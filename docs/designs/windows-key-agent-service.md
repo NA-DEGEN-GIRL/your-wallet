@@ -1337,9 +1337,11 @@ authority and is not a runtime caller of this contract. Phase 1 and Phase 2
 remain **STOP-SHIP**; both compiled policies remain `None`, and ordinary/release
 execution remains silent exit 78.
 
-**Current Phase 2E status: started, not passed.** A production-compiled,
-Windows-only, module-private adapter now models the narrow OS boundary for one
-already-installed service run-state root and its persistent `run.lock`. The
+**Current Phase 2E status: started, not passed.** The Phase 2E portion of a
+production-compiled, Windows-only, module-private adapter models the narrow OS
+boundary for one already-installed service run-state root and its persistent
+`run.lock`. The separate Phase 2F-a extension below adds the installed `state`
+directory without weakening these root/lock requirements. The
 production path obtains the fixed machine location only through
 `SHGetKnownFolderPath(FOLDERID_ProgramData)`, opens the drive root with
 `OPEN_EXISTING`, and then opens every known-folder and fixed
@@ -1361,9 +1363,11 @@ store or signing journal, and it never creates, repairs, replaces, deletes, or
 adopts either installed object.
 
 `ExpectedInstalledRunStateObjects` carries the independently supplied expected
-root and lock identities plus the service security policy. It intentionally has
-no production mint, and observed identities cannot be converted into expected
-installer authority. The adapter verifies the service SID as owner and an exact
+root and lock identities plus the service security policy; the current combined
+type also carries the separate Phase 2F-a state-directory identity described
+below. It intentionally has no production mint, and observed identities cannot
+be converted into expected installer authority. The adapter verifies the
+service SID as owner and an exact
 protected, non-inherited three-ACE DACL: an `OWNER RIGHTS` deny for
 `WRITE_DAC | WRITE_OWNER | DELETE | FILE_DELETE_CHILD`, the exact service
 operational allow (`FILE_GENERIC_READ` for the lock), and `SYSTEM`
@@ -1465,6 +1469,86 @@ supported-kernel, power-loss, or reboot guarantee; those broader guarantees
 remain external **STOP-SHIP** evidence. The ordinary/release service still has
 both compiled policies set to `None` and remains silent exit 78.
 
+**Current Phase 2F-a status: started, not passed.** The production-compiled,
+Windows-only, module-private Phase 2F-a extension adds exactly one
+installer-created `state` directory beneath the already-held fixed `v1` root.
+It can be opened only after the existing `run.lock` handle has acquired and
+verified its exclusive nonblocking `[0, 1)` range and after the held root has
+been revalidated. The open is one-component and root-relative through
+`NtCreateFile(FILE_OPEN)` with `OBJ_DONT_REPARSE`,
+`FILE_OPEN_REPARSE_POINT`, directory-only shape, and share-read/share-write but
+no delete sharing. Thread impersonation is rejected before and after the native
+state open. A pre-open rejection performs no native state open, while a
+post-open rejection retains the returned state handle inside `WithLock`; both
+retain the already-acquired range until checked retirement. The exact service
+grant is the unchanged Phase 2E
+`ROOT_ACCESS` plus only `FILE_ADD_FILE`; it adds neither
+`FILE_ADD_SUBDIRECTORY` nor `FILE_DELETE_CHILD`, `DELETE`, `WRITE_DAC`, or
+`WRITE_OWNER`. The Phase 2E root and `run.lock` requested and mapped masks remain
+unchanged.
+
+The independently supplied expected-object authority now also includes the
+complete non-sentinel `FILE_ID_INFO` for `state`. The opened directory must have
+exact-zero handle flags, be a non-reparse directory on the same local fixed NTFS
+volume as the root, match that exact identity, and carry the same service owner
+and protected exact three-ACE DACL shape as the other installed objects. Its
+service allow ACE is exactly the state-directory grant above; `OWNER RIGHTS`
+still denies `WRITE_DAC | WRITE_OWNER | DELETE | FILE_DELETE_CHILD`, and
+`SYSTEM` retains `FILE_ALL_ACCESS`. Each writer revalidation checks the held
+state handle and independently reopens the fixed leaf from the held root with
+the same no-delete-share contract. That candidate must be identity/security
+verified and checked-closed. An ambiguous candidate close poisons later
+revalidation and prevents every normal or retired receipt.
+
+`HeldServiceRunStateWriter` retains the state-directory handle as the only
+future state-mutation authority exposed by this slice; it exposes neither a raw
+handle nor marker/checkpoint operations. A post-`run.lock` failure remains
+`WithLock`; its byte range may or may not be held and its state handle may or may
+not have been obtained. Normal verified release first revalidates all three
+objects, checked-closes state mutation authority, explicitly unlocks the exact
+byte range, checked-closes `run.lock`, revalidates the still-held root, and then
+checked-closes the root before issuing `ServiceRunLockReleased`. State-close
+failure or ambiguity therefore occurs while the range is still held and cannot
+mint a normal receipt. Both a successful writer and a `WithLock` failure have an
+explicit terminal-retirement path. Retirement attempts the optional state close
+first, conditionally unlocks any acquired range, and then attempts checked close
+of both lock and root even after an earlier failure; `FailedRunLockRetired` is
+issued only when every required step succeeds. No ambiguous close, unlock, or
+revalidation result issues either receipt.
+
+The current-user kernel fixture installs and records an exact surrogate state
+directory and exercises its missing, wrong-identity, wrong-shape, reparse,
+security, no-delete-share, revalidation, release-order, and terminal-retirement
+boundaries. Its no-delete-share proof is non-vacuous: a custom from-birth test
+DACL grants the service `STATE_ACCESS | DELETE`, the production-held state
+handle makes a fresh `DELETE` open fail with exact `ERROR_SHARING_VIOLATION`,
+and the same `DELETE` open succeeds after checked retirement. The focused
+inventory is exactly 36 tests: 34 passed and two ignored. The seven tests
+attributed specifically to Phase 2F-a are
+`missing_state_failure_holds_lock_until_checked_retire`,
+`stale_and_cross_root_state_identities_are_never_adopted`,
+`wrong_state_type_reparse_and_security_are_rejected_with_lock`,
+`exact_state_authority_allows_file_create_but_denies_directory_mutation`,
+`state_no_delete_share_is_nonvacuous_when_delete_acl_allows_access`,
+`successful_writer_terminal_retire_has_exact_order_and_close_fault_no_receipt`,
+and `state_open_impersonation_bookends_preserve_exact_failure_authority`. The
+two ignored cases remain the existing Phase 2E
+`cross_process_child_fixture` helper and the qualified-host
+`symlink_reparse_at_run_lock_is_rejected_when_capability_is_available` test.
+That fixture is not installer provenance. The adapter still has no
+production expected-authority mint or caller, no marker/checkpoint read, write,
+create, replace, rename, CAS, readback, or flush operation, and no conversion to
+the Phase 2D runtime writer, Boot, Clean, stopped, provisioning, secret, signing,
+or release authority. Actual ProgramData and virtual service-SID positive-path
+evidence; installer creation and from-birth descriptor/identity provenance for
+`state`; closure of every setup or cleanup-capable handle; sealed ancestor ACLs
+and at-rest rename/delete integrity; SCM and restricted-token composition;
+group and every SACL policy; mapped-I/O and trusted service/`SYSTEM` peer
+assumptions; marker/checkpoint persistence and recovery; TPM authentication-key
+and rollback-anchor custody; and supported-kernel crash, power-loss, and reboot
+evidence remain external **STOP-SHIP** obligations. Both compiled policies stay
+`None`, and ordinary/release execution remains silent exit 78.
+
 ### Phase 3 – Authenticated Broker and helper runtime
 
 Add the bounded Broker control protocol, exact request admission, service-owned
@@ -1554,6 +1638,18 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-08-31 - Added the dormant Phase 2F-a held mutable run-state-directory
+  extension. Only after the existing `run.lock` range is exclusively held, it
+  opens the installer-created `state` leaf relative to the held root with exact
+  `ROOT_ACCESS | FILE_ADD_FILE`, no delete sharing, exact identity/security, and
+  checked path-binding revalidation. State mutation authority is checked-closed
+  before range unlock on normal release; both successful and failed writers can
+  terminally retire all optional authority, but any close, unlock, or
+  revalidation ambiguity suppresses receipts. This adds no marker/checkpoint
+  I/O, production caller, expected-authority mint, Phase 2D bridge, or release
+  activation. Installer state-directory provenance and actual ProgramData,
+  service-SID, SCM, TPM/anchor, crash, power-loss, and reboot evidence remain
+  **STOP-SHIP**, so Phase 2F-a is started but not passed.
 - 2026-08-31 - Added the dormant Phase 2E held service run-state-root adapter.
   The Windows-only production path resolves fixed ProgramData, walks every
   component with held-parent existing-only opens, verifies local NTFS,

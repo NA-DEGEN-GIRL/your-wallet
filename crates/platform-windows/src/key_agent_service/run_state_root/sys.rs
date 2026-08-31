@@ -43,11 +43,12 @@ use windows::Win32::Security::{
 #[cfg(test)]
 use windows::Win32::Security::{
     CopySid, CreateWellKnownSid, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
-    GetTokenInformation, TOKEN_USER, TokenUser,
+    GetTokenInformation, ImpersonateSelf, RevertToSelf, SecurityImpersonation, TOKEN_USER,
+    TokenUser,
 };
 use windows::Win32::Storage::FileSystem::{
-    BY_HANDLE_FILE_INFORMATION, CreateFileW, DELETE, FILE_ACCESS_RIGHTS, FILE_ALL_ACCESS,
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD,
+    BY_HANDLE_FILE_INFORMATION, CreateFileW, DELETE, FILE_ACCESS_RIGHTS, FILE_ADD_FILE,
+    FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAGS_AND_ATTRIBUTES,
     FILE_GENERIC_READ, FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
     FILE_REMOTE_PROTOCOL_INFO, FILE_SHARE_DELETE, FILE_SHARE_MODE, FILE_SHARE_READ,
@@ -75,6 +76,7 @@ use super::ServiceRunStateError;
 
 const PRODUCT_LEAVES: [&str; 3] = ["YourWallet", "KeyAgent", "v1"];
 const RUN_LOCK_LEAF: &str = "run.lock";
+const STATE_LEAF: &str = "state";
 const FILESYSTEM_NAME_UTF16: usize = 32;
 const MAX_FINAL_PATH_UTF16: usize = 32_768;
 const MIN_BINARY_SID_BYTES: usize = 8;
@@ -89,6 +91,7 @@ const ROOT_ACCESS: u32 = READ_CONTROL.0
     | FILE_READ_ATTRIBUTES.0;
 const LOCK_OPEN_ACCESS: u32 = GENERIC_READ.0 | SYNCHRONIZE.0;
 const LOCK_ACCESS: u32 = FILE_GENERIC_READ.0;
+const STATE_ACCESS: u32 = ROOT_ACCESS | FILE_ADD_FILE.0;
 const PARENT_ACCESS: u32 =
     SYNCHRONIZE.0 | FILE_LIST_DIRECTORY.0 | FILE_TRAVERSE.0 | FILE_READ_ATTRIBUTES.0;
 const OWNER_RIGHTS_DENY: u32 = WRITE_DAC.0 | WRITE_OWNER.0 | DELETE.0 | FILE_DELETE_CHILD.0;
@@ -98,6 +101,8 @@ pub(super) const ROOT_ACCESS_FOR_TEST: u32 = ROOT_ACCESS;
 #[cfg(test)]
 pub(super) const LOCK_ACCESS_FOR_TEST: u32 = LOCK_ACCESS;
 #[cfg(test)]
+pub(super) const STATE_ACCESS_FOR_TEST: u32 = STATE_ACCESS;
+#[cfg(test)]
 pub(super) const OWNER_RIGHTS_DENY_FOR_TEST: u32 = OWNER_RIGHTS_DENY;
 
 #[cfg(test)]
@@ -106,12 +111,15 @@ std::thread_local! {
     static TEST_RELEASE_TRACE: RefCell<Vec<TestReleaseStep>> = const { RefCell::new(Vec::new()) };
     static TEST_CLOSE_FAULT: Cell<Option<HandleRole>> = const { Cell::new(None) };
     static TEST_UNLOCK_FAULT: Cell<bool> = const { Cell::new(false) };
+    static TEST_STATE_NATIVE_OPEN_COUNT: Cell<usize> = const { Cell::new(0) };
+    static TEST_STATE_OPEN_IMPERSONATION_FAULT: Cell<Option<TestStateOpenImpersonationFault>> = const { Cell::new(None) };
 }
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TestReleaseStep {
     WriterRevalidated,
+    StateClosed,
     RangeUnlocked,
     LockClosed,
     RootRevalidatedAfterLock,
@@ -121,9 +129,18 @@ pub(super) enum TestReleaseStep {
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TestCloseFault {
+    State,
     Lock,
     Root,
     RevalidationRoot,
+    RevalidationState,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TestStateOpenImpersonationFault {
+    BeforeNativeOpen,
+    AfterNativeOpen,
 }
 
 /// Full, non-sentinel Windows file identity recorded by the installer.
@@ -364,6 +381,7 @@ impl fmt::Debug for SecurityPolicy {
 pub(super) struct ExpectedObjects {
     root_identity: ObjectIdentity,
     lock_identity: ObjectIdentity,
+    state_identity: ObjectIdentity,
     policy: SecurityPolicy,
 }
 
@@ -405,11 +423,13 @@ pub(super) fn current_service_sid_string_for_test() -> Result<String, ServiceRun
 pub(super) fn expected_objects_for_test(
     root_identity: TestObjectIdentity,
     lock_identity: TestObjectIdentity,
+    state_identity: TestObjectIdentity,
 ) -> Result<ExpectedObjects, ServiceRunStateError> {
     let policy = current_user_test_policy()?;
     Ok(ExpectedObjects {
         root_identity: root_identity.0,
         lock_identity: lock_identity.0,
+        state_identity: state_identity.0,
         policy,
     })
 }
@@ -771,6 +791,7 @@ impl HeldRoot {
         let mut writer = HeldWriter {
             root: self,
             lock,
+            state: None,
             range_lock_held: false,
         };
         let result = (|| {
@@ -782,6 +803,11 @@ impl HeldRoot {
                 &writer.root.expected,
                 writer.root.expected.root_identity.volume_serial_number,
             )?;
+            writer.root.revalidate_inner()?;
+            #[cfg(test)]
+            writer.open_state_with_test_fault()?;
+            #[cfg(not(test))]
+            writer.open_state()?;
             writer.root.revalidate_inner()?;
             reject_thread_impersonation()
         })();
@@ -820,6 +846,7 @@ impl fmt::Debug for HeldRoot {
     }
 }
 
+#[allow(clippy::large_enum_variant)] // Failure must retain authority without allocating.
 pub(super) enum AcquireFailure {
     BeforeLock(ServiceRunStateError),
     WithLock {
@@ -833,26 +860,37 @@ pub(super) struct ReleaseFailure {
     pub(super) cause: ServiceRunStateError,
 }
 
-/// Both root and lock remain held until explicit verified release or retirement.
+/// Root and lock, plus any successfully opened state directory, remain held
+/// until explicit verified release or retirement.
 pub(super) struct HeldWriter {
     root: HeldRoot,
     lock: OwnedHandle,
+    state: Option<OwnedHandle>,
     range_lock_held: bool,
 }
 
 impl HeldWriter {
     pub(super) fn revalidate(&self) -> Result<(), ServiceRunStateError> {
+        impersonation_bookend(|| self.revalidate_inner())
+    }
+
+    fn revalidate_inner(&self) -> Result<(), ServiceRunStateError> {
         if !self.range_lock_held {
             return Err(ServiceRunStateError::Release);
         }
-        impersonation_bookend(|| {
-            self.root.revalidate_inner()?;
-            verify_lock_handle(
-                self.lock.raw(),
-                &self.root.expected,
-                self.root.expected.root_identity.volume_serial_number,
-            )
-        })
+        let state = self.state.as_ref().ok_or(ServiceRunStateError::Release)?;
+        self.root.revalidate_inner()?;
+        verify_lock_handle(
+            self.lock.raw(),
+            &self.root.expected,
+            self.root.expected.root_identity.volume_serial_number,
+        )?;
+        verify_state_handle(
+            state.raw(),
+            &self.root.expected,
+            self.root.expected.root_identity.volume_serial_number,
+        )?;
+        self.revalidate_state_binding()
     }
 
     #[allow(clippy::result_large_err)] // Release failure intentionally retains writer authority.
@@ -862,6 +900,9 @@ impl HeldWriter {
         }
         #[cfg(test)]
         record_release_step_for_test(TestReleaseStep::WriterRevalidated);
+        if let Err(cause) = self.close_state_checked() {
+            return Err(ReleaseFailure { inner: self, cause });
+        }
         if let Err(cause) = self.unlock_exclusive_range() {
             return Err(ReleaseFailure { inner: self, cause });
         }
@@ -880,6 +921,7 @@ impl HeldWriter {
     }
 
     pub(super) fn retire(mut self) -> Result<(), ServiceRunStateError> {
+        let state_result = self.close_optional_state_checked();
         let unlock_result = if self.range_lock_held {
             self.unlock_exclusive_range()
         } else {
@@ -890,7 +932,107 @@ impl HeldWriter {
             self.range_lock_held = false;
         }
         let root_result = self.root.close_checked();
-        unlock_result.and(lock_result).and(root_result)
+        state_result
+            .and(unlock_result)
+            .and(lock_result)
+            .and(root_result)
+    }
+
+    fn open_state(&mut self) -> Result<(), ServiceRunStateError> {
+        impersonation_bookend(|| self.open_state_inner())
+    }
+
+    #[cfg(test)]
+    fn open_state_with_test_fault(&mut self) -> Result<(), ServiceRunStateError> {
+        if take_state_open_impersonation_fault_for_test(
+            TestStateOpenImpersonationFault::BeforeNativeOpen,
+        ) {
+            return run_impersonated_for_test(|| self.open_state());
+        }
+        self.open_state()
+    }
+
+    fn open_state_inner(&mut self) -> Result<(), ServiceRunStateError> {
+        if !self.range_lock_held || self.state.is_some() {
+            return Err(ServiceRunStateError::Release);
+        }
+        let opened = open_relative(
+            self.root.handle.raw(),
+            STATE_LEAF,
+            STATE_ACCESS,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        )?;
+        let mut state = opened.handle;
+        state.role = HandleRole::State;
+        self.state = Some(state);
+        let state = self.state.as_ref().ok_or(ServiceRunStateError::Release)?;
+        require_exact_open(opened.status_error, opened.information)?;
+        verify_state_handle(
+            state.raw(),
+            &self.root.expected,
+            self.root.expected.root_identity.volume_serial_number,
+        )
+    }
+
+    fn revalidate_state_binding(&self) -> Result<(), ServiceRunStateError> {
+        impersonation_bookend(|| self.revalidate_state_binding_inner())
+    }
+
+    fn revalidate_state_binding_inner(&self) -> Result<(), ServiceRunStateError> {
+        if self
+            .root
+            .revalidation_close_ambiguous
+            .load(Ordering::Acquire)
+        {
+            return Err(ServiceRunStateError::Release);
+        }
+        let opened = open_relative(
+            self.root.handle.raw(),
+            STATE_LEAF,
+            STATE_ACCESS,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        )?;
+        let mut candidate = opened.handle;
+        candidate.role = HandleRole::RevalidationState;
+        let verification = (|| {
+            require_exact_open(opened.status_error, opened.information)?;
+            verify_state_handle(
+                candidate.raw(),
+                &self.root.expected,
+                self.root.expected.root_identity.volume_serial_number,
+            )
+        })();
+        if candidate.close_checked().is_err() {
+            self.root
+                .revalidation_close_ambiguous
+                .store(true, Ordering::Release);
+            return Err(ServiceRunStateError::Release);
+        }
+        verification
+    }
+
+    fn close_state_checked(&mut self) -> Result<(), ServiceRunStateError> {
+        let Some(mut state) = self.state.take() else {
+            return Err(ServiceRunStateError::Release);
+        };
+        if let Err(cause) = state.close_checked() {
+            self.state = Some(state);
+            return Err(cause);
+        }
+        Ok(())
+    }
+
+    fn close_optional_state_checked(&mut self) -> Result<(), ServiceRunStateError> {
+        let Some(mut state) = self.state.take() else {
+            return Ok(());
+        };
+        if let Err(cause) = state.close_checked() {
+            self.state = Some(state);
+            return Err(cause);
+        }
+        Ok(())
     }
 
     fn acquire_exclusive_range(&mut self) -> Result<(), ServiceRunStateError> {
@@ -933,6 +1075,15 @@ impl HeldWriter {
     pub(super) fn handle_flags_are_zero_for_test(&self) -> bool {
         verify_handle_flags_zero(self.root.handle.raw()).is_ok()
             && verify_handle_flags_zero(self.lock.raw()).is_ok()
+            && self
+                .state
+                .as_ref()
+                .is_some_and(|state| verify_handle_flags_zero(state.raw()).is_ok())
+    }
+
+    #[cfg(test)]
+    pub(super) fn has_state_for_test(&self) -> bool {
+        self.state.is_some()
     }
 
     #[cfg(test)]
@@ -1086,6 +1237,10 @@ fn open_relative(
 ) -> Result<OpenedRelative, ServiceRunStateError> {
     validate_leaf(leaf)?;
     reject_thread_impersonation()?;
+    #[cfg(test)]
+    if leaf == STATE_LEAF {
+        TEST_STATE_NATIVE_OPEN_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+    }
     let mut name = leaf.encode_utf16().collect::<Vec<_>>();
     let byte_len = name
         .len()
@@ -1141,7 +1296,35 @@ fn open_relative(
         return Err(status_error.unwrap_or(ServiceRunStateError::Open));
     }
     let handle = OwnedHandle::new(raw)?;
-    if let Err(error) = reject_thread_impersonation() {
+    #[cfg(test)]
+    let inject_post_open_impersonation = leaf == STATE_LEAF
+        && take_state_open_impersonation_fault_for_test(
+            TestStateOpenImpersonationFault::AfterNativeOpen,
+        );
+    #[cfg(test)]
+    let impersonation_installed = if inject_post_open_impersonation {
+        // SAFETY: this test-only fault is reverted on this same thread before
+        // the opened handle is returned to the held failure typestate.
+        unsafe { ImpersonateSelf(SecurityImpersonation) }.is_ok()
+    } else {
+        false
+    };
+    let ending = reject_thread_impersonation();
+    #[cfg(test)]
+    let ending = {
+        let restored = if impersonation_installed {
+            // SAFETY: the test fault installed impersonation on this thread.
+            unsafe { RevertToSelf() }.map_err(|_| ServiceRunStateError::Impersonation)
+        } else {
+            Ok(())
+        };
+        if inject_post_open_impersonation && !impersonation_installed {
+            Err(ServiceRunStateError::Impersonation)
+        } else {
+            ending.and(restored)
+        }
+    };
+    if let Err(error) = ending {
         status_error = Some(error);
     }
     Ok(OpenedRelative {
@@ -1406,6 +1589,23 @@ fn verify_lock_handle(
     verify_exact_security(handle, &expected.policy, LOCK_ACCESS)?;
     let identity = ObjectIdentity::from_handle(handle)?;
     if identity != expected.lock_identity || identity.volume_serial_number != root_volume {
+        return Err(ServiceRunStateError::Identity);
+    }
+    Ok(())
+}
+
+fn verify_state_handle(
+    handle: HANDLE,
+    expected: &ExpectedObjects,
+    root_volume: u64,
+) -> Result<(), ServiceRunStateError> {
+    verify_handle_flags_zero(handle)?;
+    verify_exact_granted_access(handle, STATE_ACCESS)?;
+    verify_directory_shape(handle, true)?;
+    verify_supported_local_ntfs(handle)?;
+    verify_exact_security(handle, &expected.policy, STATE_ACCESS)?;
+    let identity = ObjectIdentity::from_handle(handle)?;
+    if identity != expected.state_identity || identity.volume_serial_number != root_volume {
         return Err(ServiceRunStateError::Identity);
     }
     Ok(())
@@ -2029,7 +2229,9 @@ enum HandleRole {
     Generic,
     Root,
     Lock,
+    State,
     RevalidationRoot,
+    RevalidationState,
 }
 
 impl OwnedHandle {
@@ -2075,9 +2277,12 @@ impl OwnedHandle {
                 self.state = HandleState::Closed;
                 #[cfg(test)]
                 match self.role {
+                    HandleRole::State => record_release_step_for_test(TestReleaseStep::StateClosed),
                     HandleRole::Lock => record_release_step_for_test(TestReleaseStep::LockClosed),
                     HandleRole::Root => record_release_step_for_test(TestReleaseStep::RootClosed),
-                    HandleRole::Generic | HandleRole::RevalidationRoot => {}
+                    HandleRole::Generic
+                    | HandleRole::RevalidationRoot
+                    | HandleRole::RevalidationState => {}
                 }
                 Ok(())
             }
@@ -2133,9 +2338,11 @@ pub(super) fn take_release_trace_for_test() -> Vec<TestReleaseStep> {
 #[cfg(test)]
 pub(super) fn inject_close_fault_for_test(fault: TestCloseFault) {
     let role = match fault {
+        TestCloseFault::State => HandleRole::State,
         TestCloseFault::Lock => HandleRole::Lock,
         TestCloseFault::Root => HandleRole::Root,
         TestCloseFault::RevalidationRoot => HandleRole::RevalidationRoot,
+        TestCloseFault::RevalidationState => HandleRole::RevalidationState,
     };
     TEST_CLOSE_FAULT.with(|slot| slot.set(Some(role)));
 }
@@ -2143,6 +2350,51 @@ pub(super) fn inject_close_fault_for_test(fault: TestCloseFault) {
 #[cfg(test)]
 pub(super) fn inject_unlock_fault_for_test() {
     TEST_UNLOCK_FAULT.with(|slot| slot.set(true));
+}
+
+#[cfg(test)]
+pub(super) fn inject_state_open_impersonation_fault_for_test(
+    fault: TestStateOpenImpersonationFault,
+) {
+    TEST_STATE_OPEN_IMPERSONATION_FAULT.with(|slot| slot.set(Some(fault)));
+}
+
+#[cfg(test)]
+pub(super) fn reset_state_native_open_count_for_test() {
+    TEST_STATE_NATIVE_OPEN_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(super) fn state_native_open_count_for_test() -> usize {
+    TEST_STATE_NATIVE_OPEN_COUNT.with(Cell::get)
+}
+
+#[cfg(test)]
+fn take_state_open_impersonation_fault_for_test(expected: TestStateOpenImpersonationFault) -> bool {
+    TEST_STATE_OPEN_IMPERSONATION_FAULT.with(|slot| {
+        if slot.get() == Some(expected) {
+            slot.set(None);
+            true
+        } else {
+            false
+        }
+    })
+}
+
+#[cfg(test)]
+fn run_impersonated_for_test<T>(
+    operation: impl FnOnce() -> Result<T, ServiceRunStateError>,
+) -> Result<T, ServiceRunStateError> {
+    // SAFETY: this test-only token is reverted on the same thread before return.
+    unsafe { ImpersonateSelf(SecurityImpersonation) }
+        .map_err(|_| ServiceRunStateError::Impersonation)?;
+    let result = operation();
+    // SAFETY: ImpersonateSelf succeeded on this same test thread.
+    let reverted = unsafe { RevertToSelf() }.map_err(|_| ServiceRunStateError::Impersonation);
+    match (result, reverted) {
+        (_, Err(error)) => Err(error),
+        (result, Ok(())) => result,
+    }
 }
 
 #[cfg(test)]

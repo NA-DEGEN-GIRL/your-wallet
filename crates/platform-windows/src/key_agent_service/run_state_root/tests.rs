@@ -25,8 +25,8 @@ use windows::Win32::Security::{
     SecurityImpersonation,
 };
 use windows::Win32::Storage::FileSystem::{
-    CREATE_NEW, CreateDirectoryW, CreateFileW, DELETE, FILE_ADD_FILE, FILE_ALL_ACCESS,
-    FILE_ATTRIBUTE_NORMAL, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS,
+    CREATE_NEW, CreateDirectoryW, CreateFileW, DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY,
+    FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     FILE_WRITE_DATA, OPEN_EXISTING, READ_CONTROL, WRITE_DAC, WRITE_OWNER, WriteFile,
 };
@@ -400,6 +400,7 @@ struct InstalledFixture {
     base: PathBuf,
     root_identity: TestObjectIdentity,
     lock_identity: TestObjectIdentity,
+    state_identity: TestObjectIdentity,
 }
 
 impl InstalledFixture {
@@ -412,6 +413,7 @@ impl InstalledFixture {
         let (mut setup, root_cleanup) = create_root_for_test_install(&base)?;
         tree.install_root_cleanup(root_cleanup)?;
         create_lock_for_test_install(&base)?;
+        create_state_for_test_install(&base)?;
         seal_handle_dacl(
             setup.raw()?,
             &sys::exact_sddl_for_test(sys::ROOT_ACCESS_FOR_TEST)?,
@@ -438,24 +440,39 @@ impl InstalledFixture {
             ))
             .into());
         }
+        if sys::verify_object_security_for_test(
+            &state_path(&base),
+            true,
+            sys::STATE_ACCESS_FOR_TEST,
+        )
+        .is_err()
+        {
+            let diagnostic = sys::diagnose_object_security_for_test(&state_path(&base), true)?;
+            return Err(std::io::Error::other(format!(
+                "from-birth state security mismatch: {diagnostic:?}"
+            ))
+            .into());
+        }
         let root_identity = sys::record_object_identity_for_test(&root_path(&base), true)?;
         let lock_identity = sys::record_object_identity_for_test(&lock_path(&base), false)?;
+        let state_identity = sys::record_object_identity_for_test(&state_path(&base), true)?;
         Ok(Self {
             tree,
             cleanup_root,
             base,
             root_identity,
             lock_identity,
+            state_identity,
         })
     }
 
     fn expected(&self) -> Result<ExpectedInstalledRunStateObjects, ServiceRunStateError> {
-        sys::expected_objects_for_test(self.root_identity, self.lock_identity)
+        sys::expected_objects_for_test(self.root_identity, self.lock_identity, self.state_identity)
             .map(ExpectedInstalledRunStateObjects)
     }
 
-    fn identities(&self) -> (TestObjectIdentity, TestObjectIdentity) {
-        (self.root_identity, self.lock_identity)
+    fn identities(&self) -> (TestObjectIdentity, TestObjectIdentity, TestObjectIdentity) {
+        (self.root_identity, self.lock_identity, self.state_identity)
     }
 
     fn root_cleanup(&self) -> Result<&CleanupHandle, std::io::Error> {
@@ -478,7 +495,15 @@ impl InstalledFixture {
         &self,
         lock_identity: TestObjectIdentity,
     ) -> Result<ExpectedInstalledRunStateObjects, ServiceRunStateError> {
-        sys::expected_objects_for_test(self.root_identity, lock_identity)
+        sys::expected_objects_for_test(self.root_identity, lock_identity, self.state_identity)
+            .map(ExpectedInstalledRunStateObjects)
+    }
+
+    fn expected_with_state(
+        &self,
+        state_identity: TestObjectIdentity,
+    ) -> Result<ExpectedInstalledRunStateObjects, ServiceRunStateError> {
+        sys::expected_objects_for_test(self.root_identity, self.lock_identity, state_identity)
             .map(ExpectedInstalledRunStateObjects)
     }
 
@@ -491,6 +516,7 @@ impl InstalledFixture {
         let (mut setup, root_cleanup) = create_root_for_test_install(&base)?;
         tree.install_root_cleanup(root_cleanup)?;
         create_lock_for_test_install(&base)?;
+        create_state_for_test_install(&base)?;
         let lock_identity = sys::record_object_identity_for_test(&lock_path(&base), false)?;
         fs::remove_file(lock_path(&base))?;
         seal_handle_dacl(
@@ -501,12 +527,14 @@ impl InstalledFixture {
         setup.close_checked()?;
         sys::verify_object_security_for_test(&root_path(&base), true, sys::ROOT_ACCESS_FOR_TEST)?;
         let root_identity = sys::record_object_identity_for_test(&root_path(&base), true)?;
+        let state_identity = sys::record_object_identity_for_test(&state_path(&base), true)?;
         Ok(Self {
             tree,
             cleanup_root,
             base,
             root_identity,
             lock_identity,
+            state_identity,
         })
     }
 
@@ -556,8 +584,11 @@ fn bootstrap_sddl(service_mask: u32) -> Result<String, ServiceRunStateError> {
 fn create_root_for_test_install(
     base: &Path,
 ) -> Result<(SetupHandle, CleanupHandle), Box<dyn std::error::Error>> {
-    let setup_access =
-        sys::ROOT_ACCESS_FOR_TEST | FILE_ADD_FILE.0 | FILE_DELETE_CHILD.0 | WRITE_DAC.0;
+    let setup_access = sys::ROOT_ACCESS_FOR_TEST
+        | FILE_ADD_FILE.0
+        | FILE_ADD_SUBDIRECTORY.0
+        | FILE_DELETE_CHILD.0
+        | WRITE_DAC.0;
     let sddl = bootstrap_sddl(setup_access)?;
     create_directory_with_sddl(&root_path(base), &sddl)?;
     let setup = open_test_handle(&root_path(base), setup_access, true)?;
@@ -574,6 +605,11 @@ fn create_lock_for_test_install(base: &Path) -> Result<(), Box<dyn std::error::E
     create_empty_file_with_sddl(&lock_path(base), &sddl)
 }
 
+fn create_state_for_test_install(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let sddl = sys::exact_sddl_for_test(sys::STATE_ACCESS_FOR_TEST)?;
+    create_directory_with_sddl(&state_path(base), &sddl)
+}
+
 fn create_directory_with_sddl(path: &Path, sddl: &str) -> Result<(), Box<dyn std::error::Error>> {
     let descriptor = TestSecurityDescriptor::from_sddl(sddl)?;
     let attributes = descriptor.attributes();
@@ -584,6 +620,14 @@ fn create_directory_with_sddl(path: &Path, sddl: &str) -> Result<(), Box<dyn std
 }
 
 fn create_empty_file_with_sddl(path: &Path, sddl: &str) -> Result<(), Box<dyn std::error::Error>> {
+    create_empty_file_with_sddl_and_access(path, sddl, sys::LOCK_ACCESS_FOR_TEST)
+}
+
+fn create_empty_file_with_sddl_and_access(
+    path: &Path,
+    sddl: &str,
+    desired_access: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
     let descriptor = TestSecurityDescriptor::from_sddl(sddl)?;
     let attributes = descriptor.attributes();
     let wide = wide_path(path)?;
@@ -592,7 +636,7 @@ fn create_empty_file_with_sddl(path: &Path, sddl: &str) -> Result<(), Box<dyn st
     let created = unsafe {
         CreateFileW(
             PCWSTR(wide.as_ptr()),
-            sys::LOCK_ACCESS_FOR_TEST,
+            desired_access,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             Some(ptr::from_ref(&attributes)),
             CREATE_NEW,
@@ -924,6 +968,10 @@ fn lock_path(base: &Path) -> PathBuf {
     root_path(base).join("run.lock")
 }
 
+fn state_path(base: &Path) -> PathBuf {
+    root_path(base).join("state")
+}
+
 fn wide_path(path: &Path) -> Result<Vec<u16>, std::io::Error> {
     let mut wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
     if wide.is_empty() || wide.contains(&0) {
@@ -976,6 +1024,7 @@ fn construct_fixture_then_fail(
     }
 
     create_lock_for_test_install(&base)?;
+    create_state_for_test_install(&base)?;
     seal_handle_dacl(
         setup.raw()?,
         &sys::exact_sddl_for_test(sys::ROOT_ACCESS_FOR_TEST)?,
@@ -1108,7 +1157,11 @@ fn reacquire_after_confirmed_exit_before_deadline(
 
 #[test]
 fn exact_policy_sddl_is_accepted_by_the_production_parser() -> TestResult {
-    for mask in [sys::ROOT_ACCESS_FOR_TEST, sys::LOCK_ACCESS_FOR_TEST] {
+    for mask in [
+        sys::ROOT_ACCESS_FOR_TEST,
+        sys::LOCK_ACCESS_FOR_TEST,
+        sys::STATE_ACCESS_FOR_TEST,
+    ] {
         let sddl = sys::exact_sddl_for_test(mask)?;
         assert_eq!(sys::verify_sddl_for_test(&sddl, mask), Ok(()));
     }
@@ -1117,7 +1170,7 @@ fn exact_policy_sddl_is_accepted_by_the_production_parser() -> TestResult {
 
 #[test]
 fn fixed_leaves_accept_only_single_components_and_reject_ads() {
-    for leaf in ["YourWallet", "KeyAgent", "v1", "run.lock"] {
+    for leaf in ["YourWallet", "KeyAgent", "v1", "run.lock", "state"] {
         assert_eq!(sys::validate_leaf_for_test(leaf), Ok(()));
     }
     for leaf in ["", ".", "..", "run.lock:stream", "a/b", "a\\b", "a\0b"] {
@@ -1187,6 +1240,7 @@ fn exact_positive_acquire_revalidate_release_and_reacquire_preserves_ids() -> Te
     let after = (
         sys::record_object_identity_for_test(&root_path(&fixture.base), true)?,
         sys::record_object_identity_for_test(&lock_path(&fixture.base), false)?,
+        sys::record_object_identity_for_test(&state_path(&fixture.base), true)?,
     );
     assert_eq!(before, after);
 
@@ -1223,6 +1277,30 @@ fn missing_objects_are_never_created_or_repaired() -> TestResult {
         ))
     ));
     assert!(!lock_path(&fixture.base).exists());
+    Ok(())
+}
+
+#[test]
+fn missing_state_failure_holds_lock_until_checked_retire() -> TestResult {
+    let fixture = InstalledFixture::new()?;
+    fixture.relax_root()?;
+    fs::remove_dir(state_path(&fixture.base))?;
+    fixture.reseal_root()?;
+
+    let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
+    let failure = match root.acquire_run_lock() {
+        Err(RuntimeRunLockStartFailure::WithLock(failure)) => failure,
+        Err(RuntimeRunLockStartFailure::BeforeLock(cause)) => return Err(cause.into()),
+        Ok(writer) => {
+            writer.retire()?;
+            return Err(std::io::Error::other("missing state was accepted").into());
+        }
+    };
+    assert_eq!(failure.cause(), ServiceRunStateError::Missing);
+    let competing = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
+    expect_before_lock_contention(competing)?;
+    let _retired = failure.retire()?;
+    assert!(!state_path(&fixture.base).exists());
     Ok(())
 }
 
@@ -1286,6 +1364,7 @@ fn cross_process_crash_releases_lock_and_preserves_exact_identities() -> TestRes
     let after = (
         sys::record_object_identity_for_test(&root_path(&fixture.base), true)?,
         sys::record_object_identity_for_test(&lock_path(&fixture.base), false)?,
+        sys::record_object_identity_for_test(&state_path(&fixture.base), true)?,
     );
     assert_eq!(after, before);
     release_for_test(reacquire_after_confirmed_exit_before_deadline(&fixture)?)?;
@@ -1330,9 +1409,11 @@ fn cross_process_child_fixture() -> TestResult {
         CHILD_MODE_HOLD => {
             let root_identity = sys::record_object_identity_for_test(&root_path(&base), true)?;
             let lock_identity = sys::record_object_identity_for_test(&lock_path(&base), false)?;
+            let state_identity = sys::record_object_identity_for_test(&state_path(&base), true)?;
             let expected = ExpectedInstalledRunStateObjects(sys::expected_objects_for_test(
                 root_identity,
                 lock_identity,
+                state_identity,
             )?);
             let root = open_test_service_run_state_root(&base, expected)?;
             Some(acquire_for_test(root)?)
@@ -1354,6 +1435,7 @@ fn wrong_and_cross_root_identities_are_never_adopted() -> TestResult {
     let wrong_root = ExpectedInstalledRunStateObjects(sys::expected_objects_for_test(
         second.root_identity,
         first.lock_identity,
+        first.state_identity,
     )?);
     assert!(matches!(
         open_test_service_run_state_root(&first.base, wrong_root),
@@ -1363,6 +1445,7 @@ fn wrong_and_cross_root_identities_are_never_adopted() -> TestResult {
     let crossed = ExpectedInstalledRunStateObjects(sys::expected_objects_for_test(
         first.root_identity,
         second.lock_identity,
+        first.state_identity,
     )?);
     let root = open_test_service_run_state_root(&first.base, crossed)?;
     match root.acquire_run_lock() {
@@ -1378,6 +1461,53 @@ fn wrong_and_cross_root_identities_are_never_adopted() -> TestResult {
             );
         }
     }
+    Ok(())
+}
+
+#[test]
+fn stale_and_cross_root_state_identities_are_never_adopted() -> TestResult {
+    let first = InstalledFixture::new()?;
+    let second = InstalledFixture::new()?;
+    let crossed = ExpectedInstalledRunStateObjects(sys::expected_objects_for_test(
+        first.root_identity,
+        first.lock_identity,
+        second.state_identity,
+    )?);
+    let root = open_test_service_run_state_root(&first.base, crossed)?;
+    match root.acquire_run_lock() {
+        Err(RuntimeRunLockStartFailure::WithLock(failure)) => {
+            assert_eq!(failure.cause(), ServiceRunStateError::Identity);
+            let _retired = failure.retire()?;
+        }
+        Err(RuntimeRunLockStartFailure::BeforeLock(cause)) => return Err(cause.into()),
+        Ok(writer) => {
+            writer.retire()?;
+            return Err(std::io::Error::other("cross-root state identity was adopted").into());
+        }
+    }
+
+    let stale = InstalledFixture::new()?;
+    stale.relax_root()?;
+    fs::remove_dir(state_path(&stale.base))?;
+    create_state_for_test_install(&stale.base)?;
+    stale.reseal_root()?;
+    let replacement = sys::record_object_identity_for_test(&state_path(&stale.base), true)?;
+    assert_ne!(replacement, stale.state_identity);
+    let root = open_test_service_run_state_root(&stale.base, stale.expected()?)?;
+    match root.acquire_run_lock() {
+        Err(RuntimeRunLockStartFailure::WithLock(failure)) => {
+            assert_eq!(failure.cause(), ServiceRunStateError::Identity);
+            let _retired = failure.retire()?;
+        }
+        Err(RuntimeRunLockStartFailure::BeforeLock(cause)) => return Err(cause.into()),
+        Ok(writer) => {
+            writer.retire()?;
+            return Err(std::io::Error::other("stale state identity was adopted").into());
+        }
+    }
+    let root =
+        open_test_service_run_state_root(&stale.base, stale.expected_with_state(replacement)?)?;
+    release_for_test(acquire_for_test(root)?)?;
     Ok(())
 }
 
@@ -1418,6 +1548,7 @@ fn wrong_root_and_lock_types_fail_without_repair() -> TestResult {
     let mut root_fixture = InstalledFixture::new()?;
     root_fixture.tree.relax_and_close_root_checked()?;
     fs::remove_file(lock_path(&root_fixture.base))?;
+    fs::remove_dir(state_path(&root_fixture.base))?;
     fs::remove_dir(root_path(&root_fixture.base))?;
     fs::write(root_path(&root_fixture.base), [])?;
     assert!(matches!(
@@ -1441,6 +1572,84 @@ fn wrong_root_and_lock_types_fail_without_repair() -> TestResult {
     assert!(lock_path(&lock_fixture.base).is_dir());
     root_fixture.cleanup_checked()?;
     lock_fixture.cleanup_checked()?;
+    Ok(())
+}
+
+#[test]
+fn wrong_state_type_reparse_and_security_are_rejected_with_lock() -> TestResult {
+    let wrong_type = InstalledFixture::new()?;
+    wrong_type.relax_root()?;
+    fs::remove_dir(state_path(&wrong_type.base))?;
+    create_empty_file_with_sddl_and_access(
+        &state_path(&wrong_type.base),
+        &sys::exact_sddl_for_test(sys::STATE_ACCESS_FOR_TEST)?,
+        sys::STATE_ACCESS_FOR_TEST,
+    )?;
+    wrong_type.reseal_root()?;
+    let identity = sys::record_object_identity_for_test(&state_path(&wrong_type.base), false)?;
+    let root = open_test_service_run_state_root(
+        &wrong_type.base,
+        wrong_type.expected_with_state(identity)?,
+    )?;
+    match root.acquire_run_lock() {
+        Err(RuntimeRunLockStartFailure::WithLock(failure)) => {
+            assert_eq!(failure.cause(), ServiceRunStateError::Shape);
+            let _retired = failure.retire()?;
+        }
+        Err(RuntimeRunLockStartFailure::BeforeLock(cause)) => return Err(cause.into()),
+        Ok(writer) => {
+            writer.retire()?;
+            return Err(std::io::Error::other("file-backed state was accepted").into());
+        }
+    }
+
+    let reparse = InstalledFixture::new()?;
+    reparse.relax_root()?;
+    fs::remove_dir(state_path(&reparse.base))?;
+    let target = reparse.base.join("state-target");
+    fs::create_dir(&target)?;
+    create_junction(&state_path(&reparse.base), &target)?;
+    reparse.reseal_root()?;
+    let identity = sys::record_object_identity_for_test(&state_path(&reparse.base), true)?;
+    let root =
+        open_test_service_run_state_root(&reparse.base, reparse.expected_with_state(identity)?)?;
+    match root.acquire_run_lock() {
+        Err(RuntimeRunLockStartFailure::WithLock(failure)) => {
+            assert_eq!(failure.cause(), ServiceRunStateError::Reparse);
+            let _retired = failure.retire()?;
+        }
+        Err(RuntimeRunLockStartFailure::BeforeLock(cause)) => return Err(cause.into()),
+        Ok(writer) => {
+            writer.retire()?;
+            return Err(std::io::Error::other("reparse-backed state was accepted").into());
+        }
+    }
+
+    let wrong_security = InstalledFixture::new()?;
+    wrong_security.relax_root()?;
+    fs::remove_dir(state_path(&wrong_security.base))?;
+    let overbroad = sys::STATE_ACCESS_FOR_TEST | FILE_ADD_SUBDIRECTORY.0;
+    create_directory_with_sddl(
+        &state_path(&wrong_security.base),
+        &sys::exact_sddl_for_test(overbroad)?,
+    )?;
+    wrong_security.reseal_root()?;
+    let identity = sys::record_object_identity_for_test(&state_path(&wrong_security.base), true)?;
+    let root = open_test_service_run_state_root(
+        &wrong_security.base,
+        wrong_security.expected_with_state(identity)?,
+    )?;
+    match root.acquire_run_lock() {
+        Err(RuntimeRunLockStartFailure::WithLock(failure)) => {
+            assert_eq!(failure.cause(), ServiceRunStateError::Security);
+            let _retired = failure.retire()?;
+        }
+        Err(RuntimeRunLockStartFailure::BeforeLock(cause)) => return Err(cause.into()),
+        Ok(writer) => {
+            writer.retire()?;
+            return Err(std::io::Error::other("overbroad state DACL was accepted").into());
+        }
+    }
     Ok(())
 }
 
@@ -1625,6 +1834,23 @@ fn service_owner_mutation_is_denied_and_held_root_blocks_delete() -> TestResult 
         ("WRITE_DAC", WRITE_DAC.0),
         ("WRITE_OWNER", WRITE_OWNER.0),
         ("DELETE", DELETE.0),
+        ("FILE_DELETE_CHILD", FILE_DELETE_CHILD.0),
+        ("FILE_ADD_SUBDIRECTORY", FILE_ADD_SUBDIRECTORY.0),
+        ("GENERIC_WRITE", GENERIC_WRITE.0),
+    ] {
+        fresh_access_fails_with(
+            &state_path(&fixture.base),
+            access,
+            true,
+            "state",
+            access_role,
+            ERROR_ACCESS_DENIED.to_hresult(),
+        )?;
+    }
+    for (access_role, access) in [
+        ("WRITE_DAC", WRITE_DAC.0),
+        ("WRITE_OWNER", WRITE_OWNER.0),
+        ("DELETE", DELETE.0),
     ] {
         fresh_access_fails_with(
             &lock_path(&fixture.base),
@@ -1650,7 +1876,83 @@ fn service_owner_mutation_is_denied_and_held_root_blocks_delete() -> TestResult 
 }
 
 #[test]
-fn held_root_and_lock_block_rename_and_delete() -> TestResult {
+fn exact_state_authority_allows_file_create_but_denies_directory_mutation() -> TestResult {
+    assert_eq!(sys::STATE_ACCESS_FOR_TEST, 0x0012_00a3);
+    let fixture = InstalledFixture::new()?;
+    let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
+    let writer = acquire_for_test(root)?;
+
+    let marker = state_path(&fixture.base).join("file-create-probe");
+    fs::write(&marker, [])?;
+    assert!(marker.is_file());
+    fs::remove_file(&marker)?;
+
+    let mut allowed = SetupHandle(Some(open_test_handle(
+        &state_path(&fixture.base),
+        FILE_ADD_FILE.0,
+        true,
+    )?));
+    allowed.close_checked()?;
+    filesystem_mutation_is_denied(
+        fs::create_dir(state_path(&fixture.base).join("directory-create-probe")),
+        "state-subdirectory-create",
+    )?;
+    writer.revalidate()?;
+    release_for_test(writer)?;
+    Ok(())
+}
+
+#[test]
+fn state_no_delete_share_is_nonvacuous_when_delete_acl_allows_access() -> TestResult {
+    let fixture = InstalledFixture::new()?;
+    fixture.relax_root()?;
+    fs::remove_dir(state_path(&fixture.base))?;
+    let service = sys::current_service_sid_string_for_test()?;
+    let delete_permitted_deny = sys::OWNER_RIGHTS_DENY_FOR_TEST & !DELETE.0;
+    let delete_permitted_allow = sys::STATE_ACCESS_FOR_TEST | DELETE.0;
+    let custom_state_sddl = format!(
+        "O:{service}D:P(D;;0x{delete_permitted_deny:08x};;;OW)(A;;0x{delete_permitted_allow:08x};;;{service})(A;;0x{:08x};;;SY)",
+        FILE_ALL_ACCESS.0,
+    );
+    create_directory_with_sddl(&state_path(&fixture.base), &custom_state_sddl)?;
+    fixture.reseal_root()?;
+    let state_identity = sys::record_object_identity_for_test(&state_path(&fixture.base), true)?;
+
+    let root = open_test_service_run_state_root(
+        &fixture.base,
+        fixture.expected_with_state(state_identity)?,
+    )?;
+    let failure = match root.acquire_run_lock() {
+        Err(RuntimeRunLockStartFailure::WithLock(failure)) => failure,
+        Err(RuntimeRunLockStartFailure::BeforeLock(cause)) => return Err(cause.into()),
+        Ok(writer) => {
+            writer.retire()?;
+            return Err(std::io::Error::other("custom state DACL was accepted").into());
+        }
+    };
+    assert_eq!(failure.cause(), ServiceRunStateError::Security);
+    assert!(failure.inner.has_state_for_test());
+    fresh_access_fails_with(
+        &state_path(&fixture.base),
+        DELETE.0,
+        true,
+        "state",
+        "DELETE-while-held-with-delete-permitted-DACL",
+        ERROR_SHARING_VIOLATION.to_hresult(),
+    )?;
+    let _retired = failure.retire()?;
+
+    let mut delete_probe = SetupHandle(Some(open_test_handle(
+        &state_path(&fixture.base),
+        DELETE.0,
+        true,
+    )?));
+    delete_probe.close_checked()?;
+    Ok(())
+}
+
+#[test]
+fn held_root_lock_and_state_block_rename_and_delete() -> TestResult {
     let fixture = InstalledFixture::new()?;
     let before = fixture.identities();
     let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
@@ -1671,14 +1973,24 @@ fn held_root_and_lock_block_rename_and_delete() -> TestResult {
         "lock-rename",
     )?;
     filesystem_mutation_is_denied(fs::remove_file(lock_path(&fixture.base)), "lock-delete")?;
+    filesystem_mutation_is_denied(
+        fs::rename(
+            state_path(&fixture.base),
+            root_path(&fixture.base).join("held-state-renamed"),
+        ),
+        "state-rename",
+    )?;
+    filesystem_mutation_is_denied(fs::remove_dir(state_path(&fixture.base)), "state-delete")?;
     assert!(root_path(&fixture.base).is_dir());
     assert!(lock_path(&fixture.base).is_file());
+    assert!(state_path(&fixture.base).is_dir());
     writer.revalidate()?;
     release_for_test(writer)?;
     assert_eq!(
         (
             sys::record_object_identity_for_test(&root_path(&fixture.base), true)?,
             sys::record_object_identity_for_test(&lock_path(&fixture.base), false)?,
+            sys::record_object_identity_for_test(&state_path(&fixture.base), true)?,
         ),
         before
     );
@@ -1698,12 +2010,52 @@ fn held_handle_flags_are_zero_and_release_order_is_exact() -> TestResult {
         sys::take_release_trace_for_test(),
         vec![
             sys::TestReleaseStep::WriterRevalidated,
+            sys::TestReleaseStep::StateClosed,
             sys::TestReleaseStep::RangeUnlocked,
             sys::TestReleaseStep::LockClosed,
             sys::TestReleaseStep::RootRevalidatedAfterLock,
             sys::TestReleaseStep::RootClosed,
         ]
     );
+    Ok(())
+}
+
+#[test]
+fn successful_writer_terminal_retire_has_exact_order_and_close_fault_no_receipt() -> TestResult {
+    let fixture = InstalledFixture::new()?;
+    let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
+    let writer = acquire_for_test(root)?;
+    let _ = sys::take_release_trace_for_test();
+    let _retired = writer.retire()?;
+    assert_eq!(
+        sys::take_release_trace_for_test(),
+        vec![
+            sys::TestReleaseStep::StateClosed,
+            sys::TestReleaseStep::RangeUnlocked,
+            sys::TestReleaseStep::LockClosed,
+            sys::TestReleaseStep::RootClosed,
+        ]
+    );
+
+    let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
+    let writer = acquire_for_test(root)?;
+    let _ = sys::take_release_trace_for_test();
+    sys::inject_close_fault_for_test(sys::TestCloseFault::State);
+    assert!(matches!(
+        writer.retire(),
+        Err(ServiceRunStateError::Release)
+    ));
+    assert_eq!(
+        sys::take_release_trace_for_test(),
+        vec![
+            sys::TestReleaseStep::RangeUnlocked,
+            sys::TestReleaseStep::LockClosed,
+            sys::TestReleaseStep::RootClosed,
+        ]
+    );
+
+    let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
+    release_for_test(acquire_for_test(root)?)?;
     Ok(())
 }
 
@@ -1717,6 +2069,54 @@ fn impersonation_is_rejected_before_any_filesystem_open() -> TestResult {
     assert!(matches!(result, Err(ServiceRunStateError::Impersonation)));
     assert_eq!(sys::open_count_for_test(), 0);
     drop(guard);
+    Ok(())
+}
+
+#[test]
+fn state_open_impersonation_bookends_preserve_exact_failure_authority() -> TestResult {
+    for (fault, expected_opens, expected_state) in [
+        (
+            sys::TestStateOpenImpersonationFault::BeforeNativeOpen,
+            0,
+            false,
+        ),
+        (
+            sys::TestStateOpenImpersonationFault::AfterNativeOpen,
+            1,
+            true,
+        ),
+    ] {
+        let fixture = InstalledFixture::new()?;
+        let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
+        sys::reset_state_native_open_count_for_test();
+        sys::inject_state_open_impersonation_fault_for_test(fault);
+        let failure = match root.acquire_run_lock() {
+            Err(RuntimeRunLockStartFailure::WithLock(failure)) => failure,
+            Err(RuntimeRunLockStartFailure::BeforeLock(cause)) => return Err(cause.into()),
+            Ok(writer) => {
+                writer.retire()?;
+                return Err(
+                    std::io::Error::other("state-open impersonation fault was accepted").into(),
+                );
+            }
+        };
+        assert_eq!(failure.cause(), ServiceRunStateError::Impersonation);
+        assert_eq!(sys::state_native_open_count_for_test(), expected_opens);
+        assert_eq!(failure.inner.has_state_for_test(), expected_state);
+        let competing = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
+        expect_before_lock_contention(competing)?;
+        if expected_state {
+            sys::inject_close_fault_for_test(sys::TestCloseFault::State);
+            assert!(matches!(
+                failure.retire(),
+                Err(ServiceRunStateError::Release)
+            ));
+        } else {
+            let _retired = failure.retire()?;
+        }
+        let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
+        release_for_test(acquire_for_test(root)?)?;
+    }
     Ok(())
 }
 
@@ -1738,11 +2138,13 @@ fn unlock_failure_never_mints_normal_receipt_and_checked_retire_releases_range()
         }
     };
     assert_eq!(failure.cause(), ServiceRunStateError::Release);
+    assert!(!failure.inner.has_state_for_test());
     let _retired = failure.retire()?;
     assert_eq!(
         sys::take_release_trace_for_test(),
         vec![
             sys::TestReleaseStep::WriterRevalidated,
+            sys::TestReleaseStep::StateClosed,
             sys::TestReleaseStep::RangeUnlocked,
             sys::TestReleaseStep::LockClosed,
             sys::TestReleaseStep::RootClosed,
@@ -1780,6 +2182,7 @@ fn retire_unlock_failure_closes_handles_but_never_mints_retired_receipt() -> Tes
         sys::take_release_trace_for_test(),
         vec![
             sys::TestReleaseStep::WriterRevalidated,
+            sys::TestReleaseStep::StateClosed,
             sys::TestReleaseStep::LockClosed,
             sys::TestReleaseStep::RootClosed,
         ]
@@ -1792,7 +2195,11 @@ fn retire_unlock_failure_closes_handles_but_never_mints_retired_receipt() -> Tes
 
 #[test]
 fn ambiguous_checked_close_never_mints_a_release_or_retire_receipt() -> TestResult {
-    for fault in [sys::TestCloseFault::Lock, sys::TestCloseFault::Root] {
+    for fault in [
+        sys::TestCloseFault::State,
+        sys::TestCloseFault::Lock,
+        sys::TestCloseFault::Root,
+    ] {
         let fixture = InstalledFixture::new()?;
         let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
         let writer = acquire_for_test(root)?;
@@ -1816,24 +2223,29 @@ fn ambiguous_checked_close_never_mints_a_release_or_retire_receipt() -> TestResu
 
 #[test]
 fn revalidation_probe_close_ambiguity_never_mints_any_receipt() -> TestResult {
-    let fixture = InstalledFixture::new()?;
-    let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
-    let writer = acquire_for_test(root)?;
-    sys::inject_close_fault_for_test(sys::TestCloseFault::RevalidationRoot);
-    let failure = match writer.release() {
-        Err(failure) => failure,
-        Ok(_released) => {
-            return Err(std::io::Error::other(
-                "ambiguous revalidation-probe close minted a normal receipt",
-            )
-            .into());
-        }
-    };
-    assert_eq!(failure.cause(), ServiceRunStateError::Release);
-    assert!(matches!(
-        failure.retire(),
-        Err(ServiceRunStateError::Release)
-    ));
+    for fault in [
+        sys::TestCloseFault::RevalidationRoot,
+        sys::TestCloseFault::RevalidationState,
+    ] {
+        let fixture = InstalledFixture::new()?;
+        let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
+        let writer = acquire_for_test(root)?;
+        sys::inject_close_fault_for_test(fault);
+        let failure = match writer.release() {
+            Err(failure) => failure,
+            Ok(_released) => {
+                return Err(std::io::Error::other(
+                    "ambiguous revalidation-probe close minted a normal receipt",
+                )
+                .into());
+            }
+        };
+        assert_eq!(failure.cause(), ServiceRunStateError::Release);
+        assert!(matches!(
+            failure.retire(),
+            Err(ServiceRunStateError::Release)
+        ));
+    }
     Ok(())
 }
 

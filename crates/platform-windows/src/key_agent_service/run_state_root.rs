@@ -80,7 +80,9 @@ impl HeldServiceRunStateRoot {
         self.inner.revalidate()
     }
 
-    /// Opens the already-installed `run.lock` with data access and no sharing.
+    /// Opens the already-installed `run.lock` with data access and no sharing,
+    /// acquires its exclusive range, and then opens the installed `state`
+    /// directory with exact mutation authority.
     #[allow(clippy::result_large_err)] // WithLock must retain the complete held writer.
     pub(crate) fn acquire_run_lock(
         self,
@@ -106,28 +108,35 @@ impl fmt::Debug for HeldServiceRunStateRoot {
     }
 }
 
-/// A move-only exclusive writer holding the root, `run.lock` handle, and exact
-/// one-byte kernel range lock.
+/// A move-only exclusive writer holding the root, `run.lock`, exact one-byte
+/// kernel range lock, and installer-recorded `state` directory.
 #[must_use = "the held writer must be explicitly released"]
 pub(crate) struct HeldServiceRunStateWriter {
     inner: sys::HeldWriter,
 }
 
 impl HeldServiceRunStateWriter {
-    /// Revalidates both exact objects and their fixed-path binding.
+    /// Revalidates all three exact objects and their fixed-path bindings.
     pub(crate) fn revalidate(&self) -> Result<(), ServiceRunStateError> {
         self.inner.revalidate()
     }
 
-    /// Revalidates, explicitly unlocks the exact kernel range, checked-closes
-    /// the lock handle, revalidates the still-held root, and checked-closes the
-    /// root before issuing a terminal receipt.
+    /// Revalidates, checked-closes `state`, explicitly unlocks the exact kernel
+    /// range, checked-closes the lock handle, revalidates the still-held root,
+    /// and checked-closes the root before issuing a terminal receipt.
     #[allow(clippy::result_large_err)] // Failure is a move-only authority-bearing typestate.
     pub(crate) fn release(self) -> Result<ServiceRunLockReleased, HeldRunLockFailure> {
         match self.inner.release_verified() {
             Ok(()) => Ok(ServiceRunLockReleased { _sealed: () }),
             Err(sys::ReleaseFailure { inner, cause }) => Err(HeldRunLockFailure { inner, cause }),
         }
+    }
+
+    /// Terminally retires every held authority without issuing a normal
+    /// verified-release receipt.
+    pub(crate) fn retire(self) -> Result<FailedRunLockRetired, ServiceRunStateError> {
+        self.inner.retire()?;
+        Ok(FailedRunLockRetired { _sealed: () })
     }
 }
 
@@ -139,11 +148,13 @@ impl fmt::Debug for HeldServiceRunStateWriter {
 
 /// Startup failure separated by whether Windows returned a `run.lock` handle.
 #[must_use = "a WithLock failure must be explicitly retired"]
+#[allow(clippy::large_enum_variant)] // Inline authority avoids a fallible allocation while failing.
 pub(crate) enum RuntimeRunLockStartFailure {
     /// The failure occurred before Windows returned a valid `run.lock` handle.
     BeforeLock(ServiceRunStateError),
     /// A valid `run.lock` handle remains in the terminal failure state; its
-    /// exclusive byte range may or may not have been acquired.
+    /// exclusive byte range may or may not have been acquired, and a valid
+    /// `state` handle may also remain held.
     WithLock(HeldRunLockFailure),
 }
 
@@ -156,7 +167,7 @@ impl fmt::Debug for RuntimeRunLockStartFailure {
     }
 }
 
-/// A terminal failure state that may still own the root and lock handles.
+/// A terminal failure state that may still own the root, lock, and state handles.
 #[must_use = "the failed held lock must be explicitly retired"]
 pub(crate) struct HeldRunLockFailure {
     inner: sys::HeldWriter,

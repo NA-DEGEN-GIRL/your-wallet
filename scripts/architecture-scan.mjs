@@ -6097,15 +6097,15 @@ const approvedKeyAgentServiceLifecycleSourceSha256 =
 const approvedKeyAgentServiceLifecycleTestsSha256 =
   "1fd6fba77408e27fee219c56b25674fccc219effd199028c249cc938c312768a";
 const approvedKeyAgentServiceRunStateRootSourceSha256 =
-  "8f5bcc0a3bf8d74384971232d597e4dc24461ce0dfb210f565b0e0991bc135a8";
+  "25993a73bccebfe82d256f5c3ce40b7fa7aadd6dfc7280011fda4014f99b0186";
 const approvedKeyAgentServiceRunStateRootProductionSha256 =
-  "217bb1eb9e4c0fb1d5f05d4dbc53c9c39ab1969d2cb94838c06b6a155652c253";
+  "c3dfad195105878c4b72f81fc91e39b1fc9b4491c3e5ed88227229590574ffbd";
 const approvedKeyAgentServiceRunStateRootSysSourceSha256 =
-  "18f0733b76ace45f057d30afcebc5786835c394d7b7d25007069c0d34d9604d5";
+  "ccf6b76534861830a5b461569a42035d56be2df0620371a90550dc40627240f8";
 const approvedKeyAgentServiceRunStateRootSysProductionSha256 =
-  "8a3f6556366ec31727f8725b3da360998e9f61d95a32dd8c08e97c26133aec1e";
+  "e2013579a94b1b43693cfb2ea60efdffb88e474d2222d0d69f5efa846f88417c";
 const approvedKeyAgentServiceRunStateRootTestsSha256 =
-  "dbcd3e9fc8d8a37f03bd0a807342e32c7d204158a90e0c0d1190b3ce03950e9e";
+  "bd0ccbe6412f98f5bf0153e3b5a42ed527f0ee5c0a0018feedb9b47164e06d52";
 const keyAgentServiceDurableTestNames = [
   "canonical_v1_clean_marker_and_checkpoint_round_trip",
   "canonical_v1_layout_matches_independent_golden_digests",
@@ -7903,6 +7903,7 @@ const keyAgentServicePhaseTwoCSemanticContract = ({
     return false;
   }
 
+
   return (
     (rustLexicalCode(durable.production).match(/\bmod\s+provisioning\s*;/gu) ?? [])
       .length === 1 &&
@@ -8310,6 +8311,7 @@ const keyAgentServicePhaseTwoEVisibleFunctions = [
   "acquire_run_lock",
   "revalidate",
   "release",
+  "retire",
   "cause",
   "retire",
   "open_fixed_service_run_state_root",
@@ -8336,7 +8338,7 @@ const keyAgentServicePhaseTwoETestNames = [
   "lock_hardlink_and_nonzero_length_fail_with_lock",
   "exact_owner_rights_service_system_dacl_mutations_are_rejected",
   "service_owner_mutation_is_denied_and_held_root_blocks_delete",
-  "held_root_and_lock_block_rename_and_delete",
+  "held_root_lock_and_state_block_rename_and_delete",
   "held_handle_flags_are_zero_and_release_order_is_exact",
   "impersonation_is_rejected_before_any_filesystem_open",
   "unlock_failure_never_mints_normal_receipt_and_checked_retire_releases_range",
@@ -8348,6 +8350,15 @@ const keyAgentServicePhaseTwoETestNames = [
 const keyAgentServicePhaseTwoEIgnoredTestNames = [
   "cross_process_child_fixture",
   "symlink_reparse_at_run_lock_is_rejected_when_capability_is_available",
+];
+const keyAgentServicePhaseTwoFATestNames = [
+  "missing_state_failure_holds_lock_until_checked_retire",
+  "stale_and_cross_root_state_identities_are_never_adopted",
+  "wrong_state_type_reparse_and_security_are_rejected_with_lock",
+  "exact_state_authority_allows_file_create_but_denies_directory_mutation",
+  "state_no_delete_share_is_nonvacuous_when_delete_acl_allows_access",
+  "successful_writer_terminal_retire_has_exact_order_and_close_fault_no_receipt",
+  "state_open_impersonation_bookends_preserve_exact_failure_authority",
 ];
 const keyAgentServicePhaseTwoESysVisibleTypes = [
   "ExpectedObjects",
@@ -8404,6 +8415,9 @@ const keyAgentServicePhaseTwoESemanticContract = ({
   const sysCompact = compactRust(sysProduction);
   const testsCompact = compactRust(testsSource);
   const attributedTests = keyAgentServiceRustAttributedTestInventory(testsSource);
+  const phaseTwoEAttributedTests = attributedTests.filter(({ name }) =>
+    keyAgentServicePhaseTwoETestNames.includes(name),
+  );
   const normalizedArchitectureDocument = architectureDocument.replace(
     /\s+/gu,
     " ",
@@ -8476,14 +8490,18 @@ const keyAgentServicePhaseTwoESemanticContract = ({
   const designPhaseTwoEStart = designDocument.indexOf(
     "**Current Phase 2E status: started, not passed.**",
   );
-  const designPhaseThreeStart = designDocument.indexOf(
-    "\n### Phase 3",
+  const designPhaseTwoFAStart = designDocument.indexOf(
+    "**Current Phase 2F-a status: started, not passed.**",
     designPhaseTwoEStart,
   );
+  const designPhaseThreeStart = designDocument.indexOf(
+    "\n### Phase 3",
+    designPhaseTwoFAStart,
+  );
   const phaseTwoEDesign =
-    designPhaseTwoEStart === -1 || designPhaseThreeStart === -1
+    designPhaseTwoEStart === -1 || designPhaseTwoFAStart === -1
       ? ""
-      : designDocument.slice(designPhaseTwoEStart, designPhaseThreeStart);
+      : designDocument.slice(designPhaseTwoEStart, designPhaseTwoFAStart);
   const normalizedPhaseTwoEDesign = phaseTwoEDesign.replace(/\s+/gu, " ");
   const heldRootArchitectureRows = architectureDocument
     .split(/\r?\n/gu)
@@ -8663,6 +8681,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
   let verifyExactGrantedAccess;
   let acquireRunLock;
   let writerRevalidate;
+  let writerRevalidateInner;
   let releaseVerified;
   let retire;
   let closeChecked;
@@ -8740,6 +8759,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
     heldRootCloseChecked = rustFunctionBlock(heldRootImpl, "close_checked");
     acquireRunLock = rustFunctionBlock(heldRootImpl, "acquire_run_lock");
     writerRevalidate = rustFunctionBlock(heldWriterImpl, "revalidate");
+    writerRevalidateInner = rustFunctionBlock(heldWriterImpl, "revalidate_inner");
     releaseVerified = rustFunctionBlock(heldWriterImpl, "release_verified");
     retire = rustFunctionBlock(heldWriterImpl, "retire");
     closeChecked = rustFunctionBlock(ownedHandleImpl, "close_checked");
@@ -8809,7 +8829,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
     );
     heldRenameDeleteTest = rustTopLevelFunctionBlock(
       testsSource,
-      "held_root_and_lock_block_rename_and_delete",
+      "held_root_lock_and_state_block_rename_and_delete",
     );
     releaseOrderTest = rustTopLevelFunctionBlock(
       testsSource,
@@ -8909,6 +8929,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
   } catch {
     return false;
   }
+
 
   return (
     JSON.stringify(directoryInventory) ===
@@ -9048,8 +9069,8 @@ const keyAgentServicePhaseTwoESemanticContract = ({
       "HeldServiceRunStateRoot([REDACTED])",
       "HeldServiceRunStateWriter([REDACTED])",
       "WithLock([REDACTED])",
-      "exclusive byte range may or may not have been acquired.",
-      "one-byte kernel range lock.",
+      "exclusive byte range may or may not have been acquired",
+      "exact one-byte",
       "authority",
       "[REDACTED]",
     ].every((marker) => rootSource.includes(marker)) &&
@@ -9179,7 +9200,8 @@ const keyAgentServicePhaseTwoESemanticContract = ({
       "io_status!=STATUS_SUCCESS",
       "ifraw.is_invalid()||raw==INVALID_HANDLE_VALUE",
       "lethandle=OwnedHandle::new(raw)?",
-      "ifletErr(error)=reject_thread_impersonation()",
+      "letending=reject_thread_impersonation()",
+      "ifletErr(error)=ending",
       "status_error=Some(error)",
       "information:io.Information",
     ]) &&
@@ -9368,24 +9390,30 @@ const keyAgentServicePhaseTwoESemanticContract = ({
       "AcquireFailure::BeforeLock(cause)",
       "open_relative(self.handle.raw(),RUN_LOCK_LEAF,LOCK_OPEN_ACCESS,FILE_SHARE_MODE(0),FILE_NON_DIRECTORY_FILE|FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT,)" ,
       "Err(cause)=>returnErr(AcquireFailure::BeforeLock(cause))",
-      "letmutwriter=HeldWriter{root:self,lock,range_lock_held:false,}",
+      "letmutwriter=HeldWriter{root:self,lock,state:None,range_lock_held:false,}",
       "require_exact_open(opened.status_error,opened.information)?",
       "verify_handle_flags_zero(writer.lock.raw())?",
       "writer.acquire_exclusive_range()?",
-      "verify_lock_handle(writer.lock.raw(),&writer.root.expected,writer.root.expected.root_identity.volume_serial_number,)?",
-      "writer.root.revalidate_inner()?",
+      "verify_lock_handle(writer.lock.raw(),&writer.root.expected,writer.root.expected.root_identity.volume_serial_number,)?;writer.root.revalidate_inner()?",
       "reject_thread_impersonation()",
       "Err(cause)=>Err(AcquireFailure::WithLock{inner:writer,cause,})",
     ]) &&
     hasOrderedCompactMarkers(writerRevalidate, [
+      "impersonation_bookend(||self.revalidate_inner())",
+    ]) &&
+    hasOrderedCompactMarkers(writerRevalidateInner, [
       "if!self.range_lock_held",
       "returnErr(ServiceRunStateError::Release)",
-      "impersonation_bookend(||",
+      "letstate=self.state.as_ref().ok_or(ServiceRunStateError::Release)?",
       "self.root.revalidate_inner()?",
       "verify_lock_handle(self.lock.raw(),&self.root.expected,self.root.expected.root_identity.volume_serial_number,)",
+      "verify_state_handle(state.raw(),&self.root.expected,self.root.expected.root_identity.volume_serial_number,)",
+      "self.revalidate_state_binding()",
     ]) &&
     hasOrderedCompactMarkers(releaseVerified, [
       "ifletErr(cause)=self.revalidate()",
+      "Err(ReleaseFailure{inner:self,cause})",
+      "ifletErr(cause)=self.close_state_checked()",
       "Err(ReleaseFailure{inner:self,cause})",
       "ifletErr(cause)=self.unlock_exclusive_range()",
       "Err(ReleaseFailure{inner:self,cause})",
@@ -9398,6 +9426,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
       "Ok(())",
     ]) &&
     hasOrderedCompactMarkers(retire, [
+      "letstate_result=self.close_optional_state_checked()",
       "letunlock_result=ifself.range_lock_held",
       "self.unlock_exclusive_range()",
       "else{Ok(())}",
@@ -9405,7 +9434,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
       "iflock_result.is_ok()",
       "self.range_lock_held=false",
       "letroot_result=self.root.close_checked()",
-      "unlock_result.and(lock_result).and(root_result)",
+      "state_result.and(unlock_result).and(lock_result).and(root_result)",
     ]) &&
     hasOrderedCompactMarkers(closeChecked, [
       "core::mem::replace(&mutself.state,HandleState::CloseAmbiguous)",
@@ -9419,14 +9448,14 @@ const keyAgentServicePhaseTwoESemanticContract = ({
     sysCompact.includes(
       "implDropforOwnedHandle{fndrop(&mutself){letstate=core::mem::replace(&mutself.state,HandleState::Closed);ifletHandleState::Open(raw)=state{unsafe{let_=CloseHandle(raw);}}}}",
     ) &&
-    JSON.stringify(attributedTests.map(({ name }) => name)) ===
+    JSON.stringify(phaseTwoEAttributedTests.map(({ name }) => name)) ===
       JSON.stringify(keyAgentServicePhaseTwoETestNames) &&
     JSON.stringify(
-      attributedTests
+      phaseTwoEAttributedTests
         .filter(({ ignored }) => ignored)
         .map(({ name }) => name),
     ) === JSON.stringify(keyAgentServicePhaseTwoEIgnoredTestNames) &&
-    attributedTests.length === 29 &&
+    phaseTwoEAttributedTests.length === 29 &&
     testsCompact.includes("structChildProcessGuard(Option<Child>);") &&
     testsCompact.includes(
       "constCHILD_EXIT_TIMEOUT:Duration=Duration::from_secs(30);",
@@ -9486,7 +9515,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
     namedTestEventImpl.includes('"Local\\\\YourWallet.Phase2E.{:032x}"') &&
     namedTestEventImpl.includes("test event name was already present") &&
     fixedLeavesTest.includes(
-      'for leaf in ["YourWallet", "KeyAgent", "v1", "run.lock"]',
+      'for leaf in ["YourWallet", "KeyAgent", "v1", "run.lock", "state"]',
     ) &&
     fixedLeavesTest.includes(
       'for leaf in ["", ".", "..", "run.lock:stream", "a/b", "a\\\\b", "a\\0b"]',
@@ -9569,7 +9598,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
       "writer.inner.handle_flags_are_zero_for_test()",
       "take_release_trace_for_test()",
       "release_for_test(writer)?",
-      "vec![sys::TestReleaseStep::WriterRevalidated,sys::TestReleaseStep::RangeUnlocked,sys::TestReleaseStep::LockClosed,sys::TestReleaseStep::RootRevalidatedAfterLock,sys::TestReleaseStep::RootClosed,]",
+      "vec![sys::TestReleaseStep::WriterRevalidated,sys::TestReleaseStep::StateClosed,sys::TestReleaseStep::RangeUnlocked,sys::TestReleaseStep::LockClosed,sys::TestReleaseStep::RootRevalidatedAfterLock,sys::TestReleaseStep::RootClosed,]",
     ]) &&
     hasOrderedCompactMarkers(unlockFailureTest, [
       "take_release_trace_for_test()",
@@ -9579,7 +9608,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
       "Ok(_released)=>",
       "assert_eq!(failure.cause(),ServiceRunStateError::Release)",
       "let_retired=failure.retire()?",
-      "vec![sys::TestReleaseStep::WriterRevalidated,sys::TestReleaseStep::RangeUnlocked,sys::TestReleaseStep::LockClosed,sys::TestReleaseStep::RootClosed,]",
+      "vec![sys::TestReleaseStep::WriterRevalidated,sys::TestReleaseStep::StateClosed,sys::TestReleaseStep::RangeUnlocked,sys::TestReleaseStep::LockClosed,sys::TestReleaseStep::RootClosed,]",
       "release_for_test(acquire_for_test(root)?)?",
     ]) &&
     (retireUnlockFailureTest.match(/\bsys::inject_unlock_fault_for_test\s*\(\s*\)/gu) ?? [])
@@ -9593,7 +9622,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
       "inject_unlock_fault_for_test()",
       "failure.retire()",
       "Err(ServiceRunStateError::Release)",
-      "vec![sys::TestReleaseStep::WriterRevalidated,sys::TestReleaseStep::LockClosed,sys::TestReleaseStep::RootClosed,]",
+      "vec![sys::TestReleaseStep::WriterRevalidated,sys::TestReleaseStep::StateClosed,sys::TestReleaseStep::LockClosed,sys::TestReleaseStep::RootClosed,]",
       "release_for_test(acquire_for_test(root)?)?",
     ]) &&
     hasOrderedCompactMarkers(crossProcessCrashTest, [
@@ -9694,6 +9723,486 @@ const keyAgentServicePhaseTwoESemanticContract = ({
     !normalizedHeldRootArchitecture.includes(
       "both compiled policies are `Some`",
     )
+  );
+};
+const keyAgentServicePhaseTwoFASemanticContract = ({
+  main,
+  platformService,
+  platformLib,
+  durableSource,
+  provisioningSource,
+  lifecycleSource,
+  rootSource,
+  sysSource,
+  testsSource,
+  designDocument,
+  architectureDocument,
+}) => {
+  const rootProduction = withoutCfgTestItems(rootSource);
+  const sysProduction = withoutCfgTestItems(sysSource);
+  const rootCode = rustLexicalCode(rootProduction);
+  const sysCode = rustLexicalCode(sysProduction);
+  const combinedCode = `${rootCode}\n${sysCode}`;
+  const rootCompact = compactRust(rootProduction);
+  const sysCompact = compactRust(sysProduction);
+  const testsCompact = compactRust(testsSource);
+  const attributedTests = keyAgentServiceRustAttributedTestInventory(testsSource);
+  const phaseTwoFAAttributedTests = attributedTests.filter(({ name }) =>
+    keyAgentServicePhaseTwoFATestNames.includes(name),
+  );
+  const durable = keyAgentServicePhaseTwoPartitionDurable(durableSource);
+  const lifecycleProduction =
+    keyAgentServicePhaseTwoPartitionLifecycle(lifecycleSource);
+  if (durable === null || lifecycleProduction === null) return false;
+  const productionConsumers = rustLexicalCode(
+    [
+      main,
+      platformService,
+      platformLib,
+      durable.production,
+      withoutCfgTestItems(provisioningSource),
+      lifecycleProduction,
+    ].join("\n"),
+  );
+  const forbiddenMarkerOrCheckpointIo =
+    /\b(?:YWRUNV01|YWHIWV01|ReadFile|WriteFile|FlushFileBuffers|SetFileInformationByHandle|FileRenameInformation|FILE_CREATE|FILE_OPEN_IF|FILE_OVERWRITE|FILE_OVERWRITE_IF|FILE_SUPERSEDE|ReplaceFileW?|MoveFile(?:Ex)?W?)\b/u;
+  const phaseTwoDAuthorityNames =
+    /\b(?:RuntimeWriterAcquired|BootEvidence|SingleWriterLease|ProvisionedRunState|WriterExitPending|ActiveRunLease|CleanCommittedWithWriter|StoppedRunEvidence)\b/u;
+
+  const designPhaseTwoFAStart = designDocument.indexOf(
+    "**Current Phase 2F-a status: started, not passed.**",
+  );
+  const designPhaseThreeStart = designDocument.indexOf(
+    "\n### Phase 3",
+    designPhaseTwoFAStart,
+  );
+  const phaseTwoFADesign =
+    designPhaseTwoFAStart === -1 || designPhaseThreeStart === -1
+      ? ""
+      : designDocument.slice(designPhaseTwoFAStart, designPhaseThreeStart);
+  const normalizedPhaseTwoFADesign = phaseTwoFADesign.replace(/\s+/gu, " ");
+  const phaseTwoFAArchitectureRows = architectureDocument
+    .split(/\r?\n/gu)
+    .filter((line) =>
+      line.startsWith("| Windows service held mutable run-state directory |"),
+    );
+  const normalizedPhaseTwoFAArchitecture = (
+    phaseTwoFAArchitectureRows[0] ?? ""
+  ).replace(/\s+/gu, " ");
+  const designMarkers = [
+    "production-compiled, Windows-only, module-private Phase 2F-a extension",
+    "installer-created `state` directory beneath the already-held fixed `v1` root",
+    "only after the existing `run.lock` handle has acquired and verified its exclusive nonblocking `[0, 1)` range",
+    "one-component and root-relative through `NtCreateFile(FILE_OPEN)`",
+    "share-read/share-write but no delete sharing",
+    "The focused inventory is exactly 36 tests: 34 passed and two ignored",
+    "same `DELETE` open succeeds after checked retirement",
+    "Thread impersonation is rejected before and after the native state open",
+    "pre-open rejection performs no native state open",
+    "post-open rejection retains the returned state handle inside `WithLock`",
+    "unchanged Phase 2E `ROOT_ACCESS` plus only `FILE_ADD_FILE`",
+    "adds neither `FILE_ADD_SUBDIRECTORY` nor `FILE_DELETE_CHILD`, `DELETE`, `WRITE_DAC`, or `WRITE_OWNER`",
+    "Phase 2E root and `run.lock` requested and mapped masks remain unchanged",
+    "complete non-sentinel `FILE_ID_INFO` for `state`",
+    "same local fixed NTFS volume as the root",
+    "same service owner and protected exact three-ACE DACL shape",
+    "service allow ACE is exactly the state-directory grant above",
+    "independently reopens the fixed leaf from the held root with the same no-delete-share contract",
+    "ambiguous candidate close poisons later revalidation and prevents every normal or retired receipt",
+    "state-directory handle as the only future state-mutation authority exposed by this slice",
+    "exposes neither a raw handle nor marker/checkpoint operations",
+    "checked-closes state mutation authority, explicitly unlocks the exact byte range",
+    "State-close failure or ambiguity therefore occurs while the range is still held and cannot mint a normal receipt",
+    "Both a successful writer and a `WithLock` failure have an explicit terminal-retirement path",
+    "Retirement attempts the optional state close first, conditionally unlocks any acquired range, and then attempts checked close of both lock and root even after an earlier failure",
+    "`FailedRunLockRetired` is issued only when every required step succeeds",
+    "no production expected-authority mint or caller",
+    "no marker/checkpoint read, write, create, replace, rename, CAS, readback, or flush operation",
+    "no conversion to the Phase 2D runtime writer",
+    "installer creation and from-birth descriptor/identity provenance for `state`",
+    "remain external **STOP-SHIP** obligations",
+    "Both compiled policies stay `None`",
+    "ordinary/release execution remains silent exit 78",
+  ];
+  const architectureMarkers = [
+    "zero-production-authority-mint and zero-production-caller Phase 2F-a extension",
+    "exactly one installer-created `state` directory beneath the already-held fixed `v1` root",
+    "only after the existing `run.lock` has acquired and verified its exclusive nonblocking `[0, 1)` range",
+    "one-component root-relative `NtCreateFile(FILE_OPEN)`",
+    "share-read/share-write, and no delete sharing",
+    "The focused inventory is exactly 36 tests: 34 passed and two ignored",
+    "fresh `DELETE` open fail with exact `ERROR_SHARING_VIOLATION`",
+    "unchanged Phase 2E `ROOT_ACCESS` plus only `FILE_ADD_FILE`",
+    "adds no `FILE_ADD_SUBDIRECTORY`, `FILE_DELETE_CHILD`, `DELETE`, `WRITE_DAC`, or `WRITE_OWNER`",
+    "Phase 2E root and lock masks remain unchanged",
+    "complete non-sentinel installer-recorded state identity",
+    "same local fixed NTFS volume",
+    "service SID as owner with the exact protected three-ACE DACL",
+    "service allow exactly the state grant",
+    "independently reopens the fixed state leaf with the same no-delete-share contract",
+    "ambiguous candidate close poisons every later normal or retired receipt",
+    "opaque future mutation authority with no raw-handle or marker/checkpoint operation",
+    "Normal release checked-closes state before range unlock",
+    "Both a successful writer and a `WithLock` failure have explicit terminal retirement",
+    "attempts optional state close, conditional range unlock, and both lock/root closes even after an earlier failure",
+    "issues `FailedRunLockRetired` only if all required steps succeed",
+    "Any state-close, unlock, revalidation, or close ambiguity issues no receipt",
+    "no marker/checkpoint read, write, create, replace, rename, CAS, readback, or flush",
+    "no production caller or expected-authority mint",
+    "no Phase 2D, provisioning, Boot, Clean, stopped, secret, signing, or release bridge",
+    "installer state-directory creation/from-birth descriptor and independently sealed identity provenance",
+    "remain external **STOP-SHIP** obligations",
+    "Both compiled policies remain `None`",
+    "ordinary/release execution remains silent exit 78",
+  ];
+
+  let expectedObjects;
+  let heldWriterDefinition;
+  let heldWriterImpl;
+  let wrapperWriterImpl;
+  let acquireRunLock;
+  let openState;
+  let openStateInner;
+  let writerRevalidateInner;
+  let revalidateStateBinding;
+  let revalidateStateBindingInner;
+  let closeStateChecked;
+  let closeOptionalStateChecked;
+  let verifyStateHandle;
+  let releaseVerified;
+  let retire;
+  let missingStateTest;
+  let staleStateTest;
+  let wrongStateTest;
+  let stateAuthorityTest;
+  let stateNoDeleteShareTest;
+  let terminalRetireTest;
+  let stateOpenImpersonationTest;
+  try {
+    expectedObjects = rustLexicalItemBlock(
+      sysProduction,
+      /\bpub\s*\(\s*super\s*\)\s+struct\s+ExpectedObjects\s*\{/u,
+    );
+    heldWriterDefinition = rustLexicalItemBlock(
+      sysProduction,
+      /\bpub\s*\(\s*super\s*\)\s+struct\s+HeldWriter\s*\{/u,
+    );
+    heldWriterImpl = rustLexicalItemBlock(
+      sysProduction,
+      /\bimpl\s+HeldWriter\s*\{/u,
+    );
+    wrapperWriterImpl = rustLexicalItemBlock(
+      rootProduction,
+      /\bimpl\s+HeldServiceRunStateWriter\s*\{/u,
+    );
+    const heldRootImpl = rustLexicalItemBlock(
+      sysProduction,
+      /\bimpl\s+HeldRoot\s*\{/u,
+    );
+    acquireRunLock = rustFunctionBlock(heldRootImpl, "acquire_run_lock");
+    openState = rustFunctionBlock(heldWriterImpl, "open_state");
+    openStateInner = rustFunctionBlock(heldWriterImpl, "open_state_inner");
+    writerRevalidateInner = rustFunctionBlock(heldWriterImpl, "revalidate_inner");
+    revalidateStateBinding = rustFunctionBlock(
+      heldWriterImpl,
+      "revalidate_state_binding",
+    );
+    revalidateStateBindingInner = rustFunctionBlock(
+      heldWriterImpl,
+      "revalidate_state_binding_inner",
+    );
+    closeStateChecked = rustFunctionBlock(
+      heldWriterImpl,
+      "close_state_checked",
+    );
+    closeOptionalStateChecked = rustFunctionBlock(
+      heldWriterImpl,
+      "close_optional_state_checked",
+    );
+    verifyStateHandle = rustTopLevelFunctionBlock(
+      sysProduction,
+      "verify_state_handle",
+    );
+    releaseVerified = rustFunctionBlock(heldWriterImpl, "release_verified");
+    retire = rustFunctionBlock(heldWriterImpl, "retire");
+    missingStateTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "missing_state_failure_holds_lock_until_checked_retire",
+    );
+    staleStateTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "stale_and_cross_root_state_identities_are_never_adopted",
+    );
+    wrongStateTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "wrong_state_type_reparse_and_security_are_rejected_with_lock",
+    );
+    stateAuthorityTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "exact_state_authority_allows_file_create_but_denies_directory_mutation",
+    );
+    stateNoDeleteShareTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "state_no_delete_share_is_nonvacuous_when_delete_acl_allows_access",
+    );
+    terminalRetireTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "successful_writer_terminal_retire_has_exact_order_and_close_fault_no_receipt",
+    );
+    stateOpenImpersonationTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "state_open_impersonation_bookends_preserve_exact_failure_authority",
+    );
+  } catch {
+    return false;
+  }
+
+  return (
+    sysSource.includes(
+      'const RUN_LOCK_LEAF: &str = "run.lock";\nconst STATE_LEAF: &str = "state";',
+    ) &&
+    sysCompact.includes(
+      "constROOT_ACCESS:u32=READ_CONTROL.0|SYNCHRONIZE.0|FILE_LIST_DIRECTORY.0|FILE_TRAVERSE.0|FILE_READ_ATTRIBUTES.0;",
+    ) &&
+    sysCompact.includes(
+      "constLOCK_OPEN_ACCESS:u32=GENERIC_READ.0|SYNCHRONIZE.0;",
+    ) &&
+    sysCompact.includes("constLOCK_ACCESS:u32=FILE_GENERIC_READ.0;") &&
+    sysCompact.includes("constSTATE_ACCESS:u32=ROOT_ACCESS|FILE_ADD_FILE.0;") &&
+    !/\b(?:FILE_ADD_SUBDIRECTORY|FILE_DELETE_CHILD|DELETE|WRITE_DAC|WRITE_OWNER)\b/u.test(
+      rustLexicalCode(verifyStateHandle),
+    ) &&
+    compactRust(expectedObjects).includes(
+      "pub(super)structExpectedObjects{root_identity:ObjectIdentity,lock_identity:ObjectIdentity,state_identity:ObjectIdentity,policy:SecurityPolicy,}",
+    ) &&
+    compactRust(heldWriterDefinition).includes(
+      "pub(super)structHeldWriter{root:HeldRoot,lock:OwnedHandle,state:Option<OwnedHandle>,range_lock_held:bool,}",
+    ) &&
+    hasOrderedCompactMarkers(acquireRunLock, [
+      "writer.acquire_exclusive_range()?",
+      "verify_lock_handle(writer.lock.raw(),&writer.root.expected,writer.root.expected.root_identity.volume_serial_number,)?",
+      "writer.root.revalidate_inner()?",
+      "writer.open_state()?",
+      "writer.root.revalidate_inner()?",
+      "reject_thread_impersonation()",
+    ]) &&
+    hasOrderedCompactMarkers(openState, [
+      "impersonation_bookend(||self.open_state_inner())",
+    ]) &&
+    hasOrderedCompactMarkers(openStateInner, [
+      "if!self.range_lock_held||self.state.is_some()",
+      "returnErr(ServiceRunStateError::Release)",
+      "open_relative(self.root.handle.raw(),STATE_LEAF,STATE_ACCESS,FILE_SHARE_READ|FILE_SHARE_WRITE,FILE_DIRECTORY_FILE|FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT,)?",
+      "state.role=HandleRole::State",
+      "self.state=Some(state)",
+      "require_exact_open(opened.status_error,opened.information)?",
+      "verify_state_handle(state.raw(),&self.root.expected,self.root.expected.root_identity.volume_serial_number,)",
+    ]) &&
+    hasOrderedCompactMarkers(verifyStateHandle, [
+      "verify_handle_flags_zero(handle)?",
+      "verify_exact_granted_access(handle,STATE_ACCESS)?",
+      "verify_directory_shape(handle,true)?",
+      "verify_supported_local_ntfs(handle)?",
+      "verify_exact_security(handle,&expected.policy,STATE_ACCESS)?",
+      "letidentity=ObjectIdentity::from_handle(handle)?",
+      "identity!=expected.state_identity||identity.volume_serial_number!=root_volume",
+      "Err(ServiceRunStateError::Identity)",
+    ]) &&
+    hasOrderedCompactMarkers(writerRevalidateInner, [
+      "if!self.range_lock_held",
+      "letstate=self.state.as_ref().ok_or(ServiceRunStateError::Release)?",
+      "self.root.revalidate_inner()?",
+      "verify_lock_handle(self.lock.raw(),&self.root.expected,self.root.expected.root_identity.volume_serial_number,)?",
+      "verify_state_handle(state.raw(),&self.root.expected,self.root.expected.root_identity.volume_serial_number,)?",
+      "self.revalidate_state_binding()",
+    ]) &&
+    hasOrderedCompactMarkers(revalidateStateBinding, [
+      "impersonation_bookend(||self.revalidate_state_binding_inner())",
+    ]) &&
+    hasOrderedCompactMarkers(revalidateStateBindingInner, [
+      "self.root.revalidation_close_ambiguous.load(Ordering::Acquire)",
+      "returnErr(ServiceRunStateError::Release)",
+      "open_relative(self.root.handle.raw(),STATE_LEAF,STATE_ACCESS,FILE_SHARE_READ|FILE_SHARE_WRITE,FILE_DIRECTORY_FILE|FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT,)?",
+      "candidate.role=HandleRole::RevalidationState",
+      "require_exact_open(opened.status_error,opened.information)?",
+      "verify_state_handle(candidate.raw(),&self.root.expected,self.root.expected.root_identity.volume_serial_number,)",
+      "ifcandidate.close_checked().is_err()",
+      "self.root.revalidation_close_ambiguous.store(true,Ordering::Release)",
+      "returnErr(ServiceRunStateError::Release)",
+      "verification",
+    ]) &&
+    hasOrderedCompactMarkers(closeStateChecked, [
+      "letSome(mutstate)=self.state.take()else",
+      "returnErr(ServiceRunStateError::Release)",
+      "ifletErr(cause)=state.close_checked()",
+      "self.state=Some(state)",
+      "returnErr(cause)",
+      "Ok(())",
+    ]) &&
+    hasOrderedCompactMarkers(closeOptionalStateChecked, [
+      "letSome(mutstate)=self.state.take()else",
+      "returnOk(())",
+      "ifletErr(cause)=state.close_checked()",
+      "self.state=Some(state)",
+      "returnErr(cause)",
+      "Ok(())",
+    ]) &&
+    hasOrderedCompactMarkers(releaseVerified, [
+      "self.revalidate()",
+      "self.close_state_checked()",
+      "self.unlock_exclusive_range()",
+      "self.lock.close_checked()",
+      "self.root.revalidate()",
+      "self.root.close_checked()",
+      "Ok(())",
+    ]) &&
+    hasOrderedCompactMarkers(retire, [
+      "letstate_result=self.close_optional_state_checked()",
+      "letunlock_result=ifself.range_lock_held",
+      "self.unlock_exclusive_range()",
+      "letlock_result=self.lock.close_checked()",
+      "letroot_result=self.root.close_checked()",
+      "state_result.and(unlock_result).and(lock_result).and(root_result)",
+    ]) &&
+    hasOrderedCompactMarkers(wrapperWriterImpl, [
+      "pub(crate)fnrelease(self)->Result<ServiceRunLockReleased,HeldRunLockFailure>",
+      "self.inner.release_verified()",
+      "pub(crate)fnretire(self)->Result<FailedRunLockRetired,ServiceRunStateError>",
+      "self.inner.retire()?",
+      "Ok(FailedRunLockRetired{_sealed:()})",
+    ]) &&
+    hasOrderedCompactMarkers(missingStateTest, [
+      "fs::remove_dir(state_path(&fixture.base))?",
+      "root.acquire_run_lock()",
+      "Err(RuntimeRunLockStartFailure::WithLock(failure))",
+      "failure.cause(),ServiceRunStateError::Missing",
+      "expect_before_lock_contention(competing)?",
+      "failure.retire()?",
+      "assert!(!state_path(&fixture.base).exists())",
+    ]) &&
+    hasOrderedCompactMarkers(staleStateTest, [
+      "second.state_identity",
+      "root.acquire_run_lock()",
+      "failure.cause(),ServiceRunStateError::Identity",
+      "failure.retire()?",
+      "fs::remove_dir(state_path(&stale.base))?",
+      "create_state_for_test_install(&stale.base)?",
+      "assert_ne!(replacement,stale.state_identity)",
+      "failure.cause(),ServiceRunStateError::Identity",
+      "failure.retire()?",
+      "stale.expected_with_state(replacement)?",
+      "release_for_test(acquire_for_test(root)?)?",
+    ]) &&
+    hasOrderedCompactMarkers(wrongStateTest, [
+      "create_empty_file_with_sddl_and_access",
+      "ServiceRunStateError::Shape",
+      "failure.retire()?",
+      "create_junction(&state_path(&reparse.base),&target)?",
+      "ServiceRunStateError::Reparse",
+      "failure.retire()?",
+      "letoverbroad=sys::STATE_ACCESS_FOR_TEST|FILE_ADD_SUBDIRECTORY.0",
+      "ServiceRunStateError::Security",
+      "failure.retire()?",
+    ]) &&
+    hasOrderedCompactMarkers(stateAuthorityTest, [
+      "assert_eq!(sys::STATE_ACCESS_FOR_TEST,0x0012_00a3)",
+      "letwriter=acquire_for_test(root)?",
+      "fs::write(&marker,[])?",
+      "assert!(marker.is_file())",
+      "fs::remove_file(&marker)?",
+      "open_test_handle(&state_path(&fixture.base),FILE_ADD_FILE.0,true,)?",
+      "filesystem_mutation_is_denied(",
+      "fs::create_dir(state_path(&fixture.base).join(",
+      "writer.revalidate()?",
+      "release_for_test(writer)?",
+    ]) &&
+    hasOrderedCompactMarkers(stateNoDeleteShareTest, [
+      "fixture.relax_root()?",
+      "fs::remove_dir(state_path(&fixture.base))?",
+      "letdelete_permitted_deny=sys::OWNER_RIGHTS_DENY_FOR_TEST&!DELETE.0",
+      "letdelete_permitted_allow=sys::STATE_ACCESS_FOR_TEST|DELETE.0",
+      "create_directory_with_sddl(&state_path(&fixture.base),&custom_state_sddl)?",
+      "fixture.reseal_root()?",
+      "fixture.expected_with_state(state_identity)?",
+      "Err(RuntimeRunLockStartFailure::WithLock(failure))",
+      "failure.cause(),ServiceRunStateError::Security",
+      "failure.inner.has_state_for_test()",
+      "fresh_access_fails_with(",
+      "&state_path(&fixture.base)",
+      "DELETE.0",
+      "true",
+      "ERROR_SHARING_VIOLATION.to_hresult()",
+      "failure.retire()?",
+      "open_test_handle(&state_path(&fixture.base),DELETE.0,true,)?",
+      "delete_probe.close_checked()?",
+    ]) &&
+    hasOrderedCompactMarkers(terminalRetireTest, [
+      "letwriter=acquire_for_test(root)?",
+      "writer.retire()?",
+      "vec![sys::TestReleaseStep::StateClosed,sys::TestReleaseStep::RangeUnlocked,sys::TestReleaseStep::LockClosed,sys::TestReleaseStep::RootClosed,]",
+      "sys::inject_close_fault_for_test(sys::TestCloseFault::State)",
+      "writer.retire()",
+      "Err(ServiceRunStateError::Release)",
+      "vec![sys::TestReleaseStep::RangeUnlocked,sys::TestReleaseStep::LockClosed,sys::TestReleaseStep::RootClosed,]",
+      "release_for_test(acquire_for_test(root)?)?",
+    ]) &&
+    hasOrderedCompactMarkers(stateOpenImpersonationTest, [
+      "TestStateOpenImpersonationFault::BeforeNativeOpen,0,false",
+      "TestStateOpenImpersonationFault::AfterNativeOpen,1,true",
+      "reset_state_native_open_count_for_test()",
+      "inject_state_open_impersonation_fault_for_test(fault)",
+      "Err(RuntimeRunLockStartFailure::WithLock(failure))",
+      "failure.cause(),ServiceRunStateError::Impersonation",
+      "state_native_open_count_for_test(),expected_opens",
+      "failure.inner.has_state_for_test(),expected_state",
+      "expect_before_lock_contention(competing)?",
+      "inject_close_fault_for_test(sys::TestCloseFault::State)",
+      "failure.retire()",
+      "Err(ServiceRunStateError::Release)",
+      "failure.retire()?",
+      "release_for_test(acquire_for_test(root)?)?",
+    ]) &&
+    [
+      "installer-recorded `state` directory",
+      "`state` handle may also remain held",
+      "root, lock, and state handles",
+    ].every((marker) => rootSource.includes(marker)) &&
+    [
+      "HandleRole::State=>record_release_step_for_test(TestReleaseStep::StateClosed)",
+      "HandleRole::RevalidationState=>",
+    ].every((marker) => sysCompact.includes(marker)) &&
+    !forbiddenMarkerOrCheckpointIo.test(combinedCode) &&
+    !phaseTwoDAuthorityNames.test(combinedCode) &&
+    !/\b(?:ExpectedInstalledRunStateObjects|ExpectedObjects)\b/u.test(
+      productionConsumers,
+    ) &&
+    !/\bopen_fixed_service_run_state_root\b/u.test(productionConsumers) &&
+    JSON.stringify(phaseTwoFAAttributedTests.map(({ name }) => name)) ===
+      JSON.stringify(keyAgentServicePhaseTwoFATestNames) &&
+    phaseTwoFAAttributedTests.every(({ ignored }) => !ignored) &&
+    attributedTests.length === 36 &&
+    attributedTests.every(({ name }) =>
+      [...keyAgentServicePhaseTwoETestNames, ...keyAgentServicePhaseTwoFATestNames].includes(
+        name,
+      ),
+    ) &&
+    JSON.stringify(
+      attributedTests.filter(({ ignored }) => ignored).map(({ name }) => name),
+    ) === JSON.stringify(keyAgentServicePhaseTwoEIgnoredTestNames) &&
+    normalizedPhaseTwoFADesign.length > 0 &&
+    designMarkers.every((marker) => normalizedPhaseTwoFADesign.includes(marker)) &&
+    phaseTwoFAArchitectureRows.length === 1 &&
+    architectureMarkers.every((marker) =>
+      normalizedPhaseTwoFAArchitecture.includes(marker),
+    ) &&
+    !normalizedPhaseTwoFADesign.includes("Phase 2F-a status: passed") &&
+    !normalizedPhaseTwoFAArchitecture.includes(
+      "marker/checkpoint persistence is complete",
+    ) &&
+    rootCompact.includes(
+      "pub(crate)fnretire(self)->Result<FailedRunLockRetired,ServiceRunStateError>",
+    ) &&
+    testsCompact.includes("TestReleaseStep::StateClosed")
   );
 };
 const keyAgentServicePhaseTwoInputs = Object.freeze({
@@ -10483,8 +10992,8 @@ const keyAgentServicePhaseTwoESemanticMutationProbes = [
   ),
   mutateKeyAgentServicePhaseTwoEInput(
     "sysSource",
-    "            writer.root.revalidate_inner()?;\n            reject_thread_impersonation()",
-    "            reject_thread_impersonation()",
+    "            verify_lock_handle(\n                writer.lock.raw(),\n                &writer.root.expected,\n                writer.root.expected.root_identity.volume_serial_number,\n            )?;\n            writer.root.revalidate_inner()?;",
+    "            verify_lock_handle(\n                writer.lock.raw(),\n                &writer.root.expected,\n                writer.root.expected.root_identity.volume_serial_number,\n            )?;",
   ),
   mutateKeyAgentServicePhaseTwoEInput(
     "sysSource",
@@ -10633,7 +11142,7 @@ const keyAgentServicePhaseTwoESemanticMutationProbes = [
   ),
   mutateKeyAgentServicePhaseTwoEInput(
     "rootSource",
-    "exclusive byte range may or may not have been acquired.",
+    "exclusive byte range may or may not have been acquired",
     "exclusive byte range was acquired.",
   ),
   mutateKeyAgentServicePhaseTwoEInput(
@@ -10713,14 +11222,116 @@ const keyAgentServicePhaseTwoESemanticMutationProbes = [
   ),
   mutateKeyAgentServicePhaseTwoEInput(
     "rootSource",
-    "        self.inner.retire()?;",
-    "        let _ = self.inner.retire();",
+    "    /// Checked-closes every remaining handle and issues a terminal receipt.\n    pub(crate) fn retire(self) -> Result<FailedRunLockRetired, ServiceRunStateError> {\n        self.inner.retire()?;",
+    "    /// Mutated failure retirement.\n    pub(crate) fn retire(self) -> Result<FailedRunLockRetired, ServiceRunStateError> {\n        let _ = self.inner.retire();",
   ),
   mutateKeyAgentServicePhaseTwoEInput(
     "testsSource",
     "            sys::TestReleaseStep::RangeUnlocked,\n            sys::TestReleaseStep::LockClosed,\n            sys::TestReleaseStep::RootRevalidatedAfterLock,",
     "            sys::TestReleaseStep::LockClosed,\n            sys::TestReleaseStep::RootRevalidatedAfterLock,",
   ),
+];
+const keyAgentServicePhaseTwoFASemanticMutationProbes = [
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    'const STATE_LEAF: &str = "state";',
+    'const STATE_LEAF: &str = "mutable";',
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "const STATE_ACCESS: u32 = ROOT_ACCESS | FILE_ADD_FILE.0;",
+    "const STATE_ACCESS: u32 = ROOT_ACCESS;",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "const ROOT_ACCESS: u32 = READ_CONTROL.0\n    | SYNCHRONIZE.0\n    | FILE_LIST_DIRECTORY.0\n    | FILE_TRAVERSE.0\n    | FILE_READ_ATTRIBUTES.0;",
+    "const ROOT_ACCESS: u32 = READ_CONTROL.0 | SYNCHRONIZE.0;",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "    state_identity: ObjectIdentity,",
+    "",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "    state: Option<OwnedHandle>,",
+    "    state: OwnedHandle,",
+  ),
+  {
+    ...keyAgentServicePhaseTwoEInputs,
+    sysSource: keyAgentServicePhaseTwoEInputs.sysSource.replaceAll(
+      "            FILE_SHARE_READ | FILE_SHARE_WRITE,\n            FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,",
+      "            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,\n            FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,",
+    ),
+  },
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "            writer.open_state()?;",
+    "            let _ = &writer.state;",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "    verify_exact_granted_access(handle, STATE_ACCESS)?;",
+    "    let _ = STATE_ACCESS;",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "    if identity != expected.state_identity || identity.volume_serial_number != root_volume {",
+    "    if identity.volume_serial_number != root_volume {",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "        candidate.role = HandleRole::RevalidationState;",
+    "        candidate.role = HandleRole::RevalidationRoot;",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "        if let Err(cause) = self.close_state_checked() {\n            return Err(ReleaseFailure { inner: self, cause });\n        }",
+    "        let _ = &self.state;",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "        let state_result = self.close_optional_state_checked();",
+    "        let state_result = Ok(());",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "rootSource",
+    "    /// Terminally retires every held authority without issuing a normal\n    /// verified-release receipt.\n    pub(crate) fn retire(self) -> Result<FailedRunLockRetired, ServiceRunStateError> {\n        self.inner.retire()?;\n        Ok(FailedRunLockRetired { _sealed: () })\n    }",
+    "    /// Mutated terminal retirement.\n    pub(crate) fn retire(self) -> Result<FailedRunLockRetired, ServiceRunStateError> {\n        let _ = self.inner;\n        Ok(FailedRunLockRetired { _sealed: () })\n    }",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "testsSource",
+    "state_no_delete_share_is_nonvacuous_when_delete_acl_allows_access",
+    "state_no_delete_share_is_vacuous",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "testsSource",
+    "successful_writer_terminal_retire_has_exact_order_and_close_fault_no_receipt",
+    "successful_writer_terminal_retire_is_weakened",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "testsSource",
+    "state_open_impersonation_bookends_preserve_exact_failure_authority",
+    "state_open_impersonation_bookends_are_weakened",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "designDocument",
+    "**Current Phase 2F-a status: started, not passed.**",
+    "**Current Phase 2F-a status: passed.**",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "architectureDocument",
+    "| Windows service held mutable run-state directory |",
+    "| Windows service unverified mutable run-state directory |",
+  ),
+  {
+    ...keyAgentServicePhaseTwoEInputs,
+    rootSource: `${keyAgentServicePhaseTwoEInputs.rootSource}\nfn forbidden_marker_create() { let _ = FILE_CREATE; }\n`,
+  },
+  {
+    ...keyAgentServicePhaseTwoEInputs,
+    platformService: `${keyAgentServicePhaseTwoEInputs.platformService}\nfn forbidden_phase_two_fa_caller(expected: ExpectedInstalledRunStateObjects) { let _ = open_fixed_service_run_state_root(expected); }\n`,
+  },
 ];
 const keyAgentServicePhaseTwoEPinMutationProbes = [
   mutateKeyAgentServicePhaseTwoEInput(
@@ -10756,6 +11367,8 @@ const keyAgentServicePhaseTwoEProbeChanged = (probe) =>
   );
 const keyAgentServicePhaseTwoESemanticBaseResult =
   keyAgentServicePhaseTwoESemanticContract(keyAgentServicePhaseTwoEInputs);
+const keyAgentServicePhaseTwoFASemanticBaseResult =
+  keyAgentServicePhaseTwoFASemanticContract(keyAgentServicePhaseTwoEInputs);
 const keyAgentServicePhaseTwoEPinBaseResult =
   keyAgentServicePhaseTwoEPinContract(keyAgentServicePhaseTwoEInputs);
 const keyAgentServicePhaseTwoESemanticMutationResults =
@@ -10763,6 +11376,12 @@ const keyAgentServicePhaseTwoESemanticMutationResults =
     index,
     changed: keyAgentServicePhaseTwoEProbeChanged(probe),
     rejected: !keyAgentServicePhaseTwoESemanticContract(probe),
+  }));
+const keyAgentServicePhaseTwoFASemanticMutationResults =
+  keyAgentServicePhaseTwoFASemanticMutationProbes.map((probe, index) => ({
+    index,
+    changed: keyAgentServicePhaseTwoEProbeChanged(probe),
+    rejected: !keyAgentServicePhaseTwoFASemanticContract(probe),
   }));
 const keyAgentServicePhaseTwoEPinMutationResults =
   keyAgentServicePhaseTwoEPinMutationProbes.map((probe, index) => ({
@@ -10862,6 +11481,14 @@ requireInvariant(
       ({ changed, rejected }) => changed && rejected,
     ),
   `the separate Phase 2E held service run-state-root slice must remain production-compiled but Windows-only and module-private, with no production expected-authority mint or caller, a fixed ProgramData and held-parent one-component FILE_OPEN chain, no create/repair/adopt or global-mutex/user-store reuse, exact full installer identities and owner/protected-DACL policy without an at-rest ancestor-ACL overclaim, protected current no-inherited-ACE semantics without treating AUTO_INHERITED as from-birth provenance, exact-zero handle flags, RootCandidate checked-close plus atomic poison for ambiguous revalidation probes, non-inheritable local fixed NTFS root, a zero-share GENERIC_READ-plus-SYNCHRONIZE run.lock open mapped to exact FILE_GENERIC_READ, an exclusive nonblocking byte-zero range lock, exact range-state retention across post-acquire impersonation failure, explicit verified UnlockFileEx-before-close normal release, unlock-retrying checked retirement with no receipt on unlock/close ambiguity, lock-retaining post-handle failures, no Phase 2D/provisioning conversion, exact 27-pass/two-ignored test inventory with directional share-zero and independent non-vacuous byte-range collision evidence, bounded child-exit and Contended-only crash reacquisition, guarded synchronized-child, junction, privileged-symlink, and held rename/delete evidence, explicit external installer/SCM/all-SACL/qualified-host/marker-I/O/reboot limitations, disabled policies, exit 78, and 59 independently effective semantic mutations; semantic base=${keyAgentServicePhaseTwoESemanticBaseResult}, probe count=${keyAgentServicePhaseTwoESemanticMutationProbes.length}, failed probe indexes=${JSON.stringify(keyAgentServicePhaseTwoESemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
+);
+requireInvariant(
+  keyAgentServicePhaseTwoFASemanticBaseResult &&
+    keyAgentServicePhaseTwoFASemanticMutationProbes.length === 20 &&
+    keyAgentServicePhaseTwoFASemanticMutationResults.every(
+      ({ changed, rejected }) => changed && rejected,
+    ),
+  `the separate Phase 2F-a held mutable run-state-directory extension must remain production-compiled, Windows-only, module-private, and zero-production-caller/expected-authority-mint; state must open one-component root-relative only after the exact run.lock range is held, with exact pre/post native-open impersonation bookends, ROOT_ACCESS-plus-FILE_ADD_FILE authority, non-vacuously proven no delete sharing, unchanged Phase 2E root/lock masks, exact installer identity/owner/protected-DACL/access/local-fixed-NTFS/non-reparse/zero-handle-flags verification, same-volume and checked-close path-binding revalidation, state-close-before-unlock normal release, successful-writer and failure terminal retirement, no receipt after ambiguity, exact 34-pass/two-ignored focused inventory, no marker/checkpoint I/O or Phase 2D/provisioning/signing bridge, explicit external installer/ProgramData/service-SID/SCM/SACL/TPM/crash-power-reboot limitations, disabled policies, exit 78, and 20 independently effective semantic mutations; semantic base=${keyAgentServicePhaseTwoFASemanticBaseResult}, probe count=${keyAgentServicePhaseTwoFASemanticMutationProbes.length}, failed probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFASemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
 );
 requireInvariant(
   keyAgentServicePhaseTwoEPinBaseResult &&
@@ -20268,14 +20895,14 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate has two deliberately different surfaces.",
-    sha256: "75770c1cee45ae2b160f3272b3d5b50b29a89a981aaafa8469af9de95f2fb1ae",
+    sha256: "bf8f08b3194af44c00254d5eb939391f5d4268c17901db7be1e8e2219b60f0b2",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes a safe platform-neutral gate-byte",
-    sha256: "bf5e12b36656014939e3c95b492a649ec68ced2bc45aa3e803319e87c2499b3e",
+    sha256: "a6a6697a1f105b5e5d3161e5706b3dd082c09a23f4f8d92865d379ab294a6db6",
   },
   {
     path: "docs/security-decisions.md",
@@ -28951,7 +29578,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "ec287c014ee605af9241e091772418f06e4aeecdb57556bf16a29224468b529e";
+  "60ea171c2a4c48684f1002d0e1b05d364996897187b857eb112ebd61b898136a";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -49497,8 +50124,8 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_service/run_state_root/sys.rs",
-    unsafeCount: 44,
-    sha256: "8a3f6556366ec31727f8725b3da360998e9f61d95a32dd8c08e97c26133aec1e",
+    unsafeCount: 46,
+    sha256: "e2013579a94b1b43693cfb2ea60efdffb88e474d2222d0d69f5efa846f88417c",
   },
   {
     path: "crates/platform-windows/src/key_agent_storage.rs",
@@ -57639,7 +58266,7 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "crates/platform-windows/README.md":
     "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
   "docs/architecture.md":
-    "75770c1cee45ae2b160f3272b3d5b50b29a89a981aaafa8469af9de95f2fb1ae",
+    "bf8f08b3194af44c00254d5eb939391f5d4268c17901db7be1e8e2219b60f0b2",
   "docs/protocol-contract.md":
     "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "docs/security-decisions.md":
@@ -63508,7 +64135,7 @@ const currentDebuggerExitDocumentationContract = (documents) =>
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
   "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
-  "75770c1cee45ae2b160f3272b3d5b50b29a89a981aaafa8469af9de95f2fb1ae",
+  "bf8f08b3194af44c00254d5eb939391f5d4268c17901db7be1e8e2219b60f0b2",
   "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "d36a5e3cb2544598cf8e1a97a8ff3a19a1a561dd5161d5cd3369be3fe4716656",
 ]);
@@ -73390,13 +74017,13 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "docs/architecture.md",
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
-    sha256: "75770c1cee45ae2b160f3272b3d5b50b29a89a981aaafa8469af9de95f2fb1ae",
+    sha256: "bf8f08b3194af44c00254d5eb939391f5d4268c17901db7be1e8e2219b60f0b2",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
-    sha256: "bf5e12b36656014939e3c95b492a649ec68ced2bc45aa3e803319e87c2499b3e",
+    sha256: "a6a6697a1f105b5e5d3161e5706b3dd082c09a23f4f8d92865d379ab294a6db6",
   },
   {
     path: "docs/security-decisions.md",
