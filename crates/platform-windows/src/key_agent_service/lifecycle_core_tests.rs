@@ -8,13 +8,14 @@ use super::super::durable_run_state::{
     RecoveryRequired, RunMarkerState, RuntimeBootStartFailure,
 };
 use super::{
-    ActiveReloadResolution, CleanupStep, ExitReason, ExitRequired, FatalReason,
-    LEASE_BOUND_STARTUP_REQUIREMENT_COUNT, LOGICAL_STARTUP_REQUIREMENT_COUNT, LifecycleError,
-    MAX_ACTIVE_FIXTURE_WORK, MAX_QUARANTINED_SESSIONS, MAX_RETAINED_USER_TOKEN_SESSIONS,
-    NoSecretFixtureWorkKind, NoSecretService, NoSecretStartupAttempt, NoSecretStartupRequirement,
-    PendingNoSecretStartup, RuntimeState, STARTUP_REQUIREMENT_COUNT, SessionEvent, SessionId,
-    SessionInvalidationReport, StartupExitRequired, StartupFailure, StartupObservation, StopReason,
-    StoppedPermit, WorkId, WorkState,
+    ActiveReloadResolution, CleanupStep, CompletedStartupChecklist, ExitReason, ExitRequired,
+    FatalReason, LEASE_BOUND_STARTUP_REQUIREMENT_COUNT, LOGICAL_STARTUP_REQUIREMENT_COUNT,
+    LifecycleError, MAX_ACTIVE_FIXTURE_WORK, MAX_QUARANTINED_SESSIONS,
+    MAX_RETAINED_USER_TOKEN_SESSIONS, NoSecretFixtureWorkKind, NoSecretService,
+    NoSecretStartupAttempt, NoSecretStartupRequirement, PendingNoSecretStartup, RuntimePolicy,
+    RuntimePolicyFailure, RuntimeState, STARTUP_REQUIREMENT_COUNT, SessionEvent, SessionId,
+    SessionInvalidationReport, StartupChecklist, StartupExitCause, StartupExitRequired,
+    StartupFailure, StartupObservation, StopReason, StoppedPermit, WorkId, WorkState,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -116,7 +117,7 @@ impl LifecycleHarness {
         require_exit_ok(pending.complete(receipt))
     }
 
-    fn retire_startup_exit(&mut self, exit: StartupExitRequired) -> TestResult<StartupFailure> {
+    fn retire_startup_exit(&mut self, exit: StartupExitRequired) -> TestResult<StartupExitCause> {
         match exit.into_writer_exit() {
             Err(failure) => Ok(failure),
             Ok((failure, writer_exit)) => {
@@ -188,6 +189,186 @@ fn advance_to_clean_commit(service: &mut NoSecretService) -> Result<(), Lifecycl
     Ok(())
 }
 
+fn completed_startup_checklist() -> Result<CompletedStartupChecklist, StartupFailure> {
+    let mut checklist = StartupChecklist::new();
+    for requirement in NoSecretStartupRequirement::ALL {
+        checklist.observe(requirement, StartupObservation::Verified)?;
+    }
+    checklist.finish()
+}
+
+fn ready_runtime_policy() -> Result<RuntimePolicy, StartupFailure> {
+    Ok(completed_startup_checklist()?
+        .begin_listener_startup()
+        .record_listeners_prepared()
+        .record_scm_running_published()
+        .open_admission())
+}
+
+#[test]
+fn pure_startup_checklist_latches_duplicates_and_evaluates_in_fixed_order() -> TestResult {
+    let mut ordered = StartupChecklist::new();
+    ordered.observe(
+        NoSecretStartupRequirement::ServiceToken,
+        StartupObservation::Unavailable,
+    )?;
+    ordered.observe(
+        NoSecretStartupRequirement::RestrictedServiceSid,
+        StartupObservation::Mismatch,
+    )?;
+    for requirement in NoSecretStartupRequirement::ALL.into_iter().skip(2) {
+        ordered.observe(requirement, StartupObservation::Verified)?;
+    }
+    let Err(failure) = ordered.finish() else {
+        return Err("ordered checklist unexpectedly completed".into());
+    };
+    assert_eq!(
+        failure,
+        StartupFailure::Unavailable(NoSecretStartupRequirement::ServiceToken)
+    );
+
+    let duplicate = NoSecretStartupRequirement::ProviderBinding;
+    let mut duplicated = StartupChecklist::new();
+    duplicated.observe(duplicate, StartupObservation::Mismatch)?;
+    assert_eq!(
+        duplicated.observe(duplicate, StartupObservation::Verified),
+        Err(StartupFailure::DuplicateObservation(duplicate))
+    );
+    for requirement in NoSecretStartupRequirement::ALL {
+        if requirement != duplicate {
+            duplicated.observe(requirement, StartupObservation::Verified)?;
+        }
+    }
+    let Err(failure) = duplicated.finish() else {
+        return Err("duplicate checklist unexpectedly completed".into());
+    };
+    assert_eq!(failure, StartupFailure::DuplicateObservation(duplicate));
+
+    let rendered = format!("{:?}", StartupChecklist::new());
+    assert_eq!(rendered, "StartupChecklist([REDACTED OBSERVATIONS])");
+    Ok(())
+}
+
+#[test]
+fn pure_startup_policy_chain_is_consuming_and_cannot_skip_ordering() -> TestResult {
+    let completed = completed_startup_checklist()?;
+    assert_eq!(
+        format!("{completed:?}"),
+        "CompletedStartupChecklist([REDACTED])"
+    );
+    let listener = completed.begin_listener_startup();
+    let scm = listener.record_listeners_prepared();
+    let admission = scm.record_scm_running_published();
+    let policy = admission.open_admission();
+    assert_eq!(policy.state(), RuntimeState::Ready);
+    assert_eq!(policy.work_count(), 0);
+    assert_eq!(policy.retained_user_token_count(), 0);
+    assert_eq!(policy.quarantined_session_count(), 0);
+    Ok(())
+}
+
+#[test]
+fn pure_runtime_policy_enforces_all_bounds_before_mutation() -> TestResult {
+    let mut policy = ready_runtime_policy()?;
+    let session = SessionId::new(1)?;
+    for value in 1..=MAX_ACTIVE_FIXTURE_WORK {
+        policy.admit_fixture_work(
+            WorkId::new(value as u64)?,
+            session,
+            NoSecretFixtureWorkKind::Approval,
+        )?;
+    }
+    assert_eq!(
+        policy.admit_fixture_work(
+            WorkId::new((MAX_ACTIVE_FIXTURE_WORK + 1) as u64)?,
+            session,
+            NoSecretFixtureWorkKind::Approval,
+        ),
+        Err(LifecycleError::WorkCapacityExhausted)
+    );
+    assert_eq!(policy.work_count(), MAX_ACTIVE_FIXTURE_WORK);
+
+    for value in 1..=MAX_RETAINED_USER_TOKEN_SESSIONS {
+        policy.retain_user_token(SessionId::new(u32::try_from(value)?)?)?;
+    }
+    assert_eq!(
+        policy.retain_user_token(SessionId::new(u32::try_from(
+            MAX_RETAINED_USER_TOKEN_SESSIONS + 1,
+        )?)?),
+        Err(LifecycleError::UserTokenCapacityExhausted)
+    );
+    assert_eq!(
+        policy.retained_user_token_count(),
+        MAX_RETAINED_USER_TOKEN_SESSIONS
+    );
+
+    let mut quarantine = ready_runtime_policy()?;
+    for value in 1..=MAX_QUARANTINED_SESSIONS {
+        let session = SessionId::new(u32::try_from(value)?)?;
+        quarantine.handle_session_event(SessionEvent::Lock(session))?;
+    }
+    let overflow = SessionId::new(u32::try_from(MAX_QUARANTINED_SESSIONS + 1)?)?;
+    assert_eq!(
+        quarantine.handle_session_event(SessionEvent::Lock(overflow)),
+        Err(LifecycleError::SessionQuarantineExhausted)
+    );
+    assert_eq!(
+        quarantine.quarantined_session_count(),
+        MAX_QUARANTINED_SESSIONS
+    );
+    assert_eq!(
+        quarantine.state(),
+        RuntimeState::Fatal(FatalReason::SessionQuarantineExceeded)
+    );
+    Ok(())
+}
+
+#[test]
+fn pure_runtime_cleanup_mints_one_shot_boundaries_only_after_exact_first_nine() -> TestResult {
+    let premature = ready_runtime_policy()?;
+    let Err(failure) = premature.prepare_clean() else {
+        return Err("premature runtime policy minted a clean boundary".into());
+    };
+    assert_eq!(failure, RuntimePolicyFailure::CleanupOutOfOrder);
+
+    let mut incomplete = ready_runtime_policy()?;
+    incomplete.begin_stop(StopReason::ScmStop)?;
+    for step in CleanupStep::ORDERED.into_iter().take(9) {
+        incomplete.complete_cleanup_step(step)?;
+    }
+    incomplete.work.insert(
+        WorkId::new(1)?,
+        super::FixtureWork {
+            session: SessionId::new(1)?,
+            kind: NoSecretFixtureWorkKind::Approval,
+            state: WorkState::TerminationPending,
+        },
+    );
+    let Err(failure) = incomplete.prepare_clean() else {
+        return Err("incomplete runtime policy minted a clean boundary".into());
+    };
+    assert_eq!(failure, RuntimePolicyFailure::CleanupIncomplete);
+
+    let mut policy = ready_runtime_policy()?;
+    let invalid = SessionId::new(9)?;
+    policy.handle_session_event(SessionEvent::Lock(invalid))?;
+    policy.begin_stop(StopReason::SystemShutdown)?;
+    for step in CleanupStep::ORDERED.into_iter().take(9) {
+        policy.complete_cleanup_step(step)?;
+    }
+    assert_eq!(
+        policy.expected_cleanup_step(),
+        Some(CleanupStep::CommitAndRereadCleanMarker)
+    );
+    let clean = policy.prepare_clean()?;
+    assert_eq!(format!("{clean:?}"), "CleanBoundaryPolicy([REDACTED])");
+    let release = clean.record_clean_committed();
+    assert_eq!(format!("{release:?}"), "ReleaseBoundaryPolicy([REDACTED])");
+    let stopped = release.record_writer_released();
+    assert_eq!(format!("{stopped:?}"), "StoppedRuntimePolicy([REDACTED])");
+    Ok(())
+}
+
 #[test]
 fn every_startup_requirement_is_mandatory() -> TestResult {
     assert_eq!(LOGICAL_STARTUP_REQUIREMENT_COUNT, 11);
@@ -208,7 +389,7 @@ fn every_startup_requirement_is_mandatory() -> TestResult {
         assert!(format!("{exit:?}").contains("[REDACTED]"));
         assert_eq!(
             harness.retire_startup_exit(exit)?,
-            StartupFailure::Missing(missing)
+            StartupExitCause::Checklist(StartupFailure::Missing(missing))
         );
     }
     Ok(())
@@ -251,7 +432,10 @@ fn unrelated_observation_failure_retains_a_post_acquisition_writer_until_retirem
     let Ok((failure, writer_exit)) = exit.into_writer_exit() else {
         return Err("unrelated observation failure discarded the acquired writer".into());
     };
-    assert_eq!(failure, StartupFailure::Mismatch(rejected));
+    assert_eq!(
+        failure,
+        StartupExitCause::Checklist(StartupFailure::Mismatch(rejected))
+    );
     let Err(runtime_reacquire) = harness.store.begin_runtime_boot(harness.installation) else {
         return Err("pending startup exit allowed runtime writer reacquisition".into());
     };
@@ -292,7 +476,10 @@ fn mismatched_unavailable_and_duplicate_observations_fail_closed() -> TestResult
             let Err(exit) = attempt.finish(&harness.key) else {
                 return Err("rejected startup observation produced authority".into());
             };
-            assert_eq!(harness.retire_startup_exit(exit)?, expected);
+            assert_eq!(
+                harness.retire_startup_exit(exit)?,
+                StartupExitCause::Checklist(expected)
+            );
         }
     }
 
@@ -314,7 +501,7 @@ fn mismatched_unavailable_and_duplicate_observations_fail_closed() -> TestResult
     };
     assert_eq!(
         harness.retire_startup_exit(exit)?,
-        StartupFailure::DuplicateObservation(requirement)
+        StartupExitCause::Checklist(StartupFailure::DuplicateObservation(requirement))
     );
     Ok(())
 }
@@ -362,7 +549,7 @@ fn only_sealed_clean_boot_can_enter_the_ordered_startup_chain() -> TestResult {
             };
             assert_eq!(
                 harness.retire_startup_exit(exit)?,
-                StartupFailure::DurableRecovery(expected)
+                StartupExitCause::DurableRecovery(expected)
             );
         }
     }
@@ -397,7 +584,7 @@ fn active_commit_readback_and_reload_are_exact_before_listener_preparation() -> 
         };
         assert_eq!(
             harness.retire_startup_exit(exit)?,
-            StartupFailure::DurableRecovery(RecoveryRequired::RereadDrift)
+            StartupExitCause::DurableRecovery(RecoveryRequired::RereadDrift)
         );
     }
 
@@ -414,7 +601,7 @@ fn active_commit_readback_and_reload_are_exact_before_listener_preparation() -> 
     );
     assert_eq!(
         conflict.retire_startup_exit(pending.abort(RecoveryRequired::CompareAndSwapConflict))?,
-        StartupFailure::DurableRecovery(RecoveryRequired::CompareAndSwapConflict)
+        StartupExitCause::DurableRecovery(RecoveryRequired::CompareAndSwapConflict)
     );
 
     let mut before_write = LifecycleHarness::provisioned()?;
@@ -439,7 +626,9 @@ fn active_commit_readback_and_reload_are_exact_before_listener_preparation() -> 
     };
     assert_eq!(
         before_write.retire_startup_exit(exit)?,
-        StartupFailure::Missing(NoSecretStartupRequirement::ServiceToken)
+        StartupExitCause::Checklist(StartupFailure::Missing(
+            NoSecretStartupRequirement::ServiceToken
+        ))
     );
 
     let mut ambiguous = LifecycleHarness::provisioned()?;
@@ -463,7 +652,7 @@ fn active_commit_readback_and_reload_are_exact_before_listener_preparation() -> 
         .record_listeners_prepared()
         .record_scm_running_published()
         .open_admission();
-    assert!(matches!(reloaded.state, RuntimeState::Ready));
+    assert!(matches!(reloaded.policy.state, RuntimeState::Ready));
     Ok(())
 }
 
@@ -485,7 +674,7 @@ fn lock_and_unlock_invalidate_exact_session_without_discarding_its_user_token() 
                 revalidation_required: true,
             }
         );
-        assert!(service.user_token_sessions.contains(&session));
+        assert!(service.policy.user_token_sessions.contains(&session));
         assert_eq!(
             service.admit_fixture_work(
                 WorkId::new(12)?,
@@ -528,9 +717,10 @@ fn logoff_and_user_switch_discard_tokens_and_require_helper_reap() -> TestResult
     assert_eq!(report.authorities_invalidated, 2);
     assert_eq!(report.helper_terminations_required, 2);
     assert_eq!(report.user_tokens_discarded, 2);
-    assert!(switched.user_token_sessions.is_empty());
+    assert!(switched.policy.user_token_sessions.is_empty());
     assert!(
         switched
+            .policy
             .work
             .values()
             .all(|work| work.state == WorkState::CancellationPending)
@@ -544,6 +734,7 @@ fn session_quarantine_exhaustion_fails_closed_and_preserves_first_fatal_reason()
     let mut service = harness.ready_service()?;
     for value in 1..=MAX_QUARANTINED_SESSIONS {
         service
+            .policy
             .invalid_sessions
             .insert(SessionId::new(u32::try_from(value)?)?);
     }
@@ -554,20 +745,21 @@ fn session_quarantine_exhaustion_fails_closed_and_preserves_first_fatal_reason()
         service.handle_session_event(SessionEvent::Lock(live)),
         Err(LifecycleError::SessionQuarantineExhausted)
     );
-    assert!(service.user_token_sessions.is_empty());
+    assert!(service.policy.user_token_sessions.is_empty());
     assert!(
         service
+            .policy
             .work
             .values()
             .all(|work| work.state == WorkState::TerminationPending)
     );
     assert_eq!(
-        service.state,
+        service.policy.state,
         RuntimeState::Fatal(FatalReason::SessionQuarantineExceeded)
     );
     service.crash();
     assert_eq!(
-        service.state,
+        service.policy.state,
         RuntimeState::Fatal(FatalReason::SessionQuarantineExceeded)
     );
     Ok(())
@@ -593,7 +785,7 @@ fn runtime_registries_are_bounded_before_mutation() -> TestResult {
         ),
         Err(LifecycleError::WorkCapacityExhausted)
     );
-    assert_eq!(service.work.len(), MAX_ACTIVE_FIXTURE_WORK);
+    assert_eq!(service.policy.work.len(), MAX_ACTIVE_FIXTURE_WORK);
 
     for value in 1..=MAX_RETAINED_USER_TOKEN_SESSIONS {
         service.retain_user_token(SessionId::new(u32::try_from(value)?)?)?;
@@ -605,7 +797,7 @@ fn runtime_registries_are_bounded_before_mutation() -> TestResult {
         Err(LifecycleError::UserTokenCapacityExhausted)
     );
     assert_eq!(
-        service.user_token_sessions.len(),
+        service.policy.user_token_sessions.len(),
         MAX_RETAINED_USER_TOKEN_SESSIONS
     );
     Ok(())
@@ -649,7 +841,7 @@ fn every_pre_clean_cleanup_failure_leaves_active_and_retires_the_writer() -> Tes
         }
         service.fail_cleanup(failed_step)?;
         assert_eq!(
-            service.state,
+            service.policy.state,
             RuntimeState::Fatal(FatalReason::CleanupFailed(failed_step))
         );
         assert_eq!(
@@ -682,7 +874,7 @@ fn out_of_order_incomplete_and_clean_reread_drift_require_exit() -> TestResult {
     let mut incomplete = incomplete_harness.ready_service()?;
     advance_to_clean_commit(&mut incomplete)?;
     let session = SessionId::new(91)?;
-    incomplete.work.insert(
+    incomplete.policy.work.insert(
         WorkId::new(92)?,
         super::FixtureWork {
             session,
@@ -917,7 +1109,7 @@ fn crash_cleanup_deadline_and_debug_surfaces_never_claim_clean_or_leak_identifie
     let mut crashed = crash_harness.ready_service()?;
     crashed.crash();
     assert_eq!(
-        crashed.state,
+        crashed.policy.state,
         RuntimeState::Fatal(FatalReason::ServiceCrash)
     );
     assert_eq!(
@@ -933,7 +1125,7 @@ fn crash_cleanup_deadline_and_debug_surfaces_never_claim_clean_or_leak_identifie
     expired.begin_stop(StopReason::SystemShutdown)?;
     expired.cleanup_deadline_expired()?;
     assert_eq!(
-        expired.state,
+        expired.policy.state,
         RuntimeState::Fatal(FatalReason::CleanupDeadlineExpired)
     );
 

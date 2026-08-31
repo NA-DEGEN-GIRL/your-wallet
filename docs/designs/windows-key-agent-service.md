@@ -1149,7 +1149,7 @@ models may be loaded with fixture keys only.
 network denial, session, crash, and reboot suites pass with no signing surface.
 
 **Current Phase 2A status: started, not passed.** A production-compiled,
-module-private lifecycle core with zero production callers now models nine
+module-private lifecycle core now models nine
 externally supplied no-secret startup observations. Storage binding and the
 single-instance writer are the other two logical startup requirements, but they
 arrive structurally inside lease-bound `BootEvidence` rather than as caller-
@@ -1178,10 +1178,21 @@ evidence remains withheld until exact writer release. Work and session
 identifiers and every durable identity/generation/commitment surface are
 redacted from debug output, and no session is automatically revalidated.
 
+The authority-independent policy split is explicit:
+`StartupChecklist -> CompletedStartupChecklist -> ListenerPendingPolicy ->
+ScmRunningPendingPolicy -> AdmissionPendingPolicy -> RuntimePolicy`, followed
+only by `CleanBoundaryPolicy -> ReleaseBoundaryPolicy -> StoppedRuntimePolicy`.
+The four pure-policy tests are separate from the seventeen legacy lifecycle
+tests, for an exact 21-test core inventory; the dormant Phase 2G compositor
+consumes only this narrow policy surface and independently retains Windows
+durable authority.
+
 This is an ordering model and test slice only. It creates no SCM listener,
 handle, process, RPC endpoint, storage or rollback-anchor binding, firewall
 rule, cryptographic key, secret, approval result, or signing authority. There
-is no production caller or OS adapter. Installer/configuration readback,
+is no executable or top-level production caller or OS adapter; the sole
+production-compiled consumer is the private dormant Phase 2G compositor.
+Installer/configuration readback,
 service-token and DACL enforcement, durable storage/recovery, a live
 single-instance lease, outbound-denial proof, session-notification hookup, and
 crash/reboot kernel evidence remain absent. Phase 1 and Phase 2 exit gates
@@ -1239,7 +1250,9 @@ fixed-capacity `cfg(test)` memory fixture and its HMAC key is not a production
 key source. There is still no `%ProgramData%` service-owned root, service-SID
 owner/DACL adapter, installer-seeded initial marker, kernel singleton object,
 TPM-backed authentication/high-water anchor, power-loss or reboot evidence, or
-production caller. Existing LPAC user storage and the signing journal are not
+executable/top-level production caller or production key source. The only
+internal consumers are the separately gated dormant Phase 2F-c/2G chain.
+Existing LPAC user storage and the signing journal are not
 reused as service run-state authority. Phase 1 and Phase 2 remain **STOP-SHIP**;
 both compiled policies remain `None`, and ordinary/release execution remains
 silent exit 78.
@@ -1328,9 +1341,11 @@ boundary.
 
 At the pre-Phase 2F-c boundary this remained a module-private, zero-runtime-root
 contract over only the bounded memory fixture and fixture authentication key.
-It had no filesystem or other OS adapter and still has no top-level production
-caller; the separately gated dormant Phase 2F-c composite below is its sole
-private Windows adapter and itself has no production caller or key provider.
+It had no filesystem or other OS adapter. The separately gated dormant Phase
+2F-c composite below is its sole private Windows durable adapter, and the
+separately gated Phase 2G compositor is now its sole production-compiled policy
+consumer. Neither bridge has an executable, top-level, or exported caller or a
+production key provider.
 There is still no installer or SCM integration, power-loss/reboot proof,
 TPM-backed key or anchor, secret, signing
 transition, or release authority. The separate dormant Phase 2E adapter below
@@ -1645,7 +1660,9 @@ outcomes without a production caller, expected-authority mint,
 authentication-key provider, TPM/non-rollbackable anchor integration, or
 conversion into Phase 2D Boot, Active, Clean, stopped, provisioning, signing,
 or normal-release authority. The separately gated Phase 2F-c composite below
-is now its sole production consumer, but itself remains dormant and callerless.
+is now its sole production consumer and remains dormant; its sole
+production-compiled caller is the private Phase 2G compositor, which itself has
+no executable or top-level caller.
 Neither slice establishes pair atomicity or power-loss durability. Four direct
 evidence gaps remain explicit:
 a kernel negative test with a nonzero case-sensitive-directory flag; direct
@@ -1660,9 +1677,11 @@ stay `None`, and ordinary/release execution remains silent exit 78.
 **Current Phase 2F-c status: started, not passed.** A production-compiled,
 Windows-only, module-private dormant composite now binds one Phase 2D logical
 runtime writer to one independently verified Phase 2F-b operating-system pair.
-Its normal top-level convenience entry, `start_windows_runtime`, consumes an
+Its normal internal convenience entry, `start_windows_runtime`, consumes an
 already-held `HeldServiceRunStateWriter`, one installation identity, and a
-borrowed fixture authentication key. It has no production call site,
+borrowed fixture authentication key. Its only production-compiled call site is
+the private dormant Phase 2G `begin_windows_lifecycle` compositor; neither entry
+has an executable, top-level, exported, or aliased caller. The bridge has no
 expected-authority source, protected or TPM-backed authentication-key provider,
 native-handle return, raw-writer
 escape, Phase 2C provisioning conversion, secret, signing, RPC, or release-
@@ -1700,8 +1719,10 @@ Clean follows the same full-pair expectation and logical-before-OS commit gate.
 An ambiguous Clean commit or confirmed-commit reread failure retains a single
 `WindowsCleanReloadRequired`; reload can return Clean only for the exact
 candidate, while prior, partial, or drifting state is terminal. Every live or
-reload-required composite state exposes a consuming `into_terminal`; none can
-drop one authority and continue with the other.
+reload-required composite state exposes a consuming reason-neutral
+`into_retirement`; the legacy `into_terminal(RecoveryRequired)` wrappers remain
+durable-internal compatibility only and are absent from the Phase 2G facade.
+No state can drop one authority and continue with the other.
 
 Normal stop first compares the held OS observation with the logical Clean bytes,
 then prepares and begins the logical release, and only then attempts the
@@ -1725,7 +1746,7 @@ retirement, logical release-receipt latch, then logical completion. Every error
 suppresses both normal and recovery receipts. Composite states and receipts are
 move-only and their Debug views redact authority; the production composite has
 no `unsafe`, native handle type, ownership cast, or generic type-erasure site.
-The exact composite inventory is eleven passing tests:
+The exact composite inventory is twelve passing tests:
 `kernel_clean_boot_active_clean_stop_is_exact`,
 `kernel_missing_pair_is_terminal_and_checked_retired`,
 `kernel_wrong_key_and_nonclean_pairs_never_boot`,
@@ -1733,25 +1754,108 @@ The exact composite inventory is eleven passing tests:
 `kernel_confirmed_active_reread_failure_never_reloads_as_boot`,
 `kernel_clean_ambiguity_reload_accepts_only_exact_candidate`,
 `kernel_stop_failures_never_mint_stopped`,
+`kernel_post_release_receipt_fault_is_irreversible`,
 `kernel_stop_precheck_rejects_crossed_pair_before_release`,
 `kernel_live_and_reload_states_have_checked_terminal_retirement`,
 `composite_authority_and_receipts_are_move_only`, and
 `composite_live_states_expose_consuming_terminal_transitions`. The focused
-`durable_run_state` module inventory is 76/76 passing: 34 parent tests plus 25
-provisioning, six `windows_pair`, and eleven `windows_runtime` tests. The named
+`durable_run_state` module inventory is 77/77 passing: 34 parent tests plus 25
+provisioning, six `windows_pair`, and twelve `windows_runtime` tests. The named
 pair and composite slices are therefore subsets of that module total, not
 additional disjoint counts. The kernel run-state-root suite is 54 total, with
 52 passing and the same two
 environment-dependent tests ignored.
 
 This is still not a product runtime, pair-atomic transaction, or power-loss
-proof. A production authentication-key/TPM provider and top-level caller,
+proof. A production authentication-key/TPM provider and executable/top-level caller,
 elevated ProgramData/service-SID installer provenance, SCM/restricted-token
 composition, a trusted single service/`SYSTEM` writer and peer-race proof,
 mapped-I/O exclusion, rollback-anchor integration, and supported-kernel crash,
 power-loss, and reboot reconciliation remain external **STOP-SHIP** obligations.
 Both compiled policies stay `None`, and ordinary/release execution remains
 silent exit 78.
+
+**Current Phase 2G status: started, not passed.** A separate
+production-compiled, Windows-only, module-private dormant compositor now binds
+the authority-independent Phase 2A policy to the Phase 2F-c durable/OS
+typestates. `begin_windows_lifecycle` is the sole direct production consumer of
+`start_windows_runtime`; it consumes one already-held writer, installation
+identity, and borrowed fixture key. `begin_windows_lifecycle` itself has zero
+production call sites and is neither exported nor reachable from an executable
+or top-level service entry. There is no alias caller, expected-authority mint,
+key constructor/provider call, installer adapter, SCM adapter, listener
+creation, admission adapter, secret operation, or `process::exit` call.
+
+Cause ownership is explicit. `StartupFailure`, `RuntimePolicyFailure`,
+`LifecycleError`, and `FatalReason` remain policy causes and never become a
+fabricated `RecoveryRequired`; durable/platform failures remain inside
+`WindowsTerminalCause`. Every writer-holding policy failure consumes the exact
+Windows state through reason-neutral `into_retirement`. A terminal durable
+failure is split by `into_retirement_parts` into its durable cause and the same
+reason-neutral retirement authority. Checked retirement orders logical
+begin-release, exact OS-pair retirement, logical receipt recording, and logical
+completion. A successful check reattaches the original lifecycle cause and is
+the fully checked terminal path that can authorize silent code 78. Writer-retaining
+release failure follows that same checked exit. Retirement ambiguity preserves
+both the original lifecycle cause and platform cleanup cause in an irreversible
+code-78 state; it exposes no retry, second retirement, stopped conversion, or
+normal receipt.
+
+Startup and Active ordering remain consuming. A fresh Clean boot owns a fresh
+nine-observation `StartupChecklist`; only `CompletedStartupChecklist` may
+prepare Active. If an ambiguous Active reload proves the exact prior Clean pair,
+the returned Boot path discards the completed checklist and requires all nine
+observations again. If it proves the exact Active candidate, it carries the
+completed checklist forward. Partial, drifting, confirmed-reread-failed, or
+terminal outcomes never reach listener authority. The next three transitions
+are exactly `record_listeners_prepared`, then
+`record_scm_running_published`, then `open_admission`. These are typestate
+records only: this slice does not create listeners, invoke `SetServiceStatus`,
+publish real `SCM_RUNNING`, or open a production admission endpoint.
+
+The running `WindowsNoSecretService` delegates work, retained-token,
+quarantined-session, stop, and cleanup decisions only to `RuntimePolicy`; it
+does not duplicate those registries or bounds. Clean preparation is available
+only after the exact first nine cleanup steps and empty work, retained-token,
+and quarantined-session registries. Only an exact Clean commit, or an exact
+candidate Clean reload, records `CleanBoundaryPolicy` and advances to the
+release boundary. Only `WindowsStopOutcome::Stopped` records writer release and
+mints `WindowsLifecycleStopped`. `WindowsReleasedNoReceipt` and
+`WindowsPostReleaseTerminal` map only to irreversible silent exit 78 and retain
+no release-policy or stopped authority. A cfg(test)-only consuming
+`stop_with_post_release_fault_for_test` hook uses a thread-local one-shot RAII
+fault and the normal stop path to prove the post-release logical-receipt mismatch
+branch; the hook is absent from the production partition and exposes no writer,
+pair, handle, path, identity, key, or forging authority.
+
+All Phase 2G evidence is move-only, Debug-redacted, safe-only, and free of raw
+handle/path access, `unsafe`, `dyn`/`Any`, downcast, dereference, or ownership
+escape. The exact compositor inventory is twelve passing tests:
+`clean_startup_active_runtime_clean_release_reaches_normal_stopped`,
+`startup_missing_and_mismatch_require_checked_silent_exit78`,
+`active_ambiguity_reloads_prior_with_fresh_checks_candidate_with_carried_checks_and_partial_terminal`,
+`confirmed_active_reread_failure_never_restores_boot_or_listener_authority`,
+`listener_scm_and_admission_typestates_are_ordered_and_move_only`,
+`runtime_policy_alone_enforces_work_token_and_quarantine_bounds`,
+`cleanup_requires_exact_order_and_empties_all_runtime_registries_before_clean`,
+`clean_ambiguity_advances_release_policy_for_candidate_only`,
+`release_writer_retained_checks_retirement_and_no_receipt_is_irreversible_exit78`,
+`post_release_logical_failure_is_irreversible_exit78_and_never_stopped`,
+`retirement_fault_preserves_original_lifecycle_and_platform_cleanup_causes`, and
+`debug_and_source_surfaces_are_redacted_silent_and_path_handle_free`. The
+supporting evidence is also twelve passing `windows_runtime` tests, 77/77
+focused `durable_run_state` tests, and the 54-test kernel root suite with 52
+passing and the same two environment-dependent tests ignored.
+
+This remains composition evidence, not release activation. Actual listener and
+admission implementations, SCM `SetServiceStatus`/restricted-token/service-SID
+composition, elevated ProgramData installer provenance, an independently
+protected or TPM-backed key and rollback anchor, trusted service/`SYSTEM`
+single-writer and peer-race proof, mapped-I/O exclusion, signed immutable
+artifact binding, and supported-kernel crash/power-loss/reboot reconciliation
+remain external **STOP-SHIP** obligations. Both compiled policies stay `None`;
+ordinary/release execution still uses the existing silent exit-78 path, and no
+Phase 2G typestate calls `process::exit`.
 
 ### Phase 3 – Authenticated Broker and helper runtime
 
@@ -1842,13 +1946,23 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-09-01 - Added the dormant Phase 2G Windows no-secret lifecycle
+  compositor. It is the sole private production consumer of the Phase 2F-c
+  entry while remaining unreachable from executables, keeps policy causes
+  separate from durable recovery causes, composes exact startup/Active/
+  listener-record/SCM-record/admission/runtime/Clean/release typestates, and
+  proves checked versus irreversible exit-78 outcomes including a cfg(test)-only
+  real post-release mismatch. Actual listeners, SCM/admission calls, installer,
+  restricted token, protected key/TPM, crash/power/reboot, and release activation
+  remain **STOP-SHIP**, so Phase 2G is started but not passed.
 - 2026-09-01 - Added the dormant Phase 2F-c logical/OS composite. It binds the
   writer-first Phase 2D lifecycle to the exact Phase 2F-b pair, preserves
   logical receipt ordering and OS commit/reload ambiguity, makes confirmed
   Active commit reread failure terminal, verifies and holds the exact pair
   through final writer release, and separates writer-retained, released-without-
-  receipt, and post-release terminal states. The bridge has no production
-  caller or key provider; installer/SCM, trusted-peer and mapped-I/O proof,
+  receipt, and post-release terminal states. Its sole production caller is the
+  private dormant Phase 2G compositor, which itself has no executable caller or
+  key provider; installer/SCM, trusted-peer and mapped-I/O proof,
   crash/power/reboot recovery, rollback anchor, TPM, and product integration
   remain **STOP-SHIP**, so Phase 2F-c is started but not passed.
 - 2026-08-31 - Added the dormant Phase 2F-b fixed marker/checkpoint-pair

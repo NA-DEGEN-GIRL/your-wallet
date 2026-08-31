@@ -1,9 +1,10 @@
 //! No-secret Windows Key Agent service lifecycle and recovery contract.
 //!
-//! This production-compiled module is deliberately private and has no runtime
-//! caller. It models the ordering and fail-closed decisions that future Windows
-//! adapters must obey without creating an SCM listener, OS handle, secret,
-//! signing operation, or release authority.
+//! This production-compiled module is deliberately private. Its sole runtime
+//! consumer is the sibling dormant Windows lifecycle compositor, which still
+//! has no executable/top-level caller. The core models ordering and fail-closed
+//! decisions without creating an SCM listener, OS handle, secret, signing
+//! operation, or release authority.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -29,7 +30,7 @@ const MAX_RETAINED_USER_TOKEN_SESSIONS: usize = 64;
 const MAX_QUARANTINED_SESSIONS: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum NoSecretStartupRequirement {
+pub(super) enum NoSecretStartupRequirement {
     ServiceToken,
     RestrictedServiceSid,
     PrivilegeSet,
@@ -42,7 +43,7 @@ enum NoSecretStartupRequirement {
 }
 
 impl NoSecretStartupRequirement {
-    const ALL: [Self; STARTUP_REQUIREMENT_COUNT] = [
+    pub(super) const ALL: [Self; STARTUP_REQUIREMENT_COUNT] = [
         Self::ServiceToken,
         Self::RestrictedServiceSid,
         Self::PrivilegeSet,
@@ -70,14 +71,14 @@ impl NoSecretStartupRequirement {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum StartupObservation {
+pub(super) enum StartupObservation {
     Verified,
     Mismatch,
     Unavailable,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-enum StartupFailure {
+pub(super) enum StartupFailure {
     #[error("a required no-secret startup observation is missing: {0:?}")]
     Missing(NoSecretStartupRequirement),
     #[error("a required no-secret startup observation mismatched: {0:?}")]
@@ -86,8 +87,94 @@ enum StartupFailure {
     Unavailable(NoSecretStartupRequirement),
     #[error("a no-secret startup observation was supplied more than once: {0:?}")]
     DuplicateObservation(NoSecretStartupRequirement),
+}
+
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+enum StartupExitCause {
+    #[error("authority-independent startup policy was rejected: {0}")]
+    Checklist(StartupFailure),
     #[error("durable run-state recovery is required: {0}")]
     DurableRecovery(RecoveryRequired),
+}
+
+/// Authority-independent observations required before the service may enter
+/// the ordered listener/SCM/admission startup chain.
+///
+/// This value deliberately contains neither durable authority nor Windows
+/// handles. Its consuming completion is the only constructor for the next
+/// policy typestate.
+#[must_use = "a startup checklist must be completed or rejected explicitly"]
+pub(super) struct StartupChecklist {
+    observations: [Option<StartupObservation>; STARTUP_REQUIREMENT_COUNT],
+    latched_failure: Option<StartupFailure>,
+}
+
+impl StartupChecklist {
+    pub(super) const fn new() -> Self {
+        Self {
+            observations: [None; STARTUP_REQUIREMENT_COUNT],
+            latched_failure: None,
+        }
+    }
+
+    pub(super) fn observe(
+        &mut self,
+        requirement: NoSecretStartupRequirement,
+        observation: StartupObservation,
+    ) -> Result<(), StartupFailure> {
+        let slot = &mut self.observations[requirement.index()];
+        if slot.is_some() {
+            let failure = StartupFailure::DuplicateObservation(requirement);
+            self.latched_failure.get_or_insert(failure);
+            return Err(failure);
+        }
+        *slot = Some(observation);
+        Ok(())
+    }
+
+    pub(super) fn finish(self) -> Result<CompletedStartupChecklist, StartupFailure> {
+        if let Some(failure) = self.latched_failure {
+            return Err(failure);
+        }
+        for requirement in NoSecretStartupRequirement::ALL {
+            match self.observations[requirement.index()] {
+                None => return Err(StartupFailure::Missing(requirement)),
+                Some(StartupObservation::Mismatch) => {
+                    return Err(StartupFailure::Mismatch(requirement));
+                }
+                Some(StartupObservation::Unavailable) => {
+                    return Err(StartupFailure::Unavailable(requirement));
+                }
+                Some(StartupObservation::Verified) => {}
+            }
+        }
+        Ok(CompletedStartupChecklist { _sealed: () })
+    }
+}
+
+impl fmt::Debug for StartupChecklist {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("StartupChecklist([REDACTED OBSERVATIONS])")
+    }
+}
+
+/// Move-only proof that every authority-independent startup observation was
+/// supplied exactly once and accepted in the fixed evaluation order.
+#[must_use = "a completed startup checklist must enter the ordered startup chain"]
+pub(super) struct CompletedStartupChecklist {
+    _sealed: (),
+}
+
+impl CompletedStartupChecklist {
+    pub(super) fn begin_listener_startup(self) -> ListenerPendingPolicy {
+        ListenerPendingPolicy { checklist: self }
+    }
+}
+
+impl fmt::Debug for CompletedStartupChecklist {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CompletedStartupChecklist([REDACTED])")
+    }
 }
 
 enum StartupWriterExit {
@@ -96,19 +183,19 @@ enum StartupWriterExit {
 }
 
 struct StartupExitRequired {
-    failure: StartupFailure,
+    failure: StartupExitCause,
     writer_exit: StartupWriterExit,
 }
 
 impl StartupExitRequired {
-    const fn without_writer(failure: StartupFailure) -> Self {
+    const fn without_writer(failure: StartupExitCause) -> Self {
         Self {
             failure,
             writer_exit: StartupWriterExit::NotAcquired,
         }
     }
 
-    const fn with_writer(failure: StartupFailure, writer_exit: WriterExitPending) -> Self {
+    const fn with_writer(failure: StartupExitCause, writer_exit: WriterExitPending) -> Self {
         Self {
             failure,
             writer_exit: StartupWriterExit::Pending(writer_exit),
@@ -118,7 +205,7 @@ impl StartupExitRequired {
     fn from_durable(failure: DurableFailureWithWriter) -> Self {
         let reason = failure.reason();
         Self::with_writer(
-            StartupFailure::DurableRecovery(reason),
+            StartupExitCause::DurableRecovery(reason),
             failure.into_writer_exit(),
         )
     }
@@ -126,14 +213,14 @@ impl StartupExitRequired {
     fn from_runtime_boot(failure: RuntimeBootStartFailure) -> Self {
         let reason = failure.reason();
         match failure.into_writer_exit() {
-            Err(_) => Self::without_writer(StartupFailure::DurableRecovery(reason)),
+            Err(_) => Self::without_writer(StartupExitCause::DurableRecovery(reason)),
             Ok((_, writer_exit)) => {
-                Self::with_writer(StartupFailure::DurableRecovery(reason), writer_exit)
+                Self::with_writer(StartupExitCause::DurableRecovery(reason), writer_exit)
             }
         }
     }
 
-    fn into_writer_exit(self) -> Result<(StartupFailure, WriterExitPending), StartupFailure> {
+    fn into_writer_exit(self) -> Result<(StartupExitCause, WriterExitPending), StartupExitCause> {
         match self.writer_exit {
             StartupWriterExit::NotAcquired => Err(self.failure),
             StartupWriterExit::Pending(writer_exit) => Ok((self.failure, writer_exit)),
@@ -152,9 +239,8 @@ impl fmt::Debug for StartupExitRequired {
 }
 
 struct NoSecretStartupAttempt {
-    observations: [Option<StartupObservation>; STARTUP_REQUIREMENT_COUNT],
+    checklist: StartupChecklist,
     boot: Result<BootEvidence, RuntimeBootStartFailure>,
-    latched_failure: Option<StartupFailure>,
 }
 
 impl fmt::Debug for NoSecretStartupAttempt {
@@ -166,9 +252,8 @@ impl fmt::Debug for NoSecretStartupAttempt {
 impl NoSecretStartupAttempt {
     fn new(boot: Result<BootEvidence, RuntimeBootStartFailure>) -> Self {
         Self {
-            observations: [None; STARTUP_REQUIREMENT_COUNT],
+            checklist: StartupChecklist::new(),
             boot,
-            latched_failure: None,
         }
     }
 
@@ -177,50 +262,38 @@ impl NoSecretStartupAttempt {
         requirement: NoSecretStartupRequirement,
         observation: StartupObservation,
     ) -> Result<(), StartupFailure> {
-        let slot = &mut self.observations[requirement.index()];
-        if slot.is_some() {
-            let failure = StartupFailure::DuplicateObservation(requirement);
-            self.latched_failure.get_or_insert(failure);
-            return Err(failure);
-        }
-        *slot = Some(observation);
-        Ok(())
+        self.checklist.observe(requirement, observation)
     }
 
     fn finish(
         self,
         key: &FixtureRunStateAuthenticationKey,
     ) -> Result<PendingNoSecretStartup, StartupExitRequired> {
-        if let Some(failure) = self.latched_failure {
-            return Err(self.into_exit(failure));
-        }
-        for requirement in NoSecretStartupRequirement::ALL {
-            match self.observations[requirement.index()] {
-                None => {
-                    let failure = StartupFailure::Missing(requirement);
-                    return Err(self.into_exit(failure));
-                }
-                Some(StartupObservation::Mismatch) => {
-                    let failure = StartupFailure::Mismatch(requirement);
-                    return Err(self.into_exit(failure));
-                }
-                Some(StartupObservation::Unavailable) => {
-                    let failure = StartupFailure::Unavailable(requirement);
-                    return Err(self.into_exit(failure));
-                }
-                Some(StartupObservation::Verified) => {}
-            }
-        }
-
-        let boot = self.boot.map_err(StartupExitRequired::from_runtime_boot)?;
+        let Self { checklist, boot } = self;
+        let checklist = match checklist.finish() {
+            Ok(checklist) => checklist,
+            Err(failure) => return Err(Self::into_exit_for_boot(boot, failure)),
+        };
+        let boot = boot.map_err(StartupExitRequired::from_runtime_boot)?;
         let active_transition = boot
             .prepare_active(key)
             .map_err(StartupExitRequired::from_durable)?;
-        Ok(PendingNoSecretStartup { active_transition })
+        Ok(PendingNoSecretStartup {
+            active_transition,
+            checklist,
+        })
     }
 
     fn into_exit(self, failure: StartupFailure) -> StartupExitRequired {
-        match self.boot {
+        Self::into_exit_for_boot(self.boot, failure)
+    }
+
+    fn into_exit_for_boot(
+        boot: Result<BootEvidence, RuntimeBootStartFailure>,
+        failure: StartupFailure,
+    ) -> StartupExitRequired {
+        let failure = StartupExitCause::Checklist(failure);
+        match boot {
             Ok(boot) => StartupExitRequired::with_writer(failure, boot.into_writer_exit()),
             Err(runtime_failure) => match runtime_failure.into_writer_exit() {
                 Err(_) => StartupExitRequired::without_writer(failure),
@@ -232,6 +305,7 @@ impl NoSecretStartupAttempt {
 
 struct PendingNoSecretStartup {
     active_transition: PreparedActiveTransition,
+    checklist: CompletedStartupChecklist,
 }
 
 impl PendingNoSecretStartup {
@@ -248,12 +322,16 @@ impl PendingNoSecretStartup {
             .active_transition
             .complete(committed, reread)
             .map_err(StartupExitRequired::from_durable)?;
-        Ok(ListenerPendingRuntime { active_run })
+        Ok(ListenerPendingRuntime {
+            active_run,
+            policy: self.checklist.begin_listener_startup(),
+        })
     }
 
     fn commit_ambiguous(self) -> PendingActiveReload {
         PendingActiveReload {
             reload: self.active_transition.commit_ambiguous(),
+            checklist: self.checklist,
         }
     }
 
@@ -270,6 +348,7 @@ impl fmt::Debug for PendingNoSecretStartup {
 
 struct PendingActiveReload {
     reload: ActiveReloadRequired,
+    checklist: CompletedStartupChecklist,
 }
 
 impl PendingActiveReload {
@@ -282,8 +361,8 @@ impl PendingActiveReload {
         receipt: ActiveReloadReceipt,
         key: &FixtureRunStateAuthenticationKey,
     ) -> Result<ActiveReloadResolution, StartupExitRequired> {
-        let reloaded = self
-            .reload
+        let Self { reload, checklist } = self;
+        let reloaded = reload
             .complete_reload(receipt, key)
             .map_err(StartupExitRequired::from_durable)?;
         Ok(match reloaded {
@@ -291,7 +370,10 @@ impl PendingActiveReload {
                 ActiveReloadResolution::Revalidate(NoSecretStartupAttempt::new(Ok(boot)))
             }
             ReloadedActiveRunState::Active(active_run) => {
-                ActiveReloadResolution::Resume(ListenerPendingRuntime { active_run })
+                ActiveReloadResolution::Resume(ListenerPendingRuntime {
+                    active_run,
+                    policy: checklist.begin_listener_startup(),
+                })
             }
         })
     }
@@ -321,14 +403,76 @@ impl fmt::Debug for ActiveReloadResolution {
     }
 }
 
+/// Pure policy proof that durable Active state was confirmed before listeners
+/// may be prepared.
+#[must_use = "listener preparation must be recorded before startup continues"]
+pub(super) struct ListenerPendingPolicy {
+    checklist: CompletedStartupChecklist,
+}
+
+impl ListenerPendingPolicy {
+    pub(super) fn record_listeners_prepared(self) -> ScmRunningPendingPolicy {
+        ScmRunningPendingPolicy {
+            checklist: self.checklist,
+        }
+    }
+}
+
+impl fmt::Debug for ListenerPendingPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ListenerPendingPolicy([REDACTED])")
+    }
+}
+
+/// Pure policy proof that listener preparation preceded `SCM_RUNNING`.
+#[must_use = "SCM_RUNNING publication must be recorded before startup continues"]
+pub(super) struct ScmRunningPendingPolicy {
+    checklist: CompletedStartupChecklist,
+}
+
+impl ScmRunningPendingPolicy {
+    pub(super) fn record_scm_running_published(self) -> AdmissionPendingPolicy {
+        AdmissionPendingPolicy {
+            checklist: self.checklist,
+        }
+    }
+}
+
+impl fmt::Debug for ScmRunningPendingPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ScmRunningPendingPolicy([REDACTED])")
+    }
+}
+
+/// Pure policy proof that admission remains closed until both listener and SCM
+/// publication ordering have been recorded.
+#[must_use = "admission must be opened explicitly"]
+pub(super) struct AdmissionPendingPolicy {
+    checklist: CompletedStartupChecklist,
+}
+
+impl AdmissionPendingPolicy {
+    pub(super) fn open_admission(self) -> RuntimePolicy {
+        RuntimePolicy::new(self.checklist)
+    }
+}
+
+impl fmt::Debug for AdmissionPendingPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AdmissionPendingPolicy([REDACTED])")
+    }
+}
+
 struct ListenerPendingRuntime {
     active_run: ActiveRunLease,
+    policy: ListenerPendingPolicy,
 }
 
 impl ListenerPendingRuntime {
     fn record_listeners_prepared(self) -> ScmRunningPendingRuntime {
         ScmRunningPendingRuntime {
             active_run: self.active_run,
+            policy: self.policy.record_listeners_prepared(),
         }
     }
 }
@@ -341,12 +485,14 @@ impl fmt::Debug for ListenerPendingRuntime {
 
 struct ScmRunningPendingRuntime {
     active_run: ActiveRunLease,
+    policy: ScmRunningPendingPolicy,
 }
 
 impl ScmRunningPendingRuntime {
     fn record_scm_running_published(self) -> AdmissionPendingRuntime {
         AdmissionPendingRuntime {
             active_run: self.active_run,
+            policy: self.policy.record_scm_running_published(),
         }
     }
 }
@@ -359,11 +505,12 @@ impl fmt::Debug for ScmRunningPendingRuntime {
 
 struct AdmissionPendingRuntime {
     active_run: ActiveRunLease,
+    policy: AdmissionPendingPolicy,
 }
 
 impl AdmissionPendingRuntime {
     fn open_admission(self) -> NoSecretService {
-        NoSecretService::new(self.active_run)
+        NoSecretService::new(self.active_run, self.policy.open_admission())
     }
 }
 
@@ -374,10 +521,10 @@ impl fmt::Debug for AdmissionPendingRuntime {
 }
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-struct WorkId(NonZeroU64);
+pub(super) struct WorkId(NonZeroU64);
 
 impl WorkId {
-    fn new(value: u64) -> Result<Self, LifecycleError> {
+    pub(super) fn new(value: u64) -> Result<Self, LifecycleError> {
         NonZeroU64::new(value)
             .map(Self)
             .ok_or(LifecycleError::InvalidIdentifier)
@@ -391,10 +538,10 @@ impl fmt::Debug for WorkId {
 }
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-struct SessionId(NonZeroU32);
+pub(super) struct SessionId(NonZeroU32);
 
 impl SessionId {
-    fn new(value: u32) -> Result<Self, LifecycleError> {
+    pub(super) fn new(value: u32) -> Result<Self, LifecycleError> {
         NonZeroU32::new(value)
             .map(Self)
             .ok_or(LifecycleError::InvalidIdentifier)
@@ -408,7 +555,7 @@ impl fmt::Debug for SessionId {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum NoSecretFixtureWorkKind {
+pub(super) enum NoSecretFixtureWorkKind {
     Approval,
     SecretInput,
 }
@@ -428,13 +575,13 @@ struct FixtureWork {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum StopReason {
+pub(super) enum StopReason {
     ScmStop,
     SystemShutdown,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CleanupStep {
+pub(super) enum CleanupStep {
     RejectNewWork,
     InvalidateNonDurableAuthority,
     CloseAndDrainListeners,
@@ -465,7 +612,7 @@ impl CleanupStep {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FatalReason {
+pub(super) enum FatalReason {
     ServiceCrash,
     SessionQuarantineExceeded,
     CleanupFailed(CleanupStep),
@@ -474,14 +621,14 @@ enum FatalReason {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RuntimeState {
+pub(super) enum RuntimeState {
     Ready,
     Draining(StopReason),
     Fatal(FatalReason),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SessionEvent {
+pub(super) enum SessionEvent {
     Lock(SessionId),
     Unlock(SessionId),
     Logoff(SessionId),
@@ -489,7 +636,7 @@ enum SessionEvent {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SessionInvalidationReport {
+pub(super) struct SessionInvalidationReport {
     authorities_invalidated: usize,
     helper_terminations_required: usize,
     user_tokens_discarded: usize,
@@ -505,10 +652,26 @@ impl SessionInvalidationReport {
             revalidation_required,
         }
     }
+
+    pub(super) const fn authorities_invalidated(self) -> usize {
+        self.authorities_invalidated
+    }
+
+    pub(super) const fn helper_terminations_required(self) -> usize {
+        self.helper_terminations_required
+    }
+
+    pub(super) const fn user_tokens_discarded(self) -> usize {
+        self.user_tokens_discarded
+    }
+
+    pub(super) const fn revalidation_required(self) -> bool {
+        self.revalidation_required
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-enum LifecycleError {
+pub(super) enum LifecycleError {
     #[error("a lifecycle identifier must be nonzero")]
     InvalidIdentifier,
     #[error("the no-secret service is not ready")]
@@ -543,6 +706,26 @@ enum ExitReason {
     CleanupIncomplete,
     FatalRuntime,
     DurableRecovery,
+}
+
+/// Pure runtime-policy failures. Durable recovery is deliberately absent so a
+/// sibling adapter cannot confuse a local policy rejection with an OS or
+/// durable-run-state failure.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub(super) enum RuntimePolicyFailure {
+    #[error("the first nine cleanup steps were not completed in exact order")]
+    CleanupOutOfOrder,
+    #[error("non-durable runtime registries remain populated")]
+    CleanupIncomplete,
+}
+
+impl From<RuntimePolicyFailure> for ExitReason {
+    fn from(failure: RuntimePolicyFailure) -> Self {
+        match failure {
+            RuntimePolicyFailure::CleanupOutOfOrder => Self::CleanupOutOfOrder,
+            RuntimePolicyFailure::CleanupIncomplete => Self::CleanupIncomplete,
+        }
+    }
 }
 
 struct ExitRequired {
@@ -614,8 +797,70 @@ impl fmt::Debug for RecoveryExitPermit {
     }
 }
 
+/// Move-only proof that runtime policy completed the first nine cleanup steps
+/// with all non-durable registries empty.
+#[must_use = "the clean boundary must be paired with a confirmed durable Clean commit"]
+pub(super) struct CleanBoundaryPolicy {
+    startup: CompletedStartupChecklist,
+}
+
+impl CleanBoundaryPolicy {
+    /// Advances pure policy after the composition layer receives the exact
+    /// durable/OS Clean success arm. This method does not verify that external
+    /// result itself; the composition layer must gate the call.
+    pub(super) fn record_clean_committed(self) -> ReleaseBoundaryPolicy {
+        ReleaseBoundaryPolicy {
+            startup: self.startup,
+        }
+    }
+}
+
+impl fmt::Debug for CleanBoundaryPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CleanBoundaryPolicy([REDACTED])")
+    }
+}
+
+/// Move-only policy token for the interval after the composition layer records
+/// its independently confirmed durable/OS Clean result.
+#[must_use = "the release boundary must be paired with exact writer release"]
+pub(super) struct ReleaseBoundaryPolicy {
+    startup: CompletedStartupChecklist,
+}
+
+impl ReleaseBoundaryPolicy {
+    /// Advances pure policy after the composition layer receives the exact
+    /// writer-release success arm. This method does not verify that external
+    /// result itself and must never be called for ambiguity or no receipt.
+    pub(super) fn record_writer_released(self) -> StoppedRuntimePolicy {
+        StoppedRuntimePolicy {
+            _startup: self.startup,
+        }
+    }
+}
+
+impl fmt::Debug for ReleaseBoundaryPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ReleaseBoundaryPolicy([REDACTED])")
+    }
+}
+
+/// Final move-only pure-policy token minted after the composition layer records
+/// exact writer release.
+#[must_use = "stopped policy is terminal evidence"]
+pub(super) struct StoppedRuntimePolicy {
+    _startup: CompletedStartupChecklist,
+}
+
+impl fmt::Debug for StoppedRuntimePolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("StoppedRuntimePolicy([REDACTED])")
+    }
+}
+
 struct SingleInstanceReleasePending {
     pending: PendingFinalWriterRelease,
+    policy: ReleaseBoundaryPolicy,
 }
 
 impl SingleInstanceReleasePending {
@@ -628,7 +873,10 @@ impl SingleInstanceReleasePending {
             .pending
             .complete(receipt)
             .map_err(ExitRequired::durable)?;
-        Ok(StoppedPermit::from_durable_evidence(stopped))
+        Ok(StoppedPermit::from_durable_evidence(
+            stopped,
+            self.policy.record_writer_released(),
+        ))
     }
 
     fn abort(self, reason: RecoveryRequired) -> ExitRequired {
@@ -644,6 +892,7 @@ impl fmt::Debug for SingleInstanceReleasePending {
 
 struct CleanCommitPending {
     transition: PreparedCleanTransition,
+    policy: CleanBoundaryPolicy,
 }
 
 impl CleanCommitPending {
@@ -662,12 +911,14 @@ impl CleanCommitPending {
             .map_err(ExitRequired::durable)?;
         Ok(SingleInstanceReleasePending {
             pending: committed.prepare_writer_release(),
+            policy: self.policy.record_clean_committed(),
         })
     }
 
     fn commit_ambiguous(self) -> PendingCleanReload {
         PendingCleanReload {
             reload: self.transition.commit_ambiguous(),
+            policy: self.policy,
         }
     }
 
@@ -684,6 +935,7 @@ impl fmt::Debug for CleanCommitPending {
 
 struct PendingCleanReload {
     reload: CleanReloadRequired,
+    policy: CleanBoundaryPolicy,
 }
 
 impl PendingCleanReload {
@@ -702,6 +954,7 @@ impl PendingCleanReload {
             .map_err(ExitRequired::durable)?;
         Ok(SingleInstanceReleasePending {
             pending: committed.prepare_writer_release(),
+            policy: self.policy.record_clean_committed(),
         })
     }
 
@@ -718,11 +971,18 @@ impl fmt::Debug for PendingCleanReload {
 
 struct StoppedPermit {
     stopped: StoppedRunEvidence,
+    _policy: StoppedRuntimePolicy,
 }
 
 impl StoppedPermit {
-    const fn from_durable_evidence(stopped: StoppedRunEvidence) -> Self {
-        Self { stopped }
+    const fn from_durable_evidence(
+        stopped: StoppedRunEvidence,
+        policy: StoppedRuntimePolicy,
+    ) -> Self {
+        Self {
+            stopped,
+            _policy: policy,
+        }
     }
 }
 
@@ -732,20 +992,26 @@ impl fmt::Debug for StoppedPermit {
     }
 }
 
-struct NoSecretService {
+/// Authority-independent runtime policy and bounded non-durable registries.
+///
+/// This value never owns a durable lease, Windows handle, authentication key,
+/// or release receipt. It can only be minted by consuming the ordered startup
+/// policy chain.
+#[must_use = "runtime policy must advance to a clean boundary or a terminal cause"]
+pub(super) struct RuntimePolicy {
+    startup: CompletedStartupChecklist,
     state: RuntimeState,
-    active_run: ActiveRunLease,
     work: BTreeMap<WorkId, FixtureWork>,
     user_token_sessions: BTreeSet<SessionId>,
     invalid_sessions: BTreeSet<SessionId>,
     next_cleanup_index: usize,
 }
 
-impl NoSecretService {
-    fn new(active_run: ActiveRunLease) -> Self {
+impl RuntimePolicy {
+    fn new(startup: CompletedStartupChecklist) -> Self {
         Self {
+            startup,
             state: RuntimeState::Ready,
-            active_run,
             work: BTreeMap::new(),
             user_token_sessions: BTreeSet::new(),
             invalid_sessions: BTreeSet::new(),
@@ -753,7 +1019,23 @@ impl NoSecretService {
         }
     }
 
-    fn admit_fixture_work(
+    pub(super) const fn state(&self) -> RuntimeState {
+        self.state
+    }
+
+    pub(super) fn work_count(&self) -> usize {
+        self.work.len()
+    }
+
+    pub(super) fn retained_user_token_count(&self) -> usize {
+        self.user_token_sessions.len()
+    }
+
+    pub(super) fn quarantined_session_count(&self) -> usize {
+        self.invalid_sessions.len()
+    }
+
+    pub(super) fn admit_fixture_work(
         &mut self,
         id: WorkId,
         session: SessionId,
@@ -780,7 +1062,7 @@ impl NoSecretService {
         Ok(())
     }
 
-    fn retain_user_token(&mut self, session: SessionId) -> Result<(), LifecycleError> {
+    pub(super) fn retain_user_token(&mut self, session: SessionId) -> Result<(), LifecycleError> {
         self.require_ready()?;
         if self.invalid_sessions.contains(&session) {
             return Err(LifecycleError::SessionInvalidated);
@@ -795,7 +1077,7 @@ impl NoSecretService {
         Ok(())
     }
 
-    fn handle_session_event(
+    pub(super) fn handle_session_event(
         &mut self,
         event: SessionEvent,
     ) -> Result<SessionInvalidationReport, LifecycleError> {
@@ -886,7 +1168,7 @@ impl NoSecretService {
         self.latch_fatal(FatalReason::SessionQuarantineExceeded);
     }
 
-    fn reap_cancelled_fixture_work(&mut self, id: WorkId) -> Result<(), LifecycleError> {
+    pub(super) fn reap_cancelled_fixture_work(&mut self, id: WorkId) -> Result<(), LifecycleError> {
         self.require_ready()?;
         match self.work.get(&id).map(|work| work.state) {
             None => return Err(LifecycleError::UnknownWork),
@@ -899,7 +1181,7 @@ impl NoSecretService {
         Ok(())
     }
 
-    fn begin_stop(&mut self, reason: StopReason) -> Result<(), LifecycleError> {
+    pub(super) fn begin_stop(&mut self, reason: StopReason) -> Result<(), LifecycleError> {
         match self.state {
             RuntimeState::Ready => {
                 self.state = RuntimeState::Draining(reason);
@@ -914,14 +1196,17 @@ impl NoSecretService {
         }
     }
 
-    fn expected_cleanup_step(&self) -> Option<CleanupStep> {
+    pub(super) fn expected_cleanup_step(&self) -> Option<CleanupStep> {
         if !matches!(self.state, RuntimeState::Draining(_)) {
             return None;
         }
         CleanupStep::ORDERED.get(self.next_cleanup_index).copied()
     }
 
-    fn complete_cleanup_step(&mut self, step: CleanupStep) -> Result<(), LifecycleError> {
+    pub(super) fn complete_cleanup_step(
+        &mut self,
+        step: CleanupStep,
+    ) -> Result<(), LifecycleError> {
         if self.expected_cleanup_step() != Some(step) {
             self.latch_fatal(FatalReason::CleanupProtocolViolation);
             return Err(LifecycleError::CleanupOutOfOrder);
@@ -950,7 +1235,10 @@ impl NoSecretService {
                 }
             }
             CleanupStep::ReapHelpers => self.work.clear(),
-            CleanupStep::DiscardUserTokens => self.user_token_sessions.clear(),
+            CleanupStep::DiscardUserTokens => {
+                self.user_token_sessions.clear();
+                self.invalid_sessions.clear();
+            }
             CleanupStep::ReleaseSingleInstanceLease | CleanupStep::CommitAndRereadCleanMarker => {
                 self.latch_fatal(FatalReason::CleanupProtocolViolation);
                 return Err(LifecycleError::InvalidCleanShutdownReceipt);
@@ -960,40 +1248,26 @@ impl NoSecretService {
         Ok(())
     }
 
-    fn prepare_clean_commit(
-        self,
-        key: &FixtureRunStateAuthenticationKey,
-    ) -> Result<CleanCommitPending, ExitRequired> {
+    pub(super) fn prepare_clean(self) -> Result<CleanBoundaryPolicy, RuntimePolicyFailure> {
         if self.expected_cleanup_step() != Some(CleanupStep::CommitAndRereadCleanMarker) {
-            return Err(ExitRequired::cleanup(
-                ExitReason::CleanupOutOfOrder,
-                self.active_run.into_writer_exit(),
-            ));
+            return Err(RuntimePolicyFailure::CleanupOutOfOrder);
         }
-        if !self.work.is_empty() || !self.user_token_sessions.is_empty() {
-            return Err(ExitRequired::cleanup(
-                ExitReason::CleanupIncomplete,
-                self.active_run.into_writer_exit(),
-            ));
+        if !self.work.is_empty()
+            || !self.user_token_sessions.is_empty()
+            || !self.invalid_sessions.is_empty()
+        {
+            return Err(RuntimePolicyFailure::CleanupIncomplete);
         }
-        let transition = self
-            .active_run
-            .prepare_clean(key)
-            .map_err(ExitRequired::durable)?;
-        Ok(CleanCommitPending { transition })
+        Ok(CleanBoundaryPolicy {
+            startup: self.startup,
+        })
     }
 
-    fn prepare_fatal_exit(self) -> Result<ExitRequired, LifecycleError> {
-        if !matches!(self.state, RuntimeState::Fatal(_)) {
-            return Err(LifecycleError::NotReady);
-        }
-        Ok(ExitRequired::cleanup(
-            ExitReason::FatalRuntime,
-            self.active_run.into_writer_exit(),
-        ))
+    pub(super) const fn is_fatal(&self) -> bool {
+        matches!(self.state, RuntimeState::Fatal(_))
     }
 
-    fn fail_cleanup(&mut self, step: CleanupStep) -> Result<(), LifecycleError> {
+    pub(super) fn fail_cleanup(&mut self, step: CleanupStep) -> Result<(), LifecycleError> {
         if self.expected_cleanup_step() != Some(step) {
             self.latch_fatal(FatalReason::CleanupProtocolViolation);
             return Err(LifecycleError::CleanupOutOfOrder);
@@ -1002,7 +1276,7 @@ impl NoSecretService {
         Ok(())
     }
 
-    fn cleanup_deadline_expired(&mut self) -> Result<(), LifecycleError> {
+    pub(super) fn cleanup_deadline_expired(&mut self) -> Result<(), LifecycleError> {
         if !matches!(self.state, RuntimeState::Draining(_)) {
             return Err(LifecycleError::NotReady);
         }
@@ -1010,7 +1284,7 @@ impl NoSecretService {
         Ok(())
     }
 
-    fn crash(&mut self) {
+    pub(super) fn crash(&mut self) {
         self.latch_fatal(FatalReason::ServiceCrash);
     }
 
@@ -1029,16 +1303,122 @@ impl NoSecretService {
     }
 }
 
-impl fmt::Debug for NoSecretService {
+impl fmt::Debug for RuntimePolicy {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("NoSecretService")
+            .debug_struct("RuntimePolicy")
+            .field("startup", &"[REDACTED]")
             .field("state", &self.state)
-            .field("active_run", &"[REDACTED DURABLE AUTHORITY]")
             .field("work", &"[REDACTED FIXTURE WORK]")
             .field("user_token_sessions", &"[REDACTED SESSIONS]")
             .field("invalid_sessions", &"[REDACTED SESSIONS]")
             .field("next_cleanup_index", &self.next_cleanup_index)
+            .finish()
+    }
+}
+
+/// Compatibility wrapper that pairs the authority-independent policy with the
+/// existing durable Active lease. All policy behavior remains implemented by
+/// [`RuntimePolicy`]; this type only coordinates durable transitions.
+struct NoSecretService {
+    policy: RuntimePolicy,
+    active_run: ActiveRunLease,
+}
+
+impl NoSecretService {
+    fn new(active_run: ActiveRunLease, policy: RuntimePolicy) -> Self {
+        Self { policy, active_run }
+    }
+
+    fn admit_fixture_work(
+        &mut self,
+        id: WorkId,
+        session: SessionId,
+        kind: NoSecretFixtureWorkKind,
+    ) -> Result<(), LifecycleError> {
+        self.policy.admit_fixture_work(id, session, kind)
+    }
+
+    fn retain_user_token(&mut self, session: SessionId) -> Result<(), LifecycleError> {
+        self.policy.retain_user_token(session)
+    }
+
+    fn handle_session_event(
+        &mut self,
+        event: SessionEvent,
+    ) -> Result<SessionInvalidationReport, LifecycleError> {
+        self.policy.handle_session_event(event)
+    }
+
+    fn reap_cancelled_fixture_work(&mut self, id: WorkId) -> Result<(), LifecycleError> {
+        self.policy.reap_cancelled_fixture_work(id)
+    }
+
+    fn begin_stop(&mut self, reason: StopReason) -> Result<(), LifecycleError> {
+        self.policy.begin_stop(reason)
+    }
+
+    fn expected_cleanup_step(&self) -> Option<CleanupStep> {
+        self.policy.expected_cleanup_step()
+    }
+
+    fn complete_cleanup_step(&mut self, step: CleanupStep) -> Result<(), LifecycleError> {
+        self.policy.complete_cleanup_step(step)
+    }
+
+    fn prepare_clean_commit(
+        self,
+        key: &FixtureRunStateAuthenticationKey,
+    ) -> Result<CleanCommitPending, ExitRequired> {
+        let Self { policy, active_run } = self;
+        let policy = match policy.prepare_clean() {
+            Ok(policy) => policy,
+            Err(failure) => {
+                return Err(ExitRequired::cleanup(
+                    failure.into(),
+                    active_run.into_writer_exit(),
+                ));
+            }
+        };
+        let transition = active_run
+            .prepare_clean(key)
+            .map_err(ExitRequired::durable)?;
+        Ok(CleanCommitPending { transition, policy })
+    }
+
+    fn prepare_fatal_exit(self) -> Result<ExitRequired, LifecycleError> {
+        if !self.policy.is_fatal() {
+            return Err(LifecycleError::NotReady);
+        }
+        Ok(ExitRequired::cleanup(
+            ExitReason::FatalRuntime,
+            self.active_run.into_writer_exit(),
+        ))
+    }
+
+    fn fail_cleanup(&mut self, step: CleanupStep) -> Result<(), LifecycleError> {
+        self.policy.fail_cleanup(step)
+    }
+
+    fn cleanup_deadline_expired(&mut self) -> Result<(), LifecycleError> {
+        self.policy.cleanup_deadline_expired()
+    }
+
+    fn crash(&mut self) {
+        self.policy.crash();
+    }
+}
+
+impl fmt::Debug for NoSecretService {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NoSecretService")
+            .field("state", &self.policy.state)
+            .field("active_run", &"[REDACTED DURABLE AUTHORITY]")
+            .field("work", &"[REDACTED FIXTURE WORK]")
+            .field("user_token_sessions", &"[REDACTED SESSIONS]")
+            .field("invalid_sessions", &"[REDACTED SESSIONS]")
+            .field("next_cleanup_index", &self.policy.next_cleanup_index)
             .finish()
     }
 }

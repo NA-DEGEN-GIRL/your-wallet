@@ -4,8 +4,10 @@
 //! in-memory fault fixture compiled under `cfg(test)`. A separate dormant
 //! Windows-only child joins its exact marker/checkpoint codec to the held
 //! run-state writer facade, which performs fixed-pair operating-system I/O.
-//! Neither path has a production caller, production key source, or bridge that
-//! can mint Phase 2D authority, and this slice makes no crash/power-loss claim.
+//! Its sole production-compiled caller is the sibling dormant Windows
+//! lifecycle compositor; there is no executable/top-level caller, production
+//! key source, or authority mint, and this slice makes no crash/power-loss
+//! claim.
 
 use std::cell::Cell;
 use std::fmt;
@@ -27,6 +29,23 @@ mod windows_pair;
 
 #[cfg(windows)]
 mod windows_runtime;
+
+#[cfg(windows)]
+#[allow(unused_imports)] // Reserved for the sibling Windows lifecycle adapter.
+pub(in crate::key_agent_service) use windows_runtime::{
+    WindowsActiveCommitOutcome, WindowsActiveReloadOutcome, WindowsActiveReloadRequired,
+    WindowsActiveRunLease, WindowsBootEvidence, WindowsCheckedRetired,
+    WindowsCheckedRetirementFailure, WindowsCleanCommitOutcome, WindowsCleanReloadOutcome,
+    WindowsCleanReloadRequired, WindowsCleanWithWriter, WindowsPostReleaseTerminal,
+    WindowsPreparedActiveTransition, WindowsReleasedNoReceipt, WindowsRetirementPending,
+    WindowsRuntimeBindingFailure, WindowsRuntimeStartFailure, WindowsStopOutcome,
+    WindowsStoppedRunEvidence, WindowsTerminalCause, WindowsTerminalFailure, WindowsUnboundRetired,
+    start_windows_runtime,
+};
+
+#[cfg(all(test, windows))]
+#[allow(unused_imports)] // Consumed by sibling Windows lifecycle kernel tests.
+pub(in crate::key_agent_service) use windows_runtime::install_windows_runtime_clean_fixture;
 
 type HmacSha256 = Hmac<Sha256>;
 

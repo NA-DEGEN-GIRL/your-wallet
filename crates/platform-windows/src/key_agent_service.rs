@@ -9,15 +9,19 @@
 
 use thiserror::Error;
 
-// Production-compiled Phase 2A-2E lifecycle, durable-run-state, provisioning,
-// lease-first runtime-boot, and held run-state-root models. They remain private
-// and have no runtime caller; Phase 2E additionally has no production authority
-// mint and cannot be converted into Phase 2D boot or writer evidence.
+// Production-compiled private lifecycle, durable-run-state, provisioning,
+// lease-first runtime-boot, held run-state-root, and dormant Windows lifecycle
+// composition models through Phase 2G. They have no executable/top-level
+// caller, production key source, or installer authority mint in this module.
 #[allow(dead_code)]
 mod durable_run_state;
 
 #[allow(dead_code)]
 mod lifecycle_core;
+
+#[cfg(windows)]
+#[allow(dead_code)]
+mod windows_lifecycle;
 
 #[cfg(windows)]
 #[allow(dead_code)]

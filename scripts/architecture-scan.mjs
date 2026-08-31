@@ -2452,6 +2452,16 @@ const keyAgentServiceRustFiles = await rustProductionSources(
   "crates/key-agent-service",
   { withTestCode: true },
 );
+const keyAgentServicePlatformRustFiles = (
+  await rustProductionSources(
+    "crates/platform-windows/src/key_agent_service",
+    { withoutInlineTests: true },
+  )
+).filter(
+  ({ path }) =>
+    !/(?:^|\/)tests(?:\/|$)/u.test(path) &&
+    !/(?:^|\/)(?:tests|[^/]*_tests)\.rs$/u.test(path),
+);
 const keyAgentServicePlatformSource = await text(
   "crates/platform-windows/src/key_agent_service.rs",
 );
@@ -2509,6 +2519,19 @@ const keyAgentServiceLifecycleCoreTestsPath =
   "crates/platform-windows/src/key_agent_service/lifecycle_core_tests.rs";
 const keyAgentServiceLifecycleCoreTests = await text(
   keyAgentServiceLifecycleCoreTestsPath,
+);
+const keyAgentServiceWindowsLifecyclePath =
+  "crates/platform-windows/src/key_agent_service/windows_lifecycle.rs";
+const keyAgentServiceWindowsLifecycle = await text(
+  keyAgentServiceWindowsLifecyclePath,
+);
+const keyAgentServiceWindowsLifecycleProduction = withoutCfgTestItems(
+  keyAgentServiceWindowsLifecycle,
+);
+const keyAgentServiceWindowsLifecycleTestsPath =
+  "crates/platform-windows/src/key_agent_service/windows_lifecycle_tests.rs";
+const keyAgentServiceWindowsLifecycleTests = await text(
+  keyAgentServiceWindowsLifecycleTestsPath,
 );
 const keyAgentServiceRunStateRootPath =
   "crates/platform-windows/src/key_agent_service/run_state_root.rs";
@@ -6094,10 +6117,35 @@ const keyAgentServiceLifecycleEvidenceTypes = [
   "StoppedPermit",
   "NoSecretService",
 ];
+const keyAgentServiceLifecyclePolicyTypeNames = [
+  "NoSecretStartupRequirement",
+  "StartupObservation",
+  "StartupFailure",
+  "StartupChecklist",
+  "CompletedStartupChecklist",
+  "ListenerPendingPolicy",
+  "ScmRunningPendingPolicy",
+  "AdmissionPendingPolicy",
+  "WorkId",
+  "SessionId",
+  "NoSecretFixtureWorkKind",
+  "StopReason",
+  "CleanupStep",
+  "FatalReason",
+  "RuntimeState",
+  "SessionEvent",
+  "SessionInvalidationReport",
+  "LifecycleError",
+  "RuntimePolicyFailure",
+  "CleanBoundaryPolicy",
+  "ReleaseBoundaryPolicy",
+  "StoppedRuntimePolicy",
+  "RuntimePolicy",
+];
 const approvedKeyAgentServiceDurableSourceSha256 =
-  "e3ef52b3cde6ececa9802f02ce6575885ec666f87f0b617dd94c27034db3e322";
+  "343b52fd31ce7fa83e5a528d5f0c42091b505dc8d7a79ef8e2f4212221748405";
 const approvedKeyAgentServiceDurableProductionSha256 =
-  "453f4a3f2aaab9c7359b861f8657225e2b11ce2df27402e39ca3eb8e988b3743";
+  "3b6a08cceb423c43749d48cdba7692b4a26a521cd649262aa48f350c8a92c077";
 const approvedKeyAgentServiceProvisioningSourceSha256 =
   "bbd80d1985d625a47219e3c8cb2b3c6db9bcc7b8d9ddc149482d7263b7633237";
 const approvedKeyAgentServiceProvisioningProductionSha256 =
@@ -6105,9 +6153,15 @@ const approvedKeyAgentServiceProvisioningProductionSha256 =
 const approvedKeyAgentServiceProvisioningTestsSha256 =
   "dd09f53f20943b9104539a6bbe38ffde23fcb2a07429cf92ef865ff759f955cc";
 const approvedKeyAgentServiceLifecycleSourceSha256 =
-  "cb8eb9c7e511fc191e8fcaf1ecc2d95a497e53338900a4eaa2fc8dca196ac16a";
+  "9c17becfd157dde3ba239f1bf962a9edfbc05456b1a4bd7544ec4611f59b5a66";
 const approvedKeyAgentServiceLifecycleTestsSha256 =
-  "1fd6fba77408e27fee219c56b25674fccc219effd199028c249cc938c312768a";
+  "50825104a904aa387c01a1022807a517c381eb5dcff0f8d9b2e875d51ae85c62";
+const approvedKeyAgentServiceWindowsLifecycleSourceSha256 =
+  "ef8ef4da50353a9453dc6aa2b6780eb91d7368a7eb01dd9d754948850d1deb04";
+const approvedKeyAgentServiceWindowsLifecycleProductionSha256 =
+  "61fd8c393b95508f1a333e75042e8c111d2b9cb9337dd4888279d09a4e4be99d";
+const approvedKeyAgentServiceWindowsLifecycleTestsSha256 =
+  "a74aa7f50196f3a400fc16883b53932973ab65c9514f9cc6a74bd82c3cc04001";
 const approvedKeyAgentServiceRunStateRootSourceSha256 =
   "77301e16cc91bc0aaa52377f3367cb7ea864d74d84d690b65e921dcc200c8835";
 const approvedKeyAgentServiceRunStateRootProductionSha256 =
@@ -6121,9 +6175,9 @@ const approvedKeyAgentServiceRunStateRootTestsSha256 =
 const approvedKeyAgentServiceDurableWindowsPairSha256 =
   "f712f519fc7804163b30eaeef23ec68578b74c6601c6d0953c8c4be9c76cdcf9";
 const approvedKeyAgentServiceDurableWindowsRuntimeSourceSha256 =
-  "9d807172322931a9dbbf42e7dfdba5a589862b857b30d23f25c848b34d879bb0";
+  "fb40f29f3d48b95fbc83e677e4dcce8e357c27d221a475289e8d8e26b73d8a7b";
 const approvedKeyAgentServiceDurableWindowsRuntimeProductionSha256 =
-  "3caa952730d06a6e6fb8a4b730a91cac880951724f2cce60ddd72a3be982f9d9";
+  "31cd3e0499389f91df0af57acce9df3faf9cef18ff943a7be827b1c3e164d02f";
 const keyAgentServiceDurableTestNames = [
   "canonical_v1_clean_marker_and_checkpoint_round_trip",
   "canonical_v1_layout_matches_independent_golden_digests",
@@ -6188,6 +6242,10 @@ const keyAgentServiceProvisioningTestNames = [
   "provisioning_authorities_are_move_only_and_debug_redacted",
 ];
 const keyAgentServiceLifecycleTestNames = [
+  "pure_startup_checklist_latches_duplicates_and_evaluates_in_fixed_order",
+  "pure_startup_policy_chain_is_consuming_and_cannot_skip_ordering",
+  "pure_runtime_policy_enforces_all_bounds_before_mutation",
+  "pure_runtime_cleanup_mints_one_shot_boundaries_only_after_exact_first_nine",
   "every_startup_requirement_is_mandatory",
   "unrelated_observation_failure_retains_a_post_acquisition_writer_until_retirement",
   "mismatched_unavailable_and_duplicate_observations_fail_closed",
@@ -6205,6 +6263,188 @@ const keyAgentServiceLifecycleTestNames = [
   "final_release_ambiguity_or_mismatch_retires_only_through_terminal_exit",
   "fatal_exit_preserves_active_marker_and_retires_the_fixture_writer",
   "crash_cleanup_deadline_and_debug_surfaces_never_claim_clean_or_leak_identifiers",
+];
+const keyAgentServicePhaseTwoGWindowsLifecycleTestNames = [
+  "clean_startup_active_runtime_clean_release_reaches_normal_stopped",
+  "startup_missing_and_mismatch_require_checked_silent_exit78",
+  "active_ambiguity_reloads_prior_with_fresh_checks_candidate_with_carried_checks_and_partial_terminal",
+  "confirmed_active_reread_failure_never_restores_boot_or_listener_authority",
+  "listener_scm_and_admission_typestates_are_ordered_and_move_only",
+  "runtime_policy_alone_enforces_work_token_and_quarantine_bounds",
+  "cleanup_requires_exact_order_and_empties_all_runtime_registries_before_clean",
+  "clean_ambiguity_advances_release_policy_for_candidate_only",
+  "release_writer_retained_checks_retirement_and_no_receipt_is_irreversible_exit78",
+  "post_release_logical_failure_is_irreversible_exit78_and_never_stopped",
+  "retirement_fault_preserves_original_lifecycle_and_platform_cleanup_causes",
+  "debug_and_source_surfaces_are_redacted_silent_and_path_handle_free",
+];
+const keyAgentServicePhaseTwoGWindowsLifecycleTypes = [
+  { visibility: "pub(super)", kind: "enum", name: "WindowsLifecycleCause" },
+  { visibility: "", kind: "enum", name: "WindowsLifecycleExitAuthority" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsLifecycleExitRequired" },
+  { visibility: "", kind: "enum", name: "WindowsLifecycleCheckedExitAuthority" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsLifecycleCheckedExit78" },
+  { visibility: "pub(super)", kind: "enum", name: "WindowsLifecycleIrreversibleCause" },
+  { visibility: "", kind: "enum", name: "WindowsLifecycleIrreversibleAuthority" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsLifecycleIrreversibleExit78" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsStartupAttempt" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsActiveCommitPending" },
+  { visibility: "pub(super)", kind: "enum", name: "WindowsLifecycleActiveCommitOutcome" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsActiveReloadPending" },
+  { visibility: "pub(super)", kind: "enum", name: "WindowsLifecycleActiveReloadOutcome" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsListenerPending" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsScmRunningPending" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsAdmissionPending" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsNoSecretService" },
+  { visibility: "pub(super)", kind: "enum", name: "WindowsLifecycleCleanCommitOutcome" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsCleanReloadPending" },
+  { visibility: "pub(super)", kind: "enum", name: "WindowsLifecycleCleanReloadOutcome" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsCleanReleasePending" },
+  { visibility: "pub(super)", kind: "enum", name: "WindowsLifecycleStopOutcome" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsLifecycleStopped" },
+];
+const keyAgentServicePhaseTwoGRuntimeTypes = [
+  { visibility: "pub(incrate::key_agent_service)", kind: "enum", name: "WindowsRuntimeStartFailure" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "struct", name: "WindowsRuntimeBindingFailure" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "struct", name: "WindowsUnboundRetired" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsRuntimeWriterAcquired" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "struct", name: "WindowsBootEvidence" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "struct", name: "WindowsPreparedActiveTransition" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "enum", name: "WindowsActiveCommitOutcome" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "struct", name: "WindowsActiveRunLease" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "enum", name: "WindowsCleanCommitOutcome" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "struct", name: "WindowsCleanWithWriter" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "enum", name: "WindowsStopOutcome" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "struct", name: "WindowsStoppedRunEvidence" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "struct", name: "WindowsReleasedNoReceipt" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "struct", name: "WindowsPostReleaseTerminal" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "struct", name: "WindowsCleanReloadRequired" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "enum", name: "WindowsCleanReloadOutcome" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "struct", name: "WindowsActiveReloadRequired" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "enum", name: "WindowsActiveReloadOutcome" },
+  { visibility: "", kind: "enum", name: "WindowsTerminalPair" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "struct", name: "WindowsTerminalCause" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "struct", name: "WindowsRetirementPending" },
+  { visibility: "", kind: "enum", name: "WindowsCheckedRetirementStage" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "struct", name: "WindowsCheckedRetired" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "struct", name: "WindowsCheckedRetirementFailure" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "struct", name: "WindowsTerminalFailure" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsRecoveryExit" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsRetirementFailure" },
+];
+const keyAgentServicePhaseTwoGFacadeItems = [
+  "WindowsActiveCommitOutcome",
+  "WindowsActiveReloadOutcome",
+  "WindowsActiveReloadRequired",
+  "WindowsActiveRunLease",
+  "WindowsBootEvidence",
+  "WindowsCheckedRetired",
+  "WindowsCheckedRetirementFailure",
+  "WindowsCleanCommitOutcome",
+  "WindowsCleanReloadOutcome",
+  "WindowsCleanReloadRequired",
+  "WindowsCleanWithWriter",
+  "WindowsPostReleaseTerminal",
+  "WindowsPreparedActiveTransition",
+  "WindowsReleasedNoReceipt",
+  "WindowsRetirementPending",
+  "WindowsRuntimeBindingFailure",
+  "WindowsRuntimeStartFailure",
+  "WindowsStopOutcome",
+  "WindowsStoppedRunEvidence",
+  "WindowsTerminalCause",
+  "WindowsTerminalFailure",
+  "WindowsUnboundRetired",
+  "start_windows_runtime",
+];
+const keyAgentServicePhaseTwoGWindowsLifecycleFunctions = [
+  { owner: "impl<'key>WindowsLifecycleExitRequired<'key>", visibility: "pub(super)const", name: "cause", signature: "fncause(&self)->&WindowsLifecycleCause" },
+  { owner: "impl<'key>WindowsLifecycleExitRequired<'key>", visibility: "pub(super)", name: "retire_checked", signature: "fnretire_checked(self,)->Result<WindowsLifecycleCheckedExit78<'key>,WindowsLifecycleIrreversibleExit78<'key>>" },
+  { owner: "implWindowsLifecycleCheckedExit78<'_>", visibility: "pub(super)const", name: "cause", signature: "fncause(&self)->&WindowsLifecycleCause" },
+  { owner: "implWindowsLifecycleCheckedExit78<'_>", visibility: "pub(super)const", name: "code", signature: "fncode(&self)->i32" },
+  { owner: "impl<'key>WindowsLifecycleIrreversibleExit78<'key>", visibility: "pub(super)const", name: "cause", signature: "fncause(&self)->&WindowsLifecycleIrreversibleCause" },
+  { owner: "impl<'key>WindowsLifecycleIrreversibleExit78<'key>", visibility: "pub(super)const", name: "code", signature: "fncode(&self)->i32" },
+  { owner: "free", visibility: "pub(super)", name: "begin_windows_lifecycle", signature: "fnbegin_windows_lifecycle(writer:HeldServiceRunStateWriter,installation:InstallationIdentity,key:&FixtureRunStateAuthenticationKey,)->Result<WindowsStartupAttempt<'_>,WindowsLifecycleExitRequired<'_>>" },
+  { owner: "impl<'key>WindowsStartupAttempt<'key>", visibility: "pub(super)", name: "observe", signature: "fnobserve(&mutself,requirement:NoSecretStartupRequirement,observation:StartupObservation,)->Result<(),StartupFailure>" },
+  { owner: "impl<'key>WindowsStartupAttempt<'key>", visibility: "pub(super)", name: "finish", signature: "fnfinish(self,)->Result<WindowsActiveCommitPending<'key>,WindowsLifecycleExitRequired<'key>>" },
+  { owner: "impl<'key>WindowsStartupAttempt<'key>", visibility: "pub(super)", name: "abort", signature: "fnabort(self,cause:StartupFailure)->WindowsLifecycleExitRequired<'key>" },
+  { owner: "impl<'key>WindowsActiveCommitPending<'key>", visibility: "pub(super)", name: "commit_and_reread", signature: "fncommit_and_reread(self)->WindowsLifecycleActiveCommitOutcome<'key>" },
+  { owner: "impl<'key>WindowsActiveCommitPending<'key>", visibility: "pub(super)", name: "abort", signature: "fnabort(self,cause:LifecycleError)->WindowsLifecycleExitRequired<'key>" },
+  { owner: "impl<'key>WindowsActiveReloadPending<'key>", visibility: "pub(super)", name: "reload", signature: "fnreload(self)->WindowsLifecycleActiveReloadOutcome<'key>" },
+  { owner: "impl<'key>WindowsActiveReloadPending<'key>", visibility: "pub(super)", name: "abort", signature: "fnabort(self,cause:LifecycleError)->WindowsLifecycleExitRequired<'key>" },
+  { owner: "impl<'key>WindowsListenerPending<'key>", visibility: "pub(super)", name: "record_listeners_prepared", signature: "fnrecord_listeners_prepared(self)->WindowsScmRunningPending<'key>" },
+  { owner: "impl<'key>WindowsListenerPending<'key>", visibility: "pub(super)", name: "abort", signature: "fnabort(self,cause:LifecycleError)->WindowsLifecycleExitRequired<'key>" },
+  { owner: "impl<'key>WindowsScmRunningPending<'key>", visibility: "pub(super)", name: "record_scm_running_published", signature: "fnrecord_scm_running_published(self)->WindowsAdmissionPending<'key>" },
+  { owner: "impl<'key>WindowsScmRunningPending<'key>", visibility: "pub(super)", name: "abort", signature: "fnabort(self,cause:LifecycleError)->WindowsLifecycleExitRequired<'key>" },
+  { owner: "impl<'key>WindowsAdmissionPending<'key>", visibility: "pub(super)", name: "open_admission", signature: "fnopen_admission(self)->WindowsNoSecretService<'key>" },
+  { owner: "impl<'key>WindowsAdmissionPending<'key>", visibility: "pub(super)", name: "abort", signature: "fnabort(self,cause:LifecycleError)->WindowsLifecycleExitRequired<'key>" },
+  { owner: "impl<'key>WindowsNoSecretService<'key>", visibility: "pub(super)const", name: "state", signature: "fnstate(&self)->RuntimeState" },
+  { owner: "impl<'key>WindowsNoSecretService<'key>", visibility: "pub(super)", name: "work_count", signature: "fnwork_count(&self)->usize" },
+  { owner: "impl<'key>WindowsNoSecretService<'key>", visibility: "pub(super)", name: "retained_user_token_count", signature: "fnretained_user_token_count(&self)->usize" },
+  { owner: "impl<'key>WindowsNoSecretService<'key>", visibility: "pub(super)", name: "quarantined_session_count", signature: "fnquarantined_session_count(&self)->usize" },
+  { owner: "impl<'key>WindowsNoSecretService<'key>", visibility: "pub(super)", name: "admit_fixture_work", signature: "fnadmit_fixture_work(&mutself,id:WorkId,session:SessionId,kind:NoSecretFixtureWorkKind,)->Result<(),LifecycleError>" },
+  { owner: "impl<'key>WindowsNoSecretService<'key>", visibility: "pub(super)", name: "retain_user_token", signature: "fnretain_user_token(&mutself,session:SessionId)->Result<(),LifecycleError>" },
+  { owner: "impl<'key>WindowsNoSecretService<'key>", visibility: "pub(super)", name: "handle_session_event", signature: "fnhandle_session_event(&mutself,event:SessionEvent,)->Result<SessionInvalidationReport,LifecycleError>" },
+  { owner: "impl<'key>WindowsNoSecretService<'key>", visibility: "pub(super)", name: "reap_cancelled_fixture_work", signature: "fnreap_cancelled_fixture_work(&mutself,id:WorkId)->Result<(),LifecycleError>" },
+  { owner: "impl<'key>WindowsNoSecretService<'key>", visibility: "pub(super)", name: "begin_stop", signature: "fnbegin_stop(&mutself,reason:StopReason)->Result<(),LifecycleError>" },
+  { owner: "impl<'key>WindowsNoSecretService<'key>", visibility: "pub(super)", name: "expected_cleanup_step", signature: "fnexpected_cleanup_step(&self)->Option<CleanupStep>" },
+  { owner: "impl<'key>WindowsNoSecretService<'key>", visibility: "pub(super)", name: "complete_cleanup_step", signature: "fncomplete_cleanup_step(&mutself,step:CleanupStep,)->Result<(),LifecycleError>" },
+  { owner: "impl<'key>WindowsNoSecretService<'key>", visibility: "pub(super)", name: "fail_cleanup", signature: "fnfail_cleanup(&mutself,step:CleanupStep)->Result<(),LifecycleError>" },
+  { owner: "impl<'key>WindowsNoSecretService<'key>", visibility: "pub(super)", name: "cleanup_deadline_expired", signature: "fncleanup_deadline_expired(&mutself)->Result<(),LifecycleError>" },
+  { owner: "impl<'key>WindowsNoSecretService<'key>", visibility: "pub(super)", name: "crash", signature: "fncrash(&mutself)" },
+  { owner: "impl<'key>WindowsNoSecretService<'key>", visibility: "pub(super)", name: "prepare_clean", signature: "fnprepare_clean(self)->WindowsLifecycleCleanCommitOutcome<'key>" },
+  { owner: "impl<'key>WindowsNoSecretService<'key>", visibility: "pub(super)", name: "into_exit", signature: "fninto_exit(self,cause:LifecycleError)->WindowsLifecycleExitRequired<'key>" },
+  { owner: "impl<'key>WindowsNoSecretService<'key>", visibility: "pub(super)", name: "into_fatal_exit", signature: "fninto_fatal_exit(self)->WindowsLifecycleExitRequired<'key>" },
+  { owner: "impl<'key>WindowsCleanReloadPending<'key>", visibility: "pub(super)", name: "reload", signature: "fnreload(self)->WindowsLifecycleCleanReloadOutcome<'key>" },
+  { owner: "impl<'key>WindowsCleanReloadPending<'key>", visibility: "pub(super)", name: "abort", signature: "fnabort(self,cause:LifecycleError)->WindowsLifecycleExitRequired<'key>" },
+  { owner: "impl<'key>WindowsCleanReleasePending<'key>", visibility: "pub(super)", name: "release_writer", signature: "fnrelease_writer(self)->WindowsLifecycleStopOutcome<'key>" },
+  { owner: "impl<'key>WindowsCleanReleasePending<'key>", visibility: "pub(super)", name: "abort", signature: "fnabort(self,cause:LifecycleError)->WindowsLifecycleExitRequired<'key>" },
+  { owner: "implWindowsLifecycleStopped", visibility: "pub(super)const", name: "generation", signature: "fngeneration(&self)->NonZeroU64" },
+];
+const keyAgentServicePhaseTwoGRuntimeFunctions = [
+  { owner: "free", visibility: "pub(incrate::key_agent_service)", name: "start_windows_runtime", signature: "fnstart_windows_runtime(writer:HeldServiceRunStateWriter,installation:InstallationIdentity,key:&FixtureRunStateAuthenticationKey,)->Result<WindowsBootEvidence<'_>,WindowsRuntimeStartFailure<'_>>" },
+  { owner: "implWindowsRuntimeStartFailure<'_>", visibility: "pub(super)const", name: "reason", signature: "fnreason(&self)->RecoveryRequired" },
+  { owner: "implWindowsRuntimeBindingFailure", visibility: "pub(incrate::key_agent_service)const", name: "reason", signature: "fnreason(&self)->RecoveryRequired" },
+  { owner: "implWindowsRuntimeBindingFailure", visibility: "pub(incrate::key_agent_service)", name: "retire", signature: "fnretire(self,)->Result<WindowsUnboundRetired,ServiceRunStateError>" },
+  { owner: "impl<'key>WindowsRuntimeWriterAcquired<'key>", visibility: "pub(super)", name: "from_held_writer", signature: "fnfrom_held_writer(writer:HeldServiceRunStateWriter,installation:InstallationIdentity,key:&'keyFixtureRunStateAuthenticationKey,)->Result<Self,WindowsRuntimeBindingFailure>" },
+  { owner: "impl<'key>WindowsRuntimeWriterAcquired<'key>", visibility: "pub(super)", name: "authenticate", signature: "fnauthenticate(self,)->Result<WindowsBootEvidence<'key>,WindowsTerminalFailure<'key>>" },
+  { owner: "impl<'key>WindowsRuntimeWriterAcquired<'key>", visibility: "pub(super)", name: "into_retirement", signature: "fninto_retirement(self)->WindowsRetirementPending<'key>" },
+  { owner: "impl<'key>WindowsRuntimeWriterAcquired<'key>", visibility: "pub(super)", name: "into_terminal", signature: "fninto_terminal(self,reason:RecoveryRequired)->WindowsTerminalFailure<'key>" },
+  { owner: "impl<'key>WindowsBootEvidence<'key>", visibility: "pub(incrate::key_agent_service)const", name: "generation", signature: "fngeneration(&self)->NonZeroU64" },
+  { owner: "impl<'key>WindowsBootEvidence<'key>", visibility: "pub(incrate::key_agent_service)", name: "prepare_active", signature: "fnprepare_active(self,)->Result<WindowsPreparedActiveTransition<'key>,WindowsTerminalFailure<'key>>" },
+  { owner: "impl<'key>WindowsBootEvidence<'key>", visibility: "pub(incrate::key_agent_service)", name: "into_retirement", signature: "fninto_retirement(self)->WindowsRetirementPending<'key>" },
+  { owner: "impl<'key>WindowsBootEvidence<'key>", visibility: "pub(super)", name: "into_terminal", signature: "fninto_terminal(self,reason:RecoveryRequired)->WindowsTerminalFailure<'key>" },
+  { owner: "impl<'key>WindowsPreparedActiveTransition<'key>", visibility: "pub(incrate::key_agent_service)", name: "commit_and_reread", signature: "fncommit_and_reread(self,)->WindowsActiveCommitOutcome<'key>" },
+  { owner: "impl<'key>WindowsPreparedActiveTransition<'key>", visibility: "pub(incrate::key_agent_service)", name: "into_retirement", signature: "fninto_retirement(self)->WindowsRetirementPending<'key>" },
+  { owner: "impl<'key>WindowsPreparedActiveTransition<'key>", visibility: "pub(super)", name: "into_terminal", signature: "fninto_terminal(self,reason:RecoveryRequired)->WindowsTerminalFailure<'key>" },
+  { owner: "impl<'key>WindowsActiveRunLease<'key>", visibility: "pub(incrate::key_agent_service)const", name: "generation", signature: "fngeneration(&self)->NonZeroU64" },
+  { owner: "impl<'key>WindowsActiveRunLease<'key>", visibility: "pub(incrate::key_agent_service)", name: "commit_clean", signature: "fncommit_clean(self)->WindowsCleanCommitOutcome<'key>" },
+  { owner: "impl<'key>WindowsActiveRunLease<'key>", visibility: "pub(incrate::key_agent_service)", name: "into_retirement", signature: "fninto_retirement(self)->WindowsRetirementPending<'key>" },
+  { owner: "impl<'key>WindowsActiveRunLease<'key>", visibility: "pub(super)", name: "into_terminal", signature: "fninto_terminal(self,reason:RecoveryRequired)->WindowsTerminalFailure<'key>" },
+  { owner: "impl<'key>WindowsCleanWithWriter<'key>", visibility: "pub(incrate::key_agent_service)const", name: "generation", signature: "fngeneration(&self)->NonZeroU64" },
+  { owner: "impl<'key>WindowsCleanWithWriter<'key>", visibility: "pub(incrate::key_agent_service)", name: "stop", signature: "fnstop(self)->WindowsStopOutcome<'key>" },
+  { owner: "impl<'key>WindowsCleanWithWriter<'key>", visibility: "pub(incrate::key_agent_service)", name: "into_retirement", signature: "fninto_retirement(self)->WindowsRetirementPending<'key>" },
+  { owner: "impl<'key>WindowsCleanWithWriter<'key>", visibility: "pub(super)", name: "into_terminal", signature: "fninto_terminal(self,reason:RecoveryRequired)->WindowsTerminalFailure<'key>" },
+  { owner: "implWindowsStoppedRunEvidence", visibility: "pub(incrate::key_agent_service)const", name: "generation", signature: "fngeneration(&self)->NonZeroU64" },
+  { owner: "implWindowsReleasedNoReceipt<'_>", visibility: "pub(incrate::key_agent_service)const", name: "reason", signature: "fnreason(&self)->RecoveryRequired" },
+  { owner: "implWindowsReleasedNoReceipt<'_>", visibility: "pub(incrate::key_agent_service)const", name: "cause", signature: "fncause(&self)->ServiceRunStateError" },
+  { owner: "implWindowsPostReleaseTerminal<'_>", visibility: "pub(incrate::key_agent_service)const", name: "reason", signature: "fnreason(&self)->RecoveryRequired" },
+  { owner: "impl<'key>WindowsCleanReloadRequired<'key>", visibility: "pub(incrate::key_agent_service)", name: "reload", signature: "fnreload(self)->WindowsCleanReloadOutcome<'key>" },
+  { owner: "impl<'key>WindowsCleanReloadRequired<'key>", visibility: "pub(incrate::key_agent_service)", name: "into_retirement", signature: "fninto_retirement(self)->WindowsRetirementPending<'key>" },
+  { owner: "impl<'key>WindowsCleanReloadRequired<'key>", visibility: "pub(super)", name: "into_terminal", signature: "fninto_terminal(self,reason:RecoveryRequired)->WindowsTerminalFailure<'key>" },
+  { owner: "impl<'key>WindowsActiveReloadRequired<'key>", visibility: "pub(incrate::key_agent_service)", name: "reload", signature: "fnreload(self)->WindowsActiveReloadOutcome<'key>" },
+  { owner: "impl<'key>WindowsActiveReloadRequired<'key>", visibility: "pub(incrate::key_agent_service)", name: "into_retirement", signature: "fninto_retirement(self)->WindowsRetirementPending<'key>" },
+  { owner: "impl<'key>WindowsActiveReloadRequired<'key>", visibility: "pub(super)", name: "into_terminal", signature: "fninto_terminal(self,reason:RecoveryRequired)->WindowsTerminalFailure<'key>" },
+  { owner: "implWindowsTerminalCause", visibility: "pub(incrate::key_agent_service)const", name: "recovery", signature: "fnrecovery(&self)->RecoveryRequired" },
+  { owner: "implWindowsTerminalCause", visibility: "pub(incrate::key_agent_service)const", name: "platform", signature: "fnplatform(&self)->Option<ServiceRunStateError>" },
+  { owner: "impl<'key>WindowsRetirementPending<'key>", visibility: "pub(incrate::key_agent_service)", name: "retire_checked", signature: "fnretire_checked(self,)->Result<WindowsCheckedRetired<'key>,WindowsCheckedRetirementFailure<'key>>" },
+  { owner: "impl<'key>WindowsCheckedRetirementFailure<'key>", visibility: "pub(incrate::key_agent_service)const", name: "cause", signature: "fncause(&self)->ServiceRunStateError" },
+  { owner: "impl<'key>WindowsTerminalFailure<'key>", visibility: "pub(super)const", name: "reason", signature: "fnreason(&self)->RecoveryRequired" },
+  { owner: "impl<'key>WindowsTerminalFailure<'key>", visibility: "pub(super)const", name: "platform_cause", signature: "fnplatform_cause(&self)->Option<ServiceRunStateError>" },
+  { owner: "impl<'key>WindowsTerminalFailure<'key>", visibility: "pub(incrate::key_agent_service)", name: "into_retirement_parts", signature: "fninto_retirement_parts(self,)->(WindowsTerminalCause,WindowsRetirementPending<'key>)" },
+  { owner: "impl<'key>WindowsTerminalFailure<'key>", visibility: "pub(super)", name: "retire", signature: "fnretire(self,)->Result<WindowsRecoveryExit<'key>,WindowsRetirementFailure<'key>>" },
+  { owner: "implWindowsRecoveryExit<'_>", visibility: "pub(super)const", name: "reason", signature: "fnreason(&self)->RecoveryRequired" },
+  { owner: "implWindowsRecoveryExit<'_>", visibility: "pub(super)const", name: "platform_cause", signature: "fnplatform_cause(&self)->Option<ServiceRunStateError>" },
 ];
 const keyAgentServiceLifecycleTestSuffix =
   "\n#[cfg(test)]\n#[path = \"lifecycle_core_tests.rs\"]\nmod tests;\n";
@@ -6306,6 +6546,15 @@ const keyAgentServicePhaseTwoSemanticContract = ({
   const durableFixtureCompact = compactRust(durable.fixture);
   const lifecycleCode = rustLexicalCode(lifecycleProduction);
   const lifecycleCompact = compactRust(lifecycleProduction);
+  const lifecyclePolicyTypes = [
+    ...lifecycleCode.matchAll(
+      /\bpub\s*\(\s*super\s*\)\s+(?:struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
+    ),
+  ].map((match) => match.groups.name);
+  const lifecycleNonSuperVisibility = lifecycleCode.replace(
+    /\bpub\s*\(\s*super\s*\)/gu,
+    "",
+  );
   const serviceCode = rustLexicalCode(platformService);
   const platformLibCode = rustLexicalCode(platformLib);
   const compactMain = compactRust(main);
@@ -6322,6 +6571,13 @@ const keyAgentServicePhaseTwoSemanticContract = ({
   ].map((match) => match.groups.name);
   const durableNonSuperVisibility = durableCode.replace(
     /\bpub\s*\(\s*super\s*\)/gu,
+    "",
+  );
+  const durablePrePhaseTwoGVisibility = durableNonSuperVisibility.replace(
+    /\bpub\s*\(\s*in\s+crate\s*::\s*key_agent_service\s*\)\s+use\s+windows_runtime\s*::\s*\{[^}]*\}\s*;/su,
+    "",
+  ).replace(
+    /\bpub\s*\(\s*in\s+crate\s*::\s*key_agent_service\s*\)\s+use\s+windows_runtime\s*::\s*install_windows_runtime_clean_fixture\s*;/su,
     "",
   );
   const privateDurableFunctionCounts = Object.freeze({
@@ -6348,8 +6604,11 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       ).test(durableCode)
     );
   });
-  const durableUseInventory = rustUseItems(durable.production).map((item) =>
+  const durableUseInventoryAll = rustUseItems(durable.production).map((item) =>
     compactRust(item.source),
+  );
+  const durableUseInventory = durableUseInventoryAll.filter(
+    (item) => !item.startsWith("usewindows_runtime::"),
   );
   const lifecycleUseInventory = rustUseItems(lifecycleProduction).map((item) =>
     compactRust(item.source),
@@ -6426,7 +6685,7 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     runtimeBootArchitectureRows[0] ?? ""
   ).replace(/\s+/gu, " ");
   const phaseTwoADesignMarkers = [
-    "module-private lifecycle core with zero production callers",
+    "module-private lifecycle core now models nine",
     "nine externally supplied no-secret startup observations",
     "other two logical startup requirements",
     "arrive structurally inside lease-bound `BootEvidence`",
@@ -6440,7 +6699,9 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     "Clean reload still retains the writer-release obligation",
     "bounded at 256, 64, and 64 entries",
     "latches the first fatal reason",
-    "There is no production caller or OS adapter.",
+    "`StartupChecklist -> CompletedStartupChecklist -> ListenerPendingPolicy -> ScmRunningPendingPolicy -> AdmissionPendingPolicy -> RuntimePolicy`",
+    "exact 21-test core inventory",
+    "sole production-compiled consumer is the private dormant Phase 2G compositor",
     "Phase 1 and Phase 2 exit gates remain not passed",
     "`COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY` remain `None`",
     "ordinary/release service executable remains silent exit 78",
@@ -6471,7 +6732,7 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     "ordinary/release execution remains silent exit 78",
   ];
   const lifecycleArchitectureMarkers = [
-    "module-private, zero-production-caller Phase 2A core",
+    "production-compiled, module-private Phase 2A core",
     "nine externally supplied mandatory startup observations",
     "other two logical requirements and arrive structurally inside lease-bound `BootEvidence`",
     "`CleanupStep::ReleaseRequestHardwareAndStorageHandles` names only request-scoped cleanup",
@@ -6482,7 +6743,9 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     "exact backend-bound writer-release receipt is the sole path to the stopped-report permit",
     "Lifecycle-owned Active and Clean reload wrappers",
     "no bare durable reload state can re-enter the listener or stopped path",
-    "imports no OS, SCM, storage, firewall, network, key, or signing adapter",
+    "exact 21-test core inventory",
+    "dormant Phase 2G compositor is the sole private production-compiled policy consumer",
+    "imports no actual SCM, listener, storage, firewall, network, key, or signing adapter",
     "Phase 1 and Phase 2 exit gates remain not passed",
     "both compiled policies remain `None`",
     "ordinary/release service remains silent exit 78",
@@ -6717,16 +6980,28 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       durable.fixture,
       "retire_writer_for_exit",
     );
-    startupObserve = rustFunctionBlock(lifecycleProduction, "observe");
-    startupFinish = rustFunctionBlock(lifecycleProduction, "finish");
+    const startupChecklistImpl = rustLexicalItemBlock(
+      lifecycleProduction,
+      /\bimpl\s+StartupChecklist\s*\{/u,
+    );
+    startupObserve = rustFunctionBlock(startupChecklistImpl, "observe");
+    const startupChecklistFinish = rustFunctionBlock(
+      startupChecklistImpl,
+      "finish",
+    );
+    const startupAttemptImpl = rustLexicalItemBlock(
+      lifecycleProduction,
+      /\bimpl\s+NoSecretStartupAttempt\s*\{/u,
+    );
+    startupFinish = `${startupChecklistFinish}\n${rustFunctionBlock(startupAttemptImpl, "finish")}`;
     startupFromRuntimeBoot = rustFunctionBlock(
       lifecycleProduction,
       "from_runtime_boot",
     );
-    startupIntoExit = rustFunctionBlock(lifecycleProduction, "into_exit");
+    startupIntoExit = rustFunctionBlock(startupAttemptImpl, "into_exit_for_boot");
     startupRequirement = rustLexicalItemBlock(
       lifecycleProduction,
-      /\benum\s+NoSecretStartupRequirement\s*\{/u,
+      /\bpub\s*\(\s*super\s*\)\s+enum\s+NoSecretStartupRequirement\s*\{/u,
     );
     pendingStartup = rustLexicalItemBlock(
       lifecycleProduction,
@@ -6736,31 +7011,47 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       lifecycleProduction,
       /\bimpl\s+PendingActiveReload\s*\{/u,
     );
-    listenerPrepared = rustFunctionBlock(
+    const listenerRuntimeImpl = rustLexicalItemBlock(
       lifecycleProduction,
+      /\bimpl\s+ListenerPendingRuntime\s*\{/u,
+    );
+    const scmRuntimeImpl = rustLexicalItemBlock(
+      lifecycleProduction,
+      /\bimpl\s+ScmRunningPendingRuntime\s*\{/u,
+    );
+    const admissionRuntimeImpl = rustLexicalItemBlock(
+      lifecycleProduction,
+      /\bimpl\s+AdmissionPendingRuntime\s*\{/u,
+    );
+    listenerPrepared = rustFunctionBlock(
+      listenerRuntimeImpl,
       "record_listeners_prepared",
     );
     scmRunningPublished = rustFunctionBlock(
-      lifecycleProduction,
+      scmRuntimeImpl,
       "record_scm_running_published",
     );
-    admissionOpen = rustFunctionBlock(lifecycleProduction, "open_admission");
-    workAdmission = rustFunctionBlock(lifecycleProduction, "admit_fixture_work");
-    tokenRetention = rustFunctionBlock(lifecycleProduction, "retain_user_token");
-    sessionInvalidationAll = rustFunctionBlock(
+    admissionOpen = rustFunctionBlock(admissionRuntimeImpl, "open_admission");
+    const runtimePolicyImpl = rustLexicalItemBlock(
       lifecycleProduction,
+      /\bimpl\s+RuntimePolicy\s*\{/u,
+    );
+    workAdmission = rustFunctionBlock(runtimePolicyImpl, "admit_fixture_work");
+    tokenRetention = rustFunctionBlock(runtimePolicyImpl, "retain_user_token");
+    sessionInvalidationAll = rustFunctionBlock(
+      runtimePolicyImpl,
       "invalidate_all_sessions",
     );
     sessionQuarantine = rustFunctionBlock(
-      lifecycleProduction,
+      runtimePolicyImpl,
       "quarantine_session",
     );
     sessionQuarantineFailure = rustFunctionBlock(
-      lifecycleProduction,
+      runtimePolicyImpl,
       "fail_closed_for_session_quarantine_exhaustion",
     );
     cleanupCompletion = rustFunctionBlock(
-      lifecycleProduction,
+      runtimePolicyImpl,
       "complete_cleanup_step",
     );
     cleanPrepare = rustFunctionBlock(lifecycleProduction, "prepare_clean_commit");
@@ -6784,7 +7075,7 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       lifecycleProduction,
       /\bimpl\s+StoppedPermit\s*\{/u,
     );
-    fatalLatch = rustFunctionBlock(lifecycleProduction, "latch_fatal");
+    fatalLatch = rustFunctionBlock(runtimePolicyImpl, "latch_fatal");
   } catch {
     return false;
   }
@@ -6810,6 +7101,8 @@ const keyAgentServicePhaseTwoSemanticContract = ({
         { name: "lifecycle_core.rs", kind: "file" },
         { name: "run_state_root", kind: "directory" },
         { name: "run_state_root.rs", kind: "file" },
+        { name: "windows_lifecycle_tests.rs", kind: "file" },
+        { name: "windows_lifecycle.rs", kind: "file" },
       ]) &&
     JSON.stringify(durableUseInventory) ===
       JSON.stringify([
@@ -6838,8 +7131,10 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       JSON.stringify(keyAgentServiceDurableBridgeTypes) &&
     JSON.stringify(durablePublicFunctions) ===
       JSON.stringify(keyAgentServiceDurableBridgeFunctions) &&
-    !/\bpub\b/u.test(durableNonSuperVisibility) &&
-    !/\bpub\b/u.test(lifecycleCode) &&
+    !/\bpub\b/u.test(durablePrePhaseTwoGVisibility) &&
+    JSON.stringify(lifecyclePolicyTypes) ===
+      JSON.stringify(keyAgentServiceLifecyclePolicyTypeNames) &&
+    !/\bpub\b/u.test(lifecycleNonSuperVisibility) &&
     durablePrivateFunctionsRemainPrivate &&
     keyAgentServiceMoveOnlyEvidenceContract(
       durable.production,
@@ -7379,10 +7674,10 @@ const keyAgentServicePhaseTwoSemanticContract = ({
         "#[derive(Clone,Copy,Eq,Ord,PartialEq,PartialOrd)]",
       ]) &&
     lifecycleCompact.includes(
-      "#[derive(Clone,Copy,Eq,Ord,PartialEq,PartialOrd)]structWorkId(NonZeroU64);",
+      "#[derive(Clone,Copy,Eq,Ord,PartialEq,PartialOrd)]pub(super)structWorkId(NonZeroU64);",
     ) &&
     lifecycleCompact.includes(
-      "#[derive(Clone,Copy,Eq,Ord,PartialEq,PartialOrd)]structSessionId(NonZeroU32);",
+      "#[derive(Clone,Copy,Eq,Ord,PartialEq,PartialOrd)]pub(super)structSessionId(NonZeroU32);",
     ) &&
     lifecycleCompact.includes("constMAX_ACTIVE_FIXTURE_WORK:usize=256;") &&
     lifecycleCompact.includes(
@@ -7399,7 +7694,7 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       "constSTARTUP_REQUIREMENT_COUNT:usize=LOGICAL_STARTUP_REQUIREMENT_COUNT-LEASE_BOUND_STARTUP_REQUIREMENT_COUNT;",
     ) &&
     compactRust(startupRequirement) ===
-      "enumNoSecretStartupRequirement{ServiceToken,RestrictedServiceSid,PrivilegeSet,InstalledImage,ServiceConfiguration,ProviderBinding,AnchorBinding,FirewallPolicy,EnrolledUser,}" &&
+      "pub(super)enumNoSecretStartupRequirement{ServiceToken,RestrictedServiceSid,PrivilegeSet,InstalledImage,ServiceConfiguration,ProviderBinding,AnchorBinding,FirewallPolicy,EnrolledUser,}" &&
     lifecycleCompact.includes(
       "constALL:[Self;STARTUP_REQUIREMENT_COUNT]=[Self::ServiceToken,Self::RestrictedServiceSid,Self::PrivilegeSet,Self::InstalledImage,Self::ServiceConfiguration,Self::ProviderBinding,Self::AnchorBinding,Self::FirewallPolicy,Self::EnrolledUser,];",
     ) &&
@@ -7429,19 +7724,22 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       "StartupFailure::Missing(requirement)",
       "StartupFailure::Mismatch(requirement)",
       "StartupFailure::Unavailable(requirement)",
-      "letboot=self.boot.map_err",
+      "Ok(CompletedStartupChecklist{_sealed:()})",
+      "letSelf{checklist,boot}=self",
+      "letchecklist=matchchecklist.finish()",
+      "letboot=boot.map_err(StartupExitRequired::from_runtime_boot)?",
       ".prepare_active(key)",
-      "Ok(PendingNoSecretStartup{active_transition})",
+      "Ok(PendingNoSecretStartup{active_transition,checklist,})",
     ]) &&
     hasOrderedCompactMarkers(startupFromRuntimeBoot, [
       "letreason=failure.reason()",
       "matchfailure.into_writer_exit()",
-      "Err(_)=>Self::without_writer(StartupFailure::DurableRecovery(reason))",
+      "Err(_)=>Self::without_writer(StartupExitCause::DurableRecovery(reason))",
       "Ok((_,writer_exit))",
-      "Self::with_writer(StartupFailure::DurableRecovery(reason),writer_exit)",
+      "Self::with_writer(StartupExitCause::DurableRecovery(reason),writer_exit)",
     ]) &&
     hasOrderedCompactMarkers(startupIntoExit, [
-      "matchself.boot",
+      "matchboot",
       "Ok(boot)=>StartupExitRequired::with_writer(failure,boot.into_writer_exit())",
       "Err(runtime_failure)=>matchruntime_failure.into_writer_exit()",
       "Err(_)=>StartupExitRequired::without_writer(failure)",
@@ -7451,7 +7749,7 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       "CommittedActiveMarker",
       "RereadActiveMarker",
       ".complete(committed,reread)",
-      "Ok(ListenerPendingRuntime{active_run})",
+      "Ok(ListenerPendingRuntime{active_run,policy:self.checklist.begin_listener_startup(),})",
       "fncommit_ambiguous(self)->PendingActiveReload",
     ]) &&
     hasOrderedCompactMarkers(pendingActiveReload, [
@@ -7460,28 +7758,28 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       "ReloadedActiveRunState::Boot(boot)",
       "ActiveReloadResolution::Revalidate(NoSecretStartupAttempt::new(Ok(boot)))",
       "ReloadedActiveRunState::Active(active_run)",
-      "ActiveReloadResolution::Resume(ListenerPendingRuntime{active_run})",
+      "ActiveReloadResolution::Resume(ListenerPendingRuntime{active_run,policy:checklist.begin_listener_startup(),})",
     ]) &&
     compactRust(listenerPrepared).includes(
-      "fnrecord_listeners_prepared(self)->ScmRunningPendingRuntime{ScmRunningPendingRuntime{active_run:self.active_run,}}",
+      "fnrecord_listeners_prepared(self)->ScmRunningPendingRuntime{ScmRunningPendingRuntime{active_run:self.active_run,policy:self.policy.record_listeners_prepared(),}}",
     ) &&
     compactRust(scmRunningPublished).includes(
-      "fnrecord_scm_running_published(self)->AdmissionPendingRuntime{AdmissionPendingRuntime{active_run:self.active_run,}}",
+      "fnrecord_scm_running_published(self)->AdmissionPendingRuntime{AdmissionPendingRuntime{active_run:self.active_run,policy:self.policy.record_scm_running_published(),}}",
     ) &&
     compactRust(admissionOpen).includes(
-      "fnopen_admission(self)->NoSecretService{NoSecretService::new(self.active_run)}",
+      "fnopen_admission(self)->NoSecretService{NoSecretService::new(self.active_run,self.policy.open_admission())}",
     ) &&
-    (lifecycleCode.match(/\bopen_admission\s*\(/gu) ?? []).length === 1 &&
+    (lifecycleCode.match(/\bopen_admission\s*\(/gu) ?? []).length === 3 &&
     lifecycleCompact.includes(
-      "structListenerPendingRuntime{active_run:ActiveRunLease,}",
-    ) &&
-    lifecycleCompact.includes(
-      "structScmRunningPendingRuntime{active_run:ActiveRunLease,}",
+      "structListenerPendingRuntime{active_run:ActiveRunLease,policy:ListenerPendingPolicy,}",
     ) &&
     lifecycleCompact.includes(
-      "structAdmissionPendingRuntime{active_run:ActiveRunLease,}",
+      "structScmRunningPendingRuntime{active_run:ActiveRunLease,policy:ScmRunningPendingPolicy,}",
     ) &&
-    lifecycleCompact.includes("structNoSecretService{state:RuntimeState,active_run:ActiveRunLease,") &&
+    lifecycleCompact.includes(
+      "structAdmissionPendingRuntime{active_run:ActiveRunLease,policy:AdmissionPendingPolicy,}",
+    ) &&
+    lifecycleCompact.includes("structNoSecretService{policy:RuntimePolicy,active_run:ActiveRunLease,") &&
     hasOrderedCompactMarkers(cleanupCompletion, [
       "ifself.expected_cleanup_step()!=Some(step)",
       "self.latch_fatal(FatalReason::CleanupProtocolViolation)",
@@ -7489,17 +7787,17 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       "returnErr(LifecycleError::InvalidCleanShutdownReceipt)",
       "CleanupStep::ReleaseRequestHardwareAndStorageHandles=>{}",
       "CleanupStep::ReapHelpers=>self.work.clear()",
-      "CleanupStep::DiscardUserTokens=>self.user_token_sessions.clear()",
+      "CleanupStep::DiscardUserTokens=>{self.user_token_sessions.clear()",
       "CleanupStep::ReleaseSingleInstanceLease|CleanupStep::CommitAndRereadCleanMarker",
       "self.next_cleanup_index+=1",
     ]) &&
     hasOrderedCompactMarkers(cleanPrepare, [
-      "self.expected_cleanup_step()!=Some(CleanupStep::CommitAndRereadCleanMarker)",
-      "self.active_run.into_writer_exit()",
-      "if!self.work.is_empty()||!self.user_token_sessions.is_empty()",
-      "self.active_run.into_writer_exit()",
-      ".active_run.prepare_clean(key)",
-      "Ok(CleanCommitPending{transition})",
+      "letSelf{policy,active_run}=self",
+      "letpolicy=matchpolicy.prepare_clean()",
+      "Err(failure)",
+      "active_run.into_writer_exit()",
+      "lettransition=active_run.prepare_clean(key)",
+      "Ok(CleanCommitPending{transition,policy})",
     ]) &&
     hasOrderedCompactMarkers(lifecycleCleanCommit, [
       "CommittedCleanMarker",
@@ -7507,6 +7805,7 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       "Result<SingleInstanceReleasePending,ExitRequired>",
       ".transition.complete(committed,reread)",
       "pending:committed.prepare_writer_release()",
+      "policy:self.policy.record_clean_committed()",
       "fncommit_ambiguous(self)->PendingCleanReload",
     ]) &&
     hasOrderedCompactMarkers(lifecycleCleanReload, [
@@ -7514,12 +7813,13 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       "Result<SingleInstanceReleasePending,ExitRequired>",
       ".complete_reload(receipt,key)",
       "pending:committed.prepare_writer_release()",
+      "policy:self.policy.record_clean_committed()",
     ]) &&
     hasOrderedCompactMarkers(lifecycleFinalRelease, [
       "fnrelease_request(&self)->&PendingFinalWriterRelease",
       "fncomplete(self,receipt:WriterLeaseReleaseReceipt)->Result<StoppedPermit,ExitRequired>",
       ".pending.complete(receipt)",
-      "Ok(StoppedPermit::from_durable_evidence(stopped))",
+      "StoppedPermit::from_durable_evidence(stopped,self.policy.record_writer_released(),)",
     ]) &&
     hasOrderedCompactMarkers(lifecycleExit, [
       "writer_exit:WriterExitPending",
@@ -7529,7 +7829,7 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       "Ok(RecoveryExitPermit",
     ]) &&
     compactRust(stoppedPermit) ===
-      "implStoppedPermit{constfnfrom_durable_evidence(stopped:StoppedRunEvidence)->Self{Self{stopped}}}" &&
+      "implStoppedPermit{constfnfrom_durable_evidence(stopped:StoppedRunEvidence,policy:StoppedRuntimePolicy,)->Self{Self{stopped,_policy:policy,}}}" &&
     (lifecycleCode.match(/\bStoppedPermit\s*::\s*from_durable_evidence\s*\(/gu) ?? [])
       .length === 1 &&
     !/\bfrom_reloaded_state\b/u.test(lifecycleCode) &&
@@ -7679,6 +7979,20 @@ const keyAgentServicePhaseTwoFCPinContract = ({ windowsRuntimeSource }) => {
       approvedKeyAgentServiceDurableWindowsRuntimeSourceSha256 &&
     normalizedSourceSha256(production) ===
       approvedKeyAgentServiceDurableWindowsRuntimeProductionSha256
+  );
+};
+const keyAgentServicePhaseTwoGPinContract = ({
+  windowsLifecycleSource,
+  windowsLifecycleTests,
+}) => {
+  const production = withoutCfgTestItems(windowsLifecycleSource);
+  return (
+    normalizedSourceSha256(windowsLifecycleSource) ===
+      approvedKeyAgentServiceWindowsLifecycleSourceSha256 &&
+    normalizedSourceSha256(production) ===
+      approvedKeyAgentServiceWindowsLifecycleProductionSha256 &&
+    normalizedSourceSha256(windowsLifecycleTests) ===
+      approvedKeyAgentServiceWindowsLifecycleTestsSha256
   );
 };
 const keyAgentServicePhaseTwoCSemanticContract = ({
@@ -7983,6 +8297,8 @@ const keyAgentServicePhaseTwoCSemanticContract = ({
         { name: "lifecycle_core.rs", kind: "file" },
         { name: "run_state_root", kind: "directory" },
         { name: "run_state_root.rs", kind: "file" },
+        { name: "windows_lifecycle_tests.rs", kind: "file" },
+        { name: "windows_lifecycle.rs", kind: "file" },
       ]) &&
     JSON.stringify(provisioningDirectoryInventory) ===
       JSON.stringify([
@@ -8461,6 +8777,7 @@ const keyAgentServicePhaseTwoFCRuntimeTestNames = [
   "kernel_confirmed_active_reread_failure_never_reloads_as_boot",
   "kernel_clean_ambiguity_reload_accepts_only_exact_candidate",
   "kernel_stop_failures_never_mint_stopped",
+  "kernel_post_release_receipt_fault_is_irreversible",
   "kernel_stop_precheck_rejects_crossed_pair_before_release",
   "kernel_live_and_reload_states_have_checked_terminal_retirement",
   "composite_authority_and_receipts_are_move_only",
@@ -8532,7 +8849,7 @@ const keyAgentServicePhaseTwoFCRuntimeFunctionInventory = [
     visibility: "pub(super)",
     name: "retire",
     signature:
-      "fnretire(self)->Result<WindowsUnboundRetired,ServiceRunStateError>",
+      "fnretire(self,)->Result<WindowsUnboundRetired,ServiceRunStateError>",
   },
   {
     owner: "impl<'key>WindowsRuntimeWriterAcquired<'key>",
@@ -8580,7 +8897,7 @@ const keyAgentServicePhaseTwoFCRuntimeFunctionInventory = [
     visibility: "pub(super)",
     name: "commit_and_reread",
     signature:
-      "fncommit_and_reread(self)->WindowsActiveCommitOutcome<'key>",
+      "fncommit_and_reread(self,)->WindowsActiveCommitOutcome<'key>",
   },
   {
     owner: "impl<'key>WindowsPreparedActiveTransition<'key>",
@@ -9429,6 +9746,8 @@ const keyAgentServicePhaseTwoESemanticContract = ({
         { name: "lifecycle_core.rs", kind: "file" },
         { name: "run_state_root", kind: "directory" },
         { name: "run_state_root.rs", kind: "file" },
+        { name: "windows_lifecycle_tests.rs", kind: "file" },
+        { name: "windows_lifecycle.rs", kind: "file" },
       ]) &&
     JSON.stringify(rootDirectoryInventory) ===
       JSON.stringify([
@@ -10898,6 +11217,8 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
     "Post-commit reread and ambiguity reload first revalidate the complete writer",
     "combined relevant inventory is therefore exactly 53 tests: 51 passed and two ignored",
     "At the pre-Phase 2F-c boundary, the `windows_pair` child mapped the private 148-byte durable codec envelopes into move-only fixed-pair expectations and outcomes without a production caller, expected-authority mint, authentication-key provider, TPM/non-rollbackable anchor integration",
+    "The separately gated Phase 2F-c composite below is now its sole production consumer and remains dormant",
+    "its sole production-compiled caller is the private Phase 2G compositor, which itself has no executable or top-level caller",
     "nonzero case-sensitive-directory flag",
     "compressed and encrypted file-attribute branches",
     "short-write and flush-failure injection",
@@ -10918,6 +11239,7 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
     "preserves oversized or hostile temps",
     "combined relevant inventory of 53 (51 passed, two ignored)",
     "At the pre-Phase 2F-c boundary the child mapped exact private codec envelopes into move-only pair typestates without a production caller, expected-authority mint, authentication-key provider, TPM/non-rollbackable anchor integration",
+    "the separately gated F-c composite below is now its sole production consumer and remains dormant, while its sole production-compiled caller is the private Phase 2G compositor, which itself has no executable or top-level caller",
     "nonzero case-sensitive-directory kernel negative",
     "direct compressed/encrypted branches",
     "short-write/flush-failure injection",
@@ -11127,6 +11449,8 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
     architectureMarkers.every((marker) =>
       normalizedPhaseTwoFBArchitecture.includes(marker),
     ) &&
+    !normalizedPhaseTwoFBDesign.includes("itself remains dormant and callerless") &&
+    !normalizedPhaseTwoFBArchitecture.includes("is itself dormant and callerless") &&
     !normalizedPhaseTwoFBDesign.includes("Phase 2F-b status: passed") &&
     !normalizedPhaseTwoFBArchitecture.includes("atomic pair commit is proven") &&
     !normalizedPhaseTwoFBArchitecture.includes("power-loss safe")
@@ -11153,6 +11477,10 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
   const lifecycleProduction =
     keyAgentServicePhaseTwoPartitionLifecycle(lifecycleSource);
   if (durable === null || lifecycleProduction === null) return false;
+  const durablePrePhaseTwoGProduction = durable.production.replace(
+    /\bpub\s*\(\s*in\s+crate\s*::\s*key_agent_service\s*\)\s+use\s+windows_runtime\s*::\s*\{[^}]*\}\s*;/su,
+    "",
+  );
   const runtimeProduction = withoutCfgTestItems(windowsRuntimeSource);
   const runtimeCode = rustLexicalCode(runtimeProduction);
   const runtimeCompact = compactRust(runtimeProduction);
@@ -11165,16 +11493,15 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
   const rootCompact = compactRust(rootProduction);
   const sysCompact = compactRust(sysProduction);
   const pairCompact = compactRust(pairProduction);
-  const runtimeTypes = [
-    ...runtimeCode.matchAll(
-      /\bpub\s*\(\s*super\s*\)\s+(?:struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
-    ),
-  ].map((match) => match.groups.name);
   const phaseTwoFCTypeInventory = (code, expected) => [
     ...code.matchAll(/\b(?:struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu),
   ]
     .map((match) => match.groups.name)
     .filter((name) => expected.includes(name));
+  const runtimeTypes = phaseTwoFCTypeInventory(
+    runtimeCode,
+    keyAgentServicePhaseTwoFCRuntimeTypeNames,
+  );
   const rootTypes = phaseTwoFCTypeInventory(
     rootCode,
     keyAgentServicePhaseTwoFCRootTypeNames,
@@ -11188,6 +11515,16 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
     keyAgentServicePhaseTwoFCCodecTypeNames,
   );
   const runtimeVisibleFunctions = rustVisibleFunctionItems(runtimeProduction);
+  const prePhaseTwoGFunctionInventory =
+    keyAgentServicePhaseTwoFCRuntimeFunctionInventory.map((expected) => {
+      const found = runtimeVisibleFunctions.some(
+        ({ owner, name, signature }) =>
+          compactRust(owner) === expected.owner &&
+          name === expected.name &&
+          signature === expected.signature,
+      );
+      return found ? expected : null;
+    });
   const irreversibleImplFunctions = rustImplItems(runtimeProduction)
     .filter(({ header }) =>
       /Windows(?:ReleasedNoReceipt|PostReleaseTerminal|RetirementFailure)/u.test(
@@ -11221,7 +11558,7 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
       main,
       platformService,
       platformLib,
-      durable.production,
+      durablePrePhaseTwoGProduction,
       withoutCfgTestItems(provisioningSource),
       lifecycleProduction,
       rootProduction,
@@ -11232,7 +11569,10 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
   const designStart = designDocument.indexOf(
     "**Current Phase 2F-c status: started, not passed.**",
   );
-  const designEnd = designDocument.indexOf("\n### Phase 3", designStart);
+  const designEnd = designDocument.indexOf(
+    "**Current Phase 2G status: started, not passed.**",
+    designStart,
+  );
   const normalizedDesign = (
     designStart === -1 || designEnd === -1
       ? ""
@@ -11262,6 +11602,7 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
   let activeReload;
   let terminalPairRetire;
   let terminalRetire;
+  let checkedRetire;
   let releaseSnapshot;
   let allocateBinding;
   let holdExactPairFinal;
@@ -11324,6 +11665,11 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
       /\bimpl\s*<'key>\s+WindowsTerminalFailure\s*<'key>\s*\{/u,
     );
     terminalRetire = rustFunctionBlock(terminalImpl, "retire");
+    const retirementPendingImpl = rustLexicalItemBlock(
+      runtimeProduction,
+      /\bimpl\s*<'key>\s+WindowsRetirementPending\s*<'key>\s*\{/u,
+    );
+    checkedRetire = rustFunctionBlock(retirementPendingImpl, "retire_checked");
     releaseSnapshot = rustTopLevelFunctionBlock(
       sysProduction,
       "release_snapshot_verified",
@@ -11416,30 +11762,31 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
     "terminal `RereadDrift`",
     "never reload or downgrade to the prior Clean Boot state",
     "reload can return Clean only for the exact candidate",
-    "Every live or reload-required composite state exposes a consuming `into_terminal`",
+    "Every live or reload-required composite state exposes a consuming reason-neutral",
+    "`into_retirement`; the legacy `into_terminal(RecoveryRequired)` wrappers remain",
     "pair-bound OS release",
     "holds both final leaves share-zero",
     "WindowsReleasedNoReceipt",
     "WindowsPostReleaseTerminal",
     "Checked terminal retirement is ordered",
-    "eleven passing tests",
+    "twelve passing tests",
     "external **STOP-SHIP** obligations",
     "silent exit 78",
   ];
   const architectureMarkers = [
     "Current Phase 2F-c status: started, not passed",
     "module-private dormant composite",
-    "zero production calls",
+    "its sole production-compiled caller is the private dormant Phase 2G `begin_windows_lifecycle` compositor",
     "Active ordering is logical begin-commit, OS commit, logical commit receipt, logical begin-reread, independent OS reread, then logical completion",
     "terminal `RereadDrift`",
     "only exact candidate can return Clean",
-    "Every live/reload state has a consuming terminal transition",
+    "Every live/reload state has a consuming reason-neutral `into_retirement`",
     "pair-bound OS release",
     "holds both share-zero finals through release",
     "WindowsReleasedNoReceipt",
     "WindowsPostReleaseTerminal",
-    "Terminal retirement orders logical begin-release, OS retirement, logical receipt, then logical completion",
-    "the 11/11 composite and 6/6 pair-child slices overlap that total",
+    "Reason-neutral checked retirement orders logical begin-release, OS retirement, logical receipt, then logical completion",
+    "the 12/12 composite and 6/6 pair-child slices overlap that total",
     "external **STOP-SHIP** obligations",
     "silent exit 78",
   ];
@@ -11580,16 +11927,23 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
         "Self::Writer(pair)=>pair.retire()",
         "Self::ReleaseWithWriter(pair)=>pair.retire()",
       ]) &&
-      hasOrderedCompactMarkers(terminalRetire, [
+      hasOrderedCompactMarkers(checkedRetire, [
         "logical.operation.begin_release()",
-        "pair.retire()",
+        "letpair=matchpair.retire()",
         "logical.operation.record_release_receipt()",
+        "letreceipt=WriterExitReceipt",
         "matchlogical.complete(receipt)",
+      ]) &&
+      hasOrderedCompactMarkers(terminalRetire, [
+        "let(terminal,retirement)=self.into_retirement_parts()",
+        "matchretirement.retire_checked()",
+        "Ok(retired)=>Ok(WindowsRecoveryExit::from_checked(terminal,retired))",
+        "Err(failure)=>Err(WindowsRetirementFailure::from_checked(terminal,failure))",
       ]),
     inventory:
       JSON.stringify(rootTests.map(({ name }) => name).toSorted()) ===
         JSON.stringify(expectedRootTests.toSorted()) &&
-      runtimeTests.length === 11 &&
+      runtimeTests.length === 12 &&
       JSON.stringify(runtimeTests.map(({ name }) => name)) ===
         JSON.stringify(keyAgentServicePhaseTwoFCRuntimeTestNames) &&
       pairTests.length === 6 &&
@@ -11597,7 +11951,7 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
         provisioningTestsInventory.length +
         pairTests.length +
         runtimeTests.length ===
-        76,
+        77,
     docs:
       normalizedDesign.length > 0 &&
       designMarkers.every((marker) => normalizedDesign.includes(marker)) &&
@@ -11615,18 +11969,11 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
       JSON.stringify(pairTypes) ===
         JSON.stringify(keyAgentServicePhaseTwoFCCodecTypeNames),
     scopedVisibility:
-      !/\bpub\s*\(\s*(?:crate|self|in\b)/u.test(runtimeCode),
+      !/\bpub\s*\(\s*(?:crate|self)\s*\)/u.test(runtimeCode) &&
+      !/\bpub\s+(?:struct|enum|fn|mod)\b/u.test(runtimeCode),
     runtimeFunctions:
-      JSON.stringify(
-        runtimeVisibleFunctions.map(
-          ({ owner, visibility, name, signature }) => ({
-            owner: compactRust(owner),
-            visibility,
-            name,
-            signature,
-          }),
-        ),
-      ) === JSON.stringify(keyAgentServicePhaseTwoFCRuntimeFunctionInventory),
+      JSON.stringify(prePhaseTwoGFunctionInventory) ===
+      JSON.stringify(keyAgentServicePhaseTwoFCRuntimeFunctionInventory),
     irreversible:
       JSON.stringify(irreversibleImplFunctions) ===
       JSON.stringify([
@@ -11635,6 +11982,7 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
         "implfmt::DebugforWindowsReleasedNoReceipt<'_>::fmt",
         "implWindowsPostReleaseTerminal<'_>::reason",
         "implfmt::DebugforWindowsPostReleaseTerminal<'_>::fmt",
+        "impl<'key>WindowsRetirementFailure<'key>::from_checked",
         "implfmt::DebugforWindowsRetirementFailure<'_>::fmt",
       ]),
     allocator:
@@ -11758,7 +12106,7 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
         "matchlogical.complete(receipt)",
         "WindowsStopOutcome::Stopped(WindowsStoppedRunEvidence{logical,_pair:pair,})",
       ]) &&
-      hasOrderedCompactMarkers(terminalRetire, [
+      hasOrderedCompactMarkers(checkedRetire, [
         "letreceipt=WriterExitReceipt{installation:logical.lease.installation,epoch:logical.lease.epoch,binding:logical.lease.binding,}",
         "matchlogical.complete(receipt)",
       ]),
@@ -11783,24 +12131,17 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
       JSON.stringify(keyAgentServicePhaseTwoFCSysTypeNames) &&
     JSON.stringify(pairTypes) ===
       JSON.stringify(keyAgentServicePhaseTwoFCCodecTypeNames) &&
-    JSON.stringify(
-      runtimeVisibleFunctions.map(
-        ({ owner, visibility, name, signature }) => ({
-          owner: compactRust(owner),
-          visibility,
-          name,
-          signature,
-        }),
-      ),
-    ) === JSON.stringify(keyAgentServicePhaseTwoFCRuntimeFunctionInventory) &&
+    JSON.stringify(prePhaseTwoGFunctionInventory) ===
+      JSON.stringify(keyAgentServicePhaseTwoFCRuntimeFunctionInventory) &&
     JSON.stringify(irreversibleImplFunctions) ===
       JSON.stringify([
         "implWindowsReleasedNoReceipt<'_>::reason",
         "implWindowsReleasedNoReceipt<'_>::cause",
         "implfmt::DebugforWindowsReleasedNoReceipt<'_>::fmt",
-        "implWindowsPostReleaseTerminal<'_>::reason",
-        "implfmt::DebugforWindowsPostReleaseTerminal<'_>::fmt",
-        "implfmt::DebugforWindowsRetirementFailure<'_>::fmt",
+      "implWindowsPostReleaseTerminal<'_>::reason",
+      "implfmt::DebugforWindowsPostReleaseTerminal<'_>::fmt",
+      "impl<'key>WindowsRetirementFailure<'key>::from_checked",
+      "implfmt::DebugforWindowsRetirementFailure<'_>::fmt",
       ]) &&
     keyAgentServiceMoveOnlyEvidenceContract(
       runtimeProduction,
@@ -11813,7 +12154,7 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
     ) &&
     !/\bdyn\b|\bdowncast(?:_ref|_mut)?\b/u.test(runtimeCode) &&
     !/\bpub\s+(?:struct|enum|fn|mod)\b/u.test(runtimeCode) &&
-    !/\bpub\s*\(\s*(?:crate|self|in\b)/u.test(runtimeCode) &&
+    !/\bpub\s*\(\s*(?:crate|self)\s*\)/u.test(runtimeCode) &&
     !/\b(?:start_windows_runtime|WindowsRuntimeWriterAcquired\s*::\s*from_held_writer)\s*\(/u.test(
       externalProduction,
     ) &&
@@ -12047,14 +12388,18 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
       "Self::Reloaded(pair)=>pair.retire()",
       "Self::ReleaseWithWriter(pair)=>pair.retire()",
     ]) &&
-    hasOrderedCompactMarkers(terminalRetire, [
+    hasOrderedCompactMarkers(checkedRetire, [
       "logical.operation.begin_release()",
-      "pair.retire()",
+      "letpair=matchpair.retire()",
       "logical.operation.record_release_receipt()",
       "letreceipt=WriterExitReceipt",
       "matchlogical.complete(receipt)",
-      "Ok(logical)=>Ok(WindowsRecoveryExit",
-      "Err(failure)=>Err(WindowsRetirementFailure",
+    ]) &&
+    hasOrderedCompactMarkers(terminalRetire, [
+      "let(terminal,retirement)=self.into_retirement_parts()",
+      "matchretirement.retire_checked()",
+      "Ok(retired)=>Ok(WindowsRecoveryExit::from_checked(terminal,retired))",
+      "Err(failure)=>Err(WindowsRetirementFailure::from_checked(terminal,failure))",
     ]) &&
     runtimeCompact.includes(
       "structWindowsReleasedNoReceipt<'key>{reason:RecoveryRequired,cause:ServiceRunStateError,_logical:WriterExitPending,_pair:WindowsPairReleaseAfterWriter,key:&'keyFixtureRunStateAuthenticationKey,}",
@@ -12081,7 +12426,7 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
       "matchlogical.complete(receipt)",
       "WindowsStopOutcome::Stopped(WindowsStoppedRunEvidence{logical,_pair:pair,})",
     ]) &&
-    hasOrderedCompactMarkers(terminalRetire, [
+    hasOrderedCompactMarkers(checkedRetire, [
       "letreceipt=WriterExitReceipt{installation:logical.lease.installation,epoch:logical.lease.epoch,binding:logical.lease.binding,}",
       "matchlogical.complete(receipt)",
     ]) &&
@@ -12097,7 +12442,7 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
         .filter(({ name }) => keyAgentServicePhaseTwoFCRootTestNames.includes(name))
         .map(({ name }) => name),
     ) === JSON.stringify(keyAgentServicePhaseTwoFCRootTestNames) &&
-    runtimeTests.length === 11 &&
+    runtimeTests.length === 12 &&
     runtimeTests.every(({ ignored }) => !ignored) &&
     JSON.stringify(runtimeTests.map(({ name }) => name)) ===
       JSON.stringify(keyAgentServicePhaseTwoFCRuntimeTestNames) &&
@@ -12111,7 +12456,7 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
       provisioningTestsInventory.length +
       pairTests.length +
       runtimeTests.length ===
-      76 &&
+      77 &&
     normalizedDesign.length > 0 &&
     designMarkers.every((marker) => normalizedDesign.includes(marker)) &&
     architectureRows.length === 1 &&
@@ -12123,6 +12468,679 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
     main.includes("const SERVICE_UNAVAILABLE: i32 = 78;") &&
     normalizedDesign.includes("compiled policies stay `None`") &&
     normalizedArchitecture.includes("compiled policies remain `None`")
+  );
+};
+const keyAgentServicePhaseTwoGSemanticContract = ({
+  main,
+  platformService,
+  platformLib,
+  durableSource,
+  windowsPairSource,
+  windowsRuntimeSource,
+  provisioningSource,
+  provisioningTests,
+  lifecycleSource,
+  lifecycleTests,
+  windowsLifecycleSource,
+  windowsLifecycleTests,
+  rootSource,
+  sysSource,
+  testsSource,
+  directoryInventory,
+  provisioningDirectoryInventory,
+  designDocument,
+  architectureDocument,
+}) => {
+  const durable = keyAgentServicePhaseTwoPartitionDurable(durableSource);
+  const lifecycleProduction =
+    keyAgentServicePhaseTwoPartitionLifecycle(lifecycleSource);
+  if (durable === null || lifecycleProduction === null) return false;
+
+  const runtimeProduction = withoutCfgTestItems(windowsRuntimeSource);
+  const windowsProduction = withoutCfgTestItems(windowsLifecycleSource);
+  const runtimeCode = rustLexicalCode(runtimeProduction);
+  const windowsCode = rustLexicalCode(windowsProduction);
+  const durableCode = rustLexicalCode(durable.production);
+  const windowsCompact = compactRust(windowsProduction);
+  const runtimeHookStatement =
+    "#[cfg(test)]\n    if take_post_release_receipt_fault_for_test() {\n        let _ = logical.operation.record_release_receipt();\n    }";
+  const runtimeThreadLocalBlock =
+    "#[cfg(test)]\nstd::thread_local! {\n    static POST_RELEASE_RECEIPT_FAULT_FOR_TEST: std::cell::Cell<bool> =\n        const { std::cell::Cell::new(false) };\n}";
+  const runtimeProductionWithoutHook = runtimeProduction
+    .replace(runtimeHookStatement, "")
+    .replace(runtimeThreadLocalBlock, "");
+  const typeInventory = (code) => [
+    ...code.matchAll(
+      /\b(?:(?<visibility>pub(?:\s*\([^)]*\))?)\s+)?(?<kind>struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
+    ),
+  ].map(({ groups }) => ({
+    visibility: compactRust(groups.visibility ?? ""),
+    kind: groups.kind,
+    name: groups.name,
+  }));
+  const windowsTypes = typeInventory(windowsCode);
+  const runtimeTypes = typeInventory(runtimeCode);
+  const runtimeVisibleFunctions = rustVisibleFunctionItems(runtimeProduction).map(
+    ({ owner, visibility, name, signature }) => ({
+      owner: compactRust(owner),
+      visibility: compactRust(visibility),
+      name,
+      signature,
+    }),
+  );
+  const windowsVisibleFunctions = rustVisibleFunctionItems(windowsProduction).map(
+    ({ owner, visibility, name, signature }) => ({
+      owner: compactRust(owner),
+      visibility: compactRust(visibility),
+      name,
+      signature,
+    }),
+  );
+  const facadeMatches = [
+    ...durableCode.matchAll(
+      /\bpub\s*\(\s*in\s+crate\s*::\s*key_agent_service\s*\)\s+use\s+windows_runtime\s*::\s*\{(?<body>[^}]*)\}\s*;/gu,
+    ),
+  ];
+  const facadeItems =
+    facadeMatches.length === 1
+      ? facadeMatches[0].groups.body
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean)
+      : [];
+  const windowsTests =
+    keyAgentServiceRustAttributedTestInventory(windowsLifecycleTests);
+  const runtimeTests =
+    keyAgentServiceRustAttributedTestInventory(windowsRuntimeSource);
+  const lifecycleTestsInventory =
+    keyAgentServiceRustAttributedTestInventory(lifecycleTests);
+  const rootTests = keyAgentServiceRustAttributedTestInventory(testsSource);
+  const pairTests = keyAgentServiceRustAttributedTestInventory(windowsPairSource);
+  const durableTests = keyAgentServiceRustTestNameInventory(durableSource);
+  const provisioningTestsInventory =
+    keyAgentServiceRustTestNameInventory(provisioningTests);
+  const otherProductionCode = rustLexicalCode(
+    [
+      main,
+      platformService,
+      platformLib,
+      ...keyAgentServiceRustFiles
+        .filter(
+          ({ path }) =>
+            /^crates\/key-agent-service\/src\//u.test(path) &&
+            path !== "crates/key-agent-service/src/main.rs",
+        )
+        .map(({ source }) => withoutCfgTestItems(source)),
+      ...keyAgentServicePlatformRustFiles
+        .filter(
+          ({ path }) =>
+            path !== keyAgentServiceDurableRunStatePath &&
+            path !== keyAgentServiceDurableWindowsRuntimePath &&
+            path !== keyAgentServiceWindowsLifecyclePath,
+        )
+        .map(({ source }) => source),
+    ].join("\n"),
+  );
+
+  let beginLifecycle;
+  let startupFinish;
+  let startupAbort;
+  let activeCommit;
+  let activeAbort;
+  let activeReload;
+  let listenerRecord;
+  let scmRecord;
+  let admissionOpen;
+  let servicePrepareClean;
+  let serviceDelegates;
+  let serviceIntoExit;
+  let serviceIntoFatalExit;
+  let cleanReload;
+  let completeStop;
+  let lifecycleRetire;
+  let terminalIntoRetirement;
+  let lifecycleCauseDeclaration;
+  let irreversibleCauseDeclaration;
+  let irreversibleImpl;
+  let checkedExitImpl;
+  let stoppedImpl;
+  let terminalImplFunctionNames;
+  let purePolicyChain;
+  let runtimePolicyPrepareClean;
+  let runtimePolicyExpectedCleanup;
+  let cleanupOrderImpl;
+  let startupFailureDeclaration;
+  let runtimePolicyFailureDeclaration;
+  let runtimeRetirementBodies;
+  let terminalRetirementParts;
+  try {
+    beginLifecycle = rustFunctionBlock(windowsProduction, "begin_windows_lifecycle");
+    const startupImpl = rustLexicalItemBlock(
+      windowsProduction,
+      /\bimpl\s*<'key>\s+WindowsStartupAttempt\s*<'key>\s*\{/u,
+    );
+    const activeCommitImpl = rustLexicalItemBlock(
+      windowsProduction,
+      /\bimpl\s*<'key>\s+WindowsActiveCommitPending\s*<'key>\s*\{/u,
+    );
+    const activeReloadImpl = rustLexicalItemBlock(
+      windowsProduction,
+      /\bimpl\s*<'key>\s+WindowsActiveReloadPending\s*<'key>\s*\{/u,
+    );
+    const listenerImpl = rustLexicalItemBlock(
+      windowsProduction,
+      /\bimpl\s*<'key>\s+WindowsListenerPending\s*<'key>\s*\{/u,
+    );
+    const scmImpl = rustLexicalItemBlock(
+      windowsProduction,
+      /\bimpl\s*<'key>\s+WindowsScmRunningPending\s*<'key>\s*\{/u,
+    );
+    const admissionImpl = rustLexicalItemBlock(
+      windowsProduction,
+      /\bimpl\s*<'key>\s+WindowsAdmissionPending\s*<'key>\s*\{/u,
+    );
+    const serviceImpl = rustLexicalItemBlock(
+      windowsProduction,
+      /\bimpl\s*<'key>\s+WindowsNoSecretService\s*<'key>\s*\{/u,
+    );
+    const cleanReloadImpl = rustLexicalItemBlock(
+      windowsProduction,
+      /\bimpl\s*<'key>\s+WindowsCleanReloadPending\s*<'key>\s*\{/u,
+    );
+    const exitImpl = rustLexicalItemBlock(
+      windowsProduction,
+      /\bimpl\s*<'key>\s+WindowsLifecycleExitRequired\s*<'key>\s*\{/u,
+    );
+    startupFinish = rustFunctionBlock(startupImpl, "finish");
+    startupAbort = rustFunctionBlock(startupImpl, "abort");
+    activeCommit = rustFunctionBlock(activeCommitImpl, "commit_and_reread");
+    activeAbort = rustFunctionBlock(activeCommitImpl, "abort");
+    activeReload = rustFunctionBlock(activeReloadImpl, "reload");
+    listenerRecord = rustFunctionBlock(listenerImpl, "record_listeners_prepared");
+    scmRecord = rustFunctionBlock(scmImpl, "record_scm_running_published");
+    admissionOpen = rustFunctionBlock(admissionImpl, "open_admission");
+    servicePrepareClean = rustFunctionBlock(serviceImpl, "prepare_clean");
+    serviceDelegates = [
+      ["state", "pub(super)constfnstate(&self)->RuntimeState{self.policy.state()}"],
+      ["work_count", "pub(super)fnwork_count(&self)->usize{self.policy.work_count()}"],
+      ["retained_user_token_count", "pub(super)fnretained_user_token_count(&self)->usize{self.policy.retained_user_token_count()}"],
+      ["quarantined_session_count", "pub(super)fnquarantined_session_count(&self)->usize{self.policy.quarantined_session_count()}"],
+      ["admit_fixture_work", "pub(super)fnadmit_fixture_work(&mutself,id:WorkId,session:SessionId,kind:NoSecretFixtureWorkKind,)->Result<(),LifecycleError>{self.policy.admit_fixture_work(id,session,kind)}"],
+      ["retain_user_token", "pub(super)fnretain_user_token(&mutself,session:SessionId)->Result<(),LifecycleError>{self.policy.retain_user_token(session)}"],
+      ["handle_session_event", "pub(super)fnhandle_session_event(&mutself,event:SessionEvent,)->Result<SessionInvalidationReport,LifecycleError>{self.policy.handle_session_event(event)}"],
+      ["reap_cancelled_fixture_work", "pub(super)fnreap_cancelled_fixture_work(&mutself,id:WorkId)->Result<(),LifecycleError>{self.policy.reap_cancelled_fixture_work(id)}"],
+      ["begin_stop", "pub(super)fnbegin_stop(&mutself,reason:StopReason)->Result<(),LifecycleError>{self.policy.begin_stop(reason)}"],
+      ["expected_cleanup_step", "pub(super)fnexpected_cleanup_step(&self)->Option<CleanupStep>{self.policy.expected_cleanup_step()}"],
+      ["complete_cleanup_step", "pub(super)fncomplete_cleanup_step(&mutself,step:CleanupStep,)->Result<(),LifecycleError>{self.policy.complete_cleanup_step(step)}"],
+      ["fail_cleanup", "pub(super)fnfail_cleanup(&mutself,step:CleanupStep)->Result<(),LifecycleError>{self.policy.fail_cleanup(step)}"],
+      ["cleanup_deadline_expired", "pub(super)fncleanup_deadline_expired(&mutself)->Result<(),LifecycleError>{self.policy.cleanup_deadline_expired()}"],
+      ["crash", "pub(super)fncrash(&mutself){self.policy.crash();}"],
+    ].map(([name, expected]) => compactRust(rustFunctionBlock(serviceImpl, name)) === expected);
+    serviceIntoExit = rustFunctionBlock(serviceImpl, "into_exit");
+    serviceIntoFatalExit = rustFunctionBlock(serviceImpl, "into_fatal_exit");
+    cleanReload = rustFunctionBlock(cleanReloadImpl, "reload");
+    completeStop = rustFunctionBlock(windowsProduction, "complete_lifecycle_stop");
+    lifecycleRetire = rustFunctionBlock(exitImpl, "retire_checked");
+    terminalIntoRetirement = rustFunctionBlock(exitImpl, "from_terminal");
+    lifecycleCauseDeclaration = rustLexicalItemBlock(
+      windowsProduction,
+      /\bpub\s*\(\s*super\s*\)\s+enum\s+WindowsLifecycleCause\s*\{/u,
+    );
+    irreversibleCauseDeclaration = rustLexicalItemBlock(
+      windowsProduction,
+      /\bpub\s*\(\s*super\s*\)\s+enum\s+WindowsLifecycleIrreversibleCause\s*\{/u,
+    );
+    irreversibleImpl = rustLexicalItemBlock(
+      windowsProduction,
+      /\bimpl\s*<'key>\s+WindowsLifecycleIrreversibleExit78\s*<'key>\s*\{/u,
+    );
+    checkedExitImpl = rustLexicalItemBlock(
+      windowsProduction,
+      /\bimpl\s+WindowsLifecycleCheckedExit78\s*<'_>\s*\{/u,
+    );
+    stoppedImpl = rustLexicalItemBlock(
+      windowsProduction,
+      /\bimpl\s+WindowsLifecycleStopped\s*\{/u,
+    );
+    const functionNames = (block) => [
+      ...rustLexicalCode(block).matchAll(/\bfn\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu),
+    ].map(({ groups }) => groups.name);
+    terminalImplFunctionNames = {
+      irreversible: functionNames(irreversibleImpl),
+      checked: functionNames(checkedExitImpl),
+      stopped: functionNames(stoppedImpl),
+    };
+    const completedChecklistImpl = rustLexicalItemBlock(
+      lifecycleProduction,
+      /\bimpl\s+CompletedStartupChecklist\s*\{/u,
+    );
+    const listenerPolicyImpl = rustLexicalItemBlock(
+      lifecycleProduction,
+      /\bimpl\s+ListenerPendingPolicy\s*\{/u,
+    );
+    const scmPolicyImpl = rustLexicalItemBlock(
+      lifecycleProduction,
+      /\bimpl\s+ScmRunningPendingPolicy\s*\{/u,
+    );
+    const admissionPolicyImpl = rustLexicalItemBlock(
+      lifecycleProduction,
+      /\bimpl\s+AdmissionPendingPolicy\s*\{/u,
+    );
+    const runtimePolicyImpl = rustLexicalItemBlock(
+      lifecycleProduction,
+      /\bimpl\s+RuntimePolicy\s*\{/u,
+    );
+    cleanupOrderImpl = rustLexicalItemBlock(
+      lifecycleProduction,
+      /\bimpl\s+CleanupStep\s*\{/u,
+    );
+    purePolicyChain = [
+      rustFunctionBlock(completedChecklistImpl, "begin_listener_startup"),
+      rustFunctionBlock(listenerPolicyImpl, "record_listeners_prepared"),
+      rustFunctionBlock(scmPolicyImpl, "record_scm_running_published"),
+      rustFunctionBlock(admissionPolicyImpl, "open_admission"),
+      rustFunctionBlock(runtimePolicyImpl, "new"),
+    ];
+    runtimePolicyPrepareClean = rustFunctionBlock(
+      runtimePolicyImpl,
+      "prepare_clean",
+    );
+    runtimePolicyExpectedCleanup = rustFunctionBlock(
+      runtimePolicyImpl,
+      "expected_cleanup_step",
+    );
+    startupFailureDeclaration = rustLexicalItemBlock(
+      lifecycleProduction,
+      /\bpub\s*\(\s*super\s*\)\s+enum\s+StartupFailure\s*\{/u,
+    );
+    runtimePolicyFailureDeclaration = rustLexicalItemBlock(
+      lifecycleProduction,
+      /\bpub\s*\(\s*super\s*\)\s+enum\s+RuntimePolicyFailure\s*\{/u,
+    );
+    const runtimeRetirementImpl = (name) => rustLexicalItemBlock(
+      runtimeProduction,
+      new RegExp(`\\bimpl\\s*<'key>\\s+${name}\\s*<'key>\\s*\\{`, "u"),
+    );
+    runtimeRetirementBodies = [
+      "WindowsRuntimeWriterAcquired",
+      "WindowsBootEvidence",
+      "WindowsPreparedActiveTransition",
+      "WindowsActiveRunLease",
+      "WindowsCleanWithWriter",
+      "WindowsCleanReloadRequired",
+      "WindowsActiveReloadRequired",
+    ].map((name) =>
+      compactRust(
+        rustFunctionBlock(runtimeRetirementImpl(name), "into_retirement"),
+      ),
+    );
+    terminalRetirementParts = compactRust(
+      rustFunctionBlock(
+        runtimeRetirementImpl("WindowsTerminalFailure"),
+        "into_retirement_parts",
+      ),
+    );
+  } catch {
+    return false;
+  }
+
+  const designStart = designDocument.indexOf(
+    "**Current Phase 2G status: started, not passed.**",
+  );
+  const designEnd = designDocument.indexOf("\n### Phase 3", designStart);
+  const designSlice =
+    designStart === -1 || designEnd === -1
+      ? ""
+      : designDocument.slice(designStart, designEnd).replace(/\s+/gu, " ");
+  const architectureRows = architectureDocument
+    .split(/\r?\n/gu)
+    .filter((line) => line.startsWith("| Windows no-secret lifecycle compositor |"));
+  const architectureSlice = (architectureRows[0] ?? "").replace(/\s+/gu, " ");
+
+  return (
+    JSON.stringify(windowsTypes) ===
+      JSON.stringify(keyAgentServicePhaseTwoGWindowsLifecycleTypes) &&
+    JSON.stringify(runtimeTypes) ===
+      JSON.stringify(keyAgentServicePhaseTwoGRuntimeTypes) &&
+    JSON.stringify(windowsVisibleFunctions) ===
+      JSON.stringify(keyAgentServicePhaseTwoGWindowsLifecycleFunctions) &&
+    JSON.stringify(runtimeVisibleFunctions) ===
+      JSON.stringify(keyAgentServicePhaseTwoGRuntimeFunctions) &&
+    JSON.stringify(runtimeRetirementBodies) ===
+      JSON.stringify([
+        "pub(super)fninto_retirement(self)->WindowsRetirementPending<'key>{letSelf{logical,pair,key}=self;WindowsRetirementPending::new(logical.into_writer_exit(),WindowsTerminalPair::Writer(pair),key,)}",
+        "pub(incrate::key_agent_service)fninto_retirement(self)->WindowsRetirementPending<'key>{letSelf{logical,pair,key}=self;WindowsRetirementPending::new(logical.into_writer_exit(),WindowsTerminalPair::Observed(pair),key,)}",
+        "pub(incrate::key_agent_service)fninto_retirement(self)->WindowsRetirementPending<'key>{letSelf{logical,pair,key}=self;WindowsRetirementPending::new(logical.into_writer_exit(),WindowsTerminalPair::Prepared(pair),key,)}",
+        "pub(incrate::key_agent_service)fninto_retirement(self)->WindowsRetirementPending<'key>{letSelf{logical,pair,key}=self;WindowsRetirementPending::new(logical.into_writer_exit(),WindowsTerminalPair::Observed(pair),key,)}",
+        "pub(incrate::key_agent_service)fninto_retirement(self)->WindowsRetirementPending<'key>{letSelf{logical,pair,key}=self;WindowsRetirementPending::new(logical.into_writer_exit(),WindowsTerminalPair::Observed(pair),key,)}",
+        "pub(incrate::key_agent_service)fninto_retirement(self)->WindowsRetirementPending<'key>{letSelf{logical,pair,key}=self;WindowsRetirementPending::new(logical.into_writer_exit(),WindowsTerminalPair::Ambiguous(pair),key,)}",
+        "pub(incrate::key_agent_service)fninto_retirement(self)->WindowsRetirementPending<'key>{letSelf{logical,pair,key}=self;WindowsRetirementPending::new(logical.into_writer_exit(),WindowsTerminalPair::Ambiguous(pair),key,)}",
+      ]) &&
+    terminalRetirementParts ===
+      "pub(incrate::key_agent_service)fninto_retirement_parts(self,)->(WindowsTerminalCause,WindowsRetirementPending<'key>){(self.cause,self.retirement)}" &&
+    JSON.stringify(facadeItems) ===
+      JSON.stringify(keyAgentServicePhaseTwoGFacadeItems) &&
+    (durableCode.match(
+      /\bpub\s*\(\s*in\s+crate\s*::\s*key_agent_service\s*\)\s+use\s+windows_runtime\s*::/gu,
+    ) ?? []).length === 2 &&
+    (durableCode.match(/\bpub(?:\s*\([^)]*\))?\s+use\b/gu) ?? [])
+      .length === 2 &&
+    durableSource.includes(
+      "#[cfg(all(test, windows))]\n#[allow(unused_imports)] // Consumed by sibling Windows lifecycle kernel tests.\npub(in crate::key_agent_service) use windows_runtime::install_windows_runtime_clean_fixture;",
+    ) &&
+    platformService.includes(
+      "#[cfg(windows)]\n#[allow(dead_code)]\nmod windows_lifecycle;",
+    ) &&
+    platformService.split(
+      "#[cfg(windows)]\n#[allow(dead_code)]\nmod windows_lifecycle;",
+    ).length - 1 === 1 &&
+    !/\bpub\s+(?:crate\s+)?mod\s+windows_lifecycle\b/u.test(platformService) &&
+    !/\b(?:pub\s+use|pub\s*\([^)]*\)\s+use)\b[^;]*\bwindows_lifecycle\b/u.test(
+      rustLexicalCode(platformService),
+    ) &&
+    [...windowsCode.matchAll(/\bstart_windows_runtime\b/gu)].length === 2 &&
+    rustCallSites(windowsProduction, "start_windows_runtime").length === 1 &&
+    [...runtimeCode.matchAll(/\bstart_windows_runtime\b/gu)].length === 1 &&
+    [...durableCode.matchAll(/\bstart_windows_runtime\b/gu)].length === 1 &&
+    !/\bstart_windows_runtime\b/u.test(otherProductionCode) &&
+    [...windowsCode.matchAll(/\bbegin_windows_lifecycle\b/gu)].length === 1 &&
+    !/\bbegin_windows_lifecycle\b/u.test(
+      `${otherProductionCode}\n${durableCode}\n${runtimeCode}`,
+    ) &&
+    !/\b(?:WindowsRuntimeWriterAcquired|from_held_writer|from_fixture_bytes|ExpectedInstalledRunStateObjects|ExpectedObjects)\b/u.test(
+      windowsCode,
+    ) &&
+    !/\bRecoveryRequired\s*::/u.test(windowsCode) &&
+    [...windowsCode.matchAll(/\bWINDOWS_SERVICE_EXIT_CODE\b/gu)].length === 3 &&
+    windowsCompact.includes("constWINDOWS_SERVICE_EXIT_CODE:i32=78;") &&
+    !/\bprocess\s*::\s*exit\b/u.test(windowsCode) &&
+    !/\bprocess\s*::\s*exit\b/u.test(runtimeCode) &&
+    !/\b(?:SetServiceStatus|CreateServiceW|StartServiceW|SERVICE_RUNNING|TcpListener|UnixListener|NamedPipe|OpenOptions|NCrypt[A-Za-z0-9_]*|BCrypt[A-Za-z0-9_]*|sign|decrypt|private_key|wallet_secret)\b/u.test(
+      windowsCode,
+    ) &&
+    !/\b(?:std|tokio)\s*::\s*(?:fs|net)\b/u.test(windowsCode) &&
+    !/\b(?:BTreeMap|BTreeSet|HashMap|HashSet|MAX_[A-Z0-9_]+)\b/u.test(
+      windowsCode,
+    ) &&
+    compactRust(lifecycleCauseDeclaration) ===
+      "pub(super)enumWindowsLifecycleCause{Binding(RecoveryRequired),Startup(StartupFailure),RuntimePolicy(RuntimePolicyFailure),Lifecycle(LifecycleError),Fatal(FatalReason),Durable(WindowsTerminalCause),}" &&
+    compactRust(irreversibleCauseDeclaration) ===
+      "pub(super)enumWindowsLifecycleIrreversibleCause{Retirement{original:WindowsLifecycleCause,platform:ServiceRunStateError,},ReleasedNoReceipt{recovery:RecoveryRequired,platform:ServiceRunStateError,},PostRelease{recovery:RecoveryRequired,},}" &&
+    compactRust(rustLexicalCode(startupFailureDeclaration)) ===
+      "pub(super)enumStartupFailure{#[error()]Missing(NoSecretStartupRequirement),#[error()]Mismatch(NoSecretStartupRequirement),#[error()]Unavailable(NoSecretStartupRequirement),#[error()]DuplicateObservation(NoSecretStartupRequirement),}" &&
+    compactRust(rustLexicalCode(runtimePolicyFailureDeclaration)) ===
+      "pub(super)enumRuntimePolicyFailure{#[error()]CleanupOutOfOrder,#[error()]CleanupIncomplete,}" &&
+    hasOrderedCompactMarkers(terminalIntoRetirement, [
+      "let(cause,authority)=failure.into_retirement_parts()",
+      "Self::bound(WindowsLifecycleCause::Durable(cause),authority)",
+    ]) &&
+    hasOrderedCompactMarkers(beginLifecycle, [
+      "matchstart_windows_runtime(writer,installation,key)",
+      "Ok(windows)=>Ok(WindowsStartupAttempt{checklist:StartupChecklist::new(),windows,})",
+      "Err(WindowsRuntimeStartFailure::Binding(failure))",
+      "WindowsLifecycleCause::Binding(reason)",
+      "Err(WindowsRuntimeStartFailure::Terminal(failure))",
+      "WindowsLifecycleExitRequired::from_terminal(failure)",
+    ]) &&
+    hasOrderedCompactMarkers(startupFinish, [
+      "matchchecklist.finish()",
+      "WindowsLifecycleCause::Startup(cause)",
+      "windows.into_retirement()",
+      "matchwindows.prepare_active()",
+    ]) &&
+    hasOrderedCompactMarkers(startupAbort, [
+      "WindowsLifecycleCause::Startup(cause)",
+      "self.windows.into_retirement()",
+    ]) &&
+    hasOrderedCompactMarkers(activeCommit, [
+      "matchwindows.commit_and_reread()",
+      "WindowsActiveCommitOutcome::Active(windows)",
+      "policy:checklist.begin_listener_startup()",
+      "WindowsActiveCommitOutcome::ReloadRequired(windows)",
+      "checklist,windows",
+      "WindowsActiveCommitOutcome::Terminal(failure)",
+    ]) &&
+    hasOrderedCompactMarkers(activeAbort, [
+      "WindowsLifecycleCause::Lifecycle(cause)",
+      "self.windows.into_retirement()",
+    ]) &&
+    hasOrderedCompactMarkers(activeReload, [
+      "matchwindows.reload()",
+      "WindowsActiveReloadOutcome::Boot(windows)",
+      "checklist:StartupChecklist::new()",
+      "WindowsActiveReloadOutcome::Active(windows)",
+      "policy:checklist.begin_listener_startup()",
+      "WindowsActiveReloadOutcome::Terminal(failure)",
+    ]) &&
+    (windowsCompact.match(/StartupChecklist::new\(/gu) ?? []).length === 2 &&
+    (windowsCompact.match(/\.begin_listener_startup\(/gu) ?? []).length === 2 &&
+    (windowsCompact.match(/\.record_clean_committed\(/gu) ?? []).length === 2 &&
+    (windowsCompact.match(/\.record_writer_released\(/gu) ?? []).length === 1 &&
+    hasOrderedCompactMarkers(listenerRecord, [
+      "policy:self.policy.record_listeners_prepared()",
+      "windows:self.windows",
+    ]) &&
+    JSON.stringify(purePolicyChain.map(compactRust)) ===
+      JSON.stringify([
+        "pub(super)fnbegin_listener_startup(self)->ListenerPendingPolicy{ListenerPendingPolicy{checklist:self}}",
+        "pub(super)fnrecord_listeners_prepared(self)->ScmRunningPendingPolicy{ScmRunningPendingPolicy{checklist:self.checklist,}}",
+        "pub(super)fnrecord_scm_running_published(self)->AdmissionPendingPolicy{AdmissionPendingPolicy{checklist:self.checklist,}}",
+        "pub(super)fnopen_admission(self)->RuntimePolicy{RuntimePolicy::new(self.checklist)}",
+        "fnnew(startup:CompletedStartupChecklist)->Self{Self{startup,state:RuntimeState::Ready,work:BTreeMap::new(),user_token_sessions:BTreeSet::new(),invalid_sessions:BTreeSet::new(),next_cleanup_index:0,}}",
+      ]) &&
+    (compactRust(lifecycleProduction).match(/RuntimePolicy::new\(/gu) ?? [])
+      .length === 1 &&
+    hasOrderedCompactMarkers(runtimePolicyExpectedCleanup, [
+      "if!matches!(self.state,RuntimeState::Draining(_))",
+      "returnNone",
+      "CleanupStep::ORDERED.get(self.next_cleanup_index).copied()",
+    ]) &&
+    compactRust(cleanupOrderImpl) ===
+      "implCleanupStep{constORDERED:[Self;11]=[Self::RejectNewWork,Self::InvalidateNonDurableAuthority,Self::CloseAndDrainListeners,Self::CancelRequests,Self::TerminateHelpers,Self::ReapHelpers,Self::DiscardUserTokens,Self::FlushDefinedDurableRecords,Self::ReleaseRequestHardwareAndStorageHandles,Self::CommitAndRereadCleanMarker,Self::ReleaseSingleInstanceLease,];}" &&
+    hasOrderedCompactMarkers(runtimePolicyPrepareClean, [
+      "ifself.expected_cleanup_step()!=Some(CleanupStep::CommitAndRereadCleanMarker)",
+      "returnErr(RuntimePolicyFailure::CleanupOutOfOrder)",
+      "if!self.work.is_empty()||!self.user_token_sessions.is_empty()||!self.invalid_sessions.is_empty()",
+      "returnErr(RuntimePolicyFailure::CleanupIncomplete)",
+      "Ok(CleanBoundaryPolicy{startup:self.startup,})",
+    ]) &&
+    hasOrderedCompactMarkers(scmRecord, [
+      "policy:self.policy.record_scm_running_published()",
+      "windows:self.windows",
+    ]) &&
+    hasOrderedCompactMarkers(admissionOpen, [
+      "policy:self.policy.open_admission()",
+      "windows:self.windows",
+    ]) &&
+    hasOrderedCompactMarkers(servicePrepareClean, [
+      "ifletRuntimeState::Fatal(cause)=policy.state()",
+      "WindowsLifecycleCause::Fatal(cause)",
+      "windows.into_retirement()",
+      "matchpolicy.prepare_clean()",
+      "WindowsLifecycleCause::RuntimePolicy(cause)",
+      "windows.into_retirement()",
+      "matchwindows.commit_clean()",
+      "WindowsCleanCommitOutcome::Clean(windows)",
+      "policy:policy.record_clean_committed()",
+      "WindowsCleanCommitOutcome::ReloadRequired(windows)",
+      "policy,windows",
+      "WindowsCleanCommitOutcome::Terminal(failure)",
+    ]) &&
+    serviceDelegates.every(Boolean) &&
+    hasOrderedCompactMarkers(serviceIntoExit, [
+      "WindowsLifecycleCause::Lifecycle(cause)",
+      "self.windows.into_retirement()",
+    ]) &&
+    hasOrderedCompactMarkers(serviceIntoFatalExit, [
+      "RuntimeState::Fatal(cause)=>WindowsLifecycleCause::Fatal(cause)",
+      "WindowsLifecycleCause::Lifecycle(LifecycleError::NotReady)",
+      "WindowsLifecycleExitRequired::bound(cause,self.windows.into_retirement())",
+    ]) &&
+    hasOrderedCompactMarkers(cleanReload, [
+      "matchwindows.reload()",
+      "WindowsCleanReloadOutcome::Clean(windows)",
+      "policy:policy.record_clean_committed()",
+      "WindowsCleanReloadOutcome::Terminal(failure)",
+    ]) &&
+    hasOrderedCompactMarkers(completeStop, [
+      "WindowsStopOutcome::Stopped(windows)",
+      "policy:policy.record_writer_released()",
+      "WindowsStopOutcome::Terminal(failure)",
+      "WindowsLifecycleExitRequired::from_terminal(failure)",
+      "WindowsStopOutcome::ReleasedNoReceipt(failure)",
+      "WindowsLifecycleIrreversibleExit78::released_no_receipt(failure)",
+      "WindowsStopOutcome::PostReleaseTerminal(failure)",
+      "WindowsLifecycleIrreversibleExit78::post_release(failure)",
+    ]) &&
+    hasOrderedCompactMarkers(lifecycleRetire, [
+      "letSelf{cause,authority}=self",
+      "WindowsLifecycleExitAuthority::Unbound(authority)=>matchauthority.retire()",
+      "Ok(retired)=>Ok(WindowsLifecycleCheckedExit78{cause,authority:WindowsLifecycleCheckedExitAuthority::Unbound(retired),})",
+      "WindowsLifecycleIrreversibleExit78::retirement_failure(cause,platform,None,)",
+      "WindowsLifecycleExitAuthority::Bound(authority)=>matchauthority.retire_checked()",
+      "Ok(retired)=>Ok(WindowsLifecycleCheckedExit78{cause,authority:WindowsLifecycleCheckedExitAuthority::Bound(retired),})",
+      "letplatform=failure.cause()",
+      "WindowsLifecycleIrreversibleExit78::retirement_failure(cause,platform,Some(failure),)",
+    ]) &&
+    hasOrderedCompactMarkers(irreversibleImpl, [
+      "fnretirement_failure",
+      "WindowsLifecycleIrreversibleCause::Retirement{original,platform}",
+      "fnreleased_no_receipt",
+      "WindowsLifecycleIrreversibleCause::ReleasedNoReceipt{recovery,platform}",
+      "fnpost_release",
+      "WindowsLifecycleIrreversibleCause::PostRelease{recovery}",
+      "fncode(&self)->i32{WINDOWS_SERVICE_EXIT_CODE}",
+    ]) &&
+    compactRust(checkedExitImpl).includes(
+      "fncode(&self)->i32{WINDOWS_SERVICE_EXIT_CODE}",
+    ) &&
+    !compactRust(stoppedImpl).includes("fncode") &&
+    JSON.stringify(terminalImplFunctionNames) ===
+      JSON.stringify({
+        irreversible: [
+          "retirement_failure",
+          "released_no_receipt",
+          "post_release",
+          "cause",
+          "code",
+        ],
+        checked: ["cause", "code"],
+        stopped: ["generation"],
+      }) &&
+    windowsRuntimeSource.includes(
+      "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\nenum WindowsCheckedRetirementStage {\n    BeginRelease,\n    PairRetire,\n    RecordReceipt,\n    LogicalComplete,\n}",
+    ) &&
+    !/\b(?:into_terminal|WindowsRecoveryExit|WindowsRetirementFailure)\b/u.test(
+      windowsCode,
+    ) &&
+    rustUnsafeKeywordCount(windowsProduction) === 0 &&
+    rustAuthorityTypeErasureSites(windowsProduction).length === 0 &&
+    !/\b(?:dyn|Any|downcast(?:_ref|_mut)?|Deref|as_raw|into_raw|from_raw|RawHandle|HANDLE|Path|PathBuf)\b/u.test(
+      windowsCode,
+    ) &&
+    keyAgentServiceMoveOnlyEvidenceContract(
+      windowsProduction,
+      keyAgentServicePhaseTwoGWindowsLifecycleTypes.map(({ name }) => name),
+    ) &&
+    keyAgentServiceMoveOnlyEvidenceContract(runtimeProduction, [
+      "WindowsRuntimeBindingFailure",
+      "WindowsUnboundRetired",
+      "WindowsTerminalPair",
+      "WindowsTerminalCause",
+      "WindowsRetirementPending",
+      "WindowsCheckedRetired",
+      "WindowsCheckedRetirementFailure",
+      "WindowsTerminalFailure",
+    ]) &&
+    runtimeProduction.split(runtimeHookStatement).length - 1 === 1 &&
+    runtimeProduction.split(runtimeThreadLocalBlock).length - 1 === 1 &&
+    !/\b(?:POST_RELEASE_RECEIPT_FAULT_FOR_TEST|PostReleaseReceiptFaultGuard|take_post_release_receipt_fault_for_test|install_windows_runtime_clean_fixture|install_pair_for_test|stop_with_post_release_fault_for_test)\b/u.test(
+      rustLexicalCode(runtimeProductionWithoutHook),
+    ) &&
+    !/\b(?:release_writer_with_post_release_fault_for_test|stop_with_post_release_fault_for_test|take_post_release_receipt_fault_for_test)\b/u.test(
+      windowsCode,
+    ) &&
+    windowsRuntimeSource.includes(
+      "#[cfg(test)]\nstd::thread_local! {\n    static POST_RELEASE_RECEIPT_FAULT_FOR_TEST",
+    ) &&
+    windowsRuntimeSource.includes(
+      "#[cfg(test)]\nstruct PostReleaseReceiptFaultGuard;",
+    ) &&
+    windowsRuntimeSource.includes(
+      "#[cfg(test)]\nfn take_post_release_receipt_fault_for_test() -> bool",
+    ) &&
+    windowsRuntimeSource.includes(
+      "#[cfg(test)]\n    pub(in crate::key_agent_service) fn stop_with_post_release_fault_for_test(",
+    ) &&
+    !windowsProduction.includes("release_writer_with_post_release_fault_for_test") &&
+    windowsLifecycleSource.includes(
+      "#[cfg(test)]\n    fn release_writer_with_post_release_fault_for_test(self) -> WindowsLifecycleStopOutcome<'key>",
+    ) &&
+    JSON.stringify(windowsTests.map(({ name }) => name)) ===
+      JSON.stringify(keyAgentServicePhaseTwoGWindowsLifecycleTestNames) &&
+    windowsTests.length === 12 &&
+    windowsTests.every(({ ignored }) => !ignored) &&
+    JSON.stringify(runtimeTests.map(({ name }) => name)) ===
+      JSON.stringify(keyAgentServicePhaseTwoFCRuntimeTestNames) &&
+    runtimeTests.length === 12 &&
+    runtimeTests.every(({ ignored }) => !ignored) &&
+    JSON.stringify(lifecycleTestsInventory.map(({ name }) => name)) ===
+      JSON.stringify(keyAgentServiceLifecycleTestNames) &&
+    lifecycleTestsInventory.length === 21 &&
+    lifecycleTestsInventory.every(({ ignored }) => !ignored) &&
+    rootTests.length === 54 &&
+    rootTests.filter(({ ignored }) => !ignored).length === 52 &&
+    JSON.stringify(
+      rootTests.filter(({ ignored }) => ignored).map(({ name }) => name),
+    ) === JSON.stringify(keyAgentServicePhaseTwoEIgnoredTestNames) &&
+    pairTests.length === 6 &&
+    pairTests.every(({ ignored }) => !ignored) &&
+    durableTests.length +
+      provisioningTestsInventory.length +
+      pairTests.length +
+      runtimeTests.length ===
+      77 &&
+    designSlice.length > 0 &&
+    [
+      "sole direct production consumer of `start_windows_runtime`",
+      "never become a fabricated `RecoveryRequired`",
+      "reason-neutral `into_retirement`",
+      "prior Clean pair",
+      "requires all nine observations again",
+      "exact Active candidate",
+      "record_listeners_prepared",
+      "record_scm_running_published",
+      "RuntimePolicy",
+      "exact first nine cleanup steps",
+      "Only `WindowsStopOutcome::Stopped` records writer release",
+      "cfg(test)-only consuming",
+      "twelve passing tests",
+      "external **STOP-SHIP** obligations",
+      "compiled policies stay `None`",
+      "silent exit-78 path",
+    ].every((marker) => designSlice.includes(marker)) &&
+    architectureRows.length === 1 &&
+    [
+      "Current Phase 2G status: started, not passed",
+      "sole direct caller of `start_windows_runtime`",
+      "never fabricated as `RecoveryRequired`",
+      "reason-neutral checked retirement",
+      "prior-Boot requires fresh observations",
+      "candidate-Active carries the completed checklist",
+      "listener-prepared record, `SCM_RUNNING` record, then admission-open record",
+      "only in `RuntimePolicy`",
+      "exact first nine cleanup steps",
+      "Only exact Clean or exact candidate Clean reload records the Clean boundary",
+      "only exact `WindowsStopOutcome::Stopped` records writer release",
+      "cfg(test)-only one-shot RAII post-release hook",
+      "12/12 compositor tests",
+      "external **STOP-SHIP** obligations",
+      "compiled policies remain `None`",
+      "silent exit 78",
+      "not release-ready",
+    ].every((marker) => architectureSlice.includes(marker)) &&
+    !designSlice.includes("Phase 2G status: passed") &&
+    main.includes("const SERVICE_UNAVAILABLE: i32 = 78;")
   );
 };
 const keyAgentServicePhaseTwoInputs = Object.freeze({
@@ -12429,8 +13447,8 @@ const keyAgentServicePhaseTwoSemanticMutationProbes = [
   ),
   mutateKeyAgentServicePhaseTwoInput(
     "lifecycleSource",
-    "            Ok((_, writer_exit)) => {\n                Self::with_writer(StartupFailure::DurableRecovery(reason), writer_exit)\n            }",
-    "            Ok((_, _writer_exit)) => {\n                Self::without_writer(StartupFailure::DurableRecovery(reason))\n            }",
+    "            Ok((_, writer_exit)) => {\n                Self::with_writer(StartupExitCause::DurableRecovery(reason), writer_exit)\n            }",
+    "            Ok((_, _writer_exit)) => {\n                Self::without_writer(StartupExitCause::DurableRecovery(reason))\n            }",
   ),
   mutateKeyAgentServicePhaseTwoInput(
     "lifecycleSource",
@@ -12908,6 +13926,27 @@ const mutateKeyAgentServicePhaseTwoFCInput = (
   }
   return {
     ...keyAgentServicePhaseTwoFCInputs,
+    [field]: `${source.slice(0, first)}${replacement}${source.slice(first + search.length)}`,
+  };
+};
+const keyAgentServicePhaseTwoGInputs = Object.freeze({
+  ...keyAgentServicePhaseTwoFCInputs,
+  lifecycleTests: keyAgentServiceLifecycleCoreTests,
+  windowsLifecycleSource: keyAgentServiceWindowsLifecycle,
+  windowsLifecycleTests: keyAgentServiceWindowsLifecycleTests,
+});
+const mutateKeyAgentServicePhaseTwoGInput = (
+  field,
+  search,
+  replacement,
+) => {
+  const source = keyAgentServicePhaseTwoGInputs[field];
+  const first = source.indexOf(search);
+  if (first === -1 || source.indexOf(search, first + search.length) !== -1) {
+    return keyAgentServicePhaseTwoGInputs;
+  }
+  return {
+    ...keyAgentServicePhaseTwoGInputs,
     [field]: `${source.slice(0, first)}${replacement}${source.slice(first + search.length)}`,
   };
 };
@@ -13706,8 +14745,8 @@ const keyAgentServicePhaseTwoFCSemanticMutationProbes = [
   ),
   mutateKeyAgentServicePhaseTwoFCInput(
     "windowsRuntimeSource",
-    "pub(super) struct WindowsBootEvidence<'key> {",
-    "#[derive(Clone)]\npub(super) struct WindowsBootEvidence<'key> {",
+    "pub(in crate::key_agent_service) struct WindowsBootEvidence<'key> {",
+    "#[derive(Clone)]\npub(in crate::key_agent_service) struct WindowsBootEvidence<'key> {",
   ),
 ];
 const keyAgentServicePhaseTwoFCPinMutationProbes = [
@@ -13720,6 +14759,255 @@ const keyAgentServicePhaseTwoFCPinMutationProbes = [
     "windowsRuntimeSource",
     "#[cfg(test)]\nmod tests {",
     "#[cfg(test)]\n// mutated test-only runtime module\nmod tests {",
+  ),
+];
+const keyAgentServicePhaseTwoGSemanticMutationProbes = [
+  mutateKeyAgentServicePhaseTwoGInput(
+    "platformService",
+    "#[cfg(windows)]\n#[allow(dead_code)]\nmod windows_lifecycle;",
+    "#[cfg(windows)]\n#[allow(dead_code)]\npub(crate) mod windows_lifecycle;",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "durableSource",
+    "    start_windows_runtime,\n};",
+    "    start_windows_runtime,\n};\n#[cfg(windows)]\npub(in crate::key_agent_service) use windows_runtime::WindowsBootEvidence as ExtraWindowsBootEvidence;",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsRuntimeSource",
+    "#[cfg(test)]\nmod tests {",
+    "pub(in crate::key_agent_service) fn forbidden_extra_runtime_surface() {}\n\n#[cfg(test)]\nmod tests {",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
+    "pub(super) fn forbidden_extra_lifecycle_surface() {}\n\n#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
+    "fn forbidden_second_start(writer: HeldServiceRunStateWriter, installation: InstallationIdentity, key: &FixtureRunStateAuthenticationKey) { let _ = start_windows_runtime(writer, installation, key); }\n\n#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
+    "fn forbidden_start_alias(writer: HeldServiceRunStateWriter, installation: InstallationIdentity, key: &FixtureRunStateAuthenticationKey) { let begin = start_windows_runtime; let _ = begin(writer, installation, key); }\n\n#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "durableSource",
+    "#[cfg(windows)]\nmod windows_runtime;",
+    "#[cfg(windows)]\nmod windows_runtime;\n#[cfg(windows)]\nfn forbidden_external_start(writer: super::run_state_root::HeldServiceRunStateWriter, installation: InstallationIdentity, key: &FixtureRunStateAuthenticationKey) { let _ = windows_runtime::start_windows_runtime(writer, installation, key); }",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "durableSource",
+    "#[cfg(windows)]\nmod windows_runtime;",
+    "#[cfg(windows)]\nmod windows_runtime;\n#[cfg(windows)]\nfn forbidden_external_start_alias(writer: super::run_state_root::HeldServiceRunStateWriter, installation: InstallationIdentity, key: &FixtureRunStateAuthenticationKey) { let begin = windows_runtime::start_windows_runtime; let _ = begin(writer, installation, key); }",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "platformService",
+    "#[cfg(windows)]\n#[allow(dead_code)]\nmod windows_lifecycle;",
+    "#[cfg(windows)]\n#[allow(dead_code)]\nmod windows_lifecycle;\n#[cfg(windows)]\nfn forbidden_lifecycle_caller(writer: run_state_root::HeldServiceRunStateWriter, installation: durable_run_state::InstallationIdentity, key: &durable_run_state::FixtureRunStateAuthenticationKey) { let _ = windows_lifecycle::begin_windows_lifecycle(writer, installation, key); }",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "platformService",
+    "#[cfg(windows)]\n#[allow(dead_code)]\nmod windows_lifecycle;",
+    "#[cfg(windows)]\n#[allow(dead_code)]\nmod windows_lifecycle;\n#[cfg(windows)]\nfn forbidden_lifecycle_alias(writer: run_state_root::HeldServiceRunStateWriter, installation: durable_run_state::InstallationIdentity, key: &durable_run_state::FixtureRunStateAuthenticationKey) { let begin = windows_lifecycle::begin_windows_lifecycle; let _ = begin(writer, installation, key); }",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    ") -> Result<WindowsStartupAttempt<'_>, WindowsLifecycleExitRequired<'_>> {\n    match start_windows_runtime(writer, installation, key) {",
+    ") -> Result<WindowsStartupAttempt<'_>, WindowsLifecycleExitRequired<'_>> {\n    let _ = FixtureRunStateAuthenticationKey::from_fixture_bytes([1_u8; 32]);\n    match start_windows_runtime(writer, installation, key) {",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "    Startup(StartupFailure),",
+    "    Startup(RecoveryRequired),",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "lifecycleSource",
+    "    DuplicateObservation(NoSecretStartupRequirement),\n}",
+    "    DuplicateObservation(NoSecretStartupRequirement),\n    Durable(RecoveryRequired),\n}",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "lifecycleSource",
+    "    CleanupIncomplete,\n}\n\nimpl From<RuntimePolicyFailure>",
+    "    CleanupIncomplete,\n    Durable(RecoveryRequired),\n}\n\nimpl From<RuntimePolicyFailure>",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "                return Err(WindowsLifecycleExitRequired::bound(\n                    WindowsLifecycleCause::Startup(cause),\n                    windows.into_retirement(),\n                ));",
+    "                return Err(WindowsLifecycleExitRequired::bound(\n                    WindowsLifecycleCause::Binding(RecoveryRequired::WindowsBackendFailure),\n                    windows.into_retirement(),\n                ));",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "            WindowsActiveReloadOutcome::Boot(windows) => {\n                WindowsLifecycleActiveReloadOutcome::Revalidate(WindowsStartupAttempt {\n                    checklist: StartupChecklist::new(),",
+    "            WindowsActiveReloadOutcome::Boot(windows) => {\n                WindowsLifecycleActiveReloadOutcome::Revalidate(WindowsStartupAttempt {\n                    checklist: StartupChecklist::from_completed_forbidden(checklist),",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "            WindowsActiveReloadOutcome::Active(windows) => {\n                WindowsLifecycleActiveReloadOutcome::ListenerPending(WindowsListenerPending {\n                    policy: checklist.begin_listener_startup(),",
+    "            WindowsActiveReloadOutcome::Active(windows) => {\n                WindowsLifecycleActiveReloadOutcome::ListenerPending(WindowsListenerPending {\n                    policy: StartupChecklist::new().finish().unwrap().begin_listener_startup(),",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "lifecycleSource",
+    "    pub(super) fn record_listeners_prepared(self) -> ScmRunningPendingPolicy {\n        ScmRunningPendingPolicy {\n            checklist: self.checklist,\n        }\n    }",
+    "    pub(super) fn record_listeners_prepared(self) -> ScmRunningPendingPolicy {\n        unreachable!(\"listener ordering skipped\")\n    }",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "        self.policy.admit_fixture_work(id, session, kind)",
+    "        let _ = (id, session, kind);\n        Ok(())",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "        self.policy.retain_user_token(session)",
+    "        let _ = session;\n        Ok(())",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "        self.policy.handle_session_event(event)",
+    "        let _ = event;\n        unreachable!(\"session policy bypassed\")",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "        self.policy.complete_cleanup_step(step)",
+    "        let _ = step;\n        Ok(())",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "lifecycleSource",
+    "        if !self.work.is_empty()\n            || !self.user_token_sessions.is_empty()\n            || !self.invalid_sessions.is_empty()",
+    "        if false\n            || !self.user_token_sessions.is_empty()\n            || !self.invalid_sessions.is_empty()",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "lifecycleSource",
+    "        if !self.work.is_empty()\n            || !self.user_token_sessions.is_empty()\n            || !self.invalid_sessions.is_empty()",
+    "        if !self.work.is_empty()\n            || false\n            || !self.invalid_sessions.is_empty()",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "lifecycleSource",
+    "        if !self.work.is_empty()\n            || !self.user_token_sessions.is_empty()\n            || !self.invalid_sessions.is_empty()",
+    "        if !self.work.is_empty()\n            || !self.user_token_sessions.is_empty()\n            || false",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "lifecycleSource",
+    "self.expected_cleanup_step() != Some(CleanupStep::CommitAndRereadCleanMarker)",
+    "self.expected_cleanup_step() != Some(CleanupStep::ReleaseSingleInstanceLease)",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "            WindowsCleanCommitOutcome::Clean(windows) => {\n                WindowsLifecycleCleanCommitOutcome::ReleasePending(WindowsCleanReleasePending {\n                    policy: policy.record_clean_committed(),",
+    "            WindowsCleanCommitOutcome::Clean(windows) => {\n                WindowsLifecycleCleanCommitOutcome::ReleasePending(WindowsCleanReleasePending {\n                    policy: policy.forbidden_skip_clean_record(),",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "                policy: policy.record_writer_released(),",
+    "                policy: policy.forbidden_skip_writer_release(),",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "WindowsLifecycleIrreversibleExit78::released_no_receipt(failure)",
+    "WindowsLifecycleIrreversibleExit78::post_release(failure)",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "WindowsLifecycleIrreversibleExit78::post_release(failure)",
+    "WindowsLifecycleIrreversibleExit78::released_no_receipt(failure)",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "                        cause,\n                        platform,\n                        Some(failure),",
+    "                        WindowsLifecycleCause::Lifecycle(LifecycleError::NotReady),\n                        platform,\n                        Some(failure),",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsRuntimeSource",
+    "    #[cfg(test)]\n    if take_post_release_receipt_fault_for_test() {",
+    "    if take_post_release_receipt_fault_for_test() {",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
+    "fn forbidden_erasure(authority: WindowsLifecycleExitAuthority<'_>) -> Box<dyn core::any::Any + '_> { Box::new(authority) }\n\n#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "enum WindowsLifecycleExitAuthority<'key> {",
+    "#[derive(Clone)]\nenum WindowsLifecycleExitAuthority<'key> {",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "const WINDOWS_SERVICE_EXIT_CODE: i32 = 78;",
+    "const WINDOWS_SERVICE_EXIT_CODE: i32 = 0;",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    ") -> Result<WindowsStartupAttempt<'_>, WindowsLifecycleExitRequired<'_>> {\n    match start_windows_runtime(writer, installation, key) {",
+    ") -> Result<WindowsStartupAttempt<'_>, WindowsLifecycleExitRequired<'_>> {\n    std::process::exit(78);\n    match start_windows_runtime(writer, installation, key) {",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
+    "fn forbidden_scm_adapter() { let _ = SetServiceStatus; }\n\n#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "    pub(super) const fn cause(&self) -> &WindowsLifecycleIrreversibleCause {",
+    "    fn retry(self) -> Self { self }\n\n    pub(super) const fn cause(&self) -> &WindowsLifecycleIrreversibleCause {",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleTests",
+    "fn post_release_logical_failure_is_irreversible_exit78_and_never_stopped()",
+    "fn post_release_logical_failure_can_retry_and_stop()",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "designDocument",
+    "**Current Phase 2G status: started, not passed.**",
+    "**Current Phase 2G status: passed.**",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "architectureDocument",
+    "| Windows no-secret lifecycle compositor |",
+    "| Windows release-ready lifecycle compositor |",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsRuntimeSource",
+    "    pub(in crate::key_agent_service) fn into_retirement(self) -> WindowsRetirementPending<'key> {\n        let Self { logical, pair, key } = self;\n        WindowsRetirementPending::new(\n            logical.into_writer_exit(),\n            WindowsTerminalPair::Prepared(pair),\n            key,\n        )\n    }",
+    "    pub(in crate::key_agent_service) fn into_retirement(self) -> WindowsRetirementPending<'key> {\n        let Self { logical, pair, key } = self;\n        WindowsRetirementPending::new(\n            logical.into_writer_exit(),\n            WindowsTerminalPair::Observed(pair),\n            key,\n        )\n    }",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsRuntimeSource",
+    "        (self.cause, self.retirement)",
+    "        (WindowsTerminalCause::new(RecoveryRequired::WindowsBackendFailure, None), self.retirement)",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "            WindowsCleanReloadOutcome::Terminal(failure) => {\n                WindowsLifecycleCleanReloadOutcome::ExitRequired(",
+    "            WindowsCleanReloadOutcome::Terminal(failure) => {\n                let _forged_release = policy.record_clean_committed();\n                WindowsLifecycleCleanReloadOutcome::ExitRequired(",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "        WindowsStopOutcome::ReleasedNoReceipt(failure) => {\n            WindowsLifecycleStopOutcome::IrreversibleExit78(",
+    "        WindowsStopOutcome::ReleasedNoReceipt(failure) => {\n            let _forged_stopped = policy.record_writer_released();\n            WindowsLifecycleStopOutcome::IrreversibleExit78(",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "durableSource",
+    "    start_windows_runtime,\n};\n\n#[cfg(all(test, windows))]",
+    "    start_windows_runtime,\n};\n\npub(super) use self::windows_runtime::WindowsBootEvidence as ExtraWindowsBootEvidence;\n\n#[cfg(all(test, windows))]",
+  ),
+];
+const keyAgentServicePhaseTwoGPinMutationProbes = [
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "//! Dormant Windows no-secret lifecycle composition.",
+    "//! Dormant Windows no-secret lifecycle composition (mutated).",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
+    "#[cfg(test)]\n// mutated test-only sibling\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleTests",
+    "use std::error::Error;",
+    "use std::error::Error; // mutated",
   ),
 ];
 const keyAgentServicePhaseTwoFBPinMutationProbes = [
@@ -13778,6 +15066,10 @@ const keyAgentServicePhaseTwoFCSemanticBaseResult =
   keyAgentServicePhaseTwoFCSemanticContract(keyAgentServicePhaseTwoFCInputs);
 const keyAgentServicePhaseTwoFCPinBaseResult =
   keyAgentServicePhaseTwoFCPinContract(keyAgentServicePhaseTwoFCInputs);
+const keyAgentServicePhaseTwoGSemanticBaseResult =
+  keyAgentServicePhaseTwoGSemanticContract(keyAgentServicePhaseTwoGInputs);
+const keyAgentServicePhaseTwoGPinBaseResult =
+  keyAgentServicePhaseTwoGPinContract(keyAgentServicePhaseTwoGInputs);
 const keyAgentServicePhaseTwoEPinBaseResult =
   keyAgentServicePhaseTwoEPinContract(keyAgentServicePhaseTwoEInputs);
 const keyAgentServicePhaseTwoESemanticMutationResults =
@@ -13819,6 +15111,23 @@ const keyAgentServicePhaseTwoFCPinMutationResults =
     index,
     changed: keyAgentServicePhaseTwoFCProbeChanged(probe),
     rejected: !keyAgentServicePhaseTwoFCPinContract(probe),
+  }));
+const keyAgentServicePhaseTwoGProbeChanged = (probe) =>
+  probe !== keyAgentServicePhaseTwoGInputs &&
+  Object.keys(keyAgentServicePhaseTwoGInputs).some(
+    (key) => probe[key] !== keyAgentServicePhaseTwoGInputs[key],
+  );
+const keyAgentServicePhaseTwoGSemanticMutationResults =
+  keyAgentServicePhaseTwoGSemanticMutationProbes.map((probe, index) => ({
+    index,
+    changed: keyAgentServicePhaseTwoGProbeChanged(probe),
+    rejected: !keyAgentServicePhaseTwoGSemanticContract(probe),
+  }));
+const keyAgentServicePhaseTwoGPinMutationResults =
+  keyAgentServicePhaseTwoGPinMutationProbes.map((probe, index) => ({
+    index,
+    changed: keyAgentServicePhaseTwoGProbeChanged(probe),
+    rejected: !keyAgentServicePhaseTwoGPinContract(probe),
   }));
 const keyAgentServicePhaseTwoFBPinMutationResults =
   keyAgentServicePhaseTwoFBPinMutationProbes.map((probe, index) => ({
@@ -13957,7 +15266,20 @@ requireInvariant(
     keyAgentServicePhaseTwoFCPinMutationResults.every(
       ({ changed, rejected }) => changed && rejected,
     ),
-  `the separate Phase 2F-c dormant Windows logical/OS runtime composite must remain production-compiled, Windows-only, module-private, safe-only, move-only, and free of raw/type-erased authority escape; allocate a unique nonzero checked backend binding after writer acquisition; observe before authenticating exact Clean; preserve exact Active/Clean commit, reread/reload, stop, pair-bound release, no-receipt ambiguity, and checked terminal-retirement order; retain exact pair handles and full IDs/lengths/bytes through low-level release; map writer-retained versus writer-released failures exactly across sys/root/codec; carry fresh full-ID snapshots into each next CAS; expose no direct or aliased production caller, protected/TPM key provider, expected-authority source, retry API, stopped/receipt forgery, Phase 2D bridge, or policy activation; preserve exact 54-root, 11-composite, six-pair-child, and 76 aggregate inventories, external STOP-SHIP limits, exit 78, 52 independently effective semantic mutations, and two independent full-versus-cfg(test) source-pin mutations; semantic base=${keyAgentServicePhaseTwoFCSemanticBaseResult}, pin base=${keyAgentServicePhaseTwoFCPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoFCSemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFCSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, pin probe count=${keyAgentServicePhaseTwoFCPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFCPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
+  `the separate Phase 2F-c dormant Windows logical/OS runtime composite must remain production-compiled, Windows-only, module-private, safe-only, move-only, and free of raw/type-erased authority escape; allocate a unique nonzero checked backend binding after writer acquisition; observe before authenticating exact Clean; preserve exact Active/Clean commit, reread/reload, stop, pair-bound release, no-receipt ambiguity, and checked terminal-retirement order; retain exact pair handles and full IDs/lengths/bytes through low-level release; map writer-retained versus writer-released failures exactly across sys/root/codec; carry fresh full-ID snapshots into each next CAS; admit only the separately gated private Phase 2G direct caller and expose no other direct/aliased caller, protected/TPM key provider, expected-authority source, retry API, stopped/receipt forgery, or policy activation; preserve exact 54-root, 12-composite, six-pair-child, and 77 aggregate inventories, external STOP-SHIP limits, exit 78, 52 independently effective semantic mutations, and two independent full-versus-cfg(test) source-pin mutations; semantic base=${keyAgentServicePhaseTwoFCSemanticBaseResult}, pin base=${keyAgentServicePhaseTwoFCPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoFCSemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFCSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, pin probe count=${keyAgentServicePhaseTwoFCPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFCPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
+);
+requireInvariant(
+  keyAgentServicePhaseTwoGSemanticBaseResult &&
+    keyAgentServicePhaseTwoGSemanticMutationProbes.length === 46 &&
+    keyAgentServicePhaseTwoGSemanticMutationResults.every(
+      ({ changed, rejected }) => changed && rejected,
+    ) &&
+    keyAgentServicePhaseTwoGPinBaseResult &&
+    keyAgentServicePhaseTwoGPinMutationProbes.length === 3 &&
+    keyAgentServicePhaseTwoGPinMutationResults.every(
+      ({ changed, rejected }) => changed && rejected,
+    ),
+  `the separate Phase 2G dormant Windows no-secret lifecycle compositor must preserve exact private type/function/facade surfaces, its sole direct internal Phase 2F-c caller edge and zero top-level caller, cause-neutral checked retirement, fresh-versus-carried Active checklist authority, listener-to-SCM-to-admission ordering, RuntimePolicy-only bounds and cleanup, exact Clean/reload/release/stopped classification, irreversible silent-78 evidence, test-only post-release fault isolation, safe move-only redacted authority, fixed 21-core/12-compositor/12-runtime/77-durable/54-root inventories, explicit external STOP-SHIP limits, disabled policies, no release-readiness claim, 46 independently effective semantic mutations, and three full/production/test source-pin mutations; semantic base=${keyAgentServicePhaseTwoGSemanticBaseResult}, pin base=${keyAgentServicePhaseTwoGPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoGSemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, pin probe count=${keyAgentServicePhaseTwoGPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
 );
 requireInvariant(
   keyAgentServicePhaseTwoEPinBaseResult &&
@@ -23364,14 +24686,14 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate has two deliberately different surfaces.",
-    sha256: "b5a4cfcb1d288d4777b2e9239fc250ea7519d7278d0caff31b59790fff2840fc",
+    sha256: "eb04d3a45166fce98e4b3509f2e8107c46adf7dfe97e91b88ae5ce1b76872b3a",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes a safe platform-neutral gate-byte",
-    sha256: "da53dc4eb74d32ca359c5de0dc250a9b0b33261ee4e2f84a43e8f872ad3c5bbc",
+    sha256: "63f24ae3601dd3cd110f6d24120b5930c220710d43847da9fb228a20224a8aff",
   },
   {
     path: "docs/security-decisions.md",
@@ -31380,6 +32702,14 @@ const keyAgentServiceRunStateRootTestOnlyExternalModuleSpec = Object.freeze({
   targetPath:
     "crates/platform-windows/src/key_agent_service/run_state_root/tests.rs",
 });
+const keyAgentServiceWindowsLifecycleTestOnlyExternalModuleSpec = Object.freeze({
+  parentPath:
+    "crates/platform-windows/src/key_agent_service/windows_lifecycle.rs",
+  moduleName: "tests",
+  relativePath: "windows_lifecycle_tests.rs",
+  targetPath:
+    "crates/platform-windows/src/key_agent_service/windows_lifecycle_tests.rs",
+});
 const platformWindowsProductionCandidates = await rustProductionSources(
   "crates/platform-windows/src",
   { withoutInlineTests: true },
@@ -31971,9 +33301,236 @@ requireInvariant(
     ),
   "the exact cfg(test) default-file run-state-root tests module must be the target's sole resolved cooked-path, raw-path, cfg-attr-path, default-file, or cross-workspace inbound edge across production candidates before that file is excluded from production inventories, with unparsed path-bearing attributes closed and eleven effective relationship mutations",
 );
+const keyAgentServiceExactPathTestOnlyExternalModuleContract = ({
+  parentSource,
+  targetSource,
+  platformCandidates,
+  workspaceCandidates,
+  spec,
+  expectedSpec,
+}) => {
+  if (JSON.stringify(spec) !== JSON.stringify(expectedSpec)) {
+    return false;
+  }
+  const parentCode = rustLexicalCode(parentSource);
+  const moduleMatches = [...parentCode.matchAll(/\bmod\s+tests\s*;/gu)];
+  if (moduleMatches.length !== 1) return false;
+  const attachedAttributes = rustAttachedOuterAttributes(
+    parentSource,
+    moduleMatches[0].index,
+  ).map((attribute) => attribute.source.replace(/\s+/gu, ""));
+  const resolvedTargetPath = relative(
+    root,
+    resolve(root, dirname(spec.parentPath), spec.relativePath),
+  ).replaceAll("\\", "/");
+  const productionParent = withoutCfgTestItems(
+    withoutBottomTestModule(parentSource),
+  );
+  const expectedTarget = withoutCfgTestItems(
+    withoutBottomTestModule(targetSource),
+  );
+  const exactCandidate = (candidates, path) =>
+    candidates.filter((candidate) => candidate.path === path);
+  const platformParents = exactCandidate(platformCandidates, spec.parentPath);
+  const platformTargets = exactCandidate(platformCandidates, spec.targetPath);
+  const workspaceParents = exactCandidate(workspaceCandidates, spec.parentPath);
+  const workspaceTargets = exactCandidate(workspaceCandidates, spec.targetPath);
+  if (
+    JSON.stringify(attachedAttributes) !==
+      JSON.stringify([
+        "#[cfg(test)]",
+        `#[path="${spec.relativePath}"]`,
+      ]) ||
+    resolvedTargetPath !== spec.targetPath ||
+    /\bmod\s+tests\s*;/u.test(rustLexicalCode(productionParent)) ||
+    productionParent.includes(spec.relativePath) ||
+    platformParents.length !== 1 ||
+    platformParents[0].source !== productionParent ||
+    platformTargets.length !== 1 ||
+    platformTargets[0].source !== expectedTarget ||
+    workspaceParents.length !== 1 ||
+    workspaceParents[0].source !== productionParent ||
+    workspaceTargets.length !== 1 ||
+    workspaceTargets[0].source !== expectedTarget
+  ) {
+    return false;
+  }
+  const expectedInboundEdge = {
+    declaringFile: spec.parentPath,
+    module: spec.moduleName,
+    resolution: "path",
+    literal: spec.relativePath,
+    resolvedTarget: spec.targetPath,
+    attributes: ["#[cfg(test)]", `#[path="${spec.relativePath}"]`],
+  };
+  const expectedParentInboundEdges = keyAgentServiceResolvedModuleInboundEdges(
+    [{ path: spec.parentPath, source: parentSource }],
+    spec.targetPath,
+  );
+  const platformInboundEdges = [
+    ...expectedParentInboundEdges,
+    ...keyAgentServiceResolvedModuleInboundEdges(
+      platformCandidates,
+      spec.targetPath,
+    ),
+  ];
+  const workspaceInboundEdges = [
+    ...expectedParentInboundEdges,
+    ...keyAgentServiceResolvedModuleInboundEdges(
+      workspaceCandidates,
+      spec.targetPath,
+    ),
+  ];
+  return (
+    JSON.stringify(platformInboundEdges) ===
+      JSON.stringify([expectedInboundEdge]) &&
+    JSON.stringify(workspaceInboundEdges) ===
+      JSON.stringify([expectedInboundEdge])
+  );
+};
+const keyAgentServiceWindowsLifecycleTestOnlyExternalModuleInputs =
+  Object.freeze({
+    parentSource: keyAgentServiceWindowsLifecycle,
+    targetSource: keyAgentServiceWindowsLifecycleTests,
+    platformCandidates: platformWindowsProductionCandidates,
+    workspaceCandidates: workspaceRustProductionCandidates,
+    spec: keyAgentServiceWindowsLifecycleTestOnlyExternalModuleSpec,
+    expectedSpec: keyAgentServiceWindowsLifecycleTestOnlyExternalModuleSpec,
+  });
+const mutateKeyAgentServiceWindowsLifecycleTestOnlyExternalModuleInput = (
+  field,
+  value,
+) => ({
+  ...keyAgentServiceWindowsLifecycleTestOnlyExternalModuleInputs,
+  [field]: value,
+});
+const keyAgentServiceWindowsLifecycleTestOnlyExternalModuleMutationProbes = [
+  mutateKeyAgentServiceWindowsLifecycleTestOnlyExternalModuleInput(
+    "parentSource",
+    keyAgentServiceWindowsLifecycle.replace(
+      '#[cfg(test)]\n#[path = "windows_lifecycle_tests.rs"]',
+      '#[cfg(windows)]\n#[path = "windows_lifecycle_tests.rs"]',
+    ),
+  ),
+  mutateKeyAgentServiceWindowsLifecycleTestOnlyExternalModuleInput(
+    "parentSource",
+    keyAgentServiceWindowsLifecycle.replace(
+      '#[path = "windows_lifecycle_tests.rs"]',
+      '#[path = "hidden_windows_lifecycle_tests.rs"]',
+    ),
+  ),
+  mutateKeyAgentServiceWindowsLifecycleTestOnlyExternalModuleInput(
+    "parentSource",
+    keyAgentServiceWindowsLifecycle.replace("mod tests;", "mod hidden_tests;"),
+  ),
+  mutateKeyAgentServiceWindowsLifecycleTestOnlyExternalModuleInput(
+    "targetSource",
+    `${keyAgentServiceWindowsLifecycleTests}\n// hidden target mutation\n`,
+  ),
+  mutateKeyAgentServiceWindowsLifecycleTestOnlyExternalModuleInput("spec", {
+    ...keyAgentServiceWindowsLifecycleTestOnlyExternalModuleSpec,
+    targetPath:
+      "crates/platform-windows/src/key_agent_service/hidden_windows_lifecycle_tests.rs",
+  }),
+  mutateKeyAgentServiceWindowsLifecycleTestOnlyExternalModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path ===
+      keyAgentServiceWindowsLifecycleTestOnlyExternalModuleSpec.targetPath
+        ? { ...candidate, source: `${candidate.source}\n// candidate mutation\n` }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceWindowsLifecycleTestOnlyExternalModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path === "crates/platform-windows/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[path = "key_agent_service/windows_lifecycle_tests.rs"]\nmod windows_lifecycle_tests_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceWindowsLifecycleTestOnlyExternalModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path === "crates/platform-windows/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[path = r#"key_agent_service/windows_lifecycle_tests.rs"#]\nmod raw_windows_lifecycle_tests_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceWindowsLifecycleTestOnlyExternalModuleInput(
+    "workspaceCandidates",
+    workspaceRustProductionCandidates.map((candidate) =>
+      candidate.path === "crates/approval-ui/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[path = "../../platform-windows/src/key_agent_service/windows_lifecycle_tests.rs"]\nmod cross_crate_windows_lifecycle_tests_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceWindowsLifecycleTestOnlyExternalModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path === "crates/platform-windows/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[path = concat!("key_agent_service/", "windows_lifecycle_tests.rs")]\nmod unparsed_windows_lifecycle_tests_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceWindowsLifecycleTestOnlyExternalModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path === "crates/platform-windows/src/key_agent_service.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\nmod windows_lifecycle_tests;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceWindowsLifecycleTestOnlyExternalModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path === "crates/platform-windows/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[cfg_attr(test, path = "key_agent_service/windows_lifecycle_tests.rs")]\nmod conditional_windows_lifecycle_tests_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+];
+requireInvariant(
+  keyAgentServiceExactPathTestOnlyExternalModuleContract(
+    keyAgentServiceWindowsLifecycleTestOnlyExternalModuleInputs,
+  ) &&
+    keyAgentServiceWindowsLifecycleTestOnlyExternalModuleMutationProbes.length ===
+      12 &&
+    keyAgentServiceWindowsLifecycleTestOnlyExternalModuleMutationProbes.every(
+      (probe) =>
+        Object.keys(
+          keyAgentServiceWindowsLifecycleTestOnlyExternalModuleInputs,
+        ).some(
+          (field) =>
+            probe[field] !==
+            keyAgentServiceWindowsLifecycleTestOnlyExternalModuleInputs[field],
+        ) &&
+        !keyAgentServiceExactPathTestOnlyExternalModuleContract(probe),
+    ),
+  "the exact cfg(test)-plus-path Windows lifecycle tests module must be the target's sole resolved cooked-path, raw-path, cfg-attr-path, default-file, or cross-workspace inbound edge across production candidates before that file is excluded from production inventories, with unparsed path-bearing attributes closed and twelve effective relationship mutations",
+);
 const platformWindowsTestOnlyExternalSourcePathSet = new Set([
   keyAgentServiceProvisioningTestOnlyExternalModuleSpec.targetPath,
   keyAgentServiceRunStateRootTestOnlyExternalModuleSpec.targetPath,
+  keyAgentServiceWindowsLifecycleTestOnlyExternalModuleSpec.targetPath,
 ]);
 const platformWindowsProductionFiles =
   platformWindowsProductionCandidates.filter(
@@ -31984,16 +33541,16 @@ const workspaceRustProductionFiles = workspaceRustProductionCandidates.filter(
 );
 requireInvariant(
   platformWindowsProductionCandidates.length ===
-    platformWindowsProductionFiles.length + 2 &&
+    platformWindowsProductionFiles.length + 3 &&
     workspaceRustProductionCandidates.length ===
-      workspaceRustProductionFiles.length + 2 &&
+      workspaceRustProductionFiles.length + 3 &&
     platformWindowsProductionFiles.every(
       ({ path }) => !platformWindowsTestOnlyExternalSourcePathSet.has(path),
     ) &&
     workspaceRustProductionFiles.every(
       ({ path }) => !platformWindowsTestOnlyExternalSourcePathSet.has(path),
     ),
-  "only the two separately relationship-proved provisioning and run-state-root test targets may be removed from production-source analysis",
+  "only the three separately relationship-proved provisioning, run-state-root, and Windows lifecycle test targets may be removed from production-source analysis",
 );
 const isWorkspaceBuildOutputPath = (path) =>
   /^(?:crates\/[^/]+|demo\/sepolia-wallet)\/target(?:\/|$)/iu.test(path);
@@ -32047,7 +33604,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "9522b7d65bca4d53f7e9dcea86356019971f0c85734c900b1929e8fcd547e8fa";
+  "7d117aeeace326d9b9512f5d40c85e4fdaa41bd5f855235f210548630b30daf5";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -33412,6 +34969,10 @@ const approvedWorkspacePathAttributes = [
   {
     path: "crates/platform-windows/src/key_agent_service/lifecycle_core.rs",
     attribute: '#[path = "lifecycle_core_tests.rs"]',
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service/windows_lifecycle.rs",
+    attribute: '#[path = "windows_lifecycle_tests.rs"]',
   },
 ];
 const compilationBindingEdgeProbes = {
@@ -52587,7 +54148,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service.rs",
     unsafeCount: 15,
-    sha256: "09ccaf2345bffa9cc955be9c7a85fd8e73da7b8c60c9dbaa94d7d492065f2a35",
+    sha256: "db7b34b6fea98d2d7e106f3190e87352d50ac52830db5f7c56b9fd80606d03b8",
   },
   {
     path: "crates/platform-windows/src/key_agent_service/run_state_root/sys.rs",
@@ -60734,7 +62295,7 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "crates/platform-windows/README.md":
     "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
   "docs/architecture.md":
-    "b5a4cfcb1d288d4777b2e9239fc250ea7519d7278d0caff31b59790fff2840fc",
+    "eb04d3a45166fce98e4b3509f2e8107c46adf7dfe97e91b88ae5ce1b76872b3a",
   "docs/protocol-contract.md":
     "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "docs/security-decisions.md":
@@ -66603,7 +68164,7 @@ const currentDebuggerExitDocumentationContract = (documents) =>
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
   "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
-  "b5a4cfcb1d288d4777b2e9239fc250ea7519d7278d0caff31b59790fff2840fc",
+  "eb04d3a45166fce98e4b3509f2e8107c46adf7dfe97e91b88ae5ce1b76872b3a",
   "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "d36a5e3cb2544598cf8e1a97a8ff3a19a1a561dd5161d5cd3369be3fe4716656",
 ]);
@@ -76485,13 +78046,13 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "docs/architecture.md",
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
-    sha256: "b5a4cfcb1d288d4777b2e9239fc250ea7519d7278d0caff31b59790fff2840fc",
+    sha256: "eb04d3a45166fce98e4b3509f2e8107c46adf7dfe97e91b88ae5ce1b76872b3a",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
-    sha256: "da53dc4eb74d32ca359c5de0dc250a9b0b33261ee4e2f84a43e8f872ad3c5bbc",
+    sha256: "63f24ae3601dd3cd110f6d24120b5930c220710d43847da9fb228a20224a8aff",
   },
   {
     path: "docs/security-decisions.md",

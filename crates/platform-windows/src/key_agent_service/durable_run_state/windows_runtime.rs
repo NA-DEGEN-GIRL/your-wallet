@@ -10,6 +10,8 @@ use core::fmt;
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(test)]
+use super::super::run_state_root::RuntimePairFixture;
 use super::super::run_state_root::{HeldServiceRunStateWriter, ServiceRunStateError};
 use super::windows_pair::{
     ExpectedWindowsPair, WindowsCommittedPair, WindowsObservedPair, WindowsPairCommitOutcome,
@@ -30,6 +32,35 @@ use super::{
 
 static NEXT_WINDOWS_BACKEND_BINDING: AtomicU64 = AtomicU64::new(1);
 
+#[cfg(test)]
+std::thread_local! {
+    static POST_RELEASE_RECEIPT_FAULT_FOR_TEST: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+struct PostReleaseReceiptFaultGuard;
+
+#[cfg(test)]
+impl PostReleaseReceiptFaultGuard {
+    fn arm() -> Self {
+        POST_RELEASE_RECEIPT_FAULT_FOR_TEST.with(|fault| fault.set(true));
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for PostReleaseReceiptFaultGuard {
+    fn drop(&mut self) {
+        POST_RELEASE_RECEIPT_FAULT_FOR_TEST.with(|fault| fault.set(false));
+    }
+}
+
+#[cfg(test)]
+fn take_post_release_receipt_fault_for_test() -> bool {
+    POST_RELEASE_RECEIPT_FAULT_FOR_TEST.with(|fault| fault.replace(false))
+}
+
 fn allocate_windows_backend_binding() -> Result<NonZeroU64, RecoveryRequired> {
     let value = NEXT_WINDOWS_BACKEND_BINDING
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
@@ -39,11 +70,94 @@ fn allocate_windows_backend_binding() -> Result<NonZeroU64, RecoveryRequired> {
     NonZeroU64::new(value).ok_or(RecoveryRequired::BackendBindingExhausted)
 }
 
+/// Installs one generation-one authenticated Clean pair for sibling
+/// Windows-lifecycle kernel tests. The opaque fixture retains every path,
+/// identity, and handle; this helper returns no pair or writer authority.
+#[cfg(test)]
+pub(in crate::key_agent_service) fn install_windows_runtime_clean_fixture(
+    fixture: &RuntimePairFixture,
+    installation: InstallationIdentity,
+    key: &FixtureRunStateAuthenticationKey,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let generation = NonZeroU64::new(1).ok_or(RecoveryRequired::GenerationExhausted)?;
+    let candidate = super::build_snapshot(
+        super::RunMarkerState::Clean,
+        generation,
+        installation,
+        super::Commitment::ZERO,
+        key,
+    )?
+    .bytes;
+    install_pair_for_test(fixture, &candidate)
+}
+
+#[cfg(test)]
+fn install_pair_for_test(
+    fixture: &RuntimePairFixture,
+    candidate: &super::CanonicalSnapshot,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let pair = WindowsPairWriter::from_held_writer(fixture.acquire_writer()?);
+    let observed = match pair.observe() {
+        Ok(observed) => observed,
+        Err(failure) => {
+            let cause = failure.cause();
+            let _ = failure.retire();
+            return Err(cause.into());
+        }
+    };
+    let prepared = match observed.prepare_commit(ExpectedWindowsPair::missing(), *candidate) {
+        Ok(prepared) => prepared,
+        Err(failure) => {
+            let _retired = failure.retire()?;
+            return Err(std::io::Error::other(
+                "fresh runtime fixture did not expose a missing pair",
+            )
+            .into());
+        }
+    };
+    let committed = match prepared.commit() {
+        WindowsPairCommitOutcome::Committed(committed) => committed,
+        WindowsPairCommitOutcome::KnownNotCommitted(failure) => {
+            let cause = failure.cause();
+            let _retired = failure.retire()?;
+            return Err(cause.into());
+        }
+        WindowsPairCommitOutcome::Ambiguous(failure) => {
+            let cause = failure.cause();
+            let _retired = failure.retire()?;
+            return Err(cause.into());
+        }
+    };
+    let reread = match committed.reread() {
+        Ok(reread) => reread,
+        Err(failure) => {
+            let cause = failure.cause();
+            let _retired = failure.retire()?;
+            return Err(cause.into());
+        }
+    };
+    match reread.continue_observed().release_verified() {
+        Ok(released) if released.pair() == *candidate => Ok(()),
+        Ok(_released) => Err(std::io::Error::other(
+            "initial pair release named a different canonical snapshot",
+        )
+        .into()),
+        Err(WindowsPairReleaseFailure::WriterRetained(failure)) => {
+            let cause = failure.cause();
+            let _retired = failure.retire()?;
+            Err(cause.into())
+        }
+        Err(WindowsPairReleaseFailure::WriterReleasedNoReceipt(failure)) => {
+            Err(failure.cause().into())
+        }
+    }
+}
+
 /// Starts the dormant Windows composite from an already-held exclusive OS
 /// writer. Authentication happens only after the fresh pair observation.
 #[allow(clippy::large_types_passed_by_value)] // Transfers the opaque writer once.
 #[allow(clippy::result_large_err)] // Failure retains both move-only authorities.
-pub(super) fn start_windows_runtime(
+pub(in crate::key_agent_service) fn start_windows_runtime(
     writer: HeldServiceRunStateWriter,
     installation: InstallationIdentity,
     key: &FixtureRunStateAuthenticationKey,
@@ -58,7 +172,7 @@ pub(super) fn start_windows_runtime(
 /// Complete startup failure split by whether a logical binding was allocated.
 #[must_use = "a failed Windows runtime start must be terminally retired"]
 #[allow(clippy::large_enum_variant)] // Inline authority avoids fallible allocation.
-pub(super) enum WindowsRuntimeStartFailure<'key> {
+pub(in crate::key_agent_service) enum WindowsRuntimeStartFailure<'key> {
     Binding(WindowsRuntimeBindingFailure),
     Terminal(WindowsTerminalFailure<'key>),
 }
@@ -91,17 +205,19 @@ const fn backend_reason(cause: ServiceRunStateError) -> RecoveryRequired {
 
 /// Failure to allocate the private logical binding after the OS writer was held.
 #[must_use = "the unbound Windows writer must be terminally retired"]
-pub(super) struct WindowsRuntimeBindingFailure {
+pub(in crate::key_agent_service) struct WindowsRuntimeBindingFailure {
     reason: RecoveryRequired,
     pair: WindowsPairWriter,
 }
 
 impl WindowsRuntimeBindingFailure {
-    pub(super) const fn reason(&self) -> RecoveryRequired {
+    pub(in crate::key_agent_service) const fn reason(&self) -> RecoveryRequired {
         self.reason
     }
 
-    pub(super) fn retire(self) -> Result<WindowsUnboundRetired, ServiceRunStateError> {
+    pub(in crate::key_agent_service) fn retire(
+        self,
+    ) -> Result<WindowsUnboundRetired, ServiceRunStateError> {
         self.pair
             .retire()
             .map(|pair| WindowsUnboundRetired { _pair: pair })
@@ -119,7 +235,7 @@ impl fmt::Debug for WindowsRuntimeBindingFailure {
 }
 
 /// Terminal receipt for the pre-logical-binding allocation failure path.
-pub(super) struct WindowsUnboundRetired {
+pub(in crate::key_agent_service) struct WindowsUnboundRetired {
     _pair: WindowsPairRetired,
 }
 
@@ -196,16 +312,23 @@ impl<'key> WindowsRuntimeWriterAcquired<'key> {
         }
     }
 
-    /// Converts a pre-authentication lifecycle abort into the shared checked
-    /// terminal retirement path without dropping either authority.
-    pub(super) fn into_terminal(self, reason: RecoveryRequired) -> WindowsTerminalFailure<'key> {
+    /// Consumes the pre-authentication authority into reason-neutral checked
+    /// retirement without dropping either half of the composite writer.
+    pub(super) fn into_retirement(self) -> WindowsRetirementPending<'key> {
         let Self { logical, pair, key } = self;
-        WindowsTerminalFailure::new(
-            reason,
-            None,
+        WindowsRetirementPending::new(
             logical.into_writer_exit(),
             WindowsTerminalPair::Writer(pair),
             key,
+        )
+    }
+
+    /// Compatibility wrapper that attaches a lifecycle cause to the shared
+    /// reason-neutral checked-retirement seam.
+    pub(super) fn into_terminal(self, reason: RecoveryRequired) -> WindowsTerminalFailure<'key> {
+        WindowsTerminalFailure::from_retirement(
+            WindowsTerminalCause::new(reason, None),
+            self.into_retirement(),
         )
     }
 }
@@ -218,19 +341,19 @@ impl fmt::Debug for WindowsRuntimeWriterAcquired<'_> {
 
 /// Authenticated Clean Phase 2D boot evidence holding the same OS writer.
 #[must_use = "Windows boot evidence must prepare Active or retire terminally"]
-pub(super) struct WindowsBootEvidence<'key> {
+pub(in crate::key_agent_service) struct WindowsBootEvidence<'key> {
     logical: BootEvidence,
     pair: WindowsObservedPair,
     key: &'key FixtureRunStateAuthenticationKey,
 }
 
 impl<'key> WindowsBootEvidence<'key> {
-    pub(super) const fn generation(&self) -> NonZeroU64 {
+    pub(in crate::key_agent_service) const fn generation(&self) -> NonZeroU64 {
         self.logical.generation()
     }
 
     #[allow(clippy::result_large_err)] // Failure retains both move-only authorities inline.
-    pub(super) fn prepare_active(
+    pub(in crate::key_agent_service) fn prepare_active(
         self,
     ) -> Result<WindowsPreparedActiveTransition<'key>, WindowsTerminalFailure<'key>> {
         let Self { logical, pair, key } = self;
@@ -256,13 +379,21 @@ impl<'key> WindowsBootEvidence<'key> {
         }
     }
 
-    /// Abandons authenticated startup through the sole checked terminal path.
-    pub(super) fn into_terminal(self, reason: RecoveryRequired) -> WindowsTerminalFailure<'key> {
+    /// Consumes authenticated startup into reason-neutral checked retirement.
+    pub(in crate::key_agent_service) fn into_retirement(self) -> WindowsRetirementPending<'key> {
         let Self { logical, pair, key } = self;
-        WindowsTerminalFailure::from_durable(
-            logical.abort(reason),
+        WindowsRetirementPending::new(
+            logical.into_writer_exit(),
             WindowsTerminalPair::Observed(pair),
             key,
+        )
+    }
+
+    /// Compatibility wrapper that attaches a lifecycle cause to retirement.
+    pub(super) fn into_terminal(self, reason: RecoveryRequired) -> WindowsTerminalFailure<'key> {
+        WindowsTerminalFailure::from_retirement(
+            WindowsTerminalCause::new(reason, None),
+            self.into_retirement(),
         )
     }
 }
@@ -275,14 +406,16 @@ impl fmt::Debug for WindowsBootEvidence<'_> {
 
 /// Exact Active successor and exact OS pair expectation awaiting one commit.
 #[must_use = "the prepared Windows Active transition must commit or retire"]
-pub(super) struct WindowsPreparedActiveTransition<'key> {
+pub(in crate::key_agent_service) struct WindowsPreparedActiveTransition<'key> {
     logical: PreparedActiveTransition,
     pair: WindowsPreparedPairCommit,
     key: &'key FixtureRunStateAuthenticationKey,
 }
 
 impl<'key> WindowsPreparedActiveTransition<'key> {
-    pub(super) fn commit_and_reread(self) -> WindowsActiveCommitOutcome<'key> {
+    pub(in crate::key_agent_service) fn commit_and_reread(
+        self,
+    ) -> WindowsActiveCommitOutcome<'key> {
         let Self { logical, pair, key } = self;
         if let Err(reason) = logical.operation.begin_commit() {
             return WindowsActiveCommitOutcome::Terminal(WindowsTerminalFailure::from_durable(
@@ -313,13 +446,21 @@ impl<'key> WindowsPreparedActiveTransition<'key> {
         }
     }
 
-    /// Abandons the unattempted Active transition through checked retirement.
-    pub(super) fn into_terminal(self, reason: RecoveryRequired) -> WindowsTerminalFailure<'key> {
+    /// Consumes the unattempted Active transition into checked retirement.
+    pub(in crate::key_agent_service) fn into_retirement(self) -> WindowsRetirementPending<'key> {
         let Self { logical, pair, key } = self;
-        WindowsTerminalFailure::from_durable(
-            logical.abort(reason),
+        WindowsRetirementPending::new(
+            logical.into_writer_exit(),
             WindowsTerminalPair::Prepared(pair),
             key,
+        )
+    }
+
+    /// Compatibility wrapper that attaches a lifecycle cause to retirement.
+    pub(super) fn into_terminal(self, reason: RecoveryRequired) -> WindowsTerminalFailure<'key> {
+        WindowsTerminalFailure::from_retirement(
+            WindowsTerminalCause::new(reason, None),
+            self.into_retirement(),
         )
     }
 }
@@ -393,7 +534,7 @@ impl fmt::Debug for WindowsPreparedActiveTransition<'_> {
 /// Complete consuming result of the Active commit plus independent reread.
 #[must_use = "the Windows Active outcome retains both authorities"]
 #[allow(clippy::large_enum_variant)]
-pub(super) enum WindowsActiveCommitOutcome<'key> {
+pub(in crate::key_agent_service) enum WindowsActiveCommitOutcome<'key> {
     Active(WindowsActiveRunLease<'key>),
     ReloadRequired(WindowsActiveReloadRequired<'key>),
     Terminal(WindowsTerminalFailure<'key>),
@@ -401,20 +542,20 @@ pub(super) enum WindowsActiveCommitOutcome<'key> {
 
 /// Runtime authority holding both the authenticated Active state and OS pair.
 #[must_use = "the Windows Active run must prepare Clean or retire terminally"]
-pub(super) struct WindowsActiveRunLease<'key> {
+pub(in crate::key_agent_service) struct WindowsActiveRunLease<'key> {
     logical: ActiveRunLease,
     pair: WindowsObservedPair,
     key: &'key FixtureRunStateAuthenticationKey,
 }
 
 impl<'key> WindowsActiveRunLease<'key> {
-    pub(super) const fn generation(&self) -> NonZeroU64 {
+    pub(in crate::key_agent_service) const fn generation(&self) -> NonZeroU64 {
         self.logical.generation()
     }
 
     /// Commits and independently rereads the exact successor Clean pair while
     /// retaining the same logical lease and OS writer.
-    pub(super) fn commit_clean(self) -> WindowsCleanCommitOutcome<'key> {
+    pub(in crate::key_agent_service) fn commit_clean(self) -> WindowsCleanCommitOutcome<'key> {
         let Self { logical, pair, key } = self;
         let logical = match logical.prepare_clean(key) {
             Ok(logical) => logical,
@@ -467,13 +608,21 @@ impl<'key> WindowsActiveRunLease<'key> {
         }
     }
 
-    /// Abandons Active runtime authority through checked terminal retirement.
-    pub(super) fn into_terminal(self, reason: RecoveryRequired) -> WindowsTerminalFailure<'key> {
+    /// Consumes Active runtime authority into reason-neutral retirement.
+    pub(in crate::key_agent_service) fn into_retirement(self) -> WindowsRetirementPending<'key> {
         let Self { logical, pair, key } = self;
-        WindowsTerminalFailure::from_durable(
-            logical.abort(reason),
+        WindowsRetirementPending::new(
+            logical.into_writer_exit(),
             WindowsTerminalPair::Observed(pair),
             key,
+        )
+    }
+
+    /// Compatibility wrapper that attaches a lifecycle cause to retirement.
+    pub(super) fn into_terminal(self, reason: RecoveryRequired) -> WindowsTerminalFailure<'key> {
+        WindowsTerminalFailure::from_retirement(
+            WindowsTerminalCause::new(reason, None),
+            self.into_retirement(),
         )
     }
 }
@@ -535,7 +684,7 @@ fn complete_clean_commit(
 /// Complete consuming result of the Clean commit plus independent reread.
 #[must_use = "the Windows Clean outcome retains both authorities"]
 #[allow(clippy::large_enum_variant)] // Inline authority avoids fallible allocation.
-pub(super) enum WindowsCleanCommitOutcome<'key> {
+pub(in crate::key_agent_service) enum WindowsCleanCommitOutcome<'key> {
     Clean(WindowsCleanWithWriter<'key>),
     ReloadRequired(WindowsCleanReloadRequired<'key>),
     Terminal(WindowsTerminalFailure<'key>),
@@ -543,20 +692,20 @@ pub(super) enum WindowsCleanCommitOutcome<'key> {
 
 /// Exact authenticated Clean state retaining the final pair-bound writer.
 #[must_use = "the Windows Clean writer must stop or retire terminally"]
-pub(super) struct WindowsCleanWithWriter<'key> {
+pub(in crate::key_agent_service) struct WindowsCleanWithWriter<'key> {
     logical: CleanCommittedWithWriter,
     pair: WindowsObservedPair,
     key: &'key FixtureRunStateAuthenticationKey,
 }
 
 impl<'key> WindowsCleanWithWriter<'key> {
-    pub(super) const fn generation(&self) -> NonZeroU64 {
+    pub(in crate::key_agent_service) const fn generation(&self) -> NonZeroU64 {
         self.logical.generation()
     }
 
     /// Performs the sole pair-bound final release. Stopped evidence is minted
     /// only after the OS receipt exactly names the authenticated Clean pair.
-    pub(super) fn stop(self) -> WindowsStopOutcome<'key> {
+    pub(in crate::key_agent_service) fn stop(self) -> WindowsStopOutcome<'key> {
         let Self { logical, pair, key } = self;
         if pair.observation() != logical.durable.bytes.observation() {
             return WindowsStopOutcome::Terminal(WindowsTerminalFailure::from_durable(
@@ -600,13 +749,31 @@ impl<'key> WindowsCleanWithWriter<'key> {
         }
     }
 
-    /// Abandons normal stop and consumes both authorities into retirement.
-    pub(super) fn into_terminal(self, reason: RecoveryRequired) -> WindowsTerminalFailure<'key> {
+    /// Exercises the irreversible post-release branch without exposing the
+    /// logical writer, OS pair, path, handle, identity, or key authority.
+    #[cfg(test)]
+    pub(in crate::key_agent_service) fn stop_with_post_release_fault_for_test(
+        self,
+    ) -> WindowsStopOutcome<'key> {
+        let _fault = PostReleaseReceiptFaultGuard::arm();
+        self.stop()
+    }
+
+    /// Consumes the Clean writer into reason-neutral checked retirement.
+    pub(in crate::key_agent_service) fn into_retirement(self) -> WindowsRetirementPending<'key> {
         let Self { logical, pair, key } = self;
-        WindowsTerminalFailure::from_durable(
-            logical.abort(reason),
+        WindowsRetirementPending::new(
+            logical.into_writer_exit(),
             WindowsTerminalPair::Observed(pair),
             key,
+        )
+    }
+
+    /// Compatibility wrapper that attaches a lifecycle cause to retirement.
+    pub(super) fn into_terminal(self, reason: RecoveryRequired) -> WindowsTerminalFailure<'key> {
+        WindowsTerminalFailure::from_retirement(
+            WindowsTerminalCause::new(reason, None),
+            self.into_retirement(),
         )
     }
 }
@@ -623,6 +790,10 @@ fn complete_final_release(
             _pair: pair,
             key,
         });
+    }
+    #[cfg(test)]
+    if take_post_release_receipt_fault_for_test() {
+        let _ = logical.operation.record_release_receipt();
     }
     if let Err(reason) = logical.operation.record_release_receipt() {
         return WindowsStopOutcome::PostReleaseTerminal(WindowsPostReleaseTerminal {
@@ -654,7 +825,7 @@ fn complete_final_release(
 /// Complete final release result. Only `Stopped` carries normal authority.
 #[must_use = "the Windows stop outcome must be handled explicitly"]
 #[allow(clippy::large_enum_variant)] // Inline authority avoids fallible allocation.
-pub(super) enum WindowsStopOutcome<'key> {
+pub(in crate::key_agent_service) enum WindowsStopOutcome<'key> {
     Stopped(WindowsStoppedRunEvidence),
     Terminal(WindowsTerminalFailure<'key>),
     ReleasedNoReceipt(WindowsReleasedNoReceipt<'key>),
@@ -663,13 +834,13 @@ pub(super) enum WindowsStopOutcome<'key> {
 
 /// Exact authenticated Clean evidence after pair-bound writer release.
 #[must_use = "Windows stopped evidence is the sole normal terminal receipt"]
-pub(super) struct WindowsStoppedRunEvidence {
+pub(in crate::key_agent_service) struct WindowsStoppedRunEvidence {
     logical: StoppedRunEvidence,
     _pair: WindowsPairReleased,
 }
 
 impl WindowsStoppedRunEvidence {
-    pub(super) const fn generation(&self) -> NonZeroU64 {
+    pub(in crate::key_agent_service) const fn generation(&self) -> NonZeroU64 {
         self.logical.generation()
     }
 }
@@ -683,7 +854,7 @@ impl fmt::Debug for WindowsStoppedRunEvidence {
 /// Irreversible OS close ambiguity after the logical release attempt began.
 /// No retry, retirement, recovery-exit, or stopped conversion is exposed.
 #[must_use = "a no-receipt release is an irreversible terminal state"]
-pub(super) struct WindowsReleasedNoReceipt<'key> {
+pub(in crate::key_agent_service) struct WindowsReleasedNoReceipt<'key> {
     reason: RecoveryRequired,
     cause: ServiceRunStateError,
     _logical: WriterExitPending,
@@ -692,11 +863,11 @@ pub(super) struct WindowsReleasedNoReceipt<'key> {
 }
 
 impl WindowsReleasedNoReceipt<'_> {
-    pub(super) const fn reason(&self) -> RecoveryRequired {
+    pub(in crate::key_agent_service) const fn reason(&self) -> RecoveryRequired {
         self.reason
     }
 
-    pub(super) const fn cause(&self) -> ServiceRunStateError {
+    pub(in crate::key_agent_service) const fn cause(&self) -> ServiceRunStateError {
         self.cause
     }
 }
@@ -716,7 +887,7 @@ impl fmt::Debug for WindowsReleasedNoReceipt<'_> {
 /// The OS produced a checked pair receipt, but logical stopped completion
 /// failed afterward. No writer remains and no normal/retirement API exists.
 #[must_use = "post-release logical failure cannot mint stopped evidence"]
-pub(super) struct WindowsPostReleaseTerminal<'key> {
+pub(in crate::key_agent_service) struct WindowsPostReleaseTerminal<'key> {
     reason: RecoveryRequired,
     _logical: WriterExitPending,
     _pair: WindowsPairReleased,
@@ -724,7 +895,7 @@ pub(super) struct WindowsPostReleaseTerminal<'key> {
 }
 
 impl WindowsPostReleaseTerminal<'_> {
-    pub(super) const fn reason(&self) -> RecoveryRequired {
+    pub(in crate::key_agent_service) const fn reason(&self) -> RecoveryRequired {
         self.reason
     }
 }
@@ -748,14 +919,14 @@ impl fmt::Debug for WindowsCleanWithWriter<'_> {
 
 /// Ambiguous Clean commit retaining exact logical and OS reload authority.
 #[must_use = "the Windows Clean ambiguity must reload or retire"]
-pub(super) struct WindowsCleanReloadRequired<'key> {
+pub(in crate::key_agent_service) struct WindowsCleanReloadRequired<'key> {
     logical: CleanReloadRequired,
     pair: WindowsPairReloadRequired,
     key: &'key FixtureRunStateAuthenticationKey,
 }
 
 impl<'key> WindowsCleanReloadRequired<'key> {
-    pub(super) fn reload(self) -> WindowsCleanReloadOutcome<'key> {
+    pub(in crate::key_agent_service) fn reload(self) -> WindowsCleanReloadOutcome<'key> {
         let Self { logical, pair, key } = self;
         let pair = match pair.reload() {
             Ok(pair) => pair,
@@ -799,13 +970,21 @@ impl<'key> WindowsCleanReloadRequired<'key> {
         }
     }
 
-    /// Retires an unresolved Clean ambiguity without downgrading it.
-    pub(super) fn into_terminal(self, reason: RecoveryRequired) -> WindowsTerminalFailure<'key> {
+    /// Consumes unresolved Clean ambiguity into reason-neutral retirement.
+    pub(in crate::key_agent_service) fn into_retirement(self) -> WindowsRetirementPending<'key> {
         let Self { logical, pair, key } = self;
-        WindowsTerminalFailure::from_durable(
-            logical.abort(reason),
+        WindowsRetirementPending::new(
+            logical.into_writer_exit(),
             WindowsTerminalPair::Ambiguous(pair),
             key,
+        )
+    }
+
+    /// Compatibility wrapper that attaches a lifecycle cause to retirement.
+    pub(super) fn into_terminal(self, reason: RecoveryRequired) -> WindowsTerminalFailure<'key> {
+        WindowsTerminalFailure::from_retirement(
+            WindowsTerminalCause::new(reason, None),
+            self.into_retirement(),
         )
     }
 }
@@ -819,7 +998,7 @@ impl fmt::Debug for WindowsCleanReloadRequired<'_> {
 /// Exact resolution of one ambiguous Clean commit.
 #[must_use = "the Windows Clean reload outcome retains terminal authority"]
 #[allow(clippy::large_enum_variant)] // Inline authority avoids fallible allocation.
-pub(super) enum WindowsCleanReloadOutcome<'key> {
+pub(in crate::key_agent_service) enum WindowsCleanReloadOutcome<'key> {
     Clean(WindowsCleanWithWriter<'key>),
     Terminal(WindowsTerminalFailure<'key>),
 }
@@ -832,14 +1011,14 @@ impl fmt::Debug for WindowsActiveRunLease<'_> {
 
 /// Ambiguous Active commit retaining exact logical reload and OS ambiguity.
 #[must_use = "the Windows Active ambiguity must reload or retire"]
-pub(super) struct WindowsActiveReloadRequired<'key> {
+pub(in crate::key_agent_service) struct WindowsActiveReloadRequired<'key> {
     logical: ActiveReloadRequired,
     pair: WindowsPairReloadRequired,
     key: &'key FixtureRunStateAuthenticationKey,
 }
 
 impl<'key> WindowsActiveReloadRequired<'key> {
-    pub(super) fn reload(self) -> WindowsActiveReloadOutcome<'key> {
+    pub(in crate::key_agent_service) fn reload(self) -> WindowsActiveReloadOutcome<'key> {
         let Self { logical, pair, key } = self;
         let pair = match pair.reload() {
             Ok(pair) => pair,
@@ -892,13 +1071,21 @@ impl<'key> WindowsActiveReloadRequired<'key> {
         }
     }
 
-    /// Retires an unresolved Active ambiguity without downgrading it.
-    pub(super) fn into_terminal(self, reason: RecoveryRequired) -> WindowsTerminalFailure<'key> {
+    /// Consumes unresolved Active ambiguity into reason-neutral retirement.
+    pub(in crate::key_agent_service) fn into_retirement(self) -> WindowsRetirementPending<'key> {
         let Self { logical, pair, key } = self;
-        WindowsTerminalFailure::from_durable(
-            logical.abort(reason),
+        WindowsRetirementPending::new(
+            logical.into_writer_exit(),
             WindowsTerminalPair::Ambiguous(pair),
             key,
+        )
+    }
+
+    /// Compatibility wrapper that attaches a lifecycle cause to retirement.
+    pub(super) fn into_terminal(self, reason: RecoveryRequired) -> WindowsTerminalFailure<'key> {
+        WindowsTerminalFailure::from_retirement(
+            WindowsTerminalCause::new(reason, None),
+            self.into_retirement(),
         )
     }
 }
@@ -906,7 +1093,7 @@ impl<'key> WindowsActiveReloadRequired<'key> {
 /// Complete exact resolution of one ambiguous Active commit.
 #[must_use = "the Active reload outcome retains both authorities"]
 #[allow(clippy::large_enum_variant)]
-pub(super) enum WindowsActiveReloadOutcome<'key> {
+pub(in crate::key_agent_service) enum WindowsActiveReloadOutcome<'key> {
     Boot(WindowsBootEvidence<'key>),
     Active(WindowsActiveRunLease<'key>),
     Terminal(WindowsTerminalFailure<'key>),
@@ -944,31 +1131,224 @@ impl WindowsTerminalPair {
     }
 }
 
-/// Terminal composite retaining logical exit authority and the exact OS writer.
-#[must_use = "the Windows terminal writer must be explicitly retired"]
-pub(super) struct WindowsTerminalFailure<'key> {
-    reason: RecoveryRequired,
-    platform_cause: Option<ServiceRunStateError>,
+/// Durable terminal cause kept separate from reason-neutral retirement authority.
+#[must_use = "a terminal cause must remain attached to its retirement outcome"]
+pub(in crate::key_agent_service) struct WindowsTerminalCause {
+    recovery: RecoveryRequired,
+    platform: Option<ServiceRunStateError>,
+}
+
+impl WindowsTerminalCause {
+    const fn new(recovery: RecoveryRequired, platform: Option<ServiceRunStateError>) -> Self {
+        Self { recovery, platform }
+    }
+
+    pub(in crate::key_agent_service) const fn recovery(&self) -> RecoveryRequired {
+        self.recovery
+    }
+
+    pub(in crate::key_agent_service) const fn platform(&self) -> Option<ServiceRunStateError> {
+        self.platform
+    }
+
+    const fn into_parts(self) -> (RecoveryRequired, Option<ServiceRunStateError>) {
+        (self.recovery, self.platform)
+    }
+}
+
+impl fmt::Debug for WindowsTerminalCause {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WindowsTerminalCause")
+            .field("recovery", &self.recovery)
+            .field("platform", &self.platform)
+            .finish()
+    }
+}
+
+/// Reason-neutral ownership of the logical writer exit and exact OS pair.
+/// No raw handle, path, pair authority, or lifecycle policy can be recovered.
+#[must_use = "the Windows retirement authority must be checked exactly once"]
+pub(in crate::key_agent_service) struct WindowsRetirementPending<'key> {
     logical: WriterExitPending,
     pair: WindowsTerminalPair,
     key: &'key FixtureRunStateAuthenticationKey,
 }
 
-impl<'key> WindowsTerminalFailure<'key> {
-    fn new(
-        reason: RecoveryRequired,
-        platform_cause: Option<ServiceRunStateError>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WindowsCheckedRetirementStage {
+    BeginRelease,
+    PairRetire,
+    RecordReceipt,
+    LogicalComplete,
+}
+
+impl<'key> WindowsRetirementPending<'key> {
+    const fn new(
         logical: WriterExitPending,
         pair: WindowsTerminalPair,
         key: &'key FixtureRunStateAuthenticationKey,
     ) -> Self {
+        Self { logical, pair, key }
+    }
+
+    /// Releases the logical operation, retires the exact OS pair, records the
+    /// logical receipt, then completes the logical exit. Every failure is
+    /// terminal and consumes the pair authority without minting a receipt.
+    #[allow(clippy::result_large_err)] // Failure retains the logical obligation inline.
+    pub(in crate::key_agent_service) fn retire_checked(
+        self,
+    ) -> Result<WindowsCheckedRetired<'key>, WindowsCheckedRetirementFailure<'key>> {
+        let Self { logical, pair, key } = self;
+        if logical.operation.begin_release().is_err() {
+            let cause = pair.retire().err().unwrap_or(ServiceRunStateError::Release);
+            return Err(WindowsCheckedRetirementFailure::new(
+                WindowsCheckedRetirementStage::BeginRelease,
+                cause,
+                logical,
+                key,
+            ));
+        }
+        let pair = match pair.retire() {
+            Ok(pair) => pair,
+            Err(cause) => {
+                return Err(WindowsCheckedRetirementFailure::new(
+                    WindowsCheckedRetirementStage::PairRetire,
+                    cause,
+                    logical,
+                    key,
+                ));
+            }
+        };
+        if logical.operation.record_release_receipt().is_err() {
+            return Err(WindowsCheckedRetirementFailure::new(
+                WindowsCheckedRetirementStage::RecordReceipt,
+                ServiceRunStateError::Release,
+                logical,
+                key,
+            ));
+        }
+        let receipt = WriterExitReceipt {
+            installation: logical.lease.installation,
+            epoch: logical.lease.epoch,
+            binding: logical.lease.binding,
+        };
+        match logical.complete(receipt) {
+            Ok(logical) => Ok(WindowsCheckedRetired {
+                _logical: logical,
+                _pair: pair,
+                key,
+            }),
+            Err(failure) => Err(WindowsCheckedRetirementFailure::new(
+                WindowsCheckedRetirementStage::LogicalComplete,
+                ServiceRunStateError::Release,
+                failure.into_writer_exit(),
+                key,
+            )),
+        }
+    }
+}
+
+impl fmt::Debug for WindowsRetirementPending<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("WindowsRetirementPending([REDACTED])")
+    }
+}
+
+/// Exact reason-neutral checked-retirement evidence. It cannot re-enter a
+/// normal lifecycle and exposes neither logical nor operating-system authority.
+#[must_use = "checked retirement evidence is terminal"]
+pub(in crate::key_agent_service) struct WindowsCheckedRetired<'key> {
+    _logical: RecoveryExitEvidence,
+    _pair: WindowsPairRetired,
+    key: &'key FixtureRunStateAuthenticationKey,
+}
+
+impl fmt::Debug for WindowsCheckedRetired<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = self.key;
+        formatter.write_str("WindowsCheckedRetired([REDACTED])")
+    }
+}
+
+/// Irreversible reason-neutral retirement failure. Pair authority was consumed;
+/// no retry, recovery-exit, checked-retired, or stopped conversion exists.
+#[must_use = "a checked-retirement failure is irreversible"]
+pub(in crate::key_agent_service) struct WindowsCheckedRetirementFailure<'key> {
+    stage: WindowsCheckedRetirementStage,
+    cause: ServiceRunStateError,
+    _logical: WriterExitPending,
+    key: &'key FixtureRunStateAuthenticationKey,
+}
+
+impl<'key> WindowsCheckedRetirementFailure<'key> {
+    const fn new(
+        stage: WindowsCheckedRetirementStage,
+        cause: ServiceRunStateError,
+        logical: WriterExitPending,
+        key: &'key FixtureRunStateAuthenticationKey,
+    ) -> Self {
         Self {
-            reason,
-            platform_cause,
-            logical,
-            pair,
+            stage,
+            cause,
+            _logical: logical,
             key,
         }
+    }
+
+    pub(in crate::key_agent_service) const fn cause(&self) -> ServiceRunStateError {
+        self.cause
+    }
+
+    const fn legacy_reason(&self, terminal: RecoveryRequired) -> RecoveryRequired {
+        match self.stage {
+            WindowsCheckedRetirementStage::LogicalComplete => {
+                RecoveryRequired::OperationPhaseMismatch
+            }
+            WindowsCheckedRetirementStage::BeginRelease
+            | WindowsCheckedRetirementStage::PairRetire
+            | WindowsCheckedRetirementStage::RecordReceipt => terminal,
+        }
+    }
+}
+
+impl fmt::Debug for WindowsCheckedRetirementFailure<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = self.key;
+        formatter
+            .debug_struct("WindowsCheckedRetirementFailure")
+            .field("cause", &self.cause)
+            .field("authority", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Terminal composite retaining a cause and reason-neutral retirement seam.
+#[must_use = "the Windows terminal writer must be explicitly retired"]
+pub(in crate::key_agent_service) struct WindowsTerminalFailure<'key> {
+    cause: WindowsTerminalCause,
+    retirement: WindowsRetirementPending<'key>,
+}
+
+impl<'key> WindowsTerminalFailure<'key> {
+    fn new(
+        recovery: RecoveryRequired,
+        platform: Option<ServiceRunStateError>,
+        logical: WriterExitPending,
+        pair: WindowsTerminalPair,
+        key: &'key FixtureRunStateAuthenticationKey,
+    ) -> Self {
+        Self::from_retirement(
+            WindowsTerminalCause::new(recovery, platform),
+            WindowsRetirementPending::new(logical, pair, key),
+        )
+    }
+
+    const fn from_retirement(
+        cause: WindowsTerminalCause,
+        retirement: WindowsRetirementPending<'key>,
+    ) -> Self {
+        Self { cause, retirement }
     }
 
     fn from_durable(
@@ -981,74 +1361,28 @@ impl<'key> WindowsTerminalFailure<'key> {
     }
 
     pub(super) const fn reason(&self) -> RecoveryRequired {
-        self.reason
+        self.cause.recovery()
     }
 
     pub(super) const fn platform_cause(&self) -> Option<ServiceRunStateError> {
-        self.platform_cause
+        self.cause.platform()
+    }
+
+    /// Separates the legacy durable/platform cause from the reason-neutral,
+    /// move-only checked-retirement authority.
+    pub(in crate::key_agent_service) fn into_retirement_parts(
+        self,
+    ) -> (WindowsTerminalCause, WindowsRetirementPending<'key>) {
+        (self.cause, self.retirement)
     }
 
     pub(super) fn retire(
         self,
     ) -> Result<WindowsRecoveryExit<'key>, WindowsRetirementFailure<'key>> {
-        let Self {
-            reason,
-            platform_cause,
-            logical,
-            pair,
-            key,
-        } = self;
-        // Every constructor that produces `WriterExitPending` currently leaves
-        // this one-shot operation Ready. Keep the check fail-closed anyway: if
-        // that creation invariant ever regresses, OS retirement is still
-        // attempted and no logical or platform receipt is fabricated.
-        if logical.operation.begin_release().is_err() {
-            let cause = pair.retire().err().unwrap_or(ServiceRunStateError::Release);
-            return Err(WindowsRetirementFailure {
-                reason,
-                cause,
-                _logical: logical,
-                key,
-            });
-        }
-        let pair = match pair.retire() {
-            Ok(pair) => pair,
-            Err(cause) => {
-                return Err(WindowsRetirementFailure {
-                    reason,
-                    cause,
-                    _logical: logical,
-                    key,
-                });
-            }
-        };
-        if logical.operation.record_release_receipt().is_err() {
-            return Err(WindowsRetirementFailure {
-                reason,
-                cause: ServiceRunStateError::Release,
-                _logical: logical,
-                key,
-            });
-        }
-        let receipt = WriterExitReceipt {
-            installation: logical.lease.installation,
-            epoch: logical.lease.epoch,
-            binding: logical.lease.binding,
-        };
-        match logical.complete(receipt) {
-            Ok(logical) => Ok(WindowsRecoveryExit {
-                reason,
-                platform_cause,
-                _logical: logical,
-                _pair: pair,
-                key,
-            }),
-            Err(failure) => Err(WindowsRetirementFailure {
-                reason: failure.reason(),
-                cause: ServiceRunStateError::Release,
-                _logical: failure.into_writer_exit(),
-                key,
-            }),
+        let (terminal, retirement) = self.into_retirement_parts();
+        match retirement.retire_checked() {
+            Ok(retired) => Ok(WindowsRecoveryExit::from_checked(terminal, retired)),
+            Err(failure) => Err(WindowsRetirementFailure::from_checked(terminal, failure)),
         }
     }
 }
@@ -1057,8 +1391,8 @@ impl fmt::Debug for WindowsTerminalFailure<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("WindowsTerminalFailure")
-            .field("reason", &self.reason)
-            .field("platform_cause", &self.platform_cause)
+            .field("reason", &self.reason())
+            .field("platform_cause", &self.platform_cause())
             .field("authority", &"[REDACTED]")
             .finish_non_exhaustive()
     }
@@ -1074,6 +1408,25 @@ pub(super) struct WindowsRecoveryExit<'key> {
 }
 
 impl WindowsRecoveryExit<'_> {
+    fn from_checked(
+        cause: WindowsTerminalCause,
+        retired: WindowsCheckedRetired<'_>,
+    ) -> WindowsRecoveryExit<'_> {
+        let (reason, platform_cause) = cause.into_parts();
+        let WindowsCheckedRetired {
+            _logical: logical,
+            _pair: pair,
+            key,
+        } = retired;
+        WindowsRecoveryExit {
+            reason,
+            platform_cause,
+            _logical: logical,
+            _pair: pair,
+            key,
+        }
+    }
+
     pub(super) const fn reason(&self) -> RecoveryRequired {
         self.reason
     }
@@ -1096,9 +1449,33 @@ impl fmt::Debug for WindowsRecoveryExit<'_> {
 /// Irrecoverable checked-retirement failure. No normal receipt can follow.
 pub(super) struct WindowsRetirementFailure<'key> {
     reason: RecoveryRequired,
+    platform_cause: Option<ServiceRunStateError>,
     cause: ServiceRunStateError,
     _logical: WriterExitPending,
     key: &'key FixtureRunStateAuthenticationKey,
+}
+
+impl<'key> WindowsRetirementFailure<'key> {
+    fn from_checked(
+        terminal: WindowsTerminalCause,
+        failure: WindowsCheckedRetirementFailure<'key>,
+    ) -> Self {
+        let reason = failure.legacy_reason(terminal.recovery());
+        let (_, platform_cause) = terminal.into_parts();
+        let WindowsCheckedRetirementFailure {
+            cause,
+            _logical: logical,
+            key,
+            ..
+        } = failure;
+        Self {
+            reason,
+            platform_cause,
+            cause,
+            _logical: logical,
+            key,
+        }
+    }
 }
 
 impl fmt::Debug for WindowsRetirementFailure<'_> {
@@ -1107,6 +1484,7 @@ impl fmt::Debug for WindowsRetirementFailure<'_> {
         formatter
             .debug_struct("WindowsRetirementFailure")
             .field("reason", &self.reason)
+            .field("platform_cause", &self.platform_cause)
             .field("cause", &self.cause)
             .field("authority", &"[REDACTED]")
             .finish_non_exhaustive()
@@ -1151,61 +1529,7 @@ mod tests {
         fixture: &RuntimePairFixture,
         candidate: &super::super::CanonicalSnapshot,
     ) -> TestResult {
-        let pair = WindowsPairWriter::from_held_writer(fixture.acquire_writer()?);
-        let observed = match pair.observe() {
-            Ok(observed) => observed,
-            Err(failure) => {
-                let cause = failure.cause();
-                let _ = failure.retire();
-                return Err(cause.into());
-            }
-        };
-        let prepared = match observed.prepare_commit(ExpectedWindowsPair::missing(), *candidate) {
-            Ok(prepared) => prepared,
-            Err(failure) => {
-                let _retired = failure.retire()?;
-                return Err(std::io::Error::other(
-                    "fresh runtime fixture did not expose a missing pair",
-                )
-                .into());
-            }
-        };
-        let committed = match prepared.commit() {
-            WindowsPairCommitOutcome::Committed(committed) => committed,
-            WindowsPairCommitOutcome::KnownNotCommitted(failure) => {
-                let cause = failure.cause();
-                let _retired = failure.retire()?;
-                return Err(cause.into());
-            }
-            WindowsPairCommitOutcome::Ambiguous(failure) => {
-                let cause = failure.cause();
-                let _retired = failure.retire()?;
-                return Err(cause.into());
-            }
-        };
-        let reread = match committed.reread() {
-            Ok(reread) => reread,
-            Err(failure) => {
-                let cause = failure.cause();
-                let _retired = failure.retire()?;
-                return Err(cause.into());
-            }
-        };
-        match reread.continue_observed().release_verified() {
-            Ok(released) if released.pair() == *candidate => Ok(()),
-            Ok(_released) => Err(std::io::Error::other(
-                "initial pair release named a different canonical snapshot",
-            )
-            .into()),
-            Err(WindowsPairReleaseFailure::WriterRetained(failure)) => {
-                let cause = failure.cause();
-                let _retired = failure.retire()?;
-                Err(cause.into())
-            }
-            Err(WindowsPairReleaseFailure::WriterReleasedNoReceipt(failure)) => {
-                Err(failure.cause().into())
-            }
-        }
+        install_pair_for_test(fixture, candidate)
     }
 
     fn start<'key>(
@@ -1249,6 +1573,18 @@ mod tests {
             std::io::Error::other(format!("terminal composite retirement failed: {failure:?}"))
                 .into()
         })
+    }
+
+    fn retire_reason_neutral(pending: WindowsRetirementPending<'_>) -> TestResult {
+        pending
+            .retire_checked()
+            .map(|_retired| ())
+            .map_err(|failure| {
+                std::io::Error::other(format!(
+                    "reason-neutral composite retirement failed: {failure:?}"
+                ))
+                .into()
+            })
     }
 
     fn prepare_active<'key>(
@@ -1383,9 +1719,14 @@ mod tests {
         };
         assert_eq!(failure.reason(), RecoveryRequired::MissingRunMarker);
         assert!(format!("{failure:?}").contains("[REDACTED]"));
-        let _exit = failure.retire().map_err(|failure| {
+        let (cause, pending) = failure.into_retirement_parts();
+        assert_eq!(cause.recovery(), RecoveryRequired::MissingRunMarker);
+        assert_eq!(cause.platform(), None);
+        assert!(format!("{pending:?}").contains("[REDACTED]"));
+        let retired = pending.retire_checked().map_err(|failure| {
             std::io::Error::other(format!("missing-pair retirement failed: {failure:?}"))
         })?;
+        assert!(format!("{retired:?}").contains("[REDACTED]"));
         fixture.cleanup_checked()
     }
 
@@ -1413,9 +1754,11 @@ mod tests {
             Ok(_boot) => return Err(std::io::Error::other("wrong key booted").into()),
         };
         assert_eq!(failure.reason(), RecoveryRequired::AuthenticationFailed);
-        let _exit = failure.retire().map_err(|failure| {
+        let exit = failure.retire().map_err(|failure| {
             std::io::Error::other(format!("wrong-key retirement failed: {failure:?}"))
         })?;
+        assert_eq!(exit.reason(), RecoveryRequired::AuthenticationFailed);
+        assert_eq!(exit.platform_cause(), None);
         wrong_key_fixture.cleanup_checked()?;
 
         let wrong_install_fixture = RuntimePairFixture::new()?;
@@ -1570,7 +1913,8 @@ mod tests {
         match prepared.commit_and_reread() {
             WindowsActiveCommitOutcome::Terminal(failure) => {
                 assert_eq!(failure.reason(), RecoveryRequired::RereadDrift);
-                assert!(failure.platform_cause().is_some());
+                let platform_cause = failure.platform_cause();
+                assert!(platform_cause.is_some());
                 let retirement = match failure.retire() {
                     Err(retirement) => retirement,
                     Ok(_exit) => {
@@ -1581,6 +1925,7 @@ mod tests {
                     }
                 };
                 assert_eq!(retirement.reason, RecoveryRequired::RereadDrift);
+                assert_eq!(retirement.platform_cause, platform_cause);
                 assert_eq!(retirement.cause, ServiceRunStateError::Release);
             }
             WindowsActiveCommitOutcome::ReloadRequired(reload) => {
@@ -1755,6 +2100,51 @@ mod tests {
     }
 
     #[test]
+    fn kernel_post_release_receipt_fault_is_irreversible() -> TestResult {
+        let fixture = RuntimePairFixture::new()?;
+        let installation = test_installation(0xf5)?;
+        let key = test_key(0xf6)?;
+        let initial = snapshot(RunMarkerState::Clean, 1, installation, &key)?;
+        install_pair(&fixture, &initial)?;
+
+        let clean = exact_clean(&fixture, installation, &key)?;
+        match clean.stop_with_post_release_fault_for_test() {
+            WindowsStopOutcome::PostReleaseTerminal(failure) => {
+                assert_eq!(failure.reason(), RecoveryRequired::OperationPhaseMismatch);
+            }
+            WindowsStopOutcome::Stopped(_stopped) => {
+                return Err(std::io::Error::other(
+                    "post-release receipt fault minted Stopped evidence",
+                )
+                .into());
+            }
+            WindowsStopOutcome::Terminal(failure) => return retire_terminal(failure),
+            WindowsStopOutcome::ReleasedNoReceipt(failure) => {
+                return Err(failure.cause().into());
+            }
+        }
+        fixture.cleanup_checked()?;
+
+        let normal_fixture = RuntimePairFixture::new()?;
+        let normal_installation = test_installation(0xf7)?;
+        let normal_key = test_key(0xf8)?;
+        let normal_initial = snapshot(RunMarkerState::Clean, 1, normal_installation, &normal_key)?;
+        install_pair(&normal_fixture, &normal_initial)?;
+        let normal_clean = exact_clean(&normal_fixture, normal_installation, &normal_key)?;
+        match normal_clean.stop() {
+            WindowsStopOutcome::Stopped(_stopped) => {}
+            WindowsStopOutcome::Terminal(failure) => return retire_terminal(failure),
+            WindowsStopOutcome::ReleasedNoReceipt(failure) => {
+                return Err(failure.cause().into());
+            }
+            WindowsStopOutcome::PostReleaseTerminal(failure) => {
+                return Err(failure.reason().into());
+            }
+        }
+        normal_fixture.cleanup_checked()
+    }
+
+    #[test]
     fn kernel_stop_precheck_rejects_crossed_pair_before_release() -> TestResult {
         let first_fixture = RuntimePairFixture::new()?;
         let first_installation = test_installation(0x11)?;
@@ -1820,10 +2210,14 @@ mod tests {
         let live_fixture = RuntimePairFixture::new()?;
         let live_installation = test_installation(0x21)?;
         let live_key = test_key(0x22)?;
-        let initial = snapshot(RunMarkerState::Clean, 1, live_installation, &live_key)?;
-        install_pair(&live_fixture, &initial)?;
+        install_windows_runtime_clean_fixture(&live_fixture, live_installation, &live_key)?;
         let boot = start(&live_fixture, live_installation, &live_key)?;
-        retire_checked(boot.into_terminal(RecoveryRequired::WindowsBackendFailure))?;
+        let pending = boot.into_retirement();
+        assert!(format!("{pending:?}").contains("[REDACTED]"));
+        let retired = pending.retire_checked().map_err(|failure| {
+            std::io::Error::other(format!("reason-neutral retirement failed: {failure:?}"))
+        })?;
+        assert!(format!("{retired:?}").contains("[REDACTED]"));
         live_fixture.cleanup_checked()?;
 
         let reload_fixture = RuntimePairFixture::new()?;
@@ -1845,8 +2239,45 @@ mod tests {
                 return Err(reason.into());
             }
         };
-        retire_checked(reload.into_terminal(RecoveryRequired::CommitReloadRequired))?;
-        reload_fixture.cleanup_checked()
+        retire_reason_neutral(reload.into_retirement())?;
+        reload_fixture.cleanup_checked()?;
+
+        let fault_fixture = RuntimePairFixture::new()?;
+        let fault_installation = test_installation(0x25)?;
+        let fault_key = test_key(0x26)?;
+        install_windows_runtime_clean_fixture(&fault_fixture, fault_installation, &fault_key)?;
+        let prepared = prepare_active(&fault_fixture, fault_installation, &fault_key)?;
+        fault_fixture.inject_fault(RuntimePairFault::CommittedRereadRevalidation);
+        let terminal = match prepared.commit_and_reread() {
+            WindowsActiveCommitOutcome::Terminal(failure) => failure,
+            WindowsActiveCommitOutcome::ReloadRequired(reload) => {
+                retire_reason_neutral(reload.into_retirement())?;
+                return Err(std::io::Error::other(
+                    "confirmed commit fault exposed reload authority",
+                )
+                .into());
+            }
+            WindowsActiveCommitOutcome::Active(active) => {
+                retire_reason_neutral(active.into_retirement())?;
+                return Err(std::io::Error::other(
+                    "confirmed commit fault minted Active authority",
+                )
+                .into());
+            }
+        };
+        let (_cause, pending) = terminal.into_retirement_parts();
+        let failure = match pending.retire_checked() {
+            Err(failure) => failure,
+            Ok(_retired) => {
+                return Err(std::io::Error::other(
+                    "OS retirement close ambiguity minted checked evidence",
+                )
+                .into());
+            }
+        };
+        assert_eq!(failure.cause(), ServiceRunStateError::Release);
+        assert!(format!("{failure:?}").contains("[REDACTED]"));
+        fault_fixture.cleanup_checked()
     }
 
     #[test]
@@ -1884,7 +2315,11 @@ mod tests {
         assert_move_only!(WindowsCleanReloadOutcome<'static>);
         assert_move_only!(WindowsStopOutcome<'static>);
         assert_move_only!(WindowsStoppedRunEvidence);
+        assert_move_only!(WindowsTerminalCause);
         assert_move_only!(WindowsTerminalFailure<'static>);
+        assert_move_only!(WindowsRetirementPending<'static>);
+        assert_move_only!(WindowsCheckedRetired<'static>);
+        assert_move_only!(WindowsCheckedRetirementFailure<'static>);
         assert_move_only!(WindowsReleasedNoReceipt<'static>);
         assert_move_only!(WindowsPostReleaseTerminal<'static>);
         assert_move_only!(WindowsRecoveryExit<'static>);
@@ -1893,6 +2328,31 @@ mod tests {
 
     #[test]
     fn composite_live_states_expose_consuming_terminal_transitions() {
+        let _: fn(WindowsRuntimeWriterAcquired<'static>) -> WindowsRetirementPending<'static> =
+            WindowsRuntimeWriterAcquired::into_retirement;
+        let _: fn(WindowsBootEvidence<'static>) -> WindowsRetirementPending<'static> =
+            WindowsBootEvidence::into_retirement;
+        let _: fn(WindowsPreparedActiveTransition<'static>) -> WindowsRetirementPending<'static> =
+            WindowsPreparedActiveTransition::into_retirement;
+        let _: fn(WindowsActiveRunLease<'static>) -> WindowsRetirementPending<'static> =
+            WindowsActiveRunLease::into_retirement;
+        let _: fn(WindowsActiveReloadRequired<'static>) -> WindowsRetirementPending<'static> =
+            WindowsActiveReloadRequired::into_retirement;
+        let _: fn(WindowsCleanWithWriter<'static>) -> WindowsRetirementPending<'static> =
+            WindowsCleanWithWriter::into_retirement;
+        let _: fn(WindowsCleanReloadRequired<'static>) -> WindowsRetirementPending<'static> =
+            WindowsCleanReloadRequired::into_retirement;
+        let _: fn(
+            WindowsRetirementPending<'static>,
+        ) -> Result<
+            WindowsCheckedRetired<'static>,
+            WindowsCheckedRetirementFailure<'static>,
+        > = WindowsRetirementPending::retire_checked;
+        let _: fn(
+            WindowsTerminalFailure<'static>,
+        ) -> (WindowsTerminalCause, WindowsRetirementPending<'static>) =
+            WindowsTerminalFailure::into_retirement_parts;
+
         let _: fn(
             WindowsRuntimeWriterAcquired<'static>,
             RecoveryRequired,
