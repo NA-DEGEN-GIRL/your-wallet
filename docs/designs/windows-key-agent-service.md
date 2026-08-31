@@ -1326,10 +1326,13 @@ a future composition must bind that handle to this durable writer and also
 retain the authentication-key provider and anchor handle across the same
 boundary.
 
-This remains a module-private, zero-runtime-root contract over only the bounded
-memory fixture and fixture authentication key. It imports no filesystem or
-other OS adapter and has no production constructor or caller, installer or SCM
-integration, power-loss/reboot proof, TPM-backed key or anchor, secret, signing
+At the pre-Phase 2F-c boundary this remained a module-private, zero-runtime-root
+contract over only the bounded memory fixture and fixture authentication key.
+It had no filesystem or other OS adapter and still has no top-level production
+caller; the separately gated dormant Phase 2F-c composite below is its sole
+private Windows adapter and itself has no production caller or key provider.
+There is still no installer or SCM integration, power-loss/reboot proof,
+TPM-backed key or anchor, secret, signing
 transition, or release authority. The separate dormant Phase 2E adapter below
 can hold an already-installed service root and `run.lock`, but it has no
 conversion into `RuntimeWriterAcquired`, `BootEvidence`, or any provisioning
@@ -1612,9 +1615,10 @@ writer. Post-commit reread and ambiguity reload first revalidate the complete
 writer and independently reopen the pair; a mismatch never becomes committed
 evidence.
 
-The focused root inventory is exactly 47 tests: 45 passed and the two existing
-Phase 2E cases remain ignored. The eleven tests attributed specifically to
-Phase 2F-b are
+The pre-Phase 2F-c focused root inventory is exactly 47 tests: 45 passed and the
+two existing Phase 2E cases remain ignored after the seven separately gated
+Phase 2F-c release tests are excluded. The eleven tests attributed specifically
+to Phase 2F-b are
 `fixed_pair_absent_commit_flushes_renames_and_independently_rereads`,
 `fixed_pair_existing_commit_replaces_both_full_identities`,
 `fixed_pair_leaf_set_and_from_birth_file_security_are_exact`,
@@ -1635,12 +1639,15 @@ The private `windows_pair` codec bridge has six further passing tests:
 `authority_states_and_receipts_are_move_only`. The combined relevant inventory
 is therefore exactly 53 tests: 51 passed and two ignored.
 
-The `windows_pair` child maps the private 148-byte durable codec envelopes into
-move-only fixed-pair expectations and outcomes, but it has no production caller,
-expected-authority mint, authentication-key provider, TPM or non-rollbackable
-anchor integration, or conversion into Phase 2D Boot, Active, Clean, stopped,
-provisioning, signing, or normal-release authority. It does not establish pair
-atomicity or power-loss durability. Four direct evidence gaps remain explicit:
+At the pre-Phase 2F-c boundary, the `windows_pair` child mapped the private
+148-byte durable codec envelopes into move-only fixed-pair expectations and
+outcomes without a production caller, expected-authority mint,
+authentication-key provider, TPM/non-rollbackable anchor integration, or
+conversion into Phase 2D Boot, Active, Clean, stopped, provisioning, signing,
+or normal-release authority. The separately gated Phase 2F-c composite below
+is now its sole production consumer, but itself remains dormant and callerless.
+Neither slice establishes pair atomicity or power-loss durability. Four direct
+evidence gaps remain explicit:
 a kernel negative test with a nonzero case-sensitive-directory flag; direct
 compressed and encrypted file-attribute branches; short-write and flush-failure
 injection; and ABI assertions for the variable-length rename packet. Those gaps,
@@ -1649,6 +1656,102 @@ and restricted-token composition, trusted service/`SYSTEM` peer race analysis,
 supported-kernel crash/power-loss/reboot recovery, and TPM/authentication-key
 integration remain external **STOP-SHIP** obligations. Both compiled policies
 stay `None`, and ordinary/release execution remains silent exit 78.
+
+**Current Phase 2F-c status: started, not passed.** A production-compiled,
+Windows-only, module-private dormant composite now binds one Phase 2D logical
+runtime writer to one independently verified Phase 2F-b operating-system pair.
+Its normal top-level convenience entry, `start_windows_runtime`, consumes an
+already-held `HeldServiceRunStateWriter`, one installation identity, and a
+borrowed fixture authentication key. It has no production call site,
+expected-authority source, protected or TPM-backed authentication-key provider,
+native-handle return, raw-writer
+escape, Phase 2C provisioning conversion, secret, signing, RPC, or release-
+activation bridge. The synthetic fixture-byte key import remains production-
+compiled but dormant and test-called only. A private nonzero backend binding is
+allocated only after the OS writer already exists. Binding-allocation failure
+retains the unbound pair writer for checked retirement; every pre-retirement
+writer-holding failure retains the logical writer-exit obligation and the exact
+corresponding OS-pair typestate.
+Checked-retirement failure is irreversible and consumes the pair authority; it
+exposes neither a recovery-exit nor a normal receipt.
+
+Startup is writer-first. The bridge seals the held OS writer into the logical
+runtime acquisition, freshly observes the four-leaf fixed pair, and only then
+authenticates the logical observation with the same borrowed key. Missing,
+malformed, wrong-installation, wrong-key, Active, RecoveryRequired, one-sided,
+or backend-drift state cannot mint Windows Boot evidence. Exact authenticated
+Clean Boot prepares a logical Active successor and the identical full-pair OS
+expectation before either side may attempt a commit.
+
+Active commit ordering is exact: logical `begin_commit`, OS pair commit, logical
+commit-receipt latch, logical `begin_reread`, independent OS reread, then logical
+completion. A pre-first-rename OS failure is terminal known-not-committed; an
+unconfirmed commit failure or ambiguity from the first rename attempt onward is
+`WindowsActiveReloadRequired`. Confirmed success continues only through the
+independent reread path described below. Reload first obtains
+the independent OS pair, then records the logical reload receipt, and may
+classify only the exact prior pair as Boot or the exact candidate as Active;
+partial or drifting state is terminal. The confirmed-commit reread defect found
+by the Critical/High review is closed: once the OS reports the Active commit as
+confirmed, any subsequent OS reread failure is terminal `RereadDrift`. It can
+never reload or downgrade to the prior Clean Boot state.
+
+Clean follows the same full-pair expectation and logical-before-OS commit gate.
+An ambiguous Clean commit or confirmed-commit reread failure retains a single
+`WindowsCleanReloadRequired`; reload can return Clean only for the exact
+candidate, while prior, partial, or drifting state is terminal. Every live or
+reload-required composite state exposes a consuming `into_terminal`; none can
+drop one authority and continue with the other.
+
+Normal stop first compares the held OS observation with the logical Clean bytes,
+then prepares and begins the logical release, and only then attempts the
+pair-bound OS release. That low-level release revalidates the writer, reopens and
+holds both final leaves share-zero, rechecks their full identities, exact
+lengths, and bytes, proves both temps absent, and keeps every opened pair handle
+held throughout writer release. A low-level verification failure before native
+writer release, or a native writer-release failure, returns `WriterRetained` and
+permits only checked terminal retirement; a logical precheck failure instead
+enters the ordinary composite terminal path. If the writer was
+released but a later pair-handle checked close failed, `WindowsReleasedNoReceipt`
+is irreversible and has no retry, retirement, recovery-exit, or stopped API. On
+an exact OS receipt the composite compares the receipt pair to logical Clean,
+records the logical release receipt, and completes logical stop; only that path
+mints `WindowsStoppedRunEvidence`. Any failure after the OS receipt becomes
+`WindowsPostReleaseTerminal`, which likewise has no writer, retry, retirement,
+recovery-exit, or stopped conversion.
+
+Checked terminal retirement is ordered logical `begin_release`, OS pair
+retirement, logical release-receipt latch, then logical completion. Every error
+suppresses both normal and recovery receipts. Composite states and receipts are
+move-only and their Debug views redact authority; the production composite has
+no `unsafe`, native handle type, ownership cast, or generic type-erasure site.
+The exact composite inventory is eleven passing tests:
+`kernel_clean_boot_active_clean_stop_is_exact`,
+`kernel_missing_pair_is_terminal_and_checked_retired`,
+`kernel_wrong_key_and_nonclean_pairs_never_boot`,
+`kernel_active_ambiguity_reload_classifies_prior_candidate_and_partial`,
+`kernel_confirmed_active_reread_failure_never_reloads_as_boot`,
+`kernel_clean_ambiguity_reload_accepts_only_exact_candidate`,
+`kernel_stop_failures_never_mint_stopped`,
+`kernel_stop_precheck_rejects_crossed_pair_before_release`,
+`kernel_live_and_reload_states_have_checked_terminal_retirement`,
+`composite_authority_and_receipts_are_move_only`, and
+`composite_live_states_expose_consuming_terminal_transitions`. The focused
+`durable_run_state` module inventory is 76/76 passing: 34 parent tests plus 25
+provisioning, six `windows_pair`, and eleven `windows_runtime` tests. The named
+pair and composite slices are therefore subsets of that module total, not
+additional disjoint counts. The kernel run-state-root suite is 54 total, with
+52 passing and the same two
+environment-dependent tests ignored.
+
+This is still not a product runtime, pair-atomic transaction, or power-loss
+proof. A production authentication-key/TPM provider and top-level caller,
+elevated ProgramData/service-SID installer provenance, SCM/restricted-token
+composition, a trusted single service/`SYSTEM` writer and peer-race proof,
+mapped-I/O exclusion, rollback-anchor integration, and supported-kernel crash,
+power-loss, and reboot reconciliation remain external **STOP-SHIP** obligations.
+Both compiled policies stay `None`, and ordinary/release execution remains
+silent exit 78.
 
 ### Phase 3 – Authenticated Broker and helper runtime
 
@@ -1739,6 +1842,15 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-09-01 - Added the dormant Phase 2F-c logical/OS composite. It binds the
+  writer-first Phase 2D lifecycle to the exact Phase 2F-b pair, preserves
+  logical receipt ordering and OS commit/reload ambiguity, makes confirmed
+  Active commit reread failure terminal, verifies and holds the exact pair
+  through final writer release, and separates writer-retained, released-without-
+  receipt, and post-release terminal states. The bridge has no production
+  caller or key provider; installer/SCM, trusted-peer and mapped-I/O proof,
+  crash/power/reboot recovery, rollback anchor, TPM, and product integration
+  remain **STOP-SHIP**, so Phase 2F-c is started but not passed.
 - 2026-08-31 - Added the dormant Phase 2F-b fixed marker/checkpoint-pair
   adapter. It consumes the held Phase 2F-a writer, limits I/O to four fixed
   leaves, stages and verifies exact 148-byte records, performs a full-identity

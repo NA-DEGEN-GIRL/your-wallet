@@ -14,6 +14,8 @@ mod sys;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(super) use tests::{RuntimePairFault, RuntimePairFixture};
 
 /// Path-free failures from opening or revalidating fixed run-state objects.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -258,7 +260,7 @@ impl fmt::Debug for HeldServiceRunStateWriter {
 }
 
 /// A move-only fixed-pair observation bound to the exact held writer and IDs.
-#[must_use = "the observed fixed pair must be committed or explicitly retired"]
+#[must_use = "the observed fixed pair must be committed, verified-released, or retired"]
 pub(super) struct ObservedFixedRunStatePair {
     inner: sys::ObservedPairWriter,
 }
@@ -283,6 +285,17 @@ impl ObservedFixedRunStatePair {
             sys::PairCommitOutcome::Ambiguous(inner, cause) => {
                 FixedPairCommitOutcome::Ambiguous(FixedPairAmbiguous { inner, cause })
             }
+        }
+    }
+
+    /// Releases an exact pair only after binding zero-share final handles to
+    /// this observation's bytes and full identities for the complete writer
+    /// release sequence.
+    #[allow(clippy::result_large_err)] // Failure retains move-only writer authority inline.
+    pub(super) fn release_verified(self) -> Result<FixedPairReleased, FixedPairReleaseFailure> {
+        match self.inner.release_verified() {
+            Ok(pair) => Ok(FixedPairReleased { pair, _sealed: () }),
+            Err(failure) => Err(map_fixed_pair_release_failure(failure)),
         }
     }
 
@@ -355,7 +368,7 @@ impl fmt::Debug for FixedPairCommitted {
 }
 
 /// Independent exact reread after a confirmed ordered pair commit.
-#[must_use = "the reread fixed pair retains writer authority"]
+#[must_use = "the reread fixed pair must continue toward commit/release or retire"]
 pub(super) struct FixedPairReread {
     inner: sys::RereadPairWriter,
 }
@@ -363,6 +376,14 @@ pub(super) struct FixedPairReread {
 impl FixedPairReread {
     pub(super) const fn observation(&self) -> FixedRunStatePairObservation {
         self.inner.observation()
+    }
+
+    /// Continues the active writer while retaining the independently reread
+    /// bytes and full file identities as the next consuming CAS expectation.
+    pub(super) fn continue_observed(self) -> ObservedFixedRunStatePair {
+        ObservedFixedRunStatePair {
+            inner: self.inner.continue_observed(),
+        }
     }
 
     #[cfg(test)]
@@ -479,7 +500,7 @@ impl fmt::Debug for FixedPairAmbiguous {
 }
 
 /// Exact final observation obtained only through an ambiguity reload.
-#[must_use = "the reloaded fixed pair retains writer authority"]
+#[must_use = "the reloaded fixed pair must continue toward commit/release or retire"]
 pub(super) struct FixedPairReloaded {
     inner: sys::ReloadedPairWriter,
 }
@@ -487,6 +508,14 @@ pub(super) struct FixedPairReloaded {
 impl FixedPairReloaded {
     pub(super) const fn observation(&self) -> FixedRunStatePairObservation {
         self.inner.observation()
+    }
+
+    /// Continues the active writer while retaining the ambiguity reload's
+    /// exact bytes and full file identities as the next CAS expectation.
+    pub(super) fn continue_observed(self) -> ObservedFixedRunStatePair {
+        ObservedFixedRunStatePair {
+            inner: self.inner.continue_observed(),
+        }
     }
 
     #[cfg(test)]
@@ -505,6 +534,131 @@ impl FixedPairReloaded {
 impl fmt::Debug for FixedPairReloaded {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("FixedPairReloaded([REDACTED])")
+    }
+}
+
+/// Authority-free evidence that an exact pair stayed bound while the writer
+/// was fully released and every pair handle was checked-closed.
+#[must_use = "the verified fixed-pair release receipt is terminal evidence"]
+pub(super) struct FixedPairReleased {
+    pair: ExactFixedRunStatePair,
+    _sealed: (),
+}
+
+impl FixedPairReleased {
+    pub(super) const fn pair(&self) -> ExactFixedRunStatePair {
+        self.pair
+    }
+}
+
+impl fmt::Debug for FixedPairReleased {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("FixedPairReleased([REDACTED])")
+    }
+}
+
+/// A verified pair release either still owns the writer and held pair handles,
+/// or reached an irreversible pair-close ambiguity after releasing the writer.
+#[must_use = "a failed fixed-pair release cannot issue a normal receipt"]
+#[allow(clippy::large_enum_variant)] // Inline authority keeps failure allocation-free.
+pub(super) enum FixedPairReleaseFailure {
+    WriterRetained(FixedPairReleaseWithWriter),
+    WriterReleasedNoReceipt(FixedPairReleaseAfterWriter),
+}
+
+impl FixedPairReleaseFailure {
+    pub(super) const fn cause(&self) -> ServiceRunStateError {
+        match self {
+            Self::WriterRetained(failure) => failure.cause(),
+            Self::WriterReleasedNoReceipt(failure) => failure.cause(),
+        }
+    }
+}
+
+impl fmt::Debug for FixedPairReleaseFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WriterRetained(failure) => formatter
+                .debug_tuple("WriterRetained")
+                .field(&failure.cause())
+                .finish(),
+            Self::WriterReleasedNoReceipt(failure) => formatter
+                .debug_tuple("WriterReleasedNoReceipt")
+                .field(&failure.cause())
+                .finish(),
+        }
+    }
+}
+
+/// Terminal failure authority that still owns the partial writer release and
+/// every pair handle opened before the failure.
+#[must_use = "the retained fixed-pair release authority must be retired"]
+pub(super) struct FixedPairReleaseWithWriter {
+    inner: sys::PairReleaseWithWriter,
+}
+
+impl FixedPairReleaseWithWriter {
+    pub(super) const fn cause(&self) -> ServiceRunStateError {
+        self.inner.cause
+    }
+
+    pub(super) fn retire(self) -> Result<FailedFixedPairReleaseRetired, ServiceRunStateError> {
+        self.inner.retire()?;
+        Ok(FailedFixedPairReleaseRetired { _sealed: () })
+    }
+}
+
+impl fmt::Debug for FixedPairReleaseWithWriter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FixedPairReleaseWithWriter")
+            .field("cause", &self.cause())
+            .field("authority", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Irreversible no-receipt terminal reached only when the writer was already
+/// released but a later checked pair-handle close became ambiguous.
+#[must_use = "this terminal state deliberately has no normal release receipt"]
+pub(super) struct FixedPairReleaseAfterWriter {
+    cause: ServiceRunStateError,
+    _sealed: (),
+}
+
+impl FixedPairReleaseAfterWriter {
+    pub(super) const fn cause(&self) -> ServiceRunStateError {
+        self.cause
+    }
+}
+
+impl fmt::Debug for FixedPairReleaseAfterWriter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FixedPairReleaseAfterWriter")
+            .field("cause", &self.cause)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Checked terminal cleanup receipt for a release failure that retained the
+/// writer. It can never be confused with `FixedPairReleased`.
+#[must_use = "the failed fixed-pair release was terminally retired"]
+pub(super) struct FailedFixedPairReleaseRetired {
+    _sealed: (),
+}
+
+fn map_fixed_pair_release_failure(failure: sys::PairReleaseFailure) -> FixedPairReleaseFailure {
+    match failure {
+        sys::PairReleaseFailure::WriterRetained(inner) => {
+            FixedPairReleaseFailure::WriterRetained(FixedPairReleaseWithWriter { inner })
+        }
+        sys::PairReleaseFailure::WriterReleasedNoReceipt(cause) => {
+            FixedPairReleaseFailure::WriterReleasedNoReceipt(FixedPairReleaseAfterWriter {
+                cause,
+                _sealed: (),
+            })
+        }
     }
 }
 

@@ -221,6 +221,8 @@ std::thread_local! {
     static TEST_PAIR_RENAME_COUNT: Cell<usize> = const { Cell::new(0) };
     static TEST_PAIR_INSPECT_COUNT: Cell<usize> = const { Cell::new(0) };
     static TEST_PAIR_BEFORE_SECOND_CAS: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+    static TEST_PAIR_MARKER_ATTEMPT_FAILURE: Cell<bool> = const { Cell::new(false) };
+    static TEST_PAIR_ARM_COMMITTED_REREAD_FAILURE: Cell<bool> = const { Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -232,6 +234,8 @@ pub(super) enum TestReleaseStep {
     LockClosed,
     RootRevalidatedAfterLock,
     RootClosed,
+    PairCheckpointClosed,
+    PairMarkerClosed,
 }
 
 #[cfg(test)]
@@ -1419,11 +1423,61 @@ impl PairSnapshot {
             )
         )
     }
+
+    fn is_exact_pair(&self) -> bool {
+        pair_leaf_snapshot_is_exact(&self.marker) && pair_leaf_snapshot_is_exact(&self.checkpoint)
+    }
+
+    fn exact_pair(&self) -> Option<ExactFixedRunStatePair> {
+        let FixedRunStateRecordObservation::Exact(marker) = self.marker.observation else {
+            return None;
+        };
+        let FixedRunStateRecordObservation::Exact(checkpoint) = self.checkpoint.observation else {
+            return None;
+        };
+        self.is_exact_pair()
+            .then(|| ExactFixedRunStatePair::new(marker, checkpoint))
+    }
+}
+
+fn pair_leaf_snapshot_is_exact(snapshot: &PairLeafSnapshot) -> bool {
+    matches!(
+        snapshot.observation,
+        FixedRunStateRecordObservation::Exact(_)
+    ) && snapshot.identity.is_some()
+        && snapshot.length == Some(FIXED_RUN_STATE_RECORD_BYTES)
 }
 
 pub(super) struct PairFailure {
     pub(super) inner: HeldWriter,
     pub(super) cause: ServiceRunStateError,
+}
+
+#[allow(clippy::large_enum_variant)] // Inline terminal authority avoids fallible allocation.
+pub(super) enum PairReleaseFailure {
+    WriterRetained(PairReleaseWithWriter),
+    WriterReleasedNoReceipt(ServiceRunStateError),
+}
+
+pub(super) struct PairReleaseWithWriter {
+    inner: HeldWriter,
+    handles: PairReleaseHandles,
+    pub(super) cause: ServiceRunStateError,
+}
+
+impl PairReleaseWithWriter {
+    pub(super) fn retire(self) -> Result<(), ServiceRunStateError> {
+        let Self {
+            inner,
+            mut handles,
+            cause: _,
+        } = self;
+        // The pair handles remain held while every remaining writer authority
+        // is terminally retired. Both independent cleanup paths are attempted.
+        let writer = inner.retire();
+        let pair = handles.close_all_checked();
+        writer.and(pair)
+    }
 }
 
 pub(super) struct ObservedPairWriter {
@@ -1442,6 +1496,12 @@ impl ObservedPairWriter {
         candidate: ExactFixedRunStatePair,
     ) -> PairCommitOutcome {
         commit_observed_pair(self.inner, self.expected, candidate)
+    }
+
+    #[allow(clippy::result_large_err)] // Failure retains writer and pair handles inline.
+    pub(super) fn release_verified(self) -> Result<ExactFixedRunStatePair, PairReleaseFailure> {
+        let Self { inner, expected } = self;
+        release_snapshot_verified(inner, &expected)
     }
 
     pub(super) fn retire(self) -> Result<(), ServiceRunStateError> {
@@ -1481,7 +1541,7 @@ impl CommittedPairWriter {
         match reread {
             Ok(observed) if observed.is_exact_candidate(&candidate) => Ok(RereadPairWriter {
                 inner,
-                observation: observed.observation(),
+                snapshot: observed,
             }),
             Ok(_) => Err((
                 AmbiguousPairWriter::installed_pair(inner),
@@ -1498,12 +1558,19 @@ impl CommittedPairWriter {
 
 pub(super) struct RereadPairWriter {
     inner: HeldWriter,
-    observation: FixedRunStatePairObservation,
+    snapshot: PairSnapshot,
 }
 
 impl RereadPairWriter {
     pub(super) const fn observation(&self) -> FixedRunStatePairObservation {
-        self.observation
+        self.snapshot.observation()
+    }
+
+    pub(super) fn continue_observed(self) -> ObservedPairWriter {
+        ObservedPairWriter {
+            inner: self.inner,
+            expected: self.snapshot,
+        }
     }
 
     #[cfg(test)]
@@ -1567,7 +1634,7 @@ impl AmbiguousPairWriter {
         match result {
             Ok(observed) => Ok(ReloadedPairWriter {
                 inner: self.inner,
-                observation: observed.observation(),
+                snapshot: observed,
             }),
             Err(cause) => Err(AmbiguousPairFailure { inner: self, cause }),
         }
@@ -1602,12 +1669,19 @@ pub(super) struct AmbiguousPairFailure {
 
 pub(super) struct ReloadedPairWriter {
     inner: HeldWriter,
-    observation: FixedRunStatePairObservation,
+    snapshot: PairSnapshot,
 }
 
 impl ReloadedPairWriter {
     pub(super) const fn observation(&self) -> FixedRunStatePairObservation {
-        self.observation
+        self.snapshot.observation()
+    }
+
+    pub(super) fn continue_observed(self) -> ObservedPairWriter {
+        ObservedPairWriter {
+            inner: self.inner,
+            expected: self.snapshot,
+        }
     }
 
     #[cfg(test)]
@@ -1678,6 +1752,168 @@ impl fmt::Debug for ReloadedPairWriter {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ReloadedPairWriter([REDACTED])")
     }
+}
+
+impl fmt::Debug for PairReleaseFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WriterRetained(failure) => formatter
+                .debug_tuple("WriterRetained")
+                .field(&failure.cause)
+                .finish(),
+            Self::WriterReleasedNoReceipt(cause) => formatter
+                .debug_tuple("WriterReleasedNoReceipt")
+                .field(cause)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct PairReleaseHandles {
+    marker_final: Option<OwnedHandle>,
+    checkpoint_final: Option<OwnedHandle>,
+    marker_temp: Option<OwnedHandle>,
+    checkpoint_temp: Option<OwnedHandle>,
+}
+
+impl PairReleaseHandles {
+    fn slot_mut(&mut self, leaf: PairLeaf) -> &mut Option<OwnedHandle> {
+        match leaf {
+            PairLeaf::MarkerFinal => &mut self.marker_final,
+            PairLeaf::MarkerTemp => &mut self.marker_temp,
+            PairLeaf::CheckpointFinal => &mut self.checkpoint_final,
+            PairLeaf::CheckpointTemp => &mut self.checkpoint_temp,
+        }
+    }
+
+    fn close_all_checked(&mut self) -> Result<(), ServiceRunStateError> {
+        let checkpoint_final = close_optional_pair_handle(&mut self.checkpoint_final);
+        let marker_final = close_optional_pair_handle(&mut self.marker_final);
+        let checkpoint_temp = close_optional_pair_handle(&mut self.checkpoint_temp);
+        let marker_temp = close_optional_pair_handle(&mut self.marker_temp);
+        checkpoint_final
+            .and(marker_final)
+            .and(checkpoint_temp)
+            .and(marker_temp)
+    }
+}
+
+fn close_optional_pair_handle(
+    handle: &mut Option<OwnedHandle>,
+) -> Result<(), ServiceRunStateError> {
+    handle.as_mut().map_or(Ok(()), OwnedHandle::close_checked)
+}
+
+#[allow(clippy::result_large_err)] // Failure retains the writer and held pair handles inline.
+fn release_snapshot_verified(
+    writer: HeldWriter,
+    expected: &PairSnapshot,
+) -> Result<ExactFixedRunStatePair, PairReleaseFailure> {
+    let mut handles = PairReleaseHandles::default();
+    let Some(exact_pair) = expected.exact_pair() else {
+        return Err(PairReleaseFailure::WriterRetained(PairReleaseWithWriter {
+            inner: writer,
+            handles,
+            cause: ServiceRunStateError::Shape,
+        }));
+    };
+    let verification = (|| {
+        writer.revalidate()?;
+        hold_exact_pair_final(
+            &writer,
+            &mut handles,
+            PairLeaf::MarkerFinal,
+            expected.marker,
+        )?;
+        hold_exact_pair_final(
+            &writer,
+            &mut handles,
+            PairLeaf::CheckpointFinal,
+            expected.checkpoint,
+        )?;
+        require_pair_temp_missing(&writer, &mut handles, PairLeaf::MarkerTemp)?;
+        require_pair_temp_missing(&writer, &mut handles, PairLeaf::CheckpointTemp)
+    })();
+    if let Err(cause) = verification {
+        return Err(PairReleaseFailure::WriterRetained(PairReleaseWithWriter {
+            inner: writer,
+            handles,
+            cause,
+        }));
+    }
+
+    match writer.release_verified() {
+        Err(ReleaseFailure { inner, cause }) => {
+            Err(PairReleaseFailure::WriterRetained(PairReleaseWithWriter {
+                inner,
+                handles,
+                cause,
+            }))
+        }
+        Ok(()) => match handles.close_all_checked() {
+            Ok(()) => Ok(exact_pair),
+            Err(cause) => Err(PairReleaseFailure::WriterReleasedNoReceipt(cause)),
+        },
+    }
+}
+
+fn hold_exact_pair_final(
+    writer: &HeldWriter,
+    handles: &mut PairReleaseHandles,
+    leaf: PairLeaf,
+    expected: PairLeafSnapshot,
+) -> Result<(), ServiceRunStateError> {
+    let opened = open_existing_pair_leaf(writer.state_handle()?, leaf)?;
+    let PairLeafOpen::Opened(opened) = opened else {
+        return Err(ServiceRunStateError::Missing);
+    };
+    let OpenedPairLeaf {
+        handle,
+        status_error,
+        information,
+    } = opened;
+    *handles.slot_mut(leaf) = Some(handle);
+    require_pair_open(status_error, information)?;
+    let current = inspect_pair_file(
+        handles
+            .slot_mut(leaf)
+            .as_ref()
+            .ok_or(ServiceRunStateError::Release)?
+            .raw(),
+        &writer.root.expected.policy,
+        writer.root.expected.root_identity.volume_serial_number,
+        PAIR_FINAL_GRANTED_ACCESS,
+    )?;
+    if current.identity != expected.identity {
+        return Err(ServiceRunStateError::Identity);
+    }
+    if current.length != expected.length {
+        return Err(ServiceRunStateError::Shape);
+    }
+    if current.observation != expected.observation {
+        return Err(ServiceRunStateError::Compare);
+    }
+    Ok(())
+}
+
+fn require_pair_temp_missing(
+    writer: &HeldWriter,
+    handles: &mut PairReleaseHandles,
+    leaf: PairLeaf,
+) -> Result<(), ServiceRunStateError> {
+    let opened = open_existing_pair_leaf(writer.state_handle()?, leaf)?;
+    let PairLeafOpen::Opened(opened) = opened else {
+        return Ok(());
+    };
+    let OpenedPairLeaf {
+        handle,
+        status_error,
+        information,
+    } = opened;
+    *handles.slot_mut(leaf) = Some(handle);
+    require_pair_open(status_error, information)?;
+    Err(ServiceRunStateError::Shape)
 }
 
 struct OpenedPairLeaf {
@@ -2496,6 +2732,13 @@ fn rename_staged_pair_file(writer: &HeldWriter, staged: &StagedPairFile) -> Rena
     // From this exact point onward the source may already name the final leaf.
     #[cfg(test)]
     TEST_PAIR_RENAME_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+    #[cfg(test)]
+    if staged.record == PairRecordKind::Marker && take_pair_marker_attempt_failure_for_test() {
+        return RenamePairAttempt {
+            attempted: true,
+            result: Err(ServiceRunStateError::Rename),
+        };
+    }
     // SAFETY: the aligned packet, source handle, held root directory, and
     // output remain live for the complete synchronous native call.
     let status = unsafe {
@@ -2790,10 +3033,16 @@ fn commit_observed_pair(
         Ok(())
     })();
     match final_verification {
-        Ok(()) => PairCommitOutcome::Committed(CommittedPairWriter {
-            inner: writer,
-            candidate,
-        }),
+        Ok(()) => {
+            #[cfg(test)]
+            if take_pair_committed_reread_failure_for_test() {
+                inject_close_fault_for_test(TestCloseFault::RevalidationState);
+            }
+            PairCommitOutcome::Committed(CommittedPairWriter {
+                inner: writer,
+                candidate,
+            })
+        }
         Err(cause) => {
             PairCommitOutcome::Ambiguous(AmbiguousPairWriter::installed_pair(writer), cause)
         }
@@ -4031,12 +4280,16 @@ impl OwnedHandle {
                     HandleRole::State => record_release_step_for_test(TestReleaseStep::StateClosed),
                     HandleRole::Lock => record_release_step_for_test(TestReleaseStep::LockClosed),
                     HandleRole::Root => record_release_step_for_test(TestReleaseStep::RootClosed),
+                    HandleRole::PairCheckpointFinal => {
+                        record_release_step_for_test(TestReleaseStep::PairCheckpointClosed);
+                    }
+                    HandleRole::PairMarkerFinal => {
+                        record_release_step_for_test(TestReleaseStep::PairMarkerClosed);
+                    }
                     HandleRole::Generic
                     | HandleRole::RevalidationRoot
                     | HandleRole::RevalidationState
-                    | HandleRole::PairMarkerFinal
                     | HandleRole::PairMarkerTemp
-                    | HandleRole::PairCheckpointFinal
                     | HandleRole::PairCheckpointTemp => {}
                 }
                 Ok(())
@@ -4148,6 +4401,26 @@ pub(super) fn inject_pair_before_second_cas_for_test(operation: impl FnOnce() + 
     TEST_PAIR_BEFORE_SECOND_CAS.with(|slot| {
         assert!(slot.borrow_mut().replace(Box::new(operation)).is_none());
     });
+}
+
+#[cfg(test)]
+pub(super) fn inject_pair_marker_attempt_failure_for_test() {
+    TEST_PAIR_MARKER_ATTEMPT_FAILURE.with(|slot| slot.set(true));
+}
+
+#[cfg(test)]
+fn take_pair_marker_attempt_failure_for_test() -> bool {
+    TEST_PAIR_MARKER_ATTEMPT_FAILURE.with(|slot| slot.replace(false))
+}
+
+#[cfg(test)]
+pub(super) fn inject_pair_committed_reread_failure_for_test() {
+    TEST_PAIR_ARM_COMMITTED_REREAD_FAILURE.with(|slot| slot.set(true));
+}
+
+#[cfg(test)]
+fn take_pair_committed_reread_failure_for_test() -> bool {
+    TEST_PAIR_ARM_COMMITTED_REREAD_FAILURE.with(|slot| slot.replace(false))
 }
 
 #[cfg(test)]

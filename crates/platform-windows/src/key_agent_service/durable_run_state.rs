@@ -25,6 +25,9 @@ mod provisioning;
 #[cfg(windows)]
 mod windows_pair;
 
+#[cfg(windows)]
+mod windows_runtime;
+
 type HmacSha256 = Hmac<Sha256>;
 
 const RUN_MARKER_MAGIC_V1: &[u8; 8] = b"YWRUNV01";
@@ -154,6 +157,10 @@ pub(super) enum RecoveryRequired {
     /// The bounded fixture could not allocate another unique backend binding.
     #[error("the durable run-state backend binding is exhausted")]
     BackendBindingExhausted,
+    /// The dormant Windows fixed-pair backend failed while logical authority
+    /// remained held for terminal retirement.
+    #[error("the Windows durable run-state backend failed")]
+    WindowsBackendFailure,
     /// Final writer release may or may not have completed.
     #[error("the durable run-state writer release is ambiguous")]
     WriterReleaseAmbiguous,
@@ -540,6 +547,50 @@ impl fmt::Debug for SingleWriterLease {
 /// marker or checkpoint observation was captured.
 pub(super) struct RuntimeWriterAcquired {
     lease: SingleWriterLease,
+}
+
+impl RuntimeWriterAcquired {
+    /// Seals one already-held external writer into the shared Phase 2D model.
+    ///
+    /// The caller must have acquired the external writer before capturing the
+    /// observation supplied to [`Self::authenticate_observation`].
+    const fn from_exclusive_acquisition(
+        installation: InstallationIdentity,
+        epoch: NonZeroU64,
+        binding: BackendBinding,
+    ) -> Self {
+        Self {
+            lease: SingleWriterLease::from_exclusive_acquisition(installation, epoch, binding),
+        }
+    }
+
+    /// Authenticates one writer-bound observation through the same sealed
+    /// helper used by the bounded Phase 2D fixture.
+    #[allow(clippy::large_types_passed_by_value)] // The exact pair is consumed once.
+    fn authenticate_observation(
+        self,
+        observed: SnapshotObservation,
+        key: &FixtureRunStateAuthenticationKey,
+    ) -> Result<BootEvidence, DurableFailureWithWriter> {
+        let Self { lease } = self;
+        let durable = match verify_observation(&observed, lease.installation, key) {
+            Ok(durable) => durable,
+            Err(reason) => return Err(DurableFailureWithWriter::new(reason, lease)),
+        };
+        if durable.marker.state != RunMarkerState::Clean {
+            return Err(DurableFailureWithWriter::new(
+                RecoveryRequired::PersistedNonCleanState,
+                lease,
+            ));
+        }
+        Ok(BootEvidence { durable, lease })
+    }
+
+    /// Converts a pre-authentication writer into terminal-only logical state.
+    #[must_use]
+    fn into_writer_exit(self) -> WriterExitPending {
+        WriterExitPending::new(self.lease)
+    }
 }
 
 impl fmt::Debug for RuntimeWriterAcquired {
@@ -2246,9 +2297,11 @@ impl DurableRunStateFixture {
             ))?;
         self.last_writer_epoch = epoch.get();
         self.held_writer = Some(FixtureWriterRecord::runtime(installation, epoch));
-        Ok(RuntimeWriterAcquired {
-            lease: SingleWriterLease::from_exclusive_acquisition(installation, epoch, self.binding),
-        })
+        Ok(RuntimeWriterAcquired::from_exclusive_acquisition(
+            installation,
+            epoch,
+            self.binding,
+        ))
     }
 
     fn writer_observation(&self) -> WriterObservation {
@@ -2288,41 +2341,36 @@ impl DurableRunStateFixture {
         acquired: RuntimeWriterAcquired,
         key: &FixtureRunStateAuthenticationKey,
     ) -> Result<BootEvidence, RuntimeBootStartFailure> {
-        let RuntimeWriterAcquired { lease } = acquired;
-        if lease.binding != self.binding {
-            return Err(RuntimeBootStartFailure::WithWriter(
-                DurableFailureWithWriter::new(RecoveryRequired::BackendBindingMismatch, lease),
-            ));
-        }
-        if lease.installation != self.installation {
+        if acquired.lease.binding != self.binding {
             return Err(RuntimeBootStartFailure::WithWriter(
                 DurableFailureWithWriter::new(
-                    RecoveryRequired::InstallationIdentityMismatch,
-                    lease,
+                    RecoveryRequired::BackendBindingMismatch,
+                    acquired.lease,
                 ),
             ));
         }
-        let expected = FixtureWriterRecord::runtime(lease.installation, lease.epoch);
+        if acquired.lease.installation != self.installation {
+            return Err(RuntimeBootStartFailure::WithWriter(
+                DurableFailureWithWriter::new(
+                    RecoveryRequired::InstallationIdentityMismatch,
+                    acquired.lease,
+                ),
+            ));
+        }
+        let expected =
+            FixtureWriterRecord::runtime(acquired.lease.installation, acquired.lease.epoch);
         if self.held_writer != Some(expected) {
             return Err(RuntimeBootStartFailure::WithWriter(
-                DurableFailureWithWriter::new(RecoveryRequired::WriterLeaseMismatch, lease),
+                DurableFailureWithWriter::new(
+                    RecoveryRequired::WriterLeaseMismatch,
+                    acquired.lease,
+                ),
             ));
         }
         let observed = SnapshotObservation::capture(self.marker_bytes(), self.checkpoint_bytes());
-        let durable = match verify_observation(&observed, lease.installation, key) {
-            Ok(durable) => durable,
-            Err(reason) => {
-                return Err(RuntimeBootStartFailure::WithWriter(
-                    DurableFailureWithWriter::new(reason, lease),
-                ));
-            }
-        };
-        if durable.marker.state != RunMarkerState::Clean {
-            return Err(RuntimeBootStartFailure::WithWriter(
-                DurableFailureWithWriter::new(RecoveryRequired::PersistedNonCleanState, lease),
-            ));
-        }
-        Ok(BootEvidence { durable, lease })
+        acquired
+            .authenticate_observation(observed, key)
+            .map_err(RuntimeBootStartFailure::WithWriter)
     }
 
     /// Structurally chains writer-first acquisition into the sole fresh

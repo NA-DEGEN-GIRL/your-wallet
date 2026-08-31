@@ -42,9 +42,10 @@ use windows::core::{BOOL, PCWSTR};
 use super::sys::{self, TestObjectIdentity};
 use super::{
     ExactFixedRunStatePair, ExpectedInstalledRunStateObjects, FIXED_RUN_STATE_RECORD_BYTES,
-    FixedPairCommitOutcome, FixedPairCommitted, FixedRunStateRecordObservation,
-    HeldServiceRunStateRoot, HeldServiceRunStateWriter, ObservedFixedRunStatePair,
-    RuntimeRunLockStartFailure, ServiceRunStateError, open_test_service_run_state_root,
+    FixedPairCommitOutcome, FixedPairCommitted, FixedPairReleaseFailure, FixedPairReread,
+    FixedRunStateRecordObservation, HeldServiceRunStateRoot, HeldServiceRunStateWriter,
+    ObservedFixedRunStatePair, RuntimeRunLockStartFailure, ServiceRunStateError,
+    open_test_service_run_state_root,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -543,6 +544,70 @@ impl InstalledFixture {
 
     fn cleanup_checked(mut self) -> TestResult {
         self.tree.cleanup_checked()
+    }
+}
+
+/// Opaque current-user installation surrogate for sibling runtime tests.
+/// Paths, identities, expected authority, and fault scripting stay private to
+/// this kernel-backed fixture module.
+pub(in crate::key_agent_service) struct RuntimePairFixture {
+    inner: InstalledFixture,
+}
+
+/// Opaque, one-shot kernel fault points used only by the sibling composite
+/// tests. No path, handle, identity, or low-level fault type crosses modules.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::key_agent_service) enum RuntimePairFault {
+    MarkerRenameAttempt,
+    AfterMarkerRename,
+    AfterCheckpointRename,
+    CommittedRereadRevalidation,
+    WriterReleaseUnlock,
+    CheckpointFinalClose,
+}
+
+impl RuntimePairFixture {
+    pub(in crate::key_agent_service) fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        InstalledFixture::new().map(|inner| Self { inner })
+    }
+
+    pub(in crate::key_agent_service) fn acquire_writer(
+        &self,
+    ) -> Result<HeldServiceRunStateWriter, ServiceRunStateError> {
+        let root = open_test_service_run_state_root(&self.inner.base, self.inner.expected()?)?;
+        acquire_for_test(root)
+    }
+
+    #[allow(clippy::unused_self)] // The fault is scoped to this fixture's test thread.
+    pub(in crate::key_agent_service) fn inject_fault(&self, fault: RuntimePairFault) {
+        match fault {
+            RuntimePairFault::MarkerRenameAttempt => {
+                sys::inject_pair_marker_attempt_failure_for_test();
+            }
+            RuntimePairFault::AfterMarkerRename => sys::inject_pair_impersonation_fault_for_test(
+                sys::TestPairImpersonationFault::AfterMarker,
+            ),
+            RuntimePairFault::AfterCheckpointRename => {
+                sys::inject_pair_impersonation_fault_for_test(
+                    sys::TestPairImpersonationFault::AfterCheckpoint,
+                );
+            }
+            RuntimePairFault::CommittedRereadRevalidation => {
+                sys::inject_pair_committed_reread_failure_for_test();
+            }
+            RuntimePairFault::WriterReleaseUnlock => {
+                sys::inject_unlock_fault_for_test();
+            }
+            RuntimePairFault::CheckpointFinalClose => {
+                sys::inject_close_fault_for_test(sys::TestCloseFault::PairCheckpointFinal);
+            }
+        }
+    }
+
+    pub(in crate::key_agent_service) fn cleanup_checked(
+        self,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.inner.cleanup_checked()
     }
 }
 
@@ -1279,6 +1344,30 @@ fn commit_pair_for_test(
             Err(cause.into())
         }
         FixedPairCommitOutcome::Ambiguous(failure) => {
+            let cause = failure.cause();
+            let _retired = failure.retire()?;
+            Err(cause.into())
+        }
+    }
+}
+
+#[allow(clippy::large_types_passed_by_value)] // Mirrors the consuming production facade.
+fn install_and_reread_pair_for_test(
+    fixture: &InstalledFixture,
+    candidate: ExactFixedRunStatePair,
+) -> TestResultWith<FixedPairReread> {
+    let writer = acquire_for_test(open_test_service_run_state_root(
+        &fixture.base,
+        fixture.expected()?,
+    )?)?;
+    let observed = writer.observe_fixed_pair().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        cause
+    })?;
+    match commit_pair_for_test(observed, candidate)?.reread() {
+        Ok(reread) => Ok(reread),
+        Err(failure) => {
             let cause = failure.cause();
             let _retired = failure.retire()?;
             Err(cause.into())
@@ -2054,7 +2143,18 @@ fn fixed_pair_first_rename_boundary_reload_and_close_poison_are_exact() -> TestR
         reloaded.observation().checkpoint(),
         FixedRunStateRecordObservation::Exact(*candidate.checkpoint())
     );
-    let _retired = reloaded.retire()?;
+    let released = match reloaded.continue_observed().release_verified() {
+        Ok(released) => released,
+        Err(FixedPairReleaseFailure::WriterRetained(failure)) => {
+            let cause = failure.cause();
+            let _retired = failure.retire()?;
+            return Err(cause.into());
+        }
+        Err(FixedPairReleaseFailure::WriterReleasedNoReceipt(failure)) => {
+            return Err(failure.cause().into());
+        }
+    };
+    assert_eq!(released.pair(), candidate);
     assert!(paths[0].exists() && paths[2].exists() && !paths[1].exists() && !paths[3].exists());
     full.cleanup_checked()?;
 
@@ -2245,6 +2345,293 @@ fn fixed_pair_reread_revalidates_writer_and_probe_close_poison_blocks_receipts()
         ambiguous.retire(),
         Err(ServiceRunStateError::Release)
     ));
+    fixture.cleanup_checked()
+}
+
+#[test]
+fn fixed_pair_continuation_preserves_full_ids_for_the_next_cas() -> TestResult {
+    let fixture = InstalledFixture::new()?;
+    let paths = pair_paths(&fixture.base);
+    let current = ExactFixedRunStatePair::new(
+        [0x13; FIXED_RUN_STATE_RECORD_BYTES],
+        [0x24; FIXED_RUN_STATE_RECORD_BYTES],
+    );
+    let continued = install_and_reread_pair_for_test(&fixture, current)?.continue_observed();
+    let original = sys::record_object_identity_for_test(&paths[0], false)?;
+    fs::remove_file(&paths[0])?;
+    create_record_file_with_sddl(
+        &paths[0],
+        &sys::exact_pair_file_sddl_for_test()?,
+        current.marker(),
+    )?;
+    assert_ne!(
+        sys::record_object_identity_for_test(&paths[0], false)?,
+        original
+    );
+
+    let candidate = ExactFixedRunStatePair::new(
+        [0x35; FIXED_RUN_STATE_RECORD_BYTES],
+        [0x46; FIXED_RUN_STATE_RECORD_BYTES],
+    );
+    match continued.compare_and_replace(candidate) {
+        FixedPairCommitOutcome::KnownNotCommitted(failure) => {
+            assert_eq!(failure.cause(), ServiceRunStateError::Compare);
+            let _retired = failure.retire()?;
+        }
+        other => {
+            return Err(std::io::Error::other(format!(
+                "continued CAS accepted a same-byte ID replacement: {other:?}"
+            ))
+            .into());
+        }
+    }
+    assert!(!paths[1].exists() && !paths[3].exists());
+    fixture.cleanup_checked()
+}
+
+#[test]
+fn fixed_pair_verified_release_has_exact_order_and_receipt() -> TestResult {
+    let fixture = InstalledFixture::new()?;
+    let candidate = ExactFixedRunStatePair::new(
+        [0x57; FIXED_RUN_STATE_RECORD_BYTES],
+        [0x68; FIXED_RUN_STATE_RECORD_BYTES],
+    );
+    let observed = install_and_reread_pair_for_test(&fixture, candidate)?.continue_observed();
+    let _ = sys::take_release_trace_for_test();
+    let released = match observed.release_verified() {
+        Ok(released) => released,
+        Err(FixedPairReleaseFailure::WriterRetained(failure)) => {
+            let cause = failure.cause();
+            let _retired = failure.retire()?;
+            return Err(cause.into());
+        }
+        Err(FixedPairReleaseFailure::WriterReleasedNoReceipt(failure)) => {
+            return Err(failure.cause().into());
+        }
+    };
+    assert_eq!(released.pair(), candidate);
+    assert_eq!(
+        sys::take_release_trace_for_test(),
+        vec![
+            sys::TestReleaseStep::WriterRevalidated,
+            sys::TestReleaseStep::StateClosed,
+            sys::TestReleaseStep::RangeUnlocked,
+            sys::TestReleaseStep::LockClosed,
+            sys::TestReleaseStep::RootRevalidatedAfterLock,
+            sys::TestReleaseStep::RootClosed,
+            sys::TestReleaseStep::PairCheckpointClosed,
+            sys::TestReleaseStep::PairMarkerClosed,
+        ]
+    );
+    let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
+    release_for_test(acquire_for_test(root)?)?;
+    fixture.cleanup_checked()
+}
+
+#[test]
+fn fixed_pair_verified_release_rejects_drift_and_retains_both_final_handles() -> TestResult {
+    let fixture = InstalledFixture::new()?;
+    let paths = pair_paths(&fixture.base);
+    let candidate = ExactFixedRunStatePair::new(
+        [0x79; FIXED_RUN_STATE_RECORD_BYTES],
+        [0x8a; FIXED_RUN_STATE_RECORD_BYTES],
+    );
+    let observed = install_and_reread_pair_for_test(&fixture, candidate)?.continue_observed();
+    fs::write(&paths[2], [0x9b; FIXED_RUN_STATE_RECORD_BYTES])?;
+    let failure = match observed.release_verified() {
+        Err(FixedPairReleaseFailure::WriterRetained(failure)) => failure,
+        Err(FixedPairReleaseFailure::WriterReleasedNoReceipt(failure)) => {
+            return Err(std::io::Error::other(format!(
+                "pair drift released the writer before rejection: {:?}",
+                failure.cause()
+            ))
+            .into());
+        }
+        Ok(_released) => {
+            return Err(std::io::Error::other("pair drift minted a release receipt").into());
+        }
+    };
+    assert_eq!(failure.cause(), ServiceRunStateError::Compare);
+    for (path, role) in [(&paths[0], "marker"), (&paths[2], "checkpoint")] {
+        fresh_access_fails_with(
+            path,
+            sys::PAIR_FINAL_OPEN_DESIRED_ACCESS_FOR_TEST,
+            false,
+            role,
+            "release-bound reopen",
+            ERROR_SHARING_VIOLATION.to_hresult(),
+        )?;
+    }
+    let _retired = failure.retire()?;
+    fixture.cleanup_checked()
+}
+
+#[test]
+fn fixed_pair_verified_release_rejects_same_bytes_id_swap() -> TestResult {
+    let fixture = InstalledFixture::new()?;
+    let paths = pair_paths(&fixture.base);
+    let candidate = ExactFixedRunStatePair::new(
+        [0xac; FIXED_RUN_STATE_RECORD_BYTES],
+        [0xbd; FIXED_RUN_STATE_RECORD_BYTES],
+    );
+    let observed = install_and_reread_pair_for_test(&fixture, candidate)?.continue_observed();
+    let original = sys::record_object_identity_for_test(&paths[0], false)?;
+    fs::remove_file(&paths[0])?;
+    create_record_file_with_sddl(
+        &paths[0],
+        &sys::exact_pair_file_sddl_for_test()?,
+        candidate.marker(),
+    )?;
+    assert_ne!(
+        sys::record_object_identity_for_test(&paths[0], false)?,
+        original
+    );
+    let failure = match observed.release_verified() {
+        Err(FixedPairReleaseFailure::WriterRetained(failure)) => failure,
+        Err(FixedPairReleaseFailure::WriterReleasedNoReceipt(failure)) => {
+            return Err(failure.cause().into());
+        }
+        Ok(_released) => {
+            return Err(std::io::Error::other("same-byte ID swap minted a receipt").into());
+        }
+    };
+    assert_eq!(failure.cause(), ServiceRunStateError::Identity);
+    fresh_access_fails_with(
+        &paths[0],
+        sys::PAIR_FINAL_OPEN_DESIRED_ACCESS_FOR_TEST,
+        false,
+        "marker",
+        "release-bound reopen",
+        ERROR_SHARING_VIOLATION.to_hresult(),
+    )?;
+    let _retired = failure.retire()?;
+    fixture.cleanup_checked()
+}
+
+#[test]
+fn fixed_pair_verified_release_rejects_and_holds_unexpected_temp() -> TestResult {
+    let fixture = InstalledFixture::new()?;
+    let paths = pair_paths(&fixture.base);
+    let candidate = ExactFixedRunStatePair::new(
+        [0xce; FIXED_RUN_STATE_RECORD_BYTES],
+        [0xdf; FIXED_RUN_STATE_RECORD_BYTES],
+    );
+    let observed = install_and_reread_pair_for_test(&fixture, candidate)?.continue_observed();
+    create_record_file_with_sddl(&paths[1], &sys::exact_pair_file_sddl_for_test()?, &[])?;
+    let failure = match observed.release_verified() {
+        Err(FixedPairReleaseFailure::WriterRetained(failure)) => failure,
+        Err(FixedPairReleaseFailure::WriterReleasedNoReceipt(failure)) => {
+            return Err(failure.cause().into());
+        }
+        Ok(_released) => {
+            return Err(std::io::Error::other("unexpected temp minted a receipt").into());
+        }
+    };
+    assert_eq!(failure.cause(), ServiceRunStateError::Shape);
+    for (path, role) in [
+        (&paths[0], "marker"),
+        (&paths[2], "checkpoint"),
+        (&paths[1], "marker temp"),
+    ] {
+        fresh_access_fails_with(
+            path,
+            sys::PAIR_FINAL_OPEN_DESIRED_ACCESS_FOR_TEST,
+            false,
+            role,
+            "release-bound reopen",
+            ERROR_SHARING_VIOLATION.to_hresult(),
+        )?;
+    }
+    let _retired = failure.retire()?;
+    assert!(paths[1].exists(), "unexpected temp was silently deleted");
+    fixture.cleanup_checked()
+}
+
+#[test]
+fn fixed_pair_release_unlock_failure_retains_handles_until_retire() -> TestResult {
+    let fixture = InstalledFixture::new()?;
+    let paths = pair_paths(&fixture.base);
+    let candidate = ExactFixedRunStatePair::new(
+        [0xe1; FIXED_RUN_STATE_RECORD_BYTES],
+        [0xf2; FIXED_RUN_STATE_RECORD_BYTES],
+    );
+    let observed = install_and_reread_pair_for_test(&fixture, candidate)?.continue_observed();
+    let _ = sys::take_release_trace_for_test();
+    sys::inject_unlock_fault_for_test();
+    let failure = match observed.release_verified() {
+        Err(FixedPairReleaseFailure::WriterRetained(failure)) => failure,
+        Err(FixedPairReleaseFailure::WriterReleasedNoReceipt(failure)) => {
+            return Err(failure.cause().into());
+        }
+        Ok(_released) => {
+            return Err(std::io::Error::other("unlock failure minted a pair receipt").into());
+        }
+    };
+    assert_eq!(failure.cause(), ServiceRunStateError::Release);
+    for (path, role) in [(&paths[0], "marker"), (&paths[2], "checkpoint")] {
+        fresh_access_fails_with(
+            path,
+            sys::PAIR_FINAL_OPEN_DESIRED_ACCESS_FOR_TEST,
+            false,
+            role,
+            "retained release handle",
+            ERROR_SHARING_VIOLATION.to_hresult(),
+        )?;
+    }
+    let _retired = failure.retire()?;
+    assert_eq!(
+        sys::take_release_trace_for_test(),
+        vec![
+            sys::TestReleaseStep::WriterRevalidated,
+            sys::TestReleaseStep::StateClosed,
+            sys::TestReleaseStep::RangeUnlocked,
+            sys::TestReleaseStep::LockClosed,
+            sys::TestReleaseStep::RootClosed,
+            sys::TestReleaseStep::PairCheckpointClosed,
+            sys::TestReleaseStep::PairMarkerClosed,
+        ]
+    );
+    let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
+    release_for_test(acquire_for_test(root)?)?;
+    fixture.cleanup_checked()
+}
+
+#[test]
+fn fixed_pair_post_writer_close_ambiguity_is_terminal_without_receipt() -> TestResult {
+    let fixture = InstalledFixture::new()?;
+    let candidate = ExactFixedRunStatePair::new(
+        [0x14; FIXED_RUN_STATE_RECORD_BYTES],
+        [0x25; FIXED_RUN_STATE_RECORD_BYTES],
+    );
+    let observed = install_and_reread_pair_for_test(&fixture, candidate)?.continue_observed();
+    let _ = sys::take_release_trace_for_test();
+    sys::inject_close_fault_for_test(sys::TestCloseFault::PairCheckpointFinal);
+    let failure = match observed.release_verified() {
+        Err(FixedPairReleaseFailure::WriterReleasedNoReceipt(failure)) => failure,
+        Err(FixedPairReleaseFailure::WriterRetained(failure)) => {
+            let cause = failure.cause();
+            let _ = failure.retire();
+            return Err(cause.into());
+        }
+        Ok(_released) => {
+            return Err(std::io::Error::other("ambiguous pair close minted a receipt").into());
+        }
+    };
+    assert_eq!(failure.cause(), ServiceRunStateError::Release);
+    assert_eq!(
+        sys::take_release_trace_for_test(),
+        vec![
+            sys::TestReleaseStep::WriterRevalidated,
+            sys::TestReleaseStep::StateClosed,
+            sys::TestReleaseStep::RangeUnlocked,
+            sys::TestReleaseStep::LockClosed,
+            sys::TestReleaseStep::RootRevalidatedAfterLock,
+            sys::TestReleaseStep::RootClosed,
+            sys::TestReleaseStep::PairMarkerClosed,
+        ]
+    );
+    let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
+    release_for_test(acquire_for_test(root)?)?;
     fixture.cleanup_checked()
 }
 

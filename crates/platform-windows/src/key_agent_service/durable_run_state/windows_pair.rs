@@ -11,9 +11,10 @@ use core::fmt;
 use super::super::run_state_root::{
     ExactFixedRunStatePair, FIXED_RUN_STATE_RECORD_BYTES, FailedRunLockRetired, FixedPairAmbiguous,
     FixedPairCommitOutcome as RootFixedPairCommitOutcome, FixedPairCommitted,
-    FixedPairKnownFailure, FixedPairReloadFailure, FixedPairReloaded, FixedPairReread,
-    FixedRunStatePairObservation, FixedRunStateRecordObservation, HeldServiceRunStateWriter,
-    ObservedFixedRunStatePair, ServiceRunStateError,
+    FixedPairKnownFailure, FixedPairReleaseAfterWriter, FixedPairReleaseFailure,
+    FixedPairReleaseWithWriter, FixedPairReleased, FixedPairReloadFailure, FixedPairReloaded,
+    FixedPairReread, FixedRunStatePairObservation, FixedRunStateRecordObservation,
+    HeldServiceRunStateWriter, ObservedFixedRunStatePair, ServiceRunStateError,
 };
 use super::{
     CanonicalSnapshot, FixedObservation, HIGH_WATER_BYTES, RUN_MARKER_BYTES, SnapshotObservation,
@@ -172,6 +173,26 @@ impl WindowsObservedPair {
         })
     }
 
+    /// Releases the exact writer only while this observation's pair bytes and
+    /// full identities remain bound throughout checked close.
+    #[allow(clippy::result_large_err)] // Failure retains authority inline.
+    pub(super) fn release_verified(self) -> Result<WindowsPairReleased, WindowsPairReleaseFailure> {
+        match self.inner.release_verified() {
+            Ok(inner) => Ok(WindowsPairReleased {
+                pair: canonical_snapshot(&inner.pair()),
+                inner,
+            }),
+            Err(FixedPairReleaseFailure::WriterRetained(inner)) => Err(
+                WindowsPairReleaseFailure::WriterRetained(WindowsPairReleaseWithWriter { inner }),
+            ),
+            Err(FixedPairReleaseFailure::WriterReleasedNoReceipt(inner)) => {
+                Err(WindowsPairReleaseFailure::WriterReleasedNoReceipt(
+                    WindowsPairReleaseAfterWriter { inner },
+                ))
+            }
+        }
+    }
+
     /// Terminally retires the writer without attempting a commit.
     pub(super) fn retire(self) -> Result<WindowsPairRetired, ServiceRunStateError> {
         retirement(self.inner.retire())
@@ -297,6 +318,15 @@ impl WindowsRereadPair {
     /// Returns the independently captured fixed-pair observation.
     pub(super) const fn observation(&self) -> SnapshotObservation {
         self.observation
+    }
+
+    /// Continues with the independently reopened bytes and full identities as
+    /// the next consuming pair expectation.
+    pub(super) fn continue_observed(self) -> WindowsObservedPair {
+        WindowsObservedPair {
+            inner: self.inner.continue_observed(),
+            observation: self.observation,
+        }
     }
 
     /// Terminally retires the writer after the independent reread.
@@ -440,6 +470,15 @@ impl WindowsReloadedPair {
         self.observation
     }
 
+    /// Continues with the ambiguity reload's bytes and full identities as the
+    /// next consuming pair expectation.
+    pub(super) fn continue_observed(self) -> WindowsObservedPair {
+        WindowsObservedPair {
+            inner: self.inner.continue_observed(),
+            observation: self.observation,
+        }
+    }
+
     /// Terminally retires the writer after ambiguity resolution.
     pub(super) fn retire(self) -> Result<WindowsPairRetired, ServiceRunStateError> {
         retirement(self.inner.retire())
@@ -456,6 +495,105 @@ impl fmt::Debug for WindowsReloadedPair {
 #[must_use = "terminal Windows pair retirement evidence must be observed"]
 pub(super) struct WindowsPairRetired {
     _sealed: (),
+}
+
+/// Exact pair-bound normal writer-release receipt.
+#[must_use = "the Windows pair release receipt must be consumed by the composite"]
+pub(super) struct WindowsPairReleased {
+    pair: CanonicalSnapshot,
+    inner: FixedPairReleased,
+}
+
+impl WindowsPairReleased {
+    /// Returns the exact pair that stayed bound through verified release.
+    pub(super) const fn pair(&self) -> CanonicalSnapshot {
+        self.pair
+    }
+}
+
+impl fmt::Debug for WindowsPairReleased {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = &self.inner;
+        formatter.write_str("WindowsPairReleased([REDACTED])")
+    }
+}
+
+/// Pair-bound final release failed either before writer release or after the
+/// writer was irreversibly released without a normal receipt.
+#[must_use = "a failed Windows pair release cannot issue stopped evidence"]
+#[allow(clippy::large_enum_variant)] // Inline authority avoids allocation.
+pub(super) enum WindowsPairReleaseFailure {
+    WriterRetained(WindowsPairReleaseWithWriter),
+    WriterReleasedNoReceipt(WindowsPairReleaseAfterWriter),
+}
+
+impl WindowsPairReleaseFailure {
+    pub(super) const fn cause(&self) -> ServiceRunStateError {
+        match self {
+            Self::WriterRetained(failure) => failure.cause(),
+            Self::WriterReleasedNoReceipt(failure) => failure.cause(),
+        }
+    }
+}
+
+impl fmt::Debug for WindowsPairReleaseFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WindowsPairReleaseFailure")
+            .field("cause", &self.cause())
+            .field("authority", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Failed release still holding writer and pair authority for terminal retire.
+#[must_use = "the retained Windows pair release must be terminally retired"]
+pub(super) struct WindowsPairReleaseWithWriter {
+    inner: FixedPairReleaseWithWriter,
+}
+
+impl WindowsPairReleaseWithWriter {
+    pub(super) const fn cause(&self) -> ServiceRunStateError {
+        self.inner.cause()
+    }
+
+    pub(super) fn retire(self) -> Result<WindowsPairRetired, ServiceRunStateError> {
+        self.inner
+            .retire()
+            .map(|_receipt| WindowsPairRetired { _sealed: () })
+    }
+}
+
+impl fmt::Debug for WindowsPairReleaseWithWriter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WindowsPairReleaseWithWriter")
+            .field("cause", &self.cause())
+            .field("authority", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Irreversible final state: the writer was released but checked pair close
+/// failed, so no retry, retirement receipt, or stopped evidence is possible.
+#[must_use = "the no-receipt Windows release is an irreversible terminal state"]
+pub(super) struct WindowsPairReleaseAfterWriter {
+    inner: FixedPairReleaseAfterWriter,
+}
+
+impl WindowsPairReleaseAfterWriter {
+    pub(super) const fn cause(&self) -> ServiceRunStateError {
+        self.inner.cause()
+    }
+}
+
+impl fmt::Debug for WindowsPairReleaseAfterWriter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WindowsPairReleaseAfterWriter")
+            .field("cause", &self.cause())
+            .finish_non_exhaustive()
+    }
 }
 
 impl fmt::Debug for WindowsPairRetired {
@@ -580,5 +718,9 @@ mod tests {
         assert_move_only!(WindowsPairReloadFailure);
         assert_move_only!(WindowsReloadedPair);
         assert_move_only!(WindowsPairRetired);
+        assert_move_only!(WindowsPairReleased);
+        assert_move_only!(WindowsPairReleaseFailure);
+        assert_move_only!(WindowsPairReleaseWithWriter);
+        assert_move_only!(WindowsPairReleaseAfterWriter);
     }
 }
