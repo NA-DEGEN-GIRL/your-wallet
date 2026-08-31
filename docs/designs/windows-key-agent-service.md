@@ -862,12 +862,14 @@ The service registers for session-change notifications. Lock invalidates live
 approval/secret sessions; logoff and user switch additionally terminate all
 helpers and discard user-token capabilities. SCM stop rejects new work, closes
 listeners, cancels/terminates helpers, flushes only already-defined durable
-records, and releases request-scoped hardware and storage handles. A production
-adapter must keep the service-lifetime run-state root, run-state authentication
-key provider, rollback/high-water anchor, and writer held through exact Clean
-commit and independent reread and through the final writer release. The service
-reports stopped only after that bounded sequence. If cleanup cannot be proven,
-the service exits fail-closed and the next start enters recovery before
+records, and releases request-scoped hardware and storage handles. The dormant
+Phase 2E adapter now models holding the service-lifetime run-state root and
+`run.lock` through its own checked release, but it has no bridge to the durable
+writer, authentication-key provider, or rollback/high-water anchor. A future
+production composition must bind and keep all four authorities through exact
+Clean commit and independent reread and through the final writer release. The
+service reports stopped only after that bounded sequence. If cleanup cannot be
+proven, the service exits fail-closed and the next start enters recovery before
 listening.
 
 The debug fixtures implement the SCM/RPC rundown subset of this policy. If
@@ -1318,21 +1320,150 @@ observations plus storage-binding and single-instance evidence carried
 structurally by the lease-bound `BootEvidence`. Shutdown likewise distinguishes
 request-scoped hardware/storage cleanup from service-lifetime run-state
 authority. This core proves that its durable state authority and exact writer
-remain live through Clean commit, independent reread, and final release; the
-future adapter must additionally retain its run-state-root handle,
-authentication-key provider, and anchor handle across that boundary.
+remain live through Clean commit, independent reread, and final release. The
+separate Phase 2E adapter retains its root and lock through its own release, but
+a future composition must bind that handle to this durable writer and also
+retain the authentication-key provider and anchor handle across the same
+boundary.
 
 This remains a module-private, zero-runtime-root contract over only the bounded
-memory fixture and fixture authentication key. It has no filesystem or other OS
-adapter, production constructor or caller, `%ProgramData%` root, service-SID
-owner/DACL enforcement, installer or SCM integration, kernel singleton,
-power-loss/reboot proof, TPM-backed key or anchor, secret, signing transition,
-or release authority. The next Windows storage slice is an exact held service
-run-state root plus an installer-created `run.lock`; it is not a global named
-mutex and does not reuse the existing enrolled-user/LPAC storage or signing
-journal as run-state authority. Phase 1 and Phase 2 remain **STOP-SHIP**; both
-compiled policies remain `None`, and ordinary/release execution remains silent
-exit 78.
+memory fixture and fixture authentication key. It imports no filesystem or
+other OS adapter and has no production constructor or caller, installer or SCM
+integration, power-loss/reboot proof, TPM-backed key or anchor, secret, signing
+transition, or release authority. The separate dormant Phase 2E adapter below
+can hold an already-installed service root and `run.lock`, but it has no
+conversion into `RuntimeWriterAcquired`, `BootEvidence`, or any provisioning
+authority and is not a runtime caller of this contract. Phase 1 and Phase 2
+remain **STOP-SHIP**; both compiled policies remain `None`, and ordinary/release
+execution remains silent exit 78.
+
+**Current Phase 2E status: started, not passed.** A production-compiled,
+Windows-only, module-private adapter now models the narrow OS boundary for one
+already-installed service run-state root and its persistent `run.lock`. The
+production path obtains the fixed machine location only through
+`SHGetKnownFolderPath(FOLDERID_ProgramData)`, opens the drive root with
+`OPEN_EXISTING`, and then opens every known-folder and fixed
+`YourWallet\KeyAgent\v1` component from its already-held parent with
+one-component, root-relative `NtCreateFile(FILE_OPEN)` calls. Thread
+impersonation is rejected around known-folder resolution, every open, and each
+held-object revalidation. The final root is held without delete sharing; the exact
+installer-created `run.lock` is opened as a non-directory, zero-length,
+single-link file with `GENERIC_READ | SYNCHRONIZE` and zero sharing. The kernel
+must map that request to the exact `FILE_GENERIC_READ` grant, including
+`FILE_READ_EA`; the handle then acquires the exclusive, nonblocking byte range
+`[0, 1)` with `LockFileEx`. Every production handle must report handle flags
+exactly zero, rejecting both inheritance and protect-from-close, and every open
+uses reparse-safe semantics. The adapter rejects a remote or
+non-fixed/non-NTFS volume, missing objects, unexpected open disposition,
+object-shape drift, and full `FILE_ID_INFO` mismatch. It never uses
+`OPEN_ALWAYS`, `CREATE_NEW`, a global named mutex, or the enrolled-user/LPAC
+store or signing journal, and it never creates, repairs, replaces, deletes, or
+adopts either installed object.
+
+`ExpectedInstalledRunStateObjects` carries the independently supplied expected
+root and lock identities plus the service security policy. It intentionally has
+no production mint, and observed identities cannot be converted into expected
+installer authority. The adapter verifies the service SID as owner and an exact
+protected, non-inherited three-ACE DACL: an `OWNER RIGHTS` deny for
+`WRITE_DAC | WRITE_OWNER | DELETE | FILE_DELETE_CHILD`, the exact service
+operational allow (`FILE_GENERIC_READ` for the lock), and `SYSTEM`
+`FILE_ALL_ACCESS`. It also requires exact-zero
+handle flags, local fixed NTFS with persistent ACL support, complete
+non-sentinel file identities, and root identity/security revalidation before
+and after lock acquisition. Each revalidation succeeds only after the reopened
+no-delete-share root is identity-checked and explicitly checked-closed; an
+ambiguous probe close is a failure, and after lock acquisition it remains
+writer-retaining and cannot mint a release receipt. `SE_DACL_PROTECTED` plus
+zero flags on every exact
+ACE proves the current DACL contains no inherited ACE semantics;
+`SE_DACL_AUTO_INHERITED`, if present, is only a historical/model control marker
+and is not treated as from-birth provenance. `SE_DACL_AUTO_INHERIT_REQ`, a
+defaulted or unprotected descriptor, and any nonzero ACE flags are rejected.
+Group and all SACL policy, including audit, mandatory-label, and
+resource-attribute semantics, are deliberately not claimed by this slice; the
+current production query reads only owner and DACL.
+
+The root's own `OWNER RIGHTS` deny does not by itself prove at-rest delete or
+rename denial because an ancestor can grant `FILE_DELETE_CHILD`. The surrogate
+tests therefore keep distinct claims: fresh root opens requesting `WRITE_DAC`,
+`WRITE_OWNER`, or `FILE_DELETE_CHILD` are denied; a fresh lock `DELETE` open is
+denied; and a fresh root `DELETE` open while `HeldServiceRunStateRoot` exists
+fails with `ERROR_SHARING_VIOLATION` because that held handle omits delete
+sharing. Actual installer proof must additionally seal the `YourWallet` and
+`KeyAgent` ancestor ACLs against service or untrusted delete-child and
+rename/delete paths. That ancestor policy and at-rest integrity remain external
+**STOP-SHIP** evidence rather than a claim of this runtime adapter.
+
+`HeldServiceRunStateRoot`, `HeldServiceRunStateWriter`, and
+`HeldRunLockFailure` are move-only. A failure before Windows returns the lock is
+`RuntimeRunLockStartFailure::BeforeLock`; every status, disposition,
+impersonation, identity, security, shape, root-revalidation, or revalidation
+probe checked-close failure after a lock handle exists is `WithLock` and
+retains terminal retirement authority. Here `WithLock` means that a valid
+`run.lock` handle is retained; the byte-range lock may or may not have been
+acquired. Only the successful `HeldServiceRunStateWriter` result proves the
+exclusive range lock was acquired.
+Normal release revalidates the writer, explicitly calls `UnlockFileEx` for the
+exact `[0, 1)` range, checked-closes the lock, revalidates the still-held root,
+and checked-closes the root before it can produce `ServiceRunLockReleased`. A
+native `UnlockFileEx` failure retains the writer and range and cannot mint that
+normal receipt. Checked retirement retries the explicit unlock when the range is
+still held and attempts to checked-close both handles even when unlock fails; it
+produces `FailedRunLockRetired` only if any acquired range was explicitly
+unlocked and both closes succeed. Neither receipt nor held authority converts
+into the Phase 2D durable writer, Boot, Clean, stopped, provisioning, or signing
+authority.
+
+The kernel tests use an explicitly `cfg(test)` current-user surrogate because
+this non-elevated development slice cannot install or rewrite the real machine
+root. That surrogate alone may create fixture objects and retain a
+non-inheritable, share-neutral `READ_CONTROL | WRITE_DAC` cleanup handle with no
+data or delete access across the production opener for the test lifetime. It
+checked-closes the `FILE_ADD_FILE | FILE_DELETE_CHILD` setup handle and lock
+creator handle before recording `FILE_ID_INFO` and calling the production
+opener, then closes the retained cleanup handle only after the held adapter and
+test are torn down. This is not from-birth installer evidence and does not prove
+that an actual installer closes every setup or cleanup-capable handle before
+service start. The default focused suite exercises same-process contention,
+cross-process crash/reacquisition with unchanged identities, synchronized child
+non-inheritance, and junction rejection. While the writer is held, a test-only
+raw `NtCreateFile` probe requests the exact generic lock access with all three
+share modes. It accepts only either exact sharing-violation status with no
+handle, or an exact same-identity verified handle whose byte-range lock attempt
+returns `ERROR_LOCK_VIOLATION`; every returned handle is checked-closed. A
+separate non-vacuous test opens two share-readable handles to the exact same
+file, requires the first exclusive `[0, 1)` lock to succeed and the second to
+return `ERROR_LOCK_VIOLATION`, and checked-closes both. Its `run.lock`
+symbolic-link negative is ignored by default because creating that file reparse
+point requires a qualified host with Developer Mode or
+`SeCreateSymbolicLinkPrivilege`; that test must be invoked explicitly there,
+and the default suite alone does not prove the file-symlink negative. The
+production adapter has no constructor for the expected installer authority and
+no caller, so it does not prove the actual
+`%ProgramData%\YourWallet\KeyAgent\v1` objects, virtual service-SID positive
+access, elevated installer from-birth descriptor and independently sealed
+identity provenance, closure of every installer/setup/cleanup handle before the
+service open, sealed `YourWallet`/`KeyAgent` ancestor ACLs and at-rest integrity,
+SCM account/configuration or a LocalSystem token with restricted service-SID
+composition, group policy, or any SACL policy (including audit,
+mandatory-label, and resource attributes),
+install/repair/upgrade/uninstall, marker/checkpoint I/O, atomic CAS or flush
+behavior, authentication-key or rollback-anchor custody, crash/power-loss or
+reboot recovery, or a production kernel singleton composition. Those items
+remain external **STOP-SHIP** evidence. Byte-range locks are cooperative and do
+not constrain mapped-file I/O; this zero-length, no-write service DACL narrows
+that surface, but actual service and `SYSTEM` peers must remain trusted not to
+bypass the protocol. Retirement/no-receipt close fallback and crash process
+termination can also delay range-lock release; graceful release instead requires
+the explicit successful `UnlockFileEx` ordering above. The current host test
+bounds child-exit observation to 30 seconds and, after
+confirmed exit, retries only exact `Contended` acquisitions for five seconds,
+checked-retiring every returned `WithLock` handle before retry, then proves
+reacquisition with unchanged root and lock identities. That is bounded
+repository-host crash-teardown evidence, not an instantaneous-unlock claim or a
+supported-kernel, power-loss, or reboot guarantee; those broader guarantees
+remain external **STOP-SHIP** evidence. The ordinary/release service still has
+both compiled policies set to `None` and remains silent exit 78.
 
 ### Phase 3 – Authenticated Broker and helper runtime
 
@@ -1423,6 +1554,20 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-08-31 - Added the dormant Phase 2E held service run-state-root adapter.
+  The Windows-only production path resolves fixed ProgramData, walks every
+  component with held-parent existing-only opens, verifies local NTFS,
+  non-reparse shape, exact-zero handle flags, complete installer-recorded
+  identities, and the exact owner/protected-DACL policy, then holds the final
+  root without delete sharing and installer-created `run.lock` with zero sharing
+  plus an exclusive nonblocking byte lock. Startup distinguishes `BeforeLock`
+  from lock-retaining `WithLock`; normal release explicitly unlocks the exact
+  range before checked close, while retirement retries unlock and issues no
+  receipt after any unlock/close failure. There is no
+  production expected-authority mint or caller and no Phase 2D conversion.
+  Tests use a current-user surrogate; actual ProgramData, service-SID,
+  installer, and SCM evidence, group/SACL policy, marker I/O/CAS, and crash and
+  reboot behavior remain **STOP-SHIP**, so Phase 2E is started but not passed.
 - 2026-08-31 - Added the Phase 2D lease-first runtime-boot contract. The Boot-
   producing runtime path now acquires the exact backend/installation writer
   before its fresh durable observation, consumes `RuntimeWriterAcquired` exactly once, and

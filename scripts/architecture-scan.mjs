@@ -2500,6 +2500,31 @@ const keyAgentServiceLifecycleCoreTestsPath =
 const keyAgentServiceLifecycleCoreTests = await text(
   keyAgentServiceLifecycleCoreTestsPath,
 );
+const keyAgentServiceRunStateRootPath =
+  "crates/platform-windows/src/key_agent_service/run_state_root.rs";
+const keyAgentServiceRunStateRoot = await text(
+  keyAgentServiceRunStateRootPath,
+);
+const keyAgentServiceRunStateRootSysPath =
+  "crates/platform-windows/src/key_agent_service/run_state_root/sys.rs";
+const keyAgentServiceRunStateRootSys = await text(
+  keyAgentServiceRunStateRootSysPath,
+);
+const keyAgentServiceRunStateRootTestsPath =
+  "crates/platform-windows/src/key_agent_service/run_state_root/tests.rs";
+const keyAgentServiceRunStateRootTests = await text(
+  keyAgentServiceRunStateRootTestsPath,
+);
+const keyAgentServiceRunStateRootProduction = withoutCfgTestItems(
+  keyAgentServiceRunStateRoot,
+);
+const keyAgentServiceRunStateRootSysProduction = withoutCfgTestItems(
+  keyAgentServiceRunStateRootSys,
+);
+const keyAgentServiceRunStateRootDirectoryInventory =
+  await trustedDirectoryEntryInventory(
+    "crates/platform-windows/src/key_agent_service/run_state_root",
+  );
 const keyAgentServiceLifecycleDirectoryInventory =
   await trustedDirectoryEntryInventory(
     "crates/platform-windows/src/key_agent_service",
@@ -5413,6 +5438,14 @@ const keyAgentServiceRustTestNameInventory = (source) => [
     /#\s*\[\s*test\s*\]\s*fn\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(/gu,
   ),
 ].map((match) => match.groups.name);
+const keyAgentServiceRustAttributedTestInventory = (source) => [
+  ...source.matchAll(
+    /#\s*\[\s*test\s*\]\s*(?<ignore>#\s*\[\s*ignore(?:\s*=\s*"(?:\\.|[^"\\])*")?\s*\]\s*)?fn\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(/gu,
+  ),
+].map((match) => ({
+  name: match.groups.name,
+  ignored: match.groups.ignore !== undefined,
+}));
 const tomlTableKeyInventory = (manifest, tableName) => {
   const escaped = tableName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   const header = new RegExp(`^\\s*\\[${escaped}\\]\\s*$`, "mu").exec(
@@ -6063,6 +6096,16 @@ const approvedKeyAgentServiceLifecycleSourceSha256 =
   "cb8eb9c7e511fc191e8fcaf1ecc2d95a497e53338900a4eaa2fc8dca196ac16a";
 const approvedKeyAgentServiceLifecycleTestsSha256 =
   "1fd6fba77408e27fee219c56b25674fccc219effd199028c249cc938c312768a";
+const approvedKeyAgentServiceRunStateRootSourceSha256 =
+  "8f5bcc0a3bf8d74384971232d597e4dc24461ce0dfb210f565b0e0991bc135a8";
+const approvedKeyAgentServiceRunStateRootProductionSha256 =
+  "217bb1eb9e4c0fb1d5f05d4dbc53c9c39ab1969d2cb94838c06b6a155652c253";
+const approvedKeyAgentServiceRunStateRootSysSourceSha256 =
+  "18f0733b76ace45f057d30afcebc5786835c394d7b7d25007069c0d34d9604d5";
+const approvedKeyAgentServiceRunStateRootSysProductionSha256 =
+  "8a3f6556366ec31727f8725b3da360998e9f61d95a32dd8c08e97c26133aec1e";
+const approvedKeyAgentServiceRunStateRootTestsSha256 =
+  "dbcd3e9fc8d8a37f03bd0a807342e32c7d204158a90e0c0d1190b3ce03950e9e";
 const keyAgentServiceDurableTestNames = [
   "canonical_v1_clean_marker_and_checkpoint_round_trip",
   "canonical_v1_layout_matches_independent_golden_digests",
@@ -6317,9 +6360,13 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     "**Current Phase 2D status: started, not passed.**",
     designPhaseTwoCStart,
   );
+  const designPhaseTwoEStart = designDocument.indexOf(
+    "**Current Phase 2E status: started, not passed.**",
+    designPhaseTwoDStart,
+  );
   const designPhaseThreeStart = designDocument.indexOf(
     "\n### Phase 3",
-    designPhaseTwoDStart,
+    designPhaseTwoEStart,
   );
   const phaseTwoADesign =
     designPhaseTwoAStart === -1 || designPhaseTwoBStart === -1
@@ -6330,9 +6377,9 @@ const keyAgentServicePhaseTwoSemanticContract = ({
       ? ""
       : designDocument.slice(designPhaseTwoBStart, designPhaseTwoCStart);
   const phaseTwoDDesign =
-    designPhaseTwoDStart === -1 || designPhaseThreeStart === -1
+    designPhaseTwoDStart === -1 || designPhaseTwoEStart === -1
       ? ""
-      : designDocument.slice(designPhaseTwoDStart, designPhaseThreeStart);
+      : designDocument.slice(designPhaseTwoDStart, designPhaseTwoEStart);
   const normalizedPhaseTwoADesign = phaseTwoADesign.replace(/\s+/gu, " ");
   const normalizedPhaseTwoBDesign = phaseTwoBDesign.replace(/\s+/gu, " ");
   const normalizedPhaseTwoDDesign = phaseTwoDDesign.replace(/\s+/gu, " ");
@@ -6456,10 +6503,11 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     "never initialize, provision, repair, or mint `BootEvidence`",
     "nine external observations plus storage-binding and single-instance evidence carried structurally by the lease-bound `BootEvidence`",
     "request-scoped hardware/storage cleanup",
-    "future adapter must additionally retain its run-state-root handle, authentication-key provider, and anchor handle",
-    "held service run-state root plus an installer-created `run.lock`",
-    "not a global named mutex",
-    "does not reuse the existing enrolled-user/LPAC storage or signing journal",
+    "separate Phase 2E adapter retains its root and lock through its own release",
+    "future composition must bind that handle to this durable writer",
+    "separate dormant Phase 2E adapter below",
+    "no conversion into `RuntimeWriterAcquired`, `BootEvidence`, or any provisioning authority",
+    "is not a runtime caller of this contract",
     "Phase 1 and Phase 2 remain **STOP-SHIP**",
     "compiled policies remain `None`",
     "ordinary/release execution remains silent exit 78",
@@ -6477,9 +6525,10 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     "never auto-initialize, provision, repair, or mint Boot authority",
     "Exact terminal retirement is required before runtime or provisioning writer reacquisition",
     "nine external startup observations plus structurally carried storage binding and single-instance evidence remain eleven logical requirements",
-    "held service run-state root plus installer-created `run.lock`",
-    "not a global named mutex",
-    "reuse of enrolled-user/LPAC storage",
+    "This contract itself still uses only the bounded memory fixture and fixture key",
+    "separate dormant Phase 2E adapter can hold an already-installed service root and `run.lock`",
+    "no conversion into `RuntimeWriterAcquired`, `BootEvidence`, provisioning, Clean, stopped, secret, signing, or release authority",
+    "is not wired to this contract",
     "Phase 1 and Phase 2 remain **STOP-SHIP**",
     "both compiled policies remain `None`",
     "ordinary/release execution remains silent exit 78",
@@ -6721,6 +6770,8 @@ const keyAgentServicePhaseTwoSemanticContract = ({
         { name: "durable_run_state.rs", kind: "file" },
         { name: "lifecycle_core_tests.rs", kind: "file" },
         { name: "lifecycle_core.rs", kind: "file" },
+        { name: "run_state_root", kind: "directory" },
+        { name: "run_state_root.rs", kind: "file" },
       ]) &&
     JSON.stringify(durableUseInventory) ===
       JSON.stringify([
@@ -7485,7 +7536,8 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     designPhaseTwoBStart > designPhaseTwoAStart &&
     designPhaseTwoCStart > designPhaseTwoBStart &&
     designPhaseTwoDStart > designPhaseTwoCStart &&
-    designPhaseThreeStart > designPhaseTwoDStart &&
+    designPhaseTwoEStart > designPhaseTwoDStart &&
+    designPhaseThreeStart > designPhaseTwoEStart &&
     phaseTwoADesignMarkers.every((marker) =>
       normalizedPhaseTwoADesign.includes(marker),
     ) &&
@@ -7545,6 +7597,26 @@ const keyAgentServicePhaseTwoCPinContract = ({
       approvedKeyAgentServiceProvisioningProductionSha256 &&
     normalizedSourceSha256(provisioningTests) ===
       approvedKeyAgentServiceProvisioningTestsSha256
+  );
+};
+const keyAgentServicePhaseTwoEPinContract = ({
+  rootSource,
+  sysSource,
+  testsSource,
+}) => {
+  const rootProduction = withoutCfgTestItems(rootSource);
+  const sysProduction = withoutCfgTestItems(sysSource);
+  return (
+    normalizedSourceSha256(rootSource) ===
+      approvedKeyAgentServiceRunStateRootSourceSha256 &&
+    normalizedSourceSha256(rootProduction) ===
+      approvedKeyAgentServiceRunStateRootProductionSha256 &&
+    normalizedSourceSha256(sysSource) ===
+      approvedKeyAgentServiceRunStateRootSysSourceSha256 &&
+    normalizedSourceSha256(sysProduction) ===
+      approvedKeyAgentServiceRunStateRootSysProductionSha256 &&
+    normalizedSourceSha256(testsSource) ===
+      approvedKeyAgentServiceRunStateRootTestsSha256
   );
 };
 const keyAgentServicePhaseTwoCSemanticContract = ({
@@ -7847,6 +7919,8 @@ const keyAgentServicePhaseTwoCSemanticContract = ({
         { name: "durable_run_state.rs", kind: "file" },
         { name: "lifecycle_core_tests.rs", kind: "file" },
         { name: "lifecycle_core.rs", kind: "file" },
+        { name: "run_state_root", kind: "directory" },
+        { name: "run_state_root.rs", kind: "file" },
       ]) &&
     JSON.stringify(provisioningDirectoryInventory) ===
       JSON.stringify([
@@ -8221,6 +8295,1407 @@ const keyAgentServicePhaseTwoCSemanticContract = ({
     ) === JSON.stringify(keyAgentServiceProvisioningTestNames)
   );
 };
+const keyAgentServicePhaseTwoEVisibleTypes = [
+  "ServiceRunStateError",
+  "ExpectedInstalledRunStateObjects",
+  "HeldServiceRunStateRoot",
+  "HeldServiceRunStateWriter",
+  "RuntimeRunLockStartFailure",
+  "HeldRunLockFailure",
+  "ServiceRunLockReleased",
+  "FailedRunLockRetired",
+];
+const keyAgentServicePhaseTwoEVisibleFunctions = [
+  "revalidate",
+  "acquire_run_lock",
+  "revalidate",
+  "release",
+  "cause",
+  "retire",
+  "open_fixed_service_run_state_root",
+];
+const keyAgentServicePhaseTwoETestNames = [
+  "exact_policy_sddl_is_accepted_by_the_production_parser",
+  "fixed_leaves_accept_only_single_components_and_reject_ads",
+  "fixture_drop_removes_its_exact_temp_tree",
+  "fixture_checked_cleanup_surfaces_teardown_and_removes_tree",
+  "fixture_constructor_failures_remove_their_exact_temp_trees",
+  "exact_positive_acquire_revalidate_release_and_reacquire_preserves_ids",
+  "missing_objects_are_never_created_or_repaired",
+  "second_same_process_writer_is_contended_until_checked_release",
+  "held_writer_exclusivity_directionally_rejects_share_all_nt_open",
+  "byte_range_lock_conflicts_between_two_share_readable_same_id_handles",
+  "cross_process_crash_releases_lock_and_preserves_exact_identities",
+  "held_handles_are_not_inherited_by_a_synchronized_child",
+  "cross_process_child_fixture",
+  "wrong_and_cross_root_identities_are_never_adopted",
+  "stale_recorded_lock_identity_fails_with_lock_and_can_be_retired",
+  "wrong_root_and_lock_types_fail_without_repair",
+  "junction_reparse_at_test_base_and_product_components_is_rejected",
+  "symlink_reparse_at_run_lock_is_rejected_when_capability_is_available",
+  "lock_hardlink_and_nonzero_length_fail_with_lock",
+  "exact_owner_rights_service_system_dacl_mutations_are_rejected",
+  "service_owner_mutation_is_denied_and_held_root_blocks_delete",
+  "held_root_and_lock_block_rename_and_delete",
+  "held_handle_flags_are_zero_and_release_order_is_exact",
+  "impersonation_is_rejected_before_any_filesystem_open",
+  "unlock_failure_never_mints_normal_receipt_and_checked_retire_releases_range",
+  "retire_unlock_failure_closes_handles_but_never_mints_retired_receipt",
+  "ambiguous_checked_close_never_mints_a_release_or_retire_receipt",
+  "revalidation_probe_close_ambiguity_never_mints_any_receipt",
+  "debug_errors_and_authority_are_redacted_and_phase2d_disconnected",
+];
+const keyAgentServicePhaseTwoEIgnoredTestNames = [
+  "cross_process_child_fixture",
+  "symlink_reparse_at_run_lock_is_rejected_when_capability_is_available",
+];
+const keyAgentServicePhaseTwoESysVisibleTypes = [
+  "ExpectedObjects",
+  "HeldRoot",
+  "AcquireFailure",
+  "ReleaseFailure",
+  "HeldWriter",
+];
+const keyAgentServicePhaseTwoESysVisibleFunctions = [
+  "open_fixed",
+  "revalidate",
+  "acquire_run_lock",
+  "revalidate",
+  "release_verified",
+  "retire",
+];
+const keyAgentServicePhaseTwoEMoveOnlyTypes = [
+  "ExpectedInstalledRunStateObjects",
+  "HeldServiceRunStateRoot",
+  "HeldServiceRunStateWriter",
+  "RuntimeRunLockStartFailure",
+  "HeldRunLockFailure",
+  "ServiceRunLockReleased",
+  "FailedRunLockRetired",
+  "ExpectedObjects",
+  "HeldRoot",
+  "AcquireFailure",
+  "ReleaseFailure",
+  "HeldWriter",
+];
+const keyAgentServicePhaseTwoESemanticContract = ({
+  main,
+  platformManifest,
+  platformService,
+  platformLib,
+  durableSource,
+  provisioningSource,
+  lifecycleSource,
+  rootSource,
+  sysSource,
+  testsSource,
+  directoryInventory,
+  rootDirectoryInventory,
+  designDocument,
+  architectureDocument,
+}) => {
+  const rootProduction = withoutCfgTestItems(rootSource);
+  const sysProduction = withoutCfgTestItems(sysSource);
+  const rootCode = rustLexicalCode(rootProduction);
+  const sysCode = rustLexicalCode(sysProduction);
+  const combinedProduction = `${rootProduction}\n${sysProduction}`;
+  const combinedCode = `${rootCode}\n${sysCode}`;
+  const rootCompact = compactRust(rootProduction);
+  const sysCompact = compactRust(sysProduction);
+  const testsCompact = compactRust(testsSource);
+  const attributedTests = keyAgentServiceRustAttributedTestInventory(testsSource);
+  const normalizedArchitectureDocument = architectureDocument.replace(
+    /\s+/gu,
+    " ",
+  );
+  const rootVisibleTypes = [
+    ...rootCode.matchAll(
+      /\bpub\s*\(\s*crate\s*\)\s+(?:struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
+    ),
+  ].map((match) => match.groups.name);
+  const sysVisibleTypes = [
+    ...sysCode.matchAll(
+      /\bpub\s*\(\s*super\s*\)\s+(?:struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
+    ),
+  ].map((match) => match.groups.name);
+  const rootProductionTypes = [
+    ...rootCode.matchAll(
+      /\b(?:struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
+    ),
+  ].map((match) => match.groups.name);
+  const sysProductionTypes = [
+    ...sysCode.matchAll(
+      /\b(?:struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
+    ),
+  ].map((match) => match.groups.name);
+  const rootVisibleFunctions = rustVisibleFunctionItems(rootProduction).map(
+    ({ visibility, name, signature }) => ({ visibility, name, signature }),
+  );
+  const sysVisibleFunctions = rustVisibleFunctionItems(sysProduction).map(
+    ({ visibility, name, signature }) => ({ visibility, name, signature }),
+  );
+  const rootNonRestrictedVisibility = rootCode.replace(
+    /\bpub\s*\(\s*crate\s*\)/gu,
+    "",
+  );
+  const sysNonRestrictedVisibility = sysCode.replace(
+    /\bpub\s*\(\s*super\s*\)/gu,
+    "",
+  );
+  const durable = keyAgentServicePhaseTwoPartitionDurable(durableSource);
+  const lifecycleProduction =
+    keyAgentServicePhaseTwoPartitionLifecycle(lifecycleSource);
+  if (durable === null || lifecycleProduction === null) return false;
+  const productionConsumers = rustLexicalCode(
+    [
+      main,
+      platformService,
+      platformLib,
+      durable.production,
+      withoutCfgTestItems(provisioningSource),
+      lifecycleProduction,
+    ].join("\n"),
+  );
+  const expectedAuthorityNames =
+    /\b(?:ExpectedInstalledRunStateObjects|ExpectedObjects)\b/u;
+  const phaseTwoDAuthorityNames =
+    /\b(?:RuntimeWriterAcquired|BootEvidence|SingleWriterLease|ProvisionedRunState|WriterExitPending|ActiveRunLease|CleanCommittedWithWriter|StoppedRunEvidence)\b/u;
+  const forbiddenCreationOrMutation =
+    /\b(?:OPEN_ALWAYS|CREATE_ALWAYS|CREATE_NEW|TRUNCATE_EXISTING|FILE_CREATE|FILE_OPEN_IF|FILE_OVERWRITE|FILE_OVERWRITE_IF|FILE_SUPERSEDE|CreateDirectoryW?|DeleteFileW?|RemoveDirectoryW?|MoveFile(?:Ex)?W?|ReplaceFileW?|SetFileInformationByHandle|SetNamedSecurityInfoW?|OpenOptions|create_dir(?:_all)?|remove_(?:file|dir|dir_all)|hard_link|rename)\b/u;
+  const forbiddenReuseOrSingleton =
+    /\b(?:CreateMutexW?|OpenMutexW?|FOLDERID_LocalAppData|LOCALAPPDATA|AppContainer|key_agent_storage|key_agent_lpac|signing_journal|signing_journal_v1)\b|Global\\/u;
+  const forbiddenExternalLookup =
+    /\b(?:std::env|std::net|std::process|RegOpenKeyExW?|GetEnvironmentVariableW?)\b/u;
+  const forbiddenConversion =
+    /\bimpl(?:\s*<[^>{}]*>)?\s+(?:From|Into|TryFrom|TryInto)\b|\btype\s+(?:ExpectedInstalledRunStateObjects|HeldServiceRunStateRoot|HeldServiceRunStateWriter|HeldRunLockFailure|ServiceRunLockReleased|FailedRunLockRetired|ExpectedObjects|HeldRoot|HeldWriter)\s*=/u;
+  const forbiddenExpectedConstructor =
+    /\bimpl\s+(?:ExpectedInstalledRunStateObjects|ExpectedObjects)\s*\{[^}]*\b(?:new|from_|capture|record|observe|current|fixed)\b/u;
+  const productionExpectedReturns =
+    /\bfn\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\)\s*->\s*(?:Result\s*<\s*)?(?:ExpectedInstalledRunStateObjects|ExpectedObjects)\b/u;
+
+  const designPhaseTwoEStart = designDocument.indexOf(
+    "**Current Phase 2E status: started, not passed.**",
+  );
+  const designPhaseThreeStart = designDocument.indexOf(
+    "\n### Phase 3",
+    designPhaseTwoEStart,
+  );
+  const phaseTwoEDesign =
+    designPhaseTwoEStart === -1 || designPhaseThreeStart === -1
+      ? ""
+      : designDocument.slice(designPhaseTwoEStart, designPhaseThreeStart);
+  const normalizedPhaseTwoEDesign = phaseTwoEDesign.replace(/\s+/gu, " ");
+  const heldRootArchitectureRows = architectureDocument
+    .split(/\r?\n/gu)
+    .filter((line) =>
+      line.startsWith("| Windows service held run-state root |"),
+    );
+  const normalizedHeldRootArchitecture = (
+    heldRootArchitectureRows[0] ?? ""
+  ).replace(/\s+/gu, " ");
+  const phaseTwoEDesignMarkers = [
+    "production-compiled, Windows-only, module-private adapter",
+    "already-installed service run-state root and its persistent `run.lock`",
+    "`SHGetKnownFolderPath(FOLDERID_ProgramData)`",
+    "one-component, root-relative `NtCreateFile(FILE_OPEN)` calls",
+    "Thread impersonation is rejected around known-folder resolution, every open, and each held-object revalidation",
+    "final root is held without delete sharing",
+    "non-directory, zero-length, single-link file with `GENERIC_READ | SYNCHRONIZE` and zero sharing",
+    "map that request to the exact `FILE_GENERIC_READ` grant, including `FILE_READ_EA`",
+    "exclusive, nonblocking byte range `[0, 1)` with `LockFileEx`",
+    "Every production handle must report handle flags exactly zero, rejecting both inheritance and protect-from-close",
+    "full `FILE_ID_INFO` mismatch",
+    "never creates, repairs, replaces, deletes, or adopts either installed object",
+    "no production mint",
+    "observed identities cannot be converted into expected installer authority",
+    "service SID as owner",
+    "exact protected, non-inherited three-ACE DACL",
+    "`OWNER RIGHTS` deny for `WRITE_DAC | WRITE_OWNER | DELETE | FILE_DELETE_CHILD`",
+    "operational allow (`FILE_GENERIC_READ` for the lock)",
+    "`SYSTEM` `FILE_ALL_ACCESS`",
+    "`SE_DACL_PROTECTED` plus zero flags on every exact ACE proves the current DACL contains no inherited ACE semantics",
+    "`SE_DACL_AUTO_INHERITED`, if present, is only a historical/model control marker and is not treated as from-birth provenance",
+    "`SE_DACL_AUTO_INHERIT_REQ`, a defaulted or unprotected descriptor, and any nonzero ACE flags are rejected",
+    "Group and all SACL policy, including audit, mandatory-label, and resource-attribute semantics, are deliberately not claimed",
+    "root's own `OWNER RIGHTS` deny does not by itself prove at-rest delete or rename denial because an ancestor can grant `FILE_DELETE_CHILD`",
+    "fresh root opens requesting `WRITE_DAC`, `WRITE_OWNER`, or `FILE_DELETE_CHILD` are denied",
+    "fresh lock `DELETE` open is denied",
+    "fresh root `DELETE` open while `HeldServiceRunStateRoot` exists fails with `ERROR_SHARING_VIOLATION`",
+    "Actual installer proof must additionally seal the `YourWallet` and `KeyAgent` ancestor ACLs against service or untrusted delete-child and rename/delete paths",
+    "ancestor policy and at-rest integrity remain external **STOP-SHIP** evidence",
+    "root identity/security revalidation before and after lock acquisition",
+    "Each revalidation succeeds only after the reopened no-delete-share root is identity-checked and explicitly checked-closed",
+    "ambiguous probe close is a failure, and after lock acquisition it remains writer-retaining and cannot mint a release receipt",
+    "`RuntimeRunLockStartFailure::BeforeLock`",
+    "every status, disposition, impersonation, identity, security, shape, root-revalidation, or revalidation probe checked-close failure after a lock handle exists is `WithLock`",
+    "`WithLock` means that a valid `run.lock` handle is retained; the byte-range lock may or may not have been acquired",
+    "Only the successful `HeldServiceRunStateWriter` result proves the exclusive range lock was acquired",
+    "Normal release revalidates the writer, explicitly calls `UnlockFileEx` for the exact `[0, 1)` range",
+    "checked-closes the root before it can produce `ServiceRunLockReleased`",
+    "A native `UnlockFileEx` failure retains the writer and range and cannot mint that normal receipt",
+    "Checked retirement retries the explicit unlock when the range is still held and attempts to checked-close both handles even when unlock fails",
+    "produces `FailedRunLockRetired` only if any acquired range was explicitly unlocked and both closes succeed",
+    "Neither receipt nor held authority converts into the Phase 2D durable writer",
+    "explicitly `cfg(test)` current-user surrogate",
+    "surrogate alone may create fixture objects",
+    "non-inheritable, share-neutral `READ_CONTROL | WRITE_DAC` cleanup handle with no data or delete access across the production opener for the test lifetime",
+    "checked-closes the `FILE_ADD_FILE | FILE_DELETE_CHILD` setup handle and lock creator handle before recording `FILE_ID_INFO` and calling the production opener",
+    "closes the retained cleanup handle only after the held adapter and test are torn down",
+    "not from-birth installer evidence and does not prove that an actual installer closes every setup or cleanup-capable handle before service start",
+    "default focused suite exercises same-process contention, cross-process crash/reacquisition with unchanged identities, synchronized child non-inheritance, and junction rejection",
+    "raw `NtCreateFile` probe requests the exact generic lock access with all three share modes",
+    "either exact sharing-violation status with no handle, or an exact same-identity verified handle whose byte-range lock attempt returns `ERROR_LOCK_VIOLATION`",
+    "separate non-vacuous test opens two share-readable handles to the exact same file",
+    "first exclusive `[0, 1)` lock to succeed and the second to return `ERROR_LOCK_VIOLATION`",
+    "`run.lock` symbolic-link negative is ignored by default",
+    "qualified host with Developer Mode or `SeCreateSymbolicLinkPrivilege`",
+    "default suite alone does not prove the file-symlink negative",
+    "production adapter has no constructor for the expected installer authority and no caller",
+    "actual `%ProgramData%\\YourWallet\\KeyAgent\\v1` objects",
+    "virtual service-SID positive access",
+    "elevated installer from-birth descriptor and independently sealed identity provenance",
+    "closure of every installer/setup/cleanup handle before the service open",
+    "LocalSystem token with restricted service-SID composition",
+    "any SACL policy (including audit, mandatory-label, and resource attributes)",
+    "sealed `YourWallet`/`KeyAgent` ancestor ACLs and at-rest integrity",
+    "marker/checkpoint I/O, atomic CAS or flush behavior",
+    "crash/power-loss or reboot recovery",
+    "Byte-range locks are cooperative and do not constrain mapped-file I/O",
+    "actual service and `SYSTEM` peers must remain trusted not to bypass the protocol",
+    "Retirement/no-receipt close fallback and crash process termination can also delay range-lock release",
+    "graceful release instead requires the explicit successful `UnlockFileEx` ordering above",
+    "current host test bounds child-exit observation to 30 seconds",
+    "after confirmed exit, retries only exact `Contended` acquisitions for five seconds",
+    "checked-retiring every returned `WithLock` handle before retry",
+    "proves reacquisition with unchanged root and lock identities",
+    "bounded repository-host crash-teardown evidence",
+    "not an instantaneous-unlock claim or a supported-kernel, power-loss, or reboot guarantee",
+    "remain external **STOP-SHIP** evidence",
+    "both compiled policies set to `None`",
+    "silent exit 78",
+  ];
+  const phaseTwoEArchitectureMarkers = [
+    "zero-production-authority-mint and zero-production-caller Phase 2E adapter",
+    "fixed `%ProgramData%\\YourWallet\\KeyAgent\\v1` service root and installer-created `run.lock`",
+    "held-parent, one-component `NtCreateFile(FILE_OPEN)`",
+    "`OBJ_DONT_REPARSE`",
+    "`FILE_OPEN_REPARSE_POINT`",
+    "thread impersonation is rejected around known-folder lookup, every open, and revalidation",
+    "final root omits delete sharing",
+    "lock opens with `GENERIC_READ | SYNCHRONIZE`, requires the exact mapped `FILE_GENERIC_READ` grant, uses zero sharing, and acquires the exclusive nonblocking byte range `[0, 1)`",
+    "both have handle flags exactly zero (so inheritance and protect-from-close are rejected)",
+    "complete non-sentinel `FILE_ID_INFO` equal to independently supplied installer expectations",
+    "protected, non-inherited DACL must contain exactly an `OWNER RIGHTS` deny",
+    "`SE_DACL_PROTECTED` plus zero flags on all three ACEs proves current no-inherited-ACE semantics",
+    "`SE_DACL_AUTO_INHERITED`, if present, is only a historical/model control marker and is not from-birth provenance",
+    "`SE_DACL_AUTO_INHERIT_REQ`, defaulted or unprotected descriptors, and nonzero ACE flags are rejected",
+    "root DACL alone does not prove at-rest delete denial because an ancestor can grant `FILE_DELETE_CHILD`",
+    "fresh root `WRITE_DAC`/`WRITE_OWNER`/`FILE_DELETE_CHILD` opens and fresh lock `DELETE` opens are access-denied",
+    "fresh root `DELETE` open during the held state is specifically `ERROR_SHARING_VIOLATION`",
+    "Actual installer sealing of the `YourWallet`/`KeyAgent` ancestor ACLs against service or untrusted delete-child and rename/delete paths, plus at-rest integrity, remains external **STOP-SHIP** evidence",
+    "each revalidation succeeds only after its reopened no-delete-share root is identity-checked and explicitly checked-closed",
+    "Ambiguous probe close after lock acquisition is writer-retaining and cannot mint a receipt",
+    "every post-handle status, disposition, impersonation, identity, security, shape, range-lock, revalidation, or probe-close failure is handle-retaining `WithLock`",
+    "state does not claim the byte range was acquired, while only a successful writer result proves exclusivity",
+    "Normal release revalidates the writer, explicitly unlocks exact `[0, 1)` with `UnlockFileEx`, checked-closes the lock, revalidates the held root, and checked-closes the root before issuing a receipt",
+    "A native unlock failure retains writer and range and cannot mint a normal receipt",
+    "Retirement retries explicit unlock when the range is still held, attempts both checked closes even when unlock fails, and issues a retired receipt only if any acquired range was explicitly unlocked and both closes succeed",
+    "Only consuming checked release or terminal retirement ends the move-only state",
+    "never creates, repairs, replaces, deletes, or adopts the objects",
+    "exposes no conversion to Phase 2D or provisioning authority",
+    "Only the `cfg(test)` current-user surrogate may create fixtures and retain one non-inheritable, share-neutral `READ_CONTROL | WRITE_DAC` cleanup handle with no data or delete access across the production opener for the test lifetime",
+    "checked-closes the `FILE_ADD_FILE | FILE_DELETE_CHILD` setup handle and lock creator handle before recording `FILE_ID_INFO` and calling the opener",
+    "closes the retained cleanup handle after the held adapter and test are torn down",
+    "not from-birth installer evidence and does not prove an actual installer closes every setup or cleanup-capable handle before service start",
+    "does not prove group or any SACL policy (including audit, mandatory-label, and resource attributes)",
+    "production expected-authority mint or caller",
+    "actual ProgramData/service-SID positive path",
+    "elevated installer from-birth descriptor and independently sealed identity provenance",
+    "closure of every installer/setup/cleanup handle before service open",
+    "SCM composition",
+    "marker/checkpoint I/O or CAS/flush semantics",
+    "kernel crash/power-loss/reboot recovery",
+    "mapped-I/O exclusion",
+    "untrusted service/`SYSTEM` peer enforcement",
+    "instantaneous post-crash unlock",
+    "remain external **STOP-SHIP** evidence",
+    "both compiled policies remain `None`",
+    "ordinary/release execution remains silent exit 78",
+  ];
+
+  let wrapperRootImpl;
+  let wrapperWriterImpl;
+  let wrapperFailureImpl;
+  let wrapperOpen;
+  let objectIdentityImpl;
+  let securityPolicyImpl;
+  let locationImpl;
+  let heldRootImpl;
+  let heldRootFullImpl;
+  let heldWriterImpl;
+  let heldWriterFullImpl;
+  let ownedHandleImpl;
+  let openFixed;
+  let revalidateInner;
+  let heldRootCloseChecked;
+  let openVerifiedRoot;
+  let openRootCandidate;
+  let openDriveRoot;
+  let openRelative;
+  let requireExactOpen;
+  let tryAcquireExclusiveWriterRange;
+  let acquireExclusiveRange;
+  let unlockExclusiveRange;
+  let verifyRootHandle;
+  let verifyLockHandle;
+  let verifySupportedVolume;
+  let verifyExactSecurity;
+  let inspectSecurityDescriptor;
+  let inspectExactDacl;
+  let inspectOwnerRightsDeny;
+  let inspectAllowAce;
+  let rejectImpersonation;
+  let impersonationBookend;
+  let fixedProgramDataPath;
+  let localDrivePathParts;
+  let validateLeaf;
+  let verifyHandleFlagsZero;
+  let verifyExactGrantedAccess;
+  let acquireRunLock;
+  let writerRevalidate;
+  let releaseVerified;
+  let retire;
+  let closeChecked;
+  let childProcessGuardImpl;
+  let childForceExitAndWait;
+  let namedTestEventImpl;
+  let fixedLeavesTest;
+  let shareZeroProbe;
+  let shareZeroDirectionalTest;
+  let twoShareableHandlesProbe;
+  let byteRangeCollisionTest;
+  let directionalExclusivityProbeMethod;
+  let byteRangeCollisionProbeMethod;
+  let crossProcessCrashTest;
+  let boundedCrashReacquire;
+  let noninheritChildTest;
+  let childFixtureTest;
+  let junctionReparseTest;
+  let symlinkReparseTest;
+  let heldRenameDeleteTest;
+  let releaseOrderTest;
+  let unlockFailureTest;
+  let retireUnlockFailureTest;
+  try {
+    wrapperRootImpl = rustLexicalItemBlock(
+      rootProduction,
+      /\bimpl\s+HeldServiceRunStateRoot\s*\{/u,
+    );
+    wrapperWriterImpl = rustLexicalItemBlock(
+      rootProduction,
+      /\bimpl\s+HeldServiceRunStateWriter\s*\{/u,
+    );
+    wrapperFailureImpl = rustLexicalItemBlock(
+      rootProduction,
+      /\bimpl\s+HeldRunLockFailure\s*\{/u,
+    );
+    wrapperOpen = rustTopLevelFunctionBlock(
+      rootProduction,
+      "open_fixed_service_run_state_root",
+    );
+    objectIdentityImpl = rustLexicalItemBlock(
+      sysProduction,
+      /\bimpl\s+ObjectIdentity\s*\{/u,
+    );
+    securityPolicyImpl = rustLexicalItemBlock(
+      sysProduction,
+      /\bimpl\s+SecurityPolicy\s*\{/u,
+    );
+    locationImpl = rustLexicalItemBlock(
+      sysProduction,
+      /\bimpl\s+Location\s*\{/u,
+    );
+    heldRootImpl = rustLexicalItemBlock(
+      sysProduction,
+      /\bimpl\s+HeldRoot\s*\{/u,
+    );
+    heldRootFullImpl = rustLexicalItemBlock(
+      sysSource,
+      /\bimpl\s+HeldRoot\s*\{/u,
+    );
+    heldWriterImpl = rustLexicalItemBlock(
+      sysProduction,
+      /\bimpl\s+HeldWriter\s*\{/u,
+    );
+    heldWriterFullImpl = rustLexicalItemBlock(
+      sysSource,
+      /\bimpl\s+HeldWriter\s*\{/u,
+    );
+    ownedHandleImpl = rustLexicalItemBlock(
+      sysProduction,
+      /\bimpl\s+OwnedHandle\s*\{/u,
+    );
+    openFixed = rustFunctionBlock(heldRootImpl, "open_fixed");
+    revalidateInner = rustFunctionBlock(heldRootImpl, "revalidate_inner");
+    heldRootCloseChecked = rustFunctionBlock(heldRootImpl, "close_checked");
+    acquireRunLock = rustFunctionBlock(heldRootImpl, "acquire_run_lock");
+    writerRevalidate = rustFunctionBlock(heldWriterImpl, "revalidate");
+    releaseVerified = rustFunctionBlock(heldWriterImpl, "release_verified");
+    retire = rustFunctionBlock(heldWriterImpl, "retire");
+    closeChecked = rustFunctionBlock(ownedHandleImpl, "close_checked");
+    childProcessGuardImpl = rustLexicalItemBlock(
+      testsSource,
+      /\bimpl\s+ChildProcessGuard\s*\{/u,
+    );
+    childForceExitAndWait = rustFunctionBlock(
+      childProcessGuardImpl,
+      "force_exit_and_wait",
+    );
+    namedTestEventImpl = rustLexicalItemBlock(
+      testsSource,
+      /\bimpl\s+NamedTestEvent\s*\{/u,
+    );
+    fixedLeavesTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "fixed_leaves_accept_only_single_components_and_reject_ads",
+    );
+    shareZeroProbe = rustTopLevelFunctionBlock(
+      sysSource,
+      "probe_share_all_lock_open",
+    );
+    shareZeroDirectionalTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "held_writer_exclusivity_directionally_rejects_share_all_nt_open",
+    );
+    twoShareableHandlesProbe = rustTopLevelFunctionBlock(
+      sysSource,
+      "probe_two_share_all_lock_handles",
+    );
+    byteRangeCollisionTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "byte_range_lock_conflicts_between_two_share_readable_same_id_handles",
+    );
+    directionalExclusivityProbeMethod = rustFunctionBlock(
+      heldWriterFullImpl,
+      "directional_exclusivity_probe_for_test",
+    );
+    byteRangeCollisionProbeMethod = rustFunctionBlock(
+      heldRootFullImpl,
+      "byte_range_collision_probe_for_test",
+    );
+    crossProcessCrashTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "cross_process_crash_releases_lock_and_preserves_exact_identities",
+    );
+    boundedCrashReacquire = rustTopLevelFunctionBlock(
+      testsSource,
+      "reacquire_after_confirmed_exit_before_deadline",
+    );
+    noninheritChildTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "held_handles_are_not_inherited_by_a_synchronized_child",
+    );
+    childFixtureTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "cross_process_child_fixture",
+    );
+    junctionReparseTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "junction_reparse_at_test_base_and_product_components_is_rejected",
+    );
+    symlinkReparseTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "symlink_reparse_at_run_lock_is_rejected_when_capability_is_available",
+    );
+    heldRenameDeleteTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "held_root_and_lock_block_rename_and_delete",
+    );
+    releaseOrderTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "held_handle_flags_are_zero_and_release_order_is_exact",
+    );
+    unlockFailureTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "unlock_failure_never_mints_normal_receipt_and_checked_retire_releases_range",
+    );
+    retireUnlockFailureTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "retire_unlock_failure_closes_handles_but_never_mints_retired_receipt",
+    );
+    openVerifiedRoot = rustTopLevelFunctionBlock(
+      sysProduction,
+      "open_verified_root",
+    );
+    openRootCandidate = rustTopLevelFunctionBlock(
+      sysProduction,
+      "open_root_candidate",
+    );
+    openDriveRoot = rustTopLevelFunctionBlock(sysProduction, "open_drive_root");
+    openRelative = rustTopLevelFunctionBlock(sysProduction, "open_relative");
+    requireExactOpen = rustTopLevelFunctionBlock(
+      sysProduction,
+      "require_exact_open",
+    );
+    tryAcquireExclusiveWriterRange = rustTopLevelFunctionBlock(
+      sysProduction,
+      "try_acquire_exclusive_writer_range",
+    );
+    acquireExclusiveRange = rustFunctionBlock(
+      heldWriterImpl,
+      "acquire_exclusive_range",
+    );
+    unlockExclusiveRange = rustFunctionBlock(
+      heldWriterImpl,
+      "unlock_exclusive_range",
+    );
+    verifyRootHandle = rustTopLevelFunctionBlock(
+      sysProduction,
+      "verify_root_handle",
+    );
+    verifyLockHandle = rustTopLevelFunctionBlock(
+      sysProduction,
+      "verify_lock_handle",
+    );
+    verifySupportedVolume = rustTopLevelFunctionBlock(
+      sysProduction,
+      "verify_supported_local_ntfs",
+    );
+    verifyExactSecurity = rustTopLevelFunctionBlock(
+      sysProduction,
+      "verify_exact_security",
+    );
+    inspectSecurityDescriptor = rustTopLevelFunctionBlock(
+      sysProduction,
+      "inspect_security_descriptor",
+    );
+    inspectExactDacl = rustTopLevelFunctionBlock(
+      sysProduction,
+      "inspect_exact_dacl",
+    );
+    inspectOwnerRightsDeny = rustTopLevelFunctionBlock(
+      sysProduction,
+      "inspect_owner_rights_deny",
+    );
+    inspectAllowAce = rustTopLevelFunctionBlock(
+      sysProduction,
+      "inspect_allow_ace",
+    );
+    rejectImpersonation = rustTopLevelFunctionBlock(
+      sysProduction,
+      "reject_thread_impersonation",
+    );
+    impersonationBookend = rustTopLevelFunctionBlock(
+      sysProduction,
+      "impersonation_bookend",
+    );
+    fixedProgramDataPath = rustTopLevelFunctionBlock(
+      sysProduction,
+      "fixed_program_data_path",
+    );
+    localDrivePathParts = rustTopLevelFunctionBlock(
+      sysProduction,
+      "local_drive_path_parts",
+    );
+    validateLeaf = rustTopLevelFunctionBlock(sysProduction, "validate_leaf");
+    verifyHandleFlagsZero = rustTopLevelFunctionBlock(
+      sysProduction,
+      "verify_handle_flags_zero",
+    );
+    verifyExactGrantedAccess = rustTopLevelFunctionBlock(
+      sysProduction,
+      "verify_exact_granted_access",
+    );
+  } catch {
+    return false;
+  }
+
+  return (
+    JSON.stringify(directoryInventory) ===
+      JSON.stringify([
+        { name: "durable_run_state", kind: "directory" },
+        { name: "durable_run_state.rs", kind: "file" },
+        { name: "lifecycle_core_tests.rs", kind: "file" },
+        { name: "lifecycle_core.rs", kind: "file" },
+        { name: "run_state_root", kind: "directory" },
+        { name: "run_state_root.rs", kind: "file" },
+      ]) &&
+    JSON.stringify(rootDirectoryInventory) ===
+      JSON.stringify([
+        { name: "sys.rs", kind: "file" },
+        { name: "tests.rs", kind: "file" },
+      ]) &&
+    (
+      rustLexicalCode(platformService).match(
+        /#\s*\[\s*cfg\s*\(\s*windows\s*\)\s*\]\s*#\s*\[\s*allow\s*\(\s*dead_code\s*\)\s*\]\s*mod\s+run_state_root\s*;/gu,
+      ) ?? []
+    ).length === 1 &&
+    !/\bpub(?:\s*\([^)]*\))?\s+mod\s+run_state_root\b/u.test(
+      rustLexicalCode(platformService),
+    ) &&
+    !/\brun_state_root\b/u.test(rustLexicalCode(platformLib)) &&
+    !/\brun_state_root\b/u.test(rustLexicalCode(main)) &&
+    (rootCode.match(/\bmod\s+sys\s*;/gu) ?? []).length === 1 &&
+    !/\bpub(?:\s*\([^)]*\))?\s+mod\s+sys\b/u.test(rootCode) &&
+    /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*mod\s+tests\s*;/u.test(
+      rustLexicalCode(rootSource),
+    ) &&
+    !/\bmod\s+tests\s*;/u.test(rootCode) &&
+    !/\bopen_test_service_run_state_root\b/u.test(rootCode) &&
+    (platformManifest.match(/"Win32_UI_Shell"/gu) ?? []).length === 1 &&
+    JSON.stringify(rootVisibleTypes) ===
+      JSON.stringify(keyAgentServicePhaseTwoEVisibleTypes) &&
+    JSON.stringify(rootProductionTypes) ===
+      JSON.stringify(keyAgentServicePhaseTwoEVisibleTypes) &&
+    JSON.stringify(sysVisibleTypes) ===
+      JSON.stringify(keyAgentServicePhaseTwoESysVisibleTypes) &&
+    JSON.stringify(sysProductionTypes) ===
+      JSON.stringify([
+        "ObjectIdentity",
+        "OwnedSid",
+        "SecurityPolicy",
+        "ExpectedObjects",
+        "Location",
+        "HeldRoot",
+        "AcquireFailure",
+        "ReleaseFailure",
+        "HeldWriter",
+        "OpenedRelative",
+        "RootCandidate",
+        "RangeLockAttempt",
+        "OwnedHandle",
+        "HandleState",
+        "HandleRole",
+      ]) &&
+    JSON.stringify(rootVisibleFunctions.map(({ name }) => name)) ===
+      JSON.stringify(keyAgentServicePhaseTwoEVisibleFunctions) &&
+    rootVisibleFunctions.every(({ visibility }) =>
+      ["pub(crate)", "pub(crate)const"].includes(visibility),
+    ) &&
+    JSON.stringify(sysVisibleFunctions.map(({ name }) => name)) ===
+      JSON.stringify(keyAgentServicePhaseTwoESysVisibleFunctions) &&
+    sysVisibleFunctions.every(({ visibility }) => visibility === "pub(super)") &&
+    !/\bpub\b/u.test(rootNonRestrictedVisibility) &&
+    !/\bpub\b/u.test(sysNonRestrictedVisibility) &&
+    keyAgentServiceMoveOnlyEvidenceContract(
+      combinedProduction,
+      keyAgentServicePhaseTwoEMoveOnlyTypes,
+    ) &&
+    !forbiddenConversion.test(combinedCode) &&
+    rustUnsafeKeywordCount(rootProduction) === 0 &&
+    (sysSource.match(/#!\s*\[\s*allow\s*\(\s*unsafe_code\s*\)\s*\]/gu) ?? [])
+      .length === 1 &&
+    !/#!\s*\[\s*allow\s*\(\s*unsafe_code\s*\)\s*\]/u.test(rootSource) &&
+    !forbiddenCreationOrMutation.test(combinedCode) &&
+    !forbiddenReuseOrSingleton.test(combinedCode) &&
+    !forbiddenExternalLookup.test(combinedCode) &&
+    !phaseTwoDAuthorityNames.test(combinedCode) &&
+    !expectedAuthorityNames.test(productionConsumers) &&
+    !/\bopen_fixed_service_run_state_root\b/u.test(productionConsumers) &&
+    rustStructLiteralSites(sysProduction, "ExpectedObjects").length === 0 &&
+    (rootCode.match(/\bExpectedInstalledRunStateObjects\s*\(/gu) ?? [])
+      .length === 1 &&
+    !forbiddenExpectedConstructor.test(combinedCode) &&
+    !productionExpectedReturns.test(combinedCode) &&
+    !/\b(?:HANDLE|OwnedHandle|ObjectIdentity|SecurityPolicy)\b/u.test(
+      [...rootVisibleFunctions, ...sysVisibleFunctions]
+        .map(({ signature }) => signature)
+        .join("\n"),
+    ) &&
+    [
+      "Impersonation",
+      "Location",
+      "Missing",
+      "Contended",
+      "Open",
+      "Shape",
+      "Reparse",
+      "Volume",
+      "Identity",
+      "Security",
+      "Handle",
+      "Release",
+    ].every((variant) => rootSource.includes(`    ${variant},`)) &&
+    rootCompact.includes(
+      "pub(crate)structExpectedInstalledRunStateObjects(sys::ExpectedObjects);",
+    ) &&
+    hasOrderedCompactMarkers(wrapperRootImpl, [
+      "pub(crate)fnrevalidate(&self)->Result<(),ServiceRunStateError>{self.inner.revalidate()}",
+      "pub(crate)fnacquire_run_lock(self,)->Result<HeldServiceRunStateWriter,RuntimeRunLockStartFailure>",
+      "Err(sys::AcquireFailure::BeforeLock(cause))",
+      "RuntimeRunLockStartFailure::BeforeLock(cause)",
+      "Err(sys::AcquireFailure::WithLock{inner,cause})",
+      "RuntimeRunLockStartFailure::WithLock(HeldRunLockFailure{inner,cause,})",
+    ]) &&
+    hasOrderedCompactMarkers(wrapperWriterImpl, [
+      "pub(crate)fnrevalidate(&self)->Result<(),ServiceRunStateError>{self.inner.revalidate()}",
+      "pub(crate)fnrelease(self)->Result<ServiceRunLockReleased,HeldRunLockFailure>",
+      "self.inner.release_verified()",
+      "Ok(())=>Ok(ServiceRunLockReleased{_sealed:()})",
+      "Err(sys::ReleaseFailure{inner,cause})=>Err(HeldRunLockFailure{inner,cause})",
+    ]) &&
+    hasOrderedCompactMarkers(wrapperFailureImpl, [
+      "pub(crate)constfncause(&self)->ServiceRunStateError{self.cause}",
+      "pub(crate)fnretire(self)->Result<FailedRunLockRetired,ServiceRunStateError>",
+      "self.inner.retire()?;",
+      "Ok(FailedRunLockRetired{_sealed:()})",
+    ]) &&
+    compactRust(wrapperOpen).includes(
+      "sys::HeldRoot::open_fixed(expected.0).map(|inner|HeldServiceRunStateRoot{inner})",
+    ) &&
+    [
+      "ExpectedInstalledRunStateObjects([REDACTED])",
+      "HeldServiceRunStateRoot([REDACTED])",
+      "HeldServiceRunStateWriter([REDACTED])",
+      "WithLock([REDACTED])",
+      "exclusive byte range may or may not have been acquired.",
+      "one-byte kernel range lock.",
+      "authority",
+      "[REDACTED]",
+    ].every((marker) => rootSource.includes(marker)) &&
+    sysSource.includes(
+      'const PRODUCT_LEAVES: [&str; 3] = ["YourWallet", "KeyAgent", "v1"];\nconst RUN_LOCK_LEAF: &str = "run.lock";',
+    ) &&
+    sysCompact.includes(
+      "constROOT_ACCESS:u32=READ_CONTROL.0|SYNCHRONIZE.0|FILE_LIST_DIRECTORY.0|FILE_TRAVERSE.0|FILE_READ_ATTRIBUTES.0;",
+    ) &&
+    sysCompact.includes(
+      "constLOCK_OPEN_ACCESS:u32=GENERIC_READ.0|SYNCHRONIZE.0;",
+    ) &&
+    sysCompact.includes(
+      "constLOCK_ACCESS:u32=FILE_GENERIC_READ.0;",
+    ) &&
+    sysCompact.includes(
+      "constPARENT_ACCESS:u32=SYNCHRONIZE.0|FILE_LIST_DIRECTORY.0|FILE_TRAVERSE.0|FILE_READ_ATTRIBUTES.0;",
+    ) &&
+    sysCompact.includes(
+      "constOWNER_RIGHTS_DENY:u32=WRITE_DAC.0|WRITE_OWNER.0|DELETE.0|FILE_DELETE_CHILD.0;",
+    ) &&
+    hasOrderedCompactMarkers(objectIdentityImpl, [
+      "GetFileInformationByHandleEx(handle,FileIdInfo",
+      "information.VolumeSerialNumber==0",
+      "information.FileId.Identifier==[0;16]",
+      "information.FileId.Identifier==[u8::MAX;16]",
+      "volume_serial_number:information.VolumeSerialNumber",
+      "file_id:information.FileId.Identifier",
+    ]) &&
+    hasOrderedCompactMarkers(securityPolicyImpl, [
+      "self.service_sid.validate()?",
+      "self.system_sid.validate()?",
+      "EqualSid(self.service_sid.as_psid(),self.system_sid.as_psid())",
+      "IsWellKnownSid",
+      "self.system_sid.as_psid()",
+      "WinLocalSystemSid",
+      "IsWellKnownSid",
+      "self.service_sid.as_psid()",
+      "WinCreatorOwnerRightsSid",
+    ]) &&
+    compactRust(locationImpl).includes(
+      "fnfixed()->Result<Self,ServiceRunStateError>{Ok(Self{base_path:fixed_program_data_path()?,})}",
+    ) &&
+    compactRust(openFixed).includes(
+      "letlocation=impersonation_bookend(Location::fixed)?;Self::open_at(location,expected)",
+    ) &&
+    hasOrderedCompactMarkers(fixedProgramDataPath, [
+      "SHGetKnownFolderPath(&FOLDERID_ProgramData,KF_FLAG_DEFAULT,None)",
+      "ifraw.is_null()",
+      "raw.to_string()",
+      "CoTaskMemFree(Some(raw.0.cast::<c_void>()))",
+      "text.map(PathBuf::from)",
+    ]) &&
+    hasOrderedCompactMarkers(localDrivePathParts, [
+      "Component::Prefix(prefix)",
+      "Component::RootDir",
+      "Prefix::Disk(letter)=>letter",
+      "path.as_os_str().encode_wide().any(|unit|unit==0)",
+      "letComponent::Normal(name)=componentelse",
+      "validate_leaf(name)?",
+      "ifnames.len()>64",
+      "ifnames.is_empty()||!disk.is_ascii_alphabetic()",
+    ]) &&
+    localDrivePathParts.includes(
+      'PathBuf::from(format!("{}:\\\\", char::from(disk)))',
+    ) &&
+    validateLeaf.includes('matches!(leaf, "." | "..")') &&
+    compactRust(validateLeaf).includes(
+      "leaf.encode_utf16().any(|unit|matches!(unit,0|47|58|92))",
+    ) &&
+    hasOrderedCompactMarkers(openVerifiedRoot, [
+      "letmutcandidate=open_root_candidate(location,expected)?",
+      "matchcandidate.verification",
+      "Ok(())",
+      "candidate.handle.role=HandleRole::Root",
+      "Ok(candidate.handle)",
+      "Err(cause)",
+      "ifcandidate.handle.close_checked().is_err()",
+      "Err(ServiceRunStateError::Release)",
+      "Err(cause)",
+    ]) &&
+    hasOrderedCompactMarkers(openRootCandidate, [
+      "local_drive_path_parts(&location.base_path)?",
+      "open_drive_root(&drive_root)?",
+      "verify_directory_shape(drive.raw(),false)?",
+      "verify_handle_flags_zero(drive.raw())?",
+      "verify_supported_local_ntfs(drive.raw())?",
+      "ObjectIdentity::from_handle(drive.raw())?",
+      "forcomponentin&base_components",
+      "open_relative(parent.raw(),component,PARENT_ACCESS",
+      "FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE",
+      "FILE_DIRECTORY_FILE|FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT",
+      "require_exact_open(opened.status_error,opened.information)?",
+      "for(index,leaf)inPRODUCT_LEAVES.iter().enumerate()",
+      "letis_root=index+1==PRODUCT_LEAVES.len()",
+      "ifis_root{ROOT_ACCESS}else{PARENT_ACCESS}",
+      "ifis_root{FILE_SHARE_READ|FILE_SHARE_WRITE}else{FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE}",
+      "ifis_root",
+      "letverification=(||",
+      "require_exact_open(opened.status_error,opened.information)?",
+      "verify_root_handle(opened.handle.raw(),expected)?",
+      "ifidentity.volume_serial_number!=drive_identity.volume_serial_number",
+      "returnOk(RootCandidate{handle:opened.handle,verification,})",
+      "verify_handle_flags_zero(opened.handle.raw())?",
+      "verify_directory_shape(opened.handle.raw(),false)?",
+      "ifidentity.volume_serial_number!=drive_identity.volume_serial_number",
+    ]) &&
+    hasOrderedCompactMarkers(openDriveRoot, [
+      "letwide=wide_path(path)?",
+      "reject_thread_impersonation()?",
+      "CreateFileW(PCWSTR(wide.as_ptr()),PARENT_ACCESS,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,None,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT,None,)",
+      "OwnedHandle::new(handle)",
+      "reject_thread_impersonation()?",
+    ]) &&
+    hasOrderedCompactMarkers(openRelative, [
+      "validate_leaf(leaf)?",
+      "reject_thread_impersonation()?",
+      "Length:byte_len,MaximumLength:byte_len",
+      "RootDirectory:parent",
+      "ObjectName:&rawconstunicode",
+      "Attributes:OBJ_CASE_INSENSITIVE|OBJ_DONT_REPARSE",
+      "SecurityDescriptor:ptr::null()",
+      "SecurityQualityOfService:ptr::null()",
+      "NtCreateFile(&rawmutraw,FILE_ACCESS_RIGHTS(desired_access),&rawconstattributes,&rawmutio,None,FILE_FLAGS_AND_ATTRIBUTES(0),share_access,FILE_OPEN,create_options,None,0,)",
+      "ifstatus==STATUS_SUCCESS",
+      "letio_status=unsafe{io.Anonymous.Status}",
+      "io_status!=STATUS_SUCCESS",
+      "ifraw.is_invalid()||raw==INVALID_HANDLE_VALUE",
+      "lethandle=OwnedHandle::new(raw)?",
+      "ifletErr(error)=reject_thread_impersonation()",
+      "status_error=Some(error)",
+      "information:io.Information",
+    ]) &&
+    hasOrderedCompactMarkers(requireExactOpen, [
+      "ifletSome(error)=status_error{returnErr(error);}",
+      "information==usize::try_from(FILE_OPENED)",
+      "Ok(())",
+      "Err(ServiceRunStateError::Open)",
+    ]) &&
+    hasOrderedCompactMarkers(tryAcquireExclusiveWriterRange, [
+      "ifletErr(error)=reject_thread_impersonation()",
+      "RangeLockAttempt{acquired:false,result:Err(error),}",
+      "letmutoverlapped=OVERLAPPED::default()",
+      "LockFileEx(handle,LOCKFILE_EXCLUSIVE_LOCK|LOCKFILE_FAIL_IMMEDIATELY,None,1,0,&rawmutoverlapped,)",
+      "letacquired=operation.is_ok()",
+      "Ok(())=>Ok(())",
+      "error.code()==ERROR_LOCK_VIOLATION.to_hresult()",
+      "Err(ServiceRunStateError::Contended)",
+      "Err(_)=>Err(ServiceRunStateError::Open)",
+      "letending=reject_thread_impersonation()",
+      "RangeLockAttempt{acquired,result:match(result,ending)",
+      "(_,Err(error))=>Err(error)",
+      "(result,Ok(()))=>result",
+    ]) &&
+    hasOrderedCompactMarkers(acquireExclusiveRange, [
+      "letattempt=try_acquire_exclusive_writer_range(self.lock.raw())",
+      "self.range_lock_held=attempt.acquired",
+      "attempt.result",
+    ]) &&
+    hasOrderedCompactMarkers(unlockExclusiveRange, [
+      "if!self.range_lock_held",
+      "returnErr(ServiceRunStateError::Release)",
+      "reject_thread_impersonation()?",
+      "letmutoverlapped=OVERLAPPED::default()",
+      "UnlockFileEx(self.lock.raw(),None,1,0,&rawmutoverlapped)",
+      "ifoperation.is_ok()",
+      "self.range_lock_held=false",
+      "letending=reject_thread_impersonation()",
+      "(_,Err(error))=>Err(error)",
+      "(result,Ok(()))=>result",
+    ]) &&
+    (rustLexicalCode(sysProduction).match(/\bUnlockFileEx\s*\(/gu) ?? [])
+      .length === 1 &&
+    hasOrderedCompactMarkers(verifyExactGrantedAccess, [
+      "letmutio=IO_STATUS_BLOCK::default()",
+      "letmutaccess=FILE_ACCESS_INFORMATION::default()",
+      "size_of::<FILE_ACCESS_INFORMATION>()",
+      "NtQueryInformationFile(handle,&rawmutio,ptr::from_mut(&mutaccess).cast::<c_void>(),length,FileAccessInformation,)",
+      "letio_status=unsafe{io.Anonymous.Status}",
+      "status!=STATUS_SUCCESS",
+      "io_status!=STATUS_SUCCESS",
+      "||io.Information!=size_of::<FILE_ACCESS_INFORMATION>()",
+      "||access.AccessFlags!=expected",
+      "Err(ServiceRunStateError::Security)",
+      "Ok(())",
+    ]) &&
+    hasOrderedCompactMarkers(verifyRootHandle, [
+      "verify_handle_flags_zero(handle)?",
+      "verify_directory_shape(handle,true)?",
+      "verify_supported_local_ntfs(handle)?",
+      "verify_exact_security(handle,&expected.policy,ROOT_ACCESS)?",
+      "ifObjectIdentity::from_handle(handle)?!=expected.root_identity",
+    ]) &&
+    hasOrderedCompactMarkers(verifyLockHandle, [
+      "verify_handle_flags_zero(handle)?",
+      "verify_exact_granted_access(handle,LOCK_ACCESS)?",
+      "verify_file_shape(handle)?",
+      "verify_supported_local_ntfs(handle)?",
+      "verify_exact_security(handle,&expected.policy,LOCK_ACCESS)?",
+      "identity!=expected.lock_identity||identity.volume_serial_number!=root_volume",
+    ]) &&
+    hasOrderedCompactMarkers(verifySupportedVolume, [
+      "GetDriveTypeW(PCWSTR(root.as_ptr()))",
+      "!=DRIVE_FIXED",
+      "FileRemoteProtocolInfo",
+      ".is_ok()",
+      "GetVolumeInformationByHandleW",
+      "flags&FILE_PERSISTENT_ACLS==0||!is_exact_ntfs_name(&filesystem)",
+    ]) &&
+    hasOrderedCompactMarkers(verifyExactSecurity, [
+      "OWNER_SECURITY_INFORMATION|DACL_SECURITY_INFORMATION",
+      "Some(&rawmutowner)",
+      "None",
+      "Some(&rawmutdacl)",
+      "None",
+      "Some(&rawmutdescriptor)",
+      "status!=ERROR_SUCCESS",
+      "inspect_security_descriptor(descriptor,owner,dacl,policy,service_mask)",
+    ]) &&
+    !/\b(?:GROUP_SECURITY_INFORMATION|SACL_SECURITY_INFORMATION)\b/u.test(
+      rustLexicalCode(verifyExactSecurity),
+    ) &&
+    hasOrderedCompactMarkers(inspectSecurityDescriptor, [
+      "IsValidSecurityDescriptor(descriptor)",
+      "IsValidSid(owner)",
+      "EqualSid(owner,policy.service_sid.as_psid())",
+      ".is_ok()",
+      "if!descriptor_valid||!owner_valid||!owner_matches",
+      "SE_SELF_RELATIVE",
+      "SE_DACL_PRESENT",
+      "SE_DACL_PROTECTED",
+      "SE_OWNER_DEFAULTED",
+      "SE_DACL_DEFAULTED",
+      "SE_DACL_AUTO_INHERIT_REQ",
+      "control&required!=required||control&forbidden!=0",
+      "inspect_exact_dacl(dacl,policy,service_mask)",
+    ]) &&
+    compactRust(inspectSecurityDescriptor).includes(
+      "letforbidden=control_flag(SE_OWNER_DEFAULTED)|control_flag(SE_DACL_DEFAULTED)|control_flag(SE_DACL_AUTO_INHERIT_REQ);",
+    ) &&
+    hasOrderedCompactMarkers(inspectExactDacl, [
+      "inspect_acl_header(dacl,3)?",
+      "ace_at(dacl,0)?",
+      "ace_at(dacl,1)?",
+      "ace_at(dacl,2)?",
+      "inspect_owner_rights_deny(deny)?",
+      "inspect_allow_ace(service,policy.service_sid.as_psid(),service_mask)?",
+      "inspect_allow_ace(system,policy.system_sid.as_psid(),FILE_ALL_ACCESS.0)?",
+      "letused=usize::try_from(information.AclBytesInUse)",
+      "letfree=usize::try_from(information.AclBytesFree)",
+      "lettotal=usize::from(acl_size)",
+      "used!=exact||total<used||total.checked_sub(used)!=Some(free)",
+    ]) &&
+    hasOrderedCompactMarkers(inspectOwnerRightsDeny, [
+      "header.AceType!=u8::try_from(ACCESS_DENIED_ACE_TYPE)",
+      "header.AceFlags!=0",
+      "denied.Mask!=OWNER_RIGHTS_DENY",
+      "IsWellKnownSid(sid,WinCreatorOwnerRightsSid)",
+    ]) &&
+    hasOrderedCompactMarkers(inspectAllowAce, [
+      "header.AceType!=u8::try_from(ACCESS_ALLOWED_ACE_TYPE)",
+      "header.AceFlags!=0",
+      "allowed.Mask!=expected_mask",
+      "EqualSid(sid,expected_sid)",
+      ".is_err()",
+    ]) &&
+    hasOrderedCompactMarkers(rejectImpersonation, [
+      "OpenThreadToken(GetCurrentThread(),TOKEN_QUERY,true,&rawmuttoken)",
+      "Ok(())iftoken.is_invalid()||token==INVALID_HANDLE_VALUE",
+      "Err(ServiceRunStateError::Impersonation)",
+      "Ok(())=>",
+      "HandleState::Open(token)",
+      "Err(ServiceRunStateError::Impersonation)",
+      "ERROR_NO_TOKEN",
+      "=>Ok(())",
+      "Err(_)=>Err(ServiceRunStateError::Impersonation)",
+    ]) &&
+    hasOrderedCompactMarkers(impersonationBookend, [
+      "reject_thread_impersonation()?",
+      "letresult=operation()",
+      "letending=reject_thread_impersonation()",
+      "(_,Err(error))=>Err(error)",
+      "(result,Ok(()))=>result",
+    ]) &&
+    hasOrderedCompactMarkers(revalidateInner, [
+      "ifself.revalidation_close_ambiguous.load(Ordering::Acquire)",
+      "returnErr(ServiceRunStateError::Release)",
+      "self.expected.policy.validate()?",
+      "verify_root_handle(self.handle.raw(),&self.expected)?",
+      "letmutcandidate=open_root_candidate(&self.location,&self.expected)?",
+      "candidate.handle.role=HandleRole::RevalidationRoot",
+      "ifcandidate.handle.close_checked().is_err()",
+      "self.revalidation_close_ambiguous.store(true,Ordering::Release)",
+      "returnErr(ServiceRunStateError::Release)",
+      "candidate.verification",
+    ]) &&
+    sysCompact.includes(
+      "revalidation_close_ambiguous:AtomicBool",
+    ) &&
+    sysCompact.includes(
+      "revalidation_close_ambiguous:AtomicBool::new(false)",
+    ) &&
+    compactRust(heldRootCloseChecked).includes(
+      "letresult=self.handle.close_checked();ifself.revalidation_close_ambiguous.load(Ordering::Acquire){Err(ServiceRunStateError::Release)}else{result}",
+    ) &&
+    hasOrderedCompactMarkers(verifyHandleFlagsZero, [
+      "GetHandleInformation(handle,&rawmutflags)",
+      "ifflags!=0",
+      "returnErr(ServiceRunStateError::Handle)",
+      "Ok(())",
+    ]) &&
+    hasOrderedCompactMarkers(acquireRunLock, [
+      "ifletErr(cause)=self.revalidate()",
+      "AcquireFailure::BeforeLock(cause)",
+      "ifletErr(cause)=reject_thread_impersonation()",
+      "AcquireFailure::BeforeLock(cause)",
+      "open_relative(self.handle.raw(),RUN_LOCK_LEAF,LOCK_OPEN_ACCESS,FILE_SHARE_MODE(0),FILE_NON_DIRECTORY_FILE|FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT,)" ,
+      "Err(cause)=>returnErr(AcquireFailure::BeforeLock(cause))",
+      "letmutwriter=HeldWriter{root:self,lock,range_lock_held:false,}",
+      "require_exact_open(opened.status_error,opened.information)?",
+      "verify_handle_flags_zero(writer.lock.raw())?",
+      "writer.acquire_exclusive_range()?",
+      "verify_lock_handle(writer.lock.raw(),&writer.root.expected,writer.root.expected.root_identity.volume_serial_number,)?",
+      "writer.root.revalidate_inner()?",
+      "reject_thread_impersonation()",
+      "Err(cause)=>Err(AcquireFailure::WithLock{inner:writer,cause,})",
+    ]) &&
+    hasOrderedCompactMarkers(writerRevalidate, [
+      "if!self.range_lock_held",
+      "returnErr(ServiceRunStateError::Release)",
+      "impersonation_bookend(||",
+      "self.root.revalidate_inner()?",
+      "verify_lock_handle(self.lock.raw(),&self.root.expected,self.root.expected.root_identity.volume_serial_number,)",
+    ]) &&
+    hasOrderedCompactMarkers(releaseVerified, [
+      "ifletErr(cause)=self.revalidate()",
+      "Err(ReleaseFailure{inner:self,cause})",
+      "ifletErr(cause)=self.unlock_exclusive_range()",
+      "Err(ReleaseFailure{inner:self,cause})",
+      "ifletErr(cause)=self.lock.close_checked()",
+      "Err(ReleaseFailure{inner:self,cause})",
+      "ifletErr(cause)=self.root.revalidate()",
+      "Err(ReleaseFailure{inner:self,cause})",
+      "ifletErr(cause)=self.root.close_checked()",
+      "Err(ReleaseFailure{inner:self,cause})",
+      "Ok(())",
+    ]) &&
+    hasOrderedCompactMarkers(retire, [
+      "letunlock_result=ifself.range_lock_held",
+      "self.unlock_exclusive_range()",
+      "else{Ok(())}",
+      "letlock_result=self.lock.close_checked()",
+      "iflock_result.is_ok()",
+      "self.range_lock_held=false",
+      "letroot_result=self.root.close_checked()",
+      "unlock_result.and(lock_result).and(root_result)",
+    ]) &&
+    hasOrderedCompactMarkers(closeChecked, [
+      "core::mem::replace(&mutself.state,HandleState::CloseAmbiguous)",
+      "HandleState::Open(raw)=>raw",
+      "HandleState::Closed=>",
+      "HandleState::CloseAmbiguous=>returnErr(ServiceRunStateError::Release)",
+      "CloseHandle(raw)",
+      "self.state=HandleState::Closed",
+      "Err(_)=>Err(ServiceRunStateError::Release)",
+    ]) &&
+    sysCompact.includes(
+      "implDropforOwnedHandle{fndrop(&mutself){letstate=core::mem::replace(&mutself.state,HandleState::Closed);ifletHandleState::Open(raw)=state{unsafe{let_=CloseHandle(raw);}}}}",
+    ) &&
+    JSON.stringify(attributedTests.map(({ name }) => name)) ===
+      JSON.stringify(keyAgentServicePhaseTwoETestNames) &&
+    JSON.stringify(
+      attributedTests
+        .filter(({ ignored }) => ignored)
+        .map(({ name }) => name),
+    ) === JSON.stringify(keyAgentServicePhaseTwoEIgnoredTestNames) &&
+    attributedTests.length === 29 &&
+    testsCompact.includes("structChildProcessGuard(Option<Child>);") &&
+    testsCompact.includes(
+      "constCHILD_EXIT_TIMEOUT:Duration=Duration::from_secs(30);",
+    ) &&
+    testsCompact.includes(
+      "constLOCK_REACQUIRE_TIMEOUT:Duration=Duration::from_secs(5);",
+    ) &&
+    testsCompact.includes(
+      "constPROCESS_POLL_INTERVAL:Duration=Duration::from_millis(10);",
+    ) &&
+    /const\s+CHILD_TEST_NAME\s*:\s*&str\s*=\s*"key_agent_service::run_state_root::tests::cross_process_child_fixture"\s*;/u.test(
+      testsSource,
+    ) &&
+    hasOrderedCompactMarkers(childProcessGuardImpl, [
+      "std::env::current_exe()?",
+      "Command::new(executable)",
+      ".arg(CHILD_TEST_NAME)",
+      ".env_clear()",
+      ".env(CHILD_MODE_ENV,mode)",
+      ".env(CHILD_BASE_ENV,base.as_os_str())",
+      ".env(CHILD_EVENT_ENV,event_name)",
+      ".stdin(Stdio::null())",
+      ".stdout(Stdio::null())",
+      ".stderr(Stdio::null())",
+      ".spawn()",
+    ]) &&
+    hasOrderedCompactMarkers(childForceExitAndWait, [
+      "child.kill()",
+      "letdeadline=Instant::now()+CHILD_EXIT_TIMEOUT",
+      "matchchild.try_wait()",
+      "Some(_status)",
+      "let_closed=self.0.take()",
+      "returnOk(())",
+      "NoneifInstant::now()>=deadline",
+      "None=>std::thread::sleep(PROCESS_POLL_INTERVAL)",
+    ]) &&
+    childProcessGuardImpl.includes('.arg("--exact")') &&
+    childProcessGuardImpl.includes('.arg("--ignored")') &&
+    childProcessGuardImpl.includes('.arg("--test-threads=1")') &&
+    testsCompact.includes(
+      "implDropforChildProcessGuard{fndrop(&mutself){ifletSome(child)=self.0.as_mut(){let_=child.kill();let_=child.wait();}}}",
+    ) &&
+    testsCompact.includes("structNamedTestEvent{name:String,handle:SetupHandle,}") &&
+    hasOrderedCompactMarkers(namedTestEventImpl, [
+      "getrandom::fill(&mutrandom)",
+      "u128::from_le_bytes(random)",
+      "SetLastError(ERROR_SUCCESS)",
+      "CreateEventW(None,true,false,PCWSTR(wide.as_ptr()))",
+      "GetLastError()",
+      "ERROR_ALREADY_EXISTS",
+      "CloseHandle(handle)",
+      "handle:SetupHandle(Some(handle))",
+      "WaitForSingleObject(self.handle.raw()?,CHILD_READY_TIMEOUT_MS)",
+      "wait!=WAIT_OBJECT_0",
+      "self.handle.close_checked()?",
+    ]) &&
+    namedTestEventImpl.includes('"Local\\\\YourWallet.Phase2E.{:032x}"') &&
+    namedTestEventImpl.includes("test event name was already present") &&
+    fixedLeavesTest.includes(
+      'for leaf in ["YourWallet", "KeyAgent", "v1", "run.lock"]',
+    ) &&
+    fixedLeavesTest.includes(
+      'for leaf in ["", ".", "..", "run.lock:stream", "a/b", "a\\\\b", "a\\0b"]',
+    ) &&
+    (fixedLeavesTest.match(/\bsys::validate_leaf_for_test\s*\(/gu) ?? [])
+      .length === 2 &&
+    fixedLeavesTest.includes("ServiceRunStateError::Location") &&
+    compactRust(directionalExclusivityProbeMethod).includes(
+      "probe_share_all_lock_open(self.root.handle.raw(),self.lock.raw())",
+    ) &&
+    compactRust(byteRangeCollisionProbeMethod).includes(
+      "probe_two_share_all_lock_handles(self.handle.raw(),&self.expected)",
+    ) &&
+    hasOrderedCompactMarkers(shareZeroProbe, [
+      "validate_leaf(RUN_LOCK_LEAF)?",
+      "reject_thread_impersonation()?",
+      "RootDirectory:parent",
+      "ObjectName:&rawconstunicode",
+      "Attributes:OBJ_CASE_INSENSITIVE|OBJ_DONT_REPARSE",
+      "NtCreateFile(&rawmutraw,FILE_ACCESS_RIGHTS(LOCK_OPEN_ACCESS),&rawconstattributes,&rawmutio,None,FILE_FLAGS_AND_ATTRIBUTES(0),FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,FILE_OPEN,FILE_NON_DIRECTORY_FILE|FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT,None,0,)",
+      "letimpersonation_result=reject_thread_impersonation()",
+      "letraw_valid=!raw.is_invalid()&&raw!=INVALID_HANDLE_VALUE",
+      "ifstatus==STATUS_SHARING_VIOLATION",
+      "ifraw_valid",
+      "letmutunexpected=OwnedHandle::new(raw)?",
+      "letclose_result=unexpected.close_checked()",
+      "impersonation_result?",
+      "close_result?",
+      "returnErr(ServiceRunStateError::Open)",
+      "io_status==STATUS_SHARING_VIOLATION&&io.Information==0",
+      "ifstatus!=STATUS_SUCCESS||!raw_valid",
+      "letmutunexpected=OwnedHandle::new(raw)?",
+      "letverification=(||",
+      "io.Anonymous.Status}!=STATUS_SUCCESS",
+      "io.Information!=usize::try_from(FILE_OPENED)",
+      "verify_handle_flags_zero(unexpected.raw())?",
+      "verify_file_shape(unexpected.raw())?",
+      "ObjectIdentity::from_handle(unexpected.raw())?!=ObjectIdentity::from_handle(held_lock)?",
+      "try_acquire_exclusive_writer_range(unexpected.raw()).result",
+      "Err(ServiceRunStateError::Contended)=>Ok(())",
+      "Ok(())|Err(_)=>Err(ServiceRunStateError::Open)",
+      "letclose_result=unexpected.close_checked()",
+      "impersonation_result?",
+      "verification?",
+      "close_result",
+    ]) &&
+    hasOrderedCompactMarkers(shareZeroDirectionalTest, [
+      "letwriter=acquire_for_test(root)?",
+      "writer.inner.directional_exclusivity_probe_for_test()?",
+      "writer.revalidate()?",
+      "release_for_test(writer)?",
+    ]) &&
+    hasOrderedCompactMarkers(twoShareableHandlesProbe, [
+      "letshare_all=FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE",
+      "letoptions=FILE_NON_DIRECTORY_FILE|FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT",
+      "open_relative(parent,RUN_LOCK_LEAF,LOCK_OPEN_ACCESS,share_all,options)?",
+      "require_exact_open(first_open.status_error,first_open.information)?",
+      "verify_lock_handle(first.raw(),expected,expected.root_identity.volume_serial_number,)?",
+      "try_acquire_exclusive_writer_range(first.raw()).result",
+      "iffirst_result.is_err()",
+      "letclose_result=first.close_checked()",
+      "open_relative(parent,RUN_LOCK_LEAF,LOCK_OPEN_ACCESS,share_all,options)",
+      "require_exact_open(second_open.status_error,second_open.information)?",
+      "verify_lock_handle(second.raw(),expected,expected.root_identity.volume_serial_number,)?",
+      "ObjectIdentity::from_handle(first.raw())?!=ObjectIdentity::from_handle(second.raw())?",
+      "try_acquire_exclusive_writer_range(second.raw()).result",
+      "Err(ServiceRunStateError::Contended)=>Ok(())",
+      "letsecond_close=second.close_checked()",
+      "letfirst_close=first.close_checked()",
+      "second_close.and(first_close)?",
+      "collision_result",
+    ]) &&
+    hasOrderedCompactMarkers(byteRangeCollisionTest, [
+      "letroot=open_test_service_run_state_root(&fixture.base,fixture.expected()?)?",
+      "root.inner.byte_range_collision_probe_for_test()?",
+      "letwriter=acquire_for_test(root)?",
+      "release_for_test(writer)?",
+    ]) &&
+    hasOrderedCompactMarkers(releaseOrderTest, [
+      "writer.inner.handle_flags_are_zero_for_test()",
+      "take_release_trace_for_test()",
+      "release_for_test(writer)?",
+      "vec![sys::TestReleaseStep::WriterRevalidated,sys::TestReleaseStep::RangeUnlocked,sys::TestReleaseStep::LockClosed,sys::TestReleaseStep::RootRevalidatedAfterLock,sys::TestReleaseStep::RootClosed,]",
+    ]) &&
+    hasOrderedCompactMarkers(unlockFailureTest, [
+      "take_release_trace_for_test()",
+      "inject_unlock_fault_for_test()",
+      "matchwriter.release()",
+      "Err(failure)=>failure",
+      "Ok(_released)=>",
+      "assert_eq!(failure.cause(),ServiceRunStateError::Release)",
+      "let_retired=failure.retire()?",
+      "vec![sys::TestReleaseStep::WriterRevalidated,sys::TestReleaseStep::RangeUnlocked,sys::TestReleaseStep::LockClosed,sys::TestReleaseStep::RootClosed,]",
+      "release_for_test(acquire_for_test(root)?)?",
+    ]) &&
+    (retireUnlockFailureTest.match(/\bsys::inject_unlock_fault_for_test\s*\(\s*\)/gu) ?? [])
+      .length === 2 &&
+    hasOrderedCompactMarkers(retireUnlockFailureTest, [
+      "take_release_trace_for_test()",
+      "inject_unlock_fault_for_test()",
+      "matchwriter.release()",
+      "Err(failure)=>failure",
+      "Ok(_released)=>",
+      "inject_unlock_fault_for_test()",
+      "failure.retire()",
+      "Err(ServiceRunStateError::Release)",
+      "vec![sys::TestReleaseStep::WriterRevalidated,sys::TestReleaseStep::LockClosed,sys::TestReleaseStep::RootClosed,]",
+      "release_for_test(acquire_for_test(root)?)?",
+    ]) &&
+    hasOrderedCompactMarkers(crossProcessCrashTest, [
+      "letbefore=fixture.identities()",
+      "NamedTestEvent::create()?",
+      "spawn_synchronized_child(&fixture,&event,CHILD_MODE_HOLD)?",
+      "event.wait_ready()?",
+      "expect_before_lock_contention(root)?",
+      "child.force_exit_and_wait()?",
+      "assert_eq!(after,before)",
+      "release_for_test(reacquire_after_confirmed_exit_before_deadline(&fixture)?)?",
+      "event.close_checked()?",
+    ]) &&
+    hasOrderedCompactMarkers(boundedCrashReacquire, [
+      "letdeadline=Instant::now()+LOCK_REACQUIRE_TIMEOUT",
+      "open_test_service_run_state_root(&fixture.base,fixture.expected()?)?",
+      "matchroot.acquire_run_lock()",
+      "Ok(writer)=>returnOk(writer)",
+      "Err(RuntimeRunLockStartFailure::BeforeLock(ServiceRunStateError::Contended))=>{}",
+      "Err(RuntimeRunLockStartFailure::BeforeLock(cause))=>returnErr(cause)",
+      "Err(RuntimeRunLockStartFailure::WithLock(failure))",
+      "letcause=failure.cause()",
+      "let_retired=failure.retire()?",
+      "ifcause!=ServiceRunStateError::Contended",
+      "returnErr(cause)",
+      "ifInstant::now()>=deadline",
+      "returnErr(ServiceRunStateError::Contended)",
+      "std::thread::sleep(PROCESS_POLL_INTERVAL)",
+    ]) &&
+    hasOrderedCompactMarkers(noninheritChildTest, [
+      "letwriter=acquire_for_test(root)?",
+      "spawn_synchronized_child(&fixture,&event,CHILD_MODE_SENTINEL)?",
+      "event.wait_ready()?",
+      "release_for_test(writer)?",
+      "release_for_test(acquire_for_test(root)?)?",
+      "child.force_exit_and_wait()?",
+      "event.close_checked()?",
+    ]) &&
+    hasOrderedCompactMarkers(childFixtureTest, [
+      "std::env::var_os(CHILD_MODE_ENV)",
+      "std::env::var_os(CHILD_BASE_ENV)",
+      "std::env::var(CHILD_EVENT_ENV)",
+      "CHILD_MODE_HOLD",
+      "open_test_service_run_state_root(&base,expected)?",
+      "Some(acquire_for_test(root)?)",
+      "CHILD_MODE_SENTINEL=>None",
+      "signal_child_ready(&event_name)?",
+      "std::thread::park()",
+    ]) &&
+    (junctionReparseTest.match(/\bcreate_junction\s*\(/gu) ?? []).length === 4 &&
+    (junctionReparseTest.match(/\bexpect_root_reparse_rejected\s*\(/gu) ?? [])
+      .length === 4 &&
+    hasOrderedCompactMarkers(symlinkReparseTest, [
+      "fs::rename(&original,&target)?",
+      "symlink_file(&target,&original)?",
+      "lock.reseal_root()?",
+      "expect_lock_reparse_rejected(root)?",
+    ]) &&
+    hasOrderedCompactMarkers(heldRenameDeleteTest, [
+      "letbefore=fixture.identities()",
+      "fs::rename(root_path(&fixture.base),fixture.base.join(",
+      "fs::rename(lock_path(&fixture.base),root_path(&fixture.base).join(",
+      "fs::remove_file(lock_path(&fixture.base))",
+      "writer.revalidate()?",
+      "release_for_test(writer)?",
+      "sys::record_object_identity_for_test(&root_path(&fixture.base),true)?",
+      "sys::record_object_identity_for_test(&lock_path(&fixture.base),false)?",
+    ]) &&
+    phaseTwoEDesignMarkers.every((marker) =>
+      normalizedPhaseTwoEDesign.includes(marker),
+    ) &&
+    heldRootArchitectureRows.length === 1 &&
+    phaseTwoEArchitectureMarkers.every((marker) =>
+      normalizedHeldRootArchitecture.includes(marker),
+    ) &&
+    [
+      "every omitted SACL semantic, including audit, mandatory-label, and resource-attribute policy",
+      "real LocalSystem deployment must also prove its restricted service-SID token composition through external SCM/admin evidence",
+      "cross-process crash/reacquisition with stable identities, synchronized child non-inheritance, and junction rejection",
+      "Production opens `run.lock` with `GENERIC_READ | SYNCHRONIZE`, requires the exact mapped `FILE_GENERIC_READ` grant, keeps zero sharing, and then acquires the exclusive nonblocking byte range `[0, 1)`",
+      "test-only raw `NtCreateFile` probe offering all three share modes accepts only either an exact sharing violation with no handle or an exact same-identity verified handle whose byte-lock attempt returns `ERROR_LOCK_VIOLATION`",
+      "separate non-vacuous test opens two share-readable same-identity handles",
+      "`WithLock` retains a valid lock handle but does not claim whether its byte range was acquired",
+      "Byte locks are cooperative and do not constrain mapped-file I/O",
+      "current host test bounds child-exit observation to 30 seconds and, after confirmed exit, retries only exact `Contended` acquisitions for five seconds",
+      "checked-retiring every returned `WithLock` handle before retry",
+      "proves reacquisition with unchanged root and lock identities",
+      "bounded repository-host crash-teardown evidence",
+      "not an instantaneous-unlock claim or a supported-kernel, power-loss, or reboot guarantee",
+      "`run.lock` symbolic-link negative is ignored by default",
+      "qualified host with Developer Mode or `SeCreateSymbolicLinkPrivilege`",
+      "default suite alone does not prove that file-symlink negative",
+    ].every((marker) => normalizedArchitectureDocument.includes(marker)) &&
+    !normalizedPhaseTwoEDesign.includes("Phase 2E status: passed") &&
+    !normalizedHeldRootArchitecture.includes(
+      "Phase 1 and Phase 2 exit gates have passed",
+    ) &&
+    !normalizedHeldRootArchitecture.includes(
+      "both compiled policies are `Some`",
+    )
+  );
+};
 const keyAgentServicePhaseTwoInputs = Object.freeze({
   main: keyAgentServiceMain,
   platformManifest: keyAgentServicePlatformManifest,
@@ -8544,8 +10019,8 @@ const keyAgentServicePhaseTwoSemanticMutationProbes = [
   ),
   mutateKeyAgentServicePhaseTwoInput(
     "designDocument",
-    "the\nfuture adapter must additionally retain its run-state-root handle,\nauthentication-key provider, and anchor handle across that boundary.",
-    "the\ncurrent core additionally retains its run-state-root handle,\nauthentication-key provider, and anchor handle across that boundary.",
+    "The\nseparate Phase 2E adapter retains its root and lock through its own release, but\na future composition must bind that handle to this durable writer and also\nretain the authentication-key provider and anchor handle across the same\nboundary.",
+    "The\ncurrent core retains the Phase 2E root, lock, authentication-key provider,\nand anchor handle across the same boundary.",
   ),
 ];
 const keyAgentServicePhaseTwoPinMutationProbes = [
@@ -8919,6 +10394,382 @@ const keyAgentServicePhaseTwoCPinMutationProbes = [
     "use std::{error::Error, fmt, io, num::NonZeroU64}; // mutated",
   ),
 ];
+const keyAgentServicePhaseTwoEInputs = Object.freeze({
+  main: keyAgentServiceMain,
+  platformManifest: keyAgentServicePlatformManifest,
+  platformService: keyAgentServicePlatformSource,
+  platformLib: keyAgentServicePlatformLib,
+  durableSource: keyAgentServiceDurableRunState,
+  provisioningSource: keyAgentServiceDurableProvisioning,
+  lifecycleSource: keyAgentServiceLifecycleCore,
+  rootSource: keyAgentServiceRunStateRoot,
+  sysSource: keyAgentServiceRunStateRootSys,
+  testsSource: keyAgentServiceRunStateRootTests,
+  directoryInventory: keyAgentServiceLifecycleDirectoryInventory,
+  rootDirectoryInventory: keyAgentServiceRunStateRootDirectoryInventory,
+  designDocument: keyAgentServiceDesign,
+  architectureDocument: sepoliaArchitectureDoc,
+});
+const mutateKeyAgentServicePhaseTwoEInput = (
+  field,
+  search,
+  replacement,
+) => {
+  const source = keyAgentServicePhaseTwoEInputs[field];
+  const first = source.indexOf(search);
+  if (first === -1 || source.indexOf(search, first + search.length) !== -1) {
+    return keyAgentServicePhaseTwoEInputs;
+  }
+  return {
+    ...keyAgentServicePhaseTwoEInputs,
+    [field]: `${source.slice(0, first)}${replacement}${source.slice(first + search.length)}`,
+  };
+};
+const keyAgentServicePhaseTwoESemanticMutationProbes = [
+  mutateKeyAgentServicePhaseTwoEInput(
+    "platformService",
+    "mod run_state_root;",
+    "pub(crate) mod run_state_root;",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "rootSource",
+    "impl fmt::Debug for ExpectedInstalledRunStateObjects {",
+    "impl ExpectedInstalledRunStateObjects {\n    fn capture() -> Self { unreachable!() }\n}\n\nimpl fmt::Debug for ExpectedInstalledRunStateObjects {",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "FOLDERID_ProgramData, KF_FLAG_DEFAULT, None",
+    "FOLDERID_LocalAppData, KF_FLAG_DEFAULT, None",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "            FILE_OPEN,\n            create_options,",
+    "            FILE_OPEN_IF,\n            create_options,",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "        RootDirectory: parent,\n        ObjectName: &raw const unicode,\n        Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,\n        SecurityDescriptor: ptr::null(),\n        SecurityQualityOfService: ptr::null(),\n    };\n    let mut io = IO_STATUS_BLOCK::default();\n    let mut raw = HANDLE::default();\n    // SAFETY: every structure",
+    "        RootDirectory: parent,\n        ObjectName: &raw const unicode,\n        Attributes: OBJ_CASE_INSENSITIVE,\n        SecurityDescriptor: ptr::null(),\n        SecurityQualityOfService: ptr::null(),\n    };\n    let mut io = IO_STATUS_BLOCK::default();\n    let mut raw = HANDLE::default();\n    // SAFETY: every structure",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "        RootDirectory: parent,\n        ObjectName: &raw const unicode,\n        Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,\n        SecurityDescriptor: ptr::null(),\n        SecurityQualityOfService: ptr::null(),\n    };\n    let mut io = IO_STATUS_BLOCK::default();\n    let mut raw = HANDLE::default();\n    // SAFETY: every structure",
+    "        RootDirectory: HANDLE::default(),\n        ObjectName: &raw const unicode,\n        Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,\n        SecurityDescriptor: ptr::null(),\n        SecurityQualityOfService: ptr::null(),\n    };\n    let mut io = IO_STATUS_BLOCK::default();\n    let mut raw = HANDLE::default();\n    // SAFETY: every structure",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "        let share = if is_root {\n            FILE_SHARE_READ | FILE_SHARE_WRITE\n        } else {",
+    "        let share = if is_root {\n            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE\n        } else {",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "            FILE_SHARE_MODE(0),\n            FILE_NON_DIRECTORY_FILE",
+    "            FILE_SHARE_READ,\n            FILE_NON_DIRECTORY_FILE",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "    let mut status_error = if status == STATUS_SUCCESS {",
+    "    let mut status_error = if status.0 >= 0 {",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "    if flags != 0 {\n        return Err(ServiceRunStateError::Handle);\n    }",
+    "    if flags & HANDLE_FLAG_INHERIT.0 != 0 {\n        return Err(ServiceRunStateError::Handle);\n    }",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "        if candidate.handle.close_checked().is_err() {\n            self.revalidation_close_ambiguous\n                .store(true, Ordering::Release);\n            return Err(ServiceRunStateError::Release);\n        }",
+    "        if candidate.handle.close_checked().is_err() {\n            return Err(ServiceRunStateError::Release);\n        }",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "            writer.root.revalidate_inner()?;\n            reject_thread_impersonation()",
+    "            reject_thread_impersonation()",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "            Err(cause) => Err(AcquireFailure::WithLock {\n                inner: writer,\n                cause,\n            }),",
+    "            Err(cause) => Err(AcquireFailure::BeforeLock(cause)),",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "    if ObjectIdentity::from_handle(handle)? != expected.root_identity {",
+    "    if false && ObjectIdentity::from_handle(handle)? != expected.root_identity {",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "const OWNER_RIGHTS_DENY: u32 = WRITE_DAC.0 | WRITE_OWNER.0 | DELETE.0 | FILE_DELETE_CHILD.0;",
+    "const OWNER_RIGHTS_DENY: u32 = WRITE_DAC.0 | DELETE.0 | FILE_DELETE_CHILD.0;",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "    let required = control_flag(SE_SELF_RELATIVE)\n        | control_flag(SE_DACL_PRESENT)\n        | control_flag(SE_DACL_PROTECTED);",
+    "    let required = control_flag(SE_SELF_RELATIVE)\n        | control_flag(SE_DACL_PRESENT);",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "    if header.AceType != u8::try_from(ACCESS_ALLOWED_ACE_TYPE).unwrap_or(u8::MAX)\n        || header.AceFlags != 0",
+    "    if header.AceType != u8::try_from(ACCESS_ALLOWED_ACE_TYPE).unwrap_or(u8::MAX)\n        || false",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "rootSource",
+    "pub(crate) struct ServiceRunLockReleased {",
+    "#[derive(Clone)]\npub(crate) struct ServiceRunLockReleased {",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "rootSource",
+    "impl fmt::Debug for ServiceRunLockReleased {",
+    "impl From<ServiceRunLockReleased> for BootEvidence {\n    fn from(_: ServiceRunLockReleased) -> Self { unreachable!() }\n}\n\nimpl fmt::Debug for ServiceRunLockReleased {",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "use super::ServiceRunStateError;",
+    "use super::ServiceRunStateError;\nfn forbidden_global_mutex() { let _ = CreateMutexW; let _ = r\"Global\\YourWalletKeyAgent\"; }",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "use super::ServiceRunStateError;",
+    "use super::ServiceRunStateError;\nfn forbidden_user_store() { let _ = FOLDERID_LocalAppData; let _ = key_agent_storage; }",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "rootSource",
+    "#[cfg(test)]\nfn open_test_service_run_state_root(",
+    "fn open_test_service_run_state_root(",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "platformManifest",
+    '    "Win32_UI_Shell",',
+    '    "Win32_UI_Shell_MUTATED",',
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "designDocument",
+    "**Current Phase 2E status: started, not passed.**",
+    "**Current Phase 2E status: passed.**",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "architectureDocument",
+    "The root DACL alone does not prove at-rest delete denial because an ancestor can grant `FILE_DELETE_CHILD`:",
+    "The root DACL alone proves at-rest delete denial even when an ancestor grants `FILE_DELETE_CHILD`:",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "architectureDocument",
+    "does not prove group or any SACL policy (including audit, mandatory-label, and resource attributes), a production expected-authority mint or caller, the actual ProgramData/service-SID positive path",
+    "proves group and all SACL policy, a production expected-authority mint and caller, and the actual ProgramData/service-SID positive path",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "testsSource",
+    "fn cross_process_crash_releases_lock_and_preserves_exact_identities()",
+    "fn cross_process_crash_adopts_replacement_identity()",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "testsSource",
+    "struct ChildProcessGuard(Option<Child>);",
+    "struct UncheckedChildProcess(Option<Child>);",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "testsSource",
+    '#[ignore = "requires Developer Mode or SeCreateSymbolicLinkPrivilege for a file reparse point"]',
+    "",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "            FILE_ACCESS_RIGHTS(LOCK_OPEN_ACCESS),\n            &raw const attributes,\n            &raw mut io,\n            None,\n            FILE_FLAGS_AND_ATTRIBUTES(0),\n            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,",
+    "            FILE_ACCESS_RIGHTS(LOCK_ACCESS),\n            &raw const attributes,\n            &raw mut io,\n            None,\n            FILE_FLAGS_AND_ATTRIBUTES(0),\n            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "testsSource",
+    "unsafe { SetLastError(ERROR_SUCCESS) };",
+    "unsafe { SetLastError(ERROR_ALREADY_EXISTS) };",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "testsSource",
+    '"run.lock:stream"',
+    '"run.lock-stream"',
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "const LOCK_OPEN_ACCESS: u32 = GENERIC_READ.0 | SYNCHRONIZE.0;",
+    "const LOCK_OPEN_ACCESS: u32 = LOCK_ACCESS;",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "const LOCK_ACCESS: u32 = FILE_GENERIC_READ.0;",
+    "const LOCK_ACCESS: u32 = GENERIC_READ.0;",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "    }\n    let mut overlapped = OVERLAPPED::default();\n    // SAFETY: the synchronous file handle has FILE_READ_DATA;",
+    "    }\n    let mut overlapped = OVERLAPPED { Offset: 1, ..OVERLAPPED::default() };\n    // SAFETY: the synchronous file handle has FILE_READ_DATA;",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,",
+    "            LOCKFILE_EXCLUSIVE_LOCK,",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "            None,\n            1,\n            0,\n            &raw mut overlapped,",
+    "            None,\n            2,\n            0,\n            &raw mut overlapped,",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "        Err(error) if error.code() == ERROR_LOCK_VIOLATION.to_hresult() => {",
+    "        Err(error) if error.code() == ERROR_SHARING_VIOLATION.to_hresult() => {",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "            writer.acquire_exclusive_range()?;",
+    "            let _ = writer.lock.raw();",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "        || access.AccessFlags != expected",
+    "        || false && access.AccessFlags != expected",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "        || io.Information != size_of::<FILE_ACCESS_INFORMATION>()",
+    "        || false && io.Information != size_of::<FILE_ACCESS_INFORMATION>()",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "rootSource",
+    "exclusive byte range may or may not have been acquired.",
+    "exclusive byte range was acquired.",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "        try_acquire_exclusive_writer_range(first.raw()).result\n    })();",
+    "        Ok(())\n    })();",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "        match try_acquire_exclusive_writer_range(second.raw()).result {",
+    "        match Err(ServiceRunStateError::Contended) {",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "testsSource",
+    "const CHILD_EXIT_TIMEOUT: Duration = Duration::from_secs(30);",
+    "const CHILD_EXIT_TIMEOUT: Duration = Duration::from_secs(300);",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "testsSource",
+    "const LOCK_REACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);",
+    "const LOCK_REACQUIRE_TIMEOUT: Duration = Duration::from_secs(50);",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "testsSource",
+    "            Err(RuntimeRunLockStartFailure::WithLock(failure)) => {\n                let cause = failure.cause();\n                let _retired = failure.retire()?;\n                if cause != ServiceRunStateError::Contended {",
+    "            Err(RuntimeRunLockStartFailure::WithLock(failure)) => {\n                let cause = failure.cause();\n                drop(failure);\n                if cause != ServiceRunStateError::Contended {",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "testsSource",
+    "                if cause != ServiceRunStateError::Contended {\n                    return Err(cause);\n                }\n            }\n        }\n        if Instant::now() >= deadline {",
+    "                if false && cause != ServiceRunStateError::Contended {\n                    return Err(cause);\n                }\n            }\n        }\n        if Instant::now() >= deadline {",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "testsSource",
+    "            match child.try_wait().map_err(|error| {",
+    "            match child.wait().map(Some).map_err(|error| {",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "    let owner_matches = unsafe { EqualSid(owner, policy.service_sid.as_psid()) }.is_ok();",
+    "    let owner_matches = unsafe { EqualSid(owner, policy.service_sid.as_psid()) }.is_err();",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "        | control_flag(SE_DACL_AUTO_INHERIT_REQ);",
+    "        | control_flag(SE_DACL_AUTO_INHERIT_REQ)\n        | control_flag(SE_DACL_AUTO_INHERITED);",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "    let acquired = operation.is_ok();",
+    "    let acquired = false;",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "        self.range_lock_held = attempt.acquired;",
+    "        self.range_lock_held = false;",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "            unsafe { UnlockFileEx(self.lock.raw(), None, 1, 0, &raw mut overlapped) }\n                .map_err(|_| ServiceRunStateError::Release)",
+    "            Ok(())",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "UnlockFileEx(self.lock.raw(), None, 1, 0, &raw mut overlapped)",
+    "UnlockFileEx(self.lock.raw(), None, 2, 0, &raw mut overlapped)",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "        if let Err(cause) = self.unlock_exclusive_range() {\n            return Err(ReleaseFailure { inner: self, cause });\n        }",
+    "        let _ = self.range_lock_held;",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "        let unlock_result = if self.range_lock_held {\n            self.unlock_exclusive_range()\n        } else {\n            Ok(())\n        };",
+    "        let unlock_result = Ok(());",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "rootSource",
+    "        self.inner.retire()?;",
+    "        let _ = self.inner.retire();",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "testsSource",
+    "            sys::TestReleaseStep::RangeUnlocked,\n            sys::TestReleaseStep::LockClosed,\n            sys::TestReleaseStep::RootRevalidatedAfterLock,",
+    "            sys::TestReleaseStep::LockClosed,\n            sys::TestReleaseStep::RootRevalidatedAfterLock,",
+  ),
+];
+const keyAgentServicePhaseTwoEPinMutationProbes = [
+  mutateKeyAgentServicePhaseTwoEInput(
+    "rootSource",
+    "//! Dormant held-root adapter for the fixed service run-state objects.",
+    "//! Dormant held-root adapter for the fixed service run-state objects (mutated).",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "rootSource",
+    "#[cfg(test)]\nfn open_test_service_run_state_root(",
+    "#[cfg(test)]\n// mutated test-only opener\nfn open_test_service_run_state_root(",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "//! Windows kernel adapter for fixed, installer-created service run state.",
+    "//! Windows kernel adapter for fixed, installer-created service run state (mutated).",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "pub(super) const ROOT_ACCESS_FOR_TEST: u32 = ROOT_ACCESS;",
+    "pub(super) const ROOT_ACCESS_FOR_TEST: u32 = ROOT_ACCESS + 0;",
+  ),
+  mutateKeyAgentServicePhaseTwoEInput(
+    "testsSource",
+    "//! Kernel-backed tests for the dormant held service run-state root.",
+    "//! Kernel-backed tests for the dormant held service run-state root (mutated).",
+  ),
+];
+const keyAgentServicePhaseTwoEProbeChanged = (probe) =>
+  probe !== keyAgentServicePhaseTwoEInputs &&
+  Object.keys(keyAgentServicePhaseTwoEInputs).some(
+    (key) => probe[key] !== keyAgentServicePhaseTwoEInputs[key],
+  );
+const keyAgentServicePhaseTwoESemanticBaseResult =
+  keyAgentServicePhaseTwoESemanticContract(keyAgentServicePhaseTwoEInputs);
+const keyAgentServicePhaseTwoEPinBaseResult =
+  keyAgentServicePhaseTwoEPinContract(keyAgentServicePhaseTwoEInputs);
+const keyAgentServicePhaseTwoESemanticMutationResults =
+  keyAgentServicePhaseTwoESemanticMutationProbes.map((probe, index) => ({
+    index,
+    changed: keyAgentServicePhaseTwoEProbeChanged(probe),
+    rejected: !keyAgentServicePhaseTwoESemanticContract(probe),
+  }));
+const keyAgentServicePhaseTwoEPinMutationResults =
+  keyAgentServicePhaseTwoEPinMutationProbes.map((probe, index) => ({
+    index,
+    changed: keyAgentServicePhaseTwoEProbeChanged(probe),
+    rejected: !keyAgentServicePhaseTwoEPinContract(probe),
+  }));
 const keyAgentServicePhaseTwoCProbeChanged = (probe) =>
   probe !== keyAgentServicePhaseTwoInputs &&
   Object.keys(keyAgentServicePhaseTwoInputs).some(
@@ -9003,6 +10854,22 @@ requireInvariant(
       keyAgentServicePhaseTwoCAggregateDiagnosticMutationResults,
     ) === JSON.stringify([[0], [3], [70]]),
   `the Phase 2C fresh-install provisioning slice must remain full-source-pinned, production-compiled but module-private and zero-runtime-root, with exact Missing/Missing observation under a distinct held provisioning writer, canonical Clean generation one and ZERO predecessor, absent/absent CAS, backend/installation/writer/attempt/dual-round-bound one-shot commit/reread/reload/normal-release/terminal-retirement receipts, terminal retry and reconciliation latches, exact writer retirement before Provisioned state, no boot conversion or auto-initialization, fixed tests and docs, disabled policies, exit 78, and 64 independently effective semantic plus three source-pin mutations; aggregate predicate indexes are 0=semantic base, 1=pin base, 2=semantic count, 3..66=semantic probes, 67=pin count, and 68..70=pin probes; failed predicate indexes=${JSON.stringify(keyAgentServicePhaseTwoCAggregateFailureIndexes)}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoCSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoCPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
+);
+requireInvariant(
+  keyAgentServicePhaseTwoESemanticBaseResult &&
+    keyAgentServicePhaseTwoESemanticMutationProbes.length === 59 &&
+    keyAgentServicePhaseTwoESemanticMutationResults.every(
+      ({ changed, rejected }) => changed && rejected,
+    ),
+  `the separate Phase 2E held service run-state-root slice must remain production-compiled but Windows-only and module-private, with no production expected-authority mint or caller, a fixed ProgramData and held-parent one-component FILE_OPEN chain, no create/repair/adopt or global-mutex/user-store reuse, exact full installer identities and owner/protected-DACL policy without an at-rest ancestor-ACL overclaim, protected current no-inherited-ACE semantics without treating AUTO_INHERITED as from-birth provenance, exact-zero handle flags, RootCandidate checked-close plus atomic poison for ambiguous revalidation probes, non-inheritable local fixed NTFS root, a zero-share GENERIC_READ-plus-SYNCHRONIZE run.lock open mapped to exact FILE_GENERIC_READ, an exclusive nonblocking byte-zero range lock, exact range-state retention across post-acquire impersonation failure, explicit verified UnlockFileEx-before-close normal release, unlock-retrying checked retirement with no receipt on unlock/close ambiguity, lock-retaining post-handle failures, no Phase 2D/provisioning conversion, exact 27-pass/two-ignored test inventory with directional share-zero and independent non-vacuous byte-range collision evidence, bounded child-exit and Contended-only crash reacquisition, guarded synchronized-child, junction, privileged-symlink, and held rename/delete evidence, explicit external installer/SCM/all-SACL/qualified-host/marker-I/O/reboot limitations, disabled policies, exit 78, and 59 independently effective semantic mutations; semantic base=${keyAgentServicePhaseTwoESemanticBaseResult}, probe count=${keyAgentServicePhaseTwoESemanticMutationProbes.length}, failed probe indexes=${JSON.stringify(keyAgentServicePhaseTwoESemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
+);
+requireInvariant(
+  keyAgentServicePhaseTwoEPinBaseResult &&
+    keyAgentServicePhaseTwoEPinMutationProbes.length === 5 &&
+    keyAgentServicePhaseTwoEPinMutationResults.every(
+      ({ changed, rejected }) => changed && rejected,
+    ),
+  `the Phase 2E wrapper, its production partition, kernel sys adapter, its production partition, and external tests module must remain independently normalized-source-pinned with five effective full-versus-cfg(test) mutations; pin base=${keyAgentServicePhaseTwoEPinBaseResult}, root full=${normalizedSourceSha256(keyAgentServiceRunStateRoot)}, root production=${normalizedSourceSha256(withoutCfgTestItems(keyAgentServiceRunStateRoot))}, sys full=${normalizedSourceSha256(keyAgentServiceRunStateRootSys)}, sys production=${normalizedSourceSha256(withoutCfgTestItems(keyAgentServiceRunStateRootSys))}, tests full=${normalizedSourceSha256(keyAgentServiceRunStateRootTests)}, failed probe indexes=${JSON.stringify(keyAgentServicePhaseTwoEPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
 );
 clearRustAnalysisCaches("key-agent-service-phase-two-family");
 
@@ -18401,14 +20268,14 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate has two deliberately different surfaces.",
-    sha256: "b5bc9097c38885895a4d75001d04dd36a240f43bd0850853e57414587b6d0184",
+    sha256: "75770c1cee45ae2b160f3272b3d5b50b29a89a981aaafa8469af9de95f2fb1ae",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes a safe platform-neutral gate-byte",
-    sha256: "4db6973c3d88a5adb6d59eea35aae1280045dde8db6bc06b3b609df8d3040121",
+    sha256: "bf5e12b36656014939e3c95b492a649ec68ced2bc45aa3e803319e87c2499b3e",
   },
   {
     path: "docs/security-decisions.md",
@@ -26409,6 +28276,14 @@ const keyAgentServiceProvisioningTestOnlyExternalModuleSpec = Object.freeze({
   targetPath:
     "crates/platform-windows/src/key_agent_service/durable_run_state/provisioning_tests.rs",
 });
+const keyAgentServiceRunStateRootTestOnlyExternalModuleSpec = Object.freeze({
+  parentPath:
+    "crates/platform-windows/src/key_agent_service/run_state_root.rs",
+  moduleName: "tests",
+  relativePath: "tests.rs",
+  targetPath:
+    "crates/platform-windows/src/key_agent_service/run_state_root/tests.rs",
+});
 const platformWindowsProductionCandidates = await rustProductionSources(
   "crates/platform-windows/src",
   { withoutInlineTests: true },
@@ -26776,8 +28651,233 @@ requireInvariant(
     ),
   "the exact cfg(test)-plus-path provisioning test module must be the target's sole resolved cooked-path, raw-path, cfg-attr-path, or default inbound edge across production candidates before that file is excluded from production inventories, with unparsed path-bearing attributes closed and ten effective relationship mutations",
 );
+const keyAgentServiceRunStateRootTestOnlyExternalModuleContract = ({
+  parentSource,
+  targetSource,
+  platformCandidates,
+  workspaceCandidates,
+  spec,
+}) => {
+  if (
+    JSON.stringify(spec) !==
+    JSON.stringify({
+      parentPath:
+        "crates/platform-windows/src/key_agent_service/run_state_root.rs",
+      moduleName: "tests",
+      relativePath: "tests.rs",
+      targetPath:
+        "crates/platform-windows/src/key_agent_service/run_state_root/tests.rs",
+    })
+  ) {
+    return false;
+  }
+  const parentCode = rustLexicalCode(parentSource);
+  const moduleMatches = [...parentCode.matchAll(/\bmod\s+tests\s*;/gu)];
+  if (moduleMatches.length !== 1) return false;
+  const attachedAttributes = rustAttachedOuterAttributes(
+    parentSource,
+    moduleMatches[0].index,
+  ).map((attribute) => attribute.source.replace(/\s+/gu, ""));
+  const defaultModuleDirectory = spec.parentPath.replace(/\.rs$/u, "");
+  const resolvedTargetPath = relative(
+    root,
+    resolve(root, defaultModuleDirectory, spec.relativePath),
+  ).replaceAll("\\", "/");
+  const productionParent = withoutCfgTestItems(
+    withoutBottomTestModule(parentSource),
+  );
+  const expectedTarget = withoutCfgTestItems(
+    withoutBottomTestModule(targetSource),
+  );
+  const exactCandidate = (candidates, path) =>
+    candidates.filter((candidate) => candidate.path === path);
+  const platformParents = exactCandidate(platformCandidates, spec.parentPath);
+  const platformTargets = exactCandidate(platformCandidates, spec.targetPath);
+  const workspaceParents = exactCandidate(workspaceCandidates, spec.parentPath);
+  const workspaceTargets = exactCandidate(workspaceCandidates, spec.targetPath);
+  if (
+    JSON.stringify(attachedAttributes) !==
+      JSON.stringify(["#[cfg(test)]"]) ||
+    resolvedTargetPath !== spec.targetPath ||
+    /\bmod\s+tests\s*;/u.test(rustLexicalCode(productionParent)) ||
+    productionParent.includes(spec.relativePath) ||
+    platformParents.length !== 1 ||
+    platformParents[0].source !== productionParent ||
+    platformTargets.length !== 1 ||
+    platformTargets[0].source !== expectedTarget ||
+    workspaceParents.length !== 1 ||
+    workspaceParents[0].source !== productionParent ||
+    workspaceTargets.length !== 1 ||
+    workspaceTargets[0].source !== expectedTarget
+  ) {
+    return false;
+  }
+  const expectedInboundEdge = {
+    declaringFile: spec.parentPath,
+    module: spec.moduleName,
+    resolution: "default-file",
+    literal: spec.relativePath,
+    resolvedTarget: spec.targetPath,
+    attributes: ["#[cfg(test)]"],
+  };
+  const expectedParentInboundEdges =
+    keyAgentServiceResolvedModuleInboundEdges(
+      [{ path: spec.parentPath, source: parentSource }],
+      spec.targetPath,
+    );
+  const platformInboundEdges = [
+    ...expectedParentInboundEdges,
+    ...keyAgentServiceResolvedModuleInboundEdges(
+      platformCandidates,
+      spec.targetPath,
+    ),
+  ];
+  const workspaceInboundEdges = [
+    ...expectedParentInboundEdges,
+    ...keyAgentServiceResolvedModuleInboundEdges(
+      workspaceCandidates,
+      spec.targetPath,
+    ),
+  ];
+  return (
+    JSON.stringify(platformInboundEdges) ===
+      JSON.stringify([expectedInboundEdge]) &&
+    JSON.stringify(workspaceInboundEdges) ===
+      JSON.stringify([expectedInboundEdge])
+  );
+};
+const keyAgentServiceRunStateRootTestOnlyExternalModuleInputs = Object.freeze({
+  parentSource: keyAgentServiceRunStateRoot,
+  targetSource: keyAgentServiceRunStateRootTests,
+  platformCandidates: platformWindowsProductionCandidates,
+  workspaceCandidates: workspaceRustProductionCandidates,
+  spec: keyAgentServiceRunStateRootTestOnlyExternalModuleSpec,
+});
+const mutateKeyAgentServiceRunStateRootTestOnlyExternalModuleInput = (
+  field,
+  value,
+) => ({
+  ...keyAgentServiceRunStateRootTestOnlyExternalModuleInputs,
+  [field]: value,
+});
+const keyAgentServiceRunStateRootTestOnlyExternalModuleMutationProbes = [
+  mutateKeyAgentServiceRunStateRootTestOnlyExternalModuleInput(
+    "parentSource",
+    keyAgentServiceRunStateRoot.replace(
+      "#[cfg(test)]\nmod tests;",
+      "#[cfg(windows)]\nmod tests;",
+    ),
+  ),
+  mutateKeyAgentServiceRunStateRootTestOnlyExternalModuleInput(
+    "parentSource",
+    keyAgentServiceRunStateRoot.replace("mod tests;", "mod hidden_tests;"),
+  ),
+  mutateKeyAgentServiceRunStateRootTestOnlyExternalModuleInput(
+    "targetSource",
+    `${keyAgentServiceRunStateRootTests}\n// hidden target mutation\n`,
+  ),
+  mutateKeyAgentServiceRunStateRootTestOnlyExternalModuleInput("spec", {
+    ...keyAgentServiceRunStateRootTestOnlyExternalModuleSpec,
+    targetPath:
+      "crates/platform-windows/src/key_agent_service/run_state_root/hidden.rs",
+  }),
+  mutateKeyAgentServiceRunStateRootTestOnlyExternalModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path ===
+      keyAgentServiceRunStateRootTestOnlyExternalModuleSpec.targetPath
+        ? { ...candidate, source: `${candidate.source}\n// candidate mutation\n` }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceRunStateRootTestOnlyExternalModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path === "crates/platform-windows/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[path = "key_agent_service/run_state_root/tests.rs"]\nmod run_state_tests_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceRunStateRootTestOnlyExternalModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path === "crates/platform-windows/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[path = r#"key_agent_service/run_state_root/tests.rs"#]\nmod raw_run_state_tests_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceRunStateRootTestOnlyExternalModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path === "crates/platform-windows/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[cfg_attr(test, path = "key_agent_service/run_state_root/tests.rs")]\nmod conditional_run_state_tests_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceRunStateRootTestOnlyExternalModuleInput(
+    "workspaceCandidates",
+    workspaceRustProductionCandidates.map((candidate) =>
+      candidate.path === "crates/approval-ui/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[path = "../../platform-windows/src/key_agent_service/run_state_root/tests.rs"]\nmod cross_crate_run_state_tests_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceRunStateRootTestOnlyExternalModuleInput(
+    "platformCandidates",
+    [
+      ...platformWindowsProductionCandidates,
+      {
+        path: "crates/platform-windows/src/key_agent_service/run_state_root/mod.rs",
+        source: "mod tests;\n",
+      },
+    ],
+  ),
+  mutateKeyAgentServiceRunStateRootTestOnlyExternalModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path === "crates/platform-windows/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[path = concat!("key_agent_service/run_state_root/", "tests.rs")]\nmod unparsed_run_state_tests_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+];
+requireInvariant(
+  keyAgentServiceRunStateRootTestOnlyExternalModuleContract(
+    keyAgentServiceRunStateRootTestOnlyExternalModuleInputs,
+  ) &&
+    keyAgentServiceRunStateRootTestOnlyExternalModuleMutationProbes.length ===
+      11 &&
+    keyAgentServiceRunStateRootTestOnlyExternalModuleMutationProbes.every(
+      (probe) =>
+        Object.keys(
+          keyAgentServiceRunStateRootTestOnlyExternalModuleInputs,
+        ).some(
+          (field) =>
+            probe[field] !==
+            keyAgentServiceRunStateRootTestOnlyExternalModuleInputs[field],
+        ) &&
+        !keyAgentServiceRunStateRootTestOnlyExternalModuleContract(probe),
+    ),
+  "the exact cfg(test) default-file run-state-root tests module must be the target's sole resolved cooked-path, raw-path, cfg-attr-path, default-file, or cross-workspace inbound edge across production candidates before that file is excluded from production inventories, with unparsed path-bearing attributes closed and eleven effective relationship mutations",
+);
 const platformWindowsTestOnlyExternalSourcePathSet = new Set([
   keyAgentServiceProvisioningTestOnlyExternalModuleSpec.targetPath,
+  keyAgentServiceRunStateRootTestOnlyExternalModuleSpec.targetPath,
 ]);
 const platformWindowsProductionFiles =
   platformWindowsProductionCandidates.filter(
@@ -26788,16 +28888,16 @@ const workspaceRustProductionFiles = workspaceRustProductionCandidates.filter(
 );
 requireInvariant(
   platformWindowsProductionCandidates.length ===
-    platformWindowsProductionFiles.length + 1 &&
+    platformWindowsProductionFiles.length + 2 &&
     workspaceRustProductionCandidates.length ===
-      workspaceRustProductionFiles.length + 1 &&
+      workspaceRustProductionFiles.length + 2 &&
     platformWindowsProductionFiles.every(
       ({ path }) => !platformWindowsTestOnlyExternalSourcePathSet.has(path),
     ) &&
     workspaceRustProductionFiles.every(
       ({ path }) => !platformWindowsTestOnlyExternalSourcePathSet.has(path),
     ),
-  "only the one relationship-proved provisioning test target may be removed from production-source analysis",
+  "only the two separately relationship-proved provisioning and run-state-root test targets may be removed from production-source analysis",
 );
 const isWorkspaceBuildOutputPath = (path) =>
   /^(?:crates\/[^/]+|demo\/sepolia-wallet)\/target(?:\/|$)/iu.test(path);
@@ -26851,7 +28951,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "d5324ef457cefc3182e2557ff6332d01d67b3cc19f9278572364c6002f0e39fc";
+  "ec287c014ee605af9241e091772418f06e4aeecdb57556bf16a29224468b529e";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -27023,7 +29123,7 @@ const approvedWorkspaceCargoManifestPins = [
   },
   {
     path: "crates/platform-windows/Cargo.toml",
-    sha256: "9f577141f7c6e4e3b2cd302aa5df3045095427e1e50bd6e2bcde6030fa7da089",
+    sha256: "75350ef17b310fc67253ef41a6cbc87fd1ea3f84d8543d5e59a5161294cf0ea2",
   },
   {
     path: "crates/secret-core/Cargo.toml",
@@ -47275,6 +49375,10 @@ const approvedPlatformWindowsAuthorityTypeErasureInventory = [
     sites: 19,
   },
   { path: "crates/platform-windows/src/key_agent_service.rs", sites: 3 },
+  {
+    path: "crates/platform-windows/src/key_agent_service/run_state_root/sys.rs",
+    sites: 13,
+  },
   { path: "crates/platform-windows/src/key_agent_storage.rs", sites: 20 },
   { path: "crates/platform-windows/src/launch.rs", sites: 21 },
   { path: "crates/platform-windows/src/pipe.rs", sites: 4 },
@@ -47389,7 +49493,12 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service.rs",
     unsafeCount: 15,
-    sha256: "67a4838893c6a37c1430e0cb821509946af4c590dd1a0d40cde193f038361e38",
+    sha256: "09ccaf2345bffa9cc955be9c7a85fd8e73da7b8c60c9dbaa94d7d492065f2a35",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service/run_state_root/sys.rs",
+    unsafeCount: 44,
+    sha256: "8a3f6556366ec31727f8725b3da360998e9f61d95a32dd8c08e97c26133aec1e",
   },
   {
     path: "crates/platform-windows/src/key_agent_storage.rs",
@@ -48202,8 +50311,9 @@ requireInvariant(
       "format",
       "matches",
       "offset_of",
-      "ptr::addr_of",
-      "std::vec",
+        "ptr::addr_of",
+        "std::thread_local",
+        "std::vec",
       "thread_local",
        "unreachable",
        "vec",
@@ -48265,7 +50375,7 @@ requireInvariant(
 );
 requireInvariant(
   platformWindowsManifestSha256 ===
-    "9f577141f7c6e4e3b2cd302aa5df3045095427e1e50bd6e2bcde6030fa7da089" &&
+    "75350ef17b310fc67253ef41a6cbc87fd1ea3f84d8543d5e59a5161294cf0ea2" &&
     JSON.stringify(platformWindowsCrateRootInventory) ===
       JSON.stringify([
         { name: "Cargo.toml", kind: "file" },
@@ -48314,6 +50424,7 @@ requireInvariant(
         '"Win32_System_Diagnostics_Debug",',
         '"Win32_System_Com",',
         '"Win32_System_IO",',
+        '"Win32_System_Ioctl",',
         '"Win32_System_Kernel",',
         '"Win32_System_ProcessStatus",',
         '"Win32_System_RemoteDesktop",',
@@ -48322,6 +50433,7 @@ requireInvariant(
         '"Win32_System_SystemInformation",',
         '"Win32_System_SystemServices",',
         '"Win32_System_WindowsProgramming",',
+        '"Win32_UI_Shell",',
         "]}",
         "zeroize.workspace=true",
       ].join("") &&
@@ -55527,7 +57639,7 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "crates/platform-windows/README.md":
     "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
   "docs/architecture.md":
-    "b5bc9097c38885895a4d75001d04dd36a240f43bd0850853e57414587b6d0184",
+    "75770c1cee45ae2b160f3272b3d5b50b29a89a981aaafa8469af9de95f2fb1ae",
   "docs/protocol-contract.md":
     "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "docs/security-decisions.md":
@@ -61396,7 +63508,7 @@ const currentDebuggerExitDocumentationContract = (documents) =>
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
   "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
-  "b5bc9097c38885895a4d75001d04dd36a240f43bd0850853e57414587b6d0184",
+  "75770c1cee45ae2b160f3272b3d5b50b29a89a981aaafa8469af9de95f2fb1ae",
   "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "d36a5e3cb2544598cf8e1a97a8ff3a19a1a561dd5161d5cd3369be3fe4716656",
 ]);
@@ -69749,7 +71861,7 @@ const keyAgentDebuggerPlatformSources = {
   sys: keyAgentDebuggerTransportSysSource,
 };
 const keyAgentDebuggerPlatformPins = {
-  manifest: "9f577141f7c6e4e3b2cd302aa5df3045095427e1e50bd6e2bcde6030fa7da089",
+  manifest: "75350ef17b310fc67253ef41a6cbc87fd1ea3f84d8543d5e59a5161294cf0ea2",
   lib: "80c4df636f9110b9d9de0ef7ddb97f0f4bff100cea4781a4ad822960d9238660",
   umbrella: "3175fa0ad3122c1ce1c997c3f370c678179afa1eca9d91938c0782ae963599b4",
   artifact: "f7abcc220bd737894655ccb48e80d10c179626fb634b6c88294008faec035abc",
@@ -71278,13 +73390,13 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "docs/architecture.md",
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
-    sha256: "b5bc9097c38885895a4d75001d04dd36a240f43bd0850853e57414587b6d0184",
+    sha256: "75770c1cee45ae2b160f3272b3d5b50b29a89a981aaafa8469af9de95f2fb1ae",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
-    sha256: "4db6973c3d88a5adb6d59eea35aae1280045dde8db6bc06b3b609df8d3040121",
+    sha256: "bf5e12b36656014939e3c95b492a649ec68ced2bc45aa3e803319e87c2499b3e",
   },
   {
     path: "docs/security-decisions.md",

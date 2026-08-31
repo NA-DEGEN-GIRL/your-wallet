@@ -9,15 +9,19 @@
 
 use thiserror::Error;
 
-// Production-compiled Phase 2A-2D lifecycle, durable-run-state, provisioning,
-// and lease-first runtime-boot models. They remain private, have no OS adapter
-// or runtime caller, and cannot mint a real listener, persistent-storage
-// capability, or signing authority.
+// Production-compiled Phase 2A-2E lifecycle, durable-run-state, provisioning,
+// lease-first runtime-boot, and held run-state-root models. They remain private
+// and have no runtime caller; Phase 2E additionally has no production authority
+// mint and cannot be converted into Phase 2D boot or writer evidence.
 #[allow(dead_code)]
 mod durable_run_state;
 
 #[allow(dead_code)]
 mod lifecycle_core;
+
+#[cfg(windows)]
+#[allow(dead_code)]
+mod run_state_root;
 
 /// Fixed SCM service name selected by ADR 0001.
 pub const KEY_AGENT_SERVICE_NAME: &str = "YourWalletKeyAgent";
