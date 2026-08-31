@@ -2460,6 +2460,11 @@ const keyAgentServiceDurableRunStatePath =
 const keyAgentServiceDurableRunState = await text(
   keyAgentServiceDurableRunStatePath,
 );
+const keyAgentServiceDurableWindowsPairPath =
+  "crates/platform-windows/src/key_agent_service/durable_run_state/windows_pair.rs";
+const keyAgentServiceDurableWindowsPair = await text(
+  keyAgentServiceDurableWindowsPairPath,
+);
 const keyAgentServiceDurableProvisioningPath =
   "crates/platform-windows/src/key_agent_service/durable_run_state/provisioning.rs";
 const keyAgentServiceDurableProvisioning = await text(
@@ -5440,11 +5445,13 @@ const keyAgentServiceRustTestNameInventory = (source) => [
 ].map((match) => match.groups.name);
 const keyAgentServiceRustAttributedTestInventory = (source) => [
   ...source.matchAll(
-    /#\s*\[\s*test\s*\]\s*(?<ignore>#\s*\[\s*ignore(?:\s*=\s*"(?:\\.|[^"\\])*")?\s*\]\s*)?fn\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(/gu,
+    /#\s*\[\s*test\s*\]\s*(?<attributes>(?:#\s*\[[^\]\r\n]*\](?:[ \t]*\/\/[^\r\n]*)?\s*)*)fn\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(/gu,
   ),
 ].map((match) => ({
   name: match.groups.name,
-  ignored: match.groups.ignore !== undefined,
+  ignored: /#\s*\[\s*ignore(?:\s*=\s*"(?:\\.|[^"\\])*")?\s*\]/u.test(
+    match.groups.attributes,
+  ),
 }));
 const tomlTableKeyInventory = (manifest, tableName) => {
   const escaped = tableName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -6083,9 +6090,9 @@ const keyAgentServiceLifecycleEvidenceTypes = [
   "NoSecretService",
 ];
 const approvedKeyAgentServiceDurableSourceSha256 =
-  "7b87469f312e08ae7420e32aa296e6b0ef3b491e84cb91ddf41b9295fbdf392b";
+  "67b11b0f954880f829f81d97344549bb0cba20f44f528a354fb43b14dd58194a";
 const approvedKeyAgentServiceDurableProductionSha256 =
-  "ae37d7b04079d519ae65cb6453d4ede3c671bbf1c66b002e38ccbf74d87e6b3d";
+  "90996812fd6fe8c506e53d39892cacdad2ad7f98cfe1424463108ca52ff74fea";
 const approvedKeyAgentServiceProvisioningSourceSha256 =
   "bbd80d1985d625a47219e3c8cb2b3c6db9bcc7b8d9ddc149482d7263b7633237";
 const approvedKeyAgentServiceProvisioningProductionSha256 =
@@ -6097,15 +6104,17 @@ const approvedKeyAgentServiceLifecycleSourceSha256 =
 const approvedKeyAgentServiceLifecycleTestsSha256 =
   "1fd6fba77408e27fee219c56b25674fccc219effd199028c249cc938c312768a";
 const approvedKeyAgentServiceRunStateRootSourceSha256 =
-  "25993a73bccebfe82d256f5c3ce40b7fa7aadd6dfc7280011fda4014f99b0186";
+  "c1cd666becaa2e8f99554754ca748969ffca7576d84f7f1350dc2d4413bb0ebc";
 const approvedKeyAgentServiceRunStateRootProductionSha256 =
-  "c3dfad195105878c4b72f81fc91e39b1fc9b4491c3e5ed88227229590574ffbd";
+  "103d390e2c971b75fedc14b0f318840392ab6a01a569cc4229f560cf012b7eb3";
 const approvedKeyAgentServiceRunStateRootSysSourceSha256 =
-  "ccf6b76534861830a5b461569a42035d56be2df0620371a90550dc40627240f8";
+  "ea462a89f5eb5244454d8dea8427327910c5b3f2d9d20d00160cd0e527a7decd";
 const approvedKeyAgentServiceRunStateRootSysProductionSha256 =
-  "e2013579a94b1b43693cfb2ea60efdffb88e474d2222d0d69f5efa846f88417c";
+  "b8cc429535fac39deb8cfc69c9b08eada0abd3a79d398a73ee56c05fe696c72b";
 const approvedKeyAgentServiceRunStateRootTestsSha256 =
-  "bd0ccbe6412f98f5bf0153e3b5a42ed527f0ee5c0a0018feedb9b47164e06d52";
+  "50a57526c72328cb9ea6fa46565d0b7b026fcbce304cc7f8ba9b93737e7da8c1";
+const approvedKeyAgentServiceDurableWindowsPairSha256 =
+  "c55a5bf08a23fed31ecdb4d707f51a6c78f21a9c9f3352ac238b333f753ca8fd";
 const keyAgentServiceDurableTestNames = [
   "canonical_v1_clean_marker_and_checkpoint_round_trip",
   "canonical_v1_layout_matches_independent_golden_digests",
@@ -7619,6 +7628,9 @@ const keyAgentServicePhaseTwoEPinContract = ({
       approvedKeyAgentServiceRunStateRootTestsSha256
   );
 };
+const keyAgentServicePhaseTwoFBPinContract = ({ windowsPairSource }) =>
+  normalizedSourceSha256(windowsPairSource) ===
+  approvedKeyAgentServiceDurableWindowsPairSha256;
 const keyAgentServicePhaseTwoCSemanticContract = ({
   main,
   platformService,
@@ -7903,7 +7915,6 @@ const keyAgentServicePhaseTwoCSemanticContract = ({
     return false;
   }
 
-
   return (
     (rustLexicalCode(durable.production).match(/\bmod\s+provisioning\s*;/gu) ?? [])
       .length === 1 &&
@@ -7927,6 +7938,7 @@ const keyAgentServicePhaseTwoCSemanticContract = ({
       JSON.stringify([
         { name: "provisioning_tests.rs", kind: "file" },
         { name: "provisioning.rs", kind: "file" },
+        { name: "windows_pair.rs", kind: "file" },
       ]) &&
     JSON.stringify(provisioningUseInventory) ===
       JSON.stringify([
@@ -8360,6 +8372,78 @@ const keyAgentServicePhaseTwoFATestNames = [
   "successful_writer_terminal_retire_has_exact_order_and_close_fault_no_receipt",
   "state_open_impersonation_bookends_preserve_exact_failure_authority",
 ];
+const keyAgentServicePhaseTwoFBTestNames = [
+  "fixed_pair_absent_commit_flushes_renames_and_independently_rereads",
+  "fixed_pair_existing_commit_replaces_both_full_identities",
+  "fixed_pair_leaf_set_and_from_birth_file_security_are_exact",
+  "fixed_pair_one_sided_malformed_and_hostile_temp_are_terminal_known_failures",
+  "fixed_pair_rejects_ads_and_forbidden_file_attributes",
+  "fixed_pair_startup_cleans_safe_partial_temps_but_preserves_oversized",
+  "fixed_pair_full_id_second_cas_rejects_same_bytes_replacement_without_mutation",
+  "fixed_pair_first_rename_boundary_reload_and_close_poison_are_exact",
+  "fixed_pair_inspection_has_individual_impersonation_bookends_and_close_poison",
+  "fixed_pair_ambiguous_cleanup_is_bound_to_staged_full_ids",
+  "fixed_pair_reread_revalidates_writer_and_probe_close_poison_blocks_receipts",
+];
+const keyAgentServicePhaseTwoFBCodecTestNames = [
+  "record_shapes_map_without_widening_the_codec",
+  "exact_pair_round_trips_the_two_canonical_envelopes",
+  "missing_expectation_accepts_only_missing_missing",
+  "exact_expectation_requires_both_complete_canonical_records",
+  "expectation_debug_redacts_exact_envelopes",
+  "authority_states_and_receipts_are_move_only",
+];
+const keyAgentServicePhaseTwoFBRootTypeNames = [
+  "ExactFixedRunStatePair",
+  "FixedRunStateRecordObservation",
+  "FixedRunStatePairObservation",
+  "ObservedFixedRunStatePair",
+  "FixedPairCommitOutcome",
+  "FixedPairCommitted",
+  "FixedPairReread",
+  "FixedPairKnownFailure",
+  "FixedPairAmbiguous",
+  "FixedPairReloadFailure",
+  "FixedPairReloaded",
+];
+const keyAgentServicePhaseTwoFBSysTypeNames = [
+  "PairRecordKind",
+  "PairLeaf",
+  "PairFileSecurityDescriptor",
+  "PairLeafSnapshot",
+  "PairSnapshot",
+  "PairFailure",
+  "ObservedPairWriter",
+  "PairCommitOutcome",
+  "CommittedPairWriter",
+  "RereadPairWriter",
+  "AmbiguousPairWriter",
+  "PairAmbiguityContext",
+  "AmbiguousPairFailure",
+  "ReloadedPairWriter",
+  "OpenedPairLeaf",
+  "PairLeafOpen",
+  "PairStreamInformationBuffer",
+  "PairTempCleanupBinding",
+  "StagedPairFile",
+  "StagePairFailure",
+  "RenamePairAttempt",
+];
+const keyAgentServicePhaseTwoFBCodecTypeNames = [
+  "ExpectedWindowsPair",
+  "WindowsPairWriter",
+  "WindowsObservedPair",
+  "WindowsPreparedPairCommit",
+  "WindowsPairCommitOutcome",
+  "WindowsCommittedPair",
+  "WindowsRereadPair",
+  "WindowsPairKnownFailure",
+  "WindowsPairExpectationMismatch",
+  "WindowsPairReloadRequired",
+  "WindowsPairReloadFailure",
+  "WindowsReloadedPair",
+  "WindowsPairRetired",
+];
 const keyAgentServicePhaseTwoESysVisibleTypes = [
   "ExpectedObjects",
   "HeldRoot",
@@ -8431,25 +8515,50 @@ const keyAgentServicePhaseTwoESemanticContract = ({
     ...sysCode.matchAll(
       /\bpub\s*\(\s*super\s*\)\s+(?:struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
     ),
-  ].map((match) => match.groups.name);
+  ]
+    .map((match) => match.groups.name)
+    .filter((name) => !keyAgentServicePhaseTwoFBSysTypeNames.includes(name));
   const rootProductionTypes = [
     ...rootCode.matchAll(
       /\b(?:struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
     ),
-  ].map((match) => match.groups.name);
+  ]
+    .map((match) => match.groups.name)
+    .filter((name) => !keyAgentServicePhaseTwoFBRootTypeNames.includes(name));
   const sysProductionTypes = [
     ...sysCode.matchAll(
       /\b(?:struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
     ),
-  ].map((match) => match.groups.name);
-  const rootVisibleFunctions = rustVisibleFunctionItems(rootProduction).map(
-    ({ visibility, name, signature }) => ({ visibility, name, signature }),
-  );
-  const sysVisibleFunctions = rustVisibleFunctionItems(sysProduction).map(
-    ({ visibility, name, signature }) => ({ visibility, name, signature }),
-  );
+  ]
+    .map((match) => match.groups.name)
+    .filter((name) => !keyAgentServicePhaseTwoFBSysTypeNames.includes(name));
+  const rootVisibleFunctions = rustVisibleFunctionItems(rootProduction)
+    .filter(({ owner, name }) => {
+      const compactOwner = compactRust(owner);
+      return (
+        !keyAgentServicePhaseTwoFBRootTypeNames.some((typeName) =>
+          compactOwner.includes(typeName),
+        ) &&
+        !(
+          compactOwner === "implHeldServiceRunStateWriter" &&
+          name === "observe_fixed_pair"
+        )
+      );
+    })
+    .map(({ visibility, name, signature }) => ({ visibility, name, signature }));
+  const sysVisibleFunctions = rustVisibleFunctionItems(sysProduction)
+    .filter(({ owner, name }) => {
+      const compactOwner = compactRust(owner);
+      return (
+        !keyAgentServicePhaseTwoFBSysTypeNames.some((typeName) =>
+          compactOwner.includes(typeName),
+        ) &&
+        !(compactOwner === "implHeldWriter" && name === "observe_fixed_pair")
+      );
+    })
+    .map(({ visibility, name, signature }) => ({ visibility, name, signature }));
   const rootNonRestrictedVisibility = rootCode.replace(
-    /\bpub\s*\(\s*crate\s*\)/gu,
+    /\bpub\s*\(\s*(?:crate|super)\s*\)/gu,
     "",
   );
   const sysNonRestrictedVisibility = sysCode.replace(
@@ -8930,6 +9039,52 @@ const keyAgentServicePhaseTwoESemanticContract = ({
     return false;
   }
 
+  const phaseTwoEScopedCode = rustLexicalCode(
+    [
+      wrapperRootImpl,
+      wrapperWriterImpl,
+      wrapperFailureImpl,
+      wrapperOpen,
+      objectIdentityImpl,
+      securityPolicyImpl,
+      locationImpl,
+      heldRootImpl,
+      heldWriterImpl,
+      ownedHandleImpl,
+      openFixed,
+      revalidateInner,
+      heldRootCloseChecked,
+      openVerifiedRoot,
+      openRootCandidate,
+      openDriveRoot,
+      openRelative,
+      requireExactOpen,
+      tryAcquireExclusiveWriterRange,
+      acquireExclusiveRange,
+      unlockExclusiveRange,
+      verifyRootHandle,
+      verifyLockHandle,
+      verifySupportedVolume,
+      verifyExactSecurity,
+      inspectSecurityDescriptor,
+      inspectExactDacl,
+      inspectOwnerRightsDeny,
+      inspectAllowAce,
+      rejectImpersonation,
+      impersonationBookend,
+      fixedProgramDataPath,
+      localDrivePathParts,
+      validateLeaf,
+      verifyHandleFlagsZero,
+      verifyExactGrantedAccess,
+      acquireRunLock,
+      writerRevalidate,
+      writerRevalidateInner,
+      releaseVerified,
+      retire,
+      closeChecked,
+    ].join("\n"),
+  );
 
   return (
     JSON.stringify(directoryInventory) ===
@@ -9007,7 +9162,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
     (sysSource.match(/#!\s*\[\s*allow\s*\(\s*unsafe_code\s*\)\s*\]/gu) ?? [])
       .length === 1 &&
     !/#!\s*\[\s*allow\s*\(\s*unsafe_code\s*\)\s*\]/u.test(rootSource) &&
-    !forbiddenCreationOrMutation.test(combinedCode) &&
+    !forbiddenCreationOrMutation.test(phaseTwoEScopedCode) &&
     !forbiddenReuseOrSingleton.test(combinedCode) &&
     !forbiddenExternalLookup.test(combinedCode) &&
     !phaseTwoDAuthorityNames.test(combinedCode) &&
@@ -9262,7 +9417,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
       "verify_handle_flags_zero(handle)?",
       "verify_directory_shape(handle,true)?",
       "verify_supported_local_ntfs(handle)?",
-      "verify_exact_security(handle,&expected.policy,ROOT_ACCESS)?",
+      "verify_exact_security(handle,&expected.policy,OWNER_RIGHTS_DENY,ROOT_ACCESS)?",
       "ifObjectIdentity::from_handle(handle)?!=expected.root_identity",
     ]) &&
     hasOrderedCompactMarkers(verifyLockHandle, [
@@ -9270,7 +9425,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
       "verify_exact_granted_access(handle,LOCK_ACCESS)?",
       "verify_file_shape(handle)?",
       "verify_supported_local_ntfs(handle)?",
-      "verify_exact_security(handle,&expected.policy,LOCK_ACCESS)?",
+      "verify_exact_security(handle,&expected.policy,OWNER_RIGHTS_DENY,LOCK_ACCESS)?",
       "identity!=expected.lock_identity||identity.volume_serial_number!=root_volume",
     ]) &&
     hasOrderedCompactMarkers(verifySupportedVolume, [
@@ -9289,7 +9444,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
       "None",
       "Some(&rawmutdescriptor)",
       "status!=ERROR_SUCCESS",
-      "inspect_security_descriptor(descriptor,owner,dacl,policy,service_mask)",
+      "inspect_security_descriptor(descriptor,owner,dacl,policy,owner_rights_deny,service_mask,)",
     ]) &&
     !/\b(?:GROUP_SECURITY_INFORMATION|SACL_SECURITY_INFORMATION)\b/u.test(
       rustLexicalCode(verifyExactSecurity),
@@ -9307,7 +9462,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
       "SE_DACL_DEFAULTED",
       "SE_DACL_AUTO_INHERIT_REQ",
       "control&required!=required||control&forbidden!=0",
-      "inspect_exact_dacl(dacl,policy,service_mask)",
+      "inspect_exact_dacl(dacl,policy,owner_rights_deny,service_mask)",
     ]) &&
     compactRust(inspectSecurityDescriptor).includes(
       "letforbidden=control_flag(SE_OWNER_DEFAULTED)|control_flag(SE_DACL_DEFAULTED)|control_flag(SE_DACL_AUTO_INHERIT_REQ);",
@@ -9317,7 +9472,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
       "ace_at(dacl,0)?",
       "ace_at(dacl,1)?",
       "ace_at(dacl,2)?",
-      "inspect_owner_rights_deny(deny)?",
+      "inspect_owner_rights_deny(deny,owner_rights_deny)?",
       "inspect_allow_ace(service,policy.service_sid.as_psid(),service_mask)?",
       "inspect_allow_ace(system,policy.system_sid.as_psid(),FILE_ALL_ACCESS.0)?",
       "letused=usize::try_from(information.AclBytesInUse)",
@@ -9328,7 +9483,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
     hasOrderedCompactMarkers(inspectOwnerRightsDeny, [
       "header.AceType!=u8::try_from(ACCESS_DENIED_ACE_TYPE)",
       "header.AceFlags!=0",
-      "denied.Mask!=OWNER_RIGHTS_DENY",
+      "denied.Mask!=expected_mask",
       "IsWellKnownSid(sid,WinCreatorOwnerRightsSid)",
     ]) &&
     hasOrderedCompactMarkers(inspectAllowAce, [
@@ -9390,7 +9545,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
       "AcquireFailure::BeforeLock(cause)",
       "open_relative(self.handle.raw(),RUN_LOCK_LEAF,LOCK_OPEN_ACCESS,FILE_SHARE_MODE(0),FILE_NON_DIRECTORY_FILE|FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT,)" ,
       "Err(cause)=>returnErr(AcquireFailure::BeforeLock(cause))",
-      "letmutwriter=HeldWriter{root:self,lock,state:None,range_lock_held:false,}",
+      "letmutwriter=HeldWriter{root:self,lock,state:None,range_lock_held:false,pair_receipt_poisoned:false,}",
       "require_exact_open(opened.status_error,opened.information)?",
       "verify_handle_flags_zero(writer.lock.raw())?",
       "writer.acquire_exclusive_range()?",
@@ -9742,13 +9897,17 @@ const keyAgentServicePhaseTwoFASemanticContract = ({
   const sysProduction = withoutCfgTestItems(sysSource);
   const rootCode = rustLexicalCode(rootProduction);
   const sysCode = rustLexicalCode(sysProduction);
-  const combinedCode = `${rootCode}\n${sysCode}`;
   const rootCompact = compactRust(rootProduction);
   const sysCompact = compactRust(sysProduction);
   const testsCompact = compactRust(testsSource);
   const attributedTests = keyAgentServiceRustAttributedTestInventory(testsSource);
   const phaseTwoFAAttributedTests = attributedTests.filter(({ name }) =>
     keyAgentServicePhaseTwoFATestNames.includes(name),
+  );
+  const phaseTwoEFAAttributedTests = attributedTests.filter(({ name }) =>
+    [...keyAgentServicePhaseTwoETestNames, ...keyAgentServicePhaseTwoFATestNames].includes(
+      name,
+    ),
   );
   const durable = keyAgentServicePhaseTwoPartitionDurable(durableSource);
   const lifecycleProduction =
@@ -9772,14 +9931,14 @@ const keyAgentServicePhaseTwoFASemanticContract = ({
   const designPhaseTwoFAStart = designDocument.indexOf(
     "**Current Phase 2F-a status: started, not passed.**",
   );
-  const designPhaseThreeStart = designDocument.indexOf(
-    "\n### Phase 3",
+  const designPhaseTwoFBStart = designDocument.indexOf(
+    "**Current Phase 2F-b status: started, not passed.**",
     designPhaseTwoFAStart,
   );
   const phaseTwoFADesign =
-    designPhaseTwoFAStart === -1 || designPhaseThreeStart === -1
+    designPhaseTwoFAStart === -1 || designPhaseTwoFBStart === -1
       ? ""
-      : designDocument.slice(designPhaseTwoFAStart, designPhaseThreeStart);
+      : designDocument.slice(designPhaseTwoFAStart, designPhaseTwoFBStart);
   const normalizedPhaseTwoFADesign = phaseTwoFADesign.replace(/\s+/gu, " ");
   const phaseTwoFAArchitectureRows = architectureDocument
     .split(/\r?\n/gu)
@@ -9809,7 +9968,7 @@ const keyAgentServicePhaseTwoFASemanticContract = ({
     "service allow ACE is exactly the state-directory grant above",
     "independently reopens the fixed leaf from the held root with the same no-delete-share contract",
     "ambiguous candidate close poisons later revalidation and prevents every normal or retired receipt",
-    "state-directory handle as the only future state-mutation authority exposed by this slice",
+    "state-directory handle as the only future state-mutation authority introduced by this slice",
     "exposes neither a raw handle nor marker/checkpoint operations",
     "checked-closes state mutation authority, explicitly unlocks the exact byte range",
     "State-close failure or ambiguity therefore occurs while the range is still held and cannot mint a normal receipt",
@@ -9817,8 +9976,8 @@ const keyAgentServicePhaseTwoFASemanticContract = ({
     "Retirement attempts the optional state close first, conditionally unlocks any acquired range, and then attempts checked close of both lock and root even after an earlier failure",
     "`FailedRunLockRetired` is issued only when every required step succeeds",
     "no production expected-authority mint or caller",
-    "no marker/checkpoint read, write, create, replace, rename, CAS, readback, or flush operation",
-    "no conversion to the Phase 2D runtime writer",
+    "does not itself implement marker/checkpoint I/O",
+    "Neither slice converts authority to the Phase 2D runtime writer",
     "installer creation and from-birth descriptor/identity provenance for `state`",
     "remain external **STOP-SHIP** obligations",
     "Both compiled policies stay `None`",
@@ -9841,15 +10000,15 @@ const keyAgentServicePhaseTwoFASemanticContract = ({
     "service allow exactly the state grant",
     "independently reopens the fixed state leaf with the same no-delete-share contract",
     "ambiguous candidate close poisons every later normal or retired receipt",
-    "opaque future mutation authority with no raw-handle or marker/checkpoint operation",
+    "Phase 2F-a itself exposes no raw handle or marker/checkpoint operation",
     "Normal release checked-closes state before range unlock",
     "Both a successful writer and a `WithLock` failure have explicit terminal retirement",
     "attempts optional state close, conditional range unlock, and both lock/root closes even after an earlier failure",
     "issues `FailedRunLockRetired` only if all required steps succeed",
     "Any state-close, unlock, revalidation, or close ambiguity issues no receipt",
-    "no marker/checkpoint read, write, create, replace, rename, CAS, readback, or flush",
+    "introduces no marker/checkpoint I/O",
     "no production caller or expected-authority mint",
-    "no Phase 2D, provisioning, Boot, Clean, stopped, secret, signing, or release bridge",
+    "Neither slice provides a Phase 2D, provisioning, Boot, Clean, stopped, secret, signing, or release bridge",
     "installer state-directory creation/from-birth descriptor and independently sealed identity provenance",
     "remain external **STOP-SHIP** obligations",
     "Both compiled policies remain `None`",
@@ -9957,6 +10116,24 @@ const keyAgentServicePhaseTwoFASemanticContract = ({
     return false;
   }
 
+  const phaseTwoFAScopedCode = rustLexicalCode(
+    [
+      expectedObjects,
+      heldWriterDefinition,
+      acquireRunLock,
+      openState,
+      openStateInner,
+      writerRevalidateInner,
+      revalidateStateBinding,
+      revalidateStateBindingInner,
+      closeStateChecked,
+      closeOptionalStateChecked,
+      verifyStateHandle,
+      releaseVerified,
+      retire,
+    ].join("\n"),
+  );
+
   return (
     sysSource.includes(
       'const RUN_LOCK_LEAF: &str = "run.lock";\nconst STATE_LEAF: &str = "state";',
@@ -9975,9 +10152,13 @@ const keyAgentServicePhaseTwoFASemanticContract = ({
     compactRust(expectedObjects).includes(
       "pub(super)structExpectedObjects{root_identity:ObjectIdentity,lock_identity:ObjectIdentity,state_identity:ObjectIdentity,policy:SecurityPolicy,}",
     ) &&
-    compactRust(heldWriterDefinition).includes(
-      "pub(super)structHeldWriter{root:HeldRoot,lock:OwnedHandle,state:Option<OwnedHandle>,range_lock_held:bool,}",
-    ) &&
+    hasOrderedCompactMarkers(heldWriterDefinition, [
+      "pub(super)structHeldWriter{",
+      "root:HeldRoot",
+      "lock:OwnedHandle",
+      "state:Option<OwnedHandle>",
+      "range_lock_held:bool",
+    ]) &&
     hasOrderedCompactMarkers(acquireRunLock, [
       "writer.acquire_exclusive_range()?",
       "verify_lock_handle(writer.lock.raw(),&writer.root.expected,writer.root.expected.root_identity.volume_serial_number,)?",
@@ -10003,7 +10184,7 @@ const keyAgentServicePhaseTwoFASemanticContract = ({
       "verify_exact_granted_access(handle,STATE_ACCESS)?",
       "verify_directory_shape(handle,true)?",
       "verify_supported_local_ntfs(handle)?",
-      "verify_exact_security(handle,&expected.policy,STATE_ACCESS)?",
+      "verify_exact_security(handle,&expected.policy,OWNER_RIGHTS_DENY,STATE_ACCESS)?",
       "letidentity=ObjectIdentity::from_handle(handle)?",
       "identity!=expected.state_identity||identity.volume_serial_number!=root_volume",
       "Err(ServiceRunStateError::Identity)",
@@ -10169,10 +10350,10 @@ const keyAgentServicePhaseTwoFASemanticContract = ({
     ].every((marker) => rootSource.includes(marker)) &&
     [
       "HandleRole::State=>record_release_step_for_test(TestReleaseStep::StateClosed)",
-      "HandleRole::RevalidationState=>",
+      "HandleRole::RevalidationRoot|HandleRole::RevalidationState|HandleRole::PairMarkerFinal",
     ].every((marker) => sysCompact.includes(marker)) &&
-    !forbiddenMarkerOrCheckpointIo.test(combinedCode) &&
-    !phaseTwoDAuthorityNames.test(combinedCode) &&
+    !forbiddenMarkerOrCheckpointIo.test(phaseTwoFAScopedCode) &&
+    !phaseTwoDAuthorityNames.test(phaseTwoFAScopedCode) &&
     !/\b(?:ExpectedInstalledRunStateObjects|ExpectedObjects)\b/u.test(
       productionConsumers,
     ) &&
@@ -10180,8 +10361,8 @@ const keyAgentServicePhaseTwoFASemanticContract = ({
     JSON.stringify(phaseTwoFAAttributedTests.map(({ name }) => name)) ===
       JSON.stringify(keyAgentServicePhaseTwoFATestNames) &&
     phaseTwoFAAttributedTests.every(({ ignored }) => !ignored) &&
-    attributedTests.length === 36 &&
-    attributedTests.every(({ name }) =>
+    phaseTwoEFAAttributedTests.length === 36 &&
+    phaseTwoEFAAttributedTests.every(({ name }) =>
       [...keyAgentServicePhaseTwoETestNames, ...keyAgentServicePhaseTwoFATestNames].includes(
         name,
       ),
@@ -10205,12 +10386,412 @@ const keyAgentServicePhaseTwoFASemanticContract = ({
     testsCompact.includes("TestReleaseStep::StateClosed")
   );
 };
+const keyAgentServicePhaseTwoFBSemanticContract = ({
+  main,
+  platformService,
+  platformLib,
+  durableSource,
+  windowsPairSource,
+  provisioningSource,
+  lifecycleSource,
+  rootSource,
+  sysSource,
+  testsSource,
+  provisioningDirectoryInventory,
+  designDocument,
+  architectureDocument,
+}) => {
+  const rootProduction = withoutCfgTestItems(rootSource);
+  const sysProduction = withoutCfgTestItems(sysSource);
+  const windowsPairProduction = withoutCfgTestItems(windowsPairSource);
+  const rootCode = rustLexicalCode(rootProduction);
+  const sysCode = rustLexicalCode(sysProduction);
+  const windowsPairCode = rustLexicalCode(windowsPairProduction);
+  const rootCompact = compactRust(rootProduction);
+  const sysCompact = compactRust(sysProduction);
+  const windowsPairCompact = compactRust(windowsPairProduction);
+  const attributedTests = keyAgentServiceRustAttributedTestInventory(testsSource);
+  const codecTests = keyAgentServiceRustAttributedTestInventory(windowsPairSource);
+  const phaseTwoFBTests = attributedTests.filter(({ name }) =>
+    keyAgentServicePhaseTwoFBTestNames.includes(name),
+  );
+  const expectedRootTests = [
+    ...keyAgentServicePhaseTwoETestNames,
+    ...keyAgentServicePhaseTwoFATestNames,
+    ...keyAgentServicePhaseTwoFBTestNames,
+  ];
+  const rootPairTypes = [
+    ...rootCode.matchAll(
+      /\b(?:struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
+    ),
+  ]
+    .map((match) => match.groups.name)
+    .filter((name) => keyAgentServicePhaseTwoFBRootTypeNames.includes(name));
+  const sysPairTypes = [
+    ...sysCode.matchAll(
+      /\b(?:struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
+    ),
+  ]
+    .map((match) => match.groups.name)
+    .filter((name) => keyAgentServicePhaseTwoFBSysTypeNames.includes(name));
+  const codecVisibleTypes = [
+    ...windowsPairCode.matchAll(
+      /\bpub\s*\(\s*super\s*\)\s+(?:struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
+    ),
+  ].map((match) => match.groups.name);
+  const durable = keyAgentServicePhaseTwoPartitionDurable(durableSource);
+  const lifecycleProduction =
+    keyAgentServicePhaseTwoPartitionLifecycle(lifecycleSource);
+  if (durable === null || lifecycleProduction === null) return false;
+  const productionConsumers = rustLexicalCode(
+    [
+      main,
+      platformService,
+      platformLib,
+      durable.production,
+      withoutCfgTestItems(provisioningSource),
+      lifecycleProduction,
+    ].join("\n"),
+  );
+  const designPhaseTwoFBStart = designDocument.indexOf(
+    "**Current Phase 2F-b status: started, not passed.**",
+  );
+  const designPhaseThreeStart = designDocument.indexOf(
+    "\n### Phase 3",
+    designPhaseTwoFBStart,
+  );
+  const phaseTwoFBDesign =
+    designPhaseTwoFBStart === -1 || designPhaseThreeStart === -1
+      ? ""
+      : designDocument.slice(designPhaseTwoFBStart, designPhaseThreeStart);
+  const normalizedPhaseTwoFBDesign = phaseTwoFBDesign.replace(/\s+/gu, " ");
+  const phaseTwoFBArchitectureRows = architectureDocument
+    .split(/\r?\n/gu)
+    .filter((line) =>
+      line.startsWith("| Windows service fixed marker/checkpoint pair |"),
+    );
+  const normalizedPhaseTwoFBArchitecture = (
+    phaseTwoFBArchitectureRows[0] ?? ""
+  ).replace(/\s+/gu, " ");
+
+  let pairLeafNativeOpen;
+  let pairFileSecurityImpl;
+  let inspectPairFileInner;
+  let pairFileIdentityAndLengthInner;
+  let verifyPairDefaultStream;
+  let readExactPairRecord;
+  let writeFlushReadback;
+  let clearStaleTemp;
+  let stagePairRecord;
+  let renameStagedPair;
+  let renamePacket;
+  let commitObservedPair;
+  let verifyCaseInsensitiveDirectory;
+  try {
+    pairFileSecurityImpl = rustLexicalItemBlock(
+      sysProduction,
+      /\bimpl\s+PairFileSecurityDescriptor\s*\{/u,
+    );
+    pairLeafNativeOpen = rustTopLevelFunctionBlock(
+      sysProduction,
+      "pair_leaf_native_open",
+    );
+    inspectPairFileInner = rustTopLevelFunctionBlock(
+      sysProduction,
+      "inspect_pair_file_inner",
+    );
+    pairFileIdentityAndLengthInner = rustTopLevelFunctionBlock(
+      sysProduction,
+      "pair_file_identity_and_length_inner",
+    );
+    verifyPairDefaultStream = rustTopLevelFunctionBlock(
+      sysProduction,
+      "verify_pair_default_stream",
+    );
+    readExactPairRecord = rustTopLevelFunctionBlock(
+      sysProduction,
+      "read_exact_pair_record",
+    );
+    writeFlushReadback = rustTopLevelFunctionBlock(
+      sysProduction,
+      "write_flush_and_readback_pair_record",
+    );
+    clearStaleTemp = rustTopLevelFunctionBlock(
+      sysProduction,
+      "clear_one_stale_pair_temp",
+    );
+    stagePairRecord = rustTopLevelFunctionBlock(sysProduction, "stage_pair_record");
+    renameStagedPair = rustTopLevelFunctionBlock(
+      sysProduction,
+      "rename_staged_pair_file",
+    );
+    renamePacket = rustTopLevelFunctionBlock(sysProduction, "pair_rename_packet");
+    commitObservedPair = rustTopLevelFunctionBlock(
+      sysProduction,
+      "commit_observed_pair",
+    );
+    verifyCaseInsensitiveDirectory = rustTopLevelFunctionBlock(
+      sysProduction,
+      "verify_case_insensitive_directory",
+    );
+  } catch {
+    return false;
+  }
+
+  const designMarkers = [
+    "four fixed one-component leaves",
+    "`marker.v1`, `marker.tmp`, `checkpt.v1`, and `checkpt.tmp`",
+    "Purpose-specific access is exact and includes `SYNCHRONIZE`",
+    "exact protected three-ACE DACL",
+    "zero case-sensitive-directory flags",
+    "exactly one 148-byte record",
+    "flushed with `FlushFileBuffers`, reread byte-for-byte",
+    "second writer revalidation and full-identity CAS immediately before replacement",
+    "Replacement is handle-relative and ordered marker first, checkpoint second",
+    "ordered two-file protocol, not an atomic pair transaction",
+    "does not establish pair atomicity or power-loss durability",
+    "Every failure before the first native rename attempt is known-not-committed",
+    "Cleanup is bound to the exact staged full identities",
+    "length is in `0..=148`",
+    "oversized temp, wrong identity, wrong descriptor, ADS, forbidden attribute, or other hostile shape is preserved",
+    "Post-commit reread and ambiguity reload first revalidate the complete writer",
+    "combined relevant inventory is therefore exactly 53 tests: 51 passed and two ignored",
+    "no production caller, expected-authority mint, authentication-key provider, TPM or non-rollbackable anchor integration",
+    "nonzero case-sensitive-directory flag",
+    "compressed and encrypted file-attribute branches",
+    "short-write and flush-failure injection",
+    "ABI assertions for the variable-length rename packet",
+    "external **STOP-SHIP** obligations",
+  ];
+  const architectureMarkers = [
+    "four one-component state-relative leaves `marker.v1`, `marker.tmp`, `checkpt.v1`, and `checkpt.tmp`",
+    "Purpose-specific exact access includes `SYNCHRONIZE`",
+    "exact protected three-ACE DACL",
+    "Exact records are 148 bytes",
+    "second full-ID CAS",
+    "handle-relative marker-first/checkpoint-second replacement",
+    "not atomic pair commit or power-loss proof",
+    "from the first native rename attempt onward every outcome is ambiguity-bearing",
+    "bound to staged full IDs",
+    "length `0..=148`",
+    "preserves oversized or hostile temps",
+    "combined relevant inventory of 53 (51 passed, two ignored)",
+    "no production caller, expected-authority mint, authentication-key provider, TPM/non-rollbackable anchor integration",
+    "nonzero case-sensitive-directory kernel negative",
+    "direct compressed/encrypted branches",
+    "short-write/flush-failure injection",
+    "rename-packet ABI assertions",
+    "external **STOP-SHIP** obligations",
+  ];
+
+  return (
+    durableSource.includes("#[cfg(windows)]\nmod windows_pair;") &&
+    !durableSource.includes("pub mod windows_pair;") &&
+    JSON.stringify(provisioningDirectoryInventory) ===
+      JSON.stringify([
+        { name: "provisioning_tests.rs", kind: "file" },
+        { name: "provisioning.rs", kind: "file" },
+        { name: "windows_pair.rs", kind: "file" },
+      ]) &&
+    rootCompact.includes(
+      "pub(super)constFIXED_RUN_STATE_RECORD_BYTES:usize=148;",
+    ) &&
+    sysSource.includes(
+      'const MARKER_FINAL_LEAF: &str = "marker.v1";\nconst MARKER_TEMP_LEAF: &str = "marker.tmp";\nconst CHECKPOINT_FINAL_LEAF: &str = "checkpt.v1";\nconst CHECKPOINT_TEMP_LEAF: &str = "checkpt.tmp";',
+    ) &&
+    [
+      "constPAIR_CREATE_DESIRED_ACCESS:u32=GENERIC_READ.0|GENERIC_WRITE.0|DELETE.0|SYNCHRONIZE.0;",
+      "constPAIR_FINAL_OPEN_DESIRED_ACCESS:u32=GENERIC_READ.0|SYNCHRONIZE.0;",
+      "constPAIR_FINAL_GRANTED_ACCESS:u32=FILE_GENERIC_READ.0;",
+      "constPAIR_TEMP_CLEANUP_DESIRED_ACCESS:u32=GENERIC_READ.0|DELETE.0|SYNCHRONIZE.0;",
+      "constPAIR_TEMP_CLEANUP_GRANTED_ACCESS:u32=FILE_GENERIC_READ.0|DELETE.0;",
+      "constPAIR_FILE_ACCESS:u32=FILE_GENERIC_READ.0|FILE_GENERIC_WRITE.0|DELETE.0;",
+      "constPAIR_OWNER_RIGHTS_DENY:u32=WRITE_DAC.0|WRITE_OWNER.0;",
+    ].every((marker) => sysCompact.includes(marker)) &&
+    hasOrderedCompactMarkers(pairFileSecurityImpl, [
+      "fnnew(policy:&SecurityPolicy)->Result<Self,ServiceRunStateError>",
+      "AddAccessDeniedAceEx(acl,ACL_REVISION,NO_INHERITANCE,PAIR_OWNER_RIGHTS_DENY,owner_rights.as_psid(),)",
+      "AddAccessAllowedAceEx(acl,ACL_REVISION,NO_INHERITANCE,PAIR_FILE_ACCESS,policy.service_sid.as_psid(),)",
+      "AddAccessAllowedAceEx(acl,ACL_REVISION,NO_INHERITANCE,FILE_ALL_ACCESS.0,policy.system_sid.as_psid(),)",
+      "SetSecurityDescriptorOwner",
+      "SetSecurityDescriptorDacl",
+    ]) &&
+    hasOrderedCompactMarkers(pairLeafNativeOpen, [
+      "validate_leaf(leaf_name)?",
+      "reject_thread_impersonation()?",
+      "RootDirectory:parent",
+      "Attributes:OBJ_CASE_INSENSITIVE|OBJ_DONT_REPARSE",
+      "FILE_SHARE_MODE(0)",
+      "FILE_NON_DIRECTORY_FILE|FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT|FILE_WRITE_THROUGH",
+      "letending=reject_thread_impersonation()",
+    ]) &&
+    hasOrderedCompactMarkers(inspectPairFileInner, [
+      "verify_handle_flags_zero(handle)?",
+      "verify_exact_granted_access(handle,expected_granted_access)?",
+      "verify_supported_local_ntfs(handle)?",
+      "verify_exact_security(handle,policy,PAIR_OWNER_RIGHTS_DENY,PAIR_FILE_ACCESS)?",
+      "let(identity,length)=pair_file_identity_and_length(handle)?",
+      "ifidentity.volume_serial_number!=root_volume",
+      "iflength==FIXED_RUN_STATE_RECORD_BYTES",
+      "FixedRunStateRecordObservation::Exact(read_exact_pair_record(handle)?)",
+    ]) &&
+    hasOrderedCompactMarkers(pairFileIdentityAndLengthInner, [
+      "letbasic=basic_information(handle)?",
+      "FILE_ATTRIBUTE_REPARSE_POINT",
+      "FILE_ATTRIBUTE_READONLY",
+      "FILE_ATTRIBUTE_SPARSE_FILE",
+      "FILE_ATTRIBUTE_COMPRESSED",
+      "FILE_ATTRIBUTE_ENCRYPTED",
+      "FILE_ATTRIBUTE_DIRECTORY",
+      "basic.nNumberOfLinks!=1",
+      "NtQueryInformationFile",
+      "FileStandardInformation",
+      "standard.Directory||standard.DeletePending||standard.NumberOfLinks!=1",
+      "verify_pair_default_stream(handle,length)?",
+      "ObjectIdentity::from_handle(handle)?",
+    ]) &&
+    hasOrderedCompactMarkers(verifyPairDefaultStream, [
+      "FileStreamInfo",
+      "information.NextEntryOffset!=0",
+      "information.StreamSize!=i64::try_from(expected_length)",
+      "name!=DEFAULT_STREAM_NAME",
+    ]) &&
+    hasOrderedCompactMarkers(readExactPairRecord, [
+      "SetFilePointerEx(handle,0,None,FILE_BEGIN)",
+      "ReadFile(handle,Some(&mutbytes),Some(&rawmutread),None)",
+      "usize::try_from(read).ok()!=Some(FIXED_RUN_STATE_RECORD_BYTES)",
+      "ReadFile(handle,Some(&muteof),Some(&rawmuteof_read),None)",
+      "ifeof_read!=0",
+    ]) &&
+    hasOrderedCompactMarkers(writeFlushReadback, [
+      "WriteFile(handle,Some(candidate),Some(&rawmutwritten),None)",
+      "usize::try_from(written).ok()!=Some(FIXED_RUN_STATE_RECORD_BYTES)",
+      "FlushFileBuffers(handle)",
+      "letreadback=read_exact_pair_record(handle)?",
+      "ifreadback!=*candidate",
+      "let(identity,length)=pair_file_identity_and_length(handle)?",
+      "iflength!=FIXED_RUN_STATE_RECORD_BYTES",
+    ]) &&
+    hasOrderedCompactMarkers(clearStaleTemp, [
+      "ifobserved.handle.close_checked().is_err()",
+      "PairTempCleanupBinding::SafeStaleifobserved_snapshot.length.is_some_and(|length|length<=FIXED_RUN_STATE_RECORD_BYTES)",
+      "PairTempCleanupBinding::SafeStale=>Err(ServiceRunStateError::Shape)",
+      "observed_snapshot.identity==Some(expected)",
+      "observed_snapshot.length==Some(FIXED_RUN_STATE_RECORD_BYTES)",
+      "PairTempCleanupBinding::ExactOrMissing(_)|PairTempCleanupBinding::MustBeMissing",
+      "ifletErr(cause)=binding_result",
+      "PAIR_TEMP_CLEANUP_DESIRED_ACCESS",
+      "cleanup_snapshot!=observed_snapshot",
+      "set_pair_delete_disposition(cleanup.handle.raw())",
+      "writer.poison_pair_receipt()",
+    ]) &&
+    hasOrderedCompactMarkers(stagePairRecord, [
+      "create_pair_temp(parent,record,&writer.root.expected.policy)",
+      "verify_pair_create_mode(handle.raw())?",
+      "write_flush_and_readback_pair_record(handle.raw(),candidate)?",
+      "before.identity!=Some(identity)",
+      "after.identity!=Some(identity)",
+      "FixedRunStateRecordObservation::Exact(*candidate)",
+    ]) &&
+    hasOrderedCompactMarkers(renameStagedPair, [
+      "pair_rename_packet(parent,staged.record.final_leaf())",
+      "reject_thread_impersonation()",
+      "NtSetInformationFile",
+      "FileRenameInformation",
+      "attempted:true",
+    ]) &&
+    hasOrderedCompactMarkers(renamePacket, [
+      "validate_leaf(final_leaf)?",
+      "offset_of!(FILE_RENAME_INFORMATION,FileName)",
+      "ReplaceIfExists:true",
+      "(*rename).RootDirectory=parent",
+      "(*rename).FileNameLength",
+      "ptr::copy_nonoverlapping",
+    ]) &&
+    hasOrderedCompactMarkers(commitObservedPair, [
+      "writer.revalidate()?",
+      "current!=expected||!expected.is_committable()",
+      "stage_pair_record(&writer,PairRecordKind::Marker",
+      "stage_pair_record(&writer,PairRecordKind::Checkpoint",
+      "marker_identity==checkpoint_identity",
+      "writer.revalidate()?",
+      "ifcurrent!=expected",
+      "letmarker_rename=rename_staged_pair_file(&writer,&marker)",
+      "ifmarker_rename.attempted",
+      "snapshot.identity==Some(marker_identity)",
+      "letcheckpoint_cas=observe_pair_leaf(&mutwriter,PairLeaf::CheckpointFinal)",
+      "letcheckpoint_rename=rename_staged_pair_file(&writer,&checkpoint)",
+      "AmbiguousPairWriter::checkpoint_rename",
+      "snapshot.identity==Some(checkpoint_identity)",
+    ]) &&
+    hasOrderedCompactMarkers(verifyCaseInsensitiveDirectory, [
+      "GetFileInformationByHandleEx",
+      "FileCaseSensitiveInfo",
+      "ifinformation.Flags==0",
+      "Err(ServiceRunStateError::Shape)",
+    ]) &&
+    sysCompact.includes("if!self.range_lock_held||self.pair_receipt_poisoned{returnErr(ServiceRunStateError::Release);") &&
+    sysCompact.includes("fnpoison_pair_receipt(&mutself){self.pair_receipt_poisoned=true;") &&
+    sysCompact.includes("ifpair_receipt_poisoned{Err(ServiceRunStateError::Release)") &&
+    sysCompact.includes("inner.revalidate()?;observe_pair_snapshot_reopened(&mutinner)") &&
+    windowsPairCompact.includes(
+      "const_:[();RUN_MARKER_BYTES]=[();FIXED_RUN_STATE_RECORD_BYTES];",
+    ) &&
+    windowsPairCompact.includes(
+      "const_:[();HIGH_WATER_BYTES]=[();FIXED_RUN_STATE_RECORD_BYTES];",
+    ) &&
+    windowsPairCompact.includes(
+      "observed.marker==FixedObservation::Missing&&observed.checkpoint==FixedObservation::Missing",
+    ) &&
+    windowsPairCompact.includes("Some(snapshot)=>*observed==snapshot.observation()") &&
+    windowsPairCompact.includes("matchinner.compare_and_replace(exact_pair(&candidate))") &&
+    JSON.stringify(rootPairTypes) ===
+      JSON.stringify(keyAgentServicePhaseTwoFBRootTypeNames) &&
+    JSON.stringify(sysPairTypes) ===
+      JSON.stringify(keyAgentServicePhaseTwoFBSysTypeNames) &&
+    JSON.stringify(codecVisibleTypes) ===
+      JSON.stringify(keyAgentServicePhaseTwoFBCodecTypeNames) &&
+    !/\bpub\s+(?:struct|enum|fn|mod)\b/u.test(windowsPairCode) &&
+    !/\b(?:HANDLE|OwnedHandle|NtCreateFile|ReadFile|WriteFile|FlushFileBuffers|NtSetInformationFile)\b/u.test(
+      windowsPairCode,
+    ) &&
+    !/\b(?:FixtureRunStateAuthenticationKey|RuntimeWriterAcquired|BootEvidence|ActiveRunLease|CleanCommittedWithWriter|StoppedRunEvidence|ProvisionedRunState|TPM|Tpm)\b/u.test(
+      windowsPairCode,
+    ) &&
+    !/\b(?:ExpectedWindowsPair|WindowsPairWriter|WindowsObservedPair|WindowsPreparedPairCommit|WindowsPairCommitOutcome|WindowsCommittedPair|WindowsRereadPair|WindowsPairKnownFailure|WindowsPairExpectationMismatch|WindowsPairReloadRequired|WindowsPairReloadFailure|WindowsReloadedPair|WindowsPairRetired)\b/u.test(
+      productionConsumers,
+    ) &&
+    attributedTests.length === 47 &&
+    attributedTests.filter(({ ignored }) => !ignored).length === 45 &&
+    JSON.stringify(
+      attributedTests.filter(({ ignored }) => ignored).map(({ name }) => name),
+    ) === JSON.stringify(keyAgentServicePhaseTwoEIgnoredTestNames) &&
+    attributedTests.every(({ name }) => expectedRootTests.includes(name)) &&
+    JSON.stringify(phaseTwoFBTests.map(({ name }) => name)) ===
+      JSON.stringify(keyAgentServicePhaseTwoFBTestNames) &&
+    phaseTwoFBTests.every(({ ignored }) => !ignored) &&
+    codecTests.length === 6 &&
+    codecTests.every(({ ignored }) => !ignored) &&
+    JSON.stringify(codecTests.map(({ name }) => name)) ===
+      JSON.stringify(keyAgentServicePhaseTwoFBCodecTestNames) &&
+    normalizedPhaseTwoFBDesign.length > 0 &&
+    designMarkers.every((marker) => normalizedPhaseTwoFBDesign.includes(marker)) &&
+    phaseTwoFBArchitectureRows.length === 1 &&
+    architectureMarkers.every((marker) =>
+      normalizedPhaseTwoFBArchitecture.includes(marker),
+    ) &&
+    !normalizedPhaseTwoFBDesign.includes("Phase 2F-b status: passed") &&
+    !normalizedPhaseTwoFBArchitecture.includes("atomic pair commit is proven") &&
+    !normalizedPhaseTwoFBArchitecture.includes("power-loss safe")
+  );
+};
 const keyAgentServicePhaseTwoInputs = Object.freeze({
   main: keyAgentServiceMain,
   platformManifest: keyAgentServicePlatformManifest,
   platformService: keyAgentServicePlatformSource,
   platformLib: keyAgentServicePlatformLib,
   durableSource: keyAgentServiceDurableRunState,
+  windowsPairSource: keyAgentServiceDurableWindowsPair,
   provisioningSource: keyAgentServiceDurableProvisioning,
   provisioningTests: keyAgentServiceDurableProvisioningTests,
   lifecycleSource: keyAgentServiceLifecycleCore,
@@ -10934,6 +11515,27 @@ const mutateKeyAgentServicePhaseTwoEInput = (
     [field]: `${source.slice(0, first)}${replacement}${source.slice(first + search.length)}`,
   };
 };
+const keyAgentServicePhaseTwoFBInputs = Object.freeze({
+  ...keyAgentServicePhaseTwoEInputs,
+  windowsPairSource: keyAgentServiceDurableWindowsPair,
+  provisioningDirectoryInventory:
+    keyAgentServiceDurableRunStateDirectoryInventory,
+});
+const mutateKeyAgentServicePhaseTwoFBInput = (
+  field,
+  search,
+  replacement,
+) => {
+  const source = keyAgentServicePhaseTwoFBInputs[field];
+  const first = source.indexOf(search);
+  if (first === -1 || source.indexOf(search, first + search.length) !== -1) {
+    return keyAgentServicePhaseTwoFBInputs;
+  }
+  return {
+    ...keyAgentServicePhaseTwoFBInputs,
+    [field]: `${source.slice(0, first)}${replacement}${source.slice(first + search.length)}`,
+  };
+};
 const keyAgentServicePhaseTwoESemanticMutationProbes = [
   mutateKeyAgentServicePhaseTwoEInput(
     "platformService",
@@ -10977,8 +11579,8 @@ const keyAgentServicePhaseTwoESemanticMutationProbes = [
   ),
   mutateKeyAgentServicePhaseTwoEInput(
     "sysSource",
-    "    let mut status_error = if status == STATUS_SUCCESS {",
-    "    let mut status_error = if status.0 >= 0 {",
+    "    let mut status_error = if status == STATUS_SUCCESS {\n        // SAFETY: NtCreateFile initialized IO_STATUS_BLOCK before returning a",
+    "    let mut status_error = if status.0 >= 0 {\n        // SAFETY: NtCreateFile initialized IO_STATUS_BLOCK before returning a",
   ),
   mutateKeyAgentServicePhaseTwoEInput(
     "sysSource",
@@ -11032,13 +11634,13 @@ const keyAgentServicePhaseTwoESemanticMutationProbes = [
   ),
   mutateKeyAgentServicePhaseTwoEInput(
     "sysSource",
-    "use super::ServiceRunStateError;",
-    "use super::ServiceRunStateError;\nfn forbidden_global_mutex() { let _ = CreateMutexW; let _ = r\"Global\\YourWalletKeyAgent\"; }",
+    "    FixedRunStateRecordObservation, ServiceRunStateError,\n};",
+    "    FixedRunStateRecordObservation, ServiceRunStateError,\n};\nfn forbidden_global_mutex() { let _ = CreateMutexW; let _ = r\"Global\\YourWalletKeyAgent\"; }",
   ),
   mutateKeyAgentServicePhaseTwoEInput(
     "sysSource",
-    "use super::ServiceRunStateError;",
-    "use super::ServiceRunStateError;\nfn forbidden_user_store() { let _ = FOLDERID_LocalAppData; let _ = key_agent_storage; }",
+    "    FixedRunStateRecordObservation, ServiceRunStateError,\n};",
+    "    FixedRunStateRecordObservation, ServiceRunStateError,\n};\nfn forbidden_user_store() { let _ = FOLDERID_LocalAppData; let _ = key_agent_storage; }",
   ),
   mutateKeyAgentServicePhaseTwoEInput(
     "rootSource",
@@ -11324,20 +11926,168 @@ const keyAgentServicePhaseTwoFASemanticMutationProbes = [
     "| Windows service held mutable run-state directory |",
     "| Windows service unverified mutable run-state directory |",
   ),
-  {
-    ...keyAgentServicePhaseTwoEInputs,
-    rootSource: `${keyAgentServicePhaseTwoEInputs.rootSource}\nfn forbidden_marker_create() { let _ = FILE_CREATE; }\n`,
-  },
+  mutateKeyAgentServicePhaseTwoEInput(
+    "sysSource",
+    "    fn open_state(&mut self) -> Result<(), ServiceRunStateError> {\n        impersonation_bookend(|| self.open_state_inner())\n    }",
+    "    fn open_state(&mut self) -> Result<(), ServiceRunStateError> {\n        let _ = FILE_CREATE;\n        impersonation_bookend(|| self.open_state_inner())\n    }",
+  ),
   {
     ...keyAgentServicePhaseTwoEInputs,
     platformService: `${keyAgentServicePhaseTwoEInputs.platformService}\nfn forbidden_phase_two_fa_caller(expected: ExpectedInstalledRunStateObjects) { let _ = open_fixed_service_run_state_root(expected); }\n`,
   },
 ];
+const keyAgentServicePhaseTwoFBSemanticMutationProbes = [
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "durableSource",
+    "#[cfg(windows)]\nmod windows_pair;",
+    "#[cfg(test)]\nmod windows_pair;",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "rootSource",
+    "pub(super) const FIXED_RUN_STATE_RECORD_BYTES: usize = 148;",
+    "pub(super) const FIXED_RUN_STATE_RECORD_BYTES: usize = 147;",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "sysSource",
+    'const MARKER_FINAL_LEAF: &str = "marker.v1";',
+    'const MARKER_FINAL_LEAF: &str = "marker.v2";',
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "sysSource",
+    "const PAIR_CREATE_DESIRED_ACCESS: u32 = GENERIC_READ.0 | GENERIC_WRITE.0 | DELETE.0 | SYNCHRONIZE.0;",
+    "const PAIR_CREATE_DESIRED_ACCESS: u32 = GENERIC_READ.0 | GENERIC_WRITE.0 | DELETE.0;",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "sysSource",
+    "const PAIR_FINAL_OPEN_DESIRED_ACCESS: u32 = GENERIC_READ.0 | SYNCHRONIZE.0;",
+    "const PAIR_FINAL_OPEN_DESIRED_ACCESS: u32 = GENERIC_READ.0;",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "sysSource",
+    "const PAIR_OWNER_RIGHTS_DENY: u32 = WRITE_DAC.0 | WRITE_OWNER.0;",
+    "const PAIR_OWNER_RIGHTS_DENY: u32 = WRITE_DAC.0;",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "sysSource",
+    "            FILE_SHARE_MODE(0),\n            disposition,",
+    "            FILE_SHARE_READ,\n            disposition,",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "sysSource",
+    "        Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,\n        SecurityDescriptor: security_descriptor.unwrap_or(ptr::null()),",
+    "        Attributes: OBJ_CASE_INSENSITIVE,\n        SecurityDescriptor: security_descriptor.unwrap_or(ptr::null()),",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "sysSource",
+    "    verify_pair_default_stream(handle, length)?;",
+    "    let _ = (handle, length);",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "sysSource",
+    "    if usize::try_from(written).ok() != Some(FIXED_RUN_STATE_RECORD_BYTES) {",
+    "    if written == 0 {",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "sysSource",
+    "        unsafe { FlushFileBuffers(handle) }.map_err(|_| ServiceRunStateError::RecordIo)",
+    "        Ok(())",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "sysSource",
+    "                .is_some_and(|length| length <= FIXED_RUN_STATE_RECORD_BYTES) =>",
+    "                .is_some_and(|length| length < FIXED_RUN_STATE_RECORD_BYTES) =>",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "sysSource",
+    "    let second_cas = (|| {\n        writer.revalidate()?;",
+    "    let second_cas = (|| {\n        let _ = &writer;",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "sysSource",
+    "        if current != expected {\n            return Err(ServiceRunStateError::Compare);\n        }",
+    "        if false && current != expected {\n            return Err(ServiceRunStateError::Compare);\n        }",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "sysSource",
+    "    let marker_rename = rename_staged_pair_file(&writer, &marker);",
+    "    let marker_rename = rename_staged_pair_file(&writer, &checkpoint);",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "sysSource",
+    "    RenamePairAttempt {\n        attempted: true,",
+    "    RenamePairAttempt {\n        attempted: false,",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "sysSource",
+    "        (*rename).RootDirectory = parent;",
+    "        (*rename).RootDirectory = HANDLE::default();",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "sysSource",
+    "    fn poison_pair_receipt(&mut self) {\n        self.pair_receipt_poisoned = true;\n    }",
+    "    fn poison_pair_receipt(&mut self) {\n        let _ = self.pair_receipt_poisoned;\n    }",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "sysSource",
+    "        let reread = (|| {\n            inner.revalidate()?;\n            observe_pair_snapshot_reopened(&mut inner)\n        })();",
+    "        let reread = (|| {\n            observe_pair_snapshot_reopened(&mut inner)\n        })();",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "windowsPairSource",
+    "                observed.marker == FixedObservation::Missing\n                    && observed.checkpoint == FixedObservation::Missing",
+    "                observed.marker == FixedObservation::Missing\n                    || observed.checkpoint == FixedObservation::Missing",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "testsSource",
+    "fixed_pair_full_id_second_cas_rejects_same_bytes_replacement_without_mutation",
+    "fixed_pair_second_cas_is_weakened",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "windowsPairSource",
+    "authority_states_and_receipts_are_move_only",
+    "authority_states_and_receipts_are_copyable",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "designDocument",
+    "**Current Phase 2F-b status: started, not passed.**",
+    "**Current Phase 2F-b status: passed.**",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "architectureDocument",
+    "| Windows service fixed marker/checkpoint pair |",
+    "| Windows service unverified marker/checkpoint pair |",
+  ),
+  {
+    ...keyAgentServicePhaseTwoFBInputs,
+    platformService: `${keyAgentServicePhaseTwoFBInputs.platformService}\nfn forbidden_pair_caller(writer: WindowsPairWriter) { let _ = writer.observe(); }\n`,
+  },
+  {
+    ...keyAgentServicePhaseTwoFBInputs,
+    windowsPairSource: `${keyAgentServicePhaseTwoFBInputs.windowsPairSource}\nfn forbidden_phase_two_d_bridge(_: BootEvidence) {}\n`,
+  },
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "designDocument",
+    "short-write and flush-failure\ninjection",
+    "short-write/flush behavior is fully proven\ninjection",
+  ),
+];
+const keyAgentServicePhaseTwoFBPinMutationProbes = [
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "windowsPairSource",
+    "//! Dormant Windows adapter for one exact marker/checkpoint pair.",
+    "//! Dormant Windows adapter for one exact marker/checkpoint pair (mutated).",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "windowsPairSource",
+    "#[cfg(test)]\nmod tests {",
+    "#[cfg(test)]\n// mutated test-only module\nmod tests {",
+  ),
+];
 const keyAgentServicePhaseTwoEPinMutationProbes = [
   mutateKeyAgentServicePhaseTwoEInput(
     "rootSource",
-    "//! Dormant held-root adapter for the fixed service run-state objects.",
-    "//! Dormant held-root adapter for the fixed service run-state objects (mutated).",
+    "//! Dormant held-root and fixed-record adapter for service run state.",
+    "//! Dormant held-root and fixed-record adapter for service run state (mutated).",
   ),
   mutateKeyAgentServicePhaseTwoEInput(
     "rootSource",
@@ -11369,6 +12119,10 @@ const keyAgentServicePhaseTwoESemanticBaseResult =
   keyAgentServicePhaseTwoESemanticContract(keyAgentServicePhaseTwoEInputs);
 const keyAgentServicePhaseTwoFASemanticBaseResult =
   keyAgentServicePhaseTwoFASemanticContract(keyAgentServicePhaseTwoEInputs);
+const keyAgentServicePhaseTwoFBSemanticBaseResult =
+  keyAgentServicePhaseTwoFBSemanticContract(keyAgentServicePhaseTwoFBInputs);
+const keyAgentServicePhaseTwoFBPinBaseResult =
+  keyAgentServicePhaseTwoFBPinContract(keyAgentServicePhaseTwoFBInputs);
 const keyAgentServicePhaseTwoEPinBaseResult =
   keyAgentServicePhaseTwoEPinContract(keyAgentServicePhaseTwoEInputs);
 const keyAgentServicePhaseTwoESemanticMutationResults =
@@ -11382,6 +12136,23 @@ const keyAgentServicePhaseTwoFASemanticMutationResults =
     index,
     changed: keyAgentServicePhaseTwoEProbeChanged(probe),
     rejected: !keyAgentServicePhaseTwoFASemanticContract(probe),
+  }));
+const keyAgentServicePhaseTwoFBProbeChanged = (probe) =>
+  probe !== keyAgentServicePhaseTwoFBInputs &&
+  Object.keys(keyAgentServicePhaseTwoFBInputs).some(
+    (key) => probe[key] !== keyAgentServicePhaseTwoFBInputs[key],
+  );
+const keyAgentServicePhaseTwoFBSemanticMutationResults =
+  keyAgentServicePhaseTwoFBSemanticMutationProbes.map((probe, index) => ({
+    index,
+    changed: keyAgentServicePhaseTwoFBProbeChanged(probe),
+    rejected: !keyAgentServicePhaseTwoFBSemanticContract(probe),
+  }));
+const keyAgentServicePhaseTwoFBPinMutationResults =
+  keyAgentServicePhaseTwoFBPinMutationProbes.map((probe, index) => ({
+    index,
+    changed: keyAgentServicePhaseTwoFBProbeChanged(probe),
+    rejected: !keyAgentServicePhaseTwoFBPinContract(probe),
   }));
 const keyAgentServicePhaseTwoEPinMutationResults =
   keyAgentServicePhaseTwoEPinMutationProbes.map((probe, index) => ({
@@ -11489,6 +12260,19 @@ requireInvariant(
       ({ changed, rejected }) => changed && rejected,
     ),
   `the separate Phase 2F-a held mutable run-state-directory extension must remain production-compiled, Windows-only, module-private, and zero-production-caller/expected-authority-mint; state must open one-component root-relative only after the exact run.lock range is held, with exact pre/post native-open impersonation bookends, ROOT_ACCESS-plus-FILE_ADD_FILE authority, non-vacuously proven no delete sharing, unchanged Phase 2E root/lock masks, exact installer identity/owner/protected-DACL/access/local-fixed-NTFS/non-reparse/zero-handle-flags verification, same-volume and checked-close path-binding revalidation, state-close-before-unlock normal release, successful-writer and failure terminal retirement, no receipt after ambiguity, exact 34-pass/two-ignored focused inventory, no marker/checkpoint I/O or Phase 2D/provisioning/signing bridge, explicit external installer/ProgramData/service-SID/SCM/SACL/TPM/crash-power-reboot limitations, disabled policies, exit 78, and 20 independently effective semantic mutations; semantic base=${keyAgentServicePhaseTwoFASemanticBaseResult}, probe count=${keyAgentServicePhaseTwoFASemanticMutationProbes.length}, failed probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFASemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
+);
+requireInvariant(
+  keyAgentServicePhaseTwoFBSemanticBaseResult &&
+    keyAgentServicePhaseTwoFBSemanticMutationProbes.length === 27 &&
+    keyAgentServicePhaseTwoFBSemanticMutationResults.every(
+      ({ changed, rejected }) => changed && rejected,
+    ) &&
+    keyAgentServicePhaseTwoFBPinBaseResult &&
+    keyAgentServicePhaseTwoFBPinMutationProbes.length === 2 &&
+    keyAgentServicePhaseTwoFBPinMutationResults.every(
+      ({ changed, rejected }) => changed && rejected,
+    ),
+  `the separate Phase 2F-b fixed marker/checkpoint-pair extension must remain production-compiled, Windows-only, module-private, and zero-production-caller/authority-mint; exactly four fixed state-relative leaves, exact purpose-specific synchronized access and protected file DACL, share-zero non-reparse default-stream file opens, exact 148-byte write/flush/readback and full-ID verification, full-snapshot second CAS, handle-relative marker-before-checkpoint replacement, ambiguity from the first native rename attempt, ID-bound cleanup, bounded stale-temp cleanup with hostile preservation, writer revalidation and close poison, exact 47-root plus six-codec test inventories, no Phase 2D authentication-key/TPM or production bridge, explicit non-atomicity and four evidence gaps, external installer/SCM/trusted-peer/crash-power-reboot/TPM STOP-SHIP obligations, 27 independently effective semantic mutations, and two independent child-source pin mutations; semantic base=${keyAgentServicePhaseTwoFBSemanticBaseResult}, pin base=${keyAgentServicePhaseTwoFBPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoFBSemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFBSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, pin probe count=${keyAgentServicePhaseTwoFBPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFBPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
 );
 requireInvariant(
   keyAgentServicePhaseTwoEPinBaseResult &&
@@ -20895,14 +21679,14 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate has two deliberately different surfaces.",
-    sha256: "bf8f08b3194af44c00254d5eb939391f5d4268c17901db7be1e8e2219b60f0b2",
+    sha256: "55167518a5c635918cd18139a885f4bc490931ee735f28561e4da9e1b7fcf3f4",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes a safe platform-neutral gate-byte",
-    sha256: "a6a6697a1f105b5e5d3161e5706b3dd082c09a23f4f8d92865d379ab294a6db6",
+    sha256: "7cf12584c2ae93126a2e56f851998a6fb72a31f75cd4eaa76104e8d847dc784a",
   },
   {
     path: "docs/security-decisions.md",
@@ -29578,7 +30362,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "60ea171c2a4c48684f1002d0e1b05d364996897187b857eb112ebd61b898136a";
+  "0191cf50299269cf7d68f46b6b9f19ae6d144a04a9ecf95bdbba396418e73369";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -36617,9 +37401,7 @@ function hasOrderedCompactMarkers(source, markers) {
   let cursor = 0;
   return markers.every((marker) => {
     const index = compact.indexOf(marker, cursor);
-    if (index === -1) {
-      return false;
-    }
+    if (index === -1) return false;
     cursor = index + marker.length;
     return true;
   });
@@ -50004,7 +50786,7 @@ const approvedPlatformWindowsAuthorityTypeErasureInventory = [
   { path: "crates/platform-windows/src/key_agent_service.rs", sites: 3 },
   {
     path: "crates/platform-windows/src/key_agent_service/run_state_root/sys.rs",
-    sites: 13,
+    sites: 30,
   },
   { path: "crates/platform-windows/src/key_agent_storage.rs", sites: 20 },
   { path: "crates/platform-windows/src/launch.rs", sites: 21 },
@@ -50124,8 +50906,8 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_service/run_state_root/sys.rs",
-    unsafeCount: 46,
-    sha256: "e2013579a94b1b43693cfb2ea60efdffb88e474d2222d0d69f5efa846f88417c",
+    unsafeCount: 70,
+    sha256: "b8cc429535fac39deb8cfc69c9b08eada0abd3a79d398a73ee56c05fe696c72b",
   },
   {
     path: "crates/platform-windows/src/key_agent_storage.rs",
@@ -50938,13 +51720,14 @@ requireInvariant(
       "format",
       "matches",
       "offset_of",
-        "ptr::addr_of",
-        "std::thread_local",
-        "std::vec",
+      "ptr::addr_of",
+      "ptr::addr_of_mut",
+      "std::thread_local",
+      "std::vec",
       "thread_local",
-       "unreachable",
-       "vec",
-       "write",
+      "unreachable",
+      "vec",
+      "write",
     ]) &&
     JSON.stringify(platformWindowsDerivePathInventory) ===
       JSON.stringify([
@@ -58266,7 +59049,7 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "crates/platform-windows/README.md":
     "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
   "docs/architecture.md":
-    "bf8f08b3194af44c00254d5eb939391f5d4268c17901db7be1e8e2219b60f0b2",
+    "55167518a5c635918cd18139a885f4bc490931ee735f28561e4da9e1b7fcf3f4",
   "docs/protocol-contract.md":
     "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "docs/security-decisions.md":
@@ -64135,7 +64918,7 @@ const currentDebuggerExitDocumentationContract = (documents) =>
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
   "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
-  "bf8f08b3194af44c00254d5eb939391f5d4268c17901db7be1e8e2219b60f0b2",
+  "55167518a5c635918cd18139a885f4bc490931ee735f28561e4da9e1b7fcf3f4",
   "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "d36a5e3cb2544598cf8e1a97a8ff3a19a1a561dd5161d5cd3369be3fe4716656",
 ]);
@@ -74017,13 +74800,13 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "docs/architecture.md",
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
-    sha256: "bf8f08b3194af44c00254d5eb939391f5d4268c17901db7be1e8e2219b60f0b2",
+    sha256: "55167518a5c635918cd18139a885f4bc490931ee735f28561e4da9e1b7fcf3f4",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
-    sha256: "a6a6697a1f105b5e5d3161e5706b3dd082c09a23f4f8d92865d379ab294a6db6",
+    sha256: "7cf12584c2ae93126a2e56f851998a6fb72a31f75cd4eaa76104e8d847dc784a",
   },
   {
     path: "docs/security-decisions.md",

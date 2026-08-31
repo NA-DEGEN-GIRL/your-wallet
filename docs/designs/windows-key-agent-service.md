@@ -1501,8 +1501,11 @@ verified and checked-closed. An ambiguous candidate close poisons later
 revalidation and prevents every normal or retired receipt.
 
 `HeldServiceRunStateWriter` retains the state-directory handle as the only
-future state-mutation authority exposed by this slice; it exposes neither a raw
-handle nor marker/checkpoint operations. A post-`run.lock` failure remains
+future state-mutation authority introduced by this slice; Phase 2F-a itself
+exposes neither a raw handle nor marker/checkpoint operations. The separately
+gated Phase 2F-b adapter below consumes that opaque writer without changing the
+Phase 2F-a open, revalidation, release, or retirement contracts. A
+post-`run.lock` failure remains
 `WithLock`; its byte range may or may not be held and its state handle may or may
 not have been obtained. Normal verified release first revalidates all three
 objects, checked-closes state mutation authority, explicitly unlocks the exact
@@ -1535,11 +1538,13 @@ and `state_open_impersonation_bookends_preserve_exact_failure_authority`. The
 two ignored cases remain the existing Phase 2E
 `cross_process_child_fixture` helper and the qualified-host
 `symlink_reparse_at_run_lock_is_rejected_when_capability_is_available` test.
-That fixture is not installer provenance. The adapter still has no
-production expected-authority mint or caller, no marker/checkpoint read, write,
-create, replace, rename, CAS, readback, or flush operation, and no conversion to
-the Phase 2D runtime writer, Boot, Clean, stopped, provisioning, secret, signing,
-or release authority. Actual ProgramData and virtual service-SID positive-path
+That fixture is not installer provenance. The Phase 2F-a evidence boundary has
+no production expected-authority mint or caller and does not itself implement
+marker/checkpoint I/O; Phase 2F-b now supplies a separate bounded fixed-pair I/O
+adapter, not a retroactive widening of the Phase 2F-a state-directory gate.
+Neither slice converts authority to the Phase 2D runtime writer, Boot, Clean,
+stopped, provisioning, secret, signing, or release authority. Actual ProgramData
+and virtual service-SID positive-path
 evidence; installer creation and from-birth descriptor/identity provenance for
 `state`; closure of every setup or cleanup-capable handle; sealed ancestor ACLs
 and at-rest rename/delete integrity; SCM and restricted-token composition;
@@ -1548,6 +1553,102 @@ assumptions; marker/checkpoint persistence and recovery; TPM authentication-key
 and rollback-anchor custody; and supported-kernel crash, power-loss, and reboot
 evidence remain external **STOP-SHIP** obligations. Both compiled policies stay
 `None`, and ordinary/release execution remains silent exit 78.
+
+**Current Phase 2F-b status: started, not passed.** A production-compiled,
+Windows-only, module-private adapter consumes the exact held Phase 2F-a writer
+and exposes no native handle. It is limited to four fixed one-component leaves
+under that writer's held `state` directory: `marker.v1`, `marker.tmp`,
+`checkpt.v1`, and `checkpt.tmp`. Final leaves use exact existing-file opens;
+temporary leaves use exact from-birth `FILE_CREATE`. Every native open is
+root-relative, case-insensitive, `OBJ_DONT_REPARSE`, non-directory,
+`FILE_OPEN_REPARSE_POINT`, synchronous, write-through, and share-zero. Thread
+impersonation is rejected before and after each native open, inspection,
+identity/length query, read, write, flush, cleanup disposition, and rename.
+
+Purpose-specific access is exact and includes `SYNCHRONIZE` where required:
+create requests `GENERIC_READ | GENERIC_WRITE | DELETE | SYNCHRONIZE`; ordinary
+final inspection requests `GENERIC_READ | SYNCHRONIZE` and must map to
+`FILE_GENERIC_READ`; cleanup requests `GENERIC_READ | DELETE | SYNCHRONIZE` and
+must map to `FILE_GENERIC_READ | DELETE`; the held newly created temporary file
+must grant exactly `FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE`. The pair
+files are service-owned and created with an exact protected three-ACE DACL:
+`OWNER RIGHTS` denies only `WRITE_DAC | WRITE_OWNER`, the service SID receives
+exactly the pair-file grant, and `SYSTEM` receives `FILE_ALL_ACCESS`. The
+Phase 2E root/lock masks and Phase 2F-a state-directory mask remain unchanged.
+
+Every opened pair file must have zero handle flags, exact granted access, exact
+owner/DACL, one link, no delete-pending state, and the same local fixed NTFS
+volume as the held root. It must be a non-directory, non-reparse default stream
+with no ADS and no read-only, sparse, compressed, or encrypted attribute. The
+held `state` directory is also required to report zero case-sensitive-directory
+flags before it can supply leaf authority. A final file is `Missing`,
+`Malformed`, or exactly one 148-byte record; exact reads require all 148 bytes
+and a separate zero-byte EOF probe. A staged record is written in one exact
+148-byte request, flushed with `FlushFileBuffers`, reread byte-for-byte, checked
+for the same full `FILE_ID_INFO`, and independently reinspected before rename.
+
+An observation clears only safe stale temps and then captures the two final
+leaves twice; a mismatch is terminal known-not-committed. Missing/missing and
+exact/exact are the only committable pair shapes. Commit revalidates the writer,
+compares the complete observed bytes, lengths, and full identities, stages both
+new records, rejects all old/new and marker/checkpoint identity aliasing, then
+performs a second writer revalidation and full-identity CAS immediately before
+replacement. Replacement is handle-relative and ordered marker first,
+checkpoint second. The marker replacement is confirmed by full identity and
+bytes before the checkpoint CAS and replacement; both temps must then be absent
+and both final identities and bytes must be the exact candidate. This is an
+ordered two-file protocol, not an atomic pair transaction.
+
+Every failure before the first native rename attempt is known-not-committed and
+retains only terminal retirement authority. From the first rename attempt
+onward, success or failure is ambiguity-bearing: the only nonterminal action is
+one independent reload, and a failed reload remains ambiguity-bearing and can
+only retire. Cleanup is bound to the exact staged full identities. Startup may
+delete only descriptor-valid stale temps whose length is in `0..=148`; an
+oversized temp, wrong identity, wrong descriptor, ADS, forbidden attribute, or
+other hostile shape is preserved and poisons every later normal or retired
+receipt. Any inspected-candidate checked-close ambiguity likewise poisons the
+writer. Post-commit reread and ambiguity reload first revalidate the complete
+writer and independently reopen the pair; a mismatch never becomes committed
+evidence.
+
+The focused root inventory is exactly 47 tests: 45 passed and the two existing
+Phase 2E cases remain ignored. The eleven tests attributed specifically to
+Phase 2F-b are
+`fixed_pair_absent_commit_flushes_renames_and_independently_rereads`,
+`fixed_pair_existing_commit_replaces_both_full_identities`,
+`fixed_pair_leaf_set_and_from_birth_file_security_are_exact`,
+`fixed_pair_one_sided_malformed_and_hostile_temp_are_terminal_known_failures`,
+`fixed_pair_rejects_ads_and_forbidden_file_attributes`,
+`fixed_pair_startup_cleans_safe_partial_temps_but_preserves_oversized`,
+`fixed_pair_full_id_second_cas_rejects_same_bytes_replacement_without_mutation`,
+`fixed_pair_first_rename_boundary_reload_and_close_poison_are_exact`,
+`fixed_pair_inspection_has_individual_impersonation_bookends_and_close_poison`,
+`fixed_pair_ambiguous_cleanup_is_bound_to_staged_full_ids`, and
+`fixed_pair_reread_revalidates_writer_and_probe_close_poison_blocks_receipts`.
+The private `windows_pair` codec bridge has six further passing tests:
+`record_shapes_map_without_widening_the_codec`,
+`exact_pair_round_trips_the_two_canonical_envelopes`,
+`missing_expectation_accepts_only_missing_missing`,
+`exact_expectation_requires_both_complete_canonical_records`,
+`expectation_debug_redacts_exact_envelopes`, and
+`authority_states_and_receipts_are_move_only`. The combined relevant inventory
+is therefore exactly 53 tests: 51 passed and two ignored.
+
+The `windows_pair` child maps the private 148-byte durable codec envelopes into
+move-only fixed-pair expectations and outcomes, but it has no production caller,
+expected-authority mint, authentication-key provider, TPM or non-rollbackable
+anchor integration, or conversion into Phase 2D Boot, Active, Clean, stopped,
+provisioning, signing, or normal-release authority. It does not establish pair
+atomicity or power-loss durability. Four direct evidence gaps remain explicit:
+a kernel negative test with a nonzero case-sensitive-directory flag; direct
+compressed and encrypted file-attribute branches; short-write and flush-failure
+injection; and ABI assertions for the variable-length rename packet. Those gaps,
+actual elevated ProgramData/service-SID and installer from-birth evidence, SCM
+and restricted-token composition, trusted service/`SYSTEM` peer race analysis,
+supported-kernel crash/power-loss/reboot recovery, and TPM/authentication-key
+integration remain external **STOP-SHIP** obligations. Both compiled policies
+stay `None`, and ordinary/release execution remains silent exit 78.
 
 ### Phase 3 – Authenticated Broker and helper runtime
 
@@ -1638,6 +1739,17 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-08-31 - Added the dormant Phase 2F-b fixed marker/checkpoint-pair
+  adapter. It consumes the held Phase 2F-a writer, limits I/O to four fixed
+  leaves, stages and verifies exact 148-byte records, performs a full-identity
+  second CAS and ordered marker-then-checkpoint handle-relative replacement,
+  and preserves first-rename-onward ambiguity and ID-bound cleanup authority.
+  The private `windows_pair` child maps the durable codec without a production
+  caller, authentication-key/TPM bridge, or Phase 2D authority mint. Pair
+  atomicity, power-loss durability, the four named direct evidence gaps, actual
+  ProgramData/service-SID and installer/SCM evidence, trusted-peer race analysis,
+  crash/reboot recovery, and TPM/auth integration remain **STOP-SHIP**, so
+  Phase 2F-b is started but not passed.
 - 2026-08-31 - Added the dormant Phase 2F-a held mutable run-state-directory
   extension. Only after the existing `run.lock` range is exclusively held, it
   opens the installer-created `state` leaf relative to the held root with exact

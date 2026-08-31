@@ -1,11 +1,11 @@
 //! Authenticated, no-secret durable run-state fixture.
 //!
-//! This production-compiled module is deliberately private and has no runtime
-//! caller, operating-system adapter, filesystem access, network access, or
-//! production key source. It models the canonical V1 run marker, its separate
-//! monotonic high-water checkpoint, and the move-only evidence transitions a
-//! future Windows adapter must preserve. The only backend is a bounded
-//! in-memory fault fixture compiled under `cfg(test)`.
+//! The private Phase 2D evidence model remains backed only by a bounded
+//! in-memory fault fixture compiled under `cfg(test)`. A separate dormant
+//! Windows-only child joins its exact marker/checkpoint codec to the held
+//! run-state writer facade, which performs fixed-pair operating-system I/O.
+//! Neither path has a production caller, production key source, or bridge that
+//! can mint Phase 2D authority, and this slice makes no crash/power-loss claim.
 
 use std::cell::Cell;
 use std::fmt;
@@ -21,6 +21,9 @@ use thiserror::Error;
 use zeroize::Zeroize as _;
 
 mod provisioning;
+
+#[cfg(windows)]
+mod windows_pair;
 
 type HmacSha256 = Hmac<Sha256>;
 

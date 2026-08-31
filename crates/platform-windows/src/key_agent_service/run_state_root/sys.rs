@@ -14,14 +14,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows::Wdk::Storage::FileSystem::{
-    FILE_ACCESS_INFORMATION, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
-    FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT, FileAccessInformation, NtCreateFile,
-    NtQueryInformationFile,
+    FILE_ACCESS_INFORMATION, FILE_CREATE, FILE_DIRECTORY_FILE, FILE_DISPOSITION_INFORMATION,
+    FILE_MODE_INFORMATION, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
+    FILE_RENAME_INFORMATION, FILE_RENAME_INFORMATION_0, FILE_STANDARD_INFORMATION,
+    FILE_SYNCHRONOUS_IO_NONALERT, FILE_WRITE_THROUGH, FileAccessInformation,
+    FileDispositionInformation, FileModeInformation, FileRenameInformation,
+    FileStandardInformation, NtCreateFile, NtQueryInformationFile, NtSetInformationFile,
 };
 #[cfg(test)]
 use windows::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_LOCK_VIOLATION, ERROR_NO_TOKEN, ERROR_SUCCESS, GENERIC_READ,
+    CloseHandle, ERROR_LOCK_VIOLATION, ERROR_NO_TOKEN, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE,
     GetHandleInformation, HANDLE, HLOCAL, INVALID_HANDLE_VALUE, LocalFree, OBJ_CASE_INSENSITIVE,
     OBJ_DONT_REPARSE, STATUS_FILE_IS_A_DIRECTORY, STATUS_NOT_A_DIRECTORY,
     STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND, STATUS_REPARSE_POINT_ENCOUNTERED,
@@ -34,49 +37,62 @@ use windows::Win32::Security::Authorization::{
 use windows::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
 use windows::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACCESS_DENIED_ACE, ACE_HEADER, ACL, ACL_REVISION, ACL_SIZE_INFORMATION,
-    AclSizeInformation, DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
-    GetLengthSid, GetSecurityDescriptorControl, IsValidAcl, IsValidSecurityDescriptor, IsValidSid,
-    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_AUTO_INHERIT_REQ,
-    SE_DACL_DEFAULTED, SE_DACL_PRESENT, SE_DACL_PROTECTED, SE_OWNER_DEFAULTED, SE_SELF_RELATIVE,
+    AclSizeInformation, AddAccessAllowedAceEx, AddAccessDeniedAceEx, CreateWellKnownSid,
+    DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, GetLengthSid,
+    GetSecurityDescriptorControl, InitializeAcl, InitializeSecurityDescriptor, IsValidAcl,
+    IsValidSecurityDescriptor, IsValidSid, NO_INHERITANCE, OWNER_SECURITY_INFORMATION,
+    PSECURITY_DESCRIPTOR, PSID, SE_DACL_AUTO_INHERIT_REQ, SE_DACL_DEFAULTED, SE_DACL_PRESENT,
+    SE_DACL_PROTECTED, SE_OWNER_DEFAULTED, SE_SELF_RELATIVE, SECURITY_DESCRIPTOR,
+    SetSecurityDescriptorControl, SetSecurityDescriptorDacl, SetSecurityDescriptorOwner,
     TOKEN_QUERY, WinCreatorOwnerRightsSid, WinLocalSystemSid,
 };
 #[cfg(test)]
 use windows::Win32::Security::{
-    CopySid, CreateWellKnownSid, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
-    GetTokenInformation, ImpersonateSelf, RevertToSelf, SecurityImpersonation, TOKEN_USER,
-    TokenUser,
+    CopySid, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner, GetTokenInformation,
+    ImpersonateSelf, RevertToSelf, SecurityImpersonation, TOKEN_USER, TokenUser,
 };
 use windows::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CreateFileW, DELETE, FILE_ACCESS_RIGHTS, FILE_ADD_FILE,
-    FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD,
+    FILE_ALL_ACCESS, FILE_ATTRIBUTE_COMPRESSED, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_ENCRYPTED,
+    FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_ATTRIBUTE_SPARSE_FILE, FILE_BEGIN, FILE_CASE_SENSITIVE_INFO, FILE_DELETE_CHILD,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAGS_AND_ATTRIBUTES,
-    FILE_GENERIC_READ, FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
     FILE_REMOTE_PROTOCOL_INFO, FILE_SHARE_DELETE, FILE_SHARE_MODE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, FILE_TRAVERSE, FileIdInfo, FileRemoteProtocolInfo, GetDriveTypeW,
+    FILE_SHARE_WRITE, FILE_STREAM_INFO, FILE_TRAVERSE, FileCaseSensitiveInfo, FileIdInfo,
+    FileRemoteProtocolInfo, FileStreamInfo, FlushFileBuffers, GetDriveTypeW,
     GetFileInformationByHandle, GetFileInformationByHandleEx, GetFinalPathNameByHandleW,
     GetVolumeInformationByHandleW, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
-    OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE, UnlockFileEx, VOLUME_NAME_GUID, WRITE_DAC,
-    WRITE_OWNER,
+    OPEN_EXISTING, READ_CONTROL, ReadFile, SYNCHRONIZE, SetFilePointerEx, UnlockFileEx,
+    VOLUME_NAME_GUID, WRITE_DAC, WRITE_OWNER, WriteFile,
 };
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::IO::{IO_STATUS_BLOCK, OVERLAPPED};
 use windows::Win32::System::SystemServices::{
     ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE, FILE_PERSISTENT_ACLS,
+    SECURITY_DESCRIPTOR_REVISION,
 };
 #[cfg(test)]
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::Win32::System::Threading::{GetCurrentThread, OpenThreadToken};
-use windows::Win32::System::WindowsProgramming::{DRIVE_FIXED, FILE_OPENED};
+use windows::Win32::System::WindowsProgramming::{DRIVE_FIXED, FILE_CREATED, FILE_OPENED};
 use windows::Win32::UI::Shell::{FOLDERID_ProgramData, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
 #[cfg(test)]
 use windows::core::BOOL;
 use windows::core::{PCWSTR, PWSTR};
 
-use super::ServiceRunStateError;
+use super::{
+    ExactFixedRunStatePair, FIXED_RUN_STATE_RECORD_BYTES, FixedRunStatePairObservation,
+    FixedRunStateRecordObservation, ServiceRunStateError,
+};
 
 const PRODUCT_LEAVES: [&str; 3] = ["YourWallet", "KeyAgent", "v1"];
 const RUN_LOCK_LEAF: &str = "run.lock";
 const STATE_LEAF: &str = "state";
+const MARKER_FINAL_LEAF: &str = "marker.v1";
+const MARKER_TEMP_LEAF: &str = "marker.tmp";
+const CHECKPOINT_FINAL_LEAF: &str = "checkpt.v1";
+const CHECKPOINT_TEMP_LEAF: &str = "checkpt.tmp";
 const FILESYSTEM_NAME_UTF16: usize = 32;
 const MAX_FINAL_PATH_UTF16: usize = 32_768;
 const MIN_BINARY_SID_BYTES: usize = 8;
@@ -92,9 +108,73 @@ const ROOT_ACCESS: u32 = READ_CONTROL.0
 const LOCK_OPEN_ACCESS: u32 = GENERIC_READ.0 | SYNCHRONIZE.0;
 const LOCK_ACCESS: u32 = FILE_GENERIC_READ.0;
 const STATE_ACCESS: u32 = ROOT_ACCESS | FILE_ADD_FILE.0;
+const PAIR_CREATE_DESIRED_ACCESS: u32 = GENERIC_READ.0 | GENERIC_WRITE.0 | DELETE.0 | SYNCHRONIZE.0;
+const PAIR_FINAL_OPEN_DESIRED_ACCESS: u32 = GENERIC_READ.0 | SYNCHRONIZE.0;
+const PAIR_FINAL_GRANTED_ACCESS: u32 = FILE_GENERIC_READ.0;
+const PAIR_TEMP_CLEANUP_DESIRED_ACCESS: u32 = GENERIC_READ.0 | DELETE.0 | SYNCHRONIZE.0;
+const PAIR_TEMP_CLEANUP_GRANTED_ACCESS: u32 = FILE_GENERIC_READ.0 | DELETE.0;
+const PAIR_FILE_ACCESS: u32 = FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0 | DELETE.0;
 const PARENT_ACCESS: u32 =
     SYNCHRONIZE.0 | FILE_LIST_DIRECTORY.0 | FILE_TRAVERSE.0 | FILE_READ_ATTRIBUTES.0;
 const OWNER_RIGHTS_DENY: u32 = WRITE_DAC.0 | WRITE_OWNER.0 | DELETE.0 | FILE_DELETE_CHILD.0;
+const PAIR_OWNER_RIGHTS_DENY: u32 = WRITE_DAC.0 | WRITE_OWNER.0;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PairRecordKind {
+    Marker,
+    Checkpoint,
+}
+
+impl PairRecordKind {
+    const fn final_leaf(self) -> &'static str {
+        match self {
+            Self::Marker => MARKER_FINAL_LEAF,
+            Self::Checkpoint => CHECKPOINT_FINAL_LEAF,
+        }
+    }
+
+    const fn temp_leaf(self) -> &'static str {
+        match self {
+            Self::Marker => MARKER_TEMP_LEAF,
+            Self::Checkpoint => CHECKPOINT_TEMP_LEAF,
+        }
+    }
+
+    const fn candidate(self, pair: &ExactFixedRunStatePair) -> &[u8; FIXED_RUN_STATE_RECORD_BYTES] {
+        match self {
+            Self::Marker => pair.marker(),
+            Self::Checkpoint => pair.checkpoint(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PairLeaf {
+    MarkerFinal,
+    MarkerTemp,
+    CheckpointFinal,
+    CheckpointTemp,
+}
+
+impl PairLeaf {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::MarkerFinal => MARKER_FINAL_LEAF,
+            Self::MarkerTemp => MARKER_TEMP_LEAF,
+            Self::CheckpointFinal => CHECKPOINT_FINAL_LEAF,
+            Self::CheckpointTemp => CHECKPOINT_TEMP_LEAF,
+        }
+    }
+
+    const fn for_record(record: PairRecordKind, temporary: bool) -> Self {
+        match (record, temporary) {
+            (PairRecordKind::Marker, false) => Self::MarkerFinal,
+            (PairRecordKind::Marker, true) => Self::MarkerTemp,
+            (PairRecordKind::Checkpoint, false) => Self::CheckpointFinal,
+            (PairRecordKind::Checkpoint, true) => Self::CheckpointTemp,
+        }
+    }
+}
 
 #[cfg(test)]
 pub(super) const ROOT_ACCESS_FOR_TEST: u32 = ROOT_ACCESS;
@@ -104,6 +184,30 @@ pub(super) const LOCK_ACCESS_FOR_TEST: u32 = LOCK_ACCESS;
 pub(super) const STATE_ACCESS_FOR_TEST: u32 = STATE_ACCESS;
 #[cfg(test)]
 pub(super) const OWNER_RIGHTS_DENY_FOR_TEST: u32 = OWNER_RIGHTS_DENY;
+#[cfg(test)]
+pub(super) const PAIR_FILE_ACCESS_FOR_TEST: u32 = PAIR_FILE_ACCESS;
+#[cfg(test)]
+pub(super) const PAIR_CREATE_DESIRED_ACCESS_FOR_TEST: u32 = PAIR_CREATE_DESIRED_ACCESS;
+#[cfg(test)]
+pub(super) const PAIR_FINAL_OPEN_DESIRED_ACCESS_FOR_TEST: u32 = PAIR_FINAL_OPEN_DESIRED_ACCESS;
+#[cfg(test)]
+pub(super) const PAIR_FINAL_GRANTED_ACCESS_FOR_TEST: u32 = PAIR_FINAL_GRANTED_ACCESS;
+#[cfg(test)]
+pub(super) const PAIR_TEMP_CLEANUP_DESIRED_ACCESS_FOR_TEST: u32 = PAIR_TEMP_CLEANUP_DESIRED_ACCESS;
+#[cfg(test)]
+pub(super) const PAIR_TEMP_CLEANUP_GRANTED_ACCESS_FOR_TEST: u32 = PAIR_TEMP_CLEANUP_GRANTED_ACCESS;
+#[cfg(test)]
+pub(super) const PAIR_OWNER_RIGHTS_DENY_FOR_TEST: u32 = PAIR_OWNER_RIGHTS_DENY;
+
+#[cfg(test)]
+pub(super) const fn pair_leaf_names_for_test() -> [&'static str; 4] {
+    [
+        MARKER_FINAL_LEAF,
+        MARKER_TEMP_LEAF,
+        CHECKPOINT_FINAL_LEAF,
+        CHECKPOINT_TEMP_LEAF,
+    ]
+}
 
 #[cfg(test)]
 std::thread_local! {
@@ -113,6 +217,10 @@ std::thread_local! {
     static TEST_UNLOCK_FAULT: Cell<bool> = const { Cell::new(false) };
     static TEST_STATE_NATIVE_OPEN_COUNT: Cell<usize> = const { Cell::new(0) };
     static TEST_STATE_OPEN_IMPERSONATION_FAULT: Cell<Option<TestStateOpenImpersonationFault>> = const { Cell::new(None) };
+    static TEST_PAIR_IMPERSONATION_FAULT: Cell<Option<TestPairImpersonationFault>> = const { Cell::new(None) };
+    static TEST_PAIR_RENAME_COUNT: Cell<usize> = const { Cell::new(0) };
+    static TEST_PAIR_INSPECT_COUNT: Cell<usize> = const { Cell::new(0) };
+    static TEST_PAIR_BEFORE_SECOND_CAS: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -134,6 +242,10 @@ pub(super) enum TestCloseFault {
     Root,
     RevalidationRoot,
     RevalidationState,
+    PairMarkerTemp,
+    PairCheckpointTemp,
+    PairMarkerFinal,
+    PairCheckpointFinal,
 }
 
 #[cfg(test)]
@@ -141,6 +253,17 @@ pub(super) enum TestCloseFault {
 pub(super) enum TestStateOpenImpersonationFault {
     BeforeNativeOpen,
     AfterNativeOpen,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TestPairImpersonationFault {
+    BeforeInspect,
+    AfterInspect,
+    BeforeMarker,
+    AfterMarker,
+    BeforeCheckpoint,
+    AfterCheckpoint,
 }
 
 /// Full, non-sentinel Windows file identity recorded by the installer.
@@ -295,7 +418,6 @@ impl OwnedSid {
         })
     }
 
-    #[cfg(test)]
     fn well_known(
         kind: windows::Win32::Security::WELL_KNOWN_SID_TYPE,
     ) -> Result<Self, ServiceRunStateError> {
@@ -377,6 +499,116 @@ impl fmt::Debug for SecurityPolicy {
     }
 }
 
+/// Absolute descriptor and ACL storage kept live across one from-birth create.
+struct PairFileSecurityDescriptor {
+    descriptor: SECURITY_DESCRIPTOR,
+    _acl_words: Box<[usize]>,
+    _owner_rights: OwnedSid,
+}
+
+impl PairFileSecurityDescriptor {
+    fn new(policy: &SecurityPolicy) -> Result<Self, ServiceRunStateError> {
+        policy.validate()?;
+        let owner_rights = OwnedSid::well_known(WinCreatorOwnerRightsSid)?;
+        let acl_bytes = exact_acl_bytes(&[
+            owner_rights.as_psid(),
+            policy.service_sid.as_psid(),
+            policy.system_sid.as_psid(),
+        ])?;
+        let word_size = size_of::<usize>();
+        let words = acl_bytes
+            .checked_add(word_size - 1)
+            .and_then(|value| value.checked_div(word_size))
+            .ok_or(ServiceRunStateError::Security)?;
+        let mut acl_words = vec![0_usize; words].into_boxed_slice();
+        let acl = acl_words.as_mut_ptr().cast::<ACL>();
+        // SAFETY: aligned zeroed storage owns exactly the ACL capacity passed
+        // here, and all three complete SIDs outlive this builder and create.
+        unsafe {
+            InitializeAcl(
+                acl,
+                u32::try_from(acl_bytes).map_err(|_| ServiceRunStateError::Security)?,
+                ACL_REVISION,
+            )
+            .map_err(|_| ServiceRunStateError::Security)?;
+            AddAccessDeniedAceEx(
+                acl,
+                ACL_REVISION,
+                NO_INHERITANCE,
+                PAIR_OWNER_RIGHTS_DENY,
+                owner_rights.as_psid(),
+            )
+            .map_err(|_| ServiceRunStateError::Security)?;
+            AddAccessAllowedAceEx(
+                acl,
+                ACL_REVISION,
+                NO_INHERITANCE,
+                PAIR_FILE_ACCESS,
+                policy.service_sid.as_psid(),
+            )
+            .map_err(|_| ServiceRunStateError::Security)?;
+            AddAccessAllowedAceEx(
+                acl,
+                ACL_REVISION,
+                NO_INHERITANCE,
+                FILE_ALL_ACCESS.0,
+                policy.system_sid.as_psid(),
+            )
+            .map_err(|_| ServiceRunStateError::Security)?;
+        }
+        let mut descriptor = SECURITY_DESCRIPTOR::default();
+        // SAFETY: the absolute descriptor and ACL are writable and all
+        // referenced SIDs remain live in `policy` or the returned wrapper.
+        unsafe {
+            InitializeSecurityDescriptor(
+                PSECURITY_DESCRIPTOR(ptr::from_mut(&mut descriptor).cast::<c_void>()),
+                SECURITY_DESCRIPTOR_REVISION,
+            )
+            .map_err(|_| ServiceRunStateError::Security)?;
+            SetSecurityDescriptorOwner(
+                PSECURITY_DESCRIPTOR(ptr::from_mut(&mut descriptor).cast::<c_void>()),
+                Some(policy.service_sid.as_psid()),
+                false,
+            )
+            .map_err(|_| ServiceRunStateError::Security)?;
+            SetSecurityDescriptorDacl(
+                PSECURITY_DESCRIPTOR(ptr::from_mut(&mut descriptor).cast::<c_void>()),
+                true,
+                Some(acl.cast_const()),
+                false,
+            )
+            .map_err(|_| ServiceRunStateError::Security)?;
+            SetSecurityDescriptorControl(
+                PSECURITY_DESCRIPTOR(ptr::from_mut(&mut descriptor).cast::<c_void>()),
+                SE_DACL_PROTECTED,
+                SE_DACL_PROTECTED,
+            )
+            .map_err(|_| ServiceRunStateError::Security)?;
+        }
+        Ok(Self {
+            descriptor,
+            _acl_words: acl_words,
+            _owner_rights: owner_rights,
+        })
+    }
+
+    fn as_ptr(&self) -> *const SECURITY_DESCRIPTOR {
+        ptr::from_ref(&self.descriptor)
+    }
+}
+
+fn exact_acl_bytes(sids: &[PSID; 3]) -> Result<usize, ServiceRunStateError> {
+    sids.iter().try_fold(size_of::<ACL>(), |total, sid| {
+        // SAFETY: every caller supplies one validated owned SID.
+        let sid_bytes = usize::try_from(unsafe { GetLengthSid(*sid) })
+            .map_err(|_| ServiceRunStateError::Security)?;
+        total
+            .checked_add(offset_of!(ACCESS_ALLOWED_ACE, SidStart))
+            .and_then(|value| value.checked_add(sid_bytes))
+            .ok_or(ServiceRunStateError::Security)
+    })
+}
+
 /// Opaque installer authority. There is intentionally no production mint.
 pub(super) struct ExpectedObjects {
     root_identity: ObjectIdentity,
@@ -409,6 +641,16 @@ pub(super) fn exact_sddl_for_test(service_mask: u32) -> Result<String, ServiceRu
     let service = sid_to_string_for_test(policy.service_sid.as_psid())?;
     Ok(format!(
         "O:{service}D:P(D;;0x{OWNER_RIGHTS_DENY:08x};;;OW)(A;;0x{service_mask:08x};;;{service})(A;;0x{:08x};;;SY)",
+        FILE_ALL_ACCESS.0,
+    ))
+}
+
+#[cfg(test)]
+pub(super) fn exact_pair_file_sddl_for_test() -> Result<String, ServiceRunStateError> {
+    let policy = current_user_test_policy()?;
+    let service = sid_to_string_for_test(policy.service_sid.as_psid())?;
+    Ok(format!(
+        "O:{service}D:P(D;;0x{PAIR_OWNER_RIGHTS_DENY:08x};;;OW)(A;;0x{PAIR_FILE_ACCESS:08x};;;{service})(A;;0x{:08x};;;SY)",
         FILE_ALL_ACCESS.0,
     ))
 }
@@ -490,7 +732,33 @@ pub(super) fn verify_object_security_for_test(
     .map_err(|_| ServiceRunStateError::Security)?;
     let handle = OwnedHandle::new(raw).map_err(|_| ServiceRunStateError::Security)?;
     let policy = current_user_test_policy()?;
-    verify_exact_security(handle.raw(), &policy, service_mask)
+    verify_exact_security(handle.raw(), &policy, OWNER_RIGHTS_DENY, service_mask)
+}
+
+#[cfg(test)]
+pub(super) fn verify_pair_file_security_for_test(path: &Path) -> Result<(), ServiceRunStateError> {
+    let wide = wide_path(path)?;
+    // SAFETY: this opens only the exact existing fixed-record fixture.
+    let raw = unsafe {
+        CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            READ_CONTROL.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+    }
+    .map_err(|_| ServiceRunStateError::Security)?;
+    let handle = OwnedHandle::new(raw).map_err(|_| ServiceRunStateError::Security)?;
+    let policy = current_user_test_policy()?;
+    verify_exact_security(
+        handle.raw(),
+        &policy,
+        PAIR_OWNER_RIGHTS_DENY,
+        PAIR_FILE_ACCESS,
+    )
 }
 
 #[cfg(test)]
@@ -681,7 +949,14 @@ pub(super) fn verify_sddl_for_test(
     {
         Err(ServiceRunStateError::Security)
     } else {
-        inspect_security_descriptor(descriptor, owner, dacl, &policy, service_mask)
+        inspect_security_descriptor(
+            descriptor,
+            owner,
+            dacl,
+            &policy,
+            OWNER_RIGHTS_DENY,
+            service_mask,
+        )
     };
     free_descriptor(descriptor);
     result
@@ -793,6 +1068,7 @@ impl HeldRoot {
             lock,
             state: None,
             range_lock_held: false,
+            pair_receipt_poisoned: false,
         };
         let result = (|| {
             require_exact_open(opened.status_error, opened.information)?;
@@ -867,6 +1143,7 @@ pub(super) struct HeldWriter {
     lock: OwnedHandle,
     state: Option<OwnedHandle>,
     range_lock_held: bool,
+    pair_receipt_poisoned: bool,
 }
 
 impl HeldWriter {
@@ -875,7 +1152,7 @@ impl HeldWriter {
     }
 
     fn revalidate_inner(&self) -> Result<(), ServiceRunStateError> {
-        if !self.range_lock_held {
+        if !self.range_lock_held || self.pair_receipt_poisoned {
             return Err(ServiceRunStateError::Release);
         }
         let state = self.state.as_ref().ok_or(ServiceRunStateError::Release)?;
@@ -921,6 +1198,7 @@ impl HeldWriter {
     }
 
     pub(super) fn retire(mut self) -> Result<(), ServiceRunStateError> {
+        let pair_receipt_poisoned = self.pair_receipt_poisoned;
         let state_result = self.close_optional_state_checked();
         let unlock_result = if self.range_lock_held {
             self.unlock_exclusive_range()
@@ -932,10 +1210,15 @@ impl HeldWriter {
             self.range_lock_held = false;
         }
         let root_result = self.root.close_checked();
-        state_result
+        let result = state_result
             .and(unlock_result)
             .and(lock_result)
-            .and(root_result)
+            .and(root_result);
+        if pair_receipt_poisoned {
+            Err(ServiceRunStateError::Release)
+        } else {
+            result
+        }
     }
 
     fn open_state(&mut self) -> Result<(), ServiceRunStateError> {
@@ -1097,6 +1380,1423 @@ impl HeldWriter {
 impl fmt::Debug for HeldWriter {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("HeldWriter([REDACTED])")
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct PairLeafSnapshot {
+    observation: FixedRunStateRecordObservation,
+    identity: Option<ObjectIdentity>,
+    length: Option<usize>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct PairSnapshot {
+    marker: PairLeafSnapshot,
+    checkpoint: PairLeafSnapshot,
+}
+
+impl PairSnapshot {
+    const fn observation(self) -> FixedRunStatePairObservation {
+        FixedRunStatePairObservation::new(self.marker.observation, self.checkpoint.observation)
+    }
+
+    fn is_exact_candidate(&self, candidate: &ExactFixedRunStatePair) -> bool {
+        self.marker.observation == FixedRunStateRecordObservation::Exact(*candidate.marker())
+            && self.checkpoint.observation
+                == FixedRunStateRecordObservation::Exact(*candidate.checkpoint())
+    }
+
+    fn is_committable(&self) -> bool {
+        matches!(
+            (self.marker.observation, self.checkpoint.observation),
+            (
+                FixedRunStateRecordObservation::Missing,
+                FixedRunStateRecordObservation::Missing
+            ) | (
+                FixedRunStateRecordObservation::Exact(_),
+                FixedRunStateRecordObservation::Exact(_)
+            )
+        )
+    }
+}
+
+pub(super) struct PairFailure {
+    pub(super) inner: HeldWriter,
+    pub(super) cause: ServiceRunStateError,
+}
+
+pub(super) struct ObservedPairWriter {
+    inner: HeldWriter,
+    expected: PairSnapshot,
+}
+
+impl ObservedPairWriter {
+    pub(super) const fn observation(&self) -> FixedRunStatePairObservation {
+        self.expected.observation()
+    }
+
+    #[allow(clippy::large_types_passed_by_value)] // One-shot candidate ownership is intentional.
+    pub(super) fn compare_and_replace(
+        self,
+        candidate: ExactFixedRunStatePair,
+    ) -> PairCommitOutcome {
+        commit_observed_pair(self.inner, self.expected, candidate)
+    }
+
+    pub(super) fn retire(self) -> Result<(), ServiceRunStateError> {
+        self.inner.retire()
+    }
+}
+
+#[allow(clippy::large_enum_variant)] // Inline move-only authority avoids fallible allocation.
+pub(super) enum PairCommitOutcome {
+    Committed(CommittedPairWriter),
+    KnownNotCommitted(PairFailure),
+    Ambiguous(AmbiguousPairWriter, ServiceRunStateError),
+}
+
+pub(super) struct CommittedPairWriter {
+    inner: HeldWriter,
+    candidate: ExactFixedRunStatePair,
+}
+
+impl CommittedPairWriter {
+    pub(super) const fn candidate(&self) -> ExactFixedRunStatePair {
+        self.candidate
+    }
+
+    #[allow(clippy::result_large_err)] // Ambiguity must retain the complete writer inline.
+    pub(super) fn reread(
+        self,
+    ) -> Result<RereadPairWriter, (AmbiguousPairWriter, ServiceRunStateError)> {
+        let Self {
+            mut inner,
+            candidate,
+        } = self;
+        let reread = (|| {
+            inner.revalidate()?;
+            observe_pair_snapshot_reopened(&mut inner)
+        })();
+        match reread {
+            Ok(observed) if observed.is_exact_candidate(&candidate) => Ok(RereadPairWriter {
+                inner,
+                observation: observed.observation(),
+            }),
+            Ok(_) => Err((
+                AmbiguousPairWriter::installed_pair(inner),
+                ServiceRunStateError::Compare,
+            )),
+            Err(cause) => Err((AmbiguousPairWriter::installed_pair(inner), cause)),
+        }
+    }
+
+    pub(super) fn retire(self) -> Result<(), ServiceRunStateError> {
+        self.inner.retire()
+    }
+}
+
+pub(super) struct RereadPairWriter {
+    inner: HeldWriter,
+    observation: FixedRunStatePairObservation,
+}
+
+impl RereadPairWriter {
+    pub(super) const fn observation(&self) -> FixedRunStatePairObservation {
+        self.observation
+    }
+
+    #[cfg(test)]
+    pub(super) fn into_writer(self) -> HeldWriter {
+        self.inner
+    }
+
+    pub(super) fn retire(self) -> Result<(), ServiceRunStateError> {
+        self.inner.retire()
+    }
+}
+
+pub(super) struct AmbiguousPairWriter {
+    inner: HeldWriter,
+    context: PairAmbiguityContext,
+}
+
+impl AmbiguousPairWriter {
+    const fn marker_rename(
+        inner: HeldWriter,
+        marker_temp: ObjectIdentity,
+        checkpoint_temp: ObjectIdentity,
+    ) -> Self {
+        Self {
+            inner,
+            context: PairAmbiguityContext::MarkerRename {
+                marker_temp,
+                checkpoint_temp,
+            },
+        }
+    }
+
+    const fn marker_installed(inner: HeldWriter, checkpoint_temp: ObjectIdentity) -> Self {
+        Self {
+            inner,
+            context: PairAmbiguityContext::MarkerInstalled { checkpoint_temp },
+        }
+    }
+
+    const fn checkpoint_rename(inner: HeldWriter, checkpoint_temp: ObjectIdentity) -> Self {
+        Self {
+            inner,
+            context: PairAmbiguityContext::CheckpointRename { checkpoint_temp },
+        }
+    }
+
+    const fn installed_pair(inner: HeldWriter) -> Self {
+        Self {
+            inner,
+            context: PairAmbiguityContext::InstalledPair,
+        }
+    }
+
+    #[allow(clippy::result_large_err)] // Failure must retain the complete writer inline.
+    pub(super) fn reload(mut self) -> Result<ReloadedPairWriter, AmbiguousPairFailure> {
+        let result = (|| {
+            self.inner.revalidate()?;
+            clear_ambiguity_bound_pair_temps(&mut self.inner, self.context)?;
+            observe_pair_snapshot_reopened(&mut self.inner)
+        })();
+        match result {
+            Ok(observed) => Ok(ReloadedPairWriter {
+                inner: self.inner,
+                observation: observed.observation(),
+            }),
+            Err(cause) => Err(AmbiguousPairFailure { inner: self, cause }),
+        }
+    }
+
+    pub(super) fn retire(mut self) -> Result<(), ServiceRunStateError> {
+        let cleanup = clear_ambiguity_bound_pair_temps(&mut self.inner, self.context);
+        let retire = self.inner.retire();
+        cleanup.and(retire)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PairAmbiguityContext {
+    MarkerRename {
+        marker_temp: ObjectIdentity,
+        checkpoint_temp: ObjectIdentity,
+    },
+    MarkerInstalled {
+        checkpoint_temp: ObjectIdentity,
+    },
+    CheckpointRename {
+        checkpoint_temp: ObjectIdentity,
+    },
+    InstalledPair,
+}
+
+pub(super) struct AmbiguousPairFailure {
+    pub(super) inner: AmbiguousPairWriter,
+    pub(super) cause: ServiceRunStateError,
+}
+
+pub(super) struct ReloadedPairWriter {
+    inner: HeldWriter,
+    observation: FixedRunStatePairObservation,
+}
+
+impl ReloadedPairWriter {
+    pub(super) const fn observation(&self) -> FixedRunStatePairObservation {
+        self.observation
+    }
+
+    #[cfg(test)]
+    pub(super) fn into_writer(self) -> HeldWriter {
+        self.inner
+    }
+
+    pub(super) fn retire(self) -> Result<(), ServiceRunStateError> {
+        self.inner.retire()
+    }
+}
+
+impl HeldWriter {
+    #[allow(clippy::result_large_err)] // Failure must retain the complete writer inline.
+    pub(super) fn observe_fixed_pair(mut self) -> Result<ObservedPairWriter, PairFailure> {
+        let result = (|| {
+            self.revalidate()?;
+            clear_stale_pair_temps(&mut self)?;
+            observe_pair_snapshot_reopened(&mut self)
+        })();
+        match result {
+            Ok(expected) => Ok(ObservedPairWriter {
+                inner: self,
+                expected,
+            }),
+            Err(cause) => Err(PairFailure { inner: self, cause }),
+        }
+    }
+
+    fn state_handle(&self) -> Result<HANDLE, ServiceRunStateError> {
+        self.state
+            .as_ref()
+            .map(OwnedHandle::raw)
+            .filter(|handle| !handle.is_invalid() && *handle != INVALID_HANDLE_VALUE)
+            .ok_or(ServiceRunStateError::Release)
+    }
+
+    fn poison_pair_receipt(&mut self) {
+        self.pair_receipt_poisoned = true;
+    }
+}
+
+impl fmt::Debug for ObservedPairWriter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ObservedPairWriter([REDACTED])")
+    }
+}
+
+impl fmt::Debug for CommittedPairWriter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CommittedPairWriter([REDACTED])")
+    }
+}
+
+impl fmt::Debug for AmbiguousPairWriter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AmbiguousPairWriter([REDACTED])")
+    }
+}
+
+impl fmt::Debug for RereadPairWriter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RereadPairWriter([REDACTED])")
+    }
+}
+
+impl fmt::Debug for ReloadedPairWriter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ReloadedPairWriter([REDACTED])")
+    }
+}
+
+struct OpenedPairLeaf {
+    handle: OwnedHandle,
+    status_error: Option<ServiceRunStateError>,
+    information: usize,
+}
+
+enum PairLeafOpen {
+    Missing,
+    Opened(OpenedPairLeaf),
+}
+
+fn open_existing_pair_leaf(
+    parent: HANDLE,
+    leaf: PairLeaf,
+) -> Result<PairLeafOpen, ServiceRunStateError> {
+    pair_leaf_native_open(
+        parent,
+        leaf,
+        PAIR_FINAL_OPEN_DESIRED_ACCESS,
+        FILE_OPEN,
+        None,
+    )
+}
+
+fn create_pair_temp(
+    parent: HANDLE,
+    record: PairRecordKind,
+    policy: &SecurityPolicy,
+) -> Result<OpenedPairLeaf, ServiceRunStateError> {
+    let descriptor = PairFileSecurityDescriptor::new(policy)?;
+    match pair_leaf_native_open(
+        parent,
+        PairLeaf::for_record(record, true),
+        PAIR_CREATE_DESIRED_ACCESS,
+        FILE_CREATE,
+        Some(descriptor.as_ptr()),
+    )? {
+        PairLeafOpen::Opened(opened) => Ok(opened),
+        PairLeafOpen::Missing => Err(ServiceRunStateError::Open),
+    }
+}
+
+fn pair_leaf_native_open(
+    parent: HANDLE,
+    leaf: PairLeaf,
+    desired_access: u32,
+    disposition: windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_DISPOSITION,
+    security_descriptor: Option<*const SECURITY_DESCRIPTOR>,
+) -> Result<PairLeafOpen, ServiceRunStateError> {
+    let leaf_name = leaf.name();
+    validate_leaf(leaf_name)?;
+    reject_thread_impersonation()?;
+    let mut name = leaf_name.encode_utf16().collect::<Vec<_>>();
+    let byte_len = name
+        .len()
+        .checked_mul(size_of::<u16>())
+        .and_then(|value| u16::try_from(value).ok())
+        .ok_or(ServiceRunStateError::Location)?;
+    let unicode = UNICODE_STRING {
+        Length: byte_len,
+        MaximumLength: byte_len,
+        Buffer: PWSTR(name.as_mut_ptr()),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: u32::try_from(size_of::<OBJECT_ATTRIBUTES>())
+            .map_err(|_| ServiceRunStateError::Open)?,
+        RootDirectory: parent,
+        ObjectName: &raw const unicode,
+        Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+        SecurityDescriptor: security_descriptor.unwrap_or(ptr::null()),
+        SecurityQualityOfService: ptr::null(),
+    };
+    let mut io = IO_STATUS_BLOCK::default();
+    let mut raw = HANDLE::default();
+    #[cfg(test)]
+    record_open_for_test();
+    // SAFETY: the held state directory, fixed UTF-16 leaf, optional live
+    // descriptor, and exact native outputs remain valid for this call.
+    let status = unsafe {
+        NtCreateFile(
+            &raw mut raw,
+            FILE_ACCESS_RIGHTS(desired_access),
+            &raw const attributes,
+            &raw mut io,
+            None,
+            FILE_ATTRIBUTE_NORMAL,
+            FILE_SHARE_MODE(0),
+            disposition,
+            FILE_NON_DIRECTORY_FILE
+                | FILE_OPEN_REPARSE_POINT
+                | FILE_SYNCHRONOUS_IO_NONALERT
+                | FILE_WRITE_THROUGH,
+            None,
+            0,
+        )
+    };
+    let missing = disposition == FILE_OPEN
+        && status == STATUS_OBJECT_NAME_NOT_FOUND
+        && (raw.is_invalid() || raw == INVALID_HANDLE_VALUE);
+    let mut status_error = if status == STATUS_SUCCESS {
+        // SAFETY: the synchronous native call initialized Status.
+        let io_status = unsafe { io.Anonymous.Status };
+        (io_status != STATUS_SUCCESS).then_some(ServiceRunStateError::Open)
+    } else {
+        Some(map_open_status(status))
+    };
+    let ending = reject_thread_impersonation();
+    if missing {
+        ending?;
+        return Ok(PairLeafOpen::Missing);
+    }
+    if raw.is_invalid() || raw == INVALID_HANDLE_VALUE {
+        ending?;
+        return Err(status_error.unwrap_or(ServiceRunStateError::Open));
+    }
+    let mut handle = OwnedHandle::new(raw)?;
+    handle.role = HandleRole::from_pair_leaf(leaf);
+    if let Err(error) = ending {
+        status_error = Some(error);
+    }
+    Ok(PairLeafOpen::Opened(OpenedPairLeaf {
+        handle,
+        status_error,
+        information: io.Information,
+    }))
+}
+
+fn observe_pair_snapshot(writer: &mut HeldWriter) -> Result<PairSnapshot, ServiceRunStateError> {
+    let marker = observe_pair_leaf(writer, PairLeaf::MarkerFinal)?;
+    let checkpoint = observe_pair_leaf(writer, PairLeaf::CheckpointFinal)?;
+    Ok(PairSnapshot { marker, checkpoint })
+}
+
+fn observe_pair_snapshot_reopened(
+    writer: &mut HeldWriter,
+) -> Result<PairSnapshot, ServiceRunStateError> {
+    let first = observe_pair_snapshot(writer)?;
+    let reopened = observe_pair_snapshot(writer)?;
+    if first == reopened {
+        Ok(reopened)
+    } else {
+        Err(ServiceRunStateError::Compare)
+    }
+}
+
+fn observe_pair_leaf(
+    writer: &mut HeldWriter,
+    leaf: PairLeaf,
+) -> Result<PairLeafSnapshot, ServiceRunStateError> {
+    let parent = writer.state_handle()?;
+    let opened = open_existing_pair_leaf(parent, leaf)?;
+    let PairLeafOpen::Opened(mut opened) = opened else {
+        return Ok(PairLeafSnapshot {
+            observation: FixedRunStateRecordObservation::Missing,
+            identity: None,
+            length: None,
+        });
+    };
+    let verification = (|| {
+        require_pair_open(opened.status_error, opened.information)?;
+        inspect_pair_file(
+            opened.handle.raw(),
+            &writer.root.expected.policy,
+            writer.root.expected.root_identity.volume_serial_number,
+            PAIR_FINAL_GRANTED_ACCESS,
+        )
+    })();
+    if opened.handle.close_checked().is_err() {
+        writer.poison_pair_receipt();
+        return Err(ServiceRunStateError::Release);
+    }
+    verification
+}
+
+fn inspect_pair_file(
+    handle: HANDLE,
+    policy: &SecurityPolicy,
+    root_volume: u64,
+    expected_granted_access: u32,
+) -> Result<PairLeafSnapshot, ServiceRunStateError> {
+    #[cfg(test)]
+    if take_pair_impersonation_fault_for_test(TestPairImpersonationFault::BeforeInspect) {
+        return run_impersonated_for_test(|| {
+            reject_thread_impersonation()?;
+            Err(ServiceRunStateError::Impersonation)
+        });
+    }
+    reject_thread_impersonation()?;
+    #[cfg(test)]
+    TEST_PAIR_INSPECT_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+    let operation = inspect_pair_file_inner(handle, policy, root_volume, expected_granted_access);
+    #[cfg(test)]
+    let inject_after =
+        take_pair_impersonation_fault_for_test(TestPairImpersonationFault::AfterInspect);
+    #[cfg(test)]
+    let ending = if inject_after {
+        run_impersonated_for_test(reject_thread_impersonation)
+    } else {
+        reject_thread_impersonation()
+    };
+    #[cfg(not(test))]
+    let ending = reject_thread_impersonation();
+    match (operation, ending) {
+        (_, Err(cause)) => Err(cause),
+        (result, Ok(())) => result,
+    }
+}
+
+fn inspect_pair_file_inner(
+    handle: HANDLE,
+    policy: &SecurityPolicy,
+    root_volume: u64,
+    expected_granted_access: u32,
+) -> Result<PairLeafSnapshot, ServiceRunStateError> {
+    verify_handle_flags_zero(handle)?;
+    verify_exact_granted_access(handle, expected_granted_access)?;
+    verify_supported_local_ntfs(handle)?;
+    verify_exact_security(handle, policy, PAIR_OWNER_RIGHTS_DENY, PAIR_FILE_ACCESS)?;
+    let (identity, length) = pair_file_identity_and_length(handle)?;
+    if identity.volume_serial_number != root_volume {
+        return Err(ServiceRunStateError::Identity);
+    }
+    let observation = if length == FIXED_RUN_STATE_RECORD_BYTES {
+        FixedRunStateRecordObservation::Exact(read_exact_pair_record(handle)?)
+    } else {
+        FixedRunStateRecordObservation::Malformed
+    };
+    Ok(PairLeafSnapshot {
+        observation,
+        identity: Some(identity),
+        length: Some(length),
+    })
+}
+
+fn require_pair_open(
+    status_error: Option<ServiceRunStateError>,
+    information: usize,
+) -> Result<(), ServiceRunStateError> {
+    if let Some(cause) = status_error {
+        return Err(cause);
+    }
+    if information == usize::try_from(FILE_OPENED).map_err(|_| ServiceRunStateError::Open)? {
+        Ok(())
+    } else {
+        Err(ServiceRunStateError::Open)
+    }
+}
+
+fn require_pair_created(
+    status_error: Option<ServiceRunStateError>,
+    information: usize,
+) -> Result<(), ServiceRunStateError> {
+    if let Some(cause) = status_error {
+        return Err(cause);
+    }
+    if information == usize::try_from(FILE_CREATED).map_err(|_| ServiceRunStateError::Open)? {
+        Ok(())
+    } else {
+        Err(ServiceRunStateError::Open)
+    }
+}
+
+fn pair_file_identity_and_length(
+    handle: HANDLE,
+) -> Result<(ObjectIdentity, usize), ServiceRunStateError> {
+    impersonation_bookend(|| pair_file_identity_and_length_inner(handle))
+}
+
+fn pair_file_identity_and_length_inner(
+    handle: HANDLE,
+) -> Result<(ObjectIdentity, usize), ServiceRunStateError> {
+    let basic = basic_information(handle)?;
+    if basic.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+        return Err(ServiceRunStateError::Reparse);
+    }
+    let forbidden_attributes = FILE_ATTRIBUTE_READONLY.0
+        | FILE_ATTRIBUTE_SPARSE_FILE.0
+        | FILE_ATTRIBUTE_COMPRESSED.0
+        | FILE_ATTRIBUTE_ENCRYPTED.0;
+    if basic.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY.0 | forbidden_attributes) != 0
+        || basic.nNumberOfLinks != 1
+    {
+        return Err(ServiceRunStateError::Shape);
+    }
+    let mut io = IO_STATUS_BLOCK::default();
+    let mut standard = FILE_STANDARD_INFORMATION::default();
+    let length = u32::try_from(size_of::<FILE_STANDARD_INFORMATION>())
+        .map_err(|_| ServiceRunStateError::Shape)?;
+    let query = impersonation_bookend(|| {
+        // SAFETY: the held file and exact writable output remain live.
+        let status = unsafe {
+            NtQueryInformationFile(
+                handle,
+                &raw mut io,
+                ptr::from_mut(&mut standard).cast::<c_void>(),
+                length,
+                FileStandardInformation,
+            )
+        };
+        // SAFETY: the synchronous query initialized Status.
+        let io_status = unsafe { io.Anonymous.Status };
+        if status == STATUS_SUCCESS
+            && io_status == STATUS_SUCCESS
+            && io.Information == size_of::<FILE_STANDARD_INFORMATION>()
+        {
+            Ok(())
+        } else {
+            Err(ServiceRunStateError::Shape)
+        }
+    });
+    query?;
+    if standard.Directory || standard.DeletePending || standard.NumberOfLinks != 1 {
+        return Err(ServiceRunStateError::Shape);
+    }
+    let length = usize::try_from(standard.EndOfFile).map_err(|_| ServiceRunStateError::Shape)?;
+    verify_pair_default_stream(handle, length)?;
+    Ok((ObjectIdentity::from_handle(handle)?, length))
+}
+
+#[repr(C, align(8))]
+struct PairStreamInformationBuffer([u8; 512]);
+
+fn verify_pair_default_stream(
+    handle: HANDLE,
+    expected_length: usize,
+) -> Result<(), ServiceRunStateError> {
+    const DEFAULT_STREAM_NAME: [u16; 7] = [
+        b':' as u16,
+        b':' as u16,
+        b'$' as u16,
+        b'D' as u16,
+        b'A' as u16,
+        b'T' as u16,
+        b'A' as u16,
+    ];
+    let mut buffer = PairStreamInformationBuffer([0; 512]);
+    impersonation_bookend(|| {
+        // SAFETY: the aligned fixed buffer remains writable for the exact query.
+        unsafe {
+            GetFileInformationByHandleEx(
+                handle,
+                FileStreamInfo,
+                ptr::from_mut(&mut buffer).cast::<c_void>(),
+                u32::try_from(buffer.0.len()).map_err(|_| ServiceRunStateError::Shape)?,
+            )
+        }
+        .map_err(|_| ServiceRunStateError::Shape)
+    })?;
+    let information = ptr::from_ref(&buffer).cast::<FILE_STREAM_INFO>();
+    // SAFETY: the successful query initialized at least the fixed header in
+    // the suitably aligned buffer; all flexible-name bounds are checked below.
+    let information = unsafe { &*information };
+    let name_bytes =
+        usize::try_from(information.StreamNameLength).map_err(|_| ServiceRunStateError::Shape)?;
+    let name_offset = offset_of!(FILE_STREAM_INFO, StreamName);
+    let name_end = name_offset
+        .checked_add(name_bytes)
+        .ok_or(ServiceRunStateError::Shape)?;
+    if information.NextEntryOffset != 0
+        || name_bytes % size_of::<u16>() != 0
+        || name_end > buffer.0.len()
+        || information.StreamSize
+            != i64::try_from(expected_length).map_err(|_| ServiceRunStateError::Shape)?
+        || information.StreamAllocationSize < 0
+    {
+        return Err(ServiceRunStateError::Shape);
+    }
+    // SAFETY: the checked byte length is even and wholly inside the live buffer.
+    let name = unsafe {
+        core::slice::from_raw_parts(
+            ptr::addr_of!(information.StreamName).cast::<u16>(),
+            name_bytes / size_of::<u16>(),
+        )
+    };
+    if name != DEFAULT_STREAM_NAME {
+        return Err(ServiceRunStateError::Shape);
+    }
+    Ok(())
+}
+
+fn verify_pair_create_mode(handle: HANDLE) -> Result<(), ServiceRunStateError> {
+    let mut io = IO_STATUS_BLOCK::default();
+    let mut mode = FILE_MODE_INFORMATION::default();
+    let length = u32::try_from(size_of::<FILE_MODE_INFORMATION>())
+        .map_err(|_| ServiceRunStateError::Shape)?;
+    impersonation_bookend(|| {
+        // SAFETY: the held file and exact writable output remain live.
+        let status = unsafe {
+            NtQueryInformationFile(
+                handle,
+                &raw mut io,
+                ptr::from_mut(&mut mode).cast::<c_void>(),
+                length,
+                FileModeInformation,
+            )
+        };
+        // SAFETY: the synchronous query initialized Status.
+        let io_status = unsafe { io.Anonymous.Status };
+        let required = FILE_WRITE_THROUGH.0 | FILE_SYNCHRONOUS_IO_NONALERT.0;
+        if status == STATUS_SUCCESS
+            && io_status == STATUS_SUCCESS
+            && io.Information == size_of::<FILE_MODE_INFORMATION>()
+            && mode.Mode & required == required
+        {
+            Ok(())
+        } else {
+            Err(ServiceRunStateError::Shape)
+        }
+    })
+}
+
+fn read_exact_pair_record(
+    handle: HANDLE,
+) -> Result<[u8; FIXED_RUN_STATE_RECORD_BYTES], ServiceRunStateError> {
+    impersonation_bookend(|| {
+        // SAFETY: this synchronous held file accepts an exact scalar seek.
+        unsafe { SetFilePointerEx(handle, 0, None, FILE_BEGIN) }
+            .map_err(|_| ServiceRunStateError::RecordIo)
+    })?;
+    let mut bytes = [0_u8; FIXED_RUN_STATE_RECORD_BYTES];
+    let mut read = 0_u32;
+    impersonation_bookend(|| {
+        // SAFETY: the exact initialized output remains writable for the call.
+        unsafe { ReadFile(handle, Some(&mut bytes), Some(&raw mut read), None) }
+            .map_err(|_| ServiceRunStateError::RecordIo)
+    })?;
+    if usize::try_from(read).ok() != Some(FIXED_RUN_STATE_RECORD_BYTES) {
+        return Err(ServiceRunStateError::RecordIo);
+    }
+    let mut eof = [0_u8; 1];
+    let mut eof_read = u32::MAX;
+    impersonation_bookend(|| {
+        // SAFETY: the one-byte EOF probe is exact writable storage.
+        unsafe { ReadFile(handle, Some(&mut eof), Some(&raw mut eof_read), None) }
+            .map_err(|_| ServiceRunStateError::RecordIo)
+    })?;
+    if eof_read != 0 {
+        return Err(ServiceRunStateError::Shape);
+    }
+    Ok(bytes)
+}
+
+fn write_flush_and_readback_pair_record(
+    handle: HANDLE,
+    candidate: &[u8; FIXED_RUN_STATE_RECORD_BYTES],
+) -> Result<ObjectIdentity, ServiceRunStateError> {
+    let mut written = 0_u32;
+    impersonation_bookend(|| {
+        // SAFETY: the exact candidate remains readable for the synchronous call.
+        unsafe { WriteFile(handle, Some(candidate), Some(&raw mut written), None) }
+            .map_err(|_| ServiceRunStateError::RecordIo)
+    })?;
+    if usize::try_from(written).ok() != Some(FIXED_RUN_STATE_RECORD_BYTES) {
+        return Err(ServiceRunStateError::RecordIo);
+    }
+    impersonation_bookend(|| {
+        // SAFETY: the same held write-through file remains valid.
+        unsafe { FlushFileBuffers(handle) }.map_err(|_| ServiceRunStateError::RecordIo)
+    })?;
+    let readback = read_exact_pair_record(handle)?;
+    if readback != *candidate {
+        return Err(ServiceRunStateError::RecordIo);
+    }
+    let (identity, length) = pair_file_identity_and_length(handle)?;
+    if length != FIXED_RUN_STATE_RECORD_BYTES {
+        return Err(ServiceRunStateError::Shape);
+    }
+    Ok(identity)
+}
+
+fn clear_stale_pair_temps(writer: &mut HeldWriter) -> Result<(), ServiceRunStateError> {
+    let marker = clear_one_stale_pair_temp(
+        writer,
+        PairLeaf::MarkerTemp,
+        PairTempCleanupBinding::SafeStale,
+    );
+    let checkpoint = clear_one_stale_pair_temp(
+        writer,
+        PairLeaf::CheckpointTemp,
+        PairTempCleanupBinding::SafeStale,
+    );
+    marker.and(checkpoint)
+}
+
+fn clear_ambiguity_bound_pair_temps(
+    writer: &mut HeldWriter,
+    context: PairAmbiguityContext,
+) -> Result<(), ServiceRunStateError> {
+    let (marker_binding, checkpoint_binding) = match context {
+        PairAmbiguityContext::MarkerRename {
+            marker_temp,
+            checkpoint_temp,
+        } => (
+            PairTempCleanupBinding::ExactOrMissing(marker_temp),
+            PairTempCleanupBinding::ExactOrMissing(checkpoint_temp),
+        ),
+        PairAmbiguityContext::MarkerInstalled { checkpoint_temp }
+        | PairAmbiguityContext::CheckpointRename { checkpoint_temp } => (
+            PairTempCleanupBinding::MustBeMissing,
+            PairTempCleanupBinding::ExactOrMissing(checkpoint_temp),
+        ),
+        PairAmbiguityContext::InstalledPair => (
+            PairTempCleanupBinding::MustBeMissing,
+            PairTempCleanupBinding::MustBeMissing,
+        ),
+    };
+    let marker = clear_one_stale_pair_temp(writer, PairLeaf::MarkerTemp, marker_binding);
+    let checkpoint =
+        clear_one_stale_pair_temp(writer, PairLeaf::CheckpointTemp, checkpoint_binding);
+    marker.and(checkpoint)
+}
+
+#[derive(Clone, Copy)]
+enum PairTempCleanupBinding {
+    SafeStale,
+    ExactOrMissing(ObjectIdentity),
+    MustBeMissing,
+}
+
+fn clear_one_stale_pair_temp(
+    writer: &mut HeldWriter,
+    leaf: PairLeaf,
+    binding: PairTempCleanupBinding,
+) -> Result<(), ServiceRunStateError> {
+    let parent = writer.state_handle()?;
+    let mut observed = match open_existing_pair_leaf(parent, leaf) {
+        Ok(PairLeafOpen::Missing) => return Ok(()),
+        Ok(PairLeafOpen::Opened(opened)) => opened,
+        Err(cause) => {
+            writer.poison_pair_receipt();
+            return Err(cause);
+        }
+    };
+    let observation = (|| {
+        require_pair_open(observed.status_error, observed.information)?;
+        inspect_pair_file(
+            observed.handle.raw(),
+            &writer.root.expected.policy,
+            writer.root.expected.root_identity.volume_serial_number,
+            PAIR_FINAL_GRANTED_ACCESS,
+        )
+    })();
+    if observed.handle.close_checked().is_err() {
+        writer.poison_pair_receipt();
+        return Err(ServiceRunStateError::Release);
+    }
+    if observation.is_err() {
+        writer.poison_pair_receipt();
+    }
+    let observed_snapshot = observation?;
+    let binding_result = match binding {
+        PairTempCleanupBinding::SafeStale
+            if observed_snapshot
+                .length
+                .is_some_and(|length| length <= FIXED_RUN_STATE_RECORD_BYTES) =>
+        {
+            Ok(())
+        }
+        PairTempCleanupBinding::SafeStale => Err(ServiceRunStateError::Shape),
+        PairTempCleanupBinding::ExactOrMissing(expected)
+            if observed_snapshot.identity == Some(expected)
+                && observed_snapshot.length == Some(FIXED_RUN_STATE_RECORD_BYTES)
+                && matches!(
+                    observed_snapshot.observation,
+                    FixedRunStateRecordObservation::Exact(_)
+                ) =>
+        {
+            Ok(())
+        }
+        PairTempCleanupBinding::ExactOrMissing(_) | PairTempCleanupBinding::MustBeMissing => {
+            Err(ServiceRunStateError::Identity)
+        }
+    };
+    if let Err(cause) = binding_result {
+        writer.poison_pair_receipt();
+        return Err(cause);
+    }
+
+    let cleanup_open = pair_leaf_native_open(
+        parent,
+        leaf,
+        PAIR_TEMP_CLEANUP_DESIRED_ACCESS,
+        FILE_OPEN,
+        None,
+    );
+    let mut cleanup = match cleanup_open {
+        Ok(PairLeafOpen::Opened(opened)) => opened,
+        Ok(PairLeafOpen::Missing) => {
+            writer.poison_pair_receipt();
+            return Err(ServiceRunStateError::Compare);
+        }
+        Err(cause) => {
+            writer.poison_pair_receipt();
+            return Err(cause);
+        }
+    };
+    let cleanup_result = (|| {
+        require_pair_open(cleanup.status_error, cleanup.information)?;
+        let cleanup_snapshot = inspect_pair_file(
+            cleanup.handle.raw(),
+            &writer.root.expected.policy,
+            writer.root.expected.root_identity.volume_serial_number,
+            PAIR_TEMP_CLEANUP_GRANTED_ACCESS,
+        )?;
+        if cleanup_snapshot != observed_snapshot {
+            return Err(ServiceRunStateError::Compare);
+        }
+        set_pair_delete_disposition(cleanup.handle.raw())
+    })();
+    let close = cleanup.handle.close_checked();
+    if close.is_err() {
+        writer.poison_pair_receipt();
+        return Err(ServiceRunStateError::Release);
+    }
+    if cleanup_result.is_err() {
+        writer.poison_pair_receipt();
+    }
+    cleanup_result
+}
+
+fn set_pair_delete_disposition(handle: HANDLE) -> Result<(), ServiceRunStateError> {
+    let mut io = IO_STATUS_BLOCK::default();
+    let disposition = FILE_DISPOSITION_INFORMATION { DeleteFile: true };
+    let length = u32::try_from(size_of::<FILE_DISPOSITION_INFORMATION>())
+        .map_err(|_| ServiceRunStateError::Cleanup)?;
+    impersonation_bookend(|| {
+        // SAFETY: the held file grants DELETE and the exact input remains live.
+        let status = unsafe {
+            NtSetInformationFile(
+                handle,
+                &raw mut io,
+                ptr::from_ref(&disposition).cast::<c_void>(),
+                length,
+                FileDispositionInformation,
+            )
+        };
+        // SAFETY: the synchronous call initialized Status.
+        let io_status = unsafe { io.Anonymous.Status };
+        if status == STATUS_SUCCESS && io_status == STATUS_SUCCESS {
+            Ok(())
+        } else {
+            Err(ServiceRunStateError::Cleanup)
+        }
+    })
+}
+
+struct StagedPairFile {
+    handle: OwnedHandle,
+    identity: ObjectIdentity,
+    record: PairRecordKind,
+}
+
+struct StagePairFailure {
+    handle: Option<OwnedHandle>,
+    cause: ServiceRunStateError,
+}
+
+fn stage_pair_record(
+    writer: &HeldWriter,
+    record: PairRecordKind,
+    candidate: &[u8; FIXED_RUN_STATE_RECORD_BYTES],
+) -> Result<StagedPairFile, StagePairFailure> {
+    let parent = writer.state_handle().map_err(|cause| StagePairFailure {
+        handle: None,
+        cause,
+    })?;
+    let opened =
+        create_pair_temp(parent, record, &writer.root.expected.policy).map_err(|cause| {
+            StagePairFailure {
+                handle: None,
+                cause,
+            }
+        })?;
+    let OpenedPairLeaf {
+        handle,
+        status_error,
+        information,
+    } = opened;
+    let result = (|| {
+        require_pair_created(status_error, information)?;
+        #[cfg(test)]
+        verify_pair_zero_share(parent, PairLeaf::for_record(record, true))?;
+        verify_pair_create_mode(handle.raw())?;
+        let before = inspect_pair_file(
+            handle.raw(),
+            &writer.root.expected.policy,
+            writer.root.expected.root_identity.volume_serial_number,
+            PAIR_FILE_ACCESS,
+        )?;
+        if before.observation != FixedRunStateRecordObservation::Malformed {
+            return Err(ServiceRunStateError::Shape);
+        }
+        let identity = write_flush_and_readback_pair_record(handle.raw(), candidate)?;
+        if before.identity != Some(identity) {
+            return Err(ServiceRunStateError::Identity);
+        }
+        let after = inspect_pair_file(
+            handle.raw(),
+            &writer.root.expected.policy,
+            writer.root.expected.root_identity.volume_serial_number,
+            PAIR_FILE_ACCESS,
+        )?;
+        if after.identity != Some(identity)
+            || after.observation != FixedRunStateRecordObservation::Exact(*candidate)
+        {
+            return Err(ServiceRunStateError::Identity);
+        }
+        Ok(identity)
+    })();
+    match result {
+        Ok(identity) => Ok(StagedPairFile {
+            handle,
+            identity,
+            record,
+        }),
+        Err(cause) => Err(StagePairFailure {
+            handle: Some(handle),
+            cause,
+        }),
+    }
+}
+
+#[cfg(test)]
+fn verify_pair_zero_share(parent: HANDLE, leaf: PairLeaf) -> Result<(), ServiceRunStateError> {
+    match open_existing_pair_leaf(parent, leaf) {
+        Err(ServiceRunStateError::Contended) => Ok(()),
+        Ok(PairLeafOpen::Opened(mut opened)) => {
+            let _ = opened.handle.close_checked();
+            Err(ServiceRunStateError::Security)
+        }
+        Ok(PairLeafOpen::Missing) | Err(_) => Err(ServiceRunStateError::Security),
+    }
+}
+
+fn cleanup_staged_handle(
+    writer: &mut HeldWriter,
+    handle: Option<OwnedHandle>,
+    delete: bool,
+) -> Result<(), ServiceRunStateError> {
+    let Some(mut handle) = handle else {
+        return Ok(());
+    };
+    let delete_result = if delete {
+        set_pair_delete_disposition(handle.raw())
+    } else {
+        Ok(())
+    };
+    let close_result = handle.close_checked();
+    if delete_result.is_err() || close_result.is_err() {
+        writer.poison_pair_receipt();
+    }
+    delete_result.and(close_result)
+}
+
+fn cleanup_staged_pair(
+    writer: &mut HeldWriter,
+    marker: Option<OwnedHandle>,
+    delete_marker: bool,
+    checkpoint: Option<OwnedHandle>,
+    delete_checkpoint: bool,
+) -> Result<(), ServiceRunStateError> {
+    let marker_result = cleanup_staged_handle(writer, marker, delete_marker);
+    let checkpoint_result = cleanup_staged_handle(writer, checkpoint, delete_checkpoint);
+    marker_result.and(checkpoint_result)
+}
+
+struct RenamePairAttempt {
+    attempted: bool,
+    result: Result<(), ServiceRunStateError>,
+}
+
+fn rename_staged_pair_file(writer: &HeldWriter, staged: &StagedPairFile) -> RenamePairAttempt {
+    let parent = match writer.state_handle() {
+        Ok(parent) => parent,
+        Err(cause) => {
+            return RenamePairAttempt {
+                attempted: false,
+                result: Err(cause),
+            };
+        }
+    };
+    let (mut storage, bytes) = match pair_rename_packet(parent, staged.record.final_leaf()) {
+        Ok(packet) => packet,
+        Err(cause) => {
+            return RenamePairAttempt {
+                attempted: false,
+                result: Err(cause),
+            };
+        }
+    };
+    #[cfg(test)]
+    let inject_before = match staged.record {
+        PairRecordKind::Marker => {
+            take_pair_impersonation_fault_for_test(TestPairImpersonationFault::BeforeMarker)
+        }
+        PairRecordKind::Checkpoint => {
+            take_pair_impersonation_fault_for_test(TestPairImpersonationFault::BeforeCheckpoint)
+        }
+    };
+    #[cfg(test)]
+    if inject_before {
+        return RenamePairAttempt {
+            attempted: false,
+            result: run_impersonated_for_test(reject_thread_impersonation),
+        };
+    }
+    if let Err(cause) = reject_thread_impersonation() {
+        return RenamePairAttempt {
+            attempted: false,
+            result: Err(cause),
+        };
+    }
+    let mut io = IO_STATUS_BLOCK::default();
+    // From this exact point onward the source may already name the final leaf.
+    #[cfg(test)]
+    TEST_PAIR_RENAME_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+    // SAFETY: the aligned packet, source handle, held root directory, and
+    // output remain live for the complete synchronous native call.
+    let status = unsafe {
+        NtSetInformationFile(
+            staged.handle.raw(),
+            &raw mut io,
+            storage.as_mut_ptr().cast::<c_void>(),
+            bytes,
+            FileRenameInformation,
+        )
+    };
+    // SAFETY: the synchronous call initialized Status.
+    let io_status = unsafe { io.Anonymous.Status };
+    let operation = if status == STATUS_SUCCESS && io_status == STATUS_SUCCESS {
+        Ok(())
+    } else {
+        Err(ServiceRunStateError::Rename)
+    };
+    #[cfg(test)]
+    let inject_after = match staged.record {
+        PairRecordKind::Marker => {
+            take_pair_impersonation_fault_for_test(TestPairImpersonationFault::AfterMarker)
+        }
+        PairRecordKind::Checkpoint => {
+            take_pair_impersonation_fault_for_test(TestPairImpersonationFault::AfterCheckpoint)
+        }
+    };
+    #[cfg(test)]
+    let ending = if inject_after {
+        run_impersonated_for_test(reject_thread_impersonation)
+    } else {
+        reject_thread_impersonation()
+    };
+    #[cfg(not(test))]
+    let ending = reject_thread_impersonation();
+    RenamePairAttempt {
+        attempted: true,
+        result: match (operation, ending) {
+            (_, Err(cause)) => Err(cause),
+            (result, Ok(())) => result,
+        },
+    }
+}
+
+fn pair_rename_packet(
+    parent: HANDLE,
+    final_leaf: &'static str,
+) -> Result<(Box<[usize]>, u32), ServiceRunStateError> {
+    validate_leaf(final_leaf)?;
+    let name = final_leaf.encode_utf16().collect::<Vec<_>>();
+    let name_bytes = name
+        .len()
+        .checked_mul(size_of::<u16>())
+        .ok_or(ServiceRunStateError::Rename)?;
+    let bytes = offset_of!(FILE_RENAME_INFORMATION, FileName)
+        .checked_add(name_bytes)
+        .ok_or(ServiceRunStateError::Rename)?;
+    let word_size = size_of::<usize>();
+    let words = bytes
+        .checked_add(word_size - 1)
+        .and_then(|value| value.checked_div(word_size))
+        .ok_or(ServiceRunStateError::Rename)?;
+    let mut storage = vec![0_usize; words].into_boxed_slice();
+    let rename = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+    // SAFETY: usize backing is suitably aligned and owns at least `bytes`;
+    // the fixed UTF-16 destination is copied without a trailing NUL.
+    unsafe {
+        (*rename).Anonymous = FILE_RENAME_INFORMATION_0 {
+            ReplaceIfExists: true,
+        };
+        (*rename).RootDirectory = parent;
+        (*rename).FileNameLength =
+            u32::try_from(name_bytes).map_err(|_| ServiceRunStateError::Rename)?;
+        ptr::copy_nonoverlapping(
+            name.as_ptr(),
+            ptr::addr_of_mut!((*rename).FileName).cast::<u16>(),
+            name.len(),
+        );
+    }
+    Ok((
+        storage,
+        u32::try_from(bytes).map_err(|_| ServiceRunStateError::Rename)?,
+    ))
+}
+
+#[allow(clippy::too_many_lines)] // The ordered two-record state machine stays auditable inline.
+#[allow(clippy::large_types_passed_by_value)] // Consumed tokens cannot outlive this one-shot call.
+fn commit_observed_pair(
+    mut writer: HeldWriter,
+    expected: PairSnapshot,
+    candidate: ExactFixedRunStatePair,
+) -> PairCommitOutcome {
+    let initial = (|| {
+        writer.revalidate()?;
+        let current = observe_pair_snapshot(&mut writer)?;
+        if current != expected || !expected.is_committable() {
+            return Err(ServiceRunStateError::Compare);
+        }
+        Ok(())
+    })();
+    if let Err(cause) = initial {
+        return PairCommitOutcome::KnownNotCommitted(PairFailure {
+            inner: writer,
+            cause,
+        });
+    }
+
+    let marker = match stage_pair_record(
+        &writer,
+        PairRecordKind::Marker,
+        PairRecordKind::Marker.candidate(&candidate),
+    ) {
+        Ok(staged) => staged,
+        Err(failure) => {
+            let _ = cleanup_staged_pair(&mut writer, failure.handle, true, None, true);
+            return PairCommitOutcome::KnownNotCommitted(PairFailure {
+                inner: writer,
+                cause: failure.cause,
+            });
+        }
+    };
+    let checkpoint = match stage_pair_record(
+        &writer,
+        PairRecordKind::Checkpoint,
+        PairRecordKind::Checkpoint.candidate(&candidate),
+    ) {
+        Ok(staged) => staged,
+        Err(failure) => {
+            let _ =
+                cleanup_staged_pair(&mut writer, Some(marker.handle), true, failure.handle, true);
+            return PairCommitOutcome::KnownNotCommitted(PairFailure {
+                inner: writer,
+                cause: failure.cause,
+            });
+        }
+    };
+
+    let marker_identity = marker.identity;
+    let checkpoint_identity = checkpoint.identity;
+    if marker_identity == checkpoint_identity
+        || expected.marker.identity == Some(marker_identity)
+        || expected.marker.identity == Some(checkpoint_identity)
+        || expected.checkpoint.identity == Some(marker_identity)
+        || expected.checkpoint.identity == Some(checkpoint_identity)
+    {
+        let _ = cleanup_staged_pair(
+            &mut writer,
+            Some(marker.handle),
+            true,
+            Some(checkpoint.handle),
+            true,
+        );
+        return PairCommitOutcome::KnownNotCommitted(PairFailure {
+            inner: writer,
+            cause: ServiceRunStateError::Identity,
+        });
+    }
+
+    #[cfg(test)]
+    run_pair_before_second_cas_hook_for_test();
+    let second_cas = (|| {
+        writer.revalidate()?;
+        let current = observe_pair_snapshot(&mut writer)?;
+        if current != expected {
+            return Err(ServiceRunStateError::Compare);
+        }
+        Ok(())
+    })();
+    if let Err(cause) = second_cas {
+        let _ = cleanup_staged_pair(
+            &mut writer,
+            Some(marker.handle),
+            true,
+            Some(checkpoint.handle),
+            true,
+        );
+        return PairCommitOutcome::KnownNotCommitted(PairFailure {
+            inner: writer,
+            cause,
+        });
+    }
+
+    let marker_rename = rename_staged_pair_file(&writer, &marker);
+    if let Err(cause) = marker_rename.result {
+        let _ = cleanup_staged_pair(
+            &mut writer,
+            Some(marker.handle),
+            !marker_rename.attempted,
+            Some(checkpoint.handle),
+            true,
+        );
+        return if marker_rename.attempted {
+            PairCommitOutcome::Ambiguous(
+                AmbiguousPairWriter::marker_rename(writer, marker_identity, checkpoint_identity),
+                cause,
+            )
+        } else {
+            PairCommitOutcome::KnownNotCommitted(PairFailure {
+                inner: writer,
+                cause,
+            })
+        };
+    }
+    if cleanup_staged_handle(&mut writer, Some(marker.handle), false).is_err() {
+        let _ = cleanup_staged_handle(&mut writer, Some(checkpoint.handle), true);
+        return PairCommitOutcome::Ambiguous(
+            AmbiguousPairWriter::marker_installed(writer, checkpoint_identity),
+            ServiceRunStateError::Release,
+        );
+    }
+    let marker_confirmation = observe_pair_leaf(&mut writer, PairLeaf::MarkerFinal);
+    if !matches!(
+        marker_confirmation,
+        Ok(snapshot)
+            if snapshot.identity == Some(marker_identity)
+                && snapshot.observation
+                    == FixedRunStateRecordObservation::Exact(*candidate.marker())
+    ) {
+        let cause = marker_confirmation
+            .err()
+            .unwrap_or(ServiceRunStateError::Identity);
+        let _ = cleanup_staged_handle(&mut writer, Some(checkpoint.handle), true);
+        return PairCommitOutcome::Ambiguous(
+            AmbiguousPairWriter::marker_installed(writer, checkpoint_identity),
+            cause,
+        );
+    }
+
+    let checkpoint_cas = observe_pair_leaf(&mut writer, PairLeaf::CheckpointFinal);
+    if !matches!(checkpoint_cas, Ok(snapshot) if snapshot == expected.checkpoint) {
+        let cause = checkpoint_cas
+            .err()
+            .unwrap_or(ServiceRunStateError::Compare);
+        let _ = cleanup_staged_handle(&mut writer, Some(checkpoint.handle), true);
+        return PairCommitOutcome::Ambiguous(
+            AmbiguousPairWriter::marker_installed(writer, checkpoint_identity),
+            cause,
+        );
+    }
+
+    let checkpoint_rename = rename_staged_pair_file(&writer, &checkpoint);
+    if let Err(cause) = checkpoint_rename.result {
+        let _ = cleanup_staged_handle(
+            &mut writer,
+            Some(checkpoint.handle),
+            !checkpoint_rename.attempted,
+        );
+        return PairCommitOutcome::Ambiguous(
+            AmbiguousPairWriter::checkpoint_rename(writer, checkpoint_identity),
+            cause,
+        );
+    }
+    if cleanup_staged_handle(&mut writer, Some(checkpoint.handle), false).is_err() {
+        return PairCommitOutcome::Ambiguous(
+            AmbiguousPairWriter::installed_pair(writer),
+            ServiceRunStateError::Release,
+        );
+    }
+    let checkpoint_confirmation = observe_pair_leaf(&mut writer, PairLeaf::CheckpointFinal);
+    if !matches!(
+        checkpoint_confirmation,
+        Ok(snapshot)
+            if snapshot.identity == Some(checkpoint_identity)
+                && snapshot.observation
+                    == FixedRunStateRecordObservation::Exact(*candidate.checkpoint())
+    ) {
+        let cause = checkpoint_confirmation
+            .err()
+            .unwrap_or(ServiceRunStateError::Identity);
+        return PairCommitOutcome::Ambiguous(AmbiguousPairWriter::installed_pair(writer), cause);
+    }
+
+    let final_verification = (|| {
+        let marker_temp = observe_pair_leaf(&mut writer, PairLeaf::MarkerTemp)?;
+        let checkpoint_temp = observe_pair_leaf(&mut writer, PairLeaf::CheckpointTemp)?;
+        if !matches!(
+            marker_temp.observation,
+            FixedRunStateRecordObservation::Missing
+        ) || !matches!(
+            checkpoint_temp.observation,
+            FixedRunStateRecordObservation::Missing
+        ) {
+            return Err(ServiceRunStateError::Shape);
+        }
+        let final_pair = observe_pair_snapshot(&mut writer)?;
+        if !final_pair.is_exact_candidate(&candidate)
+            || final_pair.marker.identity != Some(marker_identity)
+            || final_pair.checkpoint.identity != Some(checkpoint_identity)
+        {
+            return Err(ServiceRunStateError::Identity);
+        }
+        Ok(())
+    })();
+    match final_verification {
+        Ok(()) => PairCommitOutcome::Committed(CommittedPairWriter {
+            inner: writer,
+            candidate,
+        }),
+        Err(cause) => {
+            PairCommitOutcome::Ambiguous(AmbiguousPairWriter::installed_pair(writer), cause)
+        }
     }
 }
 
@@ -1570,7 +3270,7 @@ fn verify_root_handle(
     verify_handle_flags_zero(handle)?;
     verify_directory_shape(handle, true)?;
     verify_supported_local_ntfs(handle)?;
-    verify_exact_security(handle, &expected.policy, ROOT_ACCESS)?;
+    verify_exact_security(handle, &expected.policy, OWNER_RIGHTS_DENY, ROOT_ACCESS)?;
     if ObjectIdentity::from_handle(handle)? != expected.root_identity {
         return Err(ServiceRunStateError::Identity);
     }
@@ -1586,7 +3286,7 @@ fn verify_lock_handle(
     verify_exact_granted_access(handle, LOCK_ACCESS)?;
     verify_file_shape(handle)?;
     verify_supported_local_ntfs(handle)?;
-    verify_exact_security(handle, &expected.policy, LOCK_ACCESS)?;
+    verify_exact_security(handle, &expected.policy, OWNER_RIGHTS_DENY, LOCK_ACCESS)?;
     let identity = ObjectIdentity::from_handle(handle)?;
     if identity != expected.lock_identity || identity.volume_serial_number != root_volume {
         return Err(ServiceRunStateError::Identity);
@@ -1602,13 +3302,36 @@ fn verify_state_handle(
     verify_handle_flags_zero(handle)?;
     verify_exact_granted_access(handle, STATE_ACCESS)?;
     verify_directory_shape(handle, true)?;
+    verify_case_insensitive_directory(handle)?;
     verify_supported_local_ntfs(handle)?;
-    verify_exact_security(handle, &expected.policy, STATE_ACCESS)?;
+    verify_exact_security(handle, &expected.policy, OWNER_RIGHTS_DENY, STATE_ACCESS)?;
     let identity = ObjectIdentity::from_handle(handle)?;
     if identity != expected.state_identity || identity.volume_serial_number != root_volume {
         return Err(ServiceRunStateError::Identity);
     }
     Ok(())
+}
+
+fn verify_case_insensitive_directory(handle: HANDLE) -> Result<(), ServiceRunStateError> {
+    let mut information = FILE_CASE_SENSITIVE_INFO::default();
+    impersonation_bookend(|| {
+        // SAFETY: the held directory and exact scalar output remain live.
+        unsafe {
+            GetFileInformationByHandleEx(
+                handle,
+                FileCaseSensitiveInfo,
+                ptr::from_mut(&mut information).cast::<c_void>(),
+                u32::try_from(size_of::<FILE_CASE_SENSITIVE_INFO>())
+                    .map_err(|_| ServiceRunStateError::Shape)?,
+            )
+        }
+        .map_err(|_| ServiceRunStateError::Shape)
+    })?;
+    if information.Flags == 0 {
+        Ok(())
+    } else {
+        Err(ServiceRunStateError::Shape)
+    }
 }
 
 fn basic_information(handle: HANDLE) -> Result<BY_HANDLE_FILE_INFORMATION, ServiceRunStateError> {
@@ -1800,6 +3523,7 @@ fn is_exact_ntfs_name(value: &[u16]) -> bool {
 fn verify_exact_security(
     handle: HANDLE,
     policy: &SecurityPolicy,
+    owner_rights_deny: u32,
     service_mask: u32,
 ) -> Result<(), ServiceRunStateError> {
     let mut owner = PSID::default();
@@ -1824,7 +3548,14 @@ fn verify_exact_security(
         free_descriptor(descriptor);
         return Err(ServiceRunStateError::Security);
     }
-    let result = inspect_security_descriptor(descriptor, owner, dacl, policy, service_mask);
+    let result = inspect_security_descriptor(
+        descriptor,
+        owner,
+        dacl,
+        policy,
+        owner_rights_deny,
+        service_mask,
+    );
     free_descriptor(descriptor);
     result
 }
@@ -1843,6 +3574,7 @@ fn inspect_security_descriptor(
     owner: PSID,
     dacl: *mut ACL,
     policy: &SecurityPolicy,
+    owner_rights_deny: u32,
     service_mask: u32,
 ) -> Result<(), ServiceRunStateError> {
     // SAFETY: the descriptor and interior pointers remain owned by the caller.
@@ -1870,7 +3602,7 @@ fn inspect_security_descriptor(
     if control & required != required || control & forbidden != 0 {
         return Err(ServiceRunStateError::Security);
     }
-    inspect_exact_dacl(dacl, policy, service_mask)
+    inspect_exact_dacl(dacl, policy, owner_rights_deny, service_mask)
 }
 
 fn control_flag(flag: windows::Win32::Security::SECURITY_DESCRIPTOR_CONTROL) -> u16 {
@@ -1880,13 +3612,14 @@ fn control_flag(flag: windows::Win32::Security::SECURITY_DESCRIPTOR_CONTROL) -> 
 fn inspect_exact_dacl(
     dacl: *mut ACL,
     policy: &SecurityPolicy,
+    owner_rights_deny: u32,
     service_mask: u32,
 ) -> Result<(), ServiceRunStateError> {
     let (acl_size, information) = inspect_acl_header(dacl, 3)?;
     let deny = ace_at(dacl, 0)?;
     let service = ace_at(dacl, 1)?;
     let system = ace_at(dacl, 2)?;
-    let deny_size = inspect_owner_rights_deny(deny)?;
+    let deny_size = inspect_owner_rights_deny(deny, owner_rights_deny)?;
     let service_size = inspect_allow_ace(service, policy.service_sid.as_psid(), service_mask)?;
     let system_size = inspect_allow_ace(system, policy.system_sid.as_psid(), FILE_ALL_ACCESS.0)?;
     let exact = size_of::<ACL>()
@@ -1946,7 +3679,10 @@ fn ace_at(acl: *mut ACL, index: u32) -> Result<*mut c_void, ServiceRunStateError
     Ok(ace)
 }
 
-fn inspect_owner_rights_deny(ace: *mut c_void) -> Result<usize, ServiceRunStateError> {
+fn inspect_owner_rights_deny(
+    ace: *mut c_void,
+    expected_mask: u32,
+) -> Result<usize, ServiceRunStateError> {
     // SAFETY: GetAce proves the common header is readable.
     let header = unsafe { &*ace.cast::<ACE_HEADER>() };
     let sid_offset = offset_of!(ACCESS_DENIED_ACE, SidStart);
@@ -1958,7 +3694,7 @@ fn inspect_owner_rights_deny(ace: *mut c_void) -> Result<usize, ServiceRunStateE
     }
     // SAFETY: type and size prove the fixed deny ACE fields.
     let denied = unsafe { &*ace.cast::<ACCESS_DENIED_ACE>() };
-    if denied.Mask != OWNER_RIGHTS_DENY {
+    if denied.Mask != expected_mask {
         return Err(ServiceRunStateError::Security);
     }
     let sid = sid_in_ace(
@@ -2232,6 +3968,21 @@ enum HandleRole {
     State,
     RevalidationRoot,
     RevalidationState,
+    PairMarkerFinal,
+    PairMarkerTemp,
+    PairCheckpointFinal,
+    PairCheckpointTemp,
+}
+
+impl HandleRole {
+    const fn from_pair_leaf(leaf: PairLeaf) -> Self {
+        match leaf {
+            PairLeaf::MarkerFinal => Self::PairMarkerFinal,
+            PairLeaf::MarkerTemp => Self::PairMarkerTemp,
+            PairLeaf::CheckpointFinal => Self::PairCheckpointFinal,
+            PairLeaf::CheckpointTemp => Self::PairCheckpointTemp,
+        }
+    }
 }
 
 impl OwnedHandle {
@@ -2282,7 +4033,11 @@ impl OwnedHandle {
                     HandleRole::Root => record_release_step_for_test(TestReleaseStep::RootClosed),
                     HandleRole::Generic
                     | HandleRole::RevalidationRoot
-                    | HandleRole::RevalidationState => {}
+                    | HandleRole::RevalidationState
+                    | HandleRole::PairMarkerFinal
+                    | HandleRole::PairMarkerTemp
+                    | HandleRole::PairCheckpointFinal
+                    | HandleRole::PairCheckpointTemp => {}
                 }
                 Ok(())
             }
@@ -2343,6 +4098,10 @@ pub(super) fn inject_close_fault_for_test(fault: TestCloseFault) {
         TestCloseFault::Root => HandleRole::Root,
         TestCloseFault::RevalidationRoot => HandleRole::RevalidationRoot,
         TestCloseFault::RevalidationState => HandleRole::RevalidationState,
+        TestCloseFault::PairMarkerTemp => HandleRole::PairMarkerTemp,
+        TestCloseFault::PairCheckpointTemp => HandleRole::PairCheckpointTemp,
+        TestCloseFault::PairMarkerFinal => HandleRole::PairMarkerFinal,
+        TestCloseFault::PairCheckpointFinal => HandleRole::PairCheckpointFinal,
     };
     TEST_CLOSE_FAULT.with(|slot| slot.set(Some(role)));
 }
@@ -2360,6 +4119,46 @@ pub(super) fn inject_state_open_impersonation_fault_for_test(
 }
 
 #[cfg(test)]
+pub(super) fn inject_pair_impersonation_fault_for_test(fault: TestPairImpersonationFault) {
+    TEST_PAIR_IMPERSONATION_FAULT.with(|slot| slot.set(Some(fault)));
+}
+
+#[cfg(test)]
+pub(super) fn reset_pair_rename_count_for_test() {
+    TEST_PAIR_RENAME_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(super) fn pair_rename_count_for_test() -> usize {
+    TEST_PAIR_RENAME_COUNT.with(Cell::get)
+}
+
+#[cfg(test)]
+pub(super) fn reset_pair_inspect_count_for_test() {
+    TEST_PAIR_INSPECT_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(super) fn pair_inspect_count_for_test() -> usize {
+    TEST_PAIR_INSPECT_COUNT.with(Cell::get)
+}
+
+#[cfg(test)]
+pub(super) fn inject_pair_before_second_cas_for_test(operation: impl FnOnce() + 'static) {
+    TEST_PAIR_BEFORE_SECOND_CAS.with(|slot| {
+        assert!(slot.borrow_mut().replace(Box::new(operation)).is_none());
+    });
+}
+
+#[cfg(test)]
+fn run_pair_before_second_cas_hook_for_test() {
+    let operation = TEST_PAIR_BEFORE_SECOND_CAS.with(|slot| slot.borrow_mut().take());
+    if let Some(operation) = operation {
+        operation();
+    }
+}
+
+#[cfg(test)]
 pub(super) fn reset_state_native_open_count_for_test() {
     TEST_STATE_NATIVE_OPEN_COUNT.with(|count| count.set(0));
 }
@@ -2372,6 +4171,18 @@ pub(super) fn state_native_open_count_for_test() -> usize {
 #[cfg(test)]
 fn take_state_open_impersonation_fault_for_test(expected: TestStateOpenImpersonationFault) -> bool {
     TEST_STATE_OPEN_IMPERSONATION_FAULT.with(|slot| {
+        if slot.get() == Some(expected) {
+            slot.set(None);
+            true
+        } else {
+            false
+        }
+    })
+}
+
+#[cfg(test)]
+fn take_pair_impersonation_fault_for_test(expected: TestPairImpersonationFault) -> bool {
+    TEST_PAIR_IMPERSONATION_FAULT.with(|slot| {
         if slot.get() == Some(expected) {
             slot.set(None);
             true

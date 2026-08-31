@@ -25,13 +25,14 @@ use windows::Win32::Security::{
     SecurityImpersonation,
 };
 use windows::Win32::Storage::FileSystem::{
-    CREATE_NEW, CreateDirectoryW, CreateFileW, DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY,
-    FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    FILE_WRITE_DATA, OPEN_EXISTING, READ_CONTROL, WRITE_DAC, WRITE_OWNER, WriteFile,
+    CREATE_ALWAYS, CREATE_NEW, CreateDirectoryW, CreateFileW, DELETE, FILE_ADD_FILE,
+    FILE_ADD_SUBDIRECTORY, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL, FILE_DELETE_CHILD,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FILE_WRITE_DATA, OPEN_EXISTING, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
+    WriteFile,
 };
 use windows::Win32::System::IO::DeviceIoControl;
-use windows::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT;
+use windows::Win32::System::Ioctl::{FSCTL_SET_REPARSE_POINT, FSCTL_SET_SPARSE};
 use windows::Win32::System::SystemServices::IO_REPARSE_TAG_MOUNT_POINT;
 use windows::Win32::System::Threading::{
     CreateEventW, EVENT_MODIFY_STATE, OpenEventW, SetEvent, WaitForSingleObject,
@@ -40,7 +41,9 @@ use windows::core::{BOOL, PCWSTR};
 
 use super::sys::{self, TestObjectIdentity};
 use super::{
-    ExpectedInstalledRunStateObjects, HeldServiceRunStateRoot, HeldServiceRunStateWriter,
+    ExactFixedRunStatePair, ExpectedInstalledRunStateObjects, FIXED_RUN_STATE_RECORD_BYTES,
+    FixedPairCommitOutcome, FixedPairCommitted, FixedRunStateRecordObservation,
+    HeldServiceRunStateRoot, HeldServiceRunStateWriter, ObservedFixedRunStatePair,
     RuntimeRunLockStartFailure, ServiceRunStateError, open_test_service_run_state_root,
 };
 
@@ -650,6 +653,134 @@ fn create_empty_file_with_sddl_and_access(
     Ok(())
 }
 
+fn create_record_file_with_sddl(
+    path: &Path,
+    sddl: &str,
+    bytes: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let descriptor = TestSecurityDescriptor::from_sddl(sddl)?;
+    let attributes = descriptor.attributes();
+    let wide = wide_path(path)?;
+    // SAFETY: the exact test path and from-birth descriptor remain live and
+    // the creator receives only the file policy's intended access.
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            sys::PAIR_FILE_ACCESS_FOR_TEST,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            Some(ptr::from_ref(&attributes)),
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+    }?;
+    let mut setup = SetupHandle(Some(handle));
+    if !bytes.is_empty() {
+        let mut written = 0_u32;
+        // SAFETY: the creator owns FILE_WRITE_DATA and the input remains live.
+        unsafe { WriteFile(setup.raw()?, Some(bytes), Some(&raw mut written), None) }?;
+        if usize::try_from(written).ok() != Some(bytes.len()) {
+            return Err(std::io::Error::other("record fixture write was incomplete").into());
+        }
+    }
+    setup.close_checked()?;
+    Ok(())
+}
+
+fn create_pair_ads(path: &Path) -> TestResult {
+    let mut stream_name = path.as_os_str().to_os_string();
+    stream_name.push(":phase2fb_ads:$DATA");
+    let stream_path = PathBuf::from(stream_name);
+    let wide = wide_path(&stream_path)?;
+    // SAFETY: the fixed test-only ADS path is NUL-terminated and the base
+    // file's exact DACL grants FILE_WRITE_DATA to the service identity.
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            FILE_WRITE_DATA.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+    }?;
+    let mut stream = SetupHandle(Some(handle));
+    let mut written = 0_u32;
+    // SAFETY: the one-byte source remains live and the stream handle is held.
+    let write = unsafe { WriteFile(stream.raw()?, Some(&[0x5c]), Some(&raw mut written), None) };
+    let close = stream.close_checked();
+    write?;
+    close?;
+    if written == 1 {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("ADS fixture write was incomplete").into())
+    }
+}
+
+fn mark_pair_file_sparse(path: &Path) -> TestResult {
+    let mut handle = SetupHandle(Some(open_test_handle(
+        path,
+        sys::PAIR_FILE_ACCESS_FOR_TEST,
+        false,
+    )?));
+    let mut returned = 0_u32;
+    // SAFETY: the exact pair fixture file remains held for this no-input
+    // FSCTL_SET_SPARSE operation and the scalar output is writable.
+    let sparse = unsafe {
+        DeviceIoControl(
+            handle.raw()?,
+            FSCTL_SET_SPARSE,
+            None,
+            0,
+            None,
+            0,
+            Some(&raw mut returned),
+            None,
+        )
+    };
+    let close = handle.close_checked();
+    sparse?;
+    close?;
+    Ok(())
+}
+
+struct FilePermissionsRestore {
+    path: PathBuf,
+    original: Option<fs::Permissions>,
+}
+
+impl FilePermissionsRestore {
+    fn make_readonly(path: &Path) -> TestResultWith<Self> {
+        let original = fs::metadata(path)?.permissions();
+        let mut readonly = original.clone();
+        readonly.set_readonly(true);
+        fs::set_permissions(path, readonly)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            original: Some(original),
+        })
+    }
+
+    fn restore_checked(mut self) -> TestResult {
+        let original = self
+            .original
+            .take()
+            .ok_or_else(|| std::io::Error::other("file permissions already restored"))?;
+        fs::set_permissions(&self.path, original)?;
+        Ok(())
+    }
+}
+
+impl Drop for FilePermissionsRestore {
+    fn drop(&mut self) {
+        if let Some(original) = self.original.take() {
+            let _ = fs::set_permissions(&self.path, original);
+        }
+    }
+}
+
 fn open_test_handle(
     path: &Path,
     desired_access: u32,
@@ -972,6 +1103,11 @@ fn state_path(base: &Path) -> PathBuf {
     root_path(base).join("state")
 }
 
+fn pair_paths(base: &Path) -> [PathBuf; 4] {
+    let state = state_path(base);
+    sys::pair_leaf_names_for_test().map(|leaf| state.join(leaf))
+}
+
 fn wide_path(path: &Path) -> Result<Vec<u16>, std::io::Error> {
     let mut wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
     if wide.is_empty() || wide.contains(&0) {
@@ -1130,6 +1266,26 @@ fn release_for_test(writer: HeldServiceRunStateWriter) -> Result<(), ServiceRunS
     }
 }
 
+#[allow(clippy::large_types_passed_by_value)] // Mirrors the consuming production facade.
+fn commit_pair_for_test(
+    observed: ObservedFixedRunStatePair,
+    candidate: ExactFixedRunStatePair,
+) -> TestResultWith<FixedPairCommitted> {
+    match observed.compare_and_replace(candidate) {
+        FixedPairCommitOutcome::Committed(committed) => Ok(committed),
+        FixedPairCommitOutcome::KnownNotCommitted(failure) => {
+            let cause = failure.cause();
+            let _retired = failure.retire()?;
+            Err(cause.into())
+        }
+        FixedPairCommitOutcome::Ambiguous(failure) => {
+            let cause = failure.cause();
+            let _retired = failure.retire()?;
+            Err(cause.into())
+        }
+    }
+}
+
 fn reacquire_after_confirmed_exit_before_deadline(
     fixture: &InstalledFixture,
 ) -> Result<HeldServiceRunStateWriter, ServiceRunStateError> {
@@ -1252,6 +1408,844 @@ fn exact_positive_acquire_revalidate_release_and_reacquire_preserves_ids() -> Te
         before.1
     );
     Ok(())
+}
+
+#[test]
+fn fixed_pair_absent_commit_flushes_renames_and_independently_rereads() -> TestResult {
+    let fixture = InstalledFixture::new()?;
+    let paths = pair_paths(&fixture.base);
+    assert!(paths.iter().all(|path| !path.exists()));
+
+    let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
+    let writer = acquire_for_test(root)?;
+    let observed = writer.observe_fixed_pair().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        std::io::Error::other(format!("observe absent pair failed: {cause:?}"))
+    })?;
+    assert_eq!(
+        observed.observation().marker(),
+        FixedRunStateRecordObservation::Missing
+    );
+    assert_eq!(
+        observed.observation().checkpoint(),
+        FixedRunStateRecordObservation::Missing
+    );
+
+    let candidate = ExactFixedRunStatePair::new(
+        [0x31; FIXED_RUN_STATE_RECORD_BYTES],
+        [0x42; FIXED_RUN_STATE_RECORD_BYTES],
+    );
+    let committed = commit_pair_for_test(observed, candidate)
+        .map_err(|error| std::io::Error::other(format!("commit absent pair failed: {error:?}")))?;
+    assert_eq!(committed.candidate(), candidate);
+    let reread = match committed.reread() {
+        Ok(reread) => reread,
+        Err(failure) => {
+            let cause = failure.cause();
+            let _retired = failure.retire()?;
+            return Err(cause.into());
+        }
+    };
+    assert_eq!(
+        reread.observation().marker(),
+        FixedRunStateRecordObservation::Exact(*candidate.marker())
+    );
+    assert_eq!(
+        reread.observation().checkpoint(),
+        FixedRunStateRecordObservation::Exact(*candidate.checkpoint())
+    );
+    release_for_test(reread.into_writer())?;
+
+    assert_eq!(fs::read(&paths[0])?, candidate.marker());
+    assert!(!paths[1].exists());
+    assert_eq!(fs::read(&paths[2])?, candidate.checkpoint());
+    assert!(!paths[3].exists());
+    fixture.cleanup_checked()
+}
+
+#[test]
+fn fixed_pair_existing_commit_replaces_both_full_identities() -> TestResult {
+    let fixture = InstalledFixture::new()?;
+    let paths = pair_paths(&fixture.base);
+    let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
+    let writer = acquire_for_test(root)?;
+    let first_observed = writer.observe_fixed_pair().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        cause
+    })?;
+    let first = ExactFixedRunStatePair::new(
+        [0x53; FIXED_RUN_STATE_RECORD_BYTES],
+        [0x64; FIXED_RUN_STATE_RECORD_BYTES],
+    );
+    let first_reread = match commit_pair_for_test(first_observed, first)?.reread() {
+        Ok(reread) => reread,
+        Err(failure) => {
+            let cause = failure.cause();
+            let _retired = failure.retire()?;
+            return Err(cause.into());
+        }
+    };
+    let writer = first_reread.into_writer();
+    let old_marker = sys::record_object_identity_for_test(&paths[0], false)?;
+    let old_checkpoint = sys::record_object_identity_for_test(&paths[2], false)?;
+
+    let second_observed = writer.observe_fixed_pair().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        cause
+    })?;
+    assert_eq!(
+        second_observed.observation().marker(),
+        FixedRunStateRecordObservation::Exact(*first.marker())
+    );
+    assert_eq!(
+        second_observed.observation().checkpoint(),
+        FixedRunStateRecordObservation::Exact(*first.checkpoint())
+    );
+    let second = ExactFixedRunStatePair::new(
+        [0x75; FIXED_RUN_STATE_RECORD_BYTES],
+        [0x86; FIXED_RUN_STATE_RECORD_BYTES],
+    );
+    let second_reread = match commit_pair_for_test(second_observed, second)?.reread() {
+        Ok(reread) => reread,
+        Err(failure) => {
+            let cause = failure.cause();
+            let _retired = failure.retire()?;
+            return Err(cause.into());
+        }
+    };
+    assert_eq!(
+        second_reread.observation().marker(),
+        FixedRunStateRecordObservation::Exact(*second.marker())
+    );
+    assert_eq!(
+        second_reread.observation().checkpoint(),
+        FixedRunStateRecordObservation::Exact(*second.checkpoint())
+    );
+    release_for_test(second_reread.into_writer())?;
+
+    let new_marker = sys::record_object_identity_for_test(&paths[0], false)?;
+    let new_checkpoint = sys::record_object_identity_for_test(&paths[2], false)?;
+    assert_ne!(new_marker, old_marker);
+    assert_ne!(new_checkpoint, old_checkpoint);
+    assert_eq!(fs::read(&paths[0])?, second.marker());
+    assert_eq!(fs::read(&paths[2])?, second.checkpoint());
+    assert!(!paths[1].exists() && !paths[3].exists());
+    fixture.cleanup_checked()
+}
+
+#[test]
+fn fixed_pair_leaf_set_and_from_birth_file_security_are_exact() -> TestResult {
+    let leaves = sys::pair_leaf_names_for_test();
+    assert_eq!(FIXED_RUN_STATE_RECORD_BYTES, 148);
+    for (index, leaf) in leaves.iter().enumerate() {
+        sys::validate_leaf_for_test(leaf)?;
+        assert!(!leaf.contains(['/', '\\', ':']));
+        let (base, extension) = leaf
+            .split_once('.')
+            .ok_or_else(|| std::io::Error::other("fixed pair leaf lacks one extension"))?;
+        assert!(base.len() <= 8 && extension.len() <= 3);
+        for other in leaves.iter().skip(index + 1) {
+            assert_ne!(leaf, other);
+        }
+    }
+
+    let fixture = InstalledFixture::new()?;
+    let paths = pair_paths(&fixture.base);
+    let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
+    let writer = acquire_for_test(root)?;
+    let observed = writer.observe_fixed_pair().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        cause
+    })?;
+    let candidate = ExactFixedRunStatePair::new(
+        [0x97; FIXED_RUN_STATE_RECORD_BYTES],
+        [0xa8; FIXED_RUN_STATE_RECORD_BYTES],
+    );
+    let reread = match commit_pair_for_test(observed, candidate)?.reread() {
+        Ok(reread) => reread,
+        Err(failure) => {
+            let cause = failure.cause();
+            let _retired = failure.retire()?;
+            return Err(cause.into());
+        }
+    };
+    release_for_test(reread.into_writer())?;
+
+    for path in [&paths[0], &paths[2]] {
+        sys::verify_pair_file_security_for_test(path)?;
+        let mut exact = SetupHandle(Some(open_test_handle(
+            path,
+            sys::PAIR_FILE_ACCESS_FOR_TEST,
+            false,
+        )?));
+        exact.close_checked()?;
+        let mut delete = SetupHandle(Some(open_test_handle(path, DELETE.0, false)?));
+        delete.close_checked()?;
+        fresh_access_fails_with(
+            path,
+            WRITE_DAC.0,
+            false,
+            "fixed pair file",
+            "WRITE_DAC",
+            ERROR_ACCESS_DENIED.to_hresult(),
+        )?;
+        fresh_access_fails_with(
+            path,
+            WRITE_OWNER.0,
+            false,
+            "fixed pair file",
+            "WRITE_OWNER",
+            ERROR_ACCESS_DENIED.to_hresult(),
+        )?;
+    }
+    assert_ne!(
+        sys::PAIR_OWNER_RIGHTS_DENY_FOR_TEST,
+        sys::OWNER_RIGHTS_DENY_FOR_TEST
+    );
+    assert_eq!(sys::PAIR_CREATE_DESIRED_ACCESS_FOR_TEST, 0xc011_0000);
+    assert_eq!(sys::PAIR_FILE_ACCESS_FOR_TEST, 0x0013_019f);
+    assert_eq!(sys::PAIR_FINAL_OPEN_DESIRED_ACCESS_FOR_TEST, 0x8010_0000);
+    assert_eq!(sys::PAIR_FINAL_GRANTED_ACCESS_FOR_TEST, 0x0012_0089);
+    assert_eq!(sys::PAIR_TEMP_CLEANUP_DESIRED_ACCESS_FOR_TEST, 0x8011_0000);
+    assert_eq!(sys::PAIR_TEMP_CLEANUP_GRANTED_ACCESS_FOR_TEST, 0x0013_0089);
+    let expected_sddl = sys::exact_pair_file_sddl_for_test()?;
+    assert!(expected_sddl.contains("D;;0x000c0000;;;OW"));
+    fixture.cleanup_checked()
+}
+
+#[test]
+fn fixed_pair_one_sided_malformed_and_hostile_temp_are_terminal_known_failures() -> TestResult {
+    let candidate = ExactFixedRunStatePair::new(
+        [0xb1; FIXED_RUN_STATE_RECORD_BYTES],
+        [0xb2; FIXED_RUN_STATE_RECORD_BYTES],
+    );
+
+    let one_sided = InstalledFixture::new()?;
+    let paths = pair_paths(&one_sided.base);
+    create_record_file_with_sddl(
+        &paths[0],
+        &sys::exact_pair_file_sddl_for_test()?,
+        &[0xc1; FIXED_RUN_STATE_RECORD_BYTES],
+    )?;
+    let writer = acquire_for_test(open_test_service_run_state_root(
+        &one_sided.base,
+        one_sided.expected()?,
+    )?)?;
+    let observed = writer.observe_fixed_pair().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        cause
+    })?;
+    assert!(matches!(
+        observed.observation().marker(),
+        FixedRunStateRecordObservation::Exact(_)
+    ));
+    assert_eq!(
+        observed.observation().checkpoint(),
+        FixedRunStateRecordObservation::Missing
+    );
+    match observed.compare_and_replace(candidate) {
+        FixedPairCommitOutcome::KnownNotCommitted(failure) => {
+            assert_eq!(failure.cause(), ServiceRunStateError::Compare);
+            let _retired = failure.retire()?;
+        }
+        other => {
+            return Err(
+                std::io::Error::other(format!("unexpected one-sided outcome: {other:?}")).into(),
+            );
+        }
+    }
+    assert!(!paths[1].exists() && !paths[2].exists() && !paths[3].exists());
+    one_sided.cleanup_checked()?;
+
+    let malformed = InstalledFixture::new()?;
+    let paths = pair_paths(&malformed.base);
+    let sddl = sys::exact_pair_file_sddl_for_test()?;
+    create_record_file_with_sddl(&paths[0], &sddl, &[0xd1; FIXED_RUN_STATE_RECORD_BYTES - 1])?;
+    create_record_file_with_sddl(&paths[2], &sddl, &[0xd2; FIXED_RUN_STATE_RECORD_BYTES])?;
+    let writer = acquire_for_test(open_test_service_run_state_root(
+        &malformed.base,
+        malformed.expected()?,
+    )?)?;
+    let observed = writer.observe_fixed_pair().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        cause
+    })?;
+    assert_eq!(
+        observed.observation().marker(),
+        FixedRunStateRecordObservation::Malformed
+    );
+    match observed.compare_and_replace(candidate) {
+        FixedPairCommitOutcome::KnownNotCommitted(failure) => {
+            assert_eq!(failure.cause(), ServiceRunStateError::Compare);
+            let _retired = failure.retire()?;
+        }
+        other => {
+            return Err(
+                std::io::Error::other(format!("unexpected malformed outcome: {other:?}")).into(),
+            );
+        }
+    }
+    assert!(!paths[1].exists() && !paths[3].exists());
+    malformed.cleanup_checked()?;
+
+    let hostile = InstalledFixture::new()?;
+    let paths = pair_paths(&hostile.base);
+    create_record_file_with_sddl(
+        &paths[1],
+        &bootstrap_sddl(sys::PAIR_FILE_ACCESS_FOR_TEST)?,
+        &[0xe1; FIXED_RUN_STATE_RECORD_BYTES],
+    )?;
+    let writer = acquire_for_test(open_test_service_run_state_root(
+        &hostile.base,
+        hostile.expected()?,
+    )?)?;
+    let failure = match writer.observe_fixed_pair() {
+        Err(failure) => failure,
+        Ok(observed) => {
+            observed.retire()?;
+            return Err(std::io::Error::other("hostile temp was adopted or deleted").into());
+        }
+    };
+    assert_eq!(failure.cause(), ServiceRunStateError::Security);
+    assert!(matches!(
+        failure.retire(),
+        Err(ServiceRunStateError::Release)
+    ));
+    assert!(paths[1].exists(), "hostile temp was silently deleted");
+    hostile.cleanup_checked()
+}
+
+#[test]
+fn fixed_pair_rejects_ads_and_forbidden_file_attributes() -> TestResult {
+    fn install_pair(fixture: &InstalledFixture) -> TestResult {
+        let paths = pair_paths(&fixture.base);
+        let sddl = sys::exact_pair_file_sddl_for_test()?;
+        create_record_file_with_sddl(&paths[0], &sddl, &[0xc4; FIXED_RUN_STATE_RECORD_BYTES])?;
+        create_record_file_with_sddl(&paths[2], &sddl, &[0xd5; FIXED_RUN_STATE_RECORD_BYTES])
+    }
+
+    fn require_shape_failure(fixture: &InstalledFixture) -> TestResult {
+        let writer = acquire_for_test(open_test_service_run_state_root(
+            &fixture.base,
+            fixture.expected()?,
+        )?)?;
+        let failure = match writer.observe_fixed_pair() {
+            Err(failure) => failure,
+            Ok(observed) => {
+                observed.retire()?;
+                return Err(std::io::Error::other("hostile pair shape was accepted").into());
+            }
+        };
+        assert_eq!(failure.cause(), ServiceRunStateError::Shape);
+        let _retired = failure.retire()?;
+        Ok(())
+    }
+
+    let ads = InstalledFixture::new()?;
+    install_pair(&ads)?;
+    let paths = pair_paths(&ads.base);
+    create_pair_ads(&paths[0])?;
+    require_shape_failure(&ads)?;
+    ads.cleanup_checked()?;
+
+    let readonly = InstalledFixture::new()?;
+    install_pair(&readonly)?;
+    let paths = pair_paths(&readonly.base);
+    let restore = FilePermissionsRestore::make_readonly(&paths[0])?;
+    require_shape_failure(&readonly)?;
+    restore.restore_checked()?;
+    readonly.cleanup_checked()?;
+
+    let sparse = InstalledFixture::new()?;
+    install_pair(&sparse)?;
+    let paths = pair_paths(&sparse.base);
+    mark_pair_file_sparse(&paths[0])?;
+    require_shape_failure(&sparse)?;
+    sparse.cleanup_checked()
+}
+
+#[test]
+fn fixed_pair_startup_cleans_safe_partial_temps_but_preserves_oversized() -> TestResult {
+    let partial = InstalledFixture::new()?;
+    let paths = pair_paths(&partial.base);
+    let sddl = sys::exact_pair_file_sddl_for_test()?;
+    create_record_file_with_sddl(&paths[1], &sddl, &[])?;
+    create_record_file_with_sddl(&paths[3], &sddl, &[0x47; FIXED_RUN_STATE_RECORD_BYTES - 1])?;
+    let writer = acquire_for_test(open_test_service_run_state_root(
+        &partial.base,
+        partial.expected()?,
+    )?)?;
+    let observed = writer.observe_fixed_pair().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        cause
+    })?;
+    assert_eq!(
+        observed.observation(),
+        super::FixedRunStatePairObservation::new(
+            FixedRunStateRecordObservation::Missing,
+            FixedRunStateRecordObservation::Missing,
+        )
+    );
+    assert!(!paths[1].exists() && !paths[3].exists());
+    let _retired = observed.retire()?;
+    partial.cleanup_checked()?;
+
+    let oversized = InstalledFixture::new()?;
+    let paths = pair_paths(&oversized.base);
+    create_record_file_with_sddl(
+        &paths[1],
+        &sys::exact_pair_file_sddl_for_test()?,
+        &[0x58; FIXED_RUN_STATE_RECORD_BYTES + 1],
+    )?;
+    let writer = acquire_for_test(open_test_service_run_state_root(
+        &oversized.base,
+        oversized.expected()?,
+    )?)?;
+    let failure = match writer.observe_fixed_pair() {
+        Err(failure) => failure,
+        Ok(observed) => {
+            observed.retire()?;
+            return Err(std::io::Error::other("oversized stale temp was deleted").into());
+        }
+    };
+    assert_eq!(failure.cause(), ServiceRunStateError::Shape);
+    assert!(matches!(
+        failure.retire(),
+        Err(ServiceRunStateError::Release)
+    ));
+    assert!(paths[1].exists());
+    oversized.cleanup_checked()
+}
+
+#[test]
+fn fixed_pair_full_id_second_cas_rejects_same_bytes_replacement_without_mutation() -> TestResult {
+    let fixture = InstalledFixture::new()?;
+    let paths = pair_paths(&fixture.base);
+    let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
+    let writer = acquire_for_test(root)?;
+    let observed = writer.observe_fixed_pair().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        cause
+    })?;
+    let prior = ExactFixedRunStatePair::new(
+        [0x19; FIXED_RUN_STATE_RECORD_BYTES],
+        [0x2a; FIXED_RUN_STATE_RECORD_BYTES],
+    );
+    let reread = match commit_pair_for_test(observed, prior)?.reread() {
+        Ok(reread) => reread,
+        Err(failure) => {
+            let cause = failure.cause();
+            let _retired = failure.retire()?;
+            return Err(cause.into());
+        }
+    };
+    let writer = reread.into_writer();
+    let original_marker = sys::record_object_identity_for_test(&paths[0], false)?;
+    let observed = writer.observe_fixed_pair().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        cause
+    })?;
+
+    let replacement_path = paths[0].clone();
+    let replacement_sddl = sys::exact_pair_file_sddl_for_test()?;
+    let prior_marker = *prior.marker();
+    sys::inject_pair_before_second_cas_for_test(move || {
+        assert!(
+            fs::remove_file(&replacement_path).is_ok(),
+            "replace marker after staging"
+        );
+        assert!(
+            create_record_file_with_sddl(&replacement_path, &replacement_sddl, &prior_marker)
+                .is_ok(),
+            "create same-byte marker replacement after staging"
+        );
+    });
+
+    let candidate = ExactFixedRunStatePair::new(
+        [0x3b; FIXED_RUN_STATE_RECORD_BYTES],
+        [0x4c; FIXED_RUN_STATE_RECORD_BYTES],
+    );
+    match observed.compare_and_replace(candidate) {
+        FixedPairCommitOutcome::KnownNotCommitted(failure) => {
+            assert_eq!(failure.cause(), ServiceRunStateError::Compare);
+            let _retired = failure.retire()?;
+        }
+        other => {
+            return Err(
+                std::io::Error::other(format!("unexpected second-CAS outcome: {other:?}")).into(),
+            );
+        }
+    }
+    let substituted_marker = sys::record_object_identity_for_test(&paths[0], false)?;
+    assert_ne!(substituted_marker, original_marker);
+    assert_eq!(
+        sys::record_object_identity_for_test(&paths[0], false)?,
+        substituted_marker
+    );
+    assert_eq!(fs::read(&paths[0])?, prior.marker());
+    assert_eq!(fs::read(&paths[2])?, prior.checkpoint());
+    assert!(!paths[1].exists() && !paths[3].exists());
+    fixture.cleanup_checked()
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One test fixes the exact before/after rename boundary matrix.
+fn fixed_pair_first_rename_boundary_reload_and_close_poison_are_exact() -> TestResult {
+    let candidate = ExactFixedRunStatePair::new(
+        [0x5d; FIXED_RUN_STATE_RECORD_BYTES],
+        [0x6e; FIXED_RUN_STATE_RECORD_BYTES],
+    );
+
+    let before = InstalledFixture::new()?;
+    let paths = pair_paths(&before.base);
+    let writer = acquire_for_test(open_test_service_run_state_root(
+        &before.base,
+        before.expected()?,
+    )?)?;
+    let observed = writer.observe_fixed_pair().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        cause
+    })?;
+    sys::reset_pair_rename_count_for_test();
+    sys::inject_pair_impersonation_fault_for_test(sys::TestPairImpersonationFault::BeforeMarker);
+    match observed.compare_and_replace(candidate) {
+        FixedPairCommitOutcome::KnownNotCommitted(failure) => {
+            assert_eq!(failure.cause(), ServiceRunStateError::Impersonation);
+            assert_eq!(sys::pair_rename_count_for_test(), 0);
+            let _retired = failure.retire()?;
+        }
+        other => {
+            return Err(
+                std::io::Error::other(format!("unexpected pre-rename outcome: {other:?}")).into(),
+            );
+        }
+    }
+    assert!(paths.iter().all(|path| !path.exists()));
+    before.cleanup_checked()?;
+
+    let marker_partial = InstalledFixture::new()?;
+    let paths = pair_paths(&marker_partial.base);
+    let writer = acquire_for_test(open_test_service_run_state_root(
+        &marker_partial.base,
+        marker_partial.expected()?,
+    )?)?;
+    let observed = writer.observe_fixed_pair().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        cause
+    })?;
+    sys::reset_pair_rename_count_for_test();
+    sys::inject_pair_impersonation_fault_for_test(sys::TestPairImpersonationFault::AfterMarker);
+    let ambiguous = match observed.compare_and_replace(candidate) {
+        FixedPairCommitOutcome::Ambiguous(failure) => failure,
+        other => {
+            return Err(std::io::Error::other(format!(
+                "unexpected marker ambiguity outcome: {other:?}"
+            ))
+            .into());
+        }
+    };
+    assert_eq!(ambiguous.cause(), ServiceRunStateError::Impersonation);
+    assert_eq!(sys::pair_rename_count_for_test(), 1);
+    let reloaded = ambiguous.reload().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        cause
+    })?;
+    assert_eq!(
+        reloaded.observation().marker(),
+        FixedRunStateRecordObservation::Exact(*candidate.marker())
+    );
+    assert_eq!(
+        reloaded.observation().checkpoint(),
+        FixedRunStateRecordObservation::Missing
+    );
+    let _retired = reloaded.retire()?;
+    assert!(paths[0].exists() && !paths[1].exists() && !paths[2].exists() && !paths[3].exists());
+    marker_partial.cleanup_checked()?;
+
+    let before_checkpoint = InstalledFixture::new()?;
+    let paths = pair_paths(&before_checkpoint.base);
+    let writer = acquire_for_test(open_test_service_run_state_root(
+        &before_checkpoint.base,
+        before_checkpoint.expected()?,
+    )?)?;
+    let observed = writer.observe_fixed_pair().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        cause
+    })?;
+    sys::reset_pair_rename_count_for_test();
+    sys::inject_pair_impersonation_fault_for_test(
+        sys::TestPairImpersonationFault::BeforeCheckpoint,
+    );
+    let ambiguous = match observed.compare_and_replace(candidate) {
+        FixedPairCommitOutcome::Ambiguous(failure) => failure,
+        other => {
+            return Err(std::io::Error::other(format!(
+                "unexpected pre-checkpoint-rename outcome: {other:?}"
+            ))
+            .into());
+        }
+    };
+    assert_eq!(ambiguous.cause(), ServiceRunStateError::Impersonation);
+    assert_eq!(sys::pair_rename_count_for_test(), 1);
+    let reloaded = ambiguous.reload().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        cause
+    })?;
+    assert_eq!(
+        reloaded.observation().marker(),
+        FixedRunStateRecordObservation::Exact(*candidate.marker())
+    );
+    assert_eq!(
+        reloaded.observation().checkpoint(),
+        FixedRunStateRecordObservation::Missing
+    );
+    let _retired = reloaded.retire()?;
+    assert!(paths[0].exists() && !paths[1].exists() && !paths[2].exists() && !paths[3].exists());
+    before_checkpoint.cleanup_checked()?;
+
+    let full = InstalledFixture::new()?;
+    let paths = pair_paths(&full.base);
+    let writer = acquire_for_test(open_test_service_run_state_root(
+        &full.base,
+        full.expected()?,
+    )?)?;
+    let observed = writer.observe_fixed_pair().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        cause
+    })?;
+    sys::reset_pair_rename_count_for_test();
+    sys::inject_pair_impersonation_fault_for_test(sys::TestPairImpersonationFault::AfterCheckpoint);
+    let ambiguous = match observed.compare_and_replace(candidate) {
+        FixedPairCommitOutcome::Ambiguous(failure) => failure,
+        other => {
+            return Err(std::io::Error::other(format!(
+                "unexpected checkpoint ambiguity outcome: {other:?}"
+            ))
+            .into());
+        }
+    };
+    assert_eq!(ambiguous.cause(), ServiceRunStateError::Impersonation);
+    assert_eq!(sys::pair_rename_count_for_test(), 2);
+    let reloaded = ambiguous.reload().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        cause
+    })?;
+    assert_eq!(
+        reloaded.observation().marker(),
+        FixedRunStateRecordObservation::Exact(*candidate.marker())
+    );
+    assert_eq!(
+        reloaded.observation().checkpoint(),
+        FixedRunStateRecordObservation::Exact(*candidate.checkpoint())
+    );
+    let _retired = reloaded.retire()?;
+    assert!(paths[0].exists() && paths[2].exists() && !paths[1].exists() && !paths[3].exists());
+    full.cleanup_checked()?;
+
+    let close_poison = InstalledFixture::new()?;
+    let writer = acquire_for_test(open_test_service_run_state_root(
+        &close_poison.base,
+        close_poison.expected()?,
+    )?)?;
+    let observed = writer.observe_fixed_pair().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        cause
+    })?;
+    sys::inject_close_fault_for_test(sys::TestCloseFault::PairMarkerTemp);
+    let ambiguous = match observed.compare_and_replace(candidate) {
+        FixedPairCommitOutcome::Ambiguous(failure) => failure,
+        other => {
+            return Err(
+                std::io::Error::other(format!("unexpected pair-close outcome: {other:?}")).into(),
+            );
+        }
+    };
+    assert_eq!(ambiguous.cause(), ServiceRunStateError::Release);
+    assert!(matches!(
+        ambiguous.retire(),
+        Err(ServiceRunStateError::Release)
+    ));
+    close_poison.cleanup_checked()
+}
+
+#[test]
+fn fixed_pair_inspection_has_individual_impersonation_bookends_and_close_poison() -> TestResult {
+    fn install_exact_pair(fixture: &InstalledFixture) -> TestResult {
+        let paths = pair_paths(&fixture.base);
+        let sddl = sys::exact_pair_file_sddl_for_test()?;
+        create_record_file_with_sddl(&paths[0], &sddl, &[0x7f; FIXED_RUN_STATE_RECORD_BYTES])?;
+        create_record_file_with_sddl(&paths[2], &sddl, &[0x8f; FIXED_RUN_STATE_RECORD_BYTES])
+    }
+
+    let before = InstalledFixture::new()?;
+    install_exact_pair(&before)?;
+    let writer = acquire_for_test(open_test_service_run_state_root(
+        &before.base,
+        before.expected()?,
+    )?)?;
+    sys::reset_pair_inspect_count_for_test();
+    sys::inject_pair_impersonation_fault_for_test(sys::TestPairImpersonationFault::BeforeInspect);
+    let failure = match writer.observe_fixed_pair() {
+        Err(failure) => failure,
+        Ok(observed) => {
+            observed.retire()?;
+            return Err(std::io::Error::other("pre-inspect impersonation was accepted").into());
+        }
+    };
+    assert_eq!(failure.cause(), ServiceRunStateError::Impersonation);
+    assert_eq!(sys::pair_inspect_count_for_test(), 0);
+    let _retired = failure.retire()?;
+    before.cleanup_checked()?;
+
+    let after = InstalledFixture::new()?;
+    install_exact_pair(&after)?;
+    let writer = acquire_for_test(open_test_service_run_state_root(
+        &after.base,
+        after.expected()?,
+    )?)?;
+    sys::reset_pair_inspect_count_for_test();
+    sys::inject_pair_impersonation_fault_for_test(sys::TestPairImpersonationFault::AfterInspect);
+    let failure = match writer.observe_fixed_pair() {
+        Err(failure) => failure,
+        Ok(observed) => {
+            observed.retire()?;
+            return Err(std::io::Error::other("post-inspect impersonation was accepted").into());
+        }
+    };
+    assert_eq!(failure.cause(), ServiceRunStateError::Impersonation);
+    assert_eq!(sys::pair_inspect_count_for_test(), 1);
+    let _retired = failure.retire()?;
+    after.cleanup_checked()?;
+
+    let close_poison = InstalledFixture::new()?;
+    install_exact_pair(&close_poison)?;
+    let writer = acquire_for_test(open_test_service_run_state_root(
+        &close_poison.base,
+        close_poison.expected()?,
+    )?)?;
+    sys::reset_pair_inspect_count_for_test();
+    sys::inject_pair_impersonation_fault_for_test(sys::TestPairImpersonationFault::AfterInspect);
+    sys::inject_close_fault_for_test(sys::TestCloseFault::PairMarkerFinal);
+    let failure = match writer.observe_fixed_pair() {
+        Err(failure) => failure,
+        Ok(observed) => {
+            let _ = observed.retire();
+            return Err(std::io::Error::other("ambiguous inspect-probe close was accepted").into());
+        }
+    };
+    assert_eq!(failure.cause(), ServiceRunStateError::Release);
+    assert_eq!(sys::pair_inspect_count_for_test(), 1);
+    assert!(matches!(
+        failure.retire(),
+        Err(ServiceRunStateError::Release)
+    ));
+    close_poison.cleanup_checked()
+}
+
+#[test]
+fn fixed_pair_ambiguous_cleanup_is_bound_to_staged_full_ids() -> TestResult {
+    let fixture = InstalledFixture::new()?;
+    let paths = pair_paths(&fixture.base);
+    let writer = acquire_for_test(open_test_service_run_state_root(
+        &fixture.base,
+        fixture.expected()?,
+    )?)?;
+    let observed = writer.observe_fixed_pair().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        cause
+    })?;
+    let candidate = ExactFixedRunStatePair::new(
+        [0x91; FIXED_RUN_STATE_RECORD_BYTES],
+        [0xa2; FIXED_RUN_STATE_RECORD_BYTES],
+    );
+    sys::inject_pair_impersonation_fault_for_test(sys::TestPairImpersonationFault::AfterMarker);
+    let ambiguous = match observed.compare_and_replace(candidate) {
+        FixedPairCommitOutcome::Ambiguous(failure) => failure,
+        other => {
+            return Err(std::io::Error::other(format!(
+                "unexpected staged-ID setup outcome: {other:?}"
+            ))
+            .into());
+        }
+    };
+    assert!(!paths[3].exists());
+    create_record_file_with_sddl(
+        &paths[3],
+        &sys::exact_pair_file_sddl_for_test()?,
+        &[0xb3; FIXED_RUN_STATE_RECORD_BYTES],
+    )?;
+    let replacement = sys::record_object_identity_for_test(&paths[3], false)?;
+
+    let reload_failure = match ambiguous.reload() {
+        Err(failure) => failure,
+        Ok(reloaded) => {
+            reloaded.retire()?;
+            return Err(
+                std::io::Error::other("unrelated replacement temp was adopted or deleted").into(),
+            );
+        }
+    };
+    assert_eq!(reload_failure.cause(), ServiceRunStateError::Identity);
+    assert!(matches!(
+        reload_failure.retire(),
+        Err(ServiceRunStateError::Identity | ServiceRunStateError::Release)
+    ));
+    assert_eq!(
+        sys::record_object_identity_for_test(&paths[3], false)?,
+        replacement
+    );
+    fixture.cleanup_checked()
+}
+
+#[test]
+fn fixed_pair_reread_revalidates_writer_and_probe_close_poison_blocks_receipts() -> TestResult {
+    let fixture = InstalledFixture::new()?;
+    let writer = acquire_for_test(open_test_service_run_state_root(
+        &fixture.base,
+        fixture.expected()?,
+    )?)?;
+    let observed = writer.observe_fixed_pair().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        cause
+    })?;
+    let candidate = ExactFixedRunStatePair::new(
+        [0xe6; FIXED_RUN_STATE_RECORD_BYTES],
+        [0xf7; FIXED_RUN_STATE_RECORD_BYTES],
+    );
+    let committed = commit_pair_for_test(observed, candidate)?;
+    sys::inject_close_fault_for_test(sys::TestCloseFault::RevalidationState);
+    let ambiguous = match committed.reread() {
+        Err(failure) => failure,
+        Ok(reread) => {
+            reread.retire()?;
+            return Err(std::io::Error::other("reread skipped writer revalidation").into());
+        }
+    };
+    assert_eq!(ambiguous.cause(), ServiceRunStateError::Release);
+    assert!(matches!(
+        ambiguous.retire(),
+        Err(ServiceRunStateError::Release)
+    ));
+    fixture.cleanup_checked()
 }
 
 #[test]

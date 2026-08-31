@@ -1,8 +1,10 @@
-//! Dormant held-root adapter for the fixed service run-state objects.
+//! Dormant held-root and fixed-record adapter for service run state.
 //!
-//! This module can only open and verify installer-created objects. It has no
-//! production constructor for the expected identities or security policy, no
-//! production caller, and no conversion into Phase 2D boot evidence.
+//! The adapter opens and verifies installer-created root/lock/state objects and,
+//! only while their exact writer is held, can replace the fixed marker and
+//! checkpoint pair through two fixed temporary leaves. It has no production
+//! constructor for expected identities or security policy, no production
+//! caller, and no conversion into Phase 2D boot or durable-state evidence.
 
 use core::fmt;
 
@@ -52,6 +54,103 @@ pub(crate) enum ServiceRunStateError {
     /// A checked handle release failed.
     #[error("service run-state checked release failed")]
     Release,
+    /// Exact fixed-record I/O did not complete as requested.
+    #[error("service run-state fixed-record I/O failed")]
+    RecordIo,
+    /// The fixed marker/checkpoint pair changed before its consuming commit.
+    #[error("service run-state fixed-record comparison failed")]
+    Compare,
+    /// A handle-relative fixed-record rename failed or became ambiguous.
+    #[error("service run-state fixed-record rename failed")]
+    Rename,
+    /// Checked cleanup of a fixed temporary record failed.
+    #[error("service run-state fixed-record cleanup failed")]
+    Cleanup,
+}
+
+/// Exact byte length of each fixed V1 marker/checkpoint record.
+pub(super) const FIXED_RUN_STATE_RECORD_BYTES: usize = 148;
+
+/// One exact candidate pair. Leaf selection remains internal to this module.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) struct ExactFixedRunStatePair {
+    marker: [u8; FIXED_RUN_STATE_RECORD_BYTES],
+    checkpoint: [u8; FIXED_RUN_STATE_RECORD_BYTES],
+}
+
+impl ExactFixedRunStatePair {
+    pub(super) const fn new(
+        marker: [u8; FIXED_RUN_STATE_RECORD_BYTES],
+        checkpoint: [u8; FIXED_RUN_STATE_RECORD_BYTES],
+    ) -> Self {
+        Self { marker, checkpoint }
+    }
+
+    pub(super) const fn marker(&self) -> &[u8; FIXED_RUN_STATE_RECORD_BYTES] {
+        &self.marker
+    }
+
+    pub(super) const fn checkpoint(&self) -> &[u8; FIXED_RUN_STATE_RECORD_BYTES] {
+        &self.checkpoint
+    }
+}
+
+impl fmt::Debug for ExactFixedRunStatePair {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ExactFixedRunStatePair([REDACTED])")
+    }
+}
+
+/// Shape-only observation of one fixed record.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum FixedRunStateRecordObservation {
+    Missing,
+    Malformed,
+    Exact([u8; FIXED_RUN_STATE_RECORD_BYTES]),
+}
+
+impl fmt::Debug for FixedRunStateRecordObservation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Missing => formatter.write_str("Missing"),
+            Self::Malformed => formatter.write_str("Malformed"),
+            Self::Exact(_) => formatter.write_str("Exact([REDACTED])"),
+        }
+    }
+}
+
+/// Authority-free marker/checkpoint observation copied from a held writer.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) struct FixedRunStatePairObservation {
+    marker: FixedRunStateRecordObservation,
+    checkpoint: FixedRunStateRecordObservation,
+}
+
+impl FixedRunStatePairObservation {
+    const fn new(
+        marker: FixedRunStateRecordObservation,
+        checkpoint: FixedRunStateRecordObservation,
+    ) -> Self {
+        Self { marker, checkpoint }
+    }
+
+    pub(super) const fn marker(&self) -> FixedRunStateRecordObservation {
+        self.marker
+    }
+
+    pub(super) const fn checkpoint(&self) -> FixedRunStateRecordObservation {
+        self.checkpoint
+    }
+}
+
+impl fmt::Debug for FixedRunStatePairObservation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FixedRunStatePairObservation")
+            .field("marker", &self.marker)
+            .field("checkpoint", &self.checkpoint)
+            .finish()
+    }
 }
 
 /// Installer-recorded identities and service security policy.
@@ -138,11 +237,274 @@ impl HeldServiceRunStateWriter {
         self.inner.retire()?;
         Ok(FailedRunLockRetired { _sealed: () })
     }
+
+    /// Consumes the writer into one exact fixed-pair observation whose hidden
+    /// full identities are retained for the later second CAS.
+    #[allow(clippy::result_large_err)] // Failure retains the complete writer authority.
+    pub(super) fn observe_fixed_pair(
+        self,
+    ) -> Result<ObservedFixedRunStatePair, FixedPairKnownFailure> {
+        match self.inner.observe_fixed_pair() {
+            Ok(inner) => Ok(ObservedFixedRunStatePair { inner }),
+            Err(sys::PairFailure { inner, cause }) => Err(FixedPairKnownFailure { inner, cause }),
+        }
+    }
 }
 
 impl fmt::Debug for HeldServiceRunStateWriter {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("HeldServiceRunStateWriter([REDACTED])")
+    }
+}
+
+/// A move-only fixed-pair observation bound to the exact held writer and IDs.
+#[must_use = "the observed fixed pair must be committed or explicitly retired"]
+pub(super) struct ObservedFixedRunStatePair {
+    inner: sys::ObservedPairWriter,
+}
+
+impl ObservedFixedRunStatePair {
+    pub(super) const fn observation(&self) -> FixedRunStatePairObservation {
+        self.inner.observation()
+    }
+
+    #[allow(clippy::large_types_passed_by_value)] // The exact one-shot candidate is consumed.
+    pub(super) fn compare_and_replace(
+        self,
+        candidate: ExactFixedRunStatePair,
+    ) -> FixedPairCommitOutcome {
+        match self.inner.compare_and_replace(candidate) {
+            sys::PairCommitOutcome::Committed(inner) => {
+                FixedPairCommitOutcome::Committed(FixedPairCommitted { inner })
+            }
+            sys::PairCommitOutcome::KnownNotCommitted(sys::PairFailure { inner, cause }) => {
+                FixedPairCommitOutcome::KnownNotCommitted(FixedPairKnownFailure { inner, cause })
+            }
+            sys::PairCommitOutcome::Ambiguous(inner, cause) => {
+                FixedPairCommitOutcome::Ambiguous(FixedPairAmbiguous { inner, cause })
+            }
+        }
+    }
+
+    pub(super) fn retire(self) -> Result<FailedRunLockRetired, ServiceRunStateError> {
+        self.inner.retire()?;
+        Ok(FailedRunLockRetired { _sealed: () })
+    }
+}
+
+impl fmt::Debug for ObservedFixedRunStatePair {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ObservedFixedRunStatePair([REDACTED])")
+    }
+}
+
+/// Complete consuming commit outcome. No variant exposes a raw file handle.
+#[must_use = "the fixed-pair commit outcome retains writer authority"]
+#[allow(clippy::large_enum_variant)] // Inline move-only authority avoids fallible allocation.
+pub(super) enum FixedPairCommitOutcome {
+    Committed(FixedPairCommitted),
+    KnownNotCommitted(FixedPairKnownFailure),
+    Ambiguous(FixedPairAmbiguous),
+}
+
+impl fmt::Debug for FixedPairCommitOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Committed(_) => formatter.write_str("Committed([REDACTED])"),
+            Self::KnownNotCommitted(failure) => formatter
+                .debug_tuple("KnownNotCommitted")
+                .field(&failure.cause)
+                .finish(),
+            Self::Ambiguous(failure) => formatter
+                .debug_tuple("Ambiguous")
+                .field(&failure.cause)
+                .finish(),
+        }
+    }
+}
+
+/// Both ordered renames and their exact confirmation reopens completed.
+#[must_use = "a committed fixed pair requires an independent reread or retirement"]
+pub(super) struct FixedPairCommitted {
+    inner: sys::CommittedPairWriter,
+}
+
+impl FixedPairCommitted {
+    pub(super) const fn candidate(&self) -> ExactFixedRunStatePair {
+        self.inner.candidate()
+    }
+
+    #[allow(clippy::result_large_err)] // Ambiguity retains the complete writer authority.
+    pub(super) fn reread(self) -> Result<FixedPairReread, FixedPairAmbiguous> {
+        match self.inner.reread() {
+            Ok(inner) => Ok(FixedPairReread { inner }),
+            Err((inner, cause)) => Err(FixedPairAmbiguous { inner, cause }),
+        }
+    }
+
+    pub(super) fn retire(self) -> Result<FailedRunLockRetired, ServiceRunStateError> {
+        self.inner.retire()?;
+        Ok(FailedRunLockRetired { _sealed: () })
+    }
+}
+
+impl fmt::Debug for FixedPairCommitted {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("FixedPairCommitted([REDACTED])")
+    }
+}
+
+/// Independent exact reread after a confirmed ordered pair commit.
+#[must_use = "the reread fixed pair retains writer authority"]
+pub(super) struct FixedPairReread {
+    inner: sys::RereadPairWriter,
+}
+
+impl FixedPairReread {
+    pub(super) const fn observation(&self) -> FixedRunStatePairObservation {
+        self.inner.observation()
+    }
+
+    #[cfg(test)]
+    pub(super) fn into_writer(self) -> HeldServiceRunStateWriter {
+        HeldServiceRunStateWriter {
+            inner: self.inner.into_writer(),
+        }
+    }
+
+    pub(super) fn retire(self) -> Result<FailedRunLockRetired, ServiceRunStateError> {
+        self.inner.retire()?;
+        Ok(FailedRunLockRetired { _sealed: () })
+    }
+}
+
+impl fmt::Debug for FixedPairReread {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("FixedPairReread([REDACTED])")
+    }
+}
+
+/// Terminal pre-first-rename failure retaining the exact writer.
+#[must_use = "a known fixed-pair failure must be explicitly retired"]
+pub(super) struct FixedPairKnownFailure {
+    inner: sys::HeldWriter,
+    cause: ServiceRunStateError,
+}
+
+impl FixedPairKnownFailure {
+    pub(super) const fn cause(&self) -> ServiceRunStateError {
+        self.cause
+    }
+
+    pub(super) fn retire(self) -> Result<FailedRunLockRetired, ServiceRunStateError> {
+        self.inner.retire()?;
+        Ok(FailedRunLockRetired { _sealed: () })
+    }
+}
+
+impl fmt::Debug for FixedPairKnownFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FixedPairKnownFailure")
+            .field("cause", &self.cause)
+            .field("authority", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+/// First-rename-onward ambiguity retaining mandatory reload/retire authority.
+#[must_use = "an ambiguous fixed-pair commit must be reloaded or retired"]
+pub(super) struct FixedPairAmbiguous {
+    inner: sys::AmbiguousPairWriter,
+    cause: ServiceRunStateError,
+}
+
+impl FixedPairAmbiguous {
+    pub(super) const fn cause(&self) -> ServiceRunStateError {
+        self.cause
+    }
+
+    #[allow(clippy::result_large_err)] // Failure retains the complete writer authority.
+    pub(super) fn reload(self) -> Result<FixedPairReloaded, FixedPairReloadFailure> {
+        match self.inner.reload() {
+            Ok(inner) => Ok(FixedPairReloaded { inner }),
+            Err(sys::AmbiguousPairFailure { inner, cause }) => {
+                Err(FixedPairReloadFailure { inner, cause })
+            }
+        }
+    }
+
+    pub(super) fn retire(self) -> Result<FailedRunLockRetired, ServiceRunStateError> {
+        self.inner.retire()?;
+        Ok(FailedRunLockRetired { _sealed: () })
+    }
+}
+
+/// Reload failure that remains first-rename-onward ambiguous and can only retire.
+#[must_use = "an ambiguous reload failure must be explicitly retired"]
+pub(super) struct FixedPairReloadFailure {
+    inner: sys::AmbiguousPairWriter,
+    cause: ServiceRunStateError,
+}
+
+impl FixedPairReloadFailure {
+    pub(super) const fn cause(&self) -> ServiceRunStateError {
+        self.cause
+    }
+
+    pub(super) fn retire(self) -> Result<FailedRunLockRetired, ServiceRunStateError> {
+        self.inner.retire()?;
+        Ok(FailedRunLockRetired { _sealed: () })
+    }
+}
+
+impl fmt::Debug for FixedPairReloadFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FixedPairReloadFailure")
+            .field("cause", &self.cause)
+            .field("authority", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for FixedPairAmbiguous {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FixedPairAmbiguous")
+            .field("cause", &self.cause)
+            .field("authority", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Exact final observation obtained only through an ambiguity reload.
+#[must_use = "the reloaded fixed pair retains writer authority"]
+pub(super) struct FixedPairReloaded {
+    inner: sys::ReloadedPairWriter,
+}
+
+impl FixedPairReloaded {
+    pub(super) const fn observation(&self) -> FixedRunStatePairObservation {
+        self.inner.observation()
+    }
+
+    #[cfg(test)]
+    pub(super) fn into_writer(self) -> HeldServiceRunStateWriter {
+        HeldServiceRunStateWriter {
+            inner: self.inner.into_writer(),
+        }
+    }
+
+    pub(super) fn retire(self) -> Result<FailedRunLockRetired, ServiceRunStateError> {
+        self.inner.retire()?;
+        Ok(FailedRunLockRetired { _sealed: () })
+    }
+}
+
+impl fmt::Debug for FixedPairReloaded {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("FixedPairReloaded([REDACTED])")
     }
 }
 
