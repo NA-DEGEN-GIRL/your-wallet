@@ -1,10 +1,11 @@
-//! Fail-closed lifecycle for the debug-only Key Agent status RPC server.
+//! Fail-closed lifecycle for the dormant Key Agent status RPC server.
 //!
-//! This module owns ordering and lifetime only. Authentication decisions,
-//! epoch contents, request dispatch, and the concrete Windows calls remain in
-//! sibling modules. Once an interface may be reachable, an abandoned or
-//! failed lifecycle intentionally retains its RPC context and endpoint
-//! security descriptor until process exit.
+//! The mechanics are Windows production-compiled, but no default or release
+//! entrypoint constructs them. This module owns ordering and lifetime only.
+//! Authentication decisions, epoch contents, request dispatch, and concrete
+//! Windows calls remain in sibling modules. Once an interface may be reachable,
+//! an abandoned or failed lifecycle intentionally retains its RPC context and
+//! endpoint security descriptor until process exit.
 
 #![deny(unsafe_code)]
 
@@ -478,20 +479,74 @@ where
         self.admission_open
     }
 
-    pub(crate) fn stop_and_drain(mut self) -> Result<(), StopFailure<O, H>> {
-        let resources = match self.resources.take() {
-            Some(resources) => ManuallyDrop::into_inner(resources),
-            None => std::process::abort(),
+    pub(crate) fn close_admission(mut self) -> AdmissionClosedStatusRpcServer<O, H> {
+        let Some(mut resources) = self.resources.take() else {
+            std::process::abort();
         };
+        resources.hooks.set_admission(false);
         self.admission_open = false;
 
-        match drain_resources(resources) {
+        AdmissionClosedStatusRpcServer {
+            resources: Some(resources),
+        }
+    }
+}
+
+/// Listening status server whose admission gate has been irreversibly closed.
+///
+/// Dropping this state invalidates non-durable epochs but deliberately retains
+/// every RPC-owned resource. Only [`Self::drain`] may prove rundown and release.
+#[must_use]
+pub(crate) struct AdmissionClosedStatusRpcServer<O, H>
+where
+    O: RpcOps,
+    H: LifecycleHooks,
+{
+    resources: Option<ManuallyDrop<RpcResources<O, H>>>,
+}
+
+impl<O, H> AdmissionClosedStatusRpcServer<O, H>
+where
+    O: RpcOps,
+    H: LifecycleHooks,
+{
+    pub(crate) fn drain(mut self) -> Result<(), StopFailure<O, H>> {
+        let Some(resources) = self.resources.take() else {
+            std::process::abort();
+        };
+        let resources = ManuallyDrop::into_inner(resources);
+
+        match drain_closed_resources(resources) {
             Ok(()) => Ok(()),
             Err((report, retained_resources)) => Err(StopFailure {
                 report,
                 retained_resources,
             }),
         }
+    }
+}
+
+impl<O, H> fmt::Debug for AdmissionClosedStatusRpcServer<O, H>
+where
+    O: RpcOps,
+    H: LifecycleHooks,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AdmissionClosedStatusRpcServer(..)")
+    }
+}
+
+impl<O, H> Drop for AdmissionClosedStatusRpcServer<O, H>
+where
+    O: RpcOps,
+    H: LifecycleHooks,
+{
+    fn drop(&mut self) {
+        let Some(resources) = self.resources.as_mut() else {
+            return;
+        };
+        resources.hooks.invalidate_epochs();
+        // The `ManuallyDrop` deliberately retains every RPC-owned resource.
     }
 }
 
@@ -538,6 +593,14 @@ where
     H: LifecycleHooks,
 {
     resources.hooks.set_admission(false);
+    drain_closed_resources(resources)
+}
+
+fn drain_closed_resources<O, H>(mut resources: RpcResources<O, H>) -> DrainResult<O, H>
+where
+    O: RpcOps,
+    H: LifecycleHooks,
+{
     resources.hooks.invalidate_epochs();
 
     if let Err(error) = resources.ops.stop_server_listening() {
@@ -900,7 +963,10 @@ mod tests {
         server.enable_admission_after_scm_running();
         server.enable_admission_after_scm_running();
         assert!(server.is_admitting());
-        assert!(server.stop_and_drain().is_ok());
+        let server = server.close_admission();
+        assert_eq!(log.borrow().last(), Some(&Event::Admission(false)));
+        assert!(!log.borrow().contains(&Event::InvalidateEpochs));
+        assert!(server.drain().is_ok());
         assert_eq!(
             &log.borrow()[6..],
             [
@@ -1028,7 +1094,7 @@ mod tests {
         let Ok(server) = prepared.start() else {
             unreachable!("stop failure fixture must start")
         };
-        let error = take_stop_error(server.stop_and_drain());
+        let error = take_stop_error(server.close_admission().drain());
         assert_eq!(error.report().stage(), DrainStage::StopListening);
         assert_eq!(
             error.report().secondary(),
@@ -1072,7 +1138,7 @@ mod tests {
                 unreachable!("drain failure fixture must start")
             };
             server.enable_admission_after_scm_running();
-            let error = take_stop_error(server.stop_and_drain());
+            let error = take_stop_error(server.close_admission().drain());
             assert_eq!(error.report().stage(), expected_stage);
             assert_eq!(error.report().error(), &FakeError(failure));
             assert!(error.resources_are_retained());
@@ -1108,7 +1174,7 @@ mod tests {
         let Ok(server) = prepared.start() else {
             unreachable!("double drain failure fixture must start")
         };
-        let error = take_stop_error(server.stop_and_drain());
+        let error = take_stop_error(server.close_admission().drain());
         assert_eq!(error.report().stage(), DrainStage::UnregisterInterface);
         assert_eq!(
             error.report().secondary(),
@@ -1121,8 +1187,8 @@ mod tests {
 
     #[test]
     fn dropping_live_server_closes_admission_invalidates_and_retains_resources() {
-        let (prepared, log) = prepared(&[]);
-        let Ok(mut server) = prepared.start() else {
+        let (live_prepared, log) = prepared(&[]);
+        let Ok(mut server) = live_prepared.start() else {
             unreachable!("drop fixture must start")
         };
         server.enable_admission_after_scm_running();
@@ -1132,6 +1198,19 @@ mod tests {
             &events[events.len() - 2..],
             [Event::Admission(false), Event::InvalidateEpochs]
         );
+        assert!(!events.iter().any(|event| matches!(event, Event::Drop(_))));
+        drop(events);
+
+        let (closed_prepared, closed_log) = prepared(&[]);
+        let Ok(server) = closed_prepared.start() else {
+            unreachable!("closed drop fixture must start")
+        };
+        let server = server.close_admission();
+        assert_eq!(closed_log.borrow().last(), Some(&Event::Admission(false)));
+        assert!(!closed_log.borrow().contains(&Event::InvalidateEpochs));
+        drop(server);
+        let events = closed_log.borrow();
+        assert_eq!(events.last(), Some(&Event::InvalidateEpochs));
         assert!(!events.iter().any(|event| matches!(event, Event::Drop(_))));
     }
 }

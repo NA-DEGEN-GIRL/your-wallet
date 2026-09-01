@@ -188,15 +188,12 @@ mod key_agent_service_launch;
     debug_assertions
 ))]
 mod key_agent_service_token;
-// The local-RPC module is present only in the exact debug feasibility build. V1
-// exposes Status/Unavailable; the LPAC feature adds role-aware V2 desktop/helper
-// routing and bounded probe coordination. Neither supplies production Broker,
-// signed-helper, wallet, or signing authority.
-#[cfg(all(
-    windows,
-    feature = "key-agent-service-rpc-status-feasibility-test-hook",
-    debug_assertions
-))]
+// The local-RPC mechanics are production-compiled for the dormant Windows
+// lifecycle-effect adapter. No default or release entrypoint constructs its
+// source or starts the server. The explicit debug feasibility features remain
+// the only executable probes; LPAC additionally enables role-aware V2 routing.
+#[cfg(windows)]
+#[allow(dead_code)]
 mod key_agent_service_rpc;
 // Held existing-install adoption bookends the pure authenticated-snapshot
 // matcher with exact root/profile-binding revalidation. Its compiled dormant

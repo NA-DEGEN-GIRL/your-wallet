@@ -2055,6 +2055,71 @@ crash/power-loss/reboot reconciliation remain external **STOP-SHIP** obligations
 Both compiled policies stay `None`; ordinary/release execution still uses the
 existing silent exit-78 path, and no Phase 2G typestate calls `process::exit`.
 
+**Current Phase 2H status: started, not passed.** Phase 2H adds a dormant,
+production-compiled Windows adapter for the six Phase 2G leaf effects without
+making the compositor executable-reachable. The Windows RPC module now compiles
+in ordinary Windows library builds, and `key-agent-service-rpc-sys` plus
+`key-agent-service-wire` are nonoptional `platform-windows` dependencies. This
+is compile-time availability of RPC and SCM mechanics, not activation: the
+debug feasibility features remain the only executable probes.
+
+`WindowsServiceEffectSource` is move-only, single-use, and Debug-redacted. Its
+only production constructor consumes one sealed `WindowsScmStatusAuthority`,
+whose registered `SERVICE_STATUS_HANDLE` has no raw accessor and whose sole mint
+is private to the SCM registration boundary. Consuming the source allocates one
+opaque lifecycle binding and installs `WindowsServiceEffectBackend` as the
+sealed backend. That backend is an exact 8-stage automaton: six ordered live
+stages for listener preparation, `SCM_RUNNING`, admission open, admission close,
+listener drain, and `SCM_STOPPED`, followed by `Stopped` or fail-closed
+`Terminal`. Each successful leaf still returns the Phase 2G receipt bound to the
+exact lifecycle, nonzero attempt, and purpose; the adapter does not add a second
+effect authority or a bypass around the existing compositor.
+
+The production listener is the already implemented status RPC worker. Listener
+startup reports `KnownNotApplied` only when startup proves that resources were
+released; a retained runtime maps to `Ambiguous`. `SCM_RUNNING` and
+`SCM_STOPPED` publication failures are ambiguous. Admission may open only while
+the exact registered invocation is `SERVICE_RUNNING` and no stop, control
+failure, or finalization is latched; that predicate and `begin_accepting` run
+while the same `CONTROL_CONTEXT` lock is held. A failed admission-open attempt
+retains an admission-closed worker and is ambiguous. The consuming
+`close_admission` transition only closes admission. It must produce the
+admission-closed typestate before `AdmissionClosedStatusRpcWorker::drain` may
+invalidate epochs, stop listening, unregister with waiting enabled, wait for
+rundown, and release resources. Any unproved rundown retains the RPC resources
+and maps to `Ambiguous`. The final `SCM_STOPPED` transition terminalizes the
+shared control context under that same lock before calling `SetServiceStatus`,
+so a concurrent control callback cannot publish a later `STOP_PENDING`; a send
+failure therefore remains terminal and ambiguous rather than restoring status
+authority.
+
+The existing Phase 2G compositor inventory remains exactly 22/22. Phase 2H adds
+a separate 9/9 `windows_service_effects` inventory:
+`production_effect_source_is_single_use_redacted_and_resource_opaque`,
+`production_effect_backend_success_has_exact_six_stage_order`,
+`listener_prepare_failure_distinguishes_unapplied_from_ambiguous`,
+`scm_running_failure_never_opens_admission`,
+`admission_open_failure_retains_closed_listener_and_effect_authority`,
+`admission_close_precedes_epoch_invalidation_and_listener_drain`,
+`listener_drain_failure_never_claims_clean_or_writer_release`,
+`scm_stopped_failure_after_writer_release_retains_both_terminal_evidences`, and
+`default_and_release_service_remain_silent_exit78_without_durable_provider`.
+These fixtures replace only the leaf driver and exercise the same consuming
+service-effect state machine; they do not call process-global RPC or SCM.
+
+`WindowsServiceEffectSource::new`, the registered SCM authority mint, a real
+durable run-state provider source, `begin_windows_lifecycle`, and every
+executable or top-level production composition each still have zero production
+call sites. Default and release service execution therefore remains silent exit
+78, and both `COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY` remain
+`None`. External SCM registration/source mint composition, elevated installer
+and service-SID provisioning, a real protected durable provider and rollback
+anchor, trusted production Broker/service-peer authentication and mapped-I/O/
+peer-race proof, crash/power-loss/reboot reconciliation, TPM/authentication-key
+custody, supported-kernel matrices, signed immutable artifacts, and release
+evidence all remain **STOP-SHIP**. Phase 2H does not pass Phase 1, Phase 2, or
+the product release gate.
+
 ### Phase 3 – Authenticated Broker and helper runtime
 
 Add the bounded Broker control protocol, exact request admission, service-owned
@@ -2144,6 +2209,20 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-09-01 - Added the dormant Phase 2H production lifecycle-effects adapter.
+  Windows ordinary builds now compile the SCM/status-RPC mechanics with
+  nonoptional RPC dependencies. A move-only, single-use, redacted
+  `WindowsServiceEffectSource` seals registered SCM authority into the exact
+  8-stage `WindowsServiceEffectBackend`; its six leaf effects enforce
+  `SCM_RUNNING` before admission, consuming `close_admission` before
+  `AdmissionClosedStatusRpcWorker::drain`, and terminalize `SCM_STOPPED` under
+  `CONTROL_CONTEXT` before the native send. The Phase 2G inventory remains
+  22/22 and a separate Phase 2H service-effect inventory is 9/9. Production
+  source mint, durable provider, lifecycle/executable callers, installer and
+  service-SID composition, TPM/authentication, crash/power/reboot,
+  supported-kernel, signed-artifact, and release evidence remain absent;
+  policies stay `None`, default/release stays silent exit 78, and Phase 2H is
+  started but not passed.
 - 2026-09-01 - Replaced the legacy direct-key and parallel installation/key
   surfaces with the H1/H2 sealed run-state authentication model. The exact
   installation-bound provider has an uninhabited production backend and zero

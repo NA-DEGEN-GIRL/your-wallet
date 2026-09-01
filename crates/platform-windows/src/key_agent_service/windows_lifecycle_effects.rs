@@ -1,16 +1,19 @@
 //! Sealed local effects for the dormant Windows lifecycle compositor.
 //!
-//! Production deliberately has no backend source or constructor yet. The
-//! owned backend is uninhabited outside tests, so lifecycle effect evidence can
-//! be carried without a backend lifetime while remaining safely unmintable.
+//! The production-compiled service backend remains unreachable from an
+//! executable or durable provider. Its move-only source can only bind the exact
+//! listener/SCM/admission resources supplied by the sibling service adapter.
 
 #[cfg(not(test))]
 use core::convert::Infallible;
 use core::fmt;
 use std::num::NonZeroU64;
-
-#[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
+
+#[path = "windows_service_effects.rs"]
+mod windows_service_effects;
+
+use self::windows_service_effects::WindowsServiceEffectBackend;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::key_agent_service) enum WindowsLifecycleEffectStage {
@@ -104,13 +107,38 @@ enum BackendEffectOutcome {
     Receipt(EffectReceipt),
     KnownNotApplied,
     Ambiguous,
+    InvalidReceipt,
 }
 
 enum SealedWindowsLifecycleEffectBackend {
+    Service(WindowsServiceEffectBackend),
     #[cfg(test)]
     Fixture(FixtureWindowsLifecycleEffectBackend),
     #[cfg(not(test))]
     Unavailable(Infallible),
+}
+
+impl SealedWindowsLifecycleEffectBackend {
+    fn execute(
+        self,
+        binding: WindowsLifecycleEffectBinding,
+        attempt: NonZeroU64,
+        purpose: EffectPurpose,
+    ) -> (Self, BackendEffectOutcome) {
+        match self {
+            Self::Service(backend) => {
+                let (backend, outcome) = backend.execute(binding, attempt, purpose);
+                (Self::Service(backend), outcome)
+            }
+            #[cfg(test)]
+            Self::Fixture(mut backend) => {
+                let outcome = backend.execute(binding, attempt, purpose);
+                (Self::Fixture(backend), outcome)
+            }
+            #[cfg(not(test))]
+            Self::Unavailable(never) => match never {},
+        }
+    }
 }
 
 #[cfg(test)]
@@ -197,48 +225,49 @@ struct EffectCore {
 }
 
 impl EffectCore {
-    #[cfg(test)]
-    fn execute(mut self, purpose: EffectPurpose) -> Result<Self, WindowsLifecycleEffectFailure> {
-        let outcome = match &mut self.backend {
-            SealedWindowsLifecycleEffectBackend::Fixture(backend) => {
-                backend.execute(self.binding, self.next_attempt, purpose)
-            }
+    fn execute(self, purpose: EffectPurpose) -> Result<Self, WindowsLifecycleEffectFailure> {
+        let Self {
+            binding,
+            next_attempt,
+            backend,
+        } = self;
+        let (backend, outcome) = backend.execute(binding, next_attempt, purpose);
+        let mut core = Self {
+            binding,
+            next_attempt,
+            backend,
         };
         match outcome {
             BackendEffectOutcome::KnownNotApplied => {
-                Err(self.fail(purpose, WindowsLifecycleEffectDisposition::KnownNotApplied))
+                Err(core.fail(purpose, WindowsLifecycleEffectDisposition::KnownNotApplied))
             }
             BackendEffectOutcome::Ambiguous => {
-                Err(self.fail(purpose, WindowsLifecycleEffectDisposition::Ambiguous))
+                Err(core.fail(purpose, WindowsLifecycleEffectDisposition::Ambiguous))
+            }
+            BackendEffectOutcome::InvalidReceipt => {
+                Err(core.fail(purpose, WindowsLifecycleEffectDisposition::InvalidReceipt))
             }
             BackendEffectOutcome::Receipt(receipt)
-                if receipt.binding != self.binding
-                    || receipt.attempt != self.next_attempt
+                if receipt.binding != core.binding
+                    || receipt.attempt != core.next_attempt
                     || receipt.purpose != purpose =>
             {
-                Err(self.fail(purpose, WindowsLifecycleEffectDisposition::InvalidReceipt))
+                Err(core.fail(purpose, WindowsLifecycleEffectDisposition::InvalidReceipt))
             }
             BackendEffectOutcome::Receipt(_) => {
-                let Some(next) = self
+                let Some(next) = core
                     .next_attempt
                     .get()
                     .checked_add(1)
                     .and_then(NonZeroU64::new)
                 else {
                     return Err(
-                        self.fail(purpose, WindowsLifecycleEffectDisposition::InvalidReceipt)
+                        core.fail(purpose, WindowsLifecycleEffectDisposition::InvalidReceipt)
                     );
                 };
-                self.next_attempt = next;
-                Ok(self)
+                core.next_attempt = next;
+                Ok(core)
             }
-        }
-    }
-
-    #[cfg(not(test))]
-    fn execute(self, _purpose: EffectPurpose) -> Result<Self, WindowsLifecycleEffectFailure> {
-        match self.backend {
-            SealedWindowsLifecycleEffectBackend::Unavailable(never) => match never {},
         }
     }
 
@@ -554,18 +583,19 @@ impl fmt::Display for WindowsLifecycleEffectFixtureError {
 #[cfg(test)]
 impl std::error::Error for WindowsLifecycleEffectFixtureError {}
 
-#[cfg(test)]
-static NEXT_FIXTURE_BINDING: AtomicU64 = AtomicU64::new(1);
+static NEXT_EFFECT_BINDING: AtomicU64 = AtomicU64::new(1);
+
+fn allocate_effect_binding() -> Option<WindowsLifecycleEffectBinding> {
+    let value = NEXT_EFFECT_BINDING
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .ok()?;
+    NonZeroU64::new(value).map(WindowsLifecycleEffectBinding)
+}
 
 #[cfg(test)]
 fn allocate_fixture_binding()
 -> Result<WindowsLifecycleEffectBinding, WindowsLifecycleEffectFixtureError> {
-    let value = NEXT_FIXTURE_BINDING
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-            current.checked_add(1)
-        })
-        .map_err(|_| WindowsLifecycleEffectFixtureError::BindingExhausted)?;
-    NonZeroU64::new(value)
-        .map(WindowsLifecycleEffectBinding)
-        .ok_or(WindowsLifecycleEffectFixtureError::BindingExhausted)
+    allocate_effect_binding().ok_or(WindowsLifecycleEffectFixtureError::BindingExhausted)
 }

@@ -1,17 +1,18 @@
-//! Fixed-name Windows SCM feasibility host.
+//! Fixed-name dormant Windows SCM host and feasibility entrypoints.
 //!
 //! This module deliberately contains no wallet state, secret, or signing
-//! transition. Its inert lifecycle, bounded status RPC, and restricted-token
-//! helper-launch probe are compiled only for Windows debug builds with their
-//! exact feasibility features. Every other build fails closed before touching
-//! SCM; the helper-launch probe remains feasibility evidence, not production
-//! authorization or installer provenance.
+//! transition. The SCM/status mechanics are Windows production-compiled for a
+//! sealed lifecycle-effect adapter with no executable caller. Inert lifecycle,
+//! restricted-token, and helper-launch dispatchers remain available only to
+//! their exact debug features; default and release entrypoints fail closed
+//! before touching SCM. Those probes remain feasibility evidence, not
+//! production authorization or installer provenance.
 
 use thiserror::Error;
 
 // Production-compiled private lifecycle, durable-run-state, provisioning,
 // lease-first runtime-boot, held run-state-root, and dormant Windows lifecycle
-// composition models through Phase 2G. They have no executable/top-level
+// composition models through Phase 2H. They have no executable/top-level
 // caller, production key source, or installer authority mint in this module.
 #[allow(dead_code)]
 mod durable_run_state;
@@ -29,6 +30,10 @@ mod run_state_root;
 
 /// Fixed SCM service name selected by ADR 0001.
 pub const KEY_AGENT_SERVICE_NAME: &str = "YourWalletKeyAgent";
+
+#[cfg(windows)]
+#[cfg_attr(test, allow(unused_imports))]
+pub(in crate::key_agent_service) use sys::WindowsScmStatusAuthority;
 
 /// Failure returned by the inert SCM feasibility facade.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -171,19 +176,9 @@ pub fn run_lpac_rpc_probe_key_agent_service_fixture() -> Result<(), KeyAgentServ
     }
 }
 
-#[cfg(all(
-    windows,
-    any(
-        feature = "key-agent-service-scm-feasibility-test-hook",
-        feature = "key-agent-service-token-feasibility-test-hook",
-        feature = "key-agent-service-rpc-status-feasibility-test-hook",
-        feature = "key-agent-service-lpac-launch-feasibility-test-hook"
-    ),
-    debug_assertions
-))]
+#[cfg(windows)]
+#[allow(dead_code, unsafe_code)]
 mod sys {
-    #![allow(unsafe_code)]
-
     use core::ffi::c_void;
     use core::ptr;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -332,12 +327,72 @@ mod sys {
         BoundaryFailure,
     }
 
+    #[derive(Clone, Copy)]
+    enum AuthoritativeStatus {
+        Running,
+        Stopped,
+    }
+
+    /// Move-only authority for publishing this registered service invocation's
+    /// lifecycle status through SCM.
+    ///
+    /// The registration handle is private to this native boundary. Diagnostics
+    /// never expose it, and `bind_registered_status` is the sole mint.
+    #[must_use = "the SCM status authority must remain attached to its lifecycle effects"]
+    pub(in crate::key_agent_service) struct WindowsScmStatusAuthority {
+        status_handle: usize,
+    }
+
+    impl WindowsScmStatusAuthority {
+        fn bind_registered_status(status_handle: SERVICE_STATUS_HANDLE) -> Self {
+            Self {
+                status_handle: status_handle.0 as usize,
+            }
+        }
+
+        /// Publishes `SERVICE_RUNNING` for the exact registered service invocation.
+        pub(in crate::key_agent_service) fn publish_running(&mut self) -> bool {
+            publish_authoritative_status(self.status_handle, AuthoritativeStatus::Running)
+        }
+
+        /// Runs one admission-open transition only while this exact invocation
+        /// remains authoritatively running and no stop or failure is latched.
+        pub(in crate::key_agent_service) fn with_running_admission_gate<R>(
+            &mut self,
+            operation: impl FnOnce() -> R,
+        ) -> Option<R> {
+            with_authoritative_running_admission_gate(self.status_handle, operation)
+        }
+
+        /// Publishes `SERVICE_STOPPED` for the exact registered service invocation.
+        pub(in crate::key_agent_service) fn publish_stopped(&mut self) -> bool {
+            let published =
+                publish_authoritative_status(self.status_handle, AuthoritativeStatus::Stopped);
+            if published {
+                self.status_handle = 0;
+            }
+            published
+        }
+    }
+
+    impl core::fmt::Debug for WindowsScmStatusAuthority {
+        fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            formatter.write_str("WindowsScmStatusAuthority([REDACTED])")
+        }
+    }
+
     trait ScmWorker: Sized {
+        type AdmissionClosed: AdmissionClosedScmWorker;
+
         fn start() -> Result<Self, WorkerStartFailure>;
 
         fn begin_accepting(&mut self) -> Result<(), KeyAgentServiceFixtureError>;
 
-        fn stop_and_drain(self) -> Result<(), KeyAgentServiceFixtureError>;
+        fn close_admission(self) -> Self::AdmissionClosed;
+    }
+
+    trait AdmissionClosedScmWorker: Sized {
+        fn drain(self) -> Result<(), KeyAgentServiceFixtureError>;
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -377,7 +432,11 @@ mod sys {
 
     struct InertWorker;
 
+    struct AdmissionClosedInertWorker;
+
     impl ScmWorker for InertWorker {
+        type AdmissionClosed = AdmissionClosedInertWorker;
+
         fn start() -> Result<Self, WorkerStartFailure> {
             Ok(Self)
         }
@@ -386,21 +445,43 @@ mod sys {
             Ok(())
         }
 
-        fn stop_and_drain(self) -> Result<(), KeyAgentServiceFixtureError> {
+        fn close_admission(self) -> Self::AdmissionClosed {
+            AdmissionClosedInertWorker
+        }
+    }
+
+    impl AdmissionClosedScmWorker for AdmissionClosedInertWorker {
+        fn drain(self) -> Result<(), KeyAgentServiceFixtureError> {
             Ok(())
         }
     }
 
-    #[cfg(feature = "key-agent-service-token-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-token-feasibility-test-hook",
+        debug_assertions
+    ))]
     struct ServiceTokenWorker {
-        _proof: crate::key_agent_service_token::ServiceTokenFixtureProof,
+        proof: crate::key_agent_service_token::ServiceTokenFixtureProof,
     }
 
-    #[cfg(feature = "key-agent-service-token-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-token-feasibility-test-hook",
+        debug_assertions
+    ))]
+    struct AdmissionClosedServiceTokenWorker {
+        proof: crate::key_agent_service_token::ServiceTokenFixtureProof,
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-token-feasibility-test-hook",
+        debug_assertions
+    ))]
     impl ScmWorker for ServiceTokenWorker {
+        type AdmissionClosed = AdmissionClosedServiceTokenWorker;
+
         fn start() -> Result<Self, WorkerStartFailure> {
             crate::key_agent_service_token::verify_current_key_agent_service_token_fixture()
-                .map(|proof| Self { _proof: proof })
+                .map(|proof| Self { proof })
                 .map_err(|_| WorkerStartFailure::Boundary)
         }
 
@@ -408,7 +489,17 @@ mod sys {
             Ok(())
         }
 
-        fn stop_and_drain(self) -> Result<(), KeyAgentServiceFixtureError> {
+        fn close_admission(self) -> Self::AdmissionClosed {
+            AdmissionClosedServiceTokenWorker { proof: self.proof }
+        }
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-token-feasibility-test-hook",
+        debug_assertions
+    ))]
+    impl AdmissionClosedScmWorker for AdmissionClosedServiceTokenWorker {
+        fn drain(self) -> Result<(), KeyAgentServiceFixtureError> {
             Ok(())
         }
     }
@@ -417,7 +508,14 @@ mod sys {
     struct StatusRpcWorker(crate::key_agent_service_rpc::StatusRpcWorker);
 
     #[cfg(feature = "key-agent-service-rpc-status-feasibility-test-hook")]
+    struct AdmissionClosedStatusRpcWorker(
+        crate::key_agent_service_rpc::AdmissionClosedStatusRpcWorker,
+    );
+
+    #[cfg(feature = "key-agent-service-rpc-status-feasibility-test-hook")]
     impl ScmWorker for StatusRpcWorker {
+        type AdmissionClosed = AdmissionClosedStatusRpcWorker;
+
         fn start() -> Result<Self, WorkerStartFailure> {
             match crate::key_agent_service_rpc::StatusRpcWorker::start() {
                 Ok(worker) => Ok(Self(worker)),
@@ -436,18 +534,41 @@ mod sys {
                 .map_err(|_| KeyAgentServiceFixtureError::OperatingSystemBoundary)
         }
 
-        fn stop_and_drain(self) -> Result<(), KeyAgentServiceFixtureError> {
+        fn close_admission(self) -> Self::AdmissionClosed {
+            AdmissionClosedStatusRpcWorker(self.0.close_admission())
+        }
+    }
+
+    #[cfg(feature = "key-agent-service-rpc-status-feasibility-test-hook")]
+    impl AdmissionClosedScmWorker for AdmissionClosedStatusRpcWorker {
+        fn drain(self) -> Result<(), KeyAgentServiceFixtureError> {
             self.0
-                .stop_and_drain()
+                .drain()
                 .map_err(|_| KeyAgentServiceFixtureError::OperatingSystemBoundary)
         }
     }
 
-    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
     struct LpacRpcProbeWorker(crate::key_agent_service_rpc::StatusRpcWorker);
 
-    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    struct AdmissionClosedLpacRpcProbeWorker(
+        crate::key_agent_service_rpc::AdmissionClosedStatusRpcWorker,
+    );
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
     impl ScmWorker for LpacRpcProbeWorker {
+        type AdmissionClosed = AdmissionClosedLpacRpcProbeWorker;
+
         fn start() -> Result<Self, WorkerStartFailure> {
             let service_token =
                 crate::key_agent_service_token::verify_current_key_agent_service_token_fixture()
@@ -470,9 +591,19 @@ mod sys {
                 .map_err(|_| KeyAgentServiceFixtureError::OperatingSystemBoundary)
         }
 
-        fn stop_and_drain(self) -> Result<(), KeyAgentServiceFixtureError> {
+        fn close_admission(self) -> Self::AdmissionClosed {
+            AdmissionClosedLpacRpcProbeWorker(self.0.close_admission())
+        }
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    impl AdmissionClosedScmWorker for AdmissionClosedLpacRpcProbeWorker {
+        fn drain(self) -> Result<(), KeyAgentServiceFixtureError> {
             self.0
-                .stop_and_drain()
+                .drain()
                 .map_err(|_| KeyAgentServiceFixtureError::OperatingSystemBoundary)
         }
     }
@@ -481,7 +612,10 @@ mod sys {
         run_dispatcher_with(service_main)
     }
 
-    #[cfg(feature = "key-agent-service-token-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-token-feasibility-test-hook",
+        debug_assertions
+    ))]
     pub(super) fn run_service_token_dispatcher() -> Result<(), KeyAgentServiceFixtureError> {
         run_dispatcher_with(service_token_service_main)
     }
@@ -491,7 +625,10 @@ mod sys {
         run_dispatcher_with(status_rpc_service_main)
     }
 
-    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
     pub(super) fn run_lpac_rpc_probe_dispatcher() -> Result<(), KeyAgentServiceFixtureError> {
         run_dispatcher_with(lpac_rpc_probe_service_main)
     }
@@ -532,7 +669,10 @@ mod sys {
         service_main_impl::<InertWorker>();
     }
 
-    #[cfg(feature = "key-agent-service-token-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-token-feasibility-test-hook",
+        debug_assertions
+    ))]
     unsafe extern "system" fn service_token_service_main(
         _argument_count: u32,
         _arguments: *mut PWSTR,
@@ -548,7 +688,10 @@ mod sys {
         service_main_impl::<StatusRpcWorker>();
     }
 
-    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
     unsafe extern "system" fn lpac_rpc_probe_service_main(
         _argument_count: u32,
         _arguments: *mut PWSTR,
@@ -811,23 +954,27 @@ mod sys {
             context.unpublish_stop_event();
         }
 
-        let (worker_failed, progress_failed) = match worker {
+        // Admission is closed by a consuming transition before the progress
+        // reporter or any potentially blocking drain begins. The live worker
+        // can never be recovered after this point.
+        let admission_closed_worker = worker.map(ScmWorker::close_admission);
+        let (drain_failed, progress_failed) = match admission_closed_worker {
             None => (false, false),
             Some(worker) => {
                 if let Ok(reporter) = StopProgressReporter::start() {
-                    let worker_failed = worker.stop_and_drain().is_err();
+                    let drain_failed = worker.drain().is_err();
                     let progress_failed = reporter.finish().is_err();
-                    (worker_failed, progress_failed)
+                    (drain_failed, progress_failed)
                 } else {
-                    // Dropping a live RPC worker retains its runtime-owned
-                    // state. Without a progress/deadline thread a clean stop
-                    // cannot be claimed.
+                    // Dropping an admission-closed RPC worker retains its
+                    // runtime-owned state. Without a progress/deadline thread
+                    // a clean drain cannot be claimed.
                     drop(worker);
                     (true, true)
                 }
             }
         };
-        if worker_failed && failure.is_none() {
+        if drain_failed && failure.is_none() {
             failure = Some(CONTROL_FAILURE);
         }
 
@@ -837,7 +984,7 @@ mod sys {
         let event_close_failed = stop_event
             .map(OwnedEvent::close)
             .is_some_and(|result| result.is_err());
-        if worker_failed || progress_failed || event_close_failed {
+        if drain_failed || progress_failed || event_close_failed {
             let mut context = lock_context();
             context.status_handle = 0;
             context.stop_event = 0;
@@ -957,6 +1104,94 @@ mod sys {
         Ok(())
     }
 
+    fn publish_authoritative_status(
+        expected_status_handle: usize,
+        status: AuthoritativeStatus,
+    ) -> bool {
+        let mut context = lock_context();
+        if expected_status_handle == 0
+            || context.status_handle != expected_status_handle
+            || !authoritative_status_predecessor_is_exact(&context, status)
+        {
+            return false;
+        }
+
+        match status {
+            AuthoritativeStatus::Running => {
+                if publish_status(&mut context, SERVICE_RUNNING, 0, 0, 0).is_err() {
+                    context.control_error = true;
+                    false
+                } else {
+                    true
+                }
+            }
+            AuthoritativeStatus::Stopped => {
+                let final_status = status_value(SERVICE_STOPPED, 0, 0, 0, 0);
+                let status_handle = SERVICE_STATUS_HANDLE(context.status_handle as *mut c_void);
+
+                // Terminalize under the same lock before the final native send
+                // so a concurrent control callback cannot publish STOP_PENDING
+                // after the authoritative STOPPED transition begins.
+                context.status_handle = 0;
+                context.stop_event = 0;
+                context.status = final_status;
+                context.finishing = true;
+
+                if send_status(status_handle, &final_status).is_err() {
+                    context.control_error = true;
+                    false
+                } else {
+                    true
+                }
+            }
+        }
+    }
+
+    fn authoritative_status_predecessor_is_exact(
+        context: &PublishedControlContext,
+        status: AuthoritativeStatus,
+    ) -> bool {
+        match status {
+            AuthoritativeStatus::Running => {
+                context.status.dwCurrentState == SERVICE_START_PENDING
+                    && !context.finishing
+                    && !context.control_error
+                    && !context.stop_requested
+            }
+            AuthoritativeStatus::Stopped => {
+                context.status.dwCurrentState == SERVICE_STOP_PENDING
+                    && !context.control_error
+                    && (context.stop_requested || context.finishing)
+            }
+        }
+    }
+
+    fn with_authoritative_running_admission_gate<R>(
+        expected_status_handle: usize,
+        operation: impl FnOnce() -> R,
+    ) -> Option<R> {
+        let context = lock_context();
+        if !running_admission_gate_is_exact(&context, expected_status_handle) {
+            return None;
+        }
+
+        let result = operation();
+        drop(context);
+        Some(result)
+    }
+
+    fn running_admission_gate_is_exact(
+        context: &PublishedControlContext,
+        expected_status_handle: usize,
+    ) -> bool {
+        expected_status_handle != 0
+            && context.status_handle == expected_status_handle
+            && context.status.dwCurrentState == SERVICE_RUNNING
+            && !context.stop_requested
+            && !context.control_error
+            && !context.finishing
+    }
+
     fn send_status(
         status_handle: SERVICE_STATUS_HANDLE,
         status: &SERVICE_STATUS,
@@ -1041,6 +1276,117 @@ mod sys {
             assert!(WorkerStartFailure::Boundary.permits_stopped_status());
             #[cfg(feature = "key-agent-service-rpc-status-feasibility-test-hook")]
             assert!(!WorkerStartFailure::RuntimeStateRetained.permits_stopped_status());
+        }
+
+        #[test]
+        fn authoritative_status_rejects_wrong_predecessors_and_stop_latched_running() {
+            let mut context = PublishedControlContext {
+                status_handle: 7,
+                stop_event: 11,
+                status: status_value(SERVICE_START_PENDING, 0, 0, 1, 1),
+                stop_requested: false,
+                control_error: false,
+                finishing: false,
+            };
+            assert!(authoritative_status_predecessor_is_exact(
+                &context,
+                AuthoritativeStatus::Running
+            ));
+
+            context.stop_requested = true;
+            assert!(!authoritative_status_predecessor_is_exact(
+                &context,
+                AuthoritativeStatus::Running
+            ));
+            context.stop_requested = false;
+            context.status = status_value(SERVICE_RUNNING, 0, 0, 0, 0);
+            assert!(!authoritative_status_predecessor_is_exact(
+                &context,
+                AuthoritativeStatus::Running
+            ));
+
+            context.status = status_value(SERVICE_STOP_PENDING, 0, 0, 1, 1);
+            assert!(!authoritative_status_predecessor_is_exact(
+                &context,
+                AuthoritativeStatus::Stopped
+            ));
+            context.finishing = true;
+            assert!(authoritative_status_predecessor_is_exact(
+                &context,
+                AuthoritativeStatus::Stopped
+            ));
+            context.control_error = true;
+            assert!(!authoritative_status_predecessor_is_exact(
+                &context,
+                AuthoritativeStatus::Stopped
+            ));
+        }
+
+        #[test]
+        fn running_admission_gate_requires_exact_live_unlatched_context() {
+            let mut context = PublishedControlContext {
+                status_handle: 7,
+                stop_event: 11,
+                status: status_value(SERVICE_RUNNING, 0, 0, 0, 0),
+                stop_requested: false,
+                control_error: false,
+                finishing: false,
+            };
+            assert!(running_admission_gate_is_exact(&context, 7));
+            assert!(!running_admission_gate_is_exact(&context, 0));
+            assert!(!running_admission_gate_is_exact(&context, 8));
+
+            context.stop_requested = true;
+            assert!(!running_admission_gate_is_exact(&context, 7));
+            context.stop_requested = false;
+            context.control_error = true;
+            assert!(!running_admission_gate_is_exact(&context, 7));
+            context.control_error = false;
+            context.finishing = true;
+            assert!(!running_admission_gate_is_exact(&context, 7));
+            context.finishing = false;
+            context.status = status_value(SERVICE_START_PENDING, 0, 0, 1, 1);
+            assert!(!running_admission_gate_is_exact(&context, 7));
+        }
+
+        #[test]
+        fn scm_status_authority_is_sys_sealed_single_mint_and_debug_redacted()
+        -> Result<(), &'static str> {
+            let authority = WindowsScmStatusAuthority::bind_registered_status(
+                SERVICE_STATUS_HANDLE(7_usize as *mut c_void),
+            );
+            assert_eq!(
+                format!("{authority:?}"),
+                "WindowsScmStatusAuthority([REDACTED])"
+            );
+
+            let source = include_str!("key_agent_service.rs");
+            let (parent_source, sys_source) = source
+                .split_once("mod sys {")
+                .ok_or("Windows sys module must remain explicit")?;
+            assert!(parent_source.contains("use sys::WindowsScmStatusAuthority;"));
+            assert!(!parent_source.contains("struct WindowsScmStatusAuthority"));
+            let production_sys = sys_source
+                .split_once("    #[cfg(test)]")
+                .map_or(sys_source, |(production, _tests)| production);
+            assert_eq!(
+                production_sys
+                    .matches("struct WindowsScmStatusAuthority")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                production_sys.matches("fn bind_registered_status(").count(),
+                1
+            );
+            let (_, authority_body) = production_sys
+                .split_once("struct WindowsScmStatusAuthority {")
+                .ok_or("sealed authority declaration must remain in sys")?;
+            let (authority_fields, _) = authority_body
+                .split_once('}')
+                .ok_or("sealed authority declaration must remain bounded")?;
+            assert_eq!(authority_fields.trim(), "status_handle: usize,");
+            Ok(())
         }
 
         #[test]

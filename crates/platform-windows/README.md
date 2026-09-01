@@ -404,6 +404,40 @@ Implemented:
   version, manifest, or immutable-installation proof. Helpers still exit 78 in
   default and release builds, there is no production caller, Phase 1 is not
   passed, and both compiled policies remain `None`.
+
+  **Current Phase 2H status: started, not passed.** The Windows library now
+  production-compiles the dormant status-RPC and SCM mechanics needed by the
+  Phase 2G lifecycle compositor. `key-agent-service-rpc-sys` and
+  `key-agent-service-wire` are nonoptional dependencies, but no default or
+  release entrypoint starts the server. `WindowsServiceEffectSource` is a
+  move-only, single-use, Debug-redacted carrier for one sealed
+  `WindowsScmStatusAuthority`; consuming it installs the exact 8-stage
+  `WindowsServiceEffectBackend`. That backend drives the six leaf effects in
+  order: listener prepare, `SCM_RUNNING`, admission open, admission close,
+  listener drain, and `SCM_STOPPED`, ending only in `Stopped` or fail-closed
+  `Terminal`.
+
+  Admission opening is locked to the exact registered invocation's
+  `SERVICE_RUNNING` state under `CONTROL_CONTEXT`. The consuming
+  `close_admission` transition precedes epoch invalidation and creates the only
+  state on which `AdmissionClosedStatusRpcWorker::drain` is available; drain
+  then stops listening, unregisters with waiting enabled, waits for rundown,
+  and releases resources. Unproved startup/rundown or SCM publication retains
+  authority and is ambiguous. The final status path terminalizes
+  `CONTROL_CONTEXT` before sending `SCM_STOPPED`. Existing Phase 2G compositor
+  tests remain 22/22, with a separate 9/9 service-effect suite.
+
+  `WindowsServiceEffectSource::new`, the registered SCM authority mint, a real
+  durable-provider source, `begin_windows_lifecycle`, and executable/top-level
+  production composition still each have zero production callers. The default
+  and release service therefore remains silent exit 78 and both compiled
+  policies remain `None`. External SCM registration/source mint, elevated
+  installer/service-SID composition, a protected durable provider and rollback
+  anchor, trusted production Broker/service-peer authentication and mapped-I/O/
+  peer-race proof, crash/power/reboot recovery, TPM/authentication-key custody,
+  supported-kernel and signed-artifact evidence, and release activation remain
+  **STOP-SHIP**.
+
   A deadline that observes pending overlapped pipe I/O now treats `CancelIoEx`
   only as a cancellation request. Async `ReadFile`/`WriteFile` receive no byte-
   count output pointer; one raw `*mut OVERLAPPED` established before initiation

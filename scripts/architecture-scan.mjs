@@ -2762,6 +2762,14 @@ const keyAgentServiceWindowsLifecycleEffectsProduction =
   keyAgentServicePhaseTwoGEffectsProductionPartition(
     keyAgentServiceWindowsLifecycleEffects,
   );
+const keyAgentServiceWindowsServiceEffectsPath =
+  "crates/platform-windows/src/key_agent_service/windows_service_effects.rs";
+const keyAgentServiceWindowsServiceEffects = await text(
+  keyAgentServiceWindowsServiceEffectsPath,
+);
+const keyAgentServiceWindowsServiceEffectsProduction = withoutCfgTestItems(
+  keyAgentServiceWindowsServiceEffects,
+);
 const keyAgentServiceWindowsLifecycleTestsPath =
   "crates/platform-windows/src/key_agent_service/windows_lifecycle_tests.rs";
 const keyAgentServiceWindowsLifecycleTests = await text(
@@ -2891,6 +2899,9 @@ const keyAgentServiceDesign = await text(
 );
 const keyAgentServiceSecurityDecisions = await text(
   "docs/security-decisions.md",
+);
+const keyAgentServicePlatformReadme = await text(
+  "crates/platform-windows/README.md",
 );
 const rootReadme = await text("README.md");
 const sepoliaArchitectureDoc = await text("docs/architecture.md");
@@ -5802,7 +5813,7 @@ const keyAgentServiceFeatureContract = ({
     hasDependency(serviceManifest, "platform-windows") &&
     !hasDependency(serviceManifest, "key-agent") &&
     !hasDependency(serviceManifest, "windows") &&
-    /key-agent-service-rpc-status-feasibility-test-hook\s*=\s*\[\s*"key-agent-service-scm-feasibility-test-hook",\s*"dep:key-agent-service-rpc-sys",\s*"dep:key-agent-service-wire",?\s*\]/u.test(
+    /key-agent-service-rpc-status-feasibility-test-hook\s*=\s*\[\s*"key-agent-service-scm-feasibility-test-hook",?\s*\]/u.test(
       platformManifest,
     ) &&
     /key-agent-service-token-feasibility-test-hook\s*=\s*\[\s*"key-agent-service-scm-feasibility-test-hook",?\s*\]/u.test(
@@ -5812,10 +5823,10 @@ const keyAgentServiceFeatureContract = ({
     /key-agent-service-lpac-launch-feasibility-test-hook\s*=\s*\[\s*"dep:key-agent-service-helper-bootstrap",\s*"key-agent-service-rpc-status-feasibility-test-hook",\s*"key-agent-service-wire\/debug-feasibility-v2",\s*"key-agent-service-token-feasibility-test-hook",?\s*\]/u.test(
       platformManifest,
     ) &&
-    /^key-agent-service-rpc-sys\s*=\s*\{\s*path\s*=\s*"\.\.\/key-agent-service-rpc-sys",\s*optional\s*=\s*true\s*\}$/mu.test(
+    /^key-agent-service-rpc-sys\s*=\s*\{\s*path\s*=\s*"\.\.\/key-agent-service-rpc-sys"\s*\}$/mu.test(
       platformManifest,
     ) &&
-    /^key-agent-service-wire\s*=\s*\{\s*path\s*=\s*"\.\.\/key-agent-service-wire",\s*optional\s*=\s*true\s*\}$/mu.test(
+    /^key-agent-service-wire\s*=\s*\{\s*path\s*=\s*"\.\.\/key-agent-service-wire"\s*\}$/mu.test(
       platformManifest,
     ) &&
     /^key-agent-service-helper-bootstrap\s*=\s*\{\s*path\s*=\s*"\.\.\/key-agent-service-helper-bootstrap",\s*optional\s*=\s*true,\s*default-features\s*=\s*false\s*\}$/mu.test(
@@ -5860,7 +5871,7 @@ const keyAgentServiceFeatureContract = ({
       "std::process::exit(SERVICE_UNAVAILABLE)",
     ) === 1 &&
     main.includes("const SERVICE_UNAVAILABLE: i32 = 78;") &&
-    /#\[cfg\(\s*all\(\s*windows\s*,\s*feature\s*=\s*"key-agent-service-rpc-status-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\s*\)\]\s*mod\s+key_agent_service_rpc\s*;/u.test(
+    /#\[cfg\(\s*windows\s*\)\]\s*#\[allow\(\s*dead_code\s*\)\]\s*mod\s+key_agent_service_rpc\s*;/u.test(
       platformLib,
     ) &&
     /#\[cfg\(\s*all\(\s*windows\s*,\s*feature\s*=\s*"key-agent-service-token-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\s*\)\]\s*mod\s+key_agent_service_token\s*;/u.test(
@@ -5882,7 +5893,7 @@ const keyAgentServiceFeatureContract = ({
       "key_agent_service_launch::SERVICE_RPC_PROBE_STOP_DEADLINE_MILLISECONDS",
     ) === 1 &&
     !serviceCode.includes("key_agent_service_launch") &&
-    /#\[cfg\(\s*all\(\s*windows\s*,\s*any\(\s*feature\s*=\s*"key-agent-service-scm-feasibility-test-hook"\s*,\s*feature\s*=\s*"key-agent-service-token-feasibility-test-hook"\s*,\s*feature\s*=\s*"key-agent-service-rpc-status-feasibility-test-hook"\s*,\s*feature\s*=\s*"key-agent-service-lpac-launch-feasibility-test-hook"\s*\)\s*,\s*debug_assertions\s*\)\s*\)\]\s*mod\s+sys\s*\{/u.test(
+    /#\[cfg\(\s*windows\s*\)\]\s*#\[allow\(\s*dead_code\s*,\s*unsafe_code\s*\)\]\s*mod\s+sys\s*\{/u.test(
       platformService,
     ) &&
     keyAgentServiceLiteralCount(
@@ -5960,8 +5971,22 @@ const keyAgentServiceFeatureMutationProbes = [
   {
     ...keyAgentServiceFeatureInputs,
     platformManifest: keyAgentServicePlatformManifest.replace(
-      'key-agent-service-rpc-sys = { path = "../key-agent-service-rpc-sys", optional = true }',
       'key-agent-service-rpc-sys = { path = "../key-agent-service-rpc-sys" }',
+      'key-agent-service-rpc-sys = { path = "../key-agent-service-rpc-sys", optional = true }',
+    ),
+  },
+  {
+    ...keyAgentServiceFeatureInputs,
+    platformManifest: keyAgentServicePlatformManifest.replace(
+      'key-agent-service-wire = { path = "../key-agent-service-wire" }',
+      'key-agent-service-wire = { path = "../key-agent-service-wire", optional = true }',
+    ),
+  },
+  {
+    ...keyAgentServiceFeatureInputs,
+    platformManifest: keyAgentServicePlatformManifest.replace(
+      'key-agent-service-rpc-status-feasibility-test-hook = [\n    "key-agent-service-scm-feasibility-test-hook",\n]',
+      'key-agent-service-rpc-status-feasibility-test-hook = [\n    "key-agent-service-scm-feasibility-test-hook",\n    "dep:key-agent-service-rpc-sys",\n]',
     ),
   },
   {
@@ -6026,8 +6051,15 @@ const keyAgentServiceFeatureMutationProbes = [
   {
     ...keyAgentServiceFeatureInputs,
     platformLib: keyAgentServicePlatformLib.replace(
-      "    debug_assertions\n))]\nmod key_agent_service_rpc;",
-      "    any(debug_assertions, not(debug_assertions))\n))]\nmod key_agent_service_rpc;",
+      "#[cfg(windows)]\n#[allow(dead_code)]\nmod key_agent_service_rpc;",
+      '#[cfg(all(windows, debug_assertions))]\n#[allow(dead_code)]\nmod key_agent_service_rpc;',
+    ),
+  },
+  {
+    ...keyAgentServiceFeatureInputs,
+    platformService: keyAgentServicePlatformSource.replace(
+      "#[cfg(windows)]\n#[allow(dead_code, unsafe_code)]\nmod sys {",
+      "#[cfg(all(windows, debug_assertions))]\n#[allow(dead_code, unsafe_code)]\nmod sys {",
     ),
   },
   {
@@ -6403,9 +6435,13 @@ const approvedKeyAgentServiceWindowsLifecycleSourceSha256 =
 const approvedKeyAgentServiceWindowsLifecycleProductionSha256 =
   "898552e099b94f5fbf33e6ced2ccf1c7abaf9c4e2ddd3cc8a55ed833cc88ccb0";
 const approvedKeyAgentServiceWindowsLifecycleEffectsSourceSha256 =
-  "3d425e4cddf8958b9417aac0c9b7e3dc68646aa06ebb253dba2b5fd7fafa764f";
+  "0cb82a0e9ed0d81fd186fa4990b803a190c2277c02ea221f15533bca78990e9e";
 const approvedKeyAgentServiceWindowsLifecycleEffectsProductionSha256 =
-  "b2c567be7f8fa414655ced5255d488eb9d6c2f7a7356007ebd928a3f7cb63274";
+  "aaf1ff16addaafe884a93d99c91d11315d2a10544a3ceea1dd94a748882ba5c8";
+const approvedKeyAgentServiceWindowsServiceEffectsSourceSha256 =
+  "4fd24001e70c7a8f1a7c2ed48c2071132f222006a92104accabf98b347cb148a";
+const approvedKeyAgentServiceWindowsServiceEffectsProductionSha256 =
+  "636d744225623104a40490ea1e648b389b3e81c3d2acb21028c7cb553b332951";
 const approvedKeyAgentServiceWindowsLifecycleTestsSha256 =
   "bc8817ce48e9322a3bd1fed30eafac40089352da7d37c88178ea1b72778e1275";
 const approvedKeyAgentServiceRunStateRootSourceSha256 =
@@ -6546,6 +6582,41 @@ const keyAgentServicePhaseTwoGWindowsLifecycleTestNames = [
   "post_release_logical_failure_is_irreversible_exit78_and_never_stopped",
   "retirement_fault_preserves_original_lifecycle_and_platform_cleanup_causes",
   "debug_and_source_surfaces_are_redacted_silent_and_path_handle_free",
+];
+const keyAgentServicePhaseTwoHWindowsServiceEffectsTestNames = [
+  "production_effect_source_is_single_use_redacted_and_resource_opaque",
+  "production_effect_backend_success_has_exact_six_stage_order",
+  "listener_prepare_failure_distinguishes_unapplied_from_ambiguous",
+  "scm_running_failure_never_opens_admission",
+  "admission_open_failure_retains_closed_listener_and_effect_authority",
+  "admission_close_precedes_epoch_invalidation_and_listener_drain",
+  "listener_drain_failure_never_claims_clean_or_writer_release",
+  "scm_stopped_failure_after_writer_release_retains_both_terminal_evidences",
+  "default_and_release_service_remain_silent_exit78_without_durable_provider",
+];
+const keyAgentServicePhaseTwoHWindowsServiceEffectsProductionTypes = [
+  {
+    visibility: "pub(incrate::key_agent_service)",
+    kind: "struct",
+    name: "WindowsServiceEffectSourceError",
+  },
+  {
+    visibility: "pub(incrate::key_agent_service)",
+    kind: "struct",
+    name: "WindowsServiceEffectSource",
+  },
+  {
+    visibility: "pub(super)",
+    kind: "struct",
+    name: "WindowsServiceEffectBackend",
+  },
+  { visibility: "", kind: "enum", name: "WindowsServiceEffectBackendStage" },
+  { visibility: "", kind: "enum", name: "WindowsServiceDriverOutcome" },
+  { visibility: "", kind: "enum", name: "WindowsServiceRpcError" },
+  { visibility: "", kind: "enum", name: "WindowsServiceWorker" },
+  { visibility: "", kind: "struct", name: "WindowsServiceEffectDriver" },
+  { visibility: "", kind: "struct", name: "NativeWindowsServiceScmLeaf" },
+  { visibility: "", kind: "struct", name: "NativeWindowsServiceRpcLeaf" },
 ];
 const keyAgentServicePhaseTwoGWindowsLifecycleTypes = [
   { visibility: "pub(super)", kind: "enum", name: "WindowsLifecycleCause" },
@@ -8421,6 +8492,7 @@ const keyAgentServicePhaseTwoSemanticContract = ({
         { name: "windows_lifecycle_effects.rs", kind: "file" },
         { name: "windows_lifecycle_tests.rs", kind: "file" },
         { name: "windows_lifecycle.rs", kind: "file" },
+        { name: "windows_service_effects.rs", kind: "file" },
       ]) &&
     JSON.stringify(durableUseInventory) ===
       JSON.stringify([
@@ -9260,6 +9332,7 @@ const keyAgentServicePhaseTwoFCPinContract = ({ windowsRuntimeSource }) => {
 const keyAgentServicePhaseTwoGPinContract = ({
   windowsLifecycleSource,
   windowsLifecycleEffectsSource,
+  windowsServiceEffectsSource,
   windowsLifecycleTests,
 }) => {
   const production = withoutCfgTestItems(windowsLifecycleSource);
@@ -9268,6 +9341,9 @@ const keyAgentServicePhaseTwoGPinContract = ({
       windowsLifecycleEffectsSource,
     );
   if (effectsProduction === null) return false;
+  const serviceEffectsProduction = withoutCfgTestItems(
+    windowsServiceEffectsSource,
+  );
   return (
     normalizedSourceSha256(windowsLifecycleSource) ===
       approvedKeyAgentServiceWindowsLifecycleSourceSha256 &&
@@ -9277,6 +9353,10 @@ const keyAgentServicePhaseTwoGPinContract = ({
       approvedKeyAgentServiceWindowsLifecycleEffectsSourceSha256 &&
     normalizedSourceSha256(effectsProduction) ===
       approvedKeyAgentServiceWindowsLifecycleEffectsProductionSha256 &&
+    normalizedSourceSha256(windowsServiceEffectsSource) ===
+      approvedKeyAgentServiceWindowsServiceEffectsSourceSha256 &&
+    normalizedSourceSha256(serviceEffectsProduction) ===
+      approvedKeyAgentServiceWindowsServiceEffectsProductionSha256 &&
     normalizedSourceSha256(windowsLifecycleTests) ===
       approvedKeyAgentServiceWindowsLifecycleTestsSha256
   );
@@ -10085,6 +10165,7 @@ const keyAgentServicePhaseTwoCSemanticContract = ({
         { name: "windows_lifecycle_effects.rs", kind: "file" },
         { name: "windows_lifecycle_tests.rs", kind: "file" },
         { name: "windows_lifecycle.rs", kind: "file" },
+        { name: "windows_service_effects.rs", kind: "file" },
       ]) &&
     JSON.stringify(provisioningDirectoryInventory) ===
       JSON.stringify([
@@ -11398,6 +11479,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
         { name: "windows_lifecycle_effects.rs", kind: "file" },
         { name: "windows_lifecycle_tests.rs", kind: "file" },
         { name: "windows_lifecycle.rs", kind: "file" },
+        { name: "windows_service_effects.rs", kind: "file" },
       ]) &&
     JSON.stringify(rootDirectoryInventory) ===
       JSON.stringify([
@@ -14639,12 +14721,15 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
     lifecycleTests,
     windowsLifecycleSource,
     windowsLifecycleEffectsSource,
+    windowsServiceEffectsSource,
     windowsLifecycleTests,
     rootSource,
     testsSource,
     provisioningDirectoryInventory,
     designDocument,
     architectureDocument,
+    securityDecisionsDocument,
+    platformReadmeDocument,
   } = inputs;
   const durable = keyAgentServicePhaseTwoPartitionDurable(durableSource);
   const lifecycleProduction =
@@ -14654,6 +14739,9 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
     keyAgentServicePhaseTwoGEffectsProductionPartition(
       windowsLifecycleEffectsSource,
     );
+  const serviceEffectsProduction = withoutCfgTestItems(
+    windowsServiceEffectsSource,
+  );
   if (
     durable === null ||
     lifecycleProduction === null ||
@@ -14672,8 +14760,15 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
   const windowsCode = rustLexicalCode(windowsProduction);
   const effectsCode = rustLexicalCode(effectsProduction);
   const effectsFullCode = rustLexicalCode(windowsLifecycleEffectsSource);
+  const serviceEffectsCode = rustLexicalCode(serviceEffectsProduction);
+  const serviceEffectsFullCode = rustLexicalCode(windowsServiceEffectsSource);
   const windowsCompact = compactRust(windowsProduction);
   const effectsCompact = compactRust(effectsProduction);
+  const serviceEffectsCompact = compactRust(serviceEffectsProduction);
+  const platformServiceProduction = withoutCfgTestItems(platformService);
+  const platformServiceProductionCode = rustLexicalCode(
+    platformServiceProduction,
+  );
   const typeInventory = (source) => [
     ...rustLexicalCode(source).matchAll(
       /\b(?:(?<visibility>pub(?:\s*\([^)]*\))?)\s+)?(?<kind>struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
@@ -14709,6 +14804,8 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
   ].map(({ groups }) => groups.name);
   const windowsTests =
     keyAgentServiceRustAttributedTestInventory(windowsLifecycleTests);
+  const serviceEffectsTests =
+    keyAgentServiceRustAttributedTestInventory(windowsServiceEffectsSource);
   const runtimeTests =
     keyAgentServiceRustAttributedTestInventory(windowsRuntimeSource);
   const lifecycleTestsInventory =
@@ -14726,7 +14823,7 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
   const otherProductionCode = rustLexicalCode(
     [
       main,
-      platformService,
+      platformServiceProduction,
       platformLib,
       ...keyAgentServiceRustFiles
         .filter(
@@ -14741,7 +14838,8 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
             path !== keyAgentServiceDurableRunStatePath &&
             path !== keyAgentServiceDurableWindowsRuntimePath &&
             path !== keyAgentServiceWindowsLifecyclePath &&
-            path !== keyAgentServiceWindowsLifecycleEffectsPath,
+            path !== keyAgentServiceWindowsLifecycleEffectsPath &&
+            path !== keyAgentServiceWindowsServiceEffectsPath,
         )
         .map(({ source }) => source),
     ].join("\n"),
@@ -14779,6 +14877,8 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
   let stoppedImpl;
   let effectCoreExecute;
   let effectCoreTestExecute;
+  let allocateEffectBinding;
+  let sealedEffectBackendExecute;
   let effectCoreIntoTerminal;
   let effectAuthorityImpl;
   let effectPurposeStage;
@@ -14797,6 +14897,40 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
   let exhaustedEffectAttemptTest;
   let runtimePolicyPrepareClean;
   let cleanupOrderImpl;
+  let scmAuthorityBind;
+  let scmAuthorityType;
+  let scmAuthorityPublishRunning;
+  let scmAuthorityAdmissionGate;
+  let scmAuthorityPublishStopped;
+  let publishAuthoritativeStatus;
+  let authoritativeStatusPredecessor;
+  let withAuthoritativeAdmissionGate;
+  let runningAdmissionGateIsExact;
+  let serviceEffectSourceType;
+  let serviceEffectSourceErrorType;
+  let serviceEffectBackendType;
+  let serviceEffectBackendStageType;
+  let serviceEffectWorkerType;
+  let serviceEffectSourceNew;
+  let serviceEffectSourceIntoAuthority;
+  let serviceEffectSourceDebug;
+  let serviceEffectSourceErrorDebug;
+  let serviceEffectBackendNew;
+  let serviceEffectBackendExecute;
+  let serviceEffectBackendExpectedPurpose;
+  let serviceEffectBackendAfterSuccess;
+  let serviceEffectDriverImpl;
+  let serviceEffectDriverNew;
+  let serviceEffectDriverPrepare;
+  let serviceEffectDriverPublishRunning;
+  let serviceEffectDriverOpenAdmission;
+  let serviceEffectDriverCloseAdmission;
+  let serviceEffectDriverDrain;
+  let serviceEffectDriverPublishStopped;
+  let nativeServiceScmLeafImpl;
+  let nativeServiceRpcLeafImpl;
+  let mapServiceRpcError;
+  let commonServiceEffectItemAttributes;
   try {
     const lifecycleImpl = (name) =>
       rustLexicalItemBlock(
@@ -14924,6 +15058,10 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
       effectsImpl("EffectCore"),
       "execute",
     );
+    sealedEffectBackendExecute = rustFunctionBlock(
+      effectsImpl("SealedWindowsLifecycleEffectBackend"),
+      "execute",
+    );
     effectCoreTestExecute = rustFunctionBlock(
       effectsFullImpl("EffectCore"),
       "execute",
@@ -14931,6 +15069,10 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
     effectCoreIntoTerminal = rustFunctionBlock(
       effectsImpl("EffectCore"),
       "into_terminal",
+    );
+    allocateEffectBinding = rustTopLevelFunctionBlock(
+      effectsProduction,
+      "allocate_effect_binding",
     );
     effectAuthorityPrepare = rustFunctionBlock(
       effectsImpl("WindowsLifecycleEffectAuthority"),
@@ -14995,6 +15137,177 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
     cleanupOrderImpl = rustLexicalItemBlock(
       lifecycleProduction,
       /\bimpl\s+CleanupStep\s*\{/u,
+    );
+    const scmSys = rustLexicalItemBlock(
+      platformServiceProduction,
+      /\bmod\s+sys\s*\{/u,
+    );
+    const scmAuthorityImpl = rustLexicalItemBlock(
+      scmSys,
+      /\bimpl\s+WindowsScmStatusAuthority\s*\{/u,
+    );
+    scmAuthorityType = rustLexicalItemBlock(
+      scmSys,
+      /\bpub\s*\(\s*in\s+crate\s*::\s*key_agent_service\s*\)\s+struct\s+WindowsScmStatusAuthority\b/u,
+    );
+    scmAuthorityBind = rustFunctionBlock(
+      scmAuthorityImpl,
+      "bind_registered_status",
+    );
+    scmAuthorityPublishRunning = rustFunctionBlock(
+      scmAuthorityImpl,
+      "publish_running",
+    );
+    scmAuthorityAdmissionGate = rustFunctionBlock(
+      scmAuthorityImpl,
+      "with_running_admission_gate",
+    );
+    scmAuthorityPublishStopped = rustFunctionBlock(
+      scmAuthorityImpl,
+      "publish_stopped",
+    );
+    publishAuthoritativeStatus = rustFunctionBlock(
+      scmSys,
+      "publish_authoritative_status",
+    );
+    authoritativeStatusPredecessor = rustFunctionBlock(
+      scmSys,
+      "authoritative_status_predecessor_is_exact",
+    );
+    withAuthoritativeAdmissionGate = rustFunctionBlock(
+      scmSys,
+      "with_authoritative_running_admission_gate",
+    );
+    runningAdmissionGateIsExact = rustFunctionBlock(
+      scmSys,
+      "running_admission_gate_is_exact",
+    );
+    const serviceEffectsImpl = (name) =>
+      rustLexicalItemBlock(
+        serviceEffectsProduction,
+        new RegExp(`\\bimpl\\s+${name}\\s*\\{`, "u"),
+      );
+    serviceEffectSourceType = rustLexicalItemBlock(
+      serviceEffectsProduction,
+      /\bpub\s*\(\s*in\s+crate\s*::\s*key_agent_service\s*\)\s+struct\s+WindowsServiceEffectSource\b/u,
+    );
+    serviceEffectSourceErrorType = rustLexicalItemBlock(
+      serviceEffectsProduction,
+      /\bpub\s*\(\s*in\s+crate\s*::\s*key_agent_service\s*\)\s+struct\s+WindowsServiceEffectSourceError\b/u,
+    );
+    serviceEffectBackendType = rustLexicalItemBlock(
+      serviceEffectsProduction,
+      /\bpub\s*\(\s*super\s*\)\s+struct\s+WindowsServiceEffectBackend\b/u,
+    );
+    serviceEffectBackendStageType = rustLexicalItemBlock(
+      serviceEffectsProduction,
+      /\benum\s+WindowsServiceEffectBackendStage\b/u,
+    );
+    serviceEffectWorkerType = rustLexicalItemBlock(
+      serviceEffectsProduction,
+      /\benum\s+WindowsServiceWorker\s*<\s*R\s*>/u,
+    );
+    const serviceEffectSourceImpl = serviceEffectsImpl(
+      "WindowsServiceEffectSource",
+    );
+    serviceEffectSourceNew = rustFunctionBlock(serviceEffectSourceImpl, "new");
+    serviceEffectSourceIntoAuthority = rustFunctionBlock(
+      serviceEffectSourceImpl,
+      "into_authority",
+    );
+    serviceEffectSourceDebug = rustFunctionBlock(
+      rustLexicalItemBlock(
+        serviceEffectsProduction,
+        /\bimpl\s+fmt\s*::\s*Debug\s+for\s+WindowsServiceEffectSource\s*\{/u,
+      ),
+      "fmt",
+    );
+    serviceEffectSourceErrorDebug = rustFunctionBlock(
+      rustLexicalItemBlock(
+        serviceEffectsProduction,
+        /\bimpl\s+fmt\s*::\s*Debug\s+for\s+WindowsServiceEffectSourceError\s*\{/u,
+      ),
+      "fmt",
+    );
+    const serviceEffectBackendImpl = serviceEffectsImpl(
+      "WindowsServiceEffectBackend",
+    );
+    serviceEffectBackendNew = rustFunctionBlock(
+      serviceEffectBackendImpl,
+      "new",
+    );
+    serviceEffectBackendExecute = rustFunctionBlock(
+      serviceEffectBackendImpl,
+      "execute",
+    );
+    const serviceEffectBackendStageImpl = serviceEffectsImpl(
+      "WindowsServiceEffectBackendStage",
+    );
+    serviceEffectBackendExpectedPurpose = rustFunctionBlock(
+      serviceEffectBackendStageImpl,
+      "expected_purpose",
+    );
+    serviceEffectBackendAfterSuccess = rustFunctionBlock(
+      serviceEffectBackendStageImpl,
+      "after_success",
+    );
+    serviceEffectDriverImpl = rustLexicalItemBlock(
+      serviceEffectsProduction,
+      /\bimpl\s*<\s*S\s*,\s*R\s*>\s+WindowsServiceEffectDriver\s*<\s*S\s*,\s*R\s*>\s+where\b/u,
+    );
+    serviceEffectDriverNew = rustFunctionBlock(serviceEffectDriverImpl, "new");
+    serviceEffectDriverPrepare = rustFunctionBlock(
+      serviceEffectDriverImpl,
+      "prepare_listeners",
+    );
+    serviceEffectDriverPublishRunning = rustFunctionBlock(
+      serviceEffectDriverImpl,
+      "publish_scm_running",
+    );
+    serviceEffectDriverOpenAdmission = rustFunctionBlock(
+      serviceEffectDriverImpl,
+      "open_admission",
+    );
+    serviceEffectDriverCloseAdmission = rustFunctionBlock(
+      serviceEffectDriverImpl,
+      "close_admission",
+    );
+    serviceEffectDriverDrain = rustFunctionBlock(
+      serviceEffectDriverImpl,
+      "drain_listeners",
+    );
+    serviceEffectDriverPublishStopped = rustFunctionBlock(
+      serviceEffectDriverImpl,
+      "publish_scm_stopped",
+    );
+    nativeServiceScmLeafImpl = rustLexicalItemBlock(
+      serviceEffectsProduction,
+      /\bimpl\s+WindowsServiceScmLeaf\s+for\s+NativeWindowsServiceScmLeaf\s*\{/u,
+    );
+    nativeServiceRpcLeafImpl = rustLexicalItemBlock(
+      serviceEffectsProduction,
+      /\bimpl\s+WindowsServiceRpcLeaf\s+for\s+NativeWindowsServiceRpcLeaf\s*\{/u,
+    );
+    mapServiceRpcError = rustTopLevelFunctionBlock(
+      serviceEffectsProduction,
+      "map_status_rpc_error",
+    );
+    const commonServiceItemPatterns = [
+      /\btrait\s+WindowsServiceScmLeaf\b/u,
+      /\btrait\s+WindowsServiceRpcLeaf\b/u,
+      /\benum\s+WindowsServiceWorker\s*<\s*R\s*>/u,
+      /\bstruct\s+WindowsServiceEffectDriver\s*<\s*S\s*,\s*R\s*>/u,
+      /\bimpl\s*<\s*S\s*,\s*R\s*>\s+WindowsServiceEffectDriver\s*<\s*S\s*,\s*R\s*>\s+where\b/u,
+    ];
+    commonServiceEffectItemAttributes = commonServiceItemPatterns.map(
+      (pattern) => {
+        const match = pattern.exec(serviceEffectsFullCode);
+        if (match === null) throw new Error("service effect common item missing");
+        return rustAttachedOuterAttributes(
+          windowsServiceEffectsSource,
+          match.index,
+        ).map(compactRust);
+      },
     );
   } catch {
     return false;
@@ -15090,7 +15403,7 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
     lifecyclePostWriterBindingWitnessForTest:
       "fd9f6ac1d0f0d0c1cebd73268a64af408a710f30f24aba105a8a487fe664f565",
     effectCoreTestExecute:
-      "973e276a99173b919089f9cd6db2032a910fe1d152d2407b53f565f0db55f729",
+      "5850e34ce05825b0f64d902faaa8855e7e224f9fade83d419ac8bfe9a19ff319",
     effectCoreIntoTerminal:
       "f72f2f1c24abdf390e4b3f2f2921b318fc12c5b095ab65cdd13eebcf68c14022",
     effectAuthorityPrepare:
@@ -15173,6 +15486,39 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
       line.startsWith("| Windows no-secret lifecycle compositor |"),
     );
   const architectureSlice = (architectureRows[0] ?? "").replace(/\s+/gu, " ");
+  const phaseTwoHStatusMarker =
+    "**Current Phase 2H status: started, not passed.**";
+  const phaseTwoHDesignStart = designDocument.indexOf(phaseTwoHStatusMarker);
+  const phaseTwoHDesignEnd = designDocument.indexOf(
+    "\n### Phase 3",
+    phaseTwoHDesignStart,
+  );
+  const phaseTwoHDesignSlice =
+    phaseTwoHDesignStart === -1 || phaseTwoHDesignEnd === -1
+      ? ""
+      : designDocument
+          .slice(phaseTwoHDesignStart, phaseTwoHDesignEnd)
+          .replace(/\s+/gu, " ");
+  const phaseTwoHArchitectureRows = architectureDocument
+    .split(/\r?\n/gu)
+    .filter((line) =>
+      line.startsWith("| Windows production lifecycle-effects adapter |"),
+    );
+  const phaseTwoHArchitectureSlice = (
+    phaseTwoHArchitectureRows[0] ?? ""
+  ).replace(/\s+/gu, " ");
+  const normalizedSecurityDecisions = securityDecisionsDocument.replace(
+    /\s+/gu,
+    " ",
+  );
+  const normalizedArchitectureDocument = architectureDocument.replace(
+    /\s+/gu,
+    " ",
+  );
+  const normalizedPlatformReadme = platformReadmeDocument.replace(
+    /\s+/gu,
+    " ",
+  );
   const testOnlyEffectNames = [
     "WindowsLifecycleEffectBindingWitness",
     "FixtureWindowsLifecycleEffectFault",
@@ -15187,7 +15533,6 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
     "retains_authority_for_test",
     "is_attached_for_test",
     "failure_cause_for_test",
-    "NEXT_FIXTURE_BINDING",
     "allocate_fixture_binding",
   ];
   const lifecycleTestOnlyNames = [
@@ -15225,6 +15570,74 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
     /\b(?:unsafe|dyn|Any|downcast(?:_ref|_mut)?|Deref|DerefMut|transmute|ManuallyDrop|MaybeUninit|as_raw|into_raw|from_raw|RawHandle|HANDLE|Path|PathBuf|Box|Rc|Arc)\b/u;
   const forbiddenVacuousProductionEscape =
     /\b(?:loop|while)\b|\b(?:unreachable|panic|todo|unimplemented)\s*!|\b(?:std|core)\s*::\s*process\s*::\s*(?:abort|exit)\s*\(|\bcore\s*::\s*hint\s*::\s*unreachable_unchecked\b/u;
+  const serviceEffectDriverMethods = [
+    {
+      name: "prepare_listeners",
+      purpose: "PrepareListeners",
+      block: serviceEffectDriverPrepare,
+    },
+    {
+      name: "publish_scm_running",
+      purpose: "PublishScmRunning",
+      block: serviceEffectDriverPublishRunning,
+    },
+    {
+      name: "open_admission",
+      purpose: "OpenAdmission",
+      block: serviceEffectDriverOpenAdmission,
+    },
+    {
+      name: "close_admission",
+      purpose: "CloseAdmission",
+      block: serviceEffectDriverCloseAdmission,
+    },
+    {
+      name: "drain_listeners",
+      purpose: "DrainListeners",
+      block: serviceEffectDriverDrain,
+    },
+    {
+      name: "publish_scm_stopped",
+      purpose: "PublishScmStopped",
+      block: serviceEffectDriverPublishStopped,
+    },
+  ];
+  const serviceEffectDriverReceiptsAreExact = serviceEffectDriverMethods.every(
+    ({ name, purpose, block }) => {
+      const compact = compactRust(block);
+      return (
+        compact.startsWith(
+          `fn${name}(self,binding:WindowsLifecycleEffectBinding,attempt:NonZeroU64,)->(Self,WindowsServiceDriverOutcome)`,
+        ) &&
+        keyAgentServiceLiteralCount(compact, "EffectReceipt{") === 1 &&
+        keyAgentServiceLiteralCount(
+          compact,
+          `EffectReceipt{binding,attempt,purpose:EffectPurpose::${purpose},}`,
+        ) === 1 &&
+        !/\bpurpose\s*:\s*EffectPurpose\b/u.test(
+          rustLexicalCode(block).slice(
+            0,
+            rustLexicalCode(block).indexOf("{") + 1,
+          ),
+        )
+      );
+    },
+  );
+  const serviceEffectDriverImplCount = rustImplItems(
+    windowsServiceEffectsSource,
+  ).filter(({ header }) =>
+    /\bWindowsServiceEffectDriver\s*<\s*S\s*,\s*R\s*>/u.test(
+      rustLexicalCode(header),
+    ),
+  ).length;
+  const serviceEffectsWithoutSourceMint = serviceEffectsProduction
+    .replace(serviceEffectSourceNew, "")
+    .replace(serviceEffectSourceIntoAuthority, "");
+  const platformServiceSysReexports = [
+    ...platformServiceProductionCode.matchAll(
+      /\bpub\s*\([^)]*\)\s+use\s+sys\s*::[^;]+;/gu,
+    ),
+  ].map((match) => compactRust(match[0]));
 
   return (
     keyAgentServicePhaseTwoH2SemanticContract({
@@ -15235,17 +15648,243 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
     rustFunctionBodyClosureSha256(windowsProduction) ===
       "175ce9d68ea758d6f59da1661c90af24b002a128669d918b67b15b75b93382f5" &&
     rustFunctionBodyClosureSha256(effectsProduction) ===
-      "193606923b95054eff04de38e07ad4d5b46675920644786ce0b2dccfacc43006" &&
+      "86f623c0f9e9b0a067cdb16fe38026febe709ec84e013e48b6eba883d73045e1" &&
+    rustFunctionBodyClosureSha256(serviceEffectsProduction) ===
+      "9ea78edac590677df80dd9f0b5b48e5267af8acb7b2f2a261cbff8dc4567c7ff" &&
     JSON.stringify(typeInventory(windowsProduction)) ===
       JSON.stringify(keyAgentServicePhaseTwoGWindowsLifecycleTypes) &&
     JSON.stringify(typeInventory(effectsProduction)) ===
       JSON.stringify(keyAgentServicePhaseTwoGWindowsLifecycleEffectsTypes) &&
     JSON.stringify(typeInventory(windowsLifecycleEffectsSource)) ===
       JSON.stringify(keyAgentServicePhaseTwoGWindowsLifecycleEffectsFullTypes) &&
+    JSON.stringify(typeInventory(serviceEffectsProduction)) ===
+      JSON.stringify(
+        keyAgentServicePhaseTwoHWindowsServiceEffectsProductionTypes,
+      ) &&
     JSON.stringify(visibleFunctions(windowsProduction)) ===
       JSON.stringify(keyAgentServicePhaseTwoGWindowsLifecycleFunctions) &&
     JSON.stringify(visibleFunctions(effectsProduction)) ===
       JSON.stringify(keyAgentServicePhaseTwoGWindowsLifecycleEffectsFunctions) &&
+    JSON.stringify(visibleFunctions(serviceEffectsProduction)) ===
+      JSON.stringify([
+        {
+          owner: "implWindowsServiceEffectSource",
+          visibility: "pub(incrate::key_agent_service)",
+          name: "new",
+          signature: "fnnew(scm:WindowsScmStatusAuthority)->Self",
+        },
+        {
+          owner: "implWindowsServiceEffectSource",
+          visibility: "pub(incrate::key_agent_service)",
+          name: "into_authority",
+          signature:
+            "fninto_authority(self,)->Result<WindowsLifecycleEffectAuthority,WindowsServiceEffectSourceError>",
+        },
+        {
+          owner: "implWindowsServiceEffectBackend",
+          visibility: "pub(super)",
+          name: "execute",
+          signature:
+            "fnexecute(self,binding:WindowsLifecycleEffectBinding,attempt:NonZeroU64,purpose:EffectPurpose,)->(Self,BackendEffectOutcome)",
+        },
+      ]) &&
+    commonServiceEffectItemAttributes.every(
+      (attributes) => attributes.length === 0,
+    ) &&
+    serviceEffectDriverImplCount === 1 &&
+    JSON.stringify(functionNames(serviceEffectDriverImpl)) ===
+      JSON.stringify([
+        "new",
+        "prepare_listeners",
+        "publish_scm_running",
+        "open_admission",
+        "close_admission",
+        "drain_listeners",
+        "publish_scm_stopped",
+      ]) &&
+    compactRust(serviceEffectSourceErrorType) ===
+      "pub(incrate::key_agent_service)structWindowsServiceEffectSourceError{_source:WindowsServiceEffectSource,}" &&
+    compactRust(serviceEffectSourceType) ===
+      "pub(incrate::key_agent_service)structWindowsServiceEffectSource{backend:WindowsServiceEffectBackend,}" &&
+    compactRust(serviceEffectBackendType) ===
+      "pub(super)structWindowsServiceEffectBackend{stage:WindowsServiceEffectBackendStage,driver:SealedWindowsServiceEffectDriver,}" &&
+    compactRust(serviceEffectBackendStageType) ===
+      "enumWindowsServiceEffectBackendStage{ListenerPreparationPending,ListenersPrepared,ScmRunning,AdmissionOpen,AdmissionClosed,ListenersDrained,Stopped,Terminal,}" &&
+    compactRust(serviceEffectWorkerType) ===
+      "enumWindowsServiceWorker<R>whereR:WindowsServiceRpcLeaf,{NotStarted,Listening(R::Listening),AdmissionClosed(R::AdmissionClosed),Drained,Retained,}" &&
+    serviceEffectsCompact.includes(
+      "structWindowsServiceEffectDriver<S,R>whereR:WindowsServiceRpcLeaf,{scm:S,rpc:R,worker:WindowsServiceWorker<R>,}",
+    ) &&
+    keyAgentServiceMoveOnlyEvidenceContract(serviceEffectsProduction, [
+      "WindowsServiceEffectSourceError",
+      "WindowsServiceEffectSource",
+      "WindowsServiceEffectBackend",
+      "WindowsServiceEffectDriver",
+    ]) &&
+    hasOrderedCompactMarkers(serviceEffectSourceNew, [
+      "fnnew(scm:WindowsScmStatusAuthority)->Self",
+      "WindowsServiceEffectBackend::new(WindowsServiceEffectDriver::new",
+      "NativeWindowsServiceScmLeaf(scm)",
+      "NativeWindowsServiceRpcLeaf",
+    ]) &&
+    hasOrderedCompactMarkers(serviceEffectSourceIntoAuthority, [
+      "letSome(binding)=super::allocate_effect_binding()else",
+      "returnErr(WindowsServiceEffectSourceError{_source:self})",
+      "binding",
+      "next_attempt:NonZeroU64::MIN",
+      "backend:SealedWindowsLifecycleEffectBackend::Service(self.backend)",
+    ]) &&
+    serviceEffectSourceDebug.includes(
+      'formatter.write_str("WindowsServiceEffectSource([REDACTED])")',
+    ) &&
+    serviceEffectSourceErrorDebug.includes(
+      'formatter.write_str("WindowsServiceEffectSourceError([REDACTED])")',
+    ) &&
+    serviceEffectsProduction.includes(
+      'formatter.write_str("the Windows service effect binding space is exhausted")',
+    ) &&
+    (serviceEffectsCode.match(/\b_source\b/gu) ?? []).length === 2 &&
+    !/\b(?:source|authority|backend|driver)\s*\(\s*&self\s*\)/u.test(
+      serviceEffectsCode,
+    ) &&
+    hasOrderedCompactMarkers(serviceEffectBackendNew, [
+      "fnnew(driver:SealedWindowsServiceEffectDriver)->Self",
+      "stage:WindowsServiceEffectBackendStage::ListenerPreparationPending",
+      "driver",
+    ]) &&
+    compactRust(serviceEffectBackendExpectedPurpose) ===
+      "constfnexpected_purpose(self)->Option<EffectPurpose>{matchself{Self::ListenerPreparationPending=>Some(EffectPurpose::PrepareListeners),Self::ListenersPrepared=>Some(EffectPurpose::PublishScmRunning),Self::ScmRunning=>Some(EffectPurpose::OpenAdmission),Self::AdmissionOpen=>Some(EffectPurpose::CloseAdmission),Self::AdmissionClosed=>Some(EffectPurpose::DrainListeners),Self::ListenersDrained=>Some(EffectPurpose::PublishScmStopped),Self::Stopped|Self::Terminal=>None,}}" &&
+    compactRust(serviceEffectBackendAfterSuccess) ===
+      "constfnafter_success(self)->Self{matchself{Self::ListenerPreparationPending=>Self::ListenersPrepared,Self::ListenersPrepared=>Self::ScmRunning,Self::ScmRunning=>Self::AdmissionOpen,Self::AdmissionOpen=>Self::AdmissionClosed,Self::AdmissionClosed=>Self::ListenersDrained,Self::ListenersDrained=>Self::Stopped,Self::Stopped|Self::Terminal=>Self::Terminal,}}" &&
+    hasOrderedCompactMarkers(serviceEffectBackendExecute, [
+      "letSelf{stage,driver}=self",
+      "ifstage.expected_purpose()!=Some(purpose)",
+      "stage:WindowsServiceEffectBackendStage::Terminal",
+      "BackendEffectOutcome::InvalidReceipt",
+      "EffectPurpose::PrepareListeners=>driver.prepare_listeners(binding,attempt)",
+      "EffectPurpose::PublishScmRunning=>driver.publish_scm_running(binding,attempt)",
+      "EffectPurpose::OpenAdmission=>driver.open_admission(binding,attempt)",
+      "EffectPurpose::CloseAdmission=>driver.close_admission(binding,attempt)",
+      "EffectPurpose::DrainListeners=>driver.drain_listeners(binding,attempt)",
+      "EffectPurpose::PublishScmStopped=>driver.publish_scm_stopped(binding,attempt)",
+      "WindowsServiceDriverOutcome::Receipt(receipt)ifreceipt.binding==binding&&receipt.attempt==attempt&&receipt.purpose==purpose",
+      "stage.after_success()",
+      "BackendEffectOutcome::Receipt(receipt)",
+      "WindowsServiceDriverOutcome::Receipt(_)|WindowsServiceDriverOutcome::InvalidReceipt",
+      "WindowsServiceDriverOutcome::KnownNotApplied",
+      "WindowsServiceDriverOutcome::Ambiguous",
+      "stage:next_stage",
+    ]) &&
+    keyAgentServiceLiteralCount(
+      compactRust(serviceEffectBackendExecute),
+      "stage.after_success()",
+    ) === 1 &&
+    keyAgentServiceLiteralCount(
+      compactRust(serviceEffectBackendExecute),
+      "WindowsServiceEffectBackendStage::Terminal",
+    ) === 4 &&
+    serviceEffectDriverReceiptsAreExact &&
+    rustStructLiteralSites(serviceEffectDriverImpl, "EffectReceipt").length ===
+      6 &&
+    rustStructLiteralSites(windowsServiceEffectsSource, "EffectReceipt")
+      .length === 6 &&
+    compactRust(serviceEffectDriverNew) ===
+      "fnnew(scm:S,rpc:R)->Self{Self{scm,rpc,worker:WindowsServiceWorker::NotStarted,}}" &&
+    hasOrderedCompactMarkers(serviceEffectDriverPrepare, [
+      "if!matches!(&worker,WindowsServiceWorker::NotStarted)",
+      "WindowsServiceDriverOutcome::InvalidReceipt",
+      "matchrpc.start()",
+      "Ok(worker)",
+      "worker:WindowsServiceWorker::Listening(worker)",
+      "EffectPurpose::PrepareListeners",
+      "Err(WindowsServiceRpcError::Unavailable)",
+      "worker:WindowsServiceWorker::NotStarted",
+      "WindowsServiceDriverOutcome::KnownNotApplied",
+      "Err(WindowsServiceRpcError::RuntimeStateRetained)",
+      "worker:WindowsServiceWorker::Retained",
+      "WindowsServiceDriverOutcome::Ambiguous",
+    ]) &&
+    hasOrderedCompactMarkers(serviceEffectDriverPublishRunning, [
+      "if!matches!(&worker,WindowsServiceWorker::Listening(_))",
+      "WindowsServiceDriverOutcome::InvalidReceipt",
+      "ifscm.publish_running()",
+      "EffectPurpose::PublishScmRunning",
+      "WindowsServiceDriverOutcome::Ambiguous",
+    ]) &&
+    hasOrderedCompactMarkers(serviceEffectDriverOpenAdmission, [
+      "letWindowsServiceWorker::Listening(mutworker)=workerelse",
+      "WindowsServiceDriverOutcome::InvalidReceipt",
+      "scm.with_running_admission_gate(||rpc.begin_accepting(&mutworker))",
+      "if!matches!(gated,Some(Ok(())))",
+      "rpc.close_admission(worker)",
+      "worker:WindowsServiceWorker::AdmissionClosed(worker)",
+      "WindowsServiceDriverOutcome::Ambiguous",
+      "worker:WindowsServiceWorker::Listening(worker)",
+      "EffectPurpose::OpenAdmission",
+    ]) &&
+    hasOrderedCompactMarkers(serviceEffectDriverCloseAdmission, [
+      "letWindowsServiceWorker::Listening(worker)=workerelse",
+      "WindowsServiceDriverOutcome::InvalidReceipt",
+      "rpc.close_admission(worker)",
+      "worker:WindowsServiceWorker::AdmissionClosed(worker)",
+      "EffectPurpose::CloseAdmission",
+    ]) &&
+    hasOrderedCompactMarkers(serviceEffectDriverDrain, [
+      "letWindowsServiceWorker::AdmissionClosed(worker)=workerelse",
+      "WindowsServiceDriverOutcome::InvalidReceipt",
+      "matchrpc.drain(worker)",
+      "Ok(())",
+      "worker:WindowsServiceWorker::Drained",
+      "EffectPurpose::DrainListeners",
+      "WindowsServiceRpcError::Unavailable|WindowsServiceRpcError::RuntimeStateRetained",
+      "worker:WindowsServiceWorker::Retained",
+      "WindowsServiceDriverOutcome::Ambiguous",
+    ]) &&
+    hasOrderedCompactMarkers(serviceEffectDriverPublishStopped, [
+      "if!matches!(&worker,WindowsServiceWorker::Drained)",
+      "WindowsServiceDriverOutcome::InvalidReceipt",
+      "ifscm.publish_stopped()",
+      "EffectPurpose::PublishScmStopped",
+      "WindowsServiceDriverOutcome::Ambiguous",
+    ]) &&
+    JSON.stringify(functionNames(nativeServiceScmLeafImpl)) ===
+      JSON.stringify([
+        "publish_running",
+        "with_running_admission_gate",
+        "publish_stopped",
+      ]) &&
+    compactRust(rustFunctionBlock(nativeServiceScmLeafImpl, "publish_running")) ===
+      "fnpublish_running(&mutself)->bool{self.0.publish_running()}" &&
+    compactRust(
+      rustFunctionBlock(nativeServiceScmLeafImpl, "with_running_admission_gate"),
+    ) ===
+      "fnwith_running_admission_gate<T>(&mutself,operation:implFnOnce()->T)->Option<T>{self.0.with_running_admission_gate(operation)}" &&
+    compactRust(rustFunctionBlock(nativeServiceScmLeafImpl, "publish_stopped")) ===
+      "fnpublish_stopped(&mutself)->bool{self.0.publish_stopped()}" &&
+    JSON.stringify(functionNames(nativeServiceRpcLeafImpl)) ===
+      JSON.stringify(["start", "begin_accepting", "close_admission", "drain"]) &&
+    hasOrderedCompactMarkers(nativeServiceRpcLeafImpl, [
+      "typeListening=StatusRpcWorker",
+      "typeAdmissionClosed=AdmissionClosedStatusRpcWorker",
+      "StatusRpcWorker::start().map_err(map_status_rpc_error)",
+      "worker.begin_accepting().map_err(map_status_rpc_error)",
+      "worker.close_admission()",
+      "worker.drain().map_err(map_status_rpc_error)",
+    ]) &&
+    compactRust(mapServiceRpcError) ===
+      "constfnmap_status_rpc_error(error:StatusRpcWorkerError)->WindowsServiceRpcError{matcherror{StatusRpcWorkerError::Unavailable=>WindowsServiceRpcError::Unavailable,StatusRpcWorkerError::RuntimeStateRetained=>WindowsServiceRpcError::RuntimeStateRetained,}}" &&
+    windowsServiceEffectsSource.split(
+      "#[cfg(not(test))]\ntype SealedWindowsServiceEffectDriver =\n    WindowsServiceEffectDriver<NativeWindowsServiceScmLeaf, NativeWindowsServiceRpcLeaf>;",
+    ).length - 1 === 1 &&
+    windowsServiceEffectsSource.split(
+      "#[cfg(test)]\ntype SealedWindowsServiceEffectDriver =\n    WindowsServiceEffectDriver<FixtureWindowsServiceScmLeaf, FixtureWindowsServiceRpcLeaf>;",
+    ).length - 1 === 1 &&
+    !/\bFixtureWindowsService(?:ScmLeaf|RpcLeaf|EffectFault|EffectProbe)\b/u.test(
+      serviceEffectsCode,
+    ) &&
+    !/\b(?:RunStateAuthenticationProvider|RuntimeRunStateAuthority|HeldServiceRunStateWriter)\b/u.test(
+      serviceEffectsCode,
+    ) &&
     JSON.stringify(effectStateInvocations) ===
       JSON.stringify(keyAgentServicePhaseTwoGWindowsLifecycleEffectStates) &&
     JSON.stringify(effectsImplFunctionInventory) ===
@@ -15259,6 +15898,10 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
           functions: ["fmt"],
         },
         { owner: "implEffectPurpose", functions: ["stage"] },
+        {
+          owner: "implSealedWindowsLifecycleEffectBackend",
+          functions: ["execute"],
+        },
         {
           owner: "implEffectCore",
           functions: ["execute", "fail", "into_terminal"],
@@ -15326,10 +15969,99 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
     !/\b(?:pub\s+use|pub\s*\([^)]*\)\s+use)\b[^;]*\b(?:windows_lifecycle|effects)\b/u.test(
       rustLexicalCode(platformService),
     ) &&
+    windowsLifecycleEffectsSource.split(
+      '#[path = "windows_service_effects.rs"]\nmod windows_service_effects;',
+    ).length - 1 === 1 &&
+    effectsProduction.split(
+      '#[path = "windows_service_effects.rs"]\nmod windows_service_effects;',
+    ).length - 1 === 1 &&
+    !/\bpub(?:\s*\([^)]*\))?\s+mod\s+windows_service_effects\b/u.test(
+      effectsFullCode,
+    ) &&
+    effectsProduction.split(
+      "use self::windows_service_effects::WindowsServiceEffectBackend;",
+    ).length - 1 === 1 &&
+    platformService.split(
+      "#[cfg(windows)]\n#[cfg_attr(test, allow(unused_imports))]\npub(in crate::key_agent_service) use sys::WindowsScmStatusAuthority;",
+    ).length - 1 === 1 &&
+    platformService.split(
+      "#[cfg(windows)]\n#[allow(dead_code, unsafe_code)]\nmod sys {",
+    ).length - 1 === 1 &&
+    JSON.stringify(platformServiceSysReexports) ===
+      JSON.stringify([
+        "pub(incrate::key_agent_service)usesys::WindowsScmStatusAuthority;",
+      ]) &&
+    compactRust(scmAuthorityType) ===
+      "pub(incrate::key_agent_service)structWindowsScmStatusAuthority{status_handle:usize,}" &&
+    compactRust(scmAuthorityBind) ===
+      "fnbind_registered_status(status_handle:SERVICE_STATUS_HANDLE)->Self{Self{status_handle:status_handle.0asusize,}}" &&
+    !/\bpub(?:\s*\([^)]*\))?\s+(?:const\s+)?fn\s+bind_registered_status\b/u.test(
+      rustLexicalCode(scmAuthorityBind),
+    ) &&
+    !/\bWindowsScmStatusAuthority\s*::\s*bind_registered_status\s*\(/u.test(
+      platformServiceProductionCode,
+    ) &&
+    hasOrderedCompactMarkers(scmAuthorityPublishRunning, [
+      "publish_authoritative_status(self.status_handle,AuthoritativeStatus::Running)",
+    ]) &&
+    hasOrderedCompactMarkers(scmAuthorityAdmissionGate, [
+      "&mutself",
+      "operation:implFnOnce()->R",
+      "with_authoritative_running_admission_gate(self.status_handle,operation)",
+    ]) &&
+    hasOrderedCompactMarkers(scmAuthorityPublishStopped, [
+      "publish_authoritative_status(self.status_handle,AuthoritativeStatus::Stopped)",
+      "ifpublished",
+      "self.status_handle=0",
+      "published",
+    ]) &&
+    compactRust(authoritativeStatusPredecessor) ===
+      "fnauthoritative_status_predecessor_is_exact(context:&PublishedControlContext,status:AuthoritativeStatus,)->bool{matchstatus{AuthoritativeStatus::Running=>{context.status.dwCurrentState==SERVICE_START_PENDING&&!context.finishing&&!context.control_error&&!context.stop_requested}AuthoritativeStatus::Stopped=>{context.status.dwCurrentState==SERVICE_STOP_PENDING&&!context.control_error&&(context.stop_requested||context.finishing)}}}" &&
+    hasOrderedCompactMarkers(withAuthoritativeAdmissionGate, [
+      "letcontext=lock_context()",
+      "if!running_admission_gate_is_exact(&context,expected_status_handle)",
+      "returnNone",
+      "letresult=operation()",
+      "drop(context)",
+      "Some(result)",
+    ]) &&
+    compactRust(runningAdmissionGateIsExact) ===
+      "fnrunning_admission_gate_is_exact(context:&PublishedControlContext,expected_status_handle:usize,)->bool{expected_status_handle!=0&&context.status_handle==expected_status_handle&&context.status.dwCurrentState==SERVICE_RUNNING&&!context.stop_requested&&!context.control_error&&!context.finishing}" &&
+    hasOrderedCompactMarkers(publishAuthoritativeStatus, [
+      "letmutcontext=lock_context()",
+      "authoritative_status_predecessor_is_exact(&context,status)",
+      "AuthoritativeStatus::Stopped=>",
+      "letfinal_status=status_value(SERVICE_STOPPED,0,0,0,0)",
+      "letstatus_handle=SERVICE_STATUS_HANDLE(context.status_handleas*mutc_void)",
+      "context.status_handle=0",
+      "context.stop_event=0",
+      "context.status=final_status",
+      "context.finishing=true",
+      "send_status(status_handle,&final_status)",
+    ]) &&
+    platformServiceProduction.includes(
+      "static CONTROL_CONTEXT: Mutex<PublishedControlContext> =",
+    ) &&
     rustCallSites(windowsProduction, "start_windows_runtime").length === 1 &&
     !/\bstart_windows_runtime\b/u.test(otherProductionCode) &&
     [...windowsCode.matchAll(/\bbegin_windows_lifecycle\b/gu)].length === 1 &&
     !/\bbegin_windows_lifecycle\b/u.test(otherProductionCode) &&
+    !/\bWindowsServiceEffectSource\b/u.test(otherProductionCode) &&
+    !/\bWindowsServiceEffectSource\s*::\s*new\s*\(/u.test(
+      `${otherProductionCode}\n${serviceEffectsCode}`,
+    ) &&
+    !/\b(?:Self|WindowsServiceEffectSource)\s*::\s*new\s*\(/u.test(
+      rustLexicalCode(serviceEffectsWithoutSourceMint),
+    ) &&
+    !/\.\s*into_authority\s*\(/u.test(
+      `${otherProductionCode}\n${serviceEffectsCode}`,
+    ) &&
+    !/\bbind_registered_status\b/u.test(
+      rustLexicalCode(platformServiceProduction.replace(scmAuthorityBind, "")),
+    ) &&
+    !/\b(?:WindowsServiceEffectSource|begin_windows_lifecycle|bind_registered_status)\b/u.test(
+      rustLexicalCode(main),
+    ) &&
     compactRust(beginLifecycle).startsWith(
       "pub(super)fnbegin_windows_lifecycle(writer:HeldServiceRunStateWriter,authority:RuntimeRunStateAuthority<'_>,)->Result<WindowsStartupAttempt<'_>,WindowsLifecycleExitRequired<'_>>",
     ) &&
@@ -15356,9 +16088,37 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
     compactRust(effectPurposeStage) ===
       "constfnstage(self)->WindowsLifecycleEffectStage{matchself{Self::PrepareListeners=>WindowsLifecycleEffectStage::PrepareListeners,Self::PublishScmRunning=>WindowsLifecycleEffectStage::PublishScmRunning,Self::OpenAdmission=>WindowsLifecycleEffectStage::OpenAdmission,Self::CloseAdmission=>WindowsLifecycleEffectStage::CloseAdmission,Self::DrainListeners=>WindowsLifecycleEffectStage::DrainListeners,Self::PublishScmStopped=>WindowsLifecycleEffectStage::PublishScmStopped,}}" &&
     compactType(effectsProduction, "SealedWindowsLifecycleEffectBackend") ===
-      "enumSealedWindowsLifecycleEffectBackend{#[cfg(not(test))]Unavailable(Infallible),}" &&
-    compactRust(effectCoreExecute) ===
-      "fnexecute(self,_purpose:EffectPurpose)->Result<Self,WindowsLifecycleEffectFailure>{matchself.backend{SealedWindowsLifecycleEffectBackend::Unavailable(never)=>matchnever{},}}" &&
+      "enumSealedWindowsLifecycleEffectBackend{Service(WindowsServiceEffectBackend),#[cfg(not(test))]Unavailable(Infallible),}" &&
+    hasOrderedCompactMarkers(sealedEffectBackendExecute, [
+      "self,binding:WindowsLifecycleEffectBinding,attempt:NonZeroU64,purpose:EffectPurpose",
+      "Self::Service(backend)",
+      "backend.execute(binding,attempt,purpose)",
+      "Self::Service(backend)",
+      "Self::Unavailable(never)=>matchnever{}",
+    ]) &&
+    hasOrderedCompactMarkers(effectCoreExecute, [
+      "letSelf{binding,next_attempt,backend,}=self",
+      "backend.execute(binding,next_attempt,purpose)",
+      "letmutcore=Self{binding,next_attempt,backend,}",
+      "BackendEffectOutcome::KnownNotApplied",
+      "BackendEffectOutcome::Ambiguous",
+      "BackendEffectOutcome::InvalidReceipt",
+      "receipt.binding!=core.binding",
+      "receipt.attempt!=core.next_attempt",
+      "receipt.purpose!=purpose",
+      "checked_add(1)",
+      "core.next_attempt=next",
+      "Ok(core)",
+    ]) &&
+    effectsProduction.split(
+      "static NEXT_EFFECT_BINDING: AtomicU64 = AtomicU64::new(1);",
+    ).length - 1 === 1 &&
+    compactRust(allocateEffectBinding) ===
+      "fnallocate_effect_binding()->Option<WindowsLifecycleEffectBinding>{letvalue=NEXT_EFFECT_BINDING.fetch_update(Ordering::Relaxed,Ordering::Relaxed,|current|{current.checked_add(1)}).ok()?;NonZeroU64::new(value).map(WindowsLifecycleEffectBinding)}" &&
+    (effectsCode.match(/\bNEXT_EFFECT_BINDING\b/gu) ?? []).length === 2 &&
+    (serviceEffectsCode.match(/\ballocate_effect_binding\s*\(/gu) ?? [])
+      .length === 1 &&
+    !/\ballocate_effect_binding\b/u.test(otherProductionCode) &&
     rustStructLiteralSites(
       effectsProduction,
       "WindowsLifecycleEffectAuthority",
@@ -15426,12 +16186,12 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
       "fixture.cleanup_checked()",
     ]) &&
     hasOrderedCompactMarkers(effectCoreTestExecute, [
-      "ifreceipt.binding!=self.binding",
-      "receipt.attempt!=self.next_attempt",
+      "receipt.binding!=core.binding",
+      "receipt.attempt!=core.next_attempt",
       "receipt.purpose!=purpose",
-      "self.next_attempt.get().checked_add(1).and_then(NonZeroU64::new)",
-      "self.fail(purpose,WindowsLifecycleEffectDisposition::InvalidReceipt)",
-      "self.next_attempt=next",
+      "core.next_attempt.get().checked_add(1).and_then(NonZeroU64::new)",
+      "core.fail(purpose,WindowsLifecycleEffectDisposition::InvalidReceipt)",
+      "core.next_attempt=next",
     ]) &&
     !/\b(?:wrapping_add|saturating_add)\b/u.test(effectsFullCode) &&
     compactType(effectsProduction, "EffectReceipt").includes(
@@ -15665,16 +16425,24 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
     ) &&
     rustUnsafeKeywordCount(windowsProduction) === 0 &&
     rustUnsafeKeywordCount(effectsProduction) === 0 &&
+    rustUnsafeKeywordCount(serviceEffectsProduction) === 0 &&
     rustAuthorityTypeErasureSites(windowsProduction).length === 0 &&
     rustAuthorityTypeErasureSites(effectsProduction).length === 0 &&
+    rustAuthorityTypeErasureSites(serviceEffectsProduction).length === 0 &&
     !forbiddenEffectEscape.test(windowsCode) &&
     !forbiddenEffectEscape.test(effectsCode) &&
+    !forbiddenEffectEscape.test(serviceEffectsCode) &&
     !forbiddenVacuousProductionEscape.test(windowsCode) &&
     !forbiddenVacuousProductionEscape.test(effectsCode) &&
+    !forbiddenVacuousProductionEscape.test(serviceEffectsCode) &&
     JSON.stringify(windowsTests.map(({ name }) => name)) ===
       JSON.stringify(keyAgentServicePhaseTwoGWindowsLifecycleTestNames) &&
     windowsTests.length === 22 &&
     windowsTests.every(({ ignored }) => !ignored) &&
+    JSON.stringify(serviceEffectsTests.map(({ name }) => name)) ===
+      JSON.stringify(keyAgentServicePhaseTwoHWindowsServiceEffectsTestNames) &&
+    serviceEffectsTests.length === 9 &&
+    serviceEffectsTests.every(({ ignored }) => !ignored) &&
     JSON.stringify(runtimeTests.map(({ name }) => name)) ===
       JSON.stringify(keyAgentServicePhaseTwoFCRuntimeTestNames) &&
     runtimeTests.length === 14 &&
@@ -15736,6 +16504,53 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
       "compiled policies remain `None`",
       "not release-ready",
     ].every((marker) => architectureSlice.includes(marker)) &&
+    phaseTwoHDesignSlice.length > 0 &&
+    phaseTwoHArchitectureRows.length === 1 &&
+    architectureDocument.includes(
+      "The phase rows below are chronological boundary snapshots.",
+    ) &&
+    architectureDocument.includes(
+      "Phase 2H supersedes Phase 2G's historical absence of the dormant",
+    ) &&
+    [
+      phaseTwoHDesignSlice,
+      phaseTwoHArchitectureSlice,
+      normalizedSecurityDecisions,
+      normalizedPlatformReadme,
+    ].every(
+      (document) =>
+        document.includes(phaseTwoHStatusMarker) &&
+        [
+          "WindowsServiceEffectSource",
+          "WindowsServiceEffectBackend",
+          "8-stage",
+          "leaf effects",
+          "close_admission",
+          "AdmissionClosedStatusRpcWorker::drain",
+          "CONTROL_CONTEXT",
+          "22/22",
+          "9/9",
+          "silent exit 78",
+          "`None`",
+          "STOP-SHIP",
+        ].every((marker) => document.includes(marker)),
+    ) &&
+    [
+      phaseTwoHDesignSlice,
+      normalizedArchitectureDocument,
+      normalizedSecurityDecisions,
+      normalizedPlatformReadme,
+    ].every(
+      (document) =>
+        /(?:^|[^A-Za-z])trusted production Broker\/service-peer authentication/u.test(
+          document,
+        ) &&
+        ["mapped-I/O/", "peer-race proof"].every((marker) =>
+          document.includes(marker),
+        ),
+    ) &&
+    !phaseTwoHDesignSlice.includes("Phase 2H status: passed") &&
+    !phaseTwoHArchitectureSlice.includes("Phase 2H status: passed") &&
     !designSlice.includes("Phase 2G status: passed") &&
     main.includes("const SERVICE_UNAVAILABLE: i32 = 78;")
   );
@@ -15756,11 +16571,14 @@ const keyAgentServicePhaseTwoInputs = Object.freeze({
   lifecycleTests: keyAgentServiceLifecycleCoreTests,
   windowsLifecycleSource: keyAgentServiceWindowsLifecycle,
   windowsLifecycleEffectsSource: keyAgentServiceWindowsLifecycleEffects,
+  windowsServiceEffectsSource: keyAgentServiceWindowsServiceEffects,
   directoryInventory: keyAgentServiceLifecycleDirectoryInventory,
   provisioningDirectoryInventory:
     keyAgentServiceDurableRunStateDirectoryInventory,
   designDocument: keyAgentServiceDesign,
   architectureDocument: sepoliaArchitectureDoc,
+  securityDecisionsDocument: keyAgentServiceSecurityDecisions,
+  platformReadmeDocument: keyAgentServicePlatformReadme,
 });
 const mutateKeyAgentServicePhaseTwoInput = (
   field,
@@ -16868,7 +17686,10 @@ const keyAgentServicePhaseTwoGInputs = Object.freeze({
   lifecycleTests: keyAgentServiceLifecycleCoreTests,
   windowsLifecycleSource: keyAgentServiceWindowsLifecycle,
   windowsLifecycleEffectsSource: keyAgentServiceWindowsLifecycleEffects,
+  windowsServiceEffectsSource: keyAgentServiceWindowsServiceEffects,
   windowsLifecycleTests: keyAgentServiceWindowsLifecycleTests,
+  securityDecisionsDocument: keyAgentServiceSecurityDecisions,
+  platformReadmeDocument: keyAgentServicePlatformReadme,
 });
 const mutateKeyAgentServicePhaseTwoGInput = (
   field,
@@ -17920,8 +18741,8 @@ const keyAgentServicePhaseTwoGSemanticMutationProbes = [
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "windowsLifecycleEffectsSource",
-    "enum SealedWindowsLifecycleEffectBackend {\n    #[cfg(test)]\n    Fixture(FixtureWindowsLifecycleEffectBackend),",
-    "enum SealedWindowsLifecycleEffectBackend {\n    Fixture(FixtureWindowsLifecycleEffectBackend),",
+    "enum SealedWindowsLifecycleEffectBackend {\n    Service(WindowsServiceEffectBackend),\n    #[cfg(test)]\n    Fixture(FixtureWindowsLifecycleEffectBackend),",
+    "enum SealedWindowsLifecycleEffectBackend {\n    Service(WindowsServiceEffectBackend),\n    Fixture(FixtureWindowsLifecycleEffectBackend),",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "windowsLifecycleEffectsSource",
@@ -17936,7 +18757,7 @@ const keyAgentServicePhaseTwoGSemanticMutationProbes = [
   mutateKeyAgentServicePhaseTwoGReplacements(
     "windowsLifecycleEffectsSource",
     [
-      ["receipt.binding != self.binding", "false"],
+      ["receipt.binding != core.binding", "false"],
       [
         "impl fmt::Debug for EffectCore {",
         "#[cfg(test)]\nfn receipt_contract_decoy(receipt: EffectReceipt, purpose: EffectPurpose, mut core: EffectCore, next: NonZeroU64) {\n    if receipt.binding != core.binding {}\n    let _ = receipt.attempt != core.next_attempt;\n    let _ = receipt.purpose != purpose;\n    let _ = core.next_attempt.get().checked_add(1).and_then(NonZeroU64::new);\n    let _ = core.fail(purpose, WindowsLifecycleEffectDisposition::InvalidReceipt);\n    core.next_attempt = next;\n}\n\nimpl fmt::Debug for EffectCore {",
@@ -17945,7 +18766,7 @@ const keyAgentServicePhaseTwoGSemanticMutationProbes = [
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "windowsLifecycleEffectsSource",
-    "receipt.attempt != self.next_attempt",
+    "receipt.attempt != core.next_attempt",
     "false",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
@@ -17955,8 +18776,8 @@ const keyAgentServicePhaseTwoGSemanticMutationProbes = [
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "windowsLifecycleEffectsSource",
-    "self\n                    .next_attempt\n                    .get()\n                    .checked_add(1)",
-    "self\n                    .next_attempt\n                    .get()\n                    .saturating_add(1)",
+    "core\n                    .next_attempt\n                    .get()\n                    .checked_add(1)",
+    "core\n                    .next_attempt\n                    .get()\n                    .saturating_add(1)",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "windowsLifecycleEffectsSource",
@@ -18217,6 +19038,286 @@ const keyAgentServicePhaseTwoGSemanticMutationProbes = [
     "pub(in crate::key_agent_service) enum WindowsLifecycleEffectStage {\n    PrepareListeners,\n    PublishScmRunning,\n    OpenAdmission,\n    CloseAdmission,\n    DrainListeners,\n    PublishScmStopped,\n}",
     "pub(in crate::key_agent_service) enum WindowsLifecycleEffectStage {\n    PrepareListeners,\n    PublishScmRunning,\n    OpenAdmission,\n    CloseAdmission,\n    DrainListeners,\n    PublishScmStopped,\n    ForbiddenSeventh,\n}",
   ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    '#[path = "windows_service_effects.rs"]\nmod windows_service_effects;',
+    '#[cfg(test)]\n#[path = "windows_service_effects.rs"]\nmod windows_service_effects;',
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "platformService",
+    "pub(in crate::key_agent_service) use sys::WindowsScmStatusAuthority;",
+    "pub(crate) use sys::WindowsScmStatusAuthority;",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "platformService",
+    "pub(in crate::key_agent_service) struct WindowsScmStatusAuthority {\n        status_handle: usize,\n    }",
+    "pub(in crate::key_agent_service) struct WindowsScmStatusAuthority {\n        status_handle: usize,\n        raw_escape: usize,\n    }",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "platformService",
+    "        fn bind_registered_status(status_handle: SERVICE_STATUS_HANDLE) -> Self {",
+    "        pub(super) fn bind_registered_status(status_handle: SERVICE_STATUS_HANDLE) -> Self {",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "platformService",
+    "                    && !context.control_error\n                    && !context.stop_requested",
+    "                    && !context.control_error",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "platformService",
+    "                context.status.dwCurrentState == SERVICE_STOP_PENDING\n                    && !context.control_error",
+    "                context.status.dwCurrentState == SERVICE_RUNNING\n                    && !context.control_error",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "platformService",
+    "        let result = operation();\n        drop(context);",
+    "        drop(context);\n        let result = operation();",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "platformService",
+    "            && !context.stop_requested\n            && !context.control_error\n            && !context.finishing",
+    "            && !context.stop_requested\n            && !context.finishing",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "platformService",
+    "                context.status_handle = 0;\n                context.stop_event = 0;\n                context.status = final_status;\n                context.finishing = true;\n\n                if send_status(status_handle, &final_status).is_err() {",
+    "                if send_status(status_handle, &final_status).is_err() {\n                    context.control_error = true;\n                    return false;\n                }\n                context.status_handle = 0;\n                context.stop_event = 0;\n                context.status = final_status;\n                context.finishing = true;\n\n                if false {",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "platformService",
+    "#[cfg(windows)]\n#[allow(dead_code, unsafe_code)]\nmod sys {",
+    "#[cfg(all(windows, debug_assertions))]\n#[allow(dead_code, unsafe_code)]\nmod sys {",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "platformService",
+    "#[allow(dead_code)]\nmod lifecycle_core;",
+    "#[allow(dead_code)]\nmod lifecycle_core;\nfn hidden_effect_source_caller(source: crate::key_agent_service::windows_lifecycle::effects::windows_service_effects::WindowsServiceEffectSource) { let _ = source.into_authority(); }",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "platformService",
+    "#[allow(dead_code)]\nmod lifecycle_core;",
+    "#[allow(dead_code)]\nmod lifecycle_core;\nfn hidden_scm_authority_mint(handle: windows::Win32::System::Services::SERVICE_STATUS_HANDLE) { let _ = sys::WindowsScmStatusAuthority::bind_registered_status(handle); }",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "platformService",
+    "#[allow(dead_code)]\nmod lifecycle_core;",
+    "#[allow(dead_code)]\nmod lifecycle_core;\nfn hidden_lifecycle_begin(writer: HeldServiceRunStateWriter, authority: RuntimeRunStateAuthority<'_>) { let _ = windows_lifecycle::begin_windows_lifecycle(writer, authority); }",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "main",
+    "const SERVICE_UNAVAILABLE: i32 = 78;",
+    "const SERVICE_UNAVAILABLE: i32 = 78;\nfn hidden_product_composition() { let _ = WindowsServiceEffectSource::new; let _ = begin_windows_lifecycle; }",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "designDocument",
+    "**Current Phase 2H status: started, not passed.**",
+    "**Current Phase 2H status: passed.**",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "architectureDocument",
+    "**Current Phase 2H status: started, not passed.**",
+    "**Current Phase 2H status: passed.**",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "architectureDocument",
+    "Phase 2H supersedes Phase 2G's historical absence of the dormant",
+    "Phase 2H does not supersede Phase 2G's historical absence of the dormant",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "securityDecisionsDocument",
+    "**Current Phase 2H status: started, not passed.**",
+    "**Current Phase 2H status: passed.**",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "platformReadmeDocument",
+    "**Current Phase 2H status: started, not passed.**",
+    "**Current Phase 2H status: passed.**",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "fn production_effect_backend_success_has_exact_six_stage_order()",
+    "fn production_effect_backend_success_skips_stage_order()",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "    #[test]\n    fn production_effect_source_is_single_use_redacted_and_resource_opaque()",
+    "    #[test]\n    #[ignore = \"mutated\"]\n    fn production_effect_source_is_single_use_redacted_and_resource_opaque()",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "    Stopped,\n    Terminal,\n}",
+    "    Stopped,\n    HiddenNinthStage,\n    Terminal,\n}",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "            Self::AdmissionClosed => Some(EffectPurpose::DrainListeners),",
+    "            Self::AdmissionClosed => Some(EffectPurpose::PublishScmStopped),",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "            Self::AdmissionClosed => Self::ListenersDrained,",
+    "            Self::AdmissionClosed => Self::Stopped,",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "        if stage.expected_purpose() != Some(purpose) {",
+    "        if false {",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "                if receipt.binding == binding\n                    && receipt.attempt == attempt\n                    && receipt.purpose == purpose =>",
+    "                if receipt.attempt == attempt\n                    && receipt.purpose == purpose =>",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "            WindowsServiceDriverOutcome::KnownNotApplied => (\n                WindowsServiceEffectBackendStage::Terminal,\n                BackendEffectOutcome::KnownNotApplied,\n            ),",
+    "            WindowsServiceDriverOutcome::KnownNotApplied => (\n                stage.after_success(),\n                BackendEffectOutcome::KnownNotApplied,\n            ),",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "struct WindowsServiceEffectDriver<S, R>\nwhere",
+    "#[cfg(not(test))]\nstruct WindowsServiceEffectDriver<S, R>\nwhere",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "impl<S, R> WindowsServiceEffectDriver<S, R>\nwhere",
+    "#[cfg(not(test))]\nimpl<S, R> WindowsServiceEffectDriver<S, R>\nwhere",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "pub(in crate::key_agent_service) struct WindowsServiceEffectSourceError {\n    _source: WindowsServiceEffectSource,\n}",
+    "pub(in crate::key_agent_service) struct WindowsServiceEffectSourceError {\n    _source: WindowsServiceEffectSource,\n}\nimpl WindowsServiceEffectSourceError { pub(in crate::key_agent_service) fn source(&self) -> &WindowsServiceEffectSource { &self._source } }",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    'formatter.write_str("WindowsServiceEffectSourceError([REDACTED])")',
+    'write!(formatter, "{:#?}", self._source)',
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "                    purpose: EffectPurpose::PrepareListeners,",
+    "                    purpose: EffectPurpose::PublishScmRunning,",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "                purpose: EffectPurpose::PublishScmRunning,",
+    "                purpose: EffectPurpose::OpenAdmission,",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "                purpose: EffectPurpose::OpenAdmission,",
+    "                purpose: EffectPurpose::CloseAdmission,",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "                purpose: EffectPurpose::CloseAdmission,",
+    "                purpose: EffectPurpose::DrainListeners,",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "                    purpose: EffectPurpose::DrainListeners,",
+    "                    purpose: EffectPurpose::PublishScmStopped,",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "                purpose: EffectPurpose::PublishScmStopped,",
+    "                purpose: EffectPurpose::PrepareListeners,",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "        let gated = scm.with_running_admission_gate(|| rpc.begin_accepting(&mut worker));",
+    "        let gated = Some(rpc.begin_accepting(&mut worker));",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "        if !matches!(gated, Some(Ok(()))) {\n            let worker = rpc.close_admission(worker);",
+    "        if !matches!(gated, Some(Ok(()))) {\n            let worker = worker;",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "            Err(WindowsServiceRpcError::RuntimeStateRetained) => (\n                Self {\n                    scm,\n                    rpc,\n                    worker: WindowsServiceWorker::Retained,\n                },\n                WindowsServiceDriverOutcome::Ambiguous,\n            ),",
+    "            Err(WindowsServiceRpcError::RuntimeStateRetained) => (\n                Self {\n                    scm,\n                    rpc,\n                    worker: WindowsServiceWorker::NotStarted,\n                },\n                WindowsServiceDriverOutcome::KnownNotApplied,\n            ),",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "            Err(\n                WindowsServiceRpcError::Unavailable | WindowsServiceRpcError::RuntimeStateRetained,\n            ) => (",
+    "            Err(WindowsServiceRpcError::RuntimeStateRetained) => (",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "        self.0.with_running_admission_gate(operation)",
+    "        Some(operation())",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "        worker.close_admission()",
+    "        unsafe { core::mem::transmute(worker) }",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "        worker.drain().map_err(map_status_rpc_error)",
+    "        Ok(())",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "//! Dormant production adapter for the six Windows service lifecycle effects.",
+    "//! Dormant production adapter for the six Windows service lifecycle effects.\nfn hidden_source_mint(scm: WindowsScmStatusAuthority) { let _ = WindowsServiceEffectSource::new(scm); }",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "platformService",
+    "pub(in crate::key_agent_service) use sys::WindowsScmStatusAuthority;",
+    "pub(in crate::key_agent_service) use sys::WindowsScmStatusAuthority;\npub(in crate::key_agent_service) use sys::CONTROL_CONTEXT;",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "designDocument",
+    "trusted production Broker/service-peer authentication",
+    "untrusted production Broker/service-peer authentication",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "platformReadmeDocument",
+    "mapped-I/O/\n  peer-race proof",
+    "mapped-I/O is assumed; peer-race proof",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "#[cfg(not(test))]\ntype SealedWindowsServiceEffectDriver =\n    WindowsServiceEffectDriver<NativeWindowsServiceScmLeaf, NativeWindowsServiceRpcLeaf>;",
+    "#[cfg(test)]\ntype SealedWindowsServiceEffectDriver =\n    WindowsServiceEffectDriver<NativeWindowsServiceScmLeaf, NativeWindowsServiceRpcLeaf>;",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "#[cfg(test)]\nmod tests {",
+    "#[cfg(test)]\nfn hidden_fixture_receipt(binding: WindowsLifecycleEffectBinding, attempt: NonZeroU64) { let _ = EffectReceipt { binding, attempt, purpose: EffectPurpose::PrepareListeners }; }\n#[cfg(test)]\nmod tests {",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "#[must_use = \"the service effect source must bind to one exact lifecycle\"]\npub(in crate::key_agent_service) struct WindowsServiceEffectSource {",
+    "#[must_use = \"the service effect source must bind to one exact lifecycle\"]\n#[derive(Clone)]\npub(in crate::key_agent_service) struct WindowsServiceEffectSource {",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "static NEXT_EFFECT_BINDING: AtomicU64 = AtomicU64::new(1);",
+    "static NEXT_EFFECT_BINDING: AtomicU64 = AtomicU64::new(0);",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "            current.checked_add(1)",
+    "            current.wrapping_add(1).into()",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "        let Some(binding) = super::allocate_effect_binding() else {",
+    "        let Some(binding) = NonZeroU64::new(1).map(WindowsLifecycleEffectBinding) else {",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "architectureDocument",
+    "trusted\nproduction Broker/service-peer authentication, mapped-I/O/peer-race proof",
+    "untrusted\nproduction Broker/service-peer authentication, mapped-I/O/peer-race proof",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "securityDecisionsDocument",
+    "trusted production Broker/service-peer authentication and mapped-I/O/peer-race\nproof",
+    "trusted production Broker/service-peer authentication and mapped-I/O is assumed; peer-race\nproof",
+  ),
 ];
 const keyAgentServicePhaseTwoGPinMutationProbes = [
   mutateKeyAgentServicePhaseTwoGInput(
@@ -18243,6 +19344,16 @@ const keyAgentServicePhaseTwoGPinMutationProbes = [
     "windowsLifecycleTests",
     "use std::error::Error;",
     "use std::error::Error; // mutated",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "//! Dormant production adapter for the six Windows service lifecycle effects.",
+    "//! Dormant production adapter for the six Windows service lifecycle effects (mutated).",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsServiceEffectsSource",
+    "#[cfg(test)]\nmod tests {",
+    "#[cfg(test)]\n// mutated service-effect tests\nmod tests {",
   ),
 ];
 const keyAgentServicePhaseTwoFBPinMutationProbes = [
@@ -18548,16 +19659,16 @@ requireInvariant(
 requireInvariant(
   keyAgentServicePhaseTwoH2MutationContract &&
     keyAgentServicePhaseTwoGSemanticBaseResult &&
-    keyAgentServicePhaseTwoGSemanticMutationProbes.length === 65 &&
+    keyAgentServicePhaseTwoGSemanticMutationProbes.length === 121 &&
     keyAgentServicePhaseTwoGSemanticMutationResults.every(
       ({ changed, rejected }) => changed && rejected,
     ) &&
     keyAgentServicePhaseTwoGPinBaseResult &&
-    keyAgentServicePhaseTwoGPinMutationProbes.length === 5 &&
+    keyAgentServicePhaseTwoGPinMutationProbes.length === 7 &&
     keyAgentServicePhaseTwoGPinMutationResults.every(
       ({ changed, rejected }) => changed && rejected,
     ),
-  `the separate Phase 2G dormant Windows no-secret lifecycle compositor must preserve the exact private lifecycle/effects type and function inventories, the sole direct Phase 2F-c start edge, zero external start/begin/effect-authority callers, and the two-argument begin entry with effects attached only after exact Active; keep the production effect backend uninhabited with zero constructor/source/caller while projecting every fixture, binding-witness, exhaustion, and accessor surface out of production; bind each of six one-shot receipts to the opaque lifecycle binding, nonzero checked attempt, and exact purpose; reject duplicate, cross-bound, wrong-purpose, and exhausted attempts; preserve effect-before-policy startup, admission-close then begin-stop/reject/invalidate/effect-drain/fixed-cleanup ordering without a generic cleanup delegate; carry effect authority through every durable terminal class; require writer release to produce WindowsScmStopPending and preserve both WindowsStoppedRunEvidence and the exact effect failure on SCM_STOPPED failure; retain test-only post-release fault isolation, safe move-only redacted authority, fixed 21-core/22-compositor/14-runtime/7-Windows-provisioning/2-authentication/88-durable/56-root inventories, exact documentation limits, external STOP-SHIP obligations, disabled policies, and no release-readiness claim; enforce 65 independently effective Phase 2G semantic mutations, 40 shared H2 authority mutations, and five lifecycle/effects full-versus-production plus compositor-test source-pin mutations; semantic base=${keyAgentServicePhaseTwoGSemanticBaseResult}, H2 base=${keyAgentServicePhaseTwoH2SemanticBaseResult}, pin base=${keyAgentServicePhaseTwoGPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoGSemanticMutationProbes.length}, H2 probe count=${keyAgentServicePhaseTwoH2SemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, failed H2 probes=${JSON.stringify(keyAgentServicePhaseTwoH2SemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index, name }) => ({ index, name })))}, pin probe count=${keyAgentServicePhaseTwoGPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
+  `the combined Phase 2G/2H dormant Windows no-secret lifecycle boundary must preserve the exact private lifecycle/effects/service-adapter inventories, the sole direct Phase 2F-c start edge, zero external start/begin/effect-source/SCM-mint/executable callers, and the two-argument begin entry with effects attached only after exact Active; keep the production Service backend and cfg-independent generic six-leaf driver compiled but dormant, with an eight-state exact-purpose automaton, exact binding/attempt/purpose receipt validation, fail-closed admission, closed/drained RPC typestate, exact native SCM/RPC delegation, move-only redacted source-exhaustion ownership, and no fixture-only parallel mapping; preserve effect-before-policy startup and admission-close then begin-stop/reject/invalidate/effect-drain/fixed-cleanup ordering without a generic cleanup delegate; carry effect authority through every durable terminal class; require writer release to produce WindowsScmStopPending and preserve both WindowsStoppedRunEvidence and the exact effect failure on SCM_STOPPED failure; retain exact private SCM authority predecessor/gate/terminalization rules, production-compiled RPC dependencies with debug-only executable probes, exact 21-core/22-compositor/9-adapter/14-runtime/7-Windows-provisioning/2-authentication/88-durable/56-root inventories, chronological Phase 2G/2H docs, trusted-peer and mapped-I/O STOP-SHIP limits, silent exit 78, disabled policies, and no release-readiness claim; enforce 121 independently effective Phase 2G/2H semantic mutations, 40 shared H2 authority mutations, and seven lifecycle/effects/adapter full-versus-production plus compositor-test source-pin mutations; semantic base=${keyAgentServicePhaseTwoGSemanticBaseResult}, H2 base=${keyAgentServicePhaseTwoH2SemanticBaseResult}, pin base=${keyAgentServicePhaseTwoGPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoGSemanticMutationProbes.length}, H2 probe count=${keyAgentServicePhaseTwoH2SemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, failed H2 probes=${JSON.stringify(keyAgentServicePhaseTwoH2SemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index, name }) => ({ index, name })))}, pin probe count=${keyAgentServicePhaseTwoGPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
 );
 requireInvariant(
   keyAgentServicePhaseTwoEPinBaseResult &&
@@ -19088,7 +20199,7 @@ const keyAgentServiceTokenContract = ({
       ) &&
       policy.includes("creation_token.revalidate()?;") &&
       compactRust(serviceTokenStart).includes(
-        "crate::key_agent_service_token::verify_current_key_agent_service_token_fixture().map(|proof|Self{_proof:proof}).map_err(|_|WorkerStartFailure::Boundary)",
+        "crate::key_agent_service_token::verify_current_key_agent_service_token_fixture().map(|proof|Self{proof}).map_err(|_|WorkerStartFailure::Boundary)",
       ) &&
       compactRust(runServiceTokenDispatcher) ===
         "pub(super)fnrun_service_token_dispatcher()->Result<(),KeyAgentServiceFixtureError>{run_dispatcher_with(service_token_service_main)}" &&
@@ -22102,7 +23213,7 @@ const keyAgentServiceRpcFixturePolicyContract = ({
     JSON.stringify(directories) ===
       JSON.stringify(approvedKeyAgentServiceRpcFixtureDirectoryInventories) &&
     root.includes("#![allow(unsafe_code)]") &&
-    /modauth;#\[cfg\(feature=\)\]modcoordinator;moddispatch;modepoch;(?:#\[allow\(dead_code\)\])?modexpected_peer;modlifecycle;#\[cfg\(feature=\)\]modrouter;/u.test(
+    /modauth;#\[cfg\(all\(feature=,debug_assertions\)\)\]modcoordinator;moddispatch;modepoch;(?:#\[allow\(dead_code\)\])?modexpected_peer;modlifecycle;#\[cfg\(all\(feature=,debug_assertions\)\)\]modrouter;/u.test(
       compactRust(root),
     ) &&
     purePaths.every(
@@ -22207,7 +23318,7 @@ requireInvariant(
 const keyAgentServiceExpectedPeerReexportSource =
   keyAgentServiceRpcFixtureSources[keyAgentServiceRpcFixturePaths.root];
 const keyAgentServiceExpectedPeerReexportSha256 =
-  "5976da5ed23f3c534c844ec44a7a0401510a96efa8a12a431c57ce2ef9e75c96";
+  "51054517242def1bc58d8d2342912ffd2ed94d530c0c0474b8726ed0fa48d3fe";
 const keyAgentServiceExpectedPeerReexportCfg =
   "#[cfg(all(feature=,debug_assertions))]";
 const keyAgentServiceExpectedPeerReexportItem = `${keyAgentServiceExpectedPeerReexportCfg}pub(crate)useself::expected_peer::{EXPECTED_HELPER_QUIESCENCE_MILLISECONDS,ExpectedHelperAdmission,ExpectedHelperLease,ExpectedHelperPeer,ExpectedHelperRole,ExpectedPeerKey,ExpectedPeerRegistryError,ExpectedPeerVerificationError,};`;
@@ -22420,9 +23531,18 @@ const keyAgentServiceRpcLifecycleContract = ({ sources, platformService }) => {
     const listeningImpl = oneImpl(
       lifecycle,
       "ListeningStatusRpcServer<O, H>");
+    const admissionClosedImpl = oneImpl(
+      lifecycle,
+      "AdmissionClosedStatusRpcServer<O, H>",
+    );
     const listeningDrop = oneImpl(
       lifecycle,
       "Drop for ListeningStatusRpcServer<O, H>",
+      true,
+    );
+    const admissionClosedDrop = oneImpl(
+      lifecycle,
+      "Drop for AdmissionClosedStatusRpcServer<O, H>",
       true,
     );
     const windowsOps = oneImpl(root, "RpcOps for WindowsRpcOps", true);
@@ -22432,9 +23552,24 @@ const keyAgentServiceRpcLifecycleContract = ({ sources, platformService }) => {
       listeningImpl,
       "enable_admission_after_scm_running",
     );
-    const stopAndDrain = rustFunctionBlock(listeningImpl, "stop_and_drain");
+    const closeAdmission = rustFunctionBlock(
+      listeningImpl,
+      "close_admission",
+    );
+    const admissionClosedDrain = rustFunctionBlock(
+      admissionClosedImpl,
+      "drain",
+    );
     const listeningDropFunction = rustFunctionBlock(listeningDrop, "drop");
+    const admissionClosedDropFunction = rustFunctionBlock(
+      admissionClosedDrop,
+      "drop",
+    );
     const drainResources = rustFunctionBlock(lifecycle, "drain_resources");
+    const drainClosedResources = rustFunctionBlock(
+      lifecycle,
+      "drain_closed_resources",
+    );
     const releaseResources = rustFunctionBlock(lifecycle, "release_resources");
     const workerStart = rustFunctionBlock(root, "start");
     const workerStartLpac = rustFunctionBlock(root, "start_lpac_rpc_probe");
@@ -22443,7 +23578,19 @@ const keyAgentServiceRpcLifecycleContract = ({ sources, platformService }) => {
       "start_status_rpc_server",
     );
     const workerBegin = rustFunctionBlock(root, "begin_accepting");
-    const workerStop = rustFunctionBlock(root, "stop_and_drain");
+    const workerImpl = oneImpl(root, "impl StatusRpcWorker");
+    const admissionClosedWorkerImpl = oneImpl(
+      root,
+      "AdmissionClosedStatusRpcWorker",
+    );
+    const workerCloseAdmission = rustFunctionBlock(
+      workerImpl,
+      "close_admission",
+    );
+    const workerDrain = rustFunctionBlock(
+      admissionClosedWorkerImpl,
+      "drain",
+    );
     const callbackPermit = rustFunctionBlock(
       root,
       "try_callback_auth_permit");
@@ -22609,21 +23756,40 @@ const keyAgentServiceRpcLifecycleContract = ({ sources, platformService }) => {
         "resources.hooks.set_admission(true)",
         "self.admission_open=true",
       ]) &&
-      hasOrderedCompactMarkers(stopAndDrain, [
+      hasOrderedCompactMarkers(closeAdmission, [
         "self.resources.take()",
-        "ManuallyDrop::into_inner(resources)",
+        "std::process::abort()",
+        "resources.hooks.set_admission(false)",
         "self.admission_open=false",
-        "drain_resources(resources)",
+        "AdmissionClosedStatusRpcServer{resources:Some(resources),}",
+      ]) &&
+      compactRust(closeAdmission).startsWith(
+        "pub(crate)fnclose_admission(mutself)->AdmissionClosedStatusRpcServer<O,H>{letSome(mutresources)=self.resources.take()else{std::process::abort();}",
+      ) &&
+      hasOrderedCompactMarkers(admissionClosedDrain, [
+        "self.resources.take()",
+        "std::process::abort()",
+        "ManuallyDrop::into_inner(resources)",
+        "drain_closed_resources(resources)",
+        "Ok(())=>Ok(())",
+        "Err((report,retained_resources))=>Err(StopFailure{report,retained_resources,})",
       ]) &&
       hasOrderedCompactMarkers(listeningDropFunction, [
         "resources.hooks.set_admission(false)",
         "resources.hooks.invalidate_epochs()",
         "self.admission_open=false",
       ]) &&
-      lifecycle.includes(
-        "resources: ManuallyDrop<RpcResources<O, H>>") &&
+      hasOrderedCompactMarkers(admissionClosedDropFunction, [
+        "self.resources.as_mut()",
+        "resources.hooks.invalidate_epochs()",
+      ]) &&
+      compactRust(lifecycle).includes(
+        "structAdmissionClosedStatusRpcServer<O,H>whereO:RpcOps,H:LifecycleHooks,{resources:Option<ManuallyDrop<RpcResources<O,H>>>,}") &&
       hasOrderedCompactMarkers(drainResources, [
         "resources.hooks.set_admission(false)",
+        "drain_closed_resources(resources)",
+      ]) &&
+      hasOrderedCompactMarkers(drainClosedResources, [
         "resources.hooks.invalidate_epochs()",
         "resources.ops.stop_server_listening()",
         ".unregister_interface_waiting(resources.interface_spec,true)",
@@ -22632,7 +23798,7 @@ const keyAgentServiceRpcLifecycleContract = ({ sources, platformService }) => {
         "resources.ops.wait_server_listen()",
         "release_resources(resources)",
       ]) &&
-      !compactRust(drainResources).includes(
+      !compactRust(drainClosedResources).includes(
         "ifletErr(error)=resources.ops.stop_server_listening(){resources.ops.wait_server_listen()",
       ) &&
       hasOrderedCompactMarkers(releaseResources, [
@@ -22660,16 +23826,21 @@ const keyAgentServiceRpcLifecycleContract = ({ sources, platformService }) => {
         "worker.begin_accepting()",
       ]) &&
       hasOrderedCompactMarkers(finishService, [
+        "letadmission_closed_worker=worker.map(ScmWorker::close_admission)",
         "StopProgressReporter::start()",
-        "worker.stop_and_drain().is_err()",
+        "worker.drain().is_err()",
         "reporter.finish().is_err()",
         "drop(worker)",
         "stop_event.map(OwnedEvent::close)",
-        "ifworker_failed||progress_failed||event_close_failed",
+        "ifdrain_failed||progress_failed||event_close_failed",
         "return;",
         "letfinal_status=ifletSome(detail)=failure",
         "send_status(status_handle,&final_status)",
       ]) &&
+      keyAgentServiceLiteralCount(
+        compactRust(finishService),
+        "StopProgressReporter::start()",
+      ) === 1 &&
       hasOrderedCompactMarkers(reportStopProgress, [
         "Instant::now().checked_add(Duration::from_millis(STOP_DEADLINE_MILLISECONDS))",
         "std::process::abort()",
@@ -22732,8 +23903,14 @@ const keyAgentServiceRpcLifecycleContract = ({ sources, platformService }) => {
       compactRust(root).includes(
         "implDropforCallbackAuthPermit<'_>{fndrop(&mutself){letprevious=self.context.callback_auth_inflight.fetch_sub(1,Ordering::AcqRel);ifprevious==0{std::process::abort();}}}",
       ) &&
-      hasOrderedCompactMarkers(workerStop, [
-        "server.stop_and_drain()",
+      hasOrderedCompactMarkers(workerCloseAdmission, [
+        "letSelf{server,context}=self",
+        "AdmissionClosedStatusRpcWorker",
+        "server:server.close_admission()",
+        "context",
+      ]) &&
+      hasOrderedCompactMarkers(workerDrain, [
+        "server.drain()",
         "returnErr(StatusRpcWorkerError::RuntimeStateRetained)",
         "context.stop_probe_coordinator_and_helpers()?",
         "clear_context(&context)?",
@@ -22825,8 +24002,8 @@ const keyAgentServiceRpcLifecycleMutationProbes = [
   mutateKeyAgentServiceRpcFixtureSource(
     keyAgentServiceRpcLifecycleInputs,
     keyAgentServiceRpcFixturePaths.lifecycle,
-    "resources: ManuallyDrop<RpcResources<O, H>>",
-    "resources: RpcResources<O, H>",
+    "pub(crate) struct AdmissionClosedStatusRpcServer<O, H>\nwhere\n    O: RpcOps,\n    H: LifecycleHooks,\n{\n    resources: Option<ManuallyDrop<RpcResources<O, H>>>,\n}",
+    "pub(crate) struct AdmissionClosedStatusRpcServer<O, H>\nwhere\n    O: RpcOps,\n    H: LifecycleHooks,\n{\n    resources: Option<RpcResources<O, H>>,\n}",
   ),
   mutateKeyAgentServiceRpcFixtureSource(
     keyAgentServiceRpcLifecycleInputs,
@@ -22839,6 +24016,43 @@ const keyAgentServiceRpcLifecycleMutationProbes = [
     platformService: keyAgentServicePlatformSource.replace(
       "if publish_status(&mut context, SERVICE_RUNNING, 0, 0, 0).is_err()\n            || worker.begin_accepting().is_err()",
       "if worker.begin_accepting().is_err()\n            || publish_status(&mut context, SERVICE_RUNNING, 0, 0, 0).is_err()",
+    ),
+  },
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcLifecycleInputs,
+    keyAgentServiceRpcFixturePaths.lifecycle,
+    "    pub(crate) fn close_admission(mut self) -> AdmissionClosedStatusRpcServer<O, H> {\n        let Some(mut resources) = self.resources.take() else {",
+    "    pub(crate) fn close_admission(mut self) -> AdmissionClosedStatusRpcServer<O, H> {\n        return AdmissionClosedStatusRpcServer { resources: self.resources.take() };\n        let Some(mut resources) = self.resources.take() else {",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcLifecycleInputs,
+    keyAgentServiceRpcFixturePaths.lifecycle,
+    "impl<O, H> Drop for AdmissionClosedStatusRpcServer<O, H>",
+    "impl<O, H> Drop for HiddenAdmissionClosedStatusRpcServer<O, H>",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcLifecycleInputs,
+    keyAgentServiceRpcFixturePaths.lifecycle,
+    "fn drain_closed_resources<O, H>(mut resources: RpcResources<O, H>) -> DrainResult<O, H>\nwhere\n    O: RpcOps,\n    H: LifecycleHooks,\n{\n    resources.hooks.invalidate_epochs();",
+    "fn drain_closed_resources<O, H>(mut resources: RpcResources<O, H>) -> DrainResult<O, H>\nwhere\n    O: RpcOps,\n    H: LifecycleHooks,\n{",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcLifecycleInputs,
+    keyAgentServiceRpcFixturePaths.root,
+    "            server: server.close_admission(),",
+    "            server: unsafe { core::mem::transmute(server) },",
+  ),
+  mutateKeyAgentServiceRpcFixtureSource(
+    keyAgentServiceRpcLifecycleInputs,
+    keyAgentServiceRpcFixturePaths.root,
+    "        if let Err(failure) = server.drain() {",
+    "        if false {",
+  ),
+  {
+    ...keyAgentServiceRpcLifecycleInputs,
+    platformService: keyAgentServicePlatformSource.replace(
+      "        let admission_closed_worker = worker.map(ScmWorker::close_admission);\n        let (drain_failed, progress_failed) = match admission_closed_worker {",
+      "        let reporter_started_before_close = StopProgressReporter::start();\n        let admission_closed_worker = worker.map(ScmWorker::close_admission);\n        let (drain_failed, progress_failed) = match admission_closed_worker {",
     ),
   },
   {
@@ -22880,7 +24094,8 @@ requireInvariant(
     keyAgentServiceRpcLifecycleInputs) &&
     keyAgentServiceRpcLifecycleMutationProbes.every(
       (probe) =>
-        (probe.sources !== keyAgentServiceRpcLifecycleInputs.sources ||
+        (JSON.stringify(probe.sources) !==
+          JSON.stringify(keyAgentServiceRpcLifecycleInputs.sources) ||
           probe.platformService !==
             keyAgentServiceRpcLifecycleInputs.platformService) &&
         !keyAgentServiceRpcLifecycleContract(probe),
@@ -23318,7 +24533,7 @@ const keyAgentServiceRpcLiveProbeContract = ({ source }) => {
         "response.status()==ServiceStatus::Unavailable",
         "response.epoch_nonce()==nonce",
         "response.request_id()==request_id",
-        "letstop_result=worker.stop_and_drain()",
+        "letstop_result=worker.close_admission().drain()",
         "exchange_result?",
         "stop_result",
       ]) &&
@@ -23359,7 +24574,7 @@ const keyAgentServiceRpcLiveProbeMutationProbes = [
     "",
   ),
   mutateKeyAgentServiceRpcLiveProbe(
-    'let stop_result = worker.stop_and_drain().map_err(|_| "drain worker");',
+    'let stop_result = worker.close_admission().drain().map_err(|_| "drain worker");',
     "let stop_result = Ok(());",
   ),
 ];
@@ -23974,7 +25189,7 @@ const keyAgentServiceRpcAuthMilestoneContract = ({ sources }) => {
       /It does not by\s*\n\/\/\/ itself prove LPAC, helper image, role, or service-created provenance/u.test(
         auth,
       ) &&
-      /#\[cfg\(feature\s*=\s*"key-agent-service-lpac-launch-feasibility-test-hook"\)\]\s*pub\(crate\) fn authenticate_role_aware_call/u.test(
+      /#\[cfg\(all\(\s*feature\s*=\s*"key-agent-service-lpac-launch-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\)\]\s*pub\(crate\) fn authenticate_role_aware_call/u.test(
         auth,
       ) &&
       keyAgentServiceLiteralCount(
@@ -24004,7 +25219,7 @@ const keyAgentServiceRpcAuthInputs = Object.freeze({
 });
 const keyAgentServiceRpcAuthMilestonePins = Object.freeze({
   [keyAgentServiceRpcFixturePaths.auth]:
-    "fd5d68e237cdf7c5f78a7de4e348a079972f53278d4f777fd6c459af67d49f34",
+    "fd25b1f4ca46b2fc2ed752b2f5a82e9e9663caa7adad2790314f41aba09e3957",
   [keyAgentServiceRpcFixturePaths.authSys]:
     "a153b433a68ba4bf85a4ab4c94a1ec7f51c9567043cf4a164f23f558a8b7d56d",
 });
@@ -25139,7 +26354,14 @@ const keyAgentServicePhaseOneIntegrationContract = ({
     const workerImpl = rustImplItems(production).find(
       (item) => item.header === "impl StatusRpcWorker",
     )?.source;
-    if (contextImpl === undefined || workerImpl === undefined) return false;
+    const admissionClosedWorkerImpl = rustImplItems(production).find(
+      (item) => item.header === "impl AdmissionClosedStatusRpcWorker",
+    )?.source;
+    if (
+      contextImpl === undefined ||
+      workerImpl === undefined ||
+      admissionClosedWorkerImpl === undefined
+    ) return false;
     const exchange = rustFunctionBlock(contextImpl, "exchange");
     const invalidate = rustFunctionBlock(contextImpl, "invalidate_epochs");
     const latchFatal = rustFunctionBlock(contextImpl, "latch_fatal_runtime");
@@ -25147,23 +26369,32 @@ const keyAgentServicePhaseOneIntegrationContract = ({
       contextImpl,
       "stop_probe_coordinator_and_helpers",
     );
-    const workerStop = rustFunctionBlock(workerImpl, "stop_and_drain");
+    const workerCloseAdmission = rustFunctionBlock(
+      workerImpl,
+      "close_admission",
+    );
+    const workerDrain = rustFunctionBlock(
+      admissionClosedWorkerImpl,
+      "drain",
+    );
     const startServer = rustTopLevelFunctionBlock(
       production,
       "start_status_rpc_server",
     );
     const compactRoot = compactRust(production);
     return (
-      /#\[cfg\(\s*all\(\s*windows\s*,\s*feature\s*=\s*"key-agent-service-rpc-status-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\s*\)\]\s*mod\s+key_agent_service_rpc\s*;/u.test(
+      /#\[cfg\(\s*windows\s*\)\]\s*#\[allow\(\s*dead_code\s*\)\]\s*mod\s+key_agent_service_rpc\s*;/u.test(
         platformLib,
       ) &&
       /#\[cfg\(\s*all\(\s*windows\s*,\s*feature\s*=\s*"key-agent-service-lpac-launch-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\s*\)\]\s*mod\s+key_agent_service_launch\s*;/u.test(
         platformLib,
       ) &&
       compactRoot.includes(
-        "#[cfg(feature=)]modcoordinator;",
+        "#[cfg(all(feature=,debug_assertions))]modcoordinator;",
       ) &&
-      compactRoot.includes("#[cfg(feature=)]modrouter;") &&
+      compactRoot.includes(
+        "#[cfg(all(feature=,debug_assertions))]modrouter;",
+      ) &&
       compactRust(launchRoot).includes("modrpc_probe;") &&
       !/\bpub(?:\([^)]*\))?\s+mod\s+(?:coordinator|router|rpc_probe)\b/u.test(
         `${rustLexicalCode(root)}\n${rustLexicalCode(launchRoot)}`,
@@ -25197,8 +26428,13 @@ const keyAgentServicePhaseOneIntegrationContract = ({
         "self.helpers.stop()",
         "self.latch_fatal_runtime()",
       ]) &&
-      hasOrderedCompactMarkers(workerStop, [
-        "server.stop_and_drain()",
+      hasOrderedCompactMarkers(workerCloseAdmission, [
+        "letSelf{server,context}=self",
+        "AdmissionClosedStatusRpcWorker",
+        "server:server.close_admission()",
+      ]) &&
+      hasOrderedCompactMarkers(workerDrain, [
+        "server.drain()",
         "returnErr(StatusRpcWorkerError::RuntimeStateRetained)",
         "context.stop_probe_coordinator_and_helpers()?",
         "clear_context(&context)?",
@@ -25253,6 +26489,11 @@ const mutateKeyAgentServicePhaseOneIntegration = (
 const keyAgentServicePhaseOneIntegrationMutationProbes = [
   mutateKeyAgentServicePhaseOneIntegration(
     "platformLib",
+    "#[cfg(windows)]\n#[allow(dead_code)]\nmod key_agent_service_rpc;",
+    '#[cfg(all(windows, debug_assertions))]\n#[allow(dead_code)]\nmod key_agent_service_rpc;',
+  ),
+  mutateKeyAgentServicePhaseOneIntegration(
+    "platformLib",
     '    feature = "key-agent-service-lpac-launch-feasibility-test-hook",\n    debug_assertions\n))]\nmod key_agent_service_launch;',
     '    feature = "key-agent-service-lpac-launch-feasibility-test-hook",\n    any(debug_assertions, not(debug_assertions))\n))]\nmod key_agent_service_launch;',
   ),
@@ -25270,6 +26511,16 @@ const keyAgentServicePhaseOneIntegrationMutationProbes = [
     "root",
     "        context.stop_probe_coordinator_and_helpers()?;\n        clear_context(&context)?;",
     "        clear_context(&context)?;\n        context.stop_probe_coordinator_and_helpers()?;",
+  ),
+  mutateKeyAgentServicePhaseOneIntegration(
+    "root",
+    "            server: server.close_admission(),",
+    "            server: unsafe { core::mem::transmute(server) },",
+  ),
+  mutateKeyAgentServicePhaseOneIntegration(
+    "root",
+    "        if let Err(failure) = server.drain() {",
+    "        if false {",
   ),
   mutateKeyAgentServicePhaseOneIntegration(
     "root",
@@ -25298,7 +26549,7 @@ requireInvariant(
             probe[field] !== keyAgentServicePhaseOneIntegrationInputs[field],
         ) && !keyAgentServicePhaseOneIntegrationContract(probe),
     ),
-  "Phase 1B integration must remain debug-only and private, route role-aware manager work once, latch fatal health by closing admission before stop, defer helper cleanup until RPC rundown, stop server then coordinator then helpers then global context, classify subordinate or context-clear startup cleanup uncertainty as RuntimeStateRetained, compose the exact 5-second helper quiescence into a 30-second watchdog, and reject effective gating/order/classification mutations",
+  "Phase 1B integration must keep the status-RPC core production-compiled while its LPAC coordinator/router remain debug-feature-only and private, route role-aware manager work once, latch fatal health by closing admission before stop, defer helper cleanup until RPC rundown, stop server then coordinator then helpers then global context, classify subordinate or context-clear startup cleanup uncertainty as RuntimeStateRetained, compose the exact 5-second helper quiescence into a 30-second watchdog, and reject effective gating/order/classification mutations",
 );
 
 const keyAgentServiceTargetProfileCoordinatorTestNames = [
@@ -27964,20 +29215,20 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate has two deliberately different surfaces.",
-    sha256: "a4cda6f37385a3d131cc64120ffab8dc4adcd2af304429f452feaf7ded6bbd86",
+    sha256: "26bcf3d6493c03d13f875e101f8ecf7c1da79137c4456ed22e46bdd9f2850663",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes a safe platform-neutral gate-byte",
-    sha256: "bee6676776abec796dfe85f9b6e60f0a507343db2ad09382a9f290d8542cf743",
+    sha256: "2523342c4a8534e475cde0fa102aa2e0ab5e5f6038ca51e982083d6e8870a175",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "A separate helper-bootstrap crate exposes",
-    sha256: "d36a5e3cb2544598cf8e1a97a8ff3a19a1a561dd5161d5cd3369be3fe4716656",
+    sha256: "fd663be4fa26c59ad5e9900d8fb602f22b56e5aa7e21b75f400869577f7f4b31",
   },
 ];
 const keyAgentServiceHelperBootstrapDocumentationPatterns = [
@@ -28160,7 +29411,11 @@ const keyAgentServiceRpcEpochV2TestNames = [
 const keyAgentServiceRpcEpochV2Feature =
   "key-agent-service-lpac-launch-feasibility-test-hook";
 const keyAgentServiceRpcEpochV2CfgAttribute =
-  '#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]';
+  '#[cfg(all( feature = "key-agent-service-lpac-launch-feasibility-test-hook", debug_assertions ))]';
+const keyAgentServiceRpcEpochV2CfgCompact =
+  "#[cfg(all(feature=,debug_assertions))]";
+const keyAgentServiceRpcEpochV1FallbackCfgCompact =
+  "#[cfg(not(all(feature=,debug_assertions)))]";
 const keyAgentServiceRpcDispatchTestNames = [
   "open_and_status_are_the_only_successful_dispatches",
   "v2_open_and_status_return_only_correlated_immediate_frames",
@@ -28261,11 +29516,11 @@ const keyAgentServiceRpcEpochDispatchContract = ({ sources }) => {
       normalizedSourceSha256(
         sources[keyAgentServiceRpcFixturePaths.epoch],
       ) ===
-        "196e02bfd981409863668ff8caeed88093653c3708a75c1ec8de8dba123ec0da" &&
+        "049083e2ed1277957a03016e0d199b779d4a4dc92ebf0b36d003fe8260e857d3" &&
       normalizedSourceSha256(
         sources[keyAgentServiceRpcFixturePaths.dispatch],
       ) ===
-        "8c65184de59fec6af7a398d9ef7a0fa5ee7b304416a60a94d7e9b9fdcf43d80d" &&
+        "1cded9b1c5cf01f345c2e413d331eda3499e66c5a1571c18abe4f716c0bf0c5b" &&
       epoch.includes("#![deny(unsafe_code)]") &&
       dispatch.includes("#![deny(unsafe_code)]") &&
       epoch.includes("pub(super) const EPOCH_CAPACITY: usize = 16;") &&
@@ -28277,7 +29532,7 @@ const keyAgentServiceRpcEpochDispatchContract = ({ sources }) => {
         epoch,
       ) &&
       new RegExp(
-        `#\\[cfg\\(feature = "${keyAgentServiceRpcEpochV2Feature}"\\)\\]\\s*const EPOCH_NONCE_DOMAIN_V2:\\s*&\\[u8\\]\\s*=\\s*b"[^"\\r\\n]+\\.v2\\\\0";`,
+        `#\\[cfg\\(all\\(\\s*feature\\s*=\\s*"${keyAgentServiceRpcEpochV2Feature}"\\s*,\\s*debug_assertions\\s*\\)\\)\\]\\s*const EPOCH_NONCE_DOMAIN_V2:\\s*&\\[u8\\]\\s*=\\s*b"[^"\\r\\n]+\\.v2\\\\0";`,
         "u",
       ).test(
         epoch,
@@ -28285,7 +29540,7 @@ const keyAgentServiceRpcEpochDispatchContract = ({ sources }) => {
       keyAgentServiceLiteralCount(epoch, "EPOCH_NONCE_DOMAIN_V1") === 3 &&
       keyAgentServiceLiteralCount(epoch, "EPOCH_NONCE_DOMAIN_V2") === 2 &&
       new RegExp(
-        `#\\[cfg\\(feature = "${keyAgentServiceRpcEpochV2Feature}"\\)\\]\\s*#\\[derive\\(Clone, Copy, Debug, Eq, PartialEq\\)\\]\\s*pub\\(super\\) enum ProtocolVersion\\s*\\{\\s*V1,\\s*V2,\\s*\\}`,
+        `#\\[cfg\\(all\\(\\s*feature\\s*=\\s*"${keyAgentServiceRpcEpochV2Feature}"\\s*,\\s*debug_assertions\\s*\\)\\)\\]\\s*#\\[derive\\(Clone, Copy, Debug, Eq, PartialEq\\)\\]\\s*pub\\(super\\) enum ProtocolVersion\\s*\\{\\s*V1,\\s*V2,\\s*\\}`,
         "u",
       ).test(epoch) &&
       compactRust(epoch).includes(
@@ -28294,7 +29549,7 @@ const keyAgentServiceRpcEpochDispatchContract = ({ sources }) => {
       compactRust(epoch).includes(
         "seed:Zeroizing<[u8;EPOCH_SEED_BYTES]>,counter:u64,stopped:bool,slots:[Option<EpochSlot<P,I>>;EPOCH_CAPACITY]",
       ) &&
-      /nonce:\s*Zeroizing<\[u8;\s*32\]>,\s*#\[cfg\(feature = "key-agent-service-lpac-launch-feasibility-test-hook"\)\]\s*protocol_version:\s*ProtocolVersion,\s*peer:\s*P,\s*deadline:\s*I/u.test(
+      /nonce:\s*Zeroizing<\[u8;\s*32\]>,\s*#\[cfg\(all\(\s*feature\s*=\s*"key-agent-service-lpac-launch-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\)\]\s*protocol_version:\s*ProtocolVersion,\s*peer:\s*P,\s*deadline:\s*I/u.test(
         epoch,
       ) &&
       compactRust(epoch).includes(
@@ -28303,9 +29558,9 @@ const keyAgentServiceRpcEpochDispatchContract = ({ sources }) => {
       !/\b(?:HashMap|BTreeMap|VecDeque|retain\s*\(|remove\s*\(0\)|swap_remove)\b/u.test(
         rustLexicalCode(epoch),
       ) &&
-      issueV1.includes(keyAgentServiceRpcEpochV2CfgAttribute) &&
-      issueV1.includes(
-        `#[cfg(not(feature = "${keyAgentServiceRpcEpochV2Feature}"))]`,
+      compactRust(issueV1).includes(keyAgentServiceRpcEpochV2CfgCompact) &&
+      compactRust(issueV1).includes(
+        keyAgentServiceRpcEpochV1FallbackCfgCompact,
       ) &&
       hasOrderedCompactMarkers(issueV1, [
         "letresult=self.issue_inner(peer,ProtocolVersion::V1)",
@@ -28314,12 +29569,12 @@ const keyAgentServiceRpcEpochDispatchContract = ({ sources }) => {
       ]) &&
       keyAgentServiceLiteralCount(compactRust(issueV1), "issue_inner(") === 2 &&
       new RegExp(
-        `#\\[cfg\\(feature = "${keyAgentServiceRpcEpochV2Feature}"\\)\\]\\s*pub\\(super\\)\\s+fn\\s+issue_for_version\\b`,
+        `#\\[cfg\\(all\\(\\s*feature\\s*=\\s*"${keyAgentServiceRpcEpochV2Feature}"\\s*,\\s*debug_assertions\\s*\\)\\)\\]\\s*pub\\(super\\)\\s+fn\\s+issue_for_version\\b`,
         "u",
       ).test(epoch) &&
       compactRust(issueForVersion) ===
         "pub(super)fnissue_for_version(&self,peer:P,protocol_version:ProtocolVersion,)->Result<EpochNonce,EpochError>{self.issue_inner(peer,protocol_version)}" &&
-      issue.includes(keyAgentServiceRpcEpochV2CfgAttribute) &&
+      compactRust(issue).includes(keyAgentServiceRpcEpochV2CfgCompact) &&
       hasOrderedCompactMarkers(issue, [
         "letmutstate=self.lock_state()?",
         "ifstate.stopped{returnErr(EpochError::Stopping);}",
@@ -28342,9 +29597,9 @@ const keyAgentServiceRpcEpochDispatchContract = ({ sources }) => {
       (issueCompact.match(/state\.slots/gu) ?? []).length >= 5 &&
       !issueCompact.includes("unwrap_or") &&
       !issueCompact.includes("wrapping_add") &&
-      consumeV1.includes(keyAgentServiceRpcEpochV2CfgAttribute) &&
-      consumeV1.includes(
-        `#[cfg(not(feature = "${keyAgentServiceRpcEpochV2Feature}"))]`,
+      compactRust(consumeV1).includes(keyAgentServiceRpcEpochV2CfgCompact) &&
+      compactRust(consumeV1).includes(
+        keyAgentServiceRpcEpochV1FallbackCfgCompact,
       ) &&
       hasOrderedCompactMarkers(consumeV1, [
         "letresult=self.consume_inner(nonce,current_peer,ProtocolVersion::V1)",
@@ -28354,12 +29609,12 @@ const keyAgentServiceRpcEpochDispatchContract = ({ sources }) => {
       keyAgentServiceLiteralCount(compactRust(consumeV1), "consume_inner(") ===
         2 &&
       new RegExp(
-        `#\\[cfg\\(feature = "${keyAgentServiceRpcEpochV2Feature}"\\)\\]\\s*pub\\(super\\)\\s+fn\\s+consume_for_version\\b`,
+        `#\\[cfg\\(all\\(\\s*feature\\s*=\\s*"${keyAgentServiceRpcEpochV2Feature}"\\s*,\\s*debug_assertions\\s*\\)\\)\\]\\s*pub\\(super\\)\\s+fn\\s+consume_for_version\\b`,
         "u",
       ).test(epoch) &&
       compactRust(consumeForVersion) ===
         "pub(super)fnconsume_for_version(&self,nonce:EpochNonce,current_peer:&P,protocol_version:ProtocolVersion,)->Result<(),EpochError>{self.consume_inner(nonce,current_peer,protocol_version)}" &&
-      consume.includes(keyAgentServiceRpcEpochV2CfgAttribute) &&
+      compactRust(consume).includes(keyAgentServiceRpcEpochV2CfgCompact) &&
       hasOrderedCompactMarkers(consume, [
         "letmutstate=self.lock_state()?",
         "ifstate.stopped{returnErr(EpochError::Stopping);}",
@@ -28392,12 +29647,12 @@ const keyAgentServiceRpcEpochDispatchContract = ({ sources }) => {
       ) &&
       !compactRust(lockState).includes("PoisonError::into_inner") &&
       keyAgentServiceLiteralCount(
-        deriveNonce,
-        keyAgentServiceRpcEpochV2CfgAttribute,
+        compactRust(deriveNonce),
+        keyAgentServiceRpcEpochV2CfgCompact,
       ) === 2 &&
       keyAgentServiceLiteralCount(
-        deriveNonce,
-        `#[cfg(not(feature = "${keyAgentServiceRpcEpochV2Feature}"))]`,
+        compactRust(deriveNonce),
+        keyAgentServiceRpcEpochV1FallbackCfgCompact,
       ) === 1 &&
       hasOrderedCompactMarkers(deriveNonce, [
         "EpochHmacSha256::new_from_slice(seed)",
@@ -28424,7 +29679,7 @@ const keyAgentServiceRpcEpochDispatchContract = ({ sources }) => {
         "response.ensure_correlates_with(&request)",
         "RpcFrame::from_payload(encoded.as_slice())",
       ]) &&
-      /#\[cfg\(feature = "key-agent-service-lpac-launch-feasibility-test-hook"\)\]\s*#\[must_use = "[^"]+"\]\s*pub\(super\) enum DesktopV2Dispatch<P>/u.test(
+      /#\[cfg\(all\(\s*feature\s*=\s*"key-agent-service-lpac-launch-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\)\]\s*#\[must_use = "[^"]+"\]\s*pub\(super\) enum DesktopV2Dispatch<P>/u.test(
         sources[keyAgentServiceRpcFixturePaths.dispatch],
       ) &&
       compactRust(desktopV2Dispatch) ===
@@ -28623,19 +29878,19 @@ const keyAgentServiceRpcEpochDispatchMutationProbes = [
   mutateKeyAgentServiceRpcFixtureSource(
     keyAgentServiceRpcEpochDispatchInputs,
     keyAgentServiceRpcFixturePaths.epoch,
-    '#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub(super) enum ProtocolVersion',
+    '#[cfg(all(\n    feature = "key-agent-service-lpac-launch-feasibility-test-hook",\n    debug_assertions\n))]\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub(super) enum ProtocolVersion',
     '#[cfg(any(feature = "key-agent-service-lpac-launch-feasibility-test-hook", windows))]\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub(super) enum ProtocolVersion',
   ),
   mutateKeyAgentServiceRpcFixtureSource(
     keyAgentServiceRpcEpochDispatchInputs,
     keyAgentServiceRpcFixturePaths.epoch,
-    '    #[cfg(not(feature = "key-agent-service-lpac-launch-feasibility-test-hook"))]\n    mac.update(EPOCH_NONCE_DOMAIN_V1);',
+    '    #[cfg(not(all(\n        feature = "key-agent-service-lpac-launch-feasibility-test-hook",\n        debug_assertions\n    )))]\n    mac.update(EPOCH_NONCE_DOMAIN_V1);',
     "    #[cfg(any())]\n    mac.update(EPOCH_NONCE_DOMAIN_V1);",
   ),
   mutateKeyAgentServiceRpcFixtureSource(
     keyAgentServiceRpcEpochDispatchInputs,
     keyAgentServiceRpcFixturePaths.epoch,
-    '    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]\n    #[test]\n    fn protocol_versions_use_distinct_nonce_domains',
+    '    #[cfg(all(\n        feature = "key-agent-service-lpac-launch-feasibility-test-hook",\n        debug_assertions\n    ))]\n    #[test]\n    fn protocol_versions_use_distinct_nonce_domains',
     '    #[cfg(any(feature = "key-agent-service-lpac-launch-feasibility-test-hook", windows))]\n    #[test]\n    fn protocol_versions_use_distinct_nonce_domains',
   ),
   mutateKeyAgentServiceRpcFixtureSource(
@@ -35996,6 +37251,14 @@ const keyAgentServiceWindowsLifecycleEffectsProductionModuleSpec = Object.freeze
   targetPath:
     "crates/platform-windows/src/key_agent_service/windows_lifecycle_effects.rs",
 });
+const keyAgentServiceWindowsServiceEffectsProductionModuleSpec = Object.freeze({
+  parentPath:
+    "crates/platform-windows/src/key_agent_service/windows_lifecycle_effects.rs",
+  moduleName: "windows_service_effects",
+  relativePath: "windows_service_effects.rs",
+  targetPath:
+    "crates/platform-windows/src/key_agent_service/windows_service_effects.rs",
+});
 const keyAgentServicePhaseTwoFBProductionCandidate = (file) =>
   file.path === keyAgentServiceRunStateRootSysPath
     ? {
@@ -36009,7 +37272,12 @@ const keyAgentServicePhaseTwoFBProductionCandidate = (file) =>
             keyAgentServicePhaseTwoGEffectsProductionPartition(file.source) ??
             file.source,
         }
-      : file;
+      : file.path === keyAgentServiceWindowsServiceEffectsPath
+        ? {
+            ...file,
+            source: withoutCfgTestItems(file.source),
+          }
+        : file;
 const platformWindowsProductionCandidates = (
   await rustProductionSources("crates/platform-windows/src", {
     withoutInlineTests: true,
@@ -36851,11 +38119,17 @@ const keyAgentServiceWindowsLifecycleEffectsProductionModuleContract = ({
     parentSource,
     moduleMatches[0].index,
   ).map((attribute) => attribute.source.replace(/\s+/gu, ""));
-  const productionParent = withoutCfgTestItems(parentSource);
-  const productionTarget = keyAgentServicePhaseTwoGEffectsProductionPartition(
-    targetSource,
-  );
-  if (productionTarget === null) return false;
+  const productionParent =
+    spec.moduleName === "windows_service_effects"
+      ? keyAgentServicePhaseTwoGEffectsProductionPartition(parentSource)
+      : withoutCfgTestItems(parentSource);
+  const productionTarget =
+    spec.moduleName === "effects"
+      ? keyAgentServicePhaseTwoGEffectsProductionPartition(targetSource)
+      : spec.moduleName === "windows_service_effects"
+        ? withoutCfgTestItems(withoutBottomTestModule(targetSource))
+        : null;
+  if (productionParent === null || productionTarget === null) return false;
   const resolvedTargetPath = relative(
     root,
     resolve(root, dirname(spec.parentPath), spec.relativePath),
@@ -37049,6 +38323,140 @@ requireInvariant(
     ),
   "the exact path-bound Windows lifecycle effects production child must retain its sole parent and sole platform/workspace inbound edge, use the dedicated cfg(test)-aware production projection, and reject twelve effective relationship mutations",
 );
+const keyAgentServiceWindowsServiceEffectsProductionModuleInputs =
+  Object.freeze({
+    parentSource: keyAgentServiceWindowsLifecycleEffects,
+    targetSource: keyAgentServiceWindowsServiceEffects,
+    platformCandidates: platformWindowsProductionCandidates,
+    workspaceCandidates: workspaceRustProductionCandidates,
+    spec: keyAgentServiceWindowsServiceEffectsProductionModuleSpec,
+    expectedSpec: keyAgentServiceWindowsServiceEffectsProductionModuleSpec,
+  });
+const mutateKeyAgentServiceWindowsServiceEffectsProductionModuleInput = (
+  field,
+  value,
+) => ({
+  ...keyAgentServiceWindowsServiceEffectsProductionModuleInputs,
+  [field]: value,
+});
+const keyAgentServiceWindowsServiceEffectsProductionModuleMutationProbes = [
+  mutateKeyAgentServiceWindowsServiceEffectsProductionModuleInput(
+    "parentSource",
+    keyAgentServiceWindowsLifecycleEffects.replace(
+      '#[path = "windows_service_effects.rs"]',
+      '#[cfg(test)]\n#[path = "windows_service_effects.rs"]',
+    ),
+  ),
+  mutateKeyAgentServiceWindowsServiceEffectsProductionModuleInput(
+    "parentSource",
+    keyAgentServiceWindowsLifecycleEffects.replace(
+      '#[path = "windows_service_effects.rs"]',
+      '#[path = "hidden_windows_service_effects.rs"]',
+    ),
+  ),
+  mutateKeyAgentServiceWindowsServiceEffectsProductionModuleInput(
+    "parentSource",
+    keyAgentServiceWindowsLifecycleEffects.replace(
+      "mod windows_service_effects;",
+      "mod hidden_windows_service_effects;",
+    ),
+  ),
+  mutateKeyAgentServiceWindowsServiceEffectsProductionModuleInput(
+    "targetSource",
+    insertBeforeBottomTestModule(
+      keyAgentServiceWindowsServiceEffects,
+      "\nconst HIDDEN_WINDOWS_SERVICE_EFFECT_MUTATION: () = ();\n",
+    ),
+  ),
+  mutateKeyAgentServiceWindowsServiceEffectsProductionModuleInput("spec", {
+    ...keyAgentServiceWindowsServiceEffectsProductionModuleSpec,
+    targetPath:
+      "crates/platform-windows/src/key_agent_service/hidden_windows_service_effects.rs",
+  }),
+  mutateKeyAgentServiceWindowsServiceEffectsProductionModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path ===
+      keyAgentServiceWindowsServiceEffectsProductionModuleSpec.targetPath
+        ? { ...candidate, source: `${candidate.source}\n// candidate mutation\n` }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceWindowsServiceEffectsProductionModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path === "crates/platform-windows/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[path = "key_agent_service/windows_service_effects.rs"]\nmod windows_service_effects_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceWindowsServiceEffectsProductionModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path === "crates/platform-windows/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[path = r#"key_agent_service/windows_service_effects.rs"#]\nmod raw_windows_service_effects_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceWindowsServiceEffectsProductionModuleInput(
+    "workspaceCandidates",
+    workspaceRustProductionCandidates.map((candidate) =>
+      candidate.path === "crates/approval-ui/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[path = "../../platform-windows/src/key_agent_service/windows_service_effects.rs"]\nmod cross_crate_windows_service_effects_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceWindowsServiceEffectsProductionModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path === "crates/platform-windows/src/key_agent_service.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\nmod windows_service_effects;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceWindowsServiceEffectsProductionModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path === "crates/platform-windows/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[cfg_attr(windows, path = "key_agent_service/windows_service_effects.rs")]\nmod conditional_windows_service_effects_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+];
+requireInvariant(
+  keyAgentServiceWindowsLifecycleEffectsProductionModuleContract(
+    keyAgentServiceWindowsServiceEffectsProductionModuleInputs,
+  ) &&
+    keyAgentServiceWindowsServiceEffectsProductionModuleMutationProbes.length ===
+      11 &&
+    keyAgentServiceWindowsServiceEffectsProductionModuleMutationProbes.every(
+      (probe) =>
+        Object.keys(
+          keyAgentServiceWindowsServiceEffectsProductionModuleInputs,
+        ).some(
+          (field) =>
+            probe[field] !==
+            keyAgentServiceWindowsServiceEffectsProductionModuleInputs[field],
+        ) &&
+        !keyAgentServiceWindowsLifecycleEffectsProductionModuleContract(probe),
+    ),
+  "the exact path-bound Windows service-effect production child must retain its sole effects parent and sole platform/workspace inbound edge, use the cfg(test)-aware production projection, and reject eleven effective relationship mutations",
+);
 const platformWindowsTestOnlyExternalSourcePathSet = new Set([
   keyAgentServiceProvisioningTestOnlyExternalModuleSpec.targetPath,
   keyAgentServiceRunStateRootTestOnlyExternalModuleSpec.targetPath,
@@ -37126,7 +38534,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "d3e8478d3c83990634f856d1a8241b2d2cec9771f9b53182ddf129ad6e4941e0";
+  "57ba48849f0e466cfb234c789ffe322ed5d0b6d5cd316abb1ece93905eea4d1f";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -37298,7 +38706,7 @@ const approvedWorkspaceCargoManifestPins = [
   },
   {
     path: "crates/platform-windows/Cargo.toml",
-    sha256: "75350ef17b310fc67253ef41a6cbc87fd1ea3f84d8543d5e59a5161294cf0ea2",
+    sha256: "e29d158c6e53e9f056f2cea3146e631e832022268e9a7ee3729c4b888b2ff39c",
   },
   {
     path: "crates/secret-core/Cargo.toml",
@@ -38495,6 +39903,11 @@ const approvedWorkspacePathAttributes = [
   {
     path: "crates/platform-windows/src/key_agent_service/lifecycle_core.rs",
     attribute: '#[path = "lifecycle_core_tests.rs"]',
+  },
+  {
+    path:
+      "crates/platform-windows/src/key_agent_service/windows_lifecycle_effects.rs",
+    attribute: '#[path = "windows_service_effects.rs"]',
   },
   {
     path: "crates/platform-windows/src/key_agent_service/windows_lifecycle.rs",
@@ -58290,13 +59703,13 @@ const approvedPlatformWindowsAuthorityTypeErasureInventory = [
   },
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/lifecycle.rs",
-    sites: 6,
+    sites: 7,
   },
   {
     path: "crates/platform-windows/src/key_agent_service_token/sys.rs",
     sites: 19,
   },
-  { path: "crates/platform-windows/src/key_agent_service.rs", sites: 3 },
+  { path: "crates/platform-windows/src/key_agent_service.rs", sites: 4 },
   {
     path: "crates/platform-windows/src/key_agent_service/run_state_root/sys.rs",
     sites: 30,
@@ -58395,7 +59808,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/auth.rs",
     unsafeCount: 6,
-    sha256: "c3f4a4fe472e34d1459403eaf8eeaef71584020ee852ce0fdff5443b882f19b4",
+    sha256: "e968b5c9662560e24267eab92e5c2686e0563ea2474381f17a8d2239a632ee3d",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
@@ -58405,7 +59818,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/mod.rs",
     unsafeCount: 12,
-    sha256: "33fedc4006888df845cc02af1d928f0050b218f7aae1e6bdf7e538b6e5d03f23",
+    sha256: "db57c867e7fd10ecd72ef09903ca89db67599cfde528f540bce2ec30ccedebfc",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_token/sys.rs",
@@ -58415,7 +59828,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service.rs",
     unsafeCount: 15,
-    sha256: "db7b34b6fea98d2d7e106f3190e87352d50ac52830db5f7c56b9fd80606d03b8",
+    sha256: "6935fa1d0852f72217883461cd489b9d4c19ebcd5ab6241783566f4bda66a64d",
   },
   {
     path: "crates/platform-windows/src/key_agent_service/run_state_root/sys.rs",
@@ -58498,6 +59911,14 @@ const approvedPlatformWindowsVisibleGenericFunctionInventory = [
     name: "authorize_callback",
     signature:
       "fnauthorize_callback<D,H,A,F>(helpers:&A,authenticate:F,)->Result<(),DispatchError>whereA:HelperAdmissionPort<H>,F:FnOnce()->Result<RoleAwareCallbackPeer<D,H>,AuthenticationFailure>,",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service.rs",
+    owner: "impl WindowsScmStatusAuthority",
+    visibility: "pub(incrate::key_agent_service)",
+    name: "with_running_admission_gate",
+    signature:
+      "fnwith_running_admission_gate<R>(&mutself,operation:implFnOnce()->R,)->Option<R>",
   },
   {
     path: "crates/platform-windows/src/pipe.rs",
@@ -59003,6 +60424,17 @@ requireInvariant(
       },
       {
         declaringFile:
+          "crates/platform-windows/src/key_agent_service/windows_lifecycle_effects.rs",
+        module: "windows_service_effects",
+        literal: "windows_service_effects.rs",
+        resolvedTarget:
+          "crates/platform-windows/src/key_agent_service/windows_service_effects.rs",
+        insideCrateSource: true,
+        inProductionInventory: true,
+        attributes: ["#[path=]"],
+      },
+      {
+        declaringFile:
           "crates/platform-windows/src/key_agent_service/windows_lifecycle.rs",
         module: "effects",
         literal: "windows_lifecycle_effects.rs",
@@ -59295,6 +60727,7 @@ requireInvariant(
         "#[cfg_attr(not(test),allow(dead_code,reason=))]",
         "#[cfg_attr(not(test),allow(unused_variables))]",
         "#[cfg_attr(test,allow(dead_code))]",
+        "#[cfg_attr(test,allow(unused_imports))]",
         "#[cfg_attr(test,derive(Clone))]",
       ]) &&
     platformWindowsExpansionSensitiveUseInventory.every((item) =>
@@ -59332,7 +60765,7 @@ requireInvariant(
 );
 requireInvariant(
   platformWindowsManifestSha256 ===
-    "75350ef17b310fc67253ef41a6cbc87fd1ea3f84d8543d5e59a5161294cf0ea2" &&
+    "e29d158c6e53e9f056f2cea3146e631e832022268e9a7ee3729c4b888b2ff39c" &&
     JSON.stringify(platformWindowsCrateRootInventory) ===
       JSON.stringify([
         { name: "Cargo.toml", kind: "file" },
@@ -59362,8 +60795,8 @@ requireInvariant(
         "hmac.workspace=true",
         "key-agent-debugger-wire={workspace=true,optional=true}",
         'key-agent-service-helper-bootstrap={path="../key-agent-service-helper-bootstrap",optional=true,default-features=false}',
-        'key-agent-service-rpc-sys={path="../key-agent-service-rpc-sys",optional=true}',
-        'key-agent-service-wire={path="../key-agent-service-wire",optional=true}',
+        'key-agent-service-rpc-sys={path="../key-agent-service-rpc-sys"}',
+        'key-agent-service-wire={path="../key-agent-service-wire"}',
         "sha2.workspace=true",
         'secret-input-ui={path="../secret-input-ui"}',
         "subtle.workspace=true",
@@ -66589,13 +68022,13 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "README.md":
     "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
   "crates/platform-windows/README.md":
-    "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
+    "7a785311a344dec132359f39698c0c4d6752fbcd284511ac26f1d805a40251d2",
   "docs/architecture.md":
-    "a4cda6f37385a3d131cc64120ffab8dc4adcd2af304429f452feaf7ded6bbd86",
+    "26bcf3d6493c03d13f875e101f8ecf7c1da79137c4456ed22e46bdd9f2850663",
   "docs/protocol-contract.md":
     "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "docs/security-decisions.md":
-    "d36a5e3cb2544598cf8e1a97a8ff3a19a1a561dd5161d5cd3369be3fe4716656",
+    "fd663be4fa26c59ad5e9900d8fb602f22b56e5aa7e21b75f400869577f7f4b31",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -72459,10 +73892,10 @@ const currentDebuggerExitDocumentationContract = (documents) =>
   });
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
-  "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
-  "a4cda6f37385a3d131cc64120ffab8dc4adcd2af304429f452feaf7ded6bbd86",
+  "7a785311a344dec132359f39698c0c4d6752fbcd284511ac26f1d805a40251d2",
+  "26bcf3d6493c03d13f875e101f8ecf7c1da79137c4456ed22e46bdd9f2850663",
   "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
-  "d36a5e3cb2544598cf8e1a97a8ff3a19a1a561dd5161d5cd3369be3fe4716656",
+  "fd663be4fa26c59ad5e9900d8fb602f22b56e5aa7e21b75f400869577f7f4b31",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,
@@ -80813,8 +82246,8 @@ const keyAgentDebuggerPlatformSources = {
   sys: keyAgentDebuggerTransportSysSource,
 };
 const keyAgentDebuggerPlatformPins = {
-  manifest: "75350ef17b310fc67253ef41a6cbc87fd1ea3f84d8543d5e59a5161294cf0ea2",
-  lib: "80c4df636f9110b9d9de0ef7ddb97f0f4bff100cea4781a4ad822960d9238660",
+  manifest: "e29d158c6e53e9f056f2cea3146e631e832022268e9a7ee3729c4b888b2ff39c",
+  lib: "d5ff61c17fc6c97573cc659dca5965d08bdb8ce5368e83315c30a1de9265743e",
   umbrella: "3175fa0ad3122c1ce1c997c3f370c678179afa1eca9d91938c0782ae963599b4",
   artifact: "f7abcc220bd737894655ccb48e80d10c179626fb634b6c88294008faec035abc",
   pipe: "463600d888e3db1632d765df354253765a658f09677360f2d298bfee18c9512f",
@@ -82329,7 +83762,7 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "crates/platform-windows/README.md",
     source: activationReadme,
     anchor: "A separate dormant solution-mechanics probe",
-    sha256: "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
+    sha256: "7a785311a344dec132359f39698c0c4d6752fbcd284511ac26f1d805a40251d2",
   },
   {
     path: "docs/adr/0001-windows-key-agent-service-boundary.md",
@@ -82342,19 +83775,19 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "docs/architecture.md",
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
-    sha256: "a4cda6f37385a3d131cc64120ffab8dc4adcd2af304429f452feaf7ded6bbd86",
+    sha256: "26bcf3d6493c03d13f875e101f8ecf7c1da79137c4456ed22e46bdd9f2850663",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
-    sha256: "bee6676776abec796dfe85f9b6e60f0a507343db2ad09382a9f290d8542cf743",
+    sha256: "2523342c4a8534e475cde0fa102aa2e0ab5e5f6038ca51e982083d6e8870a175",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "The dedicated-process feasibility slice remains narrower",
-    sha256: "d36a5e3cb2544598cf8e1a97a8ff3a19a1a561dd5161d5cd3369be3fe4716656",
+    sha256: "fd663be4fa26c59ad5e9900d8fb602f22b56e5aa7e21b75f400869577f7f4b31",
   },
 ];
 const keyAgentDebuggerDocumentationPatterns = [

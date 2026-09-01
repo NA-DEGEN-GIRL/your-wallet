@@ -34,8 +34,6 @@ key-agent-service-lpac-launch-feasibility-test-hook = [
 # debug feasibility surface and does not authenticate a production Broker.
 key-agent-service-rpc-status-feasibility-test-hook = [
     "key-agent-service-scm-feasibility-test-hook",
-    "dep:key-agent-service-rpc-sys",
-    "dep:key-agent-service-wire",
 ]
 # Dormant, secretless debugger/target-topology and forced-parent-death evidence.
 # Its inert target is debug-only and untrusted; no production or RPC entrypoint
@@ -50,8 +48,8 @@ getrandom.workspace = true
 hmac.workspace = true
 key-agent-debugger-wire = { workspace = true, optional = true }
 key-agent-service-helper-bootstrap = { path = "../key-agent-service-helper-bootstrap", optional = true, default-features = false }
-key-agent-service-rpc-sys = { path = "../key-agent-service-rpc-sys", optional = true }
-key-agent-service-wire = { path = "../key-agent-service-wire", optional = true }
+key-agent-service-rpc-sys = { path = "../key-agent-service-rpc-sys" }
+key-agent-service-wire = { path = "../key-agent-service-wire" }
 sha2.workspace = true
 secret-input-ui = { path = "../secret-input-ui" }
 subtle.workspace = true

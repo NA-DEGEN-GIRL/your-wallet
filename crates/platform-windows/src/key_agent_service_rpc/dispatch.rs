@@ -10,7 +10,10 @@
 use std::fmt;
 
 use key_agent_service_rpc_sys::{ManagerError, RpcFrame};
-#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
 use key_agent_service_wire::debug_v2::{
     self, DesktopCommand, DesktopCommandRequest, DesktopCommandResponse, DesktopResult,
 };
@@ -20,7 +23,10 @@ use key_agent_service_wire::{
 };
 use zeroize::Zeroizing;
 
-#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
 use super::epoch::ProtocolVersion;
 use super::epoch::{EpochError, EpochTable, ExactEpochPeer, MonotonicClock, SystemMonotonicClock};
 
@@ -66,7 +72,10 @@ impl From<DispatchError> for ManagerError {
 ///
 /// Launch work remains an owned action so this dispatcher never waits for a
 /// helper or holds a launch coordinator lock.
-#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
 #[must_use = "dispatch outcomes may own authenticated launch authority"]
 pub(super) enum DesktopV2Dispatch<P> {
     /// A complete response that can be returned immediately.
@@ -75,7 +84,10 @@ pub(super) enum DesktopV2Dispatch<P> {
     Launch(DesktopV2Launch<P>),
 }
 
-#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
 impl<P> fmt::Debug for DesktopV2Dispatch<P> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -86,14 +98,20 @@ impl<P> fmt::Debug for DesktopV2Dispatch<P> {
 }
 
 /// One authenticated version-2 desktop launch action.
-#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
 #[must_use = "launch actions own authenticated peer authority until consumed"]
 pub(super) struct DesktopV2Launch<P> {
     current_peer: P,
     pending_completion: DesktopV2PendingCompletion,
 }
 
-#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
 impl<P> DesktopV2Launch<P> {
     /// Separates the move-only peer authority from its one-shot completion.
     #[must_use = "the returned tuple owns authenticated peer authority"]
@@ -102,7 +120,10 @@ impl<P> DesktopV2Launch<P> {
     }
 }
 
-#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
 impl<P> fmt::Debug for DesktopV2Launch<P> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("DesktopV2Launch([REDACTED])")
@@ -115,13 +136,19 @@ impl<P> fmt::Debug for DesktopV2Launch<P> {
 /// Borrowing the request supports launch correlation, while producing the RPC
 /// response consumes the capability so a coordinator cannot report completion
 /// twice for one launch action.
-#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
 #[must_use = "pending launch completion must be settled exactly once"]
 pub(super) struct DesktopV2PendingCompletion {
     request: DesktopCommandRequest,
 }
 
-#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
 impl DesktopV2PendingCompletion {
     /// Borrows the exact request for launch-side role and correlation checks.
     #[must_use]
@@ -150,7 +177,10 @@ impl DesktopV2PendingCompletion {
     }
 }
 
-#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
 impl fmt::Debug for DesktopV2PendingCompletion {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("DesktopV2PendingCompletion([REDACTED])")
@@ -196,7 +226,10 @@ where
     /// It is invoked exactly once, before any wire parsing, so every manager
     /// entry independently authenticates even malformed input.
     #[cfg(any(
-        not(feature = "key-agent-service-lpac-launch-feasibility-test-hook"),
+        not(all(
+            feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+            debug_assertions
+        )),
         test
     ))]
     pub(super) fn exchange_with<F>(
@@ -253,7 +286,11 @@ where
     }
 
     /// Authenticates and dispatches one debug-only version-2 desktop call.
-    #[cfg(all(feature = "key-agent-service-lpac-launch-feasibility-test-hook", test))]
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions,
+        test
+    ))]
     pub(super) fn exchange_v2_desktop_with<F>(
         &self,
         request_frame: &RpcFrame,
@@ -270,7 +307,10 @@ where
     ///
     /// Helper-ready belongs exclusively to a matched service-created helper.
     /// This desktop path rejects it before looking up or consuming an epoch.
-    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
     pub(super) fn exchange_authenticated_v2_desktop(
         &self,
         request_frame: &RpcFrame,
@@ -331,7 +371,10 @@ where
     }
 }
 
-#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
 fn encode_v2_response(response: &debug_v2::ServiceResponse) -> Result<RpcFrame, DispatchError> {
     let encoded = Zeroizing::new(debug_v2::encode_response(response));
     RpcFrame::from_payload(encoded.as_slice()).map_err(|_| DispatchError::Internal)
@@ -348,7 +391,10 @@ where
 }
 
 #[cfg(any(
-    not(feature = "key-agent-service-lpac-launch-feasibility-test-hook"),
+    not(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    )),
     test
 ))]
 const fn map_authentication_failure(error: AuthenticationFailure) -> DispatchError {
@@ -377,7 +423,10 @@ mod tests {
         time::Duration,
     };
 
-    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
     use key_agent_service_wire::debug_v2 as wire_v2;
     use key_agent_service_wire::{
         EpochNonce, OpenEpochRequest, ServiceCommandRequest, ServiceRequestId, WireError,
@@ -456,18 +505,27 @@ mod tests {
         decode_response(frame.payload()).map_err(|_| DispatchError::Internal)
     }
 
-    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
     fn request_frame_v2(request: &wire_v2::ServiceRequest) -> Result<RpcFrame, DispatchError> {
         RpcFrame::from_payload(&wire_v2::encode_request(request))
             .map_err(|_| DispatchError::Internal)
     }
 
-    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
     fn response_v2(frame: &RpcFrame) -> Result<wire_v2::ServiceResponse, DispatchError> {
         wire_v2::decode_response(frame.payload()).map_err(|_| DispatchError::Internal)
     }
 
-    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
     fn immediate_v2(outcome: &DesktopV2Dispatch<TestPeer>) -> Result<RpcFrame, DispatchError> {
         match outcome {
             DesktopV2Dispatch::Immediate(frame) => Ok(*frame),
@@ -492,7 +550,10 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
     fn open_epoch_v2(
         engine: &DispatchEngine<TestPeer, TestClock>,
         peer: TestPeer,
@@ -543,7 +604,10 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
     #[test]
     fn v2_open_and_status_return_only_correlated_immediate_frames() -> Result<(), DispatchError> {
         let engine = engine()?;
@@ -577,7 +641,10 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
     #[test]
     fn both_v2_launch_actions_own_the_freshly_authenticated_peer() -> Result<(), DispatchError> {
         let engine = engine()?;
@@ -614,7 +681,10 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
     #[test]
     fn desktop_helper_ready_is_authentication_denied_before_epoch_consumption()
     -> Result<(), DispatchError> {
@@ -682,7 +752,10 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
     #[test]
     fn malformed_v2_input_authenticates_once_and_yields_no_action() -> Result<(), DispatchError> {
         let engine = engine()?;
@@ -708,7 +781,10 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
     #[test]
     fn cross_version_epoch_attempts_are_terminal_in_both_directions() -> Result<(), DispatchError> {
         let engine = engine()?;
@@ -771,7 +847,10 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
     #[test]
     fn launch_completion_is_exactly_correlated_and_role_closed() -> Result<(), DispatchError> {
         fn require_consuming_completion_signature(
@@ -943,7 +1022,10 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
     #[test]
     fn v2_outcome_debug_redacts_peer_and_wire_bindings() -> Result<(), DispatchError> {
         let nonce = EpochNonce::new([0xC1; 32]).map_err(|_| DispatchError::Internal)?;

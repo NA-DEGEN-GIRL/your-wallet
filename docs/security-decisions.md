@@ -1565,6 +1565,41 @@ re-enabling or explicit duplication, and is neither exhaustive stray-handle
 enumeration nor signed-artifact, topology, immutable-install, or release proof.
 `COMPILED_PARENT_POLICY` remains `None`.
 
+**Current Phase 2H status: started, not passed.** We allow the Windows library
+to production-compile the dormant SCM/status-RPC mechanics, with
+`key-agent-service-rpc-sys` and `key-agent-service-wire` as nonoptional
+dependencies, because compilation does not itself grant lifecycle authority or
+make an executable caller. `WindowsServiceEffectSource` is move-only,
+single-use, and Debug-redacted. It can consume only one sealed
+`WindowsScmStatusAuthority`, and `WindowsServiceEffectBackend` is an exact
+8-stage state machine over six leaf effects: listener prepare, `SCM_RUNNING`,
+admission open, admission close, listener drain, and `SCM_STOPPED`, followed by
+`Stopped` or irreversible `Terminal`.
+
+The SCM registration handle remains private and has no raw accessor. Admission
+may open only while the exact invocation is authoritatively `SERVICE_RUNNING`;
+the predicate and operation stay under the same `CONTROL_CONTEXT` lock. The
+consuming `close_admission` transition must precede
+`AdmissionClosedStatusRpcWorker::drain`, which then invalidates epochs, stops
+listening, unregisters with waiting enabled, waits for rundown, and releases
+resources. Any unproved startup, admission, rundown, or SCM publication retains
+authority and is classified fail-closed. Before the final native `SCM_STOPPED`
+send, the shared context is terminalized under that lock so a concurrent
+callback cannot publish a later pending state.
+
+This is local implementation evidence: the existing Phase 2G compositor remains
+22/22 and the separate Phase 2H service-effect suite is 9/9.
+`WindowsServiceEffectSource::new`, the registered authority mint, a real durable
+provider source, `begin_windows_lifecycle`, and executable/top-level production
+composition each still have zero production call sites. Default and release
+service execution remains silent exit 78 and both compiled policies remain
+`None`. External SCM registration/source mint, elevated installer and
+service-SID composition, a protected durable provider and rollback anchor,
+trusted production Broker/service-peer authentication and mapped-I/O/peer-race
+proof, crash/power/reboot recovery, TPM/authentication-key custody,
+supported-kernel matrices, signed immutable artifacts, and release evidence
+remain **STOP-SHIP**.
+
 All seven Rust-startup supervisor integration positives are explicitly ignored
 **STOP-SHIP**. Their fixture code, when deliberately invoked, has two
 `cfg(test)` accommodations: an exact pinned terse libtest preamble may precede
