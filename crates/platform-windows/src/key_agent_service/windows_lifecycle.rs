@@ -7,6 +7,9 @@
 //! exact stopped evidence, checked exit-78 evidence, or an irreversible
 //! terminal state is reached.
 
+#[path = "windows_lifecycle_effects.rs"]
+pub(super) mod effects;
+
 use core::fmt;
 use std::num::NonZeroU64;
 
@@ -29,6 +32,12 @@ use super::lifecycle_core::{
     StartupChecklist, StartupFailure, StartupObservation, StopReason, StoppedRuntimePolicy, WorkId,
 };
 use super::run_state_root::{HeldServiceRunStateWriter, ServiceRunStateError};
+use effects::{
+    WindowsAdmissionClosedEffects, WindowsAdmissionOpenEffects, WindowsLifecycleEffectAuthority,
+    WindowsLifecycleEffectCause, WindowsLifecycleEffectFailure, WindowsLifecycleTerminalEffects,
+    WindowsListenersDrainedEffects, WindowsListenersPreparedEffects, WindowsScmRunningEffects,
+    WindowsScmStoppedEffectEvidence,
+};
 
 const WINDOWS_SERVICE_EXIT_CODE: i32 = 78;
 
@@ -38,6 +47,7 @@ const WINDOWS_SERVICE_EXIT_CODE: i32 = 78;
 pub(super) enum WindowsLifecycleCause {
     Binding(RecoveryRequired),
     Startup(StartupFailure),
+    Effect(WindowsLifecycleEffectCause),
     RuntimePolicy(RuntimePolicyFailure),
     Lifecycle(LifecycleError),
     Fatal(FatalReason),
@@ -49,6 +59,7 @@ impl fmt::Debug for WindowsLifecycleCause {
         match self {
             Self::Binding(cause) => formatter.debug_tuple("Binding").field(cause).finish(),
             Self::Startup(cause) => formatter.debug_tuple("Startup").field(cause).finish(),
+            Self::Effect(cause) => formatter.debug_tuple("Effect").field(cause).finish(),
             Self::RuntimePolicy(cause) => {
                 formatter.debug_tuple("RuntimePolicy").field(cause).finish()
             }
@@ -71,33 +82,54 @@ enum WindowsLifecycleExitAuthority<'provider> {
 pub(super) struct WindowsLifecycleExitRequired<'provider> {
     cause: WindowsLifecycleCause,
     authority: WindowsLifecycleExitAuthority<'provider>,
+    effects: WindowsLifecycleTerminalEffects,
 }
 
 impl<'provider> WindowsLifecycleExitRequired<'provider> {
     fn unbound(
         cause: WindowsLifecycleCause,
         authority: WindowsRuntimeBindingFailure<'provider>,
+        effects: WindowsLifecycleTerminalEffects,
     ) -> Self {
         Self {
             cause,
             authority: WindowsLifecycleExitAuthority::Unbound(authority),
+            effects,
         }
     }
 
-    fn bound(cause: WindowsLifecycleCause, authority: WindowsRetirementPending<'provider>) -> Self {
+    fn bound(
+        cause: WindowsLifecycleCause,
+        authority: WindowsRetirementPending<'provider>,
+        effects: WindowsLifecycleTerminalEffects,
+    ) -> Self {
         Self {
             cause,
             authority: WindowsLifecycleExitAuthority::Bound(authority),
+            effects,
         }
     }
 
-    fn from_terminal(failure: WindowsTerminalFailure<'provider>) -> Self {
+    fn from_terminal(
+        failure: WindowsTerminalFailure<'provider>,
+        effects: WindowsLifecycleTerminalEffects,
+    ) -> Self {
         let (cause, authority) = failure.into_retirement_parts();
-        Self::bound(WindowsLifecycleCause::Durable(cause), authority)
+        Self::bound(WindowsLifecycleCause::Durable(cause), authority, effects)
     }
 
     pub(super) const fn cause(&self) -> &WindowsLifecycleCause {
         &self.cause
+    }
+
+    #[cfg(test)]
+    const fn effects_attached_for_test(&self) -> bool {
+        self.effects.is_attached_for_test()
+    }
+
+    #[cfg(test)]
+    const fn effect_failure_for_test(&self) -> Option<WindowsLifecycleEffectCause> {
+        self.effects.failure_cause_for_test()
     }
 
     /// Checks the exact unbound or bound writer retirement before minting an
@@ -110,27 +142,33 @@ impl<'provider> WindowsLifecycleExitRequired<'provider> {
         WindowsLifecycleCheckedExit78<'provider>,
         WindowsLifecycleIrreversibleExit78<'provider>,
     > {
-        let Self { cause, authority } = self;
+        let Self {
+            cause,
+            authority,
+            effects,
+        } = self;
         match authority {
             WindowsLifecycleExitAuthority::Unbound(authority) => match authority.retire() {
                 Ok(retired) => Ok(WindowsLifecycleCheckedExit78 {
                     cause,
-                    authority: WindowsLifecycleCheckedExitAuthority::Unbound(retired),
+                    authority: WindowsLifecycleCheckedExitAuthority::Unbound { retired, effects },
                 }),
                 Err(failure) => Err(
-                    WindowsLifecycleIrreversibleExit78::unbound_retirement_failure(cause, failure),
+                    WindowsLifecycleIrreversibleExit78::unbound_retirement_failure(
+                        cause, failure, effects,
+                    ),
                 ),
             },
             WindowsLifecycleExitAuthority::Bound(authority) => match authority.retire_checked() {
                 Ok(retired) => Ok(WindowsLifecycleCheckedExit78 {
                     cause,
-                    authority: WindowsLifecycleCheckedExitAuthority::Bound(retired),
+                    authority: WindowsLifecycleCheckedExitAuthority::Bound { retired, effects },
                 }),
                 Err(failure) => {
                     let platform = failure.cause();
                     Err(
                         WindowsLifecycleIrreversibleExit78::bound_retirement_failure(
-                            cause, platform, failure,
+                            cause, platform, failure, effects,
                         ),
                     )
                 }
@@ -145,13 +183,20 @@ impl fmt::Debug for WindowsLifecycleExitRequired<'_> {
             .debug_struct("WindowsLifecycleExitRequired")
             .field("cause", &self.cause)
             .field("authority", &"[REDACTED]")
+            .field("effects", &"[REDACTED]")
             .finish_non_exhaustive()
     }
 }
 
 enum WindowsLifecycleCheckedExitAuthority<'provider> {
-    Unbound(WindowsUnboundRetired<'provider>),
-    Bound(WindowsCheckedRetired<'provider>),
+    Unbound {
+        retired: WindowsUnboundRetired<'provider>,
+        effects: WindowsLifecycleTerminalEffects,
+    },
+    Bound {
+        retired: WindowsCheckedRetired<'provider>,
+        effects: WindowsLifecycleTerminalEffects,
+    },
 }
 
 /// Checked terminal receipt. This is the sole lifecycle state that authorizes
@@ -170,6 +215,26 @@ impl WindowsLifecycleCheckedExit78<'_> {
     #[allow(clippy::unused_self)] // The receipt instance is the exit authority.
     pub(super) const fn code(&self) -> i32 {
         WINDOWS_SERVICE_EXIT_CODE
+    }
+
+    #[cfg(test)]
+    const fn effects_attached_for_test(&self) -> bool {
+        match &self.authority {
+            WindowsLifecycleCheckedExitAuthority::Unbound { effects, .. }
+            | WindowsLifecycleCheckedExitAuthority::Bound { effects, .. } => {
+                effects.is_attached_for_test()
+            }
+        }
+    }
+
+    #[cfg(test)]
+    const fn effect_failure_for_test(&self) -> Option<WindowsLifecycleEffectCause> {
+        match &self.authority {
+            WindowsLifecycleCheckedExitAuthority::Unbound { effects, .. }
+            | WindowsLifecycleCheckedExitAuthority::Bound { effects, .. } => {
+                effects.failure_cause_for_test()
+            }
+        }
     }
 }
 
@@ -199,6 +264,9 @@ pub(super) enum WindowsLifecycleIrreversibleCause {
     PostRelease {
         recovery: RecoveryRequired,
     },
+    ScmStoppedPublication {
+        effect: WindowsLifecycleEffectCause,
+    },
 }
 
 impl fmt::Debug for WindowsLifecycleIrreversibleCause {
@@ -218,16 +286,33 @@ impl fmt::Debug for WindowsLifecycleIrreversibleCause {
                 .debug_struct("PostRelease")
                 .field("recovery", recovery)
                 .finish(),
+            Self::ScmStoppedPublication { effect } => formatter
+                .debug_struct("ScmStoppedPublication")
+                .field("effect", effect)
+                .finish(),
         }
     }
 }
 
 #[allow(clippy::large_enum_variant)] // Inline terminal state avoids fallible allocation.
 enum WindowsLifecycleIrreversibleAuthority<'provider> {
-    UnboundRetirementFailure(WindowsUnboundRetirementFailure<'provider>),
-    BoundRetirementFailure(WindowsCheckedRetirementFailure<'provider>),
-    ReleasedNoReceipt(WindowsReleasedNoReceipt<'provider>),
-    PostRelease(WindowsPostReleaseTerminal<'provider>),
+    UnboundRetirementFailure {
+        failure: WindowsUnboundRetirementFailure<'provider>,
+        effects: WindowsLifecycleTerminalEffects,
+    },
+    BoundRetirementFailure {
+        failure: WindowsCheckedRetirementFailure<'provider>,
+        effects: WindowsLifecycleTerminalEffects,
+    },
+    ReleasedNoReceipt {
+        failure: WindowsReleasedNoReceipt<'provider>,
+        effects: WindowsLifecycleTerminalEffects,
+    },
+    PostRelease {
+        failure: WindowsPostReleaseTerminal<'provider>,
+        effects: WindowsLifecycleTerminalEffects,
+    },
+    PostWriterReleaseScmStop(WindowsPostWriterReleaseScmStopFailure<'provider>),
 }
 
 /// Irreversible terminal state that authorizes silent exit 78 but deliberately
@@ -242,11 +327,15 @@ impl<'provider> WindowsLifecycleIrreversibleExit78<'provider> {
     fn unbound_retirement_failure(
         original: WindowsLifecycleCause,
         failure: WindowsUnboundRetirementFailure<'provider>,
+        effects: WindowsLifecycleTerminalEffects,
     ) -> Self {
         let platform = failure.cause();
         Self {
             cause: WindowsLifecycleIrreversibleCause::Retirement { original, platform },
-            authority: WindowsLifecycleIrreversibleAuthority::UnboundRetirementFailure(failure),
+            authority: WindowsLifecycleIrreversibleAuthority::UnboundRetirementFailure {
+                failure,
+                effects,
+            },
         }
     }
 
@@ -254,27 +343,50 @@ impl<'provider> WindowsLifecycleIrreversibleExit78<'provider> {
         original: WindowsLifecycleCause,
         platform: ServiceRunStateError,
         failure: WindowsCheckedRetirementFailure<'provider>,
+        effects: WindowsLifecycleTerminalEffects,
     ) -> Self {
         Self {
             cause: WindowsLifecycleIrreversibleCause::Retirement { original, platform },
-            authority: WindowsLifecycleIrreversibleAuthority::BoundRetirementFailure(failure),
+            authority: WindowsLifecycleIrreversibleAuthority::BoundRetirementFailure {
+                failure,
+                effects,
+            },
         }
     }
 
-    fn released_no_receipt(failure: WindowsReleasedNoReceipt<'provider>) -> Self {
+    fn released_no_receipt(
+        failure: WindowsReleasedNoReceipt<'provider>,
+        effects: WindowsLifecycleTerminalEffects,
+    ) -> Self {
         let recovery = failure.reason();
         let platform = failure.cause();
         Self {
             cause: WindowsLifecycleIrreversibleCause::ReleasedNoReceipt { recovery, platform },
-            authority: WindowsLifecycleIrreversibleAuthority::ReleasedNoReceipt(failure),
+            authority: WindowsLifecycleIrreversibleAuthority::ReleasedNoReceipt {
+                failure,
+                effects,
+            },
         }
     }
 
-    fn post_release(failure: WindowsPostReleaseTerminal<'provider>) -> Self {
+    fn post_release(
+        failure: WindowsPostReleaseTerminal<'provider>,
+        effects: WindowsLifecycleTerminalEffects,
+    ) -> Self {
         let recovery = failure.reason();
         Self {
             cause: WindowsLifecycleIrreversibleCause::PostRelease { recovery },
-            authority: WindowsLifecycleIrreversibleAuthority::PostRelease(failure),
+            authority: WindowsLifecycleIrreversibleAuthority::PostRelease { failure, effects },
+        }
+    }
+
+    fn post_writer_release_scm_stop(
+        failure: WindowsPostWriterReleaseScmStopFailure<'provider>,
+    ) -> Self {
+        let effect = failure.cause();
+        Self {
+            cause: WindowsLifecycleIrreversibleCause::ScmStoppedPublication { effect },
+            authority: WindowsLifecycleIrreversibleAuthority::PostWriterReleaseScmStop(failure),
         }
     }
 
@@ -285,6 +397,50 @@ impl<'provider> WindowsLifecycleIrreversibleExit78<'provider> {
     #[allow(clippy::unused_self)] // The terminal instance is the exit authority.
     pub(super) const fn code(&self) -> i32 {
         WINDOWS_SERVICE_EXIT_CODE
+    }
+
+    #[cfg(test)]
+    const fn effects_attached_for_test(&self) -> bool {
+        match &self.authority {
+            WindowsLifecycleIrreversibleAuthority::UnboundRetirementFailure { effects, .. }
+            | WindowsLifecycleIrreversibleAuthority::BoundRetirementFailure { effects, .. }
+            | WindowsLifecycleIrreversibleAuthority::ReleasedNoReceipt { effects, .. }
+            | WindowsLifecycleIrreversibleAuthority::PostRelease { effects, .. } => {
+                effects.is_attached_for_test()
+            }
+            WindowsLifecycleIrreversibleAuthority::PostWriterReleaseScmStop(failure) => {
+                failure.effects.retains_authority_for_test()
+            }
+        }
+    }
+
+    #[cfg(test)]
+    const fn post_writer_release_generation_for_test(&self) -> Option<NonZeroU64> {
+        match &self.authority {
+            WindowsLifecycleIrreversibleAuthority::PostWriterReleaseScmStop(failure) => {
+                Some(failure.windows.generation())
+            }
+            WindowsLifecycleIrreversibleAuthority::UnboundRetirementFailure { .. }
+            | WindowsLifecycleIrreversibleAuthority::BoundRetirementFailure { .. }
+            | WindowsLifecycleIrreversibleAuthority::ReleasedNoReceipt { .. }
+            | WindowsLifecycleIrreversibleAuthority::PostRelease { .. } => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn post_writer_release_effect_binding_matches_for_test(
+        &self,
+        witness: effects::WindowsLifecycleEffectBindingWitness,
+    ) -> bool {
+        match &self.authority {
+            WindowsLifecycleIrreversibleAuthority::PostWriterReleaseScmStop(failure) => {
+                failure.effects.matches_binding_witness_for_test(witness)
+            }
+            WindowsLifecycleIrreversibleAuthority::UnboundRetirementFailure { .. }
+            | WindowsLifecycleIrreversibleAuthority::BoundRetirementFailure { .. }
+            | WindowsLifecycleIrreversibleAuthority::ReleasedNoReceipt { .. }
+            | WindowsLifecycleIrreversibleAuthority::PostRelease { .. } => false,
+        }
     }
 }
 
@@ -297,6 +453,18 @@ impl fmt::Debug for WindowsLifecycleIrreversibleExit78<'_> {
             .field("authority", &"[REDACTED]")
             .finish_non_exhaustive()
     }
+}
+
+fn effect_exit(
+    failure: WindowsLifecycleEffectFailure,
+    authority: WindowsRetirementPending<'_>,
+) -> WindowsLifecycleExitRequired<'_> {
+    let cause = failure.cause();
+    WindowsLifecycleExitRequired::bound(
+        WindowsLifecycleCause::Effect(cause),
+        authority,
+        failure.into_terminal(),
+    )
 }
 
 /// Begins the dormant Windows lifecycle from an already-held, installer-bound
@@ -317,10 +485,14 @@ pub(super) fn begin_windows_lifecycle(
             Err(WindowsLifecycleExitRequired::unbound(
                 WindowsLifecycleCause::Binding(reason),
                 failure,
+                WindowsLifecycleTerminalEffects::unattached(),
             ))
         }
         Err(WindowsRuntimeStartFailure::Terminal(failure)) => {
-            Err(WindowsLifecycleExitRequired::from_terminal(failure))
+            Err(WindowsLifecycleExitRequired::from_terminal(
+                failure,
+                WindowsLifecycleTerminalEffects::unattached(),
+            ))
         }
     }
 }
@@ -353,12 +525,16 @@ impl<'provider> WindowsStartupAttempt<'provider> {
                 return Err(WindowsLifecycleExitRequired::bound(
                     WindowsLifecycleCause::Startup(cause),
                     windows.into_retirement(),
+                    WindowsLifecycleTerminalEffects::unattached(),
                 ));
             }
         };
         match windows.prepare_active() {
             Ok(windows) => Ok(WindowsActiveCommitPending { checklist, windows }),
-            Err(failure) => Err(WindowsLifecycleExitRequired::from_terminal(failure)),
+            Err(failure) => Err(WindowsLifecycleExitRequired::from_terminal(
+                failure,
+                WindowsLifecycleTerminalEffects::unattached(),
+            )),
         }
     }
 
@@ -366,6 +542,7 @@ impl<'provider> WindowsStartupAttempt<'provider> {
         WindowsLifecycleExitRequired::bound(
             WindowsLifecycleCause::Startup(cause),
             self.windows.into_retirement(),
+            WindowsLifecycleTerminalEffects::unattached(),
         )
     }
 }
@@ -401,7 +578,10 @@ impl<'provider> WindowsActiveCommitPending<'provider> {
             }
             WindowsActiveCommitOutcome::Terminal(failure) => {
                 WindowsLifecycleActiveCommitOutcome::ExitRequired(
-                    WindowsLifecycleExitRequired::from_terminal(failure),
+                    WindowsLifecycleExitRequired::from_terminal(
+                        failure,
+                        WindowsLifecycleTerminalEffects::unattached(),
+                    ),
                 )
             }
         }
@@ -411,6 +591,7 @@ impl<'provider> WindowsActiveCommitPending<'provider> {
         WindowsLifecycleExitRequired::bound(
             WindowsLifecycleCause::Lifecycle(cause),
             self.windows.into_retirement(),
+            WindowsLifecycleTerminalEffects::unattached(),
         )
     }
 }
@@ -454,7 +635,10 @@ impl<'provider> WindowsActiveReloadPending<'provider> {
             }
             WindowsActiveReloadOutcome::Terminal(failure) => {
                 WindowsLifecycleActiveReloadOutcome::ExitRequired(
-                    WindowsLifecycleExitRequired::from_terminal(failure),
+                    WindowsLifecycleExitRequired::from_terminal(
+                        failure,
+                        WindowsLifecycleTerminalEffects::unattached(),
+                    ),
                 )
             }
         }
@@ -464,6 +648,7 @@ impl<'provider> WindowsActiveReloadPending<'provider> {
         WindowsLifecycleExitRequired::bound(
             WindowsLifecycleCause::Lifecycle(cause),
             self.windows.into_retirement(),
+            WindowsLifecycleTerminalEffects::unattached(),
         )
     }
 }
@@ -490,10 +675,22 @@ pub(super) struct WindowsListenerPending<'provider> {
 }
 
 impl<'provider> WindowsListenerPending<'provider> {
-    pub(super) fn record_listeners_prepared(self) -> WindowsScmRunningPending<'provider> {
-        WindowsScmRunningPending {
-            policy: self.policy.record_listeners_prepared(),
-            windows: self.windows,
+    pub(super) fn prepare_listeners(
+        self,
+        effects: WindowsLifecycleEffectAuthority,
+    ) -> WindowsListenerPreparationOutcome<'provider> {
+        match effects.prepare_listeners() {
+            Ok(effects) => {
+                WindowsListenerPreparationOutcome::ScmRunningPending(WindowsScmRunningPending {
+                    policy: self.policy.record_listeners_prepared(),
+                    windows: self.windows,
+                    effects,
+                })
+            }
+            Err(failure) => WindowsListenerPreparationOutcome::ExitRequired(effect_exit(
+                failure,
+                self.windows.into_retirement(),
+            )),
         }
     }
 
@@ -501,8 +698,16 @@ impl<'provider> WindowsListenerPending<'provider> {
         WindowsLifecycleExitRequired::bound(
             WindowsLifecycleCause::Lifecycle(cause),
             self.windows.into_retirement(),
+            WindowsLifecycleTerminalEffects::unattached(),
         )
     }
+}
+
+#[must_use = "listener preparation must retain both durable and effect authority"]
+#[allow(clippy::large_enum_variant)] // Inline authority avoids fallible allocation.
+pub(super) enum WindowsListenerPreparationOutcome<'provider> {
+    ScmRunningPending(WindowsScmRunningPending<'provider>),
+    ExitRequired(WindowsLifecycleExitRequired<'provider>),
 }
 
 impl fmt::Debug for WindowsListenerPending<'_> {
@@ -516,13 +721,28 @@ impl fmt::Debug for WindowsListenerPending<'_> {
 pub(super) struct WindowsScmRunningPending<'provider> {
     policy: ScmRunningPendingPolicy,
     windows: WindowsActiveRunLease<'provider>,
+    effects: WindowsListenersPreparedEffects,
 }
 
 impl<'provider> WindowsScmRunningPending<'provider> {
-    pub(super) fn record_scm_running_published(self) -> WindowsAdmissionPending<'provider> {
-        WindowsAdmissionPending {
-            policy: self.policy.record_scm_running_published(),
-            windows: self.windows,
+    pub(super) fn publish_scm_running(self) -> WindowsScmRunningPublicationOutcome<'provider> {
+        let Self {
+            policy,
+            windows,
+            effects,
+        } = self;
+        match effects.publish_scm_running() {
+            Ok(effects) => {
+                WindowsScmRunningPublicationOutcome::AdmissionPending(WindowsAdmissionPending {
+                    policy: policy.record_scm_running_published(),
+                    windows,
+                    effects,
+                })
+            }
+            Err(failure) => WindowsScmRunningPublicationOutcome::ExitRequired(effect_exit(
+                failure,
+                windows.into_retirement(),
+            )),
         }
     }
 
@@ -530,8 +750,16 @@ impl<'provider> WindowsScmRunningPending<'provider> {
         WindowsLifecycleExitRequired::bound(
             WindowsLifecycleCause::Lifecycle(cause),
             self.windows.into_retirement(),
+            self.effects.into_terminal(),
         )
     }
+}
+
+#[must_use = "SCM_RUNNING publication must retain both durable and effect authority"]
+#[allow(clippy::large_enum_variant)] // Inline authority avoids fallible allocation.
+pub(super) enum WindowsScmRunningPublicationOutcome<'provider> {
+    AdmissionPending(WindowsAdmissionPending<'provider>),
+    ExitRequired(WindowsLifecycleExitRequired<'provider>),
 }
 
 impl fmt::Debug for WindowsScmRunningPending<'_> {
@@ -545,13 +773,26 @@ impl fmt::Debug for WindowsScmRunningPending<'_> {
 pub(super) struct WindowsAdmissionPending<'provider> {
     policy: AdmissionPendingPolicy,
     windows: WindowsActiveRunLease<'provider>,
+    effects: WindowsScmRunningEffects,
 }
 
 impl<'provider> WindowsAdmissionPending<'provider> {
-    pub(super) fn open_admission(self) -> WindowsNoSecretService<'provider> {
-        WindowsNoSecretService {
-            policy: self.policy.open_admission(),
-            windows: self.windows,
+    pub(super) fn establish_admission(self) -> WindowsAdmissionOpenOutcome<'provider> {
+        let Self {
+            policy,
+            windows,
+            effects,
+        } = self;
+        match effects.open_admission() {
+            Ok(effects) => WindowsAdmissionOpenOutcome::Running(WindowsNoSecretService {
+                policy: policy.open_admission(),
+                windows,
+                effects,
+            }),
+            Err(failure) => WindowsAdmissionOpenOutcome::ExitRequired(effect_exit(
+                failure,
+                windows.into_retirement(),
+            )),
         }
     }
 
@@ -559,8 +800,16 @@ impl<'provider> WindowsAdmissionPending<'provider> {
         WindowsLifecycleExitRequired::bound(
             WindowsLifecycleCause::Lifecycle(cause),
             self.windows.into_retirement(),
+            self.effects.into_terminal(),
         )
     }
+}
+
+#[must_use = "admission publication must retain both durable and effect authority"]
+#[allow(clippy::large_enum_variant)] // Inline authority avoids fallible allocation.
+pub(super) enum WindowsAdmissionOpenOutcome<'provider> {
+    Running(WindowsNoSecretService<'provider>),
+    ExitRequired(WindowsLifecycleExitRequired<'provider>),
 }
 
 impl fmt::Debug for WindowsAdmissionPending<'_> {
@@ -575,6 +824,7 @@ impl fmt::Debug for WindowsAdmissionPending<'_> {
 pub(super) struct WindowsNoSecretService<'provider> {
     policy: RuntimePolicy,
     windows: WindowsActiveRunLease<'provider>,
+    effects: WindowsAdmissionOpenEffects,
 }
 
 impl<'provider> WindowsNoSecretService<'provider> {
@@ -618,19 +868,8 @@ impl<'provider> WindowsNoSecretService<'provider> {
         self.policy.reap_cancelled_fixture_work(id)
     }
 
-    pub(super) fn begin_stop(&mut self, reason: StopReason) -> Result<(), LifecycleError> {
-        self.policy.begin_stop(reason)
-    }
-
     pub(super) fn expected_cleanup_step(&self) -> Option<CleanupStep> {
         self.policy.expected_cleanup_step()
-    }
-
-    pub(super) fn complete_cleanup_step(
-        &mut self,
-        step: CleanupStep,
-    ) -> Result<(), LifecycleError> {
-        self.policy.complete_cleanup_step(step)
     }
 
     pub(super) fn fail_cleanup(&mut self, step: CleanupStep) -> Result<(), LifecycleError> {
@@ -645,13 +884,281 @@ impl<'provider> WindowsNoSecretService<'provider> {
         self.policy.crash();
     }
 
+    pub(super) fn close_admission(self) -> WindowsAdmissionCloseOutcome<'provider> {
+        let Self {
+            policy,
+            windows,
+            effects,
+        } = self;
+        match effects.close_admission() {
+            Ok(effects) => {
+                WindowsAdmissionCloseOutcome::StopPending(WindowsAdmissionClosedService {
+                    policy,
+                    windows,
+                    effects,
+                })
+            }
+            Err(failure) => WindowsAdmissionCloseOutcome::ExitRequired(effect_exit(
+                failure,
+                windows.into_retirement(),
+            )),
+        }
+    }
+
+    pub(super) fn into_exit(
+        self,
+        cause: LifecycleError,
+    ) -> WindowsLifecycleExitRequired<'provider> {
+        WindowsLifecycleExitRequired::bound(
+            WindowsLifecycleCause::Lifecycle(cause),
+            self.windows.into_retirement(),
+            self.effects.into_terminal(),
+        )
+    }
+
+    pub(super) fn into_fatal_exit(self) -> WindowsLifecycleExitRequired<'provider> {
+        let cause = match self.policy.state() {
+            RuntimeState::Fatal(cause) => WindowsLifecycleCause::Fatal(cause),
+            RuntimeState::Ready | RuntimeState::Draining(_) => {
+                WindowsLifecycleCause::Lifecycle(LifecycleError::NotReady)
+            }
+        };
+        WindowsLifecycleExitRequired::bound(
+            cause,
+            self.windows.into_retirement(),
+            self.effects.into_terminal(),
+        )
+    }
+}
+
+impl fmt::Debug for WindowsNoSecretService<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WindowsNoSecretService")
+            .field("policy", &self.policy)
+            .field("windows", &"[REDACTED]")
+            .field("effects", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+#[must_use = "admission close must precede runtime stop policy"]
+#[allow(clippy::large_enum_variant)] // Inline authority avoids fallible allocation.
+pub(super) enum WindowsAdmissionCloseOutcome<'provider> {
+    StopPending(WindowsAdmissionClosedService<'provider>),
+    ExitRequired(WindowsLifecycleExitRequired<'provider>),
+}
+
+#[must_use = "closed admission must advance to exact stop policy or terminal retirement"]
+pub(super) struct WindowsAdmissionClosedService<'provider> {
+    policy: RuntimePolicy,
+    windows: WindowsActiveRunLease<'provider>,
+    effects: WindowsAdmissionClosedEffects,
+}
+
+impl<'provider> WindowsAdmissionClosedService<'provider> {
+    pub(super) fn begin_stop_and_reject(
+        mut self,
+        reason: StopReason,
+    ) -> WindowsStopPolicyOutcome<'provider> {
+        if let Err(cause) = self.policy.begin_stop(reason) {
+            return WindowsStopPolicyOutcome::ExitRequired(self.into_exit(cause));
+        }
+        if let Err(cause) = self
+            .policy
+            .complete_cleanup_step(CleanupStep::RejectNewWork)
+        {
+            return WindowsStopPolicyOutcome::ExitRequired(self.into_exit(cause));
+        }
+        WindowsStopPolicyOutcome::InvalidationPending(WindowsInvalidationPending {
+            policy: self.policy,
+            windows: self.windows,
+            effects: self.effects,
+        })
+    }
+
+    fn into_exit(self, cause: LifecycleError) -> WindowsLifecycleExitRequired<'provider> {
+        WindowsLifecycleExitRequired::bound(
+            WindowsLifecycleCause::Lifecycle(cause),
+            self.windows.into_retirement(),
+            self.effects.into_terminal(),
+        )
+    }
+}
+
+#[must_use = "stop policy outcome must retain exact lifecycle authority"]
+#[allow(clippy::large_enum_variant)] // Inline authority avoids fallible allocation.
+pub(super) enum WindowsStopPolicyOutcome<'provider> {
+    InvalidationPending(WindowsInvalidationPending<'provider>),
+    ExitRequired(WindowsLifecycleExitRequired<'provider>),
+}
+
+impl fmt::Debug for WindowsAdmissionClosedService<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("WindowsAdmissionClosedService([REDACTED])")
+    }
+}
+
+#[must_use = "non-durable authority must be invalidated before listeners drain"]
+pub(super) struct WindowsInvalidationPending<'provider> {
+    policy: RuntimePolicy,
+    windows: WindowsActiveRunLease<'provider>,
+    effects: WindowsAdmissionClosedEffects,
+}
+
+impl<'provider> WindowsInvalidationPending<'provider> {
+    pub(super) fn invalidate_non_durable_authority(
+        mut self,
+    ) -> WindowsInvalidationOutcome<'provider> {
+        if let Err(cause) = self
+            .policy
+            .complete_cleanup_step(CleanupStep::InvalidateNonDurableAuthority)
+        {
+            return WindowsInvalidationOutcome::ExitRequired(WindowsLifecycleExitRequired::bound(
+                WindowsLifecycleCause::Lifecycle(cause),
+                self.windows.into_retirement(),
+                self.effects.into_terminal(),
+            ));
+        }
+        WindowsInvalidationOutcome::ListenerDrainPending(WindowsListenerDrainPending {
+            policy: self.policy,
+            windows: self.windows,
+            effects: self.effects,
+        })
+    }
+}
+
+#[must_use = "invalidation outcome must retain exact lifecycle authority"]
+#[allow(clippy::large_enum_variant)] // Inline authority avoids fallible allocation.
+pub(super) enum WindowsInvalidationOutcome<'provider> {
+    ListenerDrainPending(WindowsListenerDrainPending<'provider>),
+    ExitRequired(WindowsLifecycleExitRequired<'provider>),
+}
+
+impl fmt::Debug for WindowsInvalidationPending<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("WindowsInvalidationPending([REDACTED])")
+    }
+}
+
+#[must_use = "listener drain must complete before remaining cleanup"]
+pub(super) struct WindowsListenerDrainPending<'provider> {
+    policy: RuntimePolicy,
+    windows: WindowsActiveRunLease<'provider>,
+    effects: WindowsAdmissionClosedEffects,
+}
+
+impl<'provider> WindowsListenerDrainPending<'provider> {
+    pub(super) fn drain_listeners(self) -> WindowsListenerDrainOutcome<'provider> {
+        let Self {
+            mut policy,
+            windows,
+            effects,
+        } = self;
+        let effects = match effects.drain_listeners() {
+            Ok(effects) => effects,
+            Err(failure) => {
+                return WindowsListenerDrainOutcome::ExitRequired(effect_exit(
+                    failure,
+                    windows.into_retirement(),
+                ));
+            }
+        };
+        if let Err(cause) = policy.complete_cleanup_step(CleanupStep::CloseAndDrainListeners) {
+            return WindowsListenerDrainOutcome::ExitRequired(WindowsLifecycleExitRequired::bound(
+                WindowsLifecycleCause::Lifecycle(cause),
+                windows.into_retirement(),
+                effects.into_terminal(),
+            ));
+        }
+        WindowsListenerDrainOutcome::RemainingCleanup(WindowsRemainingCleanup {
+            policy,
+            windows,
+            effects,
+        })
+    }
+}
+
+impl fmt::Debug for WindowsListenerDrainPending<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("WindowsListenerDrainPending([REDACTED])")
+    }
+}
+
+#[must_use = "listener drain outcome must retain exact lifecycle authority"]
+#[allow(clippy::large_enum_variant)] // Inline authority avoids fallible allocation.
+pub(super) enum WindowsListenerDrainOutcome<'provider> {
+    RemainingCleanup(WindowsRemainingCleanup<'provider>),
+    ExitRequired(WindowsLifecycleExitRequired<'provider>),
+}
+
+#[must_use = "remaining cleanup must reach Clean or terminal retirement"]
+pub(super) struct WindowsRemainingCleanup<'provider> {
+    policy: RuntimePolicy,
+    windows: WindowsActiveRunLease<'provider>,
+    effects: WindowsListenersDrainedEffects,
+}
+
+impl<'provider> WindowsRemainingCleanup<'provider> {
+    pub(super) fn expected_cleanup_step(&self) -> Option<CleanupStep> {
+        self.policy.expected_cleanup_step()
+    }
+
+    pub(super) fn work_count(&self) -> usize {
+        self.policy.work_count()
+    }
+
+    pub(super) fn retained_user_token_count(&self) -> usize {
+        self.policy.retained_user_token_count()
+    }
+
+    pub(super) fn quarantined_session_count(&self) -> usize {
+        self.policy.quarantined_session_count()
+    }
+
+    pub(super) fn cancel_requests(&mut self) -> Result<(), LifecycleError> {
+        self.policy
+            .complete_cleanup_step(CleanupStep::CancelRequests)
+    }
+
+    pub(super) fn terminate_helpers(&mut self) -> Result<(), LifecycleError> {
+        self.policy
+            .complete_cleanup_step(CleanupStep::TerminateHelpers)
+    }
+
+    pub(super) fn reap_helpers(&mut self) -> Result<(), LifecycleError> {
+        self.policy.complete_cleanup_step(CleanupStep::ReapHelpers)
+    }
+
+    pub(super) fn discard_user_tokens(&mut self) -> Result<(), LifecycleError> {
+        self.policy
+            .complete_cleanup_step(CleanupStep::DiscardUserTokens)
+    }
+
+    pub(super) fn flush_defined_durable_records(&mut self) -> Result<(), LifecycleError> {
+        self.policy
+            .complete_cleanup_step(CleanupStep::FlushDefinedDurableRecords)
+    }
+
+    pub(super) fn release_request_hardware_and_storage_handles(
+        &mut self,
+    ) -> Result<(), LifecycleError> {
+        self.policy
+            .complete_cleanup_step(CleanupStep::ReleaseRequestHardwareAndStorageHandles)
+    }
+
     pub(super) fn prepare_clean(self) -> WindowsLifecycleCleanCommitOutcome<'provider> {
-        let Self { policy, windows } = self;
+        let Self {
+            policy,
+            windows,
+            effects,
+        } = self;
         if let RuntimeState::Fatal(cause) = policy.state() {
             return WindowsLifecycleCleanCommitOutcome::ExitRequired(
                 WindowsLifecycleExitRequired::bound(
                     WindowsLifecycleCause::Fatal(cause),
                     windows.into_retirement(),
+                    effects.into_terminal(),
                 ),
             );
         }
@@ -662,6 +1169,7 @@ impl<'provider> WindowsNoSecretService<'provider> {
                     WindowsLifecycleExitRequired::bound(
                         WindowsLifecycleCause::RuntimePolicy(cause),
                         windows.into_retirement(),
+                        effects.into_terminal(),
                     ),
                 );
             }
@@ -671,17 +1179,19 @@ impl<'provider> WindowsNoSecretService<'provider> {
                 WindowsLifecycleCleanCommitOutcome::ReleasePending(WindowsCleanReleasePending {
                     policy: policy.record_clean_committed(),
                     windows,
+                    effects,
                 })
             }
             WindowsCleanCommitOutcome::ReloadRequired(windows) => {
                 WindowsLifecycleCleanCommitOutcome::ReloadRequired(WindowsCleanReloadPending {
                     policy,
                     windows,
+                    effects,
                 })
             }
             WindowsCleanCommitOutcome::Terminal(failure) => {
                 WindowsLifecycleCleanCommitOutcome::ExitRequired(
-                    WindowsLifecycleExitRequired::from_terminal(failure),
+                    WindowsLifecycleExitRequired::from_terminal(failure, effects.into_terminal()),
                 )
             }
         }
@@ -694,27 +1204,14 @@ impl<'provider> WindowsNoSecretService<'provider> {
         WindowsLifecycleExitRequired::bound(
             WindowsLifecycleCause::Lifecycle(cause),
             self.windows.into_retirement(),
+            self.effects.into_terminal(),
         )
-    }
-
-    pub(super) fn into_fatal_exit(self) -> WindowsLifecycleExitRequired<'provider> {
-        let cause = match self.policy.state() {
-            RuntimeState::Fatal(cause) => WindowsLifecycleCause::Fatal(cause),
-            RuntimeState::Ready | RuntimeState::Draining(_) => {
-                WindowsLifecycleCause::Lifecycle(LifecycleError::NotReady)
-            }
-        };
-        WindowsLifecycleExitRequired::bound(cause, self.windows.into_retirement())
     }
 }
 
-impl fmt::Debug for WindowsNoSecretService<'_> {
+impl fmt::Debug for WindowsRemainingCleanup<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("WindowsNoSecretService")
-            .field("policy", &self.policy)
-            .field("windows", &"[REDACTED]")
-            .finish_non_exhaustive()
+        formatter.write_str("WindowsRemainingCleanup([REDACTED])")
     }
 }
 
@@ -732,21 +1229,27 @@ pub(super) enum WindowsLifecycleCleanCommitOutcome<'provider> {
 pub(super) struct WindowsCleanReloadPending<'provider> {
     policy: CleanBoundaryPolicy,
     windows: WindowsCleanReloadRequired<'provider>,
+    effects: WindowsListenersDrainedEffects,
 }
 
 impl<'provider> WindowsCleanReloadPending<'provider> {
     pub(super) fn reload(self) -> WindowsLifecycleCleanReloadOutcome<'provider> {
-        let Self { policy, windows } = self;
+        let Self {
+            policy,
+            windows,
+            effects,
+        } = self;
         match windows.reload() {
             WindowsCleanReloadOutcome::Clean(windows) => {
                 WindowsLifecycleCleanReloadOutcome::ReleasePending(WindowsCleanReleasePending {
                     policy: policy.record_clean_committed(),
                     windows,
+                    effects,
                 })
             }
             WindowsCleanReloadOutcome::Terminal(failure) => {
                 WindowsLifecycleCleanReloadOutcome::ExitRequired(
-                    WindowsLifecycleExitRequired::from_terminal(failure),
+                    WindowsLifecycleExitRequired::from_terminal(failure, effects.into_terminal()),
                 )
             }
         }
@@ -756,6 +1259,7 @@ impl<'provider> WindowsCleanReloadPending<'provider> {
         WindowsLifecycleExitRequired::bound(
             WindowsLifecycleCause::Lifecycle(cause),
             self.windows.into_retirement(),
+            self.effects.into_terminal(),
         )
     }
 }
@@ -778,52 +1282,73 @@ pub(super) enum WindowsLifecycleCleanReloadOutcome<'provider> {
 pub(super) struct WindowsCleanReleasePending<'provider> {
     policy: ReleaseBoundaryPolicy,
     windows: WindowsCleanWithWriter<'provider>,
+    effects: WindowsListenersDrainedEffects,
 }
 
 impl<'provider> WindowsCleanReleasePending<'provider> {
-    pub(super) fn release_writer(self) -> WindowsLifecycleStopOutcome<'provider> {
-        let Self { policy, windows } = self;
-        complete_lifecycle_stop(policy, windows.stop())
+    pub(super) fn release_writer(self) -> WindowsLifecycleWriterReleaseOutcome<'provider> {
+        let Self {
+            policy,
+            windows,
+            effects,
+        } = self;
+        complete_lifecycle_writer_release(policy, windows.stop(), effects)
     }
 
     #[cfg(test)]
     fn release_writer_with_post_release_fault_for_test(
         self,
-    ) -> WindowsLifecycleStopOutcome<'provider> {
-        let Self { policy, windows } = self;
-        complete_lifecycle_stop(policy, windows.stop_with_post_release_fault_for_test())
+    ) -> WindowsLifecycleWriterReleaseOutcome<'provider> {
+        let Self {
+            policy,
+            windows,
+            effects,
+        } = self;
+        complete_lifecycle_writer_release(
+            policy,
+            windows.stop_with_post_release_fault_for_test(),
+            effects,
+        )
     }
 
     pub(super) fn abort(self, cause: LifecycleError) -> WindowsLifecycleExitRequired<'provider> {
         WindowsLifecycleExitRequired::bound(
             WindowsLifecycleCause::Lifecycle(cause),
             self.windows.into_retirement(),
+            self.effects.into_terminal(),
         )
     }
 }
 
-fn complete_lifecycle_stop(
+fn complete_lifecycle_writer_release(
     policy: ReleaseBoundaryPolicy,
     outcome: WindowsStopOutcome<'_>,
-) -> WindowsLifecycleStopOutcome<'_> {
+    effects: WindowsListenersDrainedEffects,
+) -> WindowsLifecycleWriterReleaseOutcome<'_> {
     match outcome {
         WindowsStopOutcome::Stopped(windows) => {
-            WindowsLifecycleStopOutcome::Stopped(WindowsLifecycleStopped {
+            WindowsLifecycleWriterReleaseOutcome::ScmStopPending(WindowsScmStopPending {
                 policy: policy.record_writer_released(),
                 windows,
+                effects,
             })
         }
-        WindowsStopOutcome::Terminal(failure) => WindowsLifecycleStopOutcome::ExitRequired(
-            WindowsLifecycleExitRequired::from_terminal(failure),
-        ),
+        WindowsStopOutcome::Terminal(failure) => {
+            WindowsLifecycleWriterReleaseOutcome::ExitRequired(
+                WindowsLifecycleExitRequired::from_terminal(failure, effects.into_terminal()),
+            )
+        }
         WindowsStopOutcome::ReleasedNoReceipt(failure) => {
-            WindowsLifecycleStopOutcome::IrreversibleExit78(
-                WindowsLifecycleIrreversibleExit78::released_no_receipt(failure),
+            WindowsLifecycleWriterReleaseOutcome::IrreversibleExit78(
+                WindowsLifecycleIrreversibleExit78::released_no_receipt(
+                    failure,
+                    effects.into_terminal(),
+                ),
             )
         }
         WindowsStopOutcome::PostReleaseTerminal(failure) => {
-            WindowsLifecycleStopOutcome::IrreversibleExit78(
-                WindowsLifecycleIrreversibleExit78::post_release(failure),
+            WindowsLifecycleWriterReleaseOutcome::IrreversibleExit78(
+                WindowsLifecycleIrreversibleExit78::post_release(failure, effects.into_terminal()),
             )
         }
     }
@@ -835,12 +1360,75 @@ impl fmt::Debug for WindowsCleanReleasePending<'_> {
     }
 }
 
-#[must_use = "the final writer-release outcome must be handled explicitly"]
+#[must_use = "writer release must advance to exact SCM_STOPPED publication"]
 #[allow(clippy::large_enum_variant)] // Inline authority avoids fallible allocation.
-pub(super) enum WindowsLifecycleStopOutcome<'provider> {
-    Stopped(WindowsLifecycleStopped<'provider>),
+pub(super) enum WindowsLifecycleWriterReleaseOutcome<'provider> {
+    ScmStopPending(WindowsScmStopPending<'provider>),
     ExitRequired(WindowsLifecycleExitRequired<'provider>),
     IrreversibleExit78(WindowsLifecycleIrreversibleExit78<'provider>),
+}
+
+/// Durable stopped evidence held until `SCM_STOPPED` is published exactly once.
+#[must_use = "SCM_STOPPED must be published or preserved as irreversible evidence"]
+pub(super) struct WindowsScmStopPending<'provider> {
+    policy: StoppedRuntimePolicy,
+    windows: WindowsStoppedRunEvidence<'provider>,
+    effects: WindowsListenersDrainedEffects,
+}
+
+impl<'provider> WindowsScmStopPending<'provider> {
+    pub(super) fn publish_scm_stopped(self) -> WindowsLifecycleScmStopOutcome<'provider> {
+        let Self {
+            policy,
+            windows,
+            effects,
+        } = self;
+        match effects.publish_scm_stopped() {
+            Ok(effects) => WindowsLifecycleScmStopOutcome::Stopped(WindowsLifecycleStopped {
+                policy,
+                windows,
+                effects,
+            }),
+            Err(effects) => WindowsLifecycleScmStopOutcome::IrreversibleExit78(
+                WindowsLifecycleIrreversibleExit78::post_writer_release_scm_stop(
+                    WindowsPostWriterReleaseScmStopFailure { windows, effects },
+                ),
+            ),
+        }
+    }
+}
+
+impl fmt::Debug for WindowsScmStopPending<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("WindowsScmStopPending([REDACTED])")
+    }
+}
+
+#[must_use = "SCM_STOPPED outcome must remain terminal"]
+#[allow(clippy::large_enum_variant)] // Inline authority avoids fallible allocation.
+pub(super) enum WindowsLifecycleScmStopOutcome<'provider> {
+    Stopped(WindowsLifecycleStopped<'provider>),
+    IrreversibleExit78(WindowsLifecycleIrreversibleExit78<'provider>),
+}
+
+/// Irreversible `SCM_STOPPED` failure after the durable writer was released.
+#[must_use = "post-writer-release SCM failure is terminal exit-78 evidence"]
+struct WindowsPostWriterReleaseScmStopFailure<'provider> {
+    windows: WindowsStoppedRunEvidence<'provider>,
+    effects: WindowsLifecycleEffectFailure,
+}
+
+impl WindowsPostWriterReleaseScmStopFailure<'_> {
+    const fn cause(&self) -> WindowsLifecycleEffectCause {
+        self.effects.cause()
+    }
+}
+
+impl fmt::Debug for WindowsPostWriterReleaseScmStopFailure<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = (&self.windows, &self.effects);
+        formatter.write_str("WindowsPostWriterReleaseScmStopFailure([REDACTED])")
+    }
 }
 
 /// Sole normal terminal lifecycle evidence. It intentionally exposes no exit-78
@@ -849,6 +1437,7 @@ pub(super) enum WindowsLifecycleStopOutcome<'provider> {
 pub(super) struct WindowsLifecycleStopped<'provider> {
     policy: StoppedRuntimePolicy,
     windows: WindowsStoppedRunEvidence<'provider>,
+    effects: WindowsScmStoppedEffectEvidence,
 }
 
 impl WindowsLifecycleStopped<'_> {
@@ -859,7 +1448,7 @@ impl WindowsLifecycleStopped<'_> {
 
 impl fmt::Debug for WindowsLifecycleStopped<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = &self.policy;
+        let _ = (&self.policy, &self.effects);
         formatter.write_str("WindowsLifecycleStopped([REDACTED])")
     }
 }

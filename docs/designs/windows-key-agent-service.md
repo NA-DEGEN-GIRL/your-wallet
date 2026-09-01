@@ -1952,95 +1952,108 @@ Both compiled policies stay `None`, and ordinary/release execution remains
 silent exit 78.
 
 **Current Phase 2G status: started, not passed.** A separate
-production-compiled, Windows-only, module-private dormant compositor now binds
-the authority-independent Phase 2A policy to the Phase 2F-c durable/OS
-typestates. `begin_windows_lifecycle` is the sole direct production consumer of
+production-compiled, Windows-only, module-private dormant compositor binds the
+authority-independent Phase 2A policy to the Phase 2F-c durable/OS typestates.
+`begin_windows_lifecycle` is the sole direct production consumer of
 `start_windows_runtime`; both entries consume exactly one already-held writer
-and one move-only `RuntimeRunStateAuthority`, with no parallel installation or
-provider input. `begin_windows_lifecycle` itself has zero
-production call sites and is neither exported nor reachable from an executable
-or top-level service entry. There is no alias caller, production provider
-constructor/source/caller, installer adapter, SCM adapter, listener
-creation, admission adapter, secret operation, or `process::exit` call.
+and one move-only `RuntimeRunStateAuthority`, with no parallel installation,
+provider, or effect input. `begin_windows_lifecycle` itself has zero production
+call sites and is neither exported nor reachable from an executable or top-level
+service entry.
 
-Cause ownership is explicit. `StartupFailure`, `RuntimePolicyFailure`,
+The private `windows_lifecycle_effects` child adds an owned, move-only local
+effect authority only after an exact Active reread, at
+`WindowsListenerPending::prepare_listeners(effects)`. Its production backend is
+the uninhabited `Unavailable(Infallible)` variant and has zero production
+constructors, sources, or callers. Only cfg(test) fixtures can execute the six
+fixed purposes: `PrepareListeners`, `PublishScmRunning`, `OpenAdmission`,
+`CloseAdmission`, `DrainListeners`, and `PublishScmStopped`. Every successful
+receipt must match the exact opaque lifecycle binding, nonzero attempt, and
+purpose before a checked attempt increment. Known-not-applied, ambiguous,
+cross-bound, replayed/exhausted-attempt, or wrong-purpose results become typed
+effect failures and retain the consumed authority. This is local receipt and
+composition evidence only: the production slice still has no listener, SCM,
+admission, installer, provider-source, secret, or `process::exit` adapter.
+
+Cause ownership remains explicit. `StartupFailure`, `RuntimePolicyFailure`,
 `LifecycleError`, and `FatalReason` remain policy causes and never become a
-fabricated `RecoveryRequired`; durable/platform failures remain inside
-`WindowsTerminalCause`. Every writer-holding policy failure consumes the exact
-Windows state through reason-neutral `into_retirement`. A terminal durable
-failure is split by `into_retirement_parts` into its durable cause and the same
-reason-neutral retirement authority. Checked retirement orders logical
-begin-release, exact OS-pair retirement, logical receipt recording, and logical
-completion. A successful check reattaches the original lifecycle cause and is
-the fully checked terminal path that can authorize silent code 78. Writer-retaining
-release failure follows that same checked exit. Retirement ambiguity preserves
-both the original lifecycle cause and platform cleanup cause in an irreversible
-code-78 state; it exposes no retry, second retirement, stopped conversion, or
-normal receipt. After writer acquisition, the runtime authority stays nested in
-the logical lease through every remaining startup, running, exit, checked-
-retired, irreversible, and stopped state. Before-writer failure instead carries
-the authority directly through `StartupExitRequired` into terminal
-`StartupBeforeWriterExit`; no writer exists, so that path has no writer release
-or checked-retirement step.
+fabricated `RecoveryRequired`; effect failures retain their exact stage and
+disposition; durable/platform failures remain inside `WindowsTerminalCause`.
+Every writer-holding failure consumes the exact Windows state through
+reason-neutral retirement. A successful check reattaches the original lifecycle
+cause and is the fully checked terminal path that can authorize silent code 78.
+Retirement ambiguity preserves both the original lifecycle cause and platform
+cleanup cause in an irreversible code-78 state. After effect attachment, the
+same effect authority remains inside every checked or irreversible terminal as
+well as every live, Clean/reload/release, and stopped carrier; pre-Active and
+revalidation terminals are explicitly unattached. No irreversible state exposes
+retry, second retirement, stopped conversion, or a normal receipt.
 
-Startup and Active ordering remain consuming. A fresh Clean boot owns a fresh
+Startup and Active ordering are consuming. A fresh Clean boot owns a fresh
 nine-observation `StartupChecklist`; only `CompletedStartupChecklist` may
-prepare Active. If an ambiguous Active reload proves the exact prior Clean pair,
-the returned Boot path discards the completed checklist and requires all nine
-observations again. If it proves the exact Active candidate, it carries the
-completed checklist forward. Partial, drifting, confirmed-reread-failed, or
-terminal outcomes never reach listener authority. The next three transitions
-are exactly `record_listeners_prepared`, then
-`record_scm_running_published`, then `open_admission`. These are typestate
-records only: this slice does not create listeners, invoke `SetServiceStatus`,
-publish real `SCM_RUNNING`, or open a production admission endpoint.
+prepare Active. An exact prior-Clean ambiguity discards the completed checklist
+and requires all nine observations again, while an exact Active candidate carries
+the checklist forward. After exact Active, listener preparation effect success
+precedes the policy listener record, SCM-running effect success precedes the
+policy SCM record, and admission-open effect success precedes `RuntimePolicy`
+admission. Any effect failure retires the same durable authority and retains its
+effect binding; no zero-argument record/open bypass remains.
 
-The running `WindowsNoSecretService` delegates work, retained-token,
-quarantined-session, stop, and cleanup decisions only to `RuntimePolicy`; it
-does not duplicate those registries or bounds. Clean preparation is available
-only after the exact first nine cleanup steps and empty work, retained-token,
-and quarantined-session registries. Only an exact Clean commit, or an exact
-candidate Clean reload, records `CleanBoundaryPolicy` and advances to the
-release boundary. Only `WindowsStopOutcome::Stopped` records writer release and
-mints `WindowsLifecycleStopped`. `WindowsReleasedNoReceipt` and
-`WindowsPostReleaseTerminal` map only to irreversible silent exit 78 and retain
-no release-policy or stopped authority. A cfg(test)-only consuming
-`stop_with_post_release_fault_for_test` hook uses a thread-local one-shot RAII
-fault and the normal stop path to prove the post-release logical-receipt mismatch
-branch; the hook is absent from the production partition and exposes no writer,
-pair, handle, path, identity, key, or forging authority.
+Shutdown is equally fixed: admission-close effect, begin-stop, reject-new-work,
+invalidate-non-durable-authority, listener-drain effect, policy listener close/
+drain, then exactly six named remaining-cleanup methods for request cancellation,
+helper termination, helper reap, user-token discard, defined durable-record
+flush, and request hardware/storage-handle release. The Windows facade exposes
+no generic `complete_cleanup_step` delegate. Only empty registries and all nine
+pre-Clean steps can reach exact Clean commit/reload and writer release. A writer
+release first creates `WindowsScmStopPending`; only exact `PublishScmStopped`
+effect evidence mints `WindowsLifecycleStopped`. Released-no-receipt and
+post-release durable failures remain irreversible with terminal effects. A
+post-writer-release SCM publication failure is also irreversible and retains
+both `WindowsStoppedRunEvidence` and the exact effect-failure authority, with no
+retry, retirement, or stopped conversion.
 
 All Phase 2G evidence is move-only, Debug-redacted, safe-only, and free of raw
 handle/path access, `unsafe`, `dyn`/`Any`, downcast, dereference, or ownership
-escape. The exact compositor inventory is twelve passing tests:
+escape. The exact compositor inventory is 22 passing tests:
 `clean_startup_active_runtime_clean_release_reaches_normal_stopped`,
 `startup_missing_and_mismatch_require_checked_silent_exit78`,
 `active_ambiguity_reloads_prior_with_fresh_checks_candidate_with_carried_checks_and_partial_terminal`,
 `confirmed_active_reread_failure_never_restores_boot_or_listener_authority`,
 `listener_scm_and_admission_typestates_are_ordered_and_move_only`,
+`effect_authority_is_sealed_move_only_redacted_and_production_unmintable`,
+`effect_backed_startup_is_exactly_ordered_consuming_and_one_shot`,
+`cross_binding_duplicate_and_wrong_purpose_receipts_are_rejected_non_vacuously`,
+`listener_preparation_failure_and_ambiguity_preserve_effects_through_checked_exit`,
+`scm_running_failure_and_ambiguity_preserve_effects_through_checked_exit`,
+`admission_open_failure_and_ambiguity_preserve_effects_through_checked_exit`,
+`admission_close_precedes_stop_reject_and_failure_never_enters_cleanup`,
+`invalidate_then_effect_drain_gates_fixed_remaining_cleanup_without_generic_bypass`,
+`effect_carrier_survives_clean_reload_release_and_every_durable_terminal_class`,
+`post_writer_release_scm_stop_failure_and_ambiguity_are_irreversible_with_both_evidences`,
 `runtime_policy_alone_enforces_work_token_and_quarantine_bounds`,
 `cleanup_requires_exact_order_and_empties_all_runtime_registries_before_clean`,
 `clean_ambiguity_advances_release_policy_for_candidate_only`,
 `release_writer_retained_checks_retirement_and_no_receipt_is_irreversible_exit78`,
 `post_release_logical_failure_is_irreversible_exit78_and_never_stopped`,
 `retirement_fault_preserves_original_lifecycle_and_platform_cleanup_causes`, and
-`debug_and_source_surfaces_are_redacted_silent_and_path_handle_free`. The
-supporting evidence is also fourteen passing `windows_runtime` tests, 88/88
-focused `durable_run_state` tests (34 parent, two authentication, 25 logical
+`debug_and_source_surfaces_are_redacted_silent_and_path_handle_free`. Supporting
+evidence remains fourteen passing `windows_runtime` tests, 88/88 focused
+`durable_run_state` tests (34 parent, two authentication, 25 logical
 provisioning, six pair, seven Windows provisioning, and fourteen runtime), and
 the 56-test kernel root suite with 54 passing and the same two environment-
-dependent tests ignored. The lifecycle-core inventory remains 21/21 and this
-Windows compositor remains 12/12.
+dependent tests ignored. Lifecycle core remains 21/21 and the Windows compositor
+is 22/22.
 
 This remains composition evidence, not release activation. Actual listener and
-admission implementations, SCM `SetServiceStatus`/restricted-token/service-SID
-composition, elevated ProgramData installer provenance, an independently
-protected or TPM-backed key and rollback anchor, trusted service/`SYSTEM`
-single-writer and peer-race proof, mapped-I/O exclusion, signed immutable
-artifact binding, and supported-kernel crash/power-loss/reboot reconciliation
-remain external **STOP-SHIP** obligations. Both compiled policies stay `None`;
-ordinary/release execution still uses the existing silent exit-78 path, and no
-Phase 2G typestate calls `process::exit`.
+admission implementations, a production lifecycle-effect backend/source/caller,
+SCM `SetServiceStatus`/restricted-token/service-SID composition, elevated
+ProgramData installer provenance, an independently protected or TPM-backed key
+and rollback anchor, trusted service/`SYSTEM` single-writer and peer-race proof,
+mapped-I/O exclusion, signed immutable artifact binding, and supported-kernel
+crash/power-loss/reboot reconciliation remain external **STOP-SHIP** obligations.
+Both compiled policies stay `None`; ordinary/release execution still uses the
+existing silent exit-78 path, and no Phase 2G typestate calls `process::exit`.
 
 ### Phase 3 – Authenticated Broker and helper runtime
 
@@ -2146,7 +2159,7 @@ the corresponding evidence and returns release status to disabled.
   fresh authority hidden in both successful and checked-retired evidence. The
   durable inventory is exactly 88/88: 34 parent, two authentication, 25 logical
   provisioning, six pair, seven Windows provisioning, and fourteen runtime;
-  lifecycle core remains 21/21, Windows lifecycle 12/12, and kernel root 56
+  lifecycle core remains 21/21, Windows lifecycle 22/22, and kernel root 56
   total with 54 passing and two ignored. A production protected/TPM backend and
   source, elevated installer provenance, OS provenance tying writer/provider,
   service ACL/SCM/listener/admission composition, and supported-kernel crash,
@@ -2171,12 +2184,17 @@ the corresponding evidence and returns release status to disabled.
 - 2026-09-01 - Added the dormant Phase 2G Windows no-secret lifecycle
   compositor. It is the sole private production consumer of the Phase 2F-c
   entry while remaining unreachable from executables, keeps policy causes
-  separate from durable recovery causes, composes exact startup/Active/
-  listener-record/SCM-record/admission/runtime/Clean/release typestates, and
-  proves checked versus irreversible exit-78 outcomes including a cfg(test)-only
-  real post-release mismatch. Actual listeners, SCM/admission calls, installer,
-  restricted token, protected key/TPM, crash/power/reboot, and release activation
-  remain **STOP-SHIP**, so Phase 2G is started but not passed.
+  separate from durable recovery causes, and attaches a move-only local effect
+  authority only after exact Active. The sealed child validates binding/attempt/
+  purpose receipts for six exact listener/SCM/admission effects, enforces the
+  fixed shutdown sequence without a generic cleanup bypass, and carries effect
+  authority through checked and irreversible terminals. Only writer release
+  followed by an exact SCM-stopped receipt mints stopped evidence; publication
+  failure retains both durable stopped and effect-failure evidence. The
+  production effect backend is uninhabited with zero source/caller, so actual
+  listeners, SCM/admission calls, installer, restricted token, protected key/
+  TPM, crash/power/reboot, and release activation remain **STOP-SHIP**. Phase 2G
+  is started but not passed, with 22/22 focused compositor tests.
 - 2026-09-01 - Added the dormant Phase 2F-c logical/OS composite. It binds the
   writer-first Phase 2D lifecycle to the exact Phase 2F-b pair, preserves
   logical receipt ordering and OS commit/reload ambiguity, makes confirmed

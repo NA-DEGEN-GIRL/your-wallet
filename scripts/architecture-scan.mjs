@@ -1996,6 +1996,48 @@ function rustFunctionBlock(source, functionName) {
   );
 }
 
+const rustFunctionBodyClosureSha256Cache = new Map();
+function rustFunctionBodyClosureSha256(source) {
+  const cached = rustFunctionBodyClosureSha256Cache.get(source);
+  if (cached !== undefined) return cached;
+  const sourceCode = rustLexicalCode(source);
+  const implItems = rustImplItems(source);
+  const inventory = rustFunctionSignatures(source).map((signature) => {
+    const delimiter = signature.index + signature.source.length;
+    const delimiterCharacter = sourceCode[delimiter];
+    let closing = delimiter;
+    if (delimiterCharacter === "{") {
+      closing = matchingRustDelimiter(sourceCode, delimiter, "{", "}");
+      if (closing === -1) {
+        throw new Error("architecture scan could not close a function body");
+      }
+    } else if (delimiterCharacter !== ";") {
+      throw new Error("architecture scan lost a function-body delimiter");
+    }
+    const nameMatch = /\bfn\s+(?:r#)?(?<name>[\p{XID_Start}_][\p{XID_Continue}_]*)/u.exec(
+      rustLexicalCode(signature.source),
+    );
+    if (nameMatch === null) {
+      throw new Error("architecture scan lost a function name");
+    }
+    const owner = implItems.find(
+      (item) =>
+        signature.index > item.index &&
+        signature.index < item.index + item.source.length,
+    );
+    return {
+      owner: owner === undefined ? "free" : compactRust(owner.header),
+      name: nameMatch.groups.name,
+      sha256: normalizedSourceSha256(
+        source.slice(signature.index, closing + 1),
+      ),
+    };
+  });
+  const sha256 = normalizedSourceSha256(JSON.stringify(inventory));
+  rustFunctionBodyClosureSha256Cache.set(source, sha256);
+  return sha256;
+}
+
 async function rustProductionSources(
   relativeDirectory,
   {
@@ -2711,6 +2753,15 @@ const keyAgentServiceWindowsLifecycle = await text(
 const keyAgentServiceWindowsLifecycleProduction = withoutCfgTestItems(
   keyAgentServiceWindowsLifecycle,
 );
+const keyAgentServiceWindowsLifecycleEffectsPath =
+  "crates/platform-windows/src/key_agent_service/windows_lifecycle_effects.rs";
+const keyAgentServiceWindowsLifecycleEffects = await text(
+  keyAgentServiceWindowsLifecycleEffectsPath,
+);
+const keyAgentServiceWindowsLifecycleEffectsProduction =
+  keyAgentServicePhaseTwoGEffectsProductionPartition(
+    keyAgentServiceWindowsLifecycleEffects,
+  );
 const keyAgentServiceWindowsLifecycleTestsPath =
   "crates/platform-windows/src/key_agent_service/windows_lifecycle_tests.rs";
 const keyAgentServiceWindowsLifecycleTests = await text(
@@ -6348,11 +6399,15 @@ const approvedKeyAgentServiceLifecycleSourceSha256 =
 const approvedKeyAgentServiceLifecycleTestsSha256 =
   "8979883fe13f7f8a0febec34793e1c7fc9c949601d6d63bd58a7025511f7bfd4";
 const approvedKeyAgentServiceWindowsLifecycleSourceSha256 =
-  "db6b72272a73b5fcd8b843dc5519402c2a22880b34fbda7e9ef3ff6837203d06";
+  "e936fe3e42342e4779276b25f1e0038e7bca5e3e01aa0535f8e6becd95ac3ed1";
 const approvedKeyAgentServiceWindowsLifecycleProductionSha256 =
-  "e7fcbb9d382e51a1a9be4ec868cb1e3c5d2bc90d20ae9be271c78998af2e1445";
+  "898552e099b94f5fbf33e6ced2ccf1c7abaf9c4e2ddd3cc8a55ed833cc88ccb0";
+const approvedKeyAgentServiceWindowsLifecycleEffectsSourceSha256 =
+  "3d425e4cddf8958b9417aac0c9b7e3dc68646aa06ebb253dba2b5fd7fafa764f";
+const approvedKeyAgentServiceWindowsLifecycleEffectsProductionSha256 =
+  "b2c567be7f8fa414655ced5255d488eb9d6c2f7a7356007ebd928a3f7cb63274";
 const approvedKeyAgentServiceWindowsLifecycleTestsSha256 =
-  "347c89889dee9b9a672858c2ac4c2b0dd68e1501bc704096a4ef018bb4cfa9ea";
+  "bc8817ce48e9322a3bd1fed30eafac40089352da7d37c88178ea1b72778e1275";
 const approvedKeyAgentServiceRunStateRootSourceSha256 =
   "65735ed35df959e8fb4a7cb4fba7d78f5b1301a2a0e0ce1e63e9a40176a0a117";
 const approvedKeyAgentServiceRunStateRootProductionSha256 =
@@ -6474,6 +6529,16 @@ const keyAgentServicePhaseTwoGWindowsLifecycleTestNames = [
   "active_ambiguity_reloads_prior_with_fresh_checks_candidate_with_carried_checks_and_partial_terminal",
   "confirmed_active_reread_failure_never_restores_boot_or_listener_authority",
   "listener_scm_and_admission_typestates_are_ordered_and_move_only",
+  "effect_authority_is_sealed_move_only_redacted_and_production_unmintable",
+  "effect_backed_startup_is_exactly_ordered_consuming_and_one_shot",
+  "cross_binding_duplicate_and_wrong_purpose_receipts_are_rejected_non_vacuously",
+  "listener_preparation_failure_and_ambiguity_preserve_effects_through_checked_exit",
+  "scm_running_failure_and_ambiguity_preserve_effects_through_checked_exit",
+  "admission_open_failure_and_ambiguity_preserve_effects_through_checked_exit",
+  "admission_close_precedes_stop_reject_and_failure_never_enters_cleanup",
+  "invalidate_then_effect_drain_gates_fixed_remaining_cleanup_without_generic_bypass",
+  "effect_carrier_survives_clean_reload_release_and_every_durable_terminal_class",
+  "post_writer_release_scm_stop_failure_and_ambiguity_are_irreversible_with_both_evidences",
   "runtime_policy_alone_enforces_work_token_and_quarantine_bounds",
   "cleanup_requires_exact_order_and_empties_all_runtime_registries_before_clean",
   "clean_ambiguity_advances_release_policy_for_candidate_only",
@@ -6497,15 +6562,61 @@ const keyAgentServicePhaseTwoGWindowsLifecycleTypes = [
   { visibility: "pub(super)", kind: "struct", name: "WindowsActiveReloadPending" },
   { visibility: "pub(super)", kind: "enum", name: "WindowsLifecycleActiveReloadOutcome" },
   { visibility: "pub(super)", kind: "struct", name: "WindowsListenerPending" },
+  { visibility: "pub(super)", kind: "enum", name: "WindowsListenerPreparationOutcome" },
   { visibility: "pub(super)", kind: "struct", name: "WindowsScmRunningPending" },
+  { visibility: "pub(super)", kind: "enum", name: "WindowsScmRunningPublicationOutcome" },
   { visibility: "pub(super)", kind: "struct", name: "WindowsAdmissionPending" },
+  { visibility: "pub(super)", kind: "enum", name: "WindowsAdmissionOpenOutcome" },
   { visibility: "pub(super)", kind: "struct", name: "WindowsNoSecretService" },
+  { visibility: "pub(super)", kind: "enum", name: "WindowsAdmissionCloseOutcome" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsAdmissionClosedService" },
+  { visibility: "pub(super)", kind: "enum", name: "WindowsStopPolicyOutcome" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsInvalidationPending" },
+  { visibility: "pub(super)", kind: "enum", name: "WindowsInvalidationOutcome" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsListenerDrainPending" },
+  { visibility: "pub(super)", kind: "enum", name: "WindowsListenerDrainOutcome" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsRemainingCleanup" },
   { visibility: "pub(super)", kind: "enum", name: "WindowsLifecycleCleanCommitOutcome" },
   { visibility: "pub(super)", kind: "struct", name: "WindowsCleanReloadPending" },
   { visibility: "pub(super)", kind: "enum", name: "WindowsLifecycleCleanReloadOutcome" },
   { visibility: "pub(super)", kind: "struct", name: "WindowsCleanReleasePending" },
-  { visibility: "pub(super)", kind: "enum", name: "WindowsLifecycleStopOutcome" },
+  { visibility: "pub(super)", kind: "enum", name: "WindowsLifecycleWriterReleaseOutcome" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsScmStopPending" },
+  { visibility: "pub(super)", kind: "enum", name: "WindowsLifecycleScmStopOutcome" },
+  { visibility: "", kind: "struct", name: "WindowsPostWriterReleaseScmStopFailure" },
   { visibility: "pub(super)", kind: "struct", name: "WindowsLifecycleStopped" },
+];
+const keyAgentServicePhaseTwoGWindowsLifecycleEffectsTypes = [
+  { visibility: "pub(incrate::key_agent_service)", kind: "enum", name: "WindowsLifecycleEffectStage" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "enum", name: "WindowsLifecycleEffectDisposition" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "struct", name: "WindowsLifecycleEffectCause" },
+  { visibility: "", kind: "struct", name: "WindowsLifecycleEffectBinding" },
+  { visibility: "", kind: "enum", name: "EffectPurpose" },
+  { visibility: "", kind: "struct", name: "EffectReceipt" },
+  { visibility: "", kind: "enum", name: "BackendEffectOutcome" },
+  { visibility: "", kind: "enum", name: "SealedWindowsLifecycleEffectBackend" },
+  { visibility: "", kind: "struct", name: "EffectCore" },
+  { visibility: "pub(incrate::key_agent_service)", kind: "struct", name: "WindowsLifecycleEffectAuthority" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsLifecycleEffectFailure" },
+  { visibility: "pub(super)", kind: "enum", name: "WindowsLifecycleTerminalEffects" },
+  { visibility: "pub(super)", kind: "struct", name: "WindowsLifecycleAttachedTerminalEffects" },
+];
+const keyAgentServicePhaseTwoGWindowsLifecycleEffectsFullTypes = [
+  ...keyAgentServicePhaseTwoGWindowsLifecycleEffectsTypes.slice(0, 4),
+  { visibility: "pub(super)", kind: "struct", name: "WindowsLifecycleEffectBindingWitness" },
+  ...keyAgentServicePhaseTwoGWindowsLifecycleEffectsTypes.slice(4, 8),
+  { visibility: "pub(super)", kind: "enum", name: "FixtureWindowsLifecycleEffectFault" },
+  { visibility: "", kind: "struct", name: "FixtureWindowsLifecycleEffectBackend" },
+  ...keyAgentServicePhaseTwoGWindowsLifecycleEffectsTypes.slice(8),
+  { visibility: "pub(super)", kind: "enum", name: "WindowsLifecycleEffectFixtureError" },
+];
+const keyAgentServicePhaseTwoGWindowsLifecycleEffectStates = [
+  "WindowsListenersPreparedEffects",
+  "WindowsScmRunningEffects",
+  "WindowsAdmissionOpenEffects",
+  "WindowsAdmissionClosedEffects",
+  "WindowsListenersDrainedEffects",
+  "WindowsScmStoppedEffectEvidence",
 ];
 const keyAgentServicePhaseTwoGRuntimeTypes = [
   { visibility: "pub(incrate::key_agent_service)", kind: "enum", name: "WindowsRuntimeStartFailure" },
@@ -6578,11 +6689,11 @@ const keyAgentServicePhaseTwoGWindowsLifecycleFunctions = [
   { owner: "impl<'provider>WindowsActiveCommitPending<'provider>", visibility: "pub(super)", name: "abort", signature: "fnabort(self,cause:LifecycleError)->WindowsLifecycleExitRequired<'provider>" },
   { owner: "impl<'provider>WindowsActiveReloadPending<'provider>", visibility: "pub(super)", name: "reload", signature: "fnreload(self)->WindowsLifecycleActiveReloadOutcome<'provider>" },
   { owner: "impl<'provider>WindowsActiveReloadPending<'provider>", visibility: "pub(super)", name: "abort", signature: "fnabort(self,cause:LifecycleError)->WindowsLifecycleExitRequired<'provider>" },
-  { owner: "impl<'provider>WindowsListenerPending<'provider>", visibility: "pub(super)", name: "record_listeners_prepared", signature: "fnrecord_listeners_prepared(self)->WindowsScmRunningPending<'provider>" },
+  { owner: "impl<'provider>WindowsListenerPending<'provider>", visibility: "pub(super)", name: "prepare_listeners", signature: "fnprepare_listeners(self,effects:WindowsLifecycleEffectAuthority,)->WindowsListenerPreparationOutcome<'provider>" },
   { owner: "impl<'provider>WindowsListenerPending<'provider>", visibility: "pub(super)", name: "abort", signature: "fnabort(self,cause:LifecycleError)->WindowsLifecycleExitRequired<'provider>" },
-  { owner: "impl<'provider>WindowsScmRunningPending<'provider>", visibility: "pub(super)", name: "record_scm_running_published", signature: "fnrecord_scm_running_published(self)->WindowsAdmissionPending<'provider>" },
+  { owner: "impl<'provider>WindowsScmRunningPending<'provider>", visibility: "pub(super)", name: "publish_scm_running", signature: "fnpublish_scm_running(self)->WindowsScmRunningPublicationOutcome<'provider>" },
   { owner: "impl<'provider>WindowsScmRunningPending<'provider>", visibility: "pub(super)", name: "abort", signature: "fnabort(self,cause:LifecycleError)->WindowsLifecycleExitRequired<'provider>" },
-  { owner: "impl<'provider>WindowsAdmissionPending<'provider>", visibility: "pub(super)", name: "open_admission", signature: "fnopen_admission(self)->WindowsNoSecretService<'provider>" },
+  { owner: "impl<'provider>WindowsAdmissionPending<'provider>", visibility: "pub(super)", name: "establish_admission", signature: "fnestablish_admission(self)->WindowsAdmissionOpenOutcome<'provider>" },
   { owner: "impl<'provider>WindowsAdmissionPending<'provider>", visibility: "pub(super)", name: "abort", signature: "fnabort(self,cause:LifecycleError)->WindowsLifecycleExitRequired<'provider>" },
   { owner: "impl<'provider>WindowsNoSecretService<'provider>", visibility: "pub(super)const", name: "state", signature: "fnstate(&self)->RuntimeState" },
   { owner: "impl<'provider>WindowsNoSecretService<'provider>", visibility: "pub(super)", name: "work_count", signature: "fnwork_count(&self)->usize" },
@@ -6592,20 +6703,48 @@ const keyAgentServicePhaseTwoGWindowsLifecycleFunctions = [
   { owner: "impl<'provider>WindowsNoSecretService<'provider>", visibility: "pub(super)", name: "retain_user_token", signature: "fnretain_user_token(&mutself,session:SessionId)->Result<(),LifecycleError>" },
   { owner: "impl<'provider>WindowsNoSecretService<'provider>", visibility: "pub(super)", name: "handle_session_event", signature: "fnhandle_session_event(&mutself,event:SessionEvent,)->Result<SessionInvalidationReport,LifecycleError>" },
   { owner: "impl<'provider>WindowsNoSecretService<'provider>", visibility: "pub(super)", name: "reap_cancelled_fixture_work", signature: "fnreap_cancelled_fixture_work(&mutself,id:WorkId)->Result<(),LifecycleError>" },
-  { owner: "impl<'provider>WindowsNoSecretService<'provider>", visibility: "pub(super)", name: "begin_stop", signature: "fnbegin_stop(&mutself,reason:StopReason)->Result<(),LifecycleError>" },
   { owner: "impl<'provider>WindowsNoSecretService<'provider>", visibility: "pub(super)", name: "expected_cleanup_step", signature: "fnexpected_cleanup_step(&self)->Option<CleanupStep>" },
-  { owner: "impl<'provider>WindowsNoSecretService<'provider>", visibility: "pub(super)", name: "complete_cleanup_step", signature: "fncomplete_cleanup_step(&mutself,step:CleanupStep,)->Result<(),LifecycleError>" },
   { owner: "impl<'provider>WindowsNoSecretService<'provider>", visibility: "pub(super)", name: "fail_cleanup", signature: "fnfail_cleanup(&mutself,step:CleanupStep)->Result<(),LifecycleError>" },
   { owner: "impl<'provider>WindowsNoSecretService<'provider>", visibility: "pub(super)", name: "cleanup_deadline_expired", signature: "fncleanup_deadline_expired(&mutself)->Result<(),LifecycleError>" },
   { owner: "impl<'provider>WindowsNoSecretService<'provider>", visibility: "pub(super)", name: "crash", signature: "fncrash(&mutself)" },
-  { owner: "impl<'provider>WindowsNoSecretService<'provider>", visibility: "pub(super)", name: "prepare_clean", signature: "fnprepare_clean(self)->WindowsLifecycleCleanCommitOutcome<'provider>" },
+  { owner: "impl<'provider>WindowsNoSecretService<'provider>", visibility: "pub(super)", name: "close_admission", signature: "fnclose_admission(self)->WindowsAdmissionCloseOutcome<'provider>" },
   { owner: "impl<'provider>WindowsNoSecretService<'provider>", visibility: "pub(super)", name: "into_exit", signature: "fninto_exit(self,cause:LifecycleError,)->WindowsLifecycleExitRequired<'provider>" },
   { owner: "impl<'provider>WindowsNoSecretService<'provider>", visibility: "pub(super)", name: "into_fatal_exit", signature: "fninto_fatal_exit(self)->WindowsLifecycleExitRequired<'provider>" },
+  { owner: "impl<'provider>WindowsAdmissionClosedService<'provider>", visibility: "pub(super)", name: "begin_stop_and_reject", signature: "fnbegin_stop_and_reject(mutself,reason:StopReason,)->WindowsStopPolicyOutcome<'provider>" },
+  { owner: "impl<'provider>WindowsInvalidationPending<'provider>", visibility: "pub(super)", name: "invalidate_non_durable_authority", signature: "fninvalidate_non_durable_authority(mutself,)->WindowsInvalidationOutcome<'provider>" },
+  { owner: "impl<'provider>WindowsListenerDrainPending<'provider>", visibility: "pub(super)", name: "drain_listeners", signature: "fndrain_listeners(self)->WindowsListenerDrainOutcome<'provider>" },
+  { owner: "impl<'provider>WindowsRemainingCleanup<'provider>", visibility: "pub(super)", name: "expected_cleanup_step", signature: "fnexpected_cleanup_step(&self)->Option<CleanupStep>" },
+  { owner: "impl<'provider>WindowsRemainingCleanup<'provider>", visibility: "pub(super)", name: "work_count", signature: "fnwork_count(&self)->usize" },
+  { owner: "impl<'provider>WindowsRemainingCleanup<'provider>", visibility: "pub(super)", name: "retained_user_token_count", signature: "fnretained_user_token_count(&self)->usize" },
+  { owner: "impl<'provider>WindowsRemainingCleanup<'provider>", visibility: "pub(super)", name: "quarantined_session_count", signature: "fnquarantined_session_count(&self)->usize" },
+  { owner: "impl<'provider>WindowsRemainingCleanup<'provider>", visibility: "pub(super)", name: "cancel_requests", signature: "fncancel_requests(&mutself)->Result<(),LifecycleError>" },
+  { owner: "impl<'provider>WindowsRemainingCleanup<'provider>", visibility: "pub(super)", name: "terminate_helpers", signature: "fnterminate_helpers(&mutself)->Result<(),LifecycleError>" },
+  { owner: "impl<'provider>WindowsRemainingCleanup<'provider>", visibility: "pub(super)", name: "reap_helpers", signature: "fnreap_helpers(&mutself)->Result<(),LifecycleError>" },
+  { owner: "impl<'provider>WindowsRemainingCleanup<'provider>", visibility: "pub(super)", name: "discard_user_tokens", signature: "fndiscard_user_tokens(&mutself)->Result<(),LifecycleError>" },
+  { owner: "impl<'provider>WindowsRemainingCleanup<'provider>", visibility: "pub(super)", name: "flush_defined_durable_records", signature: "fnflush_defined_durable_records(&mutself)->Result<(),LifecycleError>" },
+  { owner: "impl<'provider>WindowsRemainingCleanup<'provider>", visibility: "pub(super)", name: "release_request_hardware_and_storage_handles", signature: "fnrelease_request_hardware_and_storage_handles(&mutself,)->Result<(),LifecycleError>" },
+  { owner: "impl<'provider>WindowsRemainingCleanup<'provider>", visibility: "pub(super)", name: "prepare_clean", signature: "fnprepare_clean(self)->WindowsLifecycleCleanCommitOutcome<'provider>" },
+  { owner: "impl<'provider>WindowsRemainingCleanup<'provider>", visibility: "pub(super)", name: "into_exit", signature: "fninto_exit(self,cause:LifecycleError,)->WindowsLifecycleExitRequired<'provider>" },
   { owner: "impl<'provider>WindowsCleanReloadPending<'provider>", visibility: "pub(super)", name: "reload", signature: "fnreload(self)->WindowsLifecycleCleanReloadOutcome<'provider>" },
   { owner: "impl<'provider>WindowsCleanReloadPending<'provider>", visibility: "pub(super)", name: "abort", signature: "fnabort(self,cause:LifecycleError)->WindowsLifecycleExitRequired<'provider>" },
-  { owner: "impl<'provider>WindowsCleanReleasePending<'provider>", visibility: "pub(super)", name: "release_writer", signature: "fnrelease_writer(self)->WindowsLifecycleStopOutcome<'provider>" },
+  { owner: "impl<'provider>WindowsCleanReleasePending<'provider>", visibility: "pub(super)", name: "release_writer", signature: "fnrelease_writer(self)->WindowsLifecycleWriterReleaseOutcome<'provider>" },
   { owner: "impl<'provider>WindowsCleanReleasePending<'provider>", visibility: "pub(super)", name: "abort", signature: "fnabort(self,cause:LifecycleError)->WindowsLifecycleExitRequired<'provider>" },
+  { owner: "impl<'provider>WindowsScmStopPending<'provider>", visibility: "pub(super)", name: "publish_scm_stopped", signature: "fnpublish_scm_stopped(self)->WindowsLifecycleScmStopOutcome<'provider>" },
   { owner: "implWindowsLifecycleStopped<'_>", visibility: "pub(super)const", name: "generation", signature: "fngeneration(&self)->NonZeroU64" },
+];
+const keyAgentServicePhaseTwoGWindowsLifecycleEffectsFunctions = [
+  { owner: "implWindowsLifecycleEffectCause", visibility: "pub(super)const", name: "stage", signature: "fnstage(self)->WindowsLifecycleEffectStage" },
+  { owner: "implWindowsLifecycleEffectCause", visibility: "pub(super)const", name: "disposition", signature: "fndisposition(self)->WindowsLifecycleEffectDisposition" },
+  { owner: "implWindowsLifecycleEffectAuthority", visibility: "pub(super)", name: "prepare_listeners", signature: "fnprepare_listeners(self,)->Result<WindowsListenersPreparedEffects,WindowsLifecycleEffectFailure>" },
+  { owner: "impl$name", visibility: "pub(super)", name: "into_terminal", signature: "fninto_terminal(self)->WindowsLifecycleTerminalEffects" },
+  { owner: "implWindowsListenersPreparedEffects", visibility: "pub(super)", name: "publish_scm_running", signature: "fnpublish_scm_running(self,)->Result<WindowsScmRunningEffects,WindowsLifecycleEffectFailure>" },
+  { owner: "implWindowsScmRunningEffects", visibility: "pub(super)", name: "open_admission", signature: "fnopen_admission(self,)->Result<WindowsAdmissionOpenEffects,WindowsLifecycleEffectFailure>" },
+  { owner: "implWindowsAdmissionOpenEffects", visibility: "pub(super)", name: "close_admission", signature: "fnclose_admission(self,)->Result<WindowsAdmissionClosedEffects,WindowsLifecycleEffectFailure>" },
+  { owner: "implWindowsAdmissionClosedEffects", visibility: "pub(super)", name: "drain_listeners", signature: "fndrain_listeners(self,)->Result<WindowsListenersDrainedEffects,WindowsLifecycleEffectFailure>" },
+  { owner: "implWindowsListenersDrainedEffects", visibility: "pub(super)", name: "publish_scm_stopped", signature: "fnpublish_scm_stopped(self,)->Result<WindowsScmStoppedEffectEvidence,WindowsLifecycleEffectFailure>" },
+  { owner: "implWindowsLifecycleEffectFailure", visibility: "pub(super)const", name: "cause", signature: "fncause(&self)->WindowsLifecycleEffectCause" },
+  { owner: "implWindowsLifecycleEffectFailure", visibility: "pub(super)", name: "into_terminal", signature: "fninto_terminal(self)->WindowsLifecycleTerminalEffects" },
+  { owner: "implWindowsLifecycleTerminalEffects", visibility: "pub(super)const", name: "unattached", signature: "fnunattached()->Self" },
 ];
 const keyAgentServicePhaseTwoGRuntimeFunctions = [
   { owner: "free", visibility: "pub(incrate::key_agent_service)", name: "start_windows_runtime", signature: "fnstart_windows_runtime(writer:HeldServiceRunStateWriter,authority:RuntimeRunStateAuthority<'_>,)->Result<WindowsBootEvidence<'_>,WindowsRuntimeStartFailure<'_>>" },
@@ -6679,6 +6818,12 @@ const keyAgentServicePhaseTwoPartitionLifecycle = (source) =>
   source.endsWith(keyAgentServiceLifecycleTestSuffix)
     ? source.slice(0, -keyAgentServiceLifecycleTestSuffix.length)
     : null;
+function keyAgentServicePhaseTwoGEffectsProductionPartition(source) {
+  const fixtureVariant =
+    "    #[cfg(test)]\n    Fixture(FixtureWindowsLifecycleEffectBackend),\n";
+  if (source.split(fixtureVariant).length - 1 !== 1) return null;
+  return withoutCfgTestItems(source.replace(fixtureVariant, ""));
+}
 const keyAgentServiceMoveOnlyEvidenceContract = (source, names) => {
   const code = rustLexicalCode(source);
   return names.every((name) => {
@@ -6829,16 +6974,31 @@ const keyAgentServiceH2AuthorityLifetimeTypes = Object.freeze({
     "WindowsActiveReloadPending",
     "WindowsLifecycleActiveReloadOutcome",
     "WindowsListenerPending",
+    "WindowsListenerPreparationOutcome",
     "WindowsScmRunningPending",
+    "WindowsScmRunningPublicationOutcome",
     "WindowsAdmissionPending",
+    "WindowsAdmissionOpenOutcome",
     "WindowsNoSecretService",
+    "WindowsAdmissionCloseOutcome",
+    "WindowsAdmissionClosedService",
+    "WindowsStopPolicyOutcome",
+    "WindowsInvalidationPending",
+    "WindowsInvalidationOutcome",
+    "WindowsListenerDrainPending",
+    "WindowsListenerDrainOutcome",
+    "WindowsRemainingCleanup",
     "WindowsLifecycleCleanCommitOutcome",
     "WindowsCleanReloadPending",
     "WindowsLifecycleCleanReloadOutcome",
     "WindowsCleanReleasePending",
-    "WindowsLifecycleStopOutcome",
+    "WindowsLifecycleWriterReleaseOutcome",
+    "WindowsScmStopPending",
+    "WindowsLifecycleScmStopOutcome",
+    "WindowsPostWriterReleaseScmStopFailure",
     "WindowsLifecycleStopped",
   ],
+  windowsLifecycleEffects: [],
 });
 const keyAgentServiceH2AuthorityCarrierFragments = Object.freeze({
   durable: [
@@ -6944,10 +7104,10 @@ const keyAgentServiceH2AuthorityCarrierFragments = Object.freeze({
   ],
   windowsLifecycle: [
     ["WindowsLifecycleExitAuthority", "Unbound(WindowsRuntimeBindingFailure<'provider>),Bound(WindowsRetirementPending<'provider>)"],
-    ["WindowsLifecycleExitRequired", "cause:WindowsLifecycleCause,authority:WindowsLifecycleExitAuthority<'provider>"],
-    ["WindowsLifecycleCheckedExitAuthority", "Unbound(WindowsUnboundRetired<'provider>),Bound(WindowsCheckedRetired<'provider>)"],
+    ["WindowsLifecycleExitRequired", "cause:WindowsLifecycleCause,authority:WindowsLifecycleExitAuthority<'provider>,effects:WindowsLifecycleTerminalEffects"],
+    ["WindowsLifecycleCheckedExitAuthority", "Unbound{retired:WindowsUnboundRetired<'provider>,effects:WindowsLifecycleTerminalEffects,},Bound{retired:WindowsCheckedRetired<'provider>,effects:WindowsLifecycleTerminalEffects,}"],
     ["WindowsLifecycleCheckedExit78", "cause:WindowsLifecycleCause,authority:WindowsLifecycleCheckedExitAuthority<'provider>"],
-    ["WindowsLifecycleIrreversibleAuthority", "UnboundRetirementFailure(WindowsUnboundRetirementFailure<'provider>),BoundRetirementFailure(WindowsCheckedRetirementFailure<'provider>),ReleasedNoReceipt(WindowsReleasedNoReceipt<'provider>),PostRelease(WindowsPostReleaseTerminal<'provider>)"],
+    ["WindowsLifecycleIrreversibleAuthority", "UnboundRetirementFailure{failure:WindowsUnboundRetirementFailure<'provider>,effects:WindowsLifecycleTerminalEffects,},BoundRetirementFailure{failure:WindowsCheckedRetirementFailure<'provider>,effects:WindowsLifecycleTerminalEffects,},ReleasedNoReceipt{failure:WindowsReleasedNoReceipt<'provider>,effects:WindowsLifecycleTerminalEffects,},PostRelease{failure:WindowsPostReleaseTerminal<'provider>,effects:WindowsLifecycleTerminalEffects,},PostWriterReleaseScmStop(WindowsPostWriterReleaseScmStopFailure<'provider>)"],
     ["WindowsLifecycleIrreversibleExit78", "cause:WindowsLifecycleIrreversibleCause,authority:WindowsLifecycleIrreversibleAuthority<'provider>"],
     ["WindowsStartupAttempt", "checklist:StartupChecklist,windows:WindowsBootEvidence<'provider>"],
     ["WindowsActiveCommitPending", "checklist:CompletedStartupChecklist,windows:WindowsPreparedActiveTransition<'provider>"],
@@ -6955,16 +7115,31 @@ const keyAgentServiceH2AuthorityCarrierFragments = Object.freeze({
     ["WindowsActiveReloadPending", "checklist:CompletedStartupChecklist,windows:WindowsActiveReloadRequired<'provider>"],
     ["WindowsLifecycleActiveReloadOutcome", "Revalidate(WindowsStartupAttempt<'provider>),ListenerPending(WindowsListenerPending<'provider>),ExitRequired(WindowsLifecycleExitRequired<'provider>)"],
     ["WindowsListenerPending", "policy:ListenerPendingPolicy,windows:WindowsActiveRunLease<'provider>"],
-    ["WindowsScmRunningPending", "policy:ScmRunningPendingPolicy,windows:WindowsActiveRunLease<'provider>"],
-    ["WindowsAdmissionPending", "policy:AdmissionPendingPolicy,windows:WindowsActiveRunLease<'provider>"],
-    ["WindowsNoSecretService", "policy:RuntimePolicy,windows:WindowsActiveRunLease<'provider>"],
+    ["WindowsListenerPreparationOutcome", "ScmRunningPending(WindowsScmRunningPending<'provider>),ExitRequired(WindowsLifecycleExitRequired<'provider>)"],
+    ["WindowsScmRunningPending", "policy:ScmRunningPendingPolicy,windows:WindowsActiveRunLease<'provider>,effects:WindowsListenersPreparedEffects"],
+    ["WindowsScmRunningPublicationOutcome", "AdmissionPending(WindowsAdmissionPending<'provider>),ExitRequired(WindowsLifecycleExitRequired<'provider>)"],
+    ["WindowsAdmissionPending", "policy:AdmissionPendingPolicy,windows:WindowsActiveRunLease<'provider>,effects:WindowsScmRunningEffects"],
+    ["WindowsAdmissionOpenOutcome", "Running(WindowsNoSecretService<'provider>),ExitRequired(WindowsLifecycleExitRequired<'provider>)"],
+    ["WindowsNoSecretService", "policy:RuntimePolicy,windows:WindowsActiveRunLease<'provider>,effects:WindowsAdmissionOpenEffects"],
+    ["WindowsAdmissionCloseOutcome", "StopPending(WindowsAdmissionClosedService<'provider>),ExitRequired(WindowsLifecycleExitRequired<'provider>)"],
+    ["WindowsAdmissionClosedService", "policy:RuntimePolicy,windows:WindowsActiveRunLease<'provider>,effects:WindowsAdmissionClosedEffects"],
+    ["WindowsStopPolicyOutcome", "InvalidationPending(WindowsInvalidationPending<'provider>),ExitRequired(WindowsLifecycleExitRequired<'provider>)"],
+    ["WindowsInvalidationPending", "policy:RuntimePolicy,windows:WindowsActiveRunLease<'provider>,effects:WindowsAdmissionClosedEffects"],
+    ["WindowsInvalidationOutcome", "ListenerDrainPending(WindowsListenerDrainPending<'provider>),ExitRequired(WindowsLifecycleExitRequired<'provider>)"],
+    ["WindowsListenerDrainPending", "policy:RuntimePolicy,windows:WindowsActiveRunLease<'provider>,effects:WindowsAdmissionClosedEffects"],
+    ["WindowsListenerDrainOutcome", "RemainingCleanup(WindowsRemainingCleanup<'provider>),ExitRequired(WindowsLifecycleExitRequired<'provider>)"],
+    ["WindowsRemainingCleanup", "policy:RuntimePolicy,windows:WindowsActiveRunLease<'provider>,effects:WindowsListenersDrainedEffects"],
     ["WindowsLifecycleCleanCommitOutcome", "ReleasePending(WindowsCleanReleasePending<'provider>),ReloadRequired(WindowsCleanReloadPending<'provider>),ExitRequired(WindowsLifecycleExitRequired<'provider>)"],
-    ["WindowsCleanReloadPending", "policy:CleanBoundaryPolicy,windows:WindowsCleanReloadRequired<'provider>"],
+    ["WindowsCleanReloadPending", "policy:CleanBoundaryPolicy,windows:WindowsCleanReloadRequired<'provider>,effects:WindowsListenersDrainedEffects"],
     ["WindowsLifecycleCleanReloadOutcome", "ReleasePending(WindowsCleanReleasePending<'provider>),ExitRequired(WindowsLifecycleExitRequired<'provider>)"],
-    ["WindowsCleanReleasePending", "policy:ReleaseBoundaryPolicy,windows:WindowsCleanWithWriter<'provider>"],
-    ["WindowsLifecycleStopOutcome", "Stopped(WindowsLifecycleStopped<'provider>),ExitRequired(WindowsLifecycleExitRequired<'provider>),IrreversibleExit78(WindowsLifecycleIrreversibleExit78<'provider>)"],
-    ["WindowsLifecycleStopped", "policy:StoppedRuntimePolicy,windows:WindowsStoppedRunEvidence<'provider>"],
+    ["WindowsCleanReleasePending", "policy:ReleaseBoundaryPolicy,windows:WindowsCleanWithWriter<'provider>,effects:WindowsListenersDrainedEffects"],
+    ["WindowsLifecycleWriterReleaseOutcome", "ScmStopPending(WindowsScmStopPending<'provider>),ExitRequired(WindowsLifecycleExitRequired<'provider>),IrreversibleExit78(WindowsLifecycleIrreversibleExit78<'provider>)"],
+    ["WindowsScmStopPending", "policy:StoppedRuntimePolicy,windows:WindowsStoppedRunEvidence<'provider>,effects:WindowsListenersDrainedEffects"],
+    ["WindowsLifecycleScmStopOutcome", "Stopped(WindowsLifecycleStopped<'provider>),IrreversibleExit78(WindowsLifecycleIrreversibleExit78<'provider>)"],
+    ["WindowsPostWriterReleaseScmStopFailure", "windows:WindowsStoppedRunEvidence<'provider>,effects:WindowsLifecycleEffectFailure"],
+    ["WindowsLifecycleStopped", "policy:StoppedRuntimePolicy,windows:WindowsStoppedRunEvidence<'provider>,effects:WindowsScmStoppedEffectEvidence"],
   ],
+  windowsLifecycleEffects: [],
 });
 const keyAgentServicePhaseTwoH2SemanticContract = ({
   authenticationSource,
@@ -6976,6 +7151,7 @@ const keyAgentServicePhaseTwoH2SemanticContract = ({
   windowsRuntimeSource,
   lifecycleSource,
   windowsLifecycleSource,
+  windowsLifecycleEffectsSource = keyAgentServiceWindowsLifecycleEffects,
   provisioningDirectoryInventory,
 }) => {
   const durable = keyAgentServicePhaseTwoPartitionDurable(durableSource);
@@ -7002,6 +7178,11 @@ const keyAgentServicePhaseTwoH2SemanticContract = ({
   const windowsLifecycleProduction = withoutCfgTestItems(
     windowsLifecycleSource,
   );
+  const windowsLifecycleEffectsProduction =
+    keyAgentServicePhaseTwoGEffectsProductionPartition(
+    windowsLifecycleEffectsSource,
+    );
+  if (windowsLifecycleEffectsProduction === null) return false;
   const authenticationCode = rustLexicalCode(authenticationProduction);
   const authenticationCompact = compactRust(authenticationProduction);
   const durableCompact = compactRust(durable.production);
@@ -7020,6 +7201,7 @@ const keyAgentServicePhaseTwoH2SemanticContract = ({
     windowsRuntimeProduction,
     lifecycleProduction,
     windowsLifecycleProduction,
+    windowsLifecycleEffectsProduction,
   ];
   const combinedProduction = productionSources.join("\n");
   const combinedProductionCode = rustLexicalCode(combinedProduction);
@@ -7076,6 +7258,7 @@ const keyAgentServicePhaseTwoH2SemanticContract = ({
     windowsProvisioning: windowsProvisioningProduction,
     lifecycle: lifecycleProduction,
     windowsLifecycle: windowsLifecycleProduction,
+    windowsLifecycleEffects: windowsLifecycleEffectsProduction,
   };
   const authorityCarrierGraphContract = Object.entries(
     keyAgentServiceH2AuthorityCarrierFragments,
@@ -7195,24 +7378,14 @@ const keyAgentServicePhaseTwoH2SemanticContract = ({
     windowsRuntimeSource,
   );
   const productionWithoutAuthentication = productionSources.slice(1).join("\n");
-  const productionWithoutWindowsProvisioning = [
-    authenticationProduction,
-    durable.production,
-    provisioningProduction,
-    windowsRuntimeProduction,
-    lifecycleProduction,
-    windowsLifecycleProduction,
-  ].join("\n");
-  const productionWithoutWindowsRuntime = [
-    authenticationProduction,
-    durable.production,
-    provisioningProduction,
-    windowsProvisioningProduction,
-    lifecycleProduction,
-    windowsLifecycleProduction,
-  ].join("\n");
+  const productionWithoutWindowsProvisioning = productionSources
+    .filter((source) => source !== windowsProvisioningProduction)
+    .join("\n");
+  const productionWithoutWindowsRuntime = productionSources
+    .filter((source) => source !== windowsRuntimeProduction)
+    .join("\n");
   const productionWithoutWindowsLifecycle = productionSources
-    .slice(0, -1)
+    .filter((source) => source !== windowsLifecycleProduction)
     .join("\n");
 
   return (
@@ -7410,13 +7583,13 @@ const keyAgentServicePhaseTwoH2SemanticContract = ({
       "enumStartupWriterExit<'provider>{BeforeWriter(RuntimeBootBeforeWriterFailure<'provider>),Pending(WriterExitPending<'provider>),}",
     ) &&
     compactType(windowsLifecycleProduction, "WindowsLifecycleCheckedExitAuthority").includes(
-      "enumWindowsLifecycleCheckedExitAuthority<'provider>{Unbound(WindowsUnboundRetired<'provider>),Bound(WindowsCheckedRetired<'provider>),}",
+      "enumWindowsLifecycleCheckedExitAuthority<'provider>{Unbound{retired:WindowsUnboundRetired<'provider>,effects:WindowsLifecycleTerminalEffects,},Bound{retired:WindowsCheckedRetired<'provider>,effects:WindowsLifecycleTerminalEffects,},}",
     ) &&
     compactType(windowsLifecycleProduction, "WindowsLifecycleIrreversibleAuthority").includes(
-      "enumWindowsLifecycleIrreversibleAuthority<'provider>{UnboundRetirementFailure(WindowsUnboundRetirementFailure<'provider>),BoundRetirementFailure(WindowsCheckedRetirementFailure<'provider>),ReleasedNoReceipt(WindowsReleasedNoReceipt<'provider>),PostRelease(WindowsPostReleaseTerminal<'provider>),}",
+      "enumWindowsLifecycleIrreversibleAuthority<'provider>{UnboundRetirementFailure{failure:WindowsUnboundRetirementFailure<'provider>,effects:WindowsLifecycleTerminalEffects,},BoundRetirementFailure{failure:WindowsCheckedRetirementFailure<'provider>,effects:WindowsLifecycleTerminalEffects,},ReleasedNoReceipt{failure:WindowsReleasedNoReceipt<'provider>,effects:WindowsLifecycleTerminalEffects,},PostRelease{failure:WindowsPostReleaseTerminal<'provider>,effects:WindowsLifecycleTerminalEffects,},PostWriterReleaseScmStop(WindowsPostWriterReleaseScmStopFailure<'provider>),}",
     ) &&
     compactType(windowsLifecycleProduction, "WindowsLifecycleStopped").includes(
-      "structWindowsLifecycleStopped<'provider>{policy:StoppedRuntimePolicy,windows:WindowsStoppedRunEvidence<'provider>,}",
+      "structWindowsLifecycleStopped<'provider>{policy:StoppedRuntimePolicy,windows:WindowsStoppedRunEvidence<'provider>,effects:WindowsScmStoppedEffectEvidence,}",
     ) &&
     lifetimeContract(
       durable.production,
@@ -7441,6 +7614,10 @@ const keyAgentServicePhaseTwoH2SemanticContract = ({
     lifetimeContract(
       windowsLifecycleProduction,
       keyAgentServiceH2AuthorityLifetimeTypes.windowsLifecycle,
+    ) &&
+    lifetimeContract(
+      windowsLifecycleEffectsProduction,
+      keyAgentServiceH2AuthorityLifetimeTypes.windowsLifecycleEffects,
     ) &&
     keyAgentServiceMoveOnlyEvidenceContract(windowsProvisioningProduction, [
       "WindowsInstallerProvisioningGrant",
@@ -7511,8 +7688,10 @@ const keyAgentServicePhaseTwoH2SemanticContract = ({
       "matchstart_windows_runtime(writer,authority)",
       "WindowsRuntimeStartFailure::Binding(failure)",
       "WindowsLifecycleExitRequired::unbound",
+      "WindowsLifecycleTerminalEffects::unattached()",
       "WindowsRuntimeStartFailure::Terminal(failure)",
-      "WindowsLifecycleExitRequired::from_terminal(failure)",
+      "WindowsLifecycleExitRequired::from_terminal",
+      "WindowsLifecycleTerminalEffects::unattached()",
     ]) &&
     rustStructLiteralSites(
       windowsProvisioningProduction,
@@ -8239,6 +8418,7 @@ const keyAgentServicePhaseTwoSemanticContract = ({
         { name: "lifecycle_core.rs", kind: "file" },
         { name: "run_state_root", kind: "directory" },
         { name: "run_state_root.rs", kind: "file" },
+        { name: "windows_lifecycle_effects.rs", kind: "file" },
         { name: "windows_lifecycle_tests.rs", kind: "file" },
         { name: "windows_lifecycle.rs", kind: "file" },
       ]) &&
@@ -9079,14 +9259,24 @@ const keyAgentServicePhaseTwoFCPinContract = ({ windowsRuntimeSource }) => {
 };
 const keyAgentServicePhaseTwoGPinContract = ({
   windowsLifecycleSource,
+  windowsLifecycleEffectsSource,
   windowsLifecycleTests,
 }) => {
   const production = withoutCfgTestItems(windowsLifecycleSource);
+  const effectsProduction =
+    keyAgentServicePhaseTwoGEffectsProductionPartition(
+      windowsLifecycleEffectsSource,
+    );
+  if (effectsProduction === null) return false;
   return (
     normalizedSourceSha256(windowsLifecycleSource) ===
       approvedKeyAgentServiceWindowsLifecycleSourceSha256 &&
     normalizedSourceSha256(production) ===
       approvedKeyAgentServiceWindowsLifecycleProductionSha256 &&
+    normalizedSourceSha256(windowsLifecycleEffectsSource) ===
+      approvedKeyAgentServiceWindowsLifecycleEffectsSourceSha256 &&
+    normalizedSourceSha256(effectsProduction) ===
+      approvedKeyAgentServiceWindowsLifecycleEffectsProductionSha256 &&
     normalizedSourceSha256(windowsLifecycleTests) ===
       approvedKeyAgentServiceWindowsLifecycleTestsSha256
   );
@@ -9892,6 +10082,7 @@ const keyAgentServicePhaseTwoCSemanticContract = ({
         { name: "lifecycle_core.rs", kind: "file" },
         { name: "run_state_root", kind: "directory" },
         { name: "run_state_root.rs", kind: "file" },
+        { name: "windows_lifecycle_effects.rs", kind: "file" },
         { name: "windows_lifecycle_tests.rs", kind: "file" },
         { name: "windows_lifecycle.rs", kind: "file" },
       ]) &&
@@ -11204,6 +11395,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
         { name: "lifecycle_core.rs", kind: "file" },
         { name: "run_state_root", kind: "directory" },
         { name: "run_state_root.rs", kind: "file" },
+        { name: "windows_lifecycle_effects.rs", kind: "file" },
         { name: "windows_lifecycle_tests.rs", kind: "file" },
         { name: "windows_lifecycle.rs", kind: "file" },
       ]) &&
@@ -14431,49 +14623,59 @@ const architectureMarkers = [
     normalizedArchitecture.includes("compiled policies remain `None`")
   );
 };
-const keyAgentServicePhaseTwoGSemanticContract = ({
-  main,
-  platformService,
-  platformLib,
-  durableSource,
-  authenticationSource,
-  windowsPairSource,
-  windowsRuntimeSource,
-  windowsProvisioningSource,
-  provisioningSource,
-  provisioningTests,
-  lifecycleSource,
-  lifecycleTests,
-  windowsLifecycleSource,
-  windowsLifecycleTests,
-  rootSource,
-  sysSource,
-  testsSource,
-  directoryInventory,
-  provisioningDirectoryInventory,
-  designDocument,
-  architectureDocument,
-}) => {
+const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
+  const {
+    main,
+    platformService,
+    platformLib,
+    durableSource,
+    authenticationSource,
+    windowsPairSource,
+    windowsRuntimeSource,
+    windowsProvisioningSource,
+    provisioningSource,
+    provisioningTests,
+    lifecycleSource,
+    lifecycleTests,
+    windowsLifecycleSource,
+    windowsLifecycleEffectsSource,
+    windowsLifecycleTests,
+    rootSource,
+    testsSource,
+    provisioningDirectoryInventory,
+    designDocument,
+    architectureDocument,
+  } = inputs;
   const durable = keyAgentServicePhaseTwoPartitionDurable(durableSource);
   const lifecycleProduction =
     keyAgentServicePhaseTwoPartitionLifecycle(lifecycleSource);
-  if (durable === null || lifecycleProduction === null) return false;
+  const windowsProduction = withoutCfgTestItems(windowsLifecycleSource);
+  const effectsProduction =
+    keyAgentServicePhaseTwoGEffectsProductionPartition(
+      windowsLifecycleEffectsSource,
+    );
+  if (
+    durable === null ||
+    lifecycleProduction === null ||
+    effectsProduction === null
+  ) {
+    return false;
+  }
 
   const runtimeProduction = withoutCfgTestItems(windowsRuntimeSource);
-  const windowsProduction = withoutCfgTestItems(windowsLifecycleSource);
-  const runtimeCode = rustLexicalCode(runtimeProduction);
-  const windowsCode = rustLexicalCode(windowsProduction);
-  const durableCode = rustLexicalCode(durable.production);
-  const windowsCompact = compactRust(windowsProduction);
-  const runtimeHookStatement =
+  const runtimePostReleaseFaultStatement =
     "#[cfg(test)]\n    if take_post_release_receipt_fault_for_test() {\n        let _ = logical.operation.record_release_receipt();\n    }";
-  const runtimeThreadLocalBlock =
-    "#[cfg(test)]\nstd::thread_local! {\n    static POST_RELEASE_RECEIPT_FAULT_FOR_TEST: std::cell::Cell<bool> =\n        const { std::cell::Cell::new(false) };\n}";
-  const runtimeProductionWithoutHook = runtimeProduction
-    .replace(runtimeHookStatement, "")
-    .replace(runtimeThreadLocalBlock, "");
-  const typeInventory = (code) => [
-    ...code.matchAll(
+  const runtimeProductionWithoutPostReleaseFault = runtimeProduction.replace(
+    runtimePostReleaseFaultStatement,
+    "",
+  );
+  const windowsCode = rustLexicalCode(windowsProduction);
+  const effectsCode = rustLexicalCode(effectsProduction);
+  const effectsFullCode = rustLexicalCode(windowsLifecycleEffectsSource);
+  const windowsCompact = compactRust(windowsProduction);
+  const effectsCompact = compactRust(effectsProduction);
+  const typeInventory = (source) => [
+    ...rustLexicalCode(source).matchAll(
       /\b(?:(?<visibility>pub(?:\s*\([^)]*\))?)\s+)?(?<kind>struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
     ),
   ].map(({ groups }) => ({
@@ -14481,47 +14683,41 @@ const keyAgentServicePhaseTwoGSemanticContract = ({
     kind: groups.kind,
     name: groups.name,
   }));
-  const windowsTypes = typeInventory(windowsCode);
-  const runtimeTypes = typeInventory(runtimeCode);
-  const runtimeVisibleFunctions = rustVisibleFunctionItems(runtimeProduction).map(
-    ({ owner, visibility, name, signature }) => ({
-      owner: compactRust(owner),
-      visibility: compactRust(visibility),
-      name,
-      signature,
-    }),
-  );
-  const windowsVisibleFunctions = rustVisibleFunctionItems(windowsProduction).map(
-    ({ owner, visibility, name, signature }) => ({
-      owner: compactRust(owner),
-      visibility: compactRust(visibility),
-      name,
-      signature,
-    }),
-  );
-  const facadeMatches = [
-    ...durableCode.matchAll(
-      /\bpub\s*\(\s*in\s+crate\s*::\s*key_agent_service\s*\)\s+use\s+windows_runtime\s*::\s*\{(?<body>[^}]*)\}\s*;/gu,
+  const visibleFunctions = (source) =>
+    rustVisibleFunctionItems(source).map(
+      ({ owner, visibility, name, signature }) => ({
+        owner: compactRust(owner),
+        visibility: compactRust(visibility),
+        name,
+        signature,
+      }),
+    );
+  const compactType = (source, name) =>
+    compactRust(
+      rustLexicalItemBlock(
+        source,
+        new RegExp(
+          `\\b(?:pub\\s*\\([^)]*\\)\\s+)?(?:struct|enum)\\s+${name}\\b`,
+          "u",
+        ),
+      ),
+    );
+  const functionNames = (block) => [
+    ...rustLexicalCode(block).matchAll(
+      /\bfn\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
     ),
-  ];
-  const facadeItems =
-    facadeMatches.length === 1
-      ? facadeMatches[0].groups.body
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean)
-      : [];
+  ].map(({ groups }) => groups.name);
   const windowsTests =
     keyAgentServiceRustAttributedTestInventory(windowsLifecycleTests);
   const runtimeTests =
     keyAgentServiceRustAttributedTestInventory(windowsRuntimeSource);
-  const windowsProvisioningTests = keyAgentServiceRustAttributedTestInventory(
-    windowsProvisioningSource,
-  );
   const lifecycleTestsInventory =
     keyAgentServiceRustAttributedTestInventory(lifecycleTests);
   const rootTests = keyAgentServiceRustAttributedTestInventory(testsSource);
-  const pairTests = keyAgentServiceRustAttributedTestInventory(windowsPairSource);
+  const pairTests =
+    keyAgentServiceRustAttributedTestInventory(windowsPairSource);
+  const windowsProvisioningTests =
+    keyAgentServiceRustAttributedTestInventory(windowsProvisioningSource);
   const durableTests = keyAgentServiceRustTestNameInventory(durableSource);
   const authenticationTests =
     keyAgentServiceRustTestNameInventory(authenticationSource);
@@ -14544,125 +14740,164 @@ const keyAgentServicePhaseTwoGSemanticContract = ({
           ({ path }) =>
             path !== keyAgentServiceDurableRunStatePath &&
             path !== keyAgentServiceDurableWindowsRuntimePath &&
-            path !== keyAgentServiceWindowsLifecyclePath,
+            path !== keyAgentServiceWindowsLifecyclePath &&
+            path !== keyAgentServiceWindowsLifecycleEffectsPath,
         )
         .map(({ source }) => source),
     ].join("\n"),
   );
+  const otherEffectProductionCode = rustLexicalCode(
+    [otherProductionCode, durable.production, runtimeProduction].join("\n"),
+  );
 
   let beginLifecycle;
+  let startupObserve;
   let startupFinish;
   let startupAbort;
   let activeCommit;
-  let activeAbort;
+  let activeCommitAbort;
   let activeReload;
-  let listenerRecord;
-  let scmRecord;
-  let admissionOpen;
-  let servicePrepareClean;
-  let serviceDelegates;
-  let serviceIntoExit;
-  let serviceIntoFatalExit;
+  let activeReloadAbort;
+  let listenerPrepare;
+  let listenerAbort;
+  let scmPublish;
+  let admissionEstablish;
+  let admissionClose;
+  let beginStop;
+  let invalidate;
+  let drain;
+  let remainingImpl;
+  let remainingPrepareClean;
   let cleanReload;
-  let completeStop;
+  let cleanReleaseWriter;
+  let completeWriterRelease;
+  let publishScmStopped;
+  let scmRunningAbort;
   let lifecycleRetire;
-  let terminalIntoRetirement;
-  let lifecycleCauseDeclaration;
-  let irreversibleCauseDeclaration;
   let irreversibleImpl;
-  let checkedExitImpl;
+  let checkedImpl;
   let stoppedImpl;
-  let terminalImplFunctionNames;
-  let purePolicyChain;
+  let effectCoreExecute;
+  let effectCoreTestExecute;
+  let effectCoreIntoTerminal;
+  let effectAuthorityImpl;
+  let effectPurposeStage;
+  let effectAuthorityPrepare;
+  let effectPublishRunning;
+  let effectOpenAdmission;
+  let effectCloseAdmission;
+  let effectDrain;
+  let effectPublishStopped;
+  let effectFailureIntoTerminal;
+  let effectAttemptExhaustionFixture;
+  let effectBindingWitnessForTest;
+  let effectMatchesBindingWitnessForTest;
+  let effectRetainsAuthorityForTest;
+  let lifecyclePostWriterBindingWitnessForTest;
+  let exhaustedEffectAttemptTest;
   let runtimePolicyPrepareClean;
-  let runtimePolicyExpectedCleanup;
   let cleanupOrderImpl;
-  let startupFailureDeclaration;
-  let runtimePolicyFailureDeclaration;
-  let runtimeRetirementBodies;
-  let terminalRetirementParts;
   try {
-    beginLifecycle = rustFunctionBlock(windowsProduction, "begin_windows_lifecycle");
-    const startupImpl = rustLexicalItemBlock(
+    const lifecycleImpl = (name) =>
+      rustLexicalItemBlock(
+        windowsProduction,
+        new RegExp(
+          `\\bimpl\\s*<'provider>\\s+${name}\\s*<'provider>\\s*\\{`,
+          "u",
+        ),
+      );
+    beginLifecycle = rustTopLevelFunctionBlock(
       windowsProduction,
-      /\bimpl\s*<'provider>\s+WindowsStartupAttempt\s*<'provider>\s*\{/u,
+      "begin_windows_lifecycle",
     );
-    const activeCommitImpl = rustLexicalItemBlock(
+    startupObserve = rustFunctionBlock(
+      lifecycleImpl("WindowsStartupAttempt"),
+      "observe",
+    );
+    startupFinish = rustFunctionBlock(
+      lifecycleImpl("WindowsStartupAttempt"),
+      "finish",
+    );
+    startupAbort = rustFunctionBlock(
+      lifecycleImpl("WindowsStartupAttempt"),
+      "abort",
+    );
+    activeCommit = rustFunctionBlock(
+      lifecycleImpl("WindowsActiveCommitPending"),
+      "commit_and_reread",
+    );
+    activeCommitAbort = rustFunctionBlock(
+      lifecycleImpl("WindowsActiveCommitPending"),
+      "abort",
+    );
+    activeReload = rustFunctionBlock(
+      lifecycleImpl("WindowsActiveReloadPending"),
+      "reload",
+    );
+    activeReloadAbort = rustFunctionBlock(
+      lifecycleImpl("WindowsActiveReloadPending"),
+      "abort",
+    );
+    listenerPrepare = rustFunctionBlock(
+      lifecycleImpl("WindowsListenerPending"),
+      "prepare_listeners",
+    );
+    listenerAbort = rustFunctionBlock(
+      lifecycleImpl("WindowsListenerPending"),
+      "abort",
+    );
+    scmPublish = rustFunctionBlock(
+      lifecycleImpl("WindowsScmRunningPending"),
+      "publish_scm_running",
+    );
+    scmRunningAbort = rustFunctionBlock(
+      lifecycleImpl("WindowsScmRunningPending"),
+      "abort",
+    );
+    admissionEstablish = rustFunctionBlock(
+      lifecycleImpl("WindowsAdmissionPending"),
+      "establish_admission",
+    );
+    admissionClose = rustFunctionBlock(
+      lifecycleImpl("WindowsNoSecretService"),
+      "close_admission",
+    );
+    beginStop = rustFunctionBlock(
+      lifecycleImpl("WindowsAdmissionClosedService"),
+      "begin_stop_and_reject",
+    );
+    invalidate = rustFunctionBlock(
+      lifecycleImpl("WindowsInvalidationPending"),
+      "invalidate_non_durable_authority",
+    );
+    drain = rustFunctionBlock(
+      lifecycleImpl("WindowsListenerDrainPending"),
+      "drain_listeners",
+    );
+    remainingImpl = lifecycleImpl("WindowsRemainingCleanup");
+    remainingPrepareClean = rustFunctionBlock(remainingImpl, "prepare_clean");
+    cleanReload = rustFunctionBlock(
+      lifecycleImpl("WindowsCleanReloadPending"),
+      "reload",
+    );
+    cleanReleaseWriter = rustFunctionBlock(
+      lifecycleImpl("WindowsCleanReleasePending"),
+      "release_writer",
+    );
+    completeWriterRelease = rustTopLevelFunctionBlock(
       windowsProduction,
-      /\bimpl\s*<'provider>\s+WindowsActiveCommitPending\s*<'provider>\s*\{/u,
+      "complete_lifecycle_writer_release",
     );
-    const activeReloadImpl = rustLexicalItemBlock(
-      windowsProduction,
-      /\bimpl\s*<'provider>\s+WindowsActiveReloadPending\s*<'provider>\s*\{/u,
+    publishScmStopped = rustFunctionBlock(
+      lifecycleImpl("WindowsScmStopPending"),
+      "publish_scm_stopped",
     );
-    const listenerImpl = rustLexicalItemBlock(
-      windowsProduction,
-      /\bimpl\s*<'provider>\s+WindowsListenerPending\s*<'provider>\s*\{/u,
+    lifecycleRetire = rustFunctionBlock(
+      lifecycleImpl("WindowsLifecycleExitRequired"),
+      "retire_checked",
     );
-    const scmImpl = rustLexicalItemBlock(
-      windowsProduction,
-      /\bimpl\s*<'provider>\s+WindowsScmRunningPending\s*<'provider>\s*\{/u,
-    );
-    const admissionImpl = rustLexicalItemBlock(
-      windowsProduction,
-      /\bimpl\s*<'provider>\s+WindowsAdmissionPending\s*<'provider>\s*\{/u,
-    );
-    const serviceImpl = rustLexicalItemBlock(
-      windowsProduction,
-      /\bimpl\s*<'provider>\s+WindowsNoSecretService\s*<'provider>\s*\{/u,
-    );
-    const cleanReloadImpl = rustLexicalItemBlock(
-      windowsProduction,
-      /\bimpl\s*<'provider>\s+WindowsCleanReloadPending\s*<'provider>\s*\{/u,
-    );
-    const exitImpl = rustLexicalItemBlock(
-      windowsProduction,
-      /\bimpl\s*<'provider>\s+WindowsLifecycleExitRequired\s*<'provider>\s*\{/u,
-    );
-    startupFinish = rustFunctionBlock(startupImpl, "finish");
-    startupAbort = rustFunctionBlock(startupImpl, "abort");
-    activeCommit = rustFunctionBlock(activeCommitImpl, "commit_and_reread");
-    activeAbort = rustFunctionBlock(activeCommitImpl, "abort");
-    activeReload = rustFunctionBlock(activeReloadImpl, "reload");
-    listenerRecord = rustFunctionBlock(listenerImpl, "record_listeners_prepared");
-    scmRecord = rustFunctionBlock(scmImpl, "record_scm_running_published");
-    admissionOpen = rustFunctionBlock(admissionImpl, "open_admission");
-    servicePrepareClean = rustFunctionBlock(serviceImpl, "prepare_clean");
-    serviceDelegates = [
-      ["state", "pub(super)constfnstate(&self)->RuntimeState{self.policy.state()}"],
-      ["work_count", "pub(super)fnwork_count(&self)->usize{self.policy.work_count()}"],
-      ["retained_user_token_count", "pub(super)fnretained_user_token_count(&self)->usize{self.policy.retained_user_token_count()}"],
-      ["quarantined_session_count", "pub(super)fnquarantined_session_count(&self)->usize{self.policy.quarantined_session_count()}"],
-      ["admit_fixture_work", "pub(super)fnadmit_fixture_work(&mutself,id:WorkId,session:SessionId,kind:NoSecretFixtureWorkKind,)->Result<(),LifecycleError>{self.policy.admit_fixture_work(id,session,kind)}"],
-      ["retain_user_token", "pub(super)fnretain_user_token(&mutself,session:SessionId)->Result<(),LifecycleError>{self.policy.retain_user_token(session)}"],
-      ["handle_session_event", "pub(super)fnhandle_session_event(&mutself,event:SessionEvent,)->Result<SessionInvalidationReport,LifecycleError>{self.policy.handle_session_event(event)}"],
-      ["reap_cancelled_fixture_work", "pub(super)fnreap_cancelled_fixture_work(&mutself,id:WorkId)->Result<(),LifecycleError>{self.policy.reap_cancelled_fixture_work(id)}"],
-      ["begin_stop", "pub(super)fnbegin_stop(&mutself,reason:StopReason)->Result<(),LifecycleError>{self.policy.begin_stop(reason)}"],
-      ["expected_cleanup_step", "pub(super)fnexpected_cleanup_step(&self)->Option<CleanupStep>{self.policy.expected_cleanup_step()}"],
-      ["complete_cleanup_step", "pub(super)fncomplete_cleanup_step(&mutself,step:CleanupStep,)->Result<(),LifecycleError>{self.policy.complete_cleanup_step(step)}"],
-      ["fail_cleanup", "pub(super)fnfail_cleanup(&mutself,step:CleanupStep)->Result<(),LifecycleError>{self.policy.fail_cleanup(step)}"],
-      ["cleanup_deadline_expired", "pub(super)fncleanup_deadline_expired(&mutself)->Result<(),LifecycleError>{self.policy.cleanup_deadline_expired()}"],
-      ["crash", "pub(super)fncrash(&mutself){self.policy.crash();}"],
-    ].map(([name, expected]) => compactRust(rustFunctionBlock(serviceImpl, name)) === expected);
-    serviceIntoExit = rustFunctionBlock(serviceImpl, "into_exit");
-    serviceIntoFatalExit = rustFunctionBlock(serviceImpl, "into_fatal_exit");
-    cleanReload = rustFunctionBlock(cleanReloadImpl, "reload");
-    completeStop = rustFunctionBlock(windowsProduction, "complete_lifecycle_stop");
-    lifecycleRetire = rustFunctionBlock(exitImpl, "retire_checked");
-    terminalIntoRetirement = rustFunctionBlock(exitImpl, "from_terminal");
-    lifecycleCauseDeclaration = rustLexicalItemBlock(
-      windowsProduction,
-      /\bpub\s*\(\s*super\s*\)\s+enum\s+WindowsLifecycleCause\s*\{/u,
-    );
-    irreversibleCauseDeclaration = rustLexicalItemBlock(
-      windowsProduction,
-      /\bpub\s*\(\s*super\s*\)\s+enum\s+WindowsLifecycleIrreversibleCause\s*\{/u,
-    );
-    irreversibleImpl = rustLexicalItemBlock(
-      windowsProduction,
-      /\bimpl\s*<'provider>\s+WindowsLifecycleIrreversibleExit78\s*<'provider>\s*\{/u,
-    );
-    checkedExitImpl = rustLexicalItemBlock(
+    irreversibleImpl = lifecycleImpl("WindowsLifecycleIrreversibleExit78");
+    checkedImpl = rustLexicalItemBlock(
       windowsProduction,
       /\bimpl\s+WindowsLifecycleCheckedExit78\s*<'_>\s*\{/u,
     );
@@ -14670,91 +14905,260 @@ const keyAgentServicePhaseTwoGSemanticContract = ({
       windowsProduction,
       /\bimpl\s+WindowsLifecycleStopped\s*<'_>\s*\{/u,
     );
-    const functionNames = (block) => [
-      ...rustLexicalCode(block).matchAll(/\bfn\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu),
-    ].map(({ groups }) => groups.name);
-    terminalImplFunctionNames = {
-      irreversible: functionNames(irreversibleImpl),
-      checked: functionNames(checkedExitImpl),
-      stopped: functionNames(stoppedImpl),
-    };
-    const completedChecklistImpl = rustLexicalItemBlock(
-      lifecycleProduction,
-      /\bimpl\s+CompletedStartupChecklist\s*\{/u,
+    const effectsImpl = (name) =>
+      rustLexicalItemBlock(
+        effectsProduction,
+        new RegExp(`\\bimpl\\s+${name}\\s*\\{`, "u"),
+      );
+    const effectsFullImpl = (name) =>
+      rustLexicalItemBlock(
+        windowsLifecycleEffectsSource,
+        new RegExp(`\\bimpl\\s+${name}\\s*\\{`, "u"),
+      );
+    effectAuthorityImpl = effectsImpl("WindowsLifecycleEffectAuthority");
+    effectPurposeStage = rustFunctionBlock(
+      effectsImpl("EffectPurpose"),
+      "stage",
     );
-    const listenerPolicyImpl = rustLexicalItemBlock(
-      lifecycleProduction,
-      /\bimpl\s+ListenerPendingPolicy\s*\{/u,
+    effectCoreExecute = rustFunctionBlock(
+      effectsImpl("EffectCore"),
+      "execute",
     );
-    const scmPolicyImpl = rustLexicalItemBlock(
-      lifecycleProduction,
-      /\bimpl\s+ScmRunningPendingPolicy\s*\{/u,
+    effectCoreTestExecute = rustFunctionBlock(
+      effectsFullImpl("EffectCore"),
+      "execute",
     );
-    const admissionPolicyImpl = rustLexicalItemBlock(
-      lifecycleProduction,
-      /\bimpl\s+AdmissionPendingPolicy\s*\{/u,
+    effectCoreIntoTerminal = rustFunctionBlock(
+      effectsImpl("EffectCore"),
+      "into_terminal",
+    );
+    effectAuthorityPrepare = rustFunctionBlock(
+      effectsImpl("WindowsLifecycleEffectAuthority"),
+      "prepare_listeners",
+    );
+    effectPublishRunning = rustFunctionBlock(
+      effectsImpl("WindowsListenersPreparedEffects"),
+      "publish_scm_running",
+    );
+    effectOpenAdmission = rustFunctionBlock(
+      effectsImpl("WindowsScmRunningEffects"),
+      "open_admission",
+    );
+    effectCloseAdmission = rustFunctionBlock(
+      effectsImpl("WindowsAdmissionOpenEffects"),
+      "close_admission",
+    );
+    effectDrain = rustFunctionBlock(
+      effectsImpl("WindowsAdmissionClosedEffects"),
+      "drain_listeners",
+    );
+    effectPublishStopped = rustFunctionBlock(
+      effectsImpl("WindowsListenersDrainedEffects"),
+      "publish_scm_stopped",
+    );
+    effectFailureIntoTerminal = rustFunctionBlock(
+      effectsImpl("WindowsLifecycleEffectFailure"),
+      "into_terminal",
+    );
+    effectAttemptExhaustionFixture = rustFunctionBlock(
+      windowsLifecycleEffectsSource,
+      "from_attempt_exhaustion_fixture",
+    );
+    effectBindingWitnessForTest = rustFunctionBlock(
+      windowsLifecycleEffectsSource,
+      "binding_witness_for_test",
+    );
+    effectMatchesBindingWitnessForTest = rustFunctionBlock(
+      windowsLifecycleEffectsSource,
+      "matches_binding_witness_for_test",
+    );
+    effectRetainsAuthorityForTest = rustFunctionBlock(
+      windowsLifecycleEffectsSource,
+      "retains_authority_for_test",
+    );
+    lifecyclePostWriterBindingWitnessForTest = rustFunctionBlock(
+      windowsLifecycleSource,
+      "post_writer_release_effect_binding_matches_for_test",
+    );
+    exhaustedEffectAttemptTest = rustFunctionBlock(
+      windowsLifecycleTests,
+      "assert_exhausted_effect_attempt_is_terminal",
     );
     const runtimePolicyImpl = rustLexicalItemBlock(
       lifecycleProduction,
       /\bimpl\s+RuntimePolicy\s*\{/u,
     );
-    cleanupOrderImpl = rustLexicalItemBlock(
-      lifecycleProduction,
-      /\bimpl\s+CleanupStep\s*\{/u,
-    );
-    purePolicyChain = [
-      rustFunctionBlock(completedChecklistImpl, "begin_listener_startup"),
-      rustFunctionBlock(listenerPolicyImpl, "record_listeners_prepared"),
-      rustFunctionBlock(scmPolicyImpl, "record_scm_running_published"),
-      rustFunctionBlock(admissionPolicyImpl, "open_admission"),
-      rustFunctionBlock(runtimePolicyImpl, "new"),
-    ];
     runtimePolicyPrepareClean = rustFunctionBlock(
       runtimePolicyImpl,
       "prepare_clean",
     );
-    runtimePolicyExpectedCleanup = rustFunctionBlock(
-      runtimePolicyImpl,
-      "expected_cleanup_step",
-    );
-    startupFailureDeclaration = rustLexicalItemBlock(
+    cleanupOrderImpl = rustLexicalItemBlock(
       lifecycleProduction,
-      /\bpub\s*\(\s*super\s*\)\s+enum\s+StartupFailure\s*\{/u,
-    );
-    runtimePolicyFailureDeclaration = rustLexicalItemBlock(
-      lifecycleProduction,
-      /\bpub\s*\(\s*super\s*\)\s+enum\s+RuntimePolicyFailure\s*\{/u,
-    );
-    const runtimeRetirementImpl = (name) => rustLexicalItemBlock(
-      runtimeProduction,
-      new RegExp(
-        `\\bimpl\\s*<'provider>\\s+${name}\\s*<'provider>\\s*\\{`,
-        "u",
-      ),
-    );
-    runtimeRetirementBodies = [
-      "WindowsRuntimeWriterAcquired",
-      "WindowsBootEvidence",
-      "WindowsPreparedActiveTransition",
-      "WindowsActiveRunLease",
-      "WindowsCleanWithWriter",
-      "WindowsCleanReloadRequired",
-      "WindowsActiveReloadRequired",
-    ].map((name) =>
-      compactRust(
-        rustFunctionBlock(runtimeRetirementImpl(name), "into_retirement"),
-      ),
-    );
-    terminalRetirementParts = compactRust(
-      rustFunctionBlock(
-        runtimeRetirementImpl("WindowsTerminalFailure"),
-        "into_retirement_parts",
-      ),
+      /\bimpl\s+CleanupStep\s*\{/u,
     );
   } catch {
     return false;
   }
 
+  const criticalFunctionBlocks = {
+    beginLifecycle,
+    startupObserve,
+    startupFinish,
+    startupAbort,
+    activeCommit,
+    activeCommitAbort,
+    activeReload,
+    activeReloadAbort,
+    listenerPrepare,
+    listenerAbort,
+    scmPublish,
+    scmRunningAbort,
+    admissionEstablish,
+    admissionClose,
+    beginStop,
+    invalidate,
+    drain,
+    remainingImpl,
+    cleanReload,
+    cleanReleaseWriter,
+    completeWriterRelease,
+    publishScmStopped,
+    lifecycleRetire,
+    lifecyclePostWriterBindingWitnessForTest,
+    effectCoreTestExecute,
+    effectCoreIntoTerminal,
+    effectAuthorityPrepare,
+    effectPublishRunning,
+    effectOpenAdmission,
+    effectCloseAdmission,
+    effectDrain,
+    effectPublishStopped,
+    effectFailureIntoTerminal,
+    effectAttemptExhaustionFixture,
+    effectBindingWitnessForTest,
+    effectMatchesBindingWitnessForTest,
+    effectRetainsAuthorityForTest,
+    exhaustedEffectAttemptTest,
+  };
+  const criticalFunctionSha256 = {
+    beginLifecycle:
+      "e6feaaaade4d7b6f89088e43b1f243416e2eefb13c5696a48657b1181289af21",
+    startupObserve:
+      "3c7202b16e25e1240dc92a0830f9a0f699fdaa5a69da590cb06b86b3cfe53287",
+    startupFinish:
+      "b50219277ce22bd8e6681c6ddbbe6511340694541f5ef7a28dcedfbab238e60f",
+    startupAbort:
+      "38e77048dd65e6cb73f7aa40f0727376052081cada70a721940f428d0454e285",
+    activeCommit:
+      "56aa085633320bf85757dbe210f4e08abb821f6c160d1a9a555700195258be4f",
+    activeCommitAbort:
+      "c98c92030ad9b2ed3b70d2eb3a979e4af4f72c63b716a8a96651b1d2e7cbe75d",
+    activeReload:
+      "4166e72e6797500d5e356a152f7f6af577fff8f6cdeaaa08fb7128b64d7d2549",
+    activeReloadAbort:
+      "c98c92030ad9b2ed3b70d2eb3a979e4af4f72c63b716a8a96651b1d2e7cbe75d",
+    listenerPrepare:
+      "72d08cafadbcfe203c49554f506bc4ef2e6e341ec43f9b2b98102f91b676bd41",
+    listenerAbort:
+      "c98c92030ad9b2ed3b70d2eb3a979e4af4f72c63b716a8a96651b1d2e7cbe75d",
+    scmPublish:
+      "7bb6395d6548f3429be2bcf3c5f67149ffbcbb02582ccec294f66a94a8d3f1b8",
+    scmRunningAbort:
+      "d90ab4627a805a776f7f43f943f876031a192cfed2ed449684a9662ba7c77df7",
+    admissionEstablish:
+      "9c018417e0c66b32a0a4799388833fedef2ab670fdd7b9c190d8857aeca36ec7",
+    admissionClose:
+      "74d8d4ee612704b9e6ffc69804b874e0136bd28faeb555a1e6e9df525bda01c8",
+    beginStop:
+      "95293cfc1745b06af7a3b283fd93373dd04bf5e8c020f56ca7493d7f38a531bd",
+    invalidate:
+      "b75a48a322dab715fbef08fa4220b640f620ade5e6756c58993ee6bf3032a9df",
+    drain:
+      "2e7de285330a666360e1ca62b6a63127d2256104422680e926d92b7a0ed8cfbb",
+    remainingImpl:
+      "0ded4fd80eda8c4809d59b6d39f51310257daa5e41d775d55af6341966c76c21",
+    cleanReload:
+      "b46bf6ff50f3b5f474691f38194e5cec5af70cc170f037c538226da7909e2550",
+    cleanReleaseWriter:
+      "a6956562a50c23f1129553ff98f3a858292a7359f6cba29503f47714201c20e4",
+    completeWriterRelease:
+      "5320bb2ea9779f0f5f97dc59c78d96f5fb9f6bfb169727be3efc8f59be9fef3d",
+    publishScmStopped:
+      "4633057acdbc99ef40a382e8a87d4423c70b1755f3a238e8c95155f2e629280a",
+    lifecycleRetire:
+      "b746e454cfdabf58cf92d6a91b8b53f37b18ac60ae1ed6fd2747e4141bb4f675",
+    lifecyclePostWriterBindingWitnessForTest:
+      "fd9f6ac1d0f0d0c1cebd73268a64af408a710f30f24aba105a8a487fe664f565",
+    effectCoreTestExecute:
+      "973e276a99173b919089f9cd6db2032a910fe1d152d2407b53f565f0db55f729",
+    effectCoreIntoTerminal:
+      "f72f2f1c24abdf390e4b3f2f2921b318fc12c5b095ab65cdd13eebcf68c14022",
+    effectAuthorityPrepare:
+      "b9563ceb0f941364dda45bd3c8c9791b017a75f4f763371428d9762046f42279",
+    effectPublishRunning:
+      "999cac08be766456c976c9854b2f5d0632d526de28e1d95e80c688ffdc3dc5e7",
+    effectOpenAdmission:
+      "53c86be2f27fe22cd6cbebac009cc669de31cca5b82250def1f1e9654ee6463c",
+    effectCloseAdmission:
+      "22ee6cf59c5d94ae8b7919a04e81916ba7fe2cfda0bd6e46ee310df4d5af3851",
+    effectDrain:
+      "f11ef7b0543ac5bb9961e388c1501c1da9c11bb1af1523f43a21bf2a8dd77799",
+    effectPublishStopped:
+      "de07e26722d3de441e7d83410f295702f970c96b5046f3c3a561e0e0c99d65ab",
+    effectFailureIntoTerminal:
+      "25ca838fff942f9ba04e7ccb5237a126e64a062dc52795a8b4f4edfc6f57416d",
+    effectAttemptExhaustionFixture:
+      "c5a0b80b8e604dcd4fd9b99ab2f076479a0746dfbc99a7b1225f65e8c7e5791d",
+    effectBindingWitnessForTest:
+      "57ba75789553b2ae67fa69b2761614d6787ce53c20ed002e5f0ebf9febd8693b",
+    effectMatchesBindingWitnessForTest:
+      "758fa57956b29af2e1c3df1ae3d6051c497d2f6caac11e1710f59b624751a45e",
+    effectRetainsAuthorityForTest:
+      "057e7d9462825ff570f6018281e2161cc55ce04b38e2ef0e0618dc82b9e70a36",
+    exhaustedEffectAttemptTest:
+      "efba05b229f1441bdfae5d702abb41db6a78ade7153561bce9964f8dc9ed2134",
+  };
+  const criticalFunctionsExact = Object.entries(criticalFunctionSha256).every(
+    ([name, sha256]) =>
+      normalizedSourceSha256(criticalFunctionBlocks[name]) === sha256,
+  );
+  const unattachedReferenceCount = (block) =>
+    (compactRust(block).match(
+      /\bunattached\b/gu,
+    ) ?? []).length;
+  const preActiveUnattachedInventory = [
+    ["begin_windows_lifecycle", unattachedReferenceCount(beginLifecycle)],
+    ["WindowsStartupAttempt::finish", unattachedReferenceCount(startupFinish)],
+    ["WindowsStartupAttempt::abort", unattachedReferenceCount(startupAbort)],
+    [
+      "WindowsActiveCommitPending::commit_and_reread",
+      unattachedReferenceCount(activeCommit),
+    ],
+    [
+      "WindowsActiveCommitPending::abort",
+      unattachedReferenceCount(activeCommitAbort),
+    ],
+    [
+      "WindowsActiveReloadPending::reload",
+      unattachedReferenceCount(activeReload),
+    ],
+    [
+      "WindowsActiveReloadPending::abort",
+      unattachedReferenceCount(activeReloadAbort),
+    ],
+    ["WindowsListenerPending::abort", unattachedReferenceCount(listenerAbort)],
+  ];
+  const effectStateInvocations = [
+    ...effectsFullCode.matchAll(
+      /\beffect_state\s*!\s*[([{]\s*(?<name>(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*)/gu,
+    ),
+  ].map(({ groups }) => groups.name.replace(/^r#/u, ""));
+  const effectsImplFunctionInventory = rustImplItems(effectsProduction).map(
+    ({ header, source }) => ({
+      owner: compactRust(header),
+      functions: functionNames(source),
+    }),
+  );
   const designStart = designDocument.indexOf(
     "**Current Phase 2G status: started, not passed.**",
   );
@@ -14765,309 +15169,511 @@ const keyAgentServicePhaseTwoGSemanticContract = ({
       : designDocument.slice(designStart, designEnd).replace(/\s+/gu, " ");
   const architectureRows = architectureDocument
     .split(/\r?\n/gu)
-    .filter((line) => line.startsWith("| Windows no-secret lifecycle compositor |"));
+    .filter((line) =>
+      line.startsWith("| Windows no-secret lifecycle compositor |"),
+    );
   const architectureSlice = (architectureRows[0] ?? "").replace(/\s+/gu, " ");
+  const testOnlyEffectNames = [
+    "WindowsLifecycleEffectBindingWitness",
+    "FixtureWindowsLifecycleEffectFault",
+    "FixtureWindowsLifecycleEffectBackend",
+    "WindowsLifecycleEffectFixtureError",
+    "from_fixture",
+    "from_cross_bound_fixture",
+    "from_attempt_exhaustion_fixture",
+    "has_distinct_binding_for_test",
+    "binding_witness_for_test",
+    "matches_binding_witness_for_test",
+    "retains_authority_for_test",
+    "is_attached_for_test",
+    "failure_cause_for_test",
+    "NEXT_FIXTURE_BINDING",
+    "allocate_fixture_binding",
+  ];
+  const lifecycleTestOnlyNames = [
+    "effects_attached_for_test",
+    "effect_failure_for_test",
+    "post_writer_release_generation_for_test",
+    "post_writer_release_effect_binding_matches_for_test",
+    "release_writer_with_post_release_fault_for_test",
+  ];
+  const fixedRemainingCleanup = [
+    ["cancel_requests", "CleanupStep::CancelRequests"],
+    ["terminate_helpers", "CleanupStep::TerminateHelpers"],
+    ["reap_helpers", "CleanupStep::ReapHelpers"],
+    ["discard_user_tokens", "CleanupStep::DiscardUserTokens"],
+    ["flush_defined_durable_records", "CleanupStep::FlushDefinedDurableRecords"],
+    [
+      "release_request_hardware_and_storage_handles",
+      "CleanupStep::ReleaseRequestHardwareAndStorageHandles",
+    ],
+  ];
+  const remainingCleanupExact = fixedRemainingCleanup.every(
+    ([name, step]) => {
+      const body = compactRust(rustFunctionBlock(remainingImpl, name));
+      return body.includes(`self.policy.complete_cleanup_step(${step})`);
+    },
+  );
+  const effectMoveOnlyTypes = [
+    "EffectCore",
+    "WindowsLifecycleEffectAuthority",
+    "WindowsLifecycleEffectFailure",
+    "WindowsLifecycleTerminalEffects",
+    "WindowsLifecycleAttachedTerminalEffects",
+  ];
+  const forbiddenEffectEscape =
+    /\b(?:unsafe|dyn|Any|downcast(?:_ref|_mut)?|Deref|DerefMut|transmute|ManuallyDrop|MaybeUninit|as_raw|into_raw|from_raw|RawHandle|HANDLE|Path|PathBuf|Box|Rc|Arc)\b/u;
+  const forbiddenVacuousProductionEscape =
+    /\b(?:loop|while)\b|\b(?:unreachable|panic|todo|unimplemented)\s*!|\b(?:std|core)\s*::\s*process\s*::\s*(?:abort|exit)\s*\(|\bcore\s*::\s*hint\s*::\s*unreachable_unchecked\b/u;
 
   return (
     keyAgentServicePhaseTwoH2SemanticContract({
-      authenticationSource,
-      durableSource,
-      provisioningSource,
-      provisioningTests,
-      windowsPairSource,
-      windowsProvisioningSource,
-      windowsRuntimeSource,
-      lifecycleSource,
-      windowsLifecycleSource,
-      provisioningDirectoryInventory,
+      ...inputs,
+      windowsLifecycleEffectsSource,
     }) &&
-    JSON.stringify(windowsTypes) ===
+    criticalFunctionsExact &&
+    rustFunctionBodyClosureSha256(windowsProduction) ===
+      "175ce9d68ea758d6f59da1661c90af24b002a128669d918b67b15b75b93382f5" &&
+    rustFunctionBodyClosureSha256(effectsProduction) ===
+      "193606923b95054eff04de38e07ad4d5b46675920644786ce0b2dccfacc43006" &&
+    JSON.stringify(typeInventory(windowsProduction)) ===
       JSON.stringify(keyAgentServicePhaseTwoGWindowsLifecycleTypes) &&
-    JSON.stringify(runtimeTypes) ===
-      JSON.stringify(keyAgentServicePhaseTwoGRuntimeTypes) &&
-    JSON.stringify(windowsVisibleFunctions) ===
+    JSON.stringify(typeInventory(effectsProduction)) ===
+      JSON.stringify(keyAgentServicePhaseTwoGWindowsLifecycleEffectsTypes) &&
+    JSON.stringify(typeInventory(windowsLifecycleEffectsSource)) ===
+      JSON.stringify(keyAgentServicePhaseTwoGWindowsLifecycleEffectsFullTypes) &&
+    JSON.stringify(visibleFunctions(windowsProduction)) ===
       JSON.stringify(keyAgentServicePhaseTwoGWindowsLifecycleFunctions) &&
-    JSON.stringify(runtimeVisibleFunctions) ===
-      JSON.stringify(keyAgentServicePhaseTwoGRuntimeFunctions) &&
-    JSON.stringify(runtimeRetirementBodies) ===
+    JSON.stringify(visibleFunctions(effectsProduction)) ===
+      JSON.stringify(keyAgentServicePhaseTwoGWindowsLifecycleEffectsFunctions) &&
+    JSON.stringify(effectStateInvocations) ===
+      JSON.stringify(keyAgentServicePhaseTwoGWindowsLifecycleEffectStates) &&
+    JSON.stringify(effectsImplFunctionInventory) ===
       JSON.stringify([
-        "pub(super)fninto_retirement(self)->WindowsRetirementPending<'provider>{letSelf{logical,pair}=self;WindowsRetirementPending::new(logical.into_writer_exit(),WindowsTerminalPair::Writer(pair),)}",
-        "pub(incrate::key_agent_service)fninto_retirement(self,)->WindowsRetirementPending<'provider>{letSelf{logical,pair}=self;WindowsRetirementPending::new(logical.into_writer_exit(),WindowsTerminalPair::Observed(pair),)}",
-        "pub(incrate::key_agent_service)fninto_retirement(self,)->WindowsRetirementPending<'provider>{letSelf{logical,pair}=self;WindowsRetirementPending::new(logical.into_writer_exit(),WindowsTerminalPair::Prepared(pair),)}",
-        "pub(incrate::key_agent_service)fninto_retirement(self,)->WindowsRetirementPending<'provider>{letSelf{logical,pair}=self;WindowsRetirementPending::new(logical.into_writer_exit(),WindowsTerminalPair::Observed(pair),)}",
-        "pub(incrate::key_agent_service)fninto_retirement(self,)->WindowsRetirementPending<'provider>{letSelf{logical,pair}=self;WindowsRetirementPending::new(logical.into_writer_exit(),WindowsTerminalPair::Observed(pair),)}",
-        "pub(incrate::key_agent_service)fninto_retirement(self,)->WindowsRetirementPending<'provider>{letSelf{logical,pair}=self;WindowsRetirementPending::new(logical.into_writer_exit(),WindowsTerminalPair::Ambiguous(pair),)}",
-        "pub(incrate::key_agent_service)fninto_retirement(self,)->WindowsRetirementPending<'provider>{letSelf{logical,pair}=self;WindowsRetirementPending::new(logical.into_writer_exit(),WindowsTerminalPair::Ambiguous(pair),)}",
+        {
+          owner: "implWindowsLifecycleEffectCause",
+          functions: ["stage", "disposition"],
+        },
+        {
+          owner: "implfmt::DebugforWindowsLifecycleEffectBinding",
+          functions: ["fmt"],
+        },
+        { owner: "implEffectPurpose", functions: ["stage"] },
+        {
+          owner: "implEffectCore",
+          functions: ["execute", "fail", "into_terminal"],
+        },
+        { owner: "implfmt::DebugforEffectCore", functions: ["fmt"] },
+        {
+          owner: "implWindowsLifecycleEffectAuthority",
+          functions: ["prepare_listeners"],
+        },
+        {
+          owner: "implfmt::DebugforWindowsLifecycleEffectAuthority",
+          functions: ["fmt"],
+        },
+        { owner: "impl$name", functions: ["into_terminal"] },
+        { owner: "implfmt::Debugfor$name", functions: ["fmt"] },
+        {
+          owner: "implWindowsListenersPreparedEffects",
+          functions: ["publish_scm_running"],
+        },
+        {
+          owner: "implWindowsScmRunningEffects",
+          functions: ["open_admission"],
+        },
+        {
+          owner: "implWindowsAdmissionOpenEffects",
+          functions: ["close_admission"],
+        },
+        {
+          owner: "implWindowsAdmissionClosedEffects",
+          functions: ["drain_listeners"],
+        },
+        {
+          owner: "implWindowsListenersDrainedEffects",
+          functions: ["publish_scm_stopped"],
+        },
+        {
+          owner: "implWindowsLifecycleEffectFailure",
+          functions: ["cause", "into_terminal"],
+        },
+        {
+          owner: "implfmt::DebugforWindowsLifecycleEffectFailure",
+          functions: ["fmt"],
+        },
+        {
+          owner: "implWindowsLifecycleTerminalEffects",
+          functions: ["unattached"],
+        },
+        {
+          owner: "implfmt::DebugforWindowsLifecycleTerminalEffects",
+          functions: ["fmt"],
+        },
       ]) &&
-    terminalRetirementParts ===
-      "pub(incrate::key_agent_service)fninto_retirement_parts(self,)->(WindowsTerminalCause,WindowsRetirementPending<'provider>){(self.cause,self.retirement)}" &&
-    JSON.stringify(facadeItems) ===
-      JSON.stringify(keyAgentServicePhaseTwoGFacadeItems) &&
-    (durableCode.match(
-      /\bpub\s*\(\s*in\s+crate\s*::\s*key_agent_service\s*\)\s+use\s+windows_runtime\s*::/gu,
-    ) ?? []).length === 2 &&
-    (durableCode.match(/\bpub(?:\s*\([^)]*\))?\s+use\b/gu) ?? [])
-      .length === 3 &&
-    durableSource.includes(
-      "#[cfg(all(test, windows))]\n#[allow(unused_imports)] // Consumed by sibling Windows lifecycle kernel tests.\npub(in crate::key_agent_service) use windows_runtime::install_windows_runtime_clean_fixture;",
-    ) &&
-    platformService.includes(
-      "#[cfg(windows)]\n#[allow(dead_code)]\nmod windows_lifecycle;",
-    ) &&
     platformService.split(
       "#[cfg(windows)]\n#[allow(dead_code)]\nmod windows_lifecycle;",
     ).length - 1 === 1 &&
-    !/\bpub\s+(?:crate\s+)?mod\s+windows_lifecycle\b/u.test(platformService) &&
-    !/\b(?:pub\s+use|pub\s*\([^)]*\)\s+use)\b[^;]*\bwindows_lifecycle\b/u.test(
+    !/\bpub(?:\s*\([^)]*\))?\s+mod\s+windows_lifecycle\b/u.test(
       rustLexicalCode(platformService),
     ) &&
-    [...windowsCode.matchAll(/\bstart_windows_runtime\b/gu)].length === 2 &&
+    windowsLifecycleSource.split(
+      '#[path = "windows_lifecycle_effects.rs"]\npub(super) mod effects;',
+    ).length - 1 === 1 &&
+    !/\bpub(?:\s*\((?:crate|in\s+crate)[^)]*\))\s+mod\s+effects\b/u.test(
+      windowsCode,
+    ) &&
+    !/\b(?:pub\s+use|pub\s*\([^)]*\)\s+use)\b[^;]*\b(?:windows_lifecycle|effects)\b/u.test(
+      rustLexicalCode(platformService),
+    ) &&
     rustCallSites(windowsProduction, "start_windows_runtime").length === 1 &&
-    [...runtimeCode.matchAll(/\bstart_windows_runtime\b/gu)].length === 1 &&
-    [...durableCode.matchAll(/\bstart_windows_runtime\b/gu)].length === 1 &&
     !/\bstart_windows_runtime\b/u.test(otherProductionCode) &&
     [...windowsCode.matchAll(/\bbegin_windows_lifecycle\b/gu)].length === 1 &&
-    !/\bbegin_windows_lifecycle\b/u.test(
-      `${otherProductionCode}\n${durableCode}\n${runtimeCode}`,
+    !/\bbegin_windows_lifecycle\b/u.test(otherProductionCode) &&
+    compactRust(beginLifecycle).startsWith(
+      "pub(super)fnbegin_windows_lifecycle(writer:HeldServiceRunStateWriter,authority:RuntimeRunStateAuthority<'_>,)->Result<WindowsStartupAttempt<'_>,WindowsLifecycleExitRequired<'_>>",
     ) &&
-    !/\b(?:WindowsRuntimeWriterAcquired|from_held_writer|from_fixture_bytes|ExpectedInstalledRunStateObjects|ExpectedObjects)\b/u.test(
-      windowsCode,
+    !/\bWindowsLifecycleEffectAuthority\b/u.test(
+      rustLexicalCode(beginLifecycle),
     ) &&
-    !/\bRecoveryRequired\s*::/u.test(windowsCode) &&
-    [...windowsCode.matchAll(/\bWINDOWS_SERVICE_EXIT_CODE\b/gu)].length === 3 &&
-    windowsCompact.includes("constWINDOWS_SERVICE_EXIT_CODE:i32=78;") &&
-    !/\bprocess\s*::\s*exit\b/u.test(windowsCode) &&
-    !/\bprocess\s*::\s*exit\b/u.test(runtimeCode) &&
-    !/\b(?:SetServiceStatus|CreateServiceW|StartServiceW|SERVICE_RUNNING|TcpListener|UnixListener|NamedPipe|OpenOptions|NCrypt[A-Za-z0-9_]*|BCrypt[A-Za-z0-9_]*|sign|decrypt|private_key|wallet_secret)\b/u.test(
-      windowsCode,
+    !/\bWindowsLifecycleEffectAuthority\b/u.test(otherEffectProductionCode) &&
+    (effectsCode.match(/\bWindowsLifecycleEffectAuthority\b/gu) ?? []).length ===
+      3 &&
+    (windowsCode.match(/\bWindowsLifecycleEffectAuthority\b/gu) ?? []).length ===
+      2 &&
+    JSON.stringify(functionNames(effectAuthorityImpl)) ===
+      JSON.stringify(["prepare_listeners"]) &&
+    rustFunctionSignatures(effectsProduction).every(
+      ({ source }) =>
+        !compactRust(source).includes("WindowsLifecycleEffectAuthority"),
     ) &&
-    !/\b(?:std|tokio)\s*::\s*(?:fs|net)\b/u.test(windowsCode) &&
-    !/\b(?:BTreeMap|BTreeSet|HashMap|HashSet|MAX_[A-Z0-9_]+)\b/u.test(
-      windowsCode,
+    compactType(effectsProduction, "WindowsLifecycleEffectStage") ===
+      "pub(incrate::key_agent_service)enumWindowsLifecycleEffectStage{PrepareListeners,PublishScmRunning,OpenAdmission,CloseAdmission,DrainListeners,PublishScmStopped,}" &&
+    compactType(effectsProduction, "WindowsLifecycleEffectDisposition") ===
+      "pub(incrate::key_agent_service)enumWindowsLifecycleEffectDisposition{KnownNotApplied,Ambiguous,InvalidReceipt,}" &&
+    compactType(effectsProduction, "EffectPurpose") ===
+      "enumEffectPurpose{PrepareListeners,PublishScmRunning,OpenAdmission,CloseAdmission,DrainListeners,PublishScmStopped,}" &&
+    compactRust(effectPurposeStage) ===
+      "constfnstage(self)->WindowsLifecycleEffectStage{matchself{Self::PrepareListeners=>WindowsLifecycleEffectStage::PrepareListeners,Self::PublishScmRunning=>WindowsLifecycleEffectStage::PublishScmRunning,Self::OpenAdmission=>WindowsLifecycleEffectStage::OpenAdmission,Self::CloseAdmission=>WindowsLifecycleEffectStage::CloseAdmission,Self::DrainListeners=>WindowsLifecycleEffectStage::DrainListeners,Self::PublishScmStopped=>WindowsLifecycleEffectStage::PublishScmStopped,}}" &&
+    compactType(effectsProduction, "SealedWindowsLifecycleEffectBackend") ===
+      "enumSealedWindowsLifecycleEffectBackend{#[cfg(not(test))]Unavailable(Infallible),}" &&
+    compactRust(effectCoreExecute) ===
+      "fnexecute(self,_purpose:EffectPurpose)->Result<Self,WindowsLifecycleEffectFailure>{matchself.backend{SealedWindowsLifecycleEffectBackend::Unavailable(never)=>matchnever{},}}" &&
+    rustStructLiteralSites(
+      effectsProduction,
+      "WindowsLifecycleEffectAuthority",
+    ).length === 0 &&
+    testOnlyEffectNames.every(
+      (name) =>
+        effectsFullCode.includes(name) &&
+        !new RegExp(`\\b${name}\\b`, "u").test(effectsCode),
     ) &&
-    compactRust(lifecycleCauseDeclaration) ===
-      "pub(super)enumWindowsLifecycleCause{Binding(RecoveryRequired),Startup(StartupFailure),RuntimePolicy(RuntimePolicyFailure),Lifecycle(LifecycleError),Fatal(FatalReason),Durable(WindowsTerminalCause),}" &&
-    compactRust(irreversibleCauseDeclaration) ===
-      "pub(super)enumWindowsLifecycleIrreversibleCause{Retirement{original:WindowsLifecycleCause,platform:ServiceRunStateError,},ReleasedNoReceipt{recovery:RecoveryRequired,platform:ServiceRunStateError,},PostRelease{recovery:RecoveryRequired,},}" &&
-    compactRust(rustLexicalCode(startupFailureDeclaration)) ===
-      "pub(super)enumStartupFailure{#[error()]Missing(NoSecretStartupRequirement),#[error()]Mismatch(NoSecretStartupRequirement),#[error()]Unavailable(NoSecretStartupRequirement),#[error()]DuplicateObservation(NoSecretStartupRequirement),}" &&
-    compactRust(rustLexicalCode(runtimePolicyFailureDeclaration)) ===
-      "pub(super)enumRuntimePolicyFailure{#[error()]CleanupOutOfOrder,#[error()]CleanupIncomplete,}" &&
-    hasOrderedCompactMarkers(terminalIntoRetirement, [
-      "let(cause,authority)=failure.into_retirement_parts()",
-      "Self::bound(WindowsLifecycleCause::Durable(cause),authority)",
+    lifecycleTestOnlyNames.every(
+      (name) =>
+        windowsLifecycleSource.includes(name) &&
+        !new RegExp(`\\b${name}\\b`, "u").test(windowsCode),
+    ) &&
+    runtimeProduction.split(runtimePostReleaseFaultStatement).length - 1 === 1 &&
+    !/\btake_post_release_receipt_fault_for_test\b/u.test(
+      rustLexicalCode(runtimeProductionWithoutPostReleaseFault),
+    ) &&
+    windowsLifecycleEffectsSource.includes(
+      "#[cfg(test)]\n#[derive(Clone, Copy, Eq, PartialEq)]\npub(super) struct WindowsLifecycleEffectBindingWitness",
+    ) &&
+    windowsLifecycleEffectsSource.includes(
+      "pub(super) fn from_attempt_exhaustion_fixture()",
+    ) &&
+    windowsLifecycleEffectsSource.includes(
+      "next_attempt: NonZeroU64::MAX,",
+    ) &&
+    windowsLifecycleTests.includes(
+      "fn assert_exhausted_effect_attempt_is_terminal() -> TestResult",
+    ) &&
+    windowsLifecycleTests.includes(
+      "assert_exhausted_effect_attempt_is_terminal()?;",
+    ) &&
+    hasOrderedCompactMarkers(effectAttemptExhaustionFixture, [
+      "fnfrom_attempt_exhaustion_fixture()",
+      "binding:allocate_fixture_binding()?",
+      "next_attempt:NonZeroU64::MAX",
+      "SealedWindowsLifecycleEffectBackend::Fixture",
+      "fault:None",
+      "cross_binding:None",
     ]) &&
-    hasOrderedCompactMarkers(beginLifecycle, [
-      "matchstart_windows_runtime(writer,authority)",
-      "Ok(windows)=>Ok(WindowsStartupAttempt{checklist:StartupChecklist::new(),windows,})",
-      "Err(WindowsRuntimeStartFailure::Binding(failure))",
-      "letreason=failure.reason()",
-      "WindowsLifecycleCause::Binding(reason)",
-      "Err(WindowsRuntimeStartFailure::Terminal(failure))",
-      "WindowsLifecycleExitRequired::from_terminal(failure)",
+    compactRust(effectBindingWitnessForTest) ===
+      "pub(super)constfnbinding_witness_for_test(&self)->WindowsLifecycleEffectBindingWitness{WindowsLifecycleEffectBindingWitness(self.core.binding)}" &&
+    compactRust(effectMatchesBindingWitnessForTest) ===
+      "pub(super)fnmatches_binding_witness_for_test(&self,witness:WindowsLifecycleEffectBindingWitness,)->bool{self.core.binding==witness.0}" &&
+    compactRust(effectRetainsAuthorityForTest) ===
+      "pub(super)constfnretains_authority_for_test(&self)->bool{self.core.binding.0.get()!=0}" &&
+    hasOrderedCompactMarkers(lifecyclePostWriterBindingWitnessForTest, [
+      "WindowsLifecycleIrreversibleAuthority::PostWriterReleaseScmStop(failure)",
+      "failure.effects.matches_binding_witness_for_test(witness)",
+      "WindowsLifecycleIrreversibleAuthority::UnboundRetirementFailure",
+      "WindowsLifecycleIrreversibleAuthority::BoundRetirementFailure",
+      "WindowsLifecycleIrreversibleAuthority::ReleasedNoReceipt",
+      "WindowsLifecycleIrreversibleAuthority::PostRelease",
+      "false",
     ]) &&
-    hasOrderedCompactMarkers(startupFinish, [
-      "matchchecklist.finish()",
-      "WindowsLifecycleCause::Startup(cause)",
-      "windows.into_retirement()",
-      "matchwindows.prepare_active()",
+    hasOrderedCompactMarkers(exhaustedEffectAttemptTest, [
+      "WindowsLifecycleEffectAuthority::from_attempt_exhaustion_fixture()?",
+      "prepare_listeners(effects)",
+      "WindowsListenerPreparationOutcome::ExitRequired(exit)",
+      "WindowsListenerPreparationOutcome::ScmRunningPending(scm)",
+      "assert_checked_exit(scm.abort(LifecycleError::NotReady))",
+      "WindowsLifecycleEffectStage::PrepareListeners",
+      "WindowsLifecycleEffectDisposition::InvalidReceipt",
+      "fixture.cleanup_checked()",
     ]) &&
-    hasOrderedCompactMarkers(startupAbort, [
-      "WindowsLifecycleCause::Startup(cause)",
-      "self.windows.into_retirement()",
+    hasOrderedCompactMarkers(effectCoreTestExecute, [
+      "ifreceipt.binding!=self.binding",
+      "receipt.attempt!=self.next_attempt",
+      "receipt.purpose!=purpose",
+      "self.next_attempt.get().checked_add(1).and_then(NonZeroU64::new)",
+      "self.fail(purpose,WindowsLifecycleEffectDisposition::InvalidReceipt)",
+      "self.next_attempt=next",
     ]) &&
-    hasOrderedCompactMarkers(activeCommit, [
-      "matchwindows.commit_and_reread()",
-      "WindowsActiveCommitOutcome::Active(windows)",
-      "policy:checklist.begin_listener_startup()",
-      "WindowsActiveCommitOutcome::ReloadRequired(windows)",
-      "checklist,windows",
-      "WindowsActiveCommitOutcome::Terminal(failure)",
+    !/\b(?:wrapping_add|saturating_add)\b/u.test(effectsFullCode) &&
+    compactType(effectsProduction, "EffectReceipt").includes(
+      "structEffectReceipt{binding:WindowsLifecycleEffectBinding,attempt:NonZeroU64,purpose:EffectPurpose,}",
+    ) &&
+    compactType(effectsProduction, "EffectCore").includes(
+      "structEffectCore{binding:WindowsLifecycleEffectBinding,next_attempt:NonZeroU64,backend:SealedWindowsLifecycleEffectBackend,}",
+    ) &&
+    compactRust(effectCoreIntoTerminal) ===
+      "fninto_terminal(self)->WindowsLifecycleTerminalEffects{WindowsLifecycleTerminalEffects::Attached(WindowsLifecycleAttachedTerminalEffects{cause:None,core:self,})}" &&
+    compactType(effectsProduction, "WindowsLifecycleTerminalEffects") ===
+      "pub(super)enumWindowsLifecycleTerminalEffects{Unattached,Attached(WindowsLifecycleAttachedTerminalEffects),}" &&
+    compactType(
+      effectsProduction,
+      "WindowsLifecycleAttachedTerminalEffects",
+    ) ===
+      "pub(super)structWindowsLifecycleAttachedTerminalEffects{cause:Option<WindowsLifecycleEffectCause>,core:EffectCore,}" &&
+    effectsCompact.includes(
+      "pub(super)struct$name{core:EffectCore,}impl$name{pub(super)fninto_terminal(self)->WindowsLifecycleTerminalEffects{self.core.into_terminal()}}",
+    ) &&
+    hasOrderedCompactMarkers(effectAuthorityPrepare, [
+      "self.core.execute(EffectPurpose::PrepareListeners)",
+      "WindowsListenersPreparedEffects{core}",
     ]) &&
-    hasOrderedCompactMarkers(activeAbort, [
-      "WindowsLifecycleCause::Lifecycle(cause)",
-      "self.windows.into_retirement()",
+    hasOrderedCompactMarkers(effectPublishRunning, [
+      "self.core.execute(EffectPurpose::PublishScmRunning)",
+      "WindowsScmRunningEffects{core}",
     ]) &&
-    hasOrderedCompactMarkers(activeReload, [
-      "matchwindows.reload()",
-      "WindowsActiveReloadOutcome::Boot(windows)",
-      "checklist:StartupChecklist::new()",
-      "WindowsActiveReloadOutcome::Active(windows)",
-      "policy:checklist.begin_listener_startup()",
-      "WindowsActiveReloadOutcome::Terminal(failure)",
+    hasOrderedCompactMarkers(effectOpenAdmission, [
+      "self.core.execute(EffectPurpose::OpenAdmission)",
+      "WindowsAdmissionOpenEffects{core}",
     ]) &&
-    (windowsCompact.match(/StartupChecklist::new\(/gu) ?? []).length === 2 &&
-    (windowsCompact.match(/\.begin_listener_startup\(/gu) ?? []).length === 2 &&
-    (windowsCompact.match(/\.record_clean_committed\(/gu) ?? []).length === 2 &&
-    (windowsCompact.match(/\.record_writer_released\(/gu) ?? []).length === 1 &&
-    hasOrderedCompactMarkers(listenerRecord, [
-      "policy:self.policy.record_listeners_prepared()",
-      "windows:self.windows",
+    hasOrderedCompactMarkers(effectCloseAdmission, [
+      "self.core.execute(EffectPurpose::CloseAdmission)",
+      "WindowsAdmissionClosedEffects{core}",
     ]) &&
-    JSON.stringify(purePolicyChain.map(compactRust)) ===
+    hasOrderedCompactMarkers(effectDrain, [
+      "self.core.execute(EffectPurpose::DrainListeners)",
+      "WindowsListenersDrainedEffects{core}",
+    ]) &&
+    hasOrderedCompactMarkers(effectPublishStopped, [
+      "self.core.execute(EffectPurpose::PublishScmStopped)",
+      "WindowsScmStoppedEffectEvidence{core}",
+    ]) &&
+    hasOrderedCompactMarkers(effectFailureIntoTerminal, [
+      "WindowsLifecycleTerminalEffects::Attached",
+      "cause:Some(self.cause)",
+      "core:self.core",
+    ]) &&
+    (windowsCode.match(/\bunattached\b/gu) ?? []).length === 10 &&
+    JSON.stringify(preActiveUnattachedInventory) ===
       JSON.stringify([
-        "pub(super)fnbegin_listener_startup(self)->ListenerPendingPolicy{ListenerPendingPolicy{checklist:self}}",
-        "pub(super)fnrecord_listeners_prepared(self)->ScmRunningPendingPolicy{ScmRunningPendingPolicy{checklist:self.checklist,}}",
-        "pub(super)fnrecord_scm_running_published(self)->AdmissionPendingPolicy{AdmissionPendingPolicy{checklist:self.checklist,}}",
-        "pub(super)fnopen_admission(self)->RuntimePolicy{RuntimePolicy::new(self.checklist)}",
-        "fnnew(startup:CompletedStartupChecklist)->Self{Self{startup,state:RuntimeState::Ready,work:BTreeMap::new(),user_token_sessions:BTreeSet::new(),invalid_sessions:BTreeSet::new(),next_cleanup_index:0,}}",
+        ["begin_windows_lifecycle", 2],
+        ["WindowsStartupAttempt::finish", 2],
+        ["WindowsStartupAttempt::abort", 1],
+        ["WindowsActiveCommitPending::commit_and_reread", 1],
+        ["WindowsActiveCommitPending::abort", 1],
+        ["WindowsActiveReloadPending::reload", 1],
+        ["WindowsActiveReloadPending::abort", 1],
+        ["WindowsListenerPending::abort", 1],
       ]) &&
-    (compactRust(lifecycleProduction).match(/RuntimePolicy::new\(/gu) ?? [])
-      .length === 1 &&
-    hasOrderedCompactMarkers(runtimePolicyExpectedCleanup, [
-      "if!matches!(self.state,RuntimeState::Draining(_))",
-      "returnNone",
-      "CleanupStep::ORDERED.get(self.next_cleanup_index).copied()",
+    !/\bUnattached\b/u.test(windowsCode) &&
+    hasOrderedCompactMarkers(listenerPrepare, [
+      "effects.prepare_listeners",
+      "Ok(effects)",
+      "policy:self.policy.record_listeners_prepared()",
+      "effects",
+      "Err(failure)",
+      "effect_exit(failure,self.windows.into_retirement(),)",
     ]) &&
+    hasOrderedCompactMarkers(scmPublish, [
+      "effects.publish_scm_running",
+      "Ok(effects)",
+      "policy:policy.record_scm_running_published()",
+      "effects",
+      "Err(failure)",
+      "effect_exit(failure,windows.into_retirement(),)",
+    ]) &&
+    hasOrderedCompactMarkers(admissionEstablish, [
+      "effects.open_admission",
+      "Ok(effects)",
+      "policy:policy.open_admission()",
+      "effects",
+      "Err(failure)",
+      "effect_exit(failure,windows.into_retirement(),)",
+    ]) &&
+    hasOrderedCompactMarkers(admissionClose, [
+      "effects.close_admission",
+      "Ok(effects)",
+      "WindowsAdmissionClosedService",
+      "Err(failure)",
+      "effect_exit(failure,windows.into_retirement(),)",
+    ]) &&
+    hasOrderedCompactMarkers(beginStop, [
+      "self.policy.begin_stop(reason)",
+      "complete_cleanup_step(CleanupStep::RejectNewWork)",
+      "WindowsInvalidationPending",
+    ]) &&
+    hasOrderedCompactMarkers(invalidate, [
+      "complete_cleanup_step(CleanupStep::InvalidateNonDurableAuthority)",
+      "WindowsListenerDrainPending",
+    ]) &&
+    hasOrderedCompactMarkers(drain, [
+      "effects.drain_listeners()",
+      "Ok(effects)",
+      "complete_cleanup_step(CleanupStep::CloseAndDrainListeners)",
+      "WindowsRemainingCleanup",
+    ]) &&
+    remainingCleanupExact &&
+    JSON.stringify(functionNames(remainingImpl)) ===
+      JSON.stringify([
+        "expected_cleanup_step",
+        "work_count",
+        "retained_user_token_count",
+        "quarantined_session_count",
+        "cancel_requests",
+        "terminate_helpers",
+        "reap_helpers",
+        "discard_user_tokens",
+        "flush_defined_durable_records",
+        "release_request_hardware_and_storage_handles",
+        "prepare_clean",
+        "into_exit",
+      ]) &&
+    (windowsCompact.match(/\.complete_cleanup_step\(/gu) ?? []).length === 9 &&
+    !windowsCompact.includes("::complete_cleanup_step") &&
+    !/\bfn\s+(?:complete_cleanup_step|record_listeners_prepared|record_scm_running_published|open_admission|begin_stop)\b/u.test(
+      windowsCode,
+    ) &&
     compactRust(cleanupOrderImpl) ===
       "implCleanupStep{constORDERED:[Self;11]=[Self::RejectNewWork,Self::InvalidateNonDurableAuthority,Self::CloseAndDrainListeners,Self::CancelRequests,Self::TerminateHelpers,Self::ReapHelpers,Self::DiscardUserTokens,Self::FlushDefinedDurableRecords,Self::ReleaseRequestHardwareAndStorageHandles,Self::CommitAndRereadCleanMarker,Self::ReleaseSingleInstanceLease,];}" &&
     hasOrderedCompactMarkers(runtimePolicyPrepareClean, [
-      "ifself.expected_cleanup_step()!=Some(CleanupStep::CommitAndRereadCleanMarker)",
-      "returnErr(RuntimePolicyFailure::CleanupOutOfOrder)",
+      "self.expected_cleanup_step()!=Some(CleanupStep::CommitAndRereadCleanMarker)",
       "if!self.work.is_empty()||!self.user_token_sessions.is_empty()||!self.invalid_sessions.is_empty()",
-      "returnErr(RuntimePolicyFailure::CleanupIncomplete)",
-      "Ok(CleanBoundaryPolicy{startup:self.startup,})",
+      "Ok(CleanBoundaryPolicy",
     ]) &&
-    hasOrderedCompactMarkers(scmRecord, [
-      "policy:self.policy.record_scm_running_published()",
-      "windows:self.windows",
-    ]) &&
-    hasOrderedCompactMarkers(admissionOpen, [
-      "policy:self.policy.open_admission()",
-      "windows:self.windows",
-    ]) &&
-    hasOrderedCompactMarkers(servicePrepareClean, [
-      "ifletRuntimeState::Fatal(cause)=policy.state()",
-      "WindowsLifecycleCause::Fatal(cause)",
-      "windows.into_retirement()",
-      "matchpolicy.prepare_clean()",
-      "WindowsLifecycleCause::RuntimePolicy(cause)",
-      "windows.into_retirement()",
-      "matchwindows.commit_clean()",
+    hasOrderedCompactMarkers(remainingPrepareClean, [
+      "policy.prepare_clean()",
+      "windows.commit_clean()",
       "WindowsCleanCommitOutcome::Clean(windows)",
       "policy:policy.record_clean_committed()",
+      "effects",
       "WindowsCleanCommitOutcome::ReloadRequired(windows)",
-      "policy,windows",
       "WindowsCleanCommitOutcome::Terminal(failure)",
-    ]) &&
-    serviceDelegates.every(Boolean) &&
-    hasOrderedCompactMarkers(serviceIntoExit, [
-      "WindowsLifecycleCause::Lifecycle(cause)",
-      "self.windows.into_retirement()",
-    ]) &&
-    hasOrderedCompactMarkers(serviceIntoFatalExit, [
-      "RuntimeState::Fatal(cause)=>WindowsLifecycleCause::Fatal(cause)",
-      "WindowsLifecycleCause::Lifecycle(LifecycleError::NotReady)",
-      "WindowsLifecycleExitRequired::bound(cause,self.windows.into_retirement())",
+      "effects.into_terminal()",
     ]) &&
     hasOrderedCompactMarkers(cleanReload, [
-      "matchwindows.reload()",
+      "windows.reload()",
       "WindowsCleanReloadOutcome::Clean(windows)",
       "policy:policy.record_clean_committed()",
+      "effects",
       "WindowsCleanReloadOutcome::Terminal(failure)",
+      "effects.into_terminal()",
     ]) &&
-    hasOrderedCompactMarkers(completeStop, [
+    hasOrderedCompactMarkers(completeWriterRelease, [
       "WindowsStopOutcome::Stopped(windows)",
+      "WindowsLifecycleWriterReleaseOutcome::ScmStopPending",
       "policy:policy.record_writer_released()",
+      "windows",
+      "effects",
       "WindowsStopOutcome::Terminal(failure)",
-      "WindowsLifecycleExitRequired::from_terminal(failure)",
       "WindowsStopOutcome::ReleasedNoReceipt(failure)",
-      "WindowsLifecycleIrreversibleExit78::released_no_receipt(failure)",
       "WindowsStopOutcome::PostReleaseTerminal(failure)",
-      "WindowsLifecycleIrreversibleExit78::post_release(failure)",
+    ]) &&
+    hasOrderedCompactMarkers(publishScmStopped, [
+      "effects.publish_scm_stopped()",
+      "Ok(effects)",
+      "WindowsLifecycleScmStopOutcome::Stopped(WindowsLifecycleStopped",
+      "windows",
+      "effects",
+      "Err(effects)",
+      "WindowsLifecycleScmStopOutcome::IrreversibleExit78",
+      "WindowsPostWriterReleaseScmStopFailure{windows,effects}",
     ]) &&
     hasOrderedCompactMarkers(lifecycleRetire, [
-      "letSelf{cause,authority}=self",
-      "WindowsLifecycleExitAuthority::Unbound(authority)=>matchauthority.retire()",
-      "Ok(retired)=>Ok(WindowsLifecycleCheckedExit78{cause,authority:WindowsLifecycleCheckedExitAuthority::Unbound(retired),})",
-      "WindowsLifecycleIrreversibleExit78::unbound_retirement_failure(cause,failure)",
-      "WindowsLifecycleExitAuthority::Bound(authority)=>matchauthority.retire_checked()",
-      "Ok(retired)=>Ok(WindowsLifecycleCheckedExit78{cause,authority:WindowsLifecycleCheckedExitAuthority::Bound(retired),})",
-      "letplatform=failure.cause()",
-      "WindowsLifecycleIrreversibleExit78::bound_retirement_failure(cause,platform,failure,)",
+      "letSelf{cause,authority,effects,}=self",
+      "WindowsLifecycleCheckedExitAuthority::Unbound{retired,effects}",
+      "unbound_retirement_failure(cause,failure,effects,)",
+      "WindowsLifecycleCheckedExitAuthority::Bound{retired,effects}",
+      "bound_retirement_failure(cause,platform,failure,effects,)",
     ]) &&
-    hasOrderedCompactMarkers(irreversibleImpl, [
-      "fnunbound_retirement_failure",
-      "WindowsLifecycleIrreversibleAuthority::UnboundRetirementFailure(failure)",
-      "fnbound_retirement_failure",
-      "WindowsLifecycleIrreversibleCause::Retirement{original,platform}",
-      "WindowsLifecycleIrreversibleAuthority::BoundRetirementFailure(failure)",
-      "fnreleased_no_receipt",
-      "WindowsLifecycleIrreversibleCause::ReleasedNoReceipt{recovery,platform}",
-      "fnpost_release",
-      "WindowsLifecycleIrreversibleCause::PostRelease{recovery}",
-      "fncode(&self)->i32{WINDOWS_SERVICE_EXIT_CODE}",
-    ]) &&
-    compactRust(checkedExitImpl).includes(
-      "fncode(&self)->i32{WINDOWS_SERVICE_EXIT_CODE}",
+    JSON.stringify(functionNames(irreversibleImpl)) ===
+      JSON.stringify([
+        "unbound_retirement_failure",
+        "bound_retirement_failure",
+        "released_no_receipt",
+        "post_release",
+        "post_writer_release_scm_stop",
+        "cause",
+        "code",
+      ]) &&
+    JSON.stringify(functionNames(checkedImpl)) ===
+      JSON.stringify(["cause", "code"]) &&
+    JSON.stringify(functionNames(stoppedImpl)) ===
+      JSON.stringify(["generation"]) &&
+    compactType(
+      windowsProduction,
+      "WindowsPostWriterReleaseScmStopFailure",
+    ).includes(
+      "structWindowsPostWriterReleaseScmStopFailure<'provider>{windows:WindowsStoppedRunEvidence<'provider>,effects:WindowsLifecycleEffectFailure,}",
     ) &&
-    !compactRust(stoppedImpl).includes("fncode") &&
-    JSON.stringify(terminalImplFunctionNames) ===
-      JSON.stringify({
-        irreversible: [
-          "unbound_retirement_failure",
-          "bound_retirement_failure",
-          "released_no_receipt",
-          "post_release",
-          "cause",
-          "code",
-        ],
-        checked: ["cause", "code"],
-        stopped: ["generation"],
-      }) &&
-    windowsRuntimeSource.includes(
-      "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\nenum WindowsCheckedRetirementStage {\n    BeginRelease,\n    PairRetire,\n    RecordReceipt,\n    LogicalComplete,\n}",
+    windowsLifecycleSource.includes(
+      "failure.effects.matches_binding_witness_for_test(witness)",
     ) &&
-    !/\b(?:into_terminal|WindowsRecoveryExit|WindowsRetirementFailure)\b/u.test(
-      windowsCode,
-    ) &&
-    rustUnsafeKeywordCount(windowsProduction) === 0 &&
-    rustAuthorityTypeErasureSites(windowsProduction).length === 0 &&
-    !/\b(?:dyn|Any|downcast(?:_ref|_mut)?|Deref|as_raw|into_raw|from_raw|RawHandle|HANDLE|Path|PathBuf)\b/u.test(
-      windowsCode,
+    windowsLifecycleTests.includes(
+      "failure.post_writer_release_effect_binding_matches_for_test(binding)",
     ) &&
     keyAgentServiceMoveOnlyEvidenceContract(
       windowsProduction,
       keyAgentServicePhaseTwoGWindowsLifecycleTypes.map(({ name }) => name),
     ) &&
-    keyAgentServiceMoveOnlyEvidenceContract(runtimeProduction, [
-      "WindowsRuntimeBindingFailure",
-      "WindowsUnboundRetired",
-      "WindowsUnboundRetirementFailure",
-      "WindowsTerminalPair",
-      "WindowsTerminalCause",
-      "WindowsRetirementPending",
-      "WindowsCheckedRetired",
-      "WindowsCheckedRetirementFailure",
-      "WindowsTerminalFailure",
-    ]) &&
-    runtimeProduction.split(runtimeHookStatement).length - 1 === 1 &&
-    runtimeProduction.split(runtimeThreadLocalBlock).length - 1 === 1 &&
-    !/\b(?:POST_RELEASE_RECEIPT_FAULT_FOR_TEST|PostReleaseReceiptFaultGuard|take_post_release_receipt_fault_for_test|install_windows_runtime_clean_fixture|install_pair_for_test|stop_with_post_release_fault_for_test)\b/u.test(
-      rustLexicalCode(runtimeProductionWithoutHook),
+    keyAgentServiceMoveOnlyEvidenceContract(
+      effectsProduction,
+      effectMoveOnlyTypes,
     ) &&
-    !/\b(?:release_writer_with_post_release_fault_for_test|stop_with_post_release_fault_for_test|take_post_release_receipt_fault_for_test)\b/u.test(
-      windowsCode,
+    keyAgentServicePhaseTwoGWindowsLifecycleEffectStates.every((name) => {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+      return (
+        !new RegExp(
+          `#\\s*\\[\\s*derive\\s*\\([^)]*\\b(?:Clone|Copy|Default)\\b[^)]*\\)\\s*\\]\\s*effect_state\\s*!\\s*\\(\\s*${escaped}\\b`,
+          "u",
+        ).test(effectsFullCode) &&
+        !new RegExp(
+          `\\bimpl(?:\\s*<[^>{}]*>)?\\s+(?:Clone|Copy|Default)\\s+for\\s+${escaped}\\b`,
+          "u",
+        ).test(effectsFullCode)
+      );
+    }) &&
+    !/#\s*\[\s*derive\s*\([^)]*\b(?:Clone|Copy|Default)\b[^)]*\)\s*\]\s*pub\s*\(\s*super\s*\)\s+struct\s+\$name\b/u.test(
+      effectsCode,
     ) &&
-    windowsRuntimeSource.includes(
-      "#[cfg(test)]\nstd::thread_local! {\n    static POST_RELEASE_RECEIPT_FAULT_FOR_TEST",
-    ) &&
-    windowsRuntimeSource.includes(
-      "#[cfg(test)]\nstruct PostReleaseReceiptFaultGuard;",
-    ) &&
-    windowsRuntimeSource.includes(
-      "#[cfg(test)]\nfn take_post_release_receipt_fault_for_test() -> bool",
-    ) &&
-    windowsRuntimeSource.includes(
-      "#[cfg(test)]\n    pub(in crate::key_agent_service) fn stop_with_post_release_fault_for_test(",
-    ) &&
-    !windowsProduction.includes("release_writer_with_post_release_fault_for_test") &&
-    windowsLifecycleSource.includes(
-      "#[cfg(test)]\n    fn release_writer_with_post_release_fault_for_test(\n        self,\n    ) -> WindowsLifecycleStopOutcome<'provider>",
-    ) &&
+    rustUnsafeKeywordCount(windowsProduction) === 0 &&
+    rustUnsafeKeywordCount(effectsProduction) === 0 &&
+    rustAuthorityTypeErasureSites(windowsProduction).length === 0 &&
+    rustAuthorityTypeErasureSites(effectsProduction).length === 0 &&
+    !forbiddenEffectEscape.test(windowsCode) &&
+    !forbiddenEffectEscape.test(effectsCode) &&
+    !forbiddenVacuousProductionEscape.test(windowsCode) &&
+    !forbiddenVacuousProductionEscape.test(effectsCode) &&
     JSON.stringify(windowsTests.map(({ name }) => name)) ===
       JSON.stringify(keyAgentServicePhaseTwoGWindowsLifecycleTestNames) &&
-    windowsTests.length === 12 &&
+    windowsTests.length === 22 &&
     windowsTests.every(({ ignored }) => !ignored) &&
     JSON.stringify(runtimeTests.map(({ name }) => name)) ===
       JSON.stringify(keyAgentServicePhaseTwoFCRuntimeTestNames) &&
@@ -15079,15 +15685,10 @@ const keyAgentServicePhaseTwoGSemanticContract = ({
     lifecycleTestsInventory.every(({ ignored }) => !ignored) &&
     rootTests.length === 56 &&
     rootTests.filter(({ ignored }) => !ignored).length === 54 &&
-    JSON.stringify(
-      rootTests.filter(({ ignored }) => ignored).map(({ name }) => name),
-    ) === JSON.stringify(keyAgentServicePhaseTwoEIgnoredTestNames) &&
     pairTests.length === 6 &&
     pairTests.every(({ ignored }) => !ignored) &&
     windowsProvisioningTests.length === 7 &&
     windowsProvisioningTests.every(({ ignored }) => !ignored) &&
-    JSON.stringify(windowsProvisioningTests.map(({ name }) => name)) ===
-      JSON.stringify(keyAgentServiceWindowsProvisioningTestNames) &&
     durableTests.length +
       authenticationTests.length +
       provisioningTestsInventory.length +
@@ -15097,61 +15698,42 @@ const keyAgentServicePhaseTwoGSemanticContract = ({
       88 &&
     designSlice.length > 0 &&
     [
-      "sole direct production consumer of `start_windows_runtime`",
-      "exactly one already-held writer and one move-only `RuntimeRunStateAuthority`",
-      "no parallel installation or provider input",
-      "zero production call sites",
-      "There is no alias caller, production provider constructor/source/caller",
-      "never become a fabricated `RecoveryRequired`",
-      "reason-neutral `into_retirement`",
-      "runtime authority stays nested in the logical lease",
-      "Before-writer failure instead carries the authority directly",
-      "no writer release or checked-retirement step",
-      "exact prior Clean pair",
-      "requires all nine observations again",
-      "exact Active candidate",
-      "record_listeners_prepared",
-      "record_scm_running_published",
-      "RuntimePolicy",
-      "exact first nine cleanup steps",
-      "Only `WindowsStopOutcome::Stopped` records writer release",
-      "cfg(test)-only consuming",
-      "move-only, Debug-redacted, safe-only",
-      "88/88 focused `durable_run_state` tests",
-      "seven Windows provisioning",
-      "fourteen passing `windows_runtime` tests",
+      "with no parallel installation, provider, or effect input",
+      "`WindowsListenerPending::prepare_listeners(effects)`",
+      "uninhabited `Unavailable(Infallible)` variant",
+      "zero production constructors, sources, or callers",
+      "six fixed purposes",
+      "opaque lifecycle binding, nonzero attempt, and purpose",
+      "replayed/exhausted-attempt",
+      "pre-Active and revalidation terminals are explicitly unattached",
+      "no zero-argument record/open bypass remains",
+      "admission-close effect, begin-stop, reject-new-work",
+      "exactly six named remaining-cleanup methods",
+      "no generic `complete_cleanup_step` delegate",
+      "writer release first creates `WindowsScmStopPending`",
+      "both `WindowsStoppedRunEvidence` and the exact effect-failure authority",
+      "22 passing tests",
+      "production lifecycle-effect backend/source/caller",
       "external **STOP-SHIP** obligations",
       "compiled policies stay `None`",
-      "silent exit-78 path",
     ].every((marker) => designSlice.includes(marker)) &&
     architectureRows.length === 1 &&
     [
-      "Current Phase 2G status: started, not passed",
-      "sole direct caller of `start_windows_runtime`",
-      "exact entry is `begin_windows_lifecycle(writer, authority)`",
-      "no parallel installation or provider argument",
-      "zero production callers",
-      "no executable, top-level, exported, aliased, installer, SCM, listener, admission, provider-source, secret, or `process::exit` adapter",
-      "runtime authority stays nested in the logical lease",
-      "Before-writer startup failure instead retains the consumed authority directly",
-      "no writer-release or checked-retirement step",
-      "Policy causes remain separate from durable/platform causes",
-      "reason-neutral checked retirement",
-      "A fresh Boot requires a fresh nine-observation checklist",
-      "exact candidate Active may carry the completed checklist",
-      "Listener-prepared, `SCM_RUNNING`, and admission-open are ordered typestate records only",
-      "only in `RuntimePolicy`",
-      "first nine cleanup steps live only in `RuntimePolicy`",
-      "Only exact Clean or exact candidate Clean reload records the Clean boundary",
-      "only exact stopped runtime records writer release and mints `WindowsLifecycleStopped`",
-      "retain hidden authority",
-      "move-only, Debug-redacted, safe-only",
-      "12/12 compositor tests",
-      "supporting durable evidence is 88/88",
-      "seven Windows provisioning",
+      "exact entry remains `begin_windows_lifecycle(writer, authority)`",
+      "no parallel installation, provider, or effect argument",
+      "only after exact Active",
+      "uninhabited `Unavailable(Infallible)`",
+      "zero constructor/source/caller",
+      "six exact binding/attempt/purpose receipts",
+      "duplicate/exhausted-attempt",
+      "no generic cleanup delegate",
+      "Exact writer release produces `WindowsScmStopPending`",
+      "both `WindowsStoppedRunEvidence` and `WindowsLifecycleEffectFailure`",
+      "Pre-Active terminals remain unattached",
+      "22/22 compositor tests",
+      "production lifecycle-effect backend/source/caller",
       "external **STOP-SHIP** obligations",
       "compiled policies remain `None`",
-      "silent exit 78",
       "not release-ready",
     ].every((marker) => architectureSlice.includes(marker)) &&
     !designSlice.includes("Phase 2G status: passed") &&
@@ -15173,6 +15755,7 @@ const keyAgentServicePhaseTwoInputs = Object.freeze({
   lifecycleSource: keyAgentServiceLifecycleCore,
   lifecycleTests: keyAgentServiceLifecycleCoreTests,
   windowsLifecycleSource: keyAgentServiceWindowsLifecycle,
+  windowsLifecycleEffectsSource: keyAgentServiceWindowsLifecycleEffects,
   directoryInventory: keyAgentServiceLifecycleDirectoryInventory,
   provisioningDirectoryInventory:
     keyAgentServiceDurableRunStateDirectoryInventory,
@@ -16284,6 +16867,7 @@ const keyAgentServicePhaseTwoGInputs = Object.freeze({
   ...keyAgentServicePhaseTwoFCInputs,
   lifecycleTests: keyAgentServiceLifecycleCoreTests,
   windowsLifecycleSource: keyAgentServiceWindowsLifecycle,
+  windowsLifecycleEffectsSource: keyAgentServiceWindowsLifecycleEffects,
   windowsLifecycleTests: keyAgentServiceWindowsLifecycleTests,
 });
 const mutateKeyAgentServicePhaseTwoGInput = (
@@ -16299,6 +16883,42 @@ const mutateKeyAgentServicePhaseTwoGInput = (
   return {
     ...keyAgentServicePhaseTwoGInputs,
     [field]: `${source.slice(0, first)}${replacement}${source.slice(first + search.length)}`,
+  };
+};
+const mutateKeyAgentServicePhaseTwoGReplacements = (field, replacements) => {
+  let source = keyAgentServicePhaseTwoGInputs[field];
+  for (const [search, replacement] of replacements) {
+    const first = source.indexOf(search);
+    if (first === -1 || source.indexOf(search, first + search.length) !== -1) {
+      return keyAgentServicePhaseTwoGInputs;
+    }
+    source = `${source.slice(0, first)}${replacement}${source.slice(first + search.length)}`;
+  }
+  return {
+    ...keyAgentServicePhaseTwoGInputs,
+    [field]: source,
+  };
+};
+const mutateKeyAgentServicePhaseTwoGScopedReplacement = (
+  field,
+  scopeStart,
+  scopeEnd,
+  search,
+  replacement,
+) => {
+  const source = keyAgentServicePhaseTwoGInputs[field];
+  const start = source.indexOf(scopeStart);
+  const end = start === -1 ? -1 : source.indexOf(scopeEnd, start);
+  if (start === -1 || end === -1) return keyAgentServicePhaseTwoGInputs;
+  const scope = source.slice(start, end);
+  const first = scope.indexOf(search);
+  if (first === -1 || scope.indexOf(search, first + search.length) !== -1) {
+    return keyAgentServicePhaseTwoGInputs;
+  }
+  const mutatedScope = `${scope.slice(0, first)}${replacement}${scope.slice(first + search.length)}`;
+  return {
+    ...keyAgentServicePhaseTwoGInputs,
+    [field]: `${source.slice(0, start)}${mutatedScope}${source.slice(end)}`,
   };
 };
 const keyAgentServicePhaseTwoESemanticMutationProbes = [
@@ -17257,14 +17877,21 @@ const keyAgentServicePhaseTwoGSemanticMutationProbes = [
     "#[cfg(windows)]\n#[allow(dead_code)]\npub(crate) mod windows_lifecycle;",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
-    "windowsRuntimeSource",
-    "#[cfg(test)]\nmod tests {",
-    "pub(in crate::key_agent_service) fn forbidden_extra_runtime_surface() {}\n\n#[cfg(test)]\nmod tests {",
+    "windowsLifecycleSource",
+    "    ) -> WindowsListenerPreparationOutcome<'provider> {\n        match effects.prepare_listeners() {",
+    "    ) -> WindowsListenerPreparationOutcome<'provider> {\n        loop {}\n        match effects.prepare_listeners() {",
+  ),
+  mutateKeyAgentServicePhaseTwoGScopedReplacement(
+    "windowsLifecycleSource",
+    "impl<'provider> WindowsScmRunningPending<'provider> {",
+    "impl fmt::Debug for WindowsScmRunningPending<'_> {",
+    "self.effects.into_terminal()",
+    "WindowsLifecycleTerminalEffects::Unattached",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
-    "windowsLifecycleSource",
-    "#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
-    "pub(super) fn forbidden_extra_lifecycle_surface() {}\n\n#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
+    "windowsLifecycleEffectsSource",
+    "impl WindowsListenersPreparedEffects {",
+    "effect_state! { HiddenEffectState, \"HiddenEffectState\" }\n\nimpl WindowsListenersPreparedEffects {",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "windowsLifecycleSource",
@@ -17272,19 +17899,9 @@ const keyAgentServicePhaseTwoGSemanticMutationProbes = [
     "fn forbidden_second_start(writer: HeldServiceRunStateWriter, authority: RuntimeRunStateAuthority<'_>) { let _ = start_windows_runtime(writer, authority); }\n\n#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
-    "windowsLifecycleSource",
-    "#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
-    "fn forbidden_start_alias(writer: HeldServiceRunStateWriter, authority: RuntimeRunStateAuthority<'_>) { let begin = start_windows_runtime; let _ = begin(writer, authority); }\n\n#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
-  ),
-  mutateKeyAgentServicePhaseTwoGInput(
-    "durableSource",
-    "#[cfg(windows)]\nmod windows_runtime;",
-    "#[cfg(windows)]\nmod windows_runtime;\n#[cfg(windows)]\nfn forbidden_external_start(writer: super::run_state_root::HeldServiceRunStateWriter, authority: RuntimeRunStateAuthority<'_>) { let _ = windows_runtime::start_windows_runtime(writer, authority); }",
-  ),
-  mutateKeyAgentServicePhaseTwoGInput(
-    "durableSource",
-    "#[cfg(windows)]\nmod windows_runtime;",
-    "#[cfg(windows)]\nmod windows_runtime;\n#[cfg(windows)]\nfn forbidden_external_start_alias(writer: super::run_state_root::HeldServiceRunStateWriter, authority: RuntimeRunStateAuthority<'_>) { let begin = windows_runtime::start_windows_runtime; let _ = begin(writer, authority); }",
+    "windowsRuntimeSource",
+    "/// Starts the dormant Windows composite from an already-held exclusive OS",
+    "fn forbidden_external_effect_caller(_: crate::key_agent_service::windows_lifecycle::effects::WindowsLifecycleEffectAuthority) {}\n\n/// Starts the dormant Windows composite from an already-held exclusive OS",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "platformService",
@@ -17292,104 +17909,288 @@ const keyAgentServicePhaseTwoGSemanticMutationProbes = [
     "#[cfg(windows)]\n#[allow(dead_code)]\nmod windows_lifecycle;\n#[cfg(windows)]\nfn forbidden_lifecycle_caller(writer: run_state_root::HeldServiceRunStateWriter, authority: durable_run_state::RuntimeRunStateAuthority<'_>) { let _ = windows_lifecycle::begin_windows_lifecycle(writer, authority); }",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
-    "platformService",
-    "#[cfg(windows)]\n#[allow(dead_code)]\nmod windows_lifecycle;",
-    "#[cfg(windows)]\n#[allow(dead_code)]\nmod windows_lifecycle;\n#[cfg(windows)]\nfn forbidden_lifecycle_alias(writer: run_state_root::HeldServiceRunStateWriter, authority: durable_run_state::RuntimeRunStateAuthority<'_>) { let begin = windows_lifecycle::begin_windows_lifecycle; let _ = begin(writer, authority); }",
+    "windowsLifecycleSource",
+    "    authority: RuntimeRunStateAuthority<'_>,\n) -> Result<WindowsStartupAttempt<'_>, WindowsLifecycleExitRequired<'_>> {",
+    "    authority: RuntimeRunStateAuthority<'_>,\n    effects: WindowsLifecycleEffectAuthority,\n) -> Result<WindowsStartupAttempt<'_>, WindowsLifecycleExitRequired<'_>> {",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "windowsLifecycleSource",
-    "    Startup(StartupFailure),",
-    "    Startup(RecoveryRequired),",
+    "pub(super) struct WindowsStartupAttempt<'provider> {\n    checklist: StartupChecklist,\n    windows: WindowsBootEvidence<'provider>,\n}",
+    "pub(super) struct WindowsStartupAttempt<'provider> {\n    checklist: StartupChecklist,\n    windows: WindowsBootEvidence<'provider>,\n    effects: WindowsLifecycleEffectAuthority,\n}",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
-    "lifecycleSource",
-    "    DuplicateObservation(NoSecretStartupRequirement),\n}",
-    "    DuplicateObservation(NoSecretStartupRequirement),\n    Durable(RecoveryRequired),\n}",
+    "windowsLifecycleEffectsSource",
+    "enum SealedWindowsLifecycleEffectBackend {\n    #[cfg(test)]\n    Fixture(FixtureWindowsLifecycleEffectBackend),",
+    "enum SealedWindowsLifecycleEffectBackend {\n    Fixture(FixtureWindowsLifecycleEffectBackend),",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
-    "lifecycleSource",
-    "    CleanupIncomplete,\n}\n\nimpl From<RuntimePolicyFailure>",
-    "    CleanupIncomplete,\n    Durable(RecoveryRequired),\n}\n\nimpl From<RuntimePolicyFailure>",
+    "windowsLifecycleEffectsSource",
+    "    Unavailable(Infallible),",
+    "    Unavailable(()),",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "macro_rules! effect_state {",
+    "fn hidden_production_effect_source() -> WindowsLifecycleEffectAuthority { loop {} }\n\nmacro_rules! effect_state {",
+  ),
+  mutateKeyAgentServicePhaseTwoGReplacements(
+    "windowsLifecycleEffectsSource",
+    [
+      ["receipt.binding != self.binding", "false"],
+      [
+        "impl fmt::Debug for EffectCore {",
+        "#[cfg(test)]\nfn receipt_contract_decoy(receipt: EffectReceipt, purpose: EffectPurpose, mut core: EffectCore, next: NonZeroU64) {\n    if receipt.binding != core.binding {}\n    let _ = receipt.attempt != core.next_attempt;\n    let _ = receipt.purpose != purpose;\n    let _ = core.next_attempt.get().checked_add(1).and_then(NonZeroU64::new);\n    let _ = core.fail(purpose, WindowsLifecycleEffectDisposition::InvalidReceipt);\n    core.next_attempt = next;\n}\n\nimpl fmt::Debug for EffectCore {",
+      ],
+    ],
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "receipt.attempt != self.next_attempt",
+    "false",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "receipt.purpose != purpose",
+    "false",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "self\n                    .next_attempt\n                    .get()\n                    .checked_add(1)",
+    "self\n                    .next_attempt\n                    .get()\n                    .saturating_add(1)",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "    pub(super) fn from_attempt_exhaustion_fixture()\n    -> Result<Self, WindowsLifecycleEffectFixtureError> {\n        Ok(Self {",
+    "    pub(super) fn from_attempt_exhaustion_fixture()\n    -> Result<Self, WindowsLifecycleEffectFixtureError> {\n        loop {}\n        Ok(Self {",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "#[cfg(test)]\n#[derive(Clone, Copy, Eq, PartialEq)]\npub(super) struct WindowsLifecycleEffectBindingWitness",
+    "#[derive(Clone, Copy, Eq, PartialEq)]\npub(super) struct WindowsLifecycleEffectBindingWitness",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "    #[cfg(test)]\n    pub(super) fn from_attempt_exhaustion_fixture()",
+    "    pub(super) fn from_attempt_exhaustion_fixture()",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "    #[cfg(test)]\n    pub(super) const fn binding_witness_for_test",
+    "    pub(super) const fn binding_witness_for_test",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "    #[cfg(test)]\n    pub(super) fn matches_binding_witness_for_test",
+    "    pub(super) fn matches_binding_witness_for_test",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "    #[cfg(test)]\n    pub(super) const fn retains_authority_for_test",
+    "    pub(super) const fn retains_authority_for_test",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "    ) -> Result<WindowsListenersPreparedEffects, WindowsLifecycleEffectFailure> {\n        self.core",
+    "    ) -> Result<WindowsListenersPreparedEffects, WindowsLifecycleEffectFailure> {\n        loop {}\n        self.core",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "durableSource",
+    "#[cfg(windows)]\nmod windows_runtime;",
+    "#[cfg(windows)]\nmod windows_runtime;\n#[cfg(windows)]\nfn forbidden_durable_effect_caller(_: crate::key_agent_service::windows_lifecycle::effects::WindowsLifecycleEffectAuthority) {}",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "impl WindowsLifecycleEffectFailure {\n    pub(super) const fn cause",
+    "impl WindowsLifecycleEffectFailure {\n    fn retry(self) -> Result<EffectCore, WindowsLifecycleEffectFailure> { self.core.execute(EffectPurpose::PrepareListeners) }\n\n    pub(super) const fn cause",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    ".execute(EffectPurpose::CloseAdmission)",
+    ".execute(EffectPurpose::DrainListeners)",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    ".execute(EffectPurpose::DrainListeners)",
+    ".execute(EffectPurpose::PublishScmStopped)",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "    ) -> Result<WindowsScmStoppedEffectEvidence, WindowsLifecycleEffectFailure> {\n        self.core",
+    "    ) -> Result<WindowsScmStoppedEffectEvidence, WindowsLifecycleEffectFailure> {\n        loop {}\n        self.core",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "windowsLifecycleSource",
-    "                return Err(WindowsLifecycleExitRequired::bound(\n                    WindowsLifecycleCause::Startup(cause),\n                    windows.into_retirement(),\n                ));",
-    "                return Err(WindowsLifecycleExitRequired::bound(\n                    WindowsLifecycleCause::Binding(RecoveryRequired::WindowsBackendFailure),\n                    windows.into_retirement(),\n                ));",
+    "match effects.prepare_listeners() {",
+    "match effects.publish_scm_running() {",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "pub(super) enum WindowsLifecycleTerminalEffects {\n    Unattached,\n    Attached(WindowsLifecycleAttachedTerminalEffects),\n}",
+    "pub(super) enum WindowsLifecycleTerminalEffects {\n    Unattached,\n    Lost,\n    Attached(WindowsLifecycleAttachedTerminalEffects),\n}",
+  ),
+  mutateKeyAgentServicePhaseTwoGScopedReplacement(
+    "windowsLifecycleSource",
+    "impl<'provider> WindowsAdmissionPending<'provider> {",
+    "impl fmt::Debug for WindowsAdmissionPending<'_> {",
+    "    pub(super) fn abort(self, cause: LifecycleError) -> WindowsLifecycleExitRequired<'provider> {\n        WindowsLifecycleExitRequired::bound(",
+    "    pub(super) fn abort(self, cause: LifecycleError) -> WindowsLifecycleExitRequired<'provider> {\n        return self.abort(cause);\n        WindowsLifecycleExitRequired::bound(",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "windowsLifecycleSource",
-    "            WindowsActiveReloadOutcome::Boot(windows) => {\n                WindowsLifecycleActiveReloadOutcome::Revalidate(WindowsStartupAttempt {\n                    checklist: StartupChecklist::new(),",
-    "            WindowsActiveReloadOutcome::Boot(windows) => {\n                WindowsLifecycleActiveReloadOutcome::Revalidate(WindowsStartupAttempt {\n                    checklist: StartupChecklist::from_completed_forbidden(checklist),",
+    "match effects.close_admission() {",
+    "match effects.drain_listeners() {",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "windowsLifecycleSource",
-    "            WindowsActiveReloadOutcome::Active(windows) => {\n                WindowsLifecycleActiveReloadOutcome::ListenerPending(WindowsListenerPending {\n                    policy: checklist.begin_listener_startup(),",
-    "            WindowsActiveReloadOutcome::Active(windows) => {\n                WindowsLifecycleActiveReloadOutcome::ListenerPending(WindowsListenerPending {\n                    policy: StartupChecklist::new().finish().unwrap().begin_listener_startup(),",
-  ),
-  mutateKeyAgentServicePhaseTwoGInput(
-    "lifecycleSource",
-    "    pub(super) fn record_listeners_prepared(self) -> ScmRunningPendingPolicy {\n        ScmRunningPendingPolicy {\n            checklist: self.checklist,\n        }\n    }",
-    "    pub(super) fn record_listeners_prepared(self) -> ScmRunningPendingPolicy {\n        unreachable!(\"listener ordering skipped\")\n    }",
+    "if let Err(cause) = self.policy.begin_stop(reason) {",
+    "if let Err(cause) = self.policy.crash_forbidden(reason) {",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "windowsLifecycleSource",
-    "        self.policy.admit_fixture_work(id, session, kind)",
-    "        let _ = (id, session, kind);\n        Ok(())",
+    ".complete_cleanup_step(CleanupStep::RejectNewWork)",
+    ".complete_cleanup_step(CleanupStep::CancelRequests)",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "windowsLifecycleSource",
-    "        self.policy.retain_user_token(session)",
-    "        let _ = session;\n        Ok(())",
+    ".complete_cleanup_step(CleanupStep::InvalidateNonDurableAuthority)",
+    ".complete_cleanup_step(CleanupStep::CancelRequests)",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "windowsLifecycleSource",
-    "        self.policy.handle_session_event(event)",
-    "        let _ = event;\n        unreachable!(\"session policy bypassed\")",
+    "let effects = match effects.drain_listeners() {",
+    "let effects = match effects.publish_scm_stopped() {",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "windowsLifecycleSource",
-    "        self.policy.complete_cleanup_step(step)",
-    "        let _ = step;\n        Ok(())",
-  ),
-  mutateKeyAgentServicePhaseTwoGInput(
-    "lifecycleSource",
-    "        if !self.work.is_empty()\n            || !self.user_token_sessions.is_empty()\n            || !self.invalid_sessions.is_empty()",
-    "        if false\n            || !self.user_token_sessions.is_empty()\n            || !self.invalid_sessions.is_empty()",
-  ),
-  mutateKeyAgentServicePhaseTwoGInput(
-    "lifecycleSource",
-    "        if !self.work.is_empty()\n            || !self.user_token_sessions.is_empty()\n            || !self.invalid_sessions.is_empty()",
-    "        if !self.work.is_empty()\n            || false\n            || !self.invalid_sessions.is_empty()",
-  ),
-  mutateKeyAgentServicePhaseTwoGInput(
-    "lifecycleSource",
-    "        if !self.work.is_empty()\n            || !self.user_token_sessions.is_empty()\n            || !self.invalid_sessions.is_empty()",
-    "        if !self.work.is_empty()\n            || !self.user_token_sessions.is_empty()\n            || false",
-  ),
-  mutateKeyAgentServicePhaseTwoGInput(
-    "lifecycleSource",
-    "self.expected_cleanup_step() != Some(CleanupStep::CommitAndRereadCleanMarker)",
-    "self.expected_cleanup_step() != Some(CleanupStep::ReleaseSingleInstanceLease)",
+    "policy.complete_cleanup_step(CleanupStep::CloseAndDrainListeners)",
+    "policy.complete_cleanup_step(CleanupStep::CancelRequests)",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "windowsLifecycleSource",
-    "            WindowsCleanCommitOutcome::Clean(windows) => {\n                WindowsLifecycleCleanCommitOutcome::ReleasePending(WindowsCleanReleasePending {\n                    policy: policy.record_clean_committed(),",
-    "            WindowsCleanCommitOutcome::Clean(windows) => {\n                WindowsLifecycleCleanCommitOutcome::ReleasePending(WindowsCleanReleasePending {\n                    policy: policy.forbidden_skip_clean_record(),",
+    "impl<'provider> WindowsRemainingCleanup<'provider> {\n    pub(super) fn expected_cleanup_step",
+    "impl<'provider> WindowsRemainingCleanup<'provider> {\n    fn advance_cleanup(&mut self, step: CleanupStep) -> Result<(), LifecycleError> { RuntimePolicy::complete_cleanup_step(&mut self.policy, step) }\n\n    pub(super) fn expected_cleanup_step",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "windowsLifecycleSource",
-    "                policy: policy.record_writer_released(),",
-    "                policy: policy.forbidden_skip_writer_release(),",
+    "    ) -> Result<(), StartupFailure> {\n        self.checklist.observe(requirement, observation)",
+    "    ) -> Result<(), StartupFailure> {\n        loop {}\n        self.checklist.observe(requirement, observation)",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "windowsLifecycleSource",
-    "WindowsLifecycleIrreversibleExit78::released_no_receipt(failure)",
-    "WindowsLifecycleIrreversibleExit78::post_release(failure)",
+    "    pub(super) fn release_writer(self) -> WindowsLifecycleWriterReleaseOutcome<'provider> {\n        let Self {",
+    "    pub(super) fn release_writer(self) -> WindowsLifecycleWriterReleaseOutcome<'provider> {\n        loop {}\n        let Self {",
+  ),
+  mutateKeyAgentServicePhaseTwoGScopedReplacement(
+    "windowsLifecycleSource",
+    "impl<'provider> WindowsScmRunningPending<'provider> {",
+    "impl fmt::Debug for WindowsScmRunningPending<'_> {",
+    "    pub(super) fn abort(self, cause: LifecycleError) -> WindowsLifecycleExitRequired<'provider> {\n        WindowsLifecycleExitRequired::bound(",
+    "    pub(super) fn abort(self, cause: LifecycleError) -> WindowsLifecycleExitRequired<'provider> {\n        loop {}\n        WindowsLifecycleExitRequired::bound(",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "windowsLifecycleSource",
-    "WindowsLifecycleIrreversibleExit78::post_release(failure)",
-    "WindowsLifecycleIrreversibleExit78::released_no_receipt(failure)",
+    "pub(super) struct WindowsRemainingCleanup<'provider> {\n    policy: RuntimePolicy,\n    windows: WindowsActiveRunLease<'provider>,\n    effects: WindowsListenersDrainedEffects,\n}",
+    "pub(super) struct WindowsRemainingCleanup<'provider> {\n    policy: RuntimePolicy,\n    windows: WindowsActiveRunLease<'provider>,\n    effects: WindowsAdmissionClosedEffects,\n}",
+  ),
+  mutateKeyAgentServicePhaseTwoGReplacements(
+    "windowsLifecycleSource",
+    [
+      [
+        "WindowsLifecycleCause::Startup(cause),\n            self.windows.into_retirement(),\n            WindowsLifecycleTerminalEffects::unattached(),",
+        "WindowsLifecycleCause::Startup(cause),\n            self.windows.into_retirement(),\n            WindowsLifecycleTerminalEffects::Unattached,",
+      ],
+      [
+        "    fn into_exit(self, cause: LifecycleError) -> WindowsLifecycleExitRequired<'provider> {\n        WindowsLifecycleExitRequired::bound(\n            WindowsLifecycleCause::Lifecycle(cause),\n            self.windows.into_retirement(),\n            self.effects.into_terminal(),\n        )\n    }",
+        "    fn into_exit(self, cause: LifecycleError) -> WindowsLifecycleExitRequired<'provider> {\n        WindowsLifecycleExitRequired::bound(\n            WindowsLifecycleCause::Lifecycle(cause),\n            self.windows.into_retirement(),\n            WindowsLifecycleTerminalEffects::unattached(),\n        )\n    }",
+      ],
+    ],
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "    fn into_terminal(self) -> WindowsLifecycleTerminalEffects {\n        WindowsLifecycleTerminalEffects::Attached(WindowsLifecycleAttachedTerminalEffects {\n            cause: None,\n            core: self,\n        })\n    }",
+    "    fn into_terminal(self) -> WindowsLifecycleTerminalEffects {\n        let _ = self;\n        WindowsLifecycleTerminalEffects::Unattached\n    }",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "WindowsLifecycleWriterReleaseOutcome::ScmStopPending(WindowsScmStopPending {",
+    "WindowsLifecycleWriterReleaseOutcome::ExitRequired(WindowsScmStopPending {",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "pub(super) struct WindowsScmStopPending<'provider> {\n    policy: StoppedRuntimePolicy,\n    windows: WindowsStoppedRunEvidence<'provider>,\n    effects: WindowsListenersDrainedEffects,\n}",
+    "pub(super) struct WindowsScmStopPending<'provider> {\n    policy: StoppedRuntimePolicy,\n    windows: WindowsStoppedRunEvidence<'provider>,\n    _effects: WindowsListenersDrainedEffects,\n}",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "    pub(super) fn publish_scm_stopped(self) -> WindowsLifecycleScmStopOutcome<'provider> {\n        let Self {",
+    "    pub(super) fn publish_scm_stopped(self) -> WindowsLifecycleScmStopOutcome<'provider> {\n        loop {}\n        let Self {",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "Err(effects) => WindowsLifecycleScmStopOutcome::IrreversibleExit78(",
+    "Ok(effects) => WindowsLifecycleScmStopOutcome::IrreversibleExit78(",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "struct WindowsPostWriterReleaseScmStopFailure<'provider> {\n    windows: WindowsStoppedRunEvidence<'provider>,",
+    "struct WindowsPostWriterReleaseScmStopFailure<'provider> {\n    _windows: WindowsStoppedRunEvidence<'provider>,",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "    effects: WindowsLifecycleEffectFailure,\n}\n\nimpl WindowsPostWriterReleaseScmStopFailure",
+    "    _effects: WindowsLifecycleEffectFailure,\n}\n\nimpl WindowsPostWriterReleaseScmStopFailure",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "        self.core.binding == witness.0",
+    "        true",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "        self.core.binding.0.get() != 0",
+    "        false",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    "    fn post_writer_release_effect_binding_matches_for_test(\n        &self,\n        witness: effects::WindowsLifecycleEffectBindingWitness,\n    ) -> bool {\n        match &self.authority {",
+    "    fn post_writer_release_effect_binding_matches_for_test(\n        &self,\n        witness: effects::WindowsLifecycleEffectBindingWitness,\n    ) -> bool {\n        loop {}\n        match &self.authority {",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleTests",
+    "fn assert_exhausted_effect_attempt_is_terminal() -> TestResult {\n    let (fixture, _installation, mut provider)",
+    "fn assert_exhausted_effect_attempt_is_terminal() -> TestResult {\n    loop {}\n    let (fixture, _installation, mut provider)",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleSource",
+    ") -> WindowsLifecycleWriterReleaseOutcome<'_> {\n    match outcome {",
+    ") -> WindowsLifecycleWriterReleaseOutcome<'_> {\n    loop {}\n    match outcome {",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "        pub(super) struct $name {",
+    "        #[derive(Clone)]\n        pub(super) struct $name {",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "#[cfg(test)]\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub(super) enum WindowsLifecycleEffectFixtureError",
+    "unsafe fn forbidden_effect_escape() {}\n\n#[cfg(test)]\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub(super) enum WindowsLifecycleEffectFixtureError",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "#[cfg(test)]\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub(super) enum WindowsLifecycleEffectFixtureError",
+    "pub(super) fn forbidden_effect_erasure(value: WindowsLifecycleEffectAuthority) -> Box<dyn core::any::Any> { Box::new(value) }\n\n#[cfg(test)]\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub(super) enum WindowsLifecycleEffectFixtureError",
+  ),
+  mutateKeyAgentServicePhaseTwoGScopedReplacement(
+    "windowsLifecycleSource",
+    "impl<'provider> WindowsAdmissionPending<'provider> {",
+    "impl fmt::Debug for WindowsAdmissionPending<'_> {",
+    "self.effects.into_terminal()",
+    "{ let unattached = WindowsLifecycleTerminalEffects::unattached; let _ = self.effects; unattached() }",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleTests",
+    "    assert_exhausted_effect_attempt_is_terminal()?;",
+    "    // exhausted attempt evidence removed",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "windowsRuntimeSource",
@@ -17397,54 +18198,24 @@ const keyAgentServicePhaseTwoGSemanticMutationProbes = [
     "    if take_post_release_receipt_fault_for_test() {",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
-    "windowsLifecycleSource",
-    "#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
-    "fn forbidden_erasure(authority: WindowsLifecycleExitAuthority<'_>) -> Box<dyn core::any::Any + '_> { Box::new(authority) }\n\n#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
-  ),
-  mutateKeyAgentServicePhaseTwoGInput(
-    "windowsLifecycleSource",
-    "const WINDOWS_SERVICE_EXIT_CODE: i32 = 78;",
-    "const WINDOWS_SERVICE_EXIT_CODE: i32 = 0;",
-  ),
-  mutateKeyAgentServicePhaseTwoGInput(
-    "windowsLifecycleSource",
-    "#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
-    "fn forbidden_scm_adapter() { let _ = SetServiceStatus; }\n\n#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
-  ),
-  mutateKeyAgentServicePhaseTwoGInput(
-    "windowsLifecycleSource",
-    "    pub(super) const fn cause(&self) -> &WindowsLifecycleIrreversibleCause {",
-    "    fn retry(self) -> Self { self }\n\n    pub(super) const fn cause(&self) -> &WindowsLifecycleIrreversibleCause {",
-  ),
-  mutateKeyAgentServicePhaseTwoGInput(
-    "windowsLifecycleTests",
-    "fn post_release_logical_failure_is_irreversible_exit78_and_never_stopped()",
-    "fn post_release_logical_failure_can_retry_and_stop()",
-  ),
-  mutateKeyAgentServicePhaseTwoGInput(
     "designDocument",
     "**Current Phase 2G status: started, not passed.**",
     "**Current Phase 2G status: passed.**",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
-    "architectureDocument",
-    "| Windows no-secret lifecycle compositor |",
-    "| Windows release-ready lifecycle compositor |",
+    "windowsLifecycleEffectsSource",
+    "        impl fmt::Debug for $name {",
+    "        impl $name { fn retry(self) -> Self { self } }\n\n        impl fmt::Debug for $name {",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
-    "windowsRuntimeSource",
-    "        (self.cause, self.retirement)",
-    "        (WindowsTerminalCause::new(RecoveryRequired::WindowsBackendFailure, None), self.retirement)",
+    "windowsLifecycleEffectsSource",
+    "enum EffectPurpose {\n    PrepareListeners,\n    PublishScmRunning,\n    OpenAdmission,\n    CloseAdmission,\n    DrainListeners,\n    PublishScmStopped,\n}",
+    "enum EffectPurpose {\n    PrepareListeners,\n    PublishScmRunning,\n    OpenAdmission,\n    CloseAdmission,\n    DrainListeners,\n    PublishScmStopped,\n    ForbiddenSeventh,\n}",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
-    "windowsLifecycleSource",
-    "            WindowsCleanReloadOutcome::Terminal(failure) => {\n                WindowsLifecycleCleanReloadOutcome::ExitRequired(",
-    "            WindowsCleanReloadOutcome::Terminal(failure) => {\n                let _forged_release = policy.record_clean_committed();\n                WindowsLifecycleCleanReloadOutcome::ExitRequired(",
-  ),
-  mutateKeyAgentServicePhaseTwoGInput(
-    "windowsLifecycleSource",
-    "        WindowsStopOutcome::ReleasedNoReceipt(failure) => {\n            WindowsLifecycleStopOutcome::IrreversibleExit78(",
-    "        WindowsStopOutcome::ReleasedNoReceipt(failure) => {\n            let _forged_stopped = policy.record_writer_released();\n            WindowsLifecycleStopOutcome::IrreversibleExit78(",
+    "windowsLifecycleEffectsSource",
+    "pub(in crate::key_agent_service) enum WindowsLifecycleEffectStage {\n    PrepareListeners,\n    PublishScmRunning,\n    OpenAdmission,\n    CloseAdmission,\n    DrainListeners,\n    PublishScmStopped,\n}",
+    "pub(in crate::key_agent_service) enum WindowsLifecycleEffectStage {\n    PrepareListeners,\n    PublishScmRunning,\n    OpenAdmission,\n    CloseAdmission,\n    DrainListeners,\n    PublishScmStopped,\n    ForbiddenSeventh,\n}",
   ),
 ];
 const keyAgentServicePhaseTwoGPinMutationProbes = [
@@ -17457,6 +18228,16 @@ const keyAgentServicePhaseTwoGPinMutationProbes = [
     "windowsLifecycleSource",
     "#[cfg(test)]\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
     "#[cfg(test)]\n// mutated test-only sibling\n#[path = \"windows_lifecycle_tests.rs\"]\nmod tests;",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "//! Sealed local effects for the dormant Windows lifecycle compositor.",
+    "//! Sealed local effects for the dormant Windows lifecycle compositor (mutated).",
+  ),
+  mutateKeyAgentServicePhaseTwoGInput(
+    "windowsLifecycleEffectsSource",
+    "#[cfg(test)]\n#[derive(Clone, Copy, Eq, PartialEq)]\npub(super) struct WindowsLifecycleEffectBindingWitness",
+    "#[cfg(test)]\n// mutated test-only binding witness\n#[derive(Clone, Copy, Eq, PartialEq)]\npub(super) struct WindowsLifecycleEffectBindingWitness",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "windowsLifecycleTests",
@@ -17767,16 +18548,16 @@ requireInvariant(
 requireInvariant(
   keyAgentServicePhaseTwoH2MutationContract &&
     keyAgentServicePhaseTwoGSemanticBaseResult &&
-    keyAgentServicePhaseTwoGSemanticMutationProbes.length === 39 &&
+    keyAgentServicePhaseTwoGSemanticMutationProbes.length === 65 &&
     keyAgentServicePhaseTwoGSemanticMutationResults.every(
       ({ changed, rejected }) => changed && rejected,
     ) &&
     keyAgentServicePhaseTwoGPinBaseResult &&
-    keyAgentServicePhaseTwoGPinMutationProbes.length === 3 &&
+    keyAgentServicePhaseTwoGPinMutationProbes.length === 5 &&
     keyAgentServicePhaseTwoGPinMutationResults.every(
       ({ changed, rejected }) => changed && rejected,
     ),
-  `the separate Phase 2G dormant Windows no-secret lifecycle compositor must preserve exact private type/function/facade surfaces, its sole direct internal Phase 2F-c caller edge and zero top-level caller, authority-only entry, cause-neutral checked retirement, direct before-writer authority retention without writer-retirement overclaim, fresh-versus-carried Active checklist authority, listener-to-SCM-to-admission ordering, RuntimePolicy-only bounds and cleanup, exact Clean/reload/release/stopped classification, irreversible silent-78 evidence with hidden authority, test-only post-release fault isolation, safe move-only redacted authority, fixed 21-core/12-compositor/14-runtime/7-Windows-provisioning/2-authentication/88-durable/56-root inventories, explicit external STOP-SHIP limits, disabled policies, no release-readiness claim, 39 independently effective Phase 2G semantic mutations, 40 shared H2 authority mutations, and three full/production/test source-pin mutations; semantic base=${keyAgentServicePhaseTwoGSemanticBaseResult}, H2 base=${keyAgentServicePhaseTwoH2SemanticBaseResult}, pin base=${keyAgentServicePhaseTwoGPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoGSemanticMutationProbes.length}, H2 probe count=${keyAgentServicePhaseTwoH2SemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, failed H2 probes=${JSON.stringify(keyAgentServicePhaseTwoH2SemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index, name }) => ({ index, name })))}, pin probe count=${keyAgentServicePhaseTwoGPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
+  `the separate Phase 2G dormant Windows no-secret lifecycle compositor must preserve the exact private lifecycle/effects type and function inventories, the sole direct Phase 2F-c start edge, zero external start/begin/effect-authority callers, and the two-argument begin entry with effects attached only after exact Active; keep the production effect backend uninhabited with zero constructor/source/caller while projecting every fixture, binding-witness, exhaustion, and accessor surface out of production; bind each of six one-shot receipts to the opaque lifecycle binding, nonzero checked attempt, and exact purpose; reject duplicate, cross-bound, wrong-purpose, and exhausted attempts; preserve effect-before-policy startup, admission-close then begin-stop/reject/invalidate/effect-drain/fixed-cleanup ordering without a generic cleanup delegate; carry effect authority through every durable terminal class; require writer release to produce WindowsScmStopPending and preserve both WindowsStoppedRunEvidence and the exact effect failure on SCM_STOPPED failure; retain test-only post-release fault isolation, safe move-only redacted authority, fixed 21-core/22-compositor/14-runtime/7-Windows-provisioning/2-authentication/88-durable/56-root inventories, exact documentation limits, external STOP-SHIP obligations, disabled policies, and no release-readiness claim; enforce 65 independently effective Phase 2G semantic mutations, 40 shared H2 authority mutations, and five lifecycle/effects full-versus-production plus compositor-test source-pin mutations; semantic base=${keyAgentServicePhaseTwoGSemanticBaseResult}, H2 base=${keyAgentServicePhaseTwoH2SemanticBaseResult}, pin base=${keyAgentServicePhaseTwoGPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoGSemanticMutationProbes.length}, H2 probe count=${keyAgentServicePhaseTwoH2SemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, failed H2 probes=${JSON.stringify(keyAgentServicePhaseTwoH2SemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index, name }) => ({ index, name })))}, pin probe count=${keyAgentServicePhaseTwoGPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
 );
 requireInvariant(
   keyAgentServicePhaseTwoEPinBaseResult &&
@@ -27183,14 +27964,14 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate has two deliberately different surfaces.",
-    sha256: "459deb6caca1066e72f8f55844c59fd7c0943c2b739903af62a80e831f814200",
+    sha256: "a4cda6f37385a3d131cc64120ffab8dc4adcd2af304429f452feaf7ded6bbd86",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes a safe platform-neutral gate-byte",
-    sha256: "9258e8d1f39476a8821b5305e884eb4b7e555d1b4e23184a7a63d2283b606cb6",
+    sha256: "bee6676776abec796dfe85f9b6e60f0a507343db2ad09382a9f290d8542cf743",
   },
   {
     path: "docs/security-decisions.md",
@@ -35207,13 +35988,28 @@ const keyAgentServiceWindowsLifecycleTestOnlyExternalModuleSpec = Object.freeze(
   targetPath:
     "crates/platform-windows/src/key_agent_service/windows_lifecycle_tests.rs",
 });
+const keyAgentServiceWindowsLifecycleEffectsProductionModuleSpec = Object.freeze({
+  parentPath:
+    "crates/platform-windows/src/key_agent_service/windows_lifecycle.rs",
+  moduleName: "effects",
+  relativePath: "windows_lifecycle_effects.rs",
+  targetPath:
+    "crates/platform-windows/src/key_agent_service/windows_lifecycle_effects.rs",
+});
 const keyAgentServicePhaseTwoFBProductionCandidate = (file) =>
   file.path === keyAgentServiceRunStateRootSysPath
     ? {
         ...file,
         source: keyAgentServicePhaseTwoFBProductionPartition(file.source),
       }
-    : file;
+    : file.path === keyAgentServiceWindowsLifecycleEffectsPath
+      ? {
+          ...file,
+          source:
+            keyAgentServicePhaseTwoGEffectsProductionPartition(file.source) ??
+            file.source,
+        }
+      : file;
 const platformWindowsProductionCandidates = (
   await rustProductionSources("crates/platform-windows/src", {
     withoutInlineTests: true,
@@ -36034,6 +36830,225 @@ requireInvariant(
     ),
   "the exact cfg(test)-plus-path Windows lifecycle tests module must be the target's sole resolved cooked-path, raw-path, cfg-attr-path, default-file, or cross-workspace inbound edge across production candidates before that file is excluded from production inventories, with unparsed path-bearing attributes closed and twelve effective relationship mutations",
 );
+const keyAgentServiceWindowsLifecycleEffectsProductionModuleContract = ({
+  parentSource,
+  targetSource,
+  platformCandidates,
+  workspaceCandidates,
+  spec,
+  expectedSpec,
+}) => {
+  if (JSON.stringify(spec) !== JSON.stringify(expectedSpec)) return false;
+  const escapedModule = spec.moduleName.replace(
+    /[.*+?^${}()|[\]\\]/gu,
+    "\\$&",
+  );
+  const moduleMatches = rustModuleDeclarations(parentSource).filter(
+    ({ name }) => name === spec.moduleName,
+  );
+  if (moduleMatches.length !== 1) return false;
+  const attachedAttributes = rustAttachedOuterAttributes(
+    parentSource,
+    moduleMatches[0].index,
+  ).map((attribute) => attribute.source.replace(/\s+/gu, ""));
+  const productionParent = withoutCfgTestItems(parentSource);
+  const productionTarget = keyAgentServicePhaseTwoGEffectsProductionPartition(
+    targetSource,
+  );
+  if (productionTarget === null) return false;
+  const resolvedTargetPath = relative(
+    root,
+    resolve(root, dirname(spec.parentPath), spec.relativePath),
+  ).replaceAll("\\", "/");
+  const exactCandidate = (candidates, path) =>
+    candidates.filter((candidate) => candidate.path === path);
+  const platformParents = exactCandidate(platformCandidates, spec.parentPath);
+  const platformTargets = exactCandidate(platformCandidates, spec.targetPath);
+  const workspaceParents = exactCandidate(workspaceCandidates, spec.parentPath);
+  const workspaceTargets = exactCandidate(workspaceCandidates, spec.targetPath);
+  if (
+    JSON.stringify(attachedAttributes) !==
+      JSON.stringify([`#[path="${spec.relativePath}"]`]) ||
+    resolvedTargetPath !== spec.targetPath ||
+    !new RegExp(`\\bmod\\s+${escapedModule}\\s*;`, "u").test(
+      rustLexicalCode(productionParent),
+    ) ||
+    platformParents.length !== 1 ||
+    platformParents[0].source !== productionParent ||
+    platformTargets.length !== 1 ||
+    platformTargets[0].source !== productionTarget ||
+    workspaceParents.length !== 1 ||
+    workspaceParents[0].source !== productionParent ||
+    workspaceTargets.length !== 1 ||
+    workspaceTargets[0].source !== productionTarget
+  ) {
+    return false;
+  }
+  const expectedInboundEdge = {
+    declaringFile: spec.parentPath,
+    module: spec.moduleName,
+    resolution: "path",
+    literal: spec.relativePath,
+    resolvedTarget: spec.targetPath,
+    attributes: [`#[path="${spec.relativePath}"]`],
+  };
+  return (
+    JSON.stringify(
+      keyAgentServiceResolvedModuleInboundEdges(
+        platformCandidates,
+        spec.targetPath,
+      ),
+    ) === JSON.stringify([expectedInboundEdge]) &&
+    JSON.stringify(
+      keyAgentServiceResolvedModuleInboundEdges(
+        workspaceCandidates,
+        spec.targetPath,
+      ),
+    ) === JSON.stringify([expectedInboundEdge])
+  );
+};
+const keyAgentServiceWindowsLifecycleEffectsProductionModuleInputs =
+  Object.freeze({
+    parentSource: keyAgentServiceWindowsLifecycle,
+    targetSource: keyAgentServiceWindowsLifecycleEffects,
+    platformCandidates: platformWindowsProductionCandidates,
+    workspaceCandidates: workspaceRustProductionCandidates,
+    spec: keyAgentServiceWindowsLifecycleEffectsProductionModuleSpec,
+    expectedSpec: keyAgentServiceWindowsLifecycleEffectsProductionModuleSpec,
+  });
+const mutateKeyAgentServiceWindowsLifecycleEffectsProductionModuleInput = (
+  field,
+  value,
+) => ({
+  ...keyAgentServiceWindowsLifecycleEffectsProductionModuleInputs,
+  [field]: value,
+});
+const keyAgentServiceWindowsLifecycleEffectsProductionModuleMutationProbes = [
+  mutateKeyAgentServiceWindowsLifecycleEffectsProductionModuleInput(
+    "parentSource",
+    keyAgentServiceWindowsLifecycle.replace(
+      '#[path = "windows_lifecycle_effects.rs"]',
+      '#[cfg(test)]\n#[path = "windows_lifecycle_effects.rs"]',
+    ),
+  ),
+  mutateKeyAgentServiceWindowsLifecycleEffectsProductionModuleInput(
+    "parentSource",
+    keyAgentServiceWindowsLifecycle.replace(
+      '#[path = "windows_lifecycle_effects.rs"]',
+      '#[path = "hidden_windows_lifecycle_effects.rs"]',
+    ),
+  ),
+  mutateKeyAgentServiceWindowsLifecycleEffectsProductionModuleInput(
+    "parentSource",
+    keyAgentServiceWindowsLifecycle.replace(
+      "pub(super) mod effects;",
+      "pub(super) mod hidden_effects;",
+    ),
+  ),
+  mutateKeyAgentServiceWindowsLifecycleEffectsProductionModuleInput(
+    "targetSource",
+    `${keyAgentServiceWindowsLifecycleEffects}\n// hidden production child mutation\n`,
+  ),
+  mutateKeyAgentServiceWindowsLifecycleEffectsProductionModuleInput("spec", {
+    ...keyAgentServiceWindowsLifecycleEffectsProductionModuleSpec,
+    targetPath:
+      "crates/platform-windows/src/key_agent_service/hidden_windows_lifecycle_effects.rs",
+  }),
+  mutateKeyAgentServiceWindowsLifecycleEffectsProductionModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path ===
+      keyAgentServiceWindowsLifecycleEffectsProductionModuleSpec.targetPath
+        ? { ...candidate, source: `${candidate.source}\n// candidate mutation\n` }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceWindowsLifecycleEffectsProductionModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path === "crates/platform-windows/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[path = "key_agent_service/windows_lifecycle_effects.rs"]\nmod windows_lifecycle_effects_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceWindowsLifecycleEffectsProductionModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path === "crates/platform-windows/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[path = r#"key_agent_service/windows_lifecycle_effects.rs"#]\nmod raw_windows_lifecycle_effects_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceWindowsLifecycleEffectsProductionModuleInput(
+    "workspaceCandidates",
+    workspaceRustProductionCandidates.map((candidate) =>
+      candidate.path === "crates/approval-ui/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[path = "../../platform-windows/src/key_agent_service/windows_lifecycle_effects.rs"]\nmod cross_crate_windows_lifecycle_effects_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceWindowsLifecycleEffectsProductionModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path === "crates/platform-windows/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[path = concat!("key_agent_service/", "windows_lifecycle_effects.rs")]\nmod unparsed_windows_lifecycle_effects_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceWindowsLifecycleEffectsProductionModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path === "crates/platform-windows/src/key_agent_service.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\nmod windows_lifecycle_effects;\n`,
+          }
+        : candidate,
+    ),
+  ),
+  mutateKeyAgentServiceWindowsLifecycleEffectsProductionModuleInput(
+    "platformCandidates",
+    platformWindowsProductionCandidates.map((candidate) =>
+      candidate.path === "crates/platform-windows/src/lib.rs"
+        ? {
+            ...candidate,
+            source: `${candidate.source}\n#[cfg_attr(windows, path = "key_agent_service/windows_lifecycle_effects.rs")]\nmod conditional_windows_lifecycle_effects_alias;\n`,
+          }
+        : candidate,
+    ),
+  ),
+];
+requireInvariant(
+  keyAgentServiceWindowsLifecycleEffectsProductionModuleContract(
+    keyAgentServiceWindowsLifecycleEffectsProductionModuleInputs,
+  ) &&
+    keyAgentServiceWindowsLifecycleEffectsProductionModuleMutationProbes.length ===
+      12 &&
+    keyAgentServiceWindowsLifecycleEffectsProductionModuleMutationProbes.every(
+      (probe) =>
+        Object.keys(
+          keyAgentServiceWindowsLifecycleEffectsProductionModuleInputs,
+        ).some(
+          (field) =>
+            probe[field] !==
+            keyAgentServiceWindowsLifecycleEffectsProductionModuleInputs[field],
+        ) &&
+        !keyAgentServiceWindowsLifecycleEffectsProductionModuleContract(probe),
+    ),
+  "the exact path-bound Windows lifecycle effects production child must retain its sole parent and sole platform/workspace inbound edge, use the dedicated cfg(test)-aware production projection, and reject twelve effective relationship mutations",
+);
 const platformWindowsTestOnlyExternalSourcePathSet = new Set([
   keyAgentServiceProvisioningTestOnlyExternalModuleSpec.targetPath,
   keyAgentServiceRunStateRootTestOnlyExternalModuleSpec.targetPath,
@@ -36111,7 +37126,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "c4a444cd4c752b96f280d0c8cc83eb1b9d5d383d7489f139c4a8129ebd3fe7cc";
+  "d3e8478d3c83990634f856d1a8241b2d2cec9771f9b53182ddf129ad6e4941e0";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -37480,6 +38495,10 @@ const approvedWorkspacePathAttributes = [
   {
     path: "crates/platform-windows/src/key_agent_service/lifecycle_core.rs",
     attribute: '#[path = "lifecycle_core_tests.rs"]',
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service/windows_lifecycle.rs",
+    attribute: '#[path = "windows_lifecycle_effects.rs"]',
   },
   {
     path: "crates/platform-windows/src/key_agent_service/windows_lifecycle.rs",
@@ -56853,6 +57872,22 @@ const compactProvisionFreshKeyAgent = compactRust(provisionFreshKeyAgent);
 const platformWindowsMacroRulesDefinitions = platformWindowsProductionFiles
   .filter((file) => /\bmacro_rules\s*!/u.test(rustLexicalCode(file.source)))
   .map((file) => file.path);
+const platformWindowsMacroRulesNameInventory =
+  platformWindowsProductionFiles.flatMap((file) =>
+    [
+      ...rustLexicalCode(file.source).matchAll(
+        /\bmacro_rules\s*!\s*(?<name>(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*)/gu,
+      ),
+    ].map((match) => ({
+      path: file.path,
+      name: match.groups.name.replace(/^r#/u, ""),
+    })),
+  );
+const platformWindowsLifecycleEffectStateMacroInvocations = [
+  ...rustLexicalCode(keyAgentServiceWindowsLifecycleEffectsProduction).matchAll(
+    /\beffect_state\s*!\s*[([{]\s*(?<name>(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*)/gu,
+  ),
+].map(({ groups }) => groups.name.replace(/^r#/u, ""));
 const platformWindowsMacroItemDefinitions = platformWindowsProductionFiles
   .filter((file) =>
     /\bmacro\s+(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*/u.test(
@@ -57830,7 +58865,17 @@ requireInvariant(
   "Pending authority references, crate-visible generic callables, raw ownership sites, and unsafe-bearing production sources must remain exact while supervisor code stays safe-only",
 );
 requireInvariant(
-  JSON.stringify(platformWindowsMacroRulesDefinitions) === JSON.stringify([]) &&
+  JSON.stringify(platformWindowsMacroRulesDefinitions) ===
+    JSON.stringify([keyAgentServiceWindowsLifecycleEffectsPath]) &&
+    JSON.stringify(platformWindowsMacroRulesNameInventory) ===
+      JSON.stringify([
+        {
+          path: keyAgentServiceWindowsLifecycleEffectsPath,
+          name: "effect_state",
+        },
+      ]) &&
+    JSON.stringify(platformWindowsLifecycleEffectStateMacroInvocations) ===
+      JSON.stringify(keyAgentServicePhaseTwoGWindowsLifecycleEffectStates) &&
     JSON.stringify(platformWindowsMacroItemDefinitions) ===
       JSON.stringify([]) &&
     JSON.stringify(platformWindowsMacroNamespaceAttributes) ===
@@ -57840,7 +58885,7 @@ requireInvariant(
     JSON.stringify(platformWindowsIncludeMacroTokens) === JSON.stringify([]) &&
     JSON.stringify(keyAgentProvisioningAuthorityMacroInvocations) ===
       JSON.stringify([]),
-  "production Rust must not hide Key Agent provisioning authority behind declarative, include, or authority-bearing function-like macros",
+  "production Rust may contain only the exact private six-state Windows lifecycle effect macro and must not hide Key Agent provisioning authority behind any other declarative, include, or authority-bearing function-like macro",
 );
 requireInvariant(
   JSON.stringify(keyAgentReleaseBindingAuthorityImplHeaders) ===
@@ -57955,6 +59000,17 @@ requireInvariant(
         insideCrateSource: true,
         inProductionInventory: true,
         attributes: ["#[cfg(windows)]", "#[path=]"],
+      },
+      {
+        declaringFile:
+          "crates/platform-windows/src/key_agent_service/windows_lifecycle.rs",
+        module: "effects",
+        literal: "windows_lifecycle_effects.rs",
+        resolvedTarget:
+          "crates/platform-windows/src/key_agent_service/windows_lifecycle_effects.rs",
+        insideCrateSource: true,
+        inProductionInventory: true,
+        attributes: ["#[path=]"],
       },
     ]),
   "production #[path] modules must remain exact, resolve inside platform-windows/src, and be included in the scanned production inventory",
@@ -58202,10 +59258,12 @@ requireInvariant(
       "assert",
       "assert_eq",
       "assert_ne",
+      "concat",
       "core::arch::asm",
       "core::mem::offset_of",
       "debug_assert",
       "debug_assert_eq",
+      "effect_state",
       "format",
       "matches",
       "offset_of",
@@ -65533,7 +66591,7 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "crates/platform-windows/README.md":
     "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
   "docs/architecture.md":
-    "459deb6caca1066e72f8f55844c59fd7c0943c2b739903af62a80e831f814200",
+    "a4cda6f37385a3d131cc64120ffab8dc4adcd2af304429f452feaf7ded6bbd86",
   "docs/protocol-contract.md":
     "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "docs/security-decisions.md":
@@ -71402,7 +72460,7 @@ const currentDebuggerExitDocumentationContract = (documents) =>
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
   "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
-  "459deb6caca1066e72f8f55844c59fd7c0943c2b739903af62a80e831f814200",
+  "a4cda6f37385a3d131cc64120ffab8dc4adcd2af304429f452feaf7ded6bbd86",
   "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "d36a5e3cb2544598cf8e1a97a8ff3a19a1a561dd5161d5cd3369be3fe4716656",
 ]);
@@ -81284,13 +82342,13 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "docs/architecture.md",
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
-    sha256: "459deb6caca1066e72f8f55844c59fd7c0943c2b739903af62a80e831f814200",
+    sha256: "a4cda6f37385a3d131cc64120ffab8dc4adcd2af304429f452feaf7ded6bbd86",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
-    sha256: "9258e8d1f39476a8821b5305e884eb4b7e555d1b4e23184a7a63d2283b606cb6",
+    sha256: "bee6676776abec796dfe85f9b6e60f0a507343db2ad09382a9f290d8542cf743",
   },
   {
     path: "docs/security-decisions.md",
