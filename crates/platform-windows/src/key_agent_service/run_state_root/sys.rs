@@ -118,6 +118,15 @@ const PARENT_ACCESS: u32 =
     SYNCHRONIZE.0 | FILE_LIST_DIRECTORY.0 | FILE_TRAVERSE.0 | FILE_READ_ATTRIBUTES.0;
 const OWNER_RIGHTS_DENY: u32 = WRITE_DAC.0 | WRITE_OWNER.0 | DELETE.0 | FILE_DELETE_CHILD.0;
 const PAIR_OWNER_RIGHTS_DENY: u32 = WRITE_DAC.0 | WRITE_OWNER.0;
+const PAIR_FILE_FORBIDDEN_SHAPE_ATTRIBUTES: u32 = FILE_ATTRIBUTE_DIRECTORY.0
+    | FILE_ATTRIBUTE_READONLY.0
+    | FILE_ATTRIBUTE_SPARSE_FILE.0
+    | FILE_ATTRIBUTE_COMPRESSED.0
+    | FILE_ATTRIBUTE_ENCRYPTED.0;
+
+const fn pair_file_shape_attributes_are_supported(attributes: u32) -> bool {
+    attributes & PAIR_FILE_FORBIDDEN_SHAPE_ATTRIBUTES == 0
+}
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum PairRecordKind {
@@ -210,6 +219,11 @@ pub(super) const fn pair_leaf_names_for_test() -> [&'static str; 4] {
 }
 
 #[cfg(test)]
+pub(super) const fn pair_file_shape_attributes_are_supported_for_test(attributes: u32) -> bool {
+    pair_file_shape_attributes_are_supported(attributes)
+}
+
+#[cfg(test)]
 std::thread_local! {
     static TEST_OPEN_COUNT: Cell<usize> = const { Cell::new(0) };
     static TEST_RELEASE_TRACE: RefCell<Vec<TestReleaseStep>> = const { RefCell::new(Vec::new()) };
@@ -223,6 +237,7 @@ std::thread_local! {
     static TEST_PAIR_BEFORE_SECOND_CAS: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
     static TEST_PAIR_MARKER_ATTEMPT_FAILURE: Cell<bool> = const { Cell::new(false) };
     static TEST_PAIR_ARM_COMMITTED_REREAD_FAILURE: Cell<bool> = const { Cell::new(false) };
+    static TEST_PAIR_RECORD_IO_FAULT: Cell<Option<TestPairRecordIoFault>> = const { Cell::new(None) };
 }
 
 #[cfg(test)]
@@ -268,6 +283,33 @@ pub(super) enum TestPairImpersonationFault {
     AfterMarker,
     BeforeCheckpoint,
     AfterCheckpoint,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TestPairRecordIoFault {
+    MarkerShortWrite,
+    MarkerFlush,
+    CheckpointShortWrite,
+    CheckpointFlush,
+}
+
+#[cfg(test)]
+#[derive(Debug, Eq, PartialEq)]
+pub(super) struct TestPairRenamePacketSnapshot {
+    pub(super) leaf: &'static str,
+    pub(super) replace_if_exists: bool,
+    pub(super) root_matches: bool,
+    pub(super) anonymous_offset: usize,
+    pub(super) root_directory_offset: usize,
+    pub(super) file_name_length_offset: usize,
+    pub(super) file_name_offset: usize,
+    pub(super) struct_size: usize,
+    pub(super) struct_alignment: usize,
+    pub(super) file_name_length_bytes: u32,
+    pub(super) packet_byte_count: u32,
+    pub(super) backing_byte_count: usize,
+    pub(super) file_name: Vec<u16>,
 }
 
 /// Full, non-sentinel Windows file identity recorded by the installer.
@@ -2191,11 +2233,7 @@ fn pair_file_identity_and_length_inner(
     if basic.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
         return Err(ServiceRunStateError::Reparse);
     }
-    let forbidden_attributes = FILE_ATTRIBUTE_READONLY.0
-        | FILE_ATTRIBUTE_SPARSE_FILE.0
-        | FILE_ATTRIBUTE_COMPRESSED.0
-        | FILE_ATTRIBUTE_ENCRYPTED.0;
-    if basic.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY.0 | forbidden_attributes) != 0
+    if !pair_file_shape_attributes_are_supported(basic.dwFileAttributes)
         || basic.nNumberOfLinks != 1
     {
         return Err(ServiceRunStateError::Shape);
@@ -2360,18 +2398,39 @@ fn read_exact_pair_record(
 
 fn write_flush_and_readback_pair_record(
     handle: HANDLE,
+    record: PairRecordKind,
     candidate: &[u8; FIXED_RUN_STATE_RECORD_BYTES],
 ) -> Result<ObjectIdentity, ServiceRunStateError> {
+    #[cfg(not(test))]
+    let _ = record;
     let mut written = 0_u32;
     impersonation_bookend(|| {
-        // SAFETY: the exact candidate remains readable for the synchronous call.
-        unsafe { WriteFile(handle, Some(candidate), Some(&raw mut written), None) }
+        #[cfg(test)]
+        let write_candidate: &[u8] = if take_pair_record_io_fault_for_test(match record {
+            PairRecordKind::Marker => TestPairRecordIoFault::MarkerShortWrite,
+            PairRecordKind::Checkpoint => TestPairRecordIoFault::CheckpointShortWrite,
+        }) {
+            &candidate[..FIXED_RUN_STATE_RECORD_BYTES - 1]
+        } else {
+            candidate
+        };
+        #[cfg(not(test))]
+        let write_candidate: &[u8] = candidate;
+        // SAFETY: the selected candidate slice remains readable for the synchronous call.
+        unsafe { WriteFile(handle, Some(write_candidate), Some(&raw mut written), None) }
             .map_err(|_| ServiceRunStateError::RecordIo)
     })?;
     if usize::try_from(written).ok() != Some(FIXED_RUN_STATE_RECORD_BYTES) {
         return Err(ServiceRunStateError::RecordIo);
     }
     impersonation_bookend(|| {
+        #[cfg(test)]
+        if take_pair_record_io_fault_for_test(match record {
+            PairRecordKind::Marker => TestPairRecordIoFault::MarkerFlush,
+            PairRecordKind::Checkpoint => TestPairRecordIoFault::CheckpointFlush,
+        }) {
+            return Err(ServiceRunStateError::RecordIo);
+        }
         // SAFETY: the same held write-through file remains valid.
         unsafe { FlushFileBuffers(handle) }.map_err(|_| ServiceRunStateError::RecordIo)
     })?;
@@ -2608,7 +2667,7 @@ fn stage_pair_record(
         if before.observation != FixedRunStateRecordObservation::Malformed {
             return Err(ServiceRunStateError::Shape);
         }
-        let identity = write_flush_and_readback_pair_record(handle.raw(), candidate)?;
+        let identity = write_flush_and_readback_pair_record(handle.raw(), record, candidate)?;
         if before.identity != Some(identity) {
             return Err(ServiceRunStateError::Identity);
         }
@@ -2822,6 +2881,96 @@ fn pair_rename_packet(
         storage,
         u32::try_from(bytes).map_err(|_| ServiceRunStateError::Rename)?,
     ))
+}
+
+#[cfg(test)]
+pub(super) fn pair_rename_packet_snapshots_for_test()
+-> Result<[TestPairRenamePacketSnapshot; 2], ServiceRunStateError> {
+    // SAFETY: this parameter-free call returns the stable current-process
+    // pseudo-handle; it remains process-owned and is never closed here.
+    let parent = unsafe { GetCurrentProcess() };
+    if parent == HANDLE::default() {
+        return Err(ServiceRunStateError::Rename);
+    }
+    Ok([
+        pair_rename_packet_snapshot_for_test(parent, MARKER_FINAL_LEAF)?,
+        pair_rename_packet_snapshot_for_test(parent, CHECKPOINT_FINAL_LEAF)?,
+    ])
+}
+
+#[cfg(test)]
+fn pair_rename_packet_snapshot_for_test(
+    parent: HANDLE,
+    leaf: &'static str,
+) -> Result<TestPairRenamePacketSnapshot, ServiceRunStateError> {
+    let (storage, packet_byte_count) = pair_rename_packet(parent, leaf)?;
+    let packet_byte_count_usize =
+        usize::try_from(packet_byte_count).map_err(|_| ServiceRunStateError::Rename)?;
+    let backing_byte_count = size_of_val(storage.as_ref());
+    let anonymous_offset = offset_of!(FILE_RENAME_INFORMATION, Anonymous);
+    let root_directory_offset = offset_of!(FILE_RENAME_INFORMATION, RootDirectory);
+    let file_name_length_offset = offset_of!(FILE_RENAME_INFORMATION, FileNameLength);
+    let file_name_offset = offset_of!(FILE_RENAME_INFORMATION, FileName);
+    let struct_size = size_of::<FILE_RENAME_INFORMATION>();
+    let struct_alignment = core::mem::align_of::<FILE_RENAME_INFORMATION>();
+    let fixed_fields_end = file_name_length_offset
+        .checked_add(size_of::<u32>())
+        .ok_or(ServiceRunStateError::Rename)?;
+    if storage.as_ptr().align_offset(struct_alignment) != 0
+        || backing_byte_count < struct_size
+        || packet_byte_count_usize > backing_byte_count
+        || packet_byte_count_usize < struct_size
+        || fixed_fields_end > packet_byte_count_usize
+        || file_name_offset > packet_byte_count_usize
+    {
+        return Err(ServiceRunStateError::Rename);
+    }
+
+    let rename = storage.as_ptr().cast::<FILE_RENAME_INFORMATION>();
+    // SAFETY: the production builder initialized the suitably aligned fixed
+    // fields, and the fixed header is wholly inside the checked backing store.
+    let (replace_if_exists, root_directory, file_name_length_bytes) = unsafe {
+        (
+            (*rename).Anonymous.ReplaceIfExists,
+            (*rename).RootDirectory,
+            (*rename).FileNameLength,
+        )
+    };
+    let file_name_length =
+        usize::try_from(file_name_length_bytes).map_err(|_| ServiceRunStateError::Rename)?;
+    let file_name_end = file_name_offset
+        .checked_add(file_name_length)
+        .ok_or(ServiceRunStateError::Rename)?;
+    if file_name_length % size_of::<u16>() != 0
+        || file_name_end != packet_byte_count_usize
+        || file_name_end > backing_byte_count
+    {
+        return Err(ServiceRunStateError::Rename);
+    }
+    // SAFETY: the even byte length and exact end were checked against the live
+    // backing allocation before copying the flexible UTF-16 payload.
+    let file_name = unsafe {
+        core::slice::from_raw_parts(
+            ptr::addr_of!((*rename).FileName).cast::<u16>(),
+            file_name_length / size_of::<u16>(),
+        )
+    }
+    .to_vec();
+    Ok(TestPairRenamePacketSnapshot {
+        leaf,
+        replace_if_exists,
+        root_matches: root_directory == parent,
+        anonymous_offset,
+        root_directory_offset,
+        file_name_length_offset,
+        file_name_offset,
+        struct_size,
+        struct_alignment,
+        file_name_length_bytes,
+        packet_byte_count,
+        backing_byte_count,
+        file_name,
+    })
 }
 
 #[allow(clippy::too_many_lines)] // The ordered two-record state machine stays auditable inline.
@@ -4374,6 +4523,33 @@ pub(super) fn inject_state_open_impersonation_fault_for_test(
 #[cfg(test)]
 pub(super) fn inject_pair_impersonation_fault_for_test(fault: TestPairImpersonationFault) {
     TEST_PAIR_IMPERSONATION_FAULT.with(|slot| slot.set(Some(fault)));
+}
+
+#[cfg(test)]
+pub(super) fn inject_pair_record_io_fault_for_test(fault: TestPairRecordIoFault) {
+    TEST_PAIR_RECORD_IO_FAULT.with(|slot| {
+        assert!(
+            slot.replace(Some(fault)).is_none(),
+            "a pair-record I/O fault is already armed"
+        );
+    });
+}
+
+#[cfg(test)]
+pub(super) fn pair_record_io_fault_is_armed_for_test() -> bool {
+    TEST_PAIR_RECORD_IO_FAULT.with(|slot| slot.get().is_some())
+}
+
+#[cfg(test)]
+fn take_pair_record_io_fault_for_test(expected: TestPairRecordIoFault) -> bool {
+    TEST_PAIR_RECORD_IO_FAULT.with(|slot| {
+        if slot.get() == Some(expected) {
+            slot.set(None);
+            true
+        } else {
+            false
+        }
+    })
 }
 
 #[cfg(test)]

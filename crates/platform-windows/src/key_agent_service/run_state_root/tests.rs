@@ -26,7 +26,9 @@ use windows::Win32::Security::{
 };
 use windows::Win32::Storage::FileSystem::{
     CREATE_ALWAYS, CREATE_NEW, CreateDirectoryW, CreateFileW, DELETE, FILE_ADD_FILE,
-    FILE_ADD_SUBDIRECTORY, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL, FILE_DELETE_CHILD,
+    FILE_ADD_SUBDIRECTORY, FILE_ALL_ACCESS, FILE_ATTRIBUTE_COMPRESSED, FILE_ATTRIBUTE_DIRECTORY,
+    FILE_ATTRIBUTE_ENCRYPTED, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_SPARSE_FILE, FILE_DELETE_CHILD,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ,
     FILE_SHARE_WRITE, FILE_WRITE_DATA, OPEN_EXISTING, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
     WriteFile,
@@ -1836,6 +1838,24 @@ fn fixed_pair_rejects_ads_and_forbidden_file_attributes() -> TestResult {
         Ok(())
     }
 
+    assert!(sys::pair_file_shape_attributes_are_supported_for_test(
+        FILE_ATTRIBUTE_NORMAL.0
+    ));
+    assert!(sys::pair_file_shape_attributes_are_supported_for_test(
+        FILE_ATTRIBUTE_REPARSE_POINT.0
+    ));
+    for forbidden in [
+        FILE_ATTRIBUTE_DIRECTORY.0,
+        FILE_ATTRIBUTE_READONLY.0,
+        FILE_ATTRIBUTE_SPARSE_FILE.0,
+        FILE_ATTRIBUTE_COMPRESSED.0,
+        FILE_ATTRIBUTE_ENCRYPTED.0,
+    ] {
+        assert!(!sys::pair_file_shape_attributes_are_supported_for_test(
+            forbidden
+        ));
+    }
+
     let ads = InstalledFixture::new()?;
     install_pair(&ads)?;
     let paths = pair_paths(&ads.base);
@@ -1857,6 +1877,100 @@ fn fixed_pair_rejects_ads_and_forbidden_file_attributes() -> TestResult {
     mark_pair_file_sparse(&paths[0])?;
     require_shape_failure(&sparse)?;
     sparse.cleanup_checked()
+}
+
+#[test]
+fn fixed_pair_staging_short_write_and_flush_failures_are_known_not_committed() -> TestResult {
+    let candidate = ExactFixedRunStatePair::new(
+        [0x7a; FIXED_RUN_STATE_RECORD_BYTES],
+        [0x8b; FIXED_RUN_STATE_RECORD_BYTES],
+    );
+    for fault in [
+        sys::TestPairRecordIoFault::MarkerShortWrite,
+        sys::TestPairRecordIoFault::MarkerFlush,
+        sys::TestPairRecordIoFault::CheckpointShortWrite,
+        sys::TestPairRecordIoFault::CheckpointFlush,
+    ] {
+        let fixture = InstalledFixture::new()?;
+        let paths = pair_paths(&fixture.base);
+        let writer = acquire_for_test(open_test_service_run_state_root(
+            &fixture.base,
+            fixture.expected()?,
+        )?)?;
+        let observed = writer.observe_fixed_pair().map_err(|failure| {
+            let cause = failure.cause();
+            let _ = failure.retire();
+            cause
+        })?;
+
+        sys::reset_pair_rename_count_for_test();
+        sys::inject_pair_record_io_fault_for_test(fault);
+        match observed.compare_and_replace(candidate) {
+            FixedPairCommitOutcome::KnownNotCommitted(failure) => {
+                assert_eq!(failure.cause(), ServiceRunStateError::RecordIo);
+                assert_eq!(sys::pair_rename_count_for_test(), 0);
+                let _retired = failure.retire()?;
+            }
+            other => {
+                return Err(std::io::Error::other(format!(
+                    "unexpected staging I/O fault outcome for {fault:?}: {other:?}"
+                ))
+                .into());
+            }
+        }
+        assert!(!sys::pair_record_io_fault_is_armed_for_test());
+        assert!(paths.iter().all(|path| !path.exists()));
+        fixture.cleanup_checked()?;
+    }
+    Ok(())
+}
+
+#[test]
+fn fixed_pair_rename_packet_abi_and_leaf_payload_are_exact() -> TestResult {
+    let pointer_bytes = size_of::<usize>();
+    let expected_root_directory_offset = pointer_bytes;
+    let expected_file_name_length_offset = pointer_bytes * 2;
+    let expected_file_name_offset = expected_file_name_length_offset + size_of::<u32>();
+    let expected_struct_size =
+        (expected_file_name_offset + size_of::<u16>()).div_ceil(pointer_bytes) * pointer_bytes;
+
+    for (snapshot, expected_leaf) in sys::pair_rename_packet_snapshots_for_test()?
+        .into_iter()
+        .zip(["marker.v1", "checkpt.v1"])
+    {
+        let expected_name = expected_leaf.encode_utf16().collect::<Vec<_>>();
+        let expected_name_bytes = expected_name.len() * size_of::<u16>();
+        let expected_packet_bytes = expected_file_name_offset + expected_name_bytes;
+        let expected_backing_bytes = expected_packet_bytes.div_ceil(pointer_bytes) * pointer_bytes;
+
+        assert_eq!(snapshot.leaf, expected_leaf);
+        assert!(snapshot.replace_if_exists);
+        assert!(snapshot.root_matches);
+        assert_eq!(snapshot.anonymous_offset, 0);
+        assert_eq!(
+            snapshot.root_directory_offset,
+            expected_root_directory_offset
+        );
+        assert_eq!(
+            snapshot.file_name_length_offset,
+            expected_file_name_length_offset
+        );
+        assert_eq!(snapshot.file_name_offset, expected_file_name_offset);
+        assert_eq!(snapshot.struct_size, expected_struct_size);
+        assert_eq!(snapshot.struct_alignment, pointer_bytes);
+        assert_eq!(
+            usize::try_from(snapshot.file_name_length_bytes)?,
+            expected_name_bytes
+        );
+        assert_eq!(
+            usize::try_from(snapshot.packet_byte_count)?,
+            expected_packet_bytes
+        );
+        assert_eq!(snapshot.backing_byte_count, expected_backing_bytes);
+        assert_eq!(snapshot.file_name, expected_name);
+        assert_ne!(snapshot.file_name.last(), Some(&0));
+    }
+    Ok(())
 }
 
 #[test]

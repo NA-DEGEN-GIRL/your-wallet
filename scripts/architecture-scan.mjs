@@ -644,6 +644,45 @@ function withoutCfgTestItems(source) {
   return production;
 }
 
+const keyAgentServicePhaseTwoFBInlineCfgTestStatements = Object.freeze([
+  `    static TEST_PAIR_RECORD_IO_FAULT: Cell<Option<TestPairRecordIoFault>> = const { Cell::new(None) };
+`,
+  `        #[cfg(test)]
+        let write_candidate: &[u8] = if take_pair_record_io_fault_for_test(match record {
+            PairRecordKind::Marker => TestPairRecordIoFault::MarkerShortWrite,
+            PairRecordKind::Checkpoint => TestPairRecordIoFault::CheckpointShortWrite,
+        }) {
+            &candidate[..FIXED_RUN_STATE_RECORD_BYTES - 1]
+        } else {
+            candidate
+        };
+`,
+  `        #[cfg(test)]
+        if take_pair_record_io_fault_for_test(match record {
+            PairRecordKind::Marker => TestPairRecordIoFault::MarkerFlush,
+            PairRecordKind::Checkpoint => TestPairRecordIoFault::CheckpointFlush,
+        }) {
+            return Err(ServiceRunStateError::RecordIo);
+        }
+`,
+]);
+function keyAgentServicePhaseTwoFBProductionPartition(source) {
+  let partition = source;
+  for (const statement of keyAgentServicePhaseTwoFBInlineCfgTestStatements) {
+    const first = partition.indexOf(statement);
+    if (
+      first === -1 ||
+      partition.indexOf(statement, first + statement.length) !== -1
+    ) {
+      throw new Error(
+        "Phase 2F-b expected one exact inline cfg(test) I/O-fault fragment",
+      );
+    }
+    partition = partition.replace(statement, "");
+  }
+  return withoutCfgTestItems(partition);
+}
+
 function normalizeRustFragment(fragment) {
   return fragment.replace(/\s+/gu, " ").trim();
 }
@@ -2551,7 +2590,7 @@ const keyAgentServiceRunStateRootTests = await text(
 const keyAgentServiceRunStateRootProduction = withoutCfgTestItems(
   keyAgentServiceRunStateRoot,
 );
-const keyAgentServiceRunStateRootSysProduction = withoutCfgTestItems(
+const keyAgentServiceRunStateRootSysProduction = keyAgentServicePhaseTwoFBProductionPartition(
   keyAgentServiceRunStateRootSys,
 );
 const keyAgentServiceRunStateRootDirectoryInventory =
@@ -6167,11 +6206,11 @@ const approvedKeyAgentServiceRunStateRootSourceSha256 =
 const approvedKeyAgentServiceRunStateRootProductionSha256 =
   "44a04b41f11cf9b7a44c4cce3b9e2f8704c536bc376ffc7ee5e6e92961528b94";
 const approvedKeyAgentServiceRunStateRootSysSourceSha256 =
-  "4a456fc19c7b8b23ad2bcaf240544eb9f0ae66199a8853d0a94300a7353cd24f";
+  "3d39ead36116c2c48c93b9b5380e2dd4460c978e2ccd8e5b1c3ce42c9069d307";
 const approvedKeyAgentServiceRunStateRootSysProductionSha256 =
-  "054eb6b9949ffc40016fe479c20bfce198bd58fb9b3d00f24c3d9656158acedc";
+  "0b291a73940524e8c075b8d339ee6087852a434bc16bace5b79a4ad3c7f05ec8";
 const approvedKeyAgentServiceRunStateRootTestsSha256 =
-  "0ba95af4469d57150f86c33df1307f9e1d6951b56b1eb894b9a1ca128cb41779";
+  "e6b98539a54c1bf80bb6fa5d576b37fe17d562c04b6cdca83a76fbfdb967f023";
 const approvedKeyAgentServiceDurableWindowsPairSha256 =
   "f712f519fc7804163b30eaeef23ec68578b74c6601c6d0953c8c4be9c76cdcf9";
 const approvedKeyAgentServiceDurableWindowsRuntimeSourceSha256 =
@@ -7955,7 +7994,7 @@ const keyAgentServicePhaseTwoEPinContract = ({
   testsSource,
 }) => {
   const rootProduction = withoutCfgTestItems(rootSource);
-  const sysProduction = withoutCfgTestItems(sysSource);
+  const sysProduction = keyAgentServicePhaseTwoFBProductionPartition(sysSource);
   return (
     normalizedSourceSha256(rootSource) ===
       approvedKeyAgentServiceRunStateRootSourceSha256 &&
@@ -8745,6 +8784,8 @@ const keyAgentServicePhaseTwoFBTestNames = [
   "fixed_pair_leaf_set_and_from_birth_file_security_are_exact",
   "fixed_pair_one_sided_malformed_and_hostile_temp_are_terminal_known_failures",
   "fixed_pair_rejects_ads_and_forbidden_file_attributes",
+  "fixed_pair_staging_short_write_and_flush_failures_are_known_not_committed",
+  "fixed_pair_rename_packet_abi_and_leaf_payload_are_exact",
   "fixed_pair_startup_cleans_safe_partial_temps_but_preserves_oversized",
   "fixed_pair_full_id_second_cas_rejects_same_bytes_replacement_without_mutation",
   "fixed_pair_first_rename_boundary_reload_and_close_poison_are_exact",
@@ -9123,7 +9164,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
   architectureDocument,
 }) => {
   const rootProduction = withoutCfgTestItems(rootSource);
-  const sysProduction = withoutCfgTestItems(sysSource);
+  const sysProduction = keyAgentServicePhaseTwoFBProductionPartition(sysSource);
   const rootCode = rustLexicalCode(rootProduction);
   const sysCode = rustLexicalCode(sysProduction);
   const combinedProduction = `${rootProduction}\n${sysProduction}`;
@@ -10547,7 +10588,7 @@ const keyAgentServicePhaseTwoFASemanticContract = ({
   architectureDocument,
 }) => {
   const rootProduction = withoutCfgTestItems(rootSource);
-  const sysProduction = withoutCfgTestItems(sysSource);
+  const sysProduction = keyAgentServicePhaseTwoFBProductionPartition(sysSource);
   const rootCode = rustLexicalCode(rootProduction);
   const sysCode = rustLexicalCode(sysProduction);
   const rootCompact = compactRust(rootProduction);
@@ -11055,7 +11096,7 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
   architectureDocument,
 }) => {
   const rootProduction = withoutCfgTestItems(rootSource);
-  const sysProduction = withoutCfgTestItems(sysSource);
+  const sysProduction = keyAgentServicePhaseTwoFBProductionPartition(sysSource);
   const windowsPairProduction = withoutCfgTestItems(windowsPairSource);
   const rootCode = rustLexicalCode(rootProduction);
   const sysCode = rustLexicalCode(sysProduction);
@@ -11063,6 +11104,21 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
   const rootCompact = compactRust(rootProduction);
   const sysCompact = compactRust(sysProduction);
   const windowsPairCompact = compactRust(windowsPairProduction);
+  const testOnlyPairEvidenceIdentifiers = [
+    "TestPairRecordIoFault",
+    "MarkerShortWrite",
+    "MarkerFlush",
+    "CheckpointShortWrite",
+    "CheckpointFlush",
+    "TestPairRenamePacketSnapshot",
+    "TEST_PAIR_RECORD_IO_FAULT",
+    "pair_file_shape_attributes_are_supported_for_test",
+    "inject_pair_record_io_fault_for_test",
+    "pair_record_io_fault_is_armed_for_test",
+    "take_pair_record_io_fault_for_test",
+    "pair_rename_packet_snapshots_for_test",
+    "pair_rename_packet_snapshot_for_test",
+  ];
   const attributedTests = keyAgentServiceRustAttributedTestInventory(testsSource);
   const codecTests = keyAgentServiceRustAttributedTestInventory(windowsPairSource);
   const phaseTwoFBTests = attributedTests.filter(({ name }) =>
@@ -11138,13 +11194,22 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
   let pairFileSecurityImpl;
   let inspectPairFileInner;
   let pairFileIdentityAndLengthInner;
+  let pairFileShapeAttributesAreSupported;
   let verifyPairDefaultStream;
   let readExactPairRecord;
   let writeFlushReadback;
+  let writeFlushReadbackWithTests;
   let clearStaleTemp;
   let stagePairRecord;
   let renameStagedPair;
   let renamePacket;
+  let recordIoFaultDefinition;
+  let renamePacketSnapshotDefinition;
+  let renamePacketSnapshotsForTest;
+  let renamePacketSnapshotForTest;
+  let forbiddenAttributesTest;
+  let stagingIoFaultTest;
+  let renamePacketEvidenceTest;
   let commitObservedPair;
   let verifyCaseInsensitiveDirectory;
   try {
@@ -11164,6 +11229,10 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
       sysProduction,
       "pair_file_identity_and_length_inner",
     );
+    pairFileShapeAttributesAreSupported = rustTopLevelFunctionBlock(
+      sysProduction,
+      "pair_file_shape_attributes_are_supported",
+    );
     verifyPairDefaultStream = rustTopLevelFunctionBlock(
       sysProduction,
       "verify_pair_default_stream",
@@ -11176,6 +11245,10 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
       sysProduction,
       "write_flush_and_readback_pair_record",
     );
+    writeFlushReadbackWithTests = rustTopLevelFunctionBlock(
+      sysSource,
+      "write_flush_and_readback_pair_record",
+    );
     clearStaleTemp = rustTopLevelFunctionBlock(
       sysProduction,
       "clear_one_stale_pair_temp",
@@ -11186,6 +11259,34 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
       "rename_staged_pair_file",
     );
     renamePacket = rustTopLevelFunctionBlock(sysProduction, "pair_rename_packet");
+    recordIoFaultDefinition = rustLexicalItemBlock(
+      sysSource,
+      /\bpub\(super\)\s+enum\s+TestPairRecordIoFault\s*\{/u,
+    );
+    renamePacketSnapshotDefinition = rustLexicalItemBlock(
+      sysSource,
+      /\bpub\(super\)\s+struct\s+TestPairRenamePacketSnapshot\s*\{/u,
+    );
+    renamePacketSnapshotsForTest = rustTopLevelFunctionBlock(
+      sysSource,
+      "pair_rename_packet_snapshots_for_test",
+    );
+    renamePacketSnapshotForTest = rustTopLevelFunctionBlock(
+      sysSource,
+      "pair_rename_packet_snapshot_for_test",
+    );
+    forbiddenAttributesTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "fixed_pair_rejects_ads_and_forbidden_file_attributes",
+    );
+    stagingIoFaultTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "fixed_pair_staging_short_write_and_flush_failures_are_known_not_committed",
+    );
+    renamePacketEvidenceTest = rustTopLevelFunctionBlock(
+      testsSource,
+      "fixed_pair_rename_packet_abi_and_leaf_payload_are_exact",
+    );
     commitObservedPair = rustTopLevelFunctionBlock(
       sysProduction,
       "commit_observed_pair",
@@ -11215,14 +11316,15 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
     "length is in `0..=148`",
     "oversized temp, wrong identity, wrong descriptor, ADS, forbidden attribute, or other hostile shape is preserved",
     "Post-commit reread and ambiguity reload first revalidate the complete writer",
-    "combined relevant inventory is therefore exactly 53 tests: 51 passed and two ignored",
+    "production shape predicate is also exercised directly with the compressed and encrypted attribute bits",
+    "Four deterministic, one-shot `cfg(test)` staging faults cover marker short write, marker flush failure, checkpoint short write, and checkpoint flush failure",
+    "These synthetic branches prove the state-machine response to the reported short-write/flush outcomes; they are not evidence that NTFS naturally produced a short write, nor power-loss evidence",
+    "test-only snapshot of the production variable-length rename packet fixes the current Windows x64 `FILE_RENAME_INFORMATION` ABI fields",
+    "combined relevant inventory is therefore exactly 55 tests: 53 passed and two ignored",
     "At the pre-Phase 2F-c boundary, the `windows_pair` child mapped the private 148-byte durable codec envelopes into move-only fixed-pair expectations and outcomes without a production caller, expected-authority mint, authentication-key provider, TPM/non-rollbackable anchor integration",
     "The separately gated Phase 2F-c composite below is now its sole production consumer and remains dormant",
     "its sole production-compiled caller is the private Phase 2G compositor, which itself has no executable or top-level caller",
-    "nonzero case-sensitive-directory flag",
-    "compressed and encrypted file-attribute branches",
-    "short-write and flush-failure injection",
-    "ABI assertions for the variable-length rename packet",
+    "One direct evidence gap remains explicit: a kernel negative test with a nonzero case-sensitive-directory flag",
     "external **STOP-SHIP** obligations",
   ];
   const architectureMarkers = [
@@ -11237,13 +11339,14 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
     "bound to staged full IDs",
     "length `0..=148`",
     "preserves oversized or hostile temps",
-    "combined relevant inventory of 53 (51 passed, two ignored)",
+    "shared production shape predicate has direct compressed/encrypted-bit coverage",
+    "Four deterministic one-shot synthetic faults cover marker/checkpoint short writes and flush failures",
+    "does not claim natural NTFS short-write behavior or power-loss evidence",
+    "test-only snapshot of the production variable-length rename packet fixes the current Windows x64 ABI fields/alignment/offsets",
+    "combined relevant inventory of 55 (53 passed, two ignored)",
     "At the pre-Phase 2F-c boundary the child mapped exact private codec envelopes into move-only pair typestates without a production caller, expected-authority mint, authentication-key provider, TPM/non-rollbackable anchor integration",
     "the separately gated F-c composite below is now its sole production consumer and remains dormant, while its sole production-compiled caller is the private Phase 2G compositor, which itself has no executable or top-level caller",
-    "nonzero case-sensitive-directory kernel negative",
-    "direct compressed/encrypted branches",
-    "short-write/flush-failure injection",
-    "rename-packet ABI assertions",
+    "One direct evidence gap remains: a nonzero case-sensitive-directory kernel negative",
     "external **STOP-SHIP** obligations",
   ];
 
@@ -11274,7 +11377,10 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
       "constPAIR_TEMP_CLEANUP_GRANTED_ACCESS:u32=FILE_GENERIC_READ.0|DELETE.0;",
       "constPAIR_FILE_ACCESS:u32=FILE_GENERIC_READ.0|FILE_GENERIC_WRITE.0|DELETE.0;",
       "constPAIR_OWNER_RIGHTS_DENY:u32=WRITE_DAC.0|WRITE_OWNER.0;",
+      "constPAIR_FILE_FORBIDDEN_SHAPE_ATTRIBUTES:u32=FILE_ATTRIBUTE_DIRECTORY.0|FILE_ATTRIBUTE_READONLY.0|FILE_ATTRIBUTE_SPARSE_FILE.0|FILE_ATTRIBUTE_COMPRESSED.0|FILE_ATTRIBUTE_ENCRYPTED.0;",
     ].every((marker) => sysCompact.includes(marker)) &&
+    compactRust(pairFileShapeAttributesAreSupported) ===
+      "constfnpair_file_shape_attributes_are_supported(attributes:u32)->bool{attributes&PAIR_FILE_FORBIDDEN_SHAPE_ATTRIBUTES==0}" &&
     hasOrderedCompactMarkers(pairFileSecurityImpl, [
       "fnnew(policy:&SecurityPolicy)->Result<Self,ServiceRunStateError>",
       "AddAccessDeniedAceEx(acl,ACL_REVISION,NO_INHERITANCE,PAIR_OWNER_RIGHTS_DENY,owner_rights.as_psid(),)",
@@ -11305,12 +11411,7 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
     hasOrderedCompactMarkers(pairFileIdentityAndLengthInner, [
       "letbasic=basic_information(handle)?",
       "FILE_ATTRIBUTE_REPARSE_POINT",
-      "FILE_ATTRIBUTE_READONLY",
-      "FILE_ATTRIBUTE_SPARSE_FILE",
-      "FILE_ATTRIBUTE_COMPRESSED",
-      "FILE_ATTRIBUTE_ENCRYPTED",
-      "FILE_ATTRIBUTE_DIRECTORY",
-      "basic.nNumberOfLinks!=1",
+      "!pair_file_shape_attributes_are_supported(basic.dwFileAttributes)||basic.nNumberOfLinks!=1",
       "NtQueryInformationFile",
       "FileStandardInformation",
       "standard.Directory||standard.DeletePending||standard.NumberOfLinks!=1",
@@ -11331,7 +11432,9 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
       "ifeof_read!=0",
     ]) &&
     hasOrderedCompactMarkers(writeFlushReadback, [
-      "WriteFile(handle,Some(candidate),Some(&rawmutwritten),None)",
+      "let_=record",
+      "letwrite_candidate:&[u8]=candidate",
+      "WriteFile(handle,Some(write_candidate),Some(&rawmutwritten),None)",
       "usize::try_from(written).ok()!=Some(FIXED_RUN_STATE_RECORD_BYTES)",
       "FlushFileBuffers(handle)",
       "letreadback=read_exact_pair_record(handle)?",
@@ -11339,6 +11442,101 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
       "let(identity,length)=pair_file_identity_and_length(handle)?",
       "iflength!=FIXED_RUN_STATE_RECORD_BYTES",
     ]) &&
+    compactRust(recordIoFaultDefinition) ===
+      "pub(super)enumTestPairRecordIoFault{MarkerShortWrite,MarkerFlush,CheckpointShortWrite,CheckpointFlush,}" &&
+    hasOrderedCompactMarkers(renamePacketSnapshotDefinition, [
+      "pub(super)structTestPairRenamePacketSnapshot",
+      "leaf:&'staticstr",
+      "replace_if_exists:bool",
+      "root_matches:bool",
+      "anonymous_offset:usize",
+      "root_directory_offset:usize",
+      "file_name_length_offset:usize",
+      "file_name_offset:usize",
+      "struct_size:usize",
+      "struct_alignment:usize",
+      "file_name_length_bytes:u32",
+      "packet_byte_count:u32",
+      "backing_byte_count:usize",
+      "file_name:Vec<u16>",
+    ]) &&
+    hasOrderedCompactMarkers(writeFlushReadbackWithTests, [
+      "TestPairRecordIoFault::MarkerShortWrite",
+      "TestPairRecordIoFault::CheckpointShortWrite",
+      "&candidate[..FIXED_RUN_STATE_RECORD_BYTES-1]",
+      "WriteFile(handle,Some(write_candidate),Some(&rawmutwritten),None)",
+      "usize::try_from(written).ok()!=Some(FIXED_RUN_STATE_RECORD_BYTES)",
+      "TestPairRecordIoFault::MarkerFlush",
+      "TestPairRecordIoFault::CheckpointFlush",
+      "returnErr(ServiceRunStateError::RecordIo)",
+      "FlushFileBuffers(handle)",
+    ]) &&
+    hasOrderedCompactMarkers(forbiddenAttributesTest, [
+      "pair_file_shape_attributes_are_supported_for_test(FILE_ATTRIBUTE_NORMAL.0)",
+      "pair_file_shape_attributes_are_supported_for_test(FILE_ATTRIBUTE_REPARSE_POINT.0)",
+      "FILE_ATTRIBUTE_DIRECTORY.0",
+      "FILE_ATTRIBUTE_READONLY.0",
+      "FILE_ATTRIBUTE_SPARSE_FILE.0",
+      "FILE_ATTRIBUTE_COMPRESSED.0",
+      "FILE_ATTRIBUTE_ENCRYPTED.0",
+      "assert!(!sys::pair_file_shape_attributes_are_supported_for_test(forbidden))",
+    ]) &&
+    hasOrderedCompactMarkers(stagingIoFaultTest, [
+      "TestPairRecordIoFault::MarkerShortWrite",
+      "TestPairRecordIoFault::MarkerFlush",
+      "TestPairRecordIoFault::CheckpointShortWrite",
+      "TestPairRecordIoFault::CheckpointFlush",
+      "reset_pair_rename_count_for_test()",
+      "inject_pair_record_io_fault_for_test(fault)",
+      "FixedPairCommitOutcome::KnownNotCommitted(failure)",
+      "ServiceRunStateError::RecordIo",
+      "pair_rename_count_for_test(),0",
+      "failure.retire()?",
+      "!sys::pair_record_io_fault_is_armed_for_test()",
+      "paths.iter().all(|path|!path.exists())",
+    ]) &&
+    hasOrderedCompactMarkers(renamePacketSnapshotsForTest, [
+      "GetCurrentProcess()",
+      "pair_rename_packet_snapshot_for_test(parent,MARKER_FINAL_LEAF)?",
+      "pair_rename_packet_snapshot_for_test(parent,CHECKPOINT_FINAL_LEAF)?",
+    ]) &&
+    hasOrderedCompactMarkers(renamePacketSnapshotForTest, [
+      "pair_rename_packet(parent,leaf)?",
+      "offset_of!(FILE_RENAME_INFORMATION,Anonymous)",
+      "offset_of!(FILE_RENAME_INFORMATION,RootDirectory)",
+      "offset_of!(FILE_RENAME_INFORMATION,FileNameLength)",
+      "offset_of!(FILE_RENAME_INFORMATION,FileName)",
+      "size_of::<FILE_RENAME_INFORMATION>()",
+      "align_of::<FILE_RENAME_INFORMATION>()",
+      "file_name_end!=packet_byte_count_usize",
+      "root_matches:root_directory==parent",
+    ]) &&
+    hasOrderedCompactMarkers(renamePacketEvidenceTest, [
+      "letpointer_bytes=size_of::<usize>()",
+      "letexpected_root_directory_offset=pointer_bytes",
+      "letexpected_file_name_length_offset=pointer_bytes*2",
+      "letexpected_file_name_offset=expected_file_name_length_offset+size_of::<u32>()",
+      "pair_rename_packet_snapshots_for_test()?",
+      "snapshot.replace_if_exists",
+      "snapshot.root_matches",
+      "snapshot.anonymous_offset,0",
+      "snapshot.root_directory_offset,expected_root_directory_offset",
+      "snapshot.file_name_length_offset,expected_file_name_length_offset",
+      "snapshot.file_name_offset,expected_file_name_offset",
+      "snapshot.struct_size,expected_struct_size",
+      "snapshot.struct_alignment,pointer_bytes",
+      "snapshot.file_name_length_bytes",
+      "snapshot.packet_byte_count",
+      "snapshot.backing_byte_count,expected_backing_bytes",
+      "snapshot.file_name,expected_name",
+      "snapshot.file_name.last(),Some(&0)",
+    ]) &&
+    /\.zip\(\s*\[\s*"marker\.v1"\s*,\s*"checkpt\.v1"\s*\]\s*\)/u.test(
+      renamePacketEvidenceTest,
+    ) &&
+    testOnlyPairEvidenceIdentifiers.every(
+      (name) => !new RegExp(`\\b${name}\\b`, "u").test(sysCode),
+    ) &&
     hasOrderedCompactMarkers(clearStaleTemp, [
       "ifobserved.handle.close_checked().is_err()",
       "PairTempCleanupBinding::SafeStaleifobserved_snapshot.length.is_some_and(|length|length<=FIXED_RUN_STATE_RECORD_BYTES)",
@@ -11355,7 +11553,7 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
     hasOrderedCompactMarkers(stagePairRecord, [
       "create_pair_temp(parent,record,&writer.root.expected.policy)",
       "verify_pair_create_mode(handle.raw())?",
-      "write_flush_and_readback_pair_record(handle.raw(),candidate)?",
+      "write_flush_and_readback_pair_record(handle.raw(),record,candidate)?",
       "before.identity!=Some(identity)",
       "after.identity!=Some(identity)",
       "FixedRunStateRecordObservation::Exact(*candidate)",
@@ -11428,8 +11626,8 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
     !/\b(?:ExpectedWindowsPair|WindowsPairWriter|WindowsObservedPair|WindowsPreparedPairCommit|WindowsPairCommitOutcome|WindowsCommittedPair|WindowsRereadPair|WindowsPairKnownFailure|WindowsPairExpectationMismatch|WindowsPairReloadRequired|WindowsPairReloadFailure|WindowsReloadedPair|WindowsPairRetired)\b/u.test(
       productionConsumers,
     ) &&
-    prePhaseTwoFCRootTests.length === 47 &&
-    prePhaseTwoFCRootTests.filter(({ ignored }) => !ignored).length === 45 &&
+    prePhaseTwoFCRootTests.length === 49 &&
+    prePhaseTwoFCRootTests.filter(({ ignored }) => !ignored).length === 47 &&
     JSON.stringify(
       prePhaseTwoFCRootTests
         .filter(({ ignored }) => ignored)
@@ -11485,7 +11683,7 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
   const runtimeCode = rustLexicalCode(runtimeProduction);
   const runtimeCompact = compactRust(runtimeProduction);
   const rootProduction = withoutCfgTestItems(rootSource);
-  const sysProduction = withoutCfgTestItems(sysSource);
+  const sysProduction = keyAgentServicePhaseTwoFBProductionPartition(sysSource);
   const pairProduction = withoutCfgTestItems(windowsPairSource);
   const rootCode = rustLexicalCode(rootProduction);
   const sysCode = rustLexicalCode(sysProduction);
@@ -12432,8 +12630,8 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
     ]) &&
     JSON.stringify(rootTests.map(({ name }) => name).toSorted()) ===
       JSON.stringify(expectedRootTests.toSorted()) &&
-    rootTests.length === 54 &&
-    rootTests.filter(({ ignored }) => !ignored).length === 52 &&
+    rootTests.length === 56 &&
+    rootTests.filter(({ ignored }) => !ignored).length === 54 &&
     JSON.stringify(
       rootTests.filter(({ ignored }) => ignored).map(({ name }) => name),
     ) === JSON.stringify(keyAgentServicePhaseTwoEIgnoredTestNames) &&
@@ -13088,8 +13286,8 @@ const keyAgentServicePhaseTwoGSemanticContract = ({
       JSON.stringify(keyAgentServiceLifecycleTestNames) &&
     lifecycleTestsInventory.length === 21 &&
     lifecycleTestsInventory.every(({ ignored }) => !ignored) &&
-    rootTests.length === 54 &&
-    rootTests.filter(({ ignored }) => !ignored).length === 52 &&
+    rootTests.length === 56 &&
+    rootTests.filter(({ ignored }) => !ignored).length === 54 &&
     JSON.stringify(
       rootTests.filter(({ ignored }) => ignored).map(({ name }) => name),
     ) === JSON.stringify(keyAgentServicePhaseTwoEIgnoredTestNames) &&
@@ -14481,8 +14679,48 @@ const keyAgentServicePhaseTwoFBSemanticMutationProbes = [
   },
   mutateKeyAgentServicePhaseTwoFBInput(
     "designDocument",
-    "short-write and flush-failure\ninjection",
-    "short-write/flush behavior is fully proven\ninjection",
+    "state-machine response to the reported short-write/flush outcomes; they are not",
+    "production filesystem response to short-write/flush outcomes; they are",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "sysSource",
+    "    | FILE_ATTRIBUTE_COMPRESSED.0\n",
+    "",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "sysSource",
+    "    | FILE_ATTRIBUTE_ENCRYPTED.0;",
+    "    | FILE_ATTRIBUTE_NORMAL.0;",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "testsSource",
+    "        sys::TestPairRecordIoFault::MarkerShortWrite,",
+    "        sys::TestPairRecordIoFault::RemovedMarkerShortWrite,",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "testsSource",
+    "        sys::TestPairRecordIoFault::MarkerFlush,",
+    "        sys::TestPairRecordIoFault::RemovedMarkerFlush,",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "testsSource",
+    "        sys::TestPairRecordIoFault::CheckpointShortWrite,",
+    "        sys::TestPairRecordIoFault::RemovedCheckpointShortWrite,",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "testsSource",
+    "        sys::TestPairRecordIoFault::CheckpointFlush,",
+    "        sys::TestPairRecordIoFault::RemovedCheckpointFlush,",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "testsSource",
+    "    let expected_file_name_offset = expected_file_name_length_offset + size_of::<u32>();",
+    "    let expected_file_name_offset = expected_file_name_length_offset + size_of::<u16>();",
+  ),
+  mutateKeyAgentServicePhaseTwoFBInput(
+    "testsSource",
+    "        assert_eq!(snapshot.file_name, expected_name);",
+    "        assert_eq!(snapshot.file_name.len(), expected_name.len());",
   ),
 ];
 const keyAgentServicePhaseTwoFCSemanticMutationProbes = [
@@ -15244,7 +15482,7 @@ requireInvariant(
 );
 requireInvariant(
   keyAgentServicePhaseTwoFBSemanticBaseResult &&
-    keyAgentServicePhaseTwoFBSemanticMutationProbes.length === 27 &&
+    keyAgentServicePhaseTwoFBSemanticMutationProbes.length === 35 &&
     keyAgentServicePhaseTwoFBSemanticMutationResults.every(
       ({ changed, rejected }) => changed && rejected,
     ) &&
@@ -15253,7 +15491,7 @@ requireInvariant(
     keyAgentServicePhaseTwoFBPinMutationResults.every(
       ({ changed, rejected }) => changed && rejected,
     ),
-  `the separate Phase 2F-b fixed marker/checkpoint-pair extension must remain production-compiled, Windows-only, module-private, and zero-production-caller/authority-mint; exactly four fixed state-relative leaves, exact purpose-specific synchronized access and protected file DACL, share-zero non-reparse default-stream file opens, exact 148-byte write/flush/readback and full-ID verification, full-snapshot second CAS, handle-relative marker-before-checkpoint replacement, ambiguity from the first native rename attempt, ID-bound cleanup, bounded stale-temp cleanup with hostile preservation, writer revalidation and close poison, exact 47-root plus six-codec test inventories, no Phase 2D authentication-key/TPM or production bridge, explicit non-atomicity and four evidence gaps, external installer/SCM/trusted-peer/crash-power-reboot/TPM STOP-SHIP obligations, 27 independently effective semantic mutations, and two independent child-source pin mutations; semantic base=${keyAgentServicePhaseTwoFBSemanticBaseResult}, pin base=${keyAgentServicePhaseTwoFBPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoFBSemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFBSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, pin probe count=${keyAgentServicePhaseTwoFBPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFBPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
+  `the separate Phase 2F-b fixed marker/checkpoint-pair extension must remain production-compiled, Windows-only, module-private, and zero-production-caller/authority-mint; exactly four fixed state-relative leaves, exact purpose-specific synchronized access and protected file DACL, share-zero non-reparse default-stream file opens, exact 148-byte write/flush/readback and full-ID verification, full-snapshot second CAS, handle-relative marker-before-checkpoint replacement, ambiguity from the first native rename attempt, ID-bound cleanup, bounded stale-temp cleanup with hostile preservation, writer revalidation and close poison, exact 49-root plus six-codec test inventories, no Phase 2D authentication-key/TPM or production bridge, explicit non-atomicity and one remaining direct evidence gap, external installer/SCM/trusted-peer/crash-power-reboot/TPM STOP-SHIP obligations, 35 independently effective semantic mutations, and two independent child-source pin mutations; semantic base=${keyAgentServicePhaseTwoFBSemanticBaseResult}, pin base=${keyAgentServicePhaseTwoFBPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoFBSemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFBSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, pin probe count=${keyAgentServicePhaseTwoFBPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFBPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
 );
 requireInvariant(
   keyAgentServicePhaseTwoFCSemanticBaseResult &&
@@ -15266,7 +15504,7 @@ requireInvariant(
     keyAgentServicePhaseTwoFCPinMutationResults.every(
       ({ changed, rejected }) => changed && rejected,
     ),
-  `the separate Phase 2F-c dormant Windows logical/OS runtime composite must remain production-compiled, Windows-only, module-private, safe-only, move-only, and free of raw/type-erased authority escape; allocate a unique nonzero checked backend binding after writer acquisition; observe before authenticating exact Clean; preserve exact Active/Clean commit, reread/reload, stop, pair-bound release, no-receipt ambiguity, and checked terminal-retirement order; retain exact pair handles and full IDs/lengths/bytes through low-level release; map writer-retained versus writer-released failures exactly across sys/root/codec; carry fresh full-ID snapshots into each next CAS; admit only the separately gated private Phase 2G direct caller and expose no other direct/aliased caller, protected/TPM key provider, expected-authority source, retry API, stopped/receipt forgery, or policy activation; preserve exact 54-root, 12-composite, six-pair-child, and 77 aggregate inventories, external STOP-SHIP limits, exit 78, 52 independently effective semantic mutations, and two independent full-versus-cfg(test) source-pin mutations; semantic base=${keyAgentServicePhaseTwoFCSemanticBaseResult}, pin base=${keyAgentServicePhaseTwoFCPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoFCSemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFCSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, pin probe count=${keyAgentServicePhaseTwoFCPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFCPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
+  `the separate Phase 2F-c dormant Windows logical/OS runtime composite must remain production-compiled, Windows-only, module-private, safe-only, move-only, and free of raw/type-erased authority escape; allocate a unique nonzero checked backend binding after writer acquisition; observe before authenticating exact Clean; preserve exact Active/Clean commit, reread/reload, stop, pair-bound release, no-receipt ambiguity, and checked terminal-retirement order; retain exact pair handles and full IDs/lengths/bytes through low-level release; map writer-retained versus writer-released failures exactly across sys/root/codec; carry fresh full-ID snapshots into each next CAS; admit only the separately gated private Phase 2G direct caller and expose no other direct/aliased caller, protected/TPM key provider, expected-authority source, retry API, stopped/receipt forgery, or policy activation; preserve exact 56-root, 12-composite, six-pair-child, and 77 aggregate inventories, external STOP-SHIP limits, exit 78, 52 independently effective semantic mutations, and two independent full-versus-cfg(test) source-pin mutations; semantic base=${keyAgentServicePhaseTwoFCSemanticBaseResult}, pin base=${keyAgentServicePhaseTwoFCPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoFCSemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFCSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, pin probe count=${keyAgentServicePhaseTwoFCPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFCPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
 );
 requireInvariant(
   keyAgentServicePhaseTwoGSemanticBaseResult &&
@@ -15279,7 +15517,7 @@ requireInvariant(
     keyAgentServicePhaseTwoGPinMutationResults.every(
       ({ changed, rejected }) => changed && rejected,
     ),
-  `the separate Phase 2G dormant Windows no-secret lifecycle compositor must preserve exact private type/function/facade surfaces, its sole direct internal Phase 2F-c caller edge and zero top-level caller, cause-neutral checked retirement, fresh-versus-carried Active checklist authority, listener-to-SCM-to-admission ordering, RuntimePolicy-only bounds and cleanup, exact Clean/reload/release/stopped classification, irreversible silent-78 evidence, test-only post-release fault isolation, safe move-only redacted authority, fixed 21-core/12-compositor/12-runtime/77-durable/54-root inventories, explicit external STOP-SHIP limits, disabled policies, no release-readiness claim, 46 independently effective semantic mutations, and three full/production/test source-pin mutations; semantic base=${keyAgentServicePhaseTwoGSemanticBaseResult}, pin base=${keyAgentServicePhaseTwoGPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoGSemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, pin probe count=${keyAgentServicePhaseTwoGPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
+  `the separate Phase 2G dormant Windows no-secret lifecycle compositor must preserve exact private type/function/facade surfaces, its sole direct internal Phase 2F-c caller edge and zero top-level caller, cause-neutral checked retirement, fresh-versus-carried Active checklist authority, listener-to-SCM-to-admission ordering, RuntimePolicy-only bounds and cleanup, exact Clean/reload/release/stopped classification, irreversible silent-78 evidence, test-only post-release fault isolation, safe move-only redacted authority, fixed 21-core/12-compositor/12-runtime/77-durable/56-root inventories, explicit external STOP-SHIP limits, disabled policies, no release-readiness claim, 46 independently effective semantic mutations, and three full/production/test source-pin mutations; semantic base=${keyAgentServicePhaseTwoGSemanticBaseResult}, pin base=${keyAgentServicePhaseTwoGPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoGSemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, pin probe count=${keyAgentServicePhaseTwoGPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
 );
 requireInvariant(
   keyAgentServicePhaseTwoEPinBaseResult &&
@@ -15287,7 +15525,7 @@ requireInvariant(
     keyAgentServicePhaseTwoEPinMutationResults.every(
       ({ changed, rejected }) => changed && rejected,
     ),
-  `the Phase 2E wrapper, its production partition, kernel sys adapter, its production partition, and external tests module must remain independently normalized-source-pinned with five effective full-versus-cfg(test) mutations; pin base=${keyAgentServicePhaseTwoEPinBaseResult}, root full=${normalizedSourceSha256(keyAgentServiceRunStateRoot)}, root production=${normalizedSourceSha256(withoutCfgTestItems(keyAgentServiceRunStateRoot))}, sys full=${normalizedSourceSha256(keyAgentServiceRunStateRootSys)}, sys production=${normalizedSourceSha256(withoutCfgTestItems(keyAgentServiceRunStateRootSys))}, tests full=${normalizedSourceSha256(keyAgentServiceRunStateRootTests)}, failed probe indexes=${JSON.stringify(keyAgentServicePhaseTwoEPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
+  `the Phase 2E wrapper, its production partition, kernel sys adapter, its production partition, and external tests module must remain independently normalized-source-pinned with five effective full-versus-cfg(test) mutations; pin base=${keyAgentServicePhaseTwoEPinBaseResult}, root full=${normalizedSourceSha256(keyAgentServiceRunStateRoot)}, root production=${normalizedSourceSha256(withoutCfgTestItems(keyAgentServiceRunStateRoot))}, sys full=${normalizedSourceSha256(keyAgentServiceRunStateRootSys)}, sys production=${normalizedSourceSha256(keyAgentServicePhaseTwoFBProductionPartition(keyAgentServiceRunStateRootSys))}, tests full=${normalizedSourceSha256(keyAgentServiceRunStateRootTests)}, failed probe indexes=${JSON.stringify(keyAgentServicePhaseTwoEPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
 );
 clearRustAnalysisCaches("key-agent-service-phase-two-family");
 
@@ -24686,14 +24924,14 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate has two deliberately different surfaces.",
-    sha256: "eb04d3a45166fce98e4b3509f2e8107c46adf7dfe97e91b88ae5ce1b76872b3a",
+    sha256: "4f80d63e20dec69e7c3c5cd0757611d1666eb94e87dcdee7315998ecf58a3590",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes a safe platform-neutral gate-byte",
-    sha256: "63f24ae3601dd3cd110f6d24120b5930c220710d43847da9fb228a20224a8aff",
+    sha256: "fe58538e21c95d35b0069f5035a3419e0a78d33ba27c9bb5b1d0deb0956f033b",
   },
   {
     path: "docs/security-decisions.md",
@@ -32710,13 +32948,23 @@ const keyAgentServiceWindowsLifecycleTestOnlyExternalModuleSpec = Object.freeze(
   targetPath:
     "crates/platform-windows/src/key_agent_service/windows_lifecycle_tests.rs",
 });
-const platformWindowsProductionCandidates = await rustProductionSources(
-  "crates/platform-windows/src",
-  { withoutInlineTests: true },
-);
+const keyAgentServicePhaseTwoFBProductionCandidate = (file) =>
+  file.path === keyAgentServiceRunStateRootSysPath
+    ? {
+        ...file,
+        source: keyAgentServicePhaseTwoFBProductionPartition(file.source),
+      }
+    : file;
+const platformWindowsProductionCandidates = (
+  await rustProductionSources("crates/platform-windows/src", {
+    withoutInlineTests: true,
+  })
+).map(keyAgentServicePhaseTwoFBProductionCandidate);
 const workspaceRustProductionCandidates = (
   await rustProductionSources("crates", { withoutInlineTests: true })
-).filter((file) => /^crates\/[^/]+\/src\//u.test(file.path));
+)
+  .filter((file) => /^crates\/[^/]+\/src\//u.test(file.path))
+  .map(keyAgentServicePhaseTwoFBProductionCandidate);
 const keyAgentServiceResolvedModuleInboundEdges = (files, targetPath) =>
   files.flatMap((file) => {
     const code = rustLexicalCode(file.source);
@@ -33604,7 +33852,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "b54eb62e92fa66c697cfd485be761a3ea7b9aa50faef26b2087e5175697c449d";
+  "72f80911f9f427a251002547fdd0e0b5e3fd1a3c5a6b542c9cad4eef85f3afca";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -54874,7 +55122,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service/run_state_root/sys.rs",
     unsafeCount: 70,
-    sha256: "054eb6b9949ffc40016fe479c20bfce198bd58fb9b3d00f24c3d9656158acedc",
+    sha256: "0b291a73940524e8c075b8d339ee6087852a434bc16bace5b79a4ad3c7f05ec8",
   },
   {
     path: "crates/platform-windows/src/key_agent_storage.rs",
@@ -63011,7 +63259,7 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "crates/platform-windows/README.md":
     "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
   "docs/architecture.md":
-    "eb04d3a45166fce98e4b3509f2e8107c46adf7dfe97e91b88ae5ce1b76872b3a",
+    "4f80d63e20dec69e7c3c5cd0757611d1666eb94e87dcdee7315998ecf58a3590",
   "docs/protocol-contract.md":
     "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "docs/security-decisions.md":
@@ -68880,7 +69128,7 @@ const currentDebuggerExitDocumentationContract = (documents) =>
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
   "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
-  "eb04d3a45166fce98e4b3509f2e8107c46adf7dfe97e91b88ae5ce1b76872b3a",
+  "4f80d63e20dec69e7c3c5cd0757611d1666eb94e87dcdee7315998ecf58a3590",
   "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "d36a5e3cb2544598cf8e1a97a8ff3a19a1a561dd5161d5cd3369be3fe4716656",
 ]);
@@ -78762,13 +79010,13 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "docs/architecture.md",
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
-    sha256: "eb04d3a45166fce98e4b3509f2e8107c46adf7dfe97e91b88ae5ce1b76872b3a",
+    sha256: "4f80d63e20dec69e7c3c5cd0757611d1666eb94e87dcdee7315998ecf58a3590",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
-    sha256: "63f24ae3601dd3cd110f6d24120b5930c220710d43847da9fb228a20224a8aff",
+    sha256: "fe58538e21c95d35b0069f5035a3419e0a78d33ba27c9bb5b1d0deb0956f033b",
   },
   {
     path: "docs/security-decisions.md",

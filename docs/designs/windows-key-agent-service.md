@@ -1604,6 +1604,18 @@ flags before it can supply leaf authority. A final file is `Missing`,
 and a separate zero-byte EOF probe. A staged record is written in one exact
 148-byte request, flushed with `FlushFileBuffers`, reread byte-for-byte, checked
 for the same full `FILE_ID_INFO`, and independently reinspected before rename.
+The production shape predicate is also exercised directly with the compressed
+and encrypted attribute bits, rather than relying only on the read-only and
+sparse kernel fixtures.
+
+Four deterministic, one-shot `cfg(test)` staging faults cover marker short
+write, marker flush failure, checkpoint short write, and checkpoint flush
+failure. Every case is consumed at its exact record/operation boundary, returns
+`RecordIo` as known-not-committed before any native rename attempt, leaves the
+rename count at zero, removes every temporary/final pair leaf through checked
+retirement, and leaves no armed fault. These synthetic branches prove the
+state-machine response to the reported short-write/flush outcomes; they are not
+evidence that NTFS naturally produced a short write, nor power-loss evidence.
 
 An observation clears only safe stale temps and then captures the two final
 leaves twice; a mismatch is terminal known-not-committed. Missing/missing and
@@ -1616,6 +1628,12 @@ checkpoint second. The marker replacement is confirmed by full identity and
 bytes before the checkpoint CAS and replacement; both temps must then be absent
 and both final identities and bytes must be the exact candidate. This is an
 ordered two-file protocol, not an atomic pair transaction.
+
+A test-only snapshot of the production variable-length rename packet fixes the
+current Windows x64 `FILE_RENAME_INFORMATION` ABI fields, alignment, offsets,
+packet/backing lengths, replace-if-exists bit, exact parent binding, and exact
+non-NUL-terminated UTF-16 payloads for both `marker.v1` and `checkpt.v1`. The
+snapshot does not widen the production API or expose a native handle.
 
 Every failure before the first native rename attempt is known-not-committed and
 retains only terminal retirement authority. From the first rename attempt
@@ -1630,15 +1648,17 @@ writer. Post-commit reread and ambiguity reload first revalidate the complete
 writer and independently reopen the pair; a mismatch never becomes committed
 evidence.
 
-The pre-Phase 2F-c focused root inventory is exactly 47 tests: 45 passed and the
+The pre-Phase 2F-c focused root inventory is exactly 49 tests: 47 passed and the
 two existing Phase 2E cases remain ignored after the seven separately gated
-Phase 2F-c release tests are excluded. The eleven tests attributed specifically
+Phase 2F-c release tests are excluded. The thirteen tests attributed specifically
 to Phase 2F-b are
 `fixed_pair_absent_commit_flushes_renames_and_independently_rereads`,
 `fixed_pair_existing_commit_replaces_both_full_identities`,
 `fixed_pair_leaf_set_and_from_birth_file_security_are_exact`,
 `fixed_pair_one_sided_malformed_and_hostile_temp_are_terminal_known_failures`,
 `fixed_pair_rejects_ads_and_forbidden_file_attributes`,
+`fixed_pair_staging_short_write_and_flush_failures_are_known_not_committed`,
+`fixed_pair_rename_packet_abi_and_leaf_payload_are_exact`,
 `fixed_pair_startup_cleans_safe_partial_temps_but_preserves_oversized`,
 `fixed_pair_full_id_second_cas_rejects_same_bytes_replacement_without_mutation`,
 `fixed_pair_first_rename_boundary_reload_and_close_poison_are_exact`,
@@ -1652,7 +1672,7 @@ The private `windows_pair` codec bridge has six further passing tests:
 `exact_expectation_requires_both_complete_canonical_records`,
 `expectation_debug_redacts_exact_envelopes`, and
 `authority_states_and_receipts_are_move_only`. The combined relevant inventory
-is therefore exactly 53 tests: 51 passed and two ignored.
+is therefore exactly 55 tests: 53 passed and two ignored.
 
 At the pre-Phase 2F-c boundary, the `windows_pair` child mapped the private
 148-byte durable codec envelopes into move-only fixed-pair expectations and
@@ -1663,11 +1683,12 @@ or normal-release authority. The separately gated Phase 2F-c composite below
 is now its sole production consumer and remains dormant; its sole
 production-compiled caller is the private Phase 2G compositor, which itself has
 no executable or top-level caller.
-Neither slice establishes pair atomicity or power-loss durability. Four direct
-evidence gaps remain explicit:
-a kernel negative test with a nonzero case-sensitive-directory flag; direct
-compressed and encrypted file-attribute branches; short-write and flush-failure
-injection; and ABI assertions for the variable-length rename packet. Those gaps,
+Neither slice establishes pair atomicity or power-loss durability. Direct
+compressed and encrypted attribute-policy branches, four deterministic
+synthetic short-write/flush-failure staging branches, and variable-length rename
+packet ABI/payload assertions are now covered. One direct evidence gap remains
+explicit: a kernel negative test with a nonzero case-sensitive-directory flag.
+That gap,
 actual elevated ProgramData/service-SID and installer from-birth evidence, SCM
 and restricted-token composition, trusted service/`SYSTEM` peer race analysis,
 supported-kernel crash/power-loss/reboot recovery, and TPM/authentication-key
@@ -1762,8 +1783,8 @@ The exact composite inventory is twelve passing tests:
 `durable_run_state` module inventory is 77/77 passing: 34 parent tests plus 25
 provisioning, six `windows_pair`, and twelve `windows_runtime` tests. The named
 pair and composite slices are therefore subsets of that module total, not
-additional disjoint counts. The kernel run-state-root suite is 54 total, with
-52 passing and the same two
+additional disjoint counts. The kernel run-state-root suite is 56 total, with
+54 passing and the same two
 environment-dependent tests ignored.
 
 This is still not a product runtime, pair-atomic transaction, or power-loss
@@ -1844,7 +1865,7 @@ escape. The exact compositor inventory is twelve passing tests:
 `retirement_fault_preserves_original_lifecycle_and_platform_cleanup_causes`, and
 `debug_and_source_surfaces_are_redacted_silent_and_path_handle_free`. The
 supporting evidence is also twelve passing `windows_runtime` tests, 77/77
-focused `durable_run_state` tests, and the 54-test kernel root suite with 52
+focused `durable_run_state` tests, and the 56-test kernel root suite with 54
 passing and the same two environment-dependent tests ignored.
 
 This remains composition evidence, not release activation. Actual listener and
