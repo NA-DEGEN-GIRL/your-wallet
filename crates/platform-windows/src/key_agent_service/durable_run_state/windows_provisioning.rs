@@ -18,7 +18,7 @@ use super::super::windows_pair::{
     WindowsPairReloadFailure, WindowsPairReloadRequired, WindowsPairRetired, WindowsPairWriter,
     WindowsPreparedPairCommit, WindowsReloadedPair, WindowsRereadPair,
 };
-use super::super::{FixtureRunStateAuthenticationKey, InstallationIdentity, RecoveryRequired};
+use super::super::{InstallationIdentity, RecoveryRequired, RunStateAuthenticationProvider};
 use super::{
     BackendBinding, CommittedInitialCleanMarker, FreshInstallProvisioningAuthority,
     InitialCleanCommittedWithWriter, InitialCleanReloadReceipt, InitialCleanReloadRequired,
@@ -26,8 +26,8 @@ use super::{
     ProvisioningFailureWithWriter, ProvisioningOperationBinding, ProvisioningRecoveryExitEvidence,
     ProvisioningWriterExitPending, ProvisioningWriterExitReceipt, ProvisioningWriterLease,
     ProvisioningWriterObservation, ProvisioningWriterReleaseReceipt, ReloadedInitialCleanState,
-    RereadInitialCleanMarker, UnprovisionedWithWriter, classify_initial_observation,
-    observation_is_exactly_empty,
+    RereadInitialCleanMarker, RunStateProviderIdentity, UnprovisionedWithWriter,
+    classify_initial_observation, observation_is_exactly_empty,
 };
 
 static NEXT_WINDOWS_PROVISIONING_BINDING: AtomicU64 = AtomicU64::new(1);
@@ -80,23 +80,22 @@ const fn backend_reason(cause: ServiceRunStateError) -> RecoveryRequired {
     }
 }
 
-/// Move-only fresh-install authority. Production code can name and consume it,
-/// but this module deliberately provides no production constructor.
-#[must_use = "fresh-install authority must be consumed by Windows provisioning"]
-pub(in crate::key_agent_service) struct WindowsFreshInstallAuthority<'key> {
-    installation: InstallationIdentity,
-    key: &'key FixtureRunStateAuthenticationKey,
+/// Move-only installer grant sealed to one exact provider identity.
+///
+/// Production code can name and consume the grant, but this module deliberately
+/// provides no production constructor.
+#[must_use = "the installer provisioning grant must be bound or retained"]
+pub(in crate::key_agent_service) struct WindowsInstallerProvisioningGrant {
+    expected_provider: RunStateProviderIdentity,
     attempt: NonZeroU64,
     _sealed: (),
 }
 
 #[cfg(test)]
-impl<'key> WindowsFreshInstallAuthority<'key> {
-    /// Constructs only the bounded current-user installation surrogate used by
-    /// kernel-backed tests. It is absent from production compilation.
+impl WindowsInstallerProvisioningGrant {
+    /// Seals one bounded current-user fixture attempt to the exact provider.
     pub(in crate::key_agent_service) fn for_current_user_fixture(
-        installation: InstallationIdentity,
-        key: &'key FixtureRunStateAuthenticationKey,
+        provider: &RunStateAuthenticationProvider,
     ) -> Result<Self, RecoveryRequired> {
         let value = NEXT_WINDOWS_PROVISIONING_ATTEMPT
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
@@ -106,12 +105,75 @@ impl<'key> WindowsFreshInstallAuthority<'key> {
         let attempt =
             NonZeroU64::new(value).ok_or(RecoveryRequired::ProvisioningAttemptExhausted)?;
         Ok(Self {
-            installation,
-            key,
+            expected_provider: provider.identity(),
             attempt,
             _sealed: (),
         })
     }
+}
+
+impl fmt::Debug for WindowsInstallerProvisioningGrant {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("WindowsInstallerProvisioningGrant([REDACTED])")
+    }
+}
+
+/// Exact provider/grant binding failure retaining the consumed installer grant.
+#[must_use = "a rejected installer grant must be retained or rebound"]
+pub(in crate::key_agent_service) struct WindowsFreshInstallAuthorityBindingFailure {
+    reason: RecoveryRequired,
+    grant: WindowsInstallerProvisioningGrant,
+}
+
+impl WindowsFreshInstallAuthorityBindingFailure {
+    pub(in crate::key_agent_service) const fn reason(&self) -> RecoveryRequired {
+        self.reason
+    }
+
+    pub(in crate::key_agent_service) fn into_grant(self) -> WindowsInstallerProvisioningGrant {
+        self.grant
+    }
+}
+
+impl fmt::Debug for WindowsFreshInstallAuthorityBindingFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WindowsFreshInstallAuthorityBindingFailure")
+            .field("reason", &self.reason)
+            .field("grant", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Binds one sealed installer grant to its exact provider.
+#[allow(clippy::result_large_err)] // Failure retains the move-only grant inline.
+pub(in crate::key_agent_service) fn bind_windows_fresh_install_authority(
+    provider: &RunStateAuthenticationProvider,
+    grant: WindowsInstallerProvisioningGrant,
+) -> Result<WindowsFreshInstallAuthority<'_>, WindowsFreshInstallAuthorityBindingFailure> {
+    if grant.expected_provider != provider.identity() {
+        return Err(WindowsFreshInstallAuthorityBindingFailure {
+            reason: RecoveryRequired::AuthenticationFailed,
+            grant,
+        });
+    }
+    Ok(WindowsFreshInstallAuthority {
+        installation: provider.installation(),
+        provider,
+        provider_identity: grant.expected_provider,
+        attempt: grant.attempt,
+        _sealed: (),
+    })
+}
+
+/// Move-only fresh-install authority. Only exact grant binding can construct it.
+#[must_use = "fresh-install authority must be consumed by Windows provisioning"]
+pub(in crate::key_agent_service) struct WindowsFreshInstallAuthority<'provider> {
+    installation: InstallationIdentity,
+    provider: &'provider RunStateAuthenticationProvider,
+    provider_identity: RunStateProviderIdentity,
+    attempt: NonZeroU64,
+    _sealed: (),
 }
 
 impl fmt::Debug for WindowsFreshInstallAuthority<'_> {
@@ -140,9 +202,9 @@ pub(in crate::key_agent_service) fn start_windows_initial_provisioning(
 /// Start failure split by whether the private logical binding was allocated.
 #[must_use = "a failed Windows provisioning start must be terminally retired"]
 #[allow(clippy::large_enum_variant)] // Inline authority avoids fallible allocation.
-pub(in crate::key_agent_service) enum WindowsInitialProvisioningStartFailure<'key> {
-    Binding(WindowsProvisioningBindingFailure),
-    Terminal(WindowsProvisioningTerminalFailure<'key>),
+pub(in crate::key_agent_service) enum WindowsInitialProvisioningStartFailure<'provider> {
+    Binding(WindowsProvisioningBindingFailure<'provider>),
+    Terminal(WindowsProvisioningTerminalFailure<'provider>),
 }
 
 impl WindowsInitialProvisioningStartFailure<'_> {
@@ -167,26 +229,40 @@ impl fmt::Debug for WindowsInitialProvisioningStartFailure<'_> {
 /// Binding allocation failed after the OS writer was transferred. No logical
 /// authority exists, so only direct pair retirement remains.
 #[must_use = "the unbound provisioning writer must be retired"]
-pub(in crate::key_agent_service) struct WindowsProvisioningBindingFailure {
+pub(in crate::key_agent_service) struct WindowsProvisioningBindingFailure<'provider> {
     reason: RecoveryRequired,
     pair: WindowsPairWriter,
+    authority: WindowsFreshInstallAuthority<'provider>,
 }
 
-impl WindowsProvisioningBindingFailure {
+impl<'provider> WindowsProvisioningBindingFailure<'provider> {
     pub(in crate::key_agent_service) const fn reason(&self) -> RecoveryRequired {
         self.reason
     }
 
     pub(in crate::key_agent_service) fn retire(
         self,
-    ) -> Result<WindowsProvisioningUnboundRetired, ServiceRunStateError> {
-        self.pair
-            .retire()
-            .map(|pair| WindowsProvisioningUnboundRetired { _pair: pair })
+    ) -> Result<
+        WindowsProvisioningUnboundRetired<'provider>,
+        WindowsProvisioningUnboundRetirementFailure<'provider>,
+    > {
+        let Self {
+            pair, authority, ..
+        } = self;
+        match pair.retire() {
+            Ok(pair) => Ok(WindowsProvisioningUnboundRetired {
+                _pair: pair,
+                _authority: authority,
+            }),
+            Err(cause) => Err(WindowsProvisioningUnboundRetirementFailure {
+                cause,
+                _authority: authority,
+            }),
+        }
     }
 }
 
-impl fmt::Debug for WindowsProvisioningBindingFailure {
+impl fmt::Debug for WindowsProvisioningBindingFailure<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("WindowsProvisioningBindingFailure")
@@ -197,58 +273,112 @@ impl fmt::Debug for WindowsProvisioningBindingFailure {
 }
 
 /// Terminal receipt for an unbound writer retirement.
-pub(in crate::key_agent_service) struct WindowsProvisioningUnboundRetired {
+pub(in crate::key_agent_service) struct WindowsProvisioningUnboundRetired<'provider> {
     _pair: WindowsPairRetired,
+    _authority: WindowsFreshInstallAuthority<'provider>,
 }
 
-impl fmt::Debug for WindowsProvisioningUnboundRetired {
+impl fmt::Debug for WindowsProvisioningUnboundRetired<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("WindowsProvisioningUnboundRetired")
     }
 }
 
+/// Terminal backend failure that still retains the fresh-install authority.
+#[must_use = "failed unbound retirement retains fresh-install authority"]
+pub(in crate::key_agent_service) struct WindowsProvisioningUnboundRetirementFailure<'provider> {
+    cause: ServiceRunStateError,
+    _authority: WindowsFreshInstallAuthority<'provider>,
+}
+
+impl WindowsProvisioningUnboundRetirementFailure<'_> {
+    pub(in crate::key_agent_service) const fn cause(&self) -> ServiceRunStateError {
+        self.cause
+    }
+}
+
+impl fmt::Debug for WindowsProvisioningUnboundRetirementFailure<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WindowsProvisioningUnboundRetirementFailure")
+            .field("cause", &self.cause)
+            .field("authority", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl fmt::Display for WindowsProvisioningUnboundRetirementFailure<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "unbound provisioning writer retirement failed: {}",
+            self.cause
+        )
+    }
+}
+
+impl std::error::Error for WindowsProvisioningUnboundRetirementFailure<'_> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
+    }
+}
+
 /// Writer-first internal state before the required fresh pair observation.
 #[must_use = "the acquired provisioning writer must observe or retire"]
-struct WindowsProvisioningWriterAcquired<'key> {
-    authority: FreshInstallProvisioningAuthority<'key>,
+struct WindowsProvisioningWriterAcquired<'provider> {
+    authority: FreshInstallProvisioningAuthority<'provider>,
     lease: ProvisioningWriterLease,
     pair: WindowsPairWriter,
 }
 
-impl<'key> WindowsProvisioningWriterAcquired<'key> {
+impl<'provider> WindowsProvisioningWriterAcquired<'provider> {
     #[allow(clippy::large_types_passed_by_value)]
     #[allow(clippy::result_large_err)]
     #[allow(clippy::needless_pass_by_value)] // Consumes the move-only fresh-install capability.
     fn from_held_writer(
         writer: HeldServiceRunStateWriter,
-        authority: WindowsFreshInstallAuthority<'key>,
-    ) -> Result<Self, WindowsProvisioningBindingFailure> {
+        authority: WindowsFreshInstallAuthority<'provider>,
+    ) -> Result<Self, WindowsProvisioningBindingFailure<'provider>> {
         let pair = WindowsPairWriter::from_held_writer(writer);
         let attempt = authority.attempt;
         let binding = loop {
             match allocate_windows_provisioning_value() {
                 Ok(binding) if binding != attempt => break binding,
                 Ok(_) => {}
-                Err(reason) => return Err(WindowsProvisioningBindingFailure { reason, pair }),
+                Err(reason) => {
+                    return Err(WindowsProvisioningBindingFailure {
+                        reason,
+                        pair,
+                        authority,
+                    });
+                }
             }
         };
         let epoch = loop {
             match allocate_windows_provisioning_value() {
                 Ok(epoch) if epoch != attempt && epoch != binding => break epoch,
                 Ok(_) => {}
-                Err(reason) => return Err(WindowsProvisioningBindingFailure { reason, pair }),
+                Err(reason) => {
+                    return Err(WindowsProvisioningBindingFailure {
+                        reason,
+                        pair,
+                        authority,
+                    });
+                }
             }
         };
         let WindowsFreshInstallAuthority {
             installation,
-            key,
+            provider,
+            provider_identity,
             attempt,
             ..
         } = authority;
         let backend = BackendBinding(binding);
         Ok(Self {
             authority: FreshInstallProvisioningAuthority {
-                key,
+                provider,
+                provider_identity,
                 installation,
                 binding: backend,
                 attempt,
@@ -266,8 +396,10 @@ impl<'key> WindowsProvisioningWriterAcquired<'key> {
     #[allow(clippy::result_large_err)]
     fn observe_empty(
         self,
-    ) -> Result<WindowsUnprovisionedWithWriter<'key>, WindowsProvisioningTerminalFailure<'key>>
-    {
+    ) -> Result<
+        WindowsUnprovisionedWithWriter<'provider>,
+        WindowsProvisioningTerminalFailure<'provider>,
+    > {
         let Self {
             authority,
             lease,
@@ -300,7 +432,7 @@ impl<'key> WindowsProvisioningWriterAcquired<'key> {
         Ok(WindowsUnprovisionedWithWriter { logical, pair })
     }
 
-    fn into_retirement(self) -> WindowsProvisioningRetirementPending<'key> {
+    fn into_retirement(self) -> WindowsProvisioningRetirementPending<'provider> {
         let Self {
             authority,
             lease,
@@ -321,17 +453,19 @@ impl fmt::Debug for WindowsProvisioningWriterAcquired<'_> {
 
 /// Exact Missing/Missing observation bound to the provisioning writer.
 #[must_use = "the unprovisioned writer must prepare Clean or retire"]
-pub(in crate::key_agent_service) struct WindowsUnprovisionedWithWriter<'key> {
-    logical: UnprovisionedWithWriter<'key>,
+pub(in crate::key_agent_service) struct WindowsUnprovisionedWithWriter<'provider> {
+    logical: UnprovisionedWithWriter<'provider>,
     pair: WindowsObservedPair,
 }
 
-impl<'key> WindowsUnprovisionedWithWriter<'key> {
+impl<'provider> WindowsUnprovisionedWithWriter<'provider> {
     #[allow(clippy::result_large_err)]
     pub(in crate::key_agent_service) fn prepare_initial_clean(
         self,
-    ) -> Result<WindowsPreparedInitialCleanTransition<'key>, WindowsProvisioningTerminalFailure<'key>>
-    {
+    ) -> Result<
+        WindowsPreparedInitialCleanTransition<'provider>,
+        WindowsProvisioningTerminalFailure<'provider>,
+    > {
         let Self { logical, pair } = self;
         let logical = match logical.prepare_initial_clean() {
             Ok(logical) => logical,
@@ -357,7 +491,7 @@ impl<'key> WindowsUnprovisionedWithWriter<'key> {
 
     pub(in crate::key_agent_service) fn into_retirement(
         self,
-    ) -> WindowsProvisioningRetirementPending<'key> {
+    ) -> WindowsProvisioningRetirementPending<'provider> {
         WindowsProvisioningRetirementPending::new(
             self.logical.into_writer_exit(),
             WindowsProvisioningTerminalPair::Observed(self.pair),
@@ -373,15 +507,15 @@ impl fmt::Debug for WindowsUnprovisionedWithWriter<'_> {
 
 /// Canonical Clean/generation-one candidate awaiting one pair commit.
 #[must_use = "the prepared initial Clean transition must commit or retire"]
-pub(in crate::key_agent_service) struct WindowsPreparedInitialCleanTransition<'key> {
-    logical: PreparedInitialCleanTransition<'key>,
+pub(in crate::key_agent_service) struct WindowsPreparedInitialCleanTransition<'provider> {
+    logical: PreparedInitialCleanTransition<'provider>,
     pair: WindowsPreparedPairCommit,
 }
 
-impl<'key> WindowsPreparedInitialCleanTransition<'key> {
+impl<'provider> WindowsPreparedInitialCleanTransition<'provider> {
     pub(in crate::key_agent_service) fn commit_and_reread(
         self,
-    ) -> WindowsInitialCleanCommitOutcome<'key> {
+    ) -> WindowsInitialCleanCommitOutcome<'provider> {
         let Self { logical, pair } = self;
         if let Err(reason) = logical.operation.begin_commit() {
             return WindowsInitialCleanCommitOutcome::Terminal(
@@ -420,7 +554,7 @@ impl<'key> WindowsPreparedInitialCleanTransition<'key> {
 
     pub(in crate::key_agent_service) fn into_retirement(
         self,
-    ) -> WindowsProvisioningRetirementPending<'key> {
+    ) -> WindowsProvisioningRetirementPending<'provider> {
         WindowsProvisioningRetirementPending::new(
             self.logical.into_writer_exit(),
             WindowsProvisioningTerminalPair::Prepared(self.pair),
@@ -503,22 +637,24 @@ impl fmt::Debug for WindowsPreparedInitialCleanTransition<'_> {
 /// Complete consuming outcome of the initial pair commit and independent reread.
 #[must_use = "the initial Clean outcome retains terminal authority"]
 #[allow(clippy::large_enum_variant)]
-pub(in crate::key_agent_service) enum WindowsInitialCleanCommitOutcome<'key> {
-    Committed(WindowsInitialCleanCommittedWithWriter<'key>),
-    ReloadRequired(WindowsInitialCleanReloadRequired<'key>),
-    Terminal(WindowsProvisioningTerminalFailure<'key>),
+pub(in crate::key_agent_service) enum WindowsInitialCleanCommitOutcome<'provider> {
+    Committed(WindowsInitialCleanCommittedWithWriter<'provider>),
+    ReloadRequired(WindowsInitialCleanReloadRequired<'provider>),
+    Terminal(WindowsProvisioningTerminalFailure<'provider>),
 }
 
 /// Unresolved initial commit ambiguity. Only fresh reload or retirement is
 /// available; confirmed-commit reread failures never enter this state.
 #[must_use = "initial Clean ambiguity must reload or retire"]
-pub(in crate::key_agent_service) struct WindowsInitialCleanReloadRequired<'key> {
-    logical: InitialCleanReloadRequired<'key>,
+pub(in crate::key_agent_service) struct WindowsInitialCleanReloadRequired<'provider> {
+    logical: InitialCleanReloadRequired<'provider>,
     pair: WindowsPairReloadRequired,
 }
 
-impl<'key> WindowsInitialCleanReloadRequired<'key> {
-    pub(in crate::key_agent_service) fn reload(self) -> WindowsInitialCleanReloadOutcome<'key> {
+impl<'provider> WindowsInitialCleanReloadRequired<'provider> {
+    pub(in crate::key_agent_service) fn reload(
+        self,
+    ) -> WindowsInitialCleanReloadOutcome<'provider> {
         let Self { logical, pair } = self;
         let pair = match pair.reload() {
             Ok(pair) => pair,
@@ -581,7 +717,7 @@ impl<'key> WindowsInitialCleanReloadRequired<'key> {
 
     pub(in crate::key_agent_service) fn into_retirement(
         self,
-    ) -> WindowsProvisioningRetirementPending<'key> {
+    ) -> WindowsProvisioningRetirementPending<'provider> {
         WindowsProvisioningRetirementPending::new(
             self.logical.into_writer_exit(),
             WindowsProvisioningTerminalPair::Ambiguous(self.pair),
@@ -598,38 +734,40 @@ impl fmt::Debug for WindowsInitialCleanReloadRequired<'_> {
 /// Exact classification of one fresh ambiguity reload.
 #[must_use = "the initial Clean reload outcome retains terminal authority"]
 #[allow(clippy::large_enum_variant)]
-pub(in crate::key_agent_service) enum WindowsInitialCleanReloadOutcome<'key> {
-    Retry(WindowsUnprovisionedWithWriter<'key>),
-    Committed(WindowsInitialCleanCommittedWithWriter<'key>),
-    Terminal(WindowsProvisioningTerminalFailure<'key>),
+pub(in crate::key_agent_service) enum WindowsInitialCleanReloadOutcome<'provider> {
+    Retry(WindowsUnprovisionedWithWriter<'provider>),
+    Committed(WindowsInitialCleanCommittedWithWriter<'provider>),
+    Terminal(WindowsProvisioningTerminalFailure<'provider>),
 }
 
 /// Authenticated generation-one Clean state still holding the provisioning
 /// writer and the independently reread pair identities.
 #[must_use = "committed initial Clean must release or retire"]
-pub(in crate::key_agent_service) struct WindowsInitialCleanCommittedWithWriter<'key> {
-    logical: InitialCleanCommittedWithWriter<'key>,
+pub(in crate::key_agent_service) struct WindowsInitialCleanCommittedWithWriter<'provider> {
+    logical: InitialCleanCommittedWithWriter<'provider>,
     pair: WindowsObservedPair,
 }
 
-impl<'key> WindowsInitialCleanCommittedWithWriter<'key> {
+impl<'provider> WindowsInitialCleanCommittedWithWriter<'provider> {
     pub(in crate::key_agent_service) const fn generation(&self) -> NonZeroU64 {
         self.logical.generation()
     }
 
-    pub(in crate::key_agent_service) fn release(self) -> WindowsProvisioningReleaseOutcome<'key> {
+    pub(in crate::key_agent_service) fn release(
+        self,
+    ) -> WindowsProvisioningReleaseOutcome<'provider> {
         self.release_inner()
     }
 
     #[cfg(test)]
     pub(in crate::key_agent_service) fn release_with_post_release_fault_for_test(
         self,
-    ) -> WindowsProvisioningReleaseOutcome<'key> {
+    ) -> WindowsProvisioningReleaseOutcome<'provider> {
         let _fault = PostReleaseProvisioningReceiptFaultGuard::arm();
         self.release_inner()
     }
 
-    fn release_inner(self) -> WindowsProvisioningReleaseOutcome<'key> {
+    fn release_inner(self) -> WindowsProvisioningReleaseOutcome<'provider> {
         let Self { logical, pair } = self;
         if pair.observation() != logical.durable.bytes.observation() {
             return WindowsProvisioningReleaseOutcome::Terminal(
@@ -679,7 +817,7 @@ impl<'key> WindowsInitialCleanCommittedWithWriter<'key> {
 
     pub(in crate::key_agent_service) fn into_retirement(
         self,
-    ) -> WindowsProvisioningRetirementPending<'key> {
+    ) -> WindowsProvisioningRetirementPending<'provider> {
         WindowsProvisioningRetirementPending::new(
             self.logical.into_writer_exit(),
             WindowsProvisioningTerminalPair::Observed(self.pair),
@@ -745,29 +883,29 @@ impl fmt::Debug for WindowsInitialCleanCommittedWithWriter<'_> {
 /// normal receipt; the other variants expose no reusable writer.
 #[must_use = "the provisioning release outcome must be handled explicitly"]
 #[allow(clippy::large_enum_variant)]
-pub(in crate::key_agent_service) enum WindowsProvisioningReleaseOutcome<'key> {
-    Provisioned(WindowsProvisionedRunState),
-    Terminal(WindowsProvisioningTerminalFailure<'key>),
-    ReleasedNoReceipt(WindowsProvisioningReleasedNoReceipt<'key>),
-    PostReleaseTerminal(WindowsPostReleaseProvisioningTerminal<'key>),
+pub(in crate::key_agent_service) enum WindowsProvisioningReleaseOutcome<'provider> {
+    Provisioned(WindowsProvisionedRunState<'provider>),
+    Terminal(WindowsProvisioningTerminalFailure<'provider>),
+    ReleasedNoReceipt(WindowsProvisioningReleasedNoReceipt<'provider>),
+    PostReleaseTerminal(WindowsPostReleaseProvisioningTerminal<'provider>),
 }
 
 /// Opaque proof that Clean/generation-one provisioning and exact pair-bound
 /// writer release completed. It exposes only generation and cannot become Boot
 /// evidence or return a writer/handle.
 #[must_use = "provisioned state is terminal evidence, not runtime authority"]
-pub(in crate::key_agent_service) struct WindowsProvisionedRunState {
-    logical: ProvisionedRunState,
+pub(in crate::key_agent_service) struct WindowsProvisionedRunState<'provider> {
+    logical: ProvisionedRunState<'provider>,
     _pair: WindowsPairReleased,
 }
 
-impl WindowsProvisionedRunState {
+impl WindowsProvisionedRunState<'_> {
     pub(in crate::key_agent_service) const fn generation(&self) -> NonZeroU64 {
         self.logical.generation()
     }
 }
 
-impl fmt::Debug for WindowsProvisionedRunState {
+impl fmt::Debug for WindowsProvisionedRunState<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("WindowsProvisionedRunState([REDACTED])")
     }
@@ -776,10 +914,10 @@ impl fmt::Debug for WindowsProvisionedRunState {
 /// Irreversible close ambiguity after the OS writer was released. No retry,
 /// checked-retirement, or provisioned conversion exists.
 #[must_use = "released-without-receipt is irreversible terminal evidence"]
-pub(in crate::key_agent_service) struct WindowsProvisioningReleasedNoReceipt<'key> {
+pub(in crate::key_agent_service) struct WindowsProvisioningReleasedNoReceipt<'provider> {
     reason: RecoveryRequired,
     cause: ServiceRunStateError,
-    _logical: ProvisioningWriterExitPending<'key>,
+    _logical: ProvisioningWriterExitPending<'provider>,
     _pair: WindowsPairReleaseAfterWriter,
 }
 
@@ -807,9 +945,9 @@ impl fmt::Debug for WindowsProvisioningReleasedNoReceipt<'_> {
 /// The OS produced a checked pair receipt, but logical completion failed after
 /// release. No writer or normal/retirement API remains.
 #[must_use = "post-release provisioning failure is irreversible"]
-pub(in crate::key_agent_service) struct WindowsPostReleaseProvisioningTerminal<'key> {
+pub(in crate::key_agent_service) struct WindowsPostReleaseProvisioningTerminal<'provider> {
     reason: RecoveryRequired,
-    _logical: ProvisioningWriterExitPending<'key>,
+    _logical: ProvisioningWriterExitPending<'provider>,
     _pair: WindowsPairReleased,
 }
 
@@ -894,8 +1032,8 @@ impl fmt::Debug for WindowsProvisioningTerminalCause {
 
 /// Reason-neutral ownership of the logical writer exit and exact OS pair.
 #[must_use = "provisioning retirement must be checked exactly once"]
-pub(in crate::key_agent_service) struct WindowsProvisioningRetirementPending<'key> {
-    logical: ProvisioningWriterExitPending<'key>,
+pub(in crate::key_agent_service) struct WindowsProvisioningRetirementPending<'provider> {
+    logical: ProvisioningWriterExitPending<'provider>,
     pair: WindowsProvisioningTerminalPair,
 }
 
@@ -907,9 +1045,9 @@ enum WindowsProvisioningRetirementStage {
     LogicalComplete,
 }
 
-impl<'key> WindowsProvisioningRetirementPending<'key> {
+impl<'provider> WindowsProvisioningRetirementPending<'provider> {
     const fn new(
-        logical: ProvisioningWriterExitPending<'key>,
+        logical: ProvisioningWriterExitPending<'provider>,
         pair: WindowsProvisioningTerminalPair,
     ) -> Self {
         Self { logical, pair }
@@ -920,8 +1058,10 @@ impl<'key> WindowsProvisioningRetirementPending<'key> {
     #[allow(clippy::result_large_err)]
     pub(in crate::key_agent_service) fn retire_checked(
         self,
-    ) -> Result<WindowsProvisioningCheckedRetired, WindowsProvisioningCheckedRetirementFailure<'key>>
-    {
+    ) -> Result<
+        WindowsProvisioningCheckedRetired<'provider>,
+        WindowsProvisioningCheckedRetirementFailure<'provider>,
+    > {
         let Self { logical, pair } = self;
         if logical.operation.begin_release().is_err() {
             let cause = pair.retire().err().unwrap_or(ServiceRunStateError::Release);
@@ -978,12 +1118,12 @@ impl fmt::Debug for WindowsProvisioningRetirementPending<'_> {
 /// Exact reason-neutral checked retirement evidence. It has no normal
 /// lifecycle conversion.
 #[must_use = "checked provisioning retirement is terminal evidence"]
-pub(in crate::key_agent_service) struct WindowsProvisioningCheckedRetired {
-    _logical: ProvisioningRecoveryExitEvidence,
+pub(in crate::key_agent_service) struct WindowsProvisioningCheckedRetired<'provider> {
+    _logical: ProvisioningRecoveryExitEvidence<'provider>,
     _pair: WindowsPairRetired,
 }
 
-impl fmt::Debug for WindowsProvisioningCheckedRetired {
+impl fmt::Debug for WindowsProvisioningCheckedRetired<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("WindowsProvisioningCheckedRetired([REDACTED])")
     }
@@ -992,17 +1132,17 @@ impl fmt::Debug for WindowsProvisioningCheckedRetired {
 /// Irreversible checked-retirement failure. Pair authority was consumed, so no
 /// retry or normal receipt can follow.
 #[must_use = "checked-retirement failure is irreversible"]
-pub(in crate::key_agent_service) struct WindowsProvisioningCheckedRetirementFailure<'key> {
+pub(in crate::key_agent_service) struct WindowsProvisioningCheckedRetirementFailure<'provider> {
     stage: WindowsProvisioningRetirementStage,
     cause: ServiceRunStateError,
-    _logical: ProvisioningWriterExitPending<'key>,
+    _logical: ProvisioningWriterExitPending<'provider>,
 }
 
-impl<'key> WindowsProvisioningCheckedRetirementFailure<'key> {
+impl<'provider> WindowsProvisioningCheckedRetirementFailure<'provider> {
     const fn new(
         stage: WindowsProvisioningRetirementStage,
         cause: ServiceRunStateError,
-        logical: ProvisioningWriterExitPending<'key>,
+        logical: ProvisioningWriterExitPending<'provider>,
     ) -> Self {
         Self {
             stage,
@@ -1042,16 +1182,16 @@ impl fmt::Debug for WindowsProvisioningCheckedRetirementFailure<'_> {
 
 /// Terminal cause paired with the sole reason-neutral checked-retirement seam.
 #[must_use = "terminal provisioning failure must be explicitly retired"]
-pub(in crate::key_agent_service) struct WindowsProvisioningTerminalFailure<'key> {
+pub(in crate::key_agent_service) struct WindowsProvisioningTerminalFailure<'provider> {
     cause: WindowsProvisioningTerminalCause,
-    retirement: WindowsProvisioningRetirementPending<'key>,
+    retirement: WindowsProvisioningRetirementPending<'provider>,
 }
 
-impl<'key> WindowsProvisioningTerminalFailure<'key> {
+impl<'provider> WindowsProvisioningTerminalFailure<'provider> {
     fn new(
         recovery: RecoveryRequired,
         platform: Option<ServiceRunStateError>,
-        logical: ProvisioningWriterExitPending<'key>,
+        logical: ProvisioningWriterExitPending<'provider>,
         pair: WindowsProvisioningTerminalPair,
     ) -> Self {
         Self {
@@ -1061,7 +1201,7 @@ impl<'key> WindowsProvisioningTerminalFailure<'key> {
     }
 
     fn from_logical(
-        failure: ProvisioningFailureWithWriter<'key>,
+        failure: ProvisioningFailureWithWriter<'provider>,
         pair: WindowsProvisioningTerminalPair,
     ) -> Self {
         let reason = failure.reason();
@@ -1082,7 +1222,7 @@ impl<'key> WindowsProvisioningTerminalFailure<'key> {
         self,
     ) -> (
         WindowsProvisioningTerminalCause,
-        WindowsProvisioningRetirementPending<'key>,
+        WindowsProvisioningRetirementPending<'provider>,
     ) {
         (self.cause, self.retirement)
     }
@@ -1117,29 +1257,38 @@ mod tests {
         InstallationIdentity::from_fixed_bytes([byte; 32])
     }
 
-    fn test_key(byte: u8) -> Result<FixtureRunStateAuthenticationKey, RecoveryRequired> {
-        FixtureRunStateAuthenticationKey::from_fixture_bytes([byte; 32])
+    fn test_provider(
+        installation: InstallationIdentity,
+        byte: u8,
+    ) -> Result<RunStateAuthenticationProvider, RecoveryRequired> {
+        RunStateAuthenticationProvider::from_fixture_bytes(installation, [byte; 32])
     }
 
     fn initial_snapshot(
         installation: InstallationIdentity,
-        key: &FixtureRunStateAuthenticationKey,
+        provider: &RunStateAuthenticationProvider,
     ) -> Result<CanonicalSnapshot, RecoveryRequired> {
+        if installation != provider.installation() {
+            return Err(RecoveryRequired::InstallationIdentityMismatch);
+        }
         build_snapshot(
             RunMarkerState::Clean,
             NonZeroU64::MIN,
-            installation,
             Commitment::ZERO,
-            key,
+            provider,
         )
         .map(|durable| durable.bytes)
     }
 
     fn fixture_authority(
         installation: InstallationIdentity,
-        key: &FixtureRunStateAuthenticationKey,
+        provider: &RunStateAuthenticationProvider,
     ) -> Result<WindowsFreshInstallAuthority<'_>, RecoveryRequired> {
-        WindowsFreshInstallAuthority::for_current_user_fixture(installation, key)
+        if installation != provider.installation() {
+            return Err(RecoveryRequired::InstallationIdentityMismatch);
+        }
+        let grant = WindowsInstallerProvisioningGrant::for_current_user_fixture(provider)?;
+        bind_windows_fresh_install_authority(provider, grant).map_err(|failure| failure.reason())
     }
 
     fn retire_pending(pending: WindowsProvisioningRetirementPending<'_>) -> TestResult {
@@ -1159,19 +1308,21 @@ mod tests {
         retire_pending(pending)
     }
 
-    fn start<'key>(
+    fn start<'provider>(
         fixture: &RuntimePairFixture,
         installation: InstallationIdentity,
-        key: &'key FixtureRunStateAuthenticationKey,
-    ) -> TestResultWith<WindowsUnprovisionedWithWriter<'key>> {
+        provider: &'provider RunStateAuthenticationProvider,
+    ) -> TestResultWith<WindowsUnprovisionedWithWriter<'provider>> {
         match start_windows_initial_provisioning(
             fixture.acquire_writer()?,
-            fixture_authority(installation, key)?,
+            fixture_authority(installation, provider)?,
         ) {
             Ok(unprovisioned) => Ok(unprovisioned),
             Err(WindowsInitialProvisioningStartFailure::Binding(failure)) => {
                 let reason = failure.reason();
-                let _retired = failure.retire()?;
+                let _retired = failure
+                    .retire()
+                    .map_err(|failure| std::io::Error::other(format!("{failure:?}")))?;
                 Err(reason.into())
             }
             Err(WindowsInitialProvisioningStartFailure::Terminal(failure)) => {
@@ -1182,12 +1333,12 @@ mod tests {
         }
     }
 
-    fn prepare<'key>(
+    fn prepare<'provider>(
         fixture: &RuntimePairFixture,
         installation: InstallationIdentity,
-        key: &'key FixtureRunStateAuthenticationKey,
-    ) -> TestResultWith<WindowsPreparedInitialCleanTransition<'key>> {
-        match start(fixture, installation, key)?.prepare_initial_clean() {
+        provider: &'provider RunStateAuthenticationProvider,
+    ) -> TestResultWith<WindowsPreparedInitialCleanTransition<'provider>> {
+        match start(fixture, installation, provider)?.prepare_initial_clean() {
             Ok(prepared) => Ok(prepared),
             Err(failure) => {
                 let reason = failure.reason();
@@ -1197,12 +1348,12 @@ mod tests {
         }
     }
 
-    fn exact_committed<'key>(
+    fn exact_committed<'provider>(
         fixture: &RuntimePairFixture,
         installation: InstallationIdentity,
-        key: &'key FixtureRunStateAuthenticationKey,
-    ) -> TestResultWith<WindowsInitialCleanCommittedWithWriter<'key>> {
-        match prepare(fixture, installation, key)?.commit_and_reread() {
+        provider: &'provider RunStateAuthenticationProvider,
+    ) -> TestResultWith<WindowsInitialCleanCommittedWithWriter<'provider>> {
+        match prepare(fixture, installation, provider)?.commit_and_reread() {
             WindowsInitialCleanCommitOutcome::Committed(committed) => Ok(committed),
             WindowsInitialCleanCommitOutcome::ReloadRequired(reload) => {
                 retire_pending(reload.into_retirement())?;
@@ -1220,9 +1371,9 @@ mod tests {
     fn kernel_missing_pair_provisions_clean_one_then_fresh_runtime_boots_one() -> TestResult {
         let fixture = RuntimePairFixture::new()?;
         let installation = test_installation(0x51)?;
-        let key = test_key(0x61)?;
+        let mut provider = test_provider(installation, 0x61)?;
 
-        let committed = exact_committed(&fixture, installation, &key)?;
+        let committed = exact_committed(&fixture, installation, &provider)?;
         assert_eq!(committed.generation(), NonZeroU64::MIN);
         let provisioned = match committed.release() {
             WindowsProvisioningReleaseOutcome::Provisioned(provisioned) => provisioned,
@@ -1240,23 +1391,27 @@ mod tests {
         };
         assert_eq!(provisioned.generation(), NonZeroU64::MIN);
         assert!(format!("{provisioned:?}").contains("[REDACTED]"));
+        drop(provisioned);
 
-        let boot = match start_windows_runtime(fixture.acquire_writer()?, installation, &key) {
-            Ok(boot) => boot,
-            Err(WindowsRuntimeStartFailure::Binding(failure)) => {
-                let reason = failure.reason();
-                let _retired = failure.retire()?;
-                return Err(reason.into());
-            }
-            Err(WindowsRuntimeStartFailure::Terminal(failure)) => {
-                let reason = failure.reason();
-                let (_cause, retirement) = failure.into_retirement_parts();
-                let _runtime_retired = retirement.retire_checked().map_err(|failure| {
-                    std::io::Error::other(format!("runtime retirement failed: {failure:?}"))
-                })?;
-                return Err(reason.into());
-            }
-        };
+        let boot =
+            match start_windows_runtime(fixture.acquire_writer()?, provider.runtime_authority()) {
+                Ok(boot) => boot,
+                Err(WindowsRuntimeStartFailure::Binding(failure)) => {
+                    let reason = failure.reason();
+                    let _retired = failure
+                        .retire()
+                        .map_err(|failure| std::io::Error::other(format!("{failure:?}")))?;
+                    return Err(reason.into());
+                }
+                Err(WindowsRuntimeStartFailure::Terminal(failure)) => {
+                    let reason = failure.reason();
+                    let (_cause, retirement) = failure.into_retirement_parts();
+                    let _runtime_retired = retirement.retire_checked().map_err(|failure| {
+                        std::io::Error::other(format!("runtime retirement failed: {failure:?}"))
+                    })?;
+                    return Err(reason.into());
+                }
+            };
         assert_eq!(boot.generation(), NonZeroU64::MIN);
         let _runtime_retired = boot.into_retirement().retire_checked().map_err(|failure| {
             std::io::Error::other(format!("fresh runtime retirement failed: {failure:?}"))
@@ -1268,18 +1423,20 @@ mod tests {
     fn kernel_preexisting_full_pair_is_unchanged_and_terminally_retired() -> TestResult {
         let fixture = RuntimePairFixture::new()?;
         let installation = test_installation(0x52)?;
-        let key = test_key(0x62)?;
-        let initial = initial_snapshot(installation, &key)?;
-        install_windows_runtime_clean_fixture(&fixture, installation, &key)?;
+        let provider = test_provider(installation, 0x62)?;
+        let initial = initial_snapshot(installation, &provider)?;
+        install_windows_runtime_clean_fixture(&fixture, installation, &provider)?;
 
         let failure = match start_windows_initial_provisioning(
             fixture.acquire_writer()?,
-            fixture_authority(installation, &key)?,
+            fixture_authority(installation, &provider)?,
         ) {
             Err(WindowsInitialProvisioningStartFailure::Terminal(failure)) => failure,
             Err(WindowsInitialProvisioningStartFailure::Binding(failure)) => {
                 let reason = failure.reason();
-                let _retired = failure.retire()?;
+                let _retired = failure
+                    .retire()
+                    .map_err(|failure| std::io::Error::other(format!("{failure:?}")))?;
                 return Err(reason.into());
             }
             Ok(unprovisioned) => {
@@ -1331,8 +1488,8 @@ mod tests {
         ] {
             let fixture = RuntimePairFixture::new()?;
             let installation = test_installation(byte)?;
-            let key = test_key(byte.wrapping_add(1))?;
-            let prepared = prepare(&fixture, installation, &key)?;
+            let provider = test_provider(installation, byte.wrapping_add(1))?;
+            let prepared = prepare(&fixture, installation, &provider)?;
             fixture.inject_fault(fault);
             let reload = match prepared.commit_and_reread() {
                 WindowsInitialCleanCommitOutcome::ReloadRequired(reload) => reload,
@@ -1400,8 +1557,8 @@ mod tests {
     fn kernel_confirmed_initial_commit_reread_failure_is_terminal_drift() -> TestResult {
         let fixture = RuntimePairFixture::new()?;
         let installation = test_installation(0x53)?;
-        let key = test_key(0x63)?;
-        let prepared = prepare(&fixture, installation, &key)?;
+        let provider = test_provider(installation, 0x63)?;
+        let prepared = prepare(&fixture, installation, &provider)?;
         fixture.inject_fault(RuntimePairFault::CommittedRereadRevalidation);
 
         let failure = match prepared.commit_and_reread() {
@@ -1444,8 +1601,9 @@ mod tests {
     {
         let retained_fixture = RuntimePairFixture::new()?;
         let retained_installation = test_installation(0x54)?;
-        let retained_key = test_key(0x64)?;
-        let committed = exact_committed(&retained_fixture, retained_installation, &retained_key)?;
+        let retained_provider = test_provider(retained_installation, 0x64)?;
+        let committed =
+            exact_committed(&retained_fixture, retained_installation, &retained_provider)?;
         retained_fixture.inject_fault(RuntimePairFault::WriterReleaseUnlock);
         match committed.release() {
             WindowsProvisioningReleaseOutcome::Terminal(failure) => {
@@ -1473,11 +1631,11 @@ mod tests {
 
         let no_receipt_fixture = RuntimePairFixture::new()?;
         let no_receipt_installation = test_installation(0x55)?;
-        let no_receipt_key = test_key(0x65)?;
+        let no_receipt_provider = test_provider(no_receipt_installation, 0x65)?;
         let committed = exact_committed(
             &no_receipt_fixture,
             no_receipt_installation,
-            &no_receipt_key,
+            &no_receipt_provider,
         )?;
         no_receipt_fixture.inject_fault(RuntimePairFault::CheckpointFinalClose);
         match committed.release() {
@@ -1505,11 +1663,11 @@ mod tests {
 
         let post_release_fixture = RuntimePairFixture::new()?;
         let post_release_installation = test_installation(0x56)?;
-        let post_release_key = test_key(0x66)?;
+        let post_release_provider = test_provider(post_release_installation, 0x66)?;
         let committed = exact_committed(
             &post_release_fixture,
             post_release_installation,
-            &post_release_key,
+            &post_release_provider,
         )?;
         match committed.release_with_post_release_fault_for_test() {
             WindowsProvisioningReleaseOutcome::PostReleaseTerminal(failure) => {
@@ -1535,6 +1693,36 @@ mod tests {
     }
 
     #[test]
+    fn installer_grant_binds_only_its_exact_unique_provider_identity() -> TestResult {
+        let installation = test_installation(0x56)?;
+        let provider = test_provider(installation, 0x66)?;
+        let same_material_provider = test_provider(installation, 0x66)?;
+        assert_ne!(provider.identity(), same_material_provider.identity());
+
+        let grant = WindowsInstallerProvisioningGrant::for_current_user_fixture(&provider)?;
+        assert_eq!(
+            format!("{grant:?}"),
+            "WindowsInstallerProvisioningGrant([REDACTED])"
+        );
+        let Err(mismatch) = bind_windows_fresh_install_authority(&same_material_provider, grant)
+        else {
+            return Err("distinct provider identity accepted a sealed installer grant".into());
+        };
+        assert_eq!(mismatch.reason(), RecoveryRequired::AuthenticationFailed);
+        assert!(format!("{mismatch:?}").contains("[REDACTED]"));
+
+        let authority = bind_windows_fresh_install_authority(&provider, mismatch.into_grant())
+            .map_err(|failure| failure.reason())?;
+        assert_eq!(authority.provider_identity, provider.identity());
+        assert_eq!(authority.installation, installation);
+        assert_eq!(
+            format!("{authority:?}"),
+            "WindowsFreshInstallAuthority([REDACTED])"
+        );
+        Ok(())
+    }
+
+    #[test]
     #[allow(clippy::too_many_lines)] // One inventory proves every live/reload retirement surface.
     fn live_provisioning_states_retire_checked_and_debug_is_redacted() -> TestResult {
         trait AmbiguousIfClone<Marker> {
@@ -1556,6 +1744,8 @@ mod tests {
             };
         }
 
+        assert_move_only!(WindowsInstallerProvisioningGrant);
+        assert_move_only!(WindowsFreshInstallAuthorityBindingFailure);
         assert_move_only!(WindowsFreshInstallAuthority<'static>);
         assert_move_only!(WindowsInitialProvisioningStartFailure<'static>);
         assert_move_only!(WindowsProvisioningWriterAcquired<'static>);
@@ -1574,6 +1764,7 @@ mod tests {
         assert_move_only!(WindowsProvisioningCheckedRetirementFailure<'static>);
         assert_move_only!(WindowsProvisioningReleasedNoReceipt<'static>);
         assert_move_only!(WindowsPostReleaseProvisioningTerminal<'static>);
+        assert_move_only!(WindowsProvisioningUnboundRetirementFailure<'static>);
 
         let _: fn(
             WindowsUnprovisionedWithWriter<'static>,
@@ -1594,15 +1785,17 @@ mod tests {
 
         let acquired_fixture = RuntimePairFixture::new()?;
         let acquired_installation = test_installation(0x5c)?;
-        let acquired_key = test_key(0x6c)?;
+        let acquired_provider = test_provider(acquired_installation, 0x6c)?;
         let acquired = match WindowsProvisioningWriterAcquired::from_held_writer(
             acquired_fixture.acquire_writer()?,
-            fixture_authority(acquired_installation, &acquired_key)?,
+            fixture_authority(acquired_installation, &acquired_provider)?,
         ) {
             Ok(acquired) => acquired,
             Err(failure) => {
                 let reason = failure.reason();
-                let _retired = failure.retire()?;
+                let _retired = failure
+                    .retire()
+                    .map_err(|failure| std::io::Error::other(format!("{failure:?}")))?;
                 return Err(reason.into());
             }
         };
@@ -1612,8 +1805,8 @@ mod tests {
 
         let live_fixture = RuntimePairFixture::new()?;
         let live_installation = test_installation(0x57)?;
-        let live_key = test_key(0x67)?;
-        let authority = fixture_authority(live_installation, &live_key)?;
+        let live_provider = test_provider(live_installation, 0x67)?;
+        let authority = fixture_authority(live_installation, &live_provider)?;
         assert_eq!(
             format!("{authority:?}"),
             "WindowsFreshInstallAuthority([REDACTED])"
@@ -1647,25 +1840,28 @@ mod tests {
 
         let prepared_fixture = RuntimePairFixture::new()?;
         let prepared_installation = test_installation(0x58)?;
-        let prepared_key = test_key(0x68)?;
-        let prepared = prepare(&prepared_fixture, prepared_installation, &prepared_key)?;
+        let prepared_provider = test_provider(prepared_installation, 0x68)?;
+        let prepared = prepare(&prepared_fixture, prepared_installation, &prepared_provider)?;
         assert!(format!("{prepared:?}").contains("[REDACTED]"));
         retire_pending(prepared.into_retirement())?;
         prepared_fixture.cleanup_checked()?;
 
         let committed_fixture = RuntimePairFixture::new()?;
         let committed_installation = test_installation(0x59)?;
-        let committed_key = test_key(0x69)?;
-        let committed =
-            exact_committed(&committed_fixture, committed_installation, &committed_key)?;
+        let committed_provider = test_provider(committed_installation, 0x69)?;
+        let committed = exact_committed(
+            &committed_fixture,
+            committed_installation,
+            &committed_provider,
+        )?;
         assert!(format!("{committed:?}").contains("[REDACTED]"));
         retire_pending(committed.into_retirement())?;
         committed_fixture.cleanup_checked()?;
 
         let reload_fixture = RuntimePairFixture::new()?;
         let reload_installation = test_installation(0x5a)?;
-        let reload_key = test_key(0x6a)?;
-        let prepared = prepare(&reload_fixture, reload_installation, &reload_key)?;
+        let reload_provider = test_provider(reload_installation, 0x6a)?;
+        let prepared = prepare(&reload_fixture, reload_installation, &reload_provider)?;
         reload_fixture.inject_fault(RuntimePairFault::AfterMarkerRename);
         let reload = match prepared.commit_and_reread() {
             WindowsInitialCleanCommitOutcome::ReloadRequired(reload) => reload,
@@ -1685,11 +1881,11 @@ mod tests {
 
         let retirement_fault_fixture = RuntimePairFixture::new()?;
         let retirement_fault_installation = test_installation(0x5b)?;
-        let retirement_fault_key = test_key(0x6b)?;
+        let retirement_fault_provider = test_provider(retirement_fault_installation, 0x6b)?;
         let unprovisioned = start(
             &retirement_fault_fixture,
             retirement_fault_installation,
-            &retirement_fault_key,
+            &retirement_fault_provider,
         )?;
         retirement_fault_fixture.inject_fault(RuntimePairFault::WriterReleaseUnlock);
         let failure = match unprovisioned.into_retirement().retire_checked() {

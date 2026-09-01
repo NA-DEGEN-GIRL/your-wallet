@@ -2,7 +2,7 @@ use std::error::Error;
 use std::io;
 
 use super::super::durable_run_state::{
-    FixtureRunStateAuthenticationKey, InstallationIdentity, RecoveryRequired,
+    InstallationIdentity, RecoveryRequired, RunStateAuthenticationProvider,
     install_windows_runtime_clean_fixture,
 };
 use super::super::lifecycle_core::{
@@ -50,8 +50,11 @@ fn test_installation(byte: u8) -> Result<InstallationIdentity, RecoveryRequired>
     InstallationIdentity::from_fixed_bytes([byte; 32])
 }
 
-fn test_key(byte: u8) -> Result<FixtureRunStateAuthenticationKey, RecoveryRequired> {
-    FixtureRunStateAuthenticationKey::from_fixture_bytes([byte; 32])
+fn test_provider(
+    installation: InstallationIdentity,
+    byte: u8,
+) -> Result<RunStateAuthenticationProvider, RecoveryRequired> {
+    RunStateAuthenticationProvider::from_fixture_bytes(installation, [byte; 32])
 }
 
 fn clean_fixture(
@@ -59,13 +62,13 @@ fn clean_fixture(
 ) -> TestResult<(
     RuntimePairFixture,
     InstallationIdentity,
-    FixtureRunStateAuthenticationKey,
+    RunStateAuthenticationProvider,
 )> {
     let fixture = RuntimePairFixture::new()?;
     let installation = test_installation(byte)?;
-    let key = test_key(byte.wrapping_add(1))?;
-    install_windows_runtime_clean_fixture(&fixture, installation, &key)?;
-    Ok((fixture, installation, key))
+    let provider = test_provider(installation, byte.wrapping_add(1))?;
+    install_windows_runtime_clean_fixture(&fixture, installation, &provider)?;
+    Ok((fixture, installation, provider))
 }
 
 fn assert_checked_exit(exit: WindowsLifecycleExitRequired<'_>) -> TestResult {
@@ -93,12 +96,11 @@ fn assert_exit78(exit: WindowsLifecycleExitRequired<'_>) {
     }
 }
 
-fn begin<'key>(
+fn begin<'provider>(
     fixture: &RuntimePairFixture,
-    installation: InstallationIdentity,
-    key: &'key FixtureRunStateAuthenticationKey,
-) -> TestResult<WindowsStartupAttempt<'key>> {
-    match begin_windows_lifecycle(fixture.acquire_writer()?, installation, key) {
+    provider: &'provider mut RunStateAuthenticationProvider,
+) -> TestResult<WindowsStartupAttempt<'provider>> {
+    match begin_windows_lifecycle(fixture.acquire_writer()?, provider.runtime_authority()) {
         Ok(startup) => Ok(startup),
         Err(exit) => {
             assert_exit78(exit);
@@ -119,12 +121,11 @@ fn complete_checklist(
     startup.finish()
 }
 
-fn prepared_active<'key>(
+fn prepared_active<'provider>(
     fixture: &RuntimePairFixture,
-    installation: InstallationIdentity,
-    key: &'key FixtureRunStateAuthenticationKey,
-) -> TestResult<WindowsActiveCommitPending<'key>> {
-    let startup = begin(fixture, installation, key)?;
+    provider: &'provider mut RunStateAuthenticationProvider,
+) -> TestResult<WindowsActiveCommitPending<'provider>> {
+    let startup = begin(fixture, provider)?;
     match complete_checklist(startup) {
         Ok(prepared) => Ok(prepared),
         Err(exit) => {
@@ -134,12 +135,11 @@ fn prepared_active<'key>(
     }
 }
 
-fn ready_service<'key>(
+fn ready_service<'provider>(
     fixture: &RuntimePairFixture,
-    installation: InstallationIdentity,
-    key: &'key FixtureRunStateAuthenticationKey,
-) -> TestResult<WindowsNoSecretService<'key>> {
-    match prepared_active(fixture, installation, key)?.commit_and_reread() {
+    provider: &'provider mut RunStateAuthenticationProvider,
+) -> TestResult<WindowsNoSecretService<'provider>> {
+    match prepared_active(fixture, provider)?.commit_and_reread() {
         WindowsLifecycleActiveCommitOutcome::ListenerPending(listener) => Ok(listener
             .record_listeners_prepared()
             .record_scm_running_published()
@@ -163,12 +163,11 @@ fn complete_first_nine(service: &mut WindowsNoSecretService<'_>) -> Result<(), L
     Ok(())
 }
 
-fn clean_release_pending<'key>(
+fn clean_release_pending<'provider>(
     fixture: &RuntimePairFixture,
-    installation: InstallationIdentity,
-    key: &'key FixtureRunStateAuthenticationKey,
-) -> TestResult<WindowsCleanReleasePending<'key>> {
-    let mut service = ready_service(fixture, installation, key)?;
+    provider: &'provider mut RunStateAuthenticationProvider,
+) -> TestResult<WindowsCleanReleasePending<'provider>> {
+    let mut service = ready_service(fixture, provider)?;
     complete_first_nine(&mut service)?;
     match service.prepare_clean() {
         WindowsLifecycleCleanCommitOutcome::ReleasePending(release) => Ok(release),
@@ -185,8 +184,8 @@ fn clean_release_pending<'key>(
 
 #[test]
 fn clean_startup_active_runtime_clean_release_reaches_normal_stopped() -> TestResult {
-    let (fixture, installation, key) = clean_fixture(0x31)?;
-    let release = clean_release_pending(&fixture, installation, &key)?;
+    let (fixture, _installation, mut provider) = clean_fixture(0x31)?;
+    let release = clean_release_pending(&fixture, &mut provider)?;
     let stopped = match release.release_writer() {
         WindowsLifecycleStopOutcome::Stopped(stopped) => stopped,
         WindowsLifecycleStopOutcome::ExitRequired(exit) => {
@@ -211,8 +210,8 @@ fn clean_startup_active_runtime_clean_release_reaches_normal_stopped() -> TestRe
 #[test]
 fn startup_missing_and_mismatch_require_checked_silent_exit78() -> TestResult {
     for (byte, mismatch) in [(0x41, false), (0x43, true)] {
-        let (fixture, installation, key) = clean_fixture(byte)?;
-        let mut startup = begin(&fixture, installation, &key)?;
+        let (fixture, _installation, mut provider) = clean_fixture(byte)?;
+        let mut startup = begin(&fixture, &mut provider)?;
         if mismatch {
             for requirement in NoSecretStartupRequirement::ALL {
                 startup.observe(
@@ -256,8 +255,8 @@ fn active_ambiguity_reloads_prior_with_fresh_checks_candidate_with_carried_check
         (0x53, RuntimePairFault::AfterCheckpointRename),
         (0x55, RuntimePairFault::AfterMarkerRename),
     ] {
-        let (fixture, installation, key) = clean_fixture(byte)?;
-        let prepared = prepared_active(&fixture, installation, &key)?;
+        let (fixture, _installation, mut provider) = clean_fixture(byte)?;
+        let prepared = prepared_active(&fixture, &mut provider)?;
         fixture.inject_fault(fault);
         let reload = match prepared.commit_and_reread() {
             WindowsLifecycleActiveCommitOutcome::ReloadRequired(reload) => reload,
@@ -315,8 +314,8 @@ fn active_ambiguity_reloads_prior_with_fresh_checks_candidate_with_carried_check
 
 #[test]
 fn confirmed_active_reread_failure_never_restores_boot_or_listener_authority() -> TestResult {
-    let (fixture, installation, key) = clean_fixture(0x61)?;
-    let prepared = prepared_active(&fixture, installation, &key)?;
+    let (fixture, _installation, mut provider) = clean_fixture(0x61)?;
+    let prepared = prepared_active(&fixture, &mut provider)?;
     fixture.inject_fault(RuntimePairFault::CommittedRereadRevalidation);
     let exit = match prepared.commit_and_reread() {
         WindowsLifecycleActiveCommitOutcome::ExitRequired(exit) => exit,
@@ -364,8 +363,8 @@ fn listener_scm_and_admission_typestates_are_ordered_and_move_only() {
 
 #[test]
 fn runtime_policy_alone_enforces_work_token_and_quarantine_bounds() -> TestResult {
-    let (fixture, installation, key) = clean_fixture(0x71)?;
-    let mut service = ready_service(&fixture, installation, &key)?;
+    let (fixture, _installation, mut provider) = clean_fixture(0x71)?;
+    let mut service = ready_service(&fixture, &mut provider)?;
     let work_session = SessionId::new(1)?;
     for value in 1..=256_u64 {
         service.admit_fixture_work(
@@ -423,8 +422,8 @@ fn runtime_policy_alone_enforces_work_token_and_quarantine_bounds() -> TestResul
 
 #[test]
 fn cleanup_requires_exact_order_and_empties_all_runtime_registries_before_clean() -> TestResult {
-    let (premature_fixture, premature_installation, premature_key) = clean_fixture(0x73)?;
-    let premature = ready_service(&premature_fixture, premature_installation, &premature_key)?;
+    let (premature_fixture, _premature_installation, mut premature_provider) = clean_fixture(0x73)?;
+    let premature = ready_service(&premature_fixture, &mut premature_provider)?;
     let exit = match premature.prepare_clean() {
         WindowsLifecycleCleanCommitOutcome::ExitRequired(exit) => exit,
         WindowsLifecycleCleanCommitOutcome::ReleasePending(release) => {
@@ -443,8 +442,8 @@ fn cleanup_requires_exact_order_and_empties_all_runtime_registries_before_clean(
     assert_checked_exit(exit)?;
     premature_fixture.cleanup_checked()?;
 
-    let (fixture, installation, key) = clean_fixture(0x75)?;
-    let mut service = ready_service(&fixture, installation, &key)?;
+    let (fixture, _installation, mut provider) = clean_fixture(0x75)?;
+    let mut service = ready_service(&fixture, &mut provider)?;
     let session = SessionId::new(9)?;
     service.retain_user_token(session)?;
     service.admit_fixture_work(
@@ -495,8 +494,8 @@ fn clean_ambiguity_advances_release_policy_for_candidate_only() -> TestResult {
         (0x83, RuntimePairFault::MarkerRenameAttempt),
         (0x85, RuntimePairFault::AfterMarkerRename),
     ] {
-        let (fixture, installation, key) = clean_fixture(byte)?;
-        let mut service = ready_service(&fixture, installation, &key)?;
+        let (fixture, _installation, mut provider) = clean_fixture(byte)?;
+        let mut service = ready_service(&fixture, &mut provider)?;
         complete_first_nine(&mut service)?;
         fixture.inject_fault(fault);
         let reload = match service.prepare_clean() {
@@ -545,8 +544,8 @@ fn clean_ambiguity_advances_release_policy_for_candidate_only() -> TestResult {
 
 #[test]
 fn release_writer_retained_checks_retirement_and_no_receipt_is_irreversible_exit78() -> TestResult {
-    let (retained_fixture, retained_installation, retained_key) = clean_fixture(0x91)?;
-    let retained = clean_release_pending(&retained_fixture, retained_installation, &retained_key)?;
+    let (retained_fixture, _retained_installation, mut retained_provider) = clean_fixture(0x91)?;
+    let retained = clean_release_pending(&retained_fixture, &mut retained_provider)?;
     retained_fixture.inject_fault(RuntimePairFault::WriterReleaseUnlock);
     let exit = match retained.release_writer() {
         WindowsLifecycleStopOutcome::ExitRequired(exit) => exit,
@@ -568,12 +567,9 @@ fn release_writer_retained_checks_retirement_and_no_receipt_is_irreversible_exit
     assert_checked_exit(exit)?;
     retained_fixture.cleanup_checked()?;
 
-    let (no_receipt_fixture, no_receipt_installation, no_receipt_key) = clean_fixture(0x93)?;
-    let no_receipt = clean_release_pending(
-        &no_receipt_fixture,
-        no_receipt_installation,
-        &no_receipt_key,
-    )?;
+    let (no_receipt_fixture, _no_receipt_installation, mut no_receipt_provider) =
+        clean_fixture(0x93)?;
+    let no_receipt = clean_release_pending(&no_receipt_fixture, &mut no_receipt_provider)?;
     no_receipt_fixture.inject_fault(RuntimePairFault::CheckpointFinalClose);
     let failure = match no_receipt.release_writer() {
         WindowsLifecycleStopOutcome::IrreversibleExit78(failure) => failure,
@@ -599,8 +595,8 @@ fn release_writer_retained_checks_retirement_and_no_receipt_is_irreversible_exit
 
 #[test]
 fn post_release_logical_failure_is_irreversible_exit78_and_never_stopped() -> TestResult {
-    let (fixture, installation, key) = clean_fixture(0x95)?;
-    let release = clean_release_pending(&fixture, installation, &key)?;
+    let (fixture, _installation, mut provider) = clean_fixture(0x95)?;
+    let release = clean_release_pending(&fixture, &mut provider)?;
     let failure = match release.release_writer_with_post_release_fault_for_test() {
         WindowsLifecycleStopOutcome::IrreversibleExit78(failure) => failure,
         WindowsLifecycleStopOutcome::Stopped(_stopped) => {
@@ -626,8 +622,8 @@ fn post_release_logical_failure_is_irreversible_exit78_and_never_stopped() -> Te
 
 #[test]
 fn retirement_fault_preserves_original_lifecycle_and_platform_cleanup_causes() -> TestResult {
-    let (fixture, installation, key) = clean_fixture(0xa1)?;
-    let startup = begin(&fixture, installation, &key)?;
+    let (fixture, _installation, mut provider) = clean_fixture(0xa1)?;
+    let startup = begin(&fixture, &mut provider)?;
     let Err(exit) = startup.finish() else {
         return Err(io::Error::other("missing checklist minted Active preparation").into());
     };
@@ -682,9 +678,10 @@ fn debug_and_source_surfaces_are_redacted_silent_and_path_handle_free() -> TestR
         .ok_or_else(|| io::Error::other("Stopped implementation source boundary changed"))?;
     assert!(!stopped_impl.contains("fn code"));
 
-    let (fixture, installation, key) = clean_fixture(0xb1)?;
-    let startup = begin(&fixture, installation, &key)?;
-    let rendered = format!("{startup:?} {installation:?} {key:?}");
+    let (fixture, installation, mut provider) = clean_fixture(0xb1)?;
+    let provider_debug = format!("{provider:?}");
+    let startup = begin(&fixture, &mut provider)?;
+    let rendered = format!("{startup:?} {installation:?} {provider_debug}");
     assert!(rendered.contains("[REDACTED]"));
     assert!(!rendered.contains("b1b1b1b1"));
     assert!(!rendered.contains("b2b2b2b2"));

@@ -12,14 +12,17 @@ use super::provisioning::{
 use super::{
     Commitment, DurableRunStateCommitFailure, DurableRunStateCommitFault, DurableRunStateFixture,
     DurableRunStateFixtureSeed, DurableRunStateReleaseFailure, DurableRunStateReleaseFault,
-    DurableRunStateRereadFault, FixtureRunStateAuthenticationKey, FixtureWriterRole,
-    InstallationIdentity, RecoveryRequired, RunMarkerState, RuntimeBootStartFailure,
+    DurableRunStateRereadFault, FixtureWriterRole, InstallationIdentity, RecoveryRequired,
+    RunMarkerState, RunStateAuthenticationProvider, RuntimeBootStartFailure,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
-fn fixture_key(seed: u8) -> Result<FixtureRunStateAuthenticationKey, RecoveryRequired> {
-    FixtureRunStateAuthenticationKey::from_fixture_bytes([seed; 32])
+fn fixture_provider(
+    installation: InstallationIdentity,
+    seed: u8,
+) -> Result<RunStateAuthenticationProvider, RecoveryRequired> {
+    RunStateAuthenticationProvider::from_fixture_bytes(installation, [seed; 32])
 }
 
 fn fixture_installation(seed: u8) -> Result<InstallationIdentity, RecoveryRequired> {
@@ -30,76 +33,76 @@ fn boxed_debug(error: impl fmt::Debug) -> Box<dyn Error> {
     Box::new(io::Error::other(format!("{error:?}")))
 }
 
-fn start<'key>(
+fn start<'provider>(
     backend: &mut DurableRunStateFixture,
-    key: &'key FixtureRunStateAuthenticationKey,
+    provider: &'provider RunStateAuthenticationProvider,
     installation: InstallationIdentity,
-) -> TestResult<UnprovisionedWithWriter<'key>> {
+) -> TestResult<UnprovisionedWithWriter<'provider>> {
     backend
-        .begin_initial_provisioning(key, installation)
+        .begin_initial_provisioning(provider, installation)
         .map_err(boxed_debug)
 }
 
-fn prepare<'key>(
+fn prepare<'provider>(
     backend: &mut DurableRunStateFixture,
-    key: &'key FixtureRunStateAuthenticationKey,
+    provider: &'provider RunStateAuthenticationProvider,
     installation: InstallationIdentity,
-) -> TestResult<PreparedInitialCleanTransition<'key>> {
-    start(backend, key, installation)?
+) -> TestResult<PreparedInitialCleanTransition<'provider>> {
+    start(backend, provider, installation)?
         .prepare_initial_clean()
         .map_err(boxed_debug)
 }
 
-fn commit_and_reread<'key>(
+fn commit_and_reread<'provider>(
     backend: &mut DurableRunStateFixture,
-    transition: PreparedInitialCleanTransition<'key>,
-) -> TestResult<InitialCleanCommittedWithWriter<'key>> {
+    transition: PreparedInitialCleanTransition<'provider>,
+) -> TestResult<InitialCleanCommittedWithWriter<'provider>> {
     let committed = backend.commit_initial_clean(&transition)?;
     let reread = backend.reread_initial_clean(&transition)?;
     transition.complete(committed, reread).map_err(boxed_debug)
 }
 
-fn prepare_and_commit<'key>(
+fn prepare_and_commit<'provider>(
     backend: &mut DurableRunStateFixture,
-    key: &'key FixtureRunStateAuthenticationKey,
+    provider: &'provider RunStateAuthenticationProvider,
     installation: InstallationIdentity,
-) -> TestResult<InitialCleanCommittedWithWriter<'key>> {
-    let transition = prepare(backend, key, installation)?;
+) -> TestResult<InitialCleanCommittedWithWriter<'provider>> {
+    let transition = prepare(backend, provider, installation)?;
     commit_and_reread(backend, transition)
 }
 
-fn release_initial(
+fn release_initial<'provider>(
     backend: &mut DurableRunStateFixture,
-    committed: InitialCleanCommittedWithWriter<'_>,
-) -> TestResult<ProvisionedRunState> {
+    committed: InitialCleanCommittedWithWriter<'provider>,
+) -> TestResult<ProvisionedRunState<'provider>> {
     let pending = committed.prepare_writer_release();
     let receipt = backend.release_provisioning_writer(&pending)?;
     pending.complete(receipt).map_err(boxed_debug)
 }
 
-fn retire_failure(
+fn retire_failure<'provider>(
     backend: &mut DurableRunStateFixture,
-    failure: ProvisioningFailureWithWriter<'_>,
-) -> TestResult<ProvisioningRecoveryExitEvidence> {
+    failure: ProvisioningFailureWithWriter<'provider>,
+) -> TestResult<ProvisioningRecoveryExitEvidence<'provider>> {
     let pending = failure.into_writer_exit();
     retire_pending(backend, pending)
 }
 
-fn retire_pending(
+fn retire_pending<'provider>(
     backend: &mut DurableRunStateFixture,
-    pending: ProvisioningWriterExitPending<'_>,
-) -> TestResult<ProvisioningRecoveryExitEvidence> {
+    pending: ProvisioningWriterExitPending<'provider>,
+) -> TestResult<ProvisioningRecoveryExitEvidence<'provider>> {
     let receipt = backend.retire_provisioning_writer_for_exit(&pending)?;
     pending.complete(receipt).map_err(boxed_debug)
 }
 
 fn retire_runtime_boot_failure(
     backend: &mut DurableRunStateFixture,
-    failure: RuntimeBootStartFailure,
+    failure: RuntimeBootStartFailure<'_>,
 ) -> TestResult<RecoveryRequired> {
     let (reason, pending) = failure.into_writer_exit().map_err(boxed_debug)?;
     let receipt = backend.retire_writer_for_exit(&pending)?;
-    let _retired = pending.complete(receipt)?;
+    let _retired = pending.complete(receipt).map_err(boxed_debug)?;
     Ok(reason)
 }
 
@@ -114,11 +117,11 @@ fn durable_bytes(
 
 #[test]
 fn golden_initial_clean_then_release_requires_a_fresh_runtime_boot() -> TestResult {
-    let key = fixture_key(0x5a)?;
     let installation = fixture_installation(0x41)?;
+    let mut provider = fixture_provider(installation, 0x5a)?;
     let mut backend = DurableRunStateFixture::empty(installation)?;
 
-    let committed = prepare_and_commit(&mut backend, &key, installation)?;
+    let committed = prepare_and_commit(&mut backend, &provider, installation)?;
     assert_eq!(committed.generation(), NonZeroU64::MIN);
     let snapshot = backend.canonical_snapshot()?;
     assert_eq!(&snapshot.marker[..8], b"YWRUNV01");
@@ -128,39 +131,45 @@ fn golden_initial_clean_then_release_requires_a_fresh_runtime_boot() -> TestResu
     assert_eq!(&snapshot.marker[52..84], &[0; 32]);
     assert_eq!(&snapshot.checkpoint[52..84], &[0; 32]);
 
-    let provisioned = release_initial(&mut backend, committed)?;
-    assert_eq!(provisioned.generation(), NonZeroU64::MIN);
-    assert_eq!(backend.held_writer_role(), None);
+    {
+        let provisioned = release_initial(&mut backend, committed)?;
+        assert_eq!(provisioned.generation(), NonZeroU64::MIN);
+        assert_eq!(backend.held_writer_role(), None);
+    }
 
-    let boot = backend.boot(&key, installation)?;
+    let boot = backend
+        .boot(provider.runtime_authority())
+        .map_err(boxed_debug)?;
     assert_eq!(boot.generation(), NonZeroU64::MIN);
     assert_eq!(backend.held_writer_role(), Some(FixtureWriterRole::Runtime));
     let exit = boot.into_writer_exit();
     let receipt = backend.retire_writer_for_exit(&exit)?;
-    let _retired = exit.complete(receipt)?;
+    let _retired = exit.complete(receipt).map_err(boxed_debug)?;
     Ok(())
 }
 
 #[test]
 fn ordinary_boot_missing_never_auto_initializes_and_requires_writer_retirement() -> TestResult {
-    let key = fixture_key(0x51)?;
     let installation = fixture_installation(0x42)?;
+    let mut provider = fixture_provider(installation, 0x51)?;
+    let mut contender = fixture_provider(installation, 0x51)?;
     let mut backend = DurableRunStateFixture::empty(installation)?;
-    let Err(failure) = backend.boot(&key, installation) else {
+    let Err(failure) = backend.boot(provider.runtime_authority()) else {
         return Err("missing runtime state minted boot authority".into());
     };
     assert_eq!(failure.reason(), RecoveryRequired::MissingRunMarker);
     assert!(matches!(failure, RuntimeBootStartFailure::WithWriter(_)));
     assert_eq!(durable_bytes(&backend), (None, None));
     assert_eq!(backend.held_writer_role(), Some(FixtureWriterRole::Runtime));
-    let Err(runtime_reacquire) = backend.begin_runtime_boot(installation) else {
+    let Err(runtime_reacquire) = backend.begin_runtime_boot(contender.runtime_authority()) else {
         return Err("retained missing-state failure allowed a second runtime writer".into());
     };
     assert!(matches!(
         runtime_reacquire,
-        RuntimeBootStartFailure::BeforeWriter(RecoveryRequired::WriterLeaseUnavailable)
+        RuntimeBootStartFailure::BeforeWriter(failure)
+            if failure.reason() == RecoveryRequired::WriterLeaseUnavailable
     ));
-    let Err(provisioning) = backend.begin_initial_provisioning(&key, installation) else {
+    let Err(provisioning) = backend.begin_initial_provisioning(&contender, installation) else {
         return Err("missing runtime boot converted into provisioning authority".into());
     };
     assert!(matches!(
@@ -174,7 +183,7 @@ fn ordinary_boot_missing_never_auto_initializes_and_requires_writer_retirement()
     assert_eq!(backend.held_writer_role(), None);
     assert_eq!(durable_bytes(&backend), (None, None));
 
-    let Err(runtime_retry) = backend.boot(&key, installation) else {
+    let Err(runtime_retry) = backend.boot(provider.runtime_authority()) else {
         return Err("Missing/Missing retry minted runtime boot authority".into());
     };
     assert!(matches!(
@@ -186,7 +195,7 @@ fn ordinary_boot_missing_never_auto_initializes_and_requires_writer_retirement()
         RecoveryRequired::MissingRunMarker
     );
     let unprovisioned = backend
-        .begin_initial_provisioning(&key, installation)
+        .begin_initial_provisioning(&provider, installation)
         .map_err(boxed_debug)?;
     let _retired = retire_pending(&mut backend, unprovisioned.into_writer_exit())?;
     assert_eq!(durable_bytes(&backend), (None, None));
@@ -195,8 +204,9 @@ fn ordinary_boot_missing_never_auto_initializes_and_requires_writer_retirement()
 
 #[test]
 fn rejected_runtime_state_is_post_writer_nonmutating_and_blocks_both_writer_roles() -> TestResult {
-    let key = fixture_key(0x58)?;
     let installation = fixture_installation(0x48)?;
+    let mut provider = fixture_provider(installation, 0x58)?;
+    let mut contender = fixture_provider(installation, 0x58)?;
     for (seed, expected) in [
         (
             DurableRunStateFixtureSeed::MissingMarker,
@@ -219,25 +229,30 @@ fn rejected_runtime_state_is_post_writer_nonmutating_and_blocks_both_writer_role
             RecoveryRequired::PersistedNonCleanState,
         ),
     ] {
-        let mut backend = DurableRunStateFixture::new(seed, &key, installation)?;
+        let mut backend = DurableRunStateFixture::new(seed, &provider, installation)?;
         let before = durable_bytes(&backend);
-        let acquired = backend.begin_runtime_boot(installation)?;
+        let acquired = backend
+            .begin_runtime_boot(provider.runtime_authority())
+            .map_err(boxed_debug)?;
         assert_eq!(backend.held_writer_role(), Some(FixtureWriterRole::Runtime));
-        let Err(failure) = backend.finish_runtime_boot(acquired, &key) else {
+        let Err(failure) = backend.finish_runtime_boot(acquired) else {
             return Err("rejected durable state minted runtime boot authority".into());
         };
         assert_eq!(failure.reason(), expected);
         assert!(matches!(&failure, RuntimeBootStartFailure::WithWriter(_)));
         assert_eq!(durable_bytes(&backend), before);
 
-        let Err(runtime_reacquire) = backend.begin_runtime_boot(installation) else {
+        let Err(runtime_reacquire) = backend.begin_runtime_boot(contender.runtime_authority())
+        else {
             return Err("retained runtime failure allowed a second runtime writer".into());
         };
         assert!(matches!(
             runtime_reacquire,
-            RuntimeBootStartFailure::BeforeWriter(RecoveryRequired::WriterLeaseUnavailable)
+            RuntimeBootStartFailure::BeforeWriter(failure)
+                if failure.reason() == RecoveryRequired::WriterLeaseUnavailable
         ));
-        let Err(provisioning_reacquire) = backend.begin_initial_provisioning(&key, installation)
+        let Err(provisioning_reacquire) =
+            backend.begin_initial_provisioning(&contender, installation)
         else {
             return Err("retained runtime failure allowed a provisioning writer".into());
         };
@@ -250,7 +265,7 @@ fn rejected_runtime_state_is_post_writer_nonmutating_and_blocks_both_writer_role
             expected
         );
 
-        let Err(runtime_retry) = backend.boot(&key, installation) else {
+        let Err(runtime_retry) = backend.boot(provider.runtime_authority()) else {
             return Err("rejected durable state became bootable after retirement".into());
         };
         assert!(matches!(
@@ -261,7 +276,8 @@ fn rejected_runtime_state_is_post_writer_nonmutating_and_blocks_both_writer_role
             retire_runtime_boot_failure(&mut backend, runtime_retry)?,
             expected
         );
-        let Err(provisioning_retry) = backend.begin_initial_provisioning(&key, installation) else {
+        let Err(provisioning_retry) = backend.begin_initial_provisioning(&provider, installation)
+        else {
             return Err("pre-existing durable bytes minted provisioning authority".into());
         };
         let InitialProvisioningStartFailure::WithWriter(provisioning_failure) = provisioning_retry
@@ -276,31 +292,37 @@ fn rejected_runtime_state_is_post_writer_nonmutating_and_blocks_both_writer_role
 }
 
 #[test]
-fn wrong_runtime_key_is_post_writer_and_retires_before_clean_can_boot() -> TestResult {
-    let key = fixture_key(0x59)?;
-    let wrong_key = fixture_key(0x69)?;
+fn wrong_runtime_provider_is_post_writer_and_retires_before_clean_can_boot() -> TestResult {
     let installation = fixture_installation(0x49)?;
+    let mut provider = fixture_provider(installation, 0x59)?;
+    let mut wrong_provider = fixture_provider(installation, 0x69)?;
     let mut backend = DurableRunStateFixture::empty(installation)?;
-    let committed = prepare_and_commit(&mut backend, &key, installation)?;
-    let _provisioned = release_initial(&mut backend, committed)?;
+    let committed = prepare_and_commit(&mut backend, &provider, installation)?;
+    {
+        let _provisioned = release_initial(&mut backend, committed)?;
+    }
     let before = durable_bytes(&backend);
 
-    let acquired = backend.begin_runtime_boot(installation)?;
-    let Err(failure) = backend.finish_runtime_boot(acquired, &wrong_key) else {
-        return Err("wrong authentication key minted runtime boot authority".into());
+    let acquired = backend
+        .begin_runtime_boot(wrong_provider.runtime_authority())
+        .map_err(boxed_debug)?;
+    let Err(failure) = backend.finish_runtime_boot(acquired) else {
+        return Err("wrong authentication provider minted runtime boot authority".into());
     };
     assert_eq!(failure.reason(), RecoveryRequired::AuthenticationFailed);
     assert!(matches!(&failure, RuntimeBootStartFailure::WithWriter(_)));
     assert_eq!(durable_bytes(&backend), before);
-    let Err(runtime_reacquire) = backend.begin_runtime_boot(installation) else {
-        return Err("wrong-key failure allowed runtime writer reacquisition".into());
+    let Err(runtime_reacquire) = backend.begin_runtime_boot(provider.runtime_authority()) else {
+        return Err("wrong-provider failure allowed runtime writer reacquisition".into());
     };
     assert!(matches!(
         runtime_reacquire,
-        RuntimeBootStartFailure::BeforeWriter(RecoveryRequired::WriterLeaseUnavailable)
+        RuntimeBootStartFailure::BeforeWriter(failure)
+            if failure.reason() == RecoveryRequired::WriterLeaseUnavailable
     ));
-    let Err(provisioning_reacquire) = backend.begin_initial_provisioning(&key, installation) else {
-        return Err("wrong-key failure allowed provisioning writer reacquisition".into());
+    let Err(provisioning_reacquire) = backend.begin_initial_provisioning(&provider, installation)
+    else {
+        return Err("wrong-provider failure allowed provisioning writer reacquisition".into());
     };
     assert!(matches!(
         provisioning_reacquire,
@@ -311,10 +333,12 @@ fn wrong_runtime_key_is_post_writer_and_retires_before_clean_can_boot() -> TestR
         RecoveryRequired::AuthenticationFailed
     );
 
-    let boot = backend.boot(&key, installation)?;
+    let boot = backend
+        .boot(provider.runtime_authority())
+        .map_err(boxed_debug)?;
     let pending = boot.into_writer_exit();
     let receipt = backend.retire_writer_for_exit(&pending)?;
-    let _retired = pending.complete(receipt)?;
+    let _retired = pending.complete(receipt).map_err(boxed_debug)?;
     assert_eq!(backend.held_writer_role(), None);
     assert_eq!(durable_bytes(&backend), before);
     Ok(())
@@ -322,17 +346,24 @@ fn wrong_runtime_key_is_post_writer_and_retires_before_clean_can_boot() -> TestR
 
 #[test]
 fn cross_backend_runtime_failure_retires_only_the_originating_writer() -> TestResult {
-    let key = fixture_key(0x5b)?;
     let installation = fixture_installation(0x4a)?;
+    let mut provider = fixture_provider(installation, 0x5b)?;
+    let mut contender = fixture_provider(installation, 0x5b)?;
     let mut origin = DurableRunStateFixture::empty(installation)?;
-    let committed = prepare_and_commit(&mut origin, &key, installation)?;
-    let _provisioned = release_initial(&mut origin, committed)?;
+    let committed = prepare_and_commit(&mut origin, &provider, installation)?;
+    {
+        let _provisioned = release_initial(&mut origin, committed)?;
+    }
     let mut other = DurableRunStateFixture::empty(installation)?;
-    let committed = prepare_and_commit(&mut other, &key, installation)?;
-    let _provisioned = release_initial(&mut other, committed)?;
+    let committed = prepare_and_commit(&mut other, &provider, installation)?;
+    {
+        let _provisioned = release_initial(&mut other, committed)?;
+    }
 
-    let acquired = origin.begin_runtime_boot(installation)?;
-    let Err(failure) = other.finish_runtime_boot(acquired, &key) else {
+    let acquired = origin
+        .begin_runtime_boot(provider.runtime_authority())
+        .map_err(boxed_debug)?;
+    let Err(failure) = other.finish_runtime_boot(acquired) else {
         return Err("cross-backend acquisition minted boot authority".into());
     };
     assert_eq!(failure.reason(), RecoveryRequired::BackendBindingMismatch);
@@ -342,55 +373,66 @@ fn cross_backend_runtime_failure_retires_only_the_originating_writer() -> TestRe
         other.retire_writer_for_exit(&pending),
         Err(RecoveryRequired::BackendBindingMismatch)
     ));
-    let Err(runtime_reacquire) = origin.begin_runtime_boot(installation) else {
+    let Err(runtime_reacquire) = origin.begin_runtime_boot(contender.runtime_authority()) else {
         return Err("origin allowed reacquisition before exact retirement".into());
     };
     assert!(matches!(
         runtime_reacquire,
-        RuntimeBootStartFailure::BeforeWriter(RecoveryRequired::WriterLeaseUnavailable)
+        RuntimeBootStartFailure::BeforeWriter(failure)
+            if failure.reason() == RecoveryRequired::WriterLeaseUnavailable
     ));
     let receipt = origin.retire_writer_for_exit(&pending)?;
-    let _retired = pending.complete(receipt)?;
+    let _retired = pending.complete(receipt).map_err(boxed_debug)?;
     assert_eq!(origin.held_writer_role(), None);
 
-    let boot = origin.boot(&key, installation)?;
+    let boot = origin
+        .boot(provider.runtime_authority())
+        .map_err(boxed_debug)?;
     let pending = boot.into_writer_exit();
     let receipt = origin.retire_writer_for_exit(&pending)?;
-    let _retired = pending.complete(receipt)?;
+    let _retired = pending.complete(receipt).map_err(boxed_debug)?;
     Ok(())
 }
 
 #[test]
 fn runtime_and_provisioning_writer_roles_are_mutually_exclusive() -> TestResult {
-    let key = fixture_key(0x52)?;
     let installation = fixture_installation(0x43)?;
+    let provider = fixture_provider(installation, 0x52)?;
+    let mut runtime_provider = fixture_provider(installation, 0x52)?;
     let mut backend = DurableRunStateFixture::empty(installation)?;
-    let unprovisioned = start(&mut backend, &key, installation)?;
+    let unprovisioned = start(&mut backend, &provider, installation)?;
     assert_eq!(
         backend.held_writer_role(),
         Some(FixtureWriterRole::Provisioning)
     );
-    let Err(runtime_start) = backend.begin_runtime_boot(installation) else {
+    let Err(runtime_start) = backend.begin_runtime_boot(runtime_provider.runtime_authority())
+    else {
         return Err("runtime writer overlapped provisioning".into());
     };
     assert!(matches!(
         runtime_start,
-        RuntimeBootStartFailure::BeforeWriter(RecoveryRequired::WriterLeaseUnavailable)
+        RuntimeBootStartFailure::BeforeWriter(failure)
+            if failure.reason() == RecoveryRequired::WriterLeaseUnavailable
     ));
     let transition = unprovisioned.prepare_initial_clean().map_err(boxed_debug)?;
     let committed = commit_and_reread(&mut backend, transition)?;
-    let Err(runtime_boot) = backend.boot(&key, installation) else {
+    let Err(runtime_boot) = backend.boot(runtime_provider.runtime_authority()) else {
         return Err("runtime boot overlapped provisioning".into());
     };
     assert!(matches!(
         runtime_boot,
-        RuntimeBootStartFailure::BeforeWriter(RecoveryRequired::WriterLeaseUnavailable)
+        RuntimeBootStartFailure::BeforeWriter(failure)
+            if failure.reason() == RecoveryRequired::WriterLeaseUnavailable
     ));
-    let _provisioned = release_initial(&mut backend, committed)?;
+    {
+        let _provisioned = release_initial(&mut backend, committed)?;
+    }
 
-    let runtime = backend.boot(&key, installation)?;
+    let runtime = backend
+        .boot(runtime_provider.runtime_authority())
+        .map_err(boxed_debug)?;
     assert_eq!(backend.held_writer_role(), Some(FixtureWriterRole::Runtime));
-    let Err(start_error) = backend.begin_initial_provisioning(&key, installation) else {
+    let Err(start_error) = backend.begin_initial_provisioning(&provider, installation) else {
         return Err("runtime writer did not exclude provisioning".into());
     };
     assert!(matches!(
@@ -399,37 +441,37 @@ fn runtime_and_provisioning_writer_roles_are_mutually_exclusive() -> TestResult 
     ));
     let exit = runtime.into_writer_exit();
     let receipt = backend.retire_writer_for_exit(&exit)?;
-    let _retired = exit.complete(receipt)?;
+    let _retired = exit.complete(receipt).map_err(boxed_debug)?;
     Ok(())
 }
 
 #[test]
 fn preexisting_full_one_sided_and_invalid_bytes_are_rejected_without_mutation() -> TestResult {
-    let key = fixture_key(0x53)?;
     let installation = fixture_installation(0x44)?;
+    let provider = fixture_provider(installation, 0x53)?;
     let mut backends = [
         DurableRunStateFixture::seeded(
             RunMarkerState::Clean,
             NonZeroU64::MIN,
             installation,
             Commitment::ZERO,
-            &key,
+            &provider,
         )?,
         DurableRunStateFixture::new(
             DurableRunStateFixtureSeed::MissingMarker,
-            &key,
+            &provider,
             installation,
         )?,
         DurableRunStateFixture::new(
             DurableRunStateFixtureSeed::MissingCheckpoint,
-            &key,
+            &provider,
             installation,
         )?,
-        DurableRunStateFixture::new(DurableRunStateFixtureSeed::Invalid, &key, installation)?,
+        DurableRunStateFixture::new(DurableRunStateFixtureSeed::Invalid, &provider, installation)?,
     ];
     for backend in &mut backends {
         let before = durable_bytes(backend);
-        let Err(error) = backend.begin_initial_provisioning(&key, installation) else {
+        let Err(error) = backend.begin_initial_provisioning(&provider, installation) else {
             return Err("pre-existing bytes minted provisioning authority".into());
         };
         let InitialProvisioningStartFailure::WithWriter(failure) = error else {
@@ -448,10 +490,10 @@ fn preexisting_full_one_sided_and_invalid_bytes_are_rejected_without_mutation() 
 
 #[test]
 fn ambiguous_before_write_needs_one_fresh_round_before_retry() -> TestResult {
-    let key = fixture_key(0x54)?;
     let installation = fixture_installation(0x45)?;
+    let provider = fixture_provider(installation, 0x54)?;
     let mut backend = DurableRunStateFixture::empty(installation)?;
-    let transition = prepare(&mut backend, &key, installation)?;
+    let transition = prepare(&mut backend, &provider, installation)?;
     backend.set_commit_fault(DurableRunStateCommitFault::AmbiguousBeforeWrite);
     assert_eq!(
         backend.commit_initial_clean(&transition),
@@ -483,10 +525,11 @@ fn ambiguous_before_write_needs_one_fresh_round_before_retry() -> TestResult {
 
 #[test]
 fn ambiguous_after_checkpoint_recovers_committed_with_writer_only() -> TestResult {
-    let key = fixture_key(0x55)?;
     let installation = fixture_installation(0x46)?;
+    let provider = fixture_provider(installation, 0x55)?;
+    let mut runtime_provider = fixture_provider(installation, 0x55)?;
     let mut backend = DurableRunStateFixture::empty(installation)?;
-    let transition = prepare(&mut backend, &key, installation)?;
+    let transition = prepare(&mut backend, &provider, installation)?;
     backend.set_commit_fault(DurableRunStateCommitFault::AmbiguousAfterCheckpoint);
     assert_eq!(
         backend.commit_initial_clean(&transition),
@@ -499,12 +542,13 @@ fn ambiguous_after_checkpoint_recovers_committed_with_writer_only() -> TestResul
     else {
         return Err("complete candidate restored retry authority".into());
     };
-    let Err(runtime_boot) = backend.boot(&key, installation) else {
+    let Err(runtime_boot) = backend.boot(runtime_provider.runtime_authority()) else {
         return Err("committed provisioning writer allowed runtime boot".into());
     };
     assert!(matches!(
         runtime_boot,
-        RuntimeBootStartFailure::BeforeWriter(RecoveryRequired::WriterLeaseUnavailable)
+        RuntimeBootStartFailure::BeforeWriter(failure)
+            if failure.reason() == RecoveryRequired::WriterLeaseUnavailable
     ));
     let _provisioned = release_initial(&mut backend, committed)?;
     Ok(())
@@ -512,10 +556,10 @@ fn ambiguous_after_checkpoint_recovers_committed_with_writer_only() -> TestResul
 
 #[test]
 fn partial_ambiguous_commit_is_terminal_and_retirement_preserves_bytes() -> TestResult {
-    let key = fixture_key(0x56)?;
     let installation = fixture_installation(0x47)?;
+    let provider = fixture_provider(installation, 0x56)?;
     let mut backend = DurableRunStateFixture::empty(installation)?;
-    let transition = prepare(&mut backend, &key, installation)?;
+    let transition = prepare(&mut backend, &provider, installation)?;
     backend.set_commit_fault(DurableRunStateCommitFault::AmbiguousAfterMarker);
     assert_eq!(
         backend.commit_initial_clean(&transition),
@@ -539,10 +583,10 @@ fn partial_ambiguous_commit_is_terminal_and_retirement_preserves_bytes() -> Test
 
 #[test]
 fn known_commit_failure_is_terminal_and_preserves_missing_missing() -> TestResult {
-    let key = fixture_key(0x57)?;
     let installation = fixture_installation(0x48)?;
+    let provider = fixture_provider(installation, 0x57)?;
     let mut backend = DurableRunStateFixture::empty(installation)?;
-    let transition = prepare(&mut backend, &key, installation)?;
+    let transition = prepare(&mut backend, &provider, installation)?;
     backend.set_commit_fault(DurableRunStateCommitFault::CompareAndSwapConflict);
     assert_eq!(
         backend.commit_initial_clean(&transition),
@@ -568,11 +612,11 @@ fn known_commit_failure_is_terminal_and_preserves_missing_missing() -> TestResul
 
 #[test]
 fn premature_or_successful_commit_ambiguous_cannot_strand_the_writer() -> TestResult {
-    let key = fixture_key(0x66)?;
     let installation = fixture_installation(0x67)?;
+    let provider = fixture_provider(installation, 0x66)?;
 
     let mut premature_backend = DurableRunStateFixture::empty(installation)?;
-    let premature = prepare(&mut premature_backend, &key, installation)?;
+    let premature = prepare(&mut premature_backend, &provider, installation)?;
     let Err(premature_failure) = premature.commit_ambiguous() else {
         return Err("a never-attempted commit entered ambiguity reload".into());
     };
@@ -583,7 +627,7 @@ fn premature_or_successful_commit_ambiguous_cannot_strand_the_writer() -> TestRe
     let _retired = retire_failure(&mut premature_backend, premature_failure)?;
 
     let mut successful_backend = DurableRunStateFixture::empty(installation)?;
-    let successful = prepare(&mut successful_backend, &key, installation)?;
+    let successful = prepare(&mut successful_backend, &provider, installation)?;
     let _committed = successful_backend.commit_initial_clean(&successful)?;
     let committed_bytes = durable_bytes(&successful_backend);
     let Err(successful_failure) = successful.commit_ambiguous() else {
@@ -600,10 +644,10 @@ fn premature_or_successful_commit_ambiguous_cannot_strand_the_writer() -> TestRe
 
 #[test]
 fn successful_commit_reread_and_release_attempts_are_one_shot() -> TestResult {
-    let key = fixture_key(0x64)?;
     let installation = fixture_installation(0x65)?;
+    let provider = fixture_provider(installation, 0x64)?;
     let mut backend = DurableRunStateFixture::empty(installation)?;
-    let transition = prepare(&mut backend, &key, installation)?;
+    let transition = prepare(&mut backend, &provider, installation)?;
     let committed = backend.commit_initial_clean(&transition)?;
     assert_eq!(
         backend.commit_initial_clean(&transition).map(|_| ()),
@@ -631,8 +675,14 @@ fn successful_commit_reread_and_release_attempts_are_one_shot() -> TestResult {
     assert_eq!(provisioned.generation(), NonZeroU64::MIN);
 
     let terminal_installation = fixture_installation(0x66)?;
+    let terminal_provider = fixture_provider(terminal_installation, 0x64)?;
     let mut terminal_backend = DurableRunStateFixture::empty(terminal_installation)?;
-    let terminal = prepare(&mut terminal_backend, &key, terminal_installation)?.into_writer_exit();
+    let terminal = prepare(
+        &mut terminal_backend,
+        &terminal_provider,
+        terminal_installation,
+    )?
+    .into_writer_exit();
     let terminal_receipt = terminal_backend.retire_provisioning_writer_for_exit(&terminal)?;
     assert_eq!(
         terminal_backend
@@ -646,10 +696,10 @@ fn successful_commit_reread_and_release_attempts_are_one_shot() -> TestResult {
 
 #[test]
 fn post_commit_reread_drift_is_terminal_and_keeps_committed_bytes() -> TestResult {
-    let key = fixture_key(0x58)?;
     let installation = fixture_installation(0x49)?;
+    let provider = fixture_provider(installation, 0x58)?;
     let mut backend = DurableRunStateFixture::empty(installation)?;
-    let transition = prepare(&mut backend, &key, installation)?;
+    let transition = prepare(&mut backend, &provider, installation)?;
     let committed = backend.commit_initial_clean(&transition)?;
     let exact_bytes = durable_bytes(&backend);
     backend.set_reread_fault(DurableRunStateRereadFault::CheckpointDrift);
@@ -665,12 +715,12 @@ fn post_commit_reread_drift_is_terminal_and_keeps_committed_bytes() -> TestResul
 
 #[test]
 fn cross_backend_commit_receipts_and_reread_requests_are_rejected() -> TestResult {
-    let key = fixture_key(0x59)?;
     let installation = fixture_installation(0x4a)?;
+    let provider = fixture_provider(installation, 0x59)?;
     let mut backend_a = DurableRunStateFixture::empty(installation)?;
     let mut backend_b = DurableRunStateFixture::empty(installation)?;
-    let transition_a = prepare(&mut backend_a, &key, installation)?;
-    let transition_b = prepare(&mut backend_b, &key, installation)?;
+    let transition_a = prepare(&mut backend_a, &provider, installation)?;
+    let transition_b = prepare(&mut backend_b, &provider, installation)?;
 
     assert_eq!(
         backend_a.reread_initial_clean(&transition_b).map(|_| ()),
@@ -689,13 +739,13 @@ fn cross_backend_commit_receipts_and_reread_requests_are_rejected() -> TestResul
 
 #[test]
 fn cross_backend_reread_release_and_terminal_receipts_are_each_rejected() -> TestResult {
-    let key = fixture_key(0x6a)?;
     let installation = fixture_installation(0x6b)?;
+    let provider = fixture_provider(installation, 0x6a)?;
 
     let mut reread_a = DurableRunStateFixture::empty(installation)?;
     let mut reread_b = DurableRunStateFixture::empty(installation)?;
-    let transition_a = prepare(&mut reread_a, &key, installation)?;
-    let transition_b = prepare(&mut reread_b, &key, installation)?;
+    let transition_a = prepare(&mut reread_a, &provider, installation)?;
+    let transition_b = prepare(&mut reread_b, &provider, installation)?;
     let _committed_a = reread_a.commit_initial_clean(&transition_a)?;
     let committed_b = reread_b.commit_initial_clean(&transition_b)?;
     let receipt_a = reread_a.reread_initial_clean(&transition_a)?;
@@ -713,9 +763,9 @@ fn cross_backend_reread_release_and_terminal_receipts_are_each_rejected() -> Tes
     let mut release_a = DurableRunStateFixture::empty(installation)?;
     let mut release_b = DurableRunStateFixture::empty(installation)?;
     let pending_a =
-        prepare_and_commit(&mut release_a, &key, installation)?.prepare_writer_release();
+        prepare_and_commit(&mut release_a, &provider, installation)?.prepare_writer_release();
     let pending_b =
-        prepare_and_commit(&mut release_b, &key, installation)?.prepare_writer_release();
+        prepare_and_commit(&mut release_b, &provider, installation)?.prepare_writer_release();
     let receipt_a = release_a.release_provisioning_writer(&pending_a)?;
     let receipt_b = release_b.release_provisioning_writer(&pending_b)?;
     let Err(release_failure_b) = pending_b.complete(receipt_a) else {
@@ -737,8 +787,8 @@ fn cross_backend_reread_release_and_terminal_receipts_are_each_rejected() -> Tes
 
     let mut exit_a = DurableRunStateFixture::empty(installation)?;
     let mut exit_b = DurableRunStateFixture::empty(installation)?;
-    let pending_a = prepare(&mut exit_a, &key, installation)?.into_writer_exit();
-    let pending_b = prepare(&mut exit_b, &key, installation)?.into_writer_exit();
+    let pending_a = prepare(&mut exit_a, &provider, installation)?.into_writer_exit();
+    let pending_b = prepare(&mut exit_b, &provider, installation)?.into_writer_exit();
     let receipt_a = exit_a.retire_provisioning_writer_for_exit(&pending_a)?;
     let receipt_b = exit_b.retire_provisioning_writer_for_exit(&pending_b)?;
     let Err(exit_failure_b) = pending_b.complete(receipt_a) else {
@@ -762,12 +812,12 @@ fn cross_backend_reread_release_and_terminal_receipts_are_each_rejected() -> Tes
 
 #[test]
 fn cross_backend_ambiguity_reload_receipts_are_rejected_at_the_advanced_round() -> TestResult {
-    let key = fixture_key(0x68)?;
     let installation = fixture_installation(0x69)?;
+    let provider = fixture_provider(installation, 0x68)?;
     let mut backend_a = DurableRunStateFixture::empty(installation)?;
     let mut backend_b = DurableRunStateFixture::empty(installation)?;
-    let transition_a = prepare(&mut backend_a, &key, installation)?;
-    let transition_b = prepare(&mut backend_b, &key, installation)?;
+    let transition_a = prepare(&mut backend_a, &provider, installation)?;
+    let transition_b = prepare(&mut backend_b, &provider, installation)?;
     backend_a.set_commit_fault(DurableRunStateCommitFault::AmbiguousBeforeWrite);
     backend_b.set_commit_fault(DurableRunStateCommitFault::AmbiguousBeforeWrite);
     assert!(matches!(
@@ -793,26 +843,31 @@ fn cross_backend_ambiguity_reload_receipts_are_rejected_at_the_advanced_round() 
 }
 
 #[test]
-fn wrong_installation_key_and_receipt_installation_fail_closed() -> TestResult {
-    let key = fixture_key(0x5a)?;
-    let wrong_key = fixture_key(0x6a)?;
+fn wrong_installation_provider_and_receipt_installation_fail_closed() -> TestResult {
     let installation = fixture_installation(0x4b)?;
     let other_installation = fixture_installation(0x6b)?;
+    let provider = fixture_provider(installation, 0x5a)?;
+    let mut wrong_provider = fixture_provider(installation, 0x6a)?;
+    let mut other_provider = fixture_provider(other_installation, 0x5a)?;
 
     let mut backend = DurableRunStateFixture::empty(installation)?;
-    let Err(runtime_error) = backend.begin_runtime_boot(other_installation) else {
+    let Err(runtime_error) = backend.begin_runtime_boot(other_provider.runtime_authority()) else {
         return Err("wrong installation minted runtime writer authority".into());
     };
     assert!(matches!(
         &runtime_error,
-        RuntimeBootStartFailure::BeforeWriter(RecoveryRequired::InstallationIdentityMismatch)
+        RuntimeBootStartFailure::BeforeWriter(failure)
+            if failure.reason() == RecoveryRequired::InstallationIdentityMismatch
     ));
-    assert!(matches!(
-        runtime_error.into_writer_exit(),
-        Err(RecoveryRequired::InstallationIdentityMismatch)
-    ));
+    let Err(runtime_error) = runtime_error.into_writer_exit() else {
+        return Err("wrong-installation pre-writer failure retained a writer".into());
+    };
+    assert_eq!(
+        runtime_error.reason(),
+        RecoveryRequired::InstallationIdentityMismatch
+    );
     assert_eq!(backend.held_writer_role(), None);
-    let Err(error) = backend.begin_initial_provisioning(&key, other_installation) else {
+    let Err(error) = backend.begin_initial_provisioning(&provider, other_installation) else {
         return Err("wrong installation minted fresh authority".into());
     };
     assert!(matches!(
@@ -821,11 +876,11 @@ fn wrong_installation_key_and_receipt_installation_fail_closed() -> TestResult {
             RecoveryRequired::InstallationIdentityMismatch
         )
     ));
-    let committed = prepare_and_commit(&mut backend, &key, installation)?;
+    let committed = prepare_and_commit(&mut backend, &provider, installation)?;
     let provisioned = release_initial(&mut backend, committed)?;
     assert_eq!(provisioned.generation(), NonZeroU64::MIN);
-    let Err(runtime_failure) = backend.boot(&wrong_key, installation) else {
-        return Err("wrong runtime key minted boot authority".into());
+    let Err(runtime_failure) = backend.boot(wrong_provider.runtime_authority()) else {
+        return Err("wrong runtime provider minted boot authority".into());
     };
     assert!(matches!(
         runtime_failure,
@@ -837,7 +892,7 @@ fn wrong_installation_key_and_receipt_installation_fail_closed() -> TestResult {
     );
 
     let mut receipt_backend = DurableRunStateFixture::empty(installation)?;
-    let transition = prepare(&mut receipt_backend, &key, installation)?;
+    let transition = prepare(&mut receipt_backend, &provider, installation)?;
     let committed = receipt_backend
         .commit_initial_clean(&transition)?
         .with_installation_for_fixture_test(other_installation);
@@ -855,10 +910,10 @@ fn wrong_installation_key_and_receipt_installation_fail_closed() -> TestResult {
 
 #[test]
 fn writer_epoch_substitution_is_rejected() -> TestResult {
-    let key = fixture_key(0x5b)?;
     let installation = fixture_installation(0x4c)?;
+    let provider = fixture_provider(installation, 0x5b)?;
     let mut backend = DurableRunStateFixture::empty(installation)?;
-    let transition = prepare(&mut backend, &key, installation)?;
+    let transition = prepare(&mut backend, &provider, installation)?;
     let committed = backend
         .commit_initial_clean(&transition)?
         .with_writer_epoch_for_fixture_test(NonZeroU64::new(99).ok_or("invalid epoch")?);
@@ -873,10 +928,10 @@ fn writer_epoch_substitution_is_rejected() -> TestResult {
 
 #[test]
 fn authority_attempt_substitution_is_rejected() -> TestResult {
-    let key = fixture_key(0x5c)?;
     let installation = fixture_installation(0x4d)?;
+    let provider = fixture_provider(installation, 0x5c)?;
     let mut backend = DurableRunStateFixture::empty(installation)?;
-    let transition = prepare(&mut backend, &key, installation)?;
+    let transition = prepare(&mut backend, &provider, installation)?;
     let committed = backend
         .commit_initial_clean(&transition)?
         .with_attempt_for_fixture_test(NonZeroU64::new(99).ok_or("invalid attempt")?);
@@ -894,10 +949,10 @@ fn authority_attempt_substitution_is_rejected() -> TestResult {
 
 #[test]
 fn reload_round_substitution_and_replay_are_rejected() -> TestResult {
-    let key = fixture_key(0x5d)?;
     let installation = fixture_installation(0x4e)?;
+    let provider = fixture_provider(installation, 0x5d)?;
     let mut backend = DurableRunStateFixture::empty(installation)?;
-    let transition = prepare(&mut backend, &key, installation)?;
+    let transition = prepare(&mut backend, &provider, installation)?;
     backend.set_commit_fault(DurableRunStateCommitFault::AmbiguousBeforeWrite);
     assert!(matches!(
         backend.commit_initial_clean(&transition),
@@ -920,14 +975,15 @@ fn reload_round_substitution_and_replay_are_rejected() -> TestResult {
 
 #[test]
 fn ambiguous_final_release_never_mints_provisioned_and_preserves_bytes() -> TestResult {
-    let key = fixture_key(0x5e)?;
     let installation = fixture_installation(0x4f)?;
+    let provider = fixture_provider(installation, 0x5e)?;
+    let mut runtime_provider = fixture_provider(installation, 0x5e)?;
     for fault in [
         DurableRunStateReleaseFault::AmbiguousBeforeRelease,
         DurableRunStateReleaseFault::AmbiguousAfterRelease,
     ] {
         let mut backend = DurableRunStateFixture::empty(installation)?;
-        let committed = prepare_and_commit(&mut backend, &key, installation)?;
+        let committed = prepare_and_commit(&mut backend, &provider, installation)?;
         let pending = committed.prepare_writer_release();
         let before_release = durable_bytes(&backend);
         backend.set_release_fault(fault);
@@ -946,7 +1002,7 @@ fn ambiguous_final_release_never_mints_provisioned_and_preserves_bytes() -> Test
         } else {
             RecoveryRequired::WriterReleaseReconciliationRequired
         };
-        let Err(runtime_failure) = backend.boot(&key, installation) else {
+        let Err(runtime_failure) = backend.boot(runtime_provider.runtime_authority()) else {
             return Err("ambiguous provisioning release allowed runtime boot".into());
         };
         assert_eq!(runtime_failure.reason(), expected_boot_error);
@@ -955,7 +1011,8 @@ fn ambiguous_final_release_never_mints_provisioned_and_preserves_bytes() -> Test
             RuntimeBootStartFailure::BeforeWriter(_)
         ));
         if fault == DurableRunStateReleaseFault::AmbiguousAfterRelease {
-            let Err(start_error) = backend.begin_initial_provisioning(&key, installation) else {
+            let Err(start_error) = backend.begin_initial_provisioning(&provider, installation)
+            else {
                 return Err("release-reconciliation latch allowed reprovisioning".into());
             };
             assert!(matches!(
@@ -975,10 +1032,11 @@ fn ambiguous_final_release_never_mints_provisioned_and_preserves_bytes() -> Test
 
 #[test]
 fn mismatched_release_and_terminal_round_receipts_only_reconcile_for_exit() -> TestResult {
-    let key = fixture_key(0x5f)?;
     let installation = fixture_installation(0x50)?;
+    let provider = fixture_provider(installation, 0x5f)?;
+    let mut runtime_provider = fixture_provider(installation, 0x5f)?;
     let mut backend = DurableRunStateFixture::empty(installation)?;
-    let committed = prepare_and_commit(&mut backend, &key, installation)?;
+    let committed = prepare_and_commit(&mut backend, &provider, installation)?;
     let pending = committed.prepare_writer_release();
     let before_release = durable_bytes(&backend);
     backend.set_release_fault(DurableRunStateReleaseFault::MismatchedReceiptAfterRelease);
@@ -987,16 +1045,16 @@ fn mismatched_release_and_terminal_round_receipts_only_reconcile_for_exit() -> T
         return Err("mismatched final release minted provisioned state".into());
     };
     assert_eq!(failure.reason(), RecoveryRequired::WriterLeaseMismatch);
-    let Err(runtime_failure) = backend.boot(&key, installation) else {
+    let Err(runtime_failure) = backend.boot(runtime_provider.runtime_authority()) else {
         return Err("mismatched provisioning release allowed runtime boot".into());
     };
     assert!(matches!(
         runtime_failure,
-        RuntimeBootStartFailure::BeforeWriter(
-            RecoveryRequired::WriterReleaseReconciliationRequired
-        )
+        RuntimeBootStartFailure::BeforeWriter(failure)
+            if failure.reason()
+                == RecoveryRequired::WriterReleaseReconciliationRequired
     ));
-    let Err(start_error) = backend.begin_initial_provisioning(&key, installation) else {
+    let Err(start_error) = backend.begin_initial_provisioning(&provider, installation) else {
         return Err("mismatched release receipt allowed reprovisioning".into());
     };
     assert!(matches!(
@@ -1024,12 +1082,12 @@ fn mismatched_release_and_terminal_round_receipts_only_reconcile_for_exit() -> T
 
 #[test]
 fn bounded_counter_overflow_fails_without_unbound_authority() -> TestResult {
-    let key = fixture_key(0x60)?;
     let installation = fixture_installation(0x61)?;
+    let provider = fixture_provider(installation, 0x60)?;
 
     let mut epoch_backend = DurableRunStateFixture::empty(installation)?;
     epoch_backend.last_writer_epoch = u64::MAX;
-    let Err(error) = epoch_backend.begin_initial_provisioning(&key, installation) else {
+    let Err(error) = epoch_backend.begin_initial_provisioning(&provider, installation) else {
         return Err("writer epoch overflow minted authority".into());
     };
     assert_eq!(error.reason(), RecoveryRequired::WriterLeaseUnavailable);
@@ -1037,7 +1095,7 @@ fn bounded_counter_overflow_fails_without_unbound_authority() -> TestResult {
 
     let mut attempt_backend = DurableRunStateFixture::empty(installation)?;
     attempt_backend.last_provisioning_attempt = u64::MAX;
-    let Err(error) = attempt_backend.begin_initial_provisioning(&key, installation) else {
+    let Err(error) = attempt_backend.begin_initial_provisioning(&provider, installation) else {
         return Err("attempt overflow minted authority".into());
     };
     assert_eq!(
@@ -1047,8 +1105,8 @@ fn bounded_counter_overflow_fails_without_unbound_authority() -> TestResult {
     assert_eq!(attempt_backend.held_writer_role(), None);
 
     let mut round_backend = DurableRunStateFixture::empty(installation)?;
-    let unprovisioned =
-        start(&mut round_backend, &key, installation)?.with_round_for_fixture_test(NonZeroU64::MAX);
+    let unprovisioned = start(&mut round_backend, &provider, installation)?
+        .with_round_for_fixture_test(NonZeroU64::MAX);
     round_backend.provisioning_reload_round = u64::MAX;
     let transition = unprovisioned.prepare_initial_clean().map_err(boxed_debug)?;
     round_backend.set_commit_fault(DurableRunStateCommitFault::AmbiguousBeforeWrite);
@@ -1118,10 +1176,10 @@ fn provisioning_authorities_are_move_only_and_debug_redacted() -> TestResult {
     let _ = <ProvisioningRecoveryExitEvidence as AmbiguousIfClone<_>>::marker;
     let _ = <ProvisioningRecoveryExitEvidence as AmbiguousIfCopy<_>>::marker;
 
-    let key = fixture_key(0x62)?;
     let installation = fixture_installation(0x63)?;
+    let provider = fixture_provider(installation, 0x62)?;
     let mut backend = DurableRunStateFixture::empty(installation)?;
-    let unprovisioned = start(&mut backend, &key, installation)?;
+    let unprovisioned = start(&mut backend, &provider, installation)?;
     assert!(format!("{unprovisioned:?}").contains("[REDACTED]"));
     let transition = unprovisioned.prepare_initial_clean().map_err(boxed_debug)?;
     assert!(format!("{transition:?}").contains("[REDACTED]"));

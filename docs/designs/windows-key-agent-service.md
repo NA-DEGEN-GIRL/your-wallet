@@ -863,13 +863,16 @@ approval/secret sessions; logoff and user switch additionally terminate all
 helpers and discard user-token capabilities. SCM stop rejects new work, closes
 listeners, cancels/terminates helpers, flushes only already-defined durable
 records, and releases request-scoped hardware and storage handles. The dormant
-Phase 2E adapter now models holding the service-lifetime run-state root and
-`run.lock` through its own checked release, but it has no bridge to the durable
-writer, authentication-key provider, or rollback/high-water anchor. A future
-production composition must bind and keep all four authorities through exact
-Clean commit and independent reread and through the final writer release. The
-service reports stopped only after that bounded sequence. If cleanup cannot be
-proven, the service exits fail-closed and the next start enters recovery before
+Phase 2F-c/2G chain now structurally carries the exact OS-pair writer and the
+provider-bound runtime authority through Clean commit, independent reread,
+final release, every checked or irreversible terminal, and stopped evidence.
+The independently gated Phase 2E adapter still has no production composition
+that binds its service-lifetime root and `run.lock` to that chain. A future
+product adapter must also supply OS-proven writer/provider provenance, an
+independently protected authentication backend, and a rollback/high-water
+anchor, and retain every such authority through the same bounded sequence. The
+service reports stopped only after that sequence. If cleanup cannot be proven,
+the service exits fail-closed and the next start enters recovery before
 listening.
 
 The debug fixtures implement the SCM/RPC rundown subset of this policy. If
@@ -1142,8 +1145,10 @@ may change from `None`.
 
 Add production SCM lifecycle, immutable installation/configuration readback,
 service-only storage adapters, single-instance/recovery state, outbound block,
-session notifications, and deterministic stop/crash cleanup. The cryptographic
-models may be loaded with fixture keys only.
+session notifications, and deterministic stop/crash cleanup. The current
+cryptographic model has a sealed installation-bound provider: its production
+backend is uninhabited and has zero production constructors, while only a
+`cfg(test)` fixture provider can hold nonzero test bytes.
 
 **Exit gate:** install/repair/upgrade/uninstall, token/DACL, storage identity,
 network denial, session, crash, and reboot suites pass with no signing surface.
@@ -1162,11 +1167,14 @@ authority. After the first nine exact cleanup steps and empty work/token
 registries are proven, a final pre-Clean check consumes the live runtime into
 `CleanCommitPending` while retaining the exact writer lease. The ninth cleanup
 step, `CleanupStep::ReleaseRequestHardwareAndStorageHandles`, names only
-request-scoped cleanup. This core proves that durable state authority and the
-exact writer survive through Clean commit, independent reread, and final
-release. Retaining the future run-state-root handle, authentication-key
-provider, and rollback/high-water-anchor handle across the same boundary
-remains an adapter obligation. Distinct committed and reread Clean receipts can produce only
+request-scoped cleanup. The provider-bound runtime authority is owned by the
+logical `SingleWriterLease` together with the exact writer, and survives through
+Clean commit, independent reread, final release, every terminal/recovery path,
+and stopped evidence. Retaining the future run-state-root handle and a
+production rollback/high-water-anchor handle across the same boundary remains
+an adapter obligation; so do OS provenance tying the writer and provider to the
+intended service installation and an actual protected provider backend.
+Distinct committed and reread Clean receipts can produce only
 `CleanCommittedWithWriter`; the sole stopped-report permit requires its final
 backend-bound writer-release receipt. Invalid or ambiguous evidence cannot
 claim a clean stop, and a Clean reload still retains the writer-release
@@ -1203,26 +1211,39 @@ remain not passed; `COMPILED_PARENT_POLICY` and `COMPILED_RELEASE_POLICY` remain
 module-private, zero-runtime-root core now defines exact 148-byte `YWRUNV01`
 run-marker and `YWHIWV01` independent high-water envelopes. Both bind the fixed
 installation identity, nonzero generation, predecessor/current lineage
-commitments, reserved-zero schema, and a distinct HMAC-SHA256 domain under a
-zeroizing fixture authentication key. The Boot-producing runtime path first
-acquires the exact backend/installation writer and only then freshly observes
-and authenticates the marker and checkpoint; only an exact Clean pair observed
-under that move-only writer can produce `BootEvidence`. A separate `cfg(test)`
-inspection carries no lease-binding, Boot, or mutation authority. The lifecycle
-now carries the sealed chain
+commitments, and reserved-zero schema. Exact codec and HMAC operations live only
+inside a private authentication child behind marker-specific and checkpoint-
+specific signing/verification; there is no caller-selected domain, raw-key, or
+generic tag oracle. A same-body test proves that the two purposes yield distinct
+tags and reject cross-purpose verification. The sealed
+`RunStateAuthenticationProvider` owns the exact installation and a unique opaque
+provider identity that differs even for providers constructed from the same
+installation and fixture bytes. Its production backend is uninhabited with zero
+production constructors; only `cfg(test)` can construct it from a nonzero key
+held in `Zeroizing`, and its Debug surface is redacted. Its move-only runtime
+authority is minted through `runtime_authority(&mut self)`, preventing a second
+live mint from the same provider. The Boot-producing runtime path first acquires
+the exact backend/installation writer and only then freshly observes and
+authenticates the marker and checkpoint; only an exact Clean pair under that
+writer and provider-bound authority can produce `BootEvidence`. A separate
+`cfg(test)` inspection carries no lease-binding, Boot, or mutation authority.
+`SingleWriterLease` owns both the exact writer and runtime authority throughout
+the sealed chain
 `PreparedActiveTransition -> ActiveRunLease ->
 PreparedCleanTransition -> CleanCommittedWithWriter ->
 PendingFinalWriterRelease -> StoppedRunEvidence`; raw durable observations, raw
 receipt wrappers, copied generation authority, and the former
-`single_instance_released` boolean are no longer lifecycle inputs.
+`single_instance_released` boolean are no longer lifecycle inputs. Transition
+methods do not accept a parallel provider or installation argument.
 
 Active and Clean each require exact prior-state CAS, distinct commit and reread
 receipts, agreement of marker plus high-water checkpoint, and the same opaque
-backend/lease binding as their originating transition. Every ambiguous commit
-consumes its transition into a lifecycle-branded Active or Clean reload state.
-Before either successor is constructed, the supplied transition key must
-reauthenticate the exact held prior marker and checkpoint; a key switch retains
-only terminal writer-exit authority.
+backend/lease/provider binding as their originating transition. Every ambiguous
+commit consumes its transition into a lifecycle-branded Active or Clean reload
+state. Before either successor is constructed, the lease-owned authority
+reauthenticates the exact held prior marker and checkpoint. No transition can
+substitute a replacement provider; wrong-provider evidence retains only
+terminal writer-exit authority.
 Each prepared commit carries a private one-shot phase from attempt through
 commit receipt and independent reread. Reload, normal release, and terminal-
 retirement receipts are likewise one-shot. The bounded backend latches an ambiguous or terminal commit and any
@@ -1245,14 +1266,15 @@ readback occur while the writer remains held, so a second boot cannot enter the
 release boundary; fixture crash/exit release preserves the last authenticated
 durable state without minting a stopped report.
 
-This remains a no-OS fault model, not product storage. Its only backend is a
-fixed-capacity `cfg(test)` memory fixture and its HMAC key is not a production
-key source. There is still no `%ProgramData%` service-owned root, service-SID
+This remains a no-OS fault model, not product storage. Its only storage backend
+is a fixed-capacity `cfg(test)` memory fixture, and the authentication provider's
+production backend is deliberately uninhabited rather than a production key
+source. There is still no `%ProgramData%` service-owned root, service-SID
 owner/DACL adapter, installer-seeded initial marker, kernel singleton object,
-TPM-backed authentication/high-water anchor, power-loss or reboot evidence, or
-executable/top-level production caller or production key source. The only
-internal consumers are the separately gated dormant Phase 2F-c/2G runtime chain
-and Phase 2C Windows provisioning compositor.
+protected or TPM-backed authentication/high-water source, power-loss or reboot
+evidence, or executable/top-level production caller. The only internal
+consumers are the separately gated dormant Phase 2F-c/2G runtime chain and Phase
+2C Windows provisioning compositor.
 Existing LPAC user storage and the signing journal are not
 reused as service run-state authority. Phase 1 and Phase 2 remain **STOP-SHIP**;
 both compiled policies remain `None`, and ordinary/release execution remains
@@ -1261,9 +1283,9 @@ silent exit 78.
 **Current Phase 2C status: started, not passed.** This zero-runtime-root
 slice replaces the ordinary fixture's out-of-band generation-one Clean seed
 with a production-compiled provisioning typestate. A fixture-only, move-only
-fresh-install authority is bound to one installation, backend, provisioning
-attempt, and exact fixture authentication key. It cannot become runtime
-authority. The backend must first acquire a distinct provisioning writer and,
+fresh-install authority is bound to one installation, backend, nonzero
+provisioning attempt, and exact opaque provider identity. It cannot become
+runtime authority. The backend must first acquire a distinct provisioning writer and,
 while that writer remains held, independently observe both the run marker and
 high-water checkpoint as missing before it can produce
 `UnprovisionedWithWriter`.
@@ -1271,13 +1293,16 @@ high-water checkpoint as missing before it can produce
 A production-compiled but dormant Windows-only child now composes that logical
 typestate with the fixed Phase 2F-b marker/checkpoint pair. The child is reached
 through one private `#[path = "windows_provisioning.rs"]` module and an exact
-`pub(super)` re-export; it has no executable or top-level entry. Its move-only
-`WindowsFreshInstallAuthority` has no production constructor or caller. The
-only constructor is `cfg(test)` and binds the current-user installation fixture
-to a borrowed fixture authentication key; the authority carries a private
-nonzero provisioning attempt. This is a test surrogate, not evidence that the
-caller is an elevated installer or that a missing store is a virgin
-installation.
+`pub(super)` re-export; it has no executable or top-level entry. A move-only
+`WindowsInstallerProvisioningGrant` carries an expected opaque provider identity
+and nonzero attempt; only a `cfg(test)` current-user fixture can seal and
+construct that grant. The sole binder,
+`bind_windows_fresh_install_authority(provider, grant)`, can create
+`WindowsFreshInstallAuthority` only when the exact provider identity matches.
+There is no direct fresh-authority fixture constructor, and a second provider is
+rejected even when its installation and fixture bytes are identical. This is a
+test surrogate, not evidence that the caller is an elevated installer or that a
+missing store is a virgin installation.
 
 `start_windows_initial_provisioning` consumes the already-held OS writer and
 that authority. Writer transfer precedes backend binding and writer epoch
@@ -1294,7 +1319,7 @@ distinct commit and reread receipts, and the same backend, installation,
 provisioning writer, attempt, and ambiguity round. An ambiguous commit may
 recover only an exact fully committed candidate or an exact still-empty pair;
 the latter requires a fresh backend-issued round before retry. A one-sided,
-malformed, pre-existing, wrong-key, cross-backend, stale, or drifting state is
+malformed, pre-existing, wrong-provider, cross-backend, stale, or drifting state is
 terminal and is never repaired or adopted. Every consumed durable-outcome or
 receipt-validation failure retains only provisioning-writer exit authority. A
 non-consuming request-validation, duplicate, or replay rejection cannot issue
@@ -1321,33 +1346,40 @@ release retry and block both provisioning and runtime writer reacquisition
 until matching reload or terminal reconciliation.
 
 Provisioning completion remains withheld until the exact provisioning writer
-is released. The resulting `ProvisionedRunState` has no conversion to
-`BootEvidence` or a runtime writer. Runtime startup must separately acquire a
-fresh runtime writer and only then reopen and authenticate the new Clean pair
-through the existing boot path. Ordinary boot on a missing pair still requires
-recovery and never auto-initializes storage.
+is released. The resulting `ProvisionedRunState` retains the consumed fresh
+authority as a hidden field and has no conversion to `BootEvidence` or a runtime
+writer. `ProvisioningRecoveryExitEvidence` likewise retains it through checked
+retirement. Runtime startup must separately acquire a fresh runtime writer and
+only then reopen and authenticate the new Clean pair through the existing boot
+path. Ordinary boot on a missing pair still requires recovery and never auto-
+initializes storage.
 
 The Windows release path first compares the pair observation with the exact
 logical Clean bytes, prepares and begins logical release, and then calls the
 pair-bound verified OS release. It distinguishes writer-retained,
 released-without-receipt, and post-release terminal outcomes. Only an exact
 released pair, matching logical release receipt, and logical completion mint
-`WindowsProvisionedRunState`, which exposes generation only. Every live or
-reload state also has a reason-neutral checked retirement path ordered as
+`WindowsProvisionedRunState`, which exposes generation only while retaining the
+fresh authority privately. Every live or reload state also has a reason-neutral
+checked retirement path ordered as
 logical begin-release, exact OS-pair retirement, logical receipt recording,
-then logical completion. A checked-retirement failure is irreversible and
-cannot mint normal, retry, Boot, or recovery authority.
+then logical completion. `WindowsProvisioningCheckedRetired` retains that hidden
+authority. A checked-retirement failure is irreversible and cannot mint normal,
+retry, Boot, or recovery authority.
 
-The Windows composition has six passing `windows_provisioning` tests: exact
+The Windows composition has seven passing `windows_provisioning` tests: exact
 Missing/Missing to Clean generation one followed by a separately acquired fresh
 runtime Boot; unchanged rejection of a pre-existing full pair; ambiguity reload
 classification for still-missing, marker-only, and exact-candidate states;
 terminal confirmed-commit reread drift; distinct writer-retained,
 released-without-receipt, and post-release outcomes; and complete live-state
-retirement, move-only, and Debug-redaction coverage. The focused
-`durable_run_state` inventory is therefore 85/85: 34 parent tests, 25 external
-logical provisioning tests, six `windows_pair` tests, six
-`windows_provisioning` tests, and fourteen `windows_runtime` tests. The kernel
+retirement, move-only, and Debug-redaction coverage. A focused grant/binder test
+also proves exact identity matching and non-vacuous rejection of another
+provider made from the same installation and bytes. The focused
+`durable_run_state` inventory is therefore 88/88: 34 parent tests, two private
+authentication-child tests, 25 external logical provisioning tests, six
+`windows_pair` tests, seven `windows_provisioning` tests, and fourteen
+`windows_runtime` tests. The kernel
 run-state-root inventory remains 56 total, with 54 passing and the same two
 environment-dependent tests ignored; the pre-Phase 2F-c Phase 2F-b inventory
 remains 55 total with 53 passing and two ignored.
@@ -1368,26 +1400,27 @@ both compiled policies remain `None`, and ordinary/release execution remains
 silent exit 78.
 
 **Current Phase 2D status: started, not passed.** The Boot-producing runtime
-path now mirrors the writer-first provisioning boundary. The backend must
-acquire the exact runtime writer for one backend and installation before the
-fresh run-marker/high-water observation used to mint Boot authority. Fixture
-`begin_runtime_boot` yields the
-move-only `RuntimeWriterAcquired` state; `finish_runtime_boot` consumes it
-exactly once into either exact authenticated Clean `BootEvidence` or a terminal
-failure that retains the same writer obligation. A failure before acquisition
-is `RuntimeBootStartFailure::BeforeWriter`; every observation, authentication,
-state, backend-binding, or writer-epoch failure after acquisition is
-`RuntimeBootStartFailure::WithWriter` and must complete exact terminal writer
-retirement. A separate `cfg(test)` inspection may authenticate fixture bytes
+path now mirrors the writer-first provisioning boundary. A move-only
+`RuntimeRunStateAuthority` is minted from a mutable borrow of its exact sealed
+provider and enters the writer acquisition with the provider's installation and
+opaque identity already bound. Fixture `begin_runtime_boot` yields the move-only
+`RuntimeWriterAcquired` state; `finish_runtime_boot` consumes it exactly once
+into either exact authenticated Clean `BootEvidence` or
+`RuntimeBootStartFailure`. Its typed `RuntimeBootBeforeWriterFailure` arm owns
+the consumed authority but no writer or writer-release obligation. Every
+observation, authentication, state, backend-binding, or writer-epoch failure
+after acquisition instead retains both the authority and exact writer through
+terminal writer retirement. A separate `cfg(test)` inspection may authenticate fixture bytes
 without a writer, but it has no lease-binding, Boot, or mutation authority and
 cannot later bind a newly acquired writer.
 
 Missing/Missing, either one-sided missing state, malformed bytes, a wrong
-authentication key, Active or RecoveryRequired state, and cross-backend or
-cross-epoch substitution never initialize, provision, repair, or mint
-`BootEvidence`. They preserve the observed durable state, retain only terminal
-writer-exit authority, and block runtime or provisioning writer reacquisition
-until the exact writer is retired. A fresh-install provisioning authority
+provider, Active or RecoveryRequired state, and cross-backend or cross-epoch
+substitution never initialize, provision, repair, or mint `BootEvidence`.
+Pre-acquisition rejection retains the provider-bound authority in its typed
+terminal without claiming a writer; post-acquisition rejection preserves the
+observed durable state and terminal writer-exit authority and blocks writer
+reacquisition until exact retirement. A fresh-install provisioning authority
 remains a separate fixture-only capability and cannot be derived from any
 runtime-boot result.
 
@@ -1395,20 +1428,23 @@ The eleven logical startup requirements are therefore nine external
 observations plus storage-binding and single-instance evidence carried
 structurally by the lease-bound `BootEvidence`. Shutdown likewise distinguishes
 request-scoped hardware/storage cleanup from service-lifetime run-state
-authority. This core proves that its durable state authority and exact writer
-remain live through Clean commit, independent reread, and final release. The
-separate Phase 2E adapter retains its root and lock through its own release, but
-a future composition must bind that handle to this durable writer and also
-retain the authentication-key provider and anchor handle across the same
-boundary.
+authority. `SingleWriterLease` owns the runtime authority and exact writer; that
+pair is the sole carrier after writer acquisition and remains live through every
+later startup/live/reload/release state and every writer-bound terminal,
+recovery, and stopped evidence. Before acquisition, the typed authority-bearing
+terminal owns the authority directly and has no writer-retirement path. The
+separate Phase 2E adapter retains its root and lock
+through its own release, but a future composition must bind that handle to this
+durable writer and also supply OS provenance for the writer/provider, a
+protected provider backend, and the anchor handle across the same boundary.
 
 At the pre-Phase 2F-c boundary this remained a module-private, zero-runtime-root
-contract over only the bounded memory fixture and fixture authentication key.
+contract over only the bounded memory fixture and `cfg(test)` sealed provider.
 It had no filesystem or other OS adapter. The separately gated dormant Phase
 2F-c composite below is its sole private Windows runtime durable adapter, and the
 separately gated Phase 2G compositor is now its sole production-compiled policy
 consumer. Neither bridge has an executable, top-level, or exported caller or a
-production key provider.
+production protected-provider source.
 There is still no installer or SCM integration, power-loss/reboot proof,
 TPM-backed key or anchor, secret, signing
 transition, or release authority. The separate dormant Phase 2E adapter below
@@ -1763,26 +1799,28 @@ stay `None`, and ordinary/release execution remains silent exit 78.
 Windows-only, module-private dormant composite now binds one Phase 2D logical
 runtime writer to one independently verified Phase 2F-b operating-system pair.
 Its normal internal convenience entry, `start_windows_runtime`, consumes an
-already-held `HeldServiceRunStateWriter`, one installation identity, and a
-borrowed fixture authentication key. Its only production-compiled call site is
+already-held `HeldServiceRunStateWriter` and one move-only
+`RuntimeRunStateAuthority`; installation and provider identity come only from
+that authority. Its only production-compiled call site is
 the private dormant Phase 2G `begin_windows_lifecycle` compositor; neither entry
 has an executable, top-level, exported, or aliased caller. The bridge has no
 expected-authority source, protected or TPM-backed authentication-key provider,
 native-handle return, raw-writer
 escape, Phase 2C provisioning conversion, secret, signing, RPC, or release-
-activation bridge. The synthetic fixture-byte key import remains production-
-compiled but dormant and test-called only. A private nonzero backend binding is
-allocated only after the OS writer already exists. Binding-allocation failure
-retains the unbound pair writer for checked retirement; every pre-retirement
-writer-holding failure retains the logical writer-exit obligation and the exact
-corresponding OS-pair typestate.
-Checked-retirement failure is irreversible and consumes the pair authority; it
+activation bridge. The provider backend is uninhabited and has no production
+constructor; no test-secret import remains in the production
+partition. A private nonzero backend binding is allocated only after the OS
+writer already exists. Binding-allocation failure retains both the unbound pair
+writer and runtime authority for checked retirement; every pre-retirement
+writer-holding failure retains the logical writer-exit obligation, provider-
+bound authority, and exact corresponding OS-pair typestate. Checked-retirement
+failure is irreversible but still retains the authority in a typed terminal; it
 exposes neither a recovery-exit nor a normal receipt.
 
 Startup is writer-first. The bridge seals the held OS writer into the logical
 runtime acquisition, freshly observes the four-leaf fixed pair, and only then
-authenticates the logical observation with the same borrowed key. Missing,
-malformed, wrong-installation, wrong-key, Active, RecoveryRequired, one-sided,
+authenticates the logical observation with the lease-owned authority. Missing,
+malformed, wrong-installation, wrong-provider, Active, RecoveryRequired, one-sided,
 or backend-drift state cannot mint Windows Boot evidence. Exact authenticated
 Clean Boot prepares a logical Active successor and the identical full-pair OS
 expectation before either side may attempt a commit.
@@ -1807,7 +1845,12 @@ candidate, while prior, partial, or drifting state is terminal. Every live or
 reload-required composite state exposes a consuming reason-neutral
 `into_retirement`; the legacy `into_terminal(RecoveryRequired)` wrappers remain
 durable-internal compatibility only and are absent from the Phase 2G facade.
-No state can drop one authority and continue with the other.
+No state can drop one authority and continue with the other. Before logical
+binding, the binding-failure wrapper preserves the runtime authority directly
+beside the still-held OS writer; the unbound-terminal wrapper continues to hold
+it directly after writer retirement. After binding, `SingleWriterLease` is the
+sole writer-plus-provider carrier through live, reload, checked-retired,
+released-no-receipt, post-release, recovery, and stopped wrappers.
 
 Current-host forced-process-death evidence is isolated behind a private
 `cfg(test)` facade and exercises exactly three production-order cutpoints:
@@ -1862,12 +1905,13 @@ writer release, or a native writer-release failure, returns `WriterRetained` and
 permits only checked terminal retirement; a logical precheck failure instead
 enters the ordinary composite terminal path. If the writer was
 released but a later pair-handle checked close failed, `WindowsReleasedNoReceipt`
-is irreversible and has no retry, retirement, recovery-exit, or stopped API. On
+is irreversible and has no retry, retirement, recovery-exit, or stopped API,
+but retains the provider-bound authority privately. On
 an exact OS receipt the composite compares the receipt pair to logical Clean,
 records the logical release receipt, and completes logical stop; only that path
 mints `WindowsStoppedRunEvidence`. Any failure after the OS receipt becomes
 `WindowsPostReleaseTerminal`, which likewise has no writer, retry, retirement,
-recovery-exit, or stopped conversion.
+recovery-exit, or stopped conversion and still retains that authority.
 
 Checked terminal retirement is ordered logical `begin_release`, OS pair
 retirement, logical release-receipt latch, then logical completion. Every error
@@ -1879,7 +1923,7 @@ The exact composite inventory is fourteen passing tests:
 `kernel_process_death_restart_boots_only_prior_clean_and_rejects_partial_or_active`,
 `kernel_process_death_restart_boots_only_full_clean_and_rejects_prior_active_or_partial`,
 `kernel_missing_pair_is_terminal_and_checked_retired`,
-`kernel_wrong_key_and_nonclean_pairs_never_boot`,
+`kernel_wrong_provider_and_nonclean_pairs_never_boot`,
 `kernel_active_ambiguity_reload_classifies_prior_candidate_and_partial`,
 `kernel_confirmed_active_reread_failure_never_reloads_as_boot`,
 `kernel_clean_ambiguity_reload_accepts_only_exact_candidate`,
@@ -1889,16 +1933,17 @@ The exact composite inventory is fourteen passing tests:
 `kernel_live_and_reload_states_have_checked_terminal_retirement`,
 `composite_authority_and_receipts_are_move_only`, and
 `composite_live_states_expose_consuming_terminal_transitions`. The focused
-`durable_run_state` module inventory is 85/85 passing: 34 parent tests plus 25
-logical provisioning, six `windows_pair`, six `windows_provisioning`, and
-fourteen `windows_runtime` tests. The named pair and composite slices are
+`durable_run_state` module inventory is 88/88 passing: 34 parent tests, two
+private authentication-child tests, 25 logical provisioning, six
+`windows_pair`, seven `windows_provisioning`, and fourteen `windows_runtime`
+tests. The named child and composite slices are
 therefore subsets of that module total, not additional disjoint counts. The
 kernel run-state-root suite is 56 total, with
 54 passing and the same two
 environment-dependent tests ignored.
 
 This is still not a product runtime, pair-atomic transaction, or power-loss
-proof. A production authentication-key/TPM provider and executable/top-level caller,
+proof. A production protected/TPM provider source and executable/top-level caller,
 elevated ProgramData/service-SID installer provenance, SCM/restricted-token
 composition, a trusted single service/`SYSTEM` writer and peer-race proof,
 mapped-I/O exclusion, rollback-anchor integration, and supported-kernel crash,
@@ -1910,11 +1955,12 @@ silent exit 78.
 production-compiled, Windows-only, module-private dormant compositor now binds
 the authority-independent Phase 2A policy to the Phase 2F-c durable/OS
 typestates. `begin_windows_lifecycle` is the sole direct production consumer of
-`start_windows_runtime`; it consumes one already-held writer, installation
-identity, and borrowed fixture key. `begin_windows_lifecycle` itself has zero
+`start_windows_runtime`; both entries consume exactly one already-held writer
+and one move-only `RuntimeRunStateAuthority`, with no parallel installation or
+provider input. `begin_windows_lifecycle` itself has zero
 production call sites and is neither exported nor reachable from an executable
-or top-level service entry. There is no alias caller, expected-authority mint,
-key constructor/provider call, installer adapter, SCM adapter, listener
+or top-level service entry. There is no alias caller, production provider
+constructor/source/caller, installer adapter, SCM adapter, listener
 creation, admission adapter, secret operation, or `process::exit` call.
 
 Cause ownership is explicit. `StartupFailure`, `RuntimePolicyFailure`,
@@ -1930,7 +1976,12 @@ the fully checked terminal path that can authorize silent code 78. Writer-retain
 release failure follows that same checked exit. Retirement ambiguity preserves
 both the original lifecycle cause and platform cleanup cause in an irreversible
 code-78 state; it exposes no retry, second retirement, stopped conversion, or
-normal receipt.
+normal receipt. After writer acquisition, the runtime authority stays nested in
+the logical lease through every remaining startup, running, exit, checked-
+retired, irreversible, and stopped state. Before-writer failure instead carries
+the authority directly through `StartupExitRequired` into terminal
+`StartupBeforeWriterExit`; no writer exists, so that path has no writer release
+or checked-retirement step.
 
 Startup and Active ordering remain consuming. A fresh Clean boot owns a fresh
 nine-observation `StartupChecklist`; only `CompletedStartupChecklist` may
@@ -1974,9 +2025,12 @@ escape. The exact compositor inventory is twelve passing tests:
 `post_release_logical_failure_is_irreversible_exit78_and_never_stopped`,
 `retirement_fault_preserves_original_lifecycle_and_platform_cleanup_causes`, and
 `debug_and_source_surfaces_are_redacted_silent_and_path_handle_free`. The
-supporting evidence is also fourteen passing `windows_runtime` tests, 85/85
-focused `durable_run_state` tests, and the 56-test kernel root suite with 54
-passing and the same two environment-dependent tests ignored.
+supporting evidence is also fourteen passing `windows_runtime` tests, 88/88
+focused `durable_run_state` tests (34 parent, two authentication, 25 logical
+provisioning, six pair, seven Windows provisioning, and fourteen runtime), and
+the 56-test kernel root suite with 54 passing and the same two environment-
+dependent tests ignored. The lifecycle-core inventory remains 21/21 and this
+Windows compositor remains 12/12.
 
 This remains composition evidence, not release activation. Actual listener and
 admission implementations, SCM `SetServiceStatus`/restricted-token/service-SID
@@ -2077,13 +2131,33 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-09-01 - Replaced the legacy direct-key and parallel installation/key
+  surfaces with the H1/H2 sealed run-state authentication model. The exact
+  installation-bound provider has an uninhabited production backend and zero
+  production constructors; its private codec exposes only fixed marker and
+  checkpoint purposes, including a same-body cross-purpose rejection test. Each
+  provider has a unique opaque identity. `runtime_authority(&mut self)` returns
+  a move-only authority and prevents a second mint while the first authority's
+  mutable borrow remains live. After writer acquisition, `SingleWriterLease`
+  preserves it through every later live, reload, release, terminal, recovery,
+  and stopped state; pre-writer terminal evidence retains it directly.
+  Windows runtime/lifecycle entries now consume only writer plus authority.
+  Provisioning requires an exact-identity installer grant/binder and keeps the
+  fresh authority hidden in both successful and checked-retired evidence. The
+  durable inventory is exactly 88/88: 34 parent, two authentication, 25 logical
+  provisioning, six pair, seven Windows provisioning, and fourteen runtime;
+  lifecycle core remains 21/21, Windows lifecycle 12/12, and kernel root 56
+  total with 54 passing and two ignored. A production protected/TPM backend and
+  source, elevated installer provenance, OS provenance tying writer/provider,
+  service ACL/SCM/listener/admission composition, and supported-kernel crash,
+  power-loss, and reboot evidence remain external **STOP-SHIP** obligations.
 - 2026-09-01 - Added the dormant Phase 2C Windows initial-provisioning
   composition. It transfers the held pair writer before allocating distinct
   backend-binding and writer-epoch values, admits only a fresh exact
   Missing/Missing pair, commits canonical Clean generation one in logical/OS/
   receipt/reread order, classifies ambiguity through independent reload, and
-  releases or retires authority with exact pair-bound receipts. Six focused
-  Windows tests bring the durable inventory to 85/85. This is current-user
+  releases or retires authority with exact pair-bound receipts. Seven focused
+  Windows tests contribute to the current durable inventory of 88/88. This is current-user
   fixture/local evidence only; production fresh-install authority, elevated
   installer provenance, protected storage/key/rollback custody, SCM wiring, and
   supported-kernel durability evidence remain external **STOP-SHIP**.
@@ -2110,7 +2184,7 @@ the corresponding evidence and returns release status to disabled.
   through final writer release, and separates writer-retained, released-without-
   receipt, and post-release terminal states. Its sole production caller is the
   private dormant Phase 2G compositor, which itself has no executable caller or
-  key provider; installer/SCM, trusted-peer and mapped-I/O proof,
+  production provider source; installer/SCM, trusted-peer and mapped-I/O proof,
   crash/power/reboot recovery, rollback anchor, TPM, and product integration
   remain **STOP-SHIP**, so Phase 2F-c is started but not passed.
 - 2026-08-31 - Added the dormant Phase 2F-b fixed marker/checkpoint-pair
@@ -2155,13 +2229,13 @@ the corresponding evidence and returns release status to disabled.
   before its fresh durable observation, consumes `RuntimeWriterAcquired` exactly once, and
   distinguishes `BeforeWriter` from writer-retaining `WithWriter` failures.
   Free or stale observations cannot bind later; missing, one-sided, malformed,
-  wrong-key, non-Clean, cross-backend, and cross-epoch state remains terminal
+  wrong-provider, non-Clean, cross-backend, and cross-epoch state remains terminal
   and cannot auto-initialize or provision. Clarified that nine startup facts are
   external observations while storage binding and single-instance evidence are
   carried structurally by `BootEvidence`. The model retains durable authority
   and its writer through Clean commit/reread and final release; retaining actual
-  root, key-provider, and anchor handles remains a future adapter obligation.
-  This remains a fixture-only, zero-runtime-root model; Phase 1 and Phase 2 are
+  root, protected-provider provenance, and anchor handles remains a future
+  adapter obligation. This remains a `cfg(test)`-provider, zero-runtime-root model; Phase 1 and Phase 2 are
   not passed and both compiled policies remain **STOP-SHIP**/`None`.
 - 2026-08-30 - Added the debug-only Phase 1B executable service/helper RPC
   slice. The live role-aware manager now consumes V2 launch actions while

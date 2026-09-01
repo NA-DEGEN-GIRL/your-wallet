@@ -15,9 +15,9 @@ use thiserror::Error;
 use super::durable_run_state::{
     ActiveReloadReceipt, ActiveReloadRequired, ActiveRunLease, BootEvidence, CleanReloadReceipt,
     CleanReloadRequired, CommittedActiveMarker, CommittedCleanMarker, DurableFailureWithWriter,
-    FixtureRunStateAuthenticationKey, PendingFinalWriterRelease, PreparedActiveTransition,
-    PreparedCleanTransition, RecoveryExitEvidence, RecoveryRequired, ReloadedActiveRunState,
-    RereadActiveMarker, RereadCleanMarker, RuntimeBootStartFailure, StoppedRunEvidence,
+    PendingFinalWriterRelease, PreparedActiveTransition, PreparedCleanTransition,
+    RecoveryExitEvidence, RecoveryRequired, ReloadedActiveRunState, RereadActiveMarker,
+    RereadCleanMarker, RuntimeBootBeforeWriterFailure, RuntimeBootStartFailure, StoppedRunEvidence,
     WriterExitPending, WriterExitReceipt, WriterLeaseReleaseReceipt,
 };
 
@@ -177,32 +177,62 @@ impl fmt::Debug for CompletedStartupChecklist {
     }
 }
 
-enum StartupWriterExit {
-    NotAcquired,
-    Pending(WriterExitPending),
+enum StartupWriterExit<'provider> {
+    BeforeWriter(RuntimeBootBeforeWriterFailure<'provider>),
+    Pending(WriterExitPending<'provider>),
 }
 
-struct StartupExitRequired {
+/// Terminal startup evidence for a failure that occurred before writer
+/// acquisition. It retains the consumed provider-bound runtime authority.
+#[must_use]
+struct StartupBeforeWriterExit<'provider> {
     failure: StartupExitCause,
-    writer_exit: StartupWriterExit,
+    _runtime: RuntimeBootBeforeWriterFailure<'provider>,
 }
 
-impl StartupExitRequired {
-    const fn without_writer(failure: StartupExitCause) -> Self {
+impl StartupBeforeWriterExit<'_> {
+    const fn failure(&self) -> StartupExitCause {
+        self.failure
+    }
+}
+
+impl fmt::Debug for StartupBeforeWriterExit<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StartupBeforeWriterExit")
+            .field("failure", &self.failure)
+            .field("authority", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+struct StartupExitRequired<'provider> {
+    failure: StartupExitCause,
+    writer_exit: StartupWriterExit<'provider>,
+}
+
+impl<'provider> StartupExitRequired<'provider> {
+    const fn before_writer(
+        failure: StartupExitCause,
+        runtime: RuntimeBootBeforeWriterFailure<'provider>,
+    ) -> Self {
         Self {
             failure,
-            writer_exit: StartupWriterExit::NotAcquired,
+            writer_exit: StartupWriterExit::BeforeWriter(runtime),
         }
     }
 
-    const fn with_writer(failure: StartupExitCause, writer_exit: WriterExitPending) -> Self {
+    const fn with_writer(
+        failure: StartupExitCause,
+        writer_exit: WriterExitPending<'provider>,
+    ) -> Self {
         Self {
             failure,
             writer_exit: StartupWriterExit::Pending(writer_exit),
         }
     }
 
-    fn from_durable(failure: DurableFailureWithWriter) -> Self {
+    fn from_durable(failure: DurableFailureWithWriter<'provider>) -> Self {
         let reason = failure.reason();
         Self::with_writer(
             StartupExitCause::DurableRecovery(reason),
@@ -210,25 +240,31 @@ impl StartupExitRequired {
         )
     }
 
-    fn from_runtime_boot(failure: RuntimeBootStartFailure) -> Self {
+    fn from_runtime_boot(failure: RuntimeBootStartFailure<'provider>) -> Self {
         let reason = failure.reason();
         match failure.into_writer_exit() {
-            Err(_) => Self::without_writer(StartupExitCause::DurableRecovery(reason)),
+            Err(runtime) => Self::before_writer(StartupExitCause::DurableRecovery(reason), runtime),
             Ok((_, writer_exit)) => {
                 Self::with_writer(StartupExitCause::DurableRecovery(reason), writer_exit)
             }
         }
     }
 
-    fn into_writer_exit(self) -> Result<(StartupExitCause, WriterExitPending), StartupExitCause> {
+    fn into_writer_exit(
+        self,
+    ) -> Result<(StartupExitCause, WriterExitPending<'provider>), StartupBeforeWriterExit<'provider>>
+    {
         match self.writer_exit {
-            StartupWriterExit::NotAcquired => Err(self.failure),
+            StartupWriterExit::BeforeWriter(runtime) => Err(StartupBeforeWriterExit {
+                failure: self.failure,
+                _runtime: runtime,
+            }),
             StartupWriterExit::Pending(writer_exit) => Ok((self.failure, writer_exit)),
         }
     }
 }
 
-impl fmt::Debug for StartupExitRequired {
+impl fmt::Debug for StartupExitRequired<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("StartupExitRequired")
@@ -238,19 +274,19 @@ impl fmt::Debug for StartupExitRequired {
     }
 }
 
-struct NoSecretStartupAttempt {
+struct NoSecretStartupAttempt<'provider> {
     checklist: StartupChecklist,
-    boot: Result<BootEvidence, RuntimeBootStartFailure>,
+    boot: Result<BootEvidence<'provider>, RuntimeBootStartFailure<'provider>>,
 }
 
-impl fmt::Debug for NoSecretStartupAttempt {
+impl fmt::Debug for NoSecretStartupAttempt<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("NoSecretStartupAttempt([REDACTED OBSERVATIONS])")
     }
 }
 
-impl NoSecretStartupAttempt {
-    fn new(boot: Result<BootEvidence, RuntimeBootStartFailure>) -> Self {
+impl<'provider> NoSecretStartupAttempt<'provider> {
+    fn new(boot: Result<BootEvidence<'provider>, RuntimeBootStartFailure<'provider>>) -> Self {
         Self {
             checklist: StartupChecklist::new(),
             boot,
@@ -265,10 +301,7 @@ impl NoSecretStartupAttempt {
         self.checklist.observe(requirement, observation)
     }
 
-    fn finish(
-        self,
-        key: &FixtureRunStateAuthenticationKey,
-    ) -> Result<PendingNoSecretStartup, StartupExitRequired> {
+    fn finish(self) -> Result<PendingNoSecretStartup<'provider>, StartupExitRequired<'provider>> {
         let Self { checklist, boot } = self;
         let checklist = match checklist.finish() {
             Ok(checklist) => checklist,
@@ -276,7 +309,7 @@ impl NoSecretStartupAttempt {
         };
         let boot = boot.map_err(StartupExitRequired::from_runtime_boot)?;
         let active_transition = boot
-            .prepare_active(key)
+            .prepare_active()
             .map_err(StartupExitRequired::from_durable)?;
         Ok(PendingNoSecretStartup {
             active_transition,
@@ -284,32 +317,32 @@ impl NoSecretStartupAttempt {
         })
     }
 
-    fn into_exit(self, failure: StartupFailure) -> StartupExitRequired {
+    fn into_exit(self, failure: StartupFailure) -> StartupExitRequired<'provider> {
         Self::into_exit_for_boot(self.boot, failure)
     }
 
     fn into_exit_for_boot(
-        boot: Result<BootEvidence, RuntimeBootStartFailure>,
+        boot: Result<BootEvidence<'provider>, RuntimeBootStartFailure<'provider>>,
         failure: StartupFailure,
-    ) -> StartupExitRequired {
+    ) -> StartupExitRequired<'provider> {
         let failure = StartupExitCause::Checklist(failure);
         match boot {
             Ok(boot) => StartupExitRequired::with_writer(failure, boot.into_writer_exit()),
             Err(runtime_failure) => match runtime_failure.into_writer_exit() {
-                Err(_) => StartupExitRequired::without_writer(failure),
+                Err(runtime) => StartupExitRequired::before_writer(failure, runtime),
                 Ok((_, writer_exit)) => StartupExitRequired::with_writer(failure, writer_exit),
             },
         }
     }
 }
 
-struct PendingNoSecretStartup {
-    active_transition: PreparedActiveTransition,
+struct PendingNoSecretStartup<'provider> {
+    active_transition: PreparedActiveTransition<'provider>,
     checklist: CompletedStartupChecklist,
 }
 
-impl PendingNoSecretStartup {
-    fn transition_request(&self) -> &PreparedActiveTransition {
+impl<'provider> PendingNoSecretStartup<'provider> {
+    fn transition_request(&self) -> &PreparedActiveTransition<'provider> {
         &self.active_transition
     }
 
@@ -317,7 +350,7 @@ impl PendingNoSecretStartup {
         self,
         committed: CommittedActiveMarker,
         reread: RereadActiveMarker,
-    ) -> Result<ListenerPendingRuntime, StartupExitRequired> {
+    ) -> Result<ListenerPendingRuntime<'provider>, StartupExitRequired<'provider>> {
         let active_run = self
             .active_transition
             .complete(committed, reread)
@@ -328,42 +361,41 @@ impl PendingNoSecretStartup {
         })
     }
 
-    fn commit_ambiguous(self) -> PendingActiveReload {
+    fn commit_ambiguous(self) -> PendingActiveReload<'provider> {
         PendingActiveReload {
             reload: self.active_transition.commit_ambiguous(),
             checklist: self.checklist,
         }
     }
 
-    fn abort(self, reason: RecoveryRequired) -> StartupExitRequired {
+    fn abort(self, reason: RecoveryRequired) -> StartupExitRequired<'provider> {
         StartupExitRequired::from_durable(self.active_transition.abort(reason))
     }
 }
 
-impl fmt::Debug for PendingNoSecretStartup {
+impl fmt::Debug for PendingNoSecretStartup<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("PendingNoSecretStartup([GENERATIONS])")
     }
 }
 
-struct PendingActiveReload {
-    reload: ActiveReloadRequired,
+struct PendingActiveReload<'provider> {
+    reload: ActiveReloadRequired<'provider>,
     checklist: CompletedStartupChecklist,
 }
 
-impl PendingActiveReload {
-    fn reload_request(&self) -> &ActiveReloadRequired {
+impl<'provider> PendingActiveReload<'provider> {
+    fn reload_request(&self) -> &ActiveReloadRequired<'provider> {
         &self.reload
     }
 
     fn complete(
         self,
         receipt: ActiveReloadReceipt,
-        key: &FixtureRunStateAuthenticationKey,
-    ) -> Result<ActiveReloadResolution, StartupExitRequired> {
+    ) -> Result<ActiveReloadResolution<'provider>, StartupExitRequired<'provider>> {
         let Self { reload, checklist } = self;
         let reloaded = reload
-            .complete_reload(receipt, key)
+            .complete_reload(receipt)
             .map_err(StartupExitRequired::from_durable)?;
         Ok(match reloaded {
             ReloadedActiveRunState::Boot(boot) => {
@@ -378,23 +410,23 @@ impl PendingActiveReload {
         })
     }
 
-    fn abort(self, reason: RecoveryRequired) -> StartupExitRequired {
+    fn abort(self, reason: RecoveryRequired) -> StartupExitRequired<'provider> {
         StartupExitRequired::from_durable(self.reload.abort(reason))
     }
 }
 
-impl fmt::Debug for PendingActiveReload {
+impl fmt::Debug for PendingActiveReload<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("PendingActiveReload([REDACTED])")
     }
 }
 
-enum ActiveReloadResolution {
-    Revalidate(NoSecretStartupAttempt),
-    Resume(ListenerPendingRuntime),
+enum ActiveReloadResolution<'provider> {
+    Revalidate(NoSecretStartupAttempt<'provider>),
+    Resume(ListenerPendingRuntime<'provider>),
 }
 
-impl fmt::Debug for ActiveReloadResolution {
+impl fmt::Debug for ActiveReloadResolution<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Revalidate(_) => formatter.write_str("ActiveReloadResolution::Revalidate"),
@@ -463,13 +495,13 @@ impl fmt::Debug for AdmissionPendingPolicy {
     }
 }
 
-struct ListenerPendingRuntime {
-    active_run: ActiveRunLease,
+struct ListenerPendingRuntime<'provider> {
+    active_run: ActiveRunLease<'provider>,
     policy: ListenerPendingPolicy,
 }
 
-impl ListenerPendingRuntime {
-    fn record_listeners_prepared(self) -> ScmRunningPendingRuntime {
+impl<'provider> ListenerPendingRuntime<'provider> {
+    fn record_listeners_prepared(self) -> ScmRunningPendingRuntime<'provider> {
         ScmRunningPendingRuntime {
             active_run: self.active_run,
             policy: self.policy.record_listeners_prepared(),
@@ -477,19 +509,19 @@ impl ListenerPendingRuntime {
     }
 }
 
-impl fmt::Debug for ListenerPendingRuntime {
+impl fmt::Debug for ListenerPendingRuntime<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ListenerPendingRuntime([GENERATIONS])")
     }
 }
 
-struct ScmRunningPendingRuntime {
-    active_run: ActiveRunLease,
+struct ScmRunningPendingRuntime<'provider> {
+    active_run: ActiveRunLease<'provider>,
     policy: ScmRunningPendingPolicy,
 }
 
-impl ScmRunningPendingRuntime {
-    fn record_scm_running_published(self) -> AdmissionPendingRuntime {
+impl<'provider> ScmRunningPendingRuntime<'provider> {
+    fn record_scm_running_published(self) -> AdmissionPendingRuntime<'provider> {
         AdmissionPendingRuntime {
             active_run: self.active_run,
             policy: self.policy.record_scm_running_published(),
@@ -497,24 +529,24 @@ impl ScmRunningPendingRuntime {
     }
 }
 
-impl fmt::Debug for ScmRunningPendingRuntime {
+impl fmt::Debug for ScmRunningPendingRuntime<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ScmRunningPendingRuntime([GENERATIONS])")
     }
 }
 
-struct AdmissionPendingRuntime {
-    active_run: ActiveRunLease,
+struct AdmissionPendingRuntime<'provider> {
+    active_run: ActiveRunLease<'provider>,
     policy: AdmissionPendingPolicy,
 }
 
-impl AdmissionPendingRuntime {
-    fn open_admission(self) -> NoSecretService {
+impl<'provider> AdmissionPendingRuntime<'provider> {
+    fn open_admission(self) -> NoSecretService<'provider> {
         NoSecretService::new(self.active_run, self.policy.open_admission())
     }
 }
 
-impl fmt::Debug for AdmissionPendingRuntime {
+impl fmt::Debug for AdmissionPendingRuntime<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("AdmissionPendingRuntime([GENERATIONS])")
     }
@@ -728,14 +760,14 @@ impl From<RuntimePolicyFailure> for ExitReason {
     }
 }
 
-struct ExitRequired {
+struct ExitRequired<'provider> {
     reason: ExitReason,
     durable_recovery: Option<RecoveryRequired>,
-    writer_exit: WriterExitPending,
+    writer_exit: WriterExitPending<'provider>,
 }
 
-impl ExitRequired {
-    const fn cleanup(reason: ExitReason, writer_exit: WriterExitPending) -> Self {
+impl<'provider> ExitRequired<'provider> {
+    const fn cleanup(reason: ExitReason, writer_exit: WriterExitPending<'provider>) -> Self {
         Self {
             reason,
             durable_recovery: None,
@@ -743,7 +775,7 @@ impl ExitRequired {
         }
     }
 
-    fn durable(failure: DurableFailureWithWriter) -> Self {
+    fn durable(failure: DurableFailureWithWriter<'provider>) -> Self {
         let recovery = failure.reason();
         Self {
             reason: ExitReason::DurableRecovery,
@@ -752,14 +784,14 @@ impl ExitRequired {
         }
     }
 
-    fn writer_exit_request(&self) -> &WriterExitPending {
+    fn writer_exit_request(&self) -> &WriterExitPending<'provider> {
         &self.writer_exit
     }
 
     fn complete_writer_exit(
         self,
         receipt: WriterExitReceipt,
-    ) -> Result<RecoveryExitPermit, DurableFailureWithWriter> {
+    ) -> Result<RecoveryExitPermit<'provider>, DurableFailureWithWriter<'provider>> {
         let retired = self.writer_exit.complete(receipt)?;
         Ok(RecoveryExitPermit {
             reason: self.reason,
@@ -769,7 +801,7 @@ impl ExitRequired {
     }
 }
 
-impl fmt::Debug for ExitRequired {
+impl fmt::Debug for ExitRequired<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ExitRequired")
@@ -780,13 +812,13 @@ impl fmt::Debug for ExitRequired {
     }
 }
 
-struct RecoveryExitPermit {
+struct RecoveryExitPermit<'provider> {
     reason: ExitReason,
     durable_recovery: Option<RecoveryRequired>,
-    _retired: RecoveryExitEvidence,
+    _retired: RecoveryExitEvidence<'provider>,
 }
 
-impl fmt::Debug for RecoveryExitPermit {
+impl fmt::Debug for RecoveryExitPermit<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("RecoveryExitPermit")
@@ -858,17 +890,20 @@ impl fmt::Debug for StoppedRuntimePolicy {
     }
 }
 
-struct SingleInstanceReleasePending {
-    pending: PendingFinalWriterRelease,
+struct SingleInstanceReleasePending<'provider> {
+    pending: PendingFinalWriterRelease<'provider>,
     policy: ReleaseBoundaryPolicy,
 }
 
-impl SingleInstanceReleasePending {
-    fn release_request(&self) -> &PendingFinalWriterRelease {
+impl<'provider> SingleInstanceReleasePending<'provider> {
+    fn release_request(&self) -> &PendingFinalWriterRelease<'provider> {
         &self.pending
     }
 
-    fn complete(self, receipt: WriterLeaseReleaseReceipt) -> Result<StoppedPermit, ExitRequired> {
+    fn complete(
+        self,
+        receipt: WriterLeaseReleaseReceipt,
+    ) -> Result<StoppedPermit<'provider>, ExitRequired<'provider>> {
         let stopped = self
             .pending
             .complete(receipt)
@@ -879,24 +914,24 @@ impl SingleInstanceReleasePending {
         ))
     }
 
-    fn abort(self, reason: RecoveryRequired) -> ExitRequired {
+    fn abort(self, reason: RecoveryRequired) -> ExitRequired<'provider> {
         ExitRequired::durable(self.pending.abort(reason))
     }
 }
 
-impl fmt::Debug for SingleInstanceReleasePending {
+impl fmt::Debug for SingleInstanceReleasePending<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("SingleInstanceReleasePending([REDACTED])")
     }
 }
 
-struct CleanCommitPending {
-    transition: PreparedCleanTransition,
+struct CleanCommitPending<'provider> {
+    transition: PreparedCleanTransition<'provider>,
     policy: CleanBoundaryPolicy,
 }
 
-impl CleanCommitPending {
-    fn transition_request(&self) -> &PreparedCleanTransition {
+impl<'provider> CleanCommitPending<'provider> {
+    fn transition_request(&self) -> &PreparedCleanTransition<'provider> {
         &self.transition
     }
 
@@ -904,7 +939,7 @@ impl CleanCommitPending {
         self,
         committed: CommittedCleanMarker,
         reread: RereadCleanMarker,
-    ) -> Result<SingleInstanceReleasePending, ExitRequired> {
+    ) -> Result<SingleInstanceReleasePending<'provider>, ExitRequired<'provider>> {
         let committed = self
             .transition
             .complete(committed, reread)
@@ -915,42 +950,41 @@ impl CleanCommitPending {
         })
     }
 
-    fn commit_ambiguous(self) -> PendingCleanReload {
+    fn commit_ambiguous(self) -> PendingCleanReload<'provider> {
         PendingCleanReload {
             reload: self.transition.commit_ambiguous(),
             policy: self.policy,
         }
     }
 
-    fn abort(self, reason: RecoveryRequired) -> ExitRequired {
+    fn abort(self, reason: RecoveryRequired) -> ExitRequired<'provider> {
         ExitRequired::durable(self.transition.abort(reason))
     }
 }
 
-impl fmt::Debug for CleanCommitPending {
+impl fmt::Debug for CleanCommitPending<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("CleanCommitPending([GENERATIONS])")
     }
 }
 
-struct PendingCleanReload {
-    reload: CleanReloadRequired,
+struct PendingCleanReload<'provider> {
+    reload: CleanReloadRequired<'provider>,
     policy: CleanBoundaryPolicy,
 }
 
-impl PendingCleanReload {
-    fn reload_request(&self) -> &CleanReloadRequired {
+impl<'provider> PendingCleanReload<'provider> {
+    fn reload_request(&self) -> &CleanReloadRequired<'provider> {
         &self.reload
     }
 
     fn complete(
         self,
         receipt: CleanReloadReceipt,
-        key: &FixtureRunStateAuthenticationKey,
-    ) -> Result<SingleInstanceReleasePending, ExitRequired> {
+    ) -> Result<SingleInstanceReleasePending<'provider>, ExitRequired<'provider>> {
         let committed = self
             .reload
-            .complete_reload(receipt, key)
+            .complete_reload(receipt)
             .map_err(ExitRequired::durable)?;
         Ok(SingleInstanceReleasePending {
             pending: committed.prepare_writer_release(),
@@ -958,25 +992,25 @@ impl PendingCleanReload {
         })
     }
 
-    fn abort(self, reason: RecoveryRequired) -> ExitRequired {
+    fn abort(self, reason: RecoveryRequired) -> ExitRequired<'provider> {
         ExitRequired::durable(self.reload.abort(reason))
     }
 }
 
-impl fmt::Debug for PendingCleanReload {
+impl fmt::Debug for PendingCleanReload<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("PendingCleanReload([REDACTED])")
     }
 }
 
-struct StoppedPermit {
-    stopped: StoppedRunEvidence,
+struct StoppedPermit<'provider> {
+    stopped: StoppedRunEvidence<'provider>,
     _policy: StoppedRuntimePolicy,
 }
 
-impl StoppedPermit {
+impl<'provider> StoppedPermit<'provider> {
     const fn from_durable_evidence(
-        stopped: StoppedRunEvidence,
+        stopped: StoppedRunEvidence<'provider>,
         policy: StoppedRuntimePolicy,
     ) -> Self {
         Self {
@@ -986,7 +1020,7 @@ impl StoppedPermit {
     }
 }
 
-impl fmt::Debug for StoppedPermit {
+impl fmt::Debug for StoppedPermit<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("StoppedPermit([REDACTED DURABLE EVIDENCE])")
     }
@@ -994,7 +1028,7 @@ impl fmt::Debug for StoppedPermit {
 
 /// Authority-independent runtime policy and bounded non-durable registries.
 ///
-/// This value never owns a durable lease, Windows handle, authentication key,
+/// This value never owns a durable lease, Windows handle, authentication provider,
 /// or release receipt. It can only be minted by consuming the ordered startup
 /// policy chain.
 #[must_use = "runtime policy must advance to a clean boundary or a terminal cause"]
@@ -1320,13 +1354,13 @@ impl fmt::Debug for RuntimePolicy {
 /// Compatibility wrapper that pairs the authority-independent policy with the
 /// existing durable Active lease. All policy behavior remains implemented by
 /// [`RuntimePolicy`]; this type only coordinates durable transitions.
-struct NoSecretService {
+struct NoSecretService<'provider> {
     policy: RuntimePolicy,
-    active_run: ActiveRunLease,
+    active_run: ActiveRunLease<'provider>,
 }
 
-impl NoSecretService {
-    fn new(active_run: ActiveRunLease, policy: RuntimePolicy) -> Self {
+impl<'provider> NoSecretService<'provider> {
+    fn new(active_run: ActiveRunLease<'provider>, policy: RuntimePolicy) -> Self {
         Self { policy, active_run }
     }
 
@@ -1368,8 +1402,7 @@ impl NoSecretService {
 
     fn prepare_clean_commit(
         self,
-        key: &FixtureRunStateAuthenticationKey,
-    ) -> Result<CleanCommitPending, ExitRequired> {
+    ) -> Result<CleanCommitPending<'provider>, ExitRequired<'provider>> {
         let Self { policy, active_run } = self;
         let policy = match policy.prepare_clean() {
             Ok(policy) => policy,
@@ -1380,13 +1413,11 @@ impl NoSecretService {
                 ));
             }
         };
-        let transition = active_run
-            .prepare_clean(key)
-            .map_err(ExitRequired::durable)?;
+        let transition = active_run.prepare_clean().map_err(ExitRequired::durable)?;
         Ok(CleanCommitPending { transition, policy })
     }
 
-    fn prepare_fatal_exit(self) -> Result<ExitRequired, LifecycleError> {
+    fn prepare_fatal_exit(self) -> Result<ExitRequired<'provider>, LifecycleError> {
         if !self.policy.is_fatal() {
             return Err(LifecycleError::NotReady);
         }
@@ -1409,7 +1440,7 @@ impl NoSecretService {
     }
 }
 
-impl fmt::Debug for NoSecretService {
+impl fmt::Debug for NoSecretService<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("NoSecretService")

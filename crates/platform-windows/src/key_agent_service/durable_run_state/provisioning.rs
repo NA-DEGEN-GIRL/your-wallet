@@ -16,25 +16,28 @@ mod windows;
 #[cfg(windows)]
 #[allow(unused_imports)] // Dormant production-compiled Windows provisioning seam.
 pub(super) use windows::{
-    WindowsFreshInstallAuthority, WindowsInitialCleanCommitOutcome,
-    WindowsInitialCleanCommittedWithWriter, WindowsInitialCleanReloadOutcome,
-    WindowsInitialCleanReloadRequired, WindowsInitialProvisioningStartFailure,
+    WindowsFreshInstallAuthority, WindowsFreshInstallAuthorityBindingFailure,
+    WindowsInitialCleanCommitOutcome, WindowsInitialCleanCommittedWithWriter,
+    WindowsInitialCleanReloadOutcome, WindowsInitialCleanReloadRequired,
+    WindowsInitialProvisioningStartFailure, WindowsInstallerProvisioningGrant,
     WindowsPostReleaseProvisioningTerminal, WindowsPreparedInitialCleanTransition,
     WindowsProvisionedRunState, WindowsProvisioningBindingFailure,
     WindowsProvisioningCheckedRetired, WindowsProvisioningCheckedRetirementFailure,
     WindowsProvisioningReleaseOutcome, WindowsProvisioningReleasedNoReceipt,
     WindowsProvisioningRetirementPending, WindowsProvisioningTerminalCause,
     WindowsProvisioningTerminalFailure, WindowsProvisioningUnboundRetired,
-    WindowsUnprovisionedWithWriter, start_windows_initial_provisioning,
+    WindowsProvisioningUnboundRetirementFailure, WindowsUnprovisionedWithWriter,
+    bind_windows_fresh_install_authority, start_windows_initial_provisioning,
 };
 
 use std::fmt;
 use std::num::NonZeroU64;
 
 use super::{
-    BackendBinding, Commitment, DurableSnapshot, FixtureRunStateAuthenticationKey,
-    InstallationIdentity, OneShotCommitOperation, OneShotReleaseOperation, OneShotReloadOperation,
-    RecoveryRequired, RunMarkerState, SnapshotObservation, build_snapshot, verify_observation,
+    BackendBinding, Commitment, DurableSnapshot, InstallationIdentity, OneShotCommitOperation,
+    OneShotReleaseOperation, OneShotReloadOperation, RecoveryRequired, RunMarkerState,
+    RunStateAuthenticationProvider, RunStateProviderIdentity, SnapshotObservation, build_snapshot,
+    verify_observation,
 };
 
 #[cfg(test)]
@@ -45,10 +48,11 @@ use super::{
     allocate_fixture_backend_binding,
 };
 
-/// Move-only fresh-install authority bound to one key, installation, backend,
+/// Move-only fresh-install authority bound to one provider, installation, backend,
 /// and provisioning attempt.
-pub(in crate::key_agent_service) struct FreshInstallProvisioningAuthority<'key> {
-    key: &'key FixtureRunStateAuthenticationKey,
+pub(in crate::key_agent_service) struct FreshInstallProvisioningAuthority<'provider> {
+    provider: &'provider RunStateAuthenticationProvider,
+    provider_identity: RunStateProviderIdentity,
     installation: InstallationIdentity,
     binding: BackendBinding,
     attempt: NonZeroU64,
@@ -103,6 +107,12 @@ fn validate_authority_and_lease(
     authority: &FreshInstallProvisioningAuthority<'_>,
     lease: &ProvisioningWriterLease,
 ) -> Result<(), RecoveryRequired> {
+    if authority.installation != authority.provider.installation() {
+        return Err(RecoveryRequired::InstallationIdentityMismatch);
+    }
+    if authority.provider_identity != authority.provider.identity() {
+        return Err(RecoveryRequired::AuthenticationFailed);
+    }
     if authority.binding != lease.binding {
         return Err(RecoveryRequired::BackendBindingMismatch);
     }
@@ -142,11 +152,11 @@ fn validate_operation_binding(
 
 /// Failure before or after the provisioning writer was acquired.
 #[must_use]
-pub(in crate::key_agent_service) enum InitialProvisioningStartFailure<'key> {
+pub(in crate::key_agent_service) enum InitialProvisioningStartFailure<'provider> {
     /// No writer was acquired, so there is no retirement authority.
     BeforeWriter(RecoveryRequired),
     /// The writer was acquired and must be retired for terminal process exit.
-    WithWriter(ProvisioningFailureWithWriter<'key>),
+    WithWriter(ProvisioningFailureWithWriter<'provider>),
 }
 
 impl InitialProvisioningStartFailure<'_> {
@@ -172,17 +182,18 @@ impl fmt::Debug for InitialProvisioningStartFailure<'_> {
 
 /// Exact Missing/Missing observation made while the provisioning writer is
 /// still held.
-pub(in crate::key_agent_service) struct UnprovisionedWithWriter<'key> {
-    authority: FreshInstallProvisioningAuthority<'key>,
+pub(in crate::key_agent_service) struct UnprovisionedWithWriter<'provider> {
+    authority: FreshInstallProvisioningAuthority<'provider>,
     lease: ProvisioningWriterLease,
     reload_round: NonZeroU64,
 }
 
-impl<'key> UnprovisionedWithWriter<'key> {
+impl<'provider> UnprovisionedWithWriter<'provider> {
     /// Prepares only the canonical Clean/generation-one/ZERO-predecessor pair.
     pub(in crate::key_agent_service) fn prepare_initial_clean(
         self,
-    ) -> Result<PreparedInitialCleanTransition<'key>, ProvisioningFailureWithWriter<'key>> {
+    ) -> Result<PreparedInitialCleanTransition<'provider>, ProvisioningFailureWithWriter<'provider>>
+    {
         let Self {
             authority,
             lease,
@@ -199,9 +210,8 @@ impl<'key> UnprovisionedWithWriter<'key> {
         let candidate = match build_snapshot(
             RunMarkerState::Clean,
             NonZeroU64::MIN,
-            authority.installation,
             Commitment::ZERO,
-            authority.key,
+            authority.provider,
         ) {
             Ok(candidate) => candidate,
             Err(reason) => {
@@ -223,13 +233,16 @@ impl<'key> UnprovisionedWithWriter<'key> {
     }
 
     /// Abandons provisioning without producing another write authority.
-    pub(super) fn abort(self, reason: RecoveryRequired) -> ProvisioningFailureWithWriter<'key> {
+    pub(super) fn abort(
+        self,
+        reason: RecoveryRequired,
+    ) -> ProvisioningFailureWithWriter<'provider> {
         ProvisioningFailureWithWriter::new(reason, self.authority, self.lease, self.reload_round)
     }
 
     /// Retains only the terminal writer-retirement path.
     #[must_use]
-    pub(super) fn into_writer_exit(self) -> ProvisioningWriterExitPending<'key> {
+    pub(super) fn into_writer_exit(self) -> ProvisioningWriterExitPending<'provider> {
         ProvisioningWriterExitPending::new(self.authority, self.lease, self.reload_round)
     }
 }
@@ -241,22 +254,23 @@ impl fmt::Debug for UnprovisionedWithWriter<'_> {
 }
 
 /// Canonical initial Clean candidate awaiting a distinct commit and readback.
-pub(in crate::key_agent_service) struct PreparedInitialCleanTransition<'key> {
+pub(in crate::key_agent_service) struct PreparedInitialCleanTransition<'provider> {
     candidate: DurableSnapshot,
-    authority: FreshInstallProvisioningAuthority<'key>,
+    authority: FreshInstallProvisioningAuthority<'provider>,
     lease: ProvisioningWriterLease,
     reload_round: NonZeroU64,
     operation: OneShotCommitOperation,
 }
 
-impl<'key> PreparedInitialCleanTransition<'key> {
+impl<'provider> PreparedInitialCleanTransition<'provider> {
     /// Verifies exact independently typed commit and reread receipts.
     #[allow(clippy::needless_pass_by_value)]
     pub(in crate::key_agent_service) fn complete(
         self,
         committed: CommittedInitialCleanMarker,
         reread: RereadInitialCleanMarker,
-    ) -> Result<InitialCleanCommittedWithWriter<'key>, ProvisioningFailureWithWriter<'key>> {
+    ) -> Result<InitialCleanCommittedWithWriter<'provider>, ProvisioningFailureWithWriter<'provider>>
+    {
         let Self {
             candidate,
             authority,
@@ -308,18 +322,17 @@ impl<'key> PreparedInitialCleanTransition<'key> {
                 reload_round,
             ));
         }
-        let authenticated =
-            match verify_observation(&reread.observed, authority.installation, authority.key) {
-                Ok(authenticated) => authenticated,
-                Err(reason) => {
-                    return Err(ProvisioningFailureWithWriter::new(
-                        reason,
-                        authority,
-                        lease,
-                        reload_round,
-                    ));
-                }
-            };
+        let authenticated = match verify_observation(&reread.observed, authority.provider) {
+            Ok(authenticated) => authenticated,
+            Err(reason) => {
+                return Err(ProvisioningFailureWithWriter::new(
+                    reason,
+                    authority,
+                    lease,
+                    reload_round,
+                ));
+            }
+        };
         if authenticated != candidate {
             return Err(ProvisioningFailureWithWriter::new(
                 RecoveryRequired::EquivocationDetected,
@@ -339,7 +352,8 @@ impl<'key> PreparedInitialCleanTransition<'key> {
     /// Requires a checked fresh reload round after an ambiguous commit.
     pub(in crate::key_agent_service) fn commit_ambiguous(
         self,
-    ) -> Result<InitialCleanReloadRequired<'key>, ProvisioningFailureWithWriter<'key>> {
+    ) -> Result<InitialCleanReloadRequired<'provider>, ProvisioningFailureWithWriter<'provider>>
+    {
         let Self {
             candidate,
             authority,
@@ -374,13 +388,16 @@ impl<'key> PreparedInitialCleanTransition<'key> {
     }
 
     /// Converts a known commit failure into terminal-only state.
-    pub(super) fn abort(self, reason: RecoveryRequired) -> ProvisioningFailureWithWriter<'key> {
+    pub(super) fn abort(
+        self,
+        reason: RecoveryRequired,
+    ) -> ProvisioningFailureWithWriter<'provider> {
         ProvisioningFailureWithWriter::new(reason, self.authority, self.lease, self.reload_round)
     }
 
     /// Retains only the terminal writer-retirement path.
     #[must_use]
-    pub(super) fn into_writer_exit(self) -> ProvisioningWriterExitPending<'key> {
+    pub(super) fn into_writer_exit(self) -> ProvisioningWriterExitPending<'provider> {
         ProvisioningWriterExitPending::new(self.authority, self.lease, self.reload_round)
     }
 }
@@ -428,16 +445,16 @@ enum ProvisioningWriterObservation {
 }
 
 /// Move-only state that can only be resolved by a fresh backend reload receipt.
-pub(in crate::key_agent_service) struct InitialCleanReloadRequired<'key> {
+pub(in crate::key_agent_service) struct InitialCleanReloadRequired<'provider> {
     candidate: DurableSnapshot,
-    authority: FreshInstallProvisioningAuthority<'key>,
+    authority: FreshInstallProvisioningAuthority<'provider>,
     lease: ProvisioningWriterLease,
     prior_round: NonZeroU64,
     reload_round: NonZeroU64,
     operation: OneShotReloadOperation,
 }
 
-impl<'key> InitialCleanReloadRequired<'key> {
+impl<'provider> InitialCleanReloadRequired<'provider> {
     /// Resolves exact Missing/Missing as retry authority and the exact complete
     /// candidate as committed-with-writer. Every partial or drifting result is
     /// terminal.
@@ -445,7 +462,8 @@ impl<'key> InitialCleanReloadRequired<'key> {
     pub(in crate::key_agent_service) fn complete_reload(
         self,
         receipt: InitialCleanReloadReceipt,
-    ) -> Result<ReloadedInitialCleanState<'key>, ProvisioningFailureWithWriter<'key>> {
+    ) -> Result<ReloadedInitialCleanState<'provider>, ProvisioningFailureWithWriter<'provider>>
+    {
         let Self {
             candidate,
             authority,
@@ -498,11 +516,7 @@ impl<'key> InitialCleanReloadRequired<'key> {
             }));
         }
         if receipt.observed == candidate.bytes.observation() {
-            let authenticated = match verify_observation(
-                &receipt.observed,
-                authority.installation,
-                authority.key,
-            ) {
+            let authenticated = match verify_observation(&receipt.observed, authority.provider) {
                 Ok(authenticated) => authenticated,
                 Err(reason) => {
                     return Err(ProvisioningFailureWithWriter::new(
@@ -547,14 +561,17 @@ impl<'key> InitialCleanReloadRequired<'key> {
     }
 
     /// Abandons reload without restoring provisioning write authority.
-    pub(super) fn abort(self, reason: RecoveryRequired) -> ProvisioningFailureWithWriter<'key> {
+    pub(super) fn abort(
+        self,
+        reason: RecoveryRequired,
+    ) -> ProvisioningFailureWithWriter<'provider> {
         let terminal_round = self.terminal_round();
         ProvisioningFailureWithWriter::new(reason, self.authority, self.lease, terminal_round)
     }
 
     /// Retains only the terminal writer-retirement path.
     #[must_use]
-    pub(super) fn into_writer_exit(self) -> ProvisioningWriterExitPending<'key> {
+    pub(super) fn into_writer_exit(self) -> ProvisioningWriterExitPending<'provider> {
         let terminal_round = self.terminal_round();
         ProvisioningWriterExitPending::new(self.authority, self.lease, terminal_round)
     }
@@ -580,11 +597,11 @@ impl fmt::Debug for InitialCleanReloadReceipt {
 }
 
 /// Exact resolution of an ambiguous initial Clean commit.
-pub(in crate::key_agent_service) enum ReloadedInitialCleanState<'key> {
+pub(in crate::key_agent_service) enum ReloadedInitialCleanState<'provider> {
     /// No write occurred; retry is authorized only in this fresh reload round.
-    Retry(UnprovisionedWithWriter<'key>),
+    Retry(UnprovisionedWithWriter<'provider>),
     /// Both objects reached the exact candidate and the writer remains held.
-    Committed(InitialCleanCommittedWithWriter<'key>),
+    Committed(InitialCleanCommittedWithWriter<'provider>),
 }
 
 impl fmt::Debug for ReloadedInitialCleanState<'_> {
@@ -600,14 +617,14 @@ impl fmt::Debug for ReloadedInitialCleanState<'_> {
 
 /// Exact authenticated initial Clean state that still owns the provisioning
 /// writer.
-pub(in crate::key_agent_service) struct InitialCleanCommittedWithWriter<'key> {
+pub(in crate::key_agent_service) struct InitialCleanCommittedWithWriter<'provider> {
     durable: DurableSnapshot,
-    authority: FreshInstallProvisioningAuthority<'key>,
+    authority: FreshInstallProvisioningAuthority<'provider>,
     lease: ProvisioningWriterLease,
     reload_round: NonZeroU64,
 }
 
-impl<'key> InitialCleanCommittedWithWriter<'key> {
+impl<'provider> InitialCleanCommittedWithWriter<'provider> {
     /// Returns the exact initial generation.
     #[must_use]
     pub(in crate::key_agent_service) const fn generation(&self) -> NonZeroU64 {
@@ -618,7 +635,7 @@ impl<'key> InitialCleanCommittedWithWriter<'key> {
     #[must_use]
     pub(in crate::key_agent_service) fn prepare_writer_release(
         self,
-    ) -> PendingProvisioningWriterRelease<'key> {
+    ) -> PendingProvisioningWriterRelease<'provider> {
         PendingProvisioningWriterRelease {
             durable: self.durable,
             authority: self.authority,
@@ -629,13 +646,16 @@ impl<'key> InitialCleanCommittedWithWriter<'key> {
     }
 
     /// Converts a known failure into terminal-only state.
-    pub(super) fn abort(self, reason: RecoveryRequired) -> ProvisioningFailureWithWriter<'key> {
+    pub(super) fn abort(
+        self,
+        reason: RecoveryRequired,
+    ) -> ProvisioningFailureWithWriter<'provider> {
         ProvisioningFailureWithWriter::new(reason, self.authority, self.lease, self.reload_round)
     }
 
     /// Retains only the terminal writer-retirement path.
     #[must_use]
-    pub(super) fn into_writer_exit(self) -> ProvisioningWriterExitPending<'key> {
+    pub(super) fn into_writer_exit(self) -> ProvisioningWriterExitPending<'provider> {
         ProvisioningWriterExitPending::new(self.authority, self.lease, self.reload_round)
     }
 }
@@ -647,22 +667,22 @@ impl fmt::Debug for InitialCleanCommittedWithWriter<'_> {
 }
 
 /// Initial Clean evidence waiting for the exact provisioning-writer release.
-pub(in crate::key_agent_service) struct PendingProvisioningWriterRelease<'key> {
+pub(in crate::key_agent_service) struct PendingProvisioningWriterRelease<'provider> {
     durable: DurableSnapshot,
-    authority: FreshInstallProvisioningAuthority<'key>,
+    authority: FreshInstallProvisioningAuthority<'provider>,
     lease: ProvisioningWriterLease,
     reload_round: NonZeroU64,
     operation: OneShotReleaseOperation,
 }
 
-impl<'key> PendingProvisioningWriterRelease<'key> {
+impl<'provider> PendingProvisioningWriterRelease<'provider> {
     /// Verifies the exact release receipt and mints provisioned state. This
     /// state deliberately has no conversion into ordinary boot evidence.
     #[allow(clippy::needless_pass_by_value)]
     pub(in crate::key_agent_service) fn complete(
         self,
         receipt: ProvisioningWriterReleaseReceipt,
-    ) -> Result<ProvisionedRunState, ProvisioningFailureWithWriter<'key>> {
+    ) -> Result<ProvisionedRunState<'provider>, ProvisioningFailureWithWriter<'provider>> {
         let Self {
             durable,
             authority,
@@ -688,18 +708,24 @@ impl<'key> PendingProvisioningWriterRelease<'key> {
                 reload_round,
             ));
         }
-        Ok(ProvisionedRunState { durable })
+        Ok(ProvisionedRunState {
+            durable,
+            _authority: authority,
+        })
     }
 
     /// Converts any known or ambiguous release failure into terminal-only
     /// retirement/reconciliation state.
-    pub(super) fn abort(self, reason: RecoveryRequired) -> ProvisioningFailureWithWriter<'key> {
+    pub(super) fn abort(
+        self,
+        reason: RecoveryRequired,
+    ) -> ProvisioningFailureWithWriter<'provider> {
         ProvisioningFailureWithWriter::new(reason, self.authority, self.lease, self.reload_round)
     }
 
     /// Retains only the terminal writer-retirement/reconciliation path.
     #[must_use]
-    pub(super) fn into_writer_exit(self) -> ProvisioningWriterExitPending<'key> {
+    pub(super) fn into_writer_exit(self) -> ProvisioningWriterExitPending<'provider> {
         ProvisioningWriterExitPending::new(self.authority, self.lease, self.reload_round)
     }
 }
@@ -724,11 +750,12 @@ impl fmt::Debug for ProvisioningWriterReleaseReceipt {
 /// Opaque proof that generation-one Clean provisioning and exact writer
 /// release completed. Ordinary boot must reopen/authenticate and acquire a new
 /// runtime writer separately.
-pub(in crate::key_agent_service) struct ProvisionedRunState {
+pub(in crate::key_agent_service) struct ProvisionedRunState<'provider> {
     durable: DurableSnapshot,
+    _authority: FreshInstallProvisioningAuthority<'provider>,
 }
 
-impl ProvisionedRunState {
+impl ProvisionedRunState<'_> {
     /// Returns the exact provisioned generation.
     #[must_use]
     pub(in crate::key_agent_service) const fn generation(&self) -> NonZeroU64 {
@@ -736,7 +763,7 @@ impl ProvisionedRunState {
     }
 }
 
-impl fmt::Debug for ProvisionedRunState {
+impl fmt::Debug for ProvisionedRunState<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ProvisionedRunState([REDACTED])")
     }
@@ -744,15 +771,15 @@ impl fmt::Debug for ProvisionedRunState {
 
 /// Terminal-only provisioning failure that retains the exact writer.
 #[must_use]
-pub(in crate::key_agent_service) struct ProvisioningFailureWithWriter<'key> {
+pub(in crate::key_agent_service) struct ProvisioningFailureWithWriter<'provider> {
     reason: RecoveryRequired,
-    exit: ProvisioningWriterExitPending<'key>,
+    exit: ProvisioningWriterExitPending<'provider>,
 }
 
-impl<'key> ProvisioningFailureWithWriter<'key> {
+impl<'provider> ProvisioningFailureWithWriter<'provider> {
     fn new(
         reason: RecoveryRequired,
-        authority: FreshInstallProvisioningAuthority<'key>,
+        authority: FreshInstallProvisioningAuthority<'provider>,
         lease: ProvisioningWriterLease,
         reload_round: NonZeroU64,
     ) -> Self {
@@ -770,7 +797,7 @@ impl<'key> ProvisioningFailureWithWriter<'key> {
 
     /// Consumes the failure into its sole terminal retirement path.
     #[must_use]
-    pub(super) fn into_writer_exit(self) -> ProvisioningWriterExitPending<'key> {
+    pub(super) fn into_writer_exit(self) -> ProvisioningWriterExitPending<'provider> {
         self.exit
     }
 }
@@ -802,16 +829,16 @@ impl std::error::Error for ProvisioningFailureWithWriter<'_> {
 }
 
 /// Move-only provisioning writer authority usable only for terminal exit.
-pub(in crate::key_agent_service) struct ProvisioningWriterExitPending<'key> {
-    authority: FreshInstallProvisioningAuthority<'key>,
+pub(in crate::key_agent_service) struct ProvisioningWriterExitPending<'provider> {
+    authority: FreshInstallProvisioningAuthority<'provider>,
     lease: ProvisioningWriterLease,
     reload_round: NonZeroU64,
     operation: OneShotReleaseOperation,
 }
 
-impl<'key> ProvisioningWriterExitPending<'key> {
+impl<'provider> ProvisioningWriterExitPending<'provider> {
     const fn new(
-        authority: FreshInstallProvisioningAuthority<'key>,
+        authority: FreshInstallProvisioningAuthority<'provider>,
         lease: ProvisioningWriterLease,
         reload_round: NonZeroU64,
     ) -> Self {
@@ -828,7 +855,8 @@ impl<'key> ProvisioningWriterExitPending<'key> {
     pub(super) fn complete(
         self,
         receipt: ProvisioningWriterExitReceipt,
-    ) -> Result<ProvisioningRecoveryExitEvidence, ProvisioningFailureWithWriter<'key>> {
+    ) -> Result<ProvisioningRecoveryExitEvidence<'provider>, ProvisioningFailureWithWriter<'provider>>
+    {
         let Self {
             authority,
             lease,
@@ -855,6 +883,7 @@ impl<'key> ProvisioningWriterExitPending<'key> {
         }
         Ok(ProvisioningRecoveryExitEvidence {
             _binding: receipt.proof.backend,
+            _authority: authority,
         })
     }
 }
@@ -877,11 +906,12 @@ impl fmt::Debug for ProvisioningWriterExitReceipt {
 }
 
 /// Opaque evidence that terminal provisioning-writer retirement completed.
-pub(in crate::key_agent_service) struct ProvisioningRecoveryExitEvidence {
+pub(in crate::key_agent_service) struct ProvisioningRecoveryExitEvidence<'provider> {
     _binding: BackendBinding,
+    _authority: FreshInstallProvisioningAuthority<'provider>,
 }
 
-impl fmt::Debug for ProvisioningRecoveryExitEvidence {
+impl fmt::Debug for ProvisioningRecoveryExitEvidence<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ProvisioningRecoveryExitEvidence([REDACTED])")
     }
@@ -937,12 +967,13 @@ impl DurableRunStateFixture {
 
     /// Acquires the provisioning writer before capturing the exact initial
     /// Missing/Missing observation.
-    pub(in crate::key_agent_service) fn begin_initial_provisioning<'key>(
+    pub(in crate::key_agent_service) fn begin_initial_provisioning<'provider>(
         &mut self,
-        key: &'key FixtureRunStateAuthenticationKey,
+        provider: &'provider RunStateAuthenticationProvider,
         installation: InstallationIdentity,
-    ) -> Result<UnprovisionedWithWriter<'key>, InitialProvisioningStartFailure<'key>> {
-        if installation != self.installation {
+    ) -> Result<UnprovisionedWithWriter<'provider>, InitialProvisioningStartFailure<'provider>>
+    {
+        if installation != self.installation || installation != provider.installation() {
             return Err(InitialProvisioningStartFailure::BeforeWriter(
                 RecoveryRequired::InstallationIdentityMismatch,
             ));
@@ -989,7 +1020,8 @@ impl DurableRunStateFixture {
             attempt,
         ));
         let authority = FreshInstallProvisioningAuthority {
-            key,
+            provider,
+            provider_identity: provider.identity(),
             installation,
             binding: self.binding,
             attempt,
