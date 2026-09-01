@@ -85370,7 +85370,7 @@ const qualityCheckBuildKeyAgentExecutable = powerShellFunctionBlock(
 );
 const approvedKeyAgentCargoArtifactGateSha256 = Object.freeze({
   build: "16b234c7ab30f3c708d91b518b5bf95b1948552d17e9ce43318b6333b8e90b8a",
-  tests: "beba0f5cd371538605c1f4e81f1558dc60b6209a26f3441d29ef0c4d1042eaf1",
+  tests: "f2acfbf312f8bf8464e17816ddd2cd1e49a021f5c8bef952e62abc1f8d649467",
 });
 const keyAgentCargoArtifactGateContract = (source, requireHashes = true) => {
   let build;
@@ -85547,6 +85547,8 @@ const approvedOtherPowerShellScriptPaths = [
   "scripts/launcher-contract.test.ps1",
   "scripts/release/common.ps1",
   "scripts/run-sepolia-wallet.ps1",
+  "scripts/windows-evidence/preflight.ps1",
+  "scripts/windows-evidence/run-current-user.ps1",
 ];
 const approvedRepositoryPowerShellScriptPaths = [
   ...approvedSealedReleasePowerShellEntryPaths,
@@ -85557,7 +85559,7 @@ const approvedPowerShellSourceSha256 = Object.freeze({
   "crates/key-agent-service-rpc-sys/scripts/verify-generated.ps1":
     "aaae7ff1a1708079f256adc60345726f060b734251363810d53743349d5b8104",
   "scripts/check.ps1":
-    "5b7cccbe090a546be0e0ac263fbad2ec41beb814a6a1b69b8d6271e0c9436c15",
+    "94a01cef1af7d3f6215e2bf83474030e5fd9efcbb6f072b3e22244822ee399e9",
   "scripts/launcher-contract.test.ps1":
     "4b82c49f96d4b90da0cabb17992a8ae7f77c5664796730aab6e6ff65a3649b50",
   "scripts/release/assert-key-agent-debugger-version.ps1":
@@ -85582,6 +85584,10 @@ const approvedPowerShellSourceSha256 = Object.freeze({
     "30b0a64f26429fbee00825f2b0e6c0f320d22fcc1690b19d164833b1259f197c",
   "scripts/run-sepolia-wallet.ps1":
     "6f80276eca155ecd7af5165ac8b973e00dabeab6e8d3c4ea2b50517666d104c2",
+  "scripts/windows-evidence/preflight.ps1":
+    "11ed1d75a6d8ce37f4e6e401234374e51e535cba947dd0c06bb27db9b0d5b4a5",
+  "scripts/windows-evidence/run-current-user.ps1":
+    "5b95d74aa866597972e8ca0c882bbf5497b430365572848cddf62703c8b7b346",
 });
 const approvedReleasePolicyTestSha256 = Object.freeze({
   "scripts/release/audit-extension.test.mjs":
@@ -87039,6 +87045,32 @@ function powerShellFunctionBlock(source, functionName) {
 function powerShellExecutableOutsideNamedFunctions(analysis) {
   if (!analysis.valid) return "";
   const outsideFunctions = analysis.executableCode.split("");
+  const functionHeader =
+    /(?:^|\n)[ \t]*function[ \t]+(?:global:|script:|local:)?[A-Za-z_][A-Za-z0-9_-]*[ \t]*\{/gu;
+  for (const match of analysis.executableCode.matchAll(functionHeader)) {
+    const openingBrace = analysis.executableCode.indexOf("{", match.index);
+    if (
+      openingBrace < 0 ||
+      powerShellBraceDepthAt(analysis, openingBrace) !== 0
+    ) {
+      continue;
+    }
+    const closingBrace = powerShellBraceEnd(
+      analysis.executableCode,
+      openingBrace,
+    );
+    if (closingBrace < 0) return "";
+    for (let index = match.index; index <= closingBrace; index += 1) {
+      if (outsideFunctions[index] !== "\n") outsideFunctions[index] = " ";
+    }
+    functionHeader.lastIndex = closingBrace + 1;
+  }
+  return outsideFunctions.join("");
+}
+
+function powerShellCommentFreeOutsideNamedFunctions(analysis) {
+  if (!analysis.valid) return "";
+  const outsideFunctions = analysis.commentFreeCode.split("");
   const functionHeader =
     /(?:^|\n)[ \t]*function[ \t]+(?:global:|script:|local:)?[A-Za-z_][A-Za-z0-9_-]*[ \t]*\{/gu;
   for (const match of analysis.executableCode.matchAll(functionHeader)) {
@@ -90055,6 +90087,1644 @@ requireInvariant(
       ]) &&
     releasePolicyTestCount === 66,
   "the five executed Node suites must match their exact reviewed raw-byte SHA-256 pins and documented 66-test total",
+);
+
+const approvedWindowsEvidenceReadinessPaths = Object.freeze([
+  "scripts/windows-evidence/README.md",
+  "scripts/windows-evidence/compare-build-inventories.mjs",
+  "scripts/windows-evidence/compare-build-inventories.test.mjs",
+  "scripts/windows-evidence/evidence-contract.mjs",
+  "scripts/windows-evidence/evidence-contract.test.mjs",
+  "scripts/windows-evidence/preflight.ps1",
+  "scripts/windows-evidence/run-current-user.ps1",
+]);
+const approvedWindowsEvidenceReadinessSha256 = Object.freeze({
+  "scripts/windows-evidence/readme.md":
+    "03a0ffea01181789410d11c32520b02eab8c908dd5d2cf86f000201382ab9d81",
+  "scripts/windows-evidence/compare-build-inventories.mjs":
+    "a9a9e3d6f00f8bbef48f751525c21b680d04afc1630d430d7b8348909f1b0908",
+  "scripts/windows-evidence/compare-build-inventories.test.mjs":
+    "6458577f65385dd0562069a3d4d06aad8aa3c53f0893255a1ac63478ee704fdc",
+  "scripts/windows-evidence/evidence-contract.mjs":
+    "f05974a94c2cb1e5ff026dfbf6f4fddb4427fcf589bb1ce0941552dfaffef73b",
+  "scripts/windows-evidence/evidence-contract.test.mjs":
+    "29e4ee0e96c0077b2fe37a792d32ae7b204a7b8739fb8a31b02d437a0e5e3c8b",
+  "scripts/windows-evidence/preflight.ps1":
+    "11ed1d75a6d8ce37f4e6e401234374e51e535cba947dd0c06bb27db9b0d5b4a5",
+  "scripts/windows-evidence/run-current-user.ps1":
+    "5b95d74aa866597972e8ca0c882bbf5497b430365572848cddf62703c8b7b346",
+});
+async function windowsEvidenceReadinessSources() {
+  const directoryPath = "scripts/windows-evidence";
+  const absoluteDirectory = resolve(root, directoryPath);
+  const directoryBefore = await lstat(absoluteDirectory, { bigint: true });
+  if (directoryBefore.isSymbolicLink() || !directoryBefore.isDirectory()) {
+    throw new Error("Windows evidence readiness input is not a real directory");
+  }
+  const entries = (await readdir(absoluteDirectory, { withFileTypes: true })).sort(
+    (left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0),
+  );
+  const sources = await Promise.all(
+    entries.map(async (entry) => {
+      const path = `${directoryPath}/${entry.name}`;
+      if (entry.isSymbolicLink() || !entry.isFile()) {
+        throw new Error(`Windows evidence readiness input is not a file: ${path}`);
+      }
+      const bytes = await trustedRegularFileBytes(path);
+      if (
+        bytes.length >= 3 &&
+        bytes[0] === 0xef &&
+        bytes[1] === 0xbb &&
+        bytes[2] === 0xbf
+      ) {
+        throw new Error(`Windows evidence readiness input has a BOM: ${path}`);
+      }
+      let source;
+      try {
+        source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      } catch {
+        throw new Error(`Windows evidence readiness input is not UTF-8: ${path}`);
+      }
+      if (source.includes("\u0000")) {
+        throw new Error(`Windows evidence readiness input has a NUL: ${path}`);
+      }
+      return {
+        path,
+        sha256: rawBytesSha256(bytes),
+        source: source.replace(/\r\n?/gu, "\n"),
+      };
+    }),
+  );
+  const directoryAfter = await lstat(absoluteDirectory, { bigint: true });
+  if (!sameDirectorySnapshot(directoryBefore, directoryAfter)) {
+    throw new Error("Windows evidence readiness directory changed during scan");
+  }
+  return sources;
+}
+
+function analyzeJavaScriptSource(source) {
+  const commentFree = source.split("");
+  const executable = source.split("");
+  let state = "code";
+  let regexCharacterClass = false;
+  let previousSignificant = "";
+  let valid = true;
+  const blank = (characters, index) => {
+    if (characters[index] !== "\r" && characters[index] !== "\n") {
+      characters[index] = " ";
+    }
+  };
+  const blankBoth = (index) => {
+    blank(commentFree, index);
+    blank(executable, index);
+  };
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    const next = source[index + 1];
+    if (state === "line-comment") {
+      blankBoth(index);
+      if (character === "\n") state = "code";
+      continue;
+    }
+    if (state === "block-comment") {
+      blankBoth(index);
+      if (character === "*" && next === "/") {
+        blankBoth(index + 1);
+        index += 1;
+        state = "code";
+      }
+      continue;
+    }
+    if (
+      state === "single-string" ||
+      state === "double-string" ||
+      state === "template-string"
+    ) {
+      blank(executable, index);
+      const closing =
+        state === "single-string"
+          ? "'"
+          : state === "double-string"
+            ? '"'
+            : "`";
+      if (character === "\\") {
+        if (index + 1 < source.length) blank(executable, index + 1);
+        index += 1;
+      } else if (character === closing) {
+        state = "code";
+        previousSignificant = "value";
+      } else if (character === "\n" && state !== "template-string") {
+        valid = false;
+      }
+      continue;
+    }
+    if (state === "regex") {
+      blank(executable, index);
+      if (character === "\\") {
+        if (index + 1 < source.length) blank(executable, index + 1);
+        index += 1;
+      } else if (character === "[" && !regexCharacterClass) {
+        regexCharacterClass = true;
+      } else if (character === "]" && regexCharacterClass) {
+        regexCharacterClass = false;
+      } else if (character === "/" && !regexCharacterClass) {
+        while (/[A-Za-z]/u.test(source[index + 1] ?? "")) {
+          index += 1;
+          blank(executable, index);
+        }
+        state = "code";
+        previousSignificant = "value";
+      } else if (character === "\n") {
+        valid = false;
+      }
+      continue;
+    }
+
+    if (character === "/" && next === "/") {
+      blankBoth(index);
+      blankBoth(index + 1);
+      index += 1;
+      state = "line-comment";
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      blankBoth(index);
+      blankBoth(index + 1);
+      index += 1;
+      state = "block-comment";
+      continue;
+    }
+    if (character === "'" || character === '"' || character === "`") {
+      blank(executable, index);
+      state =
+        character === "'"
+          ? "single-string"
+          : character === '"'
+            ? "double-string"
+            : "template-string";
+      continue;
+    }
+    if (
+      character === "/" &&
+      (previousSignificant === "" ||
+        "([{=,:;!?&|+-*%^~<>".includes(previousSignificant))
+    ) {
+      blank(executable, index);
+      regexCharacterClass = false;
+      state = "regex";
+      continue;
+    }
+    if (!/\s/u.test(character)) previousSignificant = character;
+  }
+  return {
+    commentFreeCode: commentFree.join(""),
+    executableCode: executable.join(""),
+    valid: valid && (state === "code" || state === "line-comment"),
+  };
+}
+
+function javaScriptLexicalFunctionBlock(source, exactHeader) {
+  const analysis = analyzeJavaScriptSource(source);
+  if (!analysis.valid) return "";
+  const { executableCode } = analysis;
+  const headerIndex = executableCode.indexOf(exactHeader);
+  if (
+    headerIndex < 0 ||
+    executableCode.indexOf(exactHeader, headerIndex + exactHeader.length) >= 0
+  ) {
+    return "";
+  }
+  const openingBrace = executableCode.indexOf(
+    "{",
+    headerIndex + exactHeader.length - 1,
+  );
+  if (openingBrace < 0) return "";
+  const closingBrace = matchingRustDelimiter(
+    executableCode,
+    openingBrace,
+    "{",
+    "}",
+  );
+  return closingBrace < 0
+    ? ""
+    : executableCode.slice(headerIndex, closingBrace + 1);
+}
+
+function hasOneJavaScriptMarkerAtBraceDepth(source, marker, expectedDepth) {
+  const indexes = [];
+  let cursor = 0;
+  for (;;) {
+    const index = source.indexOf(marker, cursor);
+    if (index < 0) break;
+    indexes.push(index);
+    cursor = index + marker.length;
+  }
+  return (
+    indexes.length === 1 &&
+    rustBraceDepthBefore(source, indexes[0]) === expectedDepth
+  );
+}
+
+function powerShellTerminationInventory(source) {
+  const analysis = analyzePowerShellSource(source);
+  if (!analysis.valid) return null;
+  return activePowerShellMatches(
+    analysis,
+    /\b(?:return|exit|break|continue|throw)\b/gu,
+  ).map((match) => {
+    const lineEnd = analysis.commentFreeCode.indexOf("\n", match.index);
+    return `${powerShellBraceDepthAt(analysis, match.index)}:${analysis.commentFreeCode
+      .slice(match.index, lineEnd < 0 ? analysis.commentFreeCode.length : lineEnd)
+      .trim()}`;
+  });
+}
+
+function hasExactPowerShellTerminationInventory(source, expected) {
+  const actual = powerShellTerminationInventory(source);
+  return actual !== null && JSON.stringify(actual) === JSON.stringify(expected);
+}
+
+function hasExactActiveJavaScriptTests(source, exactNames) {
+  const analysis = analyzeJavaScriptSource(source);
+  if (!analysis.valid) return false;
+  const { commentFreeCode, executableCode } = analysis;
+  if (/\btest\s*\.\s*(?:skip|todo|only)\s*\(/u.test(executableCode)) {
+    return false;
+  }
+  const declarations = [
+    ...commentFreeCode.matchAll(
+      /(?:^|\n)[ \t]*test\s*\(\s*"([^"\r\n]+)"/gu,
+    ),
+  ].filter((match) => {
+    const testOffset = match[0].indexOf("test");
+    return (
+      testOffset >= 0 &&
+      executableCode.startsWith("test", match.index + testOffset)
+    );
+  });
+  if (
+    JSON.stringify(declarations.map((match) => match[1])) !==
+    JSON.stringify(exactNames)
+  ) {
+    return false;
+  }
+  return declarations.every((match, index) => {
+    const testIndex = match.index + match[0].indexOf("test");
+    const nextTestIndex =
+      index + 1 < declarations.length
+        ? declarations[index + 1].index
+        : executableCode.length;
+    const arrowIndex = executableCode.indexOf("=>", testIndex);
+    if (arrowIndex < 0 || arrowIndex >= nextTestIndex) return false;
+    const openingBrace = executableCode.indexOf("{", arrowIndex + 2);
+    if (openingBrace < 0 || openingBrace >= nextTestIndex) return false;
+    const closingBrace = matchingRustDelimiter(
+      executableCode,
+      openingBrace,
+      "{",
+      "}",
+    );
+    if (closingBrace < 0 || closingBrace >= nextTestIndex) return false;
+    const body = executableCode.slice(openingBrace + 1, closingBrace);
+    const hasTopLevelReturn = [...body.matchAll(/\breturn\b/gu)].some(
+      (terminal) => rustBraceDepthBefore(body, terminal.index) === 0,
+    );
+    return (
+      !hasTopLevelReturn &&
+      /\bassert\.[A-Za-z_$][A-Za-z0-9_$]*\s*\(/u.test(body)
+    );
+  });
+}
+
+const exactWindowsEvidenceContractTestNames = Object.freeze([
+  "exact six-field evidence validates for all readiness-only results",
+  "fixed identifiers and exact member set cannot be widened",
+  "qualified test inventory is exact, fully qualified, ordered, and complete",
+  "canonical encoder emits compact sorted JSON plus exactly one LF",
+  "canonical parser rejects BOM, CRLF, trailing bytes, whitespace, and duplicates",
+  "CLI accepts only exact check input and prints the readiness-only marker",
+  "CLI rejects noncanonical input and every argument-shape widening",
+  "CLI rejects oversized and hard-linked evidence files",
+  "CLI rejects symbolic-link evidence input when the host can create it",
+  "PowerShell preflight exposes only one exact readiness marker",
+  "PowerShell runner rejects every caller argument with one fixed marker",
+]);
+const exactWindowsBuildInventoryComparatorTestNames = Object.freeze([
+  "strict path-ordered build inventories validate as immutable copies",
+  "inventory shape is a nonempty bounded array of exact records",
+  "byte counts are canonical unsigned 64-bit decimal strings",
+  "hashes require exact lowercase SHA-256 hexadecimal form",
+  "paths reject absolute, traversal, backslash, ADS, and malformed segments",
+  "paths use strict ordinal order and Windows-casefold uniqueness",
+  "equal inventories remain explicitly ineligible as release evidence",
+  "every record difference is reported unequal without a release claim",
+  "comparison validates both sides before making any equality statement",
+]);
+
+const exactWindowsLifecycleReadinessTests = Object.freeze([
+  "key_agent_service::windows_lifecycle::tests::clean_startup_active_runtime_clean_release_reaches_normal_stopped",
+  "key_agent_service::windows_lifecycle::tests::startup_missing_and_mismatch_require_checked_silent_exit78",
+  "key_agent_service::windows_lifecycle::tests::active_ambiguity_reloads_prior_with_fresh_checks_candidate_with_carried_checks_and_partial_terminal",
+  "key_agent_service::windows_lifecycle::tests::confirmed_active_reread_failure_never_restores_boot_or_listener_authority",
+  "key_agent_service::windows_lifecycle::tests::listener_scm_and_admission_typestates_are_ordered_and_move_only",
+  "key_agent_service::windows_lifecycle::tests::effect_authority_is_sealed_move_only_redacted_and_production_unmintable",
+  "key_agent_service::windows_lifecycle::tests::effect_backed_startup_is_exactly_ordered_consuming_and_one_shot",
+  "key_agent_service::windows_lifecycle::tests::cross_binding_duplicate_and_wrong_purpose_receipts_are_rejected_non_vacuously",
+  "key_agent_service::windows_lifecycle::tests::listener_preparation_failure_and_ambiguity_preserve_effects_through_checked_exit",
+  "key_agent_service::windows_lifecycle::tests::scm_running_failure_and_ambiguity_preserve_effects_through_checked_exit",
+  "key_agent_service::windows_lifecycle::tests::admission_open_failure_and_ambiguity_preserve_effects_through_checked_exit",
+  "key_agent_service::windows_lifecycle::tests::admission_close_precedes_stop_reject_and_failure_never_enters_cleanup",
+  "key_agent_service::windows_lifecycle::tests::invalidate_then_effect_drain_gates_fixed_remaining_cleanup_without_generic_bypass",
+  "key_agent_service::windows_lifecycle::tests::effect_carrier_survives_clean_reload_release_and_every_durable_terminal_class",
+  "key_agent_service::windows_lifecycle::tests::post_writer_release_scm_stop_failure_and_ambiguity_are_irreversible_with_both_evidences",
+  "key_agent_service::windows_lifecycle::tests::runtime_policy_alone_enforces_work_token_and_quarantine_bounds",
+  "key_agent_service::windows_lifecycle::tests::cleanup_requires_exact_order_and_empties_all_runtime_registries_before_clean",
+  "key_agent_service::windows_lifecycle::tests::clean_ambiguity_advances_release_policy_for_candidate_only",
+  "key_agent_service::windows_lifecycle::tests::release_writer_retained_checks_retirement_and_no_receipt_is_irreversible_exit78",
+  "key_agent_service::windows_lifecycle::tests::post_release_logical_failure_is_irreversible_exit78_and_never_stopped",
+  "key_agent_service::windows_lifecycle::tests::retirement_fault_preserves_original_lifecycle_and_platform_cleanup_causes",
+  "key_agent_service::windows_lifecycle::tests::debug_and_source_surfaces_are_redacted_silent_and_path_handle_free",
+]);
+const windowsLifecycleReadinessTestPattern =
+  /key_agent_service::windows_lifecycle::tests::[a-z0-9_]+/gu;
+const forbiddenWindowsReadinessPowerShellMutation =
+  /\b(?:Start-Process|Start-Service|Stop-Service|New-Service|Set-Service|Remove-Service|Restart-Computer|Set-Acl|Get-Acl|New-ItemProperty|Set-ItemProperty|Remove-ItemProperty|sc\.exe|reg\.exe|regedit\.exe|netsh\.exe|takeown\.exe|icacls\.exe|shutdown\.exe|tpmtool\.exe|signtool\.exe)\b|\b-Verb\s+RunAs\b/iu;
+const forbiddenWindowsReadinessPowerShellEscape =
+  /\b(?:Invoke-Expression|iex|cmd(?:\.exe)?|Invoke-WebRequest|Invoke-RestMethod|Start-BitsTransfer|Set-Content|Add-Content|Clear-Content|Out-File|Tee-Object|Copy-Item|Move-Item|New-Item)\b|\[System\.Diagnostics\.Process\]::Start\s*\(|\[System\.IO\.File\]::(?:Create|OpenWrite|WriteAllBytes|WriteAllText|AppendAllText)\s*\(|\[System\.Net\.|https?:\/\//iu;
+const forbiddenWindowsReadinessPassOutput =
+  /(?:Write-(?:Output|Host)|WriteLine)\s*(?:\(\s*)?["']PASS["']/iu;
+const windowsEvidenceReadinessInputs = {
+  qualityCheck,
+  sources: await windowsEvidenceReadinessSources(),
+};
+const windowsEvidenceReadinessContract = (inputs, requirePins = true) => {
+  const { sources } = inputs;
+  if (
+    !hasExactCaseInsensitivePathInventory(
+      sources.map(({ path }) => path),
+      approvedWindowsEvidenceReadinessPaths,
+    ) ||
+    (requirePins &&
+      !hasExactSourcePins(sources, approvedWindowsEvidenceReadinessSha256))
+  ) {
+    return false;
+  }
+  const byPath = Object.fromEntries(
+    sources.map(({ path, source }) => [path, source]),
+  );
+  const readme = byPath["scripts/windows-evidence/README.md"];
+  const comparator =
+    byPath["scripts/windows-evidence/compare-build-inventories.mjs"];
+  const comparatorTests =
+    byPath["scripts/windows-evidence/compare-build-inventories.test.mjs"];
+  const evidence = byPath["scripts/windows-evidence/evidence-contract.mjs"];
+  const evidenceTests =
+    byPath["scripts/windows-evidence/evidence-contract.test.mjs"];
+  const preflight = byPath["scripts/windows-evidence/preflight.ps1"];
+  const runner = byPath["scripts/windows-evidence/run-current-user.ps1"];
+  if (
+    [
+      readme,
+      comparator,
+      comparatorTests,
+      evidence,
+      evidenceTests,
+      preflight,
+      runner,
+    ].some((source) => typeof source !== "string")
+  ) {
+    return false;
+  }
+  const codeSources = [
+    comparator,
+    comparatorTests,
+    evidence,
+    evidenceTests,
+    preflight,
+    runner,
+  ];
+  const readinessCheckBlock = powerShellFunctionBlock(
+    inputs.qualityCheck,
+    "Invoke-WindowsEvidenceReadinessChecks",
+  );
+  const qualityTestsBlock = powerShellFunctionBlock(
+    inputs.qualityCheck,
+    "Invoke-Tests",
+  );
+  const qualityTestsAnalysis = analyzePowerShellSource(qualityTestsBlock);
+  const evidenceJavaScriptAnalysis = analyzeJavaScriptSource(evidence);
+  const comparatorJavaScriptAnalysis = analyzeJavaScriptSource(comparator);
+  const runCliBlock = javaScriptLexicalFunctionBlock(
+    evidence,
+    "async function runCli() {",
+  );
+  const evidenceTestNames =
+    evidence.match(windowsLifecycleReadinessTestPattern) ?? [];
+  const runnerTestNames =
+    runner.match(windowsLifecycleReadinessTestPattern) ?? [];
+  const evidenceSuiteCount =
+    (evidenceTests.match(/(?:^|\n)test\s*\(/gu) ?? []).length;
+  const comparatorSuiteCount =
+    (comparatorTests.match(/(?:^|\n)test\s*\(/gu) ?? []).length;
+  const runnerAnalysis = analyzePowerShellSource(runner);
+  const preflightAnalysis = analyzePowerShellSource(preflight);
+  const preflightExecutable = powerShellExecutableOutsideNamedFunctions(
+    preflightAnalysis,
+  );
+  const preflightCommentFreeOutsideFunctions =
+    powerShellCommentFreeOutsideNamedFunctions(preflightAnalysis);
+  const runnerExecutable = powerShellExecutableOutsideNamedFunctions(
+    runnerAnalysis,
+  );
+  const runnerCommentFreeOutsideFunctions =
+    powerShellCommentFreeOutsideNamedFunctions(runnerAnalysis);
+  const resolveApplicationBlock = powerShellFunctionBlock(
+    runner,
+    "Resolve-FixedApplication",
+  );
+  const closeHandlesBlock = powerShellFunctionBlock(
+    runner,
+    "Close-ReadinessApplicationHandles",
+  );
+  const openSourceBlock = powerShellFunctionBlock(
+    runner,
+    "Open-FixedReadOnlySource",
+  );
+  const stopChildBlock = powerShellFunctionBlock(
+    runner,
+    "Stop-ReadinessChildProcess",
+  );
+  const boundedApplicationBlock = powerShellFunctionBlock(
+    runner,
+    "Invoke-BoundedApplication",
+  );
+  const ambientCompilerBlock = powerShellFunctionBlock(
+    runner,
+    "Test-AmbientCompilerInjection",
+  );
+  const ambientCargoConfigurationBlock = powerShellFunctionBlock(
+    runner,
+    "Test-AmbientCargoConfiguration",
+  );
+  const newEvidencePathBlock = powerShellFunctionBlock(
+    runner,
+    "New-EvidencePath",
+  );
+  const writeEvidenceBlock = powerShellFunctionBlock(
+    runner,
+    "Write-CanonicalEvidence",
+  );
+  const assertEvidenceBlock = powerShellFunctionBlock(
+    runner,
+    "Assert-EvidenceContract",
+  );
+  const completeEvidenceBlock = powerShellFunctionBlock(
+    runner,
+    "Complete-EvidenceResult",
+  );
+  const exactCargoOutputBlock = powerShellFunctionBlock(
+    runner,
+    "Test-ExactSuccessfulCargoOutput",
+  );
+  const normalizedReadme = readme.replace(/\s+/gu, " ").trim();
+  const exactRunnerPrefix = `[CmdletBinding()]
+param(
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [object[]]$UnexpectedArguments
+)
+
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+
+if ($null -ne $UnexpectedArguments -and $UnexpectedArguments.Count -ne 0) {
+    [System.Console]::Error.WriteLine(
+        "WINDOWS_READINESS_NOT_RUN_NOT_RELEASE_EVIDENCE"
+    )
+    exit 21
+}
+
+`;
+  return (
+    runnerAnalysis.valid &&
+    preflightAnalysis.valid &&
+    codeSources.every(
+      (source) =>
+        !source.includes("scripts/release") &&
+        !source.includes("../release") &&
+        !source.includes("common.ps1"),
+    ) &&
+    JSON.stringify(evidenceTestNames) ===
+      JSON.stringify(exactWindowsLifecycleReadinessTests) &&
+    JSON.stringify(runnerTestNames) ===
+      JSON.stringify(exactWindowsLifecycleReadinessTests) &&
+    evidence.includes(
+      'const EVIDENCE_SCHEMA = "your-wallet-windows-readiness-evidence-v1";',
+    ) &&
+    evidence.includes(
+      'const CASE_ID = "phase2g-lifecycle-local-fixture-v1";',
+    ) &&
+    evidence.includes(
+      'const COMMAND_PROFILE = "cargo-test-locked-frozen-offline-v1";',
+    ) &&
+    evidence.includes('const RELEASE_ELIGIBILITY = "not-release-evidence";') &&
+    evidence.includes(
+      'const ALLOWED_RESULTS = new Set(["local-fixture", "not-run", "blocked"]);',
+    ) &&
+    evidence.includes("export function validateWindowsReadinessEvidence(value)") &&
+    evidence.includes("export function canonicalWindowsReadinessEvidence(value)") &&
+    evidence.includes(
+      "export function parseCanonicalWindowsReadinessEvidence(input)",
+    ) &&
+    evidence.includes("input[0] === 0xef") &&
+    evidence.includes('text.includes("\\r")') &&
+    evidence.includes("pathBefore, handleBefore") &&
+    evidence.includes("handleAfter, pathAfter") &&
+    evidence.includes("status.nlink !== 1n") &&
+    evidence.includes("MAX_EVIDENCE_BYTES = 64 * 1024") &&
+    evidence.includes(
+      'process.stdout.write("WINDOWS_READINESS_CONTRACT_VALID_NOT_RELEASE_EVIDENCE\\n")',
+    ) &&
+    evidence.includes(
+      'process.stderr.write("WINDOWS_READINESS_CONTRACT_INVALID\\n")',
+    ) &&
+    evidence.includes("argv.length !== 5") &&
+    evidence.includes('argv[3] !== "--expected-result"') &&
+    evidence.includes("!ALLOWED_RESULTS.has(argv[4])") &&
+    evidence.includes("expectedResult: argv[4]") &&
+    evidence.includes("if (evidence.result !== expectedResult)") &&
+    evidenceJavaScriptAnalysis.valid &&
+    evidenceJavaScriptAnalysis.executableCode.includes(
+      "if (evidence.result !== expectedResult)",
+    ) &&
+    hasOrderedTextMarkers(runCliBlock, [
+      "parseCliArguments(process.argv.slice(2))",
+      "await readPinnedEvidenceFile(inputPath)",
+      "parseCanonicalWindowsReadinessEvidence(bytes)",
+      "if (evidence.result !== expectedResult)",
+      "process.stdout.write(",
+    ]) &&
+    [
+      "parseCliArguments(process.argv.slice(2))",
+      "await readPinnedEvidenceFile(inputPath)",
+      "parseCanonicalWindowsReadinessEvidence(bytes)",
+      "if (evidence.result !== expectedResult)",
+      "process.stdout.write(",
+    ].every((marker) =>
+      hasOneJavaScriptMarkerAtBraceDepth(runCliBlock, marker, 1),
+    ) &&
+    (runCliBlock.match(/\bif\s*\(/gu) ?? []).length === 1 &&
+    (runCliBlock.match(/\bprocess\s*\.\s*stdout\s*\.\s*write\s*\(/gu) ?? [])
+      .length === 1 &&
+    !/\b(?:else|for|while|do|switch|try|catch|return|throw)\b|\bprocess\s*\.\s*exit\s*\(/u.test(
+      runCliBlock,
+    ) &&
+    !evidence.includes("error.message") &&
+    (comparator.match(/^\s*import\b/gmu) ?? []).length === 0 &&
+    !/\b(?:process|child_process|node:fs|node:path)\b/u.test(comparator) &&
+    comparator.includes("export function validateBuildInventory(value)") &&
+    comparator.includes("export function compareBuildInventories(left, right)") &&
+    comparator.includes('const RELEASE_ELIGIBILITY = "not-release-evidence";') &&
+    comparator.includes("ordinalCompare(previousPath, record.path) >= 0") &&
+    comparatorJavaScriptAnalysis.valid &&
+    comparatorJavaScriptAnalysis.executableCode.includes(
+      "ordinalCompare(previousPath, record.path) >= 0",
+    ) &&
+    comparator.includes("record.path.toLowerCase()") &&
+    comparator.includes(
+      "const WINDOWS_RESERVED_BASENAME_RE = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/iu;",
+    ) &&
+    comparator.includes('value.includes(":")') &&
+    comparator.includes('value.includes("\\\\")') &&
+    comparator.includes('segment === ".."') &&
+    comparator.includes('segment.endsWith(".")') &&
+    comparator.includes("Object.freeze(validated)") &&
+    preflight.startsWith("[CmdletBinding()]\nparam()\n") &&
+    preflight.includes('$PSModuleAutoLoadingPreference = "None"') &&
+    preflight.includes("WindowsIdentity]::GetCurrent()") &&
+    preflight.includes("TokenImpersonationLevel]::None") &&
+    preflight.includes("WindowsBuiltInRole]::Administrator") &&
+    preflight.includes("S-1-5-4") &&
+    preflight.includes("S-1-5-80-") &&
+    preflight.includes("S-1-16-(?:8192|8448)") &&
+    preflight.includes("S-1-16-(?:12288|16384|20480|28672)") &&
+    preflight.includes("& $whoamiExecutable /groups /fo csv /nh") &&
+    preflight.includes(
+      '"WINDOWS_READINESS_PREFLIGHT_PASS_CURRENT_USER_NON_ELEVATED"',
+    ) &&
+    preflight.includes('"WINDOWS_READINESS_PREFLIGHT_BLOCKED"') &&
+    preflight.includes("[System.Console]::Error.WriteLine($blockedSentinel)") &&
+    (preflightExecutable.match(/\b(?:return|exit|break|continue)\b/gu) ?? [])
+      .length === 2 &&
+    (preflightExecutable.match(/\bexit\s+0\b/gu) ?? []).length === 1 &&
+    (preflightExecutable.match(/\bexit\s+\$blockedExitCode\b/gu) ?? []).length ===
+      1 &&
+    (preflightExecutable.match(/Out\.WriteLine\(\$successSentinel\)/gu) ?? [])
+      .length === 1 &&
+    hasExactPowerShellTerminationInventory(
+      preflightCommentFreeOutsideFunctions,
+      [
+        '2:throw "blocked"',
+        '2:throw "blocked"',
+        '2:throw "blocked"',
+        '2:throw "blocked"',
+        '2:throw "blocked"',
+        '2:throw "blocked"',
+        '2:throw "blocked"',
+        "1:exit 0",
+        "1:exit $blockedExitCode",
+      ],
+    ) &&
+    hasOrderedTextMarkers(preflightCommentFreeOutsideFunctions, [
+      "WindowsIdentity]::GetCurrent()",
+      "& $whoamiExecutable /groups /fo csv /nh",
+      "WindowsBuiltInRole]::Administrator",
+      "[System.Console]::Out.WriteLine($successSentinel)",
+      "exit 0",
+      "catch {",
+      "[System.Console]::Error.WriteLine($blockedSentinel)",
+      "exit $blockedExitCode",
+    ]) &&
+    runner.startsWith(exactRunnerPrefix) &&
+    (runnerExecutable.match(/\b(?:return|exit|break|continue)\b/gu) ?? [])
+      .length === 2 &&
+    (runnerExecutable.match(/\bexit\s+21\b/gu) ?? []).length === 1 &&
+    (runnerExecutable.match(/\bexit\s+\$script:NotRunExitCode\b/gu) ?? [])
+      .length === 1 &&
+    hasExactPowerShellTerminationInventory(
+      runnerCommentFreeOutsideFunctions,
+      [
+        "1:exit 21",
+        '2:throw "evidence contract is unavailable"',
+        "1:exit $script:NotRunExitCode",
+      ],
+    ) &&
+    runner.includes('$script:CaseId = "phase2g-lifecycle-local-fixture-v1"') &&
+    runner.includes(
+      '$script:CommandProfile = "cargo-test-locked-frozen-offline-v1"',
+    ) &&
+    runner.includes(
+      '$script:EvidenceSchema = "your-wallet-windows-readiness-evidence-v1"',
+    ) &&
+    runner.includes('$script:ReleaseEligibility = "not-release-evidence"') &&
+    runner.includes('[System.Guid]::NewGuid().ToString("N")') &&
+    runner.includes('"artifacts"') &&
+    runner.includes('"windows-evidence"') &&
+    runner.includes('"evidence.json"') &&
+    (runner.match(/\[System\.IO\.FileShare\]::Read\b/gu) ?? []).length === 3 &&
+    (runner.match(/Assert-ExistingDirectoryTreeWithoutReparse/gu) ?? [])
+      .length === 5 &&
+    (runner.match(/Invoke-BoundedApplication/gu) ?? []).length === 4 &&
+    (runner.match(/\$process\.Start\(\)/gu) ?? []).length === 1 &&
+    !/(?:^|\n)\s*&\s*\$(?:nodeExecutable|systemPowerShell|cargoExecutable)\b/u.test(
+      runnerExecutable,
+    ) &&
+    runner.includes(
+      '$script:NodeApplicationHandle = $nodeApplication.Hold',
+    ) &&
+    runner.includes(
+      '$script:CargoApplicationHandle = $cargoApplication.Hold',
+    ) &&
+    runner.includes(
+      '$script:ContractSourceHandle = Open-FixedReadOnlySource',
+    ) &&
+    runner.includes(
+      '$script:PreflightSourceHandle = Open-FixedReadOnlySource',
+    ) &&
+    hasOrderedTextMarkers(resolveApplicationBlock, [
+      "[System.IO.File]::GetAttributes($source)",
+      "[System.IO.FileAttributes]::ReparsePoint",
+      "[System.IO.FileAccess]::Read",
+      "[System.IO.FileShare]::Read",
+      "Executable = $source",
+      "Hold = $hold",
+    ]) &&
+    hasOrderedTextMarkers(openSourceBlock, [
+      "[System.IO.File]::GetAttributes($fullPath)",
+      "[System.IO.FileAttributes]::ReparsePoint",
+      "[System.IO.FileAccess]::Read",
+      "[System.IO.FileShare]::Read",
+    ]) &&
+    [
+      "PreflightSourceHandle",
+      "ContractSourceHandle",
+      "CargoApplicationHandle",
+      "NodeApplicationHandle",
+    ].every(
+      (handle) =>
+        closeHandlesBlock.includes(`$script:${handle}.Dispose()`) &&
+        closeHandlesBlock.includes(`$script:${handle} = $null`),
+    ) &&
+    (closeHandlesBlock.match(/\.Dispose\(\)/gu) ?? []).length === 4 &&
+    hasOrderedTextMarkers(stopChildBlock, [
+      "if ($Process.HasExited)",
+      "$Process.Kill()",
+      "catch",
+      "if ($Process.HasExited)",
+      "$Process.WaitForExit(5000)",
+    ]) &&
+    hasExactPowerShellTerminationInventory(
+      stopChildBlock,
+      [
+        "2:return",
+        "3:return",
+        '2:throw "bounded application could not be terminated"',
+        '2:throw "bounded application termination was not observed"',
+      ],
+    ) &&
+    boundedApplicationBlock.includes("[ValidateRange(1000, 900000)]") &&
+    boundedApplicationBlock.includes("[ValidateRange(1024, 1048576)]") &&
+    boundedApplicationBlock.includes("$Arguments.Count -gt 32") &&
+    boundedApplicationBlock.includes("$encodedArgumentLine.Length -gt 30000") &&
+    boundedApplicationBlock.includes("$startInfo.UseShellExecute = $false") &&
+    boundedApplicationBlock.includes("$startInfo.CreateNoWindow = $true") &&
+    boundedApplicationBlock.includes("$startInfo.RedirectStandardOutput = $true") &&
+    boundedApplicationBlock.includes("$startInfo.RedirectStandardError = $true") &&
+    boundedApplicationBlock.includes(
+      "$stdoutTask = $process.StandardOutput.ReadAsync(",
+    ) &&
+    boundedApplicationBlock.includes(
+      "$stderrTask = $process.StandardError.ReadAsync(",
+    ) &&
+    !boundedApplicationBlock.includes("ReadToEnd") &&
+    (boundedApplicationBlock.match(/\[long\]\$MaximumOutputCharacters/gu) ?? [])
+      .length === 2 &&
+    (boundedApplicationBlock.match(/Stop-ReadinessChildProcess/gu) ?? [])
+      .length === 5 &&
+    boundedApplicationBlock.includes(
+      "$clock.ElapsedMilliseconds -ge $TimeoutMilliseconds",
+    ) &&
+    boundedApplicationBlock.includes(
+      "$process.WaitForExit([int]$remainingMilliseconds)",
+    ) &&
+    boundedApplicationBlock.includes("TimedOut = $timedOut") &&
+    boundedApplicationBlock.includes("Overflow = $overflow") &&
+    ambientCompilerBlock.includes('"CARGO_HOME"') &&
+    ambientCompilerBlock.includes('"CARGO_TARGET_DIR"') &&
+    ambientCompilerBlock.includes('"CARGO_ENCODED_RUSTFLAGS"') &&
+    ambientCompilerBlock.includes('"RUSTC_WRAPPER"') &&
+    ambientCompilerBlock.includes('"RUSTC_WORKSPACE_WRAPPER"') &&
+    ambientCompilerBlock.includes('"RUSTUP_HOME"') &&
+    ambientCompilerBlock.includes('"RUSTUP_TOOLCHAIN"') &&
+    hasOrderedTextMarkers(ambientCargoConfigurationBlock, [
+      "while ($null -ne $currentDirectory)",
+      '".cargo"',
+      "$currentDirectory = $currentDirectory.Parent",
+      "[System.Environment+SpecialFolder]::UserProfile",
+      'foreach ($fileName in @("config", "config.toml"))',
+      "[System.IO.File]::Exists($candidate)",
+      "return $true",
+    ]) &&
+    newEvidencePathBlock.includes(
+      "Assert-ExistingDirectoryTreeWithoutReparse -LiteralPath $RepositoryRoot",
+    ) &&
+    writeEvidenceBlock.includes("[System.IO.FileMode]::CreateNew") &&
+    writeEvidenceBlock.includes("[System.IO.FileAccess]::Write") &&
+    writeEvidenceBlock.includes("[System.IO.FileShare]::Read") &&
+    runner.includes("Assert-RegularDirectory -LiteralPath $targetDirectory") &&
+    hasOrderedTextMarkers(assertEvidenceBlock, [
+      "$contractResult = Invoke-BoundedApplication",
+      "$ContractPath",
+      '"--expected-result"',
+      "$ExpectedResult",
+      "-TimeoutMilliseconds 30000",
+      "-MaximumOutputCharacters 4096",
+      "$contractResult.TimedOut",
+      "$contractResult.Overflow",
+      "$contractResult.ExitCode -ne 0",
+      "$contractResult.StderrLines.Count -ne 0",
+      "$contractResult.StdoutLines.Count -ne 1",
+      "$script:ContractSuccessSentinel",
+    ]) &&
+    hasExactPowerShellTerminationInventory(
+      assertEvidenceBlock,
+      ['2:throw "evidence contract rejected output"'],
+    ) &&
+    hasExactPowerShellTerminationInventory(
+      exactCargoOutputBlock,
+      [
+        "4:return $false",
+        "2:return $false",
+        "3:return $false",
+        "1:return $true",
+      ],
+    ) &&
+    hasExactPowerShellTerminationInventory(
+      ambientCompilerBlock,
+      ["3:return $true", "1:return $false"],
+    ) &&
+    hasExactPowerShellTerminationInventory(
+      ambientCargoConfigurationBlock,
+      ["2:return $true", "4:return $true", "1:return $false"],
+    ) &&
+    hasOrderedTextMarkers(completeEvidenceBlock, [
+      "$evidenceHandle = Write-CanonicalEvidence",
+      "Assert-EvidenceContract",
+      "-ExpectedResult $Result",
+      "Close-ReadinessApplicationHandles",
+      "if ($ExitCode -eq 0)",
+      "Write-FixedSentinel -Sentinel $Sentinel",
+      "[System.Console]::Error.WriteLine($Sentinel)",
+      "$evidenceHandle.Dispose()",
+      "Close-ReadinessApplicationHandles",
+      "exit $ExitCode",
+    ]) &&
+    (completeEvidenceBlock.match(/Close-ReadinessApplicationHandles/gu) ?? [])
+      .length === 2 &&
+    (completeEvidenceBlock.match(/\$evidenceHandle\.Dispose\(\)/gu) ?? [])
+      .length === 1 &&
+    (completeEvidenceBlock.match(/Assert-EvidenceContract/gu) ?? []).length ===
+      1 &&
+    (completeEvidenceBlock.match(/Write-FixedSentinel -Sentinel \$Sentinel/gu) ?? [])
+      .length === 1 &&
+    (completeEvidenceBlock.match(/Error\.WriteLine\(\$Sentinel\)/gu) ?? [])
+      .length === 1 &&
+    hasOrderedTextMarkers(runnerCommentFreeOutsideFunctions, [
+      "$script:ContractSourceHandle = Open-FixedReadOnlySource",
+      '$nodeApplication = Resolve-FixedApplication -Name "node"',
+      "$script:NodeApplicationHandle = $nodeApplication.Hold",
+      "$script:PreflightSourceHandle = Open-FixedReadOnlySource",
+      "$preflightResult = Invoke-BoundedApplication",
+      "-Executable $systemPowerShell",
+      "-TimeoutMilliseconds 30000",
+      "-MaximumOutputCharacters 4096",
+      "(Test-AmbientCompilerInjection)",
+      "(Test-AmbientCargoConfiguration -RepositoryRoot $repositoryRoot)",
+      '$cargoApplication = Resolve-FixedApplication -Name "cargo"',
+      "$script:CargoApplicationHandle = $cargoApplication.Hold",
+      "$cargoResult = Invoke-BoundedApplication",
+      "-Executable $cargoExecutable",
+      "-TimeoutMilliseconds 900000",
+      "-MaximumOutputCharacters 262144",
+      "$cargoResult.TimedOut",
+      "$cargoResult.Overflow",
+      "Test-ExactSuccessfulCargoOutput -Output $cargoResult.StdoutLines",
+      '-Result "local-fixture"',
+      "catch {",
+      "[System.Console]::Error.WriteLine($script:NotRunSentinel)",
+      "exit $script:NotRunExitCode",
+    ]) &&
+    hasOrderedTextMarkers(runnerCommentFreeOutsideFunctions, [
+      '"test",',
+      '"--frozen",',
+      '"--offline",',
+      '"--locked",',
+      '"-p",',
+      '"platform-windows",',
+      '"--lib",',
+      '"key_agent_service::windows_lifecycle::tests::",',
+      '"--",',
+      '"--test-threads=1"',
+    ]) &&
+    runner.includes('"running 22 tests"') &&
+    runner.includes(
+      "22 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out",
+    ) &&
+    runner.includes('$env:CARGO_TERM_COLOR = "never"') &&
+    runner.includes('$env:NO_COLOR = "1"') &&
+    runner.includes(
+      '"WINDOWS_READINESS_CONTRACT_VALID_NOT_RELEASE_EVIDENCE"',
+    ) &&
+    runner.includes('"WINDOWS_READINESS_BLOCKED_NOT_RELEASE_EVIDENCE"') &&
+    runner.includes('"WINDOWS_READINESS_NOT_RUN_NOT_RELEASE_EVIDENCE"') &&
+    !forbiddenWindowsReadinessPowerShellMutation.test(preflight) &&
+    !forbiddenWindowsReadinessPowerShellMutation.test(runner) &&
+    !forbiddenWindowsReadinessPowerShellEscape.test(preflight) &&
+    !forbiddenWindowsReadinessPowerShellEscape.test(runner) &&
+    !forbiddenWindowsReadinessPassOutput.test(preflight) &&
+    !forbiddenWindowsReadinessPassOutput.test(runner) &&
+    evidenceSuiteCount === 11 &&
+    comparatorSuiteCount === 9 &&
+    hasExactActiveJavaScriptTests(
+      evidenceTests,
+      exactWindowsEvidenceContractTestNames,
+    ) &&
+    hasExactActiveJavaScriptTests(
+      comparatorTests,
+      exactWindowsBuildInventoryComparatorTestNames,
+    ) &&
+    hasExactPowerShellTerminationInventory(readinessCheckBlock, []) &&
+    readinessCheckBlock.includes("[scriptblock]::Create") &&
+    readinessCheckBlock.includes(
+      '"scripts/windows-evidence/preflight.ps1"',
+    ) &&
+    readinessCheckBlock.includes(
+      '"scripts/windows-evidence/run-current-user.ps1"',
+    ) &&
+    readinessCheckBlock.includes(
+      '"scripts/windows-evidence/evidence-contract.mjs"',
+    ) &&
+    readinessCheckBlock.includes(
+      '"scripts/windows-evidence/compare-build-inventories.mjs"',
+    ) &&
+    readinessCheckBlock.includes(
+      '"scripts/windows-evidence/evidence-contract.test.mjs"',
+    ) &&
+    readinessCheckBlock.includes(
+      '"scripts/windows-evidence/compare-build-inventories.test.mjs"',
+    ) &&
+    (readinessCheckBlock.match(/"--check"/gu) ?? []).length === 1 &&
+    (readinessCheckBlock.match(/"--test"/gu) ?? []).length === 1 &&
+    (qualityTestsBlock.match(/Invoke-WindowsEvidenceReadinessChecks/gu) ?? [])
+      .length === 1 &&
+    hasOneActivePowerShellLiteralAtBraceDepth(
+      qualityTestsAnalysis,
+      "Invoke-WindowsEvidenceReadinessChecks",
+      1,
+    ) &&
+    qualityTestsBlock.indexOf("Invoke-WindowsEvidenceReadinessChecks") <
+      qualityTestsBlock.indexOf("scripts/launcher-contract.test.ps1") &&
+    normalizedReadme.includes("non-elevated, current-user readiness fixture") &&
+    normalizedReadme.includes("never produces release evidence") &&
+    normalizedReadme.includes("--locked --frozen --offline") &&
+    normalizedReadme.includes("artifacts/windows-evidence/") &&
+    normalizedReadme.includes('releaseEligibility: "not-release-evidence"') &&
+    normalizedReadme.includes("remain separate STOP-SHIP gates") &&
+    normalizedReadme.includes(
+      "The runner rejects caller arguments, compiler/toolchain environment overrides, and Cargo configuration files discoverable from the workspace, its ancestors, or the default user Cargo directory.",
+    ) &&
+    normalizedReadme.includes(
+      "Its fixed Node, preflight, and Cargo child profiles have deadlines and live combined-output character caps.",
+    ) &&
+    normalizedReadme.includes(
+      "A timeout or overflow terminates the selected leaf process and records only a fixed readiness result; descendant-process cleanup remains part of the trusted local tool boundary.",
+    ) &&
+    normalizedReadme.includes(
+      "ambient tool writes are not evidence produced by this harness",
+    ) &&
+    normalizedReadme.includes(
+      "trusts the PATH-selected local Cargo and Node applications, the fixed system PowerShell executable, the default Rustup installation and caches, and the workspace and parent directories against malicious same-user replacement before or during the run",
+    ) &&
+    normalizedReadme.includes(
+      "holds the selected Cargo and Node leaf files, the two harness source files, and generated evidence without write/delete sharing while they are used",
+    ) &&
+    normalizedReadme.includes(
+      "does not pin parent-directory handles, so those explicit same-user and descendant-process trust boundaries remain",
+    ) &&
+    normalizedReadme.includes(
+      "Neither that boundary nor a successful fixture result is release evidence.",
+    )
+  );
+};
+const mutateWindowsEvidenceReadinessSource = (
+  inputs,
+  path,
+  search,
+  replacement,
+) => ({
+  ...inputs,
+  sources: inputs.sources.map((file) =>
+    file.path === path
+      ? { ...file, source: replaceExactStringOnce(file.source, search, replacement) }
+      : file,
+  ),
+});
+const windowsEvidenceReadinessSemanticMutationProbes = [
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/evidence-contract.mjs",
+    'const EVIDENCE_SCHEMA = "your-wallet-windows-readiness-evidence-v1";',
+    'const EVIDENCE_SCHEMA = "your-wallet-windows-readiness-evidence-v2";',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/evidence-contract.mjs",
+    'const RELEASE_ELIGIBILITY = "not-release-evidence";',
+    'const RELEASE_ELIGIBILITY = "release-evidence";',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/evidence-contract.mjs",
+    "WINDOWS_READINESS_CONTRACT_VALID_NOT_RELEASE_EVIDENCE",
+    "WINDOWS_READINESS_CONTRACT_VALID_RELEASE_EVIDENCE",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/evidence-contract.mjs",
+    "WINDOWS_READINESS_CONTRACT_INVALID",
+    "WINDOWS_READINESS_CONTRACT_ERROR_DETAIL",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/evidence-contract.mjs",
+    "export function validateWindowsReadinessEvidence(value)",
+    "function validateWindowsReadinessEvidence(value)",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/evidence-contract.mjs",
+    "pathBefore, handleBefore",
+    "handleBefore, handleBefore",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/evidence-contract.mjs",
+    'argv[3] !== "--expected-result"',
+    'argv[3] !== "--claimed-result"',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/evidence-contract.mjs",
+    "if (evidence.result !== expectedResult)",
+    "if (true)",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/compare-build-inventories.mjs",
+    'const RELEASE_ELIGIBILITY = "not-release-evidence";',
+    'const RELEASE_ELIGIBILITY = "release-evidence";',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/compare-build-inventories.mjs",
+    "export function compareBuildInventories(left, right)",
+    "function compareBuildInventories(left, right)",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/compare-build-inventories.mjs",
+    "const WINDOWS_RESERVED_BASENAME_RE = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/iu;",
+    "const WINDOWS_RESERVED_BASENAME_RE = /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$/iu;",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/preflight.ps1",
+    '$PSModuleAutoLoadingPreference = "None"',
+    '$PSModuleAutoLoadingPreference = "All"',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/preflight.ps1",
+    "S-1-16-(?:8192|8448)",
+    "S-1-16-(?:4096|8192|8448)",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/preflight.ps1",
+    "WINDOWS_READINESS_PREFLIGHT_PASS_CURRENT_USER_NON_ELEVATED",
+    "WINDOWS_READINESS_PREFLIGHT_PASS",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/preflight.ps1",
+    "[CmdletBinding()]",
+    "[CmdletBinding()]\nStart-Process powershell.exe -Verb RunAs",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "[Parameter(ValueFromRemainingArguments = $true)]",
+    "[Parameter(ValueFromRemainingArguments = $false)]",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "if ($null -ne $UnexpectedArguments -and $UnexpectedArguments.Count -ne 0) {",
+    "if ($true) {",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    '$script:CaseId = "phase2g-lifecycle-local-fixture-v1"',
+    '$script:CaseId = "arbitrary"',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    '$ErrorActionPreference = "Stop"',
+    'exit 0\n$ErrorActionPreference = "Stop"',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    '$ErrorActionPreference = "Stop"',
+    '$ErrorActionPreference = "Stop"\nWrite-Output "PASS"',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    '$ErrorActionPreference = "Stop"',
+    '$ErrorActionPreference = "Stop"\nInvoke-Expression "exit 0"',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    '$ErrorActionPreference = "Stop"',
+    '$ErrorActionPreference = "Stop"\n$null = & cmd.exe /c exit 0',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    '$ErrorActionPreference = "Stop"',
+    '$ErrorActionPreference = "Stop"\n[System.Diagnostics.Process]::Start("cmd.exe")',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    '$ErrorActionPreference = "Stop"',
+    '$ErrorActionPreference = "Stop"\nSet-Content -LiteralPath "arbitrary" -Value "PASS"',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    '$ErrorActionPreference = "Stop"',
+    '$ErrorActionPreference = "Stop"\nInvoke-WebRequest "https://example.invalid/"',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    '"--frozen",',
+    '"--mutable",',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    '"--offline",',
+    '"--online",',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    '[System.Guid]::NewGuid().ToString("N")',
+    '[System.Guid]::NewGuid().ToString("D")',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "[System.IO.FileAccess]::Write,\n            [System.IO.FileShare]::Read",
+    "[System.IO.FileAccess]::Write,\n            [System.IO.FileShare]::ReadWrite",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "    return [System.IO.File]::Open(\n        $fullPath,\n        [System.IO.FileMode]::Open,\n        [System.IO.FileAccess]::Read,\n        [System.IO.FileShare]::Read\n    )",
+    "    return [System.IO.File]::Open(\n        $fullPath,\n        [System.IO.FileMode]::Open,\n        [System.IO.FileAccess]::Read,\n        [System.IO.FileShare]::ReadWrite\n    )",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "    $hold = [System.IO.File]::Open(\n        $source,\n        [System.IO.FileMode]::Open,\n        [System.IO.FileAccess]::Read,\n        [System.IO.FileShare]::Read\n    )",
+    "    $hold = [System.IO.File]::Open(\n        $source,\n        [System.IO.FileMode]::Open,\n        [System.IO.FileAccess]::Read,\n        [System.IO.FileShare]::ReadWrite\n    )",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "$startInfo.UseShellExecute = $false",
+    "$startInfo.UseShellExecute = $true",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "$startInfo.RedirectStandardError = $true",
+    "$startInfo.RedirectStandardError = $false",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "$clock.ElapsedMilliseconds -ge $TimeoutMilliseconds",
+    "$clock.ElapsedMilliseconds -lt $TimeoutMilliseconds",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "$process.WaitForExit([int]$remainingMilliseconds)",
+    "$process.WaitForExit()",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "$stdoutTask = $process.StandardOutput.ReadAsync(",
+    "$stdoutTask = $process.StandardOutput.ReadToEndAsync(",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "[ValidateRange(1024, 1048576)]",
+    "[ValidateRange(1024, 2097152)]",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "$Process.Kill()",
+    "$null = $Process.CloseMainWindow()",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "        $cargoResult = Invoke-BoundedApplication `",
+    "        $cargoResult = & $cargoExecutable @cargoArguments `",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "            -TimeoutMilliseconds 900000 `\n            -MaximumOutputCharacters 262144",
+    "            -TimeoutMilliseconds 900000 `\n            -MaximumOutputCharacters 1048576",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "            \"--expected-result\",\n            $ExpectedResult",
+    "            \"--expected-result\",\n            \"local-fixture\"",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "            $EvidencePath,\n            \"--expected-result\",\n            $ExpectedResult",
+    "            $EvidencePath",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "            -ExpectedResult $Result `",
+    "            -ExpectedResult \"local-fixture\" `",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    '"CARGO_HOME",',
+    '"CARGO_CACHE_HOME",',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    'foreach ($fileName in @("config", "config.toml"))',
+    'foreach ($fileName in @("config.toml"))',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "        (Test-AmbientCargoConfiguration -RepositoryRoot $repositoryRoot)\n",
+    "        $false\n",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "        if ($ExitCode -eq 0) {",
+    "        if ($true) {",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "            [System.Console]::Error.WriteLine($Sentinel)",
+    "            [System.Console]::Out.WriteLine($Sentinel)",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "            $evidenceHandle.Dispose()",
+    "            $evidenceHandle.Flush()",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "        Assert-EvidenceContract `",
+    "        Write-FixedSentinel -Sentinel $Sentinel\n        Assert-EvidenceContract `",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "$script:ContractSourceHandle = Open-FixedReadOnlySource `",
+    "$null = Open-FixedReadOnlySource `",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "$script:PreflightSourceHandle = Open-FixedReadOnlySource `",
+    "$null = Open-FixedReadOnlySource `",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "    Assert-ExistingDirectoryTreeWithoutReparse -LiteralPath $repositoryRoot\n",
+    "",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    exactWindowsLifecycleReadinessTests[0],
+    `${exactWindowsLifecycleReadinessTests[0]}_decoy`,
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    '"artifacts"',
+    '"release-artifacts"',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/evidence-contract.mjs",
+    'import { lstat, open, realpath } from "node:fs/promises";',
+    'import "../release/release-manifest.mjs";\nimport { lstat, open, realpath } from "node:fs/promises";',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/evidence-contract.test.mjs",
+    'test("exact six-field evidence validates for all readiness-only results"',
+    'probe("exact six-field evidence validates for all readiness-only results"',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/README.md",
+    "remain separate STOP-SHIP gates",
+    "remain separate gates",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/README.md",
+    "never produces release evidence",
+    "produces release evidence",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/README.md",
+    "ambient tool writes are not evidence produced by this harness",
+    "ambient tool writes are evidence produced by this harness",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/README.md",
+    "deadlines and live combined-output character caps",
+    "best-effort execution limits",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/README.md",
+    "descendant-process cleanup remains part of the trusted local\ntool boundary",
+    "descendant-process cleanup is guaranteed by the harness",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/README.md",
+    "trusts the PATH-selected local Cargo and Node applications",
+    "trusts all Cargo and Node applications",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/README.md",
+    "the two harness source files",
+    "all workspace source files",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/README.md",
+    "does not pin parent-directory\nhandles",
+    "pins parent-directory handles",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/README.md",
+    "Neither that boundary nor a successful fixture result is release\nevidence.",
+    "Either that boundary or a successful fixture result is release evidence.",
+  ),
+  {
+    ...windowsEvidenceReadinessInputs,
+    qualityCheck: replaceExactStringOnce(
+      windowsEvidenceReadinessInputs.qualityCheck,
+      "    Invoke-WindowsEvidenceReadinessChecks\n",
+      "",
+    ),
+  },
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/evidence-contract.mjs",
+    "if (evidence.result !== expectedResult) {",
+    "if (false) { /* if (evidence.result !== expectedResult) */",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/compare-build-inventories.mjs",
+    "ordinalCompare(previousPath, record.path) >= 0",
+    "false /* ordinalCompare(previousPath, record.path) >= 0 */",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    '\n$script:CaseId = "phase2g-lifecycle-local-fixture-v1"',
+    '\nexit 0\n$script:CaseId = "phase2g-lifecycle-local-fixture-v1"',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/preflight.ps1",
+    "[CmdletBinding()]\nparam()\n",
+    '[CmdletBinding()]\nparam()\n[System.Console]::Out.WriteLine($successSentinel)\nexit 0\n',
+  ),
+  {
+    ...windowsEvidenceReadinessInputs,
+    qualityCheck: replaceExactStringOnce(
+      windowsEvidenceReadinessInputs.qualityCheck,
+      "    Invoke-WindowsEvidenceReadinessChecks\n",
+      "    if ($false) { Invoke-WindowsEvidenceReadinessChecks }\n",
+    ),
+  },
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    '        "--offline",',
+    '        "--online", # "--offline",',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "    )\n\n    if ($Process.HasExited) {",
+    "    )\n\n    return\n    if ($Process.HasExited) {",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "    )\n\n    $contractResult = Invoke-BoundedApplication `",
+    "    )\n\n    return\n    $contractResult = Invoke-BoundedApplication `",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "    )\n\n    $observedTests = [System.Collections.Generic.HashSet[string]]::new(",
+    "    )\n\n    return $true\n    $observedTests = [System.Collections.Generic.HashSet[string]]::new(",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "function Test-AmbientCompilerInjection {\n    $forbiddenExactNames =",
+    "function Test-AmbientCompilerInjection {\n    return $false\n    $forbiddenExactNames =",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "    )\n\n    $configurationRoots =",
+    "    )\n\n    return $false\n    $configurationRoots =",
+  ),
+  {
+    ...windowsEvidenceReadinessInputs,
+    qualityCheck: replaceExactStringOnce(
+      windowsEvidenceReadinessInputs.qualityCheck,
+      "function Invoke-WindowsEvidenceReadinessChecks {\n    foreach",
+      "function Invoke-WindowsEvidenceReadinessChecks {\n    return\n    foreach",
+    ),
+  },
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/evidence-contract.mjs",
+    "async function runCli() {\n  const { expectedResult, inputPath } =",
+    'async function runCli() {\n  process.stdout.write("WINDOWS_READINESS_CONTRACT_VALID_NOT_RELEASE_EVIDENCE\\n");\n  return;\n  const { expectedResult, inputPath } =',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/evidence-contract.test.mjs",
+    'test("exact six-field evidence validates for all readiness-only results", () => {\n  for (const result of ["local-fixture", "not-run", "blocked"]) {\n    const validated = validateWindowsReadinessEvidence(fixture(result));\n    assert.equal(validated.result, result);\n    assert.equal(validated.releaseEligibility, "not-release-evidence");\n    assert.equal(validated.qualifiedTests.length, 22);\n    assert.ok(Object.isFrozen(validated));\n    assert.ok(Object.isFrozen(validated.qualifiedTests));\n  }\n});',
+    'test("exact six-field evidence validates for all readiness-only results", () => {});',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/compare-build-inventories.test.mjs",
+    'test("strict path-ordered build inventories validate as immutable copies", () => {\n  const input = [\n    record("payload/approval-ui.exe", "1"),\n    record("payload/key-agent.exe", "20", HASH_B),\n  ];\n  const validated = validateBuildInventory(input);\n  assert.deepEqual(validated, input);\n  assert.notEqual(validated, input);\n  assert.notEqual(validated[0], input[0]);\n  assert.ok(Object.isFrozen(validated));\n  assert.ok(validated.every(Object.isFrozen));\n});',
+    'test("strict path-ordered build inventories validate as immutable copies", () => {});',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/evidence-contract.mjs",
+    "if (evidence.result !== expectedResult) {",
+    "if (`if (evidence.result !== expectedResult)` && false) {",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/compare-build-inventories.mjs",
+    "ordinalCompare(previousPath, record.path) >= 0",
+    'false || `ordinalCompare(previousPath, record.path) >= 0` === ""',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    mutateWindowsEvidenceReadinessSource(
+      windowsEvidenceReadinessInputs,
+      "scripts/windows-evidence/run-current-user.ps1",
+      "    exit $script:NotRunExitCode\n}",
+      "}",
+    ),
+    "scripts/windows-evidence/run-current-user.ps1",
+    '\n$script:CaseId = "phase2g-lifecycle-local-fixture-v1"',
+    '\nexit $script:NotRunExitCode\n$script:CaseId = "phase2g-lifecycle-local-fixture-v1"',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    mutateWindowsEvidenceReadinessSource(
+      windowsEvidenceReadinessInputs,
+      "scripts/windows-evidence/preflight.ps1",
+      "    [System.Console]::Out.WriteLine($successSentinel)\n    exit 0\n",
+      "",
+    ),
+    "scripts/windows-evidence/preflight.ps1",
+    "$process = $null\n\ntry {",
+    "$process = $null\n[System.Console]::Out.WriteLine($successSentinel)\nexit 0\n\ntry {",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "    if ($Process.HasExited) {\n        return\n    }\n    try {",
+    "    if ($Process.HasExited) {\n        return\n    }\n    return\n    try {",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "        -MaximumOutputCharacters 4096\n    if (\n        $contractResult.TimedOut",
+    "        -MaximumOutputCharacters 4096\n    return\n    if (\n        $contractResult.TimedOut",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "    $observedTests = [System.Collections.Generic.HashSet[string]]::new(\n        [System.StringComparer]::Ordinal\n    )\n    $observedOutcomes =",
+    "    $observedTests = [System.Collections.Generic.HashSet[string]]::new(\n        [System.StringComparer]::Ordinal\n    )\n    return $true\n    $observedOutcomes =",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "    $forbiddenExactNames = [System.Collections.Generic.HashSet[string]]::new(\n        [System.StringComparer]::OrdinalIgnoreCase\n    )\n    foreach",
+    "    $forbiddenExactNames = [System.Collections.Generic.HashSet[string]]::new(\n        [System.StringComparer]::OrdinalIgnoreCase\n    )\n    return $false\n    foreach",
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/run-current-user.ps1",
+    "    $configurationRoots =\n        [System.Collections.Generic.HashSet[string]]::new(\n            [System.StringComparer]::OrdinalIgnoreCase\n        )\n    $currentDirectory =",
+    "    $configurationRoots =\n        [System.Collections.Generic.HashSet[string]]::new(\n            [System.StringComparer]::OrdinalIgnoreCase\n        )\n    return $false\n    $currentDirectory =",
+  ),
+  {
+    ...windowsEvidenceReadinessInputs,
+    qualityCheck: replaceExactStringOnce(
+      windowsEvidenceReadinessInputs.qualityCheck,
+      '    foreach ($scriptPath in @(\n        "scripts/windows-evidence/preflight.ps1",\n        "scripts/windows-evidence/run-current-user.ps1"\n    )) {\n        $null = [scriptblock]::Create(',
+      '    foreach ($scriptPath in @(\n        "scripts/windows-evidence/preflight.ps1",\n        "scripts/windows-evidence/run-current-user.ps1"\n    )) {\n        return\n        $null = [scriptblock]::Create(',
+    ),
+  },
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/evidence-contract.mjs",
+    'async function runCli() {\n  const { expectedResult, inputPath } = parseCliArguments(process.argv.slice(2));\n  const bytes = await readPinnedEvidenceFile(inputPath);\n  const evidence = parseCanonicalWindowsReadinessEvidence(bytes);\n  if (evidence.result !== expectedResult) {\n    fail("Windows readiness evidence result does not match the fixed expectation");\n  }\n  process.stdout.write("WINDOWS_READINESS_CONTRACT_VALID_NOT_RELEASE_EVIDENCE\\n");\n}',
+    'async function runCli() {\n  process.stdout.write("WINDOWS_READINESS_CONTRACT_VALID_NOT_RELEASE_EVIDENCE\\n");\n  if (false) {\n    const { expectedResult, inputPath } = parseCliArguments(process.argv.slice(2));\n    const bytes = await readPinnedEvidenceFile(inputPath);\n    const evidence = parseCanonicalWindowsReadinessEvidence(bytes);\n    if (evidence.result !== expectedResult) {\n      fail("Windows readiness evidence result does not match the fixed expectation");\n    }\n    process.stdout.write("WINDOWS_READINESS_CONTRACT_VALID_NOT_RELEASE_EVIDENCE\\n");\n  }\n}',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/evidence-contract.test.mjs",
+    'test("exact six-field evidence validates for all readiness-only results", () => {',
+    'test("exact six-field evidence validates for all readiness-only results", () => {\n  return;',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    windowsEvidenceReadinessInputs,
+    "scripts/windows-evidence/compare-build-inventories.test.mjs",
+    'test("strict path-ordered build inventories validate as immutable copies", () => {',
+    'test("strict path-ordered build inventories validate as immutable copies", () => {\n  return;',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    mutateWindowsEvidenceReadinessSource(
+      windowsEvidenceReadinessInputs,
+      "scripts/windows-evidence/evidence-contract.test.mjs",
+      'test("exact six-field evidence validates for all readiness-only results", () => {',
+      'test.skip("exact six-field evidence validates for all readiness-only results", () => {',
+    ),
+    "scripts/windows-evidence/evidence-contract.test.mjs",
+    "const execFileAsync = promisify(execFile);",
+    'const execFileAsync = promisify(execFile);\nconst skippedTestDecoy = `\ntest("exact six-field evidence validates for all readiness-only results", () => { assert.equal(1, 1); });\n`;',
+  ),
+  mutateWindowsEvidenceReadinessSource(
+    mutateWindowsEvidenceReadinessSource(
+      windowsEvidenceReadinessInputs,
+      "scripts/windows-evidence/compare-build-inventories.test.mjs",
+      'test("strict path-ordered build inventories validate as immutable copies", () => {',
+      'test.skip("strict path-ordered build inventories validate as immutable copies", () => {',
+    ),
+    "scripts/windows-evidence/compare-build-inventories.test.mjs",
+    'const HASH_B = "b".repeat(64);',
+    'const HASH_B = "b".repeat(64);\nconst skippedTestDecoy = `\ntest("strict path-ordered build inventories validate as immutable copies", () => { assert.equal(1, 1); });\n`;',
+  ),
+];
+const windowsEvidenceReadinessSemanticMutationResults =
+  windowsEvidenceReadinessSemanticMutationProbes.map((probe) => ({
+    changed:
+      probe.qualityCheck !== windowsEvidenceReadinessInputs.qualityCheck ||
+      probe.sources.some(
+        (source, index) =>
+          source.source !== windowsEvidenceReadinessInputs.sources[index].source,
+      ),
+    rejected: !windowsEvidenceReadinessContract(probe, false),
+  }));
+const windowsEvidenceReadinessPinMutationResults =
+  windowsEvidenceReadinessInputs.sources.map((_, mutationIndex) => {
+    const probe = {
+      ...windowsEvidenceReadinessInputs,
+      sources: windowsEvidenceReadinessInputs.sources.map((source, index) =>
+        index === mutationIndex ? { ...source, sha256: "0".repeat(64) } : source,
+      ),
+    };
+    return {
+      changed: true,
+      rejected: !windowsEvidenceReadinessContract(probe),
+    };
+  });
+requireInvariant(
+  windowsEvidenceReadinessContract(windowsEvidenceReadinessInputs) &&
+    windowsEvidenceReadinessSemanticMutationProbes.length === 97 &&
+    windowsEvidenceReadinessSemanticMutationResults.every(
+      ({ changed, rejected }) => changed && rejected,
+    ) &&
+    windowsEvidenceReadinessPinMutationResults.length === 7 &&
+    windowsEvidenceReadinessPinMutationResults.every(
+      ({ changed, rejected }) => changed && rejected,
+    ),
+  `the Windows readiness harness must remain an exact seven-file, non-elevated, fixed-case, 22-test, locked/frozen/offline, canonical and privacy-bounded local fixture that is structurally separate from release evidence, admits no arbitrary command or output path, keeps runner-owned output under target plus ignored artifacts, pins evidence and selected tools against replacement during use, discloses ambient tool and same-user trust, runs from the root quality gate, and rejects every semantic/source-pin mutation; semantic base=${windowsEvidenceReadinessContract(windowsEvidenceReadinessInputs, false)}, semantic mutations=${JSON.stringify(windowsEvidenceReadinessSemanticMutationResults)}, pin mutations=${JSON.stringify(windowsEvidenceReadinessPinMutationResults)}`,
 );
 
 const expectedRustAnalysisCacheFamilyClearLabels = Object.freeze([

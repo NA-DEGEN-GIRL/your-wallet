@@ -101,7 +101,32 @@ function Build-KeyAgentTestExecutable {
     return $resolved.Path
 }
 
+function Invoke-WindowsEvidenceReadinessChecks {
+    foreach ($scriptPath in @(
+        "scripts/windows-evidence/preflight.ps1",
+        "scripts/windows-evidence/run-current-user.ps1"
+    )) {
+        $null = [scriptblock]::Create(
+            (Get-Content -LiteralPath $scriptPath -Raw -ErrorAction Stop)
+        )
+    }
+
+    foreach ($sourcePath in @(
+        "scripts/windows-evidence/evidence-contract.mjs",
+        "scripts/windows-evidence/compare-build-inventories.mjs"
+    )) {
+        Invoke-Checked -Executable "node" -CommandArguments @("--check", $sourcePath)
+    }
+
+    Invoke-Checked -Executable "node" -CommandArguments @(
+        "--test",
+        "scripts/windows-evidence/evidence-contract.test.mjs",
+        "scripts/windows-evidence/compare-build-inventories.test.mjs"
+    )
+}
+
 function Invoke-Tests {
+    Invoke-WindowsEvidenceReadinessChecks
     Invoke-Checked -Executable "powershell" -CommandArguments @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/launcher-contract.test.ps1")
     $keyAgentExecutable = Build-KeyAgentTestExecutable
     $previousKeyAgentExecutable = [Environment]::GetEnvironmentVariable(
@@ -147,7 +172,7 @@ Targets:
   fmt-apply  Apply Rust formatting (the only mutating gate target).
   lint       Run Clippy with warnings denied.
   typecheck  Type-check every target and feature.
-  test       Run all Rust and extension tests.
+  test       Run readiness-contract, Rust, and extension tests.
   privacy    Scan tracked source artifacts for forbidden secret fixtures.
   architecture
              Enforce trust-boundary and extension-permission invariants.
