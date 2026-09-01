@@ -664,18 +664,37 @@ const keyAgentServicePhaseTwoFBInlineCfgTestStatements = Object.freeze([
         }) {
             return Err(ServiceRunStateError::RecordIo);
         }
+  `,
+]);
+const keyAgentServicePhaseTwoFCInlineCfgTestStatements = Object.freeze([
+  `    #[cfg(test)]
+    run_pair_process_death_cutpoint_for_test(TestPairProcessDeathCutpoint::BeforeMarkerRename);
+`,
+  `    #[cfg(test)]
+    run_pair_process_death_cutpoint_for_test(TestPairProcessDeathCutpoint::AfterMarkerRename);
+`,
+  `    #[cfg(test)]
+    run_pair_process_death_cutpoint_for_test(TestPairProcessDeathCutpoint::AfterCheckpointRename);
+`,
+]);
+const keyAgentServicePhaseTwoFCTestOnlyProjectionFragments = Object.freeze([
+  `    static TEST_PAIR_PROCESS_DEATH_CUTPOINT: RefCell<Option<TestPairProcessDeathHook>> = const { RefCell::new(None) };
 `,
 ]);
 function keyAgentServicePhaseTwoFBProductionPartition(source) {
   let partition = source;
-  for (const statement of keyAgentServicePhaseTwoFBInlineCfgTestStatements) {
+  for (const statement of [
+    ...keyAgentServicePhaseTwoFBInlineCfgTestStatements,
+    ...keyAgentServicePhaseTwoFCInlineCfgTestStatements,
+    ...keyAgentServicePhaseTwoFCTestOnlyProjectionFragments,
+  ]) {
     const first = partition.indexOf(statement);
     if (
       first === -1 ||
       partition.indexOf(statement, first + statement.length) !== -1
     ) {
       throw new Error(
-        "Phase 2F-b expected one exact inline cfg(test) I/O-fault fragment",
+        "run-state sys expected one exact inline cfg(test) fragment",
       );
     }
     partition = partition.replace(statement, "");
@@ -6202,21 +6221,21 @@ const approvedKeyAgentServiceWindowsLifecycleProductionSha256 =
 const approvedKeyAgentServiceWindowsLifecycleTestsSha256 =
   "a74aa7f50196f3a400fc16883b53932973ab65c9514f9cc6a74bd82c3cc04001";
 const approvedKeyAgentServiceRunStateRootSourceSha256 =
-  "77301e16cc91bc0aaa52377f3367cb7ea864d74d84d690b65e921dcc200c8835";
+  "65735ed35df959e8fb4a7cb4fba7d78f5b1301a2a0e0ce1e63e9a40176a0a117";
 const approvedKeyAgentServiceRunStateRootProductionSha256 =
-  "44a04b41f11cf9b7a44c4cce3b9e2f8704c536bc376ffc7ee5e6e92961528b94";
+  "475b23e1f5a1110d50e7cc88330e760e7deeb4d35ff5d2654661e6e39b4ff5d1";
 const approvedKeyAgentServiceRunStateRootSysSourceSha256 =
-  "3d39ead36116c2c48c93b9b5380e2dd4460c978e2ccd8e5b1c3ce42c9069d307";
+  "f27cb0689148d048709240c0aebb1ed6a93955d9a6e1d6d4f27f4f3089ed5fb3";
 const approvedKeyAgentServiceRunStateRootSysProductionSha256 =
-  "0b291a73940524e8c075b8d339ee6087852a434bc16bace5b79a4ad3c7f05ec8";
+  "2733d00871a0a750dbae60f7359f41d67679e79c4b0289b59f74bf1b1998960c";
 const approvedKeyAgentServiceRunStateRootTestsSha256 =
-  "e6b98539a54c1bf80bb6fa5d576b37fe17d562c04b6cdca83a76fbfdb967f023";
+  "fd37d5108737eab623a49719e152051691da0577aa7ea6797cb711ec8b45a060";
 const approvedKeyAgentServiceDurableWindowsPairSha256 =
   "f712f519fc7804163b30eaeef23ec68578b74c6601c6d0953c8c4be9c76cdcf9";
 const approvedKeyAgentServiceDurableWindowsRuntimeSourceSha256 =
-  "fb40f29f3d48b95fbc83e677e4dcce8e357c27d221a475289e8d8e26b73d8a7b";
+  "e900475293673ef85ccf470f7399d49a7c666d2911e041d3d3f91297b6a0db2a";
 const approvedKeyAgentServiceDurableWindowsRuntimeProductionSha256 =
-  "31cd3e0499389f91df0af57acce9df3faf9cef18ff943a7be827b1c3e164d02f";
+  "c4075f5a19d937cab78e52419029e89f6c016ee18800c7c9866bf514d4c8132e";
 const keyAgentServiceDurableTestNames = [
   "canonical_v1_clean_marker_and_checkpoint_round_trip",
   "canonical_v1_layout_matches_independent_golden_digests",
@@ -8812,6 +8831,8 @@ const keyAgentServicePhaseTwoFCRootTestNames = [
 ];
 const keyAgentServicePhaseTwoFCRuntimeTestNames = [
   "kernel_clean_boot_active_clean_stop_is_exact",
+  "kernel_process_death_restart_boots_only_prior_clean_and_rejects_partial_or_active",
+  "kernel_process_death_restart_boots_only_full_clean_and_rejects_prior_active_or_partial",
   "kernel_missing_pair_is_terminal_and_checked_retired",
   "kernel_wrong_key_and_nonclean_pairs_never_boot",
   "kernel_active_ambiguity_reload_classifies_prior_candidate_and_partial",
@@ -8823,6 +8844,55 @@ const keyAgentServicePhaseTwoFCRuntimeTestNames = [
   "kernel_live_and_reload_states_have_checked_terminal_retirement",
   "composite_authority_and_receipts_are_move_only",
   "composite_live_states_expose_consuming_terminal_transitions",
+];
+const keyAgentServicePhaseTwoFCProcessDeathSysIdentifiers = [
+  "TestPairProcessDeathHook",
+  "TEST_PAIR_PROCESS_DEATH_CUTPOINT",
+  "TestPairProcessDeathCutpoint",
+  "BeforeMarkerRename",
+  "AfterMarkerRename",
+  "AfterCheckpointRename",
+  "inject_pair_process_death_cutpoint_for_test",
+  "pair_process_death_cutpoint_is_armed_for_test",
+  "run_pair_process_death_cutpoint_for_test",
+];
+const keyAgentServicePhaseTwoFCProcessDeathTestIdentifiers = [
+  "CHILD_PAIR_CUTPOINT_ENV",
+  "CHILD_PAIR_MARKER_ENV",
+  "CHILD_PAIR_CHECKPOINT_ENV",
+  "CHILD_MODE_PAIR_PROCESS_DEATH",
+  "CHILD_PAIR_RECORD_HEX_CHARS",
+  "wait_ready_while_child_running",
+  "command",
+  "spawn_command",
+  "spawn_pair_process_death",
+  "has_exited",
+  "RuntimePairProcessDeathCutpoint",
+  "child_value",
+  "from_child_value",
+  "sys_cutpoint",
+  "force_process_death_during_pair_commit",
+  "assert_exact_pair_and_no_temps_for_test",
+  "require_pair_test_evidence",
+  "read_exact_pair_record",
+  "assert_pair_record",
+  "assert_pair_missing",
+  "assert_exact_pair_and_no_temps",
+  "encode_child_pair_record",
+  "decode_child_pair_record",
+  "child_pair_record_from_env",
+  "expected_objects_for_existing_fixture",
+  "run_pair_process_death_child",
+  "require_distinct_pair_identities",
+];
+const keyAgentServicePhaseTwoFCProcessDeathTransportLiterals = [
+  "YOUR_WALLET_PHASE2E_CHILD_PAIR_CUTPOINT",
+  "YOUR_WALLET_PHASE2E_CHILD_PAIR_MARKER",
+  "YOUR_WALLET_PHASE2E_CHILD_PAIR_CHECKPOINT",
+  "pair-process-death",
+  "before-marker-rename",
+  "after-marker-rename",
+  "after-checkpoint-rename",
 ];
 const keyAgentServicePhaseTwoFCRuntimeTypeNames = [
   "WindowsRuntimeStartFailure",
@@ -10515,9 +10585,11 @@ const keyAgentServicePhaseTwoESemanticContract = ({
       "std::env::var_os(CHILD_BASE_ENV)",
       "std::env::var(CHILD_EVENT_ENV)",
       "CHILD_MODE_HOLD",
-      "open_test_service_run_state_root(&base,expected)?",
-      "Some(acquire_for_test(root)?)",
-      "CHILD_MODE_SENTINEL=>None",
+      "open_test_service_run_state_root(&base,expected_objects_for_existing_fixture(&base)?,)?",
+      "let_writer=acquire_for_test(root)?",
+      "signal_child_ready(&event_name)?",
+      "std::thread::park()",
+      "CHILD_MODE_SENTINEL",
       "signal_child_ready(&event_name)?",
       "std::thread::park()",
     ]) &&
@@ -11683,11 +11755,30 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
   const runtimeCode = rustLexicalCode(runtimeProduction);
   const runtimeCompact = compactRust(runtimeProduction);
   const rootProduction = withoutCfgTestItems(rootSource);
-  const sysProduction = keyAgentServicePhaseTwoFBProductionPartition(sysSource);
+  let sysProduction;
+  try {
+    sysProduction = keyAgentServicePhaseTwoFBProductionPartition(sysSource);
+  } catch {
+    return false;
+  }
   const pairProduction = withoutCfgTestItems(windowsPairSource);
   const rootCode = rustLexicalCode(rootProduction);
   const sysCode = rustLexicalCode(sysProduction);
   const pairCode = rustLexicalCode(pairProduction);
+  const rootFullCode = rustLexicalCode(rootSource);
+  const sysFullCode = rustLexicalCode(sysSource);
+  const testsCode = rustLexicalCode(testsSource);
+  const runtimeFullCode = rustLexicalCode(windowsRuntimeSource);
+  const processDeathProduction = [
+    durable.production,
+    runtimeProduction,
+    rootProduction,
+    sysProduction,
+    pairProduction,
+  ].join("\n");
+  const processDeathProductionCode = rustLexicalCode(
+    processDeathProduction,
+  );
   const rootCompact = compactRust(rootProduction);
   const sysCompact = compactRust(sysProduction);
   const pairCompact = compactRust(pairProduction);
@@ -11816,6 +11907,16 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
   let rootReloadContinue;
   let codecRereadContinue;
   let codecReloadContinue;
+  let processDeathCommit;
+  let processDeathHookRunner;
+  let processDeathChild;
+  let processDeathParent;
+  let processDeathCommand;
+  let processDeathSpawn;
+  let processDeathEncoder;
+  let processDeathDecoder;
+  let processDeathRuntimeTest;
+  let cleanProcessDeathRuntimeTest;
   try {
     allocateBinding = rustTopLevelFunctionBlock(
       runtimeProduction,
@@ -11949,6 +12050,43 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
       codecReloadImpl,
       "continue_observed",
     );
+    processDeathCommit = rustTopLevelFunctionBlock(
+      sysSource,
+      "commit_observed_pair",
+    );
+    processDeathHookRunner = rustTopLevelFunctionBlock(
+      sysSource,
+      "run_pair_process_death_cutpoint_for_test",
+    );
+    processDeathChild = rustTopLevelFunctionBlock(
+      testsSource,
+      "run_pair_process_death_child",
+    );
+    processDeathParent = rustTopLevelFunctionBlock(
+      testsSource,
+      "force_process_death_during_pair_commit",
+    );
+    processDeathCommand = rustFunctionBlock(testsSource, "command");
+    processDeathSpawn = rustFunctionBlock(
+      testsSource,
+      "spawn_pair_process_death",
+    );
+    processDeathEncoder = rustTopLevelFunctionBlock(
+      testsSource,
+      "encode_child_pair_record",
+    );
+    processDeathDecoder = rustTopLevelFunctionBlock(
+      testsSource,
+      "decode_child_pair_record",
+    );
+    processDeathRuntimeTest = rustFunctionBlock(
+      windowsRuntimeSource,
+      "kernel_process_death_restart_boots_only_prior_clean_and_rejects_partial_or_active",
+    );
+    cleanProcessDeathRuntimeTest = rustFunctionBlock(
+      windowsRuntimeSource,
+      "kernel_process_death_restart_boots_only_full_clean_and_rejects_prior_active_or_partial",
+    );
   } catch {
     return false;
   }
@@ -11962,12 +12100,25 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
     "reload can return Clean only for the exact candidate",
     "Every live or reload-required composite state exposes a consuming reason-neutral",
     "`into_retirement`; the legacy `into_terminal(RecoveryRequired)` wrappers remain",
+    "exactly three production-order cutpoints",
+    "accepts exactly 296 ASCII lowercase-hex characters",
+    "second writer sees exact run-lock contention",
+    "all four file identities distinct",
+    "bounded writer reacquisition",
+    "authenticated runtime as `HighWaterDrift`",
+    "rejected as `PersistedNonCleanState`",
+    "prior Active generation 2 is `PersistedNonCleanState`",
+    "Clean marker with the prior Active checkpoint is `HighWaterDrift`",
+    "fully replaced Clean candidate boots generation 3",
+    "carry no platform cause and complete checked retirement",
+    "forced child-process termination and reopen on the current Windows host",
+    "does not prove power-loss or reboot behavior, torn-sector or storage durability, or atomicity of the two-file pair",
     "pair-bound OS release",
     "holds both final leaves share-zero",
     "WindowsReleasedNoReceipt",
     "WindowsPostReleaseTerminal",
     "Checked terminal retirement is ordered",
-    "twelve passing tests",
+    "fourteen passing tests",
     "external **STOP-SHIP** obligations",
     "silent exit 78",
   ];
@@ -11979,12 +12130,24 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
     "terminal `RereadDrift`",
     "only exact candidate can return Clean",
     "Every live/reload state has a consuming reason-neutral `into_retirement`",
+    "exactly three cfg(test)-only process-death cutpoints",
+    "296-character lowercase-hex child transport",
+    "run-lock contention before force-termination",
+    "full file-identity matrix",
+    "bounded writer reacquisition",
+    "`HighWaterDrift` with no platform cause",
+    "`PersistedNonCleanState` with no platform cause",
+    "prior Active generation 2 as `PersistedNonCleanState` with no platform cause",
+    "Clean-generation-3 marker paired with the prior Active checkpoint as `HighWaterDrift` with no platform cause",
+    "full Clean generation 3 as Boot",
+    "current-host process termination and reopen only",
+    "does not prove power loss, reboot, torn-sector/storage durability, or pair atomicity",
     "pair-bound OS release",
     "holds both share-zero finals through release",
     "WindowsReleasedNoReceipt",
     "WindowsPostReleaseTerminal",
     "Reason-neutral checked retirement orders logical begin-release, OS retirement, logical receipt, then logical completion",
-    "the 12/12 composite and 6/6 pair-child slices overlap that total",
+    "the 14/14 composite and 6/6 pair-child slices overlap that total",
     "external **STOP-SHIP** obligations",
     "silent exit 78",
   ];
@@ -12141,7 +12304,7 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
     inventory:
       JSON.stringify(rootTests.map(({ name }) => name).toSorted()) ===
         JSON.stringify(expectedRootTests.toSorted()) &&
-      runtimeTests.length === 12 &&
+      runtimeTests.length === 14 &&
       JSON.stringify(runtimeTests.map(({ name }) => name)) ===
         JSON.stringify(keyAgentServicePhaseTwoFCRuntimeTestNames) &&
       pairTests.length === 6 &&
@@ -12149,7 +12312,7 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
         provisioningTestsInventory.length +
         pairTests.length +
         runtimeTests.length ===
-        77,
+        79,
     docs:
       normalizedDesign.length > 0 &&
       designMarkers.every((marker) => normalizedDesign.includes(marker)) &&
@@ -12308,6 +12471,206 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
         "letreceipt=WriterExitReceipt{installation:logical.lease.installation,epoch:logical.lease.epoch,binding:logical.lease.binding,}",
         "matchlogical.complete(receipt)",
       ]),
+    processDeath:
+      keyAgentServicePhaseTwoFCInlineCfgTestStatements.every(
+        (statement) => sysSource.split(statement).length - 1 === 1,
+      ) &&
+      keyAgentServicePhaseTwoFCTestOnlyProjectionFragments.every(
+        (fragment) => sysSource.split(fragment).length - 1 === 1,
+      ) &&
+      rootSource.includes(
+        "#[cfg(test)]\npub(super) use tests::{RuntimePairFault, RuntimePairFixture, RuntimePairProcessDeathCutpoint};",
+      ) &&
+      keyAgentServicePhaseTwoFCProcessDeathSysIdentifiers.every((identifier) =>
+        new RegExp(`\\b${identifier}\\b`, "u").test(sysFullCode),
+      ) &&
+      keyAgentServicePhaseTwoFCProcessDeathTestIdentifiers.every(
+        (identifier) => new RegExp(`\\b${identifier}\\b`, "u").test(testsCode),
+      ) &&
+      keyAgentServicePhaseTwoFCProcessDeathTransportLiterals.every((literal) =>
+        testsSource.includes(literal),
+      ) &&
+      [
+        ...keyAgentServicePhaseTwoFCProcessDeathSysIdentifiers,
+        ...keyAgentServicePhaseTwoFCProcessDeathTestIdentifiers.filter(
+          (identifier) => identifier !== "read_exact_pair_record",
+        ),
+        "ExpectedRestart",
+      ].every(
+        (identifier) =>
+          !new RegExp(`\\b${identifier}\\b`, "u").test(
+            processDeathProductionCode,
+          ),
+      ) &&
+      !/\bfn\s+read_exact_pair_record\s*\(\s*path\s*:\s*&\s*Path\b/u.test(
+        processDeathProductionCode,
+      ) &&
+      keyAgentServicePhaseTwoFCProcessDeathTransportLiterals.every(
+        (literal) => !processDeathProduction.includes(literal),
+      ) &&
+      !/\bExpectedRestart\s*::\s*(?:PriorClean|Partial|Active)\b/u.test(
+        rustLexicalCode(runtimeProduction),
+      ) &&
+      [
+        "kernel_process_death_restart_boots_only_prior_clean_and_rejects_partial_or_active",
+        "kernel_process_death_restart_boots_only_full_clean_and_rejects_prior_active_or_partial",
+      ].every((name) => runtimeFullCode.includes(name)) &&
+      compactRust(
+        rustLexicalItemBlock(
+          sysSource,
+          /\bpub\s*\(\s*super\s*\)\s+enum\s+TestPairProcessDeathCutpoint\s*\{/u,
+        ),
+      ) ===
+        "pub(super)enumTestPairProcessDeathCutpoint{BeforeMarkerRename,AfterMarkerRename,AfterCheckpointRename,}" &&
+      compactRust(
+        rustLexicalItemBlock(
+          testsSource,
+          /\bpub\s*\(\s*in\s+crate\s*::\s*key_agent_service\s*\)\s+enum\s+RuntimePairProcessDeathCutpoint\s*\{/u,
+        ),
+      ) ===
+        "pub(incrate::key_agent_service)enumRuntimePairProcessDeathCutpoint{BeforeMarkerRename,AfterMarkerRename,AfterCheckpointRename,}" &&
+      compactRust(processDeathRuntimeTest).includes(
+        "enumExpectedRestart{PriorClean,Partial,Active,}",
+      ) &&
+      compactRust(cleanProcessDeathRuntimeTest).includes(
+        "enumExpectedRestart{PriorActive,Partial,FullClean,}",
+      ) &&
+      hasOrderedCompactMarkers(processDeathCommit, [
+        "run_pair_process_death_cutpoint_for_test(TestPairProcessDeathCutpoint::BeforeMarkerRename)",
+        "letmarker_rename=rename_staged_pair_file(&writer,&marker)",
+        "run_pair_process_death_cutpoint_for_test(TestPairProcessDeathCutpoint::AfterMarkerRename)",
+        "cleanup_staged_handle(&mutwriter,Some(marker.handle),false)",
+        "letmarker_confirmation=observe_pair_leaf(&mutwriter,PairLeaf::MarkerFinal)",
+        "letcheckpoint_rename=rename_staged_pair_file(&writer,&checkpoint)",
+        "run_pair_process_death_cutpoint_for_test(TestPairProcessDeathCutpoint::AfterCheckpointRename)",
+        "cleanup_staged_handle(&mutwriter,Some(checkpoint.handle),false)",
+        "letcheckpoint_confirmation=observe_pair_leaf(&mutwriter,PairLeaf::CheckpointFinal)",
+      ]) &&
+      hasOrderedCompactMarkers(processDeathHookRunner, [
+        "letoperation=TEST_PAIR_PROCESS_DEATH_CUTPOINT.with(|slot|",
+        ".is_some_and(|(expected,_operation)|*expected==actual)",
+        "slot.take().map(|(_expected,operation)|operation)",
+        "else{None}",
+        "ifletSome(operation)=operation{operation();}",
+      ]) &&
+      testsSource.includes(
+        "const CHILD_PAIR_RECORD_HEX_CHARS: usize = FIXED_RUN_STATE_RECORD_BYTES * 2;",
+      ) &&
+      processDeathEncoder.includes('b"0123456789abcdef"') &&
+      compactRust(processDeathEncoder).includes(
+        "String::with_capacity(CHILD_PAIR_RECORD_HEX_CHARS)",
+      ) &&
+      compactRust(processDeathDecoder).includes(
+        "ifvalue.len()!=CHILD_PAIR_RECORD_HEX_CHARS||!value.is_ascii()",
+      ) &&
+      processDeathDecoder.includes("b'0'..=b'9'") &&
+      processDeathDecoder.includes("b'a'..=b'f'") &&
+      !processDeathDecoder.includes("b'A'..=b'F'") &&
+      compactRust(processDeathCommand).includes(".env_clear()") &&
+      hasOrderedCompactMarkers(processDeathSpawn, [
+        "Self::command(CHILD_MODE_PAIR_PROCESS_DEATH,base,event_name)?",
+        ".env(CHILD_PAIR_CUTPOINT_ENV,cutpoint.child_value())",
+        ".env(CHILD_PAIR_MARKER_ENV,encode_child_pair_record(candidate.marker()),)",
+        ".env(CHILD_PAIR_CHECKPOINT_ENV,encode_child_pair_record(candidate.checkpoint()),)",
+        "Self::spawn_command(command)",
+      ]) &&
+      hasOrderedCompactMarkers(processDeathChild, [
+        "RuntimePairProcessDeathCutpoint::from_child_value(&cutpoint_value)?",
+        "child_pair_record_from_env(CHILD_PAIR_MARKER_ENV)?",
+        "child_pair_record_from_env(CHILD_PAIR_CHECKPOINT_ENV)?",
+        "acquire_for_test(root)?",
+        "inject_pair_process_death_cutpoint_for_test(cutpoint.sys_cutpoint(),move||",
+        "!sys::pair_process_death_cutpoint_is_armed_for_test()",
+        "signal_child_ready(&hook_event_name)",
+        "std::thread::park()",
+        "observed.compare_and_replace(candidate)",
+      ]) &&
+      hasOrderedCompactMarkers(processDeathParent, [
+        "assert_exact_pair_and_no_temps(fixture,prior)?",
+        "ChildProcessGuard::spawn_pair_process_death",
+        "event.wait_ready_while_child_running(&mutchild)?",
+        "expect_before_lock_contention(root)?",
+        "child.force_exit_and_wait()?",
+        "after_installation_identities==installation_identities",
+        "RuntimePairProcessDeathCutpoint::BeforeMarkerRename=>",
+        "assert_pair_record(&paths[0],prior.marker())?",
+        "assert_pair_record(&paths[1],candidate.marker())?",
+        "assert_pair_record(&paths[2],prior.checkpoint())?",
+        "assert_pair_record(&paths[3],candidate.checkpoint())?",
+        "marker_identity==prior_marker_identity&&checkpoint_identity==prior_checkpoint_identity",
+        "require_distinct_pair_identities(&[marker_identity,marker_temp_identity,checkpoint_identity,checkpoint_temp_identity,])?",
+        "RuntimePairProcessDeathCutpoint::AfterMarkerRename=>",
+        "assert_pair_record(&paths[0],candidate.marker())?",
+        "assert_pair_missing(&paths[1])?",
+        "assert_pair_record(&paths[2],prior.checkpoint())?",
+        "assert_pair_record(&paths[3],candidate.checkpoint())?",
+        "marker_identity!=prior_marker_identity&&checkpoint_identity==prior_checkpoint_identity",
+        "require_distinct_pair_identities(&[marker_identity,checkpoint_identity,checkpoint_temp_identity,])?",
+        "RuntimePairProcessDeathCutpoint::AfterCheckpointRename=>",
+        "assert_pair_record(&paths[0],candidate.marker())?",
+        "assert_pair_missing(&paths[1])?",
+        "assert_pair_record(&paths[2],candidate.checkpoint())?",
+        "assert_pair_missing(&paths[3])?",
+        "marker_identity!=prior_marker_identity&&checkpoint_identity!=prior_checkpoint_identity",
+        "require_distinct_pair_identities(&[marker_identity,checkpoint_identity])?",
+        "event.close_checked()?",
+        "reacquire_after_confirmed_exit_before_deadline(fixture)?",
+      ]) &&
+      hasOrderedCompactMarkers(processDeathRuntimeTest, [
+        "RuntimePairProcessDeathCutpoint::BeforeMarkerRename",
+        "ExpectedRestart::PriorClean",
+        "RuntimePairProcessDeathCutpoint::AfterMarkerRename",
+        "ExpectedRestart::Partial",
+        "RuntimePairProcessDeathCutpoint::AfterCheckpointRename",
+        "ExpectedRestart::Active",
+        "retire_reason_neutral(prepared.into_retirement())?",
+        "fixture.force_process_death_during_pair_commit(cutpoint,candidate)?",
+        "start_windows_runtime(writer,installation,&key)",
+        "(ExpectedRestart::PriorClean,Ok(boot))",
+        "retire_reason_neutral(boot.into_retirement())?",
+        "assert_eq!(generation,1)",
+        "(ExpectedRestart::Partial,Err(WindowsRuntimeStartFailure::Terminal(failure)))",
+        "retire_checked(failure)?",
+        "assert_eq!(reason,RecoveryRequired::HighWaterDrift)",
+        "assert_eq!(platform_cause,None)",
+        "(ExpectedRestart::Active,Err(WindowsRuntimeStartFailure::Terminal(failure)))",
+        "retire_checked(failure)?",
+        "assert_eq!(reason,RecoveryRequired::PersistedNonCleanState)",
+        "assert_eq!(platform_cause,None)",
+        "fixture.assert_exact_pair_and_no_temps_for_test(expected_pair)?",
+        "fixture.cleanup_checked()?",
+      ]) &&
+      hasOrderedCompactMarkers(cleanProcessDeathRuntimeTest, [
+        "RuntimePairProcessDeathCutpoint::BeforeMarkerRename",
+        "ExpectedRestart::PriorActive",
+        "RuntimePairProcessDeathCutpoint::AfterMarkerRename",
+        "ExpectedRestart::Partial",
+        "RuntimePairProcessDeathCutpoint::AfterCheckpointRename",
+        "ExpectedRestart::FullClean",
+        "exact_active(&fixture,installation,&key)?",
+        "logical.prepare_clean(active_key)",
+        "letprior_generation=prepared.prior.marker.generation.get()",
+        "letcandidate_generation=prepared.successor.marker.generation.get()",
+        "retire_reason_neutral(WindowsRetirementPending::new(prepared.into_writer_exit(),WindowsTerminalPair::Observed(pair),active_key,))?",
+        "assert_eq!(prior_generation,2)",
+        "assert_eq!(candidate_generation,3)",
+        "fixture.force_process_death_during_pair_commit(cutpoint,candidate)?",
+        "start_windows_runtime(writer,installation,&key)",
+        "ExpectedRestart::PriorActive",
+        "Err(WindowsRuntimeStartFailure::Terminal(failure))",
+        "retire_checked(failure)?",
+        "assert_eq!(reason,RecoveryRequired::PersistedNonCleanState)",
+        "assert_eq!(platform_cause,None)",
+        "(ExpectedRestart::Partial,Err(WindowsRuntimeStartFailure::Terminal(failure)))",
+        "retire_checked(failure)?",
+        "assert_eq!(reason,RecoveryRequired::HighWaterDrift)",
+        "assert_eq!(platform_cause,None)",
+        "(ExpectedRestart::FullClean,Ok(boot))",
+        "retire_reason_neutral(boot.into_retirement())?",
+        "assert_eq!(generation,3)",
+        "fixture.assert_exact_pair_and_no_temps_for_test(expected_pair)?",
+        "fixture.cleanup_checked()?",
+      ]),
   };
   return (
     Object.values(phaseTwoFCContractGroups).every(Boolean) &&
@@ -12336,10 +12699,10 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
         "implWindowsReleasedNoReceipt<'_>::reason",
         "implWindowsReleasedNoReceipt<'_>::cause",
         "implfmt::DebugforWindowsReleasedNoReceipt<'_>::fmt",
-      "implWindowsPostReleaseTerminal<'_>::reason",
-      "implfmt::DebugforWindowsPostReleaseTerminal<'_>::fmt",
-      "impl<'key>WindowsRetirementFailure<'key>::from_checked",
-      "implfmt::DebugforWindowsRetirementFailure<'_>::fmt",
+        "implWindowsPostReleaseTerminal<'_>::reason",
+        "implfmt::DebugforWindowsPostReleaseTerminal<'_>::fmt",
+        "impl<'key>WindowsRetirementFailure<'key>::from_checked",
+        "implfmt::DebugforWindowsRetirementFailure<'_>::fmt",
       ]) &&
     keyAgentServiceMoveOnlyEvidenceContract(
       runtimeProduction,
@@ -12640,7 +13003,7 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
         .filter(({ name }) => keyAgentServicePhaseTwoFCRootTestNames.includes(name))
         .map(({ name }) => name),
     ) === JSON.stringify(keyAgentServicePhaseTwoFCRootTestNames) &&
-    runtimeTests.length === 12 &&
+    runtimeTests.length === 14 &&
     runtimeTests.every(({ ignored }) => !ignored) &&
     JSON.stringify(runtimeTests.map(({ name }) => name)) ===
       JSON.stringify(keyAgentServicePhaseTwoFCRuntimeTestNames) &&
@@ -12654,7 +13017,7 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
       provisioningTestsInventory.length +
       pairTests.length +
       runtimeTests.length ===
-      77 &&
+      79 &&
     normalizedDesign.length > 0 &&
     designMarkers.every((marker) => normalizedDesign.includes(marker)) &&
     architectureRows.length === 1 &&
@@ -13280,7 +13643,7 @@ const keyAgentServicePhaseTwoGSemanticContract = ({
     windowsTests.every(({ ignored }) => !ignored) &&
     JSON.stringify(runtimeTests.map(({ name }) => name)) ===
       JSON.stringify(keyAgentServicePhaseTwoFCRuntimeTestNames) &&
-    runtimeTests.length === 12 &&
+    runtimeTests.length === 14 &&
     runtimeTests.every(({ ignored }) => !ignored) &&
     JSON.stringify(lifecycleTestsInventory.map(({ name }) => name)) ===
       JSON.stringify(keyAgentServiceLifecycleTestNames) &&
@@ -13297,7 +13660,7 @@ const keyAgentServicePhaseTwoGSemanticContract = ({
       provisioningTestsInventory.length +
       pairTests.length +
       runtimeTests.length ===
-      77 &&
+      79 &&
     designSlice.length > 0 &&
     [
       "sole direct production consumer of `start_windows_runtime`",
@@ -13312,7 +13675,7 @@ const keyAgentServicePhaseTwoGSemanticContract = ({
       "exact first nine cleanup steps",
       "Only `WindowsStopOutcome::Stopped` records writer release",
       "cfg(test)-only consuming",
-      "twelve passing tests",
+      "fourteen passing `windows_runtime` tests",
       "external **STOP-SHIP** obligations",
       "compiled policies stay `None`",
       "silent exit-78 path",
@@ -14126,6 +14489,28 @@ const mutateKeyAgentServicePhaseTwoFCInput = (
     ...keyAgentServicePhaseTwoFCInputs,
     [field]: `${source.slice(0, first)}${replacement}${source.slice(first + search.length)}`,
   };
+};
+const mutateKeyAgentServicePhaseTwoFCRuntimeTest = (
+  testName,
+  search,
+  replacement,
+) => {
+  const source = keyAgentServicePhaseTwoFCInputs.windowsRuntimeSource;
+  const test = rustFunctionBlock(source, testName);
+  if (test === "") return keyAgentServicePhaseTwoFCInputs;
+  try {
+    return {
+      ...keyAgentServicePhaseTwoFCInputs,
+      windowsRuntimeSource: replaceInsideExactRustItem(
+        source,
+        test,
+        search,
+        replacement,
+      ),
+    };
+  } catch {
+    return keyAgentServicePhaseTwoFCInputs;
+  }
 };
 const keyAgentServicePhaseTwoGInputs = Object.freeze({
   ...keyAgentServicePhaseTwoFCInputs,
@@ -14986,6 +15371,129 @@ const keyAgentServicePhaseTwoFCSemanticMutationProbes = [
     "pub(in crate::key_agent_service) struct WindowsBootEvidence<'key> {",
     "#[derive(Clone)]\npub(in crate::key_agent_service) struct WindowsBootEvidence<'key> {",
   ),
+  mutateKeyAgentServicePhaseTwoFCInput(
+    "sysSource",
+    "    #[cfg(test)]\n    run_pair_process_death_cutpoint_for_test(TestPairProcessDeathCutpoint::BeforeMarkerRename);",
+    "    #[cfg(test)]\n    run_pair_process_death_cutpoint_for_test(TestPairProcessDeathCutpoint::AfterMarkerRename);",
+  ),
+  mutateKeyAgentServicePhaseTwoFCInput(
+    "sysSource",
+    "    #[cfg(test)]\n    run_pair_process_death_cutpoint_for_test(TestPairProcessDeathCutpoint::AfterMarkerRename);",
+    "    #[cfg(test)]\n    run_pair_process_death_cutpoint_for_test(TestPairProcessDeathCutpoint::BeforeMarkerRename);",
+  ),
+  mutateKeyAgentServicePhaseTwoFCInput(
+    "sysSource",
+    "    #[cfg(test)]\n    run_pair_process_death_cutpoint_for_test(TestPairProcessDeathCutpoint::AfterCheckpointRename);",
+    "    #[cfg(test)]\n    run_pair_process_death_cutpoint_for_test(TestPairProcessDeathCutpoint::AfterMarkerRename);",
+  ),
+  mutateKeyAgentServicePhaseTwoFCInput(
+    "testsSource",
+    "    if value.len() != CHILD_PAIR_RECORD_HEX_CHARS || !value.is_ascii() {",
+    "    if value.len() < CHILD_PAIR_RECORD_HEX_CHARS || !value.is_ascii() {",
+  ),
+  mutateKeyAgentServicePhaseTwoFCInput(
+    "testsSource",
+    "            b'a'..=b'f' => Ok(nibble - b'a' + 10),",
+    "            b'A'..=b'F' => Ok(nibble - b'A' + 10),",
+  ),
+  mutateKeyAgentServicePhaseTwoFCInput(
+    "testsSource",
+    'const CHILD_PAIR_CUTPOINT_ENV: &str = "YOUR_WALLET_PHASE2E_CHILD_PAIR_CUTPOINT";',
+    'const CHILD_PAIR_CUTPOINT_ENV: &str = "YOUR_WALLET_PHASE2E_CHILD_PAIR_STEP";',
+  ),
+  mutateKeyAgentServicePhaseTwoFCInput(
+    "testsSource",
+    'const CHILD_MODE_PAIR_PROCESS_DEATH: &str = "pair-process-death";',
+    'const CHILD_MODE_PAIR_PROCESS_DEATH: &str = "pair-crash";',
+  ),
+  mutateKeyAgentServicePhaseTwoFCInput(
+    "testsSource",
+    "    event.wait_ready_while_child_running(&mut child)?;\n\n    let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;\n    expect_before_lock_contention(root)?;\n    child.force_exit_and_wait()?;",
+    "    event.wait_ready_while_child_running(&mut child)?;\n\n    let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;\n    child.force_exit_and_wait()?;\n    expect_before_lock_contention(root)?;",
+  ),
+  mutateKeyAgentServicePhaseTwoFCInput(
+    "testsSource",
+    "                marker_identity,\n                marker_temp_identity,\n                checkpoint_identity,\n                checkpoint_temp_identity,",
+    "                marker_identity,\n                checkpoint_identity,",
+  ),
+  mutateKeyAgentServicePhaseTwoFCInput(
+    "testsSource",
+    "                marker_identity != prior_marker_identity\n                    && checkpoint_identity == prior_checkpoint_identity,",
+    "                marker_identity != prior_marker_identity,",
+  ),
+  mutateKeyAgentServicePhaseTwoFCInput(
+    "testsSource",
+    "                marker_identity != prior_marker_identity\n                    && checkpoint_identity != prior_checkpoint_identity,",
+    "                marker_identity != prior_marker_identity,",
+  ),
+  mutateKeyAgentServicePhaseTwoFCInput(
+    "testsSource",
+    "    Ok(reacquire_after_confirmed_exit_before_deadline(fixture)?)",
+    "    Err(std::io::Error::other(\"bounded reacquisition was skipped\").into())",
+  ),
+  mutateKeyAgentServicePhaseTwoFCRuntimeTest(
+    "kernel_process_death_restart_boots_only_prior_clean_and_rejects_partial_or_active",
+    "                    assert_eq!(reason, RecoveryRequired::HighWaterDrift);",
+    "                    assert_eq!(reason, RecoveryRequired::PersistedNonCleanState);",
+  ),
+  mutateKeyAgentServicePhaseTwoFCRuntimeTest(
+    "kernel_process_death_restart_boots_only_prior_clean_and_rejects_partial_or_active",
+    "                    assert_eq!(reason, RecoveryRequired::PersistedNonCleanState);",
+    "                    assert_eq!(reason, RecoveryRequired::HighWaterDrift);",
+  ),
+  mutateKeyAgentServicePhaseTwoFCRuntimeTest(
+    "kernel_process_death_restart_boots_only_full_clean_and_rejects_prior_active_or_partial",
+    "                    assert_eq!(reason, RecoveryRequired::PersistedNonCleanState);",
+    "                    assert_eq!(reason, RecoveryRequired::HighWaterDrift);",
+  ),
+  mutateKeyAgentServicePhaseTwoFCRuntimeTest(
+    "kernel_process_death_restart_boots_only_full_clean_and_rejects_prior_active_or_partial",
+    "                    assert_eq!(reason, RecoveryRequired::HighWaterDrift);",
+    "                    assert_eq!(reason, RecoveryRequired::PersistedNonCleanState);",
+  ),
+  mutateKeyAgentServicePhaseTwoFCRuntimeTest(
+    "kernel_process_death_restart_boots_only_full_clean_and_rejects_prior_active_or_partial",
+    "                    assert_eq!(generation, 3);",
+    "                    assert_eq!(generation, 2);",
+  ),
+  mutateKeyAgentServicePhaseTwoFCInput(
+    "windowsRuntimeSource",
+    "kernel_process_death_restart_boots_only_full_clean_and_rejects_prior_active_or_partial",
+    "kernel_process_death_restart_accepts_partial_clean",
+  ),
+  mutateKeyAgentServicePhaseTwoFCRuntimeTest(
+    "kernel_process_death_restart_boots_only_prior_clean_and_rejects_partial_or_active",
+    "                    assert_eq!(reason, RecoveryRequired::HighWaterDrift);\n                    assert_eq!(platform_cause, None);",
+    "                    assert_eq!(reason, RecoveryRequired::HighWaterDrift);\n                    assert!(platform_cause.is_some());",
+  ),
+  mutateKeyAgentServicePhaseTwoFCRuntimeTest(
+    "kernel_process_death_restart_boots_only_prior_clean_and_rejects_partial_or_active",
+    "                    assert_eq!(reason, RecoveryRequired::PersistedNonCleanState);\n                    assert_eq!(platform_cause, None);",
+    "                    assert_eq!(reason, RecoveryRequired::PersistedNonCleanState);\n                    assert!(platform_cause.is_some());",
+  ),
+  mutateKeyAgentServicePhaseTwoFCRuntimeTest(
+    "kernel_process_death_restart_boots_only_full_clean_and_rejects_prior_active_or_partial",
+    "                    assert_eq!(reason, RecoveryRequired::PersistedNonCleanState);\n                    assert_eq!(platform_cause, None);",
+    "                    assert_eq!(reason, RecoveryRequired::PersistedNonCleanState);\n                    assert!(platform_cause.is_some());",
+  ),
+  mutateKeyAgentServicePhaseTwoFCRuntimeTest(
+    "kernel_process_death_restart_boots_only_full_clean_and_rejects_prior_active_or_partial",
+    "                    assert_eq!(reason, RecoveryRequired::HighWaterDrift);\n                    assert_eq!(platform_cause, None);",
+    "                    assert_eq!(reason, RecoveryRequired::HighWaterDrift);\n                    assert!(platform_cause.is_some());",
+  ),
+  mutateKeyAgentServicePhaseTwoFCInput(
+    "designDocument",
+    "limited to forced child-process termination and reopen on the\ncurrent Windows",
+    "evidence for power-loss, reboot, and storage recovery on every Windows",
+  ),
+  {
+    ...keyAgentServicePhaseTwoFCInputs,
+    rootSource: `${keyAgentServicePhaseTwoFCInputs.rootSource}\nfn leaked_process_death_facade(_: RuntimePairProcessDeathCutpoint) {}\n`,
+  },
+  {
+    ...keyAgentServicePhaseTwoFCInputs,
+    sysSource: `${keyAgentServicePhaseTwoFCInputs.sysSource}\nconst LEAKED_PROCESS_DEATH_ENV: &str = "YOUR_WALLET_PHASE2E_CHILD_PAIR_CUTPOINT";\n`,
+  },
 ];
 const keyAgentServicePhaseTwoFCPinMutationProbes = [
   mutateKeyAgentServicePhaseTwoFCInput(
@@ -15495,7 +16003,7 @@ requireInvariant(
 );
 requireInvariant(
   keyAgentServicePhaseTwoFCSemanticBaseResult &&
-    keyAgentServicePhaseTwoFCSemanticMutationProbes.length === 52 &&
+    keyAgentServicePhaseTwoFCSemanticMutationProbes.length === 77 &&
     keyAgentServicePhaseTwoFCSemanticMutationResults.every(
       ({ changed, rejected }) => changed && rejected,
     ) &&
@@ -15504,7 +16012,7 @@ requireInvariant(
     keyAgentServicePhaseTwoFCPinMutationResults.every(
       ({ changed, rejected }) => changed && rejected,
     ),
-  `the separate Phase 2F-c dormant Windows logical/OS runtime composite must remain production-compiled, Windows-only, module-private, safe-only, move-only, and free of raw/type-erased authority escape; allocate a unique nonzero checked backend binding after writer acquisition; observe before authenticating exact Clean; preserve exact Active/Clean commit, reread/reload, stop, pair-bound release, no-receipt ambiguity, and checked terminal-retirement order; retain exact pair handles and full IDs/lengths/bytes through low-level release; map writer-retained versus writer-released failures exactly across sys/root/codec; carry fresh full-ID snapshots into each next CAS; admit only the separately gated private Phase 2G direct caller and expose no other direct/aliased caller, protected/TPM key provider, expected-authority source, retry API, stopped/receipt forgery, or policy activation; preserve exact 56-root, 12-composite, six-pair-child, and 77 aggregate inventories, external STOP-SHIP limits, exit 78, 52 independently effective semantic mutations, and two independent full-versus-cfg(test) source-pin mutations; semantic base=${keyAgentServicePhaseTwoFCSemanticBaseResult}, pin base=${keyAgentServicePhaseTwoFCPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoFCSemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFCSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, pin probe count=${keyAgentServicePhaseTwoFCPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFCPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
+  `the separate Phase 2F-c dormant Windows logical/OS runtime composite must remain production-compiled, Windows-only, module-private, safe-only, move-only, and free of raw/type-erased authority escape; allocate a unique nonzero checked backend binding after writer acquisition; observe before authenticating exact Clean; preserve exact Active/Clean commit, reread/reload, stop, pair-bound release, no-receipt ambiguity, and checked terminal-retirement order; retain exact pair handles and full IDs/lengths/bytes through low-level release; preserve three exact cfg(test)-only process-death hook positions while projecting all three inline statements out of production; require the strict private 296-character lowercase-hex child transport, run-lock contention before forced exit, exact byte/temp/full-ID matrices, bounded reacquisition, and fresh Clean-to-Active plus Active-to-Clean runtime classifications with no platform cause and checked retirement; claim current-host process termination and reopen only, never power-loss, reboot, torn-sector/storage durability, or pair atomicity; map writer-retained versus writer-released failures exactly across sys/root/codec; carry fresh full-ID snapshots into each next CAS; admit only the separately gated private Phase 2G direct caller and expose no other direct/aliased caller, protected/TPM key provider, expected-authority source, retry API, stopped/receipt forgery, policy activation, or process-death test residue; preserve exact 56-root, 14-composite, six-pair-child, and 79 aggregate inventories, external STOP-SHIP limits, exit 78, 77 independently effective semantic mutations, and two independent full-versus-cfg(test) source-pin mutations; semantic base=${keyAgentServicePhaseTwoFCSemanticBaseResult}, pin base=${keyAgentServicePhaseTwoFCPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoFCSemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFCSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, pin probe count=${keyAgentServicePhaseTwoFCPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFCPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
 );
 requireInvariant(
   keyAgentServicePhaseTwoGSemanticBaseResult &&
@@ -15517,7 +16025,7 @@ requireInvariant(
     keyAgentServicePhaseTwoGPinMutationResults.every(
       ({ changed, rejected }) => changed && rejected,
     ),
-  `the separate Phase 2G dormant Windows no-secret lifecycle compositor must preserve exact private type/function/facade surfaces, its sole direct internal Phase 2F-c caller edge and zero top-level caller, cause-neutral checked retirement, fresh-versus-carried Active checklist authority, listener-to-SCM-to-admission ordering, RuntimePolicy-only bounds and cleanup, exact Clean/reload/release/stopped classification, irreversible silent-78 evidence, test-only post-release fault isolation, safe move-only redacted authority, fixed 21-core/12-compositor/12-runtime/77-durable/56-root inventories, explicit external STOP-SHIP limits, disabled policies, no release-readiness claim, 46 independently effective semantic mutations, and three full/production/test source-pin mutations; semantic base=${keyAgentServicePhaseTwoGSemanticBaseResult}, pin base=${keyAgentServicePhaseTwoGPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoGSemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, pin probe count=${keyAgentServicePhaseTwoGPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
+  `the separate Phase 2G dormant Windows no-secret lifecycle compositor must preserve exact private type/function/facade surfaces, its sole direct internal Phase 2F-c caller edge and zero top-level caller, cause-neutral checked retirement, fresh-versus-carried Active checklist authority, listener-to-SCM-to-admission ordering, RuntimePolicy-only bounds and cleanup, exact Clean/reload/release/stopped classification, irreversible silent-78 evidence, test-only post-release fault isolation, safe move-only redacted authority, fixed 21-core/12-compositor/14-runtime/79-durable/56-root inventories, explicit external STOP-SHIP limits, disabled policies, no release-readiness claim, 46 independently effective semantic mutations, and three full/production/test source-pin mutations; semantic base=${keyAgentServicePhaseTwoGSemanticBaseResult}, pin base=${keyAgentServicePhaseTwoGPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoGSemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, pin probe count=${keyAgentServicePhaseTwoGPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
 );
 requireInvariant(
   keyAgentServicePhaseTwoEPinBaseResult &&
@@ -24924,14 +25432,14 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate has two deliberately different surfaces.",
-    sha256: "4f80d63e20dec69e7c3c5cd0757611d1666eb94e87dcdee7315998ecf58a3590",
+    sha256: "81bd42d831a5c8585843f8cd92134e070cf88a8e131c929dd5268097d392009a",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes a safe platform-neutral gate-byte",
-    sha256: "fe58538e21c95d35b0069f5035a3419e0a78d33ba27c9bb5b1d0deb0956f033b",
+    sha256: "7bc2f171a47fa1183f6ecfb4121eec6a8d8f8fc588093774e189f15319c0d4d4",
   },
   {
     path: "docs/security-decisions.md",
@@ -33852,7 +34360,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "72f80911f9f427a251002547fdd0e0b5e3fd1a3c5a6b542c9cad4eef85f3afca";
+  "c2950d2e24bd91743265fdddd6d92e4bfa1e468fa0e3ba3dbe339ac7823e483d";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -55122,7 +55630,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service/run_state_root/sys.rs",
     unsafeCount: 70,
-    sha256: "0b291a73940524e8c075b8d339ee6087852a434bc16bace5b79a4ad3c7f05ec8",
+    sha256: "2733d00871a0a750dbae60f7359f41d67679e79c4b0289b59f74bf1b1998960c",
   },
   {
     path: "crates/platform-windows/src/key_agent_storage.rs",
@@ -63259,7 +63767,7 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "crates/platform-windows/README.md":
     "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
   "docs/architecture.md":
-    "4f80d63e20dec69e7c3c5cd0757611d1666eb94e87dcdee7315998ecf58a3590",
+    "81bd42d831a5c8585843f8cd92134e070cf88a8e131c929dd5268097d392009a",
   "docs/protocol-contract.md":
     "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "docs/security-decisions.md":
@@ -69128,7 +69636,7 @@ const currentDebuggerExitDocumentationContract = (documents) =>
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
   "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
-  "4f80d63e20dec69e7c3c5cd0757611d1666eb94e87dcdee7315998ecf58a3590",
+  "81bd42d831a5c8585843f8cd92134e070cf88a8e131c929dd5268097d392009a",
   "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "d36a5e3cb2544598cf8e1a97a8ff3a19a1a561dd5161d5cd3369be3fe4716656",
 ]);
@@ -79010,13 +79518,13 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "docs/architecture.md",
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
-    sha256: "4f80d63e20dec69e7c3c5cd0757611d1666eb94e87dcdee7315998ecf58a3590",
+    sha256: "81bd42d831a5c8585843f8cd92134e070cf88a8e131c929dd5268097d392009a",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
-    sha256: "fe58538e21c95d35b0069f5035a3419e0a78d33ba27c9bb5b1d0deb0956f033b",
+    sha256: "7bc2f171a47fa1183f6ecfb4121eec6a8d8f8fc588093774e189f15319c0d4d4",
   },
   {
     path: "docs/security-decisions.md",

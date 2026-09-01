@@ -1745,6 +1745,49 @@ reload-required composite state exposes a consuming reason-neutral
 durable-internal compatibility only and are absent from the Phase 2G facade.
 No state can drop one authority and continue with the other.
 
+Current-host forced-process-death evidence is isolated behind a private
+`cfg(test)` facade and exercises exactly three production-order cutpoints:
+before marker rename, after marker rename succeeds but before its handle cleanup
+and confirmation, and after checkpoint rename succeeds but before its handle
+cleanup and confirmation. The child receives each 148-byte candidate record
+only through an environment-cleared, private transport that accepts exactly 296
+ASCII lowercase-hex characters; wrong length, non-ASCII, uppercase, and every
+non-hex character fail closed. The child reconstructs the existing current-user
+fixture installation-object identities, acquires `run.lock`, stages the fixed
+pair, signals one named event only after consuming the selected hook, and then
+parks. Before killing the child, the parent proves that a second writer sees
+exact run-lock
+contention. It then force-terminates and waits for the child, confirms that the
+root/lock/state installation identities did not change, and checks exact bytes,
+temporary-leaf presence, and complete file identities:
+
+- before marker rename, both prior finals remain at their prior identities and
+  both candidate temps exist, with all four file identities distinct;
+- after marker rename, the candidate marker is the new final identity and its
+  temp is absent, while the prior checkpoint retains its identity and the
+  distinct candidate checkpoint temp remains; and
+- after checkpoint rename, both candidate finals have new distinct identities
+  and both temps are absent.
+
+Only after those physical checks does the parent perform bounded writer
+reacquisition. A fresh composite runtime started from that returned writer
+boots the prior authenticated Clean generation 1 only at the pre-marker
+cutpoint. The marker-only pair is root-level exact/exact but is rejected by the
+authenticated runtime as `HighWaterDrift`; the fully replaced candidate Active
+pair is rejected as `PersistedNonCleanState`. Both terminal classifications
+carry no platform cause and complete checked retirement, while the prior-Clean
+Boot takes the reason-neutral retirement path. The same three cutpoints are
+also exercised from authenticated Active generation 2 toward Clean generation
+3: the pre-marker prior Active generation 2 is `PersistedNonCleanState`, the
+Clean marker with the prior Active checkpoint is `HighWaterDrift`, and the fully
+replaced Clean candidate boots generation 3. Both rejection cases again carry
+no platform cause and complete checked retirement; full Clean Boot takes the
+reason-neutral retirement path. Every case in both transition directions
+finishes by proving the exact expected final pair and no temps. This evidence
+is deliberately limited to forced child-process termination and reopen on the
+current Windows host. It does not prove power-loss or reboot behavior,
+torn-sector or storage durability, or atomicity of the two-file pair.
+
 Normal stop first compares the held OS observation with the logical Clean bytes,
 then prepares and begins the logical release, and only then attempts the
 pair-bound OS release. That low-level release revalidates the writer, reopens and
@@ -1767,8 +1810,10 @@ retirement, logical release-receipt latch, then logical completion. Every error
 suppresses both normal and recovery receipts. Composite states and receipts are
 move-only and their Debug views redact authority; the production composite has
 no `unsafe`, native handle type, ownership cast, or generic type-erasure site.
-The exact composite inventory is twelve passing tests:
+The exact composite inventory is fourteen passing tests:
 `kernel_clean_boot_active_clean_stop_is_exact`,
+`kernel_process_death_restart_boots_only_prior_clean_and_rejects_partial_or_active`,
+`kernel_process_death_restart_boots_only_full_clean_and_rejects_prior_active_or_partial`,
 `kernel_missing_pair_is_terminal_and_checked_retired`,
 `kernel_wrong_key_and_nonclean_pairs_never_boot`,
 `kernel_active_ambiguity_reload_classifies_prior_candidate_and_partial`,
@@ -1780,8 +1825,8 @@ The exact composite inventory is twelve passing tests:
 `kernel_live_and_reload_states_have_checked_terminal_retirement`,
 `composite_authority_and_receipts_are_move_only`, and
 `composite_live_states_expose_consuming_terminal_transitions`. The focused
-`durable_run_state` module inventory is 77/77 passing: 34 parent tests plus 25
-provisioning, six `windows_pair`, and twelve `windows_runtime` tests. The named
+`durable_run_state` module inventory is 79/79 passing: 34 parent tests plus 25
+provisioning, six `windows_pair`, and fourteen `windows_runtime` tests. The named
 pair and composite slices are therefore subsets of that module total, not
 additional disjoint counts. The kernel run-state-root suite is 56 total, with
 54 passing and the same two
@@ -1864,7 +1909,7 @@ escape. The exact compositor inventory is twelve passing tests:
 `post_release_logical_failure_is_irreversible_exit78_and_never_stopped`,
 `retirement_fault_preserves_original_lifecycle_and_platform_cleanup_causes`, and
 `debug_and_source_surfaces_are_redacted_silent_and_path_handle_free`. The
-supporting evidence is also twelve passing `windows_runtime` tests, 77/77
+supporting evidence is also fourteen passing `windows_runtime` tests, 79/79
 focused `durable_run_state` tests, and the 56-test kernel root suite with 54
 passing and the same two environment-dependent tests ignored.
 
@@ -1967,6 +2012,13 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-09-01 - Added current-host forced child-process termination evidence at
+  the three exact fixed-pair rename cutpoints. A private strict lowercase-hex
+  child transport, pre-kill run-lock contention, exact byte/temp/full-identity
+  matrices, bounded reacquisition, fresh Clean-to-Active and Active-to-Clean
+  runtime classification, and checked retirement now cover process death and
+  reopen. This does not claim power-loss,
+  reboot, torn-sector/storage durability, or pair atomicity.
 - 2026-09-01 - Added the dormant Phase 2G Windows no-secret lifecycle
   compositor. It is the sole private production consumer of the Phase 2F-c
   entry while remaining unreachable from executables, keeps policy causes

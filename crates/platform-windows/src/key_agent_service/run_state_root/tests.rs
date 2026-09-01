@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_SHARING_VIOLATION, ERROR_SUCCESS,
     GENERIC_WRITE, GetLastError, HANDLE, HLOCAL, LocalFree, SetLastError, WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
 };
 use windows::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1, SE_FILE_OBJECT,
@@ -59,8 +60,13 @@ const CHILD_TEST_NAME: &str =
 const CHILD_MODE_ENV: &str = "YOUR_WALLET_PHASE2E_CHILD_MODE";
 const CHILD_BASE_ENV: &str = "YOUR_WALLET_PHASE2E_CHILD_BASE";
 const CHILD_EVENT_ENV: &str = "YOUR_WALLET_PHASE2E_CHILD_EVENT";
+const CHILD_PAIR_CUTPOINT_ENV: &str = "YOUR_WALLET_PHASE2E_CHILD_PAIR_CUTPOINT";
+const CHILD_PAIR_MARKER_ENV: &str = "YOUR_WALLET_PHASE2E_CHILD_PAIR_MARKER";
+const CHILD_PAIR_CHECKPOINT_ENV: &str = "YOUR_WALLET_PHASE2E_CHILD_PAIR_CHECKPOINT";
 const CHILD_MODE_HOLD: &str = "hold";
 const CHILD_MODE_SENTINEL: &str = "sentinel";
+const CHILD_MODE_PAIR_PROCESS_DEATH: &str = "pair-process-death";
+const CHILD_PAIR_RECORD_HEX_CHARS: usize = FIXED_RUN_STATE_RECORD_BYTES * 2;
 const CHILD_READY_TIMEOUT_MS: u32 = 30_000;
 const CHILD_EXIT_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCK_REACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -254,6 +260,44 @@ impl NamedTestEvent {
         Ok(())
     }
 
+    fn wait_ready_while_child_running(&self, child: &mut ChildProcessGuard) -> TestResult {
+        let deadline = Instant::now() + Duration::from_millis(u64::from(CHILD_READY_TIMEOUT_MS));
+        loop {
+            // SAFETY: the event remains live and zero-time polling never
+            // transfers or consumes its non-inheritable handle.
+            let wait = unsafe { WaitForSingleObject(self.handle.raw()?, 0) };
+            if wait == WAIT_OBJECT_0 {
+                if child.has_exited()? {
+                    return Err(std::io::Error::other(
+                        "pair process-death child exited after signaling its cutpoint",
+                    )
+                    .into());
+                }
+                return Ok(());
+            }
+            if wait != WAIT_TIMEOUT {
+                return Err(std::io::Error::other(format!(
+                    "child cutpoint event wait failed with status {}",
+                    wait.0
+                ))
+                .into());
+            }
+            if child.has_exited()? {
+                return Err(std::io::Error::other(
+                    "pair process-death child exited before signaling its cutpoint",
+                )
+                .into());
+            }
+            if Instant::now() >= deadline {
+                return Err(std::io::Error::other(
+                    "pair process-death child did not reach its cutpoint before the deadline",
+                )
+                .into());
+            }
+            std::thread::sleep(PROCESS_POLL_INTERVAL);
+        }
+    }
+
     fn close_checked(mut self) -> TestResult {
         self.handle.close_checked()?;
         Ok(())
@@ -263,9 +307,10 @@ impl NamedTestEvent {
 struct ChildProcessGuard(Option<Child>);
 
 impl ChildProcessGuard {
-    fn spawn(mode: &'static str, base: &Path, event_name: &str) -> TestResultWith<Self> {
+    fn command(mode: &'static str, base: &Path, event_name: &str) -> TestResultWith<Command> {
         let executable = std::env::current_exe()?;
-        let child = Command::new(executable)
+        let mut command = Command::new(executable);
+        command
             .arg(CHILD_TEST_NAME)
             .arg("--exact")
             .arg("--ignored")
@@ -276,12 +321,55 @@ impl ChildProcessGuard {
             .env(CHILD_EVENT_ENV, event_name)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| {
-                std::io::Error::new(error.kind(), "Phase 2E child process launch failed")
-            })?;
+            .stderr(Stdio::null());
+        Ok(command)
+    }
+
+    fn spawn_command(mut command: Command) -> TestResultWith<Self> {
+        let child = command.spawn().map_err(|error| {
+            std::io::Error::new(error.kind(), "Phase 2E child process launch failed")
+        })?;
         Ok(Self(Some(child)))
+    }
+
+    fn spawn(mode: &'static str, base: &Path, event_name: &str) -> TestResultWith<Self> {
+        Self::spawn_command(Self::command(mode, base, event_name)?)
+    }
+
+    #[allow(clippy::large_types_passed_by_value)] // Exact pair stays opaque across child setup.
+    fn spawn_pair_process_death(
+        base: &Path,
+        event_name: &str,
+        cutpoint: RuntimePairProcessDeathCutpoint,
+        candidate: ExactFixedRunStatePair,
+    ) -> TestResultWith<Self> {
+        let mut command = Self::command(CHILD_MODE_PAIR_PROCESS_DEATH, base, event_name)?;
+        command
+            .env(CHILD_PAIR_CUTPOINT_ENV, cutpoint.child_value())
+            .env(
+                CHILD_PAIR_MARKER_ENV,
+                encode_child_pair_record(candidate.marker()),
+            )
+            .env(
+                CHILD_PAIR_CHECKPOINT_ENV,
+                encode_child_pair_record(candidate.checkpoint()),
+            );
+        Self::spawn_command(command)
+    }
+
+    fn has_exited(&mut self) -> TestResultWith<bool> {
+        let child = self
+            .0
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("child process is absent"))?;
+        let exited = child
+            .try_wait()
+            .map_err(|error| std::io::Error::new(error.kind(), "Phase 2E child exit query failed"))?
+            .is_some();
+        if exited {
+            let _closed = self.0.take();
+        }
+        Ok(exited)
     }
 
     fn force_exit_and_wait(mut self) -> TestResult {
@@ -568,6 +656,44 @@ pub(in crate::key_agent_service) enum RuntimePairFault {
     CheckpointFinalClose,
 }
 
+/// Opaque semantic cutpoints for current-host process-death evidence. The
+/// low-level test hook and all path, identity, event, and child-process state
+/// remain private to this module.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::enum_variant_names)] // Exact names mirror the two-record protocol.
+pub(in crate::key_agent_service) enum RuntimePairProcessDeathCutpoint {
+    BeforeMarkerRename,
+    AfterMarkerRename,
+    AfterCheckpointRename,
+}
+
+impl RuntimePairProcessDeathCutpoint {
+    const fn child_value(self) -> &'static str {
+        match self {
+            Self::BeforeMarkerRename => "before-marker-rename",
+            Self::AfterMarkerRename => "after-marker-rename",
+            Self::AfterCheckpointRename => "after-checkpoint-rename",
+        }
+    }
+
+    fn from_child_value(value: &str) -> TestResultWith<Self> {
+        match value {
+            "before-marker-rename" => Ok(Self::BeforeMarkerRename),
+            "after-marker-rename" => Ok(Self::AfterMarkerRename),
+            "after-checkpoint-rename" => Ok(Self::AfterCheckpointRename),
+            _ => Err(std::io::Error::other("child pair cutpoint is invalid").into()),
+        }
+    }
+
+    const fn sys_cutpoint(self) -> sys::TestPairProcessDeathCutpoint {
+        match self {
+            Self::BeforeMarkerRename => sys::TestPairProcessDeathCutpoint::BeforeMarkerRename,
+            Self::AfterMarkerRename => sys::TestPairProcessDeathCutpoint::AfterMarkerRename,
+            Self::AfterCheckpointRename => sys::TestPairProcessDeathCutpoint::AfterCheckpointRename,
+        }
+    }
+}
+
 impl RuntimePairFixture {
     pub(in crate::key_agent_service) fn new() -> Result<Self, Box<dyn std::error::Error>> {
         InstalledFixture::new().map(|inner| Self { inner })
@@ -604,6 +730,23 @@ impl RuntimePairFixture {
                 sys::inject_close_fault_for_test(sys::TestCloseFault::PairCheckpointFinal);
             }
         }
+    }
+
+    #[allow(clippy::large_types_passed_by_value)] // Mirrors the consuming production facade.
+    pub(in crate::key_agent_service) fn force_process_death_during_pair_commit(
+        &self,
+        cutpoint: RuntimePairProcessDeathCutpoint,
+        candidate: ExactFixedRunStatePair,
+    ) -> TestResultWith<HeldServiceRunStateWriter> {
+        force_process_death_during_pair_commit(&self.inner, cutpoint, candidate)
+    }
+
+    #[allow(clippy::large_types_passed_by_value)] // Exact test evidence stays inline and opaque.
+    pub(in crate::key_agent_service) fn assert_exact_pair_and_no_temps_for_test(
+        &self,
+        expected: ExactFixedRunStatePair,
+    ) -> TestResult {
+        assert_exact_pair_and_no_temps(&self.inner, expected)
     }
 
     pub(in crate::key_agent_service) fn cleanup_checked(
@@ -1175,6 +1318,53 @@ fn pair_paths(base: &Path) -> [PathBuf; 4] {
     sys::pair_leaf_names_for_test().map(|leaf| state.join(leaf))
 }
 
+fn require_pair_test_evidence(condition: bool, message: &'static str) -> TestResult {
+    if condition {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(message).into())
+    }
+}
+
+fn read_exact_pair_record(path: &Path) -> TestResultWith<[u8; FIXED_RUN_STATE_RECORD_BYTES]> {
+    let bytes = fs::read(path)?;
+    bytes.try_into().map_err(|_| {
+        std::io::Error::other("pair record does not have the exact fixed length").into()
+    })
+}
+
+fn assert_pair_record(path: &Path, expected: &[u8; FIXED_RUN_STATE_RECORD_BYTES]) -> TestResult {
+    require_pair_test_evidence(
+        read_exact_pair_record(path)? == *expected,
+        "pair record bytes did not match the expected fixed record",
+    )
+}
+
+fn assert_pair_missing(path: &Path) -> TestResult {
+    require_pair_test_evidence(
+        !path.try_exists()?,
+        "pair record expected to be absent was present",
+    )
+}
+
+#[allow(clippy::large_types_passed_by_value)] // Exact test evidence stays inline and opaque.
+fn assert_exact_pair_and_no_temps(
+    fixture: &InstalledFixture,
+    expected: ExactFixedRunStatePair,
+) -> TestResult {
+    let paths = pair_paths(&fixture.base);
+    assert_pair_record(&paths[0], expected.marker())?;
+    assert_pair_missing(&paths[1])?;
+    assert_pair_record(&paths[2], expected.checkpoint())?;
+    assert_pair_missing(&paths[3])?;
+    let marker = sys::record_object_identity_for_test(&paths[0], false)?;
+    let checkpoint = sys::record_object_identity_for_test(&paths[2], false)?;
+    require_pair_test_evidence(
+        marker != checkpoint,
+        "exact pair final leaves unexpectedly shared one full object identity",
+    )
+}
+
 fn wide_path(path: &Path) -> Result<Vec<u16>, std::io::Error> {
     let mut wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
     if wide.is_empty() || wide.contains(&0) {
@@ -1197,6 +1387,53 @@ fn wide_string(value: &str) -> Result<Vec<u16>, std::io::Error> {
     let mut wide = value.encode_utf16().collect::<Vec<_>>();
     wide.push(0);
     Ok(wide)
+}
+
+fn encode_child_pair_record(record: &[u8; FIXED_RUN_STATE_RECORD_BYTES]) -> String {
+    const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let mut encoded = String::with_capacity(CHILD_PAIR_RECORD_HEX_CHARS);
+    for byte in record {
+        encoded.push(char::from(LOWER_HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(LOWER_HEX[usize::from(byte & 0x0f)]));
+    }
+    debug_assert_eq!(encoded.len(), CHILD_PAIR_RECORD_HEX_CHARS);
+    encoded
+}
+
+fn decode_child_pair_record(value: &str) -> TestResultWith<[u8; FIXED_RUN_STATE_RECORD_BYTES]> {
+    if value.len() != CHILD_PAIR_RECORD_HEX_CHARS || !value.is_ascii() {
+        return Err(
+            std::io::Error::other("child pair record encoding has the wrong length").into(),
+        );
+    }
+
+    let decode_nibble = |nibble: u8| -> Result<u8, std::io::Error> {
+        match nibble {
+            b'0'..=b'9' => Ok(nibble - b'0'),
+            b'a'..=b'f' => Ok(nibble - b'a' + 10),
+            _ => Err(std::io::Error::other(
+                "child pair record is not lowercase hexadecimal",
+            )),
+        }
+    };
+    let encoded = value.as_bytes();
+    let mut record = [0_u8; FIXED_RUN_STATE_RECORD_BYTES];
+    for (index, byte) in record.iter_mut().enumerate() {
+        let encoded_index = index * 2;
+        let high = decode_nibble(encoded[encoded_index])?;
+        let low = decode_nibble(encoded[encoded_index + 1])?;
+        *byte = (high << 4) | low;
+    }
+    Ok(record)
+}
+
+fn child_pair_record_from_env(
+    name: &'static str,
+) -> TestResultWith<[u8; FIXED_RUN_STATE_RECORD_BYTES]> {
+    let encoded = std::env::var(name)
+        .map_err(|_| std::io::Error::other("child pair record is absent or not Unicode"))?;
+    decode_child_pair_record(&encoded)
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -1248,6 +1485,68 @@ fn signal_child_ready(event_name: &str) -> TestResult {
     unsafe { SetEvent(event.raw()?) }?;
     event.close_checked()?;
     Ok(())
+}
+
+fn expected_objects_for_existing_fixture(
+    base: &Path,
+) -> Result<ExpectedInstalledRunStateObjects, ServiceRunStateError> {
+    let root_identity = sys::record_object_identity_for_test(&root_path(base), true)?;
+    let lock_identity = sys::record_object_identity_for_test(&lock_path(base), false)?;
+    let state_identity = sys::record_object_identity_for_test(&state_path(base), true)?;
+    sys::expected_objects_for_test(root_identity, lock_identity, state_identity)
+        .map(ExpectedInstalledRunStateObjects)
+}
+
+fn run_pair_process_death_child(base: &Path, event_name: &str) -> TestResult {
+    let cutpoint_value = std::env::var(CHILD_PAIR_CUTPOINT_ENV)
+        .map_err(|_| std::io::Error::other("child pair cutpoint is absent or not Unicode"))?;
+    let cutpoint = RuntimePairProcessDeathCutpoint::from_child_value(&cutpoint_value)?;
+    let candidate = ExactFixedRunStatePair::new(
+        child_pair_record_from_env(CHILD_PAIR_MARKER_ENV)?,
+        child_pair_record_from_env(CHILD_PAIR_CHECKPOINT_ENV)?,
+    );
+    let root =
+        open_test_service_run_state_root(base, expected_objects_for_existing_fixture(base)?)?;
+    let writer = acquire_for_test(root)?;
+    let observed = writer.observe_fixed_pair().map_err(|failure| {
+        let cause = failure.cause();
+        let _ = failure.retire();
+        cause
+    })?;
+
+    let hook_event_name = event_name.to_owned();
+    sys::inject_pair_process_death_cutpoint_for_test(cutpoint.sys_cutpoint(), move || {
+        assert!(
+            !sys::pair_process_death_cutpoint_is_armed_for_test(),
+            "matched pair process-death cutpoint was not consumed"
+        );
+        if signal_child_ready(&hook_event_name).is_err() {
+            return;
+        }
+        loop {
+            std::thread::park();
+        }
+    });
+
+    let outcome = observed.compare_and_replace(candidate);
+    let hook_still_armed = sys::pair_process_death_cutpoint_is_armed_for_test();
+    match outcome {
+        FixedPairCommitOutcome::Committed(committed) => {
+            let _retired = committed.retire()?;
+        }
+        FixedPairCommitOutcome::KnownNotCommitted(failure) => {
+            let _retired = failure.retire()?;
+        }
+        FixedPairCommitOutcome::Ambiguous(failure) => {
+            let _retired = failure.retire()?;
+        }
+    }
+    let message = if hook_still_armed {
+        "pair commit returned without reaching the armed process-death cutpoint"
+    } else {
+        "pair process-death cutpoint returned instead of blocking"
+    };
+    Err(std::io::Error::other(message).into())
 }
 
 fn spawn_synchronized_child(
@@ -1400,6 +1699,122 @@ fn reacquire_after_confirmed_exit_before_deadline(
         }
         std::thread::sleep(PROCESS_POLL_INTERVAL);
     }
+}
+
+fn require_distinct_pair_identities(identities: &[TestObjectIdentity]) -> TestResult {
+    for (index, identity) in identities.iter().enumerate() {
+        require_pair_test_evidence(
+            !identities[index + 1..].contains(identity),
+            "pair leaves unexpectedly shared one full object identity",
+        )?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)] // The three physical cutpoint matrices stay auditable inline.
+#[allow(clippy::large_types_passed_by_value)] // Mirrors the consuming production facade.
+fn force_process_death_during_pair_commit(
+    fixture: &InstalledFixture,
+    cutpoint: RuntimePairProcessDeathCutpoint,
+    candidate: ExactFixedRunStatePair,
+) -> TestResultWith<HeldServiceRunStateWriter> {
+    let paths = pair_paths(&fixture.base);
+    let prior = ExactFixedRunStatePair::new(
+        read_exact_pair_record(&paths[0])?,
+        read_exact_pair_record(&paths[2])?,
+    );
+    require_pair_test_evidence(
+        candidate.marker() != prior.marker() && candidate.checkpoint() != prior.checkpoint(),
+        "process-death candidate did not change both fixed records",
+    )?;
+    assert_exact_pair_and_no_temps(fixture, prior)?;
+    let prior_marker_identity = sys::record_object_identity_for_test(&paths[0], false)?;
+    let prior_checkpoint_identity = sys::record_object_identity_for_test(&paths[2], false)?;
+    require_distinct_pair_identities(&[prior_marker_identity, prior_checkpoint_identity])?;
+    let installation_identities = fixture.identities();
+
+    let event = NamedTestEvent::create()?;
+    let mut child = ChildProcessGuard::spawn_pair_process_death(
+        &fixture.base,
+        &event.name,
+        cutpoint,
+        candidate,
+    )?;
+    event.wait_ready_while_child_running(&mut child)?;
+
+    let root = open_test_service_run_state_root(&fixture.base, fixture.expected()?)?;
+    expect_before_lock_contention(root)?;
+    child.force_exit_and_wait()?;
+
+    let after_installation_identities = (
+        sys::record_object_identity_for_test(&root_path(&fixture.base), true)?,
+        sys::record_object_identity_for_test(&lock_path(&fixture.base), false)?,
+        sys::record_object_identity_for_test(&state_path(&fixture.base), true)?,
+    );
+    require_pair_test_evidence(
+        after_installation_identities == installation_identities,
+        "process death changed a held installation object identity",
+    )?;
+
+    match cutpoint {
+        RuntimePairProcessDeathCutpoint::BeforeMarkerRename => {
+            assert_pair_record(&paths[0], prior.marker())?;
+            assert_pair_record(&paths[1], candidate.marker())?;
+            assert_pair_record(&paths[2], prior.checkpoint())?;
+            assert_pair_record(&paths[3], candidate.checkpoint())?;
+            let marker_identity = sys::record_object_identity_for_test(&paths[0], false)?;
+            let marker_temp_identity = sys::record_object_identity_for_test(&paths[1], false)?;
+            let checkpoint_identity = sys::record_object_identity_for_test(&paths[2], false)?;
+            let checkpoint_temp_identity = sys::record_object_identity_for_test(&paths[3], false)?;
+            require_pair_test_evidence(
+                marker_identity == prior_marker_identity
+                    && checkpoint_identity == prior_checkpoint_identity,
+                "pre-marker cutpoint changed a final full object identity",
+            )?;
+            require_distinct_pair_identities(&[
+                marker_identity,
+                marker_temp_identity,
+                checkpoint_identity,
+                checkpoint_temp_identity,
+            ])?;
+        }
+        RuntimePairProcessDeathCutpoint::AfterMarkerRename => {
+            assert_pair_record(&paths[0], candidate.marker())?;
+            assert_pair_missing(&paths[1])?;
+            assert_pair_record(&paths[2], prior.checkpoint())?;
+            assert_pair_record(&paths[3], candidate.checkpoint())?;
+            let marker_identity = sys::record_object_identity_for_test(&paths[0], false)?;
+            let checkpoint_identity = sys::record_object_identity_for_test(&paths[2], false)?;
+            let checkpoint_temp_identity = sys::record_object_identity_for_test(&paths[3], false)?;
+            require_pair_test_evidence(
+                marker_identity != prior_marker_identity
+                    && checkpoint_identity == prior_checkpoint_identity,
+                "post-marker cutpoint did not preserve the exact full-ID transition",
+            )?;
+            require_distinct_pair_identities(&[
+                marker_identity,
+                checkpoint_identity,
+                checkpoint_temp_identity,
+            ])?;
+        }
+        RuntimePairProcessDeathCutpoint::AfterCheckpointRename => {
+            assert_pair_record(&paths[0], candidate.marker())?;
+            assert_pair_missing(&paths[1])?;
+            assert_pair_record(&paths[2], candidate.checkpoint())?;
+            assert_pair_missing(&paths[3])?;
+            let marker_identity = sys::record_object_identity_for_test(&paths[0], false)?;
+            let checkpoint_identity = sys::record_object_identity_for_test(&paths[2], false)?;
+            require_pair_test_evidence(
+                marker_identity != prior_marker_identity
+                    && checkpoint_identity != prior_checkpoint_identity,
+                "post-checkpoint cutpoint did not replace both final full identities",
+            )?;
+            require_distinct_pair_identities(&[marker_identity, checkpoint_identity])?;
+        }
+    }
+
+    event.close_checked()?;
+    Ok(reacquire_after_confirmed_exit_before_deadline(fixture)?)
 }
 
 #[test]
@@ -2900,25 +3315,26 @@ fn cross_process_child_fixture() -> TestResult {
     let event_name = std::env::var(CHILD_EVENT_ENV)
         .map_err(|_| std::io::Error::other("child event name is absent"))?;
 
-    let _writer = match mode {
+    match mode {
         CHILD_MODE_HOLD => {
-            let root_identity = sys::record_object_identity_for_test(&root_path(&base), true)?;
-            let lock_identity = sys::record_object_identity_for_test(&lock_path(&base), false)?;
-            let state_identity = sys::record_object_identity_for_test(&state_path(&base), true)?;
-            let expected = ExpectedInstalledRunStateObjects(sys::expected_objects_for_test(
-                root_identity,
-                lock_identity,
-                state_identity,
-            )?);
-            let root = open_test_service_run_state_root(&base, expected)?;
-            Some(acquire_for_test(root)?)
+            let root = open_test_service_run_state_root(
+                &base,
+                expected_objects_for_existing_fixture(&base)?,
+            )?;
+            let _writer = acquire_for_test(root)?;
+            signal_child_ready(&event_name)?;
+            loop {
+                std::thread::park();
+            }
         }
-        CHILD_MODE_SENTINEL => None,
-        _ => return Err(std::io::Error::other("child mode is invalid").into()),
-    };
-    signal_child_ready(&event_name)?;
-    loop {
-        std::thread::park();
+        CHILD_MODE_SENTINEL => {
+            signal_child_ready(&event_name)?;
+            loop {
+                std::thread::park();
+            }
+        }
+        CHILD_MODE_PAIR_PROCESS_DEATH => run_pair_process_death_child(&base, &event_name),
+        _ => Err(std::io::Error::other("child mode is invalid").into()),
     }
 }
 

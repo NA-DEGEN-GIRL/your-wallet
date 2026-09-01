@@ -224,6 +224,9 @@ pub(super) const fn pair_file_shape_attributes_are_supported_for_test(attributes
 }
 
 #[cfg(test)]
+type TestPairProcessDeathHook = (TestPairProcessDeathCutpoint, Box<dyn FnOnce()>);
+
+#[cfg(test)]
 std::thread_local! {
     static TEST_OPEN_COUNT: Cell<usize> = const { Cell::new(0) };
     static TEST_RELEASE_TRACE: RefCell<Vec<TestReleaseStep>> = const { RefCell::new(Vec::new()) };
@@ -238,6 +241,7 @@ std::thread_local! {
     static TEST_PAIR_MARKER_ATTEMPT_FAILURE: Cell<bool> = const { Cell::new(false) };
     static TEST_PAIR_ARM_COMMITTED_REREAD_FAILURE: Cell<bool> = const { Cell::new(false) };
     static TEST_PAIR_RECORD_IO_FAULT: Cell<Option<TestPairRecordIoFault>> = const { Cell::new(None) };
+    static TEST_PAIR_PROCESS_DEATH_CUTPOINT: RefCell<Option<TestPairProcessDeathHook>> = const { RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -292,6 +296,15 @@ pub(super) enum TestPairRecordIoFault {
     MarkerFlush,
     CheckpointShortWrite,
     CheckpointFlush,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::enum_variant_names)] // Exact names mirror the two-record protocol.
+pub(super) enum TestPairProcessDeathCutpoint {
+    BeforeMarkerRename,
+    AfterMarkerRename,
+    AfterCheckpointRename,
 }
 
 #[cfg(test)]
@@ -3070,6 +3083,8 @@ fn commit_observed_pair(
         });
     }
 
+    #[cfg(test)]
+    run_pair_process_death_cutpoint_for_test(TestPairProcessDeathCutpoint::BeforeMarkerRename);
     let marker_rename = rename_staged_pair_file(&writer, &marker);
     if let Err(cause) = marker_rename.result {
         let _ = cleanup_staged_pair(
@@ -3091,6 +3106,8 @@ fn commit_observed_pair(
             })
         };
     }
+    #[cfg(test)]
+    run_pair_process_death_cutpoint_for_test(TestPairProcessDeathCutpoint::AfterMarkerRename);
     if cleanup_staged_handle(&mut writer, Some(marker.handle), false).is_err() {
         let _ = cleanup_staged_handle(&mut writer, Some(checkpoint.handle), true);
         return PairCommitOutcome::Ambiguous(
@@ -3140,6 +3157,8 @@ fn commit_observed_pair(
             cause,
         );
     }
+    #[cfg(test)]
+    run_pair_process_death_cutpoint_for_test(TestPairProcessDeathCutpoint::AfterCheckpointRename);
     if cleanup_staged_handle(&mut writer, Some(checkpoint.handle), false).is_err() {
         return PairCommitOutcome::Ambiguous(
             AmbiguousPairWriter::installed_pair(writer),
@@ -4580,6 +4599,26 @@ pub(super) fn inject_pair_before_second_cas_for_test(operation: impl FnOnce() + 
 }
 
 #[cfg(test)]
+pub(super) fn inject_pair_process_death_cutpoint_for_test(
+    cutpoint: TestPairProcessDeathCutpoint,
+    operation: impl FnOnce() + 'static,
+) {
+    TEST_PAIR_PROCESS_DEATH_CUTPOINT.with(|slot| {
+        assert!(
+            slot.borrow_mut()
+                .replace((cutpoint, Box::new(operation)))
+                .is_none(),
+            "a pair process-death cutpoint is already armed"
+        );
+    });
+}
+
+#[cfg(test)]
+pub(super) fn pair_process_death_cutpoint_is_armed_for_test() -> bool {
+    TEST_PAIR_PROCESS_DEATH_CUTPOINT.with(|slot| slot.borrow().is_some())
+}
+
+#[cfg(test)]
 pub(super) fn inject_pair_marker_attempt_failure_for_test() {
     TEST_PAIR_MARKER_ATTEMPT_FAILURE.with(|slot| slot.set(true));
 }
@@ -4602,6 +4641,24 @@ fn take_pair_committed_reread_failure_for_test() -> bool {
 #[cfg(test)]
 fn run_pair_before_second_cas_hook_for_test() {
     let operation = TEST_PAIR_BEFORE_SECOND_CAS.with(|slot| slot.borrow_mut().take());
+    if let Some(operation) = operation {
+        operation();
+    }
+}
+
+#[cfg(test)]
+fn run_pair_process_death_cutpoint_for_test(actual: TestPairProcessDeathCutpoint) {
+    let operation = TEST_PAIR_PROCESS_DEATH_CUTPOINT.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot
+            .as_ref()
+            .is_some_and(|(expected, _operation)| *expected == actual)
+        {
+            slot.take().map(|(_expected, operation)| operation)
+        } else {
+            None
+        }
+    });
     if let Some(operation) = operation {
         operation();
     }

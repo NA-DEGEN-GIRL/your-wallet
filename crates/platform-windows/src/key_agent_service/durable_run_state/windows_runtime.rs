@@ -1494,7 +1494,10 @@ impl fmt::Debug for WindowsRetirementFailure<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::key_agent_service::run_state_root::{RuntimePairFault, RuntimePairFixture};
+    use crate::key_agent_service::run_state_root::{
+        ExactFixedRunStatePair, RuntimePairFault, RuntimePairFixture,
+        RuntimePairProcessDeathCutpoint,
+    };
 
     use super::super::{Commitment, RunMarkerState, build_snapshot};
 
@@ -1699,6 +1702,252 @@ mod tests {
             }
         }
         fixture.cleanup_checked()
+    }
+
+    #[test]
+    fn kernel_process_death_restart_boots_only_prior_clean_and_rejects_partial_or_active()
+    -> TestResult {
+        #[derive(Clone, Copy)]
+        enum ExpectedRestart {
+            PriorClean,
+            Partial,
+            Active,
+        }
+
+        for (cutpoint, expected, byte) in [
+            (
+                RuntimePairProcessDeathCutpoint::BeforeMarkerRename,
+                ExpectedRestart::PriorClean,
+                0x43,
+            ),
+            (
+                RuntimePairProcessDeathCutpoint::AfterMarkerRename,
+                ExpectedRestart::Partial,
+                0x45,
+            ),
+            (
+                RuntimePairProcessDeathCutpoint::AfterCheckpointRename,
+                ExpectedRestart::Active,
+                0x47,
+            ),
+        ] {
+            let fixture = RuntimePairFixture::new()?;
+            let installation = test_installation(byte)?;
+            let key = test_key(byte.wrapping_add(1))?;
+            let initial = snapshot(RunMarkerState::Clean, 1, installation, &key)?;
+            install_pair(&fixture, &initial)?;
+
+            let prepared = prepare_active(&fixture, installation, &key)?;
+            let prior_generation = prepared.logical.prior.marker.generation.get();
+            let candidate_generation = prepared.logical.successor.marker.generation.get();
+            let prior = ExactFixedRunStatePair::new(
+                prepared.logical.prior.bytes.marker,
+                prepared.logical.prior.bytes.checkpoint,
+            );
+            let candidate = ExactFixedRunStatePair::new(
+                prepared.logical.successor.bytes.marker,
+                prepared.logical.successor.bytes.checkpoint,
+            );
+            let partial = ExactFixedRunStatePair::new(*candidate.marker(), *prior.checkpoint());
+            retire_reason_neutral(prepared.into_retirement())?;
+            assert_eq!(prior_generation, 1);
+            assert_eq!(candidate_generation, 2);
+
+            let writer = fixture.force_process_death_during_pair_commit(cutpoint, candidate)?;
+            let startup = start_windows_runtime(writer, installation, &key);
+            match (expected, startup) {
+                (ExpectedRestart::PriorClean, Ok(boot)) => {
+                    let generation = boot.generation().get();
+                    retire_reason_neutral(boot.into_retirement())?;
+                    assert_eq!(generation, 1);
+                }
+                (ExpectedRestart::Partial, Err(WindowsRuntimeStartFailure::Terminal(failure))) => {
+                    let reason = failure.reason();
+                    let platform_cause = failure.platform_cause();
+                    retire_checked(failure)?;
+                    assert_eq!(reason, RecoveryRequired::HighWaterDrift);
+                    assert_eq!(platform_cause, None);
+                }
+                (ExpectedRestart::Active, Err(WindowsRuntimeStartFailure::Terminal(failure))) => {
+                    let reason = failure.reason();
+                    let platform_cause = failure.platform_cause();
+                    retire_checked(failure)?;
+                    assert_eq!(reason, RecoveryRequired::PersistedNonCleanState);
+                    assert_eq!(platform_cause, None);
+                }
+                (_, Ok(boot)) => {
+                    retire_reason_neutral(boot.into_retirement())?;
+                    return Err(std::io::Error::other(
+                        "a non-Clean process-death restart minted Boot authority",
+                    )
+                    .into());
+                }
+                (_, Err(WindowsRuntimeStartFailure::Binding(failure))) => {
+                    let reason = failure.reason();
+                    let _retired = failure.retire()?;
+                    return Err(std::io::Error::other(format!(
+                        "process-death restart failed before authentication: {reason}"
+                    ))
+                    .into());
+                }
+                (_, Err(WindowsRuntimeStartFailure::Terminal(failure))) => {
+                    let reason = failure.reason();
+                    let platform_cause = failure.platform_cause();
+                    retire_checked(failure)?;
+                    return Err(std::io::Error::other(format!(
+                        "process-death restart had an unexpected terminal classification: {reason}; platform={platform_cause:?}"
+                    ))
+                    .into());
+                }
+            }
+
+            let expected_pair = match expected {
+                ExpectedRestart::PriorClean => prior,
+                ExpectedRestart::Partial => partial,
+                ExpectedRestart::Active => candidate,
+            };
+            fixture.assert_exact_pair_and_no_temps_for_test(expected_pair)?;
+            fixture.cleanup_checked()?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // One matrix keeps all three physical cutpoints auditable.
+    fn kernel_process_death_restart_boots_only_full_clean_and_rejects_prior_active_or_partial()
+    -> TestResult {
+        #[derive(Clone, Copy)]
+        enum ExpectedRestart {
+            PriorActive,
+            Partial,
+            FullClean,
+        }
+
+        for (cutpoint, expected, byte) in [
+            (
+                RuntimePairProcessDeathCutpoint::BeforeMarkerRename,
+                ExpectedRestart::PriorActive,
+                0x49,
+            ),
+            (
+                RuntimePairProcessDeathCutpoint::AfterMarkerRename,
+                ExpectedRestart::Partial,
+                0x4b,
+            ),
+            (
+                RuntimePairProcessDeathCutpoint::AfterCheckpointRename,
+                ExpectedRestart::FullClean,
+                0x4d,
+            ),
+        ] {
+            let fixture = RuntimePairFixture::new()?;
+            let installation = test_installation(byte)?;
+            let key = test_key(byte.wrapping_add(1))?;
+            let initial = snapshot(RunMarkerState::Clean, 1, installation, &key)?;
+            install_pair(&fixture, &initial)?;
+
+            let active = exact_active(&fixture, installation, &key)?;
+            let WindowsActiveRunLease {
+                logical,
+                pair,
+                key: active_key,
+            } = active;
+            let prepared = match logical.prepare_clean(active_key) {
+                Ok(prepared) => prepared,
+                Err(failure) => {
+                    let failure = WindowsTerminalFailure::from_durable(
+                        failure,
+                        WindowsTerminalPair::Observed(pair),
+                        active_key,
+                    );
+                    let reason = failure.reason();
+                    retire_checked(failure)?;
+                    return Err(reason.into());
+                }
+            };
+            let prior_generation = prepared.prior.marker.generation.get();
+            let candidate_generation = prepared.successor.marker.generation.get();
+            let prior_state = prepared.prior.marker.state;
+            let candidate_state = prepared.successor.marker.state;
+            let prior = ExactFixedRunStatePair::new(
+                prepared.prior.bytes.marker,
+                prepared.prior.bytes.checkpoint,
+            );
+            let candidate = ExactFixedRunStatePair::new(
+                prepared.successor.bytes.marker,
+                prepared.successor.bytes.checkpoint,
+            );
+            let partial = ExactFixedRunStatePair::new(*candidate.marker(), *prior.checkpoint());
+            retire_reason_neutral(WindowsRetirementPending::new(
+                prepared.into_writer_exit(),
+                WindowsTerminalPair::Observed(pair),
+                active_key,
+            ))?;
+            assert_eq!(prior_generation, 2);
+            assert_eq!(candidate_generation, 3);
+            assert_eq!(prior_state, RunMarkerState::Active);
+            assert_eq!(candidate_state, RunMarkerState::Clean);
+
+            let writer = fixture.force_process_death_during_pair_commit(cutpoint, candidate)?;
+            let startup = start_windows_runtime(writer, installation, &key);
+            match (expected, startup) {
+                (
+                    ExpectedRestart::PriorActive,
+                    Err(WindowsRuntimeStartFailure::Terminal(failure)),
+                ) => {
+                    let reason = failure.reason();
+                    let platform_cause = failure.platform_cause();
+                    retire_checked(failure)?;
+                    assert_eq!(reason, RecoveryRequired::PersistedNonCleanState);
+                    assert_eq!(platform_cause, None);
+                }
+                (ExpectedRestart::Partial, Err(WindowsRuntimeStartFailure::Terminal(failure))) => {
+                    let reason = failure.reason();
+                    let platform_cause = failure.platform_cause();
+                    retire_checked(failure)?;
+                    assert_eq!(reason, RecoveryRequired::HighWaterDrift);
+                    assert_eq!(platform_cause, None);
+                }
+                (ExpectedRestart::FullClean, Ok(boot)) => {
+                    let generation = boot.generation().get();
+                    retire_reason_neutral(boot.into_retirement())?;
+                    assert_eq!(generation, 3);
+                }
+                (_, Ok(boot)) => {
+                    retire_reason_neutral(boot.into_retirement())?;
+                    return Err(std::io::Error::other(
+                        "an Active or partial Clean process-death restart minted Boot authority",
+                    )
+                    .into());
+                }
+                (_, Err(WindowsRuntimeStartFailure::Binding(failure))) => {
+                    let reason = failure.reason();
+                    let _retired = failure.retire()?;
+                    return Err(std::io::Error::other(format!(
+                        "Clean process-death restart failed before authentication: {reason}"
+                    ))
+                    .into());
+                }
+                (_, Err(WindowsRuntimeStartFailure::Terminal(failure))) => {
+                    let reason = failure.reason();
+                    let platform_cause = failure.platform_cause();
+                    retire_checked(failure)?;
+                    return Err(std::io::Error::other(format!(
+                        "Clean process-death restart had an unexpected terminal classification: {reason}; platform={platform_cause:?}"
+                    ))
+                    .into());
+                }
+            }
+
+            let expected_pair = match expected {
+                ExpectedRestart::PriorActive => prior,
+                ExpectedRestart::Partial => partial,
+                ExpectedRestart::FullClean => candidate,
+            };
+            fixture.assert_exact_pair_and_no_temps_for_test(expected_pair)?;
+            fixture.cleanup_checked()?;
+        }
+        Ok(())
     }
 
     #[test]

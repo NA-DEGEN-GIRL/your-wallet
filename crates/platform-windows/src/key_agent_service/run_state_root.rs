@@ -15,7 +15,7 @@ mod sys;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-pub(super) use tests::{RuntimePairFault, RuntimePairFixture};
+pub(super) use tests::{RuntimePairFault, RuntimePairFixture, RuntimePairProcessDeathCutpoint};
 
 /// Path-free failures from opening or revalidating fixed run-state objects.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
