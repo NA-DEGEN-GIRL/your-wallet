@@ -33604,7 +33604,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "7d117aeeace326d9b9512f5d40c85e4fdaa41bd5f855235f210548630b30daf5";
+  "b54eb62e92fa66c697cfd485be761a3ea7b9aa50faef26b2087e5175697c449d";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -51159,6 +51159,7 @@ const debuggerEvidenceTestNames = [
   "worker_panic_after_event_alias_registration_cleans_up_after_join",
   "worker_panic_immediately_after_no_kill_arm_cleans_up_after_join",
   "worker_error_immediately_after_no_kill_arm_cleans_up_after_join",
+  "debug_event_alias_slot_identity_distinguishes_reuse_from_leak",
 ];
 const debuggerEvidenceTests = debuggerEvidenceTestNames.map((name) =>
   rustFunctionBlockAtDepth(keyAgentActivationBottomTests, name, 1),
@@ -51170,6 +51171,7 @@ const preArmMappedImageErrorTest = debuggerEvidenceTests[3];
 const postRegistrationWorkerPanicTest = debuggerEvidenceTests[4];
 const postArmWorkerPanicTest = debuggerEvidenceTests[5];
 const postArmWorkerErrorTest = debuggerEvidenceTests[6];
+const debugEventAliasIdentityTest = debuggerEvidenceTests[7];
 const currentKeyAgentDebuggerBoundaryLeafSha256 = Object.freeze({
   freshRunner: normalizedSourceSha256(rustLexicalCode(freshDebugRunner)),
   authenticateCreateEventHandles: normalizedSourceSha256(
@@ -51224,6 +51226,9 @@ const currentKeyAgentDebuggerBoundaryLeafSha256 = Object.freeze({
   postArmErrorEvidence: normalizedSourceSha256(
     rustLexicalCode(postArmWorkerErrorTest),
   ),
+  aliasIdentityEvidence: normalizedSourceSha256(
+    rustLexicalCode(debugEventAliasIdentityTest),
+  ),
   evidenceModuleRaw: normalizedSourceSha256(keyAgentActivationBottomTests),
 });
 const approvedKeyAgentDebuggerBoundaryLeafSha256 = Object.freeze({
@@ -51269,8 +51274,10 @@ const approvedKeyAgentDebuggerBoundaryLeafSha256 = Object.freeze({
     "6e0efd7f18c102865f42a3e723a92c6f26bb72cbddedd36224ce2db217c60830",
   postArmErrorEvidence:
     "e06e1898319f06ac2c76a124e6eb74053945dcceadc3ac38e8da380d382a7ffc",
+  aliasIdentityEvidence:
+    "a2a4c2000f9845689f8d1d1e3be98821095b7f984324058df916e4e200fbe8ef",
   evidenceModuleRaw:
-    "5e557776922a7a9c3ba1ee1cc5ef22a0c939c7ad1a9226ed447eba538506d321",
+    "0a8c1eb2208912800b193315756efef1fabe06ea5873fedf2e88215762afc516",
 });
 const keyAgentDebuggerEvidenceContract = (source) => {
   let testModule;
@@ -51644,6 +51651,715 @@ const mutateKeyAgentLeaf = (item, search, replacement, ordinal = 0) => {
     ? keyAgentActivationSource
     : keyAgentActivationSource.replace(item, mutatedItem);
 };
+const keyAgentActivationExpectedTestNames = Object.freeze([
+  "launch_state_machine_rejects_skip_replay_and_post_abort_transitions",
+  "amd64_context_storage_and_r10_readback_policy_are_exact",
+  "minimal_gate_pe_parser_binds_exact_rvas_and_rejects_shape_mutations",
+  "exact_file_identity_comparator_uses_volume_and_all_128_bits",
+  "invalid_file_identity_sentinels_fail_closed",
+  "live_file_identity_is_valid_and_stable_across_held_handles",
+  "debug_event_alias_slot_identity_distinguishes_reuse_from_leak",
+  "authority_and_detached_type_states_have_exact_transfer_traits",
+  "process_creation_flags_are_exact_and_do_not_debug_descendants",
+  "key_agent_creation_mitigation_matches_the_full_helper_policy",
+  "creation_attribute_source_contract_installs_mitigation_before_lpac",
+  "startup_attribute_list_retains_policy_and_exactly_three_stdio_handles",
+  "wrong_role_is_rejected_before_release_or_process_creation",
+  "development_release_gate_rejects_exact_role_before_creation",
+  "mapped_image_mismatch_is_rejected_and_cleaned_up_before_detach",
+  "timeout_cleanup_terminates_without_dispatching_the_first_event",
+  "real_key_agent_loader_activity_fails_closed_before_detach",
+  "minimal_primary_gate_proof_detaches_with_one_verified_suspend_count",
+  "pending_finalization_rejects_swapped_join_and_root_job_witnesses",
+  "caller_debuggee_does_not_contaminate_dedicated_activation_worker",
+  "concurrent_activations_use_isolated_workers",
+  "mismatched_job_attribute_is_rejected_and_process_is_cleaned_up",
+  "worker_error_cleans_up_exact_process",
+  "worker_panic_after_create_cleans_up_exact_process",
+  "worker_panic_after_event_alias_registration_cleans_up_after_join",
+  "worker_panic_immediately_after_no_kill_arm_cleans_up_after_join",
+  "worker_error_immediately_after_no_kill_arm_cleans_up_after_join",
+  "rejected_image_never_reaches_headless_user_mode_sentinel",
+  "headless_child_user_mode_sentinel",
+]);
+const keyAgentActivationIgnoredTestName = "headless_child_user_mode_sentinel";
+const keyAgentActivationIgnoredTestAttribute =
+  '#[ignore = "headless child sentinel; invoked only by the parent kernel test"]';
+const rustAttributedTestInventoryAtDepth = (testModule, expectedDepth) => {
+  const lexical = rustLexicalCode(testModule);
+  return [
+    ...lexical.matchAll(
+      /(?:^|\n)\s*fn\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\b/gu,
+    ),
+  ]
+    .filter(
+      (match) => rustBraceDepthBefore(lexical, match.index) === expectedDepth,
+    )
+    .map((match) => ({
+      name: match.groups.name,
+      attributes: rustFunctionOuterAttributesAtDepth(
+        testModule,
+        match.groups.name,
+        expectedDepth,
+      ),
+    }))
+    .filter(({ attributes }) => attributes.includes("#[test]"));
+};
+const keyAgentAliasIdentityInlineCfgTestStatements = Object.freeze([
+  `            #[cfg(test)]
+            let observation = TestDebugEventHandleObservation::capture(
+                self.debug_event_process
+                    .ok_or(KeyAgentActivationError::DebugDetach)?
+                    .0 as usize,
+                self.debug_event_primary_thread
+                    .ok_or(KeyAgentActivationError::DebugDetach)?
+                    .0 as usize,
+            )?;
+`,
+  `            #[cfg(test)]
+            if !observation.aliases_are_closed() {
+                return Err(KeyAgentActivationError::HandleAttenuation);
+            }
+`,
+]);
+const keyAgentAliasIdentityProductionPartition = (source) => {
+  let partition = source;
+  for (const statement of keyAgentAliasIdentityInlineCfgTestStatements) {
+    if (literalOccurrenceCount(partition, statement) !== 1) {
+      throw new Error(
+        "key-agent alias identity expected one exact inline cfg(test) statement",
+      );
+    }
+    partition = partition.replace(statement, "");
+  }
+  return withoutCfgTestItems(partition);
+};
+const keyAgentAliasIdentityImplContract = (source) => {
+  let undecorated = source;
+  const expectedByType = {
+    TestObservedAlias: ["impl TestObservedAlias"],
+    TestDebugEventHandleObservation: [
+      "impl TestDebugEventHandleObservation",
+    ],
+    TestRejectedThreadEventHandleObservation: [
+      "impl TestRejectedThreadEventHandleObservation",
+    ],
+  };
+  for (const typeName of Object.keys(expectedByType)) {
+    const decoratedHeader = `    #[cfg(test)]\n    impl ${typeName} {`;
+    if (literalOccurrenceCount(undecorated, decoratedHeader) !== 1) {
+      return false;
+    }
+    undecorated = undecorated.replace(
+      decoratedHeader,
+      `    impl ${typeName} {`,
+    );
+  }
+  return rustAuthorityImplHeaderContract(undecorated, expectedByType);
+};
+const keyAgentAliasIdentityLeaves = (source) => {
+  const withTests = withoutBottomTestModule(source);
+  const production = keyAgentAliasIdentityProductionPartition(withTests);
+  const sysWithTests = rustTopLevelLexicalItemBlock(
+    withTests,
+    /#\[cfg\(windows\)\]\s*mod\s+sys\s*\{/u,
+  );
+  const testModule = rustBottomTestModule(source);
+  const attachedObservation = rustFunctionBlockAtDepth(
+    withTests,
+    "observation_while_attached_for_test",
+    1,
+  );
+  const attachedRejectedObservation = rustFunctionBlockAtDepth(
+    withTests,
+    "rejected_thread_observation_while_attached_for_test",
+    1,
+  );
+  const observedDefinition = rustLexicalItemBlockAtDepth(
+    sysWithTests,
+    /(?:^|\n)\s*#\[cfg\(test\)\]\s*struct\s+TestObservedAlias\s*\{/u,
+    1,
+  );
+  const observedImpl = rustLexicalItemBlockAtDepth(
+    sysWithTests,
+    /(?:^|\n)\s*#\[cfg\(test\)\]\s*impl\s+TestObservedAlias\s*\{/u,
+    1,
+  );
+  const identityDefinition = rustLexicalItemBlockAtDepth(
+    sysWithTests,
+    /(?:^|\n)\s*#\[cfg\(test\)\]\s*#\[derive\([^\]]+\)\]\s*pub\(super\)\s+enum\s+TestAliasSlotIdentity\s*\{/u,
+    1,
+  );
+  const debugObservationDefinition = rustLexicalItemBlockAtDepth(
+    sysWithTests,
+    /(?:^|\n)\s*#\[cfg\(test\)\]\s*pub\(super\)\s+struct\s+TestDebugEventHandleObservation\s*\{/u,
+    1,
+  );
+  const debugObservationImpl = rustLexicalItemBlockAtDepth(
+    sysWithTests,
+    /(?:^|\n)\s*#\[cfg\(test\)\]\s*impl\s+TestDebugEventHandleObservation\s*\{/u,
+    1,
+  );
+  const rejectedObservationDefinition = rustLexicalItemBlockAtDepth(
+    sysWithTests,
+    /(?:^|\n)\s*#\[cfg\(test\)\]\s*pub\(super\)\s+struct\s+TestRejectedThreadEventHandleObservation\s*\{/u,
+    1,
+  );
+  const rejectedObservationImpl = rustLexicalItemBlockAtDepth(
+    sysWithTests,
+    /(?:^|\n)\s*#\[cfg\(test\)\]\s*impl\s+TestRejectedThreadEventHandleObservation\s*\{/u,
+    1,
+  );
+  const aliasSlotProvesClosed = rustFunctionBlockAtDepth(
+    sysWithTests,
+    "alias_slot_proves_original_closed",
+    1,
+  );
+  const failedComparisonIdentity = rustFunctionBlockAtDepth(
+    sysWithTests,
+    "failed_alias_comparison_identity",
+    1,
+  );
+  const closurePolicyAdapter = rustFunctionBlockAtDepth(
+    sysWithTests,
+    "alias_slot_proves_original_closed_for_test",
+    1,
+  );
+  const failedComparisonPolicyAdapter = rustFunctionBlockAtDepth(
+    sysWithTests,
+    "failed_alias_comparison_proves_original_closed_for_test",
+    1,
+  );
+  const kernelIdentityAdapter = rustFunctionBlockAtDepth(
+    sysWithTests,
+    "alias_slot_identity_against_retained_for_test",
+    1,
+  );
+  const capture = rustFunctionBlockAtDepth(observedImpl, "capture", 1);
+  const slotIdentity = rustFunctionBlockAtDepth(observedImpl, "slot_identity", 1);
+  const slotIdentityAfterClose = rustFunctionBlockAtDepth(
+    observedImpl,
+    "slot_identity_after_close",
+    1,
+  );
+  const retainedAuthority = rustFunctionBlockAtDepth(
+    observedImpl,
+    "retained_authority",
+    1,
+  );
+  const originalIsClosed = rustFunctionBlockAtDepth(
+    observedImpl,
+    "original_is_closed",
+    1,
+  );
+  const debugCapture = rustFunctionBlockAtDepth(
+    debugObservationImpl,
+    "capture",
+    1,
+  );
+  const aliasesAreClosed = rustFunctionBlockAtDepth(
+    debugObservationImpl,
+    "aliases_are_closed",
+    1,
+  );
+  const rejectedCapture = rustFunctionBlockAtDepth(
+    rejectedObservationImpl,
+    "capture",
+    1,
+  );
+  const aliasIsClosed = rustFunctionBlockAtDepth(
+    rejectedObservationImpl,
+    "alias_is_closed",
+    1,
+  );
+  const detachedCloseObservation = rustFunctionBlockAtDepth(
+    sysWithTests,
+    "close_detached_debug_event_handles",
+    2,
+  );
+  const identityTest = rustFunctionBlockAtDepth(
+    testModule,
+    "debug_event_alias_slot_identity_distinguishes_reuse_from_leak",
+    1,
+  );
+  const transferTest = rustFunctionBlockAtDepth(
+    testModule,
+    "authority_and_detached_type_states_have_exact_transfer_traits",
+    1,
+  );
+  return {
+    withTests,
+    production,
+    sysWithTests,
+    testModule,
+    attachedObservation,
+    attachedRejectedObservation,
+    observedDefinition,
+    observedImpl,
+    identityDefinition,
+    debugObservationDefinition,
+    debugObservationImpl,
+    rejectedObservationDefinition,
+    rejectedObservationImpl,
+    aliasSlotProvesClosed,
+    failedComparisonIdentity,
+    closurePolicyAdapter,
+    failedComparisonPolicyAdapter,
+    kernelIdentityAdapter,
+    capture,
+    slotIdentity,
+    slotIdentityAfterClose,
+    retainedAuthority,
+    originalIsClosed,
+    debugCapture,
+    aliasesAreClosed,
+    rejectedCapture,
+    aliasIsClosed,
+    detachedCloseObservation,
+    identityTest,
+    transferTest,
+  };
+};
+const keyAgentAliasIdentityCurrentLeaves = keyAgentAliasIdentityLeaves(
+  keyAgentActivationSource,
+);
+const currentKeyAgentAliasIdentityLeafSha256 = Object.freeze({
+  productionCompact: normalizedSourceSha256(
+    compactRust(keyAgentAliasIdentityCurrentLeaves.production),
+  ),
+  observerCore: normalizedSourceSha256(
+    rustLexicalCode(
+      [
+        keyAgentAliasIdentityCurrentLeaves.observedDefinition,
+        keyAgentAliasIdentityCurrentLeaves.observedImpl,
+        keyAgentAliasIdentityCurrentLeaves.identityDefinition,
+        keyAgentAliasIdentityCurrentLeaves.debugObservationDefinition,
+        keyAgentAliasIdentityCurrentLeaves.debugObservationImpl,
+        keyAgentAliasIdentityCurrentLeaves.rejectedObservationDefinition,
+        keyAgentAliasIdentityCurrentLeaves.rejectedObservationImpl,
+        keyAgentAliasIdentityCurrentLeaves.aliasSlotProvesClosed,
+        keyAgentAliasIdentityCurrentLeaves.failedComparisonIdentity,
+        keyAgentAliasIdentityCurrentLeaves.closurePolicyAdapter,
+        keyAgentAliasIdentityCurrentLeaves.failedComparisonPolicyAdapter,
+        keyAgentAliasIdentityCurrentLeaves.kernelIdentityAdapter,
+        keyAgentAliasIdentityCurrentLeaves.attachedObservation,
+        keyAgentAliasIdentityCurrentLeaves.attachedRejectedObservation,
+        keyAgentAliasIdentityCurrentLeaves.detachedCloseObservation,
+      ].join("\n"),
+    ),
+  ),
+  identityEvidence: normalizedSourceSha256(
+    rustLexicalCode(keyAgentAliasIdentityCurrentLeaves.identityTest),
+  ),
+  transferEvidence: normalizedSourceSha256(
+    rustLexicalCode(keyAgentAliasIdentityCurrentLeaves.transferTest),
+  ),
+});
+const approvedKeyAgentAliasIdentityLeafSha256 = Object.freeze({
+  productionCompact:
+    "6fb7ae5af06432bfc85cf73a4a30efa40ae64d453c3e2e490a8cc288583ef675",
+  observerCore:
+    "fcf923ed128beb0994eeeb37c4bf28cdfedd00b7d50eec56e1b42049f91f2796",
+  identityEvidence:
+    "a2a4c2000f9845689f8d1d1e3be98821095b7f984324058df916e4e200fbe8ef",
+  transferEvidence:
+    "1778d358eba2430bd5f7a34992169fcb9d852430090c02a3bbdfdf480700c469",
+});
+const keyAgentAliasIdentityContract = (source, requireHashes = true) => {
+  let leaves;
+  try {
+    leaves = keyAgentAliasIdentityLeaves(source);
+  } catch {
+    return false;
+  }
+  const {
+    withTests,
+    production,
+    sysWithTests,
+    testModule,
+    attachedObservation,
+    attachedRejectedObservation,
+    observedDefinition,
+    observedImpl,
+    identityDefinition,
+    debugObservationDefinition,
+    debugObservationImpl,
+    rejectedObservationDefinition,
+    rejectedObservationImpl,
+    aliasSlotProvesClosed,
+    failedComparisonIdentity,
+    closurePolicyAdapter,
+    failedComparisonPolicyAdapter,
+    kernelIdentityAdapter,
+    capture,
+    slotIdentity,
+    slotIdentityAfterClose,
+    retainedAuthority,
+    originalIsClosed,
+    debugCapture,
+    aliasesAreClosed,
+    rejectedCapture,
+    aliasIsClosed,
+    detachedCloseObservation,
+    identityTest,
+    transferTest,
+  } = leaves;
+  const compactCapture = compactRust(capture);
+  const compactSlotIdentity = compactRust(slotIdentity);
+  const compactRetainedAuthority = compactRust(retainedAuthority);
+  const compactIdentityTest = compactRust(identityTest);
+  const productionCode = rustLexicalCode(production);
+  const testInventory = rustAttributedTestInventoryAtDepth(testModule, 1);
+  const testOnlyIdentifiers = [
+    "TestObservedAlias",
+    "TestAliasSlotIdentity",
+    "TestDebugEventHandleObservation",
+    "TestRejectedThreadEventHandleObservation",
+    "alias_slot_proves_original_closed",
+    "failed_alias_comparison_identity",
+    "alias_slot_proves_original_closed_for_test",
+    "failed_alias_comparison_proves_original_closed_for_test",
+    "alias_slot_identity_against_retained_for_test",
+    "ERROR_NOT_SAME_OBJECT",
+  ];
+  const currentHashes = {
+    productionCompact: normalizedSourceSha256(compactRust(production)),
+    observerCore: normalizedSourceSha256(
+      rustLexicalCode(
+        [
+          observedDefinition,
+          observedImpl,
+          identityDefinition,
+          debugObservationDefinition,
+          debugObservationImpl,
+          rejectedObservationDefinition,
+          rejectedObservationImpl,
+          aliasSlotProvesClosed,
+          failedComparisonIdentity,
+          closurePolicyAdapter,
+          failedComparisonPolicyAdapter,
+          kernelIdentityAdapter,
+          attachedObservation,
+          attachedRejectedObservation,
+          detachedCloseObservation,
+        ].join("\n"),
+      ),
+    ),
+    identityEvidence: normalizedSourceSha256(rustLexicalCode(identityTest)),
+    transferEvidence: normalizedSourceSha256(rustLexicalCode(transferTest)),
+  };
+  const duplicateCalls = rustCallSites(capture, "DuplicateHandle").map((call) =>
+    call.arguments.map(compactRust),
+  );
+  const slotCompareCalls = rustCallSites(slotIdentity, "CompareObjectHandles").map(
+    (call) => call.arguments.map(compactRust),
+  );
+  return (
+    (!requireHashes ||
+      JSON.stringify(currentHashes) ===
+        JSON.stringify(approvedKeyAgentAliasIdentityLeafSha256)) &&
+    currentHashes.productionCompact ===
+      approvedKeyAgentAliasIdentityLeafSha256.productionCompact &&
+    testOnlyIdentifiers.every(
+      (name) => identifierOccurrenceCount(productionCode, name) === 0,
+    ) &&
+    compactRust(observedDefinition) ===
+      "#[cfg(test)]structTestObservedAlias{raw:usize,retained_identity:OwnedHandle,}" &&
+    compactRust(identityDefinition) ===
+      "#[cfg(test)]#[derive(Clone,Copy,Debug,Eq,PartialEq)]pub(super)enumTestAliasSlotIdentity{Invalid,DifferentObject,SameObject,Indeterminate,}" &&
+    compactRust(debugObservationDefinition) ===
+      "#[cfg(test)]pub(super)structTestDebugEventHandleObservation{process:TestObservedAlias,primary_thread:TestObservedAlias,}" &&
+    compactRust(rejectedObservationDefinition) ===
+      "#[cfg(test)]pub(super)structTestRejectedThreadEventHandleObservation{thread:TestObservedAlias,}" &&
+    keyAgentAliasIdentityImplContract(withTests) &&
+    !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*(?:pub\(super\)\s+)?struct\s+(?:TestObservedAlias|TestDebugEventHandleObservation|TestRejectedThreadEventHandleObservation)\b/u.test(
+      rustLexicalCode(sysWithTests),
+    ) &&
+    !/impl\s+(?:Clone|Copy)\s+for\s+(?:TestObservedAlias|TestDebugEventHandleObservation|TestRejectedThreadEventHandleObservation)\b/u.test(
+      rustLexicalCode(sysWithTests),
+    ) &&
+    !/\btype\s+(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*\s*=\s*(?:TestObservedAlias|TestDebugEventHandleObservation|TestRejectedThreadEventHandleObservation)\b/u.test(
+      rustLexicalCode(withTests),
+    ) &&
+    JSON.stringify(duplicateCalls) ===
+      JSON.stringify([
+        [
+          "GetCurrentProcess()",
+          "source",
+          "GetCurrentProcess()",
+          "&rawmutretained_identity",
+          "0",
+          "false",
+          "DUPLICATE_HANDLE_OPTIONS(0)",
+        ],
+      ]) &&
+    !/\b(?:DUPLICATE_SAME_ACCESS|DUPLICATE_CLOSE_SOURCE)\b/u.test(
+      rustLexicalCode(capture),
+    ) &&
+    hasOrderedCompactRustMarkers(capture, [
+      "letsource=HANDLE(rawas*mutc_void);",
+      "ifinvalid(source)",
+      "letmutretained_identity=HANDLE::default();",
+      "DuplicateHandle(GetCurrentProcess(),source,GetCurrentProcess(),&rawmutretained_identity,0,false,DUPLICATE_HANDLE_OPTIONS(0),)",
+      "ifinvalid(retained_identity)||retained_identity==source",
+      "OwnedHandle::from_raw_handle(retained_identity.0)",
+      "GetHandleInformation(retained_raw,&rawmutretained_flags)",
+      "query_handle_authority_for_test(retained_raw)",
+      "ifretained_flags!=0||retained_access!=0||retained_attributes!=0",
+      "CompareObjectHandles(source,retained_raw)",
+      "Ok(Self{raw,retained_identity,})",
+    ]) &&
+    compactCapture.includes(
+      "if!unsafe{CompareObjectHandles(source,retained_raw)}.as_bool(){returnErr(KeyAgentActivationError::Cleanup);}",
+    ) &&
+    rustCallSites(capture, "CloseHandle").length === 0 &&
+    !compactCapture.includes("OwnedHandle::from_raw_handle(source") &&
+    rustCallSites(capture, "GetHandleInformation").length === 1 &&
+    rustCallSites(capture, "query_handle_authority_for_test").length === 1 &&
+    JSON.stringify(
+      rustCallSites(capture, "CompareObjectHandles").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["source", "retained_raw"]]) &&
+    JSON.stringify(
+      rustCallSites(slotIdentity, "SetLastError").map((call) =>
+        call.arguments.map(compactRust),
+      ),
+    ) === JSON.stringify([["ERROR_SUCCESS"]]) &&
+    JSON.stringify(slotCompareCalls) ===
+      JSON.stringify([
+        [
+          "candidate",
+          "windows_handle(self.retained_identity.as_handle())",
+        ],
+      ]) &&
+    rustCallSites(slotIdentity, "GetLastError").length === 1 &&
+    !/\bGetHandleInformation\s*\(/u.test(rustLexicalCode(slotIdentity)) &&
+    hasOrderedCompactRustMarkers(slotIdentity, [
+      "SetLastError(ERROR_SUCCESS)",
+      "CompareObjectHandles(candidate,windows_handle(self.retained_identity.as_handle()),)",
+      "TestAliasSlotIdentity::SameObject",
+      "failed_alias_comparison_identity(unsafe{GetLastError()}.0)",
+    ]) &&
+    compactSlotIdentity.includes(
+      "ifunsafe{CompareObjectHandles(candidate,windows_handle(self.retained_identity.as_handle()),)}.as_bool(){TestAliasSlotIdentity::SameObject}else{failed_alias_comparison_identity(unsafe{GetLastError()}.0)}",
+    ) &&
+    rustCallSites(slotIdentity, "CloseHandle").length === 0 &&
+    !compactSlotIdentity.includes("from_raw_handle") &&
+    compactRust(failedComparisonIdentity) ===
+      "constfnfailed_alias_comparison_identity(last_error:u32)->TestAliasSlotIdentity{iflast_error==ERROR_NOT_SAME_OBJECT.0{TestAliasSlotIdentity::DifferentObject}elseiflast_error==ERROR_INVALID_HANDLE.0{TestAliasSlotIdentity::Invalid}else{TestAliasSlotIdentity::Indeterminate}}" &&
+    compactRust(aliasSlotProvesClosed) ===
+      "constfnalias_slot_proves_original_closed(identity:TestAliasSlotIdentity)->bool{matches!(identity,TestAliasSlotIdentity::Invalid|TestAliasSlotIdentity::DifferentObject)}" &&
+    compactRust(slotIdentityAfterClose) ===
+      "fnslot_identity_after_close(&self)->TestAliasSlotIdentity{self.slot_identity(HANDLE(self.rawas*mutc_void))}" &&
+    compactRust(originalIsClosed) ===
+      "fnoriginal_is_closed(&self)->bool{alias_slot_proves_original_closed(self.slot_identity_after_close())}" &&
+    hasOrderedCompactRustMarkers(retainedAuthority, [
+      "windows_handle(self.retained_identity.as_handle())",
+      "GetHandleInformation(retained,&rawmutflags)",
+      "query_handle_authority_for_test(retained)",
+      "Ok((access,flags,attributes))",
+    ]) &&
+    rustCallSites(retainedAuthority, "GetHandleInformation").length === 1 &&
+    rustCallSites(retainedAuthority, "query_handle_authority_for_test").length === 1 &&
+    compactRust(debugCapture) ===
+      "pub(super)fncapture(process:usize,primary_thread:usize,)->Result<Self,KeyAgentActivationError>{letprocess=TestObservedAlias::capture(process)?;letprimary_thread=TestObservedAlias::capture(primary_thread)?;Ok(Self{process,primary_thread,})}" &&
+    compactRust(aliasesAreClosed) ===
+      "pub(super)fnaliases_are_closed(&self)->bool{self.primary_thread.original_is_closed()&&self.process.original_is_closed()}" &&
+    compactRust(rejectedCapture) ===
+      "pub(super)fncapture(thread:usize)->Result<Self,KeyAgentActivationError>{Ok(Self{thread:TestObservedAlias::capture(thread)?,})}" &&
+    compactRust(aliasIsClosed) ===
+      "pub(super)fnalias_is_closed(&self)->bool{self.thread.original_is_closed()}" &&
+    JSON.stringify(
+      rustFunctionOuterAttributesAtDepth(
+        withTests,
+        "observation_while_attached_for_test",
+        1,
+      ),
+    ) === JSON.stringify(["#[cfg(test)]"]) &&
+    JSON.stringify(
+      rustFunctionOuterAttributesAtDepth(
+        withTests,
+        "rejected_thread_observation_while_attached_for_test",
+        1,
+      ),
+    ) === JSON.stringify(["#[cfg(test)]"]) &&
+    compactRust(attachedObservation).endsWith(
+      "sys::TestDebugEventHandleObservation::capture(handles.process.ok_or(KeyAgentActivationError::DebugDetach)?,handles.primary_thread.ok_or(KeyAgentActivationError::DebugDetach)?,)}",
+    ) &&
+    compactRust(attachedRejectedObservation).endsWith(
+      "sys::TestRejectedThreadEventHandleObservation::capture(rejected_thread)}",
+    ) &&
+    hasOrderedCompactRustMarkers(detachedCloseObservation, [
+      "#[cfg(test)]letobservation=TestDebugEventHandleObservation::capture(self.debug_event_process.ok_or(KeyAgentActivationError::DebugDetach)?.0asusize,self.debug_event_primary_thread.ok_or(KeyAgentActivationError::DebugDetach)?.0asusize,)?;",
+      "self.close_remaining_detached_debug_event_handles()?;",
+      "#[cfg(test)]if!observation.aliases_are_closed(){returnErr(KeyAgentActivationError::HandleAttenuation);}",
+    ]) &&
+    [
+      /#\[cfg\(test\)\]\s*const\s+fn\s+alias_slot_proves_original_closed\b/u,
+      /#\[cfg\(test\)\]\s*const\s+fn\s+failed_alias_comparison_identity\b/u,
+      /#\[cfg\(test\)\]\s*pub\(super\)\s+const\s+fn\s+alias_slot_proves_original_closed_for_test\b/u,
+      /#\[cfg\(test\)\]\s*pub\(super\)\s+const\s+fn\s+failed_alias_comparison_proves_original_closed_for_test\b/u,
+      /#\[cfg\(test\)\]\s*pub\(super\)\s+fn\s+alias_slot_identity_against_retained_for_test\b/u,
+    ].every((pattern) => pattern.test(rustLexicalCode(sysWithTests))) &&
+    compactRust(closurePolicyAdapter) ===
+      "pub(super)constfnalias_slot_proves_original_closed_for_test(identity:TestAliasSlotIdentity,)->bool{alias_slot_proves_original_closed(identity)}" &&
+    compactRust(failedComparisonPolicyAdapter) ===
+      "pub(super)constfnfailed_alias_comparison_proves_original_closed_for_test(last_error:u32,)->bool{alias_slot_proves_original_closed(failed_alias_comparison_identity(last_error))}" &&
+    hasOrderedCompactRustMarkers(kernelIdentityAdapter, [
+      "letobservation=TestObservedAlias::capture(source.0asusize)?;",
+      "letidentity=observation.slot_identity(candidate);",
+      "let(access,flags,attributes)=observation.retained_authority()?;",
+      "Ok((identity,access,flags,attributes))",
+    ]) &&
+    JSON.stringify(testInventory.map(({ name }) => name)) ===
+      JSON.stringify(keyAgentActivationExpectedTestNames) &&
+    testInventory.length === 29 &&
+    testInventory.filter(({ attributes }) => attributes.length === 1).length ===
+      28 &&
+    testInventory.every(({ name, attributes }) =>
+      name === keyAgentActivationIgnoredTestName
+        ? JSON.stringify(attributes) ===
+          JSON.stringify(["#[test]", keyAgentActivationIgnoredTestAttribute])
+        : JSON.stringify(attributes) === JSON.stringify(["#[test]"]),
+    ) &&
+    !hasVacuousRustTestEscape(identityTest) &&
+    /let\s+source_file\s*=\s*std::fs::File::open\(\s*package_root\.join\(\s*"Cargo\.toml"\s*\)\s*\)\?/u.test(
+      identityTest,
+    ) &&
+    /let\s+unrelated_file\s*=\s*std::fs::File::open\(\s*package_root\.join\(\s*"src"\s*\)\.join\(\s*"key_agent_activation\.rs"\s*\)\s*\)\?/u.test(
+      identityTest,
+    ) &&
+    hasOrderedCompactRustMarkers(identityTest, [
+      "alias_slot_proves_original_closed_for_test(Invalid)",
+      "alias_slot_proves_original_closed_for_test(DifferentObject)",
+      "!sys::alias_slot_proves_original_closed_for_test(SameObject)",
+      "!sys::alias_slot_proves_original_closed_for_test(Indeterminate)",
+      "failed_alias_comparison_proves_original_closed_for_test(ERROR_NOT_SAME_OBJECT.0)",
+      "failed_alias_comparison_proves_original_closed_for_test(ERROR_INVALID_HANDLE.0)",
+      "!sys::failed_alias_comparison_proves_original_closed_for_test(ERROR_SUCCESS.0)",
+      "!sys::failed_alias_comparison_proves_original_closed_for_test(ERROR_ACCESS_DENIED.0)",
+      "TestDebugEventHandleObservation::capture(source.0asusize,unrelated.0asusize)?;",
+      "assert!(!live_pair.aliases_are_closed());",
+      "TestRejectedThreadEventHandleObservation::capture(source.0asusize)?;",
+      "assert!(!live_rejected.alias_is_closed());",
+      "alias_slot_identity_against_retained_for_test(source,source)?;",
+      "assert_eq!(same,SameObject);",
+      "alias_slot_identity_against_retained_for_test(source,unrelated)?;",
+      "assert_eq!(different,DifferentObject);",
+      "alias_slot_identity_against_retained_for_test(source,HANDLE::default())?;",
+      "assert_eq!(invalid,Invalid);",
+    ]) &&
+    (compactIdentityTest.match(
+      /assert_eq!\(\(access,flags,attributes\),\(0,0,0\)\);/gu,
+    ) ?? []).length === 3 &&
+    [
+      "<sys::TestDebugEventHandleObservationasAmbiguousIfClone<_>>::marker",
+      "<sys::TestDebugEventHandleObservationasAmbiguousIfCopy<_>>::marker",
+      "<sys::TestRejectedThreadEventHandleObservationasAmbiguousIfClone<_>>::marker",
+      "<sys::TestRejectedThreadEventHandleObservationasAmbiguousIfCopy<_>>::marker",
+    ].every((marker) => compactRust(transferTest).includes(marker))
+  );
+};
+const keyAgentAliasIdentityMutationProbes = [
+  mutateKeyAgentLeaf(
+    keyAgentAliasIdentityCurrentLeaves.capture,
+    "DUPLICATE_HANDLE_OPTIONS(0)",
+    "DUPLICATE_SAME_ACCESS",
+  ),
+  mutateKeyAgentLeaf(
+    keyAgentAliasIdentityCurrentLeaves.capture,
+    "                    0,\n                    false,",
+    "                    1,\n                    false,",
+  ),
+  mutateKeyAgentLeaf(
+    keyAgentAliasIdentityCurrentLeaves.capture,
+    "                    false,\n                    DUPLICATE_HANDLE_OPTIONS(0),",
+    "                    true,\n                    DUPLICATE_HANDLE_OPTIONS(0),",
+  ),
+  mutateKeyAgentLeaf(
+    keyAgentAliasIdentityCurrentLeaves.capture,
+    "DUPLICATE_HANDLE_OPTIONS(0)",
+    "DUPLICATE_CLOSE_SOURCE",
+  ),
+  mutateKeyAgentLeaf(
+    keyAgentAliasIdentityCurrentLeaves.capture,
+    "retained_flags != 0 || retained_access != 0 || retained_attributes != 0",
+    "retained_access != 0 || retained_attributes != 0",
+  ),
+  mutateKeyAgentLeaf(
+    keyAgentAliasIdentityCurrentLeaves.capture,
+    "retained_flags != 0 || retained_access != 0 || retained_attributes != 0",
+    "retained_flags != 0 || retained_attributes != 0",
+  ),
+  mutateKeyAgentLeaf(
+    keyAgentAliasIdentityCurrentLeaves.capture,
+    "retained_flags != 0 || retained_access != 0 || retained_attributes != 0",
+    "retained_flags != 0 || retained_access != 0",
+  ),
+  mutateKeyAgentLeaf(
+    keyAgentAliasIdentityCurrentLeaves.slotIdentity,
+    "unsafe { SetLastError(ERROR_SUCCESS) };",
+    "let _ = ERROR_SUCCESS;",
+  ),
+  mutateKeyAgentLeaf(
+    keyAgentAliasIdentityCurrentLeaves.failedComparisonIdentity,
+    "ERROR_NOT_SAME_OBJECT.0",
+    "ERROR_ACCESS_DENIED.0",
+  ),
+  mutateKeyAgentLeaf(
+    keyAgentAliasIdentityCurrentLeaves.failedComparisonIdentity,
+    "ERROR_INVALID_HANDLE.0",
+    "ERROR_ACCESS_DENIED.0",
+  ),
+  mutateKeyAgentLeaf(
+    keyAgentAliasIdentityCurrentLeaves.failedComparisonIdentity,
+    "TestAliasSlotIdentity::Indeterminate",
+    "TestAliasSlotIdentity::DifferentObject",
+  ),
+  mutateKeyAgentLeaf(
+    keyAgentAliasIdentityCurrentLeaves.aliasSlotProvesClosed,
+    "TestAliasSlotIdentity::Invalid | TestAliasSlotIdentity::DifferentObject",
+    "TestAliasSlotIdentity::Invalid\n                | TestAliasSlotIdentity::DifferentObject\n                | TestAliasSlotIdentity::SameObject",
+  ),
+  mutateKeyAgentLeaf(
+    keyAgentAliasIdentityCurrentLeaves.aliasSlotProvesClosed,
+    "TestAliasSlotIdentity::Invalid | TestAliasSlotIdentity::DifferentObject",
+    "TestAliasSlotIdentity::Invalid\n                | TestAliasSlotIdentity::DifferentObject\n                | TestAliasSlotIdentity::Indeterminate",
+  ),
+  replaceInsideExactRustItem(
+    keyAgentActivationSource,
+    keyAgentAliasIdentityCurrentLeaves.observedDefinition,
+    "retained_identity: OwnedHandle",
+    "retained_identity: usize",
+  ),
+  ...[
+    keyAgentAliasIdentityCurrentLeaves.debugObservationDefinition,
+    keyAgentAliasIdentityCurrentLeaves.rejectedObservationDefinition,
+  ].flatMap((definition) =>
+    ["Clone", "Copy"].map((traitName) =>
+      replaceInsideExactRustItem(
+        keyAgentActivationSource,
+        definition,
+        "#[cfg(test)]",
+        `#[cfg(test)]\n    #[derive(${traitName})]`,
+      ),
+    ),
+  ),
+  mutateKeyAgentLeaf(
+    keyAgentAliasIdentityCurrentLeaves.identityTest,
+    "fn debug_event_alias_slot_identity_distinguishes_reuse_from_leak",
+    "fn removed_debug_event_alias_slot_identity_distinguishes_reuse_from_leak",
+  ),
+];
+const keyAgentAliasIdentityMutationResults =
+  keyAgentAliasIdentityMutationProbes.map((mutated, index) => ({
+    index,
+    changed: mutated !== keyAgentActivationSource,
+    rejected:
+      mutated !== keyAgentActivationSource &&
+      !keyAgentAliasIdentityContract(mutated, false),
+  }));
 const keyAgentHandleAttenuationContract = (source) => {
   let production;
   let withTests;
@@ -52180,6 +52896,11 @@ requireInvariant(
         mutated !== keyAgentActivationSource &&
         !keyAgentPostJoinActivationContract(mutated),
     ) &&
+    keyAgentAliasIdentityContract(keyAgentActivationSource) &&
+    keyAgentAliasIdentityMutationProbes.length === 19 &&
+    keyAgentAliasIdentityMutationResults.every(
+      ({ changed, rejected }) => changed && rejected,
+    ) &&
     keyAgentHandleAttenuationContract(keyAgentActivationSource) &&
     keyAgentHandleAttenuationMutationProbes.every(
       (mutated) =>
@@ -52198,7 +52919,7 @@ requireInvariant(
     closeOwnedHandleChecked.includes("core::mem::forget(handle)") &&
     closeOwnedHandleChecked.indexOf("CloseHandle(raw)") <
       closeOwnedHandleChecked.indexOf("core::mem::forget(handle)"),
-  "debug-event aliases must register before fallible authentication; creator handles must attenuate to exact process/resume-only authority with cfg(test)-only native readback, one resume, and process-only Running state",
+  `debug-event aliases must register before fallible authentication; test-only close observations must retain exact zero-rights object identity, distinguish invalid/reused slots from same-object leaks, remain move-only and production-absent, and keep the exact 28-pass/one-ignored inventory; creator handles must attenuate to exact process/resume-only authority with cfg(test)-only native readback, one resume, and process-only Running state; identity probe count=${keyAgentAliasIdentityMutationProbes.length}, identity mutation failures=${JSON.stringify(keyAgentAliasIdentityMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
 );
 clearRustAnalysisCaches("key-agent-debug-evidence-family");
 const keyAgentCreationAttributeBlock =
@@ -54073,7 +54794,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_activation.rs",
     unsafeCount: 103,
-    sha256: "3d10c7f9e224ca8b63a8b831dac68be4e384d0986d141589be476b580a17de17",
+    sha256: "c04d8225f8295b13519fe8090b4cbc4d42f572e6ff920bca0c263bb3c39f16ba",
   },
   {
     path: "crates/platform-windows/src/key_agent_child_bootstrap.rs",
@@ -57915,7 +58636,7 @@ const approvedKeyAgentDebuggerGateEventLeafSha256 = Object.freeze({
   positivePrimaryTest:
     "43c5064fe6da70ecf18fb091cd040ec826f2c96ddbfd1aa40b290d2aaaa58679",
   rejectedThreadAliasTest:
-    "0f3e4e87d28dfe05652dd78b0a453a4a1d067838ee9327d736622fbbea24492c",
+    "d3d3460e59451ff2a1688da1d2f2d934578e3f17620d2a9eaceee4c2548a91ac",
 });
 const keyAgentDebuggerGateEventContract = (source, requireHashes = true) => {
   let leaves;
@@ -58211,13 +58932,8 @@ const keyAgentDebuggerGateEventContract = (source, requireHashes = true) => {
       "rejected_thread_observation.alias_is_closed()",
       "require_root_job_empty_after_join(&root_job)?;",
     ]) &&
-    hasOrderedCompactRustMarkers(rejectedThreadAliasTest, [
-      "lethandle=HANDLE(self.threadas*mutc_void);",
-      "letmutflags=u32::MAX;",
-      "GetHandleInformation(handle,&rawmutflags)",
-      ".is_err()",
-      "unsafe{GetLastError()}==ERROR_INVALID_HANDLE",
-    ]) &&
+    compactRust(rejectedThreadAliasTest) ===
+      "pub(super)fnalias_is_closed(&self)->bool{self.thread.original_is_closed()}" &&
     namedTest(
       "minimal_primary_gate_proof_detaches_with_one_verified_suspend_count",
     ) &&
@@ -58314,8 +59030,8 @@ const keyAgentDebuggerGateEventMutationProbes = [
     "                        handles.rejected_thread_id = None;",
   ),
   keyAgentActivationSource.replace(
-    "                && unsafe { GetLastError() } == ERROR_INVALID_HANDLE",
-    "                && unsafe { GetLastError() } == ERROR_ACCESS_DENIED",
+    "            self.thread.original_is_closed()",
+    "            true",
   ),
   keyAgentActivationSource.replace(
     "        drop(joined);\n        assert!(rejected_thread_observation.alias_is_closed());",

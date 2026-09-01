@@ -183,14 +183,14 @@ impl KeyAgentDebugEventCleanup {
             .as_ref()
             .filter(|handles| handles.is_complete())
             .ok_or(KeyAgentActivationError::DebugDetach)?;
-        Ok(sys::TestDebugEventHandleObservation::new(
+        sys::TestDebugEventHandleObservation::capture(
             handles
                 .process
                 .ok_or(KeyAgentActivationError::DebugDetach)?,
             handles
                 .primary_thread
                 .ok_or(KeyAgentActivationError::DebugDetach)?,
-        ))
+        )
     }
 
     #[cfg(test)]
@@ -209,9 +209,7 @@ impl KeyAgentDebugEventCleanup {
             .rejected_thread
             .filter(|_| handles.rejected_thread_id.is_some())
             .ok_or(KeyAgentActivationError::DebugDetach)?;
-        Ok(sys::TestRejectedThreadEventHandleObservation::new(
-            rejected_thread,
-        ))
+        sys::TestRejectedThreadEventHandleObservation::capture(rejected_thread)
     }
 
     fn take_after_join(
@@ -1669,7 +1667,8 @@ mod sys {
     };
     #[cfg(test)]
     use windows::Win32::Foundation::{
-        ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE, ERROR_SUCCESS, STATUS_SUCCESS, SetLastError,
+        ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE, ERROR_NOT_SAME_OBJECT, ERROR_SUCCESS,
+        STATUS_SUCCESS, SetLastError,
     };
     use windows::Win32::Security::TOKEN_QUERY;
     use windows::Win32::Storage::FileSystem::{
@@ -2637,14 +2636,14 @@ mod sys {
                 return Err(KeyAgentActivationError::DebugDetach);
             }
             #[cfg(test)]
-            let observation = TestDebugEventHandleObservation::new(
+            let observation = TestDebugEventHandleObservation::capture(
                 self.debug_event_process
                     .ok_or(KeyAgentActivationError::DebugDetach)?
                     .0 as usize,
                 self.debug_event_primary_thread
                     .ok_or(KeyAgentActivationError::DebugDetach)?
                     .0 as usize,
-            );
+            )?;
             self.close_remaining_detached_debug_event_handles()?;
             #[cfg(test)]
             if !observation.aliases_are_closed() {
@@ -3953,56 +3952,205 @@ mod sys {
     }
 
     #[cfg(test)]
+    struct TestObservedAlias {
+        raw: usize,
+        retained_identity: OwnedHandle,
+    }
+
+    #[cfg(test)]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(super) enum TestAliasSlotIdentity {
+        Invalid,
+        DifferentObject,
+        SameObject,
+        Indeterminate,
+    }
+
+    #[cfg(test)]
+    const fn alias_slot_proves_original_closed(identity: TestAliasSlotIdentity) -> bool {
+        matches!(
+            identity,
+            TestAliasSlotIdentity::Invalid | TestAliasSlotIdentity::DifferentObject
+        )
+    }
+
+    #[cfg(test)]
+    const fn failed_alias_comparison_identity(last_error: u32) -> TestAliasSlotIdentity {
+        if last_error == ERROR_NOT_SAME_OBJECT.0 {
+            TestAliasSlotIdentity::DifferentObject
+        } else if last_error == ERROR_INVALID_HANDLE.0 {
+            TestAliasSlotIdentity::Invalid
+        } else {
+            TestAliasSlotIdentity::Indeterminate
+        }
+    }
+
+    #[cfg(test)]
+    impl TestObservedAlias {
+        fn capture(raw: usize) -> Result<Self, KeyAgentActivationError> {
+            let source = HANDLE(raw as *mut c_void);
+            if invalid(source) {
+                return Err(KeyAgentActivationError::Cleanup);
+            }
+
+            let mut retained_identity = HANDLE::default();
+            // SAFETY: `source` is the exact live event alias registered while
+            // the debugger remains attached. Both process parameters name the
+            // current process, Windows initializes at most one non-inheritable
+            // zero-rights identity anchor, and ownership transfers once below.
+            unsafe {
+                DuplicateHandle(
+                    GetCurrentProcess(),
+                    source,
+                    GetCurrentProcess(),
+                    &raw mut retained_identity,
+                    0,
+                    false,
+                    DUPLICATE_HANDLE_OPTIONS(0),
+                )
+            }
+            .map_err(|_| KeyAgentActivationError::Cleanup)?;
+            if invalid(retained_identity) || retained_identity == source {
+                return Err(KeyAgentActivationError::Cleanup);
+            }
+            // SAFETY: successful duplication returned one newly owned handle
+            // and no other wrapper owns `retained_identity`.
+            let retained_identity = unsafe { OwnedHandle::from_raw_handle(retained_identity.0) };
+            let retained_raw = windows_handle(retained_identity.as_handle());
+            let mut retained_flags = u32::MAX;
+            // SAFETY: the newly owned anchor is live and `retained_flags` is
+            // exact initialized writable storage.
+            unsafe { GetHandleInformation(retained_raw, &raw mut retained_flags) }
+                .map_err(|_| KeyAgentActivationError::Cleanup)?;
+            let (retained_access, retained_attributes) =
+                query_handle_authority_for_test(retained_raw)
+                    .map_err(|_| KeyAgentActivationError::Cleanup)?;
+            if retained_flags != 0 || retained_access != 0 || retained_attributes != 0 {
+                return Err(KeyAgentActivationError::Cleanup);
+            }
+            // SAFETY: both handles are live here and this call only establishes
+            // that the retained test witness names the original kernel object.
+            if !unsafe { CompareObjectHandles(source, retained_raw) }.as_bool() {
+                return Err(KeyAgentActivationError::Cleanup);
+            }
+
+            Ok(Self {
+                raw,
+                retained_identity,
+            })
+        }
+
+        fn slot_identity(&self, candidate: HANDLE) -> TestAliasSlotIdentity {
+            // SAFETY: the retained witness is live. Resetting the calling
+            // thread's last-error slot makes a false comparison classifiable.
+            unsafe { SetLastError(ERROR_SUCCESS) };
+            // SAFETY: this test-only single probe never adopts or closes the
+            // candidate. The API reports either the same object or a stable
+            // Win32 reason for a false comparison; every other result remains
+            // indeterminate.
+            if unsafe {
+                CompareObjectHandles(
+                    candidate,
+                    windows_handle(self.retained_identity.as_handle()),
+                )
+            }
+            .as_bool()
+            {
+                TestAliasSlotIdentity::SameObject
+            } else {
+                // SAFETY: read immediately after the false comparison.
+                failed_alias_comparison_identity(unsafe { GetLastError() }.0)
+            }
+        }
+
+        fn slot_identity_after_close(&self) -> TestAliasSlotIdentity {
+            self.slot_identity(HANDLE(self.raw as *mut c_void))
+        }
+
+        fn retained_authority(&self) -> Result<(u32, u32, u32), KeyAgentActivationError> {
+            let retained = windows_handle(self.retained_identity.as_handle());
+            let mut flags = u32::MAX;
+            // SAFETY: the retained identity anchor is live and `flags` is exact
+            // initialized writable storage.
+            unsafe { GetHandleInformation(retained, &raw mut flags) }
+                .map_err(|_| KeyAgentActivationError::Cleanup)?;
+            let (access, attributes) = query_handle_authority_for_test(retained)
+                .map_err(|_| KeyAgentActivationError::Cleanup)?;
+            Ok((access, flags, attributes))
+        }
+
+        fn original_is_closed(&self) -> bool {
+            alias_slot_proves_original_closed(self.slot_identity_after_close())
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) const fn alias_slot_proves_original_closed_for_test(
+        identity: TestAliasSlotIdentity,
+    ) -> bool {
+        alias_slot_proves_original_closed(identity)
+    }
+
+    #[cfg(test)]
+    pub(super) const fn failed_alias_comparison_proves_original_closed_for_test(
+        last_error: u32,
+    ) -> bool {
+        alias_slot_proves_original_closed(failed_alias_comparison_identity(last_error))
+    }
+
+    #[cfg(test)]
+    pub(super) fn alias_slot_identity_against_retained_for_test(
+        source: HANDLE,
+        candidate: HANDLE,
+    ) -> Result<(TestAliasSlotIdentity, u32, u32, u32), KeyAgentActivationError> {
+        let observation = TestObservedAlias::capture(source.0 as usize)?;
+        let identity = observation.slot_identity(candidate);
+        let (access, flags, attributes) = observation.retained_authority()?;
+        Ok((identity, access, flags, attributes))
+    }
+
+    #[cfg(test)]
     pub(super) struct TestDebugEventHandleObservation {
-        process: usize,
-        primary_thread: usize,
+        process: TestObservedAlias,
+        primary_thread: TestObservedAlias,
     }
 
     #[cfg(test)]
     impl TestDebugEventHandleObservation {
-        pub(super) const fn new(process: usize, primary_thread: usize) -> Self {
-            Self {
+        pub(super) fn capture(
+            process: usize,
+            primary_thread: usize,
+        ) -> Result<Self, KeyAgentActivationError> {
+            let process = TestObservedAlias::capture(process)?;
+            // If the second capture fails, the first local identity anchor is
+            // dropped before the error crosses this boundary.
+            let primary_thread = TestObservedAlias::capture(primary_thread)?;
+            Ok(Self {
                 process,
                 primary_thread,
-            }
+            })
         }
 
         pub(super) fn aliases_are_closed(&self) -> bool {
-            for raw in [self.primary_thread, self.process] {
-                let handle = HANDLE(raw as *mut c_void);
-                let mut flags = u32::MAX;
-                // SAFETY: this is a test-only post-join probe of the registered
-                // numeric handle values; it never adopts or closes them.
-                if unsafe { GetHandleInformation(handle, &raw mut flags) }.is_ok()
-                    // SAFETY: read immediately after the failed Win32 probe.
-                    || unsafe { GetLastError() } != ERROR_INVALID_HANDLE
-                {
-                    return false;
-                }
-            }
-            true
+            self.primary_thread.original_is_closed() && self.process.original_is_closed()
         }
     }
 
     #[cfg(test)]
     pub(super) struct TestRejectedThreadEventHandleObservation {
-        thread: usize,
+        thread: TestObservedAlias,
     }
 
     #[cfg(test)]
     impl TestRejectedThreadEventHandleObservation {
-        pub(super) const fn new(thread: usize) -> Self {
-            Self { thread }
+        pub(super) fn capture(thread: usize) -> Result<Self, KeyAgentActivationError> {
+            Ok(Self {
+                thread: TestObservedAlias::capture(thread)?,
+            })
         }
 
         pub(super) fn alias_is_closed(&self) -> bool {
-            let handle = HANDLE(self.thread as *mut c_void);
-            let mut flags = u32::MAX;
-            // SAFETY: this is a test-only post-join probe of the registered
-            // numeric handle value; it never adopts or closes the handle.
-            unsafe { GetHandleInformation(handle, &raw mut flags) }.is_err()
-                // SAFETY: read immediately after the failed Win32 probe.
-                && unsafe { GetLastError() } == ERROR_INVALID_HANDLE
+            self.thread.original_is_closed()
         }
     }
 
@@ -4671,7 +4819,9 @@ mod tests {
     use std::sync::{Arc, Barrier, mpsc};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE, ERROR_NOT_SAME_OBJECT, ERROR_SUCCESS, HANDLE,
+    };
     use windows::Win32::System::Threading::{
         CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DEBUG_ONLY_THIS_PROCESS,
         DEBUG_PROCESS, EXTENDED_STARTUPINFO_PRESENT,
@@ -5078,6 +5228,61 @@ mod tests {
     }
 
     #[test]
+    fn debug_event_alias_slot_identity_distinguishes_reuse_from_leak()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use sys::TestAliasSlotIdentity::{DifferentObject, Indeterminate, Invalid, SameObject};
+
+        assert!(sys::alias_slot_proves_original_closed_for_test(Invalid));
+        assert!(sys::alias_slot_proves_original_closed_for_test(
+            DifferentObject
+        ));
+        assert!(!sys::alias_slot_proves_original_closed_for_test(SameObject));
+        assert!(!sys::alias_slot_proves_original_closed_for_test(
+            Indeterminate
+        ));
+        assert!(
+            sys::failed_alias_comparison_proves_original_closed_for_test(ERROR_NOT_SAME_OBJECT.0)
+        );
+        assert!(
+            sys::failed_alias_comparison_proves_original_closed_for_test(ERROR_INVALID_HANDLE.0)
+        );
+        assert!(!sys::failed_alias_comparison_proves_original_closed_for_test(ERROR_SUCCESS.0));
+        assert!(
+            !sys::failed_alias_comparison_proves_original_closed_for_test(ERROR_ACCESS_DENIED.0)
+        );
+
+        let package_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let source_file = std::fs::File::open(package_root.join("Cargo.toml"))?;
+        let unrelated_file =
+            std::fs::File::open(package_root.join("src").join("key_agent_activation.rs"))?;
+        let source = HANDLE(source_file.as_raw_handle());
+        let unrelated = HANDLE(unrelated_file.as_raw_handle());
+
+        let live_pair =
+            sys::TestDebugEventHandleObservation::capture(source.0 as usize, unrelated.0 as usize)?;
+        assert!(!live_pair.aliases_are_closed());
+        let live_rejected =
+            sys::TestRejectedThreadEventHandleObservation::capture(source.0 as usize)?;
+        assert!(!live_rejected.alias_is_closed());
+
+        let (same, access, flags, attributes) =
+            sys::alias_slot_identity_against_retained_for_test(source, source)?;
+        assert_eq!(same, SameObject);
+        assert_eq!((access, flags, attributes), (0, 0, 0));
+
+        let (different, access, flags, attributes) =
+            sys::alias_slot_identity_against_retained_for_test(source, unrelated)?;
+        assert_eq!(different, DifferentObject);
+        assert_eq!((access, flags, attributes), (0, 0, 0));
+
+        let (invalid, access, flags, attributes) =
+            sys::alias_slot_identity_against_retained_for_test(source, HANDLE::default())?;
+        assert_eq!(invalid, Invalid);
+        assert_eq!((access, flags, attributes), (0, 0, 0));
+        Ok(())
+    }
+
+    #[test]
     fn authority_and_detached_type_states_have_exact_transfer_traits() {
         require_send::<PreflightKeyAgentArtifact>();
         require_send::<PendingKeyAgentActivation>();
@@ -5119,6 +5324,10 @@ mod tests {
         let _ = <RunningKeyAgentActivation as AmbiguousIfSync<_>>::marker;
         let _ = <RunningKeyAgentActivation as AmbiguousIfClone<_>>::marker;
         let _ = <RunningKeyAgentActivation as AmbiguousIfCopy<_>>::marker;
+        let _ = <sys::TestDebugEventHandleObservation as AmbiguousIfClone<_>>::marker;
+        let _ = <sys::TestDebugEventHandleObservation as AmbiguousIfCopy<_>>::marker;
+        let _ = <sys::TestRejectedThreadEventHandleObservation as AmbiguousIfClone<_>>::marker;
+        let _ = <sys::TestRejectedThreadEventHandleObservation as AmbiguousIfCopy<_>>::marker;
     }
 
     #[test]
