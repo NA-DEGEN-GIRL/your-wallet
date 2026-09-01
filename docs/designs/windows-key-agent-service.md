@@ -1251,7 +1251,8 @@ key source. There is still no `%ProgramData%` service-owned root, service-SID
 owner/DACL adapter, installer-seeded initial marker, kernel singleton object,
 TPM-backed authentication/high-water anchor, power-loss or reboot evidence, or
 executable/top-level production caller or production key source. The only
-internal consumers are the separately gated dormant Phase 2F-c/2G chain.
+internal consumers are the separately gated dormant Phase 2F-c/2G runtime chain
+and Phase 2C Windows provisioning compositor.
 Existing LPAC user storage and the signing journal are not
 reused as service run-state authority. Phase 1 and Phase 2 remain **STOP-SHIP**;
 both compiled policies remain `None`, and ordinary/release execution remains
@@ -1267,6 +1268,26 @@ while that writer remains held, independently observe both the run marker and
 high-water checkpoint as missing before it can produce
 `UnprovisionedWithWriter`.
 
+A production-compiled but dormant Windows-only child now composes that logical
+typestate with the fixed Phase 2F-b marker/checkpoint pair. The child is reached
+through one private `#[path = "windows_provisioning.rs"]` module and an exact
+`pub(super)` re-export; it has no executable or top-level entry. Its move-only
+`WindowsFreshInstallAuthority` has no production constructor or caller. The
+only constructor is `cfg(test)` and binds the current-user installation fixture
+to a borrowed fixture authentication key; the authority carries a private
+nonzero provisioning attempt. This is a test surrogate, not evidence that the
+caller is an elevated installer or that a missing store is a virgin
+installation.
+
+`start_windows_initial_provisioning` consumes the already-held OS writer and
+that authority. Writer transfer precedes backend binding and writer epoch
+allocation. The authority's carried attempt, backend binding, and writer epoch
+are nonzero and pairwise distinct. It then freshly observes the fixed pair and
+admits only exact Missing/Missing before creating the logical
+`UnprovisionedWithWriter`. Any observation error, nonempty pair, one-sided
+state, or malformed record is terminal and retains the exact pair and logical
+writer-exit obligations for checked retirement.
+
 The only candidate from that authority is canonical Clean generation one with
 a zero predecessor. It requires an exact absent/absent compare-and-swap,
 distinct commit and reread receipts, and the same backend, installation,
@@ -1279,6 +1300,18 @@ receipt-validation failure retains only provisioning-writer exit authority. A
 non-consuming request-validation, duplicate, or replay rejection cannot issue
 a second or replacement receipt and does not invalidate an already-issued
 exact receipt.
+
+The Windows child prepares `ExpectedWindowsPair::missing()` from the logical
+Clean-one candidate. The exact consuming order is logical begin-commit, OS
+commit, logical commit receipt, logical begin-reread, independent OS reread,
+and logical completion. A known-not-committed failure is terminal. From the
+first native rename attempt onward, any non-confirmed or error outcome is
+ambiguity-bearing and exposes only one independent reload or retirement. Only
+a fully confirmed commit proceeds to the independent reread. Reload classifies
+exact Missing/Missing as `Retry`, the exact authenticated candidate as
+`Committed`, and every partial, malformed, or drifting observation as terminal.
+A confirmed commit reread failure is terminal `RereadDrift`; it never re-enters
+ambiguity reload or restores the prior empty state.
 
 The same private one-shot commit, reread, reload, normal-release, and terminal-
 retirement phases apply to provisioning. An ambiguity preserves both the prior backend round and the
@@ -1294,15 +1327,45 @@ fresh runtime writer and only then reopen and authenticate the new Clean pair
 through the existing boot path. Ordinary boot on a missing pair still requires
 recovery and never auto-initializes storage.
 
-This is still only a bounded memory fault model with a fixture key and
-fixture-only fresh-install authority. It does not prove that a missing pair is
-a virgin installation and supplies no elevated installer provenance or lease,
-installer journal, `%ProgramData%` storage, service-SID owner/DACL enforcement,
-SCM configuration, signed immutable artifacts, TPM/high-water anchor,
-power-loss/reboot behavior, production constructor, or production caller.
-Deletion of an existing store must never be accepted as fresh installation by
-a future adapter. Phase 1 and Phase 2 remain **STOP-SHIP**; both compiled
-policies remain `None`, and ordinary/release execution remains silent exit 78.
+The Windows release path first compares the pair observation with the exact
+logical Clean bytes, prepares and begins logical release, and then calls the
+pair-bound verified OS release. It distinguishes writer-retained,
+released-without-receipt, and post-release terminal outcomes. Only an exact
+released pair, matching logical release receipt, and logical completion mint
+`WindowsProvisionedRunState`, which exposes generation only. Every live or
+reload state also has a reason-neutral checked retirement path ordered as
+logical begin-release, exact OS-pair retirement, logical receipt recording,
+then logical completion. A checked-retirement failure is irreversible and
+cannot mint normal, retry, Boot, or recovery authority.
+
+The Windows composition has six passing `windows_provisioning` tests: exact
+Missing/Missing to Clean generation one followed by a separately acquired fresh
+runtime Boot; unchanged rejection of a pre-existing full pair; ambiguity reload
+classification for still-missing, marker-only, and exact-candidate states;
+terminal confirmed-commit reread drift; distinct writer-retained,
+released-without-receipt, and post-release outcomes; and complete live-state
+retirement, move-only, and Debug-redaction coverage. The focused
+`durable_run_state` inventory is therefore 85/85: 34 parent tests, 25 external
+logical provisioning tests, six `windows_pair` tests, six
+`windows_provisioning` tests, and fourteen `windows_runtime` tests. The kernel
+run-state-root inventory remains 56 total, with 54 passing and the same two
+environment-dependent tests ignored; the pre-Phase 2F-c Phase 2F-b inventory
+remains 55 total with 53 passing and two ignored.
+
+This remains a current-user fixture/local composition, not product
+provisioning. It does not prove that a missing pair is a virgin installation
+and supplies no elevated installer provenance, lease, or journal, production
+fresh-authority constructor or caller, `%ProgramData%`
+service-SID from-birth storage/ACL or ancestor sealing, SCM/restricted-token
+composition, trusted `SYSTEM` peer or mapped-I/O exclusion, signed immutable
+artifact/install binding, TPM/protected authentication key, non-rollbackable
+anchor, or supported-kernel crash, power-loss, reboot, torn-sector, storage-
+durability, or pair-atomicity evidence. Deletion of an existing store must never
+be accepted as fresh installation by a future adapter. Those are external
+**STOP-SHIP** obligations. The bounded logical fixture still has no production
+constructor, or production caller. Phase 1 and Phase 2 remain **STOP-SHIP**;
+both compiled policies remain `None`, and ordinary/release execution remains
+silent exit 78.
 
 **Current Phase 2D status: started, not passed.** The Boot-producing runtime
 path now mirrors the writer-first provisioning boundary. The backend must
@@ -1342,7 +1405,7 @@ boundary.
 At the pre-Phase 2F-c boundary this remained a module-private, zero-runtime-root
 contract over only the bounded memory fixture and fixture authentication key.
 It had no filesystem or other OS adapter. The separately gated dormant Phase
-2F-c composite below is its sole private Windows durable adapter, and the
+2F-c composite below is its sole private Windows runtime durable adapter, and the
 separately gated Phase 2G compositor is now its sole production-compiled policy
 consumer. Neither bridge has an executable, top-level, or exported caller or a
 production key provider.
@@ -1679,10 +1742,11 @@ At the pre-Phase 2F-c boundary, the `windows_pair` child mapped the private
 outcomes without a production caller, expected-authority mint,
 authentication-key provider, TPM/non-rollbackable anchor integration, or
 conversion into Phase 2D Boot, Active, Clean, stopped, provisioning, signing,
-or normal-release authority. The separately gated Phase 2F-c composite below
-is now its sole production consumer and remains dormant; its sole
-production-compiled caller is the private Phase 2G compositor, which itself has
-no executable or top-level caller.
+or normal-release authority. The separately gated Phase 2F-c runtime and Phase
+2C Windows provisioning composites are now its exact two production consumers
+and remain dormant. The runtime composite's sole production-compiled caller is
+the private Phase 2G compositor, while Windows provisioning has no production
+fresh-authority constructor or caller.
 Neither slice establishes pair atomicity or power-loss durability. Direct
 compressed and encrypted attribute-policy branches, four deterministic
 synthetic short-write/flush-failure staging branches, and variable-length rename
@@ -1825,10 +1889,11 @@ The exact composite inventory is fourteen passing tests:
 `kernel_live_and_reload_states_have_checked_terminal_retirement`,
 `composite_authority_and_receipts_are_move_only`, and
 `composite_live_states_expose_consuming_terminal_transitions`. The focused
-`durable_run_state` module inventory is 79/79 passing: 34 parent tests plus 25
-provisioning, six `windows_pair`, and fourteen `windows_runtime` tests. The named
-pair and composite slices are therefore subsets of that module total, not
-additional disjoint counts. The kernel run-state-root suite is 56 total, with
+`durable_run_state` module inventory is 85/85 passing: 34 parent tests plus 25
+logical provisioning, six `windows_pair`, six `windows_provisioning`, and
+fourteen `windows_runtime` tests. The named pair and composite slices are
+therefore subsets of that module total, not additional disjoint counts. The
+kernel run-state-root suite is 56 total, with
 54 passing and the same two
 environment-dependent tests ignored.
 
@@ -1909,7 +1974,7 @@ escape. The exact compositor inventory is twelve passing tests:
 `post_release_logical_failure_is_irreversible_exit78_and_never_stopped`,
 `retirement_fault_preserves_original_lifecycle_and_platform_cleanup_causes`, and
 `debug_and_source_surfaces_are_redacted_silent_and_path_handle_free`. The
-supporting evidence is also fourteen passing `windows_runtime` tests, 79/79
+supporting evidence is also fourteen passing `windows_runtime` tests, 85/85
 focused `durable_run_state` tests, and the 56-test kernel root suite with 54
 passing and the same two environment-dependent tests ignored.
 
@@ -2012,6 +2077,16 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-09-01 - Added the dormant Phase 2C Windows initial-provisioning
+  composition. It transfers the held pair writer before allocating distinct
+  backend-binding and writer-epoch values, admits only a fresh exact
+  Missing/Missing pair, commits canonical Clean generation one in logical/OS/
+  receipt/reread order, classifies ambiguity through independent reload, and
+  releases or retires authority with exact pair-bound receipts. Six focused
+  Windows tests bring the durable inventory to 85/85. This is current-user
+  fixture/local evidence only; production fresh-install authority, elevated
+  installer provenance, protected storage/key/rollback custody, SCM wiring, and
+  supported-kernel durability evidence remain external **STOP-SHIP**.
 - 2026-09-01 - Added current-host forced child-process termination evidence at
   the three exact fixed-pair rename cutpoints. A private strict lowercase-hex
   child transport, pre-kill run-lock contention, exact byte/temp/full-identity

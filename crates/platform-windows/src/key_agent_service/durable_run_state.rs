@@ -4,10 +4,10 @@
 //! in-memory fault fixture compiled under `cfg(test)`. A separate dormant
 //! Windows-only child joins its exact marker/checkpoint codec to the held
 //! run-state writer facade, which performs fixed-pair operating-system I/O.
-//! Its sole production-compiled caller is the sibling dormant Windows
-//! lifecycle compositor; there is no executable/top-level caller, production
-//! key source, or authority mint, and this slice makes no crash/power-loss
-//! claim.
+//! Its production-compiled consumers are the sibling dormant Windows runtime
+//! and fresh-install provisioning compositors; there is no executable/top-level
+//! caller, production key source, or fresh-install authority mint, and this
+//! slice makes no crash/power-loss claim.
 
 use std::cell::Cell;
 use std::fmt;

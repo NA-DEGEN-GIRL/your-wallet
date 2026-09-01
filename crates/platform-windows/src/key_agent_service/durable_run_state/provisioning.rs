@@ -9,6 +9,25 @@
 // enum layout smaller.
 #![allow(clippy::large_enum_variant, clippy::result_large_err)]
 
+#[cfg(windows)]
+#[path = "windows_provisioning.rs"]
+mod windows;
+
+#[cfg(windows)]
+#[allow(unused_imports)] // Dormant production-compiled Windows provisioning seam.
+pub(super) use windows::{
+    WindowsFreshInstallAuthority, WindowsInitialCleanCommitOutcome,
+    WindowsInitialCleanCommittedWithWriter, WindowsInitialCleanReloadOutcome,
+    WindowsInitialCleanReloadRequired, WindowsInitialProvisioningStartFailure,
+    WindowsPostReleaseProvisioningTerminal, WindowsPreparedInitialCleanTransition,
+    WindowsProvisionedRunState, WindowsProvisioningBindingFailure,
+    WindowsProvisioningCheckedRetired, WindowsProvisioningCheckedRetirementFailure,
+    WindowsProvisioningReleaseOutcome, WindowsProvisioningReleasedNoReceipt,
+    WindowsProvisioningRetirementPending, WindowsProvisioningTerminalCause,
+    WindowsProvisioningTerminalFailure, WindowsProvisioningUnboundRetired,
+    WindowsUnprovisionedWithWriter, start_windows_initial_provisioning,
+};
+
 use std::fmt;
 use std::num::NonZeroU64;
 

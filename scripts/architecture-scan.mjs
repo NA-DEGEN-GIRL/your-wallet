@@ -681,6 +681,63 @@ const keyAgentServicePhaseTwoFCTestOnlyProjectionFragments = Object.freeze([
   `    static TEST_PAIR_PROCESS_DEATH_CUTPOINT: RefCell<Option<TestPairProcessDeathHook>> = const { RefCell::new(None) };
 `,
 ]);
+const keyAgentServicePhaseTwoCWindowsModuleFragment = `#[cfg(windows)]
+#[path = "windows_provisioning.rs"]
+mod windows;
+
+#[cfg(windows)]
+#[allow(unused_imports)] // Dormant production-compiled Windows provisioning seam.
+pub(super) use windows::{
+    WindowsFreshInstallAuthority, WindowsInitialCleanCommitOutcome,
+    WindowsInitialCleanCommittedWithWriter, WindowsInitialCleanReloadOutcome,
+    WindowsInitialCleanReloadRequired, WindowsInitialProvisioningStartFailure,
+    WindowsPostReleaseProvisioningTerminal, WindowsPreparedInitialCleanTransition,
+    WindowsProvisionedRunState, WindowsProvisioningBindingFailure,
+    WindowsProvisioningCheckedRetired, WindowsProvisioningCheckedRetirementFailure,
+    WindowsProvisioningReleaseOutcome, WindowsProvisioningReleasedNoReceipt,
+    WindowsProvisioningRetirementPending, WindowsProvisioningTerminalCause,
+    WindowsProvisioningTerminalFailure, WindowsProvisioningUnboundRetired,
+    WindowsUnprovisionedWithWriter, start_windows_initial_provisioning,
+};
+
+`;
+const keyAgentServicePhaseTwoCWindowsTestOnlyProjectionFragments = Object.freeze([
+  `    static POST_RELEASE_PROVISIONING_RECEIPT_FAULT: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+`,
+  `    #[cfg(test)]
+    if take_post_release_provisioning_receipt_fault() {
+        let _ = logical.operation.record_release_receipt();
+    }
+`,
+]);
+function removeSingleExactRustProjectionFragment(source, fragment, label) {
+  const first = source.indexOf(fragment);
+  if (first === -1 || source.indexOf(fragment, first + fragment.length) !== -1) {
+    throw new Error(`architecture scan expected one exact ${label} fragment`);
+  }
+  return `${source.slice(0, first)}${source.slice(first + fragment.length)}`;
+}
+function keyAgentServicePhaseTwoCLogicalProductionPartition(source) {
+  return withoutCfgTestItems(
+    removeSingleExactRustProjectionFragment(
+      source,
+      keyAgentServicePhaseTwoCWindowsModuleFragment,
+      "Phase 2C Windows module/re-export",
+    ),
+  );
+}
+function keyAgentServicePhaseTwoCWindowsProductionPartition(source) {
+  let partition = source;
+  for (const fragment of keyAgentServicePhaseTwoCWindowsTestOnlyProjectionFragments) {
+    partition = removeSingleExactRustProjectionFragment(
+      partition,
+      fragment,
+      "Phase 2C Windows cfg(test)",
+    );
+  }
+  return withoutCfgTestItems(partition);
+}
 function keyAgentServicePhaseTwoFBProductionPartition(source) {
   let partition = source;
   for (const statement of [
@@ -2537,6 +2594,11 @@ const keyAgentServiceDurableWindowsRuntimePath =
   "crates/platform-windows/src/key_agent_service/durable_run_state/windows_runtime.rs";
 const keyAgentServiceDurableWindowsRuntime = await text(
   keyAgentServiceDurableWindowsRuntimePath,
+);
+const keyAgentServiceDurableWindowsProvisioningPath =
+  "crates/platform-windows/src/key_agent_service/durable_run_state/windows_provisioning.rs";
+const keyAgentServiceDurableWindowsProvisioning = await text(
+  keyAgentServiceDurableWindowsProvisioningPath,
 );
 const keyAgentServiceDurableProvisioningPath =
   "crates/platform-windows/src/key_agent_service/durable_run_state/provisioning.rs";
@@ -6201,15 +6263,19 @@ const keyAgentServiceLifecyclePolicyTypeNames = [
   "RuntimePolicy",
 ];
 const approvedKeyAgentServiceDurableSourceSha256 =
-  "343b52fd31ce7fa83e5a528d5f0c42091b505dc8d7a79ef8e2f4212221748405";
+  "bd3734f7c66075b2634e62f939d7e2aa54d5667db2533cb36bf46f630dcef56b";
 const approvedKeyAgentServiceDurableProductionSha256 =
-  "3b6a08cceb423c43749d48cdba7692b4a26a521cd649262aa48f350c8a92c077";
+  "81193603ecb28065de7f5d7d9b93b7ffebff2757409680f9c4043f548e30740c";
 const approvedKeyAgentServiceProvisioningSourceSha256 =
-  "bbd80d1985d625a47219e3c8cb2b3c6db9bcc7b8d9ddc149482d7263b7633237";
+  "4ae7546fcb7d032842738ba0f1dcedcebff5b8d2a4df55cf7a1d76c0afe1e80c";
 const approvedKeyAgentServiceProvisioningProductionSha256 =
   "0e7e338eeec0b2310feb3ee63c6894637770d1bcc3b6fd8762675f6dfd7f6116";
 const approvedKeyAgentServiceProvisioningTestsSha256 =
   "dd09f53f20943b9104539a6bbe38ffde23fcb2a07429cf92ef865ff759f955cc";
+const approvedKeyAgentServiceWindowsProvisioningSourceSha256 =
+  "61b68235c96327faabc31e6c2f94c830fedba9ce7db8fb4b80df4139d678c969";
+const approvedKeyAgentServiceWindowsProvisioningProductionSha256 =
+  "f247db2d1d1f1a5df25040a147e4fd08dfe8f40694095ca699674bbf822a58fa";
 const approvedKeyAgentServiceLifecycleSourceSha256 =
   "9c17becfd157dde3ba239f1bf962a9edfbc05456b1a4bd7544ec4611f59b5a66";
 const approvedKeyAgentServiceLifecycleTestsSha256 =
@@ -6298,6 +6364,14 @@ const keyAgentServiceProvisioningTestNames = [
   "mismatched_release_and_terminal_round_receipts_only_reconcile_for_exit",
   "bounded_counter_overflow_fails_without_unbound_authority",
   "provisioning_authorities_are_move_only_and_debug_redacted",
+];
+const keyAgentServiceWindowsProvisioningTestNames = [
+  "kernel_missing_pair_provisions_clean_one_then_fresh_runtime_boots_one",
+  "kernel_preexisting_full_pair_is_unchanged_and_terminally_retired",
+  "kernel_initial_ambiguity_reload_classifies_missing_partial_and_candidate",
+  "kernel_confirmed_initial_commit_reread_failure_is_terminal_drift",
+  "kernel_provisioning_release_distinguishes_retained_no_receipt_and_post_release",
+  "live_provisioning_states_retire_checked_and_debug_is_redacted",
 ];
 const keyAgentServiceLifecycleTestNames = [
   "pure_startup_checklist_latches_duplicates_and_evaluates_in_fixed_order",
@@ -6865,7 +6939,7 @@ const keyAgentServicePhaseTwoSemanticContract = ({
     "Exact terminal retirement is required before runtime or provisioning writer reacquisition",
     "nine external startup observations plus structurally carried storage binding and single-instance evidence remain eleven logical requirements",
     "At the pre-Phase 2F-c boundary this contract itself used only the bounded memory fixture and fixture key",
-    "separately gated dormant F-c composite below is now its sole private Windows adapter",
+    "separately gated dormant F-c composite below is now its sole private Windows runtime adapter",
     "has no top-level production caller or key provider",
     "Phase 2E/F-a/F-b remain independently gated below it",
     "Phase 1 and Phase 2 remain **STOP-SHIP**",
@@ -7996,15 +8070,31 @@ const keyAgentServicePhaseTwoSemanticContract = ({
 const keyAgentServicePhaseTwoCPinContract = ({
   provisioningSource,
   provisioningTests,
+  windowsProvisioningSource,
 }) => {
-  const provisioningProduction = withoutCfgTestItems(provisioningSource);
+  let provisioningProduction;
+  let windowsProvisioningProduction;
+  try {
+    provisioningProduction =
+      keyAgentServicePhaseTwoCLogicalProductionPartition(provisioningSource);
+    windowsProvisioningProduction =
+      keyAgentServicePhaseTwoCWindowsProductionPartition(
+        windowsProvisioningSource,
+      );
+  } catch {
+    return false;
+  }
   return (
     normalizedSourceSha256(provisioningSource) ===
       approvedKeyAgentServiceProvisioningSourceSha256 &&
     normalizedSourceSha256(provisioningProduction) ===
       approvedKeyAgentServiceProvisioningProductionSha256 &&
     normalizedSourceSha256(provisioningTests) ===
-      approvedKeyAgentServiceProvisioningTestsSha256
+      approvedKeyAgentServiceProvisioningTestsSha256 &&
+    normalizedSourceSha256(windowsProvisioningSource) ===
+      approvedKeyAgentServiceWindowsProvisioningSourceSha256 &&
+    normalizedSourceSha256(windowsProvisioningProduction) ===
+      approvedKeyAgentServiceWindowsProvisioningProductionSha256
   );
 };
 const keyAgentServicePhaseTwoEPinContract = ({
@@ -8053,14 +8143,436 @@ const keyAgentServicePhaseTwoGPinContract = ({
       approvedKeyAgentServiceWindowsLifecycleTestsSha256
   );
 };
+const keyAgentServicePhaseTwoCWindowsVisibleTypes = Object.freeze([
+  "WindowsFreshInstallAuthority",
+  "WindowsInitialProvisioningStartFailure",
+  "WindowsProvisioningBindingFailure",
+  "WindowsProvisioningUnboundRetired",
+  "WindowsUnprovisionedWithWriter",
+  "WindowsPreparedInitialCleanTransition",
+  "WindowsInitialCleanCommitOutcome",
+  "WindowsInitialCleanReloadRequired",
+  "WindowsInitialCleanReloadOutcome",
+  "WindowsInitialCleanCommittedWithWriter",
+  "WindowsProvisioningReleaseOutcome",
+  "WindowsProvisionedRunState",
+  "WindowsProvisioningReleasedNoReceipt",
+  "WindowsPostReleaseProvisioningTerminal",
+  "WindowsProvisioningTerminalCause",
+  "WindowsProvisioningRetirementPending",
+  "WindowsProvisioningCheckedRetired",
+  "WindowsProvisioningCheckedRetirementFailure",
+  "WindowsProvisioningTerminalFailure",
+]);
+const keyAgentServicePhaseTwoCWindowsPairConsumerTypes = Object.freeze([
+  "ExpectedWindowsPair",
+  "WindowsCommittedPair",
+  "WindowsObservedPair",
+  "WindowsPairCommitOutcome",
+  "WindowsPairExpectationMismatch",
+  "WindowsPairKnownFailure",
+  "WindowsPairReleaseAfterWriter",
+  "WindowsPairReleaseFailure",
+  "WindowsPairReleaseWithWriter",
+  "WindowsPairReleased",
+  "WindowsPairReloadFailure",
+  "WindowsPairReloadRequired",
+  "WindowsPairRetired",
+  "WindowsPairWriter",
+  "WindowsPreparedPairCommit",
+  "WindowsReloadedPair",
+  "WindowsRereadPair",
+]);
+const keyAgentServicePhaseTwoCWindowsSemanticContract = ({
+  main,
+  platformService,
+  platformLib,
+  durableSource,
+  windowsPairSource,
+  windowsRuntimeSource,
+  provisioningSource,
+  provisioningTests,
+  windowsProvisioningSource,
+  lifecycleSource,
+  windowsLifecycleSource,
+  provisioningDirectoryInventory,
+  designDocument,
+  architectureDocument,
+}) => {
+  let logicalProduction;
+  let windowsProduction;
+  try {
+    logicalProduction = keyAgentServicePhaseTwoCLogicalProductionPartition(
+      provisioningSource,
+    );
+    windowsProduction = keyAgentServicePhaseTwoCWindowsProductionPartition(
+      windowsProvisioningSource,
+    );
+  } catch {
+    return false;
+  }
+  const durable = keyAgentServicePhaseTwoPartitionDurable(durableSource);
+  const lifecycleProduction =
+    keyAgentServicePhaseTwoPartitionLifecycle(lifecycleSource);
+  if (durable === null || lifecycleProduction === null) return false;
+
+  const windowsRuntimeProduction = withoutCfgTestItems(windowsRuntimeSource);
+  const windowsPairProduction = withoutCfgTestItems(windowsPairSource);
+  const windowsLifecycleProduction = withoutCfgTestItems(windowsLifecycleSource);
+  const windowsCode = rustLexicalCode(windowsProduction);
+  const windowsCompact = compactRust(windowsProduction);
+  const windowsVisibleTypes = [
+    ...windowsCode.matchAll(
+      /\bpub\s*\(\s*in\s+crate\s*::\s*key_agent_service\s*\)\s+(?:struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
+    ),
+  ].map((match) => match.groups.name);
+  const windowsPairConsumerPattern = new RegExp(
+    `\\b(?:${keyAgentServicePhaseTwoCWindowsPairConsumerTypes.join("|")})\\b`,
+    "u",
+  );
+  const logicalProvisioningConsumerPattern = new RegExp(
+    `\\b(?:${keyAgentServiceProvisioningVisibleTypes.join("|")})\\b`,
+    "u",
+  );
+  const otherProduction = rustLexicalCode(
+    [
+      main,
+      platformService,
+      platformLib,
+      durable.production,
+      logicalProduction,
+      lifecycleProduction,
+      windowsLifecycleProduction,
+    ].join("\n"),
+  );
+  const pairConsumerFiles = [
+    windowsRuntimeProduction,
+    windowsProduction,
+    otherProduction,
+  ].map((source) => windowsPairConsumerPattern.test(rustLexicalCode(source)));
+  const logicalConsumerFiles = [
+    windowsProduction,
+    windowsRuntimeProduction,
+    windowsPairProduction,
+    lifecycleProduction,
+    windowsLifecycleProduction,
+    rustLexicalCode([main, platformService, platformLib, durable.production].join("\n")),
+  ].map((source) =>
+    logicalProvisioningConsumerPattern.test(rustLexicalCode(source)),
+  );
+  const authorityDestructuringSites = rustStructLiteralSites(
+    windowsProduction,
+    "WindowsFreshInstallAuthority",
+  );
+  const windowsTests = keyAgentServiceRustAttributedTestInventory(
+    windowsProvisioningSource,
+  );
+  const parentTests = keyAgentServiceRustTestNameInventory(durableSource);
+  const logicalTests = keyAgentServiceRustTestNameInventory(provisioningTests);
+  const pairTests = keyAgentServiceRustAttributedTestInventory(windowsPairSource);
+  const runtimeTests = keyAgentServiceRustAttributedTestInventory(
+    windowsRuntimeSource,
+  );
+  const designPhaseTwoCStart = designDocument.indexOf(
+    "**Current Phase 2C status: started, not passed.**",
+  );
+  const designPhaseTwoDStart = designDocument.indexOf(
+    "**Current Phase 2D status: started, not passed.**",
+    designPhaseTwoCStart,
+  );
+  const designSlice =
+    designPhaseTwoCStart === -1 || designPhaseTwoDStart === -1
+      ? ""
+      : designDocument.slice(designPhaseTwoCStart, designPhaseTwoDStart);
+  const normalizedDesignSlice = designSlice.replace(/\s+/gu, " ");
+  const architectureRows = architectureDocument
+    .split(/\r?\n/gu)
+    .filter((line) =>
+      line.startsWith("| Windows service durable provisioning |"),
+    );
+  const architectureSlice = architectureRows[0] ?? "";
+
+  let start;
+  let fromHeldWriter;
+  let observeEmpty;
+  let prepareInitialClean;
+  let commitAndReread;
+  let completeInitialCleanCommit;
+  let reload;
+  let releaseInner;
+  let completeProvisioningRelease;
+  let retireChecked;
+  try {
+    start = rustTopLevelFunctionBlock(
+      windowsProduction,
+      "start_windows_initial_provisioning",
+    );
+    fromHeldWriter = rustFunctionBlock(windowsProduction, "from_held_writer");
+    observeEmpty = rustFunctionBlock(windowsProduction, "observe_empty");
+    prepareInitialClean = rustFunctionBlock(
+      windowsProduction,
+      "prepare_initial_clean",
+    );
+    commitAndReread = rustFunctionBlock(
+      windowsProduction,
+      "commit_and_reread",
+    );
+    completeInitialCleanCommit = rustTopLevelFunctionBlock(
+      windowsProduction,
+      "complete_initial_clean_commit",
+    );
+    reload = rustFunctionBlock(windowsProduction, "reload");
+    releaseInner = rustFunctionBlock(windowsProduction, "release_inner");
+    completeProvisioningRelease = rustTopLevelFunctionBlock(
+      windowsProduction,
+      "complete_provisioning_release",
+    );
+    retireChecked = rustFunctionBlock(windowsProduction, "retire_checked");
+  } catch {
+    return false;
+  }
+
+  const forbiddenEscape =
+    /\b(?:HANDLE|OwnedHandle|RawHandle|AsRawHandle|BorrowedHandle|Path|PathBuf|std\s*::\s*fs|dyn|Any|downcast|Deref|DerefMut|transmute|ManuallyDrop|MaybeUninit|from_raw|into_raw|Box|Rc|Arc)\b/u;
+  const forbiddenConversion =
+    /\bimpl(?:\s*<[^>{}]*>)?\s+(?:From|Into|TryFrom|TryInto)\b|\btype\s+Windows[A-Za-z0-9_]*\s*=/u;
+  const outsideAuthoritySurface = rustLexicalCode(
+    [otherProduction, windowsRuntimeProduction, windowsPairProduction].join("\n"),
+  );
+
+  return (
+    provisioningSource.includes(keyAgentServicePhaseTwoCWindowsModuleFragment) &&
+    JSON.stringify(provisioningDirectoryInventory) ===
+      JSON.stringify([
+        { name: "provisioning_tests.rs", kind: "file" },
+        { name: "provisioning.rs", kind: "file" },
+        { name: "windows_pair.rs", kind: "file" },
+        { name: "windows_provisioning.rs", kind: "file" },
+        { name: "windows_runtime.rs", kind: "file" },
+      ]) &&
+    !/\bwindows\b/u.test(rustLexicalCode(logicalProduction)) &&
+    keyAgentServicePhaseTwoCWindowsTestOnlyProjectionFragments.every(
+      (fragment) =>
+        windowsProvisioningSource.includes(fragment) &&
+        !windowsProduction.includes(fragment),
+    ) &&
+    !/\b(?:NEXT_WINDOWS_PROVISIONING_ATTEMPT|POST_RELEASE_PROVISIONING_RECEIPT_FAULT|PostReleaseProvisioningReceiptFaultGuard|take_post_release_provisioning_receipt_fault|release_with_post_release_fault_for_test|for_current_user_fixture)\b/u.test(
+      windowsCode,
+    ) &&
+    windowsProvisioningSource.includes(
+      "#[cfg(test)]\nimpl<'key> WindowsFreshInstallAuthority<'key>",
+    ) &&
+    windowsProvisioningSource.includes(
+      "pub(in crate::key_agent_service) fn for_current_user_fixture(",
+    ) &&
+    JSON.stringify(windowsVisibleTypes) ===
+      JSON.stringify(keyAgentServicePhaseTwoCWindowsVisibleTypes) &&
+    keyAgentServiceMoveOnlyEvidenceContract(
+      windowsProduction,
+      keyAgentServicePhaseTwoCWindowsVisibleTypes,
+    ) &&
+    rustUnsafeKeywordCount(windowsProduction) === 0 &&
+    rustAuthorityTypeErasureSites(windowsProduction).length === 0 &&
+    !forbiddenEscape.test(windowsCode) &&
+    !forbiddenConversion.test(windowsCode) &&
+    !/\b(?:BootEvidence|WindowsBootEvidence|RuntimeWriterAcquired|start_windows_runtime|StoppedRunEvidence|WindowsStoppedRunEvidence)\b/u.test(
+      windowsCode,
+    ) &&
+    JSON.stringify(pairConsumerFiles) === JSON.stringify([true, true, false]) &&
+    JSON.stringify(logicalConsumerFiles) ===
+      JSON.stringify([true, false, false, false, false, false]) &&
+    !windowsPairConsumerPattern.test(otherProduction) &&
+    !logicalProvisioningConsumerPattern.test(
+      rustLexicalCode(
+        [
+          windowsRuntimeProduction,
+          windowsPairProduction,
+          lifecycleProduction,
+          windowsLifecycleProduction,
+        ].join("\n"),
+      ),
+    ) &&
+    !/\b(?:start_windows_initial_provisioning|WindowsFreshInstallAuthority)\b/u.test(
+      outsideAuthoritySurface,
+    ) &&
+    [...windowsCode.matchAll(/\bstart_windows_initial_provisioning\b/gu)]
+      .length === 1 &&
+    rustCallSites(windowsProduction, "start_windows_initial_provisioning")
+      .length === 1 &&
+    authorityDestructuringSites.length === 1 &&
+    compactRust(authorityDestructuringSites[0].source) ===
+      "WindowsFreshInstallAuthority{installation,key,attempt,..}" &&
+    hasOrderedCompactMarkers(fromHeldWriter, [
+      "letpair=WindowsPairWriter::from_held_writer(writer)",
+      "letattempt=authority.attempt",
+      "letbinding=loop",
+      "allocate_windows_provisioning_value()",
+      "Ok(binding)ifbinding!=attempt=>breakbinding",
+      "letepoch=loop",
+      "allocate_windows_provisioning_value()",
+      "Ok(epoch)ifepoch!=attempt&&epoch!=binding=>breakepoch",
+      "letWindowsFreshInstallAuthority{installation,key,attempt,..}=authority",
+      "letbackend=BackendBinding(binding)",
+      "authority:FreshInstallProvisioningAuthority",
+      "lease:ProvisioningWriterLease",
+    ]) &&
+    hasOrderedCompactMarkers(start, [
+      "WindowsProvisioningWriterAcquired::from_held_writer(writer,authority)",
+      ".observe_empty()",
+    ]) &&
+    hasOrderedCompactMarkers(observeEmpty, [
+      "letpair=matchpair.observe()",
+      "letlogical=UnprovisionedWithWriter",
+      "reload_round:NonZeroU64::MIN",
+      "if!observation_is_exactly_empty(&pair.observation())",
+      "classify_initial_observation(&pair.observation())",
+      "Ok(WindowsUnprovisionedWithWriter{logical,pair})",
+    ]) &&
+    hasOrderedCompactMarkers(prepareInitialClean, [
+      "letlogical=matchlogical.prepare_initial_clean()",
+      "letcandidate=logical.candidate.bytes",
+      "pair.prepare_commit(ExpectedWindowsPair::missing(),candidate)",
+      "WindowsPreparedInitialCleanTransition{logical,pair}",
+    ]) &&
+    hasOrderedCompactMarkers(commitAndReread, [
+      "logical.operation.begin_commit()",
+      "matchpair.commit()",
+      "WindowsPairCommitOutcome::KnownNotCommitted(pair)",
+      "WindowsInitialCleanCommitOutcome::Terminal",
+      "WindowsPairCommitOutcome::Ambiguous(pair)",
+      "logical.commit_ambiguous()",
+      "WindowsInitialCleanCommitOutcome::ReloadRequired",
+      "WindowsPairCommitOutcome::Committed(pair)",
+      "complete_initial_clean_commit(logical,pair)",
+    ]) &&
+    hasOrderedCompactMarkers(completeInitialCleanCommit, [
+      "letcommitted_observation=pair.candidate().observation()",
+      "logical.operation.record_commit_receipt()",
+      "letcommitted=CommittedInitialCleanMarker",
+      "logical.operation.begin_reread()",
+      "letpair=matchpair.reread()",
+      "RecoveryRequired::RereadDrift",
+      "logical.abort(RecoveryRequired::RereadDrift)",
+      "letreread=RereadInitialCleanMarker",
+      "matchlogical.complete(committed,reread)",
+      "WindowsInitialCleanCommitOutcome::Committed",
+    ]) &&
+    hasOrderedCompactMarkers(reload, [
+      "letpair=matchpair.reload()",
+      "logical.operation.record_reload_receipt()",
+      "letreceipt=InitialCleanReloadReceipt",
+      "matchlogical.complete_reload(receipt)",
+      "ReloadedInitialCleanState::Retry(logical)",
+      "WindowsInitialCleanReloadOutcome::Retry",
+      "ReloadedInitialCleanState::Committed(logical)",
+      "WindowsInitialCleanReloadOutcome::Committed",
+      "WindowsInitialCleanReloadOutcome::Terminal",
+    ]) &&
+    hasOrderedCompactMarkers(releaseInner, [
+      "ifpair.observation()!=logical.durable.bytes.observation()",
+      "letlogical=logical.prepare_writer_release()",
+      "logical.operation.begin_release()",
+      "matchpair.release_verified()",
+      "WindowsPairReleaseFailure::WriterRetained(pair)",
+      "WindowsProvisioningReleaseOutcome::Terminal",
+      "WindowsPairReleaseFailure::WriterReleasedNoReceipt(pair)",
+      "WindowsProvisioningReleaseOutcome::ReleasedNoReceipt",
+    ]) &&
+    hasOrderedCompactMarkers(completeProvisioningRelease, [
+      "ifpair.pair()!=logical.durable.bytes",
+      "WindowsProvisioningReleaseOutcome::PostReleaseTerminal",
+      "logical.operation.record_release_receipt()",
+      "letreceipt=ProvisioningWriterReleaseReceipt",
+      "matchlogical.complete(receipt)",
+      "WindowsProvisioningReleaseOutcome::Provisioned",
+      "WindowsProvisionedRunState",
+      "WindowsProvisioningReleaseOutcome::PostReleaseTerminal",
+    ]) &&
+    hasOrderedCompactMarkers(retireChecked, [
+      "logical.operation.begin_release()",
+      "pair.retire()",
+      "WindowsProvisioningRetirementStage::BeginRelease",
+      "letpair=matchpair.retire()",
+      "WindowsProvisioningRetirementStage::PairRetire",
+      "iflogical.operation.record_release_receipt().is_err()",
+      "WindowsProvisioningRetirementStage::RecordReceipt",
+      "letreceipt=ProvisioningWriterExitReceipt",
+      "matchlogical.complete(receipt)",
+      "WindowsProvisioningCheckedRetired",
+      "WindowsProvisioningRetirementStage::LogicalComplete",
+    ]) &&
+    windowsCompact.includes(
+      "pub(incrate::key_agent_service)constfngeneration(&self)->NonZeroU64{self.logical.generation()}",
+    ) &&
+    JSON.stringify(windowsTests.map(({ name }) => name)) ===
+      JSON.stringify(keyAgentServiceWindowsProvisioningTestNames) &&
+    windowsTests.length === 6 &&
+    windowsTests.every(({ ignored }) => !ignored) &&
+    parentTests.length === 34 &&
+    logicalTests.length === 25 &&
+    pairTests.length === 6 &&
+    runtimeTests.length === 14 &&
+    parentTests.length +
+      logicalTests.length +
+      pairTests.length +
+      windowsTests.length +
+      runtimeTests.length ===
+      85 &&
+    normalizedDesignSlice.length > 0 &&
+    [
+      "production-compiled but dormant Windows-only child",
+      "`WindowsFreshInstallAuthority` has no production constructor or caller",
+      "current-user installation fixture",
+      "authority carries a private nonzero provisioning attempt",
+      "Writer transfer precedes backend binding and writer epoch allocation",
+      "carried attempt, backend binding, and writer epoch are nonzero and pairwise distinct",
+      "logical begin-commit, OS commit, logical commit receipt, logical begin-reread, independent OS reread, and logical completion",
+      "known-not-committed failure is terminal",
+      "first native rename attempt onward, any non-confirmed or error outcome is ambiguity-bearing",
+      "Only a fully confirmed commit proceeds to the independent reread",
+      "exact Missing/Missing as `Retry`",
+      "exact authenticated candidate as `Committed`",
+      "confirmed commit reread failure is terminal `RereadDrift`",
+      "writer-retained, released-without-receipt, and post-release terminal outcomes",
+      "reason-neutral checked retirement",
+      "six passing `windows_provisioning` tests",
+      "85/85",
+      "external **STOP-SHIP** obligations",
+    ].every((marker) => normalizedDesignSlice.includes(marker)) &&
+    architectureRows.length === 1 &&
+    [
+      "production-compiled but dormant Windows-only compositor",
+      "no production fresh-install authority constructor or caller",
+      "current-user installation fixture",
+      "authority carries a nonzero attempt",
+      "writer transfer precedes backend binding and writer-epoch allocation",
+      "all three values are pairwise distinct",
+      "logical begin-commit, OS commit, logical commit receipt, logical begin-reread, independent OS reread, then logical completion",
+      "every non-confirmed or error outcome is ambiguity-bearing",
+      "only a fully confirmed commit proceeds to independent reread",
+      "Missing/Missing as Retry",
+      "exact candidate as Committed",
+      "RereadDrift",
+      "writer-retained, released-no-receipt, and post-release terminal",
+      "Reason-neutral checked retirement",
+      "six Windows-composite provisioning tests",
+      "85/85",
+      "external **STOP-SHIP** obligations",
+    ].every((marker) => architectureSlice.includes(marker))
+  );
+};
 const keyAgentServicePhaseTwoCSemanticContract = ({
   main,
   platformService,
   platformLib,
   durableSource,
+  windowsPairSource,
+  windowsRuntimeSource,
   provisioningSource,
   provisioningTests,
+  windowsProvisioningSource,
   lifecycleSource,
+  windowsLifecycleSource,
   directoryInventory,
   provisioningDirectoryInventory,
   designDocument,
@@ -8071,7 +8583,13 @@ const keyAgentServicePhaseTwoCSemanticContract = ({
     keyAgentServicePhaseTwoPartitionLifecycle(lifecycleSource);
   if (durable === null || lifecycleProduction === null) return false;
 
-  const provisioningProduction = withoutCfgTestItems(provisioningSource);
+  let provisioningProduction;
+  try {
+    provisioningProduction =
+      keyAgentServicePhaseTwoCLogicalProductionPartition(provisioningSource);
+  } catch {
+    return false;
+  }
   const provisioningCode = rustLexicalCode(provisioningProduction);
   const provisioningCompact = compactRust(provisioningProduction);
   const provisioningUseInventory = rustUseItems(provisioningProduction).map(
@@ -8196,7 +8714,7 @@ const keyAgentServicePhaseTwoCSemanticContract = ({
     "`ProvisionedRunState` has no conversion to `BootEvidence` or a runtime writer",
     "separately acquire a fresh runtime writer and only then reopen and authenticate",
     "never auto-initializes storage",
-    "no elevated installer provenance or lease",
+    "no elevated installer provenance, lease, or journal",
     "production constructor, or production caller",
     "Phase 1 and Phase 2 remain **STOP-SHIP**",
     "both compiled policies remain `None`",
@@ -8220,9 +8738,9 @@ const keyAgentServicePhaseTwoCSemanticContract = ({
     "one-sided, malformed, stale, wrong-key, cross-backend, or drifting evidence is terminal",
     "`ProvisionedRunState` cannot become `BootEvidence`",
     "ordinary missing-state boot never auto-initializes or repairs",
-    "no production fresh-install authority or caller",
+    "no production fresh-install authority constructor or caller",
     "elevated installer provenance/lease or journal",
-    "TPM/non-rollbackable anchor",
+    "protected/TPM key and non-rollbackable anchor",
     "Phase 1 and Phase 2 remain **STOP-SHIP**",
     "both compiled policies remain `None`",
     "ordinary/release execution remains silent exit 78",
@@ -8338,6 +8856,22 @@ const keyAgentServicePhaseTwoCSemanticContract = ({
   }
 
   return (
+    keyAgentServicePhaseTwoCWindowsSemanticContract({
+      main,
+      platformService,
+      platformLib,
+      durableSource,
+      windowsPairSource,
+      windowsRuntimeSource,
+      provisioningSource,
+      provisioningTests,
+      windowsProvisioningSource,
+      lifecycleSource,
+      windowsLifecycleSource,
+      provisioningDirectoryInventory,
+      designDocument,
+      architectureDocument,
+    }) &&
     (rustLexicalCode(durable.production).match(/\bmod\s+provisioning\s*;/gu) ?? [])
       .length === 1 &&
     /\bmod\s+provisioning\s*;/u.test(rustLexicalCode(durable.production)) &&
@@ -8363,6 +8897,7 @@ const keyAgentServicePhaseTwoCSemanticContract = ({
         { name: "provisioning_tests.rs", kind: "file" },
         { name: "provisioning.rs", kind: "file" },
         { name: "windows_pair.rs", kind: "file" },
+        { name: "windows_provisioning.rs", kind: "file" },
         { name: "windows_runtime.rs", kind: "file" },
       ]) &&
     JSON.stringify(provisioningUseInventory) ===
@@ -11158,6 +11693,8 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
   platformLib,
   durableSource,
   windowsPairSource,
+  windowsRuntimeSource,
+  windowsProvisioningSource,
   provisioningSource,
   lifecycleSource,
   rootSource,
@@ -11237,7 +11774,7 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
       platformService,
       platformLib,
       durable.production,
-      withoutCfgTestItems(provisioningSource),
+      keyAgentServicePhaseTwoCLogicalProductionPartition(provisioningSource),
       lifecycleProduction,
     ].join("\n"),
   );
@@ -11394,8 +11931,8 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
     "test-only snapshot of the production variable-length rename packet fixes the current Windows x64 `FILE_RENAME_INFORMATION` ABI fields",
     "combined relevant inventory is therefore exactly 55 tests: 53 passed and two ignored",
     "At the pre-Phase 2F-c boundary, the `windows_pair` child mapped the private 148-byte durable codec envelopes into move-only fixed-pair expectations and outcomes without a production caller, expected-authority mint, authentication-key provider, TPM/non-rollbackable anchor integration",
-    "The separately gated Phase 2F-c composite below is now its sole production consumer and remains dormant",
-    "its sole production-compiled caller is the private Phase 2G compositor, which itself has no executable or top-level caller",
+    "The separately gated Phase 2F-c runtime and Phase 2C Windows provisioning composites are now its exact two production consumers and remain dormant",
+    "The runtime composite's sole production-compiled caller is the private Phase 2G compositor, while Windows provisioning has no production fresh-authority constructor or caller",
     "One direct evidence gap remains explicit: a kernel negative test with a nonzero case-sensitive-directory flag",
     "external **STOP-SHIP** obligations",
   ];
@@ -11417,7 +11954,8 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
     "test-only snapshot of the production variable-length rename packet fixes the current Windows x64 ABI fields/alignment/offsets",
     "combined relevant inventory of 55 (53 passed, two ignored)",
     "At the pre-Phase 2F-c boundary the child mapped exact private codec envelopes into move-only pair typestates without a production caller, expected-authority mint, authentication-key provider, TPM/non-rollbackable anchor integration",
-    "the separately gated F-c composite below is now its sole production consumer and remains dormant, while its sole production-compiled caller is the private Phase 2G compositor, which itself has no executable or top-level caller",
+    "the separately gated F-c runtime and Phase 2C Windows provisioning composites are its exact two production consumers and remain dormant",
+    "The runtime composite's sole production-compiled caller is the private Phase 2G compositor, while Windows provisioning has no production fresh-authority constructor or caller",
     "One direct evidence gap remains: a nonzero case-sensitive-directory kernel negative",
     "external **STOP-SHIP** obligations",
   ];
@@ -11427,7 +11965,8 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
     !durableSource.includes("pub mod windows_pair;") &&
     JSON.stringify(
       provisioningDirectoryInventory.filter(
-        ({ name }) => name !== "windows_runtime.rs",
+        ({ name }) =>
+          name !== "windows_runtime.rs" && name !== "windows_provisioning.rs",
       ),
     ) ===
       JSON.stringify([
@@ -11698,6 +12237,16 @@ const keyAgentServicePhaseTwoFBSemanticContract = ({
     !/\b(?:ExpectedWindowsPair|WindowsPairWriter|WindowsObservedPair|WindowsPreparedPairCommit|WindowsPairCommitOutcome|WindowsCommittedPair|WindowsRereadPair|WindowsPairKnownFailure|WindowsPairExpectationMismatch|WindowsPairReloadRequired|WindowsPairReloadFailure|WindowsReloadedPair|WindowsPairRetired)\b/u.test(
       productionConsumers,
     ) &&
+    /\b(?:ExpectedWindowsPair|WindowsPairWriter|WindowsObservedPair|WindowsPreparedPairCommit|WindowsPairCommitOutcome|WindowsCommittedPair|WindowsRereadPair|WindowsPairKnownFailure|WindowsPairExpectationMismatch|WindowsPairReloadRequired|WindowsPairReloadFailure|WindowsReloadedPair|WindowsPairRetired)\b/u.test(
+      rustLexicalCode(withoutCfgTestItems(windowsRuntimeSource)),
+    ) &&
+    /\b(?:ExpectedWindowsPair|WindowsPairWriter|WindowsObservedPair|WindowsPreparedPairCommit|WindowsPairCommitOutcome|WindowsCommittedPair|WindowsRereadPair|WindowsPairKnownFailure|WindowsPairExpectationMismatch|WindowsPairReloadRequired|WindowsPairReloadFailure|WindowsReloadedPair|WindowsPairRetired)\b/u.test(
+      rustLexicalCode(
+        keyAgentServicePhaseTwoCWindowsProductionPartition(
+          windowsProvisioningSource,
+        ),
+      ),
+    ) &&
     prePhaseTwoFCRootTests.length === 49 &&
     prePhaseTwoFCRootTests.filter(({ ignored }) => !ignored).length === 47 &&
     JSON.stringify(
@@ -11733,6 +12282,7 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
   durableSource,
   windowsPairSource,
   windowsRuntimeSource,
+  windowsProvisioningSource,
   provisioningSource,
   provisioningTests,
   lifecycleSource,
@@ -11830,6 +12380,9 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
   const rootTests = keyAgentServiceRustAttributedTestInventory(testsSource);
   const runtimeTests = keyAgentServiceRustAttributedTestInventory(
     windowsRuntimeSource,
+  );
+  const windowsProvisioningTests = keyAgentServiceRustAttributedTestInventory(
+    windowsProvisioningSource,
   );
   const pairTests = keyAgentServiceRustAttributedTestInventory(windowsPairSource);
   const durableTests = keyAgentServiceRustTestNameInventory(durableSource);
@@ -12161,6 +12714,7 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
           { name: "provisioning_tests.rs", kind: "file" },
           { name: "provisioning.rs", kind: "file" },
           { name: "windows_pair.rs", kind: "file" },
+          { name: "windows_provisioning.rs", kind: "file" },
           { name: "windows_runtime.rs", kind: "file" },
         ]) &&
       JSON.stringify(runtimeTypes) ===
@@ -12308,11 +12862,15 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
       JSON.stringify(runtimeTests.map(({ name }) => name)) ===
         JSON.stringify(keyAgentServicePhaseTwoFCRuntimeTestNames) &&
       pairTests.length === 6 &&
+      windowsProvisioningTests.length === 6 &&
+      JSON.stringify(windowsProvisioningTests.map(({ name }) => name)) ===
+        JSON.stringify(keyAgentServiceWindowsProvisioningTestNames) &&
       durableTests.length +
         provisioningTestsInventory.length +
         pairTests.length +
+        windowsProvisioningTests.length +
         runtimeTests.length ===
-        79,
+        85,
     docs:
       normalizedDesign.length > 0 &&
       designMarkers.every((marker) => normalizedDesign.includes(marker)) &&
@@ -12682,6 +13240,7 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
         { name: "provisioning_tests.rs", kind: "file" },
         { name: "provisioning.rs", kind: "file" },
         { name: "windows_pair.rs", kind: "file" },
+        { name: "windows_provisioning.rs", kind: "file" },
         { name: "windows_runtime.rs", kind: "file" },
       ]) &&
     JSON.stringify(runtimeTypes) ===
@@ -13009,6 +13568,10 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
       JSON.stringify(keyAgentServicePhaseTwoFCRuntimeTestNames) &&
     pairTests.length === 6 &&
     pairTests.every(({ ignored }) => !ignored) &&
+    windowsProvisioningTests.length === 6 &&
+    windowsProvisioningTests.every(({ ignored }) => !ignored) &&
+    JSON.stringify(windowsProvisioningTests.map(({ name }) => name)) ===
+      JSON.stringify(keyAgentServiceWindowsProvisioningTestNames) &&
     JSON.stringify(durableTests) ===
       JSON.stringify(keyAgentServiceDurableTestNames) &&
     JSON.stringify(provisioningTestsInventory) ===
@@ -13016,8 +13579,9 @@ const keyAgentServicePhaseTwoFCSemanticContract = ({
     durableTests.length +
       provisioningTestsInventory.length +
       pairTests.length +
+      windowsProvisioningTests.length +
       runtimeTests.length ===
-      79 &&
+      85 &&
     normalizedDesign.length > 0 &&
     designMarkers.every((marker) => normalizedDesign.includes(marker)) &&
     architectureRows.length === 1 &&
@@ -13038,6 +13602,7 @@ const keyAgentServicePhaseTwoGSemanticContract = ({
   durableSource,
   windowsPairSource,
   windowsRuntimeSource,
+  windowsProvisioningSource,
   provisioningSource,
   provisioningTests,
   lifecycleSource,
@@ -13113,6 +13678,9 @@ const keyAgentServicePhaseTwoGSemanticContract = ({
     keyAgentServiceRustAttributedTestInventory(windowsLifecycleTests);
   const runtimeTests =
     keyAgentServiceRustAttributedTestInventory(windowsRuntimeSource);
+  const windowsProvisioningTests = keyAgentServiceRustAttributedTestInventory(
+    windowsProvisioningSource,
+  );
   const lifecycleTestsInventory =
     keyAgentServiceRustAttributedTestInventory(lifecycleTests);
   const rootTests = keyAgentServiceRustAttributedTestInventory(testsSource);
@@ -13656,11 +14224,16 @@ const keyAgentServicePhaseTwoGSemanticContract = ({
     ) === JSON.stringify(keyAgentServicePhaseTwoEIgnoredTestNames) &&
     pairTests.length === 6 &&
     pairTests.every(({ ignored }) => !ignored) &&
+    windowsProvisioningTests.length === 6 &&
+    windowsProvisioningTests.every(({ ignored }) => !ignored) &&
+    JSON.stringify(windowsProvisioningTests.map(({ name }) => name)) ===
+      JSON.stringify(keyAgentServiceWindowsProvisioningTestNames) &&
     durableTests.length +
       provisioningTestsInventory.length +
       pairTests.length +
+      windowsProvisioningTests.length +
       runtimeTests.length ===
-      79 &&
+      85 &&
     designSlice.length > 0 &&
     [
       "sole direct production consumer of `start_windows_runtime`",
@@ -13711,10 +14284,13 @@ const keyAgentServicePhaseTwoInputs = Object.freeze({
   platformLib: keyAgentServicePlatformLib,
   durableSource: keyAgentServiceDurableRunState,
   windowsPairSource: keyAgentServiceDurableWindowsPair,
+  windowsRuntimeSource: keyAgentServiceDurableWindowsRuntime,
   provisioningSource: keyAgentServiceDurableProvisioning,
   provisioningTests: keyAgentServiceDurableProvisioningTests,
+  windowsProvisioningSource: keyAgentServiceDurableWindowsProvisioning,
   lifecycleSource: keyAgentServiceLifecycleCore,
   lifecycleTests: keyAgentServiceLifecycleCoreTests,
+  windowsLifecycleSource: keyAgentServiceWindowsLifecycle,
   directoryInventory: keyAgentServiceLifecycleDirectoryInventory,
   provisioningDirectoryInventory:
     keyAgentServiceDurableRunStateDirectoryInventory,
@@ -14362,8 +14938,8 @@ const keyAgentServicePhaseTwoCSemanticMutationProbes = [
   ),
   mutateKeyAgentServicePhaseTwoInput(
     "architectureDocument",
-    "or power-loss/reboot proof. Phase 1 and Phase 2 remain **STOP-SHIP**, both compiled policies remain `None`, and ordinary/release execution remains silent exit 78",
-    "or power-loss/reboot proof. Phase 1 and Phase 2 remain **STOP-SHIP**, both compiled policies are `Some`, and ordinary/release execution remains silent exit 78",
+    "storage-durability/pair-atomicity evidence remain external **STOP-SHIP** obligations. Phase 1 and Phase 2 remain **STOP-SHIP**, both compiled policies remain `None`, and ordinary/release execution remains silent exit 78",
+    "storage-durability/pair-atomicity evidence remain external **STOP-SHIP** obligations. Phase 1 and Phase 2 remain **STOP-SHIP**, both compiled policies are `Some`, and ordinary/release execution remains silent exit 78",
   ),
   mutateKeyAgentServicePhaseTwoInput(
     "provisioningTests",
@@ -14400,6 +14976,211 @@ const keyAgentServicePhaseTwoCSemanticMutationProbes = [
     "shared private one-shot phases reject commit, reread, reload, normal release, and terminal-retirement receipt reuse",
     "shared private phases allow terminal-retirement receipt reuse",
   ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "provisioningSource",
+    '#[path = "windows_provisioning.rs"]',
+    '#[path = "hidden_windows_provisioning.rs"]',
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    keyAgentServicePhaseTwoCWindowsTestOnlyProjectionFragments[0],
+    keyAgentServicePhaseTwoCWindowsTestOnlyProjectionFragments[0].replace(
+      "POST_RELEASE_PROVISIONING_RECEIPT_FAULT",
+      "HIDDEN_POST_RELEASE_PROVISIONING_RECEIPT_FAULT",
+    ),
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    keyAgentServicePhaseTwoCWindowsTestOnlyProjectionFragments[1],
+    keyAgentServicePhaseTwoCWindowsTestOnlyProjectionFragments[1].replace(
+      "take_post_release_provisioning_receipt_fault",
+      "hidden_take_post_release_provisioning_receipt_fault",
+    ),
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "#[cfg(test)]\nimpl<'key> WindowsFreshInstallAuthority<'key>",
+    "impl<'key> WindowsFreshInstallAuthority<'key>",
+  ),
+  {
+    ...keyAgentServicePhaseTwoInputs,
+    windowsRuntimeSource: `${keyAgentServiceDurableWindowsRuntime}\nfn forbidden_windows_provisioning_start(writer: HeldServiceRunStateWriter, authority: WindowsFreshInstallAuthority<'_>) { let _ = start_windows_initial_provisioning(writer, authority); }\n`,
+  },
+  {
+    ...keyAgentServicePhaseTwoInputs,
+    lifecycleSource: `${keyAgentServiceLifecycleCore}\nfn forbidden_pair_consumer(value: WindowsPairWriter) { let _ = value; }\n`,
+  },
+  {
+    ...keyAgentServicePhaseTwoInputs,
+    windowsRuntimeSource: `${keyAgentServiceDurableWindowsRuntime}\nfn forbidden_logical_provisioning_consumer(value: ProvisioningWriterLease) { let _ = value; }\n`,
+  },
+  {
+    ...keyAgentServicePhaseTwoInputs,
+    windowsProvisioningSource: `${keyAgentServiceDurableWindowsProvisioning}\nunsafe fn forbidden_raw_provisioning_escape() {}\n`,
+  },
+  {
+    ...keyAgentServicePhaseTwoInputs,
+    windowsProvisioningSource: `${keyAgentServiceDurableWindowsProvisioning}\nfn forbidden_erasure<T>(value: T) { core::mem::forget(value); }\n`,
+  },
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "pub(in crate::key_agent_service) struct WindowsFreshInstallAuthority<'key> {",
+    "#[derive(Clone)]\npub(in crate::key_agent_service) struct WindowsFreshInstallAuthority<'key> {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "impl WindowsProvisionedRunState {\n",
+    "impl WindowsProvisionedRunState {\n    pub(in crate::key_agent_service) fn into_boot(self) -> BootEvidence { unreachable!() }\n",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "        let pair = WindowsPairWriter::from_held_writer(writer);\n        let attempt = authority.attempt;",
+    "        let attempt = authority.attempt;\n        let pair = WindowsPairWriter::from_held_writer(writer);",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "                Ok(binding) if binding != attempt => break binding,",
+    "                Ok(binding) => break binding,",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "                Ok(epoch) if epoch != attempt && epoch != binding => break epoch,",
+    "                Ok(epoch) if epoch != binding => break epoch,",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "        if !observation_is_exactly_empty(&pair.observation()) {",
+    "        if false && !observation_is_exactly_empty(&pair.observation()) {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "pair.prepare_commit(ExpectedWindowsPair::missing(), candidate)",
+    "pair.prepare_commit(ExpectedWindowsPair::exact(candidate), candidate)",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "        if let Err(reason) = logical.operation.begin_commit() {",
+    "        if let Err(reason) = Ok::<(), RecoveryRequired>(()) {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "        match pair.commit() {",
+    "        match unreachable!(\"OS commit bypassed\") {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "            WindowsPairCommitOutcome::KnownNotCommitted(pair) => {",
+    "            WindowsPairCommitOutcome::Ambiguous(pair) => {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "            WindowsPairCommitOutcome::Ambiguous(pair) => match logical.commit_ambiguous() {",
+    "            WindowsPairCommitOutcome::Ambiguous(pair) => match Err(logical.abort(RecoveryRequired::CompareAndSwapConflict)) {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "    if let Err(reason) = logical.operation.record_commit_receipt() {",
+    "    if let Err(reason) = Ok::<(), RecoveryRequired>(()) {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "    if let Err(reason) = logical.operation.begin_reread() {",
+    "    if let Err(reason) = Ok::<(), RecoveryRequired>(()) {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "    let pair = match pair.reread() {",
+    "    let pair = match unreachable!(\"independent reread bypassed\") {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "                    RecoveryRequired::RereadDrift,\n                    Some(cause),",
+    "                    RecoveryRequired::WindowsBackendFailure,\n                    Some(cause),",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "        let pair = match pair.reload() {",
+    "        let pair = match unreachable!(\"ambiguity reload bypassed\") {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "        if let Err(reason) = logical.operation.record_reload_receipt() {",
+    "        if let Err(reason) = Ok::<(), RecoveryRequired>(()) {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "            Ok(ReloadedInitialCleanState::Retry(logical)) => {",
+    "            Ok(ReloadedInitialCleanState::Committed(logical)) => {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "        if pair.observation() != logical.durable.bytes.observation() {",
+    "        if false && pair.observation() != logical.durable.bytes.observation() {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "        let logical = logical.prepare_writer_release();\n        if let Err(reason) = logical.operation.begin_release() {",
+    "        let logical = logical.prepare_writer_release();\n        if let Err(reason) = Ok::<(), RecoveryRequired>(()) {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "        match pair.release_verified() {",
+    "        match unreachable!(\"verified OS release bypassed\") {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "            Err(WindowsPairReleaseFailure::WriterReleasedNoReceipt(pair)) => {",
+    "            Err(WindowsPairReleaseFailure::WriterRetained(pair)) => {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "    if pair.pair() != logical.durable.bytes {",
+    "    if false && pair.pair() != logical.durable.bytes {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "    if let Err(reason) = logical.operation.record_release_receipt() {\n        return WindowsProvisioningReleaseOutcome::PostReleaseTerminal(",
+    "    if let Err(reason) = Ok::<(), RecoveryRequired>(()) {\n        return WindowsProvisioningReleaseOutcome::PostReleaseTerminal(",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "    match logical.complete(receipt) {\n        Ok(logical) => WindowsProvisioningReleaseOutcome::Provisioned",
+    "    match Err(logical.abort(RecoveryRequired::OperationPhaseMismatch)) {\n        Ok(logical) => WindowsProvisioningReleaseOutcome::Provisioned",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "        if logical.operation.begin_release().is_err() {\n            let cause = pair.retire().err().unwrap_or(ServiceRunStateError::Release);",
+    "        let cause = pair.retire().err().unwrap_or(ServiceRunStateError::Release);\n        if logical.operation.begin_release().is_err() {",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "        if logical.operation.record_release_receipt().is_err() {\n            return Err(WindowsProvisioningCheckedRetirementFailure::new(",
+    "        if false && logical.operation.record_release_receipt().is_err() {\n            return Err(WindowsProvisioningCheckedRetirementFailure::new(",
+  ),
+  ...keyAgentServiceWindowsProvisioningTestNames.map((testName) =>
+    mutateKeyAgentServicePhaseTwoInput(
+      "windowsProvisioningSource",
+      `fn ${testName}`,
+      `fn mutated_${testName}`,
+    ),
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "designDocument",
+    "production-compiled but dormant Windows-only child",
+    "test-only Windows child",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "architectureDocument",
+    "production-compiled but dormant Windows-only compositor",
+    "test-only Windows compositor",
+  ),
+  {
+    ...keyAgentServicePhaseTwoInputs,
+    provisioningDirectoryInventory: [
+      ...keyAgentServiceDurableRunStateDirectoryInventory,
+      { name: "hidden_windows_provisioning.rs", kind: "file" },
+    ],
+  },
 ];
 const keyAgentServicePhaseTwoCPinMutationProbes = [
   mutateKeyAgentServicePhaseTwoInput(
@@ -14416,6 +15197,16 @@ const keyAgentServicePhaseTwoCPinMutationProbes = [
     "provisioningTests",
     "use std::{error::Error, fmt, io, num::NonZeroU64};",
     "use std::{error::Error, fmt, io, num::NonZeroU64}; // mutated",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "//! Dormant Windows composition for fresh-install generation-one provisioning.",
+    "//! Dormant Windows composition for fresh-install generation-one provisioning (mutated).",
+  ),
+  mutateKeyAgentServicePhaseTwoInput(
+    "windowsProvisioningSource",
+    "    /// Constructs only the bounded current-user installation surrogate used by",
+    "    /// Mutates only the bounded current-user installation surrogate used by",
   ),
 ];
 const keyAgentServicePhaseTwoEInputs = Object.freeze({
@@ -14452,6 +15243,8 @@ const mutateKeyAgentServicePhaseTwoEInput = (
 const keyAgentServicePhaseTwoFBInputs = Object.freeze({
   ...keyAgentServicePhaseTwoEInputs,
   windowsPairSource: keyAgentServiceDurableWindowsPair,
+  windowsRuntimeSource: keyAgentServiceDurableWindowsRuntime,
+  windowsProvisioningSource: keyAgentServiceDurableWindowsProvisioning,
   provisioningDirectoryInventory:
     keyAgentServiceDurableRunStateDirectoryInventory,
 });
@@ -14472,7 +15265,6 @@ const mutateKeyAgentServicePhaseTwoFBInput = (
 };
 const keyAgentServicePhaseTwoFCInputs = Object.freeze({
   ...keyAgentServicePhaseTwoFBInputs,
-  windowsRuntimeSource: keyAgentServiceDurableWindowsRuntime,
   provisioningTests: keyAgentServiceDurableProvisioningTests,
 });
 const mutateKeyAgentServicePhaseTwoFCInput = (
@@ -15907,11 +16699,11 @@ const keyAgentServicePhaseTwoCPinMutationResults =
 const keyAgentServicePhaseTwoCAggregatePredicates = Object.freeze([
   keyAgentServicePhaseTwoCSemanticContract(keyAgentServicePhaseTwoInputs),
   keyAgentServicePhaseTwoCPinContract(keyAgentServicePhaseTwoInputs),
-  keyAgentServicePhaseTwoCSemanticMutationProbes.length === 64,
+  keyAgentServicePhaseTwoCSemanticMutationProbes.length === 109,
   ...keyAgentServicePhaseTwoCSemanticMutationResults.map(
     ({ changed, rejected }) => changed && rejected,
   ),
-  keyAgentServicePhaseTwoCPinMutationProbes.length === 3,
+  keyAgentServicePhaseTwoCPinMutationProbes.length === 5,
   ...keyAgentServicePhaseTwoCPinMutationResults.map(
     ({ changed, rejected }) => changed && rejected,
   ),
@@ -15922,7 +16714,7 @@ const keyAgentServicePhaseTwoCAggregateFailureIndexes =
   keyAgentServicePhaseTwoCFailedPredicateIndexes(
     keyAgentServicePhaseTwoCAggregatePredicates,
   );
-const keyAgentServicePhaseTwoCAggregateDiagnosticMutationResults = [0, 3, 70].map(
+const keyAgentServicePhaseTwoCAggregateDiagnosticMutationResults = [0, 3, 117].map(
   (failedIndex) => {
     const predicates = keyAgentServicePhaseTwoCAggregatePredicates.map(
       (passed, index) => (index === failedIndex ? false : passed),
@@ -15965,12 +16757,12 @@ requireInvariant(
   `the Phase 2A/2B/2D no-secret service models must remain full-source-pinned private zero-runtime-root modules whose production partition excludes cfg(test) inspection and whose fixture tail contains only cfg(test) items, with lease-first runtime boot, exact backend/installation/writer-epoch validation before fresh marker/checkpoint authentication, BeforeWriter versus writer-retaining WithWriter failures, authority-free redacted test inspection, nine external plus two lease-bound structural startup requirements, request-scoped cleanup, no runtime auto-provisioning, backend-bound move-only Active/Clean/reload/final-release/terminal-exit authority, private one-shot normal-release and terminal-retirement phases plus exact writer-epoch reconciliation latches, Clean-before-release stop ordering, bounded lifecycle state, fixed tests and docs, disabled policies, exit 78, and 61 independently effective semantic plus five source-pin mutations; semantic base=${keyAgentServicePhaseTwoSemanticBaseResult}, pin base=${keyAgentServicePhaseTwoPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoSemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, pin probe count=${keyAgentServicePhaseTwoPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
 );
 requireInvariant(
-  keyAgentServicePhaseTwoCAggregatePredicates.length === 71 &&
+  keyAgentServicePhaseTwoCAggregatePredicates.length === 118 &&
     keyAgentServicePhaseTwoCAggregateFailureIndexes.length === 0 &&
     JSON.stringify(
       keyAgentServicePhaseTwoCAggregateDiagnosticMutationResults,
-    ) === JSON.stringify([[0], [3], [70]]),
-  `the Phase 2C fresh-install provisioning slice must remain full-source-pinned, production-compiled but module-private and zero-runtime-root, with exact Missing/Missing observation under a distinct held provisioning writer, canonical Clean generation one and ZERO predecessor, absent/absent CAS, backend/installation/writer/attempt/dual-round-bound one-shot commit/reread/reload/normal-release/terminal-retirement receipts, terminal retry and reconciliation latches, exact writer retirement before Provisioned state, no boot conversion or auto-initialization, fixed tests and docs, disabled policies, exit 78, and 64 independently effective semantic plus three source-pin mutations; aggregate predicate indexes are 0=semantic base, 1=pin base, 2=semantic count, 3..66=semantic probes, 67=pin count, and 68..70=pin probes; failed predicate indexes=${JSON.stringify(keyAgentServicePhaseTwoCAggregateFailureIndexes)}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoCSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoCPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
+    ) === JSON.stringify([[0], [3], [117]]),
+  `the Phase 2C fresh-install provisioning slice must remain full-source-pinned, production-compiled but module-private and zero-runtime-root, with its exact dormant Windows child, an authority-carried nonzero attempt, writer-transfer-before-binding/epoch allocation, all three pairwise distinct, exact Missing/Missing admission, canonical Clean generation one and ZERO predecessor, logical-before-OS commit/reread/reload/release order, terminal known failure and confirmed-reread drift, first-rename-onward non-confirmed ambiguity with fully confirmed commit proceeding only to independent reread, exact ambiguity classification, pair-bound checked release and reason-neutral retirement, no production fresh-authority constructor/caller or raw/type-erased/Boot escape, exact two fixed-pair consumers and one logical-provisioning Windows consumer, fixed 6-child/85-aggregate tests and docs, disabled policies, exit 78, and 109 independently effective semantic plus five full/production/test source-pin mutations; aggregate predicate indexes are 0=semantic base, 1=pin base, 2=semantic count, 3..111=semantic probes, 112=pin count, and 113..117=pin probes; failed predicate indexes=${JSON.stringify(keyAgentServicePhaseTwoCAggregateFailureIndexes)}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoCSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoCPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
 );
 requireInvariant(
   keyAgentServicePhaseTwoESemanticBaseResult &&
@@ -16012,7 +16804,7 @@ requireInvariant(
     keyAgentServicePhaseTwoFCPinMutationResults.every(
       ({ changed, rejected }) => changed && rejected,
     ),
-  `the separate Phase 2F-c dormant Windows logical/OS runtime composite must remain production-compiled, Windows-only, module-private, safe-only, move-only, and free of raw/type-erased authority escape; allocate a unique nonzero checked backend binding after writer acquisition; observe before authenticating exact Clean; preserve exact Active/Clean commit, reread/reload, stop, pair-bound release, no-receipt ambiguity, and checked terminal-retirement order; retain exact pair handles and full IDs/lengths/bytes through low-level release; preserve three exact cfg(test)-only process-death hook positions while projecting all three inline statements out of production; require the strict private 296-character lowercase-hex child transport, run-lock contention before forced exit, exact byte/temp/full-ID matrices, bounded reacquisition, and fresh Clean-to-Active plus Active-to-Clean runtime classifications with no platform cause and checked retirement; claim current-host process termination and reopen only, never power-loss, reboot, torn-sector/storage durability, or pair atomicity; map writer-retained versus writer-released failures exactly across sys/root/codec; carry fresh full-ID snapshots into each next CAS; admit only the separately gated private Phase 2G direct caller and expose no other direct/aliased caller, protected/TPM key provider, expected-authority source, retry API, stopped/receipt forgery, policy activation, or process-death test residue; preserve exact 56-root, 14-composite, six-pair-child, and 79 aggregate inventories, external STOP-SHIP limits, exit 78, 77 independently effective semantic mutations, and two independent full-versus-cfg(test) source-pin mutations; semantic base=${keyAgentServicePhaseTwoFCSemanticBaseResult}, pin base=${keyAgentServicePhaseTwoFCPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoFCSemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFCSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, pin probe count=${keyAgentServicePhaseTwoFCPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFCPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
+  `the separate Phase 2F-c dormant Windows logical/OS runtime composite must remain production-compiled, Windows-only, module-private, safe-only, move-only, and free of raw/type-erased authority escape; allocate a unique nonzero checked backend binding after writer acquisition; observe before authenticating exact Clean; preserve exact Active/Clean commit, reread/reload, stop, pair-bound release, no-receipt ambiguity, and checked terminal-retirement order; retain exact pair handles and full IDs/lengths/bytes through low-level release; preserve three exact cfg(test)-only process-death hook positions while projecting all three inline statements out of production; require the strict private 296-character lowercase-hex child transport, run-lock contention before forced exit, exact byte/temp/full-ID matrices, bounded reacquisition, and fresh Clean-to-Active plus Active-to-Clean runtime classifications with no platform cause and checked retirement; claim current-host process termination and reopen only, never power-loss, reboot, torn-sector/storage durability, or pair atomicity; map writer-retained versus writer-released failures exactly across sys/root/codec; carry fresh full-ID snapshots into each next CAS; admit only the separately gated private Phase 2G direct caller and expose no other direct/aliased caller, protected/TPM key provider, expected-authority source, retry API, stopped/receipt forgery, policy activation, or process-death test residue; preserve exact 56-root, 14-composite, six-pair-child, six-Windows-provisioning, and 85 aggregate inventories, external STOP-SHIP limits, exit 78, 77 independently effective semantic mutations, and two independent full-versus-cfg(test) source-pin mutations; semantic base=${keyAgentServicePhaseTwoFCSemanticBaseResult}, pin base=${keyAgentServicePhaseTwoFCPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoFCSemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFCSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, pin probe count=${keyAgentServicePhaseTwoFCPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoFCPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
 );
 requireInvariant(
   keyAgentServicePhaseTwoGSemanticBaseResult &&
@@ -16025,7 +16817,7 @@ requireInvariant(
     keyAgentServicePhaseTwoGPinMutationResults.every(
       ({ changed, rejected }) => changed && rejected,
     ),
-  `the separate Phase 2G dormant Windows no-secret lifecycle compositor must preserve exact private type/function/facade surfaces, its sole direct internal Phase 2F-c caller edge and zero top-level caller, cause-neutral checked retirement, fresh-versus-carried Active checklist authority, listener-to-SCM-to-admission ordering, RuntimePolicy-only bounds and cleanup, exact Clean/reload/release/stopped classification, irreversible silent-78 evidence, test-only post-release fault isolation, safe move-only redacted authority, fixed 21-core/12-compositor/14-runtime/79-durable/56-root inventories, explicit external STOP-SHIP limits, disabled policies, no release-readiness claim, 46 independently effective semantic mutations, and three full/production/test source-pin mutations; semantic base=${keyAgentServicePhaseTwoGSemanticBaseResult}, pin base=${keyAgentServicePhaseTwoGPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoGSemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, pin probe count=${keyAgentServicePhaseTwoGPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
+  `the separate Phase 2G dormant Windows no-secret lifecycle compositor must preserve exact private type/function/facade surfaces, its sole direct internal Phase 2F-c caller edge and zero top-level caller, cause-neutral checked retirement, fresh-versus-carried Active checklist authority, listener-to-SCM-to-admission ordering, RuntimePolicy-only bounds and cleanup, exact Clean/reload/release/stopped classification, irreversible silent-78 evidence, test-only post-release fault isolation, safe move-only redacted authority, fixed 21-core/12-compositor/14-runtime/6-Windows-provisioning/85-durable/56-root inventories, explicit external STOP-SHIP limits, disabled policies, no release-readiness claim, 46 independently effective semantic mutations, and three full/production/test source-pin mutations; semantic base=${keyAgentServicePhaseTwoGSemanticBaseResult}, pin base=${keyAgentServicePhaseTwoGPinBaseResult}, semantic probe count=${keyAgentServicePhaseTwoGSemanticMutationProbes.length}, failed semantic probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGSemanticMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}, pin probe count=${keyAgentServicePhaseTwoGPinMutationProbes.length}, failed pin probe indexes=${JSON.stringify(keyAgentServicePhaseTwoGPinMutationResults.filter(({ changed, rejected }) => !changed || !rejected).map(({ index }) => index))}`,
 );
 requireInvariant(
   keyAgentServicePhaseTwoEPinBaseResult &&
@@ -25432,14 +26224,14 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate has two deliberately different surfaces.",
-    sha256: "81bd42d831a5c8585843f8cd92134e070cf88a8e131c929dd5268097d392009a",
+    sha256: "2ea8e4f2a10a143bb9e89420983de1ea25eeab586e1b0db3c42aa64fce7c7729",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes a safe platform-neutral gate-byte",
-    sha256: "7bc2f171a47fa1183f6ecfb4121eec6a8d8f8fc588093774e189f15319c0d4d4",
+    sha256: "e9f25a9b2e436d0370782ae0a7254f9493ab56726d656994389ad77ed504e6c2",
   },
   {
     path: "docs/security-decisions.md",
@@ -34360,7 +35152,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "c2950d2e24bd91743265fdddd6d92e4bfa1e468fa0e3ba3dbe339ac7823e483d";
+  "d9f730952ade32bc0a81c8adb4042aa8599997c2bf55e013ff468367986e1323";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -35721,6 +36513,10 @@ const approvedWorkspacePathAttributes = [
   {
     path: "crates/platform-windows/src/key_agent_service/durable_run_state.rs",
     attribute: '#[path = "durable_run_state/provisioning_tests.rs"]',
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service/durable_run_state/provisioning.rs",
+    attribute: '#[path = "windows_provisioning.rs"]',
   },
   {
     path: "crates/platform-windows/src/key_agent_service/lifecycle_core.rs",
@@ -56190,6 +56986,17 @@ requireInvariant(
           "#[path=]",
         ],
       },
+      {
+        declaringFile:
+          "crates/platform-windows/src/key_agent_service/durable_run_state/provisioning.rs",
+        module: "windows",
+        literal: "windows_provisioning.rs",
+        resolvedTarget:
+          "crates/platform-windows/src/key_agent_service/durable_run_state/windows_provisioning.rs",
+        insideCrateSource: true,
+        inProductionInventory: true,
+        attributes: ["#[cfg(windows)]", "#[path=]"],
+      },
     ]),
   "production #[path] modules must remain exact, resolve inside platform-windows/src, and be included in the scanned production inventory",
 );
@@ -63767,7 +64574,7 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "crates/platform-windows/README.md":
     "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
   "docs/architecture.md":
-    "81bd42d831a5c8585843f8cd92134e070cf88a8e131c929dd5268097d392009a",
+    "2ea8e4f2a10a143bb9e89420983de1ea25eeab586e1b0db3c42aa64fce7c7729",
   "docs/protocol-contract.md":
     "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "docs/security-decisions.md":
@@ -69636,7 +70443,7 @@ const currentDebuggerExitDocumentationContract = (documents) =>
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
   "f61f05caaafcb5970f23a0132045a54c7f021d3cf133b0bb6b2696ae93e78e0f",
-  "81bd42d831a5c8585843f8cd92134e070cf88a8e131c929dd5268097d392009a",
+  "2ea8e4f2a10a143bb9e89420983de1ea25eeab586e1b0db3c42aa64fce7c7729",
   "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "d36a5e3cb2544598cf8e1a97a8ff3a19a1a561dd5161d5cd3369be3fe4716656",
 ]);
@@ -79518,13 +80325,13 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "docs/architecture.md",
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
-    sha256: "81bd42d831a5c8585843f8cd92134e070cf88a8e131c929dd5268097d392009a",
+    sha256: "2ea8e4f2a10a143bb9e89420983de1ea25eeab586e1b0db3c42aa64fce7c7729",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
-    sha256: "7bc2f171a47fa1183f6ecfb4121eec6a8d8f8fc588093774e189f15319c0d4d4",
+    sha256: "e9f25a9b2e436d0370782ae0a7254f9493ab56726d656994389ad77ed504e6c2",
   },
   {
     path: "docs/security-decisions.md",
