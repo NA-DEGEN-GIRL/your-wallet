@@ -2120,7 +2120,41 @@ custody, supported-kernel matrices, signed immutable artifacts, and release
 evidence all remain **STOP-SHIP**. Phase 2H does not pass Phase 1, Phase 2, or
 the product release gate.
 
-### Phase 3 – Authenticated Broker and helper runtime
+**Current Phase 2I status: started, not passed.** Phase 2I adds a private,
+production-compiled `windows_session_events` bridge that translates an already
+copied Windows session-change notification into the existing no-secret session
+lifecycle vocabulary. `ValidatedWindowsSessionEvent::decode` accepts only
+the native event type plus an owned `WTSSESSION_NOTIFICATION`, requires
+`cbSize == size_of::<WTSSESSION_NOTIFICATION>()`, and requires `dwSessionId`
+to form a nonzero `SessionId`. The validated value may then be consumed once by
+`dispatch`; `handle_windows_session_change` is the single safe decode-and-
+dispatch composition.
+
+The mapping is deliberately closed. `WTS_SESSION_LOCK`,
+`WTS_SESSION_UNLOCK`, and `WTS_SESSION_LOGOFF` become `Lock`, `Unlock`, and
+`Logoff`. `WTS_CONSOLE_CONNECT`, `WTS_CONSOLE_DISCONNECT`,
+`WTS_REMOTE_CONNECT`, `WTS_REMOTE_DISCONNECT`, `WTS_SESSION_LOGON`, and
+`WTS_SESSION_REMOTE_CONTROL` become `UserSwitch`. `WTS_SESSION_CREATE`,
+`WTS_SESSION_TERMINATE`, every unknown event type, a wrong structure size, and
+session zero are rejected without dispatch.
+
+The separate Phase 2I inventory is 8/8. It covers the three direct mappings,
+all six topology-to-`UserSwitch` mappings, create/terminate/unknown rejection,
+exact native layout and size validation, nonzero-session validation, and the
+move-only redacted single-dispatch route. Rejection variants are unit-only and
+the runtime variant retains only its policy cause; failures retain no raw
+notification, event code, or session identifier, and Debug is fixed/redacted.
+This is a safe semantic bridge only. No service status advertises
+`SERVICE_ACCEPT_SESSIONCHANGE`; the
+SCM control handler has no session-change branch and does not read `event_data`;
+`handle_windows_session_change` and the bridge have zero production callers.
+Actual SCM callback-pointer validation and copying, bounded mailbox delivery,
+ownership across concurrency, cancellation, and rundown ordering remain
+**STOP-SHIP**. Default and release service execution remains silent exit 78,
+both compiled policies remain `None`, and Phase 2I does not pass Phase 1,
+Phase 2, or the product release gate.
+
+### Phase 3 — Authenticated Broker and helper runtime
 
 Add the bounded Broker control protocol, exact request admission, service-owned
 Approval/Secret Input creation, selected non-inherited bootstrap, full helper
@@ -2209,6 +2243,18 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-09-05 - Added the dormant Phase 2I safe Windows session-change bridge.
+  It production-compiles a private closed decoder over an already copied exact-
+  size, nonzero-session `WTSSESSION_NOTIFICATION`; maps lock, unlock, and logoff
+  directly; maps six console/remote/logon topology events to `UserSwitch`; and
+  rejects create, terminate, unknown, wrong-size, and zero-session inputs. A
+  separate Phase 2I inventory is 8/8; failures retain no event code or session
+  identifier and have fixed redacted Debug output. No service status advertises
+  `SERVICE_ACCEPT_SESSIONCHANGE`, the SCM handler has no branch or `event_data`
+  read for it, and the bridge has zero production callers. Actual callback-
+  pointer copying, mailbox ownership/delivery, cancellation, and rundown remain
+  **STOP-SHIP**; default/release stays silent exit 78 and both policies stay
+  `None`.
 - 2026-09-01 - Added the dormant Phase 2H production lifecycle-effects adapter.
   Windows ordinary builds now compile the SCM/status-RPC mechanics with
   nonoptional RPC dependencies. A move-only, single-use, redacted

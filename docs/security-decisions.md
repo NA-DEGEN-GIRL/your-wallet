@@ -1600,6 +1600,34 @@ proof, crash/power/reboot recovery, TPM/authentication-key custody,
 supported-kernel matrices, signed immutable artifacts, and release evidence
 remain **STOP-SHIP**.
 
+**Current Phase 2I status: started, not passed.** The Windows library may
+production-compile the private `windows_session_events` semantic bridge, but it
+may not activate SCM session-change delivery. The bridge accepts an already
+copied `WTSSESSION_NOTIFICATION` only with an exact native `cbSize` and a
+nonzero `dwSessionId`. `ValidatedWindowsSessionEvent::decode` receives the
+native event type and produces a closed typed value; its consuming `dispatch`
+emits exactly one existing session lifecycle event.
+`handle_windows_session_change` is the sole safe composition.
+
+The accepted mapping is fixed: lock, unlock, and logoff map directly; console
+connect/disconnect, remote connect/disconnect, session logon, and remote control
+all map to `UserSwitch`. Session create, session terminate, unknown event types,
+a wrong size, and session zero fail closed without dispatch. The separate Phase
+2I suite is 8/8, covering the exact native layout, validation and mapping matrix,
+move-only redacted evidence, and the sole runtime-facade dispatch route.
+Rejection failures are unit-only and the runtime failure retains only its
+policy cause; no failure retains the raw notification, event code, or session
+identifier, and Debug output is fixed and redacted.
+
+This is local semantic evidence only. No service status advertises
+`SERVICE_ACCEPT_SESSIONCHANGE`; the current SCM control handler has no session-
+change branch and does not inspect `event_data`; and the bridge has zero
+production callers. Native callback-pointer validation and copying, bounded
+mailbox ownership and delivery, concurrent cancellation, and callback/mailbox/
+service rundown ordering remain **STOP-SHIP**. Default and release service
+execution remains silent exit 78, both compiled policies remain `None`, and
+Phase 2I does not pass Phase 1, Phase 2, or the release gate.
+
 All seven Rust-startup supervisor integration positives are explicitly ignored
 **STOP-SHIP**. Their fixture code, when deliberately invoked, has two
 `cfg(test)` accommodations: an exact pinned terse libtest preamble may precede

@@ -12,7 +12,7 @@ use thiserror::Error;
 
 // Production-compiled private lifecycle, durable-run-state, provisioning,
 // lease-first runtime-boot, held run-state-root, and dormant Windows lifecycle
-// composition models through Phase 2H. They have no executable/top-level
+// composition models through Phase 2I. They have no executable/top-level
 // caller, production key source, or installer authority mint in this module.
 #[allow(dead_code)]
 mod durable_run_state;
@@ -23,6 +23,10 @@ mod lifecycle_core;
 #[cfg(windows)]
 #[allow(dead_code)]
 mod windows_lifecycle;
+
+#[cfg(windows)]
+#[allow(dead_code)]
+mod windows_session_events;
 
 #[cfg(windows)]
 #[allow(dead_code)]

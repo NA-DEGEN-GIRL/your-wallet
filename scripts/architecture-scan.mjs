@@ -2770,6 +2770,14 @@ const keyAgentServiceWindowsServiceEffects = await text(
 const keyAgentServiceWindowsServiceEffectsProduction = withoutCfgTestItems(
   keyAgentServiceWindowsServiceEffects,
 );
+const keyAgentServiceWindowsSessionEventsPath =
+  "crates/platform-windows/src/key_agent_service/windows_session_events.rs";
+const keyAgentServiceWindowsSessionEvents = await text(
+  keyAgentServiceWindowsSessionEventsPath,
+);
+const keyAgentServiceWindowsSessionEventsProduction = withoutCfgTestItems(
+  withoutBottomTestModule(keyAgentServiceWindowsSessionEvents),
+);
 const keyAgentServiceWindowsLifecycleTestsPath =
   "crates/platform-windows/src/key_agent_service/windows_lifecycle_tests.rs";
 const keyAgentServiceWindowsLifecycleTests = await text(
@@ -8496,6 +8504,7 @@ const keyAgentServicePhaseTwoSemanticContract = ({
         { name: "windows_lifecycle_tests.rs", kind: "file" },
         { name: "windows_lifecycle.rs", kind: "file" },
         { name: "windows_service_effects.rs", kind: "file" },
+        { name: "windows_session_events.rs", kind: "file" },
       ]) &&
     JSON.stringify(durableUseInventory) ===
       JSON.stringify([
@@ -10169,6 +10178,7 @@ const keyAgentServicePhaseTwoCSemanticContract = ({
         { name: "windows_lifecycle_tests.rs", kind: "file" },
         { name: "windows_lifecycle.rs", kind: "file" },
         { name: "windows_service_effects.rs", kind: "file" },
+        { name: "windows_session_events.rs", kind: "file" },
       ]) &&
     JSON.stringify(provisioningDirectoryInventory) ===
       JSON.stringify([
@@ -11483,6 +11493,7 @@ const keyAgentServicePhaseTwoESemanticContract = ({
         { name: "windows_lifecycle_tests.rs", kind: "file" },
         { name: "windows_lifecycle.rs", kind: "file" },
         { name: "windows_service_effects.rs", kind: "file" },
+        { name: "windows_session_events.rs", kind: "file" },
       ]) &&
     JSON.stringify(rootDirectoryInventory) ===
       JSON.stringify([
@@ -15518,6 +15529,19 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
     /\s+/gu,
     " ",
   );
+  const architectureGapStart = architectureDocument.indexOf(
+    "The phase rows below are chronological boundary snapshots.",
+  );
+  const architectureGapEnd = architectureDocument.indexOf(
+    "\n| Component | Current evidence and limitation |",
+    architectureGapStart,
+  );
+  const architectureGapSlice =
+    architectureGapStart === -1 || architectureGapEnd === -1
+      ? ""
+      : architectureDocument
+          .slice(architectureGapStart, architectureGapEnd)
+          .replace(/\s+/gu, " ");
   const normalizedPlatformReadme = platformReadmeDocument.replace(
     /\s+/gu,
     " ",
@@ -16540,7 +16564,7 @@ const keyAgentServicePhaseTwoGSemanticContract = (inputs) => {
     ) &&
     [
       phaseTwoHDesignSlice,
-      normalizedArchitectureDocument,
+      architectureGapSlice,
       normalizedSecurityDecisions,
       normalizedPlatformReadme,
     ].every(
@@ -19313,8 +19337,8 @@ const keyAgentServicePhaseTwoGSemanticMutationProbes = [
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "architectureDocument",
-    "trusted\nproduction Broker/service-peer authentication, mapped-I/O/peer-race proof",
-    "untrusted\nproduction Broker/service-peer authentication, mapped-I/O/peer-race proof",
+    "trusted production Broker/service-peer authentication, mapped-I/O/peer-race\nproof",
+    "untrusted production Broker/service-peer authentication, mapped-I/O/peer-race\nproof",
   ),
   mutateKeyAgentServicePhaseTwoGInput(
     "securityDecisionsDocument",
@@ -29218,20 +29242,20 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate has two deliberately different surfaces.",
-    sha256: "6b8f5be34a29f803506b87047205a0f935032ab7b0049b40f491e26b380b0b1f",
+    sha256: "17a8acd7baeaefc36d84869f0e363c06eb84a19ef688a3d42e2a16ebce683664",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes a safe platform-neutral gate-byte",
-    sha256: "2523342c4a8534e475cde0fa102aa2e0ab5e5f6038ca51e982083d6e8870a175",
+    sha256: "55829cd809a4cf02b1b73e9c8171a3127c34b0d7c4a374494c7406e5b30dca9c",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "A separate helper-bootstrap crate exposes",
-    sha256: "a952252592e6cc909af128babeead86c91944611f1b8c42775abb19db7b150ae",
+    sha256: "65185ae468f5daf21f164fdf42d7decacadd36ebb2602e942065b73919f05462",
   },
 ];
 const keyAgentServiceHelperBootstrapDocumentationPatterns = [
@@ -36561,9 +36585,9 @@ for (const capability of [
 // the headless smoke backend remain separate non-generation partitions.
 const walletSecretOriginExpectedDocumentationSha256 = Object.freeze({
   architecture:
-    "6b8f5be34a29f803506b87047205a0f935032ab7b0049b40f491e26b380b0b1f",
+    "17a8acd7baeaefc36d84869f0e363c06eb84a19ef688a3d42e2a16ebce683664",
   securityDecisions:
-    "a952252592e6cc909af128babeead86c91944611f1b8c42775abb19db7b150ae",
+    "65185ae468f5daf21f164fdf42d7decacadd36ebb2602e942065b73919f05462",
 });
 const walletSecretOriginProductionProjection = (source) =>
   withoutCfgTestItems(withoutBottomTestModule(source));
@@ -39918,6 +39942,1431 @@ requireInvariant(
     ),
   "only the three separately relationship-proved provisioning, run-state-root, and Windows lifecycle test targets may be removed from production-source analysis",
 );
+
+const keyAgentServicePhaseTwoIParentPath =
+  "crates/platform-windows/src/key_agent_service.rs";
+const keyAgentServicePhaseTwoIExpectedDirectoryInventory = Object.freeze([
+  { name: "durable_run_state", kind: "directory" },
+  { name: "durable_run_state.rs", kind: "file" },
+  { name: "lifecycle_core_tests.rs", kind: "file" },
+  { name: "lifecycle_core.rs", kind: "file" },
+  { name: "run_state_root", kind: "directory" },
+  { name: "run_state_root.rs", kind: "file" },
+  { name: "windows_lifecycle_effects.rs", kind: "file" },
+  { name: "windows_lifecycle_tests.rs", kind: "file" },
+  { name: "windows_lifecycle.rs", kind: "file" },
+  { name: "windows_service_effects.rs", kind: "file" },
+  { name: "windows_session_events.rs", kind: "file" },
+]);
+const keyAgentServicePhaseTwoIExpectedTestNames = Object.freeze([
+  "native_session_notification_layout_is_exact",
+  "notification_size_must_match_exactly",
+  "zero_session_identifier_is_rejected_before_event_mapping",
+  "lock_and_unlock_map_to_exact_session_events",
+  "logoff_maps_to_exact_session_event",
+  "connect_disconnect_logon_and_remote_control_map_to_user_switch",
+  "reserved_and_unknown_event_types_are_rejected",
+  "validated_event_is_move_only_redacted_and_dispatches_only_through_runtime_facade",
+]);
+const keyAgentServicePhaseTwoIExpectedUseInventory = Object.freeze([
+  "usecore::fmt;",
+  "usecore::mem::size_of;",
+  "usethiserror::Error;",
+  "usewindows::Win32::System::RemoteDesktop::WTSSESSION_NOTIFICATION;",
+  "usewindows::Win32::UI::WindowsAndMessaging::{WTS_CONSOLE_CONNECT,WTS_CONSOLE_DISCONNECT,WTS_REMOTE_CONNECT,WTS_REMOTE_DISCONNECT,WTS_SESSION_CREATE,WTS_SESSION_LOCK,WTS_SESSION_LOGOFF,WTS_SESSION_LOGON,WTS_SESSION_REMOTE_CONTROL,WTS_SESSION_TERMINATE,WTS_SESSION_UNLOCK,};",
+  "usesuper::lifecycle_core::{LifecycleError,SessionEvent,SessionId,SessionInvalidationReport};",
+  "usesuper::windows_lifecycle::WindowsNoSecretService;",
+]);
+const keyAgentServicePhaseTwoIExpectedPins = Object.freeze({
+  sourceFull:
+    "c20bba5a27a40b7221b20edbc364fd61a2c49a84d2b34f052c238176bdf1e80f",
+  sourceProduction:
+    "2d4da94c36055c61f5fdedabb8752709bf32750a28381e67c50b6e21c0866b4e",
+  design:
+    "55829cd809a4cf02b1b73e9c8171a3127c34b0d7c4a374494c7406e5b30dca9c",
+  architecture:
+    "17a8acd7baeaefc36d84869f0e363c06eb84a19ef688a3d42e2a16ebce683664",
+  security:
+    "65185ae468f5daf21f164fdf42d7decacadd36ebb2602e942065b73919f05462",
+});
+const keyAgentServicePhaseTwoIExpectedInboundEdge = Object.freeze({
+  declaringFile: keyAgentServicePhaseTwoIParentPath,
+  module: "windows_session_events",
+  resolution: "default-file",
+  literal: "windows_session_events.rs",
+  resolvedTarget: keyAgentServiceWindowsSessionEventsPath,
+  attributes: ["#[cfg(windows)]", "#[allow(dead_code)]"],
+});
+const keyAgentServicePhaseTwoITypeInventory = (source) => [
+  ...rustLexicalCode(source).matchAll(
+    /\b(?:(?<visibility>pub(?:\s*\([^)]*\))?)\s+)?(?<kind>struct|enum)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)/gu,
+  ),
+].map(({ groups }) => ({
+  visibility: compactRust(groups.visibility ?? ""),
+  kind: groups.kind,
+  name: groups.name,
+}));
+const keyAgentServicePhaseTwoIProductionProjection = (source) =>
+  withoutCfgTestItems(withoutBottomTestModule(source));
+const keyAgentServicePhaseTwoIBindings = (files, path) =>
+  files
+    .filter((file) => file.path === path)
+    .map(({ path: bindingPath, source }) => ({ path: bindingPath, source }));
+const keyAgentServicePhaseTwoIExternalUsageInventory = (files) =>
+  files
+    .filter(({ path }) => path !== keyAgentServiceWindowsSessionEventsPath)
+    .flatMap((file) => {
+      const count = identifierOccurrenceCount(
+        rustLexicalCode(file.source),
+        "handle_windows_session_change",
+      );
+      return count === 0 ? [] : [{ path: file.path, count }];
+    });
+const keyAgentServicePhaseTwoIRuntimeFacadeUseInventory = (files) =>
+  files
+    .filter(({ path }) => path !== keyAgentServiceLifecycleCoreTestsPath)
+    .flatMap((file) => {
+    const count = identifierOccurrenceCount(
+      rustLexicalCode(file.source),
+      "handle_session_event",
+    );
+    return count === 0 ? [] : [{ path: file.path, count }];
+    });
+const keyAgentServicePhaseTwoIExpectedRuntimeFacadeUseInventory = Object.freeze([
+  {
+    path: "crates/platform-windows/src/key_agent_service/lifecycle_core.rs",
+    count: 3,
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service/windows_lifecycle.rs",
+    count: 2,
+  },
+  { path: keyAgentServiceWindowsSessionEventsPath, count: 1 },
+]);
+const keyAgentServicePhaseTwoIDocumentSection = (
+  document,
+  startMarker,
+  endMarker,
+) => {
+  const start = document.indexOf(startMarker);
+  const end = start === -1 ? -1 : document.indexOf(endMarker, start + startMarker.length);
+  return start === -1 || end === -1 ? "" : document.slice(start, end);
+};
+const keyAgentServicePhaseTwoINormalizedDocument = (document) =>
+  document.replace(/\s+/gu, " ");
+const keyAgentServicePhaseTwoIDesignMarkers = Object.freeze([
+  "**Current Phase 2I status: started, not passed.**",
+  "`windows_session_events`",
+  "`ValidatedWindowsSessionEvent::decode`",
+  "`WTSSESSION_NOTIFICATION`",
+  "`handle_windows_session_change`",
+  "`WTS_SESSION_CREATE`",
+  "`WTS_SESSION_TERMINATE`",
+  "`UserSwitch`",
+  "8/8",
+  "unit-only",
+  "zero production callers",
+  "`SERVICE_ACCEPT_SESSIONCHANGE`",
+  "`event_data`",
+  "callback-pointer validation and copying",
+  "mailbox delivery",
+  "cancellation",
+  "rundown ordering",
+  "**STOP-SHIP**",
+  "silent exit 78",
+  "`None`",
+]);
+const keyAgentServicePhaseTwoIArchitectureMarkers = Object.freeze([
+  "**Current Phase 2I status: started, not passed.**",
+  "`windows_session_events`",
+  "`ValidatedWindowsSessionEvent::decode`",
+  "`WTSSESSION_NOTIFICATION`",
+  "`handle_windows_session_change`",
+  "`UserSwitch`",
+  "8/8",
+  "unit-only",
+  "`SERVICE_ACCEPT_SESSIONCHANGE`",
+  "`event_data`",
+  "zero production callers",
+  "callback-pointer validation/copying",
+  "mailbox ownership and delivery",
+  "cancellation",
+  "rundown ordering",
+  "**STOP-SHIP**",
+  "silent exit 78",
+  "`None`",
+]);
+const keyAgentServicePhaseTwoISecurityMarkers = Object.freeze([
+  "**Current Phase 2I status: started, not passed.**",
+  "`windows_session_events`",
+  "`ValidatedWindowsSessionEvent::decode`",
+  "`WTSSESSION_NOTIFICATION`",
+  "`handle_windows_session_change`",
+  "`UserSwitch`",
+  "8/8",
+  "unit-only",
+  "`SERVICE_ACCEPT_SESSIONCHANGE`",
+  "`event_data`",
+  "zero production callers",
+  "callback-pointer validation and copying",
+  "mailbox ownership and delivery",
+  "cancellation",
+  "rundown ordering",
+  "**STOP-SHIP**",
+  "silent exit 78",
+  "`None`",
+]);
+const keyAgentServicePhaseTwoIPinContract = (inputs) => {
+  const production = keyAgentServicePhaseTwoIProductionProjection(
+    inputs.targetSource,
+  );
+  return (
+    normalizedSourceSha256(inputs.targetSource) ===
+      keyAgentServicePhaseTwoIExpectedPins.sourceFull &&
+    normalizedSourceSha256(production) ===
+      keyAgentServicePhaseTwoIExpectedPins.sourceProduction &&
+    normalizedSourceSha256(inputs.designDocument) ===
+      keyAgentServicePhaseTwoIExpectedPins.design &&
+    normalizedSourceSha256(inputs.architectureDocument) ===
+      keyAgentServicePhaseTwoIExpectedPins.architecture &&
+    normalizedSourceSha256(inputs.securityDocument) ===
+      keyAgentServicePhaseTwoIExpectedPins.security
+  );
+};
+
+let keyAgentServicePhaseTwoIBaseChecks = Object.freeze({});
+let keyAgentServicePhaseTwoIBaseMetrics = Object.freeze({});
+const keyAgentServicePhaseTwoISemanticContract = (inputs, requirePins = true) => {
+  try {
+    const production = keyAgentServicePhaseTwoIProductionProjection(
+      inputs.targetSource,
+    );
+    const parentProduction = withoutCfgTestItems(
+      withoutBottomTestModule(inputs.parentSource),
+    );
+    const targetCode = rustLexicalCode(production);
+    const parentCode = rustLexicalCode(parentProduction);
+    const targetCompact = compactRust(production);
+    const moduleDeclarations = rustModuleDeclarations(inputs.parentSource).filter(
+      ({ name }) => name === "windows_session_events",
+    );
+    const moduleAttributes =
+      moduleDeclarations.length === 1
+        ? rustAttachedOuterAttributes(
+            inputs.parentSource,
+            moduleDeclarations[0].index,
+          ).map(({ source }) => normalizeRustFragment(source))
+        : [];
+    const failureItem = rustLexicalItemBlockAtDepth(
+      production,
+      /(?:^|\n)\s*pub\s*\(\s*super\s*\)\s+enum\s+WindowsSessionChangeFailure\s*\{/u,
+      0,
+    );
+    const carrierItem = rustLexicalItemBlockAtDepth(
+      production,
+      /(?:^|\n)\s*struct\s+ValidatedWindowsSessionEvent\s*\{/u,
+      0,
+    );
+    const eventImpl = rustImplItemAtDepth(
+      production,
+      "impl ValidatedWindowsSessionEvent",
+      0,
+    );
+    const failureDebugImpl = rustImplItemAtDepth(
+      production,
+      "impl fmt::Debug for WindowsSessionChangeFailure",
+      0,
+    );
+    const carrierDebugImpl = rustImplItemAtDepth(
+      production,
+      "impl fmt::Debug for ValidatedWindowsSessionEvent",
+      0,
+    );
+    const decode = rustFunctionBlockAtDepth(eventImpl, "decode", 1);
+    const dispatch = rustFunctionBlockAtDepth(eventImpl, "dispatch", 1);
+    const facade = rustTopLevelFunctionBlock(
+      production,
+      "handle_windows_session_change",
+    );
+    const controlHandler = rustFunctionBlockAtDepth(
+      parentProduction,
+      "control_handler",
+      1,
+    );
+    const statusValue = rustFunctionBlockAtDepth(
+      parentProduction,
+      "status_value",
+      1,
+    );
+    const tests = rustBottomTestModule(inputs.targetSource);
+    const layoutTest = rustFunctionBlockAtDepth(
+      tests,
+      "native_session_notification_layout_is_exact",
+      1,
+    );
+    const sizeTest = rustFunctionBlockAtDepth(
+      tests,
+      "notification_size_must_match_exactly",
+      1,
+    );
+    const zeroTest = rustFunctionBlockAtDepth(
+      tests,
+      "zero_session_identifier_is_rejected_before_event_mapping",
+      1,
+    );
+    const mappingTest = rustFunctionBlockAtDepth(
+      tests,
+      "connect_disconnect_logon_and_remote_control_map_to_user_switch",
+      1,
+    );
+    const rejectedTest = rustFunctionBlockAtDepth(
+      tests,
+      "reserved_and_unknown_event_types_are_rejected",
+      1,
+    );
+    const facadeTest = rustFunctionBlockAtDepth(
+      tests,
+      "validated_event_is_move_only_redacted_and_dispatches_only_through_runtime_facade",
+      1,
+    );
+    const failureIndex = targetCode.indexOf(
+      "pub(super) enum WindowsSessionChangeFailure",
+    );
+    const failureAttributes =
+      failureIndex === -1
+        ? []
+        : rustAttachedOuterAttributes(production, failureIndex).map(({ source }) =>
+            normalizeRustFragment(source),
+          );
+    const carrierIndex = targetCode.indexOf(
+      "struct ValidatedWindowsSessionEvent",
+    );
+    const carrierAttributes =
+      carrierIndex === -1
+        ? []
+        : rustAttachedOuterAttributes(production, carrierIndex).map(
+            ({ source }) => normalizeRustFragment(source),
+          );
+    const errorAttributes = [
+      ...failureItem.matchAll(
+        /#\s*\[\s*error\s*\(\s*"(?<message>[^"\r\n]*)"\s*\)\s*\]/gu,
+      ),
+    ].map(({ groups }) => groups.message);
+    const fullTypeInventory = keyAgentServicePhaseTwoITypeInventory(
+      inputs.targetSource,
+    );
+    const productionTypeInventory =
+      keyAgentServicePhaseTwoITypeInventory(production);
+    const fullVisibleFunctions = rustVisibleFunctionItems(inputs.targetSource);
+    const productionVisibleFunctions = rustVisibleFunctionItems(production);
+    const productionUseInventory = rustUseItems(production).map(({ source }) =>
+      compactRust(source),
+    );
+    const topLevelBindingInventory = [
+      ...targetCode.matchAll(
+        /(?:^|\n)\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?<kind>const|static|type)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\b/gu,
+      ),
+    ]
+      .filter(
+        (match) => rustBraceDepthBefore(targetCode, match.index) === 0,
+      )
+      .map(({ groups }) => ({ kind: groups.kind, name: groups.name }));
+    const expectedTypeInventory = [
+      {
+        visibility: "pub(super)",
+        kind: "enum",
+        name: "WindowsSessionChangeFailure",
+      },
+      {
+        visibility: "",
+        kind: "struct",
+        name: "ValidatedWindowsSessionEvent",
+      },
+    ];
+    const expectedVisibleFunctions = [
+      {
+        owner: "free",
+        visibility: "pub(super)",
+        name: "handle_windows_session_change",
+        signature:
+          "fnhandle_windows_session_change(service:&mutWindowsNoSecretService<'_>,event_type:u32,notification:WTSSESSION_NOTIFICATION,)->Result<SessionInvalidationReport,WindowsSessionChangeFailure>",
+      },
+    ];
+    const expectedFailureCompact =
+      "pub(super)enumWindowsSessionChangeFailure{#[error()]InvalidNotificationSize,#[error()]InvalidSessionIdentifier,#[error()]UnsupportedEventType,#[error()]RuntimePolicy(#[source]LifecycleError),}";
+    const expectedCarrierCompact =
+      "structValidatedWindowsSessionEvent{event:SessionEvent,}";
+    const expectedDecodeCompact =
+      "fndecode(event_type:u32,notification:WTSSESSION_NOTIFICATION,)->Result<Self,WindowsSessionChangeFailure>{letOk(expected_size)=u32::try_from(size_of::<WTSSESSION_NOTIFICATION>())else{returnErr(WindowsSessionChangeFailure::InvalidNotificationSize);};ifnotification.cbSize!=expected_size{returnErr(WindowsSessionChangeFailure::InvalidNotificationSize);}letsession=SessionId::new(notification.dwSessionId).map_err(|_|WindowsSessionChangeFailure::InvalidSessionIdentifier)?;ifmatches!(event_type,WTS_SESSION_CREATE|WTS_SESSION_TERMINATE){returnErr(WindowsSessionChangeFailure::UnsupportedEventType);}letevent=matchevent_type{WTS_SESSION_LOCK=>SessionEvent::Lock(session),WTS_SESSION_UNLOCK=>SessionEvent::Unlock(session),WTS_SESSION_LOGOFF=>SessionEvent::Logoff(session),WTS_CONSOLE_CONNECT|WTS_CONSOLE_DISCONNECT|WTS_REMOTE_CONNECT|WTS_REMOTE_DISCONNECT|WTS_SESSION_LOGON|WTS_SESSION_REMOTE_CONTROL=>SessionEvent::UserSwitch(session),_=>returnErr(WindowsSessionChangeFailure::UnsupportedEventType),};Ok(Self{event})}";
+    const expectedDispatchCompact =
+      "fndispatch(self,service:&mutWindowsNoSecretService<'_>,)->Result<SessionInvalidationReport,WindowsSessionChangeFailure>{matchservice.handle_session_event(self.event){Ok(report)=>Ok(report),Err(cause)=>Err(WindowsSessionChangeFailure::RuntimePolicy(cause)),}}";
+    const expectedFacadeCompact =
+      "pub(super)fnhandle_windows_session_change(service:&mutWindowsNoSecretService<'_>,event_type:u32,notification:WTSSESSION_NOTIFICATION,)->Result<SessionInvalidationReport,WindowsSessionChangeFailure>{ValidatedWindowsSessionEvent::decode(event_type,notification)?.dispatch(service)}";
+    const designSection = keyAgentServicePhaseTwoINormalizedDocument(
+      keyAgentServicePhaseTwoIDocumentSection(
+        inputs.designDocument,
+        "**Current Phase 2I status: started, not passed.**",
+        "\n### Phase 3",
+      ),
+    );
+    const architectureRows = inputs.architectureDocument
+      .split(/\r?\n/gu)
+      .filter((line) =>
+        line.startsWith("| Windows session-change translation bridge |"),
+      );
+    const architectureRow = keyAgentServicePhaseTwoINormalizedDocument(
+      architectureRows[0] ?? "",
+    );
+    const securitySection = keyAgentServicePhaseTwoINormalizedDocument(
+      keyAgentServicePhaseTwoIDocumentSection(
+        inputs.securityDocument,
+        "**Current Phase 2I status: started, not passed.**",
+        "\nAll seven Rust-startup supervisor integration positives",
+      ),
+    );
+    const testNames = rustTestNameInventory(inputs.targetSource);
+    const testBlocks = keyAgentServicePhaseTwoIExpectedTestNames.map((name) =>
+      rustFunctionBlockAtDepth(tests, name, 1),
+    );
+    const topologyCheck =
+      moduleDeclarations.length === 1 &&
+      compactRust(moduleDeclarations[0].source) ===
+        "modwindows_session_events;" &&
+      JSON.stringify(moduleAttributes) ===
+        JSON.stringify(["#[cfg(windows)]", "#[allow(dead_code)]"]) &&
+      JSON.stringify(inputs.platformInboundEdges) ===
+        JSON.stringify([keyAgentServicePhaseTwoIExpectedInboundEdge]) &&
+      JSON.stringify(inputs.workspaceInboundEdges) ===
+        JSON.stringify([keyAgentServicePhaseTwoIExpectedInboundEdge]) &&
+      JSON.stringify(inputs.platformParentBindings) ===
+        JSON.stringify([
+          { path: keyAgentServicePhaseTwoIParentPath, source: parentProduction },
+        ]) &&
+      JSON.stringify(inputs.workspaceParentBindings) ===
+        JSON.stringify([
+          { path: keyAgentServicePhaseTwoIParentPath, source: parentProduction },
+        ]) &&
+      JSON.stringify(inputs.platformTargetBindings) ===
+        JSON.stringify([
+          {
+            path: keyAgentServiceWindowsSessionEventsPath,
+            source: production,
+          },
+        ]) &&
+      JSON.stringify(inputs.workspaceTargetBindings) ===
+        JSON.stringify([
+          {
+            path: keyAgentServiceWindowsSessionEventsPath,
+            source: production,
+          },
+        ]) &&
+      JSON.stringify(inputs.directoryInventory) ===
+        JSON.stringify(keyAgentServicePhaseTwoIExpectedDirectoryInventory) &&
+      !/\bpub(?:\s*\([^)]*\))?\s+(?:use|mod)\b[^;]*\bwindows_session_events\b/u.test(
+        parentCode,
+      );
+    const inventoryCheck =
+      JSON.stringify(fullTypeInventory) ===
+        JSON.stringify(expectedTypeInventory) &&
+      JSON.stringify(productionTypeInventory) ===
+        JSON.stringify(expectedTypeInventory) &&
+      JSON.stringify(fullVisibleFunctions) ===
+        JSON.stringify(expectedVisibleFunctions) &&
+      JSON.stringify(productionVisibleFunctions) ===
+        JSON.stringify(expectedVisibleFunctions) &&
+      JSON.stringify(productionUseInventory) ===
+        JSON.stringify(keyAgentServicePhaseTwoIExpectedUseInventory) &&
+      topLevelBindingInventory.length === 0 &&
+      identifierOccurrenceCount(targetCode, "WindowsSessionChangeFailure") === 11 &&
+      identifierOccurrenceCount(targetCode, "ValidatedWindowsSessionEvent") === 4 &&
+      identifierOccurrenceCount(targetCode, "handle_windows_session_change") === 1;
+    const failureAndCarrierParts = Object.freeze({
+      failureShape: compactRust(failureItem) === expectedFailureCompact,
+      carrierShape: compactRust(carrierItem) === expectedCarrierCompact,
+      failureAttributes:
+        JSON.stringify(failureAttributes) === JSON.stringify(["#[derive(Error)]"]),
+      carrierAttribute:
+        carrierAttributes.length === 1 &&
+        /^#\[must_use\s*=\s*"[^"]+"\]$/u.test(carrierAttributes[0]),
+      staticDisplay:
+        errorAttributes.length === 4 &&
+        errorAttributes.every(
+          (message) => message.length > 0 && !/[{}]/u.test(message),
+        ),
+      moveOnly: keyAgentServiceMoveOnlyEvidenceContract(production, [
+        "WindowsSessionChangeFailure",
+        "ValidatedWindowsSessionEvent",
+      ]),
+      safeOnly:
+        rustUnsafeKeywordCount(production) === 0 &&
+        rustAuthorityTypeErasureSites(production).length === 0,
+      failureDebug:
+        (failureDebugImpl.match(/\[REDACTED\]/gu) ?? []).length === 4 &&
+        (
+          rustLexicalCode(failureDebugImpl).match(
+            /\bformatter\s*\.\s*write_str\s*\(/gu,
+          ) ?? []
+        ).length === 4 &&
+        /\bSelf\s*::\s*RuntimePolicy\s*\(\s*_\s*\)/u.test(
+          rustLexicalCode(failureDebugImpl),
+        ) &&
+        !/\b(?:debug_struct|debug_tuple|field|write_fmt|format_args)\b/u.test(
+          rustLexicalCode(failureDebugImpl),
+        ),
+      carrierDebug:
+        (carrierDebugImpl.match(/\[REDACTED\]/gu) ?? []).length === 1 &&
+        (
+          rustLexicalCode(carrierDebugImpl).match(
+            /\bformatter\s*\.\s*write_str\s*\(/gu,
+          ) ?? []
+        ).length === 1 &&
+        !/\bself\s*\.\s*event\b|\b(?:debug_struct|debug_tuple|field|write_fmt|format_args)\b/u.test(
+          rustLexicalCode(carrierDebugImpl),
+        ),
+    });
+    const failureAndCarrierCheck =
+      Object.values(failureAndCarrierParts).every(Boolean);
+    const validationAndDispatchCheck =
+      compactRust(decode) === expectedDecodeCompact &&
+      compactRust(dispatch) === expectedDispatchCompact &&
+      compactRust(facade) === expectedFacadeCompact &&
+      rustCallSites(decode, "size_of").length === 1 &&
+      rustCallSites(decode, "SessionId::new").length === 1 &&
+      rustCallSites(dispatch, "service.handle_session_event").length === 1 &&
+      rustCallSites(facade, "ValidatedWindowsSessionEvent::decode").length === 1 &&
+      rustCallSites(facade, "dispatch").length === 1 &&
+      (targetCompact.match(/\bunsafe\b/gu) ?? []).length === 0;
+    const zeroCallerCheck =
+      inputs.platformExternalUsage.length === 0 &&
+      inputs.workspaceExternalUsage.length === 0 &&
+      JSON.stringify(inputs.platformRuntimeFacadeUses) ===
+        JSON.stringify(
+          keyAgentServicePhaseTwoIExpectedRuntimeFacadeUseInventory,
+        ) &&
+      JSON.stringify(inputs.workspaceRuntimeFacadeUses) ===
+        JSON.stringify(
+          keyAgentServicePhaseTwoIExpectedRuntimeFacadeUseInventory,
+        );
+    const scmDormancyCheck =
+      !/\bSERVICE_ACCEPT_SESSIONCHANGE\b|\bSERVICE_CONTROL_SESSIONCHANGE\b/u.test(
+        parentCode,
+      ) &&
+      identifierOccurrenceCount(
+        rustLexicalCode(controlHandler),
+        "_event_type",
+      ) === 1 &&
+      identifierOccurrenceCount(
+        rustLexicalCode(controlHandler),
+        "_event_data",
+      ) === 1 &&
+      !/\bevent_data\b(?!\s*:)|\bevent_type\b(?!\s*:)/u.test(
+        rustLexicalCode(controlHandler),
+      ) &&
+      compactRust(statusValue).includes(
+        "dwControlsAccepted:ifstate.0==SERVICE_RUNNING.0{SERVICE_ACCEPT_STOP|SERVICE_ACCEPT_SHUTDOWN}else{0},",
+      );
+    const exactTestsCheck =
+      JSON.stringify(testNames) ===
+        JSON.stringify(keyAgentServicePhaseTwoIExpectedTestNames) &&
+      !/#\s*\[\s*ignore(?:\s*=\s*"[^"]*")?\s*\]/u.test(tests) &&
+      testBlocks.every((block) =>
+        /\b(?:assert|debug_assert)(?:_eq|_ne)?\s*!\s*\(/u.test(
+          rustLexicalCode(block),
+        ),
+      ) &&
+      hasOrderedCompactMarkers(layoutTest, [
+        "size_of::<WTSSESSION_NOTIFICATION>()",
+        "offset_of!(WTSSESSION_NOTIFICATION,cbSize)",
+        "offset_of!(WTSSESSION_NOTIFICATION,dwSessionId)",
+      ]) &&
+      compactRust(sizeTest).includes(
+        "ValidatedWindowsSessionEvent::decode(u32::MAX,notification(expected.saturating_sub(1),0),)",
+      ) &&
+      compactRust(sizeTest).includes(
+        "Err(WindowsSessionChangeFailure::InvalidNotificationSize)",
+      ) &&
+      compactRust(zeroTest).includes(
+        "ValidatedWindowsSessionEvent::decode(u32::MAX,notification(native_size(),0))",
+      ) &&
+      compactRust(mappingTest).includes("WTS_SESSION_REMOTE_CONTROL") &&
+      compactRust(rejectedTest).includes(
+        "[0,WTS_SESSION_CREATE,WTS_SESSION_TERMINATE,u32::MAX]",
+      ) &&
+      (facadeTest.match(/\[REDACTED\]/gu) ?? []).length >= 3 &&
+      compactRust(facadeTest).includes("runtime_failure.source().is_some()") &&
+      compactRust(facadeTest).includes(
+        "production.matches().count(),1",
+      ) &&
+      compactRust(facadeTest).includes(
+        "production.contains()",
+      );
+    const documentationCheck =
+      designSection.length > 0 &&
+      architectureRows.length === 1 &&
+      securitySection.length > 0 &&
+      keyAgentServicePhaseTwoIDesignMarkers.every((marker) =>
+        designSection.includes(marker),
+      ) &&
+      keyAgentServicePhaseTwoIArchitectureMarkers.every((marker) =>
+        architectureRow.includes(marker),
+      ) &&
+      keyAgentServicePhaseTwoISecurityMarkers.every((marker) =>
+        securitySection.includes(marker),
+      ) &&
+      inputs.designDocument.includes(
+        "2026-09-05 - Added the dormant Phase 2I safe Windows session-change bridge.",
+      );
+    const checks = Object.freeze({
+      topology: topologyCheck,
+      fullAndProductionInventory: inventoryCheck,
+      safeMoveOnlyRedactedCarrier: failureAndCarrierCheck,
+      exactValidationMappingAndFacadeDispatch: validationAndDispatchCheck,
+      zeroProductionCallers: zeroCallerCheck,
+      scmDormancy: scmDormancyCheck,
+      exactEightTests: exactTestsCheck,
+      documentation: documentationCheck,
+      pins: !requirePins || keyAgentServicePhaseTwoIPinContract(inputs),
+    });
+    const metrics = Object.freeze({
+      fullTypes: fullTypeInventory,
+      productionTypes: productionTypeInventory,
+      visibleFunctions: productionVisibleFunctions,
+      productionUses: productionUseInventory,
+      topLevelBindings: topLevelBindingInventory,
+      inboundEdges: Object.freeze({
+        platform: inputs.platformInboundEdges.length,
+        workspace: inputs.workspaceInboundEdges.length,
+      }),
+      externalUsages: Object.freeze({
+        platform: inputs.platformExternalUsage,
+        workspace: inputs.workspaceExternalUsage,
+      }),
+      runtimeFacadeUses: Object.freeze({
+        platform: inputs.platformRuntimeFacadeUses,
+        workspace: inputs.workspaceRuntimeFacadeUses,
+      }),
+      failureAndCarrierParts,
+      tests: testNames,
+      missingDocs: Object.freeze({
+        design: keyAgentServicePhaseTwoIDesignMarkers.filter(
+          (marker) => !designSection.includes(marker),
+        ),
+        architecture: keyAgentServicePhaseTwoIArchitectureMarkers.filter(
+          (marker) => !architectureRow.includes(marker),
+        ),
+        security: keyAgentServicePhaseTwoISecurityMarkers.filter(
+          (marker) => !securitySection.includes(marker),
+        ),
+      }),
+      identifiers: Object.freeze({
+        failure: identifierOccurrenceCount(
+          targetCode,
+          "WindowsSessionChangeFailure",
+        ),
+        carrier: identifierOccurrenceCount(
+          targetCode,
+          "ValidatedWindowsSessionEvent",
+        ),
+        facade: identifierOccurrenceCount(
+          targetCode,
+          "handle_windows_session_change",
+        ),
+      }),
+    });
+    if (inputs === keyAgentServicePhaseTwoIInputs) {
+      keyAgentServicePhaseTwoIBaseChecks = checks;
+      keyAgentServicePhaseTwoIBaseMetrics = metrics;
+    }
+    return Object.values(checks).every(Boolean);
+  } catch {
+    return false;
+  }
+};
+
+const keyAgentServicePhaseTwoIInputs = Object.freeze({
+  parentSource: keyAgentServicePlatformSource,
+  targetSource: keyAgentServiceWindowsSessionEvents,
+  directoryInventory: keyAgentServiceLifecycleDirectoryInventory,
+  platformParentBindings: keyAgentServicePhaseTwoIBindings(
+    platformWindowsProductionCandidates,
+    keyAgentServicePhaseTwoIParentPath,
+  ),
+  workspaceParentBindings: keyAgentServicePhaseTwoIBindings(
+    workspaceRustProductionCandidates,
+    keyAgentServicePhaseTwoIParentPath,
+  ),
+  platformTargetBindings: keyAgentServicePhaseTwoIBindings(
+    platformWindowsProductionCandidates,
+    keyAgentServiceWindowsSessionEventsPath,
+  ),
+  workspaceTargetBindings: keyAgentServicePhaseTwoIBindings(
+    workspaceRustProductionCandidates,
+    keyAgentServiceWindowsSessionEventsPath,
+  ),
+  platformInboundEdges: keyAgentServiceResolvedModuleInboundEdges(
+    platformWindowsProductionCandidates,
+    keyAgentServiceWindowsSessionEventsPath,
+  ),
+  workspaceInboundEdges: keyAgentServiceResolvedModuleInboundEdges(
+    workspaceRustProductionCandidates,
+    keyAgentServiceWindowsSessionEventsPath,
+  ),
+  platformExternalUsage: keyAgentServicePhaseTwoIExternalUsageInventory(
+    platformWindowsProductionFiles,
+  ),
+  workspaceExternalUsage: keyAgentServicePhaseTwoIExternalUsageInventory(
+    workspaceRustProductionFiles,
+  ),
+  platformRuntimeFacadeUses:
+    keyAgentServicePhaseTwoIRuntimeFacadeUseInventory(
+      platformWindowsProductionFiles,
+    ),
+  workspaceRuntimeFacadeUses:
+    keyAgentServicePhaseTwoIRuntimeFacadeUseInventory(
+      workspaceRustProductionFiles,
+    ),
+  designDocument: keyAgentServiceDesign,
+  architectureDocument: sepoliaArchitectureDoc,
+  securityDocument: keyAgentServiceSecurityDecisions,
+});
+const keyAgentServicePhaseTwoIReplaceUnique = (source, search, replacement) => {
+  const first = source.indexOf(search);
+  if (
+    first === -1 ||
+    source.indexOf(search, first + search.length) !== -1
+  ) {
+    throw new Error("Phase 2I mutation expected one structural anchor");
+  }
+  return `${source.slice(0, first)}${replacement}${source.slice(
+    first + search.length,
+  )}`;
+};
+const keyAgentServicePhaseTwoISourceMutationProbe = (
+  name,
+  field,
+  mutate,
+) => {
+  const original = keyAgentServicePhaseTwoIInputs[field];
+  const mutated = mutate(original);
+  let inputs = { ...keyAgentServicePhaseTwoIInputs, [field]: mutated };
+  if (field === "targetSource") {
+    const production = keyAgentServicePhaseTwoIProductionProjection(mutated);
+    inputs = {
+      ...inputs,
+      platformTargetBindings:
+        keyAgentServicePhaseTwoIInputs.platformTargetBindings.map((binding) => ({
+          ...binding,
+          source: production,
+        })),
+      workspaceTargetBindings:
+        keyAgentServicePhaseTwoIInputs.workspaceTargetBindings.map((binding) => ({
+          ...binding,
+          source: production,
+        })),
+    };
+  } else if (field === "parentSource") {
+    const production = withoutCfgTestItems(withoutBottomTestModule(mutated));
+    const platformCandidates = platformWindowsProductionCandidates.map((file) =>
+      file.path === keyAgentServicePhaseTwoIParentPath
+        ? { ...file, source: production }
+        : file,
+    );
+    const workspaceCandidates = workspaceRustProductionCandidates.map((file) =>
+      file.path === keyAgentServicePhaseTwoIParentPath
+        ? { ...file, source: production }
+        : file,
+    );
+    inputs = {
+      ...inputs,
+      platformParentBindings: keyAgentServicePhaseTwoIBindings(
+        platformCandidates,
+        keyAgentServicePhaseTwoIParentPath,
+      ),
+      workspaceParentBindings: keyAgentServicePhaseTwoIBindings(
+        workspaceCandidates,
+        keyAgentServicePhaseTwoIParentPath,
+      ),
+      platformInboundEdges: keyAgentServiceResolvedModuleInboundEdges(
+        platformCandidates,
+        keyAgentServiceWindowsSessionEventsPath,
+      ),
+      workspaceInboundEdges: keyAgentServiceResolvedModuleInboundEdges(
+        workspaceCandidates,
+        keyAgentServiceWindowsSessionEventsPath,
+      ),
+    };
+  }
+  return Object.freeze({
+    name,
+    changed: mutated !== original,
+    inputs: Object.freeze(inputs),
+  });
+};
+const keyAgentServicePhaseTwoITargetProduction =
+  keyAgentServicePhaseTwoIProductionProjection(
+    keyAgentServiceWindowsSessionEvents,
+  );
+const keyAgentServicePhaseTwoIEventImpl = rustImplItemAtDepth(
+  keyAgentServicePhaseTwoITargetProduction,
+  "impl ValidatedWindowsSessionEvent",
+  0,
+);
+const keyAgentServicePhaseTwoIDecode = rustFunctionBlockAtDepth(
+  keyAgentServicePhaseTwoIEventImpl,
+  "decode",
+  1,
+);
+const keyAgentServicePhaseTwoIDispatch = rustFunctionBlockAtDepth(
+  keyAgentServicePhaseTwoIEventImpl,
+  "dispatch",
+  1,
+);
+const keyAgentServicePhaseTwoIFacade = rustTopLevelFunctionBlock(
+  keyAgentServicePhaseTwoITargetProduction,
+  "handle_windows_session_change",
+);
+const keyAgentServicePhaseTwoIFailureItem = rustLexicalItemBlockAtDepth(
+  keyAgentServicePhaseTwoITargetProduction,
+  /(?:^|\n)\s*pub\s*\(\s*super\s*\)\s+enum\s+WindowsSessionChangeFailure\s*\{/u,
+  0,
+);
+const keyAgentServicePhaseTwoICarrierItem = rustLexicalItemBlockAtDepth(
+  keyAgentServicePhaseTwoITargetProduction,
+  /(?:^|\n)\s*struct\s+ValidatedWindowsSessionEvent\s*\{/u,
+  0,
+);
+const keyAgentServicePhaseTwoIFailureDebug = rustImplItemAtDepth(
+  keyAgentServicePhaseTwoITargetProduction,
+  "impl fmt::Debug for WindowsSessionChangeFailure",
+  0,
+);
+const keyAgentServicePhaseTwoICarrierDebug = rustImplItemAtDepth(
+  keyAgentServicePhaseTwoITargetProduction,
+  "impl fmt::Debug for ValidatedWindowsSessionEvent",
+  0,
+);
+const keyAgentServicePhaseTwoIParentProduction = withoutCfgTestItems(
+  withoutBottomTestModule(keyAgentServicePlatformSource),
+);
+const keyAgentServicePhaseTwoIControlHandler = rustFunctionBlockAtDepth(
+  keyAgentServicePhaseTwoIParentProduction,
+  "control_handler",
+  1,
+);
+const keyAgentServicePhaseTwoIStatusValue = rustFunctionBlockAtDepth(
+  keyAgentServicePhaseTwoIParentProduction,
+  "status_value",
+  1,
+);
+const keyAgentServicePhaseTwoITests = rustBottomTestModule(
+  keyAgentServiceWindowsSessionEvents,
+);
+const keyAgentServicePhaseTwoISizeTest = rustFunctionBlockAtDepth(
+  keyAgentServicePhaseTwoITests,
+  "notification_size_must_match_exactly",
+  1,
+);
+const keyAgentServicePhaseTwoIFacadeTest = rustFunctionBlockAtDepth(
+  keyAgentServicePhaseTwoITests,
+  "validated_event_is_move_only_redacted_and_dispatches_only_through_runtime_facade",
+  1,
+);
+const keyAgentServicePhaseTwoIMutateTargetItem = (
+  name,
+  item,
+  search,
+  replacement,
+) =>
+  keyAgentServicePhaseTwoISourceMutationProbe(
+    name,
+    "targetSource",
+    (source) => replaceInsideExactRustItem(source, item, search, replacement),
+  );
+const keyAgentServicePhaseTwoIMutateParentItem = (
+  name,
+  item,
+  search,
+  replacement,
+) =>
+  keyAgentServicePhaseTwoISourceMutationProbe(
+    name,
+    "parentSource",
+    (source) => replaceInsideExactRustItem(source, item, search, replacement),
+  );
+
+const keyAgentServicePhaseTwoIAliasPlatformCandidates =
+  platformWindowsProductionCandidates.map((file) =>
+    file.path === "crates/platform-windows/src/lib.rs"
+      ? {
+          ...file,
+          source: `${file.source}\n#[path = "key_agent_service/windows_session_events.rs"]\nmod phase_two_i_alias;\n`,
+        }
+      : file,
+  );
+const keyAgentServicePhaseTwoIAliasWorkspaceCandidates =
+  workspaceRustProductionCandidates.map((file) =>
+    file.path === "crates/platform-windows/src/lib.rs"
+      ? {
+          ...file,
+          source: `${file.source}\n#[path = "key_agent_service/windows_session_events.rs"]\nmod phase_two_i_alias;\n`,
+        }
+      : file,
+  );
+const keyAgentServicePhaseTwoIExternalCallerPlatformFiles =
+  platformWindowsProductionFiles.map((file) =>
+    file.path === "crates/platform-windows/src/lib.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn phase_two_i_external_caller_probe() { key_agent_service::windows_session_events::handle_windows_session_change(); }\n`,
+        }
+      : file,
+  );
+const keyAgentServicePhaseTwoIExternalCallerWorkspaceFiles =
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/platform-windows/src/lib.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn phase_two_i_external_caller_probe() { key_agent_service::windows_session_events::handle_windows_session_change(); }\n`,
+        }
+      : file,
+  );
+const keyAgentServicePhaseTwoIDirectRuntimeBypassPlatformFiles =
+  platformWindowsProductionFiles.map((file) =>
+    file.path === "crates/platform-windows/src/lib.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn phase_two_i_direct_runtime_bypass(service: &mut WindowsNoSecretService<'_>, event: SessionEvent) { let _ = service.handle_session_event(event); }\n`,
+        }
+      : file,
+  );
+const keyAgentServicePhaseTwoIDirectRuntimeBypassWorkspaceFiles =
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/platform-windows/src/lib.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn phase_two_i_direct_runtime_bypass(service: &mut WindowsNoSecretService<'_>, event: SessionEvent) { let _ = service.handle_session_event(event); }\n`,
+        }
+      : file,
+  );
+const keyAgentServicePhaseTwoIUfcsRuntimeBypassPlatformFiles =
+  platformWindowsProductionFiles.map((file) =>
+    file.path === "crates/platform-windows/src/lib.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn phase_two_i_ufcs_runtime_bypass(service: &mut WindowsNoSecretService<'_>, event: SessionEvent) { let _ = WindowsNoSecretService::handle_session_event(service, event); }\n`,
+        }
+      : file,
+  );
+const keyAgentServicePhaseTwoIUfcsRuntimeBypassWorkspaceFiles =
+  workspaceRustProductionFiles.map((file) =>
+    file.path === "crates/platform-windows/src/lib.rs"
+      ? {
+          ...file,
+          source: `${file.source}\nfn phase_two_i_ufcs_runtime_bypass(service: &mut WindowsNoSecretService<'_>, event: SessionEvent) { let _ = WindowsNoSecretService::handle_session_event(service, event); }\n`,
+        }
+      : file,
+  );
+const keyAgentServicePhaseTwoISemanticMutationProbes = Object.freeze([
+  keyAgentServicePhaseTwoISourceMutationProbe(
+    "module loses cfg windows",
+    "parentSource",
+    (source) =>
+      keyAgentServicePhaseTwoIReplaceUnique(
+        source,
+        "#[cfg(windows)]\n#[allow(dead_code)]\nmod windows_session_events;",
+        "#[allow(dead_code)]\nmod windows_session_events;",
+      ),
+  ),
+  keyAgentServicePhaseTwoISourceMutationProbe(
+    "module loses dormant dead-code boundary",
+    "parentSource",
+    (source) =>
+      keyAgentServicePhaseTwoIReplaceUnique(
+        source,
+        "#[cfg(windows)]\n#[allow(dead_code)]\nmod windows_session_events;",
+        "#[cfg(windows)]\nmod windows_session_events;",
+      ),
+  ),
+  keyAgentServicePhaseTwoISourceMutationProbe(
+    "module visibility widens",
+    "parentSource",
+    (source) =>
+      keyAgentServicePhaseTwoIReplaceUnique(
+        source,
+        "mod windows_session_events;",
+        "pub(crate) mod windows_session_events;",
+      ),
+  ),
+  Object.freeze({
+    name: "second inbound module edge appears",
+    changed: true,
+    inputs: Object.freeze({
+      ...keyAgentServicePhaseTwoIInputs,
+      platformInboundEdges: keyAgentServiceResolvedModuleInboundEdges(
+        keyAgentServicePhaseTwoIAliasPlatformCandidates,
+        keyAgentServiceWindowsSessionEventsPath,
+      ),
+      workspaceInboundEdges: keyAgentServiceResolvedModuleInboundEdges(
+        keyAgentServicePhaseTwoIAliasWorkspaceCandidates,
+        keyAgentServiceWindowsSessionEventsPath,
+      ),
+    }),
+  }),
+  Object.freeze({
+    name: "external production caller appears",
+    changed: true,
+    inputs: Object.freeze({
+      ...keyAgentServicePhaseTwoIInputs,
+      platformExternalUsage:
+        keyAgentServicePhaseTwoIExternalUsageInventory(
+          keyAgentServicePhaseTwoIExternalCallerPlatformFiles,
+        ),
+      workspaceExternalUsage:
+        keyAgentServicePhaseTwoIExternalUsageInventory(
+          keyAgentServicePhaseTwoIExternalCallerWorkspaceFiles,
+      ),
+    }),
+  }),
+  Object.freeze({
+    name: "direct runtime-facade dot-call bypass appears",
+    changed: true,
+    inputs: Object.freeze({
+      ...keyAgentServicePhaseTwoIInputs,
+      platformRuntimeFacadeUses:
+        keyAgentServicePhaseTwoIRuntimeFacadeUseInventory(
+          keyAgentServicePhaseTwoIDirectRuntimeBypassPlatformFiles,
+        ),
+      workspaceRuntimeFacadeUses:
+        keyAgentServicePhaseTwoIRuntimeFacadeUseInventory(
+          keyAgentServicePhaseTwoIDirectRuntimeBypassWorkspaceFiles,
+        ),
+    }),
+  }),
+  Object.freeze({
+    name: "runtime-facade UFCS bypass appears",
+    changed: true,
+    inputs: Object.freeze({
+      ...keyAgentServicePhaseTwoIInputs,
+      platformRuntimeFacadeUses:
+        keyAgentServicePhaseTwoIRuntimeFacadeUseInventory(
+          keyAgentServicePhaseTwoIUfcsRuntimeBypassPlatformFiles,
+        ),
+      workspaceRuntimeFacadeUses:
+        keyAgentServicePhaseTwoIRuntimeFacadeUseInventory(
+          keyAgentServicePhaseTwoIUfcsRuntimeBypassWorkspaceFiles,
+        ),
+    }),
+  }),
+  Object.freeze({
+    name: "target production binding disappears",
+    changed: true,
+    inputs: Object.freeze({
+      ...keyAgentServicePhaseTwoIInputs,
+      platformTargetBindings: [],
+    }),
+  }),
+  Object.freeze({
+    name: "target leaves exact lifecycle inventory",
+    changed: true,
+    inputs: Object.freeze({
+      ...keyAgentServicePhaseTwoIInputs,
+      directoryInventory:
+        keyAgentServicePhaseTwoIInputs.directoryInventory.filter(
+          ({ name }) => name !== "windows_session_events.rs",
+        ),
+    }),
+  }),
+  keyAgentServicePhaseTwoISourceMutationProbe(
+    "native event import alias is shadowed by a local binding",
+    "targetSource",
+    (source) => {
+      const aliased = keyAgentServicePhaseTwoIReplaceUnique(
+        source,
+        "    WTS_SESSION_CREATE, WTS_SESSION_LOCK, WTS_SESSION_LOGOFF, WTS_SESSION_LOGON,",
+        "    WTS_SESSION_CREATE, WTS_SESSION_LOCK as NATIVE_WTS_SESSION_LOCK, WTS_SESSION_LOGOFF, WTS_SESSION_LOGON,",
+      );
+      return keyAgentServicePhaseTwoIReplaceUnique(
+        aliased,
+        "use super::lifecycle_core::{LifecycleError, SessionEvent, SessionId, SessionInvalidationReport};",
+        "const WTS_SESSION_LOCK: u32 = NATIVE_WTS_SESSION_LOCK;\n\nuse super::lifecycle_core::{LifecycleError, SessionEvent, SessionId, SessionInvalidationReport};",
+      );
+    },
+  ),
+  keyAgentServicePhaseTwoIMutateParentItem(
+    "SCM status advertises session change",
+    keyAgentServicePhaseTwoIStatusValue,
+    "SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN",
+    "SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN | SERVICE_ACCEPT_SESSIONCHANGE",
+  ),
+  keyAgentServicePhaseTwoIMutateParentItem(
+    "SCM control handler adds session-change branch",
+    keyAgentServicePhaseTwoIControlHandler,
+    "        match control {\n",
+    "        match control {\n            SERVICE_CONTROL_SESSIONCHANGE => 0,\n",
+  ),
+  keyAgentServicePhaseTwoIMutateParentItem(
+    "SCM control handler reads event data",
+    keyAgentServicePhaseTwoIControlHandler,
+    "        let mut context = lock_context();",
+    "        let _copied_event_data = _event_data;\n        let mut context = lock_context();",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "failure visibility widens",
+    keyAgentServicePhaseTwoIFailureItem,
+    "pub(super) enum WindowsSessionChangeFailure",
+    "pub(crate) enum WindowsSessionChangeFailure",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "failure retains event code",
+    keyAgentServicePhaseTwoIFailureItem,
+    "    UnsupportedEventType,",
+    "    UnsupportedEventType(u32),",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "failure retains session identifier",
+    keyAgentServicePhaseTwoIFailureItem,
+    "    InvalidSessionIdentifier,",
+    "    InvalidSessionIdentifier(SessionId),",
+  ),
+  keyAgentServicePhaseTwoISourceMutationProbe(
+    "failure becomes cloneable",
+    "targetSource",
+    (source) =>
+      keyAgentServicePhaseTwoIReplaceUnique(
+        source,
+        "#[derive(Error)]\npub(super) enum WindowsSessionChangeFailure",
+        "#[derive(Clone, Error)]\npub(super) enum WindowsSessionChangeFailure",
+      ),
+  ),
+  keyAgentServicePhaseTwoISourceMutationProbe(
+    "failure derives structural debug",
+    "targetSource",
+    (source) =>
+      keyAgentServicePhaseTwoIReplaceUnique(
+        source,
+        "#[derive(Error)]\npub(super) enum WindowsSessionChangeFailure",
+        "#[derive(Debug, Error)]\npub(super) enum WindowsSessionChangeFailure",
+      ),
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "failure debug exposes runtime cause",
+    keyAgentServicePhaseTwoIFailureDebug,
+    "            Self::RuntimePolicy(_) => {\n                formatter.write_str(\"WindowsSessionChangeFailure::RuntimePolicy([REDACTED])\")\n            }",
+    "            Self::RuntimePolicy(cause) => formatter.write_fmt(format_args!(\"{cause:?}\")),",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "validated carrier visibility widens",
+    keyAgentServicePhaseTwoICarrierItem,
+    "struct ValidatedWindowsSessionEvent",
+    "pub(super) struct ValidatedWindowsSessionEvent",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "validated carrier retains raw notification",
+    keyAgentServicePhaseTwoICarrierItem,
+    "    event: SessionEvent,",
+    "    event: SessionEvent,\n    notification: WTSSESSION_NOTIFICATION,",
+  ),
+  keyAgentServicePhaseTwoISourceMutationProbe(
+    "validated carrier becomes cloneable",
+    "targetSource",
+    (source) =>
+      keyAgentServicePhaseTwoIReplaceUnique(
+        source,
+        "struct ValidatedWindowsSessionEvent {",
+        "#[derive(Clone)]\nstruct ValidatedWindowsSessionEvent {",
+      ),
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "validated carrier debug exposes event",
+    keyAgentServicePhaseTwoICarrierDebug,
+    "        formatter.write_str(\"ValidatedWindowsSessionEvent([REDACTED])\")",
+    "        formatter.debug_struct(\"ValidatedWindowsSessionEvent\").field(\"event\", &self.event).finish()",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "decoder visibility widens",
+    keyAgentServicePhaseTwoIDecode,
+    "fn decode(",
+    "pub(super) fn decode(",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "dispatch visibility widens",
+    keyAgentServicePhaseTwoIDispatch,
+    "fn dispatch(",
+    "pub(super) fn dispatch(",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "notification size comparison weakens",
+    keyAgentServicePhaseTwoIDecode,
+    "        if notification.cbSize != expected_size {",
+    "        if notification.cbSize < expected_size {",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "session validation runs before size rejection",
+    keyAgentServicePhaseTwoIDecode,
+    "        if notification.cbSize != expected_size {",
+    "        let _premature_session = SessionId::new(notification.dwSessionId)\n            .map_err(|_| WindowsSessionChangeFailure::InvalidSessionIdentifier)?;\n        if notification.cbSize != expected_size {",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "zero session validation is bypassed",
+    keyAgentServicePhaseTwoIDecode,
+    "        let session = SessionId::new(notification.dwSessionId)",
+    "        let session = SessionId::new(notification.dwSessionId.max(1))",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "reserved create terminate rejection weakens",
+    keyAgentServicePhaseTwoIDecode,
+    "        if matches!(event_type, WTS_SESSION_CREATE | WTS_SESSION_TERMINATE) {",
+    "        if false && matches!(event_type, WTS_SESSION_CREATE | WTS_SESSION_TERMINATE) {",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "unknown event type becomes accepted",
+    keyAgentServicePhaseTwoIDecode,
+    "            _ => return Err(WindowsSessionChangeFailure::UnsupportedEventType),",
+    "            _ => SessionEvent::UserSwitch(session),",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "lock maps to wrong lifecycle event",
+    keyAgentServicePhaseTwoIDecode,
+    "            WTS_SESSION_LOCK => SessionEvent::Lock(session),",
+    "            WTS_SESSION_LOCK => SessionEvent::Unlock(session),",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "unlock maps to wrong lifecycle event",
+    keyAgentServicePhaseTwoIDecode,
+    "            WTS_SESSION_UNLOCK => SessionEvent::Unlock(session),",
+    "            WTS_SESSION_UNLOCK => SessionEvent::Lock(session),",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "logoff maps to wrong lifecycle event",
+    keyAgentServicePhaseTwoIDecode,
+    "            WTS_SESSION_LOGOFF => SessionEvent::Logoff(session),",
+    "            WTS_SESSION_LOGOFF => SessionEvent::Lock(session),",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "supported console-connect mapping disappears",
+    keyAgentServicePhaseTwoIDecode,
+    "            WTS_CONSOLE_CONNECT\n",
+    "            WTS_SESSION_LOCK\n",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "supported console-disconnect mapping disappears",
+    keyAgentServicePhaseTwoIDecode,
+    "            | WTS_CONSOLE_DISCONNECT\n",
+    "            | WTS_SESSION_LOCK\n",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "supported remote-connect mapping disappears",
+    keyAgentServicePhaseTwoIDecode,
+    "            | WTS_REMOTE_CONNECT\n",
+    "            | WTS_SESSION_LOCK\n",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "supported remote-disconnect mapping disappears",
+    keyAgentServicePhaseTwoIDecode,
+    "            | WTS_REMOTE_DISCONNECT\n",
+    "            | WTS_SESSION_LOCK\n",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "supported session-logon mapping disappears",
+    keyAgentServicePhaseTwoIDecode,
+    "            | WTS_SESSION_LOGON\n",
+    "            | WTS_SESSION_LOCK\n",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "supported remote-control mapping disappears",
+    keyAgentServicePhaseTwoIDecode,
+    "            | WTS_SESSION_REMOTE_CONTROL => SessionEvent::UserSwitch(session),",
+    "            => SessionEvent::UserSwitch(session),",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "dispatch bypasses runtime facade",
+    keyAgentServicePhaseTwoIDispatch,
+    "        match service.handle_session_event(self.event) {",
+    "        match service.policy.handle_session_event(self.event) {",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "dispatch erases runtime failure cause",
+    keyAgentServicePhaseTwoIDispatch,
+    "            Err(cause) => Err(WindowsSessionChangeFailure::RuntimePolicy(cause)),",
+    "            Err(_) => Err(WindowsSessionChangeFailure::UnsupportedEventType),",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "facade skips decoder",
+    keyAgentServicePhaseTwoIFacade,
+    "    ValidatedWindowsSessionEvent::decode(event_type, notification)?.dispatch(service)",
+    "    service.handle_session_event(SessionEvent::UserSwitch(SessionId::new(notification.dwSessionId).map_err(|_| WindowsSessionChangeFailure::InvalidSessionIdentifier)?)).map_err(WindowsSessionChangeFailure::RuntimePolicy)",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "facade visibility narrows",
+    keyAgentServicePhaseTwoIFacade,
+    "pub(super) fn handle_windows_session_change(",
+    "fn handle_windows_session_change(",
+  ),
+  keyAgentServicePhaseTwoISourceMutationProbe(
+    "reserved-event regression is ignored",
+    "targetSource",
+    (source) =>
+      keyAgentServicePhaseTwoIReplaceUnique(
+        source,
+        "    #[test]\n    fn reserved_and_unknown_event_types_are_rejected()",
+        "    #[test]\n    #[ignore]\n    fn reserved_and_unknown_event_types_are_rejected()",
+      ),
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "invalid-size precedence evidence disappears",
+    keyAgentServicePhaseTwoISizeTest,
+    "        assert!(matches!(\n            ValidatedWindowsSessionEvent::decode(\n                u32::MAX,\n                notification(expected.saturating_sub(1), 0),\n            ),\n            Err(WindowsSessionChangeFailure::InvalidNotificationSize)\n        ));\n",
+    "",
+  ),
+  keyAgentServicePhaseTwoIMutateTargetItem(
+    "runtime failure source evidence disappears",
+    keyAgentServicePhaseTwoIFacadeTest,
+    "        assert!(runtime_failure.source().is_some());\n",
+    "",
+  ),
+  keyAgentServicePhaseTwoISourceMutationProbe(
+    "design phase status anchor weakens",
+    "designDocument",
+    (source) =>
+      keyAgentServicePhaseTwoIReplaceUnique(
+        source,
+        "**Current Phase 2I status: started, not passed.**",
+        "**Phase 2I work is underway.**",
+      ),
+  ),
+  keyAgentServicePhaseTwoISourceMutationProbe(
+    "architecture phase status anchor weakens",
+    "architectureDocument",
+    (source) =>
+      keyAgentServicePhaseTwoIReplaceUnique(
+        source,
+        "**Current Phase 2I status: started, not passed.**",
+        "**Phase 2I work is underway.**",
+      ),
+  ),
+  keyAgentServicePhaseTwoISourceMutationProbe(
+    "security phase status anchor weakens",
+    "securityDocument",
+    (source) =>
+      keyAgentServicePhaseTwoIReplaceUnique(
+        source,
+        "**Current Phase 2I status: started, not passed.**",
+        "**Phase 2I work is underway.**",
+      ),
+  ),
+]);
+const keyAgentServicePhaseTwoISemanticMutationResults =
+  keyAgentServicePhaseTwoISemanticMutationProbes.map((probe) =>
+    Object.freeze({
+      name: probe.name,
+      changed: probe.changed,
+      rejected: !keyAgentServicePhaseTwoISemanticContract(probe.inputs, false),
+    }),
+  );
+
+const keyAgentServicePhaseTwoIBottomProjectionControl =
+  keyAgentServicePhaseTwoISourceMutationProbe(
+    "bottom test-only comment remains excluded",
+    "targetSource",
+    (source) => {
+      const closingBrace = source.lastIndexOf("}");
+      return closingBrace === -1
+        ? source
+        : `${source.slice(0, closingBrace)}    // Phase 2I bottom projection control.\n${source.slice(closingBrace)}`;
+    },
+  );
+const keyAgentServicePhaseTwoIInlineProjectionControl =
+  keyAgentServicePhaseTwoISourceMutationProbe(
+    "inline cfg test-only item remains excluded",
+    "targetSource",
+    (source) =>
+      insertBeforeBottomTestModule(
+        source,
+        "\n#[cfg(test)]\nfn phase_two_i_inline_projection_control() {}\n",
+      ),
+  );
+const keyAgentServicePhaseTwoIProjectionControlResults = Object.freeze([
+  keyAgentServicePhaseTwoIBottomProjectionControl,
+  keyAgentServicePhaseTwoIInlineProjectionControl,
+].map((probe) =>
+  Object.freeze({
+    name: probe.name,
+    changed: probe.changed,
+    productionUnchanged:
+      compactRust(
+        keyAgentServicePhaseTwoIProductionProjection(probe.inputs.targetSource),
+      ) === compactRust(keyAgentServiceWindowsSessionEventsProduction),
+    accepted: keyAgentServicePhaseTwoISemanticContract(probe.inputs, false),
+  }),
+));
+const keyAgentServicePhaseTwoIProductionPinControl =
+  keyAgentServicePhaseTwoISourceMutationProbe(
+    "production comment changes source pin only",
+    "targetSource",
+    (source) =>
+      insertBeforeBottomTestModule(
+        source,
+        "\n// Phase 2I production pin mutation control.\n",
+      ),
+  );
+const keyAgentServicePhaseTwoIDocumentPinControl =
+  keyAgentServicePhaseTwoISourceMutationProbe(
+    "documentation whitespace changes pin only",
+    "designDocument",
+    (source) => `${source}\n`,
+  );
+const keyAgentServicePhaseTwoIPinControlResults = Object.freeze([
+  keyAgentServicePhaseTwoIProductionPinControl,
+  keyAgentServicePhaseTwoIDocumentPinControl,
+].map((probe) =>
+  Object.freeze({
+    name: probe.name,
+    changed: probe.changed,
+    semanticAccepted: keyAgentServicePhaseTwoISemanticContract(
+      probe.inputs,
+      false,
+    ),
+    pinRejected: !keyAgentServicePhaseTwoIPinContract(probe.inputs),
+  }),
+));
+requireInvariant(
+  keyAgentServicePhaseTwoISemanticContract(keyAgentServicePhaseTwoIInputs) &&
+    keyAgentServicePhaseTwoISemanticMutationProbes.length === 49 &&
+    keyAgentServicePhaseTwoISemanticMutationResults.every(
+      ({ changed, rejected }) => changed && rejected,
+    ) &&
+    keyAgentServicePhaseTwoIProjectionControlResults.every(
+      ({ changed, productionUnchanged, accepted }) =>
+        changed && productionUnchanged && accepted,
+    ) &&
+    keyAgentServicePhaseTwoIPinControlResults.every(
+      ({ changed, semanticAccepted, pinRejected }) =>
+        changed && semanticAccepted && pinRejected,
+    ),
+  `the dormant Phase 2I Windows session-change bridge must retain its private cfg(windows) sole inbound edge, exact full/production pins and inventories, strict native validation precedence and closed mapping, move-only redacted carrier/failures, sole facade dispatch, zero production callers, dormant SCM status/handler/event-data boundary, exact eight active tests, and pinned STOP-SHIP documentation; base=${keyAgentServicePhaseTwoISemanticContract(keyAgentServicePhaseTwoIInputs)}, failed base checks=${JSON.stringify(
+    Object.entries(keyAgentServicePhaseTwoIBaseChecks)
+      .filter(([, accepted]) => !accepted)
+      .map(([name]) => name),
+  )}, base metrics=${JSON.stringify(keyAgentServicePhaseTwoIBaseMetrics)}, negative probes=${keyAgentServicePhaseTwoISemanticMutationProbes.length}, failed negative probe names=${JSON.stringify(
+    keyAgentServicePhaseTwoISemanticMutationResults
+      .filter(({ changed, rejected }) => !changed || !rejected)
+      .map(({ name }) => name),
+  )}, failed projection controls=${JSON.stringify(
+    keyAgentServicePhaseTwoIProjectionControlResults
+      .filter(
+        ({ changed, productionUnchanged, accepted }) =>
+          !changed || !productionUnchanged || !accepted,
+      )
+      .map(({ name }) => name),
+  )}, failed pin controls=${JSON.stringify(
+    keyAgentServicePhaseTwoIPinControlResults
+      .filter(
+        ({ changed, semanticAccepted, pinRejected }) =>
+          !changed || !semanticAccepted || !pinRejected,
+      )
+      .map(({ name }) => name),
+  )}`,
+);
 const isWorkspaceBuildOutputPath = (path) =>
   /^(?:crates\/[^/]+|demo\/sepolia-wallet)\/target(?:\/|$)/iu.test(path);
 const workspaceRustCompilationInputs = [
@@ -39970,7 +41419,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "1e59f4f611774061ec14ae7582b5f30a7aaa7f3286e828b927dd79db34127765";
+  "19851117aa53eabc9add416b844d64180437728d3bfbb5b6f71137f8d6fbfdf3";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -61264,7 +62713,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service.rs",
     unsafeCount: 15,
-    sha256: "6935fa1d0852f72217883461cd489b9d4c19ebcd5ab6241783566f4bda66a64d",
+    sha256: "d94719fd49fc583b311ad8e36150460a9eacbd25c12e2bc997987060905f0a11",
   },
   {
     path: "crates/platform-windows/src/key_agent_service/run_state_root/sys.rs",
@@ -61719,7 +63168,15 @@ requireInvariant(
       rustLexicalCode(keyAgentSupervisorRelease),
     ) &&
     !/\bunsafe\b/u.test(rustLexicalCode(keyAgentSupervisorRelease)),
-  "Pending authority references, crate-visible generic callables, raw ownership sites, and unsafe-bearing production sources must remain exact while supervisor code stays safe-only",
+  `Pending authority references, crate-visible generic callables, raw ownership sites, and unsafe-bearing production sources must remain exact while supervisor code stays safe-only; current service unsafe inventory=${JSON.stringify(
+    platformWindowsUnsafeSourceInventory.filter(
+      ({ path }) => path === keyAgentServicePhaseTwoIParentPath,
+    ),
+  )}, approved service unsafe inventory=${JSON.stringify(
+    approvedPlatformWindowsUnsafeSourceInventory.filter(
+      ({ path }) => path === keyAgentServicePhaseTwoIParentPath,
+    ),
+  )}`,
 );
 requireInvariant(
   JSON.stringify(platformWindowsMacroRulesDefinitions) ===
@@ -69460,11 +70917,11 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "crates/platform-windows/README.md":
     "7a785311a344dec132359f39698c0c4d6752fbcd284511ac26f1d805a40251d2",
   "docs/architecture.md":
-    "6b8f5be34a29f803506b87047205a0f935032ab7b0049b40f491e26b380b0b1f",
+    "17a8acd7baeaefc36d84869f0e363c06eb84a19ef688a3d42e2a16ebce683664",
   "docs/protocol-contract.md":
     "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "docs/security-decisions.md":
-    "a952252592e6cc909af128babeead86c91944611f1b8c42775abb19db7b150ae",
+    "65185ae468f5daf21f164fdf42d7decacadd36ebb2602e942065b73919f05462",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -75329,9 +76786,9 @@ const currentDebuggerExitDocumentationContract = (documents) =>
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
   "7a785311a344dec132359f39698c0c4d6752fbcd284511ac26f1d805a40251d2",
-    "6b8f5be34a29f803506b87047205a0f935032ab7b0049b40f491e26b380b0b1f",
+    "17a8acd7baeaefc36d84869f0e363c06eb84a19ef688a3d42e2a16ebce683664",
   "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
-    "a952252592e6cc909af128babeead86c91944611f1b8c42775abb19db7b150ae",
+    "65185ae468f5daf21f164fdf42d7decacadd36ebb2602e942065b73919f05462",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,
@@ -85211,19 +86668,19 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "docs/architecture.md",
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
-      sha256: "6b8f5be34a29f803506b87047205a0f935032ab7b0049b40f491e26b380b0b1f",
+      sha256: "17a8acd7baeaefc36d84869f0e363c06eb84a19ef688a3d42e2a16ebce683664",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
-    sha256: "2523342c4a8534e475cde0fa102aa2e0ab5e5f6038ca51e982083d6e8870a175",
+    sha256: "55829cd809a4cf02b1b73e9c8171a3127c34b0d7c4a374494c7406e5b30dca9c",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "The dedicated-process feasibility slice remains narrower",
-      sha256: "a952252592e6cc909af128babeead86c91944611f1b8c42775abb19db7b150ae",
+      sha256: "65185ae468f5daf21f164fdf42d7decacadd36ebb2602e942065b73919f05462",
   },
 ];
 const keyAgentDebuggerDocumentationPatterns = [
