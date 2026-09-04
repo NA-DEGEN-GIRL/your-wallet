@@ -286,6 +286,12 @@ impl VerifiedCreatedTargetLpac<'_> {
 }
 
 impl ExpectedServiceCreatedLpac {
+    /// Returns the authenticated desktop session retained by the
+    /// service-created token proof.
+    pub(super) const fn session_id(&self) -> NonZeroU32 {
+        self.session_id
+    }
+
     pub(super) fn revalidate_for_process(
         &self,
         process: BorrowedHandle<'_>,

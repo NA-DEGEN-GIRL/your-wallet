@@ -878,6 +878,12 @@ impl DetachedSuspendedServiceProbe {
         self.role
     }
 
+    /// Returns the authenticated desktop session from the retained
+    /// service-created target proof.
+    pub(super) const fn session_id(&self) -> NonZeroU32 {
+        self.expected_target.session_id()
+    }
+
     pub(super) fn revalidate_suspended(&self) -> Result<(), ServiceProbeCreateError> {
         if self.resumed {
             return Err(ServiceProbeCreateError::Verification);

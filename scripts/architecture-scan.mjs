@@ -1050,6 +1050,49 @@ function rustImplItems(source) {
   return items;
 }
 
+function rustImplImplementedTraitClause(header) {
+  const code = normalizeRustFragment(rustLexicalCode(header));
+  if (!/^impl\b/u.test(code)) return null;
+  let cursor = 4;
+  while (/\s/u.test(code[cursor] ?? "")) cursor += 1;
+  if (code[cursor] === "<") {
+    const genericsEnd = matchingRustDelimiter(code, cursor, "<", ">");
+    if (genericsEnd === -1) {
+      throw new Error("architecture scan could not bound impl generics");
+    }
+    cursor = genericsEnd + 1;
+    while (/\s/u.test(code[cursor] ?? "")) cursor += 1;
+  }
+  const traitStart = cursor;
+  const delimiters = [];
+  for (; cursor < code.length; cursor += 1) {
+    const character = code[cursor];
+    if (character === "(" || character === "[" || character === "<") {
+      delimiters.push(character === "(" ? ")" : character === "[" ? "]" : ">");
+      continue;
+    }
+    if (character === ")" || character === "]" || character === ">") {
+      if (delimiters.at(-1) === character) delimiters.pop();
+      continue;
+    }
+    if (
+      delimiters.length === 0 &&
+      code.startsWith("for", cursor) &&
+      !/[A-Za-z0-9_]/u.test(code[cursor - 1] ?? "") &&
+      !/[A-Za-z0-9_]/u.test(code[cursor + 3] ?? "")
+    ) {
+      const clause = code.slice(traitStart, cursor).trim();
+      if (clause.length > 0) return clause;
+    }
+  }
+  return null;
+}
+
+function rustImplHeaderImplementsTrait(header, traitName) {
+  const clause = rustImplImplementedTraitClause(header);
+  return clause !== null && identifierOccurrenceCount(clause, traitName) === 1;
+}
+
 function rustTypeAliasItems(source) {
   const sourceCode = rustLexicalCode(source);
   const items = [];
@@ -21338,7 +21381,7 @@ const keyAgentServiceDebugGateApiInventory = [
 ];
 const keyAgentServiceDebugGatePinContract = (source) =>
   normalizedSourceSha256(source) ===
-  "fe3f6879a917b6bee34ff1ce085090128b43d4647e11c91c9172d230c39faee6";
+  "d2c78f7a3156993219848020373dfc0a9140754af4f9fdf07d49390eb89f180d";
 const keyAgentServiceDebugGateSemanticContract = (source, channelSource, processSource,
 ) => {
   try {
@@ -21364,15 +21407,25 @@ const keyAgentServiceDebugGateSemanticContract = (source, channelSource, process
     const suspendedImpl = rustImplItems(processProduction).find((item) =>
       item.header.startsWith("impl SuspendedServiceProbe"),
     )?.source;
+    const expectedPeerImpl = rustImplItems(production).find((item) =>
+      item.header.includes(
+        "ExpectedHelperPeer<ServiceCreatedLpacCandidate> for DetachedExpectedServiceHelper",
+      ),
+    )?.source;
     if (
       attemptImpl === undefined ||
       cleanupImpl === undefined ||
       detachedAliasesImpl === undefined ||
       identityImpl === undefined ||
-      suspendedImpl === undefined
+      suspendedImpl === undefined ||
+      expectedPeerImpl === undefined
     ) {
       return false;
     }
+    const expectedPeerSessionId = rustFunctionBlock(
+      expectedPeerImpl,
+      "session_id",
+    );
     const registerRejectedThread = rustFunctionBlock(
       cleanupImpl,
       "register_rejected_thread_alias_with",
@@ -21513,6 +21566,8 @@ const keyAgentServiceDebugGateSemanticContract = (source, channelSource, process
     );
     return (
       source.includes("#![allow(unsafe_code)]") &&
+      compactRust(expectedPeerSessionId) ===
+        "fnsession_id(&self)->NonZeroU32{self.process.session_id()}" &&
       rustUnsafeKeywordCount(production) === 60 &&
       JSON.stringify(observedApis) ===
         JSON.stringify(keyAgentServiceDebugGateApiInventory) &&
@@ -21921,6 +21976,7 @@ const keyAgentServiceExpectedPeerLaunchContract = ({
       detachedExpectedImpl,
       "revalidate_role_binding",
     );
+    const peerSessionId = rustFunctionBlock(expectedPeerImpl, "session_id");
     const revalidateSuspended = rustFunctionBlock(
       expectedPeerImpl,
       "revalidate_suspended",
@@ -21936,6 +21992,10 @@ const keyAgentServiceExpectedPeerLaunchContract = ({
       detachedProcessImpl,
       "terminate_and_reap",
     );
+    const processSessionId = rustFunctionBlock(
+      detachedProcessImpl,
+      "session_id",
+    );
     const terminateCore = rustTopLevelFunctionBlock(
       processProduction,
       "terminate_and_reap_detached",
@@ -21948,6 +22008,7 @@ const keyAgentServiceExpectedPeerLaunchContract = ({
       expectedTargetImpl,
       "revalidate",
     );
+    const targetSessionId = rustFunctionBlock(expectedTargetImpl, "session_id");
     const compactGate = compactRust(gateProduction);
     const compactProcess = compactRust(processProduction);
     return (
@@ -21957,6 +22018,12 @@ const keyAgentServiceExpectedPeerLaunchContract = ({
       compactGate.includes(
         "pub(super)typeServiceHelperLease=ExpectedHelperLease<DetachedExpectedServiceHelper,ServiceCreatedLpacCandidate>;",
       ) &&
+      compactRust(peerSessionId) ===
+        "fnsession_id(&self)->NonZeroU32{self.process.session_id()}" &&
+      compactRust(processSessionId) ===
+        "pub(super)constfnsession_id(&self)->NonZeroU32{self.expected_target.session_id()}" &&
+      compactRust(targetSessionId) ===
+        "pub(super)constfnsession_id(&self)->NonZeroU32{self.session_id}" &&
       hasOrderedCompactMarkers(register, [
         "letSelf{peer,confirmation,_not_sync:_,}=self",
         "letlease=admission.register_suspended(peer)?.revalidate_and_resume_once()?",
@@ -22504,6 +22571,8 @@ const keyAgentServiceTargetProfileObservedApis = [
   { api: "CoTaskMemFree", count: 1 },
   { api: "UpdateProcThreadAttribute", count: 1 },
 ];
+const keyAgentServiceTargetProfileSha256 =
+  "5a9c175e1b68744fefc6d316cbd93c15054a9d03e064c890916513b22457d29b";
 const keyAgentServiceTargetProfileContract = (source) => {
   try {
     const production = withoutBottomTestModule(source);
@@ -22511,6 +22580,9 @@ const keyAgentServiceTargetProfileContract = (source) => {
     const safeSource = production.replace(sysModule, "");
     const preparedImpl = rustImplItems(production).find((item) =>
       item.header.includes("PreparedTargetUserLpac"),
+    )?.source;
+    const expectedTargetImpl = rustImplItems(production).find(
+      (item) => item.header === "impl ExpectedServiceCreatedLpac",
     )?.source;
     const ownedAppContainerSidImpl = rustImplItems(production).find(
       (item) => item.header === "impl OwnedAppContainerSid",
@@ -22520,6 +22592,7 @@ const keyAgentServiceTargetProfileContract = (source) => {
     )?.source;
     if (
       preparedImpl === undefined ||
+      expectedTargetImpl === undefined ||
       ownedAppContainerSidImpl === undefined ||
       ownedAppContainerSidDrop === undefined
     ) {
@@ -22527,6 +22600,10 @@ const keyAgentServiceTargetProfileContract = (source) => {
     }
     const prepare = rustFunctionBlock(preparedImpl, "prepare");
     const revalidate = rustFunctionBlock(preparedImpl, "revalidate");
+    const expectedSessionId = rustFunctionBlock(
+      expectedTargetImpl,
+      "session_id",
+    );
     const observe = rustFunctionBlock(production, "observe_profile");
     const observeUnderGuard = rustFunctionBlock(
       production,
@@ -22595,6 +22672,8 @@ const keyAgentServiceTargetProfileContract = (source) => {
     return (
       production.includes("#![deny(unsafe_code)]") &&
       sysModule.includes("#![allow(unsafe_code)]") &&
+      compactRust(expectedSessionId) ===
+        "pub(super)constfnsession_id(&self)->NonZeroU32{self.session_id}" &&
       rustUnsafeKeywordCount(safeSource) === 4 &&
       JSON.stringify(observedApis) ===
         JSON.stringify(keyAgentServiceTargetProfileObservedApis) &&
@@ -23065,7 +23144,9 @@ const keyAgentServiceTargetProfileMutations = [
   keyAgentServiceTargetProfileSource.replace(search, replacement),
 );
 requireInvariant(
-  keyAgentServiceTargetProfileContract(keyAgentServiceTargetProfileSource) &&
+  normalizedSourceSha256(keyAgentServiceTargetProfileSource) ===
+    keyAgentServiceTargetProfileSha256 &&
+    keyAgentServiceTargetProfileContract(keyAgentServiceTargetProfileSource) &&
     keyAgentServiceTargetProfileMutations.every(
       (probe) =>
         probe !== keyAgentServiceTargetProfileSource &&
@@ -25473,12 +25554,21 @@ const keyAgentServiceExpectedPeerTestNames = [
   "in_flight_cancel_timeout_delegates_cleanup_without_guard_abort",
   "delegated_cleanup_error_is_returned_without_second_guard_cleanup",
   "peer_panic_drops_terminal_owner_without_poisoning_registry",
+  "poisoned_registry_extracts_and_drops_live_peer_outside_lock",
+  "registration_records_server_derived_nonzero_session_without_wire_authority",
+  "invalidated_session_rejects_and_cancels_future_registration",
+  "session_invalidation_cancels_only_matching_live_peers_outside_registry_mutex",
+  "session_invalidation_requests_matching_in_flight_cancel_and_waits_for_settlement",
+  "session_invalidation_preserves_unrelated_live_and_in_flight_peers",
+  "active_session_invalidation_quarantines_all_observed_sessions_and_departing_session",
+  "session_quarantine_exhaustion_fail_closes_and_reaps_every_owner",
+  "session_invalidation_failure_and_debug_are_data_free",
   "debug_is_data_free",
 ];
 const keyAgentServiceExpectedPeerSource =
   keyAgentServiceRpcFixtureSources[keyAgentServiceRpcFixturePaths.expectedPeer];
 const keyAgentServiceExpectedPeerSha256 =
-  "245a97fc74d9115c4c10877957de11bc73740db8a42b672c4b1ad54e5db44bb5";
+  "bf254901d25055701177dc44efbd29a82eae1d4a30b330fc506f4e107eb195d9";
 const keyAgentServiceExpectedPeerPinContract = (source) =>
   normalizedSourceSha256(source) === keyAgentServiceExpectedPeerSha256;
 const keyAgentServiceExpectedPeerContract = (source) => {
@@ -25565,23 +25655,32 @@ const keyAgentServiceExpectedPeerContract = (source) => {
       production.includes("#![deny(unsafe_code)]") &&
       compact.includes("pub(crate)constEXPECTED_HELPER_CAPACITY:usize=8;") &&
       compact.includes(
+        "pub(crate)constEXPECTED_HELPER_SESSION_QUARANTINE_CAPACITY:usize=64;",
+      ) &&
+      compact.includes(
         "pub(crate)constEXPECTED_HELPER_QUIESCENCE_MILLISECONDS:u64=5_000;pub(crate)constEXPECTED_HELPER_QUIESCENCE_TIMEOUT:Duration=Duration::from_millis(EXPECTED_HELPER_QUIESCENCE_MILLISECONDS);",
       ) &&
       compact.includes(
         "enumPeerPhase{RegisteredSuspended,ExpectedRunning,Admitted,}",
       ) &&
       compact.includes(
-        "enumExpectedPeerSlot<P>{Vacant,Live{key:ExpectedPeerKey,phase:PeerPhase,peer:P,},InFlight{key:ExpectedPeerKey,phase:PeerPhase,generation:u64,cancel_requested:bool,settlement:Arc<InFlightSettlement>,},Retired(ExpectedPeerKey),}",
+        "enumExpectedPeerSlot<P>{Vacant,Live{key:ExpectedPeerKey,session_id:NonZeroU32,phase:PeerPhase,peer:P,},InFlight{key:ExpectedPeerKey,session_id:NonZeroU32,phase:PeerPhase,generation:u64,cancel_requested:bool,global_cancel_requested:bool,settlement:Arc<InFlightSettlement>,},Retired(ExpectedPeerKey),}",
+      ) &&
+      compact.includes(
+        "structExpectedPeerState<P>{stopping:bool,next_generation:u64,quarantined_sessions:[Option<NonZeroU32>;EXPECTED_HELPER_SESSION_QUARANTINE_CAPACITY],slots:[ExpectedPeerSlot<P>;EXPECTED_HELPER_CAPACITY],}",
       ) &&
       !/#\[derive\([^\]]*(?:Clone|Copy)[^\]]*\)\]\s*(?:pub\(crate\)\s+)?(?:struct\s+(?:ExpectedHelperAdmission|RegisteredExpectedHelper|ExpectedHelperLease)|enum\s+ExpectedPeerSlot)\b/u.test(
         rustLexicalCode(production),
       ) &&
       hasOrderedCompactMarkers(register, [
         "letkey=peer.key()",
+        "letsession_id=peer.session_id()",
         "lock_expected_state(&self.inner)",
         "ifstate.stopping",
+        "quarantine_contains(&state.quarantined_sessions,session_id)",
         "state.slots.iter().any(|slot|slot_key(slot)==Some(key))",
         "position(|slot|matches!(slot,ExpectedPeerSlot::Vacant))",
+        "session_id",
         "phase:PeerPhase::RegisteredSuspended",
         "Ok(RegisteredExpectedHelper",
       ]) &&
@@ -25595,7 +25694,10 @@ const keyAgentServiceExpectedPeerContract = (source) => {
         "letrole=peers[position].peer.role()",
         "peers[position].peer.revalidate_running()",
         "Ok(role)",
-        "self.settle_scan(peers).and(result)",
+        "letpolicy=ifresult.is_ok()",
+        "SelectiveCancellationSettlementPolicy::RollBackUnaffectedToOriginalPhase",
+        "SelectiveCancellationSettlementPolicy::PreservePlannedPhases",
+        "resolve_scan_result(self.settle_scan(peers,policy),result)",
       ]) &&
       keyAgentServiceLiteralCount(
         compactRust(callback),
@@ -25615,7 +25717,10 @@ const keyAgentServiceExpectedPeerContract = (source) => {
         "letrole=peers[selected].peer.role()",
         "peers[selected].next_phase=Some(PeerPhase::Admitted)",
         "Ok(role)",
-        "self.settle_scan(peers).and(result)",
+        "letpolicy=ifresult.is_ok()",
+        "SelectiveCancellationSettlementPolicy::RollBackUnaffectedToOriginalPhase",
+        "SelectiveCancellationSettlementPolicy::PreservePlannedPhases",
+        "resolve_scan_result(self.settle_scan(peers,policy),result)",
       ]) &&
       keyAgentServiceLiteralCount(
         compactRust(manager),
@@ -25638,9 +25743,11 @@ const keyAgentServiceExpectedPeerContract = (source) => {
         "matched.is_empty()&&failure.is_none()",
         "failure=Some(ExpectedPeerRegistryError::Denied)",
         "retire_all(&mutpeers)",
-        "self.settle_scan(peers)",
+        "self.settle_scan(peers,SelectiveCancellationSettlementPolicy::PreservePlannedPhases,)",
         "std::panic::resume_unwind(payload)",
-        "self.settle_scan(peers).and(result)",
+        "resolve_scan_result",
+        "self.settle_scan(peers,SelectiveCancellationSettlementPolicy::PreservePlannedPhases,)",
+        "result",
       ]) &&
       keyAgentServiceLiteralCount(
         compactRust(rejectManager),
@@ -25675,7 +25782,7 @@ const keyAgentServiceExpectedPeerContract = (source) => {
       hasOrderedCompactMarkers(stopWithTimeout, [
         "state.stopping=true",
         "ExpectedPeerSlot::InFlight",
-        "*cancel_requested=true",
+        "request_global_cancellation(cancel_requested,global_cancel_requested)",
         "in_flight.push(InFlightCancellation",
         "retire_live_slot(slot)",
         "drop(state)",
@@ -25688,7 +25795,7 @@ const keyAgentServiceExpectedPeerContract = (source) => {
       ]) &&
       hasOrderedCompactMarkers(cancelKeyWithTimeout, [
         "ExpectedPeerSlot::InFlight",
-        "*cancel_requested=true",
+        "request_global_cancellation(cancel_requested,global_cancel_requested)",
         "InFlightCancellation",
         "drop(state)",
         "in_flight.wait_until(deadline)",
@@ -25736,15 +25843,24 @@ const keyAgentServiceExpectedPeerContract = (source) => {
       hasOrderedCompactMarkers(settleScan, [
         "lock_expected_state(&self.inner)",
         "letconcurrent_live=state.slots.iter()",
-        "letexact_slots=peers.iter().all",
-        "state.stopping||concurrent_live||!exact_slots",
+        "letexact_slots=scan_slots_are_structurally_exact(&state.slots,&peers)",
+        "letglobal_cancellation=scan_has_global_cancellation(&state.slots,&peers)",
+        "state.stopping||concurrent_live||!exact_slots||global_cancellation",
+        "lettargeted_cancellation=peers.iter().any",
+        "local_has_selective_session_cancellation(&state.slots,local)",
+        "letcancelled=local_has_selective_session_cancellation(&state.slots,&local)",
+        "letrestored_phase=iftargeted_cancellation&&matches!(policy,SelectiveCancellationSettlementPolicy::RollBackUnaffectedToOriginalPhase)",
+        "Some(local.original_phase)",
+        "else",
+        "local.next_phase",
+        "if!cancelled&&letSome(phase)=restored_phase",
         "drop(state)",
-        "self.cleanup_local_peers(peers)",
+        "self.cleanup_local_peers(cleanup)",
       ]) &&
       hasOrderedCompactMarkers(cleanupLocalPeers, [
         "cleanup_peer::<P,C>(&mutpeer)",
         "drop(peer)",
-        "completed.push((index,key,generation,settlement,cleanup))",
+        "completed.push((index,key,session_id,generation,settlement,cleanup))",
         "self.inner.state.lock()",
         "state.slots[index]=ExpectedPeerSlot::Retired(key)",
         "drop(state)",
@@ -25774,8 +25890,12 @@ const keyAgentServiceExpectedPeerContract = (source) => {
       /#\[test\]\s*#\[allow\(clippy::panic\)\]\s*fn poisoned_registry_extracts_and_drops_live_peer_outside_lock/u.test(
         source,
       ) &&
-      JSON.stringify(keyAgentServiceRustTestNameInventory(source)) ===
-        JSON.stringify(keyAgentServiceExpectedPeerTestNames)
+      JSON.stringify(
+        keyAgentServiceRustAttributedTestInventory(source).map(({ name }) => name),
+      ) === JSON.stringify(keyAgentServiceExpectedPeerTestNames) &&
+      keyAgentServiceRustAttributedTestInventory(source).every(
+        ({ ignored }) => !ignored,
+      )
     );
   } catch {
     return false;
@@ -25902,16 +26022,30 @@ const keyAgentServiceExpectedPeerMutationProbes = [
     "    #[allow(clippy::panic)]\n    fn poisoned_registry_extracts_and_drops_live_peer_outside_lock",
   ),
 ];
+const keyAgentServiceExpectedPeerBaseAccepted =
+  keyAgentServiceExpectedPeerContract(keyAgentServiceExpectedPeerSource);
+const keyAgentServiceExpectedPeerPinsAccepted =
+  keyAgentServiceExpectedPeerPinContract(keyAgentServiceExpectedPeerSource);
+const keyAgentServiceExpectedPeerMutationResults =
+  keyAgentServiceExpectedPeerMutationProbes.map((probe, index) => ({
+    index,
+    changed: probe !== keyAgentServiceExpectedPeerSource,
+    contractRejected: !keyAgentServiceExpectedPeerContract(probe),
+    pinRejected: !keyAgentServiceExpectedPeerPinContract(probe),
+  }));
 requireInvariant(
-  keyAgentServiceExpectedPeerContract(keyAgentServiceExpectedPeerSource) &&
-    keyAgentServiceExpectedPeerPinContract(keyAgentServiceExpectedPeerSource) &&
-    keyAgentServiceExpectedPeerMutationProbes.every(
-      (probe) =>
-        probe !== keyAgentServiceExpectedPeerSource &&
-        !keyAgentServiceExpectedPeerContract(probe) &&
-        !keyAgentServiceExpectedPeerPinContract(probe),
+  keyAgentServiceExpectedPeerBaseAccepted &&
+    keyAgentServiceExpectedPeerPinsAccepted &&
+    keyAgentServiceExpectedPeerMutationResults.every(
+      ({ changed, contractRejected, pinRejected }) =>
+        changed && contractRejected && pinRejected,
     ),
-  "the pinned debug-only expected-helper registry must retain eight non-reusable slots, RegisteredSuspended/ExpectedRunning/Admitted phases, OS observations outside its mutex except the atomic one-shot resume/publication edge, role-derived non-consuming callback and exactly-once manager identity rules, armed guard Drop cancellation with Internal/Stopping fail-fast enforcement, unrelated-peer preservation, race/poison fail-closed cleanup, in-flight cancel that never reports false success, terminal peer cancellation, exhaustive concurrency tests, and effective mutations",
+  `the pinned debug-only expected-helper registry must retain eight non-reusable slots, RegisteredSuspended/ExpectedRunning/Admitted phases, OS observations outside its mutex except the atomic one-shot resume/publication edge, role-derived non-consuming callback and exactly-once manager identity rules, armed guard Drop cancellation with Internal/Stopping fail-fast enforcement, unrelated-peer preservation, race/poison fail-closed cleanup, in-flight cancel that never reports false success, terminal peer cancellation, exhaustive concurrency tests, and effective mutations; base=${keyAgentServiceExpectedPeerBaseAccepted}, pins=${keyAgentServiceExpectedPeerPinsAccepted}, failed mutation indices=${JSON.stringify(
+    keyAgentServiceExpectedPeerMutationResults.filter(
+      ({ changed, contractRejected, pinRejected }) =>
+        !changed || !contractRejected || !pinRejected,
+    ),
+  )}`,
 );
 
 const keyAgentServiceRpcProbeLeafSource =
@@ -28207,7 +28341,7 @@ const keyAgentServiceProcessCoordinatorInput =
   keyAgentServiceLaunchSources[keyAgentServiceLaunchPaths.process];
 const keyAgentServiceProcessCoordinatorPinContract = (processSource) =>
   normalizedSourceSha256(processSource) ===
-  "cef50280ae887379193a5c864515368028ae29f3d0893bd4e5e1c77bc4c6a2cf";
+  "3d5c043884ba8e941f54328199f4738a6d3104a0d5e154dc277e18cc2a3fda9c";
 const keyAgentServiceProcessCoordinatorSemanticContract = (processSource) => {
   try {
     const process = withoutBottomTestModule(processSource);
@@ -28238,13 +28372,21 @@ const keyAgentServiceProcessCoordinatorSemanticContract = (processSource) => {
     const pendingDetachImpl = rustImplItems(process).find(
       (item) => item.header === "impl PendingServiceProbeDetach",
     )?.source;
+    const detachedProcessImpl = rustImplItems(process).find(
+      (item) => item.header === "impl DetachedSuspendedServiceProbe",
+    )?.source;
     if (
       suspendedImpl === undefined ||
       preparedDetachImpl === undefined ||
-      pendingDetachImpl === undefined
+      pendingDetachImpl === undefined ||
+      detachedProcessImpl === undefined
     ) {
       return false;
     }
+    const detachedSessionId = rustFunctionBlock(
+      detachedProcessImpl,
+      "session_id",
+    );
     const suspendedRevalidate = rustLexicalItemBlock(
       suspendedImpl,
       /pub\(super\)\s+fn\s+revalidate\s*\(/u,
@@ -28368,6 +28510,8 @@ const keyAgentServiceProcessCoordinatorSemanticContract = (processSource) => {
     }));
     return (
       process.includes("#![allow(unsafe_code)]") &&
+      compactRust(detachedSessionId) ===
+        "pub(super)constfnsession_id(&self)->NonZeroU32{self.expected_target.session_id()}" &&
       rustUnsafeKeywordCount(process) === 8 &&
       forbiddenApis.every((api) => rustCallSites(process, api).length === 0) &&
       JSON.stringify(observedApis) ===
@@ -29242,20 +29386,20 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate has two deliberately different surfaces.",
-    sha256: "17a8acd7baeaefc36d84869f0e363c06eb84a19ef688a3d42e2a16ebce683664",
+    sha256: "7e45441bff08f8068bc8fce2911eb1786e1cd63c982c895651c797a13396a57f",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes a safe platform-neutral gate-byte",
-    sha256: "55829cd809a4cf02b1b73e9c8171a3127c34b0d7c4a374494c7406e5b30dca9c",
+    sha256: "a320dbc5923395ba12fbd42a5929703d8d9652962c7bc0b56a58a3ed76a2cf76",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "A separate helper-bootstrap crate exposes",
-    sha256: "65185ae468f5daf21f164fdf42d7decacadd36ebb2602e942065b73919f05462",
+    sha256: "9cc6eb70f2f052c75d339c2e763c2b662e3a6460b9aaa3274bcd1f82981deda5",
   },
 ];
 const keyAgentServiceHelperBootstrapDocumentationPatterns = [
@@ -36585,9 +36729,9 @@ for (const capability of [
 // the headless smoke backend remain separate non-generation partitions.
 const walletSecretOriginExpectedDocumentationSha256 = Object.freeze({
   architecture:
-    "17a8acd7baeaefc36d84869f0e363c06eb84a19ef688a3d42e2a16ebce683664",
+    "7e45441bff08f8068bc8fce2911eb1786e1cd63c982c895651c797a13396a57f",
   securityDecisions:
-    "65185ae468f5daf21f164fdf42d7decacadd36ebb2602e942065b73919f05462",
+    "9cc6eb70f2f052c75d339c2e763c2b662e3a6460b9aaa3274bcd1f82981deda5",
 });
 const walletSecretOriginProductionProjection = (source) =>
   withoutCfgTestItems(withoutBottomTestModule(source));
@@ -39983,11 +40127,11 @@ const keyAgentServicePhaseTwoIExpectedPins = Object.freeze({
   sourceProduction:
     "2d4da94c36055c61f5fdedabb8752709bf32750a28381e67c50b6e21c0866b4e",
   design:
-    "55829cd809a4cf02b1b73e9c8171a3127c34b0d7c4a374494c7406e5b30dca9c",
+    "a320dbc5923395ba12fbd42a5929703d8d9652962c7bc0b56a58a3ed76a2cf76",
   architecture:
-    "17a8acd7baeaefc36d84869f0e363c06eb84a19ef688a3d42e2a16ebce683664",
+    "7e45441bff08f8068bc8fce2911eb1786e1cd63c982c895651c797a13396a57f",
   security:
-    "65185ae468f5daf21f164fdf42d7decacadd36ebb2602e942065b73919f05462",
+    "9cc6eb70f2f052c75d339c2e763c2b662e3a6460b9aaa3274bcd1f82981deda5",
 });
 const keyAgentServicePhaseTwoIExpectedInboundEdge = Object.freeze({
   declaringFile: keyAgentServicePhaseTwoIParentPath,
@@ -41367,6 +41511,1544 @@ requireInvariant(
       .map(({ name }) => name),
   )}`,
 );
+
+const keyAgentServicePhaseThreeAExpectedPeerPath =
+  "crates/platform-windows/src/key_agent_service_rpc/expected_peer.rs";
+const keyAgentServicePhaseThreeADebugGatePath =
+  "crates/platform-windows/src/key_agent_service_launch/debug_gate.rs";
+const keyAgentServicePhaseThreeAProcessPath =
+  "crates/platform-windows/src/key_agent_service_launch/process.rs";
+const keyAgentServicePhaseThreeATargetProfilePath =
+  "crates/platform-windows/src/key_agent_service_launch/target_profile.rs";
+const keyAgentServicePhaseThreeANewTestNames = Object.freeze([
+  "registration_records_server_derived_nonzero_session_without_wire_authority",
+  "invalidated_session_rejects_and_cancels_future_registration",
+  "session_invalidation_cancels_only_matching_live_peers_outside_registry_mutex",
+  "session_invalidation_requests_matching_in_flight_cancel_and_waits_for_settlement",
+  "session_invalidation_preserves_unrelated_live_and_in_flight_peers",
+  "active_session_invalidation_quarantines_all_observed_sessions_and_departing_session",
+  "session_quarantine_exhaustion_fail_closes_and_reaps_every_owner",
+  "session_invalidation_failure_and_debug_are_data_free",
+]);
+const keyAgentServicePhaseThreeAExpectedServiceFeatures = Object.freeze([
+  "default",
+  "scm-feasibility-test-hook",
+  "service-token-feasibility-test-hook",
+  "rpc-status-feasibility-test-hook",
+  "lpac-rpc-probe-feasibility-test-hook",
+]);
+const keyAgentServicePhaseThreeAExpectedPlatformFeatures = Object.freeze([
+  "default",
+  "broker-channel-contract-test-hook",
+  "key-agent-service-scm-feasibility-test-hook",
+  "key-agent-service-token-feasibility-test-hook",
+  "key-agent-service-lpac-launch-feasibility-test-hook",
+  "key-agent-service-rpc-status-feasibility-test-hook",
+  "key-agent-debugger-transport-feasibility-test-hook",
+]);
+const keyAgentServicePhaseThreeAExpectedPins = Object.freeze({
+  expectedPeerFull:
+    "bf254901d25055701177dc44efbd29a82eae1d4a30b330fc506f4e107eb195d9",
+  expectedPeerProduction:
+    "771be7300c5e28829e0fee9b147be7c4f2f99f9ae70fc71e69b264d5825e5845",
+  debugGateFull:
+    "d2c78f7a3156993219848020373dfc0a9140754af4f9fdf07d49390eb89f180d",
+  debugGateProduction:
+    "c85fec168479f2bbc81be3e0fc5bc3390e3b47000aac571e9a85a1a1a03135d4",
+  processFull:
+    "3d5c043884ba8e941f54328199f4738a6d3104a0d5e154dc277e18cc2a3fda9c",
+  processProduction:
+    "83571b276253cb0022e52316a75d2ae1d49ca92a3a49d76646ac008517076e9b",
+  targetProfileFull:
+    "5a9c175e1b68744fefc6d316cbd93c15054a9d03e064c890916513b22457d29b",
+  targetProfileProduction:
+    "610502bfedee760837e3d1c7a3729067dda450d5bf98061553dddabb499b303c",
+  design:
+    "a320dbc5923395ba12fbd42a5929703d8d9652962c7bc0b56a58a3ed76a2cf76",
+  architecture:
+    "7e45441bff08f8068bc8fce2911eb1786e1cd63c982c895651c797a13396a57f",
+  security:
+    "9cc6eb70f2f052c75d339c2e763c2b662e3a6460b9aaa3274bcd1f82981deda5",
+  platformReadme:
+    "3a0f25bf97b178be7d9198fb9d6b55c9e6cf2321cd04bee94e99ec451b4624f5",
+});
+const keyAgentServicePhaseThreeAProductionProjection = (source) =>
+  withoutCfgTestItems(withoutBottomTestModule(source));
+const keyAgentServicePhaseThreeAOverlayProductionFiles = (inputs, files) => {
+  const replacements = new Map([
+    [keyAgentServicePhaseThreeAExpectedPeerPath, inputs.expectedPeerSource],
+    [keyAgentServicePhaseThreeADebugGatePath, inputs.debugGateSource],
+    [keyAgentServicePhaseThreeAProcessPath, inputs.processSource],
+    [keyAgentServicePhaseThreeATargetProfilePath, inputs.targetProfileSource],
+    [keyAgentServiceLifecycleCorePath, inputs.lifecycleSource],
+    [keyAgentServicePhaseTwoIParentPath, inputs.platformServiceSource],
+  ]);
+  return files.map((file) => ({
+    path: file.path,
+    source: replacements.has(file.path)
+      ? keyAgentServicePhaseThreeAProductionProjection(
+          replacements.get(file.path),
+        )
+      : file.source,
+  }));
+};
+const keyAgentServicePhaseThreeACallInventory = (files, name) =>
+  files
+    .filter(({ source }) => rustLexicalCode(source).includes(name))
+    .flatMap((file) =>
+      rustCallSites(file.source, name).map((call) => ({
+        path: file.path,
+        arguments: call.arguments.map(compactRust),
+      })),
+    );
+const keyAgentServicePhaseThreeAIdentifierInventory = (files, name) =>
+  files
+    .map((file) => ({
+      path: file.path,
+      count: identifierOccurrenceCount(rustLexicalCode(file.source), name),
+    }))
+    .filter(({ count }) => count > 0);
+const keyAgentServicePhaseThreeATraitAliasInventory = (files, traitName) => {
+  const escapedTraitName = traitName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const aliasPattern = new RegExp(
+    `\\b${escapedTraitName}\\s+as\\s+`,
+    "u",
+  );
+  return files.flatMap((file) =>
+    rustUseItems(file.source)
+      .filter((item) => aliasPattern.test(rustLexicalCode(item.source)))
+      .map(() => ({ path: file.path })),
+  );
+};
+const keyAgentServicePhaseThreeAExpectedInvalidateSessionCalls = Object.freeze([
+  {
+    path: keyAgentServiceLifecycleCorePath,
+    arguments: ["session", "false"],
+  },
+  {
+    path: keyAgentServiceLifecycleCorePath,
+    arguments: ["session", "true"],
+  },
+]);
+const keyAgentServicePhaseThreeADesignMarkers = Object.freeze([
+  "**Current Phase 3A status: started, not passed.**",
+  "`ExpectedHelperPeer::session_id`",
+  "`DetachedSuspendedServiceProbe::session_id`",
+  "`ExpectedServiceCreatedLpac`",
+  "`ExpectedPeerKey` remains only the epoch nonce and request ID",
+  "fixed 64-entry quarantine",
+  "quarantine and is terminally cancelled outside the mutex",
+  "`invalidate_active_sessions`",
+  "five-second quiescence bound",
+  "cleanup-error precedence",
+  "otherwise-successful consume",
+  "restored to its original phase",
+  "terminal malformed-candidate rejection",
+  "planned retirement",
+  "Selective and global cancellation provenance remain distinct",
+  "37/37",
+  "eight new session",
+  "zero production callers",
+  "`SERVICE_ACCEPT_SESSIONCHANGE`",
+  "silent exit 78",
+  "`None`",
+  "**STOP-SHIP**",
+]);
+const keyAgentServicePhaseThreeAArchitectureMarkers = Object.freeze([
+  "**Current Phase 3A status: started, not passed.**",
+  "`ExpectedServiceCreatedLpac`",
+  "`DetachedSuspendedServiceProbe`",
+  "`ExpectedHelperPeer`",
+  "fixed 64-entry quarantine",
+  "quarantine first",
+  "five-second settlement wait",
+  "cleanup `Internal` continues to dominate",
+  "otherwise-successful consume",
+  "rolled back to the unaffected owners' original phases",
+  "malformed-candidate rejection keeps its planned terminal retirement",
+  "selective and global cancellation provenance remain distinct",
+  "37/37",
+  "eight session-specific tests",
+  "zero production invalidation callers",
+  "`SERVICE_ACCEPT_SESSIONCHANGE`",
+  "silent exit 78",
+  "`None`",
+  "**STOP-SHIP**",
+]);
+const keyAgentServicePhaseThreeASecurityMarkers = Object.freeze([
+  "**Current Phase 3A status: started, not passed.**",
+  "`ExpectedHelperPeer::session_id`",
+  "`DetachedSuspendedServiceProbe`",
+  "`ExpectedServiceCreatedLpac`",
+  "`ExpectedPeerKey` remains exactly epoch nonce plus request ID",
+  "fixed 64-entry session quarantine",
+  "same mutex",
+  "Targeted invalidation preserves every unrelated live and in-flight owner",
+  "five-second bounded settlement",
+  "cleanup `Internal` retains precedence",
+  "otherwise-successful consume",
+  "restoring the unrelated owner to its original phase",
+  "successful malformed-candidate rejection keeps its planned terminal retirement",
+  "Selective cancellation is tracked separately from stronger global cancellation",
+  "37/37",
+  "eight new session-origin",
+  "zero production callers",
+  "`SERVICE_ACCEPT_SESSIONCHANGE`",
+  "silent exit 78",
+  "`None`",
+  "**STOP-SHIP**",
+]);
+const keyAgentServicePhaseThreeAReadmeMarkers = Object.freeze([
+  "**Current Phase 3A status: started, not passed.**",
+  "`ExpectedHelperPeer`",
+  "`ExpectedServiceCreatedLpac`",
+  "fixed 64-entry quarantine",
+  "Targeted invalidation quarantines first",
+  "five-second in-flight wait",
+  "cleanup failure keeps precedence",
+  "rolls back an otherwise-successful consume",
+  "never rolls back a planned terminal malformed-peer rejection",
+  "selective and global cancellation provenance remain distinct",
+  "37/37",
+  "eight new session-specific tests",
+  "zero production callers",
+  "silent exit 78",
+  "`None`",
+  "**STOP-SHIP**",
+]);
+const keyAgentServicePhaseThreeAPinContract = (inputs) => {
+  const expectedPeerProduction =
+    keyAgentServicePhaseThreeAProductionProjection(inputs.expectedPeerSource);
+  const debugGateProduction =
+    keyAgentServicePhaseThreeAProductionProjection(inputs.debugGateSource);
+  const processProduction =
+    keyAgentServicePhaseThreeAProductionProjection(inputs.processSource);
+  const targetProfileProduction =
+    keyAgentServicePhaseThreeAProductionProjection(inputs.targetProfileSource);
+  return (
+    normalizedSourceSha256(inputs.expectedPeerSource) ===
+      keyAgentServicePhaseThreeAExpectedPins.expectedPeerFull &&
+    normalizedSourceSha256(expectedPeerProduction) ===
+      keyAgentServicePhaseThreeAExpectedPins.expectedPeerProduction &&
+    normalizedSourceSha256(inputs.debugGateSource) ===
+      keyAgentServicePhaseThreeAExpectedPins.debugGateFull &&
+    normalizedSourceSha256(debugGateProduction) ===
+      keyAgentServicePhaseThreeAExpectedPins.debugGateProduction &&
+    normalizedSourceSha256(inputs.processSource) ===
+      keyAgentServicePhaseThreeAExpectedPins.processFull &&
+    normalizedSourceSha256(processProduction) ===
+      keyAgentServicePhaseThreeAExpectedPins.processProduction &&
+    normalizedSourceSha256(inputs.targetProfileSource) ===
+      keyAgentServicePhaseThreeAExpectedPins.targetProfileFull &&
+    normalizedSourceSha256(targetProfileProduction) ===
+      keyAgentServicePhaseThreeAExpectedPins.targetProfileProduction &&
+    normalizedSourceSha256(inputs.designDocument) ===
+      keyAgentServicePhaseThreeAExpectedPins.design &&
+    normalizedSourceSha256(inputs.architectureDocument) ===
+      keyAgentServicePhaseThreeAExpectedPins.architecture &&
+    normalizedSourceSha256(inputs.securityDocument) ===
+      keyAgentServicePhaseThreeAExpectedPins.security &&
+    normalizedSourceSha256(inputs.platformReadme) ===
+      keyAgentServicePhaseThreeAExpectedPins.platformReadme
+  );
+};
+
+let keyAgentServicePhaseThreeABaseChecks = Object.freeze({});
+let keyAgentServicePhaseThreeABaseMetrics = Object.freeze({});
+const keyAgentServicePhaseThreeASemanticContract = (inputs, requirePins = true) => {
+  try {
+    const expectedPeerProduction =
+      keyAgentServicePhaseThreeAProductionProjection(inputs.expectedPeerSource);
+    const debugGateProduction =
+      keyAgentServicePhaseThreeAProductionProjection(inputs.debugGateSource);
+    const processProduction =
+      keyAgentServicePhaseThreeAProductionProjection(inputs.processSource);
+    const targetProfileProduction =
+      keyAgentServicePhaseThreeAProductionProjection(inputs.targetProfileSource);
+    const lifecycleProduction =
+      keyAgentServicePhaseThreeAProductionProjection(inputs.lifecycleSource);
+    const platformServiceProduction =
+      keyAgentServicePhaseThreeAProductionProjection(inputs.platformServiceSource);
+    const workspaceFiles = keyAgentServicePhaseThreeAOverlayProductionFiles(
+      inputs,
+      inputs.workspaceProductionFiles,
+    );
+    const expectedCode = rustLexicalCode(expectedPeerProduction);
+    const debugCode = rustLexicalCode(debugGateProduction);
+    const processCode = rustLexicalCode(processProduction);
+    const targetCode = rustLexicalCode(targetProfileProduction);
+    const lifecycleCode = rustLexicalCode(lifecycleProduction);
+    const platformServiceCode = rustLexicalCode(platformServiceProduction);
+    const peerTrait = rustLexicalItemBlockAtDepth(
+      expectedPeerProduction,
+      /(?:^|\n)\s*pub\(crate\)\s+trait\s+ExpectedHelperPeer\s*</u,
+      0,
+    );
+    const candidateTrait = rustLexicalItemBlockAtDepth(
+      expectedPeerProduction,
+      /(?:^|\n)\s*pub\(crate\)\s+trait\s+ExpectedHelperCandidate\s*\{/u,
+      0,
+    );
+    const keyItem = rustLexicalItemBlockAtDepth(
+      expectedPeerProduction,
+      /(?:^|\n)\s*pub\(crate\)\s+struct\s+ExpectedPeerKey\s*\{/u,
+      0,
+    );
+    const slotItem = rustLexicalItemBlockAtDepth(
+      expectedPeerProduction,
+      /(?:^|\n)\s*enum\s+ExpectedPeerSlot\s*</u,
+      0,
+    );
+    const stateItem = rustLexicalItemBlockAtDepth(
+      expectedPeerProduction,
+      /(?:^|\n)\s*struct\s+ExpectedPeerState\s*</u,
+      0,
+    );
+    const selectiveSettlementPolicyItem = rustLexicalItemBlockAtDepth(
+      expectedPeerProduction,
+      /(?:^|\n)\s*enum\s+SelectiveCancellationSettlementPolicy\s*\{/u,
+      0,
+    );
+    const registryErrorItem = rustLexicalItemBlockAtDepth(
+      expectedPeerProduction,
+      /(?:^|\n)\s*pub\(crate\)\s+enum\s+ExpectedPeerRegistryError\s*\{/u,
+      0,
+    );
+    const admissionImpl = rustImplItems(expectedPeerProduction).find((item) =>
+      item.header.startsWith("impl<P, C> ExpectedHelperAdmission"),
+    )?.source;
+    const debugPeerImpls = rustImplItems(debugGateProduction).filter((item) =>
+      item.header.includes("ExpectedHelperPeer<"),
+    );
+    const processPeerImpl = rustImplItems(processProduction).find(
+      (item) => item.header === "impl DetachedSuspendedServiceProbe",
+    )?.source;
+    const targetPeerImpl = rustImplItems(targetProfileProduction).find(
+      (item) => item.header === "impl ExpectedServiceCreatedLpac",
+    )?.source;
+    if (
+      admissionImpl === undefined ||
+      debugPeerImpls.length !== 1 ||
+      processPeerImpl === undefined ||
+      targetPeerImpl === undefined
+    ) {
+      return false;
+    }
+    const debugPeerImpl = debugPeerImpls[0].source;
+    const register = rustFunctionBlock(admissionImpl, "register_suspended");
+    const invalidateSession = rustFunctionBlock(
+      admissionImpl,
+      "invalidate_session",
+    );
+    const invalidateActiveSessions = rustFunctionBlock(
+      admissionImpl,
+      "invalidate_active_sessions",
+    );
+    const settleScan = rustFunctionBlock(admissionImpl, "settle_scan");
+    const debugSessionId = rustFunctionBlock(debugPeerImpl, "session_id");
+    const processSessionId = rustFunctionBlock(processPeerImpl, "session_id");
+    const targetSessionId = rustFunctionBlock(targetPeerImpl, "session_id");
+    const observeCallback = rustFunctionBlock(admissionImpl, "observe_callback");
+    const consumeManager = rustFunctionBlock(admissionImpl, "consume_manager");
+    const rejectManagerCandidate = rustFunctionBlock(
+      admissionImpl,
+      "reject_manager_candidate",
+    );
+    const selectSessions = rustTopLevelFunctionBlock(
+      expectedPeerProduction,
+      "request_selected_session_cancellation_and_retire_live",
+    );
+    const settleInvalidated = rustTopLevelFunctionBlock(
+      expectedPeerProduction,
+      "settle_invalidated_owners",
+    );
+    const requestGlobalCancellation = rustTopLevelFunctionBlock(
+      expectedPeerProduction,
+      "request_global_cancellation",
+    );
+    const requestSelectiveSessionCancellation = rustTopLevelFunctionBlock(
+      expectedPeerProduction,
+      "request_selective_session_cancellation",
+    );
+    const scanSlotsAreStructurallyExact = rustTopLevelFunctionBlock(
+      expectedPeerProduction,
+      "scan_slots_are_structurally_exact",
+    );
+    const scanHasGlobalCancellation = rustTopLevelFunctionBlock(
+      expectedPeerProduction,
+      "scan_has_global_cancellation",
+    );
+    const localHasSelectiveSessionCancellation = rustTopLevelFunctionBlock(
+      expectedPeerProduction,
+      "local_has_selective_session_cancellation",
+    );
+    const resolveScanResult = rustTopLevelFunctionBlock(
+      expectedPeerProduction,
+      "resolve_scan_result",
+    );
+    const quarantineContains = rustTopLevelFunctionBlock(
+      expectedPeerProduction,
+      "quarantine_contains",
+    );
+    const quarantineInsert = rustTopLevelFunctionBlock(
+      expectedPeerProduction,
+      "quarantine_insert",
+    );
+    const slotSessionId = rustTopLevelFunctionBlock(
+      expectedPeerProduction,
+      "slot_session_id",
+    );
+    const controlHandler = rustFunctionBlockAtDepth(
+      platformServiceProduction,
+      "control_handler",
+      1,
+    );
+    const statusValue = rustFunctionBlockAtDepth(
+      platformServiceProduction,
+      "status_value",
+      1,
+    );
+    const tests = rustBottomTestModule(inputs.expectedPeerSource);
+    const attributedTests =
+      keyAgentServiceRustAttributedTestInventory(inputs.expectedPeerSource);
+    const newTestBlocks = Object.fromEntries(
+      keyAgentServicePhaseThreeANewTestNames.map((name) => [
+        name,
+        rustFunctionBlockAtDepth(tests, name, 1),
+      ]),
+    );
+    const terminalRejectionRegression = rustFunctionBlockAtDepth(
+      tests,
+      "assert_selective_invalidation_preserves_terminal_rejection",
+      1,
+    );
+    const inFlightCancellationScope = rustFunctionBlockAtDepth(
+      tests,
+      "in_flight_cancellation_scope",
+      1,
+    );
+    const wireProductionCode = inputs.wireFiles
+      .filter(({ path }) => path.includes("/src/"))
+      .map(({ source }) =>
+        rustLexicalCode(keyAgentServicePhaseThreeAProductionProjection(source)),
+      )
+      .join("\n");
+    const expectedPeerImplInventory = workspaceFiles
+      .filter(({ source }) => rustLexicalCode(source).includes("ExpectedHelperPeer"))
+      .flatMap((file) =>
+        rustImplItems(file.source)
+          .filter((item) =>
+            rustImplHeaderImplementsTrait(item.header, "ExpectedHelperPeer"),
+          )
+          .map((item) => ({ path: file.path, header: item.header })),
+      );
+    const expectedPeerTraitAliasInventory =
+      keyAgentServicePhaseThreeATraitAliasInventory(
+        workspaceFiles,
+        "ExpectedHelperPeer",
+      );
+    const invalidateSessionCalls = keyAgentServicePhaseThreeACallInventory(
+      workspaceFiles,
+      "invalidate_session",
+    );
+    const invalidateActiveSessionCalls = keyAgentServicePhaseThreeACallInventory(
+      workspaceFiles,
+      "invalidate_active_sessions",
+    );
+    const invalidateSessionIdentifierInventory =
+      keyAgentServicePhaseThreeAIdentifierInventory(
+        workspaceFiles,
+        "invalidate_session",
+      );
+    const invalidateActiveSessionIdentifierInventory =
+      keyAgentServicePhaseThreeAIdentifierInventory(
+        workspaceFiles,
+        "invalidate_active_sessions",
+      );
+    const externalInvalidateSessionCalls = invalidateSessionCalls.filter(
+      ({ path, arguments: callArguments }) =>
+        !(
+          (path === keyAgentServicePhaseThreeAExpectedPeerPath &&
+            JSON.stringify(callArguments) ===
+              JSON.stringify(["&self", "session_id:NonZeroU32"])) ||
+          (path === keyAgentServiceLifecycleCorePath &&
+            JSON.stringify(callArguments) ===
+              JSON.stringify([
+                "&mutself",
+                "session:SessionId",
+                "discard_user_token:bool",
+              ]))
+        ),
+    );
+    const externalInvalidateActiveSessionCalls =
+      invalidateActiveSessionCalls.filter(
+        ({ path, arguments: callArguments }) =>
+          path !== keyAgentServicePhaseThreeAExpectedPeerPath ||
+          JSON.stringify(callArguments) !==
+            JSON.stringify(["&self", "departing_session:NonZeroU32"]),
+      );
+    const designSection = keyAgentServicePhaseTwoINormalizedDocument(
+      keyAgentServicePhaseTwoIDocumentSection(
+        inputs.designDocument,
+        "**Current Phase 3A status: started, not passed.**",
+        "\n**Exit gate:**",
+      ),
+    );
+    const architectureRows = inputs.architectureDocument
+      .split(/\r?\n/gu)
+      .filter((line) =>
+        line.startsWith("| Session-bound expected-helper invalidation |"),
+      );
+    const architectureRow = keyAgentServicePhaseTwoINormalizedDocument(
+      architectureRows[0] ?? "",
+    );
+    const securitySection = keyAgentServicePhaseTwoINormalizedDocument(
+      keyAgentServicePhaseTwoIDocumentSection(
+        inputs.securityDocument,
+        "**Current Phase 3A status: started, not passed.**",
+        "\nAll seven Rust-startup supervisor integration positives",
+      ),
+    );
+    const readmeSection = keyAgentServicePhaseTwoINormalizedDocument(
+      keyAgentServicePhaseTwoIDocumentSection(
+        inputs.platformReadme,
+        "  **Current Phase 3A status: started, not passed.**",
+        "\n  A deadline that observes pending overlapped pipe I/O",
+      ),
+    );
+
+    const exactSessionOriginCheck =
+      compactRust(peerTrait) ===
+        "pub(crate)traitExpectedHelperPeer<C>:SendwhereC:ExpectedHelperCandidate,{fnkey(&self)->ExpectedPeerKey;fnsession_id(&self)->NonZeroU32;fnrole(&self)->ExpectedHelperRole;fnrevalidate_suspended(&self)->Result<(),ExpectedPeerVerificationError>;fnresume_once(&mutself)->Result<(),ExpectedPeerVerificationError>;fnexactly_matches(&self,candidate:&C)->Result<bool,ExpectedPeerVerificationError>;fnrevalidate_running(&self)->Result<(),ExpectedPeerVerificationError>;fncancel(&mutself)->Result<(),ExpectedPeerVerificationError>;}" &&
+      compactRust(candidateTrait) ===
+        "pub(crate)traitExpectedHelperCandidate{fnrevalidate(&self)->Result<(),ExpectedPeerVerificationError>;}" &&
+      compactRust(keyItem) ===
+        "pub(crate)structExpectedPeerKey{epoch_nonce:EpochNonce,request_id:ServiceRequestId,}" &&
+      compactRust(debugSessionId) ===
+        "fnsession_id(&self)->NonZeroU32{self.process.session_id()}" &&
+      compactRust(processSessionId) ===
+        "pub(super)constfnsession_id(&self)->NonZeroU32{self.expected_target.session_id()}" &&
+      compactRust(targetSessionId) ===
+        "pub(super)constfnsession_id(&self)->NonZeroU32{self.session_id}" &&
+      JSON.stringify(expectedPeerImplInventory) ===
+        JSON.stringify([
+          {
+            path: keyAgentServicePhaseThreeADebugGatePath,
+            header:
+              "impl ExpectedHelperPeer<ServiceCreatedLpacCandidate> for DetachedExpectedServiceHelper",
+          },
+        ]) &&
+      expectedPeerTraitAliasInventory.length === 0 &&
+      !/\b(?:std\s*::\s*env|SESSIONNAME|ProcessIdToSessionId|WTSQuerySessionInformation\w*)\b/u.test(
+        [debugSessionId, processSessionId, targetSessionId].join("\n"),
+      ) &&
+      !/\b(?:session_id|SessionId|NonZeroU32)\b/u.test(wireProductionCode);
+    const fixedQuarantineCheck =
+      expectedCode.includes(
+        "pub(crate) const EXPECTED_HELPER_SESSION_QUARANTINE_CAPACITY: usize = 64;",
+      ) &&
+      identifierOccurrenceCount(
+        expectedCode,
+        "EXPECTED_HELPER_SESSION_QUARANTINE_CAPACITY",
+      ) === 5 &&
+      lifecycleCode.includes("const MAX_QUARANTINED_SESSIONS: usize = 64;") &&
+      identifierOccurrenceCount(lifecycleCode, "MAX_QUARANTINED_SESSIONS") === 3 &&
+      compactRust(stateItem) ===
+        "structExpectedPeerState<P>{stopping:bool,next_generation:u64,quarantined_sessions:[Option<NonZeroU32>;EXPECTED_HELPER_SESSION_QUARANTINE_CAPACITY],slots:[ExpectedPeerSlot<P>;EXPECTED_HELPER_CAPACITY],}" &&
+      compactRust(selectiveSettlementPolicyItem) ===
+        "enumSelectiveCancellationSettlementPolicy{PreservePlannedPhases,RollBackUnaffectedToOriginalPhase,}" &&
+      /#\[derive\(Clone, Copy\)\]\s*enum\s+SelectiveCancellationSettlementPolicy/u.test(
+        expectedPeerProduction,
+      ) &&
+      compactRust(slotItem) ===
+        "enumExpectedPeerSlot<P>{Vacant,Live{key:ExpectedPeerKey,session_id:NonZeroU32,phase:PeerPhase,peer:P,},InFlight{key:ExpectedPeerKey,session_id:NonZeroU32,phase:PeerPhase,generation:u64,cancel_requested:bool,global_cancel_requested:bool,settlement:Arc<InFlightSettlement>,},Retired(ExpectedPeerKey),}" &&
+      compactRust(quarantineContains) ===
+        "fnquarantine_contains(quarantined:&[Option<NonZeroU32>;EXPECTED_HELPER_SESSION_QUARANTINE_CAPACITY],session_id:NonZeroU32,)->bool{quarantined.contains(&Some(session_id))}" &&
+      compactRust(quarantineInsert) ===
+        "fnquarantine_insert(quarantined:&mut[Option<NonZeroU32>;EXPECTED_HELPER_SESSION_QUARANTINE_CAPACITY],session_id:NonZeroU32,)->bool{ifquarantine_contains(quarantined,session_id){returntrue;}letSome(vacant)=quarantined.iter_mut().find(|entry|entry.is_none())else{returnfalse;};*vacant=Some(session_id);true}";
+    const registrationCheck =
+      hasOrderedCompactMarkers(register, [
+        "letkey=peer.key()",
+        "letsession_id=peer.session_id()",
+        "lock_expected_state(&self.inner)",
+        "ifstate.stopping",
+        "quarantine_contains(&state.quarantined_sessions,session_id)",
+        "state.slots.iter().any(|slot|slot_key(slot)==Some(key))",
+        "drop(state)",
+        "cleanup_peer(&mutpeer)",
+        "state.slots[index]=ExpectedPeerSlot::Live",
+        "session_id",
+        "phase:PeerPhase::RegisteredSuspended",
+      ]) &&
+      compactRust(register).includes(
+        "ifletSome(error)=rejected{drop(state);letcleanup=cleanup_peer(&mutpeer);drop(peer);returncleanup.and(Err(error));}",
+      ) &&
+      keyAgentServiceLiteralCount(compactRust(register), "peer.session_id()") === 1 &&
+      !/candidate\s*\.\s*session_id|ExpectedPeerKey[^;{}]*session/u.test(
+        rustLexicalCode(register),
+      );
+    const targetedInvalidationCheck =
+      hasOrderedCompactMarkers(invalidateSession, [
+        "lock_expected_state(&self.inner)",
+        "ifstate.stopping",
+        "if!quarantine_insert(&mutstate.quarantined_sessions,session_id)",
+        "state.stopping=true",
+        "request_selected_session_cancellation_and_retire_live(&mutstate.slots,|_|true,true,)",
+        "drop(state)",
+        "settle_invalidated_owners::<P,C>(cleanup,in_flight).and(Err(ExpectedPeerRegistryError::Stopping))",
+        "request_selected_session_cancellation_and_retire_live(&mutstate.slots,|candidate|",
+        "candidate==session_id",
+        "false",
+        "drop(state)",
+        "settle_invalidated_owners::<P,C>(cleanup,in_flight)",
+      ]) &&
+      keyAgentServiceLiteralCount(
+        compactRust(invalidateSession),
+        "request_selected_session_cancellation_and_retire_live(",
+      ) === 2 &&
+      keyAgentServiceLiteralCount(compactRust(invalidateSession), "drop(state)") ===
+        2;
+    const activeInvalidationCheck =
+      hasOrderedCompactMarkers(invalidateActiveSessions, [
+        "lock_expected_state(&self.inner)",
+        "ifstate.stopping",
+        "letmutquarantined=state.quarantined_sessions",
+        "quarantine_insert(&mutquarantined,departing_session)",
+        "state.slots.iter().filter_map(slot_session_id)",
+        "quarantine_insert(&mutquarantined,session_id)",
+        "state.quarantined_sessions=quarantined",
+        "state.stopping=true",
+        "request_selected_session_cancellation_and_retire_live(&mutstate.slots,|_|true,!fits,)",
+        "drop(state)",
+        "settle_invalidated_owners::<P,C>(cleanup,in_flight)",
+        "iffits",
+        "settled",
+        "settled.and(Err(ExpectedPeerRegistryError::Stopping))",
+      ]) &&
+      keyAgentServiceLiteralCount(
+        compactRust(invalidateActiveSessions),
+        "request_selected_session_cancellation_and_retire_live(",
+      ) === 1 &&
+      keyAgentServiceLiteralCount(
+        compactRust(invalidateActiveSessions),
+        "drop(state)",
+      ) === 1;
+    const selectionAndSettlementCheck =
+      hasOrderedCompactMarkers(selectSessions, [
+        "global:bool",
+        "slot_session_id(slot)",
+        "Some(session_id)=>selected(session_id)",
+        "if!selected_session",
+        "continue",
+        "ExpectedPeerSlot::InFlight",
+        "ifglobal",
+        "request_global_cancellation(cancel_requested,global_cancel_requested)",
+        "else",
+        "request_selective_session_cancellation(cancel_requested)",
+        "in_flight.push(InFlightCancellation",
+        "ExpectedPeerSlot::Live",
+        "retire_live_slot(slot)",
+        "cleanup.push(peer)",
+      ]) &&
+      compactRust(slotSessionId) ===
+        "fnslot_session_id<P>(slot:&ExpectedPeerSlot<P>)->Option<NonZeroU32>{matchslot{ExpectedPeerSlot::Live{session_id,..}|ExpectedPeerSlot::InFlight{session_id,..}=>Some(*session_id),ExpectedPeerSlot::Vacant|ExpectedPeerSlot::Retired(_)=>None,}}" &&
+      compactRust(settleInvalidated) ===
+        "fnsettle_invalidated_owners<P,C>(cleanup:Vec<P>,in_flight:Vec<InFlightCancellation>,)->Result<(),ExpectedPeerRegistryError>whereC:ExpectedHelperCandidate,P:ExpectedHelperPeer<C>,{letcleanup=cleanup_peers::<P,C>(cleanup);letsettled=wait_for_cancellations(in_flight,EXPECTED_HELPER_QUIESCENCE_TIMEOUT);cleanup.and(settled)}" &&
+      compactRust(requestGlobalCancellation) ===
+        "fnrequest_global_cancellation(cancel_requested:&mutbool,global_cancel_requested:&mutbool){*cancel_requested=true;*global_cancel_requested=true;}" &&
+      compactRust(requestSelectiveSessionCancellation) ===
+        "fnrequest_selective_session_cancellation(cancel_requested:&mutbool){*cancel_requested=true;}" &&
+      hasOrderedCompactMarkers(scanSlotsAreStructurallyExact, [
+        "peers.iter().all(|local|",
+        "ExpectedPeerSlot::InFlight",
+        "*key==local.key",
+        "*session_id==local.session_id",
+        "*phase==local.original_phase",
+        "*generation==local.generation",
+      ]) &&
+      compactRust(scanHasGlobalCancellation) ===
+        "fnscan_has_global_cancellation<P>(slots:&[ExpectedPeerSlot<P>],peers:&[LocalPeer<P>])->bool{peers.iter().any(|local|{matches!(slots.get(local.index),Some(ExpectedPeerSlot::InFlight{generation,global_cancel_requested:true,..})if*generation==local.generation)})}" &&
+      compactRust(localHasSelectiveSessionCancellation) ===
+        "fnlocal_has_selective_session_cancellation<P>(slots:&[ExpectedPeerSlot<P>],local:&LocalPeer<P>,)->bool{matches!(slots.get(local.index),Some(ExpectedPeerSlot::InFlight{generation,cancel_requested:true,global_cancel_requested:false,..})if*generation==local.generation)}" &&
+      compactRust(resolveScanResult) ===
+        "fnresolve_scan_result<T>(settlement:Result<bool,ExpectedPeerRegistryError>,operation:Result<T,ExpectedPeerRegistryError>,)->Result<T,ExpectedPeerRegistryError>{lettargeted_cancellation=settlement?;iftargeted_cancellation&&operation.is_ok(){Err(ExpectedPeerRegistryError::Denied)}else{operation}}" &&
+      hasOrderedCompactMarkers(settleScan, [
+        "lock_expected_state(&self.inner)",
+        "scan_slots_are_structurally_exact(&state.slots,&peers)",
+        "scan_has_global_cancellation(&state.slots,&peers)",
+        "state.stopping||concurrent_live||!exact_slots||global_cancellation",
+        "request_global_cancellation(cancel_requested,global_cancel_requested)",
+        "local_has_selective_session_cancellation(&state.slots,local)",
+        "local_has_selective_session_cancellation(&state.slots,&local)",
+        "letrestored_phase=iftargeted_cancellation&&matches!(policy,SelectiveCancellationSettlementPolicy::RollBackUnaffectedToOriginalPhase)",
+        "Some(local.original_phase)",
+        "else",
+        "local.next_phase",
+        "if!cancelled&&letSome(phase)=restored_phase",
+        "state.slots[index]=ExpectedPeerSlot::Live",
+        "else",
+        "cleanup.push(local)",
+        "drop(state)",
+        "self.cleanup_local_peers(cleanup).map(|()|targeted_cancellation)",
+      ]);
+    const selectiveScanRollbackCheck =
+      [observeCallback, consumeManager].every(
+        (functionBlock) =>
+          hasOrderedCompactMarkers(functionBlock, [
+            "letpolicy=ifresult.is_ok()",
+            "SelectiveCancellationSettlementPolicy::RollBackUnaffectedToOriginalPhase",
+            "else",
+            "SelectiveCancellationSettlementPolicy::PreservePlannedPhases",
+            "resolve_scan_result(self.settle_scan(peers,policy),result)",
+          ]) &&
+          keyAgentServiceLiteralCount(
+            compactRust(functionBlock),
+            "resolve_scan_result(self.settle_scan(peers,policy),result)",
+          ) === 1,
+      ) &&
+      hasOrderedCompactMarkers(consumeManager, [
+        "peers[selected].next_phase=Some(PeerPhase::Admitted)",
+        "Ok(role)",
+        "letpolicy=ifresult.is_ok()",
+        "SelectiveCancellationSettlementPolicy::RollBackUnaffectedToOriginalPhase",
+        "self.settle_scan(peers,policy)",
+      ]) &&
+      hasOrderedCompactMarkers(rejectManagerCandidate, [
+        "local.next_phase=None",
+        "peers[*position].next_phase=None",
+        "resolve_scan_result",
+        "self.settle_scan(peers,SelectiveCancellationSettlementPolicy::PreservePlannedPhases,)",
+        "result",
+      ]) &&
+      !compactRust(rejectManagerCandidate).includes(
+        "SelectiveCancellationSettlementPolicy::RollBackUnaffectedToOriginalPhase",
+      ) &&
+      hasOrderedCompactMarkers(settleScan, [
+        "iftargeted_cancellation&&matches!(policy,SelectiveCancellationSettlementPolicy::RollBackUnaffectedToOriginalPhase)",
+        "Some(local.original_phase)",
+        "else",
+        "local.next_phase",
+      ]);
+    const boundedFailurePrivacyCheck =
+      expectedCode.includes(
+        "pub(crate) const EXPECTED_HELPER_QUIESCENCE_MILLISECONDS: u64 = 5_000;",
+      ) &&
+      compactRust(registryErrorItem) ===
+        "pub(crate)enumExpectedPeerRegistryError{Denied,Full,Stopping,Internal,}" &&
+      expectedPeerProduction.includes(
+        'formatter.write_str("ExpectedHelperAdmission([REDACTED])")',
+      ) &&
+      expectedPeerProduction.includes(
+        'formatter.write_str("ExpectedPeerKey([REDACTED])")',
+      ) &&
+      !/#\[derive\([^\]]*Debug[^\]]*\)\]\s*(?:struct\s+ExpectedPeerState|enum\s+ExpectedPeerSlot|struct\s+LocalPeer)/u.test(
+        expectedPeerProduction,
+      );
+    const exactTestsCheck =
+      attributedTests.length === 37 &&
+      attributedTests.every(({ ignored }) => !ignored) &&
+      JSON.stringify(attributedTests.map(({ name }) => name)) ===
+        JSON.stringify(keyAgentServiceExpectedPeerTestNames) &&
+      keyAgentServicePhaseThreeANewTestNames.every((name) =>
+        /\b(?:assert|debug_assert)(?:_eq|_ne)?\s*!\s*\(/u.test(
+          rustLexicalCode(newTestBlocks[name]),
+        ),
+      ) &&
+      compactRust(
+        newTestBlocks[
+          "registration_records_server_derived_nonzero_session_without_wire_authority"
+        ],
+      ).includes("session_id:stored_session") &&
+      compactRust(
+        newTestBlocks[
+          "invalidated_session_rejects_and_cancels_future_registration"
+        ],
+      ).includes("Err(ExpectedPeerRegistryError::Denied)") &&
+      compactRust(
+        newTestBlocks[
+          "session_invalidation_cancels_only_matching_live_peers_outside_registry_mutex"
+        ],
+      ).includes(".try_lock()") &&
+      compactRust(
+        newTestBlocks[
+          "session_invalidation_requests_matching_in_flight_cancel_and_waits_for_settlement"
+        ],
+      ).includes("wait_for_cancel_request(&admission,key(6)?)") &&
+      compactRust(
+        newTestBlocks[
+          "session_invalidation_preserves_unrelated_live_and_in_flight_peers"
+        ],
+      ).includes("Some((true,false))") &&
+      compactRust(
+        newTestBlocks[
+          "session_invalidation_preserves_unrelated_live_and_in_flight_peers"
+        ],
+      ).includes("Some((false,false))") &&
+      hasOrderedCompactMarkers(inFlightCancellationScope, [
+        "ExpectedPeerSlot::InFlight",
+        "cancel_requested",
+        "global_cancel_requested",
+        "Some((*cancel_requested,*global_cancel_requested))",
+      ]) &&
+      compactRust(
+        newTestBlocks[
+          "session_invalidation_preserves_unrelated_live_and_in_flight_peers"
+        ],
+      ).includes("Some(PeerPhase::ExpectedRunning)") &&
+      compactRust(
+        newTestBlocks[
+          "session_invalidation_preserves_unrelated_live_and_in_flight_peers"
+        ],
+      ).includes(
+        "admission.consume_manager(key(8)?,&candidate(8,true,&trace)),Ok(ExpectedHelperRole::SecretInput)",
+      ) &&
+      compactRust(
+        newTestBlocks[
+          "session_invalidation_preserves_unrelated_live_and_in_flight_peers"
+        ],
+      ).includes("assert_selective_invalidation_preserves_terminal_rejection()?") &&
+      hasOrderedCompactMarkers(terminalRejectionRegression, [
+        "reject_manager_candidate(&candidate(16,true,&rejection_trace))",
+        "invalidate_session(invalidated_session)",
+        "Err(ExpectedPeerRegistryError::Denied)",
+        "drops.load(Ordering::SeqCst),2",
+        "observe_callback(&candidate(16,true,&trace))",
+        "Err(ExpectedPeerRegistryError::Denied)",
+      ]) &&
+      compactRust(
+        newTestBlocks[
+          "active_session_invalidation_quarantines_all_observed_sessions_and_departing_session"
+        ],
+      ).includes(".filter(|entry|entry.is_some()).count(),3") &&
+      compactRust(
+        newTestBlocks[
+          "session_quarantine_exhaustion_fail_closes_and_reaps_every_owner"
+        ],
+      ).includes("Err(ExpectedPeerRegistryError::Stopping)") &&
+      compactRust(
+        newTestBlocks["session_invalidation_failure_and_debug_are_data_free"],
+      ).includes("assert_eq!(error,ExpectedPeerRegistryError::Internal)");
+    const zeroCallerAndDormancyCheck =
+      JSON.stringify(externalInvalidateSessionCalls) ===
+        JSON.stringify(keyAgentServicePhaseThreeAExpectedInvalidateSessionCalls) &&
+      externalInvalidateActiveSessionCalls.length === 0 &&
+      invalidateSessionIdentifierInventory.length === 2 &&
+      invalidateSessionIdentifierInventory.some(
+        ({ path, count }) =>
+          path === keyAgentServicePhaseThreeAExpectedPeerPath && count === 1,
+      ) &&
+      invalidateSessionIdentifierInventory.some(
+        ({ path, count }) =>
+          path === keyAgentServiceLifecycleCorePath && count === 3,
+      ) &&
+      invalidateActiveSessionIdentifierInventory.length === 1 &&
+      invalidateActiveSessionIdentifierInventory[0].path ===
+        keyAgentServicePhaseThreeAExpectedPeerPath &&
+      invalidateActiveSessionIdentifierInventory[0].count === 1 &&
+      identifierOccurrenceCount(expectedCode, "invalidate_session") === 1 &&
+      identifierOccurrenceCount(expectedCode, "invalidate_active_sessions") === 1 &&
+      !/\b(?:SERVICE_ACCEPT_SESSIONCHANGE|SERVICE_CONTROL_SESSIONCHANGE)\b/u.test(
+        platformServiceCode,
+      ) &&
+      identifierOccurrenceCount(rustLexicalCode(controlHandler), "_event_type") ===
+        1 &&
+      identifierOccurrenceCount(rustLexicalCode(controlHandler), "_event_data") ===
+        1 &&
+      compactRust(statusValue).includes(
+        "dwControlsAccepted:ifstate.0==SERVICE_RUNNING.0{SERVICE_ACCEPT_STOP|SERVICE_ACCEPT_SHUTDOWN}else{0},",
+      );
+    const noWideningCheck =
+      keyAgentServiceExpectedPeerReexportContract(inputs.rpcRootSource) &&
+      !/EXPECTED_HELPER_SESSION_QUARANTINE_CAPACITY|invalidate_(?:active_)?session/u.test(
+        rustLexicalCode(inputs.rpcRootSource),
+      ) &&
+      !/\b(?:ExpectedHelperPeer|ExpectedHelperAdmission|invalidate_session|invalidate_active_sessions)\b/u.test(
+        rustLexicalCode(inputs.platformLibSource),
+      ) &&
+      /^default\s*=\s*\[\]$/mu.test(inputs.serviceManifest) &&
+      /^default\s*=\s*\[\]$/mu.test(inputs.platformManifest) &&
+      JSON.stringify(tomlTableKeyInventory(inputs.serviceManifest, "features")) ===
+        JSON.stringify(keyAgentServicePhaseThreeAExpectedServiceFeatures) &&
+      JSON.stringify(tomlTableKeyInventory(inputs.platformManifest, "features")) ===
+        JSON.stringify(keyAgentServicePhaseThreeAExpectedPlatformFeatures) &&
+      inputs.serviceMain.includes("const SERVICE_UNAVAILABLE: i32 = 78;") &&
+      /#\[cfg\(not\(any\([\s\S]*?fn\s+main\s*\(\s*\)\s*\{\s*std::process::exit\(SERVICE_UNAVAILABLE\);/u.test(
+        inputs.serviceMain,
+      ) &&
+      /COMPILED_RELEASE_POLICY[^=]*=\s*None\s*;/su.test(inputs.attestationSource);
+    const documentationCheck =
+      designSection.length > 0 &&
+      architectureRows.length === 1 &&
+      securitySection.length > 0 &&
+      readmeSection.length > 0 &&
+      keyAgentServicePhaseThreeADesignMarkers.every((marker) =>
+        designSection.includes(marker),
+      ) &&
+      keyAgentServicePhaseThreeAArchitectureMarkers.every((marker) =>
+        architectureRow.includes(marker),
+      ) &&
+      keyAgentServicePhaseThreeASecurityMarkers.every((marker) =>
+        securitySection.includes(marker),
+      ) &&
+      keyAgentServicePhaseThreeAReadmeMarkers.every((marker) =>
+        readmeSection.includes(marker),
+      ) &&
+      inputs.designDocument.includes(
+        "2026-09-05 - Added the dormant Phase 3A session-bound expected-helper",
+      );
+    const checks = Object.freeze({
+      exactServiceProofSessionOrigin: exactSessionOriginCheck,
+      fixedSynchronizedQuarantine: fixedQuarantineCheck,
+      registerRejectsQuarantineUnderMutex: registrationCheck,
+      targetedQuarantineBeforeSelectiveInvalidation: targetedInvalidationCheck,
+      activeTopologyQuarantineBeforeGlobalInvalidation: activeInvalidationCheck,
+      mutexFreeSelectiveSettlement: selectionAndSettlementCheck,
+      successfulSelectiveCancellationRollsBackBeforeDenied:
+        selectiveScanRollbackCheck,
+      fiveSecondBoundCleanupPrecedenceAndPrivacy: boundedFailurePrivacyCheck,
+      exactThirtySevenTests: exactTestsCheck,
+      zeroProductionCallersAndScmDormancy: zeroCallerAndDormancyCheck,
+      noFeatureReexportOrReleaseWidening: noWideningCheck,
+      pinnedFourDocumentStopShipBoundary: documentationCheck,
+      pins: !requirePins || keyAgentServicePhaseThreeAPinContract(inputs),
+    });
+    if (inputs === keyAgentServicePhaseThreeAInputs) {
+      keyAgentServicePhaseThreeABaseChecks = checks;
+      keyAgentServicePhaseThreeABaseMetrics = Object.freeze({
+        currentPins: Object.freeze({
+          expectedPeerFull: normalizedSourceSha256(inputs.expectedPeerSource),
+          expectedPeerProduction: normalizedSourceSha256(expectedPeerProduction),
+          debugGateFull: normalizedSourceSha256(inputs.debugGateSource),
+          debugGateProduction: normalizedSourceSha256(debugGateProduction),
+          processFull: normalizedSourceSha256(inputs.processSource),
+          processProduction: normalizedSourceSha256(processProduction),
+          targetProfileFull: normalizedSourceSha256(inputs.targetProfileSource),
+          targetProfileProduction: normalizedSourceSha256(targetProfileProduction),
+          design: normalizedSourceSha256(inputs.designDocument),
+          architecture: normalizedSourceSha256(inputs.architectureDocument),
+          security: normalizedSourceSha256(inputs.securityDocument),
+          platformReadme: normalizedSourceSha256(inputs.platformReadme),
+          }),
+          expectedPeerImplInventory,
+          expectedPeerTraitAliasInventory,
+          invalidateSessionCalls,
+          invalidateActiveSessionCalls,
+          invalidateSessionIdentifierInventory,
+          invalidateActiveSessionIdentifierInventory,
+          externalInvalidateSessionCalls,
+          externalInvalidateActiveSessionCalls,
+        testCount: attributedTests.length,
+        ignoredTests: attributedTests.filter(({ ignored }) => ignored).map(({ name }) => name),
+        missingDocumentationMarkers: Object.freeze({
+          design: keyAgentServicePhaseThreeADesignMarkers.filter(
+            (marker) => !designSection.includes(marker),
+          ),
+          architecture: keyAgentServicePhaseThreeAArchitectureMarkers.filter(
+            (marker) => !architectureRow.includes(marker),
+          ),
+          security: keyAgentServicePhaseThreeASecurityMarkers.filter(
+            (marker) => !securitySection.includes(marker),
+          ),
+          platformReadme: keyAgentServicePhaseThreeAReadmeMarkers.filter(
+            (marker) => !readmeSection.includes(marker),
+          ),
+        }),
+      });
+    }
+    return Object.values(checks).every(Boolean);
+  } catch {
+    return false;
+  }
+};
+const keyAgentServicePhaseThreeAInputs = Object.freeze({
+  expectedPeerSource: keyAgentServiceExpectedPeerSource,
+  rpcRootSource: keyAgentServiceExpectedPeerReexportSource,
+  debugGateSource: keyAgentServiceDebugGateSource,
+  processSource: keyAgentServiceProcessCoordinatorInput,
+  targetProfileSource: keyAgentServiceTargetProfileSource,
+  lifecycleSource: keyAgentServiceLifecycleCore,
+  platformServiceSource: keyAgentServicePlatformSource,
+  platformLibSource: keyAgentServicePlatformLib,
+  wireFiles: keyAgentServiceWireRustFiles,
+  workspaceProductionFiles: workspaceRustProductionFiles,
+  serviceManifest: keyAgentServiceManifest,
+  platformManifest: keyAgentServicePlatformManifest,
+  serviceMain: keyAgentServiceMain,
+  attestationSource: attestation,
+  designDocument: keyAgentServiceDesign,
+  architectureDocument: sepoliaArchitectureDoc,
+  securityDocument: keyAgentServiceSecurityDecisions,
+  platformReadme: keyAgentServicePlatformReadme,
+});
+const keyAgentServicePhaseThreeAReplaceMutation = (
+  name,
+  field,
+  search,
+  replacement,
+) => {
+  const original = keyAgentServicePhaseThreeAInputs[field];
+  const mutated = replaceExactStringOnce(original, search, replacement);
+  return Object.freeze({
+    name,
+    changed: mutated !== original,
+    inputs: Object.freeze({
+      ...keyAgentServicePhaseThreeAInputs,
+      [field]: mutated,
+    }),
+  });
+};
+const keyAgentServicePhaseThreeAUpdateMutation = (name, field, update) => {
+  const original = keyAgentServicePhaseThreeAInputs[field];
+  const mutated = update(original);
+  return Object.freeze({
+    name,
+    changed: JSON.stringify(mutated) !== JSON.stringify(original),
+    inputs: Object.freeze({
+      ...keyAgentServicePhaseThreeAInputs,
+      [field]: mutated,
+    }),
+  });
+};
+const keyAgentServicePhaseThreeAExpectedPeerMutation = (
+  name,
+  search,
+  replacement,
+) =>
+  keyAgentServicePhaseThreeAReplaceMutation(
+    name,
+    "expectedPeerSource",
+    search,
+    replacement,
+  );
+const keyAgentServicePhaseThreeAInsertProduction = (source, insertion) =>
+  insertBeforeBottomTestModule(source, `\n${insertion}\n`);
+const keyAgentServicePhaseThreeAExpectedSemanticMutationCount = 66;
+const keyAgentServicePhaseThreeASemanticMutationProbes = Object.freeze([
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "peer trait loses server session getter",
+    "    fn session_id(&self) -> NonZeroU32;\n",
+    "",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "candidate gains session authority",
+    "pub(crate) trait ExpectedHelperCandidate {\n    fn revalidate(&self) -> Result<(), ExpectedPeerVerificationError>;\n}",
+    "pub(crate) trait ExpectedHelperCandidate {\n    fn revalidate(&self) -> Result<(), ExpectedPeerVerificationError>;\n    fn session_id(&self) -> NonZeroU32;\n}",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "epoch request key gains session authority",
+    "    request_id: ServiceRequestId,\n}",
+    "    request_id: ServiceRequestId,\n    session_id: NonZeroU32,\n}",
+  ),
+  keyAgentServicePhaseThreeAReplaceMutation(
+    "helper getter bypasses retained process proof",
+    "debugGateSource",
+    "        self.process.session_id()",
+    "        NonZeroU32::new(1).expect(\"nonzero\")",
+  ),
+  keyAgentServicePhaseThreeAReplaceMutation(
+    "process getter bypasses retained target proof",
+    "processSource",
+    "        self.expected_target.session_id()",
+    "        NonZeroU32::new(1).expect(\"nonzero\")",
+  ),
+  keyAgentServicePhaseThreeAReplaceMutation(
+    "target getter consults environment authority",
+    "targetProfileSource",
+    "        self.session_id\n    }",
+    "        let _ = std::env::var(\"SESSIONNAME\");\n        self.session_id\n    }",
+  ),
+  keyAgentServicePhaseThreeAUpdateMutation(
+    "generic production peer implementation appears",
+    "debugGateSource",
+    (source) =>
+      keyAgentServicePhaseThreeAInsertProduction(
+        source,
+        "impl<T: Send> ExpectedHelperPeer <ServiceCreatedLpacCandidate> for HiddenPeer<T> { fn key(&self) -> ExpectedPeerKey { unreachable!() } fn session_id(&self) -> NonZeroU32 { unreachable!() } fn role(&self) -> ExpectedHelperRole { unreachable!() } fn revalidate_suspended(&self) -> Result<(), ExpectedPeerVerificationError> { unreachable!() } fn resume_once(&mut self) -> Result<(), ExpectedPeerVerificationError> { unreachable!() } fn exactly_matches(&self, _: &ServiceCreatedLpacCandidate) -> Result<bool, ExpectedPeerVerificationError> { unreachable!() } fn revalidate_running(&self) -> Result<(), ExpectedPeerVerificationError> { unreachable!() } fn cancel(&mut self) -> Result<(), ExpectedPeerVerificationError> { unreachable!() } }",
+      ),
+  ),
+  keyAgentServicePhaseThreeAUpdateMutation(
+    "wire surface gains candidate session authority",
+    "wireFiles",
+    (files) =>
+      files.map((file) =>
+        file.path === "crates/key-agent-service-wire/src/lib.rs"
+          ? {
+              ...file,
+              source: keyAgentServicePhaseThreeAInsertProduction(
+                file.source,
+                "pub struct HiddenWireSessionAuthority { pub session_id: u32 }",
+              ),
+            }
+          : file,
+      ),
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "registry quarantine capacity drifts from 64",
+    "pub(crate) const EXPECTED_HELPER_SESSION_QUARANTINE_CAPACITY: usize = 64;",
+    "pub(crate) const EXPECTED_HELPER_SESSION_QUARANTINE_CAPACITY: usize = 63;",
+  ),
+  keyAgentServicePhaseThreeAReplaceMutation(
+    "lifecycle quarantine capacity drifts from 64",
+    "lifecycleSource",
+    "const MAX_QUARANTINED_SESSIONS: usize = 64;",
+    "const MAX_QUARANTINED_SESSIONS: usize = 63;",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "quarantine becomes dynamically sized",
+    "    quarantined_sessions: [Option<NonZeroU32>; EXPECTED_HELPER_SESSION_QUARANTINE_CAPACITY],",
+    "    quarantined_sessions: Vec<Option<NonZeroU32>> ,",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "registration synthesizes session authority",
+    "        let session_id = peer.session_id();",
+    "        let session_id = NonZeroU32::new(1).expect(\"nonzero\");",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "registration ignores committed quarantine",
+    "        } else if quarantine_contains(&state.quarantined_sessions, session_id)\n            || state.slots.iter().any(|slot| slot_key(slot) == Some(key))",
+    "        } else if false\n            || state.slots.iter().any(|slot| slot_key(slot) == Some(key))",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "registration cleanup runs while mutex remains held",
+    "        if let Some(error) = rejected {\n            drop(state);\n            let cleanup = cleanup_peer(&mut peer);",
+    "        if let Some(error) = rejected {\n            let cleanup = cleanup_peer(&mut peer);",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "live slot loses session binding",
+    "        session_id: NonZeroU32,\n        phase: PeerPhase,\n        peer: P,",
+    "        phase: PeerPhase,\n        peer: P,",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "in flight slot loses session binding",
+    "        session_id: NonZeroU32,\n        phase: PeerPhase,\n        generation: u64,",
+    "        phase: PeerPhase,\n        generation: u64,",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "targeted invalidation skips quarantine commit",
+    "        if !quarantine_insert(&mut state.quarantined_sessions, session_id) {",
+    "        if false && !quarantine_insert(&mut state.quarantined_sessions, session_id) {",
+  ),
+  keyAgentServicePhaseThreeAUpdateMutation(
+    "production peer trait raw import alias implementation appears",
+    "debugGateSource",
+    (source) =>
+      keyAgentServicePhaseThreeAInsertProduction(
+        source,
+        "use crate::key_agent_service_rpc::ExpectedHelperPeer as r#HiddenTrait; impl<T: Send> r#HiddenTrait<ServiceCreatedLpacCandidate> for HiddenAliasPeer<T> { fn key(&self) -> ExpectedPeerKey { unreachable!() } fn session_id(&self) -> NonZeroU32 { unreachable!() } fn role(&self) -> ExpectedHelperRole { unreachable!() } fn revalidate_suspended(&self) -> Result<(), ExpectedPeerVerificationError> { unreachable!() } fn resume_once(&mut self) -> Result<(), ExpectedPeerVerificationError> { unreachable!() } fn exactly_matches(&self, _: &ServiceCreatedLpacCandidate) -> Result<bool, ExpectedPeerVerificationError> { unreachable!() } fn revalidate_running(&self) -> Result<(), ExpectedPeerVerificationError> { unreachable!() } fn cancel(&mut self) -> Result<(), ExpectedPeerVerificationError> { unreachable!() } }",
+      ),
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "targeted invalidation selects unrelated sessions",
+    "        let (cleanup, in_flight) = request_selected_session_cancellation_and_retire_live(\n            &mut state.slots,\n            |candidate| candidate == session_id,\n            false,\n        );",
+    "        let (cleanup, in_flight) = request_selected_session_cancellation_and_retire_live(\n            &mut state.slots,\n            |candidate| candidate != session_id,\n            false,\n        );",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "targeted invalidation cleans before unlocking",
+    "        drop(state);\n        settle_invalidated_owners::<P, C>(cleanup, in_flight)\n    }",
+    "        let settled = settle_invalidated_owners::<P, C>(cleanup, in_flight);\n        drop(state);\n        settled\n    }",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "targeted quarantine overflow does not stop registry",
+    "            state.stopping = true;\n            let (cleanup, in_flight) =",
+    "            let (cleanup, in_flight) =",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "targeted quarantine overflow does not select all owners",
+    "            let (cleanup, in_flight) = request_selected_session_cancellation_and_retire_live(\n                &mut state.slots,\n                |_| true,\n                true,\n            );",
+    "            let (cleanup, in_flight) = request_selected_session_cancellation_and_retire_live(\n                &mut state.slots,\n                |candidate| candidate == session_id,\n                true,\n            );",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "active invalidation omits departing quarantine",
+    "        let mut fits = quarantine_insert(&mut quarantined, departing_session);",
+    "        let mut fits = true;",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "active invalidation omits observed topology quarantine",
+    "            for session_id in state.slots.iter().filter_map(slot_session_id) {",
+    "            for session_id in core::iter::empty() {",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "active invalidation fails to commit fitted quarantine",
+    "            state.quarantined_sessions = quarantined;",
+    "            let _ = quarantined;",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "active invalidation retires only departing session",
+    "        let (cleanup, in_flight) = request_selected_session_cancellation_and_retire_live(\n            &mut state.slots,\n            |_| true,\n            !fits,\n        );",
+    "        let (cleanup, in_flight) = request_selected_session_cancellation_and_retire_live(\n            &mut state.slots,\n            |candidate| candidate == departing_session,\n            !fits,\n        );",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "active quarantine overflow does not stop registry",
+    "        } else {\n            state.stopping = true;\n        }\n\n        let (cleanup, in_flight) =",
+    "        } else {\n            let _ = &state;\n        }\n\n        let (cleanup, in_flight) =",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "invalidation settlement skips live cleanup",
+    "    let cleanup = cleanup_peers::<P, C>(cleanup);",
+    "    let cleanup = Ok(());",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "invalidation settlement skips inflight wait",
+    "    let settled = wait_for_cancellations(in_flight, EXPECTED_HELPER_QUIESCENCE_TIMEOUT);",
+    "    let settled = Ok(());",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "invalidation settlement reverses cleanup precedence",
+    "    cleanup.and(settled)\n}",
+    "    settled.and(cleanup)\n}",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "quiescence bound becomes unbounded zero",
+    "pub(crate) const EXPECTED_HELPER_QUIESCENCE_MILLISECONDS: u64 = 5_000;",
+    "pub(crate) const EXPECTED_HELPER_QUIESCENCE_MILLISECONDS: u64 = 0;",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "selected helper ignores session predicate",
+    "        if !selected_session {\n            continue;\n        }",
+    "        let _ = selected_session;",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "selective invalidation escalates into global cancellation",
+    "                } else {\n                    request_selective_session_cancellation(cancel_requested);\n                }",
+    "                } else {\n                    request_global_cancellation(cancel_requested, global_cancel_requested);\n                }",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "global invalidation loses global cancellation provenance",
+    "                if global {\n                    request_global_cancellation(cancel_requested, global_cancel_requested);",
+    "                if global {\n                    request_selective_session_cancellation(cancel_requested);",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "scan ignores global cancellation provenance",
+    "    let global_cancellation = scan_has_global_cancellation(&state.slots, &peers);",
+    "    let global_cancellation = false;",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "global cancellation is misclassified as selective",
+    "            cancel_requested: true,\n            global_cancel_requested: false,\n            ..\n        }) if *generation == local.generation",
+    "            cancel_requested: true,\n            global_cancel_requested: true,\n            ..\n        }) if *generation == local.generation",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "selective cancellation overwrites an existing scan error",
+    "    if targeted_cancellation && operation.is_ok() {",
+    "    if targeted_cancellation {",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "selective success leaves unrelated admitted transition committed on denial",
+    "            let restored_phase = if targeted_cancellation\n",
+    "            let restored_phase = if false && targeted_cancellation\n",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "manager rejection rolls back terminal cleanup under selective cancellation",
+    "            self.settle_scan(\n                peers,\n                SelectiveCancellationSettlementPolicy::PreservePlannedPhases,\n            ),\n            result,",
+    "            self.settle_scan(\n                peers,\n                SelectiveCancellationSettlementPolicy::RollBackUnaffectedToOriginalPhase,\n            ),\n            result,",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "terminal rejection selective-race evidence disappears",
+    "        assert_selective_invalidation_preserves_terminal_rejection()?;\n",
+    "",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "selectively cancelled peer is restored instead of retired",
+    "            if !cancelled && let Some(phase) = restored_phase {",
+    "            if let Some(phase) = restored_phase {",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "slot session helper ignores inflight owners",
+    "        ExpectedPeerSlot::Live { session_id, .. }\n        | ExpectedPeerSlot::InFlight { session_id, .. } => Some(*session_id),",
+    "        ExpectedPeerSlot::Live { session_id, .. } => Some(*session_id),\n        ExpectedPeerSlot::InFlight { .. } => None,",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "duplicate quarantine entry becomes overflow",
+    "    if quarantine_contains(quarantined, session_id) {\n        return true;\n    }",
+    "    if quarantine_contains(quarantined, session_id) {\n        return false;\n    }",
+  ),
+  keyAgentServicePhaseThreeAExpectedPeerMutation(
+    "registry error retains session data",
+    "    Denied,\n    Full,",
+    "    Denied(NonZeroU32),\n    Full,",
+  ),
+  ...keyAgentServicePhaseThreeANewTestNames.map((name) =>
+    keyAgentServicePhaseThreeAExpectedPeerMutation(
+      `session regression test is ignored: ${name}`,
+      `    #[test]\n    fn ${name}`,
+      `    #[test]\n    #[ignore]\n    fn ${name}`,
+    ),
+  ),
+  keyAgentServicePhaseThreeAUpdateMutation(
+    "production targeted invalidation function-item alias appears",
+    "debugGateSource",
+    (source) =>
+      keyAgentServicePhaseThreeAInsertProduction(
+        source,
+        "fn hidden_phase_three_a_targeted_alias(admission: &ServiceHelperAdmission, session: NonZeroU32) { let invalidate = ExpectedHelperAdmission::invalidate_session; let _ = invalidate(admission, session); }",
+      ),
+  ),
+  keyAgentServicePhaseThreeAUpdateMutation(
+    "production UFCS targeted invalidation caller appears",
+    "debugGateSource",
+    (source) =>
+      keyAgentServicePhaseThreeAInsertProduction(
+        source,
+        "fn hidden_phase_three_a_ufcs_caller(admission: &ServiceHelperAdmission, session: NonZeroU32) { let _ = ExpectedHelperAdmission::invalidate_session(admission, session); }",
+      ),
+  ),
+  keyAgentServicePhaseThreeAUpdateMutation(
+    "production active invalidation function-item alias appears",
+    "debugGateSource",
+    (source) =>
+      keyAgentServicePhaseThreeAInsertProduction(
+        source,
+        "fn hidden_phase_three_a_active_alias(admission: &ServiceHelperAdmission, session: NonZeroU32) { let invalidate = ExpectedHelperAdmission::invalidate_active_sessions; let _ = invalidate(admission, session); }",
+      ),
+  ),
+  keyAgentServicePhaseThreeAReplaceMutation(
+    "session quarantine authority is reexported",
+    "rpcRootSource",
+    "    EXPECTED_HELPER_QUIESCENCE_MILLISECONDS, ExpectedHelperAdmission,",
+    "    EXPECTED_HELPER_QUIESCENCE_MILLISECONDS, EXPECTED_HELPER_SESSION_QUARANTINE_CAPACITY, ExpectedHelperAdmission,",
+  ),
+  keyAgentServicePhaseThreeAReplaceMutation(
+    "SCM accepted controls advertise session change",
+    "platformServiceSource",
+    "            dwControlsAccepted: if state.0 == SERVICE_RUNNING.0 {\n                SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN\n            } else {",
+    "            dwControlsAccepted: if state.0 == SERVICE_RUNNING.0 {\n                SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN | SERVICE_ACCEPT_SESSIONCHANGE\n            } else {",
+  ),
+  keyAgentServicePhaseThreeAUpdateMutation(
+    "SCM session change control branch appears",
+    "platformServiceSource",
+    (source) =>
+      keyAgentServicePhaseThreeAInsertProduction(
+        source,
+        "const SERVICE_CONTROL_SESSIONCHANGE: u32 = 14;",
+      ),
+  ),
+  keyAgentServicePhaseThreeAReplaceMutation(
+    "platform feature inventory widens",
+    "platformManifest",
+    "[features]\ndefault = []",
+    "[features]\ndefault = []\nphase-three-a-session-invalidation = []",
+  ),
+  keyAgentServicePhaseThreeAReplaceMutation(
+    "service default feature activates phase three",
+    "serviceManifest",
+    "default = []",
+    'default = ["lpac-rpc-probe-feasibility-test-hook"]',
+  ),
+  keyAgentServicePhaseThreeAReplaceMutation(
+    "release policy is enabled",
+    "attestationSource",
+    "const COMPILED_RELEASE_POLICY: Option<ReleasePolicy> = None;",
+    "const COMPILED_RELEASE_POLICY: Option<ReleasePolicy> = Some(ReleasePolicy::default());",
+  ),
+  keyAgentServicePhaseThreeAReplaceMutation(
+    "ordinary service fallback exits successfully",
+    "serviceMain",
+    "    std::process::exit(SERVICE_UNAVAILABLE);",
+    "    std::process::exit(0);",
+  ),
+  keyAgentServicePhaseThreeAReplaceMutation(
+    "design Phase 3A status anchor weakens",
+    "designDocument",
+    "**Current Phase 3A status: started, not passed.**",
+    "**Phase 3A work is underway.**",
+  ),
+  keyAgentServicePhaseThreeAReplaceMutation(
+    "architecture Phase 3A status anchor weakens",
+    "architectureDocument",
+    "**Current Phase 3A status: started, not passed.**",
+    "**Phase 3A work is underway.**",
+  ),
+  keyAgentServicePhaseThreeAReplaceMutation(
+    "security Phase 3A status anchor weakens",
+    "securityDocument",
+    "**Current Phase 3A status: started, not passed.**",
+    "**Phase 3A work is underway.**",
+  ),
+  keyAgentServicePhaseThreeAReplaceMutation(
+    "platform README Phase 3A status anchor weakens",
+    "platformReadme",
+    "  **Current Phase 3A status: started, not passed.**",
+    "  **Phase 3A work is underway.**",
+  ),
+]);
+const keyAgentServicePhaseThreeASemanticMutationResults = Object.freeze(
+  keyAgentServicePhaseThreeASemanticMutationProbes.map((probe) =>
+    Object.freeze({
+      name: probe.name,
+      changed: probe.changed,
+      rejected: !keyAgentServicePhaseThreeASemanticContract(
+        probe.inputs,
+        false,
+      ),
+    }),
+  ),
+);
+const keyAgentServicePhaseThreeABottomProjectionControl =
+  keyAgentServicePhaseThreeAUpdateMutation(
+    "bottom test-module helper remains excluded",
+    "expectedPeerSource",
+    (source) => {
+      const closingBrace = source.lastIndexOf("}");
+      return closingBrace === -1
+        ? source
+        : `${source.slice(0, closingBrace)}    fn phase_three_a_bottom_projection_control() {}\n${source.slice(closingBrace)}`;
+    },
+  );
+const keyAgentServicePhaseThreeAInlineProjectionControl =
+  keyAgentServicePhaseThreeAUpdateMutation(
+    "inline cfg(test) item remains excluded",
+    "expectedPeerSource",
+    (source) =>
+      insertBeforeBottomTestModule(
+        source,
+        "\n#[cfg(test)]\nfn phase_three_a_inline_projection_control() {}\n",
+      ),
+  );
+const keyAgentServicePhaseThreeAProjectionControlResults = Object.freeze(
+  [
+    keyAgentServicePhaseThreeABottomProjectionControl,
+    keyAgentServicePhaseThreeAInlineProjectionControl,
+  ].map((probe) =>
+    Object.freeze({
+      name: probe.name,
+      changed: probe.changed,
+      productionUnchanged:
+        compactRust(
+          keyAgentServicePhaseThreeAProductionProjection(
+            probe.inputs.expectedPeerSource,
+          ),
+        ) ===
+        compactRust(
+          keyAgentServicePhaseThreeAProductionProjection(
+            keyAgentServicePhaseThreeAInputs.expectedPeerSource,
+          ),
+        ),
+      accepted: keyAgentServicePhaseThreeASemanticContract(
+        probe.inputs,
+        false,
+      ),
+    }),
+  ),
+);
+const keyAgentServicePhaseThreeAFullPinControl =
+  keyAgentServicePhaseThreeABottomProjectionControl;
+const keyAgentServicePhaseThreeAProductionPinControl =
+  keyAgentServicePhaseThreeAUpdateMutation(
+    "production comment changes production and full pins",
+    "expectedPeerSource",
+    (source) =>
+      insertBeforeBottomTestModule(
+        source,
+        "\n// Phase 3A production pin mutation control.\n",
+      ),
+  );
+const keyAgentServicePhaseThreeADocumentPinControl =
+  keyAgentServicePhaseThreeAUpdateMutation(
+    "documentation whitespace changes its pin only",
+    "designDocument",
+    (source) => `${source}\n`,
+  );
+const keyAgentServicePhaseThreeAPinControlResults = Object.freeze(
+  [
+    keyAgentServicePhaseThreeAFullPinControl,
+    keyAgentServicePhaseThreeAProductionPinControl,
+    keyAgentServicePhaseThreeADocumentPinControl,
+  ].map((probe) =>
+    Object.freeze({
+      name: probe.name,
+      changed: probe.changed,
+      semanticAccepted: keyAgentServicePhaseThreeASemanticContract(
+        probe.inputs,
+        false,
+      ),
+      pinRejected: !keyAgentServicePhaseThreeAPinContract(probe.inputs),
+    }),
+  ),
+);
+const keyAgentServicePhaseThreeAExpectedProjectionControlNames = Object.freeze([
+  "bottom test-module helper remains excluded",
+  "inline cfg(test) item remains excluded",
+]);
+const keyAgentServicePhaseThreeAExpectedPinControlNames = Object.freeze([
+  "bottom test-module helper remains excluded",
+  "production comment changes production and full pins",
+  "documentation whitespace changes its pin only",
+]);
+const keyAgentServicePhaseThreeAMutationInventoryAccepted =
+  keyAgentServicePhaseThreeASemanticMutationProbes.length ===
+  keyAgentServicePhaseThreeAExpectedSemanticMutationCount;
+const keyAgentServicePhaseThreeAControlInventoryAccepted =
+  keyAgentServicePhaseThreeAProjectionControlResults.length === 2 &&
+  keyAgentServicePhaseThreeAPinControlResults.length === 3 &&
+  JSON.stringify(
+    keyAgentServicePhaseThreeAProjectionControlResults.map(({ name }) => name),
+  ) === JSON.stringify(keyAgentServicePhaseThreeAExpectedProjectionControlNames) &&
+  JSON.stringify(
+    keyAgentServicePhaseThreeAPinControlResults.map(({ name }) => name),
+  ) === JSON.stringify(keyAgentServicePhaseThreeAExpectedPinControlNames);
+const keyAgentServicePhaseThreeABaseAccepted =
+  keyAgentServicePhaseThreeAMutationInventoryAccepted &&
+  keyAgentServicePhaseThreeAControlInventoryAccepted &&
+  keyAgentServicePhaseThreeASemanticContract(
+    keyAgentServicePhaseThreeAInputs,
+    false,
+  );
+const keyAgentServicePhaseThreeAPinsAccepted =
+  keyAgentServicePhaseThreeAPinContract(keyAgentServicePhaseThreeAInputs);
+requireInvariant(
+  keyAgentServicePhaseThreeABaseAccepted &&
+    keyAgentServicePhaseThreeAPinsAccepted &&
+    keyAgentServicePhaseThreeASemanticMutationProbes.length ===
+      keyAgentServicePhaseThreeAExpectedSemanticMutationCount &&
+    keyAgentServicePhaseThreeAProjectionControlResults.length === 2 &&
+    keyAgentServicePhaseThreeAPinControlResults.length === 3 &&
+    keyAgentServicePhaseThreeAControlInventoryAccepted &&
+    keyAgentServicePhaseThreeASemanticMutationResults.every(
+      ({ changed, rejected }) => changed && rejected,
+    ) &&
+    keyAgentServicePhaseThreeAProjectionControlResults.every(
+      ({ changed, productionUnchanged, accepted }) =>
+        changed && productionUnchanged && accepted,
+    ) &&
+    keyAgentServicePhaseThreeAPinControlResults.every(
+      ({ changed, semanticAccepted, pinRejected }) =>
+        changed && semanticAccepted && pinRejected,
+    ),
+  `the dormant Phase 3A expected-helper session invalidation slice must retain its sole service-created session getter chain, fixed synchronized quarantine, mutex-free selective and global fail-close settlement with monotonic cancellation provenance, bounded cleanup precedence, exact active test inventory, zero production activation callers, no feature/re-export/default-release widening, and pinned STOP-SHIP documentation; base=${keyAgentServicePhaseThreeABaseAccepted}, pins=${keyAgentServicePhaseThreeAPinsAccepted}, expected negative probes=${keyAgentServicePhaseThreeAExpectedSemanticMutationCount}, actual negative probes=${keyAgentServicePhaseThreeASemanticMutationProbes.length}, projection controls=${keyAgentServicePhaseThreeAProjectionControlResults.length}/2, pin controls=${keyAgentServicePhaseThreeAPinControlResults.length}/3, failed base checks=${JSON.stringify(
+    Object.entries(keyAgentServicePhaseThreeABaseChecks)
+      .filter(([, accepted]) => !accepted)
+      .map(([name]) => name),
+  )}, base metrics=${JSON.stringify(keyAgentServicePhaseThreeABaseMetrics)}, negative probes=${keyAgentServicePhaseThreeASemanticMutationResults.length}, failed negative probe names=${JSON.stringify(
+    keyAgentServicePhaseThreeASemanticMutationResults
+      .filter(({ changed, rejected }) => !changed || !rejected)
+      .map(({ name, changed, rejected }) => ({ name, changed, rejected })),
+  )}, failed projection controls=${JSON.stringify(
+    keyAgentServicePhaseThreeAProjectionControlResults
+      .filter(
+        ({ changed, productionUnchanged, accepted }) =>
+          !changed || !productionUnchanged || !accepted,
+      )
+      .map(({ name, changed, productionUnchanged, accepted }) => ({
+        name,
+        changed,
+        productionUnchanged,
+        accepted,
+      })),
+  )}, failed pin controls=${JSON.stringify(
+    keyAgentServicePhaseThreeAPinControlResults
+      .filter(
+        ({ changed, semanticAccepted, pinRejected }) =>
+          !changed || !semanticAccepted || !pinRejected,
+      )
+      .map(({ name, changed, semanticAccepted, pinRejected }) => ({
+        name,
+        changed,
+        semanticAccepted,
+        pinRejected,
+      })),
+  )}`,
+);
+
 const isWorkspaceBuildOutputPath = (path) =>
   /^(?:crates\/[^/]+|demo\/sepolia-wallet)\/target(?:\/|$)/iu.test(path);
 const workspaceRustCompilationInputs = [
@@ -41419,7 +43101,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "19851117aa53eabc9add416b844d64180437728d3bfbb5b6f71137f8d6fbfdf3";
+  "dc128c60a5f1b765a671a61e8f379cd2afb5e2a3760864064ab04fd3eb5fa5e4";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -62668,7 +64350,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service_launch/debug_gate.rs",
     unsafeCount: 60,
-    sha256: "2e53e9158f8ae114a8d2748b210117b778033700ef235443e3cf34dc5f7fb846",
+    sha256: "c85fec168479f2bbc81be3e0fc5bc3390e3b47000aac571e9a85a1a1a03135d4",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_launch/job.rs",
@@ -62678,7 +64360,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service_launch/process.rs",
     unsafeCount: 8,
-    sha256: "cecbbf1cc2692d69089747de8c2d53f6ad2bb26cc7112d006d0f577d1dad5418",
+    sha256: "83571b276253cb0022e52316a75d2ae1d49ca92a3a49d76646ac008517076e9b",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_launch/startup.rs",
@@ -62688,7 +64370,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service_launch/target_profile.rs",
     unsafeCount: 43,
-    sha256: "fd3172e1342ce7bb47c31f5f31db81a7e26feee6d9591148c9dcd6a17913619b",
+    sha256: "610502bfedee760837e3d1c7a3729067dda450d5bf98061553dddabb499b303c",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/auth.rs",
@@ -63619,6 +65301,7 @@ requireInvariant(
         "#![cfg_attr(not(windows),allow(dead_code))]",
         "#[cfg_attr(not(test),allow(dead_code,reason=))]",
         "#[cfg_attr(not(test),allow(unused_variables))]",
+        "#[cfg_attr(not(test),expect(dead_code,reason=))]",
         "#[cfg_attr(test,allow(dead_code))]",
         "#[cfg_attr(test,allow(unused_imports))]",
         "#[cfg_attr(test,derive(Clone))]",
@@ -63654,7 +65337,15 @@ requireInvariant(
       ]) &&
     JSON.stringify(platformWindowsForbiddenExpansionNamespaces) ===
       JSON.stringify([]),
-  "platform-windows production macro, derive, cfg_attr, import, glob, and namespace expansion providers must remain exact",
+  `platform-windows production macro, derive, cfg_attr, import, glob, and namespace expansion providers must remain exact; cfg_attr=${JSON.stringify(
+    platformWindowsCfgAttrInventory,
+  )}, expansion-sensitive uses=${JSON.stringify(
+    platformWindowsExpansionSensitiveUseInventory,
+  )}, glob uses=${JSON.stringify(
+    platformWindowsGlobUseInventory,
+  )}, forbidden namespaces=${JSON.stringify(
+    platformWindowsForbiddenExpansionNamespaces,
+  )}`,
 );
 requireInvariant(
   platformWindowsManifestSha256 ===
@@ -70915,13 +72606,13 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "README.md":
     "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
   "crates/platform-windows/README.md":
-    "7a785311a344dec132359f39698c0c4d6752fbcd284511ac26f1d805a40251d2",
+    "3a0f25bf97b178be7d9198fb9d6b55c9e6cf2321cd04bee94e99ec451b4624f5",
   "docs/architecture.md":
-    "17a8acd7baeaefc36d84869f0e363c06eb84a19ef688a3d42e2a16ebce683664",
+    "7e45441bff08f8068bc8fce2911eb1786e1cd63c982c895651c797a13396a57f",
   "docs/protocol-contract.md":
     "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "docs/security-decisions.md":
-    "65185ae468f5daf21f164fdf42d7decacadd36ebb2602e942065b73919f05462",
+    "9cc6eb70f2f052c75d339c2e763c2b662e3a6460b9aaa3274bcd1f82981deda5",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -76785,10 +78476,10 @@ const currentDebuggerExitDocumentationContract = (documents) =>
   });
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
-  "7a785311a344dec132359f39698c0c4d6752fbcd284511ac26f1d805a40251d2",
-    "17a8acd7baeaefc36d84869f0e363c06eb84a19ef688a3d42e2a16ebce683664",
+  "3a0f25bf97b178be7d9198fb9d6b55c9e6cf2321cd04bee94e99ec451b4624f5",
+  "7e45441bff08f8068bc8fce2911eb1786e1cd63c982c895651c797a13396a57f",
   "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
-    "65185ae468f5daf21f164fdf42d7decacadd36ebb2602e942065b73919f05462",
+  "9cc6eb70f2f052c75d339c2e763c2b662e3a6460b9aaa3274bcd1f82981deda5",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,
@@ -86655,32 +88346,38 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "crates/platform-windows/README.md",
     source: activationReadme,
     anchor: "A separate dormant solution-mechanics probe",
-    sha256: "7a785311a344dec132359f39698c0c4d6752fbcd284511ac26f1d805a40251d2",
+    endAnchor:
+      "The adoption transition, release-binding, and dormant supervisor binder all",
+    sha256: "3a0f25bf97b178be7d9198fb9d6b55c9e6cf2321cd04bee94e99ec451b4624f5",
   },
   {
     path: "docs/adr/0001-windows-key-agent-service-boundary.md",
     source: keyAgentServiceBoundaryAdr,
     anchor:
       "The dormant feasibility implementation proves only transport and topology",
+    endAnchor: "No Phase 1 fixture or partial integration permits",
     sha256: "11128f9ab0428d8eac54a4342394e06eb19a0ee413047f302cff0c2d38788605",
   },
   {
     path: "docs/architecture.md",
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
-      sha256: "17a8acd7baeaefc36d84869f0e363c06eb84a19ef688a3d42e2a16ebce683664",
+    endAnchor: "For the durable-state rows below",
+    sha256: "7e45441bff08f8068bc8fce2911eb1786e1cd63c982c895651c797a13396a57f",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
-    sha256: "55829cd809a4cf02b1b73e9c8171a3127c34b0d7c4a374494c7406e5b30dca9c",
+    endAnchor: "\n## In scope\n",
+    sha256: "a320dbc5923395ba12fbd42a5929703d8d9652962c7bc0b56a58a3ed76a2cf76",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "The dedicated-process feasibility slice remains narrower",
-      sha256: "65185ae468f5daf21f164fdf42d7decacadd36ebb2602e942065b73919f05462",
+    endAnchor: "The runtime-enabled Secret Input/recovery child instead",
+    sha256: "9cc6eb70f2f052c75d339c2e763c2b662e3a6460b9aaa3274bcd1f82981deda5",
   },
 ];
 const keyAgentDebuggerDocumentationPatterns = [
@@ -86974,13 +88671,23 @@ const keyAgentDebuggerDocumentationForbiddenOverclaims = [
   ...keyAgentDebuggerForbiddenContainmentOverclaims,
   ...keyAgentDebuggerDocumentationForbiddenJobClaims,
 ];
+const keyAgentDebuggerDocumentationMaximumForwardSpan = 25_000;
 const keyAgentDebuggerDocumentationWindow = (spec) => {
   const first = spec.source.indexOf(spec.anchor);
   if (first === -1 || spec.source.indexOf(spec.anchor, first + 1) !== -1) {
     return null;
   }
+  const end = spec.source.indexOf(spec.endAnchor);
+  if (
+    end === -1 ||
+    end <= first + spec.anchor.length ||
+    end - first > keyAgentDebuggerDocumentationMaximumForwardSpan ||
+    spec.source.indexOf(spec.endAnchor, end + spec.endAnchor.length) !== -1
+  ) {
+    return null;
+  }
   const start = Math.max(0, first - 15_000);
-  return spec.source.slice(start, first + 20_000);
+  return spec.source.slice(start, end);
 };
 const keyAgentDebuggerDocumentationWindowStart = (spec) =>
   Math.max(0, spec.source.indexOf(spec.anchor) - 15_000);
@@ -87058,7 +88765,7 @@ const keyAgentDebuggerDocumentationAnalysis = (spec) => {
     byIdentity = new Map();
     keyAgentDebuggerDocumentationAnalysisCache.set(spec.source, byIdentity);
   }
-  const identity = `${spec.path}\0${spec.anchor}`;
+  const identity = `${spec.path}\0${spec.anchor}\0${spec.endAnchor}`;
   const cached = byIdentity.get(identity);
   if (cached !== undefined) return cached;
   const analysis = keyAgentDebuggerDocumentationAnalysisUncached(spec);
@@ -87102,12 +88809,13 @@ requireInvariant(
 );
 const keyAgentDebuggerDocumentationSemanticContract = (specs) => {
   if (
-    JSON.stringify(specs.map(({ path, anchor }) => ({ path, anchor }))) !==
     JSON.stringify(
-      keyAgentDebuggerDocumentationSpecs.map(({ path, anchor }) => ({
-        path,
-        anchor,
-      })),
+      specs.map(({ path, anchor, endAnchor }) => ({ path, anchor, endAnchor })),
+    ) !==
+    JSON.stringify(
+      keyAgentDebuggerDocumentationSpecs.map(
+        ({ path, anchor, endAnchor }) => ({ path, anchor, endAnchor }),
+      ),
     )
   ) {
     return false;
@@ -87135,6 +88843,38 @@ const keyAgentDebuggerDocumentationInventoryMutations = [
   ],
   keyAgentDebuggerDocumentationSpecs.map((spec, index) =>
     index === 4 ? { ...spec, path: "docs/architecture.md" } : spec,
+  ),
+  keyAgentDebuggerDocumentationSpecs.map((spec, index) =>
+    index === 0
+      ? { ...spec, endAnchor: "REMOVED_DEBUGGER_DOCUMENTATION_END_ANCHOR" }
+      : spec,
+  ),
+  keyAgentDebuggerDocumentationSpecs.map((spec, index) => {
+    if (index !== 0) return spec;
+    const insertion = spec.source.indexOf(spec.anchor) + spec.anchor.length;
+    return {
+      ...spec,
+      source: `${spec.source.slice(0, insertion)}\n${spec.endAnchor}\n${spec.source.slice(insertion)}`,
+    };
+  }),
+  keyAgentDebuggerDocumentationSpecs.map((spec, index) => {
+    if (index !== 0) return spec;
+    const insertion = spec.source.indexOf(spec.anchor);
+    return {
+      ...spec,
+      source: `${spec.source.slice(0, insertion)}${spec.endAnchor}\n${spec.source.slice(insertion)}`,
+    };
+  }),
+  keyAgentDebuggerDocumentationSpecs.map((spec, index) =>
+    index === 0
+      ? {
+          ...spec,
+          source: spec.source.replace(
+            spec.endAnchor,
+            `${"x".repeat(keyAgentDebuggerDocumentationMaximumForwardSpan + 1)}${spec.endAnchor}`,
+          ),
+        }
+      : spec,
   ),
 ];
 const keyAgentDebuggerDocumentationMarkerMutations =
@@ -87463,13 +89203,115 @@ const keyAgentDebuggerDocumentationJobContradictionMutations =
         ),
     );
   });
-requireInvariant(
-  keyAgentDebuggerDocumentationPinContract(
+const keyAgentDebuggerDocumentationBasePinAccepted =
+  keyAgentDebuggerDocumentationPinContract(keyAgentDebuggerDocumentationSpecs);
+const keyAgentDebuggerDocumentationBaseSemanticAccepted =
+  keyAgentDebuggerDocumentationSemanticContract(
     keyAgentDebuggerDocumentationSpecs,
-  ) &&
-    keyAgentDebuggerDocumentationSemanticContract(
-      keyAgentDebuggerDocumentationSpecs,
-    ) &&
+  );
+const keyAgentDebuggerDocumentationBaseMetrics =
+  keyAgentDebuggerDocumentationSpecs.map((spec) => {
+    const analysis = keyAgentDebuggerDocumentationAnalysis(spec);
+    return {
+      path: spec.path,
+      perDocument: analysis.perDocument,
+      missingDocumentationPatterns: analysis.documentationPatterns
+        .map((accepted, index) => ({ accepted, index }))
+        .filter(({ accepted }) => !accepted)
+        .map(({ index }) => index),
+      missingJobPatterns: analysis.jobPatterns
+        .map((accepted, index) => ({ accepted, index }))
+        .filter(({ accepted }) => !accepted)
+        .map(({ index }) => index),
+      missingArtifactPatterns: analysis.artifactPatterns
+        .map((accepted, index) => ({ accepted, index }))
+        .filter(({ accepted }) => !accepted)
+        .map(({ index }) => index),
+    };
+  });
+const keyAgentDebuggerDocumentationFailedMutationGroups = [
+  {
+    name: "inventory",
+    failed: keyAgentDebuggerDocumentationInventoryMutations
+      .map((probe, index) => ({
+        index,
+        accepted: keyAgentDebuggerDocumentationSemanticContract(probe),
+      }))
+      .filter(({ accepted }) => accepted),
+  },
+  {
+    name: "marker",
+    failed: keyAgentDebuggerDocumentationMarkerMutations
+      .map((probe, index) => ({
+        index,
+        changed:
+          JSON.stringify(probe) !==
+          JSON.stringify(keyAgentDebuggerDocumentationSpecs),
+        semanticRejected:
+          !keyAgentDebuggerDocumentationSemanticContract(probe),
+        pinRejected: !keyAgentDebuggerDocumentationPinContract(probe),
+      }))
+      .filter(
+        ({ changed, semanticRejected, pinRejected }) =>
+          !changed || !semanticRejected || !pinRejected,
+      ),
+  },
+  {
+    name: "per-document-job",
+    failed: keyAgentDebuggerDocumentationPerDocumentJobMarkerMutations
+      .map((probe, index) => ({
+        index,
+        changed:
+          JSON.stringify(probe) !==
+          JSON.stringify(keyAgentDebuggerDocumentationSpecs),
+        semanticRejected:
+          !keyAgentDebuggerDocumentationSemanticContract(probe),
+        pinRejected: !keyAgentDebuggerDocumentationPinContract(probe),
+      }))
+      .filter(
+        ({ changed, semanticRejected, pinRejected }) =>
+          !changed || !semanticRejected || !pinRejected,
+      ),
+  },
+  {
+    name: "global-job",
+    failed: keyAgentDebuggerDocumentationGlobalJobMarkerMutations
+      .map((probe, index) => ({
+        index,
+        changed:
+          JSON.stringify(probe) !==
+          JSON.stringify(keyAgentDebuggerDocumentationSpecs),
+        semanticRejected:
+          !keyAgentDebuggerDocumentationSemanticContract(probe),
+        pinRejected: !keyAgentDebuggerDocumentationPinContract(probe),
+      }))
+      .filter(
+        ({ changed, semanticRejected, pinRejected }) =>
+          !changed || !semanticRejected || !pinRejected,
+      ),
+  },
+  ...[
+    [
+      "artifact",
+      keyAgentDebuggerArtifactAdmissionDocumentationMutationResults,
+    ],
+    ["alias-stop-ship", keyAgentDebuggerAliasStopShipDocumentationMutationResults],
+    ["raw-slot", keyAgentDebuggerRawSlotDocumentationMutationResults],
+    ["cleanup-delete", keyAgentDebuggerStrictCleanupDeletionMutationResults],
+    ["cleanup-exchange", keyAgentDebuggerStrictCleanupExchangeMutationResults],
+  ].map(([name, results]) => ({
+    name,
+    failed: results
+      .map((result, index) => ({ index, ...result }))
+      .filter(
+        ({ changed, semanticRejected, pinRejected }) =>
+          !changed || !semanticRejected || !pinRejected,
+      ),
+  })),
+];
+requireInvariant(
+  keyAgentDebuggerDocumentationBasePinAccepted &&
+    keyAgentDebuggerDocumentationBaseSemanticAccepted &&
     keyAgentDebuggerDocumentationInventoryMutations.every(
       (probe) => !keyAgentDebuggerDocumentationSemanticContract(probe),
     ) &&
@@ -87528,7 +89370,13 @@ requireInvariant(
         !keyAgentDebuggerDocumentationSemanticContract(probe) &&
         !keyAgentDebuggerDocumentationPinContract(probe),
     ),
-  "the exact five dormant-debugger document windows must retain the dedicated KeyAgentDebugger manifest separation, PreflightDebuggerArtifact and PreparedReleaseDebuggerArtifact, same-held-handle complete FILE_ID_INFO without reopen, independently complete native-return and event-adoption raw-slot sets, redacted non-cloneable zero-resource/no-caller admission under disabled release policy, signed-product/immutable-install/mapped-image/launch-consumption and principal/DACL/target/topology STOP-SHIP limits, the exact corruption-only 80/72/56/96/56/96 big-endian wire, silent exit-78 gated helper, current-host three-handle/sentinel/READY/decision evidence, protocol-not-OS suspension plus the real suspended inert target, current-host-only invalid numeric alias slots without object-destruction or Windows-wide-contract overclaim and direct supported-kernel alias-retirement STOP-SHIP linkage, strict conditional Job/process termination, pending-event release, detach, terminal proof, owner drop, and Job-zero ordering, relational JOB_LIST-to-unnamed/non-inheritable parent-retained Job evidence, exact KILL_ON_JOB_CLOSE plus ActiveProcessLimit two and no-breakaway policy, exact debugger/target membership, rejected third member, and 2-to-1-to-0 topology, exact CancelIoEx-request-only plus fixed five-second non-alertable GetOverlappedResultEx terminal-drain and no-unwind abort semantics, and the explicit system-wide-last-handle, target-image, supported-kernel parent-death, alias-retirement, and cancellation-liveness limits, with broad categorical parent-teardown, cancellation completion/liveness, and named/inheritable/wrong-limit/breakaway overclaims forbidden by effective per-document mutations",
+  `the exact five dormant-debugger document windows must retain the dedicated KeyAgentDebugger manifest separation, PreflightDebuggerArtifact and PreparedReleaseDebuggerArtifact, same-held-handle complete FILE_ID_INFO without reopen, independently complete native-return and event-adoption raw-slot sets, redacted non-cloneable zero-resource/no-caller admission under disabled release policy, signed-product/immutable-install/mapped-image/launch-consumption and principal/DACL/target/topology STOP-SHIP limits, the exact corruption-only 80/72/56/96/56/96 big-endian wire, silent exit-78 gated helper, current-host three-handle/sentinel/READY/decision evidence, protocol-not-OS suspension plus the real suspended inert target, current-host-only invalid numeric alias slots without object-destruction or Windows-wide-contract overclaim and direct supported-kernel alias-retirement STOP-SHIP linkage, strict conditional Job/process termination, pending-event release, detach, terminal proof, owner drop, and Job-zero ordering, relational JOB_LIST-to-unnamed/non-inheritable parent-retained Job evidence, exact KILL_ON_JOB_CLOSE plus ActiveProcessLimit two and no-breakaway policy, exact debugger/target membership, rejected third member, and 2-to-1-to-0 topology, exact CancelIoEx-request-only plus fixed five-second non-alertable GetOverlappedResultEx terminal-drain and no-unwind abort semantics, and the explicit system-wide-last-handle, target-image, supported-kernel parent-death, alias-retirement, and cancellation-liveness limits, with broad categorical parent-teardown, cancellation completion/liveness, and named/inheritable/wrong-limit/breakaway overclaims forbidden by effective per-document mutations; pins=${keyAgentDebuggerDocumentationBasePinAccepted}, semantic=${keyAgentDebuggerDocumentationBaseSemanticAccepted}, base metrics=${JSON.stringify(
+    keyAgentDebuggerDocumentationBaseMetrics,
+  )}, failed mutation groups=${JSON.stringify(
+    keyAgentDebuggerDocumentationFailedMutationGroups.filter(
+      ({ failed }) => failed.length > 0,
+    ),
+  )}`,
 );
 keyAgentDebuggerDocumentationHashCache.clear();
 keyAgentDebuggerDocumentationAnalysisCache.clear();

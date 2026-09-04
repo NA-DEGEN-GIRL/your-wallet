@@ -1628,6 +1628,50 @@ service rundown ordering remain **STOP-SHIP**. Default and release service
 execution remains silent exit 78, both compiled policies remain `None`, and
 Phase 2I does not pass Phase 1, Phase 2, or the release gate.
 
+**Current Phase 3A status: started, not passed.** Expected-helper ownership now
+includes one nonzero Windows session, but that value is accepted only from the
+service-created token/process proof. `ExpectedHelperPeer::session_id` delegates
+through the retained `DetachedSuspendedServiceProbe` to
+`ExpectedServiceCreatedLpac`; `ExpectedPeerKey` remains exactly epoch nonce plus
+request ID. No wire field, candidate observation, caller request, environment
+value, PID, or session-change notification is allowed to supply helper session
+authority.
+
+The registry keeps a fixed 64-entry session quarantine, synchronized by the
+architecture gate with the lifecycle quarantine bound. Under the registry mutex,
+targeted invalidation records the session before extracting matching live owners
+or setting matching in-flight `cancel_requested`. Active-topology invalidation
+first records the departing session and every session represented by live or
+in-flight owners, then selects the entire observed topology. Only after the
+mutex is released may either path call process cancellation/reap or wait for
+in-flight settlement. Therefore registration is ordered on one side of the
+same mutex: it is either observed and selected by invalidation, or sees the
+committed quarantine and is rejected with terminal cleanup outside the lock.
+Targeted invalidation preserves every unrelated live and in-flight owner.
+For an otherwise-successful consume racing that invalidation, preservation
+means restoring the unrelated owner to its original phase before returning
+`Denied`; a successful malformed-candidate rejection keeps its planned terminal
+retirement even when the same race changes the public result to `Denied`.
+Selective cancellation is tracked separately from stronger global cancellation.
+
+The bound is fail-closed. A 65th distinct quarantine request sets `stopping`,
+marks all in-flight owners for cancellation, extracts all live owners, performs
+the same five-second bounded settlement, and only then reports `Stopping`;
+cleanup `Internal` retains precedence. Errors and Debug surfaces remain data-
+free and never retain or print a session identifier. The focused registry suite
+is 37/37, including eight new session-origin, race, selectivity, active-topology,
+exhaustion, and privacy tests.
+
+Both invalidation methods deliberately have zero production callers. Phase 3A
+does not advertise `SERVICE_ACCEPT_SESSIONCHANGE`, consume callback data, add a
+mailbox or lifecycle-to-registry composition, widen the Broker/service wire,
+run Approval or Secret Input transcripts, or enable signing. Native callback
+copying/delivery, bounded mailbox cancellation/concurrency/rundown, installed
+restricted-service and signed-helper E2E, and supported-kernel evidence remain
+**STOP-SHIP**. Default/release execution remains silent exit 78, both compiled
+policies remain `None`, and Phase 3A does not pass Phase 1, Phase 2, Phase 3, or
+the release gate.
+
 All seven Rust-startup supervisor integration positives are explicitly ignored
 **STOP-SHIP**. Their fixture code, when deliberately invoked, has two
 `cfg(test)` accommodations: an exact pinned terse libtest preamble may precede

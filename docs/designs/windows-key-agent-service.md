@@ -2161,6 +2161,47 @@ Approval/Secret Input creation, selected non-inherited bootstrap, full helper
 transcripts, deadlines, cancellation, session invalidation, and cleanup. UI
 decisions terminate in opaque service evidence with no private-key operation.
 
+**Current Phase 3A status: started, not passed.** The production-compiled
+expected-helper registry now binds every suspended registration to one nonzero
+Windows session derived only from the service-created target proof. The getter
+chain is exact: `ExpectedHelperPeer::session_id` delegates through
+`DetachedSuspendedServiceProbe::session_id` to the session retained by
+`ExpectedServiceCreatedLpac`. `ExpectedPeerKey` remains only the epoch nonce and
+request ID; no wire frame, candidate, caller-supplied request, or environment
+value becomes session authority.
+
+`ExpectedHelperAdmission::invalidate_session` first commits one session to a
+fixed 64-entry quarantine while holding the registry mutex, then extracts only
+matching live owners and marks only matching in-flight owners for cancellation.
+`invalidate_active_sessions` atomically quarantines the departing session plus
+every session represented by the current live/in-flight topology before
+retiring that whole topology. Both paths release the mutex before process
+cancel/reap or condition-variable waiting, preserve the existing five-second
+quiescence bound and cleanup-error precedence, and leave unrelated owners
+untouched on targeted invalidation. Registration that loses either side of the
+race observes the quarantine and is terminally cancelled outside the mutex.
+If targeted invalidation overlaps an otherwise-successful consume, the public
+result is `Denied` and each unaffected owner is restored to its original phase;
+an otherwise-successful terminal malformed-candidate rejection instead keeps
+its planned retirement so the rejected peer cannot become retryable. Selective
+and global cancellation provenance remain distinct.
+The quarantine bound is fixed at 64 to match the lifecycle policy; exhaustion
+sets the registry to stopping, requests cancellation of every in-flight owner,
+extracts every live owner, and returns `Stopping` only after bounded settlement,
+unless cleanup first returns `Internal`.
+
+The focused expected-peer inventory is 37/37, including eight new session
+authority, targeted/live/in-flight race, unrelated-owner preservation, active-
+topology, exhaustion, and data-free failure/Debug tests. The two invalidation
+entries intentionally have zero production callers and do not activate
+`SERVICE_ACCEPT_SESSIONCHANGE`, an SCM callback branch, a mailbox, a Broker
+protocol, helper UI transcripts, signing, or release policy. Default/release
+execution remains silent exit 78 and both compiled policies remain `None`.
+Actual native callback copying and delivery, bounded mailbox concurrency and
+rundown, lifecycle-to-registry composition, signed helper E2E, and installed
+restricted-service evidence remain **STOP-SHIP**. Phase 3A does not pass Phase
+1, Phase 2, Phase 3, or the product release gate.
+
 **Exit gate:** real signed helper E2E and attacker matrices prove that only exact
 service-created helpers can return a bound result and Broker owns no helper
 authority.
@@ -2243,6 +2284,12 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-09-05 - Added the dormant Phase 3A session-bound expected-helper
+  invalidation slice: service-proof-only nonzero session ownership, fixed
+  64-entry quarantine-before-cleanup ordering, targeted and active-topology
+  cancellation with mutex-free reap/wait, fail-closed exhaustion, 37/37 focused
+  tests, zero production invalidation callers, and unchanged release-disable
+  boundaries.
 - 2026-09-05 - Added the dormant Phase 2I safe Windows session-change bridge.
   It production-compiles a private closed decoder over an already copied exact-
   size, nonzero-session `WTSSESSION_NOTIFICATION`; maps lock, unlock, and logoff

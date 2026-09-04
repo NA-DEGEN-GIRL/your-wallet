@@ -438,6 +438,30 @@ Implemented:
   supported-kernel and signed-artifact evidence, and release activation remain
   **STOP-SHIP**.
 
+  **Current Phase 3A status: started, not passed.** The production-compiled
+  expected-helper registry now records one nonzero, service-proof-derived
+  session for every suspended helper. The only non-test peer implementation
+  delegates from `ExpectedHelperPeer` through the retained suspended process to
+  `ExpectedServiceCreatedLpac`; the wire and epoch/request key gain no session
+  field or authority. A fixed 64-entry quarantine is checked by registration
+  under the registry mutex. Targeted invalidation quarantines first, then
+  selects only matching live/in-flight owners; active-topology invalidation
+  quarantines the departing plus all observed sessions before selecting every
+  owner. Cancellation, process reap, and the existing five-second in-flight
+  wait happen only after unlocking. Overflow sets stopping and reaps all owners,
+  while cleanup failure keeps precedence and Debug remains data-free.
+  A targeted race rolls back an otherwise-successful consume before returning
+  `Denied`, but never rolls back a planned terminal malformed-peer rejection;
+  selective and global cancellation provenance remain distinct.
+
+  The expected-peer suite is 37/37 with eight new session-specific tests. Both
+  invalidation APIs retain zero production callers, so this slice does not
+  activate SCM session-change delivery, lifecycle composition, Broker wire,
+  helper transcripts, signing, or release execution. Native callback/mailbox/
+  rundown concurrency, installed restricted-service and signed-helper E2E, and
+  supported-kernel evidence remain **STOP-SHIP**; default/release stays at
+  silent exit 78 with both compiled policies `None`.
+
   A deadline that observes pending overlapped pipe I/O now treats `CancelIoEx`
   only as a cancellation request. Async `ReadFile`/`WriteFile` receive no byte-
   count output pointer; one raw `*mut OVERLAPPED` established before initiation

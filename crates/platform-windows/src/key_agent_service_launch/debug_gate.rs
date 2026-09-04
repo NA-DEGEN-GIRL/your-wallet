@@ -415,6 +415,10 @@ impl ExpectedHelperPeer<ServiceCreatedLpacCandidate> for DetachedExpectedService
         self.expected_key
     }
 
+    fn session_id(&self) -> NonZeroU32 {
+        self.process.session_id()
+    }
+
     fn role(&self) -> ExpectedHelperRole {
         self.expected_role
     }
