@@ -1672,6 +1672,55 @@ restricted-service and signed-helper E2E, and supported-kernel evidence remain
 policies remain `None`, and Phase 3A does not pass Phase 1, Phase 2, Phase 3, or
 the release gate.
 
+**Current Phase 3B status: started, not passed.** A private, production-compiled
+pure policy admits only the Approval order
+`Admitted -> UIStarting -> UIAuthenticated -> Approved/Rejected`. The policy's
+`Admitted` is not expected-peer `Admitted`: the latter means the service
+accepted `HelperReady` through manager admission. Secret Input
+`Accepted/Cancelled` remains a distinct future path and cannot be substituted
+for an Approval decision.
+
+The concrete consuming type chain is
+`AdmittedRequestPolicy -> UiStartingRequestPolicy ->
+UiAuthenticatedRequestPolicy -> ApprovedRequestPolicy | RejectedRequestPolicy`,
+through `begin_ui`, `authenticate_ui`, and `decide`. Every non-rejected state
+also has consuming `recheck_liveness`, `cancel`, `invalidate_session`, and
+`invalidate_active_sessions` transitions.
+
+The policy is move-only and binds the server-derived expected-peer key, nonzero
+session, Approval role, and original inclusive monotonic deadline and owns the
+monotonic clock used to enforce it. Each positive transition consumes a fresh
+move-only one-shot observation and requires exact correlation, the Approval
+role, and a fresh check of that policy-owned clock against the unchanged
+deadline. This slice's liveness is limited to that one-shot observation shape
+and policy-local deadline check; the policy neither inspects an OS process nor
+authenticates a helper. A clock failure, an observation at or after the deadline,
+any role/key/session mismatch, or failed observation terminally rejects; no
+caller can repair or retry the same state.
+
+Targeted invalidation rejects only matching-session policy state and preserves
+unrelated state. Active-topology invalidation and cancellation reject every live
+phase, including `Admitted`, `UIStarting`, `UIAuthenticated`, and `Approved`.
+Thus `Approved` is intentionally non-durable and cancellable. It is not signing
+authority and conveys no intent, candidate, cryptographic-key, or private-key-operation
+authority. Seed, observation, and policy-state types are private and move-only,
+`Rejected` is terminal, and failure plus `Debug` surfaces retain no key,
+session, deadline, or other request data.
+
+The focused policy suite is exactly 10/10. The architecture mutation gate pins
+the exact order, server-only binding, positive-edge correlation/liveness,
+inclusive deadline and terminal rejection, targeted isolation, topology-wide
+cancellation, non-authoritative cancellable Approval, privacy/ownership, and
+exact zero production seed, observation mint, or callers. A future compositor
+must mint every observation only after fresh authenticated Approval UI and
+expected-peer liveness proof. This does not implement actual Broker-to-policy
+admission, helper-owner transfer, an Approval transcript, authenticated liveness
+composition, concurrent composition, cleanup/reap, or SCM callback delivery.
+Default/release execution remains silent exit 78 and both compiled policies
+remain `None`; installed restricted-service, signed-helper, supported-kernel,
+and complete runtime/release evidence remain **STOP-SHIP**. Phase 3B does not
+pass Phase 1, Phase 2, Phase 3, or the release gate.
+
 All seven Rust-startup supervisor integration positives are explicitly ignored
 **STOP-SHIP**. Their fixture code, when deliberately invoked, has two
 `cfg(test)` accommodations: an exact pinned terse libtest preamble may precede

@@ -2202,6 +2202,54 @@ rundown, lifecycle-to-registry composition, signed helper E2E, and installed
 restricted-service evidence remain **STOP-SHIP**. Phase 3A does not pass Phase
 1, Phase 2, Phase 3, or the product release gate.
 
+**Current Phase 3B status: started, not passed.** A private, production-compiled
+pure ordering policy models only the Approval decision prefix as
+`Admitted -> UIStarting -> UIAuthenticated -> Approved/Rejected`. Its
+`Admitted` is a policy-local request state and is deliberately separate from
+the expected-peer registry's `Admitted`, which records `HelperReady` manager
+admission. Secret Input `Accepted/Cancelled` remains a separate future path and
+is not representable as an Approval result.
+
+The concrete consuming typestate is
+`AdmittedRequestPolicy -> UiStartingRequestPolicy ->
+UiAuthenticatedRequestPolicy -> ApprovedRequestPolicy | RejectedRequestPolicy`,
+using `begin_ui`, `authenticate_ui`, and `decide`. Every non-rejected state also
+has consuming `recheck_liveness`, `cancel`, `invalidate_session`, and
+`invalidate_active_sessions` transitions.
+
+One move-only policy instance binds the server-derived expected-peer key,
+nonzero Windows session, Approval role, and the request's original inclusive
+monotonic deadline, and owns the monotonic clock used to enforce it. Every
+positive edge requires exact correlation, the Approval role, a fresh move-only
+one-shot observation, and a fresh check of that policy-owned clock against the
+unchanged deadline. In this slice, liveness means only that
+one-shot observation shape plus policy-local deadline revalidation: the policy
+does not inspect an OS process or authenticate a helper. Clock failure, reaching
+or passing the deadline, role/key/session mismatch, or a failed observation is
+a terminal rejection rather than a retryable state.
+
+Targeted session invalidation rejects only a matching policy instance and
+preserves unrelated state. Active-topology invalidation and cancellation reject
+`Admitted`, `UIStarting`, `UIAuthenticated`, and even `Approved`. Approval is
+therefore non-durable and cancellable: it is neither signing authority nor
+intent, candidate, cryptographic-key, or private-key-operation authority. Seed, observation,
+and policy-state types remain private and move-only; `Rejected` is terminal,
+and rejection plus `Debug` surfaces are data-free.
+
+The focused policy inventory is exactly 10/10. Architecture mutations pin the
+closed state order, server-only binding, inclusive deadline and terminal-failure
+rules, selective versus topology-wide invalidation, cancellable Approval,
+privacy/move-only constraints, and exact absence of a production mint or
+caller. This is local policy evidence only. Actual Broker-to-policy admission,
+helper-owner transfer, Approval transcript, concurrent composition,
+cleanup/reap, and SCM callback delivery are not implemented. No production
+observation constructor exists; a future compositor must mint each observation
+only after fresh authenticated Approval UI and expected-peer liveness proof.
+Default and release execution stays at silent exit 78, both compiled policies
+remain `None`, and the whole runtime, signed-helper, installed-service, kernel,
+and release boundary remains **STOP-SHIP**. Phase 3B does not pass Phase 1,
+Phase 2, Phase 3, or the product release gate.
+
 **Exit gate:** real signed helper E2E and attacker matrices prove that only exact
 service-created helpers can return a bound result and Broker owns no helper
 authority.
@@ -2284,6 +2332,17 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-09-05 - Added the started-but-not-passed Phase 3B dormant Approval
+  ordering policy boundary: exact
+  `Admitted -> UIStarting -> UIAuthenticated -> Approved/Rejected` states,
+  service-derived request/session/deadline binding, exact positive-edge
+  correlation and one-shot/deadline liveness checks, terminal
+  failure/invalidation, cancellable
+  non-authoritative Approval, 10/10 focused policy tests, architecture mutation
+  coverage, and zero production seed, observation mint, or callers. Fresh
+  authenticated OS/UI liveness composition, Broker/helper/transcript,
+  concurrency, cleanup/reap, SCM delivery, and release composition remain
+  **STOP-SHIP** with both compiled policies `None`.
 - 2026-09-05 - Added the dormant Phase 3A session-bound expected-helper
   invalidation slice: service-proof-only nonzero session ownership, fixed
   64-entry quarantine-before-cleanup ordering, targeted and active-topology

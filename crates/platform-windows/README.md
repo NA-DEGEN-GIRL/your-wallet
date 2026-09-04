@@ -462,6 +462,45 @@ Implemented:
   supported-kernel evidence remain **STOP-SHIP**; default/release stays at
   silent exit 78 with both compiled policies `None`.
 
+  **Current Phase 3B status: started, not passed.** A private,
+  production-compiled pure Approval policy enforces only
+  `Admitted -> UIStarting -> UIAuthenticated -> Approved/Rejected`. Its
+  `Admitted` is distinct from expected-peer `Admitted` (`HelperReady` manager
+  admission), and Secret Input `Accepted/Cancelled` remains a separate future
+  path. The consuming chain is
+  `AdmittedRequestPolicy -> UiStartingRequestPolicy ->
+  UiAuthenticatedRequestPolicy -> ApprovedRequestPolicy |
+  RejectedRequestPolicy`, through `begin_ui`, `authenticate_ui`, and `decide`.
+  The move-only policy binds the server-derived expected-peer key, nonzero
+  session, Approval role, and original inclusive monotonic deadline and owns
+  the monotonic clock used to enforce it. Every positive edge consumes a fresh
+  move-only one-shot observation and requires exact correlation, Approval role,
+  and a fresh check of that policy-owned clock against the unchanged deadline;
+  clock failure, an at-or-after-deadline observation,
+  mismatch, or failed observation terminally rejects. This is policy-local
+  liveness only; it neither inspects an OS process nor authenticates a helper.
+
+  Targeted invalidation rejects matching-session state only and preserves
+  unrelated state. Active-topology invalidation and cancellation reject
+  `Admitted`, `UIStarting`, `UIAuthenticated`, and `Approved`. The Approved
+  policy state is non-durable and cancellable and supplies no signing, intent,
+  candidate, cryptographic-key, or private-key-operation authority. Seed, observation, and
+  policy-state types are private and move-only, `Rejected` is terminal, and
+  errors plus Debug are data-free.
+
+  The focused policy suite is exactly 10/10. Architecture mutations pin the
+  closed order, server-only binding, correlation/liveness and inclusive-
+  deadline rules, selective versus topology-wide invalidation, cancellable
+  Approval, privacy/ownership, and zero production seed, observation mint, or
+  callers. A future compositor must mint every observation only after fresh
+  authenticated Approval UI and expected-peer liveness proof. Actual
+  Broker-to-policy admission, helper owner transfer, Approval transcript,
+  authenticated liveness composition, concurrent composition, cleanup/reap,
+  and SCM callback delivery remain unimplemented. Default/release stays at
+  silent exit 78, both compiled policies remain `None`, and installed-service,
+  signed-helper, supported-kernel, runtime, and release evidence remain
+  **STOP-SHIP**.
+
   A deadline that observes pending overlapped pipe I/O now treats `CancelIoEx`
   only as a cancellation request. Async `ReadFile`/`WriteFile` receive no byte-
   count output pointer; one raw `*mut OVERLAPPED` established before initiation

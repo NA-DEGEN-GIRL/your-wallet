@@ -21,6 +21,9 @@ mod epoch;
 // Coordinator-only guards remain dormant after the feature-gated router wiring.
 mod expected_peer;
 mod lifecycle;
+#[allow(dead_code)]
+// Approval request ordering remains dormant until a production UI compositor exists.
+mod request_lifecycle;
 #[cfg(all(
     feature = "key-agent-service-lpac-launch-feasibility-test-hook",
     debug_assertions

@@ -23257,6 +23257,8 @@ const keyAgentServiceRpcFixturePaths = Object.freeze({
   expectedPeer:
     "crates/platform-windows/src/key_agent_service_rpc/expected_peer.rs",
   lifecycle: "crates/platform-windows/src/key_agent_service_rpc/lifecycle.rs",
+  requestLifecycle:
+    "crates/platform-windows/src/key_agent_service_rpc/request_lifecycle.rs",
   router: "crates/platform-windows/src/key_agent_service_rpc/router.rs",
 });
 const approvedKeyAgentServiceRpcFixturePaths = [
@@ -23268,6 +23270,7 @@ const approvedKeyAgentServiceRpcFixturePaths = [
   keyAgentServiceRpcFixturePaths.expectedPeer,
   keyAgentServiceRpcFixturePaths.lifecycle,
   keyAgentServiceRpcFixturePaths.root,
+  keyAgentServiceRpcFixturePaths.requestLifecycle,
   keyAgentServiceRpcFixturePaths.router,
 ];
 const approvedKeyAgentServiceRpcFixtureDirectoryInventories = [
@@ -23282,6 +23285,7 @@ const approvedKeyAgentServiceRpcFixtureDirectoryInventories = [
       { name: "expected_peer.rs", kind: "file" },
       { name: "lifecycle.rs", kind: "file" },
       { name: "mod.rs", kind: "file" },
+      { name: "request_lifecycle.rs", kind: "file" },
       { name: "router.rs", kind: "file" },
     ],
   },
@@ -23310,6 +23314,7 @@ const keyAgentServiceRpcFixturePolicyContract = ({
     keyAgentServiceRpcFixturePaths.epoch,
     keyAgentServiceRpcFixturePaths.expectedPeer,
     keyAgentServiceRpcFixturePaths.lifecycle,
+    keyAgentServiceRpcFixturePaths.requestLifecycle,
     keyAgentServiceRpcFixturePaths.router,
   ];
   const nonLaunchCode = [keyAgentServiceRpcFixturePaths.root, ...purePaths]
@@ -23321,7 +23326,7 @@ const keyAgentServiceRpcFixturePolicyContract = ({
     JSON.stringify(directories) ===
       JSON.stringify(approvedKeyAgentServiceRpcFixtureDirectoryInventories) &&
     root.includes("#![allow(unsafe_code)]") &&
-    /modauth;#\[cfg\(all\(feature=,debug_assertions\)\)\]modcoordinator;moddispatch;modepoch;(?:#\[allow\(dead_code\)\])?modexpected_peer;modlifecycle;#\[cfg\(all\(feature=,debug_assertions\)\)\]modrouter;/u.test(
+    /modauth;#\[cfg\(all\(feature=,debug_assertions\)\)\]modcoordinator;moddispatch;modepoch;(?:#\[allow\(dead_code\)\])?modexpected_peer;modlifecycle;#\[allow\(dead_code\)\]modrequest_lifecycle;#\[cfg\(all\(feature=,debug_assertions\)\)\]modrouter;/u.test(
       compactRust(root),
     ) &&
     purePaths.every(
@@ -23420,13 +23425,13 @@ requireInvariant(
             keyAgentServiceRpcFixturePolicyInputs.directories) &&
         !keyAgentServiceRpcFixturePolicyContract(probe),
     ),
-  "the debug status-RPC fixture must retain its exact two-directory/nine-file inventory, deny or forbid unsafe code in all pure modules, remain crate-private and silent, and contain no network, direct process-launch, file/environment, secret, signing, wallet, transaction, or approval authority with effective mutation probes",
+  "the debug status-RPC fixture must retain its exact two-directory/ten-file inventory, deny or forbid unsafe code in all pure modules, remain crate-private and silent, and contain no network, direct process-launch, file/environment, secret, signing, wallet, transaction, or approval authority with effective mutation probes",
 );
 
 const keyAgentServiceExpectedPeerReexportSource =
   keyAgentServiceRpcFixtureSources[keyAgentServiceRpcFixturePaths.root];
 const keyAgentServiceExpectedPeerReexportSha256 =
-  "51054517242def1bc58d8d2342912ffd2ed94d530c0c0474b8726ed0fa48d3fe";
+  "27687053d2be57e7985e9c85c03ea9cd0e7a165503229bf16aa89f6f0ea857bf";
 const keyAgentServiceExpectedPeerReexportCfg =
   "#[cfg(all(feature=,debug_assertions))]";
 const keyAgentServiceExpectedPeerReexportItem = `${keyAgentServiceExpectedPeerReexportCfg}pub(crate)useself::expected_peer::{EXPECTED_HELPER_QUIESCENCE_MILLISECONDS,ExpectedHelperAdmission,ExpectedHelperLease,ExpectedHelperPeer,ExpectedHelperRole,ExpectedPeerKey,ExpectedPeerRegistryError,ExpectedPeerVerificationError,};`;
@@ -29386,20 +29391,20 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate has two deliberately different surfaces.",
-    sha256: "7e45441bff08f8068bc8fce2911eb1786e1cd63c982c895651c797a13396a57f",
+    sha256: "6a82aabd410aafb96ea402cc8fcbdc07f410b9932d001ce3fb63b1b4d58247cf",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes a safe platform-neutral gate-byte",
-    sha256: "a320dbc5923395ba12fbd42a5929703d8d9652962c7bc0b56a58a3ed76a2cf76",
+    sha256: "ba48c264cd40cd320bf2aefd55412f92a0f0694d48dc12a59ee8d81d9785107e",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "A separate helper-bootstrap crate exposes",
-    sha256: "9cc6eb70f2f052c75d339c2e763c2b662e3a6460b9aaa3274bcd1f82981deda5",
+    sha256: "a71d48d741b1f707b3e76cc7cc1c15715782255b123902dcfa7a22ed8ff60065",
   },
 ];
 const keyAgentServiceHelperBootstrapDocumentationPatterns = [
@@ -36729,9 +36734,9 @@ for (const capability of [
 // the headless smoke backend remain separate non-generation partitions.
 const walletSecretOriginExpectedDocumentationSha256 = Object.freeze({
   architecture:
-    "7e45441bff08f8068bc8fce2911eb1786e1cd63c982c895651c797a13396a57f",
+    "6a82aabd410aafb96ea402cc8fcbdc07f410b9932d001ce3fb63b1b4d58247cf",
   securityDecisions:
-    "9cc6eb70f2f052c75d339c2e763c2b662e3a6460b9aaa3274bcd1f82981deda5",
+    "a71d48d741b1f707b3e76cc7cc1c15715782255b123902dcfa7a22ed8ff60065",
 });
 const walletSecretOriginProductionProjection = (source) =>
   withoutCfgTestItems(withoutBottomTestModule(source));
@@ -40127,11 +40132,11 @@ const keyAgentServicePhaseTwoIExpectedPins = Object.freeze({
   sourceProduction:
     "2d4da94c36055c61f5fdedabb8752709bf32750a28381e67c50b6e21c0866b4e",
   design:
-    "a320dbc5923395ba12fbd42a5929703d8d9652962c7bc0b56a58a3ed76a2cf76",
+    "ba48c264cd40cd320bf2aefd55412f92a0f0694d48dc12a59ee8d81d9785107e",
   architecture:
-    "7e45441bff08f8068bc8fce2911eb1786e1cd63c982c895651c797a13396a57f",
+    "6a82aabd410aafb96ea402cc8fcbdc07f410b9932d001ce3fb63b1b4d58247cf",
   security:
-    "9cc6eb70f2f052c75d339c2e763c2b662e3a6460b9aaa3274bcd1f82981deda5",
+    "a71d48d741b1f707b3e76cc7cc1c15715782255b123902dcfa7a22ed8ff60065",
 });
 const keyAgentServicePhaseTwoIExpectedInboundEdge = Object.freeze({
   declaringFile: keyAgentServicePhaseTwoIParentPath,
@@ -41564,13 +41569,13 @@ const keyAgentServicePhaseThreeAExpectedPins = Object.freeze({
   targetProfileProduction:
     "610502bfedee760837e3d1c7a3729067dda450d5bf98061553dddabb499b303c",
   design:
-    "a320dbc5923395ba12fbd42a5929703d8d9652962c7bc0b56a58a3ed76a2cf76",
+    "ba48c264cd40cd320bf2aefd55412f92a0f0694d48dc12a59ee8d81d9785107e",
   architecture:
-    "7e45441bff08f8068bc8fce2911eb1786e1cd63c982c895651c797a13396a57f",
+    "6a82aabd410aafb96ea402cc8fcbdc07f410b9932d001ce3fb63b1b4d58247cf",
   security:
-    "9cc6eb70f2f052c75d339c2e763c2b662e3a6460b9aaa3274bcd1f82981deda5",
+    "a71d48d741b1f707b3e76cc7cc1c15715782255b123902dcfa7a22ed8ff60065",
   platformReadme:
-    "3a0f25bf97b178be7d9198fb9d6b55c9e6cf2321cd04bee94e99ec451b4624f5",
+    "8d307a3d1379f13c3be35a807522c34bc1a6300b386af45dd42ae3ccdb3716d1",
 });
 const keyAgentServicePhaseThreeAProductionProjection = (source) =>
   withoutCfgTestItems(withoutBottomTestModule(source));
@@ -41715,6 +41720,12 @@ const keyAgentServicePhaseThreeAReadmeMarkers = Object.freeze([
   "silent exit 78",
   "`None`",
   "**STOP-SHIP**",
+]);
+const keyAgentServicePhaseThreeAExpectedDocumentSemanticHashes = Object.freeze([
+  "ef6227c2f549c27a23ef2813191eb9039c55ece66b06a74d6e21d77de2045beb",
+  "8362f8c6f78d31d6dc1aa03fc38c6a50c322793fa3bb4f8d51f7f509817a3629",
+  "da6a6c718edf43e31f2d5a3c1c653e843c0219049aa48d761858d42493dfddc9",
+  "de47d2f1fa19906b8b10c828f293a3843a27b45b1f9e927c4d6e170862dba9ad",
 ]);
 const keyAgentServicePhaseThreeAPinContract = (inputs) => {
   const expectedPeerProduction =
@@ -41947,6 +41958,8 @@ const keyAgentServicePhaseThreeASemanticContract = (inputs, requirePins = true) 
         workspaceFiles,
         "ExpectedHelperPeer",
       );
+    const phaseThreeBRequestLifecyclePath =
+      "crates/platform-windows/src/key_agent_service_rpc/request_lifecycle.rs";
     const invalidateSessionCalls = keyAgentServicePhaseThreeACallInventory(
       workspaceFiles,
       "invalidate_session",
@@ -41971,6 +41984,9 @@ const keyAgentServicePhaseThreeASemanticContract = (inputs, requirePins = true) 
           (path === keyAgentServicePhaseThreeAExpectedPeerPath &&
             JSON.stringify(callArguments) ===
               JSON.stringify(["&self", "session_id:NonZeroU32"])) ||
+          (path === phaseThreeBRequestLifecyclePath &&
+            JSON.stringify(callArguments) ===
+              JSON.stringify(["self", "session_id:NonZeroU32"])) ||
           (path === keyAgentServiceLifecycleCorePath &&
             JSON.stringify(callArguments) ===
               JSON.stringify([
@@ -41983,15 +41999,19 @@ const keyAgentServicePhaseThreeASemanticContract = (inputs, requirePins = true) 
     const externalInvalidateActiveSessionCalls =
       invalidateActiveSessionCalls.filter(
         ({ path, arguments: callArguments }) =>
-          path !== keyAgentServicePhaseThreeAExpectedPeerPath ||
-          JSON.stringify(callArguments) !==
-            JSON.stringify(["&self", "departing_session:NonZeroU32"]),
+          !(
+            (path === keyAgentServicePhaseThreeAExpectedPeerPath &&
+              JSON.stringify(callArguments) ===
+                JSON.stringify(["&self", "departing_session:NonZeroU32"])) ||
+            (path === phaseThreeBRequestLifecyclePath &&
+              JSON.stringify(callArguments) === JSON.stringify(["self"]))
+          ),
       );
     const designSection = keyAgentServicePhaseTwoINormalizedDocument(
       keyAgentServicePhaseTwoIDocumentSection(
         inputs.designDocument,
         "**Current Phase 3A status: started, not passed.**",
-        "\n**Exit gate:**",
+        "\n**Current Phase 3B status: started, not passed.**",
       ),
     );
     const architectureRows = inputs.architectureDocument
@@ -42006,16 +42026,22 @@ const keyAgentServicePhaseThreeASemanticContract = (inputs, requirePins = true) 
       keyAgentServicePhaseTwoIDocumentSection(
         inputs.securityDocument,
         "**Current Phase 3A status: started, not passed.**",
-        "\nAll seven Rust-startup supervisor integration positives",
+        "\n**Current Phase 3B status: started, not passed.**",
       ),
     );
     const readmeSection = keyAgentServicePhaseTwoINormalizedDocument(
       keyAgentServicePhaseTwoIDocumentSection(
         inputs.platformReadme,
         "  **Current Phase 3A status: started, not passed.**",
-        "\n  A deadline that observes pending overlapped pipe I/O",
+        "\n  **Current Phase 3B status: started, not passed.**",
       ),
     );
+    const documentSemanticHashes = [
+      designSection,
+      securitySection,
+      readmeSection,
+      architectureRow,
+    ].map((section) => normalizedSourceSha256(section));
 
     const exactSessionOriginCheck =
       compactRust(peerTrait) ===
@@ -42332,7 +42358,7 @@ const keyAgentServicePhaseThreeASemanticContract = (inputs, requirePins = true) 
       JSON.stringify(externalInvalidateSessionCalls) ===
         JSON.stringify(keyAgentServicePhaseThreeAExpectedInvalidateSessionCalls) &&
       externalInvalidateActiveSessionCalls.length === 0 &&
-      invalidateSessionIdentifierInventory.length === 2 &&
+      invalidateSessionIdentifierInventory.length === 3 &&
       invalidateSessionIdentifierInventory.some(
         ({ path, count }) =>
           path === keyAgentServicePhaseThreeAExpectedPeerPath && count === 1,
@@ -42341,10 +42367,19 @@ const keyAgentServicePhaseThreeASemanticContract = (inputs, requirePins = true) 
         ({ path, count }) =>
           path === keyAgentServiceLifecycleCorePath && count === 3,
       ) &&
-      invalidateActiveSessionIdentifierInventory.length === 1 &&
-      invalidateActiveSessionIdentifierInventory[0].path ===
-        keyAgentServicePhaseThreeAExpectedPeerPath &&
-      invalidateActiveSessionIdentifierInventory[0].count === 1 &&
+      invalidateSessionIdentifierInventory.some(
+        ({ path, count }) =>
+          path === phaseThreeBRequestLifecyclePath && count === 4,
+      ) &&
+      invalidateActiveSessionIdentifierInventory.length === 2 &&
+      invalidateActiveSessionIdentifierInventory.some(
+        ({ path, count }) =>
+          path === keyAgentServicePhaseThreeAExpectedPeerPath && count === 1,
+      ) &&
+      invalidateActiveSessionIdentifierInventory.some(
+        ({ path, count }) =>
+          path === phaseThreeBRequestLifecyclePath && count === 4,
+      ) &&
       identifierOccurrenceCount(expectedCode, "invalidate_session") === 1 &&
       identifierOccurrenceCount(expectedCode, "invalidate_active_sessions") === 1 &&
       !/\b(?:SERVICE_ACCEPT_SESSIONCHANGE|SERVICE_CONTROL_SESSIONCHANGE)\b/u.test(
@@ -42365,8 +42400,12 @@ const keyAgentServicePhaseThreeASemanticContract = (inputs, requirePins = true) 
       !/\b(?:ExpectedHelperPeer|ExpectedHelperAdmission|invalidate_session|invalidate_active_sessions)\b/u.test(
         rustLexicalCode(inputs.platformLibSource),
       ) &&
-      /^default\s*=\s*\[\]$/mu.test(inputs.serviceManifest) &&
-      /^default\s*=\s*\[\]$/mu.test(inputs.platformManifest) &&
+      /^default\s*=\s*\[\]\s*$/mu.test(
+        tomlTableBody(inputs.serviceManifest, "features"),
+      ) &&
+      /^default\s*=\s*\[\]\s*$/mu.test(
+        tomlTableBody(inputs.platformManifest, "features"),
+      ) &&
       JSON.stringify(tomlTableKeyInventory(inputs.serviceManifest, "features")) ===
         JSON.stringify(keyAgentServicePhaseThreeAExpectedServiceFeatures) &&
       JSON.stringify(tomlTableKeyInventory(inputs.platformManifest, "features")) ===
@@ -42381,6 +42420,34 @@ const keyAgentServicePhaseThreeASemanticContract = (inputs, requirePins = true) 
       architectureRows.length === 1 &&
       securitySection.length > 0 &&
       readmeSection.length > 0 &&
+      keyAgentServiceLiteralCount(
+        inputs.designDocument,
+        "\n\n**Current Phase 3A status: started, not passed.**",
+      ) === 1 &&
+      keyAgentServiceLiteralCount(
+        inputs.securityDocument,
+        "\n\n**Current Phase 3A status: started, not passed.**",
+      ) === 1 &&
+      keyAgentServiceLiteralCount(
+        inputs.platformReadme,
+        "\n\n  **Current Phase 3A status: started, not passed.**",
+      ) === 1 &&
+      keyAgentServiceLiteralCount(
+        inputs.designDocument,
+        "\n**Current Phase 3B status: started, not passed.**",
+      ) === 1 &&
+      keyAgentServiceLiteralCount(
+        inputs.securityDocument,
+        "\n**Current Phase 3B status: started, not passed.**",
+      ) === 1 &&
+      keyAgentServiceLiteralCount(
+        inputs.platformReadme,
+        "\n  **Current Phase 3B status: started, not passed.**",
+      ) === 1 &&
+      JSON.stringify(documentSemanticHashes) ===
+        JSON.stringify(
+          keyAgentServicePhaseThreeAExpectedDocumentSemanticHashes,
+        ) &&
       keyAgentServicePhaseThreeADesignMarkers.every((marker) =>
         designSection.includes(marker),
       ) &&
@@ -42437,6 +42504,7 @@ const keyAgentServicePhaseThreeASemanticContract = (inputs, requirePins = true) 
           invalidateActiveSessionIdentifierInventory,
           externalInvalidateSessionCalls,
           externalInvalidateActiveSessionCalls,
+          documentSemanticHashes,
         testCount: attributedTests.length,
         ignoredTests: attributedTests.filter(({ ignored }) => ignored).map(({ name }) => name),
         missingDocumentationMarkers: Object.freeze({
@@ -42509,6 +42577,26 @@ const keyAgentServicePhaseThreeAUpdateMutation = (name, field, update) => {
     }),
   });
 };
+const keyAgentServicePhaseThreeADocumentSectionMutation = (
+  name,
+  field,
+  startMarker,
+  endMarker,
+  search,
+  replacement,
+) =>
+  keyAgentServicePhaseThreeAUpdateMutation(name, field, (document) => {
+    const section = keyAgentServicePhaseTwoIDocumentSection(
+      document,
+      startMarker,
+      endMarker,
+    );
+    if (section.length === 0) {
+      return document;
+    }
+    const mutatedSection = replaceExactStringOnce(section, search, replacement);
+    return replaceExactStringOnce(document, section, mutatedSection);
+  });
 const keyAgentServicePhaseThreeAExpectedPeerMutation = (
   name,
   search,
@@ -42522,7 +42610,7 @@ const keyAgentServicePhaseThreeAExpectedPeerMutation = (
   );
 const keyAgentServicePhaseThreeAInsertProduction = (source, insertion) =>
   insertBeforeBottomTestModule(source, `\n${insertion}\n`);
-const keyAgentServicePhaseThreeAExpectedSemanticMutationCount = 66;
+const keyAgentServicePhaseThreeAExpectedSemanticMutationCount = 70;
 const keyAgentServicePhaseThreeASemanticMutationProbes = Object.freeze([
   keyAgentServicePhaseThreeAExpectedPeerMutation(
     "peer trait loses server session getter",
@@ -42870,6 +42958,38 @@ const keyAgentServicePhaseThreeASemanticMutationProbes = Object.freeze([
     "  **Current Phase 3A status: started, not passed.**",
     "  **Phase 3A work is underway.**",
   ),
+  keyAgentServicePhaseThreeADocumentSectionMutation(
+    "design Phase 3A loses active invalidation API",
+    "designDocument",
+    "**Current Phase 3A status: started, not passed.**",
+    "\n**Current Phase 3B status: started, not passed.**",
+    "`invalidate_active_sessions`",
+    "active invalidation",
+  ),
+  keyAgentServicePhaseThreeADocumentSectionMutation(
+    "design Phase 3A loses silent exit 78",
+    "designDocument",
+    "**Current Phase 3A status: started, not passed.**",
+    "\n**Current Phase 3B status: started, not passed.**",
+    "silent exit 78",
+    "ordinary exit 78",
+  ),
+  keyAgentServicePhaseThreeADocumentSectionMutation(
+    "security Phase 3A loses silent exit 78",
+    "securityDocument",
+    "**Current Phase 3A status: started, not passed.**",
+    "\n**Current Phase 3B status: started, not passed.**",
+    "silent exit 78",
+    "ordinary exit 78",
+  ),
+  keyAgentServicePhaseThreeADocumentSectionMutation(
+    "platform README Phase 3A loses silent exit 78",
+    "platformReadme",
+    "  **Current Phase 3A status: started, not passed.**",
+    "\n  **Current Phase 3B status: started, not passed.**",
+    "silent exit 78",
+    "ordinary exit 78",
+  ),
 ]);
 const keyAgentServicePhaseThreeASemanticMutationResults = Object.freeze(
   keyAgentServicePhaseThreeASemanticMutationProbes.map((probe) =>
@@ -43049,6 +43169,2594 @@ requireInvariant(
   )}`,
 );
 
+const keyAgentServicePhaseThreeBPath =
+  "crates/platform-windows/src/key_agent_service_rpc/request_lifecycle.rs";
+const keyAgentServicePhaseThreeBSource = await text(
+  keyAgentServicePhaseThreeBPath,
+);
+const keyAgentServicePhaseThreeBTestNames = Object.freeze([
+  "request_policy_types_are_move_only_and_transition_methods_consume_self",
+  "admission_requires_a_strict_future_deadline",
+  "ui_start_requires_exact_key_session_and_approval_role",
+  "ui_authentication_rechecks_exact_key_session_and_approval_role",
+  "ui_decision_rechecks_binding_and_branches_exactly_once",
+  "every_positive_edge_uses_the_original_inclusive_deadline",
+  "cancellation_rejects_every_non_durable_stage_including_approved",
+  "targeted_invalidation_rejects_only_the_matching_session_at_every_stage",
+  "active_session_invalidation_rejects_every_non_durable_stage",
+  "terminal_causes_and_all_debug_surfaces_are_data_free",
+]);
+const keyAgentServicePhaseThreeBPolicyTypeNames = Object.freeze([
+  "AdmittedRequestPolicy",
+  "UiStartingRequestPolicy",
+  "UiAuthenticatedRequestPolicy",
+  "ApprovedRequestPolicy",
+  "RejectedRequestPolicy",
+]);
+const keyAgentServicePhaseThreeBMoveOnlyTypeNames = Object.freeze([
+  "RequestPolicySeed",
+  "RequestPolicyObservation",
+  "UiDecisionObservation",
+  "RequestBinding",
+  ...keyAgentServicePhaseThreeBPolicyTypeNames,
+]);
+const keyAgentServicePhaseThreeBExpectedPins = Object.freeze({
+  sourceFull: "5f8dd571c685ad817b272c91794eeddbd8c4210986ae3c931525325ff4131125",
+  sourceProduction:
+    "3a9de991a09ab223a55972b7985fa66e250cc85ba9c75ffcf09f0bb2764f569e",
+  moduleFull: "27687053d2be57e7985e9c85c03ea9cd0e7a165503229bf16aa89f6f0ea857bf",
+  moduleProduction:
+    "bee568e4962241ec0e69e2c4e698152d5efb80b54279350cb8b11b51008c57a7",
+  design: "ba48c264cd40cd320bf2aefd55412f92a0f0694d48dc12a59ee8d81d9785107e",
+  architecture:
+    "6a82aabd410aafb96ea402cc8fcbdc07f410b9932d001ce3fb63b1b4d58247cf",
+  security:
+    "a71d48d741b1f707b3e76cc7cc1c15715782255b123902dcfa7a22ed8ff60065",
+  platformReadme:
+    "8d307a3d1379f13c3be35a807522c34bc1a6300b386af45dd42ae3ccdb3716d1",
+});
+const keyAgentServicePhaseThreeBExpectedParentMacroInvocationSha256 =
+  "985d21d2b833a6aca129d9c63995b4b65269bac69815a4ba4d3c565d2dad6870";
+const keyAgentServicePhaseThreeBProductionProjection = (source) =>
+  withoutCfgTestItems(withoutBottomTestModule(source));
+const keyAgentServicePhaseThreeBOverlayProductionFiles = (inputs) => {
+  const replacements = new Map([
+    [keyAgentServicePhaseThreeBPath, inputs.source],
+    [keyAgentServiceRpcFixturePaths.root, inputs.moduleSource],
+  ]);
+  return inputs.workspaceProductionFiles.map((file) => ({
+    path: file.path,
+    source: replacements.has(file.path)
+      ? keyAgentServicePhaseThreeBProductionProjection(
+          replacements.get(file.path),
+        )
+      : file.source,
+  }));
+};
+const keyAgentServicePhaseThreeBFunctionNamesAtDepth = (owner, depth) => {
+  const ownerCode = rustLexicalCode(owner);
+  return rustFunctionSignatures(owner)
+    .filter((item) => rustBraceDepthBefore(ownerCode, item.index) === depth)
+    .map(
+      (item) =>
+        /\bfn\s+(?:r#)?(?<name>[\p{XID_Start}_][\p{XID_Continue}_]*)/u.exec(
+          rustLexicalCode(item.source),
+        ).groups.name,
+    );
+};
+const keyAgentServicePhaseThreeBTopLevelFunctionItems = (source, name) => {
+  const sourceCode = rustLexicalCode(source);
+  return rustFunctionSignatures(source)
+    .filter((signature) => {
+      if (rustBraceDepthBefore(sourceCode, signature.index) !== 0) return false;
+      const match =
+        /\bfn\s+(?:r#)?(?<name>[\p{XID_Start}_][\p{XID_Continue}_]*)/u.exec(
+          rustLexicalCode(signature.source),
+        );
+      return match?.groups.name === name;
+    })
+    .map((signature) => {
+      const openingBrace = signature.index + signature.source.length;
+      if (sourceCode[openingBrace] !== "{") {
+        throw new Error("Phase 3B expected a function body");
+      }
+      const closingBrace = matchingRustDelimiter(
+        sourceCode,
+        openingBrace,
+        "{",
+        "}",
+      );
+      if (closingBrace === -1) {
+        throw new Error("Phase 3B could not close a function body");
+      }
+      return Object.freeze({
+        source: source.slice(signature.index, closingBrace + 1),
+        attributes: rustAttachedOuterAttributes(source, signature.index).map(
+          (attribute) => normalizeRustFragment(attribute.source),
+        ),
+      });
+    });
+};
+const keyAgentServicePhaseThreeBServiceFallbackAttribute =
+  normalizeRustFragment(`#[cfg(not(any(
+    all(
+        windows,
+        feature = "lpac-rpc-probe-feasibility-test-hook",
+        debug_assertions
+    ),
+    all(
+        windows,
+        not(feature = "lpac-rpc-probe-feasibility-test-hook"),
+        feature = "rpc-status-feasibility-test-hook",
+        debug_assertions
+    ),
+    all(
+        windows,
+        not(feature = "lpac-rpc-probe-feasibility-test-hook"),
+        not(feature = "rpc-status-feasibility-test-hook"),
+        feature = "service-token-feasibility-test-hook",
+        debug_assertions
+    ),
+    all(
+        windows,
+        not(feature = "lpac-rpc-probe-feasibility-test-hook"),
+        not(feature = "rpc-status-feasibility-test-hook"),
+        not(feature = "service-token-feasibility-test-hook"),
+        feature = "scm-feasibility-test-hook",
+        debug_assertions
+    )
+)))]`);
+const keyAgentServicePhaseThreeBApprovalFallbackAttribute =
+  normalizeRustFragment(`#[cfg(any(
+    all(
+        not(feature = "service-helper-rpc-probe-feasibility-test-hook"),
+        not(feature = "runtime-entrypoint")
+    ),
+    all(
+        feature = "service-helper-rpc-probe-feasibility-test-hook",
+        not(all(windows, target_arch = "x86_64", target_env = "msvc", debug_assertions))
+    )
+))]`);
+const keyAgentServicePhaseThreeBFallbackMainContract = (
+  source,
+  expectedMainCount,
+  expectedAttribute,
+  unavailableConstant,
+) => {
+  const mains = keyAgentServicePhaseThreeBTopLevelFunctionItems(source, "main");
+  return (
+    mains.length === expectedMainCount &&
+    mains.filter(
+      (main) =>
+        JSON.stringify(main.attributes) ===
+          JSON.stringify([expectedAttribute]) &&
+        normalizeRustFragment(main.source) ===
+          normalizeRustFragment(
+            `fn main() { std::process::exit(${unavailableConstant}); }`,
+          ),
+    ).length === 1
+  );
+};
+const keyAgentServicePhaseThreeBExactDocumentSection = (
+  document,
+  startMarker,
+  endMarker,
+  maximumSpan = 8_000,
+) => {
+  const start = document.indexOf(startMarker);
+  const end = document.indexOf(endMarker);
+  if (
+    start === -1 ||
+    end === -1 ||
+    end <= start + startMarker.length ||
+    end - start > maximumSpan ||
+    document.indexOf(startMarker, start + startMarker.length) !== -1 ||
+    document.indexOf(endMarker, end + endMarker.length) !== -1
+  ) {
+    return "";
+  }
+  return document.slice(start, end);
+};
+const keyAgentServicePhaseThreeBDocumentPatterns = Object.freeze([
+  /\*\*Current Phase 3B status: started, not passed\.\*\*/u,
+  /Admitted\s*->\s*UIStarting\s*->\s*UIAuthenticated\s*->\s*Approved\/Rejected/u,
+  /AdmittedRequestPolicy/u,
+  /UiStartingRequestPolicy/u,
+  /UiAuthenticatedRequestPolicy/u,
+  /ApprovedRequestPolicy/u,
+  /RejectedRequestPolicy/u,
+  /begin_ui/u,
+  /authenticate_ui/u,
+  /decide/u,
+  /recheck_liveness|fresh (?:check|recheck)/iu,
+  /cancel/u,
+  /invalidate_session|Targeted (?:session )?invalidation/iu,
+  /invalidate_active_sessions|Active-topology invalidation/iu,
+  /move-only/iu,
+  /server-derived expected-peer key/iu,
+  /nonzero(?: Windows)? session/iu,
+  /Approval role/iu,
+  /original inclusive monotonic deadline/iu,
+  /owns? the monotonic clock|policy-owned clock/iu,
+  /fresh move-only one-shot observation/iu,
+  /clock failure/iu,
+  /(?:at or after|reaching or passing|at-or-after)-?\s*(?:the )?deadline/iu,
+  /policy-local(?: deadline)? (?:revalidation|liveness|deadline check)/iu,
+  /(?:does not|neither) inspect(?:s)? an OS process/iu,
+  /(?:does not|nor|neither|or) authenticate(?:s)? a helper/iu,
+  /Targeted (?:session )?invalidation/iu,
+  /preserves? unrelated/iu,
+  /Active-topology invalidation/iu,
+  /non-durable/iu,
+  /cancellable/iu,
+  /cryptographic-key/iu,
+  /private-key-operation/iu,
+  /Rejected[^.]{0,80}terminal/iu,
+  /(?:zero production (?:seed, observation mint, or callers|mint or caller|seed, observation mint, or callers)|exact zero production seed, observation mint, or callers|exact absence of a production mint or caller|production seed, observation mint, and caller inventories (?:all )?(?:stay|remain|are) zero)/iu,
+  /future compositor/iu,
+  /fresh authenticated Approval UI/iu,
+  /expected-peer (?:liveness )?proof/iu,
+  /cleanup\/reap/iu,
+  /silent exit 78/iu,
+  /both compiled policies(?: remain| stays? at)? `None`/iu,
+  /\*\*STOP-SHIP\*\*/u,
+]);
+const keyAgentServicePhaseThreeBDocumentContradiction =
+  /The policy-local deadline proves operating-system process liveness\.|The request policy authenticates the helper process\.|Targeted (?:session )?invalidation[^.]{0,160}(?:does not preserve|rejects) unrelated|Rejected(?:RequestPolicy|`)? (?:is|remains) not terminal|(?:Approval|Approved(?:RequestPolicy|`| policy state)?)[^.]{0,120}(?:authorizes|grants|owns|carries|is|supplies) (?!no\b|neither\b|not\b)(?:a |the )?(?:signing|intent|transcript|durable|cryptographic-key|private-key)\b|does not own the monotonic clock|active-topology invalidation[^.]{0,100}preserves?|clock failure[^.]{0,220}is accepted|not silent exit 78/iu;
+const keyAgentServicePhaseThreeBExactDocumentSentences = Object.freeze([
+  Object.freeze([
+    "One move-only policy instance binds the server-derived expected-peer key, nonzero Windows session, Approval role, and the request's original inclusive monotonic deadline, and owns the monotonic clock used to enforce it.",
+    "Clock failure, reaching or passing the deadline, role/key/session mismatch, or a failed observation is a terminal rejection rather than a retryable state.",
+    "Active-topology invalidation and cancellation reject `Admitted`, `UIStarting`, `UIAuthenticated`, and even `Approved`.",
+    "Targeted session invalidation rejects only a matching policy instance and preserves unrelated state.",
+    "Approval is therefore non-durable and cancellable: it is neither signing authority nor intent, candidate, cryptographic-key, or private-key-operation authority.",
+    "The focused policy inventory is exactly 10/10.",
+    "Default and release execution stays at silent exit 78, both compiled policies remain `None`, and the whole runtime, signed-helper, installed-service, kernel, and release boundary remains **STOP-SHIP**.",
+  ]),
+  Object.freeze([
+    "The policy is move-only and binds the server-derived expected-peer key, nonzero session, Approval role, and original inclusive monotonic deadline and owns the monotonic clock used to enforce it.",
+    "A clock failure, an observation at or after the deadline, any role/key/session mismatch, or failed observation terminally rejects; no caller can repair or retry the same state.",
+    "This slice's liveness is limited to that one-shot observation shape and policy-local deadline check; the policy neither inspects an OS process nor authenticates a helper.",
+    "Active-topology invalidation and cancellation reject every live phase, including `Admitted`, `UIStarting`, `UIAuthenticated`, and `Approved`.",
+    "It is not signing authority and conveys no intent, candidate, cryptographic-key, or private-key-operation authority.",
+    "The focused policy suite is exactly 10/10.",
+    "Default/release execution remains silent exit 78 and both compiled policies remain `None`; installed restricted-service, signed-helper, supported-kernel, and complete runtime/release evidence remain **STOP-SHIP**.",
+  ]),
+  Object.freeze([
+    "The move-only policy binds the server-derived expected-peer key, nonzero session, Approval role, and original inclusive monotonic deadline and owns the monotonic clock used to enforce it.",
+    "Every positive edge consumes a fresh move-only one-shot observation and requires exact correlation, Approval role, and a fresh check of that policy-owned clock against the unchanged deadline; clock failure, an at-or-after-deadline observation, mismatch, or failed observation terminally rejects.",
+    "Active-topology invalidation and cancellation reject `Admitted`, `UIStarting`, `UIAuthenticated`, and `Approved`.",
+    "The Approved policy state is non-durable and cancellable and supplies no signing, intent, candidate, cryptographic-key, or private-key-operation authority.",
+    "The focused policy suite is exactly 10/10.",
+    "A future compositor must mint every observation only after fresh authenticated Approval UI and expected-peer liveness proof.",
+    "Default/release stays at silent exit 78, both compiled policies remain `None`, and installed-service, signed-helper, supported-kernel, runtime, and release evidence remain **STOP-SHIP**.",
+  ]),
+  Object.freeze([
+    "One move-only instance binds only the server-derived expected-peer key, nonzero session, Approval role, and original inclusive monotonic deadline and owns the monotonic clock used to enforce it.",
+    "Every positive edge consumes a fresh move-only one-shot observation and requires exact correlation, Approval role, and a fresh check of that policy-owned clock against the unchanged deadline; clock failure, an at-or-after-deadline observation, mismatch, or failed observation terminally rejects.",
+    "Targeted invalidation rejects only matching-session state and preserves unrelated instances, while active-topology invalidation or cancellation rejects `Admitted`, `UIStarting`, `UIAuthenticated`, and `Approved`.",
+    "The Approved policy state is non-durable and cancellable and grants no signing, intent, candidate, cryptographic-key, or private-key-operation authority.",
+    "The focused inventory is exactly 10/10, and architecture mutations pin the closed order, binding/correlation/deadline rules, targeted versus topology-wide behavior, cancellable Approval, privacy/ownership, and exact zero production seed, observation mint, or callers.",
+    "Default/release execution remains silent exit 78, both compiled policies remain `None`, and installed-service, signed-helper, kernel, runtime, and release evidence remain **STOP-SHIP**.",
+  ]),
+]);
+const keyAgentServicePhaseThreeBExpectedDocumentSemanticHashes = Object.freeze([
+  "4505d12eb97baa415eb006b77c3f90b918812053db9d2f65c9e5f79fda4f2334",
+  "ccf6fcff61ae1146788e1ab513a39f8998212334675088a4cfedb08e0c219d12",
+  "bdab33b31b49250fbd4d3da46326880d1a3a331aea2c735e6fce0eb441ed6133",
+  "04472d116160dbdc4498d66cd060d74f56cf1ece9d27cdf374e9a0542c9737a2",
+]);
+const keyAgentServicePhaseThreeBDocumentStartBoundaries = Object.freeze([
+  "1, Phase 2, Phase 3, or the product release gate.\n\n**Current Phase 3B status: started, not passed.**",
+  "the release gate.\n\n**Current Phase 3B status: started, not passed.**",
+  "silent exit 78 with both compiled policies `None`.\n\n  **Current Phase 3B status: started, not passed.**",
+]);
+const keyAgentServicePhaseThreeBDocumentContract = (inputs) => {
+  const design = keyAgentServicePhaseThreeBExactDocumentSection(
+    inputs.designDocument,
+    "**Current Phase 3B status: started, not passed.**",
+    "\n### Phase 4",
+  );
+  const security = keyAgentServicePhaseThreeBExactDocumentSection(
+    inputs.securityDocument,
+    "**Current Phase 3B status: started, not passed.**",
+    "\nAll seven Rust-startup supervisor integration positives",
+  );
+  const readme = keyAgentServicePhaseThreeBExactDocumentSection(
+    inputs.platformReadme,
+    "  **Current Phase 3B status: started, not passed.**",
+    "\n  A deadline that observes pending overlapped pipe I/O",
+  );
+  const architectureRows = inputs.architectureDocument
+    .split(/\r?\n/gu)
+    .filter((line) => line.startsWith("| Approval request ordering policy |"));
+  const sections = [design, security, readme, architectureRows[0] ?? ""].map(
+    keyAgentServicePhaseTwoINormalizedDocument,
+  );
+  const sentenceInventories = sections.map((section) =>
+    section.split(/(?<=[.!?])\s+/u),
+  );
+  const semanticHashes = sections.map((section) =>
+    normalizedSourceSha256(section),
+  );
+  return (
+    design.length > 0 &&
+    security.length > 0 &&
+    readme.length > 0 &&
+    architectureRows.length === 1 &&
+    architectureRows[0].length <= 8_000 &&
+    [
+      inputs.designDocument,
+      inputs.securityDocument,
+      inputs.platformReadme,
+    ].every(
+      (document, index) =>
+        keyAgentServiceLiteralCount(
+          document,
+          keyAgentServicePhaseThreeBDocumentStartBoundaries[index],
+        ) === 1,
+    ) &&
+    JSON.stringify(semanticHashes) ===
+      JSON.stringify(
+        keyAgentServicePhaseThreeBExpectedDocumentSemanticHashes,
+      ) &&
+    sections.every(
+      (section, index) =>
+        keyAgentServicePhaseThreeBDocumentPatterns.every((pattern) =>
+          pattern.test(section),
+        ) &&
+        keyAgentServicePhaseThreeBExactDocumentSentences[index].every(
+          (sentence) => sentenceInventories[index].includes(sentence),
+        ) &&
+        !keyAgentServicePhaseThreeBDocumentContradiction.test(section),
+    ) &&
+    inputs.designDocument.includes(
+      "2026-09-05 - Added the started-but-not-passed Phase 3B dormant Approval",
+    )
+  );
+};
+const keyAgentServicePhaseThreeBPinValues = (inputs) => {
+  const production = keyAgentServicePhaseThreeBProductionProjection(inputs.source);
+  const moduleProduction =
+    keyAgentServicePhaseThreeBProductionProjection(inputs.moduleSource);
+  return Object.freeze({
+    sourceFull: normalizedSourceSha256(inputs.source),
+    sourceProduction: normalizedSourceSha256(production),
+    moduleFull: normalizedSourceSha256(inputs.moduleSource),
+    moduleProduction: normalizedSourceSha256(moduleProduction),
+    design: normalizedSourceSha256(inputs.designDocument),
+    architecture: normalizedSourceSha256(inputs.architectureDocument),
+    security: normalizedSourceSha256(inputs.securityDocument),
+    platformReadme: normalizedSourceSha256(inputs.platformReadme),
+  });
+};
+const keyAgentServicePhaseThreeBPinContract = (inputs) =>
+  JSON.stringify(keyAgentServicePhaseThreeBPinValues(inputs)) ===
+  JSON.stringify(keyAgentServicePhaseThreeBExpectedPins);
+
+let keyAgentServicePhaseThreeBBaseChecks = Object.freeze({});
+let keyAgentServicePhaseThreeBBaseMetrics = Object.freeze({});
+let keyAgentServicePhaseThreeBBaseError = null;
+const keyAgentServicePhaseThreeBSemanticContract = (inputs, requirePins = true) => {
+  try {
+    const production = keyAgentServicePhaseThreeBProductionProjection(inputs.source);
+    const moduleProduction =
+      keyAgentServicePhaseThreeBProductionProjection(inputs.moduleSource);
+    const code = rustLexicalCode(production);
+    const moduleCode = rustLexicalCode(moduleProduction);
+    const requestLifecycleModuleDeclarations = rustModuleDeclarations(
+      moduleProduction,
+    ).filter(
+      ({ name, index }) =>
+        name === "request_lifecycle" &&
+        rustBraceDepthBefore(moduleCode, index) === 0,
+    );
+    const requestLifecycleModuleAttributes =
+      requestLifecycleModuleDeclarations.length === 1
+        ? rustAttachedOuterAttributes(
+            moduleProduction,
+            requestLifecycleModuleDeclarations[0].index,
+          ).map(({ source }) => compactRust(source))
+        : [];
+    const workspaceFiles = keyAgentServicePhaseThreeBOverlayProductionFiles(inputs);
+    const item = (pattern) =>
+      rustLexicalItemBlockAtDepth(production, pattern, 0);
+    const rejectionCause = item(
+      /(?:^|\n)\s*pub\(super\)\s+enum\s+RequestPolicyRejectionCause\s*\{/u,
+    );
+    const seed = item(
+      /(?:^|\n)\s*pub\(super\)\s+struct\s+RequestPolicySeed\s*</u,
+    );
+    const observation = item(
+      /(?:^|\n)\s*pub\(super\)\s+struct\s+RequestPolicyObservation\s*\{/u,
+    );
+    const uiDecision = item(/(?:^|\n)\s*enum\s+UiDecision\s*\{/u);
+    const uiDecisionObservation = item(
+      /(?:^|\n)\s*pub\(super\)\s+struct\s+UiDecisionObservation\s*\{/u,
+    );
+    const binding = item(/(?:^|\n)\s*struct\s+RequestBinding\s*</u);
+    const admitted = item(
+      /(?:^|\n)\s*pub\(super\)\s+struct\s+AdmittedRequestPolicy\s*</u,
+    );
+    const starting = item(
+      /(?:^|\n)\s*pub\(super\)\s+struct\s+UiStartingRequestPolicy\s*</u,
+    );
+    const authenticated = item(
+      /(?:^|\n)\s*pub\(super\)\s+struct\s+UiAuthenticatedRequestPolicy\s*</u,
+    );
+    const approved = item(
+      /(?:^|\n)\s*pub\(super\)\s+struct\s+ApprovedRequestPolicy\s*</u,
+    );
+    const rejected = item(
+      /(?:^|\n)\s*pub\(super\)\s+struct\s+RejectedRequestPolicy\s*\{/u,
+    );
+    const impls = rustImplItems(production);
+    const inherentImpl = (typeName) =>
+      impls.find(
+        ({ header }) =>
+          rustImplImplementedTraitClause(header) === null &&
+          new RegExp(`\\b${typeName}\\s*(?:<|\\b)`, "u").test(header),
+      )?.source;
+    const debugImpl = (typeName) =>
+      impls.find(
+        ({ header }) =>
+          header.includes(typeName) &&
+          rustImplHeaderImplementsTrait(header, "Debug"),
+      )?.source;
+    const bindingImpl = inherentImpl("RequestBinding");
+    const admittedImpl = inherentImpl("AdmittedRequestPolicy");
+    const startingImpl = inherentImpl("UiStartingRequestPolicy");
+    const authenticatedImpl = inherentImpl("UiAuthenticatedRequestPolicy");
+    const approvedImpl = inherentImpl("ApprovedRequestPolicy");
+    const rejectBinding = rustFunctionBlockAtDepth(
+      production,
+      "reject_binding",
+      0,
+    );
+    const requiredItems = {
+      rejectionCause,
+      seed,
+      observation,
+      uiDecision,
+      uiDecisionObservation,
+      binding,
+      admitted,
+      starting,
+      authenticated,
+      approved,
+      rejected,
+      bindingImpl,
+      admittedImpl,
+      startingImpl,
+      authenticatedImpl,
+      approvedImpl,
+      rejectBinding,
+    };
+    const missingRequiredItems = Object.entries(requiredItems)
+      .filter(([, entry]) => entry == null || entry.length === 0)
+      .map(([name]) => name);
+    if (missingRequiredItems.length > 0) {
+      if (inputs === keyAgentServicePhaseThreeBInputs) {
+        keyAgentServicePhaseThreeBBaseChecks = Object.freeze({
+          allRequiredItemsFound: false,
+        });
+        keyAgentServicePhaseThreeBBaseMetrics = Object.freeze({
+          missingRequiredItems,
+          productionImplHeaders: impls.map(({ header }) => header),
+        });
+      }
+      return false;
+    }
+    const validate = rustFunctionBlockAtDepth(bindingImpl, "validate", 1);
+    const beginUi = rustFunctionBlockAtDepth(admittedImpl, "begin_ui", 1);
+    const authenticateUi = rustFunctionBlockAtDepth(
+      startingImpl,
+      "authenticate_ui",
+      1,
+    );
+    const decide = rustFunctionBlockAtDepth(authenticatedImpl, "decide", 1);
+    const rechecks = [admittedImpl, startingImpl, authenticatedImpl, approvedImpl].map(
+      (owner) => rustFunctionBlockAtDepth(owner, "recheck_liveness", 1),
+    );
+    const cancels = [admittedImpl, startingImpl, authenticatedImpl, approvedImpl].map(
+      (owner) => rustFunctionBlockAtDepth(owner, "cancel", 1),
+    );
+    const targetedInvalidations = [
+      admittedImpl,
+      startingImpl,
+      authenticatedImpl,
+      approvedImpl,
+    ].map((owner) => rustFunctionBlockAtDepth(owner, "invalidate_session", 1));
+    const activeInvalidations = [
+      admittedImpl,
+      startingImpl,
+      authenticatedImpl,
+      approvedImpl,
+    ].map((owner) =>
+      rustFunctionBlockAtDepth(owner, "invalidate_active_sessions", 1),
+    );
+    const fullAdmittedImpl = rustImplItems(inputs.source).find(
+      ({ header }) =>
+        rustImplImplementedTraitClause(header) === null &&
+        /^impl<C> AdmittedRequestPolicy<C>/u.test(header),
+    )?.source;
+    const admitForTest = rustFunctionBlockAtDepth(
+      fullAdmittedImpl ?? "",
+      "admit_for_test",
+      1,
+    );
+    const tests = rustBottomTestModule(inputs.source);
+    const attributedTests = keyAgentServiceRustAttributedTestInventory(inputs.source);
+    const testBlocks = Object.fromEntries(
+      keyAgentServicePhaseThreeBTestNames.map((name) => [
+        name,
+        rustFunctionBlockAtDepth(tests, name, 1),
+      ]),
+    );
+    const testAttributeInventory = keyAgentServicePhaseThreeBTestNames.map(
+      (name) => ({
+        name,
+        attributes: rustAttachedOuterAttributes(
+          tests,
+          rustFunctionIndexAtDepth(tests, name, 1),
+        ).map(({ source }) => compactRust(source)),
+      }),
+    );
+    const productionImplHeaders = impls.map(({ header }) => header);
+    const topLevelTypeInventory = [
+      ...code.matchAll(
+        /\b(?<kind>struct|enum|union|trait|type)\s+(?<name>(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*)/gu,
+      ),
+    ]
+      .filter((match) => rustBraceDepthBefore(code, match.index) === 0)
+      .map(({ groups }) => ({ kind: groups.kind, name: groups.name }));
+    const topLevelFunctionInventory = rustFunctionSignatures(production)
+      .filter((entry) => rustBraceDepthBefore(code, entry.index) === 0)
+      .map(
+        (entry) =>
+          /\bfn\s+(?<name>(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*)/u.exec(
+            rustLexicalCode(entry.source),
+          ).groups.name,
+      );
+    const topLevelOtherItemInventory = [
+      ...code.matchAll(
+        /\b(?<kind>mod|const|static|macro_rules|macro|extern\s+crate)\s*!?\s*(?<name>(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*)/gu,
+      ),
+    ]
+      .filter((match) => rustBraceDepthBefore(code, match.index) === 0)
+      .map(({ groups }) => ({ kind: groups.kind, name: groups.name }));
+    const macroInvocationInventory = rustMacroInvocations(production).map(
+      ({ normalizedPath }) => normalizedPath,
+    );
+    const parentMacroInvocationInventory = rustMacroInvocations(
+      moduleProduction,
+    ).map(({ normalizedPath }) => normalizedPath);
+    const parentMacroInvocationSha256 = normalizedSourceSha256(
+      JSON.stringify(parentMacroInvocationInventory),
+    );
+    const parentMacroProviderInventory = [
+      ...moduleCode.matchAll(
+        /\b(?<kind>macro_rules\s*!|macro|extern\s+crate)\s*(?<name>(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*)/gu,
+      ),
+    ]
+      .filter((match) => rustBraceDepthBefore(moduleCode, match.index) === 0)
+      .map(({ groups }) => ({ kind: groups.kind, name: groups.name }));
+    const attributeInventory = rustAttributeItems(production).map(({ source }) =>
+      normalizeRustFragment(source),
+    );
+    const associatedNonFunctionItemInventory = impls.flatMap(({ header, source }) => {
+      const ownerCode = rustLexicalCode(source);
+      return [
+        ...ownerCode.matchAll(
+          /\b(?<kind>const|static|type)\s+(?<name>(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*)/gu,
+        ),
+      ]
+        .filter((match) => rustBraceDepthBefore(ownerCode, match.index) === 1)
+        .map(({ groups }) => ({
+          owner: header,
+          kind: groups.kind,
+          name: groups.name,
+        }));
+    });
+    const methodInventory = Object.freeze({
+      binding: keyAgentServicePhaseThreeBFunctionNamesAtDepth(bindingImpl, 1),
+      admitted: keyAgentServicePhaseThreeBFunctionNamesAtDepth(admittedImpl, 1),
+      starting: keyAgentServicePhaseThreeBFunctionNamesAtDepth(startingImpl, 1),
+      authenticated:
+        keyAgentServicePhaseThreeBFunctionNamesAtDepth(authenticatedImpl, 1),
+      approved: keyAgentServicePhaseThreeBFunctionNamesAtDepth(approvedImpl, 1),
+    });
+    const externalTypeReferences = workspaceFiles
+      .filter(({ path }) => path !== keyAgentServicePhaseThreeBPath)
+      .flatMap((file) =>
+        keyAgentServicePhaseThreeBMoveOnlyTypeNames.flatMap((name) => {
+          const count = identifierOccurrenceCount(
+            rustLexicalCode(file.source),
+            name,
+          );
+          return count === 0 ? [] : [{ path: file.path, name, count }];
+        }),
+      );
+    const moduleReferenceInventory = workspaceFiles
+      .map((file) => ({
+        path: file.path,
+        count: identifierOccurrenceCount(
+          rustLexicalCode(file.source),
+          "request_lifecycle",
+        ),
+      }))
+      .filter(({ count }) => count > 0);
+    const typeItemInventory = [
+      rejectionCause,
+      seed,
+      observation,
+      uiDecision,
+      uiDecisionObservation,
+      binding,
+      admitted,
+      starting,
+      authenticated,
+      approved,
+      rejected,
+    ];
+    const attachedAttributes = (sourceItem) => {
+      const index = production.indexOf(sourceItem);
+      return rustAttachedOuterAttributes(production, index).map((attribute) =>
+        compactRust(attribute.source),
+      );
+    };
+    const rejectionAttributes = attachedAttributes(rejectionCause);
+    const uiDecisionAttributes = attachedAttributes(uiDecision);
+    const moveOnlyDerives = [
+      seed,
+      observation,
+      uiDecisionObservation,
+      binding,
+      admitted,
+      starting,
+      authenticated,
+      approved,
+      rejected,
+    ].flatMap((sourceItem) =>
+      attachedAttributes(sourceItem).filter((attribute) =>
+        /derive\([^)]*(?:Clone|Copy|Debug)/u.test(attribute),
+      ),
+    );
+    const expectedStructShapes = Object.freeze({
+      seed:
+        "pub(super)structRequestPolicySeed<C>whereC:MonotonicClock,{clock:C,key:ExpectedPeerKey,session_id:NonZeroU32,role:ExpectedHelperRole,original_deadline:C::Instant,_move_only:MoveOnly,}",
+      observation:
+        "pub(super)structRequestPolicyObservation{key:ExpectedPeerKey,session_id:NonZeroU32,role:ExpectedHelperRole,_move_only:MoveOnly,}",
+      uiDecisionObservation:
+        "pub(super)structUiDecisionObservation{peer:RequestPolicyObservation,decision:UiDecision,}",
+      binding:
+        "structRequestBinding<C>whereC:MonotonicClock,{clock:C,key:ExpectedPeerKey,session_id:NonZeroU32,role:ExpectedHelperRole,original_deadline:C::Instant,_move_only:MoveOnly,}",
+      admitted:
+        "pub(super)structAdmittedRequestPolicy<C>whereC:MonotonicClock,{binding:RequestBinding<C>,}",
+      starting:
+        "pub(super)structUiStartingRequestPolicy<C>whereC:MonotonicClock,{binding:RequestBinding<C>,}",
+      authenticated:
+        "pub(super)structUiAuthenticatedRequestPolicy<C>whereC:MonotonicClock,{binding:RequestBinding<C>,}",
+      approved:
+        "pub(super)structApprovedRequestPolicy<C>whereC:MonotonicClock,{binding:RequestBinding<C>,}",
+      rejected:
+        "pub(super)structRejectedRequestPolicy{cause:RequestPolicyRejectionCause,_move_only:MoveOnly,}",
+    });
+    const shapeCheck =
+      compactRust(seed) === expectedStructShapes.seed &&
+      compactRust(observation) === expectedStructShapes.observation &&
+      compactRust(uiDecisionObservation) === expectedStructShapes.uiDecisionObservation &&
+      compactRust(binding) === expectedStructShapes.binding &&
+      compactRust(admitted) === expectedStructShapes.admitted &&
+      compactRust(starting) === expectedStructShapes.starting &&
+      compactRust(authenticated) === expectedStructShapes.authenticated &&
+      compactRust(approved) === expectedStructShapes.approved &&
+      compactRust(rejected) === expectedStructShapes.rejected &&
+      compactRust(rejectionCause) ===
+        "pub(super)enumRequestPolicyRejectionCause{ClockUnavailable,DeadlineExpired,InvalidObservation,Cancelled,SessionInvalidated,ActiveSessionsInvalidated,UserRejected,}" &&
+      compactRust(uiDecision) === "enumUiDecision{Approve,Reject,}" &&
+      code.includes("struct MoveOnly;") &&
+      rejectionAttributes.length === 1 &&
+      rejectionAttributes[0] === "#[derive(Clone,Copy,Debug,Eq,PartialEq)]" &&
+      uiDecisionAttributes.length === 1 &&
+      uiDecisionAttributes[0] === "#[derive(Clone,Copy)]" &&
+      moveOnlyDerives.length === 0;
+    const exactTopLevelItemInventoryCheck =
+      JSON.stringify(topLevelTypeInventory) ===
+        JSON.stringify([
+          { kind: "enum", name: "RequestPolicyRejectionCause" },
+          { kind: "struct", name: "MoveOnly" },
+          { kind: "struct", name: "RequestPolicySeed" },
+          { kind: "struct", name: "RequestPolicyObservation" },
+          { kind: "enum", name: "UiDecision" },
+          { kind: "struct", name: "UiDecisionObservation" },
+          { kind: "struct", name: "RequestBinding" },
+          { kind: "struct", name: "AdmittedRequestPolicy" },
+          { kind: "struct", name: "UiStartingRequestPolicy" },
+          { kind: "struct", name: "UiAuthenticatedRequestPolicy" },
+          { kind: "struct", name: "ApprovedRequestPolicy" },
+          { kind: "struct", name: "RejectedRequestPolicy" },
+        ]) &&
+      JSON.stringify(topLevelFunctionInventory) ===
+        JSON.stringify(["reject_binding"]) &&
+      topLevelOtherItemInventory.length === 0 &&
+      macroInvocationInventory.length === 0 &&
+      associatedNonFunctionItemInventory.length === 0 &&
+      JSON.stringify(attributeInventory) ===
+        JSON.stringify([
+          "#![forbid(unsafe_code)]",
+          "#[derive(Clone, Copy, Debug, Eq, PartialEq)]",
+          '#[must_use = "a request seed must be admitted or rejected exactly once"]',
+          "#[derive(Clone, Copy)]",
+          "#[allow(clippy::needless_pass_by_value)]",
+          '#[must_use = "an admitted request remains non-durable and must advance or reject"]',
+          '#[must_use = "a starting UI remains non-durable and must authenticate or reject"]',
+          '#[must_use = "an authenticated UI remains non-durable and must decide or reject"]',
+          '#[must_use = "approval is non-durable and must remain live or reject"]',
+          '#[must_use = "terminal rejection must be observed"]',
+        ]) &&
+      compactRust(rejectBinding) ===
+        "fnreject_binding<C>(_binding:RequestBinding<C>,cause:RequestPolicyRejectionCause,)->RejectedRequestPolicywhereC:MonotonicClock,{RejectedRequestPolicy{cause,_move_only:MoveOnly,}}";
+    const importAndAuthorityCheck =
+      JSON.stringify(rustInnerAttributesAtDepth(production, 0)) ===
+        JSON.stringify(["#![forbid(unsafe_code)]"]) &&
+      JSON.stringify(rustUseItems(production).map(({ source }) => compactRust(source))) ===
+        JSON.stringify([
+          "usecore::{fmt,num::NonZeroU32};",
+          "usesuper::{epoch::MonotonicClock,expected_peer::{ExpectedHelperRole,ExpectedPeerKey},};",
+        ]) &&
+      rustUnsafeKeywordCount(production) === 0 &&
+      !/\b(?:windows|Win32|std::(?:env|io|net|process)|reqwest|tokio|TcpStream|UdpSocket|OpenProcess|CreateProcess|Command|File|OpenOptions|getrandom|mnemonic|private_key|PrivateKey|wallet|Wallet|signing|Signature|crypto|secp256k1|alloy|SecretInput|candidate|wire|SESSIONNAME|SESSIONID|WTSSESSION_NOTIFICATION)\b/iu.test(
+        code,
+      );
+    const implInventoryCheck =
+      impls.length === 14 &&
+      productionImplHeaders.filter((header) =>
+        rustImplHeaderImplementsTrait(header, "Debug"),
+      ).length === 9 &&
+      [
+        "RequestPolicySeed",
+        "RequestPolicyObservation",
+        "UiDecisionObservation",
+        "RequestBinding",
+        ...keyAgentServicePhaseThreeBPolicyTypeNames,
+      ].every(
+        (name) => {
+          const expectedCount = [
+            "RequestBinding",
+            "AdmittedRequestPolicy",
+            "UiStartingRequestPolicy",
+            "UiAuthenticatedRequestPolicy",
+            "ApprovedRequestPolicy",
+          ].includes(name)
+            ? 2
+            : 1;
+          return (
+            impls.filter(({ header }) => header.includes(name)).length ===
+            expectedCount
+          );
+        },
+      ) &&
+      !productionImplHeaders.some(
+        (header) =>
+          header.includes("RejectedRequestPolicy") &&
+          !rustImplHeaderImplementsTrait(header, "Debug"),
+      );
+    const exactMethodInventoryCheck =
+      JSON.stringify(methodInventory) ===
+      JSON.stringify({
+        binding: ["validate"],
+        admitted: [
+          "begin_ui",
+          "recheck_liveness",
+          "cancel",
+          "invalidate_session",
+          "invalidate_active_sessions",
+        ],
+        starting: [
+          "authenticate_ui",
+          "recheck_liveness",
+          "cancel",
+          "invalidate_session",
+          "invalidate_active_sessions",
+        ],
+        authenticated: [
+          "decide",
+          "recheck_liveness",
+          "cancel",
+          "invalidate_session",
+          "invalidate_active_sessions",
+        ],
+        approved: [
+          "recheck_liveness",
+          "cancel",
+          "invalidate_session",
+          "invalidate_active_sessions",
+        ],
+      }) &&
+      identifierOccurrenceCount(code, "recheck_liveness") === 4 &&
+      identifierOccurrenceCount(code, "cancel") === 4 &&
+      identifierOccurrenceCount(code, "invalidate_session") === 4 &&
+      identifierOccurrenceCount(code, "invalidate_active_sessions") === 4;
+    const validateCheck =
+      compactRust(validate) ===
+        "fnvalidate(&self,observation:RequestPolicyObservation,)->Result<(),RequestPolicyRejectionCause>{letRequestPolicyObservation{key,session_id,role,_move_only:_,}=observation;letnow=self.clock.now().ok_or(RequestPolicyRejectionCause::ClockUnavailable)?;ifnow>=self.original_deadline{returnErr(RequestPolicyRejectionCause::DeadlineExpired);}ifself.role!=ExpectedHelperRole::Approval||role!=ExpectedHelperRole::Approval||key!=self.key||session_id!=self.session_id{returnErr(RequestPolicyRejectionCause::InvalidObservation);}Ok(())}" &&
+      identifierOccurrenceCount(rustLexicalCode(validate), "now") === 3 &&
+      rustCallSites(validate, "now").length === 1;
+    const positiveEdgesCheck =
+      compactRust(beginUi) ===
+        "pub(super)fnbegin_ui(self,observation:RequestPolicyObservation,)->Result<UiStartingRequestPolicy<C>,RejectedRequestPolicy>{matchself.binding.validate(observation){Ok(())=>Ok(UiStartingRequestPolicy{binding:self.binding,}),Err(cause)=>Err(reject_binding(self.binding,cause)),}}" &&
+      compactRust(authenticateUi) ===
+        "pub(super)fnauthenticate_ui(self,observation:RequestPolicyObservation,)->Result<UiAuthenticatedRequestPolicy<C>,RejectedRequestPolicy>{matchself.binding.validate(observation){Ok(())=>Ok(UiAuthenticatedRequestPolicy{binding:self.binding,}),Err(cause)=>Err(reject_binding(self.binding,cause)),}}" &&
+      compactRust(decide) ===
+        "pub(super)fndecide(self,observation:UiDecisionObservation,)->Result<ApprovedRequestPolicy<C>,RejectedRequestPolicy>{letUiDecisionObservation{peer,decision}=observation;ifletErr(cause)=self.binding.validate(peer){returnErr(reject_binding(self.binding,cause));}matchdecision{UiDecision::Approve=>Ok(ApprovedRequestPolicy{binding:self.binding,}),UiDecision::Reject=>Err(reject_binding(self.binding,RequestPolicyRejectionCause::UserRejected,)),}}" &&
+      identifierOccurrenceCount(code, "begin_ui") === 1 &&
+      identifierOccurrenceCount(code, "authenticate_ui") === 1 &&
+      identifierOccurrenceCount(code, "decide") === 1;
+    const commonTransitionCheck =
+      rechecks.every(
+        (method) =>
+          compactRust(method) ===
+          "pub(super)fnrecheck_liveness(self,observation:RequestPolicyObservation,)->Result<Self,RejectedRequestPolicy>{matchself.binding.validate(observation){Ok(())=>Ok(self),Err(cause)=>Err(reject_binding(self.binding,cause)),}}",
+      ) &&
+      cancels.every(
+        (method) =>
+          compactRust(method) ===
+          "pub(super)fncancel(self)->RejectedRequestPolicy{reject_binding(self.binding,RequestPolicyRejectionCause::Cancelled)}",
+      ) &&
+      targetedInvalidations.every(
+        (method) =>
+          compactRust(method) ===
+          "pub(super)fninvalidate_session(self,session_id:NonZeroU32,)->Result<Self,RejectedRequestPolicy>{ifself.binding.session_id==session_id{Err(reject_binding(self.binding,RequestPolicyRejectionCause::SessionInvalidated,))}else{Ok(self)}}",
+      ) &&
+      activeInvalidations.every(
+        (method) =>
+          compactRust(method) ===
+          "pub(super)fninvalidate_active_sessions(self)->RejectedRequestPolicy{reject_binding(self.binding,RequestPolicyRejectionCause::ActiveSessionsInvalidated,)}",
+      );
+    const admissionCheck =
+      compactRust(admitForTest) ===
+        "fnadmit_for_test(seed:RequestPolicySeed<C>,observation:RequestPolicyObservation,)->Result<Self,RejectedRequestPolicy>{letRequestPolicySeed{clock,key,session_id,role,original_deadline,_move_only:_,}=seed;letbinding=RequestBinding{clock,key,session_id,role,original_deadline,_move_only:MoveOnly,};matchbinding.validate(observation){Ok(())=>Ok(Self{binding}),Err(cause)=>Err(reject_binding(binding,cause)),}}" &&
+      identifierOccurrenceCount(code, "validate") === 8;
+    const debugCheck =
+      [
+        "RequestPolicySeed",
+        "RequestPolicyObservation",
+        "UiDecisionObservation",
+        "RequestBinding",
+        "AdmittedRequestPolicy",
+        "UiStartingRequestPolicy",
+        "UiAuthenticatedRequestPolicy",
+        "ApprovedRequestPolicy",
+      ].every((typeName) => {
+        const owner = debugImpl(typeName);
+        const actual = rustFunctionBlockAtDepth(owner, "fmt", 1);
+        return (
+          owner !== undefined &&
+          normalizeRustFragment(actual) ===
+            normalizeRustFragment(
+              `fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result { formatter.write_str("${typeName}([REDACTED])") }`,
+            )
+        );
+      }) &&
+      normalizeRustFragment(
+        rustFunctionBlockAtDepth(debugImpl("RejectedRequestPolicy"), "fmt", 1),
+      ) ===
+        normalizeRustFragment(
+          'fn fmt(&self, formatter: &mut fmt::Formatter<\'_>) -> fmt::Result { formatter .debug_struct("RejectedRequestPolicy") .field("cause", &self.cause) .finish_non_exhaustive() }',
+        );
+    const noProductionMintOrCallerCheck =
+      rustStructLiteralSites(production, "RequestPolicySeed").length === 0 &&
+      rustStructLiteralSites(production, "RequestPolicyObservation").length === 1 &&
+      rustStructLiteralSites(production, "UiDecisionObservation").length === 1 &&
+      rustStructLiteralSites(production, "AdmittedRequestPolicy").length === 0 &&
+      rustStructLiteralSites(production, "UiStartingRequestPolicy").length === 1 &&
+      rustStructLiteralSites(production, "UiAuthenticatedRequestPolicy").length === 1 &&
+      rustStructLiteralSites(production, "ApprovedRequestPolicy").length === 1 &&
+      externalTypeReferences.length === 0 &&
+      JSON.stringify(moduleReferenceInventory) ===
+        JSON.stringify([
+          { path: keyAgentServiceRpcFixturePaths.root, count: 1 },
+        ]);
+    const moduleAndReleaseDormancyCheck =
+      identifierOccurrenceCount(moduleCode, "request_lifecycle") === 1 &&
+      requestLifecycleModuleDeclarations.length === 1 &&
+      compactRust(requestLifecycleModuleDeclarations[0].source) ===
+        "modrequest_lifecycle;" &&
+      JSON.stringify(requestLifecycleModuleAttributes) ===
+        JSON.stringify(["#[allow(dead_code)]"]) &&
+      compactRust(moduleProduction).includes(
+        "#[allow(dead_code)]modrequest_lifecycle;",
+      ) &&
+      !/#\s*\[\s*cfg[^\]]*\]\s*#\s*\[\s*allow\(dead_code\)\]\s*mod\s+request_lifecycle/u.test(
+        moduleCode,
+      ) &&
+      !/\bpub(?:\([^)]*\))?\s+mod\s+request_lifecycle\b/u.test(moduleCode) &&
+      !/\bpub(?:\([^)]*\))?\s+use\b[\s\S]{0,240}\b(?:RequestPolicy|RequestBinding|AdmittedRequestPolicy|UiStartingRequestPolicy|UiAuthenticatedRequestPolicy|ApprovedRequestPolicy|RejectedRequestPolicy)\b/u.test(
+        moduleCode,
+      ) &&
+      parentMacroProviderInventory.length === 0 &&
+      parentMacroInvocationSha256 ===
+        keyAgentServicePhaseThreeBExpectedParentMacroInvocationSha256 &&
+      /^default\s*=\s*\[\]\s*$/mu.test(
+        tomlTableBody(inputs.serviceManifest, "features"),
+      ) &&
+      /^default\s*=\s*\[\]\s*$/mu.test(
+        tomlTableBody(inputs.platformManifest, "features"),
+      ) &&
+      JSON.stringify(tomlTableKeyInventory(inputs.serviceManifest, "features")) ===
+        JSON.stringify(keyAgentServicePhaseThreeAExpectedServiceFeatures) &&
+      JSON.stringify(tomlTableKeyInventory(inputs.platformManifest, "features")) ===
+        JSON.stringify(keyAgentServicePhaseThreeAExpectedPlatformFeatures) &&
+      compactRust(
+        rustTopLevelConstItem(inputs.serviceMain, "SERVICE_UNAVAILABLE"),
+      ) === "constSERVICE_UNAVAILABLE:i32=78;" &&
+      keyAgentServicePhaseThreeBFallbackMainContract(
+        inputs.serviceMain,
+        5,
+        keyAgentServicePhaseThreeBServiceFallbackAttribute,
+        "SERVICE_UNAVAILABLE",
+      ) &&
+      keyAgentServiceLiteralCount(
+        compactRust(inputs.serviceMain),
+        "std::process::exit(SERVICE_UNAVAILABLE);",
+      ) === 1 &&
+      !compactRust(inputs.serviceMain).includes("std::process::exit(0);") &&
+      compactRust(
+        rustTopLevelConstItem(
+          inputs.attestationSource,
+          "COMPILED_RELEASE_POLICY",
+        ),
+      ) === "constCOMPILED_RELEASE_POLICY:Option<ReleasePolicy>=None;" &&
+      identifierOccurrenceCount(
+        rustLexicalCode(
+          keyAgentServicePhaseThreeBProductionProjection(
+            inputs.attestationSource,
+          ),
+        ),
+        "COMPILED_RELEASE_POLICY",
+      ) === 2 &&
+      compactRust(
+        keyAgentServicePhaseThreeBProductionProjection(
+          inputs.attestationSource,
+        ),
+      ).includes("letSome(policy)=COMPILED_RELEASE_POLICYelse{") &&
+      compactRust(
+        rustTopLevelConstItem(
+          inputs.approvalBootstrapSource,
+          "COMPILED_PARENT_POLICY",
+        ),
+      ) === "constCOMPILED_PARENT_POLICY:Option<ParentTrustPolicy>=None;" &&
+      identifierOccurrenceCount(
+        rustLexicalCode(
+          keyAgentServicePhaseThreeBProductionProjection(
+            inputs.approvalBootstrapSource,
+          ),
+        ),
+        "COMPILED_PARENT_POLICY",
+      ) === 2 &&
+      compactRust(
+        keyAgentServicePhaseThreeBProductionProjection(
+          inputs.approvalBootstrapSource,
+        ),
+      ).includes("letSome(policy)=COMPILED_PARENT_POLICYelse{") &&
+      compactRust(
+        rustTopLevelConstItem(
+          inputs.approvalMainSource,
+          "PRIVATE_LAUNCH_UNAVAILABLE",
+        ),
+      ) === "constPRIVATE_LAUNCH_UNAVAILABLE:i32=78;" &&
+      keyAgentServicePhaseThreeBFallbackMainContract(
+        inputs.approvalMainSource,
+        3,
+        keyAgentServicePhaseThreeBApprovalFallbackAttribute,
+        "PRIVATE_LAUNCH_UNAVAILABLE",
+      ) &&
+      keyAgentServiceLiteralCount(
+        compactRust(inputs.approvalMainSource),
+        "std::process::exit(PRIVATE_LAUNCH_UNAVAILABLE);",
+      ) === 1;
+    const approvedAuthorityAndTerminalCheck =
+      !/\b(?:sign|signing|signature|intent|transcript|wallet|private_key|mnemonic|durable|cleanup|reap|receipt|accessor|into_[A-Za-z_]+|as_[A-Za-z_]+)\b/iu.test(
+        rustLexicalCode(`${approved}\n${approvedImpl}`),
+      ) &&
+      rustImplItems(production).filter(({ header }) =>
+        header.includes("RejectedRequestPolicy"),
+      ).length === 1;
+    const exactTestsCheck =
+      attributedTests.length === 10 &&
+      JSON.stringify(attributedTests.map(({ name }) => name)) ===
+        JSON.stringify(keyAgentServicePhaseThreeBTestNames) &&
+      attributedTests.every(({ ignored }) => !ignored) &&
+      (inputs.source.match(/#\[test\]/gu) ?? []).length === 10 &&
+      JSON.stringify(testAttributeInventory) ===
+        JSON.stringify(
+          keyAgentServicePhaseThreeBTestNames.map((name, index) => ({
+            name,
+            attributes:
+              index === 5 || index === 7 || index === 9
+                ? ["#[test]", "#[allow(clippy::too_many_lines)]"]
+                : ["#[test]"],
+          })),
+        ) &&
+      compactRust(
+        testBlocks.every_positive_edge_uses_the_original_inclusive_deadline,
+      ).includes("clock.reads()-reads_before!=8") &&
+      compactRust(
+        testBlocks.targeted_invalidation_rejects_only_the_matching_session_at_every_stage,
+      ).includes("assert_same_clock_source(&approved_live.binding,&clock)") &&
+      compactRust(
+        testBlocks.terminal_causes_and_all_debug_surfaces_are_data_free,
+      ).includes("letrejected=reject_binding(admitted(&clock)?.binding,cause);");
+    const documentationCheck = keyAgentServicePhaseThreeBDocumentContract(inputs);
+    const checks = Object.freeze({
+      exactMoveOnlyStateAndBindingShapes: shapeCheck,
+      exactTopLevelTypeAndHelperInventory: exactTopLevelItemInventoryCheck,
+      forbidUnsafeAndLimitImportsAndAuthority: importAndAuthorityCheck,
+      exactImplAndMethodInventories: implInventoryCheck && exactMethodInventoryCheck,
+      freshClockInclusiveValidationAndApprovalCorrelation: validateCheck,
+      exactThreePositiveEdgesWithoutBypass: positiveEdgesCheck,
+      allFourLiveStatesRecheckCancelAndInvalidate: commonTransitionCheck,
+      testOnlyAdmissionMovesOneBindingThroughValidate: admissionCheck,
+      exactRedactedDebugSurfaces: debugCheck,
+      zeroProductionMintCallerOrModuleReference: noProductionMintOrCallerCheck,
+      privateProductionModuleAndReleaseDormancy: moduleAndReleaseDormancyCheck,
+      approvedHasNoAuthorityAndRejectedIsTerminal:
+        approvedAuthorityAndTerminalCheck,
+      exactTenActiveTests: exactTestsCheck,
+      exactFourDocumentStopShipBoundary: documentationCheck,
+      pins: !requirePins || keyAgentServicePhaseThreeBPinContract(inputs),
+    });
+    if (inputs === keyAgentServicePhaseThreeBInputs) {
+      keyAgentServicePhaseThreeBBaseChecks = checks;
+      keyAgentServicePhaseThreeBBaseMetrics = Object.freeze({
+        currentPins: keyAgentServicePhaseThreeBPinValues(inputs),
+        productionImplHeaders,
+        topLevelTypeInventory,
+        topLevelFunctionInventory,
+        topLevelOtherItemInventory,
+        macroInvocationInventory,
+        parentMacroInvocationInventory,
+        parentMacroInvocationSha256,
+        parentMacroProviderInventory,
+        attributeInventory,
+        associatedNonFunctionItemInventory,
+        methodInventory,
+        compactBodies: Object.freeze({
+          validate: compactRust(validate),
+          beginUi: compactRust(beginUi),
+          authenticateUi: compactRust(authenticateUi),
+          decide: compactRust(decide),
+          rechecks: [...new Set(rechecks.map(compactRust))],
+          cancels: [...new Set(cancels.map(compactRust))],
+          targetedInvalidations: [
+            ...new Set(targetedInvalidations.map(compactRust)),
+          ],
+          activeInvalidations: [
+            ...new Set(activeInvalidations.map(compactRust)),
+          ],
+          admitForTest: compactRust(admitForTest),
+          debugFunctions: [
+            "RequestPolicySeed",
+            "RequestPolicyObservation",
+            "UiDecisionObservation",
+            "RequestBinding",
+            "AdmittedRequestPolicy",
+            "UiStartingRequestPolicy",
+            "UiAuthenticatedRequestPolicy",
+            "ApprovedRequestPolicy",
+            "RejectedRequestPolicy",
+          ].map((typeName) => ({
+            typeName,
+            compact: compactRust(
+              rustFunctionBlockAtDepth(debugImpl(typeName), "fmt", 1),
+            ),
+          })),
+        }),
+        validateNowIdentifiers: identifierOccurrenceCount(
+          rustLexicalCode(validate),
+          "now",
+        ),
+        validateNowCalls: rustCallSites(validate, "now").length,
+        structLiteralCounts: Object.fromEntries(
+          [
+            "RequestPolicySeed",
+            "RequestPolicyObservation",
+            "UiDecisionObservation",
+            "AdmittedRequestPolicy",
+            "UiStartingRequestPolicy",
+            "UiAuthenticatedRequestPolicy",
+            "ApprovedRequestPolicy",
+          ].map((name) => [name, rustStructLiteralSites(production, name).length]),
+        ),
+        externalTypeReferences,
+        moduleReferenceInventory,
+        requestLifecycleModuleAttributes,
+        fallbackMains: Object.freeze({
+          service: keyAgentServicePhaseThreeBTopLevelFunctionItems(
+            inputs.serviceMain,
+            "main",
+          ).map((main) => ({
+            attributes: main.attributes,
+            body: normalizeRustFragment(main.source),
+          })),
+          approval: keyAgentServicePhaseThreeBTopLevelFunctionItems(
+            inputs.approvalMainSource,
+            "main",
+          ).map((main) => ({
+            attributes: main.attributes,
+            body: normalizeRustFragment(main.source),
+          })),
+        }),
+        policyUseCounts: Object.freeze({
+          release: identifierOccurrenceCount(
+            rustLexicalCode(
+              keyAgentServicePhaseThreeBProductionProjection(
+                inputs.attestationSource,
+              ),
+            ),
+            "COMPILED_RELEASE_POLICY",
+          ),
+          parent: identifierOccurrenceCount(
+            rustLexicalCode(
+              keyAgentServicePhaseThreeBProductionProjection(
+                inputs.approvalBootstrapSource,
+              ),
+            ),
+            "COMPILED_PARENT_POLICY",
+          ),
+        }),
+        testCount: attributedTests.length,
+        testAttributeInventory,
+        ignoredTests: attributedTests
+          .filter(({ ignored }) => ignored)
+          .map(({ name }) => name),
+        missingDocumentationPatterns: [
+          keyAgentServicePhaseThreeBExactDocumentSection(
+            inputs.designDocument,
+            "**Current Phase 3B status: started, not passed.**",
+            "\n### Phase 4",
+          ),
+          keyAgentServicePhaseThreeBExactDocumentSection(
+            inputs.securityDocument,
+            "**Current Phase 3B status: started, not passed.**",
+            "\nAll seven Rust-startup supervisor integration positives",
+          ),
+          keyAgentServicePhaseThreeBExactDocumentSection(
+            inputs.platformReadme,
+            "  **Current Phase 3B status: started, not passed.**",
+            "\n  A deadline that observes pending overlapped pipe I/O",
+          ),
+          inputs.architectureDocument
+            .split(/\r?\n/gu)
+            .find((line) => line.startsWith("| Approval request ordering policy |")) ?? "",
+        ].map((section, documentIndex) => ({
+          documentIndex,
+          missing: keyAgentServicePhaseThreeBDocumentPatterns
+            .map((pattern, index) => ({
+              index,
+              accepted: pattern.test(
+                keyAgentServicePhaseTwoINormalizedDocument(section),
+              ),
+            }))
+            .filter(({ accepted }) => !accepted)
+            .map(({ index }) => index),
+        })),
+      });
+    }
+    return Object.values(checks).every(Boolean);
+  } catch (error) {
+    if (inputs === keyAgentServicePhaseThreeBInputs) {
+      keyAgentServicePhaseThreeBBaseError =
+        error instanceof Error ? error.message : String(error);
+    }
+    return false;
+  }
+};
+
+const keyAgentServicePhaseThreeBInputs = Object.freeze({
+  source: keyAgentServicePhaseThreeBSource,
+  moduleSource: keyAgentServiceExpectedPeerReexportSource,
+  workspaceProductionFiles: workspaceRustProductionFiles,
+  serviceManifest: keyAgentServiceManifest,
+  platformManifest: keyAgentServicePlatformManifest,
+  serviceMain: keyAgentServiceMain,
+  attestationSource: attestation,
+  approvalBootstrapSource: approvalBootstrapWindows,
+  approvalMainSource: approvalMain,
+  designDocument: keyAgentServiceDesign,
+  architectureDocument: sepoliaArchitectureDoc,
+  securityDocument: keyAgentServiceSecurityDecisions,
+  platformReadme: keyAgentServicePlatformReadme,
+});
+const keyAgentServicePhaseThreeBReplaceMutation = (
+  name,
+  field,
+  search,
+  replacement,
+) => {
+  const original = keyAgentServicePhaseThreeBInputs[field];
+  const mutated = replaceExactStringOnce(original, search, replacement);
+  return Object.freeze({
+    name,
+    changed: mutated !== original,
+    inputs: Object.freeze({
+      ...keyAgentServicePhaseThreeBInputs,
+      [field]: mutated,
+    }),
+  });
+};
+const keyAgentServicePhaseThreeBUpdateMutation = (name, field, update) => {
+  const original = keyAgentServicePhaseThreeBInputs[field];
+  const mutated = update(original);
+  return Object.freeze({
+    name,
+    changed: JSON.stringify(mutated) !== JSON.stringify(original),
+    inputs: Object.freeze({
+      ...keyAgentServicePhaseThreeBInputs,
+      [field]: mutated,
+    }),
+  });
+};
+const keyAgentServicePhaseThreeBSourceMutation = (name, search, replacement) =>
+  keyAgentServicePhaseThreeBReplaceMutation(
+    name,
+    "source",
+    search,
+    replacement,
+  );
+const keyAgentServicePhaseThreeBInsertProduction = (source, insertion) =>
+  insertBeforeBottomTestModule(source, `\n${insertion}\n`);
+const keyAgentServicePhaseThreeBMutateOwnerMethod = (
+  source,
+  ownerName,
+  methodName,
+  update,
+) => {
+  const owner = rustImplItems(source).find(
+    ({ header }) =>
+      rustImplImplementedTraitClause(header) === null &&
+      new RegExp(`\\b${ownerName}\\s*(?:<|\\b)`, "u").test(header),
+  )?.source;
+  if (owner === undefined) return source;
+  const method = rustFunctionBlockAtDepth(owner, methodName, 1);
+  if (method.length === 0) return source;
+  const mutatedOwner = replaceExactStringOnce(owner, method, update(method));
+  return mutatedOwner === owner
+    ? source
+    : replaceExactStringOnce(source, owner, mutatedOwner);
+};
+const keyAgentServicePhaseThreeBMutateOwner = (source, ownerName, update) => {
+  const owner = rustImplItems(source).find(
+    ({ header }) =>
+      rustImplImplementedTraitClause(header) === null &&
+      new RegExp(`\\b${ownerName}\\s*(?:<|\\b)`, "u").test(header),
+  )?.source;
+  return owner === undefined
+    ? source
+    : replaceExactStringOnce(source, owner, update(owner));
+};
+const keyAgentServicePhaseThreeBMethodMutation = (
+  name,
+  ownerName,
+  methodName,
+  update,
+) =>
+  keyAgentServicePhaseThreeBUpdateMutation(name, "source", (source) =>
+    keyAgentServicePhaseThreeBMutateOwnerMethod(
+      source,
+      ownerName,
+      methodName,
+      update,
+    ),
+  );
+const keyAgentServicePhaseThreeBSectionUpdate = (
+  document,
+  startMarker,
+  endMarker,
+  update,
+) => {
+  const section = keyAgentServicePhaseThreeBExactDocumentSection(
+    document,
+    startMarker,
+    endMarker,
+  );
+  return section.length === 0
+    ? document
+    : replaceExactStringOnce(document, section, update(section));
+};
+const keyAgentServicePhaseThreeBStopShipMutation = (
+  name,
+  field,
+  startMarker,
+  endMarker,
+) =>
+  keyAgentServicePhaseThreeBUpdateMutation(name, field, (document) =>
+    keyAgentServicePhaseThreeBSectionUpdate(
+      document,
+      startMarker,
+      endMarker,
+      (section) =>
+        replaceExactStringOnce(
+          section,
+          "**STOP-SHIP**",
+          "**UNVERIFIED BOUNDARY**",
+        ),
+    ),
+  );
+
+const keyAgentServicePhaseThreeBMoveOnlyDeriveMutations =
+  keyAgentServicePhaseThreeBMoveOnlyTypeNames.map((typeName, index) => {
+    const visibility = typeName === "RequestBinding" ? "" : "pub(super) ";
+    const declaration = `${visibility}struct ${typeName}`;
+    const derive = index % 2 === 0 ? "Clone" : "Copy";
+    return keyAgentServicePhaseThreeBSourceMutation(
+      `${typeName} gains ${derive}`,
+      declaration,
+      `#[derive(${derive})]\n${declaration}`,
+    );
+  });
+const keyAgentServicePhaseThreeBSemanticMutationProbes = Object.freeze([
+  ...keyAgentServicePhaseThreeBMoveOnlyDeriveMutations,
+  keyAgentServicePhaseThreeBSourceMutation(
+    "unsafe-code prohibition is removed",
+    "#![forbid(unsafe_code)]",
+    "#![allow(unsafe_code)]",
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "unsafe production helper appears",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeBInsertProduction(
+        source,
+        "unsafe fn hidden_phase_three_b_unsafe_escape() {}",
+      ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "network import appears",
+    "source",
+    (source) => `use std::net::TcpStream;\n${source}`,
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "Windows import appears",
+    "source",
+    (source) =>
+      `use windows::Win32::System::RemoteDesktop::WTSSESSION_NOTIFICATION;\n${source}`,
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "environment session authority appears",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeBInsertProduction(
+        source,
+        'fn hidden_session_environment() { let _ = std::env::var("SESSIONNAME"); }',
+      ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "cryptographic key crate import appears",
+    "source",
+    (source) => `use secp256k1::SecretKey;\n${source}`,
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "declarative macro item appears",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeBInsertProduction(
+        source,
+        "pub macro hidden_phase_three_b_escape() {}",
+      ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "extern crate import appears",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeBInsertProduction(
+        source,
+        "extern crate core as hidden_core;",
+      ),
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "request lifecycle module becomes public",
+    "moduleSource",
+    "mod request_lifecycle;",
+    "pub(crate) mod request_lifecycle;",
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "request lifecycle module becomes feature gated",
+    "moduleSource",
+    "#[allow(dead_code)]\n// Approval request ordering remains dormant until a production UI compositor exists.\nmod request_lifecycle;",
+    "#[cfg(feature = \"key-agent-service-lpac-launch-feasibility-test-hook\")]\n#[allow(dead_code)]\n// Approval request ordering remains dormant until a production UI compositor exists.\nmod request_lifecycle;",
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "request lifecycle module gains separated cfg disablement",
+    "moduleSource",
+    "#[allow(dead_code)]\n// Approval request ordering remains dormant until a production UI compositor exists.\nmod request_lifecycle;",
+    "#[cfg(any())]\n#[doc = \"dormant\"]\n#[allow(dead_code)]\n// Approval request ordering remains dormant until a production UI compositor exists.\nmod request_lifecycle;",
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "request lifecycle module gains cfg_attr disablement",
+    "moduleSource",
+    "#[allow(dead_code)]\n// Approval request ordering remains dormant until a production UI compositor exists.\nmod request_lifecycle;",
+    "#[cfg_attr(not(test), cfg(any()))]\n#[allow(dead_code)]\n// Approval request ordering remains dormant until a production UI compositor exists.\nmod request_lifecycle;",
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "request lifecycle declaration is hidden inside a macro definition",
+    "moduleSource",
+    "#[allow(dead_code)]\n// Approval request ordering remains dormant until a production UI compositor exists.\nmod request_lifecycle;",
+    "macro_rules! hidden_request_lifecycle { () => { #[allow(dead_code)] mod request_lifecycle; } }",
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "parent module gains a function-like macro invocation",
+    "moduleSource",
+    (source) =>
+      keyAgentServicePhaseThreeBInsertProduction(
+        source,
+        "hidden_phase_three_b_parent_escape!();",
+      ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "request lifecycle state is reexported",
+    "moduleSource",
+    (source) =>
+      keyAgentServicePhaseThreeBInsertProduction(
+        source,
+        "pub(crate) use self::request_lifecycle::ApprovedRequestPolicy;",
+      ),
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "platform feature inventory widens for Phase 3B",
+    "platformManifest",
+    "[features]\ndefault = []",
+    "[features]\ndefault = []\nphase-three-b-request-policy = []",
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "service default feature activates a probe",
+    "serviceManifest",
+    "default = []",
+    'default = ["lpac-rpc-probe-feasibility-test-hook"]',
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "active service default is hidden by an unrelated empty-default decoy",
+    "serviceManifest",
+    (manifest) =>
+      `${replaceExactStringOnce(
+        manifest,
+        "default = []",
+        'default = ["lpac-rpc-probe-feasibility-test-hook"]',
+      )}\n[package.metadata.phase-three-b-decoy]\ndefault = []\n`,
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "release policy becomes enabled",
+    "attestationSource",
+    "const COMPILED_RELEASE_POLICY: Option<ReleasePolicy> = None;",
+    "const COMPILED_RELEASE_POLICY: Option<ReleasePolicy> = Some(ReleasePolicy::default());",
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "enabled release policy adds a comment decoy claiming None",
+    "attestationSource",
+    (source) =>
+      `${replaceExactStringOnce(
+        source,
+        "const COMPILED_RELEASE_POLICY: Option<ReleasePolicy> = None;",
+        "const COMPILED_RELEASE_POLICY: Option<ReleasePolicy> = Some(ReleasePolicy::default());",
+      )}\n// const COMPILED_RELEASE_POLICY: Option<ReleasePolicy> = None;\n`,
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "release policy consumer swaps away from the disabled constant",
+    "attestationSource",
+    "let Some(policy) = COMPILED_RELEASE_POLICY else {",
+    "let Some(policy) = alternate_policy() else {",
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "Approval parent policy becomes enabled",
+    "approvalBootstrapSource",
+    "const COMPILED_PARENT_POLICY: Option<ParentTrustPolicy> = None;",
+    "const COMPILED_PARENT_POLICY: Option<ParentTrustPolicy> = alternate_policy();",
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "enabled Approval parent policy adds a comment decoy claiming None",
+    "approvalBootstrapSource",
+    (source) =>
+      `${replaceExactStringOnce(
+        source,
+        "const COMPILED_PARENT_POLICY: Option<ParentTrustPolicy> = None;",
+        "const COMPILED_PARENT_POLICY: Option<ParentTrustPolicy> = alternate_policy();",
+      )}\n// const COMPILED_PARENT_POLICY: Option<ParentTrustPolicy> = None;\n`,
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "Approval policy consumer swaps away from the disabled constant",
+    "approvalBootstrapSource",
+    "let Some(policy) = COMPILED_PARENT_POLICY else {",
+    "let Some(policy) = alternate_policy() else {",
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "ordinary service fallback exits successfully",
+    "serviceMain",
+    "    std::process::exit(SERVICE_UNAVAILABLE);",
+    "    std::process::exit(0);",
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "successful service fallback adds an exit-78 comment decoy",
+    "serviceMain",
+    (source) =>
+      `${replaceExactStringOnce(
+        source,
+        "    std::process::exit(SERVICE_UNAVAILABLE);",
+        "    std::process::exit(0);",
+      )}\n// std::process::exit(SERVICE_UNAVAILABLE);\n`,
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "service fallback exits one while a dead helper retains exit 78",
+    "serviceMain",
+    (source) =>
+      `${replaceExactStringOnce(
+        source,
+        "    std::process::exit(SERVICE_UNAVAILABLE);",
+        "    std::process::exit(1);",
+      )}\n#[cfg(any())]\nfn hidden_service_exit_78_decoy() { std::process::exit(SERVICE_UNAVAILABLE); }\n`,
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "ordinary Approval UI fallback exits successfully",
+    "approvalMainSource",
+    "    std::process::exit(PRIVATE_LAUNCH_UNAVAILABLE);",
+    "    std::process::exit(0);",
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "Approval fallback exits one while a dead helper retains exit 78",
+    "approvalMainSource",
+    (source) =>
+      `${replaceExactStringOnce(
+        source,
+        "    std::process::exit(PRIVATE_LAUNCH_UNAVAILABLE);",
+        "    std::process::exit(1);",
+      )}\n#[cfg(any())]\nfn hidden_approval_exit_78_decoy() { std::process::exit(PRIVATE_LAUNCH_UNAVAILABLE); }\n`,
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "production seed mint appears",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeBInsertProduction(
+        source,
+        "fn hidden_seed_mint<C: MonotonicClock>(clock: C, key: ExpectedPeerKey, session_id: NonZeroU32, original_deadline: C::Instant) -> RequestPolicySeed<C> { RequestPolicySeed { clock, key, session_id, role: ExpectedHelperRole::Approval, original_deadline, _move_only: MoveOnly } }",
+      ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "production request observation mint appears",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeBInsertProduction(
+        source,
+        "fn hidden_observation_mint(key: ExpectedPeerKey, session_id: NonZeroU32) -> RequestPolicyObservation { RequestPolicyObservation { key, session_id, role: ExpectedHelperRole::Approval, _move_only: MoveOnly } }",
+      ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "production decision observation mint appears",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeBInsertProduction(
+        source,
+        "fn hidden_decision_mint(peer: RequestPolicyObservation) -> UiDecisionObservation { UiDecisionObservation { peer, decision: UiDecision::Approve } }",
+      ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "production admitted state mint appears",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeBInsertProduction(
+        source,
+        "fn hidden_admitted_mint<C: MonotonicClock>(binding: RequestBinding<C>) -> AdmittedRequestPolicy<C> { AdmittedRequestPolicy { binding } }",
+      ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "external function-item caller appears",
+    "moduleSource",
+    (source) =>
+      keyAgentServicePhaseThreeBInsertProduction(
+        source,
+        "fn hidden_request_policy_alias<C: epoch::MonotonicClock>() { let _begin = request_lifecycle::AdmittedRequestPolicy::<C>::begin_ui; }",
+      ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "external UFCS caller appears",
+    "moduleSource",
+    (source) =>
+      keyAgentServicePhaseThreeBInsertProduction(
+        source,
+        "fn hidden_request_policy_ufcs<C: epoch::MonotonicClock>(state: request_lifecycle::AdmittedRequestPolicy<C>, observation: request_lifecycle::RequestPolicyObservation) { let _ = request_lifecycle::AdmittedRequestPolicy::begin_ui(state, observation); }",
+      ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "external raw import alias appears",
+    "moduleSource",
+    (source) =>
+      keyAgentServicePhaseThreeBInsertProduction(
+        source,
+        "use self::request_lifecycle::RequestPolicyObservation as r#HiddenObservation;",
+      ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "external generic state reference appears",
+    "moduleSource",
+    (source) =>
+      keyAgentServicePhaseThreeBInsertProduction(
+        source,
+        "fn hidden_generic_state_reference<C: epoch::MonotonicClock>(_: request_lifecycle::ApprovedRequestPolicy<C>) {}",
+      ),
+  ),
+  ...[
+    ["clock", "    clock: C,\n"],
+    ["key", "    key: ExpectedPeerKey,\n"],
+    ["session", "    session_id: NonZeroU32,\n"],
+    ["role", "    role: ExpectedHelperRole,\n"],
+    ["original deadline", "    original_deadline: C::Instant,\n"],
+  ].map(([label, field]) =>
+    keyAgentServicePhaseThreeBUpdateMutation(
+      `seed loses ${label} binding`,
+      "source",
+      (source) => {
+        const seed = rustLexicalItemBlockAtDepth(
+          source,
+          /(?:^|\n)\s*pub\(super\)\s+struct\s+RequestPolicySeed\s*</u,
+          0,
+        );
+        return seed.length === 0
+          ? source
+          : replaceExactStringOnce(
+              source,
+              seed,
+              replaceExactStringOnce(seed, field, ""),
+            );
+      },
+    ),
+  ),
+  keyAgentServicePhaseThreeBMethodMutation(
+    "validation stops reading a fresh clock",
+    "RequestBinding",
+    "validate",
+    (method) =>
+      method.replace(
+        "        let now = self\n            .clock\n            .now()\n            .ok_or(RequestPolicyRejectionCause::ClockUnavailable)?;",
+        "        let now = self.original_deadline;",
+      ),
+  ),
+  keyAgentServicePhaseThreeBMethodMutation(
+    "clock failure no longer rejects",
+    "RequestBinding",
+    "validate",
+    (method) =>
+      method.replace(
+        ".ok_or(RequestPolicyRejectionCause::ClockUnavailable)?;",
+        ".unwrap_or(self.original_deadline);",
+      ),
+  ),
+  keyAgentServicePhaseThreeBMethodMutation(
+    "deadline equality becomes accepted",
+    "RequestBinding",
+    "validate",
+    (method) => method.replace("if now >= self.original_deadline", "if now > self.original_deadline"),
+  ),
+  keyAgentServicePhaseThreeBMethodMutation(
+    "bound role check disappears",
+    "RequestBinding",
+    "validate",
+    (method) =>
+      method.replace(
+        "self.role != ExpectedHelperRole::Approval\n            || ",
+        "",
+      ),
+  ),
+  keyAgentServicePhaseThreeBMethodMutation(
+    "observation role check disappears",
+    "RequestBinding",
+    "validate",
+    (method) =>
+      method.replace(
+        "role != ExpectedHelperRole::Approval\n            || ",
+        "",
+      ),
+  ),
+  keyAgentServicePhaseThreeBMethodMutation(
+    "expected-peer key correlation disappears",
+    "RequestBinding",
+    "validate",
+    (method) => method.replace("key != self.key\n            || ", ""),
+  ),
+  keyAgentServicePhaseThreeBMethodMutation(
+    "session correlation disappears",
+    "RequestBinding",
+    "validate",
+    (method) => method.replace("|| session_id != self.session_id", ""),
+  ),
+  keyAgentServicePhaseThreeBMethodMutation(
+    "SecretInput role is accepted",
+    "RequestBinding",
+    "validate",
+    (method) =>
+      method.replace(
+        "role != ExpectedHelperRole::Approval",
+        "role != ExpectedHelperRole::SecretInput",
+      ),
+  ),
+  keyAgentServicePhaseThreeBMethodMutation(
+    "validation accepts an external clock argument",
+    "RequestBinding",
+    "validate",
+    (method) =>
+      method.replace(
+        "        &self,\n        observation: RequestPolicyObservation,",
+        "        &self,\n        external_clock: &C,\n        observation: RequestPolicyObservation,",
+      ),
+  ),
+  keyAgentServicePhaseThreeBMethodMutation(
+    "admission replaces the bound clock",
+    "AdmittedRequestPolicy",
+    "admit_for_test",
+    (method) =>
+      method.replace(
+        "        let binding = RequestBinding {\n            clock,",
+        "        let binding = RequestBinding {\n            clock: clock.clone(),",
+      ),
+  ),
+  keyAgentServicePhaseThreeBMethodMutation(
+    "admission extends the original deadline",
+    "AdmittedRequestPolicy",
+    "admit_for_test",
+    (method) =>
+      method.replace(
+        "            original_deadline,\n            _move_only: MoveOnly,",
+        "            original_deadline: clock.now().unwrap_or(original_deadline),\n            _move_only: MoveOnly,",
+      ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "binding gains a deadline setter",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeBMutateOwner(source, "RequestBinding", (owner) => {
+        const closingBrace = owner.lastIndexOf("}");
+        return closingBrace === -1
+          ? owner
+          : `${owner.slice(0, closingBrace)}    fn set_deadline(&mut self, deadline: C::Instant) { self.original_deadline = deadline; }\n${owner.slice(closingBrace)}`;
+      }),
+  ),
+  keyAgentServicePhaseThreeBMethodMutation(
+    "test admission bypasses validation",
+    "AdmittedRequestPolicy",
+    "admit_for_test",
+    (method) => method.replace("binding.validate(observation)", "Ok(())"),
+  ),
+  keyAgentServicePhaseThreeBMethodMutation(
+    "begin_ui bypasses validation",
+    "AdmittedRequestPolicy",
+    "begin_ui",
+    (method) => method.replace("self.binding.validate(observation)", "Ok(())"),
+  ),
+  keyAgentServicePhaseThreeBMethodMutation(
+    "authenticate_ui bypasses validation",
+    "UiStartingRequestPolicy",
+    "authenticate_ui",
+    (method) => method.replace("self.binding.validate(observation)", "Ok(())"),
+  ),
+  keyAgentServicePhaseThreeBMethodMutation(
+    "decide bypasses validation",
+    "UiAuthenticatedRequestPolicy",
+    "decide",
+    (method) => method.replace("self.binding.validate(peer)", "Ok(())"),
+  ),
+  ...[
+    "AdmittedRequestPolicy",
+    "UiStartingRequestPolicy",
+    "UiAuthenticatedRequestPolicy",
+    "ApprovedRequestPolicy",
+  ].map((ownerName) =>
+    keyAgentServicePhaseThreeBMethodMutation(
+      `${ownerName} recheck bypasses validation`,
+      ownerName,
+      "recheck_liveness",
+      (method) => method.replace("self.binding.validate(observation)", "Ok(())"),
+    ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "Admitted state gains an authenticated bypass edge",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeBMutateOwner(
+        source,
+        "AdmittedRequestPolicy",
+        (owner) => {
+          const closingBrace = owner.lastIndexOf("}");
+          return closingBrace === -1
+            ? owner
+            : `${owner.slice(0, closingBrace)}    fn bypass_authentication(self) -> UiAuthenticatedRequestPolicy<C> { UiAuthenticatedRequestPolicy { binding: self.binding } }\n${owner.slice(closingBrace)}`;
+        },
+      ),
+  ),
+  ...[
+    "recheck_liveness",
+    "cancel",
+    "invalidate_session",
+    "invalidate_active_sessions",
+  ].map((methodName) =>
+    keyAgentServicePhaseThreeBMethodMutation(
+      `Approved state loses ${methodName}`,
+      "ApprovedRequestPolicy",
+      methodName,
+      () => "",
+    ),
+  ),
+  keyAgentServicePhaseThreeBMethodMutation(
+    "targeted invalidation inverts its match",
+    "AdmittedRequestPolicy",
+    "invalidate_session",
+    (method) =>
+      method.replace(
+        "self.binding.session_id == session_id",
+        "self.binding.session_id != session_id",
+      ),
+  ),
+  keyAgentServicePhaseThreeBMethodMutation(
+    "targeted invalidation rejects an unrelated session",
+    "UiStartingRequestPolicy",
+    "invalidate_session",
+    (method) =>
+      method.replace(
+        "        } else {\n            Ok(self)\n        }",
+        "        } else {\n            Err(reject_binding(self.binding, RequestPolicyRejectionCause::SessionInvalidated))\n        }",
+      ),
+  ),
+  keyAgentServicePhaseThreeBMethodMutation(
+    "active invalidation preserves a live state",
+    "UiAuthenticatedRequestPolicy",
+    "invalidate_active_sessions",
+    (method) =>
+      method.replace(
+        "-> RejectedRequestPolicy",
+        "-> UiAuthenticatedRequestPolicy<C>",
+      ).replace(
+        "reject_binding(\n            self.binding,\n            RequestPolicyRejectionCause::ActiveSessionsInvalidated,\n        )",
+        "self",
+      ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "Rejected state gains an outbound transition",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeBInsertProduction(
+        source,
+        "impl RejectedRequestPolicy { fn retry<C: MonotonicClock>(self, binding: RequestBinding<C>) -> AdmittedRequestPolicy<C> { let _ = self; AdmittedRequestPolicy { binding } } }",
+      ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "Rejected state gains a cause accessor",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeBInsertProduction(
+        source,
+        "impl RejectedRequestPolicy { fn cause(&self) -> RequestPolicyRejectionCause { self.cause } }",
+      ),
+  ),
+  ...[
+    ["signing", "fn sign(&self) {}"],
+    ["intent", "fn intent(&self) {}"],
+    ["transcript", "fn transcript(&self) {}"],
+    ["durable conversion", "fn into_durable(self) {}"],
+    ["private key", "fn private_key(&self) {}"],
+  ].map(([label, method]) =>
+    keyAgentServicePhaseThreeBUpdateMutation(
+      `Approved state gains ${label} authority`,
+      "source",
+      (source) =>
+        keyAgentServicePhaseThreeBMutateOwner(
+          source,
+          "ApprovedRequestPolicy",
+          (owner) => {
+            const closingBrace = owner.lastIndexOf("}");
+            return closingBrace === -1
+              ? owner
+              : `${owner.slice(0, closingBrace)}    ${method}\n${owner.slice(closingBrace)}`;
+          },
+        ),
+    ),
+  ),
+  keyAgentServicePhaseThreeBSourceMutation(
+    "seed Debug exposes a raw field",
+    'formatter.write_str("RequestPolicySeed([REDACTED])")',
+    'formatter.debug_struct("RequestPolicySeed").field("session_id", &self.session_id).finish()',
+  ),
+  keyAgentServicePhaseThreeBSourceMutation(
+    "seed Debug uses a wrong literal beside an expected comment decoy",
+    'formatter.write_str("RequestPolicySeed([REDACTED])")',
+    '// formatter.write_str("RequestPolicySeed([REDACTED])")\n        formatter.write_str("RequestPolicySeed([VISIBLE])")',
+  ),
+  keyAgentServicePhaseThreeBSourceMutation(
+    "Rejected Debug uses a wrong literal beside an expected comment decoy",
+    '.debug_struct("RejectedRequestPolicy")',
+    '// formatter.debug_struct("RejectedRequestPolicy")\n            .debug_struct("WrongRejectedRequestPolicy")',
+  ),
+  keyAgentServicePhaseThreeBSourceMutation(
+    "seed derives Debug",
+    "pub(super) struct RequestPolicySeed<C>",
+    "#[derive(Debug)]\npub(super) struct RequestPolicySeed<C>",
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "top-level production macro invocation appears",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeBInsertProduction(
+        source,
+        "some_crate::expand_request_policy!();",
+      ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "Approved impl gains a macro invocation",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeBMutateOwner(
+        source,
+        "ApprovedRequestPolicy",
+        (owner) => {
+          const closingBrace = owner.lastIndexOf("}");
+          return closingBrace === -1
+            ? owner
+            : `${owner.slice(0, closingBrace)}    some_crate::expand_approved!();\n${owner.slice(closingBrace)}`;
+        },
+      ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "Approved impl gains an associated function-item alias",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeBMutateOwner(
+        source,
+        "ApprovedRequestPolicy",
+        (owner) => {
+          const closingBrace = owner.lastIndexOf("}");
+          return closingBrace === -1
+            ? owner
+            : `${owner.slice(0, closingBrace)}    const HIDDEN_CANCEL: fn(Self) -> RejectedRequestPolicy = Self::cancel;\n${owner.slice(closingBrace)}`;
+        },
+      ),
+  ),
+  keyAgentServicePhaseThreeBSourceMutation(
+    "Approved state gains an arbitrary proc attribute",
+    "pub(super) struct ApprovedRequestPolicy<C>",
+    "#[some_crate::expand]\npub(super) struct ApprovedRequestPolicy<C>",
+  ),
+  keyAgentServicePhaseThreeBSourceMutation(
+    "one Phase 3B regression test is deleted",
+    "    #[test]\n    fn request_policy_types_are_move_only_and_transition_methods_consume_self",
+    "    fn request_policy_types_are_move_only_and_transition_methods_consume_self",
+  ),
+  keyAgentServicePhaseThreeBSourceMutation(
+    "one Phase 3B regression test is renamed",
+    "fn admission_requires_a_strict_future_deadline",
+    "fn admission_accepts_a_future_deadline",
+  ),
+  keyAgentServicePhaseThreeBSourceMutation(
+    "one Phase 3B regression test is ignored",
+    "    #[test]\n    fn ui_start_requires_exact_key_session_and_approval_role",
+    "    #[test]\n    #[ignore]\n    fn ui_start_requires_exact_key_session_and_approval_role",
+  ),
+  keyAgentServicePhaseThreeBSourceMutation(
+    "one Phase 3B test is compiled out before its test attribute",
+    "    #[test]\n    fn ui_authentication_rechecks_exact_key_session_and_approval_role",
+    "    #[cfg(any())]\n    #[test]\n    fn ui_authentication_rechecks_exact_key_session_and_approval_role",
+  ),
+  keyAgentServicePhaseThreeBSourceMutation(
+    "one Phase 3B test is conditionally ignored before its test attribute",
+    "    #[test]\n    fn ui_decision_rechecks_binding_and_branches_exactly_once",
+    "    #[cfg_attr(test, ignore)]\n    #[test]\n    fn ui_decision_rechecks_binding_and_branches_exactly_once",
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "an unapproved eleventh test appears",
+    "source",
+    (source) => {
+      const closingBrace = source.lastIndexOf("}");
+      return closingBrace === -1
+        ? source
+        : `${source.slice(0, closingBrace)}    #[test]\n    fn hidden_phase_three_b_eleventh_test() {}\n${source.slice(closingBrace)}`;
+    },
+  ),
+  ...[
+    ["designDocument", "**Current Phase 3B status: started, not passed.**"],
+    ["architectureDocument", "**Current Phase 3B status: started, not passed.**"],
+    ["securityDocument", "**Current Phase 3B status: started, not passed.**"],
+    ["platformReadme", "  **Current Phase 3B status: started, not passed.**"],
+  ].map(([field, status]) =>
+    keyAgentServicePhaseThreeBReplaceMutation(
+      `${field} Phase 3B status weakens`,
+      field,
+      status,
+      status.replace("started, not passed", "under development"),
+    ),
+  ),
+  keyAgentServicePhaseThreeBStopShipMutation(
+    "design Phase 3B STOP-SHIP weakens",
+    "designDocument",
+    "**Current Phase 3B status: started, not passed.**",
+    "\n### Phase 4",
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "architecture Phase 3B STOP-SHIP weakens",
+    "architectureDocument",
+    (document) => {
+      const row = document
+        .split(/\r?\n/gu)
+        .find((line) => line.startsWith("| Approval request ordering policy |"));
+      return row === undefined
+        ? document
+        : replaceExactStringOnce(
+            document,
+            row,
+            replaceExactStringOnce(
+              row,
+              "**STOP-SHIP**",
+              "**UNVERIFIED BOUNDARY**",
+            ),
+          );
+    },
+  ),
+  keyAgentServicePhaseThreeBStopShipMutation(
+    "security Phase 3B STOP-SHIP weakens",
+    "securityDocument",
+    "**Current Phase 3B status: started, not passed.**",
+    "\nAll seven Rust-startup supervisor integration positives",
+  ),
+  keyAgentServicePhaseThreeBStopShipMutation(
+    "platform README Phase 3B STOP-SHIP weakens",
+    "platformReadme",
+    "  **Current Phase 3B status: started, not passed.**",
+    "\n  A deadline that observes pending overlapped pipe I/O",
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "documentation claims policy-local deadline proves OS liveness",
+    "designDocument",
+    (document) =>
+      keyAgentServicePhaseThreeBSectionUpdate(
+        document,
+        "**Current Phase 3B status: started, not passed.**",
+        "\n### Phase 4",
+        (section) =>
+          `${section}\nThe policy-local deadline proves operating-system process liveness.\n`,
+      ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "design reverses unrelated-state preservation",
+    "designDocument",
+    (document) =>
+      keyAgentServicePhaseThreeBSectionUpdate(
+        document,
+        "**Current Phase 3B status: started, not passed.**",
+        "\n### Phase 4",
+        (section) =>
+          replaceExactStringOnce(
+            section,
+            "preserves unrelated state.",
+            "does not preserve unrelated state.",
+          ),
+      ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "security declares Rejected nonterminal",
+    "securityDocument",
+    (document) =>
+      keyAgentServicePhaseThreeBSectionUpdate(
+        document,
+        "**Current Phase 3B status: started, not passed.**",
+        "\nAll seven Rust-startup supervisor integration positives",
+        (section) =>
+          replaceExactStringOnce(
+            section,
+            "`Rejected` is terminal",
+            "`Rejected` is not terminal",
+          ),
+      ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "architecture grants Approved signing authority",
+    "architectureDocument",
+    (document) => {
+      const row = document
+        .split(/\r?\n/gu)
+        .find((line) => line.startsWith("| Approval request ordering policy |"));
+      return row === undefined
+        ? document
+        : replaceExactStringOnce(
+            document,
+            row,
+            replaceExactStringOnce(
+              row,
+              "grants no signing, intent, candidate, cryptographic-key, or private-key-operation authority",
+              "grants signing, intent, candidate, cryptographic-key, or private-key authority",
+            ),
+          );
+    },
+  ),
+  ...[
+    [
+      "designDocument",
+      "it is neither signing authority nor",
+      "it is signing authority and",
+    ],
+    [
+      "securityDocument",
+      "It is not signing\nauthority",
+      "It is signing\nauthority",
+    ],
+    [
+      "platformReadme",
+      "supplies no signing",
+      "supplies signing",
+    ],
+  ].map(([field, search, replacement]) =>
+    keyAgentServicePhaseThreeBReplaceMutation(
+      `${field} reverses Approved non-authority`,
+      field,
+      search,
+      replacement,
+    ),
+  ),
+  ...[
+    [
+      "designDocument",
+      "owns the monotonic clock used to enforce it",
+      "does not own the monotonic clock used to enforce it",
+    ],
+    [
+      "securityDocument",
+      "owns the\nmonotonic clock used to enforce it",
+      "does not own the\nmonotonic clock used to enforce it",
+    ],
+    [
+      "platformReadme",
+      "owns\n  the monotonic clock used to enforce it",
+      "does not own\n  the monotonic clock used to enforce it",
+    ],
+    [
+      "architectureDocument",
+      "owns the monotonic clock used to enforce it",
+      "does not own the monotonic clock used to enforce it",
+    ],
+  ].map(([field, search, replacement]) =>
+    keyAgentServicePhaseThreeBReplaceMutation(
+      `${field} denies policy-owned monotonic clock ownership`,
+      field,
+      search,
+      replacement,
+    ),
+  ),
+  ...[
+    [
+      "designDocument",
+      "Active-topology invalidation and cancellation reject",
+      "Active-topology invalidation and cancellation preserve",
+    ],
+    [
+      "securityDocument",
+      "Active-topology invalidation and cancellation reject",
+      "Active-topology invalidation and cancellation preserve",
+    ],
+    [
+      "platformReadme",
+      "Active-topology invalidation and cancellation reject",
+      "Active-topology invalidation and cancellation preserve",
+    ],
+    [
+      "architectureDocument",
+      "active-topology invalidation or cancellation rejects",
+      "active-topology invalidation or cancellation preserves",
+    ],
+  ].map(([field, search, replacement]) =>
+    keyAgentServicePhaseThreeBReplaceMutation(
+      `${field} reverses active-topology rejection`,
+      field,
+      search,
+      replacement,
+    ),
+  ),
+  ...[
+    [
+      "designDocument",
+      "a terminal rejection rather than a retryable state.",
+      "an accepted result rather than a retryable state.",
+    ],
+    [
+      "securityDocument",
+      "or failed observation terminally rejects;",
+      "or failed observation is accepted;",
+    ],
+    [
+      "platformReadme",
+      "mismatch, or failed observation terminally rejects.",
+      "mismatch, or failed observation is accepted.",
+    ],
+    [
+      "architectureDocument",
+      "mismatch, or failed observation terminally rejects.",
+      "mismatch, or failed observation is accepted.",
+    ],
+  ].map(([field, search, replacement]) =>
+    keyAgentServicePhaseThreeBReplaceMutation(
+      `${field} accepts a clock-failure observation`,
+      field,
+      search,
+      replacement,
+    ),
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "platform README denies silent release exit 78",
+    "platformReadme",
+    "Default/release stays at\n  silent exit 78",
+    "Default/release stays at\n  not silent exit 78",
+  ),
+  ...[
+    [
+      "designDocument",
+      "**Current Phase 3B status: started, not passed.**",
+      "It is false that **Current Phase 3B status: started, not passed.**",
+    ],
+    [
+      "securityDocument",
+      "**Current Phase 3B status: started, not passed.**",
+      "It is false that **Current Phase 3B status: started, not passed.**",
+    ],
+    [
+      "platformReadme",
+      "  **Current Phase 3B status: started, not passed.**",
+      "  It is false that **Current Phase 3B status: started, not passed.**",
+    ],
+    [
+      "architectureDocument",
+      "**Current Phase 3B status: started, not passed.**",
+      "It is false that **Current Phase 3B status: started, not passed.**",
+    ],
+  ].map(([field, search, replacement]) =>
+    keyAgentServicePhaseThreeBReplaceMutation(
+      `${field} prefixes the Phase 3B start anchor with a false-that qualifier`,
+      field,
+      search,
+      replacement,
+    ),
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "design prefixes clock ownership with a false-that qualifier",
+    "designDocument",
+    "One move-only policy instance binds",
+    "It is false that one move-only policy instance binds",
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "security prefixes active-topology rejection with a false-that qualifier",
+    "securityDocument",
+    "Active-topology invalidation and cancellation reject",
+    "It is false that active-topology invalidation and cancellation reject",
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "platform README prefixes Approved non-authority with a false-that qualifier",
+    "platformReadme",
+    "The Approved\n  policy state is non-durable",
+    "It is false that the Approved\n  policy state is non-durable",
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "architecture prefixes binding and deadline with a false-that qualifier",
+    "architectureDocument",
+    "One move-only instance binds only",
+    "It is false that one move-only instance binds only",
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "security prefixes the OS-liveness disclaimer with a false-that qualifier",
+    "securityDocument",
+    "This slice's liveness is limited to that one-shot observation shape",
+    "It is false that this slice's liveness is limited to that one-shot observation shape",
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "platform README prefixes future observation minting with a false-that qualifier",
+    "platformReadme",
+    "A future compositor must mint every observation",
+    "It is false that a future compositor must mint every observation",
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "architecture prefixes privacy and zero-production evidence with a false-that qualifier",
+    "architectureDocument",
+    "The focused inventory is exactly 10/10, and architecture mutations pin",
+    "It is false that the focused inventory is exactly 10/10, and architecture mutations pin",
+  ),
+  keyAgentServicePhaseThreeBReplaceMutation(
+    "design denies the exact ten-test inventory",
+    "designDocument",
+    "The focused policy inventory is exactly 10/10.",
+    "The focused policy inventory is not exactly 10/10.",
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "inline production child module gains a hidden state caller",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeBInsertProduction(
+        source,
+        "mod hidden_request_policy_escape { fn call<C: super::MonotonicClock>(state: super::ApprovedRequestPolicy<C>) { let _ = state.cancel(); } }",
+      ),
+  ),
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "production const block gains a function-item alias",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeBInsertProduction(
+        source,
+        "const HIDDEN_REQUEST_POLICY_ESCAPE: () = { let _invalidate = ApprovedRequestPolicy::<NeverClock>::invalidate_session; };",
+      ),
+  ),
+]);
+const keyAgentServicePhaseThreeBExpectedSemanticMutationCount = 142;
+const keyAgentServicePhaseThreeBExpectedSemanticMutationNameSha256 =
+  "d3df9edb63b30e67e1229c48dca83b82a7df076c9d3eb4b176ab617685c4719d";
+const keyAgentServicePhaseThreeBSemanticMutationNames =
+  keyAgentServicePhaseThreeBSemanticMutationProbes.map(({ name }) => name);
+const keyAgentServicePhaseThreeBSemanticMutationNameSha256 =
+  normalizedSourceSha256(
+    JSON.stringify(keyAgentServicePhaseThreeBSemanticMutationNames),
+  );
+const keyAgentServicePhaseThreeBSemanticMutationResults = Object.freeze(
+  keyAgentServicePhaseThreeBSemanticMutationProbes.map((probe) =>
+    Object.freeze({
+      name: probe.name,
+      changed: probe.changed,
+      rejected: !keyAgentServicePhaseThreeBSemanticContract(
+        probe.inputs,
+        false,
+      ),
+    }),
+  ),
+);
+const keyAgentServicePhaseThreeBBottomProjectionControl =
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "bottom test-module lexical helper remains excluded",
+    "source",
+    (source) => {
+      const closingBrace = source.lastIndexOf("}");
+      return closingBrace === -1
+        ? source
+        : `${source.slice(0, closingBrace)}    fn phase_three_b_bottom_projection_control() {}\n${source.slice(closingBrace)}`;
+    },
+  );
+const keyAgentServicePhaseThreeBInlineProjectionControl =
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "inline cfg(test) equal-length lexical rename remains excluded",
+    "source",
+    (source) => {
+      const owner = rustImplItems(source).find(
+        ({ header, index }) =>
+          header === "impl RequestPolicyObservation" &&
+          JSON.stringify(
+            rustAttachedOuterAttributes(source, index).map(({ source }) =>
+              compactRust(source),
+            ),
+          ) === JSON.stringify(["#[cfg(test)]"]),
+      )?.source;
+      if (owner === undefined) return source;
+      const mutatedOwner = replaceExactStringOnce(
+        owner,
+        "const fn new_for_test(",
+        "const fn alt_for_test(",
+      );
+      if (mutatedOwner === owner) return source;
+      return replaceExactStringOnce(
+        replaceExactStringOnce(source, owner, mutatedOwner),
+        "RequestPolicyObservation::new_for_test(",
+        "RequestPolicyObservation::alt_for_test(",
+      );
+    },
+  );
+const keyAgentServicePhaseThreeBProjectionControlResults = Object.freeze(
+  [
+    keyAgentServicePhaseThreeBBottomProjectionControl,
+    keyAgentServicePhaseThreeBInlineProjectionControl,
+  ].map((probe) =>
+    Object.freeze({
+      name: probe.name,
+      changed: probe.changed,
+      fullChanged:
+        normalizedSourceSha256(probe.inputs.source) !==
+        normalizedSourceSha256(keyAgentServicePhaseThreeBInputs.source),
+      productionUnchanged:
+        keyAgentServicePhaseThreeBProductionProjection(probe.inputs.source) ===
+        keyAgentServicePhaseThreeBProductionProjection(
+          keyAgentServicePhaseThreeBInputs.source,
+        ),
+      accepted: keyAgentServicePhaseThreeBSemanticContract(
+        probe.inputs,
+        false,
+      ),
+    }),
+  ),
+);
+const keyAgentServicePhaseThreeBProductionControl =
+  keyAgentServicePhaseThreeBUpdateMutation(
+    "production lexical helper changes projection and is rejected",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeBInsertProduction(
+        source,
+        "fn phase_three_b_production_projection_control() {}",
+      ),
+  );
+const keyAgentServicePhaseThreeBProductionControlResult = Object.freeze({
+  name: keyAgentServicePhaseThreeBProductionControl.name,
+  changed: keyAgentServicePhaseThreeBProductionControl.changed,
+  productionChanged:
+    keyAgentServicePhaseThreeBProductionProjection(
+      keyAgentServicePhaseThreeBProductionControl.inputs.source,
+    ) !==
+    keyAgentServicePhaseThreeBProductionProjection(
+      keyAgentServicePhaseThreeBInputs.source,
+    ),
+  rejected: !keyAgentServicePhaseThreeBSemanticContract(
+    keyAgentServicePhaseThreeBProductionControl.inputs,
+    false,
+  ),
+});
+const keyAgentServicePhaseThreeBProductionPinControlInputs = Object.freeze({
+  ...keyAgentServicePhaseThreeBInputs,
+  source: keyAgentServicePhaseThreeBInsertProduction(
+    keyAgentServicePhaseThreeBInputs.source,
+    "// Phase 3B source production pin mutation control.",
+  ),
+  moduleSource: keyAgentServicePhaseThreeBInsertProduction(
+    keyAgentServicePhaseThreeBInputs.moduleSource,
+    "// Phase 3B parent-module production pin mutation control.",
+  ),
+});
+const keyAgentServicePhaseThreeBProductionPinControl = Object.freeze({
+  name: "production comments change both full and production source pins",
+  changed:
+    keyAgentServicePhaseThreeBProductionPinControlInputs.source !==
+      keyAgentServicePhaseThreeBInputs.source &&
+    keyAgentServicePhaseThreeBProductionPinControlInputs.moduleSource !==
+      keyAgentServicePhaseThreeBInputs.moduleSource,
+  inputs: keyAgentServicePhaseThreeBProductionPinControlInputs,
+});
+const keyAgentServicePhaseThreeBDocumentPinControlInputs = Object.freeze({
+  ...keyAgentServicePhaseThreeBInputs,
+  designDocument: `${keyAgentServicePhaseThreeBInputs.designDocument}\n`,
+  architectureDocument: `${keyAgentServicePhaseThreeBInputs.architectureDocument}\n`,
+  securityDocument: `${keyAgentServicePhaseThreeBInputs.securityDocument}\n`,
+  platformReadme: `${keyAgentServicePhaseThreeBInputs.platformReadme}\n`,
+});
+const keyAgentServicePhaseThreeBDocumentPinControl = Object.freeze({
+  name: "all four documentation whitespace changes remain pin-only",
+  changed: [
+    "designDocument",
+    "architectureDocument",
+    "securityDocument",
+    "platformReadme",
+  ].every(
+    (field) =>
+      keyAgentServicePhaseThreeBDocumentPinControlInputs[field] !==
+      keyAgentServicePhaseThreeBInputs[field],
+  ),
+  inputs: keyAgentServicePhaseThreeBDocumentPinControlInputs,
+});
+const keyAgentServicePhaseThreeBBasePinValues =
+  keyAgentServicePhaseThreeBPinValues(keyAgentServicePhaseThreeBInputs);
+const keyAgentServicePhaseThreeBExpectedChangedPinNames = Object.freeze([
+  ["sourceFull"],
+  ["sourceFull", "sourceProduction", "moduleFull", "moduleProduction"],
+  ["design", "architecture", "security", "platformReadme"],
+]);
+const keyAgentServicePhaseThreeBPinControlResults = Object.freeze(
+  [
+    keyAgentServicePhaseThreeBBottomProjectionControl,
+    keyAgentServicePhaseThreeBProductionPinControl,
+    keyAgentServicePhaseThreeBDocumentPinControl,
+  ].map((probe, index) =>
+    Object.freeze({
+      name: probe.name,
+      changed: probe.changed,
+      semanticAccepted: keyAgentServicePhaseThreeBSemanticContract(
+        probe.inputs,
+        false,
+      ),
+      pinRejected: !keyAgentServicePhaseThreeBPinContract(probe.inputs),
+      changedPinNames: Object.entries(
+        keyAgentServicePhaseThreeBPinValues(probe.inputs),
+      )
+        .filter(
+          ([name, value]) => keyAgentServicePhaseThreeBBasePinValues[name] !== value,
+        )
+        .map(([name]) => name),
+      expectedChangedPinNames:
+        keyAgentServicePhaseThreeBExpectedChangedPinNames[index],
+    }),
+  ),
+);
+const keyAgentServicePhaseThreeBExpectedProjectionControlNames = Object.freeze([
+  "bottom test-module lexical helper remains excluded",
+  "inline cfg(test) equal-length lexical rename remains excluded",
+]);
+const keyAgentServicePhaseThreeBExpectedPinControlNames = Object.freeze([
+  "bottom test-module lexical helper remains excluded",
+  "production comments change both full and production source pins",
+  "all four documentation whitespace changes remain pin-only",
+]);
+const keyAgentServicePhaseThreeBInventoryAccepted =
+  keyAgentServicePhaseThreeBSemanticMutationProbes.length ===
+    keyAgentServicePhaseThreeBExpectedSemanticMutationCount &&
+  new Set(keyAgentServicePhaseThreeBSemanticMutationNames).size ===
+    keyAgentServicePhaseThreeBExpectedSemanticMutationCount &&
+  keyAgentServicePhaseThreeBSemanticMutationNameSha256 ===
+    keyAgentServicePhaseThreeBExpectedSemanticMutationNameSha256 &&
+  keyAgentServicePhaseThreeBProjectionControlResults.length === 2 &&
+  keyAgentServicePhaseThreeBPinControlResults.length === 3 &&
+  JSON.stringify(
+    keyAgentServicePhaseThreeBProjectionControlResults.map(({ name }) => name),
+  ) === JSON.stringify(keyAgentServicePhaseThreeBExpectedProjectionControlNames) &&
+  JSON.stringify(
+    keyAgentServicePhaseThreeBPinControlResults.map(({ name }) => name),
+  ) === JSON.stringify(keyAgentServicePhaseThreeBExpectedPinControlNames) &&
+  keyAgentServicePhaseThreeBProductionControlResult.name ===
+    "production lexical helper changes projection and is rejected";
+const keyAgentServicePhaseThreeBBaseAccepted =
+  keyAgentServicePhaseThreeBInventoryAccepted &&
+  keyAgentServicePhaseThreeBSemanticContract(
+    keyAgentServicePhaseThreeBInputs,
+    false,
+  );
+const keyAgentServicePhaseThreeBPinsAccepted =
+  keyAgentServicePhaseThreeBPinContract(keyAgentServicePhaseThreeBInputs);
+requireInvariant(
+  keyAgentServicePhaseThreeBBaseAccepted &&
+    keyAgentServicePhaseThreeBPinsAccepted &&
+    keyAgentServicePhaseThreeBSemanticMutationProbes.length ===
+      keyAgentServicePhaseThreeBExpectedSemanticMutationCount &&
+    keyAgentServicePhaseThreeBProjectionControlResults.length === 2 &&
+    keyAgentServicePhaseThreeBPinControlResults.length === 3 &&
+    keyAgentServicePhaseThreeBSemanticMutationResults.every(
+      ({ changed, rejected }) => changed && rejected,
+    ) &&
+    keyAgentServicePhaseThreeBProjectionControlResults.every(
+      ({ changed, fullChanged, productionUnchanged, accepted }) =>
+        changed && fullChanged && productionUnchanged && accepted,
+    ) &&
+    keyAgentServicePhaseThreeBProductionControlResult.changed &&
+    keyAgentServicePhaseThreeBProductionControlResult.productionChanged &&
+    keyAgentServicePhaseThreeBProductionControlResult.rejected &&
+    keyAgentServicePhaseThreeBPinControlResults.every(
+      ({
+        changed,
+        semanticAccepted,
+        pinRejected,
+        changedPinNames,
+        expectedChangedPinNames,
+      }) =>
+        changed &&
+        semanticAccepted &&
+        pinRejected &&
+        JSON.stringify(changedPinNames) ===
+          JSON.stringify(expectedChangedPinNames),
+    ),
+  `the dormant Phase 3B Approval request typestate must retain its exact move-only clock-bound five-state ordering, fresh inclusive validation and exact Approval correlation at admission/every edge/every live recheck, cancellation and selective/global invalidation, data-free terminal rejection, no Approved authority, exact ten-test inventory, zero production mint/callers, private production-compiled dormancy, default/release disablement, and four pinned STOP-SHIP documents; base=${keyAgentServicePhaseThreeBBaseAccepted}, pins=${keyAgentServicePhaseThreeBPinsAccepted}, expected negatives=${keyAgentServicePhaseThreeBExpectedSemanticMutationCount}, actual negatives=${keyAgentServicePhaseThreeBSemanticMutationProbes.length}, projection controls=${keyAgentServicePhaseThreeBProjectionControlResults.length}/2, pin controls=${keyAgentServicePhaseThreeBPinControlResults.length}/3, failed base checks=${JSON.stringify(
+    Object.entries(keyAgentServicePhaseThreeBBaseChecks)
+      .filter(([, accepted]) => !accepted)
+      .map(([name]) => name),
+  )}, mutation name pin=${keyAgentServicePhaseThreeBSemanticMutationNameSha256}, base metrics=${JSON.stringify(keyAgentServicePhaseThreeBBaseMetrics)}, failed negatives=${JSON.stringify(
+    keyAgentServicePhaseThreeBSemanticMutationResults
+      .filter(({ changed, rejected }) => !changed || !rejected)
+      .map(({ name, changed, rejected }) => ({ name, changed, rejected })),
+  )}, base error=${JSON.stringify(keyAgentServicePhaseThreeBBaseError)}, failed projection controls=${JSON.stringify(
+    keyAgentServicePhaseThreeBProjectionControlResults.filter(
+      ({ changed, fullChanged, productionUnchanged, accepted }) =>
+        !changed || !fullChanged || !productionUnchanged || !accepted,
+    ),
+  )}, production control=${JSON.stringify(
+    keyAgentServicePhaseThreeBProductionControlResult,
+  )}, failed pin controls=${JSON.stringify(
+    keyAgentServicePhaseThreeBPinControlResults.filter(
+      ({ changed, semanticAccepted, pinRejected, changedPinNames, expectedChangedPinNames }) =>
+        !changed ||
+        !semanticAccepted ||
+        !pinRejected ||
+        JSON.stringify(changedPinNames) !== JSON.stringify(expectedChangedPinNames),
+    ),
+  )}`,
+);
+
 const isWorkspaceBuildOutputPath = (path) =>
   /^(?:crates\/[^/]+|demo\/sepolia-wallet)\/target(?:\/|$)/iu.test(path);
 const workspaceRustCompilationInputs = [
@@ -43101,7 +45809,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "dc128c60a5f1b765a671a61e8f379cd2afb5e2a3760864064ab04fd3eb5fa5e4";
+  "2229023993d4acf70a156fce05e9d53f7af68dd86aa8fa9f21eb8b4fbac5d7ff";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -64385,7 +67093,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/mod.rs",
     unsafeCount: 12,
-    sha256: "db57c867e7fd10ecd72ef09903ca89db67599cfde528f540bce2ec30ccedebfc",
+    sha256: "bee568e4962241ec0e69e2c4e698152d5efb80b54279350cb8b11b51008c57a7",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_token/sys.rs",
@@ -64821,6 +67529,27 @@ const keyAgentProvisioningDeriveAliasScannerProbe =
 use approval_wire::Mint as Clone;
 use approval_wire::OtherMint as r#Debug;
 `);
+const platformWindowsUnsafeSourceInventoryMismatches = [
+  ...new Set([
+    ...platformWindowsUnsafeSourceInventory.map(({ path }) => path),
+    ...approvedPlatformWindowsUnsafeSourceInventory.map(({ path }) => path),
+  ]),
+]
+  .sort((left, right) => left.localeCompare(right))
+  .map((path) => ({
+    path,
+    current:
+      platformWindowsUnsafeSourceInventory.find((entry) => entry.path === path) ??
+      null,
+    approved:
+      approvedPlatformWindowsUnsafeSourceInventory.find(
+        (entry) => entry.path === path,
+      ) ?? null,
+  }))
+  .filter(
+    ({ current, approved }) =>
+      JSON.stringify(current) !== JSON.stringify(approved),
+  );
 const keyAgentFreshProvisioningOrder = [
   "PreparedKeyAgentProfile::provision_fresh()?",
   "create_fixed_key_agent_storage_root(",
@@ -64858,6 +67587,32 @@ requireInvariant(
     approvedPlatformWindowsUnsafeSourceInventory.filter(
       ({ path }) => path === keyAgentServicePhaseTwoIParentPath,
     ),
+  )}, equality=${JSON.stringify({
+    pending:
+      JSON.stringify(pendingKeyAgentProvisioningTokenInventory) ===
+      JSON.stringify([
+        { path: "crates/platform-windows/src/key_agent_lpac.rs", count: 3 },
+        { path: "crates/platform-windows/src/key_agent_supervisor.rs", count: 3 },
+      ]),
+    authorityTypeErasure:
+      JSON.stringify(platformWindowsAuthorityTypeErasureInventory) ===
+      JSON.stringify(approvedPlatformWindowsAuthorityTypeErasureInventory),
+    unsafeSources:
+      JSON.stringify(platformWindowsUnsafeSourceInventory) ===
+      JSON.stringify(approvedPlatformWindowsUnsafeSourceInventory),
+    visibleGenericFunctions:
+      JSON.stringify(platformWindowsVisibleGenericFunctionInventory) ===
+      JSON.stringify(approvedPlatformWindowsVisibleGenericFunctionInventory),
+  })}, Phase 3B authority-type-erasure entries=${JSON.stringify(
+    platformWindowsAuthorityTypeErasureInventory.filter(
+      ({ path }) => path === keyAgentServicePhaseThreeBPath,
+    ),
+  )}, Phase 3B visible generic entries=${JSON.stringify(
+    platformWindowsVisibleGenericFunctionInventory.filter(
+      ({ path }) => path === keyAgentServicePhaseThreeBPath,
+    ),
+  )}, unsafe-source mismatches=${JSON.stringify(
+    platformWindowsUnsafeSourceInventoryMismatches,
   )}`,
 );
 requireInvariant(
@@ -72606,13 +75361,13 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "README.md":
     "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
   "crates/platform-windows/README.md":
-    "3a0f25bf97b178be7d9198fb9d6b55c9e6cf2321cd04bee94e99ec451b4624f5",
+    "8d307a3d1379f13c3be35a807522c34bc1a6300b386af45dd42ae3ccdb3716d1",
   "docs/architecture.md":
-    "7e45441bff08f8068bc8fce2911eb1786e1cd63c982c895651c797a13396a57f",
+    "6a82aabd410aafb96ea402cc8fcbdc07f410b9932d001ce3fb63b1b4d58247cf",
   "docs/protocol-contract.md":
     "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "docs/security-decisions.md":
-    "9cc6eb70f2f052c75d339c2e763c2b662e3a6460b9aaa3274bcd1f82981deda5",
+    "a71d48d741b1f707b3e76cc7cc1c15715782255b123902dcfa7a22ed8ff60065",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -78476,10 +81231,10 @@ const currentDebuggerExitDocumentationContract = (documents) =>
   });
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
-  "3a0f25bf97b178be7d9198fb9d6b55c9e6cf2321cd04bee94e99ec451b4624f5",
-  "7e45441bff08f8068bc8fce2911eb1786e1cd63c982c895651c797a13396a57f",
+  "8d307a3d1379f13c3be35a807522c34bc1a6300b386af45dd42ae3ccdb3716d1",
+  "6a82aabd410aafb96ea402cc8fcbdc07f410b9932d001ce3fb63b1b4d58247cf",
   "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
-  "9cc6eb70f2f052c75d339c2e763c2b662e3a6460b9aaa3274bcd1f82981deda5",
+  "a71d48d741b1f707b3e76cc7cc1c15715782255b123902dcfa7a22ed8ff60065",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,
@@ -88346,9 +91101,11 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "crates/platform-windows/README.md",
     source: activationReadme,
     anchor: "A separate dormant solution-mechanics probe",
+    semanticEndAnchor:
+      "\n  **Current Phase 3B status: started, not passed.**",
     endAnchor:
       "The adoption transition, release-binding, and dormant supervisor binder all",
-    sha256: "3a0f25bf97b178be7d9198fb9d6b55c9e6cf2321cd04bee94e99ec451b4624f5",
+    sha256: "8d307a3d1379f13c3be35a807522c34bc1a6300b386af45dd42ae3ccdb3716d1",
   },
   {
     path: "docs/adr/0001-windows-key-agent-service-boundary.md",
@@ -88363,23 +91120,30 @@ const keyAgentDebuggerDocumentationSpecs = [
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
     endAnchor: "For the durable-state rows below",
-    sha256: "7e45441bff08f8068bc8fce2911eb1786e1cd63c982c895651c797a13396a57f",
+    sha256: "6a82aabd410aafb96ea402cc8fcbdc07f410b9932d001ce3fb63b1b4d58247cf",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
     endAnchor: "\n## In scope\n",
-    sha256: "a320dbc5923395ba12fbd42a5929703d8d9652962c7bc0b56a58a3ed76a2cf76",
+    sha256: "ba48c264cd40cd320bf2aefd55412f92a0f0694d48dc12a59ee8d81d9785107e",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "The dedicated-process feasibility slice remains narrower",
     endAnchor: "The runtime-enabled Secret Input/recovery child instead",
-    sha256: "9cc6eb70f2f052c75d339c2e763c2b662e3a6460b9aaa3274bcd1f82981deda5",
+    sha256: "a71d48d741b1f707b3e76cc7cc1c15715782255b123902dcfa7a22ed8ff60065",
   },
 ];
+const keyAgentDebuggerDocumentationExpectedWindowSemanticHashes = Object.freeze({
+  "crates/platform-windows/README.md":
+    "dc948f1c05c046a43f08eb36e941b4107a67c03cdcfb4c74a72344de3ee8764e",
+});
+const keyAgentDebuggerDocumentationExpectedWindowExit78Counts = Object.freeze({
+  "crates/platform-windows/README.md": 4,
+});
 const keyAgentDebuggerDocumentationPatterns = [
   /key-agent-debugger-wire/u,
   /(?:80\/72\/56\/96\/56\/96\s+bytes|80(?:-\s*byte)?[\s\S]{0,160}72(?:-\s*byte)?[\s\S]{0,160}56(?:-\s*byte)?[\s\S]{0,160}96(?:-\s*byte)?[\s\S]{0,160}56(?:-\s*byte)?[\s\S]{0,160}96(?:-\s*byte)?)/iu,
@@ -88691,6 +91455,23 @@ const keyAgentDebuggerDocumentationWindow = (spec) => {
 };
 const keyAgentDebuggerDocumentationWindowStart = (spec) =>
   Math.max(0, spec.source.indexOf(spec.anchor) - 15_000);
+const keyAgentDebuggerDocumentationSemanticWindow = (spec, window) => {
+  if (window === null || spec.semanticEndAnchor === undefined) return window;
+  const windowStart = keyAgentDebuggerDocumentationWindowStart(spec);
+  const boundary = spec.source.indexOf(spec.semanticEndAnchor);
+  if (
+    boundary === -1 ||
+    boundary <= spec.source.indexOf(spec.anchor) + spec.anchor.length ||
+    boundary >= windowStart + window.length ||
+    spec.source.indexOf(
+      spec.semanticEndAnchor,
+      boundary + spec.semanticEndAnchor.length,
+    ) !== -1
+  ) {
+    return null;
+  }
+  return spec.source.slice(windowStart, boundary);
+};
 const keyAgentDebuggerDocumentationPatternTest = (pattern, source) => {
   if (pattern.global || pattern.sticky) pattern.lastIndex = 0;
   const matched = pattern.test(source);
@@ -88713,6 +91494,25 @@ const keyAgentDebuggerDocumentationPinContract = (specs) =>
 const keyAgentDebuggerDocumentationAnalysisCache = new Map();
 const keyAgentDebuggerDocumentationAnalysisUncached = (spec) => {
   const window = keyAgentDebuggerDocumentationWindow(spec);
+  const semanticWindow = keyAgentDebuggerDocumentationSemanticWindow(spec, window);
+  const expectedWindowSemanticHash =
+    keyAgentDebuggerDocumentationExpectedWindowSemanticHashes[spec.path];
+  const expectedWindowExit78Count =
+    keyAgentDebuggerDocumentationExpectedWindowExit78Counts[spec.path];
+  const windowSemanticHash =
+    semanticWindow === null
+      ? null
+      : keyAgentDebuggerDocumentationSourceSha256(semanticWindow);
+  const windowExit78Count =
+    semanticWindow === null
+      ? 0
+      : [...semanticWindow.matchAll(/\bexits?\s+78\b/giu)].length;
+  const semanticWindowAccepted =
+    expectedWindowSemanticHash === undefined ||
+    windowSemanticHash === expectedWindowSemanticHash;
+  const exit78WindowAccepted =
+    expectedWindowExit78Count === undefined ||
+    windowExit78Count === expectedWindowExit78Count;
   const documentationPatterns = keyAgentDebuggerDocumentationPatterns.map(
     (pattern) =>
       window !== null &&
@@ -88730,6 +91530,10 @@ const keyAgentDebuggerDocumentationAnalysisUncached = (spec) => {
         keyAgentDebuggerDocumentationPatternTest(pattern, window),
     );
   const analysis = Object.freeze({
+    windowSemanticHash,
+    windowExit78Count,
+    semanticWindowAccepted,
+    exit78WindowAccepted,
     documentationPatterns: Object.freeze(documentationPatterns),
     jobPatterns: Object.freeze(jobPatterns),
     artifactPatterns: Object.freeze(artifactPatterns),
@@ -88744,6 +91548,8 @@ const keyAgentDebuggerDocumentationAnalysisUncached = (spec) => {
       keyAgentDebuggerArtifactAdmissionPerDocumentPatternIndexes.every(
         (index) => artifactPatterns[index],
       ) &&
+      semanticWindowAccepted &&
+      exit78WindowAccepted &&
       keyAgentDebuggerRawSlotDocumentationWindowContract(window) &&
       keyAgentDebuggerStrictCleanupDocumentationWindowContract(
         spec.path,
@@ -88765,7 +91571,7 @@ const keyAgentDebuggerDocumentationAnalysis = (spec) => {
     byIdentity = new Map();
     keyAgentDebuggerDocumentationAnalysisCache.set(spec.source, byIdentity);
   }
-  const identity = `${spec.path}\0${spec.anchor}\0${spec.endAnchor}`;
+  const identity = `${spec.path}\0${spec.anchor}\0${spec.semanticEndAnchor ?? ""}\0${spec.endAnchor}`;
   const cached = byIdentity.get(identity);
   if (cached !== undefined) return cached;
   const analysis = keyAgentDebuggerDocumentationAnalysisUncached(spec);
@@ -88810,11 +91616,21 @@ requireInvariant(
 const keyAgentDebuggerDocumentationSemanticContract = (specs) => {
   if (
     JSON.stringify(
-      specs.map(({ path, anchor, endAnchor }) => ({ path, anchor, endAnchor })),
+      specs.map(({ path, anchor, semanticEndAnchor, endAnchor }) => ({
+        path,
+        anchor,
+        semanticEndAnchor,
+        endAnchor,
+      })),
     ) !==
     JSON.stringify(
       keyAgentDebuggerDocumentationSpecs.map(
-        ({ path, anchor, endAnchor }) => ({ path, anchor, endAnchor }),
+        ({ path, anchor, semanticEndAnchor, endAnchor }) => ({
+          path,
+          anchor,
+          semanticEndAnchor,
+          endAnchor,
+        }),
       ),
     )
   ) {
@@ -89203,6 +92019,50 @@ const keyAgentDebuggerDocumentationJobContradictionMutations =
         ),
     );
   });
+const keyAgentDebuggerLegacyReadmeExit78Boundary =
+  "\n  **Current Phase 3B status: started, not passed.**";
+const keyAgentDebuggerLegacyReadmeExit78Mutation =
+  keyAgentDebuggerDocumentationSpecs.map((spec, index) => {
+    if (index !== 0) return spec;
+    const boundary = spec.source.indexOf(
+      keyAgentDebuggerLegacyReadmeExit78Boundary,
+    );
+    if (boundary === -1) return spec;
+    const prefix = spec.source.slice(0, boundary);
+    const mutatedPrefix = prefix.replace(
+      /\bexits?\s+78\b/giu,
+      "REMOVED_LEGACY_DEBUGGER_EXIT_78",
+    );
+    return {
+      ...spec,
+      source: `${mutatedPrefix}${spec.source.slice(boundary)}`,
+    };
+  });
+const keyAgentDebuggerLegacyReadmeExit78RemovalCount = [
+  ...keyAgentDebuggerDocumentationSpecs[0].source
+    .slice(
+      0,
+      keyAgentDebuggerDocumentationSpecs[0].source.indexOf(
+        keyAgentDebuggerLegacyReadmeExit78Boundary,
+      ),
+    )
+    .matchAll(/\bexits?\s+78\b/giu),
+].length;
+const keyAgentDebuggerLegacyReadmeExit78MutationResults = [
+  {
+    changed:
+      JSON.stringify(keyAgentDebuggerLegacyReadmeExit78Mutation) !==
+      JSON.stringify(keyAgentDebuggerDocumentationSpecs),
+    semanticRejected:
+      !keyAgentDebuggerDocumentationSemanticContract(
+        keyAgentDebuggerLegacyReadmeExit78Mutation,
+      ),
+    pinRejected:
+      !keyAgentDebuggerDocumentationPinContract(
+        keyAgentDebuggerLegacyReadmeExit78Mutation,
+      ),
+  },
+];
 const keyAgentDebuggerDocumentationBasePinAccepted =
   keyAgentDebuggerDocumentationPinContract(keyAgentDebuggerDocumentationSpecs);
 const keyAgentDebuggerDocumentationBaseSemanticAccepted =
@@ -89227,6 +92087,10 @@ const keyAgentDebuggerDocumentationBaseMetrics =
         .map((accepted, index) => ({ accepted, index }))
         .filter(({ accepted }) => !accepted)
         .map(({ index }) => index),
+      windowSemanticHash: analysis.windowSemanticHash,
+      windowExit78Count: analysis.windowExit78Count,
+      semanticWindowAccepted: analysis.semanticWindowAccepted,
+      exit78WindowAccepted: analysis.exit78WindowAccepted,
     };
   });
 const keyAgentDebuggerDocumentationFailedMutationGroups = [
@@ -89299,6 +92163,7 @@ const keyAgentDebuggerDocumentationFailedMutationGroups = [
     ["raw-slot", keyAgentDebuggerRawSlotDocumentationMutationResults],
     ["cleanup-delete", keyAgentDebuggerStrictCleanupDeletionMutationResults],
     ["cleanup-exchange", keyAgentDebuggerStrictCleanupExchangeMutationResults],
+    ["legacy-readme-exit-78", keyAgentDebuggerLegacyReadmeExit78MutationResults],
   ].map(([name, results]) => ({
     name,
     failed: results
@@ -89353,6 +92218,11 @@ requireInvariant(
         changed && semanticRejected && pinRejected,
     ) &&
     keyAgentDebuggerStrictCleanupExchangeMutationResults.every(
+      ({ changed, semanticRejected, pinRejected }) =>
+        changed && semanticRejected && pinRejected,
+    ) &&
+    keyAgentDebuggerLegacyReadmeExit78RemovalCount === 4 &&
+    keyAgentDebuggerLegacyReadmeExit78MutationResults.every(
       ({ changed, semanticRejected, pinRejected }) =>
         changed && semanticRejected && pinRejected,
     ) &&
