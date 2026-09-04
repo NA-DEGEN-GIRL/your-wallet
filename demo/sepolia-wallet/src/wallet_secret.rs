@@ -897,15 +897,20 @@ mod tests {
     }
 
     #[test]
-    fn generated_mnemonics_are_only_twelve_or_twenty_four_words() -> Result<(), SecretError> {
-        let twelve = WalletSecret::generate_mnemonic(MnemonicWordCount::Twelve)?;
-        let twenty_four = WalletSecret::generate_mnemonic(MnemonicWordCount::TwentyFour)?;
-        assert_eq!(twelve.word_count(), Some(12));
-        assert_eq!(twenty_four.word_count(), Some(24));
-        assert_ne!(
-            twelve.export_mnemonic()?.expose_secret(),
-            twenty_four.export_mnemonic()?.expose_secret()
-        );
+    fn generated_mnemonics_are_fresh_and_only_twelve_or_twenty_four_words()
+    -> Result<(), SecretError> {
+        for (word_count, expected_words) in [
+            (MnemonicWordCount::Twelve, 12),
+            (MnemonicWordCount::TwentyFour, 24),
+        ] {
+            let first = WalletSecret::generate_mnemonic(word_count)?;
+            let second = WalletSecret::generate_mnemonic(word_count)?;
+            assert_eq!(first.word_count(), Some(expected_words));
+            assert_eq!(second.word_count(), Some(expected_words));
+            let first_phrase = first.export_mnemonic()?;
+            let second_phrase = second.export_mnemonic()?;
+            assert!(first_phrase.expose_secret() != second_phrase.expose_secret());
+        }
         Ok(())
     }
 

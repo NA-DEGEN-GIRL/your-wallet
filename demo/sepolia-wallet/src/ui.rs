@@ -8025,6 +8025,65 @@ mod tests {
         (lighter + 0.05) / (darker + 0.05)
     }
 
+    fn assert_secret_origin_inputs_are_empty(app: &super::WalletApp) {
+        assert!(app.password.is_empty());
+        assert!(app.password_confirmation.is_empty());
+        assert!(app.old_password.is_empty());
+        assert!(app.imported_secret.is_empty());
+        assert!(app.reauth_password.is_empty());
+        assert!(app.generated_backup.is_none());
+        assert!(app.secret_reveal.is_none());
+    }
+
+    #[test]
+    fn wallet_app_constructors_start_without_secret_origin_inputs() {
+        let available = super::WalletApp::new(Box::new(RecordingBackend::default()));
+        assert_secret_origin_inputs_are_empty(&available);
+
+        let unavailable =
+            super::WalletApp::unavailable(format!("opaque-ui-unavailable-marker-{}", line!()));
+        assert_secret_origin_inputs_are_empty(&unavailable);
+    }
+
+    #[test]
+    fn begin_generate_neither_reads_nor_carries_the_import_buffer() {
+        let (command_sender, command_receiver) = std::sync::mpsc::channel();
+        let mut app =
+            super::WalletApp::unavailable(format!("opaque-ui-generation-marker-{}", line!()));
+        app.commands = Some(command_sender);
+        app.mnemonic_words = super::NewMnemonicWords::TwentyFour;
+
+        let password_marker = format!("opaque-password-buffer-marker-{}", line!());
+        let import_marker = format!("opaque-import-buffer-marker-{}", line!());
+        app.password = password_marker.clone();
+        app.password_confirmation = password_marker.clone();
+        app.imported_secret = import_marker.clone();
+        let expected_epoch = app.session_epoch;
+
+        app.begin_generate_wallet();
+
+        assert!(app.password.is_empty());
+        assert!(app.password_confirmation.is_empty());
+        assert!(app.imported_secret.as_str() == import_marker.as_str());
+        assert!(app.pending == Some(PendingAction::BeginGenerate));
+
+        let request = command_receiver
+            .try_recv()
+            .expect("generation command must be sent exactly once");
+        assert!(request.epoch == expected_epoch);
+        let WorkerCommand::BeginGenerate {
+            words,
+            password,
+            password_confirmation,
+        } = request.command
+        else {
+            panic!("generation action must carry only the generation command");
+        };
+        assert!(words == super::NewMnemonicWords::TwentyFour);
+        assert!(password.into_zeroizing().as_str() == password_marker.as_str());
+        assert!(password_confirmation.into_zeroizing().as_str() == password_marker.as_str());
+    }
+
     #[test]
     fn password_requires_twelve_utf8_bytes() {
         assert!(!valid_password("12345678901"));

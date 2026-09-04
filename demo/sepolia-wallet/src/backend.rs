@@ -8960,7 +8960,7 @@ mod tests {
 
     fn temporary_vault() -> PathBuf {
         let mut random = [0_u8; 8];
-        getrandom::fill(&mut random).unwrap_or_else(|_| random.copy_from_slice(&[7; 8]));
+        getrandom::fill(&mut random).expect("test temporary-vault randomness must be available");
         std::env::temp_dir()
             .join(format!(
                 "your-wallet-sepolia-test-{}",

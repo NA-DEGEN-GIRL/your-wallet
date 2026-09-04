@@ -2909,6 +2909,9 @@ const sepoliaDemoManifest = await text("demo/sepolia-wallet/Cargo.toml");
 const sepoliaDemoLock = await text("demo/sepolia-wallet/Cargo.lock");
 const sepoliaDemoMain = await text("demo/sepolia-wallet/src/main.rs");
 const sepoliaDemoBackend = await text("demo/sepolia-wallet/src/backend.rs");
+const sepoliaDemoWalletSecret = await text(
+  "demo/sepolia-wallet/src/wallet_secret.rs",
+);
 const sepoliaDemoErc20 = await text("demo/sepolia-wallet/src/erc20.rs");
 const sepoliaDemoRpc = await text("demo/sepolia-wallet/src/rpc.rs");
 const sepoliaDemoReceiveQr = await text(
@@ -29215,7 +29218,7 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate has two deliberately different surfaces.",
-    sha256: "26bcf3d6493c03d13f875e101f8ecf7c1da79137c4456ed22e46bdd9f2850663",
+    sha256: "6b8f5be34a29f803506b87047205a0f935032ab7b0049b40f491e26b380b0b1f",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
@@ -29228,7 +29231,7 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "A separate helper-bootstrap crate exposes",
-    sha256: "fd663be4fa26c59ad5e9900d8fb602f22b56e5aa7e21b75f400869577f7f4b31",
+    sha256: "a952252592e6cc909af128babeead86c91944611f1b8c42775abb19db7b150ae",
   },
 ];
 const keyAgentServiceHelperBootstrapDocumentationPatterns = [
@@ -36062,6 +36065,7 @@ requireInvariant(
 );
 
 const signer = await text("crates/secret-core/src/signing.rs");
+const secretCoreMnemonic = await text("crates/secret-core/src/mnemonic.rs");
 const bip32 = await text("crates/secret-core/src/bip32.rs");
 const signerProduction = withoutBottomTestModule(signer);
 const bip32Production = withoutBottomTestModule(bip32);
@@ -36551,6 +36555,1438 @@ for (const capability of [
 ]) {
   requireCustomRedactedDebug(vaultSession, capability);
 }
+
+// Wallet Secret Origin Firewall. Creation is allowed to originate mnemonic
+// authority only in the reviewed OS-CSPRNG leaves; import, reopen, fixtures, and
+// the headless smoke backend remain separate non-generation partitions.
+const walletSecretOriginExpectedDocumentationSha256 = Object.freeze({
+  architecture:
+    "6b8f5be34a29f803506b87047205a0f935032ab7b0049b40f491e26b380b0b1f",
+  securityDecisions:
+    "a952252592e6cc909af128babeead86c91944611f1b8c42775abb19db7b150ae",
+});
+const walletSecretOriginProductionProjection = (source) =>
+  withoutCfgTestItems(withoutBottomTestModule(source));
+const walletSecretOriginInputs = Object.freeze({
+  walletSecret: sepoliaDemoWalletSecret,
+  demoBackend: sepoliaDemoBackend,
+  demoUi: sepoliaDemoUi,
+  demoVaultV2: sepoliaDemoVaultV2,
+  secretCoreMnemonic,
+  vaultSession,
+  architecture: sepoliaArchitectureDoc,
+  securityDecisions: keyAgentServiceSecurityDecisions,
+});
+const walletSecretOriginExactCount = (source, pattern) => [
+  ...rustLexicalCode(source).matchAll(pattern),
+].length;
+const walletSecretOriginActiveTest = (testModule, name) => {
+  const block = rustFunctionBlockAtDepth(testModule, name, 1);
+  const attributes = rustFunctionOuterAttributesAtDepth(testModule, name, 1);
+  return (
+    block.length > 80 &&
+    attributes.includes("#[test]") &&
+    !attributes.some((attribute) => /\b(?:ignore|should_panic)\b/u.test(attribute)) &&
+    /\b(?:assert|assert_eq|assert_ne|matches)\s*!|\.\s*(?:expect|unwrap)\s*\(|\bassert_secret_origin_inputs_are_empty\s*\(/u.test(
+      rustLexicalCode(block),
+    )
+  );
+};
+let walletSecretOriginBaseChecks = Object.freeze({});
+let walletSecretOriginBaseMetrics = Object.freeze({});
+const walletSecretOriginFirewallContract = (inputs) => {
+  try {
+    const walletSecretProduction = walletSecretOriginProductionProjection(
+      inputs.walletSecret,
+    );
+    const demoBackendProduction = walletSecretOriginProductionProjection(
+      inputs.demoBackend,
+    );
+    const demoUiProduction = walletSecretOriginProductionProjection(
+      inputs.demoUi,
+    );
+    const demoVaultV2Production = walletSecretOriginProductionProjection(
+      inputs.demoVaultV2,
+    );
+    const secretCoreMnemonicProduction =
+      walletSecretOriginProductionProjection(inputs.secretCoreMnemonic);
+    const vaultSessionProduction = walletSecretOriginProductionProjection(
+      inputs.vaultSession,
+    );
+
+    const walletSecretImpl = rustImplItemAtDepth(
+      walletSecretProduction,
+      "impl WalletSecret",
+      0,
+    );
+    const generateMnemonic = rustFunctionBlockAtDepth(
+      walletSecretImpl,
+      "generate_mnemonic",
+      1,
+    );
+    const importMnemonicLeaf = rustFunctionBlockAtDepth(
+      walletSecretImpl,
+      "import_mnemonic",
+      1,
+    );
+    const importRawPrivateKeyLeaf = rustFunctionBlockAtDepth(
+      walletSecretImpl,
+      "import_raw_private_key",
+      1,
+    );
+    const mnemonicEntropyImpl = rustImplItemAtDepth(
+      secretCoreMnemonicProduction,
+      "impl MnemonicEntropy",
+      0,
+    );
+    const generateEntropy = rustFunctionBlockAtDepth(
+      mnemonicEntropyImpl,
+      "generate",
+      1,
+    );
+    const demoBackendImpl = rustImplItemAtDepth(
+      demoBackendProduction,
+      "impl DemoBackend",
+      0,
+    );
+    const beginGenerate = rustFunctionBlockAtDepth(
+      demoBackendImpl,
+      "begin_generate",
+      1,
+    );
+    const openWallet = rustFunctionBlockAtDepth(demoBackendImpl, "open", 1);
+    const importMnemonic = rustFunctionBlockAtDepth(
+      demoBackendImpl,
+      "import_mnemonic",
+      1,
+    );
+    const importPrivateKey = rustFunctionBlockAtDepth(
+      demoBackendImpl,
+      "import_private_key",
+      1,
+    );
+    const vaultSessionImpl = rustImplItemAtDepth(
+      vaultSessionProduction,
+      "impl<S: AtomicVaultStorage> VaultSession<S>",
+      0,
+    );
+    const createChecked = rustFunctionBlockAtDepth(
+      vaultSessionImpl,
+      "create_checked",
+      1,
+    );
+    const decodePayload = rustTopLevelFunctionBlock(
+      demoVaultV2Production,
+      "decode_payload",
+    );
+
+    const headlessMarker = "pub(crate) fn run_headless_smoke";
+    const headlessStarts = [
+      ...rustLexicalCode(demoUiProduction).matchAll(
+        /\bpub\s*\(\s*crate\s*\)\s*fn\s+run_headless_smoke\b/gu,
+      ),
+    ];
+    const headlessStart = demoUiProduction.indexOf(headlessMarker);
+    if (headlessStarts.length !== 1 || headlessStart === -1) {
+      return false;
+    }
+    const demoUiRuntime = demoUiProduction.slice(0, headlessStart);
+    const demoUiHeadless = demoUiProduction.slice(headlessStart);
+    const walletAppImpl = rustImplItemAtDepth(
+      demoUiRuntime,
+      "impl WalletApp",
+      0,
+    );
+    const walletAppNew = rustFunctionBlockAtDepth(walletAppImpl, "new", 1);
+    const walletAppUnavailable = rustFunctionBlockAtDepth(
+      walletAppImpl,
+      "unavailable",
+      1,
+    );
+    const uiBeginGenerate = rustFunctionBlockAtDepth(
+      walletAppImpl,
+      "begin_generate_wallet",
+      1,
+    );
+    const uiImportWallet = rustFunctionBlockAtDepth(
+      walletAppImpl,
+      "import_wallet",
+      1,
+    );
+    const workerCommand = rustTopLevelLexicalItemBlock(
+      demoUiRuntime,
+      /enum\s+WorkerCommand\s*\{/u,
+    );
+    const runHeadlessSmoke = rustTopLevelFunctionBlock(
+      demoUiHeadless,
+      "run_headless_smoke",
+    );
+    const headlessReveal = rustTopLevelFunctionBlock(
+      demoUiHeadless,
+      "headless_reveal",
+    );
+    const headlessAccountPrivateKeyReveal = rustTopLevelFunctionBlock(
+      demoUiHeadless,
+      "headless_account_private_key_reveal",
+    );
+    const headlessGeneratedBackupReveal = rustTopLevelFunctionBlock(
+      demoUiHeadless,
+      "headless_generated_backup_reveal",
+    );
+    const headlessBackendImpl = rustImplItemAtDepth(
+      demoUiHeadless,
+      "impl WalletBackend for HeadlessBackend",
+      0,
+    );
+    const headlessBeginGenerate = rustFunctionBlockAtDepth(
+      headlessBackendImpl,
+      "begin_generate_wallet",
+      1,
+    );
+
+    const fullDemoBackendImpl = rustImplItemAtDepth(
+      inputs.demoBackend,
+      "impl DemoBackend",
+      0,
+    );
+    const fullVaultSessionImpl = rustImplItemAtDepth(
+      inputs.vaultSession,
+      "impl<S: AtomicVaultStorage> VaultSession<S>",
+      0,
+    );
+    const walletSecretTests = rustBottomTestModule(inputs.walletSecret);
+    const demoBackendTests = rustBottomTestModule(inputs.demoBackend);
+    const demoUiTests = rustBottomTestModule(inputs.demoUi);
+    const demoVaultV2Tests = rustBottomTestModule(inputs.demoVaultV2);
+    const secretCoreMnemonicTests = rustBottomTestModule(
+      inputs.secretCoreMnemonic,
+    );
+    const vaultSessionTests = rustBottomTestModule(inputs.vaultSession);
+
+    const creationCode = rustLexicalCode(
+      [
+        generateMnemonic,
+        generateEntropy,
+        beginGenerate,
+        createChecked,
+      ].join("\n"),
+    );
+    const forbiddenCreationBypass =
+      /\b(?:SecretInput|generate_private_key|import_mnemonic|import_raw_private_key|from_raw_private_key_bytes|seed_from_u64|seed_from|from_seed|StdRng|SmallRng|thread_rng|fixture|example|fallback|option_env|include_str|include_bytes)\b|\b(?:std\s*::\s*)?env\s*::|\benv\s*!|\b(?:unwrap_or|unwrap_or_else|unwrap_or_default|unwrap_or_else_default|default)\s*\(/u;
+    const rawGeneratorPattern =
+      /\bfn\s+(?:r#)?(?=[A-Za-z0-9_]*(?:generate|random|fresh|mint|create))(?=[A-Za-z0-9_]*(?:raw_)?private_key)[A-Za-z_][A-Za-z0-9_]*\s*\(/u;
+    const rawGeneratorPatternCoverage =
+      rawGeneratorPattern.test(
+        "fn generate_raw_private_key_for_runtime_probe()",
+      ) && !rawGeneratorPattern.test("fn import_private_key()");
+    const allProductionCode = rustLexicalCode(
+      [
+        walletSecretProduction,
+        demoBackendProduction,
+        demoUiProduction,
+        demoVaultV2Production,
+        secretCoreMnemonicProduction,
+        vaultSessionProduction,
+      ].join("\n"),
+    );
+    const demoGenerateCallPattern =
+      /\bWalletSecret\s*::\s*generate_mnemonic\s*\(/gu;
+    const keyAgentGenerateCallPattern =
+      /\b(?:secret_core\s*::\s*)?MnemonicEntropy\s*::\s*generate\s*\(/gu;
+
+    const demoGeneratorMarkers = [
+      "letentropy_length=words.entropy_bytes();",
+      "letmutentropy=Zeroizing::new([0_u8;MAX_ENTROPY_BYTES]);",
+      "getrandom::fill(&mutentropy[..entropy_length]).map_err(|_|SecretError::RandomnessUnavailable)?;Self::from_mnemonic_entropy(entropy,entropy_length)",
+    ];
+    const demoGeneratorMarkersOrdered = hasOrderedCompactMarkers(
+      generateMnemonic,
+      demoGeneratorMarkers,
+    );
+    const demoGeneratorFlow =
+      demoGeneratorMarkersOrdered &&
+      rustCallSites(generateMnemonic, "getrandom::fill").length === 1 &&
+      rustCallSites(generateMnemonic, "from_mnemonic_entropy").length === 1 &&
+      rustCallSites(generateMnemonic, "import_mnemonic").length === 0 &&
+      rustCallSites(generateMnemonic, "import_raw_private_key").length === 0;
+    const secretCoreGeneratorMarkers = [
+      "letmutentropy=Zeroizing::new(vec![0_u8;words.entropy_bytes()]);",
+      "getrandom::fill(entropy.as_mut_slice()).map_err(|_|SecretError::RandomnessUnavailable)?;Self::from_entropy(entropy.as_slice())",
+    ];
+    const secretCoreGeneratorMarkersOrdered = hasOrderedCompactMarkers(
+      generateEntropy,
+      secretCoreGeneratorMarkers,
+    );
+    const secretCoreGeneratorFlow =
+      secretCoreGeneratorMarkersOrdered &&
+      rustCallSites(generateEntropy, "getrandom::fill").length === 1 &&
+      rustCallSites(generateEntropy, "from_entropy").length === 1;
+    const demoCreationMarkers = [
+      "letword_count=matchwords{",
+      "WalletSecret::generate_mnemonic(word_count).map_err(map_secret_error)?;",
+      "validated_wallet_metadata(&wallet)?",
+      "self.pending_generation=Some(PendingGeneratedWallet{",
+    ];
+    const demoCreationMarkersOrdered = hasOrderedCompactMarkers(
+      beginGenerate,
+      demoCreationMarkers,
+    );
+    const demoCreationFlow =
+      demoCreationMarkersOrdered &&
+      walletSecretOriginExactCount(
+        beginGenerate,
+        /\bWalletSecret\s*::\s*generate_mnemonic\s*\(/gu,
+      ) === 1 &&
+      !/\b(?:SecretInput|import_mnemonic|import_raw_private_key|from_mnemonic_entropy|from_entropy|from_raw_private_key_bytes|imported_secret)\b/u.test(
+        rustLexicalCode(beginGenerate),
+      );
+    const keyAgentCreationMarkers = [
+      "secret_core::MnemonicEntropy::generate(word_count).map_err(map_secret_failure)?;",
+      "letpassphrase=SessionPassphrase::empty();",
+      "letaccount_zero=entropy",
+      "letaccount_one=entropy",
+      "letblob=VaultBlob::seal_new(&payload,&password).map_err(map_secret_failure)?;",
+      "recheck_deadline(&mutchecked_deadline)?;",
+      "self.storage.commit(None,&blob)?;",
+    ];
+    const keyAgentCreationMarkersOrdered = hasOrderedCompactMarkers(
+      createChecked,
+      keyAgentCreationMarkers,
+    );
+    const keyAgentCreationFlow =
+      keyAgentCreationMarkersOrdered &&
+      walletSecretOriginExactCount(
+        createChecked,
+        /\bsecret_core\s*::\s*MnemonicEntropy\s*::\s*generate\s*\(/gu,
+      ) === 1 &&
+      !/\b(?:SecretInput|import_english|from_entropy|from_mnemonic_entropy|from_raw_private_key_bytes|generate_private_key|fixture|fallback)\b/u.test(
+        rustLexicalCode(createChecked),
+      );
+
+    const demoProductionGenerateCalls = [
+      walletSecretProduction,
+      demoBackendProduction,
+      demoUiProduction,
+      demoVaultV2Production,
+    ].reduce(
+      (count, source) =>
+        count + walletSecretOriginExactCount(source, demoGenerateCallPattern),
+      0,
+    );
+    const keyAgentProductionGenerateCalls = [
+      secretCoreMnemonicProduction,
+      vaultSessionProduction,
+    ].reduce(
+      (count, source) =>
+        count + walletSecretOriginExactCount(source, keyAgentGenerateCallPattern),
+      0,
+    );
+    const separatedImportAndReopen =
+      rustCallSites(openWallet, "generate_mnemonic").length === 0 &&
+      rustCallSites(importMnemonic, "generate_mnemonic").length === 0 &&
+      rustCallSites(importPrivateKey, "generate_mnemonic").length === 0 &&
+      walletSecretOriginExactCount(
+        importMnemonic,
+        /\bWalletSecret\s*::\s*import_mnemonic\s*\(/gu,
+      ) === 1 &&
+      rustCallSites(importPrivateKey, "import_raw_private_key").length === 1 &&
+      rustCallSites(importMnemonicLeaf, "from_mnemonic_entropy").length === 1 &&
+      rustCallSites(importRawPrivateKeyLeaf, "from_raw_private_key_bytes")
+        .length === 1 &&
+      rustCallSites(decodePayload, "from_mnemonic_entropy").length === 1 &&
+      rustCallSites(decodePayload, "from_raw_private_key_bytes").length === 1 &&
+      rustCallSites(decodePayload, "generate_mnemonic").length === 0 &&
+      rustCallSites(decodePayload, "generate").length === 0;
+
+    const fullDemoCreateAttributes = rustFunctionOuterAttributesAtDepth(
+      fullDemoBackendImpl,
+      "create",
+      1,
+    );
+    const fullRawGeneratorAttributes = rustFunctionOuterAttributesAtDepth(
+      inputs.demoBackend,
+      "generate_private_key",
+      0,
+    );
+    const fullVaultCreateAttributes = rustFunctionOuterAttributesAtDepth(
+      fullVaultSessionImpl,
+      "create",
+      1,
+    );
+    const fullVaultCreateHasCfgTest =
+      walletSecretOriginExactCount(
+        fullVaultSessionImpl,
+        /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*pub\s*\(\s*crate\s*\)\s*fn\s+create\s*\(/gu,
+      ) === 1;
+    const fixtureCfgBoundary =
+      JSON.stringify(fullDemoCreateAttributes) ===
+        JSON.stringify(["#[cfg(test)]"]) &&
+      JSON.stringify(fullRawGeneratorAttributes) ===
+        JSON.stringify(["#[cfg(test)]"]) &&
+      fullVaultCreateHasCfgTest &&
+      !/\bfn\s+create\s*\(/u.test(rustLexicalCode(demoBackendImpl)) &&
+      !/\bfn\s+create\s*\(/u.test(rustLexicalCode(vaultSessionImpl)) &&
+      identifierOccurrenceCount(
+        rustLexicalCode(demoBackendProduction),
+        "generate_private_key",
+      ) === 0 &&
+      identifierOccurrenceCount(
+        rustLexicalCode(walletSecretTests),
+        "ZERO_ENTROPY_MNEMONIC",
+      ) >= 2 &&
+      identifierOccurrenceCount(
+        rustLexicalCode(walletSecretProduction),
+        "ZERO_ENTROPY_MNEMONIC",
+      ) === 0 &&
+      identifierOccurrenceCount(
+        rustLexicalCode(demoVaultV2Tests),
+        "ZERO_MNEMONIC",
+      ) >= 2 &&
+      identifierOccurrenceCount(
+        rustLexicalCode(demoVaultV2Production),
+        "ZERO_MNEMONIC",
+      ) === 0 &&
+      identifierOccurrenceCount(
+        rustLexicalCode(secretCoreMnemonicTests),
+        "fixture",
+      ) >= 2 &&
+      identifierOccurrenceCount(
+        rustLexicalCode(secretCoreMnemonicProduction),
+        "fixture",
+      ) === 0;
+
+    const activeRegressionTestSpecs = [
+      [
+        walletSecretTests,
+        "generated_mnemonics_are_fresh_and_only_twelve_or_twenty_four_words",
+      ],
+      [walletSecretTests, "official_bip39_zero_entropy_phrases_cover_every_word_count"],
+      [walletSecretTests, "raw_key_import_is_strict_and_exports_lowercase_without_prefix"],
+      [secretCoreMnemonicTests, "creates_supported_random_strengths"],
+      [demoBackendTests, "generated_mnemonic_is_not_persisted_until_confirmation_and_opens_as_v2"],
+      [demoBackendTests, "generated_mnemonic_cancel_and_backend_expiry_write_nothing"],
+      [demoBackendTests, "mnemonic_and_raw_import_validate_metadata_and_never_overwrite"],
+      [demoUiTests, "wallet_app_constructors_start_without_secret_origin_inputs"],
+      [demoUiTests, "begin_generate_neither_reads_nor_carries_the_import_buffer"],
+      [vaultSessionTests, "create_commit_failures_leave_the_session_locked"],
+    ];
+    const activeRegressionTestResults = activeRegressionTestSpecs.map(
+      ([testModule, name]) =>
+        Object.freeze({
+          name,
+          active: walletSecretOriginActiveTest(testModule, name),
+        }),
+    );
+    const activeRegressionTests = activeRegressionTestResults.every(
+      ({ active }) => active,
+    );
+
+    const compactWorkerCommand = compactRust(workerCommand);
+    const uiBoundary =
+      compactWorkerCommand.includes(
+        "BeginGenerate{words:NewMnemonicWords,password:SensitiveText,password_confirmation:SensitiveText,}",
+      ) &&
+      compactWorkerCommand.includes(
+        "ImportMnemonic{mnemonic:SensitiveText,password:SensitiveText,password_confirmation:SensitiveText,}",
+      ) &&
+      compactWorkerCommand.includes(
+        "ImportPrivateKey{private_key:SensitiveText,password:SensitiveText,password_confirmation:SensitiveText,}",
+      ) &&
+      !/BeginGenerate\{[^{}]*(?:mnemonic|private_key|imported_secret)\s*:/u.test(
+        rustLexicalCode(workerCommand),
+      ) &&
+      walletSecretOriginExactCount(
+        walletAppNew,
+        /\bimported_secret\s*:\s*String\s*::\s*new\s*\(\s*\)\s*,/gu,
+      ) === 1 &&
+      walletSecretOriginExactCount(
+        walletAppUnavailable,
+        /\bimported_secret\s*:\s*String\s*::\s*new\s*\(\s*\)\s*,/gu,
+      ) === 1 &&
+      !/\bself\s*\.\s*imported_secret\s*=/u.test(
+        rustLexicalCode(demoUiRuntime),
+      ) &&
+      identifierOccurrenceCount(
+        rustLexicalCode(uiBeginGenerate),
+        "imported_secret",
+      ) === 0 &&
+      walletSecretOriginExactCount(
+        uiBeginGenerate,
+        /\bWorkerCommand\s*::\s*BeginGenerate\s*\{/gu,
+      ) === 1 &&
+      !/\bWorkerCommand\s*::\s*Import(?:Mnemonic|PrivateKey)\b/u.test(
+        rustLexicalCode(uiBeginGenerate),
+      ) &&
+      identifierOccurrenceCount(
+        rustLexicalCode(uiImportWallet),
+        "imported_secret",
+      ) >= 2 &&
+      walletSecretOriginExactCount(
+        uiImportWallet,
+        /\bWorkerCommand\s*::\s*ImportMnemonic\s*\{/gu,
+      ) === 1 &&
+      walletSecretOriginExactCount(
+        uiImportWallet,
+        /\bWorkerCommand\s*::\s*ImportPrivateKey\s*\{/gu,
+      ) === 1 &&
+      !/\bWorkerCommand\s*::\s*BeginGenerate\b|\bgenerate_mnemonic\b/u.test(
+        rustLexicalCode(uiImportWallet),
+      );
+
+    const directSentinelPattern =
+      /Zeroizing\s*::\s*new\s*\(\s*"(?<value>(?:\\.|[^"\\])*)"\s*\.\s*to_owned\s*\(\s*\)\s*\)/gu;
+    const directSentinels = [
+      headlessReveal,
+      headlessAccountPrivateKeyReveal,
+      headlessGeneratedBackupReveal,
+    ].flatMap((block) =>
+      [...block.matchAll(directSentinelPattern)].map(
+        (match) => match.groups.value,
+      ),
+    );
+    const headlessAuthorityPattern =
+      /\b(?:WalletSecret|MnemonicEntropy|SecretInput|VaultPassword|OpenOptions|File)\b|\bgetrandom\s*::|\b(?:std\s*::\s*)?(?:fs|net|env)\s*::|\b(?:seal_vault|open_vault|from_mnemonic_entropy|from_raw_private_key_bytes|generate_mnemonic|generate_private_key|sign_hash|sign_digest)\b/u;
+    const headlessBoundary =
+      runHeadlessSmoke.length > 500 &&
+      walletSecretOriginExactCount(
+        runHeadlessSmoke,
+        /\bimported_secret\s*:\s*String\s*::\s*new\s*\(\s*\)\s*,/gu,
+      ) === 1 &&
+      !headlessAuthorityPattern.test(rustLexicalCode(demoUiHeadless)) &&
+      hasOrderedCompactMarkers(headlessBeginGenerate, [
+        "self.calls.push(matchwords{",
+        "Ok(headless_generated_backup_reveal())",
+      ]) &&
+      directSentinels.length === 4 &&
+      directSentinels.every((value) => {
+        const words = value.trim().split(/\s+/u);
+        return (
+          value.length > 0 &&
+          value.length <= 128 &&
+          !/^(?:0x)?[0-9a-f]{64}$/iu.test(value) &&
+          ![12, 15, 18, 21, 24].includes(words.length)
+        );
+      });
+
+    const architectureAnchor = "### Wallet secret origin firewall";
+    const architectureAnchorIndex = inputs.architecture.indexOf(
+      architectureAnchor,
+    );
+    const architectureNextSection = inputs.architecture.indexOf(
+      "\n### ",
+      architectureAnchorIndex + architectureAnchor.length,
+    );
+    const architectureSection =
+      architectureAnchorIndex === -1 || architectureNextSection === -1
+        ? ""
+        : inputs.architecture.slice(
+            architectureAnchorIndex,
+            architectureNextSection,
+          );
+    const securityAnchor = "| Wallet creation entropy |";
+    const securityAnchorIndex = inputs.securityDecisions.indexOf(securityAnchor);
+    const securitySectionEnd = inputs.securityDecisions.indexOf(
+      "\n## Phase-zero stop-ship items",
+      securityAnchorIndex,
+    );
+    const securitySection =
+      securityAnchorIndex === -1 || securitySectionEnd === -1
+        ? ""
+        : inputs.securityDecisions.slice(
+            securityAnchorIndex,
+            securitySectionEnd,
+          );
+    const architectureDocumentationMarkers = [
+      "WalletSecret::generate_mnemonic",
+      "DemoBackend::begin_generate",
+      "VaultSession::create_checked",
+      "MnemonicEntropy::generate",
+      "operating-system CSPRNG",
+      "zeroizing",
+      "entropy buffer",
+      "No production API creates a `WalletSource::RawPrivateKey`-origin wallet from",
+      "Generate command neither reads nor carries the import buffer",
+      "headless-smoke sentinels are non-credential-shaped",
+      "#[cfg(test)]",
+    ];
+    const securityDocumentationMarkers = [
+      "Fresh operating-system CSPRNG output only",
+      "fixed/example/import/environment/seeded fallback",
+      "one production entropy origin",
+      "No production API creates a",
+      "`WalletSource::RawPrivateKey`-origin wallet from generated bytes",
+      "Interactive secret fields start empty",
+      "#[cfg(test)]",
+    ];
+    const documentationBoundary =
+      normalizedSourceSha256(inputs.architecture) ===
+        walletSecretOriginExpectedDocumentationSha256.architecture &&
+      normalizedSourceSha256(inputs.securityDecisions) ===
+        walletSecretOriginExpectedDocumentationSha256.securityDecisions &&
+      architectureDocumentationMarkers.every((marker) =>
+        architectureSection.includes(marker),
+      ) &&
+      securityDocumentationMarkers.every((marker) =>
+        securitySection.includes(marker),
+      );
+
+    const metrics = Object.freeze({
+      blockLengths: Object.freeze({
+        generateMnemonic: generateMnemonic.length,
+        generateEntropy: generateEntropy.length,
+        beginGenerate: beginGenerate.length,
+        createChecked: createChecked.length,
+        openWallet: openWallet.length,
+        importMnemonic: importMnemonic.length,
+        importPrivateKey: importPrivateKey.length,
+        decodePayload: decodePayload.length,
+      }),
+      orderedMarkers: Object.freeze({
+        demoGenerator: demoGeneratorMarkersOrdered,
+        secretCoreGenerator: secretCoreGeneratorMarkersOrdered,
+        demoCreation: demoCreationMarkersOrdered,
+        keyAgentCreation: keyAgentCreationMarkersOrdered,
+      }),
+      callCounts: Object.freeze({
+        demoGeneratorRandom: rustCallSites(generateMnemonic, "getrandom::fill").length,
+        demoGeneratorConstructor: rustCallSites(
+          generateMnemonic,
+          "from_mnemonic_entropy",
+        ).length,
+        secretCoreGeneratorRandom: rustCallSites(
+          generateEntropy,
+          "getrandom::fill",
+        ).length,
+        secretCoreGeneratorConstructor: rustCallSites(
+          generateEntropy,
+          "from_entropy",
+        ).length,
+        demoCreationGenerator: walletSecretOriginExactCount(
+          beginGenerate,
+          /\bWalletSecret\s*::\s*generate_mnemonic\s*\(/gu,
+        ),
+        keyAgentCreationGenerator: walletSecretOriginExactCount(
+          createChecked,
+          /\bsecret_core\s*::\s*MnemonicEntropy\s*::\s*generate\s*\(/gu,
+        ),
+        openGenerate: rustCallSites(openWallet, "generate_mnemonic").length,
+        importMnemonicGenerate: rustCallSites(
+          importMnemonic,
+          "generate_mnemonic",
+        ).length,
+        importPrivateKeyGenerate: rustCallSites(
+          importPrivateKey,
+          "generate_mnemonic",
+        ).length,
+        importMnemonicQualified: walletSecretOriginExactCount(
+          importMnemonic,
+          /\bWalletSecret\s*::\s*import_mnemonic\s*\(/gu,
+        ),
+        importMnemonicLeafConstructor: rustCallSites(
+          importMnemonicLeaf,
+          "from_mnemonic_entropy",
+        ).length,
+        importRawLeafConstructor: rustCallSites(
+          importRawPrivateKeyLeaf,
+          "from_raw_private_key_bytes",
+        ).length,
+        decodeMnemonicConstructor: rustCallSites(
+          decodePayload,
+          "from_mnemonic_entropy",
+        ).length,
+        decodeRawConstructor: rustCallSites(
+          decodePayload,
+          "from_raw_private_key_bytes",
+        ).length,
+        decodeGenerateMnemonic: rustCallSites(
+          decodePayload,
+          "generate_mnemonic",
+        ).length,
+        decodeGenericGenerate: rustCallSites(decodePayload, "generate").length,
+      }),
+      fixture: Object.freeze({
+        demoCreateAttributes: fullDemoCreateAttributes,
+        rawGeneratorAttributes: fullRawGeneratorAttributes,
+        vaultCreateAttributes: fullVaultCreateAttributes,
+        vaultCreateHasCfgTest: fullVaultCreateHasCfgTest,
+        productionDemoCreateDefinitions: walletSecretOriginExactCount(
+          demoBackendImpl,
+          /\bfn\s+create\s*\(/gu,
+        ),
+        productionVaultCreateDefinitions: walletSecretOriginExactCount(
+          vaultSessionImpl,
+          /\bfn\s+create\s*\(/gu,
+        ),
+        productionRawGeneratorIdentifiers: identifierOccurrenceCount(
+          rustLexicalCode(demoBackendProduction),
+          "generate_private_key",
+        ),
+        walletTestFixtureIdentifiers: identifierOccurrenceCount(
+          rustLexicalCode(walletSecretTests),
+          "ZERO_ENTROPY_MNEMONIC",
+        ),
+        walletProductionFixtureIdentifiers: identifierOccurrenceCount(
+          rustLexicalCode(walletSecretProduction),
+          "ZERO_ENTROPY_MNEMONIC",
+        ),
+        vaultTestFixtureIdentifiers: identifierOccurrenceCount(
+          rustLexicalCode(demoVaultV2Tests),
+          "ZERO_MNEMONIC",
+        ),
+        vaultProductionFixtureIdentifiers: identifierOccurrenceCount(
+          rustLexicalCode(demoVaultV2Production),
+          "ZERO_MNEMONIC",
+        ),
+        secretCoreTestFixtureIdentifiers: identifierOccurrenceCount(
+          rustLexicalCode(secretCoreMnemonicTests),
+          "fixture",
+        ),
+        secretCoreProductionFixtureIdentifiers: identifierOccurrenceCount(
+          rustLexicalCode(secretCoreMnemonicProduction),
+          "fixture",
+        ),
+      }),
+      failedRegressionTests: activeRegressionTestResults
+        .filter(({ active }) => !active)
+        .map(({ name }) => name),
+      headless: Object.freeze({
+        runLength: runHeadlessSmoke.length,
+        emptyImportInitializers: walletSecretOriginExactCount(
+          runHeadlessSmoke,
+          /\bimported_secret\s*:\s*String\s*::\s*new\s*\(\s*\)\s*,/gu,
+        ),
+        authorityPatternPresent: headlessAuthorityPattern.test(
+          rustLexicalCode(demoUiHeadless),
+        ),
+        generateMarkersOrdered: hasOrderedCompactMarkers(headlessBeginGenerate, [
+          "self.calls.push(matchwords{",
+          "Ok(headless_generated_backup_reveal())",
+        ]),
+        directSentinelCount: directSentinels.length,
+        invalidDirectSentinelCount: directSentinels.filter((value) => {
+          const words = value.trim().split(/\s+/u);
+          return (
+            value.length === 0 ||
+            value.length > 128 ||
+            /^(?:0x)?[0-9a-f]{64}$/iu.test(value) ||
+            [12, 15, 18, 21, 24].includes(words.length)
+          );
+        }).length,
+      }),
+      documentation: Object.freeze({
+        architectureHashMatches:
+          normalizedSourceSha256(inputs.architecture) ===
+          walletSecretOriginExpectedDocumentationSha256.architecture,
+        securityHashMatches:
+          normalizedSourceSha256(inputs.securityDecisions) ===
+          walletSecretOriginExpectedDocumentationSha256.securityDecisions,
+        architectureAnchorCount: inputs.architecture.split(architectureAnchor).length - 1,
+        securityAnchorCount: inputs.securityDecisions.split(securityAnchor).length - 1,
+        missingArchitectureMarkers: architectureDocumentationMarkers.filter(
+          (marker) => !architectureSection.includes(marker),
+        ),
+        missingSecurityMarkers: securityDocumentationMarkers.filter(
+          (marker) => !securitySection.includes(marker),
+        ),
+      }),
+    });
+
+    const checks = Object.freeze({
+      demoGeneratorFlow,
+      secretCoreGeneratorFlow,
+      demoCreationFlow,
+      keyAgentCreationFlow,
+      creationBypassAbsent: !forbiddenCreationBypass.test(creationCode),
+      exactDemoProductionGenerateCalls: demoProductionGenerateCalls === 1,
+      exactKeyAgentProductionGenerateCalls:
+        keyAgentProductionGenerateCalls === 1,
+      separatedImportAndReopen,
+      rawGeneratorPatternCoverage,
+      rawGeneratorAbsent: !rawGeneratorPattern.test(allProductionCode),
+      fixtureCfgBoundary,
+      activeRegressionTests,
+      uiBoundary,
+      headlessBoundary,
+      documentationBoundary,
+    });
+    if (inputs === walletSecretOriginInputs) {
+      walletSecretOriginBaseChecks = checks;
+      walletSecretOriginBaseMetrics = metrics;
+    }
+    return Object.values(checks).every(Boolean);
+  } catch {
+    return false;
+  }
+};
+
+const walletSecretOriginReplaceUnique = (source, search, replacement) => {
+  const first = source.indexOf(search);
+  if (
+    first === -1 ||
+    source.indexOf(search, first + search.length) !== -1
+  ) {
+    throw new Error("wallet-origin mutation expected one structural anchor");
+  }
+  return `${source.slice(0, first)}${replacement}${source.slice(
+    first + search.length,
+  )}`;
+};
+const walletSecretOriginMutationProbe = (name, field, mutate) => {
+  const original = walletSecretOriginInputs[field];
+  let mutated;
+  try {
+    mutated = mutate(original);
+  } catch {
+    throw new Error(`wallet-origin mutation could not apply: ${name}`);
+  }
+  return Object.freeze({
+    name,
+    field,
+    changed: mutated !== original,
+    inputs: Object.freeze({
+      ...walletSecretOriginInputs,
+      [field]: mutated,
+    }),
+  });
+};
+
+const walletSecretOriginWalletSecretProduction =
+  walletSecretOriginProductionProjection(sepoliaDemoWalletSecret);
+const walletSecretOriginWalletSecretImpl = rustImplItemAtDepth(
+  walletSecretOriginWalletSecretProduction,
+  "impl WalletSecret",
+  0,
+);
+const walletSecretOriginGenerateMnemonic = rustFunctionBlockAtDepth(
+  walletSecretOriginWalletSecretImpl,
+  "generate_mnemonic",
+  1,
+);
+const walletSecretOriginBackendProduction =
+  walletSecretOriginProductionProjection(sepoliaDemoBackend);
+const walletSecretOriginBackendImpl = rustImplItemAtDepth(
+  walletSecretOriginBackendProduction,
+  "impl DemoBackend",
+  0,
+);
+const walletSecretOriginBackendFullImpl = rustImplItemAtDepth(
+  sepoliaDemoBackend,
+  "impl DemoBackend",
+  0,
+);
+const walletSecretOriginBeginGenerate = rustFunctionBlockAtDepth(
+  walletSecretOriginBackendImpl,
+  "begin_generate",
+  1,
+);
+const walletSecretOriginBackendOpen = rustFunctionBlockAtDepth(
+  walletSecretOriginBackendImpl,
+  "open",
+  1,
+);
+const walletSecretOriginBackendImportMnemonic = rustFunctionBlockAtDepth(
+  walletSecretOriginBackendImpl,
+  "import_mnemonic",
+  1,
+);
+const walletSecretOriginBackendImportPrivateKey = rustFunctionBlockAtDepth(
+  walletSecretOriginBackendImpl,
+  "import_private_key",
+  1,
+);
+const walletSecretOriginMnemonicProduction =
+  walletSecretOriginProductionProjection(secretCoreMnemonic);
+const walletSecretOriginMnemonicImpl = rustImplItemAtDepth(
+  walletSecretOriginMnemonicProduction,
+  "impl MnemonicEntropy",
+  0,
+);
+const walletSecretOriginGenerateEntropy = rustFunctionBlockAtDepth(
+  walletSecretOriginMnemonicImpl,
+  "generate",
+  1,
+);
+const walletSecretOriginVaultV2Production =
+  walletSecretOriginProductionProjection(sepoliaDemoVaultV2);
+const walletSecretOriginDecodePayload = rustTopLevelFunctionBlock(
+  walletSecretOriginVaultV2Production,
+  "decode_payload",
+);
+const walletSecretOriginVaultSessionFullImpl = rustImplItemAtDepth(
+  vaultSession,
+  "impl<S: AtomicVaultStorage> VaultSession<S>",
+  0,
+);
+const walletSecretOriginUiProduction =
+  walletSecretOriginProductionProjection(sepoliaDemoUi);
+const walletSecretOriginUiHeadlessStart =
+  walletSecretOriginUiProduction.indexOf(
+    "pub(crate) fn run_headless_smoke",
+  );
+const walletSecretOriginUiRuntime = walletSecretOriginUiProduction.slice(
+  0,
+  walletSecretOriginUiHeadlessStart,
+);
+const walletSecretOriginUiHeadless = walletSecretOriginUiProduction.slice(
+  walletSecretOriginUiHeadlessStart,
+);
+const walletSecretOriginWalletAppImpl = rustImplItemAtDepth(
+  walletSecretOriginUiRuntime,
+  "impl WalletApp",
+  0,
+);
+const walletSecretOriginWalletAppNew = rustFunctionBlockAtDepth(
+  walletSecretOriginWalletAppImpl,
+  "new",
+  1,
+);
+const walletSecretOriginWalletAppUnavailable = rustFunctionBlockAtDepth(
+  walletSecretOriginWalletAppImpl,
+  "unavailable",
+  1,
+);
+const walletSecretOriginUiBeginGenerate = rustFunctionBlockAtDepth(
+  walletSecretOriginWalletAppImpl,
+  "begin_generate_wallet",
+  1,
+);
+const walletSecretOriginUiImportWallet = rustFunctionBlockAtDepth(
+  walletSecretOriginWalletAppImpl,
+  "import_wallet",
+  1,
+);
+const walletSecretOriginWorkerCommand = rustTopLevelLexicalItemBlock(
+  walletSecretOriginUiRuntime,
+  /enum\s+WorkerCommand\s*\{/u,
+);
+const walletSecretOriginHeadlessReveal = rustTopLevelFunctionBlock(
+  walletSecretOriginUiHeadless,
+  "headless_reveal",
+);
+const walletSecretOriginHeadlessBackendImpl = rustImplItemAtDepth(
+  walletSecretOriginUiHeadless,
+  "impl WalletBackend for HeadlessBackend",
+  0,
+);
+const walletSecretOriginHeadlessBeginGenerate = rustFunctionBlockAtDepth(
+  walletSecretOriginHeadlessBackendImpl,
+  "begin_generate_wallet",
+  1,
+);
+const walletSecretOriginHeadlessSentinelExpression =
+  /Zeroizing\s*::\s*new\s*\(\s*"(?:\\.|[^"\\])*"\s*\.\s*to_owned\s*\(\s*\)\s*\)/u.exec(
+    walletSecretOriginHeadlessReveal,
+  )?.[0] ?? "";
+
+const walletSecretOriginFirewallMutationProbes = Object.freeze([
+  walletSecretOriginMutationProbe(
+    "demo generator replaces the OS fill with deterministic bytes",
+    "walletSecret",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginGenerateMnemonic,
+        "getrandom::fill(&mut entropy[..entropy_length])",
+        "entropy[..entropy_length].fill(u8::default())",
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "demo generator maps OS failure to a non-randomness error",
+    "walletSecret",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginGenerateMnemonic,
+        "SecretError::RandomnessUnavailable",
+        "SecretError::InvalidMnemonic",
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "demo generator stops propagating OS randomness failure",
+    "walletSecret",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginGenerateMnemonic,
+        ".map_err(|_| SecretError::RandomnessUnavailable)?;",
+        ".map_err(|_| SecretError::RandomnessUnavailable);",
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "demo generator overwrites entropy after the OS fill",
+    "walletSecret",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginGenerateMnemonic,
+        [
+          "        getrandom::fill(&mut entropy[..entropy_length])",
+          "            .map_err(|_| SecretError::RandomnessUnavailable)?;",
+          "        Self::from_mnemonic_entropy(entropy, entropy_length)",
+        ].join("\n"),
+        [
+          "        getrandom::fill(&mut entropy[..entropy_length])",
+          "            .map_err(|_| SecretError::RandomnessUnavailable)?;",
+          "        entropy[..entropy_length].fill(u8::default());",
+          "        Self::from_mnemonic_entropy(entropy, entropy_length)",
+        ].join("\n"),
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "demo generator adds a deterministic fallback branch",
+    "walletSecret",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginGenerateMnemonic,
+        "        Self::from_mnemonic_entropy(entropy, entropy_length)",
+        [
+          "        if entropy.iter().all(|byte| *byte == u8::default()) {",
+          "            return Self::from_mnemonic_entropy(",
+          "                Zeroizing::new([u8::default(); MAX_ENTROPY_BYTES]),",
+          "                entropy_length,",
+          "            );",
+          "        }",
+          "        Self::from_mnemonic_entropy(entropy, entropy_length)",
+        ].join("\n"),
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "secret-core generator replaces the OS fill with deterministic bytes",
+    "secretCoreMnemonic",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginGenerateEntropy,
+        "getrandom::fill(entropy.as_mut_slice())",
+        "entropy.as_mut_slice().fill(u8::default())",
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "secret-core generator maps OS failure to a non-randomness error",
+    "secretCoreMnemonic",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginGenerateEntropy,
+        "SecretError::RandomnessUnavailable",
+        "SecretError::InvalidMnemonic",
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "secret-core generator stops propagating OS randomness failure",
+    "secretCoreMnemonic",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginGenerateEntropy,
+        ".map_err(|_| SecretError::RandomnessUnavailable)?;",
+        ".map_err(|_| SecretError::RandomnessUnavailable);",
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "secret-core generator overwrites entropy after the OS fill",
+    "secretCoreMnemonic",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginGenerateEntropy,
+        [
+          "        getrandom::fill(entropy.as_mut_slice()).map_err(|_| SecretError::RandomnessUnavailable)?;",
+          "        Self::from_entropy(entropy.as_slice())",
+        ].join("\n"),
+        [
+          "        getrandom::fill(entropy.as_mut_slice()).map_err(|_| SecretError::RandomnessUnavailable)?;",
+          "        entropy.as_mut_slice().fill(u8::default());",
+          "        Self::from_entropy(entropy.as_slice())",
+        ].join("\n"),
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "secret-core generator constructs from newly defaulted bytes",
+    "secretCoreMnemonic",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginGenerateEntropy,
+        "Self::from_entropy(entropy.as_slice())",
+        "Self::from_entropy(&vec![u8::default(); words.entropy_bytes()])",
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "demo creation bypasses its reviewed generator leaf",
+    "demoBackend",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginBeginGenerate,
+        "WalletSecret::generate_mnemonic(word_count).map_err(map_secret_error)?",
+        [
+          "WalletSecret::from_mnemonic_entropy(",
+          "            Zeroizing::new([u8::default(); 32]),",
+          "            word_count.entropy_bytes(),",
+          "        ).map_err(map_secret_error)?",
+        ].join("\n"),
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "demo creation calls its generator twice",
+    "demoBackend",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginBeginGenerate,
+        "        let wallet = WalletSecret::generate_mnemonic(word_count).map_err(map_secret_error)?;",
+        [
+          "        let wallet = WalletSecret::generate_mnemonic(word_count).map_err(map_secret_error)?;",
+          "        let _duplicate = WalletSecret::generate_mnemonic(word_count).map_err(map_secret_error)?;",
+        ].join("\n"),
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "demo creation invokes an import path",
+    "demoBackend",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginBeginGenerate,
+        "        self.prepared = None;",
+        [
+          "        self.prepared = None;",
+          "        let _unexpected_import = WalletSecret::import_mnemonic;",
+        ].join("\n"),
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "wallet reopen gains a generation fallback",
+    "demoBackend",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginBackendOpen,
+        "        self.prepared = None;",
+        [
+          "        self.prepared = None;",
+          "        let _unexpected = WalletSecret::generate_mnemonic(MnemonicWordCount::Twelve);",
+        ].join("\n"),
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "mnemonic import also generates a wallet",
+    "demoBackend",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginBackendImportMnemonic,
+        "        self.prepared = None;",
+        [
+          "        self.prepared = None;",
+          "        let _unexpected = WalletSecret::generate_mnemonic(MnemonicWordCount::Twelve);",
+        ].join("\n"),
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "raw-key import also generates a wallet",
+    "demoBackend",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginBackendImportPrivateKey,
+        "        self.prepared = None;",
+        [
+          "        self.prepared = None;",
+          "        let _unexpected = WalletSecret::generate_mnemonic(MnemonicWordCount::Twelve);",
+        ].join("\n"),
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "legacy demo raw-key creation loses cfg test",
+    "demoBackend",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginBackendFullImpl,
+        "    #[cfg(test)]\n    fn create(",
+        "    fn create(",
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "legacy raw-key generator loses cfg test",
+    "demoBackend",
+    (source) =>
+      walletSecretOriginReplaceUnique(
+        source,
+        "#[cfg(test)]\nfn generate_private_key(",
+        "fn generate_private_key(",
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "VaultSession compatibility creator loses cfg test",
+    "vaultSession",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginVaultSessionFullImpl,
+        "    #[cfg(test)]\n    pub(crate) fn create(",
+        "    pub(crate) fn create(",
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "production gains a raw-key origin generator",
+    "demoBackend",
+    (source) =>
+      insertBeforeBottomTestModule(
+        source,
+        [
+          "",
+          "fn generate_raw_private_key_for_runtime_probe() -> Zeroizing<[u8; 32]> {",
+          "    let mut bytes = Zeroizing::new([u8::default(); 32]);",
+          "    let _ = getrandom::fill(bytes.as_mut());",
+          "    bytes",
+          "}",
+          "",
+        ].join("\n"),
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "a deterministic vector identifier escapes into production",
+    "walletSecret",
+    (source) =>
+      insertBeforeBottomTestModule(
+        source,
+        [
+          "",
+          "fn wallet_origin_vector_escape_probe() {",
+          "    let _unexpected = ZERO_ENTROPY_MNEMONIC;",
+          "}",
+          "",
+        ].join("\n"),
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "authenticated vault decode gains a generation fallback",
+    "demoVaultV2",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginDecodePayload,
+        "    if bytes.len() != PAYLOAD_BYTES",
+        [
+          "    let _unexpected = WalletSecret::generate_mnemonic(MnemonicWordCount::Twelve);",
+          "    if bytes.len() != PAYLOAD_BYTES",
+        ].join("\n"),
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "interactive constructor prefills the import field",
+    "demoUi",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginWalletAppNew,
+        "            imported_secret: String::new(),",
+        "            imported_secret: core::iter::once(char::REPLACEMENT_CHARACTER).collect(),",
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "unavailable constructor prefills the import field",
+    "demoUi",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginWalletAppUnavailable,
+        "            imported_secret: String::new(),",
+        "            imported_secret: core::iter::once(char::REPLACEMENT_CHARACTER).collect(),",
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "Generate reads the interactive import buffer",
+    "demoUi",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginUiBeginGenerate,
+        "fn begin_generate_wallet(&mut self) {",
+        [
+          "fn begin_generate_wallet(&mut self) {",
+          "        let _unexpected = self.imported_secret.len();",
+        ].join("\n"),
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "Generate command carries an imported secret",
+    "demoUi",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginWorkerCommand,
+        "        password_confirmation: SensitiveText,\n    },",
+        [
+          "        password_confirmation: SensitiveText,",
+          "        imported_secret: SensitiveText,",
+          "    },",
+        ].join("\n"),
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "import UI routes through the Generate command",
+    "demoUi",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginUiImportWallet,
+        "WorkerCommand::ImportMnemonic {",
+        "WorkerCommand::BeginGenerate {",
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "headless fake backend reaches the real generation authority",
+    "demoUi",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginHeadlessBeginGenerate,
+        "        self.calls.push(match words {",
+        [
+          "        let _unexpected = WalletSecret::generate_mnemonic(MnemonicWordCount::Twelve);",
+          "        self.calls.push(match words {",
+        ].join("\n"),
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "headless sentinel becomes structurally raw-key-shaped",
+    "demoUi",
+    (source) =>
+      replaceInsideExactRustItem(
+        source,
+        walletSecretOriginHeadlessReveal,
+        walletSecretOriginHeadlessSentinelExpression,
+        'Zeroizing::new("f".repeat(u8::BITS as usize * 8))',
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "UI firewall regression is ignored",
+    "demoUi",
+    (source) =>
+      walletSecretOriginReplaceUnique(
+        source,
+        "    #[test]\n    fn begin_generate_neither_reads_nor_carries_the_import_buffer()",
+        [
+          "    #[test]",
+          "    #[ignore]",
+          "    fn begin_generate_neither_reads_nor_carries_the_import_buffer()",
+        ].join("\n"),
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "architecture wallet-origin marker is removed",
+    "architecture",
+    (source) =>
+      walletSecretOriginReplaceUnique(
+        source,
+        "### Wallet secret origin firewall",
+        "### Wallet secret origin boundary",
+      ),
+  ),
+  walletSecretOriginMutationProbe(
+    "security decision weakens the exact OS entropy marker",
+    "securityDecisions",
+    (source) =>
+      walletSecretOriginReplaceUnique(
+        source,
+        "Fresh operating-system CSPRNG output only",
+        "Operating-system randomness is preferred",
+      ),
+  ),
+]);
+const walletSecretOriginFirewallMutationResults =
+  walletSecretOriginFirewallMutationProbes.map((probe) =>
+    Object.freeze({
+      name: probe.name,
+      changed: probe.changed,
+      rejected: !walletSecretOriginFirewallContract(probe.inputs),
+    }),
+  );
+
+const walletSecretOriginBottomProjectionControl =
+  walletSecretOriginMutationProbe(
+    "bottom test vector-like call remains excluded",
+    "walletSecret",
+    (source) => {
+      const closingBrace = source.lastIndexOf("}");
+      if (closingBrace === -1) {
+        return source;
+      }
+      const insertion = [
+        "",
+        "    #[test]",
+        "    fn wallet_origin_bottom_projection_control() {",
+        "        let _projected = WalletSecret::generate_mnemonic;",
+        "    }",
+        "",
+      ].join("\n");
+      return `${source.slice(0, closingBrace)}${insertion}${source.slice(
+        closingBrace,
+      )}`;
+    },
+  );
+const walletSecretOriginInlineProjectionControl =
+  walletSecretOriginMutationProbe(
+    "inline cfg test vector-like call remains excluded",
+    "walletSecret",
+    (source) =>
+      insertBeforeBottomTestModule(
+        source,
+        [
+          "",
+          "#[cfg(test)]",
+          "fn wallet_origin_inline_projection_control() {",
+          "    let _projected = WalletSecret::generate_mnemonic;",
+          "}",
+          "",
+        ].join("\n"),
+      ),
+  );
+const walletSecretOriginProjectionControlResults = Object.freeze([
+  Object.freeze({
+    name: walletSecretOriginBottomProjectionControl.name,
+    changed: walletSecretOriginBottomProjectionControl.changed,
+    accepted: walletSecretOriginFirewallContract(
+      walletSecretOriginBottomProjectionControl.inputs,
+    ),
+  }),
+  Object.freeze({
+    name: walletSecretOriginInlineProjectionControl.name,
+    changed: walletSecretOriginInlineProjectionControl.changed,
+    accepted: walletSecretOriginFirewallContract(
+      walletSecretOriginInlineProjectionControl.inputs,
+    ),
+  }),
+]);
+
+requireInvariant(
+  walletSecretOriginFirewallContract(walletSecretOriginInputs) &&
+    walletSecretOriginFirewallMutationProbes.length === 32 &&
+    walletSecretOriginFirewallMutationResults.every(
+      ({ changed, rejected }) => changed && rejected,
+    ) &&
+    walletSecretOriginProjectionControlResults.every(
+      ({ changed, accepted }) => changed && accepted,
+    ),
+  `Wallet secret origin firewall must retain the double production projection, exact OS-CSPRNG error flow, single generation callers, zero raw-key-origin generator, cfg(test)-only fixtures, empty and separated interactive inputs, non-authority headless sentinels, and pinned documentation; base=${walletSecretOriginFirewallContract(walletSecretOriginInputs)}, failed base checks=${JSON.stringify(
+    Object.entries(walletSecretOriginBaseChecks)
+      .filter(([, accepted]) => !accepted)
+      .map(([name]) => name),
+  )}, base metrics=${JSON.stringify(walletSecretOriginBaseMetrics)}, negative probes=${walletSecretOriginFirewallMutationProbes.length}, failed negative probe names=${JSON.stringify(
+    walletSecretOriginFirewallMutationResults
+      .filter(({ changed, rejected }) => !changed || !rejected)
+      .map(({ name }) => name),
+  )}, failed projection control names=${JSON.stringify(
+    walletSecretOriginProjectionControlResults
+      .filter(({ changed, accepted }) => !changed || !accepted)
+      .map(({ name }) => name),
+  )}`,
+);
 
 const approvalMain = await text("crates/approval-ui/src/main.rs");
 const approvalBootstrap = await text("crates/approval-ui/src/bootstrap.rs");
@@ -38534,7 +39970,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "57ba48849f0e466cfb234c789ffe322ed5d0b6d5cd316abb1ece93905eea4d1f";
+  "1e59f4f611774061ec14ae7582b5f30a7aaa7f3286e828b927dd79db34127765";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -68024,11 +69460,11 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "crates/platform-windows/README.md":
     "7a785311a344dec132359f39698c0c4d6752fbcd284511ac26f1d805a40251d2",
   "docs/architecture.md":
-    "26bcf3d6493c03d13f875e101f8ecf7c1da79137c4456ed22e46bdd9f2850663",
+    "6b8f5be34a29f803506b87047205a0f935032ab7b0049b40f491e26b380b0b1f",
   "docs/protocol-contract.md":
     "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "docs/security-decisions.md":
-    "fd663be4fa26c59ad5e9900d8fb602f22b56e5aa7e21b75f400869577f7f4b31",
+    "a952252592e6cc909af128babeead86c91944611f1b8c42775abb19db7b150ae",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -73893,9 +75329,9 @@ const currentDebuggerExitDocumentationContract = (documents) =>
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
   "7a785311a344dec132359f39698c0c4d6752fbcd284511ac26f1d805a40251d2",
-  "26bcf3d6493c03d13f875e101f8ecf7c1da79137c4456ed22e46bdd9f2850663",
+    "6b8f5be34a29f803506b87047205a0f935032ab7b0049b40f491e26b380b0b1f",
   "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
-  "fd663be4fa26c59ad5e9900d8fb602f22b56e5aa7e21b75f400869577f7f4b31",
+    "a952252592e6cc909af128babeead86c91944611f1b8c42775abb19db7b150ae",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,
@@ -83775,7 +85211,7 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "docs/architecture.md",
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
-    sha256: "26bcf3d6493c03d13f875e101f8ecf7c1da79137c4456ed22e46bdd9f2850663",
+      sha256: "6b8f5be34a29f803506b87047205a0f935032ab7b0049b40f491e26b380b0b1f",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
@@ -83787,7 +85223,7 @@ const keyAgentDebuggerDocumentationSpecs = [
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "The dedicated-process feasibility slice remains narrower",
-    sha256: "fd663be4fa26c59ad5e9900d8fb602f22b56e5aa7e21b75f400869577f7f4b31",
+      sha256: "a952252592e6cc909af128babeead86c91944611f1b8c42775abb19db7b150ae",
   },
 ];
 const keyAgentDebuggerDocumentationPatterns = [
