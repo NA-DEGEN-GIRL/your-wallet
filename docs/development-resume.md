@@ -32,7 +32,14 @@ primary group can equal TokenUser without a redundant normal group. The narrow
 primary-user binding correction and seven-bit aggregate failure report are now
 implemented. Repository tests, static checks, fresh preparation and strict
 candidate readback and the final full architecture scan passed.
-Do not retry the installed `3dec6ce` build unchanged.
+The user subsequently applied `fad7ba8`: Remove and Install passed, Start failed.
+The newest fixed-service SCM 7024 is `0x4010`, identifying only logon-attribute
+failure; all six other aggregate predicates passed. No alternate service-logon
+attribute contract is established. A diagnostic-only refinement is implemented
+to report all nine semantic attribute differences together without changing
+acceptance. Repository tests, static/focused checks and fresh candidate
+preparation/readback and the final full architecture scan passed. Do not
+retry the installed `fad7ba8` build unchanged.
 
 ## Saved implementation
 
@@ -72,17 +79,19 @@ explicitly not release evidence. Helper feature tests 69 and Approval UI tests
 
 ## Resume here
 
-1. The user applied the `3dec6ce` redundant-group fix: Remove and Install passed,
-   but Start now reports `0x2184`, not the earlier `0x2192`. The primary-group
-   correction and aggregate report are prepared and independently read back;
-   final full architecture verification passed. Apply that fresh candidate
-   through the existing explicit elevated operator workflow.
+1. The user applied `fad7ba8`; Remove/Install passed, Start now reports `0x4010`,
+   not the earlier `0x2184`. The diagnostic-only logon-attribute refinement has
+   been prepared and independently read back; final full architecture verification
+   passed. Apply it only through the existing guarded operator workflow. Actual
+   mismatching attributes are not yet known.
    Any operator replacement must use the existing
    stopped, ownership-verified Remove/Install workflow, never overwrite or force
    adoption. Inspect completion is not startup evidence. The current candidate is at
    `artifacts/service-probe-candidate`; do not rerun prepare against that existing
-   directory or overwrite it. It now contains the primary-group correction and
-   aggregate remaining-policy report. The installed redundant-group candidate
+   directory or overwrite it. It now also contains the diagnostic-only
+   logon-attribute refinement. The installed `fad7ba8` candidate is preserved in
+   `artifacts/service-probe-candidate-before-logon-attribute-diagnostics-fad7ba8`.
+   The older redundant-group candidate
    is preserved in
    `artifacts/service-probe-candidate-before-primary-group-fix-3dec6ce`.
    The diagnostic-only build is preserved in
@@ -413,3 +422,67 @@ SCM 7024 code and decode the aggregate range using the README dependency rules.
 This correction is not a claim that the host's actual service has started or
 that a production wallet or signing path is ready. No test wallet, mnemonic or
 private-key fixture was added.
+
+## Logon-attribute-only failure evidence and diagnostic refinement
+
+The next user-run Remove/Install/Start passed Remove and Install but failed Start.
+Query-only fixed-service System log inspection found newest SCM 7024 `0x4010`:
+primary binding PASS, Local uniqueness/attributes PASS, logon uniqueness PASS,
+restricted quartet PASS and privilege policy PASS; only logon attributes failed.
+The SID-shape alternative is ruled out by the exact canonical restricted-SID
+match. Missing/extra attribute bits are not identified by that code.
+
+The official SERVICE_SID_INFO contract still gives `0xC0000007`; an independent
+review found no alternate service-generated mask contract. Do not infer a new
+allowable mask or weaken exact acceptance from a current-process token sample.
+The current change is diagnostic only: nine private booleans classify missing
+Mandatory/Enabled-by-default/Enabled, extra Owner/Deny-only/Integrity/
+Integrity-enabled/Resource, and any unknown bits in the already captured rejected
+baseline. Unknown bits collapse to one category without native values. Both
+Logon-ID bits are already required by the unique-group selector.
+
+Only a sole aggregate `0x4010` can refine to nonzero `0x5001..0x51ff`; this implies
+the other six predicates passed. Mixed aggregates are unchanged. Absent/zero
+detail preserves `0x4010`, not success. The existing error facade stays redacted;
+the detailed accessor remains exact debug LPAC only. Acceptance, native capture,
+operator workflow, service/RPC cleanup and all signing gates are unchanged.
+
+Three added tests cover all 512 semantic combinations with real rejected
+baselines and redacted errors, all 128 original aggregate masks with absent/zero/
+nonzero detail, missing/duplicate logon prerequisites, SID-shape-only failure,
+every single attribute bit change and unchanged early rejection precedence.
+Focused token tests passed 28 with the one existing installed-context ignore.
+Workspace fmt/lint/typecheck and privacy passed. Independent code review found
+no blocker. Release-policy tests passed 66 JavaScript cases and both exact
+PowerShell sentinels; default/debug-desktop/release-all-features fallback tests
+passed two each, release probe unit tests passed 15 and release fail-closed
+fixture entrypoint tests passed four, all with native exit 0.
+
+The exact current candidate was held/read back, safely renamed after explicit
+absolute-parent/absent-destination checks to
+`artifacts/service-probe-candidate-before-logon-attribute-diagnostics-fad7ba8`,
+and read back again. No files were deleted. Unelevated preparation then passed;
+independent strict single-link/size/hash checks on all four new executables and
+the canonical manifest passed. New service bytes differ from the preserved
+candidate. No real-service remove/install/start, ACL/LSA change or raw token dump
+was performed by the agent. Full repository tests passed with native exit 0:
+platform 997 passed/44 existing ignored, demo 266, extension 33, helper 69,
+native harness 139, preparation/operator CLI 20 and actual architecture CLI 24.
+The only full architecture scan of this turn passed with native exit 0 in
+288.415 seconds, reporting progress through 672 checks. All 35 historical token
+negative probes and all 14 startup predicates/50 startup negative probes passed
+(the 37 previous negatives plus 13 logon-detail probes). No documentation
+authority pin or native capture source changed this turn. Frozen scanner SHA256:
+`52f6a996cf65655a89713c127b0e7043e9ecc357cfec22017c336444e060ea01`.
+The exact 182-file Rust compilation closure is
+`bfc01f59b2585c0215dfca46585a32aadf6495a696b6f62cee5cdbead355a5d9`.
+
+The remaining action is an explicit elevated stopped/ownership-verified
+Remove/Install/Start chain, each next action conditional on native exit 0.
+This applies the new diagnostic bytes, not a guessed acceptance change. A
+continued startup failure is expected until the real mismatch has been observed
+and reviewed. Read the fixed-service SCM 7024 code and use the README nine-bit
+table if it is `0x5001..0x51ff`; unknown bits are one category, not a raw mask.
+Do not relax attributes or claim a startup fix, release evidence or production
+wallet completion from the tests or candidate preparation. No mnemonic or
+private-key fixture was introduced.

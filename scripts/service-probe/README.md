@@ -272,6 +272,47 @@ and RPC categories remain unchanged. No native error, SID, LUID, attribute value
 handle, token dump or secret is encoded. Default/release consumers, fail-closed
 acceptance, retained-runtime cleanup and signing gates are unchanged.
 
+### Logon-attribute-only refinement
+
+After applying `fad7ba8`, the user reported Remove/Install PASS and Start failure.
+The fixed-service SCM 7024 code is now `0x4010`: primary binding, Local uniqueness
+and attributes, logon uniqueness, restricted-SID quartet and privilege policy
+passed. The failing logon SID's canonical shape follows from its exact byte match
+to a canonical entry in the passing restricted quartet, so the actual mismatch
+is its attributes. This does not identify which bits differ.
+
+Microsoft's [SERVICE_SID_INFO contract](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_sid_info)
+still documents the existing `0xC0000007` expectation. No alternate service-logon
+mask was established. The acceptance predicate, all other token/descriptor
+checks and the native capture remain unchanged. A current-process token sample
+cannot substitute for the actual service's attribute observations.
+
+Only a sole aggregate `0x4010` can now be refined to `0x5001..0x51ff`. Its low
+nine bits record fixed semantic differences, not the native attribute mask.
+Their names follow the documented
+[TOKEN_GROUPS attribute definitions](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-token_groups):
+
+| Bit | Observed difference |
+| --- | --- |
+| `0x001` | Mandatory is missing |
+| `0x002` | Enabled-by-default is missing |
+| `0x004` | Enabled is missing |
+| `0x008` | Owner is additionally present |
+| `0x010` | Deny-only is additionally present |
+| `0x020` | Integrity is additionally present |
+| `0x040` | Integrity-enabled is additionally present |
+| `0x080` | Resource is additionally present |
+| `0x100` | At least one unknown attribute bit is present |
+
+Both Logon-ID bits are already required by the unique-group selector. Unknown
+bits collapse to one boolean, never their value or positions. A refined code
+implies that the other six aggregate checks passed; mixed failures retain their
+original seven-bit aggregate code. Absent/zero detail retains `0x4010`, and a
+successful baseline emits no failure. Earlier capture/identity/RPC categories,
+default/release silence and retained-runtime cleanup remain unchanged. This
+diagnostic build does not fix or accept the observed attribute mismatch. It is
+for obtaining the missing actual-service evidence before deciding on a repair.
+
 ### Automated verification
 
 ```powershell

@@ -263,6 +263,7 @@ struct ServiceTokenRemainingPolicyFailures {
     logon_attributes: bool,
     restricted_sids: bool,
     privileges: bool,
+    logon_attribute_detail: Option<ServiceTokenLogonAttributeFailures>,
 }
 
 impl ServiceTokenRemainingPolicyFailures {
@@ -295,6 +296,9 @@ impl ServiceTokenRemainingPolicyFailures {
                 )
             }),
             privileges: validate_privileges(&token.privileges, &baseline.catalog).is_err(),
+            logon_attribute_detail: logon
+                .filter(|group| group.attributes != SERVICE_LOGON_GROUP_ATTRIBUTES)
+                .map(|group| ServiceTokenLogonAttributeFailures::from_attributes(group.attributes)),
         }
     }
 
@@ -325,8 +329,96 @@ impl ServiceTokenRemainingPolicyFailures {
         if self.privileges {
             code |= 0x40;
         }
+        // Only this sole failure can be refined: every other aggregate check
+        // passed. Mixed failures retain the complete original aggregate code.
+        if code == 0x4010
+            && let Some(detail) = &self.logon_attribute_detail
+            && let Some(refined) = detail.diagnostic_code()
+        {
+            return Some(refined);
+        }
         // A report with no failed predicate never disguises the original error.
         if code == 0x4000 { None } else { Some(code) }
+    }
+}
+
+// Semantic differences only, never a retained or emitted native attribute mask.
+// Both LOGON_ID bits are already required by the unique-group selector.
+#[cfg_attr(
+    not(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    )),
+    allow(
+        dead_code,
+        reason = "closed diagnostics have no default or release consumer"
+    )
+)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent closed failure predicates, not state-machine flags"
+)]
+struct ServiceTokenLogonAttributeFailures {
+    missing_mandatory: bool,
+    missing_enabled_by_default: bool,
+    missing_enabled: bool,
+    extra_owner: bool,
+    extra_deny_only: bool,
+    extra_integrity: bool,
+    extra_integrity_enabled: bool,
+    extra_resource: bool,
+    unknown_bits: bool,
+}
+
+impl ServiceTokenLogonAttributeFailures {
+    fn from_attributes(attributes: u32) -> Self {
+        Self {
+            missing_mandatory: attributes & GROUP_MANDATORY == 0,
+            missing_enabled_by_default: attributes & GROUP_ENABLED_BY_DEFAULT == 0,
+            missing_enabled: attributes & GROUP_ENABLED == 0,
+            extra_owner: attributes & GROUP_OWNER != 0,
+            extra_deny_only: attributes & 0x0000_0010 != 0,
+            extra_integrity: attributes & 0x0000_0020 != 0,
+            extra_integrity_enabled: attributes & 0x0000_0040 != 0,
+            extra_resource: attributes & 0x2000_0000 != 0,
+            unknown_bits: attributes & !0xE000_007F != 0,
+        }
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    const fn diagnostic_code(&self) -> Option<u32> {
+        let mut code = 0x5000;
+        if self.missing_mandatory {
+            code |= 0x001;
+        }
+        if self.missing_enabled_by_default {
+            code |= 0x002;
+        }
+        if self.missing_enabled {
+            code |= 0x004;
+        }
+        if self.extra_owner {
+            code |= 0x008;
+        }
+        if self.extra_deny_only {
+            code |= 0x010;
+        }
+        if self.extra_integrity {
+            code |= 0x020;
+        }
+        if self.extra_integrity_enabled {
+            code |= 0x040;
+        }
+        if self.extra_resource {
+            code |= 0x080;
+        }
+        if self.unknown_bits {
+            code |= 0x100;
+        }
+        if code == 0x5000 { None } else { Some(code) }
     }
 }
 
@@ -2014,6 +2106,7 @@ mod tests {
                 logon_attributes: mask & 0x10 != 0,
                 restricted_sids: mask & 0x20 != 0,
                 privileges: mask & 0x40 != 0,
+                logon_attribute_detail: None,
             };
             if mask == 0 {
                 assert_eq!(failures.service_specific_code(), None);
@@ -2090,7 +2183,12 @@ mod tests {
             assert!(mapped.is_err());
             if let Err(error) = mapped {
                 assert_eq!(error.policy_rejection, Some(expected_reason));
-                assert_eq!(error.startup_diagnostic_code(), 0x4000 | (1 << index));
+                let expected_code = if index == 4 {
+                    0x5004
+                } else {
+                    0x4000 | (1 << index)
+                };
+                assert_eq!(error.startup_diagnostic_code(), expected_code);
                 assert_eq!(format!("{error:?}"), "ServiceTokenFixtureError([REDACTED])");
                 assert_eq!(
                     error.to_string(),
@@ -2192,6 +2290,192 @@ mod tests {
                 .remaining_policy_failures
                 .is_none()
         );
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn logon_attribute_diagnostics_exhaust_every_known_and_unknown_difference() {
+        let mut seen = std::collections::BTreeSet::new();
+        for mask in 0_u32..512 {
+            let mut attributes = SERVICE_LOGON_GROUP_ATTRIBUTES ^ (mask & 7);
+            for (semantic_bit, native_bit) in [
+                (0x008, GROUP_OWNER),
+                (0x010, 0x10),
+                (0x020, 0x20),
+                (0x040, 0x40),
+                (0x080, 0x2000_0000),
+                (0x100, 0x80),
+            ] {
+                if mask & semantic_bit != 0 {
+                    attributes |= native_bit;
+                }
+            }
+            let detail = ServiceTokenLogonAttributeFailures::from_attributes(attributes);
+            assert_eq!(detail.missing_mandatory, mask & 0x001 != 0);
+            assert_eq!(detail.missing_enabled_by_default, mask & 0x002 != 0);
+            assert_eq!(detail.missing_enabled, mask & 0x004 != 0);
+            assert_eq!(detail.extra_owner, mask & 0x008 != 0);
+            assert_eq!(detail.extra_deny_only, mask & 0x010 != 0);
+            assert_eq!(detail.extra_integrity, mask & 0x020 != 0);
+            assert_eq!(detail.extra_integrity_enabled, mask & 0x040 != 0);
+            assert_eq!(detail.extra_resource, mask & 0x080 != 0);
+            assert_eq!(detail.unknown_bits, mask & 0x100 != 0);
+            let expected_code = if mask == 0 { None } else { Some(0x5000 | mask) };
+            assert_eq!(detail.diagnostic_code(), expected_code);
+            let mut value = baseline();
+            for group in &mut value.observation.groups {
+                if group.sid == logon_sid() {
+                    group.attributes = attributes;
+                }
+            }
+            let checked = verify_fixture_baseline(&value);
+            if mask == 0 {
+                assert_eq!(checked, Ok(()));
+                assert!(
+                    ServiceTokenRemainingPolicyFailures::from_baseline(&value)
+                        .logon_attribute_detail
+                        .is_none()
+                );
+            } else {
+                assert!(seen.insert(0x5000 | mask));
+                assert_eq!(checked, Err(PolicyRejection::ServiceGroups));
+                let mapped = checked.map_err(|reason| {
+                    ServiceTokenFixtureError::policy_rejection_for_baseline(reason, &value)
+                });
+                assert!(mapped.is_err());
+                if let Err(error) = mapped {
+                    assert_eq!(Some(error.startup_diagnostic_code()), expected_code);
+                    assert_eq!(format!("{error:?}"), "ServiceTokenFixtureError([REDACTED])");
+                    assert_eq!(
+                        error.to_string(),
+                        "key agent service-token fixture is unavailable"
+                    );
+                    assert!(std::error::Error::source(&error).is_none());
+                }
+            }
+        }
+        assert_eq!(seen.len(), 511);
+        assert_eq!(seen.first(), Some(&0x5001));
+        assert_eq!(seen.last(), Some(&0x51ff));
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn logon_attribute_details_preserve_all_aggregate_codes_and_missing_dependencies() {
+        for mask in 0_u32..128 {
+            let mut failures = ServiceTokenRemainingPolicyFailures {
+                primary_group: mask & 0x01 != 0,
+                local_group: mask & 0x02 != 0,
+                local_attributes: mask & 0x04 != 0,
+                logon_group: mask & 0x08 != 0,
+                logon_attributes: mask & 0x10 != 0,
+                restricted_sids: mask & 0x20 != 0,
+                privileges: mask & 0x40 != 0,
+                logon_attribute_detail: Some(ServiceTokenLogonAttributeFailures::from_attributes(
+                    SERVICE_LOGON_GROUP_ATTRIBUTES | GROUP_OWNER,
+                )),
+            };
+            let original = if mask == 0 { None } else { Some(0x4000 | mask) };
+            let expected = if mask == 0x10 { Some(0x5008) } else { original };
+            assert_eq!(failures.service_specific_code(), expected);
+            failures.logon_attribute_detail = Some(
+                ServiceTokenLogonAttributeFailures::from_attributes(SERVICE_LOGON_GROUP_ATTRIBUTES),
+            );
+            assert_eq!(failures.service_specific_code(), original);
+            failures.logon_attribute_detail = None;
+            assert_eq!(failures.service_specific_code(), original);
+        }
+        for duplicate in [false, true] {
+            let mut value = baseline();
+            value.observation.primary_group_sid = service_sid();
+            if duplicate {
+                value.observation.groups.push(SidEntry {
+                    sid: logon_sid(),
+                    attributes: SERVICE_LOGON_GROUP_ATTRIBUTES | GROUP_OWNER,
+                });
+            } else {
+                value
+                    .observation
+                    .groups
+                    .retain(|group| group.sid != logon_sid());
+            }
+            let failures = ServiceTokenRemainingPolicyFailures::from_baseline(&value);
+            assert!(failures.logon_attribute_detail.is_none());
+            assert_eq!(failures.service_specific_code(), Some(0x4008));
+            assert_eq!(
+                verify_fixture_baseline(&value),
+                Err(PolicyRejection::ServiceGroups)
+            );
+        }
+        // Attribute-exact but malformed SID data cannot produce a refined code.
+        let mut value = baseline();
+        value.observation.primary_group_sid = service_sid();
+        for group in &mut value.observation.groups {
+            if group.sid == logon_sid() {
+                group.sid.0[0] = 2;
+            }
+        }
+        let failures = ServiceTokenRemainingPolicyFailures::from_baseline(&value);
+        assert!(failures.logon_attribute_detail.is_none());
+        assert_eq!(failures.service_specific_code(), Some(0x4030));
+        assert!(verify_fixture_baseline(&value).is_err());
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn logon_attribute_details_leave_early_rejections_and_policy_unchanged() {
+        assert_eq!(SERVICE_LOGON_GROUP_ATTRIBUTES, 0xC000_0007);
+        for bit in 0_u32..32 {
+            let mut value = baseline();
+            for group in &mut value.observation.groups {
+                if group.sid == logon_sid() {
+                    group.attributes ^= 1_u32 << bit;
+                }
+            }
+            assert_eq!(
+                verify_fixture_baseline(&value),
+                Err(PolicyRejection::ServiceGroups)
+            );
+            let report = ServiceTokenRemainingPolicyFailures::from_baseline(&value);
+            if bit >= 30 {
+                assert!(report.logon_attribute_detail.is_none());
+                assert_eq!(report.service_specific_code(), Some(0x4008));
+            } else if (7..29).contains(&bit) {
+                // Every unknown bit collapses into one fixed category.
+                assert_eq!(report.service_specific_code(), Some(0x5100));
+            }
+        }
+        let mutations: [fn(&mut ServiceTokenBaseline); 3] = [
+            |value| value.token_handle_flags = 1,
+            |value| value.observation.session_id = 1,
+            |value| value.observation.owner_sid = SidBytes(WORLD_SID.to_vec()),
+        ];
+        for (mutate, reason, code) in [
+            (mutations[0], PolicyRejection::HandleContinuity, 0x2181),
+            (mutations[1], PolicyRejection::TokenShape, 0x2182),
+            (mutations[2], PolicyRejection::ServiceIdentity, 0x2191),
+        ] {
+            let mut value = baseline();
+            for group in &mut value.observation.groups {
+                if group.sid == logon_sid() {
+                    group.attributes |= GROUP_OWNER;
+                }
+            }
+            mutate(&mut value);
+            assert_eq!(verify_fixture_baseline(&value), Err(reason));
+            let error = ServiceTokenFixtureError::policy_rejection_for_baseline(reason, &value);
+            assert!(error.remaining_policy_failures.is_none());
+            assert_eq!(error.startup_diagnostic_code(), code);
+        }
     }
 
     #[cfg(windows)]

@@ -19887,6 +19887,9 @@ const keyAgentServiceTokenTestNames = [
   "remaining_policy_failure_codes_are_closed_and_exhaustive",
   "remaining_policy_report_collects_independent_failures_without_accepting_them",
   "remaining_policy_report_marks_missing_dependencies_unavailable_and_keeps_fallback",
+  "logon_attribute_diagnostics_exhaust_every_known_and_unknown_difference",
+  "logon_attribute_details_preserve_all_aggregate_codes_and_missing_dependencies",
+  "logon_attribute_details_leave_early_rejections_and_policy_unchanged",
 ];
 // The fixed virtual account is already TokenUser. A redundant normal-group
 // entry is optional, but owner equality, duplicate rejection, exact attributes,
@@ -24480,10 +24483,12 @@ function keyAgentServiceStartupDiagnosticChecks(inputs) {
   const compactGate = compactRust(gate);
   return {
     tokenDataFreeShape: item(token, "struct", "ServiceTokenFixtureError") === "structServiceTokenFixtureError{kind:ServiceTokenFixtureErrorKind,stage:ServiceTokenCaptureStage,policy_rejection:Option<PolicyRejection>,policy_detail:Option<ServiceTokenPolicyDetail>,remaining_policy_failures:Option<ServiceTokenRemainingPolicyFailures>,}" &&
-      item(token, "struct", "ServiceTokenRemainingPolicyFailures") === "structServiceTokenRemainingPolicyFailures{primary_group:bool,local_group:bool,local_attributes:bool,logon_group:bool,logon_attributes:bool,restricted_sids:bool,privileges:bool,}" &&
+      item(token, "struct", "ServiceTokenRemainingPolicyFailures") === "structServiceTokenRemainingPolicyFailures{primary_group:bool,local_group:bool,local_attributes:bool,logon_group:bool,logon_attributes:bool,restricted_sids:bool,privileges:bool,logon_attribute_detail:Option<ServiceTokenLogonAttributeFailures>,}" &&
+      item(token, "struct", "ServiceTokenLogonAttributeFailures") === "structServiceTokenLogonAttributeFailures{missing_mandatory:bool,missing_enabled_by_default:bool,missing_enabled:bool,extra_owner:bool,extra_deny_only:bool,extra_integrity:bool,extra_integrity_enabled:bool,extra_resource:bool,unknown_bits:bool,}" &&
       raw(token).includes('#[allow(clippy::struct_excessive_bools,reason="independentclosedfailurepredicates,notstate-machineflags")]structServiceTokenRemainingPolicyFailures{') &&
-      // One existing query-observation allowance and this scoped report allowance.
-      (rustLexicalCode(token).match(/\bstruct_excessive_bools\b/gu) ?? []).length === 2 &&
+      raw(token).includes('#[allow(clippy::struct_excessive_bools,reason="independentclosedfailurepredicates,notstate-machineflags")]structServiceTokenLogonAttributeFailures{') &&
+      // One existing query-observation allowance and two scoped report allowances.
+      (rustLexicalCode(token).match(/\bstruct_excessive_bools\b/gu) ?? []).length === 3 &&
       item(token, "enum", "ServiceTokenCaptureStage") === `enumServiceTokenCaptureStage{Unspecified,${stages.map(([name]) => `${name},`).join("")}}` &&
       item(token, "enum", "ServiceTokenPolicyDetail") === `enumServiceTokenPolicyDetail{${details.map(([name]) => `${name},`).join("")}}` &&
       fn(token, "at_stage") === "constfnat_stage(mutself,stage:ServiceTokenCaptureStage)->Self{self.stage=stage;self}" &&
@@ -24491,9 +24496,11 @@ function keyAgentServiceStartupDiagnosticChecks(inputs) {
       fn(token, "operating_system") === "constfnoperating_system()->Self{Self{kind:ServiceTokenFixtureErrorKind::OperatingSystem,stage:ServiceTokenCaptureStage::Unspecified,policy_rejection:None,policy_detail:None,remaining_policy_failures:None,}}" &&
       fn(token, "policy") === "constfnpolicy()->Self{Self{kind:ServiceTokenFixtureErrorKind::Policy,stage:ServiceTokenCaptureStage::Unspecified,policy_rejection:None,policy_detail:None,remaining_policy_failures:None,}}",
     tokenFixedCodeMap: fn(token, "startup_diagnostic_code") === expectedTokenCode,
-    tokenBatchFixedObservation: fn(token, "from_baseline") === "fnfrom_baseline(baseline:&ServiceTokenBaseline)->Self{lettoken=&baseline.observation;letlocal=exactly_one_group(&token.groups,LOCAL_SID);letlogon=exactly_one_group_with_flag(&token.groups,GROUP_LOGON_ID);Self{primary_group:!primary_group_is_bound(&token.primary_group_sid,&token.user_sid,&token.groups,),local_group:local.is_none(),local_attributes:local.is_some_and(|group|group.attributes!=LOCAL_GROUP_ATTRIBUTES),logon_group:logon.is_none(),logon_attributes:logon.is_some_and(|group|{group.attributes!=SERVICE_LOGON_GROUP_ATTRIBUTES||!group.sid.has_canonical_shape()}),restricted_sids:logon.is_some_and(|group|{!contains_exact_sid_set(&token.restricted_sids,&[token.user_sid.0.as_slice(),WORLD_SID,group.sid.0.as_slice(),WRITE_RESTRICTED_SID,],)}),privileges:validate_privileges(&token.privileges,&baseline.catalog).is_err(),}}" &&
+    tokenBatchFixedObservation: fn(token, "from_baseline") === "fnfrom_baseline(baseline:&ServiceTokenBaseline)->Self{lettoken=&baseline.observation;letlocal=exactly_one_group(&token.groups,LOCAL_SID);letlogon=exactly_one_group_with_flag(&token.groups,GROUP_LOGON_ID);Self{primary_group:!primary_group_is_bound(&token.primary_group_sid,&token.user_sid,&token.groups,),local_group:local.is_none(),local_attributes:local.is_some_and(|group|group.attributes!=LOCAL_GROUP_ATTRIBUTES),logon_group:logon.is_none(),logon_attributes:logon.is_some_and(|group|{group.attributes!=SERVICE_LOGON_GROUP_ATTRIBUTES||!group.sid.has_canonical_shape()}),restricted_sids:logon.is_some_and(|group|{!contains_exact_sid_set(&token.restricted_sids,&[token.user_sid.0.as_slice(),WORLD_SID,group.sid.0.as_slice(),WRITE_RESTRICTED_SID,],)}),privileges:validate_privileges(&token.privileges,&baseline.catalog).is_err(),logon_attribute_detail:logon.filter(|group|group.attributes!=SERVICE_LOGON_GROUP_ATTRIBUTES).map(|group|ServiceTokenLogonAttributeFailures::from_attributes(group.attributes)),}}" &&
       fn(token, "primary_group_is_bound") === keyAgentServicePrimaryGroupBindingBody,
-    tokenBatchFixedCode: fn(token, "service_specific_code") === "constfnservice_specific_code(&self)->Option<u32>{letmutcode=0x4000;ifself.primary_group{code|=0x01;}ifself.local_group{code|=0x02;}ifself.local_attributes{code|=0x04;}ifself.logon_group{code|=0x08;}ifself.logon_attributes{code|=0x10;}ifself.restricted_sids{code|=0x20;}ifself.privileges{code|=0x40;}ifcode==0x4000{None}else{Some(code)}}",
+    tokenBatchFixedCode: fn(token, "service_specific_code") === "constfnservice_specific_code(&self)->Option<u32>{letmutcode=0x4000;ifself.primary_group{code|=0x01;}ifself.local_group{code|=0x02;}ifself.local_attributes{code|=0x04;}ifself.logon_group{code|=0x08;}ifself.logon_attributes{code|=0x10;}ifself.restricted_sids{code|=0x20;}ifself.privileges{code|=0x40;}ifcode==0x4010&&letSome(detail)=&self.logon_attribute_detail&&letSome(refined)=detail.diagnostic_code(){returnSome(refined);}ifcode==0x4000{None}else{Some(code)}}",
+    tokenLogonDetailFixedObservation: fn(token, "from_attributes") === "fnfrom_attributes(attributes:u32)->Self{Self{missing_mandatory:attributes&GROUP_MANDATORY==0,missing_enabled_by_default:attributes&GROUP_ENABLED_BY_DEFAULT==0,missing_enabled:attributes&GROUP_ENABLED==0,extra_owner:attributes&GROUP_OWNER!=0,extra_deny_only:attributes&0x0000_0010!=0,extra_integrity:attributes&0x0000_0020!=0,extra_integrity_enabled:attributes&0x0000_0040!=0,extra_resource:attributes&0x2000_0000!=0,unknown_bits:attributes&!0xE000_007F!=0,}}",
+    tokenLogonDetailFixedCode: fn(token, "diagnostic_code") === "constfndiagnostic_code(&self)->Option<u32>{letmutcode=0x5000;ifself.missing_mandatory{code|=0x001;}ifself.missing_enabled_by_default{code|=0x002;}ifself.missing_enabled{code|=0x004;}ifself.extra_owner{code|=0x008;}ifself.extra_deny_only{code|=0x010;}ifself.extra_integrity{code|=0x020;}ifself.extra_integrity_enabled{code|=0x040;}ifself.extra_resource{code|=0x080;}ifself.unknown_bits{code|=0x100;}ifcode==0x5000{None}else{Some(code)}}",
     tokenCaptureTags: JSON.stringify(tags(sys, "capture_current_service_token")) === JSON.stringify(tagged(["ThreadBefore", "ThreadAfter"])) &&
       JSON.stringify(tags(sys, "recapture_current_service_token")) === JSON.stringify(tagged(["ThreadBefore", "RetainedHandleFlags", "FreshIdentity", "RecaptureIdentityContinuity", "ThreadAfter"])) &&
       JSON.stringify(tags(sys, "capture_service_token_baseline")) === JSON.stringify(tagged(["ServiceSid", "PrivilegeCatalog", "IdentityBefore", "TokenType", "Session", "AppContainer", "AppContainer", "UiAccess", "UiAccess", "Restrictions", "UserSid", "UserIdentity", "OwnerSid", "PrimaryGroupSid", "Groups", "RestrictedSids", "Privileges", "IdentityAfter", "IdentityContinuity"])) &&
@@ -24506,6 +24513,7 @@ function keyAgentServiceStartupDiagnosticChecks(inputs) {
       fn(token, "revalidate_creation_token").includes(".map_err(|reason|{ServiceTokenFixtureError::policy_rejection_for_baseline(reason,&recaptured.captured.baseline,)})"),
     exactDebugAccessorGates: raw(token).includes(`${gate}pub(crate)constfnstartup_diagnostic_code(&self)->u32`) &&
       raw(token).includes(`${gate}constfnservice_specific_code(&self)->Option<u32>`) &&
+      raw(token).includes(`${gate}constfndiagnostic_code(&self)->Option<u32>`) &&
       raw(rpc).includes(`${gate}implRpcStartupStage{pub(super)constfnstartup_diagnostic_code(self)->u32`) &&
       raw(service).includes(`${gate}implScmWorkerforLpacRpcProbeWorker{`) &&
       raw(service).includes(`${gate}LpacToken(crate::key_agent_service_token::ServiceTokenFixtureError),`) &&
@@ -24544,16 +24552,19 @@ function keyAgentServiceStartupDiagnosticChecks(inputs) {
     diagnosticReachability: JSON.stringify([token, sys, rpc, service].map((source) => rustCallSites(source, "startup_diagnostic_code").length)) === "[1,0,1,2]" &&
       JSON.stringify([token, sys, rpc, service].map((source) => rustCallSites(source, "service_specific_code").length)) === "[2,0,0,0]" &&
       JSON.stringify([token, sys, rpc, service].map((source) => rustCallSites(source, "from_baseline").length)) === "[2,0,0,0]" &&
+      JSON.stringify([token, sys, rpc, service].map((source) => rustCallSites(source, "from_attributes").length)) === "[2,0,0,0]" &&
+      JSON.stringify([token, sys, rpc, service].map((source) => rustCallSites(source, "diagnostic_code").length)) === "[2,0,0,0]" &&
       !/\b(?:GetLastError|GetLastWin32Error|HRESULT|WIN32_ERROR|println|eprintln|dbg)\b/u.test([
         rustFunctionBlock(token, "startup_diagnostic_code"), rustFunctionBlock(token, "policy_rejection_for_baseline"),
         rustFunctionBlock(token, "from_baseline"), rustFunctionBlock(token, "service_specific_code"),
+        rustFunctionBlock(token, "from_attributes"), rustFunctionBlock(token, "diagnostic_code"),
         rustFunctionBlock(rpc, "startup_diagnostic_code"), rustFunctionBlock(service, "initialization_code"),
       ].map(rustLexicalCode).join("\n")),
   };
 }
 function keyAgentServiceStartupDiagnosticContract(inputs) {
   const checks = keyAgentServiceStartupDiagnosticChecks(inputs);
-  return Object.keys(checks).length === 12 && Object.values(checks).every((value) => value === true);
+  return Object.keys(checks).length === 14 && Object.values(checks).every((value) => value === true);
 }
 const keyAgentServiceStartupDiagnosticInputs = {
   token: keyAgentServiceTokenFixtureSources[keyAgentServiceTokenFixturePaths.policy],
@@ -24599,14 +24610,27 @@ const keyAgentServiceStartupDiagnosticMutations = [
   ["batch unchanged privilege check", "token", "privileges: validate_privileges(&token.privileges, &baseline.catalog).is_err(),", "privileges: false,"],
   ["batch release accessor gate", "token", "        debug_assertions\n    ))]\n    const fn service_specific_code", "        any(debug_assertions, not(debug_assertions))\n    ))]\n    const fn service_specific_code"],
   ["batch no second consumer", "token", "const fn service_specific_code(&self) -> Option<u32> {", "const fn service_specific_code(&self) -> Option<u32> { let _ = self.service_specific_code();"],
+  ["logon detail closed boolean payload", "token", "    missing_mandatory: bool,", "    missing_mandatory: u32,"],
+  ["logon detail only observed mismatch", "token", ".filter(|group| group.attributes != SERVICE_LOGON_GROUP_ATTRIBUTES)", ".filter(|_| true)"],
+  ["logon detail only sole attribute failure", "token", "if code == 0x4010", "if code == 0x4000"],
+  ["logon detail preserves mixed failures", "token", "if code == 0x4010", "if code & 0x10 != 0"],
+  ["logon detail missing mandatory polarity", "token", "missing_mandatory: attributes & GROUP_MANDATORY == 0,", "missing_mandatory: attributes & GROUP_MANDATORY != 0,"],
+  ["logon detail resource classification", "token", "extra_resource: attributes & 0x2000_0000 != 0,", "extra_resource: attributes & 0x4000_0000 != 0,"],
+  ["logon detail unknown attribute bound", "token", "unknown_bits: attributes & !0xE000_007F != 0,", "unknown_bits: attributes & !0xFFFF_FFFF != 0,"],
+  ["logon detail disjoint namespace", "token", "let mut code = 0x5000;", "let mut code = 0x4000;"],
+  ["logon detail exact nine bit bound", "token", "code |= 0x100;", "code |= 0x200;"],
+  ["logon detail zero report fallback", "token", "if code == 0x5000 { None } else { Some(code) }", "if false { None } else { Some(code) }"],
+  ["logon detail release accessor gate", "token", "        debug_assertions\n    ))]\n    const fn diagnostic_code", "        any(debug_assertions, not(debug_assertions))\n    ))]\n    const fn diagnostic_code"],
+  ["logon detail no native code", "token", "const fn diagnostic_code(&self) -> Option<u32> {", "const fn diagnostic_code(&self) -> Option<u32> { return Some(GetLastError().0);"],
+  ["logon detail no second consumer", "token", "const fn diagnostic_code(&self) -> Option<u32> {", "const fn diagnostic_code(&self) -> Option<u32> { let _ = self.diagnostic_code();"],
 ].map(([name, field, before, after]) => {
   const changed = keyAgentServiceStartupDiagnosticInputs[field].replace(before, after);
   return { name, changed: changed !== keyAgentServiceStartupDiagnosticInputs[field], rejected: !keyAgentServiceStartupDiagnosticContract({ ...keyAgentServiceStartupDiagnosticInputs, [field]: changed }) };
 });
 requireInvariant(
   keyAgentServiceStartupDiagnosticContract(keyAgentServiceStartupDiagnosticInputs) &&
-    keyAgentServiceStartupDiagnosticMutations.length === 37 && keyAgentServiceStartupDiagnosticMutations.every(({ changed, rejected }) => changed && rejected),
-  `the fixed debug LPAC startup diagnostics must preserve closed data-free token/capture/policy/RPC mappings and the seven-private-boolean already-rejected-baseline report, exact dependency-unavailable semantics and nonzero 0x4001..0x407f encoding with original-error fallback, exact debug accessor and SCM worker gates, unchanged status-only errors and generic event code, and retained cleanup before any stopped-status classification; no raw native value, log, accepted-result diagnostic or new authority may be introduced; preserve all 25 historical and 12 batch-diagnostic negatives; checks=${JSON.stringify(Object.entries(keyAgentServiceStartupDiagnosticChecks(keyAgentServiceStartupDiagnosticInputs)).filter(([, value]) => !value).map(([name]) => name))}, mutations=${JSON.stringify(keyAgentServiceStartupDiagnosticMutations.filter(({ changed, rejected }) => !changed || !rejected).map(({ name }) => name))}`,
+    keyAgentServiceStartupDiagnosticMutations.length === 50 && keyAgentServiceStartupDiagnosticMutations.every(({ changed, rejected }) => changed && rejected),
+  `the fixed debug LPAC startup diagnostics must preserve closed data-free token/capture/policy/RPC mappings and the seven-private-boolean already-rejected-baseline report, exact dependency-unavailable semantics and nonzero 0x4001..0x407f encoding with original-error fallback; only sole 0x4010 may refine to 0x5001..0x51ff through nine private semantic attribute-difference booleans, with absent/zero detail and every mixed failure preserving the original aggregate; retain exact debug accessors and SCM worker gates, unchanged status-only errors and generic event code, and retained cleanup before any stopped-status classification; no raw native value, log, accepted-result diagnostic or new authority may be introduced; preserve all 25 historical, 12 batch-diagnostic and 13 logon-detail negatives; checks=${JSON.stringify(Object.entries(keyAgentServiceStartupDiagnosticChecks(keyAgentServiceStartupDiagnosticInputs)).filter(([, value]) => !value).map(([name]) => name))}, mutations=${JSON.stringify(keyAgentServiceStartupDiagnosticMutations.filter(({ changed, rejected }) => !changed || !rejected).map(({ name }) => name))}`,
 );
 
 const keyAgentServiceRpcLpacSecurityDescriptorContract = (source) => {
@@ -48621,7 +48645,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "35aecb2af5ca4dc1796902b881e415e5517bced61404db0eb5c9ddf2fe932164";
+  "bfc01f59b2585c0215dfca46585a32aadf6495a696b6f62cee5cdbead355a5d9";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
