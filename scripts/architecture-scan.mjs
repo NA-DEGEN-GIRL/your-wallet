@@ -19890,6 +19890,10 @@ const keyAgentServiceTokenTestNames = [
   "logon_attribute_diagnostics_exhaust_every_known_and_unknown_difference",
   "logon_attribute_details_preserve_all_aggregate_codes_and_missing_dependencies",
   "logon_attribute_details_leave_early_rejections_and_policy_unchanged",
+  "service_logon_owner_attribute_accepts_only_two_exact_forms",
+  "owner_capable_logon_group_preserves_other_policy_requirements",
+  "owner_capable_logon_group_preserves_restricted_and_privilege_policy",
+  "logon_owner_attribute_drift_preserves_baseline_and_creation_principals",
 ];
 // The fixed virtual account is already TokenUser. A redundant normal-group
 // entry is optional, but owner equality, duplicate rejection, exact attributes,
@@ -19898,6 +19902,8 @@ const keyAgentServiceIdentityRejectionBody =
   "fnservice_identity_rejection(token:&ServiceTokenObservation)->Option<ServiceTokenPolicyDetail>{iftoken.owner_sid!=token.user_sid{returnSome(ServiceTokenPolicyDetail::OwnerMismatch);}letmutservice_groups=token.groups.iter().filter(|entry|entry.sid==token.user_sid);letfirst=service_groups.next();ifservice_groups.next().is_some(){returnSome(ServiceTokenPolicyDetail::ServiceGroupMultiplicity);}matchfirst{Some(group)ifgroup.attributes!=SERVICE_SID_GROUP_ATTRIBUTES=>{Some(ServiceTokenPolicyDetail::ServiceGroupAttributes)}Some(_)|None=>None,}}";
 const keyAgentServicePrimaryGroupBindingBody =
   "fnprimary_group_is_bound(primary:&SidBytes,user:&SidBytes,groups:&[SidEntry])->bool{primary==user||exactly_one_group(groups,&primary.0).is_some()}";
+const keyAgentServiceLogonGroupAttributesBody =
+  "fnservice_logon_group_attributes_are_supported(attributes:u32)->bool{attributes==SERVICE_LOGON_GROUP_ATTRIBUTES||attributes==(SERVICE_LOGON_GROUP_ATTRIBUTES|GROUP_OWNER)}";
 // Historical authority checks inspect the same query/order skeleton. Remove
 // only the reviewed data-free diagnostic annotations from those four bodies;
 // the startup diagnostic contract independently checks every tag and mapping.
@@ -20244,7 +20250,7 @@ const keyAgentServiceTokenContract = ({
         "exactly_one_group(&token.groups,LOCAL_SID)",
         "local_group.attributes!=LOCAL_GROUP_ATTRIBUTES",
         "exactly_one_group_with_flag(&token.groups,GROUP_LOGON_ID)",
-        "logon_group.attributes!=SERVICE_LOGON_GROUP_ATTRIBUTES",
+        "!service_logon_group_attributes_are_supported(logon_group.attributes)",
         `let${expectedRestrictedName}=[service_sid.0.as_slice(),WORLD_SID,logon_group.sid.0.as_slice(),WRITE_RESTRICTED_SID,]`,
         `contains_exact_sid_set(&token.restricted_sids,&${expectedRestrictedName})`,
         "validate_privileges(&token.privileges,catalog)?",
@@ -20253,6 +20259,8 @@ const keyAgentServiceTokenContract = ({
         keyAgentServiceIdentityRejectionBody &&
       compactRust(rustFunctionBlock(policyProduction, "primary_group_is_bound")) ===
         keyAgentServicePrimaryGroupBindingBody &&
+      compactRust(rustFunctionBlock(policyProduction, "service_logon_group_attributes_are_supported")) ===
+        keyAgentServiceLogonGroupAttributesBody &&
       compactVerifyBaseline.includes(
         "ifbaseline.token_handle_flags!=0{returnErr(PolicyRejection::HandleContinuity);}",
       ) &&
@@ -20445,6 +20453,67 @@ const keyAgentServiceTokenContract = ({
         "token.verify_creation_principals(&owner,&primary_group).is_ok()",
         "token.verify_creation_principals(WORLD_SID,&primary_group).is_err()",
         "token.verify_creation_principals(&owner,WORLD_SID).is_err()",
+      ]) &&
+      hasOrderedCompactMarkers(rustFunctionBlock(policy, "service_logon_owner_attribute_accepts_only_two_exact_forms"), [
+        "forattributesin[SERVICE_LOGON_GROUP_ATTRIBUTES,SERVICE_LOGON_GROUP_ATTRIBUTES|GROUP_OWNER,]",
+        "forseparate_service_groupin[false,true]",
+        "forprimary_is_userin[false,true]",
+        "group.attributes=attributes",
+        "assert_eq!(verify_fixture_baseline(&value),Ok(()))",
+        "assert!(!report.logon_attributes)",
+        "assert!(report.logon_attribute_detail.is_none())",
+        "forbitin0_u32..32",
+        "group.attributes^=1_u32<<bit",
+        "letexpected=ifbit==3{Ok(())}else{Err(PolicyRejection::ServiceGroups)}",
+        "assert_eq!(verify_fixture_baseline(&changed),expected)",
+        "assert!(!service_logon_group_attributes_are_supported(0))",
+        "assert!(!service_logon_group_attributes_are_supported(u32::MAX))",
+      ]) &&
+      hasOrderedCompactMarkers(rustFunctionBlock(policy, "owner_capable_logon_group_preserves_other_policy_requirements"), [
+        "original.observation.primary_group_sid=service_sid()",
+        "original.observation.groups.retain(|group|group.sid!=service_sid())",
+        "group.attributes|=GROUP_OWNER",
+        "letmutations:[fn(&mutServiceTokenBaseline);15]",
+        "|value|value.observation.owner_sid=logon_sid()",
+        "formutateinmutations",
+        "assert!(verify_fixture_baseline(&changed).is_err())",
+        "for(sid,attributes)in[(SidBytes(LOCAL_SID.to_vec()),LOCAL_GROUP_ATTRIBUTES),(logon_sid(),SERVICE_LOGON_GROUP_ATTRIBUTES),(logon_sid(),SERVICE_LOGON_GROUP_ATTRIBUTES|GROUP_OWNER),]",
+        "verify_fixture_baseline(&changed),Err(PolicyRejection::ServiceGroups)",
+      ]) &&
+      hasOrderedCompactMarkers(rustFunctionBlock(policy, "owner_capable_logon_group_preserves_restricted_and_privilege_policy"), [
+        "original.observation.primary_group_sid=service_sid()",
+        "original.observation.groups.retain(|group|group.sid!=service_sid())",
+        "group.attributes|=GROUP_OWNER",
+        "assert_eq!(verify_fixture_baseline(&original),Ok(()))",
+        "forindexin0..4",
+        "missing.observation.restricted_sids.remove(index)",
+        "duplicate.observation.restricted_sids.push(original.observation.restricted_sids[index].clone())",
+        "malformed.observation.restricted_sids[index].sid.0[0]=2",
+        "missing_privilege.observation.privileges.remove(index)",
+        "forattributesin[PRIVILEGE_REMOVED,0x0000_0100]",
+        "forforbiddenincatalog().forbidden",
+      ]) &&
+      hasOrderedCompactMarkers(rustFunctionBlock(policy, "logon_owner_attribute_drift_preserves_baseline_and_creation_principals"), [
+        "group.attributes|=GROUP_OWNER",
+        "for(before,after)in[(&original,&owner_capable),(&owner_capable,&original)]",
+        "assert_eq!(verify_fixture_baseline(before),Ok(()))",
+        "assert_eq!(verify_fixture_baseline(after),Ok(()))",
+        "verify_creation_token_revalidation(before,after,0,true)",
+        "Err(PolicyRejection::BaselineContinuity)",
+        "verify_creation_token_revalidation(&owner_capable,&owner_capable,1,true)",
+        "verify_creation_token_revalidation(&owner_capable,&owner_capable,0,false)",
+        "wrong_owner.observation.owner_sid=logon_sid()",
+        "verify_fixture_baseline(&wrong_owner),Err(PolicyRejection::ServiceIdentity)",
+        "token.verify_creation_principals(&owner,&primary).is_ok()",
+        "verify_creation_principals(&logon_sid().0,&primary).is_err()",
+        "verify_creation_principals(&owner,&logon_sid().0).is_err()",
+      ]) &&
+      hasOrderedCompactMarkers(rustFunctionBlock(policy, "logon_attribute_diagnostics_exhaust_every_known_and_unknown_difference"), [
+        "ifmask==0||mask==0x008",
+        "assert_eq!(checked,Ok(()))",
+        "assert_eq!(seen.len(),510)",
+        "assert_eq!(seen.first(),Some(&0x5001))",
+        "assert_eq!(seen.last(),Some(&0x51ff))",
       ]) &&
       policy.includes("for index in 0..4") &&
       policy.includes("for index in 0..fixture_catalog.expected.len()") &&
@@ -20650,6 +20719,10 @@ const keyAgentServiceTokenMutationProbes = [
     ["primary == user || exactly_one_group(groups, &primary.0).is_some()", "primary == user || true"],
     ["for primary_is_user in [false, true] {", "for primary_is_user in [false] {"],
     ["for (before, after) in [(&original, &user_primary), (&user_primary, &original)] {", "for (before, after) in [(&original, &user_primary)] {"],
+    ["attributes == SERVICE_LOGON_GROUP_ATTRIBUTES\n        || attributes == (SERVICE_LOGON_GROUP_ATTRIBUTES | GROUP_OWNER)", "attributes & SERVICE_LOGON_GROUP_ATTRIBUTES == SERVICE_LOGON_GROUP_ATTRIBUTES"],
+    ["|| attributes == (SERVICE_LOGON_GROUP_ATTRIBUTES | GROUP_OWNER)", "|| attributes == ((SERVICE_LOGON_GROUP_ATTRIBUTES | GROUP_OWNER) & !GROUP_ENABLED)"],
+    ["for attributes in [\n            SERVICE_LOGON_GROUP_ATTRIBUTES,\n            SERVICE_LOGON_GROUP_ATTRIBUTES | GROUP_OWNER,\n        ] {", "for attributes in [SERVICE_LOGON_GROUP_ATTRIBUTES | GROUP_OWNER] {"],
+    ["for (before, after) in [(&original, &owner_capable), (&owner_capable, &original)] {", "for (before, after) in [(&original, &owner_capable)] {"],
   ].map(([before, after]) => mutateKeyAgentServiceTokenSource(
     keyAgentServiceTokenInputs,
     keyAgentServiceTokenFixturePaths.policy,
@@ -20659,14 +20732,14 @@ const keyAgentServiceTokenMutationProbes = [
 ];
 requireInvariant(
   keyAgentServiceTokenContract(keyAgentServiceTokenInputs) &&
-    keyAgentServiceTokenMutationProbes.length === 35 &&
+    keyAgentServiceTokenMutationProbes.length === 39 &&
     keyAgentServiceTokenMutationProbes.every(
       (probe) =>
         (probe.sources !== keyAgentServiceTokenInputs.sources ||
           probe.platformService !== keyAgentServiceTokenInputs.platformService) &&
         !keyAgentServiceTokenContract(probe),
     ),
-  "the debug service-token fixture must retain its exact safe-policy/reviewed-sys inventory, fixed virtual TokenUser and Session-0 primary restricted shape, equal owner, zero-or-one separately present service group with exact attributes and duplicate rejection, primary equal to fixed TokenUser or exactly one assigned group, mandatory Local/logon groups and restricted-SID quartet, exact candidate/forbidden privilege sets, bounded zeroized observation, explicit Unverified proof, full-baseline continuity across both service-group and primary forms, query-only current-process representation evidence that is not service evidence, pre-RUNNING SCM integration, ignored live obligation, and all 24 historical plus seven service-group and four primary-binding effective regression mutations",
+  "the debug service-token fixture must retain its exact safe-policy/reviewed-sys inventory, fixed virtual TokenUser and Session-0 primary restricted shape, equal owner, zero-or-one separately present service group with exact attributes and duplicate rejection, primary equal to fixed TokenUser or exactly one assigned group, mandatory Local/logon groups with only exact documented or OWNER-capable logon attributes, restricted-SID quartet, exact candidate/forbidden privilege sets, bounded zeroized observation, explicit Unverified proof, unchanged creation principals and full-baseline continuity across service-group, primary and logon-attribute forms, query-only current-process representation evidence that is not service evidence, pre-RUNNING SCM integration, ignored live obligation, and all 24 historical plus seven service-group, four primary-binding and four exact logon-attribute effective regression mutations",
 );
 
 const keyAgentServiceCreationSecurityContract = (source) => {
@@ -24496,8 +24569,9 @@ function keyAgentServiceStartupDiagnosticChecks(inputs) {
       fn(token, "operating_system") === "constfnoperating_system()->Self{Self{kind:ServiceTokenFixtureErrorKind::OperatingSystem,stage:ServiceTokenCaptureStage::Unspecified,policy_rejection:None,policy_detail:None,remaining_policy_failures:None,}}" &&
       fn(token, "policy") === "constfnpolicy()->Self{Self{kind:ServiceTokenFixtureErrorKind::Policy,stage:ServiceTokenCaptureStage::Unspecified,policy_rejection:None,policy_detail:None,remaining_policy_failures:None,}}",
     tokenFixedCodeMap: fn(token, "startup_diagnostic_code") === expectedTokenCode,
-    tokenBatchFixedObservation: fn(token, "from_baseline") === "fnfrom_baseline(baseline:&ServiceTokenBaseline)->Self{lettoken=&baseline.observation;letlocal=exactly_one_group(&token.groups,LOCAL_SID);letlogon=exactly_one_group_with_flag(&token.groups,GROUP_LOGON_ID);Self{primary_group:!primary_group_is_bound(&token.primary_group_sid,&token.user_sid,&token.groups,),local_group:local.is_none(),local_attributes:local.is_some_and(|group|group.attributes!=LOCAL_GROUP_ATTRIBUTES),logon_group:logon.is_none(),logon_attributes:logon.is_some_and(|group|{group.attributes!=SERVICE_LOGON_GROUP_ATTRIBUTES||!group.sid.has_canonical_shape()}),restricted_sids:logon.is_some_and(|group|{!contains_exact_sid_set(&token.restricted_sids,&[token.user_sid.0.as_slice(),WORLD_SID,group.sid.0.as_slice(),WRITE_RESTRICTED_SID,],)}),privileges:validate_privileges(&token.privileges,&baseline.catalog).is_err(),logon_attribute_detail:logon.filter(|group|group.attributes!=SERVICE_LOGON_GROUP_ATTRIBUTES).map(|group|ServiceTokenLogonAttributeFailures::from_attributes(group.attributes)),}}" &&
-      fn(token, "primary_group_is_bound") === keyAgentServicePrimaryGroupBindingBody,
+    tokenBatchFixedObservation: fn(token, "from_baseline") === "fnfrom_baseline(baseline:&ServiceTokenBaseline)->Self{lettoken=&baseline.observation;letlocal=exactly_one_group(&token.groups,LOCAL_SID);letlogon=exactly_one_group_with_flag(&token.groups,GROUP_LOGON_ID);Self{primary_group:!primary_group_is_bound(&token.primary_group_sid,&token.user_sid,&token.groups,),local_group:local.is_none(),local_attributes:local.is_some_and(|group|group.attributes!=LOCAL_GROUP_ATTRIBUTES),logon_group:logon.is_none(),logon_attributes:logon.is_some_and(|group|{!service_logon_group_attributes_are_supported(group.attributes)||!group.sid.has_canonical_shape()}),restricted_sids:logon.is_some_and(|group|{!contains_exact_sid_set(&token.restricted_sids,&[token.user_sid.0.as_slice(),WORLD_SID,group.sid.0.as_slice(),WRITE_RESTRICTED_SID,],)}),privileges:validate_privileges(&token.privileges,&baseline.catalog).is_err(),logon_attribute_detail:logon.filter(|group|!service_logon_group_attributes_are_supported(group.attributes)).map(|group|ServiceTokenLogonAttributeFailures::from_attributes(group.attributes)),}}" &&
+      fn(token, "primary_group_is_bound") === keyAgentServicePrimaryGroupBindingBody &&
+      fn(token, "service_logon_group_attributes_are_supported") === keyAgentServiceLogonGroupAttributesBody,
     tokenBatchFixedCode: fn(token, "service_specific_code") === "constfnservice_specific_code(&self)->Option<u32>{letmutcode=0x4000;ifself.primary_group{code|=0x01;}ifself.local_group{code|=0x02;}ifself.local_attributes{code|=0x04;}ifself.logon_group{code|=0x08;}ifself.logon_attributes{code|=0x10;}ifself.restricted_sids{code|=0x20;}ifself.privileges{code|=0x40;}ifcode==0x4010&&letSome(detail)=&self.logon_attribute_detail&&letSome(refined)=detail.diagnostic_code(){returnSome(refined);}ifcode==0x4000{None}else{Some(code)}}",
     tokenLogonDetailFixedObservation: fn(token, "from_attributes") === "fnfrom_attributes(attributes:u32)->Self{Self{missing_mandatory:attributes&GROUP_MANDATORY==0,missing_enabled_by_default:attributes&GROUP_ENABLED_BY_DEFAULT==0,missing_enabled:attributes&GROUP_ENABLED==0,extra_owner:attributes&GROUP_OWNER!=0,extra_deny_only:attributes&0x0000_0010!=0,extra_integrity:attributes&0x0000_0020!=0,extra_integrity_enabled:attributes&0x0000_0040!=0,extra_resource:attributes&0x2000_0000!=0,unknown_bits:attributes&!0xE000_007F!=0,}}",
     tokenLogonDetailFixedCode: fn(token, "diagnostic_code") === "constfndiagnostic_code(&self)->Option<u32>{letmutcode=0x5000;ifself.missing_mandatory{code|=0x001;}ifself.missing_enabled_by_default{code|=0x002;}ifself.missing_enabled{code|=0x004;}ifself.extra_owner{code|=0x008;}ifself.extra_deny_only{code|=0x010;}ifself.extra_integrity{code|=0x020;}ifself.extra_integrity_enabled{code|=0x040;}ifself.extra_resource{code|=0x080;}ifself.unknown_bits{code|=0x100;}ifcode==0x5000{None}else{Some(code)}}",
@@ -24554,6 +24628,7 @@ function keyAgentServiceStartupDiagnosticChecks(inputs) {
       JSON.stringify([token, sys, rpc, service].map((source) => rustCallSites(source, "from_baseline").length)) === "[2,0,0,0]" &&
       JSON.stringify([token, sys, rpc, service].map((source) => rustCallSites(source, "from_attributes").length)) === "[2,0,0,0]" &&
       JSON.stringify([token, sys, rpc, service].map((source) => rustCallSites(source, "diagnostic_code").length)) === "[2,0,0,0]" &&
+      JSON.stringify([token, sys, rpc, service].map((source) => rustCallSites(source, "service_logon_group_attributes_are_supported").length)) === "[4,0,0,0]" &&
       !/\b(?:GetLastError|GetLastWin32Error|HRESULT|WIN32_ERROR|println|eprintln|dbg)\b/u.test([
         rustFunctionBlock(token, "startup_diagnostic_code"), rustFunctionBlock(token, "policy_rejection_for_baseline"),
         rustFunctionBlock(token, "from_baseline"), rustFunctionBlock(token, "service_specific_code"),
@@ -24611,7 +24686,7 @@ const keyAgentServiceStartupDiagnosticMutations = [
   ["batch release accessor gate", "token", "        debug_assertions\n    ))]\n    const fn service_specific_code", "        any(debug_assertions, not(debug_assertions))\n    ))]\n    const fn service_specific_code"],
   ["batch no second consumer", "token", "const fn service_specific_code(&self) -> Option<u32> {", "const fn service_specific_code(&self) -> Option<u32> { let _ = self.service_specific_code();"],
   ["logon detail closed boolean payload", "token", "    missing_mandatory: bool,", "    missing_mandatory: u32,"],
-  ["logon detail only observed mismatch", "token", ".filter(|group| group.attributes != SERVICE_LOGON_GROUP_ATTRIBUTES)", ".filter(|_| true)"],
+  ["logon detail only observed mismatch", "token", ".filter(|group| !service_logon_group_attributes_are_supported(group.attributes))", ".filter(|_| true)"],
   ["logon detail only sole attribute failure", "token", "if code == 0x4010", "if code == 0x4000"],
   ["logon detail preserves mixed failures", "token", "if code == 0x4010", "if code & 0x10 != 0"],
   ["logon detail missing mandatory polarity", "token", "missing_mandatory: attributes & GROUP_MANDATORY == 0,", "missing_mandatory: attributes & GROUP_MANDATORY != 0,"],
@@ -48645,7 +48720,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "bfc01f59b2585c0215dfca46585a32aadf6495a696b6f62cee5cdbead355a5d9";
+  "4b75ab47904971469edae375960759499017111889544fbc0f1dc77c3576f366";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,

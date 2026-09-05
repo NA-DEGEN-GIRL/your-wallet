@@ -1,7 +1,8 @@
 //! Debug-only restricted-service token feasibility policy.
 //!
-//! This module proves only facts that Windows documents independently of the
-//! still-unverified helper-launch composition. In particular, the candidate
+//! This module checks documented token facts and narrowly scoped observed
+//! fixture representations, not the still-unverified helper-launch composition.
+//! In particular, the candidate
 //! privilege *set* is exact, but privilege enablement, restricting-SID
 //! attributes, and the final integrity policy remain explicitly unverified
 //! until a real SCM/kernel matrix fixes their expected values.
@@ -281,7 +282,7 @@ impl ServiceTokenRemainingPolicyFailures {
             local_attributes: local.is_some_and(|group| group.attributes != LOCAL_GROUP_ATTRIBUTES),
             logon_group: logon.is_none(),
             logon_attributes: logon.is_some_and(|group| {
-                group.attributes != SERVICE_LOGON_GROUP_ATTRIBUTES
+                !service_logon_group_attributes_are_supported(group.attributes)
                     || !group.sid.has_canonical_shape()
             }),
             restricted_sids: logon.is_some_and(|group| {
@@ -297,7 +298,7 @@ impl ServiceTokenRemainingPolicyFailures {
             }),
             privileges: validate_privileges(&token.privileges, &baseline.catalog).is_err(),
             logon_attribute_detail: logon
-                .filter(|group| group.attributes != SERVICE_LOGON_GROUP_ATTRIBUTES)
+                .filter(|group| !service_logon_group_attributes_are_supported(group.attributes))
                 .map(|group| ServiceTokenLogonAttributeFailures::from_attributes(group.attributes)),
         }
     }
@@ -917,7 +918,7 @@ fn verify_fixture_policy(
 
     let logon_group = exactly_one_group_with_flag(&token.groups, GROUP_LOGON_ID)
         .ok_or(PolicyRejection::ServiceGroups)?;
-    if logon_group.attributes != SERVICE_LOGON_GROUP_ATTRIBUTES
+    if !service_logon_group_attributes_are_supported(logon_group.attributes)
         || !logon_group.sid.has_canonical_shape()
     {
         return Err(PolicyRejection::ServiceGroups);
@@ -936,6 +937,15 @@ fn verify_fixture_policy(
     validate_privileges(&token.privileges, catalog)?;
 
     Ok(())
+}
+
+fn service_logon_group_attributes_are_supported(attributes: u32) -> bool {
+    // Retain the documented SCM form and the exact OWNER-capable form observed
+    // in this host's installed fixture. OWNER eligibility does not select the
+    // actual TokenOwner: that remains the fixed service user, sealed separately.
+    // Do not strip attributes; full baseline continuity binds the complete value.
+    attributes == SERVICE_LOGON_GROUP_ATTRIBUTES
+        || attributes == (SERVICE_LOGON_GROUP_ATTRIBUTES | GROUP_OWNER)
 }
 
 fn primary_group_is_bound(primary: &SidBytes, user: &SidBytes, groups: &[SidEntry]) -> bool {
@@ -2332,7 +2342,7 @@ mod tests {
                 }
             }
             let checked = verify_fixture_baseline(&value);
-            if mask == 0 {
+            if mask == 0 || mask == 0x008 {
                 assert_eq!(checked, Ok(()));
                 assert!(
                     ServiceTokenRemainingPolicyFailures::from_baseline(&value)
@@ -2357,7 +2367,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(seen.len(), 511);
+        assert_eq!(seen.len(), 510);
         assert_eq!(seen.first(), Some(&0x5001));
         assert_eq!(seen.last(), Some(&0x51ff));
     }
@@ -2441,11 +2451,17 @@ mod tests {
                     group.attributes ^= 1_u32 << bit;
                 }
             }
+            let report = ServiceTokenRemainingPolicyFailures::from_baseline(&value);
+            if bit == 3 {
+                assert_eq!(verify_fixture_baseline(&value), Ok(()));
+                assert!(report.logon_attribute_detail.is_none());
+                assert_eq!(report.service_specific_code(), None);
+                continue;
+            }
             assert_eq!(
                 verify_fixture_baseline(&value),
                 Err(PolicyRejection::ServiceGroups)
             );
-            let report = ServiceTokenRemainingPolicyFailures::from_baseline(&value);
             if bit >= 30 {
                 assert!(report.logon_attribute_detail.is_none());
                 assert_eq!(report.service_specific_code(), Some(0x4008));
@@ -2476,6 +2492,258 @@ mod tests {
             assert!(error.remaining_policy_failures.is_none());
             assert_eq!(error.startup_diagnostic_code(), code);
         }
+    }
+
+    #[test]
+    fn service_logon_owner_attribute_accepts_only_two_exact_forms() {
+        for attributes in [
+            SERVICE_LOGON_GROUP_ATTRIBUTES,
+            SERVICE_LOGON_GROUP_ATTRIBUTES | GROUP_OWNER,
+        ] {
+            for separate_service_group in [false, true] {
+                for primary_is_user in [false, true] {
+                    let mut value = baseline();
+                    if !separate_service_group {
+                        value
+                            .observation
+                            .groups
+                            .retain(|group| group.sid != service_sid());
+                    }
+                    if primary_is_user {
+                        value.observation.primary_group_sid = service_sid();
+                    }
+                    for group in &mut value.observation.groups {
+                        if group.sid == logon_sid() {
+                            group.attributes = attributes;
+                        }
+                    }
+                    assert_eq!(verify_fixture_baseline(&value), Ok(()));
+                    assert!(
+                        verify_fixture_baseline(&value)
+                            .map_err(|reason| {
+                                ServiceTokenFixtureError::policy_rejection_for_baseline(
+                                    reason, &value,
+                                )
+                            })
+                            .is_ok()
+                    );
+                    let report = ServiceTokenRemainingPolicyFailures::from_baseline(&value);
+                    assert!(!report.logon_attributes);
+                    assert!(report.logon_attribute_detail.is_none());
+                    #[cfg(all(
+                        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+                        debug_assertions
+                    ))]
+                    assert_eq!(report.service_specific_code(), None);
+                    for bit in 0_u32..32 {
+                        let mut changed = value.clone();
+                        for group in &mut changed.observation.groups {
+                            if group.sid == logon_sid() {
+                                group.attributes ^= 1_u32 << bit;
+                            }
+                        }
+                        let expected = if bit == 3 {
+                            Ok(())
+                        } else {
+                            Err(PolicyRejection::ServiceGroups)
+                        };
+                        assert_eq!(verify_fixture_baseline(&changed), expected);
+                    }
+                }
+            }
+        }
+        assert!(!service_logon_group_attributes_are_supported(0));
+        assert!(!service_logon_group_attributes_are_supported(u32::MAX));
+    }
+
+    #[test]
+    fn owner_capable_logon_group_preserves_other_policy_requirements() {
+        let mut original = baseline();
+        original.observation.primary_group_sid = service_sid();
+        original
+            .observation
+            .groups
+            .retain(|group| group.sid != service_sid());
+        for group in &mut original.observation.groups {
+            if group.sid == logon_sid() {
+                group.attributes |= GROUP_OWNER;
+            }
+        }
+        assert_eq!(verify_fixture_baseline(&original), Ok(()));
+        let mutations: [fn(&mut ServiceTokenBaseline); 15] = [
+            |value| value.token_handle_flags = 1,
+            |value| value.observation.token_is_primary = false,
+            |value| value.observation.session_id = 1,
+            |value| value.observation.app_container = true,
+            |value| value.observation.ui_access = true,
+            |value| value.observation.has_restrictions = false,
+            |value| value.observation.user_sid.0[0] = 2,
+            |value| value.observation.owner_sid = logon_sid(),
+            |value| value.observation.owner_sid.0[0] = 2,
+            |value| value.observation.primary_group_sid = SidBytes(WORLD_SID.to_vec()),
+            |value| value.observation.primary_group_sid.0[0] = 2,
+            |value| {
+                value
+                    .observation
+                    .groups
+                    .retain(|group| group.sid.0 != LOCAL_SID);
+            },
+            |value| {
+                value
+                    .observation
+                    .groups
+                    .retain(|group| group.sid != logon_sid());
+            },
+            |value| {
+                for group in &mut value.observation.groups {
+                    if group.sid.0 == LOCAL_SID {
+                        group.attributes ^= GROUP_ENABLED;
+                    }
+                }
+            },
+            |value| {
+                value.observation.groups.push(SidEntry {
+                    sid: service_sid(),
+                    attributes: 0,
+                });
+            },
+        ];
+        for mutate in mutations {
+            let mut changed = original.clone();
+            mutate(&mut changed);
+            assert!(verify_fixture_baseline(&changed).is_err());
+        }
+        for (sid, attributes) in [
+            (SidBytes(LOCAL_SID.to_vec()), LOCAL_GROUP_ATTRIBUTES),
+            (logon_sid(), SERVICE_LOGON_GROUP_ATTRIBUTES),
+            (logon_sid(), SERVICE_LOGON_GROUP_ATTRIBUTES | GROUP_OWNER),
+        ] {
+            let mut changed = original.clone();
+            changed
+                .observation
+                .groups
+                .push(SidEntry { sid, attributes });
+            assert_eq!(
+                verify_fixture_baseline(&changed),
+                Err(PolicyRejection::ServiceGroups)
+            );
+        }
+    }
+
+    #[test]
+    fn owner_capable_logon_group_preserves_restricted_and_privilege_policy() {
+        let mut original = baseline();
+        original.observation.primary_group_sid = service_sid();
+        original
+            .observation
+            .groups
+            .retain(|group| group.sid != service_sid());
+        for group in &mut original.observation.groups {
+            if group.sid == logon_sid() {
+                group.attributes |= GROUP_OWNER;
+            }
+        }
+        assert_eq!(verify_fixture_baseline(&original), Ok(()));
+        for index in 0..4 {
+            let mut missing = original.clone();
+            missing.observation.restricted_sids.remove(index);
+            assert_eq!(
+                verify_fixture_baseline(&missing),
+                Err(PolicyRejection::RestrictedSidSet)
+            );
+            let mut duplicate = original.clone();
+            duplicate
+                .observation
+                .restricted_sids
+                .push(original.observation.restricted_sids[index].clone());
+            assert_eq!(
+                verify_fixture_baseline(&duplicate),
+                Err(PolicyRejection::RestrictedSidSet)
+            );
+            let mut malformed = original.clone();
+            malformed.observation.restricted_sids[index].sid.0[0] = 2;
+            assert_eq!(
+                verify_fixture_baseline(&malformed),
+                Err(PolicyRejection::RestrictedSidSet)
+            );
+            let mut missing_privilege = original.clone();
+            missing_privilege.observation.privileges.remove(index);
+            assert_eq!(
+                verify_fixture_baseline(&missing_privilege),
+                Err(PolicyRejection::Privileges)
+            );
+            for attributes in [PRIVILEGE_REMOVED, 0x0000_0100] {
+                let mut invalid = original.clone();
+                invalid.observation.privileges[index].attributes = attributes;
+                assert_eq!(
+                    verify_fixture_baseline(&invalid),
+                    Err(PolicyRejection::Privileges)
+                );
+            }
+        }
+        for forbidden in catalog().forbidden {
+            let mut changed = original.clone();
+            changed.observation.privileges.push(PrivilegeEntry {
+                luid: forbidden.luid,
+                attributes: 0,
+            });
+            assert_eq!(
+                verify_fixture_baseline(&changed),
+                Err(PolicyRejection::Privileges)
+            );
+        }
+    }
+
+    #[test]
+    fn logon_owner_attribute_drift_preserves_baseline_and_creation_principals() {
+        let original = baseline();
+        let mut owner_capable = original.clone();
+        for group in &mut owner_capable.observation.groups {
+            if group.sid == logon_sid() {
+                group.attributes |= GROUP_OWNER;
+            }
+        }
+        for (before, after) in [(&original, &owner_capable), (&owner_capable, &original)] {
+            assert_eq!(verify_fixture_baseline(before), Ok(()));
+            assert_eq!(verify_fixture_baseline(after), Ok(()));
+            assert_eq!(
+                verify_creation_token_revalidation(before, after, 0, true),
+                Err(PolicyRejection::BaselineContinuity)
+            );
+        }
+        assert_eq!(
+            verify_creation_token_revalidation(&owner_capable, &owner_capable, 1, true),
+            Err(PolicyRejection::HandleContinuity)
+        );
+        assert_eq!(
+            verify_creation_token_revalidation(&owner_capable, &owner_capable, 0, false),
+            Err(PolicyRejection::HandleContinuity)
+        );
+        let mut wrong_owner = owner_capable.clone();
+        wrong_owner.observation.owner_sid = logon_sid();
+        assert_eq!(
+            verify_fixture_baseline(&wrong_owner),
+            Err(PolicyRejection::ServiceIdentity)
+        );
+        let mut proof = fixture_proof();
+        proof.baseline = owner_capable;
+        let owner = proof.baseline.observation.owner_sid.0.clone();
+        let primary = proof.baseline.observation.primary_group_sid.0.clone();
+        let token = VerifiedServiceCreationToken {
+            proof: &mut proof,
+            _not_sync: PhantomData,
+        };
+        assert!(token.verify_creation_principals(&owner, &primary).is_ok());
+        assert!(
+            token
+                .verify_creation_principals(&logon_sid().0, &primary)
+                .is_err()
+        );
+        assert!(
+            token
+                .verify_creation_principals(&owner, &logon_sid().0)
+                .is_err()
+        );
     }
 
     #[cfg(windows)]

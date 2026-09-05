@@ -310,8 +310,38 @@ implies that the other six aggregate checks passed; mixed failures retain their
 original seven-bit aggregate code. Absent/zero detail retains `0x4010`, and a
 successful baseline emits no failure. Earlier capture/identity/RPC categories,
 default/release silence and retained-runtime cleanup remain unchanged. This
-diagnostic build does not fix or accept the observed attribute mismatch. It is
-for obtaining the missing actual-service evidence before deciding on a repair.
+`f48fa87` diagnostic build did not fix or accept the observed attribute mismatch.
+It obtained the missing actual-service evidence before the correction below.
+
+### Observed owner-capable logon group
+
+The user applied `f48fa87`: Remove/Install passed and Start failed with the new
+fixed-service SCM 7024 code `0x5008`. This identifies only the additional OWNER
+flag, with no missing required flag, other known extra flag or unknown bit.
+All six other remaining-policy checks passed. Together with the required
+Logon-ID selector bits, this establishes the exact observed logon attributes
+`0xC000000F` on this host, rather than a guess based on a desktop token.
+
+The shared policy/aggregate/detail predicate now accepts exactly the documented
+`0xC0000007` form or that observed `0xC000000F` form. It does not mask attributes,
+accept missing enabled/mandatory bits, or allow any other extra bit. This is an
+observed host representation, not a universal SCM-generation guarantee.
+Microsoft defines [SE_GROUP_OWNER as owner eligibility](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-token_groups);
+the actual [TokenOwner is separate](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-token_owner).
+It remains the OS-resolved fixed service user, and the exact owner/primary bytes
+are sealed into protected creation descriptors. The logon SID cannot replace
+that actual owner merely because it is owner-capable. No ACL, privilege,
+impersonation authority or native capture API was added.
+
+All group attributes remain in the complete canonical baseline; changing between
+either separately accepted form fails revalidation in both directions. Normal
+group uniqueness, restricted quartet, privilege policy and token shape remain
+required. An owner-only accepted baseline generates no failure/detail report.
+The nine-bit encoder retains its historical mapping; OWNER can still be reported
+as a difference from the documented base when combined with an unsupported
+attribute, but it is no longer an independently prohibited flag. Pure `0x5008`
+is historical evidence and cannot arise from an owner-only baseline in this
+corrected policy. Real corrected-service startup and RPC/UI remain unverified.
 
 ### Automated verification
 

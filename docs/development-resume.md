@@ -39,7 +39,15 @@ attribute contract is established. A diagnostic-only refinement is implemented
 to report all nine semantic attribute differences together without changing
 acceptance. Repository tests, static/focused checks and fresh candidate
 preparation/readback and the final full architecture scan passed. Do not
-retry the installed `fad7ba8` build unchanged.
+retry that old build unchanged. The user has now applied `f48fa87`, with Remove
+and Install PASS and Start failure. Its new SCM 7024 code is `0x5008`: only the
+OWNER flag is additionally present on the logon group; the other six aggregate
+checks passed. This establishes the exact observed `0xC000000F` form. A narrow
+shared-predicate correction accepts that form or the documented `0xC0000007`,
+without masking attributes or changing the fixed actual owner. Repository tests,
+static checks, fresh corrected-candidate preparation/readback and the final full
+architecture scan passed. The installed `f48fa87`
+diagnostic build must not be retried unchanged.
 
 ## Saved implementation
 
@@ -79,17 +87,19 @@ explicitly not release evidence. Helper feature tests 69 and Approval UI tests
 
 ## Resume here
 
-1. The user applied `fad7ba8`; Remove/Install passed, Start now reports `0x4010`,
-   not the earlier `0x2184`. The diagnostic-only logon-attribute refinement has
-   been prepared and independently read back; final full architecture verification
-   passed. Apply it only through the existing guarded operator workflow. Actual
-   mismatching attributes are not yet known.
+1. The user applied `f48fa87`; Remove/Install passed, Start now reports `0x5008`,
+   not the earlier `0x4010`. Only extra OWNER was observed. The exact two-form
+   correction is prepared and independently read back; final architecture verification passed. Use
+   any operator replacement. This is actual service-token evidence, not an
+   assumption from a desktop sample; corrected startup/RPC/UI remain unverified.
    Any operator replacement must use the existing
    stopped, ownership-verified Remove/Install workflow, never overwrite or force
    adoption. Inspect completion is not startup evidence. The current candidate is at
    `artifacts/service-probe-candidate`; do not rerun prepare against that existing
-   directory or overwrite it. It now also contains the diagnostic-only
-   logon-attribute refinement. The installed `fad7ba8` candidate is preserved in
+   directory or overwrite it. It now contains the exact two-form logon-group
+   correction. The installed `f48fa87` diagnostic-only candidate is preserved in
+   `artifacts/service-probe-candidate-before-logon-owner-fix-f48fa87`.
+   The older `fad7ba8` candidate is preserved in
    `artifacts/service-probe-candidate-before-logon-attribute-diagnostics-fad7ba8`.
    The older redundant-group candidate
    is preserved in
@@ -486,3 +496,70 @@ table if it is `0x5001..0x51ff`; unknown bits are one category, not a raw mask.
 Do not relax attributes or claim a startup fix, release evidence or production
 wallet completion from the tests or candidate preparation. No mnemonic or
 private-key fixture was introduced.
+
+## Observed owner-capable logon-group correction
+
+The user's next guarded replacement passed Remove and Install but Start failed.
+Read-only fixed-service SCM inspection found newest service-specific `0x5008`:
+OWNER is the sole extra logon attribute; no expected flag is missing and no
+other known or unknown bit is present. All six other aggregate checks passed.
+The unique logon selector already requires both Logon-ID bits, establishing the
+exact observed `0xC000000F` mask on this host.
+
+Independent security review found no blocker to accepting exactly the existing
+documented `0xC0000007` or the observed owner-capable `0xC000000F`. SE_GROUP_OWNER
+is eligibility, not selection of the actual TokenOwner. That actual owner remains
+the OS-resolved fixed service user and is sealed into protected creation
+descriptors. No other attribute is stripped or accepted; logon SID ownership
+substitution, baseline drift, malformed/duplicate groups, restricted-set changes
+and privilege changes remain rejected. No native capture, ACL/LSA/operator,
+role, RPC cleanup or signing boundary changed.
+
+`service_logon_group_attributes_are_supported` is the shared exact-equality OR
+used by acceptance, aggregate classification and detail filtering. An owner-only
+accepted baseline now produces no error/detail. The closed diagnostic encoder
+remains compatible: OWNER can accompany another unsupported difference, but
+is not independently prohibited. Pure `0x5008` is historical evidence, not a
+reachable owner-only rejection in this corrected policy. This host observation
+is not a universal Windows SCM-generation guarantee.
+
+Four regression tests cover both attribute forms across optional-service-group
+and primary-group representations, all 256 bit-flip cases, 15 scalar/group
+negative mutations, missing/duplicate groups, restricted-set and privilege
+negatives, full-baseline drift in both directions and descriptor/actual-owner
+substitution. The 512-profile diagnostic test now has exactly two accepted forms
+and 510 rejected forms. Focused final tests passed 32 with one existing installed
+context test ignored. Workspace fmt/lint/typecheck and privacy passed. Independent
+review found no blocker. Full repository tests passed with native exit 0;
+the final frozen-source rerun passed platform 1001/44 existing ignored, demo 266,
+extension 33, helper 69, native harness 139, preparation/operator CLI 20 and
+actual architecture CLI 24. No new ignored test was added.
+Release-policy tests passed 66 JavaScript cases and both exact PowerShell
+sentinels; default/debug-desktop/release-all-feature fallback tests passed two
+each, release probe unit tests passed 15 and four release fixture entrypoint
+tests passed, all with native exit 0.
+
+The prior candidate passed held readback, was safely renamed after exact
+absolute-parent/absent-destination checks to
+`artifacts/service-probe-candidate-before-logon-owner-fix-f48fa87`, then passed
+readback again. Nothing was deleted. Fresh unelevated preparation passed,
+followed by independent strict single-link/size/hash verification on all four
+executables and canonical manifest readback. New service bytes differ from the
+preserved diagnostic candidate. The agent did not modify the installed service
+or run its operator actions. The single final no-argument architecture scan
+passed with native exit 0 in 325.415 seconds, reporting progress through 672
+checks. All 39 token negatives (35 previous plus four two-form guards), 14 startup
+predicates and 50 startup negatives passed. The exact 182-file Rust closure is
+`4b75ab47904971469edae375960759499017111889544fbc0f1dc77c3576f366`.
+Frozen scanner SHA256:
+`044f06efe4f988abd7135c862636a0da0f4d960a0487ff72a71366894f32b64b`.
+Native source and authority-document pins remain unchanged.
+
+Apply the newly verified corrected candidate through the existing elevated
+stopped/ownership-verified Remove/Install/Start chain, each next action gated by
+the previous native exit 0. This corrects the observed owner-only rejection;
+it does not establish that later RPC/UI startup will succeed. Inspect a new
+fixed-service SCM code if Start still fails; an unchanged retry or guessed
+predicate relaxation is not evidence. Corrected installed-service startup and
+RPC/UI remain unverified. Product stays STOP-SHIP, compiled signing policies stay
+None, and no mnemonic or private-key fixture was introduced.
