@@ -89,8 +89,9 @@ explicitly not release evidence. Helper feature tests 69 and Approval UI tests
 
 1. The user applied `f48fa87`; Remove/Install passed, Start now reports `0x5008`,
    not the earlier `0x4010`. Only extra OWNER was observed. The exact two-form
-   correction is prepared and independently read back; final architecture verification passed. Use
-   any operator replacement. This is actual service-token evidence, not an
+   correction is prepared and independently read back; final architecture
+   verification passed. Apply it only through the guarded operator workflow
+   below. This is actual service-token evidence, not an
    assumption from a desktop sample; corrected startup/RPC/UI remain unverified.
    Any operator replacement must use the existing
    stopped, ownership-verified Remove/Install workflow, never overwrite or force
