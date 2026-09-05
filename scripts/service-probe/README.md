@@ -3,8 +3,8 @@
 This is an **unsigned, debug-only operator harness**, not a production installer
 or release approval. It has no wallet, mnemonic, private-key, vault, transaction,
 or signing operation. A transport success is not evidence that real-asset use is
-safe. The installed/restricted SCM and native UI path still needs an actual
-operator run; automated checks do not claim that evidence.
+safe. The corrected candidate's user-run Install and Start now passed; native
+UI/RPC completion remains unverified. Automated checks do not claim live evidence.
 
 The operator explicitly trusts the reviewed local workspace, the fixed native
 interop source, and the four locally prepared debug executables. `Add-Type`
@@ -93,6 +93,37 @@ it does not cancel another process, retry the command, or claim remote cleanup
 completed. Successful output is valid only with exit code 0. The service retains
 its own original helper deadline and cleanup obligations. See the official
 [local-RPC timeout limitation](https://learn.microsoft.com/en-us/windows/win32/api/rpcdce/nf-rpcdce-rpcbindingsetoption).
+
+The diagnostic client source now preserves the library's six data-free failure
+categories. A real failure prints the existing `SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE`
+line followed by `SERVICE_APPROVAL_TRANSPORT_FAILURE_CATEGORY=` and exactly one
+of `UNAVAILABLE`, `ENVIRONMENT`, `RANDOMNESS`, `DEADLINE`, `TRANSPORT` or `PROTOCOL`.
+Exit remains 78; invalid arguments retain only the original single line, and
+default/release remain silent. `UNAVAILABLE` means a correlated server response,
+not the server's internal reason; `TRANSPORT` combines binding/exchange failures.
+An absent category does not prove that RPC ran. A category is not permission to
+relax policy or automatically retry. These are fixed labels, never native errors,
+identities, raw frames, decisions or wallet data.
+
+The currently installed/matched `b3bb834` candidate predates this client-only
+diagnostic addition and must not be edited in place. A separately provenance-
+checked workspace build can diagnose it without replacing the service. The
+explicitly ignored `current_native_desktop_probe_preflight` test observes only
+its own desktop process through query APIs; it makes no RPC call and does not
+prove the earlier client's environment or service identity.
+
+Three native diagnostic tests are explicitly ignored and exact-feature-gated.
+The desktop preflight and binding-setup tests issue no RPC request. In contrast,
+`current_native_desktop_open_epoch` sends exactly one V2 OpenEpoch without any
+Approval/Status/helper command and can create bounded remote epoch/token state.
+Never run it via a bare unbounded `cargo test --ignored`: it requires a dedicated,
+provenance-checked test executable, fixed exact-test selection, asynchronous
+output draining and an external owning 25-second kill-and-reap watchdog. Local
+deadline checks cannot interrupt a synchronous RPC call. Only closed failure
+categories may be surfaced; a failure must remain a native test failure.
+The recorded isolated run returned `AccessDenied`/101 in 406 ms without watchdog
+termination. This identifies that opening's refusal, not the server's particular
+failed check, service-image identity, earlier attempt's stage or remote cleanup.
 
 After the probe, use the elevated operator shell:
 
@@ -341,7 +372,13 @@ The nine-bit encoder retains its historical mapping; OWNER can still be reported
 as a difference from the documented base when combined with an unsupported
 attribute, but it is no longer an independently prohibited flag. Pure `0x5008`
 is historical evidence and cannot arise from an owner-only baseline in this
-corrected policy. Real corrected-service startup and RPC/UI remain unverified.
+corrected policy. The user subsequently applied the corrected `b3bb834` candidate
+and reported Remove, Install and Start PASS. A strictly verified candidate client
+then ran once without elevation and returned the generic transport-unavailable
+line with native exit 78 in 168 ms. Timing alone does not identify its failure
+stage. Keep this installed fixture and candidate intact while diagnosing the
+client; no repeated replacement is required just to expose the already data-free
+client error categories. RPC/UI completion remains unverified.
 
 ### Automated verification
 

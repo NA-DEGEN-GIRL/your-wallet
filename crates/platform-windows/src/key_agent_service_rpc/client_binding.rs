@@ -172,6 +172,147 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    #[cfg(all(
+        windows,
+        target_arch = "x86_64",
+        target_env = "msvc",
+        debug_assertions,
+        feature = "key-agent-service-desktop-rpc-probe-feasibility-test-hook"
+    ))]
+    #[test]
+    #[ignore = "explicit current native binding setup observation only; sends no RPC request and is not installed-service evidence"]
+    fn current_native_desktop_binding_setup() -> Result<(), ClientBindingError> {
+        let binding = FixedDesktopRpcBinding::connect()?;
+        drop(binding);
+        Ok(())
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum NativeOpenEpochFailure {
+        BindingSetup,
+        Preflight,
+        Deadline,
+        InvalidResponse,
+        AccessDenied,
+        ServerUnavailable,
+        CallFailed,
+        Other,
+    }
+
+    const fn classify_native_open_epoch_status(status: u32) -> NativeOpenEpochFailure {
+        match status {
+            5 => NativeOpenEpochFailure::AccessDenied,
+            1_722 => NativeOpenEpochFailure::ServerUnavailable,
+            1_726 => NativeOpenEpochFailure::CallFailed,
+            _ => NativeOpenEpochFailure::Other,
+        }
+    }
+
+    #[test]
+    fn native_open_epoch_status_classification_is_closed_and_data_free() {
+        for status in (0..=u32::from(u16::MAX)).chain([u32::MAX, u32::MAX - 1]) {
+            let expected = if status == 5 {
+                NativeOpenEpochFailure::AccessDenied
+            } else if status == 1_722 {
+                NativeOpenEpochFailure::ServerUnavailable
+            } else if status == 1_726 {
+                NativeOpenEpochFailure::CallFailed
+            } else {
+                NativeOpenEpochFailure::Other
+            };
+            assert_eq!(classify_native_open_epoch_status(status), expected);
+        }
+        for (failure, expected) in [
+            (NativeOpenEpochFailure::BindingSetup, "BindingSetup"),
+            (NativeOpenEpochFailure::Preflight, "Preflight"),
+            (NativeOpenEpochFailure::Deadline, "Deadline"),
+            (NativeOpenEpochFailure::InvalidResponse, "InvalidResponse"),
+            (NativeOpenEpochFailure::AccessDenied, "AccessDenied"),
+            (
+                NativeOpenEpochFailure::ServerUnavailable,
+                "ServerUnavailable",
+            ),
+            (NativeOpenEpochFailure::CallFailed, "CallFailed"),
+            (NativeOpenEpochFailure::Other, "Other"),
+        ] {
+            assert_eq!(format!("{failure:?}"), expected);
+        }
+    }
+
+    #[cfg(all(
+        windows,
+        target_arch = "x86_64",
+        target_env = "msvc",
+        debug_assertions,
+        feature = "key-agent-service-desktop-rpc-probe-feasibility-test-hook"
+    ))]
+    #[test]
+    #[ignore = "requires an installed fixture and eligible desktop in an isolated test process with an external 25-second kill-and-reap watchdog; sends one OpenEpoch and changes service state"]
+    fn current_native_desktop_open_epoch() {
+        use key_agent_service_wire::debug_v2 as wire;
+
+        // No command follows this opening. A successful epoch retains server
+        // state until later reclamation; dropping this binding proves neither
+        // remote cleanup nor installed-service identity or release readiness.
+        let result = Instant::now()
+            .checked_add(Duration::from_secs(5))
+            .ok_or(NativeOpenEpochFailure::Deadline)
+            .and_then(|deadline| {
+                let result = (|| {
+                    super::super::auth::preflight_current_desktop_probe()
+                        .map_err(|_| NativeOpenEpochFailure::Preflight)?;
+                    remaining_milliseconds(deadline, Instant::now())
+                        .map_err(|_| NativeOpenEpochFailure::Deadline)?;
+                    let binding = FixedDesktopRpcBinding::connect()
+                        .map_err(|_| NativeOpenEpochFailure::BindingSetup)?;
+                    let result = (|| {
+                        remaining_milliseconds(deadline, Instant::now())
+                            .map_err(|_| NativeOpenEpochFailure::Deadline)?;
+                        let request =
+                            wire::ServiceRequest::OpenEpoch(wire::OpenEpochRequest::new());
+                        let frame = RpcFrame::from_payload(&wire::encode_request(&request))
+                            .map_err(|_| NativeOpenEpochFailure::InvalidResponse)?;
+                        remaining_milliseconds(deadline, Instant::now())
+                            .map_err(|_| NativeOpenEpochFailure::Deadline)?;
+                        // SAFETY: this unchanged fixed binding remains owned
+                        // here until the single synchronous shim call returns.
+                        // The borrowed handle never escapes or frees its owner.
+                        let borrowed = unsafe { BindingHandle::from_raw(binding.raw) }
+                            .ok_or(NativeOpenEpochFailure::BindingSetup)?;
+                        let response = key_agent_service_rpc_sys::exchange(&borrowed, &frame)
+                            .map_err(|status| classify_native_open_epoch_status(status.code()));
+                        remaining_milliseconds(deadline, Instant::now())
+                            .map_err(|_| NativeOpenEpochFailure::Deadline)?;
+                        let response = response?;
+                        if !response.is_canonical() {
+                            return Err(NativeOpenEpochFailure::InvalidResponse);
+                        }
+                        let decoded = wire::decode_response(response.payload())
+                            .map_err(|_| NativeOpenEpochFailure::InvalidResponse)?;
+                        decoded
+                            .ensure_correlates_with(&request)
+                            .map_err(|_| NativeOpenEpochFailure::InvalidResponse)?;
+                        if !matches!(decoded, wire::ServiceResponse::OpenEpoch(_)) {
+                            return Err(NativeOpenEpochFailure::InvalidResponse);
+                        }
+                        Ok(())
+                    })();
+                    drop(binding);
+                    remaining_milliseconds(deadline, Instant::now())
+                        .map_err(|_| NativeOpenEpochFailure::Deadline)?;
+                    result
+                })();
+                // Preserve the original deadline on preflight/setup failures
+                // too; no early error creates a fresh observation window.
+                remaining_milliseconds(deadline, Instant::now())
+                    .map_err(|_| NativeOpenEpochFailure::Deadline)?;
+                result
+            });
+        // All local binding owners are gone before this closed result is
+        // asserted. No frame, nonce, identity, or raw status is formatted.
+        assert_eq!(result, Ok(()));
+    }
+
     trait AmbiguousIfSend<Marker> {
         fn marker() {}
     }

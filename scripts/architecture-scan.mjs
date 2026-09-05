@@ -25234,6 +25234,7 @@ const keyAgentServiceRpcAuthTestNames = [
   "desktop_probe_preflight_rejects_a_nonlive_or_nonexact_process",
   "desktop_probe_preflight_rejects_every_desktop_policy_fact_on_both_reads",
   "desktop_probe_preflight_rejects_policy_valid_primary_identity_drift",
+  "current_native_desktop_probe_preflight",
   "null_callback_context_fails_before_any_rpc_query",
 ];
 const keyAgentServiceRpcAuthSysTestNames = [
@@ -25621,9 +25622,9 @@ const keyAgentServiceRpcAuthContract = ({ sources }) => {
       compactRust(tokenInformation).includes("letmutwords=vec![0_usize;word_count]",
       ) &&
       JSON.stringify(
-        keyAgentServiceRustTestNameInventory(
+        keyAgentServiceRustAttributedTestInventory(
           sources[keyAgentServiceRpcFixturePaths.auth],
-        ),
+        ).map(({ name }) => name),
       ) === JSON.stringify(keyAgentServiceRpcAuthTestNames) &&
       JSON.stringify(
         keyAgentServiceRustTestNameInventory(
@@ -25809,7 +25810,7 @@ const keyAgentServiceRpcAuthMilestoneContract = ({ sources }) => {
         compactRust(root),
         "auth::authenticate_role_aware_callback_context(call_context)",
       ) === 1 &&
-      JSON.stringify(keyAgentServiceRustTestNameInventory(authSource)) ===
+      JSON.stringify(keyAgentServiceRustAttributedTestInventory(authSource).map(({ name }) => name)) ===
         JSON.stringify(keyAgentServiceRpcAuthTestNames) &&
       JSON.stringify(keyAgentServiceRustTestNameInventory(authSysSource)) ===
         JSON.stringify(keyAgentServiceRpcAuthSysTestNames)
@@ -25824,7 +25825,7 @@ const keyAgentServiceRpcAuthInputs = Object.freeze({
 });
 const keyAgentServiceRpcAuthMilestonePins = Object.freeze({
   [keyAgentServiceRpcFixturePaths.auth]:
-    "379fe2bac578fd1eda0f7ffe377e0dcf309448c02d4e64a15baa3c96a0f5fd61",
+    "81ed95065c463b3b60bdd5bb0c86cfcbcced0c67877d124994455bb4799b25c5",
   [keyAgentServiceRpcFixturePaths.authSys]:
     "6fac1e23ebe3d0a70a67f0ea7288e45a5924233c9234d91a7912d3198d5fd83f",
 });
@@ -26046,6 +26047,87 @@ function keyAgentServiceDesktopProbeCheckNames() {
     "fixedOutput", "noWalletAuthority",
   ];
 }
+function keyAgentServiceDesktopProbeFailureContract(main) {
+  try {
+    const categories = ["Unavailable", "Environment", "Randomness", "Deadline", "Transport", "Protocol"];
+    const debugGate = '#[cfg(all(windows,target_arch="x86_64",target_env="msvc",debug_assertions,feature="desktop-rpc-probe-feasibility-test-hook"))]';
+    const testOrDebugGate = '#[cfg(any(test,all(windows,target_arch="x86_64",target_env="msvc",debug_assertions,feature="desktop-rpc-probe-feasibility-test-hook")))]';
+    const attributes = (index) => rustAttachedOuterAttributes(main, index).map(({ source }) => source.replace(/\s+/gu, ""));
+    const failure = rustTopLevelLexicalItemBlock(main, /(?:^|\n)\s*enum\s+ProbeFailure\s*\{/u);
+    const outcome = rustTopLevelLexicalItemBlock(main, /(?:^|\n)\s*enum\s+ProbeOutcome\s*\{/u);
+    const conversion = rustImplItems(main).filter(({ header }) => header === "impl From<platform_windows::DesktopRpcProbeError> for ProbeFailure");
+    const outputs = rustImplItems(main).filter(({ header }) => header === "impl ProbeFailure");
+    if (conversion.length !== 1 || outputs.length !== 1) return false;
+    const expectedSchemaAttributes = JSON.stringify([testOrDebugGate, "#[derive(Clone,Copy,Debug,Eq,PartialEq)]"]);
+    return compactRust(failure) === `enumProbeFailure{${categories.map((name) => `${name},`).join("")}}` &&
+      compactRust(outcome) === "enumProbeOutcome{Completed,Unavailable,Failed(ProbeFailure),}" &&
+      JSON.stringify(attributes(main.indexOf(failure))) === expectedSchemaAttributes &&
+      JSON.stringify(attributes(main.indexOf(outcome))) === expectedSchemaAttributes &&
+      JSON.stringify(attributes(conversion[0].index)) === JSON.stringify([debugGate]) &&
+      JSON.stringify(attributes(outputs[0].index)) === JSON.stringify([testOrDebugGate]) &&
+      compactRust(conversion[0].source) === `implFrom<platform_windows::DesktopRpcProbeError>forProbeFailure{fnfrom(error:platform_windows::DesktopRpcProbeError)->Self{matcherror{${categories.map((name) => `platform_windows::DesktopRpcProbeError::${name}=>Self::${name},`).join("")}}}}` &&
+      compactRust(outputs[0].source) === `implProbeFailure{constfnoutput(self)->&'static[u8]{matchself{${categories.map((name) => `Self::${name}=>b,`).join("")}}}}` &&
+      JSON.stringify(outputs[0].source.match(/b"(?:[^"\\]|\\.)*"/gu)) === JSON.stringify(categories.map((name) => `b"SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE\\nSERVICE_APPROVAL_TRANSPORT_FAILURE_CATEGORY=${name.toUpperCase()}\\n"`)) &&
+      ["command_outcome", "write_outcome"].every((name) =>
+        JSON.stringify(rustFunctionOuterAttributesAtDepth(main, name, 0).map((source) => source.replace(/\s+/gu, ""))) === JSON.stringify([testOrDebugGate]));
+  } catch {
+    return false;
+  }
+}
+function keyAgentServiceDesktopProbeNativePreflightTestContract(source) {
+  try {
+    return JSON.stringify(rustInlineModuleOuterAttributesAtDepth(source, "tests", 0)) === JSON.stringify(["#[cfg(test)]"]) &&
+      JSON.stringify(rustFunctionOuterAttributesAtDepth(source, "current_native_desktop_probe_preflight", 1).map((attribute) => attribute.replace(/\s+/gu, ""))) === JSON.stringify([
+        '#[cfg(all(target_os="windows",target_arch="x86_64",target_env="msvc",debug_assertions,feature="key-agent-service-desktop-rpc-probe-feasibility-test-hook"))]',
+        "#[test]",
+        '#[ignore="requiresaneligiblenon-elevatedinteractiveWindowsdesktop;query-only,noRPCorUI"]',
+      ]) &&
+      compactRust(rustFunctionBlock(source, "current_native_desktop_probe_preflight")) === "fncurrent_native_desktop_probe_preflight(){assert_eq!(super::preflight_current_desktop_probe(),Ok(()));}";
+  } catch {
+    return false;
+  }
+}
+function keyAgentServiceDesktopProbeNativeBindingTestContract(source) {
+  try {
+    return JSON.stringify(rustInlineModuleOuterAttributesAtDepth(source, "tests", 0)) === JSON.stringify(["#[cfg(test)]"]) &&
+      JSON.stringify(rustFunctionOuterAttributesAtDepth(source, "current_native_desktop_binding_setup", 1).map((attribute) => attribute.replace(/\s+/gu, ""))) === JSON.stringify([
+        '#[cfg(all(windows,target_arch="x86_64",target_env="msvc",debug_assertions,feature="key-agent-service-desktop-rpc-probe-feasibility-test-hook"))]',
+        "#[test]",
+        '#[ignore="explicitcurrentnativebindingsetupobservationonly;sendsnoRPCrequestandisnotinstalled-serviceevidence"]',
+      ]) &&
+      compactRust(rustFunctionBlock(source, "current_native_desktop_binding_setup")) === "fncurrent_native_desktop_binding_setup()->Result<(),ClientBindingError>{letbinding=FixedDesktopRpcBinding::connect()?;drop(binding);Ok(())}";
+  } catch {
+    return false;
+  }
+}
+function keyAgentServiceDesktopProbeNativeOpenEpochTestContract(source) {
+  try {
+    const categories = ["BindingSetup", "Preflight", "Deadline", "InvalidResponse", "AccessDenied", "ServerUnavailable", "CallFailed", "Other"];
+    const failure = rustLexicalItemBlockAtDepth(source, /(?:^|\n)\s*enum\s+NativeOpenEpochFailure\s*\{/u, 1);
+    const classifier = rustFunctionBlock(source, "classify_native_open_epoch_status");
+    const native = rustFunctionBlock(source, "current_native_desktop_open_epoch");
+    const coverage = rustFunctionBlock(source, "native_open_epoch_status_classification_is_closed_and_data_free");
+    return JSON.stringify(rustInlineModuleOuterAttributesAtDepth(source, "tests", 0)) === JSON.stringify(["#[cfg(test)]"]) &&
+      compactRust(failure) === `enumNativeOpenEpochFailure{${categories.map((name) => `${name},`).join("")}}` &&
+      JSON.stringify(rustAttachedOuterAttributes(source, source.indexOf(failure)).map(({ source: attribute }) => attribute.replace(/\s+/gu, ""))) === JSON.stringify(["#[derive(Clone,Copy,Debug,Eq,PartialEq)]"]) &&
+      !rustImplItems(source).some(({ header }) => /\bNativeOpenEpochFailure\b/u.test(header)) &&
+      JSON.stringify(rustFunctionOuterAttributesAtDepth(source, "classify_native_open_epoch_status", 1)) === "[]" &&
+      compactRust(classifier) === "constfnclassify_native_open_epoch_status(status:u32)->NativeOpenEpochFailure{matchstatus{5=>NativeOpenEpochFailure::AccessDenied,1_722=>NativeOpenEpochFailure::ServerUnavailable,1_726=>NativeOpenEpochFailure::CallFailed,_=>NativeOpenEpochFailure::Other,}}" &&
+      JSON.stringify(rustFunctionOuterAttributesAtDepth(source, "current_native_desktop_open_epoch", 1).map((attribute) => attribute.replace(/\s+/gu, ""))) === JSON.stringify([
+        '#[cfg(all(windows,target_arch="x86_64",target_env="msvc",debug_assertions,feature="key-agent-service-desktop-rpc-probe-feasibility-test-hook"))]',
+        "#[test]",
+        '#[ignore="requiresaninstalledfixtureandeligibledesktopinanisolatedtestprocesswithanexternal25-secondkill-and-reapwatchdog;sendsoneOpenEpochandchangesservicestate"]',
+      ]) &&
+      compactRust(native) === "fncurrent_native_desktop_open_epoch(){usekey_agent_service_wire::debug_v2aswire;letresult=Instant::now().checked_add(Duration::from_secs(5)).ok_or(NativeOpenEpochFailure::Deadline).and_then(|deadline|{letresult=(||{super::super::auth::preflight_current_desktop_probe().map_err(|_|NativeOpenEpochFailure::Preflight)?;remaining_milliseconds(deadline,Instant::now()).map_err(|_|NativeOpenEpochFailure::Deadline)?;letbinding=FixedDesktopRpcBinding::connect().map_err(|_|NativeOpenEpochFailure::BindingSetup)?;letresult=(||{remaining_milliseconds(deadline,Instant::now()).map_err(|_|NativeOpenEpochFailure::Deadline)?;letrequest=wire::ServiceRequest::OpenEpoch(wire::OpenEpochRequest::new());letframe=RpcFrame::from_payload(&wire::encode_request(&request)).map_err(|_|NativeOpenEpochFailure::InvalidResponse)?;remaining_milliseconds(deadline,Instant::now()).map_err(|_|NativeOpenEpochFailure::Deadline)?;letborrowed=unsafe{BindingHandle::from_raw(binding.raw)}.ok_or(NativeOpenEpochFailure::BindingSetup)?;letresponse=key_agent_service_rpc_sys::exchange(&borrowed,&frame).map_err(|status|classify_native_open_epoch_status(status.code()));remaining_milliseconds(deadline,Instant::now()).map_err(|_|NativeOpenEpochFailure::Deadline)?;letresponse=response?;if!response.is_canonical(){returnErr(NativeOpenEpochFailure::InvalidResponse);}letdecoded=wire::decode_response(response.payload()).map_err(|_|NativeOpenEpochFailure::InvalidResponse)?;decoded.ensure_correlates_with(&request).map_err(|_|NativeOpenEpochFailure::InvalidResponse)?;if!matches!(decoded,wire::ServiceResponse::OpenEpoch(_)){returnErr(NativeOpenEpochFailure::InvalidResponse);}Ok(())})();drop(binding);remaining_milliseconds(deadline,Instant::now()).map_err(|_|NativeOpenEpochFailure::Deadline)?;result})();remaining_milliseconds(deadline,Instant::now()).map_err(|_|NativeOpenEpochFailure::Deadline)?;result});assert_eq!(result,Ok(()));}" &&
+      rustCallSites(native, "exchange").length === 1 &&
+      rustCallSites(native, "remaining_milliseconds").length === 6 &&
+      rustUnsafeKeywordCount(native) === 1 &&
+      JSON.stringify(rustFunctionOuterAttributesAtDepth(source, "native_open_epoch_status_classification_is_closed_and_data_free", 1)) === JSON.stringify(["#[test]"]) &&
+      hasOrderedCompactMarkers(coverage, ["forstatusin(0..=u32::from(u16::MAX)).chain([u32::MAX,u32::MAX-1])", "assert_eq!(classify_native_open_epoch_status(status),expected)", ...categories.map((name) => `NativeOpenEpochFailure::${name},`), "assert_eq!(format!(),expected)"]);
+  } catch {
+    return false;
+  }
+}
 function keyAgentServiceDesktopProbeWatchdogContract(main) {
   try {
     const debugMain = rustTopLevelFunctionBlock(main.slice(0, main.indexOf("#[cfg(not(all(")), "main");
@@ -26064,14 +26146,14 @@ function keyAgentServiceDesktopProbeWatchdogContract(main) {
     return JSON.stringify(rustInlineModuleOuterAttributesAtDepth(main, "watchdog", 0)) === JSON.stringify([
       '#[cfg(any( test, all( windows, target_arch = "x86_64", target_env = "msvc", debug_assertions, feature = "desktop-rpc-probe-feasibility-test-hook" ) ))]',
     ]) &&
-      hasOrderedCompactMarkers(debugMain, ["letstarted=std::time::Instant::now()", "std::panic::set_hook(Box::new(|_|{}))", "letSome(deadline)=started.checked_add(std::time::Duration::from_secs(25))else{std::process::exit(UNAVAILABLE_EXIT);}", "watchdog::run_bounded(||watchdog::ProcessWatchdog::arm(deadline),||{", "command_outcome(std::env::args_os().count(),||{platform_windows::run_non_signing_service_approval_probe().is_ok()})", "write_outcome(std::io::stdout().lock(),outcome)", "watchdog::ProcessWatchdog::complete,", "std::process::exit(exit)"]) &&
+      hasOrderedCompactMarkers(debugMain, ["letstarted=std::time::Instant::now()", "std::panic::set_hook(Box::new(|_|{}))", "letSome(deadline)=started.checked_add(std::time::Duration::from_secs(25))else{std::process::exit(UNAVAILABLE_EXIT);}", "watchdog::run_bounded(||watchdog::ProcessWatchdog::arm(deadline),||{", "command_outcome(std::env::args_os().count(),||{platform_windows::run_non_signing_service_approval_probe().map_err(ProbeFailure::from)})", "write_outcome(std::io::stdout().lock(),outcome)", "watchdog::ProcessWatchdog::complete,", "std::process::exit(exit)"]) &&
       hasOrderedCompactMarkers(arm, ["remaining(deadline,Instant::now())?", "let(completed,receiver)=sync_channel(1)", "letworker=Builder::new()", ".spawn(move||{", "letresult=catch_unwind(AssertUnwindSafe(||{", "wait_for_completion(deadline,Instant::now,|duration|{receiver.recv_timeout(duration)})", "if!matches!(result,Ok(Ok(()))){std::process::exit(UNAVAILABLE_EXIT);}", ".map_err(|_|())?", "Ok(Self{completed,worker,deadline,})"]) &&
       hasOrderedCompactMarkers(complete, ["letSelf{completed,worker,deadline,}=self", "complete_with(deadline,Instant::now,||completed.try_send(()).map_err(|_|()),||worker.join().map_err(|_|()),)"]) &&
       hasOrderedCompactMarkers(completeWith, ["remaining(deadline,now())?", "send()?", "join()?", "remaining(deadline,now())?", "Ok(())"]) &&
       compactRust(remaining).includes("deadline.checked_duration_since(now).filter(|duration|!duration.is_zero()).ok_or(())") &&
       hasOrderedCompactMarkers(wait, ["lettimeout=remaining(deadline,now())?", "receive(timeout).map_err(|_|())?", "remaining(deadline,now())?", "Ok(())"]) &&
       hasOrderedCompactMarkers(run, ["letOk(Ok(guard))=catch_unwind(AssertUnwindSafe(arm))else{returnUNAVAILABLE_EXIT;}", "letOk(exit)=catch_unwind(AssertUnwindSafe(operation))else{returnUNAVAILABLE_EXIT;}", "ifmatches!(catch_unwind(AssertUnwindSafe(||complete(guard))),Ok(Ok(()))){exit}else{UNAVAILABLE_EXIT}"]) &&
-      body(debugMain) === "{letstarted=std::time::Instant::now();std::panic::set_hook(Box::new(|_|{}));letSome(deadline)=started.checked_add(std::time::Duration::from_secs(25))else{std::process::exit(UNAVAILABLE_EXIT);};letexit=watchdog::run_bounded(||watchdog::ProcessWatchdog::arm(deadline),||{letoutcome=command_outcome(std::env::args_os().count(),||{platform_windows::run_non_signing_service_approval_probe().is_ok()});write_outcome(std::io::stdout().lock(),outcome)},watchdog::ProcessWatchdog::complete,);std::process::exit(exit);}" &&
+      body(debugMain) === "{letstarted=std::time::Instant::now();std::panic::set_hook(Box::new(|_|{}));letSome(deadline)=started.checked_add(std::time::Duration::from_secs(25))else{std::process::exit(UNAVAILABLE_EXIT);};letexit=watchdog::run_bounded(||watchdog::ProcessWatchdog::arm(deadline),||{letoutcome=command_outcome(std::env::args_os().count(),||{platform_windows::run_non_signing_service_approval_probe().map_err(ProbeFailure::from)});write_outcome(std::io::stdout().lock(),outcome)},watchdog::ProcessWatchdog::complete,);std::process::exit(exit);}" &&
       body(arm) === "{remaining(deadline,Instant::now())?;let(completed,receiver)=sync_channel(1);letworker=Builder::new().name(.to_owned()).spawn(move||{letresult=catch_unwind(AssertUnwindSafe(||{#[cfg(test)]inject_worker_panic_for_test();wait_for_completion(deadline,Instant::now,|duration|{receiver.recv_timeout(duration)})}));if!matches!(result,Ok(Ok(()))){std::process::exit(UNAVAILABLE_EXIT);}}).map_err(|_|())?;Ok(Self{completed,worker,deadline,})}" &&
       body(complete) === "{letSelf{completed,worker,deadline,}=self;complete_with(deadline,Instant::now,||completed.try_send(()).map_err(|_|()),||worker.join().map_err(|_|()),)}" &&
       body(remaining) === "{deadline.checked_duration_since(now).filter(|duration|!duration.is_zero()).ok_or(())}" &&
@@ -26160,7 +26242,9 @@ function keyAgentServiceDesktopProbeChecks(inputs) {
         rustCallSites(exchange, "require_live_deadline").length === 2,
       inclusiveDeadline: compactRust(deadline).includes("ifoperations.now()?>=deadline{returnErr(DesktopRpcProbeError::Deadline);}Ok(())") &&
         rustCallSites(deadline, "now").length === 1,
-      fixedAuthenticatedBinding: binding.includes("const LOCAL_RPC_PROTOCOL_SEQUENCE_WIDE: [u16; 8] = [110, 99, 97, 108, 114, 112, 99, 0];") &&
+      fixedAuthenticatedBinding: keyAgentServiceDesktopProbeNativeBindingTestContract(inputs.binding) &&
+        keyAgentServiceDesktopProbeNativeOpenEpochTestContract(inputs.binding) &&
+        binding.includes("const LOCAL_RPC_PROTOCOL_SEQUENCE_WIDE: [u16; 8] = [110, 99, 97, 108, 114, 112, 99, 0];") &&
         binding.includes("const RPC_AUTHN_LEVEL_PACKET_PRIVACY: u32 = 6;") &&
         hasOrderedCompactMarkers(connect, ["RpcStringBindingComposeW(PCWSTR::null(),PCWSTR(LOCAL_RPC_PROTOCOL_SEQUENCE_WIDE.as_ptr()),PCWSTR::null(),PCWSTR(key_agent_service_rpc_sys::LOCAL_RPC_ENDPOINT_WIDE.as_ptr()),PCWSTR::null(),Some(&rawmutstring),)", "letstring=OwnedRpcString(string)", "rpc_success(status)?", "ifstring.0.is_null()", "RpcBindingFromStringBindingW", "letbinding=Self{raw,_thread_bound:PhantomData,}", "rpc_success(status)?", "ifbinding.raw.is_null()", "RpcBindingSetAuthInfoW(binding.raw.cast_const(),PCWSTR::null(),RPC_AUTHN_LEVEL_PACKET_PRIVACY,RPC_C_AUTHN_WINNT,None,RPC_C_AUTHZ_NONE,)", "Ok(binding)"]),
       threadBoundOwner: compactRust(binding).includes("pub(super)structFixedDesktopRpcBinding{raw:*mutc_void,_thread_bound:PhantomData<Rc<()>>,}") &&
@@ -26175,7 +26259,8 @@ function keyAgentServiceDesktopProbeChecks(inputs) {
         keyAgentServiceDesktopProbeWatchdogContract(main),
       checkedNativeCleanup: hasOrderedCompactMarkers(owner(binding, "impl Drop for FixedDesktopRpcBinding"), ["ifself.raw.is_null(){return;}", "RpcBindingFree(&rawmutself.raw)", "ifstatus.0!=0||!self.raw.is_null(){std::process::abort();}"]) &&
         hasOrderedCompactMarkers(owner(binding, "impl Drop for OwnedRpcString"), ["ifself.0.is_null(){return;}", "RpcStringFreeW(&rawmutself.0)", "ifstatus.0!=0||!self.0.is_null(){std::process::abort();}"]),
-      queryOnlyPreflight: hasOrderedCompactMarkers(preflight, [".current_thread_token_state()", "!=ThreadTokenState::Clear", "returnErr(RpcAuthError::AccessDenied)", ".current_process_id()", ".open_process(process_id)", ".primary_token(&process)", "validate_token_policy(&primary,TokenKind::Primary,TokenPolicy::DesktopBroker)?", "revalidate_client_process(process_id,&process,&primary,TokenPolicy::DesktopBroker,ops,)?", ".current_thread_token_state()", "!=ThreadTokenState::Clear", "returnErr(RpcAuthError::AccessDenied)", "Ok(())"]) &&
+      queryOnlyPreflight: keyAgentServiceDesktopProbeNativePreflightTestContract(inputs.auth) &&
+        hasOrderedCompactMarkers(preflight, [".current_thread_token_state()", "!=ThreadTokenState::Clear", "returnErr(RpcAuthError::AccessDenied)", ".current_process_id()", ".open_process(process_id)", ".primary_token(&process)", "validate_token_policy(&primary,TokenKind::Primary,TokenPolicy::DesktopBroker)?", "revalidate_client_process(process_id,&process,&primary,TokenPolicy::DesktopBroker,ops,)?", ".current_thread_token_state()", "!=ThreadTokenState::Clear", "returnErr(RpcAuthError::AccessDenied)", "Ok(())"]) &&
         compactRust(preflightFacade) === "pub(super)fnpreflight_current_desktop_probe()->Result<(),RpcAuthError>{preflight_current_desktop_probe_with(&sys::WindowsProcessAuthOps)}" &&
         !/AuthenticatedClient|AuthenticatedRpcClient|duplicate|impersonate|CreateProcess|spawn|unsafe/u.test(rustLexicalCode(preflight + preflightFacade)),
       fixedCurrentProcess: compactRust(currentOps).includes("NonZeroU32::new(unsafe{windows::Win32::System::Threading::GetCurrentProcessId()}).ok_or(ObservationError::Incomplete)") &&
@@ -26186,13 +26271,14 @@ function keyAgentServiceDesktopProbeChecks(inputs) {
         compactText(main).includes('#[cfg(not(all(windows,target_arch="x86_64",target_env="msvc",debug_assertions,feature="desktop-rpc-probe-feasibility-test-hook")))]fnmain(){std::process::exit(UNAVAILABLE_EXIT);}') &&
         compactText(main).includes('#[cfg(all(windows,target_arch="x86_64",target_env="msvc",debug_assertions,feature="desktop-rpc-probe-feasibility-test-hook"))]fnmain(){') &&
         (rustLexicalCode(main).match(/\bfn\s+main\s*\(/gu) ?? []).length === 2,
-      noArgumentForwarding: hasOrderedCompactMarkers(outcome, ["ifargument_count!=1{returnProbeOutcome::Unavailable;}", "ifprobe(){ProbeOutcome::Completed}else{ProbeOutcome::Unavailable}"]) &&
-        compactRust(main).includes("command_outcome(std::env::args_os().count(),||{platform_windows::run_non_signing_service_approval_probe().is_ok()})") &&
+      noArgumentForwarding: compactRust(outcome) === "fncommand_outcome(argument_count:usize,probe:implFnOnce()->Result<(),ProbeFailure>,)->ProbeOutcome{ifargument_count!=1{returnProbeOutcome::Unavailable;}matchprobe(){Ok(())=>ProbeOutcome::Completed,Err(failure)=>ProbeOutcome::Failed(failure),}}" &&
+        compactRust(main).includes("command_outcome(std::env::args_os().count(),||{platform_windows::run_non_signing_service_approval_probe().map_err(ProbeFailure::from)})") &&
         rustCallSites(outcome, "probe").length === 1 &&
         rustCallSites(main, "run_non_signing_service_approval_probe").length === 1,
-      fixedOutput: output.includes('b"SERVICE_APPROVAL_TRANSPORT_COMPLETED_NOT_RELEASE_EVIDENCE\\n"') &&
+      fixedOutput: keyAgentServiceDesktopProbeFailureContract(main) &&
+        output.includes('b"SERVICE_APPROVAL_TRANSPORT_COMPLETED_NOT_RELEASE_EVIDENCE\\n"') &&
         output.includes('b"SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE\\n"') &&
-        compactRust(output).includes("ifoutput.write_all(bytes).and_then(|()|output.flush()).is_err(){returnUNAVAILABLE_EXIT;}exit") &&
+        compactRust(output) === "fnwrite_outcome(mutoutput:implstd::io::Write,outcome:ProbeOutcome)->i32{let(bytes,exit):(&[u8],i32)=matchoutcome{ProbeOutcome::Completed=>(b,0,),ProbeOutcome::Unavailable=>(b,UNAVAILABLE_EXIT,),ProbeOutcome::Failed(failure)=>(failure.output(),UNAVAILABLE_EXIT),};ifoutput.write_all(bytes).and_then(|()|output.flush()).is_err(){returnUNAVAILABLE_EXIT;}exit}" &&
         (output.match(/b"/gu) ?? []).length === 2,
       noWalletAuthority: probe.includes("#![forbid(unsafe_code)]") && rustUnsafeKeywordCount(probe) === 0 &&
         !/\b(?:secret_core|key_agent|SigningKey|SecretKey|PrivateKey|Mnemonic|Password|Credential|Signature|Transaction|Wallet|ApprovalAuthorization|PreparedAuthorization|std\s*::\s*net|std\s*::\s*fs|TcpStream|TcpListener|UdpSocket|OpenSCManagerW|OpenServiceW|CreateServiceW|CreateProcessW|CreateProcessAsUserW|ShellExecuteW)\b/u.test(production) &&
@@ -26221,6 +26307,22 @@ function keyAgentServiceDesktopProbeMutationNames() {
     "watchdog completion send", "watchdog worker join", "watchdog inclusive expiry",
     "worker panic injection test gate",
     "watchdog extra blocking work",
+    ...["Unavailable", "Environment", "Randomness", "Deadline", "Transport", "Protocol"].map((name) => `closed failure mapping ${name}`),
+    ...["Unavailable", "Environment", "Randomness", "Deadline", "Transport", "Protocol"].map((name) => `fixed failure output ${name}`),
+    "wildcard failure mapping", "payload-bearing failure category", "failure mapper release gate",
+    "failure schema release gate", "failure output release gate", "unavailable marker compatibility",
+    "failed diagnostic exit", "default entrypoint diagnostic output", "discarded failure category",
+    "native preflight explicit opt-in", "native preflight original assertion", "native preflight debug gate",
+    "native binding explicit opt-in", "native binding setup failure propagation", "native binding exact drop",
+    "native binding no extra work", "native binding debug gate",
+    "native epoch watchdog opt-in", "native epoch debug gate", "native epoch data-free category",
+    "native epoch access-denied classification", "native epoch unavailable classification", "native epoch call-failed classification",
+    "native epoch unknown classification", "native epoch classification coverage", "native epoch original deadline",
+    "native epoch desktop preflight", "native epoch command isolation", "native epoch single exchange",
+    "native epoch immediate status classification", "native epoch canonical response", "native epoch exact correlation",
+    "native epoch exact response", "native epoch binding cleanup", "native epoch terminal assertion",
+    "native epoch no native-status output", "native epoch post-call deadline", "native epoch post-cleanup deadline",
+    "native epoch failure deadline",
   ];
 }
 function keyAgentServiceDesktopProbeMutations(inputs) {
@@ -26260,9 +26362,56 @@ function keyAgentServiceDesktopProbeMutations(inputs) {
     ["watchdog inclusive expiry", "main", ".filter(|duration| !duration.is_zero())", ".filter(|_| true)"],
     ["worker panic injection test gate", "main", "    #[cfg(test)]\n    fn inject_worker_panic_for_test()", "    fn inject_worker_panic_for_test()"],
     ["watchdog extra blocking work", "main", "        let timeout = remaining(deadline, now())?;", "        std::thread::park();\n        let timeout = remaining(deadline, now())?;"],
+    ...["Unavailable", "Environment", "Randomness", "Deadline", "Transport", "Protocol"].map((name) => [
+      `closed failure mapping ${name}`, "main", `platform_windows::DesktopRpcProbeError::${name} => Self::${name},`,
+      `platform_windows::DesktopRpcProbeError::${name} => Self::${name === "Unavailable" ? "Environment" : "Unavailable"},`, "@production",
+    ]),
+    ...["Unavailable", "Environment", "Randomness", "Deadline", "Transport", "Protocol"].map((name) => [
+      `fixed failure output ${name}`, "main", `SERVICE_APPROVAL_TRANSPORT_FAILURE_CATEGORY=${name.toUpperCase()}\\n`,
+      `SERVICE_APPROVAL_TRANSPORT_FAILURE_CATEGORY=${name === "Environment" ? "PROTOCOL" : "ENVIRONMENT"}\\n`, "@production",
+    ]),
+    ["wildcard failure mapping", "main", "platform_windows::DesktopRpcProbeError::Protocol => Self::Protocol,", "_ => Self::Protocol,", "@production"],
+    ["payload-bearing failure category", "main", "enum ProbeFailure {\n    Unavailable,", "enum ProbeFailure {\n    Unavailable(u32),"],
+    ["failure mapper release gate", "main", '    debug_assertions,\n    feature = "desktop-rpc-probe-feasibility-test-hook"\n))]\nimpl From<platform_windows::DesktopRpcProbeError> for ProbeFailure', '    feature = "desktop-rpc-probe-feasibility-test-hook"\n))]\nimpl From<platform_windows::DesktopRpcProbeError> for ProbeFailure'],
+    ["failure schema release gate", "main", '        feature = "desktop-rpc-probe-feasibility-test-hook"\n    )\n))]\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\nenum ProbeFailure', '        feature = "desktop-rpc-probe-feasibility-test-hook"\n    ),\n    windows\n))]\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\nenum ProbeFailure'],
+    ["failure output release gate", "main", '        feature = "desktop-rpc-probe-feasibility-test-hook"\n    )\n))]\nimpl ProbeFailure', '        feature = "desktop-rpc-probe-feasibility-test-hook"\n    ),\n    windows\n))]\nimpl ProbeFailure'],
+    ["unavailable marker compatibility", "main", 'b"SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE\\nSERVICE_APPROVAL_TRANSPORT_FAILURE_CATEGORY=UNAVAILABLE\\n"', 'b"SERVICE_APPROVAL_TRANSPORT_FAILURE_CATEGORY=UNAVAILABLE\\n"', "@production"],
+    ["failed diagnostic exit", "main", "ProbeOutcome::Failed(failure) => (failure.output(), UNAVAILABLE_EXIT)", "ProbeOutcome::Failed(failure) => (failure.output(), 0)", "write_outcome"],
+    ["default entrypoint diagnostic output", "main", "fn main() {\n    std::process::exit(UNAVAILABLE_EXIT);\n}", "fn main() {\n    write_outcome(std::io::stdout().lock(), ProbeOutcome::Failed(ProbeFailure::Unavailable));\n    std::process::exit(UNAVAILABLE_EXIT);\n}"],
+    ["discarded failure category", "main", "Err(failure) => ProbeOutcome::Failed(failure)", "Err(_) => ProbeOutcome::Unavailable", "command_outcome"],
+    ["native preflight explicit opt-in", "auth", '    #[ignore = "requires an eligible non-elevated interactive Windows desktop; query-only, no RPC or UI"]\n', ""],
+    ["native preflight original assertion", "auth", "assert_eq!(super::preflight_current_desktop_probe(), Ok(()));", "let _ = super::preflight_current_desktop_probe();"],
+    ["native preflight debug gate", "auth", '        debug_assertions,\n        feature = "key-agent-service-desktop-rpc-probe-feasibility-test-hook"\n    ))]\n    #[test]', '        feature = "key-agent-service-desktop-rpc-probe-feasibility-test-hook"\n    ))]\n    #[test]'],
+    ["native binding explicit opt-in", "binding", '    #[ignore = "explicit current native binding setup observation only; sends no RPC request and is not installed-service evidence"]\n', ""],
+    ["native binding setup failure propagation", "binding", "let binding = FixedDesktopRpcBinding::connect()?;", "let binding = FixedDesktopRpcBinding::connect();"],
+    ["native binding exact drop", "binding", "        drop(binding);", "        core::mem::forget(binding);", "@binding-setup-test"],
+    ["native binding no extra work", "binding", "let binding = FixedDesktopRpcBinding::connect()?;", "let binding = FixedDesktopRpcBinding::connect()?;\n        std::thread::park();"],
+    ["native binding debug gate", "binding", '        debug_assertions,\n        feature = "key-agent-service-desktop-rpc-probe-feasibility-test-hook"\n    ))]\n    #[test]\n    #[ignore = "explicit current native binding setup', '        feature = "key-agent-service-desktop-rpc-probe-feasibility-test-hook"\n    ))]\n    #[test]\n    #[ignore = "explicit current native binding setup'],
+    ["native epoch watchdog opt-in", "binding", '    #[ignore = "requires an installed fixture and eligible desktop in an isolated test process with an external 25-second kill-and-reap watchdog; sends one OpenEpoch and changes service state"]\n', ""],
+    ["native epoch debug gate", "binding", '        debug_assertions,\n        feature = "key-agent-service-desktop-rpc-probe-feasibility-test-hook"\n    ))]\n    #[test]\n    #[ignore = "requires an installed fixture', '        feature = "key-agent-service-desktop-rpc-probe-feasibility-test-hook"\n    ))]\n    #[test]\n    #[ignore = "requires an installed fixture'],
+    ["native epoch data-free category", "binding", "enum NativeOpenEpochFailure {\n        BindingSetup,", "enum NativeOpenEpochFailure {\n        BindingSetup(u32),"],
+    ["native epoch access-denied classification", "binding", "5 => NativeOpenEpochFailure::AccessDenied,", "6 => NativeOpenEpochFailure::AccessDenied,"],
+    ["native epoch unavailable classification", "binding", "1_722 => NativeOpenEpochFailure::ServerUnavailable,", "1_723 => NativeOpenEpochFailure::ServerUnavailable,"],
+    ["native epoch call-failed classification", "binding", "1_726 => NativeOpenEpochFailure::CallFailed,", "1_727 => NativeOpenEpochFailure::CallFailed,"],
+    ["native epoch unknown classification", "binding", "_ => NativeOpenEpochFailure::Other,", "_ => NativeOpenEpochFailure::AccessDenied,"],
+    ["native epoch classification coverage", "binding", "(0..=u32::from(u16::MAX)).chain([u32::MAX, u32::MAX - 1])", "(0..=255).chain([u32::MAX, u32::MAX - 1])"],
+    ["native epoch original deadline", "binding", ".checked_add(Duration::from_secs(5))", ".checked_add(Duration::from_secs(50))", "@open-epoch-test"],
+    ["native epoch desktop preflight", "binding", "super::super::auth::preflight_current_desktop_probe()", "skip_desktop_preflight()", "@open-epoch-test"],
+    ["native epoch command isolation", "binding", "wire::ServiceRequest::OpenEpoch(wire::OpenEpochRequest::new())", "wire::ServiceRequest::DesktopCommand(wire::OpenEpochRequest::new())", "@open-epoch-test"],
+    ["native epoch single exchange", "binding", "key_agent_service_rpc_sys::exchange(&borrowed, &frame)", "{ let _ = key_agent_service_rpc_sys::exchange(&borrowed, &frame); key_agent_service_rpc_sys::exchange(&borrowed, &frame) }", "@open-epoch-test"],
+    ["native epoch immediate status classification", "binding", ".map_err(|status| classify_native_open_epoch_status(status.code()))", ".map_err(|_| NativeOpenEpochFailure::Other)", "@open-epoch-test"],
+    ["native epoch canonical response", "binding", "if !response.is_canonical()", "if false", "@open-epoch-test"],
+    ["native epoch exact correlation", "binding", ".ensure_correlates_with(&request)", ".ensure_correlates_with(&another_request)", "@open-epoch-test"],
+    ["native epoch exact response", "binding", "if !matches!(decoded, wire::ServiceResponse::OpenEpoch(_))", "if false", "@open-epoch-test"],
+    ["native epoch binding cleanup", "binding", "drop(binding);", "core::mem::forget(binding);", "@open-epoch-test"],
+    ["native epoch terminal assertion", "binding", "assert_eq!(result, Ok(()));", "let _ = result;", "@open-epoch-test"],
+    ["native epoch no native-status output", "binding", ".map_err(|status| classify_native_open_epoch_status(status.code()))", ".map_err(|status| { dbg!(status.code()); classify_native_open_epoch_status(status.code()) })", "@open-epoch-test"],
+    ["native epoch post-call deadline", "binding", ".map_err(|status| classify_native_open_epoch_status(status.code()));\n                        remaining_milliseconds(deadline, Instant::now())\n                            .map_err(|_| NativeOpenEpochFailure::Deadline)?;", ".map_err(|status| classify_native_open_epoch_status(status.code()));", "@open-epoch-test"],
+    ["native epoch post-cleanup deadline", "binding", "drop(binding);\n                    remaining_milliseconds(deadline, Instant::now())\n                        .map_err(|_| NativeOpenEpochFailure::Deadline)?;", "drop(binding);", "@open-epoch-test"],
+    ["native epoch failure deadline", "binding", "                remaining_milliseconds(deadline, Instant::now())\n                    .map_err(|_| NativeOpenEpochFailure::Deadline)?;\n                result", "                result", "@open-epoch-test"],
   ].map(([name, field, search, replacement, scopedFunction]) => {
     const original = inputs[field];
-    const scope = scopedFunction === undefined ? original : scopedFunction === "@production" ? withoutBottomTestModule(original) : rustTopLevelFunctionBlock(original, scopedFunction);
+    const scope = scopedFunction === undefined ? original : scopedFunction === "@production" ? withoutBottomTestModule(original) : scopedFunction === "@binding-setup-test" ? rustFunctionBlock(original, "current_native_desktop_binding_setup") : scopedFunction === "@open-epoch-test" ? rustFunctionBlock(original, "current_native_desktop_open_epoch") : rustTopLevelFunctionBlock(original, scopedFunction);
     const mutated = replaceExactStringOnce(scope, search, replacement);
     const source = scopedFunction === undefined ? mutated : replaceExactStringOnce(original, scope, mutated);
     return { name, changed: source !== original, rejected: !keyAgentServiceDesktopProbeContract({ ...inputs, [field]: source }) };
@@ -26274,7 +26423,7 @@ requireInvariant(
   keyAgentServiceDesktopProbeContract(keyAgentServiceDesktopProbeInputs) &&
     keyAgentServiceApprovalMutationInventory(keyAgentServiceDesktopProbeMutationResults, keyAgentServiceDesktopProbeMutationNames()) &&
     keyAgentServiceDesktopProbeMutationResults.every(({ changed, rejected }) => changed && rejected),
-  `the standalone desktop probe must remain exactly debug-gated and client-feature-only, use fresh nonsecret correlation with one fixed authenticated thread-bound binding for OpenEpoch then Approval only, retain original inclusive deadlines around every call and cleanup, revalidate the eligible current desktop without minting authority, reject noncanonical/miscorrelated replies and nonexact completion, and retain silent default/release with fixed non-authorizing debug output; checks=${JSON.stringify(keyAgentServiceDesktopProbeCheckNames().filter((name) => keyAgentServiceDesktopProbeChecks(keyAgentServiceDesktopProbeInputs)[name] !== true))}; mutations=${JSON.stringify(keyAgentServiceApprovalFailedMutationNames(keyAgentServiceDesktopProbeMutationResults, keyAgentServiceDesktopProbeMutationNames()))}`,
+  `the standalone desktop probe must remain exactly debug-gated and client-feature-only, use fresh nonsecret correlation with one fixed authenticated thread-bound binding for OpenEpoch then Approval only, retain original inclusive deadlines around every call and cleanup, revalidate the eligible current desktop without minting authority, reject noncanonical/miscorrelated replies and nonexact completion, and retain silent default/release with fixed non-authorizing debug output; all six data-free error categories must map exhaustively without payloads or wildcards, retain the generic unavailable marker and exit 78, and never widen release reachability; checks=${JSON.stringify(keyAgentServiceDesktopProbeCheckNames().filter((name) => keyAgentServiceDesktopProbeChecks(keyAgentServiceDesktopProbeInputs)[name] !== true))}; mutations=${JSON.stringify(keyAgentServiceApprovalFailedMutationNames(keyAgentServiceDesktopProbeMutationResults, keyAgentServiceDesktopProbeMutationNames()))}`,
 );
 
 const keyAgentServiceExpectedPeerTestNames = [
@@ -48720,7 +48869,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "4b75ab47904971469edae375960759499017111889544fbc0f1dc77c3576f366";
+  "d1fca017192b7d48b82b0516660bdb815ecc35141c38d2af7f0ddb85893c1b60";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -49960,8 +50109,8 @@ requireInvariant(
     keyAgentServiceDesktopProbeReachabilityMutationResults.length === 5 &&
     keyAgentServiceDesktopProbeReachabilityMutationResults.every(({ changed, rejected }) => changed && rejected) &&
     normalizedSourceSha256(keyAgentServiceDesktopProbeInputs.probe) === "087a3740a4555663a013381676a393e63af49605b91e8d9a02e9af3b4951f0f9" &&
-    normalizedSourceSha256(keyAgentServiceDesktopProbeInputs.binding) === "ad7090f510df4137ba54465ec120e15475435e8b35cfe086cf0cfb81381dd1a9" &&
-    normalizedSourceSha256(keyAgentServiceDesktopProbeInputs.main) === "db50e833334cc4c43d36fd9c16dcf3aa461bc17b4ecfd30d050cdd81b209bce0",
+    normalizedSourceSha256(keyAgentServiceDesktopProbeInputs.binding) === "571ccc76f750c21e4766a7c2bd9f23f67e44adec50f98495bc4714e875e20310" &&
+    normalizedSourceSha256(keyAgentServiceDesktopProbeInputs.main) === "f3c423f867b56db4d60e5efcf675b40c68715ab6929e274fed0b12c614938cfd",
   "the standalone desktop probe must have one binary caller, one gated platform re-export, one auth-preflight caller, a non-exported thread-bound binding owner, and no native timeout-option call beyond the preexisting helper leaf; no additional call, alias, export, SCM host entry, or altered reviewed source may pass the closed workspace inventory",
 );
 requireInvariant(

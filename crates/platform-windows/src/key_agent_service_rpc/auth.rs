@@ -3924,6 +3924,22 @@ mod tests {
         }
     }
 
+    #[cfg(all(
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc",
+        debug_assertions,
+        feature = "key-agent-service-desktop-rpc-probe-feasibility-test-hook"
+    ))]
+    #[test]
+    #[ignore = "requires an eligible non-elevated interactive Windows desktop; query-only, no RPC or UI"]
+    fn current_native_desktop_probe_preflight() {
+        // Observe only this test process and thread through the existing native
+        // preflight. A failure remains a failed test with a data-free error;
+        // neither result establishes service identity or release evidence.
+        assert_eq!(super::preflight_current_desktop_probe(), Ok(()));
+    }
+
     #[test]
     fn null_callback_context_fails_before_any_rpc_query() {
         // SAFETY: null is intentionally supplied to exercise the constructor's

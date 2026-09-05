@@ -3,7 +3,110 @@
 The standalone desktop service probe and unsigned operator harness are
 implemented on top of Phase 3D. Their committed-snapshot tests, the complete architecture
 scan and actual preparation passed. Product and
-release remain STOP-SHIP; this is not installed-service or signed-helper evidence.
+release remain STOP-SHIP; automated checks are not installed-service or
+signed-helper evidence.
+
+## Current live checkpoint
+
+The user applied the corrected `b3bb834` candidate and reported Remove, Install
+and **Start PASS_NOT_RELEASE_EVIDENCE**. Startup is now observed to succeed;
+do not repeat replacement or diagnose the historical `0x5008` as a current
+failure. The installed service and matched workspace candidate remain intact.
+
+The agent then strictly verified the candidate and ran its non-signing client
+exactly once from the eligible unelevated preparation context, with the client
+file held read-only. It returned exactly
+`SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE`, native exit 78, in 168 ms. This
+establishes a client failure, not its stage or whether a window appeared.
+No completion/response or signing evidence was obtained. A bounded read-only
+SCM query returned historical failure events only; a fixed-executable Application
+crash query returned no observations, which is not proof of absence of a crash.
+
+The binary source now preserves the library's six safe error categories as a
+second fixed line after the original unavailable marker. An explicitly ignored,
+feature-gated native preflight test observes only its own process without RPC.
+Verify the workspace-only diagnostic build before another deliberate attempt;
+do not rebuild/replace the installed service just for client diagnostics.
+
+That exact ignored native preflight passed (one test, native exit 0). The newly
+reviewed client then passed strict Cargo artifact provenance and held-file
+verification and ran exactly once: `FAILURE_CATEGORY=TRANSPORT`, native exit 78,
+155 ms. The original candidate passed strict readback before and after and was
+not modified. A separate ignored native binding-setup test also passed (one
+test, native exit 0); it composes/configures and drops only a local binding,
+without issuing a request. Neither current query proves the earlier process's
+observations. TRANSPORT still combines binding setup and RPC exchange failure;
+it is not a correlated server `Unavailable` response or helper-completion result.
+
+One further explicitly ignored, opening-only native diagnostic was independently
+reviewed and run in a fresh dedicated test process after exact Cargo JSON artifact
+verification. Its executable and directories were held against replacement, and
+the owning parent imposed a 25-second kill-and-reap bound with asynchronous output
+draining. The test sent exactly one canonical V2 OpenEpoch and no command/helper
+request, preserving the original five-second deadline through binding cleanup.
+It failed with only the closed category `AccessDenied`, native test exit 101, in
+406 ms. The watchdog did not fire. This proves denial on this opening attempt,
+not the earlier client's exact stage or the denied server predicate. Callback
+failures are collapsed to access denied; a previous fatal callback observation
+could already have closed admission while SCM remains running. No further live
+request or operator mutation has been made. A successful opening would retain
+bounded remote epoch/token state, so this test is not read-only and cannot prove
+remote cleanup. Investigate service-side failure observability next; do not guess
+an ACL grant or relax authentication to clear this result.
+
+### Remaining RPC diagnosis boundary
+
+No service-side per-attempt cause is currently persisted or queryable. The
+existing `Status` result is deliberately unavailable, and SCM startup codes do
+not expose runtime authentication failures. A first-wins, closed service-side
+failure record with a reviewed reporting/cleanup path is the next development
+step before another operator replacement. Keep acceptance, callback/manager
+independence, exact process/token correlation, deadlines and cleanup unchanged.
+Do not claim that client instrumentation alone fixes the RPC refusal.
+
+Cross-account access is a hypothesis, not the observed failed predicate:
+`authenticate_identity_with` opens the caller process before RPC impersonation;
+later revalidation opens its primary token again after reversion. Both operations
+are independently DACL-checked ([OpenProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess),
+[OpenProcessToken](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocesstoken)).
+Current-user tests cannot establish access for the restricted service account.
+Moving only the first open or granting Debug would not validate that chain.
+
+An unregistered fixed EventLog source can fall back to Application, but this
+service's actual write access is not guaranteed and the APIs are synchronous.
+No EventLog API, source registration, ACL/LSA grant or background reporting
+worker was added. If considering the existing SCM terminal-status channel,
+separate observed runtime failure from proven resource cleanup: current drain
+errors deliberately suppress STOPPED, and RUNNING exit/checkpoint fields must
+not be repurposed as diagnostics. Neither absent logs nor process termination
+proves which authentication check failed or that remote resources were reaped.
+
+### Verified diagnostic checkpoint
+
+The frozen diagnostic source passed `scripts/check.ps1 test`, fmt, lint,
+typecheck and privacy, each with native exit 0. Platform: 1002 passed, 47 ignored
+(the previous 44 plus three explicit native diagnostic opt-ins); demo: 266;
+extension: 33; native harness: 139; operator/preparation CLI: 20; architecture
+actual CLI: 24. Default/debug-desktop/release-all-feature binary matrices passed
+17+2, 18+2 and 17+2 respectively. Separate 66-case release-policy checks were not
+rerun in this checkpoint; their source is unchanged.
+
+An earlier standalone platform invocation failed one loader test because it
+omitted `YW_TEST_KEY_AGENT_EXECUTABLE` setup (1001 passed, one failed, 47 ignored,
+native 101). The proper harness built and selected the exact required executable;
+the same loader test then passed without changing its source or suppressing it.
+This harness-setup failure is separate from the real AccessDenied diagnostic.
+
+The single final no-argument architecture scan passed, native exit 0, in 256.477
+seconds, reporting progress through 672 checks. Desktop contract: 20 predicates
+and 86 negative mutations, preserving all previous 35. Auth/binding production
+bodies and native adapters remain unchanged. The exact 182-file Rust closure is
+`d1fca017192b7d48b82b0516660bdb815ecc35141c38d2af7f0ddb85893c1b60`;
+scanner SHA256 is
+`66e63785425619290bf24b927582c3548e421ad5113cd779105fd6b924e29cf6`.
+Final strict workspace-candidate readback passed; it is not a new installed-image
+readback. No candidate rebuild, installed-file write, operator action, LSA/ACL
+change, signing, auto-click or mnemonic/private-key fixture was performed.
 
 The user-run elevated Install/conditional-Start command reported
 `SERVICE_PROBE_FAILED_STATE_RETAINED_FOR_REVIEW`. That first output alone did not
@@ -46,8 +149,8 @@ checks passed. This establishes the exact observed `0xC000000F` form. A narrow
 shared-predicate correction accepts that form or the documented `0xC0000007`,
 without masking attributes or changing the fixed actual owner. Repository tests,
 static checks, fresh corrected-candidate preparation/readback and the final full
-architecture scan passed. The installed `f48fa87`
-diagnostic build must not be retried unchanged.
+architecture scan passed. This historical failure sequence is superseded by the
+corrected candidate's actual Start PASS recorded above.
 
 ## Saved implementation
 
@@ -87,18 +190,17 @@ explicitly not release evidence. Helper feature tests 69 and Approval UI tests
 
 ## Resume here
 
-1. The user applied `f48fa87`; Remove/Install passed, Start now reports `0x5008`,
-   not the earlier `0x4010`. Only extra OWNER was observed. The exact two-form
-   correction is prepared and independently read back; final architecture
-   verification passed. Apply it only through the guarded operator workflow
-   below. This is actual service-token evidence, not an
-   assumption from a desktop sample; corrected startup/RPC/UI remain unverified.
+1. The user applied the exact two-form correction (`b3bb834`); Remove/Install
+   and Start passed. Diagnose the separate client failure recorded above without
+   repeating installation. Corrected startup is observed; RPC/UI completion
+   remains unverified. The correction rests on actual service-token evidence,
+   not an assumption from a desktop sample.
    Any operator replacement must use the existing
    stopped, ownership-verified Remove/Install workflow, never overwrite or force
    adoption. Inspect completion is not startup evidence. The current candidate is at
    `artifacts/service-probe-candidate`; do not rerun prepare against that existing
    directory or overwrite it. It now contains the exact two-form logon-group
-   correction. The installed `f48fa87` diagnostic-only candidate is preserved in
+   correction. The previous `f48fa87` diagnostic-only candidate is preserved in
    `artifacts/service-probe-candidate-before-logon-owner-fix-f48fa87`.
    The older `fad7ba8` candidate is preserved in
    `artifacts/service-probe-candidate-before-logon-attribute-diagnostics-fad7ba8`.
@@ -110,11 +212,11 @@ explicitly not release evidence. Helper feature tests 69 and Approval UI tests
    The original candidate is preserved in
    `artifacts/service-probe-candidate-before-startup-diagnostics-d1e1bbd`.
    A later runtime source change requires a newly reviewed build.
-2. Only after diagnosing the retained state and obtaining verified installed
-   service/readback/start results, run the candidate client in a separate
-   eligible non-elevated desktop. The
+2. Preserve the six data-free client error categories, verify the workspace-only
+   build and investigate the present client failure. Do not treat a quick failure
+   as stage evidence or automatically retry a single-use epoch. The earlier
    real candidate returned exact UNAVAILABLE/78 with no installed service and
-   no stderr; this is fail-closed negative evidence, not a positive RPC/UI test.
+   no stderr; that was fail-closed negative evidence, not a positive RPC/UI test.
    The operator's actual Readback entry returned REQUIRES_ELEVATED_OPERATOR/20
    before native operations. These observations predate the failed user-run
    operator command; they do not describe the current installation state.
@@ -556,11 +658,9 @@ Frozen scanner SHA256:
 `044f06efe4f988abd7135c862636a0da0f4d960a0487ff72a71366894f32b64b`.
 Native source and authority-document pins remain unchanged.
 
-Apply the newly verified corrected candidate through the existing elevated
-stopped/ownership-verified Remove/Install/Start chain, each next action gated by
-the previous native exit 0. This corrects the observed owner-only rejection;
-it does not establish that later RPC/UI startup will succeed. Inspect a new
-fixed-service SCM code if Start still fails; an unchanged retry or guessed
-predicate relaxation is not evidence. Corrected installed-service startup and
-RPC/UI remain unverified. Product stays STOP-SHIP, compiled signing policies stay
-None, and no mnemonic or private-key fixture was introduced.
+That checkpoint required applying the newly verified corrected candidate through
+the existing guarded operator chain. The user has now completed it with Remove,
+Install and Start PASS; follow the current live checkpoint at the top instead
+of repeating that replacement. RPC/UI completion remains unverified. Product
+stays STOP-SHIP, compiled signing policies stay None, and no mnemonic or
+private-key fixture was introduced.

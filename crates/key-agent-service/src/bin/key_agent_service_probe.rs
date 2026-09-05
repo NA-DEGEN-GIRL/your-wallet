@@ -24,7 +24,8 @@ fn main() {
         || watchdog::ProcessWatchdog::arm(deadline),
         || {
             let outcome = command_outcome(std::env::args_os().count(), || {
-                platform_windows::run_non_signing_service_approval_probe().is_ok()
+                platform_windows::run_non_signing_service_approval_probe()
+                    .map_err(ProbeFailure::from)
             });
             write_outcome(std::io::stdout().lock(), outcome)
         },
@@ -58,6 +59,7 @@ fn main() {
 enum ProbeOutcome {
     Completed,
     Unavailable,
+    Failed(ProbeFailure),
 }
 
 #[cfg(any(
@@ -70,14 +72,81 @@ enum ProbeOutcome {
         feature = "desktop-rpc-probe-feasibility-test-hook"
     )
 ))]
-fn command_outcome(argument_count: usize, probe: impl FnOnce() -> bool) -> ProbeOutcome {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProbeFailure {
+    Unavailable,
+    Environment,
+    Randomness,
+    Deadline,
+    Transport,
+    Protocol,
+}
+
+#[cfg(all(
+    windows,
+    target_arch = "x86_64",
+    target_env = "msvc",
+    debug_assertions,
+    feature = "desktop-rpc-probe-feasibility-test-hook"
+))]
+impl From<platform_windows::DesktopRpcProbeError> for ProbeFailure {
+    fn from(error: platform_windows::DesktopRpcProbeError) -> Self {
+        match error {
+            platform_windows::DesktopRpcProbeError::Unavailable => Self::Unavailable,
+            platform_windows::DesktopRpcProbeError::Environment => Self::Environment,
+            platform_windows::DesktopRpcProbeError::Randomness => Self::Randomness,
+            platform_windows::DesktopRpcProbeError::Deadline => Self::Deadline,
+            platform_windows::DesktopRpcProbeError::Transport => Self::Transport,
+            platform_windows::DesktopRpcProbeError::Protocol => Self::Protocol,
+        }
+    }
+}
+
+#[cfg(any(
+    test,
+    all(
+        windows,
+        target_arch = "x86_64",
+        target_env = "msvc",
+        debug_assertions,
+        feature = "desktop-rpc-probe-feasibility-test-hook"
+    )
+))]
+impl ProbeFailure {
+    const fn output(self) -> &'static [u8] {
+        // Keep the original unavailable line, then append only a closed
+        // category. Never format an error, request, argument, or native value.
+        match self {
+            Self::Unavailable => b"SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE\nSERVICE_APPROVAL_TRANSPORT_FAILURE_CATEGORY=UNAVAILABLE\n",
+            Self::Environment => b"SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE\nSERVICE_APPROVAL_TRANSPORT_FAILURE_CATEGORY=ENVIRONMENT\n",
+            Self::Randomness => b"SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE\nSERVICE_APPROVAL_TRANSPORT_FAILURE_CATEGORY=RANDOMNESS\n",
+            Self::Deadline => b"SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE\nSERVICE_APPROVAL_TRANSPORT_FAILURE_CATEGORY=DEADLINE\n",
+            Self::Transport => b"SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE\nSERVICE_APPROVAL_TRANSPORT_FAILURE_CATEGORY=TRANSPORT\n",
+            Self::Protocol => b"SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE\nSERVICE_APPROVAL_TRANSPORT_FAILURE_CATEGORY=PROTOCOL\n",
+        }
+    }
+}
+
+#[cfg(any(
+    test,
+    all(
+        windows,
+        target_arch = "x86_64",
+        target_env = "msvc",
+        debug_assertions,
+        feature = "desktop-rpc-probe-feasibility-test-hook"
+    )
+))]
+fn command_outcome(
+    argument_count: usize,
+    probe: impl FnOnce() -> Result<(), ProbeFailure>,
+) -> ProbeOutcome {
     if argument_count != 1 {
         return ProbeOutcome::Unavailable;
     }
-    if probe() {
-        ProbeOutcome::Completed
-    } else {
-        ProbeOutcome::Unavailable
+    match probe() {
+        Ok(()) => ProbeOutcome::Completed,
+        Err(failure) => ProbeOutcome::Failed(failure),
     }
 }
 
@@ -101,6 +170,7 @@ fn write_outcome(mut output: impl std::io::Write, outcome: ProbeOutcome) -> i32 
             b"SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE\n",
             UNAVAILABLE_EXIT,
         ),
+        ProbeOutcome::Failed(failure) => (failure.output(), UNAVAILABLE_EXIT),
     };
     if output
         .write_all(bytes)
@@ -248,30 +318,100 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
+    const fn failure_cases() -> [(ProbeFailure, &'static [u8]); 6] {
+        [
+            (ProbeFailure::Unavailable, b"SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE\nSERVICE_APPROVAL_TRANSPORT_FAILURE_CATEGORY=UNAVAILABLE\n"),
+            (ProbeFailure::Environment, b"SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE\nSERVICE_APPROVAL_TRANSPORT_FAILURE_CATEGORY=ENVIRONMENT\n"),
+            (ProbeFailure::Randomness, b"SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE\nSERVICE_APPROVAL_TRANSPORT_FAILURE_CATEGORY=RANDOMNESS\n"),
+            (ProbeFailure::Deadline, b"SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE\nSERVICE_APPROVAL_TRANSPORT_FAILURE_CATEGORY=DEADLINE\n"),
+            (ProbeFailure::Transport, b"SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE\nSERVICE_APPROVAL_TRANSPORT_FAILURE_CATEGORY=TRANSPORT\n"),
+            (ProbeFailure::Protocol, b"SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE\nSERVICE_APPROVAL_TRANSPORT_FAILURE_CATEGORY=PROTOCOL\n"),
+        ]
+    }
+
+    fn all_outcomes() -> impl Iterator<Item = ProbeOutcome> {
+        [ProbeOutcome::Completed, ProbeOutcome::Unavailable]
+            .into_iter()
+            .chain(failure_cases().map(|(failure, _)| ProbeOutcome::Failed(failure)))
+    }
+
     #[test]
     fn arguments_are_never_forwarded_and_reject_before_any_probe() {
-        for count in [0, 2, 100] {
+        for count in [0, 2, 100, usize::MAX] {
             let calls = Cell::new(0);
             let result = command_outcome(count, || {
                 calls.set(calls.get() + 1);
-                true
+                Err(ProbeFailure::Transport)
             });
             assert_eq!(result, ProbeOutcome::Unavailable);
             assert_eq!(calls.get(), 0);
+            let mut output = Vec::new();
+            assert_eq!(write_outcome(&mut output, result), UNAVAILABLE_EXIT);
+            assert_eq!(output, b"SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE\n");
         }
     }
 
     #[test]
     fn one_exact_command_runs_once_without_retry() {
-        for completed in [false, true] {
+        for (result, expected) in [
+            (Ok(()), ProbeOutcome::Completed),
+            (
+                Err(ProbeFailure::Unavailable),
+                ProbeOutcome::Failed(ProbeFailure::Unavailable),
+            ),
+        ] {
             let calls = Cell::new(0);
-            let result = command_outcome(1, || {
+            let outcome = command_outcome(1, || {
                 calls.set(calls.get() + 1);
-                completed
+                result
             });
             assert_eq!(calls.get(), 1);
-            assert_eq!(result == ProbeOutcome::Completed, completed);
+            assert_eq!(outcome, expected);
         }
+    }
+
+    #[cfg(all(
+        windows,
+        target_arch = "x86_64",
+        target_env = "msvc",
+        debug_assertions,
+        feature = "desktop-rpc-probe-feasibility-test-hook"
+    ))]
+    #[test]
+    fn every_platform_failure_maps_to_the_exact_local_category() {
+        use platform_windows::DesktopRpcProbeError;
+
+        for (error, expected) in [
+            (DesktopRpcProbeError::Unavailable, ProbeFailure::Unavailable),
+            (DesktopRpcProbeError::Environment, ProbeFailure::Environment),
+            (DesktopRpcProbeError::Randomness, ProbeFailure::Randomness),
+            (DesktopRpcProbeError::Deadline, ProbeFailure::Deadline),
+            (DesktopRpcProbeError::Transport, ProbeFailure::Transport),
+            (DesktopRpcProbeError::Protocol, ProbeFailure::Protocol),
+        ] {
+            assert_eq!(ProbeFailure::from(error), expected);
+        }
+    }
+
+    #[test]
+    fn every_failure_category_is_fixed_distinct_and_preserved_without_retry() {
+        let mut outputs = std::collections::BTreeSet::new();
+        for (failure, expected) in failure_cases() {
+            let calls = Cell::new(0);
+            let outcome = command_outcome(1, || {
+                calls.set(calls.get() + 1);
+                Err(failure)
+            });
+            assert_eq!(calls.get(), 1);
+            assert_eq!(outcome, ProbeOutcome::Failed(failure));
+            let mut output = Vec::new();
+            assert_eq!(write_outcome(&mut output, outcome), UNAVAILABLE_EXIT);
+            assert_eq!(output, expected);
+            assert_eq!(output.split(|byte| *byte == b'\n').count(), 3);
+            assert!(output.is_ascii());
+            assert!(outputs.insert(output));
+        }
+        assert_eq!(outputs.len(), 6);
     }
 
     #[test]
@@ -301,10 +441,9 @@ mod tests {
                 Ok(())
             }
         }
-        assert_eq!(
-            write_outcome(FailedOutput, ProbeOutcome::Completed),
-            UNAVAILABLE_EXIT
-        );
+        for outcome in all_outcomes() {
+            assert_eq!(write_outcome(FailedOutput, outcome), UNAVAILABLE_EXIT);
+        }
     }
 
     #[test]
@@ -318,10 +457,58 @@ mod tests {
                 Err(std::io::Error::other("output unavailable"))
             }
         }
-        assert_eq!(
-            write_outcome(FailedFlush, ProbeOutcome::Completed),
-            UNAVAILABLE_EXIT
-        );
+        for outcome in all_outcomes() {
+            assert_eq!(write_outcome(FailedFlush, outcome), UNAVAILABLE_EXIT);
+        }
+    }
+
+    #[test]
+    fn partial_category_output_failure_stays_unavailable_under_the_watchdog() {
+        struct PartialFailure<'a> {
+            output: &'a mut Vec<u8>,
+            flushes: &'a Cell<usize>,
+        }
+        impl std::io::Write for PartialFailure<'_> {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if self.output.is_empty() {
+                    let count = b"SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE\n".len();
+                    self.output.extend_from_slice(&bytes[..count]);
+                    Ok(count)
+                } else {
+                    Err(std::io::Error::other("output unavailable"))
+                }
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.flushes.set(self.flushes.get() + 1);
+                Ok(())
+            }
+        }
+        for (failure, _) in failure_cases() {
+            let mut output = Vec::new();
+            let flushes = Cell::new(0);
+            let completions = Cell::new(0);
+            let exit = watchdog::run_bounded(
+                || Ok(()),
+                || {
+                    write_outcome(
+                        PartialFailure {
+                            output: &mut output,
+                            flushes: &flushes,
+                        },
+                        ProbeOutcome::Failed(failure),
+                    )
+                },
+                |()| {
+                    completions.set(completions.get() + 1);
+                    Ok(())
+                },
+            );
+            assert_eq!(exit, UNAVAILABLE_EXIT);
+            assert_eq!(output, b"SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE\n");
+            assert_eq!(flushes.get(), 0);
+            assert_eq!(completions.get(), 1);
+        }
     }
 
     #[test]
@@ -430,26 +617,33 @@ mod tests {
                 Ok(())
             }
         }
-        let events = RefCell::new(Vec::new());
-        let exit = watchdog::run_bounded(
-            || {
-                events.borrow_mut().push("arm");
-                Ok(())
-            },
-            || {
-                events.borrow_mut().push("rpc");
-                write_outcome(RecordedOutput(&events), ProbeOutcome::Completed)
-            },
-            |()| {
-                events.borrow_mut().push("complete");
-                Ok(())
-            },
-        );
-        assert_eq!(exit, 0);
-        assert_eq!(
-            *events.borrow(),
-            ["arm", "rpc", "write", "flush", "complete"]
-        );
+        for outcome in all_outcomes() {
+            let events = RefCell::new(Vec::new());
+            let exit = watchdog::run_bounded(
+                || {
+                    events.borrow_mut().push("arm");
+                    Ok(())
+                },
+                || {
+                    events.borrow_mut().push("rpc");
+                    write_outcome(RecordedOutput(&events), outcome)
+                },
+                |()| {
+                    events.borrow_mut().push("complete");
+                    Ok(())
+                },
+            );
+            let expected = if outcome == ProbeOutcome::Completed {
+                0
+            } else {
+                UNAVAILABLE_EXIT
+            };
+            assert_eq!(exit, expected);
+            assert_eq!(
+                *events.borrow(),
+                ["arm", "rpc", "write", "flush", "complete"]
+            );
+        }
     }
 
     #[test]
