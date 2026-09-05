@@ -8,6 +8,11 @@ build = false
 
 [features]
 default = []
+# Standalone non-signing desktop V2 client. This does not enable the SCM,
+# service-token, or helper-launch feasibility features.
+key-agent-service-desktop-rpc-probe-feasibility-test-hook = [
+    "key-agent-service-wire/debug-feasibility-v2",
+]
 # Dormant, network-free Windows Broker composition used only by debug tests.
 broker-channel-contract-test-hook = []
 # Inert, no-secret SCM lifecycle fixture used only by debug feasibility tests.

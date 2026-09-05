@@ -6,9 +6,19 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 build = false
+default-run = "key-agent-service"
+
+[[bin]]
+name = "key-agent-service-probe"
+path = "src/bin/key_agent_service_probe.rs"
 
 [features]
 default = []
+# Separate desktop-only client; this feature does not enable an SCM host or
+# helper creation authority. Ordinary and release binaries remain unavailable.
+desktop-rpc-probe-feasibility-test-hook = [
+    "platform-windows/key-agent-service-desktop-rpc-probe-feasibility-test-hook",
+]
 scm-feasibility-test-hook = [
     "platform-windows/key-agent-service-scm-feasibility-test-hook",
 ]

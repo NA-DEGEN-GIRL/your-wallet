@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 const execFile = promisify(execFileCallback);
 const root = fileURLToPath(new URL("../", import.meta.url));
 const allowedExtensions = new Set([
+  ".cs",
   ".html",
   ".js",
   ".json",

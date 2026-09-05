@@ -2320,9 +2320,35 @@ function hasExactSourcePins(sources, approvedPins) {
 // claim full acceptance, and invalid arguments are rejected before source reads.
 if (process.argv.length > 2) {
   if (process.argv.length !== 4 || process.argv[2] !== "--check-group" ||
-      process.argv[3] !== "service-approval-transport") {
+      !["service-approval-transport", "service-desktop-probe"].includes(process.argv[3])) {
     process.stdout.write("ARCHITECTURE_DIAGNOSTIC_ARGUMENT_ERROR\nNOT_FULL_SCAN\n");
     process.exit(2);
+  }
+  if (process.argv[3] === "service-desktop-probe") {
+    try {
+      const inputs = await readKeyAgentServiceDesktopProbeInputs();
+      const checks = keyAgentServiceDesktopProbeChecks(inputs);
+      const expectedChecks = keyAgentServiceDesktopProbeCheckNames();
+      const failedChecks = expectedChecks.filter((name) => checks[name] !== true);
+      if (JSON.stringify(Object.keys(checks)) !== JSON.stringify(expectedChecks)) {
+        failedChecks.push("checkInventory");
+      }
+      const mutations = keyAgentServiceDesktopProbeMutations(inputs);
+      const expectedMutations = keyAgentServiceDesktopProbeMutationNames();
+      const failedMutations = keyAgentServiceApprovalFailedMutationNames(mutations, expectedMutations);
+      if (!keyAgentServiceApprovalMutationInventory(mutations, expectedMutations)) {
+        failedChecks.push("mutationInventory");
+      }
+      const accepted = failedChecks.length === 0 && failedMutations.length === 0;
+      process.stdout.write(`ARCHITECTURE_DIAGNOSTIC_${accepted ? "PASS" : "FAIL"} service-desktop-probe\n`);
+      if (failedChecks.length > 0) process.stdout.write(`checks=${failedChecks.join(",")}\n`);
+      if (failedMutations.length > 0) process.stdout.write(`mutations=${failedMutations.join(",")}\n`);
+      process.stdout.write("NOT_FULL_SCAN\n");
+      process.exit(accepted ? 0 : 1);
+    } catch {
+      process.stdout.write("ARCHITECTURE_DIAGNOSTIC_FAIL service-desktop-probe\nINPUT_READ_OR_CHECK_ERROR\nNOT_FULL_SCAN\n");
+      process.exit(1);
+    }
   }
   try {
     const inputs = Object.freeze({
@@ -5895,15 +5921,19 @@ const keyAgentServiceFeatureContract = ({
   return (
     /^publish\s*=\s*false$/mu.test(serviceManifest) &&
     /^build\s*=\s*false$/mu.test(serviceManifest) &&
+    /^default-run\s*=\s*"key-agent-service"$/mu.test(serviceManifest) &&
     /^default\s*=\s*\[\]$/mu.test(serviceManifest) &&
     JSON.stringify(tomlTableKeyInventory(serviceManifest, "features")) ===
       JSON.stringify([
         "default",
+        "desktop-rpc-probe-feasibility-test-hook",
         "scm-feasibility-test-hook",
         "service-token-feasibility-test-hook",
         "rpc-status-feasibility-test-hook",
         "lpac-rpc-probe-feasibility-test-hook",
       ]) &&
+    /^desktop-rpc-probe-feasibility-test-hook\s*=\s*\[\s*"platform-windows\/key-agent-service-desktop-rpc-probe-feasibility-test-hook",?\s*\]$/mu.test(serviceManifest) &&
+    /^key-agent-service-desktop-rpc-probe-feasibility-test-hook\s*=\s*\[\s*"key-agent-service-wire\/debug-feasibility-v2",?\s*\]$/mu.test(platformManifest) &&
     /scm-feasibility-test-hook\s*=\s*\[\s*"platform-windows\/key-agent-service-scm-feasibility-test-hook",?\s*\]/u.test(
       serviceManifest,
     ) &&
@@ -6126,8 +6156,8 @@ const keyAgentServiceFeatureMutationProbes = [
   {
     ...keyAgentServiceFeatureInputs,
     platformManifest: keyAgentServicePlatformManifest.replace(
-      '    "key-agent-service-wire/debug-feasibility-v2",\n',
-      "",
+      'key-agent-service-lpac-launch-feasibility-test-hook = [\n    "dep:key-agent-service-helper-bootstrap",\n    "key-agent-service-rpc-status-feasibility-test-hook",\n    "key-agent-service-wire/debug-feasibility-v2",\n    "key-agent-service-token-feasibility-test-hook",\n]',
+      'key-agent-service-lpac-launch-feasibility-test-hook = [\n    "dep:key-agent-service-helper-bootstrap",\n    "key-agent-service-rpc-status-feasibility-test-hook",\n    "key-agent-service-token-feasibility-test-hook",\n]',
     ),
   },
   {
@@ -23305,7 +23335,9 @@ const keyAgentServiceRpcFixturePaths = Object.freeze({
   root: "crates/platform-windows/src/key_agent_service_rpc/mod.rs",
   auth: "crates/platform-windows/src/key_agent_service_rpc/auth.rs",
   authSys: "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
+  clientBinding: "crates/platform-windows/src/key_agent_service_rpc/client_binding.rs",
   coordinator: "crates/platform-windows/src/key_agent_service_rpc/coordinator.rs",
+  desktopProbe: "crates/platform-windows/src/key_agent_service_rpc/desktop_probe.rs",
   dispatch: "crates/platform-windows/src/key_agent_service_rpc/dispatch.rs",
   epoch: "crates/platform-windows/src/key_agent_service_rpc/epoch.rs",
   expectedPeer:
@@ -23320,7 +23352,9 @@ const keyAgentServiceRpcFixturePaths = Object.freeze({
 const approvedKeyAgentServiceRpcFixturePaths = [
   keyAgentServiceRpcFixturePaths.auth,
   keyAgentServiceRpcFixturePaths.authSys,
+  keyAgentServiceRpcFixturePaths.clientBinding,
   keyAgentServiceRpcFixturePaths.coordinator,
+  keyAgentServiceRpcFixturePaths.desktopProbe,
   keyAgentServiceRpcFixturePaths.dispatch,
   keyAgentServiceRpcFixturePaths.epoch,
   keyAgentServiceRpcFixturePaths.expectedPeer,
@@ -23336,7 +23370,9 @@ const approvedKeyAgentServiceRpcFixtureDirectoryInventories = [
     entries: [
       { name: "auth", kind: "directory" },
       { name: "auth.rs", kind: "file" },
+      { name: "client_binding.rs", kind: "file" },
       { name: "coordinator.rs", kind: "file" },
+      { name: "desktop_probe.rs", kind: "file" },
       { name: "dispatch.rs", kind: "file" },
       { name: "epoch.rs", kind: "file" },
       { name: "expected_peer.rs", kind: "file" },
@@ -23367,6 +23403,7 @@ const keyAgentServiceRpcFixturePolicyContract = ({
   const code = paths.map((path) => rustLexicalCode(sources[path])).join("\n");
   const root = sources[keyAgentServiceRpcFixturePaths.root] ?? "";
   const purePaths = [
+    keyAgentServiceRpcFixturePaths.desktopProbe,
     keyAgentServiceRpcFixturePaths.dispatch,
     keyAgentServiceRpcFixturePaths.coordinator,
     keyAgentServiceRpcFixturePaths.epoch,
@@ -23385,7 +23422,7 @@ const keyAgentServiceRpcFixturePolicyContract = ({
     JSON.stringify(directories) ===
       JSON.stringify(approvedKeyAgentServiceRpcFixtureDirectoryInventories) &&
     root.includes("#![allow(unsafe_code)]") &&
-    /modauth;#\[cfg\(all\(feature=,debug_assertions\)\)\]modcoordinator;moddispatch;modepoch;(?:#\[allow\(dead_code\)\])?modexpected_peer;modlifecycle;#\[allow\(dead_code\)\]modrequest_lifecycle;#\[cfg\(all\(feature=,debug_assertions\)\)\]modrouter;#\[allow\(dead_code\)\]modsecret_input_lifecycle;/u.test(
+    /modauth;#\[cfg\(all\(target_arch=,target_env=,feature=,debug_assertions\)\)\]modclient_binding;#\[cfg\(all\(feature=,debug_assertions\)\)\]modcoordinator;#\[cfg\(all\(target_arch=,target_env=,feature=,debug_assertions\)\)\]pub\(crate\)moddesktop_probe;moddispatch;modepoch;(?:#\[allow\(dead_code\)\])?modexpected_peer;modlifecycle;#\[allow\(dead_code\)\]modrequest_lifecycle;#\[cfg\(all\(feature=,debug_assertions\)\)\]modrouter;#\[allow\(dead_code\)\]modsecret_input_lifecycle;/u.test(
       compactRust(root),
     ) &&
     purePaths.every(
@@ -23399,7 +23436,8 @@ const keyAgentServiceRpcFixturePolicyContract = ({
     !keyAgentServiceRpcFixtureAuthoritySurface.test(code) &&
     !/\b(?:secret_core|key_agent)::/u.test(code) &&
     !/\bpub\s+(?:unsafe\s+)?(?:fn|struct|enum|trait|type|const|static|mod)\b/u.test(
-      code,
+      paths.filter((path) => path !== keyAgentServiceRpcFixturePaths.desktopProbe)
+        .map((path) => rustLexicalCode(sources[path])).join("\n"),
     ) &&
     !/\b(?:fs\s*::|File\s*::|OpenOptions\s*::|std\s*::\s*env)\b/u.test(code)
   );
@@ -23484,13 +23522,13 @@ requireInvariant(
             keyAgentServiceRpcFixturePolicyInputs.directories) &&
         !keyAgentServiceRpcFixturePolicyContract(probe),
     ),
-  "the debug status-RPC fixture must retain its exact two-directory/eleven-file inventory, deny or forbid unsafe code in all pure modules, remain crate-private and silent, and contain no network, direct process-launch, file/environment, secret, signing, wallet, transaction, or approval authority with effective mutation probes",
+  "the debug status-RPC fixture must retain its exact two-directory/thirteen-file inventory, deny or forbid unsafe code in all pure modules, retain only the gated non-signing desktop facade and remain silent, and contain no network, direct process-launch, file/environment, secret, signing, wallet, transaction, or approval authority with effective mutation probes",
 );
 
 const keyAgentServiceExpectedPeerReexportSource =
   keyAgentServiceRpcFixtureSources[keyAgentServiceRpcFixturePaths.root];
 const keyAgentServiceExpectedPeerReexportSha256 =
-  "3b996da2fd1551826c6a897f03cd33543d0634671d3e8745104253c27e13cfec";
+  "5e8bfa854d4431869acde105d6263bf819468878444a9177e3ddd7c6e4d0e40c";
 const keyAgentServiceExpectedPeerReexportCfg =
   "#[cfg(all(feature=,debug_assertions))]";
 const keyAgentServiceExpectedPeerReexportItem = `${keyAgentServiceExpectedPeerReexportCfg}pub(crate)useself::expected_peer::{EXPECTED_HELPER_QUIESCENCE_MILLISECONDS,ExpectedHelperAdmission,ExpectedHelperLease,ExpectedHelperPeer,ExpectedHelperRole,ExpectedPeerKey,ExpectedPeerRegistryError,ExpectedPeerVerificationError,};`;
@@ -24801,6 +24839,12 @@ const keyAgentServiceRpcAuthTestNames = [
   "debug_is_data_free",
   "desktop_impersonation_lease_rechecks_and_reverts_exactly_once",
   "desktop_impersonation_lease_drop_is_exact_once_fallback",
+  "desktop_probe_preflight_is_query_only_ordered_and_releases_its_process",
+  "desktop_probe_preflight_fails_closed_at_every_observation_edge",
+  "desktop_probe_preflight_rejects_initial_and_late_thread_tokens",
+  "desktop_probe_preflight_rejects_a_nonlive_or_nonexact_process",
+  "desktop_probe_preflight_rejects_every_desktop_policy_fact_on_both_reads",
+  "desktop_probe_preflight_rejects_policy_valid_primary_identity_drift",
   "null_callback_context_fails_before_any_rpc_query",
 ];
 const keyAgentServiceRpcAuthSysTestNames = [
@@ -25391,9 +25435,9 @@ const keyAgentServiceRpcAuthInputs = Object.freeze({
 });
 const keyAgentServiceRpcAuthMilestonePins = Object.freeze({
   [keyAgentServiceRpcFixturePaths.auth]:
-    "fd25b1f4ca46b2fc2ed752b2f5a82e9e9663caa7adad2790314f41aba09e3957",
+    "379fe2bac578fd1eda0f7ffe377e0dcf309448c02d4e64a15baa3c96a0f5fd61",
   [keyAgentServiceRpcFixturePaths.authSys]:
-    "a153b433a68ba4bf85a4ab4c94a1ec7f51c9567043cf4a164f23f558a8b7d56d",
+    "6fac1e23ebe3d0a70a67f0ea7288e45a5924233c9234d91a7912d3198d5fd83f",
 });
 const keyAgentServiceRpcAuthMilestonePinContract = ({ sources }) =>
   Object.entries(keyAgentServiceRpcAuthMilestonePins).every(
@@ -25588,6 +25632,260 @@ requireInvariant(
         !keyAgentServiceRpcAuthMilestonePinContract(probe),
     ),
   "pinned debug status-RPC transport authentication must split desktop from broad service-created AppContainer candidates without granting candidate launch or role authority, reject both enabled and assigned-disabled SeDebugPrivilege, require exact authenticated desktop PROCESS_DUP_HANDLE denial after one creation claim with effective-token/revert bookends, retain exact TokenPrivileges parsing and invalid-handle-checked direct same-object candidate matching, gate and invoke each role-aware entrypoint exactly once, and reject effective mutations",
+);
+
+async function readKeyAgentServiceDesktopProbeInputs() {
+  return Object.freeze({
+    probe: await text("crates/platform-windows/src/key_agent_service_rpc/desktop_probe.rs"),
+    binding: await text("crates/platform-windows/src/key_agent_service_rpc/client_binding.rs"),
+    auth: await text("crates/platform-windows/src/key_agent_service_rpc/auth.rs"),
+    authSys: await text("crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs"),
+    module: await text("crates/platform-windows/src/key_agent_service_rpc/mod.rs"),
+    platformLib: await text("crates/platform-windows/src/lib.rs"),
+    platformManifest: await text("crates/platform-windows/Cargo.toml"),
+    serviceManifest: await text("crates/key-agent-service/Cargo.toml"),
+    main: await text("crates/key-agent-service/src/bin/key_agent_service_probe.rs"),
+  });
+}
+function keyAgentServiceDesktopProbeCheckNames() {
+  return [
+    "isolatedFeatures", "exactModuleGates", "exactFacade", "originalLifetimes",
+    "freshPublicRequest", "twoFreshPreflights", "oneBoundSequence", "exactCompletion",
+    "canonicalCorrelation", "inclusiveDeadline", "fixedAuthenticatedBinding",
+    "threadBoundOwner", "boundedNativeCall", "checkedNativeCleanup",
+    "queryOnlyPreflight", "fixedCurrentProcess", "silentFallback", "noArgumentForwarding",
+    "fixedOutput", "noWalletAuthority",
+  ];
+}
+function keyAgentServiceDesktopProbeWatchdogContract(main) {
+  try {
+    const debugMain = rustTopLevelFunctionBlock(main.slice(0, main.indexOf("#[cfg(not(all(")), "main");
+    const watchdog = rustTopLevelLexicalItemBlock(main, /(?:^|\n)\s*mod\s+watchdog\s*\{/u);
+    const guard = rustImplItems(watchdog).find((item) => item.header === "impl ProcessWatchdog")?.source ?? "";
+    const arm = rustFunctionBlock(guard, "arm");
+    const complete = rustFunctionBlock(guard, "complete");
+    const completeWith = rustFunctionBlock(watchdog, "complete_with");
+    const wait = rustFunctionBlock(watchdog, "wait_for_completion");
+    const run = rustFunctionBlock(watchdog, "run_bounded");
+    const remaining = rustFunctionBlock(watchdog, "remaining");
+    const body = (source) => {
+      const code = compactRust(source);
+      return code.slice(code.indexOf("{"));
+    };
+    return JSON.stringify(rustInlineModuleOuterAttributesAtDepth(main, "watchdog", 0)) === JSON.stringify([
+      '#[cfg(any( test, all( windows, target_arch = "x86_64", target_env = "msvc", debug_assertions, feature = "desktop-rpc-probe-feasibility-test-hook" ) ))]',
+    ]) &&
+      hasOrderedCompactMarkers(debugMain, ["letstarted=std::time::Instant::now()", "std::panic::set_hook(Box::new(|_|{}))", "letSome(deadline)=started.checked_add(std::time::Duration::from_secs(25))else{std::process::exit(UNAVAILABLE_EXIT);}", "watchdog::run_bounded(||watchdog::ProcessWatchdog::arm(deadline),||{", "command_outcome(std::env::args_os().count(),||{platform_windows::run_non_signing_service_approval_probe().is_ok()})", "write_outcome(std::io::stdout().lock(),outcome)", "watchdog::ProcessWatchdog::complete,", "std::process::exit(exit)"]) &&
+      hasOrderedCompactMarkers(arm, ["remaining(deadline,Instant::now())?", "let(completed,receiver)=sync_channel(1)", "letworker=Builder::new()", ".spawn(move||{", "letresult=catch_unwind(AssertUnwindSafe(||{", "wait_for_completion(deadline,Instant::now,|duration|{receiver.recv_timeout(duration)})", "if!matches!(result,Ok(Ok(()))){std::process::exit(UNAVAILABLE_EXIT);}", ".map_err(|_|())?", "Ok(Self{completed,worker,deadline,})"]) &&
+      hasOrderedCompactMarkers(complete, ["letSelf{completed,worker,deadline,}=self", "complete_with(deadline,Instant::now,||completed.try_send(()).map_err(|_|()),||worker.join().map_err(|_|()),)"]) &&
+      hasOrderedCompactMarkers(completeWith, ["remaining(deadline,now())?", "send()?", "join()?", "remaining(deadline,now())?", "Ok(())"]) &&
+      compactRust(remaining).includes("deadline.checked_duration_since(now).filter(|duration|!duration.is_zero()).ok_or(())") &&
+      hasOrderedCompactMarkers(wait, ["lettimeout=remaining(deadline,now())?", "receive(timeout).map_err(|_|())?", "remaining(deadline,now())?", "Ok(())"]) &&
+      hasOrderedCompactMarkers(run, ["letOk(Ok(guard))=catch_unwind(AssertUnwindSafe(arm))else{returnUNAVAILABLE_EXIT;}", "letOk(exit)=catch_unwind(AssertUnwindSafe(operation))else{returnUNAVAILABLE_EXIT;}", "ifmatches!(catch_unwind(AssertUnwindSafe(||complete(guard))),Ok(Ok(()))){exit}else{UNAVAILABLE_EXIT}"]) &&
+      body(debugMain) === "{letstarted=std::time::Instant::now();std::panic::set_hook(Box::new(|_|{}));letSome(deadline)=started.checked_add(std::time::Duration::from_secs(25))else{std::process::exit(UNAVAILABLE_EXIT);};letexit=watchdog::run_bounded(||watchdog::ProcessWatchdog::arm(deadline),||{letoutcome=command_outcome(std::env::args_os().count(),||{platform_windows::run_non_signing_service_approval_probe().is_ok()});write_outcome(std::io::stdout().lock(),outcome)},watchdog::ProcessWatchdog::complete,);std::process::exit(exit);}" &&
+      body(arm) === "{remaining(deadline,Instant::now())?;let(completed,receiver)=sync_channel(1);letworker=Builder::new().name(.to_owned()).spawn(move||{letresult=catch_unwind(AssertUnwindSafe(||{#[cfg(test)]inject_worker_panic_for_test();wait_for_completion(deadline,Instant::now,|duration|{receiver.recv_timeout(duration)})}));if!matches!(result,Ok(Ok(()))){std::process::exit(UNAVAILABLE_EXIT);}}).map_err(|_|())?;Ok(Self{completed,worker,deadline,})}" &&
+      body(complete) === "{letSelf{completed,worker,deadline,}=self;complete_with(deadline,Instant::now,||completed.try_send(()).map_err(|_|()),||worker.join().map_err(|_|()),)}" &&
+      body(remaining) === "{deadline.checked_duration_since(now).filter(|duration|!duration.is_zero()).ok_or(())}" &&
+      body(wait) === "{lettimeout=remaining(deadline,now())?;receive(timeout).map_err(|_|())?;remaining(deadline,now())?;Ok(())}" &&
+      body(completeWith) === "{remaining(deadline,now())?;send()?;join()?;remaining(deadline,now())?;Ok(())}" &&
+      body(run) === "{letOk(Ok(guard))=catch_unwind(AssertUnwindSafe(arm))else{returnUNAVAILABLE_EXIT;};letOk(exit)=catch_unwind(AssertUnwindSafe(operation))else{returnUNAVAILABLE_EXIT;};ifmatches!(catch_unwind(AssertUnwindSafe(||complete(guard))),Ok(Ok(()))){exit}else{UNAVAILABLE_EXIT}}" &&
+      rustCallSites(run, "catch_unwind").length === 3 &&
+      rustCallSites(completeWith, "remaining").length === 2 &&
+      JSON.stringify(rustFunctionOuterAttributesAtDepth(watchdog, "inject_worker_panic_for_test", 1)) === JSON.stringify(["#[cfg(test)]"]) &&
+      /#\[cfg\(test\)\]\s*inject_worker_panic_for_test\(\);/u.test(arm) &&
+      !/\bstd\s*::\s*env\b/u.test(rustLexicalCode(withoutCfgTestItems(watchdog))) &&
+      rustUnsafeKeywordCount(watchdog) === 0 &&
+      !/\b(?:e?println|print|dbg)!|\b(?:CreateProcess\w*|TerminateProcess|OpenProcess|Command|TcpStream)\b/u.test(rustLexicalCode(watchdog));
+  } catch {
+    return false;
+  }
+}
+function keyAgentServiceDesktopProbeChecks(inputs) {
+  try {
+    const probe = withoutBottomTestModule(inputs.probe);
+    const binding = withoutBottomTestModule(inputs.binding);
+    const auth = withoutBottomTestModule(inputs.auth);
+    const authSys = withoutBottomTestModule(inputs.authSys);
+    const main = withoutBottomTestModule(inputs.main);
+    const fn = (source, name) => rustTopLevelFunctionBlock(source, name);
+    const owner = (source, header) => rustImplItems(source).find((item) => item.header === header)?.source ?? "";
+    const facade = fn(probe, "run_non_signing_service_approval_probe");
+    const run = fn(probe, "run_with_operations");
+    const bound = fn(probe, "run_bound_probe");
+    const exchange = fn(probe, "exchange_checked");
+    const deadline = fn(probe, "require_live_deadline");
+    const windowsOps = owner(probe, "impl DesktopProbeOperations for WindowsDesktopProbeOperations");
+    const nativeOwner = owner(binding, "impl FixedDesktopRpcBinding");
+    const connect = rustFunctionBlock(nativeOwner, "connect");
+    const nativeExchange = rustFunctionBlock(nativeOwner, "exchange");
+    const timeout = fn(binding, "remaining_milliseconds");
+    const preflight = fn(auth, "preflight_current_desktop_probe_with");
+    const preflightFacade = fn(auth, "preflight_current_desktop_probe");
+    const currentOps = owner(authSys, "impl super::CurrentDesktopProbeOps for WindowsProcessAuthOps");
+    const outcome = fn(main, "command_outcome");
+    const output = fn(main, "write_outcome");
+    const probeError = rustTopLevelLexicalItemBlock(probe, /(?:^|\n)\s*pub\s+enum\s+DesktopRpcProbeError\s*\{/u);
+    const moduleGate = '#[cfg(all(target_arch="x86_64",target_env="msvc",feature="key-agent-service-desktop-rpc-probe-feasibility-test-hook",debug_assertions))]';
+    const facadeGate = '#[cfg(all(windows,target_arch="x86_64",target_env="msvc",feature="key-agent-service-desktop-rpc-probe-feasibility-test-hook",debug_assertions))]';
+    const compactText = (source) => source.replace(/\s+/gu, "");
+    const exactGatedModule = (name, declaration) => {
+      const modules = rustModuleDeclarations(inputs.module).filter((item) => item.name === name);
+      return modules.length === 1 && compactText(modules[0].source) === declaration &&
+        JSON.stringify(rustAttachedOuterAttributes(inputs.module, modules[0].index).map(({ source }) => compactText(source))) === JSON.stringify([moduleGate]);
+    };
+    const facadeUses = [...rustLexicalCode(inputs.platformLib).matchAll(/\bpub\s+use\s+key_agent_service_rpc::desktop_probe::\{[^}]+\};/gu)];
+    const production = [probe, binding, main].map(rustLexicalCode).join("\n");
+    return {
+      isolatedFeatures: /^default\s*=\s*\[\]\s*$/mu.test(inputs.platformManifest) &&
+        /^default\s*=\s*\[\]\s*$/mu.test(inputs.serviceManifest) &&
+        /^default-run\s*=\s*"key-agent-service"\s*$/mu.test(inputs.serviceManifest) &&
+        /\[\[bin\]\]\s*name\s*=\s*"key-agent-service-probe"\s*path\s*=\s*"src\/bin\/key_agent_service_probe\.rs"/u.test(inputs.serviceManifest) &&
+        /^desktop-rpc-probe-feasibility-test-hook\s*=\s*\[\s*"platform-windows\/key-agent-service-desktop-rpc-probe-feasibility-test-hook",?\s*\]\s*$/mu.test(inputs.serviceManifest) &&
+        /^key-agent-service-desktop-rpc-probe-feasibility-test-hook\s*=\s*\[\s*"key-agent-service-wire\/debug-feasibility-v2",?\s*\]\s*$/mu.test(inputs.platformManifest),
+      exactModuleGates: exactGatedModule("client_binding", "modclient_binding;") &&
+        exactGatedModule("desktop_probe", "pub(crate)moddesktop_probe;") &&
+        facadeUses.length === 1 && compactText(facadeUses[0][0]) === "pubusekey_agent_service_rpc::desktop_probe::{DesktopRpcProbeError,run_non_signing_service_approval_probe,};" &&
+        JSON.stringify(rustAttachedOuterAttributes(inputs.platformLib, facadeUses[0].index).map(({ source }) => compactText(source))) === JSON.stringify([facadeGate]),
+      exactFacade: compactRust(facade) === "pubfnrun_non_signing_service_approval_probe()->Result<(),DesktopRpcProbeError>{run_with_operations(&mutWindowsDesktopProbeOperations)}" &&
+        compactRust(probeError).replace(/#\[error\(\)\]/gu, "") === "pubenumDesktopRpcProbeError{Unavailable,Environment,Randomness,Deadline,Transport,Protocol,}" &&
+        (rustLexicalCode(probe).match(/\bpub\s+(?:fn|enum|struct|type|trait|const|static|mod)\b/gu) ?? []).length === 2,
+      originalLifetimes: probe.includes("const PROBE_LIFETIME: Duration = Duration::from_secs(25);") &&
+        probe.includes("const OPEN_EPOCH_LIFETIME: Duration = Duration::from_secs(5);") &&
+        hasOrderedCompactMarkers(run, ["letstart=operations.now()?", "letdeadline=start.checked_add(PROBE_LIFETIME)", "letopen_deadline=start.checked_add(OPEN_EPOCH_LIFETIME)"]) &&
+        rustCallSites(run, "now").length === 1,
+      freshPublicRequest: hasOrderedCompactMarkers(run, ["letmutbytes=[0_u8;REQUEST_ID_BYTES]", "operations.fill_request_id(&mutbytes)?", "ServiceRequestId::new(bytes).map_err(|_|DesktopRpcProbeError::Randomness)?", "operations.preflight()?"]) &&
+        compactRust(rustFunctionBlock(windowsOps, "fill_request_id")).includes("getrandom::fill(bytes).map_err(|_|DesktopRpcProbeError::Randomness)"),
+      twoFreshPreflights: hasOrderedCompactMarkers(run, ["operations.preflight()?", "require_live_deadline(operations,open_deadline)?", "letmutbinding=operations.connect()?"]) &&
+        hasOrderedCompactMarkers(bound, ["ServiceResponse::OpenEpoch(ack)=>ack.epoch_nonce()", "operations.preflight()?", "require_live_deadline(operations,open_deadline)?", "letcommand=ServiceRequest::DesktopCommand"]) &&
+        rustCallSites(run, "preflight").length === 1 && rustCallSites(bound, "preflight").length === 1 &&
+        compactRust(rustFunctionBlock(windowsOps, "preflight")).includes("preflight_current_desktop_probe().map_err(|_|DesktopRpcProbeError::Environment)"),
+      oneBoundSequence: hasOrderedCompactMarkers(run, ["letmutbinding=operations.connect()?", "letresult=run_bound_probe(operations,&mutbinding,request_id,open_deadline,deadline,)", "drop(binding)", "result?", "require_live_deadline(operations,deadline)"]) &&
+        rustCallSites(run, "connect").length === 1 && rustCallSites(run, "run_bound_probe").length === 1 &&
+        hasOrderedCompactMarkers(bound, ["letopen=ServiceRequest::OpenEpoch(OpenEpochRequest::new())", "exchange_checked(operations,binding,&open,open_deadline)?", "DesktopCommandRequest::new(epoch_nonce,request_id,DesktopCommand::LaunchApprovalRpcProbe,)", "exchange_checked(operations,binding,&command,deadline)?"]) &&
+        rustCallSites(bound, "exchange_checked").length === 2 &&
+        !/\b(?:loop|while|thread|spawn|sleep)\b/u.test(rustLexicalCode(run + bound + exchange)),
+      exactCompletion: hasOrderedCompactMarkers(bound, ["DesktopResult::ApprovalRpcProbeCompleted=>Ok(())", "DesktopResult::Unavailable=>Err(DesktopRpcProbeError::Unavailable)", "DesktopResult::SecretInputRpcProbeCompleted=>Err(DesktopRpcProbeError::Protocol)"]) &&
+        (compactRust(bound).match(/Ok\(\(\)\)/gu) ?? []).length === 1 &&
+        !/DesktopCommand::(?:Status|LaunchSecretInputRpcProbe)/u.test(rustLexicalCode(probe)),
+      canonicalCorrelation: hasOrderedCompactMarkers(exchange, ["RpcFrame::from_payload(&wire::encode_request(request))", "require_live_deadline(operations,deadline)?", "letresult=operations.exchange(binding,&frame,deadline)", "require_live_deadline(operations,deadline)?", "letframe=result?", "if!frame.is_canonical(){returnErr(DesktopRpcProbeError::Protocol);}", "wire::decode_response(frame.payload())", ".ensure_correlates_with(request)", "Ok(response)"]) &&
+        rustCallSites(exchange, "require_live_deadline").length === 2,
+      inclusiveDeadline: compactRust(deadline).includes("ifoperations.now()?>=deadline{returnErr(DesktopRpcProbeError::Deadline);}Ok(())") &&
+        rustCallSites(deadline, "now").length === 1,
+      fixedAuthenticatedBinding: binding.includes("const LOCAL_RPC_PROTOCOL_SEQUENCE_WIDE: [u16; 8] = [110, 99, 97, 108, 114, 112, 99, 0];") &&
+        binding.includes("const RPC_AUTHN_LEVEL_PACKET_PRIVACY: u32 = 6;") &&
+        hasOrderedCompactMarkers(connect, ["RpcStringBindingComposeW(PCWSTR::null(),PCWSTR(LOCAL_RPC_PROTOCOL_SEQUENCE_WIDE.as_ptr()),PCWSTR::null(),PCWSTR(key_agent_service_rpc_sys::LOCAL_RPC_ENDPOINT_WIDE.as_ptr()),PCWSTR::null(),Some(&rawmutstring),)", "letstring=OwnedRpcString(string)", "rpc_success(status)?", "ifstring.0.is_null()", "RpcBindingFromStringBindingW", "letbinding=Self{raw,_thread_bound:PhantomData,}", "rpc_success(status)?", "ifbinding.raw.is_null()", "RpcBindingSetAuthInfoW(binding.raw.cast_const(),PCWSTR::null(),RPC_AUTHN_LEVEL_PACKET_PRIVACY,RPC_C_AUTHN_WINNT,None,RPC_C_AUTHZ_NONE,)", "Ok(binding)"]),
+      threadBoundOwner: compactRust(binding).includes("pub(super)structFixedDesktopRpcBinding{raw:*mutc_void,_thread_bound:PhantomData<Rc<()>>,}") &&
+        !/impl\s+(?:Clone|Copy|Send|Sync|Deref|AsRef)\s+for\s+FixedDesktopRpcBinding/u.test(rustLexicalCode(binding)) &&
+        !/pub(?:\([^)]*\))?\s+(?:unsafe\s+)?fn\s+(?:raw|into_raw|as_raw|handle|binding)\b/u.test(rustLexicalCode(binding)) &&
+        binding.includes('formatter.write_str("FixedDesktopRpcBinding([REDACTED])")'),
+      boundedNativeCall: binding.includes("const MAX_REMAINING_MILLISECONDS: u32 = 25_000;") &&
+        hasOrderedCompactMarkers(timeout, [".checked_duration_since(now)", "u32::try_from(remaining.as_millis())", "ifmilliseconds==0||milliseconds>MAX_REMAINING_MILLISECONDS{returnErr(ClientBindingError::Deadline);}", "Ok(milliseconds)"]) &&
+        hasOrderedCompactMarkers(nativeExchange, ["if!request.is_canonical()", "remaining_milliseconds(deadline,Instant::now())?", "BindingHandle::from_raw(self.raw)", "letresult=key_agent_service_rpc_sys::exchange(&borrowed,request)", "remaining_milliseconds(deadline,Instant::now())?", "result.map_err(|_|ClientBindingError::Unavailable)"]) &&
+        rustCallSites(nativeExchange, "remaining_milliseconds").length === 2 &&
+        !/\b(?:RpcBindingSetOption|RPC_C_OPT_CALL_TIMEOUT)\b/u.test(rustLexicalCode(binding)) &&
+        keyAgentServiceDesktopProbeWatchdogContract(main),
+      checkedNativeCleanup: hasOrderedCompactMarkers(owner(binding, "impl Drop for FixedDesktopRpcBinding"), ["ifself.raw.is_null(){return;}", "RpcBindingFree(&rawmutself.raw)", "ifstatus.0!=0||!self.raw.is_null(){std::process::abort();}"]) &&
+        hasOrderedCompactMarkers(owner(binding, "impl Drop for OwnedRpcString"), ["ifself.0.is_null(){return;}", "RpcStringFreeW(&rawmutself.0)", "ifstatus.0!=0||!self.0.is_null(){std::process::abort();}"]),
+      queryOnlyPreflight: hasOrderedCompactMarkers(preflight, [".current_thread_token_state()", "!=ThreadTokenState::Clear", "returnErr(RpcAuthError::AccessDenied)", ".current_process_id()", ".open_process(process_id)", ".primary_token(&process)", "validate_token_policy(&primary,TokenKind::Primary,TokenPolicy::DesktopBroker)?", "revalidate_client_process(process_id,&process,&primary,TokenPolicy::DesktopBroker,ops,)?", ".current_thread_token_state()", "!=ThreadTokenState::Clear", "returnErr(RpcAuthError::AccessDenied)", "Ok(())"]) &&
+        compactRust(preflightFacade) === "pub(super)fnpreflight_current_desktop_probe()->Result<(),RpcAuthError>{preflight_current_desktop_probe_with(&sys::WindowsProcessAuthOps)}" &&
+        !/AuthenticatedClient|AuthenticatedRpcClient|duplicate|impersonate|CreateProcess|spawn|unsafe/u.test(rustLexicalCode(preflight + preflightFacade)),
+      fixedCurrentProcess: compactRust(currentOps).includes("NonZeroU32::new(unsafe{windows::Win32::System::Threading::GetCurrentProcessId()}).ok_or(ObservationError::Incomplete)") &&
+        compactRust(rustFunctionBlock(currentOps, "current_thread_token_state")) === "fncurrent_thread_token_state(&self)->Result<ThreadTokenState,ObservationError>{thread_token_state()}" &&
+        rustCallSites(currentOps, "GetCurrentProcessId").length === 1 &&
+        /#\[cfg\(all\(\s*target_arch\s*=\s*"x86_64"\s*,\s*target_env\s*=\s*"msvc"\s*,\s*debug_assertions\s*,\s*feature\s*=\s*"key-agent-service-desktop-rpc-probe-feasibility-test-hook"\s*\)\)\]\s*pub\(super\) fn preflight_current_desktop_probe/u.test(auth),
+      silentFallback: main.includes("const UNAVAILABLE_EXIT: i32 = 78;") &&
+        compactText(main).includes('#[cfg(not(all(windows,target_arch="x86_64",target_env="msvc",debug_assertions,feature="desktop-rpc-probe-feasibility-test-hook")))]fnmain(){std::process::exit(UNAVAILABLE_EXIT);}') &&
+        compactText(main).includes('#[cfg(all(windows,target_arch="x86_64",target_env="msvc",debug_assertions,feature="desktop-rpc-probe-feasibility-test-hook"))]fnmain(){') &&
+        (rustLexicalCode(main).match(/\bfn\s+main\s*\(/gu) ?? []).length === 2,
+      noArgumentForwarding: hasOrderedCompactMarkers(outcome, ["ifargument_count!=1{returnProbeOutcome::Unavailable;}", "ifprobe(){ProbeOutcome::Completed}else{ProbeOutcome::Unavailable}"]) &&
+        compactRust(main).includes("command_outcome(std::env::args_os().count(),||{platform_windows::run_non_signing_service_approval_probe().is_ok()})") &&
+        rustCallSites(outcome, "probe").length === 1 &&
+        rustCallSites(main, "run_non_signing_service_approval_probe").length === 1,
+      fixedOutput: output.includes('b"SERVICE_APPROVAL_TRANSPORT_COMPLETED_NOT_RELEASE_EVIDENCE\\n"') &&
+        output.includes('b"SERVICE_APPROVAL_TRANSPORT_UNAVAILABLE\\n"') &&
+        compactRust(output).includes("ifoutput.write_all(bytes).and_then(|()|output.flush()).is_err(){returnUNAVAILABLE_EXIT;}exit") &&
+        (output.match(/b"/gu) ?? []).length === 2,
+      noWalletAuthority: probe.includes("#![forbid(unsafe_code)]") && rustUnsafeKeywordCount(probe) === 0 &&
+        !/\b(?:secret_core|key_agent|SigningKey|SecretKey|PrivateKey|Mnemonic|Password|Credential|Signature|Transaction|Wallet|ApprovalAuthorization|PreparedAuthorization|std\s*::\s*net|std\s*::\s*fs|TcpStream|TcpListener|UdpSocket|OpenSCManagerW|OpenServiceW|CreateServiceW|CreateProcessW|CreateProcessAsUserW|ShellExecuteW)\b/u.test(production) &&
+        !/(?:e?println|print|dbg)!/u.test(production),
+    };
+  } catch {
+    return { boundedExtraction: false };
+  }
+}
+function keyAgentServiceDesktopProbeContract(inputs) {
+  const checks = keyAgentServiceDesktopProbeChecks(inputs);
+  const names = keyAgentServiceDesktopProbeCheckNames();
+  return JSON.stringify(Object.keys(checks)) === JSON.stringify(names) &&
+    names.every((name) => checks[name] === true);
+}
+function keyAgentServiceDesktopProbeMutationNames() {
+  return [
+    "client feature isolation", "module release gate", "public payload", "original probe expiry",
+    "original opening expiry", "fresh request id", "opening preflight", "launch preflight",
+    "request id validation", "single binding cleanup", "approval command only", "exact completion",
+    "canonical response", "response correlation", "inclusive expiry", "packet privacy",
+    "fixed endpoint", "thread affinity", "nonzero remaining deadline", "remaining deadline bound",
+    "binding cleanup proof", "primary desktop policy", "fresh primary revalidation",
+    "current process only", "argument count", "silent release fallback", "non-authorizing output",
+    "original process watchdog", "watchdog before IO", "watchdog expiry exit",
+    "watchdog completion send", "watchdog worker join", "watchdog inclusive expiry",
+    "worker panic injection test gate",
+    "watchdog extra blocking work",
+  ];
+}
+function keyAgentServiceDesktopProbeMutations(inputs) {
+  return [
+    ["client feature isolation", "platformManifest", 'key-agent-service-desktop-rpc-probe-feasibility-test-hook = [\n    "key-agent-service-wire/debug-feasibility-v2",\n]', 'key-agent-service-desktop-rpc-probe-feasibility-test-hook = [\n    "key-agent-service-scm-feasibility-test-hook",\n]'],
+    ["module release gate", "module", '    feature = "key-agent-service-desktop-rpc-probe-feasibility-test-hook",\n    debug_assertions\n))]\nmod client_binding;', '    feature = "key-agent-service-desktop-rpc-probe-feasibility-test-hook"\n))]\nmod client_binding;'],
+    ["public payload", "probe", "pub fn run_non_signing_service_approval_probe()", "pub fn run_non_signing_service_approval_probe(payload: &[u8])"],
+    ["original probe expiry", "probe", "PROBE_LIFETIME: Duration = Duration::from_secs(25)", "PROBE_LIFETIME: Duration = Duration::from_secs(250)"],
+    ["original opening expiry", "probe", "OPEN_EPOCH_LIFETIME: Duration = Duration::from_secs(5)", "OPEN_EPOCH_LIFETIME: Duration = Duration::from_secs(25)"],
+    ["fresh request id", "probe", "getrandom::fill(bytes).map_err(|_| DesktopRpcProbeError::Randomness)", "Ok(())"],
+    ["opening preflight", "probe", "operations.preflight()?;", "let _ = operations;", "run_with_operations"],
+    ["launch preflight", "probe", "operations.preflight()?;", "let _ = operations;", "run_bound_probe"],
+    ["request id validation", "probe", "ServiceRequestId::new(bytes)", "ServiceRequestId::new([1; REQUEST_ID_BYTES])"],
+    ["single binding cleanup", "probe", "    drop(binding);\n    result?;", "    result?;\n    drop(binding);"],
+    ["approval command only", "probe", "DesktopCommand::LaunchApprovalRpcProbe,", "DesktopCommand::LaunchSecretInputRpcProbe,"],
+    ["exact completion", "probe", "DesktopResult::ApprovalRpcProbeCompleted => Ok(())", "DesktopResult::SecretInputRpcProbeCompleted => Ok(())"],
+    ["canonical response", "probe", "if !frame.is_canonical()", "if false"],
+    ["response correlation", "probe", ".ensure_correlates_with(request)", ".ensure_correlates_with(other_request)"],
+    ["inclusive expiry", "probe", "if operations.now()? >= deadline", "if operations.now()? > deadline"],
+    ["packet privacy", "binding", "                RPC_AUTHN_LEVEL_PACKET_PRIVACY,", "                0,"],
+    ["fixed endpoint", "binding", "PCWSTR(key_agent_service_rpc_sys::LOCAL_RPC_ENDPOINT_WIDE.as_ptr())", "PCWSTR::null()"],
+    ["thread affinity", "binding", "    _thread_bound: PhantomData<Rc<()>>,", ""],
+    ["nonzero remaining deadline", "binding", "milliseconds == 0 || milliseconds > MAX_REMAINING_MILLISECONDS", "milliseconds > MAX_REMAINING_MILLISECONDS"],
+    ["remaining deadline bound", "binding", "MAX_REMAINING_MILLISECONDS: u32 = 25_000", "MAX_REMAINING_MILLISECONDS: u32 = 250_000"],
+    ["binding cleanup proof", "binding", "if status.0 != 0 || !self.raw.is_null()", "if false"],
+    ["primary desktop policy", "auth", "validate_token_policy(&primary, TokenKind::Primary, TokenPolicy::DesktopBroker)?;", "let _ = &primary;", "preflight_current_desktop_probe_with"],
+    ["fresh primary revalidation", "auth", "let _current = revalidate_client_process(", "let _current = skip_client_process_revalidation(", "preflight_current_desktop_probe_with"],
+    ["current process only", "authSys", "windows::Win32::System::Threading::GetCurrentProcessId()", "4"],
+    ["argument count", "main", "if argument_count != 1", "if false"],
+    ["silent release fallback", "main", "fn main() {\n    std::process::exit(UNAVAILABLE_EXIT);\n}", "fn main() {\n    std::process::exit(0);\n}"],
+    ["non-authorizing output", "main", "SERVICE_APPROVAL_TRANSPORT_COMPLETED_NOT_RELEASE_EVIDENCE", "SERVICE_APPROVAL_AUTHORIZED", "write_outcome"],
+    ["original process watchdog", "main", "started.checked_add(std::time::Duration::from_secs(25))", "started.checked_add(std::time::Duration::from_secs(250))"],
+    ["watchdog before IO", "main", "|| watchdog::ProcessWatchdog::arm(deadline),", "|| unguarded_process(deadline),", "@production"],
+    ["watchdog expiry exit", "main", "if !matches!(result, Ok(Ok(())))", "if false"],
+    ["watchdog completion send", "main", "|| completed.try_send(()).map_err(|_| ()),", "|| Ok(()),", "@production"],
+    ["watchdog worker join", "main", "|| worker.join().map_err(|_| ()),", "|| Ok(()),", "@production"],
+    ["watchdog inclusive expiry", "main", ".filter(|duration| !duration.is_zero())", ".filter(|_| true)"],
+    ["worker panic injection test gate", "main", "    #[cfg(test)]\n    fn inject_worker_panic_for_test()", "    fn inject_worker_panic_for_test()"],
+    ["watchdog extra blocking work", "main", "        let timeout = remaining(deadline, now())?;", "        std::thread::park();\n        let timeout = remaining(deadline, now())?;"],
+  ].map(([name, field, search, replacement, scopedFunction]) => {
+    const original = inputs[field];
+    const scope = scopedFunction === undefined ? original : scopedFunction === "@production" ? withoutBottomTestModule(original) : rustTopLevelFunctionBlock(original, scopedFunction);
+    const mutated = replaceExactStringOnce(scope, search, replacement);
+    const source = scopedFunction === undefined ? mutated : replaceExactStringOnce(original, scope, mutated);
+    return { name, changed: source !== original, rejected: !keyAgentServiceDesktopProbeContract({ ...inputs, [field]: source }) };
+  });
+}
+const keyAgentServiceDesktopProbeInputs = await readKeyAgentServiceDesktopProbeInputs();
+const keyAgentServiceDesktopProbeMutationResults = keyAgentServiceDesktopProbeMutations(keyAgentServiceDesktopProbeInputs);
+requireInvariant(
+  keyAgentServiceDesktopProbeContract(keyAgentServiceDesktopProbeInputs) &&
+    keyAgentServiceApprovalMutationInventory(keyAgentServiceDesktopProbeMutationResults, keyAgentServiceDesktopProbeMutationNames()) &&
+    keyAgentServiceDesktopProbeMutationResults.every(({ changed, rejected }) => changed && rejected),
+  `the standalone desktop probe must remain exactly debug-gated and client-feature-only, use fresh nonsecret correlation with one fixed authenticated thread-bound binding for OpenEpoch then Approval only, retain original inclusive deadlines around every call and cleanup, revalidate the eligible current desktop without minting authority, reject noncanonical/miscorrelated replies and nonexact completion, and retain silent default/release with fixed non-authorizing debug output; checks=${JSON.stringify(keyAgentServiceDesktopProbeCheckNames().filter((name) => keyAgentServiceDesktopProbeChecks(keyAgentServiceDesktopProbeInputs)[name] !== true))}; mutations=${JSON.stringify(keyAgentServiceApprovalFailedMutationNames(keyAgentServiceDesktopProbeMutationResults, keyAgentServiceDesktopProbeMutationNames()))}`,
 );
 
 const keyAgentServiceExpectedPeerTestNames = [
@@ -26183,10 +26481,10 @@ const keyAgentServicePhaseThreeCExpectedPins = Object.freeze({
   sourceFull: "12323cc591fe516bfdd7f47091bd268cfba6af41223258a041e4873a71e872ec",
   sourceProduction:
     "e2a793d182b9086d4da421ebba8d163508971ed6d16387ff7692adc3230ef5ff",
-  moduleFull: "3b996da2fd1551826c6a897f03cd33543d0634671d3e8745104253c27e13cfec",
+  moduleFull: "5e8bfa854d4431869acde105d6263bf819468878444a9177e3ddd7c6e4d0e40c",
   moduleProduction:
-    "59db9f3ce95cc4f2b0ee36fe69dfddf26a9cfa7dfd0fa204effea78ea8c95ce1",
-  design: "54739b6ec9b6357b1c515f03eaa1294f7595e3614212b7688637004585ded625",
+    "07d2e6e9424c18dcedd8c447929e525a9236a5c8f2d7227140c69bcb2c9ca119",
+  design: "1c26056a6b5afa915f983bc26b4b4a0f571a4770260c2942cc47abed454c4e93",
   architecture:
     "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
   security:
@@ -29764,7 +30062,7 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes a safe platform-neutral gate-byte",
-    sha256: "54739b6ec9b6357b1c515f03eaa1294f7595e3614212b7688637004585ded625",
+    sha256: "1c26056a6b5afa915f983bc26b4b4a0f571a4770260c2942cc47abed454c4e93",
   },
   {
     path: "docs/security-decisions.md",
@@ -40784,7 +41082,7 @@ const keyAgentServicePhaseTwoIExpectedPins = Object.freeze({
   sourceProduction:
     "2d4da94c36055c61f5fdedabb8752709bf32750a28381e67c50b6e21c0866b4e",
   design:
-    "54739b6ec9b6357b1c515f03eaa1294f7595e3614212b7688637004585ded625",
+    "1c26056a6b5afa915f983bc26b4b4a0f571a4770260c2942cc47abed454c4e93",
   architecture:
     "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
   security:
@@ -42189,6 +42487,7 @@ const keyAgentServicePhaseThreeANewTestNames = Object.freeze([
 ]);
 const keyAgentServicePhaseThreeAExpectedServiceFeatures = Object.freeze([
   "default",
+  "desktop-rpc-probe-feasibility-test-hook",
   "scm-feasibility-test-hook",
   "service-token-feasibility-test-hook",
   "rpc-status-feasibility-test-hook",
@@ -42196,6 +42495,7 @@ const keyAgentServicePhaseThreeAExpectedServiceFeatures = Object.freeze([
 ]);
 const keyAgentServicePhaseThreeAExpectedPlatformFeatures = Object.freeze([
   "default",
+  "key-agent-service-desktop-rpc-probe-feasibility-test-hook",
   "broker-channel-contract-test-hook",
   "key-agent-service-scm-feasibility-test-hook",
   "key-agent-service-token-feasibility-test-hook",
@@ -42221,7 +42521,7 @@ const keyAgentServicePhaseThreeAExpectedPins = Object.freeze({
   targetProfileProduction:
     "610502bfedee760837e3d1c7a3729067dda450d5bf98061553dddabb499b303c",
   design:
-    "54739b6ec9b6357b1c515f03eaa1294f7595e3614212b7688637004585ded625",
+    "1c26056a6b5afa915f983bc26b4b4a0f571a4770260c2942cc47abed454c4e93",
   architecture:
     "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
   security:
@@ -43869,10 +44169,10 @@ const keyAgentServicePhaseThreeBExpectedPins = Object.freeze({
   sourceFull: "5f8dd571c685ad817b272c91794eeddbd8c4210986ae3c931525325ff4131125",
   sourceProduction:
     "3a9de991a09ab223a55972b7985fa66e250cc85ba9c75ffcf09f0bb2764f569e",
-  moduleFull: "3b996da2fd1551826c6a897f03cd33543d0634671d3e8745104253c27e13cfec",
+  moduleFull: "5e8bfa854d4431869acde105d6263bf819468878444a9177e3ddd7c6e4d0e40c",
   moduleProduction:
-    "59db9f3ce95cc4f2b0ee36fe69dfddf26a9cfa7dfd0fa204effea78ea8c95ce1",
-  design: "54739b6ec9b6357b1c515f03eaa1294f7595e3614212b7688637004585ded625",
+    "07d2e6e9424c18dcedd8c447929e525a9236a5c8f2d7227140c69bcb2c9ca119",
+  design: "1c26056a6b5afa915f983bc26b4b4a0f571a4770260c2942cc47abed454c4e93",
   architecture:
     "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
   security:
@@ -48031,7 +48331,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "62a0b1a65b53d1cdd5ebc2508a9608d56e73597da4620097ed3a565d3ad71079";
+  "8925616316c90aaaa60852cc3d9f008d28de08f68aa245e1386afdda283d5f96";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -48183,7 +48483,7 @@ const approvedWorkspaceCargoManifestPins = [
   },
   {
     path: "crates/key-agent-service/Cargo.toml",
-    sha256: "cfa9f78357b85489ee4fbeba2f6b4195321957664d93d6bd8851c7cbac1f38f5",
+    sha256: "e58ac3acf421febe8ec819cdae8d7ec8b95446b3294ce60548b1878a998769d8",
   },
   {
     path: "crates/key-agent-service-helper-bootstrap/Cargo.toml",
@@ -48203,7 +48503,7 @@ const approvedWorkspaceCargoManifestPins = [
   },
   {
     path: "crates/platform-windows/Cargo.toml",
-    sha256: "e29d158c6e53e9f056f2cea3146e631e832022268e9a7ee3729c4b888b2ff39c",
+    sha256: "94ee42dcd006900dbce89a7897774075b8f2ddf78bd3ed7a6a3caaeae6394a46",
   },
   {
     path: "crates/secret-core/Cargo.toml",
@@ -49192,9 +49492,18 @@ const keyAgentServiceRpcClientRuntimeUsage = rustIdentifierUsageInventory(
   workspaceRustProductionFiles,
   keyAgentServiceRpcClientRuntimeApis,
 );
+function keyAgentServiceProtocolLiteralProjection({ path, source }) {
+  if (path !== "crates/key-agent-service/src/bin/key_agent_service_probe.rs") return source;
+  // This one reviewed comment explains why the process watchdog is necessary;
+  // it is not an additional protocol-selection literal or binding surface.
+  const comment = "                        // ncalrpc does not promise an interruptible synchronous";
+  const lines = source.split("\n");
+  if (lines.filter((line) => line === comment).length !== 1) return source;
+  return lines.map((line) => line === comment ? " ".repeat(line.length) : line).join("\n");
+}
 const keyAgentServiceRpcWorkspaceProtocolLiteralPaths =
   workspaceRustProductionFiles.flatMap((file) =>
-    [...file.source.matchAll(/\bncalrpc\b/giu)].map(() => file.path),
+    [...keyAgentServiceProtocolLiteralProjection(file).matchAll(/\bncalrpc\b/giu)].map(() => file.path),
   );
 const keyAgentServiceDesktopPrimaryDuplicateCallPaths =
   workspaceRustProductionFiles.flatMap((file) =>
@@ -49211,6 +49520,60 @@ const keyAgentServiceDesktopProcessCreateCallPaths =
 const keyAgentServiceDesktopProcessCreateUsage =
   rustIdentifierUsageInventory(workspaceRustProductionFiles, [
     "CreateProcessAsUserW"],
+);
+function keyAgentServiceDesktopProbeReachabilityContract(files) {
+  const publicName = "run_non_signing_service_approval_probe";
+  const preflightName = "preflight_current_desktop_probe";
+  const paths = {
+    main: "crates/key-agent-service/src/bin/key_agent_service_probe.rs",
+    probe: "crates/platform-windows/src/key_agent_service_rpc/desktop_probe.rs",
+    binding: "crates/platform-windows/src/key_agent_service_rpc/client_binding.rs",
+    auth: "crates/platform-windows/src/key_agent_service_rpc/auth.rs",
+    lib: "crates/platform-windows/src/lib.rs",
+    helper: "crates/key-agent-service-helper-bootstrap/src/child/windows.rs",
+  };
+  const tokens = (name) => files.flatMap(({ path, source }) => {
+    const count = (rustLexicalCode(source).match(new RegExp(`\\b${name}\\b`, "gu")) ?? []).length;
+    return count === 0 ? [] : [{ path, count }];
+  });
+  const calls = (name) => files.flatMap(({ path, source }) => {
+    const code = rustLexicalCode(source);
+    return rustCallSites(source, name)
+      .filter(({ index }) => !/\bfn\s*$/u.test(code.slice(0, index)))
+      .map(() => path);
+  });
+  return JSON.stringify(tokens(publicName)) === JSON.stringify([
+    { path: paths.main, count: 1 }, { path: paths.probe, count: 1 }, { path: paths.lib, count: 1 },
+  ]) && JSON.stringify(calls(publicName)) === JSON.stringify([paths.main]) &&
+    JSON.stringify(tokens(preflightName)) === JSON.stringify([
+      { path: paths.auth, count: 1 }, { path: paths.probe, count: 2 },
+    ]) && JSON.stringify(calls(preflightName)) === JSON.stringify([paths.probe]) &&
+    JSON.stringify(tokens("FixedDesktopRpcBinding")) === JSON.stringify([
+      { path: paths.binding, count: 4 }, { path: paths.probe, count: 3 },
+    ]) && JSON.stringify(calls("RpcBindingSetOption")) === JSON.stringify([paths.helper]) &&
+    files.filter(({ path }) => path.startsWith("crates/key-agent-service/")).every(({ path, source }) =>
+      !/run_(?:inert|service_token|status_rpc|lpac_rpc_probe)_key_agent_service_fixture/u.test(rustLexicalCode(source)) ||
+      path === "crates/key-agent-service/src/main.rs");
+}
+const keyAgentServiceDesktopProbeReachabilityMutationResults = [
+  ["second desktop caller", "crates/platform-windows/src/lib.rs", "fn unexpected_desktop_probe_caller() { run_non_signing_service_approval_probe(); }"],
+  ["aliased public facade", "crates/platform-windows/src/lib.rs", "use crate::run_non_signing_service_approval_probe as unexpected_probe;"],
+  ["second preflight caller", "crates/platform-windows/src/lib.rs", "fn unexpected_preflight_caller() { preflight_current_desktop_probe(); }"],
+  ["exported binding owner", "crates/platform-windows/src/lib.rs", "pub use key_agent_service_rpc::client_binding::FixedDesktopRpcBinding;"],
+  ["new raw timeout caller", "crates/platform-windows/src/lib.rs", "fn unexpected_timeout_caller() { unsafe { RpcBindingSetOption(binding, 12, 0); } }"],
+].map(([name, path, suffix]) => {
+  const changed = workspaceRustProductionFiles.some((file) => file.path === path);
+  const files = workspaceRustProductionFiles.map((file) => file.path === path ? { ...file, source: `${file.source}\n${suffix}\n` } : file);
+  return { name, changed, rejected: !keyAgentServiceDesktopProbeReachabilityContract(files) };
+});
+requireInvariant(
+  keyAgentServiceDesktopProbeReachabilityContract(workspaceRustProductionFiles) &&
+    keyAgentServiceDesktopProbeReachabilityMutationResults.length === 5 &&
+    keyAgentServiceDesktopProbeReachabilityMutationResults.every(({ changed, rejected }) => changed && rejected) &&
+    normalizedSourceSha256(keyAgentServiceDesktopProbeInputs.probe) === "087a3740a4555663a013381676a393e63af49605b91e8d9a02e9af3b4951f0f9" &&
+    normalizedSourceSha256(keyAgentServiceDesktopProbeInputs.binding) === "ad7090f510df4137ba54465ec120e15475435e8b35cfe086cf0cfb81381dd1a9" &&
+    normalizedSourceSha256(keyAgentServiceDesktopProbeInputs.main) === "db50e833334cc4c43d36fd9c16dcf3aa461bc17b4ecfd30d050cdd81b209bce0",
+  "the standalone desktop probe must have one binary caller, one gated platform re-export, one auth-preflight caller, a non-exported thread-bound binding owner, and no native timeout-option call beyond the preexisting helper leaf; no additional call, alias, export, SCM host entry, or altered reviewed source may pass the closed workspace inventory",
 );
 requireInvariant(
   JSON.stringify(keyAgentServiceScmRuntimeCallSites) ===
@@ -49237,16 +49600,28 @@ requireInvariant(
       JSON.stringify(
         keyAgentServiceRpcClientRuntimeApis.map((api) => ({
           api,
-          paths: [keyAgentServiceHelperBootstrapPaths.windows],
+          paths: [keyAgentServiceHelperBootstrapPaths.windows, keyAgentServiceRpcFixturePaths.clientBinding],
         })),
       ) &&
     keyAgentServiceRpcClientRuntimeUsage.calls.length ===
-      keyAgentServiceRpcClientRuntimeApis.length &&
+      keyAgentServiceRpcClientRuntimeApis.length * 2 &&
     keyAgentServiceRpcClientRuntimeUsage.aliases.length === 0 &&
     keyAgentServiceRpcClientRuntimeUsage.references.length === 0 &&
     keyAgentServiceRpcClientRuntimeUsage.qualified.length === 0 &&
     JSON.stringify(keyAgentServiceRpcWorkspaceProtocolLiteralPaths) ===
       JSON.stringify([keyAgentServiceRpcFixturePaths.lifecycle]) &&
+    keyAgentServiceProtocolLiteralProjection({
+      path: "crates/key-agent-service/src/bin/key_agent_service_probe.rs",
+      source: 'const UNAPPROVED_PROTOCOL: &str = "ncalrpc";',
+    }).includes("ncalrpc") &&
+    keyAgentServiceProtocolLiteralProjection({
+      path: "crates/platform-windows/src/lib.rs",
+      source: "                        // ncalrpc does not promise an interruptible synchronous",
+    }).includes("ncalrpc") &&
+    keyAgentServiceProtocolLiteralProjection({
+      path: "crates/key-agent-service/src/bin/key_agent_service_probe.rs",
+      source: '                        // ncalrpc does not promise an interruptible synchronous\nconst UNAPPROVED_PROTOCOL: &str = "ncalrpc";',
+    }).includes("ncalrpc") &&
     JSON.stringify(keyAgentServiceDesktopPrimaryDuplicateCallPaths) ===
       JSON.stringify([
         keyAgentServiceLaunchPaths.targetProfile,
@@ -49261,7 +49636,7 @@ requireInvariant(
     keyAgentServiceDesktopProcessCreateUsage.aliases.length === 0 &&
     keyAgentServiceDesktopProcessCreateUsage.references.length === 0 &&
     keyAgentServiceDesktopProcessCreateUsage.qualified.length === 0,
-  "the Key Agent service fixtures must keep exact runtime-only SCM, authenticated local-RPC server callsites, and the five exact helper-client binding calls in the reviewed bootstrap leaf; confine DuplicateTokenEx to the manager/child-observation adapters and the sole CreateProcessAsUserW call to the one-shot auth adapter, while installer/configuration/deletion, endpoint mapper, dynamic binding, alternate registration, aliased native APIs, and non-reviewed ncalrpc surfaces remain absent",
+  "the Key Agent service fixtures must keep exact runtime-only SCM, authenticated local-RPC server callsites, and the five exact client binding calls in each reviewed helper-bootstrap and standalone desktop-client leaf; confine DuplicateTokenEx to the manager/child-observation adapters and the sole CreateProcessAsUserW call to the one-shot auth adapter, while installer/configuration/deletion, endpoint mapper, dynamic binding, alternate registration, aliased native APIs, and non-reviewed ncalrpc surfaces remain absent",
 );
 const dynamicResolverUsageProbes = {
   alias: rustIdentifierUsageInventory(
@@ -69316,17 +69691,22 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/auth.rs",
     unsafeCount: 6,
-    sha256: "e968b5c9662560e24267eab92e5c2686e0563ea2474381f17a8d2239a632ee3d",
+    sha256: "546453885684014bcd6eac05c1f9ad8aa1245e0da117c5bfb6c84817ad1713d8",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
-    unsafeCount: 71,
-    sha256: "790054c3ffffd6d977dc1986aeb729d5a300350e87c7cb1a43785cfa755a1975",
+    unsafeCount: 72,
+    sha256: "a891271946479df16449834d8b7484e2f480f28857245082a46d9244789ab6f6",
+  },
+  {
+    path: "crates/platform-windows/src/key_agent_service_rpc/client_binding.rs",
+    unsafeCount: 6,
+    sha256: "3b376202ab59cf80b36b25f4c0c9b98d669d99b021614be2d87153a6c2622177",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/mod.rs",
     unsafeCount: 12,
-    sha256: "59db9f3ce95cc4f2b0ee36fe69dfddf26a9cfa7dfd0fa204effea78ea8c95ce1",
+    sha256: "07d2e6e9424c18dcedd8c447929e525a9236a5c8f2d7227140c69bcb2c9ca119",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_token/sys.rs",
@@ -70337,7 +70717,7 @@ requireInvariant(
 );
 requireInvariant(
   platformWindowsManifestSha256 ===
-    "e29d158c6e53e9f056f2cea3146e631e832022268e9a7ee3729c4b888b2ff39c" &&
+    "94ee42dcd006900dbce89a7897774075b8f2ddf78bd3ed7a6a3caaeae6394a46" &&
     JSON.stringify(platformWindowsCrateRootInventory) ===
       JSON.stringify([
         { name: "Cargo.toml", kind: "file" },
@@ -91819,8 +92199,8 @@ const keyAgentDebuggerPlatformSources = {
   sys: keyAgentDebuggerTransportSysSource,
 };
 const keyAgentDebuggerPlatformPins = {
-  manifest: "e29d158c6e53e9f056f2cea3146e631e832022268e9a7ee3729c4b888b2ff39c",
-  lib: "d5ff61c17fc6c97573cc659dca5965d08bdb8ce5368e83315c30a1de9265743e",
+  manifest: "94ee42dcd006900dbce89a7897774075b8f2ddf78bd3ed7a6a3caaeae6394a46",
+  lib: "833f2f8fcf14804c13baa4615cbfbadc6193dd019c77d8b6fad5c7033fbadf8d",
   umbrella: "3175fa0ad3122c1ce1c997c3f370c678179afa1eca9d91938c0782ae963599b4",
   artifact: "f7abcc220bd737894655ccb48e80d10c179626fb634b6c88294008faec035abc",
   pipe: "1edaeec6a6601cfd13a47d7051c505377ad97b0d3ebae749cf5e7975920c3da0",
@@ -93361,7 +93741,7 @@ const keyAgentDebuggerDocumentationSpecs = [
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
     endAnchor: "\n## In scope\n",
-    sha256: "54739b6ec9b6357b1c515f03eaa1294f7595e3614212b7688637004585ded625",
+    sha256: "1c26056a6b5afa915f983bc26b4b4a0f571a4770260c2942cc47abed454c4e93",
   },
   {
     path: "docs/security-decisions.md",
@@ -96649,7 +97029,7 @@ const qualityCheck = repositoryPowerShellSource("scripts/check.ps1");
 const qualityFocusedTests = repositoryPowerShellSource("scripts/test-focused.ps1");
 const approvedKeyAgentCargoArtifactGateSha256 = Object.freeze({
   build: "b5dcecb5d6054b75a69d05652100c80e48773ca27f0d0b7913298952f6c5f0c7",
-  tests: "29b3fe28ecd4ce53285e77e2eb9e4ea606b7db1ca234a592fce91976dfc50843",
+  tests: "d709ee870fbaa08e846ad2c03023a475e18302ffffd41a68ad353d68409fd20c",
   sharedParserSource: "7731e72991d43129359100c0d73142d8d2a99e3199c9f798f8b16c85aeea1fcb",
 });
 const sharedKeyAgentArtifactParserContract = (source, requireHash = true) => {
@@ -96735,12 +97115,15 @@ const keyAgentCargoArtifactGateContract = (source, requireHashes = true) => {
     (build.match(/&\s*cargo\s+build\b/gu) ?? []).length === 1 &&
     !/(?:target[\\/](?:debug|release)|Get-ChildItem|Join-Path)/iu.test(build) &&
     compactTests.startsWith(
-      'functionInvoke-Tests{Invoke-WindowsEvidenceReadinessChecksInvoke-Checked-Executable"node"-CommandArguments@("--test","scripts/architecture-diagnostic.test.mjs")Invoke-Checked-Executable"powershell"-CommandArguments@("-NoLogo","-NoProfile","-ExecutionPolicy","Bypass","-File","scripts/test-focused.test.ps1")',
+      'functionInvoke-Tests{Invoke-WindowsEvidenceReadinessChecksInvoke-Checked-Executable"node"-CommandArguments@("--test","scripts/architecture-diagnostic.test.mjs")Invoke-Checked-Executable"powershell"-CommandArguments@("-NoLogo","-NoProfile","-ExecutionPolicy","Bypass","-File","scripts/test-focused.test.ps1")Invoke-Checked-Executable"powershell"-CommandArguments@("-NoLogo","-NoProfile","-ExecutionPolicy","Bypass","-File","scripts/launcher-contract.test.ps1")Invoke-Checked-Executable"powershell"-CommandArguments@("-NoLogo","-NoProfile","-ExecutionPolicy","Bypass","-File","scripts/service-probe/native.test.ps1")Invoke-Checked-Executable"node"-CommandArguments@("--test","scripts/service-probe/prepare.test.mjs","scripts/service-probe/operate.test.mjs")',
     ) &&
     ordered(compactTests, [
       "scripts/architecture-diagnostic.test.mjs",
       "scripts/test-focused.test.ps1",
       "scripts/launcher-contract.test.ps1",
+      "scripts/service-probe/native.test.ps1",
+      "scripts/service-probe/prepare.test.mjs",
+      "scripts/service-probe/operate.test.mjs",
       "$keyAgentExecutable=Build-KeyAgentTestExecutable",
       '$previousKeyAgentExecutable=[Environment]::GetEnvironmentVariable("YW_TEST_KEY_AGENT_EXECUTABLE",[EnvironmentVariableTarget]::Process)',
       "try{$env:YW_TEST_KEY_AGENT_EXECUTABLE=$keyAgentExecutable",
@@ -96756,6 +97139,13 @@ const keyAgentCargoArtifactGateContract = (source, requireHashes = true) => {
   );
 };
 const keyAgentCargoArtifactGateMutationProbes = [
+  ...[
+    '    Invoke-Checked -Executable "powershell" -CommandArguments @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/service-probe/native.test.ps1")',
+    '    Invoke-Checked -Executable "node" -CommandArguments @("--test", "scripts/service-probe/prepare.test.mjs", "scripts/service-probe/operate.test.mjs")',
+  ].flatMap((invocation) => [
+    qualityCheck.replace(`${invocation}\n`, ""),
+    qualityCheck.replace(invocation, `    if ($false) { ${invocation.trim()} }`),
+  ]),
   qualityCheck.replace(
     '    Invoke-Checked -Executable "node" -CommandArguments @("--test", "scripts/architecture-diagnostic.test.mjs")\n',
     "",
@@ -96894,6 +97284,10 @@ const approvedOtherPowerShellScriptPaths = [
   "scripts/launcher-contract.test.ps1",
   "scripts/release/common.ps1",
   "scripts/run-sepolia-wallet.ps1",
+  "scripts/service-probe/common.ps1",
+  "scripts/service-probe/native.test.ps1",
+  "scripts/service-probe/operate.ps1",
+  "scripts/service-probe/prepare.ps1",
   "scripts/test-focused.ps1",
   "scripts/test-focused.test.ps1",
   "scripts/windows-evidence/preflight.ps1",
@@ -96908,7 +97302,7 @@ const approvedPowerShellSourceSha256 = Object.freeze({
   "crates/key-agent-service-rpc-sys/scripts/verify-generated.ps1":
     "aaae7ff1a1708079f256adc60345726f060b734251363810d53743349d5b8104",
   "scripts/check.ps1":
-    "3ded665830d4fe1f6f9d037708c354960119b552a0bd36dde281533a39873f03",
+    "46a35dffa57df37ed6f45ffb76f3b4314c2bf4e0a92f4b584429618a25cf6fad",
   "scripts/launcher-contract.test.ps1":
     "4b82c49f96d4b90da0cabb17992a8ae7f77c5664796730aab6e6ff65a3649b50",
   "scripts/release/assert-key-agent-debugger-version.ps1":
@@ -96933,6 +97327,14 @@ const approvedPowerShellSourceSha256 = Object.freeze({
     "30b0a64f26429fbee00825f2b0e6c0f320d22fcc1690b19d164833b1259f197c",
   "scripts/run-sepolia-wallet.ps1":
     "6f80276eca155ecd7af5165ac8b973e00dabeab6e8d3c4ea2b50517666d104c2",
+  "scripts/service-probe/common.ps1":
+    "1235631c54642624cea80377712b63fe4425e088e46b84483ba0de08fc190cdb",
+  "scripts/service-probe/native.test.ps1":
+    "81db553dafea9efeea7da2745f2a83652b2ca9b9fbc28f754393457c514240da",
+  "scripts/service-probe/operate.ps1":
+    "8c00b60deb8ffe3f2b7b945f7f171665971028801f6326ae30fa1930eb3b2390",
+  "scripts/service-probe/prepare.ps1":
+    "148a2c054d29ff5094243712b83f717acd5f3c15a10d84408f837805f701deb0",
   "scripts/test-focused.ps1":
     "179a85aacbadb29e59cf75c3b0ceadafdc0ec0d99db93f9ced531c273cd74fcb",
   "scripts/test-focused.test.ps1":
@@ -96964,7 +97366,7 @@ const discoveredReleaseCommonConsumerPaths = repositoryPowerShellScripts
   .filter(
     ({ path, source }) =>
       path.toLowerCase() !== "scripts/release/common.ps1" &&
-      powerShellReferencesReleaseCommon(source),
+      powerShellReferencesReleaseCommon(serviceProbeLocalCommonProjection(path, source)),
   )
   .map(({ path }) => path);
 const releaseCommonPowerShellAnalysis = analyzePowerShellSource(releaseCommon);
@@ -98256,6 +98658,17 @@ function powerShellReferencesReleaseCommon(source) {
   );
 }
 
+function serviceProbeLocalCommonProjection(path, source) {
+  // Preserve the historical conservative common.ps1 detector. Only these three
+  // reviewed, path-bound sibling imports name the unrelated service harness;
+  // an additional, dynamic, redirected or release-common reference stays visible.
+  if (!["scripts/service-probe/native.test.ps1", "scripts/service-probe/operate.ps1", "scripts/service-probe/prepare.ps1"].includes(path)) return source;
+  const literal = ". (Join-Path $PSScriptRoot 'common.ps1')";
+  const analysis = analyzePowerShellSource(source);
+  if (!analysis.valid || activePowerShellLiteralIndexes(analysis, literal).length !== 1) return source;
+  return source.replace(literal, " ".repeat(literal.length));
+}
+
 function powerShellBraceDepthAt(analysis, targetIndex) {
   let depth = 0;
   for (let index = 0; index < targetIndex; index += 1) {
@@ -99273,6 +99686,18 @@ requireInvariant(
     powerShellReferencesReleaseCommon(
       "$script:ReleasePowerShellEntryScriptPath = $PSCommandPath",
     ) &&
+    !powerShellReferencesReleaseCommon(serviceProbeLocalCommonProjection(
+      "scripts/service-probe/operate.ps1", ". (Join-Path $PSScriptRoot 'common.ps1')",
+    )) &&
+    powerShellReferencesReleaseCommon(serviceProbeLocalCommonProjection(
+      "scripts/service-probe/operate.ps1", ". (Join-Path $PSScriptRoot '../release/common.ps1')",
+    )) &&
+    powerShellReferencesReleaseCommon(serviceProbeLocalCommonProjection(
+      "scripts/service-probe/operate.ps1", ". (Join-Path $PSScriptRoot 'common.ps1')\n. (Join-Path $PSScriptRoot '../release/common.ps1')",
+    )) &&
+    powerShellReferencesReleaseCommon(serviceProbeLocalCommonProjection(
+      "scripts/service-probe/unapproved.ps1", ". (Join-Path $PSScriptRoot 'common.ps1')",
+    )) &&
     !hasExactCaseInsensitivePathInventory(
       [
         ...repositoryPowerShellScripts.map(({ path }) => path),
@@ -103078,6 +103503,189 @@ requireInvariant(
       ({ changed, rejected }) => changed && rejected,
     ),
   `the Windows readiness harness must remain an exact seven-file, non-elevated, fixed-case, 22-test, locked/frozen/offline, canonical and privacy-bounded local fixture that is structurally separate from release evidence, admits no arbitrary command or output path, keeps runner-owned output under target plus ignored artifacts, pins evidence and selected tools against replacement during use, discloses ambient tool and same-user trust, runs from the root quality gate, and rejects every semantic/source-pin mutation; semantic base=${windowsEvidenceReadinessContract(windowsEvidenceReadinessInputs, false)}, semantic mutations=${JSON.stringify(windowsEvidenceReadinessSemanticMutationResults)}, pin mutations=${JSON.stringify(windowsEvidenceReadinessPinMutationResults)}`,
+);
+
+// The operator harness is a separately reviewed, debug-only privileged leaf.
+// It does not make the local transport fixture into release evidence. Its
+// semantic probes deliberately run without source pins, so a changed privilege,
+// authority check, ownership readback or build-provenance rule cannot pass just
+// because a maintainer updates a whole-file digest.
+function serviceProbeCSharpCommentFree(source) {
+  return source.replace(
+    /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\/[^\r\n]*|\/\*[\s\S]*?\*\//gu,
+    (token) => token.startsWith("//") || token.startsWith("/*")
+      ? token.replace(/[^\r\n]/gu, " ") : token,
+  );
+}
+function serviceProbeNativeMethod(source, name) {
+  const code = rustLexicalCode(source);
+  const matches = [...code.matchAll(new RegExp(
+    `\\b(?:public|private|internal)\\s+(?:static\\s+)?[A-Za-z0-9_<>.\\[\\]]+\\s+${name}\\s*\\([^)]*\\)\\s*\\{`, "gu",
+  ))];
+  if (matches.length !== 1) return "";
+  const opening = code.indexOf("{", matches[0].index);
+  const closing = matchingRustDelimiter(code, opening, "{", "}");
+  return closing < 0 ? "" : source.slice(matches[0].index, closing + 1);
+}
+function serviceProbeHarnessChecks(inputs) {
+  const native = serviceProbeCSharpCommentFree(inputs.native);
+  const nativeLeaf = native.slice(native.indexOf("internal static class Native"));
+  const method = (name) => serviceProbeNativeMethod(native, name).replace(/\s+/gu, "");
+  const nativeMethod = (name) => serviceProbeNativeMethod(nativeLeaf, name).replace(/\s+/gu, "");
+  const all = (source, fragments) => fragments.every((fragment) => source.includes(fragment.replace(/\s+/gu, "")));
+  const ordered = (source, fragments) => {
+    let cursor = 0;
+    return fragments.every((fragment) => {
+      const marker = fragment.replace(/\s+/gu, "");
+      const index = source.indexOf(marker, cursor);
+      if (index < 0) return false;
+      cursor = index + marker.length;
+      return true;
+    });
+  };
+  const nativeCompact = native.replace(/\s+/gu, "");
+  const preparation = analyzePowerShellSource(inputs.prepare);
+  const operation = analyzePowerShellSource(inputs.operate);
+  const common = analyzePowerShellSource(inputs.common);
+  const prepare = preparation.commentFreeCode.replace(/\s+/gu, "");
+  const operate = operation.commentFreeCode.replace(/\s+/gu, "");
+  const importCode = common.commentFreeCode.replace(/\s+/gu, "");
+  const imports = [...native.matchAll(/\[DllImport\("([a-z0-9.]+)"[^\]]*\)\]\s*private static extern [A-Za-z0-9_]+ ([A-Za-z0-9_]+)\(/gu)]
+    .map((match) => `${match[1]}:${match[2]}`);
+  return {
+    fixedNativeSurface: JSON.stringify(imports) === JSON.stringify([
+      "kernel32.dll:CreateFileW", "kernel32.dll:GetFileInformationByHandle", "kernel32.dll:CreateDirectoryW", "kernel32.dll:SetFileInformationByHandle",
+      "kernel32.dll:GetCurrentProcess", "kernel32.dll:GetCurrentThread", "advapi32.dll:OpenProcessToken", "advapi32.dll:OpenThreadToken",
+      "advapi32.dll:GetTokenInformation", "advapi32.dll:GetTokenInformationBytes", "shell32.dll:SHGetKnownFolderPath",
+      "advapi32.dll:ConvertStringSecurityDescriptorToSecurityDescriptorW", "kernel32.dll:LocalFree", "advapi32.dll:GetSecurityInfo", "advapi32.dll:SetSecurityInfo",
+      "advapi32.dll:GetSecurityDescriptorOwner", "advapi32.dll:GetSecurityDescriptorGroup", "advapi32.dll:GetSecurityDescriptorDacl", "advapi32.dll:GetSecurityDescriptorLength",
+      "advapi32.dll:LookupAccountNameW", "userenv.dll:DeriveAppContainerSidFromAppContainerName", "advapi32.dll:FreeSid",
+      "advapi32.dll:OpenSCManagerW", "advapi32.dll:OpenServiceW", "advapi32.dll:CreateServiceW", "advapi32.dll:CloseServiceHandle",
+      "advapi32.dll:ChangeServiceConfig2W", "advapi32.dll:QueryServiceConfigW", "advapi32.dll:QueryServiceConfig2W", "advapi32.dll:QueryServiceStatusEx",
+      "advapi32.dll:StartServiceW", "advapi32.dll:ControlService", "advapi32.dll:DeleteService", "advapi32.dll:LsaOpenPolicy", "advapi32.dll:LsaClose",
+      "advapi32.dll:LsaEnumerateAccountRights", "advapi32.dll:LsaAddAccountRights", "advapi32.dll:LsaRemoveAccountRights", "advapi32.dll:LsaFreeMemory", "advapi32.dll:LsaNtStatusToWinError",
+    ]) && (native.match(/\bextern\b/gu) ?? []).length === 40 &&
+      JSON.stringify([...native.matchAll(/public static [A-Za-z0-9_]+ ([A-Za-z0-9_]+)\(/gu)].map((match) => match[1])) === JSON.stringify([
+        "RequireUnelevatedPreparation", "HoldPreparationDirectories", "OpenPreparationFile", "VerifyPreparationFile", "OpenPreparationBuildFile", "VerifyPreparationBuildFile", "CreatePreparationCandidate", "Run", "SelfTest",
+      ]) && !/\b(?:Process\s*\.\s*Start|Assembly\s*\.\s*Load|NativeLibrary|LoadLibrary\w*|GetProcAddress|CreateProcess\w*|ShellExecute\w*)\b/u.test(rustLexicalCode(native)),
+    operatorPreflight: ordered(method("RunWith"), [
+      "Native.BeginCheckedCleanup();", 'Require(action == "Install" || action == "Readback" || action == "Start" || action == "Stop" || action == "Remove");',
+      'if (!operations.IsElevated()) return "SERVICE_PROBE_REQUIRES_ELEVATED_OPERATOR";', "operations.Execute(action, workspace);", "Require(!Native.CleanupFailed);",
+      'return "SERVICE_PROBE_" + action.ToUpperInvariant() + "_PASS_NOT_RELEASE_EVIDENCE";',
+    ]) && all(method("IsElevatedPrimary"), ["Environment.Is64BitProcess", "Environment.UserInteractive", "OpenThreadToken(GetCurrentThread(), 8, true, out thread)", "error != 1008", "OpenProcessToken(GetCurrentProcess(), 8, out token)", "elevation != 1", "kind != 1", "session == 0", "WindowsBuiltInRole.Administrator"]),
+    fixedArtifactsAndPrivileges: all(nativeCompact, [
+      'internal const string ServiceName = "YourWalletKeyAgent";', 'internal const string Leaf = "YourWalletServiceProbe";',
+      'internal static readonly string[] Names = { "approval-ui.exe", "key-agent-service-probe.exe", "key-agent-service.exe", "secret-input-ui.exe" };',
+      'internal static readonly string[] Privileges = { "SeAssignPrimaryTokenPrivilege", "SeChangeNotifyPrivilege", "SeImpersonatePrivilege", "SeIncreaseQuotaPrivilege" };',
+      'internal static readonly string[] Rights = Privileges.Concat(new[] { "SeServiceLogonRight" }).OrderBy(x => x, StringComparer.Ordinal).ToArray();',
+    ]),
+    canonicalCandidate: all(method("ParseCandidate"), ["bytes.Length > 0 && bytes.Length <= 2048 && bytes.All(b => b < 128)", "Require(rows.Count == 4);", "row.Groups[1].Value == Names[i]", 'Require(text == canonical.Append("]}\\n").ToString());']),
+    journalBeforeRights: ordered(method("Install"), ["Native.RequireServiceAbsent(manager);", "Native.CreateProtectedDirectory(destination);", "Native.CreateService(manager, destination)", "Native.ReadRights(serviceSid)", "Rights.Except(baseline, StringComparer.Ordinal).ToArray()", 'Native.WriteNew(Path.Combine(destination, "ownership.txt"), Encoding.ASCII.GetBytes(journal), BaseSddl);', "Native.AddRights(serviceSid, added);", "Require(Native.ReadRights(serviceSid).SequenceEqual(Rights));", "Native.Configure(service);", "Native.ApplyArtifactSecurity(destination, serviceSid, approvalSid, secretSid);", "VerifyOwned(destination, directory.LeafIdentity, service);"]),
+    protectedCreation: all(nativeCompact, ['internal const string BaseSddl = "O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)";']) && ordered(method("CreateProtectedDirectory"), ["new Descriptor(Harness.BaseSddl)", "Descriptor = sd.Pointer", "CreateDirectoryW(path, ref attributes)", "VerifyExactSecurity(handle.DangerousGetHandle(), 1, Harness.BaseSddl)"]) && all(method("VerifyExactSecurity"), ["actual.Owner.Equals(expected.Owner)", "actual.Group.Equals(expected.Group)", "ControlFlags.DiscretionaryAclProtected", "AclShape(actual.DiscretionaryAcl) == AclShape(expected.DiscretionaryAcl)"]),
+    fixedServiceIdentity: all(method("CreateService"), [String.raw`CreateServiceW(manager, Harness.ServiceName, Harness.ServiceName, 0xF01FF, 0x10, 3, 1, "\"" + Path.Combine(destination, "key-agent-service.exe") + "\"", null, IntPtr.Zero, null, "NT SERVICE\\" + Harness.ServiceName, null)`]) && all(method("Configure"), ["Marshal.WriteInt32(value, 3)", "ChangeServiceConfig2W(service, 5, value)", "ChangeServiceConfig2W(service, 6, value)", "Harness.Privileges"]),
+    exactServiceReadback: all(method("VerifyService"), ["config.Type == 0x10 && config.Start == 3 && config.Error == 1 && config.Tag == 0", String.raw`BoundedString(config.Account, buffer, capacity) == "NT SERVICE\\" + Harness.ServiceName`, "Marshal.ReadInt32(buffer) == 3", "names.SequenceEqual(Harness.Privileges)", "VerifyExactSecurity(service.DangerousGetHandle(), 2, Harness.ServiceSddl)"]),
+    roleScopedHelpers: all(method("ArtifactSddl"), ['if (name == "approval-ui.exe") sddl += "(A;;0x1200a9;;;" + approval + ")";', 'if (name == "secret-input-ui.exe") sddl += "(A;;0x1200a9;;;" + secret + ")";']) && all(method("PackageSid"), ["DeriveAppContainerSidFromAppContainerName(name, out sid) == 0", 'value.StartsWith("S-1-15-2-", StringComparison.Ordinal)', "CheckCleanup(FreeSid(sid) == IntPtr.Zero)"]),
+    heldSingleLinkFiles: all(method("OpenFile"), ["directory ? 3U : 1U", "createSddl == null ? 3U : 1U", "0x00200000", "info.Attributes & 0x400", "!directory && info.Links != 1"]) && all(method("HoldDirectories"), ["Path.GetFullPath(path) == path", "Path.GetPathRoot(path).Length == 3", "handles.Add(handle)", "if (protectedPath) RequireNoUnprivilegedWrite(handle.DangerousGetHandle())"]),
+    ownedRemoval: ordered(method("Operate"), ['Require(action == "Remove" && Native.Status(service) == 1);', "VerifyOwned(destination, directory.LeafIdentity, service);", "retainedIdentity = directory.LeafIdentity;", "Native.RemoveRights(serviceSid, added);", "Require(Native.ReadRights(serviceSid).SequenceEqual(baseline));", "Native.Delete(service);", "Native.RequireServiceAbsent(manager);", "Require(directory.LeafIdentity == retainedIdentity &&", "VerifyOwnedFiles(destination, retainedIdentity, retainedServiceSid).SequenceEqual(retainedAdditions)", "Native.DeleteExactFile(Path.Combine(destination, name));", "Native.RemoveExactDirectory(destination, retainedIdentity);"]) && all(method("VerifyOwnedFiles"), ["journal[1] == directoryIdentity", "journal[2] == Hash(bytes)", "file.Verify(artifact.Bytes, artifact.Sha256)"]),
+    exactDeletionAndRights: all(method("ChangeRights"), ["sid == ServiceSid()", "names.All(x => Harness.Rights.Contains(x, StringComparer.Ordinal))", "LsaRemoveAccountRights(policy, SidBytes(sid), false, rights, (uint)rights.Length)"]) && all(method("RemoveExactDirectory"), ["Identity(held) == expectedIdentity && Directory.GetFileSystemEntries(path).Length == 0", "byte delete = 1", "SetFileInformationByHandle(held, 4, ref delete, 1)"]) && all(method("DeleteExactFile"), ["byte delete = 1", "SetFileInformationByHandle(file, 4, ref delete, 1)"]) && nativeCompact.includes("SetFileInformationByHandle(SafeFileHandlefile,uintkind,refbyteinformation,uintbytes)") && all(method("InteropLayoutsAreExact"), ["IntPtr.Size == 8", "Marshal.SizeOf(typeof(byte)) == 1", "Marshal.SizeOf(typeof(FileInfo)) == 52", "Marshal.SizeOf(typeof(ServiceConfig)) == 64", "Marshal.SizeOf(typeof(LsaString)) == 16"]) && !/\b(?:Directory|File)\s*\.\s*Delete\s*\(/u.test(rustLexicalCode(native)),
+    boundedStateWait: all(method("Wait"), ["Stopwatch.StartNew()", "clock.ElapsedMilliseconds < 35000", "System.Threading.Thread.Sleep(100)", 'throw new InvalidOperationException("SERVICE_PROBE_WAIT_EXPIRED")']),
+    nonElevatedBuild: preparation.valid && all(prepare, ["[YourWallet.ServiceProbe.Harness]::RequireUnelevatedPreparation()Assert-ServiceProbeBuildEnvironment", "'build','--offline','--locked','--no-default-features','--profile','dev'", "'--target','x86_64-pc-windows-msvc'", "'--features',$specification.Feature,'--message-format=json-render-diagnostics'", "&$PreflightAssert-ServiceProbeBuildEnvironment$arguments="]) && all(method("IsUnelevatedPreparation"), ["elevation != 0", "kind != 1", "session == 0", "!HasMediumIntegrity(token)", "return !new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator)"]),
+    exactBuildProvenance: all(prepare, ["$Result.ExitCode-ne0", "$message.reason-cne'compiler-artifact'", "$message.target.name-cne$Specification.Binary", "Test-ServiceProbeExactPath$message.manifest_path$manifest", "Test-ServiceProbeExactPath$message.target.src_path$source", "Test-ServiceProbeExactPath$message.executable$expected", "$message.profile.opt_level-cne'0'", "-not$message.profile.debug_assertions", "-not$message.profile.overflow_checks", "$features.Count-ne$Specification.Features.Count", "$features[$index]-cne$Specification.Features[$index]", "$artifacts.Count-ne1-or$finished.Count-ne1", "-not$finished[0].success", "return$artifacts[0]"]),
+    fixedBuildSpecifications: all(prepare, [
+      "Name='approval-ui.exe';Package='approval-ui';Binary='approval-ui';Source='src/main.rs';Feature='service-helper-rpc-probe-feasibility-test-hook';Features=@('service-helper-rpc-probe-feasibility-test-hook')",
+      "Name='key-agent-service-probe.exe';Package='key-agent-service';Binary='key-agent-service-probe';Source='src/bin/key_agent_service_probe.rs';Feature='desktop-rpc-probe-feasibility-test-hook';Features=@('desktop-rpc-probe-feasibility-test-hook')",
+      "Name='key-agent-service.exe';Package='key-agent-service';Binary='key-agent-service';Source='src/main.rs';Feature='lpac-rpc-probe-feasibility-test-hook';Features=@('lpac-rpc-probe-feasibility-test-hook','rpc-status-feasibility-test-hook','scm-feasibility-test-hook','service-token-feasibility-test-hook')",
+      "Name='secret-input-ui.exe';Package='secret-input-ui';Binary='secret-input-ui';Source='src/main.rs';Feature='service-helper-rpc-probe-feasibility-test-hook';Features=@('service-helper-rpc-probe-feasibility-test-hook')",
+    ]),
+    scopedCargoMaterialization: ordered(nativeMethod("OpenPreparationBuildFile"), [
+      "IsUnelevatedPreparation() && Harness.Names.Contains(name, StringComparer.Ordinal)", "root == workspace", 'Path.Combine(root, "target", "service-probe-build", "x86_64-pc-windows-msvc", "debug")',
+      "HoldDirectories(directory, false)", "CreateFileW(Path.Combine(directory, name), 0x80000000 | 0x20000, 1, ref attributes, 3, 0x00200000, IntPtr.Zero)", "info.Links == 1 || info.Links == 2",
+      "PreparationBuildOwners.Add(source, new PreparationBuildIdentity(PreparationBuildFileIdentity(info), source.Length, info.Links))", "VerifyPreparationBuildFile(source)", "return source",
+    ]) && all(nativeMethod("VerifyPreparationBuildFile"), ["Require(IsUnelevatedPreparation())", "PreparationBuildOwners.TryGetValue(source, out expected)", "info.Links == expected.Links", "PreparationBuildFileIdentity(info) == expected.FileIdentity", "source.Length == expected.Length"]) &&
+      all(nativeMethod("VerifyPreparationFile"), ["!source.CanWrite", "info.Links == 1"]) && all(nativeMethod("Identity"), ["(info.Attributes & 0x10) != 0 || info.Links == 1"]) &&
+      all(prepare, ["OpenPreparationBuildFile($workspace,$specification.Name)", "$copied=Get-ServiceProbeHeldFileRecord-Stream$verified-Name$Record.Name$source=", "OpenPreparationFile($Destination)"]),
+    heldCandidatePublication: ordered(prepare, ["CreatePreparationCandidate($workspace)", "HoldPreparationDirectories($candidateDirectory)", "Copy-ServiceProbeHeldArtifact", "foreach($recordin$records){[YourWallet.ServiceProbe.Harness]::VerifyPreparationBuildFile($record.Stream)}", "Get-ServiceProbeCandidateBytes-Records$records", "[IO.FileMode]::CreateNew", "$manifest.Flush($true)", "OpenPreparationFile((Join-Path$candidateDirectory'candidate.json'))", "$manifest.ReadByte()-ne-1", "VerifyPreparationFile($manifest)", "$actualNames-join','", "$owners[$index].Dispose()"]) && all(prepare, ["$owners.Add($stream)", "$source.Bytes-ne$Record.Bytes-or$source.Sha256-cne$Record.Sha256", "return$verified"]),
+    fixedOperatorArguments: operation.valid && ordered(operate, ["$args.Count-ne2-or$args[0]-cne'-Action'", "@('Install','Readback','Start','Stop','Remove')", "exit2", "Import-ServiceProbeNative", "[YourWallet.ServiceProbe.Harness]::Run($Action,$workspace)"]) && !/\b(?:Start-Process|Invoke-Expression|cargo|sc\.exe|icacls|takeown)\b/iu.test(operation.executableCode),
+    boundedNativeImport: common.valid && all(importCode, ["[IO.FileAttributes]::ReparsePoint", "[IO.FileShare]::Read)", "$stream.Length-le0-or$stream.Length-gt262144", "[Text.UTF8Encoding]::new($false,$true)", "Add-Type-TypeDefinition$code-LanguageCSharp-ErrorActionStop", "throw'SERVICE_PROBE_NATIVE_IMPORT_FAILED'"]),
+    privacyIncludesNative: /const allowedExtensions = new Set\(\[\s*"\.cs",\s*"\.html",\s*"\.js",\s*"\.json",\s*"\.md",\s*"\.mjs",\s*"\.ps1",\s*"\.rs",\s*"\.toml",\s*"\.yml",\s*\]\)/u.test(inputs.privacy) && inputs.privacyTests.includes('test("scans native C# harness sources before and after Git staging", async () => {') && inputs.attributes.split(/\r?\n/u).includes("*.cs text eol=lf"),
+    nonReleaseOnly: prepare.includes("'NOT_RELEASE_EVIDENCE'") && operate.includes("'_PASS_NOT_RELEASE_EVIDENCE'") && !/\b(?:secret_core|SigningKey|Mnemonic|sign_transaction|export_secret)\b/u.test(rustLexicalCode(native)),
+  };
+}
+function serviceProbeHarnessContract(inputs) {
+  const checks = serviceProbeHarnessChecks(inputs);
+  return Object.keys(checks).length === 22 && Object.values(checks).every((value) => value === true);
+}
+const serviceProbeHarnessInputs = {
+  native: await text("scripts/service-probe/ServiceProbeNative.cs"),
+  prepare: repositoryPowerShellSource("scripts/service-probe/prepare.ps1"),
+  operate: repositoryPowerShellSource("scripts/service-probe/operate.ps1"),
+  common: repositoryPowerShellSource("scripts/service-probe/common.ps1"),
+  privacy: await text("scripts/privacy-scan.mjs"),
+  privacyTests: await text("scripts/privacy-scan.test.mjs"),
+  attributes: await text(".gitattributes"),
+};
+const serviceProbeHarnessSemanticMutations = [
+  ["elevated operator", "native", "if (!operations.IsElevated())", "if (false)"],
+  ["cleanup failure", "native", "Require(!Native.CleanupFailed);", "Require(true);"],
+  ["privilege expansion", "native", '"SeIncreaseQuotaPrivilege" };', '"SeIncreaseQuotaPrivilege", "SeDebugPrivilege" };'],
+  ["candidate canonical form", "native", 'Require(text == canonical.Append("]}\\n").ToString());', "Require(true);"],
+  ["journal before rights", "native", "Native.AddRights(serviceSid, added);", "Native.AddRights(serviceSid, Rights);"],
+  ["protected owner", "native", '"O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)"', '"O:BUG:BUD:P(A;;FA;;;SY)(A;;FA;;;BA)"'],
+  ["service account", "native", String.raw`null, "NT SERVICE\\" + Harness.ServiceName, null);`, 'null, "LocalSystem", null);'],
+  ["restricted service SID", "native", "Marshal.WriteInt32(value, 3);", "Marshal.WriteInt32(value, 1);"],
+  ["ACL readback", "native", "AclShape(actual.DiscretionaryAcl) == AclShape(expected.DiscretionaryAcl)", "true"],
+  ["service privilege readback", "native", "names.SequenceEqual(Harness.Privileges)", "true"],
+  ["role scoped RX", "native", 'if (name == "approval-ui.exe") sddl +=', "if (true) sddl +="],
+  ["single link", "native", "!directory && info.Links != 1", "false"],
+  ["retained directory identity", "native", "directory.LeafIdentity == retainedIdentity &&", "true &&"],
+  ["added rights only", "native", "LsaRemoveAccountRights(policy, SidBytes(sid), false, rights,", "LsaRemoveAccountRights(policy, SidBytes(sid), true, rights,"],
+  ["nonrecursive exact deletion", "native", "Identity(held) == expectedIdentity && Directory.GetFileSystemEntries(path).Length == 0", "true"],
+  ["native BOOLEAN deletion ABI", "native", "ref byte information, uint bytes)", "ref int information, uint bytes)"],
+  ["bounded service wait", "native", "clock.ElapsedMilliseconds < 35000", "true"],
+  ["non-elevated build", "prepare", "[YourWallet.ServiceProbe.Harness]::RequireUnelevatedPreparation()\n    Assert-ServiceProbeBuildEnvironment", "Assert-ServiceProbeBuildEnvironment"],
+  ["locked offline build", "prepare", "'build', '--offline', '--locked'", "'build', '--locked'"],
+  ["one successful artifact", "prepare", "$artifacts.Count -ne 1 -or $finished.Count -ne 1", "$artifacts.Count -lt 1 -or $finished.Count -lt 1"],
+  ["debug assertions", "prepare", "-not $message.profile.debug_assertions", "$false"],
+  ["fixed desktop build feature", "prepare", "Features = @('desktop-rpc-probe-feasibility-test-hook')", "Features = @('desktop-rpc-probe-feasibility-test-hook', 'lpac-rpc-probe-feasibility-test-hook')"],
+  ["build alias link bound", "native", "info.Links == 1 || info.Links == 2", "info.Links >= 1"],
+  ["build alias write sharing", "native", "0x80000000 | 0x20000, 1, ref attributes, 3, 0x00200000", "0x80000000 | 0x20000, 3, ref attributes, 3, 0x00200000"],
+  ["build alias identity continuity", "native", "PreparationBuildFileIdentity(info) == expected.FileIdentity", "true"],
+  ["strict candidate link count", "native", "info.Links == 1 && source.Length > 0", "info.Links <= 2 && source.Length > 0"],
+  ["candidate publication readback", "prepare", "$manifest.ReadByte() -ne -1", "$false"],
+  ["all source continuity before publication", "prepare", "[YourWallet.ServiceProbe.Harness]::VerifyPreparationBuildFile($record.Stream)", "$null = $record.Stream"],
+  ["operator arguments", "operate", "$args.Count -ne 2", "$args.Count -lt 2"],
+  ["native import write sharing", "common", "[IO.FileShare]::Read)", "[IO.FileShare]::ReadWrite)"],
+  ["C sharp privacy", "privacy", '  ".cs",\n', ""],
+].map(([name, field, before, after]) => {
+  const changed = serviceProbeHarnessInputs[field].replace(before, after);
+  return { name, changed: changed !== serviceProbeHarnessInputs[field], rejected: !serviceProbeHarnessContract({ ...serviceProbeHarnessInputs, [field]: changed }) };
+});
+requireInvariant(
+  serviceProbeHarnessContract(serviceProbeHarnessInputs) && serviceProbeHarnessSemanticMutations.length === 31 &&
+    serviceProbeHarnessSemanticMutations.every(({ changed, rejected }) => changed && rejected),
+  `the separately reviewed debug operator must preserve fixed privileged native reachability, fresh elevated-primary preflight, protected file ownership, canonical candidate provenance, journaled exact LSA changes, restricted virtual-account SCM configuration, exact readbacks and non-recursive retained-identity deletion; preparation must remain non-elevated, current-build-only, held-file and non-release, with native C# privacy coverage; checks=${JSON.stringify(Object.entries(serviceProbeHarnessChecks(serviceProbeHarnessInputs)).filter(([, value]) => !value).map(([name]) => name))}, mutations=${JSON.stringify(serviceProbeHarnessSemanticMutations.filter(({ changed, rejected }) => !changed || !rejected).map(({ name }) => name))}`,
+);
+const serviceProbeHarnessPinnedSources = {
+  "ServiceProbeNative.cs": "1825f08e94de5f5cc0b535162863d095cae4a41ee2d31b799f50ea1ab5cb7b95",
+  "common.ps1": "e8e0700a94a16c88d50e03399f4aafb2ac3d88c8d57b43e177047cd35e932e7b",
+  "native.test.ps1": "2445227dafbae86b589cc9056e17f3d08b82dd6dfe7774c5b6c61194afbd2c4a",
+  "operate.ps1": "b65893db91ee7d985971e21d0743efbfde02bddd93000f2b281bf8a965cb32c3",
+  "operate.test.mjs": "48cb5cdb9573951d55758f39f0338da75f99022b84cf20a8f1988a6b1eede371",
+  "prepare.ps1": "ecf453027dd34ac1c2a5b95f28fc4517568ba26b430984bfd3ea7b81e725251b",
+  "prepare.test.mjs": "0fdd95cc2dac4d5f7228e063b8faded3d4f8bf7464700714fee1015f95719d10",
+};
+const serviceProbeHarnessSourceHashes = await Promise.all(Object.keys(serviceProbeHarnessPinnedSources).map(async (name) => [name, normalizedSourceSha256(await text(`scripts/service-probe/${name}`))]));
+const serviceProbeHarnessReadme = (await text("scripts/service-probe/README.md")).replace(/\s+/gu, " ");
+requireInvariant(
+  JSON.stringify(await trustedDirectoryEntryInventory("scripts/service-probe")) === JSON.stringify([
+    "common.ps1", "native.test.ps1", "operate.ps1", "operate.test.mjs", "prepare.ps1", "prepare.test.mjs", "README.md", "ServiceProbeNative.cs",
+  ].map((name) => ({ name, kind: "file" }))) &&
+    serviceProbeHarnessSourceHashes.every(([name, digest]) => digest === serviceProbeHarnessPinnedSources[name]) &&
+    serviceProbeHarnessReadme.includes("debug-only operator harness") && serviceProbeHarnessReadme.includes("not a production installer") &&
+    serviceProbeHarnessReadme.includes("No command below is executed by automated tests.") && serviceProbeHarnessReadme.includes("LsaRemoveAccountRights(AllRights=false)") &&
+    repositoryPowerShellSource("scripts/service-probe/native.test.ps1").includes("if ($checks -ne 30)") &&
+    repositoryPowerShellSource("scripts/service-probe/native.test.ps1").includes("SERVICE_PROBE_NATIVE_TEST_PASS_30_NO_SCM_OR_POLICY_CALLS"),
+  "the non-release service probe harness must retain exactly eight reviewed single-link files, all seven executable/test source pins, and its fixed 30-check native regression entry; changed source or an extra entry requires explicit review",
 );
 
 const expectedRustAnalysisCacheFamilyClearLabels = Object.freeze([

@@ -47,24 +47,33 @@ includes the repository-wide security checks and mutation controls, so it is
 appropriate for integration milestones. Focused test success does not imply
 that those checks have run.
 
-For the service Approval transport only, a check-only architecture diagnostic
-reuses the full scanner's predicates and mutation controls:
+Check-only architecture diagnostics reuse the full scanner's predicates and
+mutation controls for the service Approval transport and the desktop client:
 
 ```powershell
 node scripts/architecture-scan.mjs --check-group service-approval-transport
+node scripts/architecture-scan.mjs --check-group service-desktop-probe
 ```
 
-It reads only the fixed transport sources and prints restricted check/mutation
+Each group reads only its fixed sources and prints restricted check/mutation
 identifiers on failure. Its success marker always includes `NOT_FULL_SCAN`:
 this is not a repository-gate pass or release evidence. Unknown, repeated, or
 extra arguments fail closed. Run the ordinary no-argument architecture scan
 through `scripts/check.ps1 check` for complete acceptance. The full gate also
 tests this diagnostic's actual CLI, including injected failure cases.
 
+The desktop probe is a separate `key-agent-service-probe` executable. Its
+`desktop-rpc-probe-feasibility-test-hook` feature is independent of the service
+host's launch features. Default and release builds return silent exit 78;
+debug requests accept no arguments or caller-selected payload. A fixed success
+marker means only non-signing Approval transport completed, never authorization
+to sign or proof of the exact installed service image.
+
 PowerShell files use CRLF as specified by `.gitattributes`. Normalize new and
 edited PowerShell files before updating their raw-byte architecture inventory
 hashes; mixed line endings can otherwise pass locally and fail after checkout.
 
 The privacy scan checks tracked files plus non-ignored new source files.
+Native C# harness sources receive the same forbidden-fixture checks.
 Ignored build output and dependencies are outside that source inventory.
 The gate also runs the focused-runner and privacy-scanner regression tests.

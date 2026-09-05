@@ -51,6 +51,31 @@ const failPrefix =
   "ARCHITECTURE_DIAGNOSTIC_FAIL service-approval-transport\n";
 const readFailureOutput =
   `${failPrefix}INPUT_READ_OR_CHECK_ERROR\nNOT_FULL_SCAN\n`;
+const desktopArguments = ["--check-group", "service-desktop-probe"];
+const desktopSourcePaths = [
+  "crates/platform-windows/src/key_agent_service_rpc/desktop_probe.rs",
+  "crates/platform-windows/src/key_agent_service_rpc/client_binding.rs",
+  "crates/platform-windows/src/key_agent_service_rpc/auth.rs",
+  "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
+  "crates/platform-windows/src/key_agent_service_rpc/mod.rs",
+  "crates/platform-windows/src/lib.rs",
+  "crates/platform-windows/Cargo.toml",
+  "crates/key-agent-service/Cargo.toml",
+  "crates/key-agent-service/src/bin/key_agent_service_probe.rs",
+];
+const desktopCheckNames = [
+  "isolatedFeatures", "exactModuleGates", "exactFacade", "originalLifetimes",
+  "freshPublicRequest", "twoFreshPreflights", "oneBoundSequence", "exactCompletion",
+  "canonicalCorrelation", "inclusiveDeadline", "fixedAuthenticatedBinding",
+  "threadBoundOwner", "boundedNativeCall", "checkedNativeCleanup",
+  "queryOnlyPreflight", "fixedCurrentProcess", "silentFallback", "noArgumentForwarding",
+  "fixedOutput", "noWalletAuthority",
+];
+const desktopPassOutput =
+  "ARCHITECTURE_DIAGNOSTIC_PASS service-desktop-probe\nNOT_FULL_SCAN\n";
+const desktopFailPrefix = "ARCHITECTURE_DIAGNOSTIC_FAIL service-desktop-probe\n";
+const desktopReadFailure =
+  `${desktopFailPrefix}INPUT_READ_OR_CHECK_ERROR\nNOT_FULL_SCAN\n`;
 
 function sameSnapshot(left, right) {
   return left.isFile() && right.isFile() &&
@@ -107,7 +132,7 @@ async function mutateSource(fixture, path, search, replacement) {
   }
 }
 
-async function withFixture(action, { includeSources = true } = {}) {
+async function withFixture(action, { includeSources = true, paths = sourcePaths } = {}) {
   const temporaryParent = resolve(tmpdir());
   let fixture;
   try {
@@ -122,7 +147,7 @@ async function withFixture(action, { includeSources = true } = {}) {
     throw new Error("Diagnostic fixture ownership validation failed.");
   }
   try {
-    for (const path of [scannerPath, ...(includeSources ? sourcePaths : [])]) {
+    for (const path of [scannerPath, ...(includeSources ? paths : [])]) {
       const source = await readSource(repositoryRoot, path);
       try {
         await mkdir(dirname(join(fixture, path)), { recursive: true });
@@ -327,4 +352,120 @@ test("actual CLI preserves single-link input checks", async () => {
     }
     assertResult(await runDiagnostic(fixture), 1, readFailureOutput);
   });
+});
+
+test("desktop actual CLI accepts only diagnostic evidence", async () => {
+  assertResult(await runDiagnostic(repositoryRoot, desktopArguments), 0, desktopPassOutput);
+});
+
+test("desktop actual CLI needs only its nine fixed sources", async () => {
+  await withFixture(async (fixture) => {
+    assertResult(await runDiagnostic(fixture, desktopArguments), 0, desktopPassOutput);
+  }, { paths: desktopSourcePaths });
+});
+
+test("desktop actual CLI rejects argument extensions before reading sources", async () => {
+  await withFixture(async (fixture) => {
+    for (const arguments_ of [
+      ["--check-group", "SERVICE-DESKTOP-PROBE"],
+      ["--check-group=service-desktop-probe"],
+      [...desktopArguments, ...desktopArguments],
+      [...desktopArguments, "unexpected-extra-argument"],
+      [...desktopArguments, ...groupArguments],
+    ]) {
+      assertResult(await runDiagnostic(fixture, arguments_), 2,
+        "ARCHITECTURE_DIAGNOSTIC_ARGUMENT_ERROR\nNOT_FULL_SCAN\n");
+    }
+  }, { includeSources: false });
+});
+
+test("desktop actual CLI fails a changed original deadline", async () => {
+  await withFixture(async (fixture) => {
+    await mutateSource(fixture, desktopSourcePaths[0],
+      "let deadline = start\n        .checked_add(PROBE_LIFETIME)",
+      "let deadline = operations.now()?\n        .checked_add(PROBE_LIFETIME)");
+    assertResult(await runDiagnostic(fixture, desktopArguments), 1,
+      `${desktopFailPrefix}checks=originalLifetimes\nNOT_FULL_SCAN\n`);
+  }, { paths: desktopSourcePaths });
+});
+
+test("desktop actual CLI fails an ineffective mutation independently of baseline", async () => {
+  await withFixture(async (fixture) => {
+    await mutateSource(fixture, scannerPath,
+      '["inclusive expiry", "probe", "if operations.now()? >= deadline", "if operations.now()? > deadline"],',
+      '["inclusive expiry", "probe", "if operations.now()? >= deadline", "if operations.now()? >= deadline"],');
+    assertResult(await runDiagnostic(fixture, desktopArguments), 1,
+      `${desktopFailPrefix}mutations=inclusive expiry\nNOT_FULL_SCAN\n`);
+  }, { paths: desktopSourcePaths });
+});
+
+test("desktop actual CLI rejects a same-count duplicate mutation", async () => {
+  await withFixture(async (fixture) => {
+    await mutateSource(fixture, scannerPath,
+      '["canonical response", "probe", "if !frame.is_canonical()", "if false"],',
+      '["inclusive expiry", "probe", "if operations.now()? >= deadline", "if operations.now()? > deadline"],');
+    assertResult(await runDiagnostic(fixture, desktopArguments), 1,
+      `${desktopFailPrefix}checks=mutationInventory\nNOT_FULL_SCAN\n`);
+  }, { paths: desktopSourcePaths });
+});
+
+test("desktop actual CLI does not echo a source-defined mutation name", async () => {
+  await withFixture(async (fixture) => {
+    await mutateSource(fixture, scannerPath,
+      '["inclusive expiry", "probe", "if operations.now()? >= deadline", "if operations.now()? > deadline"],',
+      '["SOURCE_DEFINED_MUTATION_MARKER_MUST_NOT_BE_EMITTED", "probe", "if operations.now()? >= deadline", "if operations.now()? >= deadline"],');
+    assertResult(await runDiagnostic(fixture, desktopArguments), 1,
+      `${desktopFailPrefix}checks=mutationInventory\nNOT_FULL_SCAN\n`);
+  }, { paths: desktopSourcePaths });
+});
+
+test("desktop actual CLI cannot pass with zero predicates", async () => {
+  await withFixture(async (fixture) => {
+    await mutateSource(fixture, scannerPath,
+      "function keyAgentServiceDesktopProbeChecks(inputs) {",
+      "function keyAgentServiceDesktopProbeChecks(inputs) {\n  return {};");
+    assertResult(await runDiagnostic(fixture, desktopArguments), 1,
+      `${desktopFailPrefix}checks=${[...desktopCheckNames, "checkInventory"].join(",")}\nNOT_FULL_SCAN\n`);
+  }, { paths: desktopSourcePaths });
+});
+
+test("desktop actual CLI rejects extra predicates without source-name disclosure", async () => {
+  await withFixture(async (fixture) => {
+    const checks = Object.fromEntries(desktopCheckNames.map((name) => [name, true]));
+    checks.SOURCE_DEFINED_MARKER_MUST_NOT_BE_EMITTED = false;
+    await mutateSource(fixture, scannerPath,
+      "function keyAgentServiceDesktopProbeChecks(inputs) {",
+      `function keyAgentServiceDesktopProbeChecks(inputs) {\n  return ${JSON.stringify(checks)};`);
+    assertResult(await runDiagnostic(fixture, desktopArguments), 1,
+      `${desktopFailPrefix}checks=checkInventory\nNOT_FULL_SCAN\n`);
+  }, { paths: desktopSourcePaths });
+});
+
+test("desktop actual CLI fails closed on missing input without disclosing paths", async () => {
+  await withFixture(async (fixture) => {
+    assertResult(await runDiagnostic(fixture, desktopArguments), 1, desktopReadFailure);
+  }, { includeSources: false });
+});
+
+test("desktop actual CLI rejects non-regular inputs", async () => {
+  await withFixture(async (fixture) => {
+    try {
+      await unlink(join(fixture, desktopSourcePaths[0]));
+      await mkdir(join(fixture, desktopSourcePaths[0]));
+    } catch {
+      throw new Error("Desktop diagnostic non-regular fixture setup failed.");
+    }
+    assertResult(await runDiagnostic(fixture, desktopArguments), 1, desktopReadFailure);
+  }, { paths: desktopSourcePaths });
+});
+
+test("desktop actual CLI preserves single-link input checks", async () => {
+  await withFixture(async (fixture) => {
+    try {
+      await link(join(fixture, desktopSourcePaths[0]), join(fixture, "owned-input-alias.rs"));
+    } catch {
+      throw new Error("Desktop diagnostic hardlink fixture setup failed.");
+    }
+    assertResult(await runDiagnostic(fixture, desktopArguments), 1, desktopReadFailure);
+  }, { paths: desktopSourcePaths });
 });

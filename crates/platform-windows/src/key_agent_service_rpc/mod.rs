@@ -11,10 +11,24 @@
 
 mod auth;
 #[cfg(all(
+    target_arch = "x86_64",
+    target_env = "msvc",
+    feature = "key-agent-service-desktop-rpc-probe-feasibility-test-hook",
+    debug_assertions
+))]
+mod client_binding;
+#[cfg(all(
     feature = "key-agent-service-lpac-launch-feasibility-test-hook",
     debug_assertions
 ))]
 mod coordinator;
+#[cfg(all(
+    target_arch = "x86_64",
+    target_env = "msvc",
+    feature = "key-agent-service-desktop-rpc-probe-feasibility-test-hook",
+    debug_assertions
+))]
+pub(crate) mod desktop_probe;
 mod dispatch;
 mod epoch;
 #[allow(dead_code)]

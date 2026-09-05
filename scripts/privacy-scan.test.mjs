@@ -198,6 +198,26 @@ test("formats multiple findings in stable rule order", () => {
   );
 });
 
+test("scans native C# harness sources before and after Git staging", async () => {
+  const repositoryRoot = await createRepository();
+  try {
+    await writeFile(join(repositoryRoot, "Harness.cs"),
+      [privateKeyAssignment(), authorizationHeader(), seedPhraseLabel(), secretMarker()].join("\n"),
+      "utf8");
+    const expected = [
+      { rule: "private-key-assignment" },
+      { rule: "authorization-header" },
+      { rule: "seed-phrase-label" },
+      { rule: "production-secret-marker" },
+    ];
+    assert.deepEqual(await scanRepository(repositoryRoot), expected);
+    await runGit(repositoryRoot, ["add", "--", "Harness.cs"]);
+    assert.deepEqual(await scanRepository(repositoryRoot), expected);
+  } finally {
+    await removeRepository(repositoryRoot);
+  }
+});
+
 test("fails closed with a fixed diagnostic when Git inventory is unavailable", async () => {
   const nonRepository = await mkdtemp(join(tmpdir(), "privacy-scan-test-"));
   try {

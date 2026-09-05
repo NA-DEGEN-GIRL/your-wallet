@@ -301,6 +301,81 @@ trait ProcessAuthOps {
     ) -> Result<bool, ObservationError>;
 }
 
+#[cfg(any(
+    test,
+    all(
+        target_arch = "x86_64",
+        target_env = "msvc",
+        debug_assertions,
+        feature = "key-agent-service-desktop-rpc-probe-feasibility-test-hook"
+    )
+))]
+trait CurrentDesktopProbeOps: ProcessAuthOps {
+    fn current_process_id(&self) -> Result<NonZeroU32, ObservationError>;
+
+    fn current_thread_token_state(&self) -> Result<ThreadTokenState, ObservationError>;
+}
+
+/// Query-only preflight for the explicitly selected non-signing desktop probe.
+///
+/// This returns no identity or launch capability and does not authenticate the
+/// service. Every RPC call still needs its own independent server-side checks.
+#[cfg(all(
+    target_arch = "x86_64",
+    target_env = "msvc",
+    debug_assertions,
+    feature = "key-agent-service-desktop-rpc-probe-feasibility-test-hook"
+))]
+pub(super) fn preflight_current_desktop_probe() -> Result<(), RpcAuthError> {
+    preflight_current_desktop_probe_with(&sys::WindowsProcessAuthOps)
+}
+
+#[cfg(any(
+    test,
+    all(
+        target_arch = "x86_64",
+        target_env = "msvc",
+        debug_assertions,
+        feature = "key-agent-service-desktop-rpc-probe-feasibility-test-hook"
+    )
+))]
+fn preflight_current_desktop_probe_with<O: CurrentDesktopProbeOps>(
+    ops: &O,
+) -> Result<(), RpcAuthError> {
+    if ops
+        .current_thread_token_state()
+        .map_err(|_| RpcAuthError::CallFailed)?
+        != ThreadTokenState::Clear
+    {
+        return Err(RpcAuthError::AccessDenied);
+    }
+    let process_id = ops
+        .current_process_id()
+        .map_err(|_| RpcAuthError::CallFailed)?;
+    let process = ops
+        .open_process(process_id)
+        .map_err(|_| RpcAuthError::CallFailed)?;
+    let primary = ops
+        .primary_token(&process)
+        .map_err(|_| RpcAuthError::CallFailed)?;
+    validate_token_policy(&primary, TokenKind::Primary, TokenPolicy::DesktopBroker)?;
+    let _current = revalidate_client_process(
+        process_id,
+        &process,
+        &primary,
+        TokenPolicy::DesktopBroker,
+        ops,
+    )?;
+    if ops
+        .current_thread_token_state()
+        .map_err(|_| RpcAuthError::CallFailed)?
+        != ThreadTokenState::Clear
+    {
+        return Err(RpcAuthError::AccessDenied);
+    }
+    Ok(())
+}
+
 /// Query-only observation of the token currently effective on this thread.
 ///
 /// The native handle remains confined to the Windows adapter. This narrow
@@ -3571,6 +3646,282 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum DesktopProbeEvent {
+        InitialThread,
+        CurrentProcess,
+        OpenProcess,
+        InitialPrimary,
+        ExactProcess,
+        RevalidatedPrimary,
+        FinalThread,
+    }
+
+    const DESKTOP_PROBE_ORDER: [DesktopProbeEvent; 7] = [
+        DesktopProbeEvent::InitialThread,
+        DesktopProbeEvent::CurrentProcess,
+        DesktopProbeEvent::OpenProcess,
+        DesktopProbeEvent::InitialPrimary,
+        DesktopProbeEvent::ExactProcess,
+        DesktopProbeEvent::RevalidatedPrimary,
+        DesktopProbeEvent::FinalThread,
+    ];
+
+    struct DesktopProbeProcess {
+        process_id: NonZeroU32,
+        drops: Rc<Cell<u32>>,
+    }
+
+    impl Drop for DesktopProbeProcess {
+        fn drop(&mut self) {
+            self.drops.set(self.drops.get() + 1);
+        }
+    }
+
+    type DesktopProbeTokenMutation = fn(&mut TokenObservation);
+
+    struct DesktopProbeOps {
+        events: RefCell<Vec<DesktopProbeEvent>>,
+        fail_at: Option<DesktopProbeEvent>,
+        thread_present_at: Option<DesktopProbeEvent>,
+        process_live: bool,
+        primary_reads: Cell<usize>,
+        token_mutations: [Option<DesktopProbeTokenMutation>; 2],
+        process_drops: Rc<Cell<u32>>,
+    }
+
+    impl DesktopProbeOps {
+        fn approved() -> Self {
+            Self {
+                events: RefCell::new(Vec::new()),
+                fail_at: None,
+                thread_present_at: None,
+                process_live: true,
+                primary_reads: Cell::new(0),
+                token_mutations: [None, None],
+                process_drops: Rc::new(Cell::new(0)),
+            }
+        }
+
+        fn observe(&self, event: DesktopProbeEvent) -> Result<(), ObservationError> {
+            self.events.borrow_mut().push(event);
+            if self.fail_at == Some(event) {
+                Err(ObservationError::Incomplete)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl ProcessAuthOps for DesktopProbeOps {
+        type Process = DesktopProbeProcess;
+        type DesktopPrimaryToken = ();
+
+        fn open_process(&self, process_id: NonZeroU32) -> Result<Self::Process, ObservationError> {
+            self.observe(DesktopProbeEvent::OpenProcess)?;
+            assert_eq!(process_id.get(), 42);
+            Ok(DesktopProbeProcess {
+                process_id,
+                drops: Rc::clone(&self.process_drops),
+            })
+        }
+
+        fn primary_token(
+            &self,
+            process: &Self::Process,
+        ) -> Result<TokenObservation, ObservationError> {
+            let index = self.primary_reads.get();
+            self.primary_reads.set(index + 1);
+            self.observe(if index == 0 {
+                DesktopProbeEvent::InitialPrimary
+            } else {
+                DesktopProbeEvent::RevalidatedPrimary
+            })?;
+            assert_eq!(process.process_id.get(), 42);
+            let mut token = approved_token(TokenKind::Primary, 1);
+            if let Some(mutate) = self.token_mutations[index] {
+                mutate(&mut token);
+            }
+            Ok(token)
+        }
+
+        fn desktop_primary_token(
+            &self,
+            _token: &Self::DesktopPrimaryToken,
+        ) -> Result<TokenObservation, ObservationError> {
+            unreachable!()
+        }
+
+        fn exact_process_is_live(
+            &self,
+            process: &Self::Process,
+            process_id: NonZeroU32,
+        ) -> Result<bool, ObservationError> {
+            self.observe(DesktopProbeEvent::ExactProcess)?;
+            assert_eq!(process.process_id, process_id);
+            assert_eq!(process_id.get(), 42);
+            Ok(self.process_live)
+        }
+
+        fn same_process(
+            &self,
+            _first: &Self::Process,
+            _second: &Self::Process,
+        ) -> Result<bool, ObservationError> {
+            unreachable!()
+        }
+    }
+
+    impl super::CurrentDesktopProbeOps for DesktopProbeOps {
+        fn current_process_id(&self) -> Result<NonZeroU32, ObservationError> {
+            self.observe(DesktopProbeEvent::CurrentProcess)?;
+            NonZeroU32::new(42).ok_or(ObservationError::Incomplete)
+        }
+
+        fn current_thread_token_state(&self) -> Result<ThreadTokenState, ObservationError> {
+            let event = if self.events.borrow().is_empty() {
+                DesktopProbeEvent::InitialThread
+            } else {
+                DesktopProbeEvent::FinalThread
+            };
+            self.observe(event)?;
+            Ok(if self.thread_present_at == Some(event) {
+                ThreadTokenState::Present
+            } else {
+                ThreadTokenState::Clear
+            })
+        }
+    }
+
+    #[test]
+    fn desktop_probe_preflight_is_query_only_ordered_and_releases_its_process() {
+        for elevation in [ElevationKind::Default, ElevationKind::Limited] {
+            let mut ops = DesktopProbeOps::approved();
+            if elevation == ElevationKind::Limited {
+                ops.token_mutations = [Some(|token| token.elevation = ElevationKind::Limited); 2];
+            }
+            let result: Result<(), RpcAuthError> =
+                super::preflight_current_desktop_probe_with(&ops);
+            assert_eq!(result, Ok(()));
+            assert_eq!(*ops.events.borrow(), DESKTOP_PROBE_ORDER);
+            assert_eq!(ops.primary_reads.get(), 2);
+            assert_eq!(ops.process_drops.get(), 1);
+        }
+    }
+
+    #[test]
+    fn desktop_probe_preflight_fails_closed_at_every_observation_edge() {
+        for (index, event) in DESKTOP_PROBE_ORDER.into_iter().enumerate() {
+            let mut ops = DesktopProbeOps::approved();
+            ops.fail_at = Some(event);
+            assert_eq!(
+                super::preflight_current_desktop_probe_with(&ops),
+                Err(RpcAuthError::CallFailed)
+            );
+            assert_eq!(*ops.events.borrow(), DESKTOP_PROBE_ORDER[..=index]);
+            assert_eq!(ops.process_drops.get(), u32::from(index >= 3));
+        }
+    }
+
+    #[test]
+    fn desktop_probe_preflight_rejects_initial_and_late_thread_tokens() {
+        for event in [
+            DesktopProbeEvent::InitialThread,
+            DesktopProbeEvent::FinalThread,
+        ] {
+            let mut ops = DesktopProbeOps::approved();
+            ops.thread_present_at = Some(event);
+            assert_eq!(
+                super::preflight_current_desktop_probe_with(&ops),
+                Err(RpcAuthError::AccessDenied)
+            );
+            let observed = if event == DesktopProbeEvent::InitialThread {
+                1
+            } else {
+                7
+            };
+            assert_eq!(*ops.events.borrow(), DESKTOP_PROBE_ORDER[..observed]);
+            assert_eq!(ops.process_drops.get(), u32::from(observed == 7));
+        }
+    }
+
+    #[test]
+    fn desktop_probe_preflight_rejects_a_nonlive_or_nonexact_process() {
+        let mut ops = DesktopProbeOps::approved();
+        ops.process_live = false;
+        assert_eq!(
+            super::preflight_current_desktop_probe_with(&ops),
+            Err(RpcAuthError::AccessDenied)
+        );
+        assert_eq!(*ops.events.borrow(), DESKTOP_PROBE_ORDER[..5]);
+        assert_eq!(ops.process_drops.get(), 1);
+    }
+
+    #[test]
+    fn desktop_probe_preflight_rejects_every_desktop_policy_fact_on_both_reads() {
+        let mutations: [DesktopProbeTokenMutation; 20] = [
+            |token| token.user_sid = SidBytes(vec![1; 7]),
+            |token| token.user_sid = SidBytes(vec![1; 69]),
+            |token| token.logon_sid_count = 0,
+            |token| token.logon_sid_count = 2,
+            |token| token.logon_sid = None,
+            |token| token.logon_sid = Some(SidBytes(vec![2; 7])),
+            |token| token.logon_sid = Some(SidBytes(vec![2; 69])),
+            |token| token.session_id = 0,
+            |token| token.app_container = true,
+            |token| token.ui_access = true,
+            |token| token.integrity_rid = 0x1000,
+            |token| token.integrity_rid = 0x3000,
+            |token| token.elevation = ElevationKind::Full,
+            |token| token.elevation = ElevationKind::Other,
+            |token| token.interactive_sid_enabled = false,
+            |token| token.debug_privilege = DebugPrivilegeState::PresentDisabled,
+            |token| token.debug_privilege = DebugPrivilegeState::PresentEnabled,
+            |token| token.token_kind = TokenKind::Impersonation,
+            |token| token.token_kind = TokenKind::Other,
+            |token| token.token_level = TokenLevel::Other,
+        ];
+        for read in 0..2 {
+            for mutate in mutations {
+                let mut ops = DesktopProbeOps::approved();
+                ops.token_mutations[read] = Some(mutate);
+                assert_eq!(
+                    super::preflight_current_desktop_probe_with(&ops),
+                    Err(RpcAuthError::AccessDenied)
+                );
+                assert_eq!(ops.primary_reads.get(), read + 1);
+                let observed = if read == 0 { 4 } else { 6 };
+                assert_eq!(*ops.events.borrow(), DESKTOP_PROBE_ORDER[..observed]);
+                assert_eq!(ops.process_drops.get(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn desktop_probe_preflight_rejects_policy_valid_primary_identity_drift() {
+        let mutations: [DesktopProbeTokenMutation; 9] = [
+            |token| token.user_sid = SidBytes(vec![3; 12]),
+            |token| token.logon_sid = Some(SidBytes(vec![4; 12])),
+            |token| token.session_id = 4,
+            |token| token.authentication_id.low_part += 1,
+            |token| token.authentication_id.high_part += 1,
+            |token| token.token_id.low_part += 1,
+            |token| token.token_id.high_part += 1,
+            |token| token.elevation = ElevationKind::Limited,
+            |token| token.restricted = true,
+        ];
+        for mutate in mutations {
+            let mut ops = DesktopProbeOps::approved();
+            ops.token_mutations[1] = Some(mutate);
+            assert_eq!(
+                super::preflight_current_desktop_probe_with(&ops),
+                Err(RpcAuthError::AccessDenied)
+            );
+            assert_eq!(*ops.events.borrow(), DESKTOP_PROBE_ORDER[..6]);
+            assert_eq!(ops.process_drops.get(), 1);
+        }
     }
 
     #[test]

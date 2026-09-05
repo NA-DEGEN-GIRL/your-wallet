@@ -283,4 +283,14 @@ pub use key_agent_service::{
     run_lpac_rpc_probe_key_agent_service_fixture, run_service_token_key_agent_service_fixture,
     run_status_rpc_key_agent_service_fixture,
 };
+#[cfg(all(
+    windows,
+    target_arch = "x86_64",
+    target_env = "msvc",
+    feature = "key-agent-service-desktop-rpc-probe-feasibility-test-hook",
+    debug_assertions
+))]
+pub use key_agent_service_rpc::desktop_probe::{
+    DesktopRpcProbeError, run_non_signing_service_approval_probe,
+};
 pub use secret_channel::{SecretInputChannelError, SecretInputValue, VerifiedSecretInput};

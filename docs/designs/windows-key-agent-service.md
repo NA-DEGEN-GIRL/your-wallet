@@ -7,6 +7,10 @@ admitted-helper liveness, unconditional cleanup, and the original five-second
 deadline are enforced. No decision becomes signing authority; Phase 3 is not
 passed, both compiled policies remain `None`, and release remains **STOP-SHIP**.
 See [current implementation and remaining completion gates](../development-status.md).
+The standalone debug desktop V2 client and the separate unsigned operator
+[service-probe harness](../../scripts/service-probe/README.md) now provide the
+next real no-secret fixture workflow. They do not satisfy the installed,
+signed-helper, cross-session, or release exit gates below.
 
 **Status:** Accepted
 **Decision date:** 2026-08-25

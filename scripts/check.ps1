@@ -115,6 +115,8 @@ function Invoke-Tests {
     Invoke-Checked -Executable "node" -CommandArguments @("--test", "scripts/architecture-diagnostic.test.mjs")
     Invoke-Checked -Executable "powershell" -CommandArguments @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/test-focused.test.ps1")
     Invoke-Checked -Executable "powershell" -CommandArguments @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/launcher-contract.test.ps1")
+    Invoke-Checked -Executable "powershell" -CommandArguments @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/service-probe/native.test.ps1")
+    Invoke-Checked -Executable "node" -CommandArguments @("--test", "scripts/service-probe/prepare.test.mjs", "scripts/service-probe/operate.test.mjs")
     $keyAgentExecutable = Build-KeyAgentTestExecutable
     $previousKeyAgentExecutable = [Environment]::GetEnvironmentVariable(
         "YW_TEST_KEY_AGENT_EXECUTABLE",

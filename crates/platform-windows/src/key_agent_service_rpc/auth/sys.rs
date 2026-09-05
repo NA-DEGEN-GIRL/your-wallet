@@ -739,6 +739,25 @@ pub(super) struct WindowsProcessAuthOps;
 
 pub(super) static WINDOWS_PROCESS_AUTH_OPS: WindowsProcessAuthOps = WindowsProcessAuthOps;
 
+#[cfg(all(
+    target_arch = "x86_64",
+    target_env = "msvc",
+    debug_assertions,
+    feature = "key-agent-service-desktop-rpc-probe-feasibility-test-hook"
+))]
+impl super::CurrentDesktopProbeOps for WindowsProcessAuthOps {
+    fn current_process_id(&self) -> Result<NonZeroU32, ObservationError> {
+        // SAFETY: this scalar query has no preconditions. The caller retains a
+        // query-only handle reopened for this fixed current-process identity.
+        NonZeroU32::new(unsafe { windows::Win32::System::Threading::GetCurrentProcessId() })
+            .ok_or(ObservationError::Incomplete)
+    }
+
+    fn current_thread_token_state(&self) -> Result<ThreadTokenState, ObservationError> {
+        thread_token_state()
+    }
+}
+
 impl ProcessAuthOps for WindowsProcessAuthOps {
     type Process = RetainedProcess;
     type DesktopPrimaryToken = DesktopPrimaryToken;
