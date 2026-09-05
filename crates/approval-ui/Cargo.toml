@@ -37,6 +37,7 @@ windows = { workspace = true, features = [
 key-agent-service-helper-bootstrap = { path = "../key-agent-service-helper-bootstrap", optional = true, features = [
     "child-capture-feasibility-test-hook",
     "helper-ready-rpc-feasibility-test-hook",
+    "approval-exchange-feasibility-test-hook",
 ] }
 
 [lints.rust]

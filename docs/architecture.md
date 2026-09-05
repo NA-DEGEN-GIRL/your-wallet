@@ -1,5 +1,13 @@
 # Architecture and trust boundaries
 
+Current Phase 3D checkpoint: debug-only, non-signing Approval transport now
+continues after `HelperReady` to a real native presenter. Secret Input remains
+ready-only. Exact request/response correlation, EOF before termination, fresh
+admitted-helper liveness, unconditional cleanup, and the original five-second
+deadline are enforced. No decision becomes signing authority; Phase 3 is not
+passed, both compiled policies remain `None`, and release remains **STOP-SHIP**.
+See [current implementation and remaining completion gates](development-status.md).
+
 This repository is an incomplete implementation of a self-only Windows 11 and
 Chrome private-mainnet canary. It is not authorized for public distribution,
 high-value use, or real-mainnet funds.

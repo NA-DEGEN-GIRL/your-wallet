@@ -317,6 +317,19 @@ fn complete_helper_ready_with_operations<Operations: HelperReadyOperations>(
     retained: &RetainedHelperRpcCorrelation,
     expected_role: HelperBootstrapRole,
 ) -> Result<(), ()> {
+    authenticate_helper_ready_with_operations(operations, retained, expected_role)?;
+    operations.close_response()
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "helper-ready-rpc-feasibility-test-hook"
+))]
+fn authenticate_helper_ready_with_operations<Operations: HelperReadyOperations>(
+    operations: &mut Operations,
+    retained: &RetainedHelperRpcCorrelation,
+    expected_role: HelperBootstrapRole,
+) -> Result<(), ()> {
     let confirmation = retained.confirmation()?;
     if confirmation.role() != expected_role {
         return Err(());
@@ -360,7 +373,6 @@ fn complete_helper_ready_with_operations<Operations: HelperReadyOperations>(
     operations.write_confirmation(&retained.confirmation_frame)?;
     let confirmation_now = operations.tick_count_milliseconds()?;
     remaining_call_timeout_milliseconds(deadline, confirmation_now)?;
-    operations.close_response()?;
     Ok(())
 }
 
@@ -490,6 +502,204 @@ impl HelperReadyOperations for WindowsHelperReadyOperations {
     fn close_response(&mut self) -> Result<(), ()> {
         self.response_output.take().ok_or(())?.close()
     }
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "approval-exchange-feasibility-test-hook"
+))]
+pub(super) struct ServiceApprovalRequest {
+    operations: WindowsHelperReadyOperations,
+    retained: RetainedHelperRpcCorrelation,
+    request: approval_wire::ApprovalRequest,
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "approval-exchange-feasibility-test-hook"
+))]
+impl ServiceApprovalRequest {
+    pub(super) fn present_and_respond(
+        self,
+        presenter: impl FnOnce(&approval_wire::ApprovalRequest) -> Option<approval_wire::Decision>,
+    ) -> ! {
+        let Self {
+            mut operations,
+            retained,
+            request,
+        } = self;
+        if present_service_approval_with_operations(&mut operations, &retained, &request, presenter)
+            .is_err()
+        {
+            std::process::abort();
+        }
+        drop(request);
+        drop(retained);
+        operations.block_on_request_input()
+    }
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "approval-exchange-feasibility-test-hook"
+))]
+pub(super) fn receive_service_approval_request(
+    channels: BootstrappedInjectedChannels,
+) -> Result<ServiceApprovalRequest, ()> {
+    let BootstrappedInjectedChannels {
+        _request_input: request_input,
+        _response_output: response_output,
+        _source_access_and_direction: source_access_and_direction,
+        _helper_rpc_correlation: retained,
+    } = channels;
+    let mut operations = WindowsHelperReadyOperations {
+        request_input,
+        response_output: Some(response_output),
+        _source_access_and_direction: source_access_and_direction,
+    };
+    authenticate_helper_ready_with_operations(
+        &mut operations,
+        &retained,
+        HelperBootstrapRole::Approval,
+    )?;
+    let request = read_service_approval_with_operations(&mut operations, &retained)?;
+    Ok(ServiceApprovalRequest {
+        operations,
+        retained,
+        request,
+    })
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "approval-exchange-feasibility-test-hook"
+))]
+trait ServiceApprovalOperations {
+    fn tick_count_milliseconds(&mut self) -> Result<u64, ()>;
+    fn read_request(&mut self, bytes: &mut [u8]) -> Result<usize, ()>;
+    fn write_response(&mut self, bytes: &[u8]) -> Result<usize, ()>;
+    fn close_response(&mut self) -> Result<(), ()>;
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "approval-exchange-feasibility-test-hook"
+))]
+impl ServiceApprovalOperations for WindowsHelperReadyOperations {
+    fn tick_count_milliseconds(&mut self) -> Result<u64, ()> {
+        HelperReadyOperations::tick_count_milliseconds(self)
+    }
+
+    fn read_request(&mut self, bytes: &mut [u8]) -> Result<usize, ()> {
+        WindowsBootstrapOperations.read_request(self.request_input.word(), bytes)
+    }
+
+    fn write_response(&mut self, bytes: &[u8]) -> Result<usize, ()> {
+        let response = self.response_output.as_ref().ok_or(())?.word();
+        WindowsBootstrapOperations.write_response(response, bytes)
+    }
+
+    fn close_response(&mut self) -> Result<(), ()> {
+        HelperReadyOperations::close_response(self)
+    }
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "approval-exchange-feasibility-test-hook"
+))]
+fn check_service_approval_deadline<Operations: ServiceApprovalOperations>(
+    operations: &mut Operations,
+    retained: &RetainedHelperRpcCorrelation,
+) -> Result<(), ()> {
+    if retained.confirmation()?.role() != HelperBootstrapRole::Approval {
+        return Err(());
+    }
+    remaining_call_timeout_milliseconds(
+        *retained.deadline_tick_count_ms,
+        operations.tick_count_milliseconds()?,
+    )
+    .map(|_| ())
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "approval-exchange-feasibility-test-hook"
+))]
+fn read_service_approval_bytes<Operations: ServiceApprovalOperations>(
+    operations: &mut Operations,
+    retained: &RetainedHelperRpcCorrelation,
+    bytes: &mut [u8],
+) -> Result<(), ()> {
+    let mut offset = 0;
+    while offset < bytes.len() {
+        check_service_approval_deadline(operations, retained)?;
+        let remaining = bytes.len() - offset;
+        let read = operations.read_request(&mut bytes[offset..])?;
+        if read == 0 || read > remaining {
+            return Err(());
+        }
+        check_service_approval_deadline(operations, retained)?;
+        offset += read;
+    }
+    Ok(())
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "approval-exchange-feasibility-test-hook"
+))]
+fn read_service_approval_with_operations<Operations: ServiceApprovalOperations>(
+    operations: &mut Operations,
+    retained: &RetainedHelperRpcCorrelation,
+) -> Result<approval_wire::ApprovalRequest, ()> {
+    // Prefix length is checked before allocation. Neither read waits for EOF:
+    // the service retains the request pipe to own cancellation after response.
+    let mut prefix = [0_u8; crate::SERVICE_APPROVAL_REQUEST_PREFIX_BYTES];
+    read_service_approval_bytes(operations, retained, &mut prefix)?;
+    let length = crate::decode_service_approval_request_prefix(&prefix).map_err(|_| ())?;
+    if length > approval_wire::MAX_REQUEST_BYTES {
+        return Err(());
+    }
+    let mut bytes = Zeroizing::new(vec![0_u8; length]);
+    read_service_approval_bytes(operations, retained, &mut bytes)?;
+    let request = approval_wire::decode_request(&bytes).map_err(|_| ())?;
+    let canonical = Zeroizing::new(approval_wire::encode_request(&request));
+    if canonical.as_slice() != bytes.as_slice() {
+        return Err(());
+    }
+    check_service_approval_deadline(operations, retained)?;
+    Ok(request)
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "approval-exchange-feasibility-test-hook"
+))]
+fn present_service_approval_with_operations<Operations: ServiceApprovalOperations>(
+    operations: &mut Operations,
+    retained: &RetainedHelperRpcCorrelation,
+    request: &approval_wire::ApprovalRequest,
+    presenter: impl FnOnce(&approval_wire::ApprovalRequest) -> Option<approval_wire::Decision>,
+) -> Result<(), ()> {
+    check_service_approval_deadline(operations, retained)?;
+    let decision = presenter(request).ok_or(())?;
+    check_service_approval_deadline(operations, retained)?;
+    let response = Zeroizing::new(approval_wire::encode_response(
+        approval_wire::ApprovalResponse::for_request(decision, request),
+    ));
+    let mut offset = 0;
+    while offset < response.len() {
+        check_service_approval_deadline(operations, retained)?;
+        let remaining = response.len() - offset;
+        let written = operations.write_response(&response[offset..])?;
+        if written == 0 || written > remaining {
+            return Err(());
+        }
+        check_service_approval_deadline(operations, retained)?;
+        offset += written;
+    }
+    operations.close_response()
 }
 
 #[cfg(all(
@@ -1991,6 +2201,363 @@ mod tests {
     feature = "helper-ready-rpc-feasibility-test-hook"
 ))]
 mod helper_ready_tests {
+    #[cfg(feature = "approval-exchange-feasibility-test-hook")]
+    mod service_approval_tests {
+        use std::collections::VecDeque;
+
+        use approval_wire::{
+            ApprovalDisplay, ApprovalRequest, Decision, DisplayField, FieldSemantic, OperationKind,
+            RiskLevel, SimulationStatus,
+        };
+
+        use super::super::{
+            ServiceApprovalOperations, authenticate_helper_ready_with_operations,
+            present_service_approval_with_operations, read_service_approval_with_operations,
+        };
+        use super::{DEADLINE, Event, FakeHelperReadyOperations, INITIAL_NOW, retained};
+        use crate::{HelperBootstrapRole, encode_service_approval_request_prefix};
+
+        #[derive(Clone, Debug, Eq, PartialEq)]
+        enum IoEvent {
+            Tick,
+            Read,
+            Write,
+            Close,
+        }
+
+        struct FakeApprovalOperations {
+            input: VecDeque<u8>,
+            output: Vec<u8>,
+            events: Vec<IoEvent>,
+            ticks: VecDeque<u64>,
+            fail_at: Option<usize>,
+            read_chunk: usize,
+            write_chunk: usize,
+            read_count: Option<usize>,
+            write_count: Option<usize>,
+        }
+
+        impl FakeApprovalOperations {
+            fn scenario() -> Result<Self, ()> {
+                let bytes = approval_wire::encode_request(&request()?);
+                let mut input = encode_service_approval_request_prefix(bytes.len())
+                    .map_err(|_| ())?
+                    .to_vec();
+                input.extend_from_slice(&bytes);
+                Ok(Self {
+                    input: input.into(),
+                    output: Vec::new(),
+                    events: Vec::new(),
+                    ticks: VecDeque::new(),
+                    fail_at: None,
+                    read_chunk: usize::MAX,
+                    write_chunk: usize::MAX,
+                    read_count: None,
+                    write_count: None,
+                })
+            }
+
+            fn record(&mut self, event: IoEvent) -> Result<(), ()> {
+                let index = self.events.len();
+                self.events.push(event);
+                if self.fail_at == Some(index) {
+                    Err(())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        impl ServiceApprovalOperations for FakeApprovalOperations {
+            fn tick_count_milliseconds(&mut self) -> Result<u64, ()> {
+                self.record(IoEvent::Tick)?;
+                Ok(self.ticks.pop_front().unwrap_or(INITIAL_NOW))
+            }
+
+            fn read_request(&mut self, bytes: &mut [u8]) -> Result<usize, ()> {
+                self.record(IoEvent::Read)?;
+                if let Some(count) = self.read_count {
+                    return Ok(count);
+                }
+                let length = bytes.len().min(self.input.len()).min(self.read_chunk);
+                for byte in &mut bytes[..length] {
+                    *byte = self.input.pop_front().ok_or(())?;
+                }
+                Ok(length)
+            }
+
+            fn write_response(&mut self, bytes: &[u8]) -> Result<usize, ()> {
+                self.record(IoEvent::Write)?;
+                if let Some(count) = self.write_count {
+                    return Ok(count);
+                }
+                let length = bytes.len().min(self.write_chunk);
+                self.output.extend_from_slice(&bytes[..length]);
+                Ok(length)
+            }
+
+            fn close_response(&mut self) -> Result<(), ()> {
+                self.record(IoEvent::Close)
+            }
+        }
+
+        fn request() -> Result<ApprovalRequest, ()> {
+            // Display/hash fixtures only: no mnemonic, wallet key, or usable
+            // signing material is constructed by this transport test.
+            let hash = format!("0x{}", "00".repeat(32));
+            let account = format!("0x{}", "00".repeat(20));
+            let fields = [
+                (FieldSemantic::Origin, "Service transport test"),
+                (
+                    FieldSemantic::OriginProvenance,
+                    "Not independently verified",
+                ),
+                (
+                    FieldSemantic::OriginWarning,
+                    "No browser-origin attestation",
+                ),
+                (
+                    FieldSemantic::PersonalMessageWarning,
+                    "No signing in this test",
+                ),
+                (
+                    FieldSemantic::NoSimulationWarning,
+                    "No simulation was performed",
+                ),
+                (FieldSemantic::Account, account.as_str()),
+                (FieldSemantic::NetworkName, "No signing network"),
+                (FieldSemantic::ChainId, "1"),
+                (FieldSemantic::GenesisHash, hash.as_str()),
+                (FieldSemantic::RulesetRevision, hash.as_str()),
+                (FieldSemantic::RpcObservationsDigest, hash.as_str()),
+                (
+                    FieldSemantic::OperationKind,
+                    OperationKind::PersonalMessage.value(),
+                ),
+                (FieldSemantic::PersonalMessageBytes, "0x0102"),
+                (
+                    FieldSemantic::SimulationStatus,
+                    SimulationStatus::NotPerformed.value(),
+                ),
+            ]
+            .into_iter()
+            .map(|(semantic, value)| DisplayField::new(semantic, value, true).map_err(|_| ()))
+            .collect::<Result<Vec<_>, _>>()?;
+            let display = ApprovalDisplay::new(RiskLevel::High, fields).map_err(|_| ())?;
+            ApprovalRequest::new([0x31; 32], [0x42; 32], 120_000, "transport test", display)
+                .map_err(|_| ())
+        }
+
+        fn round_trip(operations: &mut FakeApprovalOperations) -> Result<(), ()> {
+            let retained = retained(HelperBootstrapRole::Approval).map_err(|_| ())?;
+            let request = read_service_approval_with_operations(operations, &retained)?;
+            present_service_approval_with_operations(operations, &retained, &request, |_| {
+                Some(Decision::Reject)
+            })
+        }
+
+        #[test]
+        fn service_approval_helper_ready_keeps_response_open() -> Result<(), ()> {
+            let retained = retained(HelperBootstrapRole::Approval).map_err(|_| ())?;
+            let mut operations = FakeHelperReadyOperations::scenario().map_err(|_| ())?;
+            authenticate_helper_ready_with_operations(
+                &mut operations,
+                &retained,
+                HelperBootstrapRole::Approval,
+            )?;
+            assert_eq!(operations.events.len(), 7);
+            assert!(!operations.events.contains(&Event::CloseResponse));
+            assert!(operations.written_confirmation.is_some());
+            Ok(())
+        }
+
+        #[test]
+        fn service_approval_round_trip_binds_both_decisions_and_closes_after_exact_response()
+        -> Result<(), ()> {
+            for decision in [Decision::Approve, Decision::Reject] {
+                let mut operations = FakeApprovalOperations::scenario()?;
+                let retained = retained(HelperBootstrapRole::Approval).map_err(|_| ())?;
+                let expected = request()?;
+                let request = read_service_approval_with_operations(&mut operations, &retained)?;
+                assert_eq!(request, expected);
+                assert!(operations.input.is_empty());
+                let mut presented = 0;
+                present_service_approval_with_operations(
+                    &mut operations,
+                    &retained,
+                    &request,
+                    |seen| {
+                        presented += 1;
+                        assert_eq!(seen, &expected);
+                        Some(decision)
+                    },
+                )?;
+                assert_eq!(presented, 1);
+                assert_eq!(operations.output.len(), approval_wire::RESPONSE_BYTES);
+                let response =
+                    approval_wire::decode_response(&operations.output).map_err(|_| ())?;
+                assert_eq!(response.decision(), decision);
+                assert_eq!(response.digest(), expected.digest());
+                assert_eq!(response.approval_nonce(), expected.approval_nonce());
+                assert!(matches!(
+                    operations.events.as_slice(),
+                    [
+                        ..,
+                        IoEvent::Tick,
+                        IoEvent::Write,
+                        IoEvent::Tick,
+                        IoEvent::Close
+                    ]
+                ));
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn service_approval_handles_partial_io_without_eof_and_rejects_invalid_counts()
+        -> Result<(), ()> {
+            let mut partial = FakeApprovalOperations::scenario()?;
+            partial.read_chunk = 3;
+            partial.write_chunk = 2;
+            round_trip(&mut partial)?;
+            assert_eq!(partial.output.len(), approval_wire::RESPONSE_BYTES);
+            for count in [0, usize::MAX] {
+                let mut read = FakeApprovalOperations::scenario()?;
+                read.read_count = Some(count);
+                assert!(round_trip(&mut read).is_err());
+                assert!(read.output.is_empty());
+                let mut write = FakeApprovalOperations::scenario()?;
+                write.write_count = Some(count);
+                assert!(round_trip(&mut write).is_err());
+                assert!(!write.events.contains(&IoEvent::Close));
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn service_approval_rejects_bad_prefix_truncation_and_noncanonical_request()
+        -> Result<(), ()> {
+            let baseline = FakeApprovalOperations::scenario()?;
+            let input: Vec<u8> = baseline.input.iter().copied().collect();
+            for length in [0, 1, 11, 12, input.len() - 1] {
+                let mut truncated = FakeApprovalOperations::scenario()?;
+                truncated.input = input[..length].to_vec().into();
+                assert!(round_trip(&mut truncated).is_err());
+                assert!(truncated.output.is_empty());
+            }
+            for index in [0, 7, 8, 9, 12, 20] {
+                let mut malformed = FakeApprovalOperations::scenario()?;
+                malformed.input[index] ^= 0x80;
+                assert!(round_trip(&mut malformed).is_err());
+                assert!(malformed.output.is_empty());
+            }
+            let mut trailing_payload = FakeApprovalOperations::scenario()?;
+            let bytes = approval_wire::encode_request(&request()?);
+            let mut input = encode_service_approval_request_prefix(bytes.len() + 1)
+                .map_err(|_| ())?
+                .to_vec();
+            input.extend_from_slice(&bytes);
+            input.push(0);
+            trailing_payload.input = input.into();
+            assert!(round_trip(&mut trailing_payload).is_err());
+            assert!(trailing_payload.output.is_empty());
+            Ok(())
+        }
+
+        #[test]
+        fn service_approval_checks_every_original_deadline_edge_and_never_restarts_relative_expiry()
+        -> Result<(), ()> {
+            let mut baseline = FakeApprovalOperations::scenario()?;
+            round_trip(&mut baseline)?;
+            let ticks = baseline
+                .events
+                .iter()
+                .filter(|event| **event == IoEvent::Tick)
+                .count();
+            for expired_index in 0..ticks {
+                let mut expired = FakeApprovalOperations::scenario()?;
+                expired.ticks = std::iter::repeat_n(INITIAL_NOW, expired_index)
+                    .chain([DEADLINE])
+                    .collect();
+                assert!(round_trip(&mut expired).is_err());
+                assert!(!expired.events.contains(&IoEvent::Close));
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn service_approval_failed_or_late_presenter_never_writes() -> Result<(), ()> {
+            let retained = retained(HelperBootstrapRole::Approval).map_err(|_| ())?;
+            let request = request()?;
+            let mut failed = FakeApprovalOperations::scenario()?;
+            assert!(
+                present_service_approval_with_operations(&mut failed, &retained, &request, |_| {
+                    None
+                },)
+                .is_err()
+            );
+            assert!(failed.output.is_empty());
+            let mut late = FakeApprovalOperations::scenario()?;
+            late.ticks = [INITIAL_NOW, DEADLINE].into();
+            assert!(
+                present_service_approval_with_operations(&mut late, &retained, &request, |_| Some(
+                    Decision::Approve
+                ),)
+                .is_err()
+            );
+            assert!(late.output.is_empty());
+            let mut expired = FakeApprovalOperations::scenario()?;
+            expired.ticks = [DEADLINE].into();
+            let mut presented = false;
+            assert!(
+                present_service_approval_with_operations(&mut expired, &retained, &request, |_| {
+                    presented = true;
+                    Some(Decision::Reject)
+                },)
+                .is_err()
+            );
+            assert!(!presented);
+            Ok(())
+        }
+
+        #[test]
+        fn service_approval_every_fallible_operation_stops_the_prefix() -> Result<(), ()> {
+            let mut baseline = FakeApprovalOperations::scenario()?;
+            round_trip(&mut baseline)?;
+            for failure in 0..baseline.events.len() {
+                let mut failed = FakeApprovalOperations::scenario()?;
+                failed.fail_at = Some(failure);
+                assert!(round_trip(&mut failed).is_err());
+                assert_eq!(failed.events, baseline.events[..=failure]);
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn service_approval_wrong_role_rejects_before_any_io_or_presenter() -> Result<(), ()> {
+            let retained = retained(HelperBootstrapRole::SecretInput).map_err(|_| ())?;
+            let mut operations = FakeApprovalOperations::scenario()?;
+            assert!(read_service_approval_with_operations(&mut operations, &retained).is_err());
+            assert!(operations.events.is_empty());
+            let mut presented = false;
+            assert!(
+                present_service_approval_with_operations(
+                    &mut operations,
+                    &retained,
+                    &request()?,
+                    |_| {
+                        presented = true;
+                        Some(Decision::Reject)
+                    },
+                )
+                .is_err()
+            );
+            assert!(!presented);
+            assert!(operations.events.is_empty());
+            Ok(())
+        }
+    }
+
     use std::cell::Cell;
     use std::collections::VecDeque;
     use std::rc::Rc;

@@ -112,6 +112,7 @@ function Invoke-WindowsEvidenceReadinessChecks {
 
 function Invoke-Tests {
     Invoke-WindowsEvidenceReadinessChecks
+    Invoke-Checked -Executable "node" -CommandArguments @("--test", "scripts/architecture-diagnostic.test.mjs")
     Invoke-Checked -Executable "powershell" -CommandArguments @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/test-focused.test.ps1")
     Invoke-Checked -Executable "powershell" -CommandArguments @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/launcher-contract.test.ps1")
     $keyAgentExecutable = Build-KeyAgentTestExecutable

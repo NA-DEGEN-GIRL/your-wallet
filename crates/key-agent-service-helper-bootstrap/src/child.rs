@@ -138,6 +138,78 @@ pub fn complete_helper_ready_rpc_probe(
     windows::complete_helper_ready_rpc_probe(inner, expected_role)
 }
 
+/// One canonical Approval request retained with its authenticated debug channels.
+///
+/// This move-only, thread-bound value is transport state, not approval or signing
+/// authority. No handles, raw I/O, request replacement, or caller deadline escape.
+#[cfg(all(
+    target_env = "msvc",
+    feature = "approval-exchange-feasibility-test-hook"
+))]
+#[must_use = "the one-shot service request must remain owned through presentation"]
+pub struct ServiceApprovalRequest {
+    inner: windows::ServiceApprovalRequest,
+    _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "approval-exchange-feasibility-test-hook"
+))]
+impl fmt::Debug for ServiceApprovalRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ServiceApprovalRequest([REDACTED])")
+    }
+}
+
+#[cfg(all(
+    target_env = "msvc",
+    feature = "approval-exchange-feasibility-test-hook"
+))]
+impl ServiceApprovalRequest {
+    /// Presents and binds exactly one decision, then awaits service termination.
+    ///
+    /// The original absolute bootstrap deadline is checked before and after the
+    /// callback and every write. A presenter's relative UI timer cannot extend
+    /// that deadline; the parent must enforce it while this thread is blocked.
+    ///
+    /// # Process termination
+    /// A failed/late callback, I/O, or close aborts. After response EOF, any input
+    /// completion also aborts; the parent owns final cancellation and reaping.
+    pub fn present_and_respond(
+        self,
+        presenter: impl FnOnce(&approval_wire::ApprovalRequest) -> Option<approval_wire::Decision>,
+    ) -> ! {
+        self.inner.present_and_respond(presenter)
+    }
+}
+
+/// Consumes the bootstrap, completes fixed-role Approval `HelperReady`, and reads
+/// exactly one bounded length-prefixed canonical request on the retained pipe.
+///
+/// # Process termination
+/// Every role, authentication, deadline, framing, and read failure aborts. This
+/// debug feasibility transition never creates production authorization evidence.
+#[cfg(all(
+    target_env = "msvc",
+    feature = "approval-exchange-feasibility-test-hook"
+))]
+pub fn receive_service_approval_request(
+    channels: BootstrappedInjectedChannels,
+) -> ServiceApprovalRequest {
+    let BootstrappedInjectedChannels {
+        _inner: inner,
+        _not_send_or_sync: _,
+    } = channels;
+    let Ok(inner) = windows::receive_service_approval_request(inner) else {
+        std::process::abort();
+    };
+    ServiceApprovalRequest {
+        inner,
+        _not_send_or_sync: PhantomData,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use core::fmt::Debug;
@@ -212,5 +284,23 @@ mod tests {
         let _ = <AdoptedInjectedChannels as AmbiguousIfSync<_>>::probe;
         let _ = <BootstrappedInjectedChannels as AmbiguousIfSend<_>>::probe;
         let _ = <BootstrappedInjectedChannels as AmbiguousIfSync<_>>::probe;
+    }
+
+    #[cfg(all(
+        target_env = "msvc",
+        feature = "approval-exchange-feasibility-test-hook"
+    ))]
+    #[test]
+    fn service_approval_request_is_thread_bound_and_consumes_the_bootstrap() {
+        fn require_debug<Type: Debug>() {}
+        type Presenter = fn(&approval_wire::ApprovalRequest) -> Option<approval_wire::Decision>;
+
+        require_debug::<super::ServiceApprovalRequest>();
+        let _: fn(BootstrappedInjectedChannels) -> super::ServiceApprovalRequest =
+            super::receive_service_approval_request;
+        let _: fn(super::ServiceApprovalRequest, Presenter) -> ! =
+            super::ServiceApprovalRequest::present_and_respond;
+        let _ = <super::ServiceApprovalRequest as AmbiguousIfSend<_>>::probe;
+        let _ = <super::ServiceApprovalRequest as AmbiguousIfSync<_>>::probe;
     }
 }

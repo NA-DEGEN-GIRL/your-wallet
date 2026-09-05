@@ -1363,6 +1363,7 @@ dependencies = [
 name = "key-agent-service-helper-bootstrap"
 version = "0.1.0"
 dependencies = [
+ "approval-wire",
  "key-agent-service-rpc-sys",
  "key-agent-service-wire",
  "windows",

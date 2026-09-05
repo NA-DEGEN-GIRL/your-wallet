@@ -138,7 +138,7 @@ enum DebuggerAttempt {
 
 /// Runs one exact service-created helper RPC round trip.
 ///
-/// Success is reported only after the helper's exact confirmation-plus-EOF was
+/// Success is reported only after the helper's exact role-specific exchange was
 /// observed, the registry independently reached `Admitted`, the registry-owned
 /// role matched the fixed desktop command, and process/Job cancellation and
 /// reap completed while the request writer was still retained.
@@ -198,7 +198,13 @@ pub(crate) fn run_service_helper_rpc_probe(
             Err(ServiceRpcProbeError::Cleanup)
         };
     }
-    if confirmation.wait_for_confirmation().is_err() {
+    let exchange = match role {
+        ServiceRpcProbeRole::Approval => non_signing_approval_probe_request()
+            .map_err(|_| ServiceProbeDebugGateError::Correlation)
+            .and_then(|request| confirmation.exchange_approval_probe(&request)),
+        ServiceRpcProbeRole::SecretInput => confirmation.wait_for_confirmation().map(|_| ()),
+    };
+    if exchange.is_err() {
         let cleanup = lease.cancel();
         drop(confirmation);
         return if cleanup.is_ok() {
@@ -211,12 +217,80 @@ pub(crate) fn run_service_helper_rpc_probe(
     // Retain the request writer in `confirmation` until registry-owned role
     // extraction and the exact process/Job terminal proof have both completed.
     let admitted = lease.finish_admitted_and_cancel();
+    // Cleanup is unconditional, even when the original deadline has elapsed.
+    let timely = confirmation.ensure_live_deadline();
     drop(confirmation);
     match admitted {
-        Ok(admitted_role) if admitted_role == role.admitted() => Ok(role.completed_result()),
+        Ok(admitted_role) if admitted_role == role.admitted() => {
+            timely.map_err(|_| ServiceRpcProbeError::Confirmation)?;
+            Ok(role.completed_result())
+        }
         Ok(_) => Err(ServiceRpcProbeError::Role),
         Err(_) => Err(ServiceRpcProbeError::Cleanup),
     }
+}
+
+/// A service-authored display fixture, never a wallet or signing request. The
+/// digest/nonce are fresh public correlation bytes, not signing authority. No
+/// account, secret, network, vault or broker-supplied display is consulted.
+fn non_signing_approval_probe_request()
+-> Result<approval_wire::ApprovalRequest, ServiceRpcProbeError> {
+    use approval_wire::{
+        ApprovalDisplay, ApprovalRequest, DisplayField, FieldSemantic as F, OperationKind,
+        RiskLevel, SimulationStatus,
+    };
+    let mut digest = [0_u8; 32];
+    let mut nonce = [0_u8; 32];
+    getrandom::fill(&mut digest).map_err(|_| ServiceRpcProbeError::Preparation)?;
+    getrandom::fill(&mut nonce).map_err(|_| ServiceRpcProbeError::Preparation)?;
+    let fields = [
+        (F::Origin, "https://service-probe.invalid"),
+        (
+            F::OriginProvenance,
+            "Service transport test; no browser request",
+        ),
+        (F::Account, "No wallet account - transport test only"),
+        (F::NetworkName, "No network - transport test only"),
+        (F::ChainId, "Not applicable - no signing"),
+        (F::GenesisHash, "Not applicable - no signing"),
+        (F::RulesetRevision, "Not applicable - no signing"),
+        (
+            F::RpcObservationsDigest,
+            "Not applicable - no network access",
+        ),
+        (F::OperationKind, OperationKind::PersonalMessage.value()),
+        (
+            F::PersonalMessageBytes,
+            "Transport test only; these bytes will never be signed",
+        ),
+        (F::SimulationStatus, SimulationStatus::NotPerformed.value()),
+        (
+            F::OriginWarning,
+            "Local service fixture, not a site authorization request.",
+        ),
+        (
+            F::PersonalMessageWarning,
+            "Approve and Reject only test transport; neither can sign.",
+        ),
+        (
+            F::NoSimulationWarning,
+            "No simulation, network access or transaction occurs.",
+        ),
+    ]
+    .into_iter()
+    .map(|(semantic, value)| DisplayField::new(semantic, value, true))
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|_| ServiceRpcProbeError::Preparation)?;
+    let display = ApprovalDisplay::new(RiskLevel::High, fields)
+        .map_err(|_| ServiceRpcProbeError::Preparation)?;
+    ApprovalRequest::new(
+        digest,
+        nonce,
+        COORDINATION_MILLISECONDS,
+        "TRANSPORT TEST - NO SIGNING",
+        display,
+    )
+    .map_err(|_| ServiceRpcProbeError::Preparation)
 }
 
 fn prepare_debugger_attempt(
@@ -384,6 +458,47 @@ impl fmt::Debug for DebuggerAttempt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approval_probe_fixture_is_fresh_canonical_and_explicitly_non_signing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use approval_wire::FieldSemantic;
+        let first = non_signing_approval_probe_request()?;
+        let second = non_signing_approval_probe_request()?;
+        assert_ne!(first.digest(), second.digest());
+        assert_ne!(first.approval_nonce(), second.approval_nonce());
+        assert_eq!(
+            first.expires_after_milliseconds(),
+            COORDINATION_MILLISECONDS
+        );
+        assert_eq!(first.anti_phishing_phrase(), "TRANSPORT TEST - NO SIGNING");
+        assert_eq!(
+            first
+                .display()
+                .field(FieldSemantic::Account)
+                .ok_or("missing account")?
+                .value(),
+            "No wallet account - transport test only"
+        );
+        assert_eq!(
+            first
+                .display()
+                .field(FieldSemantic::PersonalMessageWarning)
+                .ok_or("missing warning")?
+                .value(),
+            "Approve and Reject only test transport; neither can sign."
+        );
+        let encoded = approval_wire::encode_request(&first);
+        assert_eq!(approval_wire::decode_request(&encoded)?, first);
+        let prefix = key_agent_service_helper_bootstrap::encode_service_approval_request_prefix(
+            encoded.len(),
+        )?;
+        assert_eq!(
+            key_agent_service_helper_bootstrap::decode_service_approval_request_prefix(&prefix)?,
+            encoded.len()
+        );
+        Ok(())
+    }
 
     #[test]
     fn fixed_roles_bind_to_distinct_helper_names_and_authorities() {

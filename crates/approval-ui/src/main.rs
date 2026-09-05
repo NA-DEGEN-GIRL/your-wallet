@@ -6,7 +6,8 @@
 //! inherited-stream contract. The separate
 //! `service-helper-rpc-probe-feasibility-test-hook` entrypoint is restricted to
 //! debug Windows x64 MSVC builds and only completes the debugger-injected
-//! service-channel bootstrap plus the authenticated `HelperReady` RPC probe; it
+//! service-channel bootstrap, authenticated `HelperReady`, and one bounded
+//! native Approval request/decision transport probe with a no-signing title; it
 //! is not a production activation path. On Windows the child first seals its exact
 //! inherited synchronous server pipe objects while the parent retains the
 //! overlapped client ends. It then checks LPAC and Job policy and makes fresh
@@ -80,8 +81,8 @@ mod bootstrap;
     feature = "service-helper-rpc-probe-feasibility-test-hook"
 ))]
 use key_agent_service_helper_bootstrap::{
-    HelperBootstrapRole, capture_and_adopt_injected_channels, complete_helper_ready_rpc_probe,
-    complete_injected_channel_bootstrap,
+    HelperBootstrapRole, capture_and_adopt_injected_channels, complete_injected_channel_bootstrap,
+    receive_service_approval_request,
 };
 
 #[cfg(any(
@@ -180,7 +181,8 @@ fn main() {
 fn run_service_helper_rpc_probe() -> ! {
     let adopted = capture_and_adopt_injected_channels();
     let bootstrapped = complete_injected_channel_bootstrap(adopted, SERVICE_HELPER_ROLE);
-    complete_helper_ready_rpc_probe(bootstrapped, SERVICE_HELPER_ROLE)
+    let request = receive_service_approval_request(bootstrapped);
+    request.present_and_respond(|request| approval_ui::present_service_probe(request).ok())
 }
 
 #[cfg(all(

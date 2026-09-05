@@ -19,8 +19,14 @@ helper-ready-rpc-feasibility-test-hook = [
     "dep:key-agent-service-rpc-sys",
     "key-agent-service-wire/debug-feasibility-v2",
 ]
+# Extends the debug HelperReady probe with one framed native Approval exchange.
+approval-exchange-feasibility-test-hook = [
+    "helper-ready-rpc-feasibility-test-hook",
+    "dep:approval-wire",
+]
 
 [dependencies]
+approval-wire = { path = "../approval-wire", optional = true }
 key-agent-service-wire = { path = "../key-agent-service-wire" }
 zeroize.workspace = true
 

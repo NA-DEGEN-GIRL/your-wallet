@@ -3505,6 +3505,60 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]
+    #[test]
+    fn service_approval_pipe_exchanges_ready_then_framed_request_then_response_eof()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use key_agent_service_helper_bootstrap::{
+            HELPER_RPC_CONFIRMATION_BYTES, HelperBootstrapRole, HelperRpcConfirmation,
+            SERVICE_APPROVAL_REQUEST_PREFIX_BYTES, decode_service_approval_request_prefix,
+            encode_service_approval_request_prefix,
+        };
+        use key_agent_service_wire::{EpochNonce, ServiceRequestId};
+        let (mut writer, child_request, reader, child_response) =
+            PrivateApprovalPipes::create()?.into_test_parts();
+        let deadline = future_deadline()?;
+        let confirmation = HelperRpcConfirmation::new(
+            EpochNonce::new([0xA5; 32])?,
+            ServiceRequestId::new([0x5A; 16])?,
+            HelperBootstrapRole::Approval,
+        )
+        .encode();
+        sys::write_child_for_test(&child_response, &confirmation)?;
+        // This must complete without EOF: the same endpoint carries a later response.
+        assert_eq!(
+            reader
+                .read_exact(HELPER_RPC_CONFIRMATION_BYTES, deadline)?
+                .as_slice(),
+            confirmation
+        );
+        let payload = b"bounded non-signing transport bytes";
+        let prefix = encode_service_approval_request_prefix(payload.len())?;
+        writer.write_bytes(&prefix, deadline)?;
+        writer.write_bytes(payload, deadline)?;
+        let received_prefix =
+            sys::read_child_exact_for_test(&child_request, SERVICE_APPROVAL_REQUEST_PREFIX_BYTES)?;
+        let length = decode_service_approval_request_prefix(&received_prefix)?;
+        assert_eq!(
+            sys::read_child_exact_for_test(&child_request, length)?,
+            payload
+        );
+        let response = [0x64_u8; RESPONSE_BYTES];
+        sys::write_child_for_test(&child_response, &response)?;
+        drop(child_response);
+        assert_eq!(reader.read_exact_frame(RESPONSE_BYTES, deadline)?, response);
+        // Response EOF does not close the request endpoint. Its owner can still
+        // hold the child alive while the registry revalidates and kills/reaps.
+        writer.write_bytes(b"retained", deadline)?;
+        assert_eq!(
+            sys::read_child_exact_for_test(&child_request, 8)?,
+            b"retained"
+        );
+        drop(writer);
+        assert!(sys::read_child_to_end_for_test(&child_request)?.is_empty());
+        Ok(())
+    }
+
     #[test]
     fn secret_pipe_transfers_variable_response_through_exact_eof()
     -> Result<(), Box<dyn std::error::Error>> {

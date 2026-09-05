@@ -1391,11 +1391,19 @@ where
             return GuardOperation::direct(cleanup.and(Err(ExpectedPeerRegistryError::Denied)));
         }
 
-        let role = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| peer.role()));
+        // Admission is historical evidence. Revalidate the exact still-owned
+        // process immediately before extracting its role and terminal cleanup;
+        // a helper that died or changed since admission cannot finish positively.
+        // Keep both observations in the unwind boundary so cleanup also runs
+        // when an implementation panics instead of returning a rejection.
+        let role = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            peer.revalidate_running().map_err(map_verification_error)?;
+            Ok(peer.role())
+        }));
         let cleanup = cleanup_peer::<P, C>(&mut peer);
         drop(peer);
         let result = match role {
-            Ok(role) => cleanup.map(|()| role),
+            Ok(role) => cleanup.and(role),
             Err(payload) => {
                 let _ = cleanup;
                 std::panic::resume_unwind(payload);
@@ -1530,7 +1538,9 @@ where
     ///
     /// The role comes from the registry-owned launch proof. A live slot in any
     /// phase other than `Admitted` is still terminally retired, but can never
-    /// produce a successful completion.
+    /// produce a successful completion. The exact admitted peer must pass a
+    /// fresh running revalidation before its role is extracted; cleanup still
+    /// runs if that observation rejects or panics.
     pub(crate) fn finish_admitted_and_cancel(
         &mut self,
     ) -> Result<ExpectedHelperRole, ExpectedPeerRegistryError> {
@@ -1976,6 +1986,12 @@ mod tests {
         trace: Trace,
     }
 
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    enum TerminalFinishPanic {
+        Running,
+        Role,
+    }
+
     impl ExpectedHelperCandidate for FakeCandidate {
         fn revalidate(&self) -> Result<(), ExpectedPeerVerificationError> {
             self.trace.push(Event::Candidate);
@@ -1999,6 +2015,7 @@ mod tests {
         resume_pause: Option<Arc<Barrier>>,
         cancel_pause: Option<Arc<Barrier>>,
         panic_on_match: bool,
+        finish_panic: Option<TerminalFinishPanic>,
     }
 
     impl Drop for FakePeer {
@@ -2018,6 +2035,10 @@ mod tests {
         }
 
         fn role(&self) -> ExpectedHelperRole {
+            assert!(
+                self.finish_panic != Some(TerminalFinishPanic::Role),
+                "peer role panic for terminal-finish test"
+            );
             self.role
         }
 
@@ -2067,6 +2088,10 @@ mod tests {
 
         fn revalidate_running(&self) -> Result<(), ExpectedPeerVerificationError> {
             self.trace.push(Event::Running);
+            assert!(
+                self.finish_panic != Some(TerminalFinishPanic::Running),
+                "peer running panic for terminal-finish test"
+            );
             (self.resumed && self.fail != Some(Event::Running))
                 .then_some(())
                 .ok_or(ExpectedPeerVerificationError::Denied)
@@ -2117,7 +2142,34 @@ mod tests {
             resume_pause: None,
             cancel_pause: None,
             panic_on_match: false,
+            finish_panic: None,
         })
+    }
+
+    fn mutate_admitted_peer(
+        admission: &ExpectedHelperAdmission<FakePeer, FakeCandidate>,
+        expected_key: ExpectedPeerKey,
+        mutation: impl FnOnce(&mut FakePeer),
+    ) -> Result<(), ExpectedPeerRegistryError> {
+        let mut state = admission
+            .inner
+            .state
+            .lock()
+            .map_err(|_| ExpectedPeerRegistryError::Internal)?;
+        let selected = state
+            .slots
+            .iter_mut()
+            .find(|slot| slot_key(slot) == Some(expected_key));
+        let Some(ExpectedPeerSlot::Live {
+            peer,
+            phase: PeerPhase::Admitted,
+            ..
+        }) = selected
+        else {
+            return Err(ExpectedPeerRegistryError::Internal);
+        };
+        mutation(peer);
+        Ok(())
     }
 
     fn candidate(marker: u8, valid: bool, trace: &Trace) -> FakeCandidate {
@@ -2428,6 +2480,182 @@ mod tests {
         );
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         drop(lease);
+        Ok(())
+    }
+
+    #[test]
+    fn admitted_finish_revalidates_fresh_peer_before_terminal_cleanup()
+    -> Result<(), ExpectedPeerRegistryError> {
+        for role in [
+            ExpectedHelperRole::Approval,
+            ExpectedHelperRole::SecretInput,
+        ] {
+            let admission = ExpectedHelperAdmission::new();
+            let trace = Trace::new();
+            let drops = Arc::new(AtomicU32::new(0));
+            let mut lease = admission
+                .register_suspended(peer(24, 24, role, &trace, &drops)?)?
+                .revalidate_and_resume_once()?;
+            assert_eq!(
+                admission.consume_manager(key(24)?, &candidate(24, true, &trace)),
+                Ok(role)
+            );
+            trace
+                .0
+                .lock()
+                .map_err(|_| ExpectedPeerRegistryError::Internal)?
+                .clear();
+
+            assert_eq!(lease.finish_admitted_and_cancel(), Ok(role));
+            assert_eq!(
+                *trace
+                    .0
+                    .lock()
+                    .map_err(|_| ExpectedPeerRegistryError::Internal)?,
+                [Event::Running, Event::Cancel, Event::Drop]
+            );
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+            drop(lease);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn admitted_finish_rejects_stale_or_dead_peer_and_never_extracts_role()
+    -> Result<(), ExpectedPeerRegistryError> {
+        for dead in [false, true] {
+            let admission = ExpectedHelperAdmission::new();
+            let trace = Trace::new();
+            let drops = Arc::new(AtomicU32::new(0));
+            let mut lease = admission
+                .register_suspended(peer(24, 24, ExpectedHelperRole::Approval, &trace, &drops)?)?
+                .revalidate_and_resume_once()?;
+            assert_eq!(
+                admission.consume_manager(key(24)?, &candidate(24, true, &trace)),
+                Ok(ExpectedHelperRole::Approval)
+            );
+            mutate_admitted_peer(&admission, key(24)?, |peer| {
+                if dead {
+                    peer.resumed = false;
+                } else {
+                    peer.fail = Some(Event::Running);
+                }
+                peer.finish_panic = Some(TerminalFinishPanic::Role);
+            })?;
+            trace
+                .0
+                .lock()
+                .map_err(|_| ExpectedPeerRegistryError::Internal)?
+                .clear();
+
+            assert_eq!(
+                lease.finish_admitted_and_cancel(),
+                Err(ExpectedPeerRegistryError::Denied)
+            );
+            assert_eq!(
+                *trace
+                    .0
+                    .lock()
+                    .map_err(|_| ExpectedPeerRegistryError::Internal)?,
+                [Event::Running, Event::Cancel, Event::Drop]
+            );
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                admission.consume_manager(key(24)?, &candidate(24, true, &trace)),
+                Err(ExpectedPeerRegistryError::Denied)
+            );
+            drop(lease);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn admitted_finish_cleanup_error_dominates_failed_fresh_revalidation()
+    -> Result<(), ExpectedPeerRegistryError> {
+        let admission = ExpectedHelperAdmission::new();
+        let trace = Trace::new();
+        let drops = Arc::new(AtomicU32::new(0));
+        let mut lease = admission
+            .register_suspended(peer(24, 24, ExpectedHelperRole::Approval, &trace, &drops)?)?
+            .revalidate_and_resume_once()?;
+        assert_eq!(
+            admission.consume_manager(key(24)?, &candidate(24, true, &trace)),
+            Ok(ExpectedHelperRole::Approval)
+        );
+        mutate_admitted_peer(&admission, key(24)?, |peer| {
+            peer.resumed = false;
+            peer.fail = Some(Event::Cancel);
+            peer.finish_panic = Some(TerminalFinishPanic::Role);
+        })?;
+        trace
+            .0
+            .lock()
+            .map_err(|_| ExpectedPeerRegistryError::Internal)?
+            .clear();
+
+        assert_eq!(
+            lease.finish_admitted_and_cancel(),
+            Err(ExpectedPeerRegistryError::Internal)
+        );
+        assert_eq!(
+            *trace
+                .0
+                .lock()
+                .map_err(|_| ExpectedPeerRegistryError::Internal)?,
+            [Event::Running, Event::Cancel, Event::Drop]
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        drop(lease);
+        Ok(())
+    }
+
+    #[test]
+    fn admitted_finish_revalidation_or_role_panic_still_cleans_up()
+    -> Result<(), ExpectedPeerRegistryError> {
+        for panic_on_running in [true, false] {
+            let admission = ExpectedHelperAdmission::new();
+            let trace = Trace::new();
+            let drops = Arc::new(AtomicU32::new(0));
+            let mut lease = admission
+                .register_suspended(peer(24, 24, ExpectedHelperRole::Approval, &trace, &drops)?)?
+                .revalidate_and_resume_once()?;
+            assert_eq!(
+                admission.consume_manager(key(24)?, &candidate(24, true, &trace)),
+                Ok(ExpectedHelperRole::Approval)
+            );
+            mutate_admitted_peer(&admission, key(24)?, |peer| {
+                peer.finish_panic = Some(if panic_on_running {
+                    TerminalFinishPanic::Running
+                } else {
+                    TerminalFinishPanic::Role
+                });
+            })?;
+            trace
+                .0
+                .lock()
+                .map_err(|_| ExpectedPeerRegistryError::Internal)?
+                .clear();
+
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    lease.finish_admitted_and_cancel()
+                }))
+                .is_err()
+            );
+            assert_eq!(
+                *trace
+                    .0
+                    .lock()
+                    .map_err(|_| ExpectedPeerRegistryError::Internal)?,
+                [Event::Running, Event::Cancel, Event::Drop]
+            );
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                admission.consume_manager(key(24)?, &candidate(24, true, &trace)),
+                Err(ExpectedPeerRegistryError::Denied)
+            );
+            drop(lease);
+        }
         Ok(())
     }
 

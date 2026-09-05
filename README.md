@@ -1,5 +1,16 @@
 # Your Wallet
 
+## Current development checkpoint (2026-09-05)
+
+Phase 3D now connects the debug service's Approval probe to the real native UI
+with a service-authored **non-signing** request. Approval continues after
+`HelperReady` through one bounded request and bound response plus EOF; the
+historical ready-only Approval description below is superseded. Secret Input
+remains ready-only. Fresh admitted-helper liveness and terminal cleanup precede
+success, under the original five-second deadline. This is not installed-service
+or signed-artifact evidence. Release remains **STOP-SHIP**, and both compiled
+policies remain `None`. See [current status and completion gates](docs/development-status.md).
+
 ## Windows Phase 1 checkpoint (2026-08-30)
 
 **Release status remains STOP-SHIP.** The debug-only Windows feasibility path

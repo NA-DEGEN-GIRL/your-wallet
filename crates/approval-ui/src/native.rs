@@ -67,6 +67,24 @@ struct NativeControls {
 }
 
 pub(super) fn present(request: &ApprovalRequest) -> Result<Decision, ApprovalError> {
+    let title = format!(
+        "Your Wallet — {} — signed approval helper",
+        request.anti_phishing_phrase()
+    );
+    present_with_title(request, &title)
+}
+
+#[cfg(all(
+    target_arch = "x86_64",
+    target_env = "msvc",
+    debug_assertions,
+    feature = "service-helper-rpc-probe-feasibility-test-hook"
+))]
+pub(super) fn present_service_probe(request: &ApprovalRequest) -> Result<Decision, ApprovalError> {
+    present_with_title(request, "Service transport test — no signing")
+}
+
+fn present_with_title(request: &ApprovalRequest, title: &str) -> Result<Decision, ApprovalError> {
     if PRESENTED.swap(true, Ordering::AcqRel) {
         return Ok(Decision::Reject);
     }
@@ -74,17 +92,13 @@ pub(super) fn present(request: &ApprovalRequest) -> Result<Decision, ApprovalErr
     // SAFETY: This is a dedicated one-shot helper process in the intended
     // deployment. Failure only affects sizing and is safe to ignore.
     let _ = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
-    let controls = create_window(request)?;
+    let controls = create_window(request, title)?;
     run_loop(request, &controls)
 }
 
 #[allow(clippy::too_many_lines)]
-fn create_window(request: &ApprovalRequest) -> Result<NativeControls, ApprovalError> {
+fn create_window(request: &ApprovalRequest, title: &str) -> Result<NativeControls, ApprovalError> {
     let body = render_plain_text(request)?;
-    let title = format!(
-        "Your Wallet — {} — signed approval helper",
-        request.anti_phishing_phrase()
-    );
     let phrase = format!(
         "Anti-phishing phrase: {}\r\nMatch this phrase before reviewing the request.",
         request.anti_phishing_phrase()
@@ -129,7 +143,7 @@ fn create_window(request: &ApprovalRequest) -> Result<NativeControls, ApprovalEr
     let window_style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
     let window_ex_style = WS_EX_APPWINDOW | WS_EX_CONTROLPARENT | WS_EX_DLGMODALFRAME;
     let layout = Layout::for_work_area(dpi, window_style, window_ex_style)?;
-    let title_wide = wide(&title);
+    let title_wide = wide(title);
     // SAFETY: Class name is static and title is NUL-terminated and live for the
     // call. No untrusted pointer is retained by our window procedure.
     let window = unsafe {

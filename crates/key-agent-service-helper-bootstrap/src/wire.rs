@@ -18,6 +18,46 @@ pub const HELPER_ADOPTION_ACK_BYTES: usize = 72;
 pub const HELPER_BOOTSTRAP_HELLO_BYTES: usize = 100;
 /// Exact byte length of a helper RPC round-trip confirmation.
 pub const HELPER_RPC_CONFIRMATION_BYTES: usize = 72;
+/// Fixed length prefix for the debug service-owned Approval request.
+pub const SERVICE_APPROVAL_REQUEST_PREFIX_BYTES: usize = 12;
+/// Maximum canonical Approval payload length; this is not an allocation hint.
+pub const MAX_SERVICE_APPROVAL_REQUEST_BYTES: usize = 32_768;
+
+/// Encodes bounded framing only; it grants no authentication or approval.
+///
+/// # Errors
+/// Returns a data-free error for a zero or oversized payload length.
+pub fn encode_service_approval_request_prefix(
+    request_bytes: usize,
+) -> Result<[u8; SERVICE_APPROVAL_REQUEST_PREFIX_BYTES], AdoptionWireError> {
+    if !(1..=MAX_SERVICE_APPROVAL_REQUEST_BYTES).contains(&request_bytes) {
+        return Err(WireError::InvalidValue);
+    }
+    let mut prefix = [0_u8; SERVICE_APPROVAL_REQUEST_PREFIX_BYTES];
+    prefix[..8].copy_from_slice(b"YWKSAP01");
+    prefix[8..].copy_from_slice(
+        &u32::try_from(request_bytes)
+            .map_err(|_| WireError::InvalidValue)?
+            .to_be_bytes(),
+    );
+    Ok(prefix)
+}
+
+/// Decodes one exact prefix without consuming an EOF-delimited stream.
+///
+/// # Errors
+/// Rejects wrong length, magic, version, zero length, or oversized payloads.
+pub fn decode_service_approval_request_prefix(bytes: &[u8]) -> Result<usize, AdoptionWireError> {
+    if bytes.len() != SERVICE_APPROVAL_REQUEST_PREFIX_BYTES || &bytes[..8] != b"YWKSAP01" {
+        return Err(WireError::InvalidValue);
+    }
+    let length = u32::from_be_bytes(bytes[8..].try_into().map_err(|_| WireError::InvalidValue)?);
+    let length = usize::try_from(length).map_err(|_| WireError::InvalidValue)?;
+    if !(1..=MAX_SERVICE_APPROVAL_REQUEST_BYTES).contains(&length) {
+        return Err(WireError::InvalidValue);
+    }
+    Ok(length)
+}
 
 /// Stable, data-free failure categories for the helper-bootstrap frames.
 ///
@@ -679,6 +719,35 @@ fn crc32c(bytes: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_approval_prefix_is_exact_bounded_and_not_eof_delimited() -> Result<(), WireError> {
+        for length in [1, 75, 1_024, MAX_SERVICE_APPROVAL_REQUEST_BYTES] {
+            let prefix = encode_service_approval_request_prefix(length)?;
+            assert_eq!(&prefix[..8], b"YWKSAP01");
+            assert_eq!(decode_service_approval_request_prefix(&prefix)?, length);
+            for truncated in 0..SERVICE_APPROVAL_REQUEST_PREFIX_BYTES {
+                assert!(decode_service_approval_request_prefix(&prefix[..truncated]).is_err());
+            }
+            let mut trailing = prefix.to_vec();
+            trailing.push(0);
+            assert!(decode_service_approval_request_prefix(&trailing).is_err());
+            for index in 0..8 {
+                let mut changed = prefix;
+                changed[index] ^= 1;
+                assert!(decode_service_approval_request_prefix(&changed).is_err());
+            }
+        }
+        for length in [0, MAX_SERVICE_APPROVAL_REQUEST_BYTES + 1, usize::MAX] {
+            assert!(encode_service_approval_request_prefix(length).is_err());
+        }
+        for length in [0_u32, 32_769, u32::MAX] {
+            let mut prefix = encode_service_approval_request_prefix(1)?;
+            prefix[8..].copy_from_slice(&length.to_be_bytes());
+            assert!(decode_service_approval_request_prefix(&prefix).is_err());
+        }
+        Ok(())
+    }
 
     fn sample_ack(role: HelperBootstrapRole) -> Result<HelperAdoptionAck, WireError> {
         Ok(HelperAdoptionAck::new(

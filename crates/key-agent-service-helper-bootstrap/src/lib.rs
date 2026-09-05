@@ -19,8 +19,10 @@ pub use self::gate_spec::{
 pub use self::wire::{
     AdoptionWireError, HELPER_ADOPTION_ACK_BYTES, HELPER_BOOTSTRAP_HELLO_BYTES,
     HELPER_RPC_CONFIRMATION_BYTES, HelperAdoptionAck, HelperBootstrapHello, HelperBootstrapRole,
-    HelperRpcConfirmation, decode_adoption_ack, decode_bootstrap_hello, decode_rpc_confirmation,
-    encode_adoption_ack, encode_bootstrap_hello, encode_rpc_confirmation,
+    HelperRpcConfirmation, MAX_SERVICE_APPROVAL_REQUEST_BYTES,
+    SERVICE_APPROVAL_REQUEST_PREFIX_BYTES, decode_adoption_ack, decode_bootstrap_hello,
+    decode_rpc_confirmation, decode_service_approval_request_prefix, encode_adoption_ack,
+    encode_bootstrap_hello, encode_rpc_confirmation, encode_service_approval_request_prefix,
 };
 
 #[cfg(all(
@@ -50,3 +52,12 @@ pub use self::child::{
     debug_assertions
 ))]
 pub use self::child::complete_helper_ready_rpc_probe;
+
+#[cfg(all(
+    windows,
+    target_arch = "x86_64",
+    target_env = "msvc",
+    feature = "approval-exchange-feasibility-test-hook",
+    debug_assertions
+))]
+pub use self::child::{ServiceApprovalRequest, receive_service_approval_request};

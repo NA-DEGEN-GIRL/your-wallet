@@ -557,6 +557,25 @@ pub fn present(request: &ApprovalRequest) -> Result<Decision, ApprovalError> {
     }
 }
 
+/// Presents the debug service transport probe with an explicit no-signing title.
+///
+/// This native UI is not release or signing evidence. Its relative visual timer
+/// cannot extend the retained service deadline: the child checks that deadline
+/// around presentation, while the service enforces it and terminates late UI.
+///
+/// # Errors
+/// Returns an error if the request or native window cannot be constructed.
+#[cfg(all(
+    windows,
+    target_arch = "x86_64",
+    target_env = "msvc",
+    debug_assertions,
+    feature = "service-helper-rpc-probe-feasibility-test-hook"
+))]
+pub fn present_service_probe(request: &ApprovalRequest) -> Result<Decision, ApprovalError> {
+    native::present_service_probe(request)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

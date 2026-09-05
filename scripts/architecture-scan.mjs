@@ -2316,6 +2316,50 @@ function hasExactSourcePins(sources, approvedPins) {
   );
 }
 
+// This exact, check-only diagnostic reuses the full gate's validators. It cannot
+// claim full acceptance, and invalid arguments are rejected before source reads.
+if (process.argv.length > 2) {
+  if (process.argv.length !== 4 || process.argv[2] !== "--check-group" ||
+      process.argv[3] !== "service-approval-transport") {
+    process.stdout.write("ARCHITECTURE_DIAGNOSTIC_ARGUMENT_ERROR\nNOT_FULL_SCAN\n");
+    process.exit(2);
+  }
+  try {
+    const inputs = Object.freeze({
+      child: await text("crates/key-agent-service-helper-bootstrap/src/child.rs"),
+      windows: await text("crates/key-agent-service-helper-bootstrap/src/child/windows.rs"),
+      debugGate: await text("crates/platform-windows/src/key_agent_service_launch/debug_gate.rs"),
+      probe: await text("crates/platform-windows/src/key_agent_service_launch/rpc_probe.rs"),
+      main: await text("crates/approval-ui/src/main.rs"),
+      ui: await text("crates/approval-ui/src/lib.rs"),
+      native: await text("crates/approval-ui/src/native.rs"),
+    });
+    const wire = await text("crates/key-agent-service-helper-bootstrap/src/wire.rs");
+    const checks = keyAgentServiceApprovalTransportChecks(inputs);
+    const expectedChecks = keyAgentServiceApprovalTransportCheckNames();
+    const failedChecks = expectedChecks.filter((name) => checks[name] !== true);
+    if (JSON.stringify(Object.keys(checks)) !== JSON.stringify(expectedChecks)) {
+      failedChecks.push("checkInventory");
+    }
+    if (!keyAgentServiceApprovalFramingContract(wire)) failedChecks.push("framing");
+    const mutations = [...keyAgentServiceApprovalTransportMutations(inputs), ...keyAgentServiceApprovalFramingMutations(wire)];
+    const expectedMutations = [...keyAgentServiceApprovalTransportMutationNames(), ...keyAgentServiceApprovalFramingMutationNames()];
+    const failedMutations = keyAgentServiceApprovalFailedMutationNames(mutations, expectedMutations);
+    if (!keyAgentServiceApprovalMutationInventory(mutations, expectedMutations)) {
+      failedChecks.push("mutationInventory");
+    }
+    const accepted = failedChecks.length === 0 && failedMutations.length === 0;
+    process.stdout.write(`ARCHITECTURE_DIAGNOSTIC_${accepted ? "PASS" : "FAIL"} service-approval-transport\n`);
+    if (failedChecks.length > 0) process.stdout.write(`checks=${failedChecks.join(",")}\n`);
+    if (failedMutations.length > 0) process.stdout.write(`mutations=${failedMutations.join(",")}\n`);
+    process.stdout.write("NOT_FULL_SCAN\n");
+    process.exit(accepted ? 0 : 1);
+  } catch {
+    process.stdout.write("ARCHITECTURE_DIAGNOSTIC_FAIL service-approval-transport\nINPUT_READ_OR_CHECK_ERROR\nNOT_FULL_SCAN\n");
+    process.exit(1);
+  }
+}
+
 const architectureProgressStarted = performance.now();
 let architectureVerifiedCount = 0;
 
@@ -21183,7 +21227,7 @@ requireInvariant(
   "the debug-only service launch primitive must retain its exact private module inventory while its Job remains one unnamed non-nested one-process owner with equality-readback kill-on-close limits, stable lifetime-bound JOB_LIST storage, bounded Job-authoritative cleanup, reviewed narrow unsafe calls, no RPC command, ignored live evidence, and effective mutation probes",
 );
 
-const replaceExactStringOnce = (source, search, replacement) => {
+function replaceExactStringOnce(source, search, replacement) {
   const first = source.indexOf(search);
   if (first === -1 || source.indexOf(search, first + search.length) !== -1) {
     return source;
@@ -21342,6 +21386,8 @@ requireInvariant(
 const keyAgentServiceDebugGateSource =
   keyAgentServiceLaunchSources[keyAgentServiceLaunchPaths.debugGate];
 const keyAgentServiceDebugGateTestNames = [
+  "approval_probe_confirmation_rejects_wrong_epoch_request_role_and_trailing_bytes",
+  "approval_probe_response_rejects_mismatched_bindings_and_noncanonical_frames",
   "detached_alias_shape_is_closed",
   "cleanup_registry_debug_is_data_free",
   "cleanup_registry_accepts_one_exact_pair_and_latches_rejected_thread",
@@ -21389,7 +21435,7 @@ const keyAgentServiceDebugGateApiInventory = [
 ];
 const keyAgentServiceDebugGatePinContract = (source) =>
   normalizedSourceSha256(source) ===
-  "d2c78f7a3156993219848020373dfc0a9140754af4f9fdf07d49390eb89f180d";
+  "366b231adfca2325beca4009c4a50e6a8063f5aa65ba5f35e51ed1e740670062";
 const keyAgentServiceDebugGateSemanticContract = (source, channelSource, processSource,
 ) => {
   try {
@@ -25550,6 +25596,10 @@ const keyAgentServiceExpectedPeerTestNames = [
   "finish_before_manager_admission_is_denied_and_terminal",
   "registered_phase_cannot_be_finished_as_admitted",
   "admitted_finish_cleanup_error_dominates_role_success",
+  "admitted_finish_revalidates_fresh_peer_before_terminal_cleanup",
+  "admitted_finish_rejects_stale_or_dead_peer_and_never_extracts_role",
+  "admitted_finish_cleanup_error_dominates_failed_fresh_revalidation",
+  "admitted_finish_revalidation_or_role_panic_still_cleans_up",
   "in_flight_finish_is_not_success_and_requests_terminal_cleanup",
   "admitted_finish_cancels_outside_registry_mutex",
   "activation_and_candidate_failures_are_terminal_where_required",
@@ -25586,7 +25636,7 @@ const keyAgentServiceExpectedPeerTestNames = [
 const keyAgentServiceExpectedPeerSource =
   keyAgentServiceRpcFixtureSources[keyAgentServiceRpcFixturePaths.expectedPeer];
 const keyAgentServiceExpectedPeerSha256 =
-  "bf254901d25055701177dc44efbd29a82eae1d4a30b330fc506f4e107eb195d9";
+  "ad9cde87487fb6abef31b8e60f0ff64c3747cae091a348eda7572a496a575950";
 const keyAgentServiceExpectedPeerPinContract = (source) =>
   normalizedSourceSha256(source) === keyAgentServiceExpectedPeerSha256;
 const keyAgentServiceExpectedPeerContract = (source) => {
@@ -25649,6 +25699,7 @@ const keyAgentServiceExpectedPeerContract = (source) => {
       leaseImpl,
       "finish_admitted_and_cancel",
     );
+    const finishAdmittedKey = rustFunctionBlock(admissionImpl, "finish_admitted_key_with_timeout");
     const activate = rustFunctionBlock(
       registeredImpl,
       "revalidate_and_resume_once",
@@ -25897,6 +25948,20 @@ const keyAgentServiceExpectedPeerContract = (source) => {
         "self.armed=false",
         "outcome.result",
       ]) &&
+      hasOrderedCompactMarkers(finishAdmittedKey, [
+        "letSome(mutpeer)=retire_live_slot(&mutstate.slots[index])",
+        "drop(state)",
+        "ifphase!=PeerPhase::Admitted",
+        "letrole=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{",
+        "peer.revalidate_running().map_err(map_verification_error)?",
+        "Ok(peer.role())",
+        "letcleanup=cleanup_peer::<P,C>(&mutpeer)",
+        "drop(peer)",
+        "letresult=matchrole",
+        "Ok(role)=>cleanup.and(role)",
+        "std::panic::resume_unwind(payload)",
+      ]) &&
+      rustCallSites(finishAdmittedKey, "revalidate_running").length === 1 &&
       hasOrderedCompactMarkers(lockState, [
         "Err(poisoned)=>",
         "state.stopping=true",
@@ -25998,6 +26063,21 @@ const keyAgentServiceExpectedPeerMutationProbes = [
     keyAgentServiceExpectedPeerSource,
     "        let outcome = admission.finish_admitted_key(self.key);",
     "        let outcome = GuardOperation::direct(Ok(ExpectedHelperRole::Approval));",
+  ),
+  replaceExactStringOnce(
+    keyAgentServiceExpectedPeerSource,
+    "            peer.revalidate_running().map_err(map_verification_error)?;\n            Ok(peer.role())",
+    "            Ok(peer.role())",
+  ),
+  replaceExactStringOnce(
+    keyAgentServiceExpectedPeerSource,
+    "            peer.revalidate_running().map_err(map_verification_error)?;\n            Ok(peer.role())",
+    "            let role = peer.role();\n            peer.revalidate_running().map_err(map_verification_error)?;\n            Ok(role)",
+  ),
+  replaceExactStringOnce(
+    keyAgentServiceExpectedPeerSource,
+    "            Ok(role) => cleanup.and(role),",
+    "            Ok(role) => role.or(cleanup.map(|()| ExpectedHelperRole::Approval)),",
   ),
   replaceExactStringOnce(
     keyAgentServiceExpectedPeerSource,
@@ -26106,13 +26186,13 @@ const keyAgentServicePhaseThreeCExpectedPins = Object.freeze({
   moduleFull: "3b996da2fd1551826c6a897f03cd33543d0634671d3e8745104253c27e13cfec",
   moduleProduction:
     "59db9f3ce95cc4f2b0ee36fe69dfddf26a9cfa7dfd0fa204effea78ea8c95ce1",
-  design: "889f41af051096e36f4665c025e952ff437e305ff862e2273b8960f6f03841a7",
+  design: "54739b6ec9b6357b1c515f03eaa1294f7595e3614212b7688637004585ded625",
   architecture:
-    "fe05917d8cd8d443dae4e3eca818ec9c4a0d8a0a6b10e369e47bc3d11aa82da0",
+    "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
   security:
-    "ab70fe1e49fbc5b35b3a6934c1030fe1a4dedfd5ba95e7ac28ca2866caf45ad7",
+    "7b986e9aa9bc3c71b2bfd325bf3e1352e6ab465d4c773190c73033e4518ea2ae",
   platformReadme:
-    "bc5d56526772cec79551d8614e8b73c902a516657decb6ae26c1ac28bbfa3944",
+    "18ea8353cffd6d9101428428f6c9777d1a5ac21e99b77ac712de28d923222394",
 });
 const keyAgentServicePhaseThreeCProductionProjection = (source) =>
   withoutCfgTestItems(withoutBottomTestModule(source));
@@ -26341,8 +26421,9 @@ let keyAgentServicePhaseThreeCBaseError = null;
 const keyAgentServiceRpcProbeLeafSource =
   keyAgentServiceLaunchSources[keyAgentServiceLaunchPaths.rpcProbe];
 const keyAgentServiceRpcProbeLeafSha256 =
-  "533e40b624f1ebd8e76f498521ad90fc20c2e50e67784f9201f0591d6c9dd8ca";
+  "8182db511d794e6578090228a375351c532ec488bfd9f99912ca23ea0786f015";
 const keyAgentServiceRpcProbeLeafTestNames = [
+  "approval_probe_fixture_is_fresh_canonical_and_explicitly_non_signing",
   "fixed_roles_bind_to_distinct_helper_names_and_authorities",
   "exact_desktop_request_is_the_only_role_and_correlation_authority",
   "only_cleanup_and_authority_invariants_are_fatal",
@@ -26469,7 +26550,7 @@ const keyAgentServiceRpcProbeLeafMutationProbes = [
   ),
   mutateKeyAgentServiceRpcProbeLeaf(
     "source",
-    "    let admitted = lease.finish_admitted_and_cancel();\n    drop(confirmation);",
+    "    let admitted = lease.finish_admitted_and_cancel();\n    // Cleanup is unconditional, even when the original deadline has elapsed.\n    let timely = confirmation.ensure_live_deadline();\n    drop(confirmation);",
     "    drop(confirmation);\n    let admitted = lease.finish_admitted_and_cancel();",
   ),
   mutateKeyAgentServiceRpcProbeLeaf(
@@ -29676,20 +29757,20 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate has two deliberately different surfaces.",
-    sha256: "fe05917d8cd8d443dae4e3eca818ec9c4a0d8a0a6b10e369e47bc3d11aa82da0",
+    sha256: "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes a safe platform-neutral gate-byte",
-    sha256: "889f41af051096e36f4665c025e952ff437e305ff862e2273b8960f6f03841a7",
+    sha256: "54739b6ec9b6357b1c515f03eaa1294f7595e3614212b7688637004585ded625",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "A separate helper-bootstrap crate exposes",
-    sha256: "ab70fe1e49fbc5b35b3a6934c1030fe1a4dedfd5ba95e7ac28ca2866caf45ad7",
+    sha256: "7b986e9aa9bc3c71b2bfd325bf3e1352e6ab465d4c773190c73033e4518ea2ae",
   },
 ];
 const keyAgentServiceHelperBootstrapDocumentationPatterns = [
@@ -31619,11 +31700,11 @@ const approvedKeyAgentServiceHelperBootstrapDirectories = [
 const approvedKeyAgentServiceHelperBootstrapSourcePins = [
   {
     path: keyAgentServiceHelperBootstrapPaths.child,
-    sha256: "967ecde8a1735ec45ba65ae6460c1584e4c2de26afddd4aa115ed09185634974",
+    sha256: "651b28ebdeee01d8a2851c95084d13a545a7edee8375fb327731f4c7874653f2",
   },
   {
     path: keyAgentServiceHelperBootstrapPaths.windows,
-    sha256: "237d2c59e83ac586d8e1f926268fe41b65523edddc1a8622ccc88c4d6927b8d7",
+    sha256: "c5f905009c5e7617e86e78c26447ec191289cbbf26e2496ed2e751981a0de455",
   },
   {
     path: keyAgentServiceHelperBootstrapPaths.gateSpec,
@@ -31631,11 +31712,11 @@ const approvedKeyAgentServiceHelperBootstrapSourcePins = [
   },
   {
     path: keyAgentServiceHelperBootstrapPaths.lib,
-    sha256: "0c39f3c1b26ea9e3adb164cdca3ed6c7f636abc3a4b79199413075b86f1ac8aa",
+    sha256: "89fb0197dfb2125bfced8c0463a80407ec94509836a40b21ca988aac56b8e6cf",
   },
   {
     path: keyAgentServiceHelperBootstrapPaths.wire,
-    sha256: "c7c92e6b5e2d128eaac64e95ae020a44804fd4c414a50c8dc4356faa848f0fc6",
+    sha256: "d1f04eb20a61d827a29742dfc7ca185a0987fd5c31eb50b129e45d6c7774f799",
   },
 ];
 const keyAgentServiceHelperBootstrapInventoryContract = (
@@ -31644,7 +31725,7 @@ const keyAgentServiceHelperBootstrapInventoryContract = (
   directories,
 ) =>
   normalizedSourceSha256(manifest) ===
-    "a288276b47e329c6797c314f174f85ea5ce0048c606cfd533e0f5e72c4a19f96" &&
+    "c4dc187770555a53d45ca5dcbb6a0497ed998674baa1a93a3cd5a2d4a373198c" &&
   JSON.stringify(directories) ===
     JSON.stringify(approvedKeyAgentServiceHelperBootstrapDirectories) &&
   JSON.stringify(
@@ -31680,6 +31761,7 @@ const keyAgentServiceHelperBootstrapManifestContract = (manifest) => {
         "default",
         "child-capture-feasibility-test-hook",
         "helper-ready-rpc-feasibility-test-hook",
+        "approval-exchange-feasibility-test-hook",
       ]) &&
     /^default\s*=\s*\[\]\s*$/mu.test(normalized) &&
     /^child-capture-feasibility-test-hook\s*=\s*\[\]\s*$/mu.test(
@@ -31687,6 +31769,8 @@ const keyAgentServiceHelperBootstrapManifestContract = (manifest) => {
     /^helper-ready-rpc-feasibility-test-hook\s*=\s*\[\s*"child-capture-feasibility-test-hook"\s*,\s*"dep:key-agent-service-rpc-sys"\s*,\s*"key-agent-service-wire\/debug-feasibility-v2"\s*,?\s*\]\s*$/mu.test(
       normalized,
     ) &&
+    /^approval-exchange-feasibility-test-hook\s*=\s*\[\s*"helper-ready-rpc-feasibility-test-hook"\s*,\s*"dep:approval-wire"\s*,?\s*\]\s*$/mu.test(normalized) &&
+    /^approval-wire\s*=\s*\{\s*path\s*=\s*"\.\.\/approval-wire"\s*,\s*optional\s*=\s*true\s*\}\s*$/mu.test(normalized) &&
     dependencyHeaders.length === 3 &&
     dependencyHeaders[0].trim() === "[dependencies]" &&
     dependencyHeaders[1].trim() ===
@@ -31773,6 +31857,9 @@ const keyAgentServiceHelperBootstrapLibContract = (
       compactRust(item.source) ===
       "useself::child::complete_helper_ready_rpc_probe;",
   );
+  const approvalExchangeUse = useItems.find((item) =>
+    compactRust(item.source) === "useself::child::{ServiceApprovalRequest,receive_service_approval_request};",
+  );
   return (
     (lib.match(exactCfg) ?? []).length === 2 &&
     (lib.match(/#\[cfg\(all\(\s*windows\s*,\s*target_arch\s*=\s*"x86_64"\s*,\s*target_env\s*=\s*"msvc"\s*,\s*feature\s*=\s*"helper-ready-rpc-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\)\]/gu) ?? [])
@@ -31797,6 +31884,7 @@ const keyAgentServiceHelperBootstrapLibContract = (
         { inner: false, source: exactChildCfg },
         { inner: false, source: exactChildCfg },
         { inner: false, source: exactHelperReadyCfg },
+        { inner: false, source: exactHelperReadyCfg },
       ]) &&
     childModules.length === 1 &&
     JSON.stringify(attachedAttributeInventory(childModules[0].index)) ===
@@ -31812,6 +31900,10 @@ const keyAgentServiceHelperBootstrapLibContract = (
     JSON.stringify(
       attachedAttributeInventory(publicUseStart(helperReadyUse)),
     ) === JSON.stringify([exactHelperReadyCfg]) &&
+    approvalExchangeUse !== undefined &&
+    JSON.stringify(attachedAttributeInventory(publicUseStart(approvalExchangeUse))) ===
+      JSON.stringify([exactHelperReadyCfg]) &&
+    /#\[cfg\(all\(\s*windows\s*,\s*target_arch\s*=\s*"x86_64"\s*,\s*target_env\s*=\s*"msvc"\s*,\s*feature\s*=\s*"approval-exchange-feasibility-test-hook"\s*,\s*debug_assertions\s*\)\)\]\s*pub use self::child::\{ServiceApprovalRequest, receive_service_approval_request\};/u.test(lib) &&
     (lib.match(/\bmod\s+gate_spec\s*;/gu) ?? []).length === 1 &&
     (lib.match(/\bmod\s+wire\s*;/gu) ?? []).length === 1 &&
     (lib.match(/\bmod\s+child\s*;/gu) ?? []).length === 1 &&
@@ -31826,7 +31918,7 @@ const keyAgentServiceHelperBootstrapLibContract = (
         {
           visibility: "pub",
           source:
-            "useself::wire::{AdoptionWireError,HELPER_ADOPTION_ACK_BYTES,HELPER_BOOTSTRAP_HELLO_BYTES,HELPER_RPC_CONFIRMATION_BYTES,HelperAdoptionAck,HelperBootstrapHello,HelperBootstrapRole,HelperRpcConfirmation,decode_adoption_ack,decode_bootstrap_hello,decode_rpc_confirmation,encode_adoption_ack,encode_bootstrap_hello,encode_rpc_confirmation,};",
+            "useself::wire::{AdoptionWireError,HELPER_ADOPTION_ACK_BYTES,HELPER_BOOTSTRAP_HELLO_BYTES,HELPER_RPC_CONFIRMATION_BYTES,HelperAdoptionAck,HelperBootstrapHello,HelperBootstrapRole,HelperRpcConfirmation,MAX_SERVICE_APPROVAL_REQUEST_BYTES,SERVICE_APPROVAL_REQUEST_PREFIX_BYTES,decode_adoption_ack,decode_bootstrap_hello,decode_rpc_confirmation,decode_service_approval_request_prefix,encode_adoption_ack,encode_bootstrap_hello,encode_rpc_confirmation,encode_service_approval_request_prefix,};",
         },
         {
           visibility: "pub",
@@ -31837,8 +31929,12 @@ const keyAgentServiceHelperBootstrapLibContract = (
           visibility: "pub",
           source: "useself::child::complete_helper_ready_rpc_probe;",
         },
+        {
+          visibility: "pub",
+          source: "useself::child::{ServiceApprovalRequest,receive_service_approval_request};",
+        },
       ]) &&
-    (libCode.match(/\bpub\b/gu) ?? []).length === 4 &&
+    (libCode.match(/\bpub\b/gu) ?? []).length === 5 &&
     !/\bpub(?:\s*\([^)]*\))?\s+(?!use\b)(?:(?:async|unsafe|const)\s+)*(?:fn|struct|enum|union|trait|type|const|static|mod|extern\s+crate|macro_rules)\b/u.test(
       libCode,
     ) &&
@@ -32398,16 +32494,101 @@ const keyAgentServiceHelperBootstrapLegacyWireTestNames = [
   ...keyAgentServiceHelperBootstrapHelloTestNames,
 ];
 const keyAgentServiceHelperBootstrapWireV2TestNames = [
+  "service_approval_prefix_is_exact_bounded_and_not_eof_delimited",
   ...keyAgentServiceHelperBootstrapWireTestNames,
   ...keyAgentServiceHelperBootstrapRpcConfirmationTestNames,
   ...keyAgentServiceHelperBootstrapHelloTestNames,
 ];
 const keyAgentServiceHelperBootstrapWireV2PinContract = (source) =>
   normalizedSourceSha256(source) ===
-  "c7c92e6b5e2d128eaac64e95ae020a44804fd4c414a50c8dc4356faa848f0fc6";
+  "d1f04eb20a61d827a29742dfc7ca185a0987fd5c31eb50b129e45d6c7774f799";
+// Phase 3D framing is a bounded, authority-free extension; historical hello,
+// adoption, and HelperReady checks below continue to inspect their old graph.
+function keyAgentServiceApprovalFramingContract(source) {
+  try {
+    const production = withoutBottomTestModule(source);
+    const encode = rustTopLevelFunctionBlock(production, "encode_service_approval_request_prefix");
+    const decode = rustTopLevelFunctionBlock(production, "decode_service_approval_request_prefix");
+    return source.includes("#![forbid(unsafe_code)]") &&
+      rustUnsafeKeywordCount(source) === 0 &&
+      production.includes("pub const SERVICE_APPROVAL_REQUEST_PREFIX_BYTES: usize = 12;") &&
+      production.includes("pub const MAX_SERVICE_APPROVAL_REQUEST_BYTES: usize = 32_768;") &&
+      (production.match(/b"YWKSAP01"/gu) ?? []).length === 2 &&
+      hasOrderedCompactMarkers(encode, [
+        "pubfnencode_service_approval_request_prefix(request_bytes:usize,)->Result<[u8;SERVICE_APPROVAL_REQUEST_PREFIX_BYTES],AdoptionWireError>",
+        "if!(1..=MAX_SERVICE_APPROVAL_REQUEST_BYTES).contains(&request_bytes){returnErr(WireError::InvalidValue);}",
+        "letmutprefix=[0_u8;SERVICE_APPROVAL_REQUEST_PREFIX_BYTES]",
+        "prefix[..8].copy_from_slice",
+        "prefix[8..].copy_from_slice",
+        "u32::try_from(request_bytes)",
+        ".map_err(|_|WireError::InvalidValue)?",
+        ".to_be_bytes()",
+        "Ok(prefix)",
+      ]) &&
+      hasOrderedCompactMarkers(decode, [
+        "pubfndecode_service_approval_request_prefix(bytes:&[u8])->Result<usize,AdoptionWireError>",
+        "ifbytes.len()!=SERVICE_APPROVAL_REQUEST_PREFIX_BYTES||&bytes[..8]!=",
+        "returnErr(WireError::InvalidValue)",
+        "letlength=u32::from_be_bytes(bytes[8..].try_into().map_err(|_|WireError::InvalidValue)?)",
+        "letlength=usize::try_from(length).map_err(|_|WireError::InvalidValue)?",
+        "if!(1..=MAX_SERVICE_APPROVAL_REQUEST_BYTES).contains(&length){returnErr(WireError::InvalidValue);}",
+        "Ok(length)",
+      ]) &&
+      !/\b(?:cfg|ReadFile|WriteFile|HANDLE|Vec|String|unsafe|transmute)\b/u.test(rustLexicalCode(encode + decode)) &&
+      (compactRust(encode).match(/Ok\(/gu) ?? []).length === 1 &&
+      (compactRust(decode).match(/Ok\(/gu) ?? []).length === 1;
+  } catch {
+    return false;
+  }
+};
+function keyAgentServiceApprovalFramingMutations(wire) {
+  return [
+  ["prefix length", "SERVICE_APPROVAL_REQUEST_PREFIX_BYTES: usize = 12", "SERVICE_APPROVAL_REQUEST_PREFIX_BYTES: usize = 16"],
+  ["payload bound", "MAX_SERVICE_APPROVAL_REQUEST_BYTES: usize = 32_768", "MAX_SERVICE_APPROVAL_REQUEST_BYTES: usize = 65_536"],
+  ["magic", 'prefix[..8].copy_from_slice(b"YWKSAP01")', 'prefix[..8].copy_from_slice(b"YWKSAP02")'],
+  ["empty outbound", "(1..=MAX_SERVICE_APPROVAL_REQUEST_BYTES).contains(&request_bytes)", "(0..=MAX_SERVICE_APPROVAL_REQUEST_BYTES).contains(&request_bytes)"],
+  ["empty inbound", "(1..=MAX_SERVICE_APPROVAL_REQUEST_BYTES).contains(&length)", "(0..=MAX_SERVICE_APPROVAL_REQUEST_BYTES).contains(&length)"],
+  ["nonexact inbound", "bytes.len() != SERVICE_APPROVAL_REQUEST_PREFIX_BYTES", "bytes.len() < SERVICE_APPROVAL_REQUEST_PREFIX_BYTES"],
+  ["little endian", ".to_be_bytes(),", ".to_le_bytes(),"],
+].map(([name, search, replacement]) => {
+  const source = replaceExactStringOnce(wire, search, replacement);
+  return { name, changed: source !== wire, rejected: !keyAgentServiceApprovalFramingContract(source) };
+});
+}
+function keyAgentServiceApprovalFramingMutationNames() {
+  return [
+    "prefix length", "payload bound", "magic", "empty outbound", "empty inbound",
+    "nonexact inbound", "little endian",
+  ];
+}
+function keyAgentServiceApprovalMutationInventory(results, expectedNames) {
+  return Array.isArray(results) &&
+    JSON.stringify(results.map((result) => result?.name)) === JSON.stringify(expectedNames) &&
+    new Set(expectedNames).size === expectedNames.length &&
+    results.every((result) => result !== null && typeof result === "object" &&
+      JSON.stringify(Object.keys(result)) === JSON.stringify(["name", "changed", "rejected"]) &&
+      typeof result.changed === "boolean" && typeof result.rejected === "boolean");
+}
+function keyAgentServiceApprovalFailedMutationNames(results, expectedNames) {
+  return expectedNames.filter((name) => results.some((result) =>
+    result?.name === name && (result.changed !== true || result.rejected !== true)));
+}
+const keyAgentServiceApprovalFramingMutationResults =
+  keyAgentServiceApprovalFramingMutations(keyAgentServiceHelperBootstrapWire);
+requireInvariant(
+  keyAgentServiceApprovalFramingContract(keyAgentServiceHelperBootstrapWire) &&
+    keyAgentServiceApprovalMutationInventory(
+      keyAgentServiceApprovalFramingMutationResults,
+      keyAgentServiceApprovalFramingMutationNames(),
+    ) &&
+    keyAgentServiceApprovalFramingMutationResults.every(({ changed, rejected }) => changed && rejected),
+  "service Approval framing must stay authority-free with exact 12-byte YWKSAP01 framing, canonical big-endian lengths bounded to 1..32768, bounds-before-allocation/slicing, and seven effective framing mutations",
+);
 const keyAgentServiceHelperBootstrapLegacyProductionProjection = (source) => {
   let projection = source;
   for (const declaration of [
+    "pub const SERVICE_APPROVAL_REQUEST_PREFIX_BYTES: usize = 12;\n",
+    "pub const MAX_SERVICE_APPROVAL_REQUEST_BYTES: usize = 32_768;\n",
     "pub const HELPER_RPC_CONFIRMATION_BYTES: usize = 72;\n",
     'const HELPER_RPC_CONFIRMATION_MAGIC: [u8; 8] = *b"YWKHRC01";\n',
     "const FRAME_HELPER_RPC_CONFIRMATION: u16 = 1;\n",
@@ -32415,6 +32596,16 @@ const keyAgentServiceHelperBootstrapLegacyProductionProjection = (source) => {
     "const _: () = assert!(RPC_CONFIRMATION_CHECKSUM_OFFSET + 4 == HELPER_RPC_CONFIRMATION_BYTES);\n",
   ]) {
     projection = replaceExactStringOnce(projection, declaration, "");
+  }
+  for (const name of [
+    "encode_service_approval_request_prefix",
+    "decode_service_approval_request_prefix",
+  ]) {
+    projection = replaceExactStringOnce(
+      projection,
+      rustTopLevelFunctionBlock(projection, name),
+      "",
+    );
   }
 
   const confirmation = rustTopLevelLexicalItemBlock(
@@ -33448,6 +33639,7 @@ const keyAgentServiceHelperBootstrapWireHistoricalSemanticContract = (source) =>
     JSON.stringify(
       keyAgentServiceRustTestNameInventory(source).filter(
         (name) =>
+          name !== "service_approval_prefix_is_exact_bounded_and_not_eof_delimited" &&
           !keyAgentServiceHelperBootstrapRpcConfirmationTestNames.includes(
             name,
           ),
@@ -33551,7 +33743,7 @@ const keyAgentServiceHelperBootstrapWireV2SemanticContract = (source) => {
     return (
       keyAgentServiceHelperBootstrapWireHistoricalSemanticContract(source) &&
       normalizedSourceSha256(source) ===
-        "c7c92e6b5e2d128eaac64e95ae020a44804fd4c414a50c8dc4356faa848f0fc6" &&
+        "d1f04eb20a61d827a29742dfc7ca185a0987fd5c31eb50b129e45d6c7774f799" &&
       source.includes("#![forbid(unsafe_code)]") &&
       rustUnsafeKeywordCount(source) === 0 &&
       [
@@ -33957,6 +34149,7 @@ const keyAgentServiceHelperBootstrapChildV2TestNames = [
   "public_completion_signature_has_no_recoverable_error_channel",
   "public_helper_ready_signature_consumes_bootstrap_and_never_returns",
   "opaque_channel_states_are_debuggable_but_thread_bound",
+  "service_approval_request_is_thread_bound_and_consumes_the_bootstrap",
 ];
 const keyAgentServiceHelperBootstrapWindowsV2TestNames = [
   ...keyAgentServiceHelperBootstrapWindowsTestNames,
@@ -33969,6 +34162,14 @@ const keyAgentServiceHelperBootstrapWindowsV2TestNames = [
   "deadline_is_strict_future_and_at_most_five_seconds",
   "every_fallible_bootstrap_operation_prefix_rejects_before_gate",
   "process_creation_filetime_combines_high_and_low_halves",
+  "service_approval_helper_ready_keeps_response_open",
+  "service_approval_round_trip_binds_both_decisions_and_closes_after_exact_response",
+  "service_approval_handles_partial_io_without_eof_and_rejects_invalid_counts",
+  "service_approval_rejects_bad_prefix_truncation_and_noncanonical_request",
+  "service_approval_checks_every_original_deadline_edge_and_never_restarts_relative_expiry",
+  "service_approval_failed_or_late_presenter_never_writes",
+  "service_approval_every_fallible_operation_stops_the_prefix",
+  "service_approval_wrong_role_rejects_before_any_io_or_presenter",
   "exact_helper_ready_round_trip_uses_original_deadline_and_confirmation_order",
   "entrypoint_role_mismatch_rejects_before_time_rpc_or_pipe_operations",
   "deadline_is_strict_at_start_before_call_after_call_and_after_confirmation",
@@ -33978,10 +34179,10 @@ const keyAgentServiceHelperBootstrapWindowsV2TestNames = [
 ];
 const keyAgentServiceHelperBootstrapChildV2PinContract = (child, windows) =>
   normalizedSourceSha256(child) ===
-    "967ecde8a1735ec45ba65ae6460c1584e4c2de26afddd4aa115ed09185634974" &&
+    "651b28ebdeee01d8a2851c95084d13a545a7edee8375fb327731f4c7874653f2" &&
   normalizedSourceSha256(windows) ===
-    "237d2c59e83ac586d8e1f926268fe41b65523edddc1a8622ccc88c4d6927b8d7";
-const withoutKeyAgentServiceHelperBootstrapWindowsTests = (source) => {
+    "c5f905009c5e7617e86e78c26447ec191289cbbf26e2496ed2e751981a0de455";
+function withoutKeyAgentServiceHelperBootstrapWindowsTests(source) {
   const code = rustLexicalCode(source);
   const baseTestModules = [
     ...source.matchAll(/(?:^|\n)\s*#\[cfg\(test\)\]\s*mod\s+tests\s*\{/gu),
@@ -34090,9 +34291,13 @@ const keyAgentServiceHelperBootstrapChildV2SemanticContract = (
     windowsProduction,
     "complete_helper_ready_rpc_probe",
   );
-  const completeHelperReady = rustTopLevelFunctionBlock(
+  const completeHelperReadyWrapper = rustTopLevelFunctionBlock(
     windowsProduction,
     "complete_helper_ready_with_operations",
+  );
+  const completeHelperReady = rustTopLevelFunctionBlock(
+    windowsProduction,
+    "authenticate_helper_ready_with_operations",
   );
   const remainingHelperReadyTimeout = rustTopLevelFunctionBlock(
     windowsProduction,
@@ -34252,16 +34457,16 @@ const keyAgentServiceHelperBootstrapChildV2SemanticContract = (
       .length === 1 &&
     rustUnsafeKeywordCount(child) === 0 &&
     normalizedSourceSha256(child) ===
-      "967ecde8a1735ec45ba65ae6460c1584e4c2de26afddd4aa115ed09185634974" &&
+      "651b28ebdeee01d8a2851c95084d13a545a7edee8375fb327731f4c7874653f2" &&
     normalizedSourceSha256(windows) ===
-      "237d2c59e83ac586d8e1f926268fe41b65523edddc1a8622ccc88c4d6927b8d7" &&
+      "c5f905009c5e7617e86e78c26447ec191289cbbf26e2496ed2e751981a0de455" &&
     compactChild.includes(
       "pubstructAdoptedInjectedChannels{inner:windows::AdoptedInjectedChannels,_not_send_or_sync:PhantomData<Rc<()>>,}",
     ) &&
     compactChild.includes(
       "pubstructBootstrappedInjectedChannels{_inner:windows::BootstrappedInjectedChannels,_not_send_or_sync:PhantomData<Rc<()>>,}",
     ) &&
-    (compactChild.match(/std::process::abort\(\)/gu) ?? []).length === 2 &&
+    (compactChild.match(/std::process::abort\(\)/gu) ?? []).length === 3 &&
     compactRust(publicCapture) ===
       "pubfncapture_and_adopt_injected_channels()->AdoptedInjectedChannels{letOk(inner)=windows::capture_and_adopt_injected_channels()else{std::process::abort();};AdoptedInjectedChannels{inner,_not_send_or_sync:PhantomData,}}" &&
     hasOrderedCompactMarkers(publicCompletion, [
@@ -34486,6 +34691,8 @@ const keyAgentServiceHelperBootstrapChildV2SemanticContract = (
       "operations.block_on_request_input()",
     ]) &&
     !compactRust(helperReadyEntry).includes("Result<") &&
+    compactRust(completeHelperReadyWrapper) ===
+      "fncomplete_helper_ready_with_operations<Operations:HelperReadyOperations>(operations:&mutOperations,retained:&RetainedHelperRpcCorrelation,expected_role:HelperBootstrapRole,)->Result<(),()>{authenticate_helper_ready_with_operations(operations,retained,expected_role)?;operations.close_response()}" &&
     hasOrderedCompactMarkers(completeHelperReady, [
       "letconfirmation=retained.confirmation()?",
       "ifconfirmation.role()!=expected_role{returnErr(());}",
@@ -34512,7 +34719,6 @@ const keyAgentServiceHelperBootstrapChildV2SemanticContract = (
       "operations.write_confirmation(&retained.confirmation_frame)?",
       "letconfirmation_now=operations.tick_count_milliseconds()?",
       "remaining_call_timeout_milliseconds(deadline,confirmation_now)?",
-      "operations.close_response()?",
       "Ok(())",
     ]) &&
     rustCallSites(
@@ -34523,7 +34729,8 @@ const keyAgentServiceHelperBootstrapChildV2SemanticContract = (
       4 &&
     rustCallSites(completeHelperReady, "exchange").length === 1 &&
     rustCallSites(completeHelperReady, "write_confirmation").length === 1 &&
-    rustCallSites(completeHelperReady, "close_response").length === 1 &&
+    rustCallSites(completeHelperReady, "close_response").length === 0 &&
+    rustCallSites(completeHelperReadyWrapper, "close_response").length === 1 &&
     hasOrderedCompactMarkers(remainingHelperReadyTimeout, [
       "deadline.checked_sub(now)",
       ".filter(|remaining|*remaining!=0)",
@@ -34780,8 +34987,8 @@ pub fn complete_helper_ready_rpc_probe`,
   ),
   mutateKeyAgentServiceHelperBootstrapChild(
     "windows",
-    "    operations.close_response()?;",
-    "    let _ = operations;",
+    "    authenticate_helper_ready_with_operations(operations, retained, expected_role)?;\n    operations.close_response()",
+    "    authenticate_helper_ready_with_operations(operations, retained, expected_role)?;\n    Ok(())",
   ),
   mutateKeyAgentServiceHelperBootstrapChild(
     "windows",
@@ -34840,6 +35047,166 @@ requireInvariant(
     ),
   "key-agent-service-helper-bootstrap child must retain process-terminal capture plus the exact HelperReady RPC completion leaf whose exact two private naked x64 instruction streams bind directly to the reviewed gate-spec marker/byte builders, strict candidate adoption, exact non-inheritable minimum-right duplicates, canonical hello/ACK framing, expected-role/current-child/creation-FILETIME/deadline/two-peer binding, synchronous ACK-before-gate ordering, packet-private fixed-endpoint HelperReady request/confirmation before terminal request-input wait, no Peek/flush rights widening, opaque thread-bound ownership, explicit source access/direction uncertainty, exhaustive negatives, and effective mutations",
 );
+const keyAgentServiceApprovalTransportInputs = Object.freeze({
+  child: keyAgentServiceHelperBootstrapChild,
+  windows: keyAgentServiceHelperBootstrapWindows,
+  debugGate: keyAgentServiceDebugGateSource,
+  probe: keyAgentServiceRpcProbeLeafSource,
+  main: await text("crates/approval-ui/src/main.rs"),
+  ui: await text("crates/approval-ui/src/lib.rs"),
+  native: await text("crates/approval-ui/src/native.rs"),
+});
+function keyAgentServiceApprovalTransportChecks(inputs) {
+  try {
+    const child = withoutBottomTestModule(inputs.child);
+    const windows = withoutKeyAgentServiceHelperBootstrapWindowsTests(inputs.windows);
+    const debugGate = withoutBottomTestModule(inputs.debugGate);
+    const probe = withoutBottomTestModule(inputs.probe);
+    if (windows === null) return { productionProjection: false };
+    const fn = (source, name) => rustTopLevelFunctionBlock(source, name);
+    const owner = (source, header) => rustImplItems(source).find((item) => item.header === header)?.source ?? "";
+    const publicOwner = owner(child, "impl ServiceApprovalRequest");
+    const nativeOwner = owner(windows, "impl ServiceApprovalRequest");
+    const waiter = owner(debugGate, "impl ServiceHelperConfirmationWaiter");
+    const receive = fn(windows, "receive_service_approval_request");
+    const read = fn(windows, "read_service_approval_with_operations");
+    const readBytes = fn(windows, "read_service_approval_bytes");
+    const present = fn(windows, "present_service_approval_with_operations");
+    const deadline = fn(windows, "check_service_approval_deadline");
+    const exchange = rustFunctionBlock(waiter, "exchange_approval_probe");
+    const validateResponse = fn(debugGate, "validate_probe_response");
+    const validateConfirmation = fn(debugGate, "validate_probe_confirmation");
+    const run = fn(probe, "run_service_helper_rpc_probe");
+    const fixture = fn(probe, "non_signing_approval_probe_request");
+    const publicPresent = rustFunctionBlock(publicOwner, "present_and_respond");
+    const nativePresent = rustFunctionBlock(nativeOwner, "present_and_respond");
+    const publicReceive = fn(child, "receive_service_approval_request");
+    const newWindowsItems = [receive, read, readBytes, present, deadline, nativeOwner];
+    return {
+      exactGates: newWindowsItems.every((item) => {
+        const index = windows.indexOf(item);
+        return index >= 0 && rustAttachedOuterAttributes(windows, index).some((attribute) =>
+          /#\[cfg\(all\(\s*target_env\s*=\s*"msvc"\s*,\s*feature\s*=\s*"approval-exchange-feasibility-test-hook"\s*\)\)\]/u.test(attribute.source));
+      }),
+      opaqueOwnership: compactRust(child).includes("pubstructServiceApprovalRequest{inner:windows::ServiceApprovalRequest,_not_send_or_sync:PhantomData<Rc<()>>,}") &&
+        compactRust(windows).includes("pub(super)structServiceApprovalRequest{operations:WindowsHelperReadyOperations,retained:RetainedHelperRpcCorrelation,request:approval_wire::ApprovalRequest,}") &&
+        !/impl\s+(?:Clone|Copy|Send|Sync|Deref|AsRef)\s+for\s+ServiceApprovalRequest|derive\([^)]*(?:Clone|Copy)[^)]*\)\]\s*(?:pub(?:\([^)]*\))?\s+)?struct\s+ServiceApprovalRequest/u.test(rustLexicalCode(child + windows)) &&
+        child.includes('formatter.write_str("ServiceApprovalRequest([REDACTED])")'),
+      publicOneShot: hasOrderedCompactMarkers(publicReceive, [
+        "channels:BootstrappedInjectedChannels", "->ServiceApprovalRequest", "windows::receive_service_approval_request(inner)", "std::process::abort()", "ServiceApprovalRequest{inner,_not_send_or_sync:PhantomData,}",
+      ]) && compactRust(publicPresent) === "pubfnpresent_and_respond(self,presenter:implFnOnce(&approval_wire::ApprovalRequest)->Option<approval_wire::Decision>,)->!{self.inner.present_and_respond(presenter)}",
+      authenticatedReceive: hasOrderedCompactMarkers(receive, [
+        "channels:BootstrappedInjectedChannels", "response_output:Some(response_output)",
+        "authenticate_helper_ready_with_operations(&mutoperations,&retained,HelperBootstrapRole::Approval,)?",
+        "letrequest=read_service_approval_with_operations(&mutoperations,&retained)?",
+        "Ok(ServiceApprovalRequest{operations,retained,request,})",
+      ]) && rustCallSites(receive, "close_response").length === 0 &&
+        rustCallSites(receive, "complete_helper_ready_with_operations").length === 0,
+      originalDeadline: hasOrderedCompactMarkers(deadline, [
+        "ifretained.confirmation()?.role()!=HelperBootstrapRole::Approval{returnErr(());}",
+        "remaining_call_timeout_milliseconds(*retained.deadline_tick_count_ms,operations.tick_count_milliseconds()?,)",
+      ]) && rustCallSites(deadline, "tick_count_milliseconds").length === 1 &&
+        !/expires_after_ms|Instant|Duration|deadline_tick_count_ms\s*=/u.test(rustLexicalCode(receive + read + readBytes + present + deadline)),
+      boundedReads: hasOrderedCompactMarkers(readBytes, [
+        "whileoffset<bytes.len()", "check_service_approval_deadline(operations,retained)?", "letremaining=bytes.len()-offset", "letread=operations.read_request(&mutbytes[offset..])?", "ifread==0||read>remaining{returnErr(());}", "check_service_approval_deadline(operations,retained)?", "offset+=read",
+      ]) && rustCallSites(readBytes, "check_service_approval_deadline").length === 2,
+      canonicalRequest: hasOrderedCompactMarkers(read, [
+        "letmutprefix=[0_u8;crate::SERVICE_APPROVAL_REQUEST_PREFIX_BYTES]", "read_service_approval_bytes(operations,retained,&mutprefix)?", "crate::decode_service_approval_request_prefix(&prefix)", "iflength>approval_wire::MAX_REQUEST_BYTES{returnErr(());}", "letmutbytes=Zeroizing::new(vec![0_u8;length])", "read_service_approval_bytes(operations,retained,&mutbytes)?", "approval_wire::decode_request(&bytes)", "Zeroizing::new(approval_wire::encode_request(&request))", "ifcanonical.as_slice()!=bytes.as_slice(){returnErr(());}", "check_service_approval_deadline(operations,retained)?", "Ok(request)",
+      ]),
+      boundedPresentation: hasOrderedCompactMarkers(present, [
+        "check_service_approval_deadline(operations,retained)?", "letdecision=presenter(request).ok_or(())?", "check_service_approval_deadline(operations,retained)?", "Zeroizing::new(approval_wire::encode_response(approval_wire::ApprovalResponse::for_request(decision,request),))", "whileoffset<response.len()", "check_service_approval_deadline(operations,retained)?", "letremaining=response.len()-offset", "operations.write_response(&response[offset..])?", "ifwritten==0||written>remaining{returnErr(());}", "check_service_approval_deadline(operations,retained)?", "offset+=written", "operations.close_response()",
+      ]) && rustCallSites(present, "check_service_approval_deadline").length === 4 &&
+        rustCallSites(present, "presenter").length === 1 && rustCallSites(present, "close_response").length === 1,
+      retainUntilServiceKill: hasOrderedCompactMarkers(nativePresent, [
+        "self,presenter:implFnOnce(&approval_wire::ApprovalRequest)->Option<approval_wire::Decision>,)->!", "present_service_approval_with_operations(&mutoperations,&retained,&request,presenter)", ".is_err()", "std::process::abort()", "drop(request)", "drop(retained)", "operations.block_on_request_input()",
+      ]),
+      stagedParentExchange: hasOrderedCompactMarkers(exchange, [
+        "self.ensure_live_deadline()?", "ifself.expected.role()!=HelperBootstrapRole::Approval", "ParentBootstrapChannelKind::Approval{request,response}", "response.take()", ".read_exact(HELPER_RPC_CONFIRMATION_BYTES,self.deadline)", "validate_probe_confirmation(&confirmation,&self.expected)?", "approval_wire::encode_request(approval)", "encode_service_approval_request_prefix(bytes.len())", ".write_bytes(&prefix,self.deadline)", ".write_bytes(&bytes,self.deadline)", ".read_exact_frame(approval_wire::RESPONSE_BYTES,self.deadline)", "validate_probe_response(&bytes,approval.digest(),approval.approval_nonce())?", "self.ensure_live_deadline()",
+      ]) && !/decision\(\)|finish\(|close\(/u.test(compactRust(exchange)) &&
+        rustCallSites(exchange, "read_exact_frame").length === 1 && rustCallSites(exchange, "read_exact").length === 1,
+      exactCorrelation: hasOrderedCompactMarkers(validateConfirmation, [
+        "HelperRpcConfirmation::decode(bytes)", "confirmation.ensure_correlates_with(expected.epoch_nonce(),expected.request_id(),expected.role(),)",
+      ]) && hasOrderedCompactMarkers(validateResponse, [
+        "approval_wire::decode_response(bytes)", "ifresponse.digest()!=expected_digest||response.approval_nonce()!=expected_nonce{returnErr(ServiceProbeDebugGateError::Correlation);}", "Ok(())",
+      ]) && !compactRust(validateResponse).includes("decision()"),
+      cleanupBeforeOutcome: hasOrderedCompactMarkers(run, [
+        "letexchange=matchrole", "ServiceRpcProbeRole::Approval=>non_signing_approval_probe_request()", "confirmation.exchange_approval_probe(&request)", "ServiceRpcProbeRole::SecretInput=>confirmation.wait_for_confirmation().map(|_|())", "ifexchange.is_err()", "letcleanup=lease.cancel()", "drop(confirmation)", "letadmitted=lease.finish_admitted_and_cancel()", "lettimely=confirmation.ensure_live_deadline()", "drop(confirmation)", "ifadmitted_role==role.admitted()", "timely.map_err(|_|ServiceRpcProbeError::Confirmation)?", "Ok(role.completed_result())",
+      ]) && compactRust(rustFunctionBlock(waiter, "ensure_live_deadline")) === "pub(super)fnensure_live_deadline(&self)->Result<(),ServiceProbeDebugGateError>{ifInstant::now()>=self.deadline{returnErr(ServiceProbeDebugGateError::Deadline);}Ok(())}",
+      serviceAuthoredNonSigning: rustCallSites(fixture, "fill").length === 2 &&
+        hasOrderedCompactMarkers(fixture, ["getrandom::fill(&mutdigest)", "getrandom::fill(&mutnonce)", "ApprovalDisplay::new(RiskLevel::High,fields)", "ApprovalRequest::new(digest,nonce,COORDINATION_MILLISECONDS,"]) &&
+        fixture.includes('"TRANSPORT TEST - NO SIGNING"') && fixture.includes('"https://service-probe.invalid"') &&
+        !/\b(?:secret_core|SigningKey|Mnemonic|SeedPhrase|PrivateKey|Wallet|Transaction|TcpStream|UdpSocket)\b/u.test(rustLexicalCode(probe + debugGate)),
+      nativeNonSigningTitle: inputs.native.includes('present_with_title(request, "Service transport test — no signing")') &&
+        hasOrderedCompactMarkers(fn(inputs.main, "run_service_helper_rpc_probe"), ["receive_service_approval_request(bootstrapped)", "request.present_and_respond(|request|approval_ui::present_service_probe(request).ok())"]) &&
+        /#\[cfg\(all\(\s*windows\s*,\s*target_arch\s*=\s*"x86_64"\s*,\s*target_env\s*=\s*"msvc"\s*,\s*debug_assertions\s*,\s*feature\s*=\s*"service-helper-rpc-probe-feasibility-test-hook"\s*\)\)\]\s*pub fn present_service_probe/u.test(inputs.ui),
+    };
+  } catch {
+    return { boundedExtraction: false };
+  }
+};
+function keyAgentServiceApprovalTransportCheckNames() {
+  return [
+    "exactGates", "opaqueOwnership", "publicOneShot", "authenticatedReceive",
+    "originalDeadline", "boundedReads", "canonicalRequest", "boundedPresentation",
+    "retainUntilServiceKill", "stagedParentExchange", "exactCorrelation",
+    "cleanupBeforeOutcome", "serviceAuthoredNonSigning", "nativeNonSigningTitle",
+  ];
+}
+function keyAgentServiceApprovalTransportContract(inputs) {
+  const checks = keyAgentServiceApprovalTransportChecks(inputs);
+  const expectedChecks = keyAgentServiceApprovalTransportCheckNames();
+  return JSON.stringify(Object.keys(checks)) === JSON.stringify(expectedChecks) &&
+    expectedChecks.every((name) => checks[name] === true);
+}
+function keyAgentServiceApprovalTransportMutations(inputs) {
+  return [
+  ["canonical bytes", "windows", "if canonical.as_slice() != bytes.as_slice()", "if false"],
+  ["bounded allocation", "windows", "if length > approval_wire::MAX_REQUEST_BYTES", "if false"],
+  ["inbound zero progress", "windows", "if read == 0 || read > remaining", "if read > remaining"],
+  ["outbound zero progress", "windows", "if written == 0 || written > remaining", "if written > remaining"],
+  ["original expiry", "windows", "*retained.deadline_tick_count_ms,", "u64::MAX,"],
+  ["fallible presenter", "windows", "let decision = presenter(request).ok_or(())?;", "let decision = approval_wire::Decision::Approve;"],
+  ["bound response", "windows", "ApprovalResponse::for_request(decision, request)", "ApprovalResponse::for_request(decision, other_request)"],
+  ["one shot", "child", "        self,\n        presenter: impl FnOnce", "        &mut self,\n        presenter: impl FnOnce"],
+  ["thread affinity", "child", "    inner: windows::ServiceApprovalRequest,\n    _not_send_or_sync: PhantomData<Rc<()>>,", "    inner: windows::ServiceApprovalRequest,"],
+  ["response nonce", "debugGate", "response.approval_nonce() != expected_nonce", "false"],
+  ["response digest", "debugGate", "response.digest() != expected_digest", "false"],
+  ["response EOF", "debugGate", ".read_exact_frame(approval_wire::RESPONSE_BYTES, self.deadline)", ".read_exact(approval_wire::RESPONSE_BYTES, self.deadline)"],
+  ["inclusive parent deadline", "debugGate", "if Instant::now() >= self.deadline", "if Instant::now() > self.deadline"],
+  ["fresh nonce", "probe", "getrandom::fill(&mut nonce).map_err(|_| ServiceRpcProbeError::Preparation)?;", "nonce.fill(0);"],
+  ["non-signing title", "native", '"Service transport test — no signing"', '"Signed approval helper"'],
+].map(([name, field, search, replacement]) => {
+  const original = inputs[field];
+  const scopedFunction = {
+    "inbound zero progress": "read_service_approval_bytes",
+    "outbound zero progress": "present_service_approval_with_operations",
+  }[name];
+  const scope = scopedFunction === undefined ? original : rustTopLevelFunctionBlock(original, scopedFunction);
+  const mutated = replaceExactStringOnce(scope, search, replacement);
+  const source = scopedFunction === undefined ? mutated : replaceExactStringOnce(original, scope, mutated);
+  return { name, changed: source !== inputs[field], rejected: !keyAgentServiceApprovalTransportContract({ ...inputs, [field]: source }) };
+});
+}
+function keyAgentServiceApprovalTransportMutationNames() {
+  return [
+    "canonical bytes", "bounded allocation", "inbound zero progress",
+    "outbound zero progress", "original expiry", "fallible presenter",
+    "bound response", "one shot", "thread affinity", "response nonce",
+    "response digest", "response EOF", "inclusive parent deadline", "fresh nonce",
+    "non-signing title",
+  ];
+}
+const keyAgentServiceApprovalTransportMutationResults =
+  keyAgentServiceApprovalTransportMutations(keyAgentServiceApprovalTransportInputs);
+requireInvariant(
+  keyAgentServiceApprovalTransportContract(keyAgentServiceApprovalTransportInputs) &&
+    keyAgentServiceApprovalMutationInventory(
+      keyAgentServiceApprovalTransportMutationResults,
+      keyAgentServiceApprovalTransportMutationNames(),
+    ) &&
+    keyAgentServiceApprovalTransportMutationResults.every(({ changed, rejected }) => changed && rejected),
+  `debug service Approval transport must preserve one-shot thread-bound authenticated channels, original deadlines, bounded canonical input and exact bound response/EOF, explicit non-signing native UI, SecretInput's separate ready-only path, and unconditional fresh-peer terminal cleanup before data-free completion; failed checks=${JSON.stringify(keyAgentServiceApprovalTransportCheckNames().filter((name) => keyAgentServiceApprovalTransportChecks(keyAgentServiceApprovalTransportInputs)[name] !== true))}; mutationInventory=${keyAgentServiceApprovalMutationInventory(keyAgentServiceApprovalTransportMutationResults, keyAgentServiceApprovalTransportMutationNames())}; failed mutations=${JSON.stringify(keyAgentServiceApprovalFailedMutationNames(keyAgentServiceApprovalTransportMutationResults, keyAgentServiceApprovalTransportMutationNames()))}`,
+);
 const keyAgentServiceHelperBootstrapUnsafeSourceInventory =
   rustUnsafeSourceInventory(keyAgentServiceHelperBootstrapRustFiles);
 const keyAgentServiceHelperBootstrapAuthorityTypeErasureInventory =
@@ -34856,7 +35223,7 @@ requireInvariant(
         path: "crates/key-agent-service-helper-bootstrap/src/child/windows.rs",
         unsafeCount: 30,
         sha256:
-          "237d2c59e83ac586d8e1f926268fe41b65523edddc1a8622ccc88c4d6927b8d7",
+          "c5f905009c5e7617e86e78c26447ec191289cbbf26e2496ed2e751981a0de455",
       },
     ]) &&
     JSON.stringify(
@@ -37019,9 +37386,9 @@ for (const capability of [
 // the headless smoke backend remain separate non-generation partitions.
 const walletSecretOriginExpectedDocumentationSha256 = Object.freeze({
   architecture:
-    "fe05917d8cd8d443dae4e3eca818ec9c4a0d8a0a6b10e369e47bc3d11aa82da0",
+    "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
   securityDecisions:
-    "ab70fe1e49fbc5b35b3a6934c1030fe1a4dedfd5ba95e7ac28ca2866caf45ad7",
+    "7b986e9aa9bc3c71b2bfd325bf3e1352e6ab465d4c773190c73033e4518ea2ae",
 });
 const walletSecretOriginProductionProjection = (source) =>
   withoutCfgTestItems(withoutBottomTestModule(source));
@@ -40417,11 +40784,11 @@ const keyAgentServicePhaseTwoIExpectedPins = Object.freeze({
   sourceProduction:
     "2d4da94c36055c61f5fdedabb8752709bf32750a28381e67c50b6e21c0866b4e",
   design:
-    "889f41af051096e36f4665c025e952ff437e305ff862e2273b8960f6f03841a7",
+    "54739b6ec9b6357b1c515f03eaa1294f7595e3614212b7688637004585ded625",
   architecture:
-    "fe05917d8cd8d443dae4e3eca818ec9c4a0d8a0a6b10e369e47bc3d11aa82da0",
+    "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
   security:
-    "ab70fe1e49fbc5b35b3a6934c1030fe1a4dedfd5ba95e7ac28ca2866caf45ad7",
+    "7b986e9aa9bc3c71b2bfd325bf3e1352e6ab465d4c773190c73033e4518ea2ae",
 });
 const keyAgentServicePhaseTwoIExpectedInboundEdge = Object.freeze({
   declaringFile: keyAgentServicePhaseTwoIParentPath,
@@ -41838,13 +42205,13 @@ const keyAgentServicePhaseThreeAExpectedPlatformFeatures = Object.freeze([
 ]);
 const keyAgentServicePhaseThreeAExpectedPins = Object.freeze({
   expectedPeerFull:
-    "bf254901d25055701177dc44efbd29a82eae1d4a30b330fc506f4e107eb195d9",
+    "ad9cde87487fb6abef31b8e60f0ff64c3747cae091a348eda7572a496a575950",
   expectedPeerProduction:
-    "771be7300c5e28829e0fee9b147be7c4f2f99f9ae70fc71e69b264d5825e5845",
+    "e3b188bc68ef55bf3ea82950924db087625c40849b16e068c7f11228e1827b3d",
   debugGateFull:
-    "d2c78f7a3156993219848020373dfc0a9140754af4f9fdf07d49390eb89f180d",
+    "366b231adfca2325beca4009c4a50e6a8063f5aa65ba5f35e51ed1e740670062",
   debugGateProduction:
-    "c85fec168479f2bbc81be3e0fc5bc3390e3b47000aac571e9a85a1a1a03135d4",
+    "cc9116d31bc909c369ec88ddd672e2ceadc922a87e70c7792702554403576435",
   processFull:
     "3d5c043884ba8e941f54328199f4738a6d3104a0d5e154dc277e18cc2a3fda9c",
   processProduction:
@@ -41854,13 +42221,13 @@ const keyAgentServicePhaseThreeAExpectedPins = Object.freeze({
   targetProfileProduction:
     "610502bfedee760837e3d1c7a3729067dda450d5bf98061553dddabb499b303c",
   design:
-    "889f41af051096e36f4665c025e952ff437e305ff862e2273b8960f6f03841a7",
+    "54739b6ec9b6357b1c515f03eaa1294f7595e3614212b7688637004585ded625",
   architecture:
-    "fe05917d8cd8d443dae4e3eca818ec9c4a0d8a0a6b10e369e47bc3d11aa82da0",
+    "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
   security:
-    "ab70fe1e49fbc5b35b3a6934c1030fe1a4dedfd5ba95e7ac28ca2866caf45ad7",
+    "7b986e9aa9bc3c71b2bfd325bf3e1352e6ab465d4c773190c73033e4518ea2ae",
   platformReadme:
-    "bc5d56526772cec79551d8614e8b73c902a516657decb6ae26c1ac28bbfa3944",
+    "18ea8353cffd6d9101428428f6c9777d1a5ac21e99b77ac712de28d923222394",
 });
 const keyAgentServicePhaseThreeAProductionProjection = (source) =>
   withoutCfgTestItems(withoutBottomTestModule(source));
@@ -42561,7 +42928,7 @@ const keyAgentServicePhaseThreeASemanticContract = (inputs, requirePins = true) 
         expectedPeerProduction,
       );
     const exactTestsCheck =
-      attributedTests.length === 37 &&
+      attributedTests.length === 41 &&
       attributedTests.every(({ ignored }) => !ignored) &&
       JSON.stringify(attributedTests.map(({ name }) => name)) ===
         JSON.stringify(keyAgentServiceExpectedPeerTestNames) &&
@@ -43505,13 +43872,13 @@ const keyAgentServicePhaseThreeBExpectedPins = Object.freeze({
   moduleFull: "3b996da2fd1551826c6a897f03cd33543d0634671d3e8745104253c27e13cfec",
   moduleProduction:
     "59db9f3ce95cc4f2b0ee36fe69dfddf26a9cfa7dfd0fa204effea78ea8c95ce1",
-  design: "889f41af051096e36f4665c025e952ff437e305ff862e2273b8960f6f03841a7",
+  design: "54739b6ec9b6357b1c515f03eaa1294f7595e3614212b7688637004585ded625",
   architecture:
-    "fe05917d8cd8d443dae4e3eca818ec9c4a0d8a0a6b10e369e47bc3d11aa82da0",
+    "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
   security:
-    "ab70fe1e49fbc5b35b3a6934c1030fe1a4dedfd5ba95e7ac28ca2866caf45ad7",
+    "7b986e9aa9bc3c71b2bfd325bf3e1352e6ab465d4c773190c73033e4518ea2ae",
   platformReadme:
-    "bc5d56526772cec79551d8614e8b73c902a516657decb6ae26c1ac28bbfa3944",
+    "18ea8353cffd6d9101428428f6c9777d1a5ac21e99b77ac712de28d923222394",
 });
 const keyAgentServicePhaseThreeBExpectedParentMacroInvocationSha256 =
   "985d21d2b833a6aca129d9c63995b4b65269bac69815a4ba4d3c565d2dad6870";
@@ -47664,7 +48031,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "508572688b28e5ba25cd5e994e693d29d05f4cd17d3c313885840b7c1d2efa4f";
+  "62a0b1a65b53d1cdd5ebc2508a9608d56e73597da4620097ed3a565d3ad71079";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -47780,7 +48147,7 @@ const approvedWorkspaceCargoManifestPins = [
   },
   {
     path: "crates/approval-ui/Cargo.toml",
-    sha256: "8671f13ff3f1882bfa820749cd2c8a62a10b5d180337acc4543c248696dbb10f",
+    sha256: "bf3da9b3859036e183417d07d0593a53293fa1eb70b5eb1df77eb70000a48a9e",
   },
   {
     path: "crates/approval-wire/Cargo.toml",
@@ -47820,7 +48187,7 @@ const approvedWorkspaceCargoManifestPins = [
   },
   {
     path: "crates/key-agent-service-helper-bootstrap/Cargo.toml",
-    sha256: "a288276b47e329c6797c314f174f85ea5ce0048c606cfd533e0f5e72c4a19f96",
+    sha256: "c4dc187770555a53d45ca5dcbb6a0497ed998674baa1a93a3cd5a2d4a373198c",
   },
   {
     path: "crates/key-agent-service-rpc-sys/Cargo.toml",
@@ -47879,6 +48246,10 @@ const keyAgentServiceHelperBootstrapParentNeutralExports = [
   "RESPONSE_OUTPUT_MARKER",
   "adoption_complete_gate_bytes",
   "capture_gate_bytes",
+  "MAX_SERVICE_APPROVAL_REQUEST_BYTES",
+  "SERVICE_APPROVAL_REQUEST_PREFIX_BYTES",
+  "decode_service_approval_request_prefix",
+  "encode_service_approval_request_prefix",
 ].sort((left, right) => left.localeCompare(right, "en"));
 const keyAgentServiceHelperBootstrapParentNeutralImportsFromLexicalCode = (
   productionSource,
@@ -48146,15 +48517,16 @@ const keyAgentServiceHelperBootstrapReachabilityContract = (
         })),
     }),
   );
-  const helperUiManifestContract = (manifest) =>
+  const helperUiManifestContract = (manifest, approvalExchange) =>
     typeof manifest === "string" &&
     /^default\s*=\s*\[\]\s*$/mu.test(manifest) &&
     /service-helper-rpc-probe-feasibility-test-hook\s*=\s*\[\s*"dep:key-agent-service-helper-bootstrap",?\s*\]/u.test(
       manifest,
     ) &&
-    /^key-agent-service-helper-bootstrap\s*=\s*\{\s*path\s*=\s*"\.\.\/key-agent-service-helper-bootstrap",\s*optional\s*=\s*true,\s*features\s*=\s*\[\s*"child-capture-feasibility-test-hook",\s*"helper-ready-rpc-feasibility-test-hook",?\s*\]\s*\}\s*$/mu.test(
+    /^key-agent-service-helper-bootstrap\s*=\s*\{\s*path\s*=\s*"\.\.\/key-agent-service-helper-bootstrap",\s*optional\s*=\s*true,\s*features\s*=\s*\[\s*"child-capture-feasibility-test-hook",\s*"helper-ready-rpc-feasibility-test-hook",?\s*(?:"approval-exchange-feasibility-test-hook",?\s*)?\]\s*\}\s*$/mu.test(
       manifest,
     ) &&
+    manifest.includes('"approval-exchange-feasibility-test-hook"') === approvalExchange &&
     keyAgentServiceLiteralCount(
       manifest,
       "key-agent-service-helper-bootstrap",
@@ -48175,8 +48547,8 @@ const keyAgentServiceHelperBootstrapReachabilityContract = (
         "crates/secret-input-ui/src/main.rs",
       ]) &&
     typeof platformManifest === "string" &&
-    helperUiManifestContract(approvalManifest) &&
-    helperUiManifestContract(secretInputManifest) &&
+    helperUiManifestContract(approvalManifest, true) &&
+    helperUiManifestContract(secretInputManifest, false) &&
     /^key-agent-service-helper-bootstrap\s*=\s*\{\s*path\s*=\s*"\.\.\/key-agent-service-helper-bootstrap",\s*optional\s*=\s*true,\s*default-features\s*=\s*false\s*\}$/mu.test(
       platformManifest,
     ) &&
@@ -48203,6 +48575,7 @@ const keyAgentServiceHelperBootstrapReachabilityContract = (
             "CAPTURE_GATE_BREAKPOINT_OFFSET",
             "capture_gate_bytes",
             "CAPTURE_GATE_BYTES",
+            "encode_service_approval_request_prefix",
             "HELPER_ADOPTION_ACK_BYTES",
             "HELPER_RPC_CONFIRMATION_BYTES",
             "HelperAdoptionAck",
@@ -48241,12 +48614,12 @@ const keyAgentServiceHelperBootstrapReachabilityContract = (
         {
           path: "crates/approval-ui/src/main.rs",
           sha256:
-            "579f0600975e47722633a9374a4175ca676fc5d59a0b90f76a20eb440dc5189d",
+            "afd3c5e15bb50d043cee5a992562e87c381ffec2f79982c83a229621b3b171a0",
           imports: [
             {
               depth: 0,
               source:
-                "usekey_agent_service_helper_bootstrap::{HelperBootstrapRole,capture_and_adopt_injected_channels,complete_helper_ready_rpc_probe,complete_injected_channel_bootstrap,};",
+                "usekey_agent_service_helper_bootstrap::{HelperBootstrapRole,capture_and_adopt_injected_channels,complete_injected_channel_bootstrap,receive_service_approval_request,};",
               attributes: [
                 "#[cfg(all(windows,target_arch=,target_env=,debug_assertions,feature=))]",
               ],
@@ -49231,6 +49604,7 @@ const keyAgentServiceHelperBootstrapLockContract = (source) => {
     records[0].checksum === null &&
     JSON.stringify(records[0].dependencies) ===
       JSON.stringify([
+        "approval-wire",
         "key-agent-service-rpc-sys",
         "key-agent-service-wire",
         "windows",
@@ -49240,12 +49614,16 @@ const keyAgentServiceHelperBootstrapLockContract = (source) => {
 };
 const keyAgentServiceHelperBootstrapLockMutationProbes = [
   workspaceLock.replace(
-    'name = "key-agent-service-helper-bootstrap"\nversion = "0.1.0"\ndependencies = [\n "key-agent-service-rpc-sys",\n "key-agent-service-wire",\n "windows",\n "zeroize",\n]',
-    'name = "key-agent-service-helper-bootstrap"\nversion = "0.1.0"\ndependencies = [\n "key-agent-service-rpc-sys",\n "key-agent-service-wire",\n "windows",\n]',
+    'name = "key-agent-service-helper-bootstrap"\nversion = "0.1.0"\ndependencies = [\n "approval-wire",\n "key-agent-service-rpc-sys",\n "key-agent-service-wire",\n "windows",\n "zeroize",\n]',
+    'name = "key-agent-service-helper-bootstrap"\nversion = "0.1.0"\ndependencies = [\n "approval-wire",\n "key-agent-service-rpc-sys",\n "key-agent-service-wire",\n "windows",\n]',
   ),
   workspaceLock.replace(
-    'name = "key-agent-service-helper-bootstrap"\nversion = "0.1.0"\ndependencies = [\n "key-agent-service-rpc-sys",\n "key-agent-service-wire",\n "windows",\n "zeroize",\n]',
-    'name = "key-agent-service-helper-bootstrap"\nversion = "0.1.0"\ndependencies = [\n "key-agent-service-rpc-sys",\n "key-agent-service-wire",\n "platform-windows",\n "windows",\n "zeroize",\n]',
+    'name = "key-agent-service-helper-bootstrap"\nversion = "0.1.0"\ndependencies = [\n "approval-wire",\n "key-agent-service-rpc-sys",\n "key-agent-service-wire",\n "windows",\n "zeroize",\n]',
+    'name = "key-agent-service-helper-bootstrap"\nversion = "0.1.0"\ndependencies = [\n "approval-wire",\n "key-agent-service-rpc-sys",\n "key-agent-service-wire",\n "platform-windows",\n "windows",\n "zeroize",\n]',
+  ),
+  workspaceLock.replace(
+    'name = "key-agent-service-helper-bootstrap"\nversion = "0.1.0"\ndependencies = [\n "approval-wire",\n',
+    'name = "key-agent-service-helper-bootstrap"\nversion = "0.1.0"\ndependencies = [\n',
   ),
 ];
 requireInvariant(
@@ -49255,7 +49633,7 @@ requireInvariant(
         probe !== workspaceLock &&
         !keyAgentServiceHelperBootstrapLockContract(probe),
     ),
-  "Cargo.lock must contain exactly one local helper-bootstrap record with only RPC sys, service wire, Windows, and zeroize dependencies, with effective zeroize removal and dependency-expansion mutations",
+  "Cargo.lock must contain exactly one local helper-bootstrap record with only Approval wire, RPC sys, service wire, Windows, and zeroize dependencies, with effective Approval wire/zeroize removal and dependency-expansion mutations",
 );
 const keyAgentDebuggerLockContract = (source) => {
   const allRecords = cargoLockPackageRecords(source);
@@ -68913,7 +69291,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service_launch/debug_gate.rs",
     unsafeCount: 60,
-    sha256: "c85fec168479f2bbc81be3e0fc5bc3390e3b47000aac571e9a85a1a1a03135d4",
+    sha256: "cc9116d31bc909c369ec88ddd672e2ceadc922a87e70c7792702554403576435",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_launch/job.rs",
@@ -70024,7 +70402,7 @@ requireInvariant(
     rootManifestSha256 ===
       "9918490697127f3e4ad1496365f6dad29d23ecc8edacdb0b75e203b19a2bc796" &&
     workspaceLockSha256 ===
-      "a2711a6eb564dbb47546eab896cc8c513137a7e0f23c5eb9ebdcb9fa83a6624c" &&
+      "871cb254369857848f7ee0d82ea7a60019734263b2fb0241c6e93786d8ee9b49" &&
     (workspaceManifest.match(/^thiserror\s*=\s*"=2\.0\.12"\s*$/gmu) ?? [])
       .length === 1 &&
     !/\b(?:patch|replace)\b/u.test(workspaceManifestWithoutComments) &&
@@ -77214,15 +77592,15 @@ const keyAgentHandleAttenuationDocumentation = [
 ];
 const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "README.md":
-    "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
+    "e0857944b996eabaa3fa94af1c1458cb3a1fa26f2c56447f1a90b2d4f2024cdb",
   "crates/platform-windows/README.md":
-    "bc5d56526772cec79551d8614e8b73c902a516657decb6ae26c1ac28bbfa3944",
+    "18ea8353cffd6d9101428428f6c9777d1a5ac21e99b77ac712de28d923222394",
   "docs/architecture.md":
-    "fe05917d8cd8d443dae4e3eca818ec9c4a0d8a0a6b10e369e47bc3d11aa82da0",
+    "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
   "docs/protocol-contract.md":
     "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "docs/security-decisions.md":
-    "ab70fe1e49fbc5b35b3a6934c1030fe1a4dedfd5ba95e7ac28ca2866caf45ad7",
+    "7b986e9aa9bc3c71b2bfd325bf3e1352e6ab465d4c773190c73033e4518ea2ae",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -80848,8 +81226,9 @@ for (const helper of [
         `${probeCfg}constSERVICE_HELPER_ROLE:HelperBootstrapRole=HelperBootstrapRole::${helper.role};`,
       ) &&
       compactMainSource.includes(`${probeCfg}fnmain(){run_service_helper_rpc_probe();}`) &&
-      compactMainSource.includes(
-        `${probeCfg}fnrun_service_helper_rpc_probe()->!{letadopted=capture_and_adopt_injected_channels();letbootstrapped=complete_injected_channel_bootstrap(adopted,SERVICE_HELPER_ROLE);complete_helper_ready_rpc_probe(bootstrapped,SERVICE_HELPER_ROLE)}`,
+      compactMainSource.includes(helper.role === "Approval"
+        ? `${probeCfg}fnrun_service_helper_rpc_probe()->!{letadopted=capture_and_adopt_injected_channels();letbootstrapped=complete_injected_channel_bootstrap(adopted,SERVICE_HELPER_ROLE);letrequest=receive_service_approval_request(bootstrapped);request.present_and_respond(|request|approval_ui::present_service_probe(request).ok())}`
+        : `${probeCfg}fnrun_service_helper_rpc_probe()->!{letadopted=capture_and_adopt_injected_channels();letbootstrapped=complete_injected_channel_bootstrap(adopted,SERVICE_HELPER_ROLE);complete_helper_ready_rpc_probe(bootstrapped,SERVICE_HELPER_ROLE)}`,
       ) &&
       mainSource.includes(helper.readCall) &&
       mainSource.includes(helper.presentCall) &&
@@ -83085,11 +83464,11 @@ const currentDebuggerExitDocumentationContract = (documents) =>
     );
   });
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
-  "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
-  "bc5d56526772cec79551d8614e8b73c902a516657decb6ae26c1ac28bbfa3944",
-  "fe05917d8cd8d443dae4e3eca818ec9c4a0d8a0a6b10e369e47bc3d11aa82da0",
+  "e0857944b996eabaa3fa94af1c1458cb3a1fa26f2c56447f1a90b2d4f2024cdb",
+  "18ea8353cffd6d9101428428f6c9777d1a5ac21e99b77ac712de28d923222394",
+  "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
   "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
-  "ab70fe1e49fbc5b35b3a6934c1030fe1a4dedfd5ba95e7ac28ca2866caf45ad7",
+  "7b986e9aa9bc3c71b2bfd325bf3e1352e6ab465d4c773190c73033e4518ea2ae",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,
@@ -91444,7 +91823,7 @@ const keyAgentDebuggerPlatformPins = {
   lib: "d5ff61c17fc6c97573cc659dca5965d08bdb8ce5368e83315c30a1de9265743e",
   umbrella: "3175fa0ad3122c1ce1c997c3f370c678179afa1eca9d91938c0782ae963599b4",
   artifact: "f7abcc220bd737894655ccb48e80d10c179626fb634b6c88294008faec035abc",
-  pipe: "463600d888e3db1632d765df354253765a658f09677360f2d298bfee18c9512f",
+  pipe: "1edaeec6a6601cfd13a47d7051c505377ad97b0d3ebae749cf5e7975920c3da0",
   parent: "a98729c39def84e439fcf11dd36bcb0878bd19e7ec87c0e70de935847c16cc8c",
   sys: "b83485ffbed98e4ae81e6b75f088f748055283d790612dbab42b6019d7112d7e",
 };
@@ -92960,7 +93339,7 @@ const keyAgentDebuggerDocumentationSpecs = [
       "\n  **Current Phase 3B status: started, not passed.**",
     endAnchor:
       "The adoption transition, release-binding, and dormant supervisor binder all",
-    sha256: "bc5d56526772cec79551d8614e8b73c902a516657decb6ae26c1ac28bbfa3944",
+    sha256: "18ea8353cffd6d9101428428f6c9777d1a5ac21e99b77ac712de28d923222394",
   },
   {
     path: "docs/adr/0001-windows-key-agent-service-boundary.md",
@@ -92975,26 +93354,26 @@ const keyAgentDebuggerDocumentationSpecs = [
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
     endAnchor: "For the durable-state rows below",
-    sha256: "fe05917d8cd8d443dae4e3eca818ec9c4a0d8a0a6b10e369e47bc3d11aa82da0",
+    sha256: "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
     endAnchor: "\n## In scope\n",
-    sha256: "889f41af051096e36f4665c025e952ff437e305ff862e2273b8960f6f03841a7",
+    sha256: "54739b6ec9b6357b1c515f03eaa1294f7595e3614212b7688637004585ded625",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "The dedicated-process feasibility slice remains narrower",
     endAnchor: "The runtime-enabled Secret Input/recovery child instead",
-    sha256: "ab70fe1e49fbc5b35b3a6934c1030fe1a4dedfd5ba95e7ac28ca2866caf45ad7",
+    sha256: "7b986e9aa9bc3c71b2bfd325bf3e1352e6ab465d4c773190c73033e4518ea2ae",
   },
 ];
 const keyAgentDebuggerDocumentationExpectedWindowSemanticHashes = Object.freeze({
   "crates/platform-windows/README.md":
-    "dc948f1c05c046a43f08eb36e941b4107a67c03cdcfb4c74a72344de3ee8764e",
+    "cc3ea3cff4c4dbc08212c1e08097d16caf18f0c920b535956d060b13f324d3db",
 });
 const keyAgentDebuggerDocumentationExpectedWindowExit78Counts = Object.freeze({
   "crates/platform-windows/README.md": 4,
@@ -96270,7 +96649,7 @@ const qualityCheck = repositoryPowerShellSource("scripts/check.ps1");
 const qualityFocusedTests = repositoryPowerShellSource("scripts/test-focused.ps1");
 const approvedKeyAgentCargoArtifactGateSha256 = Object.freeze({
   build: "b5dcecb5d6054b75a69d05652100c80e48773ca27f0d0b7913298952f6c5f0c7",
-  tests: "d1d2649cfd749a666c1fc6b85554b79be5fd3771404f9d9cb54f0c96559c90e2",
+  tests: "29b3fe28ecd4ce53285e77e2eb9e4ea606b7db1ca234a592fce91976dfc50843",
   sharedParserSource: "7731e72991d43129359100c0d73142d8d2a99e3199c9f798f8b16c85aeea1fcb",
 });
 const sharedKeyAgentArtifactParserContract = (source, requireHash = true) => {
@@ -96356,9 +96735,10 @@ const keyAgentCargoArtifactGateContract = (source, requireHashes = true) => {
     (build.match(/&\s*cargo\s+build\b/gu) ?? []).length === 1 &&
     !/(?:target[\\/](?:debug|release)|Get-ChildItem|Join-Path)/iu.test(build) &&
     compactTests.startsWith(
-      'functionInvoke-Tests{Invoke-WindowsEvidenceReadinessChecksInvoke-Checked-Executable"powershell"-CommandArguments@("-NoLogo","-NoProfile","-ExecutionPolicy","Bypass","-File","scripts/test-focused.test.ps1")',
+      'functionInvoke-Tests{Invoke-WindowsEvidenceReadinessChecksInvoke-Checked-Executable"node"-CommandArguments@("--test","scripts/architecture-diagnostic.test.mjs")Invoke-Checked-Executable"powershell"-CommandArguments@("-NoLogo","-NoProfile","-ExecutionPolicy","Bypass","-File","scripts/test-focused.test.ps1")',
     ) &&
     ordered(compactTests, [
+      "scripts/architecture-diagnostic.test.mjs",
       "scripts/test-focused.test.ps1",
       "scripts/launcher-contract.test.ps1",
       "$keyAgentExecutable=Build-KeyAgentTestExecutable",
@@ -96376,6 +96756,14 @@ const keyAgentCargoArtifactGateContract = (source, requireHashes = true) => {
   );
 };
 const keyAgentCargoArtifactGateMutationProbes = [
+  qualityCheck.replace(
+    '    Invoke-Checked -Executable "node" -CommandArguments @("--test", "scripts/architecture-diagnostic.test.mjs")\n',
+    "",
+  ),
+  qualityCheck.replace(
+    '    Invoke-Checked -Executable "node" -CommandArguments @("--test", "scripts/architecture-diagnostic.test.mjs")',
+    '    if ($false) { Invoke-Checked -Executable "node" -CommandArguments @("--test", "scripts/architecture-diagnostic.test.mjs") }',
+  ),
   qualityCheck.replace(
     '    Invoke-Checked -Executable "powershell" -CommandArguments @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/test-focused.test.ps1")\n',
     "",
@@ -96457,7 +96845,7 @@ requireInvariant(
       (probe) => probe !== qualityFocusedTests &&
         !sharedKeyAgentArtifactParserContract(probe, false),
     ),
-  "both test runners must share exact-one absolute Cargo artifact validation; the quality gate must build the locked key-agent binary, scope its path through the workspace tests, and restore prior process state",
+  "both test runners must share exact-one absolute Cargo artifact validation; the quality gate must run actual-CLI diagnostic regressions before focused-runner contracts, build the locked key-agent binary, scope its path through the workspace tests, and restore prior process state",
 );
 const releaseManifestVerifier = await text(
   "scripts/release/release-manifest.mjs",
@@ -96520,7 +96908,7 @@ const approvedPowerShellSourceSha256 = Object.freeze({
   "crates/key-agent-service-rpc-sys/scripts/verify-generated.ps1":
     "aaae7ff1a1708079f256adc60345726f060b734251363810d53743349d5b8104",
   "scripts/check.ps1":
-    "696a78ba1b703c4bf3f436ebc4f10ace59c4b7404ea3deab0c40c3e02aee9589",
+    "3ded665830d4fe1f6f9d037708c354960119b552a0bd36dde281533a39873f03",
   "scripts/launcher-contract.test.ps1":
     "4b82c49f96d4b90da0cabb17992a8ae7f77c5664796730aab6e6ff65a3649b50",
   "scripts/release/assert-key-agent-debugger-version.ps1":

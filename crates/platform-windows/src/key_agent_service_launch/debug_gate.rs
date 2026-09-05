@@ -31,6 +31,7 @@ use key_agent_service_helper_bootstrap::{
     CAPTURE_GATE_BYTES, HELPER_ADOPTION_ACK_BYTES, HELPER_RPC_CONFIRMATION_BYTES,
     HelperAdoptionAck, HelperBootstrapHello, HelperBootstrapRole, HelperRpcConfirmation,
     REQUEST_INPUT_MARKER, RESPONSE_OUTPUT_MARKER, adoption_complete_gate_bytes, capture_gate_bytes,
+    encode_service_approval_request_prefix,
 };
 use key_agent_service_wire::{EpochNonce, ServiceRequestId};
 use thiserror::Error;
@@ -244,9 +245,11 @@ impl fmt::Debug for ParentBootstrapChannels {
 /// Post-join owner for one role-typed helper confirmation channel pair.
 ///
 /// Reading consumes only the response endpoint. The request writer remains
-/// owned by this value so a helper that closes its response after the exact
-/// confirmation frame stays blocked on request input until the coordinator has
-/// independently completed server-side admission and drops this waiter.
+/// owned by this value so a helper that closes its response after its exact
+/// role-specific exchange stays blocked on request input until the coordinator
+/// has freshly checked admission/liveness and completed terminal cleanup.
+/// Approval sends a request and receives a bound response after confirmation;
+/// Secret Input closes immediately after its ready-only confirmation.
 #[must_use = "retain the helper request writer through server-side admission"]
 pub(super) struct ServiceHelperConfirmationWaiter {
     channels: ParentBootstrapChannels,
@@ -293,6 +296,85 @@ impl ServiceHelperConfirmationWaiter {
             .map_err(|_| ServiceProbeDebugGateError::Correlation)?;
         Ok(confirmation)
     }
+
+    /// Completes the Approval-only, non-signing transport experiment. The child
+    /// keeps its response open after `HelperReady`, receives one framed canonical
+    /// request, then closes it after one bound response. No decision escapes.
+    pub(super) fn exchange_approval_probe(
+        &mut self,
+        approval: &approval_wire::ApprovalRequest,
+    ) -> Result<(), ServiceProbeDebugGateError> {
+        self.ensure_live_deadline()?;
+        if self.expected.role() != HelperBootstrapRole::Approval {
+            return Err(ServiceProbeDebugGateError::Correlation);
+        }
+        let ParentBootstrapChannelKind::Approval { request, response } = &mut self.channels.kind
+        else {
+            return Err(ServiceProbeDebugGateError::Correlation);
+        };
+        // Take once before any read; failure cannot replay this exchange. Keep
+        // the request writer in self until the coordinator has killed/reaped.
+        let response = response
+            .take()
+            .ok_or(ServiceProbeDebugGateError::Correlation)?;
+        let confirmation = response
+            .read_exact(HELPER_RPC_CONFIRMATION_BYTES, self.deadline)
+            .map_err(|_| ServiceProbeDebugGateError::Correlation)?;
+        validate_probe_confirmation(&confirmation, &self.expected)?;
+        let bytes = approval_wire::encode_request(approval);
+        let prefix = encode_service_approval_request_prefix(bytes.len())
+            .map_err(|_| ServiceProbeDebugGateError::Correlation)?;
+        request
+            .write_bytes(&prefix, self.deadline)
+            .map_err(|_| ServiceProbeDebugGateError::Correlation)?;
+        request
+            .write_bytes(&bytes, self.deadline)
+            .map_err(|_| ServiceProbeDebugGateError::Correlation)?;
+        // EOF is required while the process must still be running. A forced
+        // process termination must not manufacture a successful response EOF.
+        let bytes = response
+            .read_exact_frame(approval_wire::RESPONSE_BYTES, self.deadline)
+            .map_err(|_| ServiceProbeDebugGateError::Correlation)?;
+        validate_probe_response(&bytes, approval.digest(), approval.approval_nonce())?;
+        self.ensure_live_deadline()
+    }
+
+    /// Rechecks the original absolute deadline, including after terminal cleanup.
+    pub(super) fn ensure_live_deadline(&self) -> Result<(), ServiceProbeDebugGateError> {
+        if Instant::now() >= self.deadline {
+            return Err(ServiceProbeDebugGateError::Deadline);
+        }
+        Ok(())
+    }
+}
+
+fn validate_probe_confirmation(
+    bytes: &[u8],
+    expected: &HelperRpcConfirmation,
+) -> Result<(), ServiceProbeDebugGateError> {
+    HelperRpcConfirmation::decode(bytes)
+        .and_then(|confirmation| {
+            confirmation.ensure_correlates_with(
+                expected.epoch_nonce(),
+                expected.request_id(),
+                expected.role(),
+            )
+        })
+        .map_err(|_| ServiceProbeDebugGateError::Correlation)
+}
+
+fn validate_probe_response(
+    bytes: &[u8],
+    expected_digest: &[u8; 32],
+    expected_nonce: &[u8; 32],
+) -> Result<(), ServiceProbeDebugGateError> {
+    let response = approval_wire::decode_response(bytes)
+        .map_err(|_| ServiceProbeDebugGateError::Correlation)?;
+    if response.digest() != expected_digest || response.approval_nonce() != expected_nonce {
+        return Err(ServiceProbeDebugGateError::Correlation);
+    }
+    // Both decisions demonstrate transport only. Never return approval authority.
+    Ok(())
 }
 
 impl fmt::Debug for ServiceHelperConfirmationWaiter {
@@ -3073,6 +3155,89 @@ mod tests {
     impl<T: Copy> AmbiguousIfCopy<u8> for T {}
 
     fn assert_send<T: Send>() {}
+
+    #[test]
+    fn approval_probe_confirmation_rejects_wrong_epoch_request_role_and_trailing_bytes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::validate_probe_confirmation;
+        use key_agent_service_helper_bootstrap::HelperRpcConfirmation;
+        let epoch = EpochNonce::new([0xA5; 32])?;
+        let request = ServiceRequestId::new([0x5A; 16])?;
+        let expected = HelperRpcConfirmation::new(epoch, request, HelperBootstrapRole::Approval);
+        assert_eq!(
+            validate_probe_confirmation(&expected.encode(), &expected),
+            Ok(())
+        );
+        for wrong in [
+            HelperRpcConfirmation::new(
+                EpochNonce::new([0xA6; 32])?,
+                request,
+                HelperBootstrapRole::Approval,
+            ),
+            HelperRpcConfirmation::new(
+                epoch,
+                ServiceRequestId::new([0x5B; 16])?,
+                HelperBootstrapRole::Approval,
+            ),
+            HelperRpcConfirmation::new(epoch, request, HelperBootstrapRole::SecretInput),
+        ] {
+            assert_eq!(
+                validate_probe_confirmation(&wrong.encode(), &expected),
+                Err(ServiceProbeDebugGateError::Correlation)
+            );
+        }
+        let mut trailing = expected.encode().to_vec();
+        trailing.push(0);
+        assert_eq!(
+            validate_probe_confirmation(&trailing, &expected),
+            Err(ServiceProbeDebugGateError::Correlation)
+        );
+        assert_eq!(
+            validate_probe_confirmation(&trailing[..71], &expected),
+            Err(ServiceProbeDebugGateError::Correlation)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn approval_probe_response_rejects_mismatched_bindings_and_noncanonical_frames() {
+        use super::validate_probe_response;
+        // Public protocol correlation only; not wallet keys or entropy fixtures.
+        let digest = [0xA5; 32];
+        let nonce = [0x5A; 32];
+        for decision in [0_u8, 1_u8] {
+            let mut bytes = [0_u8; approval_wire::RESPONSE_BYTES];
+            bytes[..8].copy_from_slice(b"YWAPRS02");
+            bytes[8..10].copy_from_slice(&2_u16.to_be_bytes());
+            bytes[10] = decision;
+            bytes[11..43].copy_from_slice(&digest);
+            bytes[43..75].copy_from_slice(&nonce);
+            assert_eq!(validate_probe_response(&bytes, &digest, &nonce), Ok(()));
+            assert_eq!(
+                validate_probe_response(&bytes, &[0xA6; 32], &nonce),
+                Err(ServiceProbeDebugGateError::Correlation)
+            );
+            assert_eq!(
+                validate_probe_response(&bytes, &digest, &[0x5B; 32]),
+                Err(ServiceProbeDebugGateError::Correlation)
+            );
+            assert_eq!(
+                validate_probe_response(&bytes[..74], &digest, &nonce),
+                Err(ServiceProbeDebugGateError::Correlation)
+            );
+            let mut trailing = bytes.to_vec();
+            trailing.push(0);
+            assert_eq!(
+                validate_probe_response(&trailing, &digest, &nonce),
+                Err(ServiceProbeDebugGateError::Correlation)
+            );
+            bytes[0] ^= 1;
+            assert_eq!(
+                validate_probe_response(&bytes, &digest, &nonce),
+                Err(ServiceProbeDebugGateError::Correlation)
+            );
+        }
+    }
 
     fn handle(value: usize) -> HANDLE {
         HANDLE(value as *mut core::ffi::c_void)
