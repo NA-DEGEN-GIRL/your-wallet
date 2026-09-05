@@ -2250,6 +2250,69 @@ remain `None`, and the whole runtime, signed-helper, installed-service, kernel,
 and release boundary remains **STOP-SHIP**. Phase 3B does not pass Phase 1,
 Phase 2, Phase 3, or the product release gate.
 
+**Current Phase 3C status: started, not passed.** The separate private,
+production-compiled `secret_input_lifecycle` module models only the pure Secret
+Input ordering path. Its closed consuming graph is
+`AdmittedSecretInputPolicy -> SecretInputUiStartingPolicy ->
+SecretInputUiAuthenticatedPolicy ->
+SecretInputCompletion::{Accepted(AcceptedSecretInputPolicy),
+Cancelled(CancelledSecretInputPolicy)}`. The three positive methods are
+`begin_ui`, `authenticate_ui`, and `complete`. Any validation failure instead
+terminates as `RejectedSecretInputPolicy`. Policy-local admission is distinct
+from expected-peer `Admitted` and from the Phase 3B Approval policy; Approval
+and Secret Input outcomes are not interchangeable.
+
+A test-only `SecretInputPolicySeed` supplies one move-only instance;
+`SecretInputPolicyObservation` and `SecretInputCompletionObservation` are its
+one-shot inputs. The instance owns the monotonic clock used to enforce its
+original inclusive monotonic deadline and binds only the server-derived
+expected-peer key, one nonzero Windows session, the Secret Input role, and
+that unchanged deadline. Admission, every positive edge, and each live
+liveness recheck
+consume a fresh move-only one-shot observation. Each observation must correlate
+the exact key, session, and Secret Input role before the policy-owned clock
+reports the deadline; clock failure, an observation at or after the deadline,
+or any mismatch terminally produces `RejectedSecretInputPolicy`.
+
+The four live stages are `AdmittedSecretInputPolicy`,
+`SecretInputUiStartingPolicy`, `SecretInputUiAuthenticatedPolicy`, and
+`AcceptedSecretInputPolicy`. Every live stage has consuming
+`recheck_liveness`, `cancel`, `invalidate_session`, and
+`invalidate_active_sessions` methods.
+Targeted invalidation rejects only a matching-session instance and preserves
+unrelated state, while active-topology invalidation rejects all four live stages.
+Lifecycle cancellation terminates in data-free `RejectedSecretInputPolicy` with
+`SecretInputPolicyRejectionCause::Cancelled`; only authenticated `complete`
+cancellation yields data-free `CancelledSecretInputPolicy`.
+
+Accepted is deliberately non-durable and cancellable. It carries no secret
+bytes or vault handle and grants no signing, cryptographic-key, private-key, or
+private-key-operation authority. It exposes no secret, vault,
+cryptographic-key, or private-key accessor or conversion to any such authority.
+Seeds, observations, completion values, and policy states remain private and
+move-only; terminal states retain no request or secret data, and
+`SecretInputPolicyRejectionCause` plus `Debug` surfaces are data-free and
+redacted.
+
+The focused policy inventory is exactly 10/10; production has zero seed,
+observation, or completion mints and zero callers. Architecture mutations pin the
+closed graph, same-clock and unchanged-deadline binding, exact Secret Input
+correlation, fresh one-shot observations, all live rechecks and terminal
+branches, targeted preservation versus topology-wide invalidation, cancellable
+non-authoritative Accepted state, terminal privacy, and exact zero production
+mint or caller. No production seed or observation constructor exists. A future
+compositor must mint each observation only from fresh
+authenticated Secret Input UI and actual expected-helper liveness and
+authentication evidence.
+
+This remains local policy evidence. The production Approval path, Broker-to-
+policy compositor, actual helper authentication, Approval or Secret Input
+transcript, secret transport and vault handoff, concurrent composition,
+cleanup/reap, SCM callback delivery, and release composition are not
+implemented and remain **STOP-SHIP**. Default and release execution stays at
+silent exit 78, both compiled policies remain `None`, and Phase 3C does not pass
+Phase 1, Phase 2, Phase 3, or the product release gate.
+
 **Exit gate:** real signed helper E2E and attacker matrices prove that only exact
 service-created helpers can return a bound result and Broker owns no helper
 authority.
@@ -2332,6 +2395,18 @@ the corresponding evidence and returns release status to disabled.
 
 ## Changelog
 
+- 2026-09-05 - Added the started-but-not-passed Phase 3C dormant Secret Input
+  ordering boundary: exact admitted, UI-starting, UI-authenticated, and
+  Accepted/Cancelled completion types; same-clock key/session/Secret Input role
+  and inclusive-deadline binding; fresh one-shot correlation at admission,
+  positive edges, and live rechecks; cancellable and invalidatable
+  non-authoritative Accepted state; lifecycle cancellation as Rejected with a
+  `Cancelled` cause, distinct from authenticated UI-completion Cancelled;
+  data-free terminal states; exactly 10/10 focused tests; and zero production
+  mint or caller.
+  Production Approval/compositor, actual helper authentication, transcripts,
+  secret transport/vault handoff, cleanup, SCM delivery, and release remain
+  **STOP-SHIP** with both compiled policies `None`.
 - 2026-09-05 - Added the started-but-not-passed Phase 3B dormant Approval
   ordering policy boundary: exact
   `Admitted -> UIStarting -> UIAuthenticated -> Approved/Rejected` states,

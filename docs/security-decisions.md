@@ -1721,6 +1721,58 @@ remain `None`; installed restricted-service, signed-helper, supported-kernel,
 and complete runtime/release evidence remain **STOP-SHIP**. Phase 3B does not
 pass Phase 1, Phase 2, Phase 3, or the release gate.
 
+**Current Phase 3C status: started, not passed.** The separate private,
+production-compiled `secret_input_lifecycle` policy fixes only the Secret Input ordering
+`AdmittedSecretInputPolicy -> SecretInputUiStartingPolicy ->
+SecretInputUiAuthenticatedPolicy ->
+SecretInputCompletion::{Accepted(AcceptedSecretInputPolicy),
+Cancelled(CancelledSecretInputPolicy)}` through `begin_ui`, `authenticate_ui`,
+and `complete`. Failed validation terminates as `RejectedSecretInputPolicy`.
+Its admitted state and outcomes are disjoint from
+both expected-peer admission and the Phase 3B Approval policy.
+
+A test-only `SecretInputPolicySeed` supplies the move-only policy;
+`SecretInputPolicyObservation` and `SecretInputCompletionObservation` are its
+one-shot inputs. The policy owns one monotonic clock and binds the
+server-derived expected-peer key, nonzero session, Secret Input role, and original
+inclusive monotonic deadline. Admission, every positive edge, and every live
+liveness recheck consume a fresh move-only one-shot observation and require
+exact key/session/Secret Input correlation against that same clock and
+unchanged deadline. Clock failure, reaching or passing the deadline, mismatch,
+or any other correlation failure terminally rejects. This is policy-local
+freshness only: it does not inspect an OS process, authenticate a helper, or
+prove a UI transcript.
+
+`AdmittedSecretInputPolicy`, `SecretInputUiStartingPolicy`,
+`SecretInputUiAuthenticatedPolicy`, and `AcceptedSecretInputPolicy` are the
+only live states. Each has consuming `recheck_liveness`, `cancel`,
+`invalidate_session`, and `invalidate_active_sessions`. Targeted invalidation
+rejects only matching-session state and preserves unrelated instances;
+active-topology invalidation rejects every live state. Lifecycle cancellation
+produces terminal `RejectedSecretInputPolicy` with
+`SecretInputPolicyRejectionCause::Cancelled`; only authenticated `complete`
+cancellation produces terminal `CancelledSecretInputPolicy`.
+
+Accepted is non-durable, cancellable, and non-authoritative. It contains no
+secret bytes or vault ownership and grants no signing, cryptographic-key,
+private-key, or private-key-operation authority. It exposes no secret, vault,
+cryptographic-key, or private-key accessor or authority conversion. Cancelled
+and Rejected retain no request, correlation, deadline, or secret data; both
+terminal states are data-free. `SecretInputPolicyRejectionCause` and all
+`Debug` surfaces are fixed, data-free, and redacted. Seed, observation,
+completion, and policy-state types remain private and move-only.
+
+The focused policy inventory is exactly 10/10; production has zero seed,
+observation, or completion mints and zero callers. A future compositor must derive
+every one-shot observation from fresh authenticated Secret Input UI and actual
+expected-helper liveness and authentication evidence. The production Approval
+path, Broker/policy compositor, helper authentication, Approval and Secret
+Input transcripts, secret transport/vault handoff, concurrent cleanup/reap,
+SCM callback delivery, and release composition remain unimplemented and
+**STOP-SHIP**. Default/release execution remains silent exit 78 and both
+compiled policies remain `None`; Phase 3C does not pass Phase 1, Phase 2, Phase
+3, or the release gate.
+
 All seven Rust-startup supervisor integration positives are explicitly ignored
 **STOP-SHIP**. Their fixture code, when deliberately invoked, has two
 `cfg(test)` accommodations: an exact pinned terse libtest preamble may precede

@@ -501,6 +501,57 @@ Implemented:
   signed-helper, supported-kernel, runtime, and release evidence remain
   **STOP-SHIP**.
 
+  **Current Phase 3C status: started, not passed.** A separate private,
+  production-compiled pure `secret_input_lifecycle` policy models only the
+  consuming path
+  `AdmittedSecretInputPolicy -> SecretInputUiStartingPolicy ->
+  SecretInputUiAuthenticatedPolicy ->
+  SecretInputCompletion::{Accepted(AcceptedSecretInputPolicy),
+  Cancelled(CancelledSecretInputPolicy)}`; validation failures terminate as
+  `RejectedSecretInputPolicy`. The three positive methods are `begin_ui`,
+  `authenticate_ui`, and `complete`. Its admitted state is distinct from both
+  expected-peer `Admitted` and the Phase 3B Approval policy, so neither path
+  can substitute for the other.
+
+  A test-only `SecretInputPolicySeed` supplies one move-only policy instance;
+  `SecretInputPolicyObservation` and `SecretInputCompletionObservation` are its
+  one-shot inputs. The instance owns its monotonic clock and binds the
+  server-derived expected-peer key, nonzero session, Secret Input role, and
+  original inclusive monotonic deadline. Admission, every positive edge, and
+  every live liveness recheck consume a fresh move-only one-shot observation
+  and require exact key/session/Secret Input correlation against that same
+  clock and unchanged deadline. Clock failure, an observation at or after the
+  deadline, or any correlation mismatch terminally rejects.
+
+  `AdmittedSecretInputPolicy`, `SecretInputUiStartingPolicy`,
+  `SecretInputUiAuthenticatedPolicy`, and `AcceptedSecretInputPolicy` remain
+  live and expose consuming `recheck_liveness`, `cancel`, `invalidate_session`,
+  and `invalidate_active_sessions`. Targeted invalidation rejects
+  only matching-session state and preserves unrelated instances;
+  active-topology invalidation rejects every live state. Lifecycle cancellation
+  terminates as `RejectedSecretInputPolicy` with
+  `SecretInputPolicyRejectionCause::Cancelled`; only authenticated
+  `complete` cancellation yields `CancelledSecretInputPolicy`. Accepted remains
+  non-durable and cancellable:
+  it owns no secret bytes or vault and grants no signing, cryptographic-key,
+  private-key, or private-key-operation authority. It exposes no secret, vault,
+  cryptographic-key, or private-key accessor or authority conversion.
+  Seed, observation, completion, and policy-state types remain private and
+  move-only.
+  `CancelledSecretInputPolicy` and `RejectedSecretInputPolicy` are terminal and
+  data-free, and `SecretInputPolicyRejectionCause` plus all Debug surfaces
+  remain data-free and redacted.
+
+  The focused policy inventory is exactly 10/10; production has zero seed,
+  observation, or completion mints and zero callers. A future compositor must supply
+  fresh authenticated Secret Input UI plus actual expected-helper liveness and
+  authentication evidence; the policy itself proves neither. The production
+  Approval path, Broker/policy compositor, actual helper authentication,
+  Secret Input transcript and secret transport, cleanup/reap, SCM delivery,
+  and release composition remain unimplemented and **STOP-SHIP**.
+  Default/release stays at silent exit 78 and both compiled policies remain
+  `None`.
+
   A deadline that observes pending overlapped pipe I/O now treats `CancelIoEx`
   only as a cancellation request. Async `ReadFile`/`WriteFile` receive no byte-
   count output pointer; one raw `*mut OVERLAPPED` established before initiation

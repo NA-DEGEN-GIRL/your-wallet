@@ -2316,9 +2316,17 @@ function hasExactSourcePins(sources, approvedPins) {
   );
 }
 
+const architectureProgressStarted = performance.now();
+let architectureVerifiedCount = 0;
+
 function requireInvariant(condition, message) {
   if (!condition) {
     throw new Error(`architecture invariant failed: ${message}`);
+  }
+  architectureVerifiedCount += 1;
+  if (architectureVerifiedCount % 32 === 0) {
+    const elapsedSeconds = Math.floor((performance.now() - architectureProgressStarted) / 1000);
+    console.log(`architecture: ${architectureVerifiedCount} checks verified (${elapsedSeconds}s)`);
   }
 }
 
@@ -23259,6 +23267,8 @@ const keyAgentServiceRpcFixturePaths = Object.freeze({
   lifecycle: "crates/platform-windows/src/key_agent_service_rpc/lifecycle.rs",
   requestLifecycle:
     "crates/platform-windows/src/key_agent_service_rpc/request_lifecycle.rs",
+  secretInputLifecycle:
+    "crates/platform-windows/src/key_agent_service_rpc/secret_input_lifecycle.rs",
   router: "crates/platform-windows/src/key_agent_service_rpc/router.rs",
 });
 const approvedKeyAgentServiceRpcFixturePaths = [
@@ -23272,6 +23282,7 @@ const approvedKeyAgentServiceRpcFixturePaths = [
   keyAgentServiceRpcFixturePaths.root,
   keyAgentServiceRpcFixturePaths.requestLifecycle,
   keyAgentServiceRpcFixturePaths.router,
+  keyAgentServiceRpcFixturePaths.secretInputLifecycle,
 ];
 const approvedKeyAgentServiceRpcFixtureDirectoryInventories = [
   {
@@ -23287,6 +23298,7 @@ const approvedKeyAgentServiceRpcFixtureDirectoryInventories = [
       { name: "mod.rs", kind: "file" },
       { name: "request_lifecycle.rs", kind: "file" },
       { name: "router.rs", kind: "file" },
+      { name: "secret_input_lifecycle.rs", kind: "file" },
     ],
   },
   {
@@ -23315,6 +23327,7 @@ const keyAgentServiceRpcFixturePolicyContract = ({
     keyAgentServiceRpcFixturePaths.expectedPeer,
     keyAgentServiceRpcFixturePaths.lifecycle,
     keyAgentServiceRpcFixturePaths.requestLifecycle,
+    keyAgentServiceRpcFixturePaths.secretInputLifecycle,
     keyAgentServiceRpcFixturePaths.router,
   ];
   const nonLaunchCode = [keyAgentServiceRpcFixturePaths.root, ...purePaths]
@@ -23326,7 +23339,7 @@ const keyAgentServiceRpcFixturePolicyContract = ({
     JSON.stringify(directories) ===
       JSON.stringify(approvedKeyAgentServiceRpcFixtureDirectoryInventories) &&
     root.includes("#![allow(unsafe_code)]") &&
-    /modauth;#\[cfg\(all\(feature=,debug_assertions\)\)\]modcoordinator;moddispatch;modepoch;(?:#\[allow\(dead_code\)\])?modexpected_peer;modlifecycle;#\[allow\(dead_code\)\]modrequest_lifecycle;#\[cfg\(all\(feature=,debug_assertions\)\)\]modrouter;/u.test(
+    /modauth;#\[cfg\(all\(feature=,debug_assertions\)\)\]modcoordinator;moddispatch;modepoch;(?:#\[allow\(dead_code\)\])?modexpected_peer;modlifecycle;#\[allow\(dead_code\)\]modrequest_lifecycle;#\[cfg\(all\(feature=,debug_assertions\)\)\]modrouter;#\[allow\(dead_code\)\]modsecret_input_lifecycle;/u.test(
       compactRust(root),
     ) &&
     purePaths.every(
@@ -23425,13 +23438,13 @@ requireInvariant(
             keyAgentServiceRpcFixturePolicyInputs.directories) &&
         !keyAgentServiceRpcFixturePolicyContract(probe),
     ),
-  "the debug status-RPC fixture must retain its exact two-directory/ten-file inventory, deny or forbid unsafe code in all pure modules, remain crate-private and silent, and contain no network, direct process-launch, file/environment, secret, signing, wallet, transaction, or approval authority with effective mutation probes",
+  "the debug status-RPC fixture must retain its exact two-directory/eleven-file inventory, deny or forbid unsafe code in all pure modules, remain crate-private and silent, and contain no network, direct process-launch, file/environment, secret, signing, wallet, transaction, or approval authority with effective mutation probes",
 );
 
 const keyAgentServiceExpectedPeerReexportSource =
   keyAgentServiceRpcFixtureSources[keyAgentServiceRpcFixturePaths.root];
 const keyAgentServiceExpectedPeerReexportSha256 =
-  "27687053d2be57e7985e9c85c03ea9cd0e7a165503229bf16aa89f6f0ea857bf";
+  "3b996da2fd1551826c6a897f03cd33543d0634671d3e8745104253c27e13cfec";
 const keyAgentServiceExpectedPeerReexportCfg =
   "#[cfg(all(feature=,debug_assertions))]";
 const keyAgentServiceExpectedPeerReexportItem = `${keyAgentServiceExpectedPeerReexportCfg}pub(crate)useself::expected_peer::{EXPECTED_HELPER_QUIESCENCE_MILLISECONDS,ExpectedHelperAdmission,ExpectedHelperLease,ExpectedHelperPeer,ExpectedHelperRole,ExpectedPeerKey,ExpectedPeerRegistryError,ExpectedPeerVerificationError,};`;
@@ -26052,6 +26065,278 @@ requireInvariant(
     ),
   )}`,
 );
+
+const keyAgentServicePhaseThreeCPath =
+  "crates/platform-windows/src/key_agent_service_rpc/secret_input_lifecycle.rs";
+const keyAgentServicePhaseThreeCSource = await text(
+  keyAgentServicePhaseThreeCPath,
+);
+const keyAgentServicePhaseThreeCTestNames = Object.freeze([
+  "policy_types_are_move_only_and_transition_methods_consume_self",
+  "admission_requires_strict_future_exact_correlation_and_secret_input_role",
+  "ui_start_requires_exact_key_session_and_secret_input_role",
+  "ui_authentication_rechecks_exact_key_session_and_secret_input_role",
+  "completion_rechecks_binding_and_branches_accepted_or_cancelled_once",
+  "every_positive_edge_uses_original_inclusive_deadline_and_fresh_clock_read",
+  "lifecycle_cancellation_rejects_every_live_stage_and_ui_cancel_is_distinct",
+  "targeted_invalidation_rejects_matching_and_preserves_unrelated_session",
+  "active_invalidation_terminates_every_live_stage",
+  "terminal_and_debug_surfaces_are_data_free",
+]);
+const keyAgentServicePhaseThreeCLiveTypeNames = Object.freeze([
+  "AdmittedSecretInputPolicy",
+  "SecretInputUiStartingPolicy",
+  "SecretInputUiAuthenticatedPolicy",
+  "AcceptedSecretInputPolicy",
+]);
+const keyAgentServicePhaseThreeCMoveOnlyTypeNames = Object.freeze([
+  "SecretInputPolicySeed",
+  "SecretInputPolicyObservation",
+  "SecretInputCompletionObservation",
+  "SecretInputBinding",
+  ...keyAgentServicePhaseThreeCLiveTypeNames,
+  "SecretInputCompletion",
+  "CancelledSecretInputPolicy",
+  "RejectedSecretInputPolicy",
+]);
+const keyAgentServicePhaseThreeCExpectedPins = Object.freeze({
+  sourceFull: "12323cc591fe516bfdd7f47091bd268cfba6af41223258a041e4873a71e872ec",
+  sourceProduction:
+    "e2a793d182b9086d4da421ebba8d163508971ed6d16387ff7692adc3230ef5ff",
+  moduleFull: "3b996da2fd1551826c6a897f03cd33543d0634671d3e8745104253c27e13cfec",
+  moduleProduction:
+    "59db9f3ce95cc4f2b0ee36fe69dfddf26a9cfa7dfd0fa204effea78ea8c95ce1",
+  design: "889f41af051096e36f4665c025e952ff437e305ff862e2273b8960f6f03841a7",
+  architecture:
+    "fe05917d8cd8d443dae4e3eca818ec9c4a0d8a0a6b10e369e47bc3d11aa82da0",
+  security:
+    "ab70fe1e49fbc5b35b3a6934c1030fe1a4dedfd5ba95e7ac28ca2866caf45ad7",
+  platformReadme:
+    "bc5d56526772cec79551d8614e8b73c902a516657decb6ae26c1ac28bbfa3944",
+});
+const keyAgentServicePhaseThreeCProductionProjection = (source) =>
+  withoutCfgTestItems(withoutBottomTestModule(source));
+const keyAgentServicePhaseThreeCOverlayProductionFiles = (inputs) => {
+  const replacements = new Map([
+    [keyAgentServicePhaseThreeCPath, inputs.source],
+    [keyAgentServiceRpcFixturePaths.root, inputs.moduleSource],
+  ]);
+  return inputs.workspaceProductionFiles.map((file) => ({
+    path: file.path,
+    source: replacements.has(file.path)
+      ? keyAgentServicePhaseThreeCProductionProjection(
+          replacements.get(file.path),
+        )
+      : file.source,
+  }));
+};
+const keyAgentServicePhaseThreeCDocumentPatterns = Object.freeze([
+  /\*\*Current Phase 3C status: started, not passed\.\*\*/u,
+  /AdmittedSecretInputPolicy/u,
+  /SecretInputUiStartingPolicy/u,
+  /SecretInputUiAuthenticatedPolicy/u,
+  /SecretInputCompletion/u,
+  /AcceptedSecretInputPolicy/u,
+  /CancelledSecretInputPolicy/u,
+  /RejectedSecretInputPolicy/u,
+  /move-only/iu,
+  /monotonic clock/iu,
+  /original inclusive monotonic deadline/iu,
+  /server-derived expected-peer key/iu,
+  /nonzero (?:Windows )?session/iu,
+  /Secret Input role/iu,
+  /fresh[^.]{0,120}one-shot observation/iu,
+  /(?:at or after|at-or-after|reaching or passing)[^.]{0,100}deadline/iu,
+  /Targeted invalidation[^.]{0,160}preserves unrelated/iu,
+  /active-topology invalidation[^.]{0,120}(?:all four|every live)/iu,
+  /Accepted[^.]{0,160}non-durable/iu,
+  /(?:no|neither)[^.]{0,160}(?:secret bytes|secret accessor)/iu,
+  /(?:zero production|production has zero)[^.]{0,160}(?:mint|caller|seed)/iu,
+  /10\/10/u,
+  /silent exit 78/iu,
+  /both compiled policies remain `None`/iu,
+  /\*\*STOP-SHIP\*\*/u,
+]);
+const keyAgentServicePhaseThreeCDocumentContradiction =
+  /Phase 3C status: passed|Targeted invalidation[^.]{0,160}(?:rejects|invalidates) unrelated|Accepted[^.]{0,180}(?:owns|carries|grants|supplies) (?:secret|signing|cryptographic-key|private-key)|does not own (?:its |the )?monotonic clock|clock failure[^.]{0,120}(?:is accepted|continues)|not silent exit 78|compiled policies (?:are|become) `Some`|production (?:seed|observation|completion|caller) exists/iu;
+const keyAgentServicePhaseThreeCExactDocumentSentences = Object.freeze([
+  Object.freeze([
+    "The focused policy inventory is exactly 10/10; production has zero seed, observation, or completion mints and zero callers.",
+    "Targeted invalidation rejects only a matching-session instance and preserves unrelated state, while active-topology invalidation rejects all four live stages.",
+    "Lifecycle cancellation terminates in data-free `RejectedSecretInputPolicy` with `SecretInputPolicyRejectionCause::Cancelled`; only authenticated `complete` cancellation yields data-free `CancelledSecretInputPolicy`.",
+  ]),
+  Object.freeze([
+    "Targeted invalidation rejects only matching-session state and preserves unrelated instances; active-topology invalidation rejects every live state.",
+    "Lifecycle cancellation yields terminal `RejectedSecretInputPolicy` with `SecretInputPolicyRejectionCause::Cancelled`; only authenticated `complete` cancellation yields terminal `CancelledSecretInputPolicy`.",
+    "The focused policy inventory is exactly 10/10; production has zero seed, observation, or completion mints and zero callers.",
+  ]),
+  Object.freeze([
+    "Targeted invalidation rejects only matching-session state and preserves unrelated instances; active-topology invalidation rejects every live state.",
+    "Lifecycle cancellation produces terminal `RejectedSecretInputPolicy` with `SecretInputPolicyRejectionCause::Cancelled`; only authenticated `complete` cancellation produces terminal `CancelledSecretInputPolicy`.",
+    "The focused policy inventory is exactly 10/10; production has zero seed, observation, or completion mints and zero callers.",
+  ]),
+  Object.freeze([
+    "Targeted invalidation rejects only matching-session state and preserves unrelated instances; active-topology invalidation rejects every live state.",
+    "Lifecycle cancellation terminates as `RejectedSecretInputPolicy` with `SecretInputPolicyRejectionCause::Cancelled`; only authenticated `complete` cancellation yields `CancelledSecretInputPolicy`.",
+    "The focused policy inventory is exactly 10/10; production has zero seed, observation, or completion mints and zero callers.",
+  ]),
+]);
+const keyAgentServicePhaseThreeCExpectedDocumentSemanticHashes = Object.freeze([
+  "a1ca0a10c9c5c860a9df0041ff5c9a83e22e8a337d66438b0cbc80d069da7c71",
+  "e44309c34abc110f39cc09e075047c416f24ad5f372d143cc7f49168cd78d235",
+  "e8a89a71916b9bb10586d53a8a7af0165d544e2132e01ae99110e72ca145f320",
+  "bebfea9e0e28c606770d83b00a147aa11feaa59b8ae54eaa8f0da2462e2ed4cb",
+]);
+const keyAgentServicePhaseThreeCDocumentSections = (inputs) => {
+  const design = keyAgentServicePhaseThreeBExactDocumentSection(
+    inputs.designDocument,
+    "**Current Phase 3C status: started, not passed.**",
+    "\n### Phase 4",
+  );
+  const architectureRows = inputs.architectureDocument
+    .split(/\r?\n/gu)
+    .filter((line) => line.startsWith("| Secret Input request ordering policy |"));
+  const security = keyAgentServicePhaseThreeBExactDocumentSection(
+    inputs.securityDocument,
+    "**Current Phase 3C status: started, not passed.**",
+    "\nAll seven Rust-startup supervisor integration positives",
+  );
+  const platformReadme = keyAgentServicePhaseThreeBExactDocumentSection(
+    inputs.platformReadme,
+    "  **Current Phase 3C status: started, not passed.**",
+    "\n  A deadline that observes pending overlapped pipe I/O",
+  );
+  return Object.freeze({
+    raw: Object.freeze([
+      design,
+      architectureRows[0] ?? "",
+      security,
+      platformReadme,
+    ]),
+    architectureRowCount: architectureRows.length,
+  });
+};
+const keyAgentServicePhaseThreeCPreviousDocumentContract = (inputs) => {
+  const phaseThreeASections = [
+    keyAgentServicePhaseTwoIDocumentSection(
+      inputs.designDocument,
+      "**Current Phase 3A status: started, not passed.**",
+      "\n**Current Phase 3B status: started, not passed.**",
+    ),
+    keyAgentServicePhaseTwoIDocumentSection(
+      inputs.securityDocument,
+      "**Current Phase 3A status: started, not passed.**",
+      "\n**Current Phase 3B status: started, not passed.**",
+    ),
+    keyAgentServicePhaseTwoIDocumentSection(
+      inputs.platformReadme,
+      "  **Current Phase 3A status: started, not passed.**",
+      "\n  **Current Phase 3B status: started, not passed.**",
+    ),
+    inputs.architectureDocument
+      .split(/\r?\n/gu)
+      .find((line) =>
+        line.startsWith("| Session-bound expected-helper invalidation |"),
+      ) ?? "",
+  ].map(keyAgentServicePhaseTwoINormalizedDocument);
+  const phaseThreeBSections = [
+    keyAgentServicePhaseThreeBExactDocumentSection(
+      inputs.designDocument,
+      "**Current Phase 3B status: started, not passed.**",
+      "\n**Current Phase 3C status: started, not passed.**",
+    ),
+    keyAgentServicePhaseThreeBExactDocumentSection(
+      inputs.securityDocument,
+      "**Current Phase 3B status: started, not passed.**",
+      "\n**Current Phase 3C status: started, not passed.**",
+    ),
+    keyAgentServicePhaseThreeBExactDocumentSection(
+      inputs.platformReadme,
+      "  **Current Phase 3B status: started, not passed.**",
+      "\n  **Current Phase 3C status: started, not passed.**",
+    ),
+    inputs.architectureDocument
+      .split(/\r?\n/gu)
+      .find((line) => line.startsWith("| Approval request ordering policy |")) ??
+      "",
+  ].map(keyAgentServicePhaseTwoINormalizedDocument);
+  return (
+    JSON.stringify(phaseThreeASections.map(normalizedSourceSha256)) ===
+      JSON.stringify(
+        keyAgentServicePhaseThreeAExpectedDocumentSemanticHashes,
+      ) &&
+    JSON.stringify(phaseThreeBSections.map(normalizedSourceSha256)) ===
+      JSON.stringify(
+        keyAgentServicePhaseThreeBExpectedDocumentSemanticHashes,
+      )
+  );
+};
+const keyAgentServicePhaseThreeCDocumentContract = (inputs) => {
+  const { raw, architectureRowCount } =
+    keyAgentServicePhaseThreeCDocumentSections(inputs);
+  const sections = raw.map(keyAgentServicePhaseTwoINormalizedDocument);
+  const sentenceInventories = sections.map((section) =>
+    section.split(/(?<=[.!?])\s+/u),
+  );
+  const semanticHashes = sections.map(normalizedSourceSha256);
+  return (
+    raw.every((section) => section.length > 0) &&
+    architectureRowCount === 1 &&
+    raw[1].length <= 8_000 &&
+    keyAgentServiceLiteralCount(
+      inputs.designDocument,
+      "\n\n**Current Phase 3C status: started, not passed.**",
+    ) === 1 &&
+    keyAgentServiceLiteralCount(
+      inputs.securityDocument,
+      "\n\n**Current Phase 3C status: started, not passed.**",
+    ) === 1 &&
+    keyAgentServiceLiteralCount(
+      inputs.platformReadme,
+      "\n\n  **Current Phase 3C status: started, not passed.**",
+    ) === 1 &&
+    JSON.stringify(semanticHashes) ===
+      JSON.stringify(
+        keyAgentServicePhaseThreeCExpectedDocumentSemanticHashes,
+      ) &&
+    sections.every(
+      (section, index) =>
+        keyAgentServicePhaseThreeCDocumentPatterns.every((pattern) =>
+          pattern.test(section),
+        ) &&
+        keyAgentServicePhaseThreeCExactDocumentSentences[index].every(
+          (sentence) => sentenceInventories[index].includes(sentence),
+        ) &&
+        !keyAgentServicePhaseThreeCDocumentContradiction.test(section),
+    ) &&
+    keyAgentServicePhaseThreeCPreviousDocumentContract(inputs) &&
+    inputs.designDocument.includes(
+      "2026-09-05 - Added the started-but-not-passed Phase 3C dormant Secret Input",
+    )
+  );
+};
+const keyAgentServicePhaseThreeCPinValues = (inputs) => {
+  const production = keyAgentServicePhaseThreeCProductionProjection(inputs.source);
+  const moduleProduction =
+    keyAgentServicePhaseThreeCProductionProjection(inputs.moduleSource);
+  return Object.freeze({
+    sourceFull: normalizedSourceSha256(inputs.source),
+    sourceProduction: normalizedSourceSha256(production),
+    moduleFull: normalizedSourceSha256(inputs.moduleSource),
+    moduleProduction: normalizedSourceSha256(moduleProduction),
+    design: normalizedSourceSha256(inputs.designDocument),
+    architecture: normalizedSourceSha256(inputs.architectureDocument),
+    security: normalizedSourceSha256(inputs.securityDocument),
+    platformReadme: normalizedSourceSha256(inputs.platformReadme),
+  });
+};
+const keyAgentServicePhaseThreeCPinContract = (inputs) =>
+  JSON.stringify(keyAgentServicePhaseThreeCPinValues(inputs)) ===
+  JSON.stringify(keyAgentServicePhaseThreeCExpectedPins);
+
+let keyAgentServicePhaseThreeCBaseChecks = Object.freeze({});
+let keyAgentServicePhaseThreeCBaseMetrics = Object.freeze({});
+let keyAgentServicePhaseThreeCBaseError = null;
 
 const keyAgentServiceRpcProbeLeafSource =
   keyAgentServiceLaunchSources[keyAgentServiceLaunchPaths.rpcProbe];
@@ -29391,20 +29676,20 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: sepoliaArchitectureDoc,
     anchor:
       "The helper-bootstrap crate has two deliberately different surfaces.",
-    sha256: "6a82aabd410aafb96ea402cc8fcbdc07f410b9932d001ce3fb63b1b4d58247cf",
+    sha256: "fe05917d8cd8d443dae4e3eca818ec9c4a0d8a0a6b10e369e47bc3d11aa82da0",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes a safe platform-neutral gate-byte",
-    sha256: "ba48c264cd40cd320bf2aefd55412f92a0f0694d48dc12a59ee8d81d9785107e",
+    sha256: "889f41af051096e36f4665c025e952ff437e305ff862e2273b8960f6f03841a7",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "A separate helper-bootstrap crate exposes",
-    sha256: "a71d48d741b1f707b3e76cc7cc1c15715782255b123902dcfa7a22ed8ff60065",
+    sha256: "ab70fe1e49fbc5b35b3a6934c1030fe1a4dedfd5ba95e7ac28ca2866caf45ad7",
   },
 ];
 const keyAgentServiceHelperBootstrapDocumentationPatterns = [
@@ -36734,9 +37019,9 @@ for (const capability of [
 // the headless smoke backend remain separate non-generation partitions.
 const walletSecretOriginExpectedDocumentationSha256 = Object.freeze({
   architecture:
-    "6a82aabd410aafb96ea402cc8fcbdc07f410b9932d001ce3fb63b1b4d58247cf",
+    "fe05917d8cd8d443dae4e3eca818ec9c4a0d8a0a6b10e369e47bc3d11aa82da0",
   securityDecisions:
-    "a71d48d741b1f707b3e76cc7cc1c15715782255b123902dcfa7a22ed8ff60065",
+    "ab70fe1e49fbc5b35b3a6934c1030fe1a4dedfd5ba95e7ac28ca2866caf45ad7",
 });
 const walletSecretOriginProductionProjection = (source) =>
   withoutCfgTestItems(withoutBottomTestModule(source));
@@ -40132,11 +40417,11 @@ const keyAgentServicePhaseTwoIExpectedPins = Object.freeze({
   sourceProduction:
     "2d4da94c36055c61f5fdedabb8752709bf32750a28381e67c50b6e21c0866b4e",
   design:
-    "ba48c264cd40cd320bf2aefd55412f92a0f0694d48dc12a59ee8d81d9785107e",
+    "889f41af051096e36f4665c025e952ff437e305ff862e2273b8960f6f03841a7",
   architecture:
-    "6a82aabd410aafb96ea402cc8fcbdc07f410b9932d001ce3fb63b1b4d58247cf",
+    "fe05917d8cd8d443dae4e3eca818ec9c4a0d8a0a6b10e369e47bc3d11aa82da0",
   security:
-    "a71d48d741b1f707b3e76cc7cc1c15715782255b123902dcfa7a22ed8ff60065",
+    "ab70fe1e49fbc5b35b3a6934c1030fe1a4dedfd5ba95e7ac28ca2866caf45ad7",
 });
 const keyAgentServicePhaseTwoIExpectedInboundEdge = Object.freeze({
   declaringFile: keyAgentServicePhaseTwoIParentPath,
@@ -41569,13 +41854,13 @@ const keyAgentServicePhaseThreeAExpectedPins = Object.freeze({
   targetProfileProduction:
     "610502bfedee760837e3d1c7a3729067dda450d5bf98061553dddabb499b303c",
   design:
-    "ba48c264cd40cd320bf2aefd55412f92a0f0694d48dc12a59ee8d81d9785107e",
+    "889f41af051096e36f4665c025e952ff437e305ff862e2273b8960f6f03841a7",
   architecture:
-    "6a82aabd410aafb96ea402cc8fcbdc07f410b9932d001ce3fb63b1b4d58247cf",
+    "fe05917d8cd8d443dae4e3eca818ec9c4a0d8a0a6b10e369e47bc3d11aa82da0",
   security:
-    "a71d48d741b1f707b3e76cc7cc1c15715782255b123902dcfa7a22ed8ff60065",
+    "ab70fe1e49fbc5b35b3a6934c1030fe1a4dedfd5ba95e7ac28ca2866caf45ad7",
   platformReadme:
-    "8d307a3d1379f13c3be35a807522c34bc1a6300b386af45dd42ae3ccdb3716d1",
+    "bc5d56526772cec79551d8614e8b73c902a516657decb6ae26c1ac28bbfa3944",
 });
 const keyAgentServicePhaseThreeAProductionProjection = (source) =>
   withoutCfgTestItems(withoutBottomTestModule(source));
@@ -41987,6 +42272,9 @@ const keyAgentServicePhaseThreeASemanticContract = (inputs, requirePins = true) 
           (path === phaseThreeBRequestLifecyclePath &&
             JSON.stringify(callArguments) ===
               JSON.stringify(["self", "session_id:NonZeroU32"])) ||
+          (path === keyAgentServicePhaseThreeCPath &&
+            JSON.stringify(callArguments) ===
+              JSON.stringify(["self", "session_id:NonZeroU32"])) ||
           (path === keyAgentServiceLifecycleCorePath &&
             JSON.stringify(callArguments) ===
               JSON.stringify([
@@ -42004,6 +42292,8 @@ const keyAgentServicePhaseThreeASemanticContract = (inputs, requirePins = true) 
               JSON.stringify(callArguments) ===
                 JSON.stringify(["&self", "departing_session:NonZeroU32"])) ||
             (path === phaseThreeBRequestLifecyclePath &&
+              JSON.stringify(callArguments) === JSON.stringify(["self"])) ||
+            (path === keyAgentServicePhaseThreeCPath &&
               JSON.stringify(callArguments) === JSON.stringify(["self"]))
           ),
       );
@@ -42358,7 +42648,7 @@ const keyAgentServicePhaseThreeASemanticContract = (inputs, requirePins = true) 
       JSON.stringify(externalInvalidateSessionCalls) ===
         JSON.stringify(keyAgentServicePhaseThreeAExpectedInvalidateSessionCalls) &&
       externalInvalidateActiveSessionCalls.length === 0 &&
-      invalidateSessionIdentifierInventory.length === 3 &&
+      invalidateSessionIdentifierInventory.length === 4 &&
       invalidateSessionIdentifierInventory.some(
         ({ path, count }) =>
           path === keyAgentServicePhaseThreeAExpectedPeerPath && count === 1,
@@ -42371,7 +42661,11 @@ const keyAgentServicePhaseThreeASemanticContract = (inputs, requirePins = true) 
         ({ path, count }) =>
           path === phaseThreeBRequestLifecyclePath && count === 4,
       ) &&
-      invalidateActiveSessionIdentifierInventory.length === 2 &&
+      invalidateSessionIdentifierInventory.some(
+        ({ path, count }) =>
+          path === keyAgentServicePhaseThreeCPath && count === 4,
+      ) &&
+      invalidateActiveSessionIdentifierInventory.length === 3 &&
       invalidateActiveSessionIdentifierInventory.some(
         ({ path, count }) =>
           path === keyAgentServicePhaseThreeAExpectedPeerPath && count === 1,
@@ -42379,6 +42673,10 @@ const keyAgentServicePhaseThreeASemanticContract = (inputs, requirePins = true) 
       invalidateActiveSessionIdentifierInventory.some(
         ({ path, count }) =>
           path === phaseThreeBRequestLifecyclePath && count === 4,
+      ) &&
+      invalidateActiveSessionIdentifierInventory.some(
+        ({ path, count }) =>
+          path === keyAgentServicePhaseThreeCPath && count === 4,
       ) &&
       identifierOccurrenceCount(expectedCode, "invalidate_session") === 1 &&
       identifierOccurrenceCount(expectedCode, "invalidate_active_sessions") === 1 &&
@@ -43204,16 +43502,16 @@ const keyAgentServicePhaseThreeBExpectedPins = Object.freeze({
   sourceFull: "5f8dd571c685ad817b272c91794eeddbd8c4210986ae3c931525325ff4131125",
   sourceProduction:
     "3a9de991a09ab223a55972b7985fa66e250cc85ba9c75ffcf09f0bb2764f569e",
-  moduleFull: "27687053d2be57e7985e9c85c03ea9cd0e7a165503229bf16aa89f6f0ea857bf",
+  moduleFull: "3b996da2fd1551826c6a897f03cd33543d0634671d3e8745104253c27e13cfec",
   moduleProduction:
-    "bee568e4962241ec0e69e2c4e698152d5efb80b54279350cb8b11b51008c57a7",
-  design: "ba48c264cd40cd320bf2aefd55412f92a0f0694d48dc12a59ee8d81d9785107e",
+    "59db9f3ce95cc4f2b0ee36fe69dfddf26a9cfa7dfd0fa204effea78ea8c95ce1",
+  design: "889f41af051096e36f4665c025e952ff437e305ff862e2273b8960f6f03841a7",
   architecture:
-    "6a82aabd410aafb96ea402cc8fcbdc07f410b9932d001ce3fb63b1b4d58247cf",
+    "fe05917d8cd8d443dae4e3eca818ec9c4a0d8a0a6b10e369e47bc3d11aa82da0",
   security:
-    "a71d48d741b1f707b3e76cc7cc1c15715782255b123902dcfa7a22ed8ff60065",
+    "ab70fe1e49fbc5b35b3a6934c1030fe1a4dedfd5ba95e7ac28ca2866caf45ad7",
   platformReadme:
-    "8d307a3d1379f13c3be35a807522c34bc1a6300b386af45dd42ae3ccdb3716d1",
+    "bc5d56526772cec79551d8614e8b73c902a516657decb6ae26c1ac28bbfa3944",
 });
 const keyAgentServicePhaseThreeBExpectedParentMacroInvocationSha256 =
   "985d21d2b833a6aca129d9c63995b4b65269bac69815a4ba4d3c565d2dad6870";
@@ -43441,7 +43739,7 @@ const keyAgentServicePhaseThreeBExactDocumentSentences = Object.freeze([
   ]),
 ]);
 const keyAgentServicePhaseThreeBExpectedDocumentSemanticHashes = Object.freeze([
-  "4505d12eb97baa415eb006b77c3f90b918812053db9d2f65c9e5f79fda4f2334",
+  "c705b0070867bc0065f361f659ba8555fdbf9efb08110b15d1a5ee99391d764a",
   "ccf6fcff61ae1146788e1ab513a39f8998212334675088a4cfedb08e0c219d12",
   "bdab33b31b49250fbd4d3da46326880d1a3a331aea2c735e6fce0eb441ed6133",
   "04472d116160dbdc4498d66cd060d74f56cf1ece9d27cdf374e9a0542c9737a2",
@@ -43455,17 +43753,17 @@ const keyAgentServicePhaseThreeBDocumentContract = (inputs) => {
   const design = keyAgentServicePhaseThreeBExactDocumentSection(
     inputs.designDocument,
     "**Current Phase 3B status: started, not passed.**",
-    "\n### Phase 4",
+    "\n**Current Phase 3C status: started, not passed.**",
   );
   const security = keyAgentServicePhaseThreeBExactDocumentSection(
     inputs.securityDocument,
     "**Current Phase 3B status: started, not passed.**",
-    "\nAll seven Rust-startup supervisor integration positives",
+    "\n**Current Phase 3C status: started, not passed.**",
   );
   const readme = keyAgentServicePhaseThreeBExactDocumentSection(
     inputs.platformReadme,
     "  **Current Phase 3B status: started, not passed.**",
-    "\n  A deadline that observes pending overlapped pipe I/O",
+    "\n  **Current Phase 3C status: started, not passed.**",
   );
   const architectureRows = inputs.architectureDocument
     .split(/\r?\n/gu)
@@ -43600,7 +43898,7 @@ const keyAgentServicePhaseThreeBSemanticContract = (inputs, requirePins = true) 
     const debugImpl = (typeName) =>
       impls.find(
         ({ header }) =>
-          header.includes(typeName) &&
+          new RegExp(`\\b${typeName}\\s*(?:<|\\b)`, "u").test(header) &&
           rustImplHeaderImplementsTrait(header, "Debug"),
       )?.source;
     const bindingImpl = inherentImpl("RequestBinding");
@@ -44315,17 +44613,17 @@ const keyAgentServicePhaseThreeBSemanticContract = (inputs, requirePins = true) 
           keyAgentServicePhaseThreeBExactDocumentSection(
             inputs.designDocument,
             "**Current Phase 3B status: started, not passed.**",
-            "\n### Phase 4",
+            "\n**Current Phase 3C status: started, not passed.**",
           ),
           keyAgentServicePhaseThreeBExactDocumentSection(
             inputs.securityDocument,
             "**Current Phase 3B status: started, not passed.**",
-            "\nAll seven Rust-startup supervisor integration positives",
+            "\n**Current Phase 3C status: started, not passed.**",
           ),
           keyAgentServicePhaseThreeBExactDocumentSection(
             inputs.platformReadme,
             "  **Current Phase 3B status: started, not passed.**",
-            "\n  A deadline that observes pending overlapped pipe I/O",
+            "\n  **Current Phase 3C status: started, not passed.**",
           ),
           inputs.architectureDocument
             .split(/\r?\n/gu)
@@ -45173,7 +45471,7 @@ const keyAgentServicePhaseThreeBSemanticMutationProbes = Object.freeze([
     "design Phase 3B STOP-SHIP weakens",
     "designDocument",
     "**Current Phase 3B status: started, not passed.**",
-    "\n### Phase 4",
+    "\n**Current Phase 3C status: started, not passed.**",
   ),
   keyAgentServicePhaseThreeBUpdateMutation(
     "architecture Phase 3B STOP-SHIP weakens",
@@ -45199,13 +45497,13 @@ const keyAgentServicePhaseThreeBSemanticMutationProbes = Object.freeze([
     "security Phase 3B STOP-SHIP weakens",
     "securityDocument",
     "**Current Phase 3B status: started, not passed.**",
-    "\nAll seven Rust-startup supervisor integration positives",
+    "\n**Current Phase 3C status: started, not passed.**",
   ),
   keyAgentServicePhaseThreeBStopShipMutation(
     "platform README Phase 3B STOP-SHIP weakens",
     "platformReadme",
     "  **Current Phase 3B status: started, not passed.**",
-    "\n  A deadline that observes pending overlapped pipe I/O",
+    "\n  **Current Phase 3C status: started, not passed.**",
   ),
   keyAgentServicePhaseThreeBUpdateMutation(
     "documentation claims policy-local deadline proves OS liveness",
@@ -45214,7 +45512,7 @@ const keyAgentServicePhaseThreeBSemanticMutationProbes = Object.freeze([
       keyAgentServicePhaseThreeBSectionUpdate(
         document,
         "**Current Phase 3B status: started, not passed.**",
-        "\n### Phase 4",
+        "\n**Current Phase 3C status: started, not passed.**",
         (section) =>
           `${section}\nThe policy-local deadline proves operating-system process liveness.\n`,
       ),
@@ -45226,7 +45524,7 @@ const keyAgentServicePhaseThreeBSemanticMutationProbes = Object.freeze([
       keyAgentServicePhaseThreeBSectionUpdate(
         document,
         "**Current Phase 3B status: started, not passed.**",
-        "\n### Phase 4",
+        "\n**Current Phase 3C status: started, not passed.**",
         (section) =>
           replaceExactStringOnce(
             section,
@@ -45242,7 +45540,7 @@ const keyAgentServicePhaseThreeBSemanticMutationProbes = Object.freeze([
       keyAgentServicePhaseThreeBSectionUpdate(
         document,
         "**Current Phase 3B status: started, not passed.**",
-        "\nAll seven Rust-startup supervisor integration positives",
+        "\n**Current Phase 3C status: started, not passed.**",
         (section) =>
           replaceExactStringOnce(
             section,
@@ -45298,8 +45596,8 @@ const keyAgentServicePhaseThreeBSemanticMutationProbes = Object.freeze([
   ...[
     [
       "designDocument",
-      "owns the monotonic clock used to enforce it",
-      "does not own the monotonic clock used to enforce it",
+      "deadline, and owns the monotonic clock used to enforce it",
+      "deadline, and does not own the monotonic clock used to enforce it",
     ],
     [
       "securityDocument",
@@ -45757,6 +46055,1563 @@ requireInvariant(
   )}`,
 );
 
+const keyAgentServicePhaseThreeCAllTypeNames = Object.freeze([
+  "SecretInputPolicyRejectionCause",
+  "MoveOnly",
+  "SecretInputPolicySeed",
+  "SecretInputPolicyObservation",
+  "SecretInputDecision",
+  "SecretInputCompletionObservation",
+  "SecretInputBinding",
+  ...keyAgentServicePhaseThreeCLiveTypeNames,
+  "SecretInputCompletion",
+  "CancelledSecretInputPolicy",
+  "RejectedSecretInputPolicy",
+]);
+const keyAgentServicePhaseThreeCExpectedParentMacroInvocationSha256 =
+  keyAgentServicePhaseThreeBExpectedParentMacroInvocationSha256;
+const keyAgentServicePhaseThreeCLegacyReadmeTailStart =
+  "\n  A deadline that observes pending overlapped pipe I/O";
+const keyAgentServicePhaseThreeCLegacyReadmeTailEnd =
+  "\n  The adoption transition, release-binding, and dormant supervisor binder all";
+const keyAgentServicePhaseThreeCExpectedLegacyReadmeTailSemanticSha256 =
+  "4de031b52a2f75c90ff7141b39d39dac39af8e37f35567977a7192c79abc3f5c";
+const keyAgentServicePhaseThreeCLegacyReadmeTailContract = (readme) => {
+  const section = keyAgentServicePhaseThreeBExactDocumentSection(
+    readme,
+    keyAgentServicePhaseThreeCLegacyReadmeTailStart,
+    keyAgentServicePhaseThreeCLegacyReadmeTailEnd,
+  );
+  return (
+    section.length > 0 &&
+    keyAgentServiceLiteralCount(
+      readme,
+      keyAgentServicePhaseThreeCLegacyReadmeTailStart,
+    ) === 1 &&
+    keyAgentServiceLiteralCount(
+      readme,
+      keyAgentServicePhaseThreeCLegacyReadmeTailEnd,
+    ) === 1 &&
+    normalizedSourceSha256(
+      keyAgentServicePhaseTwoINormalizedDocument(section),
+    ) === keyAgentServicePhaseThreeCExpectedLegacyReadmeTailSemanticSha256
+  );
+};
+
+const keyAgentServicePhaseThreeCInputs = Object.freeze({
+  source: keyAgentServicePhaseThreeCSource,
+  moduleSource: keyAgentServiceExpectedPeerReexportSource,
+  workspaceProductionFiles: workspaceRustProductionFiles,
+  serviceManifest: keyAgentServiceManifest,
+  platformManifest: keyAgentServicePlatformManifest,
+  serviceMain: keyAgentServiceMain,
+  attestationSource: attestation,
+  approvalBootstrapSource: approvalBootstrapWindows,
+  approvalMainSource: approvalMain,
+  designDocument: keyAgentServiceDesign,
+  architectureDocument: sepoliaArchitectureDoc,
+  securityDocument: keyAgentServiceSecurityDecisions,
+  platformReadme: keyAgentServicePlatformReadme,
+});
+const keyAgentServicePhaseThreeCProbeDiagnostics = new WeakMap();
+
+const keyAgentServicePhaseThreeCSemanticContract = (inputs, requirePins = true) => {
+  try {
+    const production = keyAgentServicePhaseThreeCProductionProjection(inputs.source);
+    const moduleProduction =
+      keyAgentServicePhaseThreeCProductionProjection(inputs.moduleSource);
+    const code = rustLexicalCode(production);
+    const moduleCode = rustLexicalCode(moduleProduction);
+    const workspaceFiles = keyAgentServicePhaseThreeCOverlayProductionFiles(inputs);
+    const item = (pattern) =>
+      rustLexicalItemBlockAtDepth(production, pattern, 0);
+    const rejectionCause = item(
+      /(?:^|\n)\s*pub\(super\)\s+enum\s+SecretInputPolicyRejectionCause\s*\{/u,
+    );
+    const seed = item(
+      /(?:^|\n)\s*pub\(super\)\s+struct\s+SecretInputPolicySeed\s*</u,
+    );
+    const observation = item(
+      /(?:^|\n)\s*pub\(super\)\s+struct\s+SecretInputPolicyObservation\s*\{/u,
+    );
+    const decision = item(/(?:^|\n)\s*enum\s+SecretInputDecision\s*\{/u);
+    const completionObservation = item(
+      /(?:^|\n)\s*pub\(super\)\s+struct\s+SecretInputCompletionObservation\s*\{/u,
+    );
+    const binding = item(/(?:^|\n)\s*struct\s+SecretInputBinding\s*</u);
+    const admitted = item(
+      /(?:^|\n)\s*pub\(super\)\s+struct\s+AdmittedSecretInputPolicy\s*</u,
+    );
+    const starting = item(
+      /(?:^|\n)\s*pub\(super\)\s+struct\s+SecretInputUiStartingPolicy\s*</u,
+    );
+    const authenticated = item(
+      /(?:^|\n)\s*pub\(super\)\s+struct\s+SecretInputUiAuthenticatedPolicy\s*</u,
+    );
+    const completion = item(
+      /(?:^|\n)\s*pub\(super\)\s+enum\s+SecretInputCompletion\s*</u,
+    );
+    const accepted = item(
+      /(?:^|\n)\s*pub\(super\)\s+struct\s+AcceptedSecretInputPolicy\s*</u,
+    );
+    const cancelled = item(
+      /(?:^|\n)\s*pub\(super\)\s+struct\s+CancelledSecretInputPolicy\s*\{/u,
+    );
+    const rejected = item(
+      /(?:^|\n)\s*pub\(super\)\s+struct\s+RejectedSecretInputPolicy\s*\{/u,
+    );
+    const impls = rustImplItems(production);
+    const fullImpls = rustImplItems(inputs.source);
+    const inherentImpl = (typeName, sourceImpls = impls) =>
+      sourceImpls.find(
+        ({ header }) =>
+          rustImplImplementedTraitClause(header) === null &&
+          new RegExp(`\\b${typeName}\\s*(?:<|\\b)`, "u").test(header),
+      )?.source;
+    const debugImpl = (typeName) =>
+      impls.find(
+        ({ header }) =>
+          new RegExp(`\\b${typeName}\\s*(?:<|\\b)`, "u").test(header) &&
+          rustImplHeaderImplementsTrait(header, "Debug"),
+      )?.source;
+    const bindingImpl = inherentImpl("SecretInputBinding");
+    const admittedImpl = inherentImpl("AdmittedSecretInputPolicy");
+    const startingImpl = inherentImpl("SecretInputUiStartingPolicy");
+    const authenticatedImpl = inherentImpl("SecretInputUiAuthenticatedPolicy");
+    const acceptedImpl = inherentImpl("AcceptedSecretInputPolicy");
+    const fullSeedImpl = inherentImpl("SecretInputPolicySeed", fullImpls);
+    const fullObservationImpl = inherentImpl(
+      "SecretInputPolicyObservation",
+      fullImpls,
+    );
+    const fullCompletionObservationImpl = inherentImpl(
+      "SecretInputCompletionObservation",
+      fullImpls,
+    );
+    const fullAdmittedImpl = fullImpls.find(
+      ({ header }) =>
+        rustImplImplementedTraitClause(header) === null &&
+        /^impl<C> AdmittedSecretInputPolicy<C>/u.test(header),
+    )?.source;
+    const completeCancelledBinding = rustFunctionBlockAtDepth(
+      production,
+      "complete_cancelled_binding",
+      0,
+    );
+    const rejectBinding = rustFunctionBlockAtDepth(
+      production,
+      "reject_binding",
+      0,
+    );
+    const requiredItems = {
+      rejectionCause,
+      seed,
+      observation,
+      decision,
+      completionObservation,
+      binding,
+      admitted,
+      starting,
+      authenticated,
+      completion,
+      accepted,
+      cancelled,
+      rejected,
+      bindingImpl,
+      admittedImpl,
+      startingImpl,
+      authenticatedImpl,
+      acceptedImpl,
+      fullSeedImpl,
+      fullObservationImpl,
+      fullCompletionObservationImpl,
+      fullAdmittedImpl,
+      completeCancelledBinding,
+      rejectBinding,
+    };
+    const missingRequiredItems = Object.entries(requiredItems)
+      .filter(([, entry]) => entry == null || entry.length === 0)
+      .map(([name]) => name);
+    if (missingRequiredItems.length > 0) {
+      if (inputs === keyAgentServicePhaseThreeCInputs) {
+        keyAgentServicePhaseThreeCBaseChecks = Object.freeze({
+          allRequiredItemsFound: false,
+        });
+        keyAgentServicePhaseThreeCBaseMetrics = Object.freeze({
+          missingRequiredItems,
+          productionImplHeaders: impls.map(({ header }) => header),
+        });
+      }
+      return false;
+    }
+
+    const validate = rustFunctionBlockAtDepth(bindingImpl, "validate", 1);
+    const beginUi = rustFunctionBlockAtDepth(admittedImpl, "begin_ui", 1);
+    const authenticateUi = rustFunctionBlockAtDepth(
+      startingImpl,
+      "authenticate_ui",
+      1,
+    );
+    const complete = rustFunctionBlockAtDepth(authenticatedImpl, "complete", 1);
+    const liveImpls = [
+      admittedImpl,
+      startingImpl,
+      authenticatedImpl,
+      acceptedImpl,
+    ];
+    const rechecks = liveImpls.map((owner) =>
+      rustFunctionBlockAtDepth(owner, "recheck_liveness", 1),
+    );
+    const cancels = liveImpls.map((owner) =>
+      rustFunctionBlockAtDepth(owner, "cancel", 1),
+    );
+    const targetedInvalidations = liveImpls.map((owner) =>
+      rustFunctionBlockAtDepth(owner, "invalidate_session", 1),
+    );
+    const activeInvalidations = liveImpls.map((owner) =>
+      rustFunctionBlockAtDepth(owner, "invalidate_active_sessions", 1),
+    );
+    const newSeedForTest = rustFunctionBlockAtDepth(
+      fullSeedImpl,
+      "new_for_test",
+      1,
+    );
+    const newObservationForTest = rustFunctionBlockAtDepth(
+      fullObservationImpl,
+      "new_for_test",
+      1,
+    );
+    const acceptedForTest = rustFunctionBlockAtDepth(
+      fullCompletionObservationImpl,
+      "accepted_for_test",
+      1,
+    );
+    const cancelledForTest = rustFunctionBlockAtDepth(
+      fullCompletionObservationImpl,
+      "cancelled_for_test",
+      1,
+    );
+    const admitForTest = rustFunctionBlockAtDepth(
+      fullAdmittedImpl,
+      "admit_for_test",
+      1,
+    );
+    const tests = rustBottomTestModule(inputs.source);
+    const attributedTests = keyAgentServiceRustAttributedTestInventory(inputs.source);
+    const testBlocks = Object.fromEntries(
+      keyAgentServicePhaseThreeCTestNames.map((name) => [
+        name,
+        rustFunctionBlockAtDepth(tests, name, 1),
+      ]),
+    );
+    const testAttributeInventory = keyAgentServicePhaseThreeCTestNames.map(
+      (name) => ({
+        name,
+        attributes: rustAttachedOuterAttributes(
+          tests,
+          rustFunctionIndexAtDepth(tests, name, 1),
+        ).map(({ source }) => compactRust(source)),
+      }),
+    );
+    const productionImplHeaders = impls.map(({ header }) => header);
+    const topLevelTypeInventory = [
+      ...code.matchAll(
+        /\b(?<kind>struct|enum|union|trait|type)\s+(?<name>(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*)/gu,
+      ),
+    ]
+      .filter((match) => rustBraceDepthBefore(code, match.index) === 0)
+      .map(({ groups }) => ({ kind: groups.kind, name: groups.name }));
+    const topLevelFunctionInventory = rustFunctionSignatures(production)
+      .filter((entry) => rustBraceDepthBefore(code, entry.index) === 0)
+      .map(
+        (entry) =>
+          /\bfn\s+(?<name>(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*)/u.exec(
+            rustLexicalCode(entry.source),
+          ).groups.name,
+      );
+    const topLevelOtherItemInventory = [
+      ...code.matchAll(
+        /\b(?<kind>mod|const|static|macro_rules|macro|extern\s+crate)\s*!?\s*(?<name>(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*)/gu,
+      ),
+    ]
+      .filter((match) => rustBraceDepthBefore(code, match.index) === 0)
+      .map(({ groups }) => ({ kind: groups.kind, name: groups.name }));
+    const macroInvocationInventory = rustMacroInvocations(production).map(
+      ({ normalizedPath }) => normalizedPath,
+    );
+    const parentMacroInvocationInventory = rustMacroInvocations(
+      moduleProduction,
+    ).map(({ normalizedPath }) => normalizedPath);
+    const parentMacroInvocationSha256 = normalizedSourceSha256(
+      JSON.stringify(parentMacroInvocationInventory),
+    );
+    const parentMacroProviderInventory = [
+      ...moduleCode.matchAll(
+        /\b(?<kind>macro_rules\s*!|macro|extern\s+crate)\s*(?<name>(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*)/gu,
+      ),
+    ]
+      .filter((match) => rustBraceDepthBefore(moduleCode, match.index) === 0)
+      .map(({ groups }) => ({ kind: groups.kind, name: groups.name }));
+    const attributeInventory = rustAttributeItems(production).map(({ source }) =>
+      normalizeRustFragment(source),
+    );
+    const associatedNonFunctionItemInventory = impls.flatMap(
+      ({ header, source }) => {
+        const ownerCode = rustLexicalCode(source);
+        return [
+          ...ownerCode.matchAll(
+            /\b(?<kind>const|static|type)\s+(?<name>(?:r#)?[\p{XID_Start}_][\p{XID_Continue}_]*)/gu,
+          ),
+        ]
+          .filter((match) => rustBraceDepthBefore(ownerCode, match.index) === 1)
+          .map(({ groups }) => ({
+            owner: header,
+            kind: groups.kind,
+            name: groups.name,
+          }));
+      },
+    );
+    const methodInventory = Object.freeze({
+      binding: keyAgentServicePhaseThreeBFunctionNamesAtDepth(bindingImpl, 1),
+      admitted: keyAgentServicePhaseThreeBFunctionNamesAtDepth(admittedImpl, 1),
+      starting: keyAgentServicePhaseThreeBFunctionNamesAtDepth(startingImpl, 1),
+      authenticated:
+        keyAgentServicePhaseThreeBFunctionNamesAtDepth(authenticatedImpl, 1),
+      accepted: keyAgentServicePhaseThreeBFunctionNamesAtDepth(acceptedImpl, 1),
+    });
+    const externalTypeReferences = workspaceFiles
+      .filter(({ path }) => path !== keyAgentServicePhaseThreeCPath)
+      .flatMap((file) =>
+        keyAgentServicePhaseThreeCAllTypeNames
+          .filter((name) => name !== "MoveOnly")
+          .flatMap((name) => {
+            const count = identifierOccurrenceCount(
+              rustLexicalCode(file.source),
+              name,
+            );
+            return count === 0 ? [] : [{ path: file.path, name, count }];
+          }),
+      );
+    const moduleReferenceInventory = workspaceFiles
+      .map((file) => ({
+        path: file.path,
+        count: identifierOccurrenceCount(
+          rustLexicalCode(file.source),
+          "secret_input_lifecycle",
+        ),
+      }))
+      .filter(({ count }) => count > 0);
+    const moduleDeclarations = rustModuleDeclarations(moduleProduction).filter(
+      ({ name, index }) =>
+        name === "secret_input_lifecycle" &&
+        rustBraceDepthBefore(moduleCode, index) === 0,
+    );
+    const moduleAttributes =
+      moduleDeclarations.length === 1
+        ? rustAttachedOuterAttributes(
+            moduleProduction,
+            moduleDeclarations[0].index,
+          ).map(({ source }) => compactRust(source))
+        : [];
+    const attachedAttributes = (sourceItem) => {
+      const index = production.indexOf(sourceItem);
+      return rustAttachedOuterAttributes(production, index).map((attribute) =>
+        compactRust(attribute.source),
+      );
+    };
+    const rejectionAttributes = attachedAttributes(rejectionCause);
+    const decisionAttributes = attachedAttributes(decision);
+    const moveOnlyDerives = [
+      seed,
+      observation,
+      completionObservation,
+      binding,
+      admitted,
+      starting,
+      authenticated,
+      completion,
+      accepted,
+      cancelled,
+      rejected,
+    ].flatMap((sourceItem) =>
+      attachedAttributes(sourceItem).filter((attribute) =>
+        /derive\([^)]*(?:Clone|Copy|Debug)/u.test(attribute),
+      ),
+    );
+    const fullImplAttributes = (typeName) => {
+      const entry = fullImpls.find(
+        ({ header }) =>
+          rustImplImplementedTraitClause(header) === null &&
+          new RegExp(`\\b${typeName}\\s*(?:<|\\b)`, "u").test(header),
+      );
+      return entry === undefined
+        ? []
+        : rustAttachedOuterAttributes(inputs.source, entry.index).map(({ source }) =>
+            compactRust(source),
+          );
+    };
+
+    const shapeCheck =
+      compactRust(rejectionCause) ===
+        "pub(super)enumSecretInputPolicyRejectionCause{ClockUnavailable,DeadlineExpired,InvalidObservation,Cancelled,SessionInvalidated,ActiveSessionsInvalidated,}" &&
+      compactRust(seed) ===
+        "pub(super)structSecretInputPolicySeed<C>whereC:MonotonicClock,{clock:C,key:ExpectedPeerKey,session_id:NonZeroU32,role:ExpectedHelperRole,original_deadline:C::Instant,_move_only:MoveOnly,}" &&
+      compactRust(observation) ===
+        "pub(super)structSecretInputPolicyObservation{key:ExpectedPeerKey,session_id:NonZeroU32,role:ExpectedHelperRole,_move_only:MoveOnly,}" &&
+      compactRust(decision) === "enumSecretInputDecision{Accept,Cancel,}" &&
+      compactRust(completionObservation) ===
+        "pub(super)structSecretInputCompletionObservation{peer:SecretInputPolicyObservation,decision:SecretInputDecision,}" &&
+      compactRust(binding) ===
+        "structSecretInputBinding<C>whereC:MonotonicClock,{clock:C,key:ExpectedPeerKey,session_id:NonZeroU32,role:ExpectedHelperRole,original_deadline:C::Instant,_move_only:MoveOnly,}" &&
+      compactRust(admitted) ===
+        "pub(super)structAdmittedSecretInputPolicy<C>whereC:MonotonicClock,{binding:SecretInputBinding<C>,}" &&
+      compactRust(starting) ===
+        "pub(super)structSecretInputUiStartingPolicy<C>whereC:MonotonicClock,{binding:SecretInputBinding<C>,}" &&
+      compactRust(authenticated) ===
+        "pub(super)structSecretInputUiAuthenticatedPolicy<C>whereC:MonotonicClock,{binding:SecretInputBinding<C>,}" &&
+      compactRust(completion) ===
+        "pub(super)enumSecretInputCompletion<C>whereC:MonotonicClock,{Accepted(AcceptedSecretInputPolicy<C>),Cancelled(CancelledSecretInputPolicy),}" &&
+      compactRust(accepted) ===
+        "pub(super)structAcceptedSecretInputPolicy<C>whereC:MonotonicClock,{binding:SecretInputBinding<C>,}" &&
+      compactRust(cancelled) ===
+        "pub(super)structCancelledSecretInputPolicy{_move_only:MoveOnly,}" &&
+      compactRust(rejected) ===
+        "pub(super)structRejectedSecretInputPolicy{cause:SecretInputPolicyRejectionCause,_move_only:MoveOnly,}" &&
+      code.includes("struct MoveOnly;") &&
+      JSON.stringify(rejectionAttributes) ===
+        JSON.stringify(["#[derive(Clone,Copy,Debug,Eq,PartialEq)]"]) &&
+      JSON.stringify(decisionAttributes) ===
+        JSON.stringify(["#[derive(Clone,Copy)]"]) &&
+      moveOnlyDerives.length === 0;
+    const exactTopLevelItemInventoryCheck =
+      JSON.stringify(topLevelTypeInventory) ===
+        JSON.stringify([
+          { kind: "enum", name: "SecretInputPolicyRejectionCause" },
+          { kind: "struct", name: "MoveOnly" },
+          { kind: "struct", name: "SecretInputPolicySeed" },
+          { kind: "struct", name: "SecretInputPolicyObservation" },
+          { kind: "enum", name: "SecretInputDecision" },
+          { kind: "struct", name: "SecretInputCompletionObservation" },
+          { kind: "struct", name: "SecretInputBinding" },
+          { kind: "struct", name: "AdmittedSecretInputPolicy" },
+          { kind: "struct", name: "SecretInputUiStartingPolicy" },
+          { kind: "struct", name: "SecretInputUiAuthenticatedPolicy" },
+          { kind: "enum", name: "SecretInputCompletion" },
+          { kind: "struct", name: "AcceptedSecretInputPolicy" },
+          { kind: "struct", name: "CancelledSecretInputPolicy" },
+          { kind: "struct", name: "RejectedSecretInputPolicy" },
+        ]) &&
+      JSON.stringify(topLevelFunctionInventory) ===
+        JSON.stringify(["complete_cancelled_binding", "reject_binding"]) &&
+      topLevelOtherItemInventory.length === 0 &&
+      macroInvocationInventory.length === 0 &&
+      associatedNonFunctionItemInventory.length === 0 &&
+      JSON.stringify(attributeInventory) ===
+        JSON.stringify([
+          "#![forbid(unsafe_code)]",
+          "#[derive(Clone, Copy, Debug, Eq, PartialEq)]",
+          '#[must_use = "a Secret Input seed must be admitted or rejected exactly once"]',
+          "#[derive(Clone, Copy)]",
+          "#[allow(clippy::needless_pass_by_value)]",
+          '#[must_use = "an admitted Secret Input request must advance or terminate"]',
+          '#[must_use = "a starting Secret Input UI must authenticate or terminate"]',
+          '#[must_use = "an authenticated Secret Input UI must complete or terminate"]',
+          '#[must_use = "a Secret Input completion must be consumed exactly once"]',
+          '#[must_use = "Secret Input acceptance must remain live or terminate"]',
+          '#[must_use = "terminal cancellation must be observed"]',
+          '#[must_use = "terminal rejection must be observed"]',
+        ]) &&
+      compactRust(completeCancelledBinding) ===
+        "fncomplete_cancelled_binding<C>(_binding:SecretInputBinding<C>)->CancelledSecretInputPolicywhereC:MonotonicClock,{CancelledSecretInputPolicy{_move_only:MoveOnly,}}" &&
+      compactRust(rejectBinding) ===
+        "fnreject_binding<C>(_binding:SecretInputBinding<C>,cause:SecretInputPolicyRejectionCause,)->RejectedSecretInputPolicywhereC:MonotonicClock,{RejectedSecretInputPolicy{cause,_move_only:MoveOnly,}}";
+    const importAndAuthorityCheck =
+      JSON.stringify(rustInnerAttributesAtDepth(production, 0)) ===
+        JSON.stringify(["#![forbid(unsafe_code)]"]) &&
+      JSON.stringify(rustUseItems(production).map(({ source }) => compactRust(source))) ===
+        JSON.stringify([
+          "usecore::{fmt,num::NonZeroU32};",
+          "usesuper::{epoch::MonotonicClock,expected_peer::{ExpectedHelperRole,ExpectedPeerKey},};",
+        ]) &&
+      rustUnsafeKeywordCount(production) === 0 &&
+      !/\b(?:windows|Win32|std::(?:env|fs|io|net|process)|reqwest|tokio|TcpStream|UdpSocket|OpenProcess|CreateProcess|Command|File|OpenOptions|getrandom|mnemonic|private_key|PrivateKey|wallet|Wallet|signing|Signature|crypto|secp256k1|alloy|candidate|wire|SESSIONNAME|SESSIONID|WTSSESSION_NOTIFICATION|Approval)\b/iu.test(
+        code,
+      );
+    const implInventoryCheck =
+      impls.length === 16 &&
+      productionImplHeaders.filter((header) =>
+        rustImplHeaderImplementsTrait(header, "Debug"),
+      ).length === 11 &&
+      [
+        "SecretInputPolicySeed",
+        "SecretInputPolicyObservation",
+        "SecretInputCompletionObservation",
+        "SecretInputCompletion",
+        "CancelledSecretInputPolicy",
+        "RejectedSecretInputPolicy",
+      ].every(
+        (name) =>
+          impls.filter(({ header }) =>
+            new RegExp(`\\b${name}\\s*(?:<|\\b)`, "u").test(header),
+          ).length === 1,
+      ) &&
+      [
+        "SecretInputBinding",
+        ...keyAgentServicePhaseThreeCLiveTypeNames,
+      ].every(
+        (name) =>
+          impls.filter(({ header }) =>
+            new RegExp(`\\b${name}\\s*(?:<|\\b)`, "u").test(header),
+          ).length === 2,
+      ) &&
+      !productionImplHeaders.some(
+        (header) =>
+          ["CancelledSecretInputPolicy", "RejectedSecretInputPolicy"].some(
+            (name) => header.includes(name),
+          ) && !rustImplHeaderImplementsTrait(header, "Debug"),
+      );
+    const exactMethodInventoryCheck =
+      JSON.stringify(methodInventory) ===
+        JSON.stringify({
+          binding: ["validate"],
+          admitted: [
+            "begin_ui",
+            "recheck_liveness",
+            "cancel",
+            "invalidate_session",
+            "invalidate_active_sessions",
+          ],
+          starting: [
+            "authenticate_ui",
+            "recheck_liveness",
+            "cancel",
+            "invalidate_session",
+            "invalidate_active_sessions",
+          ],
+          authenticated: [
+            "complete",
+            "recheck_liveness",
+            "cancel",
+            "invalidate_session",
+            "invalidate_active_sessions",
+          ],
+          accepted: [
+            "recheck_liveness",
+            "cancel",
+            "invalidate_session",
+            "invalidate_active_sessions",
+          ],
+        }) &&
+      identifierOccurrenceCount(code, "begin_ui") === 1 &&
+      identifierOccurrenceCount(code, "authenticate_ui") === 1 &&
+      identifierOccurrenceCount(code, "complete") === 1 &&
+      identifierOccurrenceCount(code, "recheck_liveness") === 4 &&
+      identifierOccurrenceCount(code, "cancel") === 4 &&
+      identifierOccurrenceCount(code, "invalidate_session") === 4 &&
+      identifierOccurrenceCount(code, "invalidate_active_sessions") === 4;
+    const validateCheck =
+      compactRust(validate) ===
+        "fnvalidate(&self,observation:SecretInputPolicyObservation,)->Result<(),SecretInputPolicyRejectionCause>{letSecretInputPolicyObservation{key,session_id,role,_move_only:_,}=observation;letnow=self.clock.now().ok_or(SecretInputPolicyRejectionCause::ClockUnavailable)?;ifnow>=self.original_deadline{returnErr(SecretInputPolicyRejectionCause::DeadlineExpired);}ifself.role!=ExpectedHelperRole::SecretInput||role!=ExpectedHelperRole::SecretInput||key!=self.key||session_id!=self.session_id{returnErr(SecretInputPolicyRejectionCause::InvalidObservation);}Ok(())}" &&
+      identifierOccurrenceCount(rustLexicalCode(validate), "now") === 3 &&
+      rustCallSites(validate, "now").length === 1;
+    const positiveEdgesCheck =
+      compactRust(beginUi) ===
+        "pub(super)fnbegin_ui(self,observation:SecretInputPolicyObservation,)->Result<SecretInputUiStartingPolicy<C>,RejectedSecretInputPolicy>{matchself.binding.validate(observation){Ok(())=>Ok(SecretInputUiStartingPolicy{binding:self.binding,}),Err(cause)=>Err(reject_binding(self.binding,cause)),}}" &&
+      compactRust(authenticateUi) ===
+        "pub(super)fnauthenticate_ui(self,observation:SecretInputPolicyObservation,)->Result<SecretInputUiAuthenticatedPolicy<C>,RejectedSecretInputPolicy>{matchself.binding.validate(observation){Ok(())=>Ok(SecretInputUiAuthenticatedPolicy{binding:self.binding,}),Err(cause)=>Err(reject_binding(self.binding,cause)),}}" &&
+      compactRust(complete) ===
+        "pub(super)fncomplete(self,observation:SecretInputCompletionObservation,)->Result<SecretInputCompletion<C>,RejectedSecretInputPolicy>{letSecretInputCompletionObservation{peer,decision}=observation;ifletErr(cause)=self.binding.validate(peer){returnErr(reject_binding(self.binding,cause));}matchdecision{SecretInputDecision::Accept=>{Ok(SecretInputCompletion::Accepted(AcceptedSecretInputPolicy{binding:self.binding,}))}SecretInputDecision::Cancel=>Ok(SecretInputCompletion::Cancelled(complete_cancelled_binding(self.binding),)),}}" &&
+      identifierOccurrenceCount(code, "complete_cancelled_binding") === 2 &&
+      identifierOccurrenceCount(code, "reject_binding") === 20;
+    const commonTransitionCheck =
+      rechecks.every(
+        (method) =>
+          compactRust(method) ===
+          "pub(super)fnrecheck_liveness(self,observation:SecretInputPolicyObservation,)->Result<Self,RejectedSecretInputPolicy>{matchself.binding.validate(observation){Ok(())=>Ok(self),Err(cause)=>Err(reject_binding(self.binding,cause)),}}",
+      ) &&
+      cancels.every(
+        (method) =>
+          compactRust(method) ===
+          "pub(super)fncancel(self)->RejectedSecretInputPolicy{reject_binding(self.binding,SecretInputPolicyRejectionCause::Cancelled)}",
+      ) &&
+      targetedInvalidations.every(
+        (method) =>
+          compactRust(method) ===
+          "pub(super)fninvalidate_session(self,session_id:NonZeroU32,)->Result<Self,RejectedSecretInputPolicy>{ifself.binding.session_id==session_id{Err(reject_binding(self.binding,SecretInputPolicyRejectionCause::SessionInvalidated,))}else{Ok(self)}}",
+      ) &&
+      activeInvalidations.every(
+        (method) =>
+          compactRust(method) ===
+          "pub(super)fninvalidate_active_sessions(self)->RejectedSecretInputPolicy{reject_binding(self.binding,SecretInputPolicyRejectionCause::ActiveSessionsInvalidated,)}",
+      );
+    const testOnlyMintCheck =
+      JSON.stringify(fullImplAttributes("SecretInputPolicySeed")) ===
+        JSON.stringify(["#[cfg(test)]"]) &&
+      JSON.stringify(fullImplAttributes("SecretInputPolicyObservation")) ===
+        JSON.stringify(["#[cfg(test)]"]) &&
+      JSON.stringify(fullImplAttributes("SecretInputCompletionObservation")) ===
+        JSON.stringify(["#[cfg(test)]"]) &&
+      JSON.stringify(
+        rustAttachedOuterAttributes(
+          fullAdmittedImpl,
+          rustFunctionIndexAtDepth(fullAdmittedImpl, "admit_for_test", 1),
+        ).map(({ source }) => compactRust(source)),
+      ) === JSON.stringify(["#[cfg(test)]"]) &&
+      compactRust(newSeedForTest) ===
+        "fnnew_for_test(clock:C,key:ExpectedPeerKey,session_id:NonZeroU32,role:ExpectedHelperRole,original_deadline:C::Instant,)->Self{Self{clock,key,session_id,role,original_deadline,_move_only:MoveOnly,}}" &&
+      compactRust(newObservationForTest) ===
+        "constfnnew_for_test(key:ExpectedPeerKey,session_id:NonZeroU32,role:ExpectedHelperRole,)->Self{Self{key,session_id,role,_move_only:MoveOnly,}}" &&
+      compactRust(acceptedForTest) ===
+        "constfnaccepted_for_test(peer:SecretInputPolicyObservation)->Self{Self{peer,decision:SecretInputDecision::Accept,}}" &&
+      compactRust(cancelledForTest) ===
+        "constfncancelled_for_test(peer:SecretInputPolicyObservation)->Self{Self{peer,decision:SecretInputDecision::Cancel,}}" &&
+      compactRust(admitForTest).replaceAll("policy_", "binding") ===
+        "fnadmit_for_test(seed:SecretInputPolicySeed<C>,observation:SecretInputPolicyObservation,)->Result<Self,RejectedSecretInputPolicy>{letSecretInputPolicySeed{clock,key,session_id,role,original_deadline,_move_only:_,}=seed;letbinding=SecretInputBinding{clock,key,session_id,role,original_deadline,_move_only:MoveOnly,};matchbinding.validate(observation){Ok(())=>Ok(Self{binding}),Err(cause)=>Err(reject_binding(binding,cause)),}}" &&
+      identifierOccurrenceCount(code, "validate") === 8;
+    const debugCheck =
+      [
+        "SecretInputPolicySeed",
+        "SecretInputPolicyObservation",
+        "SecretInputCompletionObservation",
+        "SecretInputBinding",
+        "AdmittedSecretInputPolicy",
+        "SecretInputUiStartingPolicy",
+        "SecretInputUiAuthenticatedPolicy",
+        "SecretInputCompletion",
+        "AcceptedSecretInputPolicy",
+      ].every((typeName) => {
+        const owner = debugImpl(typeName);
+        const actual = rustFunctionBlockAtDepth(owner, "fmt", 1);
+        return (
+          owner !== undefined &&
+          normalizeRustFragment(actual) ===
+            normalizeRustFragment(
+              `fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result { formatter.write_str("${typeName}([REDACTED])") }`,
+            )
+        );
+      }) &&
+      normalizeRustFragment(
+        rustFunctionBlockAtDepth(debugImpl("CancelledSecretInputPolicy"), "fmt", 1),
+      ) ===
+        normalizeRustFragment(
+          'fn fmt(&self, formatter: &mut fmt::Formatter<\'_>) -> fmt::Result { formatter.write_str("CancelledSecretInputPolicy") }',
+        ) &&
+      normalizeRustFragment(
+        rustFunctionBlockAtDepth(debugImpl("RejectedSecretInputPolicy"), "fmt", 1),
+      ) ===
+        normalizeRustFragment(
+          'fn fmt(&self, formatter: &mut fmt::Formatter<\'_>) -> fmt::Result { formatter .debug_struct("RejectedSecretInputPolicy") .field("cause", &self.cause) .finish_non_exhaustive() }',
+        );
+    const noProductionMintOrCallerCheck =
+      rustStructLiteralSites(production, "SecretInputPolicySeed").length === 0 &&
+      rustStructLiteralSites(production, "SecretInputPolicyObservation").length === 1 &&
+      rustStructLiteralSites(production, "SecretInputCompletionObservation").length === 1 &&
+      rustStructLiteralSites(production, "SecretInputBinding").length === 0 &&
+      rustStructLiteralSites(production, "AdmittedSecretInputPolicy").length === 0 &&
+      rustStructLiteralSites(production, "SecretInputUiStartingPolicy").length === 1 &&
+      rustStructLiteralSites(production, "SecretInputUiAuthenticatedPolicy").length === 1 &&
+      rustStructLiteralSites(production, "AcceptedSecretInputPolicy").length === 1 &&
+      rustStructLiteralSites(production, "CancelledSecretInputPolicy").length === 1 &&
+      rustStructLiteralSites(production, "RejectedSecretInputPolicy").length === 1 &&
+      externalTypeReferences.length === 0 &&
+      JSON.stringify(moduleReferenceInventory) ===
+        JSON.stringify([
+          { path: keyAgentServiceRpcFixturePaths.root, count: 1 },
+        ]);
+    const moduleAndReleaseDormancyCheck =
+      identifierOccurrenceCount(moduleCode, "secret_input_lifecycle") === 1 &&
+      moduleDeclarations.length === 1 &&
+      compactRust(moduleDeclarations[0].source) === "modsecret_input_lifecycle;" &&
+      JSON.stringify(moduleAttributes) ===
+        JSON.stringify(["#[allow(dead_code)]"]) &&
+      compactRust(moduleProduction).includes(
+        "#[allow(dead_code)]modsecret_input_lifecycle;",
+      ) &&
+      !/#\s*\[\s*cfg[^\]]*\]\s*#\s*\[\s*allow\(dead_code\)\]\s*mod\s+secret_input_lifecycle/u.test(
+        moduleCode,
+      ) &&
+      !/\bpub(?:\([^)]*\))?\s+mod\s+secret_input_lifecycle\b/u.test(moduleCode) &&
+      !/\bpub(?:\([^)]*\))?\s+use\b[\s\S]{0,300}\b(?:SecretInputPolicy|SecretInputBinding|AdmittedSecretInputPolicy|SecretInputUiStartingPolicy|SecretInputUiAuthenticatedPolicy|AcceptedSecretInputPolicy|CancelledSecretInputPolicy|RejectedSecretInputPolicy)\b/u.test(
+        moduleCode,
+      ) &&
+      parentMacroProviderInventory.length === 0 &&
+      parentMacroInvocationSha256 ===
+        keyAgentServicePhaseThreeCExpectedParentMacroInvocationSha256 &&
+      /^default\s*=\s*\[\]\s*$/mu.test(
+        tomlTableBody(inputs.serviceManifest, "features"),
+      ) &&
+      /^default\s*=\s*\[\]\s*$/mu.test(
+        tomlTableBody(inputs.platformManifest, "features"),
+      ) &&
+      JSON.stringify(tomlTableKeyInventory(inputs.serviceManifest, "features")) ===
+        JSON.stringify(keyAgentServicePhaseThreeAExpectedServiceFeatures) &&
+      JSON.stringify(tomlTableKeyInventory(inputs.platformManifest, "features")) ===
+        JSON.stringify(keyAgentServicePhaseThreeAExpectedPlatformFeatures) &&
+      compactRust(
+        rustTopLevelConstItem(inputs.serviceMain, "SERVICE_UNAVAILABLE"),
+      ) === "constSERVICE_UNAVAILABLE:i32=78;" &&
+      keyAgentServicePhaseThreeBFallbackMainContract(
+        inputs.serviceMain,
+        5,
+        keyAgentServicePhaseThreeBServiceFallbackAttribute,
+        "SERVICE_UNAVAILABLE",
+      ) &&
+      keyAgentServiceLiteralCount(
+        compactRust(inputs.serviceMain),
+        "std::process::exit(SERVICE_UNAVAILABLE);",
+      ) === 1 &&
+      !compactRust(inputs.serviceMain).includes("std::process::exit(0);") &&
+      compactRust(
+        rustTopLevelConstItem(
+          inputs.attestationSource,
+          "COMPILED_RELEASE_POLICY",
+        ),
+      ) === "constCOMPILED_RELEASE_POLICY:Option<ReleasePolicy>=None;" &&
+      identifierOccurrenceCount(
+        rustLexicalCode(
+          keyAgentServicePhaseThreeCProductionProjection(
+            inputs.attestationSource,
+          ),
+        ),
+        "COMPILED_RELEASE_POLICY",
+      ) === 2 &&
+      compactRust(
+        keyAgentServicePhaseThreeCProductionProjection(inputs.attestationSource),
+      ).includes("letSome(policy)=COMPILED_RELEASE_POLICYelse{") &&
+      compactRust(
+        rustTopLevelConstItem(
+          inputs.approvalBootstrapSource,
+          "COMPILED_PARENT_POLICY",
+        ),
+      ) === "constCOMPILED_PARENT_POLICY:Option<ParentTrustPolicy>=None;" &&
+      identifierOccurrenceCount(
+        rustLexicalCode(
+          keyAgentServicePhaseThreeCProductionProjection(
+            inputs.approvalBootstrapSource,
+          ),
+        ),
+        "COMPILED_PARENT_POLICY",
+      ) === 2 &&
+      compactRust(
+        keyAgentServicePhaseThreeCProductionProjection(
+          inputs.approvalBootstrapSource,
+        ),
+      ).includes("letSome(policy)=COMPILED_PARENT_POLICYelse{") &&
+      compactRust(
+        rustTopLevelConstItem(
+          inputs.approvalMainSource,
+          "PRIVATE_LAUNCH_UNAVAILABLE",
+        ),
+      ) === "constPRIVATE_LAUNCH_UNAVAILABLE:i32=78;" &&
+      keyAgentServicePhaseThreeBFallbackMainContract(
+        inputs.approvalMainSource,
+        3,
+        keyAgentServicePhaseThreeBApprovalFallbackAttribute,
+        "PRIVATE_LAUNCH_UNAVAILABLE",
+      ) &&
+      keyAgentServiceLiteralCount(
+        compactRust(inputs.approvalMainSource),
+        "std::process::exit(PRIVATE_LAUNCH_UNAVAILABLE);",
+      ) === 1;
+    const terminalAndAuthorityCheck =
+      !/\b(?:sign|signing|signature|intent|transcript|wallet|private_key|mnemonic|durable|cleanup|reap|receipt|accessor|vault|secret_bytes|into_[A-Za-z_]+|as_[A-Za-z_]+)\b/iu.test(
+        rustLexicalCode(`${accepted}\n${acceptedImpl}`),
+      ) &&
+      ["CancelledSecretInputPolicy", "RejectedSecretInputPolicy"].every(
+        (name) =>
+          rustImplItems(production).filter(({ header }) => header.includes(name))
+            .length === 1,
+      );
+    const exactTestsCheck =
+      attributedTests.length === 10 &&
+      JSON.stringify(attributedTests.map(({ name }) => name)) ===
+        JSON.stringify(keyAgentServicePhaseThreeCTestNames) &&
+      attributedTests.every(({ ignored }) => !ignored) &&
+      (inputs.source.match(/#\[test\]/gu) ?? []).length === 10 &&
+      JSON.stringify(testAttributeInventory) ===
+        JSON.stringify(
+          keyAgentServicePhaseThreeCTestNames.map((name, index) => ({
+            name,
+            attributes:
+              index === 5 || index === 7 || index === 9
+                ? ["#[test]", "#[allow(clippy::too_many_lines)]"]
+                : ["#[test]"],
+          })),
+        ) &&
+      compactRust(
+        testBlocks.every_positive_edge_uses_original_inclusive_deadline_and_fresh_clock_read,
+      ).includes("clock.reads()-reads_before!=8") &&
+      compactRust(
+        testBlocks.lifecycle_cancellation_rejects_every_live_stage_and_ui_cancel_is_distinct,
+      ).includes(
+        "require_rejected(rejected,SecretInputPolicyRejectionCause::Cancelled)",
+      ) &&
+      compactRust(
+        testBlocks.lifecycle_cancellation_rejects_every_live_stage_and_ui_cancel_is_distinct,
+      ).includes("Ok(SecretInputCompletion::Cancelled(cancelled))") &&
+      compactRust(
+        testBlocks.targeted_invalidation_rejects_matching_and_preserves_unrelated_session,
+      ).includes("assert_bound(&accepted_live.binding,&clock)") &&
+      testBlocks.terminal_and_debug_surfaces_are_data_free.includes(
+        'if format!("{lifecycle_cancel:?}") != "RejectedSecretInputPolicy { cause: Cancelled, .. }"',
+      );
+    const documentationCheck =
+      keyAgentServicePhaseThreeCDocumentContract(inputs) &&
+      keyAgentServicePhaseThreeCLegacyReadmeTailContract(inputs.platformReadme);
+    const checks = Object.freeze({
+      exactMoveOnlyStateBindingAndTerminalShapes: shapeCheck,
+      exactTopLevelHelperMacroAttributeAndAssociatedItemInventory:
+        exactTopLevelItemInventoryCheck,
+      forbidUnsafeAndLimitImportsAndAuthority: importAndAuthorityCheck,
+      exactImplAndMethodInventories: implInventoryCheck && exactMethodInventoryCheck,
+      freshClockInclusiveValidationAndSecretInputCorrelation: validateCheck,
+      exactThreePositiveEdgesAndDistinctCompletionBranches: positiveEdgesCheck,
+      allFourLiveStatesRecheckRejectCancelAndInvalidate: commonTransitionCheck,
+      oneShotMintsAndAdmissionAreTestOnly: testOnlyMintCheck,
+      exactRedactedDebugSurfaces: debugCheck,
+      zeroProductionMintCallerOrModuleReference: noProductionMintOrCallerCheck,
+      privateUnconditionalProductionModuleAndReleaseDormancy:
+        moduleAndReleaseDormancyCheck,
+      acceptedHasNoAuthorityAndTerminalsHaveNoOutboundMethods:
+        terminalAndAuthorityCheck,
+      exactTenActiveTests: exactTestsCheck,
+      exactFourDocumentAndLegacyBoundaries: documentationCheck,
+      pins: !requirePins || keyAgentServicePhaseThreeCPinContract(inputs),
+    });
+    keyAgentServicePhaseThreeCProbeDiagnostics.set(
+      inputs,
+      Object.entries(checks)
+        .filter(([, accepted]) => !accepted)
+        .map(([name]) => name),
+    );
+    if (inputs === keyAgentServicePhaseThreeCInputs) {
+      keyAgentServicePhaseThreeCBaseChecks = checks;
+      keyAgentServicePhaseThreeCBaseMetrics = Object.freeze({
+        currentPins: keyAgentServicePhaseThreeCPinValues(inputs),
+        productionImplHeaders,
+        topLevelTypeInventory,
+        topLevelFunctionInventory,
+        topLevelOtherItemInventory,
+        macroInvocationInventory,
+        parentMacroInvocationInventory,
+        parentMacroInvocationSha256,
+        parentMacroProviderInventory,
+        attributeInventory,
+        associatedNonFunctionItemInventory,
+        methodInventory,
+        moduleAttributes,
+        compactBodies: Object.freeze({
+          validate: compactRust(validate),
+          beginUi: compactRust(beginUi),
+          authenticateUi: compactRust(authenticateUi),
+          complete: compactRust(complete),
+          rechecks: [...new Set(rechecks.map(compactRust))],
+          cancels: [...new Set(cancels.map(compactRust))],
+          targetedInvalidations: [
+            ...new Set(targetedInvalidations.map(compactRust)),
+          ],
+          activeInvalidations: [
+            ...new Set(activeInvalidations.map(compactRust)),
+          ],
+          completeCancelledBinding: compactRust(completeCancelledBinding),
+          rejectBinding: compactRust(rejectBinding),
+          admitForTest: compactRust(admitForTest),
+        }),
+        validateNowIdentifiers: identifierOccurrenceCount(
+          rustLexicalCode(validate),
+          "now",
+        ),
+        validateNowCalls: rustCallSites(validate, "now").length,
+        structLiteralCounts: Object.fromEntries(
+          keyAgentServicePhaseThreeCAllTypeNames.map((name) => [
+            name,
+            rustStructLiteralSites(production, name).length,
+          ]),
+        ),
+        externalTypeReferences,
+        moduleReferenceInventory,
+        testCount: attributedTests.length,
+        testAttributeInventory,
+        ignoredTests: attributedTests
+          .filter(({ ignored }) => ignored)
+          .map(({ name }) => name),
+        documentationSections: keyAgentServicePhaseThreeCDocumentSections(inputs).raw.map(
+          (section) => ({
+            length: section.length,
+            semanticSha256: normalizedSourceSha256(
+              keyAgentServicePhaseTwoINormalizedDocument(section),
+            ),
+            missingPatterns: keyAgentServicePhaseThreeCDocumentPatterns
+              .map((pattern, index) => ({
+                index,
+                accepted: pattern.test(
+                  keyAgentServicePhaseTwoINormalizedDocument(section),
+                ),
+              }))
+              .filter(({ accepted }) => !accepted)
+              .map(({ index }) => index),
+          }),
+        ),
+        legacyReadmeTailSemanticSha256: (() => {
+          const section = keyAgentServicePhaseThreeBExactDocumentSection(
+            inputs.platformReadme,
+            keyAgentServicePhaseThreeCLegacyReadmeTailStart,
+            keyAgentServicePhaseThreeCLegacyReadmeTailEnd,
+          );
+          return normalizedSourceSha256(
+            keyAgentServicePhaseTwoINormalizedDocument(section),
+          );
+        })(),
+      });
+    }
+    return Object.values(checks).every(Boolean);
+  } catch (error) {
+    if (inputs === keyAgentServicePhaseThreeCInputs) {
+      keyAgentServicePhaseThreeCBaseError =
+        error instanceof Error ? error.message : String(error);
+    }
+    return false;
+  }
+};
+
+const keyAgentServicePhaseThreeCReplaceMutation = (
+  name,
+  field,
+  search,
+  replacement,
+) => {
+  const original = keyAgentServicePhaseThreeCInputs[field];
+  const mutated = replaceExactStringOnce(original, search, replacement);
+  return Object.freeze({
+    name,
+    changed: mutated !== original,
+    inputs: Object.freeze({
+      ...keyAgentServicePhaseThreeCInputs,
+      [field]: mutated,
+    }),
+  });
+};
+const keyAgentServicePhaseThreeCUpdateMutation = (name, field, update) => {
+  const original = keyAgentServicePhaseThreeCInputs[field];
+  const mutated = update(original);
+  return Object.freeze({
+    name,
+    changed: JSON.stringify(mutated) !== JSON.stringify(original),
+    inputs: Object.freeze({
+      ...keyAgentServicePhaseThreeCInputs,
+      [field]: mutated,
+    }),
+  });
+};
+const keyAgentServicePhaseThreeCSourceMutation = (name, search, replacement) =>
+  keyAgentServicePhaseThreeCReplaceMutation(
+    name,
+    "source",
+    search,
+    replacement,
+  );
+const keyAgentServicePhaseThreeCInsertProduction = (source, insertion) =>
+  insertBeforeBottomTestModule(source, `\n${insertion}\n`);
+const keyAgentServicePhaseThreeCMutateOwnerMethod = (
+  source,
+  ownerName,
+  methodName,
+  update,
+) =>
+  keyAgentServicePhaseThreeBMutateOwnerMethod(
+    source,
+    ownerName,
+    methodName,
+    update,
+  );
+const keyAgentServicePhaseThreeCMethodMutation = (
+  name,
+  ownerName,
+  methodName,
+  update,
+) =>
+  keyAgentServicePhaseThreeCUpdateMutation(name, "source", (source) =>
+    keyAgentServicePhaseThreeCMutateOwnerMethod(
+      source,
+      ownerName,
+      methodName,
+      update,
+    ),
+  );
+const keyAgentServicePhaseThreeCMutateSeed = (name, update) =>
+  keyAgentServicePhaseThreeCUpdateMutation(name, "source", (source) => {
+    const seed = rustLexicalItemBlockAtDepth(
+      source,
+      /(?:^|\n)\s*pub\(super\)\s+struct\s+SecretInputPolicySeed\s*</u,
+      0,
+    );
+    return seed.length === 0
+      ? source
+      : replaceExactStringOnce(source, seed, update(seed));
+  });
+const keyAgentServicePhaseThreeCParentModuleBlock =
+  "#[allow(dead_code)]\n// Secret Input ordering remains dormant until a production UI compositor exists.\nmod secret_input_lifecycle;";
+
+const keyAgentServicePhaseThreeCSemanticMutationProbes = Object.freeze([
+  keyAgentServicePhaseThreeCSourceMutation(
+    "Accepted state gains Clone authority",
+    "pub(super) struct AcceptedSecretInputPolicy<C>",
+    "#[derive(Clone)]\npub(super) struct AcceptedSecretInputPolicy<C>",
+  ),
+  keyAgentServicePhaseThreeCUpdateMutation(
+    "network authority import enters the policy",
+    "source",
+    (source) => `use std::net::TcpStream;\n${source}`,
+  ),
+  keyAgentServicePhaseThreeCUpdateMutation(
+    "Accepted state gains private-key accessor authority",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeBMutateOwner(
+        source,
+        "AcceptedSecretInputPolicy",
+        (owner) => {
+          const closingBrace = owner.lastIndexOf("}");
+          return closingBrace === -1
+            ? owner
+            : `${owner.slice(0, closingBrace)}    pub(super) fn private_key(&self) -> &[u8] { &[] }\n${owner.slice(closingBrace)}`;
+        },
+      ),
+  ),
+  keyAgentServicePhaseThreeCUpdateMutation(
+    "module becomes public and reexports Accepted",
+    "moduleSource",
+    (source) => {
+      const widened = replaceExactStringOnce(
+        source,
+        keyAgentServicePhaseThreeCParentModuleBlock,
+        keyAgentServicePhaseThreeCParentModuleBlock.replace(
+          "mod secret_input_lifecycle;",
+          "pub(crate) mod secret_input_lifecycle;",
+        ),
+      );
+      return keyAgentServicePhaseThreeCInsertProduction(
+        widened,
+        "pub(crate) use self::secret_input_lifecycle::AcceptedSecretInputPolicy;",
+      );
+    },
+  ),
+  keyAgentServicePhaseThreeCReplaceMutation(
+    "module becomes feature gated",
+    "moduleSource",
+    keyAgentServicePhaseThreeCParentModuleBlock,
+    `#[cfg(feature = "key-agent-service-lpac-launch-feasibility-test-hook")]\n${keyAgentServicePhaseThreeCParentModuleBlock}`,
+  ),
+  keyAgentServicePhaseThreeCUpdateMutation(
+    "parent module invokes an unapproved macro",
+    "moduleSource",
+    (source) =>
+      keyAgentServicePhaseThreeCInsertProduction(
+        source,
+        "hidden_phase_three_c_parent_escape!();",
+      ),
+  ),
+  keyAgentServicePhaseThreeCUpdateMutation(
+    "production seed observation and completion mints appear",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeCInsertProduction(
+        source,
+        "fn hidden_secret_input_mints<C: MonotonicClock>(clock: C, key: ExpectedPeerKey, session_id: NonZeroU32, original_deadline: C::Instant) -> SecretInputPolicySeed<C> { let _peer = SecretInputPolicyObservation { key, session_id, role: ExpectedHelperRole::SecretInput, _move_only: MoveOnly }; SecretInputPolicySeed { clock, key, session_id, role: ExpectedHelperRole::SecretInput, original_deadline, _move_only: MoveOnly } }",
+      ),
+  ),
+  keyAgentServicePhaseThreeCUpdateMutation(
+    "external UFCS function-item caller appears",
+    "moduleSource",
+    (source) =>
+      keyAgentServicePhaseThreeCInsertProduction(
+        source,
+        "fn hidden_secret_input_ufcs<C: epoch::MonotonicClock>(state: secret_input_lifecycle::AdmittedSecretInputPolicy<C>, observation: secret_input_lifecycle::SecretInputPolicyObservation) { let call = secret_input_lifecycle::AdmittedSecretInputPolicy::<C>::begin_ui; let _ = call(state, observation); }",
+      ),
+  ),
+  keyAgentServicePhaseThreeCUpdateMutation(
+    "external raw Unicode import alias appears",
+    "moduleSource",
+    (source) =>
+      keyAgentServicePhaseThreeCInsertProduction(
+        source,
+        "use self::secret_input_lifecycle::SecretInputPolicyObservation as r#숨김;",
+      ),
+  ),
+  keyAgentServicePhaseThreeCUpdateMutation(
+    "production child module calls a live state",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeCInsertProduction(
+        source,
+        "mod hidden_secret_input_escape { fn call<C: super::MonotonicClock>(state: super::AcceptedSecretInputPolicy<C>) { let _ = state.cancel(); } }",
+      ),
+  ),
+  keyAgentServicePhaseThreeCUpdateMutation(
+    "associated const stores a function-item escape",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeBMutateOwner(
+        source,
+        "AcceptedSecretInputPolicy",
+        (owner) => {
+          const closingBrace = owner.lastIndexOf("}");
+          return closingBrace === -1
+            ? owner
+            : `${owner.slice(0, closingBrace)}    const HIDDEN_CANCEL: fn(Self) -> RejectedSecretInputPolicy = Self::cancel;\n${owner.slice(closingBrace)}`;
+        },
+      ),
+  ),
+  keyAgentServicePhaseThreeCMutateSeed(
+    "seed loses its owned clock",
+    (seed) => replaceExactStringOnce(seed, "    clock: C,\n", ""),
+  ),
+  keyAgentServicePhaseThreeCMutateSeed(
+    "seed loses its original deadline",
+    (seed) =>
+      replaceExactStringOnce(seed, "    original_deadline: C::Instant,\n", ""),
+  ),
+  keyAgentServicePhaseThreeCSourceMutation(
+    "inclusive deadline becomes exclusive",
+    "        if now >= self.original_deadline {",
+    "        if now > self.original_deadline {",
+  ),
+  keyAgentServicePhaseThreeCSourceMutation(
+    "stored role accepts Approval instead of Secret Input",
+    "        if self.role != ExpectedHelperRole::SecretInput",
+    "        if self.role != ExpectedHelperRole::Approval",
+  ),
+  keyAgentServicePhaseThreeCSourceMutation(
+    "key and session correlation are bypassed",
+    "            || key != self.key\n            || session_id != self.session_id",
+    "            || false\n            || false",
+  ),
+  keyAgentServicePhaseThreeCMethodMutation(
+    "test-only admission bypasses validation",
+    "AdmittedSecretInputPolicy",
+    "admit_for_test",
+    (method) =>
+      replaceExactStringOnce(
+        method,
+        "        match binding.validate(observation) {",
+        "        match Ok(()) {",
+      ),
+  ),
+  keyAgentServicePhaseThreeCMethodMutation(
+    "begin_ui bypasses validation",
+    "AdmittedSecretInputPolicy",
+    "begin_ui",
+    (method) =>
+      replaceExactStringOnce(
+        method,
+        "        match self.binding.validate(observation) {",
+        "        match Ok(()) {",
+      ),
+  ),
+  keyAgentServicePhaseThreeCMethodMutation(
+    "complete bypasses its fresh observation",
+    "SecretInputUiAuthenticatedPolicy",
+    "complete",
+    (method) =>
+      replaceExactStringOnce(
+        method,
+        "        if let Err(cause) = self.binding.validate(peer) {",
+        "        if false {",
+      ),
+  ),
+  keyAgentServicePhaseThreeCMethodMutation(
+    "lifecycle cancel is confused with UI completion cancellation",
+    "AdmittedSecretInputPolicy",
+    "cancel",
+    () =>
+      "pub(super) fn cancel(self) -> CancelledSecretInputPolicy { complete_cancelled_binding(self.binding) }",
+  ),
+  keyAgentServicePhaseThreeCMethodMutation(
+    "authenticated UI cancellation is confused with lifecycle rejection",
+    "SecretInputUiAuthenticatedPolicy",
+    "complete",
+    (method) =>
+      replaceExactStringOnce(
+        method,
+        "            SecretInputDecision::Cancel => Ok(SecretInputCompletion::Cancelled(\n                complete_cancelled_binding(self.binding),\n            )),",
+        "            SecretInputDecision::Cancel => Err(reject_binding(self.binding, SecretInputPolicyRejectionCause::Cancelled)),",
+      ),
+  ),
+  keyAgentServicePhaseThreeCMethodMutation(
+    "Accepted targeted invalidation rejects unrelated sessions",
+    "AcceptedSecretInputPolicy",
+    "invalidate_session",
+    (method) =>
+      replaceExactStringOnce(
+        method,
+        "        if self.binding.session_id == session_id {",
+        "        if self.binding.session_id != session_id {",
+      ),
+  ),
+  keyAgentServicePhaseThreeCMethodMutation(
+    "Accepted loses active-topology invalidation",
+    "AcceptedSecretInputPolicy",
+    "invalidate_active_sessions",
+    () => "",
+  ),
+  keyAgentServicePhaseThreeCUpdateMutation(
+    "Rejected gains an outbound transition",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeCInsertProduction(
+        source,
+        "impl RejectedSecretInputPolicy { fn retry(self) -> Self { self } }",
+      ),
+  ),
+  keyAgentServicePhaseThreeCSourceMutation(
+    "cancellation regression test is deleted from active inventory",
+    "    #[test]\n    fn lifecycle_cancellation_rejects_every_live_stage_and_ui_cancel_is_distinct",
+    "    fn lifecycle_cancellation_rejects_every_live_stage_and_ui_cancel_is_distinct",
+  ),
+  keyAgentServicePhaseThreeCSourceMutation(
+    "targeted invalidation regression test becomes ignored",
+    "    #[test]\n    #[allow(clippy::too_many_lines)] // Four stages fix matching and unrelated session behavior.\n    fn targeted_invalidation_rejects_matching_and_preserves_unrelated_session",
+    "    #[test]\n    #[ignore]\n    #[allow(clippy::too_many_lines)] // Four stages fix matching and unrelated session behavior.\n    fn targeted_invalidation_rejects_matching_and_preserves_unrelated_session",
+  ),
+  keyAgentServicePhaseThreeCReplaceMutation(
+    "design status is prefixed by a false qualifier",
+    "designDocument",
+    "**Current Phase 3C status: started, not passed.**",
+    "It is false that **Current Phase 3C status: started, not passed.**",
+  ),
+  keyAgentServicePhaseThreeCUpdateMutation(
+    "architecture reverses cancellation provenance and drops STOP-SHIP",
+    "architectureDocument",
+    (document) => {
+      const row = document
+        .split(/\r?\n/gu)
+        .find((line) => line.startsWith("| Secret Input request ordering policy |"));
+      if (row === undefined) return document;
+      const mutated = replaceExactStringOnce(
+        replaceExactStringOnce(
+          row,
+          "Lifecycle cancellation yields terminal `RejectedSecretInputPolicy` with `SecretInputPolicyRejectionCause::Cancelled`; only authenticated `complete` cancellation yields terminal `CancelledSecretInputPolicy`.",
+          "Lifecycle cancellation yields terminal `CancelledSecretInputPolicy`; authenticated `complete` cancellation rejects.",
+        ),
+        "**STOP-SHIP**",
+        "**UNVERIFIED BOUNDARY**",
+      );
+      return replaceExactStringOnce(document, row, mutated);
+    },
+  ),
+  keyAgentServicePhaseThreeCUpdateMutation(
+    "legacy README cancellation-drain claim is removed outside Phase 3C",
+    "platformReadme",
+    (document) =>
+      keyAgentServicePhaseThreeBSectionUpdate(
+        document,
+        keyAgentServicePhaseThreeCLegacyReadmeTailStart,
+        keyAgentServicePhaseThreeCLegacyReadmeTailEnd,
+        (section) =>
+          replaceExactStringOnce(section, "`CancelIoEx`", "`CancelIo`"),
+      ),
+  ),
+  (() => {
+    const inputs = Object.freeze({
+      ...keyAgentServicePhaseThreeCInputs,
+      attestationSource: replaceExactStringOnce(
+        keyAgentServicePhaseThreeCInputs.attestationSource,
+        "const COMPILED_RELEASE_POLICY: Option<ReleasePolicy> = None;",
+        "const COMPILED_RELEASE_POLICY: Option<ReleasePolicy> = Some(ReleasePolicy::default());",
+      ),
+      approvalBootstrapSource: replaceExactStringOnce(
+        keyAgentServicePhaseThreeCInputs.approvalBootstrapSource,
+        "const COMPILED_PARENT_POLICY: Option<ParentTrustPolicy> = None;",
+        "const COMPILED_PARENT_POLICY: Option<ParentTrustPolicy> = alternate_policy();",
+      ),
+      serviceMain: replaceExactStringOnce(
+        keyAgentServicePhaseThreeCInputs.serviceMain,
+        "    std::process::exit(SERVICE_UNAVAILABLE);",
+        "    std::process::exit(0);",
+      ),
+      platformManifest: replaceExactStringOnce(
+        keyAgentServicePhaseThreeCInputs.platformManifest,
+        "[features]\ndefault = []",
+        "[features]\ndefault = []\nphase-three-c-secret-input-policy = []",
+      ),
+    });
+    return Object.freeze({
+      name: "release policy exit and feature boundary widen together",
+      changed:
+        inputs.attestationSource !==
+          keyAgentServicePhaseThreeCInputs.attestationSource &&
+        inputs.approvalBootstrapSource !==
+          keyAgentServicePhaseThreeCInputs.approvalBootstrapSource &&
+        inputs.serviceMain !== keyAgentServicePhaseThreeCInputs.serviceMain &&
+        inputs.platformManifest !==
+          keyAgentServicePhaseThreeCInputs.platformManifest,
+      inputs,
+    });
+  })(),
+]);
+const keyAgentServicePhaseThreeCExpectedSemanticMutationCount = 30;
+const keyAgentServicePhaseThreeCExpectedSemanticMutationNameSha256 =
+  "a5623fe0328f5ce7dbfeb0a451936f43333a7fee405615abb242a2c1c1768b0b";
+const keyAgentServicePhaseThreeCSemanticMutationNames =
+  keyAgentServicePhaseThreeCSemanticMutationProbes.map(({ name }) => name);
+const keyAgentServicePhaseThreeCSemanticMutationNameSha256 =
+  normalizedSourceSha256(
+    JSON.stringify(keyAgentServicePhaseThreeCSemanticMutationNames),
+  );
+const keyAgentServicePhaseThreeCSemanticMutationResults = Object.freeze(
+  keyAgentServicePhaseThreeCSemanticMutationProbes.map((probe) =>
+    Object.freeze({
+      name: probe.name,
+      changed: probe.changed,
+      rejected: !keyAgentServicePhaseThreeCSemanticContract(
+        probe.inputs,
+        false,
+      ),
+    }),
+  ),
+);
+
+const keyAgentServicePhaseThreeCBottomProjectionControl =
+  keyAgentServicePhaseThreeCUpdateMutation(
+    "bottom test-module lexical helper remains excluded",
+    "source",
+    (source) => {
+      const closingBrace = source.lastIndexOf("}");
+      return closingBrace === -1
+        ? source
+        : `${source.slice(0, closingBrace)}    fn phase_three_c_bottom_projection_control() {}\n${source.slice(closingBrace)}`;
+    },
+  );
+const keyAgentServicePhaseThreeCInlineProjectionControl =
+  keyAgentServicePhaseThreeCUpdateMutation(
+    "inline cfg(test) lexical item remains excluded",
+    "source",
+    (source) => {
+      const owner = rustImplItems(source).find(({ header }) =>
+        /impl<C>\s+AdmittedSecretInputPolicy<C>/u.test(header),
+      )?.source;
+      if (owner === undefined) return source;
+      const method = rustFunctionBlockAtDepth(owner, "admit_for_test", 1);
+      const mutatedMethod = method.replace(/\bbinding\b/gu, "policy_");
+      if (method.length === 0 || mutatedMethod === method) return source;
+      return replaceExactStringOnce(source, method, mutatedMethod);
+    },
+  );
+const keyAgentServicePhaseThreeCProjectionControlResults = Object.freeze(
+  [
+    keyAgentServicePhaseThreeCBottomProjectionControl,
+    keyAgentServicePhaseThreeCInlineProjectionControl,
+  ].map((probe) =>
+    Object.freeze({
+      name: probe.name,
+      changed: probe.changed,
+      fullChanged:
+        normalizedSourceSha256(probe.inputs.source) !==
+        normalizedSourceSha256(keyAgentServicePhaseThreeCInputs.source),
+      productionUnchanged:
+        keyAgentServicePhaseThreeCProductionProjection(probe.inputs.source) ===
+        keyAgentServicePhaseThreeCProductionProjection(
+          keyAgentServicePhaseThreeCInputs.source,
+        ),
+      accepted: keyAgentServicePhaseThreeCSemanticContract(
+        probe.inputs,
+        false,
+      ),
+      failedChecks:
+        keyAgentServicePhaseThreeCProbeDiagnostics.get(probe.inputs) ?? [],
+    }),
+  ),
+);
+const keyAgentServicePhaseThreeCProductionControl =
+  keyAgentServicePhaseThreeCUpdateMutation(
+    "production lexical helper changes projection and is rejected",
+    "source",
+    (source) =>
+      keyAgentServicePhaseThreeCInsertProduction(
+        source,
+        "fn phase_three_c_production_projection_control() {}",
+      ),
+  );
+const keyAgentServicePhaseThreeCProductionControlResult = Object.freeze({
+  name: keyAgentServicePhaseThreeCProductionControl.name,
+  changed: keyAgentServicePhaseThreeCProductionControl.changed,
+  productionChanged:
+    keyAgentServicePhaseThreeCProductionProjection(
+      keyAgentServicePhaseThreeCProductionControl.inputs.source,
+    ) !==
+    keyAgentServicePhaseThreeCProductionProjection(
+      keyAgentServicePhaseThreeCInputs.source,
+    ),
+  rejected: !keyAgentServicePhaseThreeCSemanticContract(
+    keyAgentServicePhaseThreeCProductionControl.inputs,
+    false,
+  ),
+});
+const keyAgentServicePhaseThreeCProductionPinControlInputs = Object.freeze({
+  ...keyAgentServicePhaseThreeCInputs,
+  source: keyAgentServicePhaseThreeCInsertProduction(
+    keyAgentServicePhaseThreeCInputs.source,
+    "// Phase 3C source production pin mutation control.",
+  ),
+  moduleSource: keyAgentServicePhaseThreeCInsertProduction(
+    keyAgentServicePhaseThreeCInputs.moduleSource,
+    "// Phase 3C parent-module production pin mutation control.",
+  ),
+});
+const keyAgentServicePhaseThreeCProductionPinControl = Object.freeze({
+  name: "production comments change both full and production source pins",
+  changed:
+    keyAgentServicePhaseThreeCProductionPinControlInputs.source !==
+      keyAgentServicePhaseThreeCInputs.source &&
+    keyAgentServicePhaseThreeCProductionPinControlInputs.moduleSource !==
+      keyAgentServicePhaseThreeCInputs.moduleSource,
+  inputs: keyAgentServicePhaseThreeCProductionPinControlInputs,
+});
+const keyAgentServicePhaseThreeCDocumentPinControlInputs = Object.freeze({
+  ...keyAgentServicePhaseThreeCInputs,
+  designDocument: `${keyAgentServicePhaseThreeCInputs.designDocument}\n`,
+  architectureDocument: `${keyAgentServicePhaseThreeCInputs.architectureDocument}\n`,
+  securityDocument: `${keyAgentServicePhaseThreeCInputs.securityDocument}\n`,
+  platformReadme: `${keyAgentServicePhaseThreeCInputs.platformReadme}\n`,
+});
+const keyAgentServicePhaseThreeCDocumentPinControl = Object.freeze({
+  name: "all four documentation whitespace changes remain pin-only",
+  changed: [
+    "designDocument",
+    "architectureDocument",
+    "securityDocument",
+    "platformReadme",
+  ].every(
+    (field) =>
+      keyAgentServicePhaseThreeCDocumentPinControlInputs[field] !==
+      keyAgentServicePhaseThreeCInputs[field],
+  ),
+  inputs: keyAgentServicePhaseThreeCDocumentPinControlInputs,
+});
+const keyAgentServicePhaseThreeCBasePinValues =
+  keyAgentServicePhaseThreeCPinValues(keyAgentServicePhaseThreeCInputs);
+const keyAgentServicePhaseThreeCExpectedChangedPinNames = Object.freeze([
+  ["sourceFull"],
+  ["sourceFull", "sourceProduction", "moduleFull", "moduleProduction"],
+  ["design", "architecture", "security", "platformReadme"],
+]);
+const keyAgentServicePhaseThreeCPinControlResults = Object.freeze(
+  [
+    keyAgentServicePhaseThreeCBottomProjectionControl,
+    keyAgentServicePhaseThreeCProductionPinControl,
+    keyAgentServicePhaseThreeCDocumentPinControl,
+  ].map((probe, index) =>
+    Object.freeze({
+      name: probe.name,
+      changed: probe.changed,
+      semanticAccepted: keyAgentServicePhaseThreeCSemanticContract(
+        probe.inputs,
+        false,
+      ),
+      failedChecks:
+        keyAgentServicePhaseThreeCProbeDiagnostics.get(probe.inputs) ?? [],
+      pinRejected: !keyAgentServicePhaseThreeCPinContract(probe.inputs),
+      changedPinNames: Object.entries(
+        keyAgentServicePhaseThreeCPinValues(probe.inputs),
+      )
+        .filter(
+          ([name, value]) => keyAgentServicePhaseThreeCBasePinValues[name] !== value,
+        )
+        .map(([name]) => name),
+      expectedChangedPinNames:
+        keyAgentServicePhaseThreeCExpectedChangedPinNames[index],
+    }),
+  ),
+);
+const keyAgentServicePhaseThreeCExpectedProjectionControlNames = Object.freeze([
+  "bottom test-module lexical helper remains excluded",
+  "inline cfg(test) lexical item remains excluded",
+]);
+const keyAgentServicePhaseThreeCExpectedPinControlNames = Object.freeze([
+  "bottom test-module lexical helper remains excluded",
+  "production comments change both full and production source pins",
+  "all four documentation whitespace changes remain pin-only",
+]);
+const keyAgentServicePhaseThreeCInventoryAccepted =
+  keyAgentServicePhaseThreeCSemanticMutationProbes.length ===
+    keyAgentServicePhaseThreeCExpectedSemanticMutationCount &&
+  new Set(keyAgentServicePhaseThreeCSemanticMutationNames).size ===
+    keyAgentServicePhaseThreeCExpectedSemanticMutationCount &&
+  keyAgentServicePhaseThreeCSemanticMutationNameSha256 ===
+    keyAgentServicePhaseThreeCExpectedSemanticMutationNameSha256 &&
+  keyAgentServicePhaseThreeCProjectionControlResults.length === 2 &&
+  keyAgentServicePhaseThreeCPinControlResults.length === 3 &&
+  JSON.stringify(
+    keyAgentServicePhaseThreeCProjectionControlResults.map(({ name }) => name),
+  ) === JSON.stringify(keyAgentServicePhaseThreeCExpectedProjectionControlNames) &&
+  JSON.stringify(
+    keyAgentServicePhaseThreeCPinControlResults.map(({ name }) => name),
+  ) === JSON.stringify(keyAgentServicePhaseThreeCExpectedPinControlNames) &&
+  keyAgentServicePhaseThreeCProductionControlResult.name ===
+    "production lexical helper changes projection and is rejected";
+const keyAgentServicePhaseThreeCBaseAccepted =
+  keyAgentServicePhaseThreeCInventoryAccepted &&
+  keyAgentServicePhaseThreeCSemanticContract(
+    keyAgentServicePhaseThreeCInputs,
+    false,
+  );
+const keyAgentServicePhaseThreeCPinsAccepted =
+  keyAgentServicePhaseThreeCPinContract(keyAgentServicePhaseThreeCInputs);
+requireInvariant(
+  keyAgentServicePhaseThreeCBaseAccepted &&
+    keyAgentServicePhaseThreeCPinsAccepted &&
+    keyAgentServicePhaseThreeCSemanticMutationResults.every(
+      ({ changed, rejected }) => changed && rejected,
+    ) &&
+    keyAgentServicePhaseThreeCProjectionControlResults.every(
+      ({ changed, fullChanged, productionUnchanged, accepted }) =>
+        changed && fullChanged && productionUnchanged && accepted,
+    ) &&
+    keyAgentServicePhaseThreeCProductionControlResult.changed &&
+    keyAgentServicePhaseThreeCProductionControlResult.productionChanged &&
+    keyAgentServicePhaseThreeCProductionControlResult.rejected &&
+    keyAgentServicePhaseThreeCPinControlResults.every(
+      ({
+        changed,
+        semanticAccepted,
+        pinRejected,
+        changedPinNames,
+        expectedChangedPinNames,
+      }) =>
+        changed &&
+        semanticAccepted &&
+        pinRejected &&
+        JSON.stringify(changedPinNames) ===
+          JSON.stringify(expectedChangedPinNames),
+    ),
+  `the dormant Phase 3C Secret Input typestate must retain its private production-compiled closed consuming graph, owned clock and original inclusive deadline, exact Secret Input correlation, distinct lifecycle rejection versus authenticated UI cancellation, four-state live invalidation, data-free terminals and Debug surfaces, zero authority/mints/callers, exact ten active tests, release disablement, and four bounded STOP-SHIP documents; base=${keyAgentServicePhaseThreeCBaseAccepted}, pins=${keyAgentServicePhaseThreeCPinsAccepted}, expected negatives=${keyAgentServicePhaseThreeCExpectedSemanticMutationCount}, actual negatives=${keyAgentServicePhaseThreeCSemanticMutationProbes.length}, mutation name pin=${keyAgentServicePhaseThreeCSemanticMutationNameSha256}, failed checks=${JSON.stringify(
+    Object.entries(keyAgentServicePhaseThreeCBaseChecks)
+      .filter(([, accepted]) => !accepted)
+      .map(([name]) => name),
+  )}, failed negatives=${JSON.stringify(
+    keyAgentServicePhaseThreeCSemanticMutationResults
+      .filter(({ changed, rejected }) => !changed || !rejected)
+      .map(({ name, changed, rejected }) => ({ name, changed, rejected })),
+  )}, failed projection controls=${JSON.stringify(
+    keyAgentServicePhaseThreeCProjectionControlResults.filter(
+      ({ changed, fullChanged, productionUnchanged, accepted }) =>
+        !changed || !fullChanged || !productionUnchanged || !accepted,
+    ),
+  )}, production control=${JSON.stringify(
+    keyAgentServicePhaseThreeCProductionControlResult,
+  )}, failed pin controls=${JSON.stringify(
+    keyAgentServicePhaseThreeCPinControlResults.filter(
+      ({ changed, semanticAccepted, pinRejected, changedPinNames, expectedChangedPinNames }) =>
+        !changed ||
+        !semanticAccepted ||
+        !pinRejected ||
+        JSON.stringify(changedPinNames) !== JSON.stringify(expectedChangedPinNames),
+    ),
+  )}, error=${JSON.stringify(
+    keyAgentServicePhaseThreeCBaseError,
+  )}`,
+);
+
 const isWorkspaceBuildOutputPath = (path) =>
   /^(?:crates\/[^/]+|demo\/sepolia-wallet)\/target(?:\/|$)/iu.test(path);
 const workspaceRustCompilationInputs = [
@@ -45809,7 +47664,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "2229023993d4acf70a156fce05e9d53f7af68dd86aa8fa9f21eb8b4fbac5d7ff";
+  "508572688b28e5ba25cd5e994e693d29d05f4cd17d3c313885840b7c1d2efa4f";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -67093,7 +68948,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/mod.rs",
     unsafeCount: 12,
-    sha256: "bee568e4962241ec0e69e2c4e698152d5efb80b54279350cb8b11b51008c57a7",
+    sha256: "59db9f3ce95cc4f2b0ee36fe69dfddf26a9cfa7dfd0fa204effea78ea8c95ce1",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_token/sys.rs",
@@ -75361,13 +77216,13 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "README.md":
     "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
   "crates/platform-windows/README.md":
-    "8d307a3d1379f13c3be35a807522c34bc1a6300b386af45dd42ae3ccdb3716d1",
+    "bc5d56526772cec79551d8614e8b73c902a516657decb6ae26c1ac28bbfa3944",
   "docs/architecture.md":
-    "6a82aabd410aafb96ea402cc8fcbdc07f410b9932d001ce3fb63b1b4d58247cf",
+    "fe05917d8cd8d443dae4e3eca818ec9c4a0d8a0a6b10e369e47bc3d11aa82da0",
   "docs/protocol-contract.md":
     "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "docs/security-decisions.md":
-    "a71d48d741b1f707b3e76cc7cc1c15715782255b123902dcfa7a22ed8ff60065",
+    "ab70fe1e49fbc5b35b3a6934c1030fe1a4dedfd5ba95e7ac28ca2866caf45ad7",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -81231,10 +83086,10 @@ const currentDebuggerExitDocumentationContract = (documents) =>
   });
 const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "b810c75c3dac610667787f286a8bba843af011e1c725a03208f364ab012876bc",
-  "8d307a3d1379f13c3be35a807522c34bc1a6300b386af45dd42ae3ccdb3716d1",
-  "6a82aabd410aafb96ea402cc8fcbdc07f410b9932d001ce3fb63b1b4d58247cf",
+  "bc5d56526772cec79551d8614e8b73c902a516657decb6ae26c1ac28bbfa3944",
+  "fe05917d8cd8d443dae4e3eca818ec9c4a0d8a0a6b10e369e47bc3d11aa82da0",
   "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
-  "a71d48d741b1f707b3e76cc7cc1c15715782255b123902dcfa7a22ed8ff60065",
+  "ab70fe1e49fbc5b35b3a6934c1030fe1a4dedfd5ba95e7ac28ca2866caf45ad7",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,
@@ -91105,7 +92960,7 @@ const keyAgentDebuggerDocumentationSpecs = [
       "\n  **Current Phase 3B status: started, not passed.**",
     endAnchor:
       "The adoption transition, release-binding, and dormant supervisor binder all",
-    sha256: "8d307a3d1379f13c3be35a807522c34bc1a6300b386af45dd42ae3ccdb3716d1",
+    sha256: "bc5d56526772cec79551d8614e8b73c902a516657decb6ae26c1ac28bbfa3944",
   },
   {
     path: "docs/adr/0001-windows-key-agent-service-boundary.md",
@@ -91120,21 +92975,21 @@ const keyAgentDebuggerDocumentationSpecs = [
     source: activationArchitecture,
     anchor: "A separate dormant transport slice now tests only the mechanics",
     endAnchor: "For the durable-state rows below",
-    sha256: "6a82aabd410aafb96ea402cc8fcbdc07f410b9932d001ce3fb63b1b4d58247cf",
+    sha256: "fe05917d8cd8d443dae4e3eca818ec9c4a0d8a0a6b10e369e47bc3d11aa82da0",
   },
   {
     path: "docs/designs/windows-key-agent-service.md",
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
     endAnchor: "\n## In scope\n",
-    sha256: "ba48c264cd40cd320bf2aefd55412f92a0f0694d48dc12a59ee8d81d9785107e",
+    sha256: "889f41af051096e36f4665c025e952ff437e305ff862e2273b8960f6f03841a7",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "The dedicated-process feasibility slice remains narrower",
     endAnchor: "The runtime-enabled Secret Input/recovery child instead",
-    sha256: "a71d48d741b1f707b3e76cc7cc1c15715782255b123902dcfa7a22ed8ff60065",
+    sha256: "ab70fe1e49fbc5b35b3a6934c1030fe1a4dedfd5ba95e7ac28ca2866caf45ad7",
   },
 ];
 const keyAgentDebuggerDocumentationExpectedWindowSemanticHashes = Object.freeze({
@@ -91442,10 +93297,14 @@ const keyAgentDebuggerDocumentationWindow = (spec) => {
     return null;
   }
   const end = spec.source.indexOf(spec.endAnchor);
+  const maximumForwardSpan =
+    spec.path === "crates/platform-windows/README.md"
+      ? 28_000
+      : keyAgentDebuggerDocumentationMaximumForwardSpan;
   if (
     end === -1 ||
     end <= first + spec.anchor.length ||
-    end - first > keyAgentDebuggerDocumentationMaximumForwardSpan ||
+    end - first > maximumForwardSpan ||
     spec.source.indexOf(spec.endAnchor, end + spec.endAnchor.length) !== -1
   ) {
     return null;
@@ -94408,14 +96267,55 @@ const releaseVerifierToolsetTests = repositoryPowerShellSource(
 );
 const releaseCheck = repositoryPowerShellSource("scripts/release/check.ps1");
 const qualityCheck = repositoryPowerShellSource("scripts/check.ps1");
-const qualityCheckBuildKeyAgentExecutable = powerShellFunctionBlock(
-  qualityCheck,
-  "Build-KeyAgentTestExecutable",
-);
+const qualityFocusedTests = repositoryPowerShellSource("scripts/test-focused.ps1");
 const approvedKeyAgentCargoArtifactGateSha256 = Object.freeze({
-  build: "16b234c7ab30f3c708d91b518b5bf95b1948552d17e9ce43318b6333b8e90b8a",
-  tests: "f2acfbf312f8bf8464e17816ddd2cd1e49a021f5c8bef952e62abc1f8d649467",
+  build: "b5dcecb5d6054b75a69d05652100c80e48773ca27f0d0b7913298952f6c5f0c7",
+  tests: "d1d2649cfd749a666c1fc6b85554b79be5fd3771404f9d9cb54f0c96559c90e2",
+  sharedParserSource: "7731e72991d43129359100c0d73142d8d2a99e3199c9f798f8b16c85aeea1fcb",
 });
+const sharedKeyAgentArtifactParserContract = (source, requireHash = true) => {
+  const start = source.indexOf("\n\nfunction Get-FocusedKeyAgentArtifact {");
+  const end = source.indexOf("\n\nfunction Invoke-FocusedTests {");
+  if (start < 0 || end <= start) return false;
+  // Other functions legitimately contain expandable progress messages. Parse
+  // only this non-expandable security boundary and pin the whole shared source.
+  const parser = powerShellFunctionBlock(
+    source.slice(start, end),
+    "Get-FocusedKeyAgentArtifact",
+  );
+  const compact = parser.replace(/\s+/gu, "");
+  const markers = [
+    "$paths=@()",
+    "foreach($linein$Lines)",
+    "try{$message=$line|ConvertFrom-Json-ErrorActionStop}catch{continue}",
+    "$message.reason-cne'compiler-artifact'",
+    "$message.target.name-ceq'key-agent'",
+    "@($message.target.kind)-ccontains'bin'",
+    "$message.executable-is[string]",
+    "-not[string]::IsNullOrWhiteSpace($message.executable)",
+    "$paths+=$message.executable",
+    "if($paths.Count-ne1){throw",
+    "$candidate=$paths[0]",
+    "$candidateRoot=[IO.Path]::GetPathRoot($candidate)",
+    "if(-not[IO.Path]::IsPathRooted($candidate)-or",
+    String.raw`($candidateRoot-cnotmatch'^[A-Za-z]:[\\/]$'-and$candidateRoot-cnotmatch'^[\\]{2}[^\\/]+[\\][^\\/]+[\\]?$')-or`,
+    "[IO.Path]::GetFileName($candidate)-cne'key-agent.exe'-or",
+    "-not(Test-Path-LiteralPath$candidate-PathTypeLeaf)){throw",
+    "return(Resolve-Path-LiteralPath$candidate).Path",
+  ];
+  let cursor = 0;
+  const ordered = markers.every((marker) => {
+    const found = compact.indexOf(marker, cursor);
+    if (found < 0) return false;
+    cursor = found + marker.length;
+    return true;
+  });
+  return ordered &&
+    (!requireHash || normalizedSourceSha256(source) ===
+      approvedKeyAgentCargoArtifactGateSha256.sharedParserSource) &&
+    (source.match(/\bfunction\s+Get-FocusedKeyAgentArtifact\s*\{/gu) ?? []).length === 1 &&
+    source.includes("if ($MyInvocation.InvocationName -ne '.') {");
+};
 const keyAgentCargoArtifactGateContract = (source, requireHashes = true) => {
   let build;
   let tests;
@@ -94450,23 +96350,16 @@ const keyAgentCargoArtifactGateContract = (source, requireHashes = true) => {
       "$exitCode=$LASTEXITCODE",
       "finally{$ErrorActionPreference=$previousErrorPreference}",
       "if($exitCode-ne0)",
-      "$executable=$null",
-      "foreach($linein$messages)",
-      "try{$message=$line|ConvertFrom-Json-ErrorActionStop}catch{continue}",
-      '$message.reason-eq"compiler-artifact"',
-      '$message.target.name-eq"key-agent"',
-      '@($message.target.kind)-contains"bin"',
-      "$null-ne$message.executable",
-      "$executable=[string]$message.executable",
-      "[string]::IsNullOrWhiteSpace($executable)",
-      "$resolved=Resolve-Path-LiteralPath$executable-ErrorActionStop",
-      "Test-Path-LiteralPath$resolved.Path-PathTypeLeaf",
-      '[IO.Path]::GetFileName($resolved.Path)-ne"key-agent.exe"',
-      "return$resolved.Path",
+      '.([IO.Path]::Combine($PSScriptRoot,"test-focused.ps1"))',
+      "returnGet-FocusedKeyAgentArtifact-Lines@($messages)",
     ]) &&
     (build.match(/&\s*cargo\s+build\b/gu) ?? []).length === 1 &&
     !/(?:target[\\/](?:debug|release)|Get-ChildItem|Join-Path)/iu.test(build) &&
+    compactTests.startsWith(
+      'functionInvoke-Tests{Invoke-WindowsEvidenceReadinessChecksInvoke-Checked-Executable"powershell"-CommandArguments@("-NoLogo","-NoProfile","-ExecutionPolicy","Bypass","-File","scripts/test-focused.test.ps1")',
+    ) &&
     ordered(compactTests, [
+      "scripts/test-focused.test.ps1",
       "scripts/launcher-contract.test.ps1",
       "$keyAgentExecutable=Build-KeyAgentTestExecutable",
       '$previousKeyAgentExecutable=[Environment]::GetEnvironmentVariable("YW_TEST_KEY_AGENT_EXECUTABLE",[EnvironmentVariableTarget]::Process)',
@@ -94484,6 +96377,14 @@ const keyAgentCargoArtifactGateContract = (source, requireHashes = true) => {
 };
 const keyAgentCargoArtifactGateMutationProbes = [
   qualityCheck.replace(
+    '    Invoke-Checked -Executable "powershell" -CommandArguments @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/test-focused.test.ps1")\n',
+    "",
+  ),
+  qualityCheck.replace(
+    '    Invoke-Checked -Executable "powershell" -CommandArguments @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/test-focused.test.ps1")',
+    '    if ($false) { Invoke-Checked -Executable "powershell" -CommandArguments @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/test-focused.test.ps1") }',
+  ),
+  qualityCheck.replace(
     "cargo build --locked -p key-agent --bin key-agent --message-format=json-render-diagnostics",
     "cargo build -p key-agent --bin key-agent --message-format=json-render-diagnostics",
   ),
@@ -94491,24 +96392,17 @@ const keyAgentCargoArtifactGateMutationProbes = [
     "cargo build --locked -p key-agent --bin key-agent --message-format=json-render-diagnostics",
     "cargo build --locked -p key-agent --message-format=json-render-diagnostics",
   ),
-  qualityCheck.replace('$message.reason -eq "compiler-artifact"', "$true"),
-  qualityCheck.replace('$message.target.name -eq "key-agent"', "$true"),
-  qualityCheck.replace('@($message.target.kind) -contains "bin"', "$true"),
-  qualityCheck.replace("$null -ne $message.executable", "$true"),
   qualityCheck.replace(
-    qualityCheckBuildKeyAgentExecutable,
-    qualityCheckBuildKeyAgentExecutable.replace(
-      "    if ($exitCode -ne 0) {",
-      "    if ($false) {",
-    ),
+    /(function Build-KeyAgentTestExecutable \{[\s\S]*?)if \(\$exitCode -ne 0\)/u,
+    "$1if ($false)",
   ),
   qualityCheck.replace(
-    "$resolved = Resolve-Path -LiteralPath $executable -ErrorAction Stop",
-    "$resolved = [pscustomobject]@{ Path = $executable }",
+    '. ([IO.Path]::Combine($PSScriptRoot, "test-focused.ps1"))',
+    '. ([IO.Path]::Combine($PSScriptRoot, "unapproved-parser.ps1"))',
   ),
   qualityCheck.replace(
-    '[IO.Path]::GetFileName($resolved.Path) -ne "key-agent.exe"',
-    "$false",
+    "return Get-FocusedKeyAgentArtifact -Lines @($messages)",
+    "return $messages[-1]",
   ),
   qualityCheck.replace(
     "    $keyAgentExecutable = Build-KeyAgentTestExecutable",
@@ -94535,14 +96429,35 @@ const keyAgentCargoArtifactGateMutationProbes = [
     "            $env:YW_TEST_KEY_AGENT_EXECUTABLE = $keyAgentExecutable",
   ),
 ];
+const sharedKeyAgentArtifactParserMutationProbes = [
+  ["$paths.Count -ne 1", "$paths.Count -lt 1"],
+  ["$candidate = $paths[0]", "$candidate = $paths[-1]"],
+  ["$message.reason -cne 'compiler-artifact'", "$false"],
+  ["$message.target.name -ceq 'key-agent'", "$true"],
+  ["@($message.target.kind) -ccontains 'bin'", "$true"],
+  ["$message.executable -is [string]", "$true"],
+  ["-not [string]::IsNullOrWhiteSpace($message.executable)", "$true"],
+  ["-not [IO.Path]::IsPathRooted($candidate)", "$false"],
+  [String.raw`$candidateRoot -cnotmatch '^[A-Za-z]:[\\/]$'`, "$false"],
+  [String.raw`$candidateRoot -cnotmatch '^[\\]{2}[^\\/]+[\\][^\\/]+[\\]?$'`, "$false"],
+  ["[IO.Path]::GetFileName($candidate) -cne 'key-agent.exe'", "$false"],
+  ["-not (Test-Path -LiteralPath $candidate -PathType Leaf)", "$false"],
+  ["return (Resolve-Path -LiteralPath $candidate).Path", "return $candidate"],
+  ["if ($MyInvocation.InvocationName -ne '.') {", "if ($true) {"],
+].map(([before, after]) => qualityFocusedTests.replace(before, after));
 requireInvariant(
   keyAgentCargoArtifactGateContract(qualityCheck) &&
+    sharedKeyAgentArtifactParserContract(qualityFocusedTests) &&
     keyAgentCargoArtifactGateMutationProbes.every(
       (probe) =>
         probe !== qualityCheck &&
         !keyAgentCargoArtifactGateContract(probe, false),
+    ) &&
+    sharedKeyAgentArtifactParserMutationProbes.every(
+      (probe) => probe !== qualityFocusedTests &&
+        !sharedKeyAgentArtifactParserContract(probe, false),
     ),
-  "the quality gate must build and resolve Cargo's exact locked key-agent binary artifact, scope its absolute path through the workspace test environment, and restore prior process state on every exit",
+  "both test runners must share exact-one absolute Cargo artifact validation; the quality gate must build the locked key-agent binary, scope its path through the workspace tests, and restore prior process state",
 );
 const releaseManifestVerifier = await text(
   "scripts/release/release-manifest.mjs",
@@ -94591,6 +96506,8 @@ const approvedOtherPowerShellScriptPaths = [
   "scripts/launcher-contract.test.ps1",
   "scripts/release/common.ps1",
   "scripts/run-sepolia-wallet.ps1",
+  "scripts/test-focused.ps1",
+  "scripts/test-focused.test.ps1",
   "scripts/windows-evidence/preflight.ps1",
   "scripts/windows-evidence/run-current-user.ps1",
 ];
@@ -94603,7 +96520,7 @@ const approvedPowerShellSourceSha256 = Object.freeze({
   "crates/key-agent-service-rpc-sys/scripts/verify-generated.ps1":
     "aaae7ff1a1708079f256adc60345726f060b734251363810d53743349d5b8104",
   "scripts/check.ps1":
-    "94a01cef1af7d3f6215e2bf83474030e5fd9efcbb6f072b3e22244822ee399e9",
+    "696a78ba1b703c4bf3f436ebc4f10ace59c4b7404ea3deab0c40c3e02aee9589",
   "scripts/launcher-contract.test.ps1":
     "4b82c49f96d4b90da0cabb17992a8ae7f77c5664796730aab6e6ff65a3649b50",
   "scripts/release/assert-key-agent-debugger-version.ps1":
@@ -94628,6 +96545,10 @@ const approvedPowerShellSourceSha256 = Object.freeze({
     "30b0a64f26429fbee00825f2b0e6c0f320d22fcc1690b19d164833b1259f197c",
   "scripts/run-sepolia-wallet.ps1":
     "6f80276eca155ecd7af5165ac8b973e00dabeab6e8d3c4ea2b50517666d104c2",
+  "scripts/test-focused.ps1":
+    "179a85aacbadb29e59cf75c3b0ceadafdc0ec0d99db93f9ced531c273cd74fcb",
+  "scripts/test-focused.test.ps1":
+    "97dcbbe40a6b6fa3aac86112995dfb07777a740e65af68410208267b77fb5fda",
   "scripts/windows-evidence/preflight.ps1":
     "11ed1d75a6d8ce37f4e6e401234374e51e535cba947dd0c06bb27db9b0d5b4a5",
   "scripts/windows-evidence/run-current-user.ps1":

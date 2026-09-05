@@ -18,10 +18,14 @@ function Invoke-Checked {
         [string[]]$CommandArguments
     )
 
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    Write-Host "check: $Executable started"
     $previousErrorPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        & $Executable @CommandArguments
+        # Windows PowerShell wraps native stderr in ErrorRecord objects when
+        # captured. Emit their text without implying that successful tools failed.
+        & $Executable @CommandArguments 2>&1 | ForEach-Object { [string]$_ }
         $exitCode = $LASTEXITCODE
     }
     finally {
@@ -30,6 +34,7 @@ function Invoke-Checked {
     if ($exitCode -ne 0) {
         throw "Command failed with exit code ${exitCode}: $Executable"
     }
+    Write-Host ("check: {0} passed ({1:N1}s)" -f $Executable, $timer.Elapsed.TotalSeconds)
 }
 
 function Invoke-Setup {
@@ -75,30 +80,10 @@ function Build-KeyAgentTestExecutable {
         throw "Command failed with exit code ${exitCode}: cargo"
     }
 
-    $executable = $null
-    foreach ($line in $messages) {
-        try {
-            $message = $line | ConvertFrom-Json -ErrorAction Stop
-        }
-        catch {
-            continue
-        }
-        if ($message.reason -eq "compiler-artifact" -and
-            $message.target.name -eq "key-agent" -and
-            @($message.target.kind) -contains "bin" -and
-            $null -ne $message.executable) {
-            $executable = [string]$message.executable
-        }
-    }
-    if ([string]::IsNullOrWhiteSpace($executable)) {
-        throw "Cargo did not report the Key Agent test executable"
-    }
-    $resolved = Resolve-Path -LiteralPath $executable -ErrorAction Stop
-    if (-not (Test-Path -LiteralPath $resolved.Path -PathType Leaf) -or
-        [IO.Path]::GetFileName($resolved.Path) -ne "key-agent.exe") {
-        throw "Cargo reported an invalid Key Agent test executable"
-    }
-    return $resolved.Path
+    # Share the exact-one, absolute-path artifact parser with focused tests.
+    # Dot-sourcing defines the helpers without invoking the focused CLI.
+    . ([IO.Path]::Combine($PSScriptRoot, "test-focused.ps1"))
+    return Get-FocusedKeyAgentArtifact -Lines @($messages)
 }
 
 function Invoke-WindowsEvidenceReadinessChecks {
@@ -127,6 +112,7 @@ function Invoke-WindowsEvidenceReadinessChecks {
 
 function Invoke-Tests {
     Invoke-WindowsEvidenceReadinessChecks
+    Invoke-Checked -Executable "powershell" -CommandArguments @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/test-focused.test.ps1")
     Invoke-Checked -Executable "powershell" -CommandArguments @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/launcher-contract.test.ps1")
     $keyAgentExecutable = Build-KeyAgentTestExecutable
     $previousKeyAgentExecutable = [Environment]::GetEnvironmentVariable(
@@ -154,6 +140,7 @@ function Invoke-Tests {
 }
 
 function Invoke-Privacy {
+    Invoke-Checked -Executable "node" -CommandArguments @("--test", "scripts/privacy-scan.test.mjs")
     Invoke-Checked -Executable "node" -CommandArguments @("scripts/privacy-scan.mjs")
 }
 

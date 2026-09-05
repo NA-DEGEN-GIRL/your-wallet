@@ -29,6 +29,9 @@ mod request_lifecycle;
     debug_assertions
 ))]
 mod router;
+#[allow(dead_code)]
+// Secret Input ordering remains dormant until a production UI compositor exists.
+mod secret_input_lifecycle;
 
 use core::{ffi::c_void, fmt};
 use std::sync::{

@@ -1,8 +1,12 @@
-import { readFile, readdir } from "node:fs/promises";
-import { extname, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { execFile as execFileCallback } from "node:child_process";
+import { constants as fsConstants } from "node:fs";
+import { lstat, open } from "node:fs/promises";
+import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import process from "node:process";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 
+const execFile = promisify(execFileCallback);
 const root = fileURLToPath(new URL("../", import.meta.url));
 const allowedExtensions = new Set([
   ".html",
@@ -15,7 +19,6 @@ const allowedExtensions = new Set([
   ".toml",
   ".yml",
 ]);
-const ignoredDirectories = new Set([".git", ".vibe-ide-temp", "target", "vendor"]);
 const forbidden = [
   { name: "private-key-assignment", expression: /private[_-]?key\s*[:=]\s*["'][0-9a-f]{64}["']/iu },
   { name: "authorization-header", expression: /authorization\s*:\s*bearer\s+[a-z0-9._~-]{12,}/iu },
@@ -23,27 +26,193 @@ const forbidden = [
   { name: "production-secret-marker", expression: /\[(?:SECRET|PASSWORD|TOKEN|PRIVATE_KEY)\]/u },
 ];
 
-async function* walk(directory) {
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    if (entry.isDirectory() && ignoredDirectories.has(entry.name)) continue;
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) yield* walk(path);
-    else if (entry.isFile() && allowedExtensions.has(extname(entry.name))) yield path;
+const infrastructureDiagnostic =
+  "Privacy scan failed: repository inventory or source inspection was unavailable.\n";
+
+class PrivacyScanInfrastructureError extends Error {
+  constructor() {
+    super("Privacy scan infrastructure failure.");
+    this.name = "PrivacyScanInfrastructureError";
   }
 }
 
-const failures = [];
-for await (const path of walk(root)) {
-  const text = await readFile(path, "utf8");
-  for (const rule of forbidden) {
-    if (rule.expression.test(text)) {
-      failures.push(`${relative(root, path)}: ${rule.name}`);
+function infrastructureFailure() {
+  return new PrivacyScanInfrastructureError();
+}
+
+async function gitSourceInventory(repositoryRoot) {
+  let stdout;
+  try {
+    ({ stdout } = await execFile(
+      "git",
+      [
+        "-C",
+        repositoryRoot,
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "--deduplicate",
+        "-z",
+      ],
+      {
+        encoding: "buffer",
+        maxBuffer: 16 * 1024 * 1024,
+        timeout: 30_000,
+        windowsHide: true,
+      },
+    ));
+  } catch {
+    throw infrastructureFailure();
+  }
+
+  if (!Buffer.isBuffer(stdout)) throw infrastructureFailure();
+  if (stdout.length === 0) return [];
+  if (stdout.at(-1) !== 0) throw infrastructureFailure();
+
+  let decoded;
+  try {
+    decoded = new TextDecoder("utf-8", { fatal: true }).decode(stdout);
+  } catch {
+    throw infrastructureFailure();
+  }
+
+  const paths = decoded.slice(0, -1).split("\0");
+  if (paths.some((path) => path.length === 0)) throw infrastructureFailure();
+  return paths;
+}
+
+function resolveCandidate(repositoryRoot, inventoryPath) {
+  if (isAbsolute(inventoryPath)) throw infrastructureFailure();
+
+  const candidate = resolve(repositoryRoot, inventoryPath);
+  const repositoryRelativePath = relative(repositoryRoot, candidate);
+  if (
+    repositoryRelativePath.length === 0 ||
+    repositoryRelativePath === ".." ||
+    repositoryRelativePath.startsWith(`..${sep}`) ||
+    isAbsolute(repositoryRelativePath)
+  ) {
+    throw infrastructureFailure();
+  }
+  return candidate;
+}
+
+function sameFile(left, right) {
+  return (
+    left.ino === right.ino &&
+    (process.platform === "win32" || left.dev === right.dev)
+  );
+}
+
+async function readCandidate(candidate) {
+  let before;
+  try {
+    before = await lstat(candidate, { bigint: true });
+  } catch (error) {
+    // A cached path can legitimately be absent after an unstaged deletion.
+    if (error?.code === "ENOENT") return null;
+    throw infrastructureFailure();
+  }
+
+  if (before.isSymbolicLink()) throw infrastructureFailure();
+  if (!before.isFile()) return null;
+
+  let handle;
+  try {
+    handle = await open(
+      candidate,
+      fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
+    );
+  } catch {
+    throw infrastructureFailure();
+  }
+
+  let text;
+  let failure;
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile() || !sameFile(before, opened)) {
+      throw infrastructureFailure();
+    }
+
+    text = await handle.readFile({ encoding: "utf8" });
+
+    const after = await lstat(candidate, { bigint: true });
+    if (
+      after.isSymbolicLink() ||
+      !after.isFile() ||
+      !sameFile(opened, after)
+    ) {
+      throw infrastructureFailure();
+    }
+  } catch {
+    failure = infrastructureFailure();
+  }
+
+  try {
+    await handle.close();
+  } catch {
+    failure = infrastructureFailure();
+  }
+
+  if (failure !== undefined) throw failure;
+  return text;
+}
+
+export async function scanRepository(repositoryRoot) {
+  const findings = [];
+  const inventory = await gitSourceInventory(repositoryRoot);
+
+  for (const inventoryPath of inventory) {
+    if (!allowedExtensions.has(extname(inventoryPath))) continue;
+
+    const candidate = resolveCandidate(repositoryRoot, inventoryPath);
+    const text = await readCandidate(candidate);
+    if (text === null) continue;
+
+    for (const rule of forbidden) {
+      if (rule.expression.test(text)) findings.push({ rule: rule.name });
     }
   }
+
+  return findings;
 }
 
-if (failures.length > 0) {
-  process.stderr.write(`Privacy scan failed (${failures.length} finding(s)).\n`);
-  for (const failure of failures) process.stderr.write(`- ${failure}\n`);
-  process.exitCode = 1;
+export function privacyFailureReport(findings) {
+  const counts = new Map(forbidden.map((rule) => [rule.name, 0]));
+  for (const finding of findings) {
+    if (!counts.has(finding.rule)) throw infrastructureFailure();
+    counts.set(finding.rule, counts.get(finding.rule) + 1);
+  }
+
+  const lines = [`Privacy scan failed (${findings.length} finding(s)).`];
+  for (const rule of forbidden) {
+    const count = counts.get(rule.name);
+    if (count > 0) lines.push(`- ${rule.name}: ${count}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+export async function runPrivacyScan(
+  repositoryRoot,
+  writeError = (message) => process.stderr.write(message),
+) {
+  try {
+    const findings = await scanRepository(repositoryRoot);
+    if (findings.length === 0) return 0;
+    writeError(privacyFailureReport(findings));
+    return 1;
+  } catch {
+    writeError(infrastructureDiagnostic);
+    return 1;
+  }
+}
+
+const invokedPath = process.argv[1];
+if (
+  invokedPath !== undefined &&
+  resolve(invokedPath) === resolve(fileURLToPath(import.meta.url))
+) {
+  process.exitCode = await runPrivacyScan(root);
 }
