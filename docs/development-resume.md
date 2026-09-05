@@ -1,4 +1,4 @@
-# Development checkpoint — 2026-09-05
+# Development checkpoint — 2026-09-06
 
 The standalone desktop service probe and unsigned operator harness are
 implemented on top of Phase 3D. Their committed-snapshot tests, the complete architecture
@@ -17,16 +17,22 @@ security predicates and privileges are unchanged. The old workspace candidate
 is preserved in `artifacts/service-probe-candidate-before-startup-diagnostics-d1e1bbd`.
 That candidate was prepared and independently verified, and repository tests
 plus the final full architecture scan passed. The user subsequently reported
-Remove PASS, Install PASS, then Start failure. The newest fixed-service SCM 7024
-event is service-specific `0x2192` (8594): the service-identity normal-group
+Remove PASS, Install PASS, then Start failure. The then-latest fixed-service SCM 7024
+event was service-specific `0x2192` (8594): the service-identity normal-group
 multiplicity check failed. The old code merges absent and duplicate entries;
 neither case is separately established by this event. A narrow source correction
 now accepts a fixed virtual-account user without requiring a redundant normal
 group, while rejecting duplicate groups and bad present-group attributes.
-The correction and its fresh candidate are prepared; repository tests and the
-single final full architecture scan passed. The next step requires applying the
-corrected candidate through the explicit elevated operator workflow. Do not retry
-the currently installed diagnostic-only binary unchanged.
+That correction's tests, candidate verification and full architecture scan passed.
+The user applied it: Remove and Install passed, then Start failed with the newer
+scoped SCM 7024 service-specific code `0x2184` (8580). Service identity now passes;
+the combined primary/Local/logon predicate does not. Read-only native kernel
+evidence and LSA construction contracts exposed a second incorrect assumption:
+primary group can equal TokenUser without a redundant normal group. The narrow
+primary-user binding correction and seven-bit aggregate failure report are now
+implemented. Repository tests, static checks, fresh preparation and strict
+candidate readback and the final full architecture scan passed.
+Do not retry the installed `3dec6ce` build unchanged.
 
 ## Saved implementation
 
@@ -66,15 +72,19 @@ explicitly not release evidence. Helper feature tests 69 and Approval UI tests
 
 ## Resume here
 
-1. The user replaced the original fixture with the diagnostic build: Remove and
-   Install passed, but Start reported service-specific `0x2192`. Review and full
-   verification of the virtual-account redundant-group correction passed. Use
-   the already prepared corrected candidate for explicit operator replacement.
+1. The user applied the `3dec6ce` redundant-group fix: Remove and Install passed,
+   but Start now reports `0x2184`, not the earlier `0x2192`. The primary-group
+   correction and aggregate report are prepared and independently read back;
+   final full architecture verification passed. Apply that fresh candidate
+   through the existing explicit elevated operator workflow.
    Any operator replacement must use the existing
    stopped, ownership-verified Remove/Install workflow, never overwrite or force
    adoption. Inspect completion is not startup evidence. The current candidate is at
    `artifacts/service-probe-candidate`; do not rerun prepare against that existing
-   directory or overwrite it. It now contains the group-policy correction.
+   directory or overwrite it. It now contains the primary-group correction and
+   aggregate remaining-policy report. The installed redundant-group candidate
+   is preserved in
+   `artifacts/service-probe-candidate-before-primary-group-fix-3dec6ce`.
    The diagnostic-only build is preserved in
    `artifacts/service-probe-candidate-before-virtual-account-group-fix-691a7fc`.
    The original candidate is preserved in
@@ -273,7 +283,8 @@ still matches TokenUser to the exact OS-resolved fixed virtual account; owner
 must equal that user. Microsoft distinguishes TokenUser from normal groups and
 permits a user SID as TokenOwner. Descriptor creation still copies and validates
 the actual owner and primary-group bytes against the retained complete baseline.
-The primary group still must occur exactly once in normal groups. The strict
+At that checkpoint the primary group still had to occur exactly once in normal
+groups; this assumption is superseded by the primary-group correction below. The strict
 restricted-SID quartet, candidate privileges, Local/logon groups, primary
 Session-0 shape, no impersonation, same token object and complete baseline
 continuity are unchanged. No raw token data, new native API, new privilege,
@@ -319,5 +330,86 @@ partial fixtures, and no wallet storage is in its fixed targets. The agent
 remains non-elevated and has not run this chain. After application, read the
 fixed-service scoped System log if Start still fails: `0x2192` on the new build
 would mean actual duplicates, whereas the prior code conflated absent/duplicate.
-Do not relax duplicate, primary-group, restricted-SID or privilege checks merely
-to make the next stage pass.
+Do not relax duplicate, restricted-SID or privilege checks merely to make the
+next stage pass. The later primary-group change below has independent evidence.
+
+## Primary-group correction and consolidated remaining-policy diagnostics
+
+The next user-run Remove/Install/Start again passed Remove and Install. The latest
+fixed-service SCM 7024 is `0x2184` (8580), following the older `0x2192` and generic
+1 failures. This proves the earlier identity rule no longer rejects this run;
+it does not distinguish primary-group, Local or logon failure.
+
+Two query-only native current-process checks, including the raw TokenGroups
+array, found primary group equal to TokenUser and both absent from normal groups.
+This is actual current-kernel evidence, not service-token evidence. The stronger
+LSA V1/V3 logon-token construction contracts allow primary-group metadata that
+does not correspond to assigned SIDs. The previous blanket reading of the
+TOKEN_PRIMARY_GROUP structure documentation was incorrect. Official references
+and the precise bounded correction are in `scripts/service-probe/README.md`.
+
+`primary_group_is_bound` now accepts the already OS-resolved fixed TokenUser or
+exactly one matching normal group. Earlier owner/identity/duplicate/attribute
+checks remain; malformed/foreign absent or duplicated primary groups still fail.
+Full token revalidation rejects drift between either independently accepted
+representation, and descriptors retain the actual sealed owner/group bytes.
+No native capture API, privilege, ALLOW ACE, release policy or signing path changed.
+
+Only already rejected ServiceGroups/RestrictedSidSet/Privileges baselines acquire
+the seven-boolean remaining-predicate report. The debug LPAC accessor encodes
+only failures in `0x4001..0x407f`; all-zero falls back to the original rejection.
+Missing/duplicate Local or logon groups make dependent checks UNAVAILABLE, not
+PASS. No raw token values are encoded. Acceptance order and failure results,
+default/release behavior and retained-RPC-runtime cleanup are unchanged.
+
+Focused LPAC token tests pass 25 with one existing installed-context test ignored.
+They include four query-only native sys tests, all 128 encoder combinations,
+each of seven real single-predicate failures, simultaneous independent failures,
+missing/duplicate dependency semantics, fallback/redaction and both accepted
+primary representations with complete baseline/descriptor continuity. The sys
+production prefix is unchanged; its only change is one nonignored query-only
+regression. Independent review found no correctness/security blocker. Workspace
+fmt/lint/typecheck, privacy and full repository tests passed with native exit 0.
+The final-source integrated rerun passed platform 994/44 existing ignored, demo
+266, extension 33, helper 69, native harness 139, preparation/operator CLI 20,
+and actual architecture CLI 24. No new installed-service ignore was added.
+Final-source release probe unit tests passed 15, and the four release fixture
+entrypoint tests passed. Release-policy tests passed 66 JavaScript cases and
+both exact PowerShell sentinels; default/debug-desktop/release-all-features
+binary fallback tests passed two each, retaining required child exit 78.
+
+The exact prior candidate passed strict held readback, was safely renamed to
+`artifacts/service-probe-candidate-before-primary-group-fix-3dec6ce` after
+explicit absolute-parent/destination checks, then passed readback again. Nothing
+was deleted. Fresh unelevated preparation passed, followed by independent strict
+single-link/size/hash checks on all four executables and exact canonical manifest
+comparison. New service bytes differ from the preserved `3dec6ce` candidate.
+The agent has not removed/installed/started the real service. Actual startup is
+still unverified; the corrected candidate must be explicitly applied through the
+existing guarded elevated workflow before any new startup conclusion.
+
+The first full architecture attempt stopped with native exit 1 after progress through 352
+after 154.646 seconds because an older Phase 2I bridge also pins the changed
+design paragraph. Its semantic checks and negative mutations passed; a missed
+document pin is not a service-runtime result. The matching security-decisions
+paragraph was then corrected too. All six design and nine security-document pin
+consumers, their affected semantic windows and negative mutations were reviewed
+and rechecked before the final full run; no runtime policy changed for this.
+
+The final no-argument architecture scan passed with native exit 0 in 290.412
+seconds, reporting progress through 672 checks. All 35 token negative probes
+(24 historical, seven service-group, four primary-binding) and all 12 startup
+diagnostic predicates with 37 negative probes passed. The 182-file Rust
+compilation closure is
+`35aecb2af5ca4dc1796902b881e415e5517bced61404db0eb5c9ddf2fe932164`.
+Frozen scanner SHA256:
+`9b6b9fbec9cc0ae8d1f30c39e86c1e76c5df1eba6b3c23098dd63367d087d944`.
+
+The remaining operator action is the existing stopped, ownership-verified
+Remove, then Install only on native exit 0, then Start only on native exit 0.
+It applies different, independently verified service bytes; do not retry the old
+installed build unchanged. If Start still fails, read the fixed-service scoped
+SCM 7024 code and decode the aggregate range using the README dependency rules.
+This correction is not a claim that the host's actual service has started or
+that a production wallet or signing path is ready. No test wallet, mnemonic or
+private-key fixture was added.

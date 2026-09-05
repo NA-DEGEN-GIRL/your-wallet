@@ -756,7 +756,10 @@ thread impersonation, reopening the current process token, comparing the two
 handles as kernel objects, and rechecking zero handle flags plus exact token IDs,
 identity, `TokenOwner`, `TokenPrimaryGroup`, normal and restricted groups,
 privileges, and the resolved privilege catalog. The owner must equal the fixed
-service SID and the primary group must be an exact `TokenGroups` member. The
+service SID. The primary group must equal that verified user or occur exactly
+once in `TokenGroups`; LSA logon-token construction permits primary-group
+metadata independent of assigned groups. Both accepted forms remain bound by
+the complete baseline, without discarding or deduplicating entries. The
 marker exposes only a lifetime-bound borrow to the sibling creation-security
 module; it exports no identity or owned-handle value.
 

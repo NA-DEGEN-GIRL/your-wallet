@@ -19871,6 +19871,7 @@ const keyAgentServiceTokenTestNames = [
   "virtual_account_user_identity_accepts_zero_or_one_exact_service_group",
   "optional_service_group_still_rejects_duplicates_and_every_attribute_bit_change",
   "absent_service_group_preserves_all_other_token_policy_requirements",
+  "primary_user_binding_preserves_duplicates_and_full_principal_continuity",
   "optional_service_group_cannot_bypass_handle_or_complete_baseline_continuity",
   "exact_documented_restricted_sid_quartet_rejects_every_set_mutation",
   "candidate_privileges_are_an_exact_presence_set_with_bounded_attributes",
@@ -19883,12 +19884,17 @@ const keyAgentServiceTokenTestNames = [
   "startup_diagnostic_capture_codes_are_exact_and_unique",
   "startup_diagnostic_policy_codes_match_real_rejections",
   "startup_service_identity_details_remain_rejected_and_redacted",
+  "remaining_policy_failure_codes_are_closed_and_exhaustive",
+  "remaining_policy_report_collects_independent_failures_without_accepting_them",
+  "remaining_policy_report_marks_missing_dependencies_unavailable_and_keeps_fallback",
 ];
 // The fixed virtual account is already TokenUser. A redundant normal-group
 // entry is optional, but owner equality, duplicate rejection, exact attributes,
 // and the shared policy/diagnostic interpretation remain independently checked.
 const keyAgentServiceIdentityRejectionBody =
   "fnservice_identity_rejection(token:&ServiceTokenObservation)->Option<ServiceTokenPolicyDetail>{iftoken.owner_sid!=token.user_sid{returnSome(ServiceTokenPolicyDetail::OwnerMismatch);}letmutservice_groups=token.groups.iter().filter(|entry|entry.sid==token.user_sid);letfirst=service_groups.next();ifservice_groups.next().is_some(){returnSome(ServiceTokenPolicyDetail::ServiceGroupMultiplicity);}matchfirst{Some(group)ifgroup.attributes!=SERVICE_SID_GROUP_ATTRIBUTES=>{Some(ServiceTokenPolicyDetail::ServiceGroupAttributes)}Some(_)|None=>None,}}";
+const keyAgentServicePrimaryGroupBindingBody =
+  "fnprimary_group_is_bound(primary:&SidBytes,user:&SidBytes,groups:&[SidEntry])->bool{primary==user||exactly_one_group(groups,&primary.0).is_some()}";
 // Historical authority checks inspect the same query/order skeleton. Remove
 // only the reviewed data-free diagnostic annotations from those four bodies;
 // the startup diagnostic contract independently checks every tag and mapping.
@@ -20231,7 +20237,7 @@ const keyAgentServiceTokenContract = ({
         "!token.primary_group_sid.has_canonical_shape()",
         "letservice_sid=&token.user_sid",
         "ifservice_identity_rejection(token).is_some(){returnErr(PolicyRejection::ServiceIdentity);}",
-        "exactly_one_group(&token.groups,&token.primary_group_sid.0).is_none()",
+        "if!primary_group_is_bound(&token.primary_group_sid,service_sid,&token.groups){returnErr(PolicyRejection::ServiceGroups);}",
         "exactly_one_group(&token.groups,LOCAL_SID)",
         "local_group.attributes!=LOCAL_GROUP_ATTRIBUTES",
         "exactly_one_group_with_flag(&token.groups,GROUP_LOGON_ID)",
@@ -20242,6 +20248,8 @@ const keyAgentServiceTokenContract = ({
       ]) &&
       compactRust(rustFunctionBlock(policyProduction, "service_identity_rejection")) ===
         keyAgentServiceIdentityRejectionBody &&
+      compactRust(rustFunctionBlock(policyProduction, "primary_group_is_bound")) ===
+        keyAgentServicePrimaryGroupBindingBody &&
       compactVerifyBaseline.includes(
         "ifbaseline.token_handle_flags!=0{returnErr(PolicyRejection::HandleContinuity);}",
       ) &&
@@ -20377,9 +20385,10 @@ const keyAgentServiceTokenContract = ({
         "Some(ServiceTokenPolicyDetail::ServiceGroupMultiplicity)",
       ]) &&
       hasOrderedCompactMarkers(rustFunctionBlock(policy, "absent_service_group_preserves_all_other_token_policy_requirements"), [
+        "forprimary_is_userin[false,true]",
         "expected.groups.retain(|group|group.sid!=service_sid())",
-        "letmutations:[fn(&mutServiceTokenObservation);19]",
-        "|token|token.primary_group_sid=token.user_sid.clone()",
+        "ifprimary_is_user{expected.primary_group_sid=expected.user_sid.clone();}",
+        "letmutations:[fn(&mutServiceTokenObservation);18]",
         "formutateinmutations",
         "forindexin0..4",
         "missing.restricted_sids.remove(index)",
@@ -20388,6 +20397,38 @@ const keyAgentServiceTokenContract = ({
         "missing_privilege.privileges.remove(index)",
         "forattributesin[PRIVILEGE_REMOVED,0x0000_0100]",
         "forforbiddenincatalog().forbidden",
+      ]) &&
+      hasOrderedCompactMarkers(rustFunctionBlock(policy, "primary_user_binding_preserves_duplicates_and_full_principal_continuity"), [
+        "forseparate_groupin[false,true]",
+        "user_primary.observation.primary_group_sid=user_primary.observation.user_sid.clone()",
+        "assert_eq!(verify_fixture_baseline(&original),Ok(()))",
+        "assert_eq!(verify_fixture_baseline(&user_primary),Ok(()))",
+        "for(before,after)in[(&original,&user_primary),(&user_primary,&original)]",
+        "verify_creation_token_revalidation(before,after,0,true)",
+        "Err(PolicyRejection::BaselineContinuity)",
+        "verify_fixture_baseline(&duplicates),Err(PolicyRejection::ServiceIdentity)",
+        "foreign.observation.primary_group_sid=SidBytes(WORLD_SID.to_vec())",
+        "verify_fixture_baseline(&foreign),Err(PolicyRejection::ServiceGroups)",
+        "verify_fixture_baseline(&foreign),Ok(())",
+        "verify_fixture_baseline(&foreign),Err(PolicyRejection::ServiceGroups)",
+        "verify_creation_principals(&principal,&principal).is_ok()",
+        "verify_creation_principals(WORLD_SID,&principal).is_err()",
+        "verify_creation_principals(&principal,WORLD_SID).is_err()",
+      ]) &&
+      hasOrderedCompactMarkers(rustFunctionBlock(rustBottomTestModule(sys), "current_kernel_primary_group_is_bound_without_requiring_a_redundant_user_group"), [
+        "reject_thread_impersonation()?",
+        "open_current_process_token()?",
+        "token_identity_baseline(token.raw())?",
+        "token_user_sid(token.raw())?",
+        "token_primary_group_sid(token.raw())?",
+        "token_sid_entries(token.raw(),TokenGroups)?",
+        "token_identity_baseline(token.raw())?",
+        "assert!(identity_before==identity_after)",
+        "assert_eq!(token_handle_flags(&token)?,0)",
+        "reject_thread_impersonation()?",
+        "assert!(super::super::primary_group_is_bound(&primary_group,&user,&groups,))",
+        "ifprimary_group==user&&groups.iter().all(|entry|entry.sid!=user)",
+        "assert!(super::super::exactly_one_group(&groups,&primary_group.0).is_none())",
       ]) &&
       hasOrderedCompactMarkers(rustFunctionBlock(policy, "optional_service_group_cannot_bypass_handle_or_complete_baseline_continuity"), [
         "absent.observation.groups.retain(|group|group.sid!=service_sid())",
@@ -20476,8 +20517,8 @@ const keyAgentServiceTokenMutationProbes = [
   mutateKeyAgentServiceTokenSource(
     keyAgentServiceTokenInputs,
     keyAgentServiceTokenFixturePaths.policy,
-    "        WORLD_SID,\n",
-    "",
+    "        service_sid.0.as_slice(),\n        WORLD_SID,\n",
+    "        service_sid.0.as_slice(),\n",
   ),
   mutateKeyAgentServiceTokenSource(
     keyAgentServiceTokenInputs,
@@ -20518,7 +20559,7 @@ const keyAgentServiceTokenMutationProbes = [
   mutateKeyAgentServiceTokenSource(
     keyAgentServiceTokenInputs,
     keyAgentServiceTokenFixturePaths.policy,
-    "    if exactly_one_group(&token.groups, &token.primary_group_sid.0).is_none() {",
+    "    if !primary_group_is_bound(&token.primary_group_sid, service_sid, &token.groups) {",
     "    if false {",
   ),
   mutateKeyAgentServiceTokenSource(
@@ -20602,6 +20643,10 @@ const keyAgentServiceTokenMutationProbes = [
     ["Some(_) | None => None,", "Some(_) => None, None => Some(ServiceTokenPolicyDetail::ServiceGroupMultiplicity),"],
     ["for separate_group in [false, true] {", "for separate_group in [true] {"],
     ["for (original, fresh) in [(&present, &absent), (&absent, &present)] {", "for (original, fresh) in [(&present, &absent)] {"],
+    ["primary == user || exactly_one_group(groups, &primary.0).is_some()", "primary != user || exactly_one_group(groups, &primary.0).is_some()"],
+    ["primary == user || exactly_one_group(groups, &primary.0).is_some()", "primary == user || true"],
+    ["for primary_is_user in [false, true] {", "for primary_is_user in [false] {"],
+    ["for (before, after) in [(&original, &user_primary), (&user_primary, &original)] {", "for (before, after) in [(&original, &user_primary)] {"],
   ].map(([before, after]) => mutateKeyAgentServiceTokenSource(
     keyAgentServiceTokenInputs,
     keyAgentServiceTokenFixturePaths.policy,
@@ -20611,14 +20656,14 @@ const keyAgentServiceTokenMutationProbes = [
 ];
 requireInvariant(
   keyAgentServiceTokenContract(keyAgentServiceTokenInputs) &&
-    keyAgentServiceTokenMutationProbes.length === 31 &&
+    keyAgentServiceTokenMutationProbes.length === 35 &&
     keyAgentServiceTokenMutationProbes.every(
       (probe) =>
         (probe.sources !== keyAgentServiceTokenInputs.sources ||
           probe.platformService !== keyAgentServiceTokenInputs.platformService) &&
         !keyAgentServiceTokenContract(probe),
     ),
-  "the debug service-token fixture must retain its exact safe-policy/reviewed-sys inventory, fixed virtual TokenUser and Session-0 primary restricted shape, equal owner, zero-or-one separately present service group with exact attributes and duplicate rejection, mandatory primary/Local/logon groups and restricted-SID quartet, exact candidate/forbidden privilege sets, bounded zeroized observation, explicit Unverified proof, full-baseline continuity across both accepted forms, pre-RUNNING SCM integration, ignored live obligation, and all 24 historical plus seven effective regression mutations",
+  "the debug service-token fixture must retain its exact safe-policy/reviewed-sys inventory, fixed virtual TokenUser and Session-0 primary restricted shape, equal owner, zero-or-one separately present service group with exact attributes and duplicate rejection, primary equal to fixed TokenUser or exactly one assigned group, mandatory Local/logon groups and restricted-SID quartet, exact candidate/forbidden privilege sets, bounded zeroized observation, explicit Unverified proof, full-baseline continuity across both service-group and primary forms, query-only current-process representation evidence that is not service evidence, pre-RUNNING SCM integration, ignored live obligation, and all 24 historical plus seven service-group and four primary-binding effective regression mutations",
 );
 
 const keyAgentServiceCreationSecurityContract = (source) => {
@@ -24425,7 +24470,7 @@ function keyAgentServiceStartupDiagnosticChecks(inputs) {
   const details = [["OwnerMismatch", "0x2191"], ["ServiceGroupMultiplicity", "0x2192"], ["ServiceGroupAttributes", "0x2193"]];
   const rpcStages = [["Coordinator", "0x2301"], ["Context", "0x2302"], ["SecurityDescriptor", "0x2303"], ["InterfaceSpec", "0x2304"], ["PublishContext", "0x2305"], ["RegisterAuthentication", "0x2311"], ["BindEndpoint", "0x2312"], ["InstallHandler", "0x2313"], ["RegisterInterface", "0x2314"], ["Listen", "0x2315"]];
   const arms = (type, rows) => rows.map(([name, code]) => `${type}::${name}=>${code},`).join("");
-  const expectedTokenCode = "pub(crate)constfnstartup_diagnostic_code(&self)->u32{ifletSome(reason)=self.policy_rejection{ifletSome(detail)=self.policy_detail{returnmatchdetail{" + arms("ServiceTokenPolicyDetail", details) + "};}returnmatchreason{" + arms("PolicyRejection", policies) + "};}matchself.stage{ServiceTokenCaptureStage::Unspecified=>matchself.kind{ServiceTokenFixtureErrorKind::OperatingSystem=>0x2100,ServiceTokenFixtureErrorKind::Policy=>0x2180,}," + arms("ServiceTokenCaptureStage", stages) + "}}";
+  const expectedTokenCode = "pub(crate)constfnstartup_diagnostic_code(&self)->u32{ifletSome(failures)=&self.remaining_policy_failures&&letSome(code)=failures.service_specific_code(){returncode;}ifletSome(reason)=self.policy_rejection{ifletSome(detail)=self.policy_detail{returnmatchdetail{" + arms("ServiceTokenPolicyDetail", details) + "};}returnmatchreason{" + arms("PolicyRejection", policies) + "};}matchself.stage{ServiceTokenCaptureStage::Unspecified=>matchself.kind{ServiceTokenFixtureErrorKind::OperatingSystem=>0x2100,ServiceTokenFixtureErrorKind::Policy=>0x2180,}," + arms("ServiceTokenCaptureStage", stages) + "}}";
   const tags = (source, name) => rustCallSites(rustFunctionBlock(source, name), "at_stage").map(({ arguments: args }) => args.map(compactRust).join("|"));
   const tagged = (names) => names.map((name) => `ServiceTokenCaptureStage::${name}`);
   const lpacWorker = rustImplItems(service).find(({ header }) => header === "impl ScmWorker for LpacRpcProbeWorker")?.source ?? "";
@@ -24434,23 +24479,33 @@ function keyAgentServiceStartupDiagnosticChecks(inputs) {
   const initialization = fn(service, "initialization_code");
   const compactGate = compactRust(gate);
   return {
-    tokenDataFreeShape: item(token, "struct", "ServiceTokenFixtureError") === "structServiceTokenFixtureError{kind:ServiceTokenFixtureErrorKind,stage:ServiceTokenCaptureStage,policy_rejection:Option<PolicyRejection>,policy_detail:Option<ServiceTokenPolicyDetail>,}" &&
+    tokenDataFreeShape: item(token, "struct", "ServiceTokenFixtureError") === "structServiceTokenFixtureError{kind:ServiceTokenFixtureErrorKind,stage:ServiceTokenCaptureStage,policy_rejection:Option<PolicyRejection>,policy_detail:Option<ServiceTokenPolicyDetail>,remaining_policy_failures:Option<ServiceTokenRemainingPolicyFailures>,}" &&
+      item(token, "struct", "ServiceTokenRemainingPolicyFailures") === "structServiceTokenRemainingPolicyFailures{primary_group:bool,local_group:bool,local_attributes:bool,logon_group:bool,logon_attributes:bool,restricted_sids:bool,privileges:bool,}" &&
+      raw(token).includes('#[allow(clippy::struct_excessive_bools,reason="independentclosedfailurepredicates,notstate-machineflags")]structServiceTokenRemainingPolicyFailures{') &&
+      // One existing query-observation allowance and this scoped report allowance.
+      (rustLexicalCode(token).match(/\bstruct_excessive_bools\b/gu) ?? []).length === 2 &&
       item(token, "enum", "ServiceTokenCaptureStage") === `enumServiceTokenCaptureStage{Unspecified,${stages.map(([name]) => `${name},`).join("")}}` &&
       item(token, "enum", "ServiceTokenPolicyDetail") === `enumServiceTokenPolicyDetail{${details.map(([name]) => `${name},`).join("")}}` &&
       fn(token, "at_stage") === "constfnat_stage(mutself,stage:ServiceTokenCaptureStage)->Self{self.stage=stage;self}" &&
-      fn(token, "policy_rejection") === "constfnpolicy_rejection(reason:PolicyRejection)->Self{Self{kind:ServiceTokenFixtureErrorKind::Policy,stage:ServiceTokenCaptureStage::Unspecified,policy_rejection:Some(reason),policy_detail:None,}}",
+      fn(token, "policy_rejection") === "constfnpolicy_rejection(reason:PolicyRejection)->Self{Self{kind:ServiceTokenFixtureErrorKind::Policy,stage:ServiceTokenCaptureStage::Unspecified,policy_rejection:Some(reason),policy_detail:None,remaining_policy_failures:None,}}" &&
+      fn(token, "operating_system") === "constfnoperating_system()->Self{Self{kind:ServiceTokenFixtureErrorKind::OperatingSystem,stage:ServiceTokenCaptureStage::Unspecified,policy_rejection:None,policy_detail:None,remaining_policy_failures:None,}}" &&
+      fn(token, "policy") === "constfnpolicy()->Self{Self{kind:ServiceTokenFixtureErrorKind::Policy,stage:ServiceTokenCaptureStage::Unspecified,policy_rejection:None,policy_detail:None,remaining_policy_failures:None,}}",
     tokenFixedCodeMap: fn(token, "startup_diagnostic_code") === expectedTokenCode,
+    tokenBatchFixedObservation: fn(token, "from_baseline") === "fnfrom_baseline(baseline:&ServiceTokenBaseline)->Self{lettoken=&baseline.observation;letlocal=exactly_one_group(&token.groups,LOCAL_SID);letlogon=exactly_one_group_with_flag(&token.groups,GROUP_LOGON_ID);Self{primary_group:!primary_group_is_bound(&token.primary_group_sid,&token.user_sid,&token.groups,),local_group:local.is_none(),local_attributes:local.is_some_and(|group|group.attributes!=LOCAL_GROUP_ATTRIBUTES),logon_group:logon.is_none(),logon_attributes:logon.is_some_and(|group|{group.attributes!=SERVICE_LOGON_GROUP_ATTRIBUTES||!group.sid.has_canonical_shape()}),restricted_sids:logon.is_some_and(|group|{!contains_exact_sid_set(&token.restricted_sids,&[token.user_sid.0.as_slice(),WORLD_SID,group.sid.0.as_slice(),WRITE_RESTRICTED_SID,],)}),privileges:validate_privileges(&token.privileges,&baseline.catalog).is_err(),}}" &&
+      fn(token, "primary_group_is_bound") === keyAgentServicePrimaryGroupBindingBody,
+    tokenBatchFixedCode: fn(token, "service_specific_code") === "constfnservice_specific_code(&self)->Option<u32>{letmutcode=0x4000;ifself.primary_group{code|=0x01;}ifself.local_group{code|=0x02;}ifself.local_attributes{code|=0x04;}ifself.logon_group{code|=0x08;}ifself.logon_attributes{code|=0x10;}ifself.restricted_sids{code|=0x20;}ifself.privileges{code|=0x40;}ifcode==0x4000{None}else{Some(code)}}",
     tokenCaptureTags: JSON.stringify(tags(sys, "capture_current_service_token")) === JSON.stringify(tagged(["ThreadBefore", "ThreadAfter"])) &&
       JSON.stringify(tags(sys, "recapture_current_service_token")) === JSON.stringify(tagged(["ThreadBefore", "RetainedHandleFlags", "FreshIdentity", "RecaptureIdentityContinuity", "ThreadAfter"])) &&
       JSON.stringify(tags(sys, "capture_service_token_baseline")) === JSON.stringify(tagged(["ServiceSid", "PrivilegeCatalog", "IdentityBefore", "TokenType", "Session", "AppContainer", "AppContainer", "UiAccess", "UiAccess", "Restrictions", "UserSid", "UserIdentity", "OwnerSid", "PrimaryGroupSid", "Groups", "RestrictedSids", "Privileges", "IdentityAfter", "IdentityContinuity"])) &&
       JSON.stringify(tags(sys, "open_current_process_token")) === JSON.stringify(tagged(["TokenOpen", "TokenOpen"])) &&
       JSON.stringify(tags(sys, "token_handle_flags")) === JSON.stringify(tagged(["HandleFlags"])) &&
       JSON.stringify(tags(token, "verify_creation_principals")) === JSON.stringify(tagged(["CreationPrincipals"])),
-    tokenRejectedDetailOnly: fn(token, "policy_rejection_for_baseline") === "fnpolicy_rejection_for_baseline(reason:PolicyRejection,baseline:&ServiceTokenBaseline,)->Self{letmuterror=Self::policy_rejection(reason);ifreason==PolicyRejection::ServiceIdentity{error.policy_detail=service_identity_rejection(&baseline.observation);}error}" &&
+    tokenRejectedDetailOnly: fn(token, "policy_rejection_for_baseline") === "fnpolicy_rejection_for_baseline(reason:PolicyRejection,baseline:&ServiceTokenBaseline,)->Self{letmuterror=Self::policy_rejection(reason);ifreason==PolicyRejection::ServiceIdentity{error.policy_detail=service_identity_rejection(&baseline.observation);}ifreason==PolicyRejection::ServiceGroups||reason==PolicyRejection::RestrictedSidSet||reason==PolicyRejection::Privileges{error.remaining_policy_failures=Some(ServiceTokenRemainingPolicyFailures::from_baseline(baseline));}error}" &&
       fn(token, "service_identity_rejection") === keyAgentServiceIdentityRejectionBody &&
       fn(token, "verify_current_key_agent_service_token_fixture").includes("verify_fixture_baseline(&captured.baseline).map_err(|reason|{ServiceTokenFixtureError::policy_rejection_for_baseline(reason,&captured.baseline)})?") &&
       fn(token, "revalidate_creation_token").includes(".map_err(|reason|{ServiceTokenFixtureError::policy_rejection_for_baseline(reason,&recaptured.captured.baseline,)})"),
     exactDebugAccessorGates: raw(token).includes(`${gate}pub(crate)constfnstartup_diagnostic_code(&self)->u32`) &&
+      raw(token).includes(`${gate}constfnservice_specific_code(&self)->Option<u32>`) &&
       raw(rpc).includes(`${gate}implRpcStartupStage{pub(super)constfnstartup_diagnostic_code(self)->u32`) &&
       raw(service).includes(`${gate}implScmWorkerforLpacRpcProbeWorker{`) &&
       raw(service).includes(`${gate}LpacToken(crate::key_agent_service_token::ServiceTokenFixtureError),`) &&
@@ -24484,18 +24539,21 @@ function keyAgentServiceStartupDiagnosticChecks(inputs) {
       compactRust(service).includes("constSTOP_EVENT_FAILURE_CODE:u32=INITIALIZATION_FAILURE;") &&
       compactRust(lpacWorker).includes("constSTOP_EVENT_FAILURE_CODE:u32=0x2201;") &&
       (rustLexicalCode(service).match(/\bconst\s+STOP_EVENT_FAILURE_CODE\b/gu) ?? []).length === 2,
-    // This collector retains the two const-fn declaration sites as well as
-    // calls: exactly one declaration per accessor and two SCM-owned calls.
+    // This collector retains declaration sites as well as calls: exactly one
+    // declaration per accessor/batch constructor and the reviewed sole callers.
     diagnosticReachability: JSON.stringify([token, sys, rpc, service].map((source) => rustCallSites(source, "startup_diagnostic_code").length)) === "[1,0,1,2]" &&
+      JSON.stringify([token, sys, rpc, service].map((source) => rustCallSites(source, "service_specific_code").length)) === "[2,0,0,0]" &&
+      JSON.stringify([token, sys, rpc, service].map((source) => rustCallSites(source, "from_baseline").length)) === "[2,0,0,0]" &&
       !/\b(?:GetLastError|GetLastWin32Error|HRESULT|WIN32_ERROR|println|eprintln|dbg)\b/u.test([
         rustFunctionBlock(token, "startup_diagnostic_code"), rustFunctionBlock(token, "policy_rejection_for_baseline"),
+        rustFunctionBlock(token, "from_baseline"), rustFunctionBlock(token, "service_specific_code"),
         rustFunctionBlock(rpc, "startup_diagnostic_code"), rustFunctionBlock(service, "initialization_code"),
       ].map(rustLexicalCode).join("\n")),
   };
 }
 function keyAgentServiceStartupDiagnosticContract(inputs) {
   const checks = keyAgentServiceStartupDiagnosticChecks(inputs);
-  return Object.keys(checks).length === 10 && Object.values(checks).every((value) => value === true);
+  return Object.keys(checks).length === 12 && Object.values(checks).every((value) => value === true);
 }
 const keyAgentServiceStartupDiagnosticInputs = {
   token: keyAgentServiceTokenFixtureSources[keyAgentServiceTokenFixturePaths.policy],
@@ -24529,14 +24587,26 @@ const keyAgentServiceStartupDiagnosticMutations = [
   ["SCM original generic event code", "service", "const STOP_EVENT_FAILURE_CODE: u32 = INITIALIZATION_FAILURE;", "const STOP_EVENT_FAILURE_CODE: u32 = 0x2201;"],
   ["SCM fixed LPAC event code", "service", "const STOP_EVENT_FAILURE_CODE: u32 = 0x2201;", "const STOP_EVENT_FAILURE_CODE: u32 = 1;"],
   ["SCM preserve token stage", "service", ".map_err(WorkerStartFailure::LpacToken)?;", ".map_err(|_| WorkerStartFailure::Boundary)?;"],
+  ["batch bounded boolean payload", "token", "    primary_group: bool,", "    primary_group: u32,"],
+  ["batch only existing late rejections", "token", "|| reason == PolicyRejection::Privileges", "|| true"],
+  ["batch disjoint code namespace", "token", "let mut code = 0x4000;", "let mut code = 0x2100;"],
+  ["batch exact seven bit bound", "token", "code |= 0x40;", "code |= 0x80;"],
+  ["batch zero report fallback", "token", "if code == 0x4000 { None } else { Some(code) }", "if false { None } else { Some(code) }"],
+  ["batch shared primary predicate", "token", "primary_group: !primary_group_is_bound(", "primary_group: primary_group_is_bound("],
+  ["batch unavailable Local attributes", "token", "local_attributes: local.is_some_and(", "local_attributes: local.is_none_or("],
+  ["batch unavailable restricted quartet", "token", "restricted_sids: logon.is_some_and(", "restricted_sids: logon.is_none_or("],
+  ["batch exact restricted quartet", "token", "                        token.user_sid.0.as_slice(),\n                        WORLD_SID,", "                        token.user_sid.0.as_slice(),"],
+  ["batch unchanged privilege check", "token", "privileges: validate_privileges(&token.privileges, &baseline.catalog).is_err(),", "privileges: false,"],
+  ["batch release accessor gate", "token", "        debug_assertions\n    ))]\n    const fn service_specific_code", "        any(debug_assertions, not(debug_assertions))\n    ))]\n    const fn service_specific_code"],
+  ["batch no second consumer", "token", "const fn service_specific_code(&self) -> Option<u32> {", "const fn service_specific_code(&self) -> Option<u32> { let _ = self.service_specific_code();"],
 ].map(([name, field, before, after]) => {
   const changed = keyAgentServiceStartupDiagnosticInputs[field].replace(before, after);
   return { name, changed: changed !== keyAgentServiceStartupDiagnosticInputs[field], rejected: !keyAgentServiceStartupDiagnosticContract({ ...keyAgentServiceStartupDiagnosticInputs, [field]: changed }) };
 });
 requireInvariant(
   keyAgentServiceStartupDiagnosticContract(keyAgentServiceStartupDiagnosticInputs) &&
-    keyAgentServiceStartupDiagnosticMutations.length === 25 && keyAgentServiceStartupDiagnosticMutations.every(({ changed, rejected }) => changed && rejected),
-  `the fixed debug LPAC startup diagnostics must preserve closed data-free token/capture/policy/RPC mappings, exact debug accessor and SCM worker gates, unchanged status-only errors and generic event code, and retained cleanup before any stopped-status classification; no native error, log, policy acceptance or new authority may be introduced; checks=${JSON.stringify(Object.entries(keyAgentServiceStartupDiagnosticChecks(keyAgentServiceStartupDiagnosticInputs)).filter(([, value]) => !value).map(([name]) => name))}, mutations=${JSON.stringify(keyAgentServiceStartupDiagnosticMutations.filter(({ changed, rejected }) => !changed || !rejected).map(({ name }) => name))}`,
+    keyAgentServiceStartupDiagnosticMutations.length === 37 && keyAgentServiceStartupDiagnosticMutations.every(({ changed, rejected }) => changed && rejected),
+  `the fixed debug LPAC startup diagnostics must preserve closed data-free token/capture/policy/RPC mappings and the seven-private-boolean already-rejected-baseline report, exact dependency-unavailable semantics and nonzero 0x4001..0x407f encoding with original-error fallback, exact debug accessor and SCM worker gates, unchanged status-only errors and generic event code, and retained cleanup before any stopped-status classification; no raw native value, log, accepted-result diagnostic or new authority may be introduced; preserve all 25 historical and 12 batch-diagnostic negatives; checks=${JSON.stringify(Object.entries(keyAgentServiceStartupDiagnosticChecks(keyAgentServiceStartupDiagnosticInputs)).filter(([, value]) => !value).map(([name]) => name))}, mutations=${JSON.stringify(keyAgentServiceStartupDiagnosticMutations.filter(({ changed, rejected }) => !changed || !rejected).map(({ name }) => name))}`,
 );
 
 const keyAgentServiceRpcLpacSecurityDescriptorContract = (source) => {
@@ -26704,11 +26774,11 @@ const keyAgentServicePhaseThreeCExpectedPins = Object.freeze({
   moduleFull: "c001ebd5612df7205b83e87e8358f21a4c3ca0f847aa3e536ac6b7b25076aa19",
   moduleProduction:
     "a1e62f0d6a7739e3503f4da39ce6a91bb573e04aa75f80c7804323a4ef28122d",
-  design: "1c26056a6b5afa915f983bc26b4b4a0f571a4770260c2942cc47abed454c4e93",
+  design: "1937b2670dc9df9841f3b67c71c679c5e31929da533d84111bbce40221837cdd",
   architecture:
     "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
   security:
-    "7b986e9aa9bc3c71b2bfd325bf3e1352e6ab465d4c773190c73033e4518ea2ae",
+    "e56b61d9dc88ba888172e230f59ea90466842b35c1e4d17ce52f9c05b0e0f90b",
   platformReadme:
     "18ea8353cffd6d9101428428f6c9777d1a5ac21e99b77ac712de28d923222394",
 });
@@ -30282,13 +30352,13 @@ const keyAgentServiceHelperBootstrapDocumentationSpecs = [
     source: keyAgentServiceDesign,
     anchor:
       "- The helper-bootstrap crate exposes a safe platform-neutral gate-byte",
-    sha256: "1c26056a6b5afa915f983bc26b4b4a0f571a4770260c2942cc47abed454c4e93",
+    sha256: "1937b2670dc9df9841f3b67c71c679c5e31929da533d84111bbce40221837cdd",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "A separate helper-bootstrap crate exposes",
-    sha256: "7b986e9aa9bc3c71b2bfd325bf3e1352e6ab465d4c773190c73033e4518ea2ae",
+    sha256: "e56b61d9dc88ba888172e230f59ea90466842b35c1e4d17ce52f9c05b0e0f90b",
   },
 ];
 const keyAgentServiceHelperBootstrapDocumentationPatterns = [
@@ -37906,7 +37976,7 @@ const walletSecretOriginExpectedDocumentationSha256 = Object.freeze({
   architecture:
     "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
   securityDecisions:
-    "7b986e9aa9bc3c71b2bfd325bf3e1352e6ab465d4c773190c73033e4518ea2ae",
+    "e56b61d9dc88ba888172e230f59ea90466842b35c1e4d17ce52f9c05b0e0f90b",
 });
 const walletSecretOriginProductionProjection = (source) =>
   withoutCfgTestItems(withoutBottomTestModule(source));
@@ -41302,11 +41372,11 @@ const keyAgentServicePhaseTwoIExpectedPins = Object.freeze({
   sourceProduction:
     "2d4da94c36055c61f5fdedabb8752709bf32750a28381e67c50b6e21c0866b4e",
   design:
-    "1c26056a6b5afa915f983bc26b4b4a0f571a4770260c2942cc47abed454c4e93",
+    "1937b2670dc9df9841f3b67c71c679c5e31929da533d84111bbce40221837cdd",
   architecture:
     "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
   security:
-    "7b986e9aa9bc3c71b2bfd325bf3e1352e6ab465d4c773190c73033e4518ea2ae",
+    "e56b61d9dc88ba888172e230f59ea90466842b35c1e4d17ce52f9c05b0e0f90b",
 });
 const keyAgentServicePhaseTwoIExpectedInboundEdge = Object.freeze({
   declaringFile: keyAgentServicePhaseTwoIParentPath,
@@ -42741,11 +42811,11 @@ const keyAgentServicePhaseThreeAExpectedPins = Object.freeze({
   targetProfileProduction:
     "610502bfedee760837e3d1c7a3729067dda450d5bf98061553dddabb499b303c",
   design:
-    "1c26056a6b5afa915f983bc26b4b4a0f571a4770260c2942cc47abed454c4e93",
+    "1937b2670dc9df9841f3b67c71c679c5e31929da533d84111bbce40221837cdd",
   architecture:
     "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
   security:
-    "7b986e9aa9bc3c71b2bfd325bf3e1352e6ab465d4c773190c73033e4518ea2ae",
+    "e56b61d9dc88ba888172e230f59ea90466842b35c1e4d17ce52f9c05b0e0f90b",
   platformReadme:
     "18ea8353cffd6d9101428428f6c9777d1a5ac21e99b77ac712de28d923222394",
 });
@@ -44392,11 +44462,11 @@ const keyAgentServicePhaseThreeBExpectedPins = Object.freeze({
   moduleFull: "c001ebd5612df7205b83e87e8358f21a4c3ca0f847aa3e536ac6b7b25076aa19",
   moduleProduction:
     "a1e62f0d6a7739e3503f4da39ce6a91bb573e04aa75f80c7804323a4ef28122d",
-  design: "1c26056a6b5afa915f983bc26b4b4a0f571a4770260c2942cc47abed454c4e93",
+  design: "1937b2670dc9df9841f3b67c71c679c5e31929da533d84111bbce40221837cdd",
   architecture:
     "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
   security:
-    "7b986e9aa9bc3c71b2bfd325bf3e1352e6ab465d4c773190c73033e4518ea2ae",
+    "e56b61d9dc88ba888172e230f59ea90466842b35c1e4d17ce52f9c05b0e0f90b",
   platformReadme:
     "18ea8353cffd6d9101428428f6c9777d1a5ac21e99b77ac712de28d923222394",
 });
@@ -48551,7 +48621,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "4f7aee95baf250242edf9eddf2d17fe0ebed0a00113fe6ebf21e66d910867442";
+  "35aecb2af5ca4dc1796902b881e415e5517bced61404db0eb5c9ddf2fe932164";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -78201,7 +78271,7 @@ const approvedKeyAgentHandleAttenuationDocumentationSha256 = Object.freeze({
   "docs/protocol-contract.md":
     "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
   "docs/security-decisions.md":
-    "7b986e9aa9bc3c71b2bfd325bf3e1352e6ab465d4c773190c73033e4518ea2ae",
+    "e56b61d9dc88ba888172e230f59ea90466842b35c1e4d17ce52f9c05b0e0f90b",
 });
 const keyAgentHandleAttenuationDocumentationContract = (documents) =>
   JSON.stringify(documents.map(({ path }) => path)) ===
@@ -84069,7 +84139,7 @@ const approvedCurrentApprovalSecurityDocumentationSha256 = Object.freeze([
   "18ea8353cffd6d9101428428f6c9777d1a5ac21e99b77ac712de28d923222394",
   "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
   "6767db8d86985a0a1a92f99e00fc89cc9eb547be785e4cb1155b499a5a11ac44",
-  "7b986e9aa9bc3c71b2bfd325bf3e1352e6ab465d4c773190c73033e4518ea2ae",
+  "e56b61d9dc88ba888172e230f59ea90466842b35c1e4d17ce52f9c05b0e0f90b",
 ]);
 const keyAgentActualLoaderCleanupDocumentation = [
   activationReadme,
@@ -93962,14 +94032,14 @@ const keyAgentDebuggerDocumentationSpecs = [
     source: keyAgentServiceDesign,
     anchor: "The dormant solution-mechanics slice adds",
     endAnchor: "\n## In scope\n",
-    sha256: "1c26056a6b5afa915f983bc26b4b4a0f571a4770260c2942cc47abed454c4e93",
+    sha256: "1937b2670dc9df9841f3b67c71c679c5e31929da533d84111bbce40221837cdd",
   },
   {
     path: "docs/security-decisions.md",
     source: keyAgentServiceSecurityDecisions,
     anchor: "The dedicated-process feasibility slice remains narrower",
     endAnchor: "The runtime-enabled Secret Input/recovery child instead",
-    sha256: "7b986e9aa9bc3c71b2bfd325bf3e1352e6ab465d4c773190c73033e4518ea2ae",
+    sha256: "e56b61d9dc88ba888172e230f59ea90466842b35c1e4d17ce52f9c05b0e0f90b",
   },
 ];
 const keyAgentDebuggerDocumentationExpectedWindowSemanticHashes = Object.freeze({

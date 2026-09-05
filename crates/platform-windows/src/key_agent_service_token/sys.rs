@@ -815,6 +815,37 @@ mod tests {
     }
 
     #[test]
+    fn current_kernel_primary_group_is_bound_without_requiring_a_redundant_user_group()
+    -> Result<(), ServiceTokenFixtureError> {
+        reject_thread_impersonation()?;
+        let (token, flags) = open_current_process_token()?;
+        assert_eq!(flags, 0);
+        let identity_before = token_identity_baseline(token.raw())?;
+        let user = token_user_sid(token.raw())?;
+        let primary_group = token_primary_group_sid(token.raw())?;
+        let groups = token_sid_entries(token.raw(), TokenGroups)?;
+        let identity_after = token_identity_baseline(token.raw())?;
+        assert!(identity_before == identity_after);
+        assert_eq!(token_handle_flags(&token)?, 0);
+        reject_thread_impersonation()?;
+
+        // This queries the test process, not the service fixture. It validates
+        // only the representation returned by Windows without assuming a
+        // service identity, session, group set, or privilege policy.
+        assert!(super::super::primary_group_is_bound(
+            &primary_group,
+            &user,
+            &groups,
+        ));
+        if primary_group == user && groups.iter().all(|entry| entry.sid != user) {
+            // A valid user-backed primary group need not be duplicated in the
+            // raw TokenGroups array; the former normal-group-only gate fails.
+            assert!(super::super::exactly_one_group(&groups, &primary_group.0).is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn handle_flag_drift_and_wrong_kernel_object_are_observed()
     -> Result<(), ServiceTokenFixtureError> {
         let (token, flags) = open_current_process_token()?;

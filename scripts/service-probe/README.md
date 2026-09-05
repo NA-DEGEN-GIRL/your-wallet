@@ -180,7 +180,8 @@ INITIALIZATION_FAILURE, not Win32 error 1.
 
 The explicit debug LPAC service preserves closed, data-free failure categories
 through the existing SCM status channel. Token capture/policy categories use
-the `0x21xx` range, stop-event creation uses `0x2201`, and RPC startup categories
+the `0x21xx` range (plus the aggregate remaining-policy range described below),
+stop-event creation uses `0x2201`, and RPC startup categories
 use `0x23xx`. The exact mappings and negative tests are maintained with the
 token, service and RPC implementations. These are fixed enum mappings, not raw
 Windows errors, identity values, token attributes, endpoint contents or stack
@@ -216,17 +217,60 @@ the original exact attributes. More than one entry or incorrect attributes on a
 present entry still fail closed. The fixed OS-resolved `TokenUser`, matching
 `TokenOwner`, full restricted-SID quartet, privilege set, Session-0/token shape,
 Local/logon groups and complete baseline/handle revalidation remain required.
-[TokenPrimaryGroup](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-token_primary_group)
-still must occur exactly once in normal groups: unlike owner, it is not replaced
-with a user-or-group rule. No captured entry is filtered out or deduplicated.
+No captured entry is filtered out or deduplicated.
 
 The observed older diagnostic code `0x2192` combined zero and duplicate entries;
 it did not prove absence rather than duplication. In the corrected build the
 same closed code now means duplicate service-group entries. Absent entries alone
-are not an error. This fixes the false-negative policy case; an installed-service
-run is still required to establish whether this was the observed host's case and
-whether subsequent startup checks pass. Neither new tests nor this correction
+are not an error. This fixes the false-negative policy case; at that checkpoint,
+an installed-service run was still required to establish the observed host's case
+and whether subsequent startup checks passed. Neither new tests nor this correction
 enable production policy or signing.
+
+### Primary-group binding and aggregate failure evidence
+
+After applying the redundant-group correction, the host advanced to `0x2184`:
+primary-group, Local-group or logon-group policy rejection. That combined code
+does not identify which predicate failed. A separate read-only current-process
+native query found primary group equal to TokenUser, with neither SID present
+in the raw normal-group array. This is kernel evidence of a valid representation,
+not an observation of the service's token.
+
+The LSA [V1](https://learn.microsoft.com/en-us/windows/win32/api/ntsecpkg/ns-ntsecpkg-lsa_token_information_v1)
+and [V3 logon-token construction contracts](https://learn.microsoft.com/en-us/windows/win32/api/ntsecpkg/ns-ntsecpkg-lsa_token_information_v3)
+allow primary-group metadata independent of the user's assigned SIDs. The earlier
+blanket normal-group-membership assumption was therefore incorrect. The fixture
+now narrowly accepts primary group equal to the already OS-resolved fixed service
+TokenUser, or exactly one normal-group entry. It does not accept arbitrary absent
+primary groups. Earlier identity/owner/duplicate/attribute checks and later
+Local/logon, restricted-SID, privilege and full-baseline checks remain required.
+The actual owner and primary-group bytes are still sealed into creation
+descriptors; changing between separately accepted representations fails full
+revalidation. The primary-group metadata is not an added allow ACE.
+
+To avoid one retry per remaining predicate, the debug LPAC build aggregates only
+seven fixed failed-predicate flags from an already rejected, already captured
+baseline. This applies only to ServiceGroups, RestrictedSidSet or Privileges
+rejections. Codes `0x4001` through `0x407f` contain the following low-seven-bit mask:
+
+| Bit | Failed predicate |
+| --- | --- |
+| `0x01` | Primary group is neither fixed user nor exactly one normal group |
+| `0x02` | Local group absent or duplicated |
+| `0x04` | Local attributes differ (unavailable if `0x02` is set) |
+| `0x08` | Logon group absent or duplicated |
+| `0x10` | Logon attributes/SID shape differ (unavailable if `0x08` is set) |
+| `0x20` | Restricted-SID quartet differs (unavailable if `0x08` is set) |
+| `0x40` | Candidate privilege policy differs |
+
+An unavailable dependent predicate is **not PASS** even though its bit is clear.
+For example, `0x404a` reports failed Local/logon uniqueness and privilege policy;
+Local attributes, logon attributes and restricted-SID matching
+cannot be evaluated from those missing/duplicate prerequisites. All-zero reports
+fall back to the original rejection code, never success. Original capture/identity
+and RPC categories remain unchanged. No native error, SID, LUID, attribute value,
+handle, token dump or secret is encoded. Default/release consumers, fail-closed
+acceptance, retained-runtime cleanup and signing gates are unchanged.
 
 ### Automated verification
 

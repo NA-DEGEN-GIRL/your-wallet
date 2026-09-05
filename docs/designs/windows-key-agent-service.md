@@ -153,7 +153,10 @@ The following are existing facts, not new service claims:
   and fresh handles to name the same kernel object, and rechecks handle flags,
   token identity/IDs, `TokenOwner`, `TokenPrimaryGroup`, groups, restricted SIDs,
   privileges, and resolved privilege catalog. The owner must equal the fixed
-  service SID and the primary group must occur exactly once in `TokenGroups`.
+  service SID. The primary group must equal that verified user or occur exactly
+  once in `TokenGroups`; LSA logon-token construction does not require primary
+  group metadata to be an assigned group. No token entry is discarded, and
+  either representation remains bound by complete baseline revalidation.
   The capability is an exclusive borrow and exposes no SID, PID, or raw owned
   handle.
 - A debug-only service launch-input feature can consume that capability to
