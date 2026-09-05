@@ -19868,6 +19868,10 @@ const keyAgentServiceTokenForbiddenApis = [
 const keyAgentServiceTokenTestNames = [
   "documented_fixture_policy_passes_but_remains_unverified",
   "every_scalar_and_service_group_policy_mutation_is_rejected",
+  "virtual_account_user_identity_accepts_zero_or_one_exact_service_group",
+  "optional_service_group_still_rejects_duplicates_and_every_attribute_bit_change",
+  "absent_service_group_preserves_all_other_token_policy_requirements",
+  "optional_service_group_cannot_bypass_handle_or_complete_baseline_continuity",
   "exact_documented_restricted_sid_quartet_rejects_every_set_mutation",
   "candidate_privileges_are_an_exact_presence_set_with_bounded_attributes",
   "creation_token_revalidation_rejects_handle_flags_and_wrong_object",
@@ -19880,6 +19884,11 @@ const keyAgentServiceTokenTestNames = [
   "startup_diagnostic_policy_codes_match_real_rejections",
   "startup_service_identity_details_remain_rejected_and_redacted",
 ];
+// The fixed virtual account is already TokenUser. A redundant normal-group
+// entry is optional, but owner equality, duplicate rejection, exact attributes,
+// and the shared policy/diagnostic interpretation remain independently checked.
+const keyAgentServiceIdentityRejectionBody =
+  "fnservice_identity_rejection(token:&ServiceTokenObservation)->Option<ServiceTokenPolicyDetail>{iftoken.owner_sid!=token.user_sid{returnSome(ServiceTokenPolicyDetail::OwnerMismatch);}letmutservice_groups=token.groups.iter().filter(|entry|entry.sid==token.user_sid);letfirst=service_groups.next();ifservice_groups.next().is_some(){returnSome(ServiceTokenPolicyDetail::ServiceGroupMultiplicity);}matchfirst{Some(group)ifgroup.attributes!=SERVICE_SID_GROUP_ATTRIBUTES=>{Some(ServiceTokenPolicyDetail::ServiceGroupAttributes)}Some(_)|None=>None,}}";
 // Historical authority checks inspect the same query/order skeleton. Remove
 // only the reviewed data-free diagnostic annotations from those four bodies;
 // the startup diagnostic contract independently checks every tag and mapping.
@@ -20221,9 +20230,7 @@ const keyAgentServiceTokenContract = ({
         "!token.owner_sid.has_canonical_shape()",
         "!token.primary_group_sid.has_canonical_shape()",
         "letservice_sid=&token.user_sid",
-        "iftoken.owner_sid!=*service_sid",
-        "exactly_one_group(&token.groups,&service_sid.0)",
-        "service_group.attributes!=SERVICE_SID_GROUP_ATTRIBUTES",
+        "ifservice_identity_rejection(token).is_some(){returnErr(PolicyRejection::ServiceIdentity);}",
         "exactly_one_group(&token.groups,&token.primary_group_sid.0).is_none()",
         "exactly_one_group(&token.groups,LOCAL_SID)",
         "local_group.attributes!=LOCAL_GROUP_ATTRIBUTES",
@@ -20233,6 +20240,8 @@ const keyAgentServiceTokenContract = ({
         `contains_exact_sid_set(&token.restricted_sids,&${expectedRestrictedName})`,
         "validate_privileges(&token.privileges,catalog)?",
       ]) &&
+      compactRust(rustFunctionBlock(policyProduction, "service_identity_rejection")) ===
+        keyAgentServiceIdentityRejectionBody &&
       compactVerifyBaseline.includes(
         "ifbaseline.token_handle_flags!=0{returnErr(PolicyRejection::HandleContinuity);}",
       ) &&
@@ -20351,6 +20360,48 @@ const keyAgentServiceTokenContract = ({
         policy,
       ) &&
       policy.includes("for group_index in 0..3") &&
+      policy.includes("for group_index in 1..3") &&
+      hasOrderedCompactMarkers(rustFunctionBlock(policy, "virtual_account_user_identity_accepts_zero_or_one_exact_service_group"), [
+        "forseparate_groupin[false,true]",
+        "value.observation.groups.retain(|group|group.sid!=service_sid())",
+        "assert!(service_identity_rejection(&value.observation).is_none())",
+        "assert_eq!(verify_fixture_baseline(&value),Ok(()))",
+        "verify_creation_token_revalidation(&value,&value,0,true)",
+        "assert!(diagnostic.policy_detail.is_none())",
+      ]) &&
+      hasOrderedCompactMarkers(rustFunctionBlock(policy, "optional_service_group_still_rejects_duplicates_and_every_attribute_bit_change"), [
+        "forbitin0..32",
+        "value.groups[0].attributes^=1_u32<<bit",
+        "Some(ServiceTokenPolicyDetail::ServiceGroupAttributes)",
+        "value.groups.push(SidEntry{sid:service_sid(),attributes:SERVICE_SID_GROUP_ATTRIBUTES,})",
+        "Some(ServiceTokenPolicyDetail::ServiceGroupMultiplicity)",
+      ]) &&
+      hasOrderedCompactMarkers(rustFunctionBlock(policy, "absent_service_group_preserves_all_other_token_policy_requirements"), [
+        "expected.groups.retain(|group|group.sid!=service_sid())",
+        "letmutations:[fn(&mutServiceTokenObservation);19]",
+        "|token|token.primary_group_sid=token.user_sid.clone()",
+        "formutateinmutations",
+        "forindexin0..4",
+        "missing.restricted_sids.remove(index)",
+        "duplicate.restricted_sids.push(duplicate.restricted_sids[index].clone())",
+        "malformed.restricted_sids[index].sid.0[0]=2",
+        "missing_privilege.privileges.remove(index)",
+        "forattributesin[PRIVILEGE_REMOVED,0x0000_0100]",
+        "forforbiddenincatalog().forbidden",
+      ]) &&
+      hasOrderedCompactMarkers(rustFunctionBlock(policy, "optional_service_group_cannot_bypass_handle_or_complete_baseline_continuity"), [
+        "absent.observation.groups.retain(|group|group.sid!=service_sid())",
+        "for(original,fresh)in[(&present,&absent),(&absent,&present)]",
+        "verify_creation_token_revalidation(original,fresh,0,true)",
+        "Err(PolicyRejection::BaselineContinuity)",
+        "verify_creation_token_revalidation(&absent,&absent,1,true)",
+        "verify_creation_token_revalidation(&absent,&absent,0,false)",
+        "inheritable.token_handle_flags=1",
+        "drifted.observation.identity.modified_id.low_part^=1",
+        "token.verify_creation_principals(&owner,&primary_group).is_ok()",
+        "token.verify_creation_principals(WORLD_SID,&primary_group).is_err()",
+        "token.verify_creation_principals(&owner,WORLD_SID).is_err()",
+      ]) &&
       policy.includes("for index in 0..4") &&
       policy.includes("for index in 0..fixture_catalog.expected.len()") &&
       policy.includes("value.owner_sid = sid(5, &[80, 9, 9, 9, 9, 9]);") &&
@@ -20455,8 +20506,8 @@ const keyAgentServiceTokenMutationProbes = [
   mutateKeyAgentServiceTokenSource(
     keyAgentServiceTokenInputs,
     keyAgentServiceTokenFixturePaths.policy,
-    "    if token.owner_sid != *service_sid {",
-    "    if token.owner_sid == *service_sid {",
+    "    if token.owner_sid != token.user_sid {",
+    "    if token.owner_sid == token.user_sid {",
   ),
   mutateKeyAgentServiceTokenSource(
     keyAgentServiceTokenInputs,
@@ -20543,16 +20594,31 @@ const keyAgentServiceTokenMutationProbes = [
       "Ok(crate::key_agent_service_token::ServiceTokenFixtureProof::for_test())",
     ),
   },
+  ...[
+    ["if service_identity_rejection(token).is_some() {", "if false {"],
+    [".filter(|entry| entry.sid == token.user_sid);", ".filter(|entry| entry.sid == token.primary_group_sid);"],
+    ["if service_groups.next().is_some() {", "if false {"],
+    ["Some(group) if group.attributes != SERVICE_SID_GROUP_ATTRIBUTES => {", "Some(group) if false => {"],
+    ["Some(_) | None => None,", "Some(_) => None, None => Some(ServiceTokenPolicyDetail::ServiceGroupMultiplicity),"],
+    ["for separate_group in [false, true] {", "for separate_group in [true] {"],
+    ["for (original, fresh) in [(&present, &absent), (&absent, &present)] {", "for (original, fresh) in [(&present, &absent)] {"],
+  ].map(([before, after]) => mutateKeyAgentServiceTokenSource(
+    keyAgentServiceTokenInputs,
+    keyAgentServiceTokenFixturePaths.policy,
+    before,
+    after,
+  )),
 ];
 requireInvariant(
   keyAgentServiceTokenContract(keyAgentServiceTokenInputs) &&
+    keyAgentServiceTokenMutationProbes.length === 31 &&
     keyAgentServiceTokenMutationProbes.every(
       (probe) =>
         (probe.sources !== keyAgentServiceTokenInputs.sources ||
           probe.platformService !== keyAgentServiceTokenInputs.platformService) &&
         !keyAgentServiceTokenContract(probe),
     ),
-  "the debug service-token fixture must retain its exact safe-policy/reviewed-sys inventory, fixed virtual account and Session-0 primary restricted shape, exact normal groups and restricted-SID quartet, exact candidate/forbidden privilege sets, bounded zeroized observation, explicit Unverified proof, pre-RUNNING SCM integration, ignored live obligation, and effective negative mutations",
+  "the debug service-token fixture must retain its exact safe-policy/reviewed-sys inventory, fixed virtual TokenUser and Session-0 primary restricted shape, equal owner, zero-or-one separately present service group with exact attributes and duplicate rejection, mandatory primary/Local/logon groups and restricted-SID quartet, exact candidate/forbidden privilege sets, bounded zeroized observation, explicit Unverified proof, full-baseline continuity across both accepted forms, pre-RUNNING SCM integration, ignored live obligation, and all 24 historical plus seven effective regression mutations",
 );
 
 const keyAgentServiceCreationSecurityContract = (source) => {
@@ -24380,7 +24446,8 @@ function keyAgentServiceStartupDiagnosticChecks(inputs) {
       JSON.stringify(tags(sys, "open_current_process_token")) === JSON.stringify(tagged(["TokenOpen", "TokenOpen"])) &&
       JSON.stringify(tags(sys, "token_handle_flags")) === JSON.stringify(tagged(["HandleFlags"])) &&
       JSON.stringify(tags(token, "verify_creation_principals")) === JSON.stringify(tagged(["CreationPrincipals"])),
-    tokenRejectedDetailOnly: fn(token, "policy_rejection_for_baseline") === "fnpolicy_rejection_for_baseline(reason:PolicyRejection,baseline:&ServiceTokenBaseline,)->Self{letmuterror=Self::policy_rejection(reason);ifreason==PolicyRejection::ServiceIdentity{lettoken=&baseline.observation;error.policy_detail=iftoken.owner_sid==token.user_sid{matchexactly_one_group(&token.groups,&token.user_sid.0){None=>Some(ServiceTokenPolicyDetail::ServiceGroupMultiplicity),Some(group)ifgroup.attributes!=SERVICE_SID_GROUP_ATTRIBUTES=>{Some(ServiceTokenPolicyDetail::ServiceGroupAttributes)}Some(_)=>None,}}else{Some(ServiceTokenPolicyDetail::OwnerMismatch)};}error}" &&
+    tokenRejectedDetailOnly: fn(token, "policy_rejection_for_baseline") === "fnpolicy_rejection_for_baseline(reason:PolicyRejection,baseline:&ServiceTokenBaseline,)->Self{letmuterror=Self::policy_rejection(reason);ifreason==PolicyRejection::ServiceIdentity{error.policy_detail=service_identity_rejection(&baseline.observation);}error}" &&
+      fn(token, "service_identity_rejection") === keyAgentServiceIdentityRejectionBody &&
       fn(token, "verify_current_key_agent_service_token_fixture").includes("verify_fixture_baseline(&captured.baseline).map_err(|reason|{ServiceTokenFixtureError::policy_rejection_for_baseline(reason,&captured.baseline)})?") &&
       fn(token, "revalidate_creation_token").includes(".map_err(|reason|{ServiceTokenFixtureError::policy_rejection_for_baseline(reason,&recaptured.captured.baseline,)})"),
     exactDebugAccessorGates: raw(token).includes(`${gate}pub(crate)constfnstartup_diagnostic_code(&self)->u32`) &&
@@ -24445,7 +24512,7 @@ const keyAgentServiceStartupDiagnosticMutations = [
   ["wrong capture stage", "sys", "error.at_stage(ServiceTokenCaptureStage::ThreadBefore)", "error.at_stage(ServiceTokenCaptureStage::ThreadAfter)"],
   ["missing identity stage", "sys", ".at_stage(ServiceTokenCaptureStage::IdentityContinuity)", ".at_stage(ServiceTokenCaptureStage::Unspecified)"],
   ["detail only after rejection", "token", "if reason == PolicyRejection::ServiceIdentity {", "if true {"],
-  ["detail exact owner", "token", "error.policy_detail = if token.owner_sid == token.user_sid {", "error.policy_detail = if token.owner_sid != token.user_sid {"],
+  ["detail exact owner", "token", "if token.owner_sid != token.user_sid {", "if token.owner_sid == token.user_sid {"],
   ["capture policy remains rejected", "token", "verify_fixture_baseline(&captured.baseline).map_err(|reason| {", "verify_fixture_baseline(&captured.baseline).or_else(|reason| {"],
   ["release accessor gate", "token", "        debug_assertions\n    ))]\n    pub(crate) const fn startup_diagnostic_code", "        any(debug_assertions, not(debug_assertions))\n    ))]\n    pub(crate) const fn startup_diagnostic_code"],
   ["RPC code mapping", "rpc", "Self::BindEndpoint => 0x2312,", "Self::BindEndpoint => 0x2313,"],
@@ -48484,7 +48551,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "2f6ee96f41cd2b3c718583d02ead80f2e23a75ef9af10826b66de933f6216bb5";
+  "4f7aee95baf250242edf9eddf2d17fe0ebed0a00113fe6ebf21e66d910867442";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,

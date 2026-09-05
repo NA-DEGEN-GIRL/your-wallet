@@ -52,7 +52,9 @@ const GROUP_ENABLED: u32 = 0x0000_0004;
 const GROUP_OWNER: u32 = 0x0000_0008;
 const GROUP_LOGON_ID: u32 = 0xC000_0000;
 
-// SERVICE_SID_INFO documents these exact normal-group attributes.
+// SERVICE_SID_INFO documents these attributes if a separate normal-group
+// service SID is present. TokenUser is already the OS-resolved fixed virtual
+// account; TOKEN_OWNER permits that user SID without a redundant group entry.
 const SERVICE_SID_GROUP_ATTRIBUTES: u32 = GROUP_ENABLED_BY_DEFAULT | GROUP_OWNER;
 const SERVICE_LOGON_GROUP_ATTRIBUTES: u32 =
     GROUP_MANDATORY | GROUP_ENABLED_BY_DEFAULT | GROUP_ENABLED | GROUP_LOGON_ID;
@@ -305,21 +307,10 @@ impl ServiceTokenFixtureError {
         baseline: &ServiceTokenBaseline,
     ) -> Self {
         let mut error = Self::policy_rejection(reason);
-        // Classification reads the already captured failure only. It does not
-        // replace, rerun with relaxed predicates, or accept a policy rejection.
+        // Classify the already rejected baseline with the same identity rule.
+        // This does not query another token or convert a rejection to success.
         if reason == PolicyRejection::ServiceIdentity {
-            let token = &baseline.observation;
-            error.policy_detail = if token.owner_sid == token.user_sid {
-                match exactly_one_group(&token.groups, &token.user_sid.0) {
-                    None => Some(ServiceTokenPolicyDetail::ServiceGroupMultiplicity),
-                    Some(group) if group.attributes != SERVICE_SID_GROUP_ATTRIBUTES => {
-                        Some(ServiceTokenPolicyDetail::ServiceGroupAttributes)
-                    }
-                    Some(_) => None,
-                }
-            } else {
-                Some(ServiceTokenPolicyDetail::OwnerMismatch)
-            };
+            error.policy_detail = service_identity_rejection(&baseline.observation);
         }
         error
     }
@@ -711,12 +702,7 @@ fn verify_fixture_policy(
     }
 
     let service_sid = &token.user_sid;
-    if token.owner_sid != *service_sid {
-        return Err(PolicyRejection::ServiceIdentity);
-    }
-    let service_group =
-        exactly_one_group(&token.groups, &service_sid.0).ok_or(PolicyRejection::ServiceIdentity)?;
-    if service_group.attributes != SERVICE_SID_GROUP_ATTRIBUTES {
+    if service_identity_rejection(token).is_some() {
         return Err(PolicyRejection::ServiceIdentity);
     }
     if exactly_one_group(&token.groups, &token.primary_group_sid.0).is_none() {
@@ -750,6 +736,30 @@ fn verify_fixture_policy(
     validate_privileges(&token.privileges, catalog)?;
 
     Ok(())
+}
+
+fn service_identity_rejection(token: &ServiceTokenObservation) -> Option<ServiceTokenPolicyDetail> {
+    // capture_service_token_baseline already binds TokenUser to the exact
+    // OS-resolved virtual service account. That principal may own objects as
+    // TokenUser; it need not also be represented in TokenGroups. Keep owner
+    // equality, and validate rather than ignore any separately present group.
+    if token.owner_sid != token.user_sid {
+        return Some(ServiceTokenPolicyDetail::OwnerMismatch);
+    }
+    let mut service_groups = token
+        .groups
+        .iter()
+        .filter(|entry| entry.sid == token.user_sid);
+    let first = service_groups.next();
+    if service_groups.next().is_some() {
+        return Some(ServiceTokenPolicyDetail::ServiceGroupMultiplicity);
+    }
+    match first {
+        Some(group) if group.attributes != SERVICE_SID_GROUP_ATTRIBUTES => {
+            Some(ServiceTokenPolicyDetail::ServiceGroupAttributes)
+        }
+        Some(_) | None => None,
+    }
 }
 
 fn exactly_one_group<'entry>(groups: &'entry [SidEntry], sid: &[u8]) -> Option<&'entry SidEntry> {
@@ -1057,7 +1067,8 @@ mod tests {
         value.primary_group_sid.0[0] = 2;
         rejected.push(value);
 
-        for group_index in 0..3 {
+        // The virtual-account user need not be repeated as normal group 0.
+        for group_index in 1..3 {
             let mut value = observation();
             value.groups.remove(group_index);
             rejected.push(value);
@@ -1085,6 +1096,206 @@ mod tests {
                 .iter()
                 .all(|value| verify_fixture_policy(value, &catalog()).is_err())
         );
+    }
+
+    #[test]
+    fn virtual_account_user_identity_accepts_zero_or_one_exact_service_group() {
+        for separate_group in [false, true] {
+            let mut value = baseline();
+            if !separate_group {
+                value
+                    .observation
+                    .groups
+                    .retain(|group| group.sid != service_sid());
+            }
+            assert!(service_identity_rejection(&value.observation).is_none());
+            assert_eq!(verify_fixture_baseline(&value), Ok(()));
+            assert_eq!(
+                verify_creation_token_revalidation(&value, &value, 0, true),
+                Ok(())
+            );
+            let diagnostic = ServiceTokenFixtureError::policy_rejection_for_baseline(
+                PolicyRejection::ServiceIdentity,
+                &value,
+            );
+            assert!(diagnostic.policy_detail.is_none());
+        }
+        assert_eq!(
+            SERVICE_TOKEN_POLICY_COMPLETENESS,
+            ServiceTokenPolicyCompleteness::Unverified
+        );
+    }
+
+    #[test]
+    fn optional_service_group_still_rejects_duplicates_and_every_attribute_bit_change() {
+        for bit in 0..32 {
+            let mut value = observation();
+            value.groups[0].attributes ^= 1_u32 << bit;
+            assert!(matches!(
+                service_identity_rejection(&value),
+                Some(ServiceTokenPolicyDetail::ServiceGroupAttributes)
+            ));
+            assert_eq!(
+                verify_fixture_policy(&value, &catalog()),
+                Err(PolicyRejection::ServiceIdentity)
+            );
+            value.groups.push(SidEntry {
+                sid: service_sid(),
+                attributes: SERVICE_SID_GROUP_ATTRIBUTES,
+            });
+            assert!(matches!(
+                service_identity_rejection(&value),
+                Some(ServiceTokenPolicyDetail::ServiceGroupMultiplicity)
+            ));
+            assert_eq!(
+                verify_fixture_policy(&value, &catalog()),
+                Err(PolicyRejection::ServiceIdentity)
+            );
+        }
+    }
+
+    #[test]
+    fn absent_service_group_preserves_all_other_token_policy_requirements() {
+        let mut expected = observation();
+        expected.groups.retain(|group| group.sid != service_sid());
+        assert_eq!(verify_fixture_policy(&expected, &catalog()), Ok(()));
+        let mutations: [fn(&mut ServiceTokenObservation); 19] = [
+            |token| token.token_is_primary = false,
+            |token| token.session_id = 1,
+            |token| token.app_container = true,
+            |token| token.ui_access = true,
+            |token| token.has_restrictions = false,
+            |token| token.user_sid = sid(5, &[80, 9, 9, 9, 9, 9]),
+            |token| token.user_sid.0[0] = 2,
+            |token| token.owner_sid = SidBytes(WORLD_SID.to_vec()),
+            |token| token.owner_sid.0[0] = 2,
+            |token| token.primary_group_sid = SidBytes(WORLD_SID.to_vec()),
+            |token| token.primary_group_sid.0[0] = 2,
+            // Primary group still must be a normal group, unlike owner.
+            |token| token.primary_group_sid = token.user_sid.clone(),
+            |token| {
+                token.groups.remove(0);
+            },
+            |token| {
+                token.groups.remove(1);
+            },
+            |token| token.groups.push(token.groups[0].clone()),
+            |token| token.groups.push(token.groups[1].clone()),
+            |token| token.groups[0].attributes ^= GROUP_ENABLED,
+            |token| token.groups[1].attributes ^= GROUP_ENABLED,
+            |token| {
+                token.groups.push(SidEntry {
+                    sid: sid(5, &[5, 30, 40]),
+                    attributes: GROUP_LOGON_ID,
+                });
+            },
+        ];
+        for mutate in mutations {
+            let mut rejected = expected.clone();
+            mutate(&mut rejected);
+            assert!(verify_fixture_policy(&rejected, &catalog()).is_err());
+        }
+        for index in 0..4 {
+            let mut missing = expected.clone();
+            missing.restricted_sids.remove(index);
+            assert_eq!(
+                verify_fixture_policy(&missing, &catalog()),
+                Err(PolicyRejection::RestrictedSidSet)
+            );
+            let mut duplicate = expected.clone();
+            duplicate
+                .restricted_sids
+                .push(duplicate.restricted_sids[index].clone());
+            assert_eq!(
+                verify_fixture_policy(&duplicate, &catalog()),
+                Err(PolicyRejection::RestrictedSidSet)
+            );
+            let mut malformed = expected.clone();
+            malformed.restricted_sids[index].sid.0[0] = 2;
+            assert_eq!(
+                verify_fixture_policy(&malformed, &catalog()),
+                Err(PolicyRejection::RestrictedSidSet)
+            );
+            let mut missing_privilege = expected.clone();
+            missing_privilege.privileges.remove(index);
+            assert_eq!(
+                verify_fixture_policy(&missing_privilege, &catalog()),
+                Err(PolicyRejection::Privileges)
+            );
+            for attributes in [PRIVILEGE_REMOVED, 0x0000_0100] {
+                let mut invalid_privilege = expected.clone();
+                invalid_privilege.privileges[index].attributes = attributes;
+                assert_eq!(
+                    verify_fixture_policy(&invalid_privilege, &catalog()),
+                    Err(PolicyRejection::Privileges)
+                );
+            }
+        }
+        for forbidden in catalog().forbidden {
+            let mut rejected = expected.clone();
+            rejected.privileges[0].luid = forbidden.luid;
+            assert_eq!(
+                verify_fixture_policy(&rejected, &catalog()),
+                Err(PolicyRejection::Privileges)
+            );
+        }
+    }
+
+    #[test]
+    fn optional_service_group_cannot_bypass_handle_or_complete_baseline_continuity() {
+        let present = baseline();
+        let mut absent = present.clone();
+        absent
+            .observation
+            .groups
+            .retain(|group| group.sid != service_sid());
+        for (original, fresh) in [(&present, &absent), (&absent, &present)] {
+            assert_eq!(verify_fixture_baseline(original), Ok(()));
+            assert_eq!(verify_fixture_baseline(fresh), Ok(()));
+            assert_eq!(
+                verify_creation_token_revalidation(original, fresh, 0, true),
+                Err(PolicyRejection::BaselineContinuity)
+            );
+        }
+        assert_eq!(
+            verify_creation_token_revalidation(&absent, &absent, 1, true),
+            Err(PolicyRejection::HandleContinuity)
+        );
+        assert_eq!(
+            verify_creation_token_revalidation(&absent, &absent, 0, false),
+            Err(PolicyRejection::HandleContinuity)
+        );
+        let mut inheritable = absent.clone();
+        inheritable.token_handle_flags = 1;
+        assert_eq!(
+            verify_fixture_baseline(&inheritable),
+            Err(PolicyRejection::HandleContinuity)
+        );
+        let mut drifted = absent.clone();
+        drifted.observation.identity.modified_id.low_part ^= 1;
+        assert_eq!(
+            verify_creation_token_revalidation(&absent, &drifted, 0, true),
+            Err(PolicyRejection::BaselineContinuity)
+        );
+        let mut proof = fixture_proof();
+        proof.baseline = absent;
+        let owner = proof.baseline.observation.owner_sid.0.clone();
+        let primary_group = proof.baseline.observation.primary_group_sid.0.clone();
+        let token = VerifiedServiceCreationToken {
+            proof: &mut proof,
+            _not_sync: PhantomData,
+        };
+        assert!(
+            token
+                .verify_creation_principals(&owner, &primary_group)
+                .is_ok()
+        );
+        assert!(
+            token
+                .verify_creation_principals(WORLD_SID, &primary_group)
+                .is_err()
+        );
+        assert!(token.verify_creation_principals(&owner, WORLD_SID).is_err());
     }
 
     #[test]
@@ -1514,16 +1725,6 @@ mod tests {
         let mut value = baseline();
         value.observation.owner_sid = SidBytes(WORLD_SID.to_vec());
         cases.push((value, ServiceTokenPolicyDetail::OwnerMismatch, 0x2191));
-        let mut value = baseline();
-        value
-            .observation
-            .groups
-            .retain(|group| group.sid != service_sid());
-        cases.push((
-            value,
-            ServiceTokenPolicyDetail::ServiceGroupMultiplicity,
-            0x2192,
-        ));
         let mut value = baseline();
         value.observation.groups.push(SidEntry {
             sid: service_sid(),

@@ -184,8 +184,9 @@ the `0x21xx` range, stop-event creation uses `0x2201`, and RPC startup categorie
 use `0x23xx`. The exact mappings and negative tests are maintained with the
 token, service and RPC implementations. These are fixed enum mappings, not raw
 Windows errors, identity values, token attributes, endpoint contents or stack
-traces. Ordinary/status-only/release behavior, all acceptance predicates, the
-four candidate privileges and retained-runtime cleanup rules remain unchanged.
+traces. Adding these diagnostic codes did not change ordinary/status-only/release
+behavior, acceptance predicates, the four candidate privileges or retained-runtime
+cleanup rules. The subsequent narrowly scoped token-policy correction is below.
 A retained/uncertain RPC runtime must never be converted into a clean STOPPED
 diagnostic merely to obtain a code.
 
@@ -198,6 +199,34 @@ overwrite the protected installation, adopt a partial fixture, expand rights,
 or repeatedly restart an unchanged failing binary. Removed installation files
 are only the known debug executables/manifests; the preserved workspace candidate
 allows review of the prior bytes. No wallet storage is part of this fixture.
+
+### Virtual-account identity versus normal groups
+
+The original token fixture incorrectly required the already verified service
+`TokenUser` SID to appear separately exactly once in `TokenGroups`. Windows
+models the [account identity](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-token_user)
+separately from [normal groups](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-token_groups),
+and [TokenOwner](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-token_owner)
+may name that user directly. Thus object ownership does not require a redundant
+owner-capable normal group. This does not establish which representation every
+supported Windows release actually returns.
+
+The corrected debug fixture allows zero such normal-group entries, or one with
+the original exact attributes. More than one entry or incorrect attributes on a
+present entry still fail closed. The fixed OS-resolved `TokenUser`, matching
+`TokenOwner`, full restricted-SID quartet, privilege set, Session-0/token shape,
+Local/logon groups and complete baseline/handle revalidation remain required.
+[TokenPrimaryGroup](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-token_primary_group)
+still must occur exactly once in normal groups: unlike owner, it is not replaced
+with a user-or-group rule. No captured entry is filtered out or deduplicated.
+
+The observed older diagnostic code `0x2192` combined zero and duplicate entries;
+it did not prove absence rather than duplication. In the corrected build the
+same closed code now means duplicate service-group entries. Absent entries alone
+are not an error. This fixes the false-negative policy case; an installed-service
+run is still required to establish whether this was the observed host's case and
+whether subsequent startup checks pass. Neither new tests nor this correction
+enable production policy or signing.
 
 ### Automated verification
 

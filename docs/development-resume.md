@@ -15,9 +15,18 @@ the unchanged binary cannot distinguish token observation/policy from RPC
 startup. The debug-only, data-free startup-code refinement is implemented;
 security predicates and privileges are unchanged. The old workspace candidate
 is preserved in `artifacts/service-probe-candidate-before-startup-diagnostics-d1e1bbd`.
-A fresh candidate is prepared and independently verified, and repository tests
-plus the final full architecture scan passed. The installed service still has
-the older bytes; an explicit elevated operator replacement is required next.
+That candidate was prepared and independently verified, and repository tests
+plus the final full architecture scan passed. The user subsequently reported
+Remove PASS, Install PASS, then Start failure. The newest fixed-service SCM 7024
+event is service-specific `0x2192` (8594): the service-identity normal-group
+multiplicity check failed. The old code merges absent and duplicate entries;
+neither case is separately established by this event. A narrow source correction
+now accepts a fixed virtual-account user without requiring a redundant normal
+group, while rejecting duplicate groups and bad present-group attributes.
+The correction and its fresh candidate are prepared; repository tests and the
+single final full architecture scan passed. The next step requires applying the
+corrected candidate through the explicit elevated operator workflow. Do not retry
+the currently installed diagnostic-only binary unchanged.
 
 ## Saved implementation
 
@@ -57,15 +66,18 @@ explicitly not release evidence. Helper feature tests 69 and Approval UI tests
 
 ## Resume here
 
-1. Elevated Inspect passed and strict Readback then passed, but Start produced
-   SCM service-specific INITIALIZATION_FAILURE=1. Integration verification of the
-   closed debug startup categories passed. Replace the installed debug fixture
-   with the newly prepared candidate. Any operator replacement must use the existing
+1. The user replaced the original fixture with the diagnostic build: Remove and
+   Install passed, but Start reported service-specific `0x2192`. Review and full
+   verification of the virtual-account redundant-group correction passed. Use
+   the already prepared corrected candidate for explicit operator replacement.
+   Any operator replacement must use the existing
    stopped, ownership-verified Remove/Install workflow, never overwrite or force
    adoption. Inspect completion is not startup evidence. The current candidate is at
    `artifacts/service-probe-candidate`; do not rerun prepare against that existing
-   directory or overwrite it. Preparation was non-elevated and includes the
-   startup categories and final watchdog. The prior candidate is preserved in
+   directory or overwrite it. It now contains the group-policy correction.
+   The diagnostic-only build is preserved in
+   `artifacts/service-probe-candidate-before-virtual-account-group-fix-691a7fc`.
+   The original candidate is preserved in
    `artifacts/service-probe-candidate-before-startup-diagnostics-d1e1bbd`.
    A later runtime source change requires a newly reviewed build.
 2. Only after diagnosing the retained state and obtaining verified installed
@@ -242,3 +254,70 @@ chain. Obtain the user's complete output, then use the fixed service's bounded
 SCM event scope to interpret any new service-specific startup code. Do not treat
 the generic operator failure line itself as the detailed diagnosis or retry a
 failed action unchanged.
+
+## Virtual-account redundant-group correction
+
+The user's subsequent exact Remove/Install/Start chain produced Remove PASS and
+Install PASS, then Start failure. The agent's query-only fixed-service System
+log inspection found the newest SCM 7024 service-specific code `0x2192` (8594),
+followed by its installation event and the older generic-code failure. This
+establishes rejection by the service-identity group-count rule, not successful
+evaluation of later group/restricted-SID/privilege policy checks. The old code
+combined zero and multiple matching entries, so absence on this host remains
+an inference, not captured evidence.
+
+The corrected shared `service_identity_rejection` helper accepts zero redundant
+normal service-group entries or one with the original exact attributes, while
+rejecting duplicates and incorrect present-group attributes. The native capture
+still matches TokenUser to the exact OS-resolved fixed virtual account; owner
+must equal that user. Microsoft distinguishes TokenUser from normal groups and
+permits a user SID as TokenOwner. Descriptor creation still copies and validates
+the actual owner and primary-group bytes against the retained complete baseline.
+The primary group still must occur exactly once in normal groups. The strict
+restricted-SID quartet, candidate privileges, Local/logon groups, primary
+Session-0 shape, no impersonation, same token object and complete baseline
+continuity are unchanged. No raw token data, new native API, new privilege,
+account fallback, production policy or signing path was introduced.
+See the rationale and official references in `scripts/service-probe/README.md`.
+
+Independent security review found no blocker. Four new tests cover both accepted
+forms, all 32 single-bit attribute changes, mixed duplicates, 19 absent-branch
+scalar/group mutations, missing/duplicate/malformed restricted identities,
+missing/invalid/forbidden privileges, primary-group-as-user rejection, handle
+continuity, descriptor principals and bidirectional present/absent baseline
+drift. The intentional old missing-service-group negative became positive;
+all other historical rejection conditions remain. The acceptance and diagnostic
+classification use the same helper, so corrected `0x2192` means duplicates only.
+
+The prior diagnostic candidate was independently held/read back, renamed to
+`artifacts/service-probe-candidate-before-virtual-account-group-fix-691a7fc`
+only after exact path/scope/absent-destination checks, and read back again.
+Nothing was deleted. Unelevated preparation passed with native exit 0, followed
+by independent strict single-link/size/hash/canonical-inventory checks for all
+four fresh executables. The corrected service bytes differ from the preserved
+diagnostic bytes. The agent did not remove/install/start the real service.
+
+Focused LPAC token tests passed 20 (including three sys tests), with one existing
+installed-context test ignored. Release binary tests passed 15, and all four
+release fail-closed entrypoint checks passed. Workspace fmt/lint/typecheck and
+privacy passed. Separate release-policy tests passed 66 JavaScript cases and
+both exact PowerShell sentinels. Full repository tests passed with native exit 0:
+platform 989 passed/44 explicitly ignored, demo 266, extension 33, helper 69,
+native harness 139, preparation/operator CLI 14 + 6, actual architecture CLI 24.
+The frozen no-argument architecture scan passed with native exit 0 in 353.17
+seconds, with progress through 672 checks and final PASS. Exactly one full run
+was needed: affected token checks and all 24 historical plus seven new mutations,
+all 25 diagnostic mutations and the exact 182-file compilation closure were
+checked before it. Scanner SHA256:
+`0a7a1621373b099f4e1df72e0460521c0c70b0272fc982b94588a89e5691a7f4`.
+Do not claim real service start or release success from these checks.
+
+Only an explicit elevated ownership-verified stopped Remove/Install/Start chain
+can apply the corrected candidate. Each next action requires the previous native
+exit 0; uncertain state is retained. The installer does not overwrite or adopt
+partial fixtures, and no wallet storage is in its fixed targets. The agent
+remains non-elevated and has not run this chain. After application, read the
+fixed-service scoped System log if Start still fails: `0x2192` on the new build
+would mean actual duplicates, whereas the prior code conflated absent/duplicate.
+Do not relax duplicate, primary-group, restricted-SID or privilege checks merely
+to make the next stage pass.
