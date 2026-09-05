@@ -170,6 +170,37 @@ denied. Do not interpret such omission as permission to reinstall. See Microsoft
 
 ## Verification boundaries
 
+### Debug startup failure evidence
+
+A passed Readback followed by a failed Start does not by itself identify the
+failing boundary. The service may have started executing and rejected its own token or
+RPC initialization before publishing RUNNING. SCM event 7024 reports a
+**service-specific** code; the older binary's code 1 means its own generic
+INITIALIZATION_FAILURE, not Win32 error 1.
+
+The explicit debug LPAC service preserves closed, data-free failure categories
+through the existing SCM status channel. Token capture/policy categories use
+the `0x21xx` range, stop-event creation uses `0x2201`, and RPC startup categories
+use `0x23xx`. The exact mappings and negative tests are maintained with the
+token, service and RPC implementations. These are fixed enum mappings, not raw
+Windows errors, identity values, token attributes, endpoint contents or stack
+traces. Ordinary/status-only/release behavior, all acceptance predicates, the
+four candidate privileges and retained-runtime cleanup rules remain unchanged.
+A retained/uncertain RPC runtime must never be converted into a clean STOPPED
+diagnostic merely to obtain a code.
+
+Changing source does not update the installed executable. Preserve the old
+workspace candidate, prepare a fresh candidate without elevation, and verify
+it before an explicit operator replacement. Use only the existing exact stopped
+ownership-verified Remove, followed by Install only if removal succeeded, then
+Start only if installation succeeded. Each failure stops the chain. Do not
+overwrite the protected installation, adopt a partial fixture, expand rights,
+or repeatedly restart an unchanged failing binary. Removed installation files
+are only the known debug executables/manifests; the preserved workspace candidate
+allows review of the prior bytes. No wallet storage is part of this fixture.
+
+### Automated verification
+
 ```powershell
 powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/service-probe/native.test.ps1
 node --test scripts/service-probe/operate.test.mjs

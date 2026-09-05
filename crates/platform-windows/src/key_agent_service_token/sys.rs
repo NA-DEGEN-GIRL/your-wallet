@@ -33,7 +33,8 @@ use super::{
     ForbiddenPrivilegeLuid, KEY_AGENT_SERVICE_FIXTURE_PRIVILEGES,
     KEY_AGENT_SERVICE_FORBIDDEN_PRIVILEGES, KEY_AGENT_VIRTUAL_SERVICE_ACCOUNT, LuidValue,
     PrivilegeCatalog, PrivilegeEntry, RecapturedServiceToken, ServiceTokenBaseline,
-    ServiceTokenFixtureError, ServiceTokenObservation, SidBytes, SidEntry, TokenIdentityBaseline,
+    ServiceTokenCaptureStage, ServiceTokenFixtureError, ServiceTokenObservation, SidBytes,
+    SidEntry, TokenIdentityBaseline,
 };
 
 const MIN_BINARY_SID_BYTES: usize = 8;
@@ -45,10 +46,12 @@ const CURRENT_SERVICE_TOKEN_ACCESS: windows::Win32::Security::TOKEN_ACCESS_MASK 
 
 pub(super) fn capture_current_service_token()
 -> Result<CapturedServiceToken, ServiceTokenFixtureError> {
-    reject_thread_impersonation()?;
+    reject_thread_impersonation()
+        .map_err(|error| error.at_stage(ServiceTokenCaptureStage::ThreadBefore))?;
     let (token, token_handle_flags) = open_current_process_token()?;
     let baseline = capture_service_token_baseline(token.raw(), token_handle_flags)?;
-    reject_thread_impersonation()?;
+    reject_thread_impersonation()
+        .map_err(|error| error.at_stage(ServiceTokenCaptureStage::ThreadAfter))?;
 
     Ok(CapturedServiceToken { token, baseline })
 }
@@ -63,17 +66,22 @@ pub(super) fn capture_current_service_token()
 pub(super) fn recapture_current_service_token(
     retained: &OwnedToken,
 ) -> Result<RecapturedServiceToken, ServiceTokenFixtureError> {
-    reject_thread_impersonation()?;
-    let retained_handle_flags = token_handle_flags(retained)?;
+    reject_thread_impersonation()
+        .map_err(|error| error.at_stage(ServiceTokenCaptureStage::ThreadBefore))?;
+    let retained_handle_flags = token_handle_flags(retained)
+        .map_err(|error| error.at_stage(ServiceTokenCaptureStage::RetainedHandleFlags))?;
     let mut baseline = capture_service_token_baseline(retained.raw(), retained_handle_flags)?;
     let (token, fresh_handle_flags) = open_current_process_token()?;
     let same_token_object = same_kernel_object(retained.raw(), token.raw());
-    let fresh_identity = token_identity_baseline(token.raw())?;
+    let fresh_identity = token_identity_baseline(token.raw())
+        .map_err(|error| error.at_stage(ServiceTokenCaptureStage::FreshIdentity))?;
     if fresh_identity != baseline.observation.identity {
-        return Err(ServiceTokenFixtureError::policy());
+        return Err(ServiceTokenFixtureError::policy()
+            .at_stage(ServiceTokenCaptureStage::RecaptureIdentityContinuity));
     }
     baseline.token_handle_flags = fresh_handle_flags;
-    reject_thread_impersonation()?;
+    reject_thread_impersonation()
+        .map_err(|error| error.at_stage(ServiceTokenCaptureStage::ThreadAfter))?;
 
     Ok(RecapturedServiceToken {
         captured: CapturedServiceToken { token, baseline },
@@ -86,27 +94,52 @@ fn capture_service_token_baseline(
     token: HANDLE,
     token_handle_flags: u32,
 ) -> Result<ServiceTokenBaseline, ServiceTokenFixtureError> {
-    let service_sid = resolve_fixed_service_sid()?;
-    let catalog = resolve_privilege_catalog()?;
+    let service_sid = resolve_fixed_service_sid()
+        .map_err(|error| error.at_stage(ServiceTokenCaptureStage::ServiceSid))?;
+    let catalog = resolve_privilege_catalog()
+        .map_err(|error| error.at_stage(ServiceTokenCaptureStage::PrivilegeCatalog))?;
 
-    let identity_before = token_identity_baseline(token)?;
-    let token_is_primary = token_type(token)? == TokenPrimary;
-    let session_id = token_u32(token, TokenSessionId)?;
-    let app_container = exact_boolean(token_u32(token, TokenIsAppContainer)?)?;
-    let ui_access = exact_boolean(token_u32(token, TokenUIAccess)?)?;
-    let has_restrictions = token_has_restrictions(token)?;
-    let user_sid = token_user_sid(token)?;
+    let identity_before = token_identity_baseline(token)
+        .map_err(|error| error.at_stage(ServiceTokenCaptureStage::IdentityBefore))?;
+    let token_is_primary = token_type(token)
+        .map_err(|error| error.at_stage(ServiceTokenCaptureStage::TokenType))?
+        == TokenPrimary;
+    let session_id = token_u32(token, TokenSessionId)
+        .map_err(|error| error.at_stage(ServiceTokenCaptureStage::Session))?;
+    let app_container = exact_boolean(
+        token_u32(token, TokenIsAppContainer)
+            .map_err(|error| error.at_stage(ServiceTokenCaptureStage::AppContainer))?,
+    )
+    .map_err(|error| error.at_stage(ServiceTokenCaptureStage::AppContainer))?;
+    let ui_access = exact_boolean(
+        token_u32(token, TokenUIAccess)
+            .map_err(|error| error.at_stage(ServiceTokenCaptureStage::UiAccess))?,
+    )
+    .map_err(|error| error.at_stage(ServiceTokenCaptureStage::UiAccess))?;
+    let has_restrictions = token_has_restrictions(token)
+        .map_err(|error| error.at_stage(ServiceTokenCaptureStage::Restrictions))?;
+    let user_sid =
+        token_user_sid(token).map_err(|error| error.at_stage(ServiceTokenCaptureStage::UserSid))?;
     if user_sid != service_sid {
-        return Err(ServiceTokenFixtureError::policy());
+        return Err(
+            ServiceTokenFixtureError::policy().at_stage(ServiceTokenCaptureStage::UserIdentity)
+        );
     }
-    let owner_sid = token_owner_sid(token)?;
-    let primary_group_sid = token_primary_group_sid(token)?;
-    let groups = token_sid_entries(token, TokenGroups)?;
-    let restricted_sids = token_sid_entries(token, TokenRestrictedSids)?;
-    let privileges = token_privileges(token)?;
-    let identity = token_identity_baseline(token)?;
+    let owner_sid = token_owner_sid(token)
+        .map_err(|error| error.at_stage(ServiceTokenCaptureStage::OwnerSid))?;
+    let primary_group_sid = token_primary_group_sid(token)
+        .map_err(|error| error.at_stage(ServiceTokenCaptureStage::PrimaryGroupSid))?;
+    let groups = token_sid_entries(token, TokenGroups)
+        .map_err(|error| error.at_stage(ServiceTokenCaptureStage::Groups))?;
+    let restricted_sids = token_sid_entries(token, TokenRestrictedSids)
+        .map_err(|error| error.at_stage(ServiceTokenCaptureStage::RestrictedSids))?;
+    let privileges = token_privileges(token)
+        .map_err(|error| error.at_stage(ServiceTokenCaptureStage::Privileges))?;
+    let identity = token_identity_baseline(token)
+        .map_err(|error| error.at_stage(ServiceTokenCaptureStage::IdentityAfter))?;
     if identity != identity_before {
-        return Err(ServiceTokenFixtureError::policy());
+        return Err(ServiceTokenFixtureError::policy()
+            .at_stage(ServiceTokenCaptureStage::IdentityContinuity));
     }
 
     Ok(ServiceTokenBaseline {
@@ -235,9 +268,12 @@ fn open_current_process_token() -> Result<(OwnedToken, u32), ServiceTokenFixture
             &raw mut token,
         )
     }
-    .map_err(|_| ServiceTokenFixtureError::operating_system())?;
+    .map_err(|_| {
+        ServiceTokenFixtureError::operating_system().at_stage(ServiceTokenCaptureStage::TokenOpen)
+    })?;
     if invalid_handle(token) {
-        return Err(ServiceTokenFixtureError::operating_system());
+        return Err(ServiceTokenFixtureError::operating_system()
+            .at_stage(ServiceTokenCaptureStage::TokenOpen));
     }
     let owned = OwnedToken::new(token);
     let flags = token_handle_flags(&owned)?;
@@ -247,8 +283,9 @@ fn open_current_process_token() -> Result<(OwnedToken, u32), ServiceTokenFixture
 fn token_handle_flags(token: &OwnedToken) -> Result<u32, ServiceTokenFixtureError> {
     let mut flags = u32::MAX;
     // SAFETY: the owned token is live and flags is one initialized scalar.
-    unsafe { GetHandleInformation(token.raw(), &raw mut flags) }
-        .map_err(|_| ServiceTokenFixtureError::operating_system())?;
+    unsafe { GetHandleInformation(token.raw(), &raw mut flags) }.map_err(|_| {
+        ServiceTokenFixtureError::operating_system().at_stage(ServiceTokenCaptureStage::HandleFlags)
+    })?;
     Ok(flags)
 }
 

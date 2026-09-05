@@ -195,6 +195,86 @@ impl fmt::Display for StatusRpcWorkerError {
 
 impl std::error::Error for StatusRpcWorkerError {}
 
+/// Closed startup locations; no native error or runtime identity is retained.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RpcStartupStage {
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    Coordinator,
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    Context,
+    SecurityDescriptor,
+    InterfaceSpec,
+    PublishContext,
+    RegisterAuthentication,
+    BindEndpoint,
+    InstallHandler,
+    RegisterInterface,
+    Listen,
+}
+
+impl From<lifecycle::StartStage> for RpcStartupStage {
+    fn from(stage: lifecycle::StartStage) -> Self {
+        match stage {
+            lifecycle::StartStage::RegisterAuthentication => Self::RegisterAuthentication,
+            lifecycle::StartStage::BindEndpoint => Self::BindEndpoint,
+            lifecycle::StartStage::InstallHandler => Self::InstallHandler,
+            lifecycle::StartStage::RegisterInterface => Self::RegisterInterface,
+            lifecycle::StartStage::Listen => Self::Listen,
+        }
+    }
+}
+
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+impl RpcStartupStage {
+    pub(super) const fn startup_diagnostic_code(self) -> u32 {
+        match self {
+            Self::Coordinator => 0x2301,
+            Self::Context => 0x2302,
+            Self::SecurityDescriptor => 0x2303,
+            Self::InterfaceSpec => 0x2304,
+            Self::PublishContext => 0x2305,
+            Self::RegisterAuthentication => 0x2311,
+            Self::BindEndpoint => 0x2312,
+            Self::InstallHandler => 0x2313,
+            Self::RegisterInterface => 0x2314,
+            Self::Listen => 0x2315,
+        }
+    }
+}
+
+/// Separate startup-only transport so status callers keep their existing error contract.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RpcWorkerStartupError {
+    Boundary(RpcStartupStage),
+    RuntimeStateRetained,
+}
+
+impl RpcWorkerStartupError {
+    const fn into_status_error(self) -> StatusRpcWorkerError {
+        match self {
+            Self::Boundary(_) => StatusRpcWorkerError::Unavailable,
+            Self::RuntimeStateRetained => StatusRpcWorkerError::RuntimeStateRetained,
+        }
+    }
+}
+
+impl fmt::Display for RpcWorkerStartupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("key agent status RPC fixture is unavailable")
+    }
+}
+
+impl std::error::Error for RpcWorkerStartupError {}
+
 struct ServerContext {
     admission: AtomicBool,
     fatal: AtomicBool,
@@ -511,7 +591,8 @@ pub(super) struct AdmissionClosedStatusRpcWorker {
 impl StatusRpcWorker {
     pub(super) fn start() -> Result<Self, StatusRpcWorkerError> {
         let context = Arc::new(ServerContext::new()?);
-        let (server, context) = start_status_rpc_server(context, RpcSecurityProfile::StatusOnly)?;
+        let (server, context) = start_status_rpc_server(context, RpcSecurityProfile::StatusOnly)
+            .map_err(RpcWorkerStartupError::into_status_error)?;
         Ok(Self { server, context })
     }
 
@@ -521,14 +602,14 @@ impl StatusRpcWorker {
     ))]
     pub(super) fn start_lpac_rpc_probe(
         service_token: ServiceTokenFixtureProof,
-    ) -> Result<Self, StatusRpcWorkerError> {
+    ) -> Result<Self, RpcWorkerStartupError> {
         let helpers = ServiceHelperAdmission::new();
         let probe_coordinator = ServiceProbeCoordinator::start(service_token, helpers.clone())
-            .map_err(|_| StatusRpcWorkerError::Unavailable)?;
-        let context = Arc::new(ServerContext::new_with_probe_coordinator(
-            helpers,
-            probe_coordinator,
-        )?);
+            .map_err(|_| RpcWorkerStartupError::Boundary(RpcStartupStage::Coordinator))?;
+        let context = Arc::new(
+            ServerContext::new_with_probe_coordinator(helpers, probe_coordinator)
+                .map_err(|_| RpcWorkerStartupError::Boundary(RpcStartupStage::Context))?,
+        );
         let (server, context) = start_status_rpc_server(context, lpac_probe_security_profile())?;
         Ok(Self { server, context })
     }
@@ -586,10 +667,14 @@ impl AdmissionClosedStatusRpcWorker {
 fn start_status_rpc_server(
     context: Arc<ServerContext>,
     security_profile: RpcSecurityProfile,
-) -> Result<(LiveStatusServer, Arc<ServerContext>), StatusRpcWorkerError> {
-    let security_descriptor = OwnedSecurityDescriptor::new(security_profile)?;
-    let interface_spec = server_interface_spec().ok_or(StatusRpcWorkerError::Unavailable)?;
-    publish_context(Arc::clone(&context))?;
+) -> Result<(LiveStatusServer, Arc<ServerContext>), RpcWorkerStartupError> {
+    let security_descriptor = OwnedSecurityDescriptor::new(security_profile)
+        .map_err(|_| RpcWorkerStartupError::Boundary(RpcStartupStage::SecurityDescriptor))?;
+    let interface_spec = server_interface_spec().ok_or(RpcWorkerStartupError::Boundary(
+        RpcStartupStage::InterfaceSpec,
+    ))?;
+    publish_context(Arc::clone(&context))
+        .map_err(|_| RpcWorkerStartupError::Boundary(RpcStartupStage::PublishContext))?;
 
     let prepared = PreparedStatusRpcServer::new(
         WindowsRpcOps,
@@ -607,7 +692,7 @@ fn start_status_rpc_server(
                 let _ = (cleanup.stage(), cleanup.error(), cleanup.secondary());
             }
             if failure.resources_are_retained() {
-                return Err(StatusRpcWorkerError::RuntimeStateRetained);
+                return Err(RpcWorkerStartupError::RuntimeStateRetained);
             }
             #[cfg(all(
                 feature = "key-agent-service-lpac-launch-feasibility-test-hook",
@@ -617,12 +702,12 @@ fn start_status_rpc_server(
                 // The published context and uncertain terminal owners must stay
                 // retained, and SCM must not classify this as a clean boundary
                 // failure that permits SERVICE_STOPPED.
-                return Err(StatusRpcWorkerError::RuntimeStateRetained);
+                return Err(RpcWorkerStartupError::RuntimeStateRetained);
             }
             if clear_context(&context).is_err() {
-                return Err(StatusRpcWorkerError::RuntimeStateRetained);
+                return Err(RpcWorkerStartupError::RuntimeStateRetained);
             }
-            Err(StatusRpcWorkerError::Unavailable)
+            Err(RpcWorkerStartupError::Boundary(failure.stage().into()))
         }
     }
 }
@@ -1037,6 +1122,107 @@ mod tests {
     const TEST_RPC_AUTHN_LEVEL_PACKET_PRIVACY: u32 = 6;
     const TEST_RPC_AUTHN_SERVICE_WINNT: u32 = 10;
     const TEST_RPC_AUTHZ_SERVICE_NONE: u32 = 0;
+
+    #[test]
+    fn startup_stages_preserve_the_status_only_error_contract() {
+        for stage in [
+            RpcStartupStage::SecurityDescriptor,
+            RpcStartupStage::InterfaceSpec,
+            RpcStartupStage::PublishContext,
+            RpcStartupStage::RegisterAuthentication,
+            RpcStartupStage::BindEndpoint,
+            RpcStartupStage::InstallHandler,
+            RpcStartupStage::RegisterInterface,
+            RpcStartupStage::Listen,
+        ] {
+            assert_eq!(
+                RpcWorkerStartupError::Boundary(stage).into_status_error(),
+                StatusRpcWorkerError::Unavailable
+            );
+        }
+        assert_eq!(
+            RpcWorkerStartupError::RuntimeStateRetained.into_status_error(),
+            StatusRpcWorkerError::RuntimeStateRetained
+        );
+    }
+
+    #[test]
+    fn startup_lifecycle_stage_mapping_is_exact_and_data_free() {
+        for (stage, expected) in [
+            (
+                lifecycle::StartStage::RegisterAuthentication,
+                RpcStartupStage::RegisterAuthentication,
+            ),
+            (
+                lifecycle::StartStage::BindEndpoint,
+                RpcStartupStage::BindEndpoint,
+            ),
+            (
+                lifecycle::StartStage::InstallHandler,
+                RpcStartupStage::InstallHandler,
+            ),
+            (
+                lifecycle::StartStage::RegisterInterface,
+                RpcStartupStage::RegisterInterface,
+            ),
+            (lifecycle::StartStage::Listen, RpcStartupStage::Listen),
+        ] {
+            assert_eq!(RpcStartupStage::from(stage), expected);
+        }
+        assert_eq!(
+            RpcWorkerStartupError::RuntimeStateRetained.to_string(),
+            "key agent status RPC fixture is unavailable"
+        );
+        assert_eq!(
+            format!("{:?}", RpcWorkerStartupError::RuntimeStateRetained),
+            "RuntimeStateRetained"
+        );
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn lpac_startup_codes_are_closed_unique_and_redacted() {
+        let cases = [
+            (RpcStartupStage::Coordinator, 0x2301, "Coordinator"),
+            (RpcStartupStage::Context, 0x2302, "Context"),
+            (
+                RpcStartupStage::SecurityDescriptor,
+                0x2303,
+                "SecurityDescriptor",
+            ),
+            (RpcStartupStage::InterfaceSpec, 0x2304, "InterfaceSpec"),
+            (RpcStartupStage::PublishContext, 0x2305, "PublishContext"),
+            (
+                RpcStartupStage::RegisterAuthentication,
+                0x2311,
+                "RegisterAuthentication",
+            ),
+            (RpcStartupStage::BindEndpoint, 0x2312, "BindEndpoint"),
+            (RpcStartupStage::InstallHandler, 0x2313, "InstallHandler"),
+            (
+                RpcStartupStage::RegisterInterface,
+                0x2314,
+                "RegisterInterface",
+            ),
+            (RpcStartupStage::Listen, 0x2315, "Listen"),
+        ];
+        let mut codes = std::collections::BTreeSet::new();
+        for (stage, code, name) in cases {
+            assert_eq!(stage.startup_diagnostic_code(), code);
+            assert!(codes.insert(code));
+            let error = RpcWorkerStartupError::Boundary(stage);
+            assert_eq!(error.into_status_error(), StatusRpcWorkerError::Unavailable);
+            assert_eq!(
+                error.to_string(),
+                "key agent status RPC fixture is unavailable"
+            );
+            assert_eq!(format!("{error:?}"), format!("Boundary({name})"));
+        }
+        assert_eq!(codes.len(), 10);
+    }
 
     struct OwnedTestBinding(*mut c_void);
 

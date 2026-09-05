@@ -122,7 +122,12 @@ impl ServiceTokenFixtureProof {
             recaptured.retained_handle_flags,
             recaptured.same_token_object,
         )
-        .map_err(|_| ServiceTokenFixtureError::policy())
+        .map_err(|reason| {
+            ServiceTokenFixtureError::policy_rejection_for_baseline(
+                reason,
+                &recaptured.captured.baseline,
+            )
+        })
     }
 
     /// Freshly revalidates the retained service token before lending it to the
@@ -177,7 +182,8 @@ impl VerifiedServiceCreationToken<'_> {
         if owner != observation.owner_sid.0.as_slice()
             || primary_group != observation.primary_group_sid.0.as_slice()
         {
-            return Err(ServiceTokenFixtureError::policy());
+            return Err(ServiceTokenFixtureError::policy()
+                .at_stage(ServiceTokenCaptureStage::CreationPrincipals));
         }
         Ok(())
     }
@@ -200,8 +206,21 @@ struct UnverifiedIntegrityPolicy;
 struct UnverifiedScmConfiguration;
 
 /// Fail-closed service-token observation or policy failure.
+#[cfg_attr(
+    not(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    )),
+    allow(
+        dead_code,
+        reason = "closed diagnostics have no default or release consumer"
+    )
+)]
 pub(crate) struct ServiceTokenFixtureError {
-    _kind: ServiceTokenFixtureErrorKind,
+    kind: ServiceTokenFixtureErrorKind,
+    stage: ServiceTokenCaptureStage,
+    policy_rejection: Option<PolicyRejection>,
+    policy_detail: Option<ServiceTokenPolicyDetail>,
 }
 
 enum ServiceTokenFixtureErrorKind {
@@ -209,16 +228,156 @@ enum ServiceTokenFixtureErrorKind {
     Policy,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ServiceTokenPolicyDetail {
+    OwnerMismatch,
+    ServiceGroupMultiplicity,
+    ServiceGroupAttributes,
+}
+
+// Closed, data-free capture boundaries. These labels never contain a native
+// error, token value, account, SID, PID, handle, or privilege value.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ServiceTokenCaptureStage {
+    Unspecified,
+    ThreadBefore,
+    TokenOpen,
+    HandleFlags,
+    ServiceSid,
+    PrivilegeCatalog,
+    IdentityBefore,
+    TokenType,
+    Session,
+    AppContainer,
+    UiAccess,
+    Restrictions,
+    UserSid,
+    UserIdentity,
+    OwnerSid,
+    PrimaryGroupSid,
+    Groups,
+    RestrictedSids,
+    Privileges,
+    IdentityAfter,
+    IdentityContinuity,
+    ThreadAfter,
+    RetainedHandleFlags,
+    FreshIdentity,
+    RecaptureIdentityContinuity,
+    CreationPrincipals,
+}
+
 impl ServiceTokenFixtureError {
     const fn operating_system() -> Self {
         Self {
-            _kind: ServiceTokenFixtureErrorKind::OperatingSystem,
+            kind: ServiceTokenFixtureErrorKind::OperatingSystem,
+            stage: ServiceTokenCaptureStage::Unspecified,
+            policy_rejection: None,
+            policy_detail: None,
         }
     }
 
     const fn policy() -> Self {
         Self {
-            _kind: ServiceTokenFixtureErrorKind::Policy,
+            kind: ServiceTokenFixtureErrorKind::Policy,
+            stage: ServiceTokenCaptureStage::Unspecified,
+            policy_rejection: None,
+            policy_detail: None,
+        }
+    }
+
+    const fn at_stage(mut self, stage: ServiceTokenCaptureStage) -> Self {
+        self.stage = stage;
+        self
+    }
+
+    const fn policy_rejection(reason: PolicyRejection) -> Self {
+        Self {
+            kind: ServiceTokenFixtureErrorKind::Policy,
+            stage: ServiceTokenCaptureStage::Unspecified,
+            policy_rejection: Some(reason),
+            policy_detail: None,
+        }
+    }
+
+    fn policy_rejection_for_baseline(
+        reason: PolicyRejection,
+        baseline: &ServiceTokenBaseline,
+    ) -> Self {
+        let mut error = Self::policy_rejection(reason);
+        // Classification reads the already captured failure only. It does not
+        // replace, rerun with relaxed predicates, or accept a policy rejection.
+        if reason == PolicyRejection::ServiceIdentity {
+            let token = &baseline.observation;
+            error.policy_detail = if token.owner_sid == token.user_sid {
+                match exactly_one_group(&token.groups, &token.user_sid.0) {
+                    None => Some(ServiceTokenPolicyDetail::ServiceGroupMultiplicity),
+                    Some(group) if group.attributes != SERVICE_SID_GROUP_ATTRIBUTES => {
+                        Some(ServiceTokenPolicyDetail::ServiceGroupAttributes)
+                    }
+                    Some(_) => None,
+                }
+            } else {
+                Some(ServiceTokenPolicyDetail::OwnerMismatch)
+            };
+        }
+        error
+    }
+
+    /// Returns only a closed debug SCM diagnostic category, never native data.
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    pub(crate) const fn startup_diagnostic_code(&self) -> u32 {
+        if let Some(reason) = self.policy_rejection {
+            if let Some(detail) = self.policy_detail {
+                return match detail {
+                    ServiceTokenPolicyDetail::OwnerMismatch => 0x2191,
+                    ServiceTokenPolicyDetail::ServiceGroupMultiplicity => 0x2192,
+                    ServiceTokenPolicyDetail::ServiceGroupAttributes => 0x2193,
+                };
+            }
+            return match reason {
+                PolicyRejection::HandleContinuity => 0x2181,
+                PolicyRejection::TokenShape => 0x2182,
+                PolicyRejection::ServiceIdentity => 0x2183,
+                PolicyRejection::ServiceGroups => 0x2184,
+                PolicyRejection::RestrictedSidSet => 0x2185,
+                PolicyRejection::Privileges => 0x2186,
+                PolicyRejection::BaselineContinuity => 0x2187,
+            };
+        }
+        match self.stage {
+            ServiceTokenCaptureStage::Unspecified => match self.kind {
+                ServiceTokenFixtureErrorKind::OperatingSystem => 0x2100,
+                ServiceTokenFixtureErrorKind::Policy => 0x2180,
+            },
+            ServiceTokenCaptureStage::ThreadBefore => 0x2101,
+            ServiceTokenCaptureStage::TokenOpen => 0x2102,
+            ServiceTokenCaptureStage::HandleFlags => 0x2103,
+            ServiceTokenCaptureStage::ServiceSid => 0x2104,
+            ServiceTokenCaptureStage::PrivilegeCatalog => 0x2105,
+            ServiceTokenCaptureStage::IdentityBefore => 0x2106,
+            ServiceTokenCaptureStage::TokenType => 0x2107,
+            ServiceTokenCaptureStage::Session => 0x2108,
+            ServiceTokenCaptureStage::AppContainer => 0x2109,
+            ServiceTokenCaptureStage::UiAccess => 0x210a,
+            ServiceTokenCaptureStage::Restrictions => 0x210b,
+            ServiceTokenCaptureStage::UserSid => 0x210c,
+            ServiceTokenCaptureStage::UserIdentity => 0x210d,
+            ServiceTokenCaptureStage::OwnerSid => 0x210e,
+            ServiceTokenCaptureStage::PrimaryGroupSid => 0x210f,
+            ServiceTokenCaptureStage::Groups => 0x2110,
+            ServiceTokenCaptureStage::RestrictedSids => 0x2111,
+            ServiceTokenCaptureStage::Privileges => 0x2112,
+            ServiceTokenCaptureStage::IdentityAfter => 0x2113,
+            ServiceTokenCaptureStage::IdentityContinuity => 0x2114,
+            ServiceTokenCaptureStage::ThreadAfter => 0x2115,
+            ServiceTokenCaptureStage::RetainedHandleFlags => 0x2116,
+            ServiceTokenCaptureStage::FreshIdentity => 0x2117,
+            ServiceTokenCaptureStage::RecaptureIdentityContinuity => 0x2118,
+            ServiceTokenCaptureStage::CreationPrincipals => 0x2119,
         }
     }
 }
@@ -251,7 +410,9 @@ pub(crate) fn verify_current_key_agent_service_token_fixture()
 -> Result<ServiceTokenFixtureProof, ServiceTokenFixtureError> {
     let mut captured = sys::capture_current_service_token()?;
     canonicalize_service_token_baseline(&mut captured.baseline);
-    verify_fixture_baseline(&captured.baseline).map_err(|_| ServiceTokenFixtureError::policy())?;
+    verify_fixture_baseline(&captured.baseline).map_err(|reason| {
+        ServiceTokenFixtureError::policy_rejection_for_baseline(reason, &captured.baseline)
+    })?;
     Ok(ServiceTokenFixtureProof {
         retained_token: captured.token,
         baseline: captured.baseline,
@@ -1175,6 +1336,268 @@ mod tests {
                 "key agent service-token fixture is unavailable"
             );
         }
+    }
+
+    fn capture_diagnostic_cases() -> [(ServiceTokenCaptureStage, u32); 25] {
+        [
+            (ServiceTokenCaptureStage::ThreadBefore, 0x2101),
+            (ServiceTokenCaptureStage::TokenOpen, 0x2102),
+            (ServiceTokenCaptureStage::HandleFlags, 0x2103),
+            (ServiceTokenCaptureStage::ServiceSid, 0x2104),
+            (ServiceTokenCaptureStage::PrivilegeCatalog, 0x2105),
+            (ServiceTokenCaptureStage::IdentityBefore, 0x2106),
+            (ServiceTokenCaptureStage::TokenType, 0x2107),
+            (ServiceTokenCaptureStage::Session, 0x2108),
+            (ServiceTokenCaptureStage::AppContainer, 0x2109),
+            (ServiceTokenCaptureStage::UiAccess, 0x210a),
+            (ServiceTokenCaptureStage::Restrictions, 0x210b),
+            (ServiceTokenCaptureStage::UserSid, 0x210c),
+            (ServiceTokenCaptureStage::UserIdentity, 0x210d),
+            (ServiceTokenCaptureStage::OwnerSid, 0x210e),
+            (ServiceTokenCaptureStage::PrimaryGroupSid, 0x210f),
+            (ServiceTokenCaptureStage::Groups, 0x2110),
+            (ServiceTokenCaptureStage::RestrictedSids, 0x2111),
+            (ServiceTokenCaptureStage::Privileges, 0x2112),
+            (ServiceTokenCaptureStage::IdentityAfter, 0x2113),
+            (ServiceTokenCaptureStage::IdentityContinuity, 0x2114),
+            (ServiceTokenCaptureStage::ThreadAfter, 0x2115),
+            (ServiceTokenCaptureStage::RetainedHandleFlags, 0x2116),
+            (ServiceTokenCaptureStage::FreshIdentity, 0x2117),
+            (
+                ServiceTokenCaptureStage::RecaptureIdentityContinuity,
+                0x2118,
+            ),
+            (ServiceTokenCaptureStage::CreationPrincipals, 0x2119),
+        ]
+    }
+
+    fn policy_diagnostic_cases() -> [(PolicyRejection, u32); 7] {
+        [
+            (PolicyRejection::HandleContinuity, 0x2181),
+            (PolicyRejection::TokenShape, 0x2182),
+            (PolicyRejection::ServiceIdentity, 0x2183),
+            (PolicyRejection::ServiceGroups, 0x2184),
+            (PolicyRejection::RestrictedSidSet, 0x2185),
+            (PolicyRejection::Privileges, 0x2186),
+            (PolicyRejection::BaselineContinuity, 0x2187),
+        ]
+    }
+
+    #[test]
+    fn tagged_errors_keep_existing_redacted_facade_and_fail_closed_results() {
+        let mut errors = Vec::new();
+        for (stage, _) in capture_diagnostic_cases() {
+            errors.push(ServiceTokenFixtureError::operating_system().at_stage(stage));
+            errors.push(ServiceTokenFixtureError::policy().at_stage(stage));
+        }
+        for (reason, _) in policy_diagnostic_cases() {
+            let rejected: Result<(), PolicyRejection> = Err(reason);
+            let mapped = rejected.map_err(ServiceTokenFixtureError::policy_rejection);
+            assert!(mapped.is_err());
+            if let Err(error) = mapped {
+                assert!(matches!(error.kind, ServiceTokenFixtureErrorKind::Policy));
+                assert_eq!(error.policy_rejection, Some(reason));
+                errors.push(error);
+            }
+        }
+        for error in errors {
+            assert_eq!(format!("{error:?}"), "ServiceTokenFixtureError([REDACTED])");
+            assert_eq!(
+                error.to_string(),
+                "key agent service-token fixture is unavailable"
+            );
+            assert!(std::error::Error::source(&error).is_none());
+        }
+        let accepted: Result<(), PolicyRejection> = Ok(());
+        assert!(
+            accepted
+                .map_err(ServiceTokenFixtureError::policy_rejection)
+                .is_ok()
+        );
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn startup_diagnostic_capture_codes_are_exact_and_unique() {
+        assert_eq!(
+            ServiceTokenFixtureError::operating_system().startup_diagnostic_code(),
+            0x2100
+        );
+        assert_eq!(
+            ServiceTokenFixtureError::policy().startup_diagnostic_code(),
+            0x2180
+        );
+        let mut seen = std::collections::BTreeSet::from([0x2100, 0x2180]);
+        for (stage, expected) in capture_diagnostic_cases() {
+            assert!(seen.insert(expected));
+            for error in [
+                ServiceTokenFixtureError::operating_system(),
+                ServiceTokenFixtureError::policy(),
+            ] {
+                assert_eq!(error.at_stage(stage).startup_diagnostic_code(), expected);
+            }
+        }
+        for (reason, expected) in policy_diagnostic_cases() {
+            assert!(seen.insert(expected));
+            for (stage, _) in capture_diagnostic_cases() {
+                assert_eq!(
+                    ServiceTokenFixtureError::policy_rejection(reason)
+                        .at_stage(stage)
+                        .startup_diagnostic_code(),
+                    expected
+                );
+            }
+        }
+        for expected in [0x2191, 0x2192, 0x2193] {
+            assert!(seen.insert(expected));
+        }
+        assert_eq!(seen.len(), 37);
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn startup_diagnostic_policy_codes_match_real_rejections() {
+        let mut cases = Vec::new();
+        let mut value = baseline();
+        value.token_handle_flags = 1;
+        cases.push((value, PolicyRejection::HandleContinuity, 0x2181));
+        let mut value = baseline();
+        value.observation.session_id = 1;
+        cases.push((value, PolicyRejection::TokenShape, 0x2182));
+        let mut value = baseline();
+        value.observation.owner_sid = SidBytes(WORLD_SID.to_vec());
+        cases.push((value, PolicyRejection::ServiceIdentity, 0x2183));
+        let mut value = baseline();
+        value.observation.primary_group_sid = SidBytes(WORLD_SID.to_vec());
+        cases.push((value, PolicyRejection::ServiceGroups, 0x2184));
+        let mut value = baseline();
+        value.observation.restricted_sids.pop();
+        cases.push((value, PolicyRejection::RestrictedSidSet, 0x2185));
+        let mut value = baseline();
+        value.observation.privileges.pop();
+        cases.push((value, PolicyRejection::Privileges, 0x2186));
+        for (value, expected_reason, expected_code) in cases {
+            let rejected = verify_fixture_baseline(&value);
+            assert_eq!(rejected, Err(expected_reason));
+            let mapped = rejected.map_err(ServiceTokenFixtureError::policy_rejection);
+            assert!(mapped.is_err());
+            if let Err(error) = mapped {
+                assert_eq!(error.startup_diagnostic_code(), expected_code);
+            }
+        }
+        let original = baseline();
+        let mut fresh = baseline();
+        fresh.observation.identity.modified_id.low_part ^= 1;
+        let rejected = verify_creation_token_revalidation(&original, &fresh, 0, true);
+        assert_eq!(rejected, Err(PolicyRejection::BaselineContinuity));
+        let mapped = rejected.map_err(ServiceTokenFixtureError::policy_rejection);
+        assert!(mapped.is_err());
+        if let Err(error) = mapped {
+            assert_eq!(error.startup_diagnostic_code(), 0x2187);
+        }
+        assert!(
+            verify_fixture_baseline(&original)
+                .map_err(ServiceTokenFixtureError::policy_rejection)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn startup_service_identity_details_remain_rejected_and_redacted() {
+        let mut cases = Vec::new();
+        let mut value = baseline();
+        value.observation.owner_sid = SidBytes(WORLD_SID.to_vec());
+        cases.push((value, ServiceTokenPolicyDetail::OwnerMismatch, 0x2191));
+        let mut value = baseline();
+        value
+            .observation
+            .groups
+            .retain(|group| group.sid != service_sid());
+        cases.push((
+            value,
+            ServiceTokenPolicyDetail::ServiceGroupMultiplicity,
+            0x2192,
+        ));
+        let mut value = baseline();
+        value.observation.groups.push(SidEntry {
+            sid: service_sid(),
+            attributes: SERVICE_SID_GROUP_ATTRIBUTES,
+        });
+        cases.push((
+            value,
+            ServiceTokenPolicyDetail::ServiceGroupMultiplicity,
+            0x2192,
+        ));
+        let mut value = baseline();
+        for group in &mut value.observation.groups {
+            if group.sid == service_sid() {
+                group.attributes ^= GROUP_ENABLED;
+            }
+        }
+        cases.push((
+            value,
+            ServiceTokenPolicyDetail::ServiceGroupAttributes,
+            0x2193,
+        ));
+        for (value, expected_detail, expected_code) in cases {
+            let rejected = verify_fixture_baseline(&value);
+            assert_eq!(rejected, Err(PolicyRejection::ServiceIdentity));
+            let mapped = rejected.map_err(|reason| {
+                ServiceTokenFixtureError::policy_rejection_for_baseline(reason, &value)
+            });
+            assert!(mapped.is_err());
+            if let Err(error) = mapped {
+                assert_eq!(
+                    error.policy_rejection,
+                    Some(PolicyRejection::ServiceIdentity)
+                );
+                assert!(error.policy_detail == Some(expected_detail));
+                assert_eq!(format!("{error:?}"), "ServiceTokenFixtureError([REDACTED])");
+                assert_eq!(
+                    error.to_string(),
+                    "key agent service-token fixture is unavailable"
+                );
+                assert!(std::error::Error::source(&error).is_none());
+                #[cfg(all(
+                    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+                    debug_assertions
+                ))]
+                assert_eq!(error.startup_diagnostic_code(), expected_code);
+                let _ = expected_code;
+            }
+            let other = ServiceTokenFixtureError::policy_rejection_for_baseline(
+                PolicyRejection::Privileges,
+                &value,
+            );
+            assert!(other.policy_detail.is_none());
+            assert_eq!(other.policy_rejection, Some(PolicyRejection::Privileges));
+        }
+        let accepted = baseline();
+        assert!(
+            verify_fixture_baseline(&accepted)
+                .map_err(
+                    |reason| ServiceTokenFixtureError::policy_rejection_for_baseline(
+                        reason, &accepted
+                    )
+                )
+                .is_ok()
+        );
+        let fallback = ServiceTokenFixtureError::policy_rejection_for_baseline(
+            PolicyRejection::ServiceIdentity,
+            &accepted,
+        );
+        assert!(fallback.policy_detail.is_none());
+        #[cfg(all(
+            feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+            debug_assertions
+        ))]
+        assert_eq!(fallback.startup_diagnostic_code(), 0x2183);
     }
 
     #[cfg(windows)]

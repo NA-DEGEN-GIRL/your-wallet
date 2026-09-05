@@ -6,10 +6,18 @@ scan and actual preparation passed. Product and
 release remain STOP-SHIP; this is not installed-service or signed-helper evidence.
 
 The user-run elevated Install/conditional-Start command reported
-`SERVICE_PROBE_FAILED_STATE_RETAINED_FOR_REVIEW`. The failing action has not yet
-been confirmed from independent readback. Do not repeat Install, Start,
-or Remove against that partial state. The next operator step is read-only Inspect,
-not another installation attempt. The candidate has not been replaced.
+`SERVICE_PROBE_FAILED_STATE_RETAINED_FOR_REVIEW`. That first output alone did not
+identify the failing action. The user's subsequent elevated Inspect reported every check
+PASS, cleanup PASS, and service STOPPED. The subsequent strict Readback passed,
+but Start failed. The new scoped SCM event 7024 carries service-specific code 1
+(the service's INITIALIZATION_FAILURE, not Win32 error 1). Repeating Start with
+the unchanged binary cannot distinguish token observation/policy from RPC
+startup. The debug-only, data-free startup-code refinement is implemented;
+security predicates and privileges are unchanged. The old workspace candidate
+is preserved in `artifacts/service-probe-candidate-before-startup-diagnostics-d1e1bbd`.
+A fresh candidate is prepared and independently verified, and repository tests
+plus the final full architecture scan passed. The installed service still has
+the older bytes; an explicit elevated operator replacement is required next.
 
 ## Saved implementation
 
@@ -49,12 +57,17 @@ explicitly not release evidence. Helper feature tests 69 and Approval UI tests
 
 ## Resume here
 
-1. Follow `scripts/service-probe/README.md` for the elevated read-only Inspect
-   action and return its fixed categories. The first elevated operator run failed;
-   protected partial state remains. A real, fresh, hash-verified candidate exists at
+1. Elevated Inspect passed and strict Readback then passed, but Start produced
+   SCM service-specific INITIALIZATION_FAILURE=1. Integration verification of the
+   closed debug startup categories passed. Replace the installed debug fixture
+   with the newly prepared candidate. Any operator replacement must use the existing
+   stopped, ownership-verified Remove/Install workflow, never overwrite or force
+   adoption. Inspect completion is not startup evidence. The current candidate is at
    `artifacts/service-probe-candidate`; do not rerun prepare against that existing
-   directory or overwrite it. Preparation was non-elevated and included the
-   final watchdog binary. A later source change requires a newly reviewed build.
+   directory or overwrite it. Preparation was non-elevated and includes the
+   startup categories and final watchdog. The prior candidate is preserved in
+   `artifacts/service-probe-candidate-before-startup-diagnostics-d1e1bbd`.
+   A later runtime source change requires a newly reviewed build.
 2. Only after diagnosing the retained state and obtaining verified installed
    service/readback/start results, run the candidate client in a separate
    eligible non-elevated desktop. The
@@ -138,10 +151,94 @@ subkey cannot be read from this token. These are registry observations, not
 authoritative SCM/security/LSA/file readback or proof of successful installation.
 They suggest the attempt reached Configure, but do not identify the failing
 native call. If an Install PASS line was omitted from the user's report, the
-failure could instead be in the conditional Start. Inspect must check current
-service state and the remaining boundaries before any repair.
+failure could instead be in the conditional Start.
 
-No retry, service start/stop/delete, privilege change, ACL change, candidate
-replacement, or partial-state deletion was performed during this diagnosis.
+The user has now supplied the full elevated Inspect report: all 32 non-status
+observations PASS, service status STOPPED, cleanup PASS, and report COMPLETE.
+This includes exact service and file security, restricted configuration, direct
+rights, manifest/journal, all four executable hashes, and inventory. It does not
+replace the stricter ownership-bound Readback/Start entry or prove a past start.
+The agent's read-only System log query, limited to the exact service and the last
+48 hours, found only one SCM installation event (7045); no matching failure
+event was returned. Absence of an event does not prove Start was never attempted.
+A bounded independent startup-code review found no deterministic mismatch with
+the configured four privileges and no reason to weaken the token/RPC policy.
+
+After the next user-run Readback/conditional-Start, Readback returned PASS and
+Start returned the generic retained-state category. A fresh query of the same
+bounded System-log scope found event 7024 with service-specific code 1 in
+addition to the older 7045. This proves the service reached its own SCM failure
+publication; it is not an SCM account-logon rejection. Existing code maps both
+stop-event creation and worker startup failures to this code, before RUNNING.
+A separate unelevated, query-only fixed service-name lookup confirmed expected
+SID_NAME_USE, exact domain and stable returned size without emitting identities.
+The actual SCM-created process-token predicates and RPC startup stage still
+need the refined closed failure code; no alternate account or privilege grant
+is justified by the current evidence.
+
+The agent performed no retry, service start/stop/delete, privilege change,
+ACL change, installed-candidate replacement, or partial-state deletion during
+this diagnosis. The user's explicit Start attempt is recorded above.
 Actual restricted-service execution remains unverified; production and release
 remain STOP-SHIP.
+
+## Closed startup diagnosis and fresh candidate
+
+The explicit debug LPAC worker now publishes only fixed startup categories
+through the existing SCM service-specific status field: token observation/policy
+`0x21xx`, stop-event creation `0x2201`, and RPC initialization `0x23xx`.
+The already-rejected service-identity policy has three data-free subcategories:
+owner mismatch `0x2191`, missing/duplicate service group `0x2192`, and unexpected
+service-group attributes `0x2193`. No token values, raw Windows errors, paths,
+identities or secrets are logged. Error Debug/Display remain redacted.
+Acceptance predicates, token queries and their order, four privileges, default/
+status-only/release behavior and retained-runtime no-STOPPED rules are unchanged.
+Independent reciprocal runtime review found no blocker.
+
+The old workspace candidate was checked with held non-reparse directories and
+strict single-link/size/hash/canonical-inventory readback, then renamed within
+the exact artifacts parent to
+`service-probe-candidate-before-startup-diagnostics-d1e1bbd`. The destination was
+absent, and post-rename readback passed all four executables. Nothing was deleted.
+Unelevated `prepare.ps1` then passed with native exit 0. Independent fresh-candidate
+readback passed all four strict single-link/size/hash checks and canonical
+inventory; the new service executable differs from the preserved one.
+This is build evidence, not installed-service execution or release evidence.
+
+The next elevated operation is the existing ownership-verified stopped Remove,
+then Install only on success, then Start only on success. No Cargo build belongs
+in that elevated chain. Any failure stops progression and retains uncertain
+state. The old protected installation is not overwritten or adopted, and no
+wallet storage belongs to this debug fixture.
+
+Repository fmt, lint, typecheck, full tests and privacy passed with native exit 0.
+Platform tests: 985 passed, 44 explicitly ignored; demo: 266 passed; extension:
+33 passed; helper: 69 passed; diagnostic binary: 15 passed. Native harness:
+139 passed; preparation/operator CLI: 14 + 6 passed; architecture actual CLI:
+24 passed. Separate release-policy verification passed 66 JavaScript tests and
+both exact PowerShell sentinels. Default, debug-desktop-only and release
+all-feature binary fallback suites each passed two tests without SCM/UI calls.
+
+The startup architecture guard has 10 predicates and 25 effective negative
+mutations, including retained-runtime early-return rejection. The first full
+scan stopped at a historical Phase 1B consumer of the renamed startup error.
+Only its five obsolete markers were adapted; all ten existing Phase 1B negative
+mutations remain and pass. Runtime code and prepared bytes were unchanged.
+The next full scan reached 448 checks before finding the new token-error
+`cfg_attr` lint-allowance shape missing from the closed provider inventory.
+Only that reviewed compiler attribute was registered; no general macro
+provider or policy allowance was added. The final no-argument architecture scan
+then passed with native exit 0, reaching the 672-check progress checkpoint at
+266 seconds before final PASS. The final scanner's actual CLI suite also passed
+24 tests with zero skips. Final scanner SHA256:
+`b8a99f9bc755c33ad226b7bc95085ad89fdd408ce7c85744b4d357a56b235d2a`.
+Both failed earlier full runs are preserved above rather than counted as passes.
+The existing Inspect harness remains at 28 predicates and 59 effective mutations.
+
+The guarded one-line Remove/Install/Start command was parsed successfully without
+execution. Its three actions were verified in order; each later action is inside
+the preceding native-exit-zero condition. The agent has not run that elevated
+chain. Obtain the user's complete output, then use the fixed service's bounded
+SCM event scope to interpret any new service-specific startup code. Do not treat
+the generic operator failure line itself as the detailed diagnosis or retry a
+failed action unchanged.

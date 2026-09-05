@@ -19875,7 +19875,20 @@ const keyAgentServiceTokenTestNames = [
   "proof_and_creation_token_are_move_only_send_and_not_sync",
   "creation_token_debug_is_data_free",
   "redacted_public_errors_never_expose_policy_details",
+  "tagged_errors_keep_existing_redacted_facade_and_fail_closed_results",
+  "startup_diagnostic_capture_codes_are_exact_and_unique",
+  "startup_diagnostic_policy_codes_match_real_rejections",
+  "startup_service_identity_details_remain_rejected_and_redacted",
 ];
+// Historical authority checks inspect the same query/order skeleton. Remove
+// only the reviewed data-free diagnostic annotations from those four bodies;
+// the startup diagnostic contract independently checks every tag and mapping.
+function keyAgentStartupTokenDiagnosticProjection(source) {
+  const stages = "ThreadBefore|ThreadAfter|RetainedHandleFlags|FreshIdentity|RecaptureIdentityContinuity|ServiceSid|PrivilegeCatalog|IdentityBefore|TokenType|Session|AppContainer|UiAccess|Restrictions|UserSid|UserIdentity|OwnerSid|PrimaryGroupSid|Groups|RestrictedSids|Privileges|IdentityAfter|IdentityContinuity|CreationPrincipals";
+  return source.replace(new RegExp(`\\.\\s*map_err\\(\\s*\\|error\\|\\s*error\\.at_stage\\(ServiceTokenCaptureStage::(?:${stages})\\)\\s*\\)`, "gu"), "")
+    .replace(new RegExp(`\\.\\s*at_stage\\(ServiceTokenCaptureStage::(?:${stages})\\)`, "gu"), "")
+    .replace(/(exact_boolean\(\s*token_u32\(token,\s*Token(?:IsAppContainer|UIAccess)\)\s*\?)\s*,\s*\)/gu, "$1)");
+}
 const keyAgentServiceTokenContract = ({
   sources,
   directory,
@@ -19917,10 +19930,10 @@ const keyAgentServiceTokenContract = ({
       "revalidate_creation_token",
     );
     const creationToken = rustFunctionBlock(policyProduction, "creation_token");
-    const verifyCreationPrincipals = rustFunctionBlock(
+    const verifyCreationPrincipals = keyAgentStartupTokenDiagnosticProjection(rustFunctionBlock(
       policyProduction,
       "verify_creation_principals",
-    );
+    ));
     const revalidateCreationCapability = rustFunctionBlock(
       policyProduction,
       "revalidate",
@@ -19929,18 +19942,18 @@ const keyAgentServiceTokenContract = ({
       policyProduction,
       "validate_privileges",
     );
-    const captureCurrentToken = rustFunctionBlock(
+    const captureCurrentToken = keyAgentStartupTokenDiagnosticProjection(rustFunctionBlock(
       sysProduction,
       "capture_current_service_token",
-    );
-    const recaptureCurrentToken = rustFunctionBlock(
+    ));
+    const recaptureCurrentToken = keyAgentStartupTokenDiagnosticProjection(rustFunctionBlock(
       sysProduction,
       "recapture_current_service_token",
-    );
-    const captureServiceTokenBaseline = rustFunctionBlock(
+    ));
+    const captureServiceTokenBaseline = keyAgentStartupTokenDiagnosticProjection(rustFunctionBlock(
       sysProduction,
       "capture_service_token_baseline",
-    );
+    ));
     const openCurrentToken = rustFunctionBlock(
       sysProduction,
       "open_current_process_token",
@@ -20514,7 +20527,7 @@ const keyAgentServiceTokenMutationProbes = [
   mutateKeyAgentServiceTokenSource(
     keyAgentServiceTokenInputs,
     keyAgentServiceTokenFixturePaths.sys,
-    "    reject_thread_impersonation()?;\n\n    Ok(CapturedServiceToken",
+    "    reject_thread_impersonation()\n        .map_err(|error| error.at_stage(ServiceTokenCaptureStage::ThreadAfter))?;\n\n    Ok(CapturedServiceToken",
     "\n    Ok(CapturedServiceToken",
   ),
   mutateKeyAgentServiceTokenSource(
@@ -23528,7 +23541,7 @@ requireInvariant(
 const keyAgentServiceExpectedPeerReexportSource =
   keyAgentServiceRpcFixtureSources[keyAgentServiceRpcFixturePaths.root];
 const keyAgentServiceExpectedPeerReexportSha256 =
-  "5e8bfa854d4431869acde105d6263bf819468878444a9177e3ddd7c6e4d0e40c";
+  "c001ebd5612df7205b83e87e8358f21a4c3ca0f847aa3e536ac6b7b25076aa19";
 const keyAgentServiceExpectedPeerReexportCfg =
   "#[cfg(all(feature=,debug_assertions))]";
 const keyAgentServiceExpectedPeerReexportItem = `${keyAgentServiceExpectedPeerReexportCfg}pub(crate)useself::expected_peer::{EXPECTED_HELPER_QUIESCENCE_MILLISECONDS,ExpectedHelperAdmission,ExpectedHelperLease,ExpectedHelperPeer,ExpectedHelperRole,ExpectedPeerKey,ExpectedPeerRegistryError,ExpectedPeerVerificationError,};`;
@@ -23699,6 +23712,9 @@ const keyAgentServiceRpcLifecycleTestNames = [
   "dropping_live_server_closes_admission_invalidates_and_retains_resources",
 ];
 const keyAgentServiceRpcRootTestNames = [
+  "startup_stages_preserve_the_status_only_error_contract",
+  "startup_lifecycle_stage_mapping_is_exact_and_data_free",
+  "lpac_startup_codes_are_closed_unique_and_redacted",
   "constants_bind_generated_frame_and_endpoint",
   "status_only_security_profile_preserves_the_existing_descriptor_contract",
   "lpac_probe_security_profile_is_debug_only",
@@ -24028,8 +24044,9 @@ const keyAgentServiceRpcLifecycleContract = ({ sources, platformService }) => {
         "Err(crate::key_agent_service_rpc::StatusRpcWorkerError::RuntimeStateRetained)=>{Err(WorkerStartFailure::RuntimeStateRetained)}",
       ) &&
       compactRust(permitsStoppedStatus).includes(
-        "matches!(self,Self::Boundary)",
+        "self.initialization_code().is_some()",
       ) &&
+      compactRust(rustFunctionBlock(platformService, "initialization_code")).includes("Self::RuntimeStateRetained=>None") &&
       hasOrderedCompactMarkers(runningTransition, [
         "letmutcontext=lock_context()",
         "publish_status(&mutcontext,SERVICE_RUNNING,0,0,0)",
@@ -24073,30 +24090,30 @@ const keyAgentServiceRpcLifecycleContract = ({ sources, platformService }) => {
       ]) &&
       hasOrderedCompactMarkers(workerStart, [
         "letcontext=Arc::new(ServerContext::new()?)",
-        "let(server,context)=start_status_rpc_server(context,RpcSecurityProfile::StatusOnly)?",
+        "let(server,context)=start_status_rpc_server(context,RpcSecurityProfile::StatusOnly).map_err(RpcWorkerStartupError::into_status_error)?",
         "Ok(Self{server,context})",
       ]) &&
       hasOrderedCompactMarkers(workerStartLpac, [
         "lethelpers=ServiceHelperAdmission::new()",
         "ServiceProbeCoordinator::start(service_token,helpers.clone())",
-        "ServerContext::new_with_probe_coordinator(helpers,probe_coordinator,)",
+        "ServerContext::new_with_probe_coordinator(helpers,probe_coordinator)",
         "start_status_rpc_server(context,lpac_probe_security_profile())?",
         "Ok(Self{server,context})",
       ]) &&
       hasOrderedCompactMarkers(startStatusServer, [
         "security_profile:RpcSecurityProfile",
-        "letsecurity_descriptor=OwnedSecurityDescriptor::new(security_profile)?",
-        "letinterface_spec=server_interface_spec().ok_or(StatusRpcWorkerError::Unavailable)?",
-        "publish_context(Arc::clone(&context))?",
+        "letsecurity_descriptor=OwnedSecurityDescriptor::new(security_profile).map_err(|_|RpcWorkerStartupError::Boundary(RpcStartupStage::SecurityDescriptor))?",
+        "letinterface_spec=server_interface_spec().ok_or(RpcWorkerStartupError::Boundary(RpcStartupStage::InterfaceSpec,))?",
+        "publish_context(Arc::clone(&context)).map_err(|_|RpcWorkerStartupError::Boundary(RpcStartupStage::PublishContext))?",
         "PreparedStatusRpcServer::new(WindowsRpcOps,interface_spec,security_descriptor,ServerHooks{context:Arc::clone(&context),},)",
         ".start()",
         "iffailure.resources_are_retained()",
-        "returnErr(StatusRpcWorkerError::RuntimeStateRetained)",
+        "returnErr(RpcWorkerStartupError::RuntimeStateRetained)",
         "ifcontext.stop_probe_coordinator_and_helpers().is_err()",
-        "returnErr(StatusRpcWorkerError::RuntimeStateRetained)",
+        "returnErr(RpcWorkerStartupError::RuntimeStateRetained)",
         "ifclear_context(&context).is_err()",
-        "returnErr(StatusRpcWorkerError::RuntimeStateRetained)",
-        "Err(StatusRpcWorkerError::Unavailable)",
+        "returnErr(RpcWorkerStartupError::RuntimeStateRetained)",
+        "Err(RpcWorkerStartupError::Boundary(failure.stage().into()))",
       ]) &&
       hasOrderedCompactMarkers(workerBegin, [
         "self.context.fatal.load(Ordering::Acquire)",
@@ -24268,8 +24285,8 @@ const keyAgentServiceRpcLifecycleMutationProbes = [
   {
     ...keyAgentServiceRpcLifecycleInputs,
     platformService: keyAgentServicePlatformSource.replace(
-      "matches!(self, Self::Boundary)",
-      "matches!(self, Self::Boundary | Self::RuntimeStateRetained)",
+      "Self::RuntimeStateRetained => None,",
+      "Self::RuntimeStateRetained => Some(INITIALIZATION_FAILURE),",
     ),
   },
   {
@@ -24319,6 +24336,142 @@ const keyAgentServiceRpcLpacDebugCfg = `#[cfg(all(
 ))]`;
 const keyAgentServiceRpcLpacSecurityDescriptorSource =
   keyAgentServiceRpcFixtureSources[keyAgentServiceRpcFixturePaths.root];
+// Startup diagnostics are fixed debug SCM categories, never a policy bypass or
+// an alternate cleanup path. These probes run independently of source hashes.
+function keyAgentServiceStartupDiagnosticChecks(inputs) {
+  const token = withoutCfgTestItems(inputs.token);
+  const sys = withoutCfgTestItems(inputs.sys);
+  const rpc = withoutCfgTestItems(inputs.rpc);
+  const service = withoutCfgTestItems(inputs.service);
+  const fn = (source, name) => compactRust(rustFunctionBlock(source, name));
+  const item = (source, kind, name) => compactRust(rustLexicalItemBlock(source, new RegExp(`\\b${kind}\\s+${name}\\b`, "u")));
+  const raw = (source) => source.replace(/\s+/gu, "");
+  const gate = '#[cfg(all(feature="key-agent-service-lpac-launch-feasibility-test-hook",debug_assertions))]';
+  const stages = [
+    ["ThreadBefore", "0x2101"], ["TokenOpen", "0x2102"], ["HandleFlags", "0x2103"], ["ServiceSid", "0x2104"],
+    ["PrivilegeCatalog", "0x2105"], ["IdentityBefore", "0x2106"], ["TokenType", "0x2107"], ["Session", "0x2108"],
+    ["AppContainer", "0x2109"], ["UiAccess", "0x210a"], ["Restrictions", "0x210b"], ["UserSid", "0x210c"],
+    ["UserIdentity", "0x210d"], ["OwnerSid", "0x210e"], ["PrimaryGroupSid", "0x210f"], ["Groups", "0x2110"],
+    ["RestrictedSids", "0x2111"], ["Privileges", "0x2112"], ["IdentityAfter", "0x2113"], ["IdentityContinuity", "0x2114"],
+    ["ThreadAfter", "0x2115"], ["RetainedHandleFlags", "0x2116"], ["FreshIdentity", "0x2117"], ["RecaptureIdentityContinuity", "0x2118"], ["CreationPrincipals", "0x2119"],
+  ];
+  const policies = [["HandleContinuity", "0x2181"], ["TokenShape", "0x2182"], ["ServiceIdentity", "0x2183"], ["ServiceGroups", "0x2184"], ["RestrictedSidSet", "0x2185"], ["Privileges", "0x2186"], ["BaselineContinuity", "0x2187"]];
+  const details = [["OwnerMismatch", "0x2191"], ["ServiceGroupMultiplicity", "0x2192"], ["ServiceGroupAttributes", "0x2193"]];
+  const rpcStages = [["Coordinator", "0x2301"], ["Context", "0x2302"], ["SecurityDescriptor", "0x2303"], ["InterfaceSpec", "0x2304"], ["PublishContext", "0x2305"], ["RegisterAuthentication", "0x2311"], ["BindEndpoint", "0x2312"], ["InstallHandler", "0x2313"], ["RegisterInterface", "0x2314"], ["Listen", "0x2315"]];
+  const arms = (type, rows) => rows.map(([name, code]) => `${type}::${name}=>${code},`).join("");
+  const expectedTokenCode = "pub(crate)constfnstartup_diagnostic_code(&self)->u32{ifletSome(reason)=self.policy_rejection{ifletSome(detail)=self.policy_detail{returnmatchdetail{" + arms("ServiceTokenPolicyDetail", details) + "};}returnmatchreason{" + arms("PolicyRejection", policies) + "};}matchself.stage{ServiceTokenCaptureStage::Unspecified=>matchself.kind{ServiceTokenFixtureErrorKind::OperatingSystem=>0x2100,ServiceTokenFixtureErrorKind::Policy=>0x2180,}," + arms("ServiceTokenCaptureStage", stages) + "}}";
+  const tags = (source, name) => rustCallSites(rustFunctionBlock(source, name), "at_stage").map(({ arguments: args }) => args.map(compactRust).join("|"));
+  const tagged = (names) => names.map((name) => `ServiceTokenCaptureStage::${name}`);
+  const lpacWorker = rustImplItems(service).find(({ header }) => header === "impl ScmWorker for LpacRpcProbeWorker")?.source ?? "";
+  const startup = fn(rpc, "start_status_rpc_server");
+  const serviceMain = fn(service, "service_main_impl");
+  const initialization = fn(service, "initialization_code");
+  const compactGate = compactRust(gate);
+  return {
+    tokenDataFreeShape: item(token, "struct", "ServiceTokenFixtureError") === "structServiceTokenFixtureError{kind:ServiceTokenFixtureErrorKind,stage:ServiceTokenCaptureStage,policy_rejection:Option<PolicyRejection>,policy_detail:Option<ServiceTokenPolicyDetail>,}" &&
+      item(token, "enum", "ServiceTokenCaptureStage") === `enumServiceTokenCaptureStage{Unspecified,${stages.map(([name]) => `${name},`).join("")}}` &&
+      item(token, "enum", "ServiceTokenPolicyDetail") === `enumServiceTokenPolicyDetail{${details.map(([name]) => `${name},`).join("")}}` &&
+      fn(token, "at_stage") === "constfnat_stage(mutself,stage:ServiceTokenCaptureStage)->Self{self.stage=stage;self}" &&
+      fn(token, "policy_rejection") === "constfnpolicy_rejection(reason:PolicyRejection)->Self{Self{kind:ServiceTokenFixtureErrorKind::Policy,stage:ServiceTokenCaptureStage::Unspecified,policy_rejection:Some(reason),policy_detail:None,}}",
+    tokenFixedCodeMap: fn(token, "startup_diagnostic_code") === expectedTokenCode,
+    tokenCaptureTags: JSON.stringify(tags(sys, "capture_current_service_token")) === JSON.stringify(tagged(["ThreadBefore", "ThreadAfter"])) &&
+      JSON.stringify(tags(sys, "recapture_current_service_token")) === JSON.stringify(tagged(["ThreadBefore", "RetainedHandleFlags", "FreshIdentity", "RecaptureIdentityContinuity", "ThreadAfter"])) &&
+      JSON.stringify(tags(sys, "capture_service_token_baseline")) === JSON.stringify(tagged(["ServiceSid", "PrivilegeCatalog", "IdentityBefore", "TokenType", "Session", "AppContainer", "AppContainer", "UiAccess", "UiAccess", "Restrictions", "UserSid", "UserIdentity", "OwnerSid", "PrimaryGroupSid", "Groups", "RestrictedSids", "Privileges", "IdentityAfter", "IdentityContinuity"])) &&
+      JSON.stringify(tags(sys, "open_current_process_token")) === JSON.stringify(tagged(["TokenOpen", "TokenOpen"])) &&
+      JSON.stringify(tags(sys, "token_handle_flags")) === JSON.stringify(tagged(["HandleFlags"])) &&
+      JSON.stringify(tags(token, "verify_creation_principals")) === JSON.stringify(tagged(["CreationPrincipals"])),
+    tokenRejectedDetailOnly: fn(token, "policy_rejection_for_baseline") === "fnpolicy_rejection_for_baseline(reason:PolicyRejection,baseline:&ServiceTokenBaseline,)->Self{letmuterror=Self::policy_rejection(reason);ifreason==PolicyRejection::ServiceIdentity{lettoken=&baseline.observation;error.policy_detail=iftoken.owner_sid==token.user_sid{matchexactly_one_group(&token.groups,&token.user_sid.0){None=>Some(ServiceTokenPolicyDetail::ServiceGroupMultiplicity),Some(group)ifgroup.attributes!=SERVICE_SID_GROUP_ATTRIBUTES=>{Some(ServiceTokenPolicyDetail::ServiceGroupAttributes)}Some(_)=>None,}}else{Some(ServiceTokenPolicyDetail::OwnerMismatch)};}error}" &&
+      fn(token, "verify_current_key_agent_service_token_fixture").includes("verify_fixture_baseline(&captured.baseline).map_err(|reason|{ServiceTokenFixtureError::policy_rejection_for_baseline(reason,&captured.baseline)})?") &&
+      fn(token, "revalidate_creation_token").includes(".map_err(|reason|{ServiceTokenFixtureError::policy_rejection_for_baseline(reason,&recaptured.captured.baseline,)})"),
+    exactDebugAccessorGates: raw(token).includes(`${gate}pub(crate)constfnstartup_diagnostic_code(&self)->u32`) &&
+      raw(rpc).includes(`${gate}implRpcStartupStage{pub(super)constfnstartup_diagnostic_code(self)->u32`) &&
+      raw(service).includes(`${gate}implScmWorkerforLpacRpcProbeWorker{`) &&
+      raw(service).includes(`${gate}LpacToken(crate::key_agent_service_token::ServiceTokenFixtureError),`) &&
+      raw(service).includes(`${gate}LpacRpc(crate::key_agent_service_rpc::RpcStartupStage),`),
+    rpcFixedCodeMap: fn(rpc, "startup_diagnostic_code") === `pub(super)constfnstartup_diagnostic_code(self)->u32{matchself{${arms("Self", rpcStages)}}}` &&
+      compactRust(rustImplItems(rpc).find(({ header }) => header === "impl From<lifecycle::StartStage> for RpcStartupStage")?.source ?? "") === "implFrom<lifecycle::StartStage>forRpcStartupStage{fnfrom(stage:lifecycle::StartStage)->Self{matchstage{" + rpcStages.slice(5).map(([name]) => `lifecycle::StartStage::${name}=>Self::${name},`).join("") + "}}}" &&
+      item(rpc, "enum", "RpcWorkerStartupError") === "enumRpcWorkerStartupError{Boundary(RpcStartupStage),RuntimeStateRetained,}",
+    statusErrorCompatibility: fn(rpc, "into_status_error") === "constfninto_status_error(self)->StatusRpcWorkerError{matchself{Self::Boundary(_)=>StatusRpcWorkerError::Unavailable,Self::RuntimeStateRetained=>StatusRpcWorkerError::RuntimeStateRetained,}}" &&
+      fn(rpc, "start").includes(".map_err(RpcWorkerStartupError::into_status_error)?"),
+    rpcRetainedCleanupBeforeCode: startup === "fnstart_status_rpc_server(context:Arc<ServerContext>,security_profile:RpcSecurityProfile,)->Result<(LiveStatusServer,Arc<ServerContext>),RpcWorkerStartupError>{letsecurity_descriptor=OwnedSecurityDescriptor::new(security_profile).map_err(|_|RpcWorkerStartupError::Boundary(RpcStartupStage::SecurityDescriptor))?;letinterface_spec=server_interface_spec().ok_or(RpcWorkerStartupError::Boundary(RpcStartupStage::InterfaceSpec,))?;publish_context(Arc::clone(&context)).map_err(|_|RpcWorkerStartupError::Boundary(RpcStartupStage::PublishContext))?;letprepared=PreparedStatusRpcServer::new(WindowsRpcOps,interface_spec,security_descriptor,ServerHooks{context:Arc::clone(&context),},);matchprepared.start(){Ok(server)=>Ok((server,context)),Err(failure)=>{let_=(failure.stage(),failure.error());ifletSome(cleanup)=failure.cleanup_failure(){let_=(cleanup.stage(),cleanup.error(),cleanup.secondary());}iffailure.resources_are_retained(){returnErr(RpcWorkerStartupError::RuntimeStateRetained);}#[cfg(all(feature=,debug_assertions))]ifcontext.stop_probe_coordinator_and_helpers().is_err(){returnErr(RpcWorkerStartupError::RuntimeStateRetained);}ifclear_context(&context).is_err(){returnErr(RpcWorkerStartupError::RuntimeStateRetained);}Err(RpcWorkerStartupError::Boundary(failure.stage().into()))}}}" &&
+      hasOrderedCompactMarkers(rustFunctionBlock(rpc, "start_lpac_rpc_probe"), [
+      "ServiceProbeCoordinator::start(service_token,helpers.clone()).map_err(|_|RpcWorkerStartupError::Boundary(RpcStartupStage::Coordinator))?",
+      "ServerContext::new_with_probe_coordinator(helpers,probe_coordinator).map_err(|_|RpcWorkerStartupError::Boundary(RpcStartupStage::Context))?",
+      "start_status_rpc_server(context,lpac_probe_security_profile())?",
+    ]) && startup.includes(".map_err(|_|RpcWorkerStartupError::Boundary(RpcStartupStage::SecurityDescriptor))?") &&
+      startup.includes(".ok_or(RpcWorkerStartupError::Boundary(RpcStartupStage::InterfaceSpec,))?") &&
+      startup.includes(".map_err(|_|RpcWorkerStartupError::Boundary(RpcStartupStage::PublishContext))?") &&
+      hasOrderedCompactMarkers(startup, [
+        "iffailure.resources_are_retained(){returnErr(RpcWorkerStartupError::RuntimeStateRetained);}",
+        "ifcontext.stop_probe_coordinator_and_helpers().is_err(){returnErr(RpcWorkerStartupError::RuntimeStateRetained);}",
+        "ifclear_context(&context).is_err(){returnErr(RpcWorkerStartupError::RuntimeStateRetained);}",
+        "Err(RpcWorkerStartupError::Boundary(failure.stage().into()))",
+      ]),
+    scmFixedStoppedClassification: initialization === `constfninitialization_code(&self)->Option<u32>{matchself{Self::Boundary=>Some(INITIALIZATION_FAILURE),${compactGate}Self::LpacToken(error)=>Some(error.startup_diagnostic_code()),${compactGate}Self::LpacRpc(stage)=>Some(stage.startup_diagnostic_code()),#[cfg(feature=)]Self::RuntimeStateRetained=>None,}}` &&
+      fn(service, "permits_stopped_status") === "constfnpermits_stopped_status(&self)->bool{self.initialization_code().is_some()}" &&
+      serviceMain.includes("letOk(stop_event)=OwnedEvent::create()else{finish_service::<W>(status_handle,None,None,Some(W::STOP_EVENT_FAILURE_CODE));return;};") &&
+      serviceMain.includes("Err(failure)=>{iffailure.permits_stopped_status(){finish_service::<W>(status_handle,Some(stop_event),None,failure.initialization_code(),);}else{abandon_service_with_retained_runtime(stop_event);}return;}") &&
+      fn(lpacWorker, "start").includes(".map_err(WorkerStartFailure::LpacToken)?") &&
+      fn(lpacWorker, "start").includes("Err(crate::key_agent_service_rpc::RpcWorkerStartupError::Boundary(stage))=>{Err(WorkerStartFailure::LpacRpc(stage))}") &&
+      fn(lpacWorker, "start").includes("Err(crate::key_agent_service_rpc::RpcWorkerStartupError::RuntimeStateRetained)=>{Err(WorkerStartFailure::RuntimeStateRetained)}") &&
+      compactRust(service).includes("constSTOP_EVENT_FAILURE_CODE:u32=INITIALIZATION_FAILURE;") &&
+      compactRust(lpacWorker).includes("constSTOP_EVENT_FAILURE_CODE:u32=0x2201;") &&
+      (rustLexicalCode(service).match(/\bconst\s+STOP_EVENT_FAILURE_CODE\b/gu) ?? []).length === 2,
+    // This collector retains the two const-fn declaration sites as well as
+    // calls: exactly one declaration per accessor and two SCM-owned calls.
+    diagnosticReachability: JSON.stringify([token, sys, rpc, service].map((source) => rustCallSites(source, "startup_diagnostic_code").length)) === "[1,0,1,2]" &&
+      !/\b(?:GetLastError|GetLastWin32Error|HRESULT|WIN32_ERROR|println|eprintln|dbg)\b/u.test([
+        rustFunctionBlock(token, "startup_diagnostic_code"), rustFunctionBlock(token, "policy_rejection_for_baseline"),
+        rustFunctionBlock(rpc, "startup_diagnostic_code"), rustFunctionBlock(service, "initialization_code"),
+      ].map(rustLexicalCode).join("\n")),
+  };
+}
+function keyAgentServiceStartupDiagnosticContract(inputs) {
+  const checks = keyAgentServiceStartupDiagnosticChecks(inputs);
+  return Object.keys(checks).length === 10 && Object.values(checks).every((value) => value === true);
+}
+const keyAgentServiceStartupDiagnosticInputs = {
+  token: keyAgentServiceTokenFixtureSources[keyAgentServiceTokenFixturePaths.policy],
+  sys: keyAgentServiceTokenFixtureSources[keyAgentServiceTokenFixturePaths.sys],
+  rpc: keyAgentServiceRpcFixtureSources[keyAgentServiceRpcFixturePaths.root],
+  service: keyAgentServicePlatformSource,
+};
+const keyAgentServiceStartupDiagnosticMutations = [
+  ["capture code mapping", "token", "ServiceTokenCaptureStage::ThreadBefore => 0x2101,", "ServiceTokenCaptureStage::ThreadBefore => 0x2102,"],
+  ["policy code mapping", "token", "PolicyRejection::Privileges => 0x2186,", "PolicyRejection::Privileges => 0x2183,"],
+  ["identity detail code", "token", "ServiceTokenPolicyDetail::OwnerMismatch => 0x2191,", "ServiceTokenPolicyDetail::OwnerMismatch => 0x2192,"],
+  ["raw native diagnostic", "token", "pub(crate) const fn startup_diagnostic_code(&self) -> u32 {", "pub(crate) const fn startup_diagnostic_code(&self) -> u32 { return GetLastError().0;"],
+  ["raw error payload", "token", "policy_detail: Option<ServiceTokenPolicyDetail>,", "policy_detail: Option<ServiceTokenPolicyDetail>, native_error: u32,"],
+  ["wrong capture stage", "sys", "error.at_stage(ServiceTokenCaptureStage::ThreadBefore)", "error.at_stage(ServiceTokenCaptureStage::ThreadAfter)"],
+  ["missing identity stage", "sys", ".at_stage(ServiceTokenCaptureStage::IdentityContinuity)", ".at_stage(ServiceTokenCaptureStage::Unspecified)"],
+  ["detail only after rejection", "token", "if reason == PolicyRejection::ServiceIdentity {", "if true {"],
+  ["detail exact owner", "token", "error.policy_detail = if token.owner_sid == token.user_sid {", "error.policy_detail = if token.owner_sid != token.user_sid {"],
+  ["capture policy remains rejected", "token", "verify_fixture_baseline(&captured.baseline).map_err(|reason| {", "verify_fixture_baseline(&captured.baseline).or_else(|reason| {"],
+  ["release accessor gate", "token", "        debug_assertions\n    ))]\n    pub(crate) const fn startup_diagnostic_code", "        any(debug_assertions, not(debug_assertions))\n    ))]\n    pub(crate) const fn startup_diagnostic_code"],
+  ["RPC code mapping", "rpc", "Self::BindEndpoint => 0x2312,", "Self::BindEndpoint => 0x2313,"],
+  ["RPC lifecycle stage mapping", "rpc", "lifecycle::StartStage::Listen => Self::Listen,", "lifecycle::StartStage::Listen => Self::RegisterInterface,"],
+  ["RPC status compatibility", "rpc", "Self::Boundary(_) => StatusRpcWorkerError::Unavailable,", "Self::Boundary(_) => StatusRpcWorkerError::RuntimeStateRetained,"],
+  ["RPC retained status compatibility", "rpc", "Self::RuntimeStateRetained => StatusRpcWorkerError::RuntimeStateRetained,", "Self::RuntimeStateRetained => StatusRpcWorkerError::Unavailable,"],
+  ["RPC retained resources", "rpc", "if failure.resources_are_retained() {", "if false {"],
+  ["RPC no early clean classification", "rpc", "if failure.resources_are_retained() {", "if failure.resources_are_retained() { return Err(RpcWorkerStartupError::Boundary(RpcStartupStage::Listen)); }\n            if failure.resources_are_retained() {"],
+  ["RPC retained coordinator cleanup", "rpc", "if context.stop_probe_coordinator_and_helpers().is_err() {", "if false {"],
+  ["RPC retained context cleanup", "rpc", "if clear_context(&context).is_err() {", "if false {"],
+  ["RPC raw startup status", "rpc", "RpcWorkerStartupError::Boundary(failure.stage().into())", "RpcWorkerStartupError::Boundary(failure.error().into())"],
+  ["SCM retained means no stopped", "service", "Self::RuntimeStateRetained => None,", "Self::RuntimeStateRetained => Some(INITIALIZATION_FAILURE),"],
+  ["SCM retained branch", "service", "if failure.permits_stopped_status() {", "if true {"],
+  ["SCM original generic event code", "service", "const STOP_EVENT_FAILURE_CODE: u32 = INITIALIZATION_FAILURE;", "const STOP_EVENT_FAILURE_CODE: u32 = 0x2201;"],
+  ["SCM fixed LPAC event code", "service", "const STOP_EVENT_FAILURE_CODE: u32 = 0x2201;", "const STOP_EVENT_FAILURE_CODE: u32 = 1;"],
+  ["SCM preserve token stage", "service", ".map_err(WorkerStartFailure::LpacToken)?;", ".map_err(|_| WorkerStartFailure::Boundary)?;"],
+].map(([name, field, before, after]) => {
+  const changed = keyAgentServiceStartupDiagnosticInputs[field].replace(before, after);
+  return { name, changed: changed !== keyAgentServiceStartupDiagnosticInputs[field], rejected: !keyAgentServiceStartupDiagnosticContract({ ...keyAgentServiceStartupDiagnosticInputs, [field]: changed }) };
+});
+requireInvariant(
+  keyAgentServiceStartupDiagnosticContract(keyAgentServiceStartupDiagnosticInputs) &&
+    keyAgentServiceStartupDiagnosticMutations.length === 25 && keyAgentServiceStartupDiagnosticMutations.every(({ changed, rejected }) => changed && rejected),
+  `the fixed debug LPAC startup diagnostics must preserve closed data-free token/capture/policy/RPC mappings, exact debug accessor and SCM worker gates, unchanged status-only errors and generic event code, and retained cleanup before any stopped-status classification; no native error, log, policy acceptance or new authority may be introduced; checks=${JSON.stringify(Object.entries(keyAgentServiceStartupDiagnosticChecks(keyAgentServiceStartupDiagnosticInputs)).filter(([, value]) => !value).map(([name]) => name))}, mutations=${JSON.stringify(keyAgentServiceStartupDiagnosticMutations.filter(({ changed, rejected }) => !changed || !rejected).map(({ name }) => name))}`,
+);
+
 const keyAgentServiceRpcLpacSecurityDescriptorContract = (source) => {
   try {
     const production = withoutBottomTestModule(source);
@@ -26481,9 +26634,9 @@ const keyAgentServicePhaseThreeCExpectedPins = Object.freeze({
   sourceFull: "12323cc591fe516bfdd7f47091bd268cfba6af41223258a041e4873a71e872ec",
   sourceProduction:
     "e2a793d182b9086d4da421ebba8d163508971ed6d16387ff7692adc3230ef5ff",
-  moduleFull: "5e8bfa854d4431869acde105d6263bf819468878444a9177e3ddd7c6e4d0e40c",
+  moduleFull: "c001ebd5612df7205b83e87e8358f21a4c3ca0f847aa3e536ac6b7b25076aa19",
   moduleProduction:
-    "07d2e6e9424c18dcedd8c447929e525a9236a5c8f2d7227140c69bcb2c9ca119",
+    "a1e62f0d6a7739e3503f4da39ce6a91bb573e04aa75f80c7804323a4ef28122d",
   design: "1c26056a6b5afa915f983bc26b4b4a0f571a4770260c2942cc47abed454c4e93",
   architecture:
     "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
@@ -27270,15 +27423,15 @@ const keyAgentServicePhaseOneIntegrationContract = ({
         "clear_context(&context)?",
       ]) &&
       hasOrderedCompactMarkers(startServer, [
-        "publish_context(Arc::clone(&context))?",
+        "publish_context(Arc::clone(&context)).map_err(|_|RpcWorkerStartupError::Boundary(RpcStartupStage::PublishContext))?",
         "prepared.start()",
         "iffailure.resources_are_retained()",
-        "returnErr(StatusRpcWorkerError::RuntimeStateRetained)",
+        "returnErr(RpcWorkerStartupError::RuntimeStateRetained)",
         "ifcontext.stop_probe_coordinator_and_helpers().is_err()",
-        "returnErr(StatusRpcWorkerError::RuntimeStateRetained)",
+        "returnErr(RpcWorkerStartupError::RuntimeStateRetained)",
         "ifclear_context(&context).is_err()",
-        "returnErr(StatusRpcWorkerError::RuntimeStateRetained)",
-        "Err(StatusRpcWorkerError::Unavailable)",
+        "returnErr(RpcWorkerStartupError::RuntimeStateRetained)",
+        "Err(RpcWorkerStartupError::Boundary(failure.stage().into()))",
       ]) &&
       compactRust(expectedPeer).includes(
         "pub(crate)constEXPECTED_HELPER_QUIESCENCE_MILLISECONDS:u64=5_000;",
@@ -44169,9 +44322,9 @@ const keyAgentServicePhaseThreeBExpectedPins = Object.freeze({
   sourceFull: "5f8dd571c685ad817b272c91794eeddbd8c4210986ae3c931525325ff4131125",
   sourceProduction:
     "3a9de991a09ab223a55972b7985fa66e250cc85ba9c75ffcf09f0bb2764f569e",
-  moduleFull: "5e8bfa854d4431869acde105d6263bf819468878444a9177e3ddd7c6e4d0e40c",
+  moduleFull: "c001ebd5612df7205b83e87e8358f21a4c3ca0f847aa3e536ac6b7b25076aa19",
   moduleProduction:
-    "07d2e6e9424c18dcedd8c447929e525a9236a5c8f2d7227140c69bcb2c9ca119",
+    "a1e62f0d6a7739e3503f4da39ce6a91bb573e04aa75f80c7804323a4ef28122d",
   design: "1c26056a6b5afa915f983bc26b4b4a0f571a4770260c2942cc47abed454c4e93",
   architecture:
     "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
@@ -48331,7 +48484,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "8925616316c90aaaa60852cc3d9f008d28de08f68aa245e1386afdda283d5f96";
+  "2f6ee96f41cd2b3c718583d02ead80f2e23a75ef9af10826b66de933f6216bb5";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -69706,17 +69859,17 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/mod.rs",
     unsafeCount: 12,
-    sha256: "07d2e6e9424c18dcedd8c447929e525a9236a5c8f2d7227140c69bcb2c9ca119",
+    sha256: "a1e62f0d6a7739e3503f4da39ce6a91bb573e04aa75f80c7804323a4ef28122d",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_token/sys.rs",
     unsafeCount: 27,
-    sha256: "bf8ad4785537d1569eae3aa616ef5bbf961e1d84d88f29f9edc4f3e7140c88fe",
+    sha256: "d495ccc3d9653efced676d9b52ac67012cd281f728090ee85c6deafd72205faa",
   },
   {
     path: "crates/platform-windows/src/key_agent_service.rs",
     unsafeCount: 15,
-    sha256: "d94719fd49fc583b311ad8e36150460a9eacbd25c12e2bc997987060905f0a11",
+    sha256: "3ecbabbc662ab660eca00560aeeb0414997b8943cdc4c0589a3d3d665753d706",
   },
   {
     path: "crates/platform-windows/src/key_agent_service/run_state_root/sys.rs",
@@ -70667,6 +70820,7 @@ requireInvariant(
     JSON.stringify(platformWindowsCfgAttrInventory) ===
       JSON.stringify([
         "#![cfg_attr(not(windows),allow(dead_code))]",
+        "#[cfg_attr(not(all(feature=,debug_assertions)),allow(dead_code,reason=))]",
         "#[cfg_attr(not(test),allow(dead_code,reason=))]",
         "#[cfg_attr(not(test),allow(unused_variables))]",
         "#[cfg_attr(not(test),expect(dead_code,reason=))]",

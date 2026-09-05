@@ -388,6 +388,8 @@ mod sys {
     trait ScmWorker: Sized {
         type AdmissionClosed: AdmissionClosedScmWorker;
 
+        const STOP_EVENT_FAILURE_CODE: u32 = INITIALIZATION_FAILURE;
+
         fn start() -> Result<Self, WorkerStartFailure>;
 
         fn begin_accepting(&mut self) -> Result<(), KeyAgentServiceFixtureError>;
@@ -399,9 +401,19 @@ mod sys {
         fn drain(self) -> Result<(), KeyAgentServiceFixtureError>;
     }
 
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    #[derive(Debug)]
     enum WorkerStartFailure {
         Boundary,
+        #[cfg(all(
+            feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+            debug_assertions
+        ))]
+        LpacToken(crate::key_agent_service_token::ServiceTokenFixtureError),
+        #[cfg(all(
+            feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+            debug_assertions
+        ))]
+        LpacRpc(crate::key_agent_service_rpc::RpcStartupStage),
         #[cfg(feature = "key-agent-service-rpc-status-feasibility-test-hook")]
         RuntimeStateRetained,
     }
@@ -429,8 +441,26 @@ mod sys {
     }
 
     impl WorkerStartFailure {
-        const fn permits_stopped_status(self) -> bool {
-            matches!(self, Self::Boundary)
+        const fn permits_stopped_status(&self) -> bool {
+            self.initialization_code().is_some()
+        }
+
+        const fn initialization_code(&self) -> Option<u32> {
+            match self {
+                Self::Boundary => Some(INITIALIZATION_FAILURE),
+                #[cfg(all(
+                    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+                    debug_assertions
+                ))]
+                Self::LpacToken(error) => Some(error.startup_diagnostic_code()),
+                #[cfg(all(
+                    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+                    debug_assertions
+                ))]
+                Self::LpacRpc(stage) => Some(stage.startup_diagnostic_code()),
+                #[cfg(feature = "key-agent-service-rpc-status-feasibility-test-hook")]
+                Self::RuntimeStateRetained => None,
+            }
         }
     }
 
@@ -573,17 +603,19 @@ mod sys {
     impl ScmWorker for LpacRpcProbeWorker {
         type AdmissionClosed = AdmissionClosedLpacRpcProbeWorker;
 
+        const STOP_EVENT_FAILURE_CODE: u32 = 0x2201;
+
         fn start() -> Result<Self, WorkerStartFailure> {
             let service_token =
                 crate::key_agent_service_token::verify_current_key_agent_service_token_fixture()
-                    .map_err(|_| WorkerStartFailure::Boundary)?;
+                    .map_err(WorkerStartFailure::LpacToken)?;
             match crate::key_agent_service_rpc::StatusRpcWorker::start_lpac_rpc_probe(service_token)
             {
                 Ok(worker) => Ok(Self(worker)),
-                Err(crate::key_agent_service_rpc::StatusRpcWorkerError::Unavailable) => {
-                    Err(WorkerStartFailure::Boundary)
+                Err(crate::key_agent_service_rpc::RpcWorkerStartupError::Boundary(stage)) => {
+                    Err(WorkerStartFailure::LpacRpc(stage))
                 }
-                Err(crate::key_agent_service_rpc::StatusRpcWorkerError::RuntimeStateRetained) => {
+                Err(crate::key_agent_service_rpc::RpcWorkerStartupError::RuntimeStateRetained) => {
                     Err(WorkerStartFailure::RuntimeStateRetained)
                 }
             }
@@ -736,7 +768,7 @@ mod sys {
         }
 
         let Ok(stop_event) = OwnedEvent::create() else {
-            finish_service::<W>(status_handle, None, None, Some(INITIALIZATION_FAILURE));
+            finish_service::<W>(status_handle, None, None, Some(W::STOP_EVENT_FAILURE_CODE));
             return;
         };
 
@@ -761,7 +793,7 @@ mod sys {
                         status_handle,
                         Some(stop_event),
                         None,
-                        Some(INITIALIZATION_FAILURE),
+                        failure.initialization_code(),
                     );
                 } else {
                     abandon_service_with_retained_runtime(stop_event);
@@ -1278,8 +1310,69 @@ mod sys {
         #[test]
         fn retained_runtime_start_failure_forbids_stopped_status() {
             assert!(WorkerStartFailure::Boundary.permits_stopped_status());
+            assert_eq!(WorkerStartFailure::Boundary.initialization_code(), Some(1));
             #[cfg(feature = "key-agent-service-rpc-status-feasibility-test-hook")]
-            assert!(!WorkerStartFailure::RuntimeStateRetained.permits_stopped_status());
+            {
+                assert!(!WorkerStartFailure::RuntimeStateRetained.permits_stopped_status());
+                assert_eq!(
+                    WorkerStartFailure::RuntimeStateRetained.initialization_code(),
+                    None
+                );
+            }
+        }
+
+        #[test]
+        fn generic_workers_keep_the_original_stop_event_failure_code() {
+            assert_eq!(InertWorker::STOP_EVENT_FAILURE_CODE, 1);
+            #[cfg(all(
+                feature = "key-agent-service-token-feasibility-test-hook",
+                debug_assertions
+            ))]
+            assert_eq!(ServiceTokenWorker::STOP_EVENT_FAILURE_CODE, 1);
+            #[cfg(feature = "key-agent-service-rpc-status-feasibility-test-hook")]
+            assert_eq!(StatusRpcWorker::STOP_EVENT_FAILURE_CODE, 1);
+        }
+
+        #[cfg(all(
+            feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+            debug_assertions
+        ))]
+        #[test]
+        fn lpac_startup_stage_status_is_fixed_and_never_reclassifies_retained_runtime() {
+            use crate::key_agent_service_rpc::RpcStartupStage;
+
+            assert_eq!(LpacRpcProbeWorker::STOP_EVENT_FAILURE_CODE, 0x2201);
+            for (stage, expected) in [
+                (RpcStartupStage::Coordinator, 0x2301),
+                (RpcStartupStage::Context, 0x2302),
+                (RpcStartupStage::SecurityDescriptor, 0x2303),
+                (RpcStartupStage::InterfaceSpec, 0x2304),
+                (RpcStartupStage::PublishContext, 0x2305),
+                (RpcStartupStage::RegisterAuthentication, 0x2311),
+                (RpcStartupStage::BindEndpoint, 0x2312),
+                (RpcStartupStage::InstallHandler, 0x2313),
+                (RpcStartupStage::RegisterInterface, 0x2314),
+                (RpcStartupStage::Listen, 0x2315),
+            ] {
+                let failure = WorkerStartFailure::LpacRpc(stage);
+                assert!(failure.permits_stopped_status());
+                assert_eq!(failure.initialization_code(), Some(expected));
+                let status = status_value(
+                    SERVICE_STOPPED,
+                    ERROR_SERVICE_SPECIFIC_ERROR.0,
+                    expected,
+                    0,
+                    0,
+                );
+                assert_eq!(status.dwCurrentState, SERVICE_STOPPED);
+                assert_eq!(status.dwWin32ExitCode, ERROR_SERVICE_SPECIFIC_ERROR.0);
+                assert_eq!(status.dwServiceSpecificExitCode, expected);
+                assert_eq!(status.dwControlsAccepted, 0);
+            }
+            let retained = WorkerStartFailure::RuntimeStateRetained;
+            assert!(!retained.permits_stopped_status());
+            assert_eq!(retained.initialization_code(), None);
+            assert_eq!(format!("{retained:?}"), "RuntimeStateRetained");
         }
 
         #[test]
