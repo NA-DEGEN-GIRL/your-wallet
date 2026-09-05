@@ -3,7 +3,7 @@ Set-StrictMode -Version Latest
 
 try {
     if ($args.Count -ne 2 -or $args[0] -cne '-Action' -or
-        $args[1] -cnotin @('Install', 'Readback', 'Start', 'Stop', 'Remove')) {
+        $args[1] -cnotin @('Install', 'Readback', 'Start', 'Stop', 'Remove', 'Inspect')) {
         Write-Output 'SERVICE_PROBE_ARGUMENT_ERROR'
         exit 2
     }
@@ -13,6 +13,11 @@ try {
     $workspace = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
     $result = [YourWallet.ServiceProbe.Harness]::Run($Action, $workspace)
     Write-Output $result
+    if ($Action -ceq 'Inspect' -and $result.EndsWith("`nSERVICE_PROBE_INSPECT_COMPLETE_NOT_RELEASE_EVIDENCE", [StringComparison]::Ordinal)) {
+        # Exit zero means only that the finite read-only report completed.
+        # Individual FAIL/UNAVAILABLE stages do not become installation proof.
+        exit 0
+    }
     if ($result -ceq ('SERVICE_PROBE_' + $Action.ToUpperInvariant() + '_PASS_NOT_RELEASE_EVIDENCE')) {
         exit 0
     }

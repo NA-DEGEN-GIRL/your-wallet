@@ -45,6 +45,29 @@ namespace YourWallet.ServiceProbe
             void Execute(string action, string workspace);
         }
 
+        internal enum InspectionStage
+        {
+            DIRECTORY, DIRECTORY_SECURITY_OWNER_GROUP, DIRECTORY_SECURITY_ACE_BYTES, DIRECTORY_SECURITY_PROTECTED,
+            APPROVAL_FILE_PRESENCE, DESKTOP_PROBE_FILE_PRESENCE, SERVICE_FILE_PRESENCE, SECRET_INPUT_FILE_PRESENCE,
+            MANIFEST_FILE_PRESENCE, JOURNAL_FILE_PRESENCE, SERVICE_QUERY, SERVICE_CONFIG_BASE,
+            SERVICE_CONFIG_SID_TYPE, SERVICE_CONFIG_PRIVILEGES, SERVICE_STATUS_QUERY,
+            SERVICE_SECURITY_OWNER_GROUP, SERVICE_SECURITY_ACE_BYTES, SERVICE_SECURITY_PROTECTED,
+            SERVICE_SID, RIGHTS, MANIFEST, JOURNAL,
+            APPROVAL_SECURITY, DESKTOP_PROBE_SECURITY, SERVICE_FILE_SECURITY, SECRET_INPUT_SECURITY, MANIFEST_SECURITY, JOURNAL_SECURITY,
+            APPROVAL_HASH, DESKTOP_PROBE_HASH, SERVICE_FILE_HASH, SECRET_INPUT_HASH, INVENTORY
+        }
+        internal enum InspectionOutcome { PASS, FAIL, UNAVAILABLE, STOPPED, RUNNING, START_PENDING, OTHER }
+        internal interface InspectionOperations
+        {
+            bool IsElevated();
+            InspectionOutcome Check(InspectionStage stage);
+        }
+        private sealed class WindowsInspectionOperations : InspectionOperations
+        {
+            public bool IsElevated() { return Native.IsElevatedPrimary(); }
+            public InspectionOutcome Check(InspectionStage stage) { return Native.InspectStage(stage); }
+        }
+
         private sealed class WindowsOperatorOperations : OperatorOperations
         {
             public bool IsElevated() { return Native.IsElevatedPrimary(); }
@@ -96,7 +119,42 @@ namespace YourWallet.ServiceProbe
         // native error, local path, account identity, or file content is output.
         public static string Run(string action, string workspace)
         {
+            if (action == "Inspect") return RunInspectionWith(new WindowsInspectionOperations());
             return RunWith(action, workspace, new WindowsOperatorOperations());
+        }
+
+        internal static string RunInspectionWith(InspectionOperations operations)
+        {
+            Native.BeginCheckedCleanup();
+            try
+            {
+                if (!operations.IsElevated()) return "SERVICE_PROBE_REQUIRES_ELEVATED_OPERATOR";
+                var lines = new List<string> { "SERVICE_PROBE_INSPECT_READ_ONLY_NOT_OWNERSHIP_EVIDENCE" };
+                foreach (InspectionStage stage in Enum.GetValues(typeof(InspectionStage)))
+                {
+                    InspectionOutcome outcome = InspectionOutcome.UNAVAILABLE;
+                    try
+                    {
+                        var observed = operations.Check(stage);
+                        if (InspectionOutcomeIsValid(stage, observed)) outcome = observed;
+                    }
+                    catch { }
+                    lines.Add("SERVICE_PROBE_INSPECT_" + stage.ToString() + "_" + outcome.ToString());
+                }
+                lines.Add(Native.CleanupFailed ? "SERVICE_PROBE_INSPECT_CLEANUP_FAIL" : "SERVICE_PROBE_INSPECT_CLEANUP_PASS");
+                lines.Add("SERVICE_PROBE_INSPECT_COMPLETE_NOT_RELEASE_EVIDENCE");
+                return string.Join("\n", lines);
+            }
+            catch { return "SERVICE_PROBE_INSPECT_UNAVAILABLE_NOT_RELEASE_EVIDENCE"; }
+        }
+
+        private static bool InspectionOutcomeIsValid(InspectionStage stage, InspectionOutcome outcome)
+        {
+            if (outcome == InspectionOutcome.UNAVAILABLE) return true;
+            if (stage == InspectionStage.SERVICE_STATUS_QUERY)
+                return outcome == InspectionOutcome.STOPPED || outcome == InspectionOutcome.RUNNING ||
+                    outcome == InspectionOutcome.START_PENDING || outcome == InspectionOutcome.OTHER;
+            return outcome == InspectionOutcome.PASS || outcome == InspectionOutcome.FAIL;
         }
 
         internal static string RunWith(string action, string workspace, OperatorOperations operations)
@@ -273,7 +331,87 @@ namespace YourWallet.ServiceProbe
             var failedCleanup = new FakeOperatorOperations { Elevated = true, FailCleanup = true };
             Require(RunWith("Remove", "", failedCleanup) == "SERVICE_PROBE_FAILED_STATE_RETAINED_FOR_REVIEW" && failedCleanup.Executions == 1); checks++;
             Require(Native.InteropLayoutsAreExact()); checks++;
+            checks += SelfTestInspection();
             return checks;
+        }
+
+        private static int SelfTestInspection()
+        {
+            int checks = 0;
+            var stages = Enum.GetValues(typeof(InspectionStage)).Cast<InspectionStage>().ToArray();
+            Require(stages.Length == 33); checks++;
+            var denied = new FakeInspectionOperations();
+            Require(RunInspectionWith(denied) == "SERVICE_PROBE_REQUIRES_ELEVATED_OPERATOR" && denied.Queries == 1 && denied.Checked.Count == 0); checks++;
+            var preflight = new FakeInspectionOperations { Elevated = true, PreflightFail = true };
+            Require(RunInspectionWith(preflight) == "SERVICE_PROBE_INSPECT_UNAVAILABLE_NOT_RELEASE_EVIDENCE" && preflight.Checked.Count == 0); checks++;
+            var allowed = new FakeInspectionOperations { Elevated = true };
+            string expected = InspectionExpected(stages, null, InspectionOutcome.PASS, false);
+            Require(RunInspectionWith(allowed) == expected && allowed.Queries == 1 && allowed.Checked.SequenceEqual(stages)); checks++;
+            foreach (InspectionStage stage in stages)
+            {
+                var failed = new FakeInspectionOperations { Elevated = true, Target = stage, Throw = true };
+                Require(RunInspectionWith(failed) == InspectionExpected(stages, stage, InspectionOutcome.UNAVAILABLE, false) && failed.Checked.SequenceEqual(stages)); checks++;
+                var rejected = new FakeInspectionOperations { Elevated = true, Target = stage, Reject = true };
+                Require(RunInspectionWith(rejected) == InspectionExpected(stages, stage,
+                    stage == InspectionStage.SERVICE_STATUS_QUERY ? InspectionOutcome.UNAVAILABLE : InspectionOutcome.FAIL, false)); checks++;
+                var invalid = new FakeInspectionOperations { Elevated = true, Target = stage, Invalid = true };
+                Require(RunInspectionWith(invalid) == InspectionExpected(stages, stage, InspectionOutcome.UNAVAILABLE, false)); checks++;
+            }
+            var cleanup = new FakeInspectionOperations { Elevated = true, FailCleanup = true };
+            Require(RunInspectionWith(cleanup) == InspectionExpected(stages, null, InspectionOutcome.PASS, true)); checks++;
+            var mutation = new FakeOperatorOperations { Elevated = true };
+            Require(RunWith("Inspect", "untrusted-marker-never-output", mutation) == "SERVICE_PROBE_FAILED_STATE_RETAINED_FOR_REVIEW" && mutation.Queries == 0 && mutation.Executions == 0); checks++;
+            var exact = new RawSecurityDescriptor(ServiceSddl);
+            Require(Native.InspectSecurityShape(exact, ServiceSddl, InspectionStage.SERVICE_SECURITY_OWNER_GROUP) &&
+                Native.InspectSecurityShape(exact, ServiceSddl, InspectionStage.SERVICE_SECURITY_ACE_BYTES) &&
+                Native.InspectSecurityShape(exact, ServiceSddl, InspectionStage.SERVICE_SECURITY_PROTECTED)); checks++;
+            var unprotected = new RawSecurityDescriptor(ServiceSddl.Replace("D:P", "D:"));
+            Require(Native.InspectSecurityShape(unprotected, ServiceSddl, InspectionStage.SERVICE_SECURITY_OWNER_GROUP) &&
+                Native.InspectSecurityShape(unprotected, ServiceSddl, InspectionStage.SERVICE_SECURITY_ACE_BYTES) &&
+                !Native.InspectSecurityShape(unprotected, ServiceSddl, InspectionStage.SERVICE_SECURITY_PROTECTED)); checks++;
+            var owner = new RawSecurityDescriptor(ServiceSddl.Replace("O:BA", "O:SY"));
+            Require(!Native.InspectSecurityShape(owner, ServiceSddl, InspectionStage.SERVICE_SECURITY_OWNER_GROUP) &&
+                Native.InspectSecurityShape(owner, ServiceSddl, InspectionStage.SERVICE_SECURITY_ACE_BYTES)); checks++;
+            var acl = new RawSecurityDescriptor(ServiceSddl.Replace("0xF01FF", "0x20005"));
+            Require(Native.InspectSecurityShape(acl, ServiceSddl, InspectionStage.SERVICE_SECURITY_OWNER_GROUP) &&
+                !Native.InspectSecurityShape(acl, ServiceSddl, InspectionStage.SERVICE_SECURITY_ACE_BYTES)); checks++;
+            Native.BeginCheckedCleanup();
+            return checks;
+        }
+
+        private static string InspectionExpected(InspectionStage[] stages, InspectionStage? target, InspectionOutcome changed, bool cleanup)
+        {
+            var lines = new List<string> { "SERVICE_PROBE_INSPECT_READ_ONLY_NOT_OWNERSHIP_EVIDENCE" };
+            foreach (InspectionStage stage in stages)
+            {
+                InspectionOutcome outcome = target.HasValue && target.Value == stage ? changed :
+                    stage == InspectionStage.SERVICE_STATUS_QUERY ? InspectionOutcome.STOPPED : InspectionOutcome.PASS;
+                lines.Add("SERVICE_PROBE_INSPECT_" + stage.ToString() + "_" + outcome.ToString());
+            }
+            lines.Add(cleanup ? "SERVICE_PROBE_INSPECT_CLEANUP_FAIL" : "SERVICE_PROBE_INSPECT_CLEANUP_PASS");
+            lines.Add("SERVICE_PROBE_INSPECT_COMPLETE_NOT_RELEASE_EVIDENCE");
+            return string.Join("\n", lines);
+        }
+
+        private sealed class FakeInspectionOperations : InspectionOperations
+        {
+            internal bool Elevated, PreflightFail, Throw, Reject, Invalid, FailCleanup;
+            internal InspectionStage Target;
+            internal int Queries;
+            internal readonly List<InspectionStage> Checked = new List<InspectionStage>();
+            public bool IsElevated() { Queries++; if (PreflightFail) throw new InvalidOperationException("untrusted-marker-never-output"); return Elevated; }
+            public InspectionOutcome Check(InspectionStage stage)
+            {
+                Checked.Add(stage);
+                if (FailCleanup) Native.RecordCleanupFailure();
+                if (stage == Target)
+                {
+                    if (Throw) throw new InvalidOperationException("untrusted-marker-never-output");
+                    if (Reject) return InspectionOutcome.FAIL;
+                    if (Invalid) return stage == InspectionStage.SERVICE_STATUS_QUERY ? InspectionOutcome.PASS : InspectionOutcome.RUNNING;
+                }
+                return stage == InspectionStage.SERVICE_STATUS_QUERY ? InspectionOutcome.STOPPED : InspectionOutcome.PASS;
+            }
         }
 
         private sealed class FakeOperatorOperations : OperatorOperations
@@ -598,6 +736,16 @@ namespace YourWallet.ServiceProbe
                 using (var sha = SHA256.Create()) Harness.Require(Harness.Hex(sha.ComputeHash(stream)) == hash);
                 Harness.Require(stream.Length == length && Identity(handle) == identity);
             }
+            internal bool InspectHash(long length, string hash)
+            {
+                Harness.Require(length > 0 && length <= 512L * 1024 * 1024 && Identity(handle) == identity);
+                if (stream.Length != length) return false;
+                stream.Position = 0;
+                bool matches;
+                using (var sha = SHA256.Create()) matches = Harness.Hex(sha.ComputeHash(stream)) == hash;
+                Harness.Require(Identity(handle) == identity);
+                return matches && stream.Length == length;
+            }
             internal void CopyNew(string path, string sddl)
             {
                 using (var output = new HeldFile(OpenFile(path, false, true, sddl), true))
@@ -717,6 +865,222 @@ namespace YourWallet.ServiceProbe
                 bool directory = name == "directory";
                 string sddl = (name == "candidate.json" || name == "ownership.txt") ? Harness.BaseSddl : ArtifactSddl(name, service, approval, secret);
                 using (var file = OpenFile(directory ? destination : Path.Combine(destination, name), directory, false, null)) VerifyExactSecurity(file.DangerousGetHandle(), 1, sddl);
+            }
+        }
+
+        // Diagnostic handles deliberately cannot start, stop, reconfigure,
+        // delete, or change service security. Inspection never opens an owned
+        // service with the mutating operator's all-access mask.
+        internal static ServiceHandle OpenInspectionManager()
+        {
+            var manager = OpenSCManagerW(null, null, 1);
+            Harness.Require(!manager.IsInvalid); return manager;
+        }
+        internal static ServiceHandle OpenInspectionService(ServiceHandle manager)
+        {
+            var service = OpenServiceW(manager, Harness.ServiceName, 0x20005);
+            Harness.Require(!service.IsInvalid); return service;
+        }
+
+        internal static Harness.InspectionOutcome InspectStage(Harness.InspectionStage stage)
+        {
+            Harness.Require(Enum.IsDefined(typeof(Harness.InspectionStage), stage));
+            string programFiles = ProgramFiles();
+            string destination = Path.Combine(programFiles, Harness.Leaf);
+            Harness.Require(Path.GetDirectoryName(destination) == programFiles);
+            bool accepted;
+            switch (stage)
+            {
+                case Harness.InspectionStage.SERVICE_QUERY:
+                case Harness.InspectionStage.SERVICE_CONFIG_BASE:
+                case Harness.InspectionStage.SERVICE_CONFIG_SID_TYPE:
+                case Harness.InspectionStage.SERVICE_CONFIG_PRIVILEGES:
+                case Harness.InspectionStage.SERVICE_STATUS_QUERY:
+                case Harness.InspectionStage.SERVICE_SECURITY_OWNER_GROUP:
+                case Harness.InspectionStage.SERVICE_SECURITY_ACE_BYTES:
+                case Harness.InspectionStage.SERVICE_SECURITY_PROTECTED:
+                    using (var manager = OpenInspectionManager())
+                    using (var service = OpenInspectionService(manager))
+                    {
+                        if (stage == Harness.InspectionStage.SERVICE_QUERY) accepted = true;
+                        else if (stage == Harness.InspectionStage.SERVICE_STATUS_QUERY)
+                        {
+                            uint status = Status(service);
+                            Harness.Require(status >= 1 && status <= 7);
+                            return status == 1 ? Harness.InspectionOutcome.STOPPED : status == 4 ? Harness.InspectionOutcome.RUNNING :
+                                status == 2 ? Harness.InspectionOutcome.START_PENDING : Harness.InspectionOutcome.OTHER;
+                        }
+                        else if (stage == Harness.InspectionStage.SERVICE_CONFIG_BASE ||
+                            stage == Harness.InspectionStage.SERVICE_CONFIG_SID_TYPE || stage == Harness.InspectionStage.SERVICE_CONFIG_PRIVILEGES)
+                            accepted = InspectServiceConfiguration(service, destination, stage);
+                        else accepted = InspectSecurityShape(ReadSecurity(service.DangerousGetHandle(), 2), Harness.ServiceSddl, stage);
+                    }
+                    break;
+                case Harness.InspectionStage.SERVICE_SID:
+                    accepted = ServiceSid().StartsWith("S-1-5-80-", StringComparison.Ordinal); break;
+                case Harness.InspectionStage.RIGHTS:
+                    accepted = ReadRights(ServiceSid()).SequenceEqual(Harness.Rights); break;
+                default:
+                    // A diagnostic hold rejects reparses but does not assume the
+                    // ACL is correct before classifying that separate stage.
+                    using (var directory = HoldDirectories(destination, false))
+                    {
+                        switch (stage)
+                        {
+                            case Harness.InspectionStage.DIRECTORY: accepted = true; break;
+                            case Harness.InspectionStage.DIRECTORY_SECURITY_OWNER_GROUP:
+                            case Harness.InspectionStage.DIRECTORY_SECURITY_ACE_BYTES:
+                            case Harness.InspectionStage.DIRECTORY_SECURITY_PROTECTED:
+                                string expected = stage == Harness.InspectionStage.DIRECTORY_SECURITY_ACE_BYTES ?
+                                    ArtifactSddl("directory", ServiceSid(), PackageSid("YourWallet.ApprovalFrontend.LPAC.v1"), PackageSid("YourWallet.SecretInputFrontend.LPAC.v1")) : Harness.BaseSddl;
+                                using (var file = OpenFile(destination, true, false, null))
+                                    accepted = InspectSecurityShape(ReadSecurity(file.DangerousGetHandle(), 1), expected, stage);
+                                break;
+                            case Harness.InspectionStage.APPROVAL_FILE_PRESENCE: return InspectFilePresence(destination, "approval-ui.exe");
+                            case Harness.InspectionStage.DESKTOP_PROBE_FILE_PRESENCE: return InspectFilePresence(destination, "key-agent-service-probe.exe");
+                            case Harness.InspectionStage.SERVICE_FILE_PRESENCE: return InspectFilePresence(destination, "key-agent-service.exe");
+                            case Harness.InspectionStage.SECRET_INPUT_FILE_PRESENCE: return InspectFilePresence(destination, "secret-input-ui.exe");
+                            case Harness.InspectionStage.MANIFEST_FILE_PRESENCE: return InspectFilePresence(destination, "candidate.json");
+                            case Harness.InspectionStage.JOURNAL_FILE_PRESENCE: return InspectFilePresence(destination, "ownership.txt");
+                            case Harness.InspectionStage.MANIFEST:
+                                using (var file = HeldFile.Open(Path.Combine(destination, "candidate.json"), false))
+                                    accepted = InspectManifest(file.ReadBounded(2048));
+                                break;
+                            case Harness.InspectionStage.JOURNAL: accepted = InspectJournal(destination, directory.LeafIdentity); break;
+                            case Harness.InspectionStage.APPROVAL_SECURITY: accepted = InspectArtifactSecurity(destination, "approval-ui.exe"); break;
+                            case Harness.InspectionStage.DESKTOP_PROBE_SECURITY: accepted = InspectArtifactSecurity(destination, "key-agent-service-probe.exe"); break;
+                            case Harness.InspectionStage.SERVICE_FILE_SECURITY: accepted = InspectArtifactSecurity(destination, "key-agent-service.exe"); break;
+                            case Harness.InspectionStage.SECRET_INPUT_SECURITY: accepted = InspectArtifactSecurity(destination, "secret-input-ui.exe"); break;
+                            case Harness.InspectionStage.MANIFEST_SECURITY: accepted = InspectArtifactSecurity(destination, "candidate.json"); break;
+                            case Harness.InspectionStage.JOURNAL_SECURITY: accepted = InspectArtifactSecurity(destination, "ownership.txt"); break;
+                            case Harness.InspectionStage.APPROVAL_HASH: accepted = InspectArtifactHash(destination, "approval-ui.exe"); break;
+                            case Harness.InspectionStage.DESKTOP_PROBE_HASH: accepted = InspectArtifactHash(destination, "key-agent-service-probe.exe"); break;
+                            case Harness.InspectionStage.SERVICE_FILE_HASH: accepted = InspectArtifactHash(destination, "key-agent-service.exe"); break;
+                            case Harness.InspectionStage.SECRET_INPUT_HASH: accepted = InspectArtifactHash(destination, "secret-input-ui.exe"); break;
+                            case Harness.InspectionStage.INVENTORY:
+                                accepted = Directory.EnumerateFileSystemEntries(destination).Take(7).Select(Path.GetFileName).OrderBy(x => x, StringComparer.Ordinal)
+                                    .SequenceEqual(Harness.Names.Concat(new[] { "candidate.json", "ownership.txt" }).OrderBy(x => x, StringComparer.Ordinal));
+                                break;
+                            default: throw new InvalidOperationException("SERVICE_PROBE_INSPECTION_STAGE_REJECTED");
+                        }
+                    }
+                    break;
+            }
+            return accepted ? Harness.InspectionOutcome.PASS : Harness.InspectionOutcome.FAIL;
+        }
+
+        private static Harness.InspectionOutcome InspectFilePresence(string destination, string name)
+        {
+            Harness.Require(Harness.Names.Concat(new[] { "candidate.json", "ownership.txt" }).Contains(name, StringComparer.Ordinal));
+            var security = new SecurityAttributes { Length = Marshal.SizeOf(typeof(SecurityAttributes)) };
+            using (var file = CreateFileW(Path.Combine(destination, name), 0x80020000, 1, ref security, 3, 0x00200000, IntPtr.Zero))
+            {
+                int error = Marshal.GetLastWin32Error();
+                if (file.IsInvalid) return error == 2 ? Harness.InspectionOutcome.FAIL : Harness.InspectionOutcome.UNAVAILABLE;
+                FileInfo info;
+                Harness.Require(GetFileInformationByHandle(file, out info));
+                return (info.Attributes & 0x410) == 0 && info.Links == 1 ? Harness.InspectionOutcome.PASS : Harness.InspectionOutcome.FAIL;
+            }
+        }
+
+        internal static bool InspectSecurityShape(RawSecurityDescriptor actual, string sddl, Harness.InspectionStage stage)
+        {
+            var expected = new RawSecurityDescriptor(sddl);
+            switch (stage)
+            {
+                case Harness.InspectionStage.SERVICE_SECURITY_OWNER_GROUP:
+                case Harness.InspectionStage.DIRECTORY_SECURITY_OWNER_GROUP:
+                    return actual.Owner != null && actual.Group != null && actual.Owner.Equals(expected.Owner) && actual.Group.Equals(expected.Group);
+                case Harness.InspectionStage.SERVICE_SECURITY_ACE_BYTES:
+                case Harness.InspectionStage.DIRECTORY_SECURITY_ACE_BYTES:
+                    return actual.DiscretionaryAcl != null && AclShape(actual.DiscretionaryAcl) == AclShape(expected.DiscretionaryAcl);
+                case Harness.InspectionStage.SERVICE_SECURITY_PROTECTED:
+                case Harness.InspectionStage.DIRECTORY_SECURITY_PROTECTED:
+                    return (actual.ControlFlags & ControlFlags.DiscretionaryAclProtected) != 0;
+                default: throw new InvalidOperationException("SERVICE_PROBE_INSPECTION_STAGE_REJECTED");
+            }
+        }
+
+        private static bool InspectServiceConfiguration(ServiceHandle service, string destination, Harness.InspectionStage stage)
+        {
+            const int capacity = 8192; IntPtr buffer = Marshal.AllocHGlobal(capacity);
+            try
+            {
+                uint needed;
+                if (stage == Harness.InspectionStage.SERVICE_CONFIG_BASE)
+                {
+                    Harness.Require(QueryServiceConfigW(service, buffer, capacity, out needed));
+                    var config = (ServiceConfig)Marshal.PtrToStructure(buffer, typeof(ServiceConfig));
+                    return config.Type == 0x10 && config.Start == 3 && config.Error == 1 && config.Tag == 0 &&
+                        BoundedString(config.Binary, buffer, capacity) == "\"" + Path.Combine(destination, "key-agent-service.exe") + "\"" &&
+                        BoundedString(config.Account, buffer, capacity) == "NT SERVICE\\" + Harness.ServiceName &&
+                        BoundedString(config.Display, buffer, capacity) == Harness.ServiceName &&
+                        OptionalStringIsEmpty(config.Group, buffer, capacity) && OptionalStringIsEmpty(config.Dependencies, buffer, capacity);
+                }
+                if (stage == Harness.InspectionStage.SERVICE_CONFIG_SID_TYPE)
+                {
+                    Harness.Require(QueryServiceConfig2W(service, 5, buffer, capacity, out needed));
+                    return Marshal.ReadInt32(buffer) == 3;
+                }
+                Harness.Require(stage == Harness.InspectionStage.SERVICE_CONFIG_PRIVILEGES &&
+                    QueryServiceConfig2W(service, 6, buffer, capacity, out needed));
+                IntPtr cursor = Marshal.ReadIntPtr(buffer); var names = new List<string>();
+                for (int i = 0; i <= 4; i++) { string name = BoundedString(cursor, buffer, capacity); if (name.Length == 0) break; names.Add(name); cursor = IntPtr.Add(cursor, (name.Length + 1) * 2); }
+                return names.SequenceEqual(Harness.Privileges);
+            }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+
+        private static bool InspectManifest(byte[] bytes)
+        {
+            try { Harness.ParseCandidate(bytes); return true; }
+            catch (InvalidOperationException) { return false; }
+        }
+
+        private static bool InspectJournal(string destination, string identity)
+        {
+            using (var manifest = HeldFile.Open(Path.Combine(destination, "candidate.json"), false))
+            using (var ownership = HeldFile.Open(Path.Combine(destination, "ownership.txt"), false))
+            {
+                byte[] bytes = manifest.ReadBounded(2048);
+                if (!InspectManifest(bytes)) return false;
+                byte[] journalBytes = ownership.ReadBounded(2048);
+                if (journalBytes.Any(b => b >= 128)) return false;
+                string[] journal = Encoding.ASCII.GetString(journalBytes).Split('\n');
+                if (journal.Length != 6 || journal[0] != "YW_SERVICE_PROBE_OWNED_V1" || journal[1] != identity || journal[2] != Harness.Hash(bytes) || journal[5] != "") return false;
+                string[] baseline = journal[3] == "" ? new string[0] : journal[3].Split(',');
+                string[] added = journal[4] == "" ? new string[0] : journal[4].Split(',');
+                return baseline.SequenceEqual(baseline.Distinct().OrderBy(x => x, StringComparer.Ordinal)) &&
+                    added.SequenceEqual(added.Distinct().OrderBy(x => x, StringComparer.Ordinal)) &&
+                    !baseline.Intersect(added, StringComparer.Ordinal).Any() &&
+                    baseline.Concat(added).OrderBy(x => x, StringComparer.Ordinal).SequenceEqual(Harness.Rights);
+            }
+        }
+
+        private static bool InspectArtifactSecurity(string destination, string name)
+        {
+            Harness.Require(Harness.Names.Concat(new[] { "candidate.json", "ownership.txt" }).Contains(name, StringComparer.Ordinal));
+            string sddl = Harness.BaseSddl;
+            if (name != "candidate.json" && name != "ownership.txt")
+                sddl = ArtifactSddl(name, ServiceSid(), PackageSid("YourWallet.ApprovalFrontend.LPAC.v1"), PackageSid("YourWallet.SecretInputFrontend.LPAC.v1"));
+            using (var file = OpenFile(Path.Combine(destination, name), false, false, null))
+            {
+                var actual = ReadSecurity(file.DangerousGetHandle(), 1);
+                return InspectSecurityShape(actual, sddl, Harness.InspectionStage.DIRECTORY_SECURITY_OWNER_GROUP) &&
+                    InspectSecurityShape(actual, sddl, Harness.InspectionStage.DIRECTORY_SECURITY_ACE_BYTES) &&
+                    InspectSecurityShape(actual, sddl, Harness.InspectionStage.DIRECTORY_SECURITY_PROTECTED);
+            }
+        }
+
+        private static bool InspectArtifactHash(string destination, string name)
+        {
+            Harness.Require(Harness.Names.Contains(name, StringComparer.Ordinal));
+            using (var manifest = HeldFile.Open(Path.Combine(destination, "candidate.json"), false))
+            {
+                var artifacts = Harness.ParseCandidate(manifest.ReadBounded(2048));
+                var artifact = artifacts.Single(a => a.Name == name);
+                using (var file = HeldFile.Open(Path.Combine(destination, name), false))
+                    return file.InspectHash(artifact.Bytes, artifact.Sha256);
             }
         }
 

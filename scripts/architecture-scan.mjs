@@ -97330,9 +97330,9 @@ const approvedPowerShellSourceSha256 = Object.freeze({
   "scripts/service-probe/common.ps1":
     "1235631c54642624cea80377712b63fe4425e088e46b84483ba0de08fc190cdb",
   "scripts/service-probe/native.test.ps1":
-    "81db553dafea9efeea7da2745f2a83652b2ca9b9fbc28f754393457c514240da",
+    "a2e6406582c8cddb355fad1f40feb21852d2b14cfb07674a862c26ef146d05d7",
   "scripts/service-probe/operate.ps1":
-    "8c00b60deb8ffe3f2b7b945f7f171665971028801f6326ae30fa1930eb3b2390",
+    "073f0207d43bd262687154d3426d20a349614bd59e8cb9b2ca3a4fb9069c12a4",
   "scripts/service-probe/prepare.ps1":
     "148a2c054d29ff5094243712b83f717acd5f3c15a10d84408f837805f701deb0",
   "scripts/test-focused.ps1":
@@ -103527,6 +103527,137 @@ function serviceProbeNativeMethod(source, name) {
   const closing = matchingRustDelimiter(code, opening, "{", "}");
   return closing < 0 ? "" : source.slice(matches[0].index, closing + 1);
 }
+function serviceProbeInspectionChecks(inputs) {
+  const native = serviceProbeCSharpCommentFree(inputs.native);
+  const method = (name) => serviceProbeNativeMethod(native, name).replace(/\s+/gu, "");
+  const body = (name) => {
+    const source = method(name);
+    return source.slice(source.indexOf("{"));
+  };
+  const nativeCode = rustLexicalCode(native);
+  const compact = native.replace(/\s+/gu, "");
+  const report = body("RunInspectionWith");
+  const readNames = ["InspectStage", "InspectFilePresence", "InspectSecurityShape", "InspectServiceConfiguration", "InspectManifest", "InspectJournal", "InspectArtifactSecurity", "InspectArtifactHash", "InspectHash"];
+  const readSources = readNames.map((name) => serviceProbeNativeMethod(native, name));
+  const readCode = readSources.map(rustLexicalCode).join("\n");
+  const fileOpenArguments = readSources.flatMap((source) => rustCallSites(source, "OpenFile").map(({ arguments: args }) => args.join("|")));
+  const heldOpenArguments = readSources.flatMap((source) => rustCallSites(source, "Open").map(({ arguments: args }) => args.join("|")));
+  const readCallInventory = [
+    "Require,IsDefined,typeof,ProgramFiles,Combine,Require,GetDirectoryName,switch,using,OpenInspectionManager,using,OpenInspectionService,if,if,Status,Require,if,InspectServiceConfiguration,InspectSecurityShape,ReadSecurity,DangerousGetHandle,ServiceSid,StartsWith,ReadRights,ServiceSid,SequenceEqual,using,HoldDirectories,switch,ArtifactSddl,ServiceSid,PackageSid,PackageSid,using,OpenFile,InspectSecurityShape,ReadSecurity,DangerousGetHandle,InspectFilePresence,InspectFilePresence,InspectFilePresence,InspectFilePresence,InspectFilePresence,InspectFilePresence,using,Open,Combine,InspectManifest,ReadBounded,InspectJournal,InspectArtifactSecurity,InspectArtifactSecurity,InspectArtifactSecurity,InspectArtifactSecurity,InspectArtifactSecurity,InspectArtifactSecurity,InspectArtifactHash,InspectArtifactHash,InspectArtifactHash,InspectArtifactHash,EnumerateFileSystemEntries,Take,Select,OrderBy,SequenceEqual,Concat,OrderBy,InvalidOperationException",
+    "Require,Concat,Contains,SizeOf,typeof,using,CreateFileW,Combine,GetLastWin32Error,if,Require,GetFileInformationByHandle,return",
+    "RawSecurityDescriptor,switch,Equals,Equals,AclShape,AclShape,return,InvalidOperationException",
+    "AllocHGlobal,if,Require,QueryServiceConfigW,PtrToStructure,typeof,BoundedString,Combine,BoundedString,BoundedString,OptionalStringIsEmpty,OptionalStringIsEmpty,if,Require,QueryServiceConfig2W,ReadInt32,Require,QueryServiceConfig2W,ReadIntPtr,for,BoundedString,if,Add,Add,SequenceEqual,FreeHGlobal",
+    "ParseCandidate,catch",
+    "using,Open,Combine,using,Open,Combine,ReadBounded,if,InspectManifest,ReadBounded,if,Any,GetString,Split,if,Hash,Split,Split,SequenceEqual,Distinct,OrderBy,SequenceEqual,Distinct,OrderBy,Intersect,Any,Concat,OrderBy,SequenceEqual",
+    "Require,Concat,Contains,if,ArtifactSddl,ServiceSid,PackageSid,PackageSid,using,OpenFile,Combine,ReadSecurity,DangerousGetHandle,InspectSecurityShape,InspectSecurityShape,InspectSecurityShape",
+    "Require,Contains,using,Open,Combine,ParseCandidate,ReadBounded,Single,using,Open,Combine,InspectHash",
+    "Require,Identity,if,using,Create,Hex,ComputeHash,Require,Identity",
+  ];
+  const actualReadCalls = readSources.map((source) => [...rustLexicalCode(source.slice(source.indexOf("{"))).matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/gu)].map((match) => match[1]).join(","));
+  // Reviewed shared read closure, including generic calls and cleanup. Keeping
+  // this separate from the whole-file digest catches hidden mutating callbacks.
+  const sharedReadCalls = {
+    BeginCheckedCleanup: "", RecordCleanupFailure: "", CheckCleanup: "if,RecordCleanupFailure",
+    IsElevatedPrimary: "if,if,OpenThreadToken,GetCurrentThread,Dispose,GetLastWin32Error,if,Dispose,if,if,OpenProcessToken,GetCurrentProcess,using,if,GetTokenInformation,GetTokenInformation,GetTokenInformation,using,GetCurrent,WindowsPrincipal,IsInRole",
+    ProgramFiles: "Guid,Require,SHGetKnownFolderPath,PtrToStringUni,Require,IsPathRooted,StartsWith,GetFullPath,FreeCoTaskMem",
+    OpenFile: "Descriptor,SizeOf,typeof,if,CreateFileW,Require,if,GetFileInformationByHandle,Dispose,InvalidOperationException,if,Dispose",
+    Identity: "Require,GetFileInformationByHandle,Require,ToString,ToString,ToString",
+    HoldDirectories: "Require,GetFullPath,GetPathRoot,List,GetPathRoot,foreach,Substring,Split,Require,EndsWith,EndsWith,Combine,OpenFile,Add,if,RequireNoUnprivilegedWrite,DangerousGetHandle,Require,DirectoryLease,foreach,Dispose",
+    ReadBounded: "Require,while,Read,Require,Require,ReadByte,Identity",
+    ReadSecurity: "Require,GetSecurityInfo,GetSecurityDescriptorLength,Require,Copy,RawSecurityDescriptor,CheckCleanup,LocalFree",
+    AclShape: "Require,GetBinaryForm,ToBase64String",
+    RequireNoUnprivilegedWrite: "ReadSecurity,Require,Contains,foreach,Require,if,unchecked,Require,Contains",
+    ServiceSid: "LookupAccountNameW,Require,GetLastWin32Error,StringBuilder,Require,LookupAccountNameW,SecurityIdentifier",
+    PackageSid: "Require,DeriveAppContainerSidFromAppContainerName,SecurityIdentifier,Require,StartsWith,CheckCleanup,FreeSid",
+    ArtifactSddl: "if,if,if",
+    BoundedString: "ToInt64,ToInt64,Require,StringBuilder,for,ReadInt16,if,ToString,Append,InvalidOperationException",
+    OptionalStringIsEmpty: "BoundedString", Status: "Require,QueryServiceStatusEx,SizeOf,typeof,Require",
+    SidBytes: "SecurityIdentifier,GetBinaryForm", Policy: "SizeOf,typeof,Require,LsaOpenPolicy",
+    ReadRights: "Policy,LsaEnumerateAccountRights,SidBytes,if,LsaNtStatusToWinError,Require,List,for,PtrToStructure,Add,SizeOf,typeof,typeof,Require,Add,PtrToStringUni,Require,Distinct,Count,OrderBy,ToArray,if,CheckCleanup,LsaFreeMemory,CheckCleanup,LsaClose",
+    Require: "if,InvalidOperationException", Hex: "ToString,Replace,ToLowerInvariant", Hash: "using,Create,Hex,ComputeHash",
+    ParseCandidate: "Require,All,GetString,Matches,FromSeconds,Require,StringBuilder,for,Require,TryParse,Parse,Require,if,Append,Append,Require,Append,ToString",
+  };
+  const sharedCallsAreClosed = Object.entries(sharedReadCalls).every(([name, expected]) => {
+    const source = serviceProbeNativeMethod(native, name);
+    const calls = [...rustLexicalCode(source.slice(source.indexOf("{"))).matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)(?:\s*<[^;(){}]*>)?\s*\(/gu)].map((match) => match[1]).join(",");
+    return source !== "" && calls === expected;
+  });
+  const type = (name) => {
+    const declarations = [...nativeCode.matchAll(new RegExp(`\\b(?:internal|private)\\s+sealed\\s+class\\s+${name}\\b`, "gu"))];
+    if (declarations.length !== 1) return "";
+    const opening = nativeCode.indexOf("{", declarations[0].index);
+    const closing = matchingRustDelimiter(nativeCode, opening, "{", "}");
+    return closing < 0 ? "" : native.slice(declarations[0].index, closing + 1);
+  };
+  const heldFile = type("HeldFile");
+  // The two unreachable write/verify members retain their original operator
+  // checks. Exact remaining type text closes constructors and disposal too.
+  const heldReadType = heldFile.replace(serviceProbeNativeMethod(heldFile, "Verify"), "").replace(serviceProbeNativeMethod(heldFile, "CopyNew"), "").replace(/\s+/gu, "");
+  const operate = analyzePowerShellSource(inputs.operate).commentFreeCode.replace(/\s+/gu, "");
+  return {
+    inspectionDispatch: body("Run") === '{if(action=="Inspect")returnRunInspectionWith(newWindowsInspectionOperations());returnRunWith(action,workspace,newWindowsOperatorOperations());}' &&
+      compact.includes("internalinterfaceInspectionOperations{boolIsElevated();InspectionOutcomeCheck(InspectionStagestage);}") &&
+      compact.includes("privatesealedclassWindowsInspectionOperations:InspectionOperations{publicboolIsElevated(){returnNative.IsElevatedPrimary();}publicInspectionOutcomeCheck(InspectionStagestage){returnNative.InspectStage(stage);}}") &&
+      !/\b(?:Install|Operate|RunWith|Execute|WindowsOperatorOperations)\b/u.test(rustLexicalCode(serviceProbeNativeMethod(native, "RunInspectionWith"))),
+    inspectionFiniteReport: compact.includes("internalenumInspectionStage{DIRECTORY,DIRECTORY_SECURITY_OWNER_GROUP,DIRECTORY_SECURITY_ACE_BYTES,DIRECTORY_SECURITY_PROTECTED,APPROVAL_FILE_PRESENCE,DESKTOP_PROBE_FILE_PRESENCE,SERVICE_FILE_PRESENCE,SECRET_INPUT_FILE_PRESENCE,MANIFEST_FILE_PRESENCE,JOURNAL_FILE_PRESENCE,SERVICE_QUERY,SERVICE_CONFIG_BASE,SERVICE_CONFIG_SID_TYPE,SERVICE_CONFIG_PRIVILEGES,SERVICE_STATUS_QUERY,SERVICE_SECURITY_OWNER_GROUP,SERVICE_SECURITY_ACE_BYTES,SERVICE_SECURITY_PROTECTED,SERVICE_SID,RIGHTS,MANIFEST,JOURNAL,APPROVAL_SECURITY,DESKTOP_PROBE_SECURITY,SERVICE_FILE_SECURITY,SECRET_INPUT_SECURITY,MANIFEST_SECURITY,JOURNAL_SECURITY,APPROVAL_HASH,DESKTOP_PROBE_HASH,SERVICE_FILE_HASH,SECRET_INPUT_HASH,INVENTORY}") &&
+      compact.includes("internalenumInspectionOutcome{PASS,FAIL,UNAVAILABLE,STOPPED,RUNNING,START_PENDING,OTHER}") &&
+      body("InspectionOutcomeIsValid") === "{if(outcome==InspectionOutcome.UNAVAILABLE)returntrue;if(stage==InspectionStage.SERVICE_STATUS_QUERY)returnoutcome==InspectionOutcome.STOPPED||outcome==InspectionOutcome.RUNNING||outcome==InspectionOutcome.START_PENDING||outcome==InspectionOutcome.OTHER;returnoutcome==InspectionOutcome.PASS||outcome==InspectionOutcome.FAIL;}" &&
+      method("InspectStage").includes("Harness.Require(status>=1&&status<=7);returnstatus==1?Harness.InspectionOutcome.STOPPED:status==4?Harness.InspectionOutcome.RUNNING:status==2?Harness.InspectionOutcome.START_PENDING:Harness.InspectionOutcome.OTHER;") &&
+      report === '{Native.BeginCheckedCleanup();try{if(!operations.IsElevated())return"SERVICE_PROBE_REQUIRES_ELEVATED_OPERATOR";varlines=newList<string>{"SERVICE_PROBE_INSPECT_READ_ONLY_NOT_OWNERSHIP_EVIDENCE"};foreach(InspectionStagestageinEnum.GetValues(typeof(InspectionStage))){InspectionOutcomeoutcome=InspectionOutcome.UNAVAILABLE;try{varobserved=operations.Check(stage);if(InspectionOutcomeIsValid(stage,observed))outcome=observed;}catch{}lines.Add("SERVICE_PROBE_INSPECT_"+stage.ToString()+"_"+outcome.ToString());}lines.Add(Native.CleanupFailed?"SERVICE_PROBE_INSPECT_CLEANUP_FAIL":"SERVICE_PROBE_INSPECT_CLEANUP_PASS");lines.Add("SERVICE_PROBE_INSPECT_COMPLETE_NOT_RELEASE_EVIDENCE");returnstring.Join("\\n",lines);}catch{return"SERVICE_PROBE_INSPECT_UNAVAILABLE_NOT_RELEASE_EVIDENCE";}}' &&
+      operate.includes('if($Action-ceq\'Inspect\'-and$result.EndsWith("`nSERVICE_PROBE_INSPECT_COMPLETE_NOT_RELEASE_EVIDENCE",[StringComparison]::Ordinal)){exit0}') &&
+      (operate.match(/SERVICE_PROBE_INSPECT_COMPLETE_NOT_RELEASE_EVIDENCE/gu) ?? []).length === 1,
+    inspectionQueryHandles: body("OpenInspectionManager") === "{varmanager=OpenSCManagerW(null,null,1);Harness.Require(!manager.IsInvalid);returnmanager;}" &&
+      body("OpenInspectionService") === "{varservice=OpenServiceW(manager,Harness.ServiceName,0x20005);Harness.Require(!service.IsInvalid);returnservice;}" &&
+      method("InspectStage").includes("using(varmanager=OpenInspectionManager())using(varservice=OpenInspectionService(manager))") &&
+      !/\b(?:OpenManager|OpenOwnedService|OpenSCManagerW|OpenServiceW)\b/u.test(readCode),
+    inspectionSharedReadClosure: sharedCallsAreClosed &&
+      body("Policy") === "{varattributes=newLsaAttributes{Length=(uint)Marshal.SizeOf(typeof(LsaAttributes))};IntPtrpolicy;Harness.Require(LsaOpenPolicy(IntPtr.Zero,refattributes,create?0x810U:0x800U,outpolicy)==0&&policy!=IntPtr.Zero);returnpolicy;}" &&
+      method("ReadRights").includes("IntPtrpolicy=Policy(false);IntPtrrights=IntPtr.Zero;") &&
+      body("OpenFile") === '{Descriptordescriptor=createSddl==null?null:newDescriptor(createSddl);try{varattributes=newSecurityAttributes{Length=Marshal.SizeOf(typeof(SecurityAttributes)),Descriptor=descriptor==null?IntPtr.Zero:descriptor.Pointer};uintaccess=0x80000000|0x20000;if(writable)access|=0x40000000|0x40000|0x80000;varhandle=CreateFileW(path,access,directory?3U:1U,refattributes,createSddl==null?3U:1U,0x00200000|(directory?0x02000000U:0U),IntPtr.Zero);Harness.Require(!handle.IsInvalid);FileInfoinfo;if(!GetFileInformationByHandle(handle,outinfo)||(info.Attributes&0x400)!=0||(((info.Attributes&0x10)!=0)!=directory)||(!directory&&info.Links!=1)){handle.Dispose();thrownewInvalidOperationException("SERVICE_PROBE_FILE_IDENTITY_FAILED");}returnhandle;}finally{if(descriptor!=null)descriptor.Dispose();}}' &&
+      JSON.stringify(rustCallSites(serviceProbeNativeMethod(native, "HoldDirectories"), "OpenFile").map(({ arguments: args }) => args.join("|"))) === JSON.stringify(["current|true|false|null"]) &&
+      body("BeginCheckedCleanup") === "{cleanupFailed=false;}" && body("RecordCleanupFailure") === "{cleanupFailed=true;}" &&
+      compact.includes("internalstaticboolCleanupFailed{get{returncleanupFailed;}}") &&
+      type("ServiceHandle").replace(/\s+/gu, "") === "internalsealedclassServiceHandle:SafeHandleZeroOrMinusOneIsInvalid{privateServiceHandle():base(true){}protectedoverrideboolReleaseHandle(){boolclosed=CloseServiceHandle(handle);CheckCleanup(closed);returnclosed;}}" &&
+      type("Descriptor").replace(/\s+/gu, "") === "privatesealedclassDescriptor:IDisposable{internalIntPtrPointer;internalDescriptor(stringsddl){uintbytes;Harness.Require(ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl,1,outPointer,outbytes));}publicvoidDispose(){if(Pointer!=IntPtr.Zero){CheckCleanup(LocalFree(Pointer)==IntPtr.Zero);Pointer=IntPtr.Zero;}}}" &&
+      type("DirectoryLease").replace(/\s+/gu, "") === "internalsealedclassDirectoryLease:IDisposable{privatereadonlyList<SafeFileHandle>handles;internalreadonlystringLeafIdentity;internalDirectoryLease(List<SafeFileHandle>owned){handles=owned;LeafIdentity=Identity(owned.Last());}publicvoidDispose(){foreach(varhandleinhandles.AsEnumerable().Reverse())handle.Dispose();}}" &&
+      type("Artifact").replace(/\s+/gu, "") === "internalsealedclassArtifact{internalstringName;internallongBytes;internalstringSha256;}" &&
+      heldReadType === "internalsealedclassHeldFile:IDisposable{privatereadonlySafeFileHandlehandle;privatereadonlyFileStreamstream;privatereadonlystringidentity;privateHeldFile(SafeFileHandleowned,boolwritable){handle=owned;identity=Identity(owned);stream=newFileStream(owned,writable?FileAccess.ReadWrite:FileAccess.Read);}internalstaticHeldFileOpen(stringpath,boolwritable){returnnewHeldFile(OpenFile(path,false,writable,null),writable);}internalbyte[]ReadBounded(intmaximum){Harness.Require(stream.Length>0&&stream.Length<=maximum);stream.Position=0;byte[]bytes=newbyte[(int)stream.Length];intoffset=0;while(offset<bytes.Length){intcount=stream.Read(bytes,offset,bytes.Length-offset);Harness.Require(count>0);offset+=count;}Harness.Require(stream.ReadByte()==-1&&Identity(handle)==identity);returnbytes;}internalboolInspectHash(longlength,stringhash){Harness.Require(length>0&&length<=512L*1024*1024&&Identity(handle)==identity);if(stream.Length!=length)returnfalse;stream.Position=0;boolmatches;using(varsha=SHA256.Create())matches=Harness.Hex(sha.ComputeHash(stream))==hash;Harness.Require(Identity(handle)==identity);returnmatches&&stream.Length==length;}publicvoidDispose(){stream.Dispose();}}",
+    inspectionReadOnlyFiles: readSources.every((source) => source !== "") &&
+      JSON.stringify(actualReadCalls) === JSON.stringify(readCallInventory) &&
+      JSON.stringify(fileOpenArguments) === JSON.stringify([
+        "destination|true|false|null", "Path.Combine(destination, name)|false|false|null",
+      ]) && JSON.stringify(heldOpenArguments) === JSON.stringify([
+        'Path.Combine(destination, "candidate.json")|false',
+        'Path.Combine(destination, "candidate.json")|false', 'Path.Combine(destination, "ownership.txt")|false',
+        'Path.Combine(destination, "candidate.json")|false', 'Path.Combine(destination, name)|false',
+      ]) && method("InspectFilePresence").includes("CreateFileW(Path.Combine(destination,name),0x80020000,1,refsecurity,3,0x00200000,IntPtr.Zero)") &&
+      method("InspectFilePresence").includes("info.Links==1?Harness.InspectionOutcome.PASS:Harness.InspectionOutcome.FAIL") &&
+      method("InspectFilePresence").includes("if(file.IsInvalid)returnerror==2?Harness.InspectionOutcome.FAIL:Harness.InspectionOutcome.UNAVAILABLE;") &&
+      method("InspectFilePresence").includes("return(info.Attributes&0x410)==0&&info.Links==1") &&
+      JSON.stringify(rustCallSites(serviceProbeNativeMethod(native, "InspectStage"), "InspectArtifactHash").map(({ arguments: args }) => args.join("|"))) === JSON.stringify([
+        'destination|"approval-ui.exe"', 'destination|"key-agent-service-probe.exe"', 'destination|"key-agent-service.exe"', 'destination|"secret-input-ui.exe"',
+      ]) &&
+      JSON.stringify(rustCallSites(serviceProbeNativeMethod(native, "InspectStage"), "InspectArtifactSecurity").map(({ arguments: args }) => args.join("|"))) === JSON.stringify([
+        'destination|"approval-ui.exe"', 'destination|"key-agent-service-probe.exe"', 'destination|"key-agent-service.exe"', 'destination|"secret-input-ui.exe"', 'destination|"candidate.json"', 'destination|"ownership.txt"',
+      ]) &&
+      method("InspectStage").includes('caseHarness.InspectionStage.JOURNAL_FILE_PRESENCE:returnInspectFilePresence(destination,"ownership.txt");') &&
+      method("InspectStage").includes("Directory.EnumerateFileSystemEntries(destination).Take(7)") &&
+      !/\b(?:Install|Operate|RunWith|Execute|CreateProtectedDirectory|WriteNew|AddRights|RemoveRights|Configure|SetExactSecurity|ApplyArtifactSecurity|CopyNew|DeleteExactFile|RemoveExactDirectory|CreateServiceW|ChangeServiceConfig2W|StartServiceW|ControlService|DeleteService|LsaAddAccountRights|LsaRemoveAccountRights|SetSecurityInfo|SetFileInformationByHandle|CreateDirectoryW|WriteAllBytes|WriteAllText|AppendAllText|Process|Assembly|NativeLibrary)\b/u.test(readCode),
+    inspectionSeparateSecurityFacts: method("InspectSecurityShape").includes("returnactual.Owner!=null&&actual.Group!=null&&actual.Owner.Equals(expected.Owner)&&actual.Group.Equals(expected.Group);") &&
+      method("InspectSecurityShape").includes("returnactual.DiscretionaryAcl!=null&&AclShape(actual.DiscretionaryAcl)==AclShape(expected.DiscretionaryAcl);") &&
+      method("InspectSecurityShape").includes("return(actual.ControlFlags&ControlFlags.DiscretionaryAclProtected)!=0;") &&
+      method("InspectServiceConfiguration").includes("constintcapacity=8192;IntPtrbuffer=Marshal.AllocHGlobal(capacity);") &&
+      method("InspectServiceConfiguration").includes("Harness.Require(QueryServiceConfigW(service,buffer,capacity,outneeded));") &&
+      method("InspectServiceConfiguration").includes("Harness.Require(QueryServiceConfig2W(service,5,buffer,capacity,outneeded));") &&
+      method("InspectServiceConfiguration").includes("QueryServiceConfig2W(service,6,buffer,capacity,outneeded)") &&
+      method("InspectServiceConfiguration").includes("returnMarshal.ReadInt32(buffer)==3;") &&
+      method("InspectServiceConfiguration").includes("returnnames.SequenceEqual(Harness.Privileges);") &&
+      method("InspectJournal").includes("journal[1]!=identity||journal[2]!=Harness.Hash(bytes)") &&
+      method("InspectArtifactHash").includes("file.InspectHash(artifact.Bytes,artifact.Sha256)") &&
+      body("InspectHash") === "{Harness.Require(length>0&&length<=512L*1024*1024&&Identity(handle)==identity);if(stream.Length!=length)returnfalse;stream.Position=0;boolmatches;using(varsha=SHA256.Create())matches=Harness.Hex(sha.ComputeHash(stream))==hash;Harness.Require(Identity(handle)==identity);returnmatches&&stream.Length==length;}" &&
+      (nativeCode.match(/\bclass\s+WindowsInspectionOperations\b/gu) ?? []).length === 1,
+  };
+}
 function serviceProbeHarnessChecks(inputs) {
   const native = serviceProbeCSharpCommentFree(inputs.native);
   const nativeLeaf = native.slice(native.indexOf("internal static class Native"));
@@ -103605,15 +103736,16 @@ function serviceProbeHarnessChecks(inputs) {
       all(nativeMethod("VerifyPreparationFile"), ["!source.CanWrite", "info.Links == 1"]) && all(nativeMethod("Identity"), ["(info.Attributes & 0x10) != 0 || info.Links == 1"]) &&
       all(prepare, ["OpenPreparationBuildFile($workspace,$specification.Name)", "$copied=Get-ServiceProbeHeldFileRecord-Stream$verified-Name$Record.Name$source=", "OpenPreparationFile($Destination)"]),
     heldCandidatePublication: ordered(prepare, ["CreatePreparationCandidate($workspace)", "HoldPreparationDirectories($candidateDirectory)", "Copy-ServiceProbeHeldArtifact", "foreach($recordin$records){[YourWallet.ServiceProbe.Harness]::VerifyPreparationBuildFile($record.Stream)}", "Get-ServiceProbeCandidateBytes-Records$records", "[IO.FileMode]::CreateNew", "$manifest.Flush($true)", "OpenPreparationFile((Join-Path$candidateDirectory'candidate.json'))", "$manifest.ReadByte()-ne-1", "VerifyPreparationFile($manifest)", "$actualNames-join','", "$owners[$index].Dispose()"]) && all(prepare, ["$owners.Add($stream)", "$source.Bytes-ne$Record.Bytes-or$source.Sha256-cne$Record.Sha256", "return$verified"]),
-    fixedOperatorArguments: operation.valid && ordered(operate, ["$args.Count-ne2-or$args[0]-cne'-Action'", "@('Install','Readback','Start','Stop','Remove')", "exit2", "Import-ServiceProbeNative", "[YourWallet.ServiceProbe.Harness]::Run($Action,$workspace)"]) && !/\b(?:Start-Process|Invoke-Expression|cargo|sc\.exe|icacls|takeown)\b/iu.test(operation.executableCode),
+    fixedOperatorArguments: operation.valid && ordered(operate, ["$args.Count-ne2-or$args[0]-cne'-Action'", "@('Install','Readback','Start','Stop','Remove','Inspect')", "exit2", "Import-ServiceProbeNative", "[YourWallet.ServiceProbe.Harness]::Run($Action,$workspace)"]) && !/\b(?:Start-Process|Invoke-Expression|cargo|sc\.exe|icacls|takeown)\b/iu.test(operation.executableCode),
     boundedNativeImport: common.valid && all(importCode, ["[IO.FileAttributes]::ReparsePoint", "[IO.FileShare]::Read)", "$stream.Length-le0-or$stream.Length-gt262144", "[Text.UTF8Encoding]::new($false,$true)", "Add-Type-TypeDefinition$code-LanguageCSharp-ErrorActionStop", "throw'SERVICE_PROBE_NATIVE_IMPORT_FAILED'"]),
     privacyIncludesNative: /const allowedExtensions = new Set\(\[\s*"\.cs",\s*"\.html",\s*"\.js",\s*"\.json",\s*"\.md",\s*"\.mjs",\s*"\.ps1",\s*"\.rs",\s*"\.toml",\s*"\.yml",\s*\]\)/u.test(inputs.privacy) && inputs.privacyTests.includes('test("scans native C# harness sources before and after Git staging", async () => {') && inputs.attributes.split(/\r?\n/u).includes("*.cs text eol=lf"),
     nonReleaseOnly: prepare.includes("'NOT_RELEASE_EVIDENCE'") && operate.includes("'_PASS_NOT_RELEASE_EVIDENCE'") && !/\b(?:secret_core|SigningKey|Mnemonic|sign_transaction|export_secret)\b/u.test(rustLexicalCode(native)),
+    ...serviceProbeInspectionChecks(inputs),
   };
 }
 function serviceProbeHarnessContract(inputs) {
   const checks = serviceProbeHarnessChecks(inputs);
-  return Object.keys(checks).length === 22 && Object.values(checks).every((value) => value === true);
+  return Object.keys(checks).length === 28 && Object.values(checks).every((value) => value === true);
 }
 const serviceProbeHarnessInputs = {
   native: await text("scripts/service-probe/ServiceProbeNative.cs"),
@@ -103625,23 +103757,23 @@ const serviceProbeHarnessInputs = {
   attributes: await text(".gitattributes"),
 };
 const serviceProbeHarnessSemanticMutations = [
-  ["elevated operator", "native", "if (!operations.IsElevated())", "if (false)"],
-  ["cleanup failure", "native", "Require(!Native.CleanupFailed);", "Require(true);"],
+  ["elevated operator", "native", "if (!operations.IsElevated())", "if (false)", "RunWith"],
+  ["cleanup failure", "native", "Require(!Native.CleanupFailed);", "Require(true);", "RunWith"],
   ["privilege expansion", "native", '"SeIncreaseQuotaPrivilege" };', '"SeIncreaseQuotaPrivilege", "SeDebugPrivilege" };'],
-  ["candidate canonical form", "native", 'Require(text == canonical.Append("]}\\n").ToString());', "Require(true);"],
-  ["journal before rights", "native", "Native.AddRights(serviceSid, added);", "Native.AddRights(serviceSid, Rights);"],
+  ["candidate canonical form", "native", 'Require(text == canonical.Append("]}\\n").ToString());', "Require(true);", "ParseCandidate"],
+  ["journal before rights", "native", "Native.AddRights(serviceSid, added);", "Native.AddRights(serviceSid, Rights);", "Install"],
   ["protected owner", "native", '"O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)"', '"O:BUG:BUD:P(A;;FA;;;SY)(A;;FA;;;BA)"'],
   ["service account", "native", String.raw`null, "NT SERVICE\\" + Harness.ServiceName, null);`, 'null, "LocalSystem", null);'],
-  ["restricted service SID", "native", "Marshal.WriteInt32(value, 3);", "Marshal.WriteInt32(value, 1);"],
-  ["ACL readback", "native", "AclShape(actual.DiscretionaryAcl) == AclShape(expected.DiscretionaryAcl)", "true"],
-  ["service privilege readback", "native", "names.SequenceEqual(Harness.Privileges)", "true"],
-  ["role scoped RX", "native", 'if (name == "approval-ui.exe") sddl +=', "if (true) sddl +="],
-  ["single link", "native", "!directory && info.Links != 1", "false"],
-  ["retained directory identity", "native", "directory.LeafIdentity == retainedIdentity &&", "true &&"],
-  ["added rights only", "native", "LsaRemoveAccountRights(policy, SidBytes(sid), false, rights,", "LsaRemoveAccountRights(policy, SidBytes(sid), true, rights,"],
-  ["nonrecursive exact deletion", "native", "Identity(held) == expectedIdentity && Directory.GetFileSystemEntries(path).Length == 0", "true"],
+  ["restricted service SID", "native", "Marshal.WriteInt32(value, 3);", "Marshal.WriteInt32(value, 1);", "Configure"],
+  ["ACL readback", "native", "AclShape(actual.DiscretionaryAcl) == AclShape(expected.DiscretionaryAcl)", "true", "VerifyExactSecurity"],
+  ["service privilege readback", "native", "names.SequenceEqual(Harness.Privileges)", "true", "VerifyService"],
+  ["role scoped RX", "native", 'if (name == "approval-ui.exe") sddl +=', "if (true) sddl +=", "ArtifactSddl"],
+  ["single link", "native", "!directory && info.Links != 1", "false", "OpenFile"],
+  ["retained directory identity", "native", "directory.LeafIdentity == retainedIdentity &&", "true &&", "Operate"],
+  ["added rights only", "native", "LsaRemoveAccountRights(policy, SidBytes(sid), false, rights,", "LsaRemoveAccountRights(policy, SidBytes(sid), true, rights,", "ChangeRights"],
+  ["nonrecursive exact deletion", "native", "Identity(held) == expectedIdentity && Directory.GetFileSystemEntries(path).Length == 0", "true", "RemoveExactDirectory"],
   ["native BOOLEAN deletion ABI", "native", "ref byte information, uint bytes)", "ref int information, uint bytes)"],
-  ["bounded service wait", "native", "clock.ElapsedMilliseconds < 35000", "true"],
+  ["bounded service wait", "native", "clock.ElapsedMilliseconds < 35000", "true", "Wait"],
   ["non-elevated build", "prepare", "[YourWallet.ServiceProbe.Harness]::RequireUnelevatedPreparation()\n    Assert-ServiceProbeBuildEnvironment", "Assert-ServiceProbeBuildEnvironment"],
   ["locked offline build", "prepare", "'build', '--offline', '--locked'", "'build', '--locked'"],
   ["one successful artifact", "prepare", "$artifacts.Count -ne 1 -or $finished.Count -ne 1", "$artifacts.Count -lt 1 -or $finished.Count -lt 1"],
@@ -103656,21 +103788,52 @@ const serviceProbeHarnessSemanticMutations = [
   ["operator arguments", "operate", "$args.Count -ne 2", "$args.Count -lt 2"],
   ["native import write sharing", "common", "[IO.FileShare]::Read)", "[IO.FileShare]::ReadWrite)"],
   ["C sharp privacy", "privacy", '  ".cs",\n', ""],
-].map(([name, field, before, after]) => {
-  const changed = serviceProbeHarnessInputs[field].replace(before, after);
+  ["inspection separate dispatcher", "native", "return RunInspectionWith(new WindowsInspectionOperations());", "return RunWith(action, workspace, new WindowsOperatorOperations());", "Run"],
+  ["inspection elevated preflight", "native", "if (!operations.IsElevated())", "if (false)", "RunInspectionWith"],
+  ["inspection cleanup report", "native", 'Native.CleanupFailed ? "SERVICE_PROBE_INSPECT_CLEANUP_FAIL"', 'false ? "SERVICE_PROBE_INSPECT_CLEANUP_FAIL"', "RunInspectionWith"],
+  ["inspection finite observed outcome", "native", "if (InspectionOutcomeIsValid(stage, observed))", "if (true)", "RunInspectionWith"],
+  ["inspection stage-specific outcomes", "native", "if (stage == InspectionStage.SERVICE_STATUS_QUERY)", "if (false)", "InspectionOutcomeIsValid"],
+  ["inspection finite stages", "native", "SECRET_INPUT_HASH, INVENTORY\n", "SECRET_INPUT_HASH, INVENTORY, UNKNOWN_STAGE\n"],
+  ["inspection connect-only manager", "native", "OpenSCManagerW(null, null, 1)", "OpenSCManagerW(null, null, 3)", "OpenInspectionManager"],
+  ["inspection query-only service", "native", "OpenServiceW(manager, Harness.ServiceName, 0x20005)", "OpenServiceW(manager, Harness.ServiceName, 0xF01FF)", "OpenInspectionService"],
+  ["inspection no mutating opener", "native", "OpenInspectionService(manager)", "OpenOwnedService(manager)", "InspectStage"],
+  ["inspection no install reachability", "native", "Harness.Require(Enum.IsDefined(typeof(Harness.InspectionStage), stage));", "Harness.Install(destination);\n            Harness.Require(Enum.IsDefined(typeof(Harness.InspectionStage), stage));", "InspectStage"],
+  ["inspection closed read calls", "native", "Harness.Require(Enum.IsDefined(typeof(Harness.InspectionStage), stage));", "UnexpectedInspectionHelper();\n            Harness.Require(Enum.IsDefined(typeof(Harness.InspectionStage), stage));", "InspectStage"],
+  ["inspection existing-file-only presence", "native", "0x80020000, 1, ref security, 3, 0x00200000", "0x80020000, 1, ref security, 1, 0x00200000", "InspectFilePresence"],
+  ["inspection single-link presence", "native", "info.Links == 1", "info.Links >= 1", "InspectFilePresence"],
+  ["inspection journal presence", "native", 'JOURNAL_FILE_PRESENCE: return InspectFilePresence(destination, "ownership.txt");', 'JOURNAL_FILE_PRESENCE: return InspectFilePresence(destination, "candidate.json");', "InspectStage"],
+  ["inspection read-only artifact handle", "native", "OpenFile(Path.Combine(destination, name), false, false, null)", "OpenFile(Path.Combine(destination, name), false, true, null)", "InspectArtifactSecurity"],
+  ["inspection hash identity continuity", "native", "Harness.Require(Identity(handle) == identity);", "Harness.Require(true);", "InspectHash"],
+  ["inspection hash byte comparison", "native", "Harness.Hex(sha.ComputeHash(stream)) == hash", "Harness.Hex(sha.ComputeHash(stream)) != hash", "InspectHash"],
+  ["inspection exact service status", "native", "status == 1 ? Harness.InspectionOutcome.STOPPED", "status == 4 ? Harness.InspectionOutcome.STOPPED", "InspectStage"],
+  ["inspection protected ACL fact", "native", "return (actual.ControlFlags & ControlFlags.DiscretionaryAclProtected) != 0;", "return true;", "InspectSecurityShape"],
+  ["inspection restricted SID fact", "native", "return Marshal.ReadInt32(buffer) == 3;", "return Marshal.ReadInt32(buffer) == 1;", "InspectServiceConfiguration"],
+  ["inspection CLI action guard", "operate", "$Action -ceq 'Inspect' -and $result.EndsWith", "$true -and $result.EndsWith"],
+  ["inspection CLI diagnostic completion", "operate", 'EndsWith("`nSERVICE_PROBE_INSPECT_COMPLETE_NOT_RELEASE_EVIDENCE"', 'EndsWith("_PASS_NOT_RELEASE_EVIDENCE"'],
+  ["inspection transitive rights write", "native", "IntPtr policy = Policy(false);", 'AddRights(sid, new[] { "SeChangeNotifyPrivilege" });\n            IntPtr policy = Policy(false);', "ReadRights"],
+  ["inspection query-only policy", "native", "IntPtr policy = Policy(false);", "IntPtr policy = Policy(true);", "ReadRights"],
+  ["inspection shared file access", "native", "if (writable) access |=", "if (true) access |=", "OpenFile"],
+  ["inspection exact role hash routing", "native", 'APPROVAL_HASH: accepted = InspectArtifactHash(destination, "approval-ui.exe");', 'APPROVAL_HASH: accepted = InspectArtifactHash(destination, "key-agent-service.exe");', "InspectStage"],
+  ["inspection denied is unavailable", "native", "file.IsInvalid) return error == 2", "file.IsInvalid) return error == 5", "InspectFilePresence"],
+  ["inspection reparse presence rejected", "native", "info.Attributes & 0x410", "info.Attributes & 0x10", "InspectFilePresence"],
+].map(([name, field, before, after, methodName]) => {
+  const original = serviceProbeHarnessInputs[field];
+  const scope = methodName === undefined ? original : serviceProbeNativeMethod(original, methodName);
+  const mutated = scope.replace(before, after);
+  const changed = methodName === undefined ? mutated : scope === "" ? original : original.replace(scope, mutated);
   return { name, changed: changed !== serviceProbeHarnessInputs[field], rejected: !serviceProbeHarnessContract({ ...serviceProbeHarnessInputs, [field]: changed }) };
 });
 requireInvariant(
-  serviceProbeHarnessContract(serviceProbeHarnessInputs) && serviceProbeHarnessSemanticMutations.length === 31 &&
+  serviceProbeHarnessContract(serviceProbeHarnessInputs) && serviceProbeHarnessSemanticMutations.length === 59 &&
     serviceProbeHarnessSemanticMutations.every(({ changed, rejected }) => changed && rejected),
-  `the separately reviewed debug operator must preserve fixed privileged native reachability, fresh elevated-primary preflight, protected file ownership, canonical candidate provenance, journaled exact LSA changes, restricted virtual-account SCM configuration, exact readbacks and non-recursive retained-identity deletion; preparation must remain non-elevated, current-build-only, held-file and non-release, with native C# privacy coverage; checks=${JSON.stringify(Object.entries(serviceProbeHarnessChecks(serviceProbeHarnessInputs)).filter(([, value]) => !value).map(([name]) => name))}, mutations=${JSON.stringify(serviceProbeHarnessSemanticMutations.filter(({ changed, rejected }) => !changed || !rejected).map(({ name }) => name))}`,
+  `the separately reviewed debug operator must preserve fixed privileged native reachability, fresh elevated-primary preflight, protected file ownership, canonical candidate provenance, journaled exact LSA changes, restricted virtual-account SCM configuration, exact readbacks and non-recursive retained-identity deletion; Inspect must retain its separate query-only SCM and held-file path, closed read-call inventory, 33 finite stage-specific outcomes and non-ownership diagnostic completion; preparation must remain non-elevated, current-build-only, held-file and non-release, with native C# privacy coverage; checks=${JSON.stringify(Object.entries(serviceProbeHarnessChecks(serviceProbeHarnessInputs)).filter(([, value]) => !value).map(([name]) => name))}, mutations=${JSON.stringify(serviceProbeHarnessSemanticMutations.filter(({ changed, rejected }) => !changed || !rejected).map(({ name }) => name))}`,
 );
 const serviceProbeHarnessPinnedSources = {
-  "ServiceProbeNative.cs": "1825f08e94de5f5cc0b535162863d095cae4a41ee2d31b799f50ea1ab5cb7b95",
+  "ServiceProbeNative.cs": "5f7a8486329d8e5470b0fa4de5814e41ace9e7f9b3433fb07afa43512fff69f8",
   "common.ps1": "e8e0700a94a16c88d50e03399f4aafb2ac3d88c8d57b43e177047cd35e932e7b",
-  "native.test.ps1": "2445227dafbae86b589cc9056e17f3d08b82dd6dfe7774c5b6c61194afbd2c4a",
-  "operate.ps1": "b65893db91ee7d985971e21d0743efbfde02bddd93000f2b281bf8a965cb32c3",
-  "operate.test.mjs": "48cb5cdb9573951d55758f39f0338da75f99022b84cf20a8f1988a6b1eede371",
+  "native.test.ps1": "fe333bf621461902fd81ff7af207bc1a632d784c4262e92e7b91b94edcafea19",
+  "operate.ps1": "9caf256ae7358199335101dcec3fcbf931963165d1ea3c253e89b97492c989e7",
+  "operate.test.mjs": "0be4d04c80f2d6c384ce0abfc184dc6e1ffa7e0cc719ac62739d6b36ae3207c8",
   "prepare.ps1": "ecf453027dd34ac1c2a5b95f28fc4517568ba26b430984bfd3ea7b81e725251b",
   "prepare.test.mjs": "0fdd95cc2dac4d5f7228e063b8faded3d4f8bf7464700714fee1015f95719d10",
 };
@@ -103683,9 +103846,9 @@ requireInvariant(
     serviceProbeHarnessSourceHashes.every(([name, digest]) => digest === serviceProbeHarnessPinnedSources[name]) &&
     serviceProbeHarnessReadme.includes("debug-only operator harness") && serviceProbeHarnessReadme.includes("not a production installer") &&
     serviceProbeHarnessReadme.includes("No command below is executed by automated tests.") && serviceProbeHarnessReadme.includes("LsaRemoveAccountRights(AllRights=false)") &&
-    repositoryPowerShellSource("scripts/service-probe/native.test.ps1").includes("if ($checks -ne 30)") &&
-    repositoryPowerShellSource("scripts/service-probe/native.test.ps1").includes("SERVICE_PROBE_NATIVE_TEST_PASS_30_NO_SCM_OR_POLICY_CALLS"),
-  "the non-release service probe harness must retain exactly eight reviewed single-link files, all seven executable/test source pins, and its fixed 30-check native regression entry; changed source or an extra entry requires explicit review",
+    repositoryPowerShellSource("scripts/service-probe/native.test.ps1").includes("if ($checks -ne 139)") &&
+    repositoryPowerShellSource("scripts/service-probe/native.test.ps1").includes("SERVICE_PROBE_NATIVE_TEST_PASS_139_NO_SCM_OR_POLICY_CALLS"),
+  "the non-release service probe harness must retain exactly eight reviewed single-link files, all seven executable/test source pins, and its fixed 139-check native regression entry including all original 30 checks; changed source or an extra entry requires explicit review",
 );
 
 const expectedRustAnalysisCacheFamilyClearLabels = Object.freeze([

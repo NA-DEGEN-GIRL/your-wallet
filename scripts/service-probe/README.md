@@ -137,6 +137,37 @@ what to repair or remove. Do not retry Install by force, broaden permissions, or
 claim full rollback. Successful actions end in `PASS_NOT_RELEASE_EVIDENCE`;
 unelevated operation is rejected before native mutation with exit 20.
 
+## Read-only diagnosis after an operator failure
+
+Do not repeat Install, Start or Remove after a retained-state failure. The same
+generic category covers failures both before and after creation; it does not
+identify the failed check or prove what was changed. Run this **single line** in
+the elevated 64-bit PowerShell, using this workspace's actual location:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File 'D:\#Programming\your-wallet\scripts\service-probe\operate.ps1' -Action Inspect
+```
+
+Inspect is a separate read-only dispatcher. It requests only SCM connect and
+service query-configuration, query-status and READ_CONTROL rights. File handles
+are read-only; account-right enumeration does not grant or remove rights.
+It never starts, stops, installs, removes or repairs a service, changes ACLs,
+replaces candidates, runs a candidate executable, or builds project code.
+
+Output contains only fixed stage names and PASS/FAIL/UNAVAILABLE categories,
+not exception text, native error payloads, paths, SIDs, hashes or file contents.
+The service-status stage instead reports STOPPED, RUNNING, START_PENDING, OTHER
+or UNAVAILABLE, without sending a control command.
+The service security owner/group, exact ACE bytes and protection bit are checked
+separately, as are service configuration and the retained files. An unavailable
+query is not evidence of absence. A completed inspection is **not ownership,
+installation-success, transport or release evidence**; failed independent
+checks remain failed. Share the fixed output before deciding on a precise repair.
+
+An ordinary user's service list can omit a service when its query permission is
+denied. Do not interpret such omission as permission to reinstall. See Microsoft's
+[service query access contract](https://learn.microsoft.com/en-us/windows/win32/services/service-security-and-access-rights).
+
 ## Verification boundaries
 
 ```powershell
@@ -145,14 +176,19 @@ node --test scripts/service-probe/operate.test.mjs
 node --test scripts/service-probe/prepare.test.mjs
 ```
 
-The 30 native self-checks cover exact interop layouts, manifest parsing, and a fake operator dispatcher,
-including preflight rejection before execution and propagation of a failed
-explicit native cleanup. Failed SCM/LSA/native-allocation cleanup prevents a
+The 139 native self-checks retain the original 30 interop, manifest and fake
+operator checks, adding the 33-stage inspection dispatcher, fixed-output error
+cases and independent security-shape checks. These include preflight rejection
+before execution and propagation of a failed explicit native cleanup.
+Failed SCM/LSA/native-allocation cleanup prevents a
 successful operator result; finalizers do not throw. CLI tests use owned temporary
 copies, a forced-denied preflight, and a poisoned native execution boundary;
 they do not install, start, stop, delete, or configure a real service, modify LSA,
 or open a native Approval UI. They do not simulate every native installation
 failure edge and are not a substitute for installed Windows evidence.
+The six operator CLI tests include poisoned inspection adapters with fixed
+successful and mixed-failure results. They do not perform an actual elevated
+inspection of the retained fixture.
 
 Additional official contracts used by this harness:
 
