@@ -48,6 +48,11 @@ mod router;
 mod secret_input_lifecycle;
 
 use core::{ffi::c_void, fmt};
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+use std::sync::atomic::AtomicU32;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -275,9 +280,67 @@ impl fmt::Display for RpcWorkerStartupError {
 
 impl std::error::Error for RpcWorkerStartupError {}
 
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+#[derive(Clone, Copy)]
+enum AuthDiagnosticOrigin {
+    Callback,
+    Manager,
+}
+
+/// Closed, data-free diagnostic for this debug service invocation only.
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct AuthStopDiagnostic(u32);
+
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+impl AuthStopDiagnostic {
+    fn new(origin: AuthDiagnosticOrigin, stage: u32) -> Option<Self> {
+        if !(1..=15).contains(&stage) {
+            return None;
+        }
+        Some(Self(match origin {
+            AuthDiagnosticOrigin::Callback => 0x6000 + stage,
+            AuthDiagnosticOrigin::Manager => 0x6100 + stage,
+        }))
+    }
+
+    pub(super) const fn code(self) -> u32 {
+        self.0
+    }
+}
+
+/// Constructed only after RPC, coordinator, helper, and context rundown.
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+pub(super) enum DiagnosticDrainOutcome {
+    Complete,
+    AuthFailure(AuthStopDiagnostic),
+}
+
 struct ServerContext {
     admission: AtomicBool,
     fatal: AtomicBool,
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    auth_diagnostic: AtomicU32,
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    other_fatal: AtomicBool,
     callback_auth_inflight: AtomicUsize,
     dispatch: DispatchEngine<AuthenticatedRpcClient, SystemMonotonicClock>,
     #[cfg(all(
@@ -305,6 +368,16 @@ impl ServerContext {
         Ok(Self {
             admission: AtomicBool::new(false),
             fatal: AtomicBool::new(false),
+            #[cfg(all(
+                feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+                debug_assertions
+            ))]
+            auth_diagnostic: AtomicU32::new(0),
+            #[cfg(all(
+                feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+                debug_assertions
+            ))]
+            other_fatal: AtomicBool::new(false),
             callback_auth_inflight: AtomicUsize::new(0),
             dispatch,
             #[cfg(all(
@@ -338,6 +411,8 @@ impl ServerContext {
         Ok(Self {
             admission: AtomicBool::new(false),
             fatal: AtomicBool::new(false),
+            auth_diagnostic: AtomicU32::new(0),
+            other_fatal: AtomicBool::new(false),
             callback_auth_inflight: AtomicUsize::new(0),
             dispatch,
             helpers,
@@ -403,23 +478,24 @@ impl ServerContext {
             debug_assertions
         ))]
         {
-            let routed = self.map_lpac_dispatch_result(router::route_manager(
-                &self.dispatch,
-                &self.helpers,
-                request,
-                move || {
-                    let peer = auth::authenticate_role_aware_call(binding)
-                        .map_err(AuthenticationFailure::from)?;
-                    Ok(match peer {
-                        auth::AuthenticatedManagerPeer::Desktop(desktop) => {
-                            RoleAwareManagerPeer::Desktop(desktop)
-                        }
-                        auth::AuthenticatedManagerPeer::ServiceCreatedLpac(helper) => {
-                            RoleAwareManagerPeer::Helper(helper)
-                        }
-                    })
-                },
-            ))?;
+            let auth_failure_observed = core::cell::Cell::new(false);
+            let observed = &auth_failure_observed;
+            let routed = router::route_manager(&self.dispatch, &self.helpers, request, move || {
+                let peer = auth::authenticate_role_aware_call(binding).map_err(|failure| {
+                    observed.set(true);
+                    self.latch_auth_diagnostic(AuthDiagnosticOrigin::Manager, failure.code());
+                    AuthenticationFailure::from(failure.error())
+                })?;
+                Ok(match peer {
+                    auth::AuthenticatedManagerPeer::Desktop(desktop) => {
+                        RoleAwareManagerPeer::Desktop(desktop)
+                    }
+                    auth::AuthenticatedManagerPeer::ServiceCreatedLpac(helper) => {
+                        RoleAwareManagerPeer::Helper(helper)
+                    }
+                })
+            });
+            let routed = self.map_lpac_auth_dispatch_result(routed, auth_failure_observed.get())?;
 
             match routed {
                 RoleAwareManagerDispatch::Immediate(response) => Ok(response),
@@ -458,6 +534,15 @@ impl ServerContext {
     }
 
     fn latch_fatal_runtime(&self) {
+        #[cfg(all(
+            feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+            debug_assertions
+        ))]
+        self.other_fatal.store(true, Ordering::Release);
+        self.close_for_fatal_runtime();
+    }
+
+    fn close_for_fatal_runtime(&self) {
         self.admission.store(false, Ordering::Release);
         self.fatal.store(true, Ordering::Release);
         #[cfg(all(
@@ -466,6 +551,60 @@ impl ServerContext {
         ))]
         if let Some(coordinator) = &self.probe_coordinator_client {
             coordinator.begin_stop();
+        }
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    fn latch_auth_diagnostic(&self, origin: AuthDiagnosticOrigin, stage: u32) {
+        let Some(diagnostic) = AuthStopDiagnostic::new(origin, stage) else {
+            self.latch_fatal_runtime();
+            return;
+        };
+        let _ = self.auth_diagnostic.compare_exchange(
+            0,
+            diagnostic.code(),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        self.close_for_fatal_runtime();
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    fn auth_diagnostic(&self) -> Option<AuthStopDiagnostic> {
+        match self.auth_diagnostic.load(Ordering::Acquire) {
+            code @ (0x6001..=0x600f | 0x6101..=0x610f) => Some(AuthStopDiagnostic(code)),
+            _ => None,
+        }
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    fn diagnostic_after_clean_drain(&self) -> Result<DiagnosticDrainOutcome, StatusRpcWorkerError> {
+        if self.other_fatal.load(Ordering::Acquire) {
+            return Err(StatusRpcWorkerError::Unavailable);
+        }
+        if let Some(diagnostic) = self.auth_diagnostic() {
+            return Ok(DiagnosticDrainOutcome::AuthFailure(diagnostic));
+        }
+        if self.fatal.load(Ordering::Acquire) {
+            return Err(StatusRpcWorkerError::Unavailable);
+        }
+        Ok(DiagnosticDrainOutcome::Complete)
+    }
+
+    fn legacy_after_clean_drain(&self) -> Result<(), StatusRpcWorkerError> {
+        if self.fatal.load(Ordering::Acquire) {
+            Err(StatusRpcWorkerError::Unavailable)
+        } else {
+            Ok(())
         }
     }
 
@@ -487,8 +626,22 @@ impl ServerContext {
         &self,
         result: Result<T, DispatchError>,
     ) -> Result<T, ManagerError> {
+        self.map_lpac_auth_dispatch_result(result, false)
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    fn map_lpac_auth_dispatch_result<T>(
+        &self,
+        result: Result<T, DispatchError>,
+        auth_failure_observed: bool,
+    ) -> Result<T, ManagerError> {
         result.map_err(|error| {
-            if error == DispatchError::Internal {
+            // Only this call's early-returned native auth failure is tagged.
+            // A global diagnostic latch never excuses another internal error.
+            if error == DispatchError::Internal && !auth_failure_observed {
                 self.latch_fatal_runtime();
             }
             ManagerError::from(error)
@@ -640,10 +793,33 @@ impl StatusRpcWorker {
             context,
         }
     }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    pub(super) fn auth_diagnostic_stop_requested(&self) -> bool {
+        self.context.auth_diagnostic().is_some()
+    }
 }
 
 impl AdmissionClosedStatusRpcWorker {
     pub(super) fn drain(self) -> Result<(), StatusRpcWorkerError> {
+        let context = self.drain_resources()?;
+        context.legacy_after_clean_drain()
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    pub(super) fn drain_for_auth_diagnostic(
+        self,
+    ) -> Result<DiagnosticDrainOutcome, StatusRpcWorkerError> {
+        diagnostic_from_drain_result(self.drain_resources())
+    }
+
+    fn drain_resources(self) -> Result<Arc<ServerContext>, StatusRpcWorkerError> {
         let Self { server, context } = self;
         if let Err(failure) = server.drain() {
             let report = failure.report();
@@ -657,11 +833,18 @@ impl AdmissionClosedStatusRpcWorker {
         ))]
         context.stop_probe_coordinator_and_helpers()?;
         clear_context(&context)?;
-        if context.fatal.load(Ordering::Acquire) {
-            return Err(StatusRpcWorkerError::Unavailable);
-        }
-        Ok(())
+        Ok(context)
     }
+}
+
+#[cfg(all(
+    feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+    debug_assertions
+))]
+fn diagnostic_from_drain_result(
+    drained: Result<Arc<ServerContext>, StatusRpcWorkerError>,
+) -> Result<DiagnosticDrainOutcome, StatusRpcWorkerError> {
+    drained?.diagnostic_after_clean_drain()
 }
 
 fn start_status_rpc_server(
@@ -787,11 +970,21 @@ unsafe extern "system" fn interface_security_callback(
         feature = "key-agent-service-lpac-launch-feasibility-test-hook",
         debug_assertions
     ))]
+    let auth_failure_observed = core::cell::Cell::new(false);
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
     let authorization = router::authorize_callback(&context.helpers, || {
         // SAFETY: Rpcrt4 supplies the synchronous call binding as callback
         // context; the authentication helper neither retains nor frees it.
         let peer = unsafe { auth::authenticate_role_aware_callback_context(call_context) }
-            .map_err(AuthenticationFailure::from)?;
+            .map_err(|failure| {
+                auth_failure_observed.set(true);
+                context.latch_auth_diagnostic(AuthDiagnosticOrigin::Callback, failure.code());
+                AuthenticationFailure::from(failure.error())
+            })?;
         Ok(match peer {
             auth::AuthenticatedCallbackPeer::Desktop(desktop) => {
                 RoleAwareCallbackPeer::Desktop(desktop)
@@ -806,7 +999,7 @@ unsafe extern "system" fn interface_security_callback(
         feature = "key-agent-service-lpac-launch-feasibility-test-hook",
         debug_assertions
     ))]
-    if matches!(authorization, Err(DispatchError::Internal)) {
+    if matches!(authorization, Err(DispatchError::Internal)) && !auth_failure_observed.get() {
         context.latch_fatal_runtime();
     }
 
@@ -1520,6 +1713,254 @@ mod tests {
             Err(ExpectedPeerRegistryError::Stopping)
         );
         assert!(!context.fatal.load(Ordering::Acquire));
+        Ok(())
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn auth_stop_diagnostic_codes_are_closed_and_origin_separated() {
+        for stage in 1..=15 {
+            assert_eq!(
+                AuthStopDiagnostic::new(AuthDiagnosticOrigin::Callback, stage)
+                    .map(AuthStopDiagnostic::code),
+                Some(0x6000 + stage)
+            );
+            assert_eq!(
+                AuthStopDiagnostic::new(AuthDiagnosticOrigin::Manager, stage)
+                    .map(AuthStopDiagnostic::code),
+                Some(0x6100 + stage)
+            );
+        }
+        for stage in [0, 16, 17, 0x6001, u32::MAX] {
+            assert_eq!(
+                AuthStopDiagnostic::new(AuthDiagnosticOrigin::Callback, stage),
+                None
+            );
+            assert_eq!(
+                AuthStopDiagnostic::new(AuthDiagnosticOrigin::Manager, stage),
+                None
+            );
+        }
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn auth_stop_diagnostic_is_first_wins_and_preserves_legacy_fatal_rejection()
+    -> Result<(), StatusRpcWorkerError> {
+        for (first, second, expected) in [
+            (
+                AuthDiagnosticOrigin::Callback,
+                AuthDiagnosticOrigin::Manager,
+                0x6001,
+            ),
+            (
+                AuthDiagnosticOrigin::Manager,
+                AuthDiagnosticOrigin::Callback,
+                0x6101,
+            ),
+        ] {
+            let context = ServerContext::new()?;
+            context.admission.store(true, Ordering::Release);
+            assert!(context.auth_diagnostic().is_none());
+            assert!(matches!(
+                context.diagnostic_after_clean_drain(),
+                Ok(DiagnosticDrainOutcome::Complete)
+            ));
+            context.latch_auth_diagnostic(first, 1);
+            context.latch_auth_diagnostic(second, 15);
+            assert_eq!(
+                context.auth_diagnostic().map(AuthStopDiagnostic::code),
+                Some(expected)
+            );
+            assert!(context.fatal.load(Ordering::Acquire));
+            assert!(!context.other_fatal.load(Ordering::Acquire));
+            assert!(!context.admission.load(Ordering::Acquire));
+            assert!(context.try_callback_auth_permit().is_none());
+            assert_eq!(
+                context.legacy_after_clean_drain(),
+                Err(StatusRpcWorkerError::Unavailable)
+            );
+            assert!(
+                matches!(context.diagnostic_after_clean_drain(), Ok(DiagnosticDrainOutcome::AuthFailure(diagnostic)) if diagnostic.code() == expected)
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn auth_stop_diagnostic_never_excuses_another_calls_internal_failure()
+    -> Result<(), StatusRpcWorkerError> {
+        for (auth_error, manager_error) in [
+            (DispatchError::Authentication, ManagerError::AccessDenied),
+            (DispatchError::Internal, ManagerError::CallFailed),
+        ] {
+            let context = ServerContext::new()?;
+            context.latch_auth_diagnostic(AuthDiagnosticOrigin::Manager, 5);
+            assert_eq!(
+                context.map_lpac_auth_dispatch_result::<()>(Err(auth_error), true),
+                Err(manager_error)
+            );
+            assert!(!context.other_fatal.load(Ordering::Acquire));
+            assert!(matches!(
+                context.diagnostic_after_clean_drain(),
+                Ok(DiagnosticDrainOutcome::AuthFailure(_))
+            ));
+            assert_eq!(
+                context.map_lpac_dispatch_result::<()>(Err(DispatchError::Internal)),
+                Err(ManagerError::CallFailed)
+            );
+            assert!(context.other_fatal.load(Ordering::Acquire));
+            assert!(matches!(
+                context.diagnostic_after_clean_drain(),
+                Err(StatusRpcWorkerError::Unavailable)
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn concurrent_other_fatal_always_suppresses_auth_stop_diagnostic()
+    -> Result<(), StatusRpcWorkerError> {
+        for _ in 0..16 {
+            let context = ServerContext::new()?;
+            std::thread::scope(|scope| {
+                scope.spawn(|| context.latch_auth_diagnostic(AuthDiagnosticOrigin::Callback, 5));
+                scope.spawn(|| context.latch_auth_diagnostic(AuthDiagnosticOrigin::Manager, 9));
+                scope.spawn(|| context.latch_fatal_runtime());
+            });
+            assert!(matches!(
+                context.auth_diagnostic().map(AuthStopDiagnostic::code),
+                Some(0x6005 | 0x6109)
+            ));
+            assert!(context.fatal.load(Ordering::Acquire));
+            assert!(context.other_fatal.load(Ordering::Acquire));
+            assert!(matches!(
+                context.diagnostic_after_clean_drain(),
+                Err(StatusRpcWorkerError::Unavailable)
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn an_earlier_other_fatal_is_never_downgraded_by_auth_diagnostic()
+    -> Result<(), StatusRpcWorkerError> {
+        let context = ServerContext::new()?;
+        context.latch_fatal_runtime();
+        context.latch_auth_diagnostic(AuthDiagnosticOrigin::Callback, 5);
+        assert_eq!(
+            context.auth_diagnostic().map(AuthStopDiagnostic::code),
+            Some(0x6005)
+        );
+        assert!(context.other_fatal.load(Ordering::Acquire));
+        assert_eq!(
+            context.legacy_after_clean_drain(),
+            Err(StatusRpcWorkerError::Unavailable)
+        );
+        assert!(matches!(
+            context.diagnostic_after_clean_drain(),
+            Err(StatusRpcWorkerError::Unavailable)
+        ));
+        Ok(())
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn unknown_auth_stage_and_unclassified_fatal_never_become_diagnostics()
+    -> Result<(), StatusRpcWorkerError> {
+        for stage in [0, 16, u32::MAX] {
+            let context = ServerContext::new()?;
+            context.latch_auth_diagnostic(AuthDiagnosticOrigin::Callback, stage);
+            assert!(context.auth_diagnostic().is_none());
+            assert!(context.other_fatal.load(Ordering::Acquire));
+            assert!(matches!(
+                context.diagnostic_after_clean_drain(),
+                Err(StatusRpcWorkerError::Unavailable)
+            ));
+        }
+        let context = ServerContext::new()?;
+        context.fatal.store(true, Ordering::Release);
+        assert!(context.auth_diagnostic().is_none());
+        assert!(matches!(
+            context.diagnostic_after_clean_drain(),
+            Err(StatusRpcWorkerError::Unavailable)
+        ));
+        Ok(())
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn every_failed_resource_drain_suppresses_auth_diagnostic_output()
+    -> Result<(), StatusRpcWorkerError> {
+        for failure in [
+            StatusRpcWorkerError::Unavailable,
+            StatusRpcWorkerError::RuntimeStateRetained,
+        ] {
+            assert!(
+                matches!(diagnostic_from_drain_result(Err(failure)), Err(actual) if actual == failure)
+            );
+        }
+        let context = Arc::new(ServerContext::new()?);
+        context.latch_auth_diagnostic(AuthDiagnosticOrigin::Callback, 5);
+        assert!(
+            matches!(diagnostic_from_drain_result(Ok(context)), Ok(DiagnosticDrainOutcome::AuthFailure(diagnostic)) if diagnostic.code() == 0x6005)
+        );
+        Ok(())
+    }
+
+    #[cfg(all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    ))]
+    #[test]
+    fn coordinator_cleanup_failure_dominates_an_auth_diagnostic() -> Result<(), StatusRpcWorkerError>
+    {
+        let context = ServerContext::new()?;
+        context.latch_auth_diagnostic(AuthDiagnosticOrigin::Callback, 5);
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let Ok(_owner) = context.probe_coordinator_owner.lock() else {
+                return;
+            };
+            std::panic::resume_unwind(Box::new(()));
+        }));
+        assert!(poisoned.is_err());
+        assert_eq!(
+            context.stop_probe_coordinator_and_helpers(),
+            Err(StatusRpcWorkerError::Unavailable)
+        );
+        assert!(context.other_fatal.load(Ordering::Acquire));
+        assert!(matches!(
+            context.diagnostic_after_clean_drain(),
+            Err(StatusRpcWorkerError::Unavailable)
+        ));
+        assert_eq!(
+            context.helpers.stop(),
+            Err(ExpectedPeerRegistryError::Stopping)
+        );
         Ok(())
     }
 

@@ -69,6 +69,258 @@ impl fmt::Display for RpcAuthError {
 
 impl std::error::Error for RpcAuthError {}
 
+#[cfg(any(
+    test,
+    all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    )
+))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AuthDiagnosticStage {
+    CallbackContext,
+    CallObservation,
+    AuthenticationObservation,
+    ThreadState,
+    OpenProcess,
+    ThreadCookie,
+    Impersonate,
+    ImpersonationToken,
+    PrimaryToken,
+    DuplicateDesktopPrimary,
+    DesktopPrimaryToken,
+    ExactProcess,
+    SameProcess,
+    Revert,
+    PolicyOrContinuity,
+}
+
+/// Closed debug-fixture error; this never changes the underlying auth result.
+/// Native observation categories group repeated calls to the same adapter.
+/// Policy/continuity failures do not claim that an OS call failed.
+#[cfg(any(
+    test,
+    all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    )
+))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AuthDiagnosticFailure {
+    error: RpcAuthError,
+    stage: AuthDiagnosticStage,
+}
+
+#[cfg(any(
+    test,
+    all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    )
+))]
+impl AuthDiagnosticFailure {
+    pub(super) const fn new(error: RpcAuthError, stage: AuthDiagnosticStage) -> Self {
+        Self { error, stage }
+    }
+
+    pub(super) const fn error(self) -> RpcAuthError {
+        self.error
+    }
+
+    pub(super) const fn code(self) -> u32 {
+        match self.stage {
+            AuthDiagnosticStage::CallbackContext => 1,
+            AuthDiagnosticStage::CallObservation => 2,
+            AuthDiagnosticStage::AuthenticationObservation => 3,
+            AuthDiagnosticStage::ThreadState => 4,
+            AuthDiagnosticStage::OpenProcess => 5,
+            AuthDiagnosticStage::ThreadCookie => 6,
+            AuthDiagnosticStage::Impersonate => 7,
+            AuthDiagnosticStage::ImpersonationToken => 8,
+            AuthDiagnosticStage::PrimaryToken => 9,
+            AuthDiagnosticStage::DuplicateDesktopPrimary => 10,
+            AuthDiagnosticStage::DesktopPrimaryToken => 11,
+            AuthDiagnosticStage::ExactProcess => 12,
+            AuthDiagnosticStage::SameProcess => 13,
+            AuthDiagnosticStage::Revert => 14,
+            AuthDiagnosticStage::PolicyOrContinuity => 15,
+        }
+    }
+}
+
+/// Per-call, same-thread observer, never a global token/identity store.
+/// Each operation delegates exactly once; successful observations are unchanged.
+#[cfg(any(
+    test,
+    all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    )
+))]
+struct DiagnosticAuthOps<'a, O> {
+    ops: &'a O,
+    first_failure: Cell<Option<AuthDiagnosticStage>>,
+}
+
+#[cfg(any(
+    test,
+    all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    )
+))]
+impl<'a, O> DiagnosticAuthOps<'a, O> {
+    fn new(ops: &'a O) -> Self {
+        Self {
+            ops,
+            first_failure: Cell::new(None),
+        }
+    }
+
+    fn observe<T>(
+        &self,
+        stage: AuthDiagnosticStage,
+        result: Result<T, ObservationError>,
+    ) -> Result<T, ObservationError> {
+        if result.is_err() && self.first_failure.get().is_none() {
+            self.first_failure.set(Some(stage));
+        }
+        result
+    }
+
+    fn failure(&self, error: RpcAuthError) -> AuthDiagnosticFailure {
+        AuthDiagnosticFailure::new(
+            error,
+            self.first_failure
+                .get()
+                .unwrap_or(AuthDiagnosticStage::PolicyOrContinuity),
+        )
+    }
+}
+
+#[cfg(any(
+    test,
+    all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    )
+))]
+impl<O: ProcessAuthOps> ProcessAuthOps for DiagnosticAuthOps<'_, O> {
+    type Process = O::Process;
+    type DesktopPrimaryToken = O::DesktopPrimaryToken;
+
+    fn open_process(&self, process_id: NonZeroU32) -> Result<Self::Process, ObservationError> {
+        self.observe(
+            AuthDiagnosticStage::OpenProcess,
+            self.ops.open_process(process_id),
+        )
+    }
+
+    fn primary_token(&self, process: &Self::Process) -> Result<TokenObservation, ObservationError> {
+        self.observe(
+            AuthDiagnosticStage::PrimaryToken,
+            self.ops.primary_token(process),
+        )
+    }
+
+    fn desktop_primary_token(
+        &self,
+        token: &Self::DesktopPrimaryToken,
+    ) -> Result<TokenObservation, ObservationError> {
+        self.observe(
+            AuthDiagnosticStage::DesktopPrimaryToken,
+            self.ops.desktop_primary_token(token),
+        )
+    }
+
+    fn exact_process_is_live(
+        &self,
+        process: &Self::Process,
+        process_id: NonZeroU32,
+    ) -> Result<bool, ObservationError> {
+        self.observe(
+            AuthDiagnosticStage::ExactProcess,
+            self.ops.exact_process_is_live(process, process_id),
+        )
+    }
+
+    fn same_process(
+        &self,
+        first: &Self::Process,
+        second: &Self::Process,
+    ) -> Result<bool, ObservationError> {
+        self.observe(
+            AuthDiagnosticStage::SameProcess,
+            self.ops.same_process(first, second),
+        )
+    }
+}
+
+#[cfg(any(
+    test,
+    all(
+        feature = "key-agent-service-lpac-launch-feasibility-test-hook",
+        debug_assertions
+    )
+))]
+impl<O: RpcAuthOps> RpcAuthOps for DiagnosticAuthOps<'_, O> {
+    fn call_observation(&self) -> Result<CallObservation, ObservationError> {
+        self.observe(
+            AuthDiagnosticStage::CallObservation,
+            self.ops.call_observation(),
+        )
+    }
+
+    fn authentication_observation(&self) -> Result<AuthenticationObservation, ObservationError> {
+        self.observe(
+            AuthDiagnosticStage::AuthenticationObservation,
+            self.ops.authentication_observation(),
+        )
+    }
+
+    fn thread_token_state(&self) -> Result<ThreadTokenState, ObservationError> {
+        self.observe(
+            AuthDiagnosticStage::ThreadState,
+            self.ops.thread_token_state(),
+        )
+    }
+
+    fn current_thread_cookie(&self) -> Result<NonZeroU32, ObservationError> {
+        self.observe(
+            AuthDiagnosticStage::ThreadCookie,
+            self.ops.current_thread_cookie(),
+        )
+    }
+
+    fn impersonate(&self) -> Result<(), ObservationError> {
+        self.observe(AuthDiagnosticStage::Impersonate, self.ops.impersonate())
+    }
+
+    fn impersonation_token(&self) -> Result<TokenObservation, ObservationError> {
+        self.observe(
+            AuthDiagnosticStage::ImpersonationToken,
+            self.ops.impersonation_token(),
+        )
+    }
+
+    fn duplicate_desktop_primary_token(
+        &self,
+    ) -> Result<Self::DesktopPrimaryToken, ObservationError> {
+        self.observe(
+            AuthDiagnosticStage::DuplicateDesktopPrimary,
+            self.ops.duplicate_desktop_primary_token(),
+        )
+    }
+
+    fn revert(&self) -> Result<(), ObservationError> {
+        self.observe(AuthDiagnosticStage::Revert, self.ops.revert())
+    }
+
+    fn fail_fast(&self) -> ! {
+        self.ops.fail_fast()
+    }
+}
+
 /// Data-free failure classes for the sole desktop-user process-creation call.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DesktopProcessCreateError {
@@ -1151,9 +1403,10 @@ pub(crate) fn authenticate_call(
 ))]
 pub(crate) fn authenticate_role_aware_call(
     binding: CallBinding<'_>,
-) -> Result<AuthenticatedRpcManagerPeer, RpcAuthError> {
+) -> Result<AuthenticatedRpcManagerPeer, AuthDiagnosticFailure> {
     let ops = sys::WindowsRpcAuthOps::new(binding);
-    authenticate_role_aware_with(&ops)
+    let observed = DiagnosticAuthOps::new(&ops);
+    authenticate_role_aware_with(&observed).map_err(|error| observed.failure(error))
 }
 
 /// Independently authenticates the binding context supplied to an If3
@@ -1195,12 +1448,17 @@ pub(crate) unsafe fn authenticate_callback_context(
 ))]
 pub(crate) unsafe fn authenticate_role_aware_callback_context(
     raw: *const c_void,
-) -> Result<AuthenticatedRpcCallbackPeer, RpcAuthError> {
+) -> Result<AuthenticatedRpcCallbackPeer, AuthDiagnosticFailure> {
     // SAFETY: the caller supplies the active callback's synchronous context;
     // the adapter retains it only inside this function.
-    let ops = unsafe { sys::WindowsRpcAuthOps::from_callback(raw) }
-        .map_err(|_| RpcAuthError::CallFailed)?;
-    authenticate_role_aware_callback_with(&ops)
+    let ops = unsafe { sys::WindowsRpcAuthOps::from_callback(raw) }.map_err(|_| {
+        AuthDiagnosticFailure::new(
+            RpcAuthError::CallFailed,
+            AuthDiagnosticStage::CallbackContext,
+        )
+    })?;
+    let observed = DiagnosticAuthOps::new(&ops);
+    authenticate_role_aware_callback_with(&observed).map_err(|error| observed.failure(error))
 }
 
 #[cfg(any(
@@ -1735,12 +1993,13 @@ impl<O: RpcAuthOps> Drop for ImpersonationGuard<'_, O> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthenticatedClient, AuthenticationId, AuthenticationObservation, CallKind,
-        CallObservation, CallProtocol, DebugPrivilegeState, DesktopImpersonationOps,
-        DesktopProcessAccessError, EffectiveThreadAuthOps, ElevationKind, ImpersonationGuard,
-        NonZeroU32, ObservationError, ProcessAuthOps, RPC_AUTHN_LEVEL_PACKET_PRIVACY,
-        RPC_AUTHN_SERVICE_WINNT, RPC_AUTHZ_SERVICE_NONE, RPC_CALL_STATUS_ACTIVE, RpcAuthError,
-        RpcAuthOps, SidBytes, ThreadTokenState, TokenId, TokenKind, TokenLevel, TokenObservation,
+        AuthDiagnosticFailure, AuthDiagnosticStage, AuthenticatedClient, AuthenticationId,
+        AuthenticationObservation, CallKind, CallObservation, CallProtocol, DebugPrivilegeState,
+        DesktopImpersonationOps, DesktopProcessAccessError, DiagnosticAuthOps,
+        EffectiveThreadAuthOps, ElevationKind, ImpersonationGuard, NonZeroU32, ObservationError,
+        ProcessAuthOps, RPC_AUTHN_LEVEL_PACKET_PRIVACY, RPC_AUTHN_SERVICE_WINNT,
+        RPC_AUTHZ_SERVICE_NONE, RPC_CALL_STATUS_ACTIVE, RpcAuthError, RpcAuthOps, SidBytes,
+        ThreadTokenState, TokenId, TokenKind, TokenLevel, TokenObservation,
         authenticate_callback_with, authenticate_with,
     };
     use core::cell::{Cell, RefCell};
@@ -1889,6 +2148,7 @@ mod tests {
 
     struct FakeOps {
         events: RefCell<Vec<Event>>,
+        observation_failure: Cell<Option<(Event, usize)>>,
         call: Cell<Result<CallObservation, ObservationError>>,
         call_count: Cell<u32>,
         confirmed_process_id: Cell<u32>,
@@ -1930,6 +2190,7 @@ mod tests {
         fn approved() -> Self {
             Self {
                 events: RefCell::new(Vec::new()),
+                observation_failure: Cell::new(None),
                 call: Cell::new(Ok(approved_call())),
                 call_count: Cell::new(0),
                 confirmed_process_id: Cell::new(42),
@@ -1970,6 +2231,21 @@ mod tests {
 
         fn record(&self, event: Event) {
             self.events.borrow_mut().push(event);
+        }
+
+        fn record_observation(&self, event: Event) -> Result<(), ObservationError> {
+            self.record(event);
+            let occurrence = self
+                .events
+                .borrow()
+                .iter()
+                .filter(|seen| **seen == event)
+                .count();
+            if self.observation_failure.get() == Some((event, occurrence)) {
+                Err(ObservationError::Incomplete)
+            } else {
+                Ok(())
+            }
         }
 
         fn events(&self) -> Vec<Event> {
@@ -2024,7 +2300,7 @@ mod tests {
         type DesktopPrimaryToken = FakeDesktopPrimaryToken;
 
         fn open_process(&self, process_id: NonZeroU32) -> Result<Self::Process, ObservationError> {
-            self.record(Event::OpenProcess);
+            self.record_observation(Event::OpenProcess)?;
             self.open_process_ok
                 .get()
                 .then_some(FakeProcess(process_id.get()))
@@ -2035,7 +2311,7 @@ mod tests {
             &self,
             _process: &Self::Process,
         ) -> Result<TokenObservation, ObservationError> {
-            self.record(Event::PrimaryToken);
+            self.record_observation(Event::PrimaryToken)?;
             if !self.primary_token_ok.get() {
                 return Err(ObservationError::Incomplete);
             }
@@ -2054,7 +2330,7 @@ mod tests {
             &self,
             _token: &Self::DesktopPrimaryToken,
         ) -> Result<TokenObservation, ObservationError> {
-            self.record(Event::DesktopPrimaryToken);
+            self.record_observation(Event::DesktopPrimaryToken)?;
             if !self.desktop_primary_token_ok.get() {
                 return Err(ObservationError::Incomplete);
             }
@@ -2075,7 +2351,7 @@ mod tests {
             _process: &Self::Process,
             _process_id: NonZeroU32,
         ) -> Result<bool, ObservationError> {
-            self.record(Event::ExactProcess);
+            self.record_observation(Event::ExactProcess)?;
             Ok(self.exact_process.get())
         }
 
@@ -2084,14 +2360,14 @@ mod tests {
             _first: &Self::Process,
             _second: &Self::Process,
         ) -> Result<bool, ObservationError> {
-            self.record(Event::SameProcess);
+            self.record_observation(Event::SameProcess)?;
             Ok(self.same_process.get())
         }
     }
 
     impl RpcAuthOps for FakeOps {
         fn call_observation(&self) -> Result<CallObservation, ObservationError> {
-            self.record(Event::Call);
+            self.record_observation(Event::Call)?;
             let call_index = self.call_count.get();
             self.call_count.set(call_index.saturating_add(1));
             let mut call = self.call.get()?;
@@ -2104,12 +2380,12 @@ mod tests {
         fn authentication_observation(
             &self,
         ) -> Result<AuthenticationObservation, ObservationError> {
-            self.record(Event::Authentication);
+            self.record_observation(Event::Authentication)?;
             self.authentication.get()
         }
 
         fn thread_token_state(&self) -> Result<ThreadTokenState, ObservationError> {
-            self.record(Event::ThreadState);
+            self.record_observation(Event::ThreadState)?;
             let after_revert = self.events.borrow().contains(&Event::Revert);
             let query_ok = if after_revert {
                 self.residual_thread_query_ok.get()
@@ -2132,12 +2408,12 @@ mod tests {
         }
 
         fn current_thread_cookie(&self) -> Result<NonZeroU32, ObservationError> {
-            self.record(Event::ThreadCookie);
+            self.record_observation(Event::ThreadCookie)?;
             NonZeroU32::new(self.thread_cookie.get()).ok_or(ObservationError::Incomplete)
         }
 
         fn impersonate(&self) -> Result<(), ObservationError> {
-            self.record(Event::Impersonate);
+            self.record_observation(Event::Impersonate)?;
             self.impersonate_ok
                 .get()
                 .then_some(())
@@ -2145,7 +2421,7 @@ mod tests {
         }
 
         fn impersonation_token(&self) -> Result<TokenObservation, ObservationError> {
-            self.record(Event::ImpersonationToken);
+            self.record_observation(Event::ImpersonationToken)?;
             self.impersonation_token_ok
                 .get()
                 .then(|| {
@@ -2163,7 +2439,7 @@ mod tests {
         fn duplicate_desktop_primary_token(
             &self,
         ) -> Result<Self::DesktopPrimaryToken, ObservationError> {
-            self.record(Event::DuplicateDesktopPrimary);
+            self.record_observation(Event::DuplicateDesktopPrimary)?;
             self.duplicate_desktop_primary_ok
                 .get()
                 .then(|| FakeDesktopPrimaryToken {
@@ -2173,7 +2449,7 @@ mod tests {
         }
 
         fn revert(&self) -> Result<(), ObservationError> {
-            self.record(Event::Revert);
+            self.record_observation(Event::Revert)?;
             self.revert_ok
                 .get()
                 .then_some(())
@@ -2321,6 +2597,396 @@ mod tests {
             DesktopChildTokenMutation::TokenLevel => token.token_level = TokenLevel::Other,
         }
         token
+    }
+
+    const DIAGNOSTIC_OBSERVATIONS: [(Event, AuthDiagnosticStage); 13] = [
+        (Event::Call, AuthDiagnosticStage::CallObservation),
+        (
+            Event::Authentication,
+            AuthDiagnosticStage::AuthenticationObservation,
+        ),
+        (Event::ThreadState, AuthDiagnosticStage::ThreadState),
+        (Event::OpenProcess, AuthDiagnosticStage::OpenProcess),
+        (Event::ThreadCookie, AuthDiagnosticStage::ThreadCookie),
+        (Event::Impersonate, AuthDiagnosticStage::Impersonate),
+        (
+            Event::ImpersonationToken,
+            AuthDiagnosticStage::ImpersonationToken,
+        ),
+        (Event::PrimaryToken, AuthDiagnosticStage::PrimaryToken),
+        (
+            Event::DuplicateDesktopPrimary,
+            AuthDiagnosticStage::DuplicateDesktopPrimary,
+        ),
+        (
+            Event::DesktopPrimaryToken,
+            AuthDiagnosticStage::DesktopPrimaryToken,
+        ),
+        (Event::ExactProcess, AuthDiagnosticStage::ExactProcess),
+        (Event::SameProcess, AuthDiagnosticStage::SameProcess),
+        (Event::Revert, AuthDiagnosticStage::Revert),
+    ];
+
+    fn assert_diagnostic_token_unchanged(actual: &TokenObservation, expected: &TokenObservation) {
+        assert_eq!(actual.user_sid, expected.user_sid);
+        assert_eq!(actual.logon_sid_count, expected.logon_sid_count);
+        assert_eq!(actual.logon_sid, expected.logon_sid);
+        assert_eq!(actual.session_id, expected.session_id);
+        assert_eq!(actual.authentication_id, expected.authentication_id);
+        assert_eq!(actual.token_id, expected.token_id);
+        assert_eq!(actual.token_kind, expected.token_kind);
+        assert_eq!(actual.token_level, expected.token_level);
+        assert_eq!(actual.app_container, expected.app_container);
+        assert_eq!(actual.ui_access, expected.ui_access);
+        assert_eq!(actual.integrity_rid, expected.integrity_rid);
+        assert_eq!(actual.elevation, expected.elevation);
+        assert_eq!(actual.restricted, expected.restricted);
+        assert_eq!(
+            actual.interactive_sid_enabled,
+            expected.interactive_sid_enabled
+        );
+        assert_eq!(actual.debug_privilege, expected.debug_privilege);
+    }
+
+    fn diagnostic_observation<O>(ops: &O, event: Event) -> Result<(), ObservationError>
+    where
+        O: RpcAuthOps<Process = FakeProcess, DesktopPrimaryToken = FakeDesktopPrimaryToken>,
+    {
+        let process = FakeProcess(42);
+        let Some(process_id) = NonZeroU32::new(process.0) else {
+            return Err(ObservationError::Incomplete);
+        };
+        match event {
+            Event::Call => ops
+                .call_observation()
+                .map(|value| assert_eq!(value, approved_call())),
+            Event::Authentication => ops.authentication_observation().map(|value| {
+                assert_eq!(value, approved_authentication());
+            }),
+            Event::ThreadState => ops.thread_token_state().map(|value| {
+                assert_eq!(value, ThreadTokenState::Clear);
+            }),
+            Event::OpenProcess => ops
+                .open_process(process_id)
+                .map(|value| assert_eq!(value, process)),
+            Event::ThreadCookie => ops
+                .current_thread_cookie()
+                .map(|value| assert_eq!(value.get(), 7)),
+            Event::Impersonate => ops.impersonate(),
+            Event::ImpersonationToken => ops.impersonation_token().map(|value| {
+                assert_diagnostic_token_unchanged(
+                    &value,
+                    &approved_token(TokenKind::Impersonation, 1),
+                );
+            }),
+            Event::PrimaryToken => ops.primary_token(&process).map(|value| {
+                assert_diagnostic_token_unchanged(&value, &approved_token(TokenKind::Primary, 1));
+            }),
+            Event::DuplicateDesktopPrimary => ops.duplicate_desktop_primary_token().map(drop),
+            Event::DesktopPrimaryToken => {
+                let token = FakeDesktopPrimaryToken {
+                    drops: Rc::new(Cell::new(0)),
+                };
+                ops.desktop_primary_token(&token).map(|value| {
+                    let mut expected = approved_token(TokenKind::Primary, 1);
+                    expected.token_id.low_part = 21;
+                    assert_diagnostic_token_unchanged(&value, &expected);
+                })
+            }
+            Event::ExactProcess => ops
+                .exact_process_is_live(&process, process_id)
+                .map(|value| assert!(value)),
+            Event::SameProcess => ops
+                .same_process(&process, &process)
+                .map(|value| assert!(value)),
+            Event::Revert => ops.revert(),
+            _ => Err(ObservationError::Incomplete),
+        }
+    }
+
+    fn diagnostic_authenticate<O>(ops: &O, callback: bool) -> Result<bool, RpcAuthError>
+    where
+        O: RpcAuthOps,
+    {
+        if callback {
+            super::authenticate_role_aware_callback_with(ops)
+                .map(|peer| matches!(peer, super::AuthenticatedCallbackPeer::Desktop(_)))
+        } else {
+            super::authenticate_role_aware_with(ops)
+                .map(|peer| matches!(peer, super::AuthenticatedManagerPeer::Desktop(_)))
+        }
+    }
+
+    #[test]
+    fn auth_diagnostic_stage_codes_are_closed_and_data_free() {
+        let stages = [
+            (AuthDiagnosticStage::CallbackContext, "CallbackContext"),
+            (AuthDiagnosticStage::CallObservation, "CallObservation"),
+            (
+                AuthDiagnosticStage::AuthenticationObservation,
+                "AuthenticationObservation",
+            ),
+            (AuthDiagnosticStage::ThreadState, "ThreadState"),
+            (AuthDiagnosticStage::OpenProcess, "OpenProcess"),
+            (AuthDiagnosticStage::ThreadCookie, "ThreadCookie"),
+            (AuthDiagnosticStage::Impersonate, "Impersonate"),
+            (
+                AuthDiagnosticStage::ImpersonationToken,
+                "ImpersonationToken",
+            ),
+            (AuthDiagnosticStage::PrimaryToken, "PrimaryToken"),
+            (
+                AuthDiagnosticStage::DuplicateDesktopPrimary,
+                "DuplicateDesktopPrimary",
+            ),
+            (
+                AuthDiagnosticStage::DesktopPrimaryToken,
+                "DesktopPrimaryToken",
+            ),
+            (AuthDiagnosticStage::ExactProcess, "ExactProcess"),
+            (AuthDiagnosticStage::SameProcess, "SameProcess"),
+            (AuthDiagnosticStage::Revert, "Revert"),
+            (
+                AuthDiagnosticStage::PolicyOrContinuity,
+                "PolicyOrContinuity",
+            ),
+        ];
+        for (index, (stage, name)) in stages.into_iter().enumerate() {
+            for (error, error_name) in [
+                (RpcAuthError::AccessDenied, "AccessDenied"),
+                (RpcAuthError::CallFailed, "CallFailed"),
+            ] {
+                let failure = AuthDiagnosticFailure::new(error, stage);
+                assert_eq!(usize::try_from(failure.code()), Ok(index + 1));
+                assert_eq!(failure.error(), error);
+                assert_eq!(
+                    format!("{failure:?}"),
+                    format!("AuthDiagnosticFailure {{ error: {error_name}, stage: {name} }}")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn auth_diagnostic_observer_forwards_every_observation_once() {
+        for (event, stage) in DIAGNOSTIC_OBSERVATIONS {
+            for fails in [false, true] {
+                let ops = FakeOps::approved();
+                ops.observation_failure.set(fails.then_some((event, 1)));
+                let observed = DiagnosticAuthOps::new(&ops);
+                assert_eq!(
+                    diagnostic_observation(&observed, event),
+                    if fails {
+                        Err(ObservationError::Incomplete)
+                    } else {
+                        Ok(())
+                    }
+                );
+                assert_eq!(ops.events(), [event]);
+                assert_eq!(observed.first_failure.get(), fails.then_some(stage));
+                assert_eq!(
+                    observed.failure(RpcAuthError::CallFailed),
+                    AuthDiagnosticFailure::new(
+                        RpcAuthError::CallFailed,
+                        if fails {
+                            stage
+                        } else {
+                            AuthDiagnosticStage::PolicyOrContinuity
+                        }
+                    )
+                );
+                assert_eq!(
+                    ops.desktop_primary_drops.get(),
+                    u32::from(event == Event::DuplicateDesktopPrimary && !fails)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn auth_diagnostic_observer_preserves_negative_complete_observations() {
+        let ops = FakeOps::approved();
+        ops.exact_process.set(false);
+        ops.same_process.set(false);
+        ops.thread_present.set(true);
+        let observed = DiagnosticAuthOps::new(&ops);
+        let process = FakeProcess(42);
+        let process_id = NonZeroU32::new(process.0);
+        assert!(process_id.is_some());
+        if let Some(process_id) = process_id {
+            assert_eq!(
+                observed.exact_process_is_live(&process, process_id),
+                Ok(false)
+            );
+        }
+        assert_eq!(observed.same_process(&process, &process), Ok(false));
+        assert_eq!(observed.thread_token_state(), Ok(ThreadTokenState::Present));
+        assert_eq!(
+            ops.events(),
+            [Event::ExactProcess, Event::SameProcess, Event::ThreadState]
+        );
+        assert_eq!(observed.first_failure.get(), None);
+        assert_eq!(
+            observed.failure(RpcAuthError::AccessDenied),
+            AuthDiagnosticFailure::new(
+                RpcAuthError::AccessDenied,
+                AuthDiagnosticStage::PolicyOrContinuity
+            )
+        );
+    }
+
+    #[test]
+    fn auth_diagnostic_observer_retains_first_failure_and_forwards_later_calls() {
+        for (first, first_stage) in DIAGNOSTIC_OBSERVATIONS {
+            for (second, _) in DIAGNOSTIC_OBSERVATIONS {
+                let ops = FakeOps::approved();
+                let observed = DiagnosticAuthOps::new(&ops);
+                ops.observation_failure.set(Some((first, 1)));
+                assert_eq!(
+                    diagnostic_observation(&observed, first),
+                    Err(ObservationError::Incomplete)
+                );
+                ops.observation_failure
+                    .set(Some((second, if first == second { 2 } else { 1 })));
+                assert_eq!(
+                    diagnostic_observation(&observed, second),
+                    Err(ObservationError::Incomplete)
+                );
+                ops.observation_failure.set(None);
+                assert_eq!(diagnostic_observation(&observed, second), Ok(()));
+                assert_eq!(ops.events(), [first, second, second]);
+                for error in [RpcAuthError::AccessDenied, RpcAuthError::CallFailed] {
+                    assert_eq!(
+                        observed.failure(error),
+                        AuthDiagnosticFailure::new(error, first_stage)
+                    );
+                }
+                assert_eq!(DiagnosticAuthOps::new(&ops).first_failure.get(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn auth_diagnostic_observer_delegates_fail_fast_without_minting_an_observation() {
+        let ops = FakeOps::approved();
+        let observed = DiagnosticAuthOps::new(&ops);
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observed.fail_fast()));
+        assert!(result.is_err());
+        assert_eq!(ops.events(), [Event::FailFast]);
+        assert_eq!(observed.first_failure.get(), None);
+    }
+
+    #[test]
+    fn auth_diagnostic_observer_preserves_manager_callback_policy_results_and_cleanup() {
+        let mutations: [fn(&FakeOps); 9] = [
+            |_| {},
+            |ops| {
+                let mut call = approved_call();
+                call.local = false;
+                ops.call.set(Ok(call));
+            },
+            |ops| {
+                let mut auth = approved_authentication();
+                auth.authentication_level = 0;
+                ops.authentication.set(Ok(auth));
+            },
+            |ops| ops.thread_present.set(true),
+            |ops| ops.confirmed_process_id.set(43),
+            |ops| ops.matching_tokens.set(false),
+            |ops| {
+                ops.impersonation_debug_privilege
+                    .set(DebugPrivilegeState::PresentDisabled);
+            },
+            |ops| ops.desktop_primary_matches.set(false),
+            |ops| ops.exact_process.set(false),
+        ];
+        for callback in [false, true] {
+            for helper in [false, true] {
+                for mutate in mutations {
+                    let plain = FakeOps::approved();
+                    let inner = FakeOps::approved();
+                    plain.service_created_lpac_candidate.set(helper);
+                    inner.service_created_lpac_candidate.set(helper);
+                    mutate(&plain);
+                    mutate(&inner);
+                    let observed = DiagnosticAuthOps::new(&inner);
+                    let expected = diagnostic_authenticate(&plain, callback);
+                    assert_eq!(diagnostic_authenticate(&observed, callback), expected);
+                    assert_eq!(inner.events(), plain.events());
+                    assert_eq!(
+                        inner.desktop_primary_drops.get(),
+                        plain.desktop_primary_drops.get()
+                    );
+                    assert_eq!(observed.first_failure.get(), None);
+                    if let Err(error) = expected {
+                        assert_eq!(error, RpcAuthError::AccessDenied);
+                        assert_eq!(
+                            observed.failure(error),
+                            AuthDiagnosticFailure::new(
+                                error,
+                                AuthDiagnosticStage::PolicyOrContinuity
+                            )
+                        );
+                    } else {
+                        assert_eq!(expected, Ok(!helper));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn auth_diagnostic_observer_preserves_every_native_failure_revalidation_and_reversion() {
+        for callback in [false, true] {
+            for helper in [false, true] {
+                let approved = FakeOps::approved();
+                approved.service_created_lpac_candidate.set(helper);
+                assert_eq!(diagnostic_authenticate(&approved, callback), Ok(!helper));
+                let order = approved.events();
+                for (index, event) in order.iter().copied().enumerate() {
+                    let occurrence = order[..=index]
+                        .iter()
+                        .filter(|seen| **seen == event)
+                        .count();
+                    let plain = FakeOps::approved();
+                    let inner = FakeOps::approved();
+                    plain.service_created_lpac_candidate.set(helper);
+                    inner.service_created_lpac_candidate.set(helper);
+                    plain.observation_failure.set(Some((event, occurrence)));
+                    inner.observation_failure.set(Some((event, occurrence)));
+                    let observed = DiagnosticAuthOps::new(&inner);
+                    let expected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        diagnostic_authenticate(&plain, callback)
+                    }));
+                    let actual = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        diagnostic_authenticate(&observed, callback)
+                    }));
+                    if let Ok(result) = &expected {
+                        assert_eq!(*result, Err(RpcAuthError::CallFailed));
+                    }
+                    assert_eq!(actual.is_err(), expected.is_err());
+                    assert_eq!(actual.ok(), expected.ok());
+                    assert_eq!(inner.events(), plain.events());
+                    assert_eq!(
+                        inner.desktop_primary_drops.get(),
+                        plain.desktop_primary_drops.get()
+                    );
+                    let stage = DIAGNOSTIC_OBSERVATIONS
+                        .iter()
+                        .find(|(candidate, _)| *candidate == event)
+                        .map(|(_, stage)| *stage);
+                    assert!(stage.is_some());
+                    assert_eq!(observed.first_failure.get(), stage);
+                    if let Some(stage) = stage {
+                        assert_eq!(
+                            observed.failure(RpcAuthError::CallFailed),
+                            AuthDiagnosticFailure::new(RpcAuthError::CallFailed, stage)
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

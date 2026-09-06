@@ -105,9 +105,12 @@ An absent category does not prove that RPC ran. A category is not permission to
 relax policy or automatically retry. These are fixed labels, never native errors,
 identities, raw frames, decisions or wallet data.
 
-The currently installed/matched `b3bb834` candidate predates this client-only
-diagnostic addition and must not be edited in place. A separately provenance-
-checked workspace build can diagnose it without replacing the service. The
+The currently installed `b3bb834` candidate predates the client diagnostic
+addition. Its matched workspace candidate is preserved in
+`artifacts/service-probe-candidate-before-runtime-auth-diagnostics-b3bb834`.
+Earlier client-only diagnostics were separately provenance-checked without
+replacing that service. The fresh current candidate now also contains the
+service-side runtime-auth diagnostics below and awaits explicit application. The
 explicitly ignored `current_native_desktop_probe_preflight` test observes only
 its own desktop process through query APIs; it makes no RPC call and does not
 prove the earlier client's environment or service identity.
@@ -200,6 +203,81 @@ denied. Do not interpret such omission as permission to reinstall. See Microsoft
 [service query access contract](https://learn.microsoft.com/en-us/windows/win32/services/service-security-and-access-rights).
 
 ## Verification boundaries
+
+### Debug runtime authentication failure evidence
+
+The new source adds an LPAC-debug-only, first-failure diagnostic through the
+existing SCM terminal-status channel. It does not change RPC responses or any
+authentication predicate. A per-call observer forwards the same operations once
+in the same order and keeps only the first failed observation category. It does
+not retain identities, native status values, tokens, request bytes or secrets.
+If every native observation succeeded but policy/continuity rejected the caller,
+the category is explicitly `PolicyOrContinuity`, not an invented native failure.
+
+The first native entry failure atomically records one code for this service
+invocation, closes admission and requests the existing bounded stop path. The
+debug fixture deliberately stops on rejection; this is not production-service
+availability behavior. Callback codes are `0x6000 + offset`; manager codes are
+`0x6100 + offset`:
+
+| Offset | Category |
+| --- | --- |
+| 1 | Callback context construction |
+| 2 | Call attributes observation |
+| 3 | Authentication attributes observation |
+| 4 | Thread-token state observation |
+| 5 | Caller process open |
+| 6 | Thread identity observation |
+| 7 | RPC impersonation |
+| 8 | Impersonation-token observation |
+| 9 | Caller primary-token observation |
+| 10 | Desktop primary-token duplication |
+| 11 | Duplicated desktop-token observation |
+| 12 | Exact caller-process liveness observation |
+| 13 | Process-object comparison observation |
+| 14 | RPC impersonation reversion |
+| 15 | Policy or identity-continuity rejection |
+
+Repeated calls to one adapter share a category: for example, offset 9 alone does
+not distinguish the initial primary-token read from later revalidation. Revert
+or thread-cleanup failure retains the existing fail-fast behavior, so no report
+is promised when safe reversion cannot complete. The first observed caller need
+not be the intended test client; the code is not caller/service authentication.
+
+No code is published while RUNNING. Publication requires actual RPC rundown,
+coordinator/helper cleanup, exact context removal, progress-thread completion
+and stop-event close. Any unrelated fatal error (including a concurrent one),
+uncertain cleanup or status failure takes precedence; an earlier auth code cannot
+convert that state into proven cleanup. Ordinary/status-only/release behavior
+and legacy fatal-rejecting drain remain unchanged. There is no EventLog writer,
+new native API, source registration, ACL/LSA grant, extra wire operation or retry.
+See [SERVICE_STATUS](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_status)
+and [SetServiceStatus cleanup rules](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-setservicestatus).
+
+Endpoint/interface access denial before the native auth entry, admission refusal
+and later router/helper errors do not necessarily produce an auth diagnostic.
+Absent codes are not PASS and do not justify repeated starts. New source is not
+installed-service evidence: a separately prepared, reviewed candidate must first
+be applied with the guarded operator workflow before these codes can be observed.
+
+The current fresh candidate passed unelevated preparation and independent held
+canonical-manifest/all-four-artifact verification. The old candidate was moved,
+not deleted or overwritten, and passed the same verification before and after.
+The installed service has not been changed. To apply this new diagnostic build,
+run the following **single physical line** in a fresh elevated 64-bit PowerShell.
+It stops at the first nonzero native exit. Stop accepts an already-stopped owned
+fixture; Remove still requires stopped state and exact ownership/readback.
+
+```powershell
+$walletArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File','D:\#Programming\your-wallet\scripts\service-probe\operate.ps1','-Action'); foreach ($walletAction in @('Stop','Remove','Install','Start')) { powershell @walletArgs $walletAction; if ($LASTEXITCODE -ne 0) { break } }
+```
+
+Report those action results before any client run. After Start PASS, the next
+diagnostic is one independently provenance-held, externally bounded OpenEpoch
+only, followed by the fixed service's scoped SCM evidence; not an Approval or
+signing request, automatic retry or another replacement. An observed operation
+category must not be relabeled as a specific Win32 error or authentication
+predicate. An absent report is inconclusive, not permission to restart.
 
 ### Debug startup failure evidence
 

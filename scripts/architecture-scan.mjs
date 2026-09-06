@@ -23728,7 +23728,7 @@ requireInvariant(
 const keyAgentServiceExpectedPeerReexportSource =
   keyAgentServiceRpcFixtureSources[keyAgentServiceRpcFixturePaths.root];
 const keyAgentServiceExpectedPeerReexportSha256 =
-  "c001ebd5612df7205b83e87e8358f21a4c3ca0f847aa3e536ac6b7b25076aa19";
+  "67d09b11f66e224363323278503745d418e4b0d61a0577f7f6b386f72441b996";
 const keyAgentServiceExpectedPeerReexportCfg =
   "#[cfg(all(feature=,debug_assertions))]";
 const keyAgentServiceExpectedPeerReexportItem = `${keyAgentServiceExpectedPeerReexportCfg}pub(crate)useself::expected_peer::{EXPECTED_HELPER_QUIESCENCE_MILLISECONDS,ExpectedHelperAdmission,ExpectedHelperLease,ExpectedHelperPeer,ExpectedHelperRole,ExpectedPeerKey,ExpectedPeerRegistryError,ExpectedPeerVerificationError,};`;
@@ -23911,6 +23911,14 @@ const keyAgentServiceRpcRootTestNames = [
   "errors_and_context_debug_are_data_free",
   "callback_authentication_has_an_application_level_concurrency_cap",
   "invalidation_defers_expected_helper_stop_until_post_rpc_cleanup",
+  "auth_stop_diagnostic_codes_are_closed_and_origin_separated",
+  "auth_stop_diagnostic_is_first_wins_and_preserves_legacy_fatal_rejection",
+  "auth_stop_diagnostic_never_excuses_another_calls_internal_failure",
+  "concurrent_other_fatal_always_suppresses_auth_stop_diagnostic",
+  "an_earlier_other_fatal_is_never_downgraded_by_auth_diagnostic",
+  "unknown_auth_stage_and_unclassified_fatal_never_become_diagnostics",
+  "every_failed_resource_drain_suppresses_auth_diagnostic_output",
+  "coordinator_cleanup_failure_dominates_an_auth_diagnostic",
   "only_internal_dispatch_failure_latches_fatal_and_closes_admission",
   "fatal_health_latch_preserves_an_already_completed_response",
   "coordinator_owner_invariant_failure_is_fatal_but_still_stops_helpers",
@@ -24004,6 +24012,7 @@ const keyAgentServiceRpcLifecycleContract = ({ sources, platformService }) => {
       admissionClosedWorkerImpl,
       "drain",
     );
+    const workerDrainResources = rustFunctionBlock(admissionClosedWorkerImpl, "drain_resources");
     const callbackPermit = rustFunctionBlock(
       root,
       "try_callback_auth_permit");
@@ -24242,15 +24251,16 @@ const keyAgentServiceRpcLifecycleContract = ({ sources, platformService }) => {
       hasOrderedCompactMarkers(finishService, [
         "letadmission_closed_worker=worker.map(ScmWorker::close_admission)",
         "StopProgressReporter::start()",
-        "worker.drain().is_err()",
+        "worker.drain_with_diagnostic()",
         "reporter.finish().is_err()",
         "drop(worker)",
         "stop_event.map(OwnedEvent::close)",
-        "ifdrain_failed||progress_failed||event_close_failed",
+        "terminal_status_after_cleanup(failure,drain_failed,progress_failed,event_close_failed,)",
         "return;",
-        "letfinal_status=ifletSome(detail)=failure",
         "send_status(status_handle,&final_status)",
       ]) &&
+      compactRust(rustFunctionBlock(platformService, "terminal_status_after_cleanup")) ===
+        "fnterminal_status_after_cleanup(failure:Option<u32>,drain_failed:bool,progress_failed:bool,event_close_failed:bool,)->Option<SERVICE_STATUS>{ifdrain_failed||progress_failed||event_close_failed{returnNone;}Some(ifletSome(detail)=failure{status_value(SERVICE_STOPPED,ERROR_SERVICE_SPECIFIC_ERROR.0,detail,0,0,)}else{status_value(SERVICE_STOPPED,0,0,0,0)})}" &&
       keyAgentServiceLiteralCount(
         compactRust(finishService),
         "StopProgressReporter::start()",
@@ -24323,13 +24333,14 @@ const keyAgentServiceRpcLifecycleContract = ({ sources, platformService }) => {
         "server:server.close_admission()",
         "context",
       ]) &&
-      hasOrderedCompactMarkers(workerDrain, [
+      hasOrderedCompactMarkers(workerDrainResources, [
         "server.drain()",
         "returnErr(StatusRpcWorkerError::RuntimeStateRetained)",
         "context.stop_probe_coordinator_and_helpers()?",
         "clear_context(&context)?",
-        "context.fatal.load(Ordering::Acquire)",
       ]) &&
+      compactRust(workerDrain) === "pub(super)fndrain(self)->Result<(),StatusRpcWorkerError>{letcontext=self.drain_resources()?;context.legacy_after_clean_drain()}" &&
+      compactRust(rustFunctionBlock(root, "legacy_after_clean_drain")) === "fnlegacy_after_clean_drain(&self)->Result<(),StatusRpcWorkerError>{ifself.fatal.load(Ordering::Acquire){Err(StatusRpcWorkerError::Unavailable)}else{Ok(())}}" &&
       JSON.stringify(
         keyAgentServiceRustTestNameInventory(
           sources[keyAgentServiceRpcFixturePaths.lifecycle],
@@ -24706,6 +24717,194 @@ requireInvariant(
   keyAgentServiceStartupDiagnosticContract(keyAgentServiceStartupDiagnosticInputs) &&
     keyAgentServiceStartupDiagnosticMutations.length === 50 && keyAgentServiceStartupDiagnosticMutations.every(({ changed, rejected }) => changed && rejected),
   `the fixed debug LPAC startup diagnostics must preserve closed data-free token/capture/policy/RPC mappings and the seven-private-boolean already-rejected-baseline report, exact dependency-unavailable semantics and nonzero 0x4001..0x407f encoding with original-error fallback; only sole 0x4010 may refine to 0x5001..0x51ff through nine private semantic attribute-difference booleans, with absent/zero detail and every mixed failure preserving the original aggregate; retain exact debug accessors and SCM worker gates, unchanged status-only errors and generic event code, and retained cleanup before any stopped-status classification; no raw native value, log, accepted-result diagnostic or new authority may be introduced; preserve all 25 historical, 12 batch-diagnostic and 13 logon-detail negatives; checks=${JSON.stringify(Object.entries(keyAgentServiceStartupDiagnosticChecks(keyAgentServiceStartupDiagnosticInputs)).filter(([, value]) => !value).map(([name]) => name))}, mutations=${JSON.stringify(keyAgentServiceStartupDiagnosticMutations.filter(({ changed, rejected }) => !changed || !rejected).map(({ name }) => name))}`,
+);
+
+function keyAgentServiceRuntimeAuthDiagnosticChecks(inputs) {
+  const auth = withoutBottomTestModule(inputs.auth);
+  const rpc = withoutBottomTestModule(inputs.rpc);
+  const service = withoutCfgTestItems(withoutBottomTestModule(inputs.service));
+  const fn = (source, name) => compactRust(rustFunctionBlock(source, name));
+  const item = (source, kind, name) => compactRust(rustLexicalItemBlock(source, new RegExp(`\\b${kind}\\s+${name}\\b`, "u")));
+  const implementation = (source, header) => {
+    const matches = rustImplItems(source).filter((candidate) => candidate.header === header);
+    return matches.length === 1 ? matches[0].source : "";
+  };
+  const debugGate = '#[cfg(all(feature="key-agent-service-lpac-launch-feasibility-test-hook",debug_assertions))]';
+  const testDebugGate = '#[cfg(any(test,all(feature="key-agent-service-lpac-launch-feasibility-test-hook",debug_assertions)))]';
+  const gated = (source, pattern, gate) => {
+    const matches = [...rustLexicalCode(source).matchAll(pattern)];
+    return matches.length === 1 && rustAttachedOuterAttributes(source, matches[0].index)
+      .some(({ source: attribute }) => attribute.replace(/\s+/gu, "") === gate);
+  };
+  const stages = ["CallbackContext", "CallObservation", "AuthenticationObservation", "ThreadState", "OpenProcess", "ThreadCookie", "Impersonate", "ImpersonationToken", "PrimaryToken", "DuplicateDesktopPrimary", "DesktopPrimaryToken", "ExactProcess", "SameProcess", "Revert", "PolicyOrContinuity"];
+  const failure = implementation(auth, "impl AuthDiagnosticFailure");
+  const observer = implementation(auth, "impl<'a, O> DiagnosticAuthOps<'a, O>");
+  const processOps = implementation(auth, "impl<O: ProcessAuthOps> ProcessAuthOps for DiagnosticAuthOps<'_, O>");
+  const rpcOps = implementation(auth, "impl<O: RpcAuthOps> RpcAuthOps for DiagnosticAuthOps<'_, O>");
+  const operations = [
+    [processOps, "open_process", "OpenProcess", "process_id"],
+    [processOps, "primary_token", "PrimaryToken", "process"],
+    [processOps, "desktop_primary_token", "DesktopPrimaryToken", "token"],
+    [processOps, "exact_process_is_live", "ExactProcess", "process,process_id"],
+    [processOps, "same_process", "SameProcess", "first,second"],
+    [rpcOps, "call_observation", "CallObservation", ""],
+    [rpcOps, "authentication_observation", "AuthenticationObservation", ""],
+    [rpcOps, "thread_token_state", "ThreadState", ""],
+    [rpcOps, "current_thread_cookie", "ThreadCookie", ""],
+    [rpcOps, "impersonate", "Impersonate", ""],
+    [rpcOps, "impersonation_token", "ImpersonationToken", ""],
+    [rpcOps, "duplicate_desktop_primary_token", "DuplicateDesktopPrimary", ""],
+    [rpcOps, "revert", "Revert", ""],
+  ];
+  const unchangedPolicyNames = ["authenticate_identity_with", "authenticate_role_aware_with", "authenticate_role_aware_callback_with", "classify_peer_policy", "validate_call", "validate_authentication", "validate_transport_token", "satisfies_desktop_token_policy", "satisfies_service_created_lpac_candidate_policy", "same_token_identity", "same_primary_token", "revalidate_client_process"];
+  const stopDiagnostic = implementation(rpc, "impl AuthStopDiagnostic");
+  const context = implementation(rpc, "impl ServerContext");
+  const closedWorker = implementation(rpc, "impl AdmissionClosedStatusRpcWorker");
+  const runtimeWorker = implementation(rpc, "impl StatusRpcWorker");
+  const lpacWorker = implementation(service, "impl ScmWorker for LpacRpcProbeWorker");
+  const lpacClosedWorker = implementation(service, "impl AdmissionClosedScmWorker for AdmissionClosedLpacRpcProbeWorker");
+  const scmWorkerTrait = rustLexicalItemBlock(service, /\btrait\s+ScmWorker\b/u);
+  const scmClosedWorkerTrait = rustLexicalItemBlock(service, /\btrait\s+AdmissionClosedScmWorker\b/u);
+  const callback = rustFunctionBlock(rpc, "interface_security_callback");
+  return {
+    closedAuthPayload: item(auth, "enum", "AuthDiagnosticStage") === `enumAuthDiagnosticStage{${stages.map((name) => `${name},`).join("")}}` &&
+      item(auth, "struct", "AuthDiagnosticFailure") === "structAuthDiagnosticFailure{error:RpcAuthError,stage:AuthDiagnosticStage,}" &&
+      item(auth, "struct", "DiagnosticAuthOps") === "structDiagnosticAuthOps<'a,O>{ops:&'aO,first_failure:Cell<Option<AuthDiagnosticStage>>,}" &&
+      fn(failure, "new") === "pub(super)constfnnew(error:RpcAuthError,stage:AuthDiagnosticStage)->Self{Self{error,stage}}" &&
+      fn(failure, "error") === "pub(super)constfnerror(self)->RpcAuthError{self.error}" &&
+      fn(failure, "code") === `pub(super)constfncode(self)->u32{matchself.stage{${stages.map((name, index) => `AuthDiagnosticStage::${name}=>${index + 1},`).join("")}}}`,
+    exactAuthDebugGates: [
+      /\bpub\(super\)\s+enum\s+AuthDiagnosticStage\b/gu, /\bpub\(crate\)\s+struct\s+AuthDiagnosticFailure\b/gu,
+      /\bimpl\s+AuthDiagnosticFailure\s*\{/gu, /\bstruct\s+DiagnosticAuthOps\b/gu,
+      /\bimpl<'a,\s*O>\s+DiagnosticAuthOps<'a,\s*O>\s*\{/gu,
+      /\bimpl<O:\s*ProcessAuthOps>\s+ProcessAuthOps\s+for\s+DiagnosticAuthOps<'_,\s*O>\s*\{/gu,
+      /\bimpl<O:\s*RpcAuthOps>\s+RpcAuthOps\s+for\s+DiagnosticAuthOps<'_,\s*O>\s*\{/gu,
+    ].every((pattern) => gated(auth, pattern, testDebugGate)) &&
+      [/\bpub\(crate\)\s+fn\s+authenticate_role_aware_call\s*\(/gu, /\bpub\(crate\)\s+unsafe\s+fn\s+authenticate_role_aware_callback_context\s*\(/gu]
+        .every((pattern) => gated(auth, pattern, debugGate)),
+    firstFailedObservationOnly: fn(observer, "new") === "fnnew(ops:&'aO)->Self{Self{ops,first_failure:Cell::new(None),}}" &&
+      fn(observer, "observe") === "fnobserve<T>(&self,stage:AuthDiagnosticStage,result:Result<T,ObservationError>,)->Result<T,ObservationError>{ifresult.is_err()&&self.first_failure.get().is_none(){self.first_failure.set(Some(stage));}result}" &&
+      fn(observer, "failure") === "fnfailure(&self,error:RpcAuthError)->AuthDiagnosticFailure{AuthDiagnosticFailure::new(error,self.first_failure.get().unwrap_or(AuthDiagnosticStage::PolicyOrContinuity),)}",
+    exactDelegation: operations.every(([owner, name, stage, args]) =>
+      fn(owner, name).slice(fn(owner, name).indexOf("{")) === `{self.observe(AuthDiagnosticStage::${stage},self.ops.${name}(${args})${["impersonate", "revert"].includes(name) ? "" : ","})}`) &&
+      fn(rpcOps, "fail_fast") === "fnfail_fast(&self)->!{self.ops.fail_fast()}" &&
+      rustFunctionSignatures(processOps).length === 5 && rustFunctionSignatures(rpcOps).length === 9,
+    nativeEntryErrorOnly: fn(auth, "authenticate_role_aware_call") === "pub(crate)fnauthenticate_role_aware_call(binding:CallBinding<'_>,)->Result<AuthenticatedRpcManagerPeer,AuthDiagnosticFailure>{letops=sys::WindowsRpcAuthOps::new(binding);letobserved=DiagnosticAuthOps::new(&ops);authenticate_role_aware_with(&observed).map_err(|error|observed.failure(error))}" &&
+      fn(auth, "authenticate_role_aware_callback_context") === "pub(crate)unsafefnauthenticate_role_aware_callback_context(raw:*constc_void,)->Result<AuthenticatedRpcCallbackPeer,AuthDiagnosticFailure>{letops=unsafe{sys::WindowsRpcAuthOps::from_callback(raw)}.map_err(|_|{AuthDiagnosticFailure::new(RpcAuthError::CallFailed,AuthDiagnosticStage::CallbackContext,)})?;letobserved=DiagnosticAuthOps::new(&ops);authenticate_role_aware_callback_with(&observed).map_err(|error|observed.failure(error))}",
+    unchangedAuthenticationPolicy: normalizedSourceSha256(JSON.stringify(unchangedPolicyNames.map((name) => [name, fn(auth, name)]))) === "a16138ffdf137ab1211a33c79f1fc662792ca451e90c217a386ef95e344d3397",
+    closedStopCode: item(rpc, "enum", "AuthDiagnosticOrigin") === "enumAuthDiagnosticOrigin{Callback,Manager,}" &&
+      compactRust(rpc).includes("pub(super)structAuthStopDiagnostic(u32);") &&
+      fn(stopDiagnostic, "new") === "fnnew(origin:AuthDiagnosticOrigin,stage:u32)->Option<Self>{if!(1..=15).contains(&stage){returnNone;}Some(Self(matchorigin{AuthDiagnosticOrigin::Callback=>0x6000+stage,AuthDiagnosticOrigin::Manager=>0x6100+stage,}))}" &&
+      fn(stopDiagnostic, "code") === "pub(super)constfncode(self)->u32{self.0}" &&
+      fn(context, "auth_diagnostic") === "fnauth_diagnostic(&self)->Option<AuthStopDiagnostic>{matchself.auth_diagnostic.load(Ordering::Acquire){code@(0x6001..=0x600f|0x6101..=0x610f)=>Some(AuthStopDiagnostic(code)),_=>None,}}",
+    firstWinsFailStop: fn(context, "latch_auth_diagnostic") === "fnlatch_auth_diagnostic(&self,origin:AuthDiagnosticOrigin,stage:u32){letSome(diagnostic)=AuthStopDiagnostic::new(origin,stage)else{self.latch_fatal_runtime();return;};let_=self.auth_diagnostic.compare_exchange(0,diagnostic.code(),Ordering::AcqRel,Ordering::Acquire,);self.close_for_fatal_runtime();}" &&
+      hasOrderedCompactMarkers(rustFunctionBlock(context, "close_for_fatal_runtime"), ["self.admission.store(false,Ordering::Release)", "self.fatal.store(true,Ordering::Release)", "coordinator.begin_stop()"]),
+    otherFatalDominates: hasOrderedCompactMarkers(rustFunctionBlock(context, "latch_fatal_runtime"), ["self.other_fatal.store(true,Ordering::Release)", "self.close_for_fatal_runtime()"] ) &&
+      fn(context, "diagnostic_after_clean_drain") === "fndiagnostic_after_clean_drain(&self)->Result<DiagnosticDrainOutcome,StatusRpcWorkerError>{ifself.other_fatal.load(Ordering::Acquire){returnErr(StatusRpcWorkerError::Unavailable);}ifletSome(diagnostic)=self.auth_diagnostic(){returnOk(DiagnosticDrainOutcome::AuthFailure(diagnostic));}ifself.fatal.load(Ordering::Acquire){returnErr(StatusRpcWorkerError::Unavailable);}Ok(DiagnosticDrainOutcome::Complete)}",
+    perCallFailureIsolation: fn(context, "map_lpac_dispatch_result") === "fnmap_lpac_dispatch_result<T>(&self,result:Result<T,DispatchError>,)->Result<T,ManagerError>{self.map_lpac_auth_dispatch_result(result,false)}" &&
+      fn(context, "map_lpac_auth_dispatch_result") === "fnmap_lpac_auth_dispatch_result<T>(&self,result:Result<T,DispatchError>,auth_failure_observed:bool,)->Result<T,ManagerError>{result.map_err(|error|{iferror==DispatchError::Internal&&!auth_failure_observed{self.latch_fatal_runtime();}ManagerError::from(error)})}" &&
+      hasOrderedCompactMarkers(rustFunctionBlock(context, "exchange"), ["letauth_failure_observed=core::cell::Cell::new(false)", "letobserved=&auth_failure_observed", "auth::authenticate_role_aware_call(binding).map_err(|failure|{observed.set(true);self.latch_auth_diagnostic(AuthDiagnosticOrigin::Manager,failure.code());AuthenticationFailure::from(failure.error())})?", "self.map_lpac_auth_dispatch_result(routed,auth_failure_observed.get())?"]) &&
+      hasOrderedCompactMarkers(callback, ["letauth_failure_observed=core::cell::Cell::new(false)", "auth::authenticate_role_aware_callback_context(call_context)", ".map_err(|failure|{auth_failure_observed.set(true);context.latch_auth_diagnostic(AuthDiagnosticOrigin::Callback,failure.code());AuthenticationFailure::from(failure.error())})?", "ifmatches!(authorization,Err(DispatchError::Internal))&&!auth_failure_observed.get(){context.latch_fatal_runtime();}"]),
+    cleanDrainProof: hasOrderedCompactMarkers(rustFunctionBlock(closedWorker, "drain_resources"), ["letSelf{server,context}=self", "ifletErr(failure)=server.drain()", "returnErr(StatusRpcWorkerError::RuntimeStateRetained)", "context.stop_probe_coordinator_and_helpers()?", "clear_context(&context)?", "Ok(context)"]) &&
+      fn(closedWorker, "drain_for_auth_diagnostic") === "pub(super)fndrain_for_auth_diagnostic(self,)->Result<DiagnosticDrainOutcome,StatusRpcWorkerError>{diagnostic_from_drain_result(self.drain_resources())}" &&
+      fn(rpc, "diagnostic_from_drain_result") === "fndiagnostic_from_drain_result(drained:Result<Arc<ServerContext>,StatusRpcWorkerError>,)->Result<DiagnosticDrainOutcome,StatusRpcWorkerError>{drained?.diagnostic_after_clean_drain()}" &&
+      fn(closedWorker, "drain") === "pub(super)fndrain(self)->Result<(),StatusRpcWorkerError>{letcontext=self.drain_resources()?;context.legacy_after_clean_drain()}" &&
+      fn(context, "legacy_after_clean_drain") === "fnlegacy_after_clean_drain(&self)->Result<(),StatusRpcWorkerError>{ifself.fatal.load(Ordering::Acquire){Err(StatusRpcWorkerError::Unavailable)}else{Ok(())}}" &&
+      fn(runtimeWorker, "auth_diagnostic_stop_requested") === "pub(super)fnauth_diagnostic_stop_requested(&self)->bool{self.context.auth_diagnostic().is_some()}",
+    exactRpcDebugGates: [
+      /\benum\s+AuthDiagnosticOrigin\b/gu, /\bpub\(super\)\s+struct\s+AuthStopDiagnostic\b/gu,
+      /\bimpl\s+AuthStopDiagnostic\s*\{/gu, /\bpub\(super\)\s+enum\s+DiagnosticDrainOutcome\b/gu,
+      /\bfn\s+latch_auth_diagnostic\s*\(/gu, /\bfn\s+auth_diagnostic\s*\(/gu,
+      /\bfn\s+diagnostic_after_clean_drain\s*\(/gu, /\bfn\s+diagnostic_from_drain_result\s*\(/gu,
+      /\bpub\(super\)\s+fn\s+drain_for_auth_diagnostic\s*\(/gu,
+      /\bpub\(super\)\s+fn\s+auth_diagnostic_stop_requested\s*\(/gu,
+    ].every((pattern) => gated(rpc, pattern, debugGate)) &&
+      ["auth_diagnostic:AtomicU32,", "other_fatal:AtomicBool,"].every((field) => rpc.replace(/\s+/gu, "").includes(`${debugGate}${field}`)) &&
+      (compactRust(rpc).match(/auth_diagnostic:AtomicU32::new\(0\),/gu) ?? []).length === 2 &&
+      (compactRust(rpc).match(/other_fatal:AtomicBool::new\(false\),/gu) ?? []).length === 2,
+    scmDefaultCompatibility: fn(scmWorkerTrait, "diagnostic_stop_requested") === "fndiagnostic_stop_requested(&self)->bool{false}" &&
+      fn(scmClosedWorkerTrait, "drain_with_diagnostic") === "fndrain_with_diagnostic(self)->Result<Option<u32>,KeyAgentServiceFixtureError>{self.drain().map(|()|None)}" &&
+      fn(lpacWorker, "diagnostic_stop_requested") === "fndiagnostic_stop_requested(&self)->bool{self.0.auth_diagnostic_stop_requested()}" &&
+      gated(service, /\bimpl\s+ScmWorker\s+for\s+LpacRpcProbeWorker\s*\{/gu, debugGate) &&
+      gated(service, /\bimpl\s+AdmissionClosedScmWorker\s+for\s+AdmissionClosedLpacRpcProbeWorker\s*\{/gu, debugGate) &&
+      fn(lpacClosedWorker, "drain_with_diagnostic") === "fndrain_with_diagnostic(self)->Result<Option<u32>,KeyAgentServiceFixtureError>{usecrate::key_agent_service_rpc::DiagnosticDrainOutcome;self.0.drain_for_auth_diagnostic().map(|outcome|matchoutcome{DiagnosticDrainOutcome::Complete=>None,DiagnosticDrainOutcome::AuthFailure(diagnostic)=>Some(diagnostic.code()),}).map_err(|_|KeyAgentServiceFixtureError::OperatingSystemBoundary)}",
+    scmWaitBoundaryPrecedence: fn(service, "select_wait_outcome") === "fnselect_wait_outcome(control_error:bool,stop_requested:bool,wait_is_timeout:bool,diagnostic_stop_requested:implFnOnce()->bool,)->Option<WaitOutcome>{ifcontrol_error{returnSome(WaitOutcome::BoundaryFailure);}ifstop_requested{returnSome(WaitOutcome::Stop);}if!wait_is_timeout{returnSome(WaitOutcome::BoundaryFailure);}diagnostic_stop_requested().then_some(WaitOutcome::Stop)}" &&
+      hasOrderedCompactMarkers(rustFunctionBlock(service, "wait_for_stop"), ["WaitForSingleObject(stop_event.raw(),CONTROL_POLL_MILLISECONDS)", "letcontext=lock_context()", "select_wait_outcome(context.control_error,context.stop_requested,wait==WAIT_TIMEOUT,||worker.diagnostic_stop_requested(),)"]) &&
+      fn(service, "service_main_impl").includes("letwait_outcome=wait_for_stop(&stop_event,&worker)"),
+    scmCleanupBeforeTerminal: hasOrderedCompactMarkers(rustFunctionBlock(service, "finish_service"), ["letadmission_closed_worker=worker.map(ScmWorker::close_admission)", "StopProgressReporter::start()", "matchworker.drain_with_diagnostic()", "Ok(diagnostic)=>", "iffailure.is_none(){failure=diagnostic;}", "Err(_)=>true", "reporter.finish().is_err()", "drop(worker)", "stop_event.map(OwnedEvent::close)", "terminal_status_after_cleanup(failure,drain_failed,progress_failed,event_close_failed,)", "return;", "send_status(status_handle,&final_status)"]) &&
+      fn(service, "terminal_status_after_cleanup") === "fnterminal_status_after_cleanup(failure:Option<u32>,drain_failed:bool,progress_failed:bool,event_close_failed:bool,)->Option<SERVICE_STATUS>{ifdrain_failed||progress_failed||event_close_failed{returnNone;}Some(ifletSome(detail)=failure{status_value(SERVICE_STOPPED,ERROR_SERVICE_SPECIFIC_ERROR.0,detail,0,0,)}else{status_value(SERVICE_STOPPED,0,0,0,0)})}",
+    diagnosticReachability: [
+      [rpc, "latch_auth_diagnostic", 3], [rpc, "diagnostic_after_clean_drain", 2],
+      [rpc, "diagnostic_from_drain_result", 2], [rpc, "drain_for_auth_diagnostic", 1],
+      [service, "drain_for_auth_diagnostic", 1], [rpc, "auth_diagnostic_stop_requested", 1],
+      [service, "auth_diagnostic_stop_requested", 1], [service, "terminal_status_after_cleanup", 2],
+    ].every(([source, name, count]) => rustCallSites(source, name).length === count),
+    noNewDiagnosticSink: !/\b(?:GetLastError|GetLastWin32Error|HRESULT|WIN32_ERROR|println|eprintln|dbg|ReportEventW|OutputDebugStringW)\b/u.test([failure, observer, processOps, rpcOps, stopDiagnostic, rustFunctionBlock(context, "latch_auth_diagnostic"), rustFunctionBlock(context, "diagnostic_after_clean_drain")].map(rustLexicalCode).join("\n")),
+  };
+}
+
+function keyAgentServiceRuntimeAuthDiagnosticContract(inputs) {
+  try {
+    const checks = keyAgentServiceRuntimeAuthDiagnosticChecks(inputs);
+    return Object.keys(checks).length === 17 && Object.values(checks).every((value) => value === true);
+  } catch {
+    return false;
+  }
+}
+const keyAgentServiceRuntimeAuthDiagnosticInputs = {
+  auth: keyAgentServiceRpcFixtureSources[keyAgentServiceRpcFixturePaths.auth],
+  rpc: keyAgentServiceRpcFixtureSources[keyAgentServiceRpcFixturePaths.root],
+  service: keyAgentServicePlatformSource,
+};
+const keyAgentServiceRuntimeAuthDiagnosticMutations = [
+  ["closed auth stage code", "auth", "AuthDiagnosticStage::OpenProcess => 5,", "AuthDiagnosticStage::OpenProcess => 6,"],
+  ["auth raw native payload", "auth", "    stage: AuthDiagnosticStage,\n}", "    stage: AuthDiagnosticStage,\n    native_error: u32,\n}"],
+  ["underlying auth error preserved", "auth", "        self.error\n", "        RpcAuthError::AccessDenied\n"],
+  ["first failed observation only", "auth", "if result.is_err() && self.first_failure.get().is_none() {", "if self.first_failure.get().is_none() {"],
+  ["first observation latch immutable", "auth", "if result.is_err() && self.first_failure.get().is_none() {", "if result.is_err() {"],
+  ["unchanged observation result", "auth", "        result\n    }\n\n    fn failure", "        Err(ObservationError::Incomplete)\n    }\n\n    fn failure"],
+  ["policy fallback makes no native claim", "auth", ".unwrap_or(AuthDiagnosticStage::PolicyOrContinuity)", ".unwrap_or(AuthDiagnosticStage::OpenProcess)"],
+  ["exact delegation no extra query", "auth", "    fn impersonate(&self) -> Result<(), ObservationError> {\n        self.observe", "    fn impersonate(&self) -> Result<(), ObservationError> {\n        let _ = self.ops.thread_token_state();\n        self.observe"],
+  ["delegate operation identity", "auth", "AuthDiagnosticStage::Revert, self.ops.revert()", "AuthDiagnosticStage::Revert, self.ops.impersonate()"],
+  ["fail fast remains delegated", "auth", "        self.ops.fail_fast()", "        std::process::abort()"],
+  ["manager diagnostics only on error", "auth", "authenticate_role_aware_with(&observed).map_err", "authenticate_role_aware_with(&observed).or_else"],
+  ["callback diagnostics only on error", "auth", "authenticate_role_aware_callback_with(&observed).map_err", "authenticate_role_aware_callback_with(&observed).or_else"],
+  ["unchanged authentication policy", "auth", "if !call.local", "if call.local"],
+  ["auth observer release gate", "auth", "debug_assertions\n    )\n))]\nstruct DiagnosticAuthOps", "any(debug_assertions, not(debug_assertions))\n    )\n))]\nstruct DiagnosticAuthOps"],
+  ["finite runtime stage bound", "rpc", "if !(1..=15).contains(&stage) {", "if !(1..=16).contains(&stage) {"],
+  ["disjoint runtime origin code", "rpc", "AuthDiagnosticOrigin::Manager => 0x6100 + stage,", "AuthDiagnosticOrigin::Manager => 0x6000 + stage,"],
+  ["closed runtime readback range", "rpc", "code @ (0x6001..=0x600f | 0x6101..=0x610f)", "code @ (0x6000..=0x60ff | 0x6100..=0x61ff)"],
+  ["first wins atomic latch", "rpc", "self.auth_diagnostic.compare_exchange(\n            0,", "self.auth_diagnostic.compare_exchange(\n            diagnostic.code(),"],
+  ["auth failure still closes admission", "rpc", "        self.close_for_fatal_runtime();\n    }\n\n    #[cfg(all(\n        feature = \"key-agent-service-lpac-launch-feasibility-test-hook\",\n        debug_assertions\n    ))]\n    fn auth_diagnostic", "    }\n\n    #[cfg(all(\n        feature = \"key-agent-service-lpac-launch-feasibility-test-hook\",\n        debug_assertions\n    ))]\n    fn auth_diagnostic"],
+  ["unrelated fatal remains distinct", "rpc", "self.other_fatal.store(true, Ordering::Release);", "self.other_fatal.store(false, Ordering::Release);"],
+  ["unrelated fatal dominates diagnostic", "rpc", "if self.other_fatal.load(Ordering::Acquire) {", "if false {"],
+  ["untagged internal remains fatal", "rpc", "error == DispatchError::Internal && !auth_failure_observed", "error == DispatchError::Internal && auth_failure_observed"],
+  ["legacy dispatch cannot excuse error", "rpc", "self.map_lpac_auth_dispatch_result(result, false)", "self.map_lpac_auth_dispatch_result(result, true)"],
+  ["callback per-call isolation", "rpc", "&& !auth_failure_observed.get()", "&& context.auth_diagnostic().is_none()"],
+  ["cleanup failure cannot become diagnostic", "rpc", "drained?.diagnostic_after_clean_drain()", "drained.unwrap_or_else(|_| Arc::new(ServerContext::new().unwrap())).diagnostic_after_clean_drain()"],
+  ["RPC drain remains required", "rpc", "if let Err(failure) = server.drain() {", "if false {"],
+  ["helper drain remains required", "rpc", "        context.stop_probe_coordinator_and_helpers()?;", "        let _ = context.stop_probe_coordinator_and_helpers();"],
+  ["context clear remains required", "rpc", "        clear_context(&context)?;", "        let _ = clear_context(&context);"],
+  ["legacy drain still rejects fatal", "rpc", "context.legacy_after_clean_drain()", "Ok(())"],
+  ["diagnostic drain release gate", "rpc", "        debug_assertions\n    ))]\n    pub(super) fn drain_for_auth_diagnostic", "        any(debug_assertions, not(debug_assertions))\n    ))]\n    pub(super) fn drain_for_auth_diagnostic"],
+  ["SCM default never requests diagnostic stop", "service", "        fn diagnostic_stop_requested(&self) -> bool {\n            false", "        fn diagnostic_stop_requested(&self) -> bool {\n            true"],
+  ["SCM default drain retains legacy result", "service", "self.drain().map(|()| None)", "Ok(None)"],
+  ["manual control failure precedence", "service", "if control_error {", "if false {"],
+  ["native wait failure precedence", "service", "if !wait_is_timeout {", "if false {"],
+  ["SCM preserves original failure", "service", "if failure.is_none() {\n                                failure = diagnostic;", "if true {\n                                failure = diagnostic;"],
+  ["SCM complete cleanup before status", "service", "if drain_failed || progress_failed || event_close_failed {", "if false {"],
+  ["SCM progress failure dominates", "service", "if drain_failed || progress_failed || event_close_failed {", "if drain_failed || event_close_failed {"],
+  ["SCM event close failure dominates", "service", "if drain_failed || progress_failed || event_close_failed {", "if drain_failed || progress_failed {"],
+  ["no additional terminal publisher", "service", "    fn terminal_status_after_cleanup(", "    fn hidden_diagnostic_sink() { let _ = terminal_status_after_cleanup(None, false, false, false); }\n    fn terminal_status_after_cleanup("],
+].map(([name, field, before, after]) => {
+  const source = keyAgentServiceRuntimeAuthDiagnosticInputs[field];
+  const changed = source.replace(before, after);
+  return { name, changed: changed !== source, rejected: !keyAgentServiceRuntimeAuthDiagnosticContract({ ...keyAgentServiceRuntimeAuthDiagnosticInputs, [field]: changed }) };
+});
+requireInvariant(
+  keyAgentServiceRuntimeAuthDiagnosticContract(keyAgentServiceRuntimeAuthDiagnosticInputs) &&
+    keyAgentServiceRuntimeAuthDiagnosticMutations.length === 39 && keyAgentServiceRuntimeAuthDiagnosticMutations.every(({ changed, rejected }) => changed && rejected),
+  `debug LPAC first-auth diagnostics must retain the exact fifteen data-free stages, unchanged authentication predicates and ordering, same-thread error-only first-failure observer with exact once-only delegation, original RPC error conversion, per-call early-auth isolation, first-wins 0x6001..0x600f or 0x6101..0x610f fail-stop codes, separate dominating unrelated-fatal latch, exact feature gates and closed reachability; only proven RPC/coordinator/helper/context rundown may carry a typed diagnostic through default-compatible SCM cleanup, with wait/control/original-failure precedence and reporter/event-close failure suppressing terminal status; no new native value, log, RPC response, or authority; checks=${JSON.stringify(Object.entries(keyAgentServiceRuntimeAuthDiagnosticChecks(keyAgentServiceRuntimeAuthDiagnosticInputs)).filter(([, value]) => !value).map(([name]) => name))}, mutations=${JSON.stringify(keyAgentServiceRuntimeAuthDiagnosticMutations.filter(({ changed, rejected }) => !changed || !rejected).map(({ name }) => name))}`,
 );
 
 const keyAgentServiceRpcLpacSecurityDescriptorContract = (source) => {
@@ -25190,6 +25389,13 @@ requireInvariant(
 const keyAgentServiceRpcAuthTestNames = [
   "desktop_impersonation_authority_is_thread_bound_move_only",
   "desktop_process_owners_enforce_thread_and_join_boundaries",
+  "auth_diagnostic_stage_codes_are_closed_and_data_free",
+  "auth_diagnostic_observer_forwards_every_observation_once",
+  "auth_diagnostic_observer_preserves_negative_complete_observations",
+  "auth_diagnostic_observer_retains_first_failure_and_forwards_later_calls",
+  "auth_diagnostic_observer_delegates_fail_fast_without_minting_an_observation",
+  "auth_diagnostic_observer_preserves_manager_callback_policy_results_and_cleanup",
+  "auth_diagnostic_observer_preserves_every_native_failure_revalidation_and_reversion",
   "approved_call_runs_the_complete_order_and_reverts_before_revalidation",
   "callback_authenticates_independently_without_minting_launch_authority",
   "role_aware_transport_derives_helper_without_desktop_launch_authority",
@@ -25825,7 +26031,7 @@ const keyAgentServiceRpcAuthInputs = Object.freeze({
 });
 const keyAgentServiceRpcAuthMilestonePins = Object.freeze({
   [keyAgentServiceRpcFixturePaths.auth]:
-    "81ed95065c463b3b60bdd5bb0c86cfcbcced0c67877d124994455bb4799b25c5",
+    "6ff907fd37f24abbacb921093b0d3c49ab7c18090d75fa62267102201fd8979c",
   [keyAgentServiceRpcFixturePaths.authSys]:
     "6fac1e23ebe3d0a70a67f0ea7288e45a5924233c9234d91a7912d3198d5fd83f",
 });
@@ -27019,9 +27225,9 @@ const keyAgentServicePhaseThreeCExpectedPins = Object.freeze({
   sourceFull: "12323cc591fe516bfdd7f47091bd268cfba6af41223258a041e4873a71e872ec",
   sourceProduction:
     "e2a793d182b9086d4da421ebba8d163508971ed6d16387ff7692adc3230ef5ff",
-  moduleFull: "c001ebd5612df7205b83e87e8358f21a4c3ca0f847aa3e536ac6b7b25076aa19",
+  moduleFull: "67d09b11f66e224363323278503745d418e4b0d61a0577f7f6b386f72441b996",
   moduleProduction:
-    "a1e62f0d6a7739e3503f4da39ce6a91bb573e04aa75f80c7804323a4ef28122d",
+    "121f8ffc2acd14215f7b47b945941cb9e9253d455615a6289e9e2282dde76794",
   design: "1937b2670dc9df9841f3b67c71c679c5e31929da533d84111bbce40221837cdd",
   architecture:
     "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
@@ -27732,7 +27938,7 @@ const keyAgentServicePhaseOneIntegrationContract = ({
     ) return false;
     const exchange = rustFunctionBlock(contextImpl, "exchange");
     const invalidate = rustFunctionBlock(contextImpl, "invalidate_epochs");
-    const latchFatal = rustFunctionBlock(contextImpl, "latch_fatal_runtime");
+    const latchFatal = rustFunctionBlock(contextImpl, "close_for_fatal_runtime");
     const stopSubordinates = rustFunctionBlock(
       contextImpl,
       "stop_probe_coordinator_and_helpers",
@@ -27743,7 +27949,7 @@ const keyAgentServicePhaseOneIntegrationContract = ({
     );
     const workerDrain = rustFunctionBlock(
       admissionClosedWorkerImpl,
-      "drain",
+      "drain_resources",
     );
     const startServer = rustTopLevelFunctionBlock(
       production,
@@ -44707,9 +44913,9 @@ const keyAgentServicePhaseThreeBExpectedPins = Object.freeze({
   sourceFull: "5f8dd571c685ad817b272c91794eeddbd8c4210986ae3c931525325ff4131125",
   sourceProduction:
     "3a9de991a09ab223a55972b7985fa66e250cc85ba9c75ffcf09f0bb2764f569e",
-  moduleFull: "c001ebd5612df7205b83e87e8358f21a4c3ca0f847aa3e536ac6b7b25076aa19",
+  moduleFull: "67d09b11f66e224363323278503745d418e4b0d61a0577f7f6b386f72441b996",
   moduleProduction:
-    "a1e62f0d6a7739e3503f4da39ce6a91bb573e04aa75f80c7804323a4ef28122d",
+    "121f8ffc2acd14215f7b47b945941cb9e9253d455615a6289e9e2282dde76794",
   design: "1937b2670dc9df9841f3b67c71c679c5e31929da533d84111bbce40221837cdd",
   architecture:
     "f67a5ea7e7b7a88f8cd7d24da1c3aee93253bb2372627e41865b319224e2a2bb",
@@ -48869,7 +49075,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "d1fca017192b7d48b82b0516660bdb815ecc35141c38d2af7f0ddb85893c1b60";
+  "2d18db41d61f201c419313b63ac5a46fadea25177f1c9d5730c4a0db647f3e73";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -70229,7 +70435,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/auth.rs",
     unsafeCount: 6,
-    sha256: "546453885684014bcd6eac05c1f9ad8aa1245e0da117c5bfb6c84817ad1713d8",
+    sha256: "6d72540ed905448fa15b79693807a2873178f581b9df6d307434528eaffa87c0",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/auth/sys.rs",
@@ -70244,7 +70450,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service_rpc/mod.rs",
     unsafeCount: 12,
-    sha256: "a1e62f0d6a7739e3503f4da39ce6a91bb573e04aa75f80c7804323a4ef28122d",
+    sha256: "121f8ffc2acd14215f7b47b945941cb9e9253d455615a6289e9e2282dde76794",
   },
   {
     path: "crates/platform-windows/src/key_agent_service_token/sys.rs",
@@ -70254,7 +70460,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service.rs",
     unsafeCount: 15,
-    sha256: "3ecbabbc662ab660eca00560aeeb0414997b8943cdc4c0589a3d3d665753d706",
+    sha256: "a4500588608900603682eeb3474215103b71fc794ca370c98dce60212d580ac9",
   },
   {
     path: "crates/platform-windows/src/key_agent_service/run_state_root/sys.rs",

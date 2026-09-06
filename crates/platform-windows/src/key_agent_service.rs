@@ -192,8 +192,7 @@ mod sys {
     use std::time::{Duration, Instant};
 
     use windows::Win32::Foundation::{
-        CloseHandle, ERROR_CALL_NOT_IMPLEMENTED, ERROR_SERVICE_SPECIFIC_ERROR, HANDLE,
-        WAIT_OBJECT_0, WAIT_TIMEOUT,
+        CloseHandle, ERROR_CALL_NOT_IMPLEMENTED, ERROR_SERVICE_SPECIFIC_ERROR, HANDLE, WAIT_TIMEOUT,
     };
     use windows::Win32::System::Services::{
         RegisterServiceCtrlHandlerExW, SERVICE_ACCEPT_SHUTDOWN, SERVICE_ACCEPT_STOP,
@@ -320,6 +319,7 @@ mod sys {
         }
     }
 
+    #[derive(Debug, Eq, PartialEq)]
     enum WaitOutcome {
         Stop,
         BoundaryFailure,
@@ -395,10 +395,18 @@ mod sys {
         fn begin_accepting(&mut self) -> Result<(), KeyAgentServiceFixtureError>;
 
         fn close_admission(self) -> Self::AdmissionClosed;
+
+        fn diagnostic_stop_requested(&self) -> bool {
+            false
+        }
     }
 
     trait AdmissionClosedScmWorker: Sized {
         fn drain(self) -> Result<(), KeyAgentServiceFixtureError>;
+
+        fn drain_with_diagnostic(self) -> Result<Option<u32>, KeyAgentServiceFixtureError> {
+            self.drain().map(|()| None)
+        }
     }
 
     #[derive(Debug)]
@@ -630,6 +638,10 @@ mod sys {
         fn close_admission(self) -> Self::AdmissionClosed {
             AdmissionClosedLpacRpcProbeWorker(self.0.close_admission())
         }
+
+        fn diagnostic_stop_requested(&self) -> bool {
+            self.0.auth_diagnostic_stop_requested()
+        }
     }
 
     #[cfg(all(
@@ -640,6 +652,18 @@ mod sys {
         fn drain(self) -> Result<(), KeyAgentServiceFixtureError> {
             self.0
                 .drain()
+                .map_err(|_| KeyAgentServiceFixtureError::OperatingSystemBoundary)
+        }
+
+        fn drain_with_diagnostic(self) -> Result<Option<u32>, KeyAgentServiceFixtureError> {
+            use crate::key_agent_service_rpc::DiagnosticDrainOutcome;
+
+            self.0
+                .drain_for_auth_diagnostic()
+                .map(|outcome| match outcome {
+                    DiagnosticDrainOutcome::Complete => None,
+                    DiagnosticDrainOutcome::AuthFailure(diagnostic) => Some(diagnostic.code()),
+                })
                 .map_err(|_| KeyAgentServiceFixtureError::OperatingSystemBoundary)
         }
     }
@@ -820,7 +844,7 @@ mod sys {
             StartupState::Run => {}
         }
 
-        let wait_outcome = wait_for_stop(&stop_event);
+        let wait_outcome = wait_for_stop(&stop_event, &worker);
         let failure = match wait_outcome {
             WaitOutcome::Stop => None,
             WaitOutcome::BoundaryFailure => Some(WAIT_FAILURE),
@@ -944,25 +968,41 @@ mod sys {
         }
     }
 
-    fn wait_for_stop(stop_event: &OwnedEvent) -> WaitOutcome {
+    fn wait_for_stop<W: ScmWorker>(stop_event: &OwnedEvent, worker: &W) -> WaitOutcome {
         loop {
             // SAFETY: service main retains the event for the complete bounded
             // wait and finalization owns the only close transition.
             let wait = unsafe { WaitForSingleObject(stop_event.raw(), CONTROL_POLL_MILLISECONDS) };
             let context = lock_context();
-            if context.control_error {
-                return WaitOutcome::BoundaryFailure;
-            }
-            if context.stop_requested {
-                return WaitOutcome::Stop;
-            }
-            if wait != WAIT_TIMEOUT && wait != WAIT_OBJECT_0 {
-                return WaitOutcome::BoundaryFailure;
-            }
-            if wait == WAIT_OBJECT_0 {
-                return WaitOutcome::BoundaryFailure;
+            if let Some(outcome) = select_wait_outcome(
+                context.control_error,
+                context.stop_requested,
+                wait == WAIT_TIMEOUT,
+                || worker.diagnostic_stop_requested(),
+            ) {
+                return outcome;
             }
         }
+    }
+
+    fn select_wait_outcome(
+        control_error: bool,
+        stop_requested: bool,
+        wait_is_timeout: bool,
+        diagnostic_stop_requested: impl FnOnce() -> bool,
+    ) -> Option<WaitOutcome> {
+        if control_error {
+            return Some(WaitOutcome::BoundaryFailure);
+        }
+        if stop_requested {
+            return Some(WaitOutcome::Stop);
+        }
+        // Every non-timeout result without a control request is a boundary
+        // failure, including an unexplained signalled stop event.
+        if !wait_is_timeout {
+            return Some(WaitOutcome::BoundaryFailure);
+        }
+        diagnostic_stop_requested().then_some(WaitOutcome::Stop)
     }
 
     fn finish_service<W: ScmWorker>(
@@ -998,7 +1038,17 @@ mod sys {
             None => (false, false),
             Some(worker) => {
                 if let Ok(reporter) = StopProgressReporter::start() {
-                    let drain_failed = worker.drain().is_err();
+                    let drain_failed = match worker.drain_with_diagnostic() {
+                        Ok(diagnostic) => {
+                            // A diagnostic becomes publishable only after the
+                            // consuming worker has proved complete rundown.
+                            if failure.is_none() {
+                                failure = diagnostic;
+                            }
+                            false
+                        }
+                        Err(_) => true,
+                    };
                     let progress_failed = reporter.finish().is_err();
                     (drain_failed, progress_failed)
                 } else {
@@ -1020,25 +1070,18 @@ mod sys {
         let event_close_failed = stop_event
             .map(OwnedEvent::close)
             .is_some_and(|result| result.is_err());
-        if drain_failed || progress_failed || event_close_failed {
+        let Some(final_status) = terminal_status_after_cleanup(
+            failure,
+            drain_failed,
+            progress_failed,
+            event_close_failed,
+        ) else {
             let mut context = lock_context();
             context.status_handle = 0;
             context.stop_event = 0;
             context.finishing = true;
             DISPATCH_OUTCOME.store(OUTCOME_FAILURE, Ordering::Release);
             return;
-        }
-
-        let final_status = if let Some(detail) = failure {
-            status_value(
-                SERVICE_STOPPED,
-                ERROR_SERVICE_SPECIFIC_ERROR.0,
-                detail,
-                0,
-                0,
-            )
-        } else {
-            status_value(SERVICE_STOPPED, 0, 0, 0, 0)
         };
 
         {
@@ -1061,6 +1104,28 @@ mod sys {
         if send_status(status_handle, &final_status).is_err() {
             DISPATCH_OUTCOME.store(OUTCOME_FAILURE, Ordering::Release);
         }
+    }
+
+    fn terminal_status_after_cleanup(
+        failure: Option<u32>,
+        drain_failed: bool,
+        progress_failed: bool,
+        event_close_failed: bool,
+    ) -> Option<SERVICE_STATUS> {
+        if drain_failed || progress_failed || event_close_failed {
+            return None;
+        }
+        Some(if let Some(detail) = failure {
+            status_value(
+                SERVICE_STOPPED,
+                ERROR_SERVICE_SPECIFIC_ERROR.0,
+                detail,
+                0,
+                0,
+            )
+        } else {
+            status_value(SERVICE_STOPPED, 0, 0, 0, 0)
+        })
     }
 
     fn abandon_service_with_retained_runtime(stop_event: OwnedEvent) {
@@ -1331,6 +1396,92 @@ mod sys {
             assert_eq!(ServiceTokenWorker::STOP_EVENT_FAILURE_CODE, 1);
             #[cfg(feature = "key-agent-service-rpc-status-feasibility-test-hook")]
             assert_eq!(StatusRpcWorker::STOP_EVENT_FAILURE_CODE, 1);
+        }
+
+        #[test]
+        fn generic_worker_diagnostic_hooks_preserve_normal_stop_behavior()
+        -> Result<(), KeyAgentServiceFixtureError> {
+            let worker = InertWorker;
+            assert!(!worker.diagnostic_stop_requested());
+            assert_eq!(worker.close_admission().drain_with_diagnostic()?, None);
+            Ok(())
+        }
+
+        #[test]
+        fn diagnostic_poll_never_masks_control_or_wait_failure() {
+            for control_error in [false, true] {
+                for stop_requested in [false, true] {
+                    for wait_is_timeout in [false, true] {
+                        for diagnostic_requested in [false, true] {
+                            let queried = core::cell::Cell::new(false);
+                            let outcome = select_wait_outcome(
+                                control_error,
+                                stop_requested,
+                                wait_is_timeout,
+                                || {
+                                    queried.set(true);
+                                    diagnostic_requested
+                                },
+                            );
+                            let expected = if control_error {
+                                Some(WaitOutcome::BoundaryFailure)
+                            } else if stop_requested {
+                                Some(WaitOutcome::Stop)
+                            } else if !wait_is_timeout {
+                                Some(WaitOutcome::BoundaryFailure)
+                            } else if diagnostic_requested {
+                                Some(WaitOutcome::Stop)
+                            } else {
+                                None
+                            };
+                            assert_eq!(outcome, expected);
+                            assert_eq!(
+                                queried.get(),
+                                !control_error && !stop_requested && wait_is_timeout
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn terminal_status_requires_every_cleanup_owner_and_reporter_to_finish()
+        -> Result<(), &'static str> {
+            for failure in [None, Some(CONTROL_FAILURE), Some(0x6005), Some(0x6109)] {
+                for drain_failed in [false, true] {
+                    for progress_failed in [false, true] {
+                        for event_close_failed in [false, true] {
+                            let status = terminal_status_after_cleanup(
+                                failure,
+                                drain_failed,
+                                progress_failed,
+                                event_close_failed,
+                            );
+                            if drain_failed || progress_failed || event_close_failed {
+                                assert!(status.is_none());
+                            } else {
+                                let status = status
+                                    .ok_or("complete cleanup did not produce terminal status")?;
+                                assert_eq!(status.dwCurrentState, SERVICE_STOPPED);
+                                assert_eq!(status.dwControlsAccepted, 0);
+                                assert_eq!(status.dwCheckPoint, 0);
+                                assert_eq!(status.dwWaitHint, 0);
+                                assert_eq!(
+                                    status.dwWin32ExitCode,
+                                    if failure.is_some() {
+                                        ERROR_SERVICE_SPECIFIC_ERROR.0
+                                    } else {
+                                        0
+                                    }
+                                );
+                                assert_eq!(status.dwServiceSpecificExitCode, failure.unwrap_or(0));
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
         }
 
         #[cfg(all(

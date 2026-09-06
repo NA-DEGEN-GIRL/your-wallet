@@ -11,7 +11,8 @@ signed-helper evidence.
 The user applied the corrected `b3bb834` candidate and reported Remove, Install
 and **Start PASS_NOT_RELEASE_EVIDENCE**. Startup is now observed to succeed;
 do not repeat replacement or diagnose the historical `0x5008` as a current
-failure. The installed service and matched workspace candidate remain intact.
+failure. The installed service remains unchanged. Its matched workspace
+candidate is now preserved in the runtime-diagnostic archive recorded below.
 
 The agent then strictly verified the candidate and ran its non-signing client
 exactly once from the eligible unelevated preparation context, with the client
@@ -56,12 +57,12 @@ an ACL grant or relax authentication to clear this result.
 
 ### Remaining RPC diagnosis boundary
 
-No service-side per-attempt cause is currently persisted or queryable. The
-existing `Status` result is deliberately unavailable, and SCM startup codes do
-not expose runtime authentication failures. A first-wins, closed service-side
-failure record with a reviewed reporting/cleanup path is the next development
-step before another operator replacement. Keep acceptance, callback/manager
-independence, exact process/token correlation, deadlines and cleanup unchanged.
+No service-side per-attempt cause is persisted or queryable in the installed
+`b3bb834` candidate. The existing `Status` result is deliberately unavailable,
+and its SCM startup codes do not expose runtime authentication failures. The
+first-wins diagnostic described below is now implemented and prepared, but has
+not been applied to that installation. Acceptance, callback/manager independence,
+exact process/token correlation, deadlines and cleanup remain unchanged.
 Do not claim that client instrumentation alone fixes the RPC refusal.
 
 Cross-account access is a hypothesis, not the observed failed predicate:
@@ -75,13 +76,79 @@ Moving only the first open or granting Debug would not validate that chain.
 An unregistered fixed EventLog source can fall back to Application, but this
 service's actual write access is not guaranteed and the APIs are synchronous.
 No EventLog API, source registration, ACL/LSA grant or background reporting
-worker was added. If considering the existing SCM terminal-status channel,
-separate observed runtime failure from proven resource cleanup: current drain
+worker was added. The new existing-SCM-channel path separates observed runtime
+failure from proven resource cleanup: drain
 errors deliberately suppress STOPPED, and RUNNING exit/checkpoint fields must
 not be repurposed as diagnostics. Neither absent logs nor process termination
 proves which authentication check failed or that remote resources were reaped.
 
-### Verified diagnostic checkpoint
+### Runtime-auth diagnostics ready; operator application pending
+
+New source adds a closed per-call observer around the existing auth operations;
+the policy/identity/reversion algorithm and native adapter are unchanged. It
+delegates each observation once, retains only the first failed operation category,
+and preserves the original `RpcAuthError`. A rejection with no failed native
+observation is classified as `PolicyOrContinuity`. Repeated observations of the
+same operation remain grouped; the code does not invent the exact repeated call
+or native error. Existing unsafe-reversion fail-fast behavior is retained.
+
+The LPAC debug service records the first failure across calls, then closes
+admission and requests the existing bounded shutdown. Callback stage offsets
+1..15 map to `0x6001..0x600f`; manager offsets map to `0x6101..0x610f`.
+The exact table is in `scripts/service-probe/README.md`. Only clean RPC rundown,
+coordinator/helpers stop, exact context removal, progress-thread completion and
+event close allow a terminal SCM diagnostic. A separate monotonic unrelated-fatal
+latch prevents a concurrent or later cleanup/internal error from being excused
+by a previously captured auth category. Legacy drain and non-LPAC behavior retain
+their original failure semantics. No new log sink, native API, permission, wire
+command or retry is introduced.
+
+The fixture intentionally stops on its first auth rejection; no automatic
+restart is added. A caller refused before entering auth, an admission refusal,
+or a router/helper failure may still yield no auth report. This first caller is
+not necessarily the intended client, and the diagnostic is not identity or
+release evidence. No new actual service, RPC, UI or operator run was performed
+for this implementation checkpoint; the previously observed AccessDenied is
+still unresolved.
+
+The frozen source passed the full `scripts/check.ps1 test`, fmt, lint, typecheck
+and privacy targets, each with native exit 0. Platform: 1020 passed, 47 ignored;
+demo: 266; extension: 33; helper: 69; native harness: 139; preparation/operator
+CLI: 20; actual architecture CLI: 24. The 18 new tests are ordinary non-ignored
+tests. Focused auth diagnostics: 9; RPC module: 24 passed/one existing ignored;
+SCM: 13; default, debug-desktop and release-all-feature binary fallback: two
+each; release probe unit tests: 17. Separate release JS tests: 66 passed; both
+PowerShell release-helper sentinels passed. An initial release-helper invocation
+omitted the required `-NoLogo`/`-NonInteractive` host flags and correctly failed
+bootstrap; the exact reviewed invocation passed without a source/policy change.
+
+The single final no-argument architecture scan passed with native exit 0 and
+progress through 672 checks. New runtime diagnostics: 17 predicates and 39
+effective negative mutations; startup diagnostics retain 14 predicates and all
+50 negatives. Existing lifecycle/Phase-one/auth checks and historical mutations
+remain active. The 182-file Rust compilation closure is
+`2d18db41d61f201c419313b63ac5a46fadea25177f1c9d5730c4a0db647f3e73`;
+scanner SHA256 is
+`9ea347c788052ad4ee9010c9f2b141ad26d061959fa78fb87d48aa6242c1b2dc`.
+
+Before fresh preparation, the exact prior candidate was scope-checked and moved
+without overwrite to
+`artifacts/service-probe-candidate-before-runtime-auth-diagnostics-b3bb834`.
+Held canonical-manifest and all-four-artifact verification passed before and
+after the move with the same manifest digest. Fresh unelevated `prepare.ps1`
+passed, followed by independent strict held inventory, single-link, size, hash
+and canonical-manifest readback. The new `artifacts/service-probe-candidate`
+contains both client failure categories and service runtime-auth diagnostics.
+Its canonical manifest SHA256 is
+`765e6cf2833904676c939f774c2c2862cd1f8ce645a0f1cef6fb5d8cc3f148a0`;
+its service SHA256 is
+`423d26f661438ff5a48fbce2e9218c047beb62c0b790e6e489677b804d31c994`.
+This is a verified new workspace candidate, not installed-runtime evidence.
+No installed-file, LSA/ACL, acceptance, signing, mnemonic or private-key change
+was made. The explicit elevated Stop/Remove/Install/Start workflow is now the
+next boundary; no automatic elevation or restart is authorized by these tests.
+
+### Prior `0039995` diagnostic checkpoint
 
 The frozen diagnostic source passed `scripts/check.ps1 test`, fmt, lint,
 typecheck and privacy, each with native exit 0. Platform: 1002 passed, 47 ignored
@@ -190,17 +257,17 @@ explicitly not release evidence. Helper feature tests 69 and Approval UI tests
 
 ## Resume here
 
-1. The user applied the exact two-form correction (`b3bb834`); Remove/Install
-   and Start passed. Diagnose the separate client failure recorded above without
-   repeating installation. Corrected startup is observed; RPC/UI completion
-   remains unverified. The correction rests on actual service-token evidence,
-   not an assumption from a desktop sample.
-   Any operator replacement must use the existing
-   stopped, ownership-verified Remove/Install workflow, never overwrite or force
-   adoption. Inspect completion is not startup evidence. The current candidate is at
-   `artifacts/service-probe-candidate`; do not rerun prepare against that existing
-   directory or overwrite it. It now contains the exact two-form logon-group
-   correction. The previous `f48fa87` diagnostic-only candidate is preserved in
+1. The installed `b3bb834` service previously started successfully; its observed
+   OpenEpoch denial remains unresolved. Apply the newly prepared runtime-auth
+   diagnostic candidate using the guarded elevated Stop/Remove/Install/Start
+   workflow in `scripts/service-probe/README.md`, stopping at the first failure.
+   This replaces the owned debug fixture with new instrumentation, not an
+   unchanged retry. No installed state was changed by this checkpoint.
+   The current candidate is at `artifacts/service-probe-candidate`; do not rerun
+   prepare against or overwrite it. Its matched prior `b3bb834` candidate is in
+   `artifacts/service-probe-candidate-before-runtime-auth-diagnostics-b3bb834`.
+   Never force adoption or bypass ownership/readback. Inspect completion is not
+   startup evidence. The previous `f48fa87` diagnostic-only candidate is preserved in
    `artifacts/service-probe-candidate-before-logon-owner-fix-f48fa87`.
    The older `fad7ba8` candidate is preserved in
    `artifacts/service-probe-candidate-before-logon-attribute-diagnostics-fad7ba8`.
@@ -212,14 +279,14 @@ explicitly not release evidence. Helper feature tests 69 and Approval UI tests
    The original candidate is preserved in
    `artifacts/service-probe-candidate-before-startup-diagnostics-d1e1bbd`.
    A later runtime source change requires a newly reviewed build.
-2. Preserve the six data-free client error categories, verify the workspace-only
-   build and investigate the present client failure. Do not treat a quick failure
-   as stage evidence or automatically retry a single-use epoch. The earlier
-   real candidate returned exact UNAVAILABLE/78 with no installed service and
-   no stderr; that was fail-closed negative evidence, not a positive RPC/UI test.
-   The operator's actual Readback entry returned REQUIRES_ELEVATED_OPERATOR/20
-   before native operations. These observations predate the failed user-run
-   operator command; they do not describe the current installation state.
+2. After the new user-run Start PASS, verify the exact candidate, run only one
+   controlled provenance-held, externally bounded opening-only diagnostic, and
+   inspect the fixed service's new scoped SCM evidence. Do not send an Approval
+   command or automatically retry that epoch. A runtime code identifies only the
+   first reached auth category in that service invocation, not a raw native
+   error, particular repeated observation, correlated request or proven identity.
+   An absent code is inconclusive; pre-auth access denial and uncertain cleanup can
+   suppress it. Diagnose from that evidence before changing any auth predicate.
 3. Record exact installed-service/readback/helper results and clean up via the
    verified Stop/Remove workflow. Never run Cargo elevated, retry single-use
    epochs, adopt unrelated services, or repair uncertain partial state by force.
