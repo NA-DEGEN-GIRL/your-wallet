@@ -204,6 +204,53 @@ denied. Do not interpret such omission as permission to reinstall. See Microsoft
 
 ## Verification boundaries
 
+### Unreported service termination
+
+The latest operator replacement did not return Stop PASS. Elevated Inspect
+subsequently passed all non-status observations and its own handle cleanup, but
+reported service status OTHER. Inspect groups states 3, 5, 6 and 7 there; neither
+that label nor its cleanup PASS proves that service-owned resources were reaped.
+Use this read-only command in the elevated PowerShell to distinguish the state:
+
+```powershell
+sc.exe queryex YourWalletKeyAgent
+```
+
+Do not retry the replacement command while this state is unresolved. The PID
+returned in START_PENDING or STOP_PENDING is not guaranteed valid, and is not
+sufficient identity evidence for terminating a process. See Microsoft's
+[query-state and PID contract](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-queryservicestatusex).
+
+Source review found a separate liveness defect: on a quick failed drain, the
+old service could cancel/join its stop watchdog and return from ServiceMain
+without STOPPED. Its main-thread exit is after the dispatcher, which waits for
+STOPPED; callback return does not terminate the service. See the
+[dispatcher completion contract](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-startservicectrldispatcherw)
+and [ServiceMain lifetime](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nc-winsvc-lpservice_main_functionw).
+This does not yet identify the installed service's observed OTHER state.
+
+The correction requires a private move-only completion proof before any of the
+four debug-fixture callbacks can return. Only successful final STOPPED reporting
+after full cleanup mints it. Registration failure, retained startup, uncertain
+cleanup and failed final reporting instead use a nonreturning, data-free abort
+of the fixture's own process. No STOPPED or runtime-auth code is fabricated for
+failed cleanup. Auth predicates, the wire protocol, privileges, the dormant
+lifecycle authority and default/release facade gates are unchanged. The existing
+watchdog continues to bound slow cleanup; the new path covers fast errors after
+that reporter has finished. The full test/fmt/lint/typecheck/privacy and no-argument
+architecture checks passed. Four new child tests include 64 terminal combinations
+and a deliberate callback-return-without-report negative. They test a simulated
+dispatcher with fake final reporting, not an actual SCM-hosted service. Startup
+cases exercise the shared failure sink, not native registration/retention calls.
+
+The older candidate is preserved in
+`artifacts/service-probe-candidate-before-unreported-stop-fix-7916943`, with strict
+held verification before and after the move. Fresh unelevated preparation and
+independent canonical-manifest/all-four-artifact readback passed for the current
+candidate containing both auth diagnostics and the termination fix. This is not
+installed-service evidence. The exact queryex status is still pending; do not
+apply the new candidate until the retained OTHER state is understood.
+
 ### Debug runtime authentication failure evidence
 
 The new source adds an LPAC-debug-only, first-failure diagnostic through the
@@ -263,8 +310,12 @@ be applied with the guarded operator workflow before these codes can be observed
 The current fresh candidate passed unelevated preparation and independent held
 canonical-manifest/all-four-artifact verification. The old candidate was moved,
 not deleted or overwritten, and passed the same verification before and after.
-The installed service has not been changed. To apply this new diagnostic build,
-run the following **single physical line** in a fresh elevated 64-bit PowerShell.
+The current candidate includes the separately verified termination correction
+above. The failed replacement has not established a new installed image.
+The following **single physical line**
+is the guarded replacement procedure, not permission to retry the current
+unresolved OTHER state. Use it only after state review and a verified fresh
+candidate, in a fresh elevated 64-bit PowerShell.
 It stops at the first nonzero native exit. Stop accepts an already-stopped owned
 fixture; Remove still requires stopped state and exact ownership/readback.
 

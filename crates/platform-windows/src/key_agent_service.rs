@@ -725,8 +725,11 @@ mod sys {
         }
     }
 
+    #[must_use = "ServiceMain may return only after SCM accepted SERVICE_STOPPED"]
+    struct StoppedReported;
+
     unsafe extern "system" fn service_main(_argument_count: u32, _arguments: *mut PWSTR) {
-        service_main_impl::<InertWorker>();
+        let StoppedReported = service_main_impl::<InertWorker>();
     }
 
     #[cfg(all(
@@ -737,7 +740,7 @@ mod sys {
         _argument_count: u32,
         _arguments: *mut PWSTR,
     ) {
-        service_main_impl::<ServiceTokenWorker>();
+        let StoppedReported = service_main_impl::<ServiceTokenWorker>();
     }
 
     #[cfg(feature = "key-agent-service-rpc-status-feasibility-test-hook")]
@@ -745,7 +748,7 @@ mod sys {
         _argument_count: u32,
         _arguments: *mut PWSTR,
     ) {
-        service_main_impl::<StatusRpcWorker>();
+        let StoppedReported = service_main_impl::<StatusRpcWorker>();
     }
 
     #[cfg(all(
@@ -756,10 +759,10 @@ mod sys {
         _argument_count: u32,
         _arguments: *mut PWSTR,
     ) {
-        service_main_impl::<LpacRpcProbeWorker>();
+        let StoppedReported = service_main_impl::<LpacRpcProbeWorker>();
     }
 
-    fn service_main_impl<W: ScmWorker>() {
+    fn service_main_impl<W: ScmWorker>() -> StoppedReported {
         DISPATCH_OUTCOME.store(OUTCOME_CALLBACK_ACTIVE, Ordering::Release);
 
         // SAFETY: SCM invokes this callback for the fixed service table entry.
@@ -770,8 +773,7 @@ mod sys {
                 None,
             )
         }) else {
-            DISPATCH_OUTCOME.store(OUTCOME_FAILURE, Ordering::Release);
-            return;
+            abort_unreported_service();
         };
 
         let start_status_failed = {
@@ -787,24 +789,30 @@ mod sys {
             .is_err()
         };
         if start_status_failed {
-            finish_service::<W>(status_handle, None, None, Some(STATUS_FAILURE));
-            return;
+            return finish_service::<W>(status_handle, None, None, Some(STATUS_FAILURE));
         }
 
         let Ok(stop_event) = OwnedEvent::create() else {
-            finish_service::<W>(status_handle, None, None, Some(W::STOP_EVENT_FAILURE_CODE));
-            return;
+            return finish_service::<W>(
+                status_handle,
+                None,
+                None,
+                Some(W::STOP_EVENT_FAILURE_CODE),
+            );
         };
 
         let initial_state = publish_stop_event_and_select_startup(&stop_event);
         match initial_state {
             StartupState::BoundaryFailure => {
-                finish_service::<W>(status_handle, Some(stop_event), None, Some(CONTROL_FAILURE));
-                return;
+                return finish_service::<W>(
+                    status_handle,
+                    Some(stop_event),
+                    None,
+                    Some(CONTROL_FAILURE),
+                );
             }
             StartupState::Stop => {
-                finish_service::<W>(status_handle, Some(stop_event), None, None);
-                return;
+                return finish_service::<W>(status_handle, Some(stop_event), None, None);
             }
             StartupState::Run => {}
         }
@@ -813,33 +821,29 @@ mod sys {
             Ok(worker) => worker,
             Err(failure) => {
                 if failure.permits_stopped_status() {
-                    finish_service::<W>(
+                    return finish_service::<W>(
                         status_handle,
                         Some(stop_event),
                         None,
                         failure.initialization_code(),
                     );
-                } else {
-                    abandon_service_with_retained_runtime(stop_event);
                 }
-                return;
+                abandon_service_with_retained_runtime(stop_event);
             }
         };
 
         let running_state = publish_running_or_select_stop(&mut worker);
         match running_state {
             StartupState::BoundaryFailure => {
-                finish_service(
+                return finish_service(
                     status_handle,
                     Some(stop_event),
                     Some(worker),
                     Some(CONTROL_FAILURE),
                 );
-                return;
             }
             StartupState::Stop => {
-                finish_service(status_handle, Some(stop_event), Some(worker), None);
-                return;
+                return finish_service(status_handle, Some(stop_event), Some(worker), None);
             }
             StartupState::Run => {}
         }
@@ -849,7 +853,7 @@ mod sys {
             WaitOutcome::Stop => None,
             WaitOutcome::BoundaryFailure => Some(WAIT_FAILURE),
         };
-        finish_service(status_handle, Some(stop_event), Some(worker), failure);
+        finish_service(status_handle, Some(stop_event), Some(worker), failure)
     }
 
     fn publish_stop_event_and_select_startup(stop_event: &OwnedEvent) -> StartupState {
@@ -1010,7 +1014,7 @@ mod sys {
         stop_event: Option<OwnedEvent>,
         worker: Option<W>,
         mut failure: Option<u32>,
-    ) {
+    ) -> StoppedReported {
         {
             let mut context = lock_context();
             context.finishing = true;
@@ -1070,40 +1074,62 @@ mod sys {
         let event_close_failed = stop_event
             .map(OwnedEvent::close)
             .is_some_and(|result| result.is_err());
+        report_stopped_after_cleanup_with(
+            failure,
+            drain_failed,
+            progress_failed,
+            event_close_failed,
+            |final_status| {
+                {
+                    let mut context = lock_context();
+                    context.status_handle = 0;
+                    context.stop_event = 0;
+                    context.status = *final_status;
+                    context.finishing = true;
+                }
+
+                let intended_outcome = if failure.is_none() {
+                    OUTCOME_SUCCESS
+                } else {
+                    OUTCOME_FAILURE
+                };
+                DISPATCH_OUTCOME.store(intended_outcome, Ordering::Release);
+
+                // This is the last successful service operation. Only its
+                // success permits callback return, including error STOPPED.
+                send_status(status_handle, final_status)
+            },
+        )
+    }
+
+    fn report_stopped_after_cleanup_with<E>(
+        failure: Option<u32>,
+        drain_failed: bool,
+        progress_failed: bool,
+        event_close_failed: bool,
+        report: impl FnOnce(&SERVICE_STATUS) -> Result<(), E>,
+    ) -> StoppedReported {
         let Some(final_status) = terminal_status_after_cleanup(
             failure,
             drain_failed,
             progress_failed,
             event_close_failed,
         ) else {
-            let mut context = lock_context();
-            context.status_handle = 0;
-            context.stop_event = 0;
-            context.finishing = true;
-            DISPATCH_OUTCOME.store(OUTCOME_FAILURE, Ordering::Release);
-            return;
+            abort_unreported_service();
         };
-
-        {
-            let mut context = lock_context();
-            context.status_handle = 0;
-            context.stop_event = 0;
-            context.status = final_status;
-            context.finishing = true;
+        if report(&final_status).is_err() {
+            abort_unreported_service();
         }
+        StoppedReported
+    }
 
-        let intended_outcome = if failure.is_none() {
-            OUTCOME_SUCCESS
-        } else {
-            OUTCOME_FAILURE
-        };
-        DISPATCH_OUTCOME.store(intended_outcome, Ordering::Release);
-
-        // This is the last successful service operation. If it succeeds, the
-        // callback returns immediately without touching shared state again.
-        if send_status(status_handle, &final_status).is_err() {
-            DISPATCH_OUTCOME.store(OUTCOME_FAILURE, Ordering::Release);
-        }
+    fn abort_unreported_service() -> ! {
+        DISPATCH_OUTCOME.store(OUTCOME_FAILURE, Ordering::Release);
+        // These fixtures own their process. Returning ServiceMain does not
+        // release StartServiceCtrlDispatcher without a reported STOPPED, so
+        // a failure cannot defer process termination until dispatcher return.
+        // Retained resources remain unclaimed; never synthesize clean STOPPED.
+        std::process::abort();
     }
 
     fn terminal_status_after_cleanup(
@@ -1128,7 +1154,7 @@ mod sys {
         })
     }
 
-    fn abandon_service_with_retained_runtime(stop_event: OwnedEvent) {
+    fn abandon_service_with_retained_runtime(stop_event: OwnedEvent) -> ! {
         {
             let mut context = lock_context();
             context.finishing = true;
@@ -1146,7 +1172,7 @@ mod sys {
         }
         // Never publish SERVICE_STOPPED: process exit is the only authoritative
         // cleanup for the uncertain RPC runtime state.
-        DISPATCH_OUTCOME.store(OUTCOME_FAILURE, Ordering::Release);
+        abort_unreported_service();
     }
 
     fn report_stop_progress_until_complete(receiver: &Receiver<()>) {
@@ -1333,6 +1359,295 @@ mod sys {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        const TERMINAL_CHILD_CASE: &str = "YOUR_WALLET_SCM_TERMINAL_TEST_CASE";
+        const TERMINAL_CHILD_TEST: &str = "key_agent_service::sys::tests::scm_terminal_child_entry";
+        const REPORT_ATTEMPTED: &str = "SCM_TEST_REPORT_ATTEMPTED\n";
+        const STOPPED_REPORTED: &str = "SCM_TEST_STOPPED_REPORTED\n";
+        const CALLBACK_RETURNED: &str = "SCM_TEST_CALLBACK_RETURNED\n";
+
+        #[derive(Clone, Copy)]
+        struct TerminalMatrixCase {
+            failure: Option<u32>,
+            cleanup_mask: u8,
+            send_fails: bool,
+        }
+
+        fn terminal_matrix_cases() -> Vec<(String, TerminalMatrixCase)> {
+            let mut cases = Vec::new();
+            for (failure_index, failure) in
+                [None, Some(CONTROL_FAILURE), Some(0x6005), Some(0x6109)]
+                    .into_iter()
+                    .enumerate()
+            {
+                for cleanup_mask in 0..8 {
+                    for send_fails in [false, true] {
+                        cases.push((
+                            format!(
+                                "matrix-{failure_index}-{cleanup_mask}-{}",
+                                u8::from(send_fails)
+                            ),
+                            TerminalMatrixCase {
+                                failure,
+                                cleanup_mask,
+                                send_fails,
+                            },
+                        ));
+                    }
+                }
+            }
+            cases
+        }
+
+        struct OwnedTerminalChild(std::process::Child);
+
+        impl Drop for OwnedTerminalChild {
+            fn drop(&mut self) {
+                // This guard owns only the exact child it spawned. Assertion,
+                // timeout and I/O-error exits cannot abandon a test process.
+                if !matches!(self.0.try_wait(), Ok(Some(_))) {
+                    let _ = self.0.kill();
+                    let _ = self.0.wait();
+                }
+            }
+        }
+
+        struct TerminalChildResult {
+            status: std::process::ExitStatus,
+            watchdog_fired: bool,
+            output: String,
+        }
+
+        fn run_terminal_child(
+            case: &str,
+            deadline: Duration,
+        ) -> Result<TerminalChildResult, Box<dyn std::error::Error>> {
+            use std::io::Read;
+            use std::os::windows::process::CommandExt;
+            use std::process::{Command, Stdio};
+
+            let mut child = OwnedTerminalChild(
+                Command::new(std::env::current_exe()?)
+                    .args([
+                        "--exact",
+                        TERMINAL_CHILD_TEST,
+                        "--nocapture",
+                        "--test-threads=1",
+                    ])
+                    .env(TERMINAL_CHILD_CASE, case)
+                    .env("RUST_BACKTRACE", "0")
+                    .env("RUST_LIB_BACKTRACE", "0")
+                    .creation_flags(0x0800_0000)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()?,
+            );
+            let started = Instant::now();
+            let (status, watchdog_fired) = loop {
+                if let Some(status) = child.0.try_wait()? {
+                    break (status, false);
+                }
+                if started.elapsed() >= deadline {
+                    child.0.kill()?;
+                    break (child.0.wait()?, true);
+                }
+                thread::sleep(Duration::from_millis(10));
+            };
+            // The child emits only fixed test labels and the small test-runner
+            // summary. stderr is null, so panic backtraces cannot fill a pipe.
+            let mut output = Vec::new();
+            child
+                .0
+                .stdout
+                .take()
+                .ok_or("terminal child stdout missing")?
+                .take(4097)
+                .read_to_end(&mut output)?;
+            if output.len() > 4096 {
+                return Err("terminal child output exceeded its bound".into());
+            }
+            Ok(TerminalChildResult {
+                status,
+                watchdog_fired,
+                output: String::from_utf8(output)?,
+            })
+        }
+
+        fn terminal_child_marker(marker: &'static str) {
+            use std::io::Write;
+            let mut output = std::io::stdout().lock();
+            if output.write_all(marker.as_bytes()).is_err() || output.flush().is_err() {
+                std::process::exit(90);
+            }
+        }
+
+        #[allow(clippy::panic)]
+        unsafe extern "system" fn terminal_child_panicking_callback() {
+            // Deliberate child-only coverage of the same non-unwinding ABI as
+            // all four ServiceMain callbacks. This must not return to SCM.
+            panic!("SCM_TEST_CALLBACK_PANIC");
+        }
+
+        #[test]
+        fn scm_terminal_child_entry() -> Result<(), Box<dyn std::error::Error>> {
+            let Ok(case) = std::env::var(TERMINAL_CHILD_CASE) else {
+                return Ok(());
+            };
+            let matrix = terminal_matrix_cases()
+                .into_iter()
+                .find_map(|(label, matrix)| (label == case).then_some(matrix));
+            if matrix.is_none()
+                && !matches!(
+                    case.as_str(),
+                    "abort-control"
+                        | "unreported-registration"
+                        | "retained-runtime"
+                        | "callback-panic"
+                        | "legacy-return"
+                )
+            {
+                return Err("unknown terminal child case".into());
+            }
+
+            let (dispatcher_keepalive, stopped) = sync_channel(1);
+            let report_sender = dispatcher_keepalive.clone();
+            let callback = thread::spawn(move || {
+                match case.as_str() {
+                    "abort-control" => std::process::abort(),
+                    // These model the native registration/retained-startup
+                    // failures at their shared, production fail-fast sink.
+                    "unreported-registration" | "retained-runtime" => abort_unreported_service(),
+                    "callback-panic" => {
+                        // SAFETY: this argument-free child-only callback
+                        // intentionally exercises its non-unwinding ABI.
+                        unsafe { terminal_child_panicking_callback() };
+                    }
+                    "legacy-return" => {
+                        terminal_child_marker(CALLBACK_RETURNED);
+                        return;
+                    }
+                    _ => {}
+                }
+                let Some(matrix) = matrix else {
+                    std::process::exit(91);
+                };
+                let StoppedReported = report_stopped_after_cleanup_with(
+                    matrix.failure,
+                    matrix.cleanup_mask & 1 != 0,
+                    matrix.cleanup_mask & 2 != 0,
+                    matrix.cleanup_mask & 4 != 0,
+                    |status| {
+                        terminal_child_marker(REPORT_ATTEMPTED);
+                        assert_eq!(matrix.cleanup_mask, 0);
+                        assert_eq!(status.dwServiceType, SERVICE_WIN32_OWN_PROCESS);
+                        assert_eq!(status.dwCurrentState, SERVICE_STOPPED);
+                        assert_eq!(status.dwControlsAccepted, 0);
+                        assert_eq!(status.dwCheckPoint, 0);
+                        assert_eq!(status.dwWaitHint, 0);
+                        assert_eq!(
+                            status.dwServiceSpecificExitCode,
+                            matrix.failure.unwrap_or(0)
+                        );
+                        assert_eq!(
+                            status.dwWin32ExitCode,
+                            if matrix.failure.is_some() {
+                                ERROR_SERVICE_SPECIFIC_ERROR.0
+                            } else {
+                                0
+                            }
+                        );
+                        if matrix.send_fails {
+                            return Err(());
+                        }
+                        terminal_child_marker(STOPPED_REPORTED);
+                        report_sender.send(()).map_err(|_| ())
+                    },
+                );
+                terminal_child_marker(CALLBACK_RETURNED);
+            });
+
+            // Model StartServiceCtrlDispatcher, not merely ServiceMain's
+            // thread lifetime. Keeping this sender alive prevents callback
+            // return/drop from accidentally unblocking the dispatcher.
+            stopped.recv()?;
+            drop(dispatcher_keepalive);
+            callback.join().map_err(|_| "terminal callback panicked")?;
+            Ok(())
+        }
+
+        #[test]
+        fn scm_terminal_fake_native_matrix_requires_one_successful_stopped_report()
+        -> Result<(), Box<dyn std::error::Error>> {
+            let abort = run_terminal_child("abort-control", Duration::from_secs(5))?;
+            assert!(!abort.watchdog_fired);
+            assert!(!abort.status.success());
+            assert_ne!(abort.status.code(), Some(101));
+
+            let cases = terminal_matrix_cases();
+            assert_eq!(cases.len(), 64);
+            for (label, matrix) in cases {
+                let child = run_terminal_child(&label, Duration::from_secs(5))?;
+                assert!(!child.watchdog_fired, "{label}");
+                let clean = matrix.cleanup_mask == 0;
+                let reported = clean && !matrix.send_fails;
+                if reported {
+                    assert!(child.status.success(), "{label}");
+                } else {
+                    assert_eq!(child.status, abort.status, "{label}");
+                }
+                assert_eq!(
+                    child.output.matches(REPORT_ATTEMPTED).count(),
+                    usize::from(clean),
+                    "{label}"
+                );
+                assert_eq!(
+                    child.output.matches(STOPPED_REPORTED).count(),
+                    usize::from(reported),
+                    "{label}"
+                );
+                assert_eq!(
+                    child.output.matches(CALLBACK_RETURNED).count(),
+                    usize::from(reported),
+                    "{label}"
+                );
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn scm_terminal_unreported_start_and_callback_panic_do_not_return()
+        -> Result<(), Box<dyn std::error::Error>> {
+            let abort = run_terminal_child("abort-control", Duration::from_secs(5))?;
+            assert!(!abort.watchdog_fired);
+            assert!(!abort.status.success());
+            assert_ne!(abort.status.code(), Some(101));
+            for case in [
+                "unreported-registration",
+                "retained-runtime",
+                "callback-panic",
+            ] {
+                let child = run_terminal_child(case, Duration::from_secs(5))?;
+                assert!(!child.watchdog_fired, "{case}");
+                assert_eq!(child.status, abort.status, "{case}");
+                assert!(!child.output.contains(REPORT_ATTEMPTED));
+                assert!(!child.output.contains(STOPPED_REPORTED));
+                assert!(!child.output.contains(CALLBACK_RETURNED));
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn scm_terminal_legacy_callback_return_leaves_simulated_dispatcher_blocked()
+        -> Result<(), Box<dyn std::error::Error>> {
+            let child = run_terminal_child("legacy-return", Duration::from_secs(1))?;
+            assert!(child.watchdog_fired);
+            assert!(!child.status.success());
+            assert!(!child.output.contains(REPORT_ATTEMPTED));
+            assert!(!child.output.contains(STOPPED_REPORTED));
+            assert_eq!(child.output.matches(CALLBACK_RETURNED).count(), 1);
+            Ok(())
+        }
 
         #[test]
         fn service_name_is_fixed_and_nul_terminated() {

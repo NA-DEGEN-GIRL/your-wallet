@@ -24230,7 +24230,7 @@ const keyAgentServiceRpcLifecycleContract = ({ sources, platformService }) => {
       ]) &&
       hasOrderedCompactMarkers(serviceMain, [
         "publish_stop_event_and_select_startup(&stop_event)",
-        "StartupState::Stop=>{finish_service::<W>(status_handle,Some(stop_event),None,None);return;}",
+        "StartupState::Stop=>{returnfinish_service::<W>(status_handle,Some(stop_event),None,None);}",
         "W::start()",
         "failure.permits_stopped_status()",
         "abandon_service_with_retained_runtime(stop_event)",
@@ -24255,9 +24255,8 @@ const keyAgentServiceRpcLifecycleContract = ({ sources, platformService }) => {
         "reporter.finish().is_err()",
         "drop(worker)",
         "stop_event.map(OwnedEvent::close)",
-        "terminal_status_after_cleanup(failure,drain_failed,progress_failed,event_close_failed,)",
-        "return;",
-        "send_status(status_handle,&final_status)",
+        "report_stopped_after_cleanup_with(failure,drain_failed,progress_failed,event_close_failed,",
+        "send_status(status_handle,final_status)",
       ]) &&
       compactRust(rustFunctionBlock(platformService, "terminal_status_after_cleanup")) ===
         "fnterminal_status_after_cleanup(failure:Option<u32>,drain_failed:bool,progress_failed:bool,event_close_failed:bool,)->Option<SERVICE_STATUS>{ifdrain_failed||progress_failed||event_close_failed{returnNone;}Some(ifletSome(detail)=failure{status_value(SERVICE_STOPPED,ERROR_SERVICE_SPECIFIC_ERROR.0,detail,0,0,)}else{status_value(SERVICE_STOPPED,0,0,0,0)})}" &&
@@ -24283,7 +24282,7 @@ const keyAgentServiceRpcLifecycleContract = ({ sources, platformService }) => {
         "context.unpublish_stop_event()",
         "stop_event.close()",
         "context.status_handle=0",
-        "DISPATCH_OUTCOME.store(OUTCOME_FAILURE,Ordering::Release)",
+        "abort_unreported_service()",
       ]) &&
       hasOrderedCompactMarkers(workerStart, [
         "letcontext=Arc::new(ServerContext::new()?)",
@@ -24624,8 +24623,8 @@ function keyAgentServiceStartupDiagnosticChecks(inputs) {
       ]),
     scmFixedStoppedClassification: initialization === `constfninitialization_code(&self)->Option<u32>{matchself{Self::Boundary=>Some(INITIALIZATION_FAILURE),${compactGate}Self::LpacToken(error)=>Some(error.startup_diagnostic_code()),${compactGate}Self::LpacRpc(stage)=>Some(stage.startup_diagnostic_code()),#[cfg(feature=)]Self::RuntimeStateRetained=>None,}}` &&
       fn(service, "permits_stopped_status") === "constfnpermits_stopped_status(&self)->bool{self.initialization_code().is_some()}" &&
-      serviceMain.includes("letOk(stop_event)=OwnedEvent::create()else{finish_service::<W>(status_handle,None,None,Some(W::STOP_EVENT_FAILURE_CODE));return;};") &&
-      serviceMain.includes("Err(failure)=>{iffailure.permits_stopped_status(){finish_service::<W>(status_handle,Some(stop_event),None,failure.initialization_code(),);}else{abandon_service_with_retained_runtime(stop_event);}return;}") &&
+      serviceMain.includes("letOk(stop_event)=OwnedEvent::create()else{returnfinish_service::<W>(status_handle,None,None,Some(W::STOP_EVENT_FAILURE_CODE),);};") &&
+      serviceMain.includes("Err(failure)=>{iffailure.permits_stopped_status(){returnfinish_service::<W>(status_handle,Some(stop_event),None,failure.initialization_code(),);}abandon_service_with_retained_runtime(stop_event);}") &&
       fn(lpacWorker, "start").includes(".map_err(WorkerStartFailure::LpacToken)?") &&
       fn(lpacWorker, "start").includes("Err(crate::key_agent_service_rpc::RpcWorkerStartupError::Boundary(stage))=>{Err(WorkerStartFailure::LpacRpc(stage))}") &&
       fn(lpacWorker, "start").includes("Err(crate::key_agent_service_rpc::RpcWorkerStartupError::RuntimeStateRetained)=>{Err(WorkerStartFailure::RuntimeStateRetained)}") &&
@@ -24831,7 +24830,7 @@ function keyAgentServiceRuntimeAuthDiagnosticChecks(inputs) {
     scmWaitBoundaryPrecedence: fn(service, "select_wait_outcome") === "fnselect_wait_outcome(control_error:bool,stop_requested:bool,wait_is_timeout:bool,diagnostic_stop_requested:implFnOnce()->bool,)->Option<WaitOutcome>{ifcontrol_error{returnSome(WaitOutcome::BoundaryFailure);}ifstop_requested{returnSome(WaitOutcome::Stop);}if!wait_is_timeout{returnSome(WaitOutcome::BoundaryFailure);}diagnostic_stop_requested().then_some(WaitOutcome::Stop)}" &&
       hasOrderedCompactMarkers(rustFunctionBlock(service, "wait_for_stop"), ["WaitForSingleObject(stop_event.raw(),CONTROL_POLL_MILLISECONDS)", "letcontext=lock_context()", "select_wait_outcome(context.control_error,context.stop_requested,wait==WAIT_TIMEOUT,||worker.diagnostic_stop_requested(),)"]) &&
       fn(service, "service_main_impl").includes("letwait_outcome=wait_for_stop(&stop_event,&worker)"),
-    scmCleanupBeforeTerminal: hasOrderedCompactMarkers(rustFunctionBlock(service, "finish_service"), ["letadmission_closed_worker=worker.map(ScmWorker::close_admission)", "StopProgressReporter::start()", "matchworker.drain_with_diagnostic()", "Ok(diagnostic)=>", "iffailure.is_none(){failure=diagnostic;}", "Err(_)=>true", "reporter.finish().is_err()", "drop(worker)", "stop_event.map(OwnedEvent::close)", "terminal_status_after_cleanup(failure,drain_failed,progress_failed,event_close_failed,)", "return;", "send_status(status_handle,&final_status)"]) &&
+    scmCleanupBeforeTerminal: hasOrderedCompactMarkers(rustFunctionBlock(service, "finish_service"), ["letadmission_closed_worker=worker.map(ScmWorker::close_admission)", "StopProgressReporter::start()", "matchworker.drain_with_diagnostic()", "Ok(diagnostic)=>", "iffailure.is_none(){failure=diagnostic;}", "Err(_)=>true", "reporter.finish().is_err()", "drop(worker)", "stop_event.map(OwnedEvent::close)", "report_stopped_after_cleanup_with(failure,drain_failed,progress_failed,event_close_failed,", "send_status(status_handle,final_status)"]) &&
       fn(service, "terminal_status_after_cleanup") === "fnterminal_status_after_cleanup(failure:Option<u32>,drain_failed:bool,progress_failed:bool,event_close_failed:bool,)->Option<SERVICE_STATUS>{ifdrain_failed||progress_failed||event_close_failed{returnNone;}Some(ifletSome(detail)=failure{status_value(SERVICE_STOPPED,ERROR_SERVICE_SPECIFIC_ERROR.0,detail,0,0,)}else{status_value(SERVICE_STOPPED,0,0,0,0)})}",
     diagnosticReachability: [
       [rpc, "latch_auth_diagnostic", 3], [rpc, "diagnostic_after_clean_drain", 2],
@@ -24905,6 +24904,89 @@ requireInvariant(
   keyAgentServiceRuntimeAuthDiagnosticContract(keyAgentServiceRuntimeAuthDiagnosticInputs) &&
     keyAgentServiceRuntimeAuthDiagnosticMutations.length === 39 && keyAgentServiceRuntimeAuthDiagnosticMutations.every(({ changed, rejected }) => changed && rejected),
   `debug LPAC first-auth diagnostics must retain the exact fifteen data-free stages, unchanged authentication predicates and ordering, same-thread error-only first-failure observer with exact once-only delegation, original RPC error conversion, per-call early-auth isolation, first-wins 0x6001..0x600f or 0x6101..0x610f fail-stop codes, separate dominating unrelated-fatal latch, exact feature gates and closed reachability; only proven RPC/coordinator/helper/context rundown may carry a typed diagnostic through default-compatible SCM cleanup, with wait/control/original-failure precedence and reporter/event-close failure suppressing terminal status; no new native value, log, RPC response, or authority; checks=${JSON.stringify(Object.entries(keyAgentServiceRuntimeAuthDiagnosticChecks(keyAgentServiceRuntimeAuthDiagnosticInputs)).filter(([, value]) => !value).map(([name]) => name))}, mutations=${JSON.stringify(keyAgentServiceRuntimeAuthDiagnosticMutations.filter(({ changed, rejected }) => !changed || !rejected).map(({ name }) => name))}`,
+);
+
+function keyAgentServiceScmTerminationChecks(source) {
+  const service = withoutCfgTestItems(withoutBottomTestModule(source));
+  const code = rustLexicalCode(service);
+  const fn = (name) => compactRust(rustFunctionBlock(service, name));
+  const body = (name) => fn(name).slice(fn(name).indexOf("{"));
+  const main = fn("service_main_impl");
+  const finish = rustFunctionBlock(service, "finish_service");
+  const reportCalls = rustCallSites(finish, "report_stopped_after_cleanup_with");
+  const proofIndex = code.indexOf("struct StoppedReported;");
+  const callbacks = [["service_main", "InertWorker"], ["service_token_service_main", "ServiceTokenWorker"], ["status_rpc_service_main", "StatusRpcWorker"], ["lpac_rpc_probe_service_main", "LpacRpcProbeWorker"]];
+  return {
+    privateMoveOnlyProof: proofIndex !== -1 &&
+      JSON.stringify(rustAttachedOuterAttributes(service, proofIndex).map(({ source: attribute }) => attribute)) === JSON.stringify(['#[must_use = "ServiceMain may return only after SCM accepted SERVICE_STOPPED"]']) &&
+      !/\bpub(?:\([^)]*\))?\s+struct\s+StoppedReported\b/u.test(code) &&
+      !rustImplItems(service).some(({ header }) => /\bStoppedReported\b/u.test(header)) &&
+      (code.match(/\bStoppedReported\b/gu) ?? []).length === 9,
+    callbackConsumesProof: callbacks.every(([name, worker]) => body(name) === `{letStoppedReported=service_main_impl::<${worker}>();}`) &&
+      rustCallSites(service, "service_main_impl").length === 4,
+    everyReturnHasProof: main.startsWith("fnservice_main_impl<W:ScmWorker>()->StoppedReported{") &&
+      (main.match(/returnfinish_service/gu) ?? []).length === 7 && !/\breturn;/u.test(main) &&
+      main.endsWith("finish_service(status_handle,Some(stop_event),Some(worker),failure)}") &&
+      rustCallSites(rustFunctionBlock(service, "service_main_impl"), "finish_service").length === 8 &&
+      rustCallSites(service, "finish_service").length === 8 &&
+      compactRust(finish).startsWith("fnfinish_service<W:ScmWorker>(status_handle:SERVICE_STATUS_HANDLE,stop_event:Option<OwnedEvent>,worker:Option<W>,mutfailure:Option<u32>,)->StoppedReported{"),
+    registrationCannotReturnUnreported: hasOrderedCompactMarkers(rustFunctionBlock(service, "service_main_impl"), [
+      "RegisterServiceCtrlHandlerExW(PCWSTR(SERVICE_NAME_WIDE.as_ptr()),Some(control_handler),None,)",
+      "})else{abort_unreported_service();};", "letstart_status_failed=",
+    ]),
+    cleanupThenExactReport: reportCalls.length === 1 &&
+      JSON.stringify(reportCalls[0].arguments.slice(0, 4).map(compactRust)) === JSON.stringify(["failure", "drain_failed", "progress_failed", "event_close_failed"]) &&
+      compactRust(finish).endsWith("report_stopped_after_cleanup_with(failure,drain_failed,progress_failed,event_close_failed,|final_status|{{letmutcontext=lock_context();context.status_handle=0;context.stop_event=0;context.status=*final_status;context.finishing=true;}letintended_outcome=iffailure.is_none(){OUTCOME_SUCCESS}else{OUTCOME_FAILURE};DISPATCH_OUTCOME.store(intended_outcome,Ordering::Release);send_status(status_handle,final_status)},)}") &&
+      rustCallSites(finish, "send_status").length === 1 &&
+      hasOrderedCompactMarkers(finish, ["worker.map(ScmWorker::close_admission)", "worker.drain_with_diagnostic()", "reporter.finish().is_err()", "stop_event.map(OwnedEvent::close)", "report_stopped_after_cleanup_with("]) &&
+      rustCallSites(service, "report_stopped_after_cleanup_with").length === 1,
+    onlyAcceptedStoppedMintsProof: fn("report_stopped_after_cleanup_with") === "fnreport_stopped_after_cleanup_with<E>(failure:Option<u32>,drain_failed:bool,progress_failed:bool,event_close_failed:bool,report:implFnOnce(&SERVICE_STATUS)->Result<(),E>,)->StoppedReported{letSome(final_status)=terminal_status_after_cleanup(failure,drain_failed,progress_failed,event_close_failed,)else{abort_unreported_service();};ifreport(&final_status).is_err(){abort_unreported_service();}StoppedReported}" &&
+      fn("terminal_status_after_cleanup") === "fnterminal_status_after_cleanup(failure:Option<u32>,drain_failed:bool,progress_failed:bool,event_close_failed:bool,)->Option<SERVICE_STATUS>{ifdrain_failed||progress_failed||event_close_failed{returnNone;}Some(ifletSome(detail)=failure{status_value(SERVICE_STOPPED,ERROR_SERVICE_SPECIFIC_ERROR.0,detail,0,0,)}else{status_value(SERVICE_STOPPED,0,0,0,0)})}",
+    unreportedFailureTerminatesProcess: fn("abort_unreported_service") === "fnabort_unreported_service()->!{DISPATCH_OUTCOME.store(OUTCOME_FAILURE,Ordering::Release);std::process::abort();}" &&
+      rustCallSites(service, "abort_unreported_service").length === 5 &&
+      rustCallSites(rustFunctionBlock(service, "service_main_impl"), "abort_unreported_service").length === 1 &&
+      rustCallSites(rustFunctionBlock(service, "report_stopped_after_cleanup_with"), "abort_unreported_service").length === 2,
+    retainedRuntimeNeverReportsStopped: fn("abandon_service_with_retained_runtime") === "fnabandon_service_with_retained_runtime(stop_event:OwnedEvent)->!{{letmutcontext=lock_context();context.finishing=true;context.unpublish_stop_event();}let_=stop_event.close();{letmutcontext=lock_context();context.status_handle=0;context.stop_event=0;context.finishing=true;}abort_unreported_service();}" &&
+      main.includes("Err(failure)=>{iffailure.permits_stopped_status(){returnfinish_service::<W>(status_handle,Some(stop_event),None,failure.initialization_code(),);}abandon_service_with_retained_runtime(stop_event);}"),
+  };
+}
+function keyAgentServiceScmTerminationContract(source) {
+  try {
+    const checks = keyAgentServiceScmTerminationChecks(source);
+    return Object.keys(checks).length === 8 && Object.values(checks).every((value) => value === true);
+  } catch {
+    return false;
+  }
+}
+const keyAgentServiceScmTerminationMutations = [
+  ["proof cannot be copied", "    struct StoppedReported;", "    #[derive(Clone, Copy)]\n    struct StoppedReported;"],
+  ["proof remains private", "    struct StoppedReported;", "    pub(super) struct StoppedReported;"],
+  ["proof cannot have Default", "    struct StoppedReported;", "    struct StoppedReported;\n    impl Default for StoppedReported { fn default() -> Self { Self } }"],
+  ["SCM callback consumes proof", "let StoppedReported = service_main_impl::<InertWorker>();", "let _ = service_main_impl::<InertWorker>();"],
+  ["token callback consumes proof", "let StoppedReported = service_main_impl::<ServiceTokenWorker>();", "let _ = service_main_impl::<ServiceTokenWorker>();"],
+  ["status callback consumes proof", "let StoppedReported = service_main_impl::<StatusRpcWorker>();", "let _ = service_main_impl::<StatusRpcWorker>();"],
+  ["LPAC callback consumes proof", "let StoppedReported = service_main_impl::<LpacRpcProbeWorker>();", "let _ = service_main_impl::<LpacRpcProbeWorker>();"],
+  ["early callback return needs proof", "return finish_service::<W>(status_handle, None, None, Some(STATUS_FAILURE));", "finish_service::<W>(status_handle, None, None, Some(STATUS_FAILURE)); return;"],
+  ["registration failure cannot return", "        }) else {\n            abort_unreported_service();", "        }) else {\n            return StoppedReported;"],
+  ["cleanup failure cannot mint proof", "        ) else {\n            abort_unreported_service();", "        ) else {\n            return StoppedReported;"],
+  ["failed report cannot mint proof", "if report(&final_status).is_err() {\n            abort_unreported_service();", "if report(&final_status).is_err() {\n            return StoppedReported;"],
+  ["report success polarity", "if report(&final_status).is_err() {", "if report(&final_status).is_ok() {"],
+  ["report remains exactly once", "        if report(&final_status).is_err() {", "        let _ = report(&final_status);\n        if report(&final_status).is_err() {"],
+  ["actual native report result required", "                send_status(status_handle, final_status)", "                let _ = send_status(status_handle, final_status); Ok::<(), KeyAgentServiceFixtureError>(())"],
+  ["actual stopped status required", "context.status = *final_status;", "context.status = status_value(SERVICE_RUNNING, 0, 0, 0, 0);"],
+  ["abnormal process exit cannot return", "fn abort_unreported_service() -> ! {", "fn abort_unreported_service() {"],
+  ["abnormal failure cannot unwind thread", "        std::process::abort();\n    }\n\n    fn terminal_status_after_cleanup", "        panic!(\"unreported\");\n    }\n\n    fn terminal_status_after_cleanup"],
+  ["retained runtime never returns", "fn abandon_service_with_retained_runtime(stop_event: OwnedEvent) -> ! {", "fn abandon_service_with_retained_runtime(stop_event: OwnedEvent) {"],
+  ["additional proof mint denied", "    struct StoppedReported;", "    struct StoppedReported;\n    fn hidden_stopped_reported() -> StoppedReported { StoppedReported }"],
+  ["additional terminal seam caller denied", "    struct StoppedReported;", "    struct StoppedReported;\n    fn hidden_stopped_report() { let _ = report_stopped_after_cleanup_with(None, false, false, false, |_| Ok::<(), ()>(())); }"],
+].map(([name, before, after]) => {
+  const changed = keyAgentServicePlatformSource.replace(before, after);
+  return { name, changed: changed !== keyAgentServicePlatformSource, rejected: !keyAgentServiceScmTerminationContract(changed) };
+});
+requireInvariant(
+  keyAgentServiceScmTerminationContract(keyAgentServicePlatformSource) &&
+    keyAgentServiceScmTerminationMutations.length === 20 && keyAgentServiceScmTerminationMutations.every(({ changed, rejected }) => changed && rejected),
+  `every SCM callback return must consume the private move-only must-use StoppedReported proof minted solely after complete cleanup and one successful actual SERVICE_STOPPED report; registration, retained-runtime, cleanup, and terminal-report failures must reach the fixed non-returning own-process abort helper, never merely return from ServiceMain or fabricate stopped status; preserve four exact consumers, original failure classification, finite stop progress, and closed production reachability; checks=${JSON.stringify(Object.entries(keyAgentServiceScmTerminationChecks(keyAgentServicePlatformSource)).filter(([, value]) => !value).map(([name]) => name))}, mutations=${JSON.stringify(keyAgentServiceScmTerminationMutations.filter(({ changed, rejected }) => !changed || !rejected).map(({ name }) => name))}`,
 );
 
 const keyAgentServiceRpcLpacSecurityDescriptorContract = (source) => {
@@ -49075,7 +49157,7 @@ const workspaceRustCompilationClosureSha256 = rustCompilationClosureSha256(
   workspaceRustCompilationInputs,
 );
 const approvedWorkspaceRustCompilationClosureSha256 =
-  "2d18db41d61f201c419313b63ac5a46fadea25177f1c9d5730c4a0db647f3e73";
+  "0e29ac67222b64319b5c0be5515c12788654f4b91892b64d3b2d0eddb7dcf9c6";
 const workspaceKeyAgentServiceWirePublicFeatureWidening =
   replaceExactStringOnce(
     keyAgentServiceWireDebugV2PublicContract,
@@ -70460,7 +70542,7 @@ const approvedPlatformWindowsUnsafeSourceInventory = [
   {
     path: "crates/platform-windows/src/key_agent_service.rs",
     unsafeCount: 15,
-    sha256: "a4500588608900603682eeb3474215103b71fc794ca370c98dce60212d580ac9",
+    sha256: "2df728f4726a1b76e8180e2b4b6677a37167cd2fbf6209c12cc6c4f94c161397",
   },
   {
     path: "crates/platform-windows/src/key_agent_service/run_state_root/sys.rs",

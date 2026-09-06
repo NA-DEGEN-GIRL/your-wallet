@@ -8,6 +8,87 @@ signed-helper evidence.
 
 ## Current live checkpoint
 
+The user has now supplied the elevated Inspect report: all 32 non-status
+observations PASS, cleanup PASS and report COMPLETE, but service status OTHER.
+The current implementation groups states 3, 5, 6 and 7 into OTHER; it does not
+distinguish STOP_PENDING from continue/pause states. This is read-only inspection,
+not ownership-bound mutation authority or proof of cleanup/startup. A read-only
+elevated `sc.exe queryex YourWalletKeyAgent` report has been requested. Do not
+retry Stop/Remove/Install/Start, run a client, or use a pending-state PID as a
+termination target before the precise state is understood.
+
+Independent source review found an unreported-termination defect shared by the
+installed old service and the prepared `7916943` source: a quick failed drain
+finishes/cancels the progress watchdog, then returns from ServiceMain without
+STOPPED. The binary's exit occurs only after StartServiceCtrlDispatcher returns,
+but that dispatcher waits for all services to enter STOPPED. Returning from
+ServiceMain alone does not stop the service. Registration failure, retained
+startup and failed final status publication have analogous unreported-return
+paths. See [dispatcher completion](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-startservicectrldispatcherw)
+and [ServiceMain thread lifetime](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nc-winsvc-lpservice_main_functionw).
+This is a code-path defect, not proof that the observed OTHER used this path.
+The narrow explicit-completion/fail-fast correction is now implemented and
+verified. A private move-only `StoppedReported` permits the four callbacks to
+return only after successful final STOPPED reporting after cleanup. Registration
+failure, retained startup, uncertain cleanup or failed final reporting abort the
+fixture's own process instead. No successful cleanup, STOPPED or auth diagnostic
+is fabricated. Authentication, privileges, wire behavior, dormant lifecycle
+authority and default/release facade gates are unchanged.
+
+Current correction verification, all native exit 0: full `scripts/check.ps1 test`
+with platform 1024 passed/47 existing ignored, demo 266, extension 33, native
+harness 139, actual architecture CLI 24 and preparation/operator CLI 20; fmt,
+lint, typecheck and final privacy (seven tests plus source scan);
+default/desktop-only/release-all-feature binary fallback
+two tests each; release probe unit tests 17. Four added tests include a 64-case
+child-process terminal matrix, exact abort-control status comparison, zero/one
+report checks, hidden child creation and a parent-owned bounded kill/reap guard.
+The intentional callback-return-only negative stays blocked in the simulated
+dispatcher until the parent watchdog fires; corrected paths must finish without
+that watchdog. Registration/retained-startup tests model the shared failure sink,
+not real SCM calls. Focused tests passed in 181.86 seconds; the final platform
+suite, including hidden child creation, passed in 184.07 seconds.
+
+The one final no-argument architecture scan passed in 325285 milliseconds,
+progressing through 672 checks. New termination family: 8 checks/20 effective
+negatives; prior runtime-auth 17/39 and startup 14/50 remain active, together
+with all historical lifecycle/Phase-one mutations. The current 182-file Rust
+closure is `0e29ac67222b64319b5c0be5515c12788654f4b91892b64d3b2d0eddb7dcf9c6`;
+scanner SHA256 is `6c871e8bd4587e4245ba969403db31cd6367cf79f7a60a6773c699f894a76a83`.
+
+The prior `7916943` candidate was strictly verified against its recorded hashes,
+scope-checked and moved without overwrite to
+`artifacts/service-probe-candidate-before-unreported-stop-fix-7916943`.
+Held canonical-manifest/all-four-file readback matched before and after. Fresh
+unelevated preparation and independent strict held readback then passed for the
+new `artifacts/service-probe-candidate`. Its canonical manifest SHA256 is
+`ad2ba7a01785711854421b08b48eb6bf3006549e5c1113c0630d4455ed89e03d`;
+service SHA256 is
+`b5a7a4fba1c3b4a9324af33f97719ae4c18f45e79eb827f22598ec7db7726316`.
+This new candidate combines runtime-auth diagnostics with the termination fix.
+The installed fixture was not changed and no actual service/RPC/UI request was
+made by these tests. The user's exact queryex result is still pending: do not
+apply the candidate or retry Stop/Remove until the retained state is understood.
+
+Latest operator attempt after preparing `7916943`: the user reported only
+`SERVICE_PROBE_FAILED_STATE_RETAINED_FOR_REVIEW` from the guarded
+Stop/Remove/Install/Start line. If that is the complete output, Stop did not
+return PASS and the later actions were not invoked. This does not locate the
+failure or prove that Stop had no effect. Do not repeat the replacement line.
+
+Read-only checks on 2026-09-06 found the agent token still non-elevated; direct
+fixed-service SCM query returned access denied (native 5), and fixed-name CIM
+returned no unique row, which is not absence evidence. The bounded 48-hour
+fixed-service System event query returned 11 historical observations only:
+newest installation event was 2026-09-05T16:39:45Z, and newest failure remained
+the superseded `0x5008` event. No new failure stage or current status is proven.
+Source review confirms the service handle includes STOP/query rights, and Stop
+validates the installed manifest/journal rather than comparing against the new
+workspace candidate. Neither a missing STOP access bit nor the expected old/new
+candidate hash difference explains this report. No operator/RPC action or code
+change was made during those read-only checks. The later user-run Inspect is
+recorded above; precise queryex status remains the next operator input.
+
 The user applied the corrected `b3bb834` candidate and reported Remove, Install
 and **Start PASS_NOT_RELEASE_EVIDENCE**. Startup is now observed to succeed;
 do not repeat replacement or diagnose the historical `0x5008` as a current
@@ -82,7 +163,7 @@ errors deliberately suppress STOPPED, and RUNNING exit/checkpoint fields must
 not be repurposed as diagnostics. Neither absent logs nor process termination
 proves which authentication check failed or that remote resources were reaped.
 
-### Runtime-auth diagnostics ready; operator application pending
+### Prior `7916943` runtime-auth checkpoint
 
 New source adds a closed per-call observer around the existing auth operations;
 the policy/identity/reversion algorithm and native adapter are unchanged. It
@@ -143,10 +224,12 @@ Its canonical manifest SHA256 is
 `765e6cf2833904676c939f774c2c2862cd1f8ce645a0f1cef6fb5d8cc3f148a0`;
 its service SHA256 is
 `423d26f661438ff5a48fbce2e9218c047beb62c0b790e6e489677b804d31c994`.
-This is a verified new workspace candidate, not installed-runtime evidence.
+These are the prior `7916943` candidate hashes; that candidate is now archived
+as recorded above. They are not the current candidate or installed-runtime evidence.
 No installed-file, LSA/ACL, acceptance, signing, mnemonic or private-key change
-was made. The explicit elevated Stop/Remove/Install/Start workflow is now the
-next boundary; no automatic elevation or restart is authorized by these tests.
+was made during preparation. The subsequent user-run replacement failed as
+recorded at the top; read-only Inspect is now required before resuming that
+workflow. No automatic elevation or restart is authorized by these tests.
 
 ### Prior `0039995` diagnostic checkpoint
 
@@ -257,14 +340,22 @@ explicitly not release evidence. Helper feature tests 69 and Approval UI tests
 
 ## Resume here
 
-1. The installed `b3bb834` service previously started successfully; its observed
-   OpenEpoch denial remains unresolved. Apply the newly prepared runtime-auth
-   diagnostic candidate using the guarded elevated Stop/Remove/Install/Start
-   workflow in `scripts/service-probe/README.md`, stopping at the first failure.
+1. The latest replacement attempt returned a retained-state failure, probably
+   at the first Stop if the supplied output is complete. Elevated Inspect passed
+   all non-status observations but returned OTHER; obtain the requested read-only
+   `sc.exe queryex YourWalletKeyAgent` report before any further mutation. Pending
+   state or a reported PID alone is not process identity for termination. The
+   installed `b3bb834` service previously
+   started successfully; its observed OpenEpoch denial remains unresolved.
+   The guarded Stop/Remove/Install/Start workflow may be resumed only after the
+   current retained state is understood, stopping at the first failure.
    This replaces the owned debug fixture with new instrumentation, not an
    unchanged retry. No installed state was changed by this checkpoint.
-   The current candidate is at `artifacts/service-probe-candidate`; do not rerun
-   prepare against or overwrite it. Its matched prior `b3bb834` candidate is in
+   The current candidate contains both auth diagnostics and the termination fix
+   at `artifacts/service-probe-candidate`; do not rerun prepare against or
+   overwrite it. The previous auth-only diagnostic candidate is in
+   `artifacts/service-probe-candidate-before-unreported-stop-fix-7916943`.
+   The matched prior `b3bb834` candidate is in
    `artifacts/service-probe-candidate-before-runtime-auth-diagnostics-b3bb834`.
    Never force adoption or bypass ownership/readback. Inspect completion is not
    startup evidence. The previous `f48fa87` diagnostic-only candidate is preserved in
