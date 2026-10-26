@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":1,"error":{"code":-32003,"message":"insufficient funds for gas * price + value: have 0 want 1001218559030000000"}}

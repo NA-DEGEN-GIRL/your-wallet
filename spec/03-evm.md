@@ -77,7 +77,7 @@ pub enum ContractRole { Permit2, Seaport16, Seaport15, LabelOnly }
 
 ### 1.2 레지스트리
 
-레지스트리 주소만 특수 해석(R3)·라벨·신뢰 심볼을 가진다. 레지스트리는 체인별이고 선택이다(없는 체인도 있다). 표시 라벨은 `[라벨]` 형식으로 주소 뒤에 붙는다. "구현 시 확인" 항목은 M2 전(999는 M4 전, §1.5 A9)에 탐색기(Etherscan·HyperEVMScan) 검증 코드·`eth_getCode` 비어 있지 않음(999 Permit2는 mainnet Permit2와 런타임 코드 해시 일치, WHYPE는 Deposit·Withdrawal topic이 WETH9와 같음)을 확인하고 실패하면 표에서 뺀다. 사용자 체인(§1.6)은 레지스트리가 비어 있고 사용자가 주소를 더할 수 없다: WETH·Permit2·Seaport 주소는 알 수 없는 컨트랙트로 취급하고(R3 → `Uninterpreted`, typed data는 T04), ERC-20·721·1155 셀렉터·이벤트 해석은 그대로 한다.
+레지스트리 주소만 특수 해석(R3)·라벨·신뢰 심볼을 가진다. 레지스트리는 체인별이고 선택이다(없는 체인도 있다). 표시 라벨은 `[라벨]` 형식으로 주소 뒤에 붙는다. "구현 시 확인" 항목은 M4 `live_probe`(전송·호출 구현 후, M4-13 전; 999는 §1.5 A9 (e))에서 탐색기(Etherscan·HyperEVMScan) 검증 코드·`eth_getCode` 비어 있지 않음(999 Permit2는 mainnet Permit2와 런타임 코드 해시 일치, WHYPE는 Deposit·Withdrawal topic이 WETH9와 같음)을 확인하고 실패하면 표에서 뺀다. 사용자 체인(§1.6)은 레지스트리가 비어 있고 사용자가 주소를 더할 수 없다: WETH·Permit2·Seaport 주소는 알 수 없는 컨트랙트로 취급하고(R3 → `Uninterpreted`, typed data는 T04), ERC-20·721·1155 셀렉터·이벤트 해석은 그대로 한다.
 
 | 체인 | 주소 | 종류 | 값 | 확인 |
 |---|---|---|---|---|
@@ -203,15 +203,15 @@ wallet-model `U256`(`[u8;32]` BE, `checked_mul`만 있음)에 산술을 더해 `
 impl U256 {                                     // Ord 구현, Debug는 값 노출 허용(비밀 아님)
     pub const ZERO: Self; pub const MAX: Self;
     pub fn from_u64(v: u64) -> Self;  pub fn from_be_slice(b: &[u8]) -> Option<Self>;   // ≤ 32바이트
-    pub fn to_be_bytes(&self) -> [u8; 32];  pub fn minimal_be(&self) -> &[u8];          // 0이면 빈 슬라이스(RLP)
-    pub fn to_u64(&self) -> Option<u64>;
+    pub fn to_be_bytes(self) -> [u8; 32];  pub fn minimal_be(&self) -> &[u8];           // 0이면 빈 슬라이스(RLP)
+    pub fn to_u64(self) -> Option<u64>;
     pub fn checked_add(self, o: Self) -> Option<Self>;  pub fn checked_sub(self, o: Self) -> Option<Self>;
     pub fn checked_mul(self, o: Self) -> Option<Self>;  pub fn checked_mul_u64(self, m: u64) -> Option<Self>;
     pub fn div_rem_u64(self, d: NonZeroU64) -> (Self, u64);
     pub fn ceil_mul_div_u64(self, num: u64, den: NonZeroU64) -> Option<Self>;          // ⌈self·num/den⌉
     pub fn parse_quantity_lenient(s: &str) -> Result<Self, ParseValueError>;           // ^0x[0-9a-fA-F]{1,64}$
-    pub fn to_quantity(&self) -> String;        // EIP-1474 정규형(소문자, 앞 0 없음, 0 → "0x0")
-    pub fn to_decimal_string(&self) -> String;
+    pub fn to_quantity(self) -> String;         // EIP-1474 정규형(소문자, 앞 0 없음, 0 → "0x0")
+    pub fn to_decimal_string(self) -> String;
 }
 pub enum Delta { Zero, In(U256), Out(U256) }    // Σin − Σout 결과
 // 수수료·금액 계산은 전부 checked 연산, 포화·래핑 금지. 오버플로: 수수료·가스 계산은 E05(차단), diff 합산은 E09(고위험)
@@ -592,10 +592,13 @@ impl SimResult { pub fn binding(&self) -> SimulationBinding; }        // §11.1
 ```rust
 pub struct SimulationDiff {
     pub block: SimBinding,                  // §11.1: number, parent_hash, timestamp, base_fee, sim_digest
-    pub changes: Vec<AssetChange>,          // { asset: AssetId, token_id: Option<U256>, delta: Delta }
+    pub changes: Vec<AssetChange>,          // { asset: AssetId, token_id: Option<U256>, delta: Option<Delta> } (None = 합산 불가, E09); 보냄(합산 불가 포함) 먼저, 받음 다음
     pub approvals: Vec<ApprovalChange>,     // { asset: Address, spender: Address, kind: ApprovalKindEvm }
     pub transfers: Vec<TransferRow>,        // user가 from/to인 이동 원본 목록
     pub other_events: u32, pub gas_used: u64,
+    pub events: Vec<LogEvent>,              // 분류된 로그 전체(user 무관, 선택 안 된 네이티브 발신자 제외): R4·R6 입력. Reverted면 비어 있음
+    pub omitted_rows: u32,                  // E08로 생략한 행 수
+    pub native_emitter_mismatch: bool,      // §1.3-3: yw-core는 로그를 쓰지 않으므로 yw-app이 이 값으로 `native-emitter-mismatch`를 기록
 }
 pub enum AssetId { Native, Token(Address) }
 pub enum ApprovalKindEvm { Erc20 { amount: U256 }, Erc721 { token_id: U256, revoked: bool },
@@ -822,7 +825,10 @@ LF
 pub struct SiweMessage { pub scheme: String, pub domain_host: String, pub domain_port: Option<u16>,
     pub address: Address, pub statement: Option<String>, pub uri: String, pub chain_id: u64,
     pub nonce: String, pub issued_at: i64, pub expiration_time: Option<i64>, pub not_before: Option<i64>,
-    pub request_id: Option<String>, pub resources: Vec<String> }
+    pub request_id: Option<String>, pub resources: Vec<String>,
+    // 재조립(fuzz 불변식 "필드 재조립 == 원문")용 원문 토큰: scheme_explicit, domain(원문 authority), has_userinfo(S02),
+    // address_text, chain_id_text, issued_at_text, expiration_time_text, not_before_text, resources_present, trailing_lf
+}
 ```
 
 ### 9.4 SIWE 검사 (origin = 요청 사이트의 직렬화 origin)
@@ -983,10 +989,12 @@ pub enum CodeKind { Eoa, Delegated7702 { target: Address }, Contract }       // 
 pub struct TokenMeta { pub symbol: Option<String>, pub decimals: Option<u8>, pub registered: bool }
 pub struct ChainFacts { pub account_code: CodeKind, pub code: Vec<(Address, CodeKind)>,
     pub tokens: Vec<(Address, TokenMeta)>, pub balances: Vec<(Address, U256)>, pub address_book: Vec<(Address, String)> }
-pub fn build_evm_tx_request(id: ApprovalId, origin: ApprovalOrigin, signer: EvmKeySource, kind: ApprovalKind, chain: &ChainInfo,
-    d: &DecodedTx, sim: &SimResult, facts: &ChainFacts, warnings: Vec<Warning>, now_unix_ms: u64) -> ApprovalDraft;
-pub fn build_personal_request(/* 같은 앞 인수 */ m: &DecodedPersonalMessage, now_unix_ms: u64) -> ApprovalDraft;
-pub fn build_typed_request(/* 같은 앞 인수 */ t: &DecodedTypedData, facts: &ChainFacts, now_unix_ms: u64) -> ApprovalDraft;
+pub fn build_evm_tx_request(id: ApprovalId, origin: ApprovalOrigin, signer: EvmKeySource, account: Address, kind: ApprovalKind,
+    chain: &ChainInfo, d: &DecodedTx, sim: &SimResult, facts: &ChainFacts, warnings: Vec<Warning>, now_unix_ms: u64)
+    -> Result<ApprovalDraft, DisplayError>;
+pub fn build_personal_request(/* 같은 앞 인수 */ m: &DecodedPersonalMessage, now_unix_ms: u64) -> Result<ApprovalDraft, DisplayError>;
+pub fn build_typed_request(/* 같은 앞 인수 */ t: &DecodedTypedData, facts: &ChainFacts, now_unix_ms: u64) -> Result<ApprovalDraft, DisplayError>;
+// Err(DisplayError)는 방어 중복(모든 입력 문자열은 §9.2로 이스케이프된다): yw-app은 요청을 내부 오류로 끝낸다
 ```
 
 - `warnings`는 §3.7 단계 1–7에서 생긴 경고다(차단 E05·E06·E10·E11·E34·E35, 고위험 E37, 주의 E38, 정보 E31). 차단이 있으면 `sim`은 `Unavailable { reason: Skipped }`이다. `simulation` 필드는 `sim.binding()`이다. 빌더의 `now_unix_ms`는 상대 시각 표시와 T12·S04·S07 판정용이며 만료와 무관하다.
@@ -1086,7 +1094,8 @@ impl ApprovalStore {   // now_ms = yw-win time::monotonic_ms, now_unix_ms = 벽�
 
 - `issue`: A01이 그 요청의 Ready 내용을 처음 표시할 때([04](04-app-ui.md) §3.5) yw-app이 호출한다. `created_unix_ms = now_unix_ms`, `expires_unix_ms = now_unix_ms + 120,000`, §11.4 `digest`를 계산하고 `deadline_ms = now_ms + APPROVAL_TTL_MS`(checked)로 저장한다. 같은 id가 있으면 오류. kind와 `simulation` 바인딩이 맞지 않으면(§11.1) `SimulationBindingMismatch`(`issue`·`replace` 공통). 반환값은 표시용 사본(비밀 없음). 다른 창이 열려 있는 동안 준비된 요청도 표시 전에는 시간이 흐르지 않는다.
 - `consume`: `Pending`이고 `now_ms < deadline_ms`이고 `shown == digest`(상수 시간 비교, `subtle`)일 때만 `Consumed`로 바꾸고 `Approved`를 1회 반환한다. digest 불일치 → `Invalidated`. 그 밖 → 오류.
-- `replace`(§6.6): `Pending`, `shown == 현재 digest`, `new.id == id`일 때만 교체한다. `created_unix_ms`·`expires_unix_ms`·`deadline_ms`는 그대로 두고 digest만 다시 계산한다.
+- `consume`은 `risk == Blocked`인 요청에 `ApprovalError::Blocked`를 돌려준다(상태 유지, 방어 중복: 차단 요청은 승인 버튼이 없다).
+- `replace`(§6.6): `Pending`, `shown == 현재 digest`, `new.id == id`이고 kind·origin·chain·account·signer가 같을 때만 교체한다(payload·표시·바인딩은 바뀔 수 있다). `created_unix_ms`·`expires_unix_ms`·`deadline_ms`는 그대로 두고 digest만 다시 계산한다.
 - 만료 판정은 `deadline_ms`(단조 시계)로만 한다. `expires_unix_ms`는 digest·표시·로그용이다. 지갑 잠금 → `invalidate_all`. 동시 대기 개수·창 대기열은 [05](05-browser.md) §8.4·[04](04-app-ui.md) §3.7이 정한다.
 - 서명 함수(§4.2, [07] §13.1, [08] §11)는 `Approved`를 값으로 받아 소비한다. `Approved`는 `consume`으로만 만든다.
 

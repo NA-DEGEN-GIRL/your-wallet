@@ -355,13 +355,17 @@ S2(정본 형태, Sepolia, Glamsterdam 후, 새 계정으로 0.01 ETH):
 | S7b | S2의 emitter를 `0xeeee…`로 바꿈(SYSTEM 로그 없음) | 통과(ERC7528 계수), 로컬 로그 `native-emitter-mismatch` 1줄(03 §1.3-3) |
 | S8 | 호출 `gasUsed "0x3bf11"` | [결과 불완전] E03 고위험(`Simulated Incomplete`), "사용 가스가 가스 한도를 넘습니다"(03 §6.3) |
 | S8b | `maxUsedGas "0x3bf11"`(gasUsed 그대로) | S8과 같음 |
-| S9 | 각각: `result []`; 블록 2개; `calls []`; 호출 2개; `status "0x2"`; `baseFeePerGas` 없음; `gasUsed "0x0g"`; `id` 2; `result`와 `error` 동시 | 모두 `Malformed` → [결과 없음] E01 고위험, "시뮬레이션 응답 형식이 올바르지 않습니다" |
+| S9 | 각각(파일 S9a–S9i 순서): `result []`; 블록 2개; `calls []`; 호출 2개; `status "0x2"`; `baseFeePerGas` 없음; `gasUsed "0x0g"`; `id` 2; `result`와 `error` 동시 | 모두 `Malformed` → [결과 없음] E01 고위험, "시뮬레이션 응답 형식이 올바르지 않습니다" |
 | S10 | to = 토큰 T `0x1111…1111`, value 0, data = `a9059cbb ‖ PAD(기존 수신자) ‖ uint256(1,000,000)`; 로그: address T, Transfer, topics `[…, PAD(user), PAD(기존 수신자)]`, data 1,000,000; 네이티브 로그 없음 | 통과. Token(T) −1,000,000 원시 단위, E33(미등록 토큰) 정보 |
 | S10b | S10에서 로그 data 999,999 | E13 고위험 + 확인 체크(R6) |
 | S11 | 호출 객체에 `"status"` 키 2번 | yw-json `DuplicateKey` → `Malformed` → [결과 없음] E01 고위험 |
 | S12 | (파일 없음) 가짜 전송이 10 s 동안 응답 없음 | [결과 없음] E01 고위험(`None Timeout`), "시뮬레이션 응답이 없습니다(10초)". 같은 요청의 S2 결과와 표시 바이트·승인 digest 다름 |
 | S13 | S2를 `now = timestamp + 301`로 해석 | [결과 불완전] E07 고위험, "기준 블록 시각이 현재와 301초 다릅니다" |
 | S14 | S2와 `parentHash`만 다른 응답 | 표시 바이트 동일, 승인 digest 다름(03 §11.4) |
+| S1h | S1을 HyperEVM 형태로(`maxUsedGas` 없음, 요청 chainId 999) | 통과, `maxUsedGas` = None |
+| S3c | S2에서 `status "0x0"`, logs `[]`, gasUsed `0x3aaa`, `returnData`·`error.data` `0xdeadbeef`, `error.code` 3(L-REVERT 형태) | [실행 실패] E02, "이유: 사용자 정의 오류 0xdeadbeef (4바이트)" |
+| S4h | 최상위 `error.code` -32003(L-HYPEREVM 형태) | S4와 같음 |
+| S16 | 요청 to = user, value 1 wei; 응답 logs `[]`, gasUsed `0x2ee0`(12,000, Sepolia 자기 자신 전송 실측) | 통과(E04 없음) |
 | S15 | (파일 없음, M4 `flow::evm` — X-24) S2 요청에서 chainId만 8453으로, 그 체인은 `simulation = unsupported`인 사용자 체인(이름 `Test L2`, 네이티브 `ETH`/18) | 준비 전 과정에서 가짜 전송의 `eth_simulateV1` 호출 0회, [미지원] E36 고위험(`None Unsupported`). 같은 체인을 `auto`로 등록하면 호출 1회 |
 
 재시뮬레이션(03 §6.6, 단조 시계 주입): S2 응답 후 60 s에 클릭 → 재시뮬레이션 없음, 61 s → 재시뮬레이션. 새 응답이 S2와 `parentHash`만 다르면 `replace` 후 같은 클릭으로 소비, S10b처럼 안정 부분이 다르면 새 클릭 요구. 재시뮬레이션이 실패하면(S3·S4·S12 각각) 표시를 그 배너로 교체하고 그 클릭은 소비하지 않는다: 서명 0, 체크 해제, 새 체크 + 2초 누르기 뒤에만 `Approved`(차단 아님). -38012/-32005는 03 §6.6-3(수수료 재계산 후 새 클릭). S15 체인은 61 s 뒤 클릭에도 호출 0.
@@ -462,6 +466,7 @@ G1과 같은 절차로 고정한다: 테스트가 아래 입력으로 바이트�
 
 - **V13**(M4, `journal` 모듈과 함께; `src/journal/tests.rs`): EVM-V02 서명 바이트로 03 §5.1 레코드(`journal::evm`)를 인코드한다. chain_id 4(시험 도우미), account = V02 sender, nonce 819, state 1 `Signed`, role 0 `Original`, receipt_status 0, flags 0, created·updated 1,790,000,000,000, last_broadcast 0, tx_hash = V02 tx hash, approval_digest `a0a1…bf`, 포함 정보 0, origin `"yw-app"`, label `"[t] x"`. 본문 302바이트(raw 113). 골든은 02 §5.4 entry 전체 = `01`(kind EVM) ‖ `0000012e`(body_len 302, u32 BE) ‖ 본문 = 307바이트다.
 - **V14**(M2, S2 픽스처 파서가 있는 `crates/yw-app/tests/`): 03 EVM-V14대로 `SimulationBinding` 태그(03 §11.1, §11.4 `sim_tag`)마다 골든 1개, 각각 display bytes(`YWDSP003…`)·display_digest·승인 digest. 공통: id `000102…0f`, Sepolia(genesis §3.11), ACC-1, created 1,791,381,216,000, expires 1,791,381,336,000.
+  - 공통 고정 입력(M2 구현): `ChainFacts::default()`(계정 코드 EOA, 분류·토큰·주소록 없음), 해석·빌더·`issue`의 `now_unix_ms` = created, signer `Derived(0)`. 태그 1·2는 App 출처라 E28(정보)이 표시에 들어간다.
   - 태그 1 `Simulated`: §3.8 S2 요청·해석, origin App(`yw-app`), kind `EvmTransaction` 0x10. digest에 verdict `Ok`(0) ‖ number `0x9a0000` ‖ parent_hash `H(b0)` ‖ timestamp `0x6ac64ee0` ‖ base_fee 1 gwei(32바이트 BE) ‖ S2 응답의 sim_digest(03 §6.5).
   - 태그 2 `None`: 같은 요청을 S4 응답으로 해석, reason `RpcError`(5). 표시에 E01 경고(원인 줄 포함), `0x0121` `알 수 없음`, `0x0130` `시뮬레이션 없음: …`. diff 필드(`0x0110`–`0x0113`) 없음.
   - 태그 0 `NotApplicable`: EVM-V03 `Some data` `personal_sign`, origin `https://app.example`, kind `EvmPersonalSign` 0x13.
@@ -587,7 +592,7 @@ Issued At: 2026-10-25T23:59:00Z
 
 ### 5.3 M2 EVM 코어 (자동 + 수동 도구)
 
-- [ ] M2-1 03 EVM-V01–V12·V14(§3.13 태그 0·1·2 골든)와 EVM-V17의 코어 사례(03 §6.3 표 각 행 → 규칙·`SimulationBinding`·`risk == High`·차단 없음·체크 + 2.0 s → `Approved`, E12 + E01 체크박스 1개, 경고 순서, 결과 없음 바인딩 60 s 뒤 재시뮬레이션 없음, R8, E37 + 03 §3.5 대체 가스 벡터, E38 주의) 통과(값은 §3.4–3.8, §3.13). V13(저널)·V16(체인 설정)과 V17의 `flow::evm` 사례는 M4-12, V15는 M4·M5 E2E.
+- [ ] M2-1 03 EVM-V01–V12·V14(§3.13 태그 0·1·2 골든)와 EVM-V17의 코어 사례(03 §6.3 표 각 행 → 규칙·`SimulationBinding`·`risk == High`·`ack_required`·차단 없음·`issue` → `consume` 성공(체크 + 2.0 s 입력 순서 자체는 yw-app `ui::interaction` 04 AP-2(M3)·AP-6(M4-12)에서 판정), E12 + E01 체크박스 1개, 경고 순서, 결과 없음 바인딩 60 s 뒤 재시뮬레이션 없음, R8, E37 + 03 §3.5 대체 가스 벡터, E38 주의) 통과(값은 §3.4–3.8, §3.13). V13(저널)·V16(체인 설정)과 V17의 `flow::evm` 사례는 M4-12, V15는 M4·M5 E2E.
 - [ ] M2-2 X-4, X-6–X-16, X-20 통과(나머지 X는 §4.2 단계 표시대로 M4-12·M5-14·M6-1). `policy` 모듈은 `BrowserOrigin`으로 M2에 시작하므로(01 §2.2) 05 R-ERR 중 `BrowserOrigin::parse`(05 §4.7) 사례도 여기서 통과한다(R-ERR 나머지는 M5-14).
 - [ ] M2-3 퍼징 `json`, `rlp`, `signed_tx`, `abi`, `eip712`, `simulate`, `siwe` 각 600 s, 충돌 0.
 - [ ] M2-4 §2.5 프로브 L-SIM·L-REVERT·L-HYPEREVM·L-GENESIS(`node scripts/probe-rpc.mjs`, 엔드포인트는 D13 개발 설정 `%USERPROFILE%\.yw-dev\rpc.json` 또는 `YW_RPC_JSON`, 설정한 공급자 = 현재 QuickNode) 출력과 종료 코드(0/1)를 기록. L-HYPEREVM으로 999 기본 `simulation`을 03 §1.1 상수와 §3.11에 반영하고, L-GENESIS의 999 해시는 기록만 한다(상수 아님, §3.11). L-SIM·L-REVERT 응답 형태가 §3.8 S1–S3과 다르면 픽스처를 추가한 뒤 M2를 판정한다. 종료 1의 원인이 999 시뮬레이션 미지원이나 A5 실패(플랜·권한)뿐이면 M2를 막지 않는다(D15): 다른 엔드포인트·공급자로 교체 또는 그 체인 `simulation = unsupported`로 기록. 1·11155111의 `chain`·`genesis` 불일치는 M2 전에 엔드포인트를 고친다. 출력·기록 파일에 URL·호스트·토큰이 없고 `NetworkId`만 있음을 확인.

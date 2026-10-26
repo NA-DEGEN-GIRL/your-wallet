@@ -1124,10 +1124,6 @@ impl Vault {
     }
 
     /// Lends a signing key to the chain modules (`Unlocked` only). The key is erased afterwards.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used by evm::sign from M2 and btc from M8")
-    )]
     pub(crate) fn with_secp_key<T>(
         &self,
         key: KeyRef,

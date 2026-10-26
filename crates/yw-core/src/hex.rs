@@ -100,9 +100,47 @@ pub fn decode(digits: &str) -> Result<Vec<u8>, HexError> {
     Ok(out)
 }
 
+/// Compile-time decoding of trusted constant hex (`2 * N` digits, either case, no prefix).
+/// Invalid digits decode as 0; every constant built with it is checked by a test.
+pub(crate) const fn const_decode<const N: usize>(text: &str) -> [u8; N] {
+    let digits = text.as_bytes();
+    let mut out = [0_u8; N];
+    let mut index = 0;
+    while index < N {
+        let high_index = index.wrapping_mul(2);
+        let low_index = high_index.wrapping_add(1);
+        let high = if high_index < digits.len() {
+            digits[high_index]
+        } else {
+            b'0'
+        };
+        let low = if low_index < digits.len() {
+            digits[low_index]
+        } else {
+            b'0'
+        };
+        let high = match nibble(high, true) {
+            Some(value) => value,
+            None => 0,
+        };
+        let low = match nibble(low, true) {
+            Some(value) => value,
+            None => 0,
+        };
+        out[index] = (high << 4) | low;
+        index = index.wrapping_add(1);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{HexError, decode, decode_array, decode_into, encode};
+    use super::{HexError, const_decode, decode, decode_array, decode_into, encode};
+
+    #[test]
+    fn const_decoding() {
+        assert_eq!(const_decode::<3>("00aBff"), [0x00, 0xab, 0xff]);
+    }
 
     #[test]
     fn strict_round_trip() {

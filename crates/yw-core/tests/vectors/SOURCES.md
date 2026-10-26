@@ -16,3 +16,16 @@ Inline vectors (not files):
 |---|---|---|---|
 | `tests/evm_accounts.rs` ERC-55 addresses | https://github.com/ethereum/ERCs/blob/master/ERCS/erc-55.md (`# Test Cases`) | `8dd085d159cb123f545c272c0d871a5339550e79` | CC0-1.0 |
 | `src/bip39/english.txt` (word list, checked by SHA-256 in `src/bip39/tests.rs`) | https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt | `ce1862ac6bcffa1dd20aad858380e51e66e949ea` | BSD-2-Clause |
+
+M2 inline vectors (values transcribed from spec/09 §3.5–§3.8, which records them from the
+sources below; this offline session did not re-fetch the sources, so no commit is recorded):
+
+| Test | Source | License |
+|---|---|---|
+| `src/evm/sign/tests.rs` EVM-V01 EIP-155 example (key `0x46`×32) | https://eips.ethereum.org/EIPS/eip-155 (`Example`) | CC0-1.0 |
+| `src/evm/sign/tests.rs` EVM-V02 EIP-1559 (Besu) | ethereumjs `packages/tx/test/testData/eip1559.ts` ("// Source: Besu") | MPL-2.0 |
+| `src/evm/sign/tests.rs` EVM-V03 `Some data` | web3.js `accounts.sign` documentation | LGPL-3.0 |
+| `src/evm/sign/tests.rs` EVM-V03 `Hello, world!` | MetaMask eth-sig-util `src/personal-sign.test.ts` | ISC |
+| `src/evm/sign/tests.rs`, `tests/evm_eip712.rs` Ether Mail | EIPs `assets/eip-712/Example.js` (JSON as in `archive/spec-v2.4:crates/eip712/tests/vectors.rs:6-42`) | CC0-1.0 |
+| `tests/evm_consts.rs` selectors, topics, typeHashes, domain separators | computed by the test from the signature strings of spec/09 §3.6–§3.7 | — |
+| `crates/yw-app/tests/fixtures/eth_simulateV1/*.response.json` | spec/09 §3.8 S1–S16 shapes; S1h/S3c/S4h/S16 follow the 2026-10-27 probe (`docs/acceptance/probe-20261027.md`) | — |
