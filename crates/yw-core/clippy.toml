@@ -1,0 +1,9 @@
+# Root clippy.toml contents (clippy reads only the nearest clippy.toml) + yw-core OS access bans (spec/01 §5.1).
+avoid-breaking-exported-api = false
+msrv = "1.95.0"
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+disallowed-types = [ "std::time::Instant", "std::time::SystemTime", "std::fs::File", "std::fs::OpenOptions",
+                     "std::net::TcpStream", "std::net::TcpListener", "std::net::UdpSocket", "std::process::Command" ]
+disallowed-methods = [ "std::thread::spawn", "std::env::var", "std::env::var_os", "std::fs::read",
+                       "std::fs::write", "std::fs::read_to_string" ]

@@ -1,191 +1,50 @@
+﻿# scripts/check.ps1 — 저장소 게이트. 사용: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 [-Step <name>] [-Offline]
 [CmdletBinding()]
 param(
-    [Parameter(Position = 0)]
-    [ValidateSet("help", "setup", "fmt", "fmt-apply", "lint", "typecheck", "test", "privacy", "architecture", "check")]
-    [string]$Target = "help"
+    [ValidateSet("all", "fmt", "deps", "clippy", "test", "build", "ext-test", "script-test", "privacy", "audit-ext")]
+    [string]$Step = "all",
+    [switch]$Offline
 )
-
-$ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
-$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-Set-Location -LiteralPath $RepoRoot
+$ErrorActionPreference = "Continue"
+$Root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+Set-Location -LiteralPath $Root
 
-function Invoke-Checked {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Executable,
-        [Parameter(Mandatory = $true)]
-        [string[]]$CommandArguments
-    )
-
-    $timer = [Diagnostics.Stopwatch]::StartNew()
-    Write-Host "check: $Executable started"
-    $previousErrorPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        # Windows PowerShell wraps native stderr in ErrorRecord objects when
-        # captured. Emit their text without implying that successful tools failed.
-        & $Executable @CommandArguments 2>&1 | ForEach-Object { [string]$_ }
-        $exitCode = $LASTEXITCODE
-    }
-    finally {
-        $ErrorActionPreference = $previousErrorPreference
-    }
-    if ($exitCode -ne 0) {
-        throw "Command failed with exit code ${exitCode}: $Executable"
-    }
-    Write-Host ("check: {0} passed ({1:N1}s)" -f $Executable, $timer.Elapsed.TotalSeconds)
+function Fail([int]$Code, [string]$Message) {
+    [Console]::Error.WriteLine("check: FAIL $Code $Message")
+    exit $Code
+}
+function Invoke-Step([string]$Name, [int]$Code, [string]$Exe, [string[]]$ArgList) {
+    if ($Step -ne "all" -and $Step -ne $Name) { return }
+    Write-Host "check: $Name"
+    & $Exe @ArgList
+    if ($LASTEXITCODE -ne 0) { Fail $Code "$Name (exit $LASTEXITCODE)" }
+}
+function Get-Tests([string]$Dir, [int]$Code) {
+    $files = @(Get-ChildItem -LiteralPath $Dir -Filter "*.test.mjs" -File | Sort-Object Name | ForEach-Object { $_.FullName })
+    if ($files.Count -eq 0) { Fail $Code "no tests in $Dir" }
+    return $files
 }
 
-function Invoke-Setup {
-    foreach ($tool in @("cargo", "rustc", "node", "npm", "git")) {
-        if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
-            throw "Required tool is missing: $tool"
-        }
-    }
-    Invoke-Checked -Executable "cargo" -CommandArguments @("metadata", "--locked", "--no-deps", "--format-version", "1")
+$cargoVersion = & cargo --version 2>$null
+if ($LASTEXITCODE -ne 0 -or "$cargoVersion" -notmatch '^cargo 1\.95\.0 ') { Fail 10 "cargo 1.95.0 required (rust-toolchain.toml)" }
+$nodeVersion = & node --version 2>$null
+if ($LASTEXITCODE -ne 0 -or "$nodeVersion" -notmatch '^v(\d+)\.' -or [int]$Matches[1] -lt 22) { Fail 10 "Node.js 22+ required" }
+foreach ($name in "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS", "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS") {
+    if ([Environment]::GetEnvironmentVariable($name)) { Fail 11 "$name must be unset (.cargo/config.toml owns rustflags)" }
 }
+$net = @("--locked"); if ($Offline) { $net += "--offline" }
+$deps = @("scripts/check-core-deps.mjs"); if ($Offline) { $deps += "--offline" }
 
-function Invoke-FormatCheck {
-    Invoke-Checked -Executable "cargo" -CommandArguments @("fmt", "--all", "--", "--check")
-    Invoke-Checked -Executable "cargo" -CommandArguments @("fmt", "--manifest-path", "demo/sepolia-wallet/Cargo.toml", "--", "--check")
-}
-
-function Invoke-FormatApply {
-    Invoke-Checked -Executable "cargo" -CommandArguments @("fmt", "--all")
-    Invoke-Checked -Executable "cargo" -CommandArguments @("fmt", "--manifest-path", "demo/sepolia-wallet/Cargo.toml")
-}
-
-function Invoke-Lint {
-    Invoke-Checked -Executable "cargo" -CommandArguments @("clippy", "--locked", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings")
-    Invoke-Checked -Executable "cargo" -CommandArguments @("clippy", "--manifest-path", "demo/sepolia-wallet/Cargo.toml", "--locked", "--all-targets", "--", "-D", "warnings")
-}
-
-function Invoke-Typecheck {
-    Invoke-Checked -Executable "cargo" -CommandArguments @("check", "--locked", "--workspace", "--all-targets", "--all-features")
-    Invoke-Checked -Executable "cargo" -CommandArguments @("check", "--manifest-path", "demo/sepolia-wallet/Cargo.toml", "--locked", "--all-targets")
-}
-
-function Build-KeyAgentTestExecutable {
-    $previousErrorPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        $messages = & cargo build --locked -p key-agent --bin key-agent --message-format=json-render-diagnostics
-        $exitCode = $LASTEXITCODE
-    }
-    finally {
-        $ErrorActionPreference = $previousErrorPreference
-    }
-    if ($exitCode -ne 0) {
-        throw "Command failed with exit code ${exitCode}: cargo"
-    }
-
-    # Share the exact-one, absolute-path artifact parser with focused tests.
-    # Dot-sourcing defines the helpers without invoking the focused CLI.
-    . ([IO.Path]::Combine($PSScriptRoot, "test-focused.ps1"))
-    return Get-FocusedKeyAgentArtifact -Lines @($messages)
-}
-
-function Invoke-WindowsEvidenceReadinessChecks {
-    foreach ($scriptPath in @(
-        "scripts/windows-evidence/preflight.ps1",
-        "scripts/windows-evidence/run-current-user.ps1"
-    )) {
-        $null = [scriptblock]::Create(
-            (Get-Content -LiteralPath $scriptPath -Raw -ErrorAction Stop)
-        )
-    }
-
-    foreach ($sourcePath in @(
-        "scripts/windows-evidence/evidence-contract.mjs",
-        "scripts/windows-evidence/compare-build-inventories.mjs"
-    )) {
-        Invoke-Checked -Executable "node" -CommandArguments @("--check", $sourcePath)
-    }
-
-    Invoke-Checked -Executable "node" -CommandArguments @(
-        "--test",
-        "scripts/windows-evidence/evidence-contract.test.mjs",
-        "scripts/windows-evidence/compare-build-inventories.test.mjs"
-    )
-}
-
-function Invoke-Tests {
-    Invoke-WindowsEvidenceReadinessChecks
-    Invoke-Checked -Executable "node" -CommandArguments @("--test", "scripts/architecture-diagnostic.test.mjs")
-    Invoke-Checked -Executable "powershell" -CommandArguments @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/test-focused.test.ps1")
-    Invoke-Checked -Executable "powershell" -CommandArguments @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/launcher-contract.test.ps1")
-    Invoke-Checked -Executable "powershell" -CommandArguments @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/service-probe/native.test.ps1")
-    Invoke-Checked -Executable "node" -CommandArguments @("--test", "scripts/service-probe/prepare.test.mjs", "scripts/service-probe/operate.test.mjs")
-    $keyAgentExecutable = Build-KeyAgentTestExecutable
-    $previousKeyAgentExecutable = [Environment]::GetEnvironmentVariable(
-        "YW_TEST_KEY_AGENT_EXECUTABLE",
-        [EnvironmentVariableTarget]::Process
-    )
-    try {
-        $env:YW_TEST_KEY_AGENT_EXECUTABLE = $keyAgentExecutable
-        Invoke-Checked -Executable "cargo" -CommandArguments @("test", "--locked", "--workspace", "--all-targets", "--all-features")
-        Invoke-Checked -Executable "cargo" -CommandArguments @("test", "--locked", "--workspace", "--doc", "--all-features")
-        Invoke-Checked -Executable "cargo" -CommandArguments @("test", "--manifest-path", "demo/sepolia-wallet/Cargo.toml", "--locked")
-        Invoke-Checked -Executable "npm" -CommandArguments @("--prefix", "extension", "test")
-        foreach ($source in Get-ChildItem -LiteralPath "extension/src" -Filter "*.js") {
-            Invoke-Checked -Executable "node" -CommandArguments @("--check", $source.FullName)
-        }
-    }
-    finally {
-        if ($null -eq $previousKeyAgentExecutable) {
-            Remove-Item Env:YW_TEST_KEY_AGENT_EXECUTABLE -ErrorAction SilentlyContinue
-        }
-        else {
-            $env:YW_TEST_KEY_AGENT_EXECUTABLE = $previousKeyAgentExecutable
-        }
-    }
-}
-
-function Invoke-Privacy {
-    Invoke-Checked -Executable "node" -CommandArguments @("--test", "scripts/privacy-scan.test.mjs")
-    Invoke-Checked -Executable "node" -CommandArguments @("scripts/privacy-scan.mjs")
-}
-
-function Invoke-Architecture {
-    Invoke-Checked -Executable "node" -CommandArguments @("scripts/architecture-scan.mjs")
-}
-
-function Show-Help {
-    @"
-Usage: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 <target>
-
-Targets:
-  help       Show this help.
-  setup      Verify required tools and locked workspace metadata.
-  fmt        Check Rust formatting without modifying files.
-  fmt-apply  Apply Rust formatting (the only mutating gate target).
-  lint       Run Clippy with warnings denied.
-  typecheck  Type-check every target and feature.
-  test       Run readiness-contract, Rust, and extension tests.
-  privacy    Scan tracked source artifacts for forbidden secret fixtures.
-  architecture
-             Enforce trust-boundary and extension-permission invariants.
-  check      Run fmt, lint, typecheck, test, privacy, and architecture checks.
-"@
-}
-
-switch ($Target) {
-    "help" { Show-Help }
-    "setup" { Invoke-Setup }
-    "fmt" { Invoke-FormatCheck }
-    "fmt-apply" { Invoke-FormatApply }
-    "lint" { Invoke-Lint }
-    "typecheck" { Invoke-Typecheck }
-    "test" { Invoke-Tests }
-    "privacy" { Invoke-Privacy }
-    "architecture" { Invoke-Architecture }
-    "check" {
-        Invoke-FormatCheck
-        Invoke-Lint
-        Invoke-Typecheck
-        Invoke-Tests
-        Invoke-Privacy
-        Invoke-Architecture
-    }
-}
+Invoke-Step "fmt" 20 "cargo" @("fmt", "--all", "--", "--check")
+Invoke-Step "deps" 21 "node" $deps
+Invoke-Step "clippy" 22 "cargo" (@("clippy", "--workspace", "--all-targets") + $net + @("--", "-D", "warnings"))
+Invoke-Step "test" 23 "cargo" (@("test", "--workspace") + $net)
+Invoke-Step "build" 24 "cargo" (@("build", "--workspace") + $net)   # target\debug\yw-host.exe ([09] §2.2, [05] H1)
+$env:YW_CHECK = "1"                                                   # 확장 프로세스 테스트가 skip 대신 실패([09])
+if ($Step -in "all", "ext-test") { Invoke-Step "ext-test" 25 "node" (@("--test") + (Get-Tests "extension/tests" 25)) }
+if ($Step -in "all", "script-test") { Invoke-Step "script-test" 26 "node" (@("--test") + (Get-Tests "scripts" 26)) }
+Invoke-Step "privacy" 27 "node" @("scripts/privacy-scan.mjs")
+Invoke-Step "audit-ext" 28 "node" @("scripts/audit-extension.mjs", "check", "--extension-root", "extension")
+Write-Host "check: OK"
+exit 0

@@ -1,0 +1,42 @@
+[package]
+name = "yw-win"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies.windows-sys]
+workspace = true
+features = [
+    "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Networking_WinHttp", "Win32_Security",
+    "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem",
+    "Win32_System_Console", "Win32_System_DataExchange", "Win32_System_ErrorReporting", "Win32_System_IO",
+    "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Pipes",
+    "Win32_System_RemoteDesktop", "Win32_System_SystemInformation", "Win32_System_Threading",
+    "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+# workspace lints를 상속하지 않고 복사한다: 상속과 개별 재정의는 함께 쓸 수 없고, 상속된 forbid는 모듈에서 풀 수 없다.
+[lints.rust]
+unsafe_code = "deny"                 # FFI 모듈의 #![allow(unsafe_code)]로만 푼다(spec/01 §5.1)
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+# 루트 Cargo.toml [workspace.lints.clippy]의 12줄(all … exit)을 그대로 쓰고 다음 2줄을 더한다(spec/01 §3.2).
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+dbg_macro = "deny"
+mem_forget = "deny"
+exit = "deny"
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"

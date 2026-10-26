@@ -1,6 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { lstat, open } from "node:fs/promises";
+import { lstat, open, readFile } from "node:fs/promises";
 import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import process from "node:process";
 import { promisify } from "node:util";
@@ -9,7 +9,6 @@ import { fileURLToPath } from "node:url";
 const execFile = promisify(execFileCallback);
 const root = fileURLToPath(new URL("../", import.meta.url));
 const allowedExtensions = new Set([
-  ".cs",
   ".html",
   ".js",
   ".json",
@@ -20,11 +19,27 @@ const allowedExtensions = new Set([
   ".toml",
   ".yml",
 ]);
+const TEST_VECTOR_PATH = /^(?:crates\/[^/]+\/tests\/|crates\/[^/]+\/src\/(?:[^/]+\/)*tests\.rs$|tools\/[^/]+\/tests\/|extension\/tests\/|scripts\/[^/]+\.test\.mjs$|spec\/)/u;
+const BIP39_WORDS = new URL("../crates/yw-core/src/bip39/english.txt", import.meta.url); // 스캐너 자신의 저장소에서 읽는다
 const forbidden = [
-  { name: "private-key-assignment", expression: /private[_-]?key\s*[:=]\s*["'][0-9a-f]{64}["']/iu },
+  { name: "private-key-assignment", vectorsAllowed: true, expression: /private[_-]?key\s*[:=]\s*["'][0-9a-f]{64}["']/iu },
   { name: "authorization-header", expression: /authorization\s*:\s*bearer\s+[a-z0-9._~-]{12,}/iu },
-  { name: "seed-phrase-label", expression: /(?:mnemonic|seed[_ -]?phrase)\s*[:=]\s*["'][a-z]+(?:\s+[a-z]+){11,23}["']/iu },
+  { name: "seed-phrase-label", vectorsAllowed: true, expression: /(?:mnemonic|seed[_ -]?phrase)\s*[:=]\s*["'][a-z]+(?:\s+[a-z]+){11,23}["']/iu },
   { name: "production-secret-marker", expression: /\[(?:SECRET|PASSWORD|TOKEN|PRIVATE_KEY)\]/u },
+  { name: "alchemy-key-url", expression: /\.g\.alchemy\.com\/v2\/[A-Za-z0-9_-]{16,}/u },
+  { name: "quicknode-url", expression: /\.quiknode\.pro\/[A-Za-z0-9_-]{16,}/u },   // D13 템플릿: https://<이름>.<서브도메인>.quiknode.pro/<토큰>/
+  { name: "llm-api-key", expression: /\bsk-[A-Za-z0-9_-]{20,}/u },
+  { name: "labeled-private-key-hex", vectorsAllowed: true,
+    expression: /(?:priv(?:ate)?|secret|signing)[_ -]?key[^\n]{0,80}?(?<![0-9A-Fa-f])(?:0x)?[0-9A-Fa-f]{64}(?![0-9A-Fa-f])/iu },
+  { name: "bip39-word-sequence", vectorsAllowed: true, detect: (text, words) => {
+      let run = 0, last = -1;   // 공백·따옴표·쉼표·대괄호로만 이어진 BIP39 단어 12개 이상
+      for (const m of text.matchAll(/[a-z]+/gu)) {
+        const joined = last >= 0 && /^[\s"',[\]]+$/u.test(text.slice(last, m.index));
+        run = words.has(m[0]) ? (joined ? run + 1 : 1) : 0;
+        last = m.index + m[0].length;
+        if (run >= 12) return true;
+      }
+      return false; } },
 ];
 
 const infrastructureDiagnostic =
@@ -161,8 +176,28 @@ async function readCandidate(candidate) {
   return text;
 }
 
+async function loadBip39Words() {
+  let text;
+  try {
+    text = await readFile(BIP39_WORDS, { encoding: "utf8" });
+  } catch {
+    throw infrastructureFailure();
+  }
+  const list = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n");
+  const words = new Set(list);
+  if (words.size !== 2048 || list.length !== 2048 || list.some((word) => !/^[a-z]+$/u.test(word))) {
+    throw infrastructureFailure();
+  }
+  return words;
+}
+
+function ruleMatches(rule, text, words) {
+  return rule.detect === undefined ? rule.expression.test(text) : rule.detect(text, words);
+}
+
 export async function scanRepository(repositoryRoot) {
   const findings = [];
+  const words = await loadBip39Words();
   const inventory = await gitSourceInventory(repositoryRoot);
 
   for (const inventoryPath of inventory) {
@@ -172,8 +207,10 @@ export async function scanRepository(repositoryRoot) {
     const text = await readCandidate(candidate);
     if (text === null) continue;
 
+    const vectorPath = TEST_VECTOR_PATH.test(inventoryPath);
     for (const rule of forbidden) {
-      if (rule.expression.test(text)) findings.push({ rule: rule.name });
+      if (rule.vectorsAllowed === true && vectorPath) continue;
+      if (ruleMatches(rule, text, words)) findings.push({ rule: rule.name });
     }
   }
 

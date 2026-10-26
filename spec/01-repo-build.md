@@ -1,0 +1,998 @@
+# 저장소·빌드·의존성
+
+상위 문서: [spec.md](../spec.md)
+
+이 문서는 D1·D4·D5·D6·D8·D10·D13·D14·D21·D24·D28을 저장소 구조, Cargo 설정, 검사 스크립트, 코딩 규칙, 이식 목록, yw-win API로 구체화한다. 아래 수치(크레이트 수, lock 항목 수, 스크립트 동작)는 2026-10-26에 Rust 1.95.0·Node 22.23.2로 같은 매니페스트를 임시 워크스페이스에서 실행해 확인한 값이다.
+
+---
+
+## 1. M0 정리 절차
+
+### 1.1 전제
+
+- 구 트리는 태그 `archive/spec-v2.4`(= `7cb8338`)와 브랜치 `archive/windows-isolation`에 있다. main(`b5cd63a`)의 이식·유지 대상 파일은 태그와 같다. 예외는 `scripts/privacy-scan.mjs`(main 219줄, 태그 223줄)·`scripts/privacy-scan.test.mjs`(main 243줄, 태그 258줄) 두 파일이며 이식 기준은 main 판이다(README는 다시 쓰므로 무관).
+- M0는 **커밋 1개 `start v3`**로 끝난다. 이 커밋은 구 트리 삭제, 새 워크스페이스 뼈대, 검사 스크립트, `spec.md`·`spec/`를 함께 담는다. 코드 이식은 M1부터 한다(§1.5).
+- 원격 저장소가 없으므로 시작 전에 `git bundle create <다른 디스크>\your-wallet-<날짜>.bundle --all`을 **권고**한다.
+
+### 1.2 삭제 목록 (main에서 `git ls-files`로 확인한 파일 수)
+
+| 경로 | 파일 수 | 비고 |
+|---|---:|---|
+| `crates/` 전체 | 204 | approval-ui 8, approval-wire 2, broker 6, chain-registry 8, dashboard 3, eip712 6, key-agent 11, key-agent-debugger 8, key-agent-debugger-wire 2, key-agent-service 4, key-agent-service-helper-bootstrap 6, key-agent-service-rpc-sys 14, key-agent-service-wire 5, native-host 6, platform-windows 81, secret-core 10, secret-input-ui 9, wallet-model 7, wallet-protocol 8. 이식 대상도 지운다(태그에서 가져온다). |
+| `demo/` | 13 | sepolia-wallet 전체 |
+| `.github/` | 2 | `ci.yml`, `release-evidence-policy.yml`. 원격이 없어 실행되지 않으므로 CI 파일을 두지 않는다. 게이트는 `scripts/check.ps1` 하나다. |
+| `docs/` 중 `recovery-guide.ko.md` 외 전부 | 9 | `adr/0001-…`, `designs/windows-key-agent-service.md`, `architecture.md`, `development-resume.md`, `development-status.md`, `development.md`, `protocol-contract.md`, `release-security.md`, `security-decisions.md` |
+| `scripts/architecture-scan.mjs`, `scripts/architecture-diagnostic.test.mjs` | 2 | |
+| `scripts/release/` | 19 (+2 이동) | `audit-extension.mjs`·`audit-extension.test.mjs`는 §1.3대로 이동하고 나머지 19개를 지운다. |
+| `scripts/service-probe/` | 8 | |
+| `scripts/windows-evidence/` | 7 | |
+| `scripts/test-focused.ps1`, `scripts/test-focused.test.ps1`, `scripts/launcher-contract.test.ps1`, `scripts/run-sepolia-wallet.ps1` | 4 | |
+| `TEST-WALLET.cmd`, `RUN-SEPOLIA-WALLET.cmd`, `SECURITY.md` | 3 | `SECURITY.md`는 v2.4 위협 모델을 설명하므로 지우고 README가 spec.md §2를 가리킨다. |
+| `extension/tests/native-host-process.test.mjs` | 1 | 구 broker·native-host를 cargo로 빌드한다. M5에서 yw-host용으로 새로 쓴다([05](05-browser.md)). |
+
+합계 272개 삭제, 추적 파일 303 → 31. 비추적·무시 파일 `__pycache__/`, `repair_windows_cap_acl.py`(태그에도 없음; 보존하려면 먼저 저장소 밖으로 옮긴다), `target/`, `artifacts/`, `demo/sepolia-wallet/target/`(구 `.gitignore`만 무시하므로 남기면 새 `.gitignore`에서 비추적 파일이 된다)도 작업 트리에서 지운다.
+
+### 1.3 유지·이동·수정 목록
+
+| 경로 | 처리 |
+|---|---|
+| `extension/` (16개) | 유지. 수정은 M5([05](05-browser.md)). |
+| `scripts/privacy-scan.mjs`, `scripts/privacy-scan.test.mjs` | 유지, §4.3 규칙 추가. |
+| `scripts/release/audit-extension.mjs` → `scripts/audit-extension.mjs` | `git mv`. 도우미를 `scripts/lib/strict-json.mjs`로 추출(§4.4). |
+| `scripts/release/audit-extension.test.mjs` → `scripts/audit-extension.test.mjs` | `git mv`, import 경로·해시 단언 수정. |
+| `scripts/check.ps1` | 전부 다시 쓴다(§4.1). |
+| `rust-toolchain.toml`, `rustfmt.toml` | 그대로. |
+| `clippy.toml` | `allow-unwrap-in-tests = true`, `allow-expect-in-tests = true` 추가(§5.2). |
+| `.gitattributes`, `.gitignore` | §1.4 내용으로 교체. |
+| `Cargo.toml` | §3.1로 교체. `Cargo.lock`은 **지우지 않는다**(§3.6 seed). |
+| `README.md` | 60줄 이하로 다시 쓴다: 한 문단 소개, 상태(현재 마일스톤), 빌드 전제(§3.8), `cargo build --release --locked`, `scripts/check.ps1`, 문서 목록(spec.md·spec/), 구 코드는 태그 `archive/spec-v2.4`, 보안 범위는 spec.md §2. |
+| `docs/recovery-guide.ko.md` | 유지. demo·Key Agent를 언급하는 3–8행과 56–69행(`## 구현 완료 조건` 절 전체)을 지운다. 14행 "12개 또는 24개" → "24개"(D9). 41행 → "새 지갑은 passphrase를 쓰지 않습니다. passphrase는 다른 지갑에서 가져올 때만 입력합니다."(D29). v3 경로(SOL·BTC)는 M9 체크리스트에서 갱신([09](09-testing.md)). |
+| `spec.md`, `spec/*.md` | 추가. |
+
+### 1.4 실행 순서 (Git Bash, 저장소 루트)
+
+두 부분을 저장소 밖(예: `$TEMP`)에 각각 파일로 저장하고 저장소 루트에서 `bash -e "$TEMP/m0a.sh"`, (새 파일 작성 후) `bash -e "$TEMP/m0b.sh"`로 실행한다. 대화형 셸에 붙여 넣지 않는다(검사 실패 시 `exit`로 멈춰야 한다).
+
+```bash
+# m0a.sh — 전제 확인과 삭제
+test "$(git rev-parse --short 'archive/spec-v2.4^{commit}')" = 7cb8338 || { echo "STOP: tag"; exit 1; }   # 태그 객체 자체는 68026d9
+test -z "$(git status --porcelain | grep -v -x -e ' M spec.md' -e '?? spec/' -e '?? __pycache__/' -e '?? repair_windows_cap_acl.py' \
+  -e '?? scripts/dev-rpc-setup.ps1' -e '?? scripts/probe-rpc.mjs')" \
+  || { echo "STOP: unexpected working tree changes"; exit 1; }
+test "$(for p in crates demo .github docs scripts/release scripts/service-probe scripts/windows-evidence; do
+  git ls-files -- "$p" | wc -l; done | xargs)" = "204 13 2 10 21 8 7" || { echo "STOP: unexpected file counts"; exit 1; }
+git mv scripts/release/audit-extension.mjs scripts/audit-extension.mjs
+git mv scripts/release/audit-extension.test.mjs scripts/audit-extension.test.mjs
+git rm -r -q -- crates demo .github scripts/release scripts/service-probe scripts/windows-evidence \
+  docs/adr docs/designs docs/architecture.md docs/development-resume.md docs/development-status.md \
+  docs/development.md docs/protocol-contract.md docs/release-security.md docs/security-decisions.md \
+  scripts/architecture-scan.mjs scripts/architecture-diagnostic.test.mjs scripts/test-focused.ps1 \
+  scripts/test-focused.test.ps1 scripts/launcher-contract.test.ps1 scripts/run-sepolia-wallet.ps1 \
+  TEST-WALLET.cmd RUN-SEPOLIA-WALLET.cmd SECURITY.md extension/tests/native-host-process.test.mjs
+test "$(git ls-files | wc -l)" -eq 31 || { echo "STOP: unexpected tracked file count"; exit 1; }
+rm -rf __pycache__ repair_windows_cap_acl.py target artifacts demo
+# --- 손으로: §2 트리, §3.1–3.2 매니페스트, §4 스크립트, 아래 .gitattributes/.gitignore, README, spec/ 작성 ---
+# m0b.sh — 단어 목록, lock seed, 게이트, 커밋
+mkdir -p crates/yw-core/src/bip39
+node -e 'const fs=require("fs");const w=[...fs.readFileSync(process.argv[1],"utf8").matchAll(/"([a-z]+)"/g)].map(m=>m[1]);if(w.length!==2048)process.exit(1);fs.writeFileSync(process.argv[2],w.join("\n")+"\n")' \
+  "$HOME/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bip39-2.2.0/src/language/english.rs" crates/yw-core/src/bip39/english.txt
+test "$(sha256sum crates/yw-core/src/bip39/english.txt | cut -d' ' -f1)" = \
+  2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda || { echo "STOP: wordlist"; exit 1; }
+cargo metadata --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc > /dev/null   # lock 정리(§3.6)
+test "$(grep -c '^\[\[package\]\]' Cargo.lock)" -eq 47 || { echo "STOP: lock seed"; exit 1; }   # §3.6
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1   # 0
+git add -A && git commit -m "start v3" -m "Replace the v2.4 tree with the v3 skeleton. Old code: archive/spec-v2.4 (7cb8338)."
+```
+
+`.gitattributes` (전체, 한 줄에 하나씩): `* text=auto`, `*.rs`·`*.toml`·`*.md`·`*.js`·`*.mjs`·`*.json`·`*.txt`·`*.yml`·`*.lock`·`*.template`·`.gitignore`·`.gitattributes`는 `text eol=lf`, `*.ps1`·`*.cmd`는 `text eol=crlf`. 구 항목(`*.cs`, `*.rc`, 삭제된 런처·MIDL 파일)은 없앤다. `english.txt`는 LF 기준 SHA-256을 BIP39 테스트(M1)가 확인하므로 `*.txt eol=lf`가 반드시 있어야 한다.
+
+`.gitignore` (전체): `/target/`, `/vendor/`, `/.idea/`, `/.vscode/`, `/node_modules/`, `/coverage/`, `/artifacts/`, `/fuzz/target/`, `/fuzz/artifacts/`, `/tools/*/target/`, `__pycache__/`, `*.pdb`, `*.ilk`, `*.dmp`, `*.log`, `*.tmp`, `*.bak`, `.env`, `.env.*`, `!.env.example`, `*.ywv`, `*.ywm`, `*.ywj`, `*.dpapi`, `*.vault`, `*.wallet`, `*.keystore`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*private*.pem`, `/extension/native-host/com.your_wallet.native.json`, `!/extension/native-host/com.your_wallet.native.json.template` (한 줄에 하나씩).
+
+### 1.5 이식 방법 (M1 이후)
+
+- 출처는 `git show archive/spec-v2.4:<path>`로 읽고 필요한 줄 범위만 새 모듈로 옮긴다. `git checkout archive/spec-v2.4 -- <path>`로 파일을 통째로 되살리지 않는다.
+- 이식 커밋 메시지에 출처를 `archive/spec-v2.4:<path>:<lines>` 형식으로 적는다(§6 표와 같은 표기).
+- 옮긴 코드는 §5 규칙과 새 의존성 경계(serde·thiserror·windows·platform-windows 제거)를 지켜야 하며, 원본 테스트를 함께 옮긴다.
+
+### 1.6 M0 완료 조건
+
+1. `scripts/check.ps1`가 종료 코드 0(§4.1). 이때 크레이트 5개는 빈 뼈대이고 yw-core는 EVM 단계 서드파티 직접 의존성 12개(+로컬 yw-json)를 모두 선언한다(허용 목록의 "도달하지 않음" 검사 때문에).
+2. `git ls-files`에 §1.2 경로가 없다.
+3. §4.5 음성 체크리스트 1회 수행.
+
+---
+
+## 2. 워크스페이스 구성
+
+### 2.1 디렉터리 트리
+
+```
+Cargo.toml  Cargo.lock  rust-toolchain.toml  rustfmt.toml  clippy.toml  .gitattributes  .gitignore  README.md  spec.md
+.cargo/config.toml                 M7부터(§3.4)
+crates/
+  yw-core/   Cargo.toml  clippy.toml(§5.1)  src/  tests/{*.rs, vectors/}   (모듈 §2.2, 테스트 배치 [09](09-testing.md) §2.1)
+  yw-json/   Cargo.toml  src/{lib.rs, parse.rs, value.rs, write.rs, frame.rs}  tests/
+  yw-win/    Cargo.toml  src/{lib.rs, error.rs, time.rs, mem.rs, file.rs, dpapi.rs, clipboard.rs,
+                              http.rs, pipe.rs, session.rs, process.rs, input.rs, ui/{mod.rs, window.rs,
+                              msg.rs, paint.rs, controls.rs, secure_text.rs}}  tests/   (API §7)
+  yw-app/    Cargo.toml  build.rs(선택, [04](04-app-ui.md) §1.6)  tests/
+             src/{lib.rs, main.rs, app.rs, events.rs, errors.rs, settings.rs, apikeys.rs(네트워크별 RPC 엔드포인트 URL
+                  `rpc:eip155:<chainId>`·`rpc:solana:<cluster>`·`rpc:bitcoin:<net>`·공급자 템플릿 자격 정보·LLM 키, D13, [04](04-app-ui.md) §6.3), logging.rs,
+                  store.rs(`VaultStorage` 구현, [09](09-testing.md) §2.1), workers/{key, rpc, read}.rs([04](04-app-ui.md) §1.2),
+                  rpc/{mod.rs(공용 전송, [04](04-app-ui.md) §1.9), evm.rs(`rpc::evm`: eth_simulateV1 응답 파서 M2([09](09-testing.md) §3.8), 전송·호출 M4)}, flow/evm.rs(`flow::evm`, M4),
+                  browser/{mod.rs, params.rs, envelope.rs, …}(`browser::params`·`browser::envelope`, M5, [05](05-browser.md)),
+                  explain/(M6, [06](06-llm-explain.md)), sol/(M7, [07](07-solana.md) §2), btc/(M8, [08](08-bitcoin.md)),
+                  ui/{main_window, screens/*, approval, interaction, secret, secure_field, text_layout, qr, theme}.rs}
+                  (배치 [04](04-app-ui.md) §1.8, EVM 모듈 이름 [03](03-evm.md) §0)
+  yw-host/   Cargo.toml  src/{lib.rs, main.rs}  tests/               ([05](05-browser.md))
+extension/   manifest.json  package.json  extension-id.txt(M5)  src/*.js  native-host/*  tests/*.test.mjs  test-dapp/(M5)
+scripts/     check.ps1  check-core-deps.mjs  privacy-scan.mjs  privacy-scan.test.mjs
+             audit-extension.mjs  audit-extension.test.mjs  lib/strict-json.mjs
+             extension-key.mjs  register-native-host.ps1  unregister-native-host.ps1   (M5, [05](05-browser.md) §2.3·§9)
+             probe-rpc.mjs   (수동 실서비스 프로브, M2 전. check.ps1 대상 아님, §4.7)
+             dev-rpc-setup.ps1 (개발용 rpc.json 대화형 생성, §4.8)
+fuzz/        퍼징, 별도 워크스페이스·루트 exclude([09](09-testing.md) §2.4)
+tools/       btc-oracle/(M8, [08](08-bitcoin.md) §14.3)  sol-oracle/(M7, [07](07-solana.md) §17.3) — 개발 전용 차등 오라클. 각각 자체 [workspace]·Cargo.lock,
+             루트 exclude(§3.1), check.ps1·허용 목록 대상 아님, 배포 산출물에 들어가지 않음
+spec/        01 … 09
+docs/        recovery-guide.ko.md  acceptance/(체크리스트·라이브 확인 기록, [09](09-testing.md) §1·§2.5)
+```
+
+### 2.2 yw-core 모듈
+
+`src/lib.rs`는 `#![forbid(unsafe_code)]`와 아래 모듈 선언만 둔다. 모듈 경로는 이 표가 정본이고(D31) 세부 문서는 이 이름을 그대로 쓴다. 하위 파일 구성은 세부 문서가 정한다. 단계는 그 모듈이 처음 필요한 마일스톤이다.
+
+| 모듈 | 단계 | 내용 | 세부 |
+|---|---|---|---|
+| `secret` | M1 | `SecretBytes<N>`, `SecretVec`, `SecretString` (§5.3) | 이 문서 |
+| `error` | M1 | 모듈별 오류 enum과 수동 `Display` | §5.2 |
+| `entropy` | M1 | `RandomSource`(crate 내부), `OsRandom`, `fill_random(&mut [u8]) -> Result<(), EntropyError>`(getrandom), `secp_context`(§3.5 `seeded_randomize`), `random_nonzero_id`, `random_below(n)`(거부 샘플링). OS 호출은 여기서만. | [02](02-core-keys-vault.md) |
+| `bip39` (`src/bip39/mod.rs` + `english.txt`, `include_str!`) | M1 | 생성(24단어), 가져오기, 시드 | [02](02-core-keys-vault.md) |
+| `bip32` (+`bip32::xkey`, `bip32::path`) | M1 | secp256k1 HD 파생(`Bip32Path`, 엄격 경로). 공개 파생 `AccountXpub`·`derive_public_child`(비강화 색인만, BTC 주소용, M8에서 사용). `xkey`: `XKeyParts`, `decode_xkey`, `encode_xkey`, fingerprint = HASH160[0..4](`ripemd`, D5) — M1 벡터 1–5 전체 문자열 비교용. `path`: `AccountIndex`, `BtcCoin`, `BtcChain`, `evm_path`, `btc_path`, `sol_path`(D29; `sol_path`는 M7에 `slip10`과 함께 추가) | [02](02-core-keys-vault.md), [08](08-bitcoin.md) |
+| `slip10` | M7 | Ed25519 hardened-only 파생 | [07](07-solana.md) |
+| `password` | M1 | `VaultPassword`, `Bip39Passphrase` (D8) | [02](02-core-keys-vault.md) |
+| `vault` | M1 | vault v3, KEK/DEK, 백업 확인, DEK 파생 하위 키로 meta·journal 봉투 | [02](02-core-keys-vault.md) |
+| `hex` | M1 | 엄격 hex(주소·벡터) | [03](03-evm.md) |
+| `codec::base58` | M1 | base58, base58check(SHA-256d 4바이트). SOL·BTC 공유(D6) | [02](02-core-keys-vault.md), [07](07-solana.md), [08](08-bitcoin.md) |
+| `codec::transcript` | M2 | `Transcript` 정규 인코딩(승인·표시 digest) | [03](03-evm.md) |
+| `evm::address` | M1 | `Address`(`[u8; 20]`), EIP-55 파싱·표시 | [03](03-evm.md) |
+| `evm::{chain, amount, fee, rlp, tx, sign, abi, decode, eip191, eip712, siwe, simulate, risk, display}` | M2 | EVM 나머지. `amount`에 `U256`·`format_units`/`parse_units`, `fee`에 수수료·가스·대체 수수료 | [03](03-evm.md) |
+| `journal` (+`journal::{evm, sol, btc}`) | M4 | 체인 공통 이진 컨테이너 코덱(entry = `kind` u8 ‖ `body_len` u32 BE ‖ body)·`JournalError`([02] §5.4). 체인별 레코드 본문 코덱·상태 기계: `journal::evm`(M4, kind 0x01), `journal::sol`(M7, 0x02), `journal::btc`(M8, 0x03) | [02](02-core-keys-vault.md) §5.4, [03](03-evm.md) §5, [07](07-solana.md) §14, [08](08-bitcoin.md) §12.4 |
+| `approval` | M2 | 승인 세션·digest·`Approved` 토큰·공통 표시 모델(필드, 위험, 금지 문자) | [03](03-evm.md) §11, [04](04-app-ui.md) |
+| `policy` | M2 | M2: `BrowserOrigin`(승인 모델이 쓴다, [03] §0·§11). M5: 나머지 — dApp 메서드 허용 목록·route, 연결 권한, 공급자 오류 코드(`ProviderError`) | [03](03-evm.md), [05](05-browser.md) |
+| `sol::*` | M7 | 주소, 메시지, 서명, 표시(base58은 `codec::base58`, 저널 레코드는 `journal::sol`) | [07](07-solana.md) |
+| `btc::*` | M8 | 주소(bech32/bech32m; base58check는 `codec::base58`), sighash, tx, 수수료, 표시(저널 레코드는 `journal::btc`) | [08](08-bitcoin.md) |
+
+규칙: yw-core는 시간·파일·네트워크·스레드·환경 변수를 쓰지 않는다. 시각이 필요하면 호출자가 단조 `now_ms: u64`(yw-win `time::monotonic_ms`)나 벽시계 `now_unix_ms: u64`(유닉스 ms, yw-app이 구함)를 인자로 넘긴다. yw-core는 yw-json(의존성 0)에 의존한다. `evm::eip712`가 `yw_json::Value`를 입력으로 받기 때문이다([03](03-evm.md) §0). 외부 허용 목록은 바뀌지 않는다. RPC 응답은 여전히 yw-app이 yw-json으로 파싱해 yw-core 타입으로 넘기며 yw-core는 네트워크 데이터를 직접 받지 않는다.
+
+### 2.3 yw-json 공개 API
+
+RFC 8259 엄격 파서와 결정적 출력기. 의존성 0, `#![forbid(unsafe_code)]`, `#![deny(clippy::indexing_slicing, clippy::arithmetic_side_effects)]`.
+
+```rust
+pub struct Limits { pub max_bytes: usize, pub max_depth: u32, pub max_nodes: u32, pub max_items: u32 }
+impl Limits { pub const REQUEST: Limits; pub const RESPONSE: Limits; }   // 값과 depth·nodes·items 정의는 [05] §2.9. 다른 문서가 프로필을 추가할 수 있다
+pub enum Value { Null, Bool(bool), Number(Number), String(String), Array(Vec<Value>), Object(Object) }
+pub struct Number(String);   // 문법 검증된 원문 토큰. f64 변환 없음
+impl Number { pub fn as_u64(&self) -> Option<u64> /* 숫자만: 부호·'.'·지수 없음(앞자리 0은 문법이 거부). RPC·EIP-712 정수 */;
+              pub fn as_u64_allow_dot_zero(&self) -> Option<u64> /* as_u64 + `<digits>.0`. [05] §6.1 봉투 정수 필드 전용 */;
+              pub fn as_i64(&self) -> Option<i64>;
+              pub fn is_integer(&self) -> bool /* 소수점·지수 없음 */; pub fn is_negative_zero(&self) -> bool;
+              pub fn as_str(&self) -> &str /* 10진 문자열로 금액 해석용 */;
+              pub fn from_literal(s: &str) -> Result<Number, ParseError> /* RFC 8259 number 문법 검증 후 원문 보관.
+                                                    to_vec가 그대로 출력([08] maxfeerate `0.00012000`) */ }
+pub struct Object(Vec<(String, Value)>);   // 원문 순서 유지, 키 중복은 파싱 오류
+impl Object { pub fn get(&self, key: &str) -> Option<&Value>; pub fn keys(&self) -> impl Iterator<Item=&str>;
+              pub fn len(&self) -> usize }
+pub fn parse(bytes: &[u8], limits: &Limits) -> Result<Value, ParseError>;
+pub fn to_vec(value: &Value) -> Vec<u8>;   // 공백 없음, 객체는 삽입 순서, 문자열은 RFC 8259 최소 escape
+pub enum ParseError { TooLarge, InvalidUtf8, Syntax { offset: usize }, DuplicateKey { offset: usize },
+                      TooDeep, TooManyNodes, TooManyItems, LoneSurrogate { offset: usize },
+                      TrailingData { offset: usize } }
+```
+
+거부: BOM, 제어 문자(U+0000–U+001F) 원문, 짝 없는 `\uD800–\uDFFF`, 앞자리 0(`01`), `+`, `NaN`/`Infinity`, 후행 쉼표, 최상위 뒤 데이터(공백 제외). 오류 `Display`는 입력 내용을 담지 않는다. 정수 접근자 시험([05] §10.2 R-J1에 포함): `1.0`은 `as_u64_allow_dot_zero` 통과·`as_u64` 실패, `1e0`·`1.00`·`-1`은 둘 다 실패, `18446744073709551616`은 둘 다 `None`.
+
+`frame` 모듈: native messaging·pipe 공통 프레이밍(4바이트 LE 길이 + payload, `read_frame`/`write_frame`, 상한 1,048,576), API는 [05](05-browser.md) §7.3.
+
+### 2.4 크레이트 의존 규칙 (검사 스크립트가 강제, §4.2)
+
+| 크레이트 | 로컬 의존 | 외부 의존(직접) | 종류 |
+|---|---|---|---|
+| yw-core | yw-json | §3.3 단계 목록 | lib |
+| yw-json | 없음 | 없음 | lib |
+| yw-win | 없음 | windows-sys | lib |
+| yw-app | yw-core, yw-json, yw-win | qrcodegen | bin (`#![windows_subsystem = "windows"]`) |
+| yw-host | yw-json, yw-win | 없음 | bin (콘솔 서브시스템) |
+
+yw-app·yw-host는 창·OS 호출이 없는 로직을 `lib.rs`에 두고 `tests/`로 시험하며 `main.rs`는 진입만 한다([09](09-testing.md) §2.1). 모든 멤버: `[dev-dependencies]` 금지, `build.rs` 금지(예외: yw-app은 실행 파일 manifest 링크 인자만 출력하는 `build.rs`를 [04](04-app-ui.md)가 필요로 할 때 둘 수 있다).
+
+---
+
+## 3. Cargo 설정과 의존성
+
+### 3.1 루트 `Cargo.toml` (전체)
+
+```toml
+[workspace]
+resolver = "3"
+members = ["crates/yw-core", "crates/yw-json", "crates/yw-win", "crates/yw-app", "crates/yw-host"]
+exclude = ["fuzz", "tools/btc-oracle", "tools/sol-oracle"]   # 각자 워크스페이스·lock([09] §2.4, [08] §14.3, [07] §17.3), 허용 목록 대상 아님, 배포하지 않음
+
+[workspace.package]
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.95"
+license = "Apache-2.0 OR MIT"
+publish = false
+
+[workspace.dependencies]
+# yw-core, EVM 단계(D5). 모두 정확한 버전(=)과 default-features = false.
+secp256k1 = { version = "=0.31.1", default-features = false, features = ["alloc", "recovery"] }
+sha2 = { version = "=0.10.9", default-features = false }
+sha3 = { version = "=0.10.8", default-features = false }
+ripemd = { version = "=0.1.3", default-features = false }   # BIP32 fingerprint(M1)·BTC HASH160(M8)
+hmac = { version = "=0.12.1", default-features = false }
+pbkdf2 = { version = "=0.12.2", default-features = false, features = ["hmac"] }
+hkdf = { version = "=0.12.4", default-features = false }
+argon2 = { version = "=0.5.3", default-features = false, features = ["zeroize"] }
+chacha20poly1305 = { version = "=0.10.1", default-features = false, features = ["alloc"] }
+zeroize = { version = "=1.8.1", default-features = false, features = ["alloc"] }
+subtle = { version = "=2.6.1", default-features = false }
+getrandom = { version = "=0.3.3", default-features = false }
+# M7 Solana 단계 진입 커밋에서 주석 해제(§3.4):
+# ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["fast", "zeroize"] }
+# curve25519-dalek = { version = "=4.1.3", default-features = false, features = ["precomputed-tables", "zeroize"] }
+qrcodegen = { version = "=1.8.0", default-features = false }
+windows-sys = { version = "=0.61.2", default-features = false }   # feature 목록은 crates/yw-win/Cargo.toml에만
+yw-core = { path = "crates/yw-core" }
+yw-json = { path = "crates/yw-json" }
+yw-win = { path = "crates/yw-win" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(curve25519_dalek_backend, values("serial"))'] }
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+dbg_macro = "deny"
+mem_forget = "deny"
+exit = "deny"
+
+[profile.dev]
+panic = "abort"
+
+[profile.dev.package."*"]
+opt-level = 3            # 의존성만 최적화: 디버그 테스트에서 Argon2id 256 MiB가 실용 속도로 돈다
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+overflow-checks = true
+panic = "abort"
+strip = "symbols"
+debug = false
+```
+
+`cargo clippy -- -D warnings`이므로 `warn` 수준도 실패한다. `[profile.dev.package."*"]`는 [02](02-core-keys-vault.md)·[09](09-testing.md)가 요구하는 argon2·blake2 최적화를 포함한다(워크스페이스 멤버는 제외). 테스트 하네스는 `panic` 설정을 무시하고 unwind로 돈다(확인함).
+
+### 3.2 크레이트별 `Cargo.toml`
+
+모든 멤버의 `[package]`: `name = "<크레이트>"`, `version.workspace = true`, `edition.workspace = true`, `rust-version.workspace = true`, `license.workspace = true`, `publish.workspace = true`. yw-win 외 넷은 `[lints] workspace = true`. `[dependencies]` 항목은 모두 `<name>.workspace = true` 한 줄씩이다.
+
+| 크레이트 | `[dependencies]` |
+|---|---|
+| yw-core | argon2, chacha20poly1305, getrandom, hkdf, hmac, pbkdf2, ripemd, secp256k1, sha2, sha3, subtle, zeroize(서드파티 12), yw-json (+M7 ed25519-dalek, curve25519-dalek) |
+| yw-json | 없음(빈 `[dependencies]`) |
+| yw-app | qrcodegen, yw-core, yw-json, yw-win |
+| yw-host | yw-json, yw-win |
+
+```toml
+# crates/yw-win/Cargo.toml (package 표 외 전체)
+[dependencies.windows-sys]
+workspace = true
+features = [
+    "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Networking_WinHttp", "Win32_Security",
+    "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem",
+    "Win32_System_Console", "Win32_System_DataExchange", "Win32_System_ErrorReporting", "Win32_System_IO",
+    "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Pipes",
+    "Win32_System_RemoteDesktop", "Win32_System_SystemInformation", "Win32_System_Threading",
+    "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+# workspace lints를 상속하지 않고 복사한다: 상속과 개별 재정의는 함께 쓸 수 없고, 상속된 forbid는 모듈에서 풀 수 없다.
+[lints.rust]
+unsafe_code = "deny"                 # FFI 모듈의 #![allow(unsafe_code)]로만 푼다(§5.1)
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+# §3.1 [workspace.lints.clippy]의 12줄(all … exit)을 그대로 쓰고 다음 2줄을 더한다.
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+```
+
+windows-sys feature 추가·삭제는 크레이트 수를 바꾸지 않지만 yw-win Cargo.toml 변경으로 리뷰한다. `Win32_System_IO`는 `ConnectNamedPipe`·`ReadFile`·`WriteFile`·`OVERLAPPED`의 cfg 게이트이고, `GetCurrentInputMessageSource`는 `Win32_UI_Input`에 있다. 기능별 사용처는 §7 첫머리.
+
+### 3.3 허용 목록 (x86_64-pc-windows-msvc, `name=version`)
+
+| 집합 | 크레이트 |
+|---|---|
+| **EVM 런타임 30** (M0–M6) | aead=0.5.2 argon2=0.5.3 base64ct=1.8.3 blake2=0.10.6 block-buffer=0.10.4 cfg-if=1.0.4 chacha20=0.9.1 chacha20poly1305=0.10.1 cipher=0.4.4 cpufeatures=0.2.17 crypto-common=0.1.7 digest=0.10.7 generic-array=0.14.7 getrandom=0.3.3 hkdf=0.12.4 hmac=0.12.1 inout=0.1.4 keccak=0.1.6 opaque-debug=0.3.1 pbkdf2=0.12.2 poly1305=0.8.0 ripemd=0.1.3 secp256k1=0.31.1 secp256k1-sys=0.11.0 sha2=0.10.9 sha3=0.10.8 subtle=2.6.1 typenum=1.20.1 universal-hash=0.5.1 zeroize=1.8.1 |
+| **빌드 전용 4** | cc=1.4.2 find-msvc-tools=0.1.10 shlex=2.0.1 version_check=0.9.5 |
+| Solana 추가(M7) 런타임 4 + 빌드 2 | ed25519-dalek=2.2.0 ed25519=2.2.3 signature=2.2.0 curve25519-dalek=4.1.3 / rustc_version=0.4.1 semver=1.0.28 |
+| yw-win | windows-sys=0.61.2 windows-link=0.2.1 |
+| yw-app 추가 | qrcodegen=1.8.0 |
+| yw-json | 없음 |
+
+- 검사 결과(확인함): EVM 단계 yw-core 34, yw-json 0, yw-win 2, yw-app 37, yw-host 2. Solana 단계 yw-core 40, yw-app 43. Bitcoin 단계(M8)는 추가 크레이트가 없다(D5).
+- `build.rs` 허용: generic-array, getrandom, secp256k1-sys (+M7 curve25519-dalek). proc-macro는 어느 단계에서도 0개.
+- 출처는 crates.io만. 라이선스: MIT/Apache-2.0, CC0-1.0(secp256k1, secp256k1-sys), BSD-3-Clause(subtle), MIT(generic-array, qrcodegen).
+- 2026-10-24 기준 RustSec advisory-db(커밋 21d909e)와 OSV에서 위 버전에 열린 권고 없음. curve25519-dalek 4.1.3은 RUSTSEC-2024-0344 수정판이므로 `=4.1.3`을 직접 고정한다(4.2.0은 yank).
+
+### 3.4 단계 진입 절차
+
+**M7 (Solana)** — 한 커밋에서:
+1. 루트의 `ed25519-dalek`, `curve25519-dalek` 주석 해제, yw-core에 `ed25519-dalek.workspace = true`, `curve25519-dalek.workspace = true` 추가.
+2. `.cargo/config.toml` 생성:
+   ```toml
+   [target.x86_64-pc-windows-msvc]
+   rustflags = ["--cfg", 'curve25519_dalek_backend="serial"']
+   ```
+   serial 백엔드는 AVX2용 proc-macro `curve25519-dalek-derive`와 proc-macro2·quote·syn·unicode-ident를 빌드 그래프에서 뺀다. 이 설정을 `cargo metadata --filter-platform`과 빌드가 모두 따르는 것을 확인했다.
+3. `crates/yw-core/src/sol/mod.rs`에 가드:
+   ```rust
+   #[cfg(not(curve25519_dalek_backend = "serial"))]
+   compile_error!("Solana phase requires --cfg curve25519_dalek_backend=\"serial\" (.cargo/config.toml); RUSTFLAGS/CARGO_ENCODED_RUSTFLAGS override it");
+   ```
+   환경 변수 `RUSTFLAGS`가 있으면 config의 rustflags가 통째로 무시되므로, 사용자가 그런 환경에서 빌드해도 조용히 다른 의존성으로 빌드되지 않는다(확인함). `check.ps1`은 이 변수들이 비어 있지 않으면 종료 코드 11로 실패한다.
+4. `scripts/check-core-deps.mjs`의 `PHASES`에 `"sol"` 추가.
+5. §3.6 절차로 lock 갱신. Cargo.lock에는 컴파일되지 않는 `curve25519-dalek-derive`·`fiat-crypto`·`proc-macro2`·`quote`·`syn`·`unicode-ident` 항목도 생긴다(lock은 cfg와 무관, 59개가 됨을 확인함). 허용 여부 판단은 검사 스크립트가 한다.
+
+**M8 (Bitcoin)** — 의존성·허용 목록·`PHASES` 변경 없음(`ripemd`는 M0부터 허용 목록에 있다, D5).
+
+### 3.5 feature 규칙
+
+| 크레이트 | 반드시 켬 | 금지(검사 스크립트가 워크스페이스 통합 feature로 확인) |
+|---|---|---|
+| secp256k1 | alloc, recovery | rand, global-context, hashes, serde |
+| argon2 | zeroize | alloc, password-hash, rand |
+| chacha20poly1305, aead | alloc(chacha20poly1305) | getrandom, rand_core (getrandom 0.2.17·rand_core 0.6.4가 추가로 들어온다) |
+| zeroize | alloc | derive (proc-macro) |
+| getrandom | — | wasm_js |
+| pbkdf2 | hmac | — |
+| ed25519-dalek | fast, zeroize | asm, batch, digest, hazmat, legacy_compatibility, pem, pkcs8, rand_core, serde (hazmat의 `raw_sign`은 이중 공개키 오라클) |
+| curve25519-dalek | precomputed-tables, zeroize (digest는 ed25519-dalek이 켬) | group, group-bits, legacy_compatibility, rand_core, serde |
+| ed25519 / signature | — | pem, pkcs8, serde, serde_bytes / derive, digest, rand_core |
+
+feature는 dev·다른 멤버를 포함해 워크스페이스 전체에서 통합되므로, yw-app이 금지 feature를 켜도 yw-core 검사가 실패한다(의도된 엄격함).
+
+feature 선택에 따른 코드 의무(세부 [02](02-core-keys-vault.md)):
+- argon2에 `alloc`이 없으므로 `Argon2::hash_password_into_with_memory(pwd, salt, out, &mut blocks)`를 쓰고, 호출자 소유 `Vec<Block>`(`params.block_count()`개)을 사용 후 `Block::zeroize()`로 지운다.
+- secp256k1에 `rand`가 없으므로 `Secp256k1::new()` 뒤 `seeded_randomize(&[u8; 32])`를 `entropy::fill_random` 값으로 호출한다.
+
+### 3.6 Cargo.lock 정책
+
+1. `Cargo.lock`은 커밋한다. `check.ps1`의 cargo 명령은 모두 `--locked`.
+2. **M0 seed:** 기존 Cargo.lock을 그대로 둔 채 매니페스트를 바꾸고 `cargo metadata --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc`를 한 번 실행한다. 쓰지 않는 항목이 정리되고 qrcodegen 1.8.0만 추가되어 47개 `[[package]]`가 된다(확인함): 허용 34 + windows-sys·windows-link·qrcodegen + 로컬 5 + getrandom의 비Windows 의존(libc, r-efi, wasi, wasip2, wit-bindgen; 컴파일되지 않음). `ripemd 0.1.3`은 main의 Cargo.lock에 이미 있으므로(구 secret-core 의존) 새 resolve 없이 seed에 남는다. 허용 목록 편입은 M0 커밋에서 4의 (e)–(g)(허용 목록, 소스 검토, 권고 조회 날짜 기록)로 처리한다. 새로 resolve하면 cc 1.5.1·cfg-if 1.0.5·find-msvc-tools 0.1.14로 바뀌어 허용 목록이 깨진다.
+3. **금지:** `cargo generate-lockfile`, 인자 없는 `cargo update`, Cargo.lock 삭제. `--locked` 없이 cargo를 실행했다면 커밋 전 `git diff Cargo.lock`이 비어 있는지 확인한다.
+4. **크레이트 추가·변경 절차:** (a) `[workspace.dependencies]`에 `=` 고정과 `default-features = false`로 추가 → (b) `cargo metadata --format-version 1 --filter-platform x86_64-pc-windows-msvc`(캐시에 있으면 `--offline`)로 lock 갱신 → (c) 의도와 다른 전이 버전은 `cargo update -p <name>@<현재> --precise <목표>` → (d) `git diff Cargo.lock`의 추가·변경 `[[package]]`(name, version, checksum)를 커밋 메시지에 나열 → (e) 같은 커밋에서 `check-core-deps.mjs` 허용 목록·`PHASES` 갱신 → (f) `node scripts/check-core-deps.mjs --list`가 출력한 새 크레이트의 소스 디렉터리(`~/.cargo/registry/src/…/<name>-<ver>`)를 읽어 검토(build.rs·unsafe·네트워크·파일 접근 위주) → (g) RustSec advisory-db와 OSV에서 `name=version` 조회, 조회 날짜를 커밋 메시지에 기록 → (h) `check.ps1` 통과.
+
+### 3.7 소스 검토와 vendor
+
+- 검토 대상은 검사 스크립트가 보고한 폐포뿐이다. `--list`가 각 크레이트의 로컬 registry 소스 경로를 준다(네트워크 불필요).
+- `cargo vendor --locked --versioned-dirs vendor`는 **선택**이다. lock 전체(비Windows 크레이트 포함)를 받으므로 캐시에 없는 항목(예: wasi 0.14.7) 때문에 네트워크가 필요하다. `/vendor`는 gitignore이며 커밋하지 않고, `.cargo/config.toml`의 source replacement로 쓰지 않는다. 빌드는 항상 crates.io + Cargo.lock checksum이다.
+- 권고 조회(cargo-audit·cargo-deny 미설치 전제): 단계 진입 시와 M9 체크리스트에서 허용 목록 전체를 RustSec·OSV에서 수동 조회한다([09](09-testing.md)).
+
+### 3.8 빌드 전제 조건
+
+| 항목 | 요구 |
+|---|---|
+| OS | Windows 11 x64 22H2 이상(D1) |
+| Rust | rustup + `rust-toolchain.toml`(1.95.0, components clippy·rustfmt, profile minimal). 기계 기본 툴체인과 무관. |
+| C 컴파일러·링커 | Visual Studio Build Tools의 "C++를 사용한 데스크톱 개발" 워크로드(MSVC + Windows SDK). secp256k1-sys가 cc로 libsecp256k1 C 소스를 컴파일하고, `x86_64-pc-windows-msvc` 링크에도 필요하다. |
+| Node.js | 22 이상(확장 테스트·스크립트). npm 패키지 설치 없음. |
+| Git | 2.x (privacy-scan이 `git ls-files` 사용) |
+| PowerShell | Windows PowerShell 5.1 또는 7.x |
+| Chrome | 120 이상(M5부터) |
+
+빌드: `cargo build --release --locked` → `target\release\yw-app.exe`, `target\release\yw-host.exe`. 첫 빌드는 crates.io 다운로드가 필요할 수 있다. 이후 `check.ps1 -Offline` 가능.
+
+---
+
+## 4. 검사 스크립트
+
+### 4.1 `scripts/check.ps1` (전체)
+
+```powershell
+# scripts/check.ps1 — 저장소 게이트. 사용: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 [-Step <name>] [-Offline]
+[CmdletBinding()]
+param(
+    [ValidateSet("all", "fmt", "deps", "clippy", "test", "build", "ext-test", "script-test", "privacy", "audit-ext")]
+    [string]$Step = "all",
+    [switch]$Offline
+)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Continue"
+$Root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+Set-Location -LiteralPath $Root
+
+function Fail([int]$Code, [string]$Message) {
+    [Console]::Error.WriteLine("check: FAIL $Code $Message")
+    exit $Code
+}
+function Invoke-Step([string]$Name, [int]$Code, [string]$Exe, [string[]]$ArgList) {
+    if ($Step -ne "all" -and $Step -ne $Name) { return }
+    Write-Host "check: $Name"
+    & $Exe @ArgList
+    if ($LASTEXITCODE -ne 0) { Fail $Code "$Name (exit $LASTEXITCODE)" }
+}
+function Get-Tests([string]$Dir, [int]$Code) {
+    $files = @(Get-ChildItem -LiteralPath $Dir -Filter "*.test.mjs" -File | Sort-Object Name | ForEach-Object { $_.FullName })
+    if ($files.Count -eq 0) { Fail $Code "no tests in $Dir" }
+    return $files
+}
+
+$cargoVersion = & cargo --version 2>$null
+if ($LASTEXITCODE -ne 0 -or "$cargoVersion" -notmatch '^cargo 1\.95\.0 ') { Fail 10 "cargo 1.95.0 required (rust-toolchain.toml)" }
+$nodeVersion = & node --version 2>$null
+if ($LASTEXITCODE -ne 0 -or "$nodeVersion" -notmatch '^v(\d+)\.' -or [int]$Matches[1] -lt 22) { Fail 10 "Node.js 22+ required" }
+foreach ($name in "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS", "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS") {
+    if ([Environment]::GetEnvironmentVariable($name)) { Fail 11 "$name must be unset (.cargo/config.toml owns rustflags)" }
+}
+$net = @("--locked"); if ($Offline) { $net += "--offline" }
+$deps = @("scripts/check-core-deps.mjs"); if ($Offline) { $deps += "--offline" }
+
+Invoke-Step "fmt" 20 "cargo" @("fmt", "--all", "--", "--check")
+Invoke-Step "deps" 21 "node" $deps
+Invoke-Step "clippy" 22 "cargo" (@("clippy", "--workspace", "--all-targets") + $net + @("--", "-D", "warnings"))
+Invoke-Step "test" 23 "cargo" (@("test", "--workspace") + $net)
+Invoke-Step "build" 24 "cargo" (@("build", "--workspace") + $net)   # target\debug\yw-host.exe ([09] §2.2, [05] H1)
+$env:YW_CHECK = "1"                                                   # 확장 프로세스 테스트가 skip 대신 실패([09])
+if ($Step -in "all", "ext-test") { Invoke-Step "ext-test" 25 "node" (@("--test") + (Get-Tests "extension/tests" 25)) }
+if ($Step -in "all", "script-test") { Invoke-Step "script-test" 26 "node" (@("--test") + (Get-Tests "scripts" 26)) }
+Invoke-Step "privacy" 27 "node" @("scripts/privacy-scan.mjs")
+Invoke-Step "audit-ext" 28 "node" @("scripts/audit-extension.mjs", "check", "--extension-root", "extension")
+Write-Host "check: OK"
+exit 0
+```
+
+종료 코드: 0 통과, 1 스크립트 자체 오류(잘못된 `-Step` 포함), 10 cargo 1.95.0 또는 Node 22+ 없음, 11 rustflags 환경 변수 설정됨, 20 fmt, 21 의존성 허용 목록, 22 clippy, 23 cargo test, 24 cargo build, 25 확장 테스트, 26 스크립트 테스트, 27 privacy scan, 28 확장 정적 감사. 첫 실패에서 멈춘다. 모든 마일스톤 완료 조건은 이 스크립트의 0을 포함한다. (PowerShell 5.1에서 단계 선택, 종료 코드 11, 잘못된 `-Step`의 1을 확인함.)
+
+### 4.2 `scripts/check-core-deps.mjs` (전체)
+
+```js
+// scripts/check-core-deps.mjs — 워크스페이스 크레이트별 의존성 폐포를 허용 목록과 정확히 비교한다.
+// Usage: node scripts/check-core-deps.mjs [--offline] [--list]
+// Exit: 0 = OK, 1 = 정책 위반, 2 = cargo metadata 실행/해석 실패.
+import { execFileSync } from "node:child_process";
+import { dirname } from "node:path";
+
+const TARGET = "x86_64-pc-windows-msvc";
+const CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index";
+// 단계 진입 커밋에서만 바꾼다(spec/01 §3.4): M7 → "sol" 추가.
+const PHASES = new Set([]);
+
+// name=version:n (런타임에 링크) | :b (빌드 시에만 실행: build-dependency와 그 폐포)
+const table = (text) => Object.fromEntries(text.trim().split(/\s+/).map((entry) => entry.split(":")));
+const CORE_EVM = table(`
+aead=0.5.2:n argon2=0.5.3:n base64ct=1.8.3:n blake2=0.10.6:n block-buffer=0.10.4:n cfg-if=1.0.4:n
+chacha20=0.9.1:n chacha20poly1305=0.10.1:n cipher=0.4.4:n cpufeatures=0.2.17:n crypto-common=0.1.7:n
+digest=0.10.7:n generic-array=0.14.7:n getrandom=0.3.3:n hkdf=0.12.4:n hmac=0.12.1:n inout=0.1.4:n
+keccak=0.1.6:n opaque-debug=0.3.1:n pbkdf2=0.12.2:n poly1305=0.8.0:n ripemd=0.1.3:n secp256k1=0.31.1:n
+secp256k1-sys=0.11.0:n sha2=0.10.9:n sha3=0.10.8:n subtle=2.6.1:n typenum=1.20.1:n
+universal-hash=0.5.1:n zeroize=1.8.1:n
+cc=1.4.2:b find-msvc-tools=0.1.10:b shlex=2.0.1:b version_check=0.9.5:b`);
+const CORE_SOL = table(`ed25519-dalek=2.2.0:n ed25519=2.2.3:n signature=2.2.0:n curve25519-dalek=4.1.3:n
+rustc_version=0.4.1:b semver=1.0.28:b`);
+const WIN = table(`windows-sys=0.61.2:n windows-link=0.2.1:n`);
+const APP = table(`qrcodegen=1.8.0:n`);
+
+const CORE = { ...CORE_EVM, ...(PHASES.has("sol") ? CORE_SOL : {}) };
+const POLICY = {
+  "yw-core": { allow: CORE, local: ["yw-json"] },
+  "yw-json": { allow: {}, local: [] },
+  "yw-win": { allow: WIN, local: [] },
+  "yw-app": { allow: { ...CORE, ...WIN, ...APP }, local: ["yw-core", "yw-json", "yw-win"] },
+  "yw-host": { allow: WIN, local: ["yw-json", "yw-win"] },
+};
+const BUILD_RS_ALLOW = new Set(["generic-array", "getrandom", "secp256k1-sys", ...(PHASES.has("sol") ? ["curve25519-dalek"] : [])]);
+const OWN_BUILD_RS_ALLOW = new Set(["yw-app"]);
+const FORBIDDEN_FEATURES = {
+  secp256k1: ["rand", "global-context", "hashes", "serde"], argon2: ["alloc", "password-hash", "rand"],
+  chacha20poly1305: ["getrandom", "rand_core"], aead: ["getrandom", "rand_core"], zeroize: ["derive"],
+  getrandom: ["wasm_js"], "ed25519-dalek": ["asm", "batch", "digest", "hazmat", "legacy_compatibility", "pem", "pkcs8", "rand_core", "serde"],
+  "curve25519-dalek": ["group", "group-bits", "legacy_compatibility", "rand_core", "serde"],
+  ed25519: ["pem", "pkcs8", "serde", "serde_bytes"], signature: ["derive", "digest", "rand_core"],
+};
+
+let meta;
+try {
+  const args = ["metadata", "--format-version", "1", "--locked", "--filter-platform", TARGET];
+  if (process.argv.includes("--offline")) args.push("--offline");
+  meta = JSON.parse(execFileSync("cargo", args, { encoding: "utf8", maxBuffer: 64 << 20, windowsHide: true }));
+} catch (error) {
+  console.error(`deps check: cargo metadata failed: ${error instanceof Error ? error.message.split("\n")[0] : "unknown"}`);
+  process.exit(2);
+}
+const pkgs = new Map(meta.packages.map((p) => [p.id, p]));
+const nodes = new Map(meta.resolve.nodes.map((n) => [n.id, n]));
+const key = (p) => `${p.name}=${p.version}`;
+const errors = [];
+const listing = [];
+
+for (const id of meta.workspace_members) {
+  const p = pkgs.get(id);
+  if (!(p.name in POLICY)) errors.push(`${p.name}: workspace member without a policy`);
+  if (p.dependencies.some((d) => d.kind === "dev")) errors.push(`${p.name}: dev-dependencies are forbidden`);
+  if (p.targets.some((t) => t.kind.includes("custom-build")) && !OWN_BUILD_RS_ALLOW.has(p.name)) errors.push(`${p.name}: build.rs is forbidden`);
+}
+
+for (const [root, policy] of Object.entries(POLICY)) {
+  const rootId = meta.workspace_members.find((id) => pkgs.get(id).name === root);
+  if (!rootId) { errors.push(`${root}: workspace member not found`); continue; }
+  // BFS over normal + build edges (dev edges ignored); a crate reached at runtime is "n".
+  const seen = new Map();
+  const queue = [[rootId, "n"]];
+  while (queue.length) {
+    const [id, mode] = queue.shift();
+    if (seen.get(id) === "n" || seen.get(id) === mode) continue;
+    seen.set(id, mode);
+    for (const d of nodes.get(id).deps) {
+      const kinds = d.dep_kinds.map((k) => k.kind);
+      if (kinds.includes(null)) queue.push([d.pkg, mode]);
+      if (kinds.includes("build")) queue.push([d.pkg, "b"]);
+    }
+  }
+  const reached = new Set();
+  for (const [id, mode] of seen) {
+    if (id === rootId) continue;
+    const p = pkgs.get(id), k = key(p), at = `${root} -> ${k}`;
+    if (p.source === null) {
+      if (!policy.local.includes(p.name)) errors.push(`${at}: local crate not allowed here`);
+      continue;
+    }
+    reached.add(k);
+    listing.push(`${root}\t${mode === "n" ? "runtime" : "build"}\t${k}\t${dirname(p.manifest_path)}`);
+    if (p.source !== CRATES_IO) errors.push(`${at}: non-crates.io source ${p.source}`);
+    if (!(k in policy.allow)) errors.push(`${at}: not in allowlist (${mode === "n" ? "runtime" : "build-time"})`);
+    else if (policy.allow[k] === "b" && mode === "n") errors.push(`${at}: allowlisted build-only but linked at runtime`);
+    if (p.targets.some((t) => t.kind.includes("custom-build")) && !BUILD_RS_ALLOW.has(p.name)) errors.push(`${at}: unreviewed build.rs`);
+    if (p.targets.some((t) => t.kind.includes("proc-macro"))) errors.push(`${at}: proc-macro (curve25519-dalek-derive means the serial backend cfg is missing)`);
+    const bad = (FORBIDDEN_FEATURES[p.name] ?? []).filter((f) => nodes.get(id).features.includes(f));
+    if (bad.length) errors.push(`${at}: forbidden features ${bad.join(",")} (workspace-unified)`);
+  }
+  for (const k of Object.keys(policy.allow)) if (!reached.has(k)) errors.push(`${root}: ${k} allowlisted but not reached (prune or fix phase)`);
+  if (!errors.some((e) => e.startsWith(root))) console.log(`${root} deps check OK: ${reached.size} crates (${TARGET})`);
+}
+
+if (process.argv.includes("--list")) console.log(listing.join("\n"));
+if (errors.length) { console.error(`deps check FAILED (${TARGET}, phases: ${[...PHASES].join(",") || "evm"}):\n  ${errors.join("\n  ")}`); process.exit(1); }
+console.log(`deps check OK (${TARGET}, phases: ${[...PHASES].join(",") || "evm"})`);
+```
+
+`--filter-platform`은 필수다(없으면 오프라인에서 wasi 다운로드를 시도해 실패하고, 비Windows 의존까지 섞인다). 출처의 59줄 검사기(yw-core 단일 루트)를 다섯 루트·단계·멤버 규칙으로 확장한 것이다.
+
+### 4.3 `scripts/privacy-scan.mjs` 변경
+
+기존 구조(인벤토리 = `git ls-files --cached --others --exclude-standard --deduplicate -z`, symlink 안전 읽기, 규칙 이름·건수만 출력, 인프라 실패는 고정 문구 + 종료 1)를 유지하고 다음만 바꾼다.
+
+- `allowedExtensions`에서 `.cs` 삭제. 결과: `.html .js .json .md .mjs .ps1 .rs .toml .yml`.
+- 규칙 표를 아래로 교체한다. `vectorsAllowed: true` 규칙은 `TEST_VECTOR_PATH`에 맞는 경로에서 건너뛴다.
+
+```js
+const TEST_VECTOR_PATH = /^(?:crates\/[^/]+\/tests\/|crates\/[^/]+\/src\/(?:[^/]+\/)*tests\.rs$|tools\/[^/]+\/tests\/|extension\/tests\/|scripts\/[^/]+\.test\.mjs$|spec\/)/u;
+const BIP39_WORDS = new URL("../crates/yw-core/src/bip39/english.txt", import.meta.url); // 스캐너 자신의 저장소에서 읽는다
+const forbidden = [
+  { name: "private-key-assignment", vectorsAllowed: true, expression: /private[_-]?key\s*[:=]\s*["'][0-9a-f]{64}["']/iu },
+  { name: "authorization-header", expression: /authorization\s*:\s*bearer\s+[a-z0-9._~-]{12,}/iu },
+  { name: "seed-phrase-label", vectorsAllowed: true, expression: /(?:mnemonic|seed[_ -]?phrase)\s*[:=]\s*["'][a-z]+(?:\s+[a-z]+){11,23}["']/iu },
+  { name: "production-secret-marker", expression: /\[(?:SECRET|PASSWORD|TOKEN|PRIVATE_KEY)\]/u },
+  { name: "alchemy-key-url", expression: /\.g\.alchemy\.com\/v2\/[A-Za-z0-9_-]{16,}/u },
+  { name: "quicknode-url", expression: /\.quiknode\.pro\/[A-Za-z0-9_-]{16,}/u },   // D13 템플릿: https://<이름>.<서브도메인>.quiknode.pro/<토큰>/
+  { name: "llm-api-key", expression: /\bsk-[A-Za-z0-9_-]{20,}/u },
+  { name: "labeled-private-key-hex", vectorsAllowed: true,
+    expression: /(?:priv(?:ate)?|secret|signing)[_ -]?key[^\n]{0,80}?(?<![0-9A-Fa-f])(?:0x)?[0-9A-Fa-f]{64}(?![0-9A-Fa-f])/iu },
+  { name: "bip39-word-sequence", vectorsAllowed: true, detect: (text, words) => {
+      let run = 0, last = -1;   // 공백·따옴표·쉼표·대괄호로만 이어진 BIP39 단어 12개 이상
+      for (const m of text.matchAll(/[a-z]+/gu)) {
+        const joined = last >= 0 && /^[\s"',[\]]+$/u.test(text.slice(last, m.index));
+        run = words.has(m[0]) ? (joined ? run + 1 : 1) : 0;
+        last = m.index + m[0].length;
+        if (run >= 12) return true;
+      }
+      return false; } },
+];
+```
+
+- `scanRepository`는 규칙마다 `expression.test(text)` 또는 `detect(text, words)`를 적용한다. `words`는 `BIP39_WORDS`를 LF로 나눈 `Set`이며 2048개가 아니면 인프라 실패다. 결과 보고는 기존처럼 규칙 이름·건수만.
+- 표시 없는 `0x`+64hex는 해시(tx·genesis·typehash)와 모양이 같아 검사하지 않는다. 키를 가리키는 이름이 같은 줄에 있을 때만 잡는다. `<KEY>`·`{KEY}`·`<토큰>`·`docs-demo` 같은 자리표시는 16자 미만이거나 문자 집합 밖이라 잡히지 않는다.
+- 엔드포인트 URL 규칙은 D13 템플릿 두 공급자(알케미 경로 키, QuickNode 경로 토큰)의 모양만 잡는다. 다른 공급자의 토큰 URL은 잡지 못하므로 개발용 URL 파일은 저장소 밖에만 둔다(§4.6).
+- 단어 목록 파일을 읽지 못하면 인프라 실패(종료 1).
+- 테스트(`privacy-scan.test.mjs`) 추가: 새 규칙 5개(`alchemy-key-url`, `quicknode-url`, `llm-api-key`, `labeled-private-key-hex`, `bip39-word-sequence`) 각각 양성 1건, `<KEY>`·`<토큰>` 자리표시·`https://docs-demo.quiknode.pro/`·genesis 해시·영어 문장 음성, `crates/x/tests/v.rs`·`crates/x/src/m/tests.rs`·`tools/x/tests/v.rs`·`spec/02.md`의 벡터 면제, 비면제 경로의 벡터 검출. 픽스처 문자열은 기존처럼 조각을 이어 붙여 저장소 자체가 걸리지 않게 만든다. 기존 "retains all four forbidden source signatures"는 9개로, C# 하네스 테스트는 `.rs`로 바꾼다.
+- 따름 규칙: 니모닉·개인키가 든 테스트 값은 `crates/*/tests/**`(KAT·벡터 위치, [09](09-testing.md) §2.1), `crates/*/src/**/tests.rs`(`#[cfg(test)] mod tests;`), `tools/*/tests/**`(오라클, §2.1)에만 둔다. 같은 파일 안의 인라인 `mod tests`에는 두지 않는다.
+
+### 4.4 `scripts/audit-extension.mjs` 이동
+
+- `scripts/lib/strict-json.mjs` 생성: `archive/spec-v2.4:scripts/release/release-manifest.mjs:98-100`(한도 상수), `:144-150`(`fail`·`isPlainObject`, 오류 클래스는 `StrictJsonError`로 개명), `:152-158`(`decodeUtf8`), `:160-283`(`parseStrictJson`)을 옮긴다. 다른 함수는 옮기지 않는다.
+- `audit-extension.mjs`: import를 `./lib/strict-json.mjs`로 바꾸고 `evidence` 명령, `canonicalEncode`, 해시 출력(`extensionManifestSha256`, `packageSourceTreeSha256`)을 지운다. `auditExtensionRoot`는 `{ packagedFiles }`만 반환하고 CLI는 `check --extension-root <dir>`만 받아 성공 시 `EXTENSION_STATIC_AUDIT_PASS`를 출력한다. 금지 패턴·manifest 계약은 M0에서 그대로 둔다.
+- `audit-extension.test.mjs`: 첫 테스트의 해시 단언 삭제, 나머지 그대로.
+- M5에서 manifest의 `key` 필드(D22)와 localhost matches를 추가할 때 `validateManifest`의 키 집합·`matches` 기대값을 같은 커밋에서 바꾼다. `key`가 있으면 확장 ID(= `SHA-256(base64 디코딩한 key)` 앞 16바이트를 hex로 쓰고 `0-f`를 `a-p`로 바꾼 32자)를 계산해 `EXTENSION_STATIC_AUDIT_PASS id=<id>`로 출력한다. 기대 `matches`는 [05](05-browser.md)의 manifest 정의와 같아야 한다.
+
+### 4.5 M0 1회 음성 체크리스트 (검사가 실제로 막는지)
+
+각 항목은 수정 → (Cargo.toml을 바꾼 경우 `cargo metadata --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc > $null`로 lock 갱신) → `check.ps1 -Step <step> -Offline` → 기대 실패 확인 → `git checkout -- .`로 되돌린다(Cargo.lock 포함. 인덱스로 되돌리므로 M0 커밋 전에 하면 먼저 `git add -A`). 1–3은 임시 워크스페이스에서 같은 결과를 확인했다.
+
+| # | 변경 | 기대 |
+|---|---|---|
+| 1 | yw-host에 `chacha20poly1305 = { workspace = true, features = ["getrandom"] }` | deps 21: 금지 feature, getrandom 0.2.17·rand_core 0.6.4 비허용, yw-host 폐포 위반 |
+| 2 | yw-json에 `[dev-dependencies] zeroize.workspace = true` | deps 21: dev-dependencies 금지 |
+| 3 | yw-core에 `qrcodegen.workspace = true`(lock은 yw-core 의존 목록 한 줄만 바뀜) | deps 21: `yw-core -> qrcodegen=1.8.0: not in allowlist (runtime)` |
+| 4 | yw-core lib.rs에 `fn f() -> u8 { None.unwrap() }` | clippy 22 |
+| 5 | `RUSTFLAGS=-Cdebuginfo=0` 설정 후 실행 | 11 |
+| 6 | 비면제 `.rs`에 alchemy 키 모양 URL, 이어서 QuickNode 토큰 모양 URL(각각 따로) | privacy 27 |
+| 7 | `extension/src/background.js`에 `eval("1")` | audit-ext 28 |
+
+### 4.6 개발용 실서비스 RPC 설정 (D13)
+
+- 개발 중 실서비스에 붙는 도구(프로브 §4.7, `#[ignore]` 실서비스 테스트·E2E [09](09-testing.md) §2.5·§5)는 엔드포인트 URL을 환경 변수 `YW_RPC_JSON`(설정 파일 경로)이 있으면 그 파일에서, 없으면 `%USERPROFILE%\.yw-dev\rpc.json`에서 읽는다. URL을 명령줄 인자·다른 환경 변수로 받지 않는다(프로세스 목록·셸 기록에 남는다).
+- 형식: UTF-8 JSON 객체 하나, ≤ 64 KiB, 엄격 파싱(중복 키 거부; Node 도구는 `scripts/lib/strict-json.mjs`의 `decodeUtf8`·`parseStrictJson`). 키 = [02](02-core-keys-vault.md) §5.3 `NetworkId`(예 `eip155:1`, `eip155:11155111`, `eip155:999`, `solana:devnet`, `bitcoin:testnet4`), 값 = HTTPS JSON-RPC URL 전체(토큰 포함, `https://`만, ≤ 2048바이트, userinfo·fragment 없음 — yw-win `HttpsUrl`(§7.4)과 같은 규칙). 예: `{"eip155:1":"https://…","eip155:11155111":"https://…","eip155:999":"https://…"}`. 도구는 자기가 쓰는 키만 읽고 나머지는 무시한다.
+- URL 전체가 비밀이다(D13). 출력·로그·오류 문구·`docs/acceptance/` 기록·커밋 메시지에는 URL·호스트·토큰 대신 `NetworkId`만 쓴다. 설정 파일 파싱·검증 오류도 고정 문구 + 키 이름만 출력한다(값·파서 메시지 출력 금지).
+- 파일은 저장소 밖에 둔다. 도구는 설정 파일의 실제 경로(`realpath`)가 저장소 루트 아래이면 읽지 않고 실패한다. `%USERPROFILE%\.yw-dev\`는 저장소 밖이므로 `.gitignore` 변경은 없다. 저장소에 잘못 들어온 URL은 privacy scan(§4.3)이 알케미·QuickNode 모양만 잡는다.
+- 제품 코드(yw-app·yw-host 실행 파일)는 이 파일·변수를 읽지 않는다. 앱의 엔드포인트는 `apikeys.dpapi`([04](04-app-ui.md) §6.3)뿐이다.
+
+### 4.7 `scripts/probe-rpc.mjs` (수동 실서비스 프로브)
+
+[03](03-evm.md) §1.3(네이티브 이동 로그)·§1.5(A1–A5, A9 (a)(b)(d))·D14(내장 체인 chainId·블록 0 해시)와 Solana·Bitcoin 엔드포인트 연결을 실제 공급자로 확인하는 사람용 도구다(구현 완료, 2026-10-27 실측 결과는 [03] §1.5·[08] §4.5). M2 전에, 그리고 공급자·엔드포인트를 바꿀 때 실행한다. 네트워크와 비밀이 필요하므로 `check.ps1` 단계가 아니고 `*.test.mjs`도 없다([09](09-testing.md) §1 규칙 4). Node 22, npm 의존성 0(`node:*`만), 전역 `fetch`.
+
+- 실행: `node scripts/probe-rpc.mjs`. 설정은 §4.6. 설정 파일 실제 경로가 저장소 안이면 실패한다.
+- EVM(`eip155:1`, `eip155:11155111`, `eip155:999`, 없는 키는 `skip`): `eth_chainId`, 블록 0 해시(1·11155111은 상수 비교, 999는 값만 출력), 최신 블록(base fee·gasLimit), `eth_simulateV1` 5회(블록 1개·호출 1개, `traceTransfers:true`, `validation:true`, `"latest"`, gas 1,000,000, maxFee = 2×baseFee + 1 gwei, tip 1 gwei; 발신자는 실행마다 새 무작위 주소이고 `stateOverrides`로 1 ETH를 넣는다): `sim fresh 1wei`(새 주소로 1 wei), `sim self 1wei`(자기 자신), `sim revert`(`stateOverrides`로 코드 `0x63deadbeef6000526004601cfd` = 4바이트 `0xdeadbeef` revert를 넣은 주소 호출), `sim no-funds`(잔액 0 발신자가 1 ETH 전송 → 최상위 오류 코드 확인), `sim chainId+type`(호출 객체에 `chainId`·`type 0x2` 포함). `eip155:999` URL이 `/evm`으로 끝나면 같은 검사를 `/nanoreth` 경로로 한 번 더 한다(`eip155:999/nano`).
+- Solana(`solana:mainnet`, `solana:devnet`): `getGenesisHash` 비교. Bitcoin(`bitcoin:mainnet`, `bitcoin:testnet4`): `getblockhash 0` 비교, `getblockchaininfo.chain`, `bb_getBlockHash ["0"]`(Blockbook 애드온 활성 여부).
+- 출력: 검사마다 한 줄 `<NetworkId> <검사 이름> ok|err key=value…`(예: `eip155:11155111 sim fresh 1wei ok status=0x1 gasUsed=204600 maxUsedGas=204600 logs=1 nativeEmitter=fffe …`), 마지막 줄 `summary: …`. 오류는 `http`·`code`와, URL의 호스트·경로 조각을 `[redacted]`로 바꾸고 URL 모양을 `[url]`로 바꾼 RPC 메시지 앞 80자만 보여준다. URL·호스트·토큰·예외 문자열은 출력하지 않는다.
+- 종료 코드: 0 = 모든 검사 ok, 1 = 하나라도 err(설정 파일 없음 포함). `sim no-funds`는 최상위 오류가 기대값이므로 항상 err로 나오며, 판정은 사람이 [03] §1.5 표로 한다.
+- 출력에는 비밀이 없으므로 그대로 `docs/acceptance/probe-<YYYYMMDD>.md`([09](09-testing.md) §2.5)에 붙여 기록한다.
+
+### 4.8 `scripts/dev-rpc-setup.ps1` (개발용 RPC 설정 도우미)
+
+§4.6의 `rpc.json`을 만드는 대화형 PowerShell 스크립트다(Windows PowerShell 5.1 호환, UTF-8 BOM). 실행: `powershell -NoProfile -ExecutionPolicy Bypass -File scriptsdev-rpc-setup.ps1`(직접 연 터미널에서).
+
+- 입력: QuickNode 엔드포인트 이름(`https://<이름>.<체인>.quiknode.pro/<API 키>/`의 `<이름>`)과 API 키(`Read-Host -AsSecureString`, 화면에 표시 안 함). 이름 칸에 전체 URL을 붙여넣으면 이름·키를 뽑아 쓴다.
+- 네트워크 7개(`eip155:1` 서브도메인 없음, `eip155:11155111` `ethereum-sepolia`, `eip155:999` `hype-mainnet` + `/nanoreth`, `solana:mainnet`·`solana:devnet`, `bitcoin:mainnet` `btc`, `bitcoin:testnet4` `btc-testnet4`)의 URL을 만들어 각각 한 번 호출로 확인(`eth_chainId` / `getGenesisHash` / `getblockhash 0`)한다. 실패한 네트워크는 대시보드 URL을 그 자리에서 붙여넣거나 건너뛴다. 확인된 것만 기존 파일에 병합해 저장한다(UTF-8, BOM 없음).
+- URL·토큰은 출력하지 않는다. 결과 표는 `NetworkId`·이름·OK/실패만 보여준다.
+
+## 5. 코딩 규칙
+
+### 5.1 unsafe와 경계
+
+- `unsafe`는 yw-win에만 있다. yw-core·yw-json·yw-app·yw-host는 workspace lint `unsafe_code = "forbid"`에 더해 `lib.rs`/`main.rs`에 `#![forbid(unsafe_code)]`를 둔다.
+- yw-win은 FFI 모듈 파일 첫 줄에만 `#![allow(unsafe_code)]`를 두고, 모든 `unsafe` 블록에 `// SAFETY:` 주석(어떤 전제가 왜 성립하는지)과 블록당 unsafe 연산 1개(clippy `undocumented_unsafe_blocks`, `multiple_unsafe_ops_per_block`).
+- yw-win 공개 API에 원시 `HANDLE`·`HWND`·포인터를 노출하지 않는다. 모든 핸들은 `Drop`에서 닫는 RAII 타입이다. `static mut` 금지(전역 상태는 atomic·`OnceLock`).
+- yw-app은 windows-sys에 직접 의존하지 않는다. Win32 GUI 전체(클래스, wndproc, 루프, 그리기)는 yw-win의 안전 API다.
+- `crates/yw-core/clippy.toml`(루트 clippy.toml 내용 + 아래)로 yw-core의 OS 접근을 lint로 막는다(확인함: yw-core에서만 오류, yw-app은 무관):
+  ```toml
+  disallowed-types = [ "std::time::Instant", "std::time::SystemTime", "std::fs::File", "std::fs::OpenOptions",
+                       "std::net::TcpStream", "std::net::TcpListener", "std::net::UdpSocket", "std::process::Command" ]
+  disallowed-methods = [ "std::thread::spawn", "std::env::var", "std::env::var_os", "std::fs::read",
+                         "std::fs::write", "std::fs::read_to_string" ]
+  ```
+
+### 5.2 panic 금지와 오류
+
+- `unwrap`·`expect`·`panic!`·`todo!`·`unimplemented!`·`dbg!`·`print*`·`std::process::exit`·`mem::forget`은 clippy deny. 예외: `#[test]` 함수와 `#[cfg(test)]` 모듈의 `unwrap`·`expect`(clippy.toml `allow-unwrap-in-tests`, `allow-expect-in-tests`). 통합 테스트의 도우미 함수는 `Result`를 반환한다.
+- `main`은 `std::process::ExitCode`를 반환한다(소멸자가 돌아 비밀이 지워진다).
+- pedantic lint를 개별로 끌 때는 항목 단위 `#[expect(clippy::<lint>, reason = "...")]`만 쓴다(사라지면 경고 → 실패).
+- 오류는 모듈별 수동 enum + `impl Display` + `impl std::error::Error`. thiserror 등 매크로 크레이트 금지. 오류 값과 `Display`에 비밀·dApp/RPC 원문·URL·호스트·경로를 담지 않는다(고정 문구 + 숫자 코드, 대상 네트워크는 `NetworkId`).
+- 파서(yw-json 전체, yw-core `bip39`·`bip32::xkey`·`codec::base58`·`vault`·`journal`(하위 모듈 포함)·`evm::{rlp, abi, decode, eip712}`·`sol::*`·`btc::*`)는 모듈 상단에 `#![deny(clippy::indexing_slicing)]`. 길이·금액 계산(yw-json, `evm::amount`, `btc` 수수료)은 `#![deny(clippy::arithmetic_side_effects)]`로 `checked_*`만 쓴다. release에도 `overflow-checks = true`이므로 남은 overflow는 abort(D28)다.
+
+### 5.3 비밀 타입
+
+`yw-core::secret`:
+
+```rust
+pub struct SecretBytes<const N: usize>(zeroize::Zeroizing<[u8; N]>);   // 키, 시드, DEK 복사본, 엔트로피
+pub struct SecretVec(zeroize::Zeroizing<Vec<u8>>);     // 생성 시 용량 고정, 용량 초과 push는 오류(재할당 사본 방지)
+pub struct SecretString(zeroize::Zeroizing<String>);   // 니모닉 문구, 비밀번호, API 키(같은 용량 규칙)
+impl<const N: usize> SecretBytes<N> { pub fn new(src: &mut [u8; N]) -> Self /* src를 0으로 */; pub fn expose(&self) -> &[u8; N]; }
+```
+
+- `yw_core::secret`은 `pub use zeroize::{Zeroize, Zeroizing};`로 재수출한다. yw-app은 zeroize에 직접 의존하지 않고(D5) 이 재수출로 `Zeroizing<…>`을 쓴다. yw-core 공개 API는 `Zeroizing<…>`을 직접 반환해도 되고([02](02-core-keys-vault.md)) 위 래퍼를 써도 된다. 규칙은 같다.
+- 래퍼는 `Clone`·`Copy`·`Display`·`PartialEq`·serde 계열을 구현하지 않는다. 비교는 `subtle::ConstantTimeEq`. `Debug`는 `SecretBytes<32>([REDACTED])`처럼 길이 외 정보를 출력하지 않는다.
+- 비밀을 담은 일반 `[u8; N]`·`Vec`·`String` 지역 변수는 쓰고 난 즉시 `zeroize()`한다. 형 변환(UTF-16 ↔ UTF-8, hex 등)은 용량을 미리 정한 비밀 타입으로 직접 쓴다.
+- yw-win은 zeroize를 쓸 수 없으므로 자체 `mem::wipe(&mut [u8])`/`wipe_u16`(`write_volatile` + `compiler_fence(SeqCst)`)과 `mem::WipeBuf`(용량 고정, Drop에서 wipe)를 쓴다. yw-win → yw-core 경계는 `with_secret(|bytes| …)` 클로저로 넘겨 yw-core 비밀 타입에 바로 복사한다.
+- 잠금 해제 중 상주 지갑 비밀은 `yw_win::mem::LockedBox<320>` 하나(= [02](02-core-keys-vault.md) §7.3 `SLOT_LEN`, `LockedSlot` 배치: [0..32) DEK, `passphrase_used` vault이면 BIP39 passphrase)뿐이다(D10). RPC·LLM API 키는 지갑 비밀이 아니며 해당 작업 스레드가 `SecretString`으로 프로세스 수명 동안 보관할 수 있다(D10).
+
+### 5.4 로깅 (D28)
+
+- 파일 로그는 yw-app만 쓴다. 위치·순환·한 줄 형식·수준은 [04](04-app-ui.md) §8, yw-host는 [05](05-browser.md)가 정한다. yw-core·yw-json·yw-win은 로그를 쓰지 않고 오류 값만 돌려준다.
+- 로그 API는 정적 이벤트 이름과 타입이 정해진 필드만 받는다(`format!`으로 만든 임의 문자열을 받지 않는다). 문자열 필드는 `&'static str` 또는 yw-app이 만든 값(`NetworkId`, 오류 코드)뿐이다.
+- 비밀 타입은 `Display`가 없으므로 넘길 수 없다. 기록 금지: 비밀, API 키, **RPC 엔드포인트 URL 전체와 그 호스트 이름**(D13: URL 전체가 비밀이다. QuickNode 호스트 `<이름>.<서브도메인>.quiknode.pro`에는 엔드포인트 이름이, 경로에는 토큰이 들어 있고 다른 공급자도 같은 위험이 있다. RPC 대상은 [02](02-core-keys-vault.md) §5.3 `NetworkId`(예 `eip155:11155111`, `solana:devnet`)로만 기록한다), dApp·RPC·확장이 보낸 원문, origin, 파일 경로(사용자명 포함), 라벨·메모. LLM 엔드포인트(D21)는 RPC 엔드포인트가 아니므로 호스트만 허용([06](06-llm-explain.md) §8, 경로·쿼리 금지). 허용: 주소(D28), tx 해시, 체인 ID, `NetworkId`, 메서드 이름, 오류 코드, 소요 시간, 개수.
+- 크래시 덤프·텔레메트리 업로드 없음. yw-app은 시작 시 `process::exclude_from_error_reporting()`(§7.6)을 호출한다(**권고**, 실패해도 계속).
+
+### 5.5 기타
+
+- 스레드: 창은 UI 스레드 하나가 소유한다. 작업 스레드(키, RPC, pipe)는 결과를 큐에 넣고 `ui::Poster::post(msg, 0)`으로 깨운다([04](04-app-ui.md) §1.2–1.3). 메시지 `wParam`에 포인터를 넣지 않는다.
+- 비밀은 스레드 사이로 옮길 때 소유권 이동만 한다(복사 금지).
+- 문자열 표시는 항상 [03](03-evm.md)·[04](04-app-ui.md)의 표시 문자 규칙을 거친다. GDI 텍스트는 `DT_NOPREFIX`로 그린다(§7.7).
+- 테스트 벡터 위치: 니모닉·개인키를 포함한 벡터는 §4.3의 면제 경로에만 둔다. 공식 벡터 목록은 [09](09-testing.md).
+
+---
+
+## 6. 아카이브 이식 목록
+
+| 출처 | 대상 | 필수 변경 |
+|---|---|---|
+| `archive/spec-v2.4:crates/secret-core/src/error.rs:4-53` | `yw-core::error`, `vault` 오류 | thiserror 제거·수동 `Display`; `DerivationExhausted` 삭제; 오답 비밀번호와 변조는 같은 `AuthenticationFailed`(유지) |
+| `archive/spec-v2.4:crates/secret-core/src/storage.rs:5-51` | `yw-core::vault` 저장소 trait | generation CAS 의미 유지, 구현은 yw-app(`yw-win::file`) |
+| `archive/spec-v2.4:crates/secret-core/src/mnemonic.rs:12-208,272-341` | `yw-core::bip39` | bip39 크레이트 호출(3, 67, 84-97, 126-140)을 자체 구현으로; `english.txt` 내장; 생성 24단어만(D9); 가져오기 형태 규칙은 `archive/spec-v2.4:demo/sepolia-wallet/src/wallet_secret.rs:739-751`; NFKD 제거(D8) |
+| `archive/spec-v2.4:crates/secret-core/src/mnemonic.rs:210-270` | `yw-core::password::Bip39Passphrase` | NFKD 제거, 0x20–0x7E 0–256자(D8), 정확한 용량 검사 유지 |
+| `archive/spec-v2.4:crates/secret-core/src/bip32.rs:12-225,273-298,392-426,448-544` | `yw-core::bip32` | invalid-child 건너뛰기(227-271, 300-389, 428-446, 테스트 500-515) 삭제 → `Err(DerivationFailed)`; 임의 경로(BIP84 포함) 일반화; 주소 계산은 `evm::address`로 |
+| `archive/spec-v2.4:crates/secret-core/src/password.rs:8-155` | `yw-core::password::VaultPassword` | NFC·공백 매핑 제거, 0x20–0x7E 12–128자(D8), 테스트 재작성 |
+| `archive/spec-v2.4:crates/secret-core/src/vault.rs:16-39,540-801,865-887,1100-1159` | `yw-core::vault` | v3 형식([02](02-core-keys-vault.md))으로 재설계. 헤더 AAD·정확한 파라미터 거부·`Cursor`·`fill_random_nonzero` 패턴만 재사용; v1 골든(1373-1413) 폐기 |
+| `archive/spec-v2.4:crates/secret-core/src/vault.rs:41-65,159-197,433-484,933-994,1198-1351` | `yw-core::vault` 백업 확인 | 상태 기계·상수 시간 비교·집계 후 판정 유지; 단어 수·문항 수는 [02](02-core-keys-vault.md) |
+| `archive/spec-v2.4:crates/secret-core/src/signing.rs:14-120,250-279` | `yw-core::evm::sign` | `wallet_protocol::AuthorizedOperation` → `approval::Approved`([03](03-evm.md) §11.5); `recovery_id ≤ 1` 유지 |
+| `archive/spec-v2.4:crates/secret-core/src/signing.rs:122-248` | `yw-core::evm::rlp` | `encode_length`의 saturating/`unwrap_or` → 정확한 오류; type 0/1 인코딩은 [03](03-evm.md)이 정한 벡터 재현 범위만 |
+| `archive/spec-v2.4:crates/wallet-model/src/bounded.rs:1-478` | `yw-core::{hex, evm::address, evm::amount}` | EIP-55: 전부 소문자·전부 대문자·체크섬 일치 혼합만 허용(354-360, 196-199, 241-243 수정, 테스트 455-462 반전); U256 연산 추가(`archive/spec-v2.4:demo/sepolia-wallet/src/backend.rs:4204-4363`, `rpc.rs:153-180`, `erc20.rs:49-107`) |
+| `archive/spec-v2.4:crates/wallet-model/src/codec.rs:1-206` | `yw-core::codec` | 변경 없음 |
+| `archive/spec-v2.4:crates/wallet-model/src/operation.rs:1-605` | `yw-core::evm::{tx, eip191, eip712}` | 운영 경로는 type 2만(D19); `schema_id` 제거; 한도 상수 유지 |
+| `archive/spec-v2.4:crates/wallet-model/src/chain.rs:1-158` | `yw-core::evm::chain` | `ChainIdentity {chain_id, genesis_hash}`·`BlockAnchor`만, 나머지 삭제 |
+| `archive/spec-v2.4:crates/wallet-model/src/context.rs:42-229,322-424` | `yw-core::policy` | `BrowserOrigin`·고정 길이 ID 유지; localhost 토글(D22); `SimulationProvenance`(427-484)는 이식하지 않는다 — 시뮬레이션 결과·결과 없음의 표현은 [03](03-evm.md) §6(D15) |
+| `archive/spec-v2.4:crates/eip712/src/schema.rs:100-233,426-543` + `error.rs:4-91` | `yw-core::evm::eip712` | serde·`json.rs` 삭제, 입력은 `yw_json::Value`([03](03-evm.md) §8); schema exception(90-98, 186-208) → D17; 해시 코어 불변 |
+| `archive/spec-v2.4:crates/eip712/tests/vectors.rs:1-371` | `crates/yw-core/tests/evm_eip712.rs` | Ether Mail 벡터 유지, 212-256은 D17에 맞게 수정 |
+| `archive/spec-v2.4:crates/wallet-protocol/src/approval.rs:16-541,708-765` | `yw-core::approval` | digest에서 registry·ruleset·rpc_observations·protocol_validity 제거; 시뮬레이션은 필수 조건이 아니다(D15: 결과 없음·revert도 고위험 확인 후 승인, 바인딩은 [03](03-evm.md) §6.5·§11.4); platform 창 타입 → 호출자 `now_ms` |
+| `archive/spec-v2.4:crates/wallet-protocol/src/authorization.rs:36-325,470-837,957-1370` | `yw-core::approval` + `evm::display` | chain_registry·ReleaseChannel 삭제(390-445, 657-665, 796-955); wei-hex → 10진 단위; 512/1023바이트 거부 → 스크롤 표시; typed data 허용(D17) |
+| `archive/spec-v2.4:crates/wallet-protocol/src/nonce.rs:1-1317` | `yw-core::journal` | ChainIdentity 단순화; 확정 슬롯 정리(4096 수명 상한 제거); D20 |
+| `archive/spec-v2.4:crates/wallet-protocol/src/validation.rs:35-441` | `yw-core::evm::tx` | type 2만, `to` 없음 거부, dApp 수수료 무시(D19·D20); schema allowlist 삭제 |
+| `archive/spec-v2.4:crates/wallet-protocol/src/error.rs:5-178` | `yw-core::policy::ProviderError` | 4001/4100/4200/-32000/-32602/-32603 매핑과 고정 문구 유지 |
+| `archive/spec-v2.4:crates/wallet-protocol/src/policy.rs:1-127` | 버림 | |
+| `archive/spec-v2.4:crates/key-agent/src/lib.rs:118-272,274-389` | yw-app `flow::evm`(서명 흐름) + `evm::sign` | settings lease·전송 바인딩 삭제; "서명 전 저널 → 서명 → 서명 후 검증 → 반환 전 저널" 순서 유지 |
+| `archive/spec-v2.4:crates/key-agent/src/lib.rs:391-905` | `yw-core::evm::{rlp, tx}` | 엄격 디코더(`MAX_RLP_DEPTH` 4)·필드별 재검증·sender 복구를 서명 후 필수 검사로 |
+| `archive/spec-v2.4:crates/key-agent/src/lib.rs:907-1051` | `crates/yw-core/src/evm/sign/tests.rs`(단위 테스트, [09] §3.5) | EIP-155 공식 예제 등 그대로 |
+| `archive/spec-v2.4:crates/key-agent/src/vault_session.rs:27-751,876-1188` | yw-app 세션 + `yw-core::vault` | offline deadline(321-611) 삭제; 2계정 고정 일반화; 24단어 |
+| `archive/spec-v2.4:crates/key-agent/src/durable.rs:1-44,84-156,725-1231,1452-2283` | `yw-core::journal` | 키는 DEK에서 HKDF(D7); `WindowsGenerationStore`(285-461) → yw-app 파일 저장; 4096 상한 → 정리 |
+| `archive/spec-v2.4:crates/broker/src/lib.rs:24-225,390-930,992-1066` | `yw-core::policy` + yw-app `browser` | [05](05-browser.md) §3.1의 27개 메서드·route(`eth_sign` 없음); 수명 상한 → LRU·속도 제한; `require_chain_signing_eligibility`(259-279) 삭제 |
+| `archive/spec-v2.4:crates/broker/src/params.rs:1-829` | yw-app `browser::params` (yw-json) | 알려진 버그 8개 수정([05](05-browser.md)), 707-726 테스트 반전 |
+| `archive/spec-v2.4:crates/native-host/src/lib.rs:81-225,444-572` | `yw-json::frame` (+ yw-host) | serde → yw-json; `_setmode` unsafe(46-79) 삭제 → `yw_win::process::{StdIn, StdOut}` |
+| `archive/spec-v2.4:crates/native-host/src/wire.rs:21-49,600-1038,1041-1575` | yw-app `browser::envelope` | 요청 단위 오류(D23), `event` 인코더 추가, ReleaseAttestation 삭제 |
+| `archive/spec-v2.4:crates/native-host/src/wire.rs:297-578`, `main.rs:9-23` | 버림 | 동기 dispatcher·4096 프레임 상한·종료 코드 78 → 전이중 중계 재작성 |
+| `archive/spec-v2.4:crates/approval-ui/src/lib.rs:15-466,647-989` | yw-app `ui::interaction` | 순수 상태 기계와 테스트 그대로; 스트림 codec(477-506) 삭제 |
+| `archive/spec-v2.4:crates/approval-ui/src/native.rs:40-1090` | yw-app `ui::approval` on `yw-win::ui` | windows → windows-sys(yw-win 내부); `PRESENTED`(59, 88-90) 삭제; 클래스 1회 등록; `PostQuitMessage`(1013-1016) → 앱 메시지; 모달 루프 → 앱 루프 |
+| `archive/spec-v2.4:crates/approval-wire/src/lib.rs:231-777,1212-1300` | `yw-core::approval` 표시 모델 + `evm::display` | Genesis/Ruleset/RpcObservations 필수(616-631) 삭제; NotPerformed 차단(729-754) 삭제 → 시뮬레이션 결과 없음·revert를 고위험 경고로 표시(D15·D16); typed data·ERC-20·시뮬레이션 의미 추가; 금지 문자 규칙(1277-1300) 유지 |
+| `archive/spec-v2.4:crates/approval-wire/src/lib.rs:57-229,779-1210` | 버림 | hello/finish·wire codec |
+| `archive/spec-v2.4:crates/secret-input-ui/src/recovery_native.rs:118-249,342-470` | `yw-win::ui::secure_text` | ASCII 정책별 입력(§7.7), 표시용 UTF-16 사본 즉시 wipe |
+| `archive/spec-v2.4:crates/secret-input-ui/src/recovery_native.rs:615-679,1453-1607` | `yw-win::ui` 비밀 창 모드 | 숨긴 상태에서 캡처 제외 + 읽기 확인, 차단 메시지 목록 그대로; 실패 처리는 `ClassSpec.capture`(§7.7)로 분기; `PRESENTED`(69, 596-598) 삭제 |
+| `archive/spec-v2.4:crates/secret-input-ui/src/lib.rs:18-73,472-572` | 참고만 | CredUI 쓰지 않음(D11: 직접 그림; CredUI 창은 캡처 제외 불가) |
+| `archive/spec-v2.4:demo/sepolia-wallet/src/rpc.rs:866-1218,1228-1464,1981-2129` | yw-app `rpc`(공용 전송, `rpc/mod.rs`) | ureq → `yw-win::http`, serde → yw-json; id 카운터; 미지 필드 허용 |
+| `archive/spec-v2.4:demo/sepolia-wallet/src/rpc.rs:491-856,2132-3760` | yw-app `rpc::evm` | 알케미 전용 URL 조립 → 네트워크별 엔드포인트 URL(D13: `apikeys.dpapi`의 `rpc:eip155:<chainId>`, 공급자 템플릿, [04](04-app-ui.md) §6.3); 메인넷 genesis 하나 → 등록된 체인마다 고정 genesis(내장 1·11155111은 상수, 999와 사용자 체인은 처음 연결·추가 시 고정, D14, [03](03-evm.md) §1); 한도는 [03](03-evm.md); 테스트는 가짜 transport |
+| `archive/spec-v2.4:demo/sepolia-wallet/src/erc20.rs:1-583` | `yw-core::evm::{abi, decode, amount}` | 로직 그대로, 체인 매개변수화 |
+| `archive/spec-v2.4:demo/sepolia-wallet/src/receive_qr.rs:1-262` | yw-app `ui::qr` + `evm::address` | egui 그리기(170-221) → `PaintDc::fill_rect`; 체인 ID 매개변수 |
+| `archive/spec-v2.4:demo/sepolia-wallet/src/backend.rs:5228-5410,6148-6403` | `yw-win::file` | create_new → 쓰기 → FlushFileBuffers → MoveFileExW → 부모 flush 패턴 |
+| `archive/spec-v2.4:demo/sepolia-wallet/src/backend.rs:6554-6773` | `evm::amount` + 수수료 정책 | Sepolia 데모 상한(75-83) 삭제, 정책은 [03](03-evm.md) |
+| `archive/spec-v2.4:demo/sepolia-wallet/src/wallet_secret.rs:864-1176` | `crates/yw-core/src/{bip39,bip32,evm/address}/tests.rs`([09] §3.2–3.4) | 벡터 그대로 + Trezor BIP39 벡터([09](09-testing.md)) |
+| `archive/spec-v2.4:demo/sepolia-wallet/src/vault_v2.rs:22-74` | 참고만 | HKDF 하위 키 info 분리, 테스트 전용 축소 KDF 파라미터 패턴 |
+| `archive/spec-v2.4:crates/platform-windows/src/broker_channel.rs:505-558,704-760,889-918` | 참고만(`yw-win::pipe`) | SDDL·생성 플래그 대조용 |
+| `archive/spec-v2.4:extension/` | `extension/`(그대로 유지) | M0: `tests/native-host-process.test.mjs`만 삭제; 버그·`key`·localhost는 M5([05](05-browser.md)) |
+| `archive/spec-v2.4:scripts/release/audit-extension.mjs:1-225`, `release-manifest.mjs:98-283` | `scripts/audit-extension.mjs`, `scripts/lib/strict-json.mjs` | §4.4 |
+| `scripts/privacy-scan.mjs:1-219`, `scripts/privacy-scan.test.mjs:1-243` (main 판, 유지 파일) | 같은 경로 | §4.3 |
+| `archive/spec-v2.4:docs/protocol-contract.md:874-1313` | [05](05-browser.md) 참고 | |
+
+---
+
+## 7. yw-win 안전 API
+
+공통: `pub struct WinError { pub api: &'static str, pub code: u32 }`(Debug·Clone·Copy·Eq, `Display` = `"<api> failed: 0x<code:08X>"`). 실패 시 `GetLastError()`를 즉시 읽고 `FormatMessageW`는 쓰지 않는다. 문자열 인자는 내부에서 NUL 종료 UTF-16으로 바꾸며 내부 NUL은 오류다. 공개 API에는 원시 핸들·포인터가 없고 모든 핸들은 `Drop`에서 닫는다. `lib.rs`는 `pub use error::WinError; pub use process::{current_user_sid_string, spawn_detached, allow_set_foreground_window, StdIn, StdOut};`로 [05](05-browser.md) §7.8의 경로를 그대로 제공한다.
+
+feature 사용처: Foundation(핸들·오류·`LocalFree`), Graphics_Gdi(그리기), Networking_WinHttp(`http`), Security(`SECURITY_ATTRIBUTES`, `GetTokenInformation`, `CreateFileW`·`CreateNamedPipeW` 게이트), Security_Authorization(SDDL·SID 문자열), Security_Cryptography(DPAPI), Storage_FileSystem(`file`, 파이프 플래그, `GetFileType`), System_Console(`GetStdHandle`), System_DataExchange(클립보드), System_ErrorReporting(`WerAddExcludedApplication`), System_IO(`OVERLAPPED`, `GetOverlappedResult`, `CancelIoEx`), System_LibraryLoader(`GetModuleHandleW`, `SetDefaultDllDirectories`), System_Memory(`Virtual*`, `Global*`), System_Ole(`CF_UNICODETEXT`), System_Pipes, System_RemoteDesktop(`WTSRegisterSessionNotification`), System_SystemInformation(`GetTickCount64`, `GetTickCount`), System_Threading(뮤텍스·이벤트·`CreateProcessW`·`OpenProcessToken`), UI_Controls(`InitCommonControlsEx`), UI_HiDpi, UI_Input(`GetCurrentInputMessageSource`), UI_Input_KeyboardAndMouse(`GetAsyncKeyState`, `GetLastInputInfo`, `SetCapture`), UI_WindowsAndMessaging(창·메시지·`SetWindowDisplayAffinity`·`AllowSetForegroundWindow`, `WTS_*` 세션 변경 값·`WM_QUERYENDSESSION`·`WM_ENDSESSION`도 여기에 있다(확인함), 따라서 §7.7 `Msg` 추가에 feature 변경 없음).
+
+### 7.1 `time`, `mem`
+
+```rust
+pub fn monotonic_ms() -> u64;      // GetTickCount64. yw-core에 넘기는 now_ms의 출처
+pub fn system_idle_ms() -> u64;    // GetTickCount().wrapping_sub(LASTINPUTINFO.dwTime) (32비트 감김 처리)
+
+pub struct LockedBox<const N: usize> { /* 페이지 1개; const 단언 1 ≤ N ≤ 4096; Send + Sync; Clone 없음 */ }   // yw-app: LockedBox<320> = [02] §7.3 슬롯
+impl<const N: usize> LockedBox<N> {
+    pub fn new_zeroed() -> Result<Self, WinError>;  // VirtualAlloc(4096, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE) → VirtualLock
+    pub fn expose(&self) -> &[u8; N];
+    pub fn expose_mut(&mut self) -> &mut [u8; N];
+}   // Drop: 4096바이트 wipe → VirtualUnlock → VirtualFree(MEM_RELEASE). Debug: "LockedBox<N>([REDACTED])"
+pub fn wipe(buf: &mut [u8]);       // write_volatile + compiler_fence(SeqCst)
+pub fn wipe_u16(buf: &mut [u16]);
+pub struct WipeBuf<T: Copy + Default> { /* 용량 고정 Vec<T>, 초과 push는 Err, Drop에서 wipe */ }
+```
+
+`VirtualLock` 실패(예: `ERROR_WORKING_SET_QUOTA`)는 `Err`로 돌려주고 대체 경로를 두지 않는다. 처리는 [02](02-core-keys-vault.md).
+
+### 7.2 `file`, `dpapi`
+
+```rust
+pub enum FileError { NotFound, ReparsePoint, TooLarge, Os(WinError), Io(std::io::ErrorKind) }
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), FileError>;         // bytes ≤ 64 MiB
+pub fn read_limited(path: &Path, max: u64) -> Result<Vec<u8>, FileError>;        // 크기 > max → TooLarge
+pub fn ensure_dir(path: &Path) -> Result<(), FileError>;                         // create_dir_all, 재분석 지점 거부
+pub fn protect(plain: &[u8], entropy: &[u8]) -> Result<Vec<u8>, WinError>;        // dpapi, plain ≤ 1 MiB
+pub fn unprotect(blob: &[u8], entropy: &[u8]) -> Result<WipeBuf<u8>, WinError>;   // dpapi
+```
+
+- `atomic_write`(spec.md §4.3): (1) 부모 디렉터리·대상이 재분석 지점(`symlink_metadata` + `FILE_ATTRIBUTE_REPARSE_POINT`)이면 `ReparsePoint` → (2) 남은 `<target>.tmp` 삭제 → (3) `OpenOptions::create_new`, 공유 0으로 열어 `write_all` → `sync_all`(= `FlushFileBuffers`) → 닫기 → (4) `MoveFileExW(tmp, target, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` → (5) 부모 디렉터리를 `FILE_FLAG_BACKUP_SEMANTICS`·`GENERIC_WRITE`로 열어 `FlushFileBuffers`. (3)–(4) 실패 시 임시 파일 삭제를 시도하고 원래 오류를 돌려준다. 임시 파일은 항상 같은 디렉터리(같은 볼륨)다.
+- DPAPI: `CryptProtectData`/`CryptUnprotectData`, 현재 사용자 범위(`CRYPTPROTECT_LOCAL_MACHINE` 없음), `CRYPTPROTECT_UI_FORBIDDEN`, 설명·prompt NULL. 출력 버퍼는 복사 → `wipe` → `LocalFree`. `entropy` 값은 [04](04-app-ui.md).
+
+### 7.3 `clipboard`
+
+```rust
+pub enum ClipError { Busy, TooLong, Os(WinError) }
+pub fn set_text(owner: &ui::Window, text: &str) -> Result<(), ClipError>;               // 비밀 아님(주소 등), ≤ 4096자
+pub fn set_secret_text(owner: &ui::Window, text: &[u16]) -> Result<u32, ClipError>;     // ≤ 4096단위, 반환 = 설정 직후 순번
+pub fn read_text(owner: &ui::Window, max_units: usize) -> Result<(WipeBuf<u16>, u32), ClipError>;  // (내용, 순번)
+pub fn clear_if_unchanged(owner: &ui::Window, seq: u32) -> Result<bool, ClipError>;     // 순번이 같을 때만 비움
+```
+
+- 공통: `OpenClipboard(owner)`(20 ms 간격 5회, 실패 시 `Busy`) … `CloseClipboard`. 텍스트는 `GlobalAlloc(GMEM_MOVEABLE)` 메모리에 UTF-16으로 직접 쓰고 `SetClipboardData(CF_UNICODETEXT = 13)`.
+- `set_secret_text`: `EmptyClipboard` → `RegisterClipboardFormatW`로 얻은 `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory`, `CanUploadToCloudClipboard`에 각각 DWORD 0 → 마지막에 텍스트 → `CloseClipboard` → `GetClipboardSequenceNumber()` 반환. 제외 형식 하나라도 실패하면 텍스트 없이 `EmptyClipboard` 후 오류.
+- 자동 삭제(D11 30초)는 yw-app 타이머가 `clear_if_unchanged(owner, seq)`로 한다. 순번이 다르면(사용자가 이후 다른 것을 복사) 건드리지 않는다. 잠금·종료 때도 같은 호출([04](04-app-ui.md)).
+- 시스템이 해제한 GlobalAlloc 메모리는 지워지지 않는다(§2.2 범위 밖).
+
+### 7.4 `http`
+
+```rust
+pub struct HttpsUrl { /* 원문 */ }      // Debug/Display: "https://[redacted]" (호스트·경로·쿼리 모두 숨김 — RPC URL 전체가 비밀, D13)
+impl HttpsUrl { pub fn parse(s: &str) -> Result<Self, HttpError>;
+                pub fn host(&self) -> &str; }   // LLM 엔드포인트 표시·로그([06] §2.2·§6·§8) 전용. RPC 엔드포인트에는 쓰지 않는다(§5.4)
+pub struct LoopbackUrl { /* 원문 */ }   // Debug/Display: "http://<host>[:port]/…"
+impl LoopbackUrl { pub fn parse(s: &str) -> Result<Self, HttpError>; }
+pub enum EndpointUrl { Https(HttpsUrl), Loopback(LoopbackUrl) }   // LLM 엔드포인트(D21). RPC는 HttpsUrl만(D13)
+impl EndpointUrl { pub fn parse(s: &str) -> Result<Self, HttpError>; }   // scheme으로 분기
+pub struct Timeouts { pub resolve_ms: u32, pub connect_ms: u32, pub send_ms: u32, pub receive_ms: u32 }  // Default 없음
+pub struct Response { pub status: u16, pub content_type: Option<String>, pub body: Vec<u8> }
+pub enum HttpError { InvalidUrl, InvalidHeader, Timeout, Tls, TooLarge, Os(WinError) }
+pub struct Client { /* 세션 핸들 + 종류(Https | Loopback); Send + Sync */ }
+impl Client {
+    pub fn new(timeouts: Timeouts) -> Result<Self, HttpError>;            // HTTPS 전용
+    pub fn new_loopback(timeouts: Timeouts) -> Result<Self, HttpError>;   // loopback http 전용
+    pub fn post(&self, url: &EndpointUrl, headers: &[(&str, &str)], body: &[u8], max_response: usize) -> Result<Response, HttpError>;
+    pub fn post_json(&self, url: &HttpsUrl, bearer: Option<&[u8]>, body: &[u8], max_response: usize) -> Result<Response, HttpError>;
+    pub fn get(&self, url: &HttpsUrl, max_response: usize) -> Result<Response, HttpError>;
+}
+```
+
+- `HttpsUrl`: `https://`만, host `[a-z0-9.-]{1,253}`(소문자화), 포트 1–65535 선택, 경로는 `/`로 시작하는 출력 가능 ASCII(공백 없음), 전체 ≤ 2048바이트, userinfo·fragment 거부. `LoopbackUrl`: `http://`만, host는 `127.0.0.1`·`localhost`(소문자화)·`[::1]`(IPv6 리터럴) 중 하나, 포트·경로·길이·거부 규칙은 `HttpsUrl`과 같다. 클라이언트 종류와 URL 종류가 다르면 `InvalidUrl`.
+- 세션: `new`는 `WinHttpOpen("YourWallet/3", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, NULL, NULL, 0)`(동기)이고 `WINHTTP_OPTION_SECURE_PROTOCOLS = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3` 설정이 실패하면 `new` 실패. `new_loopback`은 `WINHTTP_ACCESS_TYPE_NO_PROXY`. 공통: `WINHTTP_OPTION_REDIRECT_POLICY = WINHTTP_OPTION_REDIRECT_POLICY_NEVER`, `WinHttpSetTimeouts`, `WINHTTP_OPTION_MAX_RESPONSE_HEADER_SIZE = 16384`. LLM은 RPC와 다른 `Client`(세션)를 쓴다([06](06-llm-explain.md) §4.1).
+- 시간 제한(Default 없음, 호출자가 정함): RPC([03](03-evm.md) §1.4, 07·08 공용) `Timeouts { 5000, 5000, 10000, 10000 }`, LLM `Timeouts { 10000, 10000, 10000, 10000 }`. WinHTTP 값은 단계별이고 전체 상한이 아니므로(최악 합 40 s), 호출자는 자기 기한(03 호출당 10 s, 06 `REQUEST_DEADLINE_MS`)을 넘겨 돌아온 결과를 `Timeout`으로 보고 버린다.
+- 요청: HTTPS만 `WINHTTP_FLAG_SECURE`(loopback은 없음). `WINHTTP_OPTION_DISABLE_FEATURE = WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_REDIRECTS | WINHTTP_DISABLE_AUTHENTICATION`. `post`는 호출자 헤더만 보낸다(이름 `^[A-Za-z0-9-]{1,64}$`, 값 0x20–0x7E ≤ 4096바이트, 위반은 `InvalidHeader`). `post_json`·`get`은 같은 내부 경로의 래퍼다: `Accept: application/json`, POST에 `Content-Type: application/json`, `bearer`가 있으면 `Authorization: Bearer <값>`. 헤더 버퍼는 `WipeBuf<u16>`. Origin 헤더 없음(D13). `SECURITY_FLAG_IGNORE_*` 금지.
+- 응답: 상태 코드(`WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER`)와 `WINHTTP_QUERY_CONTENT_TYPE`(없거나 256바이트 초과·비ASCII면 `None`)를 그대로 돌려준다. `Content-Length` 또는 누적 읽기가 `max_response`(≤ 16 MiB)를 넘으면 본문을 더 읽지 않고 즉시 `TooLarge`. 요청 본문 ≤ 1 MiB. `ERROR_WINHTTP_TIMEOUT`(12002) → `Timeout`, `ERROR_WINHTTP_SECURE_FAILURE`(12175) → `Tls`. 오류에 URL·호스트를 넣지 않는다. 호출자(yw-app RPC 계층)는 RPC 실패를 로그·화면 오류에 `NetworkId`·메서드 이름·`HttpError` 종류·HTTP 상태로만 남긴다(§5.4, D13).
+- `[::1]`은 `WinHttpConnect`에 대괄호 없이(`::1`) 넘긴다(구현 시 확인, §8-3).
+
+### 7.5 `pipe`
+
+```rust
+pub fn wallet_pipe_name(user_sid: &str) -> String;   // r"\\.\pipe\YourWallet.v3." + sid (D24)
+pub fn user_only_sddl(user_sid: &str) -> String;     // "O:" + sid + "D:P(A;;GA;;;" + sid + ")"
+pub enum ServerError { AlreadyExists, Os(WinError) }
+pub struct Server { /* 대기 인스턴스, 활성 연결 수(Arc 카운터) */ }
+impl Server {
+    pub fn create(name: &str, sddl: &str) -> Result<Self, ServerError>;
+    pub fn accept(&mut self) -> Result<Duplex, ServerError>;            // 블록
+}
+pub enum ConnectError { NotFound, Busy, Other(u32) }
+pub fn connect_client(name: &str) -> Result<Duplex, ConnectError>;
+pub fn wait(name: &str, timeout_ms: u32) -> bool;                       // WaitNamedPipeW
+pub struct Duplex { /* overlapped 핸들 */ }
+impl Duplex {
+    pub fn split(self) -> (PipeReader, PipeWriter);                     // PipeReader: Read + Send, PipeWriter: Write + Send
+    pub fn server_pid(&self) -> Option<u32>;                            // GetNamedPipeServerProcessId
+    pub fn client_pid(&self) -> Option<u32>;                            // GetNamedPipeClientProcessId
+}
+impl PipeReader { pub fn cancel_handle(&self) -> PipeCanceller; }       // PipeCanceller: Send, cancel() = CancelIoEx
+```
+
+- `Server::create`: SDDL → `ConvertStringSecurityDescriptorToSecurityDescriptorW`(`bInheritHandle = FALSE`, `LocalFree`로 해제). 첫 인스턴스 `CreateNamedPipeW(name, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 4, 65536, 65536, 1000, &sa)`. `ERROR_ACCESS_DENIED` → `AlreadyExists`(다른 yw-app 또는 선점). 수치·처리는 [05](05-browser.md) §8.1과 같다.
+- `accept`: 대기 인스턴스에 `ConnectNamedPipe`(overlapped, `ERROR_PIPE_CONNECTED`도 성공). 연결되면 활성 연결 수 < 4일 때 `FILE_FLAG_FIRST_PIPE_INSTANCE`만 뺀 같은 인자로 다음 대기 인스턴스를 만든 뒤 `Duplex`를 돌려준다. 4개가 모두 연결 중이면 하나가 닫힐(`Duplex` 양쪽 반이 drop) 때까지 기다렸다가 만든다.
+- `connect_client`: `CreateFileW(name, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, NULL)`. `ERROR_FILE_NOT_FOUND` → `NotFound`, `ERROR_PIPE_BUSY` → `Busy`(호출자가 `wait` 후 재시도), 그 밖 → `Other(code)`.
+- 모든 I/O는 overlapped(호출마다 `OVERLAPPED` + 수동 리셋 이벤트, `GetOverlappedResult(wait = TRUE)`): 동기 핸들에서는 대기 중인 `ReadFile`이 다른 스레드의 `WriteFile`을 막아(동기 파일 객체 직렬화) 전이중 중계가 불가능하다. 한 핸들을 두 반쪽이 공유하고(`Arc`), 마지막 반쪽이 drop될 때 닫는다(서버 측은 `DisconnectNamedPipe` 후). `ERROR_BROKEN_PIPE`·`ERROR_PIPE_NOT_CONNECTED`·0바이트 읽기는 `Read`의 EOF(`Ok(0)`). 프레임 형식은 [05](05-browser.md).
+
+### 7.6 `session`, `process`
+
+```rust
+pub fn register_session_notifications(window: &ui::Window) -> Result<(), WinError>;   // WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION)
+pub fn unregister_session_notifications(window: &ui::Window);                          // WTSUnRegisterSessionNotification
+pub fn init_process() -> Result<(), WinError>;             // SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)
+pub fn current_user_sid_string() -> Result<String, WinError>;   // OpenProcessToken(TOKEN_QUERY) → GetTokenInformation(TokenUser) → ConvertSidToStringSidW → LocalFree
+pub enum InstanceError { AlreadyRunning, Os(WinError) }
+pub struct SingleInstance { /* 뮤텍스 핸들, 프로세스 끝까지 보유 */ }
+impl SingleInstance { pub fn acquire(name: &str) -> Result<Self, InstanceError>; }   // 이름은 [04] §1.1
+pub fn spawn_detached(exe: &Path, args: &[&str]) -> Result<(), WinError>;
+pub fn allow_set_foreground_window(pid: u32) -> bool;     // AllowSetForegroundWindow
+pub struct StdIn;  pub struct StdOut;                     // Read / Write: GetStdHandle + ReadFile / WriteFile (버퍼 없음)
+pub fn std_handles_are_pipes() -> bool;                   // GetFileType(stdin/stdout) == FILE_TYPE_PIPE
+pub fn exclude_from_error_reporting() -> Result<(), WinError>;   // WerAddExcludedApplication(현재 exe, FALSE)
+```
+
+- 세션: 알림은 `WM_WTSSESSION_CHANGE`의 `ui::Msg::SessionLock`(`WTS_SESSION_LOCK` 0x7)/`SessionUnlock`(`WTS_SESSION_UNLOCK` 0x8)/`SessionDisconnect`(`WTS_CONSOLE_DISCONNECT` 0x2·`WTS_REMOTE_DISCONNECT` 0x4)/`SessionLogoff`(`WTS_SESSION_LOGOFF` 0x6), `WM_POWERBROADCAST`의 `Suspend`/`Resume`(`PBT_APMSUSPEND`/`PBT_APMRESUMEAUTOMATIC`), Windows 종료·로그오프의 `QueryEndSession`(`WM_QUERYENDSESSION`)/`EndSession`(`WM_ENDSESSION`)으로 온다(디코딩 §7.7). 등록 실패(`RPC_S_INVALID_BINDING` 등)의 재시도 정책은 yw-app([04](04-app-ui.md) §1.4). `WM_POWERBROADCAST`·`WM_QUERYENDSESSION`·`WM_ENDSESSION`은 최상위 창에만 오므로 알림을 받는 창은 `HWND_MESSAGE`가 아닌 최상위 창(숨김 가능)이다. 창 파괴 전에 `unregister_session_notifications`.
+- `acquire`: `CreateMutexW(NULL, FALSE, name)` 후 `ERROR_ALREADY_EXISTS`(183)면 핸들을 닫고 `AlreadyRunning`.
+- `spawn_detached`: 인자는 `^[A-Za-z0-9._:-]{1,64}$`만 허용(`--background` 포함), exe 경로에 `"`가 있으면 오류, 명령줄 = `"<exe>" <args…>`. `CreateProcessW(…, bInheritHandles = FALSE, DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB, NULL, <exe 디렉터리>, …)`, `ERROR_ACCESS_DENIED`면 `CREATE_BREAKAWAY_FROM_JOB` 없이 1회 재시도. 프로세스·스레드 핸들은 즉시 닫는다. 핸들 상속을 끄는 이유: yw-host가 Chrome에서 받은 표준 핸들(파이프)이 yw-app에 복제되면 yw-host가 끝나도 Chrome 쪽 파이프 끝이 닫히지 않는다. std `Command`는 `bInheritHandles = TRUE`로 프로세스를 만들므로 쓰지 않는다.
+- `StdIn`/`StdOut`은 CRT 텍스트 모드·std 콘솔 처리·`LineWriter`를 거치지 않는 원시 바이트 입출력이다(yw-host, [05](05-browser.md) §7.2). `StdOut::flush`는 아무 일도 하지 않는다(버퍼 없음).
+
+### 7.7 `ui`, `input`
+
+```rust
+pub fn init() -> Result<(), WinError>;   // SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2) + InitCommonControlsEx. 첫 창 전 1회
+pub enum CaptureExclusion { Required /* 니모닉·개인키 표시 창 */, Preferred /* 비밀번호·니모닉·개인키 입력 창 */ }
+pub struct ClassSpec { pub name: &'static str, pub secret: bool, pub capture: CaptureExclusion }   // capture는 secret = true일 때만 의미
+pub fn register_class(spec: &ClassSpec) -> Result<(), WinError>;                 // 이름마다 1회, 두 번째는 Ok(())
+pub enum WindowKind { Main, Owned { owner: Hwnd }, HiddenTopLevel }
+pub struct WindowSpec { /* builder: WindowSpec::new(class, kind).title(&str).size(w, h /* DIP */).visible(bool) */ }
+pub fn create_window(spec: &WindowSpec, handler: Box<dyn Handler>) -> Result<Window, UiError>;
+pub fn exclude_from_capture(w: &Window) -> Result<(), UiError>;                  // 설정 후 읽기 확인(비밀 클래스는 create_window가 호출)
+pub trait Handler { fn on(&mut self, w: &Window, m: &Msg) -> Reply; }
+pub enum Reply { Default, Handled(isize) }
+pub enum Msg { Create, Paint, Size { w: i32, h: i32 }, DpiChanged { dpi: u32 }, Char(u16), KeyDown { vk: u16, repeat: bool },
+  KeyUp { vk: u16 }, MouseDown { x: i32, y: i32 }, MouseUp { x: i32, y: i32 }, MouseMove { x: i32, y: i32 }, Wheel(i16),
+  MouseActivate, Timer(usize), Command { id: u16, code: u16 }, ActivateApp(bool), KillFocus { to_foreign: bool },
+  CaptureChanged, CancelMode, Close, Destroy, SessionLock, SessionUnlock, SessionDisconnect, SessionLogoff, Suspend, Resume,
+  QueryEndSession, EndSession, ImeAttempt, App { msg: u32, wparam: usize } }
+pub struct Hwnd(/* usize */);   // Copy + Eq, 불투명 식별자(포인터로 쓸 수 없음)
+pub struct Window { /* Hwnd; !Send */ }
+// Window: hwnd, show, hide, destroy, enable, set_topmost, set_foreground, flash, invalidate, set_title, set_timer(id, ms),
+//         kill_timer, dpi, client_rect, set_capture, release_capture, set_focus, is_foreground, focus_within, center_on, poster,
+//         capture_excluded() -> bool   // 비밀 클래스: exclude_from_capture 성공 여부(Preferred 실패면 false), 그 밖 false
+pub struct Poster { /* Send + Sync */ }
+impl Poster { pub fn post(&self, msg: u32, wparam: usize) -> Result<(), WinError>; }   // PostMessageW, msg ≥ WM_APP
+pub enum InputKind { Key, Mouse }
+pub fn run_loop(observe: &mut dyn FnMut(InputKind, Hwnd)) -> i32;   // GetMessageW/TranslateMessage/DispatchMessageW, 키·마우스 메시지마다 observe
+pub fn quit(code: i32);                                               // PostQuitMessage
+pub fn message_box(owner: Option<&Window>, text: &str, caption: &str, kind: MbKind) -> MbResult;   // 시작 실패 등 창 이전 오류만
+pub fn find_window(class: &'static str) -> Option<(Poster, u32)>;   // FindWindowW + GetWindowThreadProcessId → (그 창의 Poster, pid). 두 번째 인스턴스 인계용([04] §1.1)
+pub enum UiError { Os(WinError), CaptureExclusionFailed }
+pub mod input { pub fn is_down(vk: u16) -> bool; /* GetAsyncKeyState 최상위 비트 */  pub fn injected() -> bool; /* GetCurrentInputMessageSource → IMO_INJECTED */ }
+```
+
+- wndproc는 yw-win 트램펄린 하나다. 상태 `RefCell<Box<dyn Handler>>`를 `WM_NCCREATE`의 `lpCreateParams`로 받아 `GWLP_USERDATA`에 두고 `WM_NCDESTROY`에서 해제하고 0으로 지운다.
+- 재진입(핸들러 실행 중 같은 창으로 동기 메시지)은 `try_borrow_mut` 실패로 감지해 핸들러를 부르지 않고, 비밀 차단 판정 뒤 `DefWindowProcW`로 넘긴다. 핸들러는 같은 창에 동기 메시지를 일으키는 API를 피하고 `Poster`로 미룬다.
+- 비밀 클래스(`ClassSpec.secret = true`): `create_window`는 숨긴 채 `CreateWindowExW` 직후, 핸들러를 붙이기 전에 `exclude_from_capture`(= `SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)` → `GetWindowDisplayAffinity` 값이 `0x11`이 아니면 실패)를 호출한다. 설정 또는 읽기 확인이 실패하면 `ClassSpec.capture`에 따라:
+  - `CaptureExclusion::Required`(니모닉·개인키 **표시** 창): 창을 파괴하고 `Err(UiError::CaptureExclusionFailed)`. 앱은 오류를 보여 주고 비밀을 표시하지 않는다([04](04-app-ui.md) §4.5).
+  - `CaptureExclusion::Preferred`(비밀번호, 니모닉·개인키 **입력** 창): 창을 유지하고(숨김, 핸들러 연결, 아래 메시지 차단 동일) `Ok(Window)`를 돌려주며 `capture_excluded() == false`. 앱은 `show` 전에 보이는 경고 배너를 붙인다([04](04-app-ui.md) §4.5).
+  - 분기는 내부 순수 함수 `capture_outcome(mode: CaptureExclusion, excluded: bool) -> CaptureOutcome { Excluded, Unprotected, Destroy }`이며 4경우를 창 없이 단위 테스트한다. `capture`는 클래스 단위이므로 정책이 다른 창은 다른 클래스로 등록한다([04](04-app-ui.md) §1.7).
+- 비밀 클래스의 wndproc는 `capture`·캡처 제외 결과와 무관하게 [04](04-app-ui.md) §4.4의 정확히 22개 메시지(와일드카드 없음: `WM_RBUTTONDBLCLK`·`WM_IME_SETCONTEXT`·`WM_IME_NOTIFY` 등은 막지 않는다)와, 비밀 상태를 붙인 뒤(`create_window` 반환 후, `armed`)에는 `WM_SETTEXT`도 핸들러와 `DefWindowProcW` 없이 0을 반환한다. 막기 전에 `WM_IME_STARTCOMPOSITION`은 `Msg::ImeAttempt`로 핸들러에 알린다([04](04-app-ui.md) §4.4). 판정은 순수 함수 `is_blocked_secret_msg(msg: u32, armed: bool) -> bool`이며 그 목록 그대로 창 없이 단위 테스트한다. Microsoft는 캡처 제외를 보안 보장으로 보지 않는다(§2.2 범위).
+- `WM_DPICHANGED`에 `Default`면 제안 사각형으로 `SetWindowPos`. 크기는 DIP, `scale(v, dpi) = v * dpi / 96`(checked). `WM_CLOSE` 기본 = `DestroyWindow`. yw-win은 `PostQuitMessage`를 스스로 부르지 않는다(앱이 `quit`).
+- 세션·종료 메시지 디코딩: `WM_WTSSESSION_CHANGE`의 wParam `WTS_CONSOLE_DISCONNECT`(0x2)·`WTS_REMOTE_DISCONNECT`(0x4) → `SessionDisconnect`, `WTS_SESSION_LOGOFF`(0x6) → `SessionLogoff`, `WTS_SESSION_LOCK`(0x7) → `SessionLock`, `WTS_SESSION_UNLOCK`(0x8) → `SessionUnlock`, 그 밖 값은 핸들러에 오지 않는다(`DefWindowProcW`). `WM_QUERYENDSESSION` → `QueryEndSession`(`Reply::Default` = `DefWindowProcW` = TRUE, 종료 허용). `WM_ENDSESSION`은 wParam = TRUE일 때만 `EndSession`이고 FALSE(종료 취소)는 핸들러에 오지 않는다. `EndSession` 핸들러가 반환한 뒤 Windows는 프로세스를 언제든 끝낼 수 있다(앱 처리는 [04](04-app-ui.md) §1.5·§5.1).
+- 그리기: `PaintDc`(`Msg::Paint` 안에서만, BeginPaint/EndPaint RAII) — `fill_rect(Rect, Color)`(QR 모듈 포함), `draw_text(&[u16], Rect, DrawFlags)`(`DrawTextW`, `DT_NOPREFIX`를 항상 더함), `measure(&[u16], max_w) -> (fit_chars, width)`(`GetTextExtentExPointW`), `select_font(&Font)`. `Font::create(face: &str, size_pt: u16, bold: bool, dpi: u32) -> Result<Font, WinError>`(`CreateFontW`, Drop에서 `DeleteObject`). `Rect { x, y, w, h: i32 }`, `Color(u32 /* 0xRRGGBB */)`, `MbKind::{Info, Warning, Error}`, `MbResult::{Ok}`.
+- `controls`: 비밀이 아닌 값용 BUTTON·EDIT·STATIC·체크박스·owner-draw LISTBOX 생성과 자기 컨트롤 텍스트 get/set(`GetWindowTextW`, 길이 상한). 알림은 `Msg::Command`.
+- 비밀 입력(D11, OS EDIT 미사용):
+
+```rust
+pub enum CharPolicy { PrintableAscii /* 0x20–0x7E: 비밀번호·passphrase */, LowerWords /* a–z, ' ': 니모닉 */, Hex /* 0-9a-fA-F, 선택적 0x: 개인키 */ }
+pub enum CharResult { Accepted, Rejected, Backspace, Submit, Ignored }
+pub struct SecureTextField { /* WipeBuf<u8>, 용량 = max_len */ }
+impl SecureTextField {
+    pub fn new(policy: CharPolicy, max_len: usize) -> Self;
+    pub fn on_char(&mut self, unit: u16) -> CharResult;   // 0x08 → 마지막 바이트 wipe, 0x0D → Submit, 정책 밖·비ASCII·서로게이트 → Rejected
+    pub fn len(&self) -> usize;  pub fn clear(&mut self);  pub fn set_masked(&mut self, on: bool);
+    pub fn paint(&self, dc: &mut PaintDc<'_>, r: Rect, focused: bool);   // masked: '•' × len, 아니면 WipeBuf<u16> 임시 사본으로 그린 뒤 wipe
+    pub fn with_secret<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R;
+}
+```
+
+[04](04-app-ui.md)가 `SecretField`처럼 자체 위젯을 yw-app에 두더라도, 그 버퍼는 `WipeBuf` 또는 yw-core 비밀 타입이어야 하고 그리기는 `PaintDc`를 쓴다.
+
+### 7.8 테스트
+
+- 순수(`#[cfg(test)]`): `HttpsUrl`·`LoopbackUrl`·`EndpointUrl::parse` 경계(`http://example.com`·`http://127.0.0.2` 거부, `http://[::1]:11434/…` 허용), `HttpsUrl`의 `{:?}`·`{}` 출력에 호스트·경로 문자열이 없음, 헤더 검사, `is_blocked_secret_msg`, `capture_outcome` 4경우(성공은 둘 다 `Excluded`, 실패는 `Required` → `Destroy`·`Preferred` → `Unprotected`), `wallet_pipe_name`·`user_only_sddl`, `Msg` 디코딩(`WM_WTSSESSION_CHANGE` wParam 0x2·0x4·0x6·0x7·0x8과 그 밖 값, `WM_QUERYENDSESSION`, `WM_ENDSESSION` wParam TRUE·FALSE 포함), `SecureTextField` 정책·backspace·용량, `spawn_detached` 인자 검증.
+- Windows 통합(`crates/yw-win/tests/`, 개발 PC의 `cargo test`): pipe 왕복과 전이중 동시 읽기·쓰기, 두 번째 `Server::create`의 `AlreadyExists`, 연결 4개일 때 다음 인스턴스 보류, `atomic_write` 덮어쓰기·남은 임시 파일 처리, DPAPI 왕복과 다른 entropy 실패, `LockedBox` 생성·해제, `SingleInstance` 이중 획득 실패. 네트워크·화면 캡처·세션 잠금은 수동 체크리스트([09](09-testing.md)).
+
+---
+
+## 8. 미결 사항
+
+1. **구현 시 확인 — yw-host가 실행한 yw-app의 수명(D24, M5).** Chrome이 native host를 job object에 넣고 연결 종료 때 job을 정리하면 yw-host가 띄운 yw-app도 함께 종료될 수 있다(`spawn_detached`는 `CREATE_BREAKAWAY_FROM_JOB`을 먼저 시도한다, §7.6). 확인: 확장 연결 → yw-app 자동 실행 → Chrome 완전 종료 후 yw-app 생존 여부([09](09-testing.md) M5-13). 함께 종료되면 D24의 대안을 그대로 적용한다: `browserAutoLaunch` 기본값을 `false`로 바꾸고([04](04-app-ui.md) §6.1, [05](05-browser.md) §7.4) 사용자가 yw-app을 먼저 실행한다(yw-app이 없으면 요청마다 4900). D24 변경은 필요 없다.
+2. **구현 시 확인 — `WerAddExcludedApplication`.** feature 이름과 심볼은 windows-sys 0.61.2에 있고 해당 feature로 크레이트 컴파일을 확인했지만, 실제로 Windows 11에서 이 호출이 fast-fail 보고(`panic = "abort"`)를 WER 업로드 대상에서 빼는지는 확인하지 않았다. 확인: 테스트 빌드에서 의도적 abort 후 "안정성 모니터"·`%LOCALAPPDATA%\Microsoft\Windows\WER\ReportQueue`에 보고가 생기는지. 효과가 없으면 이 호출을 빼고 D28의 "크래시 업로드 없음"은 "지갑이 업로드하지 않음"으로 한정한다.
+3. **구현 시 확인 — loopback `[::1]`(§7.4).** `WinHttpConnect`가 IPv6 리터럴을 대괄호 없이 받는지 [06](06-llm-explain.md) §10 mock 테스트에서 확인한다. 대체: 대괄호 포함 형태, 둘 다 실패하면 `LoopbackUrl`에서 `[::1]`을 거부한다.

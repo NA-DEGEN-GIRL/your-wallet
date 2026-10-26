@@ -1,27 +1,15 @@
 * text=auto
 *.rs text eol=lf
-*.cs text eol=lf
 *.toml text eol=lf
-*.rc text eol=lf
 *.md text eol=lf
 *.js text eol=lf
 *.mjs text eol=lf
 *.json text eol=lf
-*.ps1 text eol=crlf
-*.cmd text eol=crlf
-# These Windows launcher files are byte-level interfaces. Preserve their exact
-# BOM/ASCII and CRLF bytes in both the Git blob and checked-out worktree.
-RUN-SEPOLIA-WALLET.cmd -text whitespace=cr-at-eol
-scripts/run-sepolia-wallet.ps1 -text whitespace=cr-at-eol
-scripts/launcher-contract.test.ps1 -text whitespace=cr-at-eol
-# Checked-in MIDL output is byte-pinned against the Windows SDK generator.
-# Keep its CRLF and generator-owned spacing unchanged in every checkout.
-crates/key-agent-service-rpc-sys/generated/key_agent_service_rpc.h -text whitespace=-trailing-space,cr-at-eol
-crates/key-agent-service-rpc-sys/generated/key_agent_service_rpc_c.c -text whitespace=-trailing-space,cr-at-eol
-crates/key-agent-service-rpc-sys/generated/key_agent_service_rpc_s.c -text whitespace=-trailing-space,cr-at-eol
+*.txt text eol=lf
 *.yml text eol=lf
-*.yaml text eol=lf
 *.lock text eol=lf
 *.template text eol=lf
 .gitignore text eol=lf
 .gitattributes text eol=lf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf

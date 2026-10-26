@@ -1,8 +1,0 @@
-/* Keep binding application-controlled and convert RPC failures to a status. */
-[
-    explicit_handle
-]
-interface YwkasRpc
-{
-    [comm_status, fault_status] Exchange();
-}
