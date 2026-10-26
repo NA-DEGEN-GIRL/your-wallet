@@ -91,6 +91,7 @@ pub const BIP39_PBKDF2_ROUNDS: u32 = 2_048;
 pub const BIP39_SALT_PREFIX: &[u8] = b"mnemonic";
 pub const MAX_MNEMONIC_INPUT_BYTES: usize = 256;   // 24단어 최대 215바이트
 pub const MAX_PASSPHRASE_BYTES: usize = 256;
+pub fn is_word(word: &str) -> bool;   // 목록에 정확히 있는 단어(이진 탐색). [04] §4.2 단어별 검사(E-INP-004)용
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WordCount { W12, W15, W18, W21, W24 }      // 엔트로피 16/20/24/28/32바이트

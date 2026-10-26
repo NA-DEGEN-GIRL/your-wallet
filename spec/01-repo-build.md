@@ -183,7 +183,9 @@ impl Number { pub fn as_u64(&self) -> Option<u64> /* 숫자만: 부호·'.'·지
                                                     to_vec가 그대로 출력([08] maxfeerate `0.00012000`) */ }
 pub struct Object(Vec<(String, Value)>);   // 원문 순서 유지, 키 중복은 파싱 오류
 impl Object { pub fn get(&self, key: &str) -> Option<&Value>; pub fn keys(&self) -> impl Iterator<Item=&str>;
-              pub fn len(&self) -> usize }
+              pub fn len(&self) -> usize;
+              pub fn from_pairs(pairs: Vec<(String, Value)>) -> Option<Object> /* 순서 유지, 키 중복이면 None. yw-app 설정·meta 출력용 */ }
+// Number::from_u64(n: u64) -> Number: 10진 원문(같은 용도)
 pub fn parse(bytes: &[u8], limits: &Limits) -> Result<Value, ParseError>;
 pub fn to_vec(value: &Value) -> Vec<u8>;   // 공백 없음, 객체는 삽입 순서, 문자열은 RFC 8259 최소 escape
 pub enum ParseError { TooLarge, InvalidUtf8, Syntax { offset: usize }, DuplicateKey { offset: usize },
@@ -790,7 +792,7 @@ impl<const N: usize> SecretBytes<N> { pub fn new(src: &mut [u8; N]) -> Self /* s
 
 ## 7. yw-win 안전 API
 
-공통: `pub struct WinError { pub api: &'static str, pub code: u32 }`(Debug·Clone·Copy·Eq, `Display` = `"<api> failed: 0x<code:08X>"`). 실패 시 `GetLastError()`를 즉시 읽고 `FormatMessageW`는 쓰지 않는다. 문자열 인자는 내부에서 NUL 종료 UTF-16으로 바꾸며 내부 NUL은 오류다. 공개 API에는 원시 핸들·포인터가 없고 모든 핸들은 `Drop`에서 닫는다. `lib.rs`는 `pub use error::WinError; pub use process::{current_user_sid_string, spawn_detached, allow_set_foreground_window, StdIn, StdOut};`로 [05](05-browser.md) §7.8의 경로를 그대로 제공한다.
+공통: `pub struct WinError { pub api: &'static str, pub code: u32 }`(Debug·Clone·Copy·Eq, `Display` = `"<api> failed: 0x<code:08X>"`). 실패 시 `GetLastError()`를 즉시 읽고 `FormatMessageW`는 쓰지 않는다. 문자열 인자는 내부에서 NUL 종료 UTF-16으로 바꾸며 내부 NUL은 오류다. 공개 API에는 원시 핸들·포인터가 없고 모든 핸들은 `Drop`에서 닫는다. `lib.rs`는 `pub use error::WinError; pub use process::{current_user_sid_string, spawn_detached, allow_set_foreground_window, StdIn, StdOut};`로 [05](05-browser.md) §7.8의 경로를 그대로 제공한다(M3는 `WinError`·`allow_set_foreground_window`만; `pipe`와 나머지 재수출은 M5에서 추가).
 
 feature 사용처: Foundation(핸들·오류·`LocalFree`), Graphics_Gdi(그리기), Networking_WinHttp(`http`), Security(`SECURITY_ATTRIBUTES`, `GetTokenInformation`, `CreateFileW`·`CreateNamedPipeW` 게이트), Security_Authorization(SDDL·SID 문자열), Security_Cryptography(DPAPI), Storage_FileSystem(`file`, 파이프 플래그, `GetFileType`), System_Console(`GetStdHandle`), System_DataExchange(클립보드), System_ErrorReporting(`WerAddExcludedApplication`), System_IO(`OVERLAPPED`, `GetOverlappedResult`, `CancelIoEx`), System_LibraryLoader(`GetModuleHandleW`, `SetDefaultDllDirectories`), System_Memory(`Virtual*`, `Global*`), System_Ole(`CF_UNICODETEXT`), System_Pipes, System_RemoteDesktop(`WTSRegisterSessionNotification`), System_SystemInformation(`GetTickCount64`, `GetTickCount`), System_Threading(뮤텍스·이벤트·`CreateProcessW`·`OpenProcessToken`), UI_Controls(`InitCommonControlsEx`), UI_HiDpi, UI_Input(`GetCurrentInputMessageSource`), UI_Input_KeyboardAndMouse(`GetAsyncKeyState`, `GetLastInputInfo`, `SetCapture`), UI_WindowsAndMessaging(창·메시지·`SetWindowDisplayAffinity`·`AllowSetForegroundWindow`, `WTS_*` 세션 변경 값·`WM_QUERYENDSESSION`·`WM_ENDSESSION`도 여기에 있다(확인함), 따라서 §7.7 `Msg` 추가에 feature 변경 없음).
 
@@ -820,6 +822,13 @@ pub enum FileError { NotFound, ReparsePoint, TooLarge, Os(WinError), Io(std::io:
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), FileError>;         // bytes ≤ 64 MiB
 pub fn read_limited(path: &Path, max: u64) -> Result<Vec<u8>, FileError>;        // 크기 > max → TooLarge
 pub fn ensure_dir(path: &Path) -> Result<(), FileError>;                         // create_dir_all, 재분석 지점 거부
+// atomic_write의 단계를 yw-app VaultStorage([02] §6.2 커밋 1–6단계)가 따로 쓰도록 공개한다(M3):
+pub fn tmp_path(path: &Path) -> PathBuf;                                          // <target>.tmp
+pub fn reject_reparse_point(path: &Path) -> Result<(), FileError>;                // 아래 (1)
+pub fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), FileError>;     // 아래 (3)
+pub fn replace_file(from: &Path, to: &Path) -> Result<(), FileError>;            // 아래 (4)
+pub fn rename_no_replace(from: &Path, to: &Path) -> Result<(), FileError>;       // MoveFileExW(WRITE_THROUGH), 대상이 있으면 실패
+pub fn flush_dir(dir: &Path) -> Result<(), FileError>;                           // 아래 (5)
 pub fn protect(plain: &[u8], entropy: &[u8]) -> Result<Vec<u8>, WinError>;        // dpapi, plain ≤ 1 MiB
 pub fn unprotect(blob: &[u8], entropy: &[u8]) -> Result<WipeBuf<u8>, WinError>;   // dpapi
 ```
@@ -925,12 +934,13 @@ pub fn exclude_from_error_reporting() -> Result<(), WinError>;   // WerAddExclud
 ### 7.7 `ui`, `input`
 
 ```rust
-pub fn init() -> Result<(), WinError>;   // SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2) + InitCommonControlsEx. 첫 창 전 1회
+pub fn init() -> Result<(), WinError>;   // SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2) + InitCommonControlsEx. 첫 창 전 1회.
+                                         // 매니페스트가 이미 PMv2를 정한 경우의 ERROR_ACCESS_DENIED(5)는 성공으로 본다([04] §1.6)
 pub enum CaptureExclusion { Required /* 니모닉·개인키 표시 창 */, Preferred /* 비밀번호·니모닉·개인키 입력 창 */ }
 pub struct ClassSpec { pub name: &'static str, pub secret: bool, pub capture: CaptureExclusion }   // capture는 secret = true일 때만 의미
 pub fn register_class(spec: &ClassSpec) -> Result<(), WinError>;                 // 이름마다 1회, 두 번째는 Ok(())
 pub enum WindowKind { Main, Owned { owner: Hwnd }, HiddenTopLevel }
-pub struct WindowSpec { /* builder: WindowSpec::new(class, kind).title(&str).size(w, h /* DIP */).visible(bool) */ }
+pub struct WindowSpec { /* builder: WindowSpec::new(class, kind).title(&str).size(w, h /* DIP */).min_size(w, h).visible(bool).topmost(bool).resizable(bool) */ }
 pub fn create_window(spec: &WindowSpec, handler: Box<dyn Handler>) -> Result<Window, UiError>;
 pub fn exclude_from_capture(w: &Window) -> Result<(), UiError>;                  // 설정 후 읽기 확인(비밀 클래스는 create_window가 호출)
 pub trait Handler { fn on(&mut self, w: &Window, m: &Msg) -> Reply; }
@@ -943,11 +953,12 @@ pub enum Msg { Create, Paint, Size { w: i32, h: i32 }, DpiChanged { dpi: u32 }, 
 pub struct Hwnd(/* usize */);   // Copy + Eq, 불투명 식별자(포인터로 쓸 수 없음)
 pub struct Window { /* Hwnd; !Send */ }
 // Window: hwnd, show, hide, destroy, enable, set_topmost, set_foreground, flash, invalidate, set_title, set_timer(id, ms),
-//         kill_timer, dpi, client_rect, set_capture, release_capture, set_focus, is_foreground, focus_within, center_on, poster,
+//         kill_timer, dpi, px(dip), client_rect, set_capture, release_capture, set_focus, is_foreground, focus_within, center_on, poster,
+//         is_alive, begin_paint() -> PaintDc, measure_text(&Font, &[u16], max_w, DrawFlags) -> (w, h)   // Paint 밖 배치 계산(GetDC)
 //         capture_excluded() -> bool   // 비밀 클래스: exclude_from_capture 성공 여부(Preferred 실패면 false), 그 밖 false
 pub struct Poster { /* Send + Sync */ }
 impl Poster { pub fn post(&self, msg: u32, wparam: usize) -> Result<(), WinError>; }   // PostMessageW, msg ≥ WM_APP
-pub enum InputKind { Key, Mouse }
+pub enum InputKind { Key { vk: Option<u16> /* WM_(SYS)KEYDOWN = Some, WM_CHAR = None */ }, Mouse }   // vk: 앱 단축키(Ctrl+L, [04] §5.1)
 pub fn run_loop(observe: &mut dyn FnMut(InputKind, Hwnd)) -> i32;   // GetMessageW/TranslateMessage/DispatchMessageW, 키·마우스 메시지마다 observe
 pub fn quit(code: i32);                                               // PostQuitMessage
 pub fn message_box(owner: Option<&Window>, text: &str, caption: &str, kind: MbKind) -> MbResult;   // 시작 실패 등 창 이전 오류만
@@ -965,7 +976,7 @@ pub mod input { pub fn is_down(vk: u16) -> bool; /* GetAsyncKeyState 최상위 �
 - 비밀 클래스의 wndproc는 `capture`·캡처 제외 결과와 무관하게 [04](04-app-ui.md) §4.4의 정확히 22개 메시지(와일드카드 없음: `WM_RBUTTONDBLCLK`·`WM_IME_SETCONTEXT`·`WM_IME_NOTIFY` 등은 막지 않는다)와, 비밀 상태를 붙인 뒤(`create_window` 반환 후, `armed`)에는 `WM_SETTEXT`도 핸들러와 `DefWindowProcW` 없이 0을 반환한다. 막기 전에 `WM_IME_STARTCOMPOSITION`은 `Msg::ImeAttempt`로 핸들러에 알린다([04](04-app-ui.md) §4.4). 판정은 순수 함수 `is_blocked_secret_msg(msg: u32, armed: bool) -> bool`이며 그 목록 그대로 창 없이 단위 테스트한다. Microsoft는 캡처 제외를 보안 보장으로 보지 않는다(§2.2 범위).
 - `WM_DPICHANGED`에 `Default`면 제안 사각형으로 `SetWindowPos`. 크기는 DIP, `scale(v, dpi) = v * dpi / 96`(checked). `WM_CLOSE` 기본 = `DestroyWindow`. yw-win은 `PostQuitMessage`를 스스로 부르지 않는다(앱이 `quit`).
 - 세션·종료 메시지 디코딩: `WM_WTSSESSION_CHANGE`의 wParam `WTS_CONSOLE_DISCONNECT`(0x2)·`WTS_REMOTE_DISCONNECT`(0x4) → `SessionDisconnect`, `WTS_SESSION_LOGOFF`(0x6) → `SessionLogoff`, `WTS_SESSION_LOCK`(0x7) → `SessionLock`, `WTS_SESSION_UNLOCK`(0x8) → `SessionUnlock`, 그 밖 값은 핸들러에 오지 않는다(`DefWindowProcW`). `WM_QUERYENDSESSION` → `QueryEndSession`(`Reply::Default` = `DefWindowProcW` = TRUE, 종료 허용). `WM_ENDSESSION`은 wParam = TRUE일 때만 `EndSession`이고 FALSE(종료 취소)는 핸들러에 오지 않는다. `EndSession` 핸들러가 반환한 뒤 Windows는 프로세스를 언제든 끝낼 수 있다(앱 처리는 [04](04-app-ui.md) §1.5·§5.1).
-- 그리기: `PaintDc`(`Msg::Paint` 안에서만, BeginPaint/EndPaint RAII) — `fill_rect(Rect, Color)`(QR 모듈 포함), `draw_text(&[u16], Rect, DrawFlags)`(`DrawTextW`, `DT_NOPREFIX`를 항상 더함), `measure(&[u16], max_w) -> (fit_chars, width)`(`GetTextExtentExPointW`), `select_font(&Font)`. `Font::create(face: &str, size_pt: u16, bold: bool, dpi: u32) -> Result<Font, WinError>`(`CreateFontW`, Drop에서 `DeleteObject`). `Rect { x, y, w, h: i32 }`, `Color(u32 /* 0xRRGGBB */)`, `MbKind::{Info, Warning, Error}`, `MbResult::{Ok}`.
+- 그리기: `PaintDc`(`Msg::Paint` 안에서만, BeginPaint/EndPaint RAII) — `fill_rect(Rect, Color)`(QR 모듈 포함), `frame_rect(Rect, Color)`, `set_text_color(Color)`, `draw_text(&[u16], Rect, DrawFlags)`, `measure_wrapped(&[u16], max_w, DrawFlags) -> h`(`DT_CALCRECT`)(`DrawTextW`, `DT_NOPREFIX`를 항상 더함), `measure(&[u16], max_w) -> (fit_chars, width)`(`GetTextExtentExPointW`), `select_font(&Font)`. `Font::create(face: &str, size_pt: u16, bold: bool, dpi: u32) -> Result<Font, WinError>`(`CreateFontW`, Drop에서 `DeleteObject`). `Rect { x, y, w, h: i32 }`, `Color(u32 /* 0xRRGGBB */)`, `MbKind::{Info, Warning, Error}`, `MbResult::{Ok}`.
 - `controls`: 비밀이 아닌 값용 BUTTON·EDIT·STATIC·체크박스·owner-draw LISTBOX 생성과 자기 컨트롤 텍스트 get/set(`GetWindowTextW`, 길이 상한). 알림은 `Msg::Command`.
 - 비밀 입력(D11, OS EDIT 미사용):
 

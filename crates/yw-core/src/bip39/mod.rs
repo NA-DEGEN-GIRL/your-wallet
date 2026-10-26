@@ -45,6 +45,16 @@ pub(crate) fn wordlist() -> Result<&'static [&'static str; WORDLIST_LEN], KeyErr
         .ok_or(KeyError::Internal)
 }
 
+/// Whether `word` is in the English list (binary search, spec/02 §2.1). Used by the word-by-word
+/// mnemonic entry grid (spec/04 §4.2 W05) before the whole phrase is parsed.
+#[must_use]
+pub fn is_word(word: &str) -> bool {
+    wordlist().is_ok_and(|list| {
+        list.binary_search_by(|candidate| candidate.as_bytes().cmp(word.as_bytes()))
+            .is_ok()
+    })
+}
+
 /// Supported mnemonic lengths (entropy 16/20/24/28/32 bytes).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WordCount {

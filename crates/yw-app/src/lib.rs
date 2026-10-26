@@ -1,7 +1,19 @@
-//! yw-app library: GUI-free wallet application logic, tested through `tests/` (spec/09 §2.1).
-//!
-//! M2 provides only `rpc::evm`'s `eth_simulateV1` response parser (spec/09 §3.8); transport,
-//! flows, UI and the browser bridge arrive with M3–M5 (spec/04 §1.8).
+//! yw-app library: the wallet application. Window-free logic (settings, key files, storage,
+//! state machines, RPC transport) is tested through `tests/` and unit tests (spec/09 §2.1); the
+//! Win32 shell (`app`, `ui::main_window`, `ui::secret`) runs in the binary.
 #![forbid(unsafe_code)]
 
+pub mod apikeys;
+pub mod app;
+pub mod errors;
+pub mod events;
+pub mod lock;
+pub mod logging;
+pub mod meta;
+pub mod network;
 pub mod rpc;
+pub mod settings;
+pub mod store;
+pub mod text;
+pub mod ui;
+pub mod workers;

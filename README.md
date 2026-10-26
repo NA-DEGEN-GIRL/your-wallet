@@ -8,7 +8,7 @@ Windows 11 PC 한 대에서 작성자 본인이 쓰는 개인용 소프트웨어
 
 ## 상태
 
-- 현재 마일스톤: **M1 키·vault** 완료(yw-core: 엔트로피, BIP39, BIP32, base58, vault v3; yw-json 파서). 다음은 M2(EVM 코어).
+- 현재 마일스톤: **M3 앱 뼈대** 구현(yw-win Win32 래퍼, yw-app 창·vault 흐름·비밀 창 보호; M1 키·vault, M2 EVM 코어 완료). M3 수동 판정은 [docs/acceptance/m3-20261027.md](docs/acceptance/m3-20261027.md). 다음은 M4(EVM 단독 전송).
 - 실제 자산을 넣지 않는다. 메인넷 사용은 M9 체크리스트 이후 소액만.
 - 마일스톤과 완료 조건: [spec.md](spec.md) §5, 판정 기준: [spec/09-testing.md](spec/09-testing.md).
 

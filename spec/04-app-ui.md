@@ -51,6 +51,7 @@ yw-app(지갑 본체, D3)의 프로세스·스레드 구조, 화면과 흐름, �
 pub const WM_YW_EVENTS: u32     = WM_APP + 1; // 0x8001, 이벤트 큐 초인종
 pub const WM_YW_ACTIVATE: u32   = WM_APP + 2; // 두 번째 인스턴스 → 첫 인스턴스
 pub const WM_YW_CHILD_DONE: u32 = WM_APP + 3; // 승인·비밀 창 → 주 창, wParam = 창 id
+pub const WM_YW_LOCK_SHORTCUT: u32 = WM_APP + 4; // 메시지 루프 관찰자가 Ctrl+L(어느 창이든)을 보면 주 창에 post
 pub const EVENT_QUEUE_CAP: usize = 4096;
 pub const MAIN_TIMER_MS: u32 = 250;           // 큐 보조 배출, 자동 잠금 판정, 기한 검사
 
@@ -91,7 +92,7 @@ impl EventQueue {
 
 ### 1.6 DPI·글꼴·색
 - 크기 상수는 96 DPI 기준 DIP이고 `GetDpiForWindow`로 환산한다. `WM_DPICHANGED`: lParam 제안 사각형으로 `SetWindowPos`, 새 DPI로 글꼴을 다시 만들고 다시 배치한다.
-- 구현 시 확인: yw-app `build.rs`의 `cargo:rustc-link-arg-bins=/MANIFEST:EMBED`·`/MANIFESTINPUT:<yw-app.manifest>`로 comctl32 v6·PerMonitorV2 매니페스트를 넣을 수 있는지. 안 되면 매니페스트 없이 위 API 호출과 고전 모양 표준 컨트롤을 쓴다(기능 영향 없음).
+- 확인함(M3): yw-app `build.rs`의 `cargo:rustc-link-arg-bins=/MANIFEST:EMBED`·`/MANIFESTINPUT:<yw-app.manifest>`로 comctl32 v6·PerMonitorV2 매니페스트가 들어간다. 매니페스트는 필수다(없으면 `InitCommonControlsEx(ICC_STANDARD_CLASSES)`가 실패). 매니페스트가 DPI를 먼저 정하므로 `ui::init`의 `SetProcessDpiAwarenessContext`는 `ERROR_ACCESS_DENIED`를 돌려주고 이를 성공으로 본다([01] §7.7).
 - 테마는 라이트만. 글꼴: 본문·라벨·버튼 `Malgun Gothic`(없으면 `Segoe UI`) 10pt, 화면 제목 굵게 13pt, 승인 창 제목 굵게 12pt, 주소·해시·hex·개인키 `Consolas` 10pt, 니모닉 표시 `Consolas` 14pt, calldata 등 hex 원본 `Consolas` 9pt.
 - 색 토큰(`ui::theme`, [06]이 참조):
 
@@ -115,7 +116,7 @@ TESTNET_BG #E8F0FE 테스트넷 띠·배지   AI_PANEL_BG #F3F0FA [06] AI 패널
 
 - 비밀 클래스는 `ClassSpec { name, secret: true, capture }`로 등록한다([01] §7.7). `capture`는 캡처 제외 실패 처리다(§4.5): `Required` = 창 파괴·비밀 미표시, `Preferred` = 창 유지·경고 배너. 비밀 아닌 클래스에는 캡처 제외를 적용하지 않는다.
 
-주 창 960×680 DIP(최소 720×520), 비밀 창 640×480(W08·W09는 820×680), 승인 창 §3.6.
+주 창 960×680 DIP(최소 720×520), 비밀 창 640×480(W04·W10은 640×560, W05는 24칸 때문에 720×600, W08·W09는 820×680), 승인 창 §3.6. M3 주 창은 화면을 직접 그리고 표준 컨트롤을 직접 소유한다(휠 스크롤). `YourWalletV3Panel`·`YourWalletV3Approval`은 owner-draw 목록·승인 창이 생기는 M4에서 등록한다.
 
 ### 1.8 yw-win 사용 API
 이름·시그니처·오류 타입의 정본은 [01] §7이다(D31). yw-app이 쓰는 것:
@@ -194,7 +195,7 @@ S04(백업 대기): 잠금 해제 직후 백업이 확인되지 않았을 때. T
 - S07: "지갑이 잠겨 있습니다.", `잠금 해제`(W02). 기다리는 dApp 요청이 있으면 T-UNLOCK-PENDING과 origin 목록(최대 5개, 나머지 "외 n건"). 계정·잔액·주소는 보이지 않는다(meta가 잠겨 있다).
 - W02 비밀번호 → `KeyJob::Unlock` → S03("확인 중…").
   - `UnlockFailed` → E-VLT-001([02] §7.4 문구). 칸을 비우고 입력과 확인 버튼을 1초 비활성화. 횟수 제한 없음.
-  - `PassphraseRequired` → W06(passphrase 1칸) → `enter_passphrase`. `PassphraseMismatch` → 오버레이 T-PASS-MISMATCH: `다시 입력`(W06), `이 passphrase로 계속`(체크 "다른 passphrase는 다른(빈) 지갑을 엽니다"를 켜야 활성) → `Unlocked { alt_passphrase: true }`.
+  - `PassphraseRequired` → W06(passphrase 1칸) → `enter_passphrase`. W06 `나중에`(Esc)는 `KeyJob::Lock`으로 `Locked`(S07)에 돌아간다(`PassphraseRequired`에 머물지 않는다). `PassphraseMismatch` → 오버레이 T-PASS-MISMATCH: `다시 입력`(W06), `이 passphrase로 계속`(체크 "다른 passphrase는 다른(빈) 지갑을 엽니다"를 켜야 활성) → `Unlocked { alt_passphrase: true }`.
   - VirtualLock 실패(yw-win 슬롯 할당 실패, `OutOfMemory`) → E-VLT-007, 잠금 해제하지 않는다([02] §7.3 권고).
   - 성공: `BackupPending`이면 S04, 아니면 meta 읽기 → S10. meta·journal이 `SidecarCorrupt`·`SidecarVaultMismatch`면 오버레이 E-VLT-006에서 `이전 사본(.prev) 사용` 또는 `격리하고 새로 시작`을 고르게 한다(journal은 T-JOURNAL-RESET 확인 후에만, [02] §6.3). 이어서 저널 복구([03])와 승인 큐 처리(§3.7).
 - dApp 요청 때문에 자동으로 연 W02·W06은 `WS_EX_TOPMOST`이고 전경이 아니면 작업 표시줄을 깜박인다(§3.6). 이 창의 `나중에`(Esc)는 잠금 해제를 기다리던 dApp 항목을 모두 `Rejected`로 끝낸다([05] §4.4: 해제 창은 하나, 결과 공유). 사용자가 직접 연 창의 `나중에`는 창만 닫는다.
@@ -284,7 +285,7 @@ S16 토큰 추가: 컨트랙트 주소(§2.15) → RPC `decimals()`·`symbol()`(
 
 **`네트워크 URL 생성`**
 1. 템플릿이 `직접 입력`이면 비활성. 입력 칸에 값이 있으면 먼저 `저장`과 같이 검사(E-KEY-002)·저장한다. 선택한 템플릿의 자격 정보가 저장돼 있지 않으면 E-KEY-004.
-2. 대상 = 등록된 모든 네트워크(기본 EVM 3, 사용자 체인, `solana:*` 2, `bitcoin:*` 2) 중 `template_url`이 `Some`인 것. 오버레이 T-RPC-GENERATE: 대상(네트워크 이름·`NetworkId`, 이미 URL이 있으면 "기존 URL 있음"), 템플릿 항목이 없어 건너뛰는 네트워크, 체크박스 `기존 URL 덮어쓰기`(기본 끔). `생성` / `취소`.
+2. 대상 = 등록된 모든 네트워크(기본 EVM 3, 사용자 체인, `solana:*` 2, `bitcoin:*` 2; 아래 목록과 같이 각 체인 탭이 구현된 단계부터) 중 `template_url`이 `Some`인 것. 오버레이 T-RPC-GENERATE: 대상(네트워크 이름·`NetworkId`, 이미 URL이 있으면 "기존 URL 있음"), 템플릿 항목이 없어 건너뛰는 네트워크, 체크박스 `기존 URL 덮어쓰기`(기본 끔). `생성` / `취소`.
 3. URL이 없는 대상과, 체크했을 때 URL이 있는 대상에 새 URL을 넣는다. 사용자 EVM 체인의 새 URL은 저장 전에 §2.17.2-2 확인(chainId·고정 제네시스 일치; 순서대로, 호출당 10 s, 재시도 없음)을 통과한 것만 쓰고, 실패한 체인은 기존 값(또는 없음)을 유지한다. 기본 네트워크는 네트워크 호출 없이 쓴다(다음 사용 때 체인 확인, [03] §1.4·[07] §15.1·[08] §2).
 4. `apikeys.dpapi`를 한 번 쓴다(§6.3; 실패 → E-APP-002, 메모리 값 되돌림). 성공 → 새 `RpcConfig`, 바뀐 네트워크의 체인 확인 상태 초기화, T-RPC-GENERATED(실패한 사용자 체인은 네트워크 이름 + 코드). 로그 `rpc.generated`(`NetworkId` 목록만).
 

@@ -4,7 +4,7 @@
 use sha2::{Digest, Sha256};
 use yw_json::Limits;
 
-use super::{Mnemonic, WordCount, wordlist};
+use super::{Mnemonic, WordCount, is_word, wordlist};
 use crate::bip32::Bip32Path;
 use crate::bip32::xkey::{XKeyVersion, derive_xkey, encode_xkey};
 use crate::error::KeyError;
@@ -241,4 +241,15 @@ fn generation_uses_32_bytes_and_debug_is_redacted() {
     let rendered = format!("{mnemonic:?}");
     assert_eq!(rendered, "Mnemonic([REDACTED])");
     assert!(!rendered.contains("abandon"));
+}
+
+#[test]
+fn is_word_matches_the_list_exactly() {
+    assert!(is_word("abandon"));
+    assert!(is_word("zoo"));
+    assert!(is_word("about"));
+    assert!(!is_word("abandonn"));
+    assert!(!is_word("Abandon"));
+    assert!(!is_word(""));
+    assert!(!is_word("aban"));
 }

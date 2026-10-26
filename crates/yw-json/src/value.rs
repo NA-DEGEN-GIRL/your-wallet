@@ -81,6 +81,12 @@ impl Number {
         Self(token)
     }
 
+    /// The decimal token of `value`.
+    #[must_use]
+    pub fn from_u64(value: u64) -> Self {
+        Self(value.to_string())
+    }
+
     /// Validates `text` against the RFC 8259 number grammar and keeps it verbatim.
     ///
     /// # Errors
@@ -162,6 +168,22 @@ pub struct Object(Vec<(String, Value)>);
 impl Object {
     pub(crate) const fn from_members(members: Vec<(String, Value)>) -> Self {
         Self(members)
+    }
+
+    /// Builds an object from members in the given order (the writer keeps this order).
+    /// Returns `None` if a key repeats, so every `Object` keeps unique keys.
+    #[must_use]
+    pub fn from_pairs(members: Vec<(String, Value)>) -> Option<Self> {
+        for (index, (key, _)) in members.iter().enumerate() {
+            if members
+                .iter()
+                .skip(index.checked_add(1)?)
+                .any(|(other, _)| other == key)
+            {
+                return None;
+            }
+        }
+        Some(Self(members))
     }
 
     /// Looks up a member by key.

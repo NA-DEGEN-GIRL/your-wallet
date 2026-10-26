@@ -1,4 +1,318 @@
-//! RPC clients (spec/04 §1.9). M2: `evm` holds only the `eth_simulateV1` response parser; the
-//! shared HTTPS transport (`yw_win::http`) and the remaining calls arrive with M4.
+//! RPC transport shared by every chain (spec/04 §1.9) and the endpoint `테스트` of the settings
+//! screen (spec/04 §2.11.1). `rpc::evm` holds the `eth_simulateV1` response parser (M2); the
+//! other EVM calls arrive with M4.
+//!
+//! JSON-RPC 2.0 over `yw_win::http::Client` (HTTPS only, TLS 1.2/1.3, no redirects/cookies/auth,
+//! no Origin), one increasing `id` per request checked against the response. Failures are
+//! classified into fixed codes; URLs, hosts and remote strings never leave this module.
 
 pub mod evm;
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+
+use yw_core::evm::amount::U256;
+use yw_json::{Limits, Number, Value};
+use yw_win::http::{Client, HttpError, HttpsUrl, Timeouts};
+
+use crate::errors::ErrorCode;
+use crate::network::{BtcNet, NetworkId, SolCluster};
+use crate::text::{json_object, json_str, json_u64};
+
+/// RPC timeouts (spec/03 §1.4: resolve 5 s, connect 5 s, send 10 s, receive 10 s).
+pub const RPC_TIMEOUTS: Timeouts = Timeouts {
+    resolve_ms: 5_000,
+    connect_ms: 5_000,
+    send_ms: 10_000,
+    receive_ms: 10_000,
+};
+/// Per-call deadline; later results count as timeouts (spec/01 §7.4).
+pub const CALL_DEADLINE_MS: u128 = 10_000;
+/// Default response bound.
+pub const DEFAULT_MAX_RESPONSE: usize = 1_048_576;
+
+/// A raw HTTP reply.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpReply {
+    /// Status.
+    pub status: u16,
+    /// Body.
+    pub body: Vec<u8>,
+}
+
+/// The transport seam (real `WinHTTP` client, or a fake in tests).
+pub trait Transport: Send + Sync {
+    /// POSTs a JSON body.
+    ///
+    /// # Errors
+    ///
+    /// [`HttpError`].
+    fn post_json(
+        &self,
+        url: &HttpsUrl,
+        body: &[u8],
+        max_response: usize,
+    ) -> Result<HttpReply, HttpError>;
+}
+
+impl Transport for Client {
+    fn post_json(
+        &self,
+        url: &HttpsUrl,
+        body: &[u8],
+        max_response: usize,
+    ) -> Result<HttpReply, HttpError> {
+        Self::post_json(self, url, None, body, max_response).map(|response| HttpReply {
+            status: response.status,
+            body: response.body,
+        })
+    }
+}
+
+/// Why a call failed (classification input, spec/04 §7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RpcFailure {
+    /// Transport error.
+    Http(HttpError),
+    /// Non-2xx HTTP status.
+    Status(u16),
+    /// JSON-RPC `error.code`.
+    Rpc(i64),
+    /// Malformed response or id mismatch.
+    Malformed,
+    /// Returned after the per-call deadline.
+    Late,
+}
+
+/// spec/04 §1.9 classification.
+#[must_use]
+pub const fn classify(failure: RpcFailure) -> ErrorCode {
+    match failure {
+        RpcFailure::Http(HttpError::Timeout) | RpcFailure::Late => ErrorCode::Rpc002,
+        RpcFailure::Http(HttpError::Tls) => ErrorCode::Rpc008,
+        RpcFailure::Http(HttpError::TooLarge) | RpcFailure::Malformed => ErrorCode::Rpc005,
+        RpcFailure::Http(HttpError::InvalidUrl) => ErrorCode::Key003,
+        RpcFailure::Http(HttpError::Os(_) | HttpError::InvalidHeader) => ErrorCode::Rpc001,
+        RpcFailure::Status(401 | 403) => ErrorCode::Rpc003,
+        RpcFailure::Status(429) | RpcFailure::Rpc(-32_005 | 429) => ErrorCode::Rpc004,
+        RpcFailure::Status(_) | RpcFailure::Rpc(_) => ErrorCode::Rpc007,
+    }
+}
+
+/// A JSON-RPC client over a transport.
+pub struct RpcClient<'t> {
+    transport: &'t dyn Transport,
+    next_id: AtomicU64,
+}
+
+impl core::fmt::Debug for RpcClient<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("RpcClient")
+    }
+}
+
+impl<'t> RpcClient<'t> {
+    /// A client starting at id 1.
+    #[must_use]
+    pub fn new(transport: &'t dyn Transport) -> Self {
+        Self {
+            transport,
+            next_id: AtomicU64::new(1),
+        }
+    }
+
+    /// Calls `method` with `params`; returns `result`.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcFailure`].
+    pub fn call(
+        &self,
+        url: &HttpsUrl,
+        method: &'static str,
+        params: Value,
+    ) -> Result<Value, RpcFailure> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let request = json_object(vec![
+            ("jsonrpc", json_str("2.0")),
+            ("id", json_u64(id)),
+            ("method", json_str(method)),
+            ("params", params),
+        ]);
+        let started = Instant::now();
+        let reply = self
+            .transport
+            .post_json(url, &yw_json::to_vec(&request), DEFAULT_MAX_RESPONSE)
+            .map_err(RpcFailure::Http)?;
+        if started.elapsed().as_millis() > CALL_DEADLINE_MS {
+            return Err(RpcFailure::Late);
+        }
+        if !(200..300).contains(&reply.status) {
+            return Err(RpcFailure::Status(reply.status));
+        }
+        let limits = Limits {
+            max_bytes: DEFAULT_MAX_RESPONSE,
+            ..Limits::RESPONSE
+        };
+        let value = yw_json::parse(&reply.body, &limits).map_err(|_| RpcFailure::Malformed)?;
+        let object = value.as_object().ok_or(RpcFailure::Malformed)?;
+        if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
+            || object
+                .get("id")
+                .and_then(Value::as_number)
+                .and_then(Number::as_u64)
+                != Some(id)
+        {
+            return Err(RpcFailure::Malformed);
+        }
+        if let Some(error) = object.get("error") {
+            let code = error
+                .as_object()
+                .and_then(|error| error.get("code"))
+                .and_then(Value::as_number)
+                .and_then(Number::as_i64)
+                .ok_or(RpcFailure::Malformed)?;
+            return Err(RpcFailure::Rpc(code));
+        }
+        object.get("result").cloned().ok_or(RpcFailure::Malformed)
+    }
+}
+
+/// Solana genesis hashes (spec/07 §15.1).
+#[must_use]
+pub const fn solana_genesis(cluster: SolCluster) -> &'static str {
+    match cluster {
+        SolCluster::Mainnet => "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+        SolCluster::Devnet => "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+    }
+}
+
+/// Bitcoin Core `getblockchaininfo.chain` (spec/08 §2).
+#[must_use]
+pub const fn bitcoin_chain(net: BtcNet) -> &'static str {
+    match net {
+        BtcNet::Mainnet => "main",
+        BtcNet::Testnet4 => "testnet4",
+    }
+}
+
+/// Result of an endpoint test.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TestOutcome {
+    /// Matches; the checked item (`chainId 1`, `genesis 일치`, `chain main`).
+    Ok(String),
+    /// Answered for another network: the item name and, for EVM, the RPC chain id.
+    Mismatch {
+        /// `chainId`, `genesis` or `chain`.
+        item: &'static str,
+        /// Parsed RPC chain id (EVM).
+        rpc_chain_id: Option<u64>,
+    },
+    /// Failed.
+    Failed(ErrorCode),
+}
+
+impl TestOutcome {
+    /// Code for logs (`ok` or the error code).
+    #[must_use]
+    pub const fn log_word(&self) -> &'static str {
+        match self {
+            Self::Ok(_) => "ok",
+            Self::Mismatch { .. } => "E-RPC-010",
+            Self::Failed(code) => code.code(),
+        }
+    }
+
+    /// The fixed message (T-RPC-OK or the error text), never including remote strings.
+    #[must_use]
+    pub fn message(&self, network_name: &str) -> String {
+        match self {
+            Self::Ok(item) => format!("엔드포인트가 작동합니다. ({network_name}, {item})"),
+            Self::Mismatch {
+                item,
+                rpc_chain_id: Some(id),
+            } => {
+                let base = ErrorCode::Rpc010.render(item);
+                let code = format!(" ({})", ErrorCode::Rpc010.code());
+                let head = base.strip_suffix(&code).unwrap_or(&base);
+                format!("{head} (RPC chainId {id}){code}")
+            }
+            Self::Mismatch { item, .. } => ErrorCode::Rpc010.render(item),
+            Self::Failed(code) => code.text(),
+        }
+    }
+}
+
+/// `eth_chainId` canonical form: `0x` + lowercase hex without leading zeros.
+#[must_use]
+pub fn canonical_quantity(value: u64) -> String {
+    format!("0x{value:x}")
+}
+
+/// One endpoint test call (spec/04 §2.11.1 table), no retry.
+#[must_use]
+pub fn test_endpoint(client: &RpcClient<'_>, network: NetworkId, url: &HttpsUrl) -> TestOutcome {
+    let empty = Value::Array(Vec::new());
+    match network {
+        NetworkId::Eip155(expected) => match client.call(url, "eth_chainId", empty) {
+            Ok(Value::String(text)) => {
+                let Some(value) = U256::parse_quantity_lenient(&text)
+                    .ok()
+                    .and_then(U256::to_u64)
+                else {
+                    return TestOutcome::Failed(ErrorCode::Rpc005);
+                };
+                if text.to_ascii_lowercase() == canonical_quantity(expected) {
+                    TestOutcome::Ok(format!("chainId {expected}"))
+                } else {
+                    TestOutcome::Mismatch {
+                        item: "chainId",
+                        rpc_chain_id: Some(value),
+                    }
+                }
+            }
+            Ok(_) => TestOutcome::Failed(ErrorCode::Rpc005),
+            Err(failure) => TestOutcome::Failed(classify(failure)),
+        },
+        NetworkId::Solana(cluster) => match client.call(url, "getGenesisHash", empty) {
+            Ok(Value::String(hash)) if hash == solana_genesis(cluster) => {
+                TestOutcome::Ok("genesis 일치".to_owned())
+            }
+            Ok(Value::String(_)) => TestOutcome::Mismatch {
+                item: "genesis",
+                rpc_chain_id: None,
+            },
+            Ok(_) => TestOutcome::Failed(ErrorCode::Rpc005),
+            Err(failure) => TestOutcome::Failed(classify(failure)),
+        },
+        NetworkId::Bitcoin(net) => match client.call(url, "getblockchaininfo", empty) {
+            Ok(Value::Object(info)) => match info.get("chain").and_then(Value::as_str) {
+                Some(chain) if chain == bitcoin_chain(net) => {
+                    TestOutcome::Ok(format!("chain {chain}"))
+                }
+                Some(_) => TestOutcome::Mismatch {
+                    item: "chain",
+                    rpc_chain_id: None,
+                },
+                None => TestOutcome::Failed(ErrorCode::Rpc005),
+            },
+            Ok(_) => TestOutcome::Failed(ErrorCode::Rpc005),
+            Err(failure) => TestOutcome::Failed(classify(failure)),
+        },
+    }
+}
+
+/// The URL a `테스트` uses (spec/04 §2.11.1): the typed replacement if any (format-checked,
+/// E-KEY-003), otherwise the stored URL, otherwise E-KEY-005 without any call.
+///
+/// # Errors
+///
+/// [`ErrorCode::Key003`] or [`ErrorCode::Key005`].
+pub fn endpoint_for_test(typed: &str, stored: Option<HttpsUrl>) -> Result<HttpsUrl, ErrorCode> {
+    let typed = typed.trim();
+    if typed.is_empty() {
+        stored.ok_or(ErrorCode::Key005)
+    } else {
+        HttpsUrl::parse(typed).map_err(|_| ErrorCode::Key003)
+    }
+}

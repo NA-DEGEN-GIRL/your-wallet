@@ -1,7 +1,7 @@
 //! Strict parser and writer behaviour (spec/01 §2.3, spec/05 §2.9). The shared limits golden
 //! (`v1-limits.golden.json`, spec/05 R-J1) is added with the browser milestone.
 
-use yw_json::{Limits, Number, ParseError, Value, parse, to_vec};
+use yw_json::{Limits, Number, Object, ParseError, Value, parse, to_vec};
 
 const SMALL: Limits = Limits {
     max_bytes: 64,
@@ -141,4 +141,22 @@ fn integer_accessors_are_exact() {
 fn error_display_has_no_input_content() {
     let error = err(b"{\"secret-value\":1,\"secret-value\":2}").unwrap();
     assert!(!error.to_string().contains("secret"));
+}
+
+#[test]
+fn built_objects_keep_order_and_reject_duplicate_keys() {
+    let object = Object::from_pairs(vec![
+        ("b".to_owned(), Value::Number(Number::from_u64(1))),
+        ("a".to_owned(), Value::Bool(true)),
+    ])
+    .expect("unique keys");
+    assert_eq!(to_vec(&Value::Object(object)), br#"{"b":1,"a":true}"#);
+    assert!(
+        Object::from_pairs(vec![
+            ("a".to_owned(), Value::Null),
+            ("a".to_owned(), Value::Null),
+        ])
+        .is_none()
+    );
+    assert_eq!(Number::from_u64(u64::MAX).as_u64(), Some(u64::MAX));
 }
