@@ -44,6 +44,12 @@ pub enum FontRole {
     Mono,
     /// Mnemonic display: Consolas 14 pt.
     MonoLarge,
+    /// Approval title: bold 12 pt.
+    ApprovalTitle,
+    /// Bold body 10 pt (sections, band head).
+    BodyBold,
+    /// Raw hex (calldata): Consolas 9 pt.
+    MonoSmall,
 }
 
 /// The fonts of one DPI.
@@ -57,6 +63,12 @@ pub struct Fonts {
     pub mono: Font,
     /// Large mono.
     pub mono_large: Font,
+    /// Approval title.
+    pub approval_title: Font,
+    /// Bold body.
+    pub body_bold: Font,
+    /// Small mono.
+    pub mono_small: Font,
 }
 
 fn body_font(size: u16, bold: bool, dpi: u32) -> Option<Font> {
@@ -74,6 +86,9 @@ impl Fonts {
             title: body_font(13, true, dpi)?,
             mono: Font::create("Consolas", 10, false, dpi).ok()?,
             mono_large: Font::create("Consolas", 14, false, dpi).ok()?,
+            approval_title: body_font(12, true, dpi)?,
+            body_bold: body_font(10, true, dpi)?,
+            mono_small: Font::create("Consolas", 9, false, dpi).ok()?,
         })
     }
 
@@ -85,6 +100,9 @@ impl Fonts {
             FontRole::Title => &self.title,
             FontRole::Mono => &self.mono,
             FontRole::MonoLarge => &self.mono_large,
+            FontRole::ApprovalTitle => &self.approval_title,
+            FontRole::BodyBold => &self.body_bold,
+            FontRole::MonoSmall => &self.mono_small,
         }
     }
 }

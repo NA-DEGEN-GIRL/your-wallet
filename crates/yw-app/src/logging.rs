@@ -34,6 +34,8 @@ pub enum Field<'a> {
     Num(u64),
     /// An EVM address (allowed by D28): 20 raw bytes, written as lowercase hex.
     Address(&'a [u8; 20]),
+    /// A transaction hash (allowed by D28): written as `0x` + lowercase hex.
+    Hash(&'a [u8; 32]),
 }
 
 /// UTC `YYYY-MM-DDTHH:MM:SS.mmmZ` from Unix milliseconds.
@@ -111,6 +113,10 @@ pub fn format_line(
             Field::Code(code) => push_sanitized(&mut line, code.code()),
             Field::Num(number) => line.push_str(&number.to_string()),
             Field::Address(bytes) => {
+                line.push_str("0x");
+                line.push_str(&yw_core::hex::encode(bytes.as_slice()));
+            }
+            Field::Hash(bytes) => {
                 line.push_str("0x");
                 line.push_str(&yw_core::hex::encode(bytes.as_slice()));
             }

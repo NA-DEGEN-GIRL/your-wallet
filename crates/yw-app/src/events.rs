@@ -6,13 +6,22 @@ use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
+use yw_core::approval::{Approved, TokenMeta};
 use yw_core::error::{KeyError, VaultError};
 use yw_core::evm::address::Address;
+use yw_core::evm::amount::U256;
+use yw_core::evm::sign::SignError;
+use yw_core::journal::evm::{EvmRecord, GroupKey, Role, Transition};
 use yw_core::secret::Zeroizing;
 use yw_core::vault::{BackupChallenge, ChallengeId, EvmKeySource, FileKind, RecordId, VaultStatus};
 
 use crate::errors::ErrorCode;
-use crate::meta::Meta;
+use crate::flow::evm::ChainCheck;
+use crate::flow::evm::form::Quote;
+use crate::flow::evm::prepare::{PrepareResult, ResimResult};
+use crate::flow::evm::track::{BroadcastOutcome, TrackResult};
+use crate::flow::evm::user_chain::ProbeError;
+use crate::meta::{ActivityEntry, Meta};
 use crate::network::NetworkId;
 
 /// Event queue doorbell (`WM_APP + 1`).
@@ -139,8 +148,75 @@ pub enum KeyJob {
         /// Indices.
         indices: Vec<u32>,
     },
+    /// Read the journal (after meta; spec/02 §5.4, spec/03 §5.4).
+    LoadJournal,
+    /// Sign an approved EVM transaction, verify it and commit the `Signed` record before anything
+    /// is sent (spec/03 §4.2–§4.3, §5.3).
+    SignEvm {
+        /// The one-time approval (moved).
+        approved: Box<Approved>,
+        /// Record fields from the approval.
+        info: SignInfo,
+    },
+    /// Apply and commit journal transitions (§5.2).
+    JournalApply {
+        /// Transitions.
+        transitions: Vec<Transition>,
+        /// Now.
+        now_unix_ms: u64,
+    },
     /// Stop the worker (after locking).
     Shutdown,
+}
+
+/// Journal record fields taken from the approval at signing time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignInfo {
+    /// `"yw-app"` or the origin.
+    pub origin: String,
+    /// Approval title.
+    pub label: String,
+    /// Role.
+    pub role: Role,
+    /// Wall clock.
+    pub now_unix_ms: u64,
+}
+
+/// The journal as the UI sees it (no secrets: signed transactions are public once sent).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct JournalView {
+    /// Decoded EVM records.
+    pub records: Vec<EvmRecord>,
+    /// EVM entries the decoder rejected ("저널 손상": EVM sending stops).
+    pub corrupt: usize,
+    /// A new EVM record fits after clean-up.
+    pub room: bool,
+}
+
+/// A signed and journaled transaction ready to broadcast.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignedSummary {
+    /// Chain.
+    pub chain_id: u64,
+    /// Account.
+    pub account: Address,
+    /// Nonce.
+    pub nonce: u64,
+    /// Signed bytes.
+    pub raw: Vec<u8>,
+    /// Hash.
+    pub tx_hash: [u8; 32],
+}
+
+/// Why signing produced nothing to send.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignFailure {
+    /// Signing or post-sign verification failed (E-TX-003; nothing stored or sent).
+    Sign(SignError),
+    /// No room in the journal (E-TX-005).
+    JournalFull,
+    /// The `Signed` record could not be committed ("저널 저장 실패"; nothing sent).
+    JournalWrite(VaultError),
 }
 
 impl KeyJob {
@@ -169,6 +245,9 @@ impl KeyJob {
             Self::SaveMeta { .. } => "SaveMeta",
             Self::ResolveSidecar { .. } => "ResolveSidecar",
             Self::DeriveAddresses { .. } => "DeriveAddresses",
+            Self::LoadJournal => "LoadJournal",
+            Self::SignEvm { .. } => "SignEvm",
+            Self::JournalApply { .. } => "JournalApply",
             Self::Shutdown => "Shutdown",
         }
     }
@@ -241,6 +320,12 @@ pub enum KeyOutcome {
     SidecarResolved(Result<(), ErrorCode>),
     /// Derived addresses (index, address).
     Addresses(Result<Vec<(u32, Address)>, VaultError>),
+    /// Journal loaded or changed.
+    Journal(Result<JournalView, VaultError>),
+    /// `SignEvm` finished.
+    SignedEvm(Result<SignedSummary, SignFailure>),
+    /// Terminal journal records moved to activity (spec/03 §5.4).
+    ActivityMoved(Vec<(NetworkId, ActivityEntry)>),
     /// The job was cancelled by `Lock`.
     Cancelled(&'static str, KeyJobError),
 }
@@ -264,7 +349,10 @@ pub struct KeyResult {
 /// and their buffers wiped by drop). `LockDone` is always accepted.
 #[must_use]
 pub fn accept_result(result: &KeyResult, current_epoch: u64) -> bool {
-    matches!(result.outcome, KeyOutcome::LockDone) || result.epoch == current_epoch
+    matches!(
+        result.outcome,
+        KeyOutcome::LockDone | KeyOutcome::SignedEvm(_) | KeyOutcome::Cancelled("SignEvm", _)
+    ) || result.epoch == current_epoch
 }
 
 /// The key worker's job queue.
@@ -363,6 +451,17 @@ impl LockSignal {
     }
 }
 
+/// Balances at one block (spec/04 §2.6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BalanceSnapshot {
+    /// Block number the values refer to.
+    pub block: u64,
+    /// Native balance per account.
+    pub native: Vec<(Address, U256)>,
+    /// Token balances of the selected account (`None` = lookup failed).
+    pub tokens: Vec<(Address, Option<U256>)>,
+}
+
 /// An RPC worker result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RpcEvent {
@@ -374,6 +473,83 @@ pub enum RpcEvent {
         message: String,
         /// Success.
         ok: bool,
+    },
+    /// A chain check result (spec/03 §1.4; a first-use pin is persisted by the UI).
+    Chain {
+        /// Chain.
+        chain_id: u64,
+        /// Result.
+        check: ChainCheck,
+    },
+    /// Balances.
+    Balances {
+        /// Job.
+        job: u64,
+        /// Chain.
+        chain_id: u64,
+        /// Snapshot or error.
+        result: Result<BalanceSnapshot, ErrorCode>,
+    },
+    /// Send-form fee quote.
+    Quote {
+        /// Job.
+        job: u64,
+        /// Quote or error.
+        result: Result<Quote, ErrorCode>,
+    },
+    /// Recipient code check (W-ADDR-4).
+    Code {
+        /// Job.
+        job: u64,
+        /// Address.
+        address: Address,
+        /// Has code.
+        result: Result<bool, ErrorCode>,
+    },
+    /// Token metadata (S16).
+    TokenMeta {
+        /// Job.
+        job: u64,
+        /// Token.
+        token: Address,
+        /// Metadata.
+        result: Result<TokenMeta, ErrorCode>,
+    },
+    /// `eth_simulateV1` about to be sent (spec/04 §3.5 `Preparing(Simulating)`).
+    Simulating {
+        /// Job.
+        job: u64,
+        /// Monotonic start.
+        since_ms: u64,
+    },
+    /// Preparation finished.
+    Prepared(Box<PrepareResult>),
+    /// Re-simulation finished.
+    Resimulated(Box<ResimResult>),
+    /// Broadcast finished.
+    Broadcast {
+        /// Chain.
+        chain_id: u64,
+        /// Hash.
+        tx_hash: [u8; 32],
+        /// Outcome.
+        outcome: BroadcastOutcome,
+        /// Observation time.
+        at_unix_ms: u64,
+    },
+    /// A tracking round finished.
+    Tracked {
+        /// Group.
+        key: GroupKey,
+        /// Result.
+        result: TrackResult,
+    },
+    /// User chain RPC check (S17, 다시 고정).
+    Probe {
+        /// Job.
+        job: u64,
+        /// Block-0 hash or error.
+        result: Result<[u8; 32], ProbeError>,
     },
 }
 

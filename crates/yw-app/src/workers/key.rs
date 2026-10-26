@@ -18,6 +18,7 @@ use crate::events::{
 use crate::logging::{self, Field};
 use crate::meta::{self, Account, Meta, RawAccount};
 use crate::store::{FileStorage, LockedSlotBox};
+use crate::workers::journal::JournalState;
 
 struct PendingImport {
     phrase: Zeroizing<Vec<u8>>,
@@ -30,6 +31,7 @@ pub struct KeyWorker {
     vault: Option<Vault>,
     pending_password: Option<Zeroizing<Vec<u8>>>,
     pending: Option<PendingImport>,
+    journal: JournalState,
 }
 
 impl core::fmt::Debug for KeyWorker {
@@ -71,6 +73,7 @@ impl KeyWorker {
             vault: None,
             pending_password: None,
             pending: None,
+            journal: JournalState::default(),
         }
     }
 
@@ -91,6 +94,7 @@ impl KeyWorker {
     pub fn lock(&mut self) {
         self.pending = None;
         self.pending_password = None;
+        self.journal.clear();
         if let Some(vault) = self.vault.as_mut() {
             vault.lock();
         }
@@ -292,9 +296,34 @@ impl KeyWorker {
         }
     }
 
-    /// Runs one non-control job.
+    /// Runs one non-control job; journal jobs can report several outcomes (signing result,
+    /// journal view, moved activity).
+    pub fn handle(&mut self, job: KeyJob) -> Vec<KeyOutcome> {
+        let alt = self.is_alt();
+        match job {
+            KeyJob::LoadJournal => vec![KeyOutcome::Journal(match self.vault.as_ref() {
+                Some(vault) => self.journal.load(vault),
+                None => Err(VaultError::InvalidState),
+            })],
+            KeyJob::SignEvm { approved, info } => match self.vault.as_mut() {
+                Some(vault) => self.journal.sign(vault, approved, &info, alt),
+                None => vec![KeyOutcome::SignedEvm(Err(
+                    crate::events::SignFailure::JournalWrite(VaultError::InvalidState),
+                ))],
+            },
+            KeyJob::JournalApply {
+                transitions,
+                now_unix_ms,
+            } => match self.vault.as_mut() {
+                Some(vault) => self.journal.apply(vault, &transitions, now_unix_ms, alt),
+                None => vec![KeyOutcome::Journal(Err(VaultError::InvalidState))],
+            },
+            other => vec![self.handle_single(other)],
+        }
+    }
+
     #[expect(clippy::too_many_lines, reason = "one arm per job kind")]
-    pub fn handle(&mut self, job: KeyJob) -> KeyOutcome {
+    fn handle_single(&mut self, job: KeyJob) -> KeyOutcome {
         match job {
             KeyJob::Load => self.load(),
             KeyJob::CreateWallet { password } => KeyOutcome::Created(self.create(&password)),
@@ -381,8 +410,10 @@ impl KeyWorker {
                 if self.is_alt() {
                     return Ok(());
                 }
+                let mut document = *meta;
+                self.journal.merge_overlay(&mut document);
                 self.vault()?
-                    .save_sidecar(FileKind::Meta, &meta.to_json())
+                    .save_sidecar(FileKind::Meta, &document.to_json())
                     .map(|_| ())
             })()),
             KeyJob::ResolveSidecar { kind, use_prev } => {
@@ -397,6 +428,9 @@ impl KeyWorker {
                 let addresses = self.vault()?.evm_addresses(&parsed)?;
                 Ok(indices.into_iter().zip(addresses).collect())
             })()),
+            KeyJob::LoadJournal | KeyJob::SignEvm { .. } | KeyJob::JournalApply { .. } => {
+                KeyOutcome::Journal(Err(VaultError::InvalidState))
+            }
             KeyJob::Lock | KeyJob::Shutdown => {
                 self.lock();
                 KeyOutcome::LockDone
@@ -445,8 +479,9 @@ pub fn run(
                 });
             }
             other => {
-                let outcome = worker.handle(other);
-                sink(KeyResult { epoch, outcome });
+                for outcome in worker.handle(other) {
+                    sink(KeyResult { epoch, outcome });
+                }
             }
         }
     }

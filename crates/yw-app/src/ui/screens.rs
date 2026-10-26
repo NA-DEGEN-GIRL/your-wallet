@@ -9,7 +9,6 @@ use crate::apikeys::{KeyName, mask_url};
 use crate::app::{App, AppMode, Confirm, Screen, SettingsSection};
 use crate::errors::ErrorCode;
 use crate::meta::EvmAccountPref;
-use crate::network::NetworkId;
 use crate::settings::{LogLevel, RpcTemplate};
 use crate::ui::main_window::{Ctl, Item, Tone};
 
@@ -200,9 +199,10 @@ impl App {
                     Ctl::button(ids::BACKUP_CHECK, "니모닉 보고 백업 확인"),
                     Ctl::button(ids::LOCK, "잠금"),
                 ]));
-                items.push(Item::Muted(
-                    "받기는 다음 단계(M4)에서 제공됩니다.".to_owned(),
-                ));
+                items.push(Item::Row(vec![Ctl::button(
+                    crate::ui::screens_evm::ids::RECEIVE_OPEN,
+                    "받기",
+                )]));
             }
             Screen::ImportIntro => {
                 items.push(Item::Title("기존 지갑 가져오기".to_owned()));
@@ -261,6 +261,12 @@ impl App {
             Screen::Main => self.main_screen(&mut items),
             Screen::Settings(section) => self.settings_screen(*section, &mut items),
             Screen::Confirm(kind) => self.confirm(*kind, &mut items),
+            Screen::Send => self.send_screen(&mut items),
+            Screen::SendResult => self.send_result_screen(&mut items),
+            Screen::Receive => self.receive_screen(&mut items),
+            Screen::AddressBook => self.book_screen(&mut items),
+            Screen::TokenAdd => self.token_screen(&mut items),
+            Screen::ChainEdit => self.chain_edit_screen(&mut items),
         }
         items
     }
@@ -318,19 +324,11 @@ impl App {
         items.push(Item::Row(row));
     }
 
-    fn rpc_status(&self) -> String {
-        let network = NetworkId::Eip155(self.settings.evm_chain_id);
-        let rpc = if self.apikeys.has(KeyName::Rpc(network)) {
-            "설정됨 (연결 확인은 설정 → 네트워크 URL → 테스트)".to_owned()
-        } else {
-            "엔드포인트 없음 (E-KEY-005)".to_owned()
-        };
-        format!("RPC: {rpc}   ·   브라우저: 연결 없음 (브라우저 연동은 M5)")
-    }
-
+    #[expect(clippy::too_many_lines, reason = "the S10 sections in order")]
     fn main_screen(&self, items: &mut Vec<Item>) {
         items.push(Item::Row(vec![
             Ctl::button(ids::OPEN_SETTINGS, "설정"),
+            Ctl::button(crate::ui::screens_evm::ids::BOOK_OPEN, "주소록"),
             Ctl::button(ids::LOCK, "잠금 (Ctrl+L)"),
         ]));
         if matches!(
@@ -352,7 +350,7 @@ impl App {
             .map(|(index, chain_id)| {
                 Ctl::radio(
                     ids::NETWORK_BASE.saturating_add(u16::try_from(index).unwrap_or(0)),
-                    &self.network_name(NetworkId::Eip155(*chain_id)),
+                    &self.network_label(*chain_id),
                     *chain_id == self.settings.evm_chain_id,
                     index == 0,
                 )
@@ -365,7 +363,12 @@ impl App {
                 Tone::Testnet,
             ));
         }
-        items.push(Item::Muted(self.rpc_status()));
+        self.evm_banners(items);
+        items.push(Item::Muted(self.evm_status_line()));
+        items.push(Item::Row(vec![Ctl::button(
+            crate::ui::screens_evm::ids::REFRESH,
+            "새로고침",
+        )]));
         items.push(Item::Rule);
         items.push(Item::Text("계정".to_owned()));
         let selected = self.meta.as_ref().map(|meta| meta.prefs.evm_account);
@@ -380,8 +383,12 @@ impl App {
                 )
                 .width(360),
             ]));
+            let balance = self.balance_text(&address);
             items.push(Item::Mono(address));
-            items.push(Item::Muted(path));
+            items.push(Item::Muted(match balance {
+                Some(balance) => format!("{path} · {balance}"),
+                None => path,
+            }));
             if is_selected {
                 if self.rename == Some(pref) {
                     items.push(Item::Row(vec![
@@ -390,7 +397,13 @@ impl App {
                         Ctl::button(ids::RENAME_CANCEL, "취소"),
                     ]));
                 } else {
-                    let mut row_ctls = vec![Ctl::button(ids::RENAME, "이름 바꾸기")];
+                    let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
+                    let mut row_ctls = vec![
+                        Ctl::button(crate::ui::screens_evm::ids::SEND_OPEN, "보내기")
+                            .enabled(unlocked),
+                        Ctl::button(crate::ui::screens_evm::ids::RECEIVE_OPEN, "받기"),
+                        Ctl::button(ids::RENAME, "이름 바꾸기"),
+                    ];
                     match pref {
                         EvmAccountPref::Index(index) => {
                             row_ctls.push(Ctl::button(ids::HIDE, "숨기기").enabled(index != 0));
@@ -413,9 +426,9 @@ impl App {
             ),
             Ctl::button(ids::IMPORT_KEY, "개인키 가져오기"),
         ]));
+        self.evm_main_sections(items);
         items.push(Item::Muted(
-            "잔액·보내기·받기(QR)·주소록·연결된 사이트는 다음 단계(M4·M5)에서 제공됩니다."
-                .to_owned(),
+            "연결된 사이트(브라우저 연동)는 다음 단계(M5)에서 제공됩니다.".to_owned(),
         ));
     }
 
@@ -426,12 +439,15 @@ impl App {
                 .enabled(section != SettingsSection::Security),
             Ctl::button(ids::SECTION_NETWORK, "네트워크")
                 .enabled(section != SettingsSection::Network),
+            Ctl::button(crate::ui::screens_evm::ids::SECTION_CHAINS, "EVM 체인")
+                .enabled(section != SettingsSection::Chains),
             Ctl::button(ids::SECTION_OTHER, "브라우저·진단·정보")
                 .enabled(section != SettingsSection::Other),
         ]));
         match section {
             SettingsSection::Security => self.security_section(items),
             SettingsSection::Network => self.network_section(items),
+            SettingsSection::Chains => self.chains_section(items),
             SettingsSection::Other => self.other_section(items),
         }
     }
@@ -646,6 +662,28 @@ impl App {
                 "선택한 가져온 개인키를 지갑에서 지웁니다. 계속하려면 비밀번호를 입력하세요.".to_owned(),
                 "계속",
             ),
+            Confirm::JournalCorrupt => (
+                "거래 저널 손상",
+                format!("{} 거래 저널을 새로 시작하면 진행 중 거래 기록이 사라질 수 있습니다. 손상된 파일은 격리(보존)합니다. 이전 사본(.prev)을 쓰려면 앱을 종료하고 직접 확인하세요.", ErrorCode::Vlt006.text()),
+                "격리하고 새로 시작",
+            ),
+            Confirm::ChainPin => ("체인 추가 — 제네시스 고정", self.chain_pin_text(), "고정하고 저장"),
+            Confirm::ChainRepin => ("다시 고정", self.chain_repin_text(), "다시 고정"),
+            Confirm::ChainDelete => (
+                "체인 삭제",
+                "체인 정의, RPC URL, 수수료 상한을 지웁니다. 이 체인의 토큰·활동 기록은 남고, 같은 chainId를 다시 추가하면 다시 보입니다.".to_owned(),
+                "삭제",
+            ),
+            Confirm::BookDelete => (
+                "주소록 항목 삭제",
+                "선택한 주소록 항목을 지웁니다.".to_owned(),
+                "삭제",
+            ),
+            Confirm::Discard => (
+                "거래 폐기",
+                "이 거래를 폐기로 표시하고 추적을 멈춥니다. 이미 네트워크에 전파됐다면 나중에 처리될 수 있습니다.".to_owned(),
+                "폐기",
+            ),
         };
         items.push(Item::Title(title.to_owned()));
         items.push(Item::Text(text));
@@ -655,6 +693,19 @@ impl App {
                 "기존 URL 덮어쓰기",
                 self.overwrite_checked,
             )]));
+        }
+        if kind == Confirm::ChainRepin {
+            let checked = self.evm.repin.as_ref().is_some_and(|repin| repin.checked);
+            items.push(Item::Row(vec![Ctl::check(
+                crate::ui::screens_evm::ids::REPIN_CHECK,
+                "새 제네시스 해시를 공식 자료로 확인했습니다",
+                checked,
+            )]));
+            items.push(Item::Row(vec![
+                Ctl::button(ids::CONFIRM_YES, yes).enabled(checked),
+                Ctl::button(ids::CONFIRM_NO, "취소"),
+            ]));
+            return;
         }
         if kind == Confirm::SidecarCorrupt {
             items.push(Item::Row(vec![

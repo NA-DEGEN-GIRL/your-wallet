@@ -801,6 +801,7 @@ feature 사용처: Foundation(핸들·오류·`LocalFree`), Graphics_Gdi(그리�
 ```rust
 pub fn monotonic_ms() -> u64;      // GetTickCount64. yw-core에 넘기는 now_ms의 출처
 pub fn system_idle_ms() -> u64;    // GetTickCount().wrapping_sub(LASTINPUTINFO.dwTime) (32비트 감김 처리)
+pub fn local_wall_ms(unix_ms: u64) -> Option<u64>;   // FileTimeToLocalFileTime(현재 표준시간대 편차): 표시용 현지 시각(활동 행, [04] §2.6)
 
 pub struct LockedBox<const N: usize> { /* 페이지 1개; const 단언 1 ≤ N ≤ 4096; Send + Sync; Clone 없음 */ }   // yw-app: LockedBox<320> = [02] §7.3 슬롯
 impl<const N: usize> LockedBox<N> {
@@ -939,7 +940,7 @@ pub fn init() -> Result<(), WinError>;   // SetProcessDpiAwarenessContext(PER_MO
 pub enum CaptureExclusion { Required /* 니모닉·개인키 표시 창 */, Preferred /* 비밀번호·니모닉·개인키 입력 창 */ }
 pub struct ClassSpec { pub name: &'static str, pub secret: bool, pub capture: CaptureExclusion }   // capture는 secret = true일 때만 의미
 pub fn register_class(spec: &ClassSpec) -> Result<(), WinError>;                 // 이름마다 1회, 두 번째는 Ok(())
-pub enum WindowKind { Main, Owned { owner: Hwnd }, HiddenTopLevel }
+pub enum WindowKind { Main, Owned { owner: Hwnd }, Floating /* 소유자 없는 대화 상자형: 승인 창 */, Child { parent: Hwnd } /* WS_CHILD|WS_VSCROLL 패널 */, HiddenTopLevel }
 pub struct WindowSpec { /* builder: WindowSpec::new(class, kind).title(&str).size(w, h /* DIP */).min_size(w, h).visible(bool).topmost(bool).resizable(bool) */ }
 pub fn create_window(spec: &WindowSpec, handler: Box<dyn Handler>) -> Result<Window, UiError>;
 pub fn exclude_from_capture(w: &Window) -> Result<(), UiError>;                  // 설정 후 읽기 확인(비밀 클래스는 create_window가 호출)
@@ -947,7 +948,7 @@ pub trait Handler { fn on(&mut self, w: &Window, m: &Msg) -> Reply; }
 pub enum Reply { Default, Handled(isize) }
 pub enum Msg { Create, Paint, Size { w: i32, h: i32 }, DpiChanged { dpi: u32 }, Char(u16), KeyDown { vk: u16, repeat: bool },
   KeyUp { vk: u16 }, MouseDown { x: i32, y: i32 }, MouseUp { x: i32, y: i32 }, MouseMove { x: i32, y: i32 }, Wheel(i16),
-  MouseActivate, Timer(usize), Command { id: u16, code: u16 }, ActivateApp(bool), KillFocus { to_foreign: bool },
+  MouseActivate, Timer(usize), VScroll { code: u16 /* SB_* */ }, Command { id: u16, code: u16 }, ActivateApp(bool), KillFocus { to_foreign: bool },
   CaptureChanged, CancelMode, Close, Destroy, SessionLock, SessionUnlock, SessionDisconnect, SessionLogoff, Suspend, Resume,
   QueryEndSession, EndSession, ImeAttempt, App { msg: u32, wparam: usize } }
 pub struct Hwnd(/* usize */);   // Copy + Eq, 불투명 식별자(포인터로 쓸 수 없음)
@@ -956,6 +957,7 @@ pub struct Window { /* Hwnd; !Send */ }
 //         kill_timer, dpi, px(dip), client_rect, set_capture, release_capture, set_focus, is_foreground, focus_within, center_on, poster,
 //         is_alive, begin_paint() -> PaintDc, measure_text(&Font, &[u16], max_w, DrawFlags) -> (w, h)   // Paint 밖 배치 계산(GetDC)
 //         capture_excluded() -> bool   // 비밀 클래스: exclude_from_capture 성공 여부(Preferred 실패면 false), 그 밖 false
+//         set_rect(Rect), set_vscroll(pos, page, max), vscroll_track_pos() -> i32   // Child 패널 배치·세로 스크롤(M4 승인 창)
 pub struct Poster { /* Send + Sync */ }
 impl Poster { pub fn post(&self, msg: u32, wparam: usize) -> Result<(), WinError>; }   // PostMessageW, msg ≥ WM_APP
 pub enum InputKind { Key { vk: Option<u16> /* WM_(SYS)KEYDOWN = Some, WM_CHAR = None */ }, Mouse }   // vk: 앱 단축키(Ctrl+L, [04] §5.1)
@@ -976,7 +978,7 @@ pub mod input { pub fn is_down(vk: u16) -> bool; /* GetAsyncKeyState 최상위 �
 - 비밀 클래스의 wndproc는 `capture`·캡처 제외 결과와 무관하게 [04](04-app-ui.md) §4.4의 정확히 22개 메시지(와일드카드 없음: `WM_RBUTTONDBLCLK`·`WM_IME_SETCONTEXT`·`WM_IME_NOTIFY` 등은 막지 않는다)와, 비밀 상태를 붙인 뒤(`create_window` 반환 후, `armed`)에는 `WM_SETTEXT`도 핸들러와 `DefWindowProcW` 없이 0을 반환한다. 막기 전에 `WM_IME_STARTCOMPOSITION`은 `Msg::ImeAttempt`로 핸들러에 알린다([04](04-app-ui.md) §4.4). 판정은 순수 함수 `is_blocked_secret_msg(msg: u32, armed: bool) -> bool`이며 그 목록 그대로 창 없이 단위 테스트한다. Microsoft는 캡처 제외를 보안 보장으로 보지 않는다(§2.2 범위).
 - `WM_DPICHANGED`에 `Default`면 제안 사각형으로 `SetWindowPos`. 크기는 DIP, `scale(v, dpi) = v * dpi / 96`(checked). `WM_CLOSE` 기본 = `DestroyWindow`. yw-win은 `PostQuitMessage`를 스스로 부르지 않는다(앱이 `quit`).
 - 세션·종료 메시지 디코딩: `WM_WTSSESSION_CHANGE`의 wParam `WTS_CONSOLE_DISCONNECT`(0x2)·`WTS_REMOTE_DISCONNECT`(0x4) → `SessionDisconnect`, `WTS_SESSION_LOGOFF`(0x6) → `SessionLogoff`, `WTS_SESSION_LOCK`(0x7) → `SessionLock`, `WTS_SESSION_UNLOCK`(0x8) → `SessionUnlock`, 그 밖 값은 핸들러에 오지 않는다(`DefWindowProcW`). `WM_QUERYENDSESSION` → `QueryEndSession`(`Reply::Default` = `DefWindowProcW` = TRUE, 종료 허용). `WM_ENDSESSION`은 wParam = TRUE일 때만 `EndSession`이고 FALSE(종료 취소)는 핸들러에 오지 않는다. `EndSession` 핸들러가 반환한 뒤 Windows는 프로세스를 언제든 끝낼 수 있다(앱 처리는 [04](04-app-ui.md) §1.5·§5.1).
-- 그리기: `PaintDc`(`Msg::Paint` 안에서만, BeginPaint/EndPaint RAII) — `fill_rect(Rect, Color)`(QR 모듈 포함), `frame_rect(Rect, Color)`, `set_text_color(Color)`, `draw_text(&[u16], Rect, DrawFlags)`, `measure_wrapped(&[u16], max_w, DrawFlags) -> h`(`DT_CALCRECT`)(`DrawTextW`, `DT_NOPREFIX`를 항상 더함), `measure(&[u16], max_w) -> (fit_chars, width)`(`GetTextExtentExPointW`), `select_font(&Font)`. `Font::create(face: &str, size_pt: u16, bold: bool, dpi: u32) -> Result<Font, WinError>`(`CreateFontW`, Drop에서 `DeleteObject`). `Rect { x, y, w, h: i32 }`, `Color(u32 /* 0xRRGGBB */)`, `MbKind::{Info, Warning, Error}`, `MbResult::{Ok}`.
+- 그리기: `PaintDc`(`Msg::Paint` 안에서만, BeginPaint/EndPaint RAII) — `fill_rect(Rect, Color)`(QR 모듈 포함), `frame_rect(Rect, Color)`, `set_text_color(Color)`, `draw_text(&[u16], Rect, DrawFlags)`, `measure_wrapped(&[u16], max_w, DrawFlags) -> h`(`DT_CALCRECT`; 높이는 `DrawFlags::WRAP`으로 잰다 — `DT_VCENTER`가 든 `LINE`은 높이 0 사각형에서 절반 값을 낸다)(`DrawTextW`, `DT_NOPREFIX`를 항상 더함), `measure(&[u16], max_w) -> (fit_chars, width)`(`GetTextExtentExPointW`), `select_font(&Font)`. `Font::create(face: &str, size_pt: u16, bold: bool, dpi: u32) -> Result<Font, WinError>`(`CreateFontW`, Drop에서 `DeleteObject`). `Rect { x, y, w, h: i32 }`, `Color(u32 /* 0xRRGGBB */)`, `MbKind::{Info, Warning, Error}`, `MbResult::{Ok}`.
 - `controls`: 비밀이 아닌 값용 BUTTON·EDIT·STATIC·체크박스·owner-draw LISTBOX 생성과 자기 컨트롤 텍스트 get/set(`GetWindowTextW`, 길이 상한). 알림은 `Msg::Command`.
 - 비밀 입력(D11, OS EDIT 미사용):
 

@@ -616,6 +616,42 @@ pub fn build_evm_tx_request(
     })
 }
 
+/// Adds the `0x0125` field (대체 대상 거래: the replaced hash and its maximum fee) to a speed-up or
+/// cancel draft (spec/03 §4.6, §11.2) right after `0x0124`; a cancel gets the title
+/// `[{network}] 거래 취소 (nonce N)`. The new maximum fee stays in `0x0120`.
+///
+/// # Errors
+///
+/// [`DisplayError`] (defensive).
+pub fn add_replacement(
+    mut draft: ApprovalDraft,
+    chain: &ChainInfo,
+    replaced_hash: &[u8; 32],
+    old_max_total_fee: Option<U256>,
+) -> Result<ApprovalDraft, DisplayError> {
+    let old =
+        old_max_total_fee.map_or_else(|| "계산 불가".to_owned(), |fee| native_amount(chain, &fee));
+    let value = format!(
+        "0x{}\n기존 최대 수수료 {old}",
+        crate::hex::encode(replaced_hash)
+    );
+    let field = DisplayField::new(FieldKey::REPLACES, "", value)?;
+    let mut fields = draft.display.fields.clone();
+    let position = fields
+        .iter()
+        .position(|existing| existing.key > FieldKey::REPLACES)
+        .unwrap_or(fields.len());
+    fields.insert(position, field);
+    let new_title = match (&draft.kind, &draft.payload) {
+        (ApprovalKind::EvmCancel, SigningPayload::EvmTx(tx)) => {
+            title(chain, &format!("거래 취소 (nonce {})", tx.nonce))
+        }
+        _ => draft.display.title.clone(),
+    };
+    draft.display = ApprovalDisplay::new(new_title, fields, draft.display.warnings.clone())?;
+    Ok(draft)
+}
+
 fn hex_lines(bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return "0x".to_owned();

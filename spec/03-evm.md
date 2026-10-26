@@ -77,30 +77,30 @@ pub enum ContractRole { Permit2, Seaport16, Seaport15, LabelOnly }
 
 ### 1.2 레지스트리
 
-레지스트리 주소만 특수 해석(R3)·라벨·신뢰 심볼을 가진다. 레지스트리는 체인별이고 선택이다(없는 체인도 있다). 표시 라벨은 `[라벨]` 형식으로 주소 뒤에 붙는다. "구현 시 확인" 항목은 M4 `live_probe`(전송·호출 구현 후, M4-13 전; 999는 §1.5 A9 (e))에서 탐색기(Etherscan·HyperEVMScan) 검증 코드·`eth_getCode` 비어 있지 않음(999 Permit2는 mainnet Permit2와 런타임 코드 해시 일치, WHYPE는 Deposit·Withdrawal topic이 WETH9와 같음)을 확인하고 실패하면 표에서 뺀다. 사용자 체인(§1.6)은 레지스트리가 비어 있고 사용자가 주소를 더할 수 없다: WETH·Permit2·Seaport 주소는 알 수 없는 컨트랙트로 취급하고(R3 → `Uninterpreted`, typed data는 T04), ERC-20·721·1155 셀렉터·이벤트 해석은 그대로 한다.
+레지스트리 주소만 특수 해석(R3)·라벨·신뢰 심볼을 가진다. 레지스트리는 체인별이고 선택이다(없는 체인도 있다). 표시 라벨은 `[라벨]` 형식으로 주소 뒤에 붙는다. "구현 시 확인" 항목은 M4 `live_probe`(전송·호출 구현 후, M4-13 전; 999는 §1.5 A9 (e))에서 탐색기(Etherscan·HyperEVMScan) 검증 코드·`eth_getCode` 비어 있지 않음(999 Permit2는 immutable 두 값(`chainId`, `DOMAIN_SEPARATOR`)을 가리면 mainnet Permit2와 런타임 코드가 같고 `DOMAIN_SEPARATOR()`가 그 체인의 EIP-712 도메인 값과 같음 — immutable이 코드에 들어가므로 해시 자체는 체인마다 다르다, WHYPE는 Deposit·Withdrawal topic이 WETH9와 같음)을 확인하고 실패하면 표에서 뺀다. 사용자 체인(§1.6)은 레지스트리가 비어 있고 사용자가 주소를 더할 수 없다: WETH·Permit2·Seaport 주소는 알 수 없는 컨트랙트로 취급하고(R3 → `Uninterpreted`, typed data는 T04), ERC-20·721·1155 셀렉터·이벤트 해석은 그대로 한다.
 
 | 체인 | 주소 | 종류 | 값 | 확인 |
 |---|---|---|---|---|
 | 1 | `0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2` | Token(Weth) | `WETH`, 18 | 확인됨 |
-| 1 | `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` | Token | `USDC`, 6 | 구현 시 확인 |
-| 1 | `0xdAC17F958D2ee523a2206206994597C13D831ec7` | Token | `USDT`, 6 | 구현 시 확인 |
-| 1 | `0x6B175474E89094C44Da98b954EedeAC495271d0F` | Token(Dai) | `DAI`, 18 | 구현 시 확인 |
-| 11155111 | `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14` | Token(Weth) | `WETH`, 18 | 구현 시 확인 |
-| 11155111 | `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238` | Token | `USDC`, 6 | 구현 시 확인 |
+| 1 | `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` | Token | `USDC`, 6 | 확인됨(M4) |
+| 1 | `0xdAC17F958D2ee523a2206206994597C13D831ec7` | Token | `USDT`, 6 | 확인됨(M4) |
+| 1 | `0x6B175474E89094C44Da98b954EedeAC495271d0F` | Token(Dai) | `DAI`, 18 | 확인됨(M4) |
+| 11155111 | `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14` | Token(Weth) | `WETH`, 18 | 확인됨(M4) |
+| 11155111 | `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238` | Token | `USDC`, 6 | 확인됨(M4) |
 | 1, 11155111 | `0x000000000022D473030F116dDEE9F6B43aC78BA3` | Permit2 | `Uniswap Permit2` | 확인됨 |
-| 1, 11155111 | `0x0000000000000068F116a894984e2DB1123eB395` | Seaport16 | `OpenSea Seaport 1.6` | 1 확인됨, 11155111 구현 시 확인 |
-| 1, 11155111 | `0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC` | Seaport15 | `OpenSea Seaport 1.5` | 1 확인됨, 11155111 구현 시 확인 |
+| 1, 11155111 | `0x0000000000000068F116a894984e2DB1123eB395` | Seaport16 | `OpenSea Seaport 1.6` | 확인됨(11155111은 M4, `information()` 버전 `1.6`) |
+| 1, 11155111 | `0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC` | Seaport15 | `OpenSea Seaport 1.5` | 확인됨(11155111은 M4, `information()` 버전 `1.5`) |
 | 1 | `0x00000000006c3852cbEf3e08E8dF289169EdE581` | LabelOnly | `OpenSea Seaport 1.1(구버전)` | 확인됨 |
 | 1 | `0x00000000F9490004C11Cef243f5400493c00Ad63` | LabelOnly | `Seaport ConduitController` | 확인됨 |
-| 1 | `0x1E0049783F008A0085193E00003D00cd54003c71` | LabelOnly | `OpenSea Conduit` | 구현 시 확인 |
-| 1 | `0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af`, `0x4C82D1fBFe28C977cBB58D8C7FF8FCF9F70a2cCA`, `0x23617e59A5925b2A4Bf75d73ff6711cD0b29De85` | LabelOnly | `Uniswap Universal Router` | 구현 시 확인 |
-| 11155111 | `0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b`, `0x7DfD4F31be6814D2906BDE155c3e1B146EAc1468`, `0x7E4f6c5e954Da5c61B3423D81E2277431Ac043f3` | LabelOnly | `Uniswap Universal Router` | 구현 시 확인 |
-| 999 | `0x5555555555555555555555555555555555555555` | Token(Weth) | `WHYPE`, 18 | 구현 시 확인 |
-| 999 | `0x000000000022D473030F116dDEE9F6B43aC78BA3` | Permit2 | `Uniswap Permit2` | 구현 시 확인 |
+| 1 | `0x1E0049783F008A0085193E00003D00cd54003c71` | LabelOnly | `OpenSea Conduit` | 확인됨(M4, ConduitController `getConduit(OPENSEA_CONDUIT_KEY)`) |
+| 1 | `0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af`, `0x4C82D1fBFe28C977cBB58D8C7FF8FCF9F70a2cCA`, `0x23617e59A5925b2A4Bf75d73ff6711cD0b29De85` | LabelOnly | `Uniswap Universal Router` | 확인됨(M4, 코드 있음) |
+| 11155111 | `0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b`, `0x7DfD4F31be6814D2906BDE155c3e1B146EAc1468`, `0x7E4f6c5e954Da5c61B3423D81E2277431Ac043f3` | LabelOnly | `Uniswap Universal Router` | 확인됨(M4, 코드 있음) |
+| 999 | `0x5555555555555555555555555555555555555555` | Token(Weth) | `WHYPE`, 18 | 확인됨(M4, WETH9 topic) |
+| 999 | `0x000000000022D473030F116dDEE9F6B43aC78BA3` | Permit2 | `Uniswap Permit2` | 확인됨(M4, immutable 제외 코드 일치) |
 
 999에는 Seaport·토큰(USDC 등)을 넣지 않는다.
 
-상수 `OPENSEA_CONDUIT_KEY = 0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b8104250f0000`(Seaport 표시용 라벨, 구현 시 확인).
+상수 `OPENSEA_CONDUIT_KEY = 0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b8104250f0000`(Seaport 표시용 라벨, 확인됨: mainnet ConduitController가 이 키로 `OpenSea Conduit` 주소·`exists = true`를 돌려줌, M4 `live_probe`).
 
 ### 1.3 네이티브 이동 로그 (Glamsterdam, 모든 체인)
 
@@ -130,6 +130,7 @@ EIP7708_SYSTEM  = 0xfffffffffffffffffffffffffffffffffffffffe   // 프로토콜 �
 
 - 도구: A1–A5와 A9 (a)(b)는 `scripts/probe-rpc.mjs`([01](01-repo-build.md) §4.7)로 한다. 엔드포인트는 저장소 밖 개발 설정 `%USERPROFILE%\.yw-dev\rpc.json` 또는 `YW_RPC_JSON`이 가리키는 파일([01] §4.6, 키 `eip155:1`·`eip155:11155111`·`eip155:999`)에서 읽는다. 출력에는 `NetworkId`만 있으므로 그대로 `docs/acceptance/probe-<YYYYMMDD>.md`에 기록한다. A6–A8, A9 (c)–(e), A10은 같은 설정으로 손으로 확인한다.
 - **실측 결과(2026-10-27, QuickNode, `scripts/probe-rpc.mjs`)**: Ethereum mainnet — `eth_simulateV1` 지원, 네이티브 로그 발신자 `0xeeee…`, 새 주소 1 wei 전송 21,000 gas, revert `status 0x0`·`error.code 3`·`error.data 0xdeadbeef`, `chainId`·`type` 필드 수락, 잔액 부족은 최상위 -38014, `maxUsedGas` 있음. Sepolia — 지원, 발신자 `0xff…fe`(Glamsterdam 후), 새 주소 전송 **204,600 gas**, **자기 자신 전송은 로그 없음·12,000 gas**, revert 15,018 gas, base fee ≈ 0. HyperEVM(999) — `/evm` 경로는 `eth_simulateV1` -32601·블록 0 조회 실패(-32603), `/nanoreth` 경로는 블록 0 해시 `0xd8fcc13b6a195b88b7b2da3722ff6cad767b13a8c1e9ffb1c73aa9d216d895f0`(최초 신뢰 고정 대상), `eth_simulateV1` 지원(발신자 `0xeeee…`, 자기 자신 전송도 로그 있음), 잔액 부족은 **최상위 -32003**, `maxUsedGas` 없음, 최근 블록 `gasLimit` 3,000,000, base fee 0.2–1.0 gwei. A1–A5·A9 (a)(b)(d)는 이 결과로 판정 완료, 공급자·URL을 바꾸면 다시 수행한다.
+- **M4 `live_probe` 결과(2026-10-27, 같은 설정, `docs/acceptance/m4-live-20261027.md`)**: A6 — 세 체인 모두 `pending` 태그 수락, 최근 송신자 12명 중 `pending > latest`가 Sepolia 1–2명·999 0–1명(멤풀 반영), mainnet 0명(자기 전송 직후 확인은 M4-2). A7 — 1·11155111·999 모두 baseFee 11개·reward 10×1. A8 — 조용한 컨트랙트 10,000블록 `eth_getLogs` 수락(1: 0개, 11155111: 1개), mainnet WETH Transfer 10,000블록은 응답이 클라이언트 4 MiB 한도를 넘음(공급자 오류가 아니라 응답 크기, 2.5–7 s), `eth_simulateV1`(`stateOverrides`) 35–280 ms. A9 (c) — 999 `eth_feeHistory` 정상, 최근 70블록(큰 블록 30,000,000 1개 포함) base fee는 작은 블록 0.1–0.117 gwei, 큰 블록 0.1 gwei로 같은 범위라 `eth_feeHistory`에 큰 블록이 섞여도 §3.4 제안값이 튀지 않음, type 2 `eth_estimateGas` 21,000 수락 (d) 작은 블록 3,000,000 (e) §1.2 999 행 확인. 앱 경로(`check_chain`·`prepare`, 서명·전송 없음)로 세 체인 체인 확인 통과(999 블록 0 해시 = §1.5 1차 실측 값)와 시뮬레이션 `Ok` 승인 초안 생성도 확인했다.
 - 시뮬레이션 지원: 2026-10 QuickNode 문서에는 일부 체인(예: Arbitrum)의 `eth_simulateV1` 페이지만 있었지만 위 실측에서 1·11155111·999(`/nanoreth`) 모두 동작했다. 그래서 내장 체인마다 `simulation` 상수(§1.1)를 `Auto`로 둘지는 그 체인의 A1(Sepolia)·A2(mainnet)·A5 결과로 정한다(999는 A9 (b)). 성공하면 `Auto` 유지, -32601·플랜 거부로 쓸 수 없으면 그 네트워크의 URL만 `eth_simulateV1`을 지원하는 공급자 URL로 바꾸거나(D13: 네트워크마다 공급자를 따로 고를 수 있다) 상수를 `Unsupported`로 바꾼다(§14-2).
 
 | # | 확인 내용 | 기대 | 다를 때 |
@@ -340,7 +341,7 @@ nonce = latest
 | 10 | §10 위험 → §11 `ApprovalDraft` → 승인 창([04](04-app-ui.md))이 Ready를 표시할 때 `issue`(§11.5) | — |
 | 11 | 클릭 → §6.6 신선도 → §11.5 소비 → §4.2 서명(키 작업 스레드, [02] `with_secp_key`) → §4.3 검증 → §5 저널 `Signed` → §4.4 전송 → 응답 | §4.3 실패 시 아무것도 저장·전송하지 않음 |
 
-차단 조건(§10.4 목록)이 생기면 남은 RPC 단계를 건너뛰고 그때까지 구한 필드와 차단 경고로 승인 요청을 만든다(거부 버튼만 활성, 바인딩 `SimulationBinding::None { reason: Skipped }`). 시뮬레이션·가스 추정이 성공하지 못한 것은 차단 조건이 아니다(D15): 경고를 더하고 다음 단계로 계속한다.
+차단 조건(§10.4 목록)이 생기면 남은 RPC 단계를 건너뛰고 그때까지 구한 필드와 차단 경고로 승인 요청을 만든다(거부 버튼만 활성, 바인딩 `SimulationBinding::None { reason: Skipped }`). 단, 단계 3–4의 차단(E34·E35·E06)은 서명할 거래(nonce·수수료)가 정해지기 전이므로 요청을 만들지 않고 승인 창 `Failed`([04] §3.5, 그 경고 문구, 거부만)로 끝낸다. 단계 5–7의 차단(E05·E10·E11)은 위처럼 차단 요청을 만든다. 시뮬레이션·가스 추정이 성공하지 못한 것은 차단 조건이 아니다(D15): 경고를 더하고 다음 단계로 계속한다.
 
 ## 4. 인코딩·서명·전송
 
@@ -414,7 +415,7 @@ pub struct SignedTx { pub raw: Vec<u8>, pub tx_hash: [u8; 32], pub tx: Eip1559Tx
 - 폴링: 같은 nonce의 모든 후보 해시에 `eth_getTransactionReceipt`. 전송 후 120 s까지 4 s 간격, 이후 15 s 간격. 저널 쓰기에 DEK가 필요하므로(D10) 잠금 중에는 폴링을 멈추고 잠금 해제 때 §5.4 조정으로 이어 간다.
 - 영수증 검증: `transactionHash == hash`, `from == account`, `status ∈ {0x0,0x1}`, `blockNumber`, `blockHash` 32바이트. 위반 영수증은 무시하고 로컬 로그만 남긴다.
 - 포함: 영수증 존재(1 확인) → `Included`, 표시 `포함됨 (블록 N)`; `status 0x0`이면 `포함됨 (실행 실패)`. 실제 수수료 = `gasUsed × effectiveGasPrice`.
-- 확정: 포함 후 60 s 간격으로 `eth_getBlockByNumber(["finalized", false]).number ≥ N`이고 `eth_getBlockByNumber([N, false]).hash == 영수증 blockHash` → `Finalized`, 표시 `확정`. 해시가 다르면 재구성 → `Broadcast`로 되돌리고 포함 정보 삭제 후 폴링 재개.
+- 확정: 포함 후 60 s 간격으로 `eth_getBlockByNumber(["finalized", false]).number ≥ N`이고 `eth_getBlockByNumber([N, false]).hash == 영수증 blockHash` → `Finalized`, 표시 `확정`. 해시가 다르면 재구성 → `Broadcast`로 되돌리고 포함 정보 삭제 후 폴링 재개. 노드가 `finalized` 태그를 JSON-RPC 오류로 거부하면 `eth_blockNumber − 64`를 확정 높이로 쓴다(같은 비교).
 
 ### 4.6 속도 올리기·취소 (앱 화면 전용, origin `yw-app`)
 

@@ -8,7 +8,7 @@ Windows 11 PC 한 대에서 작성자 본인이 쓰는 개인용 소프트웨어
 
 ## 상태
 
-- 현재 마일스톤: **M3 앱 뼈대** 구현(yw-win Win32 래퍼, yw-app 창·vault 흐름·비밀 창 보호; M1 키·vault, M2 EVM 코어 완료). M3 수동 판정은 [docs/acceptance/m3-20261027.md](docs/acceptance/m3-20261027.md). 다음은 M4(EVM 단독 전송).
+- 현재 마일스톤: **M4 EVM 단독 전송** 구현(보내기·받기 QR·잔액·활동, 승인 창 A01, 거래 저널·복구, 속도 올리기·취소, 사용자 EVM 체인; M1 키·vault, M2 EVM 코어, M3 앱 뼈대 완료). M4 판정·수동 체크리스트는 [docs/acceptance/m4-20261027.md](docs/acceptance/m4-20261027.md), 실서비스 읽기 전용 확인은 [docs/acceptance/m4-live-20261027.md](docs/acceptance/m4-live-20261027.md). 다음은 M5(브라우저 연동).
 - 실제 자산을 넣지 않는다. 메인넷 사용은 M9 체크리스트 이후 소액만.
 - 마일스톤과 완료 조건: [spec.md](spec.md) §5, 판정 기준: [spec/09-testing.md](spec/09-testing.md).
 

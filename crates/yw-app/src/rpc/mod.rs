@@ -121,6 +121,31 @@ impl<'t> RpcClient<'t> {
         }
     }
 
+    /// The next request id (also for pre-built request bodies such as `eth_simulateV1`).
+    pub fn next_id(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// POSTs a pre-built body (`eth_simulateV1`) and returns the raw reply; a reply after the
+    /// per-call deadline is a timeout.
+    ///
+    /// # Errors
+    ///
+    /// [`HttpError`] (`Timeout` also for late replies).
+    pub fn post_raw(
+        &self,
+        url: &HttpsUrl,
+        body: &[u8],
+        max_response: usize,
+    ) -> Result<HttpReply, HttpError> {
+        let started = Instant::now();
+        let reply = self.transport.post_json(url, body, max_response)?;
+        if started.elapsed().as_millis() > CALL_DEADLINE_MS {
+            return Err(HttpError::Timeout);
+        }
+        Ok(reply)
+    }
+
     /// Calls `method` with `params`; returns `result`.
     ///
     /// # Errors
@@ -132,7 +157,39 @@ impl<'t> RpcClient<'t> {
         method: &'static str,
         params: Value,
     ) -> Result<Value, RpcFailure> {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.call_limited(url, method, params, DEFAULT_MAX_RESPONSE)
+    }
+
+    /// [`Self::call`] with an explicit response bound.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcFailure`].
+    pub fn call_limited(
+        &self,
+        url: &HttpsUrl,
+        method: &'static str,
+        params: Value,
+        max_response: usize,
+    ) -> Result<Value, RpcFailure> {
+        self.call_detailed(url, method, params, max_response)
+            .map_err(|error| error.failure)
+    }
+
+    /// Calls `method`; on a JSON-RPC error also returns `error.data` when it is hex (revert
+    /// bytes of `eth_estimateGas`). The RPC `error.message` is never read.
+    ///
+    /// # Errors
+    ///
+    /// [`CallError`].
+    pub fn call_detailed(
+        &self,
+        url: &HttpsUrl,
+        method: &'static str,
+        params: Value,
+        max_response: usize,
+    ) -> Result<Value, CallError> {
+        let id = self.next_id();
         let request = json_object(vec![
             ("jsonrpc", json_str("2.0")),
             ("id", json_u64(id)),
@@ -142,20 +199,23 @@ impl<'t> RpcClient<'t> {
         let started = Instant::now();
         let reply = self
             .transport
-            .post_json(url, &yw_json::to_vec(&request), DEFAULT_MAX_RESPONSE)
-            .map_err(RpcFailure::Http)?;
+            .post_json(url, &yw_json::to_vec(&request), max_response)
+            .map_err(|error| CallError::from(RpcFailure::Http(error)))?;
         if started.elapsed().as_millis() > CALL_DEADLINE_MS {
-            return Err(RpcFailure::Late);
+            return Err(RpcFailure::Late.into());
         }
         if !(200..300).contains(&reply.status) {
-            return Err(RpcFailure::Status(reply.status));
+            return Err(RpcFailure::Status(reply.status).into());
         }
         let limits = Limits {
-            max_bytes: DEFAULT_MAX_RESPONSE,
+            max_bytes: max_response,
             ..Limits::RESPONSE
         };
-        let value = yw_json::parse(&reply.body, &limits).map_err(|_| RpcFailure::Malformed)?;
-        let object = value.as_object().ok_or(RpcFailure::Malformed)?;
+        let value = yw_json::parse(&reply.body, &limits)
+            .map_err(|_| CallError::from(RpcFailure::Malformed))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| CallError::from(RpcFailure::Malformed))?;
         if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
             || object
                 .get("id")
@@ -163,18 +223,49 @@ impl<'t> RpcClient<'t> {
                 .and_then(Number::as_u64)
                 != Some(id)
         {
-            return Err(RpcFailure::Malformed);
+            return Err(RpcFailure::Malformed.into());
         }
         if let Some(error) = object.get("error") {
-            let code = error
+            let error = error
                 .as_object()
-                .and_then(|error| error.get("code"))
+                .ok_or_else(|| CallError::from(RpcFailure::Malformed))?;
+            let code = error
+                .get("code")
                 .and_then(Value::as_number)
                 .and_then(Number::as_i64)
-                .ok_or(RpcFailure::Malformed)?;
-            return Err(RpcFailure::Rpc(code));
+                .ok_or_else(|| CallError::from(RpcFailure::Malformed))?;
+            let data = error
+                .get("data")
+                .and_then(Value::as_str)
+                .and_then(|text| text.strip_prefix("0x"))
+                .and_then(|digits| yw_core::hex::decode(digits).ok());
+            return Err(CallError {
+                failure: RpcFailure::Rpc(code),
+                data,
+            });
         }
-        object.get("result").cloned().ok_or(RpcFailure::Malformed)
+        object
+            .get("result")
+            .cloned()
+            .ok_or_else(|| CallError::from(RpcFailure::Malformed))
+    }
+}
+
+/// A failed call with the optional JSON-RPC `error.data` bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallError {
+    /// Classification input.
+    pub failure: RpcFailure,
+    /// `error.data` when it was a hex string.
+    pub data: Option<Vec<u8>>,
+}
+
+impl From<RpcFailure> for CallError {
+    fn from(failure: RpcFailure) -> Self {
+        Self {
+            failure,
+            data: None,
+        }
     }
 }
 

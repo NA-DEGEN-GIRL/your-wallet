@@ -65,6 +65,7 @@ const VK_CONTROL: u16 = 0x11;
 const VK_SHIFT: u16 = 0x10;
 const VK_MENU: u16 = 0x12;
 const MA_ACTIVATEANDEAT: isize = 2;
+const EN_CHANGE: u16 = 0x0300;
 /// Settings field limits (UTF-16 units).
 const TOKEN_MAX_UNITS: usize = 256;
 const URL_MAX_UNITS: usize = 2_048;
@@ -154,6 +155,8 @@ pub enum SettingsSection {
     Network,
     /// 브라우저·진단·정보.
     Other,
+    /// EVM 체인, 수수료 상한 (M4).
+    Chains,
 }
 
 /// Confirmation overlays.
@@ -173,6 +176,18 @@ pub enum Confirm {
     SidecarCorrupt,
     /// Remove an imported key.
     RemoveKey,
+    /// E-VLT-006 for the journal (T-JOURNAL-RESET).
+    JournalCorrupt,
+    /// T-CHAIN-PIN.
+    ChainPin,
+    /// T-CHAIN-REPIN.
+    ChainRepin,
+    /// T-CHAIN-DELETE.
+    ChainDelete,
+    /// Discard of an open transaction.
+    Discard,
+    /// Delete an address-book entry.
+    BookDelete,
 }
 
 /// Screens S01–S15 (M3 subset).
@@ -206,6 +221,18 @@ pub enum Screen {
     Settings(SettingsSection),
     /// Confirmation overlay over the previous screen.
     Confirm(Confirm),
+    /// S11.
+    Send,
+    /// S11 result.
+    SendResult,
+    /// S12.
+    Receive,
+    /// S14.
+    AddressBook,
+    /// S16.
+    TokenAdd,
+    /// S17.
+    ChainEdit,
 }
 
 /// What a password-confirm window (W03) is for.
@@ -358,6 +385,7 @@ pub struct App {
     pub(crate) scroll: i32,
     pub(crate) controls: ControlSet,
     pub(crate) placed: Placed,
+    pub(crate) evm: crate::app_evm::EvmUi,
     secret: Option<SecretWin>,
     secret_serial: u64,
     import: ImportFlow,
@@ -465,6 +493,7 @@ impl App {
             scroll: 0,
             controls: ControlSet::default(),
             placed: Placed::default(),
+            evm: crate::app_evm::EvmUi::default(),
             secret: None,
             secret_serial: 0,
             import: ImportFlow::default(),
@@ -486,7 +515,7 @@ impl App {
         self.banners.push(Banner { code, text });
     }
 
-    fn error_banner(&mut self, code: ErrorCode) {
+    pub(crate) fn error_banner(&mut self, code: ErrorCode) {
         logging::warn("app", "error", &[("code", Field::Code(code))]);
         self.banner(Some(code), code.text());
     }
@@ -583,7 +612,7 @@ impl App {
         }
     }
 
-    fn set_screen(&mut self, screen: Screen) {
+    pub(crate) fn set_screen(&mut self, screen: Screen) {
         if matches!(screen, Screen::Confirm(_)) && !matches!(self.screen, Screen::Confirm(_)) {
             self.previous_screen = self.screen.clone();
         }
@@ -673,6 +702,8 @@ impl App {
             Msg::Command { id, code } => {
                 if *code == 0 {
                     self.on_command(*id);
+                } else if *code == EN_CHANGE {
+                    self.on_edit_change(*id);
                 }
                 Reply::Handled(0)
             }
@@ -763,6 +794,7 @@ impl App {
         {
             self.clear_secret_clip(seq);
         }
+        self.evm_tick(now);
         if now.saturating_sub(self.last_flush_ms) >= LOG_FLUSH_MS {
             self.last_flush_ms = now;
             logging::flush();
@@ -805,6 +837,7 @@ impl App {
         if let Some((seq, _)) = self.secret_clip {
             self.clear_secret_clip(seq);
         }
+        self.evm_lock();
         self.meta = None;
         self.rename = None;
         self.pending_remove = None;
@@ -834,6 +867,7 @@ impl App {
             return;
         }
         self.set_mode(AppMode::ShuttingDown);
+        let _ = self.evm.queue.shutdown();
         let before = self.lock_signal.count();
         self.lock(LockReason::Shutdown);
         let _ = self.lock_signal.wait_beyond(before, Duration::from_secs(5));
@@ -870,17 +904,17 @@ impl App {
         for event in events.drain() {
             match event {
                 UiEvent::Key(result) => self.on_key_result(result),
-                UiEvent::Rpc(event) => self.on_rpc_event(event),
+                UiEvent::Rpc(RpcEvent::Test {
+                    network,
+                    message,
+                    ok,
+                }) => self.on_rpc_event(network, message, ok),
+                UiEvent::Rpc(event) => self.evm_rpc_event(event),
             }
         }
     }
 
-    fn on_rpc_event(&mut self, event: RpcEvent) {
-        let RpcEvent::Test {
-            network,
-            message,
-            ok,
-        } = event;
+    fn on_rpc_event(&mut self, network: NetworkId, message: String, ok: bool) {
         self.rpc_messages.retain(|(id, _, _)| *id != network);
         self.rpc_messages.push((network, message, ok));
         self.refresh();
@@ -972,10 +1006,14 @@ impl App {
                 self.set_screen(Screen::FirstRun);
             }
             KeyOutcome::Status(result) => self.on_status(result, now),
+            KeyOutcome::Cancelled("SignEvm", _) => self.evm_sign_cancelled(),
             KeyOutcome::Imported(Err(_))
             | KeyOutcome::LockDone
             | KeyOutcome::Cancelled(..)
             | KeyOutcome::MetaSaved(Ok(())) => {}
+            outcome @ (KeyOutcome::Journal(_)
+            | KeyOutcome::SignedEvm(_)
+            | KeyOutcome::ActivityMoved(_)) => self.evm_key_outcome(outcome),
             KeyOutcome::Challenge(Ok(challenge)) => {
                 self.challenge = Some(challenge);
                 if self.secret_purpose() == Some(Purpose::Backup) {
@@ -1118,6 +1156,9 @@ impl App {
                 } else {
                     self.refresh();
                 }
+                if self.evm.journal.is_none() {
+                    self.evm_after_unlock();
+                }
             }
             KeyOutcome::Meta(Err(
                 VaultError::SidecarCorrupt(_) | VaultError::SidecarVaultMismatch(_),
@@ -1134,6 +1175,7 @@ impl App {
                 if let Err(code) = result {
                     self.error_banner(code);
                 }
+                self.evm.journal = None;
                 self.key(KeyJob::LoadMeta);
                 self.set_screen(Screen::Processing("불러오는 중…"));
             }
@@ -1708,7 +1750,7 @@ impl App {
 
     // ----- meta, settings, apikeys -------------------------------------------------------
 
-    fn save_meta(&mut self) {
+    pub(crate) fn save_meta(&mut self) {
         if let Some(meta) = self.meta.clone() {
             self.key(KeyJob::SaveMeta {
                 meta: Box::new(meta),
@@ -1951,10 +1993,24 @@ impl App {
             ids::CONFIRM_YES => self.confirm_yes(),
             ids::CONFIRM_NO => {
                 self.pending_remove = None;
+                self.evm.discard = None;
+                self.evm.delete_chain = None;
+                self.evm.repin = None;
+                if let Some(form) = self.evm.chain_form.as_mut() {
+                    form.pending = None;
+                    form.message = None;
+                }
+                if matches!(self.screen, Screen::Confirm(Confirm::BookDelete)) {
+                    self.evm.book = crate::app_evm::BookForm::default();
+                }
                 let previous = self.previous_screen.clone();
                 self.set_screen(previous);
             }
-            other => self.on_indexed_command(other),
+            other => {
+                if !self.on_evm_command(other) {
+                    self.on_indexed_command(other);
+                }
+            }
         }
     }
 
@@ -2406,6 +2462,45 @@ impl App {
                 self.set_screen(previous);
             }
             Confirm::SidecarCorrupt => {}
+            Confirm::JournalCorrupt => {
+                self.set_screen(Screen::Main);
+                self.key(KeyJob::ResolveSidecar {
+                    kind: FileKind::Journal,
+                    use_prev: false,
+                });
+            }
+            Confirm::ChainPin => {
+                let pending = self
+                    .evm
+                    .chain_form
+                    .as_mut()
+                    .and_then(|form| form.pending.take());
+                if let Some((valid, genesis)) = pending {
+                    self.commit_chain(&valid, genesis);
+                } else {
+                    self.set_screen(previous);
+                }
+            }
+            Confirm::ChainRepin => {
+                self.commit_repin();
+                self.set_screen(Screen::Settings(SettingsSection::Chains));
+            }
+            Confirm::ChainDelete => {
+                if let Some(chain_id) = self.evm.delete_chain.take() {
+                    self.delete_chain(chain_id);
+                }
+                self.set_screen(Screen::Settings(SettingsSection::Chains));
+            }
+            Confirm::Discard => {
+                if let Some(key) = self.evm.discard.take() {
+                    self.discard_group(key);
+                }
+                self.set_screen(Screen::Main);
+            }
+            Confirm::BookDelete => {
+                self.delete_book_entry();
+                self.set_screen(Screen::AddressBook);
+            }
             Confirm::RemoveKey => {
                 self.set_screen(previous);
                 if let Some(id) = self.pending_remove.take() {

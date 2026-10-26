@@ -22,7 +22,7 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{
-    ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx,
+    ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, SetScrollInfo,
 };
 use windows_sys::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
@@ -35,18 +35,19 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
     DestroyWindow, DispatchMessageW, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO, FindWindowW,
     FlashWindowEx, GA_ROOT, GWLP_USERDATA, GetAncestor, GetClientRect, GetForegroundWindow,
-    GetMessageW, GetWindowDisplayAffinity, GetWindowLongPtrW, GetWindowThreadProcessId,
-    HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDI_APPLICATION, IsChild, IsDialogMessageW, IsIconic,
-    KillTimer, LoadCursorW, LoadIconW, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK,
-    MINMAXINFO, MSG, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, SW_HIDE,
-    SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow,
-    SetTimer, SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
-    ShowWindow, TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WM_APP, WM_CHAR, WM_CTLCOLORBTN,
-    WM_CTLCOLORSTATIC, WM_DPICHANGED, WM_GETMINMAXINFO, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_RBUTTONDOWN,
-    WM_SYSKEYDOWN, WNDCLASSEXW, WS_CAPTION, WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_EX_CONTROLPARENT,
-    WS_EX_DLGMODALFRAME, WS_EX_TOPMOST, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW,
-    WS_SYSMENU, WS_THICKFRAME,
+    GetMessageW, GetScrollInfo, GetWindowDisplayAffinity, GetWindowLongPtrW,
+    GetWindowThreadProcessId, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDI_APPLICATION, IsChild,
+    IsDialogMessageW, IsIconic, KillTimer, LoadCursorW, LoadIconW, MB_ICONERROR,
+    MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MINMAXINFO, MSG, MessageBoxW, PostMessageW,
+    PostQuitMessage, RegisterClassExW, SB_VERT, SCROLLINFO, SIF_PAGE, SIF_POS, SIF_RANGE,
+    SIF_TRACKPOS, SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowDisplayAffinity, SetWindowLongPtrW,
+    SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WM_APP,
+    WM_CHAR, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DPICHANGED, WM_GETMINMAXINFO,
+    WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEWHEEL,
+    WM_NCCREATE, WM_NCDESTROY, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WNDCLASSEXW, WS_CAPTION, WS_CHILD,
+    WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_EX_TOPMOST,
+    WS_MINIMIZEBOX, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW, WS_SYSMENU, WS_THICKFRAME, WS_VSCROLL,
 };
 
 use super::msg::{
@@ -227,8 +228,16 @@ pub enum WindowKind {
         /// Owner window.
         owner: Hwnd,
     },
+    /// A dialog-like top-level window without an owner (the approval window, spec/04 §3.6).
+    Floating,
     /// A never-shown top-level window (still receives power/session broadcasts).
     HiddenTopLevel,
+    /// A child panel of `parent` (`WS_CHILD | WS_CLIPCHILDREN | WS_VSCROLL`, spec/04 §1.7
+    /// `YourWalletV3Panel`), positioned with [`Window::set_rect`].
+    Child {
+        /// Parent window.
+        parent: Hwnd,
+    },
 }
 
 /// Window creation parameters (sizes in DIP).
@@ -308,7 +317,7 @@ impl WindowSpec {
                 WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                 WS_EX_APPWINDOW | WS_EX_CONTROLPARENT,
             ),
-            WindowKind::Owned { .. } => {
+            WindowKind::Owned { .. } | WindowKind::Floating => {
                 let mut style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
                 if self.resizable {
                     style |= WS_THICKFRAME | WS_MINIMIZEBOX;
@@ -320,6 +329,7 @@ impl WindowSpec {
                 (style, ex)
             }
             WindowKind::HiddenTopLevel => (WS_OVERLAPPED, 0),
+            WindowKind::Child { .. } => (WS_CHILD | WS_CLIPCHILDREN | WS_VSCROLL, 0),
         }
     }
 }
@@ -612,6 +622,54 @@ impl Window {
         };
     }
 
+    /// Moves and sizes the window (client coordinates of the parent for a child panel).
+    pub fn set_rect(&self, rect: Rect) {
+        // SAFETY: Moves and sizes our window; no z-order or activation change.
+        unsafe {
+            SetWindowPos(
+                self.hwnd.raw(),
+                core::ptr::null_mut(),
+                rect.x,
+                rect.y,
+                rect.w.max(0),
+                rect.h.max(0),
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+        };
+    }
+
+    /// Sets the vertical scroll bar: range `0..=max`, page size and position (pixels).
+    pub fn set_vscroll(&self, pos: i32, page: i32, max: i32) {
+        let info = SCROLLINFO {
+            cbSize: u32::try_from(core::mem::size_of::<SCROLLINFO>()).unwrap_or(28),
+            fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
+            nMin: 0,
+            nMax: max.max(0),
+            nPage: u32::try_from(page.max(0)).unwrap_or(0),
+            nPos: pos.max(0),
+            nTrackPos: 0,
+        };
+        // SAFETY: `info` is a valid SCROLLINFO for our window's vertical bar.
+        unsafe { SetScrollInfo(self.hwnd.raw(), SB_VERT, &raw const info, 1) };
+    }
+
+    /// The thumb position while it is dragged (`SB_THUMBTRACK`), 0 if unknown.
+    #[must_use]
+    pub fn vscroll_track_pos(&self) -> i32 {
+        let mut info = SCROLLINFO {
+            cbSize: u32::try_from(core::mem::size_of::<SCROLLINFO>()).unwrap_or(28),
+            fMask: SIF_TRACKPOS,
+            nMin: 0,
+            nMax: 0,
+            nPage: 0,
+            nPos: 0,
+            nTrackPos: 0,
+        };
+        // SAFETY: `info` is writable with `cbSize` and `fMask` set.
+        let ok = unsafe { GetScrollInfo(self.hwnd.raw(), SB_VERT, &raw mut info) };
+        if ok == 0 { 0 } else { info.nTrackPos }
+    }
+
     /// A thread-safe poster for this window.
     #[must_use]
     pub const fn poster(&self) -> Poster {
@@ -804,7 +862,10 @@ pub fn create_window(spec: &WindowSpec, handler: Box<dyn Handler>) -> Result<Win
     let title = to_wide(&spec.title, "CreateWindowExW")?;
     let owner = match spec.kind {
         WindowKind::Owned { owner } => owner.raw(),
-        WindowKind::Main | WindowKind::HiddenTopLevel => core::ptr::null_mut(),
+        WindowKind::Child { parent } => parent.raw(),
+        WindowKind::Main | WindowKind::Floating | WindowKind::HiddenTopLevel => {
+            core::ptr::null_mut()
+        }
     };
     let instance = module_handle()?;
     let raw_state = Box::into_raw(state);
@@ -839,13 +900,15 @@ pub fn create_window(spec: &WindowSpec, handler: Box<dyn Handler>) -> Result<Win
         shared: Rc::clone(&shared),
         owning: true,
     };
-    place(
-        hwnd,
-        if owner.is_null() { hwnd } else { owner },
-        spec,
-        style,
-        ex_style,
-    );
+    if !matches!(spec.kind, WindowKind::Child { .. }) {
+        place(
+            hwnd,
+            if owner.is_null() { hwnd } else { owner },
+            spec,
+            style,
+            ex_style,
+        );
+    }
     if matches!(spec.kind, WindowKind::Main) {
         DIALOG_ROOTS.with(|roots| {
             if let Ok(mut roots) = roots.try_borrow_mut() {

@@ -15,6 +15,7 @@ use yw_app::app::{
     App, MAIN_CLASS, MUTEX_NAME, Paths, SECRET_INPUT_CLASS, SECRET_VIEW_CLASS, load_apikeys,
     load_settings,
 };
+use yw_app::app_approval::{APPROVAL_CLASS, PANEL_CLASS};
 use yw_app::errors::ErrorCode;
 use yw_app::events::{
     EventQueue, KeyJob, UiEvent, WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT,
@@ -23,7 +24,7 @@ use yw_app::logging::{self, Field};
 use yw_app::rpc::{RPC_TIMEOUTS, Transport};
 use yw_app::settings::LogLevel;
 use yw_app::workers::key::{KeyWorker, run as run_key_worker};
-use yw_app::workers::rpc::run as run_rpc_worker;
+use yw_app::workers::rpc::{RpcWorker, run as run_rpc_worker};
 use yw_win::input::is_down;
 use yw_win::process::{InstanceError, SingleInstance};
 use yw_win::ui::{self, CaptureExclusion, ClassSpec, InputKind, MbKind};
@@ -183,6 +184,16 @@ fn main() -> ExitCode {
             secret: true,
             capture: CaptureExclusion::Required,
         },
+        ClassSpec {
+            name: APPROVAL_CLASS,
+            secret: false,
+            capture: CaptureExclusion::Preferred,
+        },
+        ClassSpec {
+            name: PANEL_CLASS,
+            secret: false,
+            capture: CaptureExclusion::Preferred,
+        },
     ] {
         if ui::register_class(&spec).is_err() {
             return fail("창 클래스를 등록하지 못했습니다.");
@@ -228,11 +239,8 @@ fn main() -> ExitCode {
                 if client.is_none() {
                     logging::warn("rpc", "client.init_failed", &[]);
                 }
-                run_rpc_worker(
-                    client.as_ref().map(|client| client as &dyn Transport),
-                    &rpc_rx,
-                    &rpc_events,
-                );
+                let transport = client.map(|client| Arc::new(client) as Arc<dyn Transport>);
+                run_rpc_worker(RpcWorker::production(transport), &rpc_rx, &rpc_events);
             });
         match (key_thread, rpc_thread) {
             (Ok(key_thread), Ok(rpc_thread)) => {

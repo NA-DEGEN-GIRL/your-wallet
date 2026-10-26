@@ -13,8 +13,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL,
     WM_PAINT, WM_PASTE, WM_POWERBROADCAST, WM_PRINT, WM_PRINTCLIENT, WM_QUERYENDSESSION,
     WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTEXT, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER,
-    WM_UNDO, WM_WTSSESSION_CHANGE, WTS_CONSOLE_DISCONNECT, WTS_REMOTE_DISCONNECT, WTS_SESSION_LOCK,
-    WTS_SESSION_LOGOFF, WTS_SESSION_UNLOCK,
+    WM_UNDO, WM_VSCROLL, WM_WTSSESSION_CHANGE, WTS_CONSOLE_DISCONNECT, WTS_REMOTE_DISCONNECT,
+    WTS_SESSION_LOCK, WTS_SESSION_LOGOFF, WTS_SESSION_UNLOCK,
 };
 
 /// Last application message number (`WM_APP..=0xBFFF`).
@@ -73,6 +73,11 @@ pub enum Msg {
         x: i32,
         /// Y.
         y: i32,
+    },
+    /// `WM_VSCROLL` request (`SB_*` code in the low word of wParam).
+    VScroll {
+        /// `SB_LINEUP` 0, `SB_LINEDOWN` 1, `SB_PAGEUP` 2, `SB_PAGEDOWN` 3, `SB_THUMBTRACK` 5, `SB_TOP` 6, `SB_BOTTOM` 7, …
+        code: u16,
     },
     /// `WM_MOUSEWHEEL` delta.
     Wheel(i16),
@@ -199,6 +204,9 @@ pub(crate) fn decode(
             let (x, y) = point();
             Msg::MouseMove { x, y }
         }
+        WM_VSCROLL => Msg::VScroll {
+            code: loword(wparam),
+        },
         WM_MOUSEWHEEL => Msg::Wheel(i16::from_ne_bytes(hiword(wparam).to_ne_bytes())),
         WM_MOUSEACTIVATE => Msg::MouseActivate,
         WM_TIMER => Msg::Timer(wparam),
@@ -304,7 +312,7 @@ mod tests {
         WM_APP, WM_CHAR, WM_COMMAND, WM_CONTEXTMENU, WM_COPY, WM_ENDSESSION, WM_GETTEXT,
         WM_IME_NOTIFY, WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS,
         WM_LBUTTONDOWN, WM_POWERBROADCAST, WM_QUERYENDSESSION, WM_RBUTTONDBLCLK, WM_SETTEXT,
-        WM_SIZE, WM_TIMER, WM_WTSSESSION_CHANGE,
+        WM_SIZE, WM_TIMER, WM_VSCROLL, WM_WTSSESSION_CHANGE,
     };
 
     fn plain(msg: u32, wparam: usize, lparam: isize) -> Option<Msg> {
@@ -380,6 +388,10 @@ mod tests {
             Some(Msg::KillFocus { to_foreign: false })
         );
         assert_eq!(plain(WM_IME_STARTCOMPOSITION, 0, 0), Some(Msg::ImeAttempt));
+        assert_eq!(
+            plain(WM_VSCROLL, 0x0012_0005, 0),
+            Some(Msg::VScroll { code: 5 })
+        );
         assert_eq!(plain(WM_RBUTTONDBLCLK, 0, 0), None);
     }
 

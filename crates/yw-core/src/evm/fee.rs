@@ -10,11 +10,12 @@
 use core::fmt;
 use core::num::NonZeroU64;
 
+use super::address::Address;
 use super::amount::{U256, format_amount, format_gwei};
 use super::chain::ChainInfo;
 use super::decode::revert_reason;
 use super::risk::{self, E05, E10, E37, E38};
-use super::tx::TX_GAS_CAP;
+use super::tx::{Eip1559Tx, TX_GAS_CAP};
 use crate::approval::Warning;
 
 /// `eth_feeHistory` result as passed by yw-app (spec/03 §3.4).
@@ -343,6 +344,67 @@ pub fn expected_fee(gas_used: u64, max_fee: &U256, base_fee: &U256, tip: &U256) 
     price.checked_mul_u64(gas_used)
 }
 
+/// The speed-up candidate (spec/03 §4.6): the newest candidate's `to`, `value`, `data`,
+/// `access_list` and `gas_limit` with fees `tip' = max(⌈old_tip × 1.1⌉, f.tip)` and
+/// `max_fee' = max(⌈old_max × 1.1⌉, 2 × f.base_fee_next + tip')`.
+///
+/// # Errors
+///
+/// [`FeeError::Overflow`] (E05).
+pub fn speed_up_tx(latest: &Eip1559Tx, fresh: &Fees) -> Result<Eip1559Tx, FeeError> {
+    let (tip, max_fee) = replacement_fees(
+        &latest.max_priority_fee_per_gas,
+        &latest.max_fee_per_gas,
+        fresh,
+    )?;
+    Ok(Eip1559Tx {
+        max_priority_fee_per_gas: tip,
+        max_fee_per_gas: max_fee,
+        ..latest.clone()
+    })
+}
+
+/// The cancel candidate (spec/03 §4.6): a zero-value self-transfer with the same nonce, empty data
+/// and access list, `gas_limit` (= ⌈estimate × 1.2⌉ from [`plan_gas_limit`]) and the +10 % fee
+/// rule of [`speed_up_tx`].
+///
+/// # Errors
+///
+/// [`FeeError::Overflow`] (E05).
+pub fn cancel_tx(
+    latest: &Eip1559Tx,
+    account: &Address,
+    gas_limit: u64,
+    fresh: &Fees,
+) -> Result<Eip1559Tx, FeeError> {
+    let (tip, max_fee) = replacement_fees(
+        &latest.max_priority_fee_per_gas,
+        &latest.max_fee_per_gas,
+        fresh,
+    )?;
+    Ok(Eip1559Tx {
+        chain_id: latest.chain_id,
+        nonce: latest.nonce,
+        max_priority_fee_per_gas: tip,
+        max_fee_per_gas: max_fee,
+        gas_limit,
+        to: *account,
+        value: U256::ZERO,
+        data: Vec::new(),
+        access_list: Vec::new(),
+    })
+}
+
+/// The fees of a built transaction, for the cap check of a replacement (§4.6 "둘 다: 상한 검사").
+#[must_use]
+pub const fn fees_of(tx: &Eip1559Tx, base_fee_next: U256) -> Fees {
+    Fees {
+        max_priority_fee_per_gas: tx.max_priority_fee_per_gas,
+        max_fee_per_gas: tx.max_fee_per_gas,
+        base_fee_next,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -513,6 +575,64 @@ mod tests {
             replacement_fees(&gwei_milli(1_200), &gwei_milli(21_200), &fresh).unwrap();
         assert_eq!(tip, U256::from_u64(1_320_000_000));
         assert_eq!(max_fee, U256::from_u64(25_320_000_000));
+    }
+
+    #[test]
+    fn speed_up_and_cancel_builders() {
+        use crate::evm::address::Address;
+        use crate::evm::tx::{AccessListItem, Eip1559Tx};
+        let fresh = Fees {
+            max_priority_fee_per_gas: gwei_milli(1_000),
+            max_fee_per_gas: gwei_milli(25_000),
+            base_fee_next: gwei_milli(12_000),
+        };
+        let latest = Eip1559Tx {
+            chain_id: 11_155_111,
+            nonce: 9,
+            max_priority_fee_per_gas: gwei_milli(1_200),
+            max_fee_per_gas: gwei_milli(21_200),
+            gas_limit: 65_000,
+            to: Address::from_bytes([0x11; 20]),
+            value: U256::from_u64(5),
+            data: vec![0xa9, 0x05, 0x9c, 0xbb],
+            access_list: vec![AccessListItem {
+                address: Address::from_bytes([0x22; 20]),
+                storage_keys: vec![[1; 32]],
+            }],
+        };
+        let speed = super::speed_up_tx(&latest, &fresh).unwrap();
+        assert_eq!(
+            speed.max_priority_fee_per_gas,
+            U256::from_u64(1_320_000_000)
+        );
+        assert_eq!(speed.max_fee_per_gas, U256::from_u64(25_320_000_000));
+        assert_eq!(
+            (
+                speed.chain_id,
+                speed.nonce,
+                speed.gas_limit,
+                speed.to,
+                speed.value
+            ),
+            (
+                latest.chain_id,
+                latest.nonce,
+                latest.gas_limit,
+                latest.to,
+                latest.value
+            )
+        );
+        assert_eq!(speed.data, latest.data);
+        assert_eq!(speed.access_list, latest.access_list);
+        let account = Address::from_bytes([0x33; 20]);
+        let cancel = super::cancel_tx(&latest, &account, 25_200, &fresh).unwrap();
+        assert_eq!(cancel.to, account);
+        assert_eq!(cancel.value, U256::ZERO);
+        assert!(cancel.data.is_empty() && cancel.access_list.is_empty());
+        assert_eq!((cancel.nonce, cancel.gas_limit), (9, 25_200));
+        assert_eq!(cancel.max_fee_per_gas, U256::from_u64(25_320_000_000));
+        let fees = super::fees_of(&cancel, fresh.base_fee_next);
+        assert_eq!(fees.max_priority_fee_per_gas, U256::from_u64(1_320_000_000));
     }
 
     #[test]

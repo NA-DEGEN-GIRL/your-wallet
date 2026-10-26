@@ -558,6 +558,298 @@ impl Meta {
     }
 }
 
+/// A typed `ActivityEntry` (spec/02 §5.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActivityEntry {
+    /// Account (EVM lowercase `0x`).
+    pub account: String,
+    /// `0x` + tx hash.
+    pub tx_id: String,
+    /// Approval title at signing time.
+    pub title: String,
+    /// `"native"` or the token address.
+    pub asset: String,
+    /// Smallest-unit decimal amount.
+    pub amount: String,
+    /// Recipient.
+    pub counterparty: String,
+    /// `succeeded` | `failed` | `dropped` | `replaced` | ….
+    pub status: String,
+    /// Terminal observation time.
+    pub time_unix_ms: u64,
+}
+
+impl ActivityEntry {
+    /// From an EVM journal activity row (spec/03 §5.4).
+    #[must_use]
+    pub fn from_row(row: &yw_core::journal::evm::ActivityRow) -> Self {
+        Self {
+            account: row.account.clone(),
+            tx_id: row.tx_id.clone(),
+            title: row.title.clone(),
+            asset: row.asset.clone(),
+            amount: row.amount.clone(),
+            counterparty: row.counterparty.clone(),
+            status: row.status.as_str().to_owned(),
+            time_unix_ms: row.time_unix_ms,
+        }
+    }
+
+    fn to_value(&self) -> Value {
+        json_object(vec![
+            ("account", json_str(&self.account)),
+            ("tx_id", json_str(&self.tx_id)),
+            ("title", json_str(&self.title)),
+            ("asset", json_str(&self.asset)),
+            ("amount", json_str(&self.amount)),
+            ("counterparty", json_str(&self.counterparty)),
+            ("status", json_str(&self.status)),
+            ("time_unix_ms", json_u64(self.time_unix_ms)),
+        ])
+    }
+
+    fn from_value(value: &Value) -> Option<Self> {
+        let object = value.as_object()?;
+        let text = |key: &str| object.get(key).and_then(Value::as_str).map(str::to_owned);
+        Some(Self {
+            account: text("account")?,
+            tx_id: text("tx_id")?,
+            title: text("title")?,
+            asset: text("asset")?,
+            amount: text("amount")?,
+            counterparty: text("counterparty")?,
+            status: text("status")?,
+            time_unix_ms: object.get("time_unix_ms").and_then(u64_of)?,
+        })
+    }
+}
+
+/// A typed EVM `AddressBookEntry`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BookEntry {
+    /// Lowercase `0x` address.
+    pub address: String,
+    /// Label.
+    pub label: String,
+    /// Verified out of band.
+    pub verified: bool,
+    /// Added (Unix ms).
+    pub added_at_unix_ms: u64,
+}
+
+impl BookEntry {
+    fn to_value(&self) -> Value {
+        json_object(vec![
+            ("chain", json_str("evm")),
+            ("address", json_str(&self.address)),
+            ("label", json_str(&self.label)),
+            ("verified", Value::Bool(self.verified)),
+            ("added_at_unix_ms", json_u64(self.added_at_unix_ms)),
+        ])
+    }
+
+    fn from_value(value: &Value) -> Option<Self> {
+        let object = value.as_object()?;
+        if object.get("chain")?.as_str()? != "evm" {
+            return None;
+        }
+        Some(Self {
+            address: object.get("address")?.as_str()?.to_owned(),
+            label: object.get("label")?.as_str()?.to_owned(),
+            verified: object.get("verified")?.as_bool()?,
+            added_at_unix_ms: object.get("added_at_unix_ms").and_then(u64_of)?,
+        })
+    }
+}
+
+/// A typed `TokenEntry`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TokenEntry {
+    /// Lowercase `0x` contract.
+    pub address: String,
+    /// Label.
+    pub label: String,
+    /// Decimals.
+    pub decimals: u8,
+}
+
+impl TokenEntry {
+    fn to_value(&self) -> Value {
+        json_object(vec![
+            ("address", json_str(&self.address)),
+            ("label", json_str(&self.label)),
+            ("decimals", json_u64(u64::from(self.decimals))),
+        ])
+    }
+
+    fn from_value(value: &Value) -> Option<Self> {
+        let object = value.as_object()?;
+        Some(Self {
+            address: object.get("address")?.as_str()?.to_owned(),
+            label: object.get("label")?.as_str()?.to_owned(),
+            decimals: u8::try_from(object.get("decimals").and_then(u64_of)?).ok()?,
+        })
+    }
+}
+
+/// Address-book or token list limit reached, or a duplicate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListError {
+    /// Same address already present (E-INP-016 for the book).
+    Duplicate,
+    /// Bound reached.
+    Full,
+}
+
+fn network_items<'map>(map: &'map [(String, Vec<Value>)], network: &str) -> &'map [Value] {
+    map.iter()
+        .find(|(key, _)| key == network)
+        .map_or(&[], |(_, items)| items.as_slice())
+}
+
+impl Meta {
+    /// Activity rows of a network (newest first as stored).
+    #[must_use]
+    pub fn activity_of(&self, network: &str) -> Vec<ActivityEntry> {
+        network_items(&self.activity, network)
+            .iter()
+            .filter_map(ActivityEntry::from_value)
+            .collect()
+    }
+
+    /// Adds or replaces (same `tx_id`) an activity row; keeps newest first, at most 500 per
+    /// network and 3,000 overall (the oldest go first, spec/02 §5.3).
+    pub fn upsert_activity(&mut self, network: &str, entry: &ActivityEntry) {
+        let mut rows = self.activity_of(network);
+        rows.retain(|row| row.tx_id != entry.tx_id);
+        rows.push(entry.clone());
+        rows.sort_by_key(|row| std::cmp::Reverse(row.time_unix_ms));
+        rows.truncate(MAX_ACTIVITY_PER_NETWORK);
+        let values: Vec<Value> = rows.iter().map(ActivityEntry::to_value).collect();
+        match self.activity.iter_mut().find(|(key, _)| key == network) {
+            Some((_, items)) => *items = values,
+            None => self.activity.push((network.to_owned(), values)),
+        }
+        loop {
+            let total: usize = self.activity.iter().map(|(_, items)| items.len()).sum();
+            if total <= MAX_ACTIVITY_TOTAL {
+                break;
+            }
+            let oldest = self
+                .activity
+                .iter()
+                .enumerate()
+                .flat_map(|(map_index, (_, items))| {
+                    items.iter().enumerate().map(move |(item_index, item)| {
+                        let time =
+                            ActivityEntry::from_value(item).map_or(0, |row| row.time_unix_ms);
+                        (time, map_index, item_index)
+                    })
+                })
+                .min();
+            let Some((_, map_index, item_index)) = oldest else {
+                break;
+            };
+            match self.activity.get_mut(map_index) {
+                Some((_, items)) if item_index < items.len() => {
+                    items.remove(item_index);
+                }
+                _ => break,
+            }
+        }
+        self.activity.retain(|(_, items)| !items.is_empty());
+    }
+
+    /// EVM address-book entries.
+    #[must_use]
+    pub fn book(&self) -> Vec<BookEntry> {
+        self.address_book
+            .iter()
+            .filter_map(BookEntry::from_value)
+            .collect()
+    }
+
+    /// Adds an EVM address-book entry.
+    ///
+    /// # Errors
+    ///
+    /// [`ListError`].
+    pub fn add_book(&mut self, entry: &BookEntry) -> Result<(), ListError> {
+        if self
+            .book()
+            .iter()
+            .any(|known| known.address == entry.address)
+        {
+            return Err(ListError::Duplicate);
+        }
+        if self.address_book.len() >= MAX_ADDRESS_BOOK {
+            return Err(ListError::Full);
+        }
+        self.address_book.push(entry.to_value());
+        Ok(())
+    }
+
+    /// Replaces the EVM entry for `entry.address` (label, verified).
+    pub fn update_book(&mut self, entry: &BookEntry) {
+        for value in &mut self.address_book {
+            if BookEntry::from_value(value).is_some_and(|known| known.address == entry.address) {
+                *value = entry.to_value();
+            }
+        }
+    }
+
+    /// Removes the EVM entry for `address`.
+    pub fn remove_book(&mut self, address: &str) {
+        self.address_book.retain(|value| {
+            BookEntry::from_value(value).is_none_or(|known| known.address != address)
+        });
+    }
+
+    /// User tokens of a network.
+    #[must_use]
+    pub fn tokens_of(&self, network: &str) -> Vec<TokenEntry> {
+        network_items(&self.tokens, network)
+            .iter()
+            .filter_map(TokenEntry::from_value)
+            .collect()
+    }
+
+    /// Adds a user token (spec/04 §2.6 S16).
+    ///
+    /// # Errors
+    ///
+    /// [`ListError`] for a duplicate or the 100 / 1,000 bounds.
+    pub fn add_token(&mut self, network: &str, entry: &TokenEntry) -> Result<(), ListError> {
+        let current = self.tokens_of(network);
+        if current.iter().any(|known| known.address == entry.address) {
+            return Err(ListError::Duplicate);
+        }
+        let total: usize = self.tokens.iter().map(|(_, items)| items.len()).sum();
+        if current.len() >= MAX_TOKENS_PER_NETWORK || total >= MAX_TOKENS_TOTAL {
+            return Err(ListError::Full);
+        }
+        match self.tokens.iter_mut().find(|(key, _)| key == network) {
+            Some((_, items)) => items.push(entry.to_value()),
+            None => self
+                .tokens
+                .push((network.to_owned(), vec![entry.to_value()])),
+        }
+        Ok(())
+    }
+
+    /// Removes a user token.
+    pub fn remove_token(&mut self, network: &str, address: &str) {
+        for (key, items) in &mut self.tokens {
+            if key == network {
+                items.retain(|value| {
+                    TokenEntry::from_value(value).is_none_or(|known| known.address != address)
+                });
+            }
+        }
+        self.tokens.retain(|(_, items)| !items.is_empty());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Account, EvmAccountPref, Meta, parse};

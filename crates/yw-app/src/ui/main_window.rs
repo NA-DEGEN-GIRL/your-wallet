@@ -115,6 +115,18 @@ impl Ctl {
         self.width = width;
         self
     }
+
+    /// Makes an edit read-only.
+    #[must_use]
+    pub const fn readonly(mut self) -> Self {
+        if let ControlKind::Edit { password, .. } = self.kind {
+            self.kind = ControlKind::Edit {
+                password,
+                readonly: true,
+            };
+        }
+        self
+    }
 }
 
 /// One element of a screen.
@@ -138,6 +150,8 @@ pub enum Item {
     LabeledRow(String, Vec<Ctl>),
     /// A thin separator line.
     Rule,
+    /// A receive QR of this payload (spec/04 §2.8).
+    Qr(String),
 }
 
 /// A text to paint.
@@ -172,6 +186,8 @@ pub struct Placed {
     pub rules: Vec<Rect>,
     /// Controls with their pixel rectangles.
     pub controls: Vec<(Ctl, Rect)>,
+    /// QR codes: origin, module pixels, payload (re-encoded at paint; never cached).
+    pub qrs: Vec<(i32, i32, i32, String)>,
     /// Total content height (px, unscrolled).
     pub content_height: i32,
 }
@@ -297,6 +313,33 @@ pub fn layout(
                 );
             }
             Item::Gap(dip) => y = y.saturating_add(px(*dip)),
+            Item::Qr(payload) => {
+                let available = width.min(px(420));
+                let geometry = crate::ui::qr::encode(payload)
+                    .and_then(|code| crate::ui::qr::layout(code.size(), dpi, available));
+                match geometry {
+                    Some(geometry) => {
+                        placed.qrs.push((
+                            margin,
+                            y.saturating_sub(scroll),
+                            geometry.module_pixels,
+                            payload.clone(),
+                        ));
+                        y = y
+                            .saturating_add(geometry.canvas_pixels())
+                            .saturating_add(px(12));
+                    }
+                    None => push_text(
+                        &mut placed,
+                        &mut y,
+                        "창을 넓히면 QR이 표시됩니다",
+                        FontRole::Body,
+                        theme::MUTED.0,
+                        None,
+                        px(8),
+                    ),
+                }
+            }
             Item::Rule => {
                 placed.rules.push(Rect::new(
                     margin,
@@ -356,6 +399,18 @@ pub fn paint(dc: &mut PaintDc<'_>, client: Rect, placed: &Placed, fonts: &Fonts)
     dc.fill_rect(client, theme::BG);
     for rule in &placed.rules {
         dc.fill_rect(*rule, theme::BORDER);
+    }
+    for (x, y, module, payload) in &placed.qrs {
+        if let Some(code) = crate::ui::qr::encode(payload) {
+            let geometry = crate::ui::qr::QrLayout {
+                symbol_modules: code.size(),
+                total_modules: code
+                    .size()
+                    .saturating_add(crate::ui::qr::QUIET_ZONE_MODULES.saturating_mul(2)),
+                module_pixels: *module,
+            };
+            crate::ui::qr::paint(dc, *x, *y, &code, &geometry);
+        }
     }
     for text in &placed.texts {
         if text.rect.bottom() < 0 || text.rect.y > client.h {
@@ -424,6 +479,13 @@ impl ControlSet {
             .iter()
             .find(|(ctl, _)| ctl.id == id)
             .map(|(_, control)| control.text_wiping(max_units))
+    }
+
+    /// Replaces a control's text (non-secret values only).
+    pub fn set_text(&self, id: u16, text: &str) {
+        if let Some((_, control)) = self.controls.iter().find(|(ctl, _)| ctl.id == id) {
+            control.set_text(text);
+        }
     }
 
     /// Clears an edit.
