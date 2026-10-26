@@ -7,21 +7,39 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { decodeUtf8, isPlainObject, parseStrictJson } from './lib/strict-json.mjs';
 
-const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..');
+const MAX_CONFIG_BYTES = 64 * 1024;
+// spec/01 §4.6: compare real paths (symlinks/junctions resolved) so the file cannot live in the repo.
+const REPO = fs.realpathSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
 const cfgPath = process.env.YW_RPC_JSON || path.join(os.homedir(), '.yw-dev', 'rpc.json');
-if (path.resolve(cfgPath).toLowerCase().startsWith(REPO.toLowerCase() + path.sep)) {
+const insideRepo = (target) => {
+  const relative = path.relative(REPO, target);
+  return relative === '' || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));
+};
+const cannotRead = () => {
+  console.error('설정 파일을 읽을 수 없습니다: rpc.json');
+  process.exit(1);
+};
+let realCfgPath;
+try {
+  realCfgPath = fs.realpathSync(cfgPath);
+} catch {
+  cannotRead();
+}
+if (insideRepo(realCfgPath)) {
   console.error('설정 파일이 저장소 안에 있습니다. 저장소 밖에 두세요.');
   process.exit(1);
 }
 let cfg;
 try {
-  const raw = fs.readFileSync(cfgPath, 'utf8').replace(/^﻿/, '');
-  if (raw.length > 65536) throw new Error('too large');
-  cfg = JSON.parse(raw);
+  const bytes = fs.readFileSync(realCfgPath);
+  if (bytes.length > MAX_CONFIG_BYTES) throw new Error('too large');
+  cfg = parseStrictJson(decodeUtf8(bytes, 'rpc.json'));   // BOM is stripped by TextDecoder
+  if (!isPlainObject(cfg)) throw new Error('not an object');
 } catch {
-  console.error('설정 파일을 읽을 수 없습니다: rpc.json');
-  process.exit(1);
+  cannotRead();
 }
 
 const secrets = [];

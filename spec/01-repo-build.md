@@ -146,7 +146,7 @@ docs/        recovery-guide.ko.md  acceptance/(체크리스트·라이브 확인
 |---|---|---|---|
 | `secret` | M1 | `SecretBytes<N>`, `SecretVec`, `SecretString` (§5.3) | 이 문서 |
 | `error` | M1 | 모듈별 오류 enum과 수동 `Display` | §5.2 |
-| `entropy` | M1 | `RandomSource`(crate 내부), `OsRandom`, `fill_random(&mut [u8]) -> Result<(), EntropyError>`(getrandom), `secp_context`(§3.5 `seeded_randomize`), `random_nonzero_id`, `random_below(n)`(거부 샘플링). OS 호출은 여기서만. | [02](02-core-keys-vault.md) |
+| `entropy` | M1 | `RandomSource`(crate 내부), `OsRandom`, `fill_random(&mut [u8]) -> Result<(), KeyError>`(getrandom, 실패는 `KeyError::RandomnessUnavailable`), `secp_context`(§3.5 `seeded_randomize`), `random_nonzero_id`, `random_below(n)`(거부 샘플링). OS 호출은 여기서만. | [02](02-core-keys-vault.md) |
 | `bip39` (`src/bip39/mod.rs` + `english.txt`, `include_str!`) | M1 | 생성(24단어), 가져오기, 시드 | [02](02-core-keys-vault.md) |
 | `bip32` (+`bip32::xkey`, `bip32::path`) | M1 | secp256k1 HD 파생(`Bip32Path`, 엄격 경로). 공개 파생 `AccountXpub`·`derive_public_child`(비강화 색인만, BTC 주소용, M8에서 사용). `xkey`: `XKeyParts`, `decode_xkey`, `encode_xkey`, fingerprint = HASH160[0..4](`ripemd`, D5) — M1 벡터 1–5 전체 문자열 비교용. `path`: `AccountIndex`, `BtcCoin`, `BtcChain`, `evm_path`, `btc_path`, `sol_path`(D29; `sol_path`는 M7에 `slip10`과 함께 추가) | [02](02-core-keys-vault.md), [08](08-bitcoin.md) |
 | `slip10` | M7 | Ed25519 hardened-only 파생 | [07](07-solana.md) |

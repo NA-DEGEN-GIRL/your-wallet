@@ -96,6 +96,9 @@ export function parseStrictJson(text) {
       while (offset < text.length) {
         skipWhitespace();
         const key = parseString();
+        // `result[key] = …` with "__proto__" would replace the object's prototype instead of
+        // adding a member; such input has no legitimate use here, so reject it outright.
+        if (key === "__proto__") fail("forbidden JSON member: __proto__");
         if (keys.has(key)) fail(`duplicate JSON member: ${key}`);
         keys.add(key);
         skipWhitespace();

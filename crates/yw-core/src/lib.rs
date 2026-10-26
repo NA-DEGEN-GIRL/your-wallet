@@ -1,5 +1,16 @@
 //! yw-core: platform-independent wallet core (keys, vault, chain encoding, policy).
 //!
-//! No network, GUI, file system, threads, clocks or `unsafe` (spec/01 §2.2, §5.1).
-//! Modules are added from M1 following the module table in spec/01 §2.2.
+//! No network, GUI, file system, threads, clocks or `unsafe` (spec/01 §2.2, §5.1); the only OS
+//! call is `getrandom` in `entropy`. Module names follow the spec/01 §2.2 table.
 #![forbid(unsafe_code)]
+
+pub mod bip32;
+pub mod bip39;
+pub mod codec;
+pub mod entropy;
+pub mod error;
+pub mod evm;
+pub mod hex;
+pub mod password;
+pub mod secret;
+pub mod vault;

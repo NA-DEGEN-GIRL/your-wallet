@@ -139,7 +139,7 @@
 | 파일(`crates/yw-core/tests/vectors/`) | 내용 | 출처 |
 |---|---|---|
 | `bip39_trezor_en.json` | trezor/python-mnemonic `vectors.json`의 `"english"` 배열 그대로, 24개 `[entropy, mnemonic, seed, xprv]` | [공식] github.com/trezor/python-mnemonic `vectors.json` |
-| `bip32.json` | `[{"seed", "chains":[{"path","xpub","xprv"}]}]` 벡터 1–4(경로 17개), `"invalid": [16개]` 벡터 5 | [공식] bitcoin/bips `bip-0032.mediawiki` |
+| `bip32.json` | `{"valid": [{"seed", "chains":[{"path","xpub","xprv"}]}], "invalid": [[키, 사유]]}` — 벡터 1–4(경로 17개, 경로의 `<sub>H</sub>`는 `'`로 표기), 벡터 5 무효 키 16개 | [공식] bitcoin/bips `bip-0032.mediawiki` |
 | `slip10_ed25519.json` | 벡터 1·2의 Ed25519 절(경로 12개) | [공식] satoshilabs/slips `slip-0010.md` |
 | `rfc8032.json` | §7.1 TEST 1, 2, 3, 1024, SHA(abc) | [공식] RFC 8032 |
 | `base58_encode_decode.json` | 21개 `[hex, base58]` | [공식] bitcoin/bitcoin `src/test/data/` |
@@ -581,7 +581,7 @@ Issued At: 2026-10-25T23:59:00Z
 
 - [ ] M1-1 B39-1–4, BIP32 벡터 1–5(§3.3, 전체 xprv·xpub 문자열), ACC-1–5 통과.
 - [ ] M1-2 G1–G5 통과. G1 상수를 넣은 커밋에서 G3이 통과했음을 기록.
-- [ ] M1-3 V-1–V-8, V-FS 통과. 02 §11.1–11.8 통과. 단 단계 표시 항목은 그 마일스톤에서 판정한다: §11.7 journal 컨테이너(M4-12), §11.5 SLIP-0010·`SolKeySource`(M7-1), §11.3 `derive_public_child`·§11.4 CKDpub 행(M8-2).
+- [ ] M1-3 V-1–V-8 통과(V-FS는 yw-app `store.rs`·yw-win `file`이 생기는 M3-12에서 판정). 02 §11.1–11.8 통과. 단 단계 표시 항목은 그 마일스톤에서 판정한다: §11.7 journal 컨테이너(M4-12), §11.5 SLIP-0010·`SolKeySource`(M7-1), §11.3 `derive_public_child`·§11.4 CKDpub 행(M8-2).
 - [ ] M1-4 측정(기록만): release 빌드에서 대상 PC Argon2 1회 시간(02 §7.4).
 - [ ] M1-5 수동 도구: 퍼징 `vault_header` 600 s, 충돌 0(§2.4).
 
@@ -607,7 +607,7 @@ Issued At: 2026-10-25T23:59:00Z
 - [ ] M3-9 로그 비밀 검사: M3 전 과정 뒤 `logs\` 전체에서 시험 비밀번호, M3-7 니모닉 단어열(`abandon abandon`), raw key hex, 엔드포인트 토큰 앞 8자, 엔드포인트 이름·`quiknode`(호스트, 01 §5.4), `TREZOR`를 검색 → 모두 0건. RPC 로그 줄은 `NetworkId`로만 대상을 가리킨다.
 - [ ] M3-10 원자적 쓰기: 비밀번호 변경 확인을 누른 직후(Argon2 진행 중) 작업 관리자로 yw-app 종료 → 재실행 → 이전 또는 새 비밀번호 중 정확히 하나로 열림, `Corrupt` 없음, `.tmp` 남지 않음.
 - [ ] M3-11 04 §10 UI-M3-05·06·10·13·14 수행(UI-M3-11은 M3-8, 나머지 UI-M3 항목은 M3-1–M3-10이 덮는다).
-- [ ] M3-12 자동: V-DPAPI(§4.1), 04 §6.5 ST-2(`apikeys.dpapi` 평문 형식: 네트워크별 URL 왕복·형식 오류·미등록 항목 무시) 통과.
+- [ ] M3-12 자동: V-DPAPI·V-FS(§4.1), 04 §6.5 ST-2(`apikeys.dpapi` 평문 형식: 네트워크별 URL 왕복·형식 오류·미등록 항목 무시) 통과.
 
 ### 5.5 M4 EVM 단독 전송 (자동 + Sepolia·HyperEVM 수동, 04 §10 UI-M4-01–16 포함)
 

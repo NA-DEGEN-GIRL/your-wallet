@@ -78,8 +78,8 @@ pub(crate) fn secp_context(rng: &mut impl RandomSource)
 ### 2.1 단어 목록
 
 - 파일: `crates/yw-core/src/bip39/english.txt`([01] §1.4가 M0에 만들고 §4.3 privacy-scan이 읽는다). bitcoin/bips `bip-0039/english.txt`를 바이트 그대로 복사한다: 2048줄, 각 줄 LF 종료(마지막 줄 포함), 13,116바이트, 첫 단어 `abandon`, 마지막 `zoo`.
-- 내장: `src/bip39/mod.rs`의 `include_str!("english.txt")`. 최초 사용 시 `std::sync::OnceLock<[&'static str; 2048]>`로 `'\n'` 분할한다. 분할 결과가 2048개가 아니면 `KeyError::Internal`(패닉 금지).
-- 무결성 테스트: 파일 SHA-256 = `2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda`(조사 단계에서 bip39-2.2.0 내장 목록으로 계산). **구현 시 확인:** 공식 english.txt를 내려받아 SHA-256을 다시 계산하고 이 값과 같은지 확인한 뒤 테스트에 고정한다. 다르면 공식 파일을 따르고 이 문서를 고친다. 이 테스트는 내장 데이터가 공식 목록과 같은지 보는 것이며 §2.3 금지 대상(문서·소스 해시 고정)이 아니다.
+- 내장: `src/bip39/mod.rs`의 `include_str!("english.txt")`. 최초 사용 시 `std::sync::OnceLock`(값은 `&'static str` 2048개 배열, 스택 32 KiB를 피해 `Box`)으로 `'\n'` 분할한다. 분할 결과가 2048개가 아니면 `KeyError::Internal`(패닉 금지).
+- 무결성 테스트: 파일 SHA-256 = `2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda`(조사 단계에서 bip39-2.2.0 내장 목록으로 계산). **확인함(2026-10-27):** bitcoin/bips `bip-0039/english.txt`(커밋 `ce1862a`)의 SHA-256이 이 값과 같아 테스트에 고정했다. 다르면 공식 파일을 따르고 이 문서를 고친다. 이 테스트는 내장 데이터가 공식 목록과 같은지 보는 것이며 §2.3 금지 대상(문서·소스 해시 고정)이 아니다.
 - 구조 테스트: 엄격한 오름차순(바이트 비교), 중복 없음, 각 단어 3–8자 `[a-z]`, 앞 4글자가 모두 다름.
 - 단어→색인은 이진 탐색이다(타이밍 부채널은 §2.2 비목표).
 
@@ -541,6 +541,8 @@ pub trait VaultStorage: Send {
 }
 /// 구조 검사(§4.5 1–7, §5.2)를 통과하면 generation, 아니면 None.
 pub fn peek_generation(kind: FileKind, bytes: &[u8]) -> Option<u64>;
+/// vault.ywv의 §4.5 1–7(KDF 없음): generation 또는 그 단계의 오류(`Malformed`·`UnsupportedVersion`·`UnsupportedParams`).
+pub fn check_vault_header(bytes: &[u8]) -> Result<u64, VaultError>;
 ```
 
 yw-app이 yw-win 파일 함수로 구현한다(출처: 데모 원자적 쓰기, §12). `commit` 절차(반드시):
@@ -561,7 +563,7 @@ yw-app이 yw-win 파일 함수로 구현한다(출처: 데모 원자적 쓰기, 
 | 디스크 상태 | `VaultStatus` | 허용 동작 |
 |---|---|---|
 | `vault.ywv` 구조 정상 | `Locked` | 잠금 해제 |
-| `vault.ywv` 구조 손상 | `Corrupt { prev_available }` | `.prev`로 복구, 또는 앱 종료 |
+| `vault.ywv` 구조 손상(§4.5 1–7 실패: `Malformed`·`UnsupportedVersion`·`UnsupportedParams`) | `Corrupt { prev_available }` | `.prev`로 복구, 또는 앱 종료 |
 | `vault.ywv` 없음, `.prev` 있음 | `MainMissing` | `.prev`로 복구 |
 | 둘 다 없음(`.tmp`만 있거나 아무것도 없음) | `NoVault` | 생성·가져오기 |
 
@@ -592,6 +594,7 @@ yw-app이 yw-win 파일 함수로 구현한다(출처: 데모 원자적 쓰기, 
 | `NoVault` | `import_mnemonic` | 커밋 성공 | `Unlocked { alt: false }` |
 | `Locked` | `unlock` | 성공 | `passphrase_used = 1` → `PassphraseRequired`; 아니면 `backup = 0` → `BackupPending`, `backup = 1` → `Unlocked { alt: false }` |
 | `Locked` | `unlock` | 실패 | `Locked` (`UnlockFailed` 등) |
+| `Locked` | `unlock` | `PayloadCorrupt`(§6.3) | `Corrupt { prev_available }` (본 파일은 그대로, `.prev` 복구 제안) |
 | `PassphraseRequired` | `enter_passphrase` | 확인값 일치 | `Unlocked { alt: false }` |
 | `PassphraseRequired` | `enter_passphrase` | 확인값 불일치 | `PassphraseMismatch` |
 | `PassphraseMismatch` | `retry_passphrase` | — | `PassphraseRequired`(입력값 소거) |
@@ -827,7 +830,7 @@ pub fn preview_evm_address(phrase: &str, passphrase: Option<&Bip39Passphrase>, i
 
 | 테스트 | 확인 |
 |---|---|
-| `create_draws_entropy_first` | `ScriptedRandom`(0x00..=0x1f 다음 고정 바이트)로 `create_wallet_with_rng` → 반환 니모닉 = `from_entropy(00..1f).phrase()` |
+| `create_draws_entropy_first` | `ScriptedRandom`(0x00..=0x1f 다음 결정적 바이트열 — 상수열이면 DEK가 고착 검사에 걸린다)로 `create_wallet_with_rng` → 반환 니모닉 = `from_entropy(00..1f).phrase()` |
 | `rng_failure_aborts_without_commit` | `FailingRandom` → `RandomnessUnavailable`, `MemStorage` 커밋 0회, 상태 `NoVault` |
 | `stuck_rng_rejected` | 32바이트가 전부 0x00 / 전부 0x5a → `RandomnessUnavailable` |
 | `zero_id_redrawn_then_fails` | 16바이트 0을 4회 → `RandomnessUnavailable`, 3회 후 비0 → 성공 |

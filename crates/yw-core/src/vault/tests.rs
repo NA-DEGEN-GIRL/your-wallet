@@ -1,0 +1,1733 @@
+//! vault v3 tests: golden G1–G5 (spec/09 §3.12), tamper table and codec rejections
+//! (spec/02 §11.6, spec/09 §4.1 V-1–V-4), sidecars and storage contract (§11.7), state machine
+//! and backup (§11.8), and the vault-level entropy cases of §11.1. Structure follows
+//! `archive/spec-v2.4:crates/secret-core/src/vault.rs:1161-1432` with v3 values.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+use argon2::{Algorithm, Argon2, Block, Params, Version};
+use chacha20poly1305::aead::{Aead, KeyInit, Payload as AeadPayload};
+use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+use hkdf::Hkdf;
+use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
+
+use super::format::{
+    self, Bip39Record, CORRUPT_NEXT_SEAL, KDF_CALLS, PAYLOAD_MAGIC, Payload, RawKeyRecord,
+    SealMaterial, peek_generation_with,
+};
+use super::{
+    EvmKeySource, FileKind, KDF_V3, KdfParams, KeyRef, LockedSlot, RecordId, SLOT_LEN, Vault,
+    VaultError, VaultStatus, VaultStorage, check_vault_header, peek_generation,
+};
+use crate::bip32::path::{AccountIndex, BtcChain, BtcCoin};
+use crate::bip39::Mnemonic;
+use crate::entropy::{FailingRandom, ScriptedRandom};
+use crate::error::{KeyError, StorageError};
+use crate::hex;
+use crate::password::{Bip39Passphrase, VaultPassword};
+
+const KDF_TEST: KdfParams = KdfParams {
+    m_kib: 64,
+    t: 1,
+    p: 1,
+};
+const ABOUT: &str =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+const GOLDEN_PASSWORD: &[u8] = b"correct horse battery staple";
+/// Regression pin of OUR vault v3 byte format (spec/02 §11.6, spec/09 §3.12 G1), recorded once
+/// from `print_golden_sha256` in the commit where G3 (independent decryption) passed. A change
+/// means the format changed: bump `VAULT_VERSION` or revert. Not a protocol vector.
+const GOLDEN_SHA256: &str = "cf7a45ce3702eae648d3909a598218cdab494d8d49dfd384f60d8c673f459c92";
+const PASSWORD: &[u8] = b"test password 1";
+const OTHER_PASSWORD: &[u8] = b"another password 2";
+
+// ---------------------------------------------------------------- test doubles
+
+#[derive(Default)]
+struct Files {
+    main: Option<Vec<u8>>,
+    prev: Option<Vec<u8>>,
+    quarantined: Vec<(u64, Vec<u8>)>,
+}
+
+struct MemInner {
+    vault: Files,
+    meta: Files,
+    journal: Files,
+    commits: usize,
+    params: KdfParams,
+    fail_commits: bool,
+}
+
+impl MemInner {
+    fn file(&mut self, kind: FileKind) -> &mut Files {
+        match kind {
+            FileKind::Vault => &mut self.vault,
+            FileKind::Meta => &mut self.meta,
+            FileKind::Journal => &mut self.journal,
+        }
+    }
+}
+
+/// In-memory `VaultStorage` with the spec/02 §6.2 commit contract; records commits.
+#[derive(Clone)]
+struct MemStorage(Arc<Mutex<MemInner>>);
+
+impl MemStorage {
+    fn new(params: KdfParams) -> Self {
+        Self(Arc::new(Mutex::new(MemInner {
+            vault: Files::default(),
+            meta: Files::default(),
+            journal: Files::default(),
+            commits: 0,
+            params,
+            fail_commits: false,
+        })))
+    }
+
+    fn with<T>(&self, f: impl FnOnce(&mut MemInner) -> T) -> T {
+        f(&mut self.0.lock().unwrap())
+    }
+
+    fn commits(&self) -> usize {
+        self.with(|inner| inner.commits)
+    }
+
+    fn main(&self, kind: FileKind) -> Option<Vec<u8>> {
+        self.with(|inner| inner.file(kind).main.clone())
+    }
+
+    fn prev(&self, kind: FileKind) -> Option<Vec<u8>> {
+        self.with(|inner| inner.file(kind).prev.clone())
+    }
+
+    fn set_main(&self, kind: FileKind, bytes: Option<Vec<u8>>) {
+        self.with(|inner| inner.file(kind).main = bytes);
+    }
+
+    fn set_prev(&self, kind: FileKind, bytes: Option<Vec<u8>>) {
+        self.with(|inner| inner.file(kind).prev = bytes);
+    }
+
+    fn quarantined(&self, kind: FileKind) -> Vec<(u64, Vec<u8>)> {
+        self.with(|inner| inner.file(kind).quarantined.clone())
+    }
+
+    fn set_fail_commits(&self, fail: bool) {
+        self.with(|inner| inner.fail_commits = fail);
+    }
+}
+
+impl VaultStorage for MemStorage {
+    fn load(&self, kind: FileKind) -> Result<Option<Vec<u8>>, StorageError> {
+        Ok(self.main(kind))
+    }
+
+    fn load_prev(&self, kind: FileKind) -> Result<Option<Vec<u8>>, StorageError> {
+        Ok(self.prev(kind))
+    }
+
+    fn commit(
+        &mut self,
+        kind: FileKind,
+        expected: Option<u64>,
+        bytes: &[u8],
+    ) -> Result<(), StorageError> {
+        self.with(|inner| {
+            if inner.fail_commits {
+                return Err(StorageError::Io(5));
+            }
+            let params = inner.params;
+            let file = inner.file(kind);
+            match (expected, file.main.as_deref()) {
+                (None, Some(_)) => return Err(StorageError::AlreadyExists),
+                (Some(_), None) => return Err(StorageError::NotFound),
+                (Some(generation), Some(main)) => match peek_generation_with(kind, main, &params) {
+                    None => return Err(StorageError::Corrupt),
+                    Some(found) if found != generation => {
+                        return Err(StorageError::GenerationConflict);
+                    }
+                    Some(_) => {}
+                },
+                (None, None) => {}
+            }
+            if let Some(old) = file.main.take() {
+                file.prev = Some(old);
+            }
+            file.main = Some(bytes.to_vec());
+            inner.commits += 1;
+            Ok(())
+        })
+    }
+
+    fn quarantine(&mut self, kind: FileKind, now_unix: u64) -> Result<(), StorageError> {
+        self.with(|inner| {
+            let file = inner.file(kind);
+            let main = file.main.take().ok_or(StorageError::NotFound)?;
+            file.quarantined.push((now_unix, main));
+            Ok(())
+        })
+    }
+}
+
+/// Heap slot that records at drop time whether the vault wiped it first.
+struct HeapSlot {
+    bytes: Box<[u8; SLOT_LEN]>,
+    wiped_at_drop: Arc<AtomicBool>,
+}
+
+impl LockedSlot for HeapSlot {
+    fn bytes(&self) -> &[u8; SLOT_LEN] {
+        &self.bytes
+    }
+
+    fn bytes_mut(&mut self) -> &mut [u8; SLOT_LEN] {
+        &mut self.bytes
+    }
+}
+
+impl Drop for HeapSlot {
+    fn drop(&mut self) {
+        self.wiped_at_drop
+            .store(self.bytes.iter().all(|byte| *byte == 0), Ordering::SeqCst);
+    }
+}
+
+fn slot() -> (Box<dyn LockedSlot>, Arc<AtomicBool>) {
+    let flag = Arc::new(AtomicBool::new(false));
+    // Pre-filled with garbage so a missing wipe is visible.
+    let slot = HeapSlot {
+        bytes: Box::new([0xa5; SLOT_LEN]),
+        wiped_at_drop: Arc::clone(&flag),
+    };
+    (Box::new(slot), flag)
+}
+
+fn new_slot() -> Box<dyn LockedSlot> {
+    slot().0
+}
+
+fn pw(text: &[u8]) -> VaultPassword {
+    VaultPassword::new(text).unwrap()
+}
+
+fn kdf_calls() -> u32 {
+    KDF_CALLS.with(std::cell::Cell::get)
+}
+
+fn index(i: u32) -> AccountIndex {
+    AccountIndex::new(i).unwrap()
+}
+
+fn flip(bytes: &mut [u8], offset: usize) {
+    *bytes.get_mut(offset).unwrap() ^= 1;
+}
+
+fn put(bytes: &mut [u8], offset: usize, value: &[u8]) {
+    bytes
+        .get_mut(offset..offset + value.len())
+        .unwrap()
+        .copy_from_slice(value);
+}
+
+fn at(bytes: &[u8], range: core::ops::Range<usize>) -> &[u8] {
+    bytes.get(range).unwrap()
+}
+
+fn seq<const N: usize>(start: u8) -> [u8; N] {
+    let mut out = [0_u8; N];
+    for (offset, byte) in out.iter_mut().enumerate() {
+        *byte = start + u8::try_from(offset).unwrap();
+    }
+    out
+}
+
+fn empty_vault(params: KdfParams) -> (MemStorage, Vault) {
+    let storage = MemStorage::new(params);
+    let vault = Vault::load_with_params(Box::new(storage.clone()), params).unwrap();
+    (storage, vault)
+}
+
+fn imported(passphrase: Option<&str>) -> (MemStorage, Vault) {
+    let (storage, mut vault) = empty_vault(KDF_TEST);
+    let passphrase = passphrase.map(|value| Bip39Passphrase::new(value).unwrap());
+    vault
+        .import_mnemonic(&pw(PASSWORD), ABOUT, passphrase, new_slot(), 1_790_000_000)
+        .unwrap();
+    (storage, vault)
+}
+
+fn created() -> (MemStorage, Vault, Zeroizing<String>) {
+    let (storage, mut vault) = empty_vault(KDF_TEST);
+    let phrase = vault
+        .create_wallet(&pw(PASSWORD), new_slot(), 1_790_000_000)
+        .unwrap();
+    (storage, vault, phrase)
+}
+
+fn reload(storage: &MemStorage) -> Vault {
+    Vault::load_with_params(Box::new(storage.clone()), KDF_TEST).unwrap()
+}
+
+fn golden_payload() -> Payload {
+    Payload {
+        bip39: Bip39Record {
+            record_id: seq(0x90),
+            created_unix: 1_790_000_000,
+            mnemonic: Mnemonic::from_entropy(&[0; 32]).unwrap(),
+            passphrase_used: false,
+            backup_confirmed: false,
+            passphrase_check: [0; 4],
+        },
+        raw_keys: Vec::new(),
+    }
+}
+
+fn seal_fixed(params: &KdfParams) -> Vec<u8> {
+    let password = pw(GOLDEN_PASSWORD);
+    let dek: [u8; 32] = seq(0x20);
+    let payload = golden_payload();
+    let material = SealMaterial {
+        password: &password,
+        vault_id: seq(0x00),
+        dek: &dek,
+        kdf_salt: seq(0x40),
+        wrap_nonce: seq(0x50),
+        payload_nonce: seq(0x70),
+        generation: 1,
+        payload: &payload,
+    };
+    format::seal_create_with(&material, params).unwrap()
+}
+
+/// Steps 1–9 with the test KDF; returns the payload's first raw key count to prove decoding.
+fn open_all(bytes: &[u8], password: &[u8], params: &KdfParams) -> Result<usize, VaultError> {
+    let (_, dek) = format::unwrap_dek(bytes, &pw(password), params)?;
+    Ok(format::decrypt_payload(bytes, &dek, params)?.raw_keys.len())
+}
+
+// ---------------------------------------------------------------- §11.1 entropy (vault level)
+
+#[test]
+fn create_draws_entropy_first() {
+    let (storage, mut vault) = empty_vault(KDF_TEST);
+    let script: Vec<u8> = (0x00..=0x1f).collect();
+    let mut rng = ScriptedRandom::new(&script);
+    let phrase = vault
+        .create_wallet_with_rng(&mut rng, &pw(PASSWORD), new_slot(), 1)
+        .unwrap();
+    assert_eq!(
+        phrase.as_str(),
+        Mnemonic::from_entropy(&script).unwrap().phrase().as_str()
+    );
+    assert_eq!(storage.commits(), 1);
+    assert_eq!(vault.status(), VaultStatus::BackupPending);
+}
+
+#[test]
+fn rng_failure_aborts_without_commit() {
+    let (storage, mut vault) = empty_vault(KDF_TEST);
+    let (slot, wiped) = slot();
+    let error = vault
+        .create_wallet_with_rng(&mut FailingRandom, &pw(PASSWORD), slot, 1)
+        .unwrap_err();
+    assert_eq!(error, VaultError::Key(KeyError::RandomnessUnavailable));
+    assert_eq!(storage.commits(), 0);
+    assert_eq!(vault.status(), VaultStatus::NoVault);
+    assert!(wiped.load(Ordering::SeqCst));
+    // Stuck entropy (all bytes equal) is also fatal and commits nothing.
+    let mut stuck = ScriptedRandom::new(&[0x5a; 32]);
+    let error = vault
+        .create_wallet_with_rng(&mut stuck, &pw(PASSWORD), new_slot(), 1)
+        .unwrap_err();
+    assert_eq!(error, VaultError::Key(KeyError::RandomnessUnavailable));
+    assert_eq!(storage.commits(), 0);
+    let error = vault
+        .import_mnemonic_with_rng(
+            &mut FailingRandom,
+            &pw(PASSWORD),
+            ABOUT,
+            None,
+            new_slot(),
+            1,
+        )
+        .unwrap_err();
+    assert_eq!(error, VaultError::Key(KeyError::RandomnessUnavailable));
+    assert_eq!(storage.commits(), 0);
+    assert_eq!(vault.status(), VaultStatus::NoVault);
+}
+
+// ---------------------------------------------------------------- §3.12 golden (production KDF)
+
+#[test]
+fn g1_g2_golden_bytes_and_field_offsets() {
+    let bytes = seal_fixed(&KDF_V3);
+    assert_eq!(bytes.len(), 272);
+    assert_eq!(hex::encode(&Sha256::digest(&bytes)), GOLDEN_SHA256);
+    assert_eq!(at(&bytes, 0..8), b"YWVLT003");
+    assert_eq!(at(&bytes, 8..10), 3_u16.to_be_bytes());
+    assert_eq!(at(&bytes, 10..12), 176_u16.to_be_bytes());
+    assert_eq!(at(&bytes, 12..28), seq::<16>(0x00));
+    assert_eq!(at(&bytes, 28..30), 1_u16.to_be_bytes());
+    assert_eq!(at(&bytes, 30..34), 262_144_u32.to_be_bytes());
+    assert_eq!(at(&bytes, 34..38), 3_u32.to_be_bytes());
+    assert_eq!(at(&bytes, 38..42), 4_u32.to_be_bytes());
+    assert_eq!(at(&bytes, 42..58), seq::<16>(0x40));
+    assert_eq!(at(&bytes, 58..82), seq::<24>(0x50));
+    assert_eq!(at(&bytes, 130..138), 1_u64.to_be_bytes());
+    assert_eq!(at(&bytes, 138..162), seq::<24>(0x70));
+    assert_eq!(at(&bytes, 162..166), 96_u32.to_be_bytes());
+    assert_eq!(at(&bytes, 166..176), [0; 10]);
+    assert_eq!(check_vault_header(&bytes), Ok(1));
+    assert_eq!(peek_generation(FileKind::Vault, &bytes), Some(1));
+}
+
+#[test]
+#[ignore = "prints the G1 digest once; run with --ignored --exact"]
+#[expect(clippy::print_stdout, reason = "golden")]
+fn print_golden_sha256() {
+    println!("{}", hex::encode(&Sha256::digest(seal_fixed(&KDF_V3))));
+}
+
+#[test]
+fn g3_independent_decryption() {
+    let bytes = seal_fixed(&KDF_V3);
+    // Everything below uses the primitives directly, not the vault module (spec/09 §3.12 G3).
+    let field = |range: core::ops::Range<usize>| at(&bytes, range).to_vec();
+    let m_kib = u32::from_be_bytes(field(30..34).try_into().unwrap());
+    let t = u32::from_be_bytes(field(34..38).try_into().unwrap());
+    let p = u32::from_be_bytes(field(38..42).try_into().unwrap());
+    let params = Params::new(m_kib, t, p, Some(32)).unwrap();
+    let mut blocks = vec![Block::default(); params.block_count()];
+    let mut pw_kek = [0_u8; 32];
+    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+        .hash_password_into_with_memory(GOLDEN_PASSWORD, &field(42..58), &mut pw_kek, &mut blocks)
+        .unwrap();
+    let mut kek = [0_u8; 32];
+    Hkdf::<Sha256>::new(Some(b"your-wallet/v3/kdf"), &pw_kek)
+        .expand(b"your-wallet/v3/kek", &mut kek)
+        .unwrap();
+    let wrap = XChaCha20Poly1305::new_from_slice(&kek).unwrap();
+    let dek = wrap
+        .decrypt(
+            XNonce::from_slice(&field(58..82)),
+            AeadPayload {
+                msg: &field(82..130),
+                aad: &field(0..82),
+            },
+        )
+        .unwrap();
+    assert_eq!(dek, seq::<32>(0x20));
+    let content = XChaCha20Poly1305::new_from_slice(&dek).unwrap();
+    let plaintext = content
+        .decrypt(
+            XNonce::from_slice(&field(138..162)),
+            AeadPayload {
+                msg: &field(176..272),
+                aad: &field(0..176),
+            },
+        )
+        .unwrap();
+    assert_eq!(plaintext.len(), 80);
+    assert_eq!(plaintext.get(0..8).unwrap(), PAYLOAD_MAGIC);
+    assert_eq!(plaintext.get(8..10).unwrap(), 1_u16.to_be_bytes());
+    assert_eq!(plaintext.get(16..17).unwrap(), [1]);
+    assert_eq!(plaintext.get(17..33).unwrap(), seq::<16>(0x90));
+    assert_eq!(
+        plaintext.get(33..41).unwrap(),
+        1_790_000_000_u64.to_be_bytes()
+    );
+    assert_eq!(plaintext.get(41..42).unwrap(), [32]);
+    assert_eq!(plaintext.get(42..74).unwrap(), [0; 32]);
+    assert_eq!(plaintext.get(74..80).unwrap(), [0; 6]);
+}
+
+#[test]
+fn g4_public_unlock_reaches_backup_pending_with_acc3() {
+    let storage = MemStorage::new(KDF_V3);
+    storage.set_main(FileKind::Vault, Some(seal_fixed(&KDF_V3)));
+    let mut vault = Vault::load(Box::new(storage)).unwrap();
+    assert_eq!(vault.status(), VaultStatus::Locked);
+    assert_eq!(vault.vault_id(), Some(seq(0x00)));
+    assert_eq!(
+        vault.unlock(&pw(GOLDEN_PASSWORD), new_slot()),
+        Ok(VaultStatus::BackupPending)
+    );
+    let address = vault.evm_address(EvmKeySource::Derived(index(0))).unwrap();
+    assert_eq!(
+        address.to_checksum(),
+        "0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb"
+    );
+}
+
+#[test]
+fn g5_wrong_password_unlock_failed() {
+    let storage = MemStorage::new(KDF_V3);
+    storage.set_main(FileKind::Vault, Some(seal_fixed(&KDF_V3)));
+    let mut vault = Vault::load(Box::new(storage)).unwrap();
+    let (slot, wiped) = slot();
+    assert_eq!(
+        vault.unlock(&pw(b"correct horse battery stapler"), slot),
+        Err(VaultError::UnlockFailed)
+    );
+    assert_eq!(vault.status(), VaultStatus::Locked);
+    assert!(wiped.load(Ordering::SeqCst));
+}
+
+// ---------------------------------------------------------------- §11.6 tamper table (KDF_TEST)
+
+enum Tamper {
+    Flip(usize),
+    Put(usize, Vec<u8>),
+}
+
+fn tampered(original: &[u8], tamper: &Tamper) -> Vec<u8> {
+    let mut bytes = original.to_vec();
+    match tamper {
+        Tamper::Flip(offset) => flip(&mut bytes, *offset),
+        Tamper::Put(offset, value) => put(&mut bytes, *offset, value),
+    }
+    bytes
+}
+
+#[test]
+fn v1_header_tamper_table() {
+    use Tamper::{Flip, Put};
+    use VaultError::{
+        Malformed, PayloadCorrupt, UnlockFailed, UnsupportedParams, UnsupportedVersion,
+    };
+    let original = seal_fixed(&KDF_TEST);
+    assert_eq!(open_all(&original, GOLDEN_PASSWORD, &KDF_TEST), Ok(0));
+    let be = |value: u32| value.to_be_bytes().to_vec();
+    let table: Vec<(Tamper, VaultError, bool, &str)> = vec![
+        (Flip(0), Malformed, false, "magic"),
+        (Flip(11), Malformed, false, "header_len"),
+        (Flip(166), Malformed, false, "flags"),
+        (Flip(169), Malformed, false, "flags"),
+        (Flip(170), Malformed, false, "reserved"),
+        (Flip(175), Malformed, false, "reserved"),
+        (Put(12, vec![0; 16]), Malformed, false, "vault_id zero"),
+        (Put(130, vec![0; 8]), Malformed, false, "generation zero"),
+        (Flip(165), Malformed, false, "payload_ct_len"),
+        (Flip(162), Malformed, false, "payload_ct_len high"),
+        (Flip(9), UnsupportedVersion, false, "version"),
+        (Flip(29), UnsupportedParams, false, "kdf_id"),
+        (Put(30, be(63)), UnsupportedParams, false, "m 63"),
+        (Put(30, be(65)), UnsupportedParams, false, "m 65"),
+        (Put(34, be(0)), UnsupportedParams, false, "t 0"),
+        (Put(34, be(2)), UnsupportedParams, false, "t 2"),
+        (Put(38, be(0)), UnsupportedParams, false, "p 0"),
+        (Put(38, be(2)), UnsupportedParams, false, "p 2"),
+        (
+            Put(30, be(262_144)),
+            UnsupportedParams,
+            false,
+            "m production",
+        ),
+        (Flip(12), UnlockFailed, true, "vault_id"),
+        (Flip(27), UnlockFailed, true, "vault_id"),
+        (Flip(42), UnlockFailed, true, "kdf_salt"),
+        (Flip(57), UnlockFailed, true, "kdf_salt"),
+        (Flip(58), UnlockFailed, true, "wrap_nonce"),
+        (Flip(81), UnlockFailed, true, "wrap_nonce"),
+        (Flip(82), UnlockFailed, true, "wrapped_dek"),
+        (Flip(129), UnlockFailed, true, "wrapped_dek"),
+        (Flip(136), PayloadCorrupt, true, "generation"),
+        (Flip(130), PayloadCorrupt, true, "generation high"),
+        (Flip(138), PayloadCorrupt, true, "payload_nonce"),
+        (Flip(161), PayloadCorrupt, true, "payload_nonce"),
+        (Flip(176), PayloadCorrupt, true, "payload_ct"),
+        (Flip(230), PayloadCorrupt, true, "payload_ct"),
+        (Flip(271), PayloadCorrupt, true, "tag"),
+    ];
+    for (tamper, expected, kdf_runs, label) in table {
+        let bytes = tampered(&original, &tamper);
+        let before = kdf_calls();
+        assert_eq!(
+            open_all(&bytes, GOLDEN_PASSWORD, &KDF_TEST),
+            Err(expected),
+            "{label}"
+        );
+        assert_eq!(kdf_calls() - before, u32::from(kdf_runs), "{label} KDF");
+    }
+}
+
+#[test]
+fn v1_truncation_and_extension_rejected_before_kdf() {
+    let original = seal_fixed(&KDF_TEST);
+    let before = kdf_calls();
+    for len in 0..original.len() {
+        let truncated = original.get(..len).unwrap();
+        assert_eq!(
+            open_all(truncated, GOLDEN_PASSWORD, &KDF_TEST),
+            Err(VaultError::Malformed),
+            "len {len}"
+        );
+    }
+    let mut extended = original.clone();
+    extended.push(0);
+    assert_eq!(
+        open_all(&extended, GOLDEN_PASSWORD, &KDF_TEST),
+        Err(VaultError::Malformed)
+    );
+    assert_eq!(kdf_calls(), before);
+}
+
+#[test]
+fn v2_wrong_password_and_wrapped_dek_tamper_are_identical() {
+    let original = seal_fixed(&KDF_TEST);
+    let wrong = open_all(&original, b"wrong password!!", &KDF_TEST).unwrap_err();
+    let mut tampered = original.clone();
+    flip(&mut tampered, 100);
+    let tamper = open_all(&tampered, GOLDEN_PASSWORD, &KDF_TEST).unwrap_err();
+    assert_eq!(wrong, VaultError::UnlockFailed);
+    assert_eq!(wrong, tamper);
+    assert_eq!(wrong.to_string(), tamper.to_string());
+    assert_eq!(
+        wrong.to_string(),
+        "비밀번호가 올바르지 않거나 vault 파일이 손상되었습니다."
+    );
+}
+
+#[test]
+fn v3_test_kdf_file_is_unsupported_through_the_public_api() {
+    let bytes = seal_fixed(&KDF_TEST);
+    let before = kdf_calls();
+    assert_eq!(
+        check_vault_header(&bytes),
+        Err(VaultError::UnsupportedParams)
+    );
+    assert_eq!(peek_generation(FileKind::Vault, &bytes), None);
+    let storage = MemStorage::new(KDF_V3);
+    storage.set_main(FileKind::Vault, Some(bytes));
+    let vault = Vault::load(Box::new(storage)).unwrap();
+    assert_eq!(
+        vault.status(),
+        VaultStatus::Corrupt {
+            prev_available: false
+        }
+    );
+    assert_eq!(kdf_calls(), before);
+}
+
+// ---------------------------------------------------------------- §4.6 payload codec
+
+fn raw_record(byte: u8) -> RawKeyRecord {
+    RawKeyRecord {
+        record_id: [byte; 16],
+        created_unix: 7,
+        key: Zeroizing::new([byte; 32]),
+    }
+}
+
+fn payload_bytes(records: &[Vec<u8>], count: u16) -> Vec<u8> {
+    let mut out = PAYLOAD_MAGIC.to_vec();
+    out.extend_from_slice(&count.to_be_bytes());
+    out.extend_from_slice(&[0; 6]);
+    for record in records {
+        out.extend_from_slice(record);
+    }
+    out
+}
+
+fn bip39_record(id: u8, entropy_len: u8, flags: u8, backup: u8, check: [u8; 4]) -> Vec<u8> {
+    let mut out = vec![1];
+    out.extend_from_slice(&[id; 16]);
+    out.extend_from_slice(&5_u64.to_be_bytes());
+    out.push(entropy_len);
+    out.extend(std::iter::repeat_n(0x11, usize::from(entropy_len)));
+    out.push(flags);
+    out.push(backup);
+    out.extend_from_slice(&check);
+    out
+}
+
+fn raw_bytes(id: u8, key: [u8; 32]) -> Vec<u8> {
+    let mut out = vec![2];
+    out.extend_from_slice(&[id; 16]);
+    out.extend_from_slice(&6_u64.to_be_bytes());
+    out.extend_from_slice(&key);
+    out
+}
+
+#[test]
+fn payload_codec_rejection_table() {
+    let good = bip39_record(1, 16, 0, 1, [0; 4]);
+    let good_raw = raw_bytes(2, [3; 32]);
+    assert!(Payload::decode(&payload_bytes(&[good.clone(), good_raw.clone()], 2)).is_ok());
+    let order: [u8; 32] =
+        hex::decode_array("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")
+            .unwrap();
+    let mut bad_magic = payload_bytes(std::slice::from_ref(&good), 1);
+    flip(&mut bad_magic, 0);
+    let mut bad_reserved = payload_bytes(std::slice::from_ref(&good), 1);
+    flip(&mut bad_reserved, 12);
+    let mut trailing = payload_bytes(std::slice::from_ref(&good), 1);
+    trailing.push(0);
+    let mut truncated = payload_bytes(std::slice::from_ref(&good), 1);
+    truncated.pop();
+    let mut unknown_tag = good_raw.clone();
+    put(&mut unknown_tag, 0, &[3]);
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        ("magic", bad_magic),
+        ("count 0", payload_bytes(&[], 0)),
+        ("count 17", payload_bytes(std::slice::from_ref(&good), 17)),
+        ("reserved", bad_reserved),
+        (
+            "unknown tag",
+            payload_bytes(&[good.clone(), unknown_tag], 2),
+        ),
+        (
+            "raw first",
+            payload_bytes(&[good_raw.clone(), good.clone()], 2),
+        ),
+        (
+            "two bip39",
+            payload_bytes(&[good.clone(), bip39_record(3, 16, 0, 1, [0; 4])], 2),
+        ),
+        (
+            "record_id zero",
+            payload_bytes(&[bip39_record(0, 16, 0, 1, [0; 4])], 1),
+        ),
+        (
+            "record_id duplicate",
+            payload_bytes(&[good.clone(), raw_bytes(1, [3; 32])], 2),
+        ),
+        (
+            "entropy_len 17",
+            payload_bytes(&[bip39_record(1, 17, 0, 1, [0; 4])], 1),
+        ),
+        (
+            "entropy_len 0",
+            payload_bytes(&[bip39_record(1, 0, 0, 1, [0; 4])], 1),
+        ),
+        (
+            "flags reserved bit",
+            payload_bytes(&[bip39_record(1, 16, 2, 1, [0; 4])], 1),
+        ),
+        (
+            "check without passphrase",
+            payload_bytes(&[bip39_record(1, 16, 0, 1, [0, 0, 0, 1])], 1),
+        ),
+        (
+            "backup 2",
+            payload_bytes(&[bip39_record(1, 16, 0, 2, [0; 4])], 1),
+        ),
+        (
+            "pending with passphrase",
+            payload_bytes(&[bip39_record(1, 16, 1, 0, [1; 4])], 1),
+        ),
+        (
+            "raw key zero",
+            payload_bytes(&[good.clone(), raw_bytes(2, [0; 32])], 2),
+        ),
+        (
+            "raw key n",
+            payload_bytes(&[good.clone(), raw_bytes(2, order)], 2),
+        ),
+        (
+            "raw key duplicate",
+            payload_bytes(
+                &[good.clone(), raw_bytes(2, [3; 32]), raw_bytes(4, [3; 32])],
+                3,
+            ),
+        ),
+        (
+            "count beyond records",
+            payload_bytes(std::slice::from_ref(&good), 2),
+        ),
+        ("trailing", trailing),
+        ("truncated", truncated),
+    ];
+    for (label, bytes) in cases {
+        assert_eq!(
+            Payload::decode(&bytes).err(),
+            Some(VaultError::PayloadCorrupt),
+            "{label}"
+        );
+    }
+    // passphrase wallet (confirmed) with a check value decodes.
+    assert!(Payload::decode(&payload_bytes(&[bip39_record(1, 32, 1, 1, [9; 4])], 1)).is_ok());
+}
+
+#[test]
+fn sixteen_records_round_trip_and_seventeen_rejected() {
+    let mut payload = golden_payload();
+    payload.raw_keys = (1..=15).map(raw_record).collect();
+    let encoded = payload.encode().unwrap();
+    let decoded = Payload::decode(&encoded).unwrap();
+    assert_eq!(decoded.raw_keys.len(), 15);
+    assert_eq!(decoded.encode().unwrap().as_slice(), encoded.as_slice());
+    payload.raw_keys.push(raw_record(16));
+    assert_eq!(payload.encode().err(), Some(VaultError::RecordLimit));
+    let mut seventeen = encoded.to_vec();
+    put(&mut seventeen, 8, &17_u16.to_be_bytes());
+    seventeen.extend_from_slice(&raw_bytes(16, [16; 32]));
+    assert_eq!(
+        Payload::decode(&seventeen).err(),
+        Some(VaultError::PayloadCorrupt)
+    );
+}
+
+// ---------------------------------------------------------------- writes
+
+#[test]
+fn payload_rewrite_keeps_key_section_and_runs_no_kdf() {
+    let (storage, mut vault) = imported(None);
+    let before_bytes = storage.main(FileKind::Vault).unwrap();
+    let before_kdf = kdf_calls();
+    let mut key = [0_u8; 32];
+    put(&mut key, 31, &[1]);
+    let id = vault.import_evm_private_key(&hex::encode(&key), 9).unwrap();
+    assert_eq!(kdf_calls(), before_kdf);
+    let after = storage.main(FileKind::Vault).unwrap();
+    assert_eq!(at(&after, 0..130), at(&before_bytes, 0..130));
+    assert_eq!(
+        peek_generation_with(FileKind::Vault, &after, &KDF_TEST),
+        Some(2)
+    );
+    assert_ne!(at(&after, 138..162), at(&before_bytes, 138..162));
+    assert_eq!(storage.prev(FileKind::Vault), Some(before_bytes));
+    assert_eq!(vault.held_bytes(), Some(after.as_slice()));
+    let raw = vault.raw_keys().unwrap();
+    assert_eq!(raw.len(), 1);
+    assert_eq!(raw.first().unwrap().0, id);
+    assert_eq!(
+        raw.first().unwrap().1.to_checksum(),
+        "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
+    );
+    assert_eq!(
+        vault
+            .evm_address(EvmKeySource::Raw(id))
+            .unwrap()
+            .to_checksum(),
+        "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
+    );
+}
+
+#[test]
+fn change_password_rewraps_and_keeps_dek() {
+    let (storage, mut vault) = imported(None);
+    let meta_generation = vault
+        .save_sidecar(FileKind::Meta, b"{\"schema\":\"yw-meta/3\"}")
+        .unwrap();
+    assert_eq!(meta_generation, 1);
+    let commits = storage.commits();
+    assert_eq!(
+        vault.change_password(&pw(OTHER_PASSWORD), &pw(b"new password 33")),
+        Err(VaultError::UnlockFailed)
+    );
+    assert_eq!(storage.commits(), commits);
+    vault
+        .change_password(&pw(PASSWORD), &pw(b"new password 33"))
+        .unwrap();
+    assert_eq!(storage.commits(), commits + 2);
+    let main = storage.main(FileKind::Vault).unwrap();
+    assert_eq!(
+        peek_generation_with(FileKind::Vault, &main, &KDF_TEST),
+        Some(3)
+    );
+    let prev = storage.prev(FileKind::Vault).unwrap();
+    assert_eq!(
+        peek_generation_with(FileKind::Vault, &prev, &KDF_TEST),
+        Some(2)
+    );
+    assert_eq!(open_all(&prev, b"new password 33", &KDF_TEST), Ok(0));
+    assert_eq!(
+        open_all(&prev, PASSWORD, &KDF_TEST),
+        Err(VaultError::UnlockFailed)
+    );
+
+    vault.lock();
+    assert_eq!(
+        vault.unlock(&pw(PASSWORD), new_slot()),
+        Err(VaultError::UnlockFailed)
+    );
+    assert_eq!(
+        vault.unlock(&pw(b"new password 33"), new_slot()),
+        Ok(VaultStatus::Unlocked {
+            alt_passphrase: false
+        })
+    );
+    // Same DEK: the sidecar written before the change still opens.
+    let (generation, plaintext) = vault.open_sidecar(FileKind::Meta).unwrap().unwrap();
+    assert_eq!(generation, 1);
+    assert_eq!(plaintext.as_slice(), b"{\"schema\":\"yw-meta/3\"}");
+}
+
+#[test]
+fn self_check_failure_commits_nothing() {
+    let (storage, mut vault) = empty_vault(KDF_TEST);
+    CORRUPT_NEXT_SEAL.with(|flag| flag.set(true));
+    let (slot, wiped) = slot();
+    let error = vault.create_wallet(&pw(PASSWORD), slot, 1).unwrap_err();
+    assert_eq!(error, VaultError::Key(KeyError::Internal));
+    assert_eq!(storage.commits(), 0);
+    assert_eq!(vault.status(), VaultStatus::NoVault);
+    assert!(wiped.load(Ordering::SeqCst));
+
+    let (storage, mut vault) = imported(None);
+    let commits = storage.commits();
+    CORRUPT_NEXT_SEAL.with(|flag| flag.set(true));
+    assert_eq!(
+        vault.import_evm_private_key(&"07".repeat(32), 1),
+        Err(VaultError::Key(KeyError::Internal))
+    );
+    assert_eq!(storage.commits(), commits);
+    assert!(vault.raw_keys().unwrap().is_empty());
+}
+
+#[test]
+fn storage_failure_keeps_state() {
+    let (storage, mut vault) = empty_vault(KDF_TEST);
+    storage.set_fail_commits(true);
+    let (slot, wiped) = slot();
+    assert_eq!(
+        vault.create_wallet(&pw(PASSWORD), slot, 1).unwrap_err(),
+        VaultError::Storage(StorageError::Io(5))
+    );
+    assert_eq!(vault.status(), VaultStatus::NoVault);
+    assert!(wiped.load(Ordering::SeqCst));
+    storage.set_fail_commits(false);
+    let (storage, mut vault) = imported(None);
+    storage.set_fail_commits(true);
+    assert_eq!(
+        vault.change_password(&pw(PASSWORD), &pw(b"new password 33")),
+        Err(VaultError::Storage(StorageError::Io(5)))
+    );
+    storage.set_fail_commits(false);
+    vault.lock();
+    assert_eq!(
+        vault.unlock(&pw(PASSWORD), new_slot()),
+        Ok(VaultStatus::Unlocked {
+            alt_passphrase: false
+        })
+    );
+}
+
+// ---------------------------------------------------------------- §11.7 sidecars and storage
+
+#[test]
+fn v4_sidecar_round_trip_mismatch_tamper_and_cas() {
+    let (storage, mut vault) = imported(None);
+    assert_eq!(
+        vault.open_sidecar(FileKind::Meta).unwrap().map(|(g, _)| g),
+        None
+    );
+    assert_eq!(vault.save_sidecar(FileKind::Meta, b"meta-1").unwrap(), 1);
+    assert_eq!(vault.save_sidecar(FileKind::Meta, b"meta-2").unwrap(), 2);
+    assert_eq!(
+        vault.save_sidecar(FileKind::Journal, b"journal").unwrap(),
+        1
+    );
+    let (generation, plaintext) = vault.open_sidecar(FileKind::Meta).unwrap().unwrap();
+    assert_eq!(
+        (generation, plaintext.as_slice()),
+        (2, b"meta-2".as_slice())
+    );
+    let meta = storage.main(FileKind::Meta).unwrap();
+    let journal = storage.main(FileKind::Journal).unwrap();
+    assert_eq!(peek_generation(FileKind::Meta, &meta), Some(2));
+    assert_eq!(peek_generation(FileKind::Journal, &meta), None);
+
+    // Magic cross: meta bytes presented as the journal.
+    storage.set_main(FileKind::Journal, Some(meta.clone()));
+    assert_eq!(
+        vault.open_sidecar(FileKind::Journal).err(),
+        Some(VaultError::SidecarCorrupt(FileKind::Journal))
+    );
+    storage.set_main(FileKind::Journal, Some(journal));
+
+    // One bit anywhere: header structure, AAD, ciphertext or tag.
+    for offset in [0, 20, 40, 63, 64, meta.len() - 1] {
+        let mut tampered = meta.clone();
+        flip(&mut tampered, offset);
+        storage.set_main(FileKind::Meta, Some(tampered));
+        let error = vault.open_sidecar(FileKind::Meta).unwrap_err();
+        let expected = if (12..28).contains(&offset) {
+            VaultError::SidecarVaultMismatch(FileKind::Meta)
+        } else {
+            VaultError::SidecarCorrupt(FileKind::Meta)
+        };
+        assert_eq!(error, expected, "offset {offset}");
+    }
+
+    // Another vault's meta (other vault_id, other DEK).
+    let (other_storage, mut other) = imported(None);
+    other.save_sidecar(FileKind::Meta, b"other").unwrap();
+    storage.set_main(FileKind::Meta, other_storage.main(FileKind::Meta));
+    assert_eq!(
+        vault.open_sidecar(FileKind::Meta).err(),
+        Some(VaultError::SidecarVaultMismatch(FileKind::Meta))
+    );
+
+    // Generation CAS: the file moved on (generation 7) behind the vault's back.
+    storage.set_main(FileKind::Meta, Some(meta.clone()));
+    vault.open_sidecar(FileKind::Meta).unwrap();
+    let mut moved = meta;
+    put(&mut moved, 28, &7_u64.to_be_bytes());
+    storage.set_main(FileKind::Meta, Some(moved));
+    let commits = storage.commits();
+    assert_eq!(
+        vault.save_sidecar(FileKind::Meta, b"meta-3"),
+        Err(VaultError::Storage(StorageError::GenerationConflict))
+    );
+    assert_eq!(storage.commits(), commits);
+    assert_eq!(
+        vault.open_sidecar(FileKind::Vault).err(),
+        Some(VaultError::InvalidState)
+    );
+    assert_eq!(
+        vault.save_sidecar(FileKind::Vault, b"x").err(),
+        Some(VaultError::InvalidState)
+    );
+}
+
+#[test]
+fn storage_commit_contract() {
+    let mut storage = MemStorage::new(KDF_TEST);
+    let first = seal_fixed(&KDF_TEST);
+    storage.commit(FileKind::Vault, None, &first).unwrap();
+    assert_eq!(
+        storage.commit(FileKind::Vault, None, &first),
+        Err(StorageError::AlreadyExists)
+    );
+    assert_eq!(
+        storage.commit(FileKind::Vault, Some(2), &first),
+        Err(StorageError::GenerationConflict)
+    );
+    let mut corrupt = first.clone();
+    corrupt.truncate(100);
+    storage.set_main(FileKind::Vault, Some(corrupt.clone()));
+    assert_eq!(
+        storage.commit(FileKind::Vault, Some(1), &first),
+        Err(StorageError::Corrupt)
+    );
+    assert_eq!(storage.main(FileKind::Vault), Some(corrupt));
+    storage.set_main(FileKind::Vault, Some(first.clone()));
+    let mut second = first.clone();
+    put(&mut second, 130, &2_u64.to_be_bytes());
+    storage.commit(FileKind::Vault, Some(1), &second).unwrap();
+    assert_eq!(storage.prev(FileKind::Vault), Some(first));
+    assert_eq!(storage.main(FileKind::Vault), Some(second));
+}
+
+// ---------------------------------------------------------------- §6.3 load and recovery
+
+#[test]
+fn load_classification_and_recovery_from_prev() {
+    let (storage, vault) = imported(None);
+    drop(vault);
+    let generation_one = storage.main(FileKind::Vault).unwrap();
+    assert_eq!(reload(&storage).status(), VaultStatus::Locked);
+
+    // Make a second generation so .prev exists, then damage the main file.
+    let mut vault = reload(&storage);
+    vault.unlock(&pw(PASSWORD), new_slot()).unwrap();
+    vault.import_evm_private_key(&"07".repeat(32), 2).unwrap();
+    drop(vault);
+    let mut damaged = storage.main(FileKind::Vault).unwrap();
+    damaged.truncate(150);
+    storage.set_main(FileKind::Vault, Some(damaged.clone()));
+    let mut vault = reload(&storage);
+    assert_eq!(
+        vault.status(),
+        VaultStatus::Corrupt {
+            prev_available: true
+        }
+    );
+    assert_eq!(
+        vault.unlock(&pw(PASSWORD), new_slot()),
+        Err(VaultError::InvalidState)
+    );
+    assert_eq!(
+        vault.recover_from_prev(&pw(OTHER_PASSWORD), new_slot(), 99),
+        Err(VaultError::UnlockFailed)
+    );
+    assert_eq!(storage.main(FileKind::Vault), Some(damaged.clone()));
+    assert_eq!(
+        vault.recover_from_prev(&pw(PASSWORD), new_slot(), 99),
+        Ok(VaultStatus::Unlocked {
+            alt_passphrase: false
+        })
+    );
+    assert_eq!(storage.quarantined(FileKind::Vault), vec![(99, damaged)]);
+    let recovered = storage.main(FileKind::Vault).unwrap();
+    assert_eq!(at(&recovered, 0..130), at(&generation_one, 0..130));
+    assert_eq!(
+        peek_generation_with(FileKind::Vault, &recovered, &KDF_TEST),
+        Some(2)
+    );
+    assert!(
+        vault.raw_keys().unwrap().is_empty(),
+        "newer changes in the damaged file are lost"
+    );
+
+    // Main missing, .prev present.
+    storage.set_main(FileKind::Vault, None);
+    let mut vault = reload(&storage);
+    assert_eq!(vault.status(), VaultStatus::MainMissing);
+    assert_eq!(
+        vault.recover_from_prev(&pw(PASSWORD), new_slot(), 100),
+        Ok(VaultStatus::Unlocked {
+            alt_passphrase: false
+        })
+    );
+
+    // Nothing at all.
+    storage.set_main(FileKind::Vault, None);
+    storage.set_prev(FileKind::Vault, None);
+    let mut vault = reload(&storage);
+    assert_eq!(vault.status(), VaultStatus::NoVault);
+    assert_eq!(
+        vault.recover_from_prev(&pw(PASSWORD), new_slot(), 1),
+        Err(VaultError::InvalidState)
+    );
+}
+
+#[test]
+fn payload_corrupt_at_unlock_offers_prev_recovery() {
+    let (storage, mut vault) = imported(None);
+    vault.import_evm_private_key(&"07".repeat(32), 2).unwrap();
+    drop(vault);
+    let mut main = storage.main(FileKind::Vault).unwrap();
+    flip(&mut main, 200);
+    storage.set_main(FileKind::Vault, Some(main.clone()));
+    let mut vault = reload(&storage);
+    assert_eq!(vault.status(), VaultStatus::Locked);
+    assert_eq!(
+        vault.unlock(&pw(PASSWORD), new_slot()),
+        Err(VaultError::PayloadCorrupt)
+    );
+    assert_eq!(
+        vault.status(),
+        VaultStatus::Corrupt {
+            prev_available: true
+        }
+    );
+    assert_eq!(storage.main(FileKind::Vault), Some(main));
+    assert_eq!(
+        vault.recover_from_prev(&pw(PASSWORD), new_slot(), 5),
+        Ok(VaultStatus::Unlocked {
+            alt_passphrase: false
+        })
+    );
+}
+
+// ---------------------------------------------------------------- §11.8 state machine
+
+#[test]
+fn transitions_and_invalid_calls() {
+    let (_, mut vault) = empty_vault(KDF_TEST);
+    assert_eq!(vault.status(), VaultStatus::NoVault);
+    assert_eq!(
+        vault.unlock(&pw(PASSWORD), new_slot()),
+        Err(VaultError::InvalidState)
+    );
+    assert_eq!(
+        vault.enter_passphrase(Bip39Passphrase::new("x").unwrap()),
+        Err(VaultError::InvalidState)
+    );
+    assert_eq!(vault.retry_passphrase(), Err(VaultError::InvalidState));
+    assert_eq!(
+        vault.accept_mismatched_passphrase(),
+        Err(VaultError::InvalidState)
+    );
+    assert_eq!(
+        vault.backup_challenge().err(),
+        Some(VaultError::InvalidState)
+    );
+    assert_eq!(
+        vault.evm_address(EvmKeySource::Derived(index(0))).err(),
+        Some(VaultError::InvalidState)
+    );
+    assert_eq!(
+        vault.reveal_mnemonic(&pw(PASSWORD)).err(),
+        Some(VaultError::InvalidState)
+    );
+    assert_eq!(
+        vault.open_sidecar(FileKind::Meta).err(),
+        Some(VaultError::InvalidState)
+    );
+    assert_eq!(vault.vault_id(), None);
+    vault.lock();
+    assert_eq!(vault.status(), VaultStatus::NoVault);
+
+    let (storage, mut vault, _) = created();
+    assert_eq!(vault.status(), VaultStatus::BackupPending);
+    assert_eq!(
+        vault.create_wallet(&pw(PASSWORD), new_slot(), 1).err(),
+        Some(VaultError::InvalidState)
+    );
+    assert_eq!(
+        vault.import_mnemonic(&pw(PASSWORD), ABOUT, None, new_slot(), 1),
+        Err(VaultError::InvalidState)
+    );
+    assert_eq!(
+        vault.unlock(&pw(PASSWORD), new_slot()),
+        Err(VaultError::InvalidState)
+    );
+    vault.lock();
+    assert_eq!(vault.status(), VaultStatus::Locked);
+    assert_eq!(
+        vault.unlock(&pw(OTHER_PASSWORD), new_slot()),
+        Err(VaultError::UnlockFailed)
+    );
+    assert_eq!(vault.status(), VaultStatus::Locked);
+    assert_eq!(
+        vault.unlock(&pw(PASSWORD), new_slot()),
+        Ok(VaultStatus::BackupPending)
+    );
+    assert_eq!(reload(&storage).status(), VaultStatus::Locked);
+
+    let (_, mut vault) = imported(None);
+    assert_eq!(
+        vault.status(),
+        VaultStatus::Unlocked {
+            alt_passphrase: false
+        }
+    );
+    assert_eq!(
+        vault.backup_challenge().err(),
+        Some(VaultError::InvalidState)
+    );
+    assert_eq!(
+        vault.enter_passphrase(Bip39Passphrase::new("x").unwrap()),
+        Err(VaultError::InvalidState)
+    );
+    vault.lock();
+    assert_eq!(
+        vault.unlock(&pw(PASSWORD), new_slot()),
+        Ok(VaultStatus::Unlocked {
+            alt_passphrase: false
+        })
+    );
+}
+
+#[test]
+fn backup_pending_blocks_signing_but_shows_addresses() {
+    let (_, mut vault, phrase) = created();
+    assert_eq!(phrase.split(' ').count(), 24);
+    assert!(vault.evm_address(EvmKeySource::Derived(index(0))).is_ok());
+    assert_eq!(vault.evm_addresses(&[index(0), index(1)]).unwrap().len(), 2);
+    assert_eq!(
+        vault.with_secp_key(KeyRef::Evm(EvmKeySource::Derived(index(0))), |_, _| Ok(())),
+        Err(VaultError::BackupNotConfirmed)
+    );
+    assert_eq!(
+        vault
+            .reveal_evm_private_key(&pw(PASSWORD), EvmKeySource::Derived(index(0)))
+            .err(),
+        Some(VaultError::BackupNotConfirmed)
+    );
+    assert_eq!(
+        vault.import_evm_private_key(&"07".repeat(32), 1),
+        Err(VaultError::BackupNotConfirmed)
+    );
+    assert_eq!(
+        vault.reveal_mnemonic(&pw(PASSWORD)).unwrap().as_str(),
+        phrase.as_str()
+    );
+    assert_eq!(
+        vault.reveal_mnemonic(&pw(OTHER_PASSWORD)).err(),
+        Some(VaultError::UnlockFailed)
+    );
+}
+
+#[test]
+fn lock_wipes_the_slot() {
+    let (_, mut vault) = empty_vault(KDF_TEST);
+    let (slot, wiped) = slot();
+    vault
+        .import_mnemonic(&pw(PASSWORD), ABOUT, None, slot, 1)
+        .unwrap();
+    assert!(!wiped.load(Ordering::SeqCst));
+    assert_eq!(vault.slot_bytes().unwrap().get(32), Some(&0));
+    vault.lock();
+    assert!(wiped.load(Ordering::SeqCst));
+    assert_eq!(vault.status(), VaultStatus::Locked);
+    assert!(vault.slot_bytes().is_none());
+    assert!(vault.held_bytes().is_none());
+    assert_eq!(
+        vault.evm_address(EvmKeySource::Derived(index(0))).err(),
+        Some(VaultError::InvalidState)
+    );
+}
+
+#[test]
+fn passphrase_match_mismatch_accept_and_retry() {
+    let (storage, mut vault) = imported(Some("TREZOR"));
+    assert_eq!(
+        vault.status(),
+        VaultStatus::Unlocked {
+            alt_passphrase: false
+        }
+    );
+    assert_eq!(
+        vault
+            .evm_address(EvmKeySource::Derived(index(0)))
+            .unwrap()
+            .to_checksum(),
+        "0x9c32F71D4DB8Fb9e1A58B0a80dF79935e7256FA6"
+    );
+    // Stored check value = SHA-256(addr0)[0..4] = dc929830 (ACC-4).
+    let payload = vault.payload().unwrap();
+    assert_eq!(hex::encode(&payload.bip39.passphrase_check), "dc929830");
+    vault.lock();
+
+    assert_eq!(
+        vault.unlock(&pw(PASSWORD), new_slot()),
+        Ok(VaultStatus::PassphraseRequired)
+    );
+    assert_eq!(
+        vault.evm_address(EvmKeySource::Derived(index(0))).err(),
+        Some(VaultError::InvalidState)
+    );
+    assert_eq!(
+        vault.enter_passphrase(Bip39Passphrase::empty()),
+        Err(VaultError::Key(KeyError::PassphraseEmpty))
+    );
+    assert_eq!(
+        vault.enter_passphrase(Bip39Passphrase::new("TREZOR").unwrap()),
+        Ok(VaultStatus::Unlocked {
+            alt_passphrase: false
+        })
+    );
+    vault.lock();
+
+    vault.unlock(&pw(PASSWORD), new_slot()).unwrap();
+    assert_eq!(
+        vault.enter_passphrase(Bip39Passphrase::new(" TREZOR").unwrap()),
+        Ok(VaultStatus::PassphraseMismatch)
+    );
+    assert_eq!(vault.slot_bytes().unwrap().get(32), Some(&1));
+    assert_eq!(
+        vault.retry_passphrase(),
+        Ok(VaultStatus::PassphraseRequired)
+    );
+    assert!(
+        vault
+            .slot_bytes()
+            .unwrap()
+            .get(32..SLOT_LEN)
+            .unwrap()
+            .iter()
+            .all(|byte| *byte == 0)
+    );
+    assert_eq!(
+        vault.enter_passphrase(Bip39Passphrase::new("trezor").unwrap()),
+        Ok(VaultStatus::PassphraseMismatch)
+    );
+    assert_eq!(
+        vault.accept_mismatched_passphrase(),
+        Ok(VaultStatus::Unlocked {
+            alt_passphrase: true
+        })
+    );
+    let alt = vault.evm_address(EvmKeySource::Derived(index(0))).unwrap();
+    assert_ne!(
+        alt.to_checksum(),
+        "0x9c32F71D4DB8Fb9e1A58B0a80dF79935e7256FA6"
+    );
+    assert_eq!(
+        storage.commits(),
+        1,
+        "an alt session changes nothing on disk"
+    );
+
+    assert_eq!(
+        vault.import_mnemonic(
+            &pw(PASSWORD),
+            ABOUT,
+            Some(Bip39Passphrase::empty()),
+            new_slot(),
+            1
+        ),
+        Err(VaultError::InvalidState)
+    );
+    let (_, mut fresh) = empty_vault(KDF_TEST);
+    assert_eq!(
+        fresh.import_mnemonic(
+            &pw(PASSWORD),
+            ABOUT,
+            Some(Bip39Passphrase::empty()),
+            new_slot(),
+            1
+        ),
+        Err(VaultError::Key(KeyError::PassphraseEmpty))
+    );
+}
+
+fn challenge_script() -> Vec<u8> {
+    // random_below(24) = 5, (23) = 7, (22) = 0, (21) = 20 → swaps give 1-based [3, 6, 9, 24].
+    [5_u32, 7, 0, 20]
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect()
+}
+
+fn answers(phrase: &str, positions: [u8; 4]) -> [String; 4] {
+    let words: Vec<&str> = phrase.split(' ').collect();
+    positions.map(|position| (*words.get(usize::from(position) - 1).unwrap()).to_owned())
+}
+
+fn refs(values: &[String; 4]) -> [&str; 4] {
+    let [a, b, c, d] = values;
+    [a.as_str(), b.as_str(), c.as_str(), d.as_str()]
+}
+
+fn altered(mut words: [String; 4], position: usize, change: fn(&str) -> String) -> [String; 4] {
+    let word = words.get_mut(position).unwrap();
+    *word = change(word);
+    words
+}
+
+#[test]
+fn backup_confirmation() {
+    let (storage, mut vault, phrase) = created();
+    let suffix = {
+        let address = vault
+            .evm_address(EvmKeySource::Derived(index(0)))
+            .unwrap()
+            .to_lower_hex();
+        address.get(36..).unwrap().to_owned()
+    };
+    let challenge = vault
+        .backup_challenge_with_rng(&mut ScriptedRandom::new(&challenge_script()))
+        .unwrap();
+    assert_eq!(challenge.positions, [3, 6, 9, 24]);
+
+    // Each failure is BackupMismatch, discards the challenge, and stays in BackupPending.
+    let other_word: fn(&str) -> String = |word| {
+        if word == "zoo" {
+            "abandon".to_owned()
+        } else {
+            "zoo".to_owned()
+        }
+    };
+    let upper: fn(&str) -> String = str::to_ascii_uppercase;
+    let too_long: fn(&str) -> String = |_| "abandonnn".to_owned();
+    let wrong_suffix = if suffix == "000000" {
+        "000001"
+    } else {
+        "000000"
+    };
+    for label in [
+        "word",
+        "uppercase",
+        "long word",
+        "suffix",
+        "short suffix",
+        "non-hex suffix",
+    ] {
+        let challenge = vault.backup_challenge().unwrap();
+        let expected = answers(&phrase, challenge.positions);
+        let (words, suffix_value) = match label {
+            "word" => (altered(expected.clone(), 2, other_word), suffix.as_str()),
+            "uppercase" => (altered(expected.clone(), 0, upper), suffix.as_str()),
+            "long word" => (altered(expected.clone(), 3, too_long), suffix.as_str()),
+            "suffix" => (expected.clone(), wrong_suffix),
+            "short suffix" => (expected.clone(), "12345"),
+            _ => (expected.clone(), "12345g"),
+        };
+        assert_eq!(
+            vault.confirm_backup(challenge.id, refs(&words), suffix_value),
+            Err(VaultError::BackupMismatch),
+            "{label}"
+        );
+        assert_eq!(vault.status(), VaultStatus::BackupPending);
+        assert_eq!(
+            vault.confirm_backup(challenge.id, refs(&expected), &suffix),
+            Err(VaultError::ChallengeStale),
+            "{label}"
+        );
+    }
+
+    // A stale id is rejected while the current challenge stays usable.
+    let stale = vault.backup_challenge().unwrap();
+    let current = vault
+        .backup_challenge_with_rng(&mut ScriptedRandom::new(&challenge_script()))
+        .unwrap();
+    assert_eq!(
+        vault.confirm_backup(stale.id, refs(&answers(&phrase, stale.positions)), &suffix),
+        Err(VaultError::ChallengeStale)
+    );
+    assert_eq!(vault.status(), VaultStatus::BackupPending);
+    let commits = storage.commits();
+    let upper_suffix = suffix.to_ascii_uppercase();
+    vault
+        .confirm_backup(
+            current.id,
+            refs(&answers(&phrase, current.positions)),
+            &upper_suffix,
+        )
+        .unwrap();
+    assert_eq!(
+        vault.status(),
+        VaultStatus::Unlocked {
+            alt_passphrase: false
+        }
+    );
+    assert_eq!(storage.commits(), commits + 1);
+    vault.lock();
+    assert_eq!(
+        vault.unlock(&pw(PASSWORD), new_slot()),
+        Ok(VaultStatus::Unlocked {
+            alt_passphrase: false
+        })
+    );
+}
+
+#[test]
+fn challenge_positions_are_distinct_ascending_and_in_range() {
+    let (_, mut vault, _) = created();
+    for _ in 0..200 {
+        let challenge = vault.backup_challenge().unwrap();
+        assert!(
+            challenge
+                .positions
+                .windows(2)
+                .all(|pair| pair.first() < pair.last())
+        );
+        assert!(
+            challenge
+                .positions
+                .iter()
+                .all(|position| (1..=24).contains(position))
+        );
+    }
+}
+
+#[test]
+fn raw_keys_limits_duplicates_reveal_and_remove() {
+    let (_, mut vault) = imported(None);
+    for invalid in [
+        String::new(),
+        format!("0X{}", "07".repeat(32)),
+        "00".repeat(32),
+        "07".repeat(31),
+        format!("{}0", "07".repeat(32)),
+        format!(" {}", "07".repeat(32)),
+        "gg".repeat(32),
+        "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141".to_owned(),
+    ] {
+        assert_eq!(
+            vault.import_evm_private_key(&invalid, 1),
+            Err(VaultError::Key(KeyError::InvalidPrivateKey)),
+            "{invalid:?}"
+        );
+    }
+    let first = vault
+        .import_evm_private_key(&format!("0x{}", "07".repeat(32)), 1)
+        .unwrap();
+    assert_eq!(
+        vault.import_evm_private_key(&"07".repeat(32).to_ascii_uppercase(), 1),
+        Err(VaultError::DuplicateKey)
+    );
+    for byte in 8..22_u8 {
+        vault
+            .import_evm_private_key(&hex::encode(&[byte; 32]), 1)
+            .unwrap();
+    }
+    assert_eq!(vault.raw_keys().unwrap().len(), 15);
+    assert_eq!(
+        vault.import_evm_private_key(&"77".repeat(32), 1),
+        Err(VaultError::RecordLimit)
+    );
+    assert_eq!(
+        vault
+            .reveal_evm_private_key(&pw(PASSWORD), EvmKeySource::Raw(first))
+            .unwrap()
+            .as_str(),
+        "07".repeat(32)
+    );
+    assert_eq!(
+        vault
+            .reveal_evm_private_key(&pw(PASSWORD), EvmKeySource::Derived(index(0)))
+            .unwrap()
+            .as_str(),
+        "1ab42cc412b618bdea3a599e3c9bae199ebf030895b039e9db1e30dafb12b727"
+    );
+    assert_eq!(
+        vault.remove_evm_raw_key(&pw(OTHER_PASSWORD), first),
+        Err(VaultError::UnlockFailed)
+    );
+    vault.remove_evm_raw_key(&pw(PASSWORD), first).unwrap();
+    assert_eq!(
+        vault.remove_evm_raw_key(&pw(PASSWORD), first),
+        Err(VaultError::RecordNotFound)
+    );
+    assert_eq!(
+        vault.evm_address(EvmKeySource::Raw(first)).err(),
+        Some(VaultError::RecordNotFound)
+    );
+    assert_eq!(vault.raw_keys().unwrap().len(), 14);
+    let unknown = RecordId::from_bytes([0xee; 16]);
+    assert_eq!(unknown.as_bytes(), &[0xee; 16]);
+}
+
+#[test]
+fn derived_addresses_signing_key_and_batch_limit() {
+    let (_, vault) = imported(None);
+    let addresses = vault.evm_addresses(&[index(0), index(1)]).unwrap();
+    let rendered: Vec<String> = addresses
+        .iter()
+        .map(|address| address.to_checksum())
+        .collect();
+    assert_eq!(
+        rendered,
+        [
+            "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+            "0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0"
+        ]
+    );
+    let too_many: Vec<AccountIndex> = (0..101).map(index).collect();
+    assert_eq!(
+        vault.evm_addresses(&too_many).err(),
+        Some(VaultError::InvalidState)
+    );
+    let key = vault
+        .with_secp_key(KeyRef::Evm(EvmKeySource::Derived(index(1))), |_, secret| {
+            Ok(hex::encode(&secret.secret_bytes()))
+        })
+        .unwrap();
+    assert_eq!(
+        key,
+        "9a983cb3d832fbde5ab49d692b7a8bf5b5d232479c99333d0fc8e1d21f1b55b6"
+    );
+    let btc = vault
+        .with_secp_key(
+            KeyRef::Btc {
+                coin: BtcCoin::Mainnet,
+                chain: BtcChain::Receive,
+                index: 0,
+            },
+            |ctx, secret| {
+                Ok(hex::encode(
+                    &secp256k1::PublicKey::from_secret_key(ctx, secret).serialize(),
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        btc,
+        "0330d54fd0dd420a6e5f8d3624f5f3482cae350f79d5f0753bf5beef9c2d91af3c"
+    );
+}
+
+#[test]
+fn debug_output_is_redacted() {
+    let marker = "07".repeat(32);
+    let password = pw(b"marker-password-xyz");
+    let (_, mut vault) = imported(Some("SECRETPASS"));
+    vault.import_evm_private_key(&marker, 1).unwrap();
+    let payload = vault.payload().unwrap();
+    for rendered in [
+        format!("{password:?}"),
+        format!("{:?}", Bip39Passphrase::new("SECRETPASS").unwrap()),
+        format!("{:?}", payload.bip39.mnemonic),
+        format!("{vault:?}"),
+        format!("{:?}", vault.backup_challenge().err()),
+    ] {
+        assert!(!rendered.contains("marker-password"), "{rendered}");
+        assert!(!rendered.contains("SECRETPASS"), "{rendered}");
+        assert!(!rendered.contains("abandon"), "{rendered}");
+        assert!(!rendered.contains(&marker), "{rendered}");
+    }
+    assert_eq!(
+        format!("{vault:?}"),
+        "Vault { status: Unlocked { alt_passphrase: false }, .. }"
+    );
+}
+
+#[test]
+fn vault_is_send() {
+    fn assert_send<T: Send>() {}
+    assert_send::<Vault>();
+}
+
+// ---------------------------------------------------------------- manual tools (ignored)
+
+/// spec/09 §2.4 fallback for the `vault_header` fuzz target (cargo-fuzz not used): xorshift64*
+/// (fixed seed) bit flips, inserts, deletes and truncations of the golden files, 1,000,000 runs.
+/// Invariants: no panic, `peek_generation` agrees with `check_vault_header`, and no Argon2 call.
+/// Run: `cargo test --release -p yw-core --lib vault::tests::fuzz_lite_vault_header -- --ignored`.
+#[test]
+#[ignore = "manual fuzz fallback (spec/09 §2.4); run in release"]
+fn fuzz_lite_vault_header() {
+    const SEED: u64 = 0x5957_564c_5430_3033;
+    const RUNS: u32 = 1_000_000;
+    const MAX_LEN: usize = 4_096;
+    let seeds = [seal_fixed(&KDF_V3), seal_fixed(&KDF_TEST)];
+    let mut state = SEED;
+    let mut next = move |bound: usize| {
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        let value = state.wrapping_mul(0x2545_f491_4f6c_dd1d);
+        usize::try_from(value % u64::try_from(bound.max(1)).unwrap()).unwrap()
+    };
+    let before = kdf_calls();
+    let mut accepted = 0_u32;
+    for _ in 0..RUNS {
+        let mut input = seeds.get(next(seeds.len())).unwrap().clone();
+        for _ in 0..=next(4) {
+            match next(4) {
+                0 if !input.is_empty() => {
+                    let at = next(input.len());
+                    *input.get_mut(at).unwrap() ^= 1 << next(8);
+                }
+                1 if input.len() < MAX_LEN => {
+                    let at = next(input.len() + 1);
+                    input.insert(at, u8::try_from(next(256)).unwrap());
+                }
+                2 if !input.is_empty() => {
+                    input.remove(next(input.len()));
+                }
+                3 => input.truncate(next(input.len() + 1)),
+                _ => {}
+            }
+        }
+        let checked = check_vault_header(&input);
+        assert_eq!(peek_generation(FileKind::Vault, &input), checked.ok());
+        let _ = peek_generation_with(FileKind::Vault, &input, &KDF_TEST);
+        let _ = peek_generation(FileKind::Meta, &input);
+        let _ = peek_generation(FileKind::Journal, &input);
+        accepted += u32::from(checked.is_ok());
+    }
+    assert_eq!(kdf_calls(), before);
+    assert!(accepted > 0 && accepted < RUNS);
+}
+
+/// spec/09 §5.2 M1-4: exactly one production Argon2id (256 MiB, t = 3, p = 4) for timing the
+/// release build from outside (`Measure-Command`); yw-core itself never reads a clock.
+#[test]
+#[ignore = "manual timing tool (spec/02 §7.4)"]
+fn argon2_production_single_derivation() {
+    let before = kdf_calls();
+    let kek = format::derive_kek(&pw(GOLDEN_PASSWORD), &seq(0x40), &KDF_V3).unwrap();
+    assert_eq!(kdf_calls() - before, 1);
+    assert_ne!(kek.as_slice(), [0; 32]);
+}
+
+#[test]
+fn lock_from_passphrase_states() {
+    let (_, mut vault) = imported(Some("TREZOR"));
+    vault.lock();
+    assert_eq!(
+        vault.unlock(&pw(PASSWORD), new_slot()),
+        Ok(VaultStatus::PassphraseRequired)
+    );
+    vault.lock();
+    assert_eq!(vault.status(), VaultStatus::Locked);
+    vault.unlock(&pw(PASSWORD), new_slot()).unwrap();
+    assert_eq!(
+        vault.enter_passphrase(Bip39Passphrase::new("wrong").unwrap()),
+        Ok(VaultStatus::PassphraseMismatch)
+    );
+    vault.lock();
+    assert_eq!(vault.status(), VaultStatus::Locked);
+    assert!(vault.slot_bytes().is_none());
+}
