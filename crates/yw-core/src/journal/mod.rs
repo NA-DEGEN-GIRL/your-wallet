@@ -1,8 +1,8 @@
 //! Transaction journal plaintext (spec/02 §5.4, M4): the chain-independent binary container
 //! `"YWJPL003" ‖ entry_count u16 ‖ reserved[6] ‖ entries` with
 //! `entry = kind u8 ‖ body_len u32 BE ‖ body`, its count and size bounds, and
-//! [`JournalError::Full`]. Chain record bodies live in the chain submodules (`journal::evm` at M4;
-//! SOL and BTC bodies arrive at M7/M8 and are kept as opaque bytes until then).
+//! [`JournalError::Full`]. Chain record bodies live in the chain submodules (`journal::evm` at M4,
+//! `journal::sol` at M7; BTC bodies arrive at M8 and are kept as opaque bytes until then).
 //!
 //! Patterns from `archive/spec-v2.4:crates/key-agent/src/durable.rs:725-806,1100-1129`
 //! (signed-before-broadcast records, interrupted-broadcast recovery) re-specified for v3: the
@@ -11,6 +11,7 @@
 #![deny(clippy::indexing_slicing)]
 
 pub mod evm;
+pub mod sol;
 
 #[cfg(test)]
 mod tests;
@@ -68,7 +69,7 @@ impl EntryKind {
     pub const fn max_body(self) -> usize {
         match self {
             Self::Evm => evm::MAX_BODY,
-            Self::Sol => 1_321,
+            Self::Sol => sol::SOL_JOURNAL_MAX_BODY,
             Self::Btc => 37_906,
         }
     }

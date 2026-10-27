@@ -709,6 +709,9 @@ impl App {
     /// An endpoint URL changed (spec/03 §1.4): the chain's verification restarts in the RPC
     /// worker, the read workers and the blocked set (the pinned genesis stays).
     pub(crate) fn network_url_changed(&mut self, network: NetworkId) {
+        if let NetworkId::Solana(cluster) = network {
+            self.sol_url_changed(cluster);
+        }
         if let NetworkId::Eip155(chain_id) = network {
             self.evm.chain_checks.remove(&chain_id);
             let _ = self.rpc(crate::workers::rpc::RpcJob::ResetChain { chain_id });

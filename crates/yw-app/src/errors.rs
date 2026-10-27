@@ -150,6 +150,16 @@ pub enum ErrorCode {
     Tx005,
     /// Display validation failure.
     Ui001,
+    /// SOL recipient is a program, sysvar or allowlisted mint (spec/07 §12.1-2).
+    Sol001,
+    /// SOL recipient is a small-order or non-canonical point (§12.1-3).
+    Sol002,
+    /// SOL recipient is the sending account (§12.1-4).
+    Sol003,
+    /// An approved SOL transfer stopped before signing (§13.1 steps 4–6): nothing was signed.
+    Sol004,
+    /// SOL signature status: network/RPC check needed (§14.2, 120 s pending).
+    Sol005,
 }
 
 impl ErrorCode {
@@ -229,6 +239,11 @@ impl ErrorCode {
             Self::Tx004 => "E-TX-004",
             Self::Tx005 => "E-TX-005",
             Self::Ui001 => "E-UI-001",
+            Self::Sol001 => "E-SOL-001",
+            Self::Sol002 => "E-SOL-002",
+            Self::Sol003 => "E-SOL-003",
+            Self::Sol004 => "E-SOL-004",
+            Self::Sol005 => "E-SOL-005",
         }
     }
 
@@ -321,6 +336,15 @@ impl ErrorCode {
             Self::Tx004 => "전송 결과를 확인할 수 없습니다. 활동에서 상태를 확인하세요.",
             Self::Tx005 => "거래 저널 공간이 부족합니다.",
             Self::Ui001 => "요청 내용을 안전하게 표시할 수 없어 거부했습니다.",
+            Self::Sol001 => "받는 주소가 프로그램·시스템·토큰 mint 주소입니다. 보내면 잃습니다.",
+            Self::Sol002 => "받는 주소는 아무도 쓸 수 없는 주소입니다. 보내면 잃습니다.",
+            Self::Sol003 => "보내는 계정과 같은 주소로는 보낼 수 없습니다.",
+            Self::Sol004 => {
+                "승인한 전송을 서명 전에 멈췄습니다(아무것도 서명·전송하지 않음). 다시 검토하세요."
+            }
+            Self::Sol005 => {
+                "전송 확인이 오래 걸립니다. 네트워크·RPC 상태를 확인하세요(자동 재서명 없음)."
+            }
         }
     }
 

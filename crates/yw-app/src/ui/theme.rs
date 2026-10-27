@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use yw_win::ui::{Color, Font};
+use yw_win::ui::{Color, DrawFlags, Font, PaintDc, Rect};
 
 /// Window background.
 pub const BG: Color = Color(0x00FF_FFFF);
@@ -50,6 +50,8 @@ pub enum FontRole {
     BodyBold,
     /// Raw hex (calldata): Consolas 9 pt.
     MonoSmall,
+    /// Emphasized address groups: Consolas bold 10 pt (spec/07 §12.3, spec/04 §3.3).
+    MonoBold,
 }
 
 /// The fonts of one DPI.
@@ -69,6 +71,8 @@ pub struct Fonts {
     pub body_bold: Font,
     /// Small mono.
     pub mono_small: Font,
+    /// Bold mono.
+    pub mono_bold: Font,
 }
 
 fn body_font(size: u16, bold: bool, dpi: u32) -> Option<Font> {
@@ -89,6 +93,7 @@ impl Fonts {
             approval_title: body_font(12, true, dpi)?,
             body_bold: body_font(10, true, dpi)?,
             mono_small: Font::create("Consolas", 9, false, dpi).ok()?,
+            mono_bold: Font::create("Consolas", 10, true, dpi).ok()?,
         })
     }
 
@@ -103,6 +108,7 @@ impl Fonts {
             FontRole::ApprovalTitle => &self.approval_title,
             FontRole::BodyBold => &self.body_bold,
             FontRole::MonoSmall => &self.mono_small,
+            FontRole::MonoBold => &self.mono_bold,
         }
     }
 }
@@ -127,4 +133,117 @@ impl FontCache {
 #[must_use]
 pub fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
+}
+
+/// The segments of a grouped Solana address line (spec/07 §12.3: the whole address in 4-character
+/// groups, first and last group regular, the middle groups bold): `(text, bold)` with the
+/// separating spaces as regular segments. `None` unless `text` is exactly
+/// [`yw_core::sol::address::grouped`] of a valid address, so no other text changes weight.
+#[must_use]
+pub fn sol_address_segments(text: &str) -> Option<Vec<(&str, bool)>> {
+    let groups: Vec<&str> = text.split(' ').collect();
+    if groups.len() < 3
+        || groups
+            .iter()
+            .any(|group| group.is_empty() || group.len() > 4)
+    {
+        return None;
+    }
+    let address = yw_core::sol::SolAddress::parse(&groups.concat()).ok()?;
+    if yw_core::sol::address::grouped(&address) != text {
+        return None;
+    }
+    let last = groups.len().saturating_sub(1);
+    let mut segments = Vec::with_capacity(groups.len().saturating_mul(2));
+    for (index, group) in groups.into_iter().enumerate() {
+        if index != 0 {
+            segments.push((" ", false));
+        }
+        segments.push((group, index != 0 && index != last));
+    }
+    Some(segments)
+}
+
+/// Draws `segments` on one line from `(x, y)` with the regular / bold mono fonts in the current
+/// text color. Returns `false` (nothing drawn) when the line is wider than `rect.w`.
+pub fn paint_sol_address(
+    dc: &mut PaintDc<'_>,
+    fonts: &Fonts,
+    segments: &[(&str, bool)],
+    rect: Rect,
+) -> bool {
+    let measured: Vec<(Vec<u16>, FontRole, i32)> = segments
+        .iter()
+        .map(|(text, bold)| {
+            let role = if *bold {
+                FontRole::MonoBold
+            } else {
+                FontRole::Mono
+            };
+            dc.select_font(fonts.get(role));
+            let units = wide(text);
+            let (_, width) = dc.measure(&units, i32::MAX);
+            (units, role, width)
+        })
+        .collect();
+    let total = measured
+        .iter()
+        .fold(0_i32, |sum, (_, _, width)| sum.saturating_add(*width));
+    if total > rect.w {
+        return false;
+    }
+    let mut x = rect.x;
+    for (units, role, width) in &measured {
+        dc.select_font(fonts.get(*role));
+        dc.draw_text(
+            units,
+            Rect::new(x, rect.y, width.saturating_add(4), rect.h),
+            DrawFlags::LINE,
+        );
+        x = x.saturating_add(*width);
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sol_address_segments;
+
+    #[test]
+    fn only_grouped_solana_addresses_get_bold_middle_groups() {
+        let segments =
+            sol_address_segments("HAgk 14Jp MQLg t6rV gv7c BQFJ WFto 5Dqx i472 uT3D Kpqk")
+                .unwrap_or_default();
+        assert_eq!(segments.len(), 21);
+        let bold: Vec<&str> = segments
+            .iter()
+            .filter(|(_, bold)| *bold)
+            .map(|(text, _)| *text)
+            .collect();
+        assert_eq!(
+            bold,
+            [
+                "14Jp", "MQLg", "t6rV", "gv7c", "BQFJ", "WFto", "5Dqx", "i472", "uT3D"
+            ]
+        );
+        assert_eq!(segments.first(), Some(&("HAgk", false)));
+        assert_eq!(segments.last(), Some(&("Kpqk", false)));
+        let joined: String = segments.iter().map(|(text, _)| *text).collect();
+        assert_eq!(
+            joined,
+            "HAgk 14Jp MQLg t6rV gv7c BQFJ WFto 5Dqx i472 uT3D Kpqk"
+        );
+        // Ungrouped, regrouped, altered or non-address text keeps its weight.
+        for text in [
+            "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk",
+            "HAgk 14Jp MQLg t6rV gv7c BQFJ WFto 5Dqx i472 uT3D Kpq0",
+            "HAg k14J pMQL gt6r Vgv7 cBQF JWFt o5Dq xi47 2uT3 DKpq k",
+            "HAgk  14Jp MQLg t6rV gv7c BQFJ WFto 5Dqx i472 uT3D Kpqk",
+            "0x98 58Ef FD23",
+            "새 계정(아직 없음)",
+            "",
+        ] {
+            assert!(sol_address_segments(text).is_none(), "{text}");
+        }
+    }
 }

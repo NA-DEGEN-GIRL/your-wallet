@@ -1,6 +1,6 @@
 //! RPC transport shared by every chain (spec/04 §1.9) and the endpoint `테스트` of the settings
-//! screen (spec/04 §2.11.1). `rpc::evm` holds the `eth_simulateV1` response parser (M2); the
-//! other EVM calls arrive with M4.
+//! screen (spec/04 §2.11.1). `rpc::evm` holds the EVM calls; the Solana calls are
+//! `crate::sol::rpc` (M7).
 //!
 //! JSON-RPC 2.0 over `yw_win::http::Client` (HTTPS only, TLS 1.2/1.3, no redirects/cookies/auth,
 //! no Origin), one increasing `id` per request checked against the response. Failures are
@@ -242,6 +242,7 @@ impl<'t> RpcClient<'t> {
             return Err(CallError {
                 failure: RpcFailure::Rpc(code),
                 data,
+                data_value: error.get("data").cloned(),
             });
         }
         object
@@ -258,6 +259,9 @@ pub struct CallError {
     pub failure: RpcFailure,
     /// `error.data` when it was a hex string.
     pub data: Option<Vec<u8>>,
+    /// The raw `error.data` JSON (Solana `sendTransaction` preflight errors carry a structured
+    /// `err`; only its structure is classified, never its strings, spec/07 §15.3).
+    pub data_value: Option<Value>,
 }
 
 impl From<RpcFailure> for CallError {
@@ -265,6 +269,7 @@ impl From<RpcFailure> for CallError {
         Self {
             failure,
             data: None,
+            data_value: None,
         }
     }
 }

@@ -30,8 +30,11 @@ use crate::error::{KeyError, StorageError, VaultError};
 use crate::evm::Address;
 use crate::hex;
 use crate::password::{Bip39Passphrase, VaultPassword};
+use crate::slip10::SolKeySource;
 
 const MAX_ADDRESS_BATCH: usize = 100;
+/// `sol_public_keys` batch bound (spec/02 §10.3).
+const MAX_SOL_KEY_BATCH: usize = 128;
 const CHALLENGE_WORDS: usize = 4;
 const MAX_BACKUP_WORD: usize = 8;
 const ADDRESS_SUFFIX_LEN: usize = 6;
@@ -1136,6 +1139,49 @@ impl Vault {
         let result = f(&ctx, &secret);
         secret.non_secure_erase();
         result
+    }
+
+    /// Ed25519 public keys of up to 128 Solana key sources, computing the BIP39 seed once
+    /// (spec/02 §10.3; account add, cache refresh, recovery scan). Output order = input order;
+    /// each source's seed is wiped right after its public key is computed.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` outside `BackupPending`/`Unlocked` or for more than 128 sources (nothing is
+    /// derived), `Key(InvalidPath)` for `SolletLegacy` (not implemented, spec/07 §3.2).
+    pub fn sol_public_keys(&self, srcs: &[SolKeySource]) -> Result<Vec<[u8; 32]>, VaultError> {
+        self.require_public()?;
+        if srcs.len() > MAX_SOL_KEY_BATCH {
+            return Err(VaultError::InvalidState);
+        }
+        if srcs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let payload = self.payload()?;
+        let seed = self.seed(&payload)?;
+        srcs.iter()
+            .map(|src| {
+                let secret = src.ed25519_seed(&seed)?;
+                Ok(crate::sol::keys::public_key(&secret))
+            })
+            .collect()
+    }
+
+    /// Lends the 32-byte Ed25519 seed of `src` to the Solana signing module (`Unlocked` only).
+    /// The seed, the BIP39 seed and every intermediate are wiped when `f` returns
+    /// (spec/02 §10.3, §7.3).
+    pub(crate) fn with_ed25519_seed<T>(
+        &self,
+        src: SolKeySource,
+        f: impl FnOnce(&[u8; 32]) -> Result<T, VaultError>,
+    ) -> Result<T, VaultError> {
+        self.require_signing()?;
+        let payload = self.payload()?;
+        let seed = self.seed(&payload)?;
+        let secret = src.ed25519_seed(&seed)?;
+        drop(seed);
+        drop(payload);
+        f(&secret)
     }
 
     #[cfg(test)]

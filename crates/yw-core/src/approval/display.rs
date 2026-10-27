@@ -83,6 +83,24 @@ impl FieldKey {
     pub const MESSAGE_BYTES: Self = Self(0x0403);
     /// SIWE 필드.
     pub const SIWE_FIELD: Self = Self(0x0404);
+    /// SOL 받는 주소.
+    pub const SOL_TO: Self = Self(0x0501);
+    /// SOL 자산·금액.
+    pub const SOL_AMOUNT: Self = Self(0x0502);
+    /// SOL ATA 생성(SPL, v1.1).
+    pub const SOL_ATA: Self = Self(0x0503);
+    /// SOL 수수료.
+    pub const SOL_FEE: Self = Self(0x0504);
+    /// SOL 최대 총 차감.
+    pub const SOL_TOTAL: Self = Self(0x0505);
+    /// SOL 잔액(RPC 참고).
+    pub const SOL_BALANCE: Self = Self(0x0506);
+    /// SOL 시뮬레이션(참고).
+    pub const SOL_SIMULATION: Self = Self(0x0507);
+    /// SOL 유효 시간.
+    pub const SOL_VALIDITY: Self = Self(0x0508);
+    /// SOL 감사(`intent_hash`).
+    pub const SOL_AUDIT: Self = Self(0x0509);
 
     /// `(critical, volatile)` for keys of the §11.2 table; `None` for unknown keys.
     #[must_use]
@@ -96,9 +114,10 @@ impl FieldKey {
             | 0x0301..=0x0304
             | 0x0401
             | 0x0402
-            | 0x0404 => (true, false),
+            | 0x0404
+            | 0x0501..=0x0505 => (true, false),
             0x0121 | 0x0130 => (false, true),
-            0x0113 | 0x0122..=0x0124 | 0x0140 | 0x0141 | 0x0403 => (false, false),
+            0x0113 | 0x0122..=0x0124 | 0x0140 | 0x0141 | 0x0403 | 0x0506..=0x0509 => (false, false),
             _ => return None,
         })
     }

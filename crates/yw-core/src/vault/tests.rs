@@ -1731,3 +1731,144 @@ fn lock_from_passphrase_states() {
     assert_eq!(vault.status(), VaultStatus::Locked);
     assert!(vault.slot_bytes().is_none());
 }
+
+// ---------------------------------------------------------------- Solana (M7, spec/02 §11.5)
+
+/// An unlocked test vault (fast KDF) holding `phrase`, for the Solana signing tests.
+pub(crate) fn unlocked_with(phrase: &str) -> Vault {
+    let (_, mut vault) = empty_vault(KDF_TEST);
+    vault
+        .import_mnemonic(&pw(PASSWORD), phrase, None, new_slot(), 1_790_000_000)
+        .unwrap();
+    vault
+}
+
+fn sol_b58(key: &[u8; 32]) -> String {
+    crate::codec::base58::encode(key)
+}
+
+/// spec/07 §17.1 table, `abandon`×11 `about` and `abandon`×23 `art`, through one
+/// `sol_public_keys` call per mnemonic; output order = input order.
+#[test]
+fn sol_key_sources_reproduce_the_spec07_table() {
+    use crate::slip10::SolKeySource;
+    let index = |i| AccountIndex::new(i).unwrap();
+    let sources = [
+        SolKeySource::Standard(index(0)),
+        SolKeySource::Standard(index(1)),
+        SolKeySource::Standard(index(2)),
+        SolKeySource::Bip44Account(index(0)),
+        SolKeySource::Bip44Account(index(1)),
+        SolKeySource::Bip44Root,
+        SolKeySource::RawSeed,
+    ];
+    let about = [
+        "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk",
+        "Hh8QwFUA6MtVu1qAoq12ucvFHNwCcVTV7hpWjeY1Hztb",
+        "7WktogJEd2wQ9eH2oWusmcoFTgeYi6rS632UviTBJ2jm",
+        "GjJyeC1r2RgkuoCWMyPYkCWSGSGLcz266EaAkLA27AhL",
+        "ANf3TEKFL6jPWjzkndo4CbnNdUNkBk4KHPggJs2nu8Xi",
+        "D2PPQSYFe83nDzk96FqGumVU8JA7J8vj2Rhjc2oXzEi5",
+        "EHqmfkN89RJ7Y33CXM6uCzhVeuywHoJXZZLszBHHZy7o",
+    ];
+    let art = [
+        "3Cy3YNTFywCmxoxt8n7UH6hg6dLo5uACowX3CFceaSnx",
+        "5frqxtii9LeGq2bz3dSNokvZcEooF483MzeU24JrhcTA",
+        "3SuKj3MZU9dMZ9oR1R7afttihZFkWpfUmduuv9rmfMa1",
+        "4BZp4ci5rhNYqbayj1uppeTas1osK2Q4b74x7UENC5Hd",
+        "7bDLWB6YMdFHVRonYoTzikCFSoC5Ls4SKxbnydpLTPCM",
+        "BkWizA4ezeYB3jbixzPnzj6r2QuGekZXXFQHstDJE8wK",
+        "31fsSBAugfgtWp4WZLgr1D9TBkgiS13d5eK3GWBQwRct",
+    ];
+    let art_phrase = Mnemonic::from_entropy(&[0; 32]).unwrap().phrase();
+    for (phrase, expected) in [(ABOUT, about), (art_phrase.as_str(), art)] {
+        let vault = unlocked_with(phrase);
+        let keys = vault.sol_public_keys(&sources).unwrap();
+        let shown: Vec<String> = keys.iter().map(sol_b58).collect();
+        assert_eq!(shown, expected);
+        // Reversed input → reversed output.
+        let mut reversed = sources;
+        reversed.reverse();
+        let mut back: Vec<String> = vault
+            .sol_public_keys(&reversed)
+            .unwrap()
+            .iter()
+            .map(sol_b58)
+            .collect();
+        back.reverse();
+        assert_eq!(back, expected);
+    }
+    let vault = unlocked_with(ABOUT);
+    assert_eq!(
+        hex::encode(
+            vault
+                .sol_public_keys(&sources[..1])
+                .unwrap()
+                .first()
+                .unwrap()
+        ),
+        "f036276246a75b9de3349ed42b15e232f6518fc20f5fcd4f1d64e81f9bd258f7"
+    );
+}
+
+#[test]
+fn sol_public_keys_bounds_states_and_sollet() {
+    use crate::slip10::SolKeySource;
+    let vault = unlocked_with(ABOUT);
+    let many = vec![SolKeySource::Bip44Root; 128];
+    assert_eq!(vault.sol_public_keys(&many).unwrap().len(), 128);
+    let too_many = vec![SolKeySource::Bip44Root; 129];
+    assert_eq!(
+        vault.sol_public_keys(&too_many),
+        Err(VaultError::InvalidState)
+    );
+    assert_eq!(vault.sol_public_keys(&[]), Ok(Vec::new()));
+    assert_eq!(
+        vault.sol_public_keys(&[SolKeySource::SolletLegacy {
+            wallet: 0,
+            account: 0
+        }]),
+        Err(VaultError::Key(KeyError::InvalidPath))
+    );
+    // Created wallets are BackupPending: public keys yes, signing seed no.
+    let (_, pending, _) = created();
+    assert!(pending.sol_public_keys(&[SolKeySource::RawSeed]).is_ok());
+    assert_eq!(
+        pending.with_ed25519_seed(SolKeySource::RawSeed, |_| Ok(())),
+        Err(VaultError::BackupNotConfirmed)
+    );
+    let (_, mut locked) = imported(None);
+    locked.lock();
+    assert_eq!(
+        locked.sol_public_keys(&[SolKeySource::RawSeed]),
+        Err(VaultError::InvalidState)
+    );
+}
+
+#[test]
+fn with_ed25519_seed_lends_the_spec_seeds() {
+    use crate::slip10::SolKeySource;
+    let vault = unlocked_with(ABOUT);
+    let standard = vault
+        .with_ed25519_seed(SolKeySource::Standard(AccountIndex::ZERO), |seed| {
+            Ok(hex::encode(seed))
+        })
+        .unwrap();
+    assert_eq!(
+        standard,
+        "37df573b3ac4ad5b522e064e25b63ea16bcbe79d449e81a0268d1047948bb445"
+    );
+    let raw = vault
+        .with_ed25519_seed(SolKeySource::RawSeed, |seed| Ok(hex::encode(seed)))
+        .unwrap();
+    assert_eq!(
+        raw,
+        "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc1"
+    );
+    assert_eq!(
+        vault.with_ed25519_seed(SolKeySource::RawSeed, |_| -> Result<(), VaultError> {
+            Err(VaultError::RecordNotFound)
+        }),
+        Err(VaultError::RecordNotFound)
+    );
+}

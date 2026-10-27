@@ -62,6 +62,27 @@ pub enum EvmAccountPref {
     Record([u8; 16]),
 }
 
+/// The main-window chain tab (spec/04 §6.4 `tab`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Tab {
+    /// `"evm"`.
+    #[default]
+    Evm,
+    /// `"sol"` (M7).
+    Sol,
+}
+
+impl Tab {
+    /// The meta string.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Evm => "evm",
+            Self::Sol => "sol",
+        }
+    }
+}
+
 /// `prefs` (spec/04 §6.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Prefs {
@@ -69,6 +90,8 @@ pub struct Prefs {
     pub evm_account: EvmAccountPref,
     /// Selected Solana account index.
     pub sol_account: u32,
+    /// Chain tab.
+    pub tab: Tab,
 }
 
 impl Default for Prefs {
@@ -76,6 +99,7 @@ impl Default for Prefs {
         Self {
             evm_account: EvmAccountPref::Index(0),
             sol_account: 0,
+            tab: Tab::Evm,
         }
     }
 }
@@ -88,8 +112,8 @@ pub struct Meta {
     pub evm_accounts: Vec<Account>,
     /// Imported raw keys.
     pub evm_raw_accounts: Vec<RawAccount>,
-    /// Solana accounts (M7).
-    pub sol_accounts: Vec<Value>,
+    /// Solana standard accounts `m/44'/501'/i'/0'` (M7; `address` = base58 display cache).
+    pub sol_accounts: Vec<Account>,
     /// `btc` (M8), `null` before.
     pub btc: Value,
     /// Address book.
@@ -168,6 +192,12 @@ fn exact_keys(object: &Object, keys: &[&str]) -> bool {
     object.len() == keys.len() && keys.iter().all(|key| object.get(key).is_some())
 }
 
+/// A canonical base58 Solana address (strict 32-byte decoder, spec/07 §5).
+#[must_use]
+pub fn is_sol_addr(text: &str) -> bool {
+    yw_core::sol::SolAddress::parse(text).is_ok()
+}
+
 fn parse_account(value: &Value, evm: bool) -> Option<Account> {
     let object = value.as_object()?;
     if !exact_keys(object, &["index", "label", "address", "hidden"]) {
@@ -179,7 +209,12 @@ fn parse_account(value: &Value, evm: bool) -> Option<Account> {
     }
     let label = object.get("label")?.as_str()?;
     let address = object.get("address")?.as_str()?;
-    if !is_valid_label(label) || (evm && !(address.is_empty() || is_evm_addr(address))) {
+    let address_ok = if evm {
+        address.is_empty() || is_evm_addr(address)
+    } else {
+        address.is_empty() || is_sol_addr(address)
+    };
+    if !is_valid_label(label) || !address_ok {
         return None;
     }
     Some(Account {
@@ -219,6 +254,7 @@ fn valid_book_entry(value: &Value) -> bool {
         matches!(chain, "evm" | "sol" | "btc").then_some(())?;
         let address = object.get("address")?.as_str()?;
         (chain != "evm" || is_evm_addr(address)).then_some(())?;
+        (chain != "sol" || is_sol_addr(address)).then_some(())?;
         (!address.is_empty() && address.len() <= 128).then_some(())?;
         is_valid_label(object.get("label")?.as_str()?).then_some(())?;
         object.get("verified")?.as_bool()?;
@@ -356,11 +392,22 @@ fn parse_prefs(value: &Value, meta: &Meta) -> Option<Prefs> {
                         .then_some(EvmAccountPref::Record(id))?
                 };
             }
-            "sol_account" => prefs.sol_account = u32::try_from(u64_of(entry)?).ok()?,
+            "sol_account" => {
+                let index = u32::try_from(u64_of(entry)?).ok()?;
+                (meta.sol_accounts.is_empty()
+                    || meta
+                        .sol_accounts
+                        .iter()
+                        .any(|account| account.index == index))
+                .then_some(())?;
+                prefs.sol_account = index;
+            }
             "tab" => {
-                if entry.as_str()? != "evm" {
-                    return None;
-                }
+                prefs.tab = match entry.as_str()? {
+                    "evm" => Tab::Evm,
+                    "sol" => Tab::Sol,
+                    _ => return None,
+                };
             }
             _ => return None,
         }
@@ -417,11 +464,15 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
     if evm_raw_accounts.len() > MAX_RAW_ACCOUNTS {
         return Err(MetaError);
     }
-    let sol_accounts = array("sol_accounts")?.to_vec();
+    let sol_accounts: Vec<Account> = array("sol_accounts")?
+        .iter()
+        .map(|value| parse_account(value, false))
+        .collect::<Option<_>>()
+        .ok_or(MetaError)?;
     if sol_accounts.len() > MAX_EVM_ACCOUNTS
-        || !sol_accounts
-            .iter()
-            .all(|value| parse_account(value, false).is_some())
+        || sol_accounts
+            .windows(2)
+            .any(|pair| pair.first().map(|a| a.index) >= pair.get(1).map(|b| b.index))
     {
         return Err(MetaError);
     }
@@ -521,7 +572,10 @@ impl Meta {
                         .collect(),
                 ),
             ),
-            ("sol_accounts", Value::Array(self.sol_accounts.clone())),
+            (
+                "sol_accounts",
+                Value::Array(self.sol_accounts.iter().map(account_json).collect()),
+            ),
             ("btc", self.btc.clone()),
             ("address_book", Value::Array(self.address_book.clone())),
             (
@@ -535,11 +589,25 @@ impl Meta {
                 json_object(vec![
                     ("evm_account", evm_account),
                     ("sol_account", json_u64(u64::from(self.prefs.sol_account))),
-                    ("tab", json_str("evm")),
+                    ("tab", json_str(self.prefs.tab.as_str())),
                 ]),
             ),
         ]);
         yw_json::to_vec(&root)
+    }
+
+    /// The next Solana standard index (largest + 1, or 0 for the first account), `None` at the
+    /// bounds (100 accounts, index 999).
+    #[must_use]
+    pub fn next_sol_index(&self) -> Option<u32> {
+        if self.sol_accounts.len() >= MAX_EVM_ACCOUNTS {
+            return None;
+        }
+        let next = match self.sol_accounts.iter().map(|account| account.index).max() {
+            Some(max) => max.checked_add(1)?,
+            None => 0,
+        };
+        (u64::from(next) <= MAX_ACCOUNT_INDEX).then_some(next)
     }
 
     /// The next derived index for `계정 추가` (largest + 1), `None` at the bounds.
@@ -651,6 +719,44 @@ impl BookEntry {
     fn from_value(value: &Value) -> Option<Self> {
         let object = value.as_object()?;
         if object.get("chain")?.as_str()? != "evm" {
+            return None;
+        }
+        Some(Self {
+            address: object.get("address")?.as_str()?.to_owned(),
+            label: object.get("label")?.as_str()?.to_owned(),
+            verified: object.get("verified")?.as_bool()?,
+            added_at_unix_ms: object.get("added_at_unix_ms").and_then(u64_of)?,
+        })
+    }
+}
+
+/// A typed Solana `AddressBookEntry` (`chain = "sol"`, base58 address).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SolBookEntry {
+    /// Base58 address.
+    pub address: String,
+    /// Label.
+    pub label: String,
+    /// Verified out of band.
+    pub verified: bool,
+    /// Added (Unix ms).
+    pub added_at_unix_ms: u64,
+}
+
+impl SolBookEntry {
+    fn to_value(&self) -> Value {
+        json_object(vec![
+            ("chain", json_str("sol")),
+            ("address", json_str(&self.address)),
+            ("label", json_str(&self.label)),
+            ("verified", Value::Bool(self.verified)),
+            ("added_at_unix_ms", json_u64(self.added_at_unix_ms)),
+        ])
+    }
+
+    fn from_value(value: &Value) -> Option<Self> {
+        let object = value.as_object()?;
+        if object.get("chain")?.as_str()? != "sol" {
             return None;
         }
         Some(Self {
@@ -798,6 +904,42 @@ impl Meta {
         }
     }
 
+    /// Solana address-book entries.
+    #[must_use]
+    pub fn sol_book(&self) -> Vec<SolBookEntry> {
+        self.address_book
+            .iter()
+            .filter_map(SolBookEntry::from_value)
+            .collect()
+    }
+
+    /// Adds a Solana address-book entry.
+    ///
+    /// # Errors
+    ///
+    /// [`ListError`].
+    pub fn add_sol_book(&mut self, entry: &SolBookEntry) -> Result<(), ListError> {
+        if self
+            .sol_book()
+            .iter()
+            .any(|known| known.address == entry.address)
+        {
+            return Err(ListError::Duplicate);
+        }
+        if self.address_book.len() >= MAX_ADDRESS_BOOK {
+            return Err(ListError::Full);
+        }
+        self.address_book.push(entry.to_value());
+        Ok(())
+    }
+
+    /// Removes the Solana entry for `address`.
+    pub fn remove_sol_book(&mut self, address: &str) {
+        self.address_book.retain(|value| {
+            SolBookEntry::from_value(value).is_none_or(|known| known.address != address)
+        });
+    }
+
     /// Removes the EVM entry for `address`.
     pub fn remove_book(&mut self, address: &str) {
         self.address_book.retain(|value| {
@@ -852,7 +994,47 @@ impl Meta {
 
 #[cfg(test)]
 mod tests {
-    use super::{Account, EvmAccountPref, Meta, parse};
+    use super::{Account, EvmAccountPref, Meta, SolBookEntry, Tab, parse};
+
+    #[test]
+    fn solana_accounts_tab_and_book_round_trip() {
+        let mut meta = Meta::default();
+        assert_eq!(meta.next_sol_index(), Some(0));
+        meta.sol_accounts.push(Account {
+            index: 0,
+            label: "Solana 1".to_owned(),
+            address: "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk".to_owned(),
+            hidden: false,
+        });
+        meta.prefs.tab = Tab::Sol;
+        meta.add_sol_book(&SolBookEntry {
+            address: "Hh8QwFUA6MtVu1qAoq12ucvFHNwCcVTV7hpWjeY1Hztb".to_owned(),
+            label: "친구".to_owned(),
+            verified: true,
+            added_at_unix_ms: 1,
+        })
+        .unwrap();
+        assert!(
+            meta.add_sol_book(&SolBookEntry {
+                address: "Hh8QwFUA6MtVu1qAoq12ucvFHNwCcVTV7hpWjeY1Hztb".to_owned(),
+                label: "중복".to_owned(),
+                verified: false,
+                added_at_unix_ms: 2,
+            })
+            .is_err()
+        );
+        let parsed = parse(&meta.to_json()).unwrap();
+        assert!(!parsed.prefs_reset);
+        assert_eq!(parsed.meta, meta);
+        assert_eq!(parsed.meta.next_sol_index(), Some(1));
+        assert_eq!(parsed.meta.sol_book().len(), 1);
+        assert!(parsed.meta.book().is_empty());
+        // A non-canonical or EVM-style address in sol_accounts rejects the document.
+        let bad = String::from_utf8(meta.to_json())
+            .unwrap()
+            .replacen("HAgk14", "0xHAgk", 1);
+        assert!(parse(bad.as_bytes()).is_err());
+    }
 
     #[test]
     fn default_round_trips_and_has_account_zero() {

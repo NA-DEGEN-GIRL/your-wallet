@@ -355,10 +355,10 @@ windows-sys feature 추가·삭제는 크레이트 수를 바꾸지 않지만 yw
    serial 백엔드는 AVX2용 proc-macro `curve25519-dalek-derive`와 proc-macro2·quote·syn·unicode-ident를 빌드 그래프에서 뺀다. 이 설정을 `cargo metadata --filter-platform`과 빌드가 모두 따르는 것을 확인했다.
 3. `crates/yw-core/src/sol/mod.rs`에 가드:
    ```rust
-   #[cfg(not(curve25519_dalek_backend = "serial"))]
+   #[cfg(not(any(curve25519_dalek_backend = "serial", doc, doctest)))]
    compile_error!("Solana phase requires --cfg curve25519_dalek_backend=\"serial\" (.cargo/config.toml); RUSTFLAGS/CARGO_ENCODED_RUSTFLAGS override it");
    ```
-   환경 변수 `RUSTFLAGS`가 있으면 config의 rustflags가 통째로 무시되므로, 사용자가 그런 환경에서 빌드해도 조용히 다른 의존성으로 빌드되지 않는다(확인함). `check.ps1`은 이 변수들이 비어 있지 않으면 종료 코드 11로 실패한다.
+   환경 변수 `RUSTFLAGS`가 있으면 config의 rustflags가 통째로 무시되므로, 사용자가 그런 환경에서 빌드해도 조용히 다른 의존성으로 빌드되지 않는다(확인함, M7 구현 때 `RUSTFLAGS=-Dwarnings cargo check -p yw-core`로 다시 확인). `doc`·`doctest`를 빼는 이유: rustdoc은 config의 `rustflags`를 받지 않아 `cargo test`의 doctest 수집 단계에서 가드가 오탐한다(확인함, 2026-10-27). doctest는 rustc로 빌드된 라이브러리를 링크하므로 가드의 목적은 그대로다. `check.ps1`은 이 변수들이 비어 있지 않으면 종료 코드 11로 실패한다.
 4. `scripts/check-core-deps.mjs`의 `PHASES`에 `"sol"` 추가.
 5. §3.6 절차로 lock 갱신. Cargo.lock에는 컴파일되지 않는 `curve25519-dalek-derive`·`fiat-crypto`·`proc-macro2`·`quote`·`syn`·`unicode-ident` 항목도 생긴다(lock은 cfg와 무관, 59개가 됨을 확인함). 허용 여부 판단은 검사 스크립트가 한다.
 

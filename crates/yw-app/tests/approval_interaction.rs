@@ -597,7 +597,7 @@ fn ap4_unsafe_text_and_unknown_keys_are_rejected() {
     assert_eq!(validate_for_display(&display), Err(ErrorCode::Ui001));
     let mut display = message(RiskLevel::Info, false, 0).display;
     display.fields.push(DisplayField {
-        key: FieldKey(0x0501),
+        key: FieldKey(0x0999),
         sub_label: String::new(),
         value: "x".to_owned(),
         critical: true,

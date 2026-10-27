@@ -1,13 +1,15 @@
-//! Per-chain derivation paths (D29, spec/02 §3.3). `sol_path` is added with Solana (M7).
+//! Per-chain derivation paths (D29, spec/02 §3.3). `sol_path` (M7) lives with `slip10` and is
+//! re-exported here.
 
 use super::{Bip32Path, HARDENED};
 use crate::error::KeyError;
+pub use crate::slip10::sol_path;
 
 /// Highest account index the core accepts (EVM and Solana).
 pub const MAX_ACCOUNT_INDEX: u32 = 999;
 
 /// An account index in `0..=MAX_ACCOUNT_INDEX`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AccountIndex(u32);
 
 impl AccountIndex {

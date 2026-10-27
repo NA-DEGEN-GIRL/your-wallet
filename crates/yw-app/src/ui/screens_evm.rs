@@ -795,6 +795,7 @@ impl App {
                 Ctl::button(base.saturating_add(1), "삭제"),
             ]));
         }
+        self.sol_book_section(items);
     }
 
     /// S16.

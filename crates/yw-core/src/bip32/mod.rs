@@ -133,7 +133,7 @@ impl fmt::Debug for XPriv {
 }
 
 /// `HMAC-SHA512(key, parts…)` into a zeroizing buffer.
-fn hmac_sha512(key: &[u8], parts: &[&[u8]]) -> Result<Zeroizing<[u8; 64]>, KeyError> {
+pub(crate) fn hmac_sha512(key: &[u8], parts: &[&[u8]]) -> Result<Zeroizing<[u8; 64]>, KeyError> {
     let mut mac = HmacSha512::new_from_slice(key).map_err(|_| KeyError::Internal)?;
     for part in parts {
         mac.update(part);
@@ -145,7 +145,7 @@ fn hmac_sha512(key: &[u8], parts: &[&[u8]]) -> Result<Zeroizing<[u8; 64]>, KeyEr
     Ok(out)
 }
 
-fn split_halves(output: &[u8; 64]) -> (Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>) {
+pub(crate) fn split_halves(output: &[u8; 64]) -> (Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>) {
     let mut left = Zeroizing::new([0_u8; 32]);
     let mut right = Zeroizing::new([0_u8; 32]);
     let (il, ir) = output.split_at(32);

@@ -32,7 +32,6 @@ use crate::flow::evm::prepare::{
     PrepareJob, PrepareOutcome, PrepareResult, Prepared, ResimJob, ResimKind, ResimResult,
 };
 use crate::logging::{self, Field};
-use crate::network::NetworkId;
 use crate::ui::approval::QueueOutcome;
 use crate::ui::approval_view::{ApprovalView, Block, Tone, escape_spans, view};
 use crate::ui::interaction::{
@@ -147,6 +146,13 @@ pub struct ApprovalUi {
     layout: Option<PanelLayout>,
     bottom: Bottom,
     widths: HashMap<(FontRole, char), i32>,
+}
+
+impl ApprovalUi {
+    /// The current preparation job id.
+    pub(crate) const fn job(&self) -> u64 {
+        self.job
+    }
 }
 
 impl core::fmt::Debug for ApprovalUi {
@@ -439,6 +445,20 @@ fn draw_line(
     offset_y: i32,
     widths: &HashMap<(FontRole, char), i32>,
 ) {
+    if line.font == FontRole::Mono
+        && let Some(segments) = crate::ui::theme::sol_address_segments(&line.text)
+    {
+        dc.set_text_color(line.color);
+        let rect = Rect::new(
+            line.x,
+            line.y.saturating_sub(offset_y),
+            i32::MAX / 4,
+            line.height,
+        );
+        if crate::ui::theme::paint_sol_address(dc, fonts, &segments, rect) {
+            return;
+        }
+    }
     dc.select_font(fonts.get(line.font));
     let spans = escape_spans(&line.text);
     let mut x = line.x;
@@ -611,7 +631,7 @@ impl App {
         let panel = create_window(&panel_spec, panel_handler).map_err(|_| ())?;
         let deadline_ms = match &item {
             QueuedItem::Site(site) => site.deadline_ms,
-            QueuedItem::App(_) => now.saturating_add(MAX_LIFETIME_MS),
+            QueuedItem::App(_) | QueuedItem::Sol(_) => now.saturating_add(MAX_LIFETIME_MS),
         };
         let gate = ApprovalGate {
             prepare: PrepareState::Preparing(PrepareStage::Building),
@@ -671,6 +691,7 @@ impl App {
         match item {
             QueuedItem::App(app) => self.prepare_transaction(job, &app, None),
             QueuedItem::Site(site) => self.prepare_site(job, &site),
+            QueuedItem::Sol(sol) => self.prepare_sol(job, &sol),
         }
         self.rebuild_view();
     }
@@ -885,7 +906,7 @@ impl App {
         }
     }
 
-    fn show_failure(&mut self, code: ErrorCode, retryable: bool, text: String) {
+    pub(crate) fn show_failure(&mut self, code: ErrorCode, retryable: bool, text: String) {
         if let Some(ui) = self.evm.window.as_mut() {
             ui.failure = Some(text);
             let _ = ui
@@ -966,7 +987,7 @@ impl App {
                 );
                 let site = self.evm.window.as_ref().and_then(|ui| match &ui.item {
                     QueuedItem::Site(site) => Some(site.reply),
-                    QueuedItem::App(_) => None,
+                    QueuedItem::App(_) | QueuedItem::Sol(_) => None,
                 });
                 if failure.invalid_params
                     && let Some(reply) = site
@@ -996,8 +1017,19 @@ impl App {
         draft: yw_core::approval::ApprovalDraft,
         prepared: Option<Box<Prepared>>,
     ) {
+        self.show_ready_draft_at(draft, prepared, now_unix_ms());
+    }
+
+    /// [`Self::show_ready_draft`] with the wall-clock display time given (the SOL intent binds
+    /// it as `created_at_ms`, spec/07 §13.1-3).
+    pub(crate) fn show_ready_draft_at(
+        &mut self,
+        draft: yw_core::approval::ApprovalDraft,
+        prepared: Option<Box<Prepared>>,
+        now_unix: u64,
+    ) {
         let now = now_ms();
-        let Ok(request) = self.evm.store.issue(draft, now, now_unix_ms()) else {
+        let Ok(request) = self.evm.store.issue(draft, now, now_unix) else {
             self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
             return;
         };
@@ -1148,7 +1180,7 @@ impl App {
         let chain_id = ui.item.chain_id();
         let extra_warnings = match &ui.item {
             QueuedItem::Site(site) => site_fee_warning(site),
-            QueuedItem::App(_) => Vec::new(),
+            QueuedItem::App(_) | QueuedItem::Sol(_) => Vec::new(),
         };
         let Ok(chain) = self.chain_job(chain_id) else {
             return;
@@ -1180,12 +1212,19 @@ impl App {
                 logging::info(
                     "app",
                     "approval.consumed",
-                    &[("net", Field::Net(NetworkId::Eip155(item.chain_id())))],
+                    &[("net", Field::Net(item.network()))],
                 );
                 let reply = match &item {
                     QueuedItem::Site(site) => Some(site.reply),
-                    QueuedItem::App(_) => None,
+                    QueuedItem::App(_) | QueuedItem::Sol(_) => None,
                 };
+                if let QueuedItem::Sol(sol) = &item
+                    && request.kind == yw_core::approval::ApprovalKind::SolTransfer
+                {
+                    self.sol_consumed(approved, sol.cluster, now);
+                    self.finish_approval(QueueOutcome::Approved);
+                    return;
+                }
                 match (prepared, request.kind) {
                     (
                         _,
@@ -1206,7 +1245,7 @@ impl App {
                                 site.origin.as_str().to_owned(),
                                 crate::app_browser::SignWaiter::Tx(site.reply),
                             ),
-                            QueuedItem::App(_) => {
+                            QueuedItem::App(_) | QueuedItem::Sol(_) => {
                                 ("yw-app".to_owned(), crate::app_browser::SignWaiter::App)
                             }
                         };
@@ -1288,9 +1327,16 @@ impl App {
         {
             badges.push(crate::ui::screens_evm::custom_chain_badge(chain_id));
         }
-        let testnet = chain_id == SEPOLIA;
+        let sol_devnet = self.evm.window.as_ref().is_some_and(|ui| {
+            matches!(&ui.item, QueuedItem::Sol(item) if item.cluster == yw_core::sol::SolCluster::Devnet)
+        });
+        let testnet = chain_id == SEPOLIA || sol_devnet;
         if testnet {
-            badges.push("테스트넷 — 실제 자산이 아닙니다".to_owned());
+            badges.push(if sol_devnet {
+                "Solana devnet (테스트) — 실제 자산이 아닙니다".to_owned()
+            } else {
+                "테스트넷 — 실제 자산이 아닙니다".to_owned()
+            });
         }
         let Some(ui) = self.evm.window.as_mut() else {
             return;
@@ -1740,12 +1786,20 @@ impl App {
         dc.fill_rect(client, theme::BG);
         let mut y = margin;
         // Header.
-        let mut header_lines: Vec<(String, FontRole)> = ui
-            .view
-            .header
-            .iter()
-            .map(|(label, value)| (format!("{label}: {value}"), FontRole::Body))
-            .collect();
+        // One entry per line; a grouped Solana address line is Consolas with bold middle groups
+        // (spec/07 §12.3).
+        let mut header_lines: Vec<(String, FontRole)> = Vec::new();
+        for (label, value) in &ui.view.header {
+            for (index, line) in value.split('\n').enumerate() {
+                if index == 0 {
+                    header_lines.push((format!("{label}: {line}"), FontRole::Body));
+                } else if crate::ui::theme::sol_address_segments(line).is_some() {
+                    header_lines.push((line.to_owned(), FontRole::Mono));
+                } else {
+                    header_lines.push((line.to_owned(), FontRole::Body));
+                }
+            }
+        }
         if header_lines.is_empty() {
             header_lines.push(("요청 출처: Your Wallet (이 앱)".to_owned(), FontRole::Body));
         }
@@ -1774,11 +1828,15 @@ impl App {
             dc.select_font(fonts.get(*role));
             dc.set_text_color(theme::TEXT);
             let height = dc.measure_wrapped(&wide(text), width, DrawFlags::WRAP);
-            dc.draw_text(
-                &wide(text),
-                Rect::new(margin, y, width, height),
-                DrawFlags::WRAP,
-            );
+            let rect = Rect::new(margin, y, width, height);
+            let emphasized = *role == FontRole::Mono
+                && crate::ui::theme::sol_address_segments(text).is_some_and(|segments| {
+                    crate::ui::theme::paint_sol_address(&mut dc, fonts, &segments, rect)
+                });
+            if !emphasized {
+                dc.select_font(fonts.get(*role));
+                dc.draw_text(&wide(text), rect, DrawFlags::WRAP);
+            }
             y = y.saturating_add(height).saturating_add(px(2));
         }
         y = y.saturating_add(px(8));

@@ -33,6 +33,7 @@ use crate::evm::address::Address;
 use crate::evm::amount::U256;
 use crate::evm::tx::Eip1559Tx;
 use crate::policy::BrowserOrigin;
+use crate::sol::{SolCluster, SolTransferIntent};
 use crate::vault::EvmKeySource;
 
 /// Random approval identifier.
@@ -76,7 +77,7 @@ impl ApprovalOrigin {
     }
 }
 
-/// Chain reference bound into the digest (`chain_tag` 1 = EVM).
+/// Chain reference bound into the digest (`chain_tag` 1 = EVM, 2 = Solana).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChainRef {
     /// EVM chain with its verified genesis hash.
@@ -86,6 +87,13 @@ pub enum ChainRef {
         /// Verified genesis (§1.4).
         genesis: [u8; 32],
     },
+    /// Solana cluster with its checked genesis hash (spec/07 §13.1, §15.1).
+    Solana {
+        /// Cluster.
+        cluster: SolCluster,
+        /// `getGenesisHash` value (= the cluster's pinned hash).
+        genesis: [u8; 32],
+    },
 }
 
 /// Signing account.
@@ -93,15 +101,13 @@ pub enum ChainRef {
 pub enum AccountRef {
     /// EVM address.
     Evm(Address),
+    /// Solana sender public key.
+    Sol([u8; 32]),
 }
 
 /// Approval kind (digest byte).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
-#[expect(
-    clippy::enum_variant_names,
-    reason = "names fixed by spec/03 §11.1; SOL/BTC kinds arrive at M7/M8"
-)]
 pub enum ApprovalKind {
     /// EVM transaction.
     EvmTransaction = 0x10,
@@ -113,6 +119,8 @@ pub enum ApprovalKind {
     EvmPersonalSign = 0x13,
     /// `eth_signTypedData_v4`.
     EvmTypedData = 0x14,
+    /// Solana transfer (spec/07 §13.1; origin is always the app).
+    SolTransfer = 0x20,
 }
 
 impl ApprovalKind {
@@ -134,10 +142,6 @@ impl ApprovalKind {
 
 /// What will be signed (digest bytes per spec/03 §11.4).
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[expect(
-    clippy::enum_variant_names,
-    reason = "names fixed by spec/03 §11.1; SOL/BTC payloads arrive at M7/M8"
-)]
 pub enum SigningPayload {
     /// A type-2 transaction (`0x02 ‖ rlp(9 fields)`).
     EvmTx(Eip1559Tx),
@@ -145,6 +149,8 @@ pub enum SigningPayload {
     EvmPersonal(Vec<u8>),
     /// `0x19 0x01 ‖ domainSeparator ‖ hashStruct`.
     EvmTypedData([u8; 66]),
+    /// A Solana transfer intent (spec/07 §13.2).
+    SolTransfer(SolTransferIntent),
 }
 
 impl SigningPayload {
@@ -155,6 +161,7 @@ impl SigningPayload {
             Self::EvmTx(tx) => tx.signing_preimage(),
             Self::EvmPersonal(preimage) => preimage.clone(),
             Self::EvmTypedData(preimage) => preimage.to_vec(),
+            Self::SolTransfer(intent) => intent.transcript(),
         }
     }
 }
@@ -164,6 +171,8 @@ impl SigningPayload {
 pub enum Signer {
     /// An EVM key from the vault.
     Evm(EvmKeySource),
+    /// The key source is in the payload (SOL intent `source`; the signing check binds `from`).
+    FromPayload,
 }
 
 /// Simulation block binding (spec/03 §6.5, §11.1).

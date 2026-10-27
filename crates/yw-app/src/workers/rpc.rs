@@ -25,6 +25,7 @@ use crate::logging::{self, Field};
 use crate::network::NetworkId;
 use crate::rpc::evm as rpc;
 use crate::rpc::{RpcClient, TestOutcome, Transport, classify, test_endpoint};
+use crate::sol::flow::{PreviewJob, SolEndpoint, TrackJob};
 use crate::workers::journal::fault_point;
 
 /// An RPC job.
@@ -131,6 +132,35 @@ pub enum RpcJob {
         /// Address-book names.
         address_book: Vec<(Address, String)>,
     },
+    /// Solana balances of `accounts` (genesis checked first).
+    SolBalances {
+        /// Job.
+        job: u64,
+        /// Endpoint.
+        endpoint: SolEndpoint,
+        /// Accounts.
+        accounts: Vec<yw_core::sol::SolAddress>,
+    },
+    /// Solana step-2 preview.
+    SolPreview(Box<PreviewJob>),
+    /// Solana step-5 lookup (after approval, before signing).
+    SolPreSign {
+        /// Job.
+        job: u64,
+        /// Endpoint.
+        endpoint: SolEndpoint,
+    },
+    /// One Solana broadcast round.
+    SolTrack(Box<TrackJob>),
+    /// Solana recovery scan.
+    SolScan {
+        /// Job.
+        job: u64,
+        /// Endpoint.
+        endpoint: SolEndpoint,
+        /// Sources and their addresses.
+        keys: Vec<(yw_core::slip10::SolKeySource, yw_core::sol::SolAddress)>,
+    },
     /// Stop.
     Shutdown,
 }
@@ -158,6 +188,11 @@ impl RpcJob {
             Self::Track { .. } => "Track",
             Self::Probe { .. } => "Probe",
             Self::TypedFacts { .. } => "TypedFacts",
+            Self::SolBalances { .. } => "SolBalances",
+            Self::SolPreview(_) => "SolPreview",
+            Self::SolPreSign { .. } => "SolPreSign",
+            Self::SolTrack(_) => "SolTrack",
+            Self::SolScan { .. } => "SolScan",
             Self::Shutdown => "Shutdown",
         }
     }
@@ -592,6 +627,85 @@ impl RpcWorker {
                 }
                 push(events, RpcEvent::Tracked { key, result });
             }
+            RpcJob::SolBalances {
+                job,
+                endpoint,
+                accounts,
+            } => {
+                let result = crate::sol::flow::balances(&*transport, &endpoint, &accounts);
+                if let Err(code) = result {
+                    logging::warn(
+                        "rpc",
+                        "sol.balances",
+                        &[
+                            ("net", Field::Net(sol_net(&endpoint))),
+                            ("code", Field::Code(code)),
+                        ],
+                    );
+                }
+                push(
+                    events,
+                    RpcEvent::SolBalances {
+                        job,
+                        cluster: endpoint.cluster,
+                        result,
+                    },
+                );
+            }
+            RpcJob::SolPreview(preview_job) => {
+                let result = crate::sol::flow::preview(&*transport, &preview_job);
+                logging::info(
+                    "rpc",
+                    "sol.previewed",
+                    &[("net", Field::Net(sol_net(&preview_job.endpoint)))],
+                );
+                push(events, RpcEvent::SolPreviewed(Box::new(result)));
+            }
+            RpcJob::SolPreSign { job, endpoint } => {
+                let result = crate::sol::flow::pre_sign(&*transport, &endpoint);
+                logging::info(
+                    "rpc",
+                    "sol.presign",
+                    &[
+                        ("net", Field::Net(sol_net(&endpoint))),
+                        (
+                            "result",
+                            Field::Word(if result.is_ok() { "ok" } else { "err" }),
+                        ),
+                    ],
+                );
+                push(events, RpcEvent::SolPreSigned { job, result });
+            }
+            RpcJob::SolTrack(track_job) => {
+                let result = crate::sol::flow::track_round(&*transport, &track_job, &*self.clock);
+                if result.sends > 0 {
+                    fault_point("sol.after_send");
+                }
+                push(events, RpcEvent::SolTracked(Box::new(result)));
+            }
+            RpcJob::SolScan {
+                job,
+                endpoint,
+                keys,
+            } => {
+                let result = crate::sol::scan::scan(&*transport, &endpoint, &keys);
+                logging::info(
+                    "rpc",
+                    "sol.scan",
+                    &[
+                        ("net", Field::Net(sol_net(&endpoint))),
+                        (
+                            "rows",
+                            Field::Num(
+                                result.as_ref().map_or(0, |rows| {
+                                    u64::try_from(rows.len()).unwrap_or(u64::MAX)
+                                }),
+                            ),
+                        ),
+                    ],
+                );
+                push(events, RpcEvent::SolScanned { job, result });
+            }
             RpcJob::Probe {
                 job,
                 url,
@@ -618,6 +732,10 @@ impl RpcWorker {
             }
         }
     }
+}
+
+fn sol_net(endpoint: &SolEndpoint) -> NetworkId {
+    crate::workers::journal::sol_network(endpoint.cluster)
 }
 
 /// The worker loop.

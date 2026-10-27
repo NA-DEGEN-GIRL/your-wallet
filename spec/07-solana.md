@@ -31,7 +31,7 @@ pub enum SolCluster { Mainnet = 1, Devnet = 2 }
 // SolKeySource는 [02] §3.5 `yw_core::slip10::SolKeySource`를 그대로 쓴다(이 문서에서 다시 정의하지 않는다, AccountIndex는 [02] §3.3):
 //   enum SolKeySource { Standard(AccountIndex), Bip44Account(AccountIndex), Bip44Root, RawSeed,
 //                       SolletLegacy { wallet: u32, account: u32 } }
-pub enum SolAsset { Sol, Spl(&'static SplAllowEntry) }
+pub enum SolAsset { Sol, Spl(&'static SplAllowEntry) }   // M7(v1) 코드는 `Sol`만 둔다. `Spl`은 v1.1에서 추가
 pub struct SolTransferCore {                           // 메시지 바이트가 결정하는 값 전부(블록해시 제외)
     pub from: SolAddress, pub to: SolAddress, pub asset: SolAsset,
     pub amount: u64,             // SOL: lamports, SPL: 원시 단위
@@ -128,6 +128,8 @@ pub fn base58_encode(bytes: &[u8]) -> String;                        // M1에 �
 pub fn base58_decode_32(s: &str) -> Result<[u8; 32], Base58Error>;   // 주소·블록해시·제네시스
 pub fn base58_decode_64(s: &str) -> Result<[u8; 64], Base58Error>;   // 서명 (RPC 응답 대조용)
 pub enum Base58Error { Empty, BadLength, InvalidChar { pos: usize }, WrongDecodedLength, NonCanonical }
+// 구현: M1의 `codec::base58::Base58Error`(InvalidCharacter·InvalidChecksum·InvalidLength·TooLong, 비엄격 디코더용)에
+// 위 다섯 변형을 더했다. 엄격 디코더는 이 다섯만 돌려준다.
 ```
 
 | 규칙 | 32바이트 | 64바이트 |
@@ -229,7 +231,7 @@ instruction = program_id_index u8 || shortvec(n_acc) || account_index u8 * n_acc
 |---|---|---|---|
 | mainnet | USDC | `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` | 6 |
 | mainnet | USDT | `Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB` | 6 |
-| devnet | USDC(Circle devnet) | 구현 시 확인(Circle 문서에서 주소, `getAccountInfo`로 owner=Token·decimals=6 확인) | 6 |
+| devnet | USDC(Circle devnet) | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`(2026-10-27 `getAccountInfo`: owner = Token, 82바이트, decimals 6, initialized) | 6 |
 
 - 토큰 식별은 mint 주소로만 한다. 온체인 메타데이터(이름·기호·로고)는 읽지 않는다.
 
@@ -278,8 +280,8 @@ max_fee = SOL_BASE_FEE_LAMPORTS_PER_SIG × 1 + ceil(cu_price_micro × cu_limit /
 
 ```rust
 pub const SOL_BASE_FEE_LAMPORTS_PER_SIG: u64 = 5_000;   // 프로토콜 값, §16에서 재확인, getFeeForMessage로 교차 확인
-pub const SOL_TRANSFER_CU_LIMIT: u32 = 600;              // 측정 전 임시값(예상 사용량 450 = 명령 3개 × 150)
-pub const SPL_TRANSFER_CU_LIMIT: u32 = 60_000;           // 측정 전 임시값
+pub const SOL_TRANSFER_CU_LIMIT: u32 = 600;              // 측정 완료(2026-10-27): devnet·mainnet 각각 새 계정·기존 계정 ×10, unitsConsumed 최대 450 → 450 + 150
+pub const SPL_TRANSFER_CU_LIMIT: u32 = 60_000;           // 측정 전 임시값(v1.1)
 ```
 
 - 우선 수수료는 **요청한 한도** 기준으로 청구되므로 한도를 항상 명시한다(생략 시 기본 한도가 builtin 명령당 3,000, 그 밖 200,000 CU).
@@ -392,7 +394,8 @@ AccountRef::Sol([u8; 32])                                      // account_bytes 
 ApprovalKind::SolTransfer = 0x20                               // origin은 항상 ApprovalOrigin::App
 SigningPayload::SolTransfer(SolTransferIntent)                 // signing_payload_bytes = §13.2 transcript 바이트
 pub fn build_sol_transfer_request(intent: &SolTransferIntent, genesis: &[u8; 32],
-                                  facts: &SolPreviewFacts /* 2단계 조회 결과 */, now_unix_ms: u64) -> ApprovalDraft; // issue 전, [03] §11.1
+                                  facts: &SolPreviewFacts /* 2단계 조회 결과 */) -> Result<ApprovalDraft, DisplayError>; // issue 전, [03] §11.1
+// 표시 시각은 intent.created_at_ms가 가진다. yw-app은 같은 now_unix_ms로 intent를 만들고 바로 `issue`한다.
 pub fn sign_transfer(vault: &Vault, approved: Approved, consumed_at_ms: u64,
                      blockhash: [u8; 32], now_ms: u64) -> Result<SignedSolTransfer, SolSignError>;
 pub const SOL_SIGN_DEADLINE_SECS: u64 = 20;      // consume → 서명 시작 (승인 창 만료 120 s와 별개)
@@ -605,7 +608,7 @@ M7 착수 때 공식 문서로 다시 확인하고, 바뀌었으면 해당 상�
 | SIMD-0553(기본 수수료 공식 변경) 거버넌스 대기 | `SOL_BASE_FEE_LAMPORTS_PER_SIG`, `getFeeForMessage` 교차 확인(§10) |
 | 기본 수수료 5,000 lamports/서명, 우선 수수료 = 요청 CU 한도 × 가격 | §10 |
 | 템플릿 CU 사용량(System·ComputeBudget 명령 각 150 CU 예상) | §10 측정 절차 |
-| 설정한 공급자(현재 QuickNode; 공급자·엔드포인트를 바꾸면 그 공급자로 다시 확인, mainnet·devnet 각각): `getSignatureStatuses`의 `searchTransactionHistory:true` 지원 범위, `getFeeForMessage`에 우선 수수료 포함 여부, `sendTransaction`의 `maxRetries:0` 준수, `getAccountInfo` dataSlice 지원. QuickNode 템플릿 서브도메인(`solana-mainnet`·`solana-devnet`, §15.1)은 대시보드와 대조 | 실패 시: 이력 검색이 안 되면 §14.3-2를 `searchTransactionHistory:false`로 하고 3번 조건을 600초로 늘리며, 사용자가 탐색기에서 미처리를 확인했다는 체크를 추가로 요구한다. 우선 수수료 미포함이면 §10 비교를 `rpc_fee + priority == max_fee`로 바꾼다 |
+| 설정한 공급자(현재 QuickNode; 공급자·엔드포인트를 바꾸면 그 공급자로 다시 확인, mainnet·devnet 각각): `getSignatureStatuses`의 `searchTransactionHistory:true` 지원 범위, `getFeeForMessage`에 우선 수수료 포함 여부, `sendTransaction`의 `maxRetries:0` 준수, `getAccountInfo` dataSlice 지원. QuickNode 템플릿 서브도메인(`solana-mainnet`·`solana-devnet`, §15.1)은 대시보드와 대조. **2026-10-27 실측(`docs/acceptance/m7-live-20261027.md`)**: 이력 검색 동작(mainnet 약 5일·devnet 약 31일 전 서명이 `true`에서만 finalized), `getFeeForMessage`는 우선 수수료 포함(600 CU × 1,000,000 µL → 5,600), dataSlice 0/0 동작, rent0 650,240·rent165 1,488,440(5,080 lamports/byte 계열). `maxRetries:0`은 전송 없이 확인할 수 없어 M7-4 devnet E2E에서 본다 | 실패 시: 이력 검색이 안 되면 §14.3-2를 `searchTransactionHistory:false`로 하고 3번 조건을 600초로 늘리며, 사용자가 탐색기에서 미처리를 확인했다는 체크를 추가로 요구한다. 우선 수수료 미포함이면 §10 비교를 `rpc_fee + priority == max_fee`로 바꾼다 |
 
 ## 17. 테스트 벡터와 수락 테스트
 
@@ -700,5 +703,5 @@ SHA-256(tx 267B)  7ecb80478f954ea1a3625bf0ee1776ff0991c3f8e6ceb33c6f7b198f3929f7
 
 미결 1–3(단일 RPC 만료 증명, D5 문구, 작업량)은 spec.md 개정(§2.2 비목표, D5, §5 M7 작업량)으로 해소되어 삭제했다. 미결 6(다른 문서 등록 항목)은 모두 반영되어 삭제했다: [03] §10.1·§11(`ChainRef::Solana` 태그 2, `AccountRef::Sol`, `ApprovalKind::SolTransfer = 0x20`, `SigningPayload::SolTransfer`, `FieldKey` `0x0501`–`0x0509`, `RuleId` 상위 바이트 `'L'`), [02] §3.5·§10.3(`SolKeySource`, `with_ed25519_seed`, `sol_public_keys`), [04] §3.2–§3.4(필드 라벨, D16 단일 체크박스), [04] §6.3(`rpc:solana:<cluster>`). 다른 문서가 번호로 참조하므로 4·5번 번호를 유지한다.
 
-4. **USDT devnet 시험 불가(구현 시 확인).** D25의 v1.1 허용 목록 중 USDT는 devnet 공식 mint를 확인하지 못했다. 확인: Circle 문서의 devnet USDC mint를 `getAccountInfo`로 owner = Token·decimals = 6 검사(§8.3). 대안: v1.1 devnet E2E는 USDC로만 하고 USDT는 M9 메인넷 소액 체크리스트에서 확인한다. devnet USDC도 확인되지 않으면 v1.1 devnet E2E를 M9 소액으로 대신한다.
-5. **CU 한도 상수는 측정 전 임시값이다(구현 시 확인).** `SOL_TRANSFER_CU_LIMIT = 600`, `SPL_TRANSFER_CU_LIMIT = 60_000`은 M7 착수 시 §10 절차로 확정한다. 대안 없음: 측정 전 값으로 mainnet 전송을 하지 않는다.
+4. **USDT devnet 시험 불가(구현 시 확인).** D25의 v1.1 허용 목록 중 USDT는 devnet 공식 mint를 확인하지 못했다. devnet USDC는 2026-10-27 확인했다(§8.3). 대안: v1.1 devnet E2E는 USDC로만 하고 USDT는 M9 메인넷 소액 체크리스트에서 확인한다.
+5. **CU 한도 상수.** `SOL_TRANSFER_CU_LIMIT = 600`은 2026-10-27 §10 절차로 확정했다(최대 450). `SPL_TRANSFER_CU_LIMIT = 60_000`은 v1.1 착수 때 같은 절차로 확정한다. 대안 없음: 측정 전 값으로 mainnet SPL 전송을 하지 않는다.

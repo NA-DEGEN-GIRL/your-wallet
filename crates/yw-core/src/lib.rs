@@ -16,4 +16,6 @@ pub mod journal;
 pub mod password;
 pub mod policy;
 pub mod secret;
+pub mod slip10;
+pub mod sol;
 pub mod vault;

@@ -1,0 +1,2 @@
+[target.x86_64-pc-windows-msvc]
+rustflags = ["--cfg", 'curve25519_dalek_backend="serial"']

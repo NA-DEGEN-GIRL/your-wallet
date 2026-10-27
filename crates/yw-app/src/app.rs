@@ -157,6 +157,8 @@ pub enum SettingsSection {
     Other,
     /// EVM 체인, 수수료 상한 (M4).
     Chains,
+    /// Solana: 클러스터, 수수료 상한, 다른 경로 스캔 (M7).
+    Solana,
 }
 
 /// Confirmation overlays.
@@ -237,6 +239,14 @@ pub enum Screen {
     ChainEdit,
     /// S13.
     Sites,
+    /// S11 for Solana.
+    SolSend,
+    /// S11 result for Solana.
+    SolSendResult,
+    /// S12 for Solana.
+    SolReceive,
+    /// The recovery scan (spec/07 §3.3).
+    SolScan,
 }
 
 /// What a password-confirm window (W03) is for.
@@ -390,6 +400,7 @@ pub struct App {
     pub(crate) controls: ControlSet,
     pub(crate) placed: Placed,
     pub(crate) evm: crate::app_evm::EvmUi,
+    pub(crate) sol: crate::app_sol::SolUi,
     pub(crate) browser: Option<crate::app_browser::BrowserUi>,
     secret: Option<SecretWin>,
     secret_serial: u64,
@@ -499,6 +510,7 @@ impl App {
             controls: ControlSet::default(),
             placed: Placed::default(),
             evm: crate::app_evm::EvmUi::default(),
+            sol: crate::app_sol::SolUi::default(),
             browser: None,
             secret: None,
             secret_serial: 0,
@@ -717,7 +729,7 @@ impl App {
             Msg::Command { id, code } => {
                 if *code == 0 {
                     self.on_command(*id);
-                } else if *code == EN_CHANGE {
+                } else if *code == EN_CHANGE && !self.on_sol_edit_change(*id) {
                     self.on_edit_change(*id);
                 }
                 Reply::Handled(0)
@@ -810,6 +822,7 @@ impl App {
             self.clear_secret_clip(seq);
         }
         self.evm_tick(now);
+        self.sol_tick(now);
         if now.saturating_sub(self.last_flush_ms) >= LOG_FLUSH_MS {
             self.last_flush_ms = now;
             logging::flush();
@@ -853,6 +866,7 @@ impl App {
             self.clear_secret_clip(seq);
         }
         self.evm_lock();
+        self.sol_lock();
         self.meta = None;
         self.rename = None;
         self.pending_remove = None;
@@ -1029,6 +1043,9 @@ impl App {
             }
             KeyOutcome::Status(result) => self.on_status(result, now),
             KeyOutcome::Cancelled("SignEvm" | "SignMessage", _) => self.evm_sign_cancelled(),
+            KeyOutcome::Cancelled("SignSol", _) => self.sol_sign_cancelled(),
+            KeyOutcome::SolKeys(purpose, result) => self.on_sol_keys(purpose, result),
+            KeyOutcome::SignedSol(result) => self.on_sol_signed(result),
             KeyOutcome::SignedMessage(result) => self.browser_message_signed(result),
             KeyOutcome::Imported(Err(_))
             | KeyOutcome::LockDone
@@ -1190,6 +1207,9 @@ impl App {
                 }
                 if self.evm.journal.is_none() {
                     self.evm_after_unlock();
+                }
+                if self.sol_tab_active() {
+                    self.sol_ensure_account();
                 }
             }
             KeyOutcome::Meta(Err(
@@ -2047,7 +2067,10 @@ impl App {
                 self.set_screen(previous);
             }
             other => {
-                if !self.on_evm_command(other) && !self.on_sites_command(other) {
+                if !self.on_sol_command(other)
+                    && !self.on_evm_command(other)
+                    && !self.on_sites_command(other)
+                {
                     self.on_indexed_command(other);
                 }
             }
@@ -2103,14 +2126,18 @@ impl App {
         }
     }
 
-    /// Networks in the URL list (spec/04 §2.11.1 order; SOL/BTC rows join at M7/M8).
+    /// Networks in the URL list (spec/04 §2.11.1 order; BTC rows join at M8).
     #[must_use]
     pub fn url_networks(&self) -> Vec<NetworkId> {
-        self.settings
+        let mut networks: Vec<NetworkId> = self
+            .settings
             .registered_evm()
             .into_iter()
             .map(NetworkId::Eip155)
-            .collect()
+            .collect();
+        networks.push(NetworkId::Solana(crate::network::SolCluster::Mainnet));
+        networks.push(NetworkId::Solana(crate::network::SolCluster::Devnet));
+        networks
     }
 
     /// Display name of a network.
@@ -2121,7 +2148,10 @@ impl App {
                 .settings
                 .evm_chain_name(id)
                 .unwrap_or_else(|| format!("chainId {id}")),
-            other => other.to_string(),
+            NetworkId::Solana(cluster) => crate::app_sol::core_cluster(cluster)
+                .display_name()
+                .to_owned(),
+            other @ NetworkId::Bitcoin(_) => other.to_string(),
         }
     }
 

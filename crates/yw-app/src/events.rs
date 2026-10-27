@@ -12,7 +12,10 @@ use yw_core::evm::address::Address;
 use yw_core::evm::amount::U256;
 use yw_core::evm::sign::SignError;
 use yw_core::journal::evm::{EvmRecord, GroupKey, Role, Transition};
+use yw_core::journal::sol::{SolRecord, SolTransition};
 use yw_core::secret::Zeroizing;
+use yw_core::slip10::SolKeySource;
+use yw_core::sol::{SolAddress, SolCluster, SolSignError};
 use yw_core::vault::{BackupChallenge, ChallengeId, EvmKeySource, FileKind, RecordId, VaultStatus};
 
 use crate::errors::ErrorCode;
@@ -23,6 +26,8 @@ use crate::flow::evm::track::{BroadcastOutcome, TrackResult};
 use crate::flow::evm::user_chain::ProbeError;
 use crate::meta::{ActivityEntry, Meta};
 use crate::network::NetworkId;
+use crate::sol::flow::{PreSignError, PreviewResult, TrackResult as SolTrackResult};
+use crate::sol::scan::ScanRow;
 
 /// Event queue doorbell (`WM_APP + 1`).
 pub const WM_YW_EVENTS: u32 = 0x8001;
@@ -172,6 +177,34 @@ pub enum KeyJob {
         /// Now.
         now_unix_ms: u64,
     },
+    /// Solana public keys (`Vault::sol_public_keys`, spec/02 §10.3).
+    SolKeys {
+        /// Why.
+        purpose: SolKeysPurpose,
+        /// Sources (≤ 128).
+        sources: Vec<SolKeySource>,
+    },
+    /// Sign an approved SOL transfer and commit its `Pending` record before anything is sent
+    /// (spec/07 §13.1 steps 6–7).
+    SignSol {
+        /// The one-time approval (moved).
+        approved: Box<Approved>,
+        /// Monotonic ms of `consume`.
+        consumed_at_ms: u64,
+        /// Finalized blockhash fetched after approval.
+        blockhash: [u8; 32],
+        /// Its `lastValidBlockHeight`.
+        last_valid_block_height: u64,
+        /// Wall clock (journal `signed_at_ms`).
+        now_unix_ms: u64,
+    },
+    /// Apply a SOL broadcast-loop transition; terminal records move to activity (spec/07 §14.1).
+    SolApply {
+        /// Transition.
+        transition: SolTransition,
+        /// Wall clock.
+        now_unix_ms: u64,
+    },
     /// Stop the worker (after locking).
     Shutdown,
 }
@@ -198,6 +231,54 @@ pub struct JournalView {
     pub corrupt: usize,
     /// A new EVM record fits after clean-up.
     pub room: bool,
+    /// Decoded SOL records (spec/07 §14.1).
+    pub sol_records: Vec<SolRecord>,
+    /// SOL entries the decoder rejected (SOL sending stops, bytes kept).
+    pub sol_corrupt: usize,
+    /// A new SOL `Pending` record fits after clean-up.
+    pub sol_room: bool,
+}
+
+/// Why Solana public keys were asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SolKeysPurpose {
+    /// `계정 추가` / first Solana entry: the new standard account `index`.
+    AddAccount {
+        /// Index.
+        index: u32,
+    },
+    /// The recovery scan (spec/07 §3.3).
+    Scan,
+}
+
+/// A signed and journaled SOL transfer ready to broadcast.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SolSignedSummary {
+    /// Cluster.
+    pub cluster: SolCluster,
+    /// Sender.
+    pub from: SolAddress,
+    /// Signature.
+    pub signature: [u8; 64],
+    /// Signed bytes.
+    pub tx: Vec<u8>,
+    /// Journal `signed_at_ms`.
+    pub signed_at_ms: u64,
+    /// Journal `last_valid_block_height`.
+    pub last_valid_block_height: u64,
+}
+
+/// Why a SOL signing produced nothing to send.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SolSignFailure {
+    /// Signing or verification refused (nothing signed or stored).
+    Sign(SolSignError),
+    /// A record with the same `intent_hash` exists (`AlreadySigned`).
+    AlreadySigned,
+    /// No room in the journal (E-TX-005).
+    JournalFull,
+    /// The `Pending` record could not be committed (the signature is dropped; nothing sent).
+    JournalWrite(VaultError),
 }
 
 /// A signed and journaled transaction ready to broadcast.
@@ -256,6 +337,9 @@ impl KeyJob {
             Self::SignEvm { .. } => "SignEvm",
             Self::SignMessage { .. } => "SignMessage",
             Self::JournalApply { .. } => "JournalApply",
+            Self::SolKeys { .. } => "SolKeys",
+            Self::SignSol { .. } => "SignSol",
+            Self::SolApply { .. } => "SolApply",
             Self::Shutdown => "Shutdown",
         }
     }
@@ -336,6 +420,13 @@ pub enum KeyOutcome {
     SignedMessage(Result<[u8; 65], SignError>),
     /// Terminal journal records moved to activity (spec/03 §5.4).
     ActivityMoved(Vec<(NetworkId, ActivityEntry)>),
+    /// Solana public keys.
+    SolKeys(
+        SolKeysPurpose,
+        Result<Vec<(SolKeySource, SolAddress)>, VaultError>,
+    ),
+    /// `SignSol` finished.
+    SignedSol(Result<SolSignedSummary, SolSignFailure>),
     /// The job was cancelled by `Lock`.
     Cancelled(&'static str, KeyJobError),
 }
@@ -364,7 +455,8 @@ pub fn accept_result(result: &KeyResult, current_epoch: u64) -> bool {
         KeyOutcome::LockDone
             | KeyOutcome::SignedEvm(_)
             | KeyOutcome::SignedMessage(_)
-            | KeyOutcome::Cancelled("SignEvm" | "SignMessage", _)
+            | KeyOutcome::SignedSol(_)
+            | KeyOutcome::Cancelled("SignEvm" | "SignMessage" | "SignSol", _)
     ) || result.epoch == current_epoch
 }
 
@@ -572,6 +664,33 @@ pub enum RpcEvent {
         job: u64,
         /// Block-0 hash or error.
         result: Result<[u8; 32], ProbeError>,
+    },
+    /// Solana balances.
+    SolBalances {
+        /// Job.
+        job: u64,
+        /// Cluster.
+        cluster: SolCluster,
+        /// Balances or error.
+        result: Result<Vec<(SolAddress, u64)>, ErrorCode>,
+    },
+    /// Solana preview finished.
+    SolPreviewed(Box<PreviewResult>),
+    /// Solana pre-sign lookup finished.
+    SolPreSigned {
+        /// Job.
+        job: u64,
+        /// `(blockhash, lastValidBlockHeight)` or why not.
+        result: Result<([u8; 32], u64), PreSignError>,
+    },
+    /// A Solana broadcast round finished.
+    SolTracked(Box<SolTrackResult>),
+    /// Recovery scan finished.
+    SolScanned {
+        /// Job.
+        job: u64,
+        /// Rows or error.
+        result: Result<Vec<ScanRow>, ErrorCode>,
     },
 }
 

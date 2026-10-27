@@ -1,0 +1,1449 @@
+//! Solana flows on the UI thread (M7; spec/07 §3, §11–§14, spec/04 §2.6–§2.11): standard accounts
+//! and balances, the send form (S11 for SOL), receive (S12), the approval item and its preview,
+//! the post-approval blockhash lookup and signing, the broadcast-loop scheduling, activity, the
+//! Solana address book and the recovery scan. RPC work goes to `yw-rpc`, keys and journal commits
+//! to `yw-key`.
+
+use core::fmt::Write as _;
+use std::collections::HashMap;
+
+use yw_core::approval::Approved;
+use yw_core::bip32::path::AccountIndex;
+use yw_core::journal::sol::{SolRecord, SolTransition, SolTxState};
+use yw_core::slip10::SolKeySource;
+use yw_core::sol::broadcast::{LoopState, Outcome, PendingTx, SOL_POLL_INTERVAL_MS};
+use yw_core::sol::display::build_sol_transfer_request;
+use yw_core::sol::fee::SOL_TRANSFER_CU_LIMIT;
+use yw_core::sol::recipient::{
+    KnownAddress, KnownKind, RecipientBlock, RecipientCheck, check_recipient,
+};
+use yw_core::sol::rent::{AmountError, format_amount, parse_amount};
+use yw_core::sol::{SolAddress, SolCluster};
+
+use crate::app::{App, AppMode, Screen};
+use crate::app_evm::QueuedItem;
+use crate::errors::ErrorCode;
+use crate::events::{KeyJob, RpcEvent, SolKeysPurpose, SolSignFailure, SolSignedSummary};
+use crate::logging::{self, Field};
+use crate::meta::{Account, SolBookEntry, Tab};
+use crate::network::NetworkId;
+use crate::sol::flow::{
+    PreSignError, PreviewJob, PreviewOutcome, PreviewResult, SolEndpoint, TrackJob, TrackResult,
+};
+use crate::sol::scan::{ScanRow, scan_sources};
+use crate::text::is_valid_label;
+use crate::ui::approval::{QueueOutcome, QueueSource};
+use crate::workers::journal::sol_network;
+use crate::workers::rpc::RpcJob;
+
+/// Balance refresh while the Solana tab is visible (spec/04 §2.6).
+pub const SOL_BALANCE_REFRESH_MS: u64 = 60_000;
+/// Send-form validation after typing stops.
+pub const SOL_SEND_DEBOUNCE_MS: u64 = 500;
+/// Activity rows shown.
+pub const SOL_MAX_ACTIVITY_ROWS: usize = 50;
+
+fn now_ms() -> u64 {
+    yw_win::time::monotonic_ms()
+}
+
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+/// Settings cluster → core cluster.
+#[must_use]
+pub const fn core_cluster(cluster: crate::network::SolCluster) -> SolCluster {
+    match cluster {
+        crate::network::SolCluster::Mainnet => SolCluster::Mainnet,
+        crate::network::SolCluster::Devnet => SolCluster::Devnet,
+    }
+}
+
+/// Core cluster → settings cluster.
+#[must_use]
+pub const fn ui_cluster(cluster: SolCluster) -> crate::network::SolCluster {
+    match cluster {
+        SolCluster::Mainnet => crate::network::SolCluster::Mainnet,
+        SolCluster::Devnet => crate::network::SolCluster::Devnet,
+    }
+}
+
+/// The error code of a §12.1 block.
+#[must_use]
+pub const fn recipient_code(block: RecipientBlock) -> ErrorCode {
+    match block {
+        RecipientBlock::Format(_) => ErrorCode::Inp009,
+        RecipientBlock::IsProgram => ErrorCode::Sol001,
+        RecipientBlock::Unspendable => ErrorCode::Sol002,
+        RecipientBlock::SelfSend => ErrorCode::Sol003,
+    }
+}
+
+/// A queued SOL transfer approval.
+#[derive(Clone, Debug)]
+pub struct SolApprovalItem {
+    /// Cluster.
+    pub cluster: SolCluster,
+    /// Key source of `from`.
+    pub source: SolKeySource,
+    /// Sender.
+    pub from: SolAddress,
+    /// Sender label.
+    pub label: String,
+    /// §12.1 result.
+    pub recipient: RecipientCheck,
+    /// Lamports, `None` = send max.
+    pub amount: Option<u64>,
+}
+
+/// The SOL send form (inputs survive rejection and expiry).
+#[derive(Clone, Debug, Default)]
+pub struct SolSendForm {
+    /// A non-standard source being moved to a standard account (recovery scan, spec/07 §3.3):
+    /// `(source, from)`; the recipient is fixed and the amount is "send max".
+    pub moving: Option<(SolKeySource, SolAddress)>,
+    /// Recipient text.
+    pub to_text: String,
+    /// Amount text.
+    pub amount_text: String,
+    /// `최대` (send max: the amount is computed at preview).
+    pub send_max: bool,
+    /// Picker open.
+    pub picker: bool,
+    /// Last edit awaiting validation.
+    pub dirty_ms: Option<u64>,
+    /// Local check result.
+    pub check: Option<RecipientCheck>,
+    /// Recipient error.
+    pub recipient_error: Option<ErrorCode>,
+    /// Parsed amount.
+    pub amount: Option<u64>,
+    /// Amount error.
+    pub amount_error: Option<ErrorCode>,
+    /// Message (T-APPR-EXPIRED, errors).
+    pub info: Option<String>,
+}
+
+/// Loop scheduling of one `Pending` record.
+#[derive(Clone, Copy, Debug, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent flags of one record's loop"
+)]
+pub struct SolTrackState {
+    /// Decision state.
+    pub state: LoopState,
+    /// Next round (monotonic ms).
+    pub next_ms: u64,
+    /// A round is running.
+    pub busy: bool,
+    /// Genesis checked this session (resume check, spec/07 §15.1).
+    pub genesis_checked: bool,
+    /// Genesis mismatch: stopped until restart or a URL change.
+    pub halted: bool,
+    /// "네트워크/RPC 확인 필요".
+    pub notice: bool,
+    /// Last round failure.
+    pub error: Option<ErrorCode>,
+}
+
+/// An approved transfer waiting for its blockhash (spec/07 §13.1 step 5).
+#[derive(Debug)]
+pub struct PendingSign {
+    /// The one-time approval.
+    pub approved: Box<Approved>,
+    /// Monotonic ms of `consume`.
+    pub consumed_at_ms: u64,
+    /// Lookup job.
+    pub job: u64,
+}
+
+/// Recovery scan stage.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScanStage {
+    /// The disclosure notice (confirm first).
+    #[default]
+    Notice,
+    /// Deriving public keys.
+    Deriving,
+    /// Querying balances.
+    Running,
+    /// Results shown.
+    Done,
+}
+
+/// Recovery scan state.
+#[derive(Clone, Debug, Default)]
+pub struct SolScanState {
+    /// Stage.
+    pub stage: ScanStage,
+    /// Cluster scanned.
+    pub cluster: Option<SolCluster>,
+    /// Rows.
+    pub rows: Vec<ScanRow>,
+    /// Job.
+    pub job: u64,
+    /// Message.
+    pub message: Option<String>,
+}
+
+/// Solana address-book form (S14).
+#[derive(Clone, Debug, Default)]
+pub struct SolBookForm {
+    /// Address text.
+    pub address: String,
+    /// Label text.
+    pub label: String,
+    /// Verified.
+    pub verified: bool,
+    /// Message.
+    pub message: Option<String>,
+}
+
+/// Solana UI state.
+#[derive(Debug, Default)]
+pub struct SolUi {
+    /// Balances per (cluster, account).
+    pub balances: HashMap<(SolCluster, SolAddress), u64>,
+    /// Last balance error per cluster.
+    pub balance_error: HashMap<SolCluster, ErrorCode>,
+    /// Outstanding balance job.
+    pub balance_job: u64,
+    /// Next balance refresh.
+    pub next_balance_ms: u64,
+    /// Account creation in flight.
+    pub creating: bool,
+    /// Send form.
+    pub send: SolSendForm,
+    /// The (cluster, account) between enqueue and the `Pending` record (one in flight).
+    pub slot: Option<(SolCluster, SolAddress)>,
+    /// Approved transfer waiting for its blockhash.
+    pub pending_sign: Option<PendingSign>,
+    /// Broadcast loop per signature.
+    pub tracking: HashMap<[u8; 64], SolTrackState>,
+    /// Last sent transfer.
+    pub sent: Option<(SolCluster, [u8; 64])>,
+    /// The inputs and sender of the last sent transfer, for "다시 보내기" after `Expired` /
+    /// `FailedOnChain` (spec/07 §14.3: same inputs, new preview, new intent, new approval).
+    pub resend: Option<(SolSendForm, SolAddress)>,
+    /// Recovery scan.
+    pub scan: SolScanState,
+    /// Address book form.
+    pub book: SolBookForm,
+    /// Rename of the selected account.
+    pub rename: Option<u32>,
+    /// Job counter.
+    pub next_job: u64,
+}
+
+impl SolUi {
+    /// A fresh job id.
+    pub fn job(&mut self) -> u64 {
+        self.next_job = self.next_job.saturating_add(1);
+        self.next_job
+    }
+
+    /// Forgets everything that needs the unlocked wallet (lock). The broadcast loop needs no
+    /// secret, but its journal is re-read after unlock and the loop resumes from it.
+    pub fn clear_unlocked(&mut self) {
+        self.balances.clear();
+        self.balance_error.clear();
+        self.creating = false;
+        self.send = SolSendForm::default();
+        self.slot = None;
+        self.pending_sign = None;
+        self.tracking.clear();
+        self.sent = None;
+        self.resend = None;
+        self.scan = SolScanState::default();
+        self.book = SolBookForm::default();
+        self.rename = None;
+    }
+}
+
+impl App {
+    // ----- basics -------------------------------------------------------------------------
+
+    /// The selected cluster (settings `solana.cluster`).
+    #[must_use]
+    pub fn sol_cluster(&self) -> SolCluster {
+        core_cluster(self.settings.solana.cluster)
+    }
+
+    /// The endpoint of a cluster, or E-KEY-005 without any call.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::Key005`].
+    pub fn sol_endpoint(&self, cluster: SolCluster) -> Result<SolEndpoint, ErrorCode> {
+        let url = self
+            .apikeys
+            .rpc_url(NetworkId::Solana(ui_cluster(cluster)))
+            .ok_or(ErrorCode::Key005)?;
+        Ok(SolEndpoint { cluster, url })
+    }
+
+    /// Visible Solana accounts `(index, label, address)`.
+    #[must_use]
+    pub fn sol_account_rows(&self) -> Vec<(u32, String, SolAddress)> {
+        self.meta.as_ref().map_or_else(Vec::new, |meta| {
+            meta.sol_accounts
+                .iter()
+                .filter(|account| !account.hidden)
+                .filter_map(|account| {
+                    SolAddress::parse(&account.address)
+                        .ok()
+                        .map(|address| (account.index, account.label.clone(), address))
+                })
+                .collect()
+        })
+    }
+
+    /// The selected Solana account.
+    #[must_use]
+    pub fn sol_selected(&self) -> Option<(u32, String, SolAddress)> {
+        let selected = self.meta.as_ref()?.prefs.sol_account;
+        let rows = self.sol_account_rows();
+        rows.iter()
+            .find(|(index, ..)| *index == selected)
+            .or_else(|| rows.first())
+            .cloned()
+    }
+
+    /// Decoded SOL journal records.
+    #[must_use]
+    pub fn sol_records(&self) -> Vec<SolRecord> {
+        self.evm
+            .journal
+            .as_ref()
+            .map_or_else(Vec::new, |journal| journal.sol_records.clone())
+    }
+
+    /// SOL sending is stopped by a damaged record (spec/07 §14.1).
+    #[must_use]
+    pub fn sol_journal_damaged(&self) -> bool {
+        self.evm
+            .journal
+            .as_ref()
+            .is_some_and(|journal| journal.sol_corrupt > 0)
+    }
+
+    /// The `Pending` record of (cluster, from).
+    #[must_use]
+    pub fn sol_pending(&self, cluster: SolCluster, from: &SolAddress) -> Option<SolRecord> {
+        let records = self.sol_records();
+        yw_core::journal::sol::pending_for(&records, cluster, from).cloned()
+    }
+
+    /// The account label of an address (own accounts), or the address.
+    #[must_use]
+    pub fn sol_label(&self, address: &str) -> String {
+        self.sol_account_rows()
+            .into_iter()
+            .find(|(_, _, known)| known.to_base58() == address)
+            .map_or_else(|| address.to_owned(), |(_, label, _)| label)
+    }
+
+    /// Address book, own accounts and sent history for the §12.1 checks.
+    #[must_use]
+    pub fn sol_known(&self) -> Vec<KnownAddress> {
+        let mut known = Vec::new();
+        if let Some(meta) = self.meta.as_ref() {
+            for entry in meta.sol_book() {
+                if let Ok(address) = SolAddress::parse(&entry.address) {
+                    known.push(KnownAddress {
+                        address,
+                        label: entry.label,
+                        kind: KnownKind::Book {
+                            verified: entry.verified,
+                        },
+                    });
+                }
+            }
+        }
+        for (index, label, address) in self.sol_account_rows() {
+            known.push(KnownAddress {
+                address,
+                label,
+                kind: KnownKind::Own { index },
+            });
+        }
+        if let Some(meta) = self.meta.as_ref() {
+            for cluster in [SolCluster::Mainnet, SolCluster::Devnet] {
+                for entry in meta.activity_of(cluster.network_id()) {
+                    if let Ok(address) = SolAddress::parse(&entry.counterparty) {
+                        known.push(KnownAddress {
+                            address,
+                            label: String::new(),
+                            kind: KnownKind::Sent,
+                        });
+                    }
+                }
+            }
+        }
+        for record in self.sol_records() {
+            if let Some(core) = record.core() {
+                known.push(KnownAddress {
+                    address: core.to,
+                    label: String::new(),
+                    kind: KnownKind::Sent,
+                });
+            }
+        }
+        known
+    }
+
+    // ----- tab, accounts -------------------------------------------------------------------
+
+    /// Switches the main tab; the first Solana entry derives account 0 (spec/07 §3.1).
+    pub fn sol_select_tab(&mut self, tab: Tab) {
+        if let Some(meta) = self.meta.as_mut()
+            && meta.prefs.tab != tab
+        {
+            meta.prefs.tab = tab;
+            self.save_meta();
+        }
+        if tab == Tab::Sol {
+            self.sol_ensure_account();
+            self.sol.next_balance_ms = 0;
+        }
+        self.refresh();
+    }
+
+    /// Derives account 0 when there is none.
+    pub fn sol_ensure_account(&mut self) {
+        let empty = self
+            .meta
+            .as_ref()
+            .is_some_and(|meta| meta.sol_accounts.is_empty());
+        if empty
+            && !self.sol.creating
+            && matches!(self.mode, AppMode::Unlocked { .. } | AppMode::BackupPending)
+        {
+            self.sol_add_account();
+        }
+    }
+
+    /// `계정 추가`: the next standard index.
+    pub fn sol_add_account(&mut self) {
+        let Some(index) = self
+            .meta
+            .as_ref()
+            .and_then(crate::meta::Meta::next_sol_index)
+        else {
+            return;
+        };
+        let Ok(account) = AccountIndex::new(index) else {
+            return;
+        };
+        self.sol.creating = true;
+        self.key(KeyJob::SolKeys {
+            purpose: SolKeysPurpose::AddAccount { index },
+            sources: vec![SolKeySource::Standard(account)],
+        });
+    }
+
+    /// Selects a Solana account row.
+    pub fn sol_select_account(&mut self, row: usize) {
+        let rows = self.sol_account_rows();
+        if let Some((index, ..)) = rows.get(row)
+            && let Some(meta) = self.meta.as_mut()
+        {
+            meta.prefs.sol_account = *index;
+            self.sol.rename = None;
+            self.save_meta();
+        }
+        self.refresh();
+    }
+
+    /// Saves a renamed Solana account.
+    pub fn sol_save_rename(&mut self, label: &str) {
+        let Some(index) = self.sol.rename else {
+            return;
+        };
+        let label = label.trim();
+        if !is_valid_label(label) {
+            self.banner(Some(ErrorCode::Inp017), ErrorCode::Inp017.text());
+            self.refresh();
+            return;
+        }
+        if let Some(meta) = self.meta.as_mut()
+            && let Some(account) = meta
+                .sol_accounts
+                .iter_mut()
+                .find(|account| account.index == index)
+        {
+            label.clone_into(&mut account.label);
+        }
+        self.sol.rename = None;
+        self.save_meta();
+        self.refresh();
+    }
+
+    /// Hides the selected account (not account 0).
+    pub fn sol_hide_selected(&mut self) {
+        let Some((index, ..)) = self.sol_selected() else {
+            return;
+        };
+        if index == 0 {
+            return;
+        }
+        if let Some(meta) = self.meta.as_mut() {
+            for account in &mut meta.sol_accounts {
+                if account.index == index {
+                    account.hidden = true;
+                }
+            }
+            meta.prefs.sol_account = 0;
+        }
+        self.save_meta();
+        self.refresh();
+    }
+
+    /// Key worker result of `SolKeys`.
+    pub fn on_sol_keys(
+        &mut self,
+        purpose: SolKeysPurpose,
+        result: Result<Vec<(SolKeySource, SolAddress)>, yw_core::error::VaultError>,
+    ) {
+        match (purpose, result) {
+            (SolKeysPurpose::AddAccount { index }, Ok(keys)) => {
+                self.sol.creating = false;
+                let Some((_, address)) = keys.first() else {
+                    return;
+                };
+                if let Some(meta) = self.meta.as_mut()
+                    && !meta
+                        .sol_accounts
+                        .iter()
+                        .any(|account| account.index == index)
+                {
+                    meta.sol_accounts.push(Account {
+                        index,
+                        label: format!("Solana {}", index.saturating_add(1)),
+                        address: address.to_base58(),
+                        hidden: false,
+                    });
+                    meta.sol_accounts.sort_by_key(|account| account.index);
+                    if meta.sol_accounts.len() == 1 {
+                        meta.prefs.sol_account = index;
+                    }
+                }
+                logging::info(
+                    "app",
+                    "sol.account_added",
+                    &[("index", Field::Num(u64::from(index)))],
+                );
+                self.save_meta();
+                self.sol.next_balance_ms = 0;
+                self.refresh();
+            }
+            (SolKeysPurpose::Scan, Ok(keys)) => {
+                let cluster = self.sol_cluster();
+                match self.sol_endpoint(cluster) {
+                    Ok(endpoint) => {
+                        let job = self.sol.job();
+                        self.sol.scan.job = job;
+                        self.sol.scan.stage = ScanStage::Running;
+                        self.sol.scan.cluster = Some(cluster);
+                        let _ = self.rpc(RpcJob::SolScan {
+                            job,
+                            endpoint,
+                            keys,
+                        });
+                    }
+                    Err(code) => {
+                        self.sol.scan.stage = ScanStage::Notice;
+                        self.sol.scan.message = Some(code.text());
+                    }
+                }
+                self.refresh();
+            }
+            (purpose, Err(error)) => {
+                if matches!(purpose, SolKeysPurpose::AddAccount { .. }) {
+                    self.sol.creating = false;
+                } else {
+                    self.sol.scan.stage = ScanStage::Notice;
+                }
+                self.error_banner(crate::errors::vault_code(error));
+            }
+        }
+    }
+
+    // ----- balances -----------------------------------------------------------------------
+
+    /// Asks the balances of the visible accounts (Solana tab, spec/04 §2.6).
+    pub fn sol_refresh_balances(&mut self) {
+        self.sol.next_balance_ms = now_ms().saturating_add(SOL_BALANCE_REFRESH_MS);
+        let cluster = self.sol_cluster();
+        let accounts: Vec<SolAddress> = self
+            .sol_account_rows()
+            .into_iter()
+            .map(|(_, _, address)| address)
+            .collect();
+        if accounts.is_empty() {
+            return;
+        }
+        match self.sol_endpoint(cluster) {
+            Ok(endpoint) => {
+                let job = self.sol.job();
+                self.sol.balance_job = job;
+                let _ = self.rpc(RpcJob::SolBalances {
+                    job,
+                    endpoint,
+                    accounts,
+                });
+            }
+            Err(code) => {
+                self.sol.balance_error.insert(cluster, code);
+            }
+        }
+    }
+
+    /// The balance of an account on the selected cluster.
+    #[must_use]
+    pub fn sol_balance(&self, address: &SolAddress) -> Option<u64> {
+        self.sol
+            .balances
+            .get(&(self.sol_cluster(), *address))
+            .copied()
+    }
+
+    // ----- events -------------------------------------------------------------------------
+
+    /// RPC worker events of the Solana flows.
+    pub fn sol_rpc_event(&mut self, event: RpcEvent) {
+        match event {
+            RpcEvent::SolBalances {
+                job,
+                cluster,
+                result,
+            } => {
+                if job != self.sol.balance_job {
+                    return;
+                }
+                match result {
+                    Ok(list) => {
+                        for (address, balance) in list {
+                            self.sol.balances.insert((cluster, address), balance);
+                        }
+                        self.sol.balance_error.remove(&cluster);
+                    }
+                    Err(code) => {
+                        self.sol.balance_error.insert(cluster, code);
+                    }
+                }
+                self.refresh();
+            }
+            RpcEvent::SolPreviewed(result) => self.on_sol_previewed(*result),
+            RpcEvent::SolPreSigned { job, result } => self.on_sol_presigned(job, result),
+            RpcEvent::SolTracked(result) => self.on_sol_tracked(&result),
+            RpcEvent::SolScanned { job, result } => {
+                if job != self.sol.scan.job {
+                    return;
+                }
+                match result {
+                    Ok(rows) => {
+                        self.sol.scan.rows = rows;
+                        self.sol.scan.stage = ScanStage::Done;
+                        self.sol.scan.message = None;
+                    }
+                    Err(code) => {
+                        self.sol.scan.stage = ScanStage::Notice;
+                        self.sol.scan.message = Some(code.text());
+                    }
+                }
+                self.refresh();
+            }
+            _ => {}
+        }
+    }
+
+    /// Main-timer part: balances, form debounce, broadcast-loop rounds.
+    pub fn sol_tick(&mut self, now: u64) {
+        let on_tab = self
+            .meta
+            .as_ref()
+            .is_some_and(|meta| meta.prefs.tab == Tab::Sol);
+        if matches!(self.mode, AppMode::Unlocked { .. })
+            && on_tab
+            && matches!(self.screen, Screen::Main)
+            && now >= self.sol.next_balance_ms
+        {
+            self.sol_refresh_balances();
+        }
+        if let Some(changed) = self.sol.send.dirty_ms
+            && now.saturating_sub(changed) >= SOL_SEND_DEBOUNCE_MS
+        {
+            self.sol.send.dirty_ms = None;
+            self.sol_validate_send();
+        }
+        self.sol_tick_tracking(now);
+    }
+
+    // ----- send form ----------------------------------------------------------------------
+
+    /// Opens the SOL send form for the selected account.
+    pub fn sol_open_send(&mut self) {
+        if self.sol.send.moving.is_some() {
+            self.sol.send = SolSendForm::default();
+        }
+        self.sol.send.info = None;
+        self.set_screen(Screen::SolSend);
+        self.sol_refresh_balances();
+    }
+
+    /// Whether the last sent transfer ended `Expired` / `FailedOnChain` and its inputs are kept
+    /// ("다시 보내기", spec/07 §14.3).
+    #[must_use]
+    pub fn sol_can_resend(&self) -> bool {
+        let Some((cluster, signature)) = self.sol.sent else {
+            return false;
+        };
+        if self.sol.resend.is_none() {
+            return false;
+        }
+        if let Some(record) = self
+            .sol_records()
+            .iter()
+            .find(|record| record.signature() == signature)
+        {
+            return matches!(
+                record.state,
+                SolTxState::Expired | SolTxState::FailedOnChain
+            );
+        }
+        let tx_id = yw_core::codec::base58::base58_encode(&signature);
+        self.meta.as_ref().is_some_and(|meta| {
+            meta.activity_of(cluster.network_id()).iter().any(|entry| {
+                entry.tx_id == tx_id && matches!(entry.status.as_str(), "expired" | "failed")
+            })
+        })
+    }
+
+    /// "다시 보내기": the same inputs back in the send form; `검토` then starts a new preview,
+    /// a new intent and a new approval (spec/07 §14.3). Nothing of the old approval is reused.
+    pub fn sol_send_again(&mut self) {
+        if !self.sol_can_resend() {
+            return;
+        }
+        let Some((form, from)) = self.sol.resend.take() else {
+            return;
+        };
+        if form.moving.is_none()
+            && let Some(row) = self
+                .sol_account_rows()
+                .iter()
+                .position(|(_, _, address)| *address == from)
+        {
+            self.sol_select_account(row);
+        }
+        self.sol.send = form;
+        self.sol.sent = None;
+        self.set_screen(Screen::SolSend);
+        self.sol_validate_send();
+        self.sol_refresh_balances();
+    }
+
+    /// The sending account of the form: `(source, from, label)`.
+    #[must_use]
+    pub fn sol_form_sender(&self) -> Option<(SolKeySource, SolAddress, String)> {
+        if let Some((source, from)) = self.sol.send.moving {
+            return Some((source, from, format!("비표준 경로 {}", source.path_text())));
+        }
+        let (index, label, address) = self.sol_selected()?;
+        let index = AccountIndex::new(index).ok()?;
+        Some((SolKeySource::Standard(index), address, label))
+    }
+
+    /// Validates the form (local checks only; the preview does the RPC part).
+    pub fn sol_validate_send(&mut self) {
+        let Some((_, from, _)) = self.sol_form_sender() else {
+            return;
+        };
+        let known = self.sol_known();
+        let form = &mut self.sol.send;
+        if form.to_text.trim().is_empty() {
+            form.check = None;
+            form.recipient_error = None;
+        } else {
+            match check_recipient(&form.to_text, &from, &known) {
+                Ok(check) => {
+                    form.check = Some(check);
+                    form.recipient_error = None;
+                }
+                Err(block) => {
+                    form.check = None;
+                    form.recipient_error = Some(recipient_code(block));
+                }
+            }
+        }
+        if form.send_max || form.amount_text.is_empty() {
+            form.amount = None;
+            form.amount_error = None;
+        } else {
+            match parse_amount(&form.amount_text, 9) {
+                Ok(amount) => {
+                    form.amount = Some(amount);
+                    form.amount_error = None;
+                }
+                Err(AmountError::Format | AmountError::Zero | AmountError::Overflow) => {
+                    form.amount = None;
+                    form.amount_error = Some(ErrorCode::Inp011);
+                }
+            }
+        }
+        self.refresh();
+    }
+
+    /// `최대` (send max): the amount is `balance − max fee`, computed at preview.
+    pub fn sol_fill_max(&mut self) {
+        self.sol.send.send_max = !self.sol.send.send_max;
+        if self.sol.send.send_max {
+            self.sol.send.amount_text.clear();
+            self.controls
+                .set_text(crate::ui::screens_sol::ids::SEND_AMOUNT_EDIT, "");
+        }
+        self.sol_validate_send();
+    }
+
+    /// Whether `검토` is enabled.
+    #[must_use]
+    pub fn sol_can_review(&self) -> bool {
+        let form = &self.sol.send;
+        let cluster = self.sol_cluster();
+        let Some((_, from, _)) = self.sol_form_sender() else {
+            return false;
+        };
+        form.check.is_some()
+            && form.recipient_error.is_none()
+            && (form.send_max || (form.amount.is_some() && form.amount_error.is_none()))
+            && self.evm.journal.is_some()
+            && !self.sol_journal_damaged()
+            && self.sol_pending(cluster, &from).is_none()
+            && self.sol.slot.is_none()
+            && self.sol.pending_sign.is_none()
+            && matches!(self.mode, AppMode::Unlocked { .. })
+    }
+
+    /// `검토`: queue the approval (spec/07 §13.1 step 1 done, step 2 runs in A01).
+    pub fn sol_review(&mut self) {
+        if !self.sol_can_review() {
+            return;
+        }
+        let Some((source, from, label)) = self.sol_form_sender() else {
+            return;
+        };
+        let Some(recipient) = self.sol.send.check.clone() else {
+            return;
+        };
+        let cluster = self.sol_cluster();
+        let item = SolApprovalItem {
+            cluster,
+            source,
+            from,
+            label,
+            recipient,
+            amount: if self.sol.send.send_max {
+                None
+            } else {
+                self.sol.send.amount
+            },
+        };
+        if self
+            .evm
+            .queue
+            .enqueue(QueueSource::App, QueuedItem::Sol(Box::new(item)))
+            .is_ok()
+        {
+            self.sol.slot = Some((cluster, from));
+            self.sol.send.info = None;
+            self.show_next_approval();
+        } else {
+            self.sol.send.info = Some(ErrorCode::App005.text());
+            self.refresh();
+        }
+    }
+
+    /// An approval ended (any outcome; spec/04 §3.1: back to the form with inputs kept).
+    pub fn sol_approval_finished(&mut self, _item: &SolApprovalItem, outcome: QueueOutcome) {
+        if outcome != QueueOutcome::Approved {
+            self.sol.slot = None;
+        }
+        if outcome == QueueOutcome::Expired {
+            self.sol.send.info = Some("승인 시간이 지났습니다. 다시 검토하세요.".to_owned());
+        }
+        logging::info(
+            "app",
+            "approval.finished",
+            &[(
+                "outcome",
+                Field::Word(crate::app_evm::outcome_name(outcome)),
+            )],
+        );
+        self.refresh();
+    }
+
+    // ----- approval window: preview, consume, sign -----------------------------------------
+
+    /// Step 2 on the RPC worker (called by `start_prepare`).
+    pub fn prepare_sol(&mut self, job: u64, item: &SolApprovalItem) {
+        let endpoint = match self.sol_endpoint(item.cluster) {
+            Ok(endpoint) => endpoint,
+            Err(code) => {
+                self.show_failure(code, false, code.text());
+                return;
+            }
+        };
+        let journal_room = self
+            .evm
+            .journal
+            .as_ref()
+            .is_some_and(|journal| journal.sol_room);
+        let sent = self.rpc(RpcJob::SolPreview(Box::new(PreviewJob {
+            job,
+            endpoint,
+            source: item.source,
+            from: item.from,
+            account_label: item.label.clone(),
+            recipient: item.recipient.clone(),
+            amount: item.amount,
+            fee_cap: self.settings.solana.max_fee_lamports,
+            max_cu_price: self.settings.solana.max_cu_price_micro,
+            pending_exists: self.sol_pending(item.cluster, &item.from).is_some(),
+            journal_room,
+        })));
+        if !sent {
+            self.show_failure(ErrorCode::Rpc001, true, ErrorCode::Rpc001.text());
+        }
+    }
+
+    fn on_sol_previewed(&mut self, result: PreviewResult) {
+        let matches = self
+            .evm
+            .window
+            .as_ref()
+            .is_some_and(|window| window.job() == result.job);
+        if !matches {
+            return;
+        }
+        match result.outcome {
+            PreviewOutcome::Failed { code, retryable } => {
+                logging::warn("app", "sol.preview_failed", &[("code", Field::Code(code))]);
+                self.show_failure(code, retryable, code.text());
+            }
+            PreviewOutcome::Ready(prepared) => {
+                let Ok(id) = Self::new_approval_id() else {
+                    self.show_failure(ErrorCode::Vlt005, false, ErrorCode::Vlt005.text());
+                    return;
+                };
+                let now_unix = now_unix_ms();
+                let intent = prepared.intent(id.0, now_unix);
+                if prepared.core.cu_limit != SOL_TRANSFER_CU_LIMIT {
+                    self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
+                    return;
+                }
+                match build_sol_transfer_request(&intent, &prepared.genesis, &prepared.facts) {
+                    Ok(draft) => self.show_ready_draft_at(draft, None, now_unix),
+                    Err(_) => {
+                        self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
+                    }
+                }
+            }
+        }
+    }
+
+    /// `consume` succeeded (spec/07 §13.1 step 4): fetch the finalized blockhash now.
+    pub fn sol_consumed(&mut self, approved: Approved, cluster: SolCluster, consumed_at_ms: u64) {
+        let job = self.sol.job();
+        match self.sol_endpoint(cluster) {
+            Ok(endpoint) => {
+                self.sol.pending_sign = Some(PendingSign {
+                    approved: Box::new(approved),
+                    consumed_at_ms,
+                    job,
+                });
+                if !self.rpc(RpcJob::SolPreSign { job, endpoint }) {
+                    self.sol_abort_sign(ErrorCode::Rpc001);
+                }
+            }
+            Err(code) => {
+                drop(approved);
+                self.sol.slot = None;
+                self.sol_abort_message(code);
+            }
+        }
+    }
+
+    fn sol_abort_message(&mut self, cause: ErrorCode) {
+        let message = format!("{} — {}", ErrorCode::Sol004.text(), cause.text());
+        logging::warn("app", "sol.sign_aborted", &[("code", Field::Code(cause))]);
+        self.sol.send.info = Some(message.clone());
+        self.banner(None, message);
+        self.refresh();
+    }
+
+    fn sol_abort_sign(&mut self, cause: ErrorCode) {
+        self.sol.pending_sign = None;
+        self.sol.slot = None;
+        self.sol_abort_message(cause);
+    }
+
+    fn on_sol_presigned(&mut self, job: u64, result: Result<([u8; 32], u64), PreSignError>) {
+        let Some(pending) = self.sol.pending_sign.take() else {
+            return;
+        };
+        if pending.job != job {
+            self.sol.pending_sign = Some(pending);
+            return;
+        }
+        match result {
+            Ok((blockhash, last_valid_block_height)) => {
+                self.key(KeyJob::SignSol {
+                    approved: pending.approved,
+                    consumed_at_ms: pending.consumed_at_ms,
+                    blockhash,
+                    last_valid_block_height,
+                    now_unix_ms: now_unix_ms(),
+                });
+            }
+            Err(error) => {
+                let code = match error {
+                    PreSignError::Rpc(code) => code,
+                    PreSignError::ClusterMismatch => ErrorCode::Rpc006,
+                    PreSignError::RpcAnomaly => ErrorCode::Rpc005,
+                };
+                self.sol.slot = None;
+                self.sol_abort_message(code);
+            }
+        }
+    }
+
+    /// `SignSol` finished.
+    pub fn on_sol_signed(&mut self, result: Result<SolSignedSummary, SolSignFailure>) {
+        self.sol.slot = None;
+        match result {
+            Ok(signed) => {
+                logging::info(
+                    "app",
+                    "sol.signed",
+                    &[("net", Field::Net(sol_network(signed.cluster)))],
+                );
+                self.sol.sent = Some((signed.cluster, signed.signature));
+                let form = std::mem::take(&mut self.sol.send);
+                self.sol.resend = Some((
+                    SolSendForm {
+                        moving: form.moving,
+                        to_text: form.to_text,
+                        amount_text: form.amount_text,
+                        send_max: form.send_max,
+                        ..SolSendForm::default()
+                    },
+                    signed.from,
+                ));
+                self.sol.tracking.insert(
+                    signed.signature,
+                    SolTrackState {
+                        next_ms: 0,
+                        // Signed just now after a genesis check (step 5).
+                        genesis_checked: true,
+                        ..SolTrackState::default()
+                    },
+                );
+                if matches!(self.screen, Screen::SolSend) {
+                    self.set_screen(Screen::SolSendResult);
+                } else {
+                    self.refresh();
+                }
+                self.sol_tick_tracking(now_ms());
+            }
+            Err(failure) => {
+                let cause = match failure {
+                    SolSignFailure::Sign(yw_core::sol::SolSignError::Vault(error)) => {
+                        crate::errors::vault_code(error)
+                    }
+                    SolSignFailure::Sign(_) | SolSignFailure::AlreadySigned => ErrorCode::Tx003,
+                    SolSignFailure::JournalFull => ErrorCode::Tx005,
+                    SolSignFailure::JournalWrite(_) => ErrorCode::Vlt003,
+                };
+                self.sol_abort_message(cause);
+            }
+        }
+    }
+
+    /// A consumed SOL approval ended without a signature because of the lock.
+    pub fn sol_sign_cancelled(&mut self) {
+        self.sol.slot = None;
+        self.sol.pending_sign = None;
+        logging::info(
+            "app",
+            "sol.sign_aborted",
+            &[("reason", Field::Word("locked"))],
+        );
+    }
+
+    // ----- broadcast loop -------------------------------------------------------------------
+
+    /// Starts tracking every `Pending` record of the journal (after unlock / journal change).
+    pub fn sol_schedule_tracking(&mut self) {
+        let pending: Vec<[u8; 64]> = self
+            .sol_records()
+            .iter()
+            .filter(|record| record.state == SolTxState::Pending)
+            .map(SolRecord::signature)
+            .collect();
+        self.sol
+            .tracking
+            .retain(|signature, _| pending.contains(signature));
+        for signature in pending {
+            self.sol.tracking.entry(signature).or_default();
+        }
+    }
+
+    fn sol_tick_tracking(&mut self, now: u64) {
+        let records = self.sol_records();
+        let due: Vec<[u8; 64]> = self
+            .sol
+            .tracking
+            .iter()
+            .filter(|(_, state)| !state.busy && !state.halted && now >= state.next_ms)
+            .map(|(signature, _)| *signature)
+            .collect();
+        for signature in due {
+            let Some(record) = records.iter().find(|record| {
+                record.signature() == signature && record.state == SolTxState::Pending
+            }) else {
+                continue;
+            };
+            let Ok(endpoint) = self.sol_endpoint(record.cluster) else {
+                if let Some(state) = self.sol.tracking.get_mut(&signature) {
+                    state.error = Some(ErrorCode::Key005);
+                    state.next_ms = now.saturating_add(5_000);
+                }
+                continue;
+            };
+            let Some(state) = self.sol.tracking.get_mut(&signature) else {
+                continue;
+            };
+            let job = TrackJob {
+                endpoint,
+                signature,
+                tx: record.tx.clone(),
+                pending: PendingTx {
+                    signed_at_ms: record.signed_at_ms,
+                    last_valid_block_height: record.last_valid_block_height,
+                },
+                state: state.state,
+                check_genesis: !state.genesis_checked,
+            };
+            state.busy = true;
+            if !self.rpc(RpcJob::SolTrack(Box::new(job)))
+                && let Some(state) = self.sol.tracking.get_mut(&signature)
+            {
+                state.busy = false;
+            }
+        }
+    }
+
+    fn on_sol_tracked(&mut self, result: &TrackResult) {
+        let now = now_ms();
+        let Some(state) = self.sol.tracking.get_mut(&result.signature) else {
+            return;
+        };
+        state.busy = false;
+        state.next_ms = now.saturating_add(SOL_POLL_INTERVAL_MS);
+        state.state = result.state;
+        match result.genesis_ok {
+            Some(true) => state.genesis_checked = true,
+            Some(false) => state.halted = true,
+            None => {}
+        }
+        let transition = match result.outcome {
+            Ok(Outcome::Pending { notice }) => {
+                state.notice = notice;
+                state.error = None;
+                None
+            }
+            Ok(Outcome::Landed { slot }) => Some(SolTransition::Landed {
+                signature: result.signature,
+                slot,
+            }),
+            Ok(Outcome::FailedOnChain { slot, err }) => Some(SolTransition::FailedOnChain {
+                signature: result.signature,
+                slot,
+                err,
+            }),
+            Ok(Outcome::Expired) => Some(SolTransition::Expired {
+                signature: result.signature,
+            }),
+            Err(code) => {
+                state.error = Some(code);
+                None
+            }
+        };
+        if let Some(transition) = transition {
+            logging::info(
+                "app",
+                "sol.terminal",
+                &[("kind", Field::Word(transition.name()))],
+            );
+            state.halted = true;
+            if matches!(self.mode, AppMode::Unlocked { .. }) {
+                self.key(KeyJob::SolApply {
+                    transition,
+                    now_unix_ms: now_unix_ms(),
+                });
+            } else {
+                // Locked: the journal is written after unlock (spec/07 §14.2); the loop resumes
+                // from the journal then and observes the same final state.
+                state.halted = false;
+            }
+        }
+        self.refresh();
+    }
+
+    /// The status text of a pending record.
+    #[must_use]
+    pub fn sol_record_status(&self, record: &SolRecord) -> String {
+        match record.state {
+            SolTxState::Pending => {
+                let state = self.sol.tracking.get(&record.signature());
+                let mut text = if state.is_some_and(|state| state.state.processing) {
+                    "처리 중 (finalized 대기)".to_owned()
+                } else {
+                    "전송 확인 중".to_owned()
+                };
+                if let Some(state) = state {
+                    if let Some(code) = state.state.preflight_err {
+                        let _ = write!(
+                            text,
+                            " — 재전송 중지: {}",
+                            yw_core::sol::broadcast::err::text(code)
+                        );
+                    }
+                    if state.state.anomaly {
+                        text.push_str(" — RPC가 다른 서명을 반환함(RpcAnomaly)");
+                    }
+                    if state.halted {
+                        let _ = write!(text, " — {}", ErrorCode::Rpc006.text());
+                    } else if let Some(code) = state.error {
+                        let _ = write!(text, " — 조회 실패 {}", code.code());
+                    }
+                    if state.notice {
+                        let _ = write!(text, " — {}", ErrorCode::Sol005.text());
+                    }
+                }
+                text
+            }
+            SolTxState::Landed => "성공".to_owned(),
+            SolTxState::FailedOnChain => format!(
+                "실패: {}",
+                yw_core::sol::broadcast::err::text(record.terminal_err)
+            ),
+            SolTxState::Expired => "만료 (전송되지 않음)".to_owned(),
+        }
+    }
+
+    // ----- lock, URL changes ----------------------------------------------------------------
+
+    /// Lock: drop the unlocked state (the approval token, if any, is dropped unused).
+    pub fn sol_lock(&mut self) {
+        self.sol.clear_unlocked();
+    }
+
+    /// The `solana:<cluster>` URL changed: re-check the genesis on the next rounds.
+    pub fn sol_url_changed(&mut self, cluster: crate::network::SolCluster) {
+        let cluster = core_cluster(cluster);
+        let records = self.sol_records();
+        for (signature, state) in &mut self.sol.tracking {
+            if records
+                .iter()
+                .any(|record| record.signature() == *signature && record.cluster == cluster)
+            {
+                state.genesis_checked = false;
+                state.halted = false;
+            }
+        }
+        self.sol.balance_error.remove(&cluster);
+        self.sol.next_balance_ms = 0;
+    }
+
+    // ----- receive, book, scan --------------------------------------------------------------
+
+    /// Copies the selected address (not a secret: plain clipboard, spec/07 §12.3).
+    pub fn sol_copy_address(&mut self) {
+        if let Some((_, _, address)) = self.sol_selected() {
+            self.copy_text(&address.to_base58());
+        }
+    }
+
+    /// Saves a Solana address-book entry (S14).
+    pub fn sol_save_book(&mut self) {
+        let form = self.sol.book.clone();
+        let Ok(address) = SolAddress::parse_input(&form.address) else {
+            self.sol.book.message = Some(ErrorCode::Inp009.text());
+            self.refresh();
+            return;
+        };
+        let label = form.label.trim();
+        if !is_valid_label(label) {
+            self.sol.book.message = Some(ErrorCode::Inp017.text());
+            self.refresh();
+            return;
+        }
+        let entry = SolBookEntry {
+            address: address.to_base58(),
+            label: label.to_owned(),
+            verified: form.verified,
+            added_at_unix_ms: now_unix_ms(),
+        };
+        let Some(meta) = self.meta.as_mut() else {
+            return;
+        };
+        match meta.add_sol_book(&entry) {
+            Ok(()) => {
+                self.sol.book = SolBookForm::default();
+                self.save_meta();
+            }
+            Err(crate::meta::ListError::Duplicate) => {
+                self.sol.book.message = Some(ErrorCode::Inp016.text());
+            }
+            Err(crate::meta::ListError::Full) => {
+                self.sol.book.message = Some("주소록은 최대 500개입니다.".to_owned());
+            }
+        }
+        self.refresh();
+    }
+
+    /// Deletes a Solana address-book entry.
+    pub fn sol_delete_book(&mut self, row: usize) {
+        let Some(entry) = self
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.sol_book().get(row).cloned())
+        else {
+            return;
+        };
+        if let Some(meta) = self.meta.as_mut() {
+            meta.remove_sol_book(&entry.address);
+        }
+        self.save_meta();
+        self.refresh();
+    }
+
+    /// Opens the scan screen at its notice.
+    pub fn sol_open_scan(&mut self) {
+        if !matches!(
+            self.sol.scan.stage,
+            ScanStage::Deriving | ScanStage::Running
+        ) {
+            self.sol.scan = SolScanState::default();
+        }
+        self.set_screen(Screen::SolScan);
+    }
+
+    /// Starts the scan after the disclosure was confirmed (spec/07 §3.3).
+    pub fn sol_start_scan(&mut self) {
+        if self.sol_endpoint(self.sol_cluster()).is_err() {
+            self.sol.scan.message = Some(ErrorCode::Key005.text());
+            self.refresh();
+            return;
+        }
+        self.sol.scan.stage = ScanStage::Deriving;
+        self.sol.scan.message = None;
+        self.key(KeyJob::SolKeys {
+            purpose: SolKeysPurpose::Scan,
+            sources: scan_sources(),
+        });
+        self.refresh();
+    }
+
+    /// Scan rows worth showing: funded accounts and standard accounts not yet added.
+    #[must_use]
+    pub fn sol_scan_rows(&self) -> Vec<ScanRow> {
+        let known: Vec<u32> = self
+            .meta
+            .as_ref()
+            .map(|meta| {
+                meta.sol_accounts
+                    .iter()
+                    .map(|account| account.index)
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.sol
+            .scan
+            .rows
+            .iter()
+            .filter(|row| {
+                row.balance > 0
+                    && !matches!(row.source, SolKeySource::Standard(index) if known.contains(&index.get()))
+            })
+            .copied()
+            .collect()
+    }
+
+    /// `계정 추가` from a scan row (standard path only).
+    pub fn sol_scan_add(&mut self, row: usize) {
+        let rows = self.sol_scan_rows();
+        let Some(ScanRow {
+            source: SolKeySource::Standard(index),
+            address,
+            ..
+        }) = rows.get(row).copied()
+        else {
+            return;
+        };
+        if let Some(meta) = self.meta.as_mut()
+            && !meta
+                .sol_accounts
+                .iter()
+                .any(|account| account.index == index.get())
+            && meta.sol_accounts.len() < crate::meta::MAX_EVM_ACCOUNTS
+        {
+            meta.sol_accounts.push(Account {
+                index: index.get(),
+                label: format!("Solana {}", index.get().saturating_add(1)),
+                address: address.to_base58(),
+                hidden: false,
+            });
+            meta.sol_accounts.sort_by_key(|account| account.index);
+        }
+        self.save_meta();
+        self.refresh();
+    }
+
+    /// `표준 계정으로 이동` from a non-standard scan row: the send form with the recipient fixed
+    /// to the selected standard account and "send max" (spec/07 §3.3).
+    pub fn sol_scan_move(&mut self, row: usize) {
+        let rows = self.sol_scan_rows();
+        let Some(row) = rows.get(row).copied() else {
+            return;
+        };
+        if row.source.is_standard() {
+            return;
+        }
+        let Some((_, _, target)) = self.sol_selected() else {
+            return;
+        };
+        self.sol.send = SolSendForm {
+            moving: Some((row.source, row.address)),
+            to_text: target.to_base58(),
+            send_max: true,
+            ..SolSendForm::default()
+        };
+        self.set_screen(Screen::SolSend);
+        self.sol_validate_send();
+    }
+
+    /// Lamports as `x.xxxxxxxxx SOL`.
+    #[must_use]
+    pub fn sol_text(lamports: u64) -> String {
+        format!("{} SOL", format_amount(lamports, 9))
+    }
+}

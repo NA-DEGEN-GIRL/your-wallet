@@ -137,15 +137,28 @@ pub enum QueuedItem {
     App(Box<AppApproval>),
     /// A dApp request (connect, signing, unlock-gated permission).
     Site(Box<crate::browser::SiteRequest>),
+    /// A Solana transfer of this app (spec/07 §13).
+    Sol(Box<crate::app_sol::SolApprovalItem>),
 }
 
 impl QueuedItem {
-    /// The chain the item signs on (dApp: the origin chain at request time).
+    /// The EVM chain the item signs on (dApp: the origin chain at request time); 0 for Solana.
     #[must_use]
     pub fn chain_id(&self) -> u64 {
         match self {
             Self::App(item) => item.chain_id,
             Self::Site(site) => site.chain_id,
+            Self::Sol(_) => 0,
+        }
+    }
+
+    /// The network of the item (logs).
+    #[must_use]
+    pub fn network(&self) -> NetworkId {
+        match self {
+            Self::App(item) => NetworkId::Eip155(item.chain_id),
+            Self::Site(site) => NetworkId::Eip155(site.chain_id),
+            Self::Sol(item) => crate::workers::journal::sol_network(item.cluster),
         }
     }
 }
@@ -533,8 +546,15 @@ impl App {
                         "거래 저널이 손상되어 보내기를 멈췄습니다. (E-VLT-006)".to_owned(),
                     );
                 }
+                if view.sol_corrupt > 0 {
+                    self.banner(
+                        Some(ErrorCode::Vlt006),
+                        "거래 저널이 손상되어 보내기를 멈췄습니다. (E-VLT-006)".to_owned(),
+                    );
+                }
                 self.evm.journal = Some(view);
                 self.schedule_tracking(true);
+                self.sol_schedule_tracking();
                 self.refresh();
             }
             KeyOutcome::Journal(Err(
@@ -725,6 +745,11 @@ impl App {
             }
             RpcEvent::Probe { job, result } => self.on_probe(job, result),
             RpcEvent::Test { .. } => {}
+            event @ (RpcEvent::SolBalances { .. }
+            | RpcEvent::SolPreviewed(_)
+            | RpcEvent::SolPreSigned { .. }
+            | RpcEvent::SolTracked(_)
+            | RpcEvent::SolScanned { .. }) => self.sol_rpc_event(event),
         }
     }
 
@@ -1314,6 +1339,10 @@ impl App {
     pub fn approval_finished(&mut self, item: &QueuedItem, outcome: QueueOutcome) {
         let item = match item {
             QueuedItem::App(item) => item,
+            QueuedItem::Sol(item) => {
+                self.sol_approval_finished(item, outcome);
+                return;
+            }
             QueuedItem::Site(site) => {
                 self.site_finished(site, outcome);
                 logging::info(

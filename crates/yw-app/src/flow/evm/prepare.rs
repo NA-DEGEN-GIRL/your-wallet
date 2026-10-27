@@ -966,8 +966,11 @@ fn rebuild(
     sim_received_ms: u64,
     now_unix_ms: u64,
 ) -> Option<Box<Prepared>> {
-    let yw_core::approval::AccountRef::Evm(account) = job.request.account;
-    let yw_core::approval::Signer::Evm(signer) = job.request.signer;
+    let (yw_core::approval::AccountRef::Evm(account), yw_core::approval::Signer::Evm(signer)) =
+        (job.request.account, job.request.signer)
+    else {
+        return None;
+    };
     let prepare_job = PrepareJob {
         job: job.job,
         chain: job.chain.clone(),
@@ -1024,12 +1027,14 @@ pub fn resimulate(
 ) -> ResimResult {
     let client = RpcClient::new(&**transport);
     let url = &job.chain.url;
-    let yw_core::approval::AccountRef::Evm(account) = job.request.account;
     let mut result = ResimResult {
         job: job.job,
         kind: ResimKind::NoResult,
         prepared: None,
         failure: None,
+    };
+    let yw_core::approval::AccountRef::Evm(account) = job.request.account else {
+        return result;
     };
     let check = cache.ensure(
         &client,

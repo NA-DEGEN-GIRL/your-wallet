@@ -219,6 +219,8 @@ fn approval_window_renders_a_fixture_dry_run() {
             records: Vec::new(),
             corrupt: 0,
             room: true,
+            sol_room: true,
+            ..JournalView::default()
         });
         state.enqueue_app(AppApproval {
             chain_id: 11_155_111,

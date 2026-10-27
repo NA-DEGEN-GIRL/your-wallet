@@ -1,0 +1,256 @@
+//! SLIP-0010 Ed25519 derivation (hardened only) and the Solana key sources (spec/02 §3.5,
+//! spec/07 §3, M7).
+//!
+//! The derivation result is an RFC 8032 secret seed. It is only ever handed to
+//! `ed25519_dalek::SigningKey::from_bytes` inside `Vault::with_ed25519_seed` /
+//! `Vault::sol_public_keys`; no public API returns it.
+
+use core::fmt;
+use core::str::FromStr;
+
+use zeroize::Zeroizing;
+
+use crate::bip32::path::AccountIndex;
+use crate::bip32::{HARDENED, MAX_PATH_DEPTH, hmac_sha512, split_halves};
+use crate::error::KeyError;
+
+/// HMAC key of the SLIP-0010 Ed25519 master node.
+pub const SLIP10_ED25519_KEY: &[u8] = b"ed25519 seed";
+/// `44'` (BIP44 purpose, hardened).
+const PURPOSE_44H: u32 = 0x8000_002C;
+/// `501'` (SLIP-0044 Solana coin type, hardened).
+const COIN_501H: u32 = 0x8000_01F5;
+
+/// A path whose components are all hardened, depth 1..=10 (spec/02 §3.5). Never accepts a
+/// non-hardened component and never promotes one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Slip10Path {
+    components: Vec<u32>,
+}
+
+impl Slip10Path {
+    /// Builds a path from hardened components (bit 31 set on every one).
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError::InvalidPath`] for an empty path, a depth above 10 or a non-hardened component.
+    pub fn from_components(components: Vec<u32>) -> Result<Self, KeyError> {
+        if components.is_empty()
+            || components.len() > MAX_PATH_DEPTH
+            || components.iter().any(|component| component & HARDENED == 0)
+        {
+            return Err(KeyError::InvalidPath);
+        }
+        Ok(Self { components })
+    }
+
+    /// Child numbers (all with bit 31 set).
+    #[must_use]
+    pub fn components(&self) -> &[u32] {
+        &self.components
+    }
+}
+
+impl FromStr for Slip10Path {
+    type Err = KeyError;
+
+    /// Grammar: `"m/" comp' ("/" comp')*`, `comp = "0" | [1-9][0-9]*`, value < 2^31, every
+    /// component with `'`, depth 1..=10.
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let rest = input.strip_prefix("m/").ok_or(KeyError::InvalidPath)?;
+        let components = rest
+            .split('/')
+            .map(|component| {
+                let digits = component.strip_suffix('\'').ok_or(KeyError::InvalidPath)?;
+                let canonical = !digits.is_empty()
+                    && digits.len() <= 10
+                    && digits.bytes().all(|byte| byte.is_ascii_digit())
+                    && (digits == "0" || !digits.starts_with('0'));
+                if !canonical {
+                    return Err(KeyError::InvalidPath);
+                }
+                let value = digits.parse::<u32>().map_err(|_| KeyError::InvalidPath)?;
+                if value >= HARDENED {
+                    return Err(KeyError::InvalidPath);
+                }
+                Ok(value | HARDENED)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::from_components(components)
+    }
+}
+
+impl fmt::Display for Slip10Path {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("m")?;
+        for component in &self.components {
+            write!(formatter, "/{}'", component & !HARDENED)?;
+        }
+        Ok(())
+    }
+}
+
+/// A SLIP-0010 node: key and chain code (secret, wiped on drop).
+pub(crate) struct Node {
+    pub(crate) key: Zeroizing<[u8; 32]>,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only the SLIP-0010 vector tests read the chain code"
+        )
+    )]
+    pub(crate) chain_code: Zeroizing<[u8; 32]>,
+}
+
+impl fmt::Debug for Node {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Node([REDACTED])")
+    }
+}
+
+/// `I = HMAC-SHA512("ed25519 seed", seed)`, `k = IL`, `c = IR`, then for every (hardened)
+/// component `I = HMAC-SHA512(c, 0x00 ‖ k ‖ ser32(i))`. Any seed length (test vectors use 16
+/// and 64 bytes); a non-hardened component is `InvalidPath`.
+pub(crate) fn derive_node(seed: &[u8], components: &[u32]) -> Result<Node, KeyError> {
+    let output = hmac_sha512(SLIP10_ED25519_KEY, &[seed])?;
+    let (mut key, mut chain_code) = split_halves(&output);
+    for component in components {
+        if component & HARDENED == 0 {
+            return Err(KeyError::InvalidPath);
+        }
+        let output = hmac_sha512(
+            chain_code.as_slice(),
+            &[&[0], key.as_slice(), &component.to_be_bytes()],
+        )?;
+        let (child_key, child_chain) = split_halves(&output);
+        key = child_key;
+        chain_code = child_chain;
+    }
+    Ok(Node { key, chain_code })
+}
+
+/// The 32-byte Ed25519 secret seed at `path` for a 64-byte BIP39 seed (spec/02 §3.5).
+pub(crate) fn slip10_ed25519(
+    seed: &[u8; 64],
+    path: &Slip10Path,
+) -> Result<Zeroizing<[u8; 32]>, KeyError> {
+    Ok(derive_node(seed, path.components())?.key)
+}
+
+/// `m/44'/501'/i'/0'` (`SolKeySource::Standard`, D25, D29).
+#[must_use]
+pub fn sol_path(index: AccountIndex) -> Slip10Path {
+    Slip10Path {
+        components: vec![PURPOSE_44H, COIN_501H, index.get() | HARDENED, HARDENED],
+    }
+}
+
+/// Where a Solana Ed25519 seed comes from (spec/02 §3.5, tags spec/07 §3.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SolKeySource {
+    /// `m/44'/501'/i'/0'` (Phantom, Solflare, Backpack; the only source of new accounts). Tag 1.
+    Standard(AccountIndex),
+    /// `m/44'/501'/i'` (Ledger Live, Sollet "bip44"). Tag 2.
+    Bip44Account(AccountIndex),
+    /// `m/44'/501'` (solana-keygen `prompt://` default). Tag 3.
+    Bip44Root,
+    /// No derivation: BIP39 seed `[0..32]` (`solana-keygen new`). Tag 4.
+    RawSeed,
+    /// Sollet legacy (tag 5). Not implemented (spec/07 §3.2: no confirmed vector); every use is
+    /// `KeyError::InvalidPath`.
+    SolletLegacy {
+        /// Wallet index.
+        wallet: u32,
+        /// Account index.
+        account: u32,
+    },
+}
+
+impl SolKeySource {
+    /// The source tag (spec/07 §3.2).
+    #[must_use]
+    pub const fn tag(self) -> u8 {
+        match self {
+            Self::Standard(_) => 1,
+            Self::Bip44Account(_) => 2,
+            Self::Bip44Root => 3,
+            Self::RawSeed => 4,
+            Self::SolletLegacy { .. } => 5,
+        }
+    }
+
+    /// `(a, b)` of the intent transcript and journal header (spec/07 §13.2): the account index
+    /// for tags 1–2, `(wallet, account)` for tag 5, `(0, 0)` otherwise.
+    #[must_use]
+    pub const fn params(self) -> (u32, u32) {
+        match self {
+            Self::Standard(index) | Self::Bip44Account(index) => (index.get(), 0),
+            Self::SolletLegacy { wallet, account } => (wallet, account),
+            Self::Bip44Root | Self::RawSeed => (0, 0),
+        }
+    }
+
+    /// Rebuilds a source from its tag and parameters (journal header check).
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError::InvalidPath`] for an unknown tag or parameters outside the tag's rule.
+    pub fn from_parts(tag: u8, a: u32, b: u32) -> Result<Self, KeyError> {
+        let index = || AccountIndex::new(a).map_err(|_| KeyError::InvalidPath);
+        match (tag, b) {
+            (1, 0) => Ok(Self::Standard(index()?)),
+            (2, 0) => Ok(Self::Bip44Account(index()?)),
+            (3, 0) if a == 0 => Ok(Self::Bip44Root),
+            (4, 0) if a == 0 => Ok(Self::RawSeed),
+            (5, _) if a < HARDENED && b < HARDENED => Ok(Self::SolletLegacy {
+                wallet: a,
+                account: b,
+            }),
+            _ => Err(KeyError::InvalidPath),
+        }
+    }
+
+    /// Whether this is the standard path (new accounts; tags 2–5 are recovery-scan only).
+    #[must_use]
+    pub const fn is_standard(self) -> bool {
+        matches!(self, Self::Standard(_))
+    }
+
+    /// The path text shown to the user (`m/44'/501'/0'/0'`, `BIP39 seed[0..32]`, …).
+    #[must_use]
+    pub fn path_text(self) -> String {
+        match self {
+            Self::Standard(index) => format!("m/44'/501'/{}'/0'", index.get()),
+            Self::Bip44Account(index) => format!("m/44'/501'/{}'", index.get()),
+            Self::Bip44Root => "m/44'/501'".to_owned(),
+            Self::RawSeed => "BIP39 seed[0..32] (파생 없음)".to_owned(),
+            Self::SolletLegacy { wallet, account } => format!("m/501'/{wallet}'/0/{account}"),
+        }
+    }
+
+    /// The 32-byte Ed25519 seed for a 64-byte BIP39 seed (spec/02 §3.5 table).
+    pub(crate) fn ed25519_seed(self, seed: &[u8; 64]) -> Result<Zeroizing<[u8; 32]>, KeyError> {
+        let path = match self {
+            Self::Standard(index) => sol_path(index),
+            Self::Bip44Account(index) => Slip10Path {
+                components: vec![PURPOSE_44H, COIN_501H, index.get() | HARDENED],
+            },
+            Self::Bip44Root => Slip10Path {
+                components: vec![PURPOSE_44H, COIN_501H],
+            },
+            Self::RawSeed => {
+                let mut out = Zeroizing::new([0_u8; 32]);
+                for (slot, byte) in out.iter_mut().zip(seed.iter()) {
+                    *slot = *byte;
+                }
+                return Ok(out);
+            }
+            Self::SolletLegacy { .. } => return Err(KeyError::InvalidPath),
+        };
+        slip10_ed25519(seed, &path)
+    }
+}
+
+#[cfg(test)]
+mod tests;

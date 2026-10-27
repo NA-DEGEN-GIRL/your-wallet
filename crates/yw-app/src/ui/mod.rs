@@ -10,6 +10,7 @@ pub mod qr;
 pub mod screens;
 pub mod screens_evm;
 pub mod screens_sites;
+pub mod screens_sol;
 pub mod secret;
 pub mod secure_field;
 pub mod text_layout;

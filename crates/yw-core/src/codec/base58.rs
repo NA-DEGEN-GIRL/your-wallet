@@ -25,6 +25,20 @@ pub enum Base58Error {
     InvalidLength,
     /// Input longer than [`MAX_DECODE_INPUT`].
     TooLong,
+    /// Strict fixed-length decoding (spec/07 §5): empty text.
+    Empty,
+    /// Strict fixed-length decoding: text length outside 32–44 (32 bytes) or 64–88 (64 bytes),
+    /// checked before decoding.
+    BadLength,
+    /// Strict fixed-length decoding: a character outside the alphabet (byte position).
+    InvalidChar {
+        /// Byte offset of the first invalid character.
+        pos: usize,
+    },
+    /// Strict fixed-length decoding: the decoded length is not the expected one.
+    WrongDecodedLength,
+    /// Strict fixed-length decoding: re-encoding the bytes does not give the text back.
+    NonCanonical,
 }
 
 impl fmt::Display for Base58Error {
@@ -34,6 +48,11 @@ impl fmt::Display for Base58Error {
             Self::InvalidChecksum => "base58check checksum mismatch",
             Self::InvalidLength => "base58check payload is too short",
             Self::TooLong => "base58 text is too long",
+            Self::Empty => "base58 text is empty",
+            Self::BadLength => "base58 text length is out of range",
+            Self::InvalidChar { .. } => "base58 text has a character outside the alphabet",
+            Self::WrongDecodedLength => "base58 text decodes to the wrong length",
+            Self::NonCanonical => "base58 text is not canonical",
         })
     }
 }
@@ -46,6 +65,58 @@ pub fn encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(max_encoded_len(bytes.len()));
     encode_into(bytes, &mut out);
     out
+}
+
+/// Base58-encodes `bytes` (the spec/07 §5 name of [`encode`]).
+#[must_use]
+pub fn base58_encode(bytes: &[u8]) -> String {
+    encode(bytes)
+}
+
+/// Strict decoder of exactly `N` bytes (spec/07 §5): the text length is checked before
+/// decoding, every character must be in the alphabet, the decoded length must be `N`, and the
+/// bytes must re-encode to the same text.
+fn decode_fixed<const N: usize>(
+    text: &str,
+    lengths: (usize, usize),
+) -> Result<[u8; N], Base58Error> {
+    if text.is_empty() {
+        return Err(Base58Error::Empty);
+    }
+    if text.len() < lengths.0 || text.len() > lengths.1 {
+        return Err(Base58Error::BadLength);
+    }
+    if let Some(pos) = text.bytes().position(|byte| value_of(byte).is_none()) {
+        return Err(Base58Error::InvalidChar { pos });
+    }
+    let decoded = decode_secret(text)?;
+    let out: [u8; N] = decoded
+        .as_slice()
+        .try_into()
+        .map_err(|_| Base58Error::WrongDecodedLength)?;
+    if encode(&out) != text {
+        return Err(Base58Error::NonCanonical);
+    }
+    Ok(out)
+}
+
+/// Strict 32-byte decoder (addresses, blockhashes, genesis hashes; text 32–44 characters).
+///
+/// # Errors
+///
+/// [`Base58Error::Empty`], [`Base58Error::BadLength`], [`Base58Error::InvalidChar`],
+/// [`Base58Error::WrongDecodedLength`] or [`Base58Error::NonCanonical`].
+pub fn base58_decode_32(text: &str) -> Result<[u8; 32], Base58Error> {
+    decode_fixed::<32>(text, (32, 44))
+}
+
+/// Strict 64-byte decoder (signatures; text 64–88 characters).
+///
+/// # Errors
+///
+/// As [`base58_decode_32`].
+pub fn base58_decode_64(text: &str) -> Result<[u8; 64], Base58Error> {
+    decode_fixed::<64>(text, (64, 88))
 }
 
 /// Decodes Base58 text.

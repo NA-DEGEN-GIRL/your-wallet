@@ -7,7 +7,7 @@ import { dirname } from "node:path";
 const TARGET = "x86_64-pc-windows-msvc";
 const CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index";
 // 단계 진입 커밋에서만 바꾼다(spec/01 §3.4): M7 → "sol" 추가.
-const PHASES = new Set([]);
+const PHASES = new Set(["sol"]);
 
 // name=version:n (런타임에 링크) | :b (빌드 시에만 실행: build-dependency와 그 폐포)
 const table = (text) => Object.fromEntries(text.trim().split(/\s+/).map((entry) => entry.split(":")));

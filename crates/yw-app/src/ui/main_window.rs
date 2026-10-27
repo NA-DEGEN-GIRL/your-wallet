@@ -419,8 +419,15 @@ pub fn paint(dc: &mut PaintDc<'_>, client: Rect, placed: &Placed, fonts: &Fonts)
         if let Some(fill) = text.fill {
             dc.fill_rect(text.rect, yw_win::ui::Color(fill));
         }
-        dc.select_font(fonts.get(text.font));
         dc.set_text_color(yw_win::ui::Color(text.color));
+        if text.font == FontRole::Mono
+            && text.fill.is_none()
+            && let Some(segments) = crate::ui::theme::sol_address_segments(&text.text)
+            && crate::ui::theme::paint_sol_address(dc, fonts, &segments, text.rect)
+        {
+            continue;
+        }
+        dc.select_font(fonts.get(text.font));
         let inner = if text.fill.is_some() {
             let pad = (text.rect.h
                 - dc.measure_wrapped(&wide(&text.text), text.rect.w, DrawFlags::WRAP))

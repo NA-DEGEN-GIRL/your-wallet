@@ -190,10 +190,11 @@ pub(crate) fn sign_message_with(
     Ok(out)
 }
 
-fn evm_parts(approved: &Approved) -> (Address, crate::vault::EvmKeySource) {
-    let AccountRef::Evm(account) = approved.account();
-    let Signer::Evm(source) = approved.signer();
-    (account, source)
+fn evm_parts(approved: &Approved) -> Result<(Address, crate::vault::EvmKeySource), SignError> {
+    match (approved.account(), approved.signer()) {
+        (AccountRef::Evm(account), Signer::Evm(source)) => Ok((account, source)),
+        _ => Err(SignError::KindMismatch),
+    }
 }
 
 fn with_key<T>(
@@ -201,7 +202,7 @@ fn with_key<T>(
     approved: &Approved,
     f: impl FnOnce(&Secp256k1<All>, &SecretKey, &Address) -> Result<T, SignError>,
 ) -> Result<T, SignError> {
-    let (account, source) = evm_parts(approved);
+    let (account, source) = evm_parts(approved)?;
     vault
         .with_secp_key(KeyRef::Evm(source), |ctx, secret| {
             Ok(f(ctx, secret, &account))
@@ -222,7 +223,9 @@ pub fn sign_transaction(vault: &Vault, approved: Approved) -> Result<SignedTx, S
     let SigningPayload::EvmTx(tx) = approved.payload() else {
         return Err(SignError::KindMismatch);
     };
-    let ChainRef::Evm { chain_id, .. } = approved.chain();
+    let ChainRef::Evm { chain_id, .. } = approved.chain() else {
+        return Err(SignError::KindMismatch);
+    };
     if !approved.kind().is_evm_transaction() || tx.chain_id != chain_id || tx.validate().is_err() {
         return Err(SignError::KindMismatch);
     }

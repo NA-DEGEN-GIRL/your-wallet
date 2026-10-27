@@ -9,6 +9,8 @@ use yw_core::bip32::preview_evm_address;
 use yw_core::error::{KeyError, VaultError};
 use yw_core::password::{Bip39Passphrase, VaultPassword};
 use yw_core::secret::Zeroizing;
+use yw_core::slip10::SolKeySource;
+use yw_core::sol::SolAddress;
 use yw_core::vault::{EvmKeySource, FileKind, Vault, VaultStatus, VaultStorage};
 
 use crate::errors::ErrorCode;
@@ -18,7 +20,7 @@ use crate::events::{
 use crate::logging::{self, Field};
 use crate::meta::{self, Account, Meta, RawAccount};
 use crate::store::{FileStorage, LockedSlotBox};
-use crate::workers::journal::JournalState;
+use crate::workers::journal::{JournalState, SolSignTimes};
 
 struct PendingImport {
     phrase: Zeroizing<Vec<u8>>,
@@ -271,6 +273,20 @@ impl KeyWorker {
             mismatch = true;
         }
         document.evm_raw_accounts = raw_accounts;
+        let sol_sources: Vec<SolKeySource> = document
+            .sol_accounts
+            .iter()
+            .filter_map(|account| AccountIndex::new(account.index).ok())
+            .map(SolKeySource::Standard)
+            .collect();
+        let sol_keys = vault.sol_public_keys(&sol_sources)?;
+        for (account, key) in document.sol_accounts.iter_mut().zip(sol_keys) {
+            let text = SolAddress::from_bytes(key).to_base58();
+            if account.address != text {
+                mismatch = true;
+                account.address = text;
+            }
+        }
         if mismatch {
             logging::warn("key", "MetaAddressMismatch", &[]);
             if !alt {
@@ -316,6 +332,35 @@ impl KeyWorker {
                 now_unix_ms,
             } => match self.vault.as_mut() {
                 Some(vault) => self.journal.apply(vault, &transitions, now_unix_ms, alt),
+                None => vec![KeyOutcome::Journal(Err(VaultError::InvalidState))],
+            },
+            KeyJob::SignSol {
+                approved,
+                consumed_at_ms,
+                blockhash,
+                last_valid_block_height,
+                now_unix_ms,
+            } => match self.vault.as_mut() {
+                Some(vault) => self.journal.sign_sol(
+                    vault,
+                    approved,
+                    SolSignTimes {
+                        consumed_at_ms,
+                        blockhash,
+                        last_valid_block_height,
+                        now_unix_ms,
+                    },
+                    alt,
+                ),
+                None => vec![KeyOutcome::SignedSol(Err(
+                    crate::events::SolSignFailure::JournalWrite(VaultError::InvalidState),
+                ))],
+            },
+            KeyJob::SolApply {
+                transition,
+                now_unix_ms,
+            } => match self.vault.as_mut() {
+                Some(vault) => self.journal.apply_sol(vault, &transition, now_unix_ms, alt),
                 None => vec![KeyOutcome::Journal(Err(VaultError::InvalidState))],
             },
             other => vec![self.handle_single(other)],
@@ -437,9 +482,22 @@ impl KeyWorker {
                     )),
                 })
             }
-            KeyJob::LoadJournal | KeyJob::SignEvm { .. } | KeyJob::JournalApply { .. } => {
-                KeyOutcome::Journal(Err(VaultError::InvalidState))
-            }
+            KeyJob::SolKeys { purpose, sources } => KeyOutcome::SolKeys(
+                purpose,
+                self.vault().and_then(|vault| {
+                    let keys = vault.sol_public_keys(&sources)?;
+                    Ok(sources
+                        .into_iter()
+                        .zip(keys)
+                        .map(|(source, key)| (source, SolAddress::from_bytes(key)))
+                        .collect())
+                }),
+            ),
+            KeyJob::LoadJournal
+            | KeyJob::SignEvm { .. }
+            | KeyJob::JournalApply { .. }
+            | KeyJob::SignSol { .. }
+            | KeyJob::SolApply { .. } => KeyOutcome::Journal(Err(VaultError::InvalidState)),
             KeyJob::Lock | KeyJob::Shutdown => {
                 self.lock();
                 KeyOutcome::LockDone

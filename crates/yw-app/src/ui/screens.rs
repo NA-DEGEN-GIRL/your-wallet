@@ -272,6 +272,10 @@ impl App {
             Screen::TokenAdd => self.token_screen(&mut items),
             Screen::ChainEdit => self.chain_edit_screen(&mut items),
             Screen::Sites => self.sites_screen(&mut items),
+            Screen::SolSend => self.sol_send_screen(&mut items),
+            Screen::SolSendResult => self.sol_send_result_screen(&mut items),
+            Screen::SolReceive => self.sol_receive_screen(&mut items),
+            Screen::SolScan => self.sol_scan_screen(&mut items),
         }
         items
     }
@@ -347,6 +351,11 @@ impl App {
                 "가져올 때와 다른 passphrase로 연 지갑입니다. 계정 이름·주소록·연결 기록이 저장되지 않습니다.".to_owned(),
                 Tone::Warn,
             ));
+        }
+        self.tab_row(items);
+        if self.sol_tab_active() {
+            self.sol_main_screen(items);
+            return;
         }
         items.push(Item::Title("EVM".to_owned()));
         let chains = self.settings.registered_evm();
@@ -444,6 +453,8 @@ impl App {
                 .enabled(section != SettingsSection::Network),
             Ctl::button(crate::ui::screens_evm::ids::SECTION_CHAINS, "EVM 체인")
                 .enabled(section != SettingsSection::Chains),
+            Ctl::button(crate::ui::screens_sol::ids::SECTION_SOL, "Solana")
+                .enabled(section != SettingsSection::Solana),
             Ctl::button(ids::SECTION_OTHER, "브라우저·진단·정보")
                 .enabled(section != SettingsSection::Other),
         ]));
@@ -451,6 +462,7 @@ impl App {
             SettingsSection::Security => self.security_section(items),
             SettingsSection::Network => self.network_section(items),
             SettingsSection::Chains => self.chains_section(items),
+            SettingsSection::Solana => self.sol_settings_section(items),
             SettingsSection::Other => self.other_section(items),
         }
     }
@@ -595,7 +607,7 @@ impl App {
                 ));
             }
         }
-        items.push(Item::Muted("URL에는 토큰이 들어 있어 화면에는 가린 형태만 보입니다. Solana·Bitcoin 네트워크는 해당 단계(M7·M8)에서 목록에 추가됩니다.".to_owned()));
+        items.push(Item::Muted("URL에는 토큰이 들어 있어 화면에는 가린 형태만 보입니다. Bitcoin 네트워크는 M8에서 목록에 추가됩니다.".to_owned()));
     }
 
     fn other_section(&self, items: &mut Vec<Item>) {

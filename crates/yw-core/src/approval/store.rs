@@ -198,9 +198,15 @@ fn digest_parts(parts: &Parts<'_>, expires_unix_ms: u64) -> Result<[u8; 32], App
             transcript.push_u64(*chain_id);
             transcript.push_bytes(genesis)?;
         }
+        ChainRef::Solana { cluster, genesis } => {
+            transcript.push_u8(2);
+            transcript.push_u8(cluster.code());
+            transcript.push_bytes(genesis)?;
+        }
     }
     match parts.account {
         AccountRef::Evm(address) => transcript.push_bytes(address.as_bytes())?,
+        AccountRef::Sol(public) => transcript.push_bytes(public)?,
     }
     transcript.push_bytes(&parts.payload.digest_bytes())?;
     transcript.push_bytes(&parts.display.digest()?)?;
@@ -263,6 +269,17 @@ fn check_draft(draft: &ApprovalDraft) -> Result<(), ApprovalError> {
         }
         ApprovalKind::EvmPersonalSign => matches!(draft.payload, SigningPayload::EvmPersonal(_)),
         ApprovalKind::EvmTypedData => matches!(draft.payload, SigningPayload::EvmTypedData(_)),
+        ApprovalKind::SolTransfer => {
+            matches!(
+                (&draft.payload, &draft.chain, &draft.account, &draft.origin),
+                (
+                    SigningPayload::SolTransfer(intent),
+                    ChainRef::Solana { cluster, .. },
+                    AccountRef::Sol(from),
+                    ApprovalOrigin::App,
+                ) if intent.cluster == *cluster && intent.core.from.as_bytes() == from
+            )
+        }
     };
     if !payload_ok {
         return Err(ApprovalError::PayloadMismatch);

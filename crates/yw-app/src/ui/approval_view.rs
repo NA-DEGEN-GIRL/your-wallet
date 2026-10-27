@@ -149,7 +149,16 @@ const fn is_raw(field: &DisplayField) -> bool {
 }
 
 const fn is_mono(key: FieldKey) -> bool {
-    matches!(key.0, 0x0003 | 0x0101 | 0x0125 | 0x0140 | 0x0141)
+    matches!(
+        key.0,
+        0x0003 | 0x0101 | 0x0125 | 0x0140 | 0x0141 | 0x0501 | 0x0509
+    )
+}
+
+/// SOL amount/fee rows shown in the asset-change area (spec/04 §3.2: "SOL·BTC는 해당 문서의
+/// 금액·수수료 행").
+const fn is_sol_money(key: FieldKey) -> bool {
+    matches!(key.0, 0x0502..=0x0505)
 }
 
 fn label_of(field: &DisplayField) -> String {
@@ -216,6 +225,37 @@ fn tone_of(level: RiskLevel) -> Tone {
     }
 }
 
+fn push_simulation_section(
+    view: &mut ApprovalView,
+    display: &yw_core::approval::ApprovalDisplay,
+    state: Option<SimState>,
+    show_diff: bool,
+) {
+    view.blocks.push(Block::Section("시뮬레이션 결과"));
+    if show_diff {
+        for field in display
+            .fields
+            .iter()
+            .filter(|field| is_diff(field.key) || field.key == FieldKey::SIMULATION)
+        {
+            view.blocks.push(Block::Field {
+                label: label_of(field),
+                value: field.value.clone(),
+                mono: false,
+            });
+        }
+        if state == Some(SimState::Incomplete) {
+            view.blocks.push(Block::Muted(
+                "시뮬레이션에서 확인된 부분만 표시합니다.".to_owned(),
+            ));
+        }
+    } else {
+        view.blocks.push(Block::Muted(
+            "시뮬레이션 결과가 없어 자산 변화를 표시할 수 없습니다.".to_owned(),
+        ));
+    }
+}
+
 /// Builds the view of a signing request.
 ///
 /// # Errors
@@ -269,12 +309,13 @@ pub fn signing_view(
         view.blocks.push(Block::Ack);
     }
     let show_diff = matches!(state, Some(SimState::Ok | SimState::Incomplete));
-    view.blocks.push(Block::Section("시뮬레이션 결과"));
-    if show_diff {
+    let sol = request.kind == yw_core::approval::ApprovalKind::SolTransfer;
+    if sol {
+        view.blocks.push(Block::Section("금액·수수료"));
         for field in display
             .fields
             .iter()
-            .filter(|field| is_diff(field.key) || field.key == FieldKey::SIMULATION)
+            .filter(|field| is_sol_money(field.key))
         {
             view.blocks.push(Block::Field {
                 label: label_of(field),
@@ -282,19 +323,13 @@ pub fn signing_view(
                 mono: false,
             });
         }
-        if state == Some(SimState::Incomplete) {
-            view.blocks.push(Block::Muted(
-                "시뮬레이션에서 확인된 부분만 표시합니다.".to_owned(),
-            ));
-        }
     } else {
-        view.blocks.push(Block::Muted(
-            "시뮬레이션 결과가 없어 자산 변화를 표시할 수 없습니다.".to_owned(),
-        ));
+        push_simulation_section(&mut view, display, state, show_diff);
     }
     view.blocks.push(Block::Section("상세"));
     for field in &display.fields {
         let shown_above = is_header(field.key)
+            || (sol && is_sol_money(field.key))
             || (show_diff && (is_diff(field.key) || field.key == FieldKey::SIMULATION));
         if shown_above || is_raw(field) {
             continue;
