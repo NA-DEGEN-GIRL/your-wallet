@@ -147,7 +147,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 Rust 쪽 고정값: yw-host와 yw-app은 같은 파일을 컴파일 시점에 포함한다.
 
 ```rust
-// crates/yw-host/src/main.rs (yw-app은 crates/yw-app/src/browser/mod.rs에서 상대 경로만 다름)
+// crates/yw-host/src/lib.rs (테스트가 쓰므로 lib에 둔다; yw-app은 crates/yw-app/src/browser/mod.rs에서 상대 경로만 다름)
 const EXTENSION_ID_FILE: &str = include_str!("../../../extension/extension-id.txt");
 fn pinned_extension_id() -> Option<&'static str> {
     let id = EXTENSION_ID_FILE.trim_end();
@@ -605,7 +605,7 @@ meta가 암호화되어 있으므로(D7) 잠긴 동안 grant를 알 수 없다.
 
 ### 6.2 yw-app 수신 처리 순서
 1. 프레임을 UTF-8 + `REQUEST_LIMITS`로 파싱. 실패 → 로그 후 버림(상관 정보가 없으므로 응답 불가. 확장 기한이 처리). 연결은 유지한다.
-2. 봉투 파싱. 실패했지만 `sessionId`·`sequence`·`activationNonce`·`requestId`가 형식대로 있으면 -32600 "Invalid request.", 아니면 버림.
+2. 봉투 파싱. 실패했지만 `sessionId`·`sequence`·`activationNonce`·`requestId`가 형식대로 있으면 -32600 "Invalid request.", 아니면 버림. `kind`가 `"cancel"`인 프레임의 형식 오류는 상관 필드가 있어도 버린다(cancel에는 응답하지 않는다, §6.1).
 3. 순번: `sequence`가 이 연결에서 받은 최대값보다 커야 한다. 아니면 -32600(request) 또는 버림(cancel).
 4. `context` 검사. `extensionId` 불일치·origin 형식 오류 → -32600. http origin이고 토글 꺼짐 → 4100.
 5. 문서 표 갱신(§4.8).
@@ -923,7 +923,7 @@ yw-app은 `$BinDir\yw-app.exe`로 실행하는 것을 기본으로 한다(yw-hos
 | M2 | 〃 | 가짜 `chrome`으로 `background.js`를 로드했을 때 `onConnectExternal`·`onMessageExternal` 등록 0회 |
 | H1 | `tests/yw-host-process.test.mjs`(신규, `native-host-process.test.mjs` 대체) | `target/debug/yw-host.exe`가 없으면 `process.env.YW_CHECK === "1"`이면 실패, 아니면 skip([01] §4.1). Node `net.createServer().listen(<테스트 pipe>)`로 가짜 yw-app을 만들고 yw-host를 실행: hello 형식, 바이트 그대로 양방향 중계, 잘못된 origin 인자 → 종료 2·출력 없음, 서버 없음(`YW_TEST_NO_SPAWN=1`) → 4900 응답 후 종료 3, 서버 없음 + `YW_TEST_DATA_DIR`의 settings.json `{"version":1,"browserAutoLaunch":false}`(`YW_TEST_NO_SPAWN` 없음) → 2 s 안에 4900·종료 3 |
 
-H1을 위해 yw-host는 **debug 빌드에서만**(`cfg!(debug_assertions)`) 환경 변수 `YW_TEST_PIPE_NAME`(pipe 전체 이름 대체), `YW_TEST_NO_SPAWN=1`(yw-app 실행 생략, `browserAutoLaunch` false와 같음), `YW_TEST_DATA_DIR`(settings.json 폴더 대체, §7.4)을 읽는다. release 빌드는 무시한다.
+H1을 위해 yw-host는 **debug 빌드에서만**(`cfg!(debug_assertions)`) 환경 변수 `YW_TEST_PIPE_NAME`(pipe 전체 이름 대체), `YW_TEST_NO_SPAWN=1`(yw-app 실행 생략, `browserAutoLaunch` false와 같음), `YW_TEST_DATA_DIR`(settings.json 폴더 대체, §7.4)을 읽는다. release 빌드는 무시한다. yw-app도 **debug 빌드에서만** `YW_TEST_PIPE_NAME`(`\.pipe`로 시작할 때)을 pipe 이름으로 쓴다(M5 headless E2E: 버리는 `LOCALAPPDATA` + 테스트 pipe로 실제 yw-host ↔ yw-app 중계 확인).
 
 ### 10.2 Rust
 | ID | 크레이트 | 내용 |

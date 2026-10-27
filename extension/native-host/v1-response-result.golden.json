@@ -1,0 +1,12 @@
+{
+  "namespace": "your-wallet",
+  "version": 1,
+  "role": "native-host",
+  "kind": "response",
+  "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "sequence": 1,
+  "requestSequence": 1,
+  "activationNonce": "000000000000000000000000000000000000000000000000000000000000000c",
+  "requestId": "01010101010101010101010101010101",
+  "result": "0xaa36a7"
+}

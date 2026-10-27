@@ -7,30 +7,41 @@
 
   const NAMESPACE = "your-wallet";
   const PROTOCOL_VERSION = 1;
-  const MAX_MESSAGE_BYTES = 1_048_576;
-  const MAX_REQUESTS_PER_ACTIVATION = 4_096;
-  const MAX_METHOD_LENGTH = 96;
-  const MAX_REQUEST_ID_LENGTH = 32;
+  const CONTENT_PORT_NAME = "your-wallet-content-v1";
+  const MAX_EVENT_ACCOUNTS = 16;
+  const MAX_ERROR_MESSAGE_LENGTH = 512;
 
-  const METHOD_ROUTE = Object.freeze({
+  // JSON limits shared with yw-json (spec/05 §2.9). Counting rules must match Rust exactly.
+  const REQUEST_LIMITS = Object.freeze({
+    maxBytes: 1_048_576,
+    maxDepth: 32,
+    maxNodes: 8_192,
+    maxItems: 4_096
+  });
+  const RESPONSE_LIMITS = Object.freeze({
+    maxBytes: 1_048_576,
+    maxDepth: 32,
+    maxNodes: 262_144,
+    maxItems: 262_144
+  });
+
+  // The single JS method table (spec/05 §3.1, order = v1-methods.golden.json).
+  const METHOD_ROUTE = Object.freeze(Object.assign(Object.create(null), {
     eth_requestAccounts: "permission",
     eth_accounts: "permission",
     eth_chainId: "permission",
     net_version: "permission",
-    eth_sendTransaction: "signing",
-    personal_sign: "signing",
-    eth_signTypedData_v4: "signing",
-    wallet_addEthereumChain: "permission",
     wallet_switchEthereumChain: "permission",
-    wallet_watchAsset: "permission",
     wallet_requestPermissions: "permission",
     wallet_getPermissions: "permission",
-    wallet_getCapabilities: "permission",
+    wallet_revokePermissions: "permission",
+    web3_clientVersion: "permission",
     eth_blockNumber: "read",
     eth_call: "read",
     eth_estimateGas: "read",
     eth_feeHistory: "read",
     eth_gasPrice: "read",
+    eth_maxPriorityFeePerGas: "read",
     eth_getBalance: "read",
     eth_getBlockByHash: "read",
     eth_getBlockByNumber: "read",
@@ -40,18 +51,22 @@
     eth_getTransactionByHash: "read",
     eth_getTransactionCount: "read",
     eth_getTransactionReceipt: "read",
-    eth_maxPriorityFeePerGas: "read"
-  });
+    eth_sendTransaction: "signing",
+    personal_sign: "signing",
+    eth_signTypedData_v4: "signing"
+  }));
 
-  const ALLOWED_EVENTS = new Set([
-    "accountsChanged",
-    "chainChanged",
-    "connect",
-    "disconnect"
-  ]);
+  const EVENTS = Object.freeze(["accountsChanged", "chainChanged"]);
 
-  const HEX_NONCE_PATTERN = /^[0-9a-f]{32,128}$/u;
-  const REQUEST_ID_PATTERN = /^[0-9a-f]{32}$/u;
+  const ID64_PATTERN = /^[0-9a-f]{64}$/u;
+  const ID32_PATTERN = /^[0-9a-f]{32}$/u;
+  const ALL_ZERO_PATTERN = /^0+$/u;
+  const METHOD_PATTERN = /^[A-Za-z0-9_]{1,96}$/u;
+  const REASON_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
+  const ADDRESS_PATTERN = /^0x[0-9a-f]{40}$/u;
+  const CHAIN_ID_PATTERN = /^0x[1-9a-f][0-9a-f]*$/u;
+
+  const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 
   function isPlainObject(value) {
     if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -70,117 +85,195 @@
       return false;
     }
     const allowed = new Set([...required, ...optional]);
-    return required.every((key) => Object.prototype.hasOwnProperty.call(value, key))
-      && keys.every((key) => allowed.has(key));
+    return required.every((key) => hasOwn(value, key)) && keys.every((key) => allowed.has(key));
   }
 
-  function isJsonValue(value, depth = 0) {
-    if (depth > 64) {
+  // spec/05 §2.9 — must stay identical to yw-json's counting.
+  function checkJson(value, limits) {
+    let nodes = 0;
+    let items = 0;
+    const walk = (v, depth) => {
+      if (++nodes > limits.maxNodes) return false;
+      if (v === null || typeof v === "boolean") return true;
+      if (typeof v === "number") return Number.isFinite(v);
+      if (typeof v === "string") return v.isWellFormed();
+      if (depth + 1 > limits.maxDepth) return false;
+      if (Array.isArray(v)) {
+        for (const e of v) if (++items > limits.maxItems || !walk(e, depth + 1)) return false;
+        return true;
+      }
+      if (!isPlainObject(v)) return false;
+      for (const k of Object.keys(v)) {
+        if (++items > limits.maxItems || ++nodes > limits.maxNodes || !k.isWellFormed()
+          || !walk(v[k], depth + 1)) return false;
+      }
+      return true;
+    };
+    if (!walk(value, 0)) return false;
+    let text;
+    try { text = JSON.stringify(value); } catch { return false; }
+    return typeof text === "string" && new TextEncoder().encode(text).byteLength <= limits.maxBytes;
+  }
+
+  // spec/05 §2.4: https, or http with hostname exactly localhost / 127.0.0.1 (any port).
+  function isSupportedPageUrl(value) {
+    let url;
+    try {
+      url = new URL(String(value));
+    } catch (_error) {
       return false;
     }
-    if (value === null || typeof value === "string" || typeof value === "boolean") {
+    if (url.username !== "" || url.password !== "" || url.origin === "null"
+      || url.hostname === "" || url.hostname.startsWith("[")) {
+      return false;
+    }
+    if (url.protocol === "https:") {
       return true;
     }
-    if (typeof value === "number") {
-      return Number.isFinite(value);
-    }
-    if (Array.isArray(value)) {
-      return value.length <= 10_000 && value.every((entry) => isJsonValue(entry, depth + 1));
-    }
-    if (!isPlainObject(value) || Object.keys(value).length > 10_000) {
-      return false;
-    }
-    return Object.entries(value).every(([key, entry]) => (
-      typeof key === "string" && isJsonValue(entry, depth + 1)
-    ));
-  }
-
-  function encodedJsonSize(value) {
-    let serialized;
-    try {
-      serialized = JSON.stringify(value);
-    } catch (_error) {
-      return Number.POSITIVE_INFINITY;
-    }
-    if (serialized === undefined) {
-      return Number.POSITIVE_INFINITY;
-    }
-    return new TextEncoder().encode(serialized).byteLength;
-  }
-
-  function fitsMessageLimit(value) {
-    return encodedJsonSize(value) <= MAX_MESSAGE_BYTES;
+    return url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
   }
 
   function methodRoute(method) {
-    if (typeof method !== "string" || method.length === 0 || method.length > MAX_METHOD_LENGTH) {
+    if (typeof method !== "string" || !METHOD_PATTERN.test(method) || !hasOwn(METHOD_ROUTE, method)) {
       return null;
     }
-    return Object.prototype.hasOwnProperty.call(METHOD_ROUTE, method)
-      ? METHOD_ROUTE[method]
-      : null;
+    return METHOD_ROUTE[method];
   }
 
-  function validRequestId(value) {
-    return typeof value === "string"
-      && value.length <= MAX_REQUEST_ID_LENGTH
-      && REQUEST_ID_PATTERN.test(value);
+  function isId64(value) {
+    return typeof value === "string" && ID64_PATTERN.test(value) && !ALL_ZERO_PATTERN.test(value);
   }
 
-  function validNonce(value) {
-    return typeof value === "string" && HEX_NONCE_PATTERN.test(value);
+  function isId32(value) {
+    return typeof value === "string" && ID32_PATTERN.test(value) && !ALL_ZERO_PATTERN.test(value);
   }
 
-  function validParams(value) {
-    return (Array.isArray(value) || isPlainObject(value)) && isJsonValue(value);
+  function isReason(value) {
+    return typeof value === "string" && REASON_PATTERN.test(value);
   }
 
-  function parsePageRequest(value, expectedChannel) {
-    const required = ["namespace", "version", "channel", "kind", "id", "method", "params"];
-    if (!hasExactKeys(value, required)) {
+  function isParams(value) {
+    return Array.isArray(value) || isPlainObject(value);
+  }
+
+  // `{ code, message, data? }`, exact keys. `data` is checked by the enclosing checkJson.
+  function validRpcError(value) {
+    return hasExactKeys(value, ["code", "message"], ["data"])
+      && Number.isSafeInteger(value.code)
+      && typeof value.message === "string"
+      && value.message.length >= 1
+      && value.message.length <= MAX_ERROR_MESSAGE_LENGTH;
+  }
+
+  function validEvent(event, payload) {
+    if (event === "accountsChanged") {
+      return Array.isArray(payload)
+        && payload.length <= MAX_EVENT_ACCOUNTS
+        && payload.every((account) => typeof account === "string" && ADDRESS_PATTERN.test(account));
+    }
+    if (event === "chainChanged") {
+      return typeof payload === "string" && CHAIN_ID_PATTERN.test(payload);
+    }
+    return false;
+  }
+
+  function hasEnvelope(value) {
+    return isPlainObject(value) && value.namespace === NAMESPACE && value.version === PROTOCOL_VERSION;
+  }
+
+  // page → content (spec/05 §2.6). Returns null for anything that is not an exact page message.
+  function parsePageMessage(value, expectedChannel) {
+    if (!hasEnvelope(value)) {
       return null;
     }
-    if (value.namespace !== NAMESPACE
-      || value.version !== PROTOCOL_VERSION
-      || value.channel !== expectedChannel
-      || value.kind !== "request"
-      || !validRequestId(value.id)
-      || !validParams(value.params)) {
-      return null;
+    if (value.kind === "bridge-request") {
+      return hasExactKeys(value, ["namespace", "version", "kind"]) ? Object.freeze({ kind: "bridge-request" }) : null;
     }
-    return Object.freeze({
-      id: value.id,
-      method: value.method,
-      params: value.params
-    });
+    if (value.kind === "request") {
+      if (!hasExactKeys(value, ["namespace", "version", "kind", "channel", "id", "method", "params"])
+        || value.channel !== expectedChannel
+        || !isId32(value.id)
+        || typeof value.method !== "string"
+        || !isParams(value.params)) {
+        return null;
+      }
+      return Object.freeze({ kind: "request", id: value.id, method: value.method, params: value.params });
+    }
+    if (value.kind === "cancel") {
+      if (!hasExactKeys(value, ["namespace", "version", "kind", "channel", "id"])
+        || value.channel !== expectedChannel
+        || !isId32(value.id)) {
+        return null;
+      }
+      return Object.freeze({ kind: "cancel", id: value.id });
+    }
+    return null;
   }
 
-  function parseContentRequest(value, expectedActivationNonce) {
-    const required = ["namespace", "version", "kind", "activationNonce", "id", "method", "params"];
-    if (!hasExactKeys(value, required)) {
+  // content → background (spec/05 §2.6).
+  function parseContentMessage(value, expectedActivationNonce) {
+    if (!hasEnvelope(value) || value.activationNonce !== expectedActivationNonce) {
       return null;
     }
-    if (value.namespace !== NAMESPACE
-      || value.version !== PROTOCOL_VERSION
-      || value.kind !== "request"
-      || value.activationNonce !== expectedActivationNonce
-      || !validRequestId(value.id)
-      || !validParams(value.params)) {
-      return null;
+    if (value.kind === "request") {
+      if (!hasExactKeys(value, ["namespace", "version", "kind", "activationNonce", "id", "method", "params"])
+        || !isId32(value.id)
+        || typeof value.method !== "string"
+        || !isParams(value.params)) {
+        return null;
+      }
+      return Object.freeze({ kind: "request", id: value.id, method: value.method, params: value.params });
     }
-    return Object.freeze({
-      id: value.id,
-      method: value.method,
-      params: value.params
-    });
+    if (value.kind === "cancel") {
+      if (!hasExactKeys(value, ["namespace", "version", "kind", "activationNonce", "id", "reason"])
+        || !isId32(value.id)
+        || !isReason(value.reason)) {
+        return null;
+      }
+      return Object.freeze({ kind: "cancel", id: value.id, reason: value.reason });
+    }
+    if (value.kind === "disconnect") {
+      if (!hasExactKeys(value, ["namespace", "version", "kind", "activationNonce", "reason"])
+        || !isReason(value.reason)) {
+        return null;
+      }
+      return Object.freeze({ kind: "disconnect", reason: value.reason });
+    }
+    return null;
   }
 
-  function rpcError(code, message, data) {
-    const error = { code, message };
-    if (data !== undefined && isJsonValue(data)) {
-      error.data = data;
+  // background → content (spec/05 §2.6). Deep JSON limits are checked separately by the caller.
+  function parseBackgroundMessage(value) {
+    if (!hasEnvelope(value) || !isId64(value.activationNonce)) {
+      return null;
     }
-    return error;
+    if (value.kind === "activated") {
+      return hasExactKeys(value, ["namespace", "version", "kind", "activationNonce"])
+        ? Object.freeze({ kind: "activated", activationNonce: value.activationNonce })
+        : null;
+    }
+    if (value.kind === "response") {
+      const base = ["namespace", "version", "kind", "activationNonce", "id"];
+      if (hasExactKeys(value, [...base, "result"]) && isId32(value.id)) {
+        return Object.freeze({ kind: "response", activationNonce: value.activationNonce, id: value.id, body: { result: value.result } });
+      }
+      if (hasExactKeys(value, [...base, "error"]) && isId32(value.id) && validRpcError(value.error)) {
+        return Object.freeze({ kind: "response", activationNonce: value.activationNonce, id: value.id, body: { error: value.error } });
+      }
+      return null;
+    }
+    if (value.kind === "event") {
+      if (!hasExactKeys(value, ["namespace", "version", "kind", "activationNonce", "event", "payload"])
+        || !validEvent(value.event, value.payload)) {
+        return null;
+      }
+      return Object.freeze({ kind: "event", activationNonce: value.activationNonce, event: value.event, payload: value.payload });
+    }
+    return null;
+  }
+
+  function rpcError(code, message) {
+    return { code, message };
   }
 
   function randomHex(byteLength, cryptoObject = root.crypto) {
@@ -192,25 +285,44 @@
     return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
   }
 
+  // Exact provider error strings (spec/05 §5).
+  const ERRORS = Object.freeze({
+    UNSUPPORTED_METHOD: Object.freeze(rpcError(4200, "Unsupported method.")),
+    UNAVAILABLE: Object.freeze(rpcError(4900, "Wallet is unavailable.")),
+    CONNECTION_CLOSED: Object.freeze(rpcError(4900, "Wallet connection closed.")),
+    EXTENSION_RELOADED: Object.freeze(rpcError(4900, "Wallet extension was reloaded.")),
+    RATE_LIMITED: Object.freeze(rpcError(-32005, "Rate limit exceeded.")),
+    TOO_MANY_PENDING: Object.freeze(rpcError(-32005, "Too many pending requests.")),
+    REQUEST_TOO_LARGE: Object.freeze(rpcError(-32600, "Request too large.")),
+    INTERNAL: Object.freeze(rpcError(-32603, "Internal error.")),
+    TIMED_OUT: Object.freeze(rpcError(-32603, "Request timed out.")),
+    RESPONSE_TOO_LARGE: Object.freeze(rpcError(-32603, "Response too large."))
+  });
+
   const api = Object.freeze({
     NAMESPACE,
     PROTOCOL_VERSION,
-    MAX_MESSAGE_BYTES,
-    MAX_REQUESTS_PER_ACTIVATION,
-    ALLOWED_EVENTS,
-    encodedJsonSize,
-    fitsMessageLimit,
+    CONTENT_PORT_NAME,
+    REQUEST_LIMITS,
+    RESPONSE_LIMITS,
+    METHOD_ROUTE,
+    EVENTS,
+    ERRORS,
+    checkJson,
     hasExactKeys,
-    isJsonValue,
+    isId32,
+    isId64,
     isPlainObject,
+    isReason,
+    isSupportedPageUrl,
     methodRoute,
-    parseContentRequest,
-    parsePageRequest,
+    parseBackgroundMessage,
+    parseContentMessage,
+    parsePageMessage,
     randomHex,
     rpcError,
-    validNonce,
-    validParams,
-    validRequestId
+    validEvent,
+    validRpcError
   });
 
   Object.defineProperty(root, "__YOUR_WALLET_SHARED__", {

@@ -10,70 +10,94 @@
     throw new Error("Your Wallet shared module was not loaded.");
   }
 
-  const CONTENT_PORT_NAME = "your-wallet-content-v1";
+  const CONTENT_PORT_NAME = shared.CONTENT_PORT_NAME;
   const NATIVE_HOST_NAME = "com.your_wallet.native";
-  const REQUEST_DEADLINE_MS = 120_000;
+  const READ_DEADLINE_MS = 60_000;
+  const INTERACTIVE_DEADLINE_MS = 600_000;
   const MAX_ACTIVE_DOCUMENTS = 128;
-  const MAX_GLOBAL_PENDING = 1_024;
+  const MAX_GLOBAL_PENDING = 512;
   const MAX_PENDING_PER_DOCUMENT = 64;
-  const MAX_NATIVE_CONNECTION_ATTEMPTS = 4_096;
+  const RATE_PER_SECOND = 40;
+  const RATE_BURST = 80;
+  const NATIVE_BACKOFF_BASE_MS = 1_000;
+  const NATIVE_BACKOFF_MAX_MS = 30_000;
+  const DEFAULT_DISCONNECT_REASON = "content-port-disconnect";
   const DOCUMENT_ID_PATTERN = /^[A-Za-z0-9._:-]{1,256}$/u;
-  const PROFILE_ID_PATTERN = /^[0-9a-f]{64}$/u;
   const EXTENSION_ID_PATTERN = /^[a-p]{32}$/u;
-  const CANCEL_REASON_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
+  const MAX_SENDER_URL_LENGTH = 8_192;
+  const NATIVE_RESPONSE_KEYS = Object.freeze([
+    "namespace", "version", "role", "kind", "sessionId", "sequence",
+    "requestSequence", "activationNonce", "requestId"
+  ]);
+  const NATIVE_EVENT_KEYS = Object.freeze([
+    "namespace", "version", "role", "kind", "sessionId", "sequence",
+    "activationNonce", "event", "payload"
+  ]);
 
+  const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+
+  // spec/05 §2.8. One content port = one activation; one native port = one session.
   class BackgroundRouter {
-    constructor({ profileInstallId, sessionId, extensionId, randomHex, now, nativeFactory }) {
-      if (!PROFILE_ID_PATTERN.test(profileInstallId)
-        || !PROFILE_ID_PATTERN.test(sessionId)
+    constructor({ profileInstallId, extensionId, randomHex, now, setTimer, clearTimer, nativeFactory }) {
+      if (!shared.isId64(profileInstallId)
         || !EXTENSION_ID_PATTERN.test(extensionId)
         || typeof randomHex !== "function"
         || typeof now !== "function"
+        || typeof setTimer !== "function"
+        || typeof clearTimer !== "function"
         || typeof nativeFactory !== "function") {
         throw new TypeError("Invalid background router configuration.");
       }
       this.profileInstallId = profileInstallId;
-      this.sessionId = sessionId;
       this.extensionId = extensionId;
       this.randomHex = randomHex;
       this.now = now;
+      this.setTimer = setTimer;
+      this.clearTimer = clearTimer;
       this.nativeFactory = nativeFactory;
       this.activations = new Map();
-      this.pending = new Map();
-      this.nativeConnection = null;
-      this.nativeEpoch = 0;
-      this.nativeConnectionAttempts = 0;
-      this.lastNativeSequence = 0;
-      this.outboundSequence = 0;
-      this.issuedPortNonces = new Set([profileInstallId, sessionId]);
+      this.issuedNonces = new Set([profileInstallId]);
+      this.pendingCount = 0;
+      this.useCounter = 0;
+      this.native = null;
+      this.failures = 0;
+      this.nativeRetryAt = 0;
     }
 
-    attachContent({ sender, postMessage }) {
-      if (typeof postMessage !== "function") {
-        throw new TypeError("A content-port sender is required.");
+    attachContent({ sender, postMessage, disconnect }) {
+      if (typeof postMessage !== "function" || typeof disconnect !== "function") {
+        throw new TypeError("Content-port adapters are required.");
       }
-      if (this.activations.size >= MAX_ACTIVE_DOCUMENTS) {
-        throw new Error("Active wallet document limit reached.");
+      const activationNonce = this.issueNonce();
+      const channelNonce = this.issueNonce();
+      let context;
+      try {
+        context = deriveSenderContext({ sender, extensionId: this.extensionId, channelNonce });
+      } catch (_error) {
+        this.issuedNonces.delete(activationNonce);
+        this.issuedNonces.delete(channelNonce);
+        return null;
       }
-      const activationNonce = this.issuePortNonce();
-      const channelNonce = this.issuePortNonce();
-      const context = deriveSenderContext({
-        sender,
-        extensionId: this.extensionId,
-        channelNonce
-      });
-      const state = {
+      if (this.activations.size >= MAX_ACTIVE_DOCUMENTS && !this.evictIdleActivation()) {
+        this.issuedNonces.delete(activationNonce);
+        this.issuedNonces.delete(channelNonce);
+        return null;
+      }
+      const now = this.now();
+      const activation = {
         activationNonce,
         channelNonce,
         context,
-        live: true,
-        pendingIds: new Set(),
         postMessage,
-        respondedIds: new Set(),
-        seenIds: new Set()
+        closePort: disconnect,
+        pending: new Map(),
+        tokens: RATE_BURST,
+        tokensAt: Number.isFinite(now) ? now : 0,
+        lastUsed: ++this.useCounter,
+        live: true
       };
-      this.activations.set(activationNonce, state);
-      this.postContent(state, {
+      this.activations.set(activationNonce, activation);
+      this.postContent(activation, {
         namespace: shared.NAMESPACE,
         version: shared.PROTOCOL_VERSION,
         kind: "activated",
@@ -81,478 +105,413 @@
       });
       return Object.freeze({
         activationNonce,
-        receive: (message) => this.receiveContent(state, message),
-        disconnect: (reason = "content-port-disconnect") => this.detachActivation(state, reason, false)
+        receive: (message) => this.receiveContent(activation, message),
+        disconnect: (reason = DEFAULT_DISCONNECT_REASON) => this.detach(activation, reason)
       });
     }
 
-    receiveContent(state, value) {
-      if (!state.live || this.activations.get(state.activationNonce) !== state) {
+    receiveContent(activation, value) {
+      if (!activation.live) {
         return false;
       }
-      if (!shared.fitsMessageLimit(value)) {
-        const id = shared.isPlainObject(value) && shared.validRequestId(value.id) ? value.id : null;
-        if (id !== null && !state.seenIds.has(id)) {
-          state.seenIds.add(id);
-          this.respondError(state, id, -32600, "Request exceeds the wallet message limit.");
-        } else {
-          this.detachActivation(state, "oversized-content-message", true);
-        }
+      const message = shared.parseContentMessage(value, activation.activationNonce);
+      if (message === null) {
         return false;
       }
-      if (isContentDisconnect(value, state.activationNonce)) {
-        this.detachActivation(state, "document-disconnect", false);
-        return true;
+      if (message.kind === "request") {
+        return this.handleRequest(activation, message);
       }
-      const request = shared.parseContentRequest(value, state.activationNonce);
-      if (!request) {
-        const id = shared.isPlainObject(value) && shared.validRequestId(value.id) ? value.id : null;
-        if (id !== null && !state.seenIds.has(id)) {
-          state.seenIds.add(id);
-          this.respondError(state, id, -32600, "Invalid wallet request envelope.");
-        } else {
-          this.detachActivation(state, "invalid-content-envelope", true);
-        }
+      if (message.kind === "cancel") {
+        return this.cancelRequest(activation, message.id, "page-cancel");
+      }
+      this.detach(activation, message.reason);
+      return true;
+    }
+
+    handleRequest(activation, request) {
+      if (activation.pending.has(request.id)) {
         return false;
       }
-      if (state.seenIds.has(request.id)) {
-        if (state.pendingIds.has(request.id)) {
-          const duplicatePending = this.pending.get(requestKey(state.activationNonce, request.id));
-          if (duplicatePending) {
-            this.sendNativeCancellation(duplicatePending, "replayed-request-id");
-          }
-          this.respondError(state, request.id, -32600, "Duplicate request identifier.");
-        }
-        if (state.live) {
-          this.detachActivation(state, "replayed-request-id", true);
-        }
-        return false;
-      }
-      if (state.seenIds.size >= shared.MAX_REQUESTS_PER_ACTIVATION) {
-        state.seenIds.add(request.id);
-        this.respondError(state, request.id, -32005, "Request limit reached for this document.");
-        this.detachActivation(state, "request-limit", true);
-        return false;
-      }
-      state.seenIds.add(request.id);
-      if (this.pending.size >= MAX_GLOBAL_PENDING
-        || state.pendingIds.size >= MAX_PENDING_PER_DOCUMENT) {
-        this.respondError(state, request.id, -32005, "Too many wallet requests are pending.");
-        return false;
-      }
+      activation.lastUsed = ++this.useCounter;
       const route = shared.methodRoute(request.method);
       if (route === null) {
-        this.respondError(state, request.id, 4200, "Unsupported wallet method.");
-        return false;
+        return this.reject(activation, request.id, shared.ERRORS.UNSUPPORTED_METHOD);
       }
-
-      try {
-        this.ensureNativeConnection();
-      } catch (_error) {
-        this.respondError(state, request.id, 4900, "Native wallet service is unavailable.");
-        return false;
+      const now = this.now();
+      if (!Number.isSafeInteger(now) || now < 0) {
+        return this.reject(activation, request.id, shared.ERRORS.INTERNAL);
       }
-
-      const issuedAtUnixMs = this.now();
-      if (!Number.isSafeInteger(issuedAtUnixMs) || issuedAtUnixMs < 0) {
-        this.respondError(state, request.id, -32603, "Wallet clock is unavailable.");
-        return false;
+      if (!this.takeToken(activation, now)) {
+        return this.reject(activation, request.id, shared.ERRORS.RATE_LIMITED);
       }
-      const deadlineUnixMs = issuedAtUnixMs + REQUEST_DEADLINE_MS;
-      if (!Number.isSafeInteger(deadlineUnixMs)) {
-        this.respondError(state, request.id, -32603, "Wallet request deadline overflowed.");
-        return false;
+      if (this.pendingCount >= MAX_GLOBAL_PENDING || activation.pending.size >= MAX_PENDING_PER_DOCUMENT) {
+        return this.reject(activation, request.id, shared.ERRORS.TOO_MANY_PENDING);
       }
-      let sequence;
-      try {
-        sequence = this.nextOutboundSequenceCandidate();
-      } catch (_error) {
-        this.respondError(state, request.id, 4900, "Native wallet service is unavailable.");
-        return false;
+      if (now < this.nativeRetryAt) {
+        return this.reject(activation, request.id, shared.ERRORS.UNAVAILABLE);
       }
-      const nativeRequest = {
+      const native = this.ensureNative(now);
+      if (native === null) {
+        return this.reject(activation, request.id, shared.ERRORS.UNAVAILABLE);
+      }
+      const deadlineMs = route === "read" ? READ_DEADLINE_MS : INTERACTIVE_DEADLINE_MS;
+      const sequence = native.outSequence + 1;
+      const envelope = {
         namespace: shared.NAMESPACE,
         version: shared.PROTOCOL_VERSION,
         role: "extension",
         kind: "request",
-        sessionId: this.sessionId,
+        sessionId: native.sessionId,
         sequence,
-        deadlineUnixMs,
+        deadlineUnixMs: now + deadlineMs,
         profileInstallId: this.profileInstallId,
-        activationNonce: state.activationNonce,
+        activationNonce: activation.activationNonce,
         requestId: request.id,
         method: request.method,
         params: request.params,
         route,
-        context: state.context
+        context: activation.context
       };
-      if (!shared.fitsMessageLimit(nativeRequest)) {
-        this.respondError(state, request.id, -32600, "Request exceeds the native wallet message limit.");
-        return false;
+      if (!Number.isSafeInteger(sequence) || !Number.isSafeInteger(envelope.deadlineUnixMs)) {
+        return this.reject(activation, request.id, shared.ERRORS.INTERNAL);
       }
-      this.outboundSequence = sequence;
-      const pendingKey = requestKey(state.activationNonce, request.id);
-      const pending = { state, id: request.id, sequence, deadlineUnixMs };
-      state.pendingIds.add(request.id);
-      this.pending.set(pendingKey, pending);
+      if (!shared.checkJson(envelope, shared.REQUEST_LIMITS)) {
+        return this.reject(activation, request.id, shared.ERRORS.REQUEST_TOO_LARGE);
+      }
+      native.outSequence = sequence;
+      const record = { activation, id: request.id, sequence, native, timer: null };
+      activation.pending.set(record.id, record);
+      this.pendingCount += 1;
+      record.timer = this.setTimer(() => this.expire(record), deadlineMs);
       try {
-        this.nativeConnection.send(nativeRequest);
+        native.connection.send(envelope);
       } catch (_error) {
-        this.pending.delete(pendingKey);
-        state.pendingIds.delete(request.id);
-        this.respondError(state, request.id, 4900, "Native wallet service disconnected.");
-        this.dropNativeConnection("native-send-failed");
+        // The native port is unusable: every pending request (this one included) gets 4900.
+        this.teardownNative(native, { disconnect: true, countFailure: true });
         return false;
       }
       return true;
     }
 
-    ensureNativeConnection() {
-      if (this.nativeConnection !== null) {
-        return;
-      }
-      this.openNativeConnection("native-reconnect");
-    }
-
-    reconnectNative() {
-      this.dropNativeConnection("native-reconnect");
-      this.openNativeConnection("native-reconnect");
-    }
-
-    openNativeConnection(cancelReason) {
-      this.cancelAllPending(cancelReason);
-      if (this.nativeConnectionAttempts >= MAX_NATIVE_CONNECTION_ATTEMPTS) {
-        throw new Error("Native connection attempt limit reached.");
-      }
-      if (this.nativeConnectionAttempts !== 0) {
-        this.sessionId = this.issuePortNonce();
-      }
-      this.nativeConnectionAttempts += 1;
-      const epoch = this.nativeEpoch + 1;
-      this.nativeEpoch = epoch;
-      this.lastNativeSequence = 0;
-      this.outboundSequence = 0;
-      const connection = this.nativeFactory({
-        hostName: NATIVE_HOST_NAME,
-        onMessage: (message) => {
-          if (this.nativeEpoch === epoch) {
-            this.receiveNative(message);
-          }
-        },
-        onDisconnect: () => {
-          if (this.nativeEpoch === epoch) {
-            this.nativeConnection = null;
-            this.cancelAllPending("native-disconnect");
-          }
-        }
-      });
-      if (!connection || typeof connection.send !== "function") {
-        throw new Error("Native transport did not provide a send operation.");
-      }
-      this.nativeConnection = connection;
-    }
-
-    dropNativeConnection(reason) {
-      const connection = this.nativeConnection;
-      this.nativeEpoch += 1;
-      this.nativeConnection = null;
-      this.cancelAllPending(reason);
-      if (connection && typeof connection.disconnect === "function") {
-        try {
-          connection.disconnect();
-        } catch (_error) {
-          // The transport is already unusable; pending work was cancelled above.
-        }
-      }
-    }
-
-    receiveNative(value) {
-      if (!shared.fitsMessageLimit(value)
-        || !shared.isPlainObject(value)
-        || value.namespace !== shared.NAMESPACE
-        || value.version !== shared.PROTOCOL_VERSION
-        || value.role !== "native-host"
-        || value.sessionId !== this.sessionId
-        || !Number.isSafeInteger(value.sequence)
-        || value.sequence !== this.lastNativeSequence + 1) {
-        this.dropNativeConnection("invalid-native-envelope");
+    takeToken(activation, now) {
+      const elapsed = Math.max(0, now - activation.tokensAt);
+      activation.tokens = Math.min(RATE_BURST, activation.tokens + (elapsed * RATE_PER_SECOND) / 1_000);
+      activation.tokensAt = now;
+      if (activation.tokens < 1) {
         return false;
       }
-      this.lastNativeSequence = value.sequence;
-      if (value.kind === "response") {
-        return this.receiveNativeResponse(value);
-      }
-      if (value.kind === "event") {
-        return this.receiveNativeEvent(value);
-      }
-      this.dropNativeConnection("unknown-native-message");
-      return false;
+      activation.tokens -= 1;
+      return true;
     }
 
-    receiveNativeResponse(value) {
-      const resultShape = shared.hasExactKeys(value, [
-        "namespace", "version", "role", "kind", "sessionId", "sequence",
-        "requestSequence", "activationNonce", "requestId", "result"
-      ]);
-      const errorShape = shared.hasExactKeys(value, [
-        "namespace", "version", "role", "kind", "sessionId", "sequence",
-        "requestSequence", "activationNonce", "requestId", "error"
-      ]);
-      if ((!resultShape && !errorShape)
-        || !PROFILE_ID_PATTERN.test(value.activationNonce)
-        || !shared.validRequestId(value.requestId)
-        || !Number.isSafeInteger(value.requestSequence)
-        || (resultShape && !shared.isJsonValue(value.result))
-        || (errorShape && !validRpcError(value.error))) {
-        this.dropNativeConnection("invalid-native-response");
-        return false;
+    ensureNative(now) {
+      if (this.native !== null) {
+        return this.native;
       }
-      const key = requestKey(value.activationNonce, value.requestId);
-      const pending = this.pending.get(key);
-      if (!pending || pending.sequence !== value.requestSequence || !pending.state.live) {
-        return false;
-      }
-      const receivedAtUnixMs = this.now();
-      if (!Number.isSafeInteger(receivedAtUnixMs)
-        || receivedAtUnixMs >= pending.deadlineUnixMs) {
-        this.pending.delete(key);
-        pending.state.pendingIds.delete(pending.id);
-        this.respondError(pending.state, pending.id, -32000, "Wallet request timed out.");
-        return false;
-      }
-      this.pending.delete(key);
-      pending.state.pendingIds.delete(pending.id);
-      if (resultShape) {
-        return this.respondResult(pending.state, pending.id, value.result);
-      }
-      return this.respondWithErrorObject(pending.state, pending.id, value.error);
-    }
-
-    receiveNativeEvent(value) {
-      if (!shared.hasExactKeys(value, [
-        "namespace", "version", "role", "kind", "sessionId", "sequence",
-        "activationNonce", "event", "payload"
-      ])
-        || !PROFILE_ID_PATTERN.test(value.activationNonce)
-        || !shared.ALLOWED_EVENTS.has(value.event)
-        || !shared.isJsonValue(value.payload)) {
-        this.dropNativeConnection("invalid-native-event");
-        return false;
-      }
-      const state = this.activations.get(value.activationNonce);
-      if (!state || !state.live) {
-        return false;
-      }
-      return this.postContent(state, {
-        namespace: shared.NAMESPACE,
-        version: shared.PROTOCOL_VERSION,
-        kind: "event",
-        activationNonce: state.activationNonce,
-        event: value.event,
-        payload: value.payload
-      });
-    }
-
-    respondResult(state, id, result) {
-      return this.respond(state, id, { result });
-    }
-
-    respondError(state, id, code, message, data) {
-      return this.respondWithErrorObject(state, id, shared.rpcError(code, message, data));
-    }
-
-    respondWithErrorObject(state, id, error) {
-      return this.respond(state, id, { error });
-    }
-
-    respond(state, id, body) {
-      if (!state.live || state.respondedIds.has(id)) {
-        return false;
-      }
-      const pendingKey = requestKey(state.activationNonce, id);
-      this.pending.delete(pendingKey);
-      state.pendingIds.delete(id);
-      state.respondedIds.add(id);
-      const envelope = {
-        namespace: shared.NAMESPACE,
-        version: shared.PROTOCOL_VERSION,
-        kind: "response",
-        activationNonce: state.activationNonce,
-        id,
-        ...body
+      const native = {
+        connection: null,
+        sessionId: this.randomHex(32),
+        outSequence: 0,
+        lastInSequence: 0,
+        healthy: false
       };
-      if (!shared.fitsMessageLimit(envelope)) {
-        delete envelope.result;
-        envelope.error = shared.rpcError(-32603, "Wallet response exceeds the message limit.");
+      try {
+        if (!shared.isId64(native.sessionId)) {
+          throw new Error("Invalid native session identifier.");
+        }
+        const connection = this.nativeFactory({
+          hostName: NATIVE_HOST_NAME,
+          onMessage: (message) => {
+            if (this.native === native) {
+              this.receiveNative(native, message);
+            }
+          },
+          onDisconnect: () => {
+            if (this.native === native) {
+              this.teardownNative(native, { disconnect: false, countFailure: true });
+            }
+          }
+        });
+        if (!connection || typeof connection.send !== "function") {
+          throw new Error("Native transport did not provide a send operation.");
+        }
+        native.connection = connection;
+      } catch (_error) {
+        this.recordFailure(now);
+        return null;
       }
-      return this.postContent(state, envelope);
+      this.native = native;
+      return native;
     }
 
-    detachActivation(state, reason, notifyContent) {
-      if (!state.live) {
-        return;
+    recordFailure(now) {
+      this.failures += 1;
+      const delay = Math.min(
+        NATIVE_BACKOFF_BASE_MS * 2 ** Math.min(this.failures - 1, 30),
+        NATIVE_BACKOFF_MAX_MS
+      );
+      this.nativeRetryAt = now + delay;
+    }
+
+    receiveNative(native, value) {
+      if (!validNativeMessage(native, value)) {
+        this.teardownNative(native, { disconnect: true, countFailure: true });
+        return false;
       }
-      const cancellationReason = normalizeCancelReason(reason);
-      for (const id of state.pendingIds) {
-        const key = requestKey(state.activationNonce, id);
-        const pending = this.pending.get(key);
-        this.pending.delete(key);
-        if (pending) {
-          this.sendNativeCancellation(pending, cancellationReason);
+      native.lastInSequence = value.sequence;
+      if (value.kind === "event") {
+        native.healthy = true;
+        const activation = this.activations.get(value.activationNonce);
+        if (!activation || !activation.live) {
+          return false;
         }
-      }
-      state.pendingIds.clear();
-      if (notifyContent) {
-        this.postContent(state, {
+        return this.postContent(activation, {
           namespace: shared.NAMESPACE,
           version: shared.PROTOCOL_VERSION,
-          kind: "disconnect",
-          activationNonce: state.activationNonce,
-          error: shared.rpcError(4900, "Wallet connection closed.", { reason: cancellationReason })
+          kind: "event",
+          activationNonce: activation.activationNonce,
+          event: value.event,
+          payload: value.payload
         });
       }
-      state.live = false;
-      this.activations.delete(state.activationNonce);
-      this.issuedPortNonces.delete(state.activationNonce);
-      this.issuedPortNonces.delete(state.channelNonce);
+      const isResult = hasOwn(value, "result");
+      if (isResult || value.error.code !== 4900) {
+        native.healthy = true;
+      }
+      const activation = this.activations.get(value.activationNonce);
+      const record = activation ? activation.pending.get(value.requestId) : undefined;
+      if (!record || record.native !== native || record.sequence !== value.requestSequence) {
+        return false;
+      }
+      this.removePending(record);
+      return this.respond(activation, record.id, isResult ? { result: value.result } : { error: value.error });
     }
 
-    cancelAllPending(reason) {
-      const cancellationReason = normalizeCancelReason(reason);
-      const affected = new Set();
-      for (const pending of this.pending.values()) {
-        affected.add(pending.state);
+    // Native port gone (Chrome onDisconnect, protocol violation, send failure or suspend).
+    // Activations survive; every pending request gets 4900 and the next request reconnects.
+    teardownNative(native, { disconnect, countFailure }) {
+      if (this.native !== native) {
+        return;
       }
-      this.pending.clear();
-      for (const state of affected) {
-        state.pendingIds.clear();
-        if (state.live) {
-          this.postContent(state, {
-            namespace: shared.NAMESPACE,
-            version: shared.PROTOCOL_VERSION,
-            kind: "disconnect",
-            activationNonce: state.activationNonce,
-            error: shared.rpcError(4900, "Native wallet connection closed.", {
-              reason: cancellationReason
-            })
-          });
-          state.live = false;
-          this.activations.delete(state.activationNonce);
-          this.issuedPortNonces.delete(state.activationNonce);
-          this.issuedPortNonces.delete(state.channelNonce);
+      this.native = null;
+      if (disconnect && native.connection && typeof native.connection.disconnect === "function") {
+        try {
+          native.connection.disconnect();
+        } catch (_error) {
+          // Already closed.
+        }
+      }
+      if (countFailure) {
+        if (native.healthy) {
+          this.failures = 0;
+          this.nativeRetryAt = 0;
+        } else {
+          this.recordFailure(this.now());
+        }
+      }
+      for (const activation of [...this.activations.values()]) {
+        for (const record of [...activation.pending.values()]) {
+          if (record.native !== native) {
+            continue;
+          }
+          this.removePending(record);
+          this.respond(activation, record.id, { error: shared.ERRORS.CONNECTION_CLOSED });
         }
       }
     }
 
-    sendNativeCancellation(pending, reason) {
-      if (this.nativeConnection === null) {
+    expire(record) {
+      const { activation } = record;
+      if (activation.pending.get(record.id) !== record) {
         return;
       }
+      record.timer = null;
+      this.removePending(record);
+      this.respond(activation, record.id, { error: shared.ERRORS.TIMED_OUT });
+      this.sendCancel(record, "deadline");
+    }
+
+    cancelRequest(activation, id, reason) {
+      const record = activation.pending.get(id);
+      if (!record) {
+        return false;
+      }
+      this.removePending(record);
+      this.sendCancel(record, reason);
+      return true;
+    }
+
+    sendCancel(record, reason) {
+      const native = this.native;
+      if (native === null || record.native !== native) {
+        return;
+      }
+      const sequence = native.outSequence + 1;
+      native.outSequence = sequence;
       try {
-        const sequence = this.nextOutboundSequenceCandidate();
-        const message = {
+        native.connection.send({
           namespace: shared.NAMESPACE,
           version: shared.PROTOCOL_VERSION,
           role: "extension",
           kind: "cancel",
-          sessionId: this.sessionId,
+          sessionId: native.sessionId,
           sequence,
-          activationNonce: pending.state.activationNonce,
-          requestId: pending.id,
-          requestSequence: pending.sequence,
-          reason: normalizeCancelReason(reason)
-        };
-        if (!shared.fitsMessageLimit(message)) {
-          this.dropNativeConnection("native-cancel-invalid");
-          return;
-        }
-        this.outboundSequence = sequence;
-        this.nativeConnection.send(message);
+          activationNonce: record.activation.activationNonce,
+          requestId: record.id,
+          requestSequence: record.sequence,
+          reason
+        });
       } catch (_error) {
-        if (this.nativeConnection !== null) {
-          this.dropNativeConnection("native-cancel-failed");
-        }
+        this.teardownNative(native, { disconnect: true, countFailure: true });
       }
     }
 
-    postContent(state, message) {
-      if (!shared.fitsMessageLimit(message)) {
+    removePending(record) {
+      if (record.timer !== null) {
+        this.clearTimer(record.timer);
+        record.timer = null;
+      }
+      if (record.activation.pending.get(record.id) === record) {
+        record.activation.pending.delete(record.id);
+        this.pendingCount -= 1;
+      }
+    }
+
+    // Content `disconnect` message or content port closed: cancel this document's native work.
+    detach(activation, reason) {
+      if (!activation.live) {
+        return;
+      }
+      activation.live = false;
+      this.activations.delete(activation.activationNonce);
+      this.issuedNonces.delete(activation.activationNonce);
+      this.issuedNonces.delete(activation.channelNonce);
+      const cancelReason = shared.isReason(reason) ? reason : DEFAULT_DISCONNECT_REASON;
+      for (const record of [...activation.pending.values()]) {
+        this.removePending(record);
+        this.sendCancel(record, cancelReason);
+      }
+    }
+
+    evictIdleActivation() {
+      let victim = null;
+      for (const activation of this.activations.values()) {
+        if (activation.pending.size === 0 && (victim === null || activation.lastUsed < victim.lastUsed)) {
+          victim = activation;
+        }
+      }
+      if (victim === null) {
         return false;
       }
+      this.detach(victim, "document-evicted");
       try {
-        state.postMessage(message);
+        victim.closePort();
+      } catch (_error) {
+        // The port may already be closed.
+      }
+      return true;
+    }
+
+    reject(activation, id, error) {
+      this.respond(activation, id, { error });
+      return false;
+    }
+
+    respond(activation, id, body) {
+      if (!activation.live) {
+        return false;
+      }
+      return this.postContent(activation, {
+        namespace: shared.NAMESPACE,
+        version: shared.PROTOCOL_VERSION,
+        kind: "response",
+        activationNonce: activation.activationNonce,
+        id,
+        ...body
+      });
+    }
+
+    postContent(activation, message) {
+      try {
+        activation.postMessage(message);
         return true;
       } catch (_error) {
-        if (state.live) {
-          this.detachActivation(state, "content-post-failed", false);
-        }
+        this.detach(activation, DEFAULT_DISCONNECT_REASON);
         return false;
       }
     }
 
-    nextOutboundSequenceCandidate() {
-      if (this.outboundSequence >= Number.MAX_SAFE_INTEGER) {
-        this.dropNativeConnection("sequence-exhausted");
-        throw new Error("Native message sequence exhausted.");
-      }
-      return this.outboundSequence + 1;
-    }
-
-    issuePortNonce() {
+    issueNonce() {
       for (let attempt = 0; attempt < 16; attempt += 1) {
         const candidate = this.randomHex(32);
-        if (PROFILE_ID_PATTERN.test(candidate) && !this.issuedPortNonces.has(candidate)) {
-          this.issuedPortNonces.add(candidate);
+        if (shared.isId64(candidate) && !this.issuedNonces.has(candidate)) {
+          this.issuedNonces.add(candidate);
           return candidate;
         }
       }
-      throw new Error("Unable to allocate a unique content-port nonce.");
+      throw new Error("Unable to allocate a unique nonce.");
     }
 
-    shutdown() {
-      for (const state of [...this.activations.values()]) {
-        this.detachActivation(state, "worker-shutdown", true);
+    // service worker onSuspend: close only the native connection (activations are kept).
+    closeNative() {
+      if (this.native !== null) {
+        this.teardownNative(this.native, { disconnect: true, countFailure: false });
       }
-      this.dropNativeConnection("worker-shutdown");
     }
   }
 
-  function normalizeCancelReason(reason) {
-    return typeof reason === "string" && CANCEL_REASON_PATTERN.test(reason)
-      ? reason
-      : "invalid-cancel-reason";
+  function validNativeMessage(native, value) {
+    if (!shared.checkJson(value, shared.RESPONSE_LIMITS)
+      || !shared.isPlainObject(value)
+      || value.namespace !== shared.NAMESPACE
+      || value.version !== shared.PROTOCOL_VERSION
+      || value.role !== "native-host"
+      || value.sessionId !== native.sessionId
+      || !Number.isSafeInteger(value.sequence)
+      || value.sequence !== native.lastInSequence + 1
+      || !shared.isId64(value.activationNonce)) {
+      return false;
+    }
+    if (value.kind === "response") {
+      const resultShape = shared.hasExactKeys(value, [...NATIVE_RESPONSE_KEYS, "result"]);
+      const errorShape = shared.hasExactKeys(value, [...NATIVE_RESPONSE_KEYS, "error"]);
+      return (resultShape || (errorShape && shared.validRpcError(value.error)))
+        && Number.isSafeInteger(value.requestSequence)
+        && value.requestSequence >= 1
+        && shared.isId32(value.requestId);
+    }
+    if (value.kind === "event") {
+      return shared.hasExactKeys(value, NATIVE_EVENT_KEYS) && shared.validEvent(value.event, value.payload);
+    }
+    return false;
   }
 
+  // spec/05 §2.4: origin is derived only from Chrome's port.sender.
   function deriveSenderContext(configuration) {
     if (!shared.hasExactKeys(configuration, ["sender", "extensionId", "channelNonce"])
       || !EXTENSION_ID_PATTERN.test(configuration.extensionId)
-      || !PROFILE_ID_PATTERN.test(configuration.channelNonce)) {
+      || !shared.isId64(configuration.channelNonce)) {
       throw new Error("Background-owned browser context configuration is invalid.");
     }
     const { sender, extensionId, channelNonce } = configuration;
     if (!sender || typeof sender !== "object"
-      || !sender.tab || !Number.isSafeInteger(sender.tab.id) || sender.tab.id < 0
+      || !sender.tab || typeof sender.tab !== "object"
+      || !Number.isSafeInteger(sender.tab.id) || sender.tab.id < 0
+      || sender.tab.incognito === true
       || sender.frameId !== 0
       || sender.documentLifecycle !== "active"
       || typeof sender.documentId !== "string"
-      || !DOCUMENT_ID_PATTERN.test(sender.documentId)
-      || typeof sender.url !== "string"
-      || sender.tab.incognito === true
-      || sender.url.length > 8_192) {
-      throw new Error("Content connection lacks a valid top-level document identity.");
+      || !DOCUMENT_ID_PATTERN.test(sender.documentId)) {
+      throw new Error("Content connection is not an active top-level document.");
     }
-    let parsed;
-    try {
-      parsed = new URL(sender.url);
-    } catch (_error) {
-      throw new Error("Content connection URL is invalid.");
+    if (typeof sender.url !== "string"
+      || sender.url.length > MAX_SENDER_URL_LENGTH
+      || !shared.isSupportedPageUrl(sender.url)) {
+      throw new Error("Content connection page is not a supported origin.");
     }
-    if (parsed.protocol !== "https:"
-      || parsed.username !== ""
-      || parsed.password !== ""
-      || parsed.origin === "null"
-      || (typeof sender.origin === "string" && sender.origin !== parsed.origin)) {
-      throw new Error("Content connection origin is not an allowed HTTPS origin.");
+    const { origin } = new URL(sender.url);
+    if (sender.origin !== undefined && sender.origin !== origin) {
+      throw new Error("Content connection origin does not match its URL.");
     }
     return Object.freeze({
       browserFamily: "chrome",
@@ -560,36 +519,11 @@
       tabId: sender.tab.id,
       frameId: 0,
       documentId: sender.documentId,
-      topOrigin: parsed.origin,
-      frameOrigin: parsed.origin,
+      topOrigin: origin,
+      frameOrigin: origin,
       documentLifecycle: "active",
       channelNonce
     });
-  }
-
-  function isContentDisconnect(value, activationNonce) {
-    return shared.hasExactKeys(value, [
-      "namespace", "version", "kind", "activationNonce", "reason"
-    ])
-      && value.namespace === shared.NAMESPACE
-      && value.version === shared.PROTOCOL_VERSION
-      && value.kind === "disconnect"
-      && value.activationNonce === activationNonce
-      && typeof value.reason === "string"
-      && value.reason.length <= 128;
-  }
-
-  function requestKey(activationNonce, requestId) {
-    return `${activationNonce}:${requestId}`;
-  }
-
-  function validRpcError(value) {
-    return shared.hasExactKeys(value, ["code", "message"], ["data"])
-      && Number.isSafeInteger(value.code)
-      && typeof value.message === "string"
-      && value.message.length > 0
-      && value.message.length <= 512
-      && (!Object.prototype.hasOwnProperty.call(value, "data") || shared.isJsonValue(value.data));
   }
 
   Object.defineProperty(root, "__YOUR_WALLET_BACKGROUND_CORE__", {
@@ -600,13 +534,16 @@
       BackgroundRouter,
       CONTENT_PORT_NAME,
       NATIVE_HOST_NAME,
-      REQUEST_DEADLINE_MS,
+      READ_DEADLINE_MS,
+      INTERACTIVE_DEADLINE_MS,
       MAX_ACTIVE_DOCUMENTS,
       MAX_GLOBAL_PENDING,
       MAX_PENDING_PER_DOCUMENT,
-      MAX_NATIVE_CONNECTION_ATTEMPTS,
-      deriveSenderContext,
-      validRpcError
+      RATE_PER_SECOND,
+      RATE_BURST,
+      NATIVE_BACKOFF_BASE_MS,
+      NATIVE_BACKOFF_MAX_MS,
+      deriveSenderContext
     })
   });
 }(globalThis));

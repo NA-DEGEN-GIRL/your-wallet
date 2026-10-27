@@ -58,6 +58,8 @@ pub struct SendIntent {
     pub access_list: Vec<AccessListItem>,
     /// dApp `gas` (wallet sends: `None`).
     pub dapp_gas: Option<u64>,
+    /// dApp `nonce` (spec/03 §3.2: must equal the nonce of §3.6; wallet sends: `None`).
+    pub dapp_nonce: Option<u64>,
 }
 
 /// Replacement mode (spec/03 §4.6).
@@ -152,6 +154,9 @@ pub struct PrepareFailure {
     pub code: ErrorCode,
     /// `다시 시도` offered (E-RPC-001/002/004).
     pub retryable: bool,
+    /// The dApp's `nonce` differs from the wallet's (spec/03 §3.2): answered -32602 without
+    /// showing the failure.
+    pub invalid_params: bool,
 }
 
 impl PrepareFailure {
@@ -163,6 +168,7 @@ impl PrepareFailure {
                 code,
                 ErrorCode::Rpc001 | ErrorCode::Rpc002 | ErrorCode::Rpc004
             ),
+            invalid_params: false,
         }
     }
 
@@ -608,6 +614,18 @@ fn nonce_step(
             pending,
         )
         .map_err(|block| PrepareFailure::new(block.warning(), ErrorCode::Tx002))?;
+        if job
+            .intent
+            .dapp_nonce
+            .is_some_and(|requested| requested != nonce)
+        {
+            let mut failure = PrepareFailure::new(
+                warning(E35, Some("dApp이 지정한 nonce가 지갑의 nonce와 다릅니다")),
+                ErrorCode::Tx002,
+            );
+            failure.invalid_params = true;
+            return Err(failure);
+        }
         return Ok((nonce, None));
     };
     let key = target
@@ -963,6 +981,7 @@ fn rebuild(
             data: context.tx.data.clone(),
             access_list: context.tx.access_list.clone(),
             dapp_gas: None,
+            dapp_nonce: None,
         },
         replace: None,
         records: Vec::new(),
@@ -1089,3 +1108,104 @@ pub fn resimulate(
     };
     result
 }
+
+fn collect_addresses(
+    node: &yw_core::evm::eip712::TdNode,
+    under_token: bool,
+    addresses: &mut Vec<Address>,
+    tokens: &mut Vec<Address>,
+) {
+    use yw_core::evm::eip712::{TdNode, TdValue};
+    match node {
+        TdNode::Value(TdValue::Address(address)) => {
+            if !addresses.contains(address) {
+                addresses.push(*address);
+            }
+            if under_token && !tokens.contains(address) {
+                tokens.push(*address);
+            }
+        }
+        TdNode::Value(_) => {}
+        TdNode::Array(items) => {
+            for item in items {
+                collect_addresses(item, under_token, addresses, tokens);
+            }
+        }
+        TdNode::Struct { fields, .. } => {
+            for (name, item) in fields {
+                collect_addresses(item, name == "token", addresses, tokens);
+            }
+        }
+    }
+}
+
+/// Facts for a typed-data display (spec/03 §8.5 address classification, §2.5 token metadata of
+/// `token` fields and of an EIP-2612/DAI verifying contract), at most 16 lookups each. When the
+/// chain check does not verify, no lookup is made (the display shows unclassified addresses).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the inputs of one typed-data preparation"
+)]
+#[must_use]
+pub fn typed_facts(
+    transport: &SharedTransport,
+    cache: &mut ChainCache,
+    chain: &super::ChainJob,
+    account: &Address,
+    typed: &yw_core::evm::eip712::DecodedTypedData,
+    address_book: Vec<(Address, String)>,
+    clock: &dyn Clock,
+    retry_delay_ms: u64,
+) -> (ChainFacts, ChainCheck) {
+    use yw_core::evm::eip712::KnownSchema;
+    let mut facts = ChainFacts {
+        address_book,
+        ..ChainFacts::default()
+    };
+    let client = RpcClient::new(&**transport);
+    let url = &chain.url;
+    let check = cache.ensure(&client, url, &chain.info, clock, retry_delay_ms);
+    if !matches!(check, ChainCheck::Verified { .. }) {
+        return (facts, check);
+    }
+    let mut addresses = vec![*account];
+    let mut tokens = Vec::new();
+    if let Some(contract) = typed.domain.verifying_contract {
+        addresses.push(contract);
+        if matches!(
+            typed.schema,
+            Some(KnownSchema::Eip2612Permit | KnownSchema::DaiPermit)
+        ) {
+            tokens.push(contract);
+        }
+    }
+    collect_addresses(&typed.root, false, &mut addresses, &mut tokens);
+    let started = clock.now_ms();
+    let over = || clock.now_ms().saturating_sub(started) > PREPARE_TYPED_BUDGET_MS;
+    for token in tokens.iter().take(MAX_FACT_LOOKUPS) {
+        if over() {
+            break;
+        }
+        let meta = token_meta(&client, url, &chain.info, token);
+        facts.tokens.push((*token, meta));
+    }
+    for address in addresses.iter().take(MAX_FACT_LOOKUPS) {
+        if over() {
+            break;
+        }
+        if chain.info.label(address).is_some() || facts.code_of(address).is_some() {
+            continue;
+        }
+        if let Ok(code) = rpc::code(&client, url, address) {
+            let kind = CodeKind::from_code(&code);
+            if address == account {
+                facts.account_code = kind;
+            }
+            facts.code.push((*address, kind));
+        }
+    }
+    (facts, check)
+}
+
+/// Lookup budget of a typed-data preparation (the spec/03 §1.4 30 s budget).
+pub const PREPARE_TYPED_BUDGET_MS: u64 = super::PREPARE_BUDGET_MS;

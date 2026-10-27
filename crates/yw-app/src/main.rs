@@ -16,6 +16,7 @@ use yw_app::app::{
     load_settings,
 };
 use yw_app::app_approval::{APPROVAL_CLASS, PANEL_CLASS};
+use yw_app::app_browser::BrowserUi;
 use yw_app::errors::ErrorCode;
 use yw_app::events::{
     EventQueue, KeyJob, UiEvent, WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT,
@@ -232,15 +233,17 @@ fn main() -> ExitCode {
             });
         let (rpc_tx, rpc_rx) = mpsc::channel();
         let rpc_events = Arc::clone(&events);
+        // One HTTPS client shared by yw-rpc and yw-read-0..3 (spec/04 §1.2, §1.9).
+        let client = yw_win::http::Client::new(RPC_TIMEOUTS).ok();
+        if client.is_none() {
+            logging::warn("rpc", "client.init_failed", &[]);
+        }
+        let transport = client.map(|client| Arc::new(client) as Arc<dyn Transport>);
+        let rpc_transport = transport.clone();
         let rpc_thread = std::thread::Builder::new()
             .name("yw-rpc".to_owned())
             .spawn(move || {
-                let client = yw_win::http::Client::new(RPC_TIMEOUTS).ok();
-                if client.is_none() {
-                    logging::warn("rpc", "client.init_failed", &[]);
-                }
-                let transport = client.map(|client| Arc::new(client) as Arc<dyn Transport>);
-                run_rpc_worker(RpcWorker::production(transport), &rpc_rx, &rpc_events);
+                run_rpc_worker(RpcWorker::production(rpc_transport), &rpc_rx, &rpc_events);
             });
         match (key_thread, rpc_thread) {
             (Ok(key_thread), Ok(rpc_thread)) => {
@@ -248,6 +251,8 @@ fn main() -> ExitCode {
             }
             _ => return fail("작업 스레드를 시작하지 못했습니다."),
         }
+        // Browser bridge: dispatcher, read workers, pipe server (spec/05 §8.1, within 2 s).
+        state.attach_browser(BrowserUi::start(&events, transport));
         // 8. Classify the vault.
         state.key(KeyJob::Load);
         // 9. Show unless started for the browser.

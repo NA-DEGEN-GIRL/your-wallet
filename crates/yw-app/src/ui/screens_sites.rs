@@ -1,0 +1,136 @@
+//! S13 연결된 사이트 (spec/04 §2.9): every grant with its origin (http badge), accounts in return
+//! order, origin chain and connection time; `연결 해제` per row and `모두 해제` (confirmation).
+//! Also the S07 T-UNLOCK-PENDING line (spec/04 §2.5, §2.16).
+
+use core::fmt::Write as _;
+
+use crate::app::{App, Confirm};
+use crate::ui::main_window::{Ctl, Item, Tone};
+
+/// Control ids (after the M4 ranges, which end at 6,600).
+pub mod ids {
+    /// 연결된 사이트.
+    pub const SITES_OPEN: u16 = 6_700;
+    /// 모두 해제.
+    pub const SITES_REVOKE_ALL: u16 = 6_701;
+    /// Row buttons (`연결 해제`), one per grant.
+    pub const SITE_ROW_BASE: u16 = 6_710;
+    /// Row span (256 grants, spec/02 §5.3).
+    pub const SITE_ROW_SPAN: u16 = 256;
+}
+
+fn local_time(unix_ms: u64) -> String {
+    let local = yw_win::time::local_wall_ms(unix_ms);
+    let text = crate::logging::format_utc(local.unwrap_or(unix_ms));
+    let short = text.get(..16).unwrap_or(&text).replace('T', " ");
+    if local.is_some() {
+        short
+    } else {
+        format!("{short} UTC")
+    }
+}
+
+impl App {
+    /// S13.
+    pub(crate) fn sites_screen(&self, items: &mut Vec<Item>) {
+        items.push(Item::Row(vec![Ctl::button(
+            crate::ui::screens::ids::BACK_MAIN,
+            "← 메인",
+        )]));
+        items.push(Item::Title("연결된 사이트".to_owned()));
+        let grants = self.browser_grants();
+        if grants.is_empty() {
+            items.push(Item::Muted("연결된 사이트가 없습니다.".to_owned()));
+            return;
+        }
+        items.push(Item::Muted(
+            "연결된 사이트는 선택한 계정의 주소, 잔액, 거래 기록을 볼 수 있습니다. 서명과 전송은 매번 따로 승인합니다."
+                .to_owned(),
+        ));
+        let labels = self.own_accounts();
+        for (index, site) in grants.iter().enumerate() {
+            items.push(Item::Rule);
+            items.push(Item::Text(site.origin.as_str().to_owned()));
+            if site.origin.is_http() {
+                items.push(Item::Banner(
+                    "로컬 개발 사이트(http)".to_owned(),
+                    Tone::Warn,
+                ));
+            }
+            for account in &site.accounts {
+                let label = labels
+                    .iter()
+                    .find(|(address, _)| address == account)
+                    .map_or("", |(_, label)| label.as_str());
+                items.push(Item::Mono(format!("{label}  {}", account.to_checksum())));
+            }
+            let chain = self
+                .settings
+                .evm_chain_name(site.chain_id)
+                .unwrap_or_else(|| format!("chainId {}", site.chain_id));
+            items.push(Item::Muted(format!(
+                "네트워크: {chain}   ·   연결 시각: {}",
+                local_time(site.granted_at_unix_ms)
+            )));
+            let id = u16::try_from(index)
+                .ok()
+                .filter(|offset| *offset < ids::SITE_ROW_SPAN)
+                .map_or(0, |offset| ids::SITE_ROW_BASE + offset);
+            if id != 0 {
+                items.push(Item::Row(vec![Ctl::button(id, "연결 해제")]));
+            }
+        }
+        items.push(Item::Rule);
+        items.push(Item::Row(vec![Ctl::button(
+            ids::SITES_REVOKE_ALL,
+            "모두 해제",
+        )]));
+    }
+
+    /// S07 T-UNLOCK-PENDING (at most 5 origins, then "외 n건").
+    pub(crate) fn unlock_pending_text(&self) -> Option<String> {
+        let origins = self.waiting_origins();
+        if origins.is_empty() {
+            return None;
+        }
+        let count = self
+            .evm
+            .queue
+            .waiting_payloads()
+            .filter(|item| matches!(item, crate::app_evm::QueuedItem::Site(_)))
+            .count();
+        let shown: Vec<&str> = origins.iter().take(5).map(String::as_str).collect();
+        let mut list = shown.join(", ");
+        if origins.len() > 5 {
+            let _ = write!(list, " 외 {}건", origins.len() - 5);
+        }
+        Some(format!("잠금 해제를 기다리는 요청 {count}건: {list}"))
+    }
+
+    /// Commands of S13.
+    pub(crate) fn on_sites_command(&mut self, id: u16) -> bool {
+        match id {
+            ids::SITES_OPEN => {
+                self.set_screen(crate::app::Screen::Sites);
+                true
+            }
+            ids::SITES_REVOKE_ALL => {
+                self.set_screen(crate::app::Screen::Confirm(Confirm::DisconnectAll));
+                true
+            }
+            _ => {
+                let Some(offset) = id
+                    .checked_sub(ids::SITE_ROW_BASE)
+                    .filter(|offset| *offset < ids::SITE_ROW_SPAN)
+                else {
+                    return false;
+                };
+                if let Some(site) = self.browser_grants().get(usize::from(offset)) {
+                    let origin = site.origin.clone();
+                    self.disconnect_site(&origin);
+                }
+                true
+            }
+        }
+    }
+}

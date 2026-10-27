@@ -10,218 +10,364 @@
     throw new Error("Your Wallet shared module was not loaded.");
   }
 
+  const MAX_PENDING = 64;
+  const CONNECT_TIMEOUT_MS = 5_000;
+  const MIN_RECONNECT_INTERVAL_MS = 250;
+  const STATES = Object.freeze({
+    IDLE: "IDLE",
+    CONNECTING: "CONNECTING",
+    ACTIVE: "ACTIVE",
+    DEAD: "DEAD"
+  });
+
+  // spec/05 §2.7. The bridge never touches Chrome APIs directly; content.js supplies adapters.
   class ContentBridge {
-    constructor({ channelNonce, sendToBackground, postToPage }) {
-      if (!shared.validNonce(channelNonce)) {
+    constructor({ channelNonce, connectPort, postToPage, isContextValid, setTimer, clearTimer, now }) {
+      if (!shared.isId64(channelNonce)) {
         throw new TypeError("Invalid page channel nonce.");
       }
-      if (typeof sendToBackground !== "function" || typeof postToPage !== "function") {
-        throw new TypeError("Content bridge adapters are required.");
+      for (const adapter of [connectPort, postToPage, isContextValid, setTimer, clearTimer, now]) {
+        if (typeof adapter !== "function") {
+          throw new TypeError("Content bridge adapters are required.");
+        }
       }
       this.channelNonce = channelNonce;
-      this.activationNonce = null;
-      this.sendToBackground = sendToBackground;
+      this.connectPort = connectPort;
       this.postToPage = postToPage;
-      this.pending = new Set();
-      this.seen = new Set();
-      this.responded = new Set();
-      this.active = false;
+      this.isContextValid = isContextValid;
+      this.setTimer = setTimer;
+      this.clearTimer = clearTimer;
+      this.now = now;
+      this.state = STATES.IDLE;
+      this.port = null;
+      this.portGeneration = 0;
+      this.activationNonce = null;
+      // id -> { id, method, params, sent }. Queued (not yet sent) entries are also listed in `queue`.
+      this.pending = new Map();
+      this.queue = [];
+      this.connectTimer = null;
+      this.delayTimer = null;
+      this.lastConnectAt = null;
     }
 
-    activate(activationNonce) {
-      if (this.active || !shared.validNonce(activationNonce)) {
+    announce() {
+      this.post({ kind: "bridge-init" });
+    }
+
+    receivePage(value) {
+      const message = shared.parsePageMessage(value, this.channelNonce);
+      if (message === null) {
         return false;
       }
-      this.activationNonce = activationNonce;
-      this.active = true;
-      this.postToPage({
+      if (message.kind === "bridge-request") {
+        this.announce();
+        return true;
+      }
+      if (message.kind === "cancel") {
+        return this.cancelFromPage(message.id);
+      }
+      return this.requestFromPage(value, message);
+    }
+
+    requestFromPage(raw, request) {
+      if (this.pending.has(request.id)) {
+        return false;
+      }
+      if (shared.methodRoute(request.method) === null) {
+        this.respond(request.id, { error: shared.ERRORS.UNSUPPORTED_METHOD });
+        return false;
+      }
+      if (!shared.checkJson(raw, shared.REQUEST_LIMITS)) {
+        this.respond(request.id, { error: shared.ERRORS.REQUEST_TOO_LARGE });
+        return false;
+      }
+      if (this.pending.size >= MAX_PENDING) {
+        this.respond(request.id, { error: shared.ERRORS.TOO_MANY_PENDING });
+        return false;
+      }
+      if (this.state === STATES.IDLE && !this.contextValid()) {
+        this.enterDead();
+      }
+      if (this.state === STATES.DEAD) {
+        this.respond(request.id, { error: shared.ERRORS.EXTENSION_RELOADED });
+        return false;
+      }
+      const entry = { id: request.id, method: request.method, params: request.params, sent: false };
+      this.pending.set(entry.id, entry);
+      if (this.state === STATES.ACTIVE) {
+        this.sendRequest(entry);
+        return true;
+      }
+      this.queue.push(entry);
+      if (this.state === STATES.IDLE) {
+        this.beginConnect();
+      }
+      return true;
+    }
+
+    cancelFromPage(id) {
+      const entry = this.pending.get(id);
+      if (!entry || (this.state !== STATES.CONNECTING && this.state !== STATES.ACTIVE)) {
+        return false;
+      }
+      this.pending.delete(id);
+      if (!entry.sent) {
+        this.queue = this.queue.filter((queued) => queued !== entry);
+        return true;
+      }
+      this.sendToPort({
         namespace: shared.NAMESPACE,
         version: shared.PROTOCOL_VERSION,
-        channel: this.channelNonce,
-        kind: "bridge-init"
+        kind: "cancel",
+        activationNonce: this.activationNonce,
+        id,
+        reason: "page-cancel"
       });
       return true;
     }
 
-    receivePage(value) {
-      if (!this.active || !shared.fitsMessageLimit(value)) {
-        return false;
+    beginConnect() {
+      this.state = STATES.CONNECTING;
+      const elapsed = this.lastConnectAt === null ? Infinity : this.now() - this.lastConnectAt;
+      if (elapsed < MIN_RECONNECT_INTERVAL_MS) {
+        const generation = this.portGeneration;
+        this.delayTimer = this.setTimer(() => {
+          this.delayTimer = null;
+          if (this.state === STATES.CONNECTING && this.portGeneration === generation && this.port === null) {
+            this.openPort();
+          }
+        }, MIN_RECONNECT_INTERVAL_MS - elapsed);
+        return;
       }
-      const request = shared.parsePageRequest(value, this.channelNonce);
-      if (!request) {
-        return false;
+      this.openPort();
+    }
+
+    openPort() {
+      this.lastConnectAt = this.now();
+      this.portGeneration += 1;
+      const generation = this.portGeneration;
+      let port;
+      try {
+        port = this.connectPort();
+      } catch (_error) {
+        this.enterDead();
+        return;
       }
-      if (this.seen.has(request.id)) {
-        this.cancel("duplicate-request-id");
-        return false;
+      this.port = port;
+      try {
+        port.onMessage((message) => {
+          if (this.portGeneration === generation && this.port === port) {
+            this.receiveBackground(message);
+          }
+        });
+        port.onDisconnect(() => {
+          if (this.portGeneration === generation && this.port === port) {
+            this.portClosed();
+          }
+        });
+      } catch (_error) {
+        this.enterDead();
+        return;
       }
-      if (this.seen.size >= shared.MAX_REQUESTS_PER_ACTIVATION) {
-        this.respondError(request.id, shared.rpcError(-32005, "Request limit reached for this document."));
-        this.cancel("request-limit");
-        return false;
-      }
-      this.seen.add(request.id);
-      this.pending.add(request.id);
-      const outbound = {
-        namespace: shared.NAMESPACE,
-        version: shared.PROTOCOL_VERSION,
-        kind: "request",
-        activationNonce: this.activationNonce,
-        id: request.id,
-        method: request.method,
-        params: request.params
-      };
-      if (!shared.fitsMessageLimit(outbound)) {
-        this.pending.delete(request.id);
-        this.respondError(request.id, shared.rpcError(-32600, "Request exceeds the wallet message limit."));
-        return false;
-      }
-      this.sendToBackground(outbound);
-      return true;
+      this.connectTimer = this.setTimer(() => {
+        this.connectTimer = null;
+        if (this.state === STATES.CONNECTING && this.portGeneration === generation) {
+          this.closePort();
+          this.failAll(shared.ERRORS.CONNECTION_CLOSED);
+          this.state = STATES.IDLE;
+        }
+      }, CONNECT_TIMEOUT_MS);
     }
 
     receiveBackground(value) {
-      if (!this.active || !shared.isPlainObject(value) || !shared.fitsMessageLimit(value)) {
+      const message = shared.parseBackgroundMessage(value);
+      if (message === null) {
         return false;
       }
-      if (value.namespace !== shared.NAMESPACE
-        || value.version !== shared.PROTOCOL_VERSION
-        || value.activationNonce !== this.activationNonce) {
-        return false;
-      }
-      if (value.kind === "response") {
-        return this.receiveResponse(value);
-      }
-      if (value.kind === "event") {
-        return this.receiveEvent(value);
-      }
-      if (value.kind === "disconnect") {
-        if (!shared.hasExactKeys(value, [
-          "namespace", "version", "kind", "activationNonce", "error"
-        ]) || !validRpcError(value.error)) {
+      if (this.state === STATES.CONNECTING) {
+        if (message.kind !== "activated") {
           return false;
         }
-        this.cancel("background-disconnect", value.error);
+        this.activationNonce = message.activationNonce;
+        this.state = STATES.ACTIVE;
+        this.cancelTimer("connectTimer");
+        const queued = this.queue;
+        this.queue = [];
+        for (const entry of queued) {
+          if (this.state !== STATES.ACTIVE) {
+            break;
+          }
+          this.sendRequest(entry);
+        }
+        return true;
+      }
+      if (this.state !== STATES.ACTIVE || message.activationNonce !== this.activationNonce) {
+        return false;
+      }
+      if (message.kind === "response") {
+        if (!this.pending.has(message.id) || !this.pending.get(message.id).sent) {
+          return false;
+        }
+        this.pending.delete(message.id);
+        const body = shared.checkJson(value, shared.RESPONSE_LIMITS)
+          ? message.body
+          : { error: shared.ERRORS.RESPONSE_TOO_LARGE };
+        this.respond(message.id, body);
+        return true;
+      }
+      if (message.kind === "event") {
+        if (!shared.checkJson(value, shared.RESPONSE_LIMITS)) {
+          return false;
+        }
+        this.post({ kind: "event", event: message.event, payload: message.payload });
         return true;
       }
       return false;
     }
 
-    receiveResponse(value) {
-      const resultShape = shared.hasExactKeys(value, [
-        "namespace", "version", "kind", "activationNonce", "id", "result"
-      ]);
-      const errorShape = shared.hasExactKeys(value, [
-        "namespace", "version", "kind", "activationNonce", "id", "error"
-      ]);
-      if ((!resultShape && !errorShape)
-        || !shared.validRequestId(value.id)
-        || !this.pending.has(value.id)
-        || this.responded.has(value.id)
-        || (resultShape && !shared.isJsonValue(value.result))
-        || (errorShape && !validRpcError(value.error))) {
+    // pagehide / freeze: close the activation but stay reusable (bfcache restore reconnects).
+    closeForDocument(reason) {
+      if (this.state !== STATES.CONNECTING && this.state !== STATES.ACTIVE) {
         return false;
       }
-      this.pending.delete(value.id);
-      this.responded.add(value.id);
-      const pageMessage = {
-        namespace: shared.NAMESPACE,
-        version: shared.PROTOCOL_VERSION,
-        channel: this.channelNonce,
-        kind: "response",
-        id: value.id
-      };
-      if (resultShape) {
-        pageMessage.result = value.result;
-      } else {
-        pageMessage.error = value.error;
+      if (this.state === STATES.ACTIVE && shared.isReason(reason)) {
+        this.sendToPort({
+          namespace: shared.NAMESPACE,
+          version: shared.PROTOCOL_VERSION,
+          kind: "disconnect",
+          activationNonce: this.activationNonce,
+          reason
+        });
       }
-      if (!shared.fitsMessageLimit(pageMessage)) {
-        delete pageMessage.result;
-        pageMessage.error = shared.rpcError(-32603, "Wallet response exceeds the message limit.");
-      }
-      this.postToPage(pageMessage);
+      this.closePort();
+      this.failAll(shared.ERRORS.CONNECTION_CLOSED);
+      this.state = STATES.IDLE;
       return true;
     }
 
-    receiveEvent(value) {
-      if (!shared.hasExactKeys(value, [
-        "namespace", "version", "kind", "activationNonce", "event", "payload"
-      ]) || !shared.ALLOWED_EVENTS.has(value.event) || !shared.isJsonValue(value.payload)) {
-        return false;
-      }
-      const pageMessage = {
-        namespace: shared.NAMESPACE,
-        version: shared.PROTOCOL_VERSION,
-        channel: this.channelNonce,
-        kind: "event",
-        event: value.event,
-        payload: value.payload
-      };
-      if (!shared.fitsMessageLimit(pageMessage)) {
-        return false;
-      }
-      this.postToPage(pageMessage);
-      return true;
-    }
-
-    respondError(id, error) {
-      if (this.responded.has(id)) {
-        return false;
-      }
-      this.responded.add(id);
-      this.postToPage({
-        namespace: shared.NAMESPACE,
-        version: shared.PROTOCOL_VERSION,
-        channel: this.channelNonce,
-        kind: "response",
-        id,
-        error
-      });
-      return true;
-    }
-
-    cancel(reason, suppliedError = null) {
-      if (!this.active) {
+    portClosed() {
+      this.port = null;
+      this.portGeneration += 1;
+      this.activationNonce = null;
+      this.cancelTimer("connectTimer");
+      this.cancelTimer("delayTimer");
+      if (!this.contextValid()) {
+        this.enterDead();
         return;
       }
-      this.active = false;
-      const error = suppliedError || shared.rpcError(4900, "Wallet connection closed.", { reason });
-      for (const id of this.pending) {
-        this.respondError(id, error);
-      }
-      this.pending.clear();
-      this.postToPage({
-        namespace: shared.NAMESPACE,
-        version: shared.PROTOCOL_VERSION,
-        channel: this.channelNonce,
-        kind: "disconnect",
-        error
-      });
-      this.sendToBackground({
-        namespace: shared.NAMESPACE,
-        version: shared.PROTOCOL_VERSION,
-        kind: "disconnect",
-        activationNonce: this.activationNonce,
-        reason
-      });
+      this.failAll(shared.ERRORS.CONNECTION_CLOSED);
+      this.state = STATES.IDLE;
     }
-  }
 
-  function validRpcError(value) {
-    if (!shared.hasExactKeys(value, ["code", "message"], ["data"])) {
-      return false;
+    enterDead() {
+      if (this.state === STATES.DEAD) {
+        return;
+      }
+      this.closePort();
+      this.state = STATES.DEAD;
+      this.failAll(shared.ERRORS.EXTENSION_RELOADED);
+      this.post({ kind: "disconnect", error: shared.ERRORS.EXTENSION_RELOADED });
     }
-    return Number.isInteger(value.code)
-      && typeof value.message === "string"
-      && value.message.length <= 512
-      && (!Object.prototype.hasOwnProperty.call(value, "data") || shared.isJsonValue(value.data));
+
+    sendRequest(entry) {
+      entry.sent = true;
+      this.sendToPort({
+        namespace: shared.NAMESPACE,
+        version: shared.PROTOCOL_VERSION,
+        kind: "request",
+        activationNonce: this.activationNonce,
+        id: entry.id,
+        method: entry.method,
+        params: entry.params
+      });
+    }
+
+    sendToPort(message) {
+      const port = this.port;
+      if (port === null) {
+        return false;
+      }
+      try {
+        port.postMessage(message);
+        return true;
+      } catch (_error) {
+        if (this.port === port) {
+          this.portClosed();
+        }
+        return false;
+      }
+    }
+
+    closePort() {
+      const port = this.port;
+      this.port = null;
+      this.portGeneration += 1;
+      this.activationNonce = null;
+      this.cancelTimer("connectTimer");
+      this.cancelTimer("delayTimer");
+      if (port !== null) {
+        try {
+          port.disconnect();
+        } catch (_error) {
+          // The worker side may already be gone.
+        }
+      }
+    }
+
+    failAll(error) {
+      const entries = [...this.pending.values()];
+      this.pending.clear();
+      this.queue = [];
+      for (const entry of entries) {
+        this.respond(entry.id, { error });
+      }
+    }
+
+    respond(id, body) {
+      this.post({ kind: "response", id, ...body });
+    }
+
+    post(fields) {
+      const { kind, ...rest } = fields;
+      try {
+        this.postToPage({
+          namespace: shared.NAMESPACE,
+          version: shared.PROTOCOL_VERSION,
+          kind,
+          channel: this.channelNonce,
+          ...rest
+        });
+      } catch (_error) {
+        // The page may be tearing down; nothing else to notify.
+      }
+    }
+
+    contextValid() {
+      try {
+        return this.isContextValid() === true;
+      } catch (_error) {
+        return false;
+      }
+    }
+
+    cancelTimer(name) {
+      if (this[name] !== null) {
+        this.clearTimer(this[name]);
+        this[name] = null;
+      }
+    }
   }
 
   Object.defineProperty(root, "__YOUR_WALLET_CONTENT_CORE__", {
     configurable: false,
     enumerable: false,
     writable: false,
-    value: Object.freeze({ ContentBridge, validRpcError })
+    value: Object.freeze({
+      ContentBridge,
+      STATES,
+      MAX_PENDING,
+      CONNECT_TIMEOUT_MS,
+      MIN_RECONNECT_INTERVAL_MS
+    })
   });
 }(globalThis));

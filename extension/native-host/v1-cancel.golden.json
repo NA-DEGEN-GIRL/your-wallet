@@ -1,0 +1,12 @@
+{
+  "namespace": "your-wallet",
+  "version": 1,
+  "role": "extension",
+  "kind": "cancel",
+  "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "sequence": 2,
+  "activationNonce": "000000000000000000000000000000000000000000000000000000000000000c",
+  "requestId": "01010101010101010101010101010101",
+  "requestSequence": 1,
+  "reason": "deadline"
+}

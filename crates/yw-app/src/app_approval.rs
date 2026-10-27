@@ -23,7 +23,8 @@ use yw_win::ui::{
 };
 
 use crate::app::App;
-use crate::app_evm::AppApproval;
+use crate::app_evm::{AppApproval, QueuedItem};
+use crate::browser::{SiteKind, SiteRequest};
 use crate::errors::ErrorCode;
 use crate::events::{KeyJob, SignInfo};
 use crate::flow::evm::Limits;
@@ -102,6 +103,18 @@ struct PanelLayout {
     height: i32,
     ack: Option<Rect>,
     raw: Option<Rect>,
+    accounts: Vec<(usize, Rect)>,
+}
+
+/// Connect-window state (spec/05 §4.2).
+#[derive(Clone, Debug)]
+pub struct ConnectState {
+    /// Offered accounts (address, label) in list order.
+    pub accounts: Vec<(yw_core::evm::address::Address, String)>,
+    /// Selection.
+    pub selected: Vec<bool>,
+    /// Origin chain name.
+    pub chain_name: String,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -116,7 +129,9 @@ struct Bottom {
 pub struct ApprovalUi {
     window: Window,
     panel: Window,
-    item: AppApproval,
+    item: QueuedItem,
+    connect: Option<ConnectState>,
+    typed: Option<Box<yw_core::evm::eip712::DecodedTypedData>>,
     session: ApprovalSession,
     job: u64,
     prepared: Option<Box<Prepared>>,
@@ -385,6 +400,32 @@ fn build_layout(
                 builder.gap(20);
                 builder.text(text, FontRole::BodyBold, theme::FOCUS, margin, inner);
             }
+            Block::Account {
+                index,
+                label,
+                address,
+                checked,
+            } => {
+                let size = builder.px(16);
+                let top = builder.y;
+                let rect = Rect::new(margin, top, size, size);
+                builder.layout.frames.push((rect, theme::TEXT));
+                if *checked {
+                    builder
+                        .layout
+                        .fills
+                        .push((rect.inset(builder.px(3)), theme::FOCUS));
+                }
+                let x = margin.saturating_add(size).saturating_add(builder.px(8));
+                let width = inner.saturating_sub(size).saturating_sub(builder.px(8));
+                builder.text(label, FontRole::BodyBold, theme::TEXT, x, width);
+                builder.text(address, FontRole::Mono, theme::TEXT, x, width);
+                builder.layout.accounts.push((
+                    *index,
+                    Rect::new(margin, top, inner, builder.y.saturating_sub(top).max(size)),
+                ));
+                builder.gap(8);
+            }
         }
     }
     builder.layout.height = builder.y.saturating_add(margin);
@@ -454,43 +495,103 @@ fn remaining_text(ms: u64) -> String {
 impl App {
     // ----- queue and window lifecycle -----------------------------------------------------
 
-    /// Shows the next queued approval (unlocked only, spec/04 §3.7).
+    /// Shows the next queued approval (unlocked only, spec/04 §3.7). Site items that need no
+    /// window (connected `eth_requestAccounts`, revoke after unlock) or fail their checks are
+    /// answered and skipped.
     pub fn show_next_approval(&mut self) {
         if self.evm.window.is_some() || !matches!(self.mode, crate::app::AppMode::Unlocked { .. }) {
+            if self.mode == crate::app::AppMode::BackupPending {
+                let finished = self.evm.queue.drain_waiting_matching(
+                    |item| matches!(item, QueuedItem::Site(_)),
+                    QueueOutcome::NotReady,
+                );
+                for (item, outcome) in finished {
+                    self.approval_finished(&item.payload, outcome);
+                }
+            }
             self.refresh();
             return;
         }
-        let now = now_ms();
-        let mut finished = Vec::new();
-        let shown = self.evm.queue.show_next(now, &mut finished);
-        for (item, outcome) in finished {
-            self.approval_finished(&item.payload, outcome);
-        }
-        let Some(id) = shown else {
-            return;
-        };
-        let Some(item) = self.evm.queue.shown().map(|shown| shown.payload.clone()) else {
-            return;
-        };
-        let _ = id;
-        if self.open_approval(item.clone()).is_err() {
-            if let Some((item, outcome)) = self.evm.queue.finish_shown(QueueOutcome::Rejected) {
+        loop {
+            let now = now_ms();
+            let mut finished = Vec::new();
+            let shown = self.evm.queue.show_next(now, &mut finished);
+            for (item, outcome) in finished {
                 self.approval_finished(&item.payload, outcome);
             }
-            self.error_banner(ErrorCode::App009);
+            if shown.is_none() {
+                self.refresh();
+                return;
+            }
+            let Some(item) = self.evm.queue.shown().map(|shown| shown.payload.clone()) else {
+                return;
+            };
+            if let QueuedItem::Site(site) = &item
+                && let Some(outcome) = self.site_preflight(site)
+            {
+                if let Some((done, outcome)) = self.evm.queue.finish_shown(outcome) {
+                    self.approval_finished(&done.payload, outcome);
+                }
+                continue;
+            }
+            if self.open_approval(item).is_err() {
+                if let Some((item, outcome)) = self.evm.queue.finish_shown(QueueOutcome::Rejected) {
+                    self.approval_finished(&item.payload, outcome);
+                }
+                self.error_banner(ErrorCode::App009);
+                return;
+            }
+            self.start_prepare();
             return;
         }
-        self.start_prepare();
     }
 
-    fn open_approval(&mut self, item: AppApproval) -> Result<(), ()> {
+    fn connect_state(&self, site: &SiteRequest) -> ConnectState {
+        let granted: Vec<yw_core::evm::address::Address> = self
+            .browser_grants()
+            .into_iter()
+            .find(|grant| grant.origin == site.origin)
+            .map(|grant| grant.accounts)
+            .unwrap_or_default();
+        let accounts = self.own_accounts();
+        let selected = accounts
+            .iter()
+            .enumerate()
+            .map(|(index, (address, _))| {
+                if granted.is_empty() {
+                    index == 0
+                } else {
+                    granted.contains(address)
+                }
+            })
+            .collect();
+        ConnectState {
+            accounts,
+            selected,
+            chain_name: self
+                .settings
+                .evm_chain_name(site.chain_id)
+                .unwrap_or_else(|| format!("chainId {}", site.chain_id)),
+        }
+    }
+
+    fn open_approval(&mut self, item: QueuedItem) -> Result<(), ()> {
         let now = now_ms();
+        let connect = match &item {
+            QueuedItem::Site(site) if site.kind.is_connect() => Some(self.connect_state(site)),
+            _ => None,
+        };
         let handler = Box::new(Forward {
             app: self.self_ref.clone(),
             target: Target::Approval,
         });
+        let title = if connect.is_some() {
+            "Your Wallet — 사이트 연결"
+        } else {
+            "Your Wallet — 승인 요청"
+        };
         let spec = WindowSpec::new(APPROVAL_CLASS, WindowKind::Floating)
-            .title("Your Wallet — 승인 요청")
+            .title(title)
             .size(820, 710)
             .min_size(520, 460)
             .topmost(true)
@@ -508,13 +609,17 @@ impl App {
         )
         .visible(true);
         let panel = create_window(&panel_spec, panel_handler).map_err(|_| ())?;
+        let deadline_ms = match &item {
+            QueuedItem::Site(site) => site.deadline_ms,
+            QueuedItem::App(_) => now.saturating_add(MAX_LIFETIME_MS),
+        };
         let gate = ApprovalGate {
             prepare: PrepareState::Preparing(PrepareStage::Building),
             ack_checked: false,
             connect_selected: 0,
             ready_at_ms: now,
             is_foreground: false,
-            deadline_ms: now.saturating_add(MAX_LIFETIME_MS),
+            deadline_ms: deadline_ms.max(now.saturating_add(1)),
             submitting: false,
         };
         let session = ApprovalSession::new(gate, now).map_err(|_| ())?;
@@ -529,6 +634,8 @@ impl App {
             window,
             panel,
             item,
+            connect,
+            typed: None,
             session,
             job: 0,
             prepared: None,
@@ -561,6 +668,15 @@ impl App {
         let _ = ui
             .session
             .replace_content(now_ms(), PrepareState::Preparing(PrepareStage::Building));
+        match item {
+            QueuedItem::App(app) => self.prepare_transaction(job, &app, None),
+            QueuedItem::Site(site) => self.prepare_site(job, &site),
+        }
+        self.rebuild_view();
+    }
+
+    /// Steps 3–10 of spec/03 §3.7 on the RPC worker, for an app send or a dApp transaction.
+    fn prepare_transaction(&mut self, job: u64, item: &AppApproval, site: Option<&SiteRequest>) {
         let records = self.evm.records().to_vec();
         let room = self
             .evm
@@ -581,25 +697,192 @@ impl App {
             return;
         };
         let address_book = self.address_book_facts();
+        let (origin, extra_warnings) = match site {
+            Some(site) => (
+                yw_core::approval::ApprovalOrigin::Site(site.origin.clone()),
+                site_fee_warning(site),
+            ),
+            None => (yw_core::approval::ApprovalOrigin::App, Vec::new()),
+        };
         let sent = self.rpc(RpcJob::Prepare(Box::new(PrepareJob {
             job,
             chain,
             id,
-            origin: yw_core::approval::ApprovalOrigin::App,
+            origin,
             account: item.account,
             signer: item.signer,
-            intent: item.intent,
-            replace: item.replace,
+            intent: item.intent.clone(),
+            replace: item.replace.clone(),
             records,
             journal_room: room,
             address_book,
-            extra_warnings: Vec::new(),
+            extra_warnings,
             limits: Limits::PRODUCTION,
         })));
         if !sent {
             self.show_failure(ErrorCode::Rpc001, true, ErrorCode::Rpc001.text());
         }
-        self.rebuild_view();
+    }
+
+    /// The dApp items: connect window content, transaction preparation, message drafts.
+    #[expect(clippy::too_many_lines, reason = "one arm per dApp request kind")]
+    fn prepare_site(&mut self, job: u64, site: &SiteRequest) {
+        let now = now_ms();
+        match &site.kind {
+            SiteKind::RequestAccounts | SiteKind::RequestPermissions => {
+                self.evm.queue.mark_ready(now);
+                let deadline = self
+                    .evm
+                    .queue
+                    .shown_deadline()
+                    .unwrap_or(now.saturating_add(120_000));
+                if let Some(ui) = self.evm.window.as_mut() {
+                    let selected = ui.connect.as_ref().map_or(0, |connect| {
+                        connect.selected.iter().filter(|checked| **checked).count()
+                    });
+                    let accounts = ui.connect.as_ref().map_or(0, |c| c.accounts.len());
+                    ui.session.gate.deadline_ms = deadline;
+                    let _ = ui.session.replace_content(
+                        now,
+                        PrepareState::Ready(ReadyContent::Connect(
+                            crate::ui::interaction::ConnectView { accounts },
+                        )),
+                    );
+                    ui.session.gate.connect_selected = selected;
+                }
+            }
+            SiteKind::Send(tx) => {
+                let Some(signer) = self.account_source(&tx.from) else {
+                    self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
+                    return;
+                };
+                let item = AppApproval {
+                    chain_id: site.chain_id,
+                    account: tx.from,
+                    signer,
+                    intent: crate::flow::evm::prepare::SendIntent {
+                        to: tx.to,
+                        value: tx.value,
+                        data: tx.data.clone(),
+                        access_list: tx.access_list.clone(),
+                        dapp_gas: tx.gas,
+                        dapp_nonce: tx.nonce,
+                    },
+                    replace: None,
+                };
+                self.prepare_transaction(job, &item, Some(site));
+            }
+            SiteKind::PersonalSign { account, message } => {
+                let decoded = yw_core::evm::eip191::decode_personal_message(message.clone());
+                let draft = self.message_chain(site.chain_id).and_then(|chain| {
+                    let signer = self.account_source(account)?;
+                    let id = Self::new_approval_id().ok()?;
+                    yw_core::evm::display::build_personal_request(
+                        id,
+                        yw_core::approval::ApprovalOrigin::Site(site.origin.clone()),
+                        signer,
+                        *account,
+                        yw_core::approval::ApprovalKind::EvmPersonalSign,
+                        &chain,
+                        &decoded,
+                        now_unix_ms(),
+                    )
+                    .ok()
+                });
+                match draft {
+                    Some(draft) => self.show_ready_draft(draft, None),
+                    None => self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text()),
+                }
+            }
+            SiteKind::TypedData {
+                account,
+                source,
+                value,
+            } => {
+                let Ok(typed) =
+                    yw_core::evm::eip712::validate_typed_data_v4(source, value, site.chain_id)
+                else {
+                    self.respond(
+                        &site.reply,
+                        Err(yw_core::policy::ProviderError::InvalidParams),
+                    );
+                    self.finish_approval(QueueOutcome::Cancelled);
+                    return;
+                };
+                let typed = Box::new(typed);
+                if let Some(ui) = self.evm.window.as_mut() {
+                    ui.typed = Some(typed.clone());
+                }
+                if let Ok(chain) = self.chain_job(site.chain_id) {
+                    let address_book = self.address_book_facts();
+                    let sent = self.rpc(RpcJob::TypedFacts {
+                        job,
+                        chain,
+                        account: *account,
+                        typed,
+                        address_book,
+                    });
+                    if !sent {
+                        self.on_typed_facts(job, &yw_core::approval::ChainFacts::default());
+                    }
+                } else {
+                    let facts = yw_core::approval::ChainFacts {
+                        address_book: self.address_book_facts(),
+                        ..yw_core::approval::ChainFacts::default()
+                    };
+                    self.on_typed_facts(job, &facts);
+                }
+            }
+            SiteKind::Revoke => self.finish_approval(QueueOutcome::Cancelled),
+        }
+    }
+
+    /// The chain of a message signature: the registered definition with the verified genesis
+    /// when known (the approval binds the chain, spec/03 §11.1).
+    fn message_chain(&self, chain_id: u64) -> Option<yw_core::evm::chain::ChainInfo> {
+        let info = crate::flow::evm::chain_info(&self.settings, chain_id)?;
+        Some(match self.evm.chain_checks.get(&chain_id) {
+            Some(crate::flow::evm::ChainCheck::Verified { genesis, .. }) => {
+                crate::flow::evm::with_genesis(&info, *genesis)
+            }
+            _ => info,
+        })
+    }
+
+    /// Typed-data facts arrived: build the draft (spec/03 §8).
+    pub fn on_typed_facts(&mut self, job: u64, facts: &yw_core::approval::ChainFacts) {
+        let Some(ui) = self.evm.window.as_ref() else {
+            return;
+        };
+        if ui.job != job {
+            return;
+        }
+        let (QueuedItem::Site(site), Some(typed)) = (ui.item.clone(), ui.typed.clone()) else {
+            return;
+        };
+        let SiteKind::TypedData { account, .. } = &site.kind else {
+            return;
+        };
+        let draft = self.message_chain(site.chain_id).and_then(|chain| {
+            let signer = self.account_source(account)?;
+            let id = Self::new_approval_id().ok()?;
+            yw_core::evm::display::build_typed_request(
+                id,
+                yw_core::approval::ApprovalOrigin::Site(site.origin.clone()),
+                signer,
+                *account,
+                yw_core::approval::ApprovalKind::EvmTypedData,
+                &chain,
+                &typed,
+                facts,
+                now_unix_ms(),
+            )
+            .ok()
+        });
+        match draft {
+            Some(draft) => self.show_ready_draft(draft, None),
+            None => self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text()),
+        }
     }
 
     fn show_failure(&mut self, code: ErrorCode, retryable: bool, text: String) {
@@ -612,9 +895,13 @@ impl App {
         self.rebuild_view();
     }
 
-    /// Closes the window without any outcome bookkeeping.
+    /// Closes the window without queue bookkeeping; a still-pending issued approval is rejected
+    /// (it can never be consumed without its window).
     pub fn close_approval_window(&mut self) {
         if let Some(ui) = self.evm.window.take() {
+            if let Some(request) = ui.request.as_ref() {
+                self.evm.store.reject(request.id);
+            }
             ui.window.kill_timer(APPROVAL_TIMER_ID);
             drop(ui.panel);
             drop(ui.window);
@@ -677,23 +964,40 @@ impl App {
                     "prepare.failed",
                     &[("code", Field::Code(failure.code))],
                 );
+                let site = self.evm.window.as_ref().and_then(|ui| match &ui.item {
+                    QueuedItem::Site(site) => Some(site.reply),
+                    QueuedItem::App(_) => None,
+                });
+                if failure.invalid_params
+                    && let Some(reply) = site
+                {
+                    // spec/03 §3.2: the dApp nonce differs — -32602, no failure window.
+                    self.respond(&reply, Err(yw_core::policy::ProviderError::InvalidParams));
+                    self.finish_approval(QueueOutcome::Cancelled);
+                    return;
+                }
                 let text = failure.message();
                 self.show_failure(failure.code, failure.retryable, text);
             }
-            PrepareOutcome::Ready(prepared) => self.show_ready(prepared),
+            PrepareOutcome::Ready(prepared) => {
+                if prepared.native_emitter_mismatch {
+                    logging::info("app", "native-emitter-mismatch", &[]);
+                }
+                let draft = prepared.draft.clone();
+                self.show_ready_draft(draft, Some(prepared));
+            }
         }
     }
 
-    fn show_ready(&mut self, prepared: Box<Prepared>) {
+    /// Issues a draft at its first Ready display (spec/03 §11.5). Transactions keep their
+    /// preparation (signing, journal, re-simulation); messages have none.
+    fn show_ready_draft(
+        &mut self,
+        draft: yw_core::approval::ApprovalDraft,
+        prepared: Option<Box<Prepared>>,
+    ) {
         let now = now_ms();
-        if prepared.native_emitter_mismatch {
-            logging::info("app", "native-emitter-mismatch", &[]);
-        }
-        let Ok(request) = self
-            .evm
-            .store
-            .issue(prepared.draft.clone(), now, now_unix_ms())
-        else {
+        let Ok(request) = self.evm.store.issue(draft, now, now_unix_ms()) else {
             self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
             return;
         };
@@ -717,7 +1021,7 @@ impl App {
                 PrepareState::Ready(ReadyContent::Signing(Box::new(request.clone()))),
             );
             ui.request = Some(request);
-            ui.prepared = Some(prepared);
+            ui.prepared = prepared;
         }
         self.rebuild_view();
     }
@@ -784,12 +1088,37 @@ impl App {
 
     fn approved(&mut self) {
         let now = now_ms();
+        let connect = self
+            .evm
+            .window
+            .as_ref()
+            .and_then(|ui| match (&ui.item, &ui.connect) {
+                (QueuedItem::Site(site), Some(connect)) => Some((site.clone(), connect.clone())),
+                _ => None,
+            });
+        if let Some((site, connect)) = connect {
+            let accounts: Vec<yw_core::evm::address::Address> = connect
+                .accounts
+                .iter()
+                .zip(&connect.selected)
+                .filter(|(_, checked)| **checked)
+                .map(|((address, _), _)| *address)
+                .collect();
+            self.connect_approved(&site, accounts);
+            self.finish_approval(QueueOutcome::Approved);
+            return;
+        }
         let Some(ui) = self.evm.window.as_mut() else {
             return;
         };
         let Some(request) = ui.request.clone() else {
             return;
         };
+        if ui.prepared.is_none() {
+            ui.session.gate.submitting = true;
+            self.consume_and_sign();
+            return;
+        }
         ui.session.gate.submitting = true;
         ui.status = Some("확인 중…".to_owned());
         let received = ui
@@ -816,7 +1145,11 @@ impl App {
         ui.resim_click = click;
         ui.session.gate.submitting = true;
         ui.status = Some("시뮬레이션 중… (0/10초)".to_owned());
-        let chain_id = ui.item.chain_id;
+        let chain_id = ui.item.chain_id();
+        let extra_warnings = match &ui.item {
+            QueuedItem::Site(site) => site_fee_warning(site),
+            QueuedItem::App(_) => Vec::new(),
+        };
         let Ok(chain) = self.chain_job(chain_id) else {
             return;
         };
@@ -826,7 +1159,7 @@ impl App {
             request,
             context: prepared.context,
             address_book,
-            extra_warnings: Vec::new(),
+            extra_warnings,
             limits: Limits::PRODUCTION,
         })));
         self.rebuild_view();
@@ -837,25 +1170,62 @@ impl App {
         let Some(ui) = self.evm.window.as_ref() else {
             return;
         };
-        let (Some(request), Some(prepared)) = (ui.request.clone(), ui.prepared.clone()) else {
+        let Some(request) = ui.request.clone() else {
             return;
         };
+        let prepared = ui.prepared.clone();
+        let item = ui.item.clone();
         match self.evm.store.consume(request.id, request.digest, now) {
             Ok(approved) => {
                 logging::info(
                     "app",
                     "approval.consumed",
-                    &[("net", Field::Net(NetworkId::Eip155(ui.item.chain_id)))],
+                    &[("net", Field::Net(NetworkId::Eip155(item.chain_id())))],
                 );
-                self.key(KeyJob::SignEvm {
-                    approved: Box::new(approved),
-                    info: SignInfo {
-                        origin: "yw-app".to_owned(),
-                        label: request.display.title.clone(),
-                        role: prepared.context.role,
-                        now_unix_ms: now_unix_ms(),
-                    },
-                });
+                let reply = match &item {
+                    QueuedItem::Site(site) => Some(site.reply),
+                    QueuedItem::App(_) => None,
+                };
+                match (prepared, request.kind) {
+                    (
+                        _,
+                        kind @ (yw_core::approval::ApprovalKind::EvmPersonalSign
+                        | yw_core::approval::ApprovalKind::EvmTypedData),
+                    ) => {
+                        if let Some(reply) = reply {
+                            self.push_sign_waiter(crate::app_browser::SignWaiter::Message(reply));
+                        }
+                        self.key(KeyJob::SignMessage {
+                            approved: Box::new(approved),
+                            typed: kind == yw_core::approval::ApprovalKind::EvmTypedData,
+                        });
+                    }
+                    (Some(prepared), _) => {
+                        let (origin, waiter) = match &item {
+                            QueuedItem::Site(site) => (
+                                site.origin.as_str().to_owned(),
+                                crate::app_browser::SignWaiter::Tx(site.reply),
+                            ),
+                            QueuedItem::App(_) => {
+                                ("yw-app".to_owned(), crate::app_browser::SignWaiter::App)
+                            }
+                        };
+                        self.push_sign_waiter(waiter);
+                        self.key(KeyJob::SignEvm {
+                            approved: Box::new(approved),
+                            info: SignInfo {
+                                origin,
+                                label: request.display.title.clone(),
+                                role: prepared.context.role,
+                                now_unix_ms: now_unix_ms(),
+                            },
+                        });
+                    }
+                    (None, _) => {
+                        self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
+                        return;
+                    }
+                }
                 self.finish_approval(QueueOutcome::Approved);
             }
             Err(_) => {
@@ -905,7 +1275,7 @@ impl App {
 
     fn rebuild_view(&mut self) {
         let now = now_ms();
-        let testnet_chain = self.evm.window.as_ref().map(|ui| ui.item.chain_id);
+        let testnet_chain = self.evm.window.as_ref().map(|ui| ui.item.chain_id());
         let Some(chain_id) = testnet_chain else {
             return;
         };
@@ -926,6 +1296,45 @@ impl App {
             return;
         };
         let wide_layout = ui.window.client_rect().w >= ui.window.px(80 * 8);
+        if let QueuedItem::Site(site) = &ui.item {
+            if let (Some(connect), PrepareState::Ready(ReadyContent::Connect(_))) =
+                (&ui.connect, &ui.session.gate.prepare)
+            {
+                let accounts: Vec<(String, String)> = connect
+                    .accounts
+                    .iter()
+                    .map(|(address, label)| (label.clone(), address.to_checksum()))
+                    .collect();
+                let mut connect_view = crate::ui::approval_view::connect_view(
+                    site.origin.as_str(),
+                    site.origin.is_http(),
+                    &accounts,
+                    &connect.selected,
+                    &connect.chain_name,
+                );
+                connect_view.badges.extend(badges);
+                connect_view.testnet = testnet;
+                ui.view = connect_view;
+                ui.layout = None;
+                ui.window.invalidate();
+                ui.panel.invalidate();
+                return;
+            }
+            let mut site_badges = Vec::new();
+            if site.origin.is_http() {
+                site_badges.push("로컬 개발 사이트(http)".to_owned());
+            }
+            if site
+                .origin
+                .host()
+                .split('.')
+                .any(|label| label.starts_with("xn--"))
+            {
+                site_badges.push("국제화 도메인(punycode)".to_owned());
+            }
+            site_badges.extend(badges);
+            badges = site_badges;
+        }
         match view(
             &ui.session.gate.prepare,
             now,
@@ -975,6 +1384,20 @@ impl App {
             ui.panel.invalidate();
             ui.window.invalidate();
         }
+    }
+
+    fn toggle_connect_account(&mut self, index: usize) {
+        let now = now_ms();
+        if let Some(ui) = self.evm.window.as_mut()
+            && let Some(connect) = ui.connect.as_mut()
+            && let Some(slot) = connect.selected.get_mut(index)
+        {
+            *slot = !*slot;
+            let count = connect.selected.iter().filter(|checked| **checked).count();
+            ui.session.gate.connect_selected = count;
+            ui.session.set_ack(now, false);
+        }
+        self.rebuild_view();
     }
 
     fn toggle_raw(&mut self) {
@@ -1243,7 +1666,14 @@ impl App {
                 ui.window.set_focus();
                 let content_y = y.saturating_add(ui.scroll);
                 let layout = ui.layout.clone().unwrap_or_default();
-                if layout.ack.is_some_and(|rect| rect.contains(*x, content_y)) {
+                if let Some((index, _)) = layout
+                    .accounts
+                    .iter()
+                    .find(|(_, rect)| rect.contains(*x, content_y))
+                {
+                    let index = *index;
+                    self.toggle_connect_account(index);
+                } else if layout.ack.is_some_and(|rect| rect.contains(*x, content_y)) {
                     ui.focus = Focus::Ack;
                     self.toggle_ack();
                 } else if layout.raw.is_some_and(|rect| rect.contains(*x, content_y)) {
@@ -1455,7 +1885,9 @@ impl App {
                 .status
                 .as_deref()
                 .is_some_and(|s| s.starts_with("시뮬레이션")));
-        let label = if ui.view.blocked {
+        let label = if ui.connect.is_some() {
+            "연결"
+        } else if ui.view.blocked {
             "승인할 수 없음"
         } else if simulating {
             "시뮬레이션 중…"
@@ -1597,3 +2029,13 @@ impl App {
 #[cfg(test)]
 #[path = "app_approval_smoke.rs"]
 mod smoke;
+
+/// E31 for a dApp transaction that carried fee fields (spec/03 §3.4, values ignored).
+fn site_fee_warning(site: &SiteRequest) -> Vec<yw_core::approval::Warning> {
+    match &site.kind {
+        SiteKind::Send(tx) if tx.fee_fields => {
+            vec![yw_core::evm::risk::warning(yw_core::evm::risk::E31, None)]
+        }
+        _ => Vec::new(),
+    }
+}

@@ -1,0 +1,11 @@
+{
+  "namespace": "your-wallet",
+  "version": 1,
+  "role": "native-host",
+  "kind": "event",
+  "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "sequence": 2,
+  "activationNonce": "000000000000000000000000000000000000000000000000000000000000000c",
+  "event": "chainChanged",
+  "payload": "0x1"
+}

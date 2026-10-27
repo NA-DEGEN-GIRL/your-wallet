@@ -342,7 +342,10 @@ impl App {
         } else {
             "확인 전".to_owned()
         };
-        format!("RPC: {rpc}   ·   브라우저: 연결 없음 (브라우저 연동은 M5)")
+        format!(
+            "RPC: {rpc}   ·   {}",
+            crate::app_browser::status_text(self.browser.as_ref())
+        )
     }
 
     /// Network radios with "(차단됨)".

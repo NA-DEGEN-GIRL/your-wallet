@@ -903,6 +903,9 @@ impl Duplex {
     pub fn client_pid(&self) -> Option<u32>;                            // GetNamedPipeClientProcessId
 }
 impl PipeReader { pub fn cancel_handle(&self) -> PipeCanceller; }       // PipeCanceller: Send, cancel() = CancelIoEx
+// M5 추가: yw-app 종료 시 accept를 멈추는 정지 핸들과 R-P2(DACL 확인)용 보안 요약
+// ServerError::Stopped; impl Server { pub fn stop_handle(&self) -> ServerStop /* Clone + Send + Sync, stop() */;
+//   pub fn security_summary(&self) -> Result<SecuritySummary, WinError>; } // GetSecurityInfo: owner SID, protected, ACE 목록(type, mask, SID)
 ```
 
 - `Server::create`: SDDL → `ConvertStringSecurityDescriptorToSecurityDescriptorW`(`bInheritHandle = FALSE`, `LocalFree`로 해제). 첫 인스턴스 `CreateNamedPipeW(name, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 4, 65536, 65536, 1000, &sa)`. `ERROR_ACCESS_DENIED` → `AlreadyExists`(다른 yw-app 또는 선점). 수치·처리는 [05](05-browser.md) §8.1과 같다.

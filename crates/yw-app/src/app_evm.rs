@@ -130,6 +130,26 @@ pub struct AppApproval {
     pub replace: Option<ReplaceTarget>,
 }
 
+/// A queued approval item: this app's own flows or a dApp request (spec/04 §3.1).
+#[derive(Clone, Debug)]
+pub enum QueuedItem {
+    /// Send, speed-up, cancel.
+    App(Box<AppApproval>),
+    /// A dApp request (connect, signing, unlock-gated permission).
+    Site(Box<crate::browser::SiteRequest>),
+}
+
+impl QueuedItem {
+    /// The chain the item signs on (dApp: the origin chain at request time).
+    #[must_use]
+    pub fn chain_id(&self) -> u64 {
+        match self {
+            Self::App(item) => item.chain_id,
+            Self::Site(site) => site.chain_id,
+        }
+    }
+}
+
 /// The last sent transaction (S11 result).
 #[derive(Clone, Copy, Debug)]
 pub struct SentInfo {
@@ -243,8 +263,8 @@ pub struct EvmUi {
     pub send: SendForm,
     /// Last sent.
     pub sent: Option<SentInfo>,
-    /// Approval queue (app items at M4).
-    pub queue: ApprovalQueue<AppApproval>,
+    /// Approval queue (app items and dApp requests).
+    pub queue: ApprovalQueue<QueuedItem>,
     /// Issued approvals.
     pub store: ApprovalStore,
     /// Send slots `(chain, account)` (spec/03 §3.6).
@@ -497,7 +517,9 @@ impl App {
     pub fn evm_lock(&mut self) {
         self.close_approval_window();
         self.evm.store.invalidate_all();
-        let _ = self.evm.queue.lock();
+        for (item, outcome) in self.evm.queue.lock() {
+            self.approval_finished(&item.payload, outcome);
+        }
         self.evm.clear_unlocked();
     }
 
@@ -543,6 +565,7 @@ impl App {
     }
 
     fn on_signed(&mut self, result: Result<crate::events::SignedSummary, SignFailure>) {
+        self.browser_tx_signed(result.as_ref().map(|signed| signed.tx_hash).map_err(|_| ()));
         match result {
             Ok(signed) => {
                 self.release_slot(signed.chain_id, &signed.account);
@@ -598,6 +621,7 @@ impl App {
 
     /// A consumed signing item ended without a signature because of the lock (spec/04 §1.2).
     pub fn evm_sign_cancelled(&mut self) {
+        self.browser_sign_cancelled();
         logging::info("app", "sign.aborted", &[("reason", Field::Word("locked"))]);
         self.evm.slots.clear();
     }
@@ -671,6 +695,7 @@ impl App {
             }
             RpcEvent::Simulating { job, since_ms } => self.on_simulating(job, since_ms),
             RpcEvent::Prepared(result) => self.on_prepared(*result),
+            RpcEvent::TypedFacts { job, facts, .. } => self.on_typed_facts(job, &facts),
             RpcEvent::Resimulated(result) => self.on_resimulated(*result),
             RpcEvent::Broadcast {
                 chain_id,
@@ -703,7 +728,7 @@ impl App {
         }
     }
 
-    fn on_chain_check(&mut self, chain_id: u64, check: ChainCheck) {
+    pub(crate) fn on_chain_check(&mut self, chain_id: u64, check: ChainCheck) {
         if let ChainCheck::Verified {
             genesis,
             pinned_now: true,
@@ -921,6 +946,7 @@ impl App {
         at_unix_ms: u64,
     ) {
         self.evm.notes.insert(tx_hash, outcome);
+        self.browser_broadcast(tx_hash, outcome);
         match outcome {
             BroadcastOutcome::HashMismatch => self.banner(
                 None,
@@ -1017,6 +1043,7 @@ impl App {
                 data: Vec::new(),
                 access_list: Vec::new(),
                 dapp_gas: None,
+                dapp_nonce: None,
             },
             SendAsset::Token(token) => SendIntent {
                 to: token,
@@ -1024,6 +1051,7 @@ impl App {
                 data: erc20_transfer_data(recipient, &amount),
                 access_list: Vec::new(),
                 dapp_gas: None,
+                dapp_nonce: None,
             },
         })
     }
@@ -1087,6 +1115,7 @@ impl App {
             data: Vec::new(),
             access_list: Vec::new(),
             dapp_gas: None,
+            dapp_nonce: None,
         });
         if let Some((recipient, _)) = self.evm.send.recipient.as_ref()
             && self.evm.send.asset == SendAsset::Native
@@ -1265,7 +1294,12 @@ impl App {
             return;
         }
         let slot = (item.chain_id, item.account);
-        if self.evm.queue.enqueue(QueueSource::App, item).is_ok() {
+        if self
+            .evm
+            .queue
+            .enqueue(QueueSource::App, QueuedItem::App(Box::new(item)))
+            .is_ok()
+        {
             self.evm.slots.push(slot);
             self.evm.send.info = None;
             self.show_next_approval();
@@ -1277,7 +1311,20 @@ impl App {
 
     /// An approval ended (any outcome): free the slot unless it was approved (the slot is held
     /// until the `Signed` record, spec/03 §3.6).
-    pub fn approval_finished(&mut self, item: &AppApproval, outcome: QueueOutcome) {
+    pub fn approval_finished(&mut self, item: &QueuedItem, outcome: QueueOutcome) {
+        let item = match item {
+            QueuedItem::App(item) => item,
+            QueuedItem::Site(site) => {
+                self.site_finished(site, outcome);
+                logging::info(
+                    "app",
+                    "approval.finished",
+                    &[("outcome", Field::Word(outcome_name(outcome)))],
+                );
+                self.refresh();
+                return;
+            }
+        };
         if outcome != QueueOutcome::Approved {
             self.release_slot(item.chain_id, &item.account);
         }
@@ -1312,12 +1359,13 @@ impl App {
                 data: Vec::new(),
                 access_list: Vec::new(),
                 dapp_gas: None,
+                dapp_nonce: None,
             },
             replace: Some(ReplaceTarget { mode, group }),
         });
     }
 
-    fn account_source(&self, address: &Address) -> Option<EvmKeySource> {
+    pub(crate) fn account_source(&self, address: &Address) -> Option<EvmKeySource> {
         let meta = self.meta.as_ref()?;
         let text = address.to_lower_hex();
         if let Some(account) = meta
@@ -1716,6 +1764,7 @@ impl App {
             ],
         );
         self.evm.chain_checks.remove(&valid.chain_id);
+        self.reset_read_chain(valid.chain_id);
         let _ = self.rpc(RpcJob::ResetChain {
             chain_id: valid.chain_id,
         });
@@ -1761,6 +1810,8 @@ impl App {
         logging::info("app", "chain.deleted", &[("net", Field::Net(network))]);
         self.evm.chain_checks.remove(&chain_id);
         let _ = self.rpc(RpcJob::ResetChain { chain_id });
+        self.reset_read_chain(chain_id);
+        self.chain_removed_from_sites(chain_id);
     }
 
     /// `다시 고정` (spec/04 §2.17.4): fetch the new block-0 hash.
@@ -1820,6 +1871,7 @@ impl App {
             ],
         );
         self.evm.chain_checks.remove(&repin.chain_id);
+        self.reset_read_chain(repin.chain_id);
         let _ = self.rpc(RpcJob::ResetChain {
             chain_id: repin.chain_id,
         });

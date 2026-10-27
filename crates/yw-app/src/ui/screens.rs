@@ -171,6 +171,7 @@ fn header(app: &App, items: &mut Vec<Item>) {
 impl App {
     /// Builds the current screen.
     #[must_use]
+    #[expect(clippy::too_many_lines, reason = "one arm per screen")]
     pub fn items(&self) -> Vec<Item> {
         let mut items = Vec::new();
         header(self, &mut items);
@@ -224,6 +225,9 @@ impl App {
             Screen::Locked => {
                 items.push(Item::Title("Your Wallet".to_owned()));
                 items.push(Item::Text("지갑이 잠겨 있습니다.".to_owned()));
+                if let Some(pending) = self.unlock_pending_text() {
+                    items.push(Item::Banner(pending, Tone::Info));
+                }
                 items.push(Item::Row(vec![Ctl::button(ids::UNLOCK, "잠금 해제")]));
             }
             Screen::PassMismatch => {
@@ -267,6 +271,7 @@ impl App {
             Screen::AddressBook => self.book_screen(&mut items),
             Screen::TokenAdd => self.token_screen(&mut items),
             Screen::ChainEdit => self.chain_edit_screen(&mut items),
+            Screen::Sites => self.sites_screen(&mut items),
         }
         items
     }
@@ -329,6 +334,7 @@ impl App {
         items.push(Item::Row(vec![
             Ctl::button(ids::OPEN_SETTINGS, "설정"),
             Ctl::button(crate::ui::screens_evm::ids::BOOK_OPEN, "주소록"),
+            Ctl::button(crate::ui::screens_sites::ids::SITES_OPEN, "연결된 사이트"),
             Ctl::button(ids::LOCK, "잠금 (Ctrl+L)"),
         ]));
         if matches!(
@@ -427,9 +433,6 @@ impl App {
             Ctl::button(ids::IMPORT_KEY, "개인키 가져오기"),
         ]));
         self.evm_main_sections(items);
-        items.push(Item::Muted(
-            "연결된 사이트(브라우저 연동)는 다음 단계(M5)에서 제공됩니다.".to_owned(),
-        ));
     }
 
     fn settings_screen(&self, section: SettingsSection, items: &mut Vec<Item>) {
@@ -678,6 +681,11 @@ impl App {
                 "주소록 항목 삭제",
                 "선택한 주소록 항목을 지웁니다.".to_owned(),
                 "삭제",
+            ),
+            Confirm::DisconnectAll => (
+                "모든 사이트 연결 해제",
+                "연결된 모든 사이트의 연결을 해제합니다. 사이트는 다시 연결을 요청해야 계정을 볼 수 있습니다.".to_owned(),
+                "모두 해제",
             ),
             Confirm::Discard => (
                 "거래 폐기",

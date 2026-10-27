@@ -1,0 +1,7 @@
+{
+  "kind": "hello",
+  "protocol": 1,
+  "hostVersion": "0.3.0",
+  "extensionOrigin": "chrome-extension://abcdefghijklmnopabcdefghijklmnop/",
+  "pid": 1234
+}

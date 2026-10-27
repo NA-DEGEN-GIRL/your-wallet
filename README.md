@@ -8,7 +8,7 @@ Windows 11 PC 한 대에서 작성자 본인이 쓰는 개인용 소프트웨어
 
 ## 상태
 
-- 현재 마일스톤: **M4 EVM 단독 전송** 구현(보내기·받기 QR·잔액·활동, 승인 창 A01, 거래 저널·복구, 속도 올리기·취소, 사용자 EVM 체인; M1 키·vault, M2 EVM 코어, M3 앱 뼈대 완료). M4 판정·수동 체크리스트는 [docs/acceptance/m4-20261027.md](docs/acceptance/m4-20261027.md), 실서비스 읽기 전용 확인은 [docs/acceptance/m4-live-20261027.md](docs/acceptance/m4-live-20261027.md). 다음은 M5(브라우저 연동).
+- 현재 마일스톤: **M5 브라우저 연동** 구현(Chrome 확장 버그 수정·고정 ID, `yw-host` native messaging 중계, 사용자 전용 named pipe, dApp 메서드·권한·체인 전환·읽기 중계, 연결 창·연결된 사이트 화면, 등록 스크립트, 로컬 test-dApp; M1 키·vault, M2 EVM 코어, M3 앱 뼈대, M4 EVM 단독 전송 완료). M5 판정·수동 체크리스트(등록·확장 로드 포함)는 [docs/acceptance/m5-20261027.md](docs/acceptance/m5-20261027.md). 다음은 M6(선택: LLM 설명), M7(Solana), M8(Bitcoin).
 - 실제 자산을 넣지 않는다. 메인넷 사용은 M9 체크리스트 이후 소액만.
 - 마일스톤과 완료 조건: [spec.md](spec.md) §5, 판정 기준: [spec/09-testing.md](spec/09-testing.md).
 
@@ -18,7 +18,7 @@ Windows 11 PC 한 대에서 작성자 본인이 쓰는 개인용 소프트웨어
 - rustup + `rust-toolchain.toml`(Rust 1.95.0, clippy·rustfmt)
 - Visual Studio Build Tools "C++를 사용한 데스크톱 개발"(MSVC + Windows SDK; secp256k1-sys 빌드·링크)
 - Node.js 22 이상(npm 패키지 설치 없음), Git 2.x, Windows PowerShell 5.1 또는 PowerShell 7
-- Chrome 120 이상(M5부터)
+- Chrome 120 이상(M5부터). 확장은 `extension\` 폴더를 압축해제 로드하고 native host는 `scripts\register-native-host.ps1`로 HKCU에 등록한다(spec/05 §9, 확장 ID `nnpjlobjgbanccjddghlpaafpohfkeph`).
 
 ## 빌드와 검사
 

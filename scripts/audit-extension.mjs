@@ -2,11 +2,17 @@ import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { extensionIdFromKey } from "./extension-key.mjs";
 import { decodeUtf8, parseStrictJson } from "./lib/strict-json.mjs";
 
 const MAX_SOURCE_FILE_BYTES = 256 * 1024;
 const MAX_PACKAGE_SOURCE_BYTES = 1024 * 1024;
 const REQUIRED_PERMISSIONS = ["nativeMessaging", "storage"];
+const EXTENSION_NAME = "Your Wallet";
+// Exactly the ten top-level keys of spec/05 §2.2 (including the pinned `key`).
+const MANIFEST_KEYS = ["background", "content_scripts", "description", "incognito", "key", "manifest_version", "minimum_chrome_version", "name", "permissions", "version"];
+// spec/05 §2.2: both content scripts match exactly these three patterns.
+const CONTENT_SCRIPT_MATCHES = ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"];
 const FORBIDDEN_SOURCE_PATTERNS = [
   [/\beval\s*\(/u, "eval"],
   [/\bnew\s+Function\b/u, "Function constructor"],
@@ -89,11 +95,11 @@ async function listSourceFiles(rootReal) {
 }
 
 function validateManifest(manifest) {
-  exactKeys(manifest, ["background", "content_scripts", "description", "incognito", "manifest_version", "minimum_chrome_version", "name", "permissions", "version"], "extension manifest");
+  exactKeys(manifest, MANIFEST_KEYS, "extension manifest");
   if (manifest.manifest_version !== 3) fail("extension must use Manifest V3");
   if (manifest.incognito !== "not_allowed") fail("extension incognito mode must be disabled");
   if (manifest.minimum_chrome_version !== "120") fail("minimum Chrome version must remain explicitly pinned to 120");
-  if (typeof manifest.name !== "string" || manifest.name.length < 1 || manifest.name.length > 64) fail("extension name is invalid");
+  if (manifest.name !== EXTENSION_NAME) fail(`extension name must be exactly "${EXTENSION_NAME}"`);
   if (typeof manifest.description !== "string" || manifest.description.length < 1 || manifest.description.length > 132) fail("extension description is invalid");
   if (typeof manifest.version !== "string" || !/^(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2,3}$/u.test(manifest.version)) fail("extension version is invalid");
   exactArray(manifest.permissions, REQUIRED_PERMISSIONS, "extension permissions");
@@ -105,13 +111,24 @@ function validateManifest(manifest) {
   const [mainWorld, isolatedWorld] = manifest.content_scripts;
   for (const [entry, label] of [[mainWorld, "MAIN content script"], [isolatedWorld, "ISOLATED content script"]]) {
     exactKeys(entry, ["all_frames", "js", "matches", "run_at", "world"], label);
-    exactArray(entry.matches, ["https://*/*"], `${label}.matches`);
+    exactArray(entry.matches, CONTENT_SCRIPT_MATCHES, `${label}.matches`);
     if (entry.all_frames !== false || entry.run_at !== "document_start") fail(`${label} lifetime contract changed`);
   }
   if (mainWorld.world !== "MAIN") fail("the first content script must run in MAIN world");
   exactArray(mainWorld.js, ["src/provider-main.js"], "MAIN content scripts");
   if (isolatedWorld.world !== "ISOLATED") fail("the second content script must run in ISOLATED world");
   exactArray(isolatedWorld.js, ["src/shared.js", "src/content-core.js", "src/content.js"], "ISOLATED content scripts");
+  return manifestExtensionId(manifest.key);
+}
+
+// Chrome extension ID: SHA-256 of the base64-decoded DER key, first 16 bytes as hex mapped 0-f -> a-p.
+function manifestExtensionId(key) {
+  if (typeof key !== "string" || key.length === 0) fail("extension key must be a base64 SubjectPublicKeyInfo string");
+  try {
+    return extensionIdFromKey(key);
+  } catch {
+    fail("extension key is not canonical base64 DER");
+  }
 }
 
 function staticImports(source) {
@@ -132,7 +149,7 @@ export async function auditExtensionRoot(extensionRoot) {
   } catch (error) {
     fail(`extension manifest is not strict JSON: ${error instanceof Error ? error.message : "parse failure"}`);
   }
-  validateManifest(manifest);
+  const extensionId = validateManifest(manifest);
 
   const sourceFiles = await listSourceFiles(rootReal);
   const expectedFiles = new Set([
@@ -162,7 +179,7 @@ export async function auditExtensionRoot(extensionRoot) {
     if (!expectedFiles.has(sourceFile)) fail(`unreferenced executable source is forbidden from the package: ${sourceFile}`);
   }
 
-  return { packagedFiles: ["manifest.json", ...sourceFiles] };
+  return { packagedFiles: ["manifest.json", ...sourceFiles], extensionId };
 }
 
 function parseArguments(argv) {
@@ -182,8 +199,8 @@ async function runCli() {
   const root = args.get("--extension-root");
   if (!root) fail("--extension-root is required");
   if (args.size !== 1) fail("check accepts only --extension-root");
-  await auditExtensionRoot(root);
-  process.stdout.write("EXTENSION_STATIC_AUDIT_PASS\n");
+  const { extensionId } = await auditExtensionRoot(root);
+  process.stdout.write(`EXTENSION_STATIC_AUDIT_PASS id=${extensionId}\n`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

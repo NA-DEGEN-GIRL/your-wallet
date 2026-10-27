@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <title>Your Wallet test dApp</title>
+  <style>
+    body { font: 14px/1.4 system-ui, sans-serif; margin: 16px; color: #1b1b1b; background: #fafafa; }
+    h1 { font-size: 18px; margin: 0 0 8px; }
+    h2 { font-size: 14px; margin: 14px 0 6px; }
+    fieldset { border: 1px solid #ccc; margin: 0 0 10px; padding: 8px 10px; }
+    label { display: inline-block; margin: 2px 12px 2px 0; }
+    input { font: 13px ui-monospace, monospace; width: 26em; }
+    input.short { width: 9em; }
+    .tests { display: flex; flex-wrap: wrap; gap: 6px; }
+    button { font: 12px system-ui, sans-serif; padding: 4px 8px; cursor: pointer; }
+    pre { background: #111; color: #e8e8e8; padding: 10px; height: 420px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+    .note { color: #555; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Your Wallet test dApp (spec/09 §5.7)</h1>
+  <p class="note">Serve with <code>node extension/test-dapp/serve.mjs</code> and open localhost:5173. Provider: EIP-6963 Your Wallet, else window.ethereum.</p>
+
+  <fieldset>
+    <legend>Inputs</legend>
+    <label>Recipient A1 <input id="recipient" placeholder="0x… (wallet account 1, not connected)" autocomplete="off" spellcheck="false"></label>
+    <label>Amount (ETH) <input id="amount" class="short" value="0.0001" autocomplete="off"></label>
+    <label>Token (WETH) <input id="token" value="0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14" autocomplete="off" spellcheck="false"></label>
+    <label>User chain id (hex, T04) <input id="userChain" class="short" placeholder="0x…" autocomplete="off" spellcheck="false"></label>
+  </fieldset>
+
+  <h2>Connection and chain</h2>
+  <div class="tests">
+    <button type="button" data-test="T01">T01 eth_requestAccounts</button>
+    <button type="button" data-test="T02">T02 eth_accounts + wallet_getPermissions</button>
+    <button type="button" data-test="T03">T03 chainId / net_version / clientVersion</button>
+    <button type="button" data-test="T04">T04 switch 0x1 → 0x3e7 → user → 0xaa36a7 / 0x89</button>
+    <button type="button" data-test="T05">T05 wallet_revokePermissions → eth_accounts</button>
+    <button type="button" data-test="T06">T06 reads (block, balance, call, gas, fees, logs)</button>
+  </div>
+
+  <h2>Transactions</h2>
+  <div class="tests">
+    <button type="button" data-test="T07">T07 send ETH → A1</button>
+    <button type="button" data-test="T08">T08 WETH deposit 0.001</button>
+    <button type="button" data-test="T09">T09 WETH transfer A1 0.0005</button>
+    <button type="button" data-test="T10">T10 approve Permit2 10^15</button>
+    <button type="button" data-test="T11">T11 approve Permit2 max</button>
+    <button type="button" data-test="T12">T12 approve A1 1</button>
+    <button type="button" data-test="T13">T13 WETH 0xdeadbeef call</button>
+    <button type="button" data-test="T14">T14 WETH withdraw 10^30</button>
+    <button type="button" data-test="T15">T15 authorizationList → -32602</button>
+    <button type="button" data-test="T16">T16 type 0x4 / no to / chainId 0x1 / from A1</button>
+    <button type="button" data-test="T17">T17 send ETH maxFeePerGas 0x1</button>
+  </div>
+
+  <h2>Messages and typed data</h2>
+  <div class="tests">
+    <button type="button" data-test="T18">T18 personal_sign text</button>
+    <button type="button" data-test="T19">T19 personal_sign 0xff00fe</button>
+    <button type="button" data-test="T20">T20 SIWE (scheme)</button>
+    <button type="button" data-test="T20b">T20b SIWE (no scheme)</button>
+    <button type="button" data-test="T21">T21 SIWE evil.example</button>
+    <button type="button" data-test="T22">T22 SIWE expired</button>
+    <button type="button" data-test="T23">T23 v4 Permit2 PermitSingle</button>
+    <button type="button" data-test="T24">T24 v4 EIP-2612 Permit</button>
+    <button type="button" data-test="T25">T25 v4 Ether Mail</button>
+    <button type="button" data-test="T26">T26 v4 domain chainId 1</button>
+    <button type="button" data-test="T27">T27 v4 no chainId</button>
+  </div>
+
+  <h2>Rejections, limits and lifecycle</h2>
+  <div class="tests">
+    <button type="button" data-test="T28">T28 unsupported methods → 4200</button>
+    <button type="button" data-test="T29">T29 2 MiB / depth 40 → -32600</button>
+    <button type="button" data-test="T30">T30 eth_blockNumber × 5,000</button>
+    <button type="button" data-test="T31">T31 send then close tab</button>
+    <button type="button" data-test="T32">T32 eip6963:requestProvider</button>
+    <button type="button" id="clear">Clear log</button>
+  </div>
+
+  <h2>Log</h2>
+  <pre id="log"></pre>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

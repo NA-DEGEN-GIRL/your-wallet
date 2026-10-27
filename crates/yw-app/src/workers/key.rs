@@ -428,6 +428,15 @@ impl KeyWorker {
                 let addresses = self.vault()?.evm_addresses(&parsed)?;
                 Ok(indices.into_iter().zip(addresses).collect())
             })()),
+            KeyJob::SignMessage { approved, typed } => {
+                KeyOutcome::SignedMessage(match self.vault.as_ref() {
+                    Some(vault) if typed => yw_core::evm::sign::sign_typed_data(vault, *approved),
+                    Some(vault) => yw_core::evm::sign::sign_personal(vault, *approved),
+                    None => Err(yw_core::evm::sign::SignError::Vault(
+                        VaultError::InvalidState,
+                    )),
+                })
+            }
             KeyJob::LoadJournal | KeyJob::SignEvm { .. } | KeyJob::JournalApply { .. } => {
                 KeyOutcome::Journal(Err(VaultError::InvalidState))
             }

@@ -2,6 +2,7 @@
 //! 전송(호출 기록)") and a manual clock.
 #![allow(dead_code, reason = "each test binary uses a different subset")]
 
+pub mod browser;
 pub mod evm;
 
 use std::collections::HashMap;

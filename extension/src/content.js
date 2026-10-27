@@ -3,73 +3,55 @@
 
   const shared = root.__YOUR_WALLET_SHARED__;
   const contentCore = root.__YOUR_WALLET_CONTENT_CORE__;
-  if (!shared || !contentCore || root.top !== root || root.location.protocol !== "https:") {
+  if (!shared || !contentCore || root.top !== root || !shared.isSupportedPageUrl(root.location.href)) {
     return;
   }
 
   const targetOrigin = root.location.origin;
-  const port = chrome.runtime.connect({ name: "your-wallet-content-v1" });
-  let portLive = true;
+
+  function connectPort() {
+    // Throws when the extension context is invalidated; the bridge then enters DEAD.
+    const port = chrome.runtime.connect({ name: shared.CONTENT_PORT_NAME });
+    return Object.freeze({
+      postMessage: (message) => port.postMessage(message),
+      disconnect: () => port.disconnect(),
+      onMessage: (listener) => port.onMessage.addListener(listener),
+      onDisconnect: (listener) => port.onDisconnect.addListener(() => {
+        void chrome.runtime.lastError;
+        listener();
+      })
+    });
+  }
+
+  function isContextValid() {
+    try {
+      return typeof chrome === "object" && chrome !== null && chrome.runtime?.id !== undefined;
+    } catch (_error) {
+      return false;
+    }
+  }
+
   const bridge = new contentCore.ContentBridge({
     channelNonce: shared.randomHex(32),
-    sendToBackground: (message) => {
-      if (portLive) {
-        try {
-          port.postMessage(message);
-        } catch (_error) {
-          portLive = false;
-        }
-      }
-    },
-    postToPage: (message) => root.postMessage(message, targetOrigin)
+    connectPort,
+    postToPage: (message) => root.postMessage(message, targetOrigin),
+    isContextValid,
+    setTimer: (callback, milliseconds) => root.setTimeout(callback, milliseconds),
+    clearTimer: (handle) => root.clearTimeout(handle),
+    now: () => Date.now()
   });
 
-  function onWindowMessage(event) {
+  // No `once`: the document can be restored from bfcache and hidden again.
+  // `beforeunload` is deliberately ignored because the user may cancel the unload.
+  root.addEventListener("message", (event) => {
     if (event.source !== root || event.origin !== targetOrigin) {
       return;
     }
     bridge.receivePage(event.data);
-  }
-
-  function closeForDocument(reason) {
-    if (!portLive) {
-      bridge.cancel(reason);
-      return;
-    }
-    bridge.cancel(reason);
-    portLive = false;
-    try {
-      port.disconnect();
-    } catch (_error) {
-      // The worker may already have stopped; local pending requests are cancelled.
-    }
-    root.removeEventListener("message", onWindowMessage);
-  }
-
-  root.addEventListener("message", onWindowMessage);
-  root.addEventListener("pagehide", () => closeForDocument("document-pagehide"), { once: true });
-  root.addEventListener("freeze", () => closeForDocument("document-freeze"), { once: true });
-  root.addEventListener("beforeunload", () => closeForDocument("document-beforeunload"), { once: true });
-
-  port.onMessage.addListener((message) => {
-    if (shared.hasExactKeys(message, ["namespace", "version", "kind", "activationNonce"])
-      && message.namespace === shared.NAMESPACE
-      && message.version === shared.PROTOCOL_VERSION
-      && message.kind === "activated") {
-      bridge.activate(message.activationNonce);
-      return;
-    }
-    if (shared.hasExactKeys(message, ["namespace", "version", "kind", "error"])
-      && message.kind === "fatal") {
-      closeForDocument("worker-initialization-failed");
-      return;
-    }
-    bridge.receiveBackground(message);
   });
+  root.addEventListener("pagehide", () => bridge.closeForDocument("document-pagehide"));
+  // Page Lifecycle `freeze` is fired at the Document (non-bubbling), not at the Window.
+  root.document.addEventListener("freeze", () => bridge.closeForDocument("document-freeze"));
 
-  port.onDisconnect.addListener(() => {
-    portLive = false;
-    void chrome.runtime.lastError;
-    bridge.cancel("worker-disconnect");
-  });
+  bridge.announce();
 }(globalThis));

@@ -188,6 +188,8 @@ pub enum Confirm {
     Discard,
     /// Delete an address-book entry.
     BookDelete,
+    /// S13 `모두 해제`.
+    DisconnectAll,
 }
 
 /// Screens S01–S15 (M3 subset).
@@ -233,6 +235,8 @@ pub enum Screen {
     TokenAdd,
     /// S17.
     ChainEdit,
+    /// S13.
+    Sites,
 }
 
 /// What a password-confirm window (W03) is for.
@@ -386,6 +390,7 @@ pub struct App {
     pub(crate) controls: ControlSet,
     pub(crate) placed: Placed,
     pub(crate) evm: crate::app_evm::EvmUi,
+    pub(crate) browser: Option<crate::app_browser::BrowserUi>,
     secret: Option<SecretWin>,
     secret_serial: u64,
     import: ImportFlow,
@@ -494,6 +499,7 @@ impl App {
             controls: ControlSet::default(),
             placed: Placed::default(),
             evm: crate::app_evm::EvmUi::default(),
+            browser: None,
             secret: None,
             secret_serial: 0,
             import: ImportFlow::default(),
@@ -546,6 +552,14 @@ impl App {
     #[must_use]
     pub fn main_poster(&self) -> Option<yw_win::ui::Poster> {
         self.main.as_ref().map(Window::poster)
+    }
+
+    /// Attaches the started browser bridge (spec/05 §8.1).
+    pub fn attach_browser(&mut self, browser: crate::app_browser::BrowserUi) {
+        if browser.server.is_none() {
+            self.error_banner(ErrorCode::Pipe001);
+        }
+        self.browser = Some(browser);
     }
 
     /// The key queue and lock signal shared with the key worker.
@@ -625,6 +639,7 @@ impl App {
 
     /// Recomputes the layout, syncs the child controls and repaints.
     pub fn refresh(&mut self) {
+        self.sync_browser();
         let Some(main) = self.main.as_ref() else {
             return;
         };
@@ -867,7 +882,12 @@ impl App {
             return;
         }
         self.set_mode(AppMode::ShuttingDown);
-        let _ = self.evm.queue.shutdown();
+        for (item, outcome) in self.evm.queue.shutdown() {
+            self.approval_finished(&item.payload, outcome);
+        }
+        if let Some(browser) = self.browser.as_mut() {
+            browser.stop();
+        }
         let before = self.lock_signal.count();
         self.lock(LockReason::Shutdown);
         let _ = self.lock_signal.wait_beyond(before, Duration::from_secs(5));
@@ -910,6 +930,7 @@ impl App {
                     ok,
                 }) => self.on_rpc_event(network, message, ok),
                 UiEvent::Rpc(event) => self.evm_rpc_event(event),
+                UiEvent::Dapp(event) => self.on_dapp_event(event),
             }
         }
     }
@@ -956,6 +977,7 @@ impl App {
                     self.open_input(SecretKind::Unlock, Purpose::Unlock, false);
                 }
                 self.startup_load = false;
+                self.browser_vault_loaded();
             }
             KeyOutcome::Created(Ok((phrase, address))) => {
                 self.set_mode(AppMode::BackupPending);
@@ -1006,7 +1028,8 @@ impl App {
                 self.set_screen(Screen::FirstRun);
             }
             KeyOutcome::Status(result) => self.on_status(result, now),
-            KeyOutcome::Cancelled("SignEvm", _) => self.evm_sign_cancelled(),
+            KeyOutcome::Cancelled("SignEvm" | "SignMessage", _) => self.evm_sign_cancelled(),
+            KeyOutcome::SignedMessage(result) => self.browser_message_signed(result),
             KeyOutcome::Imported(Err(_))
             | KeyOutcome::LockDone
             | KeyOutcome::Cancelled(..)
@@ -1128,6 +1151,15 @@ impl App {
             }
             KeyOutcome::RawKeyRemoved(Ok(id)) => {
                 self.close_secret();
+                let removed = self.meta.as_ref().and_then(|meta| {
+                    meta.evm_raw_accounts
+                        .iter()
+                        .find(|raw| raw.record_id == *id.as_bytes())
+                        .and_then(|raw| yw_core::evm::address::parse_address(&raw.address).ok())
+                });
+                if let Some(address) = removed {
+                    self.account_removed_from_sites(&address);
+                }
                 if let Some(meta) = self.meta.as_mut() {
                     meta.evm_raw_accounts
                         .retain(|raw| raw.record_id != *id.as_bytes());
@@ -1221,6 +1253,7 @@ impl App {
                         self.close_secret();
                         self.idle.input(now);
                         self.set_screen(Screen::BackupPending);
+                        self.browser_vault_loaded();
                     }
                     VaultStatus::Unlocked { alt_passphrase } => {
                         self.close_secret();
@@ -1345,7 +1378,7 @@ impl App {
     }
 
     /// Opens an input window (W01–W07, W10).
-    fn open_input(&mut self, kind: SecretKind, purpose: Purpose, topmost: bool) {
+    pub(crate) fn open_input(&mut self, kind: SecretKind, purpose: Purpose, topmost: bool) {
         self.close_secret();
         let (serial, created) = self.create_secret(kind, topmost);
         match created {
@@ -1398,6 +1431,12 @@ impl App {
                 self.error_banner(ErrorCode::App009);
             }
         }
+    }
+
+    /// Whether a secret window (W01–W10) is open.
+    #[must_use]
+    pub fn secret_open(&self) -> bool {
+        self.secret.is_some()
     }
 
     /// Closes the open secret window (buffers wiped).
@@ -1731,6 +1770,7 @@ impl App {
                 if self.mode == AppMode::Unlocking {
                     self.set_mode(AppMode::Locked);
                 }
+                self.dapp_unlock_dismissed();
                 self.refresh();
             }
             Purpose::ShowForBackup | Purpose::Backup => {
@@ -2007,7 +2047,7 @@ impl App {
                 self.set_screen(previous);
             }
             other => {
-                if !self.on_evm_command(other) {
+                if !self.on_evm_command(other) && !self.on_sites_command(other) {
                     self.on_indexed_command(other);
                 }
             }
@@ -2053,6 +2093,7 @@ impl App {
                 2 => {
                     if self.apikeys.remove(KeyName::Rpc(network)) && self.save_apikeys() {
                         logging::info("app", "rpc.url_deleted", &[("net", Field::Net(network))]);
+                        self.network_url_changed(network);
                     }
                     self.rpc_messages.retain(|(id, _, _)| *id != network);
                     self.refresh();
@@ -2174,8 +2215,12 @@ impl App {
                 .find(|account| account.index == index)
         {
             account.hidden = true;
+            let hidden = yw_core::evm::address::parse_address(&account.address).ok();
             meta.prefs.evm_account = EvmAccountPref::Index(0);
             self.save_meta();
+            if let Some(address) = hidden {
+                self.account_removed_from_sites(&address);
+            }
         }
         self.refresh();
     }
@@ -2339,6 +2384,7 @@ impl App {
             for network in &written {
                 logging::info("app", "rpc.generated", &[("net", Field::Net(*network))]);
                 self.rpc_messages.retain(|(id, _, _)| id != network);
+                self.network_url_changed(*network);
             }
             let skipped_names: Vec<String> = skipped
                 .iter()
@@ -2369,6 +2415,7 @@ impl App {
                 if self.save_apikeys() {
                     logging::info("app", "rpc.url_set", &[("net", Field::Net(network))]);
                     self.rpc_messages.retain(|(id, _, _)| *id != network);
+                    self.network_url_changed(network);
                 }
                 self.controls.clear_text(ids::REPLACE_EDIT);
                 self.replace_target = None;
@@ -2413,6 +2460,7 @@ impl App {
         self.refresh();
     }
 
+    #[expect(clippy::too_many_lines, reason = "one arm per confirmation overlay")]
     fn confirm_yes(&mut self) {
         let Screen::Confirm(kind) = self.screen.clone() else {
             return;
@@ -2430,6 +2478,10 @@ impl App {
                 settings.allow_localhost_dapps = true;
                 self.screen = previous;
                 self.save_settings(settings, "allowLocalhostDapps");
+            }
+            Confirm::DisconnectAll => {
+                self.disconnect_all_sites();
+                self.set_screen(Screen::Sites);
             }
             Confirm::RevealMnemonic => {
                 self.set_screen(previous);

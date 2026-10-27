@@ -230,6 +230,7 @@ fn approval_window_renders_a_fixture_dry_run() {
                 data: Vec::new(),
                 access_list: Vec::new(),
                 dapp_gas: None,
+                dapp_nonce: None,
             },
             replace: None,
         });

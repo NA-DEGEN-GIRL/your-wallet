@@ -266,7 +266,7 @@ pub struct AccessListItem { pub address: Address, pub storage_keys: Vec<[u8; 32]
 | `value` | 선택, quantity, 기본 0 | -32602 |
 | `data`, `input` | 선택, hex data. 둘 다 있으면 디코드한 바이트가 같을 때만 수락 | -32602 |
 | `gas` | 선택, ≤ 16,777,216 | -32602 |
-| `nonce` | 선택. 있으면 §3.6에서 정한 nonce와 같아야 함 | -32602 |
+| `nonce` | 선택. 있으면 §3.6에서 정한 nonce와 같아야 함(§3.7 단계 4에서 판정: 다르면 준비 중이던 창을 닫고 -32602, 실패 표시 없음) | -32602 |
 | `type` | 선택, 값 0 또는 2 (1·3·4·그 밖 거부, D19) | -32602 |
 | `chainId` | 선택, 활성 체인과 같음 | -32602 |
 | `gasPrice`, `maxFeePerGas`, `maxPriorityFeePerGas` | 선택, quantity 형식만 검사, 값은 버림(D20). 하나라도 있으면 E31 | -32602 |

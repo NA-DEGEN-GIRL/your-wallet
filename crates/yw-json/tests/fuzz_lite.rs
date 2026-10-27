@@ -76,3 +76,67 @@ fn fuzz_lite_json() {
     }
     assert!(accepted > 0);
 }
+
+/// spec/09 §2.4 `frame` target (M5-14 fallback): `read_frame` over a cursor until EOF on
+/// 1,000,000 mutations. Invariants: no panic; a frame read back with `write_frame` equals the
+/// input bytes it was read from; a length of 0 or > 1 MiB is `Oversized` before any payload byte
+/// is read.
+#[test]
+#[ignore = "fuzz-lite (spec/09 §2.4 fallback)"]
+fn fuzz_lite_frame() {
+    use std::io::{Cursor, Read};
+    use yw_json::frame::{FrameError, MAX_FRAME_BYTES, read_frame, write_frame};
+
+    struct Counting<'a> {
+        inner: Cursor<&'a [u8]>,
+        read: usize,
+    }
+    impl Read for Counting<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let count = self.inner.read(buf)?;
+            self.read += count;
+            Ok(count)
+        }
+    }
+
+    let seeds: [&[u8]; 4] = [
+        b"\x02\x00\x00\x00{}",
+        b"\x02\x00\x00\x00{}\x05\x00\x00\x00[1,2]",
+        b"\x00\x00\x00\x00",
+        b"\x01\x00\x10\x00x",
+    ];
+    let mut mutator = Mutator {
+        state: 0x6672_616d_6566_7a31,
+    };
+    let mut frames = 0_u32;
+    for _ in 0..1_000_000 {
+        let input = mutator.mutate(&seeds);
+        let mut reader = Counting {
+            inner: Cursor::new(&input),
+            read: 0,
+        };
+        loop {
+            let before = reader.read;
+            let length = input
+                .get(before..before.saturating_add(4))
+                .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+                .map(u32::from_le_bytes);
+            match read_frame(&mut reader, MAX_FRAME_BYTES) {
+                Ok(Some(frame)) => {
+                    let mut written = Vec::new();
+                    write_frame(&mut written, &frame, MAX_FRAME_BYTES).unwrap();
+                    assert_eq!(Some(written.as_slice()), input.get(before..reader.read));
+                    frames += 1;
+                }
+                Err(FrameError::Oversized) => {
+                    let length = usize::try_from(length.unwrap_or(0)).unwrap_or(usize::MAX);
+                    assert!(length == 0 || length > MAX_FRAME_BYTES);
+                    assert_eq!(reader.read, before + 4, "payload read before Oversized");
+                    break;
+                }
+                Ok(None) | Err(_) => break,
+            }
+        }
+    }
+    assert!(frames > 0);
+}

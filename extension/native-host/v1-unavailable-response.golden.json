@@ -10,6 +10,6 @@
   "requestId": "01010101010101010101010101010101",
   "error": {
     "code": 4900,
-    "message": "Private wallet broker is unavailable."
+    "message": "Wallet is unavailable."
   }
 }

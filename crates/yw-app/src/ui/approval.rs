@@ -367,6 +367,32 @@ impl<T> ApprovalQueue<T> {
         finished
     }
 
+    /// The id of the first item (shown or waiting) matching `predicate`.
+    pub fn find(&self, predicate: impl Fn(&T) -> bool) -> Option<QueueId> {
+        self.shown
+            .as_ref()
+            .map(|shown| &shown.item)
+            .into_iter()
+            .chain(self.waiting.iter())
+            .find(|item| predicate(&item.payload))
+            .map(|item| item.id)
+    }
+
+    /// Waiting items matching `predicate` end with `outcome` (connection revoked: signing items
+    /// of that origin, spec/05 §4.5; a deleted chain; `BackupPending`).
+    pub fn drain_waiting_matching(
+        &mut self,
+        predicate: impl Fn(&T) -> bool,
+        outcome: QueueOutcome,
+    ) -> Vec<(QueueItem<T>, QueueOutcome)> {
+        self.drain_waiting(|item| !predicate(&item.payload), outcome)
+    }
+
+    /// Payloads of the waiting items (status texts).
+    pub fn waiting_payloads(&self) -> impl Iterator<Item = &T> {
+        self.waiting.iter().map(|item| &item.payload)
+    }
+
     /// Extension cancel: removes a waiting item or closes the shown one.
     pub fn cancel(&mut self, id: QueueId) -> Option<(QueueItem<T>, QueueOutcome)> {
         if self.shown.as_ref().is_some_and(|shown| shown.item.id == id) {

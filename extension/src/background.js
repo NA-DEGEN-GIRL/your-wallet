@@ -6,15 +6,31 @@ const core = globalThis.__YOUR_WALLET_BACKGROUND_CORE__;
 const PROFILE_INSTALL_ID_KEY = "profileInstallIdV1";
 const PROFILE_ID_PATTERN = /^[0-9a-f]{64}$/u;
 
-const profileInstallIdPromise = loadOrCreateProfileInstallId();
-const routerPromise = profileInstallIdPromise.then((profileInstallId) => new core.BackgroundRouter({
-  profileInstallId,
-  sessionId: shared.randomHex(32),
-  extensionId: chrome.runtime.id,
-  randomHex: (bytes) => shared.randomHex(bytes),
-  now: () => Date.now(),
-  nativeFactory: createNativeTransport
-}));
+// Router creation is retried on the next content connection if loading the
+// profile identifier fails. Connections from other extensions or web pages are
+// never accepted: no external-connection or external-message listener exists.
+let routerPromise = null;
+
+function getRouter() {
+  if (routerPromise === null) {
+    const created = loadOrCreateProfileInstallId().then((profileInstallId) => new core.BackgroundRouter({
+      profileInstallId,
+      extensionId: chrome.runtime.id,
+      randomHex: (bytes) => shared.randomHex(bytes),
+      now: () => Date.now(),
+      setTimer: (callback, milliseconds) => setTimeout(callback, milliseconds),
+      clearTimer: (handle) => clearTimeout(handle),
+      nativeFactory: createNativeTransport
+    }));
+    routerPromise = created;
+    created.catch(() => {
+      if (routerPromise === created) {
+        routerPromise = null;
+      }
+    });
+  }
+  return routerPromise;
+}
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== core.CONTENT_PORT_NAME) {
@@ -31,41 +47,45 @@ chrome.runtime.onConnect.addListener((port) => {
       handle.disconnect("content-port-disconnect");
     }
   });
+  port.onMessage.addListener((message) => {
+    if (handle !== null) {
+      handle.receive(message);
+    }
+  });
 
-  void routerPromise.then((router) => {
+  getRouter().then((router) => {
     if (detached) {
       return;
     }
     handle = router.attachContent({
       sender: port.sender,
-      postMessage: (message) => port.postMessage(message)
+      postMessage: (message) => port.postMessage(message),
+      disconnect: () => port.disconnect()
     });
-    port.onMessage.addListener((message) => {
-      handle.receive(message);
-    });
+    if (handle === null) {
+      port.disconnect();
+    }
   }).catch(() => {
+    // Initialization failed: close the port; the content script treats it as a transient disconnect.
     if (!detached) {
       try {
-        port.postMessage({
-          namespace: shared.NAMESPACE,
-          version: shared.PROTOCOL_VERSION,
-          kind: "fatal",
-          error: shared.rpcError(4900, "Wallet extension initialization failed.")
-        });
-      } finally {
         port.disconnect();
+      } catch (_error) {
+        // Already closed.
       }
     }
   });
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-  void profileInstallIdPromise;
+  getRouter().catch(() => {});
 });
 
 if (chrome.runtime.onSuspend) {
   chrome.runtime.onSuspend.addListener(() => {
-    void routerPromise.then((router) => router.shutdown());
+    if (routerPromise !== null) {
+      routerPromise.then((router) => router.closeNative()).catch(() => {});
+    }
   });
 }
 

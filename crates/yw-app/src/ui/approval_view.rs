@@ -69,6 +69,17 @@ pub enum Block {
     },
     /// Preparation notice (spinner).
     Notice(String),
+    /// A connect-window account checkbox (spec/05 §4.2).
+    Account {
+        /// Index in the offered list.
+        index: usize,
+        /// Account label.
+        label: String,
+        /// EIP-55 address.
+        address: String,
+        /// Selected.
+        checked: bool,
+    },
 }
 
 /// The whole A01 content.
@@ -363,5 +374,60 @@ pub fn view(
             }],
             ..ApprovalView::default()
         }),
+    }
+}
+
+/// The connect window content (spec/05 §4.2): the origin in large type, the http and punycode
+/// badges, the fixed guidance, the account checkboxes and the origin chain.
+#[must_use]
+pub fn connect_view(
+    origin: &str,
+    http: bool,
+    accounts: &[(String, String)],
+    selected: &[bool],
+    chain_name: &str,
+) -> ApprovalView {
+    let mut badges = Vec::new();
+    if http {
+        badges.push("로컬 개발 사이트(http)".to_owned());
+    }
+    if origin
+        .split(['/', '.', ':'])
+        .any(|label| label.starts_with("xn--"))
+    {
+        badges.push("국제화 도메인(punycode) — 주소를 다시 확인하세요".to_owned());
+    }
+    let mut blocks = vec![
+        Block::Title(origin.to_owned()),
+        Block::Warning {
+            text: "이 사이트는 선택한 계정의 주소, 잔액, 거래 기록을 볼 수 있습니다. 서명과 전송은 매번 따로 승인합니다.".to_owned(),
+            tone: Tone::Plain,
+        },
+        Block::Section("연결할 계정 (1–16개)"),
+    ];
+    for (index, (label, address)) in accounts.iter().enumerate() {
+        blocks.push(Block::Account {
+            index,
+            label: label.clone(),
+            address: address.clone(),
+            checked: selected.get(index).copied().unwrap_or(false),
+        });
+    }
+    let count = selected.iter().filter(|checked| **checked).count();
+    if count > 16 {
+        blocks.push(Block::Muted(
+            "한 사이트에 연결할 수 있는 계정은 16개까지입니다.".to_owned(),
+        ));
+    }
+    blocks.push(Block::Field {
+        label: "현재 네트워크".to_owned(),
+        value: chain_name.to_owned(),
+        mono: false,
+    });
+    ApprovalView {
+        header: vec![("요청 출처".to_owned(), origin.to_owned())],
+        badges,
+        blocks,
+        ..ApprovalView::default()
     }
 }

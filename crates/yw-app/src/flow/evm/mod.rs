@@ -245,6 +245,21 @@ impl ChainCache {
         self.states.get(&chain_id).copied()
     }
 
+    /// Stores a verified or mismatch result checked elsewhere (the dApp read workers,
+    /// spec/05 §3.5); unverified results are not cached.
+    pub fn store(&mut self, chain_id: u64, check: ChainCheck) {
+        if !matches!(check, ChainCheck::Unverified(_)) {
+            let stored = match check {
+                ChainCheck::Verified { genesis, .. } => ChainCheck::Verified {
+                    genesis,
+                    pinned_now: false,
+                },
+                other => other,
+            };
+            self.states.insert(chain_id, stored);
+        }
+    }
+
     /// Returns the cached verified/mismatch state or checks now (unverified results are not
     /// cached). A first-use pin is stored as verified.
     pub fn ensure(

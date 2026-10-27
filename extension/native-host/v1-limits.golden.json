@@ -1,0 +1,102 @@
+{
+  "limits": {
+    "request": {
+      "maxBytes": 1048576,
+      "maxDepth": 32,
+      "maxNodes": 8192,
+      "maxItems": 4096
+    },
+    "response": {
+      "maxBytes": 1048576,
+      "maxDepth": 32,
+      "maxNodes": 262144,
+      "maxItems": 262144
+    }
+  },
+  "cases": [
+    {
+      "profile": "request",
+      "shape": "depth",
+      "n": 32,
+      "ok": true
+    },
+    {
+      "profile": "request",
+      "shape": "depth",
+      "n": 33,
+      "ok": false
+    },
+    {
+      "profile": "request",
+      "shape": "array",
+      "n": 4095,
+      "ok": true
+    },
+    {
+      "profile": "request",
+      "shape": "array",
+      "n": 4096,
+      "ok": false
+    },
+    {
+      "profile": "request",
+      "shape": "object",
+      "n": 4095,
+      "ok": true
+    },
+    {
+      "profile": "request",
+      "shape": "object",
+      "n": 4096,
+      "ok": false
+    },
+    {
+      "profile": "request",
+      "shape": "bytes",
+      "n": 1048576,
+      "ok": true
+    },
+    {
+      "profile": "request",
+      "shape": "bytes",
+      "n": 1048577,
+      "ok": false
+    },
+    {
+      "profile": "response",
+      "shape": "array",
+      "n": 262141,
+      "ok": true
+    },
+    {
+      "profile": "response",
+      "shape": "array",
+      "n": 262142,
+      "ok": false
+    },
+    {
+      "profile": "response",
+      "shape": "depth",
+      "n": 32,
+      "ok": true
+    },
+    {
+      "profile": "response",
+      "shape": "depth",
+      "n": 33,
+      "ok": false
+    },
+    {
+      "profile": "response",
+      "shape": "bytes",
+      "n": 1048576,
+      "ok": true
+    },
+    {
+      "profile": "response",
+      "shape": "bytes",
+      "n": 1048577,
+      "ok": false
+    }
+  ]
+}

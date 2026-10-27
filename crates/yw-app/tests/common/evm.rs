@@ -108,6 +108,7 @@ pub fn send_intent() -> TestResult<SendIntent> {
         data: Vec::new(),
         access_list: Vec::new(),
         dapp_gas: None,
+        dapp_nonce: None,
     })
 }
 

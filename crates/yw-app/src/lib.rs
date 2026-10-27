@@ -6,8 +6,10 @@
 pub mod apikeys;
 pub mod app;
 pub mod app_approval;
+pub mod app_browser;
 pub mod app_evm;
 pub mod app_evm_commands;
+pub mod browser;
 pub mod errors;
 pub mod events;
 pub mod flow;

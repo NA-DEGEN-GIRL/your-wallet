@@ -1,0 +1,134 @@
+//! spec/05 §10.2 R-M1 (method table against the shared golden) and R-ERR (yw-core part: every
+//! `ProviderError` code and message against the spec/05 §5 table; `BrowserOrigin` rules are the
+//! unit tests of `policy`).
+
+use yw_core::policy::{Method, ProviderError, Route};
+use yw_json::{Limits, Value, parse};
+
+const METHODS_GOLDEN: &str = include_str!("../../../extension/native-host/v1-methods.golden.json");
+
+fn names(golden: &Value, key: &str) -> Vec<String> {
+    golden
+        .as_object()
+        .and_then(|object| object.get(key))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn r_m1_method_table_matches_the_shared_golden() {
+    let golden = parse(METHODS_GOLDEN.as_bytes(), &Limits::RESPONSE).unwrap();
+    let object = golden.as_object().unwrap();
+    assert_eq!(
+        object.keys().collect::<Vec<_>>(),
+        ["permission", "read", "signing", "rejected"]
+    );
+    let mut expected = Vec::new();
+    for (key, route) in [
+        ("permission", Route::Permission),
+        ("read", Route::Read),
+        ("signing", Route::Signing),
+    ] {
+        let list = names(&golden, key);
+        assert!(!list.is_empty());
+        for name in list {
+            let method = Method::parse(&name).unwrap();
+            assert_eq!(method.route(), route, "{name}");
+            expected.push(method);
+        }
+    }
+    assert_eq!(expected.as_slice(), Method::ALL.as_slice());
+    let rejected = names(&golden, "rejected");
+    assert_eq!(rejected.len(), 31);
+    for name in rejected {
+        assert_eq!(Method::parse(&name), None, "{name}");
+    }
+}
+
+#[test]
+fn r_err_provider_errors_match_spec_05_section_5() {
+    let table: [(ProviderError, i64, &str); 20] = [
+        (
+            ProviderError::UserRejected,
+            4001,
+            "User rejected the request.",
+        ),
+        (ProviderError::Expired, 4001, "Request expired."),
+        (ProviderError::Unauthorized, 4100, "Unauthorized."),
+        (
+            ProviderError::UnsupportedMethod,
+            4200,
+            "Unsupported method.",
+        ),
+        (ProviderError::Unavailable, 4900, "Wallet is unavailable."),
+        (
+            ProviderError::ConnectionClosed,
+            4900,
+            "Wallet connection closed.",
+        ),
+        (
+            ProviderError::ExtensionReloaded,
+            4900,
+            "Wallet extension was reloaded.",
+        ),
+        (
+            ProviderError::ChainUnavailable,
+            4901,
+            "Chain RPC is unavailable.",
+        ),
+        (
+            ProviderError::UnrecognizedChain,
+            4902,
+            "Unrecognized chain.",
+        ),
+        (
+            ProviderError::RequestPending,
+            -32_002,
+            "Request already pending.",
+        ),
+        (
+            ProviderError::TransactionPending,
+            -32_002,
+            "Transaction already pending.",
+        ),
+        (ProviderError::RateLimited, -32_005, "Rate limit exceeded."),
+        (
+            ProviderError::TooManyPending,
+            -32_005,
+            "Too many pending requests.",
+        ),
+        (ProviderError::InvalidRequest, -32_600, "Invalid request."),
+        (
+            ProviderError::RequestTooLarge,
+            -32_600,
+            "Request too large.",
+        ),
+        (ProviderError::InvalidParams, -32_602, "Invalid params."),
+        (ProviderError::Internal, -32_603, "Internal error."),
+        (ProviderError::TimedOut, -32_603, "Request timed out."),
+        (
+            ProviderError::ResponseTooLarge,
+            -32_603,
+            "Response too large.",
+        ),
+        (
+            ProviderError::BroadcastFailed,
+            -32_603,
+            "Transaction broadcast failed.",
+        ),
+    ];
+    for (error, code, message) in table {
+        assert_eq!(error.code(), code, "{message}");
+        assert_eq!(error.message(), message);
+        assert_eq!(error.data(), None);
+    }
+    let upstream = ProviderError::upstream(Some(-32_000), Some("nonce too low"), None);
+    assert_eq!(upstream.code(), -32_000);
+    assert_eq!(upstream.message(), "nonce too low");
+}

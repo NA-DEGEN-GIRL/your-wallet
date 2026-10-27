@@ -118,6 +118,19 @@ pub enum RpcJob {
         /// Check `baseFeePerGas` (adding).
         check_base_fee: bool,
     },
+    /// Typed-data facts for a dApp signature (spec/03 §8.5).
+    TypedFacts {
+        /// UI job id.
+        job: u64,
+        /// Chain.
+        chain: ChainJob,
+        /// Signing account.
+        account: Address,
+        /// The validated typed data.
+        typed: Box<yw_core::evm::eip712::DecodedTypedData>,
+        /// Address-book names.
+        address_book: Vec<(Address, String)>,
+    },
     /// Stop.
     Shutdown,
 }
@@ -144,6 +157,7 @@ impl RpcJob {
             Self::Broadcast { .. } => "Broadcast",
             Self::Track { .. } => "Track",
             Self::Probe { .. } => "Probe",
+            Self::TypedFacts { .. } => "TypedFacts",
             Self::Shutdown => "Shutdown",
         }
     }
@@ -364,6 +378,40 @@ impl RpcWorker {
                 push(events, run_test(&*transport, network, &name, &url));
             }
             RpcJob::ResetChain { chain_id } => self.cache.reset(chain_id),
+            RpcJob::TypedFacts {
+                job,
+                chain,
+                account,
+                typed,
+                address_book,
+            } => {
+                let (facts, check) = crate::flow::evm::prepare::typed_facts(
+                    &transport,
+                    &mut self.cache,
+                    &chain,
+                    &account,
+                    &typed,
+                    address_book,
+                    &*self.clock,
+                    self.limits.retry_delay_ms,
+                );
+                log_check(chain.info.chain_id, &check);
+                push(
+                    events,
+                    RpcEvent::Chain {
+                        chain_id: chain.info.chain_id,
+                        check,
+                    },
+                );
+                push(
+                    events,
+                    RpcEvent::TypedFacts {
+                        job,
+                        facts: Box::new(facts),
+                        check,
+                    },
+                );
+            }
             RpcJob::Balances {
                 job,
                 chain,

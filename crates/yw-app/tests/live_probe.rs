@@ -299,6 +299,7 @@ fn read_only_prepare(
             data: Vec::new(),
             access_list: Vec::new(),
             dapp_gas: None,
+            dapp_nonce: None,
         },
         replace: None,
         records: Vec::new(),

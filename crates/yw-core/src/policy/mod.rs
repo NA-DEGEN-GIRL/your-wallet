@@ -1,12 +1,21 @@
-//! Browser policy (spec/01 §2.2 `policy`). M2 provides [`BrowserOrigin`], the single origin type
-//! used by the approval model (spec/03 §11.1) and SIWE checks (spec/03 §9.4); the method
-//! allowlist, connection grants and provider error codes arrive with M5 (spec/05).
+//! Browser policy (spec/01 §2.2 `policy`): [`BrowserOrigin`] (M2, the single origin type used by
+//! the approval model, spec/03 §11.1, and SIWE checks, spec/03 §9.4) and, from M5 (spec/05), the
+//! dApp method allowlist and routes ([`Method`], [`Route`]), connection grants
+//! ([`ConnectedSite`]) and provider error codes ([`ProviderError`]).
 //!
 //! Ported from `archive/spec-v2.4:crates/wallet-model/src/context.rs:42-131` and narrowed to the
 //! spec/05 §4.7 grammar: https with a lowercase DNS-style host, or http only for `localhost` and
 //! `127.0.0.1`; no IPv6 literal, userinfo or path, and no default port.
 
 use core::fmt;
+
+mod error;
+mod grant;
+mod method;
+
+pub use error::ProviderError;
+pub use grant::{ConnectedSite, MAX_GRANT_ACCOUNTS, MAX_GRANTS, valid_selection};
+pub use method::{Method, Route, is_method_name};
 
 /// Maximum serialized origin length (spec/05 §4.7).
 pub const MAX_ORIGIN_BYTES: usize = 256;

@@ -158,6 +158,13 @@ pub enum KeyJob {
         /// Record fields from the approval.
         info: SignInfo,
     },
+    /// Sign an approved `personal_sign` or `eth_signTypedData_v4` (spec/03 §4.2, §9, §8).
+    SignMessage {
+        /// The one-time approval (moved).
+        approved: Box<Approved>,
+        /// `true` = typed data.
+        typed: bool,
+    },
     /// Apply and commit journal transitions (§5.2).
     JournalApply {
         /// Transitions.
@@ -247,6 +254,7 @@ impl KeyJob {
             Self::DeriveAddresses { .. } => "DeriveAddresses",
             Self::LoadJournal => "LoadJournal",
             Self::SignEvm { .. } => "SignEvm",
+            Self::SignMessage { .. } => "SignMessage",
             Self::JournalApply { .. } => "JournalApply",
             Self::Shutdown => "Shutdown",
         }
@@ -324,6 +332,8 @@ pub enum KeyOutcome {
     Journal(Result<JournalView, VaultError>),
     /// `SignEvm` finished.
     SignedEvm(Result<SignedSummary, SignFailure>),
+    /// `SignMessage` finished: the 65-byte `r ‖ s ‖ v` signature.
+    SignedMessage(Result<[u8; 65], SignError>),
     /// Terminal journal records moved to activity (spec/03 §5.4).
     ActivityMoved(Vec<(NetworkId, ActivityEntry)>),
     /// The job was cancelled by `Lock`.
@@ -351,7 +361,10 @@ pub struct KeyResult {
 pub fn accept_result(result: &KeyResult, current_epoch: u64) -> bool {
     matches!(
         result.outcome,
-        KeyOutcome::LockDone | KeyOutcome::SignedEvm(_) | KeyOutcome::Cancelled("SignEvm", _)
+        KeyOutcome::LockDone
+            | KeyOutcome::SignedEvm(_)
+            | KeyOutcome::SignedMessage(_)
+            | KeyOutcome::Cancelled("SignEvm" | "SignMessage", _)
     ) || result.epoch == current_epoch
 }
 
@@ -524,6 +537,15 @@ pub enum RpcEvent {
     },
     /// Preparation finished.
     Prepared(Box<PrepareResult>),
+    /// Typed-data facts for a dApp signature.
+    TypedFacts {
+        /// Job.
+        job: u64,
+        /// Facts.
+        facts: Box<yw_core::approval::ChainFacts>,
+        /// The chain check made for them.
+        check: ChainCheck,
+    },
     /// Re-simulation finished.
     Resimulated(Box<ResimResult>),
     /// Broadcast finished.
@@ -560,6 +582,14 @@ pub enum UiEvent {
     Key(KeyResult),
     /// RPC worker result.
     Rpc(RpcEvent),
+    /// Browser bridge event (spec/05).
+    Dapp(crate::browser::DappEvent),
+}
+
+impl crate::browser::DappSink for EventQueue {
+    fn push(&self, event: crate::browser::DappEvent) -> bool {
+        Self::push(self, UiEvent::Dapp(event)).is_ok()
+    }
 }
 
 /// The queue is full (E-APP-005).
