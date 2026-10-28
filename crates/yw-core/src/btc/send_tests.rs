@@ -156,6 +156,7 @@ fn plan_with(
         change_next: fixture.meta.change_next(),
         layout_seed: [seed; 32],
         typed_fee_override: typed,
+        conflicts: &[],
     })
     .unwrap()
 }
@@ -412,7 +413,8 @@ fn key_mismatch_stops_signing() {
 }
 
 /// spec/08 §5 / spec/09 BTC-N3: a recorded amount that differs from the plan, or a missing
-/// record, stops before signing.
+/// record, stops before signing (a missing record with its own text: a refresh during the
+/// approval dropped the input, review fix).
 #[test]
 fn amount_record_mismatch_aborts() {
     let fixture = fixture();
@@ -443,7 +445,11 @@ fn amount_record_mismatch_aborts() {
         .collect();
     assert_eq!(
         check_recorded_amounts(&plan, &missing),
-        Err(SignError::AmountRecordMismatch)
+        Err(SignError::InputNotRecorded)
+    );
+    assert_ne!(
+        SignError::InputNotRecorded.to_string(),
+        SignError::AmountRecordMismatch.to_string()
     );
     // A tampered plan amount (the approval would have to show it) is caught the same way.
     let mut tampered = plan.clone();
@@ -822,8 +828,10 @@ fn end_to_end_testnet4_core() {
         check_can_send(&records, NET),
         Err(super::select::PlanError::InFlight)
     );
+    // Two inputs and the (unconfirmed) change output of the in-flight record.
     let in_flight = in_flight_outpoints(&records, NET);
-    assert_eq!(in_flight.len(), 2);
+    assert_eq!(in_flight.len(), 3);
+    assert!(in_flight.contains(&records[0].change_outpoint().unwrap()));
     let spendable = fixture.meta.spendable(TIP, &in_flight);
     assert_eq!(spendable.len(), 1);
     // Confirmed at TIP + 1 → own change verified.

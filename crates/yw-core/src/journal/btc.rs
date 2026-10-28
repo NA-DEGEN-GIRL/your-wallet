@@ -9,7 +9,7 @@
 //! Body layout (big-endian; the raw transaction bytes as they are), 238-byte fixed header:
 //!
 //! ```text
-//! [0] record_version u8 = 1   [1] network u8   [2] state u8   [3] flags u8
+//! [0] record_version u8 = 1   [1] network u8   [2] state u8   [3] flags u8 (bits 0–6)
 //! [4] entry_id [16]   [20] created_at_unix u64   [28] updated_at_unix u64
 //! [36] txid [32]   [68] wtxid [32]   [100] approval_digest [32]
 //! [132] fee_sats u64   [140] vsize u32   [144] lock_time u32   [148] not_found_count u32
@@ -72,8 +72,11 @@ pub mod flags {
     pub const HAS_REPLACED_BY: u8 = 1 << 4;
     /// bit5: has `confirmed_height`.
     pub const HAS_CONFIRMED_HEIGHT: u8 = 1 << 5;
+    /// bit6: the last Core `sendrawtransaction` of this record was a communication failure
+    /// (spec/08 §11.3 manual Esplora broadcast condition; kept across restarts).
+    pub const LAST_SEND_COMM_FAILURE: u8 = 1 << 6;
     /// Every defined bit.
-    pub const ALL: u8 = 0x3f;
+    pub const ALL: u8 = 0x7f;
 }
 
 const NO_INDEX: u32 = 0xFFFF_FFFF;
@@ -170,7 +173,10 @@ impl BtcTxState {
 
     /// The §12.1 transition table (with `Conflicted` reachable from the broadcast states and
     /// `Replaced` when an original confirms first). `BroadcastUnknown → Abandoned` additionally
-    /// needs the record's [`BtcRecord::can_abandon`] (checked by [`set_state`]).
+    /// needs the record's [`BtcRecord::can_abandon`] (checked by [`set_state`]). A shallow
+    /// `Confirmed` record goes back to `InMempool` / `BroadcastUnknown` on a reorg (tracking
+    /// only), and an `Abandoned` record becomes `Conflicted` when a transaction spending one of
+    /// its inputs confirms.
     #[must_use]
     pub const fn can_transition_to(self, next: Self) -> bool {
         match self {
@@ -200,8 +206,9 @@ impl BtcTxState {
                 Self::Confirmed | Self::Replaced | Self::BroadcastUnknown | Self::Conflicted
             ),
             Self::Replaced => matches!(next, Self::Confirmed | Self::Conflicted),
-            Self::Abandoned => matches!(next, Self::Confirmed),
-            Self::Rejected | Self::Confirmed | Self::Conflicted => false,
+            Self::Abandoned => matches!(next, Self::Confirmed | Self::Conflicted),
+            Self::Confirmed => matches!(next, Self::InMempool | Self::BroadcastUnknown),
+            Self::Rejected | Self::Conflicted => false,
         }
     }
 
@@ -293,6 +300,8 @@ pub struct BtcRecord {
     pub lock_time: u32,
     /// Consecutive not-found observations (spec/08 §12.2).
     pub not_found_count: u32,
+    /// The last Core `sendrawtransaction` was a communication failure (flags bit6).
+    pub last_send_comm_failure: bool,
     /// The transaction this one replaces (fee bump).
     pub replaces: Option<Txid>,
     /// The replacement that replaced this one.
@@ -464,6 +473,7 @@ impl BtcRecord {
             vsize: u32::try_from(verified.vsize()).map_err(|_| BtcRecordError::Outputs)?,
             lock_time: plan.lock_time(),
             not_found_count: 0,
+            last_send_comm_failure: false,
             replaces: plan.replaces(),
             replaced_by: None,
             confirmed_height: None,
@@ -499,6 +509,9 @@ impl BtcRecord {
         }
         if self.confirmed_height.is_some() {
             out |= flags::HAS_CONFIRMED_HEIGHT;
+        }
+        if self.last_send_comm_failure {
+            out |= flags::LAST_SEND_COMM_FAILURE;
         }
         out
     }
@@ -646,6 +659,7 @@ impl BtcRecord {
             vsize: vsize_field,
             lock_time,
             not_found_count,
+            last_send_comm_failure: has(flags::LAST_SEND_COMM_FAILURE),
             replaces,
             replaced_by,
             confirmed_height,
@@ -726,6 +740,26 @@ impl BtcRecord {
             BtcTxState::BroadcastUnknown => self.not_found_count >= BTC_NOT_FOUND_LIMIT,
             _ => false,
         }
+    }
+
+    /// An `Abandoned` record that reached the network before it was given up and may still
+    /// confirm: [포기] of a `BroadcastUnknown` record needs `not_found_count >= 10` (kept by the
+    /// transition) while [취소] of a never-sent `Signed` record leaves it 0, and the 30-day
+    /// window has not passed. Every new send must spend one of its inputs so that at most one of
+    /// the two can confirm (spec/08 §12.1 "포기 뒤 다시 보내기").
+    #[must_use]
+    pub const fn is_live_abandoned(&self, now_unix: u64) -> bool {
+        matches!(self.state, BtcTxState::Abandoned)
+            && self.not_found_count >= BTC_NOT_FOUND_LIMIT
+            && now_unix.saturating_sub(self.updated_at_unix) <= BTC_ABANDON_WINDOW_SECS
+    }
+
+    /// Whether `other` spends one of this record's inputs.
+    #[must_use]
+    pub fn shares_input(&self, other: &Self) -> bool {
+        self.inputs
+            .iter()
+            .any(|input| other.inputs.iter().any(|o| o.outpoint == input.outpoint))
     }
 
     /// Confirmations at `tip_height` (0 unless `Confirmed`).
@@ -858,16 +892,58 @@ pub fn in_flight(records: &[BtcRecord], network: BtcNetwork) -> bool {
     of_network(records, network).any(|record| record.state.is_in_flight())
 }
 
-/// The outpoints spent by in-flight records (excluded from candidates and balance; kept in
-/// `verified` by `BtcMeta::apply_refresh`).
+/// The outpoints spent by in-flight records, and the change outputs of in-flight records
+/// (unconfirmed again after a reorg, spec/08 §12.2-5): excluded from candidates and balance;
+/// kept in `verified` by `BtcMeta::apply_refresh`.
 #[must_use]
 pub fn in_flight_outpoints(records: &[BtcRecord], network: BtcNetwork) -> Vec<OutPoint> {
     let mut out: Vec<OutPoint> = Vec::new();
     for record in of_network(records, network).filter(|record| record.state.is_in_flight()) {
-        for input in &record.inputs {
-            if !out.contains(&input.outpoint) {
-                out.push(input.outpoint);
+        for outpoint in record
+            .inputs
+            .iter()
+            .map(|input| input.outpoint)
+            .chain(record.change_outpoint())
+        {
+            if !out.contains(&outpoint) {
+                out.push(outpoint);
             }
+        }
+    }
+    out
+}
+
+/// The input sets of the live `Abandoned` records of `network` ([`BtcRecord::is_live_abandoned`]):
+/// a new send must spend at least one outpoint of every set (`SendRequest::conflicts`), so the
+/// abandoned transaction and the new one can never both confirm (spec/08 §12.1).
+#[must_use]
+pub fn abandoned_conflicts(
+    records: &[BtcRecord],
+    network: BtcNetwork,
+    now_unix: u64,
+) -> Vec<Vec<OutPoint>> {
+    of_network(records, network)
+        .filter(|record| record.is_live_abandoned(now_unix))
+        .map(|record| record.inputs.iter().map(|input| input.outpoint).collect())
+        .collect()
+}
+
+/// The outpoints `BtcMeta::apply_refresh` keeps although the indexer no longer lists them:
+/// [`in_flight_outpoints`] and the inputs of live `Abandoned` records (an indexer that saw the
+/// abandoned transaction hides its inputs; the next send must still be able to spend one).
+#[must_use]
+pub fn refresh_keep_outpoints(
+    records: &[BtcRecord],
+    network: BtcNetwork,
+    now_unix: u64,
+) -> Vec<OutPoint> {
+    let mut out = in_flight_outpoints(records, network);
+    for outpoint in abandoned_conflicts(records, network, now_unix)
+        .into_iter()
+        .flatten()
+    {
+        if !out.contains(&outpoint) {
+            out.push(outpoint);
         }
     }
     out
@@ -907,19 +983,41 @@ pub fn check_can_send(records: &[BtcRecord], network: BtcNetwork) -> Result<(), 
     }
 }
 
-/// The current RBF target of `network` (spec/08 §9: always the latest replacement): the newest
-/// record in `Submitted`/`BroadcastUnknown`/`InMempool`.
+/// The current RBF target of `network` (spec/08 §9: always the latest replacement): the last
+/// record in journal order (records are appended, so a replacement always follows its
+/// original; the wall clock is not used) in `Submitted`/`BroadcastUnknown`/`InMempool`.
 #[must_use]
 pub fn bump_target(records: &[BtcRecord], network: BtcNetwork) -> Option<&BtcRecord> {
     of_network(records, network)
         .filter(|record| record.state.can_bump())
-        .max_by_key(|record| (record.created_at_unix, record.entry_id))
+        .last()
+}
+
+/// The current record of `txid` on `network`: the last one in journal order. A txid is unique
+/// in the journal ([`push_record`] refuses a second record), but a journal written before that
+/// rule may hold a finished record and a later one with the same txid; transitions and
+/// observations always address the later one.
+#[must_use]
+pub fn current_record<'a>(
+    records: &'a [BtcRecord],
+    network: BtcNetwork,
+    txid: &Txid,
+) -> Option<&'a BtcRecord> {
+    records
+        .iter()
+        .rev()
+        .find(|record| record.network == network && record.txid == *txid)
 }
 
 fn find<'a>(records: &'a [BtcRecord], network: BtcNetwork, txid: &Txid) -> Option<&'a BtcRecord> {
-    records
-        .iter()
-        .find(|record| record.network == network && record.txid == *txid)
+    current_record(records, network, txid)
+}
+
+/// Whether `record` is the current record of its txid ([`current_record`]): a superseded
+/// duplicate of an old journal produces no activity row.
+fn is_current(record: &BtcRecord, records: &[BtcRecord]) -> bool {
+    current_record(records, record.network, &record.txid)
+        .is_some_and(|current| current.entry_id == record.entry_id)
 }
 
 /// The originals `txid` replaces on `network`, nearest first: its `replaces`, that record's
@@ -1010,6 +1108,32 @@ pub fn check_plan_allowed(records: &[BtcRecord], plan: &SendPlan) -> Result<(), 
     Ok(())
 }
 
+/// The pre-sign re-check of the abandon rule (spec/08 §12.1): a new send (not a fee bump) must
+/// spend at least one input of every live `Abandoned` record ([`abandoned_conflicts`]), else
+/// both transactions could confirm and pay twice.
+///
+/// # Errors
+///
+/// [`PlanError::AbandonedNotConflicted`].
+pub fn check_abandoned_conflicts(
+    records: &[BtcRecord],
+    plan: &SendPlan,
+    now_unix: u64,
+) -> Result<(), PlanError> {
+    if plan.replaces().is_some() {
+        return Ok(());
+    }
+    let spent: Vec<OutPoint> = plan.inputs().iter().map(|input| input.outpoint).collect();
+    if abandoned_conflicts(records, plan.network(), now_unix)
+        .iter()
+        .all(|group| group.iter().any(|outpoint| spent.contains(outpoint)))
+    {
+        Ok(())
+    } else {
+        Err(PlanError::AbandonedNotConflicted)
+    }
+}
+
 /// The startup floor of `change_next` (spec/08 §3.2): `max(change_index + 1)` over records of
 /// `network` that reached `Broadcasting` or a later state.
 #[must_use]
@@ -1082,10 +1206,24 @@ impl Working {
         }
     }
 
+    /// The current record of `txid` (the last in journal order, [`current_record`]).
     fn position(&self, network: BtcNetwork, txid: &Txid) -> Option<usize> {
         self.records
             .iter()
-            .position(|(_, record)| record.network == network && record.txid == *txid)
+            .rposition(|(_, record)| record.network == network && record.txid == *txid)
+    }
+
+    /// The record with `entry_id` (unique: the approval id).
+    fn position_entry(&self, network: BtcNetwork, entry_id: &[u8; 16]) -> Option<usize> {
+        self.records
+            .iter()
+            .position(|(_, record)| record.network == network && record.entry_id == *entry_id)
+    }
+
+    fn mark_dirty(&mut self, position: usize) {
+        if let Some(flag) = self.dirty.get_mut(position) {
+            *flag = true;
+        }
     }
 
     fn set(&mut self, position: usize, next: BtcTxState, now_unix: u64) -> bool {
@@ -1171,6 +1309,35 @@ impl Working {
                     self.set(child, BtcTxState::Conflicted, now_unix);
                 }
             }
+            // Any other record spending one of the confirmed inputs can never confirm now: an
+            // abandoned transaction a later send conflicted with, or that later send when the
+            // abandoned one confirmed first (spec/08 §12.1). Originals of the confirmed record
+            // are `Replaced` already (above) and stay so.
+            let conflicting: Vec<usize> =
+                self.records
+                    .get(position)
+                    .map_or_else(Vec::new, |(_, confirmed)| {
+                        self.records
+                            .iter()
+                            .enumerate()
+                            .filter(|(other, (_, record))| {
+                                *other != position
+                                    && record.network == network
+                                    && matches!(
+                                        record.state,
+                                        BtcTxState::Abandoned
+                                            | BtcTxState::Submitted
+                                            | BtcTxState::BroadcastUnknown
+                                            | BtcTxState::InMempool
+                                    )
+                                    && record.shares_input(confirmed)
+                            })
+                            .map(|(other, _)| other)
+                            .collect()
+                    });
+            for other in conflicting {
+                self.set(other, BtcTxState::Conflicted, now_unix);
+            }
         }
     }
 
@@ -1211,10 +1378,41 @@ pub fn set_state(
     next: BtcTxState,
     now_unix: u64,
 ) -> Result<StateChange, TransitionError> {
-    let mut working = Working::load(plain);
+    let working = Working::load(plain);
     let position = working
         .position(network, txid)
         .ok_or(TransitionError::UnknownTx)?;
+    transition(plain, working, position, next, now_unix)
+}
+
+/// [`set_state`] of the record with `entry_id` (the approval id; unique in the journal). The
+/// key worker resolves a step's record once and addresses it by `entry_id` from then on, so a
+/// check and its transition always concern the same record.
+///
+/// # Errors
+///
+/// As [`set_state`] (`UnknownTx` for an unknown `entry_id`).
+pub fn set_state_entry(
+    plain: &mut JournalPlain,
+    network: BtcNetwork,
+    entry_id: &[u8; 16],
+    next: BtcTxState,
+    now_unix: u64,
+) -> Result<StateChange, TransitionError> {
+    let working = Working::load(plain);
+    let position = working
+        .position_entry(network, entry_id)
+        .ok_or(TransitionError::UnknownTx)?;
+    transition(plain, working, position, next, now_unix)
+}
+
+fn transition(
+    plain: &mut JournalPlain,
+    mut working: Working,
+    position: usize,
+    next: BtcTxState,
+    now_unix: u64,
+) -> Result<StateChange, TransitionError> {
     let (from, abandonable) = working
         .records
         .get(position)
@@ -1223,7 +1421,7 @@ pub fn set_state(
     let cascade_only = matches!(
         next,
         BtcTxState::Confirmed | BtcTxState::Replaced | BtcTxState::Conflicted
-    );
+    ) || (from == BtcTxState::Confirmed);
     let refused_abandon = next == BtcTxState::Abandoned && !abandonable;
     if cascade_only || refused_abandon || !working.set(position, next, now_unix) {
         return Err(TransitionError::NotAllowed { from, to: next });
@@ -1276,10 +1474,13 @@ pub enum TxSeen {
 pub enum TrackInput {
     /// Step 1: `getmempoolentry` returned an object.
     MempoolEntry,
-    /// Step 1 returned `-5`; step 2's indexer `TxStatus`.
+    /// Step 1 returned `-5` (or the record is tracked by step 2 only); step 2's indexer
+    /// `TxStatus`, plus the Esplora `TxRaw` probe when the status was ambiguous.
     NotInMempool {
         /// `TxStatus`.
         indexer: TxSeen,
+        /// `TxRaw` probe result, if made.
+        raw_found: Option<bool>,
     },
     /// The endpoint has no `getmempoolentry` (§4.5 C2): step 2 only, plus the Esplora `TxRaw`
     /// probe (`Some(true)` = 200, `Some(false)` = 404) when the status was ambiguous.
@@ -1311,39 +1512,26 @@ pub enum TrackObservation {
     Deferred,
 }
 
-/// The §12.2 decision of one round.
+/// The §12.2 decision of one round. An indexer that still sees the transaction unconfirmed
+/// (Blockbook `confirmations == 0`, or an ambiguous Esplora `{"confirmed":false}` whose `TxRaw`
+/// probe answers 200) counts as "in a mempool" even when Core's mempool lacks it: the
+/// transaction is still propagating somewhere, so the round must not count towards [포기].
 #[must_use]
 pub const fn observe(input: TrackInput) -> TrackObservation {
-    match input {
-        TrackInput::NotInMempool {
-            indexer: TxSeen::Confirmed { height },
+    let (indexer, raw_found) = match input {
+        TrackInput::MempoolEntry => return TrackObservation::InMempool,
+        TrackInput::NotInMempool { indexer, raw_found }
+        | TrackInput::NoMempoolRpc { indexer, raw_found } => (indexer, raw_found),
+    };
+    match (indexer, raw_found) {
+        (TxSeen::Confirmed { height }, _) => TrackObservation::Confirmed { height },
+        (TxSeen::Unconfirmed, _) | (TxSeen::UnconfirmedOrUnknown, Some(true)) => {
+            TrackObservation::InMempool
         }
-        | TrackInput::NoMempoolRpc {
-            indexer: TxSeen::Confirmed { height },
-            ..
-        } => TrackObservation::Confirmed { height },
-        TrackInput::NotInMempool { .. }
-        | TrackInput::NoMempoolRpc {
-            indexer: TxSeen::NotFound,
-            ..
+        (TxSeen::NotFound, _) | (TxSeen::UnconfirmedOrUnknown, Some(false)) => {
+            TrackObservation::NotFound
         }
-        | TrackInput::NoMempoolRpc {
-            indexer: TxSeen::UnconfirmedOrUnknown,
-            raw_found: Some(false),
-        } => TrackObservation::NotFound,
-        TrackInput::MempoolEntry
-        | TrackInput::NoMempoolRpc {
-            indexer: TxSeen::Unconfirmed,
-            ..
-        }
-        | TrackInput::NoMempoolRpc {
-            indexer: TxSeen::UnconfirmedOrUnknown,
-            raw_found: Some(true),
-        } => TrackObservation::InMempool,
-        TrackInput::NoMempoolRpc {
-            indexer: TxSeen::UnconfirmedOrUnknown,
-            raw_found: None,
-        } => TrackObservation::NeedRawProbe,
+        (TxSeen::UnconfirmedOrUnknown, None) => TrackObservation::NeedRawProbe,
     }
 }
 
@@ -1376,16 +1564,18 @@ pub enum TrackMode {
     None,
 }
 
-fn chain_end_finished(record: &BtcRecord, records: &[BtcRecord], tip_height: Option<u32>) -> bool {
+fn chain_end_finished(
+    record: &BtcRecord,
+    records: &[BtcRecord],
+    tip_height: Option<u32>,
+    now_unix: u64,
+) -> bool {
     let mut current = record.replaced_by;
     for _ in 0..records.len().saturating_add(1) {
         let Some(txid) = current else {
             return true;
         };
-        let Some(next) = records
-            .iter()
-            .find(|candidate| candidate.network == record.network && candidate.txid == txid)
-        else {
+        let Some(next) = find(records, record.network, &txid) else {
             return true;
         };
         match next.state {
@@ -1394,14 +1584,25 @@ fn chain_end_finished(record: &BtcRecord, records: &[BtcRecord], tip_height: Opt
                     .is_none_or(|tip| next.confirmations(tip) >= BTC_TRACK_CONFIRMATIONS);
             }
             BtcTxState::Replaced => current = next.replaced_by,
-            _ => return false,
+            // A replacement that was given up: the original may still confirm within the
+            // replacement's 30-day window, not longer.
+            BtcTxState::Abandoned => {
+                return now_unix.saturating_sub(next.updated_at_unix) > BTC_ABANDON_WINDOW_SECS;
+            }
+            BtcTxState::Rejected | BtcTxState::Conflicted => return true,
+            BtcTxState::Signed
+            | BtcTxState::Broadcasting
+            | BtcTxState::Submitted
+            | BtcTxState::BroadcastUnknown
+            | BtcTxState::InMempool => return false,
         }
     }
     true
 }
 
 /// Whether tracking of `record` is over (spec/08 §12.4 "추적이 끝난 항목"): `Rejected`,
-/// `Conflicted`, `Confirmed` with 6+ confirmations, `Replaced` whose replacement has 6+,
+/// `Conflicted`, `Confirmed` with 6+ confirmations, `Replaced` whose replacement chain ends
+/// confirmed with 6+, rejected, conflicted, missing, or abandoned more than 30 days ago,
 /// `Abandoned` older than 30 days. `tip_height` is `None` for records of another network
 /// (not queried any more: `Confirmed` counts as finished).
 #[must_use]
@@ -1416,7 +1617,7 @@ pub fn is_finished(
         BtcTxState::Confirmed => {
             tip_height.is_none_or(|tip| record.confirmations(tip) >= BTC_TRACK_CONFIRMATIONS)
         }
-        BtcTxState::Replaced => chain_end_finished(record, records, tip_height),
+        BtcTxState::Replaced => chain_end_finished(record, records, tip_height, now_unix),
         BtcTxState::Abandoned => {
             now_unix.saturating_sub(record.updated_at_unix) > BTC_ABANDON_WINDOW_SECS
         }
@@ -1454,14 +1655,16 @@ pub fn track_mode(
 }
 
 /// Applies one tracking observation to record `txid` (spec/08 §12.2): `InMempool` moves
-/// `Submitted`/`BroadcastUnknown` to `InMempool` and resets `not_found_count`; `Confirmed`
-/// (with at least 1 confirmation at `tip_height`) confirms `Submitted`/`BroadcastUnknown`/
-/// `InMempool`/`Replaced`, an `Abandoned` record within 30 days, or updates a `Confirmed`
-/// height, conflicting every replacement; `NotFound` increments `not_found_count` of a
-/// `Submitted`/`InMempool`/`BroadcastUnknown` record and turns `Submitted`/`InMempool` into
-/// `BroadcastUnknown` at 10. `Deferred` and other combinations change nothing. (The caller
-/// passes a `Confirmed` of a record with in-flight replacements through [`hold_confirmation`]
-/// first.)
+/// `Submitted`/`BroadcastUnknown` to `InMempool` and resets `not_found_count`, and moves a
+/// (shallow, still tracked) `Confirmed` record back to `InMempool` (reorg: its change is in
+/// flight again, [`in_flight_outpoints`]); `Confirmed` (with at least 1 confirmation at
+/// `tip_height`) confirms `Submitted`/`BroadcastUnknown`/`InMempool`/`Replaced`, an `Abandoned`
+/// record within 30 days, or updates a `Confirmed` height, conflicting every replacement and
+/// every other record spending one of its inputs; `NotFound` increments `not_found_count` of a
+/// `Submitted`/`InMempool`/`BroadcastUnknown`/`Confirmed` record and turns it into
+/// `BroadcastUnknown` at 10 (a `Confirmed` record that vanished was reorganized out).
+/// `Deferred` and other combinations change nothing. (The caller passes a `Confirmed` of a
+/// record with in-flight replacements through [`hold_confirmation`] first.)
 ///
 /// # Errors
 ///
@@ -1486,17 +1689,20 @@ pub fn apply_observation(
         TrackObservation::InMempool => {
             if matches!(
                 state,
-                BtcTxState::Submitted | BtcTxState::BroadcastUnknown | BtcTxState::InMempool
+                BtcTxState::Submitted
+                    | BtcTxState::BroadcastUnknown
+                    | BtcTxState::InMempool
+                    | BtcTxState::Confirmed
             ) && record.not_found_count != 0
             {
                 record.not_found_count = 0;
                 record.updated_at_unix = now_unix;
-                if let Some(flag) = working.dirty.get_mut(position) {
-                    *flag = true;
-                }
+                working.mark_dirty(position);
             }
-            if matches!(state, BtcTxState::Submitted | BtcTxState::BroadcastUnknown)
-                && working.set(position, BtcTxState::InMempool, now_unix)
+            if matches!(
+                state,
+                BtcTxState::Submitted | BtcTxState::BroadcastUnknown | BtcTxState::Confirmed
+            ) && working.set(position, BtcTxState::InMempool, now_unix)
             {
                 working.cascade(position, now_unix);
             }
@@ -1509,12 +1715,11 @@ pub fn apply_observation(
                 now_unix.saturating_sub(record.updated_at_unix) <= BTC_ABANDON_WINDOW_SECS;
             match state {
                 BtcTxState::Confirmed => {
-                    if record.confirmed_height != Some(height) {
+                    if record.confirmed_height != Some(height) || record.not_found_count != 0 {
                         record.confirmed_height = Some(height);
+                        record.not_found_count = 0;
                         record.updated_at_unix = now_unix;
-                        if let Some(flag) = working.dirty.get_mut(position) {
-                            *flag = true;
-                        }
+                        working.mark_dirty(position);
                     }
                 }
                 BtcTxState::Abandoned if !within_window => {}
@@ -1532,14 +1737,15 @@ pub fn apply_observation(
         TrackObservation::NotFound => {
             if matches!(
                 state,
-                BtcTxState::Submitted | BtcTxState::InMempool | BtcTxState::BroadcastUnknown
+                BtcTxState::Submitted
+                    | BtcTxState::InMempool
+                    | BtcTxState::BroadcastUnknown
+                    | BtcTxState::Confirmed
             ) {
                 record.not_found_count = record.not_found_count.saturating_add(1);
                 record.updated_at_unix = now_unix;
                 let limit = record.not_found_count >= BTC_NOT_FOUND_LIMIT;
-                if let Some(flag) = working.dirty.get_mut(position) {
-                    *flag = true;
-                }
+                working.mark_dirty(position);
                 if limit && state != BtcTxState::BroadcastUnknown {
                     working.set(position, BtcTxState::BroadcastUnknown, now_unix);
                 }
@@ -1594,7 +1800,8 @@ fn tip_for(record: &BtcRecord, network: BtcNetwork, tip_height: u32) -> Option<u
 }
 
 /// Activity rows of every finished BTC record (write them to meta, overwriting by `tx_id`,
-/// when they finish; spec/08 §12.4). `tip_height` is the current network's tip.
+/// when they finish; spec/08 §12.4). `tip_height` is the current network's tip. A superseded
+/// duplicate of an old journal ([`current_record`]) produces no row.
 #[must_use]
 pub fn finished_rows(
     plain: &JournalPlain,
@@ -1607,15 +1814,29 @@ pub fn finished_rows(
     records
         .iter()
         .filter(|record| {
-            is_finished(
-                record,
-                &records,
-                tip_for(record, network, tip_height),
-                now_unix,
-            )
+            is_current(record, &records)
+                && is_finished(
+                    record,
+                    &records,
+                    tip_for(record, network, tip_height),
+                    now_unix,
+                )
         })
         .filter_map(|record| activity_row(record, time_unix_ms))
         .collect()
+}
+
+/// The activity row of a removed finished record, `None` for a superseded duplicate.
+fn removed_row(
+    record: &BtcRecord,
+    records: &[BtcRecord],
+    time_unix_ms: u64,
+) -> Option<BtcActivityRow> {
+    if is_current(record, records) {
+        activity_row(record, time_unix_ms)
+    } else {
+        None
+    }
 }
 
 /// Finished records, oldest first (`created_at_unix`, `updated_at_unix`, `entry_id`).
@@ -1676,12 +1897,13 @@ pub fn prune_finished(
     now_unix: u64,
     time_unix_ms: u64,
 ) -> Vec<BtcActivityRow> {
+    let records = BtcEntries::from_plain(plain).records();
     let finished = finished_oldest_first(plain, network, tip_height, now_unix);
     let excess = finished.len().saturating_sub(BTC_JOURNAL_FINAL_KEEP);
     let mut rows = Vec::new();
     for record in finished.iter().take(excess) {
         if remove_record(plain, record)
-            && let Some(row) = activity_row(record, time_unix_ms)
+            && let Some(row) = removed_row(record, &records, time_unix_ms)
         {
             rows.push(row);
         }
@@ -1719,11 +1941,12 @@ pub fn make_room(
     if has_room(plain) {
         return Ok(Vec::new());
     }
+    let records = BtcEntries::from_plain(plain).records();
     let mut trial = plain.clone();
     let mut rows = Vec::new();
     for record in finished_oldest_first(&trial, network, tip_height, now_unix) {
         if remove_record(&mut trial, &record)
-            && let Some(row) = activity_row(&record, time_unix_ms)
+            && let Some(row) = removed_row(&record, &records, time_unix_ms)
         {
             rows.push(row);
         }
@@ -1735,19 +1958,130 @@ pub fn make_room(
     Err(JournalError::Full)
 }
 
-/// Adds a record as a new BTC entry.
+/// Why a new record was not added.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BtcPushError {
+    /// No room ([`JournalError::Full`]), or the record does not encode.
+    Full,
+    /// A record with the same txid exists on the network and is still tracked (or, for
+    /// [`push_record`], exists at all: call [`take_finished_duplicates`] first).
+    Duplicate,
+}
+
+impl fmt::Display for BtcPushError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Full => "거래 저널 공간이 부족합니다",
+            Self::Duplicate => "같은 거래가 이미 저널에 있습니다. 그 거래의 상태를 확인하세요",
+        })
+    }
+}
+
+impl std::error::Error for BtcPushError {}
+
+impl From<JournalError> for BtcPushError {
+    fn from(error: JournalError) -> Self {
+        match error {
+            JournalError::Full => Self::Full,
+        }
+    }
+}
+
+/// Before adding `record` (spec/08 §12.4 "txid 중복"): finished records with the same txid on
+/// its network (e.g. a pre-check `Rejected` transaction signed again byte for byte: same
+/// inputs, outputs and lock time) and `Abandoned` ones (the new record tracks the same
+/// transaction) are removed from `plain` and their activity rows returned (write them to meta
+/// before committing the journal). Any other tracked one (in flight, `Confirmed` below 6,
+/// `Replaced`) refuses the new record and leaves `plain` unchanged.
 ///
 /// # Errors
 ///
-/// [`JournalError::Full`] when it does not fit (call [`make_room`] first) or does not encode.
-pub fn push_record(plain: &mut JournalPlain, record: &BtcRecord) -> Result<(), JournalError> {
-    if !has_room(plain) {
-        return Err(JournalError::Full);
+/// [`BtcPushError::Duplicate`].
+pub fn take_finished_duplicates(
+    plain: &mut JournalPlain,
+    record: &BtcRecord,
+    tip_height: u32,
+    now_unix: u64,
+    time_unix_ms: u64,
+) -> Result<Vec<BtcActivityRow>, BtcPushError> {
+    let records = BtcEntries::from_plain(plain).records();
+    let same: Vec<&BtcRecord> = records
+        .iter()
+        .filter(|old| old.network == record.network && old.txid == record.txid)
+        .collect();
+    // An `Abandoned` record is superseded too: the new record tracks the very same
+    // transaction (same txid, same inputs), so nothing can confirm twice.
+    if same.iter().any(|old| {
+        old.state != BtcTxState::Abandoned
+            && !is_finished(old, &records, Some(tip_height), now_unix)
+    }) {
+        return Err(BtcPushError::Duplicate);
     }
-    let body = record.encode().map_err(|_| JournalError::Full)?;
+    let mut trial = plain.clone();
+    let mut rows = Vec::new();
+    for old in same {
+        if remove_record(&mut trial, old)
+            && let Some(row) = removed_row(old, &records, time_unix_ms)
+        {
+            rows.push(row);
+        }
+    }
+    *plain = trial;
+    Ok(rows)
+}
+
+/// Adds a record as a new BTC entry. A txid is unique per network in the journal: transitions
+/// and observations address a record by it.
+///
+/// # Errors
+///
+/// [`BtcPushError::Full`] when it does not fit (call [`make_room`] first) or does not encode,
+/// [`BtcPushError::Duplicate`] when a record with the same txid exists (call
+/// [`take_finished_duplicates`] first).
+pub fn push_record(plain: &mut JournalPlain, record: &BtcRecord) -> Result<(), BtcPushError> {
+    if !has_room(plain) {
+        return Err(BtcPushError::Full);
+    }
+    if BtcEntries::from_plain(plain)
+        .records
+        .iter()
+        .any(|(_, old)| old.network == record.network && old.txid == record.txid)
+    {
+        return Err(BtcPushError::Duplicate);
+    }
+    let body = record.encode().map_err(|_| BtcPushError::Full)?;
     plain.entries.push(Entry {
         kind: EntryKind::Btc,
         body,
     });
     Ok(())
+}
+
+/// Records the outcome class of the last Core `sendrawtransaction` of the record `entry_id`
+/// (flags bit6): `true` after a communication failure (timeout, transport, HTTP 5xx, 429
+/// abort), `false` after any answer of the node. Kept across restarts so the manual Esplora
+/// broadcast (spec/08 §11.3) stays offered. Returns whether the journal changed.
+///
+/// # Errors
+///
+/// [`TransitionError::UnknownTx`], [`TransitionError::Encode`].
+pub fn set_last_send_comm_failure(
+    plain: &mut JournalPlain,
+    network: BtcNetwork,
+    entry_id: &[u8; 16],
+    comm_failure: bool,
+) -> Result<bool, TransitionError> {
+    let mut working = Working::load(plain);
+    let position = working
+        .position_entry(network, entry_id)
+        .ok_or(TransitionError::UnknownTx)?;
+    let Some((_, record)) = working.records.get_mut(position) else {
+        return Err(TransitionError::UnknownTx);
+    };
+    if record.last_send_comm_failure == comm_failure {
+        return Ok(false);
+    }
+    record.last_send_comm_failure = comm_failure;
+    working.mark_dirty(position);
+    working.commit(plain).map(|_| true)
 }

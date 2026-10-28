@@ -44,6 +44,8 @@ pub mod ids {
     pub const MISMATCH_KEEP_META: u16 = 9_009;
     /// [{settings 값}으로 바꾸기].
     pub const MISMATCH_USE_SETTINGS: u16 = 9_010;
+    /// [블록 높이 기록 초기화] (shown while blocked by a tip regression).
+    pub const RESET_TIP: u16 = 9_011;
     /// Send: recipient edit.
     pub const SEND_TO_EDIT: u16 = 9_020;
     /// Send: amount edit.
@@ -70,6 +72,8 @@ pub mod ids {
     pub const SEND_REVIEW: u16 = 9_031;
     /// Send `취소`.
     pub const SEND_CANCEL: u16 = 9_032;
+    /// Send: `주소 전체를 직접 확인했습니다` (W-ADDR-3).
+    pub const SEND_ADDR_ACK: u16 = 9_033;
     /// Result `해시 복사`.
     pub const RESULT_COPY: u16 = 9_040;
     /// Result [다시 시도] (pre-check communication failure).
@@ -155,7 +159,7 @@ pub mod ids {
     const _: () = assert!(ACTIVITY_BASE + ACTIVITY_SPAN <= 10_000);
 
     /// Every fixed id (tests check uniqueness and the range).
-    pub const FIXED: [u16; 51] = [
+    pub const FIXED: [u16; 53] = [
         TAB_BTC,
         SECTION_BTC,
         REFRESH,
@@ -167,6 +171,7 @@ pub mod ids {
         DISCOVER_CANCEL,
         MISMATCH_KEEP_META,
         MISMATCH_USE_SETTINGS,
+        RESET_TIP,
         SEND_TO_EDIT,
         SEND_AMOUNT_EDIT,
         UNIT_BTC,
@@ -180,6 +185,7 @@ pub mod ids {
         TYPED_FEE_EDIT,
         SEND_REVIEW,
         SEND_CANCEL,
+        SEND_ADDR_ACK,
         RESULT_COPY,
         RESULT_RETRY,
         RESULT_TO_SEND,
@@ -545,6 +551,10 @@ impl App {
             if utxo.hint_mismatch {
                 line.push_str(" · 서버 응답 불일치");
             }
+            if utxo.indexer_only {
+                line.push_str(" · ");
+                line.push_str(crate::app_btc::INDEXER_ONLY);
+            }
             items.push(Item::Text(line));
             items.push(Item::Mono(utxo.outpoint.to_string()));
             let id = ids::UTXO_BASE.saturating_add(u16::try_from(row).unwrap_or(0));
@@ -690,6 +700,16 @@ impl App {
         }
         if let Some(text) = self.btc.blocked.as_ref().filter(|_| !mismatch) {
             items.push(Item::Banner(text.clone(), Tone::Blocked));
+            if self.btc.tip_regressed {
+                items.push(Item::Help(
+                    "노드 블록 높이가 이 지갑이 전에 본 높이보다 6블록 넘게 낮습니다. 노드(RPC)를 바꿨거나 이전 노드가 잘못된 높이를 알려 준 경우에만 기록을 초기화하세요."
+                        .to_owned(),
+                ));
+                items.push(Item::Row(vec![
+                    Ctl::button(ids::RESET_TIP, "블록 높이 기록 초기화")
+                        .enabled(self.btc_unlocked()),
+                ]));
+            }
         }
         if let Some(lag) = self.btc.lag_warning {
             items.push(Item::Banner(
@@ -850,6 +870,14 @@ impl App {
         } else if let Some(kind) = form.recipient {
             items.push(Item::Help(format!("주소 종류: {}", kind.type_label())));
             items.push(Item::Mono(grouped(&encode_address(&kind, net))));
+            if let Some(note) = &form.look_alike {
+                items.push(Item::Banner(note.clone(), Tone::Warn));
+                items.push(Item::Row(vec![Ctl::check(
+                    ids::SEND_ADDR_ACK,
+                    "주소 전체를 직접 확인했습니다",
+                    form.ack,
+                )]));
+            }
         }
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("금액과 수수료".to_owned())));

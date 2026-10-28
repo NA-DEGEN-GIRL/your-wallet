@@ -376,6 +376,49 @@ pub fn hash160(data: &[u8]) -> [u8; 20] {
     out
 }
 
+/// The characters of an address after its fixed prefix: bech32 HRP, `1` and the witness version
+/// character (`bc1q…` → after `bc1q`); base58 the version character (`1…`/`3…`/`m…`/`n…`/`2…`).
+fn varying_part(address: &str) -> Option<&str> {
+    let skip = match address.rfind('1') {
+        Some(separator)
+            if address
+                .get(..separator)
+                .is_some_and(|hrp| matches!(hrp, "bc" | "tb")) =>
+        {
+            separator.checked_add(2)?
+        }
+        _ => 1,
+    };
+    address.get(skip..)
+}
+
+/// W-ADDR-3 for Bitcoin (spec/04 §2.15 row 7, [08] §10 "유사 주소 주석"): two different
+/// addresses whose first 4 and last 4 characters after the fixed prefix
+/// ([`varying_part`]) are equal, ASCII case ignored — what address-poisoning generators match.
+#[must_use]
+pub fn is_look_alike(a: &str, b: &str) -> bool {
+    let a = a.to_ascii_lowercase();
+    let b = b.to_ascii_lowercase();
+    if a == b {
+        return false;
+    }
+    let (Some(left), Some(right)) = (varying_part(&a), varying_part(&b)) else {
+        return false;
+    };
+    let head = |text: &str| text.get(..4).map(str::to_owned);
+    let tail = |text: &str| {
+        text.len()
+            .checked_sub(4)
+            .and_then(|start| text.get(start..))
+            .map(str::to_owned)
+    };
+    left.len() >= 8
+        && right.len() >= 8
+        && head(left).is_some()
+        && head(left) == head(right)
+        && tail(left) == tail(right)
+}
+
 /// The P2WPKH program `HASH160(K)` of `m/84'/{coin}'/0'/{chain}/{index}` from the cached account
 /// node by two `CKDpub` steps (spec/08 §3.1). No vault and no private key.
 ///

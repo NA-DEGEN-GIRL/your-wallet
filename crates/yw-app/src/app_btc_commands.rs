@@ -213,6 +213,8 @@ impl App {
             ids::DISCOVER_CANCEL => self.btc_cancel_discovery(),
             ids::MISMATCH_KEEP_META => self.btc_mismatch_keep_meta(),
             ids::MISMATCH_USE_SETTINGS => self.btc_mismatch_use_settings(),
+            ids::RESET_TIP => self.btc_reset_tip(),
+            ids::SEND_ADDR_ACK => self.btc_toggle_address_ack(),
             ids::UNIT_BTC => self.btc_set_unit(BtcAmountUnit::Btc),
             ids::UNIT_SATS => self.btc_set_unit(BtcAmountUnit::Sats),
             ids::SEND_MAX => self.btc_toggle_max(),

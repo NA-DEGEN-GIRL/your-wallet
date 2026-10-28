@@ -65,10 +65,35 @@ impl Tag {
 ///
 /// [`RpcFailure`].
 pub fn parse_envelope(status: u16, body: &[u8], id: u64, cap: usize) -> Result<Value, RpcFailure> {
+    parse_envelope_with(status, body, id, cap, false)
+}
+
+/// [`parse_envelope`] for a method whose `null` result is an answer (`gettxout` of a spent or
+/// unknown output): `{"result":null,"error":null}` (or without `error`) is `Ok(Value::Null)`.
+///
+/// # Errors
+///
+/// [`RpcFailure`].
+pub fn parse_envelope_nullable(
+    status: u16,
+    body: &[u8],
+    id: u64,
+    cap: usize,
+) -> Result<Value, RpcFailure> {
+    parse_envelope_with(status, body, id, cap, true)
+}
+
+fn parse_envelope_with(
+    status: u16,
+    body: &[u8],
+    id: u64,
+    cap: usize,
+    nullable: bool,
+) -> Result<Value, RpcFailure> {
     if matches!(status, 401 | 403 | 429) {
         return Err(RpcFailure::Status(status));
     }
-    let parsed = envelope_member(body, id, cap);
+    let parsed = envelope_member(body, id, cap, nullable);
     if (200..300).contains(&status) {
         return parsed;
     }
@@ -78,7 +103,7 @@ pub fn parse_envelope(status: u16, body: &[u8], id: u64, cap: usize) -> Result<V
     }
 }
 
-fn envelope_member(body: &[u8], id: u64, cap: usize) -> Result<Value, RpcFailure> {
+fn envelope_member(body: &[u8], id: u64, cap: usize, nullable: bool) -> Result<Value, RpcFailure> {
     let limits = Limits {
         max_bytes: cap,
         ..Limits::RESPONSE
@@ -110,6 +135,9 @@ fn envelope_member(body: &[u8], id: u64, cap: usize) -> Result<Value, RpcFailure
                 .and_then(Number::as_i64)
                 .ok_or(RpcFailure::Malformed)?;
             Err(RpcFailure::Rpc(code))
+        }
+        (None, None) if nullable && object.get("result").is_some_and(Value::is_null) => {
+            Ok(Value::Null)
         }
         _ => Err(RpcFailure::Malformed),
     }
@@ -246,6 +274,28 @@ impl<'a> BtcClient<'a> {
         )
     }
 
+    /// [`Self::core_call`] for a method whose `null` result is an answer (`gettxout`).
+    ///
+    /// # Errors
+    ///
+    /// [`RpcFailure`].
+    pub fn core_call_nullable(
+        &self,
+        method: &'static str,
+        params: &Value,
+        cap: usize,
+        txid: Option<Txid>,
+    ) -> Result<Value, RpcFailure> {
+        let url = &self.endpoint.core_url;
+        let tag = Tag::core(method, txid);
+        let (result, _) = self.paced(
+            tag,
+            || self.json_rpc_once(url, method, params, cap, tag, true),
+            |outcome| matches!(outcome, Err(failure) if is_rate_limited(*failure)),
+        );
+        result
+    }
+
     /// A JSON-RPC call (Core or `bb-rpc`) on the request line.
     ///
     /// # Errors
@@ -261,7 +311,7 @@ impl<'a> BtcClient<'a> {
     ) -> Result<Value, RpcFailure> {
         let (result, _) = self.paced(
             tag,
-            || self.json_rpc_once(url, method, params, cap, tag),
+            || self.json_rpc_once(url, method, params, cap, tag, false),
             |outcome| matches!(outcome, Err(failure) if is_rate_limited(*failure)),
         );
         result
@@ -274,6 +324,7 @@ impl<'a> BtcClient<'a> {
         params: &Value,
         cap: usize,
         tag: Tag,
+        nullable: bool,
     ) -> Result<Value, RpcFailure> {
         let id = self.next_id();
         let request = json_object(vec![
@@ -291,7 +342,7 @@ impl<'a> BtcClient<'a> {
         let outcome = match reply {
             Err(error) => Err(RpcFailure::Http(error)),
             Ok(_) if elapsed > BTC_CALL_DEADLINE_MS => Err(RpcFailure::Late),
-            Ok(reply) => parse_envelope(reply.status, &reply.body, id, cap),
+            Ok(reply) => parse_envelope_with(reply.status, &reply.body, id, cap, nullable),
         };
         let detail = match outcome {
             Ok(_) => ("result", Field::Word("ok")),

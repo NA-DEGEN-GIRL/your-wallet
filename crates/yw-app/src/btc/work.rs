@@ -26,7 +26,7 @@ use super::broadcast::{
     EsploraPostOutcome, ManualBroadcastGate, esplora_broadcast_confirmed, send_raw_transaction,
     test_mempool_accept,
 };
-use super::chain::{ChainInput, ChainSession, ChainStatus, ensure_chain};
+use super::chain::{ChainInput, ChainSession, ChainStatus, ensure_chain, tip_ahead_check};
 use super::flow::{
     DiscoveryJob, DiscoveryResult, RefreshJob, RefreshResult, TrackItem, TrackJob, cooldown_gate,
     discover, esplora_test, observe_tx, refresh,
@@ -104,6 +104,9 @@ pub struct PrepareJob {
     pub meta: BtcMeta,
     /// Outpoints of in-flight journal records (`journal::btc::in_flight_outpoints`).
     pub in_flight: Vec<OutPoint>,
+    /// Input sets of live abandoned records (`journal::btc::abandoned_conflicts`): a send spends
+    /// one outpoint of each (spec/08 §12.1).
+    pub conflicts: Vec<Vec<OutPoint>>,
     /// Send or bump.
     pub kind: PrepareKind,
     /// Fee-rate input.
@@ -160,6 +163,14 @@ pub enum PrepareError {
     FeeUnoverridable,
     /// Public derivation failed while building the facts.
     Derivation,
+    /// The Core tip is more than `BTC_PLAN_TIP_AHEAD_MAX` blocks above the indexer tip
+    /// (review M2): nothing is planned.
+    TipAhead {
+        /// Core `blocks`.
+        core: u32,
+        /// Indexer `TipHeight`.
+        indexer: u32,
+    },
 }
 
 impl PrepareError {
@@ -185,6 +196,10 @@ impl PrepareError {
             ),
             Self::FeeUnoverridable => yw_core::btc::policy::texts::FEE_UNOVERRIDABLE.to_owned(),
             Self::Derivation => yw_core::btc::policy::texts::DERIVATION_FAILED.to_owned(),
+            Self::TipAhead { core, indexer } => format!(
+                "노드 블록 높이({core})가 인덱서({indexer})보다 {}블록 넘게 앞서 보내기를 멈췄습니다. 잠시 뒤 다시 검토하거나 노드(RPC) 설정을 확인하세요",
+                yw_core::btc::BTC_PLAN_TIP_AHEAD_MAX
+            ),
         }
     }
 }
@@ -452,6 +467,11 @@ fn prepare(
     work: &PrepareJob,
 ) -> Result<Prepared, PrepareError> {
     let status = ensure_chain(client, session, work.chain, true).map_err(PrepareError::Btc)?;
+    if let Err((core, indexer)) =
+        tip_ahead_check(client, session, status.tip_height).map_err(PrepareError::Btc)?
+    {
+        return Err(PrepareError::TipAhead { core, indexer });
+    }
     let mempool: MempoolInfo =
         rpc::get_mempool_info(client).map_err(|failure| PrepareError::Btc(failure.into()))?;
     let floor = fee_floor(
@@ -488,6 +508,7 @@ fn prepare(
             change_next: work.meta.change_next(),
             layout_seed: work.layout_seed,
             typed_fee_override: work.typed_fee_override,
+            conflicts: &work.conflicts,
         }),
         PrepareKind::Bump { source } => plan_fee_bump(&BumpRequest {
             source,

@@ -13,9 +13,10 @@ use btc_support::{
 use yw_app::btc::BtcClient;
 use yw_app::btc::client::parse_envelope;
 use yw_app::btc::rpc::{
-    BlockchainInfo, MempoolEntry, MempoolInfo, estimate_smart_fee, get_block_hash_0,
-    get_blockchain_info, get_mempool_entry, get_mempool_info, get_raw_transaction,
-    maxfeerate_value, send_failure, send_raw_transaction, test_mempool_accept,
+    BlockchainInfo, MempoolEntry, MempoolInfo, TxOutAnswer, TxOutInfo, estimate_smart_fee,
+    get_block_hash_0, get_blockchain_info, get_mempool_entry, get_mempool_info,
+    get_raw_transaction, get_tx_out, maxfeerate_value, send_failure, send_raw_transaction,
+    test_mempool_accept,
 };
 use yw_app::errors::ErrorCode;
 use yw_app::rpc::{RpcFailure, classify};
@@ -241,13 +242,16 @@ fn response_caps_per_method() -> TestResult {
 
 #[test]
 fn strict_core_numbers() -> TestResult {
+    // Review fix: a `feerate` that is not a plain positive BTC decimal is "no estimate" (manual
+    // input with the floor), not a failed call; amounts stay strict (never through f64).
     for (feerate, expected) in [
         ("0.00001000", Ok(Some(1_000))),
-        ("0", Ok(Some(0))),
-        ("1e-05", Err(RpcFailure::Malformed)),
-        ("-0.1", Err(RpcFailure::Malformed)),
-        ("0.000010001", Err(RpcFailure::Malformed)),
-        ("\"0.00001\"", Err(RpcFailure::Malformed)),
+        ("0", Ok(None)),
+        ("1e-05", Ok(None)),
+        ("-0.1", Ok(None)),
+        ("0.000010001", Ok(None)),
+        ("\"0.00001\"", Ok(None)),
+        ("null", Ok(None)),
     ] {
         let body = format!("{{\"feerate\":{feerate},\"blocks\":2}}");
         let rig = rig(move |_| Reply::Result(body.clone()));
@@ -299,6 +303,88 @@ fn strict_core_numbers() -> TestResult {
         b"0.00012000".to_vec()
     );
     assert_eq!(maxfeerate_value("x"), Err(RpcFailure::Malformed));
+    Ok(())
+}
+
+/// Review fix: `incrementalrelayfee` missing or malformed is 1,000 sat/kvB (spec/08 §9); the
+/// floor inputs stay required.
+#[test]
+fn mempool_info_incremental_default() {
+    for (incremental, expected) in [
+        (",\"incrementalrelayfee\":0.00002000", Ok(2_000)),
+        ("", Ok(1_000)),
+        (",\"incrementalrelayfee\":1e-05", Ok(1_000)),
+        (",\"incrementalrelayfee\":\"0.00001\"", Ok(1_000)),
+        (",\"incrementalrelayfee\":0", Ok(1_000)),
+    ] {
+        let body = format!(
+            "{{\"loaded\":true,\"mempoolminfee\":0.00001000,\"minrelaytxfee\":0.00000100{incremental}}}"
+        );
+        let rig = rig(move |_| Reply::Result(body.clone()));
+        let client = BtcClient::new(rig.env(), &rig.endpoint);
+        assert_eq!(
+            get_mempool_info(&client).map(|info| info.incremental),
+            expected,
+            "{incremental}"
+        );
+    }
+    let rig = rig(|_| Reply::Result("{\"minrelaytxfee\":0.00000100}".to_owned()));
+    let client = BtcClient::new(rig.env(), &rig.endpoint);
+    assert_eq!(get_mempool_info(&client), Err(RpcFailure::Malformed));
+}
+
+/// Review M5: `gettxout [txid, vout, true]` — an object is Core's view of an unspent output,
+/// `null` (also without `error`) is spent or unknown, `-32601` means the endpoint lacks it.
+#[test]
+fn gettxout_answers() -> TestResult {
+    let outpoint = yw_core::btc::OutPoint {
+        txid: txid(REAL_TXID)?,
+        vout: 1,
+    };
+    let script = format!("0014{REAL_PROGRAM}");
+    let object = format!(
+        "{{\"bestblock\":\"{}\",\"confirmations\":12,\"value\":0.00050000,\"scriptPubKey\":{{\"asm\":\"{SERVER_STRING}\",\"hex\":\"{script}\",\"type\":\"witness_v0_keyhash\"}},\"coinbase\":false}}",
+        "00".repeat(32)
+    );
+    let rig_object = rig(move |_| Reply::Result(object.clone()));
+    let client = BtcClient::new(rig_object.env(), &rig_object.endpoint);
+    assert_eq!(
+        get_tx_out(&client, &outpoint)?,
+        TxOutAnswer::Unspent(TxOutInfo {
+            value: Sats::new(50_000).ok_or("sats")?,
+            script_pubkey: yw_core::hex::decode(&script)?,
+            confirmations: 12,
+            coinbase: false,
+        })
+    );
+    let call = rig_object.fake.calls();
+    assert_eq!(call[0].method, "gettxout");
+    assert!(call[0].params.ends_with(",1,true]"), "{}", call[0].params);
+    let rig_null = rig(|_| Reply::Result("null".to_owned()));
+    let client = BtcClient::new(rig_null.env(), &rig_null.endpoint);
+    assert_eq!(get_tx_out(&client, &outpoint)?, TxOutAnswer::Missing);
+    let rig_missing = rig(|_| Reply::RpcError(-32_601));
+    let client = BtcClient::new(rig_missing.env(), &rig_missing.endpoint);
+    assert_eq!(get_tx_out(&client, &outpoint)?, TxOutAnswer::Unsupported);
+    // Other methods still refuse a null result.
+    let rig_strict = rig(|_| Reply::Result("null".to_owned()));
+    let client = BtcClient::new(rig_strict.env(), &rig_strict.endpoint);
+    assert_eq!(get_mempool_info(&client), Err(RpcFailure::Malformed));
+    for bad in [
+        "{\"confirmations\":1,\"value\":0.0005,\"scriptPubKey\":{\"hex\":\"0014AB\"},\"coinbase\":false}",
+        "{\"confirmations\":1,\"value\":1e-3,\"scriptPubKey\":{\"hex\":\"00\"},\"coinbase\":false}",
+        "{\"confirmations\":-1,\"value\":0.0005,\"scriptPubKey\":{\"hex\":\"00\"},\"coinbase\":false}",
+        "{\"confirmations\":1,\"value\":0.0005,\"scriptPubKey\":{\"hex\":\"00\"}}",
+        "7",
+    ] {
+        let rig_bad = rig(move |_| Reply::Result(bad.to_owned()));
+        let client = BtcClient::new(rig_bad.env(), &rig_bad.endpoint);
+        assert_eq!(
+            get_tx_out(&client, &outpoint),
+            Err(RpcFailure::Malformed),
+            "{bad}"
+        );
+    }
     Ok(())
 }
 

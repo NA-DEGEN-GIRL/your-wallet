@@ -166,9 +166,12 @@ pub enum SignError {
         /// Input index.
         input: usize,
     },
-    /// A plan amount differs from a recorded verified amount, or is not recorded
-    /// (spec/08 §5 `AmountRecordMismatch`).
+    /// A plan amount differs from a recorded verified amount (spec/08 §5
+    /// `AmountRecordMismatch`: a bug or tampering signal).
     AmountRecordMismatch,
+    /// A plan input has no record at all (spec/08 §5): typically a refresh during the approval
+    /// dropped it from `verified` (spent, or no longer listed). Same hard stop, own text.
+    InputNotRecorded,
     /// Program derivation from the account node failed.
     Derivation,
     /// The fresh signature failed its own strict check.
@@ -184,6 +187,7 @@ impl fmt::Display for SignError {
             Self::ApprovalMismatch => formatter.write_str(texts::APPROVAL_MISMATCH),
             Self::KeyMismatch { .. } => formatter.write_str(texts::KEY_MISMATCH),
             Self::AmountRecordMismatch => formatter.write_str(texts::AMOUNT_RECORD_MISMATCH),
+            Self::InputNotRecorded => formatter.write_str(texts::INPUT_NOT_RECORDED),
             Self::PlanInconsistent | Self::Derivation | Self::Witness(_) => {
                 formatter.write_str(texts::SIGN_INTERNAL)
             }
@@ -229,7 +233,7 @@ pub fn check_recorded_amounts(
             }
         }
         if !seen {
-            return Err(SignError::AmountRecordMismatch);
+            return Err(SignError::InputNotRecorded);
         }
     }
     Ok(())

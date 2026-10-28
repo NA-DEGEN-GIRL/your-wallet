@@ -6,8 +6,8 @@
 //! - [`discover`]: address discovery driving yw-core's `Discovery` (spec/08 §3.4), also
 //!   "더 찾기".
 //! - [`refresh`]: spec/08 §4.7 steps 1–4 (chain check and mempool floor, history of the watch
-//!   set, UTXO candidates, previous-transaction verification through Core with one indexer
-//!   `TxRaw` fallback).
+//!   set, UTXO candidates checked against Core's `gettxout`, previous-transaction verification
+//!   through Core with one indexer `TxRaw` fallback).
 //! - [`observe_tx`]: one tracking observation (spec/08 §12.2): the inputs of yw-core's
 //!   `journal::btc::observe`, which decides.
 //!
@@ -23,7 +23,7 @@ use yw_core::bip32::path::BtcChain;
 use yw_core::btc::address::{BtcAddress, p2wpkh_program};
 use yw_core::btc::meta::{ListedUtxo, VerifiedUtxo as CoreVerifiedUtxo};
 use yw_core::btc::prevtx::{PrevTxError, verify_prev_output};
-use yw_core::btc::{BtcNetwork, Discovery, OutPoint, Sats, Txid, conf};
+use yw_core::btc::{BTC_MAX_ADDRESS_INDEX, BtcNetwork, Discovery, OutPoint, Sats, Txid, conf};
 use yw_core::journal::btc::{TrackInput, TrackObservation, hold_confirmation, observe};
 use yw_win::http::HttpsUrl;
 
@@ -33,7 +33,7 @@ use super::indexer::{
     self, AddrSummary, BtcIndexerReq, BtcIndexerResp, CAP_GENESIS, IndexerError, TxSeen,
     UtxoCandidate, parse_esplora, transport_error,
 };
-use super::rpc::{self, MempoolEntry, MempoolInfo};
+use super::rpc::{self, MempoolEntry, MempoolInfo, TxOutAnswer};
 use super::{BtcError, LogSink, Trigger, indexer_word, network_id};
 use crate::errors::ErrorCode;
 use crate::flow::evm::Clock;
@@ -43,6 +43,16 @@ use crate::settings::{BtcIndexer, LogLevel};
 
 /// Highest non-hardened index.
 pub const MAX_CHILD_INDEX: u32 = 0x7FFF_FFFF;
+
+/// Core's view of a candidate (`gettxout`): the value and coinbase flag it reports, compared
+/// with the hash-verified previous transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CoreView {
+    /// `gettxout.value`.
+    pub value: Sats,
+    /// `gettxout.coinbase`.
+    pub coinbase: bool,
+}
 
 /// Settings `테스트` result.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -309,10 +319,14 @@ pub struct Candidate {
     pub chain: BtcChain,
     /// Index of the paid address.
     pub index: u32,
-    /// Indexer block height.
+    /// Block height: Core's (`tip + 1 - gettxout.confirmations`) when it answered, else the
+    /// indexer's.
     pub height: u32,
     /// Indexer value (hint).
     pub value_hint: Sats,
+    /// Core's `gettxout` view; `None` = indexer only (no `gettxout` on the endpoint, or the
+    /// call failed this round): shown as such.
+    pub core: Option<CoreView>,
 }
 
 /// Where a verified raw transaction came from.
@@ -352,6 +366,8 @@ pub enum VerifyFailure {
     Prev(PrevTxError),
     /// Neither Core nor the indexer gave the raw transaction.
     Unavailable,
+    /// Core's `gettxout` value or coinbase flag differs from the verified previous output.
+    CoreMismatch,
 }
 
 /// A candidate left out of balance and selection ("검증 실패 UTXO n개").
@@ -399,6 +415,16 @@ impl RefreshResult {
                 index: candidate.index,
                 height: candidate.height,
             })
+            .collect()
+    }
+
+    /// Candidates Core did not confirm (`gettxout` unavailable this round): "인덱서만 확인".
+    #[must_use]
+    pub fn indexer_only(&self) -> Vec<OutPoint> {
+        self.candidates
+            .iter()
+            .filter(|candidate| candidate.core.is_none())
+            .map(|candidate| candidate.outpoint)
             .collect()
     }
 
@@ -472,7 +498,78 @@ const fn verify_word(failure: VerifyFailure) -> &'static str {
         VerifyFailure::Prev(PrevTxError::ScriptMismatch) => "script_mismatch",
         VerifyFailure::Prev(PrevTxError::ZeroValue) => "zero_value",
         VerifyFailure::Unavailable => "unavailable",
+        VerifyFailure::CoreMismatch => "core_mismatch",
     }
+}
+
+/// Core's own view of every candidate (`gettxout [txid, vout, true]`, review M5): an output
+/// Core does not have unspent (spent on chain or by a mempool transaction, unknown), has with
+/// another script, or has with 0 confirmations is dropped (not listed); a confirmed one takes
+/// Core's height `tip + 1 - confirmations`. Without `gettxout` (`-32601`) or after a failed
+/// call the candidate keeps the indexer's height and stays indexer-only.
+///
+/// # Errors
+///
+/// A rate-limit abort.
+fn core_check(
+    client: &BtcClient<'_>,
+    job: &RefreshJob,
+    net: BtcNetwork,
+    tip_height: u32,
+    candidates: Vec<Candidate>,
+) -> Result<Vec<Candidate>, BtcError> {
+    let mut out = Vec::with_capacity(candidates.len());
+    let mut supported = true;
+    for mut candidate in candidates {
+        if !supported {
+            out.push(candidate);
+            continue;
+        }
+        let outpoint = candidate.outpoint;
+        let dropped = |reason: &'static str| {
+            client.log(
+                LogLevel::Warn,
+                "candidate_dropped",
+                super::client::Tag::core("gettxout", Some(outpoint.txid)),
+                &[
+                    ("vout", Field::Num(u64::from(outpoint.vout))),
+                    ("reason", Field::Word(reason)),
+                ],
+            );
+        };
+        match rpc::get_tx_out(client, &outpoint) {
+            Ok(TxOutAnswer::Unspent(info)) => {
+                let expected = BtcAddress::p2wpkh(
+                    net,
+                    &p2wpkh_program(&job.account, candidate.chain, candidate.index)
+                        .map_err(|_| BtcError::Derivation)?,
+                )
+                .script_pubkey();
+                if info.script_pubkey != expected {
+                    dropped("script");
+                } else if info.confirmations == 0 {
+                    dropped("unconfirmed");
+                } else {
+                    candidate.height = tip_height
+                        .saturating_add(1)
+                        .saturating_sub(info.confirmations);
+                    candidate.core = Some(CoreView {
+                        value: info.value,
+                        coinbase: info.coinbase,
+                    });
+                    out.push(candidate);
+                }
+            }
+            Ok(TxOutAnswer::Missing) => dropped("spent_or_unknown"),
+            Ok(TxOutAnswer::Unsupported) => {
+                supported = false;
+                out.push(candidate);
+            }
+            Err(failure) if is_rate_limited(failure) => return Err(BtcError::Core(failure)),
+            Err(_) => out.push(candidate),
+        }
+    }
+    Ok(out)
 }
 
 /// Refresh (spec/08 §4.7 steps 1–4).
@@ -497,7 +594,8 @@ pub fn refresh(
         (BtcChain::Receive, job.receive_count),
         (BtcChain::Change, job.change_count),
     ] {
-        for index in 0..count.min(MAX_CHILD_INDEX.saturating_add(1)) {
+        // The watch set never exceeds `BTC_MAX_ADDRESS_INDEX` addresses per chain.
+        for index in 0..count.min(BTC_MAX_ADDRESS_INDEX) {
             let address = our_address(&job.account, net, chain, index)?;
             let summary = address_summary(client, session, &address)?;
             let excluded = chain == BtcChain::Change && inflight.contains(&index);
@@ -526,10 +624,12 @@ pub fn refresh(
                     index: *index,
                     height,
                     value_hint: utxo.value_hint,
+                    core: None,
                 });
             }
         }
     }
+    let candidates = core_check(client, job, net, status.tip_height, candidates)?;
     let (verified, failed) = verify_candidates(client, session, job, &candidates)?;
     Ok(RefreshResult {
         chain: status,
@@ -572,7 +672,13 @@ fn verify_candidates(
                     .map_err(VerifyFailure::Prev)
             }
             _ => Err(VerifyFailure::Unavailable),
-        };
+        }
+        .and_then(|(prev, source)| match candidate.core {
+            Some(core) if core.value != prev.value || core.coinbase != prev.is_coinbase => {
+                Err(VerifyFailure::CoreMismatch)
+            }
+            _ => Ok((prev, source)),
+        });
         match outcome {
             Ok((prev, source)) => verified.push(VerifiedUtxo {
                 outpoint: prev.outpoint,
@@ -699,15 +805,36 @@ pub fn observe_tx(
     })
 }
 
+/// yw-core's decision for one `TxStatus` answer, with the one Esplora `TxRaw` probe it asks for
+/// (`NeedRawProbe`: an ambiguous `{"confirmed":false}`).
+fn decide(
+    client: &BtcClient<'_>,
+    txid: &Txid,
+    input: impl Fn(Option<bool>) -> TrackInput,
+) -> Result<TrackObservation, BtcError> {
+    let first = observe(input(None));
+    if first != TrackObservation::NeedRawProbe {
+        return Ok(first);
+    }
+    let raw_found = match indexer::fetch(client, &BtcIndexerReq::TxRaw(*txid)) {
+        Ok(_) => true,
+        Err(IndexerError::NotFound) => false,
+        Err(error) => return Err(BtcError::Indexer(error)),
+    };
+    Ok(observe(input(Some(raw_found))))
+}
+
 /// Steps 1–2 of [`observe_tx`]: yw-core's decision and whether `getmempoolentry` answered
-/// `-32601` now.
+/// `-32601` now. An indexer that still has the transaction unconfirmed counts as "in a
+/// mempool" also when Core's mempool lacks it (review M1).
 fn observe_steps(
     client: &BtcClient<'_>,
     job: &TrackJob,
 ) -> Result<(TrackObservation, bool), BtcError> {
+    let not_in_mempool = |indexer| move |raw_found| TrackInput::NotInMempool { indexer, raw_found };
     if job.indexer_only {
         let indexer = tx_status(client, &job.txid)?;
-        return Ok((observe(TrackInput::NotInMempool { indexer }), false));
+        return Ok((decide(client, &job.txid, not_in_mempool(indexer))?, false));
     }
     let mut unsupported = false;
     if job.mempool_entry {
@@ -717,26 +844,15 @@ fn observe_steps(
             }
             MempoolEntry::Absent => {
                 let indexer = tx_status(client, &job.txid)?;
-                return Ok((observe(TrackInput::NotInMempool { indexer }), false));
+                return Ok((decide(client, &job.txid, not_in_mempool(indexer))?, false));
             }
             MempoolEntry::Unsupported => unsupported = true,
         }
     }
     let indexer = tx_status(client, &job.txid)?;
-    let mut observation = observe(TrackInput::NoMempoolRpc {
+    let observation = decide(client, &job.txid, |raw_found| TrackInput::NoMempoolRpc {
         indexer,
-        raw_found: None,
-    });
-    if observation == TrackObservation::NeedRawProbe {
-        let raw_found = match indexer::fetch(client, &BtcIndexerReq::TxRaw(job.txid)) {
-            Ok(_) => true,
-            Err(IndexerError::NotFound) => false,
-            Err(error) => return Err(BtcError::Indexer(error)),
-        };
-        observation = observe(TrackInput::NoMempoolRpc {
-            indexer,
-            raw_found: Some(raw_found),
-        });
-    }
+        raw_found,
+    })?;
     Ok((observation, unsupported))
 }

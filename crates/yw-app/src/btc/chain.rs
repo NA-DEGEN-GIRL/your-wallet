@@ -3,8 +3,11 @@
 //!
 //! 1. Core `getblockhash [0]` equals the network constant.
 //! 2. Core `getblockchaininfo`: `chain`, `initialblockdownload == false`, `headers - blocks <= 2`,
-//!    `now - 86400 <= mediantime <= now + 7200` (local UTC seconds), `blocks` is the tip, and
-//!    `blocks >= max_tip_seen - 6` (then `max_tip_seen = max(max_tip_seen, blocks)`).
+//!    `now - 86400 <= mediantime <= now + 7200` (local UTC seconds), `blocks < 500,000,000` (a
+//!    lock-time timestamp is never a height), `blocks` is the tip, and
+//!    `blocks >= max_tip_seen - 6` (then `max_tip_seen = max(max_tip_seen, blocks)`, raised at
+//!    most to the indexer tip + 3 when step 4 gave one: one endpoint alone cannot ratchet it to
+//!    a wrong height that would block every later check).
 //! 3. Indexer `GenesisHash` equals the constant (`esplora` mandatory; `bb-*` too). No address is
 //!    sent to the indexer before this step passed in the session.
 //! 4. `esplora` only, never blocking: indexer `TipHeight` more than 3 blocks from `blocks` →
@@ -16,7 +19,9 @@
 //! `esploraBaseUrl` change ([`ChainSession::reset`]) and every `BTC_CHAIN_RECHECK_SECS`; steps
 //! 1–2 also run right before `testmempoolaccept` / `sendrawtransaction` ([`check_core`]).
 
-use yw_core::btc::{BTC_CHAIN_RECHECK_SECS, BTC_INDEXER_TIP_LAG_WARN, BtcNetwork};
+use yw_core::btc::{
+    BTC_CHAIN_RECHECK_SECS, BTC_INDEXER_TIP_LAG_WARN, BTC_LOCKTIME_THRESHOLD, BtcNetwork,
+};
 
 use super::BtcError;
 use super::client::{BtcClient, Tag};
@@ -51,6 +56,8 @@ pub enum CoreCheckFailure {
     MedianTime,
     /// `blocks < max_tip_seen - 6`.
     TipRegressed,
+    /// `blocks >= 500,000,000`.
+    TipImplausible,
 }
 
 impl CoreCheckFailure {
@@ -64,6 +71,7 @@ impl CoreCheckFailure {
             Self::HeadersAhead => "headers",
             Self::MedianTime => "mediantime",
             Self::TipRegressed => "tip_regressed",
+            Self::TipImplausible => "tip_implausible",
         }
     }
 }
@@ -139,6 +147,7 @@ pub struct ChainSession {
     tip_height: Option<u32>,
     max_tip_seen: u32,
     lag_warning: Option<u32>,
+    indexer_tip: Option<u32>,
 }
 
 impl ChainSession {
@@ -155,6 +164,7 @@ impl ChainSession {
             tip_height: None,
             max_tip_seen: 0,
             lag_warning: None,
+            indexer_tip: None,
         }
     }
 
@@ -208,6 +218,21 @@ impl ChainSession {
     #[must_use]
     pub const fn lag_warning(&self) -> Option<u32> {
         self.lag_warning
+    }
+
+    /// The `esplora` indexer tip of the last full check (step 4).
+    #[must_use]
+    pub const fn indexer_tip(&self) -> Option<u32> {
+        self.indexer_tip
+    }
+
+    /// Raises the session's `max_tip_seen` with a Core tip that passed step 2, at most to the
+    /// indexer tip + `BTC_INDEXER_TIP_LAG_WARN` when step 4 gave one.
+    fn ratchet(&mut self, tip: u32) {
+        let capped = self.indexer_tip.map_or(tip, |indexer| {
+            tip.min(indexer.saturating_add(BTC_INDEXER_TIP_LAG_WARN))
+        });
+        self.max_tip_seen = self.max_tip_seen.max(capped);
     }
 
     fn block(&mut self, client: &BtcClient<'_>, block: BtcBlock) -> BtcError {
@@ -272,6 +297,9 @@ pub fn judge_blockchain_info(
     {
         return Err(CoreCheckFailure::MedianTime);
     }
+    if info.blocks >= BTC_LOCKTIME_THRESHOLD || info.headers >= BTC_LOCKTIME_THRESHOLD {
+        return Err(CoreCheckFailure::TipImplausible);
+    }
     if info.blocks < max_tip_seen.saturating_sub(TIP_REGRESSION_MAX) {
         return Err(CoreCheckFailure::TipRegressed);
     }
@@ -288,11 +316,20 @@ fn step2(
     match judge_blockchain_info(&info, session.settings_net, floor, input.now_unix_secs) {
         Ok(tip) => {
             session.tip_height = Some(tip);
-            session.max_tip_seen = floor.max(tip);
+            session.max_tip_seen = floor.max(session.max_tip_seen);
             Ok(tip)
         }
         Err(failure) => Err(session.block(client, BtcBlock::Core(failure))),
     }
+}
+
+/// Step 1 (`getblockhash 0`).
+fn step1(client: &BtcClient<'_>, session: &mut ChainSession) -> Result<(), BtcError> {
+    let genesis = rpc::get_block_hash_0(client)?;
+    if genesis != session.settings_net.genesis() {
+        return Err(session.block(client, BtcBlock::Core(CoreCheckFailure::Genesis)));
+    }
+    Ok(())
 }
 
 /// Steps 1–2 (Core), always both calls (also right before `testmempoolaccept` /
@@ -307,11 +344,9 @@ pub fn check_core(
     input: ChainInput,
 ) -> Result<ChainStatus, BtcError> {
     gate(client, session)?;
-    let genesis = rpc::get_block_hash_0(client)?;
-    if genesis != session.settings_net.genesis() {
-        return Err(session.block(client, BtcBlock::Core(CoreCheckFailure::Genesis)));
-    }
+    step1(client, session)?;
     let tip = step2(client, session, input)?;
+    session.ratchet(tip);
     Ok(session.status(input, tip))
 }
 
@@ -326,7 +361,9 @@ pub fn check_full(
     session: &mut ChainSession,
     input: ChainInput,
 ) -> Result<ChainStatus, BtcError> {
-    let status = check_core(client, session, input)?;
+    gate(client, session)?;
+    step1(client, session)?;
+    let tip = step2(client, session, input)?;
     match indexer::fetch(client, &BtcIndexerReq::GenesisHash) {
         Ok(BtcIndexerResp::GenesisHash(hash)) if hash == session.settings_net.genesis() => {}
         Ok(BtcIndexerResp::GenesisHash(_)) => {
@@ -344,7 +381,8 @@ pub fn check_full(
     if client.endpoint().indexer == BtcIndexer::Esplora {
         match indexer::fetch(client, &BtcIndexerReq::TipHeight) {
             Ok(BtcIndexerResp::TipHeight(height)) => {
-                let lag = height.abs_diff(status.tip_height);
+                session.indexer_tip = Some(height);
+                let lag = height.abs_diff(tip);
                 if lag > BTC_INDEXER_TIP_LAG_WARN {
                     session.lag_warning = Some(lag);
                     client.log(
@@ -362,7 +400,42 @@ pub fn check_full(
             Ok(_) | Err(_) => {}
         }
     }
-    Ok(session.status(input, status.tip_height))
+    session.ratchet(tip);
+    Ok(session.status(input, tip))
+}
+
+/// Planning guard (review M2): the Core tip may not be more than `BTC_PLAN_TIP_AHEAD_MAX`
+/// blocks above an `esplora` indexer tip (`lock_time = tip` would not be final elsewhere, and a
+/// lying endpoint could ratchet `max_tip_seen`). A fresh `TipHeight`, else the last full
+/// check's; nothing to compare with for `bb-*` or when both are unavailable.
+///
+/// # Errors
+///
+/// `(core tip, indexer tip)` when the Core tip is too far ahead; a rate-limit abort as
+/// [`BtcError`].
+pub fn tip_ahead_check(
+    client: &BtcClient<'_>,
+    session: &mut ChainSession,
+    core_tip: u32,
+) -> Result<Result<(), (u32, u32)>, BtcError> {
+    if client.endpoint().indexer != BtcIndexer::Esplora {
+        return Ok(Ok(()));
+    }
+    match indexer::fetch(client, &BtcIndexerReq::TipHeight) {
+        Ok(BtcIndexerResp::TipHeight(height)) => session.indexer_tip = Some(height),
+        Err(IndexerError::RateLimited) => {
+            return Err(BtcError::Indexer(IndexerError::RateLimited));
+        }
+        Ok(_) | Err(_) => {}
+    }
+    Ok(match session.indexer_tip {
+        Some(indexer)
+            if core_tip > indexer.saturating_add(yw_core::btc::BTC_PLAN_TIP_AHEAD_MAX) =>
+        {
+            Err((core_tip, indexer))
+        }
+        _ => Ok(()),
+    })
 }
 
 /// The check a job needs: blocked → error without requests; steps 1–4 when due; otherwise
@@ -381,9 +454,12 @@ pub fn ensure_chain(
     if session.full_check_due(client.now_ms()) {
         return check_full(client, session, input);
     }
-    let tip = match (refresh_tip, session.tip_height) {
-        (false, Some(tip)) => tip,
-        _ => step2(client, session, input)?,
+    let tip = if let (false, Some(tip)) = (refresh_tip, session.tip_height) {
+        tip
+    } else {
+        let tip = step2(client, session, input)?;
+        session.ratchet(tip);
+        tip
     };
     Ok(session.status(input, tip))
 }

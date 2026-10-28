@@ -108,6 +108,7 @@ pub fn plan(
         change_next: 3,
         layout_seed: seed,
         typed_fee_override: None,
+        conflicts: &[],
     })
 }
 
@@ -144,6 +145,7 @@ pub fn record(plan: &SendPlan, state: BtcTxState, created: u64) -> BtcRecord {
         vsize: u32::try_from(vsize(&parsed)).unwrap(),
         lock_time: plan.lock_time(),
         not_found_count: 0,
+        last_send_comm_failure: false,
         replaces: plan.replaces(),
         replaced_by: None,
         confirmed_height: (state == BtcTxState::Confirmed).then_some(TIP),

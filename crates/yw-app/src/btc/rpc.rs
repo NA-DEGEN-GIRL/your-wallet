@@ -8,7 +8,7 @@
 
 use yw_core::btc::amount::parse_btc_decimal;
 use yw_core::btc::policy::{MempoolAccept, SendRawResult, known_reject_token};
-use yw_core::btc::{BtcNetwork, Sats, Txid};
+use yw_core::btc::{BtcNetwork, OutPoint, Sats, Txid};
 use yw_json::{Number, Object, Value};
 
 use super::client::BtcClient;
@@ -32,6 +32,10 @@ pub const CAP_TESTMEMPOOLACCEPT: usize = 16 * 1_024;
 pub const CAP_SENDRAWTRANSACTION: usize = 4 * 1_024;
 /// `getmempoolentry` cap.
 pub const CAP_GETMEMPOOLENTRY: usize = 16 * 1_024;
+/// `gettxout` cap.
+pub const CAP_GETTXOUT: usize = 16 * 1_024;
+/// `incrementalrelayfee` when `getmempoolinfo` lacks a usable value (spec/08 §9: 1,000 sat/kvB).
+pub const INCREMENTAL_RELAY_DEFAULT: u64 = 1_000;
 
 /// Core "Invalid address or key" / "No such mempool or blockchain transaction".
 pub const RPC_INVALID_ADDRESS_OR_KEY: i64 = -5;
@@ -152,23 +156,30 @@ pub fn get_raw_transaction(client: &BtcClient<'_>, txid: &Txid) -> Result<Vec<u8
     raw_tx_hex(text).map_err(|_| RpcFailure::Malformed)
 }
 
-/// `estimatesmartfee [target, "economical"]` → sat/kvB, `None` without `feerate` (only
-/// `errors`, common on testnet4; the strings are not read).
+/// `estimatesmartfee [target, "economical"]` → sat/kvB, `None` without a usable `feerate`
+/// (only `errors`, common on testnet4; or a value that is not a plain BTC decimal, e.g. an
+/// exponent or more than 8 decimals: "no estimate", manual input only, spec/08 §8.2). The
+/// strings are not read.
 ///
 /// # Errors
 ///
-/// [`RpcFailure`] (`Malformed` for a `feerate` that is not a BTC decimal).
+/// [`RpcFailure`] (a result that is not an object).
 pub fn estimate_smart_fee(client: &BtcClient<'_>, target: u32) -> Result<Option<u64>, RpcFailure> {
     let params = Value::Array(vec![
         Value::Number(Number::from_u64(u64::from(target))),
         json_str("economical"),
     ]);
     let result = client.core_call("estimatesmartfee", &params, CAP_ESTIMATESMARTFEE, None)?;
-    let object = object_of(&result)?;
-    match object.get("feerate") {
-        None | Some(Value::Null) => Ok(None),
-        Some(rate) => btc_number(Some(rate)).map(Some),
-    }
+    Ok(feerate_of(object_of(&result)?))
+}
+
+/// The `feerate` of an `estimatesmartfee` result in sat/kvB; `None` when absent, `null`, zero
+/// or not a plain BTC decimal.
+#[must_use]
+pub fn feerate_of(object: &Object) -> Option<u64> {
+    btc_number(object.get("feerate"))
+        .ok()
+        .filter(|rate| *rate > 0)
 }
 
 /// `getmempoolinfo` fee floor inputs, sat/kvB.
@@ -189,11 +200,23 @@ pub struct MempoolInfo {
 /// [`RpcFailure`].
 pub fn get_mempool_info(client: &BtcClient<'_>) -> Result<MempoolInfo, RpcFailure> {
     let result = client.core_call("getmempoolinfo", &no_params(), CAP_GETMEMPOOLINFO, None)?;
-    let object = object_of(&result)?;
+    mempool_info_of(object_of(&result)?)
+}
+
+/// The fee floor inputs of a `getmempoolinfo` result: `mempoolminfee` and `minrelaytxfee` are
+/// required; a missing or malformed `incrementalrelayfee` is 1,000 sat/kvB (spec/08 §9).
+///
+/// # Errors
+///
+/// [`RpcFailure::Malformed`].
+pub fn mempool_info_of(object: &Object) -> Result<MempoolInfo, RpcFailure> {
     Ok(MempoolInfo {
         mempool_min: btc_number(object.get("mempoolminfee"))?,
         min_relay: btc_number(object.get("minrelaytxfee"))?,
-        incremental: btc_number(object.get("incrementalrelayfee"))?,
+        incremental: btc_number(object.get("incrementalrelayfee"))
+            .ok()
+            .filter(|rate| *rate > 0)
+            .unwrap_or(INCREMENTAL_RELAY_DEFAULT),
     })
 }
 
@@ -328,6 +351,80 @@ pub fn send_raw_transaction(
             .and_then(|text| Txid::from_display_hex(text).ok())
             .map_or(SendRawResult::NotTxid, SendRawResult::Txid),
         Err(failure) => send_failure(failure),
+    }
+}
+
+/// Core's view of an unspent output (`gettxout [txid, vout, true]`, mempool spends included).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TxOutInfo {
+    /// `value` (BTC decimal → sats).
+    pub value: Sats,
+    /// `scriptPubKey.hex`.
+    pub script_pubkey: Vec<u8>,
+    /// `confirmations` (0 = only in the mempool).
+    pub confirmations: u32,
+    /// `coinbase`.
+    pub coinbase: bool,
+}
+
+/// A `gettxout` answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TxOutAnswer {
+    /// Unspent (not spent by a mempool transaction either).
+    Unspent(TxOutInfo),
+    /// `null`: spent (on chain or in the node's mempool) or unknown.
+    Missing,
+    /// `-32601`: the endpoint does not offer the method.
+    Unsupported,
+}
+
+/// Parses a non-null `gettxout` result.
+///
+/// # Errors
+///
+/// [`RpcFailure::Malformed`].
+pub fn tx_out_of(value: &Value) -> Result<TxOutAnswer, RpcFailure> {
+    if value.is_null() {
+        return Ok(TxOutAnswer::Missing);
+    }
+    let object = object_of(value)?;
+    let script = object
+        .get("scriptPubKey")
+        .and_then(Value::as_object)
+        .and_then(|script| script.get("hex"))
+        .and_then(Value::as_str)
+        .filter(|hex| {
+            hex.bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        .and_then(|hex| yw_core::hex::decode(hex).ok())
+        .ok_or(RpcFailure::Malformed)?;
+    Ok(TxOutAnswer::Unspent(TxOutInfo {
+        value: Sats::new(btc_number(object.get("value"))?).ok_or(RpcFailure::Malformed)?,
+        script_pubkey: script,
+        confirmations: u32_of(object.get("confirmations"))?,
+        coinbase: object
+            .get("coinbase")
+            .and_then(Value::as_bool)
+            .ok_or(RpcFailure::Malformed)?,
+    }))
+}
+
+/// `gettxout [txid, vout, true]` (spec/08 §4.7-3): Core's own view of a candidate output.
+///
+/// # Errors
+///
+/// [`RpcFailure`].
+pub fn get_tx_out(client: &BtcClient<'_>, outpoint: &OutPoint) -> Result<TxOutAnswer, RpcFailure> {
+    let params = Value::Array(vec![
+        json_str(&outpoint.txid.to_display_hex()),
+        Value::Number(Number::from_u64(u64::from(outpoint.vout))),
+        Value::Bool(true),
+    ]);
+    match client.core_call_nullable("gettxout", &params, CAP_GETTXOUT, Some(outpoint.txid)) {
+        Ok(value) => tx_out_of(&value),
+        Err(RpcFailure::Rpc(RPC_METHOD_NOT_FOUND)) => Ok(TxOutAnswer::Unsupported),
+        Err(failure) => Err(failure),
     }
 }
 
