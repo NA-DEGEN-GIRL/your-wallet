@@ -304,6 +304,43 @@ pub struct SolBookForm {
     pub message: Option<String>,
 }
 
+/// A Solana account of this wallet: a standard-path account (`m/44'/501'/i'/0'`) or an imported
+/// key (vault `tag 3`, spec/02 §8.4). The signer is `SolKeySource::Standard(i)` or
+/// `SolKeySource::Imported` (looked up by the public key).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SolAccountId {
+    /// Standard path index.
+    Derived(u32),
+    /// Imported key record id.
+    Imported([u8; 16]),
+}
+
+impl SolAccountId {
+    /// The signing key source.
+    #[must_use]
+    pub fn source(self) -> Option<SolKeySource> {
+        match self {
+            Self::Derived(index) => AccountIndex::new(index).ok().map(SolKeySource::Standard),
+            Self::Imported(_) => Some(SolKeySource::Imported),
+        }
+    }
+
+    /// The path text shown under the account (`m/44'/501'/i'/0'` or the import note).
+    #[must_use]
+    pub fn path_text(self) -> String {
+        match self {
+            Self::Derived(index) => format!("m/44'/501'/{index}'/0'"),
+            Self::Imported(_) => "가져온 개인키 (복구 단어로 복구되지 않음)".to_owned(),
+        }
+    }
+
+    /// Whether this is an imported key.
+    #[must_use]
+    pub const fn is_imported(self) -> bool {
+        matches!(self, Self::Imported(_))
+    }
+}
+
 /// Solana UI state.
 #[derive(Debug, Default)]
 pub struct SolUi {
@@ -337,7 +374,7 @@ pub struct SolUi {
     /// Address book form.
     pub book: SolBookForm,
     /// Rename of the selected account.
-    pub rename: Option<u32>,
+    pub rename: Option<SolAccountId>,
     /// Job counter.
     pub next_job: u64,
 }
@@ -390,29 +427,47 @@ impl App {
         Ok(SolEndpoint { cluster, url })
     }
 
-    /// Visible Solana accounts `(index, label, address)`.
+    /// Visible Solana accounts `(id, label, address)`: standard accounts, then imported keys.
     #[must_use]
-    pub fn sol_account_rows(&self) -> Vec<(u32, String, SolAddress)> {
+    pub fn sol_account_rows(&self) -> Vec<(SolAccountId, String, SolAddress)> {
         self.meta.as_ref().map_or_else(Vec::new, |meta| {
-            meta.sol_accounts
+            let derived = meta
+                .sol_accounts
                 .iter()
                 .filter(|account| !account.hidden)
                 .filter_map(|account| {
-                    SolAddress::parse(&account.address)
-                        .ok()
-                        .map(|address| (account.index, account.label.clone(), address))
+                    SolAddress::parse(&account.address).ok().map(|address| {
+                        (
+                            SolAccountId::Derived(account.index),
+                            account.label.clone(),
+                            address,
+                        )
+                    })
+                });
+            let imported = meta.sol_raw_accounts.iter().filter_map(|raw| {
+                SolAddress::parse(&raw.address).ok().map(|address| {
+                    (
+                        SolAccountId::Imported(raw.record_id),
+                        raw.label.clone(),
+                        address,
+                    )
                 })
-                .collect()
+            });
+            derived.chain(imported).collect()
         })
     }
 
-    /// The selected Solana account.
+    /// The selected Solana account (an imported key when `sol_raw_selected` names one).
     #[must_use]
-    pub fn sol_selected(&self) -> Option<(u32, String, SolAddress)> {
-        let selected = self.meta.as_ref()?.prefs.sol_account;
+    pub fn sol_selected(&self) -> Option<(SolAccountId, String, SolAddress)> {
+        let meta = self.meta.as_ref()?;
+        let wanted = meta.sol_raw_selected.map_or(
+            SolAccountId::Derived(meta.prefs.sol_account),
+            SolAccountId::Imported,
+        );
         let rows = self.sol_account_rows();
         rows.iter()
-            .find(|(index, ..)| *index == selected)
+            .find(|(id, ..)| *id == wanted)
             .or_else(|| rows.first())
             .cloned()
     }
@@ -472,11 +527,14 @@ impl App {
                 }
             }
         }
-        for (index, label, address) in self.sol_account_rows() {
+        for (id, label, address) in self.sol_account_rows() {
             known.push(KnownAddress {
                 address,
                 label,
-                kind: KnownKind::Own { index },
+                kind: match id {
+                    SolAccountId::Derived(index) => KnownKind::Own { index },
+                    SolAccountId::Imported(_) => KnownKind::OwnImported,
+                },
             });
         }
         let sent = |succeeded: bool| {
@@ -528,13 +586,14 @@ impl App {
         self.refresh();
     }
 
-    /// Derives account 0 when there is none.
+    /// Derives account 0 when there is none (not in a key-only wallet: no recovery words).
     pub fn sol_ensure_account(&mut self) {
         let empty = self
             .meta
             .as_ref()
             .is_some_and(|meta| meta.sol_accounts.is_empty());
         if empty
+            && self.keys.has_mnemonic
             && !self.sol.creating
             && matches!(self.mode, AppMode::Unlocked { .. } | AppMode::BackupPending)
         {
@@ -564,10 +623,16 @@ impl App {
     /// Selects a Solana account row.
     pub fn sol_select_account(&mut self, row: usize) {
         let rows = self.sol_account_rows();
-        if let Some((index, ..)) = rows.get(row)
+        if let Some((id, ..)) = rows.get(row)
             && let Some(meta) = self.meta.as_mut()
         {
-            meta.prefs.sol_account = *index;
+            match *id {
+                SolAccountId::Derived(index) => {
+                    meta.prefs.sol_account = index;
+                    meta.sol_raw_selected = None;
+                }
+                SolAccountId::Imported(record) => meta.sol_raw_selected = Some(record),
+            }
             self.sol.rename = None;
             self.save_meta();
         }
@@ -576,7 +641,7 @@ impl App {
 
     /// Saves a renamed Solana account.
     pub fn sol_save_rename(&mut self, label: &str) {
-        let Some(index) = self.sol.rename else {
+        let Some(target) = self.sol.rename else {
             return;
         };
         let label = label.trim();
@@ -585,22 +650,36 @@ impl App {
             self.refresh();
             return;
         }
-        if let Some(meta) = self.meta.as_mut()
-            && let Some(account) = meta
-                .sol_accounts
-                .iter_mut()
-                .find(|account| account.index == index)
-        {
-            label.clone_into(&mut account.label);
+        if let Some(meta) = self.meta.as_mut() {
+            match target {
+                SolAccountId::Derived(index) => {
+                    if let Some(account) = meta
+                        .sol_accounts
+                        .iter_mut()
+                        .find(|account| account.index == index)
+                    {
+                        label.clone_into(&mut account.label);
+                    }
+                }
+                SolAccountId::Imported(record) => {
+                    if let Some(raw) = meta
+                        .sol_raw_accounts
+                        .iter_mut()
+                        .find(|raw| raw.record_id == record)
+                    {
+                        label.clone_into(&mut raw.label);
+                    }
+                }
+            }
         }
         self.sol.rename = None;
         self.save_meta();
         self.refresh();
     }
 
-    /// Hides the selected account (not account 0).
+    /// Hides the selected standard account (not account 0; imported keys are removed instead).
     pub fn sol_hide_selected(&mut self) {
-        let Some((index, ..)) = self.sol_selected() else {
+        let Some((SolAccountId::Derived(index), ..)) = self.sol_selected() else {
             return;
         };
         if index == 0 {
@@ -928,15 +1007,15 @@ impl App {
         self.sol_refresh_balances();
     }
 
-    /// The sending account of the form: `(source, from, label)`.
+    /// The sending account of the form: `(source, from, label)`. An imported key signs as
+    /// `SolKeySource::Imported` (found by `from` in the vault).
     #[must_use]
     pub fn sol_form_sender(&self) -> Option<(SolKeySource, SolAddress, String)> {
         if let Some((source, from)) = self.sol.send.moving {
             return Some((source, from, format!("비표준 경로 {}", source.path_text())));
         }
-        let (index, label, address) = self.sol_selected()?;
-        let index = AccountIndex::new(index).ok()?;
-        Some((SolKeySource::Standard(index), address, label))
+        let (id, label, address) = self.sol_selected()?;
+        Some((id.source()?, address, label))
     }
 
     /// Validates the form (local checks only; the preview does the RPC part).

@@ -16,8 +16,11 @@
 //! | AI 설명 (`screens_llm`) | 10,000–10,099 | M6 settings |
 //! | EVM accounts (`screens`) | 11,000–11,999 | one radio per row (index range 0..=999) |
 //! | Solana accounts (`screens_sol`) | 12,000–12,999 | one radio per row (index range 0..=999) |
+//! | imported keys (`screens_keys`) | 13,000–13,199 | S18/S19, script radios 13,010–13,013, Bitcoin rows 13,100–13,159 |
 
-use crate::ui::{screens, screens_btc, screens_evm, screens_llm, screens_sites, screens_sol};
+use crate::ui::{
+    screens, screens_btc, screens_evm, screens_keys, screens_llm, screens_sites, screens_sol,
+};
 
 /// Largest number of rows of the Solana recovery scan (spec/07 §3.3: 50 standard + 50 BIP44
 /// accounts, the BIP44 root, the seed and the 5 Sollet sources).
@@ -203,7 +206,14 @@ pub fn ranges() -> Vec<IdRange> {
             screens_sol::ids::ACCOUNT_BASE,
             screens_sol::ids::ACCOUNT_SPAN,
             1,
-            MAX_EVM_ACCOUNTS,
+            MAX_EVM_ACCOUNTS + MAX_RAW_ACCOUNTS,
+        ),
+        range(
+            "keys.btc_rows",
+            screens_keys::ids::BTC_ROW_BASE,
+            screens_keys::ids::BTC_ROW_SPAN,
+            screens_keys::ids::BTC_ROW_STRIDE,
+            MAX_RAW_ACCOUNTS,
         ),
         range(
             "btc.utxo_rows",
@@ -232,6 +242,7 @@ pub fn fixed() -> Vec<(&'static str, &'static [u16])> {
         ("sol", screens_sol::ids::FIXED),
         ("btc", &screens_btc::ids::FIXED),
         ("llm", screens_llm::ids::FIXED),
+        ("keys", screens_keys::ids::FIXED),
     ]
 }
 

@@ -3,9 +3,13 @@
 //! Duplicate keys, a missing known key or an invalid value reject the whole document (treated as
 //! `SidecarCorrupt`, E-VLT-006), except `prefs`, which falls back to its default on any error.
 //! Unknown top-level keys (a newer minor version's) are kept and written back after the known keys
-//! (spec/04 §6.6, spec/02 §5.3).
+//! (spec/04 §6.6, spec/02 §5.3). The imported-key keys (`sol_raw_accounts`, `btc_raw_accounts`,
+//! `sol_raw_selected`) are optional on read (files written before key import lack them) and always
+//! written after `prefs`.
 
+use yw_core::btc::BtcNetwork;
 use yw_core::btc::meta::{BtcMeta, btc_meta_from_json, btc_meta_to_json};
+use yw_core::keyimport::BtcScriptType;
 use yw_json::{Limits, Number, Object, Value};
 
 use crate::network::NetworkId;
@@ -15,7 +19,7 @@ use crate::text::{is_valid_label, json_object, json_object_owned, json_str, json
 pub const META_SCHEMA: &str = "yw-meta/3";
 /// Derived EVM accounts bound.
 pub const MAX_EVM_ACCOUNTS: usize = 100;
-/// Raw EVM keys bound.
+/// Imported keys bound, per chain (EVM, Solana, Bitcoin; spec/02 §5.3).
 pub const MAX_RAW_ACCOUNTS: usize = 15;
 /// Largest account index (`AccountIndex`, spec/02 §3.3).
 pub const MAX_ACCOUNT_INDEX: u64 = 999;
@@ -43,6 +47,8 @@ const KEYS: [&str; 10] = [
     "activity",
     "prefs",
 ];
+/// Imported-key keys added with key import: optional on read, written after `prefs`.
+const OPTIONAL_KEYS: [&str; 3] = ["sol_raw_accounts", "btc_raw_accounts", "sol_raw_selected"];
 
 const LIMITS: Limits = Limits {
     max_bytes: META_MAX_BYTES,
@@ -73,6 +79,32 @@ pub struct RawAccount {
     pub label: String,
     /// `0x` + 40 lowercase hex.
     pub address: String,
+}
+
+/// An imported Solana key (`SolRawAccount`, vault `tag 3`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SolRawAccount {
+    /// Vault record id.
+    pub record_id: [u8; 16],
+    /// Label.
+    pub label: String,
+    /// Canonical base58 address (= public key).
+    pub address: String,
+}
+
+/// An imported Bitcoin key (`BtcRawAccount`, vault `tag 4`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BtcRawAccount {
+    /// Vault record id.
+    pub record_id: [u8; 16],
+    /// Label.
+    pub label: String,
+    /// Address on `network` (display cache; the vault value is authoritative).
+    pub address: String,
+    /// Network of the WIF.
+    pub network: BtcNetwork,
+    /// Script (address) type.
+    pub script: BtcScriptType,
 }
 
 /// Selected EVM account preference.
@@ -133,10 +165,16 @@ impl Default for Prefs {
 /// kept as validated JSON values so they round-trip unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Meta {
-    /// Derived EVM accounts (index ascending, index 0 present).
+    /// Derived EVM accounts (index ascending, index 0 present; empty in a key-only wallet).
     pub evm_accounts: Vec<Account>,
     /// Imported raw keys.
     pub evm_raw_accounts: Vec<RawAccount>,
+    /// Imported Solana keys (0..=15).
+    pub sol_raw_accounts: Vec<SolRawAccount>,
+    /// Imported Bitcoin keys (0..=15).
+    pub btc_raw_accounts: Vec<BtcRawAccount>,
+    /// The selected Solana account is this imported key (`None`: the derived `prefs.sol_account`).
+    pub sol_raw_selected: Option<[u8; 16]>,
     /// Solana standard accounts `m/44'/501'/i'/0'` (M7; `address` = base58 display cache).
     pub sol_accounts: Vec<Account>,
     /// `btc` (M8, spec/08 §12.3), `None` = `null` (BTC never enabled, or reset).
@@ -166,6 +204,9 @@ impl Default for Meta {
                 hidden: false,
             }],
             evm_raw_accounts: Vec::new(),
+            sol_raw_accounts: Vec::new(),
+            btc_raw_accounts: Vec::new(),
+            sol_raw_selected: None,
             sol_accounts: Vec::new(),
             btc: None,
             address_book: Vec::new(),
@@ -174,6 +215,17 @@ impl Default for Meta {
             activity: Vec::new(),
             prefs: Prefs::default(),
             unknown: Vec::new(),
+        }
+    }
+}
+
+impl Meta {
+    /// The default meta of a key-only wallet (no derived accounts, spec/02 §5.3).
+    #[must_use]
+    pub fn key_only() -> Self {
+        Self {
+            evm_accounts: Vec::new(),
+            ..Self::default()
         }
     }
 }
@@ -269,6 +321,86 @@ fn parse_raw(value: &Value) -> Option<RawAccount> {
         label: label.to_owned(),
         address: address.to_owned(),
     })
+}
+
+fn parse_sol_raw(value: &Value) -> Option<SolRawAccount> {
+    let object = value.as_object()?;
+    if !exact_keys(object, &["record_id", "label", "address"]) {
+        return None;
+    }
+    let label = object.get("label")?.as_str()?;
+    let address = object.get("address")?.as_str()?;
+    if !is_valid_label(label) || !is_sol_addr(address) {
+        return None;
+    }
+    Some(SolRawAccount {
+        record_id: parse_hex16(object.get("record_id")?.as_str()?)?,
+        label: label.to_owned(),
+        address: address.to_owned(),
+    })
+}
+
+fn parse_btc_raw(value: &Value) -> Option<BtcRawAccount> {
+    let object = value.as_object()?;
+    if !exact_keys(
+        object,
+        &["record_id", "label", "address", "network", "script"],
+    ) {
+        return None;
+    }
+    let label = object.get("label")?.as_str()?;
+    let address = object.get("address")?.as_str()?;
+    let network = BtcNetwork::parse_settings_name(object.get("network")?.as_str()?)?;
+    let script = BtcScriptType::parse_name(object.get("script")?.as_str()?)?;
+    if !is_valid_label(label) || yw_core::btc::parse_address(address, network).is_err() {
+        return None;
+    }
+    Some(BtcRawAccount {
+        record_id: parse_hex16(object.get("record_id")?.as_str()?)?,
+        label: label.to_owned(),
+        address: address.to_owned(),
+        network,
+        script,
+    })
+}
+
+/// The optional imported-key keys (absent in files written before key import).
+type RawLists = (Vec<SolRawAccount>, Vec<BtcRawAccount>, Option<[u8; 16]>);
+
+fn parse_raw_lists(object: &Object) -> Option<RawLists> {
+    let sol = match object.get("sol_raw_accounts") {
+        None => Vec::new(),
+        Some(value) => value
+            .as_array()?
+            .iter()
+            .map(parse_sol_raw)
+            .collect::<Option<Vec<_>>>()?,
+    };
+    let btc = match object.get("btc_raw_accounts") {
+        None => Vec::new(),
+        Some(value) => value
+            .as_array()?
+            .iter()
+            .map(parse_btc_raw)
+            .collect::<Option<Vec<_>>>()?,
+    };
+    let selected = match object.get("sol_raw_selected") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(parse_hex16(value.as_str()?)?),
+    };
+    let ids_unique = |ids: Vec<[u8; 16]>| {
+        ids.iter().enumerate().all(|(at, id)| {
+            !ids.iter()
+                .skip(at.saturating_add(1))
+                .any(|other| other == id)
+        })
+    };
+    let valid = sol.len() <= MAX_RAW_ACCOUNTS
+        && btc.len() <= MAX_RAW_ACCOUNTS
+        && ids_unique(sol.iter().map(|raw| raw.record_id).collect())
+        && ids_unique(btc.iter().map(|raw| raw.record_id).collect())
+        && selected.is_none_or(|id| sol.iter().any(|raw| raw.record_id == id));
+    valid.then_some((sol, btc, selected))
 }
 
 fn valid_book_entry(value: &Value) -> bool {
@@ -409,10 +541,14 @@ fn parse_prefs(value: &Value, meta: &Meta) -> Option<Prefs> {
                 }
                 prefs.evm_account = if let Some(index) = selector.get("index") {
                     let index = u32::try_from(u64_of(index)?).ok()?;
-                    meta.evm_accounts
-                        .iter()
-                        .any(|account| account.index == index)
-                        .then_some(EvmAccountPref::Index(index))?
+                    // A key-only wallet has no derived account: the default `{"index": 0}` then
+                    // means "the first imported account".
+                    (meta.evm_accounts.is_empty()
+                        || meta
+                            .evm_accounts
+                            .iter()
+                            .any(|account| account.index == index))
+                    .then_some(EvmAccountPref::Index(index))?
                 } else {
                     let id = parse_hex16(selector.get("record_id")?.as_str()?)?;
                     meta.evm_raw_accounts
@@ -461,7 +597,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
     }
     let unknown: Vec<(String, Value)> = object
         .iter()
-        .filter(|(key, _)| !KEYS.contains(key))
+        .filter(|(key, _)| !KEYS.contains(key) && !OPTIONAL_KEYS.contains(key))
         .map(|(key, value)| (key.to_owned(), value.clone()))
         .collect();
     let get = |key: &str| object.get(key).ok_or(MetaError);
@@ -471,9 +607,11 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         .map(|value| parse_account(value, true))
         .collect::<Option<_>>()
         .ok_or(MetaError)?;
-    if evm_accounts.is_empty()
-        || evm_accounts.len() > MAX_EVM_ACCOUNTS
-        || evm_accounts.first().map(|account| account.index) != Some(0)
+    // Empty only in a key-only wallet (spec/02 §5.3); otherwise index 0 comes first.
+    if evm_accounts.len() > MAX_EVM_ACCOUNTS
+        || evm_accounts
+            .first()
+            .is_some_and(|account| account.index != 0)
         || evm_accounts
             .windows(2)
             .any(|pair| pair.first().map(|a| a.index) >= pair.get(1).map(|b| b.index))
@@ -528,9 +666,14 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         valid_activity,
     )
     .ok_or(MetaError)?;
+    let (sol_raw_accounts, btc_raw_accounts, sol_raw_selected) =
+        parse_raw_lists(object).ok_or(MetaError)?;
     let mut meta = Meta {
         evm_accounts,
         evm_raw_accounts,
+        sol_raw_accounts,
+        btc_raw_accounts,
+        sol_raw_selected,
         sol_accounts,
         btc,
         address_book,
@@ -625,6 +768,43 @@ impl Meta {
                     ("sol_account", json_u64(u64::from(self.prefs.sol_account))),
                     ("tab", json_str(self.prefs.tab.as_str())),
                 ]),
+            ),
+            (
+                "sol_raw_accounts",
+                Value::Array(
+                    self.sol_raw_accounts
+                        .iter()
+                        .map(|raw| {
+                            json_object(vec![
+                                ("record_id", json_str(&yw_core::hex::encode(&raw.record_id))),
+                                ("label", json_str(&raw.label)),
+                                ("address", json_str(&raw.address)),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+            (
+                "btc_raw_accounts",
+                Value::Array(
+                    self.btc_raw_accounts
+                        .iter()
+                        .map(|raw| {
+                            json_object(vec![
+                                ("record_id", json_str(&yw_core::hex::encode(&raw.record_id))),
+                                ("label", json_str(&raw.label)),
+                                ("address", json_str(&raw.address)),
+                                ("network", json_str(raw.network.settings_name())),
+                                ("script", json_str(raw.script.name())),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+            (
+                "sol_raw_selected",
+                self.sol_raw_selected
+                    .map_or(Value::Null, |id| json_str(&yw_core::hex::encode(&id))),
             ),
         ]
     }

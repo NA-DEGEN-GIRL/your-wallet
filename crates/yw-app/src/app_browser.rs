@@ -488,6 +488,11 @@ impl App {
                     self.respond(&site.reply, Err(ProviderError::TransactionPending));
                     return;
                 }
+                if site.kind.is_connect() && self.own_accounts().is_empty() {
+                    // A key-only wallet without an EVM key (spec/05 §4.2): 4100 with the reason.
+                    self.respond(&site.reply, Err(ProviderError::NoEvmAccount));
+                    return;
+                }
             }
             _ => {}
         }

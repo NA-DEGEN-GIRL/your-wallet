@@ -21,6 +21,11 @@ pub enum Charset {
     BackupWord,
     /// `0-9a-fA-F` as typed: address suffix.
     HexSuffix,
+    /// The base58 alphabet (Bitcoin WIF).
+    Base58,
+    /// ASCII letters, digits, `[`, `]`, `,` and single spaces: a Solana base58 keypair or a
+    /// `solana-keygen` JSON array (the core parser decides).
+    KeyText,
 }
 
 /// Why a unit was rejected.
@@ -159,6 +164,17 @@ impl SecretField {
                 .is_ascii_hexdigit()
                 .then_some(byte)
                 .ok_or(RejectReason::NotAllowed),
+            Charset::Base58 => is_base58(byte)
+                .then_some(byte)
+                .ok_or(RejectReason::NotAllowed),
+            Charset::KeyText => match byte {
+                b' ' if self.len == 0 || self.last() == Some(b' ') => {
+                    Err(RejectReason::DoubleSpace)
+                }
+                b' ' | b'[' | b']' | b',' => Ok(byte),
+                _ if byte.is_ascii_alphanumeric() => Ok(byte),
+                _ => Err(RejectReason::NotAllowed),
+            },
         }
     }
 
@@ -248,6 +264,11 @@ fn is_blank(unit: u16) -> bool {
     matches!(unit, 0x20 | 0x09 | 0x0D | 0x0A)
 }
 
+/// Bitcoin base58 alphabet (no `0`, `O`, `I`, `l`).
+const fn is_base58(byte: u8) -> bool {
+    matches!(byte, b'1'..=b'9' | b'A'..=b'H' | b'J'..=b'N' | b'P'..=b'Z' | b'a'..=b'k' | b'm'..=b'z')
+}
+
 /// Normalizes clipboard text for a field (spec/04 §4.7-2): trim space/tab/CR/LF; for mnemonic
 /// text collapse runs of them into one space (and lowercase); every unit must pass the field's
 /// character set and the whole value must fit, otherwise nothing is inserted (E-INP-018).
@@ -275,7 +296,8 @@ pub fn normalize_paste(
     let mut field = SecretField::new(charset, limit).map_err(|_| ErrorCode::Inp018)?;
     let mut previous_blank = false;
     for unit in trimmed {
-        let unit = if charset == Charset::MnemonicText && is_blank(*unit) {
+        let collapses = matches!(charset, Charset::MnemonicText | Charset::KeyText);
+        let unit = if collapses && is_blank(*unit) {
             if previous_blank {
                 continue;
             }

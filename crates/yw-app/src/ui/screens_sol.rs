@@ -14,6 +14,7 @@ use yw_core::sol::token::TokenHolding;
 use yw_core::sol::{SolAddress, SolAsset, SolCluster, SplAllowEntry};
 
 use crate::app::{App, AppMode};
+use crate::app_sol::SolAccountId;
 use crate::meta::Tab;
 use crate::ui::main_window::{Ctl, Item, Tone};
 
@@ -320,10 +321,14 @@ impl App {
         items.push(Item::CardEnd);
         let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
         let selected = self.sol_selected();
-        if let Some((index, label, address)) = &selected {
+        if selected.is_none() && self.key_only() && self.meta.is_some() {
+            self.no_accounts_card(yw_core::keyimport::ImportChain::Sol, items);
+            return;
+        }
+        if let Some((id, label, address)) = &selected {
             items.push(Item::CardStart(None));
             items.push(Item::Subtitle(label.clone()));
-            items.push(Item::Help(format!("m/44'/501'/{index}'/0'")));
+            items.push(Item::Help(id.path_text()));
             if let Some(lamports) = self.sol_balance(address) {
                 items.push(Item::Display(App::sol_text(lamports)));
                 items.push(Item::Help(format!(
@@ -371,9 +376,13 @@ impl App {
             items.push(Item::CardEnd);
         }
         items.push(Item::CardStart(Some("내 Solana 계정".to_owned())));
-        items.push(Item::Help(
-            "경로 m/44'/501'/i'/0' (Phantom·Solflare와 같은 표준 경로)".to_owned(),
-        ));
+        items.push(Item::Help(if self.key_only() {
+            "이 지갑은 개인키로 시작해 복구 단어가 없습니다. 모든 계정은 '가져온 키'이며 각각의 원래 개인키가 유일한 백업입니다."
+                .to_owned()
+        } else {
+            "경로 m/44'/501'/i'/0' (Phantom·Solflare와 같은 표준 경로). '가져온 키' 계정은 복구 단어로 복구되지 않으니 원래 개인키를 따로 백업하세요."
+                .to_owned()
+        }));
         let rows = self.sol_account_rows();
         if rows.is_empty() {
             items.push(Item::Muted(if self.sol.creating {
@@ -382,21 +391,27 @@ impl App {
                 "Solana 계정이 없습니다.".to_owned()
             }));
         }
-        let selected = selected.map(|(index, ..)| index);
-        for (row, (index, label, address)) in rows
+        let selected = selected.map(|(id, ..)| id);
+        let removable = self.can_remove_imported();
+        for (row, (id, label, address)) in rows
             .into_iter()
             .take(usize::from(ids::ACCOUNT_SPAN))
             .enumerate()
         {
-            let is_selected = selected == Some(index);
+            let is_selected = selected == Some(id);
+            let shown_label = if id.is_imported() {
+                format!("{label}  [가져온 키]")
+            } else {
+                label.clone()
+            };
             items.push(Item::Row(vec![
                 Ctl::radio(
                     ids::ACCOUNT_BASE.saturating_add(u16::try_from(row).unwrap_or(0)),
-                    &label,
+                    &shown_label,
                     is_selected,
                     row == 0,
                 )
-                .width(360),
+                .width(420),
             ]));
             items.push(Item::Mono(grouped(&address)));
             let balance = self.sol_balance(&address).map_or_else(
@@ -409,39 +424,62 @@ impl App {
                     )
                 },
             );
-            items.push(Item::Help(format!("m/44'/501'/{index}'/0' · {balance}")));
+            items.push(Item::Help(format!("{} · {balance}", id.path_text())));
             if is_selected {
-                if self.sol.rename == Some(index) {
+                if self.sol.rename == Some(id) {
                     items.push(Item::Row(vec![
                         Ctl::edit(ids::RENAME_EDIT, &label, 260, false, 64),
                         Ctl::primary(ids::RENAME_SAVE, "저장"),
                         Ctl::button(ids::RENAME_CANCEL, "취소"),
                     ]));
                 } else {
-                    items.push(Item::Row(vec![
-                        Ctl::button(ids::RENAME, "이름 바꾸기"),
-                        Ctl::button(ids::HIDE, "숨기기").enabled(index != 0),
-                    ]));
+                    let mut row_ctls = vec![Ctl::button(ids::RENAME, "이름 바꾸기")];
+                    match id {
+                        SolAccountId::Derived(index) => {
+                            row_ctls.push(Ctl::button(ids::HIDE, "숨기기").enabled(index != 0));
+                        }
+                        SolAccountId::Imported(_) => {
+                            row_ctls.push(
+                                Ctl::button(
+                                    crate::ui::screens_keys::ids::SOL_REVEAL,
+                                    "개인키 보기",
+                                )
+                                .enabled(unlocked),
+                            );
+                            row_ctls.push(
+                                Ctl::danger(crate::ui::screens_keys::ids::SOL_REMOVE, "삭제")
+                                    .enabled(unlocked && removable),
+                            );
+                        }
+                    }
+                    items.push(Item::Row(row_ctls));
                 }
             }
             items.push(Item::Gap(4));
         }
         items.push(Item::Rule);
-        items.push(Item::Row(vec![
-            Ctl::button(ids::ADD_ACCOUNT, "계정 추가").enabled(
-                !self.sol.creating
-                    && self
-                        .meta
-                        .as_ref()
-                        .and_then(crate::meta::Meta::next_sol_index)
-                        .is_some(),
-            ),
-            Ctl::button(ids::SCAN_OPEN, "다른 경로 스캔"),
-        ]));
-        items.push(Item::Help(
-            "다른 지갑에서 쓰던 계정이 안 보이면 '다른 경로 스캔'으로 찾을 수 있습니다(읽기 전용)."
-                .to_owned(),
-        ));
+        let import = Ctl::button(crate::ui::screens_keys::ids::SOL_IMPORT, "개인키 가져오기")
+            .enabled(self.can_import(yw_core::keyimport::ImportChain::Sol));
+        if self.key_only() {
+            items.push(Item::Row(vec![import]));
+        } else {
+            items.push(Item::Row(vec![
+                Ctl::button(ids::ADD_ACCOUNT, "계정 추가").enabled(
+                    !self.sol.creating
+                        && self
+                            .meta
+                            .as_ref()
+                            .and_then(crate::meta::Meta::next_sol_index)
+                            .is_some(),
+                ),
+                Ctl::button(ids::SCAN_OPEN, "다른 경로 스캔"),
+                import,
+            ]));
+            items.push(Item::Help(
+                "다른 지갑에서 쓰던 계정이 안 보이면 '다른 경로 스캔'으로 찾을 수 있습니다(읽기 전용). 개인키만 있으면 '개인키 가져오기'(Phantom·Solflare base58 또는 solana-keygen JSON)."
+                    .to_owned(),
+            ));
+        }
         items.push(Item::CardEnd);
         if let Some((_, _, address)) = self.sol_selected() {
             self.sol_token_card(items, &address, unlocked && !no_endpoint);
@@ -846,7 +884,7 @@ impl App {
         ));
         items.push(Item::Qr(address.to_base58()));
         items.push(Item::Mono(grouped(&address)));
-        items.push(Item::Help(format!("m/44'/501'/{index}'/0'")));
+        items.push(Item::Help(index.path_text()));
         items.push(Item::Row(vec![Ctl::primary(
             ids::COPY_ADDRESS,
             "주소 복사",

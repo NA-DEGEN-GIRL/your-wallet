@@ -202,6 +202,10 @@ pub enum Confirm {
     LlmOn,
     /// `보관 항목 삭제`: dormant `apikeys.dpapi` entries (spec/04 §6.6).
     PruneDormant,
+    /// T-REVEAL-WARN for an imported Solana/Bitcoin key (`KeysUi::target`).
+    RevealImported,
+    /// Remove an imported Solana/Bitcoin key (T-REMOVE-IMPORTED, `KeysUi::target`).
+    RemoveImported,
 }
 
 /// Screens S01–S15 (M3 subset).
@@ -265,6 +269,10 @@ pub enum Screen {
     BtcBump,
     /// S12 for Bitcoin.
     BtcReceive,
+    /// S18 "개인키로 시작하기": chain and script type (spec/04 §2.18).
+    KeyStartIntro,
+    /// S19: the address of the entered key.
+    KeyStartAddress(crate::app_keys::KeyStartView),
 }
 
 /// What a password-confirm window (W03) is for.
@@ -279,6 +287,10 @@ pub enum PasswordAction {
     RevealKey(EvmKeySource),
     /// Remove an imported key.
     RemoveKey(RecordId),
+    /// Reveal an imported Solana/Bitcoin key.
+    RevealImported(RecordId),
+    /// Remove an imported Solana/Bitcoin key.
+    RemoveImported(RecordId),
     /// Recover from `.prev`.
     Recover,
 }
@@ -310,6 +322,12 @@ pub enum Purpose {
     ChangePassword,
     /// W07.
     ImportKey,
+    /// W01 of "개인키로 시작하기".
+    KeyStartPassword,
+    /// W07 of "개인키로 시작하기".
+    KeyStartKey,
+    /// W07 of `개인키 가져오기` on the Solana / Bitcoin tab.
+    ImportChainKey(yw_core::keyimport::ImportSpec),
 }
 
 struct SecretWin {
@@ -435,6 +453,8 @@ pub struct App {
     pub(crate) evm: crate::app_evm::EvmUi,
     pub(crate) sol: crate::app_sol::SolUi,
     pub(crate) btc: crate::app_btc::BtcUi,
+    /// Imported keys and "개인키로 시작하기" (spec/04 §2.18).
+    pub(crate) keys: crate::app_keys::KeysUi,
     pub(crate) browser: Option<crate::app_browser::BrowserUi>,
     /// The `yw-llm` worker, only while the AI explanation is effectively on (spec/06 §9).
     pub(crate) llm: Option<crate::explain::ExplainService>,
@@ -477,6 +497,8 @@ fn flow_step(purpose: Purpose) -> Option<SecretStep> {
         Purpose::ImportMnemonic | Purpose::ImportPassphrase => {
             ("기존 지갑 가져오기", IMPORT_STEPS, 2)
         }
+        Purpose::KeyStartPassword => ("개인키로 시작하기", crate::app_keys::KEY_START_STEPS, 1),
+        Purpose::KeyStartKey => ("개인키로 시작하기", crate::app_keys::KEY_START_STEPS, 2),
         _ => return None,
     };
     Some(SecretStep {
@@ -597,6 +619,7 @@ impl App {
             evm: crate::app_evm::EvmUi::default(),
             sol: crate::app_sol::SolUi::default(),
             btc: crate::app_btc::BtcUi::default(),
+            keys: crate::app_keys::KeysUi::default(),
             browser: None,
             llm: None,
             llm_ui: crate::app_llm::LlmUi::default(),
@@ -1012,6 +1035,7 @@ impl App {
         self.meta = None;
         self.rename = None;
         self.pending_remove = None;
+        self.keys = crate::app_keys::KeysUi::default();
         self.passphrase_session = false;
         self.recover_return = None;
         logging::info("app", "lock", &[("reason", Field::Word(reason.as_str()))]);
@@ -1117,7 +1141,7 @@ impl App {
         self.secret.as_ref().map(|secret| secret.purpose)
     }
 
-    fn with_form(&mut self, f: impl FnOnce(&mut SecretForm)) {
+    pub(crate) fn with_form(&mut self, f: impl FnOnce(&mut SecretForm)) {
         if let Some(secret) = self.secret.as_mut() {
             f(&mut secret.form);
             secret.window.invalidate();
@@ -1218,6 +1242,31 @@ impl App {
                 self.set_screen(Screen::FirstRun);
             }
             KeyOutcome::Status(result) => self.on_status(result, now),
+            KeyOutcome::KeyStartPreview(result) => self.on_key_start_preview(result),
+            KeyOutcome::KeyStartCommitted(Ok(())) => {
+                self.keys.start = crate::app_keys::KeyStartFlow::default();
+                self.set_mode(AppMode::Unlocked {
+                    alt_passphrase: false,
+                });
+                self.idle.input(now);
+                self.key(KeyJob::LoadMeta);
+                logging::info("app", "keystart.created", &[]);
+                // S08 after "개인키로 시작하기": the backup is the original key.
+                self.done_imported = false;
+                self.keys.done_start = true;
+                self.set_screen(Screen::Done);
+            }
+            // The answer to `DiscardKeyStart`.
+            KeyOutcome::KeyStartCommitted(Err(VaultError::InvalidState)) => {}
+            KeyOutcome::KeyStartCommitted(Err(error)) => {
+                self.keys.start = crate::app_keys::KeyStartFlow::default();
+                self.error_banner(vault_code(error));
+                self.set_screen(Screen::FirstRun);
+            }
+            KeyOutcome::KeyImported(result) => self.on_key_imported(result),
+            KeyOutcome::ImportedKeyRemoved(Ok((id, chain))) => {
+                self.on_imported_key_removed(id, chain);
+            }
             KeyOutcome::Cancelled("SignEvm" | "SignMessage", _) => self.evm_sign_cancelled(),
             KeyOutcome::Cancelled("SignSol", _) => self.sol_sign_cancelled(),
             KeyOutcome::Cancelled("SignBtc", _) => {
@@ -1312,14 +1361,15 @@ impl App {
                         Purpose::ShowRevealed,
                         display,
                     ),
-                    RevealWhat::PrivateKey(_) => {
+                    RevealWhat::PrivateKey(_) | RevealWhat::ImportedKey(_) => {
                         self.open_display(SecretKind::ShowKey, Purpose::ShowRevealed, display);
                     }
                 }
             }
             KeyOutcome::Revealed(Err(error))
             | KeyOutcome::PasswordChanged(Err(error))
-            | KeyOutcome::RawKeyRemoved(Err(error)) => self.password_failure(error, now),
+            | KeyOutcome::RawKeyRemoved(Err(error))
+            | KeyOutcome::ImportedKeyRemoved(Err(error)) => self.password_failure(error, now),
             KeyOutcome::PasswordChanged(Ok(())) => {
                 self.close_secret();
                 logging::info("app", "password.changed", &[]);
@@ -1373,11 +1423,15 @@ impl App {
                 self.refresh();
             }
             KeyOutcome::Meta(Ok(MetaLoaded {
-                meta, prefs_reset, ..
+                meta,
+                prefs_reset,
+                has_mnemonic,
+                ..
             })) => {
                 if prefs_reset {
                     logging::warn("app", "meta.prefs_reset", &[]);
                 }
+                self.keys.has_mnemonic = has_mnemonic;
                 self.meta = Some(meta);
                 if matches!(self.mode, AppMode::Unlocked { .. })
                     && matches!(
@@ -1915,6 +1969,7 @@ impl App {
         secret.window.invalidate();
     }
 
+    #[expect(clippy::too_many_lines, reason = "one arm per secret-window purpose")]
     fn on_submit(&mut self, purpose: Purpose, submission: Submission) {
         let mut values = submission.values.into_iter();
         let mut next = || values.next().unwrap_or_default();
@@ -1991,6 +2046,13 @@ impl App {
                     PasswordAction::RemoveKey(id) => {
                         self.key(KeyJob::RemoveRawKey { password, id });
                     }
+                    PasswordAction::RevealImported(id) => self.key(KeyJob::Reveal {
+                        password,
+                        what: RevealWhat::ImportedKey(id),
+                    }),
+                    PasswordAction::RemoveImported(id) => {
+                        self.key(KeyJob::RemoveImportedKey { password, id });
+                    }
                     PasswordAction::Recover => {
                         // Where to return on failure or cancel (S09, or S07 after a failed
                         // unlock); a retry after a failure is already back in that mode.
@@ -2011,6 +2073,12 @@ impl App {
             Purpose::ImportKey => {
                 self.with_form(|form| form.set_busy(true));
                 self.key(KeyJob::ImportPrivateKey { hex: next() });
+            }
+            Purpose::KeyStartPassword => self.key_start_password(next()),
+            Purpose::KeyStartKey => self.key_start_key(next()),
+            Purpose::ImportChainKey(spec) => {
+                self.with_form(|form| form.set_busy(true));
+                self.key(KeyJob::ImportKey { spec, key: next() });
             }
             Purpose::ShowForBackup | Purpose::ShowRevealed => {}
         }
@@ -2047,6 +2115,10 @@ impl App {
                 });
                 self.set_screen(Screen::FirstRun);
             }
+            Purpose::KeyStartPassword | Purpose::KeyStartKey => {
+                self.key_start_cancel();
+                self.set_screen(Screen::FirstRun);
+            }
             Purpose::EnterPassphrase => self.lock(LockReason::Manual),
             Purpose::Unlock => {
                 if self.mode == AppMode::Unlocking {
@@ -2077,7 +2149,8 @@ impl App {
             Purpose::ConfirmPassword(_)
             | Purpose::ShowRevealed
             | Purpose::ChangePassword
-            | Purpose::ImportKey => self.refresh(),
+            | Purpose::ImportKey
+            | Purpose::ImportChainKey(_) => self.refresh(),
         }
     }
 
@@ -2161,7 +2234,10 @@ impl App {
             ids::CREATE_NEXT => {
                 self.open_input(SecretKind::SetPassword, Purpose::CreatePassword, false);
             }
-            ids::INTRO_CANCEL => self.set_screen(Screen::FirstRun),
+            ids::INTRO_CANCEL => {
+                self.key_start_cancel();
+                self.set_screen(Screen::FirstRun);
+            }
             ids::IMPORT_NEXT => {
                 self.open_input(SecretKind::SetPassword, Purpose::ImportPassword, false);
             }
@@ -2187,6 +2263,7 @@ impl App {
             ids::LOCK => self.lock(LockReason::Manual),
             ids::DONE_CONTINUE | ids::BACK_MAIN => {
                 self.info = None;
+                self.keys.done_start = false;
                 if self.meta.is_some() {
                     self.set_screen(Screen::Main);
                 } else {
@@ -2252,12 +2329,10 @@ impl App {
                 }
             }
             ids::IMPORT_KEY => {
-                if matches!(self.mode, AppMode::Unlocked { .. }) {
-                    self.open_input(SecretKind::PrivateKey, Purpose::ImportKey, false);
-                }
+                self.open_key_import(yw_core::keyimport::ImportChain::Evm);
             }
             ids::RENAME => {
-                self.rename = self.meta.as_ref().map(|meta| meta.prefs.evm_account);
+                self.rename = self.selected_pref();
                 self.refresh();
             }
             ids::RENAME_CANCEL => {
@@ -2267,9 +2342,7 @@ impl App {
             ids::RENAME_SAVE => self.save_rename(),
             ids::HIDE => self.hide_selected(),
             ids::REMOVE_KEY => {
-                if let Some(EvmAccountPref::Record(id)) =
-                    self.meta.as_ref().map(|meta| meta.prefs.evm_account)
-                {
+                if let Some(EvmAccountPref::Record(id)) = self.selected_pref() {
                     self.pending_remove = Some(RecordId::from_bytes(id));
                     self.set_screen(Screen::Confirm(Confirm::RemoveKey));
                 }
@@ -2359,6 +2432,7 @@ impl App {
             }
             ids::CONFIRM_NO => {
                 self.pending_remove = None;
+                self.keys.target = None;
                 self.evm.discard = None;
                 self.evm.delete_chain = None;
                 self.evm.repin = None;
@@ -2382,7 +2456,8 @@ impl App {
                 self.refresh();
             }
             other => {
-                if !self.on_sol_command(other)
+                if !self.on_keys_command(other)
+                    && !self.on_sol_command(other)
                     && !self.on_btc_command(other)
                     && !self.on_evm_command(other)
                     && !self.on_sites_command(other)
@@ -2838,7 +2913,7 @@ impl App {
             }
             Confirm::RevealKey => {
                 self.set_screen(previous);
-                let source = match self.meta.as_ref().map(|meta| meta.prefs.evm_account) {
+                let source = match self.selected_pref() {
                     Some(EvmAccountPref::Record(id)) => EvmKeySource::Raw(RecordId::from_bytes(id)),
                     Some(EvmAccountPref::Index(index)) => {
                         yw_core::bip32::path::AccountIndex::new(index).map_or(
@@ -2914,6 +2989,7 @@ impl App {
                     );
                 }
             }
+            Confirm::RevealImported | Confirm::RemoveImported => self.imported_confirmed(kind),
         }
     }
 

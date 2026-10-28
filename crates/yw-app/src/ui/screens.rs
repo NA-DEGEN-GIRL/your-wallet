@@ -268,6 +268,8 @@ pub const T_ALT_PASS_RECEIVE: &str = "확인되지 않은 passphrase로 연 지�
 pub const T_MAINNET: &str = "메인넷 — 실제 자산";
 /// S10 `내 계정` help: only derived accounts come back from the recovery words.
 pub const T_ACCOUNTS_BACKUP: &str = "보내기·받기에 쓸 계정을 고르세요. 경로(m/44'/60'/…)가 있는 계정은 복구 단어로 복구되지만, '가져온 개인키' 계정은 복구 단어로 복구되지 않으니 그 개인키를 따로 백업하세요.";
+/// S10 `내 계정` help of a key-only wallet (no recovery words).
+pub const T_ACCOUNTS_KEY_ONLY: &str = "보내기·받기에 쓸 계정을 고르세요. 이 지갑은 개인키로 시작해 복구 단어가 없습니다. 모든 계정은 '가져온 키'이며 각각의 원래 개인키가 유일한 백업입니다.";
 /// The imported-key removal confirmation (export first: imported keys are not in the 24 words).
 pub const T_REMOVE_KEY: &str = "선택한 가져온 개인키 계정을 이 지갑에서 지웁니다. 가져온 개인키는 복구 단어로 복구되지 않으므로, 지우고 나면 원래 개인키 없이는 이 계정의 자산에 다시 접근할 수 없습니다. 지우기 전에 설정 → 보안 → '개인키 보기'로 개인키를 내보내 안전하게 보관했는지 확인하세요. 계속하려면 비밀번호를 입력하세요.";
 /// The EVM `폐기` confirmation: discarding only stops tracking; a resend may pay twice.
@@ -362,6 +364,8 @@ impl App {
             Screen::BtcSendResult => self.btc_send_result_screen(&mut items),
             Screen::BtcBump => self.btc_bump_screen(&mut items),
             Screen::BtcReceive => self.btc_receive_screen(&mut items),
+            Screen::KeyStartIntro => self.key_start_intro(&mut items),
+            Screen::KeyStartAddress(view) => Self::key_start_address(view, &mut items),
         }
         if self.passphrase_unverified() {
             disable_receive(&mut items);
@@ -406,6 +410,7 @@ impl App {
             Ctl::button(ids::FIRST_IMPORT, "기존 지갑 가져오기").enabled(!self.leftover),
         ]));
         items.push(Item::CardEnd);
+        self.first_run_key_card(items);
     }
 
     fn create_intro(items: &mut Vec<Item>) {
@@ -461,7 +466,7 @@ impl App {
             "· 그 지갑에서 BIP39 passphrase(25번째 단어)를 썼다면 그 passphrase".to_owned(),
         ));
         items.push(Item::Help(
-            "EVM 개인키 하나만 가져오려면 먼저 새 지갑을 만든 뒤 메인 화면의 '개인키 가져오기'를 쓰세요."
+            "복구 단어 없이 개인키(EVM·Solana·Bitcoin)만 있다면 첫 화면의 '개인키로 시작하기'를 쓰세요. 이미 지갑이 있다면 메인 화면의 '개인키 가져오기'로 더할 수 있습니다."
                 .to_owned(),
         ));
         items.push(Item::Help(crate::app_btc::BTC_IMPORT_NOTE.to_owned()));
@@ -544,7 +549,16 @@ impl App {
 
     fn done(&self, items: &mut Vec<Item>) {
         items.push(Item::Title("준비되었습니다".to_owned()));
-        if self.done_imported {
+        if self.keys.done_start {
+            items.push(Item::Banner(
+                crate::ui::screens_keys::T_KEY_START_OK.to_owned(),
+                Tone::Success,
+            ));
+            items.push(Item::Banner(
+                crate::ui::screens_keys::T_KEY_START_BACKUP.to_owned(),
+                Tone::Warn,
+            ));
+        } else if self.done_imported {
             // No backup check runs on import: the words came from the user's existing backup.
             items.push(Item::Banner(
                 "지갑을 가져왔습니다. 이제 지갑을 쓸 수 있습니다.".to_owned(),
@@ -691,7 +705,11 @@ impl App {
             return;
         }
         if self.btc_tab_active() {
-            self.btc_main_screen(items);
+            // A key-only wallet has no derived Bitcoin account: its imported keys only.
+            if !self.key_only() {
+                self.btc_main_screen(items);
+            }
+            self.btc_imported_card(items);
             return;
         }
         let chains = self.settings.registered_evm();
@@ -724,10 +742,18 @@ impl App {
         self.evm_banners(items);
         items.push(Item::Help(self.evm_status_line()));
         items.push(Item::CardEnd);
+        if self.account_rows().is_empty() && self.meta.is_some() {
+            self.no_accounts_card(yw_core::keyimport::ImportChain::Evm, items);
+            return;
+        }
         self.evm_hero(items);
         items.push(Item::CardStart(Some("내 계정".to_owned())));
-        items.push(Item::Help(T_ACCOUNTS_BACKUP.to_owned()));
-        let selected = self.meta.as_ref().map(|meta| meta.prefs.evm_account);
+        items.push(Item::Help(if self.key_only() {
+            T_ACCOUNTS_KEY_ONLY.to_owned()
+        } else {
+            T_ACCOUNTS_BACKUP.to_owned()
+        }));
+        let selected = self.selected_pref();
         for (row, (pref, label, address, path)) in self
             .account_rows()
             .into_iter()
@@ -735,14 +761,18 @@ impl App {
             .enumerate()
         {
             let is_selected = selected == Some(pref);
+            let shown_label = match pref {
+                EvmAccountPref::Record(_) => format!("{label}  [가져온 키]"),
+                EvmAccountPref::Index(_) => label.clone(),
+            };
             items.push(Item::Row(vec![
                 Ctl::radio(
                     ids::ACCOUNT_BASE.saturating_add(u16::try_from(row).unwrap_or(0)),
-                    &label,
+                    &shown_label,
                     is_selected,
                     row == 0,
                 )
-                .width(360),
+                .width(420),
             ]));
             let balance = self.balance_text(&address);
             let shown = yw_core::evm::address::parse_address(&address)
@@ -766,7 +796,10 @@ impl App {
                             row_ctls.push(Ctl::button(ids::HIDE, "숨기기").enabled(index != 0));
                         }
                         EvmAccountPref::Record(_) => {
-                            row_ctls.push(Ctl::danger(ids::REMOVE_KEY, "삭제"));
+                            row_ctls.push(
+                                Ctl::danger(ids::REMOVE_KEY, "삭제")
+                                    .enabled(self.can_remove_imported()),
+                            );
                         }
                     }
                     items.push(Item::Row(row_ctls));
@@ -775,15 +808,22 @@ impl App {
             items.push(Item::Gap(4));
         }
         items.push(Item::Rule);
-        items.push(Item::Row(vec![
-            Ctl::button(ids::ADD_ACCOUNT, "계정 추가").enabled(
-                self.meta
-                    .as_ref()
-                    .and_then(crate::meta::Meta::next_index)
-                    .is_some(),
-            ),
-            Ctl::button(ids::IMPORT_KEY, "개인키 가져오기"),
-        ]));
+        let mut actions = Vec::new();
+        if !self.key_only() {
+            actions.push(
+                Ctl::button(ids::ADD_ACCOUNT, "계정 추가").enabled(
+                    self.meta
+                        .as_ref()
+                        .and_then(crate::meta::Meta::next_index)
+                        .is_some(),
+                ),
+            );
+        }
+        actions.push(
+            Ctl::button(ids::IMPORT_KEY, "개인키 가져오기")
+                .enabled(self.can_import(yw_core::keyimport::ImportChain::Evm)),
+        );
+        items.push(Item::Row(actions));
         items.push(Item::CardEnd);
         self.evm_main_sections(items);
     }
@@ -874,16 +914,28 @@ impl App {
         let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
         let public = unlocked || self.mode == AppMode::BackupPending;
         items.push(Item::CardStart(Some("복구 단어·개인키".to_owned())));
+        if self.key_only() {
+            items.push(Item::Help(
+                "이 지갑은 개인키로 시작해 복구 단어가 없습니다. 각 계정의 백업은 그 원래 개인키이며, 보기 전에 비밀번호를 다시 묻고 화면 캡처에서 제외된 창에 보여줍니다."
+                    .to_owned(),
+            ));
+            items.push(Item::Row(vec![
+                Ctl::button(ids::REVEAL_KEY, "개인키 보기")
+                    .enabled(unlocked && self.selected_account().is_some()),
+            ]));
+        } else {
+            items.push(Item::Help(
+                "복구 단어(니모닉)는 지갑 전체의 백업입니다. 보기 전에 비밀번호를 다시 묻고, 화면 캡처에서 제외된 창에 보여줍니다."
+                    .to_owned(),
+            ));
+            items.push(Item::Row(vec![
+                Ctl::button(ids::REVEAL_MNEMONIC, "복구 단어 보기").enabled(public),
+                Ctl::button(ids::REVEAL_KEY, "개인키 보기").enabled(unlocked),
+            ]));
+        }
         items.push(Item::Help(
-            "복구 단어(니모닉)는 지갑 전체의 백업입니다. 보기 전에 비밀번호를 다시 묻고, 화면 캡처에서 제외된 창에 보여줍니다."
+            "개인키 보기는 메인 화면에서 선택한 EVM 계정의 키를 보여줍니다. Solana·Bitcoin의 가져온 개인키는 각 탭의 계정에서 '개인키 보기'를 누르세요."
                 .to_owned(),
-        ));
-        items.push(Item::Row(vec![
-            Ctl::button(ids::REVEAL_MNEMONIC, "복구 단어 보기").enabled(public),
-            Ctl::button(ids::REVEAL_KEY, "개인키 보기").enabled(unlocked),
-        ]));
-        items.push(Item::Help(
-            "개인키 보기는 메인 화면에서 선택한 EVM 계정의 키를 보여줍니다.".to_owned(),
         ));
         items.push(Item::Row(vec![Ctl::check(
             ids::COPY_TOGGLE,
@@ -1164,6 +1216,16 @@ impl App {
                 T_REMOVE_KEY.to_owned(),
                 "계속",
             ),
+            Confirm::RemoveImported => (
+                "가져온 개인키 삭제",
+                crate::ui::screens_keys::T_REMOVE_IMPORTED.to_owned(),
+                "계속",
+            ),
+            Confirm::RevealImported => (
+                "개인키 보기",
+                "화면 근처의 사람이나 카메라가 볼 수 있습니다. 계속하려면 비밀번호를 입력하세요.".to_owned(),
+                "계속",
+            ),
             Confirm::JournalCorrupt => (
                 "거래 저널 손상",
                 format!("{} 거래 저널을 새로 시작하면 진행 중 거래 기록이 사라질 수 있습니다. 손상된 파일은 격리(보존)합니다. 이전 사본(.prev)을 쓰려면 앱을 종료하고 직접 확인하세요.", ErrorCode::Vlt006.text()),
@@ -1210,6 +1272,7 @@ impl App {
                 | Confirm::DisconnectAll
                 | Confirm::Discard
                 | Confirm::RemoveKey
+                | Confirm::RemoveImported
                 | Confirm::JournalCorrupt
         );
         items.push(Item::Title(title.to_owned()));
@@ -1217,6 +1280,12 @@ impl App {
         items.push(Item::Text(text));
         if kind == Confirm::RemoveKey {
             self.remove_key_balance(items);
+        }
+        if matches!(kind, Confirm::RemoveImported | Confirm::RevealImported)
+            && let Some((label, address)) = self.imported_target_text()
+        {
+            items.push(Item::Field("계정".to_owned(), label));
+            items.push(Item::Mono(address));
         }
         if kind == Confirm::Generate {
             items.push(Item::Row(vec![Ctl::check(

@@ -430,11 +430,37 @@ impl App {
         self.rpc_tx.as_ref().is_some_and(|tx| tx.send(job).is_ok())
     }
 
-    /// The selected account: address and key source.
+    /// The selected account: address and key source. A preference that names no listed account
+    /// (a key-only wallet's default `{"index": 0}`, a removed key) falls back to the first row.
     #[must_use]
     pub fn selected_account(&self) -> Option<(Address, EvmKeySource, String)> {
+        self.preferred_account().or_else(|| {
+            let (pref, ..) = self.account_rows().into_iter().next()?;
+            self.account_of(pref)
+        })
+    }
+
+    /// The effective selection: the stored preference when it names a listed account, else the
+    /// first row (what [`App::selected_account`] shows).
+    #[must_use]
+    pub fn selected_pref(&self) -> Option<EvmAccountPref> {
+        let stored = self.meta.as_ref()?.prefs.evm_account;
+        if self.account_of(stored).is_some() {
+            return Some(stored);
+        }
+        self.account_rows()
+            .into_iter()
+            .next()
+            .map(|(pref, ..)| pref)
+    }
+
+    fn preferred_account(&self) -> Option<(Address, EvmKeySource, String)> {
+        self.account_of(self.meta.as_ref()?.prefs.evm_account)
+    }
+
+    fn account_of(&self, pref: EvmAccountPref) -> Option<(Address, EvmKeySource, String)> {
         let meta = self.meta.as_ref()?;
-        match meta.prefs.evm_account {
+        match pref {
             EvmAccountPref::Index(index) => {
                 let account = meta
                     .evm_accounts
