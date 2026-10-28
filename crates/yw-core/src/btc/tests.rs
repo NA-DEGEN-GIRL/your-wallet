@@ -135,7 +135,7 @@ fn bip84_addresses() {
         assert_eq!(ours.as_str(), address);
         assert_eq!(ours.to_string(), address);
         assert_eq!(ours.network(), net);
-        assert_eq!(ours.program(), &program);
+        assert_eq!(ours.kind(), ScriptKind::P2wpkh(program));
         assert_eq!(&ours.script_pubkey()[2..], program.as_slice());
         assert_eq!(parse_address(address, net), Ok(ScriptKind::P2wpkh(program)));
     }

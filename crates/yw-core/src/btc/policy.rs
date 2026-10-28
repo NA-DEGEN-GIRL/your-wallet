@@ -138,10 +138,12 @@ pub enum BtcWarning {
         /// Left-out candidates.
         count: u32,
     },
-    /// B07: our own address `m/84'/{coin}'/0'/{chain}/{index}`.
+    /// B07: our own address `(chain, index)` of the spending account.
     OwnAddress {
-        /// Coin type (0 or 1).
-        coin: u32,
+        /// The spending account.
+        account: super::account::BtcAccountKey,
+        /// Network (coin type of the path text).
+        network: super::network::BtcNetwork,
         /// Chain.
         chain: BtcChain,
         /// Index.
@@ -182,9 +184,14 @@ impl BtcWarning {
             Self::UtxosExcluded { count } => {
                 format!("UTXO {count}개는 포함되지 않음(입력 최대 100개)")
             }
-            Self::OwnAddress { coin, chain, index } => format!(
-                "이 지갑의 주소입니다 (m/84'/{coin}'/0'/{}/{index})",
-                chain.index()
+            Self::OwnAddress {
+                account,
+                network,
+                chain,
+                index,
+            } => format!(
+                "이 지갑의 주소입니다 ({})",
+                account.path_text(network, chain, index)
             ),
             Self::LegacyRecipient => texts::LEGACY_RECIPIENT.to_owned(),
             Self::ScriptRecipient => texts::SCRIPT_RECIPIENT.to_owned(),

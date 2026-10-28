@@ -218,7 +218,9 @@ fn layout_from_seed() {
 #[test]
 fn change_skips_recipient_script() {
     let account = account();
-    let program = yw_core::btc::address::p2wpkh_program(&account, BtcChain::Change, 3).unwrap();
+    let program =
+        yw_core::btc::address::p2wpkh_program(account.xpub().unwrap(), BtcChain::Change, 3)
+            .unwrap();
     let to_change = plan(
         &[utxo(50_000, TIP - 1, 1, 0)],
         ScriptKind::P2wpkh(program),
@@ -694,7 +696,7 @@ fn display_fields_and_warnings() {
     );
     assert_eq!(
         field(&draft, FieldKey::ACCOUNT),
-        "Bitcoin 계정 0 (m/84'/1'/0')"
+        "Bitcoin 네이티브 세그윗 계정 0 (m/84'/1'/0')"
     );
     assert_eq!(
         field(&draft, FieldKey::BTC_TO),
@@ -728,7 +730,7 @@ fn display_fields_and_warnings() {
     assert_eq!(
         field(&draft, FieldKey::BTC_ADVANCED),
         format!(
-            "version 2\nnLockTime 200000 (= 블록 높이 200000)\nRBF 가능 (sequence 0xFFFFFFFD)\nvsize 141 vB · weight 561 WU (서명 전 추정)\ntxid {}",
+            "version 2\nnLockTime 200000 (= 블록 높이 200000)\nRBF 가능 (sequence 0xFFFFFFFD)\n입력 형식 P2WPKH\nvsize 141 vB · weight 561 WU (서명 전 추정)\ntxid {}",
             send.txid()
         )
     );
@@ -794,6 +796,6 @@ fn display_fields_and_warnings() {
     assert_eq!(field(&draft, FieldKey::NETWORK), "BITCOIN MAINNET");
     assert_eq!(
         field(&draft, FieldKey::ACCOUNT),
-        "Bitcoin 계정 0 (m/84'/0'/0')"
+        "Bitcoin 네이티브 세그윗 계정 0 (m/84'/0'/0')"
     );
 }

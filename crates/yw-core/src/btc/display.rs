@@ -5,6 +5,7 @@
 //! server string is shown.
 #![deny(clippy::indexing_slicing)]
 
+use super::account::{BtcAccountId, BtcAccountKey};
 use super::address::{encode_address, kind_from_script};
 use super::amount::{Sats, format_btc, format_btc_and_sats, format_sats_grouped};
 use super::fee::{FeeRate, rate_kvb};
@@ -17,8 +18,7 @@ use crate::approval::{
     AccountRef, ApprovalDisplay, ApprovalDraft, ApprovalId, ApprovalOrigin, ChainRef, DisplayError,
     DisplayField, FieldKey, Signer, SigningPayload, SimulationBinding, Warning,
 };
-use crate::bip32::AccountXpub;
-use crate::bip32::path::{BtcChain, BtcCoin};
+use crate::bip32::path::BtcChain;
 
 /// Facts from the app that are shown but not part of the plan (spec/08 §10).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -29,17 +29,14 @@ pub struct BtcSendFacts {
     pub min_confirmations: Option<u32>,
     /// The recipient script's SHA-256 is not in `BtcMeta.sent_scripts` (B05).
     pub first_time_recipient: bool,
-    /// The recipient is our address `m/84'/{coin}'/0'/{chain}/{index}` (B07).
+    /// The recipient is our address `(chain, index)` of the spending account (B07).
     pub own_recipient: Option<(BtcChain, u32)>,
 }
 
 /// The coin-type number of `network` (0 mainnet, 1 testnet4).
 #[must_use]
 pub const fn coin_number(network: BtcNetwork) -> u32 {
-    match network.coin_type() {
-        BtcCoin::Mainnet => 0,
-        BtcCoin::Test => 1,
-    }
+    network.coin_number()
 }
 
 fn push_u32(out: &mut Vec<u8>, value: u32) {
@@ -54,7 +51,13 @@ fn push_u32(out: &mut Vec<u8>, value: u32) {
 /// ‖ has_change u8 ‖ [change_vout u32 ‖ change_index u32]
 /// ‖ fee u64 ‖ planned_vsize u32 ‖ has_replaces u8 ‖ [replaces_txid 32 (internal order)]
 /// ‖ fee_override_typed u8
+/// ‖ [account block 19, every account but BIP84 account 0:
+///    0x01 ‖ source u8 (1 HD, 2 imported) ‖ script_type u8 ‖ HD account u32 ‖ 0^12 | record id 16]
 /// ```
+///
+/// The unsigned transaction carries the fixed P2SH-P2WPKH scriptSigs; the account block binds
+/// the address type and key source (an imported key's identity is its public key, which several
+/// types share).
 #[must_use]
 pub fn btc_payload(plan: &SendPlan) -> Vec<u8> {
     let unsigned = serialize(plan.tx(), false);
@@ -91,6 +94,9 @@ pub fn btc_payload(plan: &SendPlan) -> Vec<u8> {
         None => out.push(0),
     }
     out.push(u8::from(plan.fee_override_typed()));
+    if let Some(block) = account_block(plan.account()) {
+        out.extend_from_slice(&block);
+    }
     out
 }
 
@@ -152,10 +158,52 @@ pub fn payload_header(bytes: &[u8]) -> Option<BtcPayloadHeader> {
         reader.take(32)?;
     }
     reader.flag()?;
+    if reader.at != bytes.len() {
+        // The account block of a non-primary account: marker 1, source, type, 16 bytes.
+        let block = reader.take(ACCOUNT_BLOCK_LEN)?;
+        if block.first() != Some(&1) {
+            return None;
+        }
+    }
     (reader.at == bytes.len()).then_some(BtcPayloadHeader {
         network,
         has_replaces,
     })
+}
+
+/// Length of the payload account block (`1 ‖ source ‖ type ‖ 16 bytes`).
+const ACCOUNT_BLOCK_LEN: usize = 19;
+
+/// The account block of `account`, `None` for the primary (BIP84 account 0) whose payload keeps
+/// the original layout: `0x01 ‖ source (1 HD, 2 imported) ‖ ScriptType code ‖ (HD: account u32
+/// ‖ 12 zero bytes | imported: record id 16)`.
+fn account_block(account: &BtcAccountKey) -> Option<[u8; ACCOUNT_BLOCK_LEN]> {
+    let id = account.id();
+    if id == BtcAccountId::PRIMARY {
+        return None;
+    }
+    let mut out = [0_u8; ACCOUNT_BLOCK_LEN];
+    let mut body = [0_u8; 16];
+    let source = match id {
+        BtcAccountId::Hd { account, .. } => {
+            for (slot, byte) in body.iter_mut().zip(account.to_be_bytes()) {
+                *slot = byte;
+            }
+            1
+        }
+        BtcAccountId::Imported { id } => {
+            body = id;
+            2
+        }
+    };
+    for (slot, byte) in out.iter_mut().zip(
+        [1, source, account.script_type().code()]
+            .iter()
+            .chain(body.iter()),
+    ) {
+        *slot = *byte;
+    }
+    Some(out)
 }
 
 /// The approval title: `[Bitcoin 메인넷] 보내기: 0.00120000 BTC` or
@@ -202,7 +250,8 @@ pub fn plan_warnings(plan: &SendPlan, facts: &BtcSendFacts) -> Vec<Warning> {
     }
     if let Some((chain, index)) = facts.own_recipient {
         out.push(BtcWarning::OwnAddress {
-            coin: coin_number(plan.network()),
+            account: *plan.account(),
+            network: plan.network(),
             chain,
             index,
         });
@@ -239,13 +288,23 @@ fn recipient_address(plan: &SendPlan) -> Result<String, DisplayError> {
     Ok(encode_address(&kind, plan.network()))
 }
 
-fn change_text(plan: &SendPlan, coin: u32) -> String {
+fn change_text(plan: &SendPlan) -> String {
     match plan.change() {
-        Some(change) => format!(
-            "{} BTC — 이 지갑으로 돌아옴 m/84'/{coin}'/0'/1/{}",
-            format_btc(change.value),
-            change.index
-        ),
+        Some(change) => {
+            let account = plan.account();
+            let (chain, index) = account.change_path(change.index);
+            let place = if account.is_single() {
+                account
+                    .address(plan.network(), chain, index)
+                    .map_or_else(|_| "같은 주소".to_owned(), |address| address.to_string())
+            } else {
+                account.path_text(plan.network(), chain, index)
+            };
+            format!(
+                "{} BTC — 이 지갑으로 돌아옴 {place}",
+                format_btc(change.value)
+            )
+        }
         None => format!(
             "잔돈 없음: {} sats 수수료에 추가",
             format_sats_grouped(plan.change_folded().get())
@@ -323,31 +382,52 @@ fn replaces_text(plan: &SendPlan) -> Option<String> {
 }
 
 fn advanced_text(plan: &SendPlan) -> String {
+    let txid = if plan.txid_is_final() {
+        plan.txid().to_string()
+    } else {
+        "서명 후 결정 (레거시 입력)".to_owned()
+    };
     format!(
-        "version {BTC_TX_VERSION}\nnLockTime {} (= 블록 높이 {})\nRBF 가능 (sequence 0x{BTC_SEQUENCE:08X})\nvsize {} vB · weight {} WU (서명 전 추정)\ntxid {}",
+        "version {BTC_TX_VERSION}\nnLockTime {} (= 블록 높이 {})\nRBF 가능 (sequence 0x{BTC_SEQUENCE:08X})\n입력 형식 {}\nvsize {} vB · weight {} WU (서명 전 추정)\ntxid {txid}",
         plan.lock_time(),
         plan.lock_time(),
+        plan.account().script_type().technical(),
         plan.planned_vsize(),
         plan.planned_weight(),
-        plan.txid()
     )
 }
 
+/// The approval account field: `Bitcoin 네이티브 세그윗 계정 0 (m/84'/0'/0')`, or for an imported
+/// key `Bitcoin 가져온 키 · 레거시 (<address>)`.
+fn account_text(account: &BtcAccountKey, network: BtcNetwork) -> String {
+    let place = if account.is_single() {
+        account
+            .address(network, BtcChain::Receive, 0)
+            .map_or_else(|_| "-".to_owned(), |address| address.to_string())
+    } else {
+        account.node_text(network)
+    };
+    format!("Bitcoin {} ({place})", account.display_name())
+}
+
 /// Builds the draft of a send or fee bump (spec/08 §10): origin `App`, chain `Bitcoin` with the
-/// network's pinned genesis, account = the cached account public key, `Signer::FromPayload`,
-/// payload [`btc_payload`], `SimulationBinding::NotApplicable`.
+/// network's pinned genesis, account = the account identity (`BtcAccountKey::identity`),
+/// `Signer::FromPayload`, payload [`btc_payload`], `SimulationBinding::NotApplicable`.
 ///
 /// # Errors
 ///
-/// [`DisplayError`] (defensive: every string is built here).
+/// [`DisplayError`] (defensive: every string is built here; also when `account` is not the
+/// plan's account).
 pub fn build_btc_request(
     id: ApprovalId,
     plan: &SendPlan,
-    account: &AccountXpub,
+    account: &BtcAccountKey,
     facts: &BtcSendFacts,
 ) -> Result<ApprovalDraft, DisplayError> {
+    if plan.account() != account {
+        return Err(DisplayError::InvalidText);
+    }
     let network = plan.network();
-    let coin = coin_number(network);
     let total = plan
         .amount()
         .checked_add(plan.fee())
@@ -356,15 +436,11 @@ pub fn build_btc_request(
     let mut fields = vec![
         DisplayField::new(FieldKey::ORIGIN, "", "Your Wallet (이 앱)")?,
         DisplayField::new(FieldKey::NETWORK, "", network.banner())?,
-        DisplayField::new(
-            FieldKey::ACCOUNT,
-            "",
-            format!("Bitcoin 계정 0 (m/84'/{coin}'/0')"),
-        )?,
+        DisplayField::new(FieldKey::ACCOUNT, "", account_text(account, network))?,
         DisplayField::new(FieldKey::BTC_TO, "", recipient_address(plan)?)?,
         DisplayField::new(FieldKey::BTC_TYPE, "", kind.type_label())?,
         DisplayField::new(FieldKey::BTC_AMOUNT, "", format_btc_and_sats(plan.amount()))?,
-        DisplayField::new(FieldKey::BTC_CHANGE, "", change_text(plan, coin))?,
+        DisplayField::new(FieldKey::BTC_CHANGE, "", change_text(plan))?,
         DisplayField::new(FieldKey::BTC_INPUTS, "", inputs_text(plan, facts))?,
         DisplayField::new(FieldKey::BTC_FEE, "", fee_text(plan))?,
         DisplayField::new(FieldKey::BTC_TOTAL, "", format_btc_and_sats(total))?,
@@ -390,7 +466,7 @@ pub fn build_btc_request(
             network: network.id(),
             genesis: network.genesis(),
         },
-        account: AccountRef::Bitcoin(account.pubkey),
+        account: AccountRef::Bitcoin(account.identity()),
         signer: Signer::FromPayload,
         kind: plan.kind(),
         payload: SigningPayload::Btc(btc_payload(plan)),

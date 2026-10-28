@@ -94,6 +94,61 @@ pub fn p2wpkh_script_code(program: &[u8; 20]) -> [u8; 26] {
     out
 }
 
+/// P2SH-P2WPKH redeem script `00 14 <h20>` (BIP49, BIP141 "P2WPKH nested in BIP16 P2SH").
+#[must_use]
+pub fn p2sh_p2wpkh_redeem_script(hash: &[u8; 20]) -> [u8; P2WPKH_SPK_LEN] {
+    p2wpkh_script_pubkey(hash)
+}
+
+/// P2SH-P2WPKH scriptSig: one push of the redeem script, `16 00 14 <h20>` (23 bytes).
+#[must_use]
+pub fn p2sh_p2wpkh_script_sig(hash: &[u8; 20]) -> [u8; 23] {
+    let mut out = [0_u8; 23];
+    for (slot, byte) in out
+        .iter_mut()
+        .zip([0x16].iter().chain(&p2sh_p2wpkh_redeem_script(hash)))
+    {
+        *slot = *byte;
+    }
+    out
+}
+
+/// P2PKH scriptSig `<sig_item> <pubkey>` as two direct pushes (both items are 1–75 bytes:
+/// `DER ‖ 0x01` ≤ 73, key 33 or 65). `None` for an item outside 1–75 bytes.
+#[must_use]
+pub fn p2pkh_script_sig(sig_item: &[u8], pubkey: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(
+        sig_item
+            .len()
+            .saturating_add(pubkey.len())
+            .saturating_add(2),
+    );
+    for item in [sig_item, pubkey] {
+        let length = u8::try_from(item.len())
+            .ok()
+            .filter(|len| (1..=75).contains(len))?;
+        out.push(length);
+        out.extend_from_slice(item);
+    }
+    Some(out)
+}
+
+/// Splits a P2PKH scriptSig into its two direct pushes (`None` for any other shape).
+#[must_use]
+pub fn split_p2pkh_script_sig(script_sig: &[u8]) -> Option<(&[u8], &[u8])> {
+    let (first_len, rest) = script_sig.split_first()?;
+    let first_len = usize::from(*first_len);
+    if !(1..=75).contains(&first_len) {
+        return None;
+    }
+    let (sig, rest) = rest.split_at_checked(first_len)?;
+    let (second_len, key) = rest.split_first()?;
+    if !(1..=75).contains(second_len) || key.len() != usize::from(*second_len) {
+        return None;
+    }
+    Some((sig, key))
+}
+
 /// scriptPubKey length of `kind`.
 #[must_use]
 pub const fn spk_len(kind: &ScriptKind) -> usize {

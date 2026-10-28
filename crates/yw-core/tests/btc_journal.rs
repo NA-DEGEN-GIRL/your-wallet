@@ -11,7 +11,7 @@
 
 mod btc_common;
 
-use btc_common::{NET, RECIPIENT, SEED, TIP, account, plan, rate, record, simple_plan, utxo};
+use btc_common::{NET, RECIPIENT, SEED, TIP, account, plan, rate, record, simple_plan, utxo, xpub};
 use yw_core::btc::amount::Sats;
 use yw_core::btc::select::{BumpRequest, PlanError, SendAmount, SendPlan, plan_fee_bump};
 use yw_core::btc::tx::{OutPoint, Txid};
@@ -224,8 +224,11 @@ fn journal_codec_roundtrip_and_truncation() {
     // Specific rejections.
     let body = records[0].encode().unwrap();
     let mut version = body.clone();
-    version[0] = 2;
+    version[0] = 3;
     assert_eq!(BtcRecord::decode(&version), Err(BtcRecordError::Version));
+    // Version 2 needs the 18-byte account block after the header.
+    version[0] = 2;
+    assert_eq!(BtcRecord::decode(&version), Err(BtcRecordError::Length));
     let mut unknown_flag = body.clone();
     unknown_flag[3] |= 0x80;
     assert_eq!(BtcRecord::decode(&unknown_flag), Err(BtcRecordError::Value));
@@ -266,7 +269,7 @@ fn journal_codec_roundtrip_and_truncation() {
         yw_core::journal::EntryKind::Btc.max_body(),
         BTC_JOURNAL_MAX_BODY
     );
-    assert_eq!(BTC_JOURNAL_MAX_BODY, 238 + 49 * 100 + 32_768);
+    assert_eq!(BTC_JOURNAL_MAX_BODY, 238 + 18 + 49 * 100 + 32_768);
 }
 
 /// spec/08 §12.1 transitions (with `Conflicted` from the broadcast states and `Replaced`).
@@ -1155,8 +1158,11 @@ fn own_change_needs_the_account_script() {
     assert_eq!(own.height, TIP);
     assert!(own.own);
     // Another account (e.g. an alt-passphrase session sharing the journal): skipped.
-    let other = yw_core::bip32::derive_public_child(&account(), 7).unwrap();
-    assert_eq!(confirmed.own_change_utxo(&other), None);
+    let other = yw_core::bip32::derive_public_child(&xpub(), 7).unwrap();
+    assert_eq!(
+        confirmed.own_change_utxo(&yw_core::btc::account::BtcAccountKey::primary(other)),
+        None
+    );
     // A recorded change index that does not derive the output's script: skipped.
     let mut wrong_index = confirmed.clone();
     wrong_index.change = Some(RecordChange {

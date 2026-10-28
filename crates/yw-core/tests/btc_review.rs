@@ -11,7 +11,7 @@
 
 mod btc_common;
 
-use btc_common::{NET, RECIPIENT, SEED, TIP, account, rate, record, simple_plan, utxo};
+use btc_common::{NET, RECIPIENT, SEED, TIP, account, rate, record, simple_plan, utxo, xpub};
 use yw_core::btc::amount::Sats;
 use yw_core::btc::fee::FeeRate;
 use yw_core::btc::meta::{BtcMeta, Discovery, MetaError};
@@ -63,7 +63,7 @@ fn send_request<'a>(
     conflicts: &'a [Vec<OutPoint>],
     tip_height: u32,
     change_next: u32,
-    account: &'a yw_core::bip32::AccountXpub,
+    account: &'a yw_core::btc::account::BtcAccountKey,
 ) -> SendRequest<'a> {
     SendRequest {
         network: NET,
@@ -366,7 +366,7 @@ fn tip_bounds_and_reset() {
         request(BTC_LOCKTIME_THRESHOLD),
         Err(PlanError::TipImplausible)
     );
-    let mut meta = BtcMeta::new(NET, account);
+    let mut meta = BtcMeta::new(NET, *account.xpub().unwrap());
     assert_eq!(
         meta.observe_tip(BTC_LOCKTIME_THRESHOLD),
         Err(MetaError::TipImplausible)
@@ -386,7 +386,7 @@ fn tip_bounds_and_reset() {
 /// issuance stops at `BTC_MAX_ADDRESS_INDEX`; the change chain too.
 #[test]
 fn discovery_and_issuance_caps() {
-    let mut meta = BtcMeta::new(NET, account());
+    let mut meta = BtcMeta::new(NET, xpub());
     let mut discovery = Discovery::full();
     let mut requests = 0_u32;
     while discovery.next_request().is_some() {
@@ -407,7 +407,7 @@ fn discovery_and_issuance_caps() {
     }
     assert_eq!(extra, 2 * BTC_DISCOVERY_MAX_SCAN);
     // Issuance at the cap.
-    let text = String::from_utf8(yw_json::to_vec(&BtcMeta::new(NET, account()).to_json())).unwrap();
+    let text = String::from_utf8(yw_json::to_vec(&BtcMeta::new(NET, xpub()).to_json())).unwrap();
     let capped = text
         .replace(
             "\"receive_next\":0",
@@ -582,7 +582,7 @@ fn last_send_comm_failure_is_persisted() {
 /// A send the node refused without relaying gives its change index back.
 #[test]
 fn rejected_send_gives_the_change_index_back() {
-    let mut meta = BtcMeta::new(NET, account());
+    let mut meta = BtcMeta::new(NET, xpub());
     assert_eq!(meta.on_broadcasting(Some(0)), Ok(true));
     assert_eq!(meta.change_next(), 1);
     assert!(!meta.on_send_rejected(Some(5)), "not the latest index");

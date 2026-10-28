@@ -1,12 +1,14 @@
 //! Bitcoin send-only core (spec/08, M8): networks and genesis pins, amounts in sats, bech32 /
 //! bech32m (own implementation, D6), the address parsing policy (base58check through
 //! `codec::base58`), script templates and dust, the strict transaction parser and serializer,
-//! the BIP143 P2WPKH sighash, previous-transaction verification (CVE-2020-14199) and the ECDSA
-//! helpers used by signing. Nothing here touches the network, clocks or files: RPC/indexer
-//! observations are arguments (spec/01 §2.2). Journal records are `journal::btc`.
+//! the four account types ([`account`]: P2PKH / P2SH-P2WPKH / P2WPKH / P2TR, BIP44/49/84/86,
+//! HD accounts and imported single keys), the legacy and BIP143 sighashes, BIP341 key-path
+//! Taproot ([`taproot`]), previous-transaction verification (CVE-2020-14199) and the ECDSA /
+//! Schnorr helpers used by signing. Nothing here touches the network, clocks or files:
+//! RPC/indexer observations are arguments (spec/01 §2.2). Journal records are `journal::btc`.
 //!
-//! Encoding layer: [`network`], [`amount`], [`bech32`], [`address`], [`script`], [`tx`],
-//! [`sighash`], [`prevtx`]. Sending: [`fee`] (rates, floor, caps), [`select`] (coin selection,
+//! Encoding layer: [`network`], [`amount`], [`bech32`], [`address`], [`account`], [`script`],
+//! [`tx`], [`sighash`], [`taproot`], [`prevtx`]. Sending: [`fee`] (rates, floor, caps), [`select`] (coin selection,
 //! layout, send-max, RBF plans), [`policy`] (`B01`–`B08`, fixed texts, node answers),
 //! [`display`] (approval payload, fields, warnings), [`sign`] (`sign_plan` and the strict
 //! witness checker), [`verify`] (post-sign checks) and [`meta`] (`BtcMeta`, discovery, verified
@@ -21,6 +23,7 @@
 //! `policy::broadcast_outcome` → `set_state(..)`.
 #![deny(clippy::indexing_slicing)]
 
+pub mod account;
 pub mod address;
 pub mod amount;
 pub mod bech32;
@@ -34,20 +37,25 @@ pub mod script;
 pub mod select;
 pub mod sighash;
 pub mod sign;
+pub mod taproot;
 pub mod tx;
 pub mod verify;
 
+pub use account::{BtcAccountId, BtcAccountKey, BtcKeySource, BtcPubKey, ScriptType};
 pub use address::{AddressError, BtcAddress, ScriptKind, encode_address, parse_address};
 pub use amount::{AmountError, Sats};
 pub use display::{BtcSendFacts, btc_payload, build_btc_request};
 pub use fee::{FeeChoice, FeeRate, FeeSelection, FeeSource};
-pub use meta::{BtcMeta, Discovery};
+pub use meta::{BtcAccounts, BtcMeta, Discovery};
 pub use network::BtcNetwork;
 pub use select::{
     BumpRequest, BumpSource, PlanError, SendAmount, SendPlan, SendRequest, Utxo, plan_fee_bump,
     plan_send,
 };
-pub use sign::{SignError, SignedTx, check_recorded_amounts, sign_plan};
+pub use sign::{
+    BtcImportedKeys, BtcKeys, ImportedBtcSecret, SignError, SignedTx, check_recorded_amounts,
+    sign_plan,
+};
 pub use tx::{OutPoint, Transaction, TxIn, TxOut, Txid};
 pub use verify::{PostSignError, VerifiedSignedTx, verify_signed};
 
@@ -139,3 +147,5 @@ pub const fn conf(height: u32, tip_height: u32) -> u32 {
 mod send_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod types_tests;

@@ -12,16 +12,16 @@
 
 use core::fmt;
 
-use secp256k1::{All, PublicKey, Secp256k1};
+use secp256k1::PublicKey;
 use sha2::{Digest, Sha256};
 use yw_json::{Number, Object, Value};
 
-use super::address::{BtcAddress, ScriptKind, hash160, kind_from_script};
+use super::account::{BTC_MAX_HD_ACCOUNT, BtcAccountId, BtcAccountKey, BtcPubKey, ScriptType};
+use super::address::{BtcAddress, ScriptKind, kind_from_script};
 use super::amount::Sats;
 use super::display::BtcSendFacts;
 use super::network::BtcNetwork;
 use super::prevtx::VerifiedPrevOut;
-use super::script::p2wpkh_script_pubkey;
 use super::select::{SendPlan, Utxo};
 use super::tx::{OutPoint, Txid};
 use super::{
@@ -29,8 +29,7 @@ use super::{
     BTC_GAP_LIMIT, BTC_LOCKTIME_THRESHOLD, BTC_MAX_ADDRESS_INDEX, BTC_MIN_CONF, MAX_MONEY, conf,
 };
 use crate::bip32::path::BtcChain;
-use crate::bip32::{AccountXpub, HARDENED, derive_public_child_with};
-use crate::entropy::{OsRandom, secp_context};
+use crate::bip32::{AccountXpub, HARDENED};
 use crate::error::KeyError;
 
 /// `BtcMeta.version`.
@@ -247,6 +246,8 @@ pub enum MetaError {
     Full,
     /// Discovery is not finished.
     DiscoveryIncomplete,
+    /// An imported key has one address ("새 주소" refused).
+    SingleAddress,
     /// Public derivation failed.
     Key(KeyError),
 }
@@ -270,6 +271,9 @@ impl fmt::Display for MetaError {
             Self::NotVerified => formatter.write_str("검증된 UTXO가 아닙니다"),
             Self::Full => formatter.write_str("BTC 데이터 공간이 부족합니다"),
             Self::DiscoveryIncomplete => formatter.write_str("주소 검색 미완료"),
+            Self::SingleAddress => {
+                formatter.write_str("가져온 키 계정은 주소가 하나라 새 주소를 만들 수 없습니다")
+            }
             Self::Key(_) => formatter.write_str(super::policy::texts::DERIVATION_FAILED),
         }
     }
@@ -295,41 +299,14 @@ impl fmt::Display for BtcMetaError {
 
 impl std::error::Error for BtcMetaError {}
 
-/// Public derivation of our programs with one context and the two chain nodes.
-struct Deriver {
-    ctx: Secp256k1<All>,
-    receive: AccountXpub,
-    change: AccountXpub,
-}
-
-impl Deriver {
-    fn new(account: &AccountXpub) -> Result<Self, KeyError> {
-        let ctx = secp_context(&mut OsRandom)?;
-        let receive = derive_public_child_with(&ctx, account, BtcChain::Receive.index())?;
-        let change = derive_public_child_with(&ctx, account, BtcChain::Change.index())?;
-        Ok(Self {
-            ctx,
-            receive,
-            change,
-        })
-    }
-
-    fn program(&self, chain: BtcChain, index: u32) -> Result<[u8; 20], KeyError> {
-        let parent = match chain {
-            BtcChain::Receive => &self.receive,
-            BtcChain::Change => &self.change,
-        };
-        Ok(hash160(
-            &derive_public_child_with(&self.ctx, parent, index)?.pubkey,
-        ))
-    }
-}
-
-/// The meta `btc` object (spec/08 §12.3).
+/// One BTC account's state (spec/08 §12.3): meta `btc` holds the BIP84 account 0 (JSON version
+/// 1, unchanged), meta `btc_accounts` the other accounts (JSON version 2, [`BtcAccounts`]).
+/// A single imported key has one address `(Receive, 0)`: `receive_next = 1`, `change_next = 0`,
+/// no discovery, change back to that address.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BtcMeta {
     pub(crate) network: BtcNetwork,
-    pub(crate) account: AccountXpub,
+    pub(crate) account: BtcAccountKey,
     pub(crate) receive_next: u32,
     pub(crate) change_next: u32,
     pub(crate) last_used_receive: Option<u32>,
@@ -347,18 +324,27 @@ fn script_hash(script: &[u8]) -> [u8; 32] {
 }
 
 impl BtcMeta {
-    /// Fresh meta for `network` with the account node from `Vault::btc_account_xpub` (BTC
-    /// enable, network change, meta reset): indices 0, nothing verified, discovery pending.
+    /// Fresh meta of the BIP84 account 0 for `network` with the node from
+    /// `Vault::btc_account_xpub(network.coin_type())` (BTC enable, network change, meta reset):
+    /// indices 0, nothing verified, discovery pending.
     #[must_use]
     pub const fn new(network: BtcNetwork, account: AccountXpub) -> Self {
+        Self::with_key(network, BtcAccountKey::primary(account))
+    }
+
+    /// Fresh meta of any account: an HD account starts like [`BtcMeta::new`]; a single key gets
+    /// its one address issued (`receive_next = 1`) and needs no discovery.
+    #[must_use]
+    pub const fn with_key(network: BtcNetwork, account: BtcAccountKey) -> Self {
+        let single = account.is_single();
         Self {
             network,
             account,
-            receive_next: 0,
+            receive_next: if single { 1 } else { 0 },
             change_next: 0,
             last_used_receive: None,
             last_used_change: None,
-            discovery_done: false,
+            discovery_done: single,
             max_tip_seen: 0,
             verified: Vec::new(),
             frozen: Vec::new(),
@@ -373,10 +359,23 @@ impl BtcMeta {
         self.network
     }
 
-    /// Cached account node `m/84'/{coin}'/0'`.
+    /// The account: address type and public key material (HD node `m/{p}'/{coin}'/{a}'` or a
+    /// single key).
     #[must_use]
-    pub const fn account(&self) -> &AccountXpub {
+    pub const fn account(&self) -> &BtcAccountKey {
         &self.account
+    }
+
+    /// The account identity.
+    #[must_use]
+    pub const fn id(&self) -> BtcAccountId {
+        self.account.id()
+    }
+
+    /// One imported key (one address, no discovery, no "새 주소").
+    #[must_use]
+    pub const fn is_single(&self) -> bool {
+        self.account.is_single()
     }
 
     /// Next receive index to issue.
@@ -459,42 +458,39 @@ impl BtcMeta {
         }
     }
 
-    /// Our P2WPKH address `m/84'/{coin}'/0'/{chain}/{index}` by public derivation.
+    /// Our address of `(chain, index)` by public derivation (a single key: `(Receive, 0)` only).
     ///
     /// # Errors
     ///
     /// [`KeyError`] (hardened index, derivation, randomness).
     pub fn address(&self, chain: BtcChain, index: u32) -> Result<BtcAddress, KeyError> {
-        let program = super::address::p2wpkh_program(&self.account, chain, index)?;
-        Ok(BtcAddress::p2wpkh(self.network, &program))
+        self.account.address(self.network, chain, index)
     }
 
-    /// The `verify_prev_output` expected script `00 14 <program>` of `(chain, index)`.
+    /// The `verify_prev_output` expected script (our output of the account type) of
+    /// `(chain, index)`.
     ///
     /// # Errors
     ///
     /// [`KeyError`].
-    pub fn expected_script(&self, chain: BtcChain, index: u32) -> Result<[u8; 22], KeyError> {
-        Ok(p2wpkh_script_pubkey(&super::address::p2wpkh_program(
-            &self.account,
-            chain,
-            index,
-        )?))
+    pub fn expected_script(&self, chain: BtcChain, index: u32) -> Result<Vec<u8>, KeyError> {
+        self.account.script(chain, index)
     }
 
     /// The watch set (spec/08 §3.3): receive `[0, receive_next)` then change `[0, change_next)`,
-    /// with their addresses; each chain stops at `BTC_MAX_ADDRESS_INDEX`.
+    /// with their addresses; each chain stops at `BTC_MAX_ADDRESS_INDEX`. A single key watches
+    /// its one address.
     ///
     /// # Errors
     ///
     /// [`KeyError`].
     pub fn watch_set(&self) -> Result<Vec<(BtcChain, u32, BtcAddress)>, KeyError> {
-        let deriver = Deriver::new(&self.account)?;
+        let deriver = self.account.deriver()?;
         let mut out = Vec::new();
         for chain in [BtcChain::Receive, BtcChain::Change] {
             for index in 0..self.next_of(chain).min(BTC_MAX_ADDRESS_INDEX) {
-                let program = deriver.program(chain, index)?;
-                out.push((chain, index, BtcAddress::p2wpkh(self.network, &program)));
+                let kind = deriver.kind(chain, index)?;
+                out.push((chain, index, BtcAddress::ours(self.network, kind)));
             }
         }
         Ok(out)
@@ -531,6 +527,9 @@ impl BtcMeta {
     ///
     /// [`MetaError::IndexExhausted`].
     pub fn receive_address(&mut self) -> Result<ReceiveAddress, MetaError> {
+        if self.is_single() {
+            return Ok(ReceiveAddress::Existing(0));
+        }
         let start = self.receive_start();
         if start < self.receive_next {
             return Ok(ReceiveAddress::Existing(start));
@@ -544,8 +543,12 @@ impl BtcMeta {
     ///
     /// # Errors
     ///
-    /// [`MetaError::GapWarning`], [`MetaError::GapHardLimit`], [`MetaError::IndexExhausted`].
+    /// [`MetaError::GapWarning`], [`MetaError::GapHardLimit`], [`MetaError::IndexExhausted`],
+    /// [`MetaError::SingleAddress`] for an imported key.
     pub fn new_receive_address(&mut self, gap_confirmed: bool) -> Result<u32, MetaError> {
+        if self.is_single() {
+            return Err(MetaError::SingleAddress);
+        }
         let unused = self.unused_receive_tail();
         if unused >= BTC_GAP_HARD_LIMIT {
             return Err(MetaError::GapHardLimit);
@@ -846,6 +849,7 @@ impl BtcMeta {
     /// floor from `journal::btc::change_next_floor`. Returns whether meta changed.
     pub fn reconcile_change_next(&mut self, journal_floor: Option<u32>) -> bool {
         match journal_floor {
+            _ if self.is_single() => false,
             Some(floor) if floor > self.change_next && floor <= MAX_NEXT => {
                 self.change_next = floor;
                 true
@@ -861,7 +865,7 @@ impl BtcMeta {
     ///
     /// [`MetaError::IndexExhausted`].
     pub fn on_broadcasting(&mut self, change_index: Option<u32>) -> Result<bool, MetaError> {
-        let Some(index) = change_index else {
+        let Some(index) = change_index.filter(|_| !self.is_single()) else {
             return Ok(false);
         };
         let next = index.checked_add(1).ok_or(MetaError::IndexExhausted)?;
@@ -881,6 +885,7 @@ impl BtcMeta {
     /// whether meta changed.
     pub fn on_send_rejected(&mut self, change_index: Option<u32>) -> bool {
         match change_index {
+            _ if self.is_single() => false,
             Some(index) if index.checked_add(1) == Some(self.change_next) => {
                 self.change_next = index;
                 true
@@ -889,24 +894,39 @@ impl BtcMeta {
         }
     }
 
-    /// `(chain, index)` when `script` is one of our P2WPKH addresses in
-    /// `[0, next + BTC_GAP_LIMIT)` of either chain (B07).
+    /// `(chain, index)` when `script` is one of this account's addresses in
+    /// `[0, next + BTC_GAP_LIMIT)` of either chain (a single key: its one address) (B07).
     ///
     /// # Errors
     ///
     /// [`KeyError`].
     pub fn own_recipient(&self, script: &[u8]) -> Result<Option<(BtcChain, u32)>, KeyError> {
-        let Some(ScriptKind::P2wpkh(program)) = kind_from_script(script) else {
+        let Some(kind) = kind_from_script(script) else {
             return Ok(None);
         };
-        let deriver = Deriver::new(&self.account)?;
+        let deriver = self.account.deriver()?;
+        if self.is_single() {
+            return Ok(
+                (deriver.kind(BtcChain::Receive, 0)? == kind).then_some((BtcChain::Receive, 0))
+            );
+        }
+        let ours = matches!(
+            (self.account.script_type(), kind),
+            (ScriptType::P2pkh, ScriptKind::P2pkh(_))
+                | (ScriptType::P2shP2wpkh, ScriptKind::P2sh(_))
+                | (ScriptType::P2wpkh, ScriptKind::P2wpkh(_))
+                | (ScriptType::P2tr, ScriptKind::P2tr(_))
+        );
+        if !ours {
+            return Ok(None);
+        }
         for chain in [BtcChain::Receive, BtcChain::Change] {
             let end = self
                 .next_of(chain)
                 .saturating_add(BTC_GAP_LIMIT)
                 .min(HARDENED);
             for index in 0..end {
-                if deriver.program(chain, index)? == program {
+                if deriver.kind(chain, index)? == kind {
                     return Ok(Some((chain, index)));
                 }
             }
@@ -1061,6 +1081,11 @@ impl Discovery {
     pub fn apply(&self, meta: &mut BtcMeta) -> Result<(), MetaError> {
         if !self.is_done() {
             return Err(MetaError::DiscoveryIncomplete);
+        }
+        if meta.is_single() {
+            // One address, nothing to discover (its history comes with the refresh).
+            meta.discovery_done = true;
+            return Ok(());
         }
         for (scan, chain) in self.scans.iter().zip(CHAINS) {
             let found_next = scan.last.map_or(0, |last| last.saturating_add(1));
@@ -1242,30 +1267,187 @@ fn object(members: Vec<(&str, Value)>) -> Value {
     .map_or(Value::Null, Value::Object)
 }
 
+/// Keys of a version 2 account object (`btc_accounts.accounts[]`): version 1's with the
+/// account node replaced by `script_type` and `key`.
+const KEYS_V2: [&str; 14] = [
+    "version",
+    "network",
+    "script_type",
+    "key",
+    "receive_next",
+    "change_next",
+    "last_used_receive",
+    "last_used_change",
+    "discovery_done",
+    "max_tip_seen",
+    "verified",
+    "frozen",
+    "unfrozen",
+    "sent_scripts",
+];
+/// `key.hd` of a version 2 object.
+const HD_KEYS: [&str; 3] = ["account", "pubkey", "chain_code"];
+/// `key.imported` of a version 2 object.
+const IMPORTED_KEYS: [&str; 2] = ["id", "pubkey"];
+/// `BtcMeta` version of the non-primary accounts.
+pub const BTC_META_VERSION_V2: u64 = 2;
+
+fn decode_hex_bytes(value: &Value, field: &'static str) -> Result<Vec<u8>, BtcMetaError> {
+    value
+        .as_str()
+        .filter(|text| {
+            text.bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        .and_then(|text| crate::hex::decode(text).ok())
+        .ok_or(BtcMetaError(field))
+}
+
+/// The `key` object of a version 2 account.
+fn account_key(value: &Value, script_type: ScriptType) -> Result<BtcAccountKey, BtcMetaError> {
+    let object = value.as_object().ok_or(BtcMetaError("key"))?;
+    if object.len() != 1 {
+        return Err(BtcMetaError("key"));
+    }
+    if let Some(hd) = object.get("hd") {
+        let hd = object_with(hd, &HD_KEYS, "key.hd")?;
+        let account = u32_field(get(hd, "account")?, MAX_NEXT, "key.hd.account")?;
+        let pubkey = hex_array::<33>(get(hd, "pubkey")?, "key.hd.pubkey")?;
+        let chain_code = hex_array::<32>(get(hd, "chain_code")?, "key.hd.chain_code")?;
+        let key = BtcAccountKey::hd(script_type, account, AccountXpub { pubkey, chain_code })
+            .map_err(|_| BtcMetaError("key.hd"))?;
+        if key.id() == BtcAccountId::PRIMARY {
+            // BIP84 account 0 lives in meta `btc` (version 1).
+            return Err(BtcMetaError("key.hd"));
+        }
+        return Ok(key);
+    }
+    let imported = object_with(
+        object.get("imported").ok_or(BtcMetaError("key"))?,
+        &IMPORTED_KEYS,
+        "key.imported",
+    )?;
+    let id = hex_array::<16>(get(imported, "id")?, "key.imported.id")?;
+    if id == [0; 16] {
+        return Err(BtcMetaError("key.imported.id"));
+    }
+    let pubkey = BtcPubKey::parse(&decode_hex_bytes(
+        get(imported, "pubkey")?,
+        "key.imported.pubkey",
+    )?)
+    .map_err(|_| BtcMetaError("key.imported.pubkey"))?;
+    BtcAccountKey::single(id, script_type, pubkey).map_err(|_| BtcMetaError("key.imported"))
+}
+
+/// `frozen`, `unfrozen` and `sent_scripts` of a `BtcMeta` object (bounds, no duplicates).
+type Marks = (Vec<(OutPoint, FreezeReason)>, Vec<OutPoint>, Vec<[u8; 32]>);
+
+fn parse_marks(root: &Object) -> Result<Marks, BtcMetaError> {
+    let frozen = array(get(root, "frozen")?, MAX_FROZEN, "frozen")?
+        .iter()
+        .map(|item| {
+            let object = object_with(item, &FROZEN_KEYS, "frozen")?;
+            let reason = FreezeReason::from_code(integer(
+                get(object, "reason")?,
+                u64::MAX,
+                "frozen.reason",
+            )?)
+            .ok_or(BtcMetaError("frozen.reason"))?;
+            Ok((
+                outpoint(get(object, "outpoint")?, "frozen.outpoint")?,
+                reason,
+            ))
+        })
+        .collect::<Result<Vec<_>, BtcMetaError>>()?;
+    let frozen_outpoints: Vec<OutPoint> = frozen.iter().map(|(op, _)| *op).collect();
+    if has_duplicates(&frozen_outpoints) {
+        return Err(BtcMetaError("frozen"));
+    }
+    let unfrozen = array(get(root, "unfrozen")?, MAX_UNFROZEN, "unfrozen")?
+        .iter()
+        .map(|item| outpoint(item, "unfrozen"))
+        .collect::<Result<Vec<_>, _>>()?;
+    if has_duplicates(&unfrozen) {
+        return Err(BtcMetaError("unfrozen"));
+    }
+    let sent_scripts = array(get(root, "sent_scripts")?, MAX_SENT_SCRIPTS, "sent_scripts")?
+        .iter()
+        .map(|item| hex_array::<32>(item, "sent_scripts"))
+        .collect::<Result<Vec<_>, _>>()?;
+    if has_duplicates(&sent_scripts) {
+        return Err(BtcMetaError("sent_scripts"));
+    }
+    Ok((frozen, unfrozen, sent_scripts))
+}
+
+fn account_key_json(account: &BtcAccountKey) -> Value {
+    match account {
+        BtcAccountKey::Hd { account, xpub, .. } => object(vec![(
+            "hd",
+            object(vec![
+                ("account", number(u64::from(*account))),
+                ("pubkey", string(crate::hex::encode(&xpub.pubkey))),
+                ("chain_code", string(crate::hex::encode(&xpub.chain_code))),
+            ]),
+        )]),
+        BtcAccountKey::Single { id, pubkey, .. } => object(vec![(
+            "imported",
+            object(vec![
+                ("id", string(crate::hex::encode(id))),
+                ("pubkey", string(crate::hex::encode(pubkey.as_bytes()))),
+            ]),
+        )]),
+    }
+}
+
 impl BtcMeta {
-    /// Strict decode of the meta `btc` object (spec/08 §12.3).
+    /// Strict decode of a `BtcMeta` object (spec/08 §12.3): version 1 (meta `btc`, the BIP84
+    /// account 0 node in `account_pubkey`/`account_chain_code`) or version 2 (meta
+    /// `btc_accounts`, `script_type` and `key`).
     ///
     /// # Errors
     ///
     /// [`BtcMetaError`] naming the first invalid field: unknown or missing keys, wrong types or
-    /// formats, `version != 1`, an invalid account key, indices `>= 2^31`, `last_used >= next`,
-    /// bounds (4,096 / 1,024 / 1,024 / 4,096) or duplicates.
+    /// formats, an unknown `version`, an invalid account key, indices `>= 2^31`,
+    /// `last_used >= next`, bounds (4,096 / 1,024 / 1,024 / 4,096), duplicates, a version 2
+    /// object for BIP84 account 0, or a single key whose state is not its one address.
     pub fn from_json(value: &Value) -> Result<Self, BtcMetaError> {
-        let root = object_with(value, &KEYS, "btc")?;
-        if integer(get(root, "version")?, u64::MAX, "version")? != BTC_META_VERSION {
-            return Err(BtcMetaError("version"));
-        }
+        let version = value
+            .as_object()
+            .ok_or(BtcMetaError("btc"))?
+            .get("version")
+            .ok_or(BtcMetaError("btc"))
+            .and_then(|version| integer(version, u64::MAX, "version"))?;
+        let (root, account) = match version {
+            BTC_META_VERSION => {
+                let root = object_with(value, &KEYS, "btc")?;
+                let pubkey = hex_array::<33>(get(root, "account_pubkey")?, "account_pubkey")?;
+                if !matches!(pubkey.first(), Some(0x02 | 0x03))
+                    || PublicKey::from_byte_array_compressed(pubkey).is_err()
+                {
+                    return Err(BtcMetaError("account_pubkey"));
+                }
+                let chain_code =
+                    hex_array::<32>(get(root, "account_chain_code")?, "account_chain_code")?;
+                (
+                    root,
+                    BtcAccountKey::primary(AccountXpub { pubkey, chain_code }),
+                )
+            }
+            BTC_META_VERSION_V2 => {
+                let root = object_with(value, &KEYS_V2, "btc")?;
+                let script_type = get(root, "script_type")?
+                    .as_str()
+                    .and_then(ScriptType::parse_json_name)
+                    .ok_or(BtcMetaError("script_type"))?;
+                (root, account_key(get(root, "key")?, script_type)?)
+            }
+            _ => return Err(BtcMetaError("version")),
+        };
         let network = get(root, "network")?
             .as_str()
             .and_then(BtcNetwork::parse_settings_name)
             .ok_or(BtcMetaError("network"))?;
-        let pubkey = hex_array::<33>(get(root, "account_pubkey")?, "account_pubkey")?;
-        if !matches!(pubkey.first(), Some(0x02 | 0x03))
-            || PublicKey::from_byte_array_compressed(pubkey).is_err()
-        {
-            return Err(BtcMetaError("account_pubkey"));
-        }
-        let chain_code = hex_array::<32>(get(root, "account_chain_code")?, "account_chain_code")?;
         let index_max = MAX_NEXT;
         let receive_next = u32_field(get(root, "receive_next")?, index_max, "receive_next")?;
         let change_next = u32_field(get(root, "change_next")?, index_max, "change_next")?;
@@ -1293,43 +1475,19 @@ impl BtcMeta {
         if has_duplicates(&outpoints) {
             return Err(BtcMetaError("verified"));
         }
-        let frozen = array(get(root, "frozen")?, MAX_FROZEN, "frozen")?
-            .iter()
-            .map(|item| {
-                let object = object_with(item, &FROZEN_KEYS, "frozen")?;
-                let reason = FreezeReason::from_code(integer(
-                    get(object, "reason")?,
-                    u64::MAX,
-                    "frozen.reason",
-                )?)
-                .ok_or(BtcMetaError("frozen.reason"))?;
-                Ok((
-                    outpoint(get(object, "outpoint")?, "frozen.outpoint")?,
-                    reason,
-                ))
-            })
-            .collect::<Result<Vec<_>, BtcMetaError>>()?;
-        let frozen_outpoints: Vec<OutPoint> = frozen.iter().map(|(op, _)| *op).collect();
-        if has_duplicates(&frozen_outpoints) {
-            return Err(BtcMetaError("frozen"));
+        if account.is_single()
+            && (receive_next != 1
+                || change_next != 0
+                || verified
+                    .iter()
+                    .any(|entry| entry.chain != BtcChain::Receive || entry.index != 0))
+        {
+            return Err(BtcMetaError("receive_next"));
         }
-        let unfrozen = array(get(root, "unfrozen")?, MAX_UNFROZEN, "unfrozen")?
-            .iter()
-            .map(|item| outpoint(item, "unfrozen"))
-            .collect::<Result<Vec<_>, _>>()?;
-        if has_duplicates(&unfrozen) {
-            return Err(BtcMetaError("unfrozen"));
-        }
-        let sent_scripts = array(get(root, "sent_scripts")?, MAX_SENT_SCRIPTS, "sent_scripts")?
-            .iter()
-            .map(|item| hex_array::<32>(item, "sent_scripts"))
-            .collect::<Result<Vec<_>, _>>()?;
-        if has_duplicates(&sent_scripts) {
-            return Err(BtcMetaError("sent_scripts"));
-        }
+        let (frozen, unfrozen, sent_scripts) = parse_marks(root)?;
         Ok(Self {
             network,
-            account: AccountXpub { pubkey, chain_code },
+            account,
             receive_next,
             change_next,
             last_used_receive,
@@ -1343,8 +1501,9 @@ impl BtcMeta {
         })
     }
 
-    /// The meta `btc` object in §12.3 key order (lowercase hex, sats as decimal strings,
-    /// outpoints `"<txid>:<vout>"`).
+    /// The `BtcMeta` object in §12.3 key order (lowercase hex, sats as decimal strings,
+    /// outpoints `"<txid>:<vout>"`): version 1 for BIP84 account 0 (meta `btc`, byte-identical to
+    /// earlier versions), version 2 for every other account.
     #[must_use]
     pub fn to_json(&self) -> Value {
         let verified = self
@@ -1372,17 +1531,24 @@ impl BtcMeta {
                 ])
             })
             .collect();
-        object(vec![
-            ("version", number(BTC_META_VERSION)),
-            ("network", string(self.network.settings_name())),
-            (
-                "account_pubkey",
-                string(crate::hex::encode(&self.account.pubkey)),
-            ),
-            (
-                "account_chain_code",
-                string(crate::hex::encode(&self.account.chain_code)),
-            ),
+        let mut members = match (&self.account, self.account.id() == BtcAccountId::PRIMARY) {
+            (BtcAccountKey::Hd { xpub, .. }, true) => vec![
+                ("version", number(BTC_META_VERSION)),
+                ("network", string(self.network.settings_name())),
+                ("account_pubkey", string(crate::hex::encode(&xpub.pubkey))),
+                (
+                    "account_chain_code",
+                    string(crate::hex::encode(&xpub.chain_code)),
+                ),
+            ],
+            (account, _) => vec![
+                ("version", number(BTC_META_VERSION_V2)),
+                ("network", string(self.network.settings_name())),
+                ("script_type", string(account.script_type().json_name())),
+                ("key", account_key_json(account)),
+            ],
+        };
+        members.extend([
             ("receive_next", number(u64::from(self.receive_next))),
             ("change_next", number(u64::from(self.change_next))),
             ("last_used_receive", optional(self.last_used_receive)),
@@ -1409,25 +1575,214 @@ impl BtcMeta {
                         .collect(),
                 ),
             ),
-        ])
+        ]);
+        object(members)
     }
 }
 
-/// The meta `btc` value: `null` → `None`, an object → [`BtcMeta::from_json`].
+/// The meta `btc` value: `null` → `None`, an object → [`BtcMeta::from_json`] (version 1, the
+/// BIP84 account 0, only).
 ///
 /// # Errors
 ///
 /// [`BtcMetaError`].
 pub fn btc_meta_from_json(value: &Value) -> Result<Option<BtcMeta>, BtcMetaError> {
     if value.is_null() {
-        Ok(None)
-    } else {
-        BtcMeta::from_json(value).map(Some)
+        return Ok(None);
     }
+    let meta = BtcMeta::from_json(value)?;
+    if meta.id() != BtcAccountId::PRIMARY {
+        return Err(BtcMetaError("btc"));
+    }
+    Ok(Some(meta))
 }
 
 /// `None` → `null`, `Some` → [`BtcMeta::to_json`].
 #[must_use]
 pub fn btc_meta_to_json(meta: Option<&BtcMeta>) -> Value {
     meta.map_or(Value::Null, BtcMeta::to_json)
+}
+
+// ---- meta `btc_accounts` ----
+
+/// Most accounts in `btc_accounts` (both networks together).
+pub const MAX_BTC_ACCOUNTS: usize = 64;
+/// `btc_accounts.version`.
+pub const BTC_ACCOUNTS_VERSION: u64 = 1;
+const ACCOUNTS_KEYS: [&str; 3] = ["version", "selected", "accounts"];
+
+/// Meta `btc_accounts` (spec/08 §12.3a, a new top-level key so earlier app versions keep it
+/// unread and unchanged, spec/04 §6.6): every BTC account except BIP84 account 0 (which stays
+/// meta `btc`), of both networks, and the selected account. Accounts of the other network stay
+/// stored and come back when the network is switched back.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BtcAccounts {
+    /// The selected account (`None` = BIP84 account 0, also when the selection is not an account
+    /// of the current network).
+    pub selected: Option<BtcAccountId>,
+    /// The other accounts (each with its own network copy).
+    pub accounts: Vec<BtcMeta>,
+}
+
+fn account_id_json(id: &BtcAccountId) -> Value {
+    match id {
+        BtcAccountId::Hd {
+            script_type,
+            account,
+        } => object(vec![(
+            "hd",
+            object(vec![
+                ("script_type", string(script_type.json_name())),
+                ("account", number(u64::from(*account))),
+            ]),
+        )]),
+        BtcAccountId::Imported { id } => object(vec![("imported", string(crate::hex::encode(id)))]),
+    }
+}
+
+fn account_id(value: &Value) -> Result<BtcAccountId, BtcMetaError> {
+    const FIELD: &str = "btc_accounts.selected";
+    let object = value.as_object().ok_or(BtcMetaError(FIELD))?;
+    if object.len() != 1 {
+        return Err(BtcMetaError(FIELD));
+    }
+    if let Some(hd) = object.get("hd") {
+        let hd = object_with(hd, &["script_type", "account"], FIELD)?;
+        return Ok(BtcAccountId::Hd {
+            script_type: get(hd, "script_type")?
+                .as_str()
+                .and_then(ScriptType::parse_json_name)
+                .ok_or(BtcMetaError(FIELD))?,
+            account: u32_field(get(hd, "account")?, MAX_NEXT, FIELD)?,
+        });
+    }
+    let id = hex_array::<16>(object.get("imported").ok_or(BtcMetaError(FIELD))?, FIELD)?;
+    Ok(BtcAccountId::Imported { id })
+}
+
+impl BtcAccounts {
+    /// Strict decode of meta `btc_accounts`; a missing key is the default (no extra accounts).
+    ///
+    /// # Errors
+    ///
+    /// [`BtcMetaError`]: unknown or missing keys, `version != 1`, more than 64 accounts, an
+    /// invalid account object, or two accounts with the same identity on one network.
+    pub fn from_json(value: Option<&Value>) -> Result<Self, BtcMetaError> {
+        let Some(value) = value else {
+            return Ok(Self::default());
+        };
+        let root = object_with(value, &ACCOUNTS_KEYS, "btc_accounts")?;
+        if integer(get(root, "version")?, u64::MAX, "btc_accounts.version")? != BTC_ACCOUNTS_VERSION
+        {
+            return Err(BtcMetaError("btc_accounts.version"));
+        }
+        let selected = match get(root, "selected")? {
+            Value::Null => None,
+            other => Some(account_id(other)?),
+        };
+        let accounts = array(
+            get(root, "accounts")?,
+            MAX_BTC_ACCOUNTS,
+            "btc_accounts.accounts",
+        )?
+        .iter()
+        .map(BtcMeta::from_json)
+        .collect::<Result<Vec<_>, _>>()?;
+        let keys: Vec<(BtcNetwork, BtcAccountId)> = accounts
+            .iter()
+            .map(|meta| (meta.network(), meta.id()))
+            .collect();
+        if has_duplicates(&keys) {
+            return Err(BtcMetaError("btc_accounts.accounts"));
+        }
+        Ok(Self { selected, accounts })
+    }
+
+    /// The `btc_accounts` object.
+    #[must_use]
+    pub fn to_json(&self) -> Value {
+        object(vec![
+            ("version", number(BTC_ACCOUNTS_VERSION)),
+            (
+                "selected",
+                self.selected.as_ref().map_or(Value::Null, account_id_json),
+            ),
+            (
+                "accounts",
+                Value::Array(self.accounts.iter().map(BtcMeta::to_json).collect()),
+            ),
+        ])
+    }
+
+    /// The accounts of `network`.
+    pub fn of_network(&self, network: BtcNetwork) -> impl Iterator<Item = &BtcMeta> {
+        self.accounts
+            .iter()
+            .filter(move |meta| meta.network() == network)
+    }
+
+    /// Account `id` of `network`.
+    #[must_use]
+    pub fn get(&self, network: BtcNetwork, id: BtcAccountId) -> Option<&BtcMeta> {
+        self.of_network(network).find(|meta| meta.id() == id)
+    }
+
+    /// Account `id` of `network`, mutable.
+    pub fn get_mut(&mut self, network: BtcNetwork, id: BtcAccountId) -> Option<&mut BtcMeta> {
+        self.accounts
+            .iter_mut()
+            .find(|meta| meta.network() == network && meta.id() == id)
+    }
+
+    /// Replaces account `meta.id()` of `meta.network()` or adds it.
+    ///
+    /// # Errors
+    ///
+    /// [`MetaError::Full`] at 64 accounts; [`MetaError::NotVerified`] for BIP84 account 0 (it
+    /// belongs in meta `btc`).
+    pub fn upsert(&mut self, meta: BtcMeta) -> Result<(), MetaError> {
+        if meta.id() == BtcAccountId::PRIMARY {
+            return Err(MetaError::NotVerified);
+        }
+        if let Some(slot) = self.get_mut(meta.network(), meta.id()) {
+            *slot = meta;
+            return Ok(());
+        }
+        if self.accounts.len() >= MAX_BTC_ACCOUNTS {
+            return Err(MetaError::Full);
+        }
+        self.accounts.push(meta);
+        Ok(())
+    }
+
+    /// The selected account on `network` (`PRIMARY` when nothing or a missing account is
+    /// selected).
+    #[must_use]
+    pub fn selected_on(&self, network: BtcNetwork) -> BtcAccountId {
+        match self.selected {
+            Some(id) if self.get(network, id).is_some() => id,
+            _ => BtcAccountId::PRIMARY,
+        }
+    }
+
+    /// The next free HD account number of `script_type` on `network` (the BIP84 account 0 is
+    /// meta `btc`, so P2WPKH starts at 1), `None` above [`BTC_MAX_HD_ACCOUNT`] or when the list is
+    /// full.
+    #[must_use]
+    pub fn next_hd_account(&self, network: BtcNetwork, script_type: ScriptType) -> Option<u32> {
+        if self.accounts.len() >= MAX_BTC_ACCOUNTS {
+            return None;
+        }
+        let first = u32::from(script_type == ScriptType::P2wpkh);
+        (first..=BTC_MAX_HD_ACCOUNT).find(|candidate| {
+            self.get(
+                network,
+                BtcAccountId::Hd {
+                    script_type,
+                    account: *candidate,
+                },
+            )
+            .is_none()
+        })
+    }
 }
