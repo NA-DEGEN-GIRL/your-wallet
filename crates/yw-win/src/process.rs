@@ -127,14 +127,34 @@ fn current_exe_wide() -> Result<Vec<u16>, WinError> {
     }
 }
 
-/// `WerAddExcludedApplication(<current exe>, FALSE)` (spec/01 §5.4; recommended, not required).
+/// The file-name part (after the last `\` or `/`) of a NUL-terminated path, NUL-terminated.
+fn file_name_wide(path_with_nul: &[u16]) -> Vec<u16> {
+    let path = path_with_nul
+        .split(|unit| *unit == 0)
+        .next()
+        .unwrap_or_default();
+    let start = path
+        .iter()
+        .rposition(|unit| *unit == u16::from(b'\\') || *unit == u16::from(b'/'))
+        .map_or(0, |index| index.saturating_add(1));
+    let mut name = path.get(start..).unwrap_or_default().to_vec();
+    name.push(0);
+    name
+}
+
+/// `WerAddExcludedApplication(<current exe file name>, FALSE)` (spec/01 §5.4; recommended, not
+/// required). WER matches the exclusion by executable file name (e.g. `yw-app.exe`), so the
+/// full path would never match.
 ///
 /// # Errors
 ///
 /// [`WinError`] with the HRESULT as code.
 pub fn exclude_from_error_reporting() -> Result<(), WinError> {
-    let exe = current_exe_wide()?;
-    // SAFETY: `exe` is the NUL-terminated executable path, live for the call.
+    let exe = file_name_wide(&current_exe_wide()?);
+    if exe.len() <= 1 {
+        return Err(WinError::invalid_argument("WerAddExcludedApplication"));
+    }
+    // SAFETY: `exe` is the NUL-terminated executable file name, live for the call.
     let hr = unsafe { WerAddExcludedApplication(exe.as_ptr(), 0) };
     if hr != 0 {
         return Err(WinError::new(
@@ -448,8 +468,24 @@ pub fn std_handles_are_pipes() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{spawn_command_line, valid_spawn_arg};
+    use super::{file_name_wide, spawn_command_line, valid_spawn_arg};
     use std::path::Path;
+
+    #[test]
+    fn wer_exclusion_uses_the_executable_file_name() {
+        let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
+        assert_eq!(
+            file_name_wide(&wide(r"C:\Users\x\AppData\Local\YourWallet\yw-app.exe")),
+            wide("yw-app.exe")
+        );
+        assert_eq!(
+            file_name_wide(&wide("C:/a/yw-host.exe")),
+            wide("yw-host.exe")
+        );
+        assert_eq!(file_name_wide(&wide("yw-app.exe")), wide("yw-app.exe"));
+        assert_eq!(file_name_wide(&wide(r"C:\dir\")), wide(""));
+        assert_eq!(file_name_wide(&[]), wide(""));
+    }
 
     #[test]
     fn spawn_arguments_follow_the_allowed_pattern() {

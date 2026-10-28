@@ -14,9 +14,11 @@ pub fn monotonic_ms() -> u64 {
 }
 
 /// Milliseconds since the last system-wide input (`GetTickCount() - LASTINPUTINFO.dwTime`,
-/// 32-bit wrap handled). Returns 0 when the query fails.
+/// 32-bit wrap handled). `None` when the query fails: callers fall back to their own last-input
+/// time (a failure must not read as "input just now", which would keep an idle lock from ever
+/// firing).
 #[must_use]
-pub fn system_idle_ms() -> u64 {
+pub fn system_idle_ms() -> Option<u64> {
     let mut info = LASTINPUTINFO {
         cbSize: u32::try_from(core::mem::size_of::<LASTINPUTINFO>()).unwrap_or(8),
         dwTime: 0,
@@ -24,11 +26,11 @@ pub fn system_idle_ms() -> u64 {
     // SAFETY: `info` is a writable LASTINPUTINFO with `cbSize` set, live for the call.
     let ok = unsafe { GetLastInputInfo(&raw mut info) };
     if ok == 0 {
-        return 0;
+        return None;
     }
     // SAFETY: `GetTickCount` takes no arguments.
     let now = unsafe { GetTickCount() };
-    u64::from(idle_between(now, info.dwTime))
+    Some(u64::from(idle_between(now, info.dwTime)))
 }
 
 /// 1601-01-01 → 1970-01-01 in milliseconds.

@@ -40,6 +40,8 @@ fn spawn_or_exit(body: impl FnOnce() + Send + 'static) {
 }
 
 fn main() -> ExitCode {
+    // DLLs load from System32 only (spec/01 §7.6); a failure is not fatal, like in yw-app.
+    let _ = yw_win::process::init_process();
     let args: Vec<_> = std::env::args_os().collect();
     let origin = match yw_host::check_args(&args) {
         Ok(origin) => origin,

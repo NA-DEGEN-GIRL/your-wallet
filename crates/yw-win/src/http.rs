@@ -3,8 +3,19 @@
 //! `http` for local LLM endpoints. No redirects, cookies, automatic authentication, Origin or
 //! Referer. Errors never contain the URL or host; `HttpsUrl` formats as `https://[redacted]`
 //! because a whole RPC URL is a secret.
+//!
+//! The `WinHTTP` timeouts are per phase and per receive, so a server that trickles its body could
+//! keep a request alive indefinitely; every request therefore also has a total deadline (the sum
+//! of the four phase timeouts) that bounds the body read loop.
+//!
+//! Certificate revocation checking (`WINHTTP_ENABLE_SSL_REVOCATION`) is deliberately left off:
+//! with it, an unreachable CRL/OCSP responder (captive portal, filtered network, offline
+//! revocation infrastructure of a provider) fails the whole TLS handshake, which would make RPC
+//! and LLM endpoints unusable in such networks. Chain validation itself is never weakened
+//! (`SECURITY_FLAG_IGNORE_*` is not used).
 
 use core::fmt;
+use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Networking::WinHttp::{
     ERROR_WINHTTP_SECURE_FAILURE, ERROR_WINHTTP_TIMEOUT, INTERNET_DEFAULT_HTTP_PORT,
@@ -12,12 +23,13 @@ use windows_sys::Win32::Networking::WinHttp::{
     WINHTTP_DISABLE_AUTHENTICATION, WINHTTP_DISABLE_COOKIES, WINHTTP_DISABLE_REDIRECTS,
     WINHTTP_FLAG_SECURE, WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2, WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3,
     WINHTTP_OPTION_DISABLE_FEATURE, WINHTTP_OPTION_MAX_RESPONSE_HEADER_SIZE,
-    WINHTTP_OPTION_REDIRECT_POLICY, WINHTTP_OPTION_REDIRECT_POLICY_NEVER,
-    WINHTTP_OPTION_SECURE_PROTOCOLS, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_QUERY_CONTENT_TYPE,
-    WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_FLAG_NUMBER64, WINHTTP_QUERY_STATUS_CODE,
-    WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryDataAvailable,
-    WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest,
-    WinHttpSetOption, WinHttpSetTimeouts,
+    WINHTTP_OPTION_RECEIVE_TIMEOUT, WINHTTP_OPTION_REDIRECT_POLICY,
+    WINHTTP_OPTION_REDIRECT_POLICY_NEVER, WINHTTP_OPTION_SECURE_PROTOCOLS,
+    WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_QUERY_CONTENT_TYPE, WINHTTP_QUERY_FLAG_NUMBER,
+    WINHTTP_QUERY_FLAG_NUMBER64, WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect,
+    WinHttpOpen, WinHttpOpenRequest, WinHttpQueryDataAvailable, WinHttpQueryHeaders,
+    WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetOption,
+    WinHttpSetTimeouts,
 };
 
 use crate::error::WinError;
@@ -373,6 +385,26 @@ enum ClientKind {
 pub struct Client {
     session: Handle,
     kind: ClientKind,
+    timeouts: Timeouts,
+}
+
+impl Timeouts {
+    /// The total deadline of one request: the sum of the four phase timeouts (saturating).
+    #[must_use]
+    pub fn total_ms(&self) -> u64 {
+        u64::from(self.resolve_ms)
+            .saturating_add(u64::from(self.connect_ms))
+            .saturating_add(u64::from(self.send_ms))
+            .saturating_add(u64::from(self.receive_ms))
+    }
+}
+
+/// The receive timeout for the next body read: what is left of the total deadline, at most
+/// `receive_ms`, at least 1 ms; `None` once the deadline has passed.
+fn next_receive_timeout(total: Duration, elapsed: Duration, receive_ms: u32) -> Option<u32> {
+    let remaining = total.checked_sub(elapsed).filter(|left| !left.is_zero())?;
+    let remaining_ms = u32::try_from(remaining.as_millis()).unwrap_or(u32::MAX);
+    Some(remaining_ms.clamp(1, receive_ms.max(1)))
 }
 
 impl fmt::Debug for Client {
@@ -437,7 +469,11 @@ impl Client {
         if ok == 0 {
             return Err(os_error("WinHttpSetTimeouts"));
         }
-        Ok(Self { session, kind })
+        Ok(Self {
+            session,
+            kind,
+            timeouts,
+        })
     }
 
     /// An HTTPS-only session (TLS 1.2 | 1.3; fails if that cannot be set).
@@ -540,6 +576,8 @@ impl Client {
         body: Option<&[u8]>,
         max_response: usize,
     ) -> Result<Response, HttpError> {
+        let started = Instant::now();
+        let total = Duration::from_millis(self.timeouts.total_ms());
         let body = body.unwrap_or(&[]);
         if body.len() > MAX_REQUEST_BODY {
             return Err(HttpError::TooLarge);
@@ -672,6 +710,14 @@ impl Client {
         }
         let mut body_out = Vec::new();
         loop {
+            // Total deadline: a trickling body cannot outlive the sum of the phase timeouts. The
+            // next wait is shortened to what is left (best effort; the check above each read
+            // bounds the loop even if the option cannot be set).
+            let wait_ms = next_receive_timeout(total, started.elapsed(), self.timeouts.receive_ms)
+                .ok_or(HttpError::Timeout)?;
+            if wait_ms < self.timeouts.receive_ms {
+                let _ = set_u32_option(&request, WINHTTP_OPTION_RECEIVE_TIMEOUT, wait_ms);
+            }
             let mut available = 0_u32;
             // SAFETY: `available` is writable.
             if unsafe { WinHttpQueryDataAvailable(request.0, &raw mut available) } == 0 {
@@ -719,7 +765,36 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
-    use super::{EndpointUrl, HttpError, HttpsUrl, LoopbackUrl, header_block, valid_header};
+    use super::{
+        EndpointUrl, HttpError, HttpsUrl, LoopbackUrl, Timeouts, header_block,
+        next_receive_timeout, valid_header,
+    };
+    use std::time::Duration;
+
+    #[test]
+    fn total_deadline_bounds_each_receive() {
+        let timeouts = Timeouts {
+            resolve_ms: 5_000,
+            connect_ms: 5_000,
+            send_ms: 10_000,
+            receive_ms: 10_000,
+        };
+        assert_eq!(timeouts.total_ms(), 30_000);
+        let total = Duration::from_millis(timeouts.total_ms());
+        let at = Duration::from_millis;
+        assert_eq!(next_receive_timeout(total, at(0), 10_000), Some(10_000));
+        assert_eq!(next_receive_timeout(total, at(25_000), 10_000), Some(5_000));
+        assert_eq!(next_receive_timeout(total, at(29_999), 10_000), Some(1));
+        assert_eq!(next_receive_timeout(total, at(30_000), 10_000), None);
+        assert_eq!(next_receive_timeout(total, at(90_000), 10_000), None);
+        let huge = Timeouts {
+            resolve_ms: u32::MAX,
+            connect_ms: u32::MAX,
+            send_ms: u32::MAX,
+            receive_ms: u32::MAX,
+        };
+        assert_eq!(huge.total_ms(), 4 * u64::from(u32::MAX));
+    }
 
     #[test]
     fn https_url_accepts_and_normalizes() {

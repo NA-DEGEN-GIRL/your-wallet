@@ -5,14 +5,20 @@
 //! own `OVERLAPPED` with a manual-reset event, waited with `GetOverlappedResult(wait = TRUE)`: on
 //! a synchronous handle a pending `ReadFile` blocks another thread's `WriteFile` (synchronous file
 //! objects serialize I/O), which would make a full-duplex relay impossible. The two halves of a
-//! connection share one handle through an `Arc`; the last one dropped closes it (the server side
-//! calls `DisconnectNamedPipe` first, which discards data the peer has not read yet).
+//! connection share one handle through an `Arc`; the last one dropped closes it with plain
+//! `CloseHandle` (no `DisconnectNamedPipe`, which would discard data the peer has not read yet,
+//! e.g. a final hello-reject). `DisconnectNamedPipe` is used only to reuse an instance whose client
+//! left before the connect completed.
 //!
 //! Security and creation flags follow
 //! `archive/spec-v2.4:crates/platform-windows/src/broker_channel.rs:505-558` (SDDL →
 //! `ConvertStringSecurityDescriptorToSecurityDescriptorW`, `LocalFree`) and `:889-918`
 //! (`create_server`), except for the name: it is fixed per user (`YourWallet.v3.<SID>`), never
-//! random, and the instance limit is 4.
+//! random, and the instance limit is 4. Because the name is predictable, both ends check who owns
+//! the pipe object: the client reads the owner of its handle ([`Duplex::owner_sid`]) and refuses a
+//! server that another user created, and the server compares the security of every later instance
+//! with the first one (created with `FILE_FLAG_FIRST_PIPE_INSTANCE`) and closes an instance that
+//! joined a pipe someone else created after all of ours had closed.
 
 use core::ffi::c_void;
 use core::fmt;
@@ -229,23 +235,14 @@ impl Drop for Slot {
     }
 }
 
-/// The handle shared by both halves of a connection.
+/// The handle shared by both halves of a connection. Dropping it closes the handle without
+/// `DisconnectNamedPipe`, so the peer still reads every byte written before the close (then EOF).
 struct PipeShared {
     // Field order matters: the handle closes before the slot is released, so the server never
     // exceeds the instance limit when it creates the next instance.
     handle: OwnedHandle,
     slot: Option<Slot>,
     cancelled: AtomicBool,
-}
-
-impl Drop for PipeShared {
-    fn drop(&mut self) {
-        if self.slot.is_some() {
-            // SAFETY: Server-side instance handle owned by `self`; no I/O is pending because no
-            // half references it any more.
-            unsafe { DisconnectNamedPipe(self.handle.raw()) };
-        }
-    }
 }
 
 /// A connected pipe (either end). Split it into a reader and a writer for full-duplex use.
@@ -312,6 +309,34 @@ impl Duplex {
         let ok = unsafe { GetNamedPipeClientProcessId(self.shared.handle.raw(), &raw mut pid) };
         (ok != 0 && pid != 0).then_some(pid)
     }
+
+    /// The owner SID string of the pipe object behind this end
+    /// (`GetSecurityInfo(SE_KERNEL_OBJECT, OWNER_SECURITY_INFORMATION)` on the handle). On the
+    /// client side this is the owner the *server* gave the pipe: a process of another user cannot
+    /// make it this user's SID (that needs `SeRestorePrivilege`), so it identifies a squatter on
+    /// the predictable per-user name (spec/05 §8.1).
+    ///
+    /// # Errors
+    ///
+    /// The failing call's [`WinError`] (e.g. the handle lacks `READ_CONTROL`).
+    pub fn owner_sid(&self) -> Result<String, WinError> {
+        query_security(self.shared.handle.raw(), false).map(|summary| summary.owner)
+    }
+
+    /// Whether the pipe object is owned by the user running this process: [`Self::owner_sid`]
+    /// equals [`crate::current_user_sid_string`] ([`owner_is`]; any failure is `false`).
+    #[must_use]
+    pub fn owned_by_current_user(&self) -> bool {
+        owner_is(self.owner_sid(), crate::current_user_sid_string())
+    }
+}
+
+/// `true` only when both SIDs were read, the owner is not empty and both strings are equal (the
+/// owner check of [`Duplex::owned_by_current_user`], separated so callers can inject the
+/// expected SID).
+#[must_use]
+pub fn owner_is(owner: Result<String, WinError>, expected: Result<String, WinError>) -> bool {
+    matches!((owner, expected), (Ok(owner), Ok(expected)) if !owner.is_empty() && owner == expected)
 }
 
 /// The reading half. `ERROR_BROKEN_PIPE`, `ERROR_PIPE_NOT_CONNECTED` and a 0-byte read are EOF
@@ -372,15 +397,19 @@ impl fmt::Debug for PipeWriter {
 }
 
 impl io::Write for PipeWriter {
+    /// A cancelled connection ([`PipeCanceller::cancel`]) fails with `ERROR_OPERATION_ABORTED`,
+    /// whether the cancel came before the write started or while it was pending.
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         if buffer.is_empty() {
             return Ok(0);
         }
+        if self.shared.cancelled.load(Ordering::SeqCst) {
+            return Err(os_error(ERROR_OPERATION_ABORTED));
+        }
         let handle = self.shared.handle.raw();
         let length = clamp_len(buffer.len());
         let pointer = buffer.as_ptr();
-        let never = AtomicBool::new(false);
-        let result = overlapped_io(handle, &self.event, &never, |overlapped| {
+        let result = overlapped_io(handle, &self.event, &self.shared.cancelled, |overlapped| {
             // SAFETY: `pointer` is readable for `length` bytes and `buffer` stays borrowed until
             // `overlapped_io` returns after completion; `overlapped` is live and in place.
             unsafe { WriteFile(handle, pointer, length, core::ptr::null_mut(), overlapped) }
@@ -397,8 +426,8 @@ impl io::Write for PipeWriter {
 }
 
 /// Aborts a connection's I/O: `cancel()` = `CancelIoEx(handle, NULL)`, which completes every
-/// pending read and write on the shared handle with `ERROR_OPERATION_ABORTED`; later reads fail
-/// at once. Holds no strong reference, so it never keeps the connection open.
+/// pending read and write on the shared handle with `ERROR_OPERATION_ABORTED`; later reads and
+/// writes fail at once. Holds no strong reference, so it never keeps the connection open.
 #[derive(Clone)]
 pub struct PipeCanceller(Weak<PipeShared>);
 
@@ -411,7 +440,7 @@ impl fmt::Debug for PipeCanceller {
 }
 
 impl PipeCanceller {
-    /// Cancels pending and future reads (and pending writes) of the connection, if it is open.
+    /// Cancels pending and future reads and writes of the connection, if it is open.
     pub fn cancel(&self) {
         if let Some(shared) = self.0.upgrade() {
             shared.cancelled.store(true, Ordering::SeqCst);
@@ -491,7 +520,9 @@ pub fn wait(name: &str, timeout_ms: u32) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ServerError {
     /// The first instance could not be created (`ERROR_ACCESS_DENIED`): another server (another
-    /// yw-app) owns the name.
+    /// yw-app) owns the name. Also returned by `accept` when a later instance turned out to belong
+    /// to a pipe with another owner or DACL (someone created the name after all of this server's
+    /// instances had closed); that instance is closed at once.
     AlreadyExists,
     /// [`ServerStop::stop`] was called.
     Stopped,
@@ -657,6 +688,8 @@ enum Connect {
 pub struct Server {
     name: Vec<u16>,
     security: SecurityDescriptor,
+    /// Owner and DACL read back from the first instance; every later instance must match.
+    expected: SecuritySummary,
     listening: Option<OwnedHandle>,
     connect_event: Event,
     slots: Arc<Slots>,
@@ -692,9 +725,12 @@ impl Server {
                 ServerError::Os(error)
             }
         })?;
+        // The first instance created the pipe, so its security is ours (read back once).
+        let expected = query_security(first.raw(), true).map_err(ServerError::Os)?;
         Ok(Self {
             name,
             security,
+            expected,
             listening: Some(first),
             connect_event: Event::new(true).map_err(ServerError::Os)?,
             slots: Arc::new(Slots {
@@ -718,10 +754,13 @@ impl Server {
     /// success). Afterwards the next waiting instance is created while fewer than 4 connections
     /// are active; with 4 active, the next `accept` waits until a connection closes (both halves
     /// of its `Duplex` dropped) before creating one, and clients meanwhile get `ERROR_PIPE_BUSY`.
+    /// Every later instance is checked against the first one's owner and DACL (see
+    /// [`ServerError::AlreadyExists`]).
     ///
     /// # Errors
     ///
-    /// [`ServerError::Stopped`] after [`ServerStop::stop`], or [`ServerError::Os`].
+    /// [`ServerError::Stopped`] after [`ServerStop::stop`], [`ServerError::AlreadyExists`] for an
+    /// instance of a foreign pipe, or [`ServerError::Os`].
     pub fn accept(&mut self) -> Result<Duplex, ServerError> {
         loop {
             if self.stop.stopped.load(Ordering::SeqCst) {
@@ -737,8 +776,8 @@ impl Server {
                     let slot = Slot::acquire(&self.slots);
                     let duplex = Duplex::new(instance, Some(slot)).map_err(ServerError::Os)?;
                     if self.slots.active() < MAX_INSTANCES {
-                        // A failure here is retried by the next `accept`.
-                        self.listening = create_instance(&self.name, &self.security, false).ok();
+                        // A failure here is retried (and reported) by the next `accept`.
+                        self.listening = self.create_later().ok();
                     }
                     return Ok(duplex);
                 }
@@ -754,15 +793,36 @@ impl Server {
         }
     }
 
+    /// Creates a non-first instance and checks that it belongs to this server's pipe: its owner
+    /// and DACL (shared by all instances of a pipe) must equal the first instance's. Without the
+    /// check, an instance created after all of ours had closed could join a pipe another user
+    /// created under the same name in between. A mismatching instance is closed here.
+    fn create_later(&self) -> Result<OwnedHandle, ServerError> {
+        let instance = create_instance(&self.name, &self.security, false).map_err(|error| {
+            if error.code == ERROR_ACCESS_DENIED {
+                ServerError::AlreadyExists
+            } else {
+                ServerError::Os(error)
+            }
+        })?;
+        match query_security(instance.raw(), true) {
+            Ok(summary) if summary == self.expected => Ok(instance),
+            Ok(_) => Err(ServerError::AlreadyExists),
+            Err(error) => Err(ServerError::Os(error)),
+        }
+    }
+
     /// Creates a non-first instance once fewer than 4 connections are active.
     fn next_instance(&self) -> Result<OwnedHandle, ServerError> {
         loop {
             let mut timeout = INFINITE;
             if self.slots.active() < MAX_INSTANCES {
-                match create_instance(&self.name, &self.security, false) {
+                match self.create_later() {
                     Ok(instance) => return Ok(instance),
-                    Err(error) if error.code == ERROR_PIPE_BUSY => timeout = BUSY_RETRY_MS,
-                    Err(error) => return Err(ServerError::Os(error)),
+                    Err(ServerError::Os(error)) if error.code == ERROR_PIPE_BUSY => {
+                        timeout = BUSY_RETRY_MS;
+                    }
+                    Err(error) => return Err(error),
                 }
             }
             match wait_any(&[self.stop.event.raw(), self.slots.freed.raw()], timeout) {
@@ -833,54 +893,70 @@ impl Server {
             .listening
             .as_ref()
             .ok_or(WinError::new("GetSecurityInfo", ERROR_INVALID_HANDLE))?;
-        let mut owner: PSID = core::ptr::null_mut();
-        let mut dacl: *mut ACL = core::ptr::null_mut();
-        let mut descriptor: PSECURITY_DESCRIPTOR = core::ptr::null_mut();
-        // SAFETY: Live instance handle; all out pointers are writable; group and SACL are not
-        // requested.
-        let status = unsafe {
-            GetSecurityInfo(
-                instance.raw(),
-                SE_KERNEL_OBJECT,
-                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-                &raw mut owner,
-                core::ptr::null_mut(),
-                &raw mut dacl,
-                core::ptr::null_mut(),
-                &raw mut descriptor,
-            )
-        };
-        if status != 0 {
-            return Err(WinError::new("GetSecurityInfo", status));
-        }
-        let descriptor = LocalBuffer(descriptor);
-        let mut control = 0_u16;
-        let mut revision = 0_u32;
-        // SAFETY: `descriptor` is the live descriptor returned above; outputs are writable.
-        let ok = unsafe {
-            GetSecurityDescriptorControl(descriptor.0, &raw mut control, &raw mut revision)
-        };
-        if ok == 0 {
-            return Err(WinError::last("GetSecurityDescriptorControl"));
-        }
-        let owner = if owner.is_null() {
-            String::new()
-        } else {
-            // SAFETY: `owner` points into `descriptor`, which is alive.
-            unsafe { sid_to_string(owner) }?
-        };
-        let aces = if dacl.is_null() {
-            Vec::new()
-        } else {
-            // SAFETY: `dacl` points into `descriptor`, which is alive.
-            unsafe { read_aces(dacl) }?
-        };
-        Ok(SecuritySummary {
-            owner,
-            dacl_protected: control & SE_DACL_PROTECTED != 0,
-            aces,
-        })
+        query_security(instance.raw(), true)
     }
+}
+
+/// `GetSecurityInfo(handle, SE_KERNEL_OBJECT, OWNER [| DACL])` + `GetSecurityDescriptorControl`.
+/// Without `with_dacl` only the owner is read (`dacl_protected` is then `false`, `aces` empty).
+fn query_security(handle: HANDLE, with_dacl: bool) -> Result<SecuritySummary, WinError> {
+    let mut owner: PSID = core::ptr::null_mut();
+    let mut dacl: *mut ACL = core::ptr::null_mut();
+    let mut descriptor: PSECURITY_DESCRIPTOR = core::ptr::null_mut();
+    let info = if with_dacl {
+        OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
+    } else {
+        OWNER_SECURITY_INFORMATION
+    };
+    let dacl_out: *mut *mut ACL = if with_dacl {
+        &raw mut dacl
+    } else {
+        core::ptr::null_mut()
+    };
+    // SAFETY: `handle` is a live pipe handle owned by the caller; every requested out pointer is
+    // writable (the DACL one is null when the DACL is not requested); group and SACL are not
+    // requested.
+    let status = unsafe {
+        GetSecurityInfo(
+            handle,
+            SE_KERNEL_OBJECT,
+            info,
+            &raw mut owner,
+            core::ptr::null_mut(),
+            dacl_out,
+            core::ptr::null_mut(),
+            &raw mut descriptor,
+        )
+    };
+    if status != 0 {
+        return Err(WinError::new("GetSecurityInfo", status));
+    }
+    let descriptor = LocalBuffer(descriptor);
+    let mut control = 0_u16;
+    let mut revision = 0_u32;
+    // SAFETY: `descriptor` is the live descriptor returned above; outputs are writable.
+    let ok =
+        unsafe { GetSecurityDescriptorControl(descriptor.0, &raw mut control, &raw mut revision) };
+    if ok == 0 {
+        return Err(WinError::last("GetSecurityDescriptorControl"));
+    }
+    let owner = if owner.is_null() {
+        String::new()
+    } else {
+        // SAFETY: `owner` points into `descriptor`, which is alive.
+        unsafe { sid_to_string(owner) }?
+    };
+    let aces = if dacl.is_null() {
+        Vec::new()
+    } else {
+        // SAFETY: `dacl` points into `descriptor`, which is alive.
+        unsafe { read_aces(dacl) }?
+    };
+    Ok(SecuritySummary {
+        owner,
+        dacl_protected: with_dacl && control & SE_DACL_PROTECTED != 0,
+        aces,
+    })
 }
 
 /// The ACEs of `dacl`.
@@ -939,7 +1015,50 @@ unsafe fn read_aces(dacl: *const ACL) -> Result<Vec<AceSummary>, WinError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{user_only_sddl, wallet_pipe_name};
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use super::{Server, ServerError, owner_is, user_only_sddl, wallet_pipe_name};
+    use crate::error::WinError;
+
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+
+    fn unique_name() -> String {
+        format!(
+            r"\\.\pipe\YourWallet.test.unit.{}.{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        )
+    }
+
+    #[test]
+    fn owner_check_needs_two_equal_readable_sids() {
+        let sid = || Ok::<_, WinError>("S-1-5-21-1-2-3-1001".to_owned());
+        assert!(owner_is(sid(), sid()));
+        assert!(!owner_is(sid(), Ok("S-1-5-21-1-2-3-1002".to_owned())));
+        assert!(!owner_is(Ok(String::new()), Ok(String::new())));
+        assert!(!owner_is(Err(WinError::new("GetSecurityInfo", 5)), sid()));
+        assert!(!owner_is(sid(), Err(WinError::new("OpenProcessToken", 5))));
+    }
+
+    /// All of the server's instances closed and another server took the name: the next instance
+    /// joins that pipe (same name), so its security differs from the first instance's and it is
+    /// closed instead of being offered to clients. The "squatter" here is the same user with a
+    /// wider DACL; a real one also has another owner.
+    #[test]
+    fn a_later_instance_of_a_foreign_pipe_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+        let sid = crate::current_user_sid_string()?;
+        let name = unique_name();
+        let mut server = Server::create(&name, &user_only_sddl(&sid))?;
+        server.listening = None;
+        let squatter = Server::create(&name, &format!("O:{sid}D:P(A;;GA;;;{sid})(A;;GA;;;WD)"))?;
+        assert_ne!(squatter.security_summary()?, server.expected);
+        assert!(matches!(server.accept(), Err(ServerError::AlreadyExists)));
+        assert!(server.listening.is_none());
+        drop(squatter);
+        // The name is free again: the server recreates a verified instance.
+        assert!(server.create_later().is_ok());
+        Ok(())
+    }
 
     #[test]
     fn pipe_name_and_sddl_follow_d24() {

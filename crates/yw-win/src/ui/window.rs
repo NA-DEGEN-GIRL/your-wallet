@@ -7,14 +7,22 @@
 //! exclusion is applied to the hidden window before any state is attached and read back, the
 //! listed messages are blocked, and the per-window pointer is cleared at `WM_NCDESTROY`. The
 //! one-shot `PRESENTED` guard is gone; classes are registered once; the app owns the loop.
+//!
+//! Message parameters are not trusted to carry our pointers: the per-window state is found in a
+//! thread-local registry (hwnd → state), never through `GWLP_USERDATA` (which another process can
+//! overwrite), and `WM_NCCREATE` adopts its `lpCreateParams` only when it is exactly the state
+//! [`create_window`] is creating on this thread. Messages whose `lParam` the trampoline
+//! dereferences are never legitimately posted, so [`run_loop`] drops posted copies.
 
 use core::cell::{Cell, RefCell};
 use core::fmt;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Mutex;
 
 use windows_sys::Win32::Foundation::{
-    ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+    ERROR_CLASS_ALREADY_EXISTS, ERROR_INVALID_WINDOW_HANDLE, HWND, LPARAM, LRESULT, POINT, RECT,
+    WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::{
     GetMonitorInfoW, GetStockObject, InvalidateRect, MONITOR_DEFAULTTONEAREST,
@@ -43,11 +51,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SIF_TRACKPOS, SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowDisplayAffinity, SetWindowLongPtrW,
     SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WM_APP,
-    WM_CHAR, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DPICHANGED, WM_DRAWITEM, WM_GETMINMAXINFO,
-    WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEWHEEL,
-    WM_NCCREATE, WM_NCDESTROY, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WNDCLASSEXW, WS_CAPTION, WS_CHILD,
-    WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_EX_TOPMOST,
-    WS_MINIMIZEBOX, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW, WS_SYSMENU, WS_THICKFRAME, WS_VSCROLL,
+    WM_CHAR, WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM,
+    WM_GETMINMAXINFO, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN,
+    WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WNDCLASSEXW,
+    WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_EX_CONTROLPARENT,
+    WS_EX_DLGMODALFRAME, WS_EX_TOPMOST, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW,
+    WS_SYSMENU, WS_THICKFRAME, WS_VSCROLL,
 };
 
 use super::msg::{
@@ -120,6 +129,66 @@ static CLASSES: Mutex<Vec<ClassEntry>> = Mutex::new(Vec::new());
 thread_local! {
     /// Top-level windows whose messages go through `IsDialogMessageW` (Tab navigation).
     static DIALOG_ROOTS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    /// Live windows of this thread: hwnd → address of the adopted `Box<WindowState>`. The
+    /// trampoline dereferences only a state found here (added at `WM_NCCREATE`, removed at
+    /// `WM_NCDESTROY`).
+    static STATES: RefCell<HashMap<usize, usize>> = RefCell::new(HashMap::new());
+    /// The state box [`create_window`] is creating on this thread (0 = none). `WM_NCCREATE`
+    /// adopts exactly this pointer, once.
+    static CREATING: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The `WM_NCCREATE` adoption rule: the creation parameter is exactly the state being created
+/// on this thread, the window's user data was never set and the window is not registered yet.
+const fn may_adopt(params: usize, creating: usize, user_data: isize, registered: bool) -> bool {
+    params != 0 && params == creating && user_data == 0 && !registered
+}
+
+/// The registered state of `hwnd` on this thread (null when there is none).
+fn registered_state(hwnd: HWND) -> *mut WindowState {
+    let address = STATES.with(|states| {
+        states
+            .try_borrow()
+            .ok()
+            .and_then(|states| states.get(&hwnd.expose_provenance()).copied())
+            .unwrap_or(0)
+    });
+    core::ptr::with_exposed_provenance_mut(address)
+}
+
+fn register_state(hwnd: HWND, state: usize) -> bool {
+    STATES.with(|states| {
+        states.try_borrow_mut().is_ok_and(|mut states| {
+            states.insert(hwnd.expose_provenance(), state);
+            true
+        })
+    })
+}
+
+fn unregister_state(hwnd: HWND) {
+    STATES.with(|states| {
+        if let Ok(mut states) = states.try_borrow_mut() {
+            states.remove(&hwnd.expose_provenance());
+        }
+    });
+}
+
+/// Messages the trampoline treats as coming from the system (it dereferences their `lParam` or
+/// they change the window's lifecycle). Windows sends them; a posted copy is forged and
+/// [`run_loop`] drops it.
+const fn never_posted(msg: u32) -> bool {
+    matches!(
+        msg,
+        WM_NCCREATE
+            | WM_CREATE
+            | WM_NCDESTROY
+            | WM_DESTROY
+            | WM_GETMINMAXINFO
+            | WM_DPICHANGED
+            | WM_DRAWITEM
+            | WM_CTLCOLORSTATIC
+            | WM_CTLCOLORBTN
+    )
 }
 
 fn module_handle() -> Result<windows_sys::Win32::Foundation::HINSTANCE, WinError> {
@@ -407,18 +476,27 @@ impl Window {
         self.shared.alive.get()
     }
 
+    /// The raw handle while the window exists. After `WM_NCDESTROY` the handle value may be
+    /// reused by an unrelated window, so every method below does nothing (or returns a neutral
+    /// value) once the window is gone.
+    fn live(&self) -> Option<HWND> {
+        self.shared.alive.get().then(|| self.hwnd.raw())
+    }
+
     /// Shows the window (restores it when minimized).
     pub fn show(&self) {
-        // SAFETY: Queries the minimized state of our window handle.
-        let iconic = unsafe { IsIconic(self.hwnd.raw()) } != 0;
-        // SAFETY: Shows our window handle.
-        unsafe { ShowWindow(self.hwnd.raw(), if iconic { SW_RESTORE } else { SW_SHOW }) };
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: Queries the minimized state of our live window handle.
+        let iconic = unsafe { IsIconic(hwnd) } != 0;
+        // SAFETY: Shows our live window handle.
+        unsafe { ShowWindow(hwnd, if iconic { SW_RESTORE } else { SW_SHOW }) };
     }
 
     /// Hides the window.
     pub fn hide(&self) {
-        // SAFETY: Hides our window handle.
-        unsafe { ShowWindow(self.hwnd.raw(), SW_HIDE) };
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: Hides our live window handle.
+        unsafe { ShowWindow(hwnd, SW_HIDE) };
     }
 
     /// Destroys the window now.
@@ -436,21 +514,23 @@ impl Window {
 
     /// Enables or disables mouse and keyboard input.
     pub fn enable(&self, enabled: bool) {
-        // SAFETY: Changes the enabled state of our window handle.
-        unsafe { EnableWindow(self.hwnd.raw(), i32::from(enabled)) };
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: Changes the enabled state of our live window handle.
+        unsafe { EnableWindow(hwnd, i32::from(enabled)) };
     }
 
     /// Adds or removes `WS_EX_TOPMOST`.
     pub fn set_topmost(&self, topmost: bool) {
+        let Some(hwnd) = self.live() else { return };
         let after = if topmost {
             HWND_TOPMOST
         } else {
             HWND_NOTOPMOST
         };
-        // SAFETY: Changes only the z-order of our window.
+        // SAFETY: Changes only the z-order of our live window.
         unsafe {
             SetWindowPos(
-                self.hwnd.raw(),
+                hwnd,
                 after,
                 0,
                 0,
@@ -464,35 +544,41 @@ impl Window {
     /// `SetForegroundWindow`; returns whether it succeeded.
     #[must_use]
     pub fn set_foreground(&self) -> bool {
-        // SAFETY: Requests foreground activation for our window handle.
-        unsafe { SetForegroundWindow(self.hwnd.raw()) != 0 }
+        let Some(hwnd) = self.live() else {
+            return false;
+        };
+        // SAFETY: Requests foreground activation for our live window handle.
+        unsafe { SetForegroundWindow(hwnd) != 0 }
     }
 
     /// `FlashWindowEx(FLASHW_ALL | FLASHW_TIMERNOFG)`.
     pub fn flash(&self) {
+        let Some(hwnd) = self.live() else { return };
         let info = FLASHWINFO {
             cbSize: u32::try_from(core::mem::size_of::<FLASHWINFO>()).unwrap_or(20),
-            hwnd: self.hwnd.raw(),
+            hwnd,
             dwFlags: FLASHW_ALL | FLASHW_TIMERNOFG,
             uCount: 0,
             dwTimeout: 0,
         };
-        // SAFETY: `info` is a valid FLASHWINFO for our window.
+        // SAFETY: `info` is a valid FLASHWINFO for our live window.
         unsafe { FlashWindowEx(&raw const info) };
     }
 
     /// Invalidates the whole client area.
     pub fn invalidate(&self) {
-        // SAFETY: Invalidates our window's client area (null rect = everything).
-        unsafe { InvalidateRect(self.hwnd.raw(), core::ptr::null(), 1) };
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: Invalidates our live window's client area (null rect = everything).
+        unsafe { InvalidateRect(hwnd, core::ptr::null(), 1) };
     }
 
     /// Sets the title (never pass secrets).
     pub fn set_title(&self, title: &str) {
+        let Some(hwnd) = self.live() else { return };
         if let Ok(wide) = to_wide(title, "SetWindowTextW") {
             // SAFETY: `wide` is NUL-terminated and live for the call. Secret windows block
             // WM_SETTEXT once armed, so titles are set before attaching or on non-secret windows.
-            unsafe { SetWindowTextW(self.hwnd.raw(), wide.as_ptr()) };
+            unsafe { SetWindowTextW(hwnd, wide.as_ptr()) };
         }
     }
 
@@ -500,10 +586,13 @@ impl Window {
     ///
     /// # Errors
     ///
-    /// [`WinError`] from `SetTimer`.
+    /// [`WinError`] from `SetTimer` (`ERROR_INVALID_WINDOW_HANDLE` once the window is gone).
     pub fn set_timer(&self, id: usize, ms: u32) -> Result<(), WinError> {
-        // SAFETY: Creates a window timer on our window (no callback).
-        let result = unsafe { SetTimer(self.hwnd.raw(), id, ms, None) };
+        let hwnd = self
+            .live()
+            .ok_or(WinError::new("SetTimer", ERROR_INVALID_WINDOW_HANDLE))?;
+        // SAFETY: Creates a window timer on our live window (no callback).
+        let result = unsafe { SetTimer(hwnd, id, ms, None) };
         if result == 0 {
             return Err(WinError::last("SetTimer"));
         }
@@ -512,15 +601,17 @@ impl Window {
 
     /// Stops timer `id`.
     pub fn kill_timer(&self, id: usize) {
-        // SAFETY: Kills a timer on our window; unknown ids are harmless.
-        unsafe { KillTimer(self.hwnd.raw(), id) };
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: Kills a timer on our live window; unknown ids are harmless.
+        unsafe { KillTimer(hwnd, id) };
     }
 
     /// Current DPI (96 if unknown).
     #[must_use]
     pub fn dpi(&self) -> u32 {
-        // SAFETY: Queries the DPI of our window.
-        let dpi = unsafe { GetDpiForWindow(self.hwnd.raw()) };
+        let Some(hwnd) = self.live() else { return 96 };
+        // SAFETY: Queries the DPI of our live window.
+        let dpi = unsafe { GetDpiForWindow(hwnd) };
         if dpi == 0 { 96 } else { dpi }
     }
 
@@ -539,15 +630,18 @@ impl Window {
             right: 0,
             bottom: 0,
         };
-        // SAFETY: `rect` is writable storage for our window's client rectangle.
-        unsafe { GetClientRect(self.hwnd.raw(), &raw mut rect) };
+        if let Some(hwnd) = self.live() {
+            // SAFETY: `rect` is writable storage for our live window's client rectangle.
+            unsafe { GetClientRect(hwnd, &raw mut rect) };
+        }
         Rect::from_win(&rect)
     }
 
     /// Captures the mouse.
     pub fn set_capture(&self) {
-        // SAFETY: Captures the mouse for our window.
-        unsafe { SetCapture(self.hwnd.raw()) };
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: Captures the mouse for our live window.
+        unsafe { SetCapture(hwnd) };
     }
 
     /// Releases mouse capture.
@@ -562,34 +656,42 @@ impl Window {
 
     /// Gives this window keyboard focus.
     pub fn set_focus(&self) {
-        // SAFETY: Sets focus to our window.
-        unsafe { SetFocus(self.hwnd.raw()) };
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: Sets focus to our live window.
+        unsafe { SetFocus(hwnd) };
     }
 
     /// Whether this window is the foreground window.
     #[must_use]
     pub fn is_foreground(&self) -> bool {
+        let Some(hwnd) = self.live() else {
+            return false;
+        };
         // SAFETY: Reads the foreground window handle.
         let foreground = unsafe { GetForegroundWindow() };
-        foreground == self.hwnd.raw()
+        foreground == hwnd
     }
 
     /// Whether keyboard focus is this window or one of its children.
     #[must_use]
     pub fn focus_within(&self) -> bool {
+        let Some(hwnd) = self.live() else {
+            return false;
+        };
         // SAFETY: Reads the thread's focus window.
         let focus = unsafe { GetFocus() };
         if focus.is_null() {
             return false;
         }
         // SAFETY: Queries the parent/child relation of two window handles.
-        focus == self.hwnd.raw() || unsafe { IsChild(self.hwnd.raw(), focus) } != 0
+        focus == hwnd || unsafe { IsChild(hwnd, focus) } != 0
     }
 
     /// Centers the window on `anchor`'s monitor work area (or its own monitor).
     pub fn center_on(&self, anchor: Option<&Self>) {
-        let target = anchor.map_or(self.hwnd, |window| window.hwnd);
-        let Some(work) = work_area(target.raw(), MONITOR_DEFAULTTONEAREST) else {
+        let Some(hwnd) = self.live() else { return };
+        let target = anchor.and_then(Self::live).unwrap_or(hwnd);
+        let Some(work) = work_area(target, MONITOR_DEFAULTTONEAREST) else {
             return;
         };
         let mut rect = RECT {
@@ -598,20 +700,15 @@ impl Window {
             right: 0,
             bottom: 0,
         };
-        // SAFETY: `rect` is writable storage for our window rectangle.
-        unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(
-                self.hwnd.raw(),
-                &raw mut rect,
-            )
-        };
+        // SAFETY: `rect` is writable storage for our live window's rectangle.
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &raw mut rect) };
         let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
         let x = work.left + (work.right - work.left - w).max(0) / 2;
         let y = work.top + (work.bottom - work.top - h).max(0) / 2;
-        // SAFETY: Moves our window.
+        // SAFETY: Moves our live window.
         unsafe {
             SetWindowPos(
-                self.hwnd.raw(),
+                hwnd,
                 core::ptr::null_mut(),
                 x,
                 y,
@@ -624,10 +721,11 @@ impl Window {
 
     /// Moves and sizes the window (client coordinates of the parent for a child panel).
     pub fn set_rect(&self, rect: Rect) {
-        // SAFETY: Moves and sizes our window; no z-order or activation change.
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: Moves and sizes our live window; no z-order or activation change.
         unsafe {
             SetWindowPos(
-                self.hwnd.raw(),
+                hwnd,
                 core::ptr::null_mut(),
                 rect.x,
                 rect.y,
@@ -640,6 +738,7 @@ impl Window {
 
     /// Sets the vertical scroll bar: range `0..=max`, page size and position (pixels).
     pub fn set_vscroll(&self, pos: i32, page: i32, max: i32) {
+        let Some(hwnd) = self.live() else { return };
         let info = SCROLLINFO {
             cbSize: u32::try_from(core::mem::size_of::<SCROLLINFO>()).unwrap_or(28),
             fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
@@ -649,13 +748,14 @@ impl Window {
             nPos: pos.max(0),
             nTrackPos: 0,
         };
-        // SAFETY: `info` is a valid SCROLLINFO for our window's vertical bar.
-        unsafe { SetScrollInfo(self.hwnd.raw(), SB_VERT, &raw const info, 1) };
+        // SAFETY: `info` is a valid SCROLLINFO for our live window's vertical bar.
+        unsafe { SetScrollInfo(hwnd, SB_VERT, &raw const info, 1) };
     }
 
     /// The thumb position while it is dragged (`SB_THUMBTRACK`), 0 if unknown.
     #[must_use]
     pub fn vscroll_track_pos(&self) -> i32 {
+        let Some(hwnd) = self.live() else { return 0 };
         let mut info = SCROLLINFO {
             cbSize: u32::try_from(core::mem::size_of::<SCROLLINFO>()).unwrap_or(28),
             fMask: SIF_TRACKPOS,
@@ -665,8 +765,8 @@ impl Window {
             nPos: 0,
             nTrackPos: 0,
         };
-        // SAFETY: `info` is writable with `cbSize` and `fMask` set.
-        let ok = unsafe { GetScrollInfo(self.hwnd.raw(), SB_VERT, &raw mut info) };
+        // SAFETY: `info` is writable with `cbSize` and `fMask` set; the window is live.
+        let ok = unsafe { GetScrollInfo(hwnd, SB_VERT, &raw mut info) };
         if ok == 0 { 0 } else { info.nTrackPos }
     }
 
@@ -692,11 +792,18 @@ impl Window {
         width: i32,
         flags: super::paint::DrawFlags,
     ) -> (i32, i32) {
-        super::paint::measure_with(self.hwnd.raw(), font, text, width, flags)
+        // A destroyed window measures on the screen DC (null window) instead of a stale handle.
+        let hwnd = self.live().unwrap_or(core::ptr::null_mut());
+        super::paint::measure_with(hwnd, font, text, width, flags)
     }
 
-    pub(crate) const fn raw_id(&self) -> usize {
-        self.hwnd.0
+    /// The raw handle value while the window exists, 0 (no window) afterwards.
+    pub(crate) fn live_raw_id(&self) -> usize {
+        if self.shared.alive.get() {
+            self.hwnd.0
+        } else {
+            0
+        }
     }
 
     pub(crate) fn alive_probe(&self) -> Rc<dyn Fn() -> bool> {
@@ -708,9 +815,12 @@ impl Window {
     ///
     /// # Errors
     ///
-    /// [`WinError`] from `BeginPaint`.
+    /// [`WinError`] from `BeginPaint` (`ERROR_INVALID_WINDOW_HANDLE` once the window is gone).
     pub fn begin_paint(&self) -> Result<PaintDc<'_>, WinError> {
-        PaintDc::begin(self.hwnd.raw())
+        let hwnd = self
+            .live()
+            .ok_or(WinError::new("BeginPaint", ERROR_INVALID_WINDOW_HANDLE))?;
+        PaintDc::begin(hwnd)
     }
 }
 
@@ -818,7 +928,10 @@ fn apply_exclusion(hwnd: HWND) -> bool {
 ///
 /// [`UiError::CaptureExclusionFailed`] when setting or verifying fails.
 pub fn exclude_from_capture(window: &Window) -> Result<(), UiError> {
-    if apply_exclusion(window.hwnd.raw()) {
+    let Some(hwnd) = window.live() else {
+        return Err(UiError::CaptureExclusionFailed);
+    };
+    if apply_exclusion(hwnd) {
         window.shared.capture_excluded.set(true);
         Ok(())
     } else {
@@ -869,6 +982,9 @@ pub fn create_window(spec: &WindowSpec, handler: Box<dyn Handler>) -> Result<Win
     };
     let instance = module_handle()?;
     let raw_state = Box::into_raw(state);
+    // The only pointer WM_NCCREATE may adopt during this call (restored afterwards, so a window
+    // created from inside another window's creation keeps working).
+    let previous = CREATING.with(|slot| slot.replace(raw_state.expose_provenance()));
     // SAFETY: Class and title are NUL-terminated and live; `raw_state` is a valid boxed state
     // adopted by the trampoline at WM_NCCREATE (ownership tracked through `shared.adopted`).
     let hwnd = unsafe {
@@ -887,6 +1003,7 @@ pub fn create_window(spec: &WindowSpec, handler: Box<dyn Handler>) -> Result<Win
             raw_state.cast_const().cast(),
         )
     };
+    CREATING.with(|slot| slot.set(previous));
     if hwnd.is_null() {
         let error = WinError::last("CreateWindowExW");
         if !shared.adopted.get() {
@@ -894,6 +1011,18 @@ pub fn create_window(spec: &WindowSpec, handler: Box<dyn Handler>) -> Result<Win
             drop(unsafe { Box::from_raw(raw_state) });
         }
         return Err(UiError::Os(error));
+    }
+    if !shared.adopted.get() {
+        // The window exists but never adopted its state (no registry entry): it would have no
+        // handler and could not be destroyed through `Window`, so remove it now.
+        // SAFETY: Destroys the window this thread just created.
+        unsafe { DestroyWindow(hwnd) };
+        // SAFETY: The trampoline never adopted the box, so it is still exclusively ours.
+        drop(unsafe { Box::from_raw(raw_state) });
+        return Err(UiError::Os(WinError::new(
+            "CreateWindowExW",
+            ERROR_INVALID_WINDOW_HANDLE,
+        )));
     }
     let window = Window {
         hwnd: Hwnd::from_raw(hwnd),
@@ -926,14 +1055,13 @@ pub fn create_window(spec: &WindowSpec, handler: Box<dyn Handler>) -> Result<Win
             CaptureOutcome::Excluded | CaptureOutcome::Unprotected => {}
         }
         shared.capture_excluded.set(excluded);
-        // SAFETY: The window is alive (just created on this thread), so its state pointer in
-        // GWLP_USERDATA is the box adopted at WM_NCCREATE.
-        let state_ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
-        let state_ptr = core::ptr::with_exposed_provenance::<WindowState>(
-            usize::try_from(state_ptr).unwrap_or(0),
-        );
-        if state_ptr.is_null() {
-            return Err(UiError::Os(WinError::new("GetWindowLongPtrW", 1_400)));
+        // The registry holds the box adopted at WM_NCCREATE; it must be the one created above.
+        let state_ptr = registered_state(hwnd);
+        if state_ptr.is_null() || state_ptr != raw_state {
+            return Err(UiError::Os(WinError::new(
+                "CreateWindowExW",
+                ERROR_INVALID_WINDOW_HANDLE,
+            )));
         }
         {
             // SAFETY: Non-null pointer to the live adopted state (freed only at WM_NCDESTROY,
@@ -944,7 +1072,7 @@ pub fn create_window(spec: &WindowSpec, handler: Box<dyn Handler>) -> Result<Win
             }
         }
         shared.armed.set(true);
-        deliver_synthesized(state_ptr.cast_mut(), window.hwnd, &shared, &Msg::Create);
+        deliver_synthesized(state_ptr, window.hwnd, &shared, &Msg::Create);
         if !shared.alive.get() {
             return Err(UiError::Os(WinError::new("CreateWindowExW", 1_400)));
         }
@@ -992,6 +1120,14 @@ fn foreign_focus(hwnd: HWND, target: usize) -> bool {
     unsafe { IsChild(hwnd, target) == 0 }
 }
 
+/// `WM_DPICHANGED` carries the new DPI in both words of `wParam` (X and Y are always equal on
+/// Windows); anything else is not a system-generated message and its `lParam` is not read.
+const fn dpi_changed_wparam_valid(wparam: WPARAM) -> bool {
+    let x = wparam & 0xFFFF;
+    let y = (wparam >> 16) & 0xFFFF;
+    x == y && x >= 48 && wparam <= 0xFFFF_FFFF
+}
+
 fn default_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // SAFETY: Forwards the unchanged message to the default window procedure.
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
@@ -1029,7 +1165,7 @@ fn dispatch(state: &WindowState, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             }
             return brush.expose_provenance().cast_signed();
         }
-        WM_DRAWITEM if super::controls::draw_item(lparam) => return 1,
+        WM_DRAWITEM if super::controls::draw_item(hwnd, wparam, lparam) => return 1,
         WM_GETMINMAXINFO if state.min_size != (0, 0) => {
             // SAFETY: Queries our window's DPI.
             let dpi = match unsafe { GetDpiForWindow(hwnd) } {
@@ -1074,7 +1210,7 @@ fn dispatch(state: &WindowState, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
         Reply::Handled(value) => value,
         Reply::Default if msg == WM_DPICHANGED => {
             let suggested: *const RECT = core::ptr::with_exposed_provenance(lparam.cast_unsigned());
-            if !suggested.is_null() {
+            if !suggested.is_null() && dpi_changed_wparam_valid(wparam) {
                 // SAFETY: For WM_DPICHANGED, lParam points to the suggested window RECT.
                 let rect = unsafe { *suggested };
                 // SAFETY: Applies the suggested rectangle to our window.
@@ -1096,10 +1232,41 @@ fn dispatch(state: &WindowState, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
     }
 }
 
+/// `WM_NCCREATE`: adopts the state `create_window` is creating on this thread, and nothing else.
+/// The `CREATESTRUCTW` in `lparam` is read only while such a creation is in progress, and its
+/// `lpCreateParams` must be exactly that state ([`may_adopt`]); a forged `WM_NCCREATE` (sent to
+/// an existing window, or with another pointer) is ignored.
+fn adopt_on_nccreate(hwnd: HWND, lparam: LPARAM) {
+    let creating = CREATING.with(Cell::get);
+    let create: *const CREATESTRUCTW = core::ptr::with_exposed_provenance(lparam.cast_unsigned());
+    if creating == 0 || create.is_null() {
+        return;
+    }
+    // SAFETY: A creation is in progress on this thread, so this WM_NCCREATE comes from our own
+    // CreateWindowExW call and lParam points to the CREATESTRUCTW of that creation.
+    let params = unsafe { (*create).lpCreateParams }.expose_provenance();
+    // SAFETY: Reads the pointer-sized user data of the window being created.
+    let user_data = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
+    let registered = !registered_state(hwnd).is_null();
+    if !may_adopt(params, creating, user_data, registered) || !register_state(hwnd, params) {
+        return;
+    }
+    CREATING.with(|slot| slot.set(0));
+    // SAFETY: Marks the window as adopted in its user data (informational only; lookups use the
+    // registry).
+    unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, params.cast_signed()) };
+    let state: *const WindowState = core::ptr::with_exposed_provenance(params);
+    // SAFETY: `params` equals the live `Box<WindowState>` that `create_window` is creating.
+    let state = unsafe { &*state };
+    state.shared.adopted.set(true);
+    state.shared.alive.set(true);
+}
+
 // SAFETY (contract): Windows calls this procedure on the window's thread with a live HWND. The
-// only pointer stored in GWLP_USERDATA is the `Box<WindowState>` passed through
-// `lpCreateParams`; it is freed exactly once, at WM_NCDESTROY or, if a handler is running, after
-// the outermost dispatch returns.
+// only state pointer ever dereferenced is the `Box<WindowState>` registered for `hwnd` in this
+// thread's registry (adopted at WM_NCCREATE from `create_window`'s creation slot); it is freed
+// exactly once, at WM_NCDESTROY or, if a handler is running, after the outermost dispatch
+// returns. `GWLP_USERDATA`, which other processes can overwrite, is never trusted.
 unsafe extern "system" fn trampoline(
     hwnd: HWND,
     msg: u32,
@@ -1107,38 +1274,19 @@ unsafe extern "system" fn trampoline(
     lparam: LPARAM,
 ) -> LRESULT {
     if msg == WM_NCCREATE {
-        let create: *const CREATESTRUCTW =
-            core::ptr::with_exposed_provenance(lparam.cast_unsigned());
-        if !create.is_null() {
-            // SAFETY: For WM_NCCREATE, lParam points to the CREATESTRUCTW of this creation.
-            let params = unsafe { (*create).lpCreateParams };
-            if !params.is_null() {
-                // SAFETY: Stores our boxed state pointer in the window's user data.
-                unsafe {
-                    SetWindowLongPtrW(
-                        hwnd,
-                        GWLP_USERDATA,
-                        params.expose_provenance().cast_signed(),
-                    )
-                };
-                // SAFETY: `params` is the live `Box<WindowState>` from `create_window`.
-                let state = unsafe { &*params.cast::<WindowState>() };
-                state.shared.adopted.set(true);
-                state.shared.alive.set(true);
-            }
-        }
+        adopt_on_nccreate(hwnd, lparam);
         return default_proc(hwnd, msg, wparam, lparam);
     }
-    // SAFETY: Reads the pointer-sized user data of our window.
-    let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
-    let state_ptr = core::ptr::with_exposed_provenance_mut::<WindowState>(raw.cast_unsigned());
+    let state_ptr = registered_state(hwnd);
     if state_ptr.is_null() {
         return default_proc(hwnd, msg, wparam, lparam);
     }
     if msg == WM_NCDESTROY {
-        // SAFETY: Clears the user data so no later message can reach the state.
+        unregister_state(hwnd);
+        // SAFETY: Clears the user data marker of our window.
         unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
-        // SAFETY: The pointer is the live adopted state (cleared above, freed below at most once).
+        // SAFETY: The pointer is the live adopted state (unregistered above, freed below at most
+        // once).
         let state = unsafe { &*state_ptr };
         state.shared.alive.set(false);
         state.shared.armed.set(false);
@@ -1238,6 +1386,11 @@ pub fn run_loop(observe: &mut dyn FnMut(InputKind, Hwnd)) -> i32 {
         if result < 0 {
             return 1;
         }
+        // GetMessageW returns only posted messages (sent ones are dispatched inside it); a posted
+        // pointer or lifecycle message is forged and must not reach a window procedure.
+        if never_posted(message.message) {
+            continue;
+        }
         if let Some(kind) = observed_input(message.message, message.wParam) {
             observe(kind, Hwnd::from_raw(message.hwnd));
         }
@@ -1327,10 +1480,132 @@ pub fn find_window(class: &'static str) -> Option<(Poster, u32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{InputKind, exclusion_verified, observed_input, scale};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        WM_CHAR, WM_KEYDOWN, WM_MOUSEMOVE, WM_RBUTTONDOWN,
+    use core::cell::Cell;
+    use std::rc::Rc;
+
+    use super::{
+        CaptureExclusion, ClassSpec, Handler, InputKind, Msg, Reply, Window, WindowKind,
+        WindowSpec, create_window, dpi_changed_wparam_valid, exclusion_verified, may_adopt,
+        never_posted, observed_input, register_class, registered_state, run_loop, scale,
     };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CREATESTRUCTW, GWLP_USERDATA, PostMessageW, PostQuitMessage, SendMessageW,
+        SetWindowLongPtrW, WM_APP, WM_CHAR, WM_CLOSE, WM_DPICHANGED, WM_DRAWITEM, WM_GETMINMAXINFO,
+        WM_KEYDOWN, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_RBUTTONDOWN,
+    };
+
+    #[test]
+    fn adoption_needs_the_creation_slot_and_a_fresh_window() {
+        assert!(may_adopt(0x1000, 0x1000, 0, false));
+        assert!(!may_adopt(0x2000, 0x1000, 0, false), "another pointer");
+        assert!(!may_adopt(0x1000, 0, 0, false), "no creation in progress");
+        assert!(!may_adopt(0, 0, 0, false), "null parameter");
+        assert!(
+            !may_adopt(0x1000, 0x1000, 0x1000, false),
+            "user data already set"
+        );
+        assert!(!may_adopt(0x1000, 0x1000, 0, true), "already registered");
+    }
+
+    #[test]
+    fn pointer_and_lifecycle_messages_are_never_posted() {
+        for msg in [
+            WM_NCCREATE,
+            WM_NCDESTROY,
+            WM_GETMINMAXINFO,
+            WM_DPICHANGED,
+            WM_DRAWITEM,
+        ] {
+            assert!(never_posted(msg), "{msg:#x}");
+        }
+        for msg in [WM_CLOSE, WM_APP, WM_CHAR, WM_KEYDOWN] {
+            assert!(!never_posted(msg), "{msg:#x}");
+        }
+    }
+
+    #[test]
+    fn dpi_changed_needs_equal_dpi_words() {
+        assert!(dpi_changed_wparam_valid(0x0090_0090));
+        assert!(dpi_changed_wparam_valid(0x0060_0060));
+        assert!(!dpi_changed_wparam_valid(0x0090_0060));
+        assert!(!dpi_changed_wparam_valid(0));
+        assert!(!dpi_changed_wparam_valid(0x1_0090_0090));
+    }
+
+    struct CountApp(Rc<Cell<u32>>);
+
+    impl Handler for CountApp {
+        fn on(&mut self, _window: &Window, msg: &Msg) -> Reply {
+            if matches!(msg, Msg::App { .. }) {
+                self.0.set(self.0.get() + 1);
+            }
+            Reply::Default
+        }
+    }
+
+    /// A real hidden window on the test thread: a bogus `GWLP_USERDATA` (writable by any process
+    /// on the desktop), a forged `WM_NCCREATE` and posted lifecycle messages never reach or replace
+    /// its state.
+    #[test]
+    fn forged_messages_and_user_data_never_reach_the_state() {
+        const CLASS: &str = "YourWalletV3UnitTestForged";
+        register_class(&ClassSpec {
+            name: CLASS,
+            secret: false,
+            capture: CaptureExclusion::Preferred,
+        })
+        .unwrap();
+        let seen = Rc::new(Cell::new(0));
+        let window = create_window(
+            &WindowSpec::new(CLASS, WindowKind::HiddenTopLevel),
+            Box::new(CountApp(Rc::clone(&seen))),
+        )
+        .unwrap();
+        let hwnd = window.hwnd().raw();
+        let state = registered_state(hwnd);
+        assert!(!state.is_null());
+
+        // SAFETY: Overwrites the user data of our own test window with a bogus pointer value.
+        unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0x0123_4560) };
+        // SAFETY: Sends a plain-value application message to our own test window.
+        unsafe { SendMessageW(hwnd, WM_APP + 1, 0, 0) };
+        assert_eq!(seen.get(), 1);
+
+        let forged = CREATESTRUCTW {
+            lpCreateParams: core::ptr::with_exposed_provenance_mut(0x0DEA_D000),
+            ..CREATESTRUCTW::default()
+        };
+        // SAFETY: `forged` is a live CREATESTRUCTW for the duration of this synchronous send.
+        unsafe {
+            SendMessageW(
+                hwnd,
+                WM_NCCREATE,
+                0,
+                (&raw const forged).expose_provenance().cast_signed(),
+            )
+        };
+        assert_eq!(registered_state(hwnd), state);
+        // SAFETY: Sends a plain-value application message to our own test window.
+        unsafe { SendMessageW(hwnd, WM_APP + 1, 0, 0) };
+        assert_eq!(seen.get(), 2);
+
+        // Posted WM_NCDESTROY / WM_DRAWITEM are dropped by the loop; WM_APP still arrives.
+        // SAFETY: Posts plain values to our own test window.
+        unsafe { PostMessageW(hwnd, WM_NCDESTROY, 0, 0) };
+        // SAFETY: Posts plain values (a bogus "pointer") to our own test window.
+        unsafe { PostMessageW(hwnd, WM_DRAWITEM, 7, 0x0DEA_D000) };
+        // SAFETY: Posts a plain-value application message to our own test window.
+        unsafe { PostMessageW(hwnd, WM_APP + 2, 0, 0) };
+        // SAFETY: Posts WM_QUIT to this thread's queue (retrieved after the messages above).
+        unsafe { PostQuitMessage(0) };
+        assert_eq!(run_loop(&mut |_, _| {}), 0);
+        assert!(window.is_alive());
+        assert_eq!(registered_state(hwnd), state);
+        assert_eq!(seen.get(), 3);
+
+        drop(window);
+        assert!(registered_state(hwnd).is_null());
+    }
 
     #[test]
     fn exclusion_requires_set_and_exact_read_back() {

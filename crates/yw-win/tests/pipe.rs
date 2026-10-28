@@ -1,6 +1,7 @@
 //! Named pipe integration tests on the development PC (spec/01 §7.8, spec/05 §8.1, R-P2 pieces):
 //! round trip and full duplex on one connection, `AlreadyExists`, the 4-instance limit and a
-//! freed slot, `stop`, the DACL of a user-only server, EOF after the peer drops and cancellation.
+//! freed slot, `stop`, the DACL and owner of a user-only server, EOF after the peer drops (data
+//! written before a close still arrives) and cancellation of reads and writes.
 //! Every test uses its own `\\.\pipe\YourWallet.test.<pid>.<n>` name.
 
 use std::io::{Read, Write};
@@ -268,6 +269,83 @@ fn eof_after_the_peer_drops() -> TestResult {
     let (mut client_reader, mut client_writer) = second.split();
     assert_eq!(client_reader.read(&mut [0_u8; 4])?, 0);
     assert!(client_writer.write_all(b"x").is_err());
+    Ok(())
+}
+
+#[test]
+fn data_written_before_the_server_closes_still_arrives() -> TestResult {
+    let name = test_name();
+    let mut server = user_server(&name)?;
+    let client = client(&name)?;
+    let (server_reader, mut server_writer) = server.accept()?.split();
+    // Like a hello-reject: written, then the connection is closed at once.
+    server_writer.write_all(b"last frame")?;
+    drop(server_writer);
+    drop(server_reader);
+    let (mut client_reader, _client_writer) = client.split();
+    let mut received = Vec::new();
+    client_reader.read_to_end(&mut received)?;
+    assert_eq!(received, b"last frame");
+    Ok(())
+}
+
+#[test]
+fn both_ends_report_this_user_as_the_pipe_owner() -> TestResult {
+    let name = test_name();
+    let sid = current_user_sid_string()?;
+    let mut server = user_server(&name)?;
+    let client = client(&name)?;
+    let accepted = server.accept()?;
+    assert_eq!(client.owner_sid()?, sid);
+    assert_eq!(accepted.owner_sid()?, sid);
+    assert!(client.owned_by_current_user());
+    Ok(())
+}
+
+#[test]
+fn cancel_aborts_a_pending_write_and_later_writes() -> TestResult {
+    let name = test_name();
+    let mut server = user_server(&name)?;
+    let _client = client(&name)?;
+    let (reader, mut writer) = server.accept()?.split();
+    let canceller = reader.cancel_handle();
+    // Several times the 64 KiB buffer and the client never reads: the write stays pending.
+    let pending = thread::spawn(move || {
+        let result = writer
+            .write_all(&vec![0x5a_u8; 400_000])
+            .map_err(|error| error.raw_os_error());
+        (result, writer)
+    });
+    thread::sleep(Duration::from_millis(100));
+    assert!(!pending.is_finished());
+    canceller.cancel();
+    let (result, mut writer) = join(pending)?;
+    assert_eq!(result, Err(Some(ABORTED)));
+    assert_eq!(
+        writer.write(b"x").map_err(|error| error.raw_os_error()),
+        Err(Some(ABORTED))
+    );
+    drop(reader);
+    Ok(())
+}
+
+#[test]
+fn a_write_after_cancel_fails_without_starting() -> TestResult {
+    let name = test_name();
+    let mut server = user_server(&name)?;
+    let client = client(&name)?;
+    let (reader, mut writer) = server.accept()?.split();
+    reader.cancel_handle().cancel();
+    assert_eq!(
+        writer.write(b"never").map_err(|error| error.raw_os_error()),
+        Err(Some(ABORTED))
+    );
+    // Nothing reached the client: it sees EOF once the server side is gone.
+    drop((reader, writer));
+    let (mut client_reader, _client_writer) = client.split();
+    let mut received = Vec::new();
+    client_reader.read_to_end(&mut received)?;
+    assert!(received.is_empty());
     Ok(())
 }
 
