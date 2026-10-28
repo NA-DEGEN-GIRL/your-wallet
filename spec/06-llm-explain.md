@@ -55,6 +55,7 @@ AI 설명은 틀릴 수 있으며 승인 판단과 위험 표시에 쓰이지 �
 - dApp `eth_sendTransaction`: 코어 해석 완료 **그리고** 시뮬레이션 단계 종료(D15, [03](03-evm.md) §6) 뒤. 종료 = 시뮬레이션 상태가 정해짐(§4.3 `simulation.status` 5종 중 하나: 성공, 체인 `simulation = unsupported`라 호출하지 않음, 응답 없음·오류, revert, 결과 불완전). 성공이 아니어도 요청한다(D15: 시뮬레이션은 승인을 막지 않는다). 시뮬레이션이 진행 중이면 기다린다.
 - dApp `personal_sign`(D18)·`eth_signTypedData_v4`(D17): 코어 해석 완료 뒤. 시뮬레이션 대상이 아니다.
 - 요청하지 않음: 지갑 화면에서 만든 EVM·SOL·BTC 보내기(사용자가 만든 고정 템플릿, D27), 검증에서 거부된 요청.
+- 창은 열렸지만 승인할 수 없는 요청(위험 등급 `Blocked`, 시뮬레이션 전에 막힌 `Skipped`)과 준비가 실패한 요청(`Failed`)도 요청하지 않는다. 미리 확보한 패널은 자리를 지키고 그 사실 한 줄만 보인다(구현 상태 `Skipped`, 결과 0건).
 
 ### 3.2 동작
 
@@ -174,7 +175,7 @@ yw-app이 코어 해석 결과([03](03-evm.md) §7–§9)와 시뮬레이션 상
 ## 6. 표시 규칙
 
 - 위치: 코어 표시·경고 영역 아래, 승인·거절 버튼 위의 별도 패널. 제목 **"AI 설명 (참고용, 틀릴 수 있음)"**, 배경 `AI_PANEL_BG`([04](04-app-ui.md) §1.6, §3.8)로 코어 영역과 구분한다.
-- 기능이 켜져 있고 §3.1 대상이면 창을 만들 때 패널 높이(본문 10줄 고정, 넘치면 패널 내부 스크롤)를 미리 확보한다. 결과가 도착해도 버튼·경고 위치가 바뀌지 않는다. 패널은 키보드 포커스를 받지 않는다. "다시 요청" 버튼은 패널 안 오른쪽 위에 두고 기본 버튼으로 만들지 않으며 Enter·Space에 연결하지 않는다.
+- 기능이 켜져 있고 §3.1 대상이면 창을 만들 때 패널 높이(본문 10줄 고정, 넘치면 패널 내부 스크롤)를 미리 확보한다. 그 창은 기본·최소 높이에 240 DIP를 더해 코어 영역 크기를 유지한다([04](04-app-ui.md) §3.6). 본문은 휠·스크롤 막대로만 움직이는 별도 자식 창이다. 결과가 도착해도 버튼·경고 위치가 바뀌지 않는다. 패널은 키보드 포커스를 받지 않는다. "다시 요청" 버튼은 패널 안 오른쪽 위에 두고 기본 버튼으로 만들지 않으며 Enter·Space에 연결하지 않는다.
 - `summary`: 직접 그리는 평문 렌더러([04](04-app-ui.md) §3.3 `ui::text_layout`)로 자동 줄바꿈만 한다. 링크·서식·클릭 동작·복사 기능이 없다.
 - `actions`: 모델 문자열 대신 검증된 값으로 yw-app이 만든 줄 `<유형> · <자산> <금액> · <from> → <to>`(빈 필드 생략). 자산은 레지스트리 심볼 또는 "미확인 토큰 <전체 주소>"(native는 체인 심볼), 금액은 §5.3을 통과한 `amount`의 `norm` 값(`무제한`은 그대로), 주소는 EIP-55 전체 주소. 유형: `send` 보냄, `receive` 받음, `approve` 사용 권한 부여, `revoke_approval` 권한 취소, `approve_all` 전체 권한 부여, `permit` 권한 서명(permit), `sign_in` 로그인 서명, `sign_message` 메시지 서명, `contract_call` 컨트랙트 호출, `other` 기타.
 - `unknowns`: "AI가 판단하지 못한 것:" 아래 글머리 목록. 꼬리 줄: `{host} · {model} · {경과 초, 소수 1자리}초`.
@@ -200,12 +201,12 @@ yw-app이 코어 해석 결과([03](03-evm.md) §7–§9)와 시뮬레이션 상
 
 ## 8. 로깅
 
-- 요청 1건당 로컬 로그 한 줄: `llm_explain gen=<n> kind=<request> result=<상태·오류 이름> reason=<Hidden/Mismatch 이유|-> http=<code|-> req_bytes=<n> resp_bytes=<n> elapsed_ms=<n> host=<endpoint host>`.
+- 요청 1건당 로컬 로그 한 줄: `llm_explain gen=<n> kind=<request> result=<상태·오류 이름> reason=<Hidden/Mismatch 이유|-> http=<code|-> req_bytes=<n> resp_bytes=<n> elapsed_ms=<n> host=<endpoint host>`. UI 스레드가 그 요청이 화면에서 끝날 때(결과 반영, 10초 기한, 입력 변경·창 닫힘 = `result=Discarded`) 한 번 쓰고, 그 뒤 늦게 온 결과는 기록하지 않는다. `http`·`req_bytes`·`resp_bytes`는 작업자가 결과와 함께 넘긴 값이다(기한·폐기면 `-`·0).
 - 프롬프트, 입력 JSON, 응답 본문, 모델 출력 문자열, API 키, `Authorization` 헤더, 엔드포인트 경로는 기록하지 않는다. 이를 켜는 설정·디버그 모드도 만들지 않는다(D28: 서명 메시지에 개인정보가 들어갈 수 있다). `ExplainError`·`AiPanelState`·`Explanation`의 `Debug`는 내용 대신 종류·크기만 출력한다(패닉·크래시 메시지 유출 방지).
 
 ## 9. 모듈과 시그니처
 
-파일: `crates/yw-app/src/explain/{mod,config,input,request,response,panel}.rs`.
+파일: `crates/yw-app/src/explain/{mod,config,input,request,response,panel}.rs`(단위 테스트 `explain/tests.rs`). 앱 연결은 기존 패턴대로 `app_llm.rs`(작업자 수명, S15 `AI 설명` 명령, 연결 테스트, §8 로그), `app_approval.rs`(패널 확보·그리기·상태 전이), `ui/screens_llm.rs`(S15 화면)에 둔다.
 
 ```rust
 pub const REQUEST_DEADLINE_MS: u64 = 10_000;   pub const MAX_REQUEST_BODY: usize = 49_152;
@@ -225,7 +226,9 @@ pub struct ExplainInput { json: Vec<u8>, trusted: TrustedSets }   // TrustedSets
 pub struct Explanation { summary: String, actions: Vec<ExplainAction>, unknowns: Vec<String> }
 
 pub fn build_input(src: &ExplainSource<'_>, origin: &str, user: &Address, chain: &ChainInfo,
-                   tokens: &TokenRegistry) -> Result<ExplainInput, ExplainError>;
+                   facts: &ChainFacts) -> Result<ExplainInput, ExplainError>;
+    // 레지스트리는 chain.tokens([03] §1.2), 레지스트리 밖 토큰의 RPC 기호·decimals는 표시가 쓴
+    // facts.tokens([03] §2.5)에서 온다(기호는 Untrusted).
 pub fn build_body(cfg: &LlmConfig, input: &ExplainInput) -> Result<Vec<u8>, ExplainError>;
 pub fn parse_response(status: u16, content_type: Option<&str>, body: &[u8], input: &ExplainInput)
     -> Result<Explanation, ExplainError>;          // §5 전체, 네트워크 없음
@@ -237,7 +240,7 @@ pub trait LlmTransport: Send {                     // 테스트는 mock, 실제 
 
 `LlmTransport` 실제 구현은 `yw_win::http::Client::post(&EndpointUrl, headers, body, MAX_RESPONSE_BODY)`와 `Response.content_type`([01](01-repo-build.md) §7.4)을 쓴다. https는 `Client::new`, loopback은 `Client::new_loopback`, 둘 다 `Timeouts` 네 값 10,000 ms(§4.1).
 
-기능이 꺼져 있으면 `ExplainService`를 만들지 않는다(`Option<ExplainService>` = `None`). 이때 작업자 스레드 생성, WinHTTP 세션 생성, `apikeys.dpapi`의 `llm` 복호화가 일어나지 않는다. 켜져 있으면 `yw-llm` 스레드가 `llm` 키를 `Zeroizing`으로 프로세스 수명 동안 보관한다(D10: 지갑 비밀 아님). 기능을 끄면 `ExplainService`를 버리고(키 drop), 키를 바꾸거나 지우면 다시 만든다.
+기능이 꺼져 있으면 `ExplainService`를 만들지 않는다(`Option<ExplainService>` = `None`). 이때 작업자 스레드 생성, WinHTTP 세션 생성, `llm` 키 전달이 일어나지 않는다. (`apikeys.dpapi`는 파일 하나를 통째로 복호화하므로 `llm` 항목도 다른 항목처럼 UI 스레드가 들고 있다([04] §6.3). 꺼져 있으면 어떤 작업자에도 넘기지 않는다.) 켜져 있으면 `yw-llm` 스레드가 `llm` 키를 `Zeroizing`으로 프로세스 수명 동안 보관한다(D10: 지갑 비밀 아님). 기능을 끄면 `ExplainService`를 버리고(키 drop), 키를 바꾸거나 지우면 다시 만든다.
 
 ## 10. 테스트
 
@@ -265,6 +268,7 @@ pub trait LlmTransport: Send {                     // 테스트는 mock, 실제 
 - 공급자의 `json_schema`+`strict:true` 지원과 `max_tokens` 필수·거부 여부를 연결 테스트로 확인한다. HTTP 400이면 `response_format="json_object"` 또는 `max_tokens` 설정(0 또는 1–4096)으로 맞춘다.
 - 응답 `Content-Type`(로컬 서버 포함)이 `application/json`인지, 추론형 모델의 추가 필드(예: `reasoning_content`)로 16 KiB를 넘는지 확인한다. 규칙과 상한은 완화하지 않고 맞는 서버·비추론 모델을 쓴다.
 - 다른 스레드의 `WinHttpCloseHandle`이 동기 호출을 중단시키는지 E8로 관찰한다. 중단되지 않으면 `WinHttpSetTimeouts`에 맡기고 늦은 결과는 버린다(§3.2).
+- 확인함(2026-10-28, `tests/llm_mock.rs`): loopback `http://127.0.0.1:<port>`로 `Client::new_loopback` 요청·헤더·302 미추적·16 KiB 상한(Content-Length 있음/없음)이 정의대로 동작. 11초 지연 mock에서 패널은 10초(±0.5초)에 `Failed(Timeout)`이 되고, 11초에 도착한 유효 응답(가짜 전송)은 버려진다. `WinHttpCloseHandle` 중단은 쓰지 않고 `WinHttpSetTimeouts` + 늦은 결과 폐기로 정했다. `[::1]`은 URL 규칙만 시험했다. 실제 공급자(json_schema·max_tokens 호환)는 수동 M6-3.
 
 ## 미결 사항
 

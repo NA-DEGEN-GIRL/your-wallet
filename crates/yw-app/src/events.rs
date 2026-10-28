@@ -753,6 +753,10 @@ pub enum UiEvent {
     Rpc(RpcEvent),
     /// Browser bridge event (spec/05).
     Dapp(crate::browser::DappEvent),
+    /// `yw-llm` result for an approval window (spec/06 §3.2).
+    Llm(Box<crate::explain::LlmDone>),
+    /// Settings `연결 테스트` result (spec/06 §2.2).
+    LlmTest(Result<(), crate::explain::ExplainError>),
 }
 
 impl crate::browser::DappSink for EventQueue {

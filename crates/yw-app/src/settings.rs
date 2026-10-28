@@ -539,23 +539,11 @@ fn load_solana(object: &Object) -> Option<SolanaSettings> {
 }
 
 fn llm_endpoint_valid(text: &str) -> bool {
-    if text.is_empty() {
-        return true;
-    }
-    text.len() <= 2_048
-        && !text.contains('@')
-        && !text.contains('?')
-        && !text.contains('#')
-        && text.ends_with("/chat/completions")
-        && yw_win::http::EndpointUrl::parse(text).is_ok()
+    text.is_empty() || crate::explain::config::parse_endpoint(text).is_some()
 }
 
 fn llm_model_valid(text: &str) -> bool {
-    text.is_empty()
-        || ((1..=128).contains(&text.len())
-            && text
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._:/@+-".contains(&byte)))
+    text.is_empty() || crate::explain::config::valid_model(text)
 }
 
 fn load_llm(object: &Object) -> Option<LlmSettings> {

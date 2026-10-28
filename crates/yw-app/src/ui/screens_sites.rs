@@ -7,7 +7,7 @@ use core::fmt::Write as _;
 use crate::app::{App, Confirm};
 use crate::ui::main_window::{Ctl, Item, Tone};
 
-/// Control ids (after the M4 ranges, which end at 6,600).
+/// Control ids (6,700–6,965; the whole map is `ui::command_ids`).
 pub mod ids {
     /// 연결된 사이트.
     pub const SITES_OPEN: u16 = 6_700;
@@ -17,6 +17,8 @@ pub mod ids {
     pub const SITE_ROW_BASE: u16 = 6_710;
     /// Row span (256 grants, spec/02 §5.3).
     pub const SITE_ROW_SPAN: u16 = 256;
+    /// Every fixed id of this module.
+    pub const FIXED: &[u16] = &[SITES_OPEN, SITES_REVOKE_ALL];
 }
 
 fn local_time(unix_ms: u64) -> String {

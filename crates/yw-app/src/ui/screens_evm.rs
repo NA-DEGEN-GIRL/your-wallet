@@ -66,10 +66,12 @@ pub mod ids {
     pub const SEND_REVIEW: u16 = 915;
     /// 취소 / 돌아가기.
     pub const SEND_CANCEL: u16 = 916;
-    /// Asset radios.
-    pub const SEND_ASSET_BASE: u16 = 920;
+    /// Asset radios: native, then the chain's registry tokens and the user's tokens (≤ 100 per
+    /// network, spec/02 §5.3). The old 920..960 span (40) let the 40th token reuse the first
+    /// picker id; see `ui::command_ids`.
+    pub const SEND_ASSET_BASE: u16 = 3_000;
     /// Asset radio span.
-    pub const SEND_ASSET_SPAN: u16 = 40;
+    pub const SEND_ASSET_SPAN: u16 = 200;
     /// Picker rows.
     pub const SEND_PICK_BASE: u16 = 960;
     /// Picker span.
@@ -140,12 +142,59 @@ pub mod ids {
     pub const CAPS_SAVE: u16 = 2_453;
     /// 기본값으로.
     pub const CAPS_DEFAULT: u16 = 2_454;
-    /// Activity rows (8 ids per row).
+    /// Activity rows ([`ACTIVITY_STRIDE`] ids per row, at most `MAX_ACTIVITY_ROWS` = 50 rows).
     pub const ACTIVITY_BASE: u16 = 2_500;
-    /// Activity span.
-    pub const ACTIVITY_SPAN: u16 = 4_000;
+    /// Ids per activity row.
+    pub const ACTIVITY_STRIDE: u16 = 8;
+    /// Activity span (50 rows × 8).
+    pub const ACTIVITY_SPAN: u16 = 400;
     /// T-CHAIN-REPIN-ACK check.
     pub const REPIN_CHECK: u16 = 6_600;
+
+    /// Every fixed id of this module (`ui::command_ids` checks them against all ranges).
+    pub const FIXED: &[u16] = &[
+        SEND_OPEN,
+        RECEIVE_OPEN,
+        REFRESH,
+        BOOK_OPEN,
+        TOKEN_OPEN,
+        REPIN_SETTINGS,
+        SEND_TO_EDIT,
+        SEND_AMOUNT_EDIT,
+        SEND_MAX,
+        SEND_PICK,
+        SEND_ACK,
+        SEND_REVIEW,
+        SEND_CANCEL,
+        COPY_ADDRESS,
+        BOOK_ADDR_EDIT,
+        BOOK_LABEL_EDIT,
+        BOOK_VERIFIED,
+        BOOK_SAVE,
+        BOOK_CANCEL,
+        TOKEN_ADDR_EDIT,
+        TOKEN_LOOKUP,
+        TOKEN_LABEL_EDIT,
+        TOKEN_SAVE,
+        SECTION_CHAINS,
+        CHAIN_ADD,
+        CHAIN_ID_EDIT,
+        CHAIN_NAME_EDIT,
+        CHAIN_SYMBOL_EDIT,
+        CHAIN_DECIMALS_EDIT,
+        CHAIN_RPC_EDIT,
+        CHAIN_EXPLORER_EDIT,
+        CHAIN_SIM_AUTO,
+        CHAIN_SIM_UNSUPPORTED,
+        CHAIN_SAVE,
+        CHAIN_CANCEL,
+        CAPS_FEE_EDIT,
+        CAPS_TIP_EDIT,
+        CAPS_TOTAL_EDIT,
+        CAPS_SAVE,
+        CAPS_DEFAULT,
+        REPIN_CHECK,
+    ];
 }
 
 /// Status words of activity rows.
@@ -443,8 +492,11 @@ impl App {
         }
         let count = rows.len();
         for (index, row) in rows.into_iter().enumerate() {
-            let base = ids::ACTIVITY_BASE
-                .saturating_add(u16::try_from(index).unwrap_or(0).saturating_mul(8));
+            let base = ids::ACTIVITY_BASE.saturating_add(
+                u16::try_from(index)
+                    .unwrap_or(0)
+                    .saturating_mul(ids::ACTIVITY_STRIDE),
+            );
             items.push(Item::Text(row.head));
             items.push(Item::Help(format!("상태: {}", row.status)));
             items.push(Item::Mono(row.hash));
@@ -586,8 +638,11 @@ impl App {
             form.asset == SendAsset::Native,
             true,
         ));
-        for (index, (address, symbol, _, registered)) in
-            self.chain_tokens(chain_id).into_iter().enumerate()
+        for (index, (address, symbol, _, registered)) in self
+            .chain_tokens(chain_id)
+            .into_iter()
+            .take(usize::from(ids::SEND_ASSET_SPAN).saturating_sub(1))
+            .enumerate()
         {
             let text = if registered {
                 symbol
@@ -857,8 +912,8 @@ impl App {
                 "주소록이 비어 있습니다. 위에서 첫 주소를 추가하세요.".to_owned(),
             ));
         }
-        let count = entries.len();
-        for (index, entry) in entries.iter().enumerate() {
+        let count = entries.len().min(usize::from(ids::BOOK_ROW_SPAN / 2));
+        for (index, entry) in entries.iter().take(count).enumerate() {
             let base = ids::BOOK_ROW_BASE
                 .saturating_add(u16::try_from(index).unwrap_or(0).saturating_mul(2));
             let verified = if entry.verified { " ✓ 확인됨" } else { "" };
@@ -943,7 +998,8 @@ impl App {
             "기본 체인 3개와 직접 추가한 체인입니다. 체인마다 RPC 주소가 있어야 쓸 수 있고, 연결할 때마다 chainId와 첫 블록(제네시스)을 다시 확인합니다."
                 .to_owned(),
         ));
-        let chains = self.settings.registered_evm();
+        let mut chains = self.settings.registered_evm();
+        chains.truncate(usize::from(ids::CHAIN_ROW_SPAN / 4));
         let count = chains.len();
         for (index, chain_id) in chains.into_iter().enumerate() {
             let user = self
@@ -1046,6 +1102,7 @@ impl App {
             .settings
             .registered_evm()
             .into_iter()
+            .take(usize::from(ids::CAPS_CHAIN_SPAN))
             .enumerate()
             .map(|(index, chain_id)| {
                 Ctl::radio(

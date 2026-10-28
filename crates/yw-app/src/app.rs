@@ -161,6 +161,8 @@ pub enum SettingsSection {
     Solana,
     /// Bitcoin: 켜기·네트워크, 인덱서, Esplora URL (M8).
     Bitcoin,
+    /// AI 설명 (M6, spec/06 §2).
+    Ai,
 }
 
 /// Confirmation overlays.
@@ -196,6 +198,8 @@ pub enum Confirm {
     DisconnectAll,
     /// A Bitcoin overlay (`BtcUi::confirm` holds which one and its texts).
     Btc,
+    /// The AI explanation privacy notice (spec/06 §2.2).
+    LlmOn,
 }
 
 /// Screens S01–S15 (M3 subset).
@@ -417,6 +421,10 @@ pub struct App {
     pub(crate) sol: crate::app_sol::SolUi,
     pub(crate) btc: crate::app_btc::BtcUi,
     pub(crate) browser: Option<crate::app_browser::BrowserUi>,
+    /// The `yw-llm` worker, only while the AI explanation is effectively on (spec/06 §9).
+    pub(crate) llm: Option<crate::explain::ExplainService>,
+    /// S15 `AI 설명` form.
+    pub(crate) llm_ui: crate::app_llm::LlmUi,
     secret: Option<SecretWin>,
     secret_serial: u64,
     import: ImportFlow,
@@ -550,6 +558,8 @@ impl App {
             sol: crate::app_sol::SolUi::default(),
             btc: crate::app_btc::BtcUi::default(),
             browser: None,
+            llm: None,
+            llm_ui: crate::app_llm::LlmUi::default(),
             secret: None,
             secret_serial: 0,
             import: ImportFlow::default(),
@@ -628,6 +638,8 @@ impl App {
         self.events = Some(events);
         self.workers = workers;
         self.rpc_tx = Some(rpc_tx);
+        // spec/06 §9: the LLM worker only when the feature is effectively on.
+        self.llm_reconfigure();
     }
 
     /// Registers session notifications (retried by the timer, spec/04 §1.4-6).
@@ -770,6 +782,7 @@ impl App {
                 } else if *code == EN_CHANGE
                     && !self.on_sol_edit_change(*id)
                     && !self.on_btc_edit_change(*id)
+                    && !self.on_llm_edit_change(*id)
                 {
                     self.on_edit_change(*id);
                 }
@@ -952,6 +965,7 @@ impl App {
         if let Some(tx) = self.rpc_tx.take() {
             let _ = tx.send(RpcJob::Shutdown);
         }
+        self.llm_shutdown();
         let deadline = now_ms().saturating_add(2_000);
         for handle in std::mem::take(&mut self.workers) {
             while !handle.is_finished() && now_ms() < deadline {
@@ -974,6 +988,12 @@ impl App {
 
     // ----- events ------------------------------------------------------------------------
 
+    /// Drains the event queue (screenshot tour: the worker results of a scene).
+    #[cfg(test)]
+    pub(crate) fn tour_drain_events(&mut self) {
+        self.drain_events();
+    }
+
     fn drain_events(&mut self) {
         let Some(events) = self.events.clone() else {
             return;
@@ -988,6 +1008,8 @@ impl App {
                 }) => self.on_rpc_event(network, message, ok),
                 UiEvent::Rpc(event) => self.evm_rpc_event(event),
                 UiEvent::Dapp(event) => self.on_dapp_event(event),
+                UiEvent::Llm(done) => self.on_llm_done(*done),
+                UiEvent::LlmTest(result) => self.on_llm_test(result),
             }
         }
     }
@@ -2116,6 +2138,7 @@ impl App {
                 self.evm.discard = None;
                 self.evm.delete_chain = None;
                 self.evm.repin = None;
+                self.llm_ui.notice_checked = false;
                 if let Some(form) = self.evm.chain_form.as_mut() {
                     form.pending = None;
                     form.message = None;
@@ -2131,6 +2154,7 @@ impl App {
                     && !self.on_btc_command(other)
                     && !self.on_evm_command(other)
                     && !self.on_sites_command(other)
+                    && !self.on_llm_command(other)
                 {
                     self.on_indexed_command(other);
                 }
@@ -2647,6 +2671,7 @@ impl App {
                 self.set_screen(Screen::AddressBook);
             }
             Confirm::Btc => self.btc_confirm_yes(),
+            Confirm::LlmOn => self.llm_confirm_on(),
             Confirm::RemoveKey => {
                 self.set_screen(previous);
                 if let Some(id) = self.pending_remove.take() {

@@ -40,6 +40,9 @@ pub enum Field<'a> {
     Hash(&'a [u8; 32]),
     /// A Bitcoin txid (allowed by D28): display-order lowercase hex without prefix.
     BtcTxid(yw_core::btc::Txid),
+    /// The LLM endpoint `host[:port]` (spec/01 §5.4, spec/06 §8): never an RPC host, never a
+    /// path or query.
+    LlmHost(&'a str),
 }
 
 /// UTC `YYYY-MM-DDTHH:MM:SS.mmmZ` from Unix milliseconds.
@@ -126,6 +129,10 @@ pub fn format_line(
                 line.push_str(&yw_core::hex::encode(bytes.as_slice()));
             }
             Field::BtcTxid(txid) => line.push_str(&txid.to_display_hex()),
+            Field::LlmHost(host) => {
+                let authority = host.split(['/', '?', '#']).next().unwrap_or("");
+                push_sanitized(&mut line, authority);
+            }
         }
     }
     if line.len() > LOG_LINE_MAX_BYTES - 1 {

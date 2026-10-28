@@ -78,10 +78,12 @@ pub mod ids {
     pub const ADD_ACCOUNT: u16 = 260;
     /// 개인키 가져오기.
     pub const IMPORT_KEY: u16 = 261;
-    /// Account selection base.
-    pub const ACCOUNT_BASE: u16 = 300;
+    /// Account selection radios (one id per row). Rows ≤ 115 (spec/02 §5.3: 100 derived + 15
+    /// imported); the span covers the whole account-index range 0..=999 so no meta can spill
+    /// into another range (`ui::command_ids`).
+    pub const ACCOUNT_BASE: u16 = 11_000;
     /// Account selection span.
-    pub const ACCOUNT_SPAN: u16 = 120;
+    pub const ACCOUNT_SPAN: u16 = 1_000;
     /// 이름 바꾸기.
     pub const RENAME: u16 = 420;
     /// 숨기기.
@@ -158,6 +160,73 @@ pub mod ids {
     pub const CONFIRM_NO: u16 = 801;
     /// T-RPC-GENERATE `기존 URL 덮어쓰기`.
     pub const OVERWRITE_CHECK: u16 = 802;
+
+    /// Every fixed id of this module (`ui::command_ids` checks them against all ranges).
+    pub const FIXED: &[u16] = &[
+        FIRST_CREATE,
+        FIRST_IMPORT,
+        OPEN_DATA_FOLDER,
+        OPEN_LOG_FOLDER,
+        CREATE_NEXT,
+        INTRO_CANCEL,
+        IMPORT_NEXT,
+        IMPORT_CORRECT,
+        IMPORT_WRONG,
+        UNLOCK,
+        BACKUP_CHECK,
+        LOCK,
+        DONE_RPC,
+        DONE_CONTINUE,
+        RECOVER,
+        EXIT,
+        MISMATCH_RETRY,
+        MISMATCH_CONTINUE,
+        MISMATCH_CHECK,
+        SIDECAR_PREV,
+        SIDECAR_FRESH,
+        OPEN_SETTINGS,
+        BACK_MAIN,
+        DISMISS_BANNERS,
+        ADVANCED_TOGGLE,
+        ADD_ACCOUNT,
+        IMPORT_KEY,
+        RENAME,
+        HIDE,
+        REMOVE_KEY,
+        RENAME_SAVE,
+        RENAME_CANCEL,
+        RENAME_EDIT,
+        SECTION_SECURITY,
+        SECTION_NETWORK,
+        SECTION_OTHER,
+        AUTOLOCK_EDIT,
+        AUTOLOCK_SAVE,
+        COPY_TOGGLE,
+        REVEAL_MNEMONIC,
+        REVEAL_KEY,
+        CHANGE_PASSWORD,
+        TPL_QUICKNODE,
+        TPL_ALCHEMY,
+        TPL_MANUAL,
+        QN_NAME_EDIT,
+        QN_TOKEN_EDIT,
+        ALCHEMY_KEY_EDIT,
+        TPL_SAVE,
+        TPL_DELETE,
+        GENERATE,
+        REPLACE_EDIT,
+        REPLACE_SAVE,
+        REPLACE_CANCEL,
+        LOCALHOST_TOGGLE,
+        AUTOLAUNCH_TOGGLE,
+        LOG_ERROR,
+        LOG_WARN,
+        LOG_INFO,
+        LOG_DEBUG,
+        CONFIRM_YES,
+        CONFIRM_NO,
+        OVERWRITE_CHECK,
+    ];
 }
 
 /// Steps of the create flow (S02 → W01 → W08 → W10, spec/04 §2.3).
@@ -566,6 +635,7 @@ impl App {
         let chains = self.settings.registered_evm();
         let chips: Vec<Ctl> = chains
             .iter()
+            .take(usize::from(ids::NETWORK_SPAN))
             .enumerate()
             .map(|(index, chain_id)| {
                 Ctl::tab(
@@ -592,7 +662,12 @@ impl App {
             "보내기·받기에 쓸 계정을 고르세요. 모든 계정은 같은 복구 단어로 복구됩니다.".to_owned(),
         ));
         let selected = self.meta.as_ref().map(|meta| meta.prefs.evm_account);
-        for (row, (pref, label, address, path)) in self.account_rows().into_iter().enumerate() {
+        for (row, (pref, label, address, path)) in self
+            .account_rows()
+            .into_iter()
+            .take(usize::from(ids::ACCOUNT_SPAN))
+            .enumerate()
+        {
             let is_selected = selected == Some(pref);
             items.push(Item::Row(vec![
                 Ctl::radio(
@@ -677,6 +752,11 @@ impl App {
                 section == SettingsSection::Bitcoin,
             ),
             Ctl::tab(
+                crate::ui::screens_llm::ids::SECTION_AI,
+                "AI 설명",
+                section == SettingsSection::Ai,
+            ),
+            Ctl::tab(
                 ids::SECTION_OTHER,
                 "브라우저·진단·정보",
                 section == SettingsSection::Other,
@@ -688,6 +768,7 @@ impl App {
             SettingsSection::Chains => self.chains_section(items),
             SettingsSection::Solana => self.sol_settings_section(items),
             SettingsSection::Bitcoin => self.btc_settings_section(items),
+            SettingsSection::Ai => self.llm_settings_section(items),
             SettingsSection::Other => self.other_section(items),
         }
     }
@@ -857,7 +938,8 @@ impl App {
             "주소에는 토큰이 들어 있어 가린 형태로만 보입니다. '테스트'는 그 주소가 올바른 네트워크를 가리키는지 한 번 확인합니다."
                 .to_owned(),
         ));
-        let networks = self.url_networks();
+        let mut networks = self.url_networks();
+        networks.truncate(usize::from(ids::ROW_SPAN / 4));
         let last = networks.len().saturating_sub(1);
         for (row, network) in networks.into_iter().enumerate() {
             let url = self.apikeys.rpc_url(network);
@@ -1030,6 +1112,11 @@ impl App {
                 "이 거래를 폐기로 표시하고 추적을 멈춥니다. 이미 네트워크에 전파됐다면 나중에 처리될 수 있습니다.".to_owned(),
                 "폐기",
             ),
+            Confirm::LlmOn => (
+                "AI 설명 켜기",
+                self.llm_notice_text().unwrap_or_default(),
+                "켜기",
+            ),
         };
         let destructive = matches!(
             kind,
@@ -1050,13 +1137,21 @@ impl App {
                 self.overwrite_checked,
             )]));
         }
-        if kind == Confirm::ChainRepin {
-            let checked = self.evm.repin.as_ref().is_some_and(|repin| repin.checked);
-            items.push(Item::Row(vec![Ctl::check(
-                crate::ui::screens_evm::ids::REPIN_CHECK,
-                "새 제네시스 해시를 공식 자료로 확인했습니다",
-                checked,
-            )]));
+        if matches!(kind, Confirm::ChainRepin | Confirm::LlmOn) {
+            let (check_id, check_text, checked) = if kind == Confirm::LlmOn {
+                (
+                    crate::ui::screens_llm::ids::NOTICE_CHECK,
+                    "이해했습니다",
+                    self.llm_ui.notice_checked,
+                )
+            } else {
+                (
+                    crate::ui::screens_evm::ids::REPIN_CHECK,
+                    "새 제네시스 해시를 공식 자료로 확인했습니다",
+                    self.evm.repin.as_ref().is_some_and(|repin| repin.checked),
+                )
+            };
+            items.push(Item::Row(vec![Ctl::check(check_id, check_text, checked)]));
             items.push(Item::Row(vec![
                 Ctl::primary(ids::CONFIRM_YES, yes).enabled(checked),
                 Ctl::button(ids::CONFIRM_NO, "취소"),

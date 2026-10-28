@@ -108,7 +108,7 @@ FOCUS·PRIMARY_BG #0F6CBD 포커스·주 버튼·진행   ESCAPE_TEXT #A4262C �
 INFO_BG #E8F1FB / INFO_TEXT #0F4C81 정보       SUCCESS_BG #DFF6DD / SUCCESS_TEXT #0E700E 완료
 WARN_BG #FFF4CE / WARN_TEXT #7A5C00 주의·주소 주석   DANGER_BG #FDE7E9 / DANGER_TEXT #A4262C 고위험·오류
 BLOCKED_BG #A4262C / BLOCKED_TEXT #FFFFFF 차단   TESTNET_BG #E8F0FE 테스트넷 띠·배지
-AI_PANEL_BG #F3F0FA [06] AI 패널   QR_DARK #000000 / QR_LIGHT #FFFFFF
+AI_PANEL_BG #F3F0FA / AI_PANEL_BORDER #D9D0EE [06] AI 패널   QR_DARK #000000 / QR_LIGHT #FFFFFF
 BTC_MAINNET_BG #C42B1C / BTC_MAINNET_TEXT #FFFFFF, BTC_TESTNET4_BG #F7A23B(글자 TEXT) [08] §2 네트워크 배너(A01 헤더)
 ```
 
@@ -170,6 +170,7 @@ pub enum AppMode { NoVault, Locked, Unlocking, PassphraseRequired, PassphraseMis
 - 주 창 화면: S01 첫 실행(`NoVault`), S02 생성 안내, S03 처리 중(KDF 진행 표시), S04 백업 대기(`BackupPending`), S05 가져오기, S06 첫 주소 확인, S07 잠금 화면(`Locked`·`PassphraseRequired`), S08 완료, S09 복구(`Corrupt`·`MainMissing`), S10 메인(`Unlocked`), S11 보내기·결과, S12 받기, S13 연결된 사이트, S14 주소록, S15 설정, S16 토큰 추가, S17 EVM 체인 추가·편집(§2.17).
 - 별도 최상위 창: W01–W10 비밀 창(§4.1), A01 승인·연결 창(§3).
 - 비밀 창이 열려 있는 동안 주 창은 `EnableWindow(FALSE)`다. 승인 창은 주 창을 막지 않는다.
+- 주 창 자식 컨트롤의 명령 ID(`WM_COMMAND`)는 화면 모듈마다 `ids`에 두고, 고정 ID와 목록형 범위(계정·주소록·스캔 행·사이트 등)가 서로 겹치지 않으며 각 범위가 그 목록의 최대 길이(행 수 × 행당 ID 수)를 담는다. 전체 지도와 시험은 `ui::command_ids`(1·2는 쓰지 않음). 승인 창·비밀 창은 자식 컨트롤 없이 직접 그리고 영역으로 판정하므로 명령 ID가 없다.
 - `Unlocked`의 S10 상단 막대(흰 띠): 왼쪽 "Your Wallet", 오른쪽 `주소록`, `연결된 사이트`, `설정`, `잠금 (Ctrl+L)`. 그 아래 체인 탭(`EVM (이더리움 등)`·`Solana`·`Bitcoin`, 탭 모양)과 네트워크 칩. 다른 화면은 맨 위 링크 `← 메인으로`. `alt_passphrase == true`이면 상시 배너 T-ALT-PASS([02] §7.5).
 - 사용자에게 보이는 용어: "니모닉"은 "복구 단어"로 부르고 처음 나오는 곳에 "(니모닉)"을 붙인다. 오류 문구(§7)와 코드는 바꾸지 않는다.
 
@@ -265,7 +266,7 @@ S16 토큰 추가: 컨트랙트 주소(§2.15) → RPC `decimals()`·`symbol()`(
 - `추가`, `편집`, `삭제`(확인 오버레이). 쓰기는 키 작업자의 meta 저장(원자적, [02] §6).
 
 ### 2.11 설정 (S15)
-화면: 링크 `← 메인으로`, 제목 "설정", 구역 탭 `보안`·`네트워크(RPC)`·`EVM 체인`·`Solana`·`Bitcoin`·`브라우저·진단·정보`(선택한 탭은 채움). 구역 안의 항목은 카드로 묶고 카드마다 한 줄 설명(도움말)을 둔다 — 보안: "자동 잠금", "복구 단어·개인키", "비밀번호"; 네트워크(RPC): "RPC 공급자"(RPC가 무엇이고 템플릿이 무엇을 해 주는지, 입력 칸마다 어디서 찾는 값인지), "네트워크별 RPC 주소"; EVM 체인: "EVM 체인"; Solana: "Solana 네트워크"; Bitcoin: "Bitcoin 사용과 네트워크", "주소 조회 서버(인덱서)", "Esplora URL"; 브라우저·진단·정보: "브라우저 연결", "진단", "정보". 기술 항목은 `고급 설정 보기 ▸`를 켰을 때만 보인다: EVM 수수료 상한, 체인별 고정 제네시스 해시, Solana 수수료·CU 가격 상한, 로그 수준. `고급 설정 보기`를 켠 상태는 앱이 실행되는 동안만 유지하고 저장하지 않는다(보내기 폼의 `수수료 계산 보기`와 같은 상태). 템플릿 자격 정보의 `삭제`는 위험 버튼 `자격 정보 삭제`, URL이 없는 네트워크 행의 `교체`는 `입력`으로 보인다(같은 동작).
+화면: 링크 `← 메인으로`, 제목 "설정", 구역 탭 `보안`·`네트워크(RPC)`·`EVM 체인`·`Solana`·`Bitcoin`·`AI 설명`(M6)·`브라우저·진단·정보`(선택한 탭은 채움). 구역 안의 항목은 카드로 묶고 카드마다 한 줄 설명(도움말)을 둔다 — 보안: "자동 잠금", "복구 단어·개인키", "비밀번호"; 네트워크(RPC): "RPC 공급자"(RPC가 무엇이고 템플릿이 무엇을 해 주는지, 입력 칸마다 어디서 찾는 값인지), "네트워크별 RPC 주소"; EVM 체인: "EVM 체인"; Solana: "Solana 네트워크"; Bitcoin: "Bitcoin 사용과 네트워크", "주소 조회 서버(인덱서)", "Esplora URL"; AI 설명: "AI 설명 (선택 기능)"(상태 줄·`AI 설명 사용`), "AI 공급자 (OpenAI 호환)"(엔드포인트·모델·응답 형식·max_tokens, `저장`·`연결 테스트`), "AI API 키"(설정됨/없음, `키 저장`·`키 삭제`); 브라우저·진단·정보: "브라우저 연결", "진단", "정보". 기술 항목은 `고급 설정 보기 ▸`를 켰을 때만 보인다: EVM 수수료 상한, 체인별 고정 제네시스 해시, Solana 수수료·CU 가격 상한, 로그 수준. `고급 설정 보기`를 켠 상태는 앱이 실행되는 동안만 유지하고 저장하지 않는다(보내기 폼의 `수수료 계산 보기`와 같은 상태). 템플릿 자격 정보의 `삭제`는 위험 버튼 `자격 정보 삭제`, URL이 없는 네트워크 행의 `교체`는 `입력`으로 보인다(같은 동작).
 
 | 구역 | 항목 | 동작 |
 |---|---|---|
@@ -588,7 +589,7 @@ pub fn can_approve(g: &ApprovalGate, now: Instant) -> bool {
 - `Expired`: Site 항목은 dApp에 4001 `Request expired.`(§3.1). App 항목은 앱이 그 흐름을 시작한 화면(보내기는 폼, 입력값 유지, §2.7)으로 돌아가 T-APPR-EXPIRED를 보인다. 같은 승인을 되살리거나 연장하지 않는다. 다시 검토하면 준비부터 다시 하고 새 승인(새 id, 새 `issue`)을 만든다.
 
 ### 3.6 창 동작
-- 기본 820×710 DIP, 최소 520×460(이식 `native.rs:40-60`). 작업 영역보다 크면 맞춘다. 주 창이 있는 모니터(없으면 기본 모니터) 가운데.
+- 기본 820×710 DIP, 최소 520×460(이식 `native.rs:40-60`). AI 설명 패널을 확보하는 창(M6, [06] §6)은 높이에 240 DIP를 더한다(820×950, 최소 520×700). 작업 영역보다 크면 맞춘다. 주 창이 있는 모니터(없으면 기본 모니터) 가운데.
 - `WS_EX_TOPMOST`. 연 직후 `SetForegroundWindow`, 전경이 되지 못하면 `FlashWindowEx(FLASHW_ALL | FLASHW_TIMERNOFG, 0)`.
 - 클릭 관통 방지: `MA_ACTIVATEANDEAT`(§1.8), `click_through` 이벤트, `APPROVE_ARM_DELAY_MS`.
 - 화면 캡처 제외는 적용하지 않는다(비밀 없음, D11 대상 아님). 소유 창 없음.

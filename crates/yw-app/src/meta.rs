@@ -15,10 +15,14 @@ pub const META_SCHEMA: &str = "yw-meta/3";
 pub const MAX_EVM_ACCOUNTS: usize = 100;
 /// Raw EVM keys bound.
 pub const MAX_RAW_ACCOUNTS: usize = 15;
-const MAX_ACCOUNT_INDEX: u64 = 999;
-const MAX_ADDRESS_BOOK: usize = 500;
-const MAX_SITES: usize = 256;
-const MAX_TOKENS_PER_NETWORK: usize = 100;
+/// Largest account index (`AccountIndex`, spec/02 §3.3).
+pub const MAX_ACCOUNT_INDEX: u64 = 999;
+/// Address-book bound (all chains together).
+pub const MAX_ADDRESS_BOOK: usize = 500;
+/// Connected-sites bound.
+pub const MAX_SITES: usize = 256;
+/// User tokens per EVM network.
+pub const MAX_TOKENS_PER_NETWORK: usize = 100;
 const MAX_TOKENS_TOTAL: usize = 1_000;
 const MAX_ACTIVITY_PER_NETWORK: usize = 500;
 const MAX_ACTIVITY_TOTAL: usize = 3_000;

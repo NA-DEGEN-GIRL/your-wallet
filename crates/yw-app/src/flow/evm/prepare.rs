@@ -143,6 +143,9 @@ pub struct Prepared {
     pub native_emitter_mismatch: bool,
     /// The simulated call's `gasUsed` (logged for spec/09 M4-2), `None` without a block.
     pub sim_gas_used: Option<u64>,
+    /// The interpreted simulation the draft was built from (the AI explanation input, spec/06
+    /// §4.3; never part of the digest by itself — the draft's binding is).
+    pub sim: SimResult,
 }
 
 /// A preparation that produced no signable transaction (only `거부`, spec/04 §3.5).
@@ -739,6 +742,7 @@ fn finish(
         sim_received_ms,
         native_emitter_mismatch,
         sim_gas_used,
+        sim: sim.clone(),
     }))
 }
 

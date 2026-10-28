@@ -300,6 +300,17 @@ impl ApiKeys {
         self.set(KeyName::TplAlchemy, key);
     }
 
+    /// Stores the LLM API key (validated by the caller, spec/06 §2.1).
+    pub fn set_llm(&mut self, key: &str) {
+        self.set(KeyName::Llm, key);
+    }
+
+    /// The LLM API key, for building the `yw-llm` configuration only (spec/06 §9).
+    #[must_use]
+    pub fn llm_key(&self) -> Option<&str> {
+        self.get(KeyName::Llm)
+    }
+
     /// The credential of `template`, if stored.
     #[must_use]
     pub fn credential(&self, template: RpcTemplate) -> Option<TemplateCred> {

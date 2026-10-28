@@ -76,6 +76,10 @@ pub const BTC_MAINNET_BG: Color = Color(0x00C4_2B1C);
 pub const BTC_TESTNET4_BG: Color = Color(0x00F7_A23B);
 /// Text on the Bitcoin mainnet banner.
 pub const BTC_MAINNET_TEXT: Color = Color(0x00FF_FFFF);
+/// The AI explanation panel (spec/04 §1.6, §3.8; spec/06 §6): set apart from the core display.
+pub const AI_PANEL_BG: Color = Color(0x00F3_F0FA);
+/// The AI panel's outline and title accent.
+pub const AI_PANEL_BORDER: Color = Color(0x00D9_D0EE);
 
 // ----- spacing grid (DIP) --------------------------------------------------------------------
 

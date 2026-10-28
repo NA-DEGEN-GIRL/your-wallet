@@ -17,7 +17,8 @@ use crate::app::{App, AppMode};
 use crate::meta::Tab;
 use crate::ui::main_window::{Ctl, Item, Tone};
 
-/// Command ids of the Solana screens (7000 and up).
+/// Command ids of the Solana screens (7000–7909 and the account radios at 12,000; the whole
+/// map and its checks are in `ui::command_ids`).
 pub mod ids {
     /// Tab `EVM`.
     pub const TAB_EVM: u16 = 7_000;
@@ -57,10 +58,12 @@ pub mod ids {
     pub const TOKEN_SEND_BASE: u16 = 7_027;
     /// Token send span.
     pub const TOKEN_SEND_SPAN: u16 = 3;
-    /// Account radios.
-    pub const ACCOUNT_BASE: u16 = 7_200;
+    /// Account radios (one id per row; rows ≤ 100, spec/02 §5.3). The span covers the whole
+    /// account-index range 0..=999. It used to start at 7,200, inside the scan rows below, so
+    /// the 41st scan row's `계정 추가` selected account 0 instead.
+    pub const ACCOUNT_BASE: u16 = 12_000;
     /// Account radio span.
-    pub const ACCOUNT_SPAN: u16 = 100;
+    pub const ACCOUNT_SPAN: u16 = 1_000;
     /// Recipient edit.
     pub const SEND_TO_EDIT: u16 = 7_020;
     /// Amount edit.
@@ -95,10 +98,13 @@ pub mod ids {
     pub const SET_DEVNET: u16 = 7_106;
     /// Scan: confirm and start.
     pub const SCAN_START: u16 = 7_110;
-    /// Scan rows (2 ids per row: 계정 추가, 표준 계정으로 이동).
+    /// Scan rows ([`SCAN_ROW_STRIDE`] ids per row: 계정 추가, 표준 계정으로 이동). Rows ≤ 107
+    /// (spec/07 §3.3: 50 standard + 50 BIP44 + root + seed + 5 Sollet sources).
     pub const SCAN_ROW_BASE: u16 = 7_120;
-    /// Scan rows span.
-    pub const SCAN_ROW_SPAN: u16 = 240;
+    /// Ids per scan row.
+    pub const SCAN_ROW_STRIDE: u16 = 2;
+    /// Scan rows span (128 rows × 2; ends at 7,376 below `BOOK_ADDR_EDIT`).
+    pub const SCAN_ROW_SPAN: u16 = 256;
     /// Book address edit.
     pub const BOOK_ADDR_EDIT: u16 = 7_400;
     /// Book label edit.
@@ -111,6 +117,81 @@ pub mod ids {
     pub const BOOK_ROW_BASE: u16 = 7_410;
     /// Book rows span.
     pub const BOOK_ROW_SPAN: u16 = 500;
+
+    /// Every fixed id of this module (`ui::command_ids` checks them against all ranges).
+    pub const FIXED: &[u16] = &[
+        TAB_EVM,
+        TAB_SOL,
+        CLUSTER_MAINNET,
+        CLUSTER_DEVNET,
+        REFRESH,
+        SEND_OPEN,
+        RECEIVE_OPEN,
+        RENAME,
+        HIDE,
+        ADD_ACCOUNT,
+        SCAN_OPEN,
+        RENAME_EDIT,
+        RENAME_SAVE,
+        RENAME_CANCEL,
+        COPY_ADDRESS,
+        SEND_TO_EDIT,
+        SEND_AMOUNT_EDIT,
+        SEND_MAX,
+        SEND_REVIEW,
+        SEND_CANCEL,
+        SEND_PICK,
+        SEND_AGAIN,
+        SECTION_SOL,
+        FEE_CAP_EDIT,
+        CU_PRICE_EDIT,
+        FEE_SAVE,
+        FEE_DEFAULT,
+        SET_MAINNET,
+        SET_DEVNET,
+        SCAN_START,
+        BOOK_ADDR_EDIT,
+        BOOK_LABEL_EDIT,
+        BOOK_VERIFIED,
+        BOOK_SAVE,
+    ];
+
+    /// What a scan-row id does (row index into `sol_scan_rows`).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum ScanAction {
+        /// `계정 추가` (standard path).
+        Add(usize),
+        /// `표준 계정으로 이동` (non-standard path).
+        Move(usize),
+    }
+
+    /// The button id of a scan action (`None` beyond the span).
+    #[must_use]
+    pub fn scan_row_id(action: ScanAction) -> Option<u16> {
+        let (row, extra) = match action {
+            ScanAction::Add(row) => (row, 0),
+            ScanAction::Move(row) => (row, 1),
+        };
+        let offset = u16::try_from(row)
+            .ok()?
+            .checked_mul(SCAN_ROW_STRIDE)?
+            .checked_add(extra)?;
+        (offset < SCAN_ROW_SPAN).then(|| SCAN_ROW_BASE.saturating_add(offset))
+    }
+
+    /// The scan action of `id`, if it is a scan-row id.
+    #[must_use]
+    pub fn scan_action(id: u16) -> Option<ScanAction> {
+        let offset = id
+            .checked_sub(SCAN_ROW_BASE)
+            .filter(|offset| *offset < SCAN_ROW_SPAN)?;
+        let row = usize::from(offset / SCAN_ROW_STRIDE);
+        Some(if offset % SCAN_ROW_STRIDE == 0 {
+            ScanAction::Add(row)
+        } else {
+            ScanAction::Move(row)
+        })
+    }
 }
 
 fn local_time(unix_ms: u64) -> String {
@@ -302,7 +383,11 @@ impl App {
             }));
         }
         let selected = selected.map(|(index, ..)| index);
-        for (row, (index, label, address)) in rows.into_iter().enumerate() {
+        for (row, (index, label, address)) in rows
+            .into_iter()
+            .take(usize::from(ids::ACCOUNT_SPAN))
+            .enumerate()
+        {
             let is_selected = selected == Some(index);
             items.push(Item::Row(vec![
                 Ctl::radio(
@@ -884,9 +969,8 @@ impl App {
                         "잔액이 있는 다른 경로 계정이나 추가할 표준 계정이 없습니다.".to_owned(),
                     ));
                 }
-                for (index, row) in rows.iter().enumerate() {
-                    let base = ids::SCAN_ROW_BASE
-                        .saturating_add(u16::try_from(index).unwrap_or(0).saturating_mul(2));
+                let shown = usize::from(ids::SCAN_ROW_SPAN / ids::SCAN_ROW_STRIDE);
+                for (index, row) in rows.iter().take(shown).enumerate() {
                     let mut text = format!(
                         "{} · {}",
                         row.source.path_text(),
@@ -906,10 +990,12 @@ impl App {
                     items.push(Item::Text(text));
                     items.push(Item::Mono(grouped(&row.address)));
                     if row.source.is_standard() {
-                        items.push(Item::Row(vec![Ctl::button(base, "계정 추가")]));
-                    } else {
+                        if let Some(id) = ids::scan_row_id(ids::ScanAction::Add(index)) {
+                            items.push(Item::Row(vec![Ctl::button(id, "계정 추가")]));
+                        }
+                    } else if let Some(id) = ids::scan_row_id(ids::ScanAction::Move(index)) {
                         items.push(Item::Row(vec![
-                            Ctl::button(base.saturating_add(1), "표준 계정으로 이동")
+                            Ctl::button(id, "표준 계정으로 이동")
                                 .enabled(matches!(self.mode, AppMode::Unlocked { .. })),
                         ]));
                     }
@@ -962,7 +1048,11 @@ impl App {
         if entries.is_empty() {
             items.push(Item::Help("Solana 주소록이 비어 있습니다.".to_owned()));
         }
-        for (index, entry) in entries.iter().enumerate() {
+        for (index, entry) in entries
+            .iter()
+            .take(usize::from(ids::BOOK_ROW_SPAN))
+            .enumerate()
+        {
             let verified = if entry.verified { " ✓ 확인됨" } else { "" };
             items.push(Item::Subtitle(format!("{}{verified}", entry.label)));
             items.push(Item::Mono(SolAddress::parse(&entry.address).map_or_else(

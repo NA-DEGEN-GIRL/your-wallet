@@ -95,7 +95,7 @@ fn rpc_events(queue: &EventQueue) -> Vec<RpcEvent> {
         .into_iter()
         .filter_map(|event| match event {
             UiEvent::Rpc(event) => Some(event),
-            UiEvent::Key(_) | UiEvent::Dapp(_) => None,
+            UiEvent::Key(_) | UiEvent::Dapp(_) | UiEvent::Llm(_) | UiEvent::LlmTest(_) => None,
         })
         .collect()
 }

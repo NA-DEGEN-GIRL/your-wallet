@@ -20,7 +20,7 @@ use crate::errors::ErrorCode;
 use crate::settings::BtcIndexer;
 use crate::ui::main_window::{Ctl, Item, Tone};
 
-/// Command ids of the Bitcoin screens (9000–9899; the other screens end below 8,000).
+/// Command ids of the Bitcoin screens (9000–9899; the whole map is `ui::command_ids`).
 pub mod ids {
     /// Tab `Bitcoin`.
     pub const TAB_BTC: u16 = 9_000;
@@ -1319,23 +1319,7 @@ mod tests {
         assert!(utxo_end <= ids::ACTIVITY_BASE);
         let rows = u16::try_from(BTC_MAX_ACTIVITY_ROWS).unwrap();
         assert!(rows * ids::ACTIVITY_STRIDE <= ids::ACTIVITY_SPAN);
-        // Every other screen module ends below 9,000 (fixed ids and indexed spans).
-        let others = [
-            crate::ui::screens::ids::ROW_BASE + crate::ui::screens::ids::ROW_SPAN,
-            crate::ui::screens::ids::OVERWRITE_CHECK,
-            crate::ui::screens::ids::ACCOUNT_BASE + crate::ui::screens::ids::ACCOUNT_SPAN,
-            crate::ui::screens_evm::ids::ACTIVITY_BASE + crate::ui::screens_evm::ids::ACTIVITY_SPAN,
-            crate::ui::screens_evm::ids::BOOK_ROW_BASE + crate::ui::screens_evm::ids::BOOK_ROW_SPAN,
-            crate::ui::screens_evm::ids::REPIN_CHECK,
-            crate::ui::screens_sites::ids::SITE_ROW_BASE
-                + crate::ui::screens_sites::ids::SITE_ROW_SPAN,
-            crate::ui::screens_sol::ids::BOOK_ROW_BASE + crate::ui::screens_sol::ids::BOOK_ROW_SPAN,
-            crate::ui::screens_sol::ids::ACCOUNT_BASE + crate::ui::screens_sol::ids::ACCOUNT_SPAN,
-            crate::ui::screens_sol::ids::SCAN_ROW_BASE + crate::ui::screens_sol::ids::SCAN_ROW_SPAN,
-        ];
-        for end in others {
-            assert!(end < 9_000, "{end}");
-        }
+        // The other modules are checked against these ranges in `ui::command_ids`.
         // Fee radios map back to their form.
         for bump in [false, true] {
             let choices: Vec<_> = fee_ids(bump)

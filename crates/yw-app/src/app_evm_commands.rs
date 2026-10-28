@@ -260,10 +260,10 @@ impl App {
         }
         if let Some(index) = offset(id, ids::ACTIVITY_BASE, ids::ACTIVITY_SPAN) {
             let rows = self.activity_rows();
-            let Some(row) = rows.get(usize::from(index / 8)).cloned() else {
+            let Some(row) = rows.get(usize::from(index / ids::ACTIVITY_STRIDE)).cloned() else {
                 return true;
             };
-            match index % 8 {
+            match index % ids::ACTIVITY_STRIDE {
                 0 => self.copy_text(&row.hash),
                 1 => {
                     if let Some(key) = row.open {

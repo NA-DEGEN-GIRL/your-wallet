@@ -12,6 +12,8 @@
 //! - RPC URLs are `*.example.test` placeholders that are never contacted (EVM approval windows
 //!   are prepared against the fixture transport of `app_approval::smoke`, the Solana token
 //!   approval against `SolTourRpc`);
+//! - the AI explanation scene (M6) talks to a loopback mock on `127.0.0.1:<random port>` that the
+//!   tour itself serves with one fixed, made-up answer; no external endpoint or key is used;
 //! - the capture exclusion of the tour's own secret windows is lifted right before capture with
 //!   `dev_tour_lift_capture_exclusion` (debug builds only) — the app's code path is unchanged.
 //!
@@ -573,6 +575,199 @@ fn approval(app: &Rc<RefCell<App>>, fixture_name: &str) {
     app.borrow_mut().on_prepared(result);
 }
 
+/// The made-up AI answer of the tour: for the S2 send (0.01 `SepoliaETH` from account 0 to the
+/// address-book recipient), or for the settings' connection-test sample (`0x…dEaD` →
+/// `0x…beef`) when the request carries that sample.
+fn tour_llm_answer(request: &[u8]) -> Vec<u8> {
+    use crate::text::{json_object, json_str};
+    let sample =
+        String::from_utf8_lossy(request).contains("000000000000000000000000000000000000dead");
+    let (from, to, summary) = if sample {
+        (
+            crate::app_llm::SAMPLE_FROM.to_ascii_lowercase(),
+            crate::app_llm::SAMPLE_TO.to_owned(),
+            format!(
+                "표본 요청입니다. 실행되면 {}에서 0.01 SepoliaETH가 {}로 이동합니다. 이 요청에는 시뮬레이션 결과가 없습니다.",
+                crate::app_llm::SAMPLE_FROM,
+                crate::app_llm::SAMPLE_TO
+            ),
+        )
+    } else {
+        (
+            evm_address(0).to_lower_hex(),
+            recipient().to_lower_hex(),
+            format!(
+                "이 거래가 실행되면 내 계정 {}에서 0.01 SepoliaETH가 받는 주소 {}로 이동합니다. 시뮬레이션에서도 내 SepoliaETH 잔액이 0.01 줄어들었고, 토큰 권한이 바뀌는 내용은 없습니다.",
+                evm_address(0).to_checksum(),
+                recipient().to_checksum()
+            ),
+        )
+    };
+    let content = json_object(vec![
+        ("summary", json_str(&summary)),
+        (
+            "actions",
+            yw_json::Value::Array(vec![json_object(vec![
+                ("type", json_str("send")),
+                ("asset", json_str("native")),
+                ("amount", json_str("0.01")),
+                ("from", json_str(&from)),
+                ("to", json_str(&to)),
+            ])]),
+        ),
+        (
+            "unknowns",
+            yw_json::Value::Array(vec![json_str(
+                "받는 주소의 주인이 누구인지는 입력 데이터만으로 알 수 없습니다.",
+            )]),
+        ),
+    ]);
+    let content = String::from_utf8(yw_json::to_vec(&content)).unwrap();
+    yw_json::to_vec(&json_object(vec![
+        ("object", json_str("chat.completion")),
+        (
+            "choices",
+            yw_json::Value::Array(vec![json_object(vec![
+                (
+                    "message",
+                    json_object(vec![
+                        ("role", json_str("assistant")),
+                        ("content", json_str(&content)),
+                    ]),
+                ),
+                ("finish_reason", json_str("stop")),
+            ])]),
+        ),
+    ]))
+}
+
+/// A loopback chat-completions mock (DEV ONLY, tour process only): every request gets
+/// [`tour_llm_answer`]. Returns the endpoint URL.
+fn tour_llm_mock() -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else {
+                continue;
+            };
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+            let mut data = Vec::new();
+            let mut buffer = [0_u8; 8_192];
+            let mut expected = None;
+            loop {
+                match stream.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => data.extend_from_slice(&buffer[..read]),
+                }
+                if expected.is_none()
+                    && let Some(end) = data.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    let head = String::from_utf8_lossy(&data[..end]).to_ascii_lowercase();
+                    let length = head
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length: "))
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    expected = Some(end + 4 + length);
+                }
+                if expected.is_some_and(|total| data.len() >= total) {
+                    break;
+                }
+            }
+            let body = tour_llm_answer(&data);
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+        }
+    });
+    format!("http://127.0.0.1:{port}/v1/chat/completions")
+}
+
+/// A dApp `eth_sendTransaction` from the connected `https://app.example.org` (0.01 `SepoliaETH` to
+/// the address-book recipient), prepared against the S2 fixture like [`approval`].
+fn site_approval(app: &Rc<RefCell<App>>) {
+    use crate::browser::envelope::{Correlation, Id16, Id32};
+    use crate::browser::params::TxParams;
+    use crate::browser::{DappEvent, Reply, SiteKind, SiteRequest};
+    let (tx, rx) = mpsc::channel();
+    {
+        let mut state = app.borrow_mut();
+        state.rpc_tx = Some(tx);
+        let site = SiteRequest {
+            reply: Reply {
+                conn: 1,
+                correlation: Correlation {
+                    session_id: Id32([1; 32]),
+                    sequence: 1,
+                    activation_nonce: Id32([2; 32]),
+                    request_id: Id16([3; 16]),
+                },
+            },
+            origin: yw_core::policy::BrowserOrigin::parse("https://app.example.org").unwrap(),
+            chain_id: SEPOLIA,
+            deadline_ms: yw_win::time::monotonic_ms().saturating_add(600_000),
+            method: yw_core::policy::Method::SendTransaction,
+            kind: SiteKind::Send(Box::new(TxParams {
+                from: evm_address(0),
+                to: recipient(),
+                value: U256::from_u64(10_000_000_000_000_000),
+                data: Vec::new(),
+                gas: None,
+                nonce: None,
+                chain_id: Some(SEPOLIA),
+                fee_fields: false,
+                access_list: Vec::new(),
+            })),
+            compat_mode: None,
+        };
+        state.on_dapp_event(DappEvent::Request(Box::new(site)));
+    }
+    let job = loop {
+        match rx.try_recv() {
+            Ok(RpcJob::Prepare(job)) => break job,
+            Ok(_) => {}
+            Err(_) => unreachable!("no preparation job"),
+        }
+    };
+    let transport: SharedTransport = std::sync::Arc::new(FixtureRpc {
+        simulate: fixture("S2"),
+    });
+    let clock = FixtureClock {
+        now_ms: AtomicU64::new(0),
+    };
+    let result = prepare(
+        &transport,
+        &mut ChainCache::default(),
+        &job,
+        &clock,
+        &|_| {},
+    );
+    app.borrow_mut().on_prepared(result);
+}
+
+/// Pumps until the AI panel left `Waiting`/`Requesting` (at most 5 s).
+fn wait_for_ai(app: &Rc<RefCell<App>>) {
+    for _ in 0..50 {
+        pump(100);
+        app.borrow_mut().tour_drain_events();
+        let state = app.borrow().tour_ai_state();
+        if !matches!(
+            state,
+            Some(
+                crate::explain::AiPanelState::Waiting
+                    | crate::explain::AiPanelState::Requesting { .. }
+            )
+        ) {
+            return;
+        }
+    }
+}
+
 #[test]
 #[ignore = "DEV ONLY: opens windows on the desktop and writes BMPs (scripts/screenshot-tour.ps1)"]
 #[expect(clippy::too_many_lines, reason = "one scene after another")]
@@ -742,6 +937,47 @@ fn screenshot_tour() {
     save(main_hwnd(&app), "17-settings-rpc");
     set_screen(&app, UNLOCKED, Screen::Sites);
     save(main_hwnd(&app), "18-sites");
+
+    // M6: the optional AI explanation, answered by the tour's own loopback mock.
+    let endpoint = tour_llm_mock();
+    {
+        let mut state = app.borrow_mut();
+        state.settings.llm_explain = crate::settings::LlmSettings {
+            enabled: true,
+            endpoint,
+            model: "mock-model".to_owned(),
+            privacy_notice_version: u64::from(crate::explain::PRIVACY_NOTICE_VERSION),
+            ..crate::settings::LlmSettings::default()
+        };
+        state.events = Some(std::sync::Arc::new(crate::events::EventQueue::new(
+            Box::new(|| {}),
+        )));
+        state.llm_reconfigure();
+    }
+    set_screen(&app, UNLOCKED, Screen::Main);
+    site_approval(&app);
+    wait_for_ai(&app);
+    save(approval_hwnd(&app), "22-approval-ai-explain");
+    app.borrow_mut().tour_reject_approval();
+    app.borrow_mut().open_llm_settings();
+    let _ = app
+        .borrow_mut()
+        .on_llm_command(crate::ui::screens_llm::ids::TEST);
+    for _ in 0..50 {
+        pump(100);
+        app.borrow_mut().tour_drain_events();
+        if !app.borrow().llm_ui.test_running {
+            break;
+        }
+    }
+    {
+        // Past the back link and the title, so the test result under the buttons is in view.
+        let mut state = app.borrow_mut();
+        state.scroll = 96;
+        state.refresh();
+    }
+    save(main_hwnd(&app), "23-settings-ai");
+    app.borrow_mut().llm_shutdown();
 
     if let Some(browser) = app.borrow_mut().browser.as_mut() {
         browser.stop();

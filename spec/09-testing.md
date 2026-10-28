@@ -733,7 +733,8 @@ WETH = Sepolia `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14`(03 §1.2, 구현 시
 
 ### 5.8 M6 LLM 설명 (선택)
 
-- [ ] M6-1 자동: 06 §10 E1–E12 통과(X-19 포함).
+- [ ] M6-1 자동: 06 §10 E1–E12 통과(X-19 포함). 순수 사례는 `crates/yw-app/src/explain/tests.rs`·`explain/config.rs`, loopback mock(127.0.0.1:0)·실제 WinHTTP 사례는 `crates/yw-app/tests/llm_mock.rs`(E1·E2·E3·E4·E5·E8·E9·E10·E11·응답 주입 시도).
+- [ ] M6-1b 자동(UI 명령 ID): `ui::command_ids` 시험 — 모든 고정 ID와 목록형 범위가 겹치지 않고 범위마다 최대 목록(스캔 107행 × 2, 계정 0..=999, 사이트 256, 주소록 500 등)을 담음, Solana 스캔 41번째 이후 행 버튼이 그 행 동작으로 가는 회귀 시험(`app_sol_commands::tests`).
 - [ ] M6-2 수동: 기능 끔 → M4-2 수행 → `logs\`에 `llm_explain` 줄 0, 외부 연결 대상은 설정한 RPC 엔드포인트(현재 QuickNode, D13)뿐(기록에는 호스트 대신 `NetworkId`).
 - [ ] M6-3 수동: 실제 공급자 켬 → 켜기 고지 표시, T09·T23 설명 1회씩 패널 표시, 결과 도착 전후 버튼 위치 동일(06 §10 수동). 엔드포인트를 틀린 URL로 바꿈 → 패널 오류 문구, 승인 정상.
 

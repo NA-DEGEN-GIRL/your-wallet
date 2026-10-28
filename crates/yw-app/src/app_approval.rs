@@ -24,9 +24,17 @@ use yw_win::ui::{
 
 use crate::app::App;
 use crate::app_evm::{AppApproval, QueuedItem};
+use crate::app_llm::log_request;
 use crate::browser::{SiteKind, SiteRequest};
 use crate::errors::ErrorCode;
 use crate::events::{KeyJob, SignInfo};
+use crate::explain::input::RequestKind;
+use crate::explain::panel::{
+    AiPanel, BODY_LINES, Dispatch, Ended, PANEL_TITLE, PanelLine, RETRY_LABEL, body_lines,
+};
+use crate::explain::{
+    ExplainError, ExplainInput, ExplainSource, LlmDone, LlmJob, RequestStats, build_input,
+};
 use crate::flow::evm::Limits;
 use crate::flow::evm::prepare::{
     PrepareJob, PrepareOutcome, PrepareResult, Prepared, ResimJob, ResimKind, ResimResult,
@@ -48,6 +56,11 @@ pub const APPROVAL_CLASS: &str = "YourWalletV3Approval";
 pub const PANEL_CLASS: &str = "YourWalletV3Panel";
 const APPROVAL_TIMER_ID: usize = 7;
 const MA_ACTIVATEANDEAT: isize = 2;
+/// Extra window height (DIP) when the AI panel is reserved (spec/06 §6: ten body lines plus the
+/// title row), so the core content area keeps the size it has without the panel.
+const AI_PANEL_EXTRA_DIP: i32 = 240;
+const SKIP_BLOCKED: &str = "승인할 수 없는 요청이라 AI 설명을 요청하지 않았습니다.";
+const SKIP_FAILED: &str = "요청을 준비하지 못해 AI 설명을 요청하지 않았습니다.";
 const VK_LBUTTON: u16 = 0x01;
 const VK_TAB: u16 = 0x09;
 const VK_RETURN: u16 = 0x0D;
@@ -81,6 +94,35 @@ enum Pressed {
     Approve,
     Reject,
     Retry,
+    AiRetry,
+}
+
+/// The AI explanation panel of one window (spec/06 §6, spec/04 §3.8): reserved when the window
+/// opens, painted by the window (title, `다시 요청`) and by its own child (`body`, ten lines,
+/// scrolled inside). Never focused and never an input of the gate.
+struct AiUi {
+    panel: AiPanel,
+    serial: u64,
+    body: Window,
+    scroll: i32,
+    host: String,
+    model: String,
+    kind: RequestKind,
+}
+
+impl core::fmt::Debug for AiUi {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("AiUi")
+            .field("state", self.panel.state())
+            .finish_non_exhaustive()
+    }
+}
+
+/// What a Ready display means for the AI panel.
+enum AiReady {
+    Input(Result<ExplainInput, ExplainError>),
+    Skip(&'static str),
 }
 
 #[derive(Clone, Debug)]
@@ -127,6 +169,8 @@ struct Bottom {
     reject: Rect,
     retry: Option<Rect>,
     panel: Rect,
+    ai_retry: Option<Rect>,
+    ai_body: Rect,
 }
 
 /// The open approval window and its flow state.
@@ -151,6 +195,7 @@ pub struct ApprovalUi {
     layout: Option<PanelLayout>,
     bottom: Bottom,
     widths: HashMap<(FontRole, char), i32>,
+    ai: Option<AiUi>,
 }
 
 impl ApprovalUi {
@@ -170,6 +215,7 @@ impl core::fmt::Debug for ApprovalUi {
 enum Target {
     Approval,
     Panel,
+    AiBody,
 }
 
 struct Forward {
@@ -188,6 +234,7 @@ impl Handler for Forward {
         match self.target {
             Target::Approval => app.on_approval_msg(window, msg),
             Target::Panel => app.on_panel_msg(window, msg),
+            Target::AiBody => app.on_ai_body_msg(window, msg),
         }
     }
 }
@@ -779,6 +826,10 @@ impl App {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "window, panel, AI body and session set up in order"
+    )]
     fn open_approval(&mut self, item: QueuedItem) -> Result<(), ()> {
         let now = now_ms();
         let connect = match &item {
@@ -794,10 +845,27 @@ impl App {
         } else {
             "Your Wallet — 승인 요청"
         };
+        // spec/06 §3.1: dApp transactions, personal_sign and typed data, only while the worker
+        // exists (feature effectively on). The panel's height is reserved now (§6).
+        let ai_kind = match &item {
+            QueuedItem::Site(site) => match &site.kind {
+                SiteKind::Send(_) => Some(RequestKind::EvmTx),
+                SiteKind::PersonalSign { .. } => Some(RequestKind::PersonalSign),
+                SiteKind::TypedData { .. } => Some(RequestKind::TypedData),
+                SiteKind::RequestAccounts | SiteKind::RequestPermissions | SiteKind::Revoke => None,
+            },
+            QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => None,
+        }
+        .filter(|_| self.llm.is_some());
+        let extra = if ai_kind.is_some() {
+            AI_PANEL_EXTRA_DIP
+        } else {
+            0
+        };
         let spec = WindowSpec::new(APPROVAL_CLASS, WindowKind::Floating)
             .title(title)
-            .size(820, 710)
-            .min_size(520, 460)
+            .size(820, 710 + extra)
+            .min_size(520, 460 + extra)
             .topmost(true)
             .resizable(true);
         let window = create_window(&spec, handler).map_err(|_| ())?;
@@ -813,6 +881,33 @@ impl App {
         )
         .visible(true);
         let panel = create_window(&panel_spec, panel_handler).map_err(|_| ())?;
+        let ai = match (ai_kind, self.llm.as_ref()) {
+            (Some(kind), Some(service)) => {
+                let body_handler = Box::new(Forward {
+                    app: self.self_ref.clone(),
+                    target: Target::AiBody,
+                });
+                let body_spec = WindowSpec::new(
+                    PANEL_CLASS,
+                    WindowKind::Child {
+                        parent: window.hwnd(),
+                    },
+                )
+                .visible(true);
+                let body = create_window(&body_spec, body_handler).map_err(|_| ())?;
+                self.llm_ui.next_window = self.llm_ui.next_window.saturating_add(1);
+                Some(AiUi {
+                    panel: AiPanel::new(true),
+                    serial: self.llm_ui.next_window,
+                    body,
+                    scroll: 0,
+                    host: service.host().to_owned(),
+                    model: service.model().to_owned(),
+                    kind,
+                })
+            }
+            _ => None,
+        };
         let deadline_ms = match &item {
             QueuedItem::Site(site) => site.deadline_ms,
             QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => {
@@ -857,6 +952,7 @@ impl App {
             layout: None,
             bottom: Bottom::default(),
             widths: HashMap::new(),
+            ai,
         });
         logging::info("app", "approval.open", &[]);
         self.rebuild_view();
@@ -998,7 +1094,10 @@ impl App {
                     .ok()
                 });
                 match draft {
-                    Some(draft) => self.show_ready_draft(draft, None),
+                    Some(draft) => {
+                        self.show_ready_draft(draft, None);
+                        self.ai_ready_message();
+                    }
                     None => self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text()),
                 }
             }
@@ -1088,7 +1187,10 @@ impl App {
             .ok()
         });
         match draft {
-            Some(draft) => self.show_ready_draft(draft, None),
+            Some(draft) => {
+                self.show_ready_draft(draft, None);
+                self.ai_ready_typed(facts);
+            }
             None => self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text()),
         }
     }
@@ -1100,15 +1202,23 @@ impl App {
                 .session
                 .replace_content(now_ms(), PrepareState::Failed { code, retryable });
         }
+        self.ai_ready(AiReady::Skip(SKIP_FAILED));
         self.rebuild_view();
     }
 
     /// Closes the window without queue bookkeeping; a still-pending issued approval is rejected
     /// (it can never be consumed without its window).
     pub fn close_approval_window(&mut self) {
-        if let Some(ui) = self.evm.window.take() {
+        if let Some(mut ui) = self.evm.window.take() {
             if let Some(request) = ui.request.as_ref() {
                 self.evm.store.reject(request.id);
+            }
+            // spec/06 §3.2: a result arriving after the window closed is dropped.
+            if let Some(mut ai) = ui.ai.take() {
+                if let Some(ended) = ai.panel.close(now_ms()) {
+                    log_request(&ai.host, ai.kind, &ended, None);
+                }
+                drop(ai.body);
             }
             ui.window.kill_timer(APPROVAL_TIMER_ID);
             drop(ui.panel);
@@ -1193,6 +1303,7 @@ impl App {
                 }
                 let draft = prepared.draft.clone();
                 self.show_ready_draft(draft, Some(prepared));
+                self.ai_ready_tx();
             }
         }
     }
@@ -1302,6 +1413,8 @@ impl App {
                 PrepareState::Ready(ReadyContent::Signing(Box::new(request))),
             );
         }
+        // spec/06 §3.2: a re-simulation that changes the input bytes re-requests.
+        self.ai_ready_tx();
         self.rebuild_view();
     }
 
@@ -1693,6 +1806,7 @@ impl App {
             }
             Msg::Timer(APPROVAL_TIMER_ID) => {
                 self.interaction(InteractionEvent::Tick);
+                self.ai_tick(now_ms());
                 if let Some(ui) = self.evm.window.as_ref()
                     && matches!(
                         ui.session.gate.prepare,
@@ -1724,6 +1838,10 @@ impl App {
                     window.set_capture();
                 } else if bottom.retry.is_some_and(|rect| rect.contains(*x, *y)) {
                     ui.pressed = Some(Pressed::Retry);
+                    window.set_capture();
+                } else if bottom.ai_retry.is_some_and(|rect| rect.contains(*x, *y)) {
+                    // Mouse only: not a default button, not in the Tab order, not on Enter/Space.
+                    ui.pressed = Some(Pressed::AiRetry);
                     window.set_capture();
                 }
                 window.invalidate();
@@ -1759,6 +1877,11 @@ impl App {
                         if bottom.retry.is_some_and(|rect| rect.contains(*x, *y)) =>
                     {
                         self.retry_action();
+                    }
+                    Some(Pressed::AiRetry)
+                        if bottom.ai_retry.is_some_and(|rect| rect.contains(*x, *y)) =>
+                    {
+                        self.ai_retry();
                     }
                     _ => {}
                 }
@@ -1970,6 +2093,10 @@ impl App {
         let now = now_ms();
         let dpi = window.dpi();
         let client = window.client_rect();
+        let llm_busy = self
+            .llm
+            .as_ref()
+            .is_none_or(crate::explain::ExplainService::busy);
         let Self { evm, fonts, .. } = self;
         let Some(fonts) = fonts.for_dpi(dpi) else {
             return;
@@ -2280,7 +2407,78 @@ impl App {
             Focus::Reject => dc.frame_rect(reject.inset(-px(3)), theme::FOCUS),
             _ => {}
         }
-        let panel = Rect::new(0, y, client.w, bottom_top.saturating_sub(y).max(px(40)));
+        // AI panel (spec/06 §6): fixed height right above the bottom bar, reserved from the start,
+        // so a result never moves the buttons or the warnings.
+        let (content_bottom, ai_retry, ai_body) = match ui.ai.as_ref() {
+            Some(ai) => {
+                let line_h = line_height(&mut dc, fonts, FontRole::Body);
+                let pad = px(10);
+                let title_h = px(28);
+                let body_h = line_h.saturating_mul(BODY_LINES);
+                let height = pad
+                    .saturating_add(title_h)
+                    .saturating_add(px(6))
+                    .saturating_add(body_h)
+                    .saturating_add(pad);
+                // Anchored to the bottom bar: the buttons are never covered, whatever the size.
+                let top = bottom_top.saturating_sub(height);
+                dc.fill_rect(Rect::new(0, top, client.w, height), theme::AI_PANEL_BG);
+                dc.fill_rect(Rect::new(0, top, client.w, 1), theme::AI_PANEL_BORDER);
+                dc.fill_rect(Rect::new(0, top, px(4), height), theme::AI_PANEL_BORDER);
+                let button_w = px(110);
+                dc.select_font(&fonts.body_bold);
+                dc.set_text_color(theme::TEXT);
+                dc.draw_text(
+                    &wide(PANEL_TITLE),
+                    Rect::new(
+                        margin,
+                        top.saturating_add(pad),
+                        width.saturating_sub(button_w).saturating_sub(px(12)),
+                        title_h,
+                    ),
+                    DrawFlags::LINE,
+                );
+                let retry_rect = ai.panel.retry_offered().then(|| {
+                    Rect::new(
+                        client.w.saturating_sub(margin).saturating_sub(button_w),
+                        top.saturating_add(pad),
+                        button_w,
+                        title_h,
+                    )
+                });
+                if let Some(rect) = retry_rect {
+                    let style = theme::BUTTON_SECONDARY;
+                    let (fill, border, text) = if llm_busy {
+                        (
+                            style.disabled_fill,
+                            style.disabled_border,
+                            style.disabled_text,
+                        )
+                    } else {
+                        (style.fill, style.border, style.text)
+                    };
+                    dc.round_rect(rect, radius, fill, border);
+                    dc.select_font(&fonts.body);
+                    dc.set_text_color(text);
+                    dc.draw_text(&wide(RETRY_LABEL), rect, DrawFlags::CENTER);
+                }
+                let body = Rect::new(
+                    margin,
+                    top.saturating_add(pad)
+                        .saturating_add(title_h)
+                        .saturating_add(px(6)),
+                    width,
+                    body_h,
+                );
+                if body != ui.bottom.ai_body {
+                    ai.body.set_rect(body);
+                    ai.body.invalidate();
+                }
+                (top, retry_rect.filter(|_| !llm_busy), body)
+            }
+            None => (bottom_top, None, Rect::default()),
+        };
+        let panel = Rect::new(0, y, client.w, content_bottom.saturating_sub(y).max(px(40)));
         if panel != ui.bottom.panel {
             ui.panel.set_rect(panel);
             ui.layout = None;
@@ -2291,7 +2489,337 @@ impl App {
             reject,
             retry,
             panel,
+            ai_retry,
+            ai_body,
         };
+    }
+
+    /// Paints the AI panel body (spec/06 §6): plain text laid out by `ui::text_layout`, wrapped
+    /// only; no links, formatting, click actions or copy.
+    fn paint_ai_body(&mut self, window: &Window) {
+        let now = now_ms();
+        let dpi = window.dpi();
+        let client = window.client_rect();
+        let Self { evm, fonts, .. } = self;
+        let Some(fonts) = fonts.for_dpi(dpi) else {
+            return;
+        };
+        let Some(ui) = evm.window.as_mut() else {
+            return;
+        };
+        let ApprovalUi { ai, widths, .. } = ui;
+        let Some(ai) = ai.as_mut() else {
+            return;
+        };
+        let Ok(mut dc) = window.begin_paint() else {
+            return;
+        };
+        dc.fill_rect(client, theme::AI_PANEL_BG);
+        let px = |dip: i32| yw_win::ui::scale(dip, dpi);
+        let width = client.w.saturating_sub(px(4)).max(px(40));
+        let mut rows: Vec<(i32, String, FontRole, Color, i32)> = Vec::new();
+        let mut y = 0_i32;
+        for line in body_lines(&ai.panel, now, &ai.host, &ai.model) {
+            let (text, role, color) = match line {
+                PanelLine::Text(text) | PanelLine::Action(text) | PanelLine::Bullet(text) => {
+                    (text, FontRole::Body, theme::TEXT)
+                }
+                PanelLine::Heading(text) | PanelLine::Notice(text) => {
+                    (text, FontRole::BodyBold, theme::TEXT)
+                }
+                PanelLine::Footer(text) => (text, FontRole::Caption, theme::MUTED),
+                PanelLine::Gap => {
+                    y = y.saturating_add(px(6));
+                    continue;
+                }
+            };
+            let height = line_height(&mut dc, fonts, role);
+            for character in text.chars() {
+                let _ = char_width(&mut dc, fonts, widths, role, character);
+            }
+            let cache = &*widths;
+            let pieces = text_layout::layout(&text, width, &|character| {
+                cache.get(&(role, character)).copied().unwrap_or(0)
+            });
+            for piece in pieces {
+                rows.push((
+                    y,
+                    text.get(piece.start..piece.end).unwrap_or("").to_owned(),
+                    role,
+                    color,
+                    height,
+                ));
+                y = y.saturating_add(height);
+            }
+        }
+        let max = y.saturating_sub(client.h).max(0);
+        ai.scroll = ai.scroll.clamp(0, max);
+        window.set_vscroll(ai.scroll, client.h, y);
+        for (top, text, role, color, height) in rows {
+            let top = top.saturating_sub(ai.scroll);
+            if top.saturating_add(height) < 0 || top > client.h {
+                continue;
+            }
+            dc.select_font(fonts.get(role));
+            dc.set_text_color(color);
+            dc.draw_text(
+                &wide(&text),
+                Rect::new(0, top, width.saturating_add(px(4)), height),
+                DrawFlags::LINE,
+            );
+        }
+    }
+
+    pub(crate) fn on_ai_body_msg(&mut self, window: &Window, msg: &Msg) -> Reply {
+        match msg {
+            Msg::Paint => {
+                self.paint_ai_body(window);
+                Reply::Handled(0)
+            }
+            Msg::MouseDown { .. } => {
+                // The panel never takes keyboard focus (spec/04 §3.8).
+                if let Some(ui) = self.evm.window.as_ref() {
+                    ui.window.set_focus();
+                }
+                Reply::Handled(0)
+            }
+            Msg::Wheel(delta) => {
+                let step = window.px(40);
+                self.ai_scroll_by(window, -(i32::from(*delta) / 120).saturating_mul(step));
+                Reply::Handled(0)
+            }
+            Msg::VScroll { code } => {
+                let page = window.client_rect().h;
+                let line = window.px(20);
+                let current = self
+                    .evm
+                    .window
+                    .as_ref()
+                    .and_then(|ui| ui.ai.as_ref())
+                    .map_or(0, |ai| ai.scroll);
+                let target = match code {
+                    0 => current.saturating_sub(line),
+                    1 => current.saturating_add(line),
+                    2 => current.saturating_sub(page),
+                    3 => current.saturating_add(page),
+                    4 | 5 => window.vscroll_track_pos(),
+                    6 => 0,
+                    7 => i32::MAX / 2,
+                    _ => current,
+                };
+                self.ai_scroll_by(window, target.saturating_sub(current));
+                Reply::Handled(0)
+            }
+            _ => Reply::Default,
+        }
+    }
+
+    fn ai_scroll_by(&mut self, window: &Window, delta: i32) {
+        if let Some(ai) = self.evm.window.as_mut().and_then(|ui| ui.ai.as_mut()) {
+            ai.scroll = ai.scroll.saturating_add(delta).max(0);
+            window.invalidate();
+        }
+    }
+
+    // ----- AI explanation (spec/06) -------------------------------------------------------
+
+    fn llm_busy(&self) -> bool {
+        self.llm
+            .as_ref()
+            .is_none_or(crate::explain::ExplainService::busy)
+    }
+
+    /// Logs an ended request and hands a new one to the worker.
+    fn ai_after(
+        &mut self,
+        ended: Option<Ended>,
+        dispatch: Option<Dispatch>,
+        stats: Option<&RequestStats>,
+    ) {
+        let now = now_ms();
+        let Self { evm, llm, .. } = self;
+        let Some(ui) = evm.window.as_mut() else {
+            return;
+        };
+        let Some(ai) = ui.ai.as_mut() else {
+            return;
+        };
+        if let Some(ended) = ended {
+            log_request(&ai.host, ai.kind, &ended, stats);
+        }
+        if let Some(dispatch) = dispatch {
+            let generation = dispatch.generation;
+            let job = LlmJob {
+                window: ai.serial,
+                generation,
+                input: dispatch.input,
+            };
+            let sent = llm.as_ref().is_some_and(|service| service.submit(job));
+            if !sent
+                && let Some(ended) = ai
+                    .panel
+                    .on_result(now, generation, Err(ExplainError::Network))
+            {
+                log_request(&ai.host, ai.kind, &ended, None);
+            }
+        }
+        ai.body.invalidate();
+        ui.window.invalidate();
+    }
+
+    fn ai_ready(&mut self, ready: AiReady) {
+        let now = now_ms();
+        let busy = self.llm_busy();
+        let Some(ai) = self.evm.window.as_mut().and_then(|ui| ui.ai.as_mut()) else {
+            return;
+        };
+        let (ended, dispatch) = match ready {
+            AiReady::Input(Ok(input)) => ai.panel.set_input(now, input, busy),
+            AiReady::Input(Err(error)) => (ai.panel.input_failed(now, error), None),
+            AiReady::Skip(text) => (ai.panel.skip(now, text), None),
+        };
+        self.ai_after(ended, dispatch, None);
+    }
+
+    /// A dApp transaction reached Ready (first display or re-simulation): the input from the
+    /// wallet's decoding and the simulation status (spec/06 §3.1, §4.3).
+    fn ai_ready_tx(&mut self) {
+        let ready = {
+            let Some(ui) = self.evm.window.as_ref() else {
+                return;
+            };
+            if ui.ai.is_none() {
+                return;
+            }
+            let (QueuedItem::Site(site), Some(prepared), Some(request)) =
+                (&ui.item, ui.prepared.as_ref(), ui.request.as_ref())
+            else {
+                return;
+            };
+            let yw_core::approval::AccountRef::Evm(user) = request.account else {
+                return;
+            };
+            if request.display.risk == RiskLevel::Blocked {
+                AiReady::Skip(SKIP_BLOCKED)
+            } else {
+                crate::app_llm::transaction_input(prepared, site.origin.as_str(), &user)
+                    .map_or(AiReady::Skip(SKIP_BLOCKED), AiReady::Input)
+            }
+        };
+        self.ai_ready(ready);
+    }
+
+    /// A `personal_sign` request reached Ready.
+    fn ai_ready_message(&mut self) {
+        let Some(ui) = self.evm.window.as_ref() else {
+            return;
+        };
+        // Only for the window whose draft was just shown (not a next window opened meanwhile).
+        if ui.ai.is_none() || ui.request.is_none() {
+            return;
+        }
+        let QueuedItem::Site(site) = ui.item.clone() else {
+            return;
+        };
+        let SiteKind::PersonalSign { account, message } = &site.kind else {
+            return;
+        };
+        let blocked = ui
+            .request
+            .as_ref()
+            .is_some_and(|request| request.display.risk == RiskLevel::Blocked);
+        let ready = match self.message_chain(site.chain_id) {
+            _ if blocked => AiReady::Skip(SKIP_BLOCKED),
+            Some(chain) => {
+                let decoded = yw_core::evm::eip191::decode_personal_message(message.clone());
+                AiReady::Input(build_input(
+                    &ExplainSource::PersonalSign(&decoded),
+                    site.origin.as_str(),
+                    account,
+                    &chain,
+                    &yw_core::approval::ChainFacts::default(),
+                ))
+            }
+            None => AiReady::Skip(SKIP_FAILED),
+        };
+        self.ai_ready(ready);
+    }
+
+    /// A typed-data request reached Ready (with the facts its display used).
+    fn ai_ready_typed(&mut self, facts: &yw_core::approval::ChainFacts) {
+        let Some(ui) = self.evm.window.as_ref() else {
+            return;
+        };
+        if ui.ai.is_none() || ui.request.is_none() {
+            return;
+        }
+        let (QueuedItem::Site(site), Some(typed)) = (ui.item.clone(), ui.typed.clone()) else {
+            return;
+        };
+        let SiteKind::TypedData { account, .. } = &site.kind else {
+            return;
+        };
+        let blocked = ui
+            .request
+            .as_ref()
+            .is_some_and(|request| request.display.risk == RiskLevel::Blocked);
+        let ready = match self.message_chain(site.chain_id) {
+            _ if blocked => AiReady::Skip(SKIP_BLOCKED),
+            Some(chain) => AiReady::Input(build_input(
+                &ExplainSource::TypedData(&typed),
+                site.origin.as_str(),
+                account,
+                &chain,
+                facts,
+            )),
+            None => AiReady::Skip(SKIP_FAILED),
+        };
+        self.ai_ready(ready);
+    }
+
+    /// The 50 ms tick: deadline and a request waiting for the worker (spec/06 §3.2).
+    fn ai_tick(&mut self, now: u64) {
+        let busy = self.llm_busy();
+        let Some(ai) = self.evm.window.as_mut().and_then(|ui| ui.ai.as_mut()) else {
+            return;
+        };
+        let requesting = matches!(
+            ai.panel.state(),
+            crate::explain::AiPanelState::Requesting { .. }
+        );
+        let (ended, dispatch) = ai.panel.tick(now, busy);
+        if ended.is_some() || dispatch.is_some() {
+            self.ai_after(ended, dispatch, None);
+        } else if requesting && now % 1_000 < 50 {
+            ai.body.invalidate();
+        }
+    }
+
+    /// `다시 요청` (mouse only).
+    fn ai_retry(&mut self) {
+        let now = now_ms();
+        let busy = self.llm_busy();
+        let Some(ai) = self.evm.window.as_mut().and_then(|ui| ui.ai.as_mut()) else {
+            return;
+        };
+        let dispatch = ai.panel.retry(now, busy);
+        self.ai_after(None, dispatch, None);
+    }
+
+    /// A `yw-llm` result (spec/06 §3.2): applied only to the open window's current request.
+    pub(crate) fn on_llm_done(&mut self, done: LlmDone) {
+        let now = now_ms();
+        let Some(ai) = self
+            .evm
+            .window
+            .as_mut()
+            .and_then(|ui| ui.ai.as_mut())
+            .filter(|ai| ai.serial == done.window)
+        else {
+            return;
+        };
+        let ended = ai.panel.on_result(now, done.generation, done.result);
+        self.ai_after(ended, None, Some(&done.stats));
     }
 
     fn paint_panel(&mut self, window: &Window) {
@@ -2410,6 +2938,15 @@ impl App {
     /// Rejects the open approval (as `거부` would).
     pub(crate) fn tour_reject_approval(&mut self) {
         self.finish_approval(QueueOutcome::Rejected);
+    }
+
+    /// The open window's AI panel state (spec/06), if it has one.
+    pub(crate) fn tour_ai_state(&self) -> Option<crate::explain::AiPanelState> {
+        self.evm
+            .window
+            .as_ref()
+            .and_then(|ui| ui.ai.as_ref())
+            .map(|ai| ai.panel.state().clone())
     }
 }
 
