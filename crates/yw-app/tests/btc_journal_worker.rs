@@ -678,7 +678,10 @@ fn accounts_on_disk(vault: &Vault) -> TestResult<yw_core::btc::BtcAccounts> {
 /// is refused; signing with an imported key stops at the vault hook (not connected yet) with
 /// nothing journaled.
 #[test]
-#[expect(clippy::too_many_lines, reason = "the account ops in order on one vault")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the account ops in order on one vault"
+)]
 fn accounts_are_stored_selected_and_imported_keys_wait_for_the_vault() -> TestResult {
     use yw_core::btc::{BtcAccountId, BtcAccountKey, BtcPubKey, ScriptType, SignError};
     let mut fixture = fixture("accounts")?;
