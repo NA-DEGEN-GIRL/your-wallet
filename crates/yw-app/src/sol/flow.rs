@@ -1,26 +1,33 @@
 //! `sol::flow` (spec/07 §13–§14): the Solana pipelines that run on the `yw-rpc` worker — the
-//! step-2 preview, the step-5 pre-sign lookup, one broadcast/expiry round, balances and the
-//! recovery scan. They never touch keys: the intent is built and issued on the UI thread at
-//! first Ready display, signing and journal commits happen on the key worker. Every pipeline
-//! checks `getGenesisHash` against the selected cluster first (spec/07 §15.1).
+//! step-2 preview (SOL and allowlisted SPL), the step-5 pre-sign lookup, one broadcast/expiry
+//! round, balances (SOL and the allowlisted tokens' derived ATAs) and the recovery scan. They
+//! never touch keys: the intent is built and issued on the UI thread at first Ready display,
+//! signing and journal commits happen on the key worker. Every pipeline checks `getGenesisHash`
+//! against the selected cluster first (spec/07 §15.1).
 
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::broadcast::{
     LoopState, Observation, Outcome, PendingTx, SigStatus, decide, plan, wants_history,
 };
-use yw_core::sol::display::{SimSummary, SolBlock, SolPreviewFacts, intent_flags};
+use yw_core::sol::display::{SimSummary, SolBlock, SolPreviewFacts, SplPreviewFacts, intent_flags};
 use yw_core::sol::fee::{
-    FeeError, SOL_TRANSFER_CU_LIMIT, check_rpc_fee, choose_cu_price, max_fee, p75,
+    FeeError, check_rpc_fee, choose_cu_price, max_fee, p75, template_cu_limit,
 };
 use yw_core::sol::intent::SolTransferIntent;
 use yw_core::sol::message::{assemble_transaction, encode_message};
+use yw_core::sol::pda::associated_token_address;
 use yw_core::sol::recipient::{AccountClass, RecipientCheck, classify_account};
-use yw_core::sol::rent::{check_rent0, check_sol_send, send_max_amount};
+use yw_core::sol::rent::{
+    check_rent0, check_rent165, check_sol_send, check_spl_send, send_max_amount,
+    spl_send_max_amount,
+};
 use yw_core::sol::sign::SOL_MAX_LVBH_AHEAD;
-use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolTransferCore};
+use yw_core::sol::template::{SplAccounts, spl_entries};
+use yw_core::sol::token::{TokenHolding, check_mint, classify_holding};
+use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolTransferCore, SplAllowEntry};
 use yw_win::http::HttpsUrl;
 
-use super::rpc as sol_rpc;
+use super::rpc::{self as sol_rpc, AccountData};
 use crate::errors::ErrorCode;
 use crate::flow::evm::Clock;
 use crate::rpc::{RpcClient, RpcFailure, Transport, classify};
@@ -73,9 +80,11 @@ pub struct PreviewJob {
     pub from: SolAddress,
     /// Sender label (meta).
     pub account_label: String,
-    /// §12.1 result.
+    /// §12.1 result (for SPL already checked with `check_recipient_for`: on-curve only).
     pub recipient: RecipientCheck,
-    /// Lamports, `None` = send max.
+    /// SOL or an allowlisted SPL token of `endpoint.cluster`.
+    pub asset: SolAsset,
+    /// Lamports or raw token units, `None` = send max.
     pub amount: Option<u64>,
     /// Settings `max_fee_lamports`.
     pub fee_cap: u64,
@@ -160,15 +169,16 @@ fn failed(job: u64, failure: RpcFailure) -> PreviewResult {
 }
 
 fn blocked(job: &PreviewJob, genesis: [u8; 32], block: SolBlock) -> PreviewResult {
+    let cu_limit = template_cu_limit(job.asset);
     let core = SolTransferCore {
         from: job.from,
         to: job.recipient.to,
-        asset: SolAsset::Sol,
+        asset: job.asset,
         amount: job.amount.unwrap_or(0),
-        cu_limit: SOL_TRANSFER_CU_LIMIT,
+        cu_limit,
         cu_price_micro: 0,
     };
-    let max_fee = max_fee(SOL_TRANSFER_CU_LIMIT, 0).unwrap_or(0);
+    let max_fee = max_fee(cu_limit, 0).unwrap_or(0);
     let facts = SolPreviewFacts {
         account_label: job.account_label.clone(),
         recipient: job.recipient.clone(),
@@ -177,6 +187,11 @@ fn blocked(job: &PreviewJob, genesis: [u8; 32], block: SolBlock) -> PreviewResul
         rent0: 0,
         rpc_fee: None,
         simulation: SimSummary::NoResult,
+        spl: job.asset.spl().map(|_| SplPreviewFacts {
+            token_balance: None,
+            to_ata_exists: true,
+            rent165: 0,
+        }),
         blocks: vec![block],
     };
     PreviewResult {
@@ -192,7 +207,7 @@ fn blocked(job: &PreviewJob, genesis: [u8; 32], block: SolBlock) -> PreviewResul
                 &job.recipient,
                 AccountClass::SystemWallet,
                 SimSummary::NoResult,
-                SOL_TRANSFER_CU_LIMIT,
+                cu_limit,
                 job.source,
             ),
             facts,
@@ -201,9 +216,80 @@ fn blocked(job: &PreviewJob, genesis: [u8; 32], block: SolBlock) -> PreviewResul
     }
 }
 
-/// Step 2 (spec/07 §13.1): genesis → balance → recipient account → rent → priority fees →
-/// preview blockhash → `getFeeForMessage` (one retry with a new blockhash on `null`) →
-/// `simulateTransaction` (reference). Approval-impossible conditions become `L01` blocks.
+/// The SPL lookups of step 2 (spec/07 §13.1-2, §15.4): mint, `from_ata`, `to_ata`.
+struct SplLookup {
+    /// `from_ata` raw balance (`None`: missing or unusable).
+    token_balance: Option<u64>,
+    /// `to_ata` exists (any account at the address).
+    to_ata_exists: bool,
+    /// The blocks found (mint/ATA mismatch → `RpcAnomaly`, frozen accounts).
+    blocks: Vec<SolBlock>,
+    /// `from_ata`, `to_ata` (writable accounts for the priority-fee lookup).
+    writable: [SolAddress; 2],
+}
+
+fn spl_lookup(
+    client: &RpcClient<'_>,
+    url: &HttpsUrl,
+    job: &PreviewJob,
+    entry: &'static SplAllowEntry,
+) -> Result<SplLookup, RpcFailure> {
+    let probe = SolTransferCore {
+        from: job.from,
+        to: job.recipient.to,
+        asset: SolAsset::Spl(entry),
+        amount: 1,
+        cu_limit: 1,
+        cu_price_micro: 0,
+    };
+    // The ATAs are local derivations (never RPC values); failing to derive is impossible in
+    // practice and treated as malformed input.
+    let accounts = SplAccounts::of(&probe).ok_or(RpcFailure::Malformed)?;
+    let mint = sol_rpc::account_data(client, url, &entry.mint)?;
+    let from_ata = sol_rpc::account_data(client, url, &accounts.from_ata)?;
+    let to_ata = sol_rpc::account_data(client, url, &accounts.to_ata)?;
+    let mut blocks = Vec::new();
+    if check_mint(entry, mint.as_ref().map(AccountData::view)).is_err() {
+        blocks.push(SolBlock::RpcAnomaly);
+    }
+    let token_balance =
+        match classify_holding(entry, &job.from, from_ata.as_ref().map(AccountData::view)) {
+            TokenHolding::Missing => None,
+            TokenHolding::Active(amount) => Some(amount),
+            TokenHolding::Frozen(amount) => {
+                blocks.push(SolBlock::TokenAccountFrozen);
+                Some(amount)
+            }
+            TokenHolding::Invalid => {
+                blocks.push(SolBlock::RpcAnomaly);
+                None
+            }
+        };
+    let to_ata_exists = match classify_holding(
+        entry,
+        &job.recipient.to,
+        to_ata.as_ref().map(AccountData::view),
+    ) {
+        TokenHolding::Missing => false,
+        TokenHolding::Active(_) => true,
+        TokenHolding::Frozen(_) | TokenHolding::Invalid => {
+            blocks.push(SolBlock::RecipientTokenAccountUnusable);
+            true
+        }
+    };
+    Ok(SplLookup {
+        token_balance,
+        to_ata_exists,
+        blocks,
+        writable: [accounts.from_ata, accounts.to_ata],
+    })
+}
+
+/// Step 2 (spec/07 §13.1): genesis → balance → recipient account → (SPL) mint, `from_ata`,
+/// `to_ata` → rent (0, and 165 for SPL) → priority fees → preview blockhash →
+/// `getFeeForMessage` (one retry with a new blockhash on `null`) → `simulateTransaction`
+/// (reference). Approval-impossible conditions become `L01` blocks. Mint, decimals, token
+/// program and ATAs come from the allowlist and local derivation; RPC data only blocks.
 #[must_use]
 #[expect(
     clippy::too_many_lines,
@@ -227,19 +313,40 @@ pub fn preview(transport: &dyn Transport, job: &PreviewJob) -> PreviewResult {
         Ok(info) => classify_account(info.as_ref().map(|info| (&info.owner, info.executable))),
         Err(failure) => return failed(job.job, failure),
     };
+    let spl = match job.asset.spl() {
+        Some(entry) => match spl_lookup(&client, url, job, entry) {
+            Ok(lookup) => Some(lookup),
+            Err(failure) => return failed(job.job, failure),
+        },
+        None => None,
+    };
     let rent0 = match sol_rpc::minimum_rent(&client, url, 0) {
         Ok(rent0) => rent0,
         Err(failure) => return failed(job.job, failure),
     };
-    let mut blocks: Vec<SolBlock> = Vec::new();
-    let rent_ok = check_rent0(rent0).is_ok();
+    let rent165 = if spl.is_some() {
+        match sol_rpc::minimum_rent(&client, url, 165) {
+            Ok(rent165) => rent165,
+            Err(failure) => return failed(job.job, failure),
+        }
+    } else {
+        0
+    };
+    let mut blocks: Vec<SolBlock> = spl
+        .as_ref()
+        .map(|lookup| lookup.blocks.clone())
+        .unwrap_or_default();
+    let rent_ok = check_rent0(rent0).is_ok() && (spl.is_none() || check_rent165(rent165).is_ok());
     if !rent_ok {
         blocks.push(SolBlock::RpcAnomaly);
     }
     // Reference only: a failing lookup leaves the price at 0 (no priority fee).
-    let fees = sol_rpc::prioritization_fees(&client, url, &[job.from, job.recipient.to])
-        .unwrap_or_default();
-    let cu_limit = SOL_TRANSFER_CU_LIMIT;
+    let writable = match &spl {
+        Some(lookup) => vec![job.from, lookup.writable[0], lookup.writable[1]],
+        None => vec![job.from, job.recipient.to],
+    };
+    let fees = sol_rpc::prioritization_fees(&client, url, &writable).unwrap_or_default();
+    let cu_limit = template_cu_limit(job.asset);
     let price = choose_cu_price(p75(&fees), job.max_cu_price, job.fee_cap, cu_limit);
     let maximum = match max_fee(cu_limit, price) {
         Ok(fee) if fee <= job.fee_cap => fee,
@@ -253,19 +360,41 @@ pub fn preview(transport: &dyn Transport, job: &PreviewJob) -> PreviewResult {
         }
     };
     let send_max = job.amount.is_none();
-    let amount = match job.amount {
-        Some(amount) => amount,
-        None => send_max_amount(balance, maximum).unwrap_or_else(|error| {
+    let amount = match (job.amount, &spl) {
+        (Some(amount), _) => amount,
+        (None, None) => send_max_amount(balance, maximum).unwrap_or_else(|error| {
+            blocks.push(SolBlock::Rent(error));
+            0
+        }),
+        (None, Some(lookup)) => spl_send_max_amount(lookup.token_balance).unwrap_or_else(|error| {
             blocks.push(SolBlock::Rent(error));
             0
         }),
     };
-    let exists = account != AccountClass::Missing;
-    if rent_ok
-        && amount > 0
-        && let Err(error) = check_sol_send(balance, amount, maximum, rent0, exists)
-    {
-        blocks.push(SolBlock::Rent(error));
+    if rent_ok && amount > 0 {
+        let rule = match &spl {
+            None => check_sol_send(
+                balance,
+                amount,
+                maximum,
+                rent0,
+                account != AccountClass::Missing,
+            )
+            .err(),
+            Some(lookup) => check_spl_send(
+                balance,
+                maximum,
+                rent0,
+                rent165,
+                lookup.to_ata_exists,
+                lookup.token_balance,
+                amount,
+            )
+            .err(),
+        };
+        if let Some(error) = rule {
+            blocks.push(SolBlock::Rent(error));
+        }
     }
     match account {
         AccountClass::TokenAccount => blocks.push(SolBlock::RecipientIsTokenAccount),
@@ -275,7 +404,7 @@ pub fn preview(transport: &dyn Transport, job: &PreviewJob) -> PreviewResult {
     let core = SolTransferCore {
         from: job.from,
         to: job.recipient.to,
-        asset: SolAsset::Sol,
+        asset: job.asset,
         amount,
         cu_limit,
         cu_price_micro: price,
@@ -295,7 +424,7 @@ pub fn preview(transport: &dyn Transport, job: &PreviewJob) -> PreviewResult {
             Err(failure) => return failed(job.job, failure),
         }
     }
-    if let Err(error) = check_rpc_fee(rpc_fee, maximum, send_max) {
+    if let Err(error) = check_rpc_fee(rpc_fee, maximum, send_max && spl.is_none()) {
         blocks.push(SolBlock::Fee(error));
     }
     let simulation = sol_rpc::simulate(
@@ -334,6 +463,11 @@ pub fn preview(transport: &dyn Transport, job: &PreviewJob) -> PreviewResult {
                 rent0,
                 rpc_fee,
                 simulation,
+                spl: spl.map(|lookup| SplPreviewFacts {
+                    token_balance: lookup.token_balance,
+                    to_ata_exists: lookup.to_ata_exists,
+                    rent165,
+                }),
                 blocks,
             },
             genesis,
@@ -437,7 +571,8 @@ pub fn track_round(transport: &dyn Transport, job: &TrackJob, clock: &dyn Clock)
         }
     }
     let signature_text = yw_core::codec::base58::base58_encode(&job.signature);
-    let status = match sol_rpc::signature_status(&client, url, &signature_text, false) {
+    let programs = sol_rpc::programs_of(&job.tx);
+    let status = match sol_rpc::signature_status(&client, url, &signature_text, false, programs) {
         Ok(status) => status,
         Err(failure) => {
             result.outcome = Err(classify(failure));
@@ -456,7 +591,7 @@ pub fn track_round(transport: &dyn Transport, job: &TrackJob, clock: &dyn Clock)
         None
     };
     let history = if status == SigStatus::NotFound && wants_history(&job.pending, height) {
-        sol_rpc::signature_status(&client, url, &signature_text, true).ok()
+        sol_rpc::signature_status(&client, url, &signature_text, true, programs).ok()
     } else {
         None
     };
@@ -478,7 +613,59 @@ pub fn track_round(transport: &dyn Transport, job: &TrackJob, clock: &dyn Clock)
     result
 }
 
-/// Balances of `accounts` after the genesis check.
+/// The balances of one account: lamports and, for each allowlisted token of the cluster, what
+/// its derived ATA holds (unknown tokens and other token accounts are never asked for, so they
+/// are never shown; spec/07 §12.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SolBalanceRow {
+    /// Account.
+    pub address: SolAddress,
+    /// Lamports (finalized).
+    pub lamports: u64,
+    /// Allowlist order of the cluster.
+    pub tokens: Vec<(&'static SplAllowEntry, TokenHolding)>,
+}
+
+/// `getAccountInfo(ATA(wallet, entry))` with the raw data, classified (spec/07 §15.4). The ATA
+/// is derived locally; decimals are never read from it.
+///
+/// # Errors
+///
+/// [`RpcFailure`].
+pub fn token_holding(
+    client: &RpcClient<'_>,
+    url: &HttpsUrl,
+    wallet: &SolAddress,
+    entry: &'static SplAllowEntry,
+) -> Result<TokenHolding, RpcFailure> {
+    let Ok((ata, _)) = associated_token_address(wallet, &entry.token_program, &entry.mint) else {
+        return Ok(TokenHolding::Invalid);
+    };
+    let account = sol_rpc::account_data(client, url, &ata)?;
+    Ok(classify_holding(
+        entry,
+        wallet,
+        account.as_ref().map(AccountData::view),
+    ))
+}
+
+/// The allowlisted token holdings of `wallet` on `cluster`, in allowlist order.
+///
+/// # Errors
+///
+/// [`RpcFailure`].
+pub fn token_holdings(
+    client: &RpcClient<'_>,
+    url: &HttpsUrl,
+    cluster: SolCluster,
+    wallet: &SolAddress,
+) -> Result<Vec<(&'static SplAllowEntry, TokenHolding)>, RpcFailure> {
+    spl_entries(cluster)
+        .map(|entry| token_holding(client, url, wallet, entry).map(|holding| (entry, holding)))
+        .collect()
+}
+
+/// Balances (SOL and allowlisted tokens) of `accounts` after the genesis check.
 ///
 /// # Errors
 ///
@@ -487,7 +674,7 @@ pub fn balances(
     transport: &dyn Transport,
     endpoint: &SolEndpoint,
     accounts: &[SolAddress],
-) -> Result<Vec<(SolAddress, u64)>, ErrorCode> {
+) -> Result<Vec<SolBalanceRow>, ErrorCode> {
     let client = RpcClient::new(transport);
     if !check_genesis(&client, endpoint)? {
         return Err(ErrorCode::Rpc006);
@@ -495,9 +682,14 @@ pub fn balances(
     accounts
         .iter()
         .map(|account| {
-            sol_rpc::balance(&client, &endpoint.url, account)
-                .map(|balance| (*account, balance))
-                .map_err(classify)
+            let lamports = sol_rpc::balance(&client, &endpoint.url, account).map_err(classify)?;
+            let tokens = token_holdings(&client, &endpoint.url, endpoint.cluster, account)
+                .map_err(classify)?;
+            Ok(SolBalanceRow {
+                address: *account,
+                lamports,
+                tokens,
+            })
         })
         .collect()
 }

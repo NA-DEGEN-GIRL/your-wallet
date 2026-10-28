@@ -9,8 +9,25 @@ pub const SOL_BASE_FEE_LAMPORTS_PER_SIG: u64 = 5_000;
 /// devnet 2026-10-27 with `simulateTransaction` ×10 of the real template (max 450 CU;
 /// `docs/acceptance/m7-live-20261027.md`), so 450 + 150 = 600.
 pub const SOL_TRANSFER_CU_LIMIT: u32 = 600;
-/// `T_SPL` compute-unit limit (v1.1; provisional until measured, spec/07 미결 5).
+/// `T_SPL` compute-unit limit (v1.1, spec/07 §10). Measured 2026-10-28 with
+/// `simulateTransaction` (`sigVerify:false`, `replaceRecentBlockhash:true`) ×10 per case on
+/// devnet and mainnet (`docs/acceptance/m7-spl-20261028.md`): existing destination ATA 4,842 CU;
+/// new ATA 13,923–28,923 CU, exactly `c255 + 1,500 × (255 − bump)` of the destination ATA
+/// (`c255` = 13,923–13,932: each failed bump of the ATA program's `find_program_address` is one
+/// 1,500-CU `create_program_address`). A sample maximum × 1.25 therefore depends on the sampled
+/// bumps; 60,000 covers `c255 + 1,500 × 30` (every bump ≥ 225, all but ~2^-30 of recipients)
+/// and `(c255 + 1,500 × 20) × 1.25` = 55,000.
 pub const SPL_TRANSFER_CU_LIMIT: u32 = 60_000;
+
+/// The fixed compute-unit limit of an asset's template (intent creation enforces it; the parser
+/// accepts any `1..=1_400_000` so vectors can use other limits).
+#[must_use]
+pub const fn template_cu_limit(asset: super::template::SolAsset) -> u32 {
+    match asset {
+        super::template::SolAsset::Sol => SOL_TRANSFER_CU_LIMIT,
+        super::template::SolAsset::Spl(_) => SPL_TRANSFER_CU_LIMIT,
+    }
+}
 /// Settings range of `max_fee_lamports` (spec/07 §10).
 pub const MAX_FEE_RANGE: (u64, u64) = (10_000, 10_000_000);
 /// Settings range of `max_cu_price_micro`.
@@ -128,7 +145,10 @@ pub fn check_rpc_fee(
 
 #[cfg(test)]
 mod tests {
-    use super::{FeeCheck, FeeError, check_rpc_fee, choose_cu_price, max_fee, p75, priority_fee};
+    use super::{
+        FeeCheck, FeeError, check_rpc_fee, choose_cu_price, max_fee, p75, priority_fee,
+        template_cu_limit,
+    };
 
     #[test]
     fn fee_formula_and_rounding() {
@@ -142,6 +162,20 @@ mod tests {
         assert_eq!(priority_fee(1_400_000, u64::MAX), Err(FeeError::Overflow));
         assert_eq!(priority_fee(1_000_000, u64::MAX), Ok(u64::MAX));
         assert_eq!(max_fee(1_000_000, u64::MAX), Err(FeeError::Overflow));
+    }
+
+    #[test]
+    fn template_limits() {
+        use crate::sol::template::{SPL_ALLOWLIST, SolAsset};
+        assert_eq!(template_cu_limit(SolAsset::Sol), 600);
+        assert_eq!(template_cu_limit(SolAsset::Spl(&SPL_ALLOWLIST[0])), 60_000);
+        // getFeeForMessage of T_SPL at 1,000 micro-lamports/CU (live 2026-10-28): 5,060.
+        assert_eq!(max_fee(60_000, 1_000), Ok(5_060));
+        // The default cap leaves room for the default price cap at the SPL limit.
+        assert_eq!(
+            choose_cu_price(u64::MAX, 1_000_000, 100_000, 60_000),
+            1_000_000
+        );
     }
 
     #[test]

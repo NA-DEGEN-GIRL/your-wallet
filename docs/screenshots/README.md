@@ -1,10 +1,10 @@
-# 화면 투어 (2026-10-28)
+# 화면 투어 (2026-10-28, Solana v1.1 화면 갱신)
 
 완성된 지갑의 주요 화면과 창입니다. `scripts/screenshot-tour.ps1`이 만듭니다(spec/04 §11, 개발 전용). 바뀐 점과 이유는 [UX 검토](../ux-review-20261028.md)에 있습니다.
 
 - 모든 값은 시험용입니다. 버리는 임시 데이터 폴더만 쓰고 실제 지갑 폴더(`%LOCALAPPDATA%\YourWallet`)는 건드리지 않았습니다.
 - 새 지갑 만들기 화면의 단어는 누구나 아는 BIP39 **공개 시험 벡터**(엔트로피 0, 24단어)이고, 메인 화면은 공개 시험 니모닉(`abandon` × 11 + `about`) 지갑입니다. 이 단어들로 만든 지갑에 실제 자산을 두면 안 됩니다.
-- 잔액·연결된 사이트·UTXO·RPC 주소는 지어낸 값이며 네트워크에 연결하지 않았습니다. 승인 창은 저장소의 고정 시뮬레이션 응답으로 준비했습니다.
+- 잔액·토큰 잔액·연결된 사이트·UTXO·RPC 주소는 지어낸 값이며 네트워크에 연결하지 않았습니다. 승인 창은 저장소의 고정 시뮬레이션 응답(EVM)과 투어 안의 고정 Solana 응답(토큰)으로 준비했습니다.
 - 화면 크기는 100%(96 DPI) 기준입니다. 비밀 창(03–05, 09)은 실제로는 화면 캡처에서 제외되며, 투어 프로세스가 직접 만든 창에 한해 캡처 직전에 제외를 풀었습니다.
 
 | 파일 | 설명 |
@@ -23,8 +23,10 @@
 | [12-approval-simulated.png](12-approval-simulated.png) | 승인 창(시뮬레이션 성공) — 맨 위 한 문장 요약과 받는 주소 전체, 자산 변화, 핵심 정보. `승인`은 창이 앞에 나온 뒤 1초가 지나야 켜지므로 여기서는 회색입니다. |
 | [13-approval-no-simulation.png](13-approval-no-simulation.png) | 승인 창(시뮬레이션 결과 없음) — 고위험 띠, 확인 체크박스 1개, 2초 길게 누르기. |
 | [14-receive.png](14-receive.png) | 받기 — QR, 4자씩 끊은 전체 주소, 주소 복사. |
-| [15-main-solana.png](15-main-solana.png) | 메인(Solana devnet) — 같은 배치, 주소 가운데 묶음 굵게. |
+| [15-main-solana.png](15-main-solana.png) | 메인(Solana devnet) — 같은 배치, 주소 가운데 묶음 굵게. 큰 SOL 잔액 아래 허용 목록 토큰(USDC) 한 줄 요약(자세한 행은 아래 "토큰" 카드). |
 | [16-main-bitcoin.png](16-main-bitcoin.png) | 메인(Bitcoin testnet4) — 네트워크 배너, 사용 가능 잔액, 검증된 UTXO. |
 | [17-settings-rpc.png](17-settings-rpc.png) | 설정 → 네트워크(RPC) — RPC가 무엇인지, 입력 칸마다 어디서 찾는 값인지 설명. |
 | [18-sites.png](18-sites.png) | 연결된 사이트 — 사이트마다 볼 수 있는 계정과 연결 해제. |
 | [19-extension-popup.png](19-extension-popup.png) | 크롬 확장 팝업 — 앱 연결 상태와 dApp에 보이는 지갑(호환 모드) 선택. 실제 Chrome 대신 미리보기 페이지로 찍었습니다. |
+| [20-send-solana-usdc.png](20-send-solana-usdc.png) | Solana 보내기(v1.1) — `자산` 라디오에서 USDC를 고른 모습. 받는 사람은 지갑 주소(토큰 계정 주소가 아님)라는 안내와 보유 잔액·mint. |
+| [21-approval-solana-usdc.png](21-approval-solana-usdc.png) | Solana 토큰 승인 창(devnet USDC) — 요약 문장과 받는 지갑 주소, 금액·mint·토큰 프로그램·보내는·받는 토큰 계정(ATA) 전체, 받는 토큰 계정이 없어 만드는 비용(rent)을 보내는 쪽이 낸다는 안내. 고정 응답으로 준비했고 서명하지 않았습니다. |

@@ -3,17 +3,24 @@
 //!
 //! Account order follows solana-sdk `CompiledKeys` (fee payer, then writable signers, readonly
 //! signers, writable non-signers, readonly non-signers, each group ascending by raw bytes). The
-//! only accepted message in v1 is `T_SOL` (`header [1, 0, 2]`, keys
-//! `[from, to, System, ComputeBudget]`, instructions limit → price → transfer).
+//! only accepted messages are `T_SOL` (`header [1, 0, 2]`, keys `[from, to, System,
+//! ComputeBudget]`, instructions limit → price → transfer) and `T_SPL` (v1.1, `header [1, 0, 6]`,
+//! keys `[from] ++ sort{from_ata, to_ata} ++ sort{to, mint, System, Token, ATA, ComputeBudget}`,
+//! instructions limit → price → ATA `CreateIdempotent` → Token `TransferChecked`).
 #![deny(clippy::indexing_slicing)]
 
 use core::fmt;
 
-use super::address::{COMPUTE_BUDGET_PROGRAM, SYSTEM_PROGRAM, SolAddress, SolCluster};
+use super::address::{
+    ATA_PROGRAM, COMPUTE_BUDGET_PROGRAM, CurveClass, SYSTEM_PROGRAM, SolAddress, SolCluster,
+    TOKEN_PROGRAM, curve_class,
+};
 use super::shortvec::{self, ShortVecError};
 use super::template::{
-    SOL_MAX_COMPUTE_UNITS, SOL_MAX_TX_BYTES, SolAsset, SolTransferCore, T_SOL_HEADER,
-    set_compute_unit_limit_data, set_compute_unit_price_data, system_transfer_data,
+    ATA_CREATE_IDEMPOTENT, SOL_MAX_COMPUTE_UNITS, SOL_MAX_TX_BYTES, SolAsset, SolTransferCore,
+    SplAccounts, T_SOL_HEADER, T_SPL_HEADER, TOKEN_TRANSFER_CHECKED_TAG,
+    set_compute_unit_limit_data, set_compute_unit_price_data, spl_entry, system_transfer_data,
+    transfer_checked_data,
 };
 
 /// Strict parser failure (spec/07 §9).
@@ -41,10 +48,13 @@ pub enum SolParseError {
     BadData,
     /// The header roles or the in-group ascending order are violated.
     BadGroupOrder,
-    /// A mint outside the allowlist (`T_SPL`, v1.1).
+    /// `T_SPL`: a mint outside the cluster's allowlist, or decimals other than its pinned value.
     NotAllowlisted,
-    /// An associated token account differs from its derivation (`T_SPL`, v1.1).
+    /// `T_SPL`: an associated token account differs from its local derivation.
     AtaMismatch,
+    /// `T_SPL`: the recipient wallet is not a canonical large-order curve point (a PDA, token
+    /// account or unspendable key); tokens sent to its ATA could never be moved.
+    RecipientOffCurve,
     /// Zero amount.
     ZeroAmount,
     /// Compute-unit limit outside `1..=1_400_000`.
@@ -115,10 +125,78 @@ pub(crate) fn encode_legacy_message(
     out
 }
 
-/// The message bytes of a transfer (`T_SOL`, spec/07 §8.2).
+/// The `T_SPL` keys and instructions of a core (spec/07 §8.3), `None` for SOL or when the ATAs
+/// cannot be derived.
+fn spl_layout(core: &SolTransferCore) -> Option<(Vec<[u8; 32]>, Vec<CompiledIx>)> {
+    let accounts = SplAccounts::of(core)?;
+    let entry = accounts.entry;
+    let mut writable = [accounts.from_ata.to_bytes(), accounts.to_ata.to_bytes()];
+    writable.sort_unstable();
+    let mut readonly = [
+        core.to.to_bytes(),
+        entry.mint.to_bytes(),
+        SYSTEM_PROGRAM.to_bytes(),
+        entry.token_program.to_bytes(),
+        ATA_PROGRAM.to_bytes(),
+        COMPUTE_BUDGET_PROGRAM.to_bytes(),
+    ];
+    readonly.sort_unstable();
+    let mut keys = Vec::with_capacity(9);
+    keys.push(core.from.to_bytes());
+    keys.extend_from_slice(&writable);
+    keys.extend_from_slice(&readonly);
+    let index = |key: &SolAddress| -> Option<u8> {
+        keys.iter()
+            .position(|known| known == key.as_bytes())
+            .and_then(|position| u8::try_from(position).ok())
+    };
+    let budget = index(&COMPUTE_BUDGET_PROGRAM)?;
+    let instructions = vec![
+        CompiledIx {
+            program: budget,
+            accounts: Vec::new(),
+            data: set_compute_unit_limit_data(core.cu_limit),
+        },
+        CompiledIx {
+            program: budget,
+            accounts: Vec::new(),
+            data: set_compute_unit_price_data(core.cu_price_micro),
+        },
+        CompiledIx {
+            program: index(&ATA_PROGRAM)?,
+            accounts: vec![
+                0,
+                index(&accounts.to_ata)?,
+                index(&core.to)?,
+                index(&entry.mint)?,
+                index(&SYSTEM_PROGRAM)?,
+                index(&entry.token_program)?,
+            ],
+            data: ATA_CREATE_IDEMPOTENT.to_vec(),
+        },
+        CompiledIx {
+            program: index(&entry.token_program)?,
+            accounts: vec![
+                index(&accounts.from_ata)?,
+                index(&entry.mint)?,
+                index(&accounts.to_ata)?,
+                0,
+            ],
+            data: transfer_checked_data(core.amount, entry.decimals),
+        },
+    ];
+    Some((keys, instructions))
+}
+
+/// The message bytes of a transfer (`T_SOL` spec/07 §8.2, `T_SPL` §8.3). For SPL both ATAs are
+/// derived locally; if that were ever impossible the result is empty, which every parser and the
+/// re-encoding identity reject (nothing is signed).
 #[must_use]
 pub fn encode_message(core: &SolTransferCore, blockhash: &[u8; 32]) -> Vec<u8> {
     match core.asset {
+        SolAsset::Spl(_) => spl_layout(core).map_or_else(Vec::new, |(keys, instructions)| {
+            encode_legacy_message(T_SPL_HEADER, &keys, blockhash, &instructions)
+        }),
         SolAsset::Sol => encode_legacy_message(
             T_SOL_HEADER,
             &[
@@ -259,8 +337,6 @@ pub fn parse_message(
     msg: &[u8],
     cluster: SolCluster,
 ) -> Result<(SolTransferCore, [u8; 32]), SolParseError> {
-    // The cluster only matters for the SPL allowlist (v1.1).
-    let _ = cluster;
     if msg.len() > SOL_MAX_TX_BYTES.saturating_sub(65) {
         return Err(SolParseError::TooLarge);
     }
@@ -273,14 +349,16 @@ pub fn parse_message(
         .take(3)?
         .try_into()
         .map_err(|_| SolParseError::Truncated)?;
-    if header != T_SOL_HEADER {
-        return Err(SolParseError::UnknownTemplate);
-    }
+    let (expected_keys, expected_ix) = match header {
+        T_SOL_HEADER => (4, 3),
+        T_SPL_HEADER => (9, 4),
+        _ => return Err(SolParseError::UnknownTemplate),
+    };
     let n_keys = reader.short_len()?;
-    if n_keys != 4 {
+    if n_keys != expected_keys {
         return Err(SolParseError::UnknownTemplate);
     }
-    let mut keys: Vec<[u8; 32]> = Vec::with_capacity(4);
+    let mut keys: Vec<[u8; 32]> = Vec::with_capacity(n_keys);
     for _ in 0..n_keys {
         let key = reader.array32()?;
         if keys.contains(&key) {
@@ -290,17 +368,45 @@ pub fn parse_message(
     }
     let blockhash = reader.array32()?;
     let n_ix = reader.short_len()?;
-    if n_ix != 3 {
+    if n_ix != expected_ix {
         return Err(SolParseError::UnknownTemplate);
     }
-    let limit_ix = reader.instruction(n_keys)?;
-    let price_ix = reader.instruction(n_keys)?;
-    let transfer_ix = reader.instruction(n_keys)?;
-    let limit = expect_ix(&limit_ix, &keys, &COMPUTE_BUDGET_PROGRAM, &[], &[0x02], 5)?;
-    let price = expect_ix(&price_ix, &keys, &COMPUTE_BUDGET_PROGRAM, &[], &[0x03], 9)?;
+    let core = if header == T_SPL_HEADER {
+        parse_spl(&mut reader, &keys, cluster)?
+    } else {
+        parse_sol(&mut reader, &keys)?
+    };
+    if core.amount == 0 {
+        return Err(SolParseError::ZeroAmount);
+    }
+    if !(1..=SOL_MAX_COMPUTE_UNITS).contains(&core.cu_limit) {
+        return Err(SolParseError::BadComputeLimit);
+    }
+    if reader.at != msg.len() {
+        return Err(SolParseError::TrailingBytes);
+    }
+    Ok((core, blockhash))
+}
+
+/// The two `ComputeBudget` instructions (limit, then price) at the head of every template.
+fn parse_budget(reader: &mut Reader<'_>, keys: &[[u8; 32]]) -> Result<(u32, u64), SolParseError> {
+    let limit_ix = reader.instruction(keys.len())?;
+    let price_ix = reader.instruction(keys.len())?;
+    let limit = expect_ix(&limit_ix, keys, &COMPUTE_BUDGET_PROGRAM, &[], &[0x02], 5)?;
+    let price = expect_ix(&price_ix, keys, &COMPUTE_BUDGET_PROGRAM, &[], &[0x03], 9)?;
+    Ok((
+        le_u32(limit).ok_or(SolParseError::BadData)?,
+        le_u64(price).ok_or(SolParseError::BadData)?,
+    ))
+}
+
+/// `T_SOL` instructions and roles (header `[1, 0, 2]`, 4 keys, 3 instructions).
+fn parse_sol(reader: &mut Reader<'_>, keys: &[[u8; 32]]) -> Result<SolTransferCore, SolParseError> {
+    let (cu_limit, cu_price_micro) = parse_budget(reader, keys)?;
+    let transfer_ix = reader.instruction(keys.len())?;
     let lamports = expect_ix(
         &transfer_ix,
-        &keys,
+        keys,
         &SYSTEM_PROGRAM,
         &[0, 1],
         &[0x02, 0, 0, 0],
@@ -320,29 +426,136 @@ pub fn parse_message(
     let (Some(from), Some(to)) = (keys.first(), keys.get(1)) else {
         return Err(SolParseError::Truncated);
     };
-    let cu_limit = le_u32(limit).ok_or(SolParseError::BadData)?;
-    let cu_price_micro = le_u64(price).ok_or(SolParseError::BadData)?;
-    let amount = le_u64(lamports).ok_or(SolParseError::BadData)?;
-    if amount == 0 {
-        return Err(SolParseError::ZeroAmount);
+    Ok(SolTransferCore {
+        from: SolAddress::from_bytes(*from),
+        to: SolAddress::from_bytes(*to),
+        asset: SolAsset::Sol,
+        amount: le_u64(lamports).ok_or(SolParseError::BadData)?,
+        cu_limit,
+        cu_price_micro,
+    })
+}
+
+fn key_at(keys: &[[u8; 32]], index: u8) -> Result<SolAddress, SolParseError> {
+    keys.get(usize::from(index))
+        .copied()
+        .map(SolAddress::from_bytes)
+        .ok_or(SolParseError::BadIndex)
+}
+
+/// Whether `keys[range]` holds exactly the keys at `indices` in strictly ascending order.
+fn group_is(keys: &[[u8; 32]], range: core::ops::Range<usize>, indices: &[u8]) -> bool {
+    let Some(group) = keys.get(range.clone()) else {
+        return false;
+    };
+    let mut wanted: Vec<usize> = indices.iter().map(|index| usize::from(*index)).collect();
+    wanted.sort_unstable();
+    wanted.dedup();
+    wanted.len() == group.len()
+        && wanted.iter().copied().eq(range)
+        && group.windows(2).all(|pair| match pair {
+            [a, b] => a < b,
+            _ => false,
+        })
+}
+
+/// `T_SPL` instructions, roles, allowlist and ATA derivation (spec/07 §8.3, §9 steps 5–7).
+fn parse_spl(
+    reader: &mut Reader<'_>,
+    keys: &[[u8; 32]],
+    cluster: SolCluster,
+) -> Result<SolTransferCore, SolParseError> {
+    let (cu_limit, cu_price_micro) = parse_budget(reader, keys)?;
+    let create_ix = reader.instruction(keys.len())?;
+    let transfer_ix = reader.instruction(keys.len())?;
+    // ③ ATA CreateIdempotent(payer = key 0, ata, wallet, mint, System, Token), data `01`.
+    if key_at(keys, create_ix.program)? != ATA_PROGRAM {
+        return Err(SolParseError::UnexpectedProgram);
     }
-    if !(1..=SOL_MAX_COMPUTE_UNITS).contains(&cu_limit) {
-        return Err(SolParseError::BadComputeLimit);
+    // ④ Token TransferChecked(source, mint, destination, owner = key 0), data `0c ‖ u64 ‖ u8`.
+    if key_at(keys, transfer_ix.program)? != TOKEN_PROGRAM {
+        return Err(SolParseError::UnexpectedProgram);
     }
-    if reader.at != msg.len() {
-        return Err(SolParseError::TrailingBytes);
+    let [
+        payer,
+        to_ata_index,
+        to_index,
+        mint_index,
+        system_index,
+        token_index,
+    ] = <[u8; 6]>::try_from(create_ix.accounts.as_slice())
+        .map_err(|_| SolParseError::BadAccounts)?;
+    let [from_ata_index, transfer_mint, destination, owner] =
+        <[u8; 4]>::try_from(transfer_ix.accounts.as_slice())
+            .map_err(|_| SolParseError::BadAccounts)?;
+    if payer != 0
+        || owner != 0
+        || key_at(keys, system_index)? != SYSTEM_PROGRAM
+        || token_index != transfer_ix.program
+        || transfer_mint != mint_index
+        || destination != to_ata_index
+    {
+        return Err(SolParseError::BadAccounts);
     }
-    Ok((
-        SolTransferCore {
-            from: SolAddress::from_bytes(*from),
-            to: SolAddress::from_bytes(*to),
-            asset: SolAsset::Sol,
-            amount,
-            cu_limit,
-            cu_price_micro,
-        },
-        blockhash,
-    ))
+    if create_ix.data != ATA_CREATE_IDEMPOTENT {
+        return Err(SolParseError::BadData);
+    }
+    let [tag, a0, a1, a2, a3, a4, a5, a6, a7, decimals] =
+        <[u8; 10]>::try_from(transfer_ix.data.as_slice()).map_err(|_| SolParseError::BadData)?;
+    if tag != TOKEN_TRANSFER_CHECKED_TAG {
+        return Err(SolParseError::BadData);
+    }
+    let amount = u64::from_le_bytes([a0, a1, a2, a3, a4, a5, a6, a7]);
+    // Roles (spec/07 §7): key 0 the payer only; keys 1–2 exactly the two token accounts; keys
+    // 3–8 exactly {to, mint, System, Token, ATA, ComputeBudget}; each group strictly ascending.
+    let readonly = [
+        to_index,
+        mint_index,
+        system_index,
+        token_index,
+        create_ix.program,
+        budget_index(keys)?,
+    ];
+    if from_ata_index == 0
+        || readonly.contains(&0)
+        || !group_is(keys, 1..3, &[from_ata_index, to_ata_index])
+        || !group_is(keys, 3..9, &readonly)
+    {
+        return Err(SolParseError::BadGroupOrder);
+    }
+    let from = key_at(keys, 0)?;
+    let to = key_at(keys, to_index)?;
+    let mint = key_at(keys, mint_index)?;
+    let entry = spl_entry(cluster, &mint).ok_or(SolParseError::NotAllowlisted)?;
+    if decimals != entry.decimals || entry.token_program != TOKEN_PROGRAM {
+        return Err(SolParseError::NotAllowlisted);
+    }
+    if curve_class(to.as_bytes()) != CurveClass::OnCurve {
+        return Err(SolParseError::RecipientOffCurve);
+    }
+    let core = SolTransferCore {
+        from,
+        to,
+        asset: SolAsset::Spl(entry),
+        amount,
+        cu_limit,
+        cu_price_micro,
+    };
+    let accounts = SplAccounts::of(&core).ok_or(SolParseError::AtaMismatch)?;
+    if key_at(keys, from_ata_index)? != accounts.from_ata
+        || key_at(keys, to_ata_index)? != accounts.to_ata
+    {
+        return Err(SolParseError::AtaMismatch);
+    }
+    Ok(core)
+}
+
+/// The index of `ComputeBudget` (its presence is checked by [`parse_budget`]).
+fn budget_index(keys: &[[u8; 32]]) -> Result<u8, SolParseError> {
+    keys.iter()
+        .position(|key| key == COMPUTE_BUDGET_PROGRAM.as_bytes())
+        .and_then(|position| u8::try_from(position).ok())
+        .ok_or(SolParseError::UnexpectedProgram)
 }
 
 /// Parses a signed transaction: `tx[0] == 0x01`, the 64-byte signature, then the message.

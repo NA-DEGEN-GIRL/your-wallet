@@ -418,7 +418,7 @@ TEST 1024·SHA(abc)는 `rfc8032.json`에서 같은 방식으로 검사한다.
 
 거부: `80 00`, `80 80 00`(비정규), `ff ff 04`(> 0xffff), `80 80 80`(셋째 바이트 연속 비트), `80`(잘림).
 
-**PDA·ATA** [공식] anza-xyz solana-sdk `test_create_program_address`(program `BPFLoaderUpgradeab1e11111111111111111111111`): `["", [1]]` → `BwqrghZA2htAcqq8dzP1WDAhTXYTYWj7CHxF5j7TDBAe`; `["☉", [0]]` → `13yWmRpaTR4r5nAktwLqMpRNr28tnVUZw26rTvPSSB19`; `["Talking","Squirrels"]` → `2fnQrngrQT4SeLcdToJAD96phoEjNL2man2kfRLCASVk`; `[SeedPubey1111111111111111111111111111111111 32B, [1]]` → `976ymqVnfE32QFe6NfGDctSvVa36LWnvYxhU6G2232YL`. ATA(v1.1): `HAgk14…`의 USDC(`EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`) ATA = `5N3f1tj9v1vc5TUZ8S7mCAnVmjVKrfnzXWhxLaxyZAgt`, bump 254. 탐색은 bump 255→1, 결과는 곡선 밖이어야 한다.
+**PDA·ATA** [공식] anza-xyz solana-sdk `test_create_program_address`(program `BPFLoaderUpgradeab1e11111111111111111111111`): `["", [1]]` → `BwqrghZA2htAcqq8dzP1WDAhTXYTYWj7CHxF5j7TDBAe`; `["☉", [0]]` → `13yWmRpaTR4r5nAktwLqMpRNr28tnVUZw26rTvPSSB19`; `["Talking","Squirrels"]` → `2fnQrngrQT4SeLcdToJAD96phoEjNL2man2kfRLCASVk`; `[SeedPubey1111111111111111111111111111111111 32B, [1]]` → `976ymqVnfE32QFe6NfGDctSvVa36LWnvYxhU6G2232YL`. ATA(v1.1): `HAgk14…`의 USDC(`EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`) ATA = `5N3f1tj9v1vc5TUZ8S7mCAnVmjVKrfnzXWhxLaxyZAgt`, bump 254. 탐색은 bump 255→1, 결과는 곡선 밖이어야 한다. `Hh8Qw…`의 USDC ATA = `8X8ts1CnpZmtqApE2rREA97xEJuSRcomPGVcMFdS2cgY`, bump 255. v1.1 구현: `sol::pda` 벡터 테스트, `sol::tests_spl` (T_SPL 골든·파서 거부·서명·저널·표시), `sol::token`(mint·토큰 계정 레이아웃·decimals 고정), `sol::rent` SPL 규칙, `sol::recipient` SPL 곡선 밖 차단.
 
 **인코딩·메시지**: base58 `base58_encode_decode.json` 21개 + 경계값(07 §17.2), System Transfer 42 lamports data `02 00 00 00 2a 00 00 00 00 00 00 00`, solana-sdk `test_sdk_serialize` 206바이트, T_SOL(message 202 B, tx 267 B)·T_SPL(372 B, 437 B) 골든은 07 §17.3 값 그대로. 제네시스: mainnet `5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d`, devnet `EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG`.
 
@@ -558,9 +558,10 @@ Issued At: 2026-10-25T23:59:00Z
 | ID | 조작 | 기대 | 정본 |
 |---|---|---|---|
 | SOL-N1 | 만료 전 재서명 8사례(가짜 RPC) | 07 §17.4 ①–⑧ | 07 §14.3 |
-| SOL-N2 | 템플릿 밖 메시지(명령 추가·순서·프로그램 ID·0x80/0x81 접두·header·중복 ComputeBudget), 202바이트 각 비트 반전 | 거부 또는 동일성 검사 실패 | 07 §17.4 |
+| SOL-N2 | 템플릿 밖 메시지(명령 추가·순서·프로그램 ID·0x80/0x81 접두·header·중복 ComputeBudget), 202바이트(T_SOL)·372바이트(T_SPL) 각 비트 반전 | 거부 또는 동일성 검사 실패 | 07 §17.4 |
 | SOL-N3 | 자기 자신, small-order·비정규 점 수신자, rent0 미만 새 계정, 남는 잔액 0 < r < rent0, 제네시스 불일치 / 곡선 밖(off-curve) 수신자 | 차단 / 곡선 밖은 고위험 `L02`(차단 아님, 07 §12.1-6: PDA·토큰 계정일 수 있음) | 07 §11–§15 |
 | SOL-N4 | 공개 절반이 다른 64바이트 keypair | `from_keypair_bytes` 실패 | 07 §17.1 |
+| SOL-N5 | (v1.1) T_SPL 템플릿 밖(ATA Create·Transfer·Token-2022·계정·그룹·역할), 허용 목록 밖·다른 클러스터 mint, decimals 9, ATA 불일치, 곡선 밖·small-order 받는 지갑, 372바이트 각 비트 반전 / RPC가 mint decimals 9·다른 owner·81바이트 / ATA 자리에 다른 mint·owner·동결 / 모르는 토큰 | 거부(`NotAllowlisted`·`AtaMismatch`·`RecipientOffCurve` 등) / `RpcAnomaly`(메시지 decimals는 6 그대로) / `Invalid`·동결 차단 / 조회·표시 없음 | 07 §8.3, §9, §12.1-6, §15.4 |
 | BTC-N1 | 이전 거래 금액 위조(출력 금액 1바이트 변경, txid는 원본) | `TxidMismatch`, 후보 제외 | 08 §14.2 |
 | BTC-N2 | 스크립트 불일치·vout 범위 밖·뒤 바이트·비정규 CompactSize | 각각 거부 | 08 §14.2 |
 | BTC-N3 | 기록 금액과 계획 금액 다름 | 서명 전 중단 | 08 §5 |
@@ -744,6 +745,9 @@ WETH = Sepolia `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14`(03 §1.2, 구현 시
 - [ ] M7-4 devnet E2E: 07 §17.6 1–9. 4번 장애 주입 지점 이름은 `sol.after_journal_pending`(07 §14.2 `Pending` fsync 직후, 전송 전). 6번의 devnet RPC 재정의는 설정에서 저장해 `apikeys.dpapi`의 `rpc:solana:devnet` 항목(04 §6.3)으로 넣고, 끝나면 지운다.
 - [ ] M7-5 T_SOL·T_SPL 골든 교차 확인(07 §17.3, 저장소 안 별도 워크스페이스 `tools/sol-oracle/`(§2.1), 1회) 기록.
 - [ ] M7-6 호환성: 시험 vault에서 만든 24단어 시험 니모닉을 Phantom 또는 Solflare에 가져옴 → 계정 0·1 주소가 yw-app과 같음.
+- [ ] M7-7 (v1.1) 자동: SOL-N5, 07 §17.3 T_SPL 골든·PDA·ATA 벡터, 07 §17.4 SPL 항목(`sol::tests_spl`, `sol::token`, `tests/sol_spl_flow.rs`, `tests/sol_journal_worker.rs` SPL 사례), 퍼징 시드에 T_SPL 골든.
+- [ ] M7-8 (v1.1) §2.5 SOL 라이브에 SPL 항목: mint 확인(owner·82바이트·decimals 6), rent165, T_SPL `getFeeForMessage`, T_SPL CU 측정(새 ATA·기존 ATA 각 10회, 07 §10 bump 모델) → `SPL_TRANSFER_CU_LIMIT` 확정. 측정 전 mainnet SPL 전송 금지.
+- [ ] M7-9 (v1.1) devnet USDC E2E: 07 §17.6-8(faucet, 새 수신자 ATA 생성, 기존 ATA, 토큰 보내기 최대, 모르는 토큰 숨김, 곡선 밖 받는 주소 차단). USDT는 devnet 공식 mint가 없어 M9 mainnet 소액 체크리스트(07 미결 4).
 
 ### 5.10 M8 Bitcoin
 

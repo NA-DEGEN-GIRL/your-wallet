@@ -9,8 +9,9 @@
 //!   read or written, no vault is created, no key worker or RPC worker runs;
 //! - the only mnemonic is the public BIP39 test vector (entropy 0, built at run time), and every
 //!   balance, site and transaction shown is made up;
-//! - RPC URLs are `*.example.test` placeholders that are never contacted (approval windows are
-//!   prepared against the fixture transport of `app_approval::smoke`);
+//! - RPC URLs are `*.example.test` placeholders that are never contacted (EVM approval windows
+//!   are prepared against the fixture transport of `app_approval::smoke`, the Solana token
+//!   approval against `SolTourRpc`);
 //! - the capture exclusion of the tour's own secret windows is lifted right before capture with
 //!   `dev_tour_lift_capture_exclusion` (debug builds only) — the app's code path is unchanged.
 //!
@@ -218,6 +219,12 @@ fn tour_meta() -> Meta {
         verified: true,
         added_at_unix_ms: 1_793_000_000_000,
     });
+    let _ = meta.add_sol_book(&crate::meta::SolBookEntry {
+        address: SOL_RECIPIENT.to_owned(),
+        label: "테스트 받는 사람".to_owned(),
+        verified: true,
+        added_at_unix_ms: 1_793_000_000_000,
+    });
     meta
 }
 
@@ -282,6 +289,15 @@ fn unlocked_state(state: &mut App) {
         .sol
         .balances
         .insert((yw_core::sol::SolCluster::Devnet, sol), 2_500_000_000);
+    // Made-up allowlisted token holding (devnet USDC, 25.000000) for the token card.
+    if let Some(entry) =
+        yw_core::sol::template::spl_entries(yw_core::sol::SolCluster::Devnet).next()
+    {
+        state.sol.tokens.insert(
+            (yw_core::sol::SolCluster::Devnet, sol),
+            vec![(entry, yw_core::sol::token::TokenHolding::Active(25_000_000))],
+        );
+    }
     if state.browser.is_none() {
         tour_browser(state);
     }
@@ -390,6 +406,120 @@ fn tour_btc(state: &mut App) {
     }
     state.btc.tip = Some(120_100);
     state.btc.indexer_verified = true;
+}
+
+/// The Solana recipient of the token scenes: account 1 of the 12-word test mnemonic
+/// (`m/44'/501'/1'/0'`, spec/07 §17.1), saved in the address book.
+const SOL_RECIPIENT: &str = "Hh8QwFUA6MtVu1qAoq12ucvFHNwCcVTV7hpWjeY1Hztb";
+
+/// A made-up devnet for the SPL approval scene (never contacted): the sender holds 2.5 SOL and
+/// 25 USDC, the recipient has no USDC token account yet (so the ATA is created and its rent
+/// shown), rents are the 2026-10-28 live values.
+struct SolTourRpc;
+
+impl crate::rpc::Transport for SolTourRpc {
+    fn post_json(
+        &self,
+        _url: &HttpsUrl,
+        body: &[u8],
+        _max_response: usize,
+    ) -> Result<crate::rpc::HttpReply, yw_win::http::HttpError> {
+        use yw_json::{Limits, Object, Value};
+        let request = yw_json::parse(body, &Limits::REQUEST)
+            .map_err(|_| yw_win::http::HttpError::InvalidUrl)?;
+        let object = request
+            .as_object()
+            .ok_or(yw_win::http::HttpError::InvalidUrl)?;
+        let id = object.get("id").cloned().unwrap_or(Value::Null);
+        let method = object.get("method").and_then(Value::as_str).unwrap_or("");
+        let first = object
+            .get("params")
+            .and_then(Value::as_array)
+            .and_then(|params| params.first())
+            .map(|value| match value {
+                Value::String(text) => text.clone(),
+                other => String::from_utf8(yw_json::to_vec(other)).unwrap_or_default(),
+            })
+            .unwrap_or_default();
+        let entry = yw_core::sol::template::spl_entries(yw_core::sol::SolCluster::Devnet)
+            .next()
+            .unwrap();
+        let from = SolAddress::parse("HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk").unwrap();
+        let ata = |wallet: &SolAddress| {
+            yw_core::sol::pda::associated_token_address(wallet, &entry.token_program, &entry.mint)
+                .unwrap()
+                .0
+                .to_base58()
+        };
+        let account = |data: &[u8]| {
+            format!(
+                "{{\"data\":[\"{}\",\"base64\"],\"executable\":false,\"lamports\":1461600,\"owner\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"rentEpoch\":0,\"space\":{}}}",
+                crate::sol::rpc::base64(data),
+                data.len()
+            )
+        };
+        let context = |value: &str| format!("{{\"context\":{{\"slot\":7}},\"value\":{value}}}");
+        let result = match method {
+            "getGenesisHash" => "\"EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG\"".to_owned(),
+            "getBalance" => context("2500000000"),
+            "getAccountInfo" if first == entry.mint.to_base58() => {
+                let mut mint = vec![0_u8; 82];
+                mint[44] = entry.decimals;
+                mint[45] = 1;
+                context(&account(&mint))
+            }
+            "getAccountInfo" if first == ata(&from) => {
+                let mut token = vec![0_u8; 165];
+                token[0..32].copy_from_slice(entry.mint.as_bytes());
+                token[32..64].copy_from_slice(from.as_bytes());
+                token[64..72].copy_from_slice(&25_000_000_u64.to_le_bytes());
+                token[108] = 1;
+                context(&account(&token))
+            }
+            "getAccountInfo" => context("null"),
+            "getMinimumBalanceForRentExemption" if first == "165" => "1488440".to_owned(),
+            "getMinimumBalanceForRentExemption" => "650240".to_owned(),
+            "getRecentPrioritizationFees" => "[{\"slot\":1,\"prioritizationFee\":0}]".to_owned(),
+            "getLatestBlockhash" => context(
+                "{\"blockhash\":\"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx\",\"lastValidBlockHeight\":1150}",
+            ),
+            "getFeeForMessage" => context("5000"),
+            "simulateTransaction" => context(
+                "{\"err\":null,\"logs\":[],\"accounts\":null,\"unitsConsumed\":15423,\"returnData\":null}",
+            ),
+            _ => "null".to_owned(),
+        };
+        let value = yw_json::parse(result.as_bytes(), &Limits::RESPONSE).unwrap_or(Value::Null);
+        let pairs = vec![
+            ("jsonrpc".to_owned(), Value::String("2.0".to_owned())),
+            ("id".to_owned(), id),
+            ("result".to_owned(), value),
+        ];
+        let body = Object::from_pairs(pairs)
+            .map_or_else(Vec::new, |object| yw_json::to_vec(&Value::Object(object)));
+        Ok(crate::rpc::HttpReply { status: 200, body })
+    }
+}
+
+/// `검토` of the prepared Solana send form: the approval window opens and its step-2 preview is
+/// answered by [`SolTourRpc`] as the RPC worker would deliver it (no key, nothing signed).
+fn sol_approval(app: &Rc<RefCell<App>>) {
+    let (tx, rx) = mpsc::channel();
+    {
+        let mut state = app.borrow_mut();
+        state.rpc_tx = Some(tx);
+        state.sol_review();
+    }
+    let job = loop {
+        match rx.try_recv() {
+            Ok(RpcJob::SolPreview(job)) => break job,
+            Ok(_) => {}
+            Err(_) => unreachable!("no Solana preview job"),
+        }
+    };
+    let result = crate::sol::flow::preview(&SolTourRpc, &job);
+    app.borrow_mut()
+        .sol_rpc_event(crate::events::RpcEvent::SolPreviewed(Box::new(result)));
 }
 
 /// Opens the approval window for a Sepolia send and prepares it against `fixture_name`
@@ -573,6 +703,25 @@ fn screenshot_tour() {
     }
     set_screen(&app, UNLOCKED, Screen::Main);
     save(main_hwnd(&app), "15-main-solana");
+    {
+        let mut state = app.borrow_mut();
+        state.sol.send = crate::app_sol::SolSendForm {
+            token: yw_core::sol::template::spl_entries(yw_core::sol::SolCluster::Devnet).next(),
+            to_text: SOL_RECIPIENT.to_owned(),
+            amount_text: "5".to_owned(),
+            ..crate::app_sol::SolSendForm::default()
+        };
+        state.sol_validate_send();
+    }
+    set_screen(&app, UNLOCKED, Screen::SolSend);
+    save(main_hwnd(&app), "20-send-solana-usdc");
+    sol_approval(&app);
+    save(approval_hwnd(&app), "21-approval-solana-usdc");
+    app.borrow_mut().tour_reject_approval();
+    {
+        let mut state = app.borrow_mut();
+        state.sol.send = crate::app_sol::SolSendForm::default();
+    }
     {
         let mut state = app.borrow_mut();
         if let Some(meta) = state.meta.as_mut() {

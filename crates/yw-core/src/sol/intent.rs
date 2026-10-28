@@ -5,7 +5,7 @@
 use sha2::{Digest, Sha256};
 
 use super::address::SolCluster;
-use super::template::SolTransferCore;
+use super::template::{SolAsset, SolTransferCore, SplAccounts};
 use crate::codec::transcript::Transcript;
 use crate::slip10::SolKeySource;
 
@@ -32,7 +32,7 @@ pub mod flags {
     pub const ALL: u8 = 0x7f;
 }
 
-/// One SOL transfer as approved (spec/07 §2). `id` = `ApprovalRequest.id`.
+/// One SOL or allowlisted SPL transfer as approved (spec/07 §2). `id` = `ApprovalRequest.id`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SolTransferIntent {
     /// Approval id (fresh per review).
@@ -76,6 +76,18 @@ impl SolTransferIntent {
         push_bytes(&mut t, self.core.from.as_bytes());
         push_bytes(&mut t, self.core.to.as_bytes());
         t.push_u8(self.core.asset.tag());
+        if let SolAsset::Spl(entry) = self.core.asset {
+            // The ATAs are derived (spec/07 §8.4); an impossible derivation binds zeros and the
+            // message encodes empty, so nothing could be signed for it.
+            let (from_ata, to_ata) = SplAccounts::of(&self.core).map_or(([0; 32], [0; 32]), |a| {
+                (a.from_ata.to_bytes(), a.to_ata.to_bytes())
+            });
+            push_bytes(&mut t, entry.mint.as_bytes());
+            push_bytes(&mut t, entry.token_program.as_bytes());
+            t.push_u8(entry.decimals);
+            push_bytes(&mut t, &from_ata);
+            push_bytes(&mut t, &to_ata);
+        }
         t.push_u64(self.core.amount);
         t.push_u32(self.core.cu_limit);
         t.push_u64(self.core.cu_price_micro);

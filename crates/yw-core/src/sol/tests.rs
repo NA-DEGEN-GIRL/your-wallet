@@ -37,7 +37,7 @@ use crate::journal::{Entry, EntryKind, JournalError, JournalPlain};
 use crate::slip10::SolKeySource;
 use crate::vault::tests::unlocked_with;
 
-const ABOUT: &str =
+pub(super) const ABOUT: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 /// RFC 8032 secret seed of `m/44'/501'/0'/0'` for the `abandon`×11 `about` mnemonic.
 const STANDARD0_SECRET: &str = "37df573b3ac4ad5b522e064e25b63ea16bcbe79d449e81a0268d1047948bb445";
@@ -376,6 +376,7 @@ fn facts(intent: &SolTransferIntent) -> SolPreviewFacts {
         rent0: 890_880,
         rpc_fee: Some(intent.max_fee_lamports),
         simulation: SimSummary::Ok { units: 450 },
+        spl: None,
         blocks: Vec::new(),
     }
 }

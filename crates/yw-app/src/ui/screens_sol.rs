@@ -1,12 +1,17 @@
 //! Solana screen contents (M7; spec/04 §2.6–§2.8, §2.10, §2.11, spec/07 §3.3, §12.3): the S10
-//! Solana tab, the SOL send form and its result, receive, the S15 Solana section, the recovery
-//! scan and the Solana part of the address book. Addresses are always shown in full, in
-//! 4-character groups (spec/07 §12.3); activity addresses have no copy or select buttons.
+//! Solana tab (with the allowlisted-token card of v1.1), the SOL/SPL send form with its asset
+//! picker and its result, receive, the S15 Solana section, the recovery scan and the Solana part
+//! of the address book. Addresses are always shown in full, in 4-character groups (spec/07
+//! §12.3); activity addresses have no copy or select buttons.
+
+use core::fmt::Write as _;
 
 use yw_core::sol::address::grouped;
 use yw_core::sol::recipient::KnownKind;
-use yw_core::sol::rent::format_raw;
-use yw_core::sol::{SolAddress, SolCluster};
+use yw_core::sol::rent::{format_amount, format_raw};
+use yw_core::sol::template::spl_entries;
+use yw_core::sol::token::TokenHolding;
+use yw_core::sol::{SolAddress, SolAsset, SolCluster, SplAllowEntry};
 
 use crate::app::{App, AppMode};
 use crate::meta::Tab;
@@ -44,6 +49,14 @@ pub mod ids {
     pub const RENAME_CANCEL: u16 = 7_013;
     /// 주소 복사.
     pub const COPY_ADDRESS: u16 = 7_014;
+    /// Send-form asset radios (SOL, then the cluster's allowlisted tokens; v1.1).
+    pub const SEND_ASSET_BASE: u16 = 7_015;
+    /// Asset radio span.
+    pub const SEND_ASSET_SPAN: u16 = 4;
+    /// Token card "이 토큰 보내기" (allowlist index of the cluster; v1.1).
+    pub const TOKEN_SEND_BASE: u16 = 7_027;
+    /// Token send span.
+    pub const TOKEN_SEND_SPAN: u16 = 3;
     /// Account radios.
     pub const ACCOUNT_BASE: u16 = 7_200;
     /// Account radio span.
@@ -108,6 +121,45 @@ fn local_time(unix_ms: u64) -> String {
         short
     } else {
         format!("{short} UTC")
+    }
+}
+
+/// `(value, note)` of a token holding: the balance with the pinned decimals and symbol, and what
+/// it means (RPC reference; missing account; frozen; unreadable).
+fn token_holding_text(entry: &SplAllowEntry, holding: Option<TokenHolding>) -> (String, String) {
+    let amount = |raw: u64| format!("{} {}", format_amount(raw, entry.decimals), entry.symbol);
+    let raw = |raw: u64| {
+        format!(
+            "{} 원시 단위 · decimals {} · RPC finalized 기준(참고)",
+            format_raw(raw),
+            entry.decimals
+        )
+    };
+    match holding {
+        None => (
+            "잔액 알 수 없음".to_owned(),
+            "아직 읽지 못했습니다. RPC 연결을 확인하고 새로고침하세요.".to_owned(),
+        ),
+        Some(TokenHolding::Missing) => (
+            amount(0),
+            format!(
+                "이 계정에는 아직 {} 토큰 계정(ATA)이 없습니다. 받으면 보내는 쪽이 만듭니다.",
+                entry.symbol
+            ),
+        ),
+        Some(TokenHolding::Active(value)) => (amount(value), raw(value)),
+        Some(TokenHolding::Frozen(value)) => (
+            amount(value),
+            format!(
+                "{} — 토큰 발행자가 이 토큰 계정을 동결해 보내거나 받을 수 없습니다.",
+                raw(value)
+            ),
+        ),
+        Some(TokenHolding::Invalid) => (
+            "확인할 수 없음".to_owned(),
+            "RPC가 돌려준 계정이 이 토큰의 토큰 계정 형식과 달라 잔액을 표시하지 않습니다."
+                .to_owned(),
+        ),
     }
 }
 
@@ -203,6 +255,25 @@ impl App {
                     "잔액을 아직 읽지 못했습니다. RPC 연결을 확인하고 새로고침하세요.".to_owned(),
                 ));
             }
+            if let Some(holdings) = self.sol_token_holdings(address) {
+                let tokens: Vec<String> = holdings
+                    .iter()
+                    .map(|(entry, holding)| {
+                        holding.balance().map_or_else(
+                            || format!("{} 확인할 수 없음", entry.symbol),
+                            |raw| {
+                                format!("{} {}", format_amount(raw, entry.decimals), entry.symbol)
+                            },
+                        )
+                    })
+                    .collect();
+                if !tokens.is_empty() {
+                    items.push(Item::Help(format!(
+                        "허용 목록 토큰: {} (아래 '토큰' 카드)",
+                        tokens.join(" · ")
+                    )));
+                }
+            }
             items.push(Item::Mono(grouped(address)));
             let mut row = vec![
                 Ctl::primary(ids::SEND_OPEN, "보내기").enabled(unlocked),
@@ -287,6 +358,9 @@ impl App {
                 .to_owned(),
         ));
         items.push(Item::CardEnd);
+        if let Some((_, _, address)) = self.sol_selected() {
+            self.sol_token_card(items, &address, unlocked && !no_endpoint);
+        }
         items.push(Item::CardStart(Some(
             "활동 (이 지갑이 보낸 거래)".to_owned(),
         )));
@@ -344,7 +418,39 @@ impl App {
         items.push(Item::CardEnd);
     }
 
-    /// The SOL send form.
+    /// The "토큰" card of S10 (spec/04 §2.6, spec/07 §8.3, §12.3): the allowlisted tokens of the
+    /// cluster for the selected account. Balances are read only from each token's derived ATA,
+    /// so other tokens and NFTs are never fetched or shown.
+    fn sol_token_card(&self, items: &mut Vec<Item>, address: &SolAddress, can_send: bool) {
+        let entries: Vec<&'static SplAllowEntry> = spl_entries(self.sol_cluster()).collect();
+        let symbols: Vec<&str> = entries.iter().map(|entry| entry.symbol).collect();
+        items.push(Item::CardStart(Some("토큰 (선택한 계정)".to_owned())));
+        items.push(Item::Help(format!(
+            "허용 목록 토큰만 표시합니다: {} (SPL Token). 다른 토큰·NFT는 받아도 여기에 보이지 않고 보낼 수 없습니다.",
+            symbols.join("·")
+        )));
+        for (index, entry) in entries.into_iter().enumerate() {
+            let holding = self.sol_token_holding(address, entry);
+            let (value, note) = token_holding_text(entry, holding);
+            items.push(Item::Field(entry.symbol.to_owned(), value));
+            items.push(Item::Help(note));
+            items.push(Item::Help("mint (허용 목록 고정)".to_owned()));
+            items.push(Item::Mono(grouped(&entry.mint)));
+            let id = ids::TOKEN_SEND_BASE.saturating_add(u16::try_from(index).unwrap_or(0));
+            items.push(Item::Row(vec![
+                Ctl::link(id, &format!("{} 보내기", entry.symbol)).enabled(
+                    can_send
+                        && holding
+                            .and_then(TokenHolding::balance)
+                            .is_some_and(|raw| raw > 0),
+                ),
+            ]));
+            items.push(Item::Gap(4));
+        }
+        items.push(Item::CardEnd);
+    }
+
+    /// The SOL/SPL send form.
     #[expect(clippy::too_many_lines, reason = "the send-form fields in order")]
     pub fn sol_send_screen(&self, items: &mut Vec<Item>) {
         let cluster = self.sol_cluster();
@@ -406,6 +512,12 @@ impl App {
             "Solana 주소(base58, 32–44자)입니다. 붙여넣은 뒤 굵게 표시된 가운데 부분까지 전체를 확인하세요."
                 .to_owned(),
         ));
+        if let Some(entry) = form.token {
+            items.push(Item::Help(format!(
+                "{0}을(를) 받을 사람의 지갑 주소를 넣으세요. {0} 토큰 계정(ATA) 주소가 아닙니다 — 받는 토큰 계정은 지갑이 계산합니다. PDA·토큰 계정 같은 곡선 밖 주소로는 토큰을 보낼 수 없습니다.",
+                entry.symbol
+            )));
+        }
         if form.picker && form.moving.is_none() {
             self.sol_picker_rows(items);
         }
@@ -458,7 +570,44 @@ impl App {
             }
         }
         items.push(Item::CardEnd);
-        items.push(Item::CardStart(Some("금액".to_owned())));
+        self.sol_asset_amount_card(items, &from);
+        items.push(Item::Row(vec![
+            Ctl::primary(ids::SEND_REVIEW, "검토").enabled(self.sol_can_review()),
+            Ctl::button(ids::SEND_CANCEL, "취소"),
+        ]));
+    }
+
+    /// The "보낼 자산과 금액" card: asset radios (SOL and the cluster's allowlisted tokens), the
+    /// token's pinned facts and balance, the amount in the asset's decimals, send max and fees.
+    fn sol_asset_amount_card(&self, items: &mut Vec<Item>, from: &SolAddress) {
+        let form = &self.sol.send;
+        let asset = form.asset();
+        items.push(Item::CardStart(Some("보낼 자산과 금액".to_owned())));
+        let radios: Vec<Ctl> = self
+            .sol_assets()
+            .into_iter()
+            .take(usize::from(ids::SEND_ASSET_SPAN))
+            .enumerate()
+            .map(|(index, choice)| {
+                Ctl::radio(
+                    ids::SEND_ASSET_BASE.saturating_add(u16::try_from(index).unwrap_or(0)),
+                    choice.symbol(),
+                    choice == asset,
+                    index == 0,
+                )
+            })
+            .collect();
+        items.push(Item::LabeledRow("자산".to_owned(), radios));
+        if let SolAsset::Spl(entry) = asset {
+            let (value, note) = token_holding_text(entry, self.sol_token_holding(from, entry));
+            items.push(Item::Help(format!(
+                "{} · SPL Token · 보유 {value}",
+                entry.symbol
+            )));
+            items.push(Item::Help(note));
+            items.push(Item::Help("mint (허용 목록 고정)".to_owned()));
+            items.push(Item::Mono(grouped(&entry.mint)));
+        }
         let mut amount_row = vec![
             Ctl::edit(ids::SEND_AMOUNT_EDIT, &form.amount_text, 260, false, 32)
                 .enabled(!form.send_max),
@@ -466,26 +615,35 @@ impl App {
         if form.moving.is_none() {
             amount_row.push(Ctl::check(ids::SEND_MAX, "보내기 최대", form.send_max));
         }
-        items.push(Item::LabeledRow("금액 (SOL)".to_owned(), amount_row));
+        items.push(Item::LabeledRow(
+            format!("금액 ({})", asset.symbol()),
+            amount_row,
+        ));
         if form.send_max {
-            items.push(Item::Help(
-                "보내기 최대: 잔액 − 최대 수수료를 보내고 이 계정의 SOL 잔액은 0이 됩니다(승인 창에서 확인)."
+            items.push(Item::Help(match asset {
+                SolAsset::Sol => "보내기 최대: 잔액 − 최대 수수료를 보내고 이 계정의 SOL 잔액은 0이 됩니다(승인 창에서 확인)."
                     .to_owned(),
-            ));
+                SolAsset::Spl(entry) => format!(
+                    "보내기 최대: 이 계정의 {} 전부를 보냅니다. SOL에서는 수수료(와 필요하면 받는 토큰 계정 생성비)만 나갑니다(승인 창에서 확인).",
+                    entry.symbol
+                ),
+            }));
         }
         if let Some(code) = form.amount_error {
             items.push(Item::Banner(code.text(), Tone::Danger));
         }
         items.push(Item::Help(format!(
             "수수료는 지갑이 계산합니다: 기본 5,000 lamports + 우선 수수료(CU 한도 {}), 상한 {} lamports.",
-            yw_core::sol::fee::SOL_TRANSFER_CU_LIMIT,
+            format_raw(u64::from(yw_core::sol::fee::template_cu_limit(asset))),
             format_raw(self.settings.solana.max_fee_lamports)
         )));
+        if let SolAsset::Spl(entry) = asset {
+            items.push(Item::Help(format!(
+                "받는 사람에게 {} 토큰 계정이 없으면 이 거래가 만들고, 생성 비용(rent)을 보내는 계정의 SOL로 냅니다. 금액은 승인 창에서 확인하세요. 보낸 뒤에도 SOL이 조금 남아야 합니다.",
+                entry.symbol
+            )));
+        }
         items.push(Item::CardEnd);
-        items.push(Item::Row(vec![
-            Ctl::primary(ids::SEND_REVIEW, "검토").enabled(self.sol_can_review()),
-            Ctl::button(ids::SEND_CANCEL, "취소"),
-        ]));
     }
 
     fn sol_picker_rows(&self, items: &mut Vec<Item>) {
@@ -585,8 +743,16 @@ impl App {
                 Tone::Testnet,
             ));
         }
+        let tokens: Vec<&str> = spl_entries(self.sol_cluster())
+            .map(|entry| entry.symbol)
+            .collect();
+        items.push(Item::Help(format!(
+            "보내는 사람에게 아래 주소나 QR을 알려주세요. SOL과 허용 목록 토큰({})을 받을 수 있습니다. 다른 토큰은 받아도 이 지갑에 보이지 않고 보낼 수 없습니다.",
+            tokens.join("·")
+        )));
         items.push(Item::Help(
-            "보내는 사람에게 아래 주소나 QR을 알려주세요. SOL만 보내야 합니다.".to_owned(),
+            "토큰을 보내는 쪽에는 이 지갑 주소를 알려주면 됩니다(토큰 계정 주소는 상대 지갑이 계산합니다)."
+                .to_owned(),
         ));
         items.push(Item::Qr(address.to_base58()));
         items.push(Item::Mono(grouped(&address)));
@@ -721,11 +887,23 @@ impl App {
                 for (index, row) in rows.iter().enumerate() {
                     let base = ids::SCAN_ROW_BASE
                         .saturating_add(u16::try_from(index).unwrap_or(0).saturating_mul(2));
-                    items.push(Item::Text(format!(
-                        "{} · {} (RPC 참고)",
+                    let mut text = format!(
+                        "{} · {}",
                         row.source.path_text(),
                         App::sol_text(row.balance)
-                    )));
+                    );
+                    for (entry, holding) in &row.tokens {
+                        if let Some(raw) = holding.balance().filter(|raw| *raw > 0) {
+                            let _ = write!(
+                                text,
+                                " · {} {}",
+                                format_amount(raw, entry.decimals),
+                                entry.symbol
+                            );
+                        }
+                    }
+                    text.push_str(" (RPC 참고)");
+                    items.push(Item::Text(text));
                     items.push(Item::Mono(grouped(&row.address)));
                     if row.source.is_standard() {
                         items.push(Item::Row(vec![Ctl::button(base, "계정 추가")]));

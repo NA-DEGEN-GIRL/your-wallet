@@ -24,7 +24,7 @@ use yw_core::sol::fee::{FeeError, SOL_TRANSFER_CU_LIMIT};
 use yw_core::sol::intent::flags;
 use yw_core::sol::recipient::check_recipient;
 use yw_core::sol::rent::RentError;
-use yw_core::sol::{SolAddress, SolCluster};
+use yw_core::sol::{SolAddress, SolAsset, SolCluster};
 use yw_json::Value;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -107,6 +107,7 @@ fn job(amount: Option<u64>) -> TestResult<PreviewJob> {
         from: addr(FROM),
         account_label: "Solana 1".to_owned(),
         recipient: check_recipient(TO, &addr(FROM), &[]).map_err(|error| format!("{error:?}"))?,
+        asset: SolAsset::Sol,
         amount,
         fee_cap: 100_000,
         max_cu_price: 1_000_000,
@@ -687,7 +688,14 @@ fn balances_and_scan_pin_the_genesis() -> TestResult {
     let rpc = fake(World::default());
     let list = balances(&*rpc, &endpoint(), &[addr(FROM), addr(TO)])
         .map_err(|code| code.code().to_owned())?;
-    assert_eq!(list, [(addr(FROM), 10 * SOL), (addr(TO), 10 * SOL)]);
+    let lamports: Vec<(SolAddress, u64)> =
+        list.iter().map(|row| (row.address, row.lamports)).collect();
+    assert_eq!(lamports, [(addr(FROM), 10 * SOL), (addr(TO), 10 * SOL)]);
+    // Devnet: exactly the one allowlisted token per account, missing ATA (getAccountInfo null).
+    for row in &list {
+        assert_eq!(row.tokens.len(), 1);
+        assert_eq!(row.tokens[0].1, yw_core::sol::token::TokenHolding::Missing);
+    }
     let wrong = fake(World {
         genesis: MAINNET,
         ..World::default()
@@ -713,6 +721,7 @@ fn balances_and_scan_pin_the_genesis() -> TestResult {
                 "0"
             })
         }
+        "getAccountInfo" => ctx("null"),
         _ => Answer::Error(-32_601, None),
     });
     let sources = scan_sources();

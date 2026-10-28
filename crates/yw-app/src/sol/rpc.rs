@@ -4,9 +4,10 @@
 //! strings (`message`, logs) are never read or shown: errors are classified from their JSON
 //! structure only (spec/07 §15.3). Every request uses `"commitment":"finalized"` and base64.
 
-use yw_core::sol::SolAddress;
 use yw_core::sol::broadcast::{SendResult, SigStatus, err};
 use yw_core::sol::display::SimSummary;
+use yw_core::sol::template::T_SPL_HEADER;
+use yw_core::sol::{SolAddress, SolAsset};
 use yw_json::{Number, Value};
 use yw_win::http::HttpsUrl;
 
@@ -31,7 +32,78 @@ pub const T_SOL_PROGRAMS: [IxProgram; 3] = [
     IxProgram::System,
 ];
 
+/// `T_SPL` instruction programs (limit, price, ATA `CreateIdempotent`, `TransferChecked`).
+pub const T_SPL_PROGRAMS: [IxProgram; 4] = [
+    IxProgram::ComputeBudget,
+    IxProgram::ComputeBudget,
+    IxProgram::Token,
+    IxProgram::Token,
+];
+
+/// The instruction programs of an asset's template (for `InstructionError` classification).
+#[must_use]
+pub const fn programs_for(asset: SolAsset) -> &'static [IxProgram] {
+    match asset {
+        SolAsset::Sol => &T_SOL_PROGRAMS,
+        SolAsset::Spl(_) => &T_SPL_PROGRAMS,
+    }
+}
+
+/// The instruction programs of a wallet transaction (`01 ‖ signature ‖ message`) by its template
+/// header: `T_SPL` for `[1, 0, 6]`, otherwise `T_SOL`. Only the error class shown depends on it.
+#[must_use]
+pub fn programs_of(tx: &[u8]) -> &'static [IxProgram] {
+    match tx.get(65..68) {
+        Some(header) if header == T_SPL_HEADER => &T_SPL_PROGRAMS,
+        _ => &T_SOL_PROGRAMS,
+    }
+}
+
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Strict standard base64 (RFC 4648 §4, padded): length a multiple of 4, padding only at the end
+/// (at most two `=`), unused bits zero (canonical). Account data of `getAccountInfo`.
+#[must_use]
+pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    let bytes = text.as_bytes();
+    if !bytes.len().is_multiple_of(4) {
+        return None;
+    }
+    let value = |byte: u8| -> Option<u32> {
+        let index = ALPHABET.iter().position(|symbol| *symbol == byte)?;
+        u32::try_from(index).ok()
+    };
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    let chunks = bytes.chunks_exact(4);
+    let last = chunks.len().saturating_sub(1);
+    for (index, chunk) in chunks.enumerate() {
+        let [s0, s1, s2, s3] = <[u8; 4]>::try_from(chunk).ok()?;
+        let padding = match (s2, s3) {
+            (b'=', b'=') => 2,
+            (_, b'=') => 1,
+            _ => 0,
+        };
+        if padding > 0 && index != last {
+            return None;
+        }
+        let triple = (value(s0)? << 18)
+            | (value(s1)? << 12)
+            | if padding == 2 { 0 } else { value(s2)? << 6 }
+            | if padding == 0 { value(s3)? } else { 0 };
+        let [_, first, second, third] = triple.to_be_bytes();
+        out.push(first);
+        match padding {
+            0 => {
+                out.push(second);
+                out.push(third);
+            }
+            1 if third == 0 => out.push(second),
+            2 if second == 0 && third == 0 => {}
+            _ => return None,
+        }
+    }
+    Some(out)
+}
 
 /// Standard base64 with padding (transactions and messages are sent as base64, spec/07 §15.2).
 #[must_use]
@@ -165,6 +237,76 @@ pub fn account_info(
             .and_then(Value::as_bool)
             .ok_or(RpcFailure::Malformed)?,
         lamports: u64_of(object.get("lamports").ok_or(RpcFailure::Malformed)?)?,
+    }))
+}
+
+/// An account with its data (`getAccountInfo` without `dataSlice`, base64).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccountData {
+    /// Owner program.
+    pub owner: SolAddress,
+    /// Executable.
+    pub executable: bool,
+    /// Lamports.
+    pub lamports: u64,
+    /// Raw data (strict base64).
+    pub data: Vec<u8>,
+}
+
+impl AccountData {
+    /// `(owner program, data)` for the yw-core SPL classifiers.
+    #[must_use]
+    pub fn view(&self) -> (&SolAddress, &[u8]) {
+        (&self.owner, &self.data)
+    }
+}
+
+/// Largest account data read: a mint (82 B) or token account (165 B) is far below; anything
+/// longer is not an SPL account of the allowlist and is refused as `Malformed`.
+const MAX_ACCOUNT_DATA: usize = 4_096;
+
+/// `getAccountInfo(addr, {base64, finalized})` with the data (mint and token accounts,
+/// spec/07 §15.2, §15.4) → `None` for a missing account. The data must be `[<base64>, "base64"]`.
+///
+/// # Errors
+///
+/// [`RpcFailure`].
+pub fn account_data(
+    client: &RpcClient<'_>,
+    url: &HttpsUrl,
+    address: &SolAddress,
+) -> Result<Option<AccountData>, RpcFailure> {
+    let config = json_object(vec![
+        ("encoding", json_str("base64")),
+        ("commitment", json_str("finalized")),
+    ]);
+    let result = client.call(
+        url,
+        "getAccountInfo",
+        Value::Array(vec![json_str(&address.to_base58()), config]),
+    )?;
+    let value = context_value(&result)?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    let object = value.as_object().ok_or(RpcFailure::Malformed)?;
+    let data = match object.get("data").and_then(Value::as_array) {
+        Some([Value::String(text), Value::String(encoding)]) if encoding == "base64" => {
+            if text.len() > MAX_ACCOUNT_DATA.div_ceil(3).saturating_mul(4) {
+                return Err(RpcFailure::Malformed);
+            }
+            base64_decode(text).ok_or(RpcFailure::Malformed)?
+        }
+        _ => return Err(RpcFailure::Malformed),
+    };
+    Ok(Some(AccountData {
+        owner: address_of(object.get("owner").ok_or(RpcFailure::Malformed)?)?,
+        executable: object
+            .get("executable")
+            .and_then(Value::as_bool)
+            .ok_or(RpcFailure::Malformed)?,
+        lamports: u64_of(object.get("lamports").ok_or(RpcFailure::Malformed)?)?,
+        data,
     }))
 }
 
@@ -337,7 +479,7 @@ pub fn simulate(client: &RpcClient<'_>, url: &HttpsUrl, tx: &[u8]) -> SimSummary
     match value.get("err") {
         Some(Value::Null) => units.map_or(SimSummary::NoResult, |units| SimSummary::Ok { units }),
         Some(error) => SimSummary::Failed {
-            err: classify_tx_error(error, &T_SOL_PROGRAMS),
+            err: classify_tx_error(error, programs_of(tx)),
             units,
         },
         None => SimSummary::NoResult,
@@ -379,7 +521,7 @@ pub fn send_transaction(
                 .as_object()
                 .and_then(|object| object.get("err"))
                 .map_or(err::OTHER, |error| {
-                    classify_tx_error(error, &T_SOL_PROGRAMS)
+                    classify_tx_error(error, programs_of(tx))
                 });
             if err::is_deterministic(code) {
                 SendResult::Deterministic(code)
@@ -391,7 +533,8 @@ pub fn send_transaction(
     }
 }
 
-/// `getSignatureStatuses([sig], {searchTransactionHistory})` for one signature.
+/// `getSignatureStatuses([sig], {searchTransactionHistory})` for one signature; `programs` names
+/// the template's instruction programs for the error class ([`programs_of`]).
 ///
 /// # Errors
 ///
@@ -401,6 +544,7 @@ pub fn signature_status(
     url: &HttpsUrl,
     signature: &str,
     history: bool,
+    programs: &[IxProgram],
 ) -> Result<SigStatus, RpcFailure> {
     let config = json_object(vec![("searchTransactionHistory", Value::Bool(history))]);
     let result = client.call(
@@ -426,7 +570,7 @@ pub fn signature_status(
             let error = object.get("err").ok_or(RpcFailure::Malformed)?;
             Ok(SigStatus::Finalized {
                 slot,
-                err: (!error.is_null()).then(|| classify_tx_error(error, &T_SOL_PROGRAMS)),
+                err: (!error.is_null()).then(|| classify_tx_error(error, programs)),
             })
         }
         "processed" | "confirmed" => Ok(SigStatus::Processing),
@@ -439,7 +583,10 @@ mod tests {
     use yw_core::sol::broadcast::err;
     use yw_json::Limits;
 
-    use super::{IxProgram, T_SOL_PROGRAMS, base64, classify_tx_error};
+    use super::{
+        IxProgram, T_SOL_PROGRAMS, T_SPL_PROGRAMS, base64, base64_decode, classify_tx_error,
+        programs_of,
+    };
 
     fn json(text: &str) -> yw_json::Value {
         yw_json::parse(text.as_bytes(), &Limits::RESPONSE).unwrap()
@@ -457,8 +604,51 @@ mod tests {
             ("foobar", "Zm9vYmFy"),
         ] {
             assert_eq!(base64(input.as_bytes()), expected);
+            assert_eq!(
+                base64_decode(expected).as_deref(),
+                Some(input.as_bytes()),
+                "{expected}"
+            );
         }
         assert_eq!(base64(&[0xfb, 0xff]), "+/8=");
+        assert_eq!(base64_decode("+/8=").as_deref(), Some(&[0xfb, 0xff][..]));
+        let all: Vec<u8> = (0..=255).collect();
+        assert_eq!(base64_decode(&base64(&all)), Some(all));
+    }
+
+    #[test]
+    fn base64_decoder_is_strict() {
+        for bad in [
+            "Zg", "Zg=", "Zg===", "Z===", "Zh==", "Zm9=", "Zg==Zg==", "Zm9v\n", " Zm9v", "Zm-v",
+            "Zm_v", "Zm9v=", "====",
+        ] {
+            assert_eq!(base64_decode(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn programs_follow_the_template_header() {
+        let mut tx = vec![1_u8];
+        tx.extend_from_slice(&[0; 64]);
+        tx.extend_from_slice(&[1, 0, 6, 9]);
+        assert_eq!(programs_of(&tx), &T_SPL_PROGRAMS);
+        tx[67] = 2;
+        assert_eq!(programs_of(&tx), &T_SOL_PROGRAMS);
+        assert_eq!(programs_of(&[]), &T_SOL_PROGRAMS);
+        assert_eq!(
+            classify_tx_error(
+                &json(r#"{"InstructionError":[2,{"Custom":0}]}"#),
+                &T_SPL_PROGRAMS
+            ),
+            err::TOKEN_INSTRUCTION
+        );
+        assert_eq!(
+            classify_tx_error(
+                &json(r#"{"InstructionError":[3,{"Custom":1}]}"#),
+                &T_SPL_PROGRAMS
+            ),
+            err::TOKEN_INSTRUCTION
+        );
     }
 
     #[test]

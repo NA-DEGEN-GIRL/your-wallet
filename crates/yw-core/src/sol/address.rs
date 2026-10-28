@@ -245,9 +245,7 @@ pub const SOL_BLOCKED_RECIPIENTS: [&str; 27] = [
 pub fn is_blocked_recipient(address: &SolAddress) -> bool {
     let text = address.to_base58();
     SOL_BLOCKED_RECIPIENTS.contains(&text.as_str())
-        || crate::sol::template::SPL_ALLOWLIST
-            .iter()
-            .any(|entry| entry.mint == text)
+        || crate::sol::template::is_allowlisted_mint(address)
 }
 
 #[cfg(test)]

@@ -396,9 +396,9 @@ pub struct SolActivityRow {
     pub tx_id: String,
     /// The approval title rebuilt from the transaction.
     pub title: String,
-    /// `"native"` (SOL).
+    /// `"native"` (SOL) or the SPL mint (base58).
     pub asset: String,
-    /// Lamports, decimal.
+    /// Lamports or raw token units, decimal.
     pub amount: String,
     /// Recipient wallet (base58).
     pub counterparty: String,
@@ -420,6 +420,7 @@ pub fn activity_row(record: &SolRecord, time_unix_ms: u64) -> Option<SolActivity
         title: transfer_title(record.cluster, &core),
         asset: match core.asset {
             SolAsset::Sol => "native".to_owned(),
+            SolAsset::Spl(entry) => entry.mint.to_base58(),
         },
         amount: core.amount.to_string(),
         counterparty: core.to.to_base58(),

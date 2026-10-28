@@ -1,14 +1,16 @@
 //! spec/09 §2.4 fallback for the M7 fuzz targets (`sol_base58`, `sol_shortvec`, `sol_tx`,
-//! `sol_journal`): cargo-fuzz/nightly are not installed (offline), so each target's invariant runs
-//! here over 1,000,000 xorshift64* mutations (bit flip, insert, delete, truncate) of its seeds.
+//! `sol_journal`; seeds `T_SOL` and, since v1.1, `T_SPL`): cargo-fuzz/nightly are not installed
+//! (offline), so each target's invariant runs here over 1,000,000 xorshift64* mutations (bit
+//! flip, insert, delete, truncate) of its seeds.
 //! Run with `cargo test --release -p yw-core --test sol_fuzz_lite -- --ignored`.
 
 use yw_core::codec::base58::{base58_decode_32, base58_decode_64, base58_encode};
 use yw_core::hex;
 use yw_core::journal::sol::SolRecord;
-use yw_core::sol::SolCluster;
 use yw_core::sol::message::{assemble_transaction, encode_message, parse_transaction};
 use yw_core::sol::shortvec;
+use yw_core::sol::template::SPL_ALLOWLIST;
+use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolTransferCore};
 
 const RUNS: u32 = 1_000_000;
 
@@ -93,10 +95,40 @@ fn golden_tx() -> Vec<u8> {
     )
 }
 
-/// A `Pending` devnet body around the golden transaction (spec/07 §14.1 layout).
+/// The spec/07 §17.3 `T_SPL` golden message (372 bytes, mainnet USDC), built by the public
+/// encoder and pinned by its SHA-256.
+fn spl_message() -> Vec<u8> {
+    let addr = |text: &str| SolAddress::parse(text).unwrap_or(SolAddress::from_bytes([0; 32]));
+    let core = SolTransferCore {
+        from: addr("HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"),
+        to: addr("Hh8QwFUA6MtVu1qAoq12ucvFHNwCcVTV7hpWjeY1Hztb"),
+        asset: SolAsset::Spl(&SPL_ALLOWLIST[0]),
+        amount: 1_000_000,
+        cu_limit: 40_000,
+        cu_price_micro: 1_000,
+    };
+    encode_message(&core, &[7; 32])
+}
+
+/// Its signature (spec/07 §17.3).
+const T_SPL_SIGNATURE: &str =
+    "5iVhrE6aU2jjv4CyoJKYkqAd3xpPcdPynaGWW32yt6daMUZm1jAdVWq4aSyFNpB4eyU2SGhB6p7tB8eLrMdoGt8L";
+
+fn spl_tx() -> Vec<u8> {
+    assemble_transaction(
+        &base58_decode_64(T_SPL_SIGNATURE).unwrap_or([0; 64]),
+        &spl_message(),
+    )
+}
+
+/// A devnet body around the golden `T_SOL` transaction (spec/07 §14.1 layout).
 fn golden_body(state: u8) -> Vec<u8> {
-    let tx = golden_tx();
-    let mut body = vec![0x02, 1, state, 2, 1];
+    body_of(state, 2, &golden_tx())
+}
+
+/// A body of `tx` on `cluster` in `state`.
+fn body_of(state: u8, cluster: u8, tx: &[u8]) -> Vec<u8> {
+    let mut body = vec![0x02, 1, state, cluster, 1];
     body.extend_from_slice(&[0; 8]);
     body.extend_from_slice(&[0x42; 16]);
     body.extend_from_slice(&[0x24; 32]);
@@ -106,15 +138,24 @@ fn golden_body(state: u8) -> Vec<u8> {
     body.extend_from_slice(&slot.to_be_bytes());
     body.extend_from_slice(&err.to_be_bytes());
     body.extend_from_slice(&u16::try_from(tx.len()).unwrap_or(0).to_be_bytes());
-    body.extend_from_slice(&tx);
+    body.extend_from_slice(tx);
     body
 }
 
 #[test]
 fn seeds_are_valid() {
     assert!(parse_transaction(&golden_tx(), SolCluster::Mainnet).is_ok());
+    assert_eq!(
+        hex::encode(&yw_core::codec::sha256(&spl_message())),
+        "db305edc2a3c1a3bcde2ac525684340d7a56a8e816c41e86d8231f795ca6d9e8"
+    );
+    assert!(parse_transaction(&spl_tx(), SolCluster::Mainnet).is_ok());
     for state in 1..=4 {
         assert!(SolRecord::decode(&golden_body(state)).is_ok(), "{state}");
+        assert!(
+            SolRecord::decode(&body_of(state, 1, &spl_tx())).is_ok(),
+            "{state}"
+        );
     }
 }
 
@@ -170,7 +211,12 @@ fn fuzz_lite_sol_shortvec() {
 #[test]
 #[ignore = "fuzz-lite (spec/09 §2.4 fallback)"]
 fn fuzz_lite_sol_tx() {
-    let seeds = vec![golden_tx(), hex::decode(T_SOL_MESSAGE).unwrap()];
+    let seeds = vec![
+        golden_tx(),
+        hex::decode(T_SOL_MESSAGE).unwrap(),
+        spl_tx(),
+        spl_message(),
+    ];
     let mut mutator = Mutator::new(0x736f_6c5f_7478_2121, 1_232);
     let mut accepted = 0_u32;
     for _ in 0..RUNS {
@@ -189,7 +235,8 @@ fn fuzz_lite_sol_tx() {
 #[test]
 #[ignore = "fuzz-lite (spec/09 §2.4 fallback)"]
 fn fuzz_lite_sol_journal() {
-    let seeds: Vec<Vec<u8>> = (1..=4).map(golden_body).collect();
+    let mut seeds: Vec<Vec<u8>> = (1..=4).map(golden_body).collect();
+    seeds.extend((1..=4).map(|state| body_of(state, 1, &spl_tx())));
     let mut mutator = Mutator::new(0x736f_6c6a_726e_6c21, 2_048);
     let mut accepted = 0_u32;
     for _ in 0..RUNS {

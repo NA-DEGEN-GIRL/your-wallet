@@ -720,7 +720,7 @@ pub enum RpcEvent {
         /// Cluster.
         cluster: SolCluster,
         /// Balances or error.
-        result: Result<Vec<(SolAddress, u64)>, ErrorCode>,
+        result: Result<Vec<crate::sol::flow::SolBalanceRow>, ErrorCode>,
     },
     /// Solana preview finished.
     SolPreviewed(Box<PreviewResult>),

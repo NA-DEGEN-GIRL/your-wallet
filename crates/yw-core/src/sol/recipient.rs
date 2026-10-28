@@ -3,6 +3,7 @@
 use core::fmt;
 
 use super::address::{CurveClass, SolAddress, curve_class, is_blocked_recipient};
+use super::template::SolAsset;
 use crate::codec::base58::Base58Error;
 
 /// Matching characters at either end that make two addresses lookalikes (observed poisoning
@@ -20,6 +21,9 @@ pub enum RecipientBlock {
     Unspendable,
     /// The sending account itself.
     SelfSend,
+    /// SPL only: an off-curve recipient (PDA or token account). Its ATA would be owned by an
+    /// address nobody can sign for, so the tokens could never move (spec/07 §12.1-6).
+    OffCurveOwner,
 }
 
 impl fmt::Display for RecipientBlock {
@@ -29,6 +33,9 @@ impl fmt::Display for RecipientBlock {
             Self::IsProgram => "받는 주소가 프로그램·시스템·토큰 mint 주소입니다. 보내면 잃습니다.",
             Self::Unspendable => "받는 주소는 아무도 쓸 수 없는 주소입니다. 보내면 잃습니다.",
             Self::SelfSend => "보내는 계정과 같은 주소로는 보낼 수 없습니다.",
+            Self::OffCurveOwner => {
+                "토큰은 일반 지갑 주소로만 보낼 수 있습니다. 이 주소는 프로그램 소유 주소(PDA)나 토큰 계정이라 받은 토큰을 옮길 수 없습니다."
+            }
         })
     }
 }
@@ -134,6 +141,25 @@ pub fn check_recipient(
     })
 }
 
+/// The local checks for an asset: [`check_recipient`], and for SPL an off-curve recipient is
+/// blocked ([`RecipientBlock::OffCurveOwner`]) instead of the SOL high-risk warning `L02`.
+///
+/// # Errors
+///
+/// [`RecipientBlock`].
+pub fn check_recipient_for(
+    input: &str,
+    from: &SolAddress,
+    known: &[KnownAddress],
+    asset: SolAsset,
+) -> Result<RecipientCheck, RecipientBlock> {
+    let check = check_recipient(input, from, known)?;
+    if check.off_curve && matches!(asset, SolAsset::Spl(_)) {
+        return Err(RecipientBlock::OffCurveOwner);
+    }
+    Ok(check)
+}
+
 /// `getAccountInfo(to)` classification (spec/07 §12.2; reference only: it may block, never clear
 /// a warning).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -176,10 +202,11 @@ pub fn classify_account(info: Option<(&SolAddress, bool)>) -> AccountClass {
 #[cfg(test)]
 mod tests {
     use super::{
-        AccountClass, KnownAddress, KnownKind, RecipientBlock, check_recipient, classify_account,
-        is_lookalike,
+        AccountClass, KnownAddress, KnownKind, RecipientBlock, check_recipient,
+        check_recipient_for, classify_account, is_lookalike,
     };
     use crate::sol::address::{SYSTEM_PROGRAM, SolAddress, TOKEN_PROGRAM};
+    use crate::sol::template::SolAsset;
 
     fn addr(text: &str) -> SolAddress {
         SolAddress::parse(text).unwrap()
@@ -255,6 +282,37 @@ mod tests {
         }];
         let repeat = check_recipient(OTHER, &from, &sent).unwrap();
         assert!(!repeat.first_time && repeat.exact.is_none());
+    }
+
+    #[test]
+    fn spl_blocks_off_curve_recipients() {
+        let from = addr(FROM);
+        let usdc = SolAsset::Spl(&crate::sol::template::SPL_ALLOWLIST[0]);
+        // A USDC ATA pasted as the recipient (off-curve): SOL warns (L02), SPL blocks.
+        let ata = "5N3f1tj9v1vc5TUZ8S7mCAnVmjVKrfnzXWhxLaxyZAgt";
+        assert!(
+            check_recipient_for(ata, &from, &[], SolAsset::Sol)
+                .unwrap()
+                .off_curve
+        );
+        assert_eq!(
+            check_recipient_for(ata, &from, &[], usdc),
+            Err(RecipientBlock::OffCurveOwner)
+        );
+        // ComputeBudget is off-curve too but the program block comes first.
+        assert_eq!(
+            check_recipient_for(
+                "ComputeBudget111111111111111111111111111111",
+                &from,
+                &[],
+                usdc
+            ),
+            Err(RecipientBlock::IsProgram)
+        );
+        // Normal wallets pass for both.
+        let ok = check_recipient_for(OTHER, &from, &known(), usdc).unwrap();
+        assert!(!ok.off_curve && ok.first_time);
+        assert!(check_recipient_for(OWN1, &from, &known(), usdc).is_ok());
     }
 
     #[test]

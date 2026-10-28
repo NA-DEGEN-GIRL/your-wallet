@@ -160,6 +160,8 @@ pub enum ErrorCode {
     Sol004,
     /// SOL signature status: network/RPC check needed (§14.2, 120 s pending).
     Sol005,
+    /// SPL recipient is off-curve (a PDA or token account; spec/07 §12.1-6, v1.1).
+    Sol006,
     /// Bitcoin indexer unreachable: transport error, timeout, TLS, HTTP 3xx/5xx/other
     /// (spec/08 §4.3; `{인덱서}` = indexer display name, optional cause code).
     Btc001,
@@ -261,6 +263,7 @@ impl ErrorCode {
             Self::Sol003 => "E-SOL-003",
             Self::Sol004 => "E-SOL-004",
             Self::Sol005 => "E-SOL-005",
+            Self::Sol006 => "E-SOL-006",
             Self::Btc001 => "E-BTC-001",
             Self::Btc002 => "E-BTC-002",
             Self::Btc003 => "E-BTC-003",
@@ -373,6 +376,9 @@ impl ErrorCode {
             }
             Self::Sol005 => {
                 "전송 확인이 오래 걸립니다. 네트워크·RPC 상태를 확인하세요(자동 재서명 없음)."
+            }
+            Self::Sol006 => {
+                "토큰은 일반 지갑 주소로만 보낼 수 있습니다. 이 주소는 프로그램 소유 주소(PDA)나 토큰 계정이라 받은 토큰을 옮길 수 없습니다."
             }
             Self::Btc001 => {
                 "Bitcoin 인덱서({인덱서})에 연결할 수 없습니다. 잠시 후 다시 시도하거나 설정 → Bitcoin에서 인덱서를 바꾸세요."

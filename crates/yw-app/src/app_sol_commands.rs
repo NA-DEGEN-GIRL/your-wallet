@@ -151,6 +151,16 @@ impl App {
             self.sol_select_account(usize::from(row));
             return true;
         }
+        if let Some(index) = offset(id, ids::SEND_ASSET_BASE, ids::SEND_ASSET_SPAN) {
+            self.sol_select_asset(usize::from(index));
+            return true;
+        }
+        if let Some(index) = offset(id, ids::TOKEN_SEND_BASE, ids::TOKEN_SEND_SPAN) {
+            // Token card "보내기": the send form with that token selected (SOL is asset 0).
+            self.sol_open_send();
+            self.sol_select_asset(usize::from(index).saturating_add(1));
+            return true;
+        }
         if let Some(row) = offset(id, ids::SEND_PICK_BASE, ids::SEND_PICK_SPAN) {
             if let Some((_, address)) = self.sol_picker_entries().get(usize::from(row)) {
                 self.sol.send.to_text = address.to_base58();

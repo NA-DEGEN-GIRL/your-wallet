@@ -1,5 +1,6 @@
 //! Solana flows on the UI thread (M7; spec/07 §3, §11–§14, spec/04 §2.6–§2.11): standard accounts
-//! and balances, the send form (S11 for SOL), receive (S12), the approval item and its preview,
+//! and balances (SOL and, since v1.1, the allowlisted tokens' derived ATAs), the SOL/SPL send form
+//! (S11) with its asset picker, receive (S12), the approval item and its preview,
 //! the post-approval blockhash lookup and signing, the broadcast-loop scheduling, activity, the
 //! Solana address book and the recovery scan. RPC work goes to `yw-rpc`, keys and journal commits
 //! to `yw-key`.
@@ -13,12 +14,14 @@ use yw_core::journal::sol::{SolRecord, SolTransition, SolTxState};
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::broadcast::{LoopState, Outcome, PendingTx, SOL_POLL_INTERVAL_MS};
 use yw_core::sol::display::build_sol_transfer_request;
-use yw_core::sol::fee::SOL_TRANSFER_CU_LIMIT;
+use yw_core::sol::fee::template_cu_limit;
 use yw_core::sol::recipient::{
-    KnownAddress, KnownKind, RecipientBlock, RecipientCheck, check_recipient,
+    KnownAddress, KnownKind, RecipientBlock, RecipientCheck, check_recipient_for,
 };
 use yw_core::sol::rent::{AmountError, format_amount, parse_amount};
-use yw_core::sol::{SolAddress, SolCluster};
+use yw_core::sol::template::spl_entries;
+use yw_core::sol::token::TokenHolding;
+use yw_core::sol::{SolAddress, SolAsset, SolCluster, SplAllowEntry};
 
 use crate::app::{App, AppMode, Screen};
 use crate::app_evm::QueuedItem;
@@ -81,10 +84,11 @@ pub const fn recipient_code(block: RecipientBlock) -> ErrorCode {
         RecipientBlock::IsProgram => ErrorCode::Sol001,
         RecipientBlock::Unspendable => ErrorCode::Sol002,
         RecipientBlock::SelfSend => ErrorCode::Sol003,
+        RecipientBlock::OffCurveOwner => ErrorCode::Sol006,
     }
 }
 
-/// A queued SOL transfer approval.
+/// A queued SOL or SPL transfer approval.
 #[derive(Clone, Debug)]
 pub struct SolApprovalItem {
     /// Cluster.
@@ -95,18 +99,22 @@ pub struct SolApprovalItem {
     pub from: SolAddress,
     /// Sender label.
     pub label: String,
-    /// §12.1 result.
+    /// §12.1 result (checked for `asset`).
     pub recipient: RecipientCheck,
-    /// Lamports, `None` = send max.
+    /// SOL or an allowlisted token of `cluster`.
+    pub asset: SolAsset,
+    /// Lamports or raw token units, `None` = send max.
     pub amount: Option<u64>,
 }
 
-/// The SOL send form (inputs survive rejection and expiry).
+/// The SOL/SPL send form (inputs survive rejection and expiry).
 #[derive(Clone, Debug, Default)]
 pub struct SolSendForm {
     /// A non-standard source being moved to a standard account (recovery scan, spec/07 §3.3):
     /// `(source, from)`; the recipient is fixed and the amount is "send max".
     pub moving: Option<(SolKeySource, SolAddress)>,
+    /// The asset picker: `None` = SOL, otherwise an allowlisted token of the cluster (v1.1).
+    pub token: Option<&'static SplAllowEntry>,
     /// Recipient text.
     pub to_text: String,
     /// Amount text.
@@ -127,6 +135,17 @@ pub struct SolSendForm {
     pub amount_error: Option<ErrorCode>,
     /// Message (T-APPR-EXPIRED, errors).
     pub info: Option<String>,
+}
+
+impl SolSendForm {
+    /// The selected asset.
+    #[must_use]
+    pub const fn asset(&self) -> SolAsset {
+        match self.token {
+            Some(entry) => SolAsset::Spl(entry),
+            None => SolAsset::Sol,
+        }
+    }
 }
 
 /// Loop scheduling of one `Pending` record.
@@ -210,6 +229,8 @@ pub struct SolBookForm {
 pub struct SolUi {
     /// Balances per (cluster, account).
     pub balances: HashMap<(SolCluster, SolAddress), u64>,
+    /// Allowlisted token holdings per (cluster, account), allowlist order (v1.1).
+    pub tokens: HashMap<(SolCluster, SolAddress), Vec<(&'static SplAllowEntry, TokenHolding)>>,
     /// Last balance error per cluster.
     pub balance_error: HashMap<SolCluster, ErrorCode>,
     /// Outstanding balance job.
@@ -252,6 +273,7 @@ impl SolUi {
     /// secret, but its journal is re-read after unlock and the loop resumes from it.
     pub fn clear_unlocked(&mut self) {
         self.balances.clear();
+        self.tokens.clear();
         self.balance_error.clear();
         self.creating = false;
         self.send = SolSendForm::default();
@@ -614,6 +636,54 @@ impl App {
             .copied()
     }
 
+    /// The allowlisted token holdings of an account on the selected cluster (allowlist order;
+    /// `None` until the first balance refresh). Other tokens are never fetched or shown.
+    #[must_use]
+    pub fn sol_token_holdings(
+        &self,
+        address: &SolAddress,
+    ) -> Option<&[(&'static SplAllowEntry, TokenHolding)]> {
+        self.sol
+            .tokens
+            .get(&(self.sol_cluster(), *address))
+            .map(Vec::as_slice)
+    }
+
+    /// The holding of one allowlisted token of an account on the selected cluster.
+    #[must_use]
+    pub fn sol_token_holding(
+        &self,
+        address: &SolAddress,
+        entry: &SplAllowEntry,
+    ) -> Option<TokenHolding> {
+        self.sol_token_holdings(address)?
+            .iter()
+            .find(|(known, _)| known.mint == entry.mint)
+            .map(|(_, holding)| *holding)
+    }
+
+    /// The assets of the selected cluster: SOL, then the allowlisted tokens in table order.
+    #[must_use]
+    pub fn sol_assets(&self) -> Vec<SolAsset> {
+        let mut assets = vec![SolAsset::Sol];
+        assets.extend(spl_entries(self.sol_cluster()).map(SolAsset::Spl));
+        assets
+    }
+
+    /// Picks the asset of the send form (index into [`Self::sol_assets`]); the recipient and
+    /// amount are checked again for the new asset (decimals, SPL off-curve rule).
+    pub fn sol_select_asset(&mut self, index: usize) {
+        let Some(asset) = self.sol_assets().get(index).copied() else {
+            return;
+        };
+        let token = asset.spl();
+        if self.sol.send.token != token {
+            self.sol.send.token = token;
+            self.sol.send.info = None;
+        }
+        self.sol_validate_send();
+    }
+
     // ----- events -------------------------------------------------------------------------
 
     /// RPC worker events of the Solana flows.
@@ -629,8 +699,11 @@ impl App {
                 }
                 match result {
                     Ok(list) => {
-                        for (address, balance) in list {
-                            self.sol.balances.insert((cluster, address), balance);
+                        for row in list {
+                            self.sol
+                                .balances
+                                .insert((cluster, row.address), row.lamports);
+                            self.sol.tokens.insert((cluster, row.address), row.tokens);
                         }
                         self.sol.balance_error.remove(&cluster);
                     }
@@ -767,12 +840,18 @@ impl App {
             return;
         };
         let known = self.sol_known();
+        let cluster = self.sol_cluster();
         let form = &mut self.sol.send;
+        // A token of another cluster (cluster switched under a kept form) falls back to SOL.
+        if form.token.is_some_and(|entry| entry.cluster != cluster) {
+            form.token = None;
+        }
+        let asset = form.asset();
         if form.to_text.trim().is_empty() {
             form.check = None;
             form.recipient_error = None;
         } else {
-            match check_recipient(&form.to_text, &from, &known) {
+            match check_recipient_for(&form.to_text, &from, &known, asset) {
                 Ok(check) => {
                     form.check = Some(check);
                     form.recipient_error = None;
@@ -787,7 +866,7 @@ impl App {
             form.amount = None;
             form.amount_error = None;
         } else {
-            match parse_amount(&form.amount_text, 9) {
+            match parse_amount(&form.amount_text, asset.decimals()) {
                 Ok(amount) => {
                     form.amount = Some(amount);
                     form.amount_error = None;
@@ -849,6 +928,7 @@ impl App {
             from,
             label,
             recipient,
+            asset: self.sol.send.asset(),
             amount: if self.sol.send.send_max {
                 None
             } else {
@@ -912,6 +992,7 @@ impl App {
             from: item.from,
             account_label: item.label.clone(),
             recipient: item.recipient.clone(),
+            asset: item.asset,
             amount: item.amount,
             fee_cap: self.settings.solana.max_fee_lamports,
             max_cu_price: self.settings.solana.max_cu_price_micro,
@@ -944,7 +1025,7 @@ impl App {
                 };
                 let now_unix = now_unix_ms();
                 let intent = prepared.intent(id.0, now_unix);
-                if prepared.core.cu_limit != SOL_TRANSFER_CU_LIMIT {
+                if prepared.core.cu_limit != template_cu_limit(prepared.core.asset) {
                     self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
                     return;
                 }
@@ -1039,6 +1120,7 @@ impl App {
                 self.sol.resend = Some((
                     SolSendForm {
                         moving: form.moving,
+                        token: form.token,
                         to_text: form.to_text,
                         amount_text: form.amount_text,
                         send_max: form.send_max,
@@ -1381,10 +1463,10 @@ impl App {
             .rows
             .iter()
             .filter(|row| {
-                row.balance > 0
+                row.has_funds()
                     && !matches!(row.source, SolKeySource::Standard(index) if known.contains(&index.get()))
             })
-            .copied()
+            .cloned()
             .collect()
     }
 
@@ -1395,7 +1477,7 @@ impl App {
             source: SolKeySource::Standard(index),
             address,
             ..
-        }) = rows.get(row).copied()
+        }) = rows.get(row).cloned()
         else {
             return;
         };
@@ -1422,7 +1504,7 @@ impl App {
     /// to the selected standard account and "send max" (spec/07 §3.3).
     pub fn sol_scan_move(&mut self, row: usize) {
         let rows = self.sol_scan_rows();
-        let Some(row) = rows.get(row).copied() else {
+        let Some(row) = rows.get(row).cloned() else {
             return;
         };
         if row.source.is_standard() {
@@ -1431,8 +1513,23 @@ impl App {
         let Some((_, _, target)) = self.sol_selected() else {
             return;
         };
+        // Tokens first (moving them needs the SOL for fees), then SOL; the asset can be changed.
+        let token = row
+            .tokens
+            .iter()
+            .find(|(_, holding)| holding.balance().is_some_and(|amount| amount > 0))
+            .map(|(entry, _)| *entry);
+        // The scan's reference balances of the non-standard account, for the form.
+        let cluster = self.sol.scan.cluster.unwrap_or_else(|| self.sol_cluster());
+        self.sol
+            .balances
+            .insert((cluster, row.address), row.balance);
+        self.sol
+            .tokens
+            .insert((cluster, row.address), row.tokens.clone());
         self.sol.send = SolSendForm {
             moving: Some((row.source, row.address)),
+            token,
             to_text: target.to_base58(),
             send_max: true,
             ..SolSendForm::default()

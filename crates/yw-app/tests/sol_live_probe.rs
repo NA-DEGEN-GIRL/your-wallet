@@ -7,6 +7,9 @@
 //!   otherwise `%USERPROFILE%\.yw-dev\rpc.json`; keys `solana:mainnet`, `solana:devnet`
 //!   (missing → skip). The real path must be outside the repository.
 //! - Output names networks by `NetworkId` only: no URL, host, token or server message.
+//! - v1.1: `T_SPL` CU measurement (senders = `getTokenLargestAccounts` holders whose token
+//!   account is their canonical ATA), rent165, `getFeeForMessage` of `T_SPL`, app SPL balances
+//!   and preview.
 //! - Nothing is signed or sent: messages are unsigned (`simulateTransaction` with
 //!   `sigVerify:false`, `getFeeForMessage`), addresses are validator identities read from
 //!   `getVoteAccounts` and random addresses; no key is used.
@@ -19,17 +22,20 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use yw_app::rpc::{RpcClient, RpcFailure, classify};
-use yw_app::sol::flow::{PreviewJob, PreviewOutcome, SolEndpoint, pre_sign, preview};
+use yw_app::sol::flow::{PreviewJob, PreviewOutcome, SolEndpoint, balances, pre_sign, preview};
 use yw_app::sol::rpc as sol;
 use yw_core::bip32::path::AccountIndex;
 use yw_core::codec::base58::base58_encode;
 use yw_core::slip10::SolKeySource;
+use yw_core::sol::address::{CurveClass, curve_class};
 use yw_core::sol::display::SimSummary;
-use yw_core::sol::fee::{SOL_TRANSFER_CU_LIMIT, max_fee};
+use yw_core::sol::fee::{SOL_TRANSFER_CU_LIMIT, SPL_TRANSFER_CU_LIMIT, max_fee};
 use yw_core::sol::message::{assemble_transaction, encode_message};
-use yw_core::sol::recipient::check_recipient;
+use yw_core::sol::pda::associated_token_address;
+use yw_core::sol::recipient::{check_recipient, check_recipient_for};
 use yw_core::sol::template::SPL_ALLOWLIST;
-use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolTransferCore};
+use yw_core::sol::token::{TokenHolding, check_mint, parse_token_account};
+use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolTransferCore, SplAllowEntry};
 use yw_json::{Limits as JsonLimits, Number, Object, Value};
 use yw_win::http::{Client, HttpError, HttpsUrl};
 
@@ -146,33 +152,6 @@ fn context_value(result: &Value) -> Option<&Value> {
     result.as_object().and_then(|object| object.get("value"))
 }
 
-/// Standard base64 decoding (account data of the mint check).
-fn base64_decode(text: &str) -> Option<Vec<u8>> {
-    let value = |byte: u8| -> Option<u32> {
-        Some(u32::from(match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => return None,
-        }))
-    };
-    let bytes = text.trim_end_matches('=').as_bytes();
-    let mut out = Vec::with_capacity(bytes.len() * 3 / 4);
-    for chunk in bytes.chunks(4) {
-        let mut acc = 0_u32;
-        for (index, byte) in chunk.iter().enumerate() {
-            acc |= value(*byte)? << (18 - 6 * u32::try_from(index).ok()?);
-        }
-        let produced = chunk.len().saturating_sub(1);
-        for index in 0..produced {
-            out.push(u8::try_from((acc >> (16 - 8 * u32::try_from(index).ok()?)) & 0xff).ok()?);
-        }
-    }
-    Some(out)
-}
-
 /// Validator identities (system-owned keypairs that pay vote fees: funded-looking addresses).
 fn identities(client: &RpcClient<'_>, url: &HttpsUrl) -> Vec<SolAddress> {
     let params = Value::Array(vec![object(vec![
@@ -247,6 +226,299 @@ fn sim_units(summary: SimSummary) -> String {
     }
 }
 
+/// A random address that is a canonical large-order curve point (a possible wallet key).
+fn random_wallet(salt: u8) -> SolAddress {
+    for round in 0..64_u8 {
+        let candidate = random_address(salt.wrapping_mul(64).wrapping_add(round));
+        if curve_class(candidate.as_bytes()) == CurveClass::OnCurve {
+            return candidate;
+        }
+    }
+    SolAddress::from_bytes([0; 32])
+}
+
+/// SPL holders usable as simulated senders: `getTokenLargestAccounts` → token accounts whose
+/// address is the canonical ATA of an on-curve, System-owned wallet with enough SOL. Returns up
+/// to two `(wallet, token amount)` pairs (read-only: nothing is signed).
+fn spl_holders(
+    client: &RpcClient<'_>,
+    url: &HttpsUrl,
+    entry: &'static SplAllowEntry,
+    min_lamports: u64,
+) -> Vec<(SolAddress, u64)> {
+    let params = Value::Array(vec![
+        text(&entry.mint.to_base58()),
+        object(vec![("commitment", text("finalized"))]),
+    ]);
+    let Ok(result) = client.call_limited(url, "getTokenLargestAccounts", params, BIG_RESPONSE)
+    else {
+        return Vec::new();
+    };
+    let candidates: Vec<SolAddress> = context_value(&result)
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|item| {
+                    item.as_object()
+                        .and_then(|object| object.get("address"))
+                        .and_then(Value::as_str)
+                        .and_then(|text| SolAddress::parse(text).ok())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for address in candidates {
+        let Ok(Some(account)) = sol::account_data(client, url, &address) else {
+            continue;
+        };
+        let Some(token) = parse_token_account(&account.data) else {
+            continue;
+        };
+        let wallet = token.owner;
+        let canonical = associated_token_address(&wallet, &entry.token_program, &entry.mint)
+            .is_ok_and(|(ata, _)| ata == address);
+        if !canonical
+            || token.mint != entry.mint
+            || token.amount == 0
+            || curve_class(wallet.as_bytes()) != CurveClass::OnCurve
+        {
+            continue;
+        }
+        let funded =
+            sol::balance(client, url, &wallet).is_ok_and(|lamports| lamports >= min_lamports);
+        let system = sol::account_info(client, url, &wallet).is_ok_and(|info| {
+            info.is_some_and(|info| {
+                info.owner == SolAddress::from_bytes([0; 32]) && !info.executable
+            })
+        });
+        if funded && system {
+            out.push((wallet, token.amount));
+        }
+        if out.len() >= 2 {
+            break;
+        }
+    }
+    out
+}
+
+/// Compute-unit limit used while measuring (above any plausible `T_SPL` use).
+const MEASURE_LIMIT: u32 = 200_000;
+
+/// The v1.1 measurements (spec/07 §10, §11, §15.4): the `T_SPL` CU measurement (×10 to new
+/// recipients = ATA created, ×10 to an existing ATA), `getFeeForMessage` of `T_SPL`, the
+/// app's allowlisted-ATA balances and its read-only SPL preview. Unsigned messages only.
+#[expect(clippy::too_many_lines, reason = "one SPL probe sequence per cluster")]
+fn probe_spl(
+    report: &mut Report,
+    cluster: SolCluster,
+    url: &HttpsUrl,
+    client: &RpcClient<'_>,
+    transport: &Client,
+) -> TestResult {
+    let net = cluster.network_id();
+    let Some(entry) = SPL_ALLOWLIST.iter().find(|entry| entry.cluster == cluster) else {
+        return Ok(());
+    };
+    let rent0 = sol::minimum_rent(client, url, 0).unwrap_or(0);
+    let rent165 = sol::minimum_rent(client, url, 165).unwrap_or(0);
+    let min = rent165.saturating_add(rent0).saturating_add(1_000_000);
+    let holders = spl_holders(client, url, entry, min);
+    report.line(
+        net,
+        &format!("{} holder (largest accounts)", entry.symbol),
+        !holders.is_empty(),
+        &format!(
+            "count={} first={}",
+            holders.len(),
+            holders.first().map_or_else(
+                || "-".to_owned(),
+                |(wallet, amount)| format!("{wallet} tokens={amount}")
+            )
+        ),
+    );
+    let Some((from, _)) = holders.first().copied() else {
+        return Ok(());
+    };
+    let existing = holders.get(1).map(|(wallet, _)| *wallet);
+    let mut targets = vec![("new ATA", None)];
+    if let Some(existing) = existing {
+        targets.push(("existing ATA", Some(existing)));
+    }
+    // Each failed bump of the ATA program's `find_program_address` costs one
+    // `create_program_address` syscall (1,500 CU), so the units depend on the destination ATA's
+    // bump (known locally): units = c255 + 1,500 × (255 − bump). The report gives c255 per case
+    // (it varies by a few CU with the length of the logged base58 addresses).
+    let mut new_max = 0_u64;
+    let mut new_base = 0_u64;
+    for (kind, fixed) in targets {
+        let mut max_units = 0_u64;
+        let mut ok_runs = 0_usize;
+        let mut bases: Vec<u64> = Vec::new();
+        let mut bumps: Vec<u8> = Vec::new();
+        for run in 0..SIM_RUNS {
+            let to = fixed.unwrap_or_else(|| random_wallet(u8::try_from(run + 30).unwrap_or(0)));
+            let bump = associated_token_address(&to, &entry.token_program, &entry.mint)
+                .map_or(0, |(_, bump)| bump);
+            let core = SolTransferCore {
+                from,
+                to,
+                asset: SolAsset::Spl(entry),
+                amount: 1,
+                cu_limit: MEASURE_LIMIT,
+                cu_price_micro: 0,
+            };
+            let tx = assemble_transaction(&[0; 64], &encode_message(&core, &[0; 32]));
+            if let SimSummary::Ok { units } = sol::simulate(client, url, &tx) {
+                max_units = max_units.max(units);
+                ok_runs += 1;
+                bumps.push(bump);
+                let base = units.saturating_sub(1_500 * u64::from(255 - bump));
+                if !bases.contains(&base) {
+                    bases.push(base);
+                }
+            }
+        }
+        if fixed.is_none() {
+            new_max = max_units;
+            new_base = bases.iter().copied().max().unwrap_or(0);
+        }
+        report.line(
+            net,
+            &format!("simulate T_SPL x{SIM_RUNS} ({kind})"),
+            ok_runs == SIM_RUNS
+                && bases.iter().max().unwrap_or(&0) - bases.iter().min().unwrap_or(&0) <= 100,
+            &format!("ok_runs={ok_runs} max_units={max_units} bumps={bumps:?} c255={bases:?}"),
+        );
+    }
+    // spec/07 §10: the literal rule on this sample, and the bump model used to freeze the
+    // constant (60,000 covers every bump ≥ 225, i.e. all but ~2^-30 of recipients).
+    let sample = new_max.saturating_mul(5).div_ceil(4).div_ceil(1_000) * 1_000;
+    let model = (new_base + 1_500 * 20)
+        .saturating_mul(5)
+        .div_ceil(4)
+        .div_ceil(1_000)
+        * 1_000;
+    let covered_bump =
+        255_u64.saturating_sub(u64::from(SPL_TRANSFER_CU_LIMIT).saturating_sub(new_base) / 1_500);
+    report.line(
+        net,
+        "SPL CU limit",
+        new_base > 0
+            && sample <= u64::from(SPL_TRANSFER_CU_LIMIT)
+            && model <= u64::from(SPL_TRANSFER_CU_LIMIT),
+        &format!(
+            "max_new_ata={new_max} sample_rule=ceil1000(m*1.25)={sample} c255={new_base} model=ceil1000((c255+30000)*1.25)={model} constant={SPL_TRANSFER_CU_LIMIT} covers_bump>={covered_bump}"
+        ),
+    );
+    // getFeeForMessage of T_SPL: base fee + priority fee on the requested limit.
+    let (blockhash, _) = sol::latest_blockhash(client, url).unwrap_or(([0; 32], 0));
+    for price in [0_u64, 1_000] {
+        let core = SolTransferCore {
+            from,
+            to: random_wallet(7),
+            asset: SolAsset::Spl(entry),
+            amount: 1,
+            cu_limit: SPL_TRANSFER_CU_LIMIT,
+            cu_price_micro: price,
+        };
+        let expected = max_fee(SPL_TRANSFER_CU_LIMIT, price).unwrap_or(0);
+        let label = format!("getFeeForMessage T_SPL price={price}");
+        match sol::fee_for_message(client, url, &encode_message(&core, &blockhash)) {
+            Ok(Some(fee)) => report.line(
+                net,
+                &label,
+                fee == expected,
+                &format!("rpc={fee} local_max={expected}"),
+            ),
+            Ok(None) => report.line(net, &label, false, "value=null"),
+            Err(failure) => report.line(net, &label, false, &failure_kv(failure)),
+        }
+    }
+    // Balances path: the holder's derived ATA through the app classifier.
+    let endpoint = SolEndpoint {
+        cluster,
+        url: url.clone(),
+    };
+    match balances(transport, &endpoint, &[from]) {
+        Ok(rows) => {
+            let tokens: Vec<(&str, TokenHolding)> = rows
+                .first()
+                .map(|row| {
+                    row.tokens
+                        .iter()
+                        .map(|(known, holding)| (known.symbol, *holding))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let ok = rows.first().is_some_and(|row| {
+                row.tokens.iter().any(|(known, holding)| {
+                    known.mint == entry.mint
+                        && matches!(holding, TokenHolding::Active(amount) if *amount > 0)
+                })
+            });
+            report.line(
+                net,
+                "app balances (allowlisted ATAs)",
+                ok,
+                &format!("tokens={tokens:?}"),
+            );
+        }
+        Err(code) => report.line(
+            net,
+            "app balances (allowlisted ATAs)",
+            false,
+            &format!("code={}", code.code()),
+        ),
+    }
+    // The app preview of an SPL transfer to a new wallet (read-only, no key).
+    let to = random_wallet(99);
+    let asset = SolAsset::Spl(entry);
+    let recipient = check_recipient_for(&to.to_base58(), &from, &[], asset)
+        .map_err(|error| format!("{error:?}"))?;
+    let job = PreviewJob {
+        job: 2,
+        endpoint,
+        source: SolKeySource::Standard(AccountIndex::ZERO),
+        from,
+        account_label: "probe".to_owned(),
+        recipient,
+        asset,
+        amount: Some(1),
+        fee_cap: 100_000,
+        max_cu_price: 1_000_000,
+        pending_exists: false,
+        journal_room: true,
+    };
+    let started = Instant::now();
+    match preview(transport, &job).outcome {
+        PreviewOutcome::Ready(prepared) => report.line(
+            net,
+            "app SPL preview (read-only)",
+            prepared.facts.blocks.is_empty(),
+            &format!(
+                "blocks={:?} flags={:#04x} price={} max_fee={} rpc_fee={:?} sim={} spl={:?} ms={}",
+                prepared.facts.blocks,
+                prepared.flags,
+                prepared.core.cu_price_micro,
+                prepared.max_fee,
+                prepared.facts.rpc_fee,
+                sim_units(prepared.facts.simulation),
+                prepared.facts.spl,
+                started.elapsed().as_millis()
+            ),
+        ),
+        PreviewOutcome::Failed { code, .. } => {
+            report.line(
+                net,
+                "app SPL preview (read-only)",
+                false,
+                &format!("code={}", code.code()),
+            );
+        }
+    }
+    Ok(())
+}
 #[expect(clippy::too_many_lines, reason = "one probe sequence per cluster")]
 fn probe_cluster(report: &mut Report, cluster: SolCluster, url: &HttpsUrl) -> TestResult {
     let net = cluster.network_id();
@@ -478,8 +750,10 @@ fn probe_cluster(report: &mut Report, cluster: SolCluster, url: &HttpsUrl) -> Te
             let oldest = (pick(list.last()), age(list.last()));
             for (label, (signature, age)) in [("newest", newest), ("oldest", oldest)] {
                 let Some(signature) = signature else { continue };
-                let off = sol::signature_status(&client, url, &signature, false);
-                let on = sol::signature_status(&client, url, &signature, true);
+                let off =
+                    sol::signature_status(&client, url, &signature, false, &sol::T_SOL_PROGRAMS);
+                let on =
+                    sol::signature_status(&client, url, &signature, true, &sol::T_SOL_PROGRAMS);
                 report.line(
                     net,
                     &format!("getSignatureStatuses {label}"),
@@ -492,60 +766,41 @@ fn probe_cluster(report: &mut Report, cluster: SolCluster, url: &HttpsUrl) -> Te
         Err(failure) => report.line(net, "getSignaturesForAddress", false, &failure_kv(failure)),
     }
     let unknown = base58_encode(&[0x11; 64]);
-    let status = sol::signature_status(&client, url, &unknown, true);
+    let status = sol::signature_status(&client, url, &unknown, true, &sol::T_SOL_PROGRAMS);
     report.line(
         net,
         "getSignatureStatuses unknown",
         status == Ok(yw_core::sol::broadcast::SigStatus::NotFound),
         &format!("{status:?}"),
     );
-    // dataSlice and the SPL allowlist mint (owner Token, 82 bytes, decimals 6, initialized).
+    // dataSlice and the SPL allowlist mint (owner Token, 82 bytes, decimals 6, initialized),
+    // through the app's strict base64 account reader and the core cross-check.
     for entry in SPL_ALLOWLIST
         .iter()
         .filter(|entry| entry.cluster == cluster)
     {
-        let Ok(mint) = SolAddress::parse(entry.mint) else {
-            continue;
-        };
-        let sliced = sol::account_info(&client, url, &mint);
-        let full = client.call(
-            url,
-            "getAccountInfo",
-            Value::Array(vec![
-                text(entry.mint),
-                object(vec![
-                    ("encoding", text("base64")),
-                    ("commitment", text("finalized")),
-                ]),
-            ]),
-        );
-        let data = full.ok().and_then(|result| {
-            context_value(&result)
-                .and_then(Value::as_object)
-                .and_then(|object| object.get("data"))
-                .and_then(Value::as_array)
-                .and_then(|pair| pair.first())
-                .and_then(Value::as_str)
-                .and_then(base64_decode)
-        });
+        let sliced = sol::account_info(&client, url, &entry.mint);
+        let full = sol::account_data(&client, url, &entry.mint);
         let owner_ok = sliced.as_ref().is_ok_and(|info| {
-            info.is_some_and(|info| {
-                info.owner.to_base58() == "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-            })
+            info.is_some_and(|info| info.owner == yw_core::sol::address::TOKEN_PROGRAM)
         });
-        let shape = data
+        let checked = full
             .as_ref()
-            .map(|data| (data.len(), data.get(44).copied(), data.get(45).copied()));
+            .ok()
+            .map(|account| check_mint(entry, account.as_ref().map(sol::AccountData::view)));
         report.line(
             net,
             &format!("mint {}", entry.symbol),
-            owner_ok && shape == Some((82, Some(entry.decimals), Some(1))),
+            owner_ok && matches!(checked, Some(Ok(_))),
             &format!(
-                "mint={} dataSlice_owner_token={owner_ok} shape={shape:?}",
-                entry.mint
+                "mint={} dataSlice_owner_token={owner_ok} check={:?} pinned_decimals={}",
+                entry.mint,
+                checked.map(|result| result.map(|mint| (mint.decimals, mint.initialized))),
+                entry.decimals
             ),
         );
     }
+    probe_spl(report, cluster, url, &client, &transport)?;
     // The app path, read-only: preview (no key) and the pre-sign lookup.
     let endpoint = SolEndpoint {
         cluster,
@@ -561,6 +816,7 @@ fn probe_cluster(report: &mut Report, cluster: SolCluster, url: &HttpsUrl) -> Te
         from,
         account_label: "probe".to_owned(),
         recipient,
+        asset: SolAsset::Sol,
         amount: Some(rent0 + 1_000),
         fee_cap: 100_000,
         max_cu_price: 1_000_000,

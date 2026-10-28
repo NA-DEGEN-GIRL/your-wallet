@@ -26,8 +26,20 @@ pub enum RentError {
     InsufficientBalance,
     /// Zero amount.
     ZeroAmount,
-    /// Rent outside `1..=SOL_RENT0_SANITY_MAX`.
+    /// Rent outside `1..=SOL_RENT0_SANITY_MAX` (or `rent165` outside its range).
     RpcAnomaly,
+    /// SPL: the sender has no token account (ATA) for this mint (RPC).
+    NoTokenAccount,
+    /// SPL: amount above the token balance (RPC), or nothing to send for "send max".
+    InsufficientTokens,
+    /// SPL: after the maximum fee and the possible ATA rent the sender must keep `rent0`
+    /// lamports (no SPL transfer empties the SOL account).
+    SolReserve {
+        /// `max_fee + (to_ata missing ? rent165 : 0) + rent0`.
+        needed: u64,
+        /// `rent0`.
+        rent0: u64,
+    },
 }
 
 impl fmt::Display for RentError {
@@ -46,6 +58,16 @@ impl fmt::Display for RentError {
             Self::InsufficientBalance => formatter.write_str("잔액이 부족합니다(수수료 포함)"),
             Self::ZeroAmount => formatter.write_str("0은 보낼 수 없습니다"),
             Self::RpcAnomaly => formatter.write_str("RPC 응답 값이 비정상입니다"),
+            Self::NoTokenAccount => {
+                formatter.write_str("보내는 계정에 이 토큰의 토큰 계정(ATA)이 없습니다(잔액 0)")
+            }
+            Self::InsufficientTokens => formatter.write_str("토큰 잔액이 부족합니다"),
+            Self::SolReserve { needed, rent0 } => write!(
+                formatter,
+                "SOL이 부족합니다: 수수료와 받는 토큰 계정 생성비(필요할 때)를 내고도 {} SOL이 남아야 합니다(필요 {} SOL)",
+                format_amount(*rent0, 9),
+                format_amount(*needed, 9)
+            ),
         }
     }
 }
@@ -107,6 +129,85 @@ pub const fn send_max_amount(balance: u64, max_fee: u64) -> Result<u64, RentErro
     match balance.checked_sub(max_fee) {
         Some(amount) if amount >= 1 => Ok(amount),
         _ => Err(RentError::InsufficientBalance),
+    }
+}
+
+/// Range check of `rent165` (v1.1).
+///
+/// # Errors
+///
+/// [`RentError::RpcAnomaly`].
+pub const fn check_rent165(rent165: u64) -> Result<(), RentError> {
+    if rent165 == 0 || rent165 > SOL_RENT165_SANITY_MAX {
+        return Err(RentError::RpcAnomaly);
+    }
+    Ok(())
+}
+
+/// What an allowed SPL transfer leaves (RPC reference values).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SplSendCheck {
+    /// Lamports left: `balance − max_fee − rent`.
+    pub sol_after: u64,
+    /// Token raw units left.
+    pub token_after: u64,
+    /// The ATA rent the sender pays (`rent165` when the destination ATA is missing, else 0).
+    pub rent: u64,
+}
+
+/// SPL rules (spec/07 §11): `0 < amount ≤ from_ata.amount` (no `from_ata` → `NoTokenAccount`)
+/// and the SOL account keeps `r = balance − max_fee − (to_ata missing ? rent165 : 0) ≥ rent0`.
+///
+/// # Errors
+///
+/// [`RentError`].
+pub const fn check_spl_send(
+    balance: u64,
+    max_fee: u64,
+    rent0: u64,
+    rent165: u64,
+    to_ata_exists: bool,
+    token_balance: Option<u64>,
+    amount: u64,
+) -> Result<SplSendCheck, RentError> {
+    if let Err(error) = check_rent0(rent0) {
+        return Err(error);
+    }
+    if let Err(error) = check_rent165(rent165) {
+        return Err(error);
+    }
+    if amount == 0 {
+        return Err(RentError::ZeroAmount);
+    }
+    let Some(tokens) = token_balance else {
+        return Err(RentError::NoTokenAccount);
+    };
+    let Some(token_after) = tokens.checked_sub(amount) else {
+        return Err(RentError::InsufficientTokens);
+    };
+    let rent = if to_ata_exists { 0 } else { rent165 };
+    let needed = max_fee.saturating_add(rent).saturating_add(rent0);
+    let sol_after = balance.saturating_sub(max_fee).saturating_sub(rent);
+    if balance < needed {
+        return Err(RentError::SolReserve { needed, rent0 });
+    }
+    Ok(SplSendCheck {
+        sol_after,
+        token_after,
+        rent,
+    })
+}
+
+/// SPL "send max": the whole token balance of `from_ata`.
+///
+/// # Errors
+///
+/// [`RentError::NoTokenAccount`] or [`RentError::InsufficientTokens`] (zero balance).
+pub const fn spl_send_max_amount(token_balance: Option<u64>) -> Result<u64, RentError> {
+    match token_balance {
+        None => Err(RentError::NoTokenAccount),
+        Some(0) => Err(RentError::InsufficientTokens),
+        Some(amount) => Ok(amount),
     }
 }
 
@@ -221,8 +322,9 @@ pub fn sol_text(lamports: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AmountError, RentError, check_rent0, check_sol_send, format_amount, format_raw,
-        parse_amount, send_max_amount,
+        AmountError, RentError, SOL_RENT165_SANITY_MAX, SplSendCheck, check_rent0, check_rent165,
+        check_sol_send, check_spl_send, format_amount, format_raw, parse_amount, send_max_amount,
+        spl_send_max_amount,
     };
 
     const RENT0: u64 = 890_880;
@@ -287,6 +389,80 @@ mod tests {
         // Send max leaves exactly 0, which the remainder rule accepts.
         let amount = send_max_amount(1_000_000, 5_000).unwrap();
         assert_eq!(check_sol_send(1_000_000, amount, 5_000, RENT0, true), Ok(0));
+    }
+
+    #[test]
+    fn spl_rules_and_rent_display_values() {
+        const RENT165: u64 = 2_039_280;
+        const FEE: u64 = 5_040;
+        // Missing destination ATA: the sender pays rent165 and keeps at least rent0.
+        let needed = FEE + RENT165 + RENT0;
+        assert_eq!(
+            check_spl_send(needed, FEE, RENT0, RENT165, false, Some(10), 10),
+            Ok(SplSendCheck {
+                sol_after: RENT0,
+                token_after: 0,
+                rent: RENT165
+            })
+        );
+        assert_eq!(
+            check_spl_send(needed - 1, FEE, RENT0, RENT165, false, Some(10), 10),
+            Err(RentError::SolReserve {
+                needed,
+                rent0: RENT0
+            })
+        );
+        // Existing destination ATA: no rent.
+        assert_eq!(
+            check_spl_send(FEE + RENT0, FEE, RENT0, RENT165, true, Some(10), 3),
+            Ok(SplSendCheck {
+                sol_after: RENT0,
+                token_after: 7,
+                rent: 0
+            })
+        );
+        // The SOL account is never emptied by an SPL transfer (r = 0 is not allowed).
+        assert!(matches!(
+            check_spl_send(FEE, FEE, RENT0, RENT165, true, Some(10), 3),
+            Err(RentError::SolReserve { .. })
+        ));
+        // Token side.
+        assert_eq!(
+            check_spl_send(10 * RENT165, FEE, RENT0, RENT165, true, None, 1),
+            Err(RentError::NoTokenAccount)
+        );
+        assert_eq!(
+            check_spl_send(10 * RENT165, FEE, RENT0, RENT165, true, Some(9), 10),
+            Err(RentError::InsufficientTokens)
+        );
+        assert_eq!(
+            check_spl_send(10 * RENT165, FEE, RENT0, RENT165, true, Some(9), 0),
+            Err(RentError::ZeroAmount)
+        );
+        // rent165 sanity range.
+        for bad in [0, SOL_RENT165_SANITY_MAX + 1] {
+            assert_eq!(check_rent165(bad), Err(RentError::RpcAnomaly));
+            assert_eq!(
+                check_spl_send(10 * RENT165, FEE, RENT0, bad, true, Some(9), 1),
+                Err(RentError::RpcAnomaly)
+            );
+        }
+        assert_eq!(check_rent165(SOL_RENT165_SANITY_MAX), Ok(()));
+        // Send max = the whole token balance.
+        assert_eq!(spl_send_max_amount(Some(42)), Ok(42));
+        assert_eq!(
+            spl_send_max_amount(Some(0)),
+            Err(RentError::InsufficientTokens)
+        );
+        assert_eq!(spl_send_max_amount(None), Err(RentError::NoTokenAccount));
+        assert_eq!(
+            RentError::SolReserve {
+                needed: 2_694_560,
+                rent0: 650_240
+            }
+            .to_string(),
+            "SOL이 부족합니다: 수수료와 받는 토큰 계정 생성비(필요할 때)를 내고도 0.000650240 SOL이 남아야 합니다(필요 0.002694560 SOL)"
+        );
     }
 
     #[test]

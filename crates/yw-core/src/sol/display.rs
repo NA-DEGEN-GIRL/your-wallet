@@ -1,6 +1,9 @@
-//! The SOL approval request (spec/07 §13.3): title, display fields `0x0001`–`0x0003` and
+//! The SOL/SPL approval request (spec/07 §13.3): title, display fields `0x0001`–`0x0003` and
 //! `0x0501`–`0x0509`, and the `L01`–`L08` warnings (`RuleId` family `'L'`, spec/03 §10.1).
 //! Strings that come from the user (labels) are escaped; nothing from RPC is shown verbatim.
+//! SPL amounts, symbols, mints, decimals and token programs come from the pinned allowlist and
+//! the ATAs from the local derivation; RPC values (balances, ATA existence, rent) are marked as
+//! references.
 
 use core::fmt::Write as _;
 
@@ -10,7 +13,7 @@ use super::fee::{FeeError, SOL_BASE_FEE_LAMPORTS_PER_SIG, priority_fee};
 use super::intent::{SolTransferIntent, flags};
 use super::recipient::{AccountClass, KnownKind, RecipientCheck};
 use super::rent::{RentError, format_amount, format_raw};
-use super::template::{SolAsset, SolTransferCore};
+use super::template::{SolAsset, SolTransferCore, SplAccounts};
 use crate::approval::{
     AccountRef, ApprovalDisplay, ApprovalDraft, ApprovalId, ApprovalKind, ApprovalOrigin, ChainRef,
     DisplayError, DisplayField, FieldKey, MAX_TITLE_BYTES, RiskLevel, RuleId, Signer,
@@ -54,18 +57,24 @@ pub enum SolBlock {
     ClusterMismatch,
     /// Fee arithmetic, cap, or `getFeeForMessage` cross-check.
     Fee(FeeError),
-    /// Rent or balance rule.
+    /// Rent, balance or token-balance rule.
     Rent(RentError),
     /// The recipient is a token account or mint (§12.2).
     RecipientIsTokenAccount,
     /// The recipient is an executable program (§12.2).
     RecipientIsProgram,
-    /// An implausible RPC value (`lastValidBlockHeight`, rent).
+    /// An implausible RPC value (`lastValidBlockHeight`, rent, mint data that disagrees with the
+    /// pinned allowlist, a foreign account at the sender's ATA address).
     RpcAnomaly,
     /// A `Pending` transfer of the same (cluster, account) exists.
     PendingExists,
     /// No room in the journal (`JournalError::Full`, E-TX-005).
     JournalFull,
+    /// SPL: the sender's token account is frozen (§15.4).
+    TokenAccountFrozen,
+    /// SPL: the recipient's ATA exists but is frozen or not a token account of this mint and
+    /// wallet (§15.4).
+    RecipientTokenAccountUnusable,
 }
 
 impl SolBlock {
@@ -85,6 +94,12 @@ impl SolBlock {
             Self::RpcAnomaly => "RPC 응답 값이 비정상입니다".to_owned(),
             Self::PendingExists => "이 계정의 이전 전송을 확인 중입니다".to_owned(),
             Self::JournalFull => "거래 저널 공간이 부족합니다".to_owned(),
+            Self::TokenAccountFrozen => {
+                "보내는 토큰 계정이 동결되어 있습니다(토큰 발행자가 막음)".to_owned()
+            }
+            Self::RecipientTokenAccountUnusable => {
+                "받는 사람의 토큰 계정(ATA)이 동결되었거나 이 토큰의 계정이 아닙니다".to_owned()
+            }
         }
     }
 }
@@ -120,6 +135,25 @@ impl SimSummary {
     }
 }
 
+/// SPL facts of the step-2 preview (RPC references, v1.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SplPreviewFacts {
+    /// `from_ata` raw balance (`None`: no usable token account).
+    pub token_balance: Option<u64>,
+    /// `getAccountInfo(to_ata)` returned an account.
+    pub to_ata_exists: bool,
+    /// `getMinimumBalanceForRentExemption(165)`.
+    pub rent165: u64,
+}
+
+impl SplPreviewFacts {
+    /// The rent the sender pays for the destination ATA (`rent165` when it is missing).
+    #[must_use]
+    pub const fn rent(&self) -> u64 {
+        if self.to_ata_exists { 0 } else { self.rent165 }
+    }
+}
+
 /// Step-2 preview facts that are shown but not signed (spec/07 §13.1-2, §13.3).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SolPreviewFacts {
@@ -137,6 +171,8 @@ pub struct SolPreviewFacts {
     pub rpc_fee: Option<u64>,
     /// Simulation (reference).
     pub simulation: SimSummary,
+    /// SPL facts (`None` for SOL).
+    pub spl: Option<SplPreviewFacts>,
     /// `L01` reasons.
     pub blocks: Vec<SolBlock>,
 }
@@ -197,21 +233,34 @@ pub fn lamports_text(lamports: u64) -> String {
     )
 }
 
-/// The approval title of a transfer (`[Solana devnet (테스트)] SOL 전송: 1.000000000 SOL`). The
-/// journal activity rebuilds the same string from the transaction bytes (spec/07 §14.1).
+/// `1.000000 USDC` (pinned decimals and symbol of the asset; SOL as `1.000000000 SOL`).
+#[must_use]
+pub fn asset_amount_text(asset: SolAsset, raw: u64) -> String {
+    format!(
+        "{} {}",
+        format_amount(raw, asset.decimals()),
+        asset.symbol()
+    )
+}
+
+/// The approval title of a transfer (`[Solana devnet (테스트)] SOL 전송: 1.000000000 SOL`,
+/// `[Solana mainnet] 토큰 전송: 1.000000 USDC`). The journal activity rebuilds the same string
+/// from the transaction bytes (spec/07 §14.1).
 #[must_use]
 pub fn transfer_title(cluster: SolCluster, core: &SolTransferCore) -> String {
-    let title = match core.asset {
-        SolAsset::Sol => format!(
-            "[{}] SOL 전송: {} SOL",
-            cluster.display_name(),
-            format_amount(core.amount, 9)
-        ),
+    let (kind, short) = match core.asset {
+        SolAsset::Sol => ("SOL 전송", "SOL 전송"),
+        SolAsset::Spl(_) => ("토큰 전송", "토큰 전송"),
     };
+    let title = format!(
+        "[{}] {kind}: {}",
+        cluster.display_name(),
+        asset_amount_text(core.asset, core.amount)
+    );
     if title.len() <= MAX_TITLE_BYTES {
         title
     } else {
-        format!("[{}] SOL 전송", cluster.display_name())
+        format!("[{}] {short}", cluster.display_name())
     }
 }
 
@@ -298,7 +347,13 @@ fn warnings(intent: &SolTransferIntent, facts: &SolPreviewFacts) -> Vec<Warning>
     if intent.has(flags::SEND_MAX) {
         out.push(warning(
             L08,
-            "보내기 최대: 보낸 뒤 이 계정의 SOL 잔액은 0이 됩니다".to_owned(),
+            match intent.core.asset {
+                SolAsset::Sol => "보내기 최대: 보낸 뒤 이 계정의 SOL 잔액은 0이 됩니다".to_owned(),
+                SolAsset::Spl(entry) => format!(
+                    "보내기 최대: 보낸 뒤 이 계정의 {} 잔액은 0이 됩니다(SOL은 남습니다)",
+                    entry.symbol
+                ),
+            },
         ));
     }
     out
@@ -340,9 +395,46 @@ fn recipient_text(core: &SolTransferCore, facts: &SolPreviewFacts) -> String {
         };
     }
     if facts.recipient_account == AccountClass::Missing {
-        text.push_str("\n새 계정(아직 없음)");
+        text.push_str(match core.asset {
+            SolAsset::Sol => "\n새 계정(아직 없음)",
+            SolAsset::Spl(_) => "\nSOL 계정 없음(새 지갑일 수 있음 — 토큰을 받는 데는 문제없음)",
+        });
+    }
+    if matches!(core.asset, SolAsset::Spl(_)) {
+        text.push_str("\n받는 지갑(소유자) 주소입니다. 토큰은 아래 '자산·금액'의 받는 토큰 계정(ATA)으로 갑니다.");
     }
     text
+}
+
+/// `0x0502` for SPL: symbol, UI and raw amount, mint, token program, decimals, both ATAs.
+fn spl_amount_text(core: &SolTransferCore, accounts: &SplAccounts) -> String {
+    let entry = accounts.entry;
+    format!(
+        "{}\n{} (원시 단위, decimals {})\nmint (허용 목록 고정):\n{}\n토큰 프로그램: SPL Token (TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA)\n보내는 토큰 계정(내 ATA):\n{}\n받는 토큰 계정(받는 지갑의 ATA, 지갑이 계산):\n{}",
+        asset_amount_text(core.asset, core.amount),
+        format_raw(core.amount),
+        entry.decimals,
+        grouped(&entry.mint),
+        grouped(&accounts.from_ata),
+        grouped(&accounts.to_ata),
+    )
+}
+
+/// `0x0503`: the destination ATA creation and who pays its rent.
+fn ata_text(spl: &SplPreviewFacts) -> String {
+    if spl.to_ata_exists {
+        format!(
+            "받는 토큰 계정이 이미 있습니다(RPC 참고) — 생성 비용 없음.\n거래에는 '없으면 만들기'(CreateIdempotent) 명령이 항상 들어갑니다. 실행 때 없으면 최대 {} SOL({} lamports, rent)을 보내는 계정이 냅니다.",
+            format_amount(spl.rent165, 9),
+            format_raw(spl.rent165)
+        )
+    } else {
+        format!(
+            "받는 토큰 계정이 없습니다(RPC 참고) — 이 거래가 만듭니다.\n생성 비용(rent) 최대 {} SOL({} lamports)을 보내는 계정이 냅니다(받는 사람 소유 계정에 들어감).",
+            format_amount(spl.rent165, 9),
+            format_raw(spl.rent165)
+        )
+    }
 }
 
 fn balance_text(balance: u64, total: u64) -> String {
@@ -353,19 +445,117 @@ fn balance_text(balance: u64, total: u64) -> String {
     format!("{} SOL → {after} (RPC 기준)", format_amount(balance, 9))
 }
 
-/// Builds the draft of a SOL transfer (spec/07 §13.1-3); `genesis` is the hash checked with
-/// `getGenesisHash` (equal to the cluster's pinned value).
+fn token_balance_text(asset: SolAsset, balance: Option<u64>, amount: u64) -> String {
+    match balance {
+        Some(balance) => {
+            let after = balance
+                .checked_sub(amount)
+                .map_or_else(|| "부족".to_owned(), |rest| asset_amount_text(asset, rest));
+            format!("{} → {after} (RPC 기준)", asset_amount_text(asset, balance))
+        }
+        None => format!("{} 토큰 계정 없음 (RPC 기준)", asset.symbol()),
+    }
+}
+
+/// The SOL the transfer can take at most: amount (SOL only) + maximum fee + the possible ATA
+/// rent (SPL, when RPC says the destination ATA is missing).
+#[must_use]
+pub fn max_sol_debit(intent: &SolTransferIntent, facts: &SolPreviewFacts) -> u64 {
+    match intent.core.asset {
+        SolAsset::Sol => intent.core.amount.saturating_add(intent.max_fee_lamports),
+        SolAsset::Spl(_) => intent
+            .max_fee_lamports
+            .saturating_add(facts.spl.map_or(0, |spl| spl.rent())),
+    }
+}
+
+/// The asset-specific fields `0x0502`–`0x0506` (spec/07 §13.3): SOL amount, fee, total and
+/// balance; SPL adds `0x0503` (ATA creation and its rent) and the token side of each.
+fn asset_fields(
+    fields: &mut Vec<DisplayField>,
+    intent: &SolTransferIntent,
+    facts: &SolPreviewFacts,
+) -> Result<(), DisplayError> {
+    let core = &intent.core;
+    let total = max_sol_debit(intent, facts);
+    match core.asset {
+        SolAsset::Sol => {
+            fields.push(DisplayField::new(
+                FieldKey::SOL_AMOUNT,
+                "",
+                lamports_text(core.amount),
+            )?);
+            fields.push(DisplayField::new(
+                FieldKey::SOL_FEE,
+                "",
+                fee_text(intent, facts),
+            )?);
+            fields.push(DisplayField::new(
+                FieldKey::SOL_TOTAL,
+                "",
+                lamports_text(total),
+            )?);
+            fields.push(DisplayField::new(
+                FieldKey::SOL_BALANCE,
+                "",
+                balance_text(facts.balance, total),
+            )?);
+        }
+        SolAsset::Spl(entry) => {
+            let (Some(accounts), Some(spl)) = (SplAccounts::of(core), facts.spl) else {
+                return Err(DisplayError::InvalidText);
+            };
+            fields.push(DisplayField::new(
+                FieldKey::SOL_AMOUNT,
+                entry.symbol,
+                spl_amount_text(core, &accounts),
+            )?);
+            fields.push(DisplayField::new(FieldKey::SOL_ATA, "", ata_text(&spl))?);
+            fields.push(DisplayField::new(
+                FieldKey::SOL_FEE,
+                "",
+                fee_text(intent, facts),
+            )?);
+            fields.push(DisplayField::new(
+                FieldKey::SOL_TOTAL,
+                "",
+                format!(
+                    "{}\nSOL 최대 {} SOL ({} lamports = 수수료 최대 {} + 토큰 계정 생성 rent {})",
+                    asset_amount_text(core.asset, core.amount),
+                    format_amount(total, 9),
+                    format_raw(total),
+                    format_raw(intent.max_fee_lamports),
+                    format_raw(spl.rent())
+                ),
+            )?);
+            fields.push(DisplayField::new(
+                FieldKey::SOL_BALANCE,
+                "",
+                format!(
+                    "{}\n{}",
+                    token_balance_text(core.asset, spl.token_balance, core.amount),
+                    balance_text(facts.balance, total)
+                ),
+            )?);
+        }
+    }
+    Ok(())
+}
+
+/// Builds the draft of a SOL or SPL transfer (spec/07 §13.1-3); `genesis` is the hash checked
+/// with `getGenesisHash` (equal to the cluster's pinned value).
 ///
 /// # Errors
 ///
-/// [`DisplayError`] (defensive: every string is built or escaped here).
+/// [`DisplayError`] (defensive: every string is built or escaped here; an SPL intent without
+/// derivable accounts or preview facts is refused the same way).
 pub fn build_sol_transfer_request(
     intent: &SolTransferIntent,
     genesis: &[u8; 32],
     facts: &SolPreviewFacts,
 ) -> Result<ApprovalDraft, DisplayError> {
     let core = &intent.core;
-    let mut fields: Vec<DisplayField> = Vec::with_capacity(12);
+    let mut fields: Vec<DisplayField> = Vec::with_capacity(13);
     fields.push(DisplayField::new(
         FieldKey::ORIGIN,
         "",
@@ -395,27 +585,7 @@ pub fn build_sol_transfer_request(
         "",
         recipient_text(core, facts),
     )?);
-    fields.push(DisplayField::new(
-        FieldKey::SOL_AMOUNT,
-        "",
-        lamports_text(core.amount),
-    )?);
-    fields.push(DisplayField::new(
-        FieldKey::SOL_FEE,
-        "",
-        fee_text(intent, facts),
-    )?);
-    let total = core.amount.saturating_add(intent.max_fee_lamports);
-    fields.push(DisplayField::new(
-        FieldKey::SOL_TOTAL,
-        "",
-        lamports_text(total),
-    )?);
-    fields.push(DisplayField::new(
-        FieldKey::SOL_BALANCE,
-        "",
-        balance_text(facts.balance, total),
-    )?);
+    asset_fields(&mut fields, intent, facts)?;
     fields.push(DisplayField::new(
         FieldKey::SOL_SIMULATION,
         "",

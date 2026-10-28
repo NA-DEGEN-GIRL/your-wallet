@@ -2,7 +2,8 @@
 //! vault in a temp folder (BIP-39 test vector `abandon`×11 `about`, never a real seed) signs an
 //! approved devnet transfer; the `Pending` record is on disk before the transaction is returned,
 //! the same intent cannot be signed twice (`AlreadySigned`), a late approval is refused before
-//! any key use, and a `Landed` transition moves the record to meta `activity`.
+//! any key use, and a `Landed` transition moves the record to meta `activity`. The v1.1 case
+//! signs a devnet USDC transfer (`T_SPL`, 526-byte body) and checks the activity `asset` = mint.
 
 use std::path::PathBuf;
 
@@ -15,7 +16,9 @@ use yw_core::bip32::path::AccountIndex;
 use yw_core::journal::sol::{SolTransition, SolTxState};
 use yw_core::password::VaultPassword;
 use yw_core::slip10::SolKeySource;
-use yw_core::sol::display::{SimSummary, SolPreviewFacts, build_sol_transfer_request};
+use yw_core::sol::display::{
+    SimSummary, SolPreviewFacts, SplPreviewFacts, build_sol_transfer_request,
+};
 use yw_core::sol::intent::{SolTransferIntent, flags};
 use yw_core::sol::message::parse_transaction;
 use yw_core::sol::recipient::{AccountClass, check_recipient};
@@ -84,6 +87,11 @@ fn approve(intent: &SolTransferIntent) -> TestResult<Approved> {
         rent0: 890_880,
         rpc_fee: Some(5_000),
         simulation: SimSummary::Ok { units: 450 },
+        spl: intent.core.asset.spl().map(|_| SplPreviewFacts {
+            token_balance: Some(5_000_000),
+            to_ata_exists: false,
+            rent165: 2_039_280,
+        }),
         blocks: Vec::new(),
     };
     let draft = build_sol_transfer_request(intent, &SolCluster::Devnet.genesis(), &facts)
@@ -200,6 +208,69 @@ fn pending_record_first_then_already_signed_then_activity() -> TestResult {
     let (_, plaintext) = vault.open_sidecar(FileKind::Meta)?.ok_or("meta missing")?;
     let document = meta::parse(&plaintext).map_err(|_| "meta parse")?.meta;
     assert_eq!(document.activity_of("solana:devnet").len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// v1.1: a devnet USDC transfer through the key worker — `T_SPL` (437 bytes) journaled as a
+/// 526-byte body, then `FailedOnChain` → activity with `asset` = the devnet USDC mint.
+#[test]
+fn spl_transfer_is_journaled_and_its_activity_names_the_mint() -> TestResult {
+    let dir = temp_dir("spl")?;
+    let mut vault = vault(&dir)?;
+    let mut state = JournalState::default();
+    let entry = yw_core::sol::template::spl_entries(SolCluster::Devnet)
+        .next()
+        .ok_or("no devnet token")?;
+    let mut spl = intent()?;
+    spl.id = [0x55; 16];
+    spl.core.asset = SolAsset::Spl(entry);
+    spl.core.amount = 2_500_000;
+    spl.core.cu_limit = yw_core::sol::fee::SPL_TRANSFER_CU_LIMIT;
+    spl.max_fee_lamports = 5_000;
+    let outcomes = state.sign_sol(
+        &mut vault,
+        Box::new(approve(&spl)?),
+        times(yw_win::time::monotonic_ms()),
+        false,
+    );
+    let Some(KeyOutcome::SignedSol(Ok(summary))) = outcomes.first() else {
+        return Err("not signed".into());
+    };
+    assert_eq!(summary.tx.len(), 437);
+    let (core, _, _) =
+        parse_transaction(&summary.tx, SolCluster::Devnet).map_err(|error| format!("{error:?}"))?;
+    assert_eq!(core, spl.core);
+    let mut reloaded = JournalState::default();
+    let view = reloaded.load(&vault)?;
+    let record = view.sol_records.first().ok_or("no record")?;
+    assert_eq!(record.encode().map_err(|_| "encode")?.len(), 526);
+    let moved = state.apply_sol(
+        &mut vault,
+        &SolTransition::FailedOnChain {
+            signature: summary.signature,
+            slot: 78,
+            err: yw_core::sol::broadcast::err::TOKEN_INSTRUCTION,
+        },
+        NOW + 5_000,
+        false,
+    );
+    let Some(KeyOutcome::ActivityMoved(rows)) = moved.get(1) else {
+        return Err("no activity".into());
+    };
+    let (network, activity) = rows.first().ok_or("empty activity")?;
+    assert_eq!(network.to_string(), "solana:devnet");
+    assert_eq!(activity.status, "failed");
+    assert_eq!(
+        activity.asset,
+        "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+    );
+    assert_eq!(activity.amount, "2500000");
+    assert_eq!(activity.counterparty, TO);
+    assert_eq!(
+        activity.title,
+        "[Solana devnet (테스트)] 토큰 전송: 2.500000 USDC"
+    );
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

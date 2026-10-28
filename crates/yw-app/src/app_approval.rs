@@ -526,7 +526,25 @@ fn build_layout(
                     FontRole::Body
                 };
                 builder.gap(2);
-                builder.text(value, role, theme::TEXT, x, w);
+                let has_sol_address = !*mono
+                    && value
+                        .split('\n')
+                        .any(|line| crate::ui::theme::sol_address_segments(line).is_some());
+                if has_sol_address {
+                    // Grouped Solana addresses on their own lines of a text field (the SPL mint
+                    // and token accounts of `0x0502`) are drawn like address fields: Consolas
+                    // with bold middle groups (spec/07 §12.3).
+                    for line in value.split('\n') {
+                        let line_role = if crate::ui::theme::sol_address_segments(line).is_some() {
+                            FontRole::Mono
+                        } else {
+                            role
+                        };
+                        builder.text(line, line_role, theme::TEXT, x, w);
+                    }
+                } else {
+                    builder.text(value, role, theme::TEXT, x, w);
+                }
                 builder.gap(10);
             }
             Block::Muted(text) => {
