@@ -25,8 +25,9 @@ use super::params::{ReadParams, Validated, permission_value, validate};
 use super::{
     ConnId, DappEvent, DappSink, GrantChange, INTERACTIVE_DEADLINE_MS, MAX_APPROVALS_GLOBAL,
     MAX_APPROVALS_PER_ORIGIN, MAX_CHAIN_CACHE, MAX_DOCUMENTS, MAX_READS_GLOBAL,
-    MAX_READS_PER_DOCUMENT, Outbound, Outlet, RATE_BURST, RATE_PER_DOCUMENT, READ_DEADLINE_MS,
-    Reply, RequestKey, SiteKind, SiteRequest, VaultView, WalletView,
+    MAX_READS_PER_DOCUMENT, MAX_READS_PER_UNCONNECTED_ORIGIN, Outbound, Outlet, RATE_BURST,
+    RATE_PER_DOCUMENT, READ_DEADLINE_MS, Reply, RequestKey, SiteKind, SiteRequest, VaultView,
+    WalletView,
 };
 use crate::flow::evm::Clock;
 use crate::logging::{self, Field};
@@ -61,23 +62,40 @@ impl<K: PartialEq + Clone, V> Lru<K, V> {
     }
 
     fn insert(&mut self, key: K, value: V) {
+        self.insert_with(key, value, |_, _| true);
+    }
+
+    /// Inserts; when full, evicts the least recently used entry that `evictable` accepts (an
+    /// entry still in use is kept), falling back to the plain LRU entry so the bound holds.
+    fn insert_with(&mut self, key: K, value: V, evictable: impl Fn(&K, &V) -> bool) {
         let tick = self.next_tick();
         if let Some(entry) = self.entries.iter_mut().find(|(k, _, _)| *k == key) {
             entry.1 = value;
             entry.2 = tick;
             return;
         }
-        if self.entries.len() >= self.capacity
-            && let Some(oldest) = self
-                .entries
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, (_, _, stamp))| *stamp)
-                .map(|(index, _)| index)
-        {
-            self.entries.swap_remove(oldest);
+        if self.entries.len() >= self.capacity {
+            let oldest = |preferred: bool| {
+                self.entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (k, v, _))| !preferred || evictable(k, v))
+                    .min_by_key(|(_, (_, _, stamp))| *stamp)
+                    .map(|(index, _)| index)
+            };
+            if let Some(victim) = oldest(true).or_else(|| oldest(false)) {
+                self.entries.swap_remove(victim);
+            }
         }
         self.entries.push((key, value, tick));
+    }
+
+    fn contains(&self, key: &K) -> bool {
+        self.entries.iter().any(|(k, _, _)| k == key)
+    }
+
+    const fn is_full(&self) -> bool {
+        self.entries.len() >= self.capacity
     }
 
     fn retain(&mut self, keep: impl Fn(&K, &V) -> bool) {
@@ -154,6 +172,15 @@ struct ApprovalInfo {
     connect: bool,
 }
 
+/// What [`BrowserCore::admit_site`] checks an approval-class request against.
+struct Admission<'a> {
+    origin: &'a BrowserOrigin,
+    chain_id: u64,
+    vault: VaultView,
+    grant: Option<&'a ConnectedSite>,
+    now_ms: u64,
+}
+
 /// A queued read.
 #[derive(Clone, Debug)]
 pub struct ReadTask {
@@ -161,6 +188,8 @@ pub struct ReadTask {
     pub reply: Reply,
     /// Document (per-document counters).
     pub document: Id32,
+    /// Origin (per-origin counters).
+    pub origin: BrowserOrigin,
     /// Method.
     pub method: Method,
     /// Normalized params.
@@ -180,9 +209,64 @@ struct State {
     approvals: HashMap<RequestKey, ApprovalInfo>,
     reads_total: usize,
     reads_per_document: HashMap<Id32, usize>,
+    reads_per_origin: HashMap<BrowserOrigin, usize>,
     reads: VecDeque<ReadTask>,
     /// Cached `eth_blockNumber` per chain: (value, received at monotonic ms).
     block_numbers: HashMap<u64, (u64, u64)>,
+    /// Origins that had a grant when the wallet locked (in memory only, cleared at unlock):
+    /// they may still open the unlock window during the cooldown.
+    locked_connected: Vec<BrowserOrigin>,
+    /// Monotonic ms until which unconnected origins cannot reopen the dApp unlock window.
+    unlock_cooldown_until_ms: u64,
+}
+
+impl State {
+    /// Activations with a request still pending on their connection.
+    fn busy_documents(&self) -> std::collections::HashSet<Id32> {
+        self.conns
+            .values()
+            .flat_map(|conn| conn.pending.keys().map(|(activation, _)| *activation))
+            .collect()
+    }
+
+    /// Records a document: when the table is full, a document of an origin already holding
+    /// [`super::MAX_DOCUMENTS_PER_ORIGIN`] entries makes room among its own, otherwise the least
+    /// recently used document without a pending request goes (spec/05 §4.8: documents that are
+    /// still in use keep receiving events).
+    fn note_document(&mut self, activation: Id32, origin: &BrowserOrigin, conn: ConnId) {
+        if self.documents.is_full() && !self.documents.contains(&activation) {
+            let busy = self.busy_documents();
+            let own = self
+                .documents
+                .iter()
+                .filter(|(_, (known, _))| known == origin)
+                .count();
+            let crowded = own >= super::MAX_DOCUMENTS_PER_ORIGIN;
+            self.documents
+                .insert_with(activation, (origin.clone(), conn), |key, (known, _)| {
+                    !busy.contains(key) && (!crowded || known == origin)
+                });
+            return;
+        }
+        self.documents.insert(activation, (origin.clone(), conn));
+    }
+
+    /// Caches an origin's chain; when full, an origin with a document in the table (a live page
+    /// that was told this chain) is never the one forgotten (spec/05 §4.3: no unannounced chain
+    /// change).
+    fn cache_chain(&mut self, origin: &BrowserOrigin, chain_id: u64) {
+        if self.chain_cache.is_full() && !self.chain_cache.contains(origin) {
+            let live: Vec<BrowserOrigin> = self
+                .documents
+                .iter()
+                .map(|(_, (known, _))| known.clone())
+                .collect();
+            self.chain_cache
+                .insert_with(origin.clone(), chain_id, |known, _| !live.contains(known));
+            return;
+        }
+        self.chain_cache.insert(origin.clone(), chain_id);
+    }
 }
 
 /// The shared dispatcher state.
@@ -219,8 +303,11 @@ impl BrowserCore {
                 approvals: HashMap::new(),
                 reads_total: 0,
                 reads_per_document: HashMap::new(),
+                reads_per_origin: HashMap::new(),
                 reads: VecDeque::new(),
                 block_numbers: HashMap::new(),
+                locked_connected: Vec::new(),
+                unlock_cooldown_until_ms: 0,
             }),
             reads_ready: Condvar::new(),
             sink,
@@ -308,7 +395,6 @@ impl BrowserCore {
     pub fn respond(&self, reply: &Reply, body: Answer) -> bool {
         let mut state = self.lock();
         let key = reply.key();
-        state.approvals.remove(&key);
         let Some(conn) = state.conns.get_mut(&reply.conn) else {
             return false;
         };
@@ -317,12 +403,16 @@ impl BrowserCore {
             Some(pending) if pending.sequence == reply.correlation.sequence => {
                 conn.pending.remove(&pending_key);
             }
+            // A stale answer (another request now uses the same ids) leaves that request's
+            // approval record alone.
             _ => return false,
         }
-        conn.outlet.send(Outbound::Response {
+        let sent = conn.outlet.send(Outbound::Response {
             correlation: reply.correlation,
             body,
-        })
+        });
+        state.approvals.remove(&key);
+        sent
     }
 
     /// Sends an event to every document of `origin` (spec/05 §4.8).
@@ -332,6 +422,10 @@ impl BrowserCore {
     }
 
     fn emit_locked(state: &State, origin: &BrowserOrigin, event: &BrowserEvent) {
+        // spec/05 §4.6: with the localhost toggle off, localhost pages get nothing.
+        if origin.is_http() && !state.wallet.allow_localhost {
+            return;
+        }
         for (activation, (doc_origin, conn_id)) in state.documents.iter() {
             if doc_origin != origin {
                 continue;
@@ -388,7 +482,7 @@ impl BrowserCore {
             .map(|site| site.chain_id)
             .filter(|chain| state.wallet.registered(*chain))
             .unwrap_or(state.wallet.evm_chain_id);
-        state.chain_cache.insert(origin.clone(), chain);
+        state.cache_chain(origin, chain);
         chain
     }
 
@@ -404,9 +498,23 @@ impl BrowserCore {
         let mut state = self.lock();
         let origins: Vec<BrowserOrigin> = state.grants.iter().map(|s| s.origin.clone()).collect();
         state.grants.clear();
-        for origin in origins {
-            Self::emit_locked(&state, &origin, &BrowserEvent::AccountsChanged(Vec::new()));
+        for origin in &origins {
+            Self::emit_locked(&state, origin, &BrowserEvent::AccountsChanged(Vec::new()));
         }
+        if !origins.is_empty() {
+            state.locked_connected = origins;
+        }
+    }
+
+    /// The user dismissed the unlock window opened for dApp requests (`나중에`): for
+    /// [`super::UNLOCK_PROMPT_COOLDOWN_MS`], requests from origins not connected at lock time
+    /// that would open it again are rejected with 4001 (spec/05 §4.4).
+    pub fn dapp_unlock_dismissed(&self) {
+        let until = self
+            .clock
+            .now_ms()
+            .saturating_add(super::UNLOCK_PROMPT_COOLDOWN_MS);
+        self.lock().unlock_cooldown_until_ms = until;
     }
 
     /// Wallet unlocked with the meta grants: merges the chain cache (spec/05 §4.3: a cached
@@ -415,6 +523,8 @@ impl BrowserCore {
     /// where the origin chain changed. Returns the grants whose `chain_id` must be saved.
     pub fn unlock_wallet(&self, grants: Vec<ConnectedSite>) -> Vec<ConnectedSite> {
         let mut state = self.lock();
+        state.locked_connected.clear();
+        state.unlock_cooldown_until_ms = 0;
         let mut changed_grants = Vec::new();
         let mut merged = Vec::with_capacity(grants.len());
         for mut site in grants {
@@ -425,7 +535,7 @@ impl BrowserCore {
                 None if state.wallet.registered(site.chain_id) => site.chain_id,
                 None => state.wallet.evm_chain_id,
             };
-            state.chain_cache.insert(site.origin.clone(), target);
+            state.cache_chain(&site.origin, target);
             if site.chain_id != target {
                 site.chain_id = target;
                 changed_grants.push(site.clone());
@@ -634,9 +744,7 @@ impl BrowserCore {
         }
         // 5. Document table.
         let origin = request.context.origin.clone();
-        state
-            .documents
-            .insert(correlation.activation_nonce, (origin.clone(), conn));
+        state.note_document(correlation.activation_nonce, &origin, conn);
         // 6. Method and route.
         let Some(method) = Method::parse(&request.method) else {
             Self::log_error("-", &ProviderError::UnsupportedMethod, conn);
@@ -697,7 +805,13 @@ impl BrowserCore {
                 .get(&correlation.activation_nonce)
                 .copied()
                 .unwrap_or(0);
-            if per_document >= MAX_READS_PER_DOCUMENT || state.reads_total >= MAX_READS_GLOBAL {
+            let connected = state.wallet.vault == VaultView::Unlocked
+                && state.grants.iter().any(|site| site.origin == origin);
+            let per_origin = state.reads_per_origin.get(&origin).copied().unwrap_or(0);
+            if per_document >= MAX_READS_PER_DOCUMENT
+                || state.reads_total >= MAX_READS_GLOBAL
+                || (!connected && per_origin >= MAX_READS_PER_UNCONNECTED_ORIGIN)
+            {
                 reject(&state, ProviderError::TooManyPending);
                 return;
             }
@@ -770,7 +884,7 @@ impl BrowserCore {
                 } else if target == chain_id {
                     immediate(&mut state, Ok(Value::Null));
                 } else {
-                    state.chain_cache.insert(origin.clone(), target);
+                    state.cache_chain(&origin, target);
                     let persist = vault == VaultView::Unlocked && grant.is_some();
                     if persist
                         && let Some(site) = state.grants.iter_mut().find(|s| s.origin == origin)
@@ -813,6 +927,7 @@ impl BrowserCore {
                     .reads_per_document
                     .entry(correlation.activation_nonce)
                     .or_insert(0) += 1;
+                *state.reads_per_origin.entry(origin.clone()).or_insert(0) += 1;
                 if let Some(entry) = state.conns.get_mut(&conn) {
                     entry.pending.insert(
                         pending_key,
@@ -825,6 +940,7 @@ impl BrowserCore {
                 state.reads.push_back(ReadTask {
                     reply,
                     document: correlation.activation_nonce,
+                    origin,
                     method,
                     params,
                     chain_id,
@@ -859,9 +975,14 @@ impl BrowserCore {
                         return;
                     }
                 };
-                if let Err(error) =
-                    Self::admit_site(&state, &origin, chain_id, vault, grant.as_ref(), &kind)
-                {
+                let admission = Admission {
+                    origin: &origin,
+                    chain_id,
+                    vault,
+                    grant: grant.as_ref(),
+                    now_ms: now,
+                };
+                if let Err(error) = Self::admit_site(&state, &admission, &kind) {
                     immediate(&mut state, Err(error));
                     return;
                 }
@@ -883,6 +1004,19 @@ impl BrowserCore {
                     },
                 );
                 drop(state);
+                // C8: typed data is checked against the origin chain outside the dispatcher lock,
+                // and only while unlocked — a locked wallet queues the request for the unlock
+                // window and the approval flow validates it then (no parsing work for pages
+                // that cannot be answered yet).
+                if vault == VaultView::Unlocked
+                    && let SiteKind::TypedData { source, value, .. } = &kind
+                    && yw_core::evm::eip712::validate_typed_data_v4(source, value, chain_id)
+                        .is_err()
+                {
+                    Self::log_error(name, &ProviderError::InvalidParams, conn);
+                    let _ = self.respond(&reply, Err(ProviderError::InvalidParams));
+                    return;
+                }
                 logging::info(
                     "browser",
                     "request.queued",
@@ -904,18 +1038,25 @@ impl BrowserCore {
         }
     }
 
-    /// Checks of an approval-class request before it is queued (spec/05 §4.1–§4.2, §8.4):
-    /// vault state, grant membership, the 256-grant limit, duplicate connect windows, the
-    /// origin chain rules of the signing params and the approval limits.
+    /// Checks of an approval-class request before it is queued (spec/05 §4.1–§4.2, §8.4), all
+    /// cheap (C8: typed data is validated by the caller after the lock is released): vault state,
+    /// grant membership (a signing request of a site whose connect window is still pending
+    /// waits behind it in the queue and is checked again when shown), the 256-grant limit, the
+    /// unlock-window cooldown, duplicate connect windows and the approval limits, then the origin
+    /// chain rule of `eth_sendTransaction`.
     fn admit_site(
         state: &State,
-        origin: &BrowserOrigin,
-        chain_id: u64,
-        vault: VaultView,
-        grant: Option<&ConnectedSite>,
+        admission: &Admission<'_>,
         kind: &SiteKind,
     ) -> Result<(), ProviderError> {
-        match vault {
+        let origin = admission.origin;
+        let connecting = || {
+            state
+                .approvals
+                .values()
+                .any(|info| info.connect && info.origin == *origin)
+        };
+        match admission.vault {
             VaultView::NoVault | VaultView::Unavailable | VaultView::BackupPending => {
                 return Err(ProviderError::Unauthorized);
             }
@@ -927,32 +1068,27 @@ impl BrowserCore {
                     _ => None,
                 };
                 if let Some(account) = account
-                    && !grant.is_some_and(|site| site.allows(&account))
+                    && !admission.grant.is_some_and(|site| site.allows(&account))
+                    && !connecting()
                 {
                     return Err(ProviderError::Unauthorized);
                 }
-                if kind.is_connect() && grant.is_none() && state.grants.len() >= MAX_GRANTS {
+                if kind.is_connect()
+                    && admission.grant.is_none()
+                    && state.grants.len() >= MAX_GRANTS
+                {
                     return Err(ProviderError::Unauthorized);
                 }
             }
-            VaultView::Locked | VaultView::Starting => {}
-        }
-        match kind {
-            SiteKind::Send(tx) if tx.chain_id.is_some_and(|id| id != chain_id) => {
-                return Err(ProviderError::InvalidParams);
+            VaultView::Locked | VaultView::Starting => {
+                if admission.now_ms < state.unlock_cooldown_until_ms
+                    && !state.locked_connected.contains(origin)
+                {
+                    return Err(ProviderError::UserRejected);
+                }
             }
-            SiteKind::TypedData { source, value, .. } => {
-                yw_core::evm::eip712::validate_typed_data_v4(source, value, chain_id)
-                    .map_err(|_| ProviderError::InvalidParams)?;
-            }
-            _ => {}
         }
-        if kind.is_connect()
-            && state
-                .approvals
-                .values()
-                .any(|info| info.connect && info.origin == *origin)
-        {
+        if kind.is_connect() && connecting() {
             return Err(ProviderError::RequestPending);
         }
         let same_origin = state
@@ -963,6 +1099,11 @@ impl BrowserCore {
         if same_origin >= MAX_APPROVALS_PER_ORIGIN || state.approvals.len() >= MAX_APPROVALS_GLOBAL
         {
             return Err(ProviderError::TooManyPending);
+        }
+        if let SiteKind::Send(tx) = kind
+            && tx.chain_id.is_some_and(|id| id != admission.chain_id)
+        {
+            return Err(ProviderError::InvalidParams);
         }
         Ok(())
     }
@@ -1016,6 +1157,12 @@ impl BrowserCore {
                     state.reads_per_document.remove(&task.document);
                 }
             }
+            if let Some(count) = state.reads_per_origin.get_mut(&task.origin) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    state.reads_per_origin.remove(&task.origin);
+                }
+            }
         }
         let name = task.method.as_str();
         match &body {
@@ -1059,5 +1206,124 @@ impl BrowserCore {
     #[must_use]
     pub fn is_stopped(&self) -> bool {
         self.stopped.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use yw_core::policy::BrowserOrigin;
+
+    use super::{BrowserCore, Conn, Lru, Pending};
+    use crate::browser::envelope::{Id16, Id32};
+    use crate::browser::{DappEvent, DappSink, MAX_DOCUMENTS, MAX_DOCUMENTS_PER_ORIGIN, Outbound};
+
+    struct Quiet;
+
+    impl DappSink for Quiet {
+        fn push(&self, _event: DappEvent) -> bool {
+            true
+        }
+    }
+
+    struct Sinkhole;
+
+    impl crate::browser::Outlet for Sinkhole {
+        fn send(&self, _outbound: Outbound) -> bool {
+            true
+        }
+    }
+
+    fn core() -> Arc<BrowserCore> {
+        BrowserCore::new(
+            "abcdefghijklmnopabcdefghijklmnop",
+            Arc::new(Quiet),
+            Arc::new(crate::flow::evm::SystemClock),
+        )
+    }
+
+    fn doc(index: usize) -> Id32 {
+        let mut bytes = [0_u8; 32];
+        bytes[..8].copy_from_slice(&u64::try_from(index).unwrap().to_be_bytes());
+        bytes[31] = 1;
+        Id32(bytes)
+    }
+
+    fn site(index: usize) -> BrowserOrigin {
+        BrowserOrigin::parse(&format!("https://s{index}.example")).unwrap()
+    }
+
+    #[test]
+    fn lru_evicts_the_oldest_evictable_entry_and_keeps_its_bound() {
+        let mut lru: Lru<u32, bool> = Lru::new(3);
+        lru.insert(1, true);
+        lru.insert(2, false);
+        lru.insert(3, false);
+        // Entry 1 (oldest) is in use: entry 2 goes instead.
+        lru.insert_with(4, false, |_, in_use| !in_use);
+        let keys: Vec<u32> = lru.iter().map(|(key, _)| *key).collect();
+        assert!(keys.contains(&1) && !keys.contains(&2) && keys.len() == 3);
+        // Nothing evictable: plain LRU so the bound holds.
+        lru.insert_with(5, false, |_, _| false);
+        assert_eq!(lru.iter().count(), 3);
+    }
+
+    #[test]
+    fn live_documents_and_their_chains_are_not_evicted() {
+        let core = core();
+        let mut state = core.lock();
+        state.conns.insert(
+            1,
+            Conn {
+                outlet: Box::new(Sinkhole),
+                max_sequence: 0,
+                last_session: None,
+                pending: HashMap::new(),
+                buckets: Lru::new(MAX_DOCUMENTS),
+            },
+        );
+        // A full table: one document per site; the oldest one has a request pending.
+        for index in 0..MAX_DOCUMENTS {
+            state.note_document(doc(index), &site(index), 1);
+        }
+        if let Some(conn) = state.conns.get_mut(&1) {
+            conn.pending.insert(
+                (doc(0), Id16([1; 16])),
+                Pending {
+                    sequence: 1,
+                    class: super::Class::Read,
+                },
+            );
+        }
+        for index in 0..MAX_DOCUMENTS {
+            state.cache_chain(&site(index), 1);
+        }
+        state.note_document(doc(MAX_DOCUMENTS), &site(MAX_DOCUMENTS), 1);
+        assert!(state.documents.contains(&doc(0)), "pending request: kept");
+        assert!(
+            !state.documents.contains(&doc(1)),
+            "oldest idle document went"
+        );
+        // The chain cache is full: a new origin evicts site 1 (no document left), never a
+        // site whose page is still in the table.
+        state.cache_chain(&site(MAX_DOCUMENTS), 11_155_111);
+        assert!(state.chain_cache.contains(&site(0)));
+        assert!(!state.chain_cache.contains(&site(1)));
+        assert!(state.chain_cache.contains(&site(MAX_DOCUMENTS)));
+        // One origin churning activations only evicts its own documents once at its quota.
+        let churn = site(9_999);
+        for index in 0..MAX_DOCUMENTS_PER_ORIGIN + 10 {
+            state.note_document(doc(10_000 + index), &churn, 1);
+        }
+        let own = state
+            .documents
+            .iter()
+            .filter(|(_, (origin, _))| *origin == churn)
+            .count();
+        assert_eq!(own, MAX_DOCUMENTS_PER_ORIGIN);
+        assert!(state.documents.contains(&doc(0)));
+        assert_eq!(state.documents.iter().count(), MAX_DOCUMENTS);
     }
 }

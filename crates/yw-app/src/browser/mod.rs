@@ -55,6 +55,16 @@ pub const RATE_BURST: u32 = 40;
 pub const MAX_READS_PER_DOCUMENT: usize = 64;
 /// Reads waiting or running overall.
 pub const MAX_READS_GLOBAL: usize = 256;
+/// Reads waiting or running for one origin that is not connected (no grant while unlocked), over
+/// all its documents: one site cannot take every global read slot (spec/05 §8.4).
+pub const MAX_READS_PER_UNCONNECTED_ORIGIN: usize = 64;
+/// Documents of one origin in the document table: a site churning activations evicts its own
+/// oldest documents, not other sites' (spec/05 §4.8).
+pub const MAX_DOCUMENTS_PER_ORIGIN: usize = 64;
+/// After the user dismisses the unlock window opened for dApp requests (`나중에`), approval-class
+/// requests that would open it again from origins not connected at lock time are rejected (4001)
+/// for this long instead of popping the window (spec/05 §4.4).
+pub const UNLOCK_PROMPT_COOLDOWN_MS: u64 = 30_000;
 /// Read worker threads.
 pub const READ_WORKERS: usize = 4;
 /// Pipe instances.

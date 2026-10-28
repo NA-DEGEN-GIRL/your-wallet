@@ -206,6 +206,7 @@ fn prepare_broadcast_and_probe_events() -> TestResult {
     let hash = yw_core::codec::keccak256(&raw);
     let sender = FakeRpc::new(move |method, params| match method {
         "eth_chainId" => Answer::Result("\"0xaa36a7\"".to_owned()),
+        "eth_getBlockByNumber" => Answer::Result(common::evm::block(&SEPOLIA_GENESIS, 0)),
         "eth_sendRawTransaction" if param_str(params, 0) == "0x0201" => {
             Answer::Result(format!("\"0x{}\"", yw_core::hex::encode(&hash)))
         }
@@ -301,5 +302,123 @@ fn a_worker_without_client_answers_every_job() -> TestResult {
         rpc_events(&queue).as_slice(),
         [RpcEvent::Test { ok: false, .. }]
     ));
+    Ok(())
+}
+
+/// D14: another genesis at broadcast time sends nothing, blocks the chain (the Chain event comes
+/// before the outcome) and later jobs see the mismatch without new calls.
+#[test]
+fn broadcast_rechecks_the_genesis_and_blocks_a_mismatch() -> TestResult {
+    let queue = EventQueue::new(Box::new(|| {}));
+    let forked = FakeRpc::new(move |method, _| match method {
+        "eth_chainId" => Answer::Result("\"0xaa36a7\"".to_owned()),
+        "eth_getBlockByNumber" => Answer::Result(common::evm::block(&[0xee; 32], 0)),
+        _ => Answer::Error(-32_601, None),
+    });
+    let mut blocked = RpcWorker::new(
+        Some(forked.shared()),
+        Box::new(FakeClock::at(S2_UNIX_MS)),
+        limits(),
+    );
+    let raw = vec![0x02, 0x01];
+    let hash = yw_core::codec::keccak256(&raw);
+    blocked.handle(
+        RpcJob::Broadcast {
+            chain: sepolia_job(),
+            raw,
+            tx_hash: hash,
+        },
+        &queue,
+    );
+    assert!(matches!(
+        rpc_events(&queue).as_slice(),
+        [
+            RpcEvent::Chain {
+                chain_id: 11_155_111,
+                check: ChainCheck::Mismatch(_)
+            },
+            RpcEvent::Broadcast {
+                outcome: BroadcastOutcome::ChainMismatch,
+                ..
+            }
+        ]
+    ));
+    assert_eq!(forked.count("eth_sendRawTransaction"), 0);
+    let calls = forked.methods().len();
+    blocked.handle(
+        RpcJob::Code {
+            job: 1,
+            chain: sepolia_job(),
+            address: address(USER)?,
+        },
+        &queue,
+    );
+    assert_eq!(forked.methods().len(), calls, "the mismatch sticks");
+    assert!(rpc_events(&queue).iter().any(|event| matches!(
+        event,
+        RpcEvent::Code {
+            result: Err(ErrorCode::Rpc006),
+            ..
+        }
+    )));
+    Ok(())
+}
+
+/// C1: a re-simulation with a newer one already queued is dropped by the worker loop (only the
+/// newest window job's result is ever used); other jobs keep their FIFO order.
+#[test]
+fn superseded_resimulations_are_dropped() -> TestResult {
+    use yw_app::flow::evm::ChainCache;
+    use yw_app::flow::evm::prepare::{ResimJob, prepare};
+    use yw_app::workers::rpc::{run, superseded};
+    let rpc = chain_world();
+    let prepared = common::evm::ready(
+        prepare(
+            &rpc.shared(),
+            &mut ChainCache::default(),
+            &job(sepolia(), address(USER)?, send_intent()?),
+            &FakeClock::at(S2_UNIX_MS),
+            &|_| {},
+        )
+        .outcome,
+    )?;
+    let mut store = yw_core::approval::ApprovalStore::new();
+    let request = store.issue(prepared.draft.clone(), 1, S2_UNIX_MS)?;
+    let resim = |id| {
+        RpcJob::Resimulate(Box::new(ResimJob {
+            job: id,
+            chain: sepolia_job(),
+            request: request.clone(),
+            context: prepared.context.clone(),
+            address_book: Vec::new(),
+            extra_warnings: Vec::new(),
+            limits: limits(),
+        }))
+    };
+    let later: std::collections::VecDeque<RpcJob> = [resim(9)].into_iter().collect();
+    assert!(superseded(&resim(8), &later));
+    assert!(!superseded(&resim(9), &std::collections::VecDeque::new()));
+    let simulated = rpc.count("eth_simulateV1");
+    let (tx, rx) = std::sync::mpsc::channel();
+    for job in [
+        resim(1),
+        resim(2),
+        RpcJob::ResetChain { chain_id: 1 },
+        resim(3),
+    ] {
+        tx.send(job).map_err(|_| "send")?;
+    }
+    tx.send(RpcJob::Shutdown).map_err(|_| "send")?;
+    let queue = EventQueue::new(Box::new(|| {}));
+    run(worker(Some(&rpc)), &rx, &queue);
+    let finished: Vec<u64> = rpc_events(&queue)
+        .into_iter()
+        .filter_map(|event| match event {
+            RpcEvent::Resimulated(result) => Some(result.job),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(finished, vec![3]);
+    assert_eq!(rpc.count("eth_simulateV1"), simulated + 1);
     Ok(())
 }

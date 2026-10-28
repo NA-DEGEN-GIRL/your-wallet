@@ -967,6 +967,8 @@ impl App {
 
     /// The lock procedure (spec/04 §5.3).
     pub fn lock(&mut self, reason: LockReason) {
+        // The dispatcher stops answering with accounts now, not after the suspend wait.
+        self.browser_lock_begin();
         let vault_present = !matches!(
             self.mode,
             AppMode::NoVault | AppMode::Starting | AppMode::Corrupt { .. } | AppMode::MainMissing

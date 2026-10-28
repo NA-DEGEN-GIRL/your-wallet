@@ -743,6 +743,64 @@ fn remaining_text(ms: u64) -> String {
     format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
+/// What the window does after an interaction event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatusAction {
+    /// Act on the approval (once).
+    Approve,
+    /// Expired (`Expired`).
+    Expire,
+    /// Rejected.
+    Reject,
+    /// Still pending: repaint.
+    Repaint,
+    /// An approval already acted on (C1): `Approved` is terminal and is returned again on every
+    /// later tick, so only the transition into it may act.
+    Nothing,
+}
+
+fn status_action(
+    before: InteractionStatus,
+    after: InteractionStatus,
+    now_ms: u64,
+    deadline_ms: u64,
+) -> StatusAction {
+    match after {
+        InteractionStatus::Approved if before == InteractionStatus::Approved => {
+            StatusAction::Nothing
+        }
+        InteractionStatus::Approved => StatusAction::Approve,
+        InteractionStatus::Rejected if now_ms >= deadline_ms => StatusAction::Expire,
+        InteractionStatus::Rejected => StatusAction::Reject,
+        InteractionStatus::Pending => StatusAction::Repaint,
+    }
+}
+
+/// The header network badge (spec/04 §3 header): built-in mainnets (Ethereum, `HyperEVM`,
+/// Solana mainnet) say plainly that real assets move; Sepolia and Solana devnet are test
+/// networks. User chains have no testnet classification and get neither; Bitcoin has its own
+/// network banner. Returns the text and whether it is the testnet coloring.
+fn network_badge(
+    evm_chain: Option<u64>,
+    sol: Option<yw_core::sol::SolCluster>,
+) -> Option<(&'static str, bool)> {
+    use yw_core::evm::chain::{ETHEREUM_MAINNET, HYPEREVM_MAINNET};
+    use yw_core::sol::SolCluster;
+    match (evm_chain, sol) {
+        (_, Some(SolCluster::Devnet)) => {
+            Some(("Solana devnet (테스트) — 실제 자산이 아닙니다", true))
+        }
+        (_, Some(SolCluster::Mainnet)) | (Some(ETHEREUM_MAINNET | HYPEREVM_MAINNET), None) => {
+            Some((MAINNET_BADGE, false))
+        }
+        (Some(SEPOLIA), None) => Some(("테스트넷 — 실제 자산이 아닙니다", true)),
+        _ => None,
+    }
+}
+
+/// The mainnet header badge.
+const MAINNET_BADGE: &str = "메인넷 — 실제 자산";
+
 impl App {
     // ----- queue and window lifecycle -----------------------------------------------------
 
@@ -1368,13 +1426,31 @@ impl App {
         let Some(old) = ui.request.clone() else {
             return;
         };
+        // A chain mismatch found now blocks like at preparation (`Failed`, only `거부`); it never
+        // becomes an approvable "no simulation" warning.
+        if let Some(failure) = result.failure.filter(|_| result.kind == ResimKind::Failed) {
+            logging::warn(
+                "app",
+                "resim.failed",
+                &[("code", Field::Code(failure.code))],
+            );
+            if let Some(ui) = self.evm.window.as_mut() {
+                ui.status = None;
+                ui.resim_click = false;
+            }
+            self.show_failure(failure.code, false, failure.message());
+            return;
+        }
         let Some(prepared) = result.prepared else {
             if let Some(ui) = self.evm.window.as_mut() {
                 ui.status = Some(
                     "다시 실행한 시뮬레이션이 성공하지 못했습니다. 경고를 확인하고 다시 승인하세요."
                         .to_owned(),
                 );
-                ui.session.gate.submitting = false;
+                ui.resim_click = false;
+                // Same content, but a new approval (checkbox, arm delay, fresh interaction).
+                let prepare = ui.session.gate.prepare.clone();
+                let _ = ui.session.replace_content(now_ms(), prepare);
             }
             self.rebuild_view();
             return;
@@ -1400,7 +1476,7 @@ impl App {
         if let Some(ui) = self.evm.window.as_mut() {
             ui.status = match result.kind {
                 ResimKind::Same => None,
-                ResimKind::Changed | ResimKind::Blocked => {
+                ResimKind::Changed | ResimKind::Blocked | ResimKind::Failed => {
                     Some("시뮬레이션 결과가 바뀌었습니다. 다시 확인하세요".to_owned())
                 }
                 ResimKind::NoResult => Some(
@@ -1443,6 +1519,11 @@ impl App {
         let Some(ui) = self.evm.window.as_mut() else {
             return;
         };
+        // C1: one approval is acted on once — a submission in flight (re-simulation or consume)
+        // ignores any further approval until its result replaces or resets the content.
+        if ui.session.gate.submitting {
+            return;
+        }
         let Some(request) = ui.request.clone() else {
             return;
         };
@@ -1482,10 +1563,15 @@ impl App {
             QueuedItem::Site(site) => site_fee_warning(site),
             QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => Vec::new(),
         };
-        let Ok(chain) = self.chain_job(chain_id) else {
-            return;
+        let chain = match self.chain_job(chain_id) {
+            Ok(chain) => chain,
+            Err(code) => {
+                let failure = crate::flow::evm::prepare::PrepareFailure::no_endpoint();
+                self.show_failure(code, false, failure.message());
+                return;
+            }
         };
-        let _ = self.rpc(RpcJob::Resimulate(Box::new(ResimJob {
+        let sent = self.rpc(RpcJob::Resimulate(Box::new(ResimJob {
             job,
             chain,
             request,
@@ -1494,6 +1580,18 @@ impl App {
             extra_warnings,
             limits: Limits::PRODUCTION,
         })));
+        if let Some(ui) = self.evm.window.as_mut() {
+            if sent {
+                // C1: the approval that asked for this re-simulation has been acted on; the
+                // terminal `Approved` status must not dispatch it again on the next tick.
+                let _ = ui.session.restart_interaction(now_ms());
+            } else {
+                ui.status = Some(ErrorCode::Rpc001.text());
+                ui.resim_click = false;
+                let prepare = ui.session.gate.prepare.clone();
+                let _ = ui.session.replace_content(now_ms(), prepare);
+            }
+        }
         self.rebuild_view();
     }
 
@@ -1538,10 +1636,13 @@ impl App {
                         kind @ (yw_core::approval::ApprovalKind::EvmPersonalSign
                         | yw_core::approval::ApprovalKind::EvmTypedData),
                     ) => {
-                        if let Some(reply) = reply {
-                            self.push_sign_waiter(crate::app_browser::SignWaiter::Message(reply));
-                        }
+                        let waiter = reply.map_or(
+                            crate::app_browser::SignWaiter::App,
+                            crate::app_browser::SignWaiter::Message,
+                        );
+                        let ticket = self.push_sign_waiter(waiter);
                         self.key(KeyJob::SignMessage {
+                            ticket,
                             approved: Box::new(approved),
                             typed: kind == yw_core::approval::ApprovalKind::EvmTypedData,
                         });
@@ -1556,8 +1657,9 @@ impl App {
                                 ("yw-app".to_owned(), crate::app_browser::SignWaiter::App)
                             }
                         };
-                        self.push_sign_waiter(waiter);
+                        let ticket = self.push_sign_waiter(waiter);
                         self.key(KeyJob::SignEvm {
+                            ticket,
                             approved: Box::new(approved),
                             info: SignInfo {
                                 origin,
@@ -1600,22 +1702,22 @@ impl App {
             return;
         };
         ui.session.gate.is_foreground = ui.window.is_foreground();
+        let before = ui.session.interaction().status();
         let status = ui.session.event(now, event);
         let deadline = ui.session.gate.deadline_ms;
-        match status {
-            InteractionStatus::Approved => self.approved(),
-            InteractionStatus::Rejected if now >= deadline => {
-                self.finish_approval(QueueOutcome::Expired);
-            }
-            InteractionStatus::Rejected => {
+        match status_action(before, status, now, deadline) {
+            StatusAction::Approve => self.approved(),
+            StatusAction::Expire => self.finish_approval(QueueOutcome::Expired),
+            StatusAction::Reject => {
                 logging::info("app", "approval.rejected", &[]);
                 self.finish_approval(QueueOutcome::Rejected);
             }
-            InteractionStatus::Pending => {
+            StatusAction::Repaint => {
                 if let Some(ui) = self.evm.window.as_ref() {
                     ui.window.invalidate();
                 }
             }
+            StatusAction::Nothing => {}
         }
     }
 
@@ -1634,16 +1736,15 @@ impl App {
         {
             badges.push(crate::ui::screens_evm::custom_chain_badge(chain_id));
         }
-        let sol_devnet = self.evm.window.as_ref().is_some_and(|ui| {
-            matches!(&ui.item, QueuedItem::Sol(item) if item.cluster == yw_core::sol::SolCluster::Devnet)
-        });
-        let testnet = chain_id == SEPOLIA || sol_devnet;
-        if testnet {
-            badges.push(if sol_devnet {
-                "Solana devnet (테스트) — 실제 자산이 아닙니다".to_owned()
-            } else {
-                "테스트넷 — 실제 자산이 아닙니다".to_owned()
-            });
+        let (evm_chain, sol_cluster) = match self.evm.window.as_ref().map(|ui| &ui.item) {
+            Some(QueuedItem::Sol(item)) => (None, Some(item.cluster)),
+            Some(QueuedItem::App(_) | QueuedItem::Site(_)) => (Some(chain_id), None),
+            Some(QueuedItem::Btc(_)) | None => (None, None),
+        };
+        let mut testnet = false;
+        if let Some((text, test)) = network_badge(evm_chain, sol_cluster) {
+            testnet = test;
+            badges.push(text.to_owned());
         }
         let Some(ui) = self.evm.window.as_mut() else {
             return;
@@ -2957,5 +3058,66 @@ fn site_fee_warning(site: &SiteRequest) -> Vec<yw_core::approval::Warning> {
             vec![yw_core::evm::risk::warning(yw_core::evm::risk::E31, None)]
         }
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use yw_core::evm::chain::{ETHEREUM_MAINNET, HYPEREVM_MAINNET, SEPOLIA};
+    use yw_core::sol::SolCluster;
+
+    use super::{MAINNET_BADGE, StatusAction, network_badge, status_action};
+    use crate::ui::interaction::InteractionStatus;
+
+    /// C1: `Approved` is terminal and comes back on every 50 ms tick; only the transition into
+    /// it acts, so one click dispatches at most one re-simulation.
+    #[test]
+    fn only_the_transition_into_approved_acts() {
+        use InteractionStatus::{Approved, Pending, Rejected};
+        assert_eq!(
+            status_action(Pending, Approved, 1, 10),
+            StatusAction::Approve
+        );
+        for _tick in 0..100 {
+            assert_eq!(
+                status_action(Approved, Approved, 2, 10),
+                StatusAction::Nothing
+            );
+        }
+        assert_eq!(
+            status_action(Pending, Pending, 3, 10),
+            StatusAction::Repaint
+        );
+        assert_eq!(
+            status_action(Pending, Rejected, 3, 10),
+            StatusAction::Reject
+        );
+        assert_eq!(
+            status_action(Pending, Rejected, 10, 10),
+            StatusAction::Expire
+        );
+    }
+
+    #[test]
+    fn mainnets_get_the_real_asset_badge() {
+        assert_eq!(MAINNET_BADGE, "메인넷 — 실제 자산");
+        for chain in [ETHEREUM_MAINNET, HYPEREVM_MAINNET] {
+            assert_eq!(
+                network_badge(Some(chain), None),
+                Some((MAINNET_BADGE, false))
+            );
+        }
+        assert_eq!(
+            network_badge(None, Some(SolCluster::Mainnet)),
+            Some((MAINNET_BADGE, false))
+        );
+        assert_eq!(
+            network_badge(Some(SEPOLIA), None),
+            Some(("테스트넷 — 실제 자산이 아닙니다", true))
+        );
+        assert!(network_badge(None, Some(SolCluster::Devnet)).is_some_and(|(_, test)| test));
+        // User chains have no testnet classification; Bitcoin has its own banner.
+        assert_eq!(network_badge(Some(8_453), None), None);
+        assert_eq!(network_badge(None, None), None);
     }
 }

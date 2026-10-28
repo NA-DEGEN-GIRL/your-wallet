@@ -120,7 +120,7 @@ EIP7708_SYSTEM  = 0xfffffffffffffffffffffffffffffffffffffffe   // 프로토콜 �
 ### 1.4 RPC 사용 규칙
 
 - **엔드포인트(D13)**: `endpoint(chain)` = [04](04-app-ui.md) §6.3 `apikeys.dpapi`의 `rpc:eip155:<chainId>` URL([04] §1.9 `RpcConfig`). 없으면 엔드포인트 없음: read는 [05](05-browser.md) §5 `ChainUnavailable`(4901), 보내기·서명은 E35 차단(원인 "RPC 엔드포인트 없음"). 템플릿(§1.1 `templates`)·공급자 자격 정보로 URL을 만들어 대신 쓰지 않는다(대체 경로 없음). 아래 규칙은 어느 공급자·체인이든 같다.
-- **체인 확인**: 연결마다(앱 실행 후, 그리고 그 체인 URL 변경 후 그 체인의 첫 EVM RPC 전에) `eth_chainId` 결과 문자열 == `chain_id`의 정규 hex(소문자 변환 후 비교)이고, `h = eth_getBlockByNumber(["0x0", false]).hash`(결과가 객체가 아니거나 `hash`가 32바이트가 아니면 전송 오류와 같다)가 `genesis` 규칙을 만족해야 한다: `Fixed(g)`·`PinOnFirstUse(Some(g))` → `h == g`. `PinOnFirstUse(None)`(HyperEVM 첫 사용) → chainId가 맞으면 `h`를 고정값으로 저장([04] §6)하고 저장 성공 후 `Verified`(최초 신뢰: 첫 연결의 RPC가 거짓이면 이후 올바른 RPC에서 불일치로 막히고, 사용자가 [04]에서 고정을 지운 뒤 다시 연결한다). 사용자 체인은 추가 때 고정한다(§1.6). 불일치 → 그 체인 상태 `RpcMismatch`: 읽기는 `ChainUnavailable`, 보내기·서명은 E34 "RPC 체인 불일치"(차단)(앱 재시작 또는 그 체인 `rpc:eip155:<chainId>` URL 변경 전까지 — 템플릿 자격 정보를 바꿔 URL이 다시 만들어진 경우 포함; URL이 바뀌면 상태를 초기화하되 고정 제네시스는 지우지 않는다). 전송 오류 → 150 ms 간격 3회 재시도 후 `Unverified`(다음 사용 때 재시도, 보내기·서명은 E35). `eth_sendRawTransaction` 직전마다 `eth_chainId`를 다시 확인한다.
+- **체인 확인**: 연결마다(앱 실행 후, 그리고 그 체인 URL 변경 후 그 체인의 첫 EVM RPC 전에) `eth_chainId` 결과 문자열 == `chain_id`의 정규 hex(소문자 변환 후 비교)이고, `h = eth_getBlockByNumber(["0x0", false]).hash`(결과가 객체가 아니거나 `hash`가 32바이트가 아니면 전송 오류와 같다)가 `genesis` 규칙을 만족해야 한다: `Fixed(g)`·`PinOnFirstUse(Some(g))` → `h == g`. `PinOnFirstUse(None)`(HyperEVM 첫 사용) → chainId가 맞으면 `h`를 고정값으로 저장([04] §6)하고 저장 성공 후 `Verified`(최초 신뢰: 첫 연결의 RPC가 거짓이면 이후 올바른 RPC에서 불일치로 막히고, 사용자가 [04]에서 고정을 지운 뒤 다시 연결한다). 사용자 체인은 추가 때 고정한다(§1.6). 불일치 → 그 체인 상태 `RpcMismatch`: 읽기는 `ChainUnavailable`, 보내기·서명은 E34 "RPC 체인 불일치"(차단)(앱 재시작 또는 그 체인 `rpc:eip155:<chainId>` URL 변경 전까지 — 템플릿 자격 정보를 바꿔 URL이 다시 만들어진 경우 포함; URL이 바뀌면 상태를 초기화하되 고정 제네시스는 지우지 않는다). 전송 오류 → 150 ms 간격 3회 재시도 후 `Unverified`(다음 사용 때 재시도, 보내기·서명은 E35). 위 확인 결과(앱 실행 중 캐시)는 읽기·준비·조회에 쓴다. 서명된 바이트를 보낼 때는 캐시에 기대지 않는다: `eth_sendRawTransaction` 직전마다(§4.4 전송, §5.4 재전송) 그 연결에서 `eth_chainId`와 블록 0 해시를 모두 다시 확인한다(D14). 불일치 → 보내지 않고 그 체인을 `RpcMismatch`로 막는다. 전송 오류(§4.4 전송은 위처럼 3회 재시도 후, §5.4 재전송은 그 회차만) → 보내지 않고 불일치로 보지 않는다(`Signed` 유지, §5.4 자동 재전송이 다시 시도한다).
 - **내부 사용 메서드**: `eth_chainId`, `eth_blockNumber`, `eth_getBlockByNumber`, `eth_getTransactionCount`, `eth_getBalance`, `eth_getCode`, `eth_call`, `eth_estimateGas`, `eth_feeHistory`, `eth_simulateV1`, `eth_sendRawTransaction`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`. `simulation = Unsupported` 체인에는 `eth_simulateV1`을 보내지 않는다(E36). 금지: 공급자 전용 메서드(`alchemy_*`·`qn_*` 등; `alchemy_simulate*`는 2026-09-30 종료), `debug_*`, `trace_*`.
 - **시간 제한**: 호출당 10 s. 요청 준비 전체(§3.7 단계 3–9) 30 s: 단계 3–7에서 넘으면 E35(차단), 단계 8에서 넘으면 시뮬레이션 결과 없음(`Timeout`, E01 고위험), 단계 9에서 넘으면 남은 사실 조회를 실패로 보고 E27.
 - **응답 크기**: `eth_simulateV1` 4 MiB, 그 밖 1 MiB. 초과 → 해당 호출 실패(시뮬레이션은 `TooLarge`, E01).
@@ -397,18 +397,23 @@ pub struct SignedTx { pub raw: Vec<u8>, pub tx_hash: [u8; 32], pub tx: Eip1559Tx
 
 ### 4.4 전송
 
-전제: 저널 `Signed` 레코드가 디스크에 커밋됨(§5.3), `eth_chainId` 재확인.
+전제: 저널 `Signed` 레코드가 디스크에 커밋됨(§5.3), 체인 재확인(§1.4: `eth_chainId`와 블록 0 해시, 전송 오류는 150 ms 간격 3회 재시도).
 
-`eth_sendRawTransaction(["0x" + hex(raw)])`의 결과:
+| 체인 재확인 | 저널 | dApp 응답 | 앱 표시 |
+|---|---|---|---|
+| 불일치 | `Signed` 유지, `flags.manual_resend`, 체인 `RpcMismatch` | -32603 `BroadcastFailed` | E-RPC-006 배너. 자동 재전송 안 함 |
+| 재시도 후에도 전송 오류 | `Signed` 유지(아무것도 보내지 않음) | `tx_hash` | "전송 확인 중", §5.4 자동 재전송 |
+
+확인되면 `eth_sendRawTransaction(["0x" + hex(raw)])`의 결과:
 
 | 결과 | 저널 | dApp 응답 | 앱 표시 |
 |---|---|---|---|
 | 반환 해시 == `tx_hash` | `Broadcast` | `tx_hash` | 전송됨 |
 | 반환 해시 ≠ `tx_hash` | `Signed` 유지, `flags.rpc_hash_mismatch` | -32603 `BroadcastFailed` | 고위험 알림 "RPC가 다른 거래 해시를 반환했습니다". 자동 재전송 안 함 |
-| JSON-RPC 오류 | `eth_getTransactionByHash(tx_hash)` 존재 → `Broadcast`; 없음 → `Signed` 유지 | 존재 시 `tx_hash`, 없으면 -32603 `BroadcastFailed` | 재전송·폐기 버튼 |
+| JSON-RPC 오류 | `eth_getTransactionByHash(tx_hash)` 존재 → `Broadcast`; 없음 → `Signed` 유지 + `flags.manual_resend` | 존재 시 `tx_hash`, 없으면 -32603 `BroadcastFailed` | 재전송·폐기 버튼. 자동 재전송 안 함(재시작 후에도) |
 | 시간 초과·전송 오류 | 2 s, 5 s 뒤 같은 바이트 재전송 후 `eth_getTransactionByHash`; 존재 → `Broadcast`; 없음 → `Signed` 유지 | `tx_hash` | "전송 확인 중", §5.4 자동 재전송 |
 
-어떤 경우에도 자동으로 다시 서명하지 않는다.
+dApp에 실패(`BroadcastFailed`)를 알린 거래는 자동으로 보내지 않는다: 그 레코드에 `manual_resend`(또는 `rpc_hash_mismatch`)를 커밋해 앱을 다시 시작해도 사용자의 `재전송`만 보낸다. 자동 재전송이 이어지는 경우에만 tx hash를 돌려준다. 어떤 경우에도 자동으로 다시 서명하지 않는다.
 
 ### 4.5 영수증·확정
 
@@ -443,7 +448,7 @@ off  size  field
 38   1     state                  1 Signed, 2 Broadcast, 3 Included, 4 Finalized, 5 Dropped, 6 Replaced
 39   1     role                   0 Original, 1 SpeedUp, 2 Cancel
 40   1     receipt_status         0 없음, 1 성공, 2 실패
-41   1     flags                  bit0 rpc_hash_mismatch, bit1 user_discarded, 나머지 0
+41   1     flags                  bit0 rpc_hash_mismatch, bit1 user_discarded, bit2 manual_resend(§4.4), 나머지 0
 42   8     created_unix_ms        u64
 50   8     updated_unix_ms        u64
 58   8     last_broadcast_unix_ms u64, 0 = 없음
@@ -483,8 +488,8 @@ off  size  field
 
 잠금 해제 직후, 그리고 §3.6 단계마다 `reconcile(chain, account)`:
 1. 미종결 레코드의 nonce 그룹마다 모든 후보 영수증 조회 → §5.2.
-2. 영수증 없음, `latest nonce == nonce` → 그룹의 최신 후보 `raw`를 그대로 재전송(`eth_getTransactionByHash`가 null일 때만, 60 s에 최대 1회). **다시 서명하지 않는다.**
-3. `rpc_hash_mismatch` 레코드는 자동 재전송하지 않는다(사용자 재전송 버튼만).
+2. 영수증 없음, `latest nonce == nonce` → 그룹의 최신 후보 `raw`를 그대로 재전송(`eth_getTransactionByHash`가 null일 때만, 60 s에 최대 1회, 직전에 §1.4 체인 재확인). **다시 서명하지 않는다.**
+3. `rpc_hash_mismatch`·`manual_resend` 레코드는 자동 재전송하지 않는다(사용자 재전송 버튼만). `Broadcast`로 바뀌면(노드가 알게 되면) 두 플래그를 지운다.
 4. 정리·상한: 종결 레코드(`Finalized`/`Dropped`/`Replaced`)는 종결 후 7일 지나면 다음 저널 쓰기 때 [02](02-core-keys-vault.md) §5.3 `activity`로 옮긴 뒤 삭제한다. 개수·용량 상한은 EVM·SOL·BTC가 함께 쓰는 [02] §5.4 값(전체 ≤ 256, 평문 ≤ 16 MiB, EVM 최대 본문 131,761)이다. 새 레코드(`Signed` 원본·SpeedUp·Cancel)를 만들 서명 전(§3.7 단계 4, §4.6)에 [02] §5.4 추가 전 검사를 하고, 자리가 없으면 EVM 종결 레코드를 오래된 것부터(activity로 옮긴 뒤) 지운다. 다른 체인 항목은 그 문서 규칙으로만 지운다. 그래도 없으면 `journal::JournalError::Full` → E06 "거래 저널 공간이 부족합니다"(서명·전송 없음).
 
 **activity 대응(EVM, [02] §5.3).** 종결 레코드를 activity로 옮길 때: `account` = 레코드 계정(소문자 `0x` hex), `tx_id` = `0x`+최종 후보의 tx_hash, `title` = 서명 당시 승인 제목(§11.1). calldata가 ERC-20 `transfer`로 해석되면 `asset` = 토큰 주소, `amount` = 토큰 최소 단위 10진, `counterparty` = 받는 주소; 아니면 `asset` = `"native"`, `amount` = value(wei 10진, 0이면 `"0"`), `counterparty` = tx `to`. `status`: `Finalized` + 영수증 status 1 → `succeeded`, 0 → `failed`; `Dropped`(사용자 폐기 포함) → `dropped`; `Replaced` → `replaced`. `time_unix_ms` = 종결 관측 시각. SpeedUp은 원본과 한 행(확정된 후보의 해시), Cancel이 확정되면 원본 행은 `replaced`이고 취소 거래는 `title` "거래 취소"인 별도 행이다.
@@ -629,6 +634,9 @@ sim_digest = SHA-256(T)
 2. `Simulated`이고 응답 수신 후 경과(yw-app `monotonic_ms`) ≤ 60 s → 그대로 소비(D23).
 3. `Simulated`이고 > 60 s → 같은 거래로 재시뮬레이션 → §6.3 판정·표시 재구성. **안정 부분**(volatile이 아닌 필드, 경고, risk, ack_required)이 같으면 요청을 새 digest로 교체(§11.5 `replace`)하고 그 클릭으로 소비한다. 다르면 요청을 교체하고 "시뮬레이션 결과가 바뀌었습니다. 다시 확인하세요"를 띄운 뒤 새 클릭(고위험이면 체크·누르기 다시)을 요구한다. 재시뮬레이션 결과가 없으면(E01) 바인딩을 `None { reason }`으로 바꾼 요청으로 교체하고 "시뮬레이션을 다시 실행하지 못했습니다. 경고를 확인하고 다시 승인하세요"를 띄운 뒤 새 클릭(체크·2초 누르기)을 요구한다(그 클릭은 1항으로 소비). 만료 시각은 바꾸지 않는다.
 4. 재시뮬레이션이 -38012/-32005면 §3.4로 수수료를 다시 계산해 거래를 다시 만들고(상한 초과면 E05 차단 요청으로 교체) 한 번 더 시뮬레이션한 뒤 3의 "다르면"(또는 결과 없음) 경로를 탄다. 재시뮬레이션 결과 자체로는 차단하지 않는다(수수료 재계산의 E05만 차단).
+5. 재시뮬레이션 전 체인 확인(§1.4)이 불일치(E34)면 시뮬레이션하지 않고 요청을 교체하지 않는다. "결과 없음"으로 승인할 수 있게 두지 않고 §3.7 단계 3과 같이 승인 창 `Failed`([04] §3.5, 거부만)로 끝낸다. 미확인(`Unverified`)은 전송 오류이므로 3의 결과 없음 경로다.
+6. 재시뮬레이션 diff에 처음 준비 때 없던 승인 대상(spender·operator)이나 토큰이 나오면 그 사실만 새로 조회한다(§2.5 토큰 메타데이터, §8.5 주소 분류; 이미 아는 사실은 다시 조회하지 않고, 남은 준비 예산과 16개 한도 안에서). 주소 분류의 `eth_getCode`가 실패하면(준비 단계 9도 같다) 그 주소를 분류하지 않은 채 두지 않고 고위험 경고 "주소 분류 조회(eth_getCode)에 실패했습니다 — 승인 대상이 일반 계정(EOA)인지 확인할 수 없습니다"(규칙 E27, 등급 고위험)를 더한다. 표시가 바뀌므로 3의 "다르면" 경로가 된다.
+7. 클릭 한 번은 재시뮬레이션을 한 번만 일으킨다: 재시뮬레이션을 보낸 뒤 승인 조작은 새로 시작하고, 결과가 와서 요청을 교체(또는 그대로 소비)할 때까지 승인 입력을 받지 않는다. 같은 창의 새 재시뮬레이션이 대기 중이면 RPC 작업 스레드는 앞선 것을 버린다.
 
 ## 7. calldata 해석
 

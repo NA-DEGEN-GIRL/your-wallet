@@ -171,7 +171,12 @@ impl ChainCheck {
     }
 }
 
-fn check_once(
+/// One chain check without retries (`Err` = transport or RPC failure).
+///
+/// # Errors
+///
+/// The [`RpcFailure`] of `eth_chainId` or the block-0 lookup.
+pub fn check_once(
     client: &RpcClient<'_>,
     url: &HttpsUrl,
     chain: &ChainInfo,
@@ -226,8 +231,11 @@ pub fn check_chain(
     ChainCheck::Unverified(last)
 }
 
-/// Verification state per chain for this app run (spec/03 §1.4: checked once per connection,
-/// again after a URL change; mismatches stick until restart or URL change).
+/// Verification state per chain for this app run (spec/03 §1.4: checked once after start, again
+/// after a URL change; mismatches stick until restart or URL change). It serves reads,
+/// preparation and tracking; sending signed bytes never relies on it — every broadcast and
+/// re-broadcast re-checks chain id and genesis on its own connection
+/// ([`track::broadcast_checked`], [`track::track_group`]).
 #[derive(Debug, Default)]
 pub struct ChainCache {
     states: HashMap<u64, ChainCheck>,

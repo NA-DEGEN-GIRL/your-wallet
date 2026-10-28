@@ -12,14 +12,19 @@ use yw_core::evm::abi::erc20_transfer_data;
 use yw_core::evm::address::Address;
 use yw_core::evm::amount::{U256, format_amount, format_units};
 use yw_core::evm::chain::{ChainInfo, GenesisRule, HYPEREVM_MAINNET, SimulationSupport};
-use yw_core::journal::evm::{EvmRecord, GroupKey, Transition, groups, in_flight, latest_candidate};
+use yw_core::journal::evm::{
+    EvmRecord, FLAG_MANUAL_RESEND, FLAG_RPC_HASH_MISMATCH, GroupKey, Transition, groups, in_flight,
+    latest_candidate,
+};
 use yw_core::vault::{EvmKeySource, FileKind, RecordId};
 use yw_win::clipboard;
 
 use crate::apikeys::{KeyName, mask_url};
 use crate::app::{App, AppMode, Confirm, Screen, SettingsSection};
 use crate::errors::ErrorCode;
-use crate::events::{BalanceSnapshot, JournalView, KeyJob, KeyOutcome, RpcEvent, SignFailure};
+use crate::events::{
+    BalanceSnapshot, EvmSigned, JournalView, KeyJob, KeyOutcome, RpcEvent, SignFailure,
+};
 use crate::flow::evm::form::{AddressNote, KnownAddress, Quote, check_recipient, parse_amount};
 use crate::flow::evm::prepare::{ReplaceMode, ReplaceTarget, SendIntent};
 use crate::flow::evm::track::{BroadcastOutcome, TrackInput, poll_interval_ms};
@@ -287,6 +292,8 @@ pub struct EvmUi {
     pub slots: Vec<(u64, Address)>,
     /// Job counter.
     pub next_job: u64,
+    /// Signing-ticket counter (`SignEvm` / `SignMessage` waiters).
+    pub next_ticket: u64,
     /// S17.
     pub chain_form: Option<ChainFormState>,
     /// 다시 고정.
@@ -368,6 +375,29 @@ fn now_ms() -> u64 {
 #[must_use]
 pub fn hash_text(hash: &[u8; 32]) -> String {
     hash32_text(hash)
+}
+
+/// Restores the activity notes of journaled refusals (after a restart or unlock the in-memory
+/// notes are gone, the record flags are not): a `Signed` record with `manual_resend` shows the
+/// failed broadcast with `재전송`·`폐기`, one with `rpc_hash_mismatch` the other-hash note. Notes
+/// of this session are kept.
+pub fn seed_notes<S: std::hash::BuildHasher>(
+    notes: &mut HashMap<[u8; 32], BroadcastOutcome, S>,
+    records: &[EvmRecord],
+) {
+    for record in records
+        .iter()
+        .filter(|record| record.state == yw_core::journal::evm::TxState::Signed)
+    {
+        let note = if record.has_flag(FLAG_RPC_HASH_MISMATCH) {
+            BroadcastOutcome::HashMismatch
+        } else if record.has_flag(FLAG_MANUAL_RESEND) {
+            BroadcastOutcome::Rejected { known: false }
+        } else {
+            continue;
+        };
+        notes.entry(record.tx_hash).or_insert(note);
+    }
 }
 
 impl App {
@@ -561,6 +591,7 @@ impl App {
                         "거래 저널이 손상되어 보내기를 멈췄습니다. (E-VLT-006)".to_owned(),
                     );
                 }
+                seed_notes(&mut self.evm.notes, &view.records);
                 self.evm.journal = Some(view);
                 self.schedule_tracking(true);
                 self.sol_schedule_tracking();
@@ -589,13 +620,21 @@ impl App {
                 }
                 self.refresh();
             }
-            KeyOutcome::SignedEvm(result) => self.on_signed(result),
+            KeyOutcome::SignedEvm(signed) => self.on_signed(signed),
             _ => {}
         }
     }
 
-    fn on_signed(&mut self, result: Result<crate::events::SignedSummary, SignFailure>) {
-        self.browser_tx_signed(result.as_ref().map(|signed| signed.tx_hash).map_err(|_| ()));
+    fn on_signed(&mut self, signed: EvmSigned) {
+        let EvmSigned { ticket, result } = signed;
+        if result == Err(SignFailure::Locked) {
+            self.evm_sign_locked(ticket);
+            return;
+        }
+        self.browser_tx_signed(
+            ticket,
+            result.as_ref().map(|signed| signed.tx_hash).map_err(|_| ()),
+        );
         match result {
             Ok(signed) => {
                 self.release_slot(signed.chain_id, &signed.account);
@@ -640,6 +679,7 @@ impl App {
                     SignFailure::JournalWrite(_) => {
                         format!("저널 저장 실패 — {}", ErrorCode::Vlt003.text())
                     }
+                    SignFailure::Locked => ErrorCode::App009.text(),
                 };
                 logging::warn("app", "sign.failed", &[]);
                 self.evm.send.info = Some(message.clone());
@@ -649,9 +689,16 @@ impl App {
         }
     }
 
-    /// A consumed signing item ended without a signature because of the lock (spec/04 §1.2).
+    /// A consumed signing job with `ticket` ended without a signature because of the lock: its
+    /// dApp waiter gets 4001 (spec/04 §1.2).
+    pub fn evm_sign_locked(&mut self, ticket: crate::events::SignTicket) {
+        self.browser_sign_cancelled(ticket);
+        self.evm_sign_cancelled();
+    }
+
+    /// A signing job ended without a signature because of the lock (signing jobs report
+    /// through [`Self::evm_sign_locked`] with their ticket; this keeps the slot bookkeeping).
     pub fn evm_sign_cancelled(&mut self) {
-        self.browser_sign_cancelled();
         logging::info("app", "sign.aborted", &[("reason", Field::Word("locked"))]);
         self.evm.slots.clear();
     }
@@ -938,11 +985,17 @@ impl App {
                 }
                 continue;
             };
+            // A refusal seen this session whose `manual_resend` record flag is not committed
+            // yet; once committed, tracking itself honours the flag (and still notices a node
+            // that knows the transaction after all).
             let manual = group.iter().any(|record| {
                 matches!(
                     self.evm.notes.get(&record.tx_hash),
-                    Some(BroadcastOutcome::Rejected { known: false })
-                )
+                    Some(
+                        BroadcastOutcome::Rejected { known: false }
+                            | BroadcastOutcome::ChainMismatch
+                    )
+                ) && !record.has_flag(FLAG_MANUAL_RESEND)
             });
             let drop_seen = self
                 .evm
@@ -981,7 +1034,20 @@ impl App {
         outcome: BroadcastOutcome,
         at_unix_ms: u64,
     ) {
-        self.evm.notes.insert(tx_hash, outcome);
+        // A manual `재전송` that could not even re-check the chain leaves a manual-only record:
+        // keep offering `재전송`·`폐기` rather than "서명됨".
+        let manual_only = self
+            .evm
+            .records()
+            .iter()
+            .any(|record| record.tx_hash == tx_hash && record.has_flag(FLAG_MANUAL_RESEND));
+        let note = match outcome {
+            BroadcastOutcome::ChainUnverified if manual_only => {
+                BroadcastOutcome::Rejected { known: false }
+            }
+            other => other,
+        };
+        self.evm.notes.insert(tx_hash, note);
         self.browser_broadcast(tx_hash, outcome);
         match outcome {
             BroadcastOutcome::HashMismatch => self.banner(
@@ -1009,6 +1075,7 @@ impl App {
     pub fn evm_tick(&mut self, now: u64) {
         self.tick_approval(now);
         self.tick_tracking(now);
+        self.browser_tick(now);
         if matches!(self.mode, AppMode::Unlocked { .. })
             && matches!(self.screen, Screen::Main)
             && now >= self.evm.next_balance_ms
@@ -2054,5 +2121,67 @@ pub const fn outcome_name(outcome: QueueOutcome) -> &'static str {
         QueueOutcome::TooManyPending => "TooManyPending",
         QueueOutcome::NotReady => "NotReady",
         QueueOutcome::Shutdown => "Shutdown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use yw_core::evm::address::Address;
+    use yw_core::journal::evm::{
+        EvmRecord, FLAG_MANUAL_RESEND, FLAG_RPC_HASH_MISMATCH, Role, TxState,
+    };
+
+    use super::seed_notes;
+    use crate::flow::evm::track::BroadcastOutcome;
+
+    const BESU_SIGNED: &str = "02f86e048203338301284d8301d97c828ae094000000000000000000000000000000000000aaaa8402933bc980c080a00f924cb68412c8f1cfd74d9b581c71eeaf94fff6abdde3e5b02ca6b2931dcf47a07dd1c50027c3e31f8b565e25ce68a5072110f61fce5eee81b195dd51273c2f83";
+
+    fn record(flags: u8) -> EvmRecord {
+        let sender =
+            yw_core::evm::address::parse_address("0xFE3B557E8Fb62b89F4916B721be55cEb828dBd73")
+                .unwrap_or(Address::from_bytes([0; 20]));
+        let mut record = EvmRecord::new_signed(
+            4,
+            sender,
+            819,
+            Role::Original,
+            1_790_000_000_000,
+            [7; 32],
+            "https://app.example",
+            "x",
+            yw_core::hex::decode(BESU_SIGNED).unwrap(),
+        )
+        .unwrap();
+        record.flags = flags;
+        record
+    }
+
+    /// After a restart the activity notes come back from the journal flags: a manual-resend-only
+    /// record offers `재전송`·`폐기` again (and tracking never re-sends it on its own).
+    #[test]
+    fn journal_flags_restore_the_manual_resend_notes() {
+        let manual = record(FLAG_MANUAL_RESEND);
+        let mut notes = HashMap::new();
+        seed_notes(&mut notes, std::slice::from_ref(&manual));
+        assert_eq!(
+            notes.get(&manual.tx_hash),
+            Some(&BroadcastOutcome::Rejected { known: false })
+        );
+        let other_hash = record(FLAG_RPC_HASH_MISMATCH);
+        let mut notes = HashMap::new();
+        seed_notes(&mut notes, std::slice::from_ref(&other_hash));
+        assert_eq!(
+            notes.get(&other_hash.tx_hash),
+            Some(&BroadcastOutcome::HashMismatch)
+        );
+        // Session notes win; records that are not `Signed` or carry no flag add nothing.
+        let mut notes = HashMap::from([(manual.tx_hash, BroadcastOutcome::Sent)]);
+        let mut sent = record(FLAG_MANUAL_RESEND);
+        sent.state = TxState::Broadcast;
+        seed_notes(&mut notes, &[manual.clone(), sent, record(0)]);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes.get(&manual.tx_hash), Some(&BroadcastOutcome::Sent));
     }
 }

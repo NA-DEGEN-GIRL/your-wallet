@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use common::evm::{S2_UNIX_MS, TestResult, USER, address, fake, job, ready, send_intent, world};
 use common::{Answer, FakeClock};
-use yw_app::events::{KeyOutcome, SignFailure, SignInfo};
+use yw_app::events::{EvmSigned, KeyOutcome, SignFailure, SignInfo, SignTicket};
 use yw_app::flow::evm::ChainCache;
 use yw_app::flow::evm::prepare::prepare;
 use yw_app::meta;
@@ -82,8 +82,12 @@ fn signed_record_is_committed_then_tracked_and_moved_to_activity() -> TestResult
         now_unix_ms: S2_UNIX_MS,
     };
     let mut state = JournalState::default();
-    let outcomes = state.sign(&mut vault, Box::new(approved), &info, false);
-    let Some(KeyOutcome::SignedEvm(Ok(summary))) = outcomes.first() else {
+    let outcomes = state.sign(&mut vault, SignTicket(1), Box::new(approved), &info, false);
+    let Some(KeyOutcome::SignedEvm(EvmSigned {
+        ticket: SignTicket(1),
+        result: Ok(summary),
+    })) = outcomes.first()
+    else {
         return Err(format!("not signed: {:?}", outcomes.first().map(|_| "other")).into());
     };
     assert_eq!((summary.chain_id, summary.nonce), (11_155_111, 5));
@@ -177,6 +181,7 @@ fn signed_record_is_committed_then_tracked_and_moved_to_activity() -> TestResult
     let mut later = JournalState::default();
     let outcomes = later.sign(
         &mut vault,
+        SignTicket(2),
         Box::new(approved),
         &SignInfo {
             now_unix_ms: next_at,
@@ -185,7 +190,7 @@ fn signed_record_is_committed_then_tracked_and_moved_to_activity() -> TestResult
         false,
     );
     assert!(
-        matches!(outcomes.first(), Some(KeyOutcome::SignedEvm(Ok(summary))) if summary.nonce == 6)
+        matches!(outcomes.first(), Some(KeyOutcome::SignedEvm(EvmSigned { ticket: SignTicket(2), result: Ok(summary) })) if summary.nonce == 6)
     );
     let moved = outcomes.iter().find_map(|outcome| match outcome {
         KeyOutcome::ActivityMoved(rows) => Some(rows.len()),
@@ -244,16 +249,105 @@ fn post_sign_verification_failure_stores_nothing() -> TestResult {
         role: Role::Original,
         now_unix_ms: S2_UNIX_MS,
     };
-    let outcomes = JournalState::default().sign(&mut vault, Box::new(approved), &info, false);
+    let outcomes =
+        JournalState::default().sign(&mut vault, SignTicket(3), Box::new(approved), &info, false);
     assert!(matches!(
         outcomes.first(),
-        Some(KeyOutcome::SignedEvm(Err(SignFailure::Sign(
-            SignError::PostSignVerification
-        ))))
+        Some(KeyOutcome::SignedEvm(EvmSigned {
+            ticket: SignTicket(3),
+            result: Err(SignFailure::Sign(SignError::PostSignVerification))
+        }))
     ));
     assert_eq!(outcomes.len(), 1, "no journal view: nothing was written");
     assert!(JournalState::default().load(&vault)?.records.is_empty());
     drop(vault);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// spec/04 §1.2 with signing tickets: `Lock` cancels queued signing jobs and each answers its own
+/// ticket (the UI matches waiters by ticket, never by queue order).
+#[test]
+fn lock_cancelled_signing_jobs_report_their_tickets() -> TestResult {
+    use yw_app::events::{
+        KeyJob, KeyQueue, KeyResult, LockSignal, MessageSignFailure, MessageSigned,
+    };
+    let rpc = fake(world(11_155_111, SEPOLIA_GENESIS, Vec::new()));
+    let clock = FakeClock::at(S2_UNIX_MS);
+    let job = job(sepolia(), address(USER)?, send_intent()?);
+    let prepared = ready(
+        prepare(
+            &rpc.shared(),
+            &mut ChainCache::default(),
+            &job,
+            &clock,
+            &|_| {},
+        )
+        .outcome,
+    )?;
+    let mut store = ApprovalStore::new();
+    let first = store.issue(prepared.draft.clone(), 1, S2_UNIX_MS)?;
+    let first = store.consume(first.id, first.digest, 2)?;
+    let mut draft = prepared.draft;
+    draft.id = yw_core::approval::ApprovalId([8; 16]);
+    let second = store.issue(draft, 3, S2_UNIX_MS)?;
+    let second = store.consume(second.id, second.digest, 4)?;
+    let info = SignInfo {
+        origin: "https://app.example".to_owned(),
+        label: "x".to_owned(),
+        role: Role::Original,
+        now_unix_ms: S2_UNIX_MS,
+    };
+    let queue = KeyQueue::default();
+    queue.push(
+        1,
+        KeyJob::SignEvm {
+            ticket: SignTicket(11),
+            approved: Box::new(first),
+            info,
+        },
+    );
+    queue.push(
+        1,
+        KeyJob::SignMessage {
+            ticket: SignTicket(12),
+            approved: Box::new(second),
+            typed: false,
+        },
+    );
+    queue.push(2, KeyJob::Lock);
+    queue.push(2, KeyJob::Shutdown);
+    let dir = temp_dir("lock-tickets")?;
+    let results: std::sync::Mutex<Vec<KeyResult>> = std::sync::Mutex::new(Vec::new());
+    yw_app::workers::key::run(
+        yw_app::workers::key::KeyWorker::new(&dir),
+        &queue,
+        &|result| {
+            if let Ok(mut list) = results.lock() {
+                list.push(result);
+            }
+        },
+        &LockSignal::default(),
+    );
+    let results = results.into_inner().map_err(|_| "poisoned")?;
+    assert!(matches!(
+        results.first().map(|result| &result.outcome),
+        Some(KeyOutcome::SignedEvm(EvmSigned {
+            ticket: SignTicket(11),
+            result: Err(SignFailure::Locked)
+        }))
+    ));
+    assert!(matches!(
+        results.get(1).map(|result| &result.outcome),
+        Some(KeyOutcome::SignedMessage(MessageSigned {
+            ticket: SignTicket(12),
+            result: Err(MessageSignFailure::Locked)
+        }))
+    ));
+    assert!(matches!(
+        results.get(2).map(|result| &result.outcome),
+        Some(KeyOutcome::LockDone)
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

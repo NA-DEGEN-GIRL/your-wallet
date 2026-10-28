@@ -458,17 +458,22 @@ impl JournalState {
 
     /// Signs an approved transaction: room check (moving terminal groups to activity if
     /// needed), `sign_transaction` with post-sign verification, the `Signed` record committed —
-    /// only then is the result returned for broadcast (spec/03 §5.3).
+    /// only then is the result returned for broadcast (spec/03 §5.3). The result carries the
+    /// job's `ticket` (its waiter on the UI thread).
     pub fn sign(
         &mut self,
         vault: &mut Vault,
+        ticket: crate::events::SignTicket,
         approved: Box<Approved>,
         info: &SignInfo,
         alt: bool,
     ) -> Vec<KeyOutcome> {
         let mut out = Vec::new();
         let result = self.sign_inner(vault, *approved, info, alt, &mut out);
-        out.insert(0, KeyOutcome::SignedEvm(result));
+        out.insert(
+            0,
+            KeyOutcome::SignedEvm(crate::events::EvmSigned { ticket, result }),
+        );
         out
     }
 

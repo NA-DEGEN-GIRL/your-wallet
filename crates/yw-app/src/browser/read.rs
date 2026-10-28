@@ -153,10 +153,22 @@ fn block_number(client: &RpcClient<'_>, url: &HttpsUrl) -> Result<u64, ProviderE
     }
 }
 
+/// spec/05 §3.5: an answer over the `RESPONSE_LIMITS` (bytes, depth, nodes, items) is -32603
+/// `Response too large.`; malformed JSON is 4901.
+const fn parse_error(error: yw_json::ParseError) -> ProviderError {
+    match error {
+        yw_json::ParseError::TooLarge
+        | yw_json::ParseError::TooDeep
+        | yw_json::ParseError::TooManyNodes
+        | yw_json::ParseError::TooManyItems => ProviderError::ResponseTooLarge,
+        _ => ProviderError::ChainUnavailable,
+    }
+}
+
 /// One JSON-RPC call with the spec/05 §3.5 mapping: transport, TLS, timeout, non-2xx (except
-/// 429) and malformed answers → 4901; 429 → -32005; a body over the bound → -32603 `Response
-/// too large.`; a JSON-RPC `error` → sanitized `Upstream`; a result above 1,044,480 bytes →
-/// `ResponseTooLarge`.
+/// 429) and malformed answers → 4901; 429 → -32005; a body or JSON structure over the bounds →
+/// -32603 `Response too large.`; a JSON-RPC `error` → sanitized `Upstream`; a result above
+/// 1,044,480 bytes → `ResponseTooLarge`.
 ///
 /// # Errors
 ///
@@ -188,8 +200,7 @@ pub fn forward(client: &RpcClient<'_>, url: &HttpsUrl, method: Method, params: V
         max_bytes: MAX_READ_RESPONSE,
         ..Limits::RESPONSE
     };
-    let value =
-        yw_json::parse(&reply.body, &limits).map_err(|_| ProviderError::ChainUnavailable)?;
+    let value = yw_json::parse(&reply.body, &limits).map_err(parse_error)?;
     let object = value.as_object().ok_or(ProviderError::ChainUnavailable)?;
     if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
         || object
@@ -218,4 +229,57 @@ pub fn forward(client: &RpcClient<'_>, url: &HttpsUrl, method: Method, params: V
         return Err(ProviderError::ResponseTooLarge);
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use yw_core::policy::{Method, ProviderError};
+    use yw_json::Value;
+    use yw_win::http::{HttpError, HttpsUrl};
+
+    use super::forward;
+    use crate::rpc::{HttpReply, RpcClient, Transport};
+
+    struct Raw(Vec<u8>);
+
+    impl Transport for Raw {
+        fn post_json(
+            &self,
+            _url: &HttpsUrl,
+            _body: &[u8],
+            _max_response: usize,
+        ) -> Result<HttpReply, HttpError> {
+            Ok(HttpReply {
+                status: 200,
+                body: self.0.clone(),
+            })
+        }
+    }
+
+    fn read(body: &str) -> Result<Value, ProviderError> {
+        let url = HttpsUrl::parse("https://rpc.example.test/").unwrap();
+        let transport = Raw(body.as_bytes().to_vec());
+        forward(
+            &RpcClient::new(&transport),
+            &url,
+            Method::BlockNumber,
+            Value::Array(Vec::new()),
+        )
+    }
+
+    /// spec/05 §3.5: an answer over `RESPONSE_LIMITS` is -32603 `Response too large.`, only
+    /// malformed JSON is 4901.
+    #[test]
+    fn json_over_the_response_limits_is_too_large() {
+        let deep = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"result":{}1{}}}"#,
+            "[".repeat(40),
+            "]".repeat(40)
+        );
+        assert_eq!(read(&deep), Err(ProviderError::ResponseTooLarge));
+        assert_eq!(
+            read(r#"{"jsonrpc":"2.0","id":"#),
+            Err(ProviderError::ChainUnavailable)
+        );
+    }
 }
