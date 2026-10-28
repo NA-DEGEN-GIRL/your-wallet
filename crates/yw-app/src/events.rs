@@ -15,6 +15,7 @@ use yw_core::evm::sign::SignError;
 use yw_core::journal::btc::BtcRecord;
 use yw_core::journal::evm::{EvmRecord, GroupKey, Role, Transition};
 use yw_core::journal::sol::{SolRecord, SolTransition};
+use yw_core::keyimport::{BtcKeyInfo, ImportChain, ImportPreview, ImportSpec};
 use yw_core::secret::{SecretString, Zeroizing};
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::{SolAddress, SolCluster, SolSignError};
@@ -56,6 +57,20 @@ pub enum RevealWhat {
     Mnemonic,
     /// An EVM private key (W09).
     PrivateKey(EvmKeySource),
+    /// An imported key of any chain in its export format (W09: EVM hex, Solana base58 keypair,
+    /// Bitcoin WIF).
+    ImportedKey(RecordId),
+}
+
+/// An imported key just stored in the vault (public facts only).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImportedAccount {
+    /// EVM (`tag 2`).
+    Evm(RecordId, Address),
+    /// Solana (`tag 3`).
+    Sol(RecordId, SolAddress),
+    /// Bitcoin (`tag 4`).
+    Btc(RecordId, BtcKeyInfo),
 }
 
 /// A key worker job (spec/04 §1.2). Buffers are moved, never copied.
@@ -140,6 +155,37 @@ pub enum KeyJob {
     RecoverFromPrev {
         /// Password.
         password: Zeroizing<Vec<u8>>,
+    },
+    /// "개인키로 시작하기": hold the password and the key text, parse the key and report the
+    /// address to confirm (no vault is written).
+    PreviewKeyStart {
+        /// Vault password (`None` = keep the one already held after a failed preview).
+        password: Option<Zeroizing<Vec<u8>>>,
+        /// Chain (and Bitcoin script type).
+        spec: ImportSpec,
+        /// Key text.
+        key: Zeroizing<Vec<u8>>,
+    },
+    /// Wipe the held key text (and the password unless `keep_password`).
+    DiscardKeyStart {
+        /// Keep the password for another key attempt (`다릅니다`).
+        keep_password: bool,
+    },
+    /// `Vault::create_with_key` with the held buffers, then the key-only default meta.
+    CommitKeyStart,
+    /// `Vault::import_key` (Solana, Bitcoin; `Unlocked` only).
+    ImportKey {
+        /// Chain (and Bitcoin script type).
+        spec: ImportSpec,
+        /// Key text.
+        key: Zeroizing<Vec<u8>>,
+    },
+    /// `Vault::remove_imported_key` (any chain).
+    RemoveImportedKey {
+        /// Password.
+        password: Zeroizing<Vec<u8>>,
+        /// Record.
+        id: RecordId,
     },
     /// Read meta (or the default), refresh the address caches.
     LoadMeta,
@@ -406,6 +452,11 @@ impl KeyJob {
             Self::ImportPrivateKey { .. } => "ImportPrivateKey",
             Self::RemoveRawKey { .. } => "RemoveRawKey",
             Self::RecoverFromPrev { .. } => "RecoverFromPrev",
+            Self::PreviewKeyStart { .. } => "PreviewKeyStart",
+            Self::DiscardKeyStart { .. } => "DiscardKeyStart",
+            Self::CommitKeyStart => "CommitKeyStart",
+            Self::ImportKey { .. } => "ImportKey",
+            Self::RemoveImportedKey { .. } => "RemoveImportedKey",
             Self::LoadMeta => "LoadMeta",
             Self::SaveMeta { .. } => "SaveMeta",
             Self::ResolveSidecar { .. } => "ResolveSidecar",
@@ -472,6 +523,8 @@ pub struct MetaLoaded {
     pub mismatch: bool,
     /// `prefs` was reset.
     pub prefs_reset: bool,
+    /// `false` for a key-only wallet (no recovery words, spec/02 §4.6).
+    pub has_mnemonic: bool,
 }
 
 /// What a key job produced.
@@ -505,6 +558,14 @@ pub enum KeyOutcome {
     RawKeyImported(Result<(RecordId, Address), VaultError>),
     /// Raw key removed.
     RawKeyRemoved(Result<RecordId, VaultError>),
+    /// "개인키로 시작하기" preview: the address to confirm.
+    KeyStartPreview(Result<ImportPreview, KeyError>),
+    /// "개인키로 시작하기" committed (key-only vault created and unlocked).
+    KeyStartCommitted(Result<(), VaultError>),
+    /// A Solana or Bitcoin key imported.
+    KeyImported(Result<ImportedAccount, VaultError>),
+    /// An imported key removed (its chain).
+    ImportedKeyRemoved(Result<(RecordId, ImportChain), VaultError>),
     /// Meta loaded.
     Meta(Result<MetaLoaded, VaultError>),
     /// Meta saved.

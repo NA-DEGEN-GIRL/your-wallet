@@ -18,6 +18,9 @@ pub enum ProviderError {
     /// value (`Unlocked { alt_passphrase: true }`, spec/02 §7.5). Connect and signing requests
     /// are refused; reads continue.
     PassphraseUnverified,
+    /// 4100 with the reason: the wallet has no EVM account (a key-only wallet started from a
+    /// Solana or Bitcoin key, spec/02 §8.5). Connect is refused until an EVM key is imported.
+    NoEvmAccount,
     /// 4200 `Unsupported method.`
     UnsupportedMethod,
     /// 4900 `Wallet is unavailable.`
@@ -69,7 +72,7 @@ impl ProviderError {
     pub const fn code(&self) -> i64 {
         match self {
             Self::UserRejected | Self::Expired => 4001,
-            Self::Unauthorized | Self::PassphraseUnverified => 4100,
+            Self::Unauthorized | Self::PassphraseUnverified | Self::NoEvmAccount => 4100,
             Self::UnsupportedMethod => 4200,
             Self::Unavailable | Self::ConnectionClosed | Self::ExtensionReloaded => 4900,
             Self::ChainUnavailable => 4901,
@@ -94,6 +97,9 @@ impl ProviderError {
             Self::Unauthorized => "Unauthorized.",
             Self::PassphraseUnverified => {
                 "Unauthorized: the wallet was opened with an unverified passphrase, so connecting and signing are disabled. Lock the wallet and unlock it with the correct passphrase."
+            }
+            Self::NoEvmAccount => {
+                "Unauthorized: this wallet has no EVM account. Import an EVM private key in the Your Wallet app first."
             }
             Self::UnsupportedMethod => "Unsupported method.",
             Self::Unavailable => "Wallet is unavailable.",

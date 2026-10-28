@@ -11,6 +11,7 @@
 //! [`FormAction`].
 
 use yw_core::bip39::is_word;
+use yw_core::keyimport::ImportChain;
 use yw_core::password::VaultPassword;
 use yw_core::secret::{SecretString, Zeroizing};
 use yw_win::ui::{DrawFlags, PaintDc, Rect, scale};
@@ -40,6 +41,12 @@ pub const SECRET_TIMER_MS: u32 = 50;
 pub const MNEMONIC_TEXT_MAX: usize = 216;
 /// T-IMPORTED-KEY (W07, spec/04 §2.16): imported keys are not covered by the recovery words.
 pub const T_IMPORTED_KEY_BACKUP: &str = "주의: 가져온 개인키는 이 지갑의 복구 단어(24단어)로 복구되지 않습니다. 이 PC나 지갑 파일을 잃으면 이 계정은 원래 개인키로만 되살릴 수 있으니, 원래 개인키를 따로 안전하게 보관하세요.";
+/// T-KEY-ONLY (W07 of a wallet without recovery words, spec/04 §2.16).
+pub const T_KEY_ONLY_BACKUP: &str = "주의: 이 지갑에는 복구 단어가 없습니다. 이 계정의 백업은 지금 입력하는 원래 개인키뿐입니다. 이 PC나 지갑 파일을 잃으면 원래 개인키로만 되살릴 수 있으니, 원래 개인키를 종이 등 안전한 곳에 따로 보관하세요.";
+/// W07 help of a Solana key (spec/04 §2.18).
+pub const T_SOL_KEY_INPUT: &str = "Phantom·Solflare의 '개인키 내보내기'로 받은 base58 문자열(64바이트 keypair) 또는 solana-keygen JSON 파일의 내용([숫자 64개])을 붙여넣으세요. 주소(32바이트)는 개인키가 아닙니다.";
+/// W07 help of a Bitcoin key (spec/04 §2.18).
+pub const T_BTC_KEY_INPUT: &str = "WIF 형식 개인키(5·K·L로 시작하면 mainnet, 9·c로 시작하면 testnet4)를 붙여넣으세요. 주소 형식은 앞 화면에서 고른 것으로 만듭니다.";
 const VK_TAB: u16 = 0x09;
 const VK_ESCAPE: u16 = 0x1B;
 const VK_INSERT: u16 = 0x2D;
@@ -63,8 +70,14 @@ pub enum SecretKind {
         /// Two fields.
         confirm: bool,
     },
-    /// W07 개인키 가져오기.
-    PrivateKey,
+    /// W07 개인키 가져오기 (`no_words`: the wallet has no recovery words — key-only wallet or
+    /// "개인키로 시작하기").
+    PrivateKey {
+        /// Chain of the key (character set, length, help).
+        chain: ImportChain,
+        /// The T-IMPORTED-KEY variant without recovery words.
+        no_words: bool,
+    },
     /// W08 니모닉 표시 (`create` = first display with the 2 s acknowledgement).
     ShowMnemonic {
         /// Creation flow.
@@ -90,7 +103,7 @@ impl SecretKind {
             Self::ChangePassword => "W04",
             Self::Mnemonic => "W05",
             Self::Passphrase { .. } => "W06",
-            Self::PrivateKey => "W07",
+            Self::PrivateKey { .. } => "W07",
             Self::ShowMnemonic { .. } => "W08",
             Self::ShowKey => "W09",
             Self::Backup { .. } => "W10",
@@ -109,7 +122,7 @@ impl SecretKind {
         matches!(
             self,
             Self::Mnemonic
-                | Self::PrivateKey
+                | Self::PrivateKey { .. }
                 | Self::ShowMnemonic { .. }
                 | Self::ShowKey
                 | Self::Backup { .. }
@@ -135,7 +148,7 @@ impl SecretKind {
             Self::ChangePassword => "비밀번호 변경",
             Self::Mnemonic => "복구 단어 입력",
             Self::Passphrase { .. } => "passphrase 입력",
-            Self::PrivateKey => "개인키 가져오기",
+            Self::PrivateKey { .. } => "개인키 가져오기",
             Self::ShowMnemonic { .. } => "복구 단어 (니모닉)",
             Self::ShowKey => "개인키 보기",
             Self::Backup { .. } => "백업 확인",
@@ -149,7 +162,7 @@ impl SecretKind {
             Self::ShowMnemonic { .. } | Self::ShowKey => (820, 680),
             Self::Mnemonic => (720, 600),
             // W07 also carries the T-IMPORTED-KEY backup warning.
-            Self::Backup { .. } | Self::ChangePassword | Self::PrivateKey => (640, 560),
+            Self::Backup { .. } | Self::ChangePassword | Self::PrivateKey { .. } => (640, 560),
             _ => (640, 480),
         }
     }
@@ -383,13 +396,30 @@ fn slots_for(kind: SecretKind) -> Vec<Slot> {
         SecretKind::Passphrase { confirm: false } => {
             vec![slot("passphrase", Charset::Printable, 1, 256, true)]
         }
-        SecretKind::PrivateKey => vec![slot(
+        SecretKind::PrivateKey {
+            chain: ImportChain::Evm,
+            ..
+        } => vec![slot(
             "개인키 (16진수 64자리)",
             Charset::PrivateKeyHex,
             64,
             66,
             false,
         )],
+        SecretKind::PrivateKey {
+            chain: ImportChain::Sol,
+            ..
+        } => vec![slot(
+            "Solana 개인키 (base58 keypair 또는 JSON 배열)",
+            Charset::KeyText,
+            1,
+            yw_core::keyimport::SOL_KEY_TEXT_MAX,
+            false,
+        )],
+        SecretKind::PrivateKey {
+            chain: ImportChain::Btc,
+            ..
+        } => vec![slot("Bitcoin 개인키 (WIF)", Charset::Base58, 51, 52, false)],
         SecretKind::Backup { positions } => {
             let mut out: Vec<Option<Slot>> = positions
                 .iter()
@@ -434,9 +464,19 @@ fn intro(kind: SecretKind, words: usize) -> Vec<String> {
         SecretKind::Passphrase { confirm: false } => {
             vec!["이 지갑의 BIP39 passphrase를 입력하세요.".to_owned()]
         }
-        SecretKind::PrivateKey => vec![
-            "가져올 EVM 개인키(16진수 64자리, 0x 선택)를 입력하세요.".to_owned(),
-            T_IMPORTED_KEY_BACKUP.to_owned(),
+        SecretKind::PrivateKey { chain, no_words } => vec![
+            match chain {
+                ImportChain::Evm => {
+                    "가져올 EVM 개인키(16진수 64자리, 0x 선택)를 입력하세요.".to_owned()
+                }
+                ImportChain::Sol => T_SOL_KEY_INPUT.to_owned(),
+                ImportChain::Btc => T_BTC_KEY_INPUT.to_owned(),
+            },
+            if no_words {
+                T_KEY_ONLY_BACKUP.to_owned()
+            } else {
+                T_IMPORTED_KEY_BACKUP.to_owned()
+            },
         ],
         SecretKind::ShowMnemonic { .. } => vec![format!(
             "아래 {words}단어와 첫 주소를 순서대로 종이에 적으세요. 이 단어들이 지갑의 유일한 백업이며, 아는 사람은 누구든 자산을 옮길 수 있습니다. 이 창은 화면 캡처에서 제외됩니다."
@@ -705,10 +745,19 @@ impl SecretForm {
             SecretKind::Passphrase { confirm: true } if !equal(0, 1) => {
                 return Err(ErrorCode::Inp002.text());
             }
-            SecretKind::PrivateKey => {
+            SecretKind::PrivateKey {
+                chain: ImportChain::Evm,
+                ..
+            } => {
                 if let Some(slot) = self.slots.first() {
                     finalize_private_key(&slot.field).map_err(ErrorCode::text)?;
                 }
+            }
+            SecretKind::PrivateKey {
+                chain: ImportChain::Btc,
+                ..
+            } if self.slots.iter().any(|slot| slot.field.len() < slot.min) => {
+                return Err(ErrorCode::Inp023.text());
             }
             SecretKind::Backup { .. }
                 if self.slots.iter().any(|slot| slot.field.len() < slot.min) =>
@@ -761,8 +810,24 @@ impl SecretForm {
             if self.kind == SecretKind::Mnemonic && value.last() == Some(&b' ') {
                 value.pop();
             }
-            if self.kind == SecretKind::PrivateKey {
+            if matches!(
+                self.kind,
+                SecretKind::PrivateKey {
+                    chain: ImportChain::Evm,
+                    ..
+                }
+            ) {
                 value = finalize_private_key(&slot.field).unwrap_or_default();
+            }
+            if matches!(
+                self.kind,
+                SecretKind::PrivateKey {
+                    chain: ImportChain::Sol,
+                    ..
+                }
+            ) && value.last() == Some(&b' ')
+            {
+                value.pop();
             }
             values.push(value);
             slot.field.clear();
@@ -1315,8 +1380,16 @@ impl SecretForm {
         dc.set_text_color(theme::TEXT);
         if self.kind == SecretKind::ShowKey {
             dc.select_font(&fonts.mono_large);
-            let mut units = Zeroizing::new(Vec::with_capacity(display.text.expose().len()));
-            units.extend(display.text.expose().encode_utf16());
+            let text = display.text.expose();
+            // A Solana keypair (up to 88 characters, no spaces) does not fit one line: paint it
+            // in lines of 44 (the copied text is unchanged).
+            let mut units = Zeroizing::new(Vec::with_capacity(text.len().saturating_add(2)));
+            for (index, unit) in text.encode_utf16().enumerate() {
+                if text.len() > 64 && index > 0 && index % 44 == 0 {
+                    units.push(0x000A);
+                }
+                units.push(unit);
+            }
             let box_rect = Rect::new(margin, y, width, px(80));
             dc.round_rect(box_rect, px(6), theme::BG, theme::CARD_BORDER);
             dc.draw_text(&units, box_rect.inset(px(12)), DrawFlags::WRAP);
@@ -1598,7 +1671,7 @@ impl SecretForm {
             SecretKind::Unlock => "잠금 해제".to_owned(),
             SecretKind::ChangePassword => "변경".to_owned(),
             SecretKind::Mnemonic | SecretKind::SetPassword => "다음".to_owned(),
-            SecretKind::PrivateKey => "가져오기".to_owned(),
+            SecretKind::PrivateKey { .. } => "가져오기".to_owned(),
             _ => "확인".to_owned(),
         };
         let mut right: Vec<(Button, String)> = vec![(Button::Primary, primary_label)];

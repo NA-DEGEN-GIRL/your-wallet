@@ -3018,11 +3018,19 @@ impl crate::app::App {
             meta.prefs.tab = crate::meta::Tab::Btc;
             self.save_meta();
         }
+        if self.key_only() {
+            // A key-only wallet has no derived Bitcoin account (spec/02 §8.5): imported keys only.
+            self.refresh();
+            return;
+        }
         self.btc_call(BtcUi::open_tab);
     }
 
     /// Meta was loaded (unlock): `null` meta with BTC enabled → create and discover.
     pub fn btc_after_meta(&mut self) {
+        if self.key_only() {
+            return;
+        }
         self.btc_call(BtcUi::after_meta);
     }
 
@@ -3030,7 +3038,11 @@ impl crate::app::App {
     /// opened once the journal is read (refresh on open, spec/08 §4.7).
     pub fn btc_journal_changed(&mut self) {
         self.btc_call(BtcUi::journal_changed);
-        if self.btc_tab_active() && self.btc.refresh.job == 0 && !self.btc.discovery.running {
+        if self.btc_tab_active()
+            && !self.key_only()
+            && self.btc.refresh.job == 0
+            && !self.btc.discovery.running
+        {
             self.btc_call(BtcUi::open_tab);
         }
     }
@@ -3048,6 +3060,9 @@ impl crate::app::App {
     /// Main-timer part (60 s cycle while unlocked).
     pub fn btc_tick(&mut self, now: u64) {
         let _ = now;
+        if self.key_only() {
+            return;
+        }
         self.btc_call(BtcUi::tick);
     }
 

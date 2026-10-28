@@ -11,6 +11,7 @@ pub mod app_btc;
 pub mod app_btc_commands;
 pub mod app_evm;
 pub mod app_evm_commands;
+pub mod app_keys;
 pub mod app_llm;
 pub mod app_sol;
 pub mod app_sol_commands;

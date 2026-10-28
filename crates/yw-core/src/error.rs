@@ -50,6 +50,17 @@ pub enum KeyError {
     InvalidPrivateKey,
     /// `decode_xkey` rejected the string (test API only).
     InvalidExtendedKey,
+    /// A Solana private key is neither a base58 64-byte keypair nor a JSON array of 64 numbers
+    /// (spec/02 §8.4).
+    SolKeyFormat,
+    /// The Solana key text decodes to 32 bytes: most likely an address, not a private key.
+    SolKeyIsAddress,
+    /// The public half of a Solana keypair is not the public key of its secret half.
+    SolKeyMismatch,
+    /// A Bitcoin WIF is malformed (length, characters, checksum, version, suffix or range).
+    WifFormat,
+    /// An uncompressed WIF key was paired with a script type other than P2PKH.
+    WifUncompressedScript,
     /// A library returned an unexpected error, or the word list failed to load.
     Internal,
 }
@@ -80,6 +91,21 @@ impl fmt::Display for KeyError {
             }
             Self::DerivationFailed => formatter.write_str("이 경로에서 키를 파생할 수 없습니다."),
             Self::InvalidPrivateKey => formatter.write_str("사용할 수 없는 개인키입니다."),
+            Self::SolKeyFormat => formatter.write_str(
+                "Solana 개인키는 base58 64바이트 keypair(Phantom·Solflare 내보내기) 또는 숫자 64개의 JSON 배열(solana-keygen 파일)이어야 합니다.",
+            ),
+            Self::SolKeyIsAddress => formatter.write_str(
+                "입력한 값은 32바이트라 개인키가 아니라 Solana 주소(공개키)로 보입니다. 지갑의 '개인키 내보내기'로 받은 값을 넣으세요.",
+            ),
+            Self::SolKeyMismatch => formatter.write_str(
+                "keypair의 공개키 부분이 개인키와 맞지 않습니다. 값이 잘리거나 바뀌지 않았는지 확인하세요.",
+            ),
+            Self::WifFormat => formatter.write_str(
+                "Bitcoin 개인키는 WIF(5·K·L·9·c로 시작하는 base58 51–52자)여야 합니다. 글자와 체크섬을 확인하세요.",
+            ),
+            Self::WifUncompressedScript => formatter.write_str(
+                "압축되지 않은 키(5·9로 시작하는 WIF)는 P2PKH(레거시) 주소에만 쓸 수 있습니다.",
+            ),
             Self::InvalidEntropyLength
             | Self::InvalidPath
             | Self::InvalidAccountIndex
@@ -153,6 +179,11 @@ pub enum VaultError {
     DuplicateKey,
     /// No record with this identifier.
     RecordNotFound,
+    /// The wallet has no recovery words (a key-only vault, spec/02 §4.6): derivation, the
+    /// mnemonic reveal and the BIP39 passphrase do not exist.
+    NoMnemonic,
+    /// The last key of a key-only vault cannot be removed (a vault holds at least one record).
+    LastKey,
 }
 
 impl From<KeyError> for VaultError {
@@ -181,8 +212,10 @@ impl fmt::Display for VaultError {
             Self::BackupNotConfirmed => "백업 확인을 먼저 끝내세요.",
             Self::BackupMismatch => "입력한 단어 또는 주소가 맞지 않습니다.",
             Self::ChallengeStale => "백업 확인 문항이 바뀌었습니다. 새 문항으로 다시 입력하세요.",
-            Self::RecordLimit => "가져온 개인키는 최대 15개입니다.",
+            Self::RecordLimit => "가져온 개인키는 체인마다 최대 15개입니다.",
             Self::DuplicateKey => "이미 가져온 개인키입니다.",
+            Self::NoMnemonic => "이 지갑에는 복구 단어가 없습니다(개인키로 시작한 지갑).",
+            Self::LastKey => "개인키로 시작한 지갑의 마지막 키는 지울 수 없습니다.",
         };
         formatter.write_str(text)
     }

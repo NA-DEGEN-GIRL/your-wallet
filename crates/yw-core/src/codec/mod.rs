@@ -2,6 +2,7 @@
 
 pub mod base58;
 pub mod transcript;
+pub mod wif;
 
 /// SHA-256 of `bytes` (digest helper for transcripts and independent golden checks).
 #[must_use]

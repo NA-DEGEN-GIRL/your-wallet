@@ -14,7 +14,7 @@ mod format;
 mod session;
 
 pub use format::{check_vault_header, peek_generation};
-pub use session::{SidecarContents, Vault};
+pub use session::{ImportedKeys, SidecarContents, Vault};
 
 /// `vault.ywv` magic.
 pub const VAULT_MAGIC: [u8; 8] = *b"YWVLT003";
@@ -44,10 +44,12 @@ pub const DEK_LEN: usize = 32;
 pub const WRAPPED_DEK_LEN: usize = 48;
 /// Smallest payload ciphertext (64-byte plaintext + tag).
 pub const PAYLOAD_CT_MIN: u32 = 80;
-/// Largest payload ciphertext.
-pub const PAYLOAD_CT_MAX: u32 = 2_048;
-/// One `Bip39` record plus at most 15 `EvmRawKey` records.
-pub const MAX_RECORDS: usize = 16;
+/// Largest payload ciphertext: 16 + 64 (24-word `Bip39`) + 15 × (57 + 89 + 60) imported keys
+/// + 16 = 3,186 bytes fit; files written before key import never exceed 2,048.
+pub const PAYLOAD_CT_MAX: u32 = 4_096;
+/// At most one `Bip39` record plus at most 15 imported keys of each chain (`EvmRawKey`,
+/// `SolKey`, `BtcKey`).
+pub const MAX_RECORDS: usize = 46;
 /// Locked slot layout: `[0..32)` DEK, `[32]` passphrase present, `[33..35)` passphrase length
 /// (u16 BE, 0..=256), `[35..291)` passphrase bytes, `[291..320)` zero.
 pub const SLOT_LEN: usize = 320;
@@ -200,6 +202,37 @@ pub enum KeyRef {
         /// Non-hardened index.
         index: u32,
     },
+    /// An imported Bitcoin key (`tag 4`); its network and script type are in the record
+    /// ([`Vault::btc_imported_keys`]).
+    BtcImported(RecordId),
+}
+
+/// Source of a Bitcoin signing key: derived from the mnemonic, or an imported WIF key
+/// (spec/02 §8.4). The signer turns it into a [`KeyRef`] for `Vault::with_secp_key`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BtcKeySource {
+    /// `m/84'/{coin}'/0'/{chain}/{index}`.
+    Derived {
+        /// Coin type.
+        coin: crate::bip32::path::BtcCoin,
+        /// Receive or change chain.
+        chain: crate::bip32::path::BtcChain,
+        /// Non-hardened index.
+        index: u32,
+    },
+    /// An imported key record (`tag 4`).
+    Imported(RecordId),
+}
+
+impl BtcKeySource {
+    /// The signing key reference of this source.
+    #[must_use]
+    pub const fn key_ref(self) -> KeyRef {
+        match self {
+            Self::Derived { coin, chain, index } => KeyRef::Btc { coin, chain, index },
+            Self::Imported(id) => KeyRef::BtcImported(id),
+        }
+    }
 }
 
 /// Identifier of the current backup challenge.

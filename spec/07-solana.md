@@ -10,7 +10,8 @@ D25·D27·D29의 세부 명세다. Solana는 yw-app 화면에서만 쓰는 보�
 |---|---|---|
 | **v1 (M7)** | SOL 받기(주소·QR), SOL 잔액(참고), SOL 보내기(템플릿 T_SOL), 보내기 최대, 복구 스캔(§3.3)과 비표준 경로 자금 이동, mainnet·devnet | 필수 |
 | **v1.1 (M7 후속)** | 허용 목록 SPL 토큰(USDC·USDT, classic Token program `Tokenkeg…`만) 받기·잔액·보내기(템플릿 T_SPL), 받는 쪽 ATA 자동 생성(CreateIdempotent), 복구 스캔의 토큰 잔액·토큰별 전액 이동 | v1 완료 조건을 깨지 않는다. 구현 2026-10-28([acceptance](../docs/acceptance/m7-spl-20261028.md)) |
-| **범위 밖** | Token-2022, 허용 목록 밖 토큰·NFT(잔액도 숨김), v0·v1(0x81) 트랜잭션, address lookup table, durable nonce, 스테이킹, 스왑, 계정 닫기, memo, dApp 연결(Wallet Standard), 외부 트랜잭션·메시지 서명(`signMessage` 포함), 개인키·64바이트 keypair 가져오기·내보내기, Solana Pay URI(`solana:`), 받은 거래 내역, testnet 클러스터, 다중 서명자 | 추가하려면 spec.md D25를 먼저 고친다 |
+| **가져온 개인키 (2026-10-29)** | base58 64바이트 keypair(Phantom·Solflare 내보내기)·`solana-keygen` JSON 배열 가져오기(§3.4), 그 계정의 SOL·허용 목록 SPL 받기·잔액·보내기(T_SOL·T_SPL 그대로), 가져온 키 내보내기(base58 keypair)·삭제, 개인키로 시작한 지갑(복구 단어 없음, [02] §8.5) | D9·D25. 구현 2026-10-29([acceptance](../docs/acceptance/keys-import-20261029.md)) |
+| **범위 밖** | Token-2022, 허용 목록 밖 토큰·NFT(잔액도 숨김), v0·v1(0x81) 트랜잭션, address lookup table, durable nonce, 스테이킹, 스왑, 계정 닫기, memo, dApp 연결(Wallet Standard), 외부 트랜잭션·메시지 서명(`signMessage` 포함), 파생(니모닉) 계정의 개인키 내보내기, Solana Pay URI(`solana:`), 받은 거래 내역, testnet 클러스터, 다중 서명자 | 추가하려면 spec.md D25를 먼저 고친다 |
 
 - 수수료 지불자는 항상 보내는 계정이다. 서명자는 항상 1명이다.
 - 한 (클러스터, 보내는 계정)에 진행 중(`Pending`, §14) 전송은 1개만 허용한다(D20과 같은 규칙).
@@ -30,7 +31,7 @@ pub struct SolAddress([u8; 32]);                       // Debug는 base58 전체
 pub enum SolCluster { Mainnet = 1, Devnet = 2 }
 // SolKeySource는 [02] §3.5 `yw_core::slip10::SolKeySource`를 그대로 쓴다(이 문서에서 다시 정의하지 않는다, AccountIndex는 [02] §3.3):
 //   enum SolKeySource { Standard(AccountIndex), Bip44Account(AccountIndex), Bip44Root, RawSeed,
-//                       SolletLegacy { wallet: u32, account: u32 } }
+//                       SolletLegacy { wallet: u32, account: u32 }, Imported }   // Imported: §3.4
 pub enum SolAsset { Sol, Spl(&'static SplAllowEntry) }   // v1은 `Sol`만, v1.1(2026-10-28)에서 `Spl` 추가. decimals()·symbol()·tag()
 pub struct SolTransferCore {                           // 메시지 바이트가 결정하는 값 전부(블록해시 제외)
     pub from: SolAddress, pub to: SolAddress, pub asset: SolAsset,
@@ -71,6 +72,7 @@ pub(crate) fn signing_key(k: &[u8; 32]) -> ed25519_dalek::SigningKey;   // with_
 | `Bip44Root` | 3 | `m/44'/501'` | solana-keygen `prompt://` 기본, Sollet "bip44Root" | 아니오 | 예 |
 | `RawSeed` | 4 | 파생 없음: BIP39 seed[0..32] | `solana-keygen new`(경로 없음) | 아니오 | 예 |
 | `SolletLegacy { wallet, account }` | 5 | `m/501'/wallet'/0/account`를 secp256k1 BIP32(`"Bitcoin seed"`, [02] §3.1)로 파생한 32바이트 개인키를 Ed25519 시드로 사용 | Sollet(폐기) | 아니오 | 선택(MAY), "고급" 아래 |
+| `Imported` | 6 | 파생 없음: vault `SolKey` record(`tag 3`, [02] §4.6)의 시드, 공개키(`intent.core.from`)로 찾음. 매개변수 `(a, b) = (0, 0)` | Phantom·Solflare·solana-keygen에서 내보낸 개인키(§3.4) | 가져오기 | 아니오 |
 
 - 타입은 [02] §3.5 `SolKeySource`(`Standard`·`Bip44Account`의 `i`는 `AccountIndex`, 0..=999)이고, 출처별 32바이트 시드 계산은 [02] §10.3 `with_ed25519_seed`·`sol_public_keys`가 이 표대로 한다.
 - 태그 5는 구현 시 확인: spl-token-wallet의 `deriveSeed` 소스와 대조한 벡터 1개를 얻지 못하면 구현하지 않는다.
@@ -88,6 +90,19 @@ pub(crate) fn signing_key(k: &[u8; 32]) -> ed25519_dalek::SigningKey;   // with_
 pub const SOL_SCAN_GAP: u32 = 5;
 pub const SOL_SCAN_MAX_INDEX: u32 = 49;
 ```
+
+### 3.4 가져온 개인키 (D9, [02] §8.4)
+
+- 입력 형식(`yw_core::keyimport`, 앞뒤 ASCII 공백·탭·CR·LF 무시, ASCII만, ≤ `SOL_KEY_TEXT_MAX` = 640바이트):
+  1. **base58 64바이트 keypair**: `seed[32] ‖ public[32]`(Phantom·Solflare "개인키 내보내기", 보통 87–88자). base58 디코드 결과가 64바이트가 아니면 거부: 32바이트면 `KeyError::SolKeyIsAddress`(E-INP-021, "주소(공개키)로 보입니다"), 그 밖은 `SolKeyFormat`(E-INP-020).
+  2. **`solana-keygen` JSON**: `[`·`]` 사이에 쉼표로 나눈 10진수 정확히 64개(각 0–255, 부호·지수·앞자리 0 금지, 숫자 주위 공백·줄바꿈 허용). 개수·형식 위반은 `SolKeyFormat`.
+  - 두 형식 모두 `public == Ed25519(seed).verifying_key()`여야 한다(다르면 `SolKeyMismatch`, E-INP-022). 32바이트 시드만 있는 형식(hex 64자 등)은 받지 않는다.
+- 저장: vault `SolKey` record(`tag 3`: 시드 32 + 공개키 32). 디코드 때 공개키를 시드에서 다시 계산해 비교한다. 같은 공개키를 두 번 가져오면 `DuplicateKey`, 체인당 15개 상한(`RecordLimit`). 파생 계정과 같은 키를 가져오는 것은 막지 않는다(서로 다른 계정 행으로 보인다).
+- meta: `sol_raw_accounts`(`{record_id, label, address}`)와 선택 `sol_raw_selected`([02] §5.3). 계정 목록은 표준 계정 다음에 가져온 계정을 "[가져온 키]" 배지와 함께 보인다([04] §2.18).
+- 서명: 출처 `SolKeySource::Imported`(태그 6). `sign_transfer`는 `Vault::with_imported_ed25519_seed(&intent.core.from, …)`로 그 공개키의 record를 찾아 시드를 빌린다(없으면 `Vault(RecordNotFound)`, 키 전용 지갑의 파생 출처는 `Vault(NoMnemonic)`). 나머지 서명 절차(§13.1-6: 기한, 승인 대조, 수수료 규칙, 재인코딩 동일성, 공개키 대조, `verify_strict`)는 같다.
+- 가져온 키는 §3.3의 "비표준 경로 규칙"(보내기 최대·자기 표준 계정만)을 받지 않는다: `SolKeySource::needs_move_rule()`이 태그 2–5에만 참이다. 승인 창 `L07`도 없고, 계정 필드의 경로 줄은 "가져온 개인키 (복구 단어 밖)"이다. 수신자가 자기 가져온 계정이면 `KnownKind::OwnImported`("내 계정(가져온 개인키): {라벨}").
+- 저널: SOL 레코드 헤더의 출처 태그 6, `(a, b) = (0, 0)`(§14.1). 태그 6에 0이 아닌 매개변수는 `SolRecordError::Source`.
+- 내보내기: `Vault::reveal_imported_key`가 base58 64바이트 keypair를 돌려준다(W09, 비밀번호 재입력, 복사 토글 규칙 [04] §4.8).
 
 ## 4. 의존성
 
@@ -418,7 +433,7 @@ pub const SOL_MIN_LVBH_AHEAD: u64 = 100;         // lvbh = 블록해시 높이 +
 ```text
 start_domain("your-wallet/sol/transfer-intent", 1)
 push_bytes(id[16])  push_u8(cluster)  push_bytes(genesis_hash[32])
-push_u8(source_tag)  push_u32(a)  push_u32(b)          // §3.2 태그; Standard/Bip44Account: a=AccountIndex 값,b=0; SolletLegacy: a=wallet,b=account; 나머지 0,0
+push_u8(source_tag)  push_u32(a)  push_u32(b)          // §3.2 태그(1–6); Standard/Bip44Account: a=AccountIndex 값,b=0; SolletLegacy: a=wallet,b=account; 나머지(Imported 포함) 0,0
 push_bytes(from[32])  push_bytes(to[32])
 push_u8(asset_tag)                                      // 1=SOL, 2=SPL
   SPL이면: push_bytes(mint[32]) push_bytes(token_program[32]) push_u8(decimals) push_bytes(from_ata[32]) push_bytes(to_ata[32])
@@ -493,7 +508,7 @@ pub const SOL_JOURNAL_MAX_BODY: usize = SOL_JOURNAL_HEADER_LEN + SOL_MAX_TX_BYTE
 ```
 
 - 고정 헤더 크기는 **H = 89바이트**이고 `body_len = 89 + tx_len`이어야 한다. 따라서 SOL 최대 본문은 89 + 1,232 = **1,321바이트**다([02] §5.4가 이 값을 쓴다). 실제 템플릿 본문은 T_SOL 356바이트(89 + 267), T_SPL 526바이트(89 + 437).
-- 서명·블록해시·from·to·금액은 tx 바이트 안에 있다. 로드 때 헤더 검사(`record_kind == 0x02`, `record_version == 1`, `state` 1–4, `cluster` 1–2, `source_tag` 1–5와 §13.2의 a·b 규칙, `body_len == 89 + tx_len`, `Pending`·`Expired`면 `terminal_slot == 0`·`terminal_err == 0`) + `parse_transaction` + 재인코딩 동일성 + `verify_strict(from)`이 모두 성공해야 한다. 실패는 [02] §5.4 **본문 오류**다: SOL 보내기만 끄고 "저널 손상"(E-VLT-006)을 표시하며, 그 entry는 브로드캐스트하지 않고 자동 삭제하지 않으며 바이트 그대로 보존한다. 프레이밍 오류(`kind`·`body_len` 범위 등)는 [02] §5.4가 처리한다.
+- 서명·블록해시·from·to·금액은 tx 바이트 안에 있다. 로드 때 헤더 검사(`record_kind == 0x02`, `record_version == 1`, `state` 1–4, `cluster` 1–2, `source_tag` 1–6과 §13.2의 a·b 규칙, `body_len == 89 + tx_len`, `Pending`·`Expired`면 `terminal_slot == 0`·`terminal_err == 0`) + `parse_transaction` + 재인코딩 동일성 + `verify_strict(from)`이 모두 성공해야 한다. 실패는 [02] §5.4 **본문 오류**다: SOL 보내기만 끄고 "저널 손상"(E-VLT-006)을 표시하며, 그 entry는 브로드캐스트하지 않고 자동 삭제하지 않으며 바이트 그대로 보존한다. 프레이밍 오류(`kind`·`body_len` 범위 등)는 [02] §5.4가 처리한다.
 - 이식 근거(먼저 기록하고 나중에 내보내는 패턴): `archive/spec-v2.4:crates/key-agent/src/durable.rs:725-806,1100-1129`. 이 문서의 상태 수는 4개로 줄인다.
 - 정리: 터미널 상태(2–4) 레코드는 meta `activity["solana:mainnet" | "solana:devnet"]`([02] §5.3)에 아래 `ActivityEntry`로 옮긴(meta 쓰기 성공) 뒤 저널에서 삭제한다. `Pending`은 자동 삭제하지 않는다.
 - 저널 자리 검사(서명 전, [02] §5.4 추가 전 검사): 새 `Pending`을 만들 서명 전에 `entry_count + 1 ≤ 256`, SOL entry 수 + 1 ≤ `SOL_JOURNAL_MAX_RECORDS`, `현재 평문 길이 + 5 + SOL_JOURNAL_MAX_BODY ≤ 16 MiB`를 본다. 넘으면 SOL 종결 레코드를 오래된 것(`signed_at_ms` 오름차순)부터 activity로 옮긴 뒤 지우며 다시 보고, 그래도 넘으면 `journal::JournalError::Full`로 서명·전송하지 않는다(E-TX-005 "거래 저널 공간이 부족합니다", [04] §7). 다른 체인 entry는 지우지 않는다.

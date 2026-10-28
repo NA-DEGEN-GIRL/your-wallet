@@ -770,3 +770,236 @@ fn evm_receive_qr_toggles_to_the_plain_address() {
     assert!(qr(&app.items()).is_some_and(|payload| payload.starts_with("ethereum:")));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// ---------------------------------------------------------------- imported keys (spec/04 §2.18)
+
+/// spec/07 §17.1 abandon `m/44'/501'/0'/0'` seed: a public test vector, imported as a keypair.
+const SOL_SEED_HEX: &str = "37df573b3ac4ad5b522e064e25b63ea16bcbe79d449e81a0268d1047948bb445";
+const SOL_ADDRESS: &str = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
+/// BIP84 test vector WIF (abandon mnemonic, `m/84'/0'/0'/0/0`) and its address.
+const BIP84_WIF: &str = "KyZpNDKnfs94vbrwhJneDi77V6jF64PWPF8x5cdJb8ifgg2DUc9d";
+const BIP84_ADDRESS: &str = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu";
+
+fn sol_keypair_text() -> String {
+    let mut pair = yw_core::hex::decode(SOL_SEED_HEX).unwrap();
+    pair.extend_from_slice(&yw_core::codec::base58::base58_decode_32(SOL_ADDRESS).unwrap());
+    yw_core::codec::base58::encode(&pair)
+}
+
+fn control_ids(items: &[Item]) -> Vec<u16> {
+    controls(items).iter().map(|ctl| ctl.id).collect()
+}
+
+/// "개인키로 시작하기" with a Solana key: a key-only wallet (no recovery words) whose tabs hide
+/// derivation, takes a Bitcoin key, survives lock/unlock straight to S10, and keeps its last key.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one key-only wallet from S01 to removal"
+)]
+fn key_start_creates_a_key_only_wallet() {
+    use crate::ui::screens_keys::{self as keys_ui, ids as key_ids};
+    use yw_core::keyimport::{BtcScriptType, ImportChain, ImportSpec};
+
+    let mut h = Harness::new("keystart");
+    assert_eq!(h.app.screen, Screen::FirstRun);
+    assert!(control_ids(&h.app.items()).contains(&key_ids::FIRST_KEY));
+    h.app.on_command(key_ids::FIRST_KEY);
+    assert_eq!(h.app.screen, Screen::KeyStartIntro);
+    assert!(has_text(&h.app.items(), keys_ui::T_KEY_START_BACKUP));
+    h.app.on_command(key_ids::START_CHAIN_SOL);
+    assert_eq!(h.app.keys.start.chain, ImportChain::Sol);
+    // W01, then W07 with an address instead of a key: back to S18 with W07 (headless: refused).
+    h.submit(Purpose::KeyStartPassword, &[WALLET_PW]);
+    h.submit(Purpose::KeyStartKey, &[SOL_ADDRESS.as_bytes()]);
+    h.pump();
+    assert_eq!(h.app.screen, Screen::KeyStartIntro);
+    assert!(
+        h.app.keys.start.password_held,
+        "the worker keeps the password"
+    );
+    // The keypair: S19 shows its address and the backup warning.
+    h.submit(Purpose::KeyStartKey, &[sol_keypair_text().as_bytes()]);
+    h.pump();
+    let Screen::KeyStartAddress(view) = h.app.screen.clone() else {
+        unreachable!("S19 expected, got {:?}", h.app.screen);
+    };
+    assert_eq!(view.address, SOL_ADDRESS);
+    assert!(has_text(&h.app.items(), keys_ui::T_KEY_START_BACKUP));
+    h.app.on_command(key_ids::START_CORRECT);
+    h.pump();
+    assert_eq!(
+        h.app.mode,
+        AppMode::Unlocked {
+            alt_passphrase: false
+        }
+    );
+    assert_eq!(h.app.screen, Screen::Done);
+    assert!(has_text(&h.app.items(), keys_ui::T_KEY_START_OK));
+    h.app.on_command(ids::DONE_CONTINUE);
+    assert_eq!(h.app.screen, Screen::Main);
+    assert!(h.app.key_only());
+    let meta = h.app.meta.clone().unwrap();
+    assert!(meta.evm_accounts.is_empty() && meta.sol_accounts.is_empty());
+    assert_eq!(meta.sol_raw_accounts.len(), 1);
+    assert_eq!(meta.prefs.tab, Tab::Sol);
+    // Solana tab: the imported account with its badge, no derivation controls; it signs as an
+    // imported key.
+    let items = h.app.items();
+    assert!(
+        items
+            .iter()
+            .any(|item| matches!(item, Item::Mono(text) if text.replace(' ', "") == SOL_ADDRESS))
+    );
+    assert!(
+        controls(&items)
+            .iter()
+            .any(|ctl| ctl.text.contains("[가져온 키]"))
+    );
+    let ids_now = control_ids(&items);
+    assert!(!ids_now.contains(&crate::ui::screens_sol::ids::ADD_ACCOUNT));
+    assert!(!ids_now.contains(&crate::ui::screens_sol::ids::SCAN_OPEN));
+    assert!(ids_now.contains(&key_ids::SOL_IMPORT));
+    let (source, from, _) = h.app.sol_form_sender().unwrap();
+    assert_eq!(source, yw_core::slip10::SolKeySource::Imported);
+    assert_eq!(from.to_base58(), SOL_ADDRESS);
+    // EVM and Bitcoin tabs: "이 지갑에는 … 계정이 없습니다" with `개인키 가져오기`.
+    h.app.sol_select_tab(Tab::Evm);
+    let items = h.app.items();
+    assert!(has_text(
+        &items,
+        &keys_ui::no_accounts_text(ImportChain::Evm)
+    ));
+    assert!(control_ids(&items).contains(&ids::IMPORT_KEY));
+    assert!(!control_ids(&items).contains(&ids::ADD_ACCOUNT));
+    h.app.btc_select_tab();
+    let items = h.app.items();
+    assert!(has_text(
+        &items,
+        &keys_ui::no_accounts_text(ImportChain::Btc)
+    ));
+    // Settings: no recovery-word reveal.
+    h.app
+        .set_screen(Screen::Settings(super::SettingsSection::Security));
+    assert!(!control_ids(&h.app.items()).contains(&ids::REVEAL_MNEMONIC));
+    // A Bitcoin WIF as P2WPKH.
+    h.app.set_screen(Screen::Main);
+    h.submit(
+        Purpose::ImportChainKey(ImportSpec::Btc(BtcScriptType::P2wpkh)),
+        &[BIP84_WIF.as_bytes()],
+    );
+    h.pump();
+    let meta = h.app.meta.clone().unwrap();
+    assert_eq!(meta.btc_raw_accounts.len(), 1);
+    assert_eq!(meta.btc_raw_accounts[0].address, BIP84_ADDRESS);
+    let items = h.app.items();
+    assert!(has_text(&items, keys_ui::T_BTC_IMPORTED_PENDING));
+    assert!(has_text(&items, "[가져온 키]"));
+    // Lock and unlock: straight to S10, meta and the key-only flag come back.
+    h.app.lock(LockReason::Manual);
+    h.pump();
+    assert_eq!(h.app.mode, AppMode::Locked);
+    h.submit(Purpose::Unlock, &[WALLET_PW]);
+    h.pump();
+    assert_eq!(
+        h.app.mode,
+        AppMode::Unlocked {
+            alt_passphrase: false
+        }
+    );
+    assert!(h.app.key_only());
+    let meta = h.app.meta.clone().unwrap();
+    assert_eq!(
+        (meta.sol_raw_accounts.len(), meta.btc_raw_accounts.len()),
+        (1, 1)
+    );
+    // Remove the Solana key (export-first overlay, then W03).
+    h.app.sol_select_tab(Tab::Sol);
+    h.app.on_command(key_ids::SOL_REMOVE);
+    assert_eq!(h.app.screen, Screen::Confirm(Confirm::RemoveImported));
+    assert!(has_text(&h.app.items(), keys_ui::T_REMOVE_IMPORTED));
+    let record = yw_core::vault::RecordId::from_bytes(meta.sol_raw_accounts[0].record_id);
+    h.app.on_command(ids::CONFIRM_YES);
+    h.submit(
+        Purpose::ConfirmPassword(PasswordAction::RemoveImported(record)),
+        &[WALLET_PW],
+    );
+    h.pump();
+    assert!(h.app.meta.as_ref().unwrap().sol_raw_accounts.is_empty());
+    // The Bitcoin key is the last one: it cannot be removed.
+    assert!(!h.app.can_remove_imported());
+    h.app.btc_select_tab();
+    let items = h.app.items();
+    let remove = key_ids::btc_row_id(0, key_ids::BtcRowAction::Remove).unwrap();
+    assert!(
+        controls(&items)
+            .iter()
+            .any(|ctl| ctl.id == remove && !ctl.enabled)
+    );
+    h.app.on_command(remove);
+    assert_ne!(h.app.screen, Screen::Confirm(Confirm::RemoveImported));
+}
+
+/// Imports into a mnemonic wallet: every chain tab offers `개인키 가져오기`; imported Solana
+/// accounts list after the derived ones with the badge and sign as `Imported`.
+#[test]
+fn imports_into_a_mnemonic_wallet() {
+    use crate::ui::screens_keys::ids as key_ids;
+    use yw_core::keyimport::ImportSpec;
+
+    let mut h = Harness::new("keyimport");
+    h.submit(Purpose::ImportPassword, &[WALLET_PW]);
+    h.submit(Purpose::ImportMnemonic, &[ABOUT.as_bytes()]);
+    h.pump();
+    h.app.on_command(ids::IMPORT_CORRECT);
+    h.pump();
+    h.app.on_command(ids::DONE_CONTINUE);
+    assert!(!h.app.key_only());
+    // EVM tab: 계정 추가 and 개인키 가져오기 side by side.
+    let items = h.app.items();
+    assert!(control_ids(&items).contains(&ids::ADD_ACCOUNT));
+    assert!(control_ids(&items).contains(&ids::IMPORT_KEY));
+    // Solana tab: account 0 is derived on entry; the imported key is added after it.
+    h.app.sol_select_tab(Tab::Sol);
+    h.pump();
+    assert_eq!(h.app.meta.as_ref().unwrap().sol_accounts.len(), 1);
+    // The same key as account 0 (abandon m/44'/501'/0'/0') is still a separate imported record.
+    h.submit(
+        Purpose::ImportChainKey(ImportSpec::Sol),
+        &[sol_keypair_text().as_bytes()],
+    );
+    h.pump();
+    let meta = h.app.meta.clone().unwrap();
+    assert_eq!(meta.sol_raw_accounts.len(), 1);
+    let rows = h.app.sol_account_rows();
+    assert_eq!(rows.len(), 2);
+    assert!(rows[1].0.is_imported());
+    // Select the imported row: the form signs with `SolKeySource::Imported`.
+    h.app
+        .on_command(crate::ui::screens_sol::ids::ACCOUNT_BASE + 1);
+    let (source, _, _) = h.app.sol_form_sender().unwrap();
+    assert_eq!(source, yw_core::slip10::SolKeySource::Imported);
+    let items = h.app.items();
+    assert!(control_ids(&items).contains(&key_ids::SOL_REVEAL));
+    assert!(control_ids(&items).contains(&key_ids::SOL_REMOVE));
+    // Duplicate import: the vault refuses (E-VLT-011), meta unchanged.
+    h.submit(
+        Purpose::ImportChainKey(ImportSpec::Sol),
+        &[sol_keypair_text().as_bytes()],
+    );
+    h.pump();
+    assert_eq!(h.app.meta.as_ref().unwrap().sol_raw_accounts.len(), 1);
+    // Reveal: the key worker returns the base58 keypair (W09 cannot open headless).
+    let record = yw_core::vault::RecordId::from_bytes(
+        h.app.meta.as_ref().unwrap().sol_raw_accounts[0].record_id,
+    );
+    h.app.key(crate::events::KeyJob::Reveal {
+        password: Zeroizing::new(WALLET_PW.to_vec()),
+        what: crate::events::RevealWhat::ImportedKey(record),
+    });
+    let results = h.run_one();
+    assert!(results.iter().any(|result| matches!(
+        &result.outcome,
+        KeyOutcome::Revealed(Ok((_, text, None))) if text.expose() == sol_keypair_text()
+    )));
+}

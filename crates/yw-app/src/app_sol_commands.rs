@@ -103,7 +103,7 @@ impl App {
             ids::SEND_OPEN => self.sol_open_send(),
             ids::RECEIVE_OPEN => self.set_screen(Screen::SolReceive),
             ids::RENAME => {
-                self.sol.rename = self.sol_selected().map(|(index, ..)| index);
+                self.sol.rename = self.sol_selected().map(|(id, ..)| id);
                 self.refresh();
             }
             ids::RENAME_SAVE => {

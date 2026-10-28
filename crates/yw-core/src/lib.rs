@@ -14,6 +14,7 @@ pub mod error;
 pub mod evm;
 pub mod hex;
 pub mod journal;
+pub mod keyimport;
 pub mod password;
 pub mod policy;
 pub mod secret;

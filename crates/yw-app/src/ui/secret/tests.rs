@@ -9,6 +9,7 @@ use super::{
 };
 use crate::errors::ErrorCode;
 use crate::ui::secure_field::{Charset, PushResult, SecretField};
+use yw_core::keyimport::ImportChain;
 use yw_core::secret::{SecretString, Zeroizing};
 
 fn type_text(form: &mut SecretForm, text: &str, now: u64) {
@@ -100,7 +101,7 @@ fn sw1_secret_messages_are_blocked_headlessly() {
 
 #[test]
 fn sw1_timeout_wipes_and_focus_loss_masks() {
-    let mut form = SecretForm::new(SecretKind::PrivateKey, 0, true);
+    let mut form = SecretForm::new(EVM_KEY, 0, true);
     type_text(&mut form, "0xabc", 1_000);
     assert!(matches!(
         form.on_tick(1_000 + SECRET_WINDOW_TIMEOUT_MS - 1),
@@ -253,14 +254,31 @@ fn sw4_capture_decisions() {
 
 #[test]
 fn w07_warns_that_imported_keys_are_not_in_the_recovery_words() {
-    let lines = super::intro(SecretKind::PrivateKey, 0);
+    let lines = super::intro(EVM_KEY, 0);
     assert!(
         lines
             .iter()
             .any(|line| line == super::T_IMPORTED_KEY_BACKUP)
     );
     assert!(super::T_IMPORTED_KEY_BACKUP.contains("복구 단어(24단어)로 복구되지 않습니다"));
-    assert_eq!(SecretKind::PrivateKey.size(), (640, 560));
+    assert_eq!(EVM_KEY.size(), (640, 560));
+    // Without recovery words (key-only wallet, "개인키로 시작하기") the warning says the original
+    // key is the only backup, for every chain.
+    for chain in [ImportChain::Evm, ImportChain::Sol, ImportChain::Btc] {
+        let lines = super::intro(
+            SecretKind::PrivateKey {
+                chain,
+                no_words: true,
+            },
+            0,
+        );
+        assert!(lines.iter().any(|line| line == super::T_KEY_ONLY_BACKUP));
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line == super::T_IMPORTED_KEY_BACKUP)
+        );
+    }
     // The redacting display buffer still renders its content for copy.
     let form = SecretForm::display(
         SecretKind::ShowKey,
@@ -273,4 +291,64 @@ fn w07_warns_that_imported_keys_are_not_in_the_recovery_words() {
         },
     );
     assert_eq!(form.copy_units().map(|units| units.len()), Some(64));
+}
+
+const EVM_KEY: SecretKind = SecretKind::PrivateKey {
+    chain: ImportChain::Evm,
+    no_words: false,
+};
+
+#[test]
+fn w07_solana_and_bitcoin_fields_take_their_formats() {
+    // Solana: base58 or a JSON array; spaces collapse, other characters are refused.
+    let mut sol = SecretForm::new(
+        SecretKind::PrivateKey {
+            chain: ImportChain::Sol,
+            no_words: false,
+        },
+        0,
+        true,
+    );
+    type_text(&mut sol, "[1, 2,3]", 1);
+    let mut field = SecretField::new(Charset::KeyText, 32).unwrap();
+    for unit in "[1,  2]".encode_utf16() {
+        let _ = field.push_unit(unit);
+    }
+    assert_eq!(field.as_bytes(), b"[1, 2]");
+    assert_eq!(
+        field.push_unit(u16::from(b'"')),
+        PushResult::Rejected(crate::ui::secure_field::RejectReason::NotAllowed)
+    );
+    // Bitcoin WIF: the base58 alphabet only (no 0, O, I, l).
+    let mut wif = SecretField::new(Charset::Base58, 52).unwrap();
+    for (unit, accepted) in [
+        ('K', true),
+        ('0', false),
+        ('O', false),
+        ('I', false),
+        ('l', false),
+        ('z', true),
+    ] {
+        let result = wif.push_unit(u16::from(u8::try_from(unit).unwrap()));
+        assert_eq!(result == PushResult::Accepted, accepted, "{unit}");
+    }
+    // A short WIF is refused before anything is sent (E-INP-023).
+    let mut btc = SecretForm::new(
+        SecretKind::PrivateKey {
+            chain: ImportChain::Btc,
+            no_words: true,
+        },
+        0,
+        true,
+    );
+    type_text(&mut btc, "KwDiBf89", 1);
+    assert!(matches!(btc.on_char(0x0D, 2), FormAction::Redraw));
+    // Pasted JSON with line breaks collapses to single spaces.
+    let units: Vec<u16> = "[1,
+  2,
+ 3]"
+    .encode_utf16()
+    .collect();
+    let pasted = crate::ui::secure_field::normalize_paste(&units, Charset::KeyText, 64).unwrap();
+    assert_eq!(pasted.as_slice(), b"[1, 2, 3]");
 }

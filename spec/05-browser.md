@@ -533,7 +533,7 @@ pub struct ConnectedSite {
 
 ### 4.2 연결 흐름 (`eth_requestAccounts`, `wallet_requestPermissions`)
 1. 같은 origin의 연결 창이 이미 대기·표시 중 → -32002 "Request already pending.".
-2. 잠겨 있으면 잠금 해제 창([04](04-app-ui.md)). 닫거나 실패 → 4001. vault가 `BackupPending`([02] §7.1)이면 → 4100(signing도 같음, §8.4). 확인되지 않은 passphrase로 연 세션([02] §7.5)이면 → 4100 `PassphraseUnverified`(이유를 담은 메시지, §5; signing도 같음).
+2. 잠겨 있으면 잠금 해제 창([04](04-app-ui.md)). 닫거나 실패 → 4001. vault가 `BackupPending`([02] §7.1)이면 → 4100(signing도 같음, §8.4). 확인되지 않은 passphrase로 연 세션([02] §7.5)이면 → 4100 `PassphraseUnverified`(이유를 담은 메시지, §5; signing도 같음). 지갑에 EVM 계정이 하나도 없으면(복구 단어 없이 Solana·Bitcoin 개인키로 시작한 지갑, [02] §8.5, [04] §2.18) 연결 창을 열지 않고 → 4100 `NoEvmAccount`(이유를 담은 메시지, §5). 키 전용 지갑의 연결 창은 가져온 EVM 계정만 보인다.
 3. `eth_requestAccounts`이고 이미 연결 → grant 계정 반환(창 없음). 연결되지 않은 origin이고 grant가 이미 256개 → 4100(창 없음, §4.1).
 4. "사이트 연결" 창(승인 큐 순서대로, §8.4):
    - 제목 `사이트 연결`, origin 전체(scheme://host[:port]) 크게 표시. `http` origin이면 `로컬 개발 사이트(http)` 표시. 호스트에 `xn--` 라벨이 있으면 `국제화 도메인(punycode)` 경고. 요청 `context.compatMode`가 있으면 배지 `호환 모드: MetaMask` 또는 `호환 모드: Rabby`(§2.12, 서명 승인 창도 같은 배지). origin은 바뀌지 않는다.
@@ -605,6 +605,7 @@ dApp 요청으로 띄운 잠금 해제 창을 `나중에`로 닫으면 `UNLOCK_P
 | 4001 | `Expired` | `Request expired.` | 승인·연결 창 표시 후 120 s 만료(D23, [03] §11.5) |
 | 4100 | `Unauthorized` | `Unauthorized.` | 미연결 origin의 계정 요구 메서드, grant에 없는 계정, localhost 토글 꺼짐, vault 없음, vault가 `BackupPending`(백업 미확인)인 동안의 signing·연결 요청, 대기 중 연결 해제(§4.5), grant 256개 상태에서 새 origin 연결(§4.1) |
 | 4100 | `PassphraseUnverified` | `Unauthorized: the wallet was opened with an unverified passphrase, so connecting and signing are disabled. Lock the wallet and unlock it with the correct passphrase.` | 확인값과 맞지 않는 BIP39 passphrase로 연 세션(`Unlocked { alt_passphrase: true }`, `App::passphrase_unverified()`, [02] §7.5)의 연결·signing 요청(디스패처 상태 `VaultView::PassphraseUnverified`, 잠김 중 큐에 들어갔다가 이 세션으로 풀린 요청은 [04] §3.1 `PassphraseUnverified`). 읽기 메서드는 계속 동작하고 grant는 없다(`eth_accounts` `[]`, `wallet_revokePermissions` `null`) |
+| 4100 | `NoEvmAccount` | `Unauthorized: this wallet has no EVM account. Import an EVM private key in the Your Wallet app first.` | EVM 계정(파생·가져온 키)이 하나도 없는 지갑(키 전용 지갑, [02] §8.5)의 연결 요청(§4.2). 앱에서 EVM 개인키를 가져오면 연결할 수 있다 |
 | 4200 | `UnsupportedMethod` | `Unsupported method.` | 허용 표 밖(`wallet_addEthereumChain` 포함, D14·§3.2), method 형식 오류 |
 | 4900 | `Unavailable` | `Wallet is unavailable.` | yw-host가 yw-app에 연결 실패(§7.6, `browserAutoLaunch` 꺼짐 포함), 확장 backoff 중, `connectNative` 실패 |
 | 4900 | `ConnectionClosed` | `Wallet connection closed.` | content port·native 연결이 끊길 때 진행 중인 요청, yw-app 종료 |

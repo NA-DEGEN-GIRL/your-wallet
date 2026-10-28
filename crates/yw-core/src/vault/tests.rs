@@ -283,17 +283,14 @@ fn reload(storage: &MemStorage) -> Vault {
 }
 
 fn golden_payload() -> Payload {
-    Payload {
-        bip39: Bip39Record {
-            record_id: seq(0x90),
-            created_unix: 1_790_000_000,
-            mnemonic: Mnemonic::from_entropy(&[0; 32]).unwrap(),
-            passphrase_used: false,
-            backup_confirmed: false,
-            passphrase_check: [0; 4],
-        },
-        raw_keys: Vec::new(),
-    }
+    Payload::new(Some(Bip39Record {
+        record_id: seq(0x90),
+        created_unix: 1_790_000_000,
+        mnemonic: Mnemonic::from_entropy(&[0; 32]).unwrap(),
+        passphrase_used: false,
+        backup_confirmed: false,
+        passphrase_check: [0; 4],
+    }))
 }
 
 fn seal_fixed(params: &KdfParams) -> Vec<u8> {
@@ -680,7 +677,7 @@ fn payload_codec_rejection_table() {
     let mut truncated = payload_bytes(std::slice::from_ref(&good), 1);
     truncated.pop();
     let mut unknown_tag = good_raw.clone();
-    put(&mut unknown_tag, 0, &[3]);
+    put(&mut unknown_tag, 0, &[5]);
     let cases: Vec<(&str, Vec<u8>)> = vec![
         ("magic", bad_magic),
         ("count 0", payload_bytes(&[], 0)),
@@ -766,7 +763,7 @@ fn payload_codec_rejection_table() {
 #[test]
 fn sixteen_records_round_trip_and_seventeen_rejected() {
     let mut payload = golden_payload();
-    payload.raw_keys = (1..=15).map(raw_record).collect();
+    payload.raw_keys.extend((1..=15).map(raw_record));
     let encoded = payload.encode().unwrap();
     let decoded = Payload::decode(&encoded).unwrap();
     assert_eq!(decoded.raw_keys.len(), 15);
@@ -1282,7 +1279,10 @@ fn passphrase_match_mismatch_accept_and_retry() {
     );
     // Stored check value = SHA-256(addr0)[0..4] = dc929830 (ACC-4).
     let payload = vault.payload().unwrap();
-    assert_eq!(hex::encode(&payload.bip39.passphrase_check), "dc929830");
+    assert_eq!(
+        hex::encode(&payload.bip39.as_ref().unwrap().passphrase_check),
+        "dc929830"
+    );
     vault.lock();
 
     assert_eq!(
@@ -1639,7 +1639,7 @@ fn debug_output_is_redacted() {
     for rendered in [
         format!("{password:?}"),
         format!("{:?}", Bip39Passphrase::new("SECRETPASS").unwrap()),
-        format!("{:?}", payload.bip39.mnemonic),
+        format!("{:?}", payload.bip39.as_ref().unwrap().mnemonic),
         format!("{vault:?}"),
         format!("{:?}", vault.backup_challenge().err()),
     ] {
@@ -2206,4 +2206,510 @@ fn secret_outputs_redact_debug() {
     let (_, created_vault, created_phrase) = created();
     drop(created_vault);
     assert_eq!(format!("{created_phrase:?}"), "SecretString([REDACTED])");
+}
+
+// ---------------------------------------------------------------- imported keys (tags 3, 4) and
+// key-only vaults (spec/02 §4.6, §8.4–§8.5, §11.9)
+
+/// RFC 8032 test 1 seed (a public test vector).
+const SOL_TEST_SEED: &str = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+/// BIP84 test vector WIF (abandon mnemonic, `m/84'/0'/0'/0/0`).
+const BIP84_TEST_WIF: &str = "KyZpNDKnfs94vbrwhJneDi77V6jF64PWPF8x5cdJb8ifgg2DUc9d";
+
+fn sol_import(seed: [u8; 32]) -> crate::keyimport::ImportKey {
+    let public = crate::sol::keys::public_key(&seed);
+    crate::keyimport::ImportKey {
+        inner: crate::keyimport::ImportInner::Sol {
+            seed: Zeroizing::new(seed),
+            public,
+        },
+    }
+}
+
+fn btc_import(
+    secret: [u8; 32],
+    compressed: bool,
+    script: crate::keyimport::BtcScriptType,
+) -> crate::keyimport::ImportKey {
+    crate::keyimport::ImportKey {
+        inner: crate::keyimport::ImportInner::Btc {
+            secret: Zeroizing::new(secret),
+            compressed,
+            network: crate::btc::network::BtcNetwork::Mainnet,
+            script,
+        },
+    }
+}
+
+fn evm_import(byte: u8) -> crate::keyimport::ImportKey {
+    crate::keyimport::ImportKey::parse(crate::keyimport::ImportSpec::Evm, &hex::encode(&[byte; 32]))
+        .unwrap()
+}
+
+/// A key-only test vault (fast KDF) holding `key`, for the Solana signing tests.
+pub(crate) fn key_only_with(key: crate::keyimport::ImportKey) -> Vault {
+    let (_, mut vault) = empty_vault(KDF_TEST);
+    vault
+        .create_with_key(&pw(PASSWORD), key, new_slot(), 1_790_000_000)
+        .unwrap();
+    vault
+}
+
+fn sol_record_bytes(id: u8, seed: [u8; 32], public: [u8; 32]) -> Vec<u8> {
+    let mut out = vec![3];
+    out.extend_from_slice(&[id; 16]);
+    out.extend_from_slice(&8_u64.to_be_bytes());
+    out.extend_from_slice(&seed);
+    out.extend_from_slice(&public);
+    out
+}
+
+fn btc_record_bytes(id: u8, secret: [u8; 32], flags: u8, network: u8, script: u8) -> Vec<u8> {
+    let mut out = vec![4];
+    out.extend_from_slice(&[id; 16]);
+    out.extend_from_slice(&9_u64.to_be_bytes());
+    out.extend_from_slice(&secret);
+    out.push(flags);
+    out.push(network);
+    out.push(script);
+    out
+}
+
+#[test]
+fn old_layout_payload_decodes_and_re_encodes_identically() {
+    // A payload as written before key import existed: Bip39 + EvmRawKey records only.
+    let bytes = payload_bytes(
+        &[
+            bip39_record(1, 32, 0, 1, [0; 4]),
+            raw_bytes(2, [3; 32]),
+            raw_bytes(4, [5; 32]),
+        ],
+        3,
+    );
+    let payload = Payload::decode(&bytes).unwrap();
+    assert!(payload.bip39.is_some());
+    assert_eq!(payload.raw_keys.len(), 2);
+    assert!(payload.sol_keys.is_empty() && payload.btc_keys.is_empty());
+    assert_eq!(payload.encode().unwrap().as_slice(), bytes.as_slice());
+}
+
+#[test]
+#[expect(clippy::too_many_lines, reason = "one table / one scenario")]
+fn tagged_records_codec_and_rejections() {
+    let sol_seed: [u8; 32] = hex::decode_array(SOL_TEST_SEED).unwrap();
+    let sol_public = crate::sol::keys::public_key(&sol_seed);
+    let good_sol = sol_record_bytes(5, sol_seed, sol_public);
+    let good_btc = btc_record_bytes(6, [9; 32], 1, 1, 3);
+    let bip39 = bip39_record(1, 16, 0, 1, [0; 4]);
+    let raw = raw_bytes(2, [3; 32]);
+    // Every tag together, and key-only payloads (no Bip39), decode and re-encode identically.
+    for (records, count) in [
+        (
+            vec![
+                bip39.clone(),
+                raw.clone(),
+                good_sol.clone(),
+                good_btc.clone(),
+            ],
+            4,
+        ),
+        (vec![good_sol.clone()], 1),
+        (vec![good_btc.clone()], 1),
+        (vec![raw.clone(), good_btc.clone()], 2),
+        // The same Bitcoin secret used as another script type is another account.
+        (
+            vec![good_btc.clone(), btc_record_bytes(7, [9; 32], 1, 1, 4)],
+            2,
+        ),
+        // An uncompressed key as P2PKH.
+        (vec![btc_record_bytes(7, [9; 32], 0, 2, 1)], 1),
+    ] {
+        let bytes = payload_bytes(&records, count);
+        let payload = Payload::decode(&bytes).unwrap();
+        assert_eq!(payload.encode().unwrap().as_slice(), bytes.as_slice());
+    }
+    let mut wrong_public = sol_public;
+    flip(&mut wrong_public, 0);
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "sol public mismatch",
+            payload_bytes(&[sol_record_bytes(5, sol_seed, wrong_public)], 1),
+        ),
+        (
+            "sol duplicate",
+            payload_bytes(
+                &[good_sol.clone(), sol_record_bytes(7, sol_seed, sol_public)],
+                2,
+            ),
+        ),
+        (
+            "btc duplicate",
+            payload_bytes(
+                &[good_btc.clone(), btc_record_bytes(7, [9; 32], 1, 1, 3)],
+                2,
+            ),
+        ),
+        (
+            "btc zero secret",
+            payload_bytes(&[btc_record_bytes(7, [0; 32], 1, 1, 3)], 1),
+        ),
+        (
+            "btc flags 2",
+            payload_bytes(&[btc_record_bytes(7, [9; 32], 2, 1, 3)], 1),
+        ),
+        (
+            "btc network 0",
+            payload_bytes(&[btc_record_bytes(7, [9; 32], 1, 0, 3)], 1),
+        ),
+        (
+            "btc network 3",
+            payload_bytes(&[btc_record_bytes(7, [9; 32], 1, 3, 3)], 1),
+        ),
+        (
+            "btc script 0",
+            payload_bytes(&[btc_record_bytes(7, [9; 32], 1, 1, 0)], 1),
+        ),
+        (
+            "btc script 5",
+            payload_bytes(&[btc_record_bytes(7, [9; 32], 1, 1, 5)], 1),
+        ),
+        (
+            "uncompressed segwit",
+            payload_bytes(&[btc_record_bytes(7, [9; 32], 0, 1, 3)], 1),
+        ),
+        (
+            "sol before raw",
+            payload_bytes(&[good_sol.clone(), raw.clone()], 2),
+        ),
+        (
+            "btc before sol",
+            payload_bytes(&[good_btc.clone(), good_sol.clone()], 2),
+        ),
+        (
+            "bip39 after raw",
+            payload_bytes(&[raw.clone(), bip39.clone()], 2),
+        ),
+        (
+            "record id shared across tags",
+            payload_bytes(
+                &[good_sol.clone(), btc_record_bytes(5, [9; 32], 1, 1, 3)],
+                2,
+            ),
+        ),
+        (
+            "unknown tag 5",
+            payload_bytes(&[btc_record_bytes(7, [9; 32], 1, 1, 3)], 1)
+                .into_iter()
+                .enumerate()
+                .map(|(at, byte)| if at == 16 { 5 } else { byte })
+                .collect(),
+        ),
+        (
+            "count 47",
+            payload_bytes(std::slice::from_ref(&good_sol), 47),
+        ),
+    ];
+    for (label, bytes) in cases {
+        assert_eq!(
+            Payload::decode(&bytes).err(),
+            Some(VaultError::PayloadCorrupt),
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn largest_payload_fits_and_seals() {
+    // 24 words + 15 keys of each chain: 16 + 64 + 15 × (57 + 89 + 60) = 3,170 plaintext bytes.
+    let mut payload = golden_payload();
+    payload.raw_keys.extend((1..=15).map(raw_record));
+    for byte in 1..=15_u8 {
+        let seed = [byte; 32];
+        payload.sol_keys.push(format::SolKeyRecord {
+            record_id: [0x40 + byte; 16],
+            created_unix: 1,
+            seed: Zeroizing::new(seed),
+            public: crate::sol::keys::public_key(&seed),
+        });
+        payload.btc_keys.push(format::BtcKeyRecord {
+            record_id: [0x80 + byte; 16],
+            created_unix: 1,
+            secret: Zeroizing::new([byte; 32]),
+            compressed: true,
+            network: crate::btc::network::BtcNetwork::Testnet4,
+            script: crate::keyimport::BtcScriptType::P2tr,
+        });
+    }
+    let encoded = payload.encode().unwrap();
+    assert_eq!(encoded.len(), 3_170);
+    assert!(encoded.len() + 16 <= usize::try_from(super::PAYLOAD_CT_MAX).unwrap());
+    let decoded = Payload::decode(&encoded).unwrap();
+    assert_eq!(decoded.record_count(), 46);
+    let password = pw(PASSWORD);
+    let dek: [u8; 32] = seq(0x20);
+    let material = SealMaterial {
+        password: &password,
+        vault_id: seq(0x01),
+        dek: &dek,
+        kdf_salt: seq(0x40),
+        wrap_nonce: seq(0x50),
+        payload_nonce: seq(0x70),
+        generation: 1,
+        payload: &payload,
+    };
+    let sealed = format::seal_create_with(&material, &KDF_TEST).unwrap();
+    assert_eq!(open_all(&sealed, PASSWORD, &KDF_TEST), Ok(15));
+    // A 16th key of one chain is refused by the encoder.
+    payload.sol_keys.push(format::SolKeyRecord {
+        record_id: [0x3f; 16],
+        created_unix: 1,
+        seed: Zeroizing::new([0x77; 32]),
+        public: crate::sol::keys::public_key(&[0x77; 32]),
+    });
+    assert_eq!(payload.encode().err(), Some(VaultError::RecordLimit));
+}
+
+#[test]
+fn key_only_vault_lifecycle() {
+    let sol_seed: [u8; 32] = hex::decode_array(SOL_TEST_SEED).unwrap();
+    let (storage, mut vault) = empty_vault(KDF_TEST);
+    let id = vault
+        .create_with_key(&pw(PASSWORD), sol_import(sol_seed), new_slot(), 7)
+        .unwrap();
+    assert_eq!(
+        vault.status(),
+        VaultStatus::Unlocked {
+            alt_passphrase: false
+        }
+    );
+    assert_eq!(storage.commits(), 1);
+    assert_eq!(vault.has_mnemonic(), Ok(false));
+    let keys = vault.imported_keys().unwrap();
+    assert!(!keys.has_mnemonic && keys.evm.is_empty() && keys.btc.is_empty());
+    assert_eq!(
+        keys.sol,
+        vec![(id, crate::sol::keys::public_key(&sol_seed))]
+    );
+    // Reload and unlock: straight to Unlocked (no passphrase, no backup step).
+    vault.lock();
+    let mut vault = reload(&storage);
+    assert_eq!(
+        vault.unlock(&pw(PASSWORD), new_slot()),
+        Ok(VaultStatus::Unlocked {
+            alt_passphrase: false
+        })
+    );
+    // Derivation features do not exist.
+    assert_eq!(vault.evm_addresses(&[]), Ok(Vec::new()));
+    assert_eq!(
+        vault.evm_addresses(&[index(0)]).err(),
+        Some(VaultError::NoMnemonic)
+    );
+    assert_eq!(
+        vault.evm_address(EvmKeySource::Derived(index(0))).err(),
+        Some(VaultError::NoMnemonic)
+    );
+    assert_eq!(
+        vault.reveal_mnemonic(&pw(PASSWORD)).err(),
+        Some(VaultError::NoMnemonic)
+    );
+    assert_eq!(
+        vault.btc_account_xpub(BtcCoin::Mainnet).err(),
+        Some(VaultError::NoMnemonic)
+    );
+    assert_eq!(
+        vault
+            .sol_public_keys(&[crate::slip10::SolKeySource::Standard(index(0))])
+            .err(),
+        Some(VaultError::NoMnemonic)
+    );
+    assert_eq!(vault.sol_public_keys(&[]), Ok(Vec::new()));
+    assert_eq!(
+        vault.backup_challenge().err(),
+        Some(VaultError::InvalidState)
+    );
+    // The imported key signs and reveals.
+    let public = crate::sol::keys::public_key(&sol_seed);
+    assert_eq!(
+        vault.with_imported_ed25519_seed(&public, |seed| Ok(*seed)),
+        Ok(sol_seed)
+    );
+    assert_eq!(
+        vault
+            .with_imported_ed25519_seed(&[1; 32], |seed| Ok(*seed))
+            .err(),
+        Some(VaultError::RecordNotFound)
+    );
+    let (chain, text) = vault.reveal_imported_key(&pw(PASSWORD), id).unwrap();
+    assert_eq!(chain, crate::keyimport::ImportChain::Sol);
+    let mut pair = sol_seed.to_vec();
+    pair.extend_from_slice(&public);
+    assert_eq!(text.expose(), crate::codec::base58::encode(&pair));
+    assert_eq!(
+        vault.reveal_imported_key(&pw(OTHER_PASSWORD), id).err(),
+        Some(VaultError::UnlockFailed)
+    );
+    // Other chains can be added; the last key cannot be removed.
+    let evm = vault.import_key(evm_import(7), 8).unwrap();
+    assert_eq!(
+        vault.remove_imported_key(&pw(PASSWORD), id),
+        Ok(crate::keyimport::ImportChain::Sol)
+    );
+    assert_eq!(
+        vault.remove_imported_key(&pw(PASSWORD), evm),
+        Err(VaultError::LastKey)
+    );
+    assert_eq!(
+        vault.remove_evm_raw_key(&pw(PASSWORD), evm),
+        Err(VaultError::LastKey)
+    );
+    assert_eq!(vault.imported_keys().unwrap().evm.len(), 1);
+    // Creating over an existing vault is refused.
+    let (slot, wiped) = slot();
+    assert_eq!(
+        vault.create_with_key(&pw(PASSWORD), sol_import(sol_seed), slot, 9),
+        Err(VaultError::InvalidState)
+    );
+    assert!(wiped.load(Ordering::SeqCst));
+    // Sidecars work as in any vault.
+    assert_eq!(vault.save_sidecar(FileKind::Meta, b"{}"), Ok(1));
+}
+
+#[test]
+#[expect(clippy::too_many_lines, reason = "one table / one scenario")]
+fn imported_keys_caps_duplicates_signing_and_removal() {
+    use crate::keyimport::{BtcScriptType, ImportChain};
+    let (_, mut vault) = imported(None);
+    assert_eq!(vault.has_mnemonic(), Ok(true));
+    // Solana: 15 per chain, duplicate public key refused.
+    let mut sol_ids = Vec::new();
+    for byte in 1..=15_u8 {
+        sol_ids.push(vault.import_key(sol_import([byte; 32]), 1).unwrap());
+    }
+    assert_eq!(
+        vault.import_key(sol_import([3; 32]), 1),
+        Err(VaultError::DuplicateKey)
+    );
+    assert_eq!(
+        vault.import_key(sol_import([0x70; 32]), 1),
+        Err(VaultError::RecordLimit)
+    );
+    // Bitcoin: the cap is separate; the same secret as another script type is allowed, the same
+    // use is a duplicate.
+    let wif = crate::keyimport::ImportKey::parse(
+        crate::keyimport::ImportSpec::Btc(BtcScriptType::P2wpkh),
+        BIP84_TEST_WIF,
+    )
+    .unwrap();
+    let bip84 = vault.import_key(wif, 2).unwrap();
+    assert_eq!(
+        vault.import_key(
+            crate::keyimport::ImportKey::parse(
+                crate::keyimport::ImportSpec::Btc(BtcScriptType::P2wpkh),
+                BIP84_TEST_WIF,
+            )
+            .unwrap(),
+            2
+        ),
+        Err(VaultError::DuplicateKey)
+    );
+    let taproot = vault
+        .import_key(
+            crate::keyimport::ImportKey::parse(
+                crate::keyimport::ImportSpec::Btc(BtcScriptType::P2tr),
+                BIP84_TEST_WIF,
+            )
+            .unwrap(),
+            2,
+        )
+        .unwrap();
+    for byte in 1..=13_u8 {
+        vault
+            .import_key(btc_import([byte; 32], true, BtcScriptType::P2pkh), 3)
+            .unwrap();
+    }
+    assert_eq!(
+        vault.import_key(btc_import([0x55; 32], false, BtcScriptType::P2pkh), 3),
+        Err(VaultError::RecordLimit)
+    );
+    // EVM keeps its own cap of 15 next to full Solana and Bitcoin lists.
+    for byte in 1..=15_u8 {
+        vault.import_key(evm_import(byte), 4).unwrap();
+    }
+    assert_eq!(
+        vault.import_key(evm_import(0x60), 4),
+        Err(VaultError::RecordLimit)
+    );
+    let keys = vault.imported_keys().unwrap();
+    assert_eq!(
+        (keys.evm.len(), keys.sol.len(), keys.btc.len()),
+        (15, 15, 15)
+    );
+    let (_, info) = keys.btc.iter().find(|(id, _)| *id == bip84).unwrap();
+    assert_eq!(info.address, "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu");
+    assert_eq!(info.script, BtcScriptType::P2wpkh);
+    // The full vault survives lock/unlock (payload ≈ 3.2 KB > the old 2,048-byte bound).
+    vault.lock();
+    assert_eq!(
+        vault.unlock(&pw(PASSWORD), new_slot()),
+        Ok(VaultStatus::Unlocked {
+            alt_passphrase: false
+        })
+    );
+    assert_eq!(vault.imported_keys().unwrap(), keys);
+    // An imported Bitcoin key signs through `KeyRef::BtcImported` (BIP84 public key).
+    let public = vault
+        .with_secp_key(
+            super::BtcKeySource::Imported(bip84).key_ref(),
+            |ctx, secret| Ok(secp256k1::PublicKey::from_secret_key(ctx, secret).serialize()),
+        )
+        .unwrap();
+    assert_eq!(
+        hex::encode(&public),
+        "0330d54fd0dd420a6e5f8d3624f5f3482cae350f79d5f0753bf5beef9c2d91af3c"
+    );
+    assert_eq!(
+        vault
+            .with_secp_key(
+                KeyRef::BtcImported(RecordId::from_bytes([0xee; 16])),
+                |_, _| Ok(())
+            )
+            .err(),
+        Some(VaultError::RecordNotFound)
+    );
+    // Reveal gives the WIF back; removal works for every chain.
+    let (chain, text) = vault.reveal_imported_key(&pw(PASSWORD), bip84).unwrap();
+    assert_eq!((chain, text.expose()), (ImportChain::Btc, BIP84_TEST_WIF));
+    assert_eq!(
+        vault.remove_imported_key(&pw(PASSWORD), taproot),
+        Ok(ImportChain::Btc)
+    );
+    assert_eq!(
+        vault.remove_imported_key(&pw(PASSWORD), *sol_ids.first().unwrap()),
+        Ok(ImportChain::Sol)
+    );
+    assert_eq!(
+        vault.remove_imported_key(&pw(PASSWORD), taproot),
+        Err(VaultError::RecordNotFound)
+    );
+    // `remove_evm_raw_key` only removes EVM records.
+    assert_eq!(
+        vault.remove_evm_raw_key(&pw(PASSWORD), bip84),
+        Err(VaultError::RecordNotFound)
+    );
+    let keys = vault.imported_keys().unwrap();
+    assert_eq!(
+        (keys.evm.len(), keys.sol.len(), keys.btc.len()),
+        (15, 14, 14)
+    );
+}
+
+#[test]
+fn backup_pending_refuses_key_import() {
+    let (_, mut vault, _) = created();
+    assert_eq!(
+        vault.import_key(sol_import([1; 32]), 1),
+        Err(VaultError::BackupNotConfirmed)
+    );
+    assert!(vault.imported_keys().unwrap().sol.is_empty());
 }
