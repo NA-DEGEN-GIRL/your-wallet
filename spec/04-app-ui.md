@@ -795,7 +795,7 @@ impl SecretField {
 
 | 키 | 타입 | 기본값 | 규칙 |
 |---|---|---|---|
-| `version` | integer | 1 | 정확히 1. 다르면 파일 전체 무효(yw-host도 이 키를 읽는다, 아래 `browserAutoLaunch`) |
+| `version` | integer | 1 | 이 형식의 주 버전(`SETTINGS_VERSION = 1`). 1보다 큰 정수 = 더 새로운 앱의 파일 → 읽기 전용(§6.6). 그 밖(0, 음수, 정수 아님, 없음) → 파일 전체 무효(yw-host도 이 키를 읽는다, 아래 `browserAutoLaunch`) |
 | `autoLockMinutes` | integer | 10 | 1–60 (D12) |
 | `allowSecretCopy` | bool | false | §4.8 |
 | `allowLocalhostDapps` | bool | false | D22, [05] §4.6 |
@@ -827,10 +827,11 @@ EsploraBaseUrls = { "mainnet": EsploraBaseUrl, "testnet4": EsploraBaseUrl }   //
 
 ### 6.2 읽기·검증·쓰기
 - 파일 없음: 모두 기본값. 첫 변경 때 만든다.
-- 64 KiB 초과, JSON 오류, 중복 키, 루트가 객체가 아님, `version` 오류: 전체를 기본값으로 쓰고 배너 E-APP-001. 파일은 그대로 두고 다음 변경 때 덮어쓴다.
-- 최상위 키마다 따로 검증한다. 틀린 키는 그 키만 기본값이고 배너에 키 이름을 보인다. 객체 값(`feeCaps`의 네트워크 항목, `rpc`, `solana`, `bitcoin`, `llm_explain`)은 그 객체 단위로 되돌린다(예외: `bitcoin.esploraBaseUrl`은 네트워크 키 단위, §6.1). 모르는 최상위 키·`feeCaps` 네트워크 키는 무시하고 배너에 보이며 다음 쓰기에서 사라진다.
+- 64 KiB 초과, JSON 오류, 중복 키, 루트가 객체가 아님, `version`이 정수가 아니거나 0·없음: 전체를 기본값으로 쓰고 배너 E-APP-001(`settings.json`). 파일은 그대로 두고 다음 변경 때 덮어쓴다.
+- `version` > 1(더 새로운 앱의 파일): 읽기 전용(§6.6). 값은 모두 기본값, 배너 E-APP-001에 "settings.json은 더 새로운 버전(n)의 앱이 쓴 파일입니다 — 읽기 전용으로 열었고 이번 실행의 설정 변경은 저장되지 않습니다. 앱을 최신 버전으로 업데이트하세요". 이번 실행의 변경은 메모리에만 적용하고 파일 내용은 바꾸지 않는다(쓰기는 읽은 바이트를 그대로 다시 쓴다).
+- 최상위 키마다 따로 검증한다. 틀린 키는 그 키만 기본값이고 배너에 키 이름을 보인다. 객체 값(`feeCaps`의 네트워크 항목, `rpc`, `solana`, `bitcoin`, `llm_explain`)은 그 객체 단위로 되돌린다(예외: `bitcoin.esploraBaseUrl`은 네트워크 키 단위, §6.1). 모르는 최상위 키는 새 부 버전의 키로 보고 배너 없이 보존해 다음 쓰기에서 알려진 키 뒤에 읽은 순서대로 다시 쓴다(§6.6). 모르는 `feeCaps` 네트워크 키는 무시하고 배너에 보이며 다음 쓰기에서 사라진다.
 - 검증 순서: `evmChains` → `evmChainId`·`evmGenesisPins`·`feeCaps`(등록된 체인 집합에 의존). `evmChains`는 항목 단위다: 무효 항목, 기본 체인·앞 항목과 chainId 또는 이름이 겹치는 항목, 33번째부터는 버리고 배너 "evmChains[i]"(배열이 아니면 전체 `[]`). 버린 체인의 `feeCaps`·`rpc:*` 항목은 고아로 무시된다. `evmGenesisPins`는 키 단위(모르는 키·형식 오류는 그 키만 버림).
-- 쓰기: 메모리의 전체 설정을 직렬화해 §9 원자적 쓰기. 검증을 통과한 값만 메모리에 들어간다.
+- 쓰기: 메모리의 전체 설정을 직렬화해 §9 원자적 쓰기(알려진 키는 §6.1 순서, 그 뒤 보존한 모르는 최상위 키). 검증을 통과한 값만 메모리에 들어간다.
 - 반영: `autoLockMinutes` 다음 판정부터, `allowLocalhostDapps` [05]의 다음 요청부터, `browserAutoLaunch` yw-host의 다음 실행 판단부터, `evmChainId` 즉시(S10 새로고침), `evmChains`·`evmGenesisPins` 즉시(새 `RpcConfig`, 그 체인 확인 상태 초기화, §1.9), `feeCaps` 다음 준비부터, `rpc.template` 즉시(S15·S17 입력 해석만), `bitcoin.indexer`·`bitcoin.esploraBaseUrl` 즉시(새 `RpcConfig`, [08] §2 연결 검사 다시), `logLevel` 다음 줄부터.
 
 ### 6.3 apikeys.dpapi
@@ -841,7 +842,7 @@ offset 0   magic       8 bytes  "YWAPIK01"
 offset 8   count       u8       0..=48
 반복 count번:
            name_len    u8       1..=32
-           name        ASCII    "rpc:" NetworkId | "tpl:quicknode" | "tpl:alchemy" | "llm"   (같은 이름 두 번 금지, 그 밖 이름은 형식 오류)
+           name        ASCII    "rpc:" NetworkId | "tpl:quicknode" | "tpl:alchemy" | "llm"   (같은 이름 두 번 금지, 그 밖 이름은 아래 이름 형식 규칙: 모르는 이름은 보존, §6.6)
                                 NetworkId = "eip155:" <chainId 10진, 앞자리 0 없음>   // 기본 1·11155111·999 + settings evmChains
                                           | "solana:mainnet" | "solana:devnet" | "bitcoin:mainnet" | "bitcoin:testnet4"
            value_len   u16 BE   1..=2048
@@ -853,10 +854,11 @@ offset 8   count       u8       0..=48
 ```
 - 상한 근거: `tpl:*` 2 + `llm` 1 + EVM 기본 3 + 사용자 체인 32 + SOL 2 + BTC 2 = 42 ≤ 48개, 42 × (1 + 32 + 2 + 2048) < 131,072. 가장 긴 이름 `rpc:eip155:9223372036854775771` = 30바이트 ≤ 32.
 - 런타임 엔드포인트는 `rpc:*`뿐이다(§1.9). `tpl:*`는 나중에 추가한 체인이나 토큰 교체 때 URL을 다시 만들기 위한 템플릿 자격 정보이고(§2.11.1) 런타임 호출에 쓰지 않는다.
-- `settings.json`을 먼저 읽는다(§1.4-5). `rpc:eip155:<chainId>` 중 기본 체인도 `evmChains`에도 없는 것은 고아 항목이다: 무시하고 로그 `apikeys.orphan`(이름만), 다음 저장 때 사라진다.
+- `settings.json`을 먼저 읽는다(§1.4-5). `rpc:eip155:<chainId>` 중 기본 체인도 `evmChains`에도 없는 것은 고아 항목이다: 엔드포인트로 쓰지 않고(`RpcConfig`에 없음) 로그 `apikeys.orphan`(이름만)을 남기며, 보존해 저장 때마다 그대로 다시 쓴다(§6.6). 같은 chainId 체인이 다시 등록되면(다음 실행, 또는 그 체인의 URL을 새로 저장) 다시 쓰인다. 사용자가 그 항목을 지우는 동작(`ApiKeys::remove`·`prune_dormant`)만 지운다.
+- 이름 형식: `^[a-z0-9][a-z0-9:._-]*$` 1–32바이트. 이 버전이 아는 이름(위 표)은 값까지 검증한다. 형식에 맞지만 모르는 이름(예 `tpl:infura`, `rpc:solana:testnet`)은 새 버전의 항목으로 보고 값 바이트(1–2,048)를 해석하지 않은 채 보존해 다시 쓴다(§6.6). 아는 계열의 잘못된 이름(`rpc:eip155:01`처럼 정규형이 아닌 chainId, `rpc:`)과 형식 밖 이름(대문자·공백)은 형식 오류다.
 - 복호화 결과(`WipeBuf<u8>`)는 바로 파싱해 `Zeroizing` 값으로 옮긴다. UI 스레드가 모든 항목을 소유하고(저장 때 평문을 다시 만들기 위해), `rpc:*` URL만 `RpcConfig`(§1.9)로 RPC·read 작업자에 복사해 종료 때까지 보관한다(D10: RPC URL·API 키는 지갑 비밀이 아니다). `tpl:*`는 작업자에 보내지 않는다. LLM 키는 [06](기능이 꺼져 있으면 복호화하지 않음).
 - 형식 오류·복호화 실패(다른 사용자·다른 PC): E-KEY-001, 모든 항목 없음으로 취급(엔드포인트 없음). 다음 저장 때 덮어쓴다.
-- 저장: 메모리의 항목으로 평문을 새로 만들어 `protect` → §9 원자적 쓰기. 모두 지우면 `count = 0`.
+- 저장: 메모리의 항목(쓰는 항목 다음에 보존한 고아·모르는 항목, 합계 48개 안에서; 넘치면 보존 항목을 뒤에서부터 뺀다)으로 평문을 새로 만들어 `protect` → §9 원자적 쓰기. 모두 지우면 `count = 0`.
 - URL 전체가 비밀이다(D13): 경로에 토큰·키가 있고, 호스트에도 QuickNode 엔드포인트 이름이 있다. URL·호스트·토큰·템플릿 자격 정보를 로그·문구·화면에 쓰지 않는다. 로그는 항목 이름(`rpc:<NetworkId>`·`tpl:*`)만, 화면은 §2.11.1 가린 형태만 쓴다.
 
 ### 6.4 meta `prefs`
@@ -871,30 +873,45 @@ offset 8   count       u8       0..=48
 BTC 계정 선택 키는 없다. BTC v1은 계정 0(m/84'/{coin}'/0')만 쓴다([08] §1.1–1.2, D26).
 
 ### 6.5 시험 (자동)
-- ST-1(`settings.json`): `evmChains` 33개 → 32개 + 배너. chainId 999·중복 chainId·이름 "sepolia 테스트넷"(대소문자만 다름)·`decimals` 37·`simulation` `"off"`·대문자 `genesisHash`·`explorer`에 `?` → 그 항목만 버림. `evmChainId` = 버린 체인 → 11155111 + 배너. `feeCaps["eip155:<버린 id>"]` → 무시. `evmGenesisPins["eip155:1"]` → 그 키만 버림. 모르는 키(예 `rpcUrl`)가 있는 항목·`quicknodeSubdomain` `"Base_Sepolia"` → 그 항목만 버림. `rpc.template` `"infura"`·`rpc.provider` 키 → `rpc` 기본값 + 배너. `bitcoin.indexer` `"blockbook"` → `bitcoin` 객체 기본값(`"esplora"`, mempool.space URL 2개) + 배너. `bitcoin`에 `esploraBaseUrl` 없음 → 기본 URL, 배너 없음. `esploraBaseUrl.mainnet`이 `http://mempool.space/api`·`https://mempool.space/api/`·`https://mempool.space/api?x=1`·`https://u@mempool.space/api`·`https://mempool.space/api/../x`·`https://mempool.space/a%20b`·`https://x.btc.quiknode.pro/tok`·`https://bitcoin-mainnet.g.alchemy.com/v2/k`·257바이트 → 그 키만 기본값 + 배너 `bitcoin.esploraBaseUrl.mainnet`, `enabled`·`network`·`indexer`·`testnet4` 값은 유지. `https://MEMPOOL.space/api` → `https://mempool.space/api`로 정규화. `https://blockstream.info/testnet4/api`·`https://esplora.example.com:3002` 통과. `esploraBaseUrl.signet` 키 → 무시 + 배너. 왕복 직렬화 → 키 순서 고정(`esploraBaseUrl`은 항상 두 키), 바이트 동일.
-- ST-2(`apikeys.dpapi` 평문): 42개 항목(`tpl:*` 2, `llm`, `rpc:*` 39)·각 `rpc:*` 2,048바이트 URL 왕복. `count` 49, 같은 이름 2개, `rpc:eip155:01`, 이름 33바이트, 모르는 이름 `tpl:infura`, `tpl:quicknode` 값에 `:` 없음·대문자 이름·토큰 15자 → 형식 오류(E-KEY-001, 모든 항목 없음). 등록 안 된 `rpc:eip155:8453` → 무시, 다음 저장에서 빠짐. `RpcConfig.endpoints`에 `tpl:*` 값이 없음.
+- ST-1(`settings.json`): `evmChains` 33개 → 32개 + 배너. chainId 999·중복 chainId·이름 "sepolia 테스트넷"(대소문자만 다름)·`decimals` 37·`simulation` `"off"`·대문자 `genesisHash`·`explorer`에 `?` → 그 항목만 버림. `evmChainId` = 버린 체인 → 11155111 + 배너. `feeCaps["eip155:<버린 id>"]` → 무시. `evmGenesisPins["eip155:1"]` → 그 키만 버림. 모르는 키(예 `rpcUrl`)가 있는 항목·`quicknodeSubdomain` `"Base_Sepolia"` → 그 항목만 버림. 모르는 최상위 키(`rpcUrl`) → 배너 없음, 보존(쓰기 끝에 그대로). `version` 0·`"2"`·-1·1.5 → 파일 전체 무효. `rpc.template` `"infura"`·`rpc.provider` 키 → `rpc` 기본값 + 배너. `bitcoin.indexer` `"blockbook"` → `bitcoin` 객체 기본값(`"esplora"`, mempool.space URL 2개) + 배너. `bitcoin`에 `esploraBaseUrl` 없음 → 기본 URL, 배너 없음. `esploraBaseUrl.mainnet`이 `http://mempool.space/api`·`https://mempool.space/api/`·`https://mempool.space/api?x=1`·`https://u@mempool.space/api`·`https://mempool.space/api/../x`·`https://mempool.space/a%20b`·`https://x.btc.quiknode.pro/tok`·`https://bitcoin-mainnet.g.alchemy.com/v2/k`·257바이트 → 그 키만 기본값 + 배너 `bitcoin.esploraBaseUrl.mainnet`, `enabled`·`network`·`indexer`·`testnet4` 값은 유지. `https://MEMPOOL.space/api` → `https://mempool.space/api`로 정규화. `https://blockstream.info/testnet4/api`·`https://esplora.example.com:3002` 통과. `esploraBaseUrl.signet` 키 → 무시 + 배너. 왕복 직렬화 → 키 순서 고정(`esploraBaseUrl`은 항상 두 키), 바이트 동일.
+- ST-2(`apikeys.dpapi` 평문): 42개 항목(`tpl:*` 2, `llm`, `rpc:*` 39)·각 `rpc:*` 2,048바이트 URL 왕복. `count` 49, 같은 이름 2개, `rpc:eip155:01`·`rpc:eip155:abc`·`rpc:`, 이름 33바이트, `TPL:infura`·`tpl infura`, `tpl:quicknode` 값에 `:` 없음·대문자 이름·토큰 15자, 고아 `rpc:*` 값이 `http://` → 형식 오류(E-KEY-001, 모든 항목 없음). 등록 안 된 `rpc:eip155:8453` → 엔드포인트 아님, 다음 저장에도 그대로(등록하면 다시 쓰임, URL을 새로 저장하면 교체, `remove`·`prune_dormant`로만 지움). 모르는 이름 `tpl:infura`·`rpc:solana:testnet`(UTF-8 아닌 값 포함) → 보존, 평문 바이트 동일 왕복. 쓰는 항목 48개 + 보존 항목 → 보존 항목을 빼고 `count` 48. `RpcConfig.endpoints`에 `tpl:*` 값이 없음. S15 `QuickNode` 입력 도우미(`quicknode_credentials`): 엔드포인트 이름 칸이나 토큰 칸에 붙인 `https://<이름>[.<서브도메인>].quiknode.pro/<토큰>/[경로]`(`wss://` 포함, 앞뒤 공백 무시) → 이름(소문자)·토큰, 다른 칸이 비었거나 같은 URL·같은 값이면 통과, 다르면 그 칸 E-KEY-002. 포트·라벨 3개 이상·토큰 15자·`http://`·알케미 URL → URL로 보지 않음.
 - ST-3(S17 입력 판정, 순수 함수): chainId `0`·`01`·9,223,372,036,854,775,772 → E-CHN-004, 11155111 → E-CHN-003. RPC 칸(시험용 가짜 자격 정보): `rpc.template = "quicknode"` + `tpl:quicknode` 있음, `Base-Sepolia` → `quicknodeSubdomain` `base-sepolia`, URL `https://<이름>.base-sepolia.quiknode.pro/<토큰>/`; `rpc.template = "alchemy"` + `tpl:alchemy` 있음, `Base-Sepolia.g.alchemy.com` → `alchemyLabel` `base-sepolia`, URL `https://base-sepolia.g.alchemy.com/v2/<KEY>`; 그 템플릿 자격 정보 없음 → E-KEY-004; `rpc.template = "manual"` + `base-sepolia` → E-KEY-003; `base.sepolia` → E-CHN-004; `http://x` → E-KEY-003. 모의 RPC: chainId 응답 `0x2105` ≠ 입력 8452 → E-CHN-001, 블록 0 `hash` 31바이트 → E-CHN-002 + E-RPC-005, 편집 중 해시 ≠ 고정값 → E-CHN-008·저장 없음. 삭제: 활성 체인 → E-CHN-009, 미종결 저널 레코드 → E-CHN-007.
 - ST-4(§2.11.1 엔드포인트, 순수 함수 + 모의 RPC, 시험용 가짜 이름·토큰·키): `template_url` QuickNode `eip155:1`(서브도메인 없음) → `https://<이름>.quiknode.pro/<토큰>/`, `eip155:11155111` → `https://<이름>.<[03] 서브도메인>.quiknode.pro/<토큰>/`, 알케미 `solana:devnet` → `https://<[07] 라벨>.g.alchemy.com/v2/<KEY>`, 항목 없는 네트워크·`Manual` → `None`(생성 대상에서 빠지고 T-RPC-GENERATED의 건너뜀 목록에 나옴). `기존 URL 덮어쓰기` 끔 → 기존 `rpc:*` 바이트 동일, 켬 → 교체. 사용자 체인 생성 URL의 chainId 불일치 → 그 체인만 쓰지 않음. `mask_url` 결과에 이름·서브도메인·라벨·토큰·키 부분 문자열이 없음. 엔드포인트 없는 네트워크 → 호출 0회, E-KEY-005(EVM 준비 `Failed`, `retryable == false`). `테스트`: EVM `eth_chainId` `0x2105` (기대 1) → E-RPC-010, SOL 다른 genesis → E-RPC-010, BTC `chain` `"test"` → E-RPC-010, HTTP 401 → E-RPC-003. Bitcoin `Esplora URL` `테스트`(모의 서버): testnet4 줄에 testnet4 제네시스 → T-BTC-IDX-OK, mainnet·testnet3 제네시스 → E-BTC-003, 404·본문 끝 `\n` → E-BTC-004, 500 → E-BTC-001, 요청 경로는 `/block-height/0`뿐(주소 없음). 위 모든 경우 로그 줄에 URL·호스트·토큰이 없고 `net=<NetworkId>`만 있음.
+- ST-5(§6.6 형식 호환, `tests/compat.rs`, 고정 파일 `tests/fixtures/compat/`): 이전 릴리스의 `settings-v1.json`(공백·줄바꿈 있음) → 배너 없음, 값 그대로, 왕복 바이트 동일. 새 부 버전 `settings-v1-newer-minor.json`(모르는 최상위 키 `uiTheme`·`addressLabels`) → 배너 없음, 값을 바꿔 저장하면 알려진 키 다음에 두 키가 읽은 순서·값 그대로. 새 주 버전 `settings-v2.json` → 배너(읽기 전용), 기본값, 값을 바꿔도 `to_json`이 원본 바이트와 같음. 모르는 키 60,000바이트 + 사용자 체인 32개 → 64 KiB 안에 맞추려고 모르는 키를 빼고 배너 없이 다시 읽힘. 새 부 버전 meta `meta-v3-newer-minor.json`(`watch_only`·`ui_layout`) → 열림, 계정 이름을 바꿔 저장하면 두 키가 끝에 그대로, `yw-meta/4` → 형식 오류. 업그레이드 시나리오: v2 settings(사용자 체인 안 보임)로 읽은 `rpc:eip155:84532`가 다른 저장을 거쳐도 남고 v1 settings로 다시 읽으면 엔드포인트로 돌아옴.
+
+### 6.6 형식 호환 (업그레이드·이전 버전으로 되돌리기)
+데이터 폴더 `v3`의 파일을 여러 앱 버전이 번갈아 읽고 쓸 수 있으므로 다음 규칙을 지킨다. 목적: 한 버전이 다른 버전의 데이터를 지우거나 덮어써 잃지 않는다.
+
+| 파일 | 버전 표시 | 같은 주 버전의 새 부 버전 (읽는 쪽이 모르는 내용) | 더 새로운 주 버전 | 더 오래된 주 버전 |
+|---|---|---|---|---|
+| `settings.json` | `version` 정수(현재 1) | 모르는 **최상위 키**: 배너 없이 보존, 쓰기 때 알려진 키 뒤에 읽은 순서·값 그대로 | `version` > 1: 읽기 전용(값은 기본값, 배너 E-APP-001, 이번 실행의 변경은 메모리에만, 파일 내용 불변) | 알려진 이전 버전은 읽을 때 메모리에서 이행하고 다음 쓰기에 현재 버전으로 쓴다. 현재 1이 첫 버전이므로 이행할 이전 버전은 없고 0·정수 아님은 손상(§6.2) |
+| `meta.ywm` 평문 | `schema` = `"yw-meta/3"` | 모르는 **최상위 키**: 보존, 쓰기 때 알려진 키 뒤에 그대로([02] §5.3) | 없음: `schema`는 데이터 폴더 `v3`과 함께만 바뀐다(다른 `schema`는 형식 오류, E-VLT-006) | 없음(v1·v2는 이행하지 않음, D7) |
+| `apikeys.dpapi` 평문 | magic `YWAPIK01` | 모르는 **항목 이름**(§6.3 이름 형식): 값 바이트를 해석하지 않고 보존, 저장 때 다시 씀. 등록 안 된 네트워크의 `rpc:*`(고아)도 같이 보존 | 없음: magic은 데이터 폴더와 함께만 바뀐다(다른 magic은 형식 오류, E-KEY-001) | 없음 |
+
+- 새 부 버전이 지켜야 할 것(쓰는 쪽 규칙): 새 데이터는 **새 최상위 키**(settings·meta) 또는 **새 항목 이름**(apikeys)으로만 더한다. 이미 있는 키의 의미·값 범위를 바꾸거나 알려진 객체·레코드 안에 키를 더하는 것은 주 버전 변경이다(settings는 `version` + 1, meta·apikeys·vault·journal은 새 데이터 폴더 `v4`). 이전 버전은 알려진 객체 안의 모르는 키를 지금처럼 그 객체 단위 오류로 처리한다(§6.2, [02] §5.3).
+- 보존한 키·항목은 이 버전에서 쓰지 않는다(엔드포인트·설정값으로 해석하지 않음). 크기 상한(settings 64 KiB, meta 8 MiB, apikeys 48개)을 넘게 되면 알려진 값이 우선이고, 보존한 것을 뒤에서부터 빼고 쓴다.
+- 손상과 구별: 알려진 키의 형식 오류·중복 키·필수 키 없음은 지금까지처럼 그 키(또는 파일) 단위 오류다.
+- 사용자 안내: 업그레이드 전에 앱을 닫고 `%LOCALAPPDATA%\YourWallet\v3` 폴더를 통째로 복사해 둔다(docs/install.ko.md §5). 새 버전에서 이전 버전으로 되돌린 경우 `settings.json`이 읽기 전용이면 새 버전을 다시 설치한다.
 
 ## 7. 오류·메시지 정책
-- RPC·LLM·OS가 준 문자열은 화면에 그대로 보이지 않는다(spec.md §2.1). 예외: AI 설명 패널(§3.8)은 [06] §5–§6 필터를 거친 파생 텍스트를 별도 패널에만 표시한다(spec.md §2.1 예외). 모든 오류는 `ErrorCode`로 분류해 고정 한국어 문구 + `(코드)`로 보인다. 예: "RPC 응답 시간이 초과되었습니다. (E-RPC-002)". 체인 문서가 정한 고정 문구 표([08] §13 등)는 그 표를 쓴다.
+- RPC·LLM·OS가 준 문자열은 화면에 그대로 보이지 않는다(spec.md §2.1). 예외: AI 설명 패널(§3.8)은 [06] §5–§6 필터를 거친 파생 텍스트를 별도 패널에만 표시한다(spec.md §2.1 예외). 모든 오류는 `ErrorCode`로 분류해 고정 한국어 문구 + `(코드)`로 보인다. 문구는 원인 한 문장 다음에 사용자가 할 수 있는 다음 행동을 적는다. 예: "RPC 응답 시간이 초과되었습니다. 잠시 후 다시 시도하고, 계속되면 설정 → 네트워크(RPC)에서 테스트하거나 다른 RPC URL로 바꾸세요. (E-RPC-002)". 체인 문서가 정한 고정 문구 표([08] §13 등)는 그 표를 쓴다.
 - 분류 입력은 HTTP 상태, JSON-RPC `error.code`, WinHTTP·Win32 오류 번호, 내부 enum(`VaultError`·`KeyError`·`journal::JournalError`, [02] §10)이다. 문자열로 분류해야 하면(공급자의 허용 목록 거부 등) yw-app 안의 고정 부분 문자열 비교만 쓰고 그 문자열은 보이지 않는다. 오류 문구·배너에는 엔드포인트를 네트워크 이름으로만 가리키고 URL·호스트를 넣지 않는다(§1.9).
 - 로그: 코드는 `warn` 이상으로 항상 남긴다. 원격 메시지 문자열은 `debug`에서만, 0x20–0x7E 밖을 `?`로 바꾸고 256바이트로 잘라 남긴다.
 - 배너는 사용자가 닫을 때까지 남고 같은 코드는 한 번만 보인다.
 
 | 코드 | 상황(원인 enum) | 문구 |
 |---|---|---|
-| E-APP-001 | `settings.json` 읽기 실패·무효 키 | 설정 파일을 읽지 못해 기본값을 사용합니다. ({키}) |
+| E-APP-001 | `settings.json` 읽기 실패·무효 키, 더 새로운 `version`(§6.2·§6.6: {키} 자리에 읽기 전용 안내) | 설정 파일을 읽지 못해 기본값을 사용합니다. ({키}) |
 | E-APP-002 | `settings.json` 쓰기 실패 | 설정을 저장하지 못했습니다. 디스크 공간과 권한을 확인하세요. |
 | E-APP-004 | 세션 알림 등록 실패 | Windows 잠금 감지를 켜지 못했습니다. 자리를 비울 때 직접 잠그세요. |
 | E-APP-005 | 이벤트 큐 가득 참 | 요청이 너무 많아 일부를 처리하지 못했습니다. |
-| E-APP-009 | 내부 오류(`InvalidState`, `RecordNotFound`, `KeyError::Internal` 등) | 내부 오류가 발생했습니다. 로그를 확인하세요. |
+| E-APP-009 | 내부 오류(`InvalidState`, `RecordNotFound`, `KeyError::Internal` 등) | 내부 오류가 발생했습니다. 앱을 다시 시작해 보고, 반복되면 로그 폴더 %LOCALAPPDATA%\YourWallet\v3\logs의 yw-app.log에서 오류 코드 줄을 확인하세요. |
 | E-PIPE-001 | pipe 생성 실패 | 브라우저 연결을 시작하지 못했습니다. 앱을 다시 실행하세요. |
-| E-VLT-001 | `UnlockFailed` | 비밀번호가 올바르지 않거나 vault 파일이 손상되었습니다. |
-| E-VLT-002 | `Malformed`, `UnsupportedVersion`, `UnsupportedParams` | 지갑 파일을 읽을 수 없습니다. 손상되었거나 다른 버전의 파일입니다. |
+| E-VLT-001 | `UnlockFailed`(비밀번호 오류와 손상을 구분하지 않는다, [02] §10) | 비밀번호가 올바르지 않거나 vault 파일이 손상되었습니다. 대부분 입력 실수이니 Caps Lock과 한/영 상태를 확인하고 다시 입력하세요. 맞는 비밀번호로도 계속 실패하면 파일 손상일 수 있습니다(복구 안내 참고). |
+| E-VLT-002 | `Malformed`, `UnsupportedVersion`, `UnsupportedParams` | 지갑 파일을 읽을 수 없습니다. 손상되었거나 다른 버전의 파일입니다. 더 새로운 버전의 앱이 쓴 파일이면 앱을 최신 버전으로 업데이트하세요. 앱은 이 파일을 지우거나 덮어쓰지 않습니다. |
 | E-VLT-003 | `Storage` | 지갑 파일을 저장하지 못했습니다. 디스크 공간과 권한을 확인하세요. |
 | E-VLT-005 | `RandomnessUnavailable` | 안전한 난수를 얻지 못해 작업을 중단했습니다. |
-| E-VLT-006 | `SidecarCorrupt`, `SidecarVaultMismatch`, 저널 손상 | 지갑 부가 파일(meta·저널)을 읽을 수 없습니다. |
+| E-VLT-006 | `SidecarCorrupt`, `SidecarVaultMismatch`, 저널 손상 | 지갑 부가 파일(meta·저널)을 읽을 수 없습니다. 복구 단어·키와 자산에는 영향이 없습니다. 더 새로운 버전의 앱이 쓴 파일이면 앱을 최신 버전으로 업데이트한 뒤 다시 여세요. |
 | E-VLT-007 | `OutOfMemory`, VirtualLock 실패 | 메모리를 잠그지 못해 잠금 해제하지 않았습니다. |
 | E-VLT-008 | `PayloadCorrupt` | 지갑 내용이 손상되었습니다. 이전 사본(.prev)으로 복구할 수 있습니다. |
 | E-VLT-009 | `BackupNotConfirmed` | 백업 확인을 먼저 끝내세요. |
@@ -922,18 +939,18 @@ BTC 계정 선택 키는 없다. BTC v1은 계정 0(m/84'/{coin}'/0')만 쓴다(
 | E-SEC-001 | 캡처 제외 실패(`CaptureExclusion::Required` 창 W08·W09, §4.5. `Preferred` 창은 T-CAPTURE-WARN) | 화면 캡처 제외를 적용하지 못해 표시하지 않습니다. |
 | E-SEC-002 | 클립보드 열기 실패 | 클립보드를 사용할 수 없습니다. 잠시 후 다시 시도하세요. |
 | E-KEY-001 | `apikeys.dpapi` 읽기 실패 | 저장된 RPC 엔드포인트·API 키를 읽을 수 없습니다. 다시 입력하세요. |
-| E-KEY-002 | 템플릿 자격 정보 형식(QuickNode 엔드포인트 이름·토큰, 알케미 키, §2.11) | 공급자 템플릿 입력 형식이 올바르지 않습니다. ({항목}) |
+| E-KEY-002 | 템플릿 자격 정보 형식(QuickNode 엔드포인트 이름·토큰, 알케미 키, §2.11). {항목}은 문구 끝, 코드 앞에 붙인다 | 공급자 템플릿 입력 형식이 올바르지 않습니다. QuickNode는 대시보드의 엔드포인트 주소 https://<이름>.<체인>.quiknode.pro/<토큰>/ 에서 첫 '.' 앞의 <이름>과 '.quiknode.pro/' 바로 뒤의 <토큰>을 넣고, 알케미는 대시보드의 API Key를 넣으세요. ({항목}) |
 | E-KEY-003 | RPC URL 형식(`HttpsUrl::parse` 실패, `직접 입력` 템플릿에 URL이 아닌 값) | RPC URL은 https:// 로 시작하는 올바른 주소여야 합니다. |
 | E-KEY-004 | 템플릿 자격 정보 없음(`네트워크 URL 생성`, S17 서브도메인·라벨 입력, §2.11.1·§2.17.1) | 선택한 RPC 공급자 템플릿의 자격 정보가 없습니다. 설정 → RPC 공급자에서 먼저 저장하세요. |
 | E-KEY-005 | 네트워크 엔드포인트 없음(`rpc:<NetworkId>` 없음: 그 네트워크의 조회·준비·서명·`테스트`·BTC 켜기, [03] E35, §1.9) | RPC 엔드포인트가 없습니다. 설정 → 네트워크 URL에서 이 네트워크의 URL을 만들거나 입력하세요. |
-| E-RPC-001 | DNS·연결 실패 | 네트워크에 연결할 수 없습니다. |
-| E-RPC-002 | 시간 초과 | RPC 응답 시간이 초과되었습니다. |
-| E-RPC-003 | HTTP 401·403 | RPC 엔드포인트가 인증을 거부했습니다. 설정 → 네트워크 URL에서 이 네트워크의 URL(토큰)을 확인하세요. |
+| E-RPC-001 | DNS·연결 실패 | 네트워크에 연결할 수 없습니다. 인터넷 연결을 확인하고, 계속되면 설정 → 네트워크(RPC)에서 이 네트워크의 테스트를 눌러 보세요. |
+| E-RPC-002 | 시간 초과 | RPC 응답 시간이 초과되었습니다. 잠시 후 다시 시도하고, 계속되면 설정 → 네트워크(RPC)에서 테스트하거나 다른 RPC URL로 바꾸세요. |
+| E-RPC-003 | HTTP 401·403 | RPC 엔드포인트가 인증을 거부했습니다. 설정 → 네트워크(RPC)에서 이 네트워크의 URL(토큰)을 확인하세요. QuickNode 멀티체인이면 대시보드에서 이 체인이 그 엔드포인트에 켜져 있어야 합니다. |
 | E-RPC-004 | HTTP 429, 한도 초과 코드 | 요청 한도를 넘었습니다. 잠시 후 다시 시도하세요. |
-| E-RPC-005 | 응답 형식 이상 | RPC 응답 형식이 올바르지 않습니다. |
-| E-RPC-006 | chainId 불일치, 상수 제네시스 체인(1·11155111)의 제네시스 불일치([03] §1.4) | RPC가 다른 네트워크를 가리킵니다. 작업을 중단했습니다. |
-| E-RPC-007 | 그 밖의 JSON-RPC 오류 | RPC가 요청을 거부했습니다. |
-| E-RPC-008 | TLS 실패 | 보안 연결(TLS)을 맺지 못했습니다. |
+| E-RPC-005 | 응답 형식 이상 | RPC 응답 형식이 올바르지 않습니다. 설정 → 네트워크(RPC)에서 테스트해 이 네트워크용 URL(경로 포함)이 맞는지 확인하세요. |
+| E-RPC-006 | chainId 불일치, 상수 제네시스 체인(1·11155111)의 제네시스 불일치([03] §1.4) | RPC가 다른 네트워크를 가리킵니다. 작업을 중단했습니다. 설정 → 네트워크(RPC) → 테스트로 이 네트워크의 URL을 확인하고 맞는 URL로 바꾸세요. |
+| E-RPC-007 | 그 밖의 JSON-RPC 오류, 그 밖의 HTTP 상태(404 포함) | RPC가 요청을 거부했습니다. 설정 → 네트워크(RPC)에서 테스트해 보세요. QuickNode 멀티체인이면 대시보드에서 이 체인이 그 엔드포인트에 켜져 있는지, 요금제가 이 요청을 지원하는지 확인하세요. |
+| E-RPC-008 | TLS 실패 | 보안 연결(TLS)을 맺지 못했습니다. PC의 날짜·시간이 맞는지, 보안 프로그램·프록시가 HTTPS 연결을 가로채지 않는지 확인하세요. |
 | E-RPC-009 | 리퍼러·origin 허용 목록 거부 | RPC 엔드포인트에 리퍼러·도메인 허용 목록이 걸려 있습니다. 공급자 대시보드에서 해제하세요(토큰 인증·IP 허용 목록은 무방, D13). |
 | E-RPC-010 | 엔드포인트 `테스트` 결과 불일치(§2.11.1). {항목} = `chainId`(EVM; 문구 끝에 " (RPC chainId {n})", 파싱한 10진 값), `genesis`(SOL), `chain`(BTC; 원격 문자열은 보이지 않음) | 엔드포인트 테스트 실패: {항목} 불일치 — 다른 네트워크의 URL입니다. |
 | E-BTC-001 | Bitcoin 인덱서 연결 실패: 전송 오류·시간 초과·TLS(원인 코드 E-RPC-001·002·008을 함께 보인다, 예 "(E-BTC-001, E-RPC-002)"), HTTP 3xx·5xx·그 밖 상태([08] §4.3). {인덱서} = `Esplora`·`Blockbook JSON-RPC`·`Blockbook REST`(URL·호스트 없음) | Bitcoin 인덱서({인덱서})에 연결할 수 없습니다. 잠시 후 다시 시도하거나 설정 → Bitcoin에서 인덱서를 바꾸세요. |
@@ -958,10 +975,10 @@ BTC 계정 선택 키는 없다. BTC v1은 계정 0(m/84'/{coin}'/0')만 쓴다(
 | E-CHN-008 | 최초 신뢰 고정 체인(HyperEVM·사용자 체인)의 제네시스 불일치(§1.9, §2.17.4) | 체인 정보가 바뀌었습니다 (제네시스 불일치) |
 | E-CHN-009 | 삭제 거부: 활성 체인 | 사용 중인 체인은 삭제할 수 없습니다. 네트워크를 먼저 바꾸세요. |
 | E-CHN-010 | 사용자 체인 추가: `baseFeePerGas` 없음([03] §1.6-4) | EIP-1559를 지원하지 않는 체인입니다. |
-| E-TX-001 | 수수료 상한 초과([03] E05) | 수수료가 설정한 상한을 넘습니다. |
+| E-TX-001 | 수수료 상한 초과([03] E05) | 수수료가 설정한 상한을 넘습니다. 네트워크가 붐비면 잠시 후 다시 시도하거나, 설정 → EVM 체인 → 고급 설정 보기의 EVM 수수료 상한을 확인하세요. |
 | E-TX-002 | 진행 중 거래(D20, [03] E06) | 이 계정의 이전 거래가 아직 확정되지 않았습니다. |
 | E-TX-003 | 서명 후 자체 검증 실패 | 내부 검증에 실패해 거래를 보내지 않았습니다. |
-| E-TX-004 | 전송 결과 불명 | 전송 결과를 확인할 수 없습니다. 활동에서 상태를 확인하세요. |
+| E-TX-004 | 전송 결과 불명 | 전송 결과를 확인할 수 없습니다. 다시 보내지 마세요 — 거래가 이미 전송되었을 수 있습니다. 활동에서 상태를 확인하세요. |
 | E-TX-005 | `journal::JournalError::Full`([02] §5.4 추가 전 검사, [03] E06; 모든 체인, 서명·전송 없음) | 거래 저널 공간이 부족합니다. |
 | E-UI-001 | 표시 검증 실패 | 요청 내용을 안전하게 표시할 수 없어 거부했습니다. |
 | E-SOL-001 | SOL 받는 주소가 프로그램·sysvar·허용 목록 mint([07] §12.1-2, 입력 단계 차단) | 받는 주소가 프로그램·시스템·토큰 mint 주소입니다. 보내면 잃습니다. |
@@ -976,7 +993,7 @@ BTC 계정 선택 키는 없다. BTC v1은 계정 0(m/84'/{coin}'/0')만 쓴다(
 
 ## 8. 로그 (D28)
 - 파일: `logs\yw-app.log`, 순환 `yw-app.1.log` … `yw-app.4.log`(총 5개). yw-host 로그는 [05].
-- 순환: 한 줄을 쓰기 전 현재 크기 + 줄 길이가 `LOG_FILE_MAX_BYTES = 1_048_576`을 넘으면 닫고, `.4` 삭제, `.3→.4`, `.2→.3`, `.1→.2`, 현재→`.1`로 이름을 바꾸고 새 파일을 연다. 순환 실패는 무시하고 계속 쓴다.
+- 순환: 한 줄을 쓰기 전 현재 크기 + 줄 길이가 `LOG_FILE_MAX_BYTES = 1_048_576`을 넘으면 닫고, `.4` 삭제, `.3→.4`, `.2→.3`, `.1→.2`, 현재→`.1`로 이름을 바꾸고 새 파일을 연다. `.1`–`.4` 단계의 실패는 무시한다. 현재 파일이 이름 바꾸기 뒤에도 남아 있으면(다른 프로그램이 잡고 있음 등) 그 파일을 비우고(truncate) 첫 줄에 `WARN log rotate.failed`를 쓴 뒤 계속 쓴다. 비우기도 실패하면 이번 실행 동안 파일 로그를 멈춘다(크기 상한을 넘겨 계속 커지지 않는다).
 - 형식: UTF-8, LF, 한 줄 ≤ 1,024바이트(넘으면 자름). `2026-10-26T12:34:56.789Z WARN rpc E-RPC-002 method=eth_simulateV1 net=eip155:11155111 ms=12000`. 시각은 UTC. 필드 값은 0x21–0x7E만(나머지 `?`). 엔드포인트는 `net=<NetworkId>`로만 가리키고 `host=`·`url=` 필드는 없다(D13: QuickNode 호스트에는 엔드포인트 이름이 들어간다, §1.9). BTC 인덱서는 `idx=esplora|bb-rpc|bb-rest`와 경로 종류만 쓴다(`esplora`: `utxo`·`address`·`tx-status`·`tx-hex`·`block-height`·`tip-height`·`tx-post`, `bb-rest`: `utxo`·`address`·`tx`·`block-index`). 비밀이 아닌 Esplora 기준 URL도 쓰지 않는다([08] §4.1).
 - `Mutex<LogWriter>`(버퍼). `warn` 이상은 즉시 flush, 나머지는 2초마다와 종료 때. `logLevel` 이상만 쓴다. 텔레메트리·업로드 경로는 없다.
 

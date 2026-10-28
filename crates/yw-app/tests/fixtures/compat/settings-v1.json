@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "autoLockMinutes": 15,
+  "allowSecretCopy": false,
+  "allowLocalhostDapps": true,
+  "browserAutoLaunch": false,
+  "evmChainId": 84532,
+  "evmChains": [
+    {
+      "chainId": 84532,
+      "name": "Base Sepolia",
+      "symbol": "ETH",
+      "decimals": 18,
+      "quicknodeSubdomain": "base-sepolia",
+      "explorer": "https://sepolia.basescan.org",
+      "simulation": "auto",
+      "genesisHash": "0xba5eba5eba5eba5eba5eba5eba5eba5eba5eba5eba5eba5eba5eba5eba5eba5e"
+    }
+  ],
+  "evmGenesisPins": { "eip155:999": "0xd8fcc13b6a195b88b7b2da3722ff6cad767b13a8c1e9ffb1c73aa9d216d895f0" },
+  "feeCaps": {
+    "eip155:84532": { "maxFeePerGasGwei": "50", "maxPriorityFeePerGasGwei": "2", "maxTotalFee": "0.01" }
+  },
+  "rpc": { "template": "quicknode" },
+  "solana": { "max_fee_lamports": 100000, "max_cu_price_micro": 1000000, "cluster": "devnet" },
+  "bitcoin": { "enabled": true, "network": "testnet4", "indexer": "esplora",
+               "esploraBaseUrl": { "mainnet": "https://blockstream.info/api", "testnet4": "https://blockstream.info/testnet4/api" } },
+  "llm_explain": { "enabled": false, "endpoint": "", "model": "", "response_format": "json_schema", "max_tokens": 0, "privacy_notice_version": 0 },
+  "logLevel": "warn"
+}

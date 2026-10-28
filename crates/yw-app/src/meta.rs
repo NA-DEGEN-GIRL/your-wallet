@@ -1,7 +1,9 @@
 //! The decrypted `meta.ywm` JSON (`schema = "yw-meta/3"`, spec/02 §5.3) and its `prefs` object
 //! (spec/04 §6.4). yw-core only seals bytes; this module parses and writes the JSON with yw-json.
-//! Unknown or duplicate keys reject the whole document (treated as `SidecarCorrupt`, E-VLT-006),
-//! except `prefs`, which falls back to its default on any error.
+//! Duplicate keys, a missing known key or an invalid value reject the whole document (treated as
+//! `SidecarCorrupt`, E-VLT-006), except `prefs`, which falls back to its default on any error.
+//! Unknown top-level keys (a newer minor version's) are kept and written back after the known keys
+//! (spec/04 §6.6, spec/02 §5.3).
 
 use yw_core::btc::meta::{BtcMeta, btc_meta_from_json, btc_meta_to_json};
 use yw_json::{Limits, Number, Object, Value};
@@ -26,9 +28,24 @@ pub const MAX_TOKENS_PER_NETWORK: usize = 100;
 const MAX_TOKENS_TOTAL: usize = 1_000;
 const MAX_ACTIVITY_PER_NETWORK: usize = 500;
 const MAX_ACTIVITY_TOTAL: usize = 3_000;
+/// Largest meta plaintext (spec/02 §5.2).
+const META_MAX_BYTES: usize = 8 * 1_024 * 1_024;
+/// The top-level keys of `yw-meta/3`, in write order.
+const KEYS: [&str; 10] = [
+    "schema",
+    "evm_accounts",
+    "evm_raw_accounts",
+    "sol_accounts",
+    "btc",
+    "address_book",
+    "connected_sites",
+    "tokens",
+    "activity",
+    "prefs",
+];
 
 const LIMITS: Limits = Limits {
-    max_bytes: 8 * 1_024 * 1_024,
+    max_bytes: META_MAX_BYTES,
     max_depth: 16,
     max_nodes: 1_000_000,
     max_items: 1_000_000,
@@ -134,6 +151,9 @@ pub struct Meta {
     pub activity: Vec<(String, Vec<Value>)>,
     /// Preferences.
     pub prefs: Prefs,
+    /// Top-level keys this version does not know (a newer minor version's), in file order; written
+    /// back after the known keys while the plaintext stays within 8 MiB (spec/04 §6.6).
+    pub unknown: Vec<(String, Value)>,
 }
 
 impl Default for Meta {
@@ -153,6 +173,7 @@ impl Default for Meta {
             tokens: Vec::new(),
             activity: Vec::new(),
             prefs: Prefs::default(),
+            unknown: Vec::new(),
         }
     }
 }
@@ -428,27 +449,21 @@ fn parse_prefs(value: &Value, meta: &Meta) -> Option<Prefs> {
 ///
 /// # Errors
 ///
-/// [`MetaError`] for any schema violation (outside `prefs`).
+/// [`MetaError`] for any schema violation (outside `prefs`). Unknown top-level keys are not a
+/// violation: they are kept in [`Meta::unknown`] (spec/04 §6.6).
 pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
-    const KEYS: [&str; 10] = [
-        "schema",
-        "evm_accounts",
-        "evm_raw_accounts",
-        "sol_accounts",
-        "btc",
-        "address_book",
-        "connected_sites",
-        "tokens",
-        "activity",
-        "prefs",
-    ];
     let root = yw_json::parse(bytes, &LIMITS).map_err(|_| MetaError)?;
     let object = root.as_object().ok_or(MetaError)?;
-    if !exact_keys(object, &KEYS)
+    if !KEYS.iter().all(|key| object.get(key).is_some())
         || object.get("schema").and_then(Value::as_str) != Some(META_SCHEMA)
     {
         return Err(MetaError);
     }
+    let unknown: Vec<(String, Value)> = object
+        .iter()
+        .filter(|(key, _)| !KEYS.contains(key))
+        .map(|(key, value)| (key.to_owned(), value.clone()))
+        .collect();
     let get = |key: &str| object.get(key).ok_or(MetaError);
     let array = |key: &str| get(key)?.as_array().ok_or(MetaError);
     let evm_accounts: Vec<Account> = array("evm_accounts")?
@@ -523,6 +538,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         tokens,
         activity,
         prefs: Prefs::default(),
+        unknown,
     };
     let prefs = parse_prefs(get("prefs")?, &meta);
     let prefs_reset = prefs.is_none();
@@ -549,9 +565,18 @@ fn network_map_json(map: &[(String, Vec<Value>)]) -> Value {
 }
 
 impl Meta {
-    /// Serializes in the spec/02 §5.3 key order.
+    /// Serializes in the spec/02 §5.3 key order, followed by the unknown top-level keys kept from
+    /// the file (spec/04 §6.6) while the plaintext stays within 8 MiB.
     #[must_use]
     pub fn to_json(&self) -> Vec<u8> {
+        crate::settings::serialize_with_unknown(
+            &|| self.known_members(),
+            &self.unknown,
+            META_MAX_BYTES,
+        )
+    }
+
+    fn known_members(&self) -> Vec<(&'static str, Value)> {
         let evm_account = match self.prefs.evm_account {
             EvmAccountPref::Index(index) => {
                 json_object(vec![("index", json_u64(u64::from(index)))])
@@ -560,7 +585,7 @@ impl Meta {
                 json_object(vec![("record_id", json_str(&yw_core::hex::encode(&id)))])
             }
         };
-        let root = json_object(vec![
+        vec![
             ("schema", json_str(META_SCHEMA)),
             (
                 "evm_accounts",
@@ -601,8 +626,7 @@ impl Meta {
                     ("tab", json_str(self.prefs.tab.as_str())),
                 ]),
             ),
-        ]);
-        yw_json::to_vec(&root)
+        ]
     }
 
     /// The next Solana standard index (largest + 1, or 0 for the first account), `None` at the
@@ -1096,10 +1120,58 @@ mod tests {
     }
 
     #[test]
-    fn unknown_keys_and_bad_accounts_are_rejected() {
+    fn unknown_top_level_keys_are_kept_and_written_back() {
+        // A newer minor version added two top-level keys (spec/04 §6.6 fixture).
         let good = String::from_utf8(Meta::default().to_json()).unwrap();
-        let unknown = good.replacen("\"btc\":null", "\"btc\":null,\"extra\":1", 1);
-        assert!(parse(unknown.as_bytes()).is_err());
+        let newer = good.replacen(
+            "\"btc\":null",
+            "\"future_notes\":{\"a\":[1,\"x\"]},\"btc\":null,\"future_flag\":true",
+            1,
+        );
+        let parsed = parse(newer.as_bytes()).unwrap();
+        assert!(!parsed.prefs_reset);
+        let names: Vec<&str> = parsed
+            .meta
+            .unknown
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .collect();
+        assert_eq!(names, ["future_notes", "future_flag"]);
+        let mut meta = parsed.meta;
+        meta.evm_accounts[0].label = "주 계정".to_owned();
+        let written = String::from_utf8(meta.to_json()).unwrap();
+        assert!(written.ends_with(",\"future_notes\":{\"a\":[1,\"x\"]},\"future_flag\":true}"));
+        let again = parse(written.as_bytes()).unwrap();
+        assert_eq!(again.meta, meta);
+        assert_eq!(again.meta.to_json(), written.as_bytes());
+        // Unknown keys never push the plaintext over 8 MiB: they are dropped instead.
+        let big = Meta {
+            unknown: vec![
+                ("small".to_owned(), super::Value::Bool(true)),
+                (
+                    "huge".to_owned(),
+                    super::Value::String("x".repeat(super::META_MAX_BYTES)),
+                ),
+                ("after".to_owned(), super::Value::Null),
+            ],
+            ..Meta::default()
+        };
+        let bytes = big.to_json();
+        assert!(bytes.len() <= super::META_MAX_BYTES);
+        let kept = parse(&bytes).unwrap().meta.unknown;
+        assert_eq!(kept, vec![("small".to_owned(), super::Value::Bool(true))]);
+    }
+
+    #[test]
+    fn missing_keys_other_schemas_and_bad_accounts_are_rejected() {
+        let good = String::from_utf8(Meta::default().to_json()).unwrap();
+        let missing = good.replacen("\"btc\":null,", "", 1);
+        assert!(parse(missing.as_bytes()).is_err());
+        let other_schema = good.replacen("yw-meta/3", "yw-meta/4", 1);
+        assert!(parse(other_schema.as_bytes()).is_err());
+        // Unknown keys inside typed records are still a violation (only top-level keys may grow).
+        let nested = good.replacen("\"hidden\":false", "\"hidden\":false,\"extra\":1", 1);
+        assert!(parse(nested.as_bytes()).is_err());
         let no_zero = good.replacen("\"index\":0", "\"index\":1", 1);
         assert!(parse(no_zero.as_bytes()).is_err());
         let bad_label = good.replacen("계정 1", " padded", 1);

@@ -1,6 +1,9 @@
 # Native messaging host registration
 
-Summary of spec/05 §9. There is no installer and no Web Store package (D1).
+Summary of spec/05 §9 (source builds). There is no Web Store package (D1). The release zip has its
+own per-user installer, `install.ps1` (spec/01 §9.3, docs/install.ko.md), which installs to
+`%LOCALAPPDATA%\Programs\YourWallet` and registers the same HKCU key; the scripts below are for
+running a build from this repository (default `-BinDir` `%LOCALAPPDATA%\YourWallet\bin`).
 
 ## Register (`scripts/register-native-host.ps1`)
 

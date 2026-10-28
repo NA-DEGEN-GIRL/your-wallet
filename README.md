@@ -8,7 +8,13 @@ Windows 11 PC 한 대에서 작성자 본인이 쓰는 개인용 소프트웨어
 
 ## 상태
 
-- 현재 마일스톤: **M5 브라우저 연동** 구현(Chrome 확장 버그 수정·고정 ID, `yw-host` native messaging 중계, 사용자 전용 named pipe, dApp 메서드·권한·체인 전환·읽기 중계, 연결 창·연결된 사이트 화면, 등록 스크립트, 로컬 test-dApp; M1 키·vault, M2 EVM 코어, M3 앱 뼈대, M4 EVM 단독 전송 완료). M5 판정·수동 체크리스트(등록·확장 로드 포함)는 [docs/acceptance/m5-20261027.md](docs/acceptance/m5-20261027.md). 다음은 M6(선택: LLM 설명), M7(Solana), M8(Bitcoin).
+- **구현 완료 · 수동 검증 대기.** M0–M8 전 마일스톤을 구현했다: 키·vault(M1), EVM 코어(M2), 앱 뼈대(M3),
+  EVM 송금·사용자 체인(M4), 브라우저 연동과 MetaMask·Rabby 호환 모드(M5), 선택 기능 LLM 설명(M6),
+  Solana 송금과 v1.1 SPL 허용 목록(M7), Bitcoin 송금(M8). 자동 검사(`scripts/check.ps1`)는 통과하며,
+  마일스톤별 수동 체크리스트와 라이브 확인은 [docs/acceptance/](docs/acceptance/)에서 진행 중이다
+  (아직 남은 예: Chrome job object에서 yw-app 생존 확인 M5-13, 메인넷 소액 M9).
+- 설치는 미리 빌드된 배포 zip과 `install.ps1`로 한다(아래 "설치", [docs/install.ko.md](docs/install.ko.md)).
+  배포 zip은 작성자 본인 PC 설치용이며 다른 사람에게 배포하는 제품이 아니다(spec.md §2.2).
 - 실제 자산을 넣지 않는다. 메인넷 사용은 M9 체크리스트 이후 소액만.
 - 마일스톤과 완료 조건: [spec.md](spec.md) §5, 판정 기준: [spec/09-testing.md](spec/09-testing.md).
 

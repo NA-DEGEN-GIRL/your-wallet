@@ -185,6 +185,10 @@ impl LogWriter {
         }
     }
 
+    /// Rotates the files. If the current file could not be renamed away (another program holds
+    /// it, a `.1` that cannot be replaced), it is truncated instead so it never grows past the
+    /// bound, and a `rotate.failed` line says so; if even that fails, file logging stops for this
+    /// run (spec/04 §8).
     fn rotate(&mut self) {
         self.flush();
         self.file = None;
@@ -192,16 +196,33 @@ impl LogWriter {
         for index in (0..ROTATIONS).rev() {
             let _ = fs::rename(numbered(&self.dir, index), numbered(&self.dir, index + 1));
         }
-        self.file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(numbered(&self.dir, 0))
-            .ok();
+        let current = numbered(&self.dir, 0);
+        let renamed = fs::metadata(&current)
+            .ok()
+            .is_none_or(|metadata| metadata.len() == 0);
+        self.file = if renamed {
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&current)
+                .ok()
+        } else {
+            OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&current)
+                .ok()
+        };
         self.size = 0;
+        if !renamed && self.file.is_some() {
+            let line = format_line(now_unix_ms(), LogLevel::Warn, "log", "rotate.failed", &[]);
+            self.buffer.extend_from_slice(line.as_bytes());
+        }
     }
 
-    /// Appends one line, rotating first if it would exceed the bound. Rotation failures are
-    /// ignored (spec/04 §8).
+    /// Appends one line, rotating first if it would exceed the bound. A failed rotation truncates
+    /// the current file (or stops file logging) instead of letting it grow (spec/04 §8).
     pub fn write_line(&mut self, line: &str, flush_now: bool) {
         let len = u64::try_from(line.len()).unwrap_or(u64::MAX);
         let pending = u64::try_from(self.buffer.len()).unwrap_or(u64::MAX);
@@ -381,6 +402,36 @@ mod tests {
         for name in &names {
             assert!(std::fs::metadata(dir.join(name)).unwrap().len() <= LOG_FILE_MAX_BYTES);
         }
+        drop(writer);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn failed_rotation_truncates_instead_of_growing() {
+        let dir = std::env::temp_dir().join(format!(
+            "yw-app-log-stuck-{}-{}",
+            std::process::id(),
+            yw_win::time::monotonic_ms()
+        ));
+        // `.1`–`.4` are non-empty directories: no rename in the chain can succeed, so the current
+        // file stays where it is.
+        for index in 1..=4 {
+            let blocker = dir.join(format!("yw-app.{index}.log"));
+            std::fs::create_dir_all(&blocker).unwrap();
+            std::fs::write(blocker.join("keep"), b"x").unwrap();
+        }
+        let mut writer = LogWriter::open(&dir);
+        let line = format!("{}\n", "y".repeat(1_000));
+        let lines_per_file = usize::try_from(LOG_FILE_MAX_BYTES).unwrap() / line.len() + 1;
+        for _ in 0..lines_per_file * 3 {
+            writer.write_line(&line, true);
+        }
+        let current = dir.join("yw-app.log");
+        let size = std::fs::metadata(&current).unwrap().len();
+        assert!(size <= LOG_FILE_MAX_BYTES, "{size}");
+        let text = std::fs::read_to_string(&current).unwrap();
+        assert!(text.contains(" WARN log rotate.failed\n"));
+        assert!(text.ends_with(&line));
         drop(writer);
         std::fs::remove_dir_all(&dir).unwrap();
     }

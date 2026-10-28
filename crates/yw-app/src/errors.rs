@@ -288,13 +288,21 @@ impl ErrorCode {
             Self::App002 => "설정을 저장하지 못했습니다. 디스크 공간과 권한을 확인하세요.",
             Self::App004 => "Windows 잠금 감지를 켜지 못했습니다. 자리를 비울 때 직접 잠그세요.",
             Self::App005 => "요청이 너무 많아 일부를 처리하지 못했습니다.",
-            Self::App009 => "내부 오류가 발생했습니다. 로그를 확인하세요.",
+            Self::App009 => {
+                "내부 오류가 발생했습니다. 앱을 다시 시작해 보고, 반복되면 로그 폴더 %LOCALAPPDATA%\\YourWallet\\v3\\logs의 yw-app.log에서 오류 코드 줄을 확인하세요."
+            }
             Self::Pipe001 => "브라우저 연결을 시작하지 못했습니다. 앱을 다시 실행하세요.",
-            Self::Vlt001 => "비밀번호가 올바르지 않거나 vault 파일이 손상되었습니다.",
-            Self::Vlt002 => "지갑 파일을 읽을 수 없습니다. 손상되었거나 다른 버전의 파일입니다.",
+            Self::Vlt001 => {
+                "비밀번호가 올바르지 않거나 vault 파일이 손상되었습니다. 대부분 입력 실수이니 Caps Lock과 한/영 상태를 확인하고 다시 입력하세요. 맞는 비밀번호로도 계속 실패하면 파일 손상일 수 있습니다(복구 안내 참고)."
+            }
+            Self::Vlt002 => {
+                "지갑 파일을 읽을 수 없습니다. 손상되었거나 다른 버전의 파일입니다. 더 새로운 버전의 앱이 쓴 파일이면 앱을 최신 버전으로 업데이트하세요. 앱은 이 파일을 지우거나 덮어쓰지 않습니다."
+            }
             Self::Vlt003 => "지갑 파일을 저장하지 못했습니다. 디스크 공간과 권한을 확인하세요.",
             Self::Vlt005 => "안전한 난수를 얻지 못해 작업을 중단했습니다.",
-            Self::Vlt006 => "지갑 부가 파일(meta·저널)을 읽을 수 없습니다.",
+            Self::Vlt006 => {
+                "지갑 부가 파일(meta·저널)을 읽을 수 없습니다. 복구 단어·키와 자산에는 영향이 없습니다. 더 새로운 버전의 앱이 쓴 파일이면 앱을 최신 버전으로 업데이트한 뒤 다시 여세요."
+            }
             Self::Vlt007 => "메모리를 잠그지 못해 잠금 해제하지 않았습니다.",
             Self::Vlt008 => "지갑 내용이 손상되었습니다. 이전 사본(.prev)으로 복구할 수 있습니다.",
             Self::Vlt009 => "백업 확인을 먼저 끝내세요.",
@@ -317,7 +325,9 @@ impl ErrorCode {
             Self::Sec001 => "화면 캡처 제외를 적용하지 못해 표시하지 않습니다.",
             Self::Sec002 => "클립보드를 사용할 수 없습니다. 잠시 후 다시 시도하세요.",
             Self::Key001 => "저장된 RPC 엔드포인트·API 키를 읽을 수 없습니다. 다시 입력하세요.",
-            Self::Key002 => "공급자 템플릿 입력 형식이 올바르지 않습니다.",
+            Self::Key002 => {
+                "공급자 템플릿 입력 형식이 올바르지 않습니다. QuickNode는 대시보드의 엔드포인트 주소 https://<이름>.<체인>.quiknode.pro/<토큰>/ 에서 첫 '.' 앞의 <이름>과 '.quiknode.pro/' 바로 뒤의 <토큰>을 넣고, 알케미는 대시보드의 API Key를 넣으세요."
+            }
             Self::Key003 => "RPC URL은 https:// 로 시작하는 올바른 주소여야 합니다.",
             Self::Key004 => {
                 "선택한 RPC 공급자 템플릿의 자격 정보가 없습니다. 설정 → RPC 공급자에서 먼저 저장하세요."
@@ -325,16 +335,28 @@ impl ErrorCode {
             Self::Key005 => {
                 "RPC 엔드포인트가 없습니다. 설정 → 네트워크 URL에서 이 네트워크의 URL을 만들거나 입력하세요."
             }
-            Self::Rpc001 => "네트워크에 연결할 수 없습니다.",
-            Self::Rpc002 => "RPC 응답 시간이 초과되었습니다.",
+            Self::Rpc001 => {
+                "네트워크에 연결할 수 없습니다. 인터넷 연결을 확인하고, 계속되면 설정 → 네트워크(RPC)에서 이 네트워크의 테스트를 눌러 보세요."
+            }
+            Self::Rpc002 => {
+                "RPC 응답 시간이 초과되었습니다. 잠시 후 다시 시도하고, 계속되면 설정 → 네트워크(RPC)에서 테스트하거나 다른 RPC URL로 바꾸세요."
+            }
             Self::Rpc003 => {
-                "RPC 엔드포인트가 인증을 거부했습니다. 설정 → 네트워크 URL에서 이 네트워크의 URL(토큰)을 확인하세요."
+                "RPC 엔드포인트가 인증을 거부했습니다. 설정 → 네트워크(RPC)에서 이 네트워크의 URL(토큰)을 확인하세요. QuickNode 멀티체인이면 대시보드에서 이 체인이 그 엔드포인트에 켜져 있어야 합니다."
             }
             Self::Rpc004 => "요청 한도를 넘었습니다. 잠시 후 다시 시도하세요.",
-            Self::Rpc005 => "RPC 응답 형식이 올바르지 않습니다.",
-            Self::Rpc006 => "RPC가 다른 네트워크를 가리킵니다. 작업을 중단했습니다.",
-            Self::Rpc007 => "RPC가 요청을 거부했습니다.",
-            Self::Rpc008 => "보안 연결(TLS)을 맺지 못했습니다.",
+            Self::Rpc005 => {
+                "RPC 응답 형식이 올바르지 않습니다. 설정 → 네트워크(RPC)에서 테스트해 이 네트워크용 URL(경로 포함)이 맞는지 확인하세요."
+            }
+            Self::Rpc006 => {
+                "RPC가 다른 네트워크를 가리킵니다. 작업을 중단했습니다. 설정 → 네트워크(RPC) → 테스트로 이 네트워크의 URL을 확인하고 맞는 URL로 바꾸세요."
+            }
+            Self::Rpc007 => {
+                "RPC가 요청을 거부했습니다. 설정 → 네트워크(RPC)에서 테스트해 보세요. QuickNode 멀티체인이면 대시보드에서 이 체인이 그 엔드포인트에 켜져 있는지, 요금제가 이 요청을 지원하는지 확인하세요."
+            }
+            Self::Rpc008 => {
+                "보안 연결(TLS)을 맺지 못했습니다. PC의 날짜·시간이 맞는지, 보안 프로그램·프록시가 HTTPS 연결을 가로채지 않는지 확인하세요."
+            }
             Self::Rpc009 => {
                 "RPC 엔드포인트에 리퍼러·도메인 허용 목록이 걸려 있습니다. 공급자 대시보드에서 해제하세요(토큰 인증·IP 허용 목록은 무방, D13)."
             }
@@ -362,10 +384,14 @@ impl ErrorCode {
             Self::Chn008 => "체인 정보가 바뀌었습니다 (제네시스 불일치)",
             Self::Chn009 => "사용 중인 체인은 삭제할 수 없습니다. 네트워크를 먼저 바꾸세요.",
             Self::Chn010 => "EIP-1559를 지원하지 않는 체인입니다.",
-            Self::Tx001 => "수수료가 설정한 상한을 넘습니다.",
+            Self::Tx001 => {
+                "수수료가 설정한 상한을 넘습니다. 네트워크가 붐비면 잠시 후 다시 시도하거나, 설정 → EVM 체인 → 고급 설정 보기의 EVM 수수료 상한을 확인하세요."
+            }
             Self::Tx002 => "이 계정의 이전 거래가 아직 확정되지 않았습니다.",
             Self::Tx003 => "내부 검증에 실패해 거래를 보내지 않았습니다.",
-            Self::Tx004 => "전송 결과를 확인할 수 없습니다. 활동에서 상태를 확인하세요.",
+            Self::Tx004 => {
+                "전송 결과를 확인할 수 없습니다. 다시 보내지 마세요 — 거래가 이미 전송되었을 수 있습니다. 활동에서 상태를 확인하세요."
+            }
             Self::Tx005 => "거래 저널 공간이 부족합니다.",
             Self::Ui001 => "요청 내용을 안전하게 표시할 수 없어 거부했습니다.",
             Self::Sol001 => "받는 주소가 프로그램·시스템·토큰 mint 주소입니다. 보내면 잃습니다.",
@@ -517,10 +543,57 @@ mod tests {
             ErrorCode::Rpc010.render("chainId"),
             "엔드포인트 테스트 실패: chainId 불일치 — 다른 네트워크의 URL입니다. (E-RPC-010)"
         );
-        assert_eq!(
-            ErrorCode::Vlt001.text(),
-            "비밀번호가 올바르지 않거나 vault 파일이 손상되었습니다. (E-VLT-001)"
+        let unlock = ErrorCode::Vlt001.text();
+        assert!(unlock.starts_with("비밀번호가 올바르지 않거나 vault 파일이 손상되었습니다. "));
+        assert!(unlock.contains("Caps Lock") && unlock.ends_with(" (E-VLT-001)"));
+    }
+
+    #[test]
+    fn messages_name_a_next_step() {
+        assert!(
+            ErrorCode::Tx004
+                .message()
+                .contains("다시 보내지 마세요 — 거래가 이미 전송되었을 수 있습니다")
         );
+        assert!(
+            ErrorCode::App009
+                .text()
+                .contains("%LOCALAPPDATA%\\YourWallet\\v3\\logs")
+        );
+        assert!(
+            ErrorCode::Rpc006
+                .message()
+                .contains("설정 → 네트워크(RPC) → 테스트")
+        );
+        assert!(ErrorCode::Tx001.message().contains("EVM 수수료 상한"));
+        for code in [ErrorCode::Vlt002, ErrorCode::Vlt006] {
+            assert!(code.message().contains("업데이트"), "{}", code.code());
+        }
+        for code in [ErrorCode::Rpc003, ErrorCode::Rpc007] {
+            assert!(
+                code.message().contains("QuickNode 멀티체인"),
+                "{}",
+                code.code()
+            );
+        }
+        for code in [
+            ErrorCode::Rpc001,
+            ErrorCode::Rpc002,
+            ErrorCode::Rpc005,
+            ErrorCode::Rpc007,
+            ErrorCode::Rpc008,
+        ] {
+            // One sentence of cause, then at least one sentence of what to do.
+            assert!(code.message().matches(". ").count() >= 1, "{}", code.code());
+            assert!(code.message().ends_with("세요."), "{}", code.code());
+        }
+        // E-KEY-002 names the item after the hint, as the S15 handler appends it.
+        let item = ErrorCode::Key002
+            .text()
+            .replace(" (E-KEY-002)", " (토큰) (E-KEY-002)");
+        assert!(item.contains("<토큰>") && item.ends_with("(토큰) (E-KEY-002)"));
+        // No message has an unfilled placeholder other than the documented ones.
+        assert!(!ErrorCode::Key002.message().contains('{'));
     }
 
     #[test]
