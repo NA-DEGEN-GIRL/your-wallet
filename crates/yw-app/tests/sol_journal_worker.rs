@@ -96,7 +96,7 @@ fn approve(intent: &SolTransferIntent) -> TestResult<Approved> {
         }),
         blocks: Vec::new(),
     };
-    let draft = build_sol_transfer_request(intent, &SolCluster::Devnet.genesis(), &facts)
+    let draft = build_sol_transfer_request(intent, &intent.cluster.genesis(), &facts)
         .map_err(|error| format!("{error:?}"))?;
     let mut store = ApprovalStore::new();
     let request = store.issue(draft, 1, NOW)?;
@@ -113,6 +113,10 @@ fn times(consumed_at_ms: u64) -> SolSignTimes {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one record's life: pending, every refusal while it is pending, activity"
+)]
 fn pending_record_first_then_already_signed_then_activity() -> TestResult {
     let dir = temp_dir("pending")?;
     let mut vault = vault(&dir)?;
@@ -159,12 +163,31 @@ fn pending_record_first_then_already_signed_then_activity() -> TestResult {
         Some(KeyOutcome::SignedSol(Err(SolSignFailure::AlreadySigned)))
     ));
     assert_eq!(std::fs::read(dir.join("journal.ywj"))?, before);
-    // ④ more than 20 s after consume: refused before any key use or write.
+    // One `Pending` per (cluster, account), checked again on the journal before signing: another
+    // approved transfer of the same account is refused, nothing signed or written.
     let mut other = intent()?;
     other.id = [0x43; 16];
-    let late = state.sign_sol(
+    let second = state.sign_sol(
         &mut vault,
         Box::new(approve(&other)?),
+        times(yw_win::time::monotonic_ms()),
+        false,
+    );
+    assert!(matches!(
+        second.first(),
+        Some(KeyOutcome::SignedSol(Err(SolSignFailure::Sign(
+            SolSignError::PendingExists
+        ))))
+    ));
+    assert_eq!(std::fs::read(dir.join("journal.ywj"))?, before);
+    // The same account on the other cluster is not blocked by it (refused here only for the
+    // deadline: ④ more than 20 s after consume, before any key use or write).
+    let mut mainnet = other;
+    mainnet.id = [0x45; 16];
+    mainnet.cluster = SolCluster::Mainnet;
+    let late = state.sign_sol(
+        &mut vault,
+        Box::new(approve(&mainnet)?),
         times(now.saturating_sub(20_001)),
         false,
     );

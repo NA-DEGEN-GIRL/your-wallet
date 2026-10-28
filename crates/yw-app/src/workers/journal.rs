@@ -14,9 +14,9 @@ use yw_core::journal::evm::{
 };
 use yw_core::journal::sol::{
     SolActivityRow, SolEntries, SolRecord, SolTransition, has_intent, has_room as sol_has_room,
-    make_room as sol_make_room, push_record as sol_push_record, take_terminal,
+    make_room as sol_make_room, pending_for, push_record as sol_push_record, take_terminal,
 };
-use yw_core::sol::sign_transfer;
+use yw_core::sol::{SolSignError, sign_transfer};
 use yw_core::vault::{FileKind, Vault};
 
 use crate::events::{
@@ -252,15 +252,23 @@ impl JournalState {
         out: &mut Vec<KeyOutcome>,
     ) -> Result<SolSignedSummary, SolSignFailure> {
         let yw_core::approval::SigningPayload::SolTransfer(intent) = approved.payload() else {
-            return Err(SolSignFailure::Sign(
-                yw_core::sol::SolSignError::KindMismatch,
-            ));
+            return Err(SolSignFailure::Sign(SolSignError::KindMismatch));
         };
         let intent = *intent;
         let current = self.current(vault).map_err(SolSignFailure::JournalWrite)?;
         let mut trial = current;
         if has_intent(&trial, &intent.intent_hash()) {
             return Err(SolSignFailure::AlreadySigned);
+        }
+        // One `Pending` per (cluster, account) (spec/07 §1), checked again on the journal itself.
+        if pending_for(
+            &SolEntries::from_plain(&trial).records(),
+            intent.cluster,
+            &intent.core.from,
+        )
+        .is_some()
+        {
+            return Err(SolSignFailure::Sign(SolSignError::PendingExists));
         }
         if !sol_has_room(&trial) {
             let rows = sol_make_room(&mut trial, times.now_unix_ms)

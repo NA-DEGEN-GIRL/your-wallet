@@ -1276,6 +1276,9 @@ impl App {
                     SolSignFailure::Sign(yw_core::sol::SolSignError::Vault(error)) => {
                         crate::errors::vault_code(error)
                     }
+                    SolSignFailure::Sign(yw_core::sol::SolSignError::PendingExists) => {
+                        ErrorCode::Tx002
+                    }
                     SolSignFailure::Sign(_) | SolSignFailure::AlreadySigned => ErrorCode::Tx003,
                     SolSignFailure::JournalFull => ErrorCode::Tx005,
                     SolSignFailure::JournalWrite(_) => ErrorCode::Vlt003,

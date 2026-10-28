@@ -353,15 +353,17 @@ pub fn preview(transport: &dyn Transport, job: &PreviewJob) -> PreviewResult {
     let fees = sol_rpc::prioritization_fees(&client, url, &writable).unwrap_or_default();
     let cu_limit = template_cu_limit(job.asset);
     let price = choose_cu_price(p75(&fees), job.max_cu_price, job.fee_cap, cu_limit);
-    let maximum = match max_fee(cu_limit, price) {
-        Ok(fee) if fee <= job.fee_cap => fee,
+    // A blocked fee falls back to price 0 so the core and its maximum fee still agree (the
+    // approval request refuses an intent whose maximum fee is not the formula's value).
+    let (price, maximum) = match max_fee(cu_limit, price) {
+        Ok(fee) if fee <= job.fee_cap => (price, fee),
         Ok(_) => {
             blocks.push(SolBlock::Fee(FeeError::AboveCap));
-            max_fee(cu_limit, 0).unwrap_or(0)
+            (0, max_fee(cu_limit, 0).unwrap_or(0))
         }
         Err(error) => {
             blocks.push(SolBlock::Fee(error));
-            max_fee(cu_limit, 0).unwrap_or(0)
+            (0, max_fee(cu_limit, 0).unwrap_or(0))
         }
     };
     let send_max = job.amount.is_none();
