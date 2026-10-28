@@ -1,2 +1,5 @@
 [target.x86_64-pc-windows-msvc]
-rustflags = ["--cfg", 'curve25519_dalek_backend="serial"']
+# serial: Solana 단계 의존성 가드(spec/01 §3.4). /Brepro: 링커가 PE 타임스탬프 대신 내용 해시를 써서 같은
+# 입력이면 같은 바이너리가 나온다(spec/01 §3.9). 이 PC의 절대 경로를 지우는 --remap-path-prefix는 값이
+# 사용자마다 달라 여기에 둘 수 없으므로 scripts/package.ps1이 `--config`로 덧붙인다.
+rustflags = ["--cfg", 'curve25519_dalek_backend="serial"', "-C", "link-arg=/Brepro"]

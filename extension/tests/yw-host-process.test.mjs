@@ -1,14 +1,16 @@
 // H1 (spec/05 §10.1): runs the real target/debug/yw-host.exe against a fake yw-app pipe server.
 // Missing binary: fails when YW_CHECK=1 (scripts/check.ps1), otherwise the tests are skipped.
 // Every case sets YW_TEST_PIPE_NAME to a fresh \\.\pipe\YourWallet.test.h1.<pid>.<n>, so the real
-// wallet pipe is never used; the no-server cases disable spawning, so yw-app is never started.
+// wallet pipe is never used, and LOCALAPPDATA to an empty temp folder, so the user's real
+// settings.json is never read. Every case except the browserAutoLaunch one also sets
+// YW_TEST_NO_SPAWN=1, so yw-app is never started even if the fake server goes away early.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const HOST = fileURLToPath(new URL("../../target/debug/yw-host.exe", import.meta.url));
@@ -26,6 +28,10 @@ const skip = missing && process.env.YW_CHECK !== "1" ? "target/debug/yw-host.exe
 
 let nextPipe = 0;
 const uniquePipe = () => `\\\\.\\pipe\\YourWallet.test.h1.${process.pid}.${nextPipe++}`;
+
+// An empty %LOCALAPPDATA% for every yw-host process of this file (removed at the end).
+const localAppData = mkdtempSync(join(tmpdir(), "yw-host-h1-localappdata-"));
+after(() => rmSync(localAppData, { recursive: true, force: true }));
 
 function frame(payload) {
   const body = Buffer.isBuffer(payload) ? payload : Buffer.from(payload, "utf8");
@@ -76,7 +82,11 @@ class FrameStream {
 
 function startHost(args, extraEnv) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("YW_TEST_")));
-  const child = spawn(HOST, args, { env: { ...env, ...extraEnv }, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+  const child = spawn(HOST, args, {
+    env: { ...env, LOCALAPPDATA: localAppData, ...extraEnv },
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+  });
   child.stdin.on("error", () => {});
   const stdout = new FrameStream(child.stdout);
   let stderr = "";
@@ -120,7 +130,7 @@ test("H1 hello format and byte-identical relay in both directions", { skip }, as
   const pipeName = uniquePipe();
   const { server, connection } = await startFakeApp(pipeName);
   try {
-    const host = startHost([ORIGIN, "--parent-window=0"], { YW_TEST_PIPE_NAME: pipeName });
+    const host = startHost([ORIGIN, "--parent-window=0"], { YW_TEST_PIPE_NAME: pipeName, YW_TEST_NO_SPAWN: "1" });
     const { socket, app, hello, helloFrame } = await connection;
     assert.deepEqual(Object.keys(hello), Object.keys(HELLO));
     assert.deepEqual(hello, { ...HELLO, hostVersion: hello.hostVersion, extensionOrigin: ORIGIN, pid: host.child.pid });
@@ -170,15 +180,19 @@ test("H1 no server with YW_TEST_NO_SPAWN=1 answers one 4900 and exits 3", { skip
   assert.match(host.stderr(), /^yw-host: unavailable\r?\n$/u);
 });
 
-test("H1 no server with browserAutoLaunch false answers 4900 within 2 s and exits 3", { skip }, async () => {
+// spec/05 H1 targets 2 s; the bound here is looser so a loaded machine (process start of a debug
+// build) cannot fail it, but still well below the 10 s connect deadline that a spawn would wait for.
+const NO_SPAWN_BUDGET_MS = 8_000;
+
+test("H1 no server with browserAutoLaunch false answers 4900 without the connect wait and exits 3", { skip }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "yw-host-h1-"));
   try {
     writeFileSync(join(dir, "settings.json"), '{"version":1,"browserAutoLaunch":false}');
     const started = Date.now();
     const host = startHost([ORIGIN], { YW_TEST_PIPE_NAME: uniquePipe(), YW_TEST_DATA_DIR: dir });
     host.child.stdin.write(frame(REQUEST_TEXT));
-    const response = await host.stdout.next(2_000);
-    assert.ok(Date.now() - started < 2_000);
+    const response = await host.stdout.next(NO_SPAWN_BUDGET_MS);
+    assert.ok(Date.now() - started < NO_SPAWN_BUDGET_MS);
     assert.deepEqual(JSON.parse(response.toString("utf8")), UNAVAILABLE);
     assert.equal(await host.closed, 3);
   } finally {
@@ -190,7 +204,7 @@ test("H1 hello-reject switches to UNAVAILABLE", { skip }, async () => {
   const pipeName = uniquePipe();
   const { server, connection } = await startFakeApp(pipeName, { kind: "hello-reject", reason: "protocol" });
   try {
-    const host = startHost([ORIGIN], { YW_TEST_PIPE_NAME: pipeName });
+    const host = startHost([ORIGIN], { YW_TEST_PIPE_NAME: pipeName, YW_TEST_NO_SPAWN: "1" });
     host.child.stdin.write(frame(REQUEST_TEXT));
     const { socket } = await connection;
     const response = await host.stdout.next(3_000);

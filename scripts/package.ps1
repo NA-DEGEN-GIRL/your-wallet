@@ -166,10 +166,38 @@ Write-Host "package: extension $extensionId, $($extensionFiles.Count) runtime fi
 
 # ---------------------------------------------------------------- 4. 릴리스 빌드
 
-Write-Host 'package: cargo build --release --locked --offline -p yw-app -p yw-host'
-$code = Invoke-Native 'cargo' @('build', '--release', '--locked', '--offline', '-p', 'yw-app', '-p', 'yw-host')
+# 경로 정리(spec/01 §3.9): 의존성·std의 패닉 위치 문자열에 들어가는 이 PC의 절대 경로(사용자 이름 포함)를
+# 일반 이름으로 바꾼다. 값이 PC마다 달라 .cargo/config.toml에 둘 수 없고, rustflags 환경 변수는 금지이므로
+# `--config`로 넘긴다(배열은 config.toml의 rustflags 뒤에 이어 붙는다: serial 백엔드 cfg·/Brepro 유지).
+# 나중에 준 매핑이 이긴다: 넓은 것(사용자 폴더)부터 좁은 것(저장소) 순서.
+$sysroot = (Get-NativeOutput 'rustc --print sysroot' 'rustc' @('--print', 'sysroot'))[0].Trim()
+$rustcCommit = ((Get-NativeOutput 'rustc -vV' 'rustc' @('-vV')) | Where-Object { $_ -match '^commit-hash: ' } | Select-Object -First 1) -replace '^commit-hash: ', ''
+$cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
+$remaps = [ordered]@{}
+if ($env:USERPROFILE) { $remaps[$env:USERPROFILE] = '~' }
+$remaps[$cargoHome] = '/cargo'
+$remaps[$sysroot] = '/rust'
+if ($rustcCommit -match '^[0-9a-f]{40}$') { $remaps[(Join-Path $sysroot 'lib\rustlib\src\rust')] = "/rustc/$rustcCommit" }
+$remaps[$Root] = '.'
+$remapFlags = @()
+foreach ($from in $remaps.Keys) {
+    if ($from.Contains("'") -or $from.Contains('=')) { Fail "path not usable in --remap-path-prefix: $from" }
+    $remapFlags += "'--remap-path-prefix=$from=$($remaps[$from])'"
+}
+$remapConfig = "target.x86_64-pc-windows-msvc.rustflags=[$($remapFlags -join ', ')]"
+
+Write-Host 'package: cargo build --release --locked --offline -p yw-app -p yw-host (+ --remap-path-prefix)'
+$code = Invoke-Native 'cargo' @('build', '--release', '--locked', '--offline', '--config', $remapConfig, '-p', 'yw-app', '-p', 'yw-host')
 if ($code -ne 0) { Fail "cargo build failed (exit $code)" }
 $releaseDir = Join-Path $Root 'target\release'
+# 배포 파일에 이 PC의 경로가 남지 않았는지 확인한다(사용자 폴더·cargo 홈·툴체인).
+$latin1 = [Text.Encoding]::GetEncoding(28591)
+foreach ($exe in 'yw-app.exe', 'yw-host.exe') {
+    $text = $latin1.GetString([IO.File]::ReadAllBytes((Join-Path $releaseDir $exe)))
+    foreach ($local in @($env:USERPROFILE, $cargoHome, $sysroot) | Where-Object { $_ }) {
+        if ($text.IndexOf($local, [StringComparison]::OrdinalIgnoreCase) -ge 0) { Fail "$exe contains a local path ($local)" }
+    }
+}
 
 # ---------------------------------------------------------------- 5. 스테이징
 

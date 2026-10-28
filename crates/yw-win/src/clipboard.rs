@@ -111,11 +111,12 @@ pub(crate) fn set_secret_with(ops: &mut impl ClipOps, text: &[u16]) -> Result<u3
             let _ = ops.empty();
             return Err(ClipError::Os(error));
         }
-        Ok(())
+        // Read while the clipboard is still ours: after `CloseClipboard` another process may
+        // copy at once, and its sequence number must never be the one the auto-clear waits for.
+        Ok(ops.sequence())
     })();
     ops.close();
-    result?;
-    Ok(ops.sequence())
+    result
 }
 
 pub(crate) fn set_plain_with(ops: &mut impl ClipOps, text: &[u16]) -> Result<(), ClipError> {
@@ -185,17 +186,44 @@ fn global_with(bytes_len: usize, fill: impl FnOnce(*mut u8)) -> Result<HANDLE, W
     Ok(memory)
 }
 
+/// Zeroes `bytes_len` bytes of the (unlocked, still ours) global block and frees it. Used when
+/// `SetClipboardData` refused the block, which may hold secret text.
+fn wipe_and_free(memory: HANDLE, bytes_len: usize) {
+    // SAFETY: Locks the movable block we allocated and still own.
+    let pointer = unsafe { GlobalLock(memory) };
+    if !pointer.is_null() {
+        // SAFETY: The locked block holds at least `bytes_len` bytes (allocated with that size),
+        // writable and not aliased while locked by this thread.
+        let bytes = unsafe { core::slice::from_raw_parts_mut(pointer.cast::<u8>(), bytes_len) };
+        crate::mem::wipe(bytes);
+        // SAFETY: Unlocks the block locked above.
+        unsafe { GlobalUnlock(memory) };
+    }
+    // SAFETY: Frees the unlocked allocation we own (ownership never transferred).
+    unsafe { GlobalFree(memory) };
+}
+
 impl Win32Clip {
-    fn place(memory: HANDLE, format: u32) -> Result<(), WinError> {
+    fn place(memory: HANDLE, bytes_len: usize, format: u32) -> Result<(), WinError> {
         // SAFETY: The clipboard is open by this thread; on success the system owns `memory`.
         let placed = unsafe { SetClipboardData(format, memory) };
         if placed.is_null() {
             let error = WinError::last("SetClipboardData");
-            // SAFETY: Ownership did not transfer, so we free our allocation.
-            unsafe { GlobalFree(memory) };
+            wipe_and_free(memory, bytes_len);
             return Err(error);
         }
         Ok(())
+    }
+}
+
+/// The text length of a `CF_UNICODETEXT` block of `available` units, scanning at most
+/// `max_units + 1` units for the terminator: `Some(len)` when `len <= max_units` (NUL found, or
+/// a short block without one), `None` when the text is longer than `max_units`.
+fn text_len_within(units: &[u16], available: usize, max_units: usize) -> Option<usize> {
+    match units.iter().position(|unit| *unit == 0) {
+        Some(len) => Some(len),
+        None if available <= max_units => Some(available),
+        None => None,
     }
 }
 
@@ -234,7 +262,7 @@ impl ClipOps for Win32Clip {
             // SAFETY: `pointer` addresses at least 4 writable locked bytes.
             unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, bytes.len()) };
         })?;
-        Self::place(memory, format)
+        Self::place(memory, bytes.len(), format)
     }
 
     #[expect(
@@ -254,7 +282,7 @@ impl ClipOps for Win32Clip {
                 );
             }
         })?;
-        Self::place(memory, u32::from(CF_UNICODETEXT))
+        Self::place(memory, byte_len, u32::from(CF_UNICODETEXT))
     }
 
     fn get_unicode(&mut self, max_units: usize) -> Result<Option<WipeBuf<u16>>, ClipError> {
@@ -269,24 +297,27 @@ impl ClipOps for Win32Clip {
         }
         // SAFETY: Queries the size of the system-owned global block.
         let size = unsafe { GlobalSize(handle) };
+        if size == 0 {
+            // `GlobalSize` failed (or an empty block): no text to read.
+            return Ok(None);
+        }
         // SAFETY: Locks the system-owned global block for reading.
         let pointer = unsafe { GlobalLock(handle) };
         if pointer.is_null() {
             return Err(ClipError::Os(WinError::last("GlobalLock")));
         }
         let available = size / 2;
-        // SAFETY: The locked block holds `size` bytes, i.e. `available` u16 units, aligned.
-        let units = unsafe { core::slice::from_raw_parts(pointer.cast::<u16>(), available) };
-        let text_len = units
-            .iter()
-            .position(|unit| *unit == 0)
-            .unwrap_or(units.len());
-        let result = if text_len > max_units {
-            Err(ClipError::TooLong)
-        } else {
-            let mut out = WipeBuf::with_capacity(text_len);
-            let _ = out.extend_from_slice(units.get(..text_len).unwrap_or(&[]));
-            Ok(Some(out))
+        // Never look past `max_units + 1` units, however large the block claims to be.
+        let scanned = available.min(max_units.saturating_add(1));
+        // SAFETY: The locked block holds `size` bytes, i.e. at least `scanned` u16 units, aligned.
+        let units = unsafe { core::slice::from_raw_parts(pointer.cast::<u16>(), scanned) };
+        let result = match text_len_within(units, available, max_units) {
+            None => Err(ClipError::TooLong),
+            Some(text_len) => {
+                let mut out = WipeBuf::with_capacity(text_len);
+                let _ = out.extend_from_slice(units.get(..text_len).unwrap_or(&[]));
+                Ok(Some(out))
+            }
         };
         // SAFETY: Unlocks the block locked above.
         unsafe { GlobalUnlock(handle) };
@@ -305,7 +336,7 @@ impl ClipOps for Win32Clip {
 
 fn ops_for(owner: &Window) -> Win32Clip {
     Win32Clip {
-        owner: core::ptr::with_exposed_provenance_mut(owner.raw_id()),
+        owner: core::ptr::with_exposed_provenance_mut(owner.live_raw_id()),
     }
 }
 
@@ -350,7 +381,7 @@ pub fn clear_if_unchanged(owner: &Window, seq: u32) -> Result<bool, ClipError> {
 mod tests {
     use super::{
         ClipError, ClipOps, EXCLUSION_FORMATS, MAX_TEXT_UNITS, clear_if_unchanged_with, read_with,
-        set_plain_with, set_secret_with,
+        set_plain_with, set_secret_with, text_len_within,
     };
     use crate::error::WinError;
     use crate::mem::WipeBuf;
@@ -375,6 +406,8 @@ mod tests {
         seq: u32,
         content: Option<Vec<u16>>,
         bump_on_open: bool,
+        /// Another process copies right after our `CloseClipboard`.
+        bump_on_close: bool,
     }
 
     impl ClipOps for Mock {
@@ -391,6 +424,9 @@ mod tests {
         }
         fn close(&mut self) {
             self.ops.push(Op::Close);
+            if self.bump_on_close {
+                self.seq += 1;
+            }
         }
         fn empty(&mut self) -> Result<(), WinError> {
             self.ops.push(Op::Empty);
@@ -455,6 +491,32 @@ mod tests {
         expected.push(Op::Close);
         assert_eq!(mock.ops, expected);
         assert_eq!(seq, mock.seq);
+    }
+
+    #[test]
+    fn secret_copy_sequence_is_read_before_the_clipboard_is_closed() {
+        let mut mock = Mock {
+            bump_on_close: true,
+            ..Mock::default()
+        };
+        let seq = set_secret_with(&mut mock, &units("abc")).unwrap();
+        // Our own copy's number, not the one of whatever was copied after we closed.
+        assert_eq!(seq + 1, mock.seq);
+        assert_eq!(clear_if_unchanged_with(&mut mock, seq), Ok(false));
+        assert_eq!(mock.content, Some(units("abc")));
+    }
+
+    #[test]
+    fn text_scan_stops_after_max_units_plus_one() {
+        // Terminated within the limit.
+        assert_eq!(text_len_within(&units("ab\0zz"), 5, 4), Some(2));
+        // No terminator in a block that is short enough: the whole block.
+        assert_eq!(text_len_within(&units("abc"), 3, 4), Some(3));
+        // `max + 1` units scanned without a terminator: too long, whatever follows.
+        assert_eq!(text_len_within(&units("abcde"), 1_000_000, 4), None);
+        // Exactly `max` units then the terminator.
+        assert_eq!(text_len_within(&units("abcd\0"), 9, 4), Some(4));
+        assert_eq!(text_len_within(&[], 0, 4), Some(0));
     }
 
     #[test]

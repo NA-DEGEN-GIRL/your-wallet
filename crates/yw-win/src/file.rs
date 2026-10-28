@@ -13,8 +13,9 @@ use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    MoveFileExW,
 };
 
 use crate::error::WinError;
@@ -140,8 +141,9 @@ pub fn rename_no_replace(from: &Path, to: &Path) -> Result<(), FileError> {
     move_file(from, to, MOVEFILE_WRITE_THROUGH)
 }
 
-/// Opens `dir` with `FILE_FLAG_BACKUP_SEMANTICS` and `GENERIC_WRITE` and calls `FlushFileBuffers`
-/// so a rename inside it is durable (NTFS).
+/// Opens `dir` itself (`FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT`, so a junction
+/// or symlink is opened rather than followed) with `GENERIC_WRITE`, rejects a reparse point and
+/// calls `FlushFileBuffers` so a rename inside it is durable (NTFS).
 ///
 /// # Errors
 ///
@@ -150,7 +152,7 @@ pub fn flush_dir(dir: &Path) -> Result<(), FileError> {
     let directory = OpenOptions::new()
         .write(true)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(dir)?;
     if directory.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(FileError::ReparsePoint);
@@ -159,15 +161,43 @@ pub fn flush_dir(dir: &Path) -> Result<(), FileError> {
     Ok(())
 }
 
+/// The outcome of a successful [`atomic_write_detailed`]: the new content is in place either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AtomicWrite {
+    /// Replaced and the parent directory flushed.
+    Durable,
+    /// Replaced, but flushing the parent directory failed (a warning: the rename may not survive
+    /// a power loss yet, but the file already holds the new content and the old one is gone).
+    DirFlushFailed(FileError),
+}
+
 /// Atomically replaces `path` with `bytes` (≤ 64 MiB): reject reparse points → delete a leftover
 /// `<path>.tmp` → create-new/write/flush/close the temporary → `MoveFileExW(REPLACE_EXISTING |
 /// WRITE_THROUGH)` → flush the parent. On a failure in the write or move the temporary is removed
-/// and the original error returned.
+/// and the original error returned. A failed parent flush after a successful replace is a success
+/// (use [`atomic_write_detailed`] to see it).
 ///
 /// # Errors
 ///
-/// [`FileError`].
+/// [`FileError`] when `path` was not replaced.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), FileError> {
+    atomic_write_detailed(path, bytes).map(|_| ())
+}
+
+/// [`atomic_write`] that reports a failed parent flush as [`AtomicWrite::DirFlushFailed`].
+///
+/// # Errors
+///
+/// [`FileError`] when `path` was not replaced.
+pub fn atomic_write_detailed(path: &Path, bytes: &[u8]) -> Result<AtomicWrite, FileError> {
+    atomic_write_with(path, bytes, flush_dir)
+}
+
+fn atomic_write_with(
+    path: &Path,
+    bytes: &[u8],
+    flush: impl FnOnce(&Path) -> Result<(), FileError>,
+) -> Result<AtomicWrite, FileError> {
     if bytes.len() > ATOMIC_WRITE_MAX {
         return Err(FileError::TooLarge);
     }
@@ -188,7 +218,10 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), FileError> {
         let _ = fs::remove_file(&tmp);
         return Err(error);
     }
-    flush_dir(parent)
+    Ok(match flush(parent) {
+        Ok(()) => AtomicWrite::Durable,
+        Err(error) => AtomicWrite::DirFlushFailed(error),
+    })
 }
 
 /// Reads `path` if it is at most `max` bytes.
@@ -221,8 +254,9 @@ pub fn ensure_dir(path: &Path) -> Result<(), FileError> {
 
 #[cfg(test)]
 mod tests {
-    use super::tmp_path;
+    use super::{AtomicWrite, FileError, atomic_write_with, read_limited, tmp_path};
     use std::path::Path;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     #[test]
     fn tmp_path_appends_suffix_in_same_directory() {
@@ -230,5 +264,33 @@ mod tests {
             tmp_path(Path::new(r"C:\a\vault.ywv")),
             Path::new(r"C:\a\vault.ywv.tmp")
         );
+    }
+
+    #[test]
+    fn a_failed_directory_flush_after_the_replace_is_a_warning() {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "yw-win-unit-flush-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("settings.json");
+        let failing = |_: &Path| Err(FileError::Io(std::io::ErrorKind::PermissionDenied));
+        assert_eq!(
+            atomic_write_with(&target, b"new", failing),
+            Ok(AtomicWrite::DirFlushFailed(FileError::Io(
+                std::io::ErrorKind::PermissionDenied
+            )))
+        );
+        // The replace happened: the new content is there and no temporary is left.
+        assert_eq!(read_limited(&target, 16).unwrap(), b"new");
+        assert!(!tmp_path(&target).exists());
+        assert_eq!(
+            atomic_write_with(&target, b"newer", |_: &Path| Ok(())),
+            Ok(AtomicWrite::Durable)
+        );
+        assert_eq!(read_limited(&target, 16).unwrap(), b"newer");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

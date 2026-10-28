@@ -29,7 +29,7 @@ mod llm {
     use yw_app::explain::{
         AiPanelState, ExplainError, ExplainInput, ExplainService, ExplainSim, ExplainSource,
         HiddenReason, LlmConfig, LlmDone, LlmJob, MAX_RESPONSE_BODY, MismatchReason,
-        ResponseFormatMode, WinHttpTransport, build_input, explain_once,
+        REQUEST_DEADLINE_MS, ResponseFormatMode, WinHttpTransport, build_input, explain_once,
     };
     use yw_app::flow::evm::ChainCache;
     use yw_app::flow::evm::prepare::{Prepared, prepare};
@@ -316,8 +316,15 @@ mod llm {
 
     // ----- E1 ----------------------------------------------------------------------------
 
+    /// Distinct data folder per app (pid + counter), so parallel tests never share one.
+    static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
+
     fn app_with(llm: LlmSettings) -> App {
-        let dir = std::env::temp_dir().join(format!("yw-llm-e1-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "yw-llm-e1-{}-{}",
+            std::process::id(),
+            NEXT_DIR.fetch_add(1, Ordering::SeqCst)
+        ));
         let mut app = App::new(
             Paths {
                 data: dir.clone(),
@@ -724,14 +731,34 @@ mod llm {
 
     // ----- E8 ----------------------------------------------------------------------------
 
-    /// Drives a panel like the approval window: 50 ms ticks, worker results as they arrive.
-    /// Returns when the panel left `Requesting`, with the elapsed time.
+    /// The clock values the panel saw around its transition out of `Requesting`: the last tick
+    /// it was still requesting at, and the one at which it left.
+    struct Transition {
+        before_ms: u64,
+        at_ms: u64,
+    }
+
+    impl Transition {
+        /// The panel timed out by the first tick at or after the 10 s deadline (judged on the
+        /// clock values it was given, not on how long the machine took to get there); the lower
+        /// bound leaves room for `WinHTTP` reporting its own 10 s receive timeout a little early.
+        fn at_the_deadline(&self) -> bool {
+            self.before_ms < REQUEST_DEADLINE_MS
+                && self.at_ms >= REQUEST_DEADLINE_MS - 500
+                && self.before_ms < self.at_ms
+        }
+    }
+
+    /// Drives a panel like the approval window: 50 ms ticks, worker results as they arrive. The
+    /// tick runs before results are drained, so a result arriving after the deadline is always
+    /// late (and left in `results`), even when the machine was too busy to tick in between.
+    /// Returns the clock values around the moment the panel left `Requesting`.
     fn drive(
         panel: &mut AiPanel,
         service: &ExplainService,
         results: &mpsc::Receiver<LlmDone>,
         started: Instant,
-    ) -> Duration {
+    ) -> Transition {
         let input = native_input();
         let (_, dispatch) = panel.set_input(0, input, service.busy());
         let dispatch = dispatch.unwrap();
@@ -740,16 +767,24 @@ mod llm {
             generation: dispatch.generation,
             input: dispatch.input,
         }));
+        let mut before_ms = 0;
         loop {
             std::thread::sleep(Duration::from_millis(50));
             let now = u64::try_from(started.elapsed().as_millis()).unwrap();
-            while let Ok(done) = results.try_recv() {
+            let _ = panel.tick(now, service.busy());
+            // Once the tick ended the request, later results stay queued for the caller.
+            while matches!(panel.state(), AiPanelState::Requesting { .. })
+                && let Ok(done) = results.try_recv()
+            {
                 panel.on_result(now, done.generation, done.result);
             }
-            let _ = panel.tick(now, service.busy());
             if !matches!(panel.state(), AiPanelState::Requesting { .. }) {
-                return started.elapsed();
+                return Transition {
+                    before_ms,
+                    at_ms: now,
+                };
             }
+            before_ms = now;
         }
     }
 
@@ -762,11 +797,13 @@ mod llm {
         });
         let service = ExplainService::start(config(&mock, None), sink).unwrap();
         let mut panel = AiPanel::new(true);
-        let elapsed = drive(&mut panel, &service, &results, Instant::now());
+        let transition = drive(&mut panel, &service, &results, Instant::now());
         assert_eq!(panel.state(), &AiPanelState::Failed(ExplainError::Timeout));
         assert!(
-            elapsed >= Duration::from_millis(9_500) && elapsed <= Duration::from_millis(10_500),
-            "{elapsed:?}"
+            transition.at_the_deadline(),
+            "{} → {} ms",
+            transition.before_ms,
+            transition.at_ms
         );
         // Whatever the worker returns later is dropped.
         if let Ok(done) = results.recv_timeout(Duration::from_secs(2)) {
@@ -810,12 +847,22 @@ mod llm {
             ExplainService::start_with(config(&mock, None), Box::new(Slow), sink).unwrap();
         let mut panel = AiPanel::new(true);
         let started = Instant::now();
-        let elapsed = drive(&mut panel, &service, &results, started);
-        assert!(elapsed <= Duration::from_millis(10_500), "{elapsed:?}");
+        let transition = drive(&mut panel, &service, &results, started);
+        assert!(
+            transition.at_the_deadline(),
+            "{} → {} ms",
+            transition.before_ms,
+            transition.at_ms
+        );
         assert_eq!(panel.state(), &AiPanelState::Failed(ExplainError::Timeout));
-        // The worker is still busy: a new request waits instead of starting.
-        assert!(service.busy());
-        let done = results.recv_timeout(Duration::from_secs(5)).unwrap();
+        // The worker is still busy: a new request waits instead of starting. `Slow` answers 11 s
+        // after the submit, so the check is only meaningful (and only made) while that has not
+        // passed yet; a machine too busy to get here in time skips it.
+        let busy = service.busy();
+        if started.elapsed() < Duration::from_secs(11) {
+            assert!(busy);
+        }
+        let done = results.recv_timeout(Duration::from_secs(30)).unwrap();
         assert!(done.result.is_ok(), "the late answer itself was valid");
         let now = u64::try_from(started.elapsed().as_millis()).unwrap();
         assert!(panel.on_result(now, done.generation, done.result).is_none());

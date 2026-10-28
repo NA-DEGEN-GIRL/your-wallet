@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use yw_json::frame::{FrameError, MAX_FRAME_BYTES, read_frame, write_frame};
 use yw_json::{Limits, Number, Object, Value, parse, to_vec};
+use yw_win::WinError;
 use yw_win::pipe::{ConnectError, Duplex, PipeReader, PipeWriter};
 
 /// stdin EOF or pipe EOF.
@@ -320,10 +321,35 @@ pub fn run_with_deadline<T>(
     (!fired).then_some(result)
 }
 
+/// Whether the pipe server is trusted: the pipe object's owner ([`Duplex::owner_sid`]) equals
+/// `user_sid()` (the current user's SID in production, [`yw_win::current_user_sid_string`]).
+/// A pipe another user created under the predictable per-user name, or any failure to read
+/// either SID, is not trusted (spec/05 §8.1).
+pub fn server_owner_trusted(
+    duplex: &Duplex,
+    user_sid: impl FnOnce() -> Result<String, WinError>,
+) -> bool {
+    yw_win::pipe::owner_is(duplex.owner_sid(), user_sid())
+}
+
 /// Splits a fresh connection, sends the hello and waits up to 2 s for the ack (spec/05 §8.2).
-/// Returns the halves and `GetNamedPipeServerProcessId`, or `None` (→ UNAVAILABLE).
+/// Returns the halves and `GetNamedPipeServerProcessId`, or `None` (→ UNAVAILABLE). A server
+/// whose pipe is not owned by the current user gets nothing, not even the hello.
 #[must_use]
 pub fn handshake(duplex: Duplex, origin: &str) -> Option<(PipeReader, PipeWriter, Option<u32>)> {
+    handshake_with(duplex, origin, yw_win::current_user_sid_string)
+}
+
+/// [`handshake`] with the expected owner SID injected (tests simulate a foreign owner).
+#[must_use]
+pub fn handshake_with(
+    duplex: Duplex,
+    origin: &str,
+    user_sid: impl FnOnce() -> Result<String, WinError>,
+) -> Option<(PipeReader, PipeWriter, Option<u32>)> {
+    if !server_owner_trusted(&duplex, user_sid) {
+        return None;
+    }
     let app_pid = duplex.server_pid();
     let (mut reader, mut writer) = duplex.split();
     let canceller = reader.cancel_handle();

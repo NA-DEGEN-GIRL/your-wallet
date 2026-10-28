@@ -18,5 +18,9 @@ pub mod secret;
 pub mod secure_field;
 pub mod text_layout;
 pub mod theme;
+// DEV ONLY: needs `yw_win::ui::capture`, which exists only with debug assertions, so the tour is
+// left out of `cargo test --release` (and never part of a release binary).
+// (Two attributes rather than `all(test, debug_assertions)`, so clippy still sees a test module.)
 #[cfg(test)]
+#[cfg(debug_assertions)]
 mod tour;

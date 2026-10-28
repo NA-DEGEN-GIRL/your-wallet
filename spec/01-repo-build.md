@@ -409,7 +409,20 @@ feature 선택에 따른 코드 의무(세부 [02](02-core-keys-vault.md)):
 | PowerShell | Windows PowerShell 5.1 또는 7.x |
 | Chrome | 120 이상(M5부터) |
 
-빌드: `cargo build --release --locked` → `target\release\yw-app.exe`, `target\release\yw-host.exe`. 첫 빌드는 crates.io 다운로드가 필요할 수 있다. 이후 `check.ps1 -Offline` 가능.
+빌드: `cargo build --release --locked` → `target\release\yw-app.exe`, `target\release\yw-host.exe`. 첫 빌드는 crates.io 다운로드가 필요할 수 있다. 이후 `check.ps1 -Offline` 가능. 배포할 exe는 §3.9의 경로 정리를 하는 `scripts/package.ps1`(§9.2)로만 만든다.
+
+### 3.9 재현성과 빌드 경로
+
+`.cargo/config.toml`(전체):
+
+```toml
+[target.x86_64-pc-windows-msvc]
+rustflags = ["--cfg", 'curve25519_dalek_backend="serial"', "-C", "link-arg=/Brepro"]
+```
+
+- `--cfg curve25519_dalek_backend="serial"`: §3.4 M7.
+- `/Brepro`: MSVC 링커가 PE 헤더·디버그 디렉터리의 시각 대신 내용 해시를 쓴다(같은 입력 → 같은 exe). PDB 경로는 rustc가 이미 `/PDBALTPATH:%_PDB%`로 파일 이름만 남긴다(확인함).
+- 의존성과 std의 패닉 위치 문자열에는 이 PC의 절대 경로가 들어간다(`C:\Users\<이름>\.cargo\registry\src\…`, rust-src가 설치된 툴체인의 `…\lib\rustlib\src\rust\library\…`; 워크스페이스 크레이트는 상대 경로라 해당 없음). `--remap-path-prefix`는 접두사 일치뿐이라 사용자 이름을 숨기는 값을 PC와 무관하게 config에 적을 수 없고(`C:\Users\=~`는 `~<이름>\…`를 남긴다), cargo `trim-paths`는 1.95에서 불안정(확인함, 2026-10-28), rustflags 환경 변수는 §3.4·§4.1이 금지한다. 그래서 `scripts/package.ps1`이 이 PC의 값으로 `--config 'target.x86_64-pc-windows-msvc.rustflags=[…]'`를 덧붙인다(배열은 config.toml 값 뒤에 이어진다): `%USERPROFILE%` → `~`, cargo 홈 → `/cargo`, sysroot → `/rust`, `<sysroot>\lib\rustlib\src\rust` → `/rustc/<rustc commit>`, 저장소 루트 → `.`(나중 매핑이 이긴다). 빌드 뒤 두 exe에 `%USERPROFILE%`·cargo 홈·sysroot 문자열이 없는지 확인하고 있으면 실패한다. `cargo build --release`를 직접 실행한 exe에는 경로가 남는다(개발용).
 
 ---
 
@@ -421,7 +434,7 @@ feature 선택에 따른 코드 의무(세부 [02](02-core-keys-vault.md)):
 # scripts/check.ps1 — 저장소 게이트. 사용: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 [-Step <name>] [-Offline]
 [CmdletBinding()]
 param(
-    [ValidateSet("all", "fmt", "deps", "clippy", "test", "build", "ext-test", "script-test", "privacy", "audit-ext")]
+    [ValidateSet("all", "fmt", "deps", "clippy", "test", "fuzz", "build", "ext-test", "script-test", "privacy", "audit-ext")]
     [string]$Step = "all",
     [switch]$Offline
 )
@@ -460,6 +473,9 @@ Invoke-Step "fmt" 20 "cargo" @("fmt", "--all", "--", "--check")
 Invoke-Step "deps" 21 "node" $deps
 Invoke-Step "clippy" 22 "cargo" (@("clippy", "--workspace", "--all-targets") + $net + @("--", "-D", "warnings"))
 Invoke-Step "test" 23 "cargo" (@("test", "--workspace") + $net)
+$env:YW_FUZZ_RUNS = "20000"                                           # fuzz-lite 스모크([09] §2.4): 무시된 fuzz_lite_*를 2만 회씩
+Invoke-Step "fuzz" 29 "cargo" (@("test", "--workspace") + $net + @("--", "--ignored", "fuzz_lite"))
+$env:YW_FUZZ_RUNS = $null                                             # 직접 --ignored로 돌리면 1,000,000회
 Invoke-Step "build" 24 "cargo" (@("build", "--workspace") + $net)   # target\debug\yw-host.exe ([09] §2.2, [05] H1)
 $env:YW_CHECK = "1"                                                   # 확장 프로세스 테스트가 skip 대신 실패([09])
 if ($Step -in "all", "ext-test") { Invoke-Step "ext-test" 25 "node" (@("--test") + (Get-Tests "extension/tests" 25)) }
@@ -470,21 +486,24 @@ Write-Host "check: OK"
 exit 0
 ```
 
-종료 코드: 0 통과, 1 스크립트 자체 오류(잘못된 `-Step` 포함), 10 cargo 1.95.0 또는 Node 22+ 없음, 11 rustflags 환경 변수 설정됨, 20 fmt, 21 의존성 허용 목록, 22 clippy, 23 cargo test, 24 cargo build, 25 확장 테스트, 26 스크립트 테스트, 27 privacy scan, 28 확장 정적 감사. 첫 실패에서 멈춘다. 모든 마일스톤 완료 조건은 이 스크립트의 0을 포함한다. (PowerShell 5.1에서 단계 선택, 종료 코드 11, 잘못된 `-Step`의 1을 확인함.)
+종료 코드: 0 통과, 1 스크립트 자체 오류(잘못된 `-Step` 포함), 10 cargo 1.95.0 또는 Node 22+ 없음, 11 rustflags 환경 변수 설정됨, 20 fmt, 21 의존성 허용 목록, 22 clippy, 23 cargo test, 29 fuzz-lite 스모크(`fuzz`, test 다음·build 앞: `#[ignore]`된 `fuzz_lite_*` 테스트를 `YW_FUZZ_RUNS=20000`으로 디버그 빌드에서 실행; 각 테스트는 이 변수가 없으면 1,000,000회), 24 cargo build, 25 확장 테스트, 26 스크립트 테스트, 27 privacy scan, 28 확장 정적 감사. 첫 실패에서 멈춘다. 모든 마일스톤 완료 조건은 이 스크립트의 0을 포함한다. (PowerShell 5.1에서 단계 선택, 종료 코드 11, 잘못된 `-Step`의 1을 확인함.)
 
 ### 4.2 `scripts/check-core-deps.mjs` (전체)
 
 ```js
 // scripts/check-core-deps.mjs — 워크스페이스 크레이트별 의존성 폐포를 허용 목록과 정확히 비교한다.
-// Usage: node scripts/check-core-deps.mjs [--offline] [--list]
+// Usage: node scripts/check-core-deps.mjs [--offline] [--list] [--metadata <file>]
+//   --metadata <file>: cargo를 실행하지 않고 그 파일의 `cargo metadata` JSON을 검사한다(scripts/check-core-deps.test.mjs).
 // Exit: 0 = OK, 1 = 정책 위반, 2 = cargo metadata 실행/해석 실패.
 import { execFileSync } from "node:child_process";
-import { dirname } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const TARGET = "x86_64-pc-windows-msvc";
-const CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index";
+export const TARGET = "x86_64-pc-windows-msvc";
+export const CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index";
 // 단계 진입 커밋에서만 바꾼다(spec/01 §3.4): M7 → "sol" 추가.
-const PHASES = new Set([]);
+export const PHASES = new Set([]);
 
 // name=version:n (런타임에 링크) | :b (빌드 시에만 실행: build-dependency와 그 폐포)
 const table = (text) => Object.fromEntries(text.trim().split(/\s+/).map((entry) => entry.split(":")));
@@ -502,16 +521,16 @@ const WIN = table(`windows-sys=0.61.2:n windows-link=0.2.1:n`);
 const APP = table(`qrcodegen=1.8.0:n`);
 
 const CORE = { ...CORE_EVM, ...(PHASES.has("sol") ? CORE_SOL : {}) };
-const POLICY = {
+export const POLICY = {
   "yw-core": { allow: CORE, local: ["yw-json"] },
   "yw-json": { allow: {}, local: [] },
   "yw-win": { allow: WIN, local: [] },
   "yw-app": { allow: { ...CORE, ...WIN, ...APP }, local: ["yw-core", "yw-json", "yw-win"] },
   "yw-host": { allow: WIN, local: ["yw-json", "yw-win"] },
 };
-const BUILD_RS_ALLOW = new Set(["generic-array", "getrandom", "secp256k1-sys", ...(PHASES.has("sol") ? ["curve25519-dalek"] : [])]);
-const OWN_BUILD_RS_ALLOW = new Set(["yw-app"]);
-const FORBIDDEN_FEATURES = {
+export const BUILD_RS_ALLOW = new Set(["generic-array", "getrandom", "secp256k1-sys", ...(PHASES.has("sol") ? ["curve25519-dalek"] : [])]);
+export const OWN_BUILD_RS_ALLOW = new Set(["yw-app"]);
+export const FORBIDDEN_FEATURES = {
   secp256k1: ["rand", "global-context", "hashes", "serde"], argon2: ["alloc", "password-hash", "rand"],
   chacha20poly1305: ["getrandom", "rand_core"], aead: ["getrandom", "rand_core"], zeroize: ["derive"],
   getrandom: ["wasm_js"], "ed25519-dalek": ["asm", "batch", "digest", "hazmat", "legacy_compatibility", "pem", "pkcs8", "rand_core", "serde"],
@@ -519,72 +538,96 @@ const FORBIDDEN_FEATURES = {
   ed25519: ["pem", "pkcs8", "serde", "serde_bytes"], signature: ["derive", "digest", "rand_core"],
 };
 
-let meta;
-try {
+/**
+ * Checks one `cargo metadata --format-version 1` document against the policy.
+ * Returns `{ errors, ok, listing }`: violations, the per-crate OK lines and the `--list` rows.
+ * Throws when the document lacks the fields it reads (the CLI reports that as exit 2).
+ */
+export function checkMetadata(meta) {
+  const pkgs = new Map(meta.packages.map((p) => [p.id, p]));
+  const nodes = new Map(meta.resolve.nodes.map((n) => [n.id, n]));
+  const key = (p) => `${p.name}=${p.version}`;
+  const errors = [];
+  const ok = [];
+  const listing = [];
+
+  for (const id of meta.workspace_members) {
+    const p = pkgs.get(id);
+    if (!(p.name in POLICY)) errors.push(`${p.name}: workspace member without a policy`);
+    if (p.dependencies.some((d) => d.kind === "dev")) errors.push(`${p.name}: dev-dependencies are forbidden`);
+    if (p.targets.some((t) => t.kind.includes("custom-build")) && !OWN_BUILD_RS_ALLOW.has(p.name)) errors.push(`${p.name}: build.rs is forbidden`);
+  }
+
+  for (const [root, policy] of Object.entries(POLICY)) {
+    const rootId = meta.workspace_members.find((id) => pkgs.get(id).name === root);
+    if (!rootId) { errors.push(`${root}: workspace member not found`); continue; }
+    // BFS over normal + build edges (dev edges ignored); a crate reached at runtime is "n".
+    const seen = new Map();
+    const queue = [[rootId, "n"]];
+    while (queue.length) {
+      const [id, mode] = queue.shift();
+      if (seen.get(id) === "n" || seen.get(id) === mode) continue;
+      seen.set(id, mode);
+      for (const d of nodes.get(id).deps) {
+        const kinds = d.dep_kinds.map((k) => k.kind);
+        if (kinds.includes(null)) queue.push([d.pkg, mode]);
+        if (kinds.includes("build")) queue.push([d.pkg, "b"]);
+      }
+    }
+    const reached = new Set();
+    for (const [id, mode] of seen) {
+      if (id === rootId) continue;
+      const p = pkgs.get(id), k = key(p), at = `${root} -> ${k}`;
+      if (p.source === null) {
+        if (!policy.local.includes(p.name)) errors.push(`${at}: local crate not allowed here`);
+        continue;
+      }
+      reached.add(k);
+      listing.push(`${root}\t${mode === "n" ? "runtime" : "build"}\t${k}\t${dirname(p.manifest_path)}`);
+      if (p.source !== CRATES_IO) errors.push(`${at}: non-crates.io source ${p.source}`);
+      if (!(k in policy.allow)) errors.push(`${at}: not in allowlist (${mode === "n" ? "runtime" : "build-time"})`);
+      else if (policy.allow[k] === "b" && mode === "n") errors.push(`${at}: allowlisted build-only but linked at runtime`);
+      if (p.targets.some((t) => t.kind.includes("custom-build")) && !BUILD_RS_ALLOW.has(p.name)) errors.push(`${at}: unreviewed build.rs`);
+      if (p.targets.some((t) => t.kind.includes("proc-macro"))) errors.push(`${at}: proc-macro (curve25519-dalek-derive means the serial backend cfg is missing)`);
+      const bad = (FORBIDDEN_FEATURES[p.name] ?? []).filter((f) => nodes.get(id).features.includes(f));
+      if (bad.length) errors.push(`${at}: forbidden features ${bad.join(",")} (workspace-unified)`);
+    }
+    for (const k of Object.keys(policy.allow)) if (!reached.has(k)) errors.push(`${root}: ${k} allowlisted but not reached (prune or fix phase)`);
+    if (!errors.some((e) => e.startsWith(root))) ok.push(`${root} deps check OK: ${reached.size} crates (${TARGET})`);
+  }
+  return { errors, ok, listing };
+}
+
+function loadMetadata(argv) {
+  const file = argv.indexOf("--metadata");
+  if (file >= 0) {
+    if (!argv[file + 1]) throw new Error("--metadata needs a file");
+    return JSON.parse(readFileSync(argv[file + 1], "utf8"));
+  }
   const args = ["metadata", "--format-version", "1", "--locked", "--filter-platform", TARGET];
-  if (process.argv.includes("--offline")) args.push("--offline");
-  meta = JSON.parse(execFileSync("cargo", args, { encoding: "utf8", maxBuffer: 64 << 20, windowsHide: true }));
-} catch (error) {
-  console.error(`deps check: cargo metadata failed: ${error instanceof Error ? error.message.split("\n")[0] : "unknown"}`);
-  process.exit(2);
-}
-const pkgs = new Map(meta.packages.map((p) => [p.id, p]));
-const nodes = new Map(meta.resolve.nodes.map((n) => [n.id, n]));
-const key = (p) => `${p.name}=${p.version}`;
-const errors = [];
-const listing = [];
-
-for (const id of meta.workspace_members) {
-  const p = pkgs.get(id);
-  if (!(p.name in POLICY)) errors.push(`${p.name}: workspace member without a policy`);
-  if (p.dependencies.some((d) => d.kind === "dev")) errors.push(`${p.name}: dev-dependencies are forbidden`);
-  if (p.targets.some((t) => t.kind.includes("custom-build")) && !OWN_BUILD_RS_ALLOW.has(p.name)) errors.push(`${p.name}: build.rs is forbidden`);
+  if (argv.includes("--offline")) args.push("--offline");
+  return JSON.parse(execFileSync("cargo", args, { encoding: "utf8", maxBuffer: 64 << 20, windowsHide: true }));
 }
 
-for (const [root, policy] of Object.entries(POLICY)) {
-  const rootId = meta.workspace_members.find((id) => pkgs.get(id).name === root);
-  if (!rootId) { errors.push(`${root}: workspace member not found`); continue; }
-  // BFS over normal + build edges (dev edges ignored); a crate reached at runtime is "n".
-  const seen = new Map();
-  const queue = [[rootId, "n"]];
-  while (queue.length) {
-    const [id, mode] = queue.shift();
-    if (seen.get(id) === "n" || seen.get(id) === mode) continue;
-    seen.set(id, mode);
-    for (const d of nodes.get(id).deps) {
-      const kinds = d.dep_kinds.map((k) => k.kind);
-      if (kinds.includes(null)) queue.push([d.pkg, mode]);
-      if (kinds.includes("build")) queue.push([d.pkg, "b"]);
-    }
+const firstLine = (error) => (error instanceof Error ? error.message.split("\n")[0] : "unknown");
+const invokedPath = process.argv[1];
+if (invokedPath !== undefined && resolve(invokedPath) === resolve(fileURLToPath(import.meta.url))) {
+  let result;
+  try {
+    result = checkMetadata(loadMetadata(process.argv));
+  } catch (error) {
+    console.error(`deps check: cargo metadata failed: ${firstLine(error)}`);
+    process.exit(2);
   }
-  const reached = new Set();
-  for (const [id, mode] of seen) {
-    if (id === rootId) continue;
-    const p = pkgs.get(id), k = key(p), at = `${root} -> ${k}`;
-    if (p.source === null) {
-      if (!policy.local.includes(p.name)) errors.push(`${at}: local crate not allowed here`);
-      continue;
-    }
-    reached.add(k);
-    listing.push(`${root}\t${mode === "n" ? "runtime" : "build"}\t${k}\t${dirname(p.manifest_path)}`);
-    if (p.source !== CRATES_IO) errors.push(`${at}: non-crates.io source ${p.source}`);
-    if (!(k in policy.allow)) errors.push(`${at}: not in allowlist (${mode === "n" ? "runtime" : "build-time"})`);
-    else if (policy.allow[k] === "b" && mode === "n") errors.push(`${at}: allowlisted build-only but linked at runtime`);
-    if (p.targets.some((t) => t.kind.includes("custom-build")) && !BUILD_RS_ALLOW.has(p.name)) errors.push(`${at}: unreviewed build.rs`);
-    if (p.targets.some((t) => t.kind.includes("proc-macro"))) errors.push(`${at}: proc-macro (curve25519-dalek-derive means the serial backend cfg is missing)`);
-    const bad = (FORBIDDEN_FEATURES[p.name] ?? []).filter((f) => nodes.get(id).features.includes(f));
-    if (bad.length) errors.push(`${at}: forbidden features ${bad.join(",")} (workspace-unified)`);
-  }
-  for (const k of Object.keys(policy.allow)) if (!reached.has(k)) errors.push(`${root}: ${k} allowlisted but not reached (prune or fix phase)`);
-  if (!errors.some((e) => e.startsWith(root))) console.log(`${root} deps check OK: ${reached.size} crates (${TARGET})`);
+  for (const line of result.ok) console.log(line);
+  const phases = [...PHASES].join(",") || "evm";
+  if (process.argv.includes("--list")) console.log(result.listing.join("\n"));
+  if (result.errors.length) { console.error(`deps check FAILED (${TARGET}, phases: ${phases}):\n  ${result.errors.join("\n  ")}`); process.exit(1); }
+  console.log(`deps check OK (${TARGET}, phases: ${phases})`);
 }
-
-if (process.argv.includes("--list")) console.log(listing.join("\n"));
-if (errors.length) { console.error(`deps check FAILED (${TARGET}, phases: ${[...PHASES].join(",") || "evm"}):\n  ${errors.join("\n  ")}`); process.exit(1); }
-console.log(`deps check OK (${TARGET}, phases: ${[...PHASES].join(",") || "evm"})`);
 ```
 
-`--filter-platform`은 필수다(없으면 오프라인에서 wasi 다운로드를 시도해 실패하고, 비Windows 의존까지 섞인다). 출처의 59줄 검사기(yw-core 단일 루트)를 다섯 루트·단계·멤버 규칙으로 확장한 것이다.
+`--filter-platform`은 필수다(없으면 오프라인에서 wasi 다운로드를 시도해 실패하고, 비Windows 의존까지 섞인다). 출처의 59줄 검사기(yw-core 단일 루트)를 다섯 루트·단계·멤버 규칙으로 확장한 것이다. 검사 본체는 `checkMetadata(meta)`(가져와도 CLI는 실행되지 않는다)이고, `scripts/check-core-deps.test.mjs`가 허용 목록과 정확히 같은 합성 그래프(통과)와 위반 종류별 변형(허용 목록 밖·빌드 전용의 런타임 링크·dev-dependency·자체 build.rs·금지 feature·crates.io 밖 출처·proc-macro·검토 안 된 build.rs·도달하지 않는 허용 항목·허용 안 된 로컬 크레이트·정책 없는/없는 멤버)과 `--metadata` CLI의 종료 코드 0·1·2를 cargo 없이 시험한다(script-test 단계).
 
 ### 4.3 `scripts/privacy-scan.mjs` 변경
 
@@ -800,7 +843,8 @@ feature 사용처: Foundation(핸들·오류·`LocalFree`), Graphics_Gdi(그리�
 
 ```rust
 pub fn monotonic_ms() -> u64;      // GetTickCount64. yw-core에 넘기는 now_ms의 출처
-pub fn system_idle_ms() -> u64;    // GetTickCount().wrapping_sub(LASTINPUTINFO.dwTime) (32비트 감김 처리)
+pub fn system_idle_ms() -> Option<u64>;   // GetTickCount().wrapping_sub(LASTINPUTINFO.dwTime) (32비트 감김 처리). GetLastInputInfo 실패 → None:
+                                           // 호출자는 앱 자체의 마지막 입력 시각으로 대신한다(0을 돌려주면 유휴 잠금이 영영 안 걸린다)
 pub fn local_wall_ms(unix_ms: u64) -> Option<u64>;   // FileTimeToLocalFileTime(현재 표준시간대 편차): 표시용 현지 시각(활동 행, [04] §2.6)
 
 pub struct LockedBox<const N: usize> { /* 페이지 1개; const 단언 1 ≤ N ≤ 4096; Send + Sync; Clone 없음 */ }   // yw-app: LockedBox<320> = [02] §7.3 슬롯
@@ -821,6 +865,8 @@ pub struct WipeBuf<T: Copy + Default> { /* 용량 고정 Vec<T>, 초과 push는 
 ```rust
 pub enum FileError { NotFound, ReparsePoint, TooLarge, Os(WinError), Io(std::io::ErrorKind) }
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), FileError>;         // bytes ≤ 64 MiB
+pub enum AtomicWrite { Durable, DirFlushFailed(FileError) }                      // 교체는 끝남; DirFlushFailed = 경고
+pub fn atomic_write_detailed(path: &Path, bytes: &[u8]) -> Result<AtomicWrite, FileError>;   // 아래 (5) 실패를 경고로 구분
 pub fn read_limited(path: &Path, max: u64) -> Result<Vec<u8>, FileError>;        // 크기 > max → TooLarge
 pub fn ensure_dir(path: &Path) -> Result<(), FileError>;                         // create_dir_all, 재분석 지점 거부
 // atomic_write의 단계를 yw-app VaultStorage([02] §6.2 커밋 1–6단계)가 따로 쓰도록 공개한다(M3):
@@ -834,7 +880,7 @@ pub fn protect(plain: &[u8], entropy: &[u8]) -> Result<Vec<u8>, WinError>;      
 pub fn unprotect(blob: &[u8], entropy: &[u8]) -> Result<WipeBuf<u8>, WinError>;   // dpapi
 ```
 
-- `atomic_write`(spec.md §4.3): (1) 부모 디렉터리·대상이 재분석 지점(`symlink_metadata` + `FILE_ATTRIBUTE_REPARSE_POINT`)이면 `ReparsePoint` → (2) 남은 `<target>.tmp` 삭제 → (3) `OpenOptions::create_new`, 공유 0으로 열어 `write_all` → `sync_all`(= `FlushFileBuffers`) → 닫기 → (4) `MoveFileExW(tmp, target, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` → (5) 부모 디렉터리를 `FILE_FLAG_BACKUP_SEMANTICS`·`GENERIC_WRITE`로 열어 `FlushFileBuffers`. (3)–(4) 실패 시 임시 파일 삭제를 시도하고 원래 오류를 돌려준다. 임시 파일은 항상 같은 디렉터리(같은 볼륨)다.
+- `atomic_write`(spec.md §4.3): (1) 부모 디렉터리·대상이 재분석 지점(`symlink_metadata` + `FILE_ATTRIBUTE_REPARSE_POINT`)이면 `ReparsePoint` → (2) 남은 `<target>.tmp` 삭제 → (3) `OpenOptions::create_new`, 공유 0으로 열어 `write_all` → `sync_all`(= `FlushFileBuffers`) → 닫기 → (4) `MoveFileExW(tmp, target, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` → (5) 부모 디렉터리 자체를 `FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT`·`GENERIC_WRITE`로 열어(재분석 지점은 따라가지 않고 그 자체를 연다 → 속성에 `FILE_ATTRIBUTE_REPARSE_POINT`가 있으면 `ReparsePoint`) `FlushFileBuffers`. (3)–(4) 실패 시 임시 파일 삭제를 시도하고 원래 오류를 돌려준다. (4)가 성공한 뒤 (5)만 실패하면 새 내용은 이미 제자리에 있으므로 `atomic_write`는 `Ok(())`, `atomic_write_detailed`는 `Ok(AtomicWrite::DirFlushFailed(e))`(경고: 정전 시 이름 바꾸기가 아직 디스크에 없을 수 있음)다. 임시 파일은 항상 같은 디렉터리(같은 볼륨)다.
 - DPAPI: `CryptProtectData`/`CryptUnprotectData`, 현재 사용자 범위(`CRYPTPROTECT_LOCAL_MACHINE` 없음), `CRYPTPROTECT_UI_FORBIDDEN`, 설명·prompt NULL. 출력 버퍼는 복사 → `wipe` → `LocalFree`. `entropy` 값은 [04](04-app-ui.md).
 
 ### 7.3 `clipboard`
@@ -848,7 +894,8 @@ pub fn clear_if_unchanged(owner: &ui::Window, seq: u32) -> Result<bool, ClipErro
 ```
 
 - 공통: `OpenClipboard(owner)`(20 ms 간격 5회, 실패 시 `Busy`) … `CloseClipboard`. 텍스트는 `GlobalAlloc(GMEM_MOVEABLE)` 메모리에 UTF-16으로 직접 쓰고 `SetClipboardData(CF_UNICODETEXT = 13)`.
-- `set_secret_text`: `EmptyClipboard` → `RegisterClipboardFormatW`로 얻은 `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory`, `CanUploadToCloudClipboard`에 각각 DWORD 0 → 마지막에 텍스트 → `CloseClipboard` → `GetClipboardSequenceNumber()` 반환. 제외 형식 하나라도 실패하면 텍스트 없이 `EmptyClipboard` 후 오류.
+- `set_secret_text`: `EmptyClipboard` → `RegisterClipboardFormatW`로 얻은 `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory`, `CanUploadToCloudClipboard`에 각각 DWORD 0 → 마지막에 텍스트 → `GetClipboardSequenceNumber()`(클립보드를 연 채로 읽는다: 닫은 직후 다른 프로세스가 복사하면 그 순번을 잡아 남의 내용을 지울 수 있다) → `CloseClipboard` → 그 순번 반환. 제외 형식 하나라도 실패하면 텍스트 없이 `EmptyClipboard` 후 오류. `SetClipboardData`가 실패하면(소유권이 넘어가지 않음) 블록을 잠가 0으로 지운 뒤 `GlobalFree`.
+- `read_text`: `GlobalSize`가 0(실패 또는 빈 블록)이면 텍스트 없음, NUL은 처음 `max_units + 1`단위까지만 찾는다(그 안에 없고 블록이 더 길면 `TooLong`).
 - 자동 삭제(D11 30초)는 yw-app 타이머가 `clear_if_unchanged(owner, seq)`로 한다. 순번이 다르면(사용자가 이후 다른 것을 복사) 건드리지 않는다. 잠금·종료 때도 같은 호출([04](04-app-ui.md)).
 - 시스템이 해제한 GlobalAlloc 메모리는 지워지지 않는다(§2.2 범위 밖).
 
@@ -877,8 +924,8 @@ impl Client {
 
 - `HttpsUrl`: `https://`만, host `[a-z0-9.-]{1,253}`(소문자화), 포트 1–65535 선택, 경로는 `/`로 시작하는 출력 가능 ASCII(공백 없음), 전체 ≤ 2048바이트, userinfo·fragment 거부. `LoopbackUrl`: `http://`만, host는 `127.0.0.1`·`localhost`(소문자화)·`[::1]`(IPv6 리터럴) 중 하나, 포트·경로·길이·거부 규칙은 `HttpsUrl`과 같다. 클라이언트 종류와 URL 종류가 다르면 `InvalidUrl`.
 - 세션: `new`는 `WinHttpOpen("YourWallet/3", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, NULL, NULL, 0)`(동기)이고 `WINHTTP_OPTION_SECURE_PROTOCOLS = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3` 설정이 실패하면 `new` 실패. `new_loopback`은 `WINHTTP_ACCESS_TYPE_NO_PROXY`. 공통: `WINHTTP_OPTION_REDIRECT_POLICY = WINHTTP_OPTION_REDIRECT_POLICY_NEVER`, `WinHttpSetTimeouts`, `WINHTTP_OPTION_MAX_RESPONSE_HEADER_SIZE = 16384`. LLM은 RPC와 다른 `Client`(세션)를 쓴다([06](06-llm-explain.md) §4.1).
-- 시간 제한(Default 없음, 호출자가 정함): RPC([03](03-evm.md) §1.4, 07·08 공용) `Timeouts { 5000, 5000, 10000, 10000 }`, LLM `Timeouts { 10000, 10000, 10000, 10000 }`. WinHTTP 값은 단계별이고 전체 상한이 아니므로(최악 합 40 s), 호출자는 자기 기한(03 호출당 10 s, 06 `REQUEST_DEADLINE_MS`)을 넘겨 돌아온 결과를 `Timeout`으로 보고 버린다.
-- 요청: HTTPS만 `WINHTTP_FLAG_SECURE`(loopback은 없음). `WINHTTP_OPTION_DISABLE_FEATURE = WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_REDIRECTS | WINHTTP_DISABLE_AUTHENTICATION`. `post`는 호출자 헤더만 보낸다(이름 `^[A-Za-z0-9-]{1,64}$`, 값 0x20–0x7E ≤ 4096바이트, 위반은 `InvalidHeader`). `post_json`·`get`은 같은 내부 경로의 래퍼다: `Accept: application/json`, POST에 `Content-Type: application/json`, `bearer`가 있으면 `Authorization: Bearer <값>`. 헤더 버퍼는 `WipeBuf<u16>`. Origin 헤더 없음(D13). `SECURITY_FLAG_IGNORE_*` 금지.
+- 시간 제한(Default 없음, 호출자가 정함): RPC([03](03-evm.md) §1.4, 07·08 공용) `Timeouts { 5000, 5000, 10000, 10000 }`, LLM `Timeouts { 10000, 10000, 10000, 10000 }`. WinHTTP 값은 단계별(수신은 읽기 한 번마다)이므로, 요청마다 전체 기한 = 네 값의 합(RPC 30 s, LLM 40 s)을 두고 본문 읽기 반복이 그것을 넘지 않게 한다: 읽기마다 남은 시간을 확인해 지났으면 `Timeout`, 다음 읽기의 `WINHTTP_OPTION_RECEIVE_TIMEOUT`을 `min(receive_ms, 남은 시간)`으로 줄인다(바이트를 조금씩 흘리는 서버가 요청을 무한히 붙잡지 못한다). 호출자는 여전히 자기 기한(03 호출당 10 s, 06 `REQUEST_DEADLINE_MS`)을 넘겨 돌아온 결과를 `Timeout`으로 보고 버린다.
+- 요청: HTTPS만 `WINHTTP_FLAG_SECURE`(loopback은 없음). `WINHTTP_OPTION_DISABLE_FEATURE = WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_REDIRECTS | WINHTTP_DISABLE_AUTHENTICATION`. `post`는 호출자 헤더만 보낸다(이름 `^[A-Za-z0-9-]{1,64}$`, 값 0x20–0x7E ≤ 4096바이트, 위반은 `InvalidHeader`). `post_json`·`get`은 같은 내부 경로의 래퍼다: `Accept: application/json`, POST에 `Content-Type: application/json`, `bearer`가 있으면 `Authorization: Bearer <값>`. 헤더 버퍼는 `WipeBuf<u16>`. Origin 헤더 없음(D13). `SECURITY_FLAG_IGNORE_*` 금지. 인증서 폐기 확인(`WINHTTP_OPTION_ENABLE_FEATURE = WINHTTP_ENABLE_SSL_REVOCATION`)은 켜지 않는다: CRL/OCSP 응답자에 닿지 못하는 네트워크(캡티브 포털, 필터링, 공급자 쪽 장애)에서 TLS 핸드셰이크 자체가 실패해 RPC·LLM이 모두 막히기 때문이다. 체인 검증은 그대로다.
 - 응답: 상태 코드(`WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER`)와 `WINHTTP_QUERY_CONTENT_TYPE`(없거나 256바이트 초과·비ASCII면 `None`)를 그대로 돌려준다. `Content-Length` 또는 누적 읽기가 `max_response`(≤ 16 MiB)를 넘으면 본문을 더 읽지 않고 즉시 `TooLarge`. 요청 본문 ≤ 1 MiB. `ERROR_WINHTTP_TIMEOUT`(12002) → `Timeout`, `ERROR_WINHTTP_SECURE_FAILURE`(12175) → `Tls`. 오류에 URL·호스트를 넣지 않는다. 호출자(yw-app RPC 계층)는 RPC 실패를 로그·화면 오류에 `NetworkId`·메서드 이름·`HttpError` 종류·HTTP 상태로만 남긴다(§5.4, D13).
 - `[::1]`은 `WinHttpConnect`에 대괄호 없이(`::1`) 넘긴다(구현 시 확인, §8-3).
 
@@ -901,7 +948,10 @@ impl Duplex {
     pub fn split(self) -> (PipeReader, PipeWriter);                     // PipeReader: Read + Send, PipeWriter: Write + Send
     pub fn server_pid(&self) -> Option<u32>;                            // GetNamedPipeServerProcessId
     pub fn client_pid(&self) -> Option<u32>;                            // GetNamedPipeClientProcessId
+    pub fn owner_sid(&self) -> Result<String, WinError>;                // GetSecurityInfo(handle, SE_KERNEL_OBJECT, OWNER_SECURITY_INFORMATION)
+    pub fn owned_by_current_user(&self) -> bool;                        // owner_is(owner_sid(), current_user_sid_string())
 }
+pub fn owner_is(owner: Result<String, WinError>, expected: Result<String, WinError>) -> bool;   // 둘 다 Ok, 비어 있지 않음, 같음
 impl PipeReader { pub fn cancel_handle(&self) -> PipeCanceller; }       // PipeCanceller: Send, cancel() = CancelIoEx
 // M5 추가: yw-app 종료 시 accept를 멈추는 정지 핸들과 R-P2(DACL 확인)용 보안 요약
 // ServerError::Stopped; impl Server { pub fn stop_handle(&self) -> ServerStop /* Clone + Send + Sync, stop() */;
@@ -909,9 +959,10 @@ impl PipeReader { pub fn cancel_handle(&self) -> PipeCanceller; }       // PipeC
 ```
 
 - `Server::create`: SDDL → `ConvertStringSecurityDescriptorToSecurityDescriptorW`(`bInheritHandle = FALSE`, `LocalFree`로 해제). 첫 인스턴스 `CreateNamedPipeW(name, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 4, 65536, 65536, 1000, &sa)`. `ERROR_ACCESS_DENIED` → `AlreadyExists`(다른 yw-app 또는 선점). 수치·처리는 [05](05-browser.md) §8.1과 같다.
-- `accept`: 대기 인스턴스에 `ConnectNamedPipe`(overlapped, `ERROR_PIPE_CONNECTED`도 성공). 연결되면 활성 연결 수 < 4일 때 `FILE_FLAG_FIRST_PIPE_INSTANCE`만 뺀 같은 인자로 다음 대기 인스턴스를 만든 뒤 `Duplex`를 돌려준다. 4개가 모두 연결 중이면 하나가 닫힐(`Duplex` 양쪽 반이 drop) 때까지 기다렸다가 만든다.
+- `accept`: 대기 인스턴스에 `ConnectNamedPipe`(overlapped, `ERROR_PIPE_CONNECTED`도 성공). 연결되면 활성 연결 수 < 4일 때 `FILE_FLAG_FIRST_PIPE_INSTANCE`만 뺀 같은 인자로 다음 대기 인스턴스를 만든 뒤 `Duplex`를 돌려준다. 4개가 모두 연결 중이면 하나가 닫힐(`Duplex` 양쪽 반이 drop) 때까지 기다렸다가 만든다. 이름이 사용자마다 고정이라, 우리 인스턴스가 모두 닫힌 사이 다른 사용자가 같은 이름으로 파이프를 만들면 첫 인스턴스 플래그 없는 다음 인스턴스가 그 파이프에 붙는다. 그래서 `create`는 첫 인스턴스의 보안 요약(소유자·DACL 보호·ACE)을 읽어 두고, 이후 인스턴스마다 같은 요약인지 확인한다(보안 설명자는 파이프 단위로 공유된다). 다르면 그 인스턴스를 닫고 `AlreadyExists`(yw-app은 경고 로그 후 재시도).
 - `connect_client`: `CreateFileW(name, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, NULL)`. `ERROR_FILE_NOT_FOUND` → `NotFound`, `ERROR_PIPE_BUSY` → `Busy`(호출자가 `wait` 후 재시도), 그 밖 → `Other(code)`.
-- 모든 I/O는 overlapped(호출마다 `OVERLAPPED` + 수동 리셋 이벤트, `GetOverlappedResult(wait = TRUE)`): 동기 핸들에서는 대기 중인 `ReadFile`이 다른 스레드의 `WriteFile`을 막아(동기 파일 객체 직렬화) 전이중 중계가 불가능하다. 한 핸들을 두 반쪽이 공유하고(`Arc`), 마지막 반쪽이 drop될 때 닫는다(서버 측은 `DisconnectNamedPipe` 후). `ERROR_BROKEN_PIPE`·`ERROR_PIPE_NOT_CONNECTED`·0바이트 읽기는 `Read`의 EOF(`Ok(0)`). 프레임 형식은 [05](05-browser.md).
+- 서버 소유자 확인: 클라이언트 핸들의 `owner_sid()`는 서버가 파이프에 준 소유자다(`GENERIC_READ`에 `READ_CONTROL` 포함). 다른 사용자의 프로세스는 소유자를 이 사용자 SID로 둘 수 없으므로(`SeRestorePrivilege` 필요) 이름을 선점한 파이프를 가려낸다. yw-host는 hello를 보내기 전에 `owner_is(owner_sid(), current_user_sid_string())`가 아니면 연결을 버리고 UNAVAILABLE(요청마다 4900)로 간다([05](05-browser.md) §8.1). yw-app의 SDDL(`O:<SID>`)은 관리자 권한으로 실행돼도 소유자를 사용자 SID로 둔다.
+- 모든 I/O는 overlapped(호출마다 `OVERLAPPED` + 수동 리셋 이벤트, `GetOverlappedResult(wait = TRUE)`): 동기 핸들에서는 대기 중인 `ReadFile`이 다른 스레드의 `WriteFile`을 막아(동기 파일 객체 직렬화) 전이중 중계가 불가능하다. 한 핸들을 두 반쪽이 공유하고(`Arc`), 마지막 반쪽이 drop될 때 `CloseHandle`만으로 닫는다: `DisconnectNamedPipe`는 상대가 아직 읽지 않은 데이터(예: 마지막 hello-reject)를 버리므로, 클라이언트가 연결 완료 전에 떠난 인스턴스를 다시 쓸 때만 부른다. `ERROR_BROKEN_PIPE`·`ERROR_PIPE_NOT_CONNECTED`·0바이트 읽기는 `Read`의 EOF(`Ok(0)`). `PipeCanceller::cancel` 뒤에는 대기 중인 읽기·쓰기가 `ERROR_OPERATION_ABORTED`로 끝나고, 이후 읽기·쓰기는 시작하지 않고 같은 오류다. 프레임 형식은 [05](05-browser.md).
 
 ### 7.6 `session`, `process`
 
@@ -927,10 +978,11 @@ pub fn spawn_detached(exe: &Path, args: &[&str]) -> Result<(), WinError>;
 pub fn allow_set_foreground_window(pid: u32) -> bool;     // AllowSetForegroundWindow
 pub struct StdIn;  pub struct StdOut;                     // Read / Write: GetStdHandle + ReadFile / WriteFile (버퍼 없음)
 pub fn std_handles_are_pipes() -> bool;                   // GetFileType(stdin/stdout) == FILE_TYPE_PIPE
-pub fn exclude_from_error_reporting() -> Result<(), WinError>;   // WerAddExcludedApplication(현재 exe, FALSE)
+pub fn exclude_from_error_reporting() -> Result<(), WinError>;   // WerAddExcludedApplication(현재 exe의 파일 이름 `yw-app.exe`, FALSE): WER은 파일 이름으로 맞추므로 전체 경로는 맞지 않는다
 ```
 
 - 세션: 알림은 `WM_WTSSESSION_CHANGE`의 `ui::Msg::SessionLock`(`WTS_SESSION_LOCK` 0x7)/`SessionUnlock`(`WTS_SESSION_UNLOCK` 0x8)/`SessionDisconnect`(`WTS_CONSOLE_DISCONNECT` 0x2·`WTS_REMOTE_DISCONNECT` 0x4)/`SessionLogoff`(`WTS_SESSION_LOGOFF` 0x6), `WM_POWERBROADCAST`의 `Suspend`/`Resume`(`PBT_APMSUSPEND`/`PBT_APMRESUMEAUTOMATIC`), Windows 종료·로그오프의 `QueryEndSession`(`WM_QUERYENDSESSION`)/`EndSession`(`WM_ENDSESSION`)으로 온다(디코딩 §7.7). 등록 실패(`RPC_S_INVALID_BINDING` 등)의 재시도 정책은 yw-app([04](04-app-ui.md) §1.4). `WM_POWERBROADCAST`·`WM_QUERYENDSESSION`·`WM_ENDSESSION`은 최상위 창에만 오므로 알림을 받는 창은 `HWND_MESSAGE`가 아닌 최상위 창(숨김 가능)이다. 창 파괴 전에 `unregister_session_notifications`.
+- `init_process`: yw-app([04](04-app-ui.md) §1.4)과 yw-host(`main` 첫 줄, 실패해도 계속) 모두 시작하자마자 부른다.
 - `acquire`: `CreateMutexW(NULL, FALSE, name)` 후 `ERROR_ALREADY_EXISTS`(183)면 핸들을 닫고 `AlreadyRunning`.
 - `spawn_detached`: 인자는 `^[A-Za-z0-9._:-]{1,64}$`만 허용(`--background` 포함), exe 경로에 `"`가 있으면 오류, 명령줄 = `"<exe>" <args…>`. `CreateProcessW(…, bInheritHandles = FALSE, DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB, NULL, <exe 디렉터리>, …)`, `ERROR_ACCESS_DENIED`면 `CREATE_BREAKAWAY_FROM_JOB` 없이 1회 재시도. 프로세스·스레드 핸들은 즉시 닫는다. 핸들 상속을 끄는 이유: yw-host가 Chrome에서 받은 표준 핸들(파이프)이 yw-app에 복제되면 yw-host가 끝나도 Chrome 쪽 파이프 끝이 닫히지 않는다. std `Command`는 `bInheritHandles = TRUE`로 프로세스를 만들므로 쓰지 않는다.
 - `StdIn`/`StdOut`은 CRT 텍스트 모드·std 콘솔 처리·`LineWriter`를 거치지 않는 원시 바이트 입출력이다(yw-host, [05](05-browser.md) §7.2). `StdOut::flush`는 아무 일도 하지 않는다(버퍼 없음).
@@ -972,17 +1024,17 @@ pub enum UiError { Os(WinError), CaptureExclusionFailed }
 pub mod input { pub fn is_down(vk: u16) -> bool; /* GetAsyncKeyState 최상위 비트 */  pub fn injected() -> bool; /* GetCurrentInputMessageSource → IMO_INJECTED */ }
 ```
 
-- wndproc는 yw-win 트램펄린 하나다. 상태 `RefCell<Box<dyn Handler>>`를 `WM_NCCREATE`의 `lpCreateParams`로 받아 `GWLP_USERDATA`에 두고 `WM_NCDESTROY`에서 해제하고 0으로 지운다.
+- wndproc는 yw-win 트램펄린 하나다. 상태 `RefCell<Box<dyn Handler>>`는 스레드 지역 등록부(hwnd → 상태)로만 찾는다. `GWLP_USERDATA`는 다른 프로세스도 쓸 수 있으므로 믿지 않는다(표시용으로만 쓴다). `WM_NCCREATE`는 `create_window`가 이 스레드에서 지금 만드는 상태(스레드 지역 "creating" 칸)와 `lpCreateParams`가 정확히 같고, 창의 user data가 0이며 아직 등록되지 않았을 때만 그것을 받아 등록한다(칸은 한 번 쓰면 비운다; 진행 중인 생성이 없으면 `CREATESTRUCTW`도 읽지 않는다). `WM_NCDESTROY`에서 등록을 지우고 해제한다. `GetMessageW`는 게시된 메시지만 돌려주므로, `run_loop`는 트램펄린이 lParam을 역참조하거나 수명을 바꾸는 메시지(`WM_NCCREATE`·`WM_CREATE`·`WM_NCDESTROY`·`WM_DESTROY`·`WM_GETMINMAXINFO`·`WM_DPICHANGED`·`WM_DRAWITEM`·`WM_CTLCOLORSTATIC`·`WM_CTLCOLORBTN`)가 게시돼 오면 버린다(시스템은 이들을 보내기만 한다). `Window`·`Control`의 메서드는 창(컨트롤은 부모 창)이 파괴된 뒤에는 아무것도 하지 않거나 중립값을 돌려준다(재사용된 hwnd 값을 건드리지 않는다).
 - 재진입(핸들러 실행 중 같은 창으로 동기 메시지)은 `try_borrow_mut` 실패로 감지해 핸들러를 부르지 않고, 비밀 차단 판정 뒤 `DefWindowProcW`로 넘긴다. 핸들러는 같은 창에 동기 메시지를 일으키는 API를 피하고 `Poster`로 미룬다.
 - 비밀 클래스(`ClassSpec.secret = true`): `create_window`는 숨긴 채 `CreateWindowExW` 직후, 핸들러를 붙이기 전에 `exclude_from_capture`(= `SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)` → `GetWindowDisplayAffinity` 값이 `0x11`이 아니면 실패)를 호출한다. 설정 또는 읽기 확인이 실패하면 `ClassSpec.capture`에 따라:
   - `CaptureExclusion::Required`(니모닉·개인키 **표시** 창): 창을 파괴하고 `Err(UiError::CaptureExclusionFailed)`. 앱은 오류를 보여 주고 비밀을 표시하지 않는다([04](04-app-ui.md) §4.5).
   - `CaptureExclusion::Preferred`(비밀번호, 니모닉·개인키 **입력** 창): 창을 유지하고(숨김, 핸들러 연결, 아래 메시지 차단 동일) `Ok(Window)`를 돌려주며 `capture_excluded() == false`. 앱은 `show` 전에 보이는 경고 배너를 붙인다([04](04-app-ui.md) §4.5).
   - 분기는 내부 순수 함수 `capture_outcome(mode: CaptureExclusion, excluded: bool) -> CaptureOutcome { Excluded, Unprotected, Destroy }`이며 4경우를 창 없이 단위 테스트한다. `capture`는 클래스 단위이므로 정책이 다른 창은 다른 클래스로 등록한다([04](04-app-ui.md) §1.7).
 - 비밀 클래스의 wndproc는 `capture`·캡처 제외 결과와 무관하게 [04](04-app-ui.md) §4.4의 정확히 22개 메시지(와일드카드 없음: `WM_RBUTTONDBLCLK`·`WM_IME_SETCONTEXT`·`WM_IME_NOTIFY` 등은 막지 않는다)와, 비밀 상태를 붙인 뒤(`create_window` 반환 후, `armed`)에는 `WM_SETTEXT`도 핸들러와 `DefWindowProcW` 없이 0을 반환한다. 막기 전에 `WM_IME_STARTCOMPOSITION`은 `Msg::ImeAttempt`로 핸들러에 알린다([04](04-app-ui.md) §4.4). 판정은 순수 함수 `is_blocked_secret_msg(msg: u32, armed: bool) -> bool`이며 그 목록 그대로 창 없이 단위 테스트한다. Microsoft는 캡처 제외를 보안 보장으로 보지 않는다(§2.2 범위).
-- `WM_DPICHANGED`에 `Default`면 제안 사각형으로 `SetWindowPos`. 크기는 DIP, `scale(v, dpi) = v * dpi / 96`(checked). `WM_CLOSE` 기본 = `DestroyWindow`. yw-win은 `PostQuitMessage`를 스스로 부르지 않는다(앱이 `quit`).
+- `WM_DPICHANGED`에 `Default`면 제안 사각형으로 `SetWindowPos`(wParam의 두 워드가 같은 DPI일 때만 lParam을 읽는다). 크기는 DIP, `scale(v, dpi) = v * dpi / 96`(checked). `WM_CLOSE` 기본 = `DestroyWindow`. yw-win은 `PostQuitMessage`를 스스로 부르지 않는다(앱이 `quit`).
 - 세션·종료 메시지 디코딩: `WM_WTSSESSION_CHANGE`의 wParam `WTS_CONSOLE_DISCONNECT`(0x2)·`WTS_REMOTE_DISCONNECT`(0x4) → `SessionDisconnect`, `WTS_SESSION_LOGOFF`(0x6) → `SessionLogoff`, `WTS_SESSION_LOCK`(0x7) → `SessionLock`, `WTS_SESSION_UNLOCK`(0x8) → `SessionUnlock`, 그 밖 값은 핸들러에 오지 않는다(`DefWindowProcW`). `WM_QUERYENDSESSION` → `QueryEndSession`(`Reply::Default` = `DefWindowProcW` = TRUE, 종료 허용). `WM_ENDSESSION`은 wParam = TRUE일 때만 `EndSession`이고 FALSE(종료 취소)는 핸들러에 오지 않는다. `EndSession` 핸들러가 반환한 뒤 Windows는 프로세스를 언제든 끝낼 수 있다(앱 처리는 [04](04-app-ui.md) §1.5·§5.1).
 - 그리기: `PaintDc`(`Msg::Paint` 안에서만, BeginPaint/EndPaint RAII) — `fill_rect(Rect, Color)`(QR 모듈 포함), `frame_rect(Rect, Color)`, `set_text_color(Color)`, `draw_text(&[u16], Rect, DrawFlags)`, `measure_wrapped(&[u16], max_w, DrawFlags) -> h`(`DT_CALCRECT`; 높이는 `DrawFlags::WRAP`으로 잰다 — `DT_VCENTER`가 든 `LINE`은 높이 0 사각형에서 절반 값을 낸다)(`DrawTextW`, `DT_NOPREFIX`를 항상 더함), `measure(&[u16], max_w) -> (fit_chars, width)`(`GetTextExtentExPointW`), `select_font(&Font)`. `Font::create(face: &str, size_pt: u16, bold: bool, dpi: u32) -> Result<Font, WinError>`(`CreateFontW`, Drop에서 `DeleteObject`). `Rect { x, y, w, h: i32 }`, `Color(u32 /* 0xRRGGBB */)`, `MbKind::{Info, Warning, Error}`, `MbResult::{Ok}`.
-- `controls`: 비밀이 아닌 값용 BUTTON·EDIT·STATIC·체크박스·owner-draw LISTBOX 생성과 자기 컨트롤 텍스트 get/set(`GetWindowTextW`, 길이 상한). 알림은 `Msg::Command`. 푸시 버튼은 `ControlKind::Button(ButtonStyle)`(`BS_OWNERDRAW`): 부모 wndproc가 `WM_DRAWITEM`에서 스타일(채움·글자·테두리·눌림·비활성·포커스 색, 모서리 반지름 DIP)대로 그린다. `Control::set_backdrop(Color)`은 체크박스·라디오·읽기 전용 칸이 `WM_CTLCOLORSTATIC`·`WM_CTLCOLORBTN`에서 받을 배경(놓인 카드·창 색)이고, `Control::set_button_style`은 같은 컨트롤의 스타일만 바꾼다([04] §1.6).
+- `controls`: 비밀이 아닌 값용 BUTTON·EDIT·STATIC·체크박스·owner-draw LISTBOX 생성과 자기 컨트롤 텍스트 get/set(`GetWindowTextW`, 길이 상한). 알림은 `Msg::Command`. 푸시 버튼은 `ControlKind::Button(ButtonStyle)`(`BS_OWNERDRAW`): 부모 wndproc가 `WM_DRAWITEM`에서 스타일(채움·글자·테두리·눌림·비활성·포커스 색, 모서리 반지름 DIP)대로 그린다. lParam(`DRAWITEMSTRUCT`)은 wParam이 그 부모 아래 우리 owner-draw 버튼의 id일 때만 읽고, 구조체의 `CtlType`·`CtlID`·`hwndItem`이 그 버튼과 같아야 그린다. `Control::set_backdrop(Color)`은 체크박스·라디오·읽기 전용 칸이 `WM_CTLCOLORSTATIC`·`WM_CTLCOLORBTN`에서 받을 배경(놓인 카드·창 색)이고, `Control::set_button_style`은 같은 컨트롤의 스타일만 바꾼다([04] §1.6).
 - `capture`(개발 전용, `#[cfg(debug_assertions)]`): `capture_client(Hwnd) -> Capture { width, height, bmp }`(창 자신의 클라이언트 DC에서 `BitBlt` → 24비트 BMP, Gdi feature만 씀), `dev_tour_redraw`, `dev_tour_flush`(`GdiFlush`), `dev_tour_lift_capture_exclusion(&Window)`(`WDA_NONE`, 투어 프로세스가 만든 창에만). 앱 경로는 쓰지 않는다([04] §11).
 - 비밀 입력(D11, OS EDIT 미사용):
 
@@ -1003,8 +1055,8 @@ impl SecureTextField {
 
 ### 7.8 테스트
 
-- 순수(`#[cfg(test)]`): `HttpsUrl`·`LoopbackUrl`·`EndpointUrl::parse` 경계(`http://example.com`·`http://127.0.0.2` 거부, `http://[::1]:11434/…` 허용), `HttpsUrl`의 `{:?}`·`{}` 출력에 호스트·경로 문자열이 없음, 헤더 검사, `is_blocked_secret_msg`, `capture_outcome` 4경우(성공은 둘 다 `Excluded`, 실패는 `Required` → `Destroy`·`Preferred` → `Unprotected`), `wallet_pipe_name`·`user_only_sddl`, `Msg` 디코딩(`WM_WTSSESSION_CHANGE` wParam 0x2·0x4·0x6·0x7·0x8과 그 밖 값, `WM_QUERYENDSESSION`, `WM_ENDSESSION` wParam TRUE·FALSE 포함), `SecureTextField` 정책·backspace·용량, `spawn_detached` 인자 검증.
-- Windows 통합(`crates/yw-win/tests/`, 개발 PC의 `cargo test`): pipe 왕복과 전이중 동시 읽기·쓰기, 두 번째 `Server::create`의 `AlreadyExists`, 연결 4개일 때 다음 인스턴스 보류, `atomic_write` 덮어쓰기·남은 임시 파일 처리, DPAPI 왕복과 다른 entropy 실패, `LockedBox` 생성·해제, `SingleInstance` 이중 획득 실패. 네트워크·화면 캡처·세션 잠금은 수동 체크리스트([09](09-testing.md)).
+- 순수(`#[cfg(test)]`): `HttpsUrl`·`LoopbackUrl`·`EndpointUrl::parse` 경계(`http://example.com`·`http://127.0.0.2` 거부, `http://[::1]:11434/…` 허용), `HttpsUrl`의 `{:?}`·`{}` 출력에 호스트·경로 문자열이 없음, 헤더 검사, `is_blocked_secret_msg`, `capture_outcome` 4경우(성공은 둘 다 `Excluded`, 실패는 `Required` → `Destroy`·`Preferred` → `Unprotected`), `wallet_pipe_name`·`user_only_sddl`, `Msg` 디코딩(`WM_WTSSESSION_CHANGE` wParam 0x2·0x4·0x6·0x7·0x8과 그 밖 값, `WM_QUERYENDSESSION`, `WM_ENDSESSION` wParam TRUE·FALSE 포함), `SecureTextField` 정책·backspace·용량, `spawn_detached` 인자 검증, `owner_is`, WER 파일 이름, 클립보드 순번을 닫기 전에 읽음·NUL 탐색 상한, 전체 HTTP 기한 계산, `WM_NCCREATE` 채택 규칙·게시 금지 메시지·`WM_DPICHANGED` wParam, 디렉터리 flush 실패의 경고 결과, 다른 파이프에 붙은 이후 인스턴스 거부(같은 사용자의 DACL이 다른 "선점" 파이프로), 숨김 창에 위조한 `GWLP_USERDATA`·`WM_NCCREATE`·게시된 `WM_NCDESTROY`/`WM_DRAWITEM`이 상태에 닿지 않음.
+- Windows 통합(`crates/yw-win/tests/`, 개발 PC의 `cargo test`): pipe 왕복과 전이중 동시 읽기·쓰기, 두 번째 `Server::create`의 `AlreadyExists`, 연결 4개일 때 다음 인스턴스 보류, 서버가 쓰고 바로 닫아도 데이터가 도착함, 양 끝의 `owner_sid`, 취소 뒤 대기 중·이후 쓰기의 `ERROR_OPERATION_ABORTED`, loopback HTTP 정상 응답과 조금씩 흘리는 본문의 전체 기한 `Timeout`, 정션에 대한 `flush_dir`의 `ReparsePoint`, `atomic_write` 덮어쓰기·남은 임시 파일 처리, DPAPI 왕복과 다른 entropy 실패, `LockedBox` 생성·해제, `SingleInstance` 이중 획득 실패. 네트워크·화면 캡처·세션 잠금은 수동 체크리스트([09](09-testing.md)).
 
 ---
 
@@ -1039,13 +1091,13 @@ impl SecureTextField {
 2. `-SkipCheck`가 아니면 같은 PowerShell로 `scripts/check.ps1 -Offline`. 실패하면 중단. `-SkipCheck` zip은 배포하지 않는다(경고 출력).
 3. `node scripts/extension-key.mjs check`, `extension/extension-id.txt`의 ID가 `packaging/install.ps1`의 `$ExtensionId`와 같음, install.ps1의 `'@YW_VERSION@'`이 정확히 1개, 두 packaging 스크립트 BOM.
 4. 확장 런타임 파일 = `scripts/audit-extension.mjs`의 `auditExtensionRoot("extension").packagedFiles`(`manifest.json`, `popup/*`, `src/*.js`; 정본이 하나뿐이도록 재구현하지 않는다)와 `extension/icons/`(있으면). `package.json`, `extension-id.txt`, `native-host/`, `tests/`는 넣지 않는다. `test-dapp/`은 `-IncludeTestDapp`일 때만 `extension/test-dapp/`으로 넣는다.
-5. `cargo build --release --locked --offline -p yw-app -p yw-host`.
+5. `cargo build --release --locked --offline --config 'target.x86_64-pc-windows-msvc.rustflags=[<§3.9 --remap-path-prefix 목록>]' -p yw-app -p yw-host`. 빌드 뒤 두 exe에 `%USERPROFILE%`·cargo 홈·sysroot 경로 문자열이 있으면 실패한다(§3.9).
 6. `dist/YourWallet-<버전>/`을 새로 만들고 다음을 복사한다: `yw-app.exe`, `yw-host.exe`, `extension/…`, `install.ps1`(버전 치환, BOM 유지), `uninstall.ps1`, `README-설치.txt`(생성, 한국어, UTF-8 BOM, CRLF: 확인·설치·확장 로드·SmartScreen·제거·소스 커밋), 루트의 `LICENSE`·`LICENSE.txt`·`LICENSE.md`·`COPYING`(있는 것만). 스테이징한 `extension/`에 `audit-extension.mjs check`를 다시 실행한다.
 7. `SHA256SUMS`: 자기 자신을 뺀 모든 파일, 한 줄 `<소문자 hex 64>␠␠<'/' 구분 상대 경로>`, LF, UTF-8(BOM 없음), 경로 서수(ordinal) 정렬. `sha256sum -c`와 호환.
 8. `dist/YourWallet-<버전>-win-x64.zip`: 최상위 폴더 `YourWallet-<버전>/` 하나, 항목은 서수 정렬, 시각은 1의 커밋 시각(UTC), 이름은 UTF-8(일반 목적 플래그 bit 11, `README-설치.txt`), 디렉터리 항목 없음, Deflate. 만든 뒤 다시 열어 항목 목록·각 항목 SHA-256이 스테이징과 같은지 확인한다.
 9. `dist/YourWallet-<버전>-win-x64.zip.sha256`(`<hex>␠␠<zip 이름>` LF)을 쓰고 경로·크기·SHA-256을 출력한다. 배포자는 이 값을 zip과 다른 경로로 알린다.
 
-재현성: 확장·스크립트·README는 같은 커밋(작업 트리 변경 없음)이면 바이트가 같고, zip 항목 순서·시각도 고정이다. `yw-*.exe`가 다른 PC·경로에서 바이트 단위로 재현되는지는 확인하지 않았다(MSVC 링커 시각·PDB 경로가 들어갈 수 있다). 따라서 소스 재빌드 확인(D1)의 기준은 같은 커밋으로 package.ps1을 실행해 exe 외 줄의 `SHA256SUMS`가 같은지이며, exe 줄이 다르면 그 사실을 기록한다.
+재현성: 확장·스크립트·README는 같은 커밋(작업 트리 변경 없음)이면 바이트가 같고, zip 항목 순서·시각도 고정이다. `yw-*.exe`가 다른 PC·경로에서 바이트 단위로 재현되는지는 확인하지 않았다. 링커 시각은 `/Brepro`가, PDB 경로는 rustc의 `/PDBALTPATH:%_PDB%`가, 이 PC의 소스 경로는 §3.9의 `--remap-path-prefix`가 없애지만 툴체인·SDK 차이는 남을 수 있다. 따라서 소스 재빌드 확인(D1)의 기준은 같은 커밋으로 package.ps1을 실행해 exe 외 줄의 `SHA256SUMS`가 같은지이며, exe 줄이 다르면 그 사실을 기록한다.
 
 ### 9.3 `packaging/install.ps1`
 

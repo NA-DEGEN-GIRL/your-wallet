@@ -11,7 +11,8 @@ use crate::error::WinError;
 use crate::ui::Window;
 
 fn raw(window: &Window) -> HWND {
-    core::ptr::with_exposed_provenance_mut(window.raw_id())
+    // Null (no window) once the window is gone, so a stale handle value is never used.
+    core::ptr::with_exposed_provenance_mut(window.live_raw_id())
 }
 
 /// `WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION)`.

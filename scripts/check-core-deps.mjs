@@ -1,13 +1,16 @@
 // scripts/check-core-deps.mjs — 워크스페이스 크레이트별 의존성 폐포를 허용 목록과 정확히 비교한다.
-// Usage: node scripts/check-core-deps.mjs [--offline] [--list]
+// Usage: node scripts/check-core-deps.mjs [--offline] [--list] [--metadata <file>]
+//   --metadata <file>: cargo를 실행하지 않고 그 파일의 `cargo metadata` JSON을 검사한다(scripts/check-core-deps.test.mjs).
 // Exit: 0 = OK, 1 = 정책 위반, 2 = cargo metadata 실행/해석 실패.
 import { execFileSync } from "node:child_process";
-import { dirname } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const TARGET = "x86_64-pc-windows-msvc";
-const CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index";
+export const TARGET = "x86_64-pc-windows-msvc";
+export const CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index";
 // 단계 진입 커밋에서만 바꾼다(spec/01 §3.4): M7 → "sol" 추가.
-const PHASES = new Set(["sol"]);
+export const PHASES = new Set(["sol"]);
 
 // name=version:n (런타임에 링크) | :b (빌드 시에만 실행: build-dependency와 그 폐포)
 const table = (text) => Object.fromEntries(text.trim().split(/\s+/).map((entry) => entry.split(":")));
@@ -25,16 +28,16 @@ const WIN = table(`windows-sys=0.61.2:n windows-link=0.2.1:n`);
 const APP = table(`qrcodegen=1.8.0:n`);
 
 const CORE = { ...CORE_EVM, ...(PHASES.has("sol") ? CORE_SOL : {}) };
-const POLICY = {
+export const POLICY = {
   "yw-core": { allow: CORE, local: ["yw-json"] },
   "yw-json": { allow: {}, local: [] },
   "yw-win": { allow: WIN, local: [] },
   "yw-app": { allow: { ...CORE, ...WIN, ...APP }, local: ["yw-core", "yw-json", "yw-win"] },
   "yw-host": { allow: WIN, local: ["yw-json", "yw-win"] },
 };
-const BUILD_RS_ALLOW = new Set(["generic-array", "getrandom", "secp256k1-sys", ...(PHASES.has("sol") ? ["curve25519-dalek"] : [])]);
-const OWN_BUILD_RS_ALLOW = new Set(["yw-app"]);
-const FORBIDDEN_FEATURES = {
+export const BUILD_RS_ALLOW = new Set(["generic-array", "getrandom", "secp256k1-sys", ...(PHASES.has("sol") ? ["curve25519-dalek"] : [])]);
+export const OWN_BUILD_RS_ALLOW = new Set(["yw-app"]);
+export const FORBIDDEN_FEATURES = {
   secp256k1: ["rand", "global-context", "hashes", "serde"], argon2: ["alloc", "password-hash", "rand"],
   chacha20poly1305: ["getrandom", "rand_core"], aead: ["getrandom", "rand_core"], zeroize: ["derive"],
   getrandom: ["wasm_js"], "ed25519-dalek": ["asm", "batch", "digest", "hazmat", "legacy_compatibility", "pem", "pkcs8", "rand_core", "serde"],
@@ -42,66 +45,90 @@ const FORBIDDEN_FEATURES = {
   ed25519: ["pem", "pkcs8", "serde", "serde_bytes"], signature: ["derive", "digest", "rand_core"],
 };
 
-let meta;
-try {
+/**
+ * Checks one `cargo metadata --format-version 1` document against the policy.
+ * Returns `{ errors, ok, listing }`: violations, the per-crate OK lines and the `--list` rows.
+ * Throws when the document lacks the fields it reads (the CLI reports that as exit 2).
+ */
+export function checkMetadata(meta) {
+  const pkgs = new Map(meta.packages.map((p) => [p.id, p]));
+  const nodes = new Map(meta.resolve.nodes.map((n) => [n.id, n]));
+  const key = (p) => `${p.name}=${p.version}`;
+  const errors = [];
+  const ok = [];
+  const listing = [];
+
+  for (const id of meta.workspace_members) {
+    const p = pkgs.get(id);
+    if (!(p.name in POLICY)) errors.push(`${p.name}: workspace member without a policy`);
+    if (p.dependencies.some((d) => d.kind === "dev")) errors.push(`${p.name}: dev-dependencies are forbidden`);
+    if (p.targets.some((t) => t.kind.includes("custom-build")) && !OWN_BUILD_RS_ALLOW.has(p.name)) errors.push(`${p.name}: build.rs is forbidden`);
+  }
+
+  for (const [root, policy] of Object.entries(POLICY)) {
+    const rootId = meta.workspace_members.find((id) => pkgs.get(id).name === root);
+    if (!rootId) { errors.push(`${root}: workspace member not found`); continue; }
+    // BFS over normal + build edges (dev edges ignored); a crate reached at runtime is "n".
+    const seen = new Map();
+    const queue = [[rootId, "n"]];
+    while (queue.length) {
+      const [id, mode] = queue.shift();
+      if (seen.get(id) === "n" || seen.get(id) === mode) continue;
+      seen.set(id, mode);
+      for (const d of nodes.get(id).deps) {
+        const kinds = d.dep_kinds.map((k) => k.kind);
+        if (kinds.includes(null)) queue.push([d.pkg, mode]);
+        if (kinds.includes("build")) queue.push([d.pkg, "b"]);
+      }
+    }
+    const reached = new Set();
+    for (const [id, mode] of seen) {
+      if (id === rootId) continue;
+      const p = pkgs.get(id), k = key(p), at = `${root} -> ${k}`;
+      if (p.source === null) {
+        if (!policy.local.includes(p.name)) errors.push(`${at}: local crate not allowed here`);
+        continue;
+      }
+      reached.add(k);
+      listing.push(`${root}\t${mode === "n" ? "runtime" : "build"}\t${k}\t${dirname(p.manifest_path)}`);
+      if (p.source !== CRATES_IO) errors.push(`${at}: non-crates.io source ${p.source}`);
+      if (!(k in policy.allow)) errors.push(`${at}: not in allowlist (${mode === "n" ? "runtime" : "build-time"})`);
+      else if (policy.allow[k] === "b" && mode === "n") errors.push(`${at}: allowlisted build-only but linked at runtime`);
+      if (p.targets.some((t) => t.kind.includes("custom-build")) && !BUILD_RS_ALLOW.has(p.name)) errors.push(`${at}: unreviewed build.rs`);
+      if (p.targets.some((t) => t.kind.includes("proc-macro"))) errors.push(`${at}: proc-macro (curve25519-dalek-derive means the serial backend cfg is missing)`);
+      const bad = (FORBIDDEN_FEATURES[p.name] ?? []).filter((f) => nodes.get(id).features.includes(f));
+      if (bad.length) errors.push(`${at}: forbidden features ${bad.join(",")} (workspace-unified)`);
+    }
+    for (const k of Object.keys(policy.allow)) if (!reached.has(k)) errors.push(`${root}: ${k} allowlisted but not reached (prune or fix phase)`);
+    if (!errors.some((e) => e.startsWith(root))) ok.push(`${root} deps check OK: ${reached.size} crates (${TARGET})`);
+  }
+  return { errors, ok, listing };
+}
+
+function loadMetadata(argv) {
+  const file = argv.indexOf("--metadata");
+  if (file >= 0) {
+    if (!argv[file + 1]) throw new Error("--metadata needs a file");
+    return JSON.parse(readFileSync(argv[file + 1], "utf8"));
+  }
   const args = ["metadata", "--format-version", "1", "--locked", "--filter-platform", TARGET];
-  if (process.argv.includes("--offline")) args.push("--offline");
-  meta = JSON.parse(execFileSync("cargo", args, { encoding: "utf8", maxBuffer: 64 << 20, windowsHide: true }));
-} catch (error) {
-  console.error(`deps check: cargo metadata failed: ${error instanceof Error ? error.message.split("\n")[0] : "unknown"}`);
-  process.exit(2);
-}
-const pkgs = new Map(meta.packages.map((p) => [p.id, p]));
-const nodes = new Map(meta.resolve.nodes.map((n) => [n.id, n]));
-const key = (p) => `${p.name}=${p.version}`;
-const errors = [];
-const listing = [];
-
-for (const id of meta.workspace_members) {
-  const p = pkgs.get(id);
-  if (!(p.name in POLICY)) errors.push(`${p.name}: workspace member without a policy`);
-  if (p.dependencies.some((d) => d.kind === "dev")) errors.push(`${p.name}: dev-dependencies are forbidden`);
-  if (p.targets.some((t) => t.kind.includes("custom-build")) && !OWN_BUILD_RS_ALLOW.has(p.name)) errors.push(`${p.name}: build.rs is forbidden`);
+  if (argv.includes("--offline")) args.push("--offline");
+  return JSON.parse(execFileSync("cargo", args, { encoding: "utf8", maxBuffer: 64 << 20, windowsHide: true }));
 }
 
-for (const [root, policy] of Object.entries(POLICY)) {
-  const rootId = meta.workspace_members.find((id) => pkgs.get(id).name === root);
-  if (!rootId) { errors.push(`${root}: workspace member not found`); continue; }
-  // BFS over normal + build edges (dev edges ignored); a crate reached at runtime is "n".
-  const seen = new Map();
-  const queue = [[rootId, "n"]];
-  while (queue.length) {
-    const [id, mode] = queue.shift();
-    if (seen.get(id) === "n" || seen.get(id) === mode) continue;
-    seen.set(id, mode);
-    for (const d of nodes.get(id).deps) {
-      const kinds = d.dep_kinds.map((k) => k.kind);
-      if (kinds.includes(null)) queue.push([d.pkg, mode]);
-      if (kinds.includes("build")) queue.push([d.pkg, "b"]);
-    }
+const firstLine = (error) => (error instanceof Error ? error.message.split("\n")[0] : "unknown");
+const invokedPath = process.argv[1];
+if (invokedPath !== undefined && resolve(invokedPath) === resolve(fileURLToPath(import.meta.url))) {
+  let result;
+  try {
+    result = checkMetadata(loadMetadata(process.argv));
+  } catch (error) {
+    console.error(`deps check: cargo metadata failed: ${firstLine(error)}`);
+    process.exit(2);
   }
-  const reached = new Set();
-  for (const [id, mode] of seen) {
-    if (id === rootId) continue;
-    const p = pkgs.get(id), k = key(p), at = `${root} -> ${k}`;
-    if (p.source === null) {
-      if (!policy.local.includes(p.name)) errors.push(`${at}: local crate not allowed here`);
-      continue;
-    }
-    reached.add(k);
-    listing.push(`${root}\t${mode === "n" ? "runtime" : "build"}\t${k}\t${dirname(p.manifest_path)}`);
-    if (p.source !== CRATES_IO) errors.push(`${at}: non-crates.io source ${p.source}`);
-    if (!(k in policy.allow)) errors.push(`${at}: not in allowlist (${mode === "n" ? "runtime" : "build-time"})`);
-    else if (policy.allow[k] === "b" && mode === "n") errors.push(`${at}: allowlisted build-only but linked at runtime`);
-    if (p.targets.some((t) => t.kind.includes("custom-build")) && !BUILD_RS_ALLOW.has(p.name)) errors.push(`${at}: unreviewed build.rs`);
-    if (p.targets.some((t) => t.kind.includes("proc-macro"))) errors.push(`${at}: proc-macro (curve25519-dalek-derive means the serial backend cfg is missing)`);
-    const bad = (FORBIDDEN_FEATURES[p.name] ?? []).filter((f) => nodes.get(id).features.includes(f));
-    if (bad.length) errors.push(`${at}: forbidden features ${bad.join(",")} (workspace-unified)`);
-  }
-  for (const k of Object.keys(policy.allow)) if (!reached.has(k)) errors.push(`${root}: ${k} allowlisted but not reached (prune or fix phase)`);
-  if (!errors.some((e) => e.startsWith(root))) console.log(`${root} deps check OK: ${reached.size} crates (${TARGET})`);
+  for (const line of result.ok) console.log(line);
+  const phases = [...PHASES].join(",") || "evm";
+  if (process.argv.includes("--list")) console.log(result.listing.join("\n"));
+  if (result.errors.length) { console.error(`deps check FAILED (${TARGET}, phases: ${phases}):\n  ${result.errors.join("\n  ")}`); process.exit(1); }
+  console.log(`deps check OK (${TARGET}, phases: ${phases})`);
 }
-
-if (process.argv.includes("--list")) console.log(listing.join("\n"));
-if (errors.length) { console.error(`deps check FAILED (${TARGET}, phases: ${[...PHASES].join(",") || "evm"}):\n  ${errors.join("\n  ")}`); process.exit(1); }
-console.log(`deps check OK (${TARGET}, phases: ${[...PHASES].join(",") || "evm"})`);

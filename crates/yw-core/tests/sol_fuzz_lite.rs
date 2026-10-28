@@ -12,7 +12,19 @@ use yw_core::sol::shortvec;
 use yw_core::sol::template::SPL_ALLOWLIST;
 use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolTransferCore};
 
-const RUNS: u32 = 1_000_000;
+/// Iterations per target: `YW_FUZZ_RUNS` when set to a positive number (the short smoke run of
+/// `scripts/check.ps1`), otherwise 1,000,000 (spec/09 §2.4).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the iteration count of a test tool; yw-core itself never reads the environment"
+)]
+fn runs() -> u32 {
+    std::env::var("YW_FUZZ_RUNS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|&runs| runs > 0)
+        .unwrap_or(1_000_000)
+}
 
 /// xorshift64* with a fixed seed (recorded in docs/acceptance/m7-20261027.md).
 struct Mutator {
@@ -174,7 +186,7 @@ fn fuzz_lite_sol_base58() {
     .collect();
     let mut mutator = Mutator::new(0x736f_6c62_3538_3332, 64);
     let mut accepted = 0_u32;
-    for _ in 0..RUNS {
+    for _ in 0..runs() {
         let input = mutator.mutate(&seeds);
         let Ok(text) = core::str::from_utf8(&input) else {
             continue;
@@ -184,7 +196,7 @@ fn fuzz_lite_sol_base58() {
             accepted += 1;
         }
     }
-    assert!(accepted > 0 && accepted < RUNS);
+    assert!(accepted > 0 && accepted < runs());
 }
 
 #[test]
@@ -198,14 +210,14 @@ fn fuzz_lite_sol_shortvec() {
     .collect();
     let mut mutator = Mutator::new(0x7368_6f72_7476_6563, 8);
     let mut accepted = 0_u32;
-    for _ in 0..RUNS {
+    for _ in 0..runs() {
         let input = mutator.mutate(&seeds);
         if let Ok((value, used)) = shortvec::decode(&input) {
             assert_eq!(shortvec::encode(value), input[..used]);
             accepted += 1;
         }
     }
-    assert!(accepted > 0 && accepted < RUNS);
+    assert!(accepted > 0 && accepted < runs());
 }
 
 #[test]
@@ -219,7 +231,7 @@ fn fuzz_lite_sol_tx() {
     ];
     let mut mutator = Mutator::new(0x736f_6c5f_7478_2121, 1_232);
     let mut accepted = 0_u32;
-    for _ in 0..RUNS {
+    for _ in 0..runs() {
         let input = mutator.mutate(&seeds);
         if let Ok((core, blockhash, signature)) = parse_transaction(&input, SolCluster::Mainnet) {
             assert_eq!(
@@ -229,7 +241,7 @@ fn fuzz_lite_sol_tx() {
             accepted += 1;
         }
     }
-    assert!(accepted > 0 && accepted < RUNS);
+    assert!(accepted > 0 && accepted < runs());
 }
 
 #[test]
@@ -239,12 +251,12 @@ fn fuzz_lite_sol_journal() {
     seeds.extend((1..=4).map(|state| body_of(state, 1, &spl_tx())));
     let mut mutator = Mutator::new(0x736f_6c6a_726e_6c21, 2_048);
     let mut accepted = 0_u32;
-    for _ in 0..RUNS {
+    for _ in 0..runs() {
         let input = mutator.mutate(&seeds);
         if let Ok(record) = SolRecord::decode(&input) {
             assert_eq!(record.encode().unwrap(), input);
             accepted += 1;
         }
     }
-    assert!(accepted > 0 && accepted < RUNS);
+    assert!(accepted > 0 && accepted < runs());
 }

@@ -2,26 +2,51 @@
 //! yw-app pipe server end to end over a real named pipe: hello/hello-ack, hello-reject for a
 //! foreign origin, per-request answers with the connection's own outbound sequence, a malformed
 //! frame that keeps the connection, and a framing error that closes only that connection.
-//! Pipe names are `\\.\pipe\YourWallet.test.<pid>.<n>` (spec/09 §2.1).
+//! Pipe names are `\\.\pipe\YourWallet.test.<pid>.<n>` (spec/09 §2.1). Every read has a 10 s
+//! watchdog, so a missing frame fails the test instead of hanging it.
 
 mod common;
 
 use std::io::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::Duration;
 
 use common::FakeClock;
 use common::browser::{GOLDEN_ID, NOW_UNIX, RequestSpec, Sink, json, request_frame, wallet};
 use yw_app::browser::server::start;
 use yw_app::browser::{BrowserCore, DappSink, VaultView};
 use yw_app::settings::Settings;
-use yw_json::frame::{MAX_FRAME_BYTES, read_frame, write_frame};
+use yw_json::frame::{FrameError, MAX_FRAME_BYTES, read_frame, write_frame};
 use yw_json::{Limits, Number, Value};
-use yw_win::pipe::{ConnectError, Server, ServerError, connect_client, user_only_sddl};
+use yw_win::pipe::{ConnectError, PipeReader, Server, ServerError, connect_client, user_only_sddl};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 static NEXT: AtomicU32 = AtomicU32::new(1);
+
+/// How long a test waits for one frame.
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// `read_frame` with a watchdog that cancels the read after [`READ_TIMEOUT`] (the read then
+/// fails with `FrameError::Io`).
+fn read_timed(reader: &mut PipeReader) -> Result<Option<Vec<u8>>, FrameError> {
+    let canceller = reader.cancel_handle();
+    let (done, finished) = mpsc::channel::<()>();
+    let watchdog = std::thread::spawn(move || {
+        if matches!(
+            finished.recv_timeout(READ_TIMEOUT),
+            Err(RecvTimeoutError::Timeout)
+        ) {
+            canceller.cancel();
+        }
+    });
+    let result = read_frame(reader, MAX_FRAME_BYTES);
+    drop(done);
+    let _ = watchdog.join();
+    result
+}
 
 fn name() -> String {
     format!(
@@ -125,8 +150,8 @@ fn r_p2_user_only_dacl_first_instance_and_busy() -> TestResult {
 fn server_hello_requests_and_framing_errors() -> TestResult {
     let pipe = name();
     let mut running = start(core(), &pipe, origin())?;
-    // A foreign origin is refused (the reject may be discarded with the instance; either way
-    // the connection ends without carrying envelopes).
+    // A foreign origin is refused: the hello-reject arrives (the server closes the instance
+    // without discarding unread data), then the connection ends without carrying envelopes.
     let (mut reader, mut writer) = connect_client(&pipe)
         .map_err(|error| format!("{error:?}"))?
         .split();
@@ -135,20 +160,16 @@ fn server_hello_requests_and_framing_errors() -> TestResult {
         &hello("chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba/"),
         MAX_FRAME_BYTES,
     )?;
-    if let Ok(Some(frame)) = read_frame(&mut reader, MAX_FRAME_BYTES) {
-        assert_eq!(frame, br#"{"kind":"hello-reject","reason":"origin"}"#);
-    }
-    assert!(matches!(
-        read_frame(&mut reader, MAX_FRAME_BYTES),
-        Ok(None) | Err(_)
-    ));
+    let reject = read_timed(&mut reader)?.ok_or("no hello-reject")?;
+    assert_eq!(reject, br#"{"kind":"hello-reject","reason":"origin"}"#);
+    assert!(matches!(read_timed(&mut reader), Ok(None)));
     drop((reader, writer));
     // The pinned origin is accepted.
     let (mut reader, mut writer) = connect_client(&pipe)
         .map_err(|error| format!("{error:?}"))?
         .split();
     write_frame(&mut writer, &hello(&origin()), MAX_FRAME_BYTES)?;
-    let ack = read_frame(&mut reader, MAX_FRAME_BYTES)?.ok_or("no ack")?;
+    let ack = read_timed(&mut reader)?.ok_or("no ack")?;
     assert_eq!(field(&ack, "kind")?, Value::String("hello-ack".to_owned()));
     assert_eq!(
         field(&ack, "appVersion")?,
@@ -156,7 +177,7 @@ fn server_hello_requests_and_framing_errors() -> TestResult {
     );
     // A request is answered with outbound sequence 1.
     write_frame(&mut writer, &request(1, 1), MAX_FRAME_BYTES)?;
-    let first = read_frame(&mut reader, MAX_FRAME_BYTES)?.ok_or("no response")?;
+    let first = read_timed(&mut reader)?.ok_or("no response")?;
     assert_eq!(number(&field(&first, "sequence")?), Some(1));
     assert_eq!(number(&field(&first, "requestSequence")?), Some(1));
     assert_eq!(
@@ -166,16 +187,13 @@ fn server_hello_requests_and_framing_errors() -> TestResult {
     // Not JSON: dropped, the connection stays; the next request gets sequence 2.
     write_frame(&mut writer, b"not json", MAX_FRAME_BYTES)?;
     write_frame(&mut writer, &request(2, 2), MAX_FRAME_BYTES)?;
-    let second = read_frame(&mut reader, MAX_FRAME_BYTES)?.ok_or("no response")?;
+    let second = read_timed(&mut reader)?.ok_or("no response")?;
     assert_eq!(number(&field(&second, "sequence")?), Some(2));
     assert_eq!(number(&field(&second, "requestSequence")?), Some(2));
     // A zero-length frame is a framing error: this connection closes.
     writer.write_all(&[0, 0, 0, 0])?;
     writer.flush()?;
-    assert!(matches!(
-        read_frame(&mut reader, MAX_FRAME_BYTES),
-        Ok(None) | Err(_)
-    ));
+    assert!(matches!(read_timed(&mut reader), Ok(None) | Err(_)));
     running.stop();
     Ok(())
 }

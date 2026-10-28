@@ -13,7 +13,7 @@ use core::fmt;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use windows_sys::Win32::Foundation::{HWND, RECT};
+use windows_sys::Win32::Foundation::{ERROR_INVALID_WINDOW_HANDLE, HWND, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
     CreatePen, CreateSolidBrush, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteObject,
     DrawTextW, FillRect, HBRUSH, HDC, HFONT, InvalidateRect, PS_SOLID, RoundRect, SelectObject,
@@ -62,11 +62,14 @@ pub struct ButtonStyle {
     pub radius: i32,
 }
 
-/// Paint state of one control: the button style (owner-drawn buttons) and the backdrop color.
+/// Paint state of one control: the button style (owner-drawn buttons) and the backdrop color,
+/// plus the parent and command id it was created with (to recognize its `WM_DRAWITEM`).
 #[derive(Clone, Copy, Debug)]
 struct ControlPaint {
     style: Option<ButtonStyle>,
     backdrop: Color,
+    parent: usize,
+    id: u16,
 }
 
 thread_local! {
@@ -165,21 +168,44 @@ pub(crate) fn round_rect(hdc: HDC, rect: &RECT, radius: i32, fill: Color, border
     unsafe { DeleteObject(brush) };
 }
 
-/// `WM_DRAWITEM` of a parent for one of our owner-drawn buttons. `false` when the item is not
-/// ours (the caller then uses the default processing).
-pub(crate) fn draw_item(lparam: isize) -> bool {
+/// The owner-drawn button created under `parent` with command `id` (its hwnd), if any.
+fn owner_drawn_button(parent: HWND, id: usize) -> Option<usize> {
+    let parent = parent.expose_provenance();
+    PAINTS.with(|paints| {
+        paints.try_borrow().ok().and_then(|paints| {
+            paints.iter().find_map(|(hwnd, paint)| {
+                (paint.style.is_some() && paint.parent == parent && usize::from(paint.id) == id)
+                    .then_some(*hwnd)
+            })
+        })
+    })
+}
+
+/// `WM_DRAWITEM` of `parent` for one of our owner-drawn buttons. `false` when the item is not
+/// ours (the caller then uses the default processing). `lParam` is dereferenced only when
+/// `wParam` names one of our owner-drawn buttons of this parent, and the structure must then
+/// describe exactly that button.
+pub(crate) fn draw_item(parent: HWND, wparam: usize, lparam: isize) -> bool {
+    let Some(button) = owner_drawn_button(parent, wparam) else {
+        return false;
+    };
     let item: *const DRAWITEMSTRUCT = core::ptr::with_exposed_provenance(lparam.cast_unsigned());
     if item.is_null() {
         return false;
     }
-    // SAFETY: For WM_DRAWITEM, lParam points to a DRAWITEMSTRUCT valid for this message.
+    // SAFETY: For WM_DRAWITEM (sent by our own button control on this thread), lParam points to
+    // a DRAWITEMSTRUCT valid for this message.
     let item = unsafe { &*item };
-    if item.CtlType != ODT_BUTTON {
+    if item.CtlType != ODT_BUTTON
+        || usize::try_from(item.CtlID).ok() != Some(wparam)
+        || item.hwndItem.expose_provenance() != button
+    {
         return false;
     }
     let Some(ControlPaint {
         style: Some(style),
         backdrop,
+        ..
     }) = paint_of(item.hwndItem)
     else {
         return false;
@@ -356,7 +382,14 @@ pub fn create_control(
     let (class, style, ex_style) = styles(kind);
     let class = to_wide(class, "CreateWindowExW")?;
     let text = to_wide(text, "CreateWindowExW")?;
-    let parent_hwnd: HWND = core::ptr::with_exposed_provenance_mut(parent.raw_id());
+    let parent_id = parent.live_raw_id();
+    if parent_id == 0 {
+        return Err(WinError::new(
+            "CreateWindowExW",
+            ERROR_INVALID_WINDOW_HANDLE,
+        ));
+    }
+    let parent_hwnd: HWND = core::ptr::with_exposed_provenance_mut(parent_id);
     let menu: HMENU = core::ptr::with_exposed_provenance_mut(usize::from(id));
     // SAFETY: Class and text are NUL-terminated and live; the parent is our live window; the
     // child id is passed in the menu slot as documented for WS_CHILD windows.
@@ -390,6 +423,8 @@ pub fn create_control(
                 ControlPaint {
                     style,
                     backdrop: DEFAULT_BACKDROP,
+                    parent: parent_hwnd.expose_provenance(),
+                    id,
                 },
             );
         }
@@ -403,8 +438,11 @@ pub fn create_control(
 }
 
 impl Control {
-    fn raw(&self) -> HWND {
-        core::ptr::with_exposed_provenance_mut(self.hwnd)
+    /// The control's handle while its parent window exists. A control is destroyed only with its
+    /// parent or by its own `Drop`, so after the parent is gone the handle value may belong to an
+    /// unrelated window: every method below then does nothing (or returns a neutral value).
+    fn live(&self) -> Option<HWND> {
+        (self.parent_alive)().then(|| core::ptr::with_exposed_provenance_mut(self.hwnd))
     }
 
     /// The command id.
@@ -415,20 +453,24 @@ impl Control {
 
     /// Sets non-secret text.
     pub fn set_text(&self, text: &str) {
+        let Some(hwnd) = self.live() else { return };
         if let Ok(wide) = to_wide(text, "SetWindowTextW") {
-            // SAFETY: `wide` is NUL-terminated and live; the control is ours.
-            unsafe { SetWindowTextW(self.raw(), wide.as_ptr()) };
+            // SAFETY: `wide` is NUL-terminated and live; the control is ours and alive.
+            unsafe { SetWindowTextW(hwnd, wide.as_ptr()) };
         }
     }
 
     fn read_units(&self, max_units: usize) -> WipeBuf<u16> {
-        // SAFETY: Queries the text length of our control.
-        let len = unsafe { GetWindowTextLengthW(self.raw()) };
+        let Some(hwnd) = self.live() else {
+            return WipeBuf::with_capacity(0);
+        };
+        // SAFETY: Queries the text length of our live control.
+        let len = unsafe { GetWindowTextLengthW(hwnd) };
         let len = usize::try_from(len).unwrap_or(0).min(max_units);
         let mut buffer = vec![0_u16; len.saturating_add(1)];
         let capacity = i32::try_from(buffer.len()).unwrap_or(0);
         // SAFETY: `buffer` is writable for `capacity` units including the terminator.
-        let copied = unsafe { GetWindowTextW(self.raw(), buffer.as_mut_ptr(), capacity) };
+        let copied = unsafe { GetWindowTextW(hwnd, buffer.as_mut_ptr(), capacity) };
         let copied = usize::try_from(copied).unwrap_or(0).min(len);
         let mut out = WipeBuf::with_capacity(copied);
         let _ = out.extend_from_slice(buffer.get(..copied).unwrap_or(&[]));
@@ -450,10 +492,11 @@ impl Control {
 
     /// Limits an edit to `units` characters.
     pub fn set_limit(&self, units: u32) {
-        // SAFETY: Sends EM_SETLIMITTEXT with a plain value to our control.
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: Sends EM_SETLIMITTEXT with a plain value to our live control.
         unsafe {
             SendMessageW(
-                self.raw(),
+                hwnd,
                 EM_SETLIMITTEXT,
                 usize::try_from(units).unwrap_or(0),
                 0,
@@ -463,67 +506,73 @@ impl Control {
 
     /// Checks or unchecks a check box / radio button.
     pub fn set_checked(&self, checked: bool) {
+        let Some(hwnd) = self.live() else { return };
         let state = if checked { BST_CHECKED } else { BST_UNCHECKED };
-        // SAFETY: Sends BM_SETCHECK with a plain value to our control.
-        unsafe {
-            SendMessageW(
-                self.raw(),
-                BM_SETCHECK,
-                usize::try_from(state).unwrap_or(0),
-                0,
-            )
-        };
+        // SAFETY: Sends BM_SETCHECK with a plain value to our live control.
+        unsafe { SendMessageW(hwnd, BM_SETCHECK, usize::try_from(state).unwrap_or(0), 0) };
     }
 
     /// Whether a check box / radio button is checked.
     #[must_use]
     pub fn is_checked(&self) -> bool {
-        // SAFETY: Sends BM_GETCHECK to our control.
-        let state = unsafe { SendMessageW(self.raw(), BM_GETCHECK, 0, 0) };
+        let Some(hwnd) = self.live() else {
+            return false;
+        };
+        // SAFETY: Sends BM_GETCHECK to our live control.
+        let state = unsafe { SendMessageW(hwnd, BM_GETCHECK, 0, 0) };
         state == isize::try_from(BST_CHECKED).unwrap_or(1)
     }
 
     /// Enables or disables the control.
     pub fn enable(&self, enabled: bool) {
-        // SAFETY: Changes the enabled state of our control.
-        unsafe { EnableWindow(self.raw(), i32::from(enabled)) };
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: Changes the enabled state of our live control.
+        unsafe { EnableWindow(hwnd, i32::from(enabled)) };
     }
 
     /// Whether the control is enabled.
     #[must_use]
     pub fn is_enabled(&self) -> bool {
-        // SAFETY: Queries our control.
-        unsafe { IsWindowEnabled(self.raw()) != 0 }
+        let Some(hwnd) = self.live() else {
+            return false;
+        };
+        // SAFETY: Queries our live control.
+        unsafe { IsWindowEnabled(hwnd) != 0 }
     }
 
     /// Shows or hides the control.
     pub fn show(&self, visible: bool) {
-        // SAFETY: Shows or hides our control.
-        unsafe { ShowWindow(self.raw(), if visible { SW_SHOW } else { SW_HIDE }) };
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: Shows or hides our live control.
+        unsafe { ShowWindow(hwnd, if visible { SW_SHOW } else { SW_HIDE }) };
     }
 
     /// Moves and resizes the control.
     pub fn set_rect(&self, rect: Rect) {
-        // SAFETY: Moves our control within its parent.
-        unsafe { MoveWindow(self.raw(), rect.x, rect.y, rect.w, rect.h, 1) };
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: Moves our live control within its parent.
+        unsafe { MoveWindow(hwnd, rect.x, rect.y, rect.w, rect.h, 1) };
     }
 
     /// Sets the control font (`font` must outlive the control or be replaced first).
     pub fn set_font(&self, font: &Font) {
+        let Some(hwnd) = self.live() else { return };
         let handle = font.raw().expose_provenance();
-        // SAFETY: Sends WM_SETFONT with our font handle and redraw = TRUE.
-        unsafe { SendMessageW(self.raw(), WM_SETFONT, handle, 1) };
+        // SAFETY: Sends WM_SETFONT with our font handle and redraw = TRUE to our live control.
+        unsafe { SendMessageW(hwnd, WM_SETFONT, handle, 1) };
     }
 
     /// Gives the control keyboard focus.
     pub fn focus(&self) {
-        // SAFETY: Sets focus to our control.
-        unsafe { SetFocus(self.raw()) };
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: Sets focus to our live control.
+        unsafe { SetFocus(hwnd) };
     }
 
     /// Sets the color under the control (card or window background) used to paint the corners of
     /// an owner-drawn button and the background of check boxes, radios and read-only edits.
     pub fn set_backdrop(&self, color: Color) {
+        let Some(hwnd) = self.live() else { return };
         let changed = PAINTS.with(|paints| {
             let Ok(mut paints) = paints.try_borrow_mut() else {
                 return false;
@@ -537,13 +586,14 @@ impl Control {
             }
         });
         if changed {
-            // SAFETY: Invalidates our control so it repaints with the new backdrop.
-            unsafe { InvalidateRect(self.raw(), core::ptr::null(), 1) };
+            // SAFETY: Invalidates our live control so it repaints with the new backdrop.
+            unsafe { InvalidateRect(hwnd, core::ptr::null(), 1) };
         }
     }
 
     /// Replaces an owner-drawn button's style (same control, new colors).
     pub fn set_button_style(&self, style: ButtonStyle) {
+        let Some(hwnd) = self.live() else { return };
         let changed = PAINTS.with(|paints| {
             let Ok(mut paints) = paints.try_borrow_mut() else {
                 return false;
@@ -557,8 +607,8 @@ impl Control {
             }
         });
         if changed {
-            // SAFETY: Invalidates our control so it repaints in the new style.
-            unsafe { InvalidateRect(self.raw(), core::ptr::null(), 1) };
+            // SAFETY: Invalidates our live control so it repaints in the new style.
+            unsafe { InvalidateRect(hwnd, core::ptr::null(), 1) };
         }
     }
 }
@@ -570,9 +620,9 @@ impl Drop for Control {
                 paints.remove(&self.hwnd);
             }
         });
-        if (self.parent_alive)() {
+        if let Some(hwnd) = self.live() {
             // SAFETY: The parent is alive, so this child handle is still ours.
-            unsafe { DestroyWindow(self.raw()) };
+            unsafe { DestroyWindow(hwnd) };
         }
     }
 }

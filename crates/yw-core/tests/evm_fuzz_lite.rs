@@ -18,7 +18,19 @@ use yw_core::evm::siwe::{SiweParse, parse_siwe};
 use yw_core::evm::tx::{AccessListItem, Eip1559Tx, decode_signed};
 use yw_core::hex;
 
-const RUNS: u32 = 1_000_000;
+/// Iterations per target: `YW_FUZZ_RUNS` when set to a positive number (the short smoke run of
+/// `scripts/check.ps1`), otherwise 1,000,000 (spec/09 §2.4).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the iteration count of a test tool; yw-core itself never reads the environment"
+)]
+fn runs() -> u32 {
+    std::env::var("YW_FUZZ_RUNS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|&runs| runs > 0)
+        .unwrap_or(1_000_000)
+}
 
 /// xorshift64* with a fixed seed (recorded in docs/acceptance/m2-20261027.md).
 struct Mutator {
@@ -110,14 +122,14 @@ fn fuzz_lite_rlp() {
     ];
     let mut mutator = Mutator::new(0x726c_7066_757a_7a31, 4_096);
     let mut accepted = 0_u32;
-    for _ in 0..RUNS {
+    for _ in 0..runs() {
         let input = mutator.mutate(&seeds);
         if let Ok(item) = decode_exact(&input) {
             assert_eq!(encode_item(&item), input);
             accepted += 1;
         }
     }
-    assert!(accepted > 0 && accepted < RUNS);
+    assert!(accepted > 0 && accepted < runs());
 }
 
 #[test]
@@ -126,7 +138,7 @@ fn fuzz_lite_signed_tx() {
     let seeds = vec![hex::decode(BESU).unwrap(), signed_seed()];
     let mut mutator = Mutator::new(0x7369_676e_6564_7478, 4_096);
     let mut accepted = 0_u32;
-    for _ in 0..RUNS {
+    for _ in 0..runs() {
         let input = mutator.mutate(&seeds);
         if let Ok(decoded) = decode_signed(&input) {
             assert_eq!(decoded.encode(), input);
@@ -141,7 +153,7 @@ fn fuzz_lite_signed_tx() {
             accepted += 1;
         }
     }
-    assert!(accepted > 0 && accepted < RUNS);
+    assert!(accepted > 0 && accepted < runs());
 }
 
 #[test]
@@ -197,7 +209,7 @@ fn fuzz_lite_abi() {
     ];
     let mut mutator = Mutator::new(0x6162_6966_757a_7a31, 8_192);
     let mut known = 0_u32;
-    for _ in 0..RUNS {
+    for _ in 0..runs() {
         let input = mutator.mutate(&seeds);
         let to = match input.first().map(|byte| byte % 3) {
             Some(0) => permit2,
@@ -230,7 +242,7 @@ fn fuzz_lite_eip712() {
     ];
     let mut mutator = Mutator::new(0x6569_7037_3132_6631, 131_072);
     let mut accepted = 0_u32;
-    for _ in 0..RUNS {
+    for _ in 0..runs() {
         let input = mutator.mutate(&seeds);
         let Ok(value) = yw_json::parse(&input, &yw_json::Limits::REQUEST) else {
             continue;
@@ -253,7 +265,7 @@ fn fuzz_lite_siwe() {
     let seeds = vec![base.as_bytes().to_vec(), full.into_bytes()];
     let mut mutator = Mutator::new(0x7369_7765_6675_7a7a, 4_096);
     let mut accepted = 0_u32;
-    for _ in 0..RUNS {
+    for _ in 0..runs() {
         let input = mutator.mutate(&seeds);
         let Ok(text) = core::str::from_utf8(&input) else {
             continue;
@@ -263,5 +275,5 @@ fn fuzz_lite_siwe() {
             accepted += 1;
         }
     }
-    assert!(accepted > 0 && accepted < RUNS);
+    assert!(accepted > 0 && accepted < runs());
 }
