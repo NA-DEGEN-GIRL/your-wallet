@@ -21,6 +21,12 @@ use crate::vault::Vault;
 pub const SOL_SIGN_DEADLINE_SECS: u64 = 20;
 /// `lastValidBlockHeight` may be at most this far above the finalized block height.
 pub const SOL_MAX_LVBH_AHEAD: u64 = 300;
+/// `lastValidBlockHeight` must be at least this far above the finalized block height asked right
+/// after it. A finalized blockhash is valid for 150 blocks (`lvbh` = its block height + 150) and
+/// `getBlockHeight` cannot see an older bank than `getLatestBlockhash`, so `lvbh ≤ h + 150`; a
+/// lower value than `h + 100` (50 blocks ≈ 10 s of drift between the two calls) is implausible
+/// and would let the expiry proof (`height > lvbh`, spec/07 §14.3) start too early.
+pub const SOL_MIN_LVBH_AHEAD: u64 = 100;
 
 /// A signed, verified transfer.
 #[derive(Clone, Debug, PartialEq, Eq)]

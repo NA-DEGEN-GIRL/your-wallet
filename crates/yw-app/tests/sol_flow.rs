@@ -1,7 +1,9 @@
 //! Solana pipelines over the scripted transport (spec/07 §13–§15, spec/09 §4.4): the step-2
 //! preview with its call order, `L01` blocks and flags; the step-5 lookup and its range check;
 //! the broadcast round state machine against a fake RPC and a manual clock (SOL-N1: the same
-//! signed bytes are re-sent, never re-signed; `Expired` only with height, history and 90 s);
+//! signed bytes are re-sent, never re-signed; `Expired` only after two height rounds, each with a
+//! `getEpochInfo` height above `lastValidBlockHeight`, a history `null` answered at or after that
+//! view's slot, and 90 s of both the wall and the monotonic clock);
 //! balances and the recovery scan with the genesis pin.
 
 mod common;
@@ -10,6 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use common::{Answer, FakeClock, FakeRpc, url};
 use yw_app::errors::ErrorCode;
+use yw_app::flow::evm::Clock as _;
 use yw_app::sol::flow::{
     PreSignError, PreviewJob, PreviewOutcome, SolEndpoint, SolPrepared, TrackJob, balances,
     pre_sign, preview, track_round,
@@ -401,8 +404,18 @@ fn pre_sign_lookup_and_range_check() {
         methods,
         ["getGenesisHash", "getLatestBlockhash", "getBlockHeight"]
     );
-    assert!(lookup(1_000, 1_000, DEVNET).0.is_ok());
+    // lvbh = blockhash height + 150 ≤ h + 150; below h + 100 is implausible (it would let the
+    // expiry proof start early), above h + 300 too.
+    assert!(lookup(1_000, 1_100, DEVNET).0.is_ok());
     assert!(lookup(1_000, 1_300, DEVNET).0.is_ok());
+    assert_eq!(
+        lookup(1_000, 1_099, DEVNET).0,
+        Err(PreSignError::RpcAnomaly)
+    );
+    assert_eq!(
+        lookup(1_000, 1_000, DEVNET).0,
+        Err(PreSignError::RpcAnomaly)
+    );
     assert_eq!(lookup(1_000, 999, DEVNET).0, Err(PreSignError::RpcAnomaly));
     assert_eq!(
         lookup(1_000, 1_301, DEVNET).0,
@@ -415,13 +428,36 @@ fn pre_sign_lookup_and_range_check() {
 
 // ----- broadcast loop (SOL-N1) ----------------------------------------------------------------
 
-/// The fake network of one signature: status (history off/on), height, send behaviour.
+/// The fake network of one signature: status (history off/on, the history answer's
+/// `context.slot`), the `getEpochInfo` view (height and slot), send behaviour.
 #[derive(Clone, Debug)]
 struct Net {
     status: &'static str,
     history: &'static str,
     height: u64,
     send: Answer,
+    view_slot: u64,
+    history_slot: u64,
+}
+
+impl Net {
+    /// A consistent RPC: the history is answered at the slot of the height view.
+    fn new(status: &'static str, history: &'static str, height: u64, send: Answer) -> Self {
+        Self {
+            status,
+            history,
+            height,
+            send,
+            view_slot: 4_000,
+            history_slot: 4_000,
+        }
+    }
+}
+
+fn ctx_at(value: &str, slot: u64) -> Answer {
+    Answer::Result(format!(
+        "{{\"context\":{{\"slot\":{slot}}},\"value\":{value}}}"
+    ))
 }
 
 const NULL_STATUS: &str = "[null]";
@@ -445,9 +481,16 @@ fn net_rpc(net: &Arc<Mutex<Net>>) -> Arc<FakeRpc> {
                     .and_then(|object| object.get("searchTransactionHistory"))
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                ctx(if history { net.history } else { net.status })
+                if history {
+                    ctx_at(net.history, net.history_slot)
+                } else {
+                    ctx_at(net.status, net.view_slot)
+                }
             }
-            "getBlockHeight" => Answer::Result(net.height.to_string()),
+            "getEpochInfo" => Answer::Result(format!(
+                "{{\"absoluteSlot\":{},\"blockHeight\":{},\"epoch\":900,\"slotIndex\":1,\"slotsInEpoch\":432000,\"transactionCount\":null}}",
+                net.view_slot, net.height
+            )),
             "sendTransaction" => net.send.clone(),
             _ => Answer::Error(-32_601, None),
         }
@@ -457,7 +500,8 @@ fn net_rpc(net: &Arc<Mutex<Net>>) -> Arc<FakeRpc> {
 const SIGNATURE: [u8; 64] = [0x5a; 64];
 const SIGNED_AT: u64 = 1_800_000_000_000;
 
-fn track(state: LoopState) -> TrackJob {
+/// A round of the record signed at `SIGNED_AT`, tracked since monotonic `since`.
+fn track_since(state: LoopState, since: u64) -> TrackJob {
     TrackJob {
         endpoint: endpoint(),
         signature: SIGNATURE,
@@ -468,7 +512,19 @@ fn track(state: LoopState) -> TrackJob {
         },
         state,
         check_genesis: false,
+        tracked_since_ms: since,
     }
+}
+
+fn track(state: LoopState) -> TrackJob {
+    track_since(state, 0)
+}
+
+/// Monotonic ms of the signing when it happened in this session (both clocks agree).
+fn signed_in_session(clock: &FakeClock) -> u64 {
+    clock
+        .now_ms()
+        .saturating_sub(clock.now_unix_ms().saturating_sub(SIGNED_AT))
 }
 
 fn local_signature() -> String {
@@ -479,16 +535,28 @@ fn accepted() -> Answer {
     Answer::Result(format!("\"{}\"", local_signature()))
 }
 
-/// Runs `rounds` rounds 1 s apart; returns the last outcome and the final state.
+/// Runs `rounds` rounds 1 s apart (a record signed in this session); returns the last outcome
+/// and the final state.
 fn run(
     rpc: &FakeRpc,
     clock: &FakeClock,
     rounds: u32,
+    state: LoopState,
+) -> (Result<Outcome, String>, LoopState) {
+    run_since(rpc, clock, rounds, state, signed_in_session(clock))
+}
+
+/// [`run`] for a record tracked since monotonic `since`.
+fn run_since(
+    rpc: &FakeRpc,
+    clock: &FakeClock,
+    rounds: u32,
     mut state: LoopState,
+    since: u64,
 ) -> (Result<Outcome, String>, LoopState) {
     let mut outcome = Ok(Outcome::Pending { notice: false });
     for _ in 0..rounds {
-        let result = track_round(rpc, &track(state), clock);
+        let result = track_round(rpc, &track_since(state, since), clock);
         state = result.state;
         outcome = result.outcome.map_err(|code| code.code().to_owned());
         if !matches!(outcome, Ok(Outcome::Pending { .. })) {
@@ -502,12 +570,12 @@ fn run(
 #[test]
 fn sol_n1_unseen_transaction_is_resent_unchanged_never_resigned() {
     // ① status null, height ≤ lvbh: only the same bytes are re-sent, every 2.5 s.
-    let net = Arc::new(Mutex::new(Net {
-        status: NULL_STATUS,
-        history: NULL_STATUS,
-        height: 1_100,
-        send: accepted(),
-    }));
+    let net = Arc::new(Mutex::new(Net::new(
+        NULL_STATUS,
+        NULL_STATUS,
+        1_100,
+        accepted(),
+    )));
     let rpc = net_rpc(&net);
     let clock = FakeClock::at(SIGNED_AT + 10_000);
     let (outcome, _) = run(&rpc, &clock, 30, LoopState::default());
@@ -532,12 +600,12 @@ fn sol_n1_unseen_transaction_is_resent_unchanged_never_resigned() {
 #[test]
 fn sol_n1_expiry_needs_height_history_and_90_seconds() {
     // ② height > lvbh and history null but < 90 s since signing: still Pending.
-    let net = Arc::new(Mutex::new(Net {
-        status: NULL_STATUS,
-        history: NULL_STATUS,
-        height: 1_151,
-        send: accepted(),
-    }));
+    let net = Arc::new(Mutex::new(Net::new(
+        NULL_STATUS,
+        NULL_STATUS,
+        1_151,
+        accepted(),
+    )));
     let rpc = net_rpc(&net);
     let clock = FakeClock::at(SIGNED_AT + 30_000);
     let (outcome, state) = run(&rpc, &clock, 50, LoopState::default());
@@ -547,10 +615,82 @@ fn sol_n1_expiry_needs_height_history_and_90_seconds() {
         "history asked after the height"
     );
     assert!(state.last_round_ms.is_some());
-    // ③ all three: Expired; a new send needs a new intent and approval (nothing here re-signs).
+    // Height and slot come from one getEpochInfo answer; getBlockHeight is not asked.
+    assert!(rpc.count("getEpochInfo") >= 16);
+    assert_eq!(rpc.count("getBlockHeight"), 0);
+    let history = rpc
+        .params_of("getSignatureStatuses")
+        .into_iter()
+        .filter(|params| params.contains("\"searchTransactionHistory\":true"))
+        .count();
+    assert_eq!(history, rpc.count("getEpochInfo"));
+    // ③ every condition in two height rounds (2.5 s apart): Expired; a new send needs a new
+    // intent and approval (nothing here re-signs). Height rounds at 89 s (too early), 92 s
+    // (first proof round) and 95 s (second).
+    let rpc = net_rpc(&net);
     let clock = FakeClock::at(SIGNED_AT + 89_000);
-    let (outcome, _) = run(&rpc, &clock, 5, LoopState::default());
+    let (outcome, state) = run(&rpc, &clock, 10, LoopState::default());
+    assert_eq!(outcome, Ok(Outcome::Expired), "{state:?}");
+    assert_eq!(rpc.count("getEpochInfo"), 3);
+    assert_eq!(clock.now_unix_ms(), SIGNED_AT + 95_000);
+}
+
+#[test]
+fn sol_n1_expiry_needs_one_consistent_view_and_the_monotonic_clock() {
+    // The history `null` is answered at a slot behind the height view: never Expired.
+    let mut behind = Net::new(NULL_STATUS, NULL_STATUS, 1_151, accepted());
+    behind.history_slot = behind.view_slot - 1;
+    let rpc = net_rpc(&Arc::new(Mutex::new(behind)));
+    let (outcome, state) = run(
+        &rpc,
+        &FakeClock::at(SIGNED_AT + 600_000),
+        20,
+        LoopState::default(),
+    );
+    assert!(matches!(outcome, Ok(Outcome::Pending { notice: true })));
+    assert_eq!(state.expiry_rounds, 0);
+    // A history answer ahead of the view is fine.
+    let mut ahead = Net::new(NULL_STATUS, NULL_STATUS, 1_151, accepted());
+    ahead.history_slot = ahead.view_slot + 50;
+    let rpc = net_rpc(&Arc::new(Mutex::new(ahead)));
+    let (outcome, _) = run(
+        &rpc,
+        &FakeClock::at(SIGNED_AT + 600_000),
+        20,
+        LoopState::default(),
+    );
     assert_eq!(outcome, Ok(Outcome::Expired));
+    // The wall clock says 10 minutes, but this session started tracking (restart, unlock) just
+    // now: 90 s of monotonic time are still needed.
+    let net = Arc::new(Mutex::new(Net::new(
+        NULL_STATUS,
+        NULL_STATUS,
+        1_151,
+        accepted(),
+    )));
+    let rpc = net_rpc(&net);
+    let clock = FakeClock::at(SIGNED_AT + 600_000);
+    let since = clock.now_ms();
+    let (outcome, state) = run_since(&rpc, &clock, 85, LoopState::default(), since);
+    assert!(matches!(outcome, Ok(Outcome::Pending { .. })));
+    assert_eq!(state.expiry_rounds, 0);
+    let (outcome, _) = run_since(&rpc, &clock, 15, state, since);
+    assert_eq!(outcome, Ok(Outcome::Expired));
+    // A malformed getEpochInfo (no absoluteSlot) is no height observation.
+    let rpc = FakeRpc::new(|method, _| match method {
+        "getEpochInfo" => Answer::Result("{\"blockHeight\":2000}".to_owned()),
+        "getSignatureStatuses" => ctx_at(NULL_STATUS, 9_999),
+        "sendTransaction" => accepted(),
+        _ => Answer::Error(-32_601, None),
+    });
+    let (outcome, state) = run(
+        &rpc,
+        &FakeClock::at(SIGNED_AT + 600_000),
+        20,
+        LoopState::default(),
+    );
+    assert!(matches!(outcome, Ok(Outcome::Pending { .. })));
+    assert_eq!(state.expiry_rounds, 0);
 }
 
 #[test]
@@ -566,35 +706,30 @@ fn sol_n1_late_landing_found_by_history_wins() {
             },
         ),
     ] {
-        let net = Arc::new(Mutex::new(Net {
-            status: NULL_STATUS,
+        let net = Arc::new(Mutex::new(Net::new(
+            NULL_STATUS,
             history,
-            height: 2_000,
-            send: accepted(),
-        }));
+            2_000,
+            accepted(),
+        )));
         let rpc = net_rpc(&net);
         let clock = FakeClock::at(SIGNED_AT + 600_000);
         let (outcome, _) = run(&rpc, &clock, 3, LoopState::default());
         assert_eq!(outcome, Ok(expected));
     }
     // A finalized status without history.
-    let net = Arc::new(Mutex::new(Net {
-        status: LANDED,
-        history: NULL_STATUS,
-        height: 1_000,
-        send: accepted(),
-    }));
+    let net = Arc::new(Mutex::new(Net::new(LANDED, NULL_STATUS, 1_000, accepted())));
     let rpc = net_rpc(&net);
     let (outcome, _) = run(&rpc, &FakeClock::at(SIGNED_AT), 1, LoopState::default());
     assert_eq!(outcome, Ok(Outcome::Landed { slot: 9 }));
     assert_eq!(rpc.count("sendTransaction"), 0);
     // processed/confirmed: no re-send, not success.
-    let net = Arc::new(Mutex::new(Net {
-        status: PROCESSED,
-        history: NULL_STATUS,
-        height: 1_000,
-        send: accepted(),
-    }));
+    let net = Arc::new(Mutex::new(Net::new(
+        PROCESSED,
+        NULL_STATUS,
+        1_000,
+        accepted(),
+    )));
     let rpc = net_rpc(&net);
     let (outcome, state) = run(&rpc, &FakeClock::at(SIGNED_AT), 10, LoopState::default());
     assert!(matches!(outcome, Ok(Outcome::Pending { .. })));
@@ -615,12 +750,12 @@ fn preflight(err: &str) -> Answer {
 fn sol_n1_deterministic_preflight_stops_resending_but_keeps_pending() {
     // ⑦ InsufficientFundsForFee: re-sending stops (memory flag), the record stays Pending, the
     // height is still checked for the expiry proof.
-    let net = Arc::new(Mutex::new(Net {
-        status: NULL_STATUS,
-        history: NULL_STATUS,
-        height: 1_000,
-        send: preflight("\"InsufficientFundsForFee\""),
-    }));
+    let net = Arc::new(Mutex::new(Net::new(
+        NULL_STATUS,
+        NULL_STATUS,
+        1_000,
+        preflight("\"InsufficientFundsForFee\""),
+    )));
     let rpc = net_rpc(&net);
     let clock = FakeClock::at(SIGNED_AT + 1_000);
     let (outcome, state) = run(&rpc, &clock, 12, LoopState::default());
@@ -628,25 +763,25 @@ fn sol_n1_deterministic_preflight_stops_resending_but_keeps_pending() {
     assert!(state.stop_rebroadcast);
     assert_eq!(state.preflight_err, Some(err::INSUFFICIENT_FUNDS_FOR_FEE));
     assert_eq!(rpc.count("sendTransaction"), 1);
-    assert!(rpc.count("getBlockHeight") >= 4);
+    assert!(rpc.count("getEpochInfo") >= 4);
     // A transient preflight error (BlockhashNotFound) keeps re-sending.
-    let net = Arc::new(Mutex::new(Net {
-        status: NULL_STATUS,
-        history: NULL_STATUS,
-        height: 1_000,
-        send: preflight("\"BlockhashNotFound\""),
-    }));
+    let net = Arc::new(Mutex::new(Net::new(
+        NULL_STATUS,
+        NULL_STATUS,
+        1_000,
+        preflight("\"BlockhashNotFound\""),
+    )));
     let rpc = net_rpc(&net);
     let (_, state) = run(&rpc, &FakeClock::at(SIGNED_AT), 12, LoopState::default());
     assert!(!state.stop_rebroadcast);
     assert!(rpc.count("sendTransaction") >= 4);
     // Transport errors too.
-    let net = Arc::new(Mutex::new(Net {
-        status: NULL_STATUS,
-        history: NULL_STATUS,
-        height: 1_000,
-        send: Answer::Transport(yw_win::http::HttpError::Timeout),
-    }));
+    let net = Arc::new(Mutex::new(Net::new(
+        NULL_STATUS,
+        NULL_STATUS,
+        1_000,
+        Answer::Transport(yw_win::http::HttpError::Timeout),
+    )));
     let rpc = net_rpc(&net);
     let (_, state) = run(&rpc, &FakeClock::at(SIGNED_AT), 12, LoopState::default());
     assert!(!state.stop_rebroadcast);
@@ -656,12 +791,12 @@ fn sol_n1_deterministic_preflight_stops_resending_but_keeps_pending() {
 #[test]
 fn sol_n1_other_signature_is_an_anomaly() {
     // ⑧ the RPC answers with another signature: RpcAnomaly, state unchanged (still Pending).
-    let net = Arc::new(Mutex::new(Net {
-        status: NULL_STATUS,
-        history: NULL_STATUS,
-        height: 1_000,
-        send: Answer::Result(format!("\"{}\"", base58_encode(&[0x11; 64]))),
-    }));
+    let net = Arc::new(Mutex::new(Net::new(
+        NULL_STATUS,
+        NULL_STATUS,
+        1_000,
+        Answer::Result(format!("\"{}\"", base58_encode(&[0x11; 64]))),
+    )));
     let rpc = net_rpc(&net);
     let (outcome, state) = run(&rpc, &FakeClock::at(SIGNED_AT), 3, LoopState::default());
     assert!(matches!(outcome, Ok(Outcome::Pending { .. })));

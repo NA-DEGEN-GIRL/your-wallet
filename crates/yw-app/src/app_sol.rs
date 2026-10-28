@@ -202,6 +202,21 @@ pub struct SolTrackState {
     pub notice: bool,
     /// Last round failure.
     pub error: Option<ErrorCode>,
+    /// Monotonic ms at which this session started tracking the record (its signing, or the
+    /// loop's resumption after start/unlock): the expiry proof's monotonic minimum (spec/07
+    /// §14.3) counts from here.
+    pub since_ms: u64,
+}
+
+impl SolTrackState {
+    /// A record tracked from `now` (monotonic ms).
+    #[must_use]
+    pub fn since(now: u64) -> Self {
+        Self {
+            since_ms: now,
+            ..Self::default()
+        }
+    }
 }
 
 /// An approved transfer waiting for its blockhash (spec/07 §13.1 step 5).
@@ -1189,7 +1204,7 @@ impl App {
                         next_ms: 0,
                         // Signed just now after a genesis check (step 5).
                         genesis_checked: true,
-                        ..SolTrackState::default()
+                        ..SolTrackState::since(now_ms())
                     },
                 );
                 if matches!(self.screen, Screen::SolSend) {
@@ -1237,8 +1252,13 @@ impl App {
         self.sol
             .tracking
             .retain(|signature, _| pending.contains(signature));
+        // A record first seen now (start, unlock) counts its monotonic expiry minimum from now.
+        let now = now_ms();
         for signature in pending {
-            self.sol.tracking.entry(signature).or_default();
+            self.sol
+                .tracking
+                .entry(signature)
+                .or_insert_with(|| SolTrackState::since(now));
         }
     }
 
@@ -1277,6 +1297,7 @@ impl App {
                 },
                 state: state.state,
                 check_genesis: !state.genesis_checked,
+                tracked_since_ms: state.since_ms,
             };
             state.busy = true;
             if !self.rpc(RpcJob::SolTrack(Box::new(job)))

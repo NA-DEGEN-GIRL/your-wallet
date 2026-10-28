@@ -7,7 +7,7 @@
 
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::broadcast::{
-    LoopState, Observation, Outcome, PendingTx, SigStatus, decide, plan, wants_history,
+    LoopState, Observation, Outcome, PendingTx, RoundTimes, SigStatus, decide, plan, wants_history,
 };
 use yw_core::sol::display::{SimSummary, SolBlock, SolPreviewFacts, SplPreviewFacts, intent_flags};
 use yw_core::sol::fee::{
@@ -21,7 +21,7 @@ use yw_core::sol::rent::{
     check_rent0, check_rent165, check_sol_send, check_spl_send, send_max_amount,
     spl_send_max_amount,
 };
-use yw_core::sol::sign::SOL_MAX_LVBH_AHEAD;
+use yw_core::sol::sign::{SOL_MAX_LVBH_AHEAD, SOL_MIN_LVBH_AHEAD};
 use yw_core::sol::template::{SplAccounts, spl_entries};
 use yw_core::sol::token::{TokenHolding, check_mint, classify_holding};
 use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolTransferCore, SplAllowEntry};
@@ -482,12 +482,13 @@ pub enum PreSignError {
     Rpc(ErrorCode),
     /// `getGenesisHash` differs.
     ClusterMismatch,
-    /// `lastValidBlockHeight` outside `h..=h + 300`.
+    /// `lastValidBlockHeight` outside `h + 100..=h + 300`.
     RpcAnomaly,
 }
 
 /// Step 5 (spec/07 §13.1): genesis again, `getLatestBlockhash(finalized)`,
-/// `getBlockHeight(finalized)` and the range check. Returns `(blockhash, lastValidBlockHeight)`.
+/// `getBlockHeight(finalized)` and the range check `h + SOL_MIN_LVBH_AHEAD ≤ lvbh ≤ h +
+/// SOL_MAX_LVBH_AHEAD`. Returns `(blockhash, lastValidBlockHeight)`.
 ///
 /// # Errors
 ///
@@ -504,7 +505,9 @@ pub fn pre_sign(
         .map_err(|failure| PreSignError::Rpc(classify(failure)))?;
     let height = sol_rpc::block_height(&client, &endpoint.url)
         .map_err(|failure| PreSignError::Rpc(classify(failure)))?;
-    if last_valid < height || last_valid > height.saturating_add(SOL_MAX_LVBH_AHEAD) {
+    if last_valid < height.saturating_add(SOL_MIN_LVBH_AHEAD)
+        || last_valid > height.saturating_add(SOL_MAX_LVBH_AHEAD)
+    {
         return Err(PreSignError::RpcAnomaly);
     }
     Ok((blockhash, last_valid))
@@ -525,6 +528,9 @@ pub struct TrackJob {
     pub state: LoopState,
     /// Check `getGenesisHash` first (first round after start/unlock/URL change).
     pub check_genesis: bool,
+    /// Monotonic ms (the [`Clock::now_ms`] clock) at which this session started tracking the
+    /// record: its signing, or the loop's resumption after start or unlock (spec/07 §14.3).
+    pub tracked_since_ms: u64,
 }
 
 /// A round's result.
@@ -543,8 +549,9 @@ pub struct TrackResult {
 }
 
 /// One round (spec/07 §14.2–§14.3): status (history off) → plan → re-send the same bytes and/or
-/// `getBlockHeight` → history lookup only when the height is past `lastValidBlockHeight` →
-/// [`decide`]. No re-signing exists here.
+/// `getEpochInfo` (block height and slot of one view) → history lookup (with its `context.slot`)
+/// only when that height is past `lastValidBlockHeight` → [`decide`] with the wall clock and the
+/// monotonic time since [`TrackJob::tracked_since_ms`]. No re-signing exists here.
 #[must_use]
 pub fn track_round(transport: &dyn Transport, job: &TrackJob, clock: &dyn Clock) -> TrackResult {
     let client = RpcClient::new(transport);
@@ -585,30 +592,29 @@ pub fn track_round(transport: &dyn Transport, job: &TrackJob, clock: &dyn Clock)
         result.sends = result.sends.saturating_add(1);
         sol_rpc::send_transaction(&client, url, &job.tx, &signature_text)
     });
-    let height = if round.height {
-        sol_rpc::block_height(&client, url).ok()
+    let chain = if round.height {
+        sol_rpc::epoch_view(&client, url).ok()
     } else {
         None
     };
-    let history = if status == SigStatus::NotFound && wants_history(&job.pending, height) {
-        sol_rpc::signature_status(&client, url, &signature_text, true, programs).ok()
+    let history = if status == SigStatus::NotFound && wants_history(&job.pending, chain) {
+        sol_rpc::signature_history(&client, url, &signature_text, programs).ok()
     } else {
         None
     };
     let observation = Observation {
         status,
         send,
-        height,
+        chain,
         history,
     };
-    let mut state = job.state;
-    result.outcome = Ok(decide(
-        &job.pending,
-        &mut state,
-        &observation,
+    let times = RoundTimes {
         now_ms,
-        clock.now_unix_ms(),
-    ));
+        now_unix_ms: clock.now_unix_ms(),
+        mono_elapsed: now_ms.saturating_sub(job.tracked_since_ms),
+    };
+    let mut state = job.state;
+    result.outcome = Ok(decide(&job.pending, &mut state, &observation, &times));
     result.state = state;
     result
 }

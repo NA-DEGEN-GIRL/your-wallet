@@ -566,6 +566,7 @@ fn spl_track_round_classifies_token_errors() {
         },
         state: LoopState::default(),
         check_genesis: false,
+        tracked_since_ms: 0,
     };
     let result = track_round(&*rpc, &job, &FakeClock::at(1_800_000_001_000));
     assert_eq!(
