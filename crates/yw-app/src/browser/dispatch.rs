@@ -895,6 +895,7 @@ impl BrowserCore {
                     deadline_ms,
                     method,
                     kind,
+                    compat_mode: request.context.compat_mode,
                 })));
                 if !delivered {
                     let _ = self.respond(&reply, Err(ProviderError::Internal));

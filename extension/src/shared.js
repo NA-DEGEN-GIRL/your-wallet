@@ -8,6 +8,11 @@
   const NAMESPACE = "your-wallet";
   const PROTOCOL_VERSION = 1;
   const CONTENT_PORT_NAME = "your-wallet-content-v1";
+  const POPUP_PORT_NAME = "your-wallet-popup-v1";
+  // spec/05 §2.12 compatibility mode: `chrome.storage.local` key and values. `off` is the default
+  // and is never sent on the wire (absence means off).
+  const COMPAT_MODE_STORAGE_KEY = "compatMode";
+  const COMPAT_MODES = Object.freeze(["off", "metamask", "rabby"]);
   const MAX_EVENT_ACCOUNTS = 16;
   const MAX_ERROR_MESSAGE_LENGTH = 512;
 
@@ -156,6 +161,15 @@
     return Array.isArray(value) || isPlainObject(value);
   }
 
+  function isCompatMode(value) {
+    return typeof value === "string" && COMPAT_MODES.includes(value);
+  }
+
+  // Anything that is not one of the three stored values (missing, corrupted) is the default.
+  function normalizeCompatMode(value) {
+    return isCompatMode(value) ? value : "off";
+  }
+
   // `{ code, message, data? }`, exact keys. `data` is checked by the enclosing checkJson.
   function validRpcError(value) {
     return hasExactKeys(value, ["code", "message"], ["data"])
@@ -216,13 +230,21 @@
       return null;
     }
     if (value.kind === "request") {
-      if (!hasExactKeys(value, ["namespace", "version", "kind", "activationNonce", "id", "method", "params"])
+      // `compatMode` is present only in the two compatibility modes (spec/05 §2.12).
+      if (!hasExactKeys(value, ["namespace", "version", "kind", "activationNonce", "id", "method", "params"], ["compatMode"])
         || !isId32(value.id)
         || typeof value.method !== "string"
-        || !isParams(value.params)) {
+        || !isParams(value.params)
+        || (hasOwn(value, "compatMode") && (value.compatMode === "off" || !isCompatMode(value.compatMode)))) {
         return null;
       }
-      return Object.freeze({ kind: "request", id: value.id, method: value.method, params: value.params });
+      return Object.freeze({
+        kind: "request",
+        id: value.id,
+        method: value.method,
+        params: value.params,
+        compatMode: hasOwn(value, "compatMode") ? value.compatMode : "off"
+      });
     }
     if (value.kind === "cancel") {
       if (!hasExactKeys(value, ["namespace", "version", "kind", "activationNonce", "id", "reason"])
@@ -303,6 +325,9 @@
     NAMESPACE,
     PROTOCOL_VERSION,
     CONTENT_PORT_NAME,
+    POPUP_PORT_NAME,
+    COMPAT_MODE_STORAGE_KEY,
+    COMPAT_MODES,
     REQUEST_LIMITS,
     RESPONSE_LIMITS,
     METHOD_ROUTE,
@@ -310,12 +335,14 @@
     ERRORS,
     checkJson,
     hasExactKeys,
+    isCompatMode,
     isId32,
     isId64,
     isPlainObject,
     isReason,
     isSupportedPageUrl,
     methodRoute,
+    normalizeCompatMode,
     parseBackgroundMessage,
     parseContentMessage,
     parsePageMessage,

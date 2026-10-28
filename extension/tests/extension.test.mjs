@@ -627,8 +627,82 @@ test("B7 deriveSenderContext follows the spec/05 §2.4 table", () => {
   assert.throws(() => deriveSenderContext({ ...configuration(sender()), extensionId: "chrome-extension-id" }), Error);
 });
 
+// ---------- spec/05 §2.12 compatibility mode (B8) ----------
+
+test("B8 a content compatMode becomes an optional context.compatMode; off adds nothing", () => {
+  const { native, router } = makeRouter();
+  const doc = attach(router);
+  const send = (id, extra) => doc.handle.receive({
+    namespace: "your-wallet", version: 1, kind: "request", activationNonce: doc.handle.activationNonce,
+    id, method: "eth_requestAccounts", params: [], ...extra
+  });
+  assert.equal(send(rid(1), {}), true);
+  assert.equal(send(rid(2), { compatMode: "metamask" }), true);
+  assert.equal(send(rid(3), { compatMode: "rabby" }), true);
+  assert.equal(send(rid(4), {}), true);
+  const [plain, metamask, rabby, plainAgain] = native.last.requests();
+  assert.equal(Object.hasOwn(plain.context, "compatMode"), false);
+  assert.equal(Object.keys(plain.context).length, 9);
+  assert.deepEqual(metamask.context, { ...plain.context, compatMode: "metamask" });
+  assert.deepEqual(rabby.context, { ...plain.context, compatMode: "rabby" });
+  // The per-document activation context is never mutated by a per-request note.
+  assert.deepEqual(plainAgain.context, plain.context);
+  // Explicit "off", unknown values and wrong types are malformed content messages: ignored.
+  for (const [index, compatMode] of ["off", "MetaMask", "on", "", null, 1].entries()) {
+    assert.equal(send(rid(10 + index), { compatMode }), false, String(compatMode));
+  }
+  assert.equal(native.last.requests().length, 4);
+  assert.equal(doc.delivered.filter((message) => message.kind === "response").length, 0);
+});
+
+test("B8 popup status is what the router observed and never opens native messaging", () => {
+  const { clock, native, router } = makeRouter();
+  assert.equal(router.nativeStatus(), "unknown");
+  assert.equal(native.connections.length, 0);
+  const doc = attach(router);
+  doc.request(rid(1));
+  assert.equal(router.nativeStatus(), "checking");
+  native.last.reply(native.last.requests()[0], { result: "0xaa36a7" });
+  assert.equal(router.nativeStatus(), "connected");
+  // A healthy connection that closes (yw-app quit) leaves nothing known.
+  native.last.drop();
+  assert.equal(router.nativeStatus(), "unknown");
+  // An unhealthy one (only 4900 answers, then gone) is a failed attempt.
+  clock.advance(10);
+  doc.request(rid(2));
+  native.last.reply(native.last.requests()[0], { error: UNAVAILABLE });
+  assert.equal(router.nativeStatus(), "checking");
+  native.last.drop();
+  assert.equal(router.nativeStatus(), "unavailable");
+  native.throwOnConnect = true;
+  clock.advance(60_000);
+  doc.request(rid(3));
+  assert.equal(router.nativeStatus(), "unavailable");
+
+  for (const status of core.NATIVE_STATUSES) {
+    assert.deepEqual(core.popupStatusMessage(status), { namespace: "your-wallet", version: 1, kind: "status", native: status });
+  }
+  assert.deepEqual(core.NATIVE_STATUSES, ["connected", "checking", "unavailable", "unknown"]);
+  assert.equal(core.popupStatusMessage("bogus").native, "unknown");
+  assert.equal(core.POPUP_PORT_NAME, "your-wallet-popup-v1");
+
+  const popupUrl = `chrome-extension://${EXTENSION_ID}/popup/popup.html`;
+  const popupSender = { id: EXTENSION_ID, url: popupUrl, origin: `chrome-extension://${EXTENSION_ID}` };
+  assert.equal(core.isPopupSender(popupSender, EXTENSION_ID, popupUrl), true);
+  for (const [name, value] of Object.entries({
+    "content script in a tab": { ...popupSender, tab: { id: 1 } },
+    "other extension": { ...popupSender, id: "ponmlkjihgfedcbaponmlkjihgfedcba" },
+    "other page": { ...popupSender, url: `chrome-extension://${EXTENSION_ID}/other.html` },
+    "web page": { id: EXTENSION_ID, url: "https://dapp.example/", tab: { id: 2 } },
+    "missing": undefined,
+    "null": null
+  })) {
+    assert.equal(core.isPopupSender(value, EXTENSION_ID, popupUrl), false, name);
+  }
+});
+
 test("extension sources contain no dynamic-code, network or HTML injection primitives", async () => {
-  for (const name of ["shared.js", "content-core.js", "background-core.js", "background.js", "content.js", "provider-main.js"]) {
+  for (const name of ["shared.js", "content-core.js", "background-core.js", "background.js", "content.js", "provider-main.js", "popup-core.js", "popup.js"]) {
     const source = await readFile(new URL(`../src/${name}`, import.meta.url), "utf8");
     assert.doesNotMatch(source, /\beval\s*\(/u, name);
     assert.doesNotMatch(source, /\bnew\s+Function\b/u, name);

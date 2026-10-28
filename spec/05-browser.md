@@ -40,14 +40,15 @@ page ──window.ethereum / EIP-6963──▶ provider-main.js (MAIN world)
 ### 2.1 파일별 변경 요약
 | 파일 | 변경 |
 |---|---|
-| `manifest.json` | §2.2 내용으로 교체(이름, 버전 0.3.0, `key`, localhost 매치) |
+| `manifest.json` | §2.2 내용으로 교체(이름, 버전 0.3.0, `key`, localhost 매치, 호환 모드 팝업 `action`) |
+| `popup/popup.html`, `popup/popup.css`, `src/popup.js`, `src/popup-core.js` | 신규. 호환 모드 액션 팝업(§2.12) |
 | `extension-id.txt` | 신규. 32자 a–p ID + LF. `scripts/extension-key.mjs generate`가 만든다(§2.3) |
 | `package.json` | `version` → `0.3.0`. 스크립트는 `"test": "node --test tests/*.test.mjs"` 유지 |
-| `src/shared.js` | 메서드 표 단일 정본(§3.1), `REQUEST_LIMITS`/`RESPONSE_LIMITS`·`checkJson`(§2.9), `isSupportedPageUrl`, 새 메시지 파서(§2.6). 수명 상한 제거 |
-| `src/provider-main.js` | 메서드 목록 삭제, EventEmitter API, `window.ethereum` 정책, rdns, 브리지 재사용, 시간 초과 시 cancel(§2.5) |
-| `src/content-core.js`, `src/content.js` | IDLE/CONNECTING/ACTIVE/DEAD 상태 기계로 재작성, 지연 연결·재연결, cancel 전달(§2.7) |
-| `src/background-core.js` | 수명 상한 제거, 토큰 버킷, 기한 타이머, cancel, native 재연결 backoff, native 끊김 시 문서 유지(§2.8) |
-| `src/background.js` | `fatal` 메시지 삭제. 외부 연결 리스너 등록 금지(§2.8) |
+| `src/shared.js` | 메서드 표 단일 정본(§3.1), `REQUEST_LIMITS`/`RESPONSE_LIMITS`·`checkJson`(§2.9), `isSupportedPageUrl`, 새 메시지 파서(§2.6), 호환 모드 값(`COMPAT_MODES`, `normalizeCompatMode`, §2.12). 수명 상한 제거 |
+| `src/provider-main.js` | 메서드 목록 삭제, EventEmitter API, `window.ethereum` 정책, rdns, 브리지 재사용, 시간 초과 시 cancel(§2.5), 호환 모드(§2.12) |
+| `src/content-core.js`, `src/content.js` | IDLE/CONNECTING/ACTIVE/DEAD 상태 기계로 재작성, 지연 연결·재연결, cancel 전달(§2.7), 시작 시 호환 모드 읽기(§2.12) |
+| `src/background-core.js` | 수명 상한 제거, 토큰 버킷, 기한 타이머, cancel, native 재연결 backoff, native 끊김 시 문서 유지(§2.8), `context.compatMode`·팝업 상태(§2.12) |
+| `src/background.js` | `fatal` 메시지 삭제. 외부 연결 리스너 등록 금지(§2.8). 팝업 포트 응답(§2.12) |
 | `native-host/*.golden.json` | §10.3 목록으로 갱신·추가 |
 | `native-host/validate-manifest.mjs` | 이름 변경 `validateNativeManifest`, CLI 추가, cmd 메타문자 거부(§9.3) |
 | `native-host/README.md` | §9 절차 요약으로 교체 |
@@ -55,7 +56,7 @@ page ──window.ethereum / EIP-6963──▶ provider-main.js (MAIN world)
 | `tests/*` | §10.1 |
 
 ### 2.2 manifest.json (최종)
-`key` 값만 생성 결과로 채운다. 그 밖의 내용은 아래와 같아야 한다(값 비교, 키 순서 무관, 테스트 M1).
+`key` 값만 생성 결과로 채운다. 그 밖의 내용은 아래와 같아야 한다(값 비교, 키 순서 무관, 테스트 M1). `action`은 호환 모드 팝업(§2.12)이며 아이콘은 두지 않는다(Chrome이 이름 첫 글자를 표시).
 
 ```json
 {
@@ -68,6 +69,7 @@ page ──window.ethereum / EIP-6963──▶ provider-main.js (MAIN world)
   "key": "<base64 DER SubjectPublicKeyInfo, RSA-2048, 392 chars>",
   "permissions": ["nativeMessaging", "storage"],
   "background": { "service_worker": "src/background.js", "type": "module" },
+  "action": { "default_title": "Your Wallet", "default_popup": "popup/popup.html" },
   "content_scripts": [
     {
       "matches": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
@@ -87,9 +89,9 @@ page ──window.ethereum / EIP-6963──▶ provider-main.js (MAIN world)
 }
 ```
 
-- `host_permissions`, `externally_connectable`, `web_accessible_resources`는 두지 않는다.
+- `host_permissions`, `optional_host_permissions`, `optional_permissions`, `externally_connectable`, `web_accessible_resources`, `content_security_policy`는 두지 않는다. 호환 모드(§2.12)도 `scripting`·호스트 권한 없이 동작한다.
 - localhost 매치는 항상 주입한다. 허용 여부는 yw-app 설정 토글이 정한다(§4.6). 포트 없는 패턴이 모든 포트에 매치되는지는 §11-1에서 확인한다.
-- `storage`는 `profileInstallIdV1`(64 hex, `chrome.storage.local`) 하나에만 쓴다(`archive/spec-v2.4:extension/src/background.js:72-84` 유지).
+- `storage`(`chrome.storage.local`)는 두 키에만 쓴다: `profileInstallIdV1`(64 hex, background, `archive/spec-v2.4:extension/src/background.js:72-84` 유지)과 `compatMode`(`"off"`·`"metamask"`·`"rabby"`, 팝업이 쓰고 content script가 읽는다, §2.12).
 
 ### 2.3 manifest 키와 확장 ID
 절차(M5 첫 작업, 1회):
@@ -172,15 +174,17 @@ fn pinned_extension_id() -> Option<&'static str> {
 
 **전역 등록**
 
-- EIP-6963: 로드 직후와 `eip6963:requestProvider` 이벤트마다 항상 `eip6963:announceProvider`를 보낸다. `info = Object.freeze({ uuid: <페이지마다 UUIDv4>, name: "Your Wallet", icon: <기존 PNG data URI>, rdns: "io.github.na-degen-girl.yourwallet" })`. 재귀 방지(`archive/spec-v2.4:extension/src/provider-main.js:111-126`) 유지.
-- `window.ethereum`: `!("ethereum" in window)`일 때만 `Object.defineProperty(window, "ethereum", { value: provider, configurable: true, enumerable: true, writable: true })` 후 `window.dispatchEvent(new Event("ethereum#initialized"))`. 이미 있으면 건드리지 않는다. 예외는 삼킨다.
+- EIP-6963: 모드가 정해지는 순간(§2.12: 첫 유효 `bridge-init`, 또는 로드 후 `MODE_WAIT_MS = 10_000` 동안 없으면 `off`) 한 번, 그 뒤 `eip6963:requestProvider` 이벤트마다 항상 `eip6963:announceProvider`를 보낸다. 모드가 정해지기 전에 받은 `requestProvider`는 그 첫 알림으로 답한다(보통 document_start 뒤 수 ms). `info = Object.freeze({ uuid: <페이지마다 UUIDv4>, name: "Your Wallet", icon: <기존 PNG data URI>, rdns: "io.github.na-degen-girl.yourwallet" })`(기본 모드, 호환 모드의 이름·rdns는 §2.12). 재귀 방지(`archive/spec-v2.4:extension/src/provider-main.js:111-126`) 유지.
+- `window.ethereum`(로드 시, 모드와 무관): `!("ethereum" in window)`일 때만 `Object.defineProperty(window, "ethereum", { value: provider, configurable: true, enumerable: true, writable: true })` 후 `window.dispatchEvent(new Event("ethereum#initialized"))`. 이미 있으면 건드리지 않는다. 예외는 삼킨다. 기본 모드는 이것으로 끝이고, 호환 모드는 모드가 정해질 때 §2.12 규칙으로 차지한다.
 
 **provider 객체**: 확장 가능한(extensible) 일반 객체. 아래 멤버는 `writable:false, configurable:false`로 정의한다. 객체를 freeze하지 않는다(레거시 dApp의 속성 대입이 strict mode에서 실패하지 않도록).
 
 | 멤버 | 동작 |
 |---|---|
 | `isYourWallet` | `true` |
-| `isMetaMask` | `false` |
+| `isMetaMask` (getter) | 현재 모드가 `metamask`·`rabby`면 `true`, 아니면(`off`, 모드 확정 전) `false` |
+| `isRabby` (getter) | 현재 모드가 `rabby`면 `true`, 아니면 `false` |
+| `_metamask` (getter) | 호환 모드에서 `Object.freeze({ isUnlocked })`, 기본 모드에서 `undefined`(§2.12). `requestBatch` 없음 |
 | `chainId` (getter) | 마지막으로 알게 된 chainId 문자열 또는 `null` |
 | `selectedAddress` (getter) | 마지막 계정 목록의 첫 항목 또는 `null` |
 | `isConnected()` | 채널 확보 && DEAD 아님 |
@@ -212,7 +216,7 @@ fn pinned_extension_id() -> Option<&'static str> {
 6. `id = 16바이트 무작위 hex`로 page request(§2.6) 전송, `REQUEST_TIMEOUT_MS` 타이머 시작. 시간 초과 시 -32603 "Request timed out."으로 거부하고 page `cancel`을 보낸다.
 7. 결과 수신 시 `eth_accounts`/`eth_requestAccounts` 결과로 `selectedAddress`, `eth_chainId` 결과로 `chainId`를 갱신한다.
 
-**브리지**: 시작 시 page `bridge-request`를 보낸다. `bridge-init`은 채널이 없을 때 받아들이고, 같은 채널 값이면 다시 받아도 무시하고, 다른 채널 값이면 무시한다. 수신 메시지는 `event.source === window && event.origin === location.origin`인 것만 본다.
+**브리지**: 시작 시 page `bridge-request`를 보낸다. `bridge-init`은 정확한 키 집합(§2.6, `compatMode` 포함)이고 `compatMode`가 세 값 중 하나일 때만 유효하다. 채널이 없을 때 받아들여 채널과 모드(아직 정해지지 않았다면)를 정하고, 같은 채널 값이면 다시 받아도 무시하고(모드도 바뀌지 않는다), 다른 채널 값이면 무시한다. 수신 메시지는 `event.source === window && event.origin === location.origin`인 것만 본다.
 
 ### 2.6 확장 내부 메시지 (정확한 키 집합, 모든 메시지에 `namespace:"your-wallet"`, `version:1`)
 | 방향 | kind | 나머지 키 |
@@ -220,11 +224,11 @@ fn pinned_extension_id() -> Option<&'static str> {
 | page→content | `bridge-request` | (없음) |
 | page→content | `request` | `channel`, `id`(32 hex), `method`, `params` |
 | page→content | `cancel` | `channel`, `id` |
-| content→page | `bridge-init` | `channel`(64 hex) |
+| content→page | `bridge-init` | `channel`(64 hex), `compatMode`(`"off"`\|`"metamask"`\|`"rabby"`, §2.12) |
 | content→page | `response` | `channel`, `id`, `result` \| `error` |
 | content→page | `event` | `channel`, `event`, `payload` |
 | content→page | `disconnect` | `channel`, `error` (DEAD 진입 시 1회) |
-| content→bg | `request` | `activationNonce`, `id`, `method`, `params` |
+| content→bg | `request` | `activationNonce`, `id`, `method`, `params`, 선택 `compatMode`(`"metamask"`\|`"rabby"`만, 기본 모드에서는 키 없음. `"off"`·그 밖 값은 형식 오류) |
 | content→bg | `cancel` | `activationNonce`, `id`, `reason`(`^[A-Za-z0-9_-]{1,128}$`) |
 | content→bg | `disconnect` | `activationNonce`, `reason` |
 | bg→content | `activated` | `activationNonce`(64 hex) |
@@ -233,10 +237,12 @@ fn pinned_extension_id() -> Option<&'static str> {
 
 삭제: bg→content `disconnect`, `fatal`. background가 문서를 끊을 때는 port를 닫는다.
 
+팝업 포트 `your-wallet-popup-v1`(§2.12): popup이 연결하면 bg가 `{ namespace, version: 1, kind: "status", native: "connected"|"checking"|"unavailable"|"unknown" }`(정확한 키) 하나를 보낸다. popup은 아무것도 보내지 않는다.
+
 `error` 형식(모든 구간 공통): `{ code: 안전 정수, message: 1–512 UTF-16 단위, data?: JSON }`, 정확한 키 집합.
 
 ### 2.7 content 상태 기계
-상수: `MAX_PENDING = 64`, `CONNECT_TIMEOUT_MS = 5_000`, `MIN_RECONNECT_INTERVAL_MS = 250`. 채널 nonce는 문서 수명 동안 하나(`randomHex(32)`)다. content는 로드 즉시와 `bridge-request` 수신마다 `bridge-init`을 보낸다. port는 **첫 요청 때** 연다(모든 https 페이지에서 service worker와 yw-app을 깨우지 않기 위해).
+상수: `MAX_PENDING = 64`, `CONNECT_TIMEOUT_MS = 5_000`, `MIN_RECONNECT_INTERVAL_MS = 250`, `MODE_READ_TIMEOUT_MS = 3_000`. 채널 nonce는 문서 수명 동안 하나(`randomHex(32)`)다. content는 document_start에 `chrome.storage.local.get("compatMode")`로 모드를 한 번 읽고(§2.12, 실패·형식 오류·3 s 초과는 `off`) 그 즉시 bridge를 만들어 `bridge-init`을 보내며, 이후 `bridge-request` 수신마다 다시 보낸다. 모드는 문서 수명 동안 고정이다. port는 **첫 요청 때** 연다(모든 https 페이지에서 service worker와 yw-app을 깨우지 않기 위해).
 
 | 상태 | 사건 | 동작 → 다음 상태 |
 |---|---|---|
@@ -258,7 +264,7 @@ fn pinned_extension_id() -> Option<&'static str> {
 | DEAD | 요청 | 4900 "Wallet extension was reloaded." |
 
 - 리스너는 `{ once: true }` 없이 등록한다. `beforeunload`에는 반응하지 않는다(사용자가 취소할 수 있다). bfcache 복원 후 다음 요청이 다시 연결한다.
-- `content-core.js`의 `ContentBridge`는 Chrome API 없이 테스트할 수 있게 어댑터를 받는다: `new ContentBridge({ channelNonce, connectPort, postToPage, isContextValid, setTimer, clearTimer, now })`. `connectPort()`는 `{ postMessage, disconnect, onMessage(fn), onDisconnect(fn) }`를 돌려준다.
+- `content-core.js`의 `ContentBridge`는 Chrome API 없이 테스트할 수 있게 어댑터를 받는다: `new ContentBridge({ channelNonce, compatMode = "off", connectPort, postToPage, isContextValid, setTimer, clearTimer, now })`. `connectPort()`는 `{ postMessage, disconnect, onMessage(fn), onDisconnect(fn) }`를 돌려준다. 모드 읽기는 `loadCompatMode({ readStorage, setTimer, clearTimer })`(거부하지 않는 Promise)다.
 
 ### 2.8 background router
 상수(`background-core.js`): `CONTENT_PORT_NAME = "your-wallet-content-v1"`, `NATIVE_HOST_NAME = "com.your_wallet.native"`, `READ_DEADLINE_MS = 60_000`(route `read`), `INTERACTIVE_DEADLINE_MS = 600_000`(route `permission`·`signing`, 잠금 해제·검토 포함, D23), `MAX_ACTIVE_DOCUMENTS = 128`, `MAX_GLOBAL_PENDING = 512`, `MAX_PENDING_PER_DOCUMENT = 64`, `RATE_PER_SECOND = 40`(문서별 토큰 버킷 충전), `RATE_BURST = 80`(용량·초기값), `NATIVE_BACKOFF_BASE_MS = 1_000`, `NATIVE_BACKOFF_MAX_MS = 30_000`. 삭제: `MAX_NATIVE_CONNECTION_ATTEMPTS`, `seenIds`, `respondedIds`, `shared.MAX_REQUESTS_PER_ACTIVATION`.
@@ -272,7 +278,7 @@ fn pinned_extension_id() -> Option<&'static str> {
 3. 토큰 버킷 부족 → -32005 "Rate limit exceeded.". pending 한도 → -32005 "Too many pending requests.".
 4. backoff 중(`now < nativeRetryAt`) → 4900 "Wallet is unavailable.".
 5. native 연결이 없으면 연다(`connectNative` 예외 → 4900 "Wallet is unavailable." + backoff 갱신).
-6. §6.1 request 봉투 생성. `checkJson(envelope, REQUEST_LIMITS)` 실패 → -32600 "Request too large.".
+6. §6.1 request 봉투 생성. content 요청에 `compatMode`가 있으면 그 요청의 `context`에만 `compatMode`를 더한다(activation의 context는 바꾸지 않는다, §2.12). `checkJson(envelope, REQUEST_LIMITS)` 실패 → -32600 "Request too large.".
 7. 전송 후 pending 등록, route 기한(`READ_DEADLINE_MS` 또는 `INTERACTIVE_DEADLINE_MS`)으로 `setTimeout` 시작. 만료 시 content에 -32603 "Request timed out." 응답, native `cancel`(reason `deadline`).
 
 **cancel/disconnect**: content `cancel` → pending이면 타이머 해제, 제거, native `cancel`(reason `page-cancel`). content `disconnect` 또는 port 끊김 → 그 activation의 pending 모두 native `cancel`(reason은 받은 값, 없으면 `content-port-disconnect`) 후 activation 삭제.
@@ -283,7 +289,7 @@ fn pinned_extension_id() -> Option<&'static str> {
 
 **backoff**: 연결마다 `healthy = false`로 시작하고, 4900이 아닌 response 또는 event를 하나라도 받으면 `true`. 끊길 때 `healthy`면 `failures = 0`, 아니면 `failures += 1`과 `nativeRetryAt = now + min(NATIVE_BACKOFF_BASE_MS × 2^(failures−1), NATIVE_BACKOFF_MAX_MS)`.
 
-**background.js**: router 초기화(`profileInstallId` 로드) 실패 시 그 port를 닫는다(content는 일시 끊김으로 처리). `chrome.runtime.onConnectExternal`, `onMessageExternal`은 등록하지 않는다. `onSuspend`에서 native 연결만 닫는다.
+**background.js**: router 초기화(`profileInstallId` 로드) 실패 시 그 port를 닫는다(content는 일시 끊김으로 처리). `chrome.runtime.onConnectExternal`, `onMessageExternal`, `onMessage`는 등록하지 않는다(팝업도 `onConnect`의 이름 있는 port를 쓴다, §2.12). `onSuspend`에서 native 연결만 닫는다.
 
 ### 2.9 JSON 한도 (JS와 Rust가 정확히 같아야 함)
 | 프로필 | 적용 구간 | maxBytes | maxDepth | maxNodes | maxItems |
@@ -347,7 +353,54 @@ yw-json은 같은 정의의 `yw_json::Limits { max_bytes, max_depth, max_nodes, 
 | native 이벤트 인코더 없음 | `wire.rs` 전체 | yw-app `encode_event`(§6.5) | R-E2 |
 
 ### 2.11 audit-extension.mjs
-spec.md §6에 따라 유지한다. 이동·정리는 [01](01-repo-build.md) §4.4가 M0에 한다: `release-manifest.mjs` 의존은 `scripts/lib/strict-json.mjs`(`parseStrictJson`·`decodeUtf8`)로 옮기고 `canonicalEncode`·evidence(해시 출력) 모드는 삭제, CLI는 `check`만. M5에서 같은 커밋으로 바꿀 점: manifest 최상위 키 허용 집합에 `key` 추가(정확히 §2.2의 10개 키), `name` 정확히 `"Your Wallet"`, 두 content script의 `matches`를 §2.2의 세 패턴으로 고정, 통과 시 확장 ID 출력([01] §4.4). 금지 패턴 검사(eval, `Function`, 동적 `import()`, `fetch`, `innerHTML`, URL 리터럴 등)는 그대로 둔다.
+spec.md §6에 따라 유지한다. 이동·정리는 [01](01-repo-build.md) §4.4가 M0에 한다: `release-manifest.mjs` 의존은 `scripts/lib/strict-json.mjs`(`parseStrictJson`·`decodeUtf8`)로 옮기고 `canonicalEncode`·evidence(해시 출력) 모드는 삭제, CLI는 `check`만. M5에서 같은 커밋으로 바꿀 점: manifest 최상위 키 허용 집합에 `key` 추가, `name` 정확히 `"Your Wallet"`, 두 content script의 `matches`를 §2.2의 세 패턴으로 고정, 통과 시 확장 ID 출력([01] §4.4). 금지 패턴 검사(eval, `Function`, 동적 `import()`, `fetch`, `innerHTML`, URL 리터럴 등)는 그대로 둔다.
+
+호환 모드(§2.12)에서 더한 점: 최상위 키는 정확히 §2.2의 11개(`action` 포함). `action`은 정확히 `{ default_title: "Your Wallet", default_popup: "popup/popup.html" }`. `popup/` 폴더는 정확히 `popup.html`·`popup.css` 두 일반 파일. `popup.html`: `<script type="module" src="../src/<이름>.js"></script>` 형태만(내용 없는 것), 인라인 이벤트 처리기·`style` 속성·`<style>`·`iframe`/`object`/`embed`/`base`/`form`/`img` 등 삽입·이동 요소·`meta http-equiv`·scheme 있는 URL·`javascript:`/`data:` 등 scheme·protocol-relative URL 금지, `<link rel="stylesheet" href="popup.css">` 하나만. `popup.css`: `url(`·`@import`·`expression(`·scheme 있는 URL 금지. 팝업 script와 그 정적 import는 `src/`의 다른 파일과 같은 금지 패턴·"참조되지 않은 소스 금지" 검사를 받는다. 패키지 목록은 `manifest.json`, `popup/*`, `src/*` 순서.
+
+### 2.12 호환 모드 (D22: MetaMask·Rabby처럼 보이기)
+목적: MetaMask(또는 Rabby)만 지원하는 dApp에서도 연결·SIWE 로그인·서명이 Your Wallet으로 오게 한다. 모드는 표시 방식만 바꾼다. 메서드 표·권한·승인 창·origin 도출·비밀 경계(§1)는 모드와 무관하게 같다.
+
+| 모드(`compatMode`) | 팝업 표시 | `isMetaMask` | `isRabby` | `_metamask` | EIP-6963 `info.name` / `rdns` | `window.ethereum` | 다른 확장 알림 가로채기 |
+|---|---|---|---|---|---|---|---|
+| `off`(기본) | 기본 (Your Wallet) | `false` | `false` | `undefined` | `Your Wallet` / `io.github.na-degen-girl.yourwallet` | 없을 때만 등록(§2.5) | 안 함 |
+| `metamask` | MetaMask처럼 보이기 | `true` | `false` | `{ isUnlocked }` | `MetaMask` / `io.metamask` | 차지(아래) | `io.metamask`·`io.metamask.flask`·`io.rabby` |
+| `rabby` | Rabby처럼 보이기 | `true` | `true` | `{ isUnlocked }` | `Rabby Wallet` / `io.rabby` | 차지(아래) | 같음 |
+
+**저장과 전달**
+
+- 팝업이 `chrome.storage.local`의 `compatMode`에 `"off"`·`"metamask"`·`"rabby"` 중 하나를 쓴다. 그 밖의 값·없음은 `off`.
+- ISOLATED content script가 document_start에 그 키를 한 번 읽고(`MODE_READ_TIMEOUT_MS = 3_000`, 실패·초과는 `off`) `bridge-init`의 `compatMode`로 MAIN world에 넘긴다. 새 권한은 없다(`storage`는 이미 있음). MAIN world 동기 전달에는 `scripting` + 호스트 권한(동적 content script 등록)이 필요하므로 쓰지 않는다. 그 대가로 document_start 뒤 저장소 응답까지(보통 수 ms) **임시 구간**이 생긴다(아래 한계).
+- 모드는 문서마다 한 번 정해진다: 첫 유효 `bridge-init`, 또는 로드 후 `MODE_WAIT_MS = 10_000` 동안 없으면 `off`. 이후 바뀌지 않는다. 팝업에서 바꾼 모드는 **다음 페이지 로드부터** 적용된다.
+- 페이지는 `bridge-init`을 위조해 자기 페이지의 provider 표시만 바꿀 수 있다(§1: 브리지는 보안 경계가 아니다). yw-app에 가는 표시는 content가 저장소에서 읽은 값만 쓴다(content→bg `request`의 `compatMode`, page→content 메시지에는 모드가 없다).
+- content→bg `request`에 `compatMode`(호환 모드일 때만) → background가 그 요청의 native `context.compatMode`(§6.1)로 옮긴다. yw-app은 엄격히 검사하고(값은 `"metamask"`·`"rabby"`만, 그 밖은 그 요청만 -32600) 연결 창·승인 창에 배지 `호환 모드: MetaMask`·`호환 모드: Rabby`를 더한다(§4.2). origin은 언제나 `port.sender`에서 도출한 실제 사이트 origin이다.
+
+**`window.ethereum` 우선권(호환 모드)**: 모드가 정해질 때 접근자 속성으로 차지한다.
+
+```js
+Object.defineProperty(window, "ethereum", { get: () => provider, set: (_ignored) => {}, configurable: true, enumerable: true });
+```
+
+- getter는 항상 우리 provider를 돌려준다. setter는 받아서 무시한다: 다른 확장의 `window.ethereum = x`(MetaMask 방식)는 strict mode에서도 예외 없이 효과가 없다.
+- `configurable: true`를 유지한다. `configurable: false`로 잠그면 뒤에 `Object.defineProperty(window, "ethereum", …)`를 부르는 다른 지갑 스크립트가 TypeError로 죽는다(다른 확장 기능 파손). 대신 다른 스크립트의 configurable 재정의는 성공하므로, 검문점(모드 확정, `eip6963:requestProvider`, `DOMContentLoaded`, `load`)마다 우리 접근자가 아니면 다시 차지한다(유한 횟수, 반복 타이머 없음). 소유자가 바뀌면 `ethereum#initialized`를 다시 보낸다.
+- 우리보다 먼저 다른 지갑이 넣은 값: configurable(일반 대입으로 만든 속성 포함)이면 그대로 재정의한다. non-configurable이면 대입(`window.ethereum = provider`)만 시도한다. 대입을 캐시하는 setter(Rabby 방식)면 우리 provider가 보이고, 쓰기 불가면 그 지갑이 남는다(예외 없음, EIP-6963 알림은 그대로).
+- 기본 모드: §2.5 규칙 그대로(없을 때만, 일반 데이터 속성). 차지·재차지·가로채기를 하지 않는다.
+
+**EIP-6963**: 한 페이지에는 한 신원만 알린다. 호환 모드에서는 "Your Wallet" 알림을 **보내지 않고** 표의 호환 신원만 알린다(중복 목록·dApp이 엉뚱한 쪽을 고르는 일 방지). `uuid`는 페이지마다 하나(모드와 무관), 아이콘은 우리 PNG(다른 회사 로고를 복사하지 않는다).
+
+**가로채기**: provider-main.js가 document_start에 `window.addEventListener("eip6963:announceProvider", intercept, true)`(capture)를 등록한다. window 대상 이벤트에서 capture 리스너는 페이지의 일반 리스너보다 먼저 실행되고, 페이지 스크립트는 우리보다 늦게 등록한다. 호환 모드로 확정된 뒤 `event.detail`이 우리 detail이 아니고 `detail.info.rdns`(소문자 비교)가 `io.metamask`·`io.metamask.flask`·`io.rabby`이면 `stopImmediatePropagation()`. 다른 rdns(`io.coinbase.wallet` 등)는 통과한다. `detail` getter가 예외를 던지면 통과시킨다. 기본 모드와 모드 확정 전에는 아무것도 막지 않는다.
+
+**`_metamask.isUnlocked()`**: `eth_accounts`를 보내 결과가 비어 있지 않으면 `true`(이 origin이 연결되어 있고 yw-app이 잠금 해제 상태), 비었거나 오류면 `false`. 거부하지 않는다. `requestBatch` 등 다른 `_metamask` 멤버는 없다.
+
+**한계(최선 노력, 팝업 경고 문구로 알림)**
+
+- 임시 구간(모드 확정 전 수 ms)에 실행된 페이지 코드는 기본 플래그(`isMetaMask: false`)를 보고, 그 사이 실제 MetaMask가 보낸 알림은 막히지 않는다. 대부분의 dApp은 번들 로드 뒤(또는 버튼 클릭 때) 지갑을 찾고, EIP-6963 목록은 계속 듣기 때문에 영향이 적다.
+- 실제 MetaMask·Rabby가 `window.ethereum`을 non-configurable·쓰기 불가로 만들면 되찾을 수 없다. 다른 확장이 EIP-6963 이외의 경로(예: MetaMask SDK의 확장 통신, `window.ethereum.providers` 배열)로 자신을 알리면 막지 않는다.
+- 그래서 팝업 경고: "실제 MetaMask/Rabby가 켜져 있으면 가로채기가 완벽하지 않을 수 있습니다. 함께 쓰지 않을 때 가장 확실합니다."
+
+**팝업**(`popup/popup.html` + `src/popup.js` 모듈 + `src/popup-core.js`, 한국어, 원격 자원·인라인 script 없음, 텍스트는 `textContent`만)
+
+- yw-app 연결 상태: popup이 `chrome.runtime.connect({ name: "your-wallet-popup-v1" })`로 묻고 background가 상태 하나를 답한다(§2.6). 봉투 v1에는 ping이 없으므로 background가 **마지막으로 관찰한** 상태다: `connected`(native 열림 + yw-app 응답 받음) "연결됨", `checking`(열림, 응답 전) "확인 중", `unavailable`(마지막 연결 실패·backoff) "연결 안 됨", `unknown`(관찰 없음: worker 재시작 직후, 요청이 없었음, 2 s 무응답) "확인 불가". 상태 조회는 router를 만들지 않고 native를 열지 않는다(열면 yw-app이 자동 실행된다). background는 `port.sender.id === chrome.runtime.id`, `sender.tab` 없음, `sender.url === chrome.runtime.getURL("popup/popup.html")`일 때만 답하고 그 밖은 port를 닫는다.
+- 모드 선택: 라디오 3개("기본 (Your Wallet)", "MetaMask처럼 보이기", "Rabby처럼 보이기"), 선택한 모드의 한 줄 설명, 저장 결과, "모드 변경은 다음 페이지 로드부터 적용됩니다. 열려 있는 dApp 탭은 새로고침하세요.", 위 경고.
 
 ---
 
@@ -461,7 +514,7 @@ pub struct ConnectedSite {
 2. 잠겨 있으면 잠금 해제 창([04](04-app-ui.md)). 닫거나 실패 → 4001. vault가 `BackupPending`([02] §7.1)이면 → 4100(signing도 같음, §8.4).
 3. `eth_requestAccounts`이고 이미 연결 → grant 계정 반환(창 없음). 연결되지 않은 origin이고 grant가 이미 256개 → 4100(창 없음, §4.1).
 4. "사이트 연결" 창(승인 큐 순서대로, §8.4):
-   - 제목 `사이트 연결`, origin 전체(scheme://host[:port]) 크게 표시. `http` origin이면 `로컬 개발 사이트(http)` 표시. 호스트에 `xn--` 라벨이 있으면 `국제화 도메인(punycode)` 경고.
+   - 제목 `사이트 연결`, origin 전체(scheme://host[:port]) 크게 표시. `http` origin이면 `로컬 개발 사이트(http)` 표시. 호스트에 `xn--` 라벨이 있으면 `국제화 도메인(punycode)` 경고. 요청 `context.compatMode`가 있으면 배지 `호환 모드: MetaMask` 또는 `호환 모드: Rabby`(§2.12, 서명 승인 창도 같은 배지). origin은 바뀌지 않는다.
    - 안내: `이 사이트는 선택한 계정의 주소, 잔액, 거래 기록을 볼 수 있습니다. 서명과 전송은 매번 따로 승인합니다.`
    - EVM 계정 목록: 체크박스 + 라벨 + 전체 주소(EIP-55 표기). 기본 선택: 기존 grant가 있으면 그 계정, 없으면 계정 0.
    - 현재 origin 체인 이름 표시.
@@ -568,9 +621,9 @@ meta가 암호화되어 있으므로(D7) 잠긴 동안 grant를 알 수 없다.
 | `method` | 문자열 1–96 |
 | `params` | 배열 또는 객체 |
 | `route` | `"permission"` \| `"read"` \| `"signing"` |
-| `context` | 객체, 아래 9개 키 |
+| `context` | 객체, 아래 9개 키 + 선택 키 1개 |
 
-`context`: `browserFamily` = `"chrome"`, `extensionId` = 고정 ID, `tabId` = 0..=2^53−1 정수, `frameId` = `0`, `documentId` = `^[A-Za-z0-9._:-]{1,256}$`, `topOrigin` = §4.7 `BrowserOrigin`, `frameOrigin` = `topOrigin`과 같음, `documentLifecycle` = `"active"`, `channelNonce` = id64.
+`context`: `browserFamily` = `"chrome"`, `extensionId` = 고정 ID, `tabId` = 0..=2^53−1 정수, `frameId` = `0`, `documentId` = `^[A-Za-z0-9._:-]{1,256}$`, `topOrigin` = §4.7 `BrowserOrigin`, `frameOrigin` = `topOrigin`과 같음, `documentLifecycle` = `"active"`, `channelNonce` = id64. 선택 `compatMode` = 문자열 `"metamask"` 또는 `"rabby"`(§2.12, 표시 전용). 기본 모드는 키가 없다. `"off"`·대소문자 다른 값·문자열이 아닌 값은 그 요청만 -32600이다. 이 선택 키는 v1 호환 확장이므로 `version`은 1 그대로이고 골든 `v1-request.golden.json`(키 없음)도 그대로다.
 
 **cancel** (extension → app) — 신규 골든 `v1-cancel.golden.json`
 
@@ -654,7 +707,9 @@ pub const NAMESPACE: &str = "your-wallet";
 pub const PROTOCOL_VERSION: u64 = 1;
 pub struct Id32(pub [u8; 32]);   // 와이어: id64(64 hex)
 pub struct Id16(pub [u8; 16]);   // 와이어: id32(32 hex)
-pub struct BrowserContext { pub tab_id: u64, pub document_id: String, pub origin: BrowserOrigin, pub channel_nonce: Id32 }
+pub enum CompatMode { MetaMask, Rabby }   // parse("metamask"|"rabby"), as_str, label() = "MetaMask"|"Rabby" (§2.12)
+pub struct BrowserContext { pub tab_id: u64, pub document_id: String, pub origin: BrowserOrigin, pub channel_nonce: Id32,
+    pub compat_mode: Option<CompatMode> }      // SiteRequest.compat_mode로 승인 큐에 전달, 배지 ui::approval_view::compat_mode_badge
 pub struct Correlation { pub session_id: Id32, pub sequence: u64, pub activation_nonce: Id32, pub request_id: Id16 }
 pub struct RequestEnvelope {
     pub correlation: Correlation, pub deadline_unix_ms: u64, pub profile_install_id: Id32,
@@ -901,16 +956,24 @@ yw-app은 `$BinDir\yw-app.exe`로 실행하는 것을 기본으로 한다(yw-hos
 | S1 | `tests/shared.test.mjs`(신규) | `METHOD_ROUTE`가 `v1-methods.golden.json`의 permission/read/signing과 정확히 같고 `rejected`는 하나도 없음 |
 | S2 | 〃 | `v1-limits.golden.json` 모든 사례에서 `checkJson` 결과 일치, 고립 surrogate 문자열·키 거부 |
 | S3 | 〃 | `isSupportedPageUrl`: https 허용, `http://localhost:5173`·`http://127.0.0.1` 허용, `http://example.com`·`http://[::1]`·`file:` 거부 |
-| P1 | `tests/provider-main.test.mjs`(갱신) | `ethereum` 없으면 `configurable:true` 등록 + `ethereum#initialized`, 있으면 그대로(기존 159-181 유지), announce는 항상, rdns 값, `window.yourWallet` 없음 |
-| P2 | 〃 | provider 객체가 확장 가능하고 내장 멤버는 덮어쓸 수 없음 |
+| P1 | `tests/provider-main.test.mjs`(갱신) | `ethereum` 없으면 `configurable:true` 등록 + `ethereum#initialized`, 있으면 그대로(기존 159-181 유지), announce는 항상(모드 확정 후. 그 전 `requestProvider`는 확정 시 1회로 답함, `bridge-init` 없으면 10 s 뒤 기본 신원), rdns 값, `window.yourWallet` 없음 |
+| P2 | 〃 | provider 객체가 확장 가능하고 내장 멤버(`isRabby`·`_metamask` 포함)는 덮어쓸 수 없음 |
 | P3 | 〃 | `on/addListener/once/off/removeListener/removeAllListeners/listenerCount`, 알 수 없는 이벤트 등록이 throw하지 않음, 리스너 예외 격리 |
 | P4 | 〃 | `connect`는 chainId를 처음 알 때 1회. 일시적 끊김(content 4900 응답)에 `disconnect` 없음. page `disconnect` 수신 시 `disconnect` 1회 |
 | P5 | 〃 | 605 s 시간 초과(`mock.timers`)에 -32603 + page `cancel` 전송, 604 s에는 아직 대기 |
 | P6 | 〃 | 같은 채널 `bridge-init` 재수신 허용, 다른 채널 무시, 채널 없을 때 10 s 대기 후 4900 |
+| P7 | 〃 (§2.12) | 모드 전달: `compatMode` 없음·`"MetaMask"`·`"on"`·`""`·숫자·null·추가 키인 `bridge-init` 무시(채널·모드 없음), 첫 유효 값이 문서 모드, 이후 다른 모드 무시, 10 s 기본값 확정 뒤 늦은 `bridge-init`은 채널만 |
+| P8 | 〃 | 모드별 플래그(`isMetaMask`·`isRabby`·`_metamask`, 확정 전에는 기본값)와 EIP-6963 `name`·`rdns`, 우리 PNG 아이콘, 페이지 uuid 하나, 호환 모드에서 "Your Wallet" 알림 없음(신원 1개) |
+| P9 | 〃 | `window.ethereum` 우선권: 임시 구간에 MetaMask가 대입 → 확정 시 되찾음 + `ethereum#initialized`; 확정 뒤 대입(strict 포함)은 예외 없이 무시; configurable 재정의는 예외 없이 성공하고 `requestProvider`·`DOMContentLoaded`·`load`에서 되찾음; 우리보다 먼저 있던 MetaMask(일반 대입) → 우리 것(두 호환 모드); non-configurable 캐시 setter(Rabby 방식) → setter로 들어감; non-configurable 쓰기 불가 → 그대로·예외 없음·알림은 감; 기본 모드는 종전 규칙 |
+| P10 | 〃 | EIP-6963 가로채기: 호환 모드에서 남의 `io.metamask`·`io.metamask.flask`·`io.rabby`(대소문자 무관) 알림은 페이지 일반·capture 리스너 모두 못 받고 `io.coinbase.wallet`·`app.phantom`·우리 rdns·`io.metamask.evil` 등은 받음, 이상한·적대적 `detail`은 예외 없이 통과; 기본 모드와 모드 확정 전에는 아무것도 막지 않음 |
+| P11 | 〃 | `_metamask.isUnlocked()`: `eth_accounts` `[]`→false, `[주소]`→true, 오류·배열 아님→false, DEAD→false(거부 없음); 기본 모드에는 `_metamask` 없음 |
 | C1 | `tests/content.test.mjs`(신규, `ContentBridge` 어댑터 사용) | 첫 요청 전에는 port를 열지 않음. IDLE→CONNECTING→ACTIVE, 큐 순서 유지 |
 | C2 | 〃 | port 끊김 → pending 4900, IDLE. 다음 요청이 재연결해 성공 |
 | C3 | 〃 | `isContextValid() === false` → DEAD, page `disconnect` 1회, 이후 4900 "Wallet extension was reloaded." |
 | C4 | 〃 | `pagehide` 후 IDLE(DEAD 아님), 5 s 연결 시간 초과, 250 ms 재연결 간격, 미허용 메서드(`wallet_addEthereumChain` 포함)는 연결 없이 4200 |
+| C5 | 〃 (§2.12) | `bridge-init`에 문서 모드, content→bg `request`에 호환 모드일 때만 `compatMode`(background 파서가 그대로 수락), 페이지 요청의 `compatMode` 키는 거부, 잘못된 모드로 `ContentBridge` 생성 시 TypeError; `loadCompatMode`: 유효 값 그대로, 없음·대소문자 다름·숫자·null·객체 아님 → `off`, 거부·예외 → `off`, 응답 없음 → 3 s에 `off`·늦은 응답 무시 |
+| E1 | `tests/compat-delivery.test.mjs`(신규) | 실제 `provider-main.js`(MAIN)와 `shared.js`·`content-core.js`·`content.js`(ISOLATED)를 두 VM world + 공유 postMessage로 실행: `chrome.storage.local.get("compatMode")` = metamask → 저장소 응답 전에는 기본 플래그·알림 없음 → 응답 후 MetaMask 알림 1개·`isMetaMask` true → `window.ethereum.request(eth_requestAccounts)` → content port 요청 `compatMode` → `BackgroundRouter` native 봉투 `context.compatMode = "metamask"`, `topOrigin` = sender origin, 10개 키 → 응답이 페이지까지 돌아옴 |
+| E2 | 〃 | 저장소 거부·`"MetaMask"` 값·예외 → 기본 신원, port 요청·봉투 context에 `compatMode` 없음(9개 키) |
 | B1 | `tests/extension.test.mjs`(갱신) | 한 activation에서 요청 5,000개 순차 성공(가짜 `now()`를 요청마다 25 ms 진행, 수명 상한 회귀). `MAX_NATIVE_CONNECTION_ATTEMPTS` 테스트(433)는 "재연결 횟수 무제한 + backoff 간격"으로 반전 |
 | B2 | 〃 | 토큰 버킷: 81번째 즉시 요청 -32005, 1 s 뒤 회복 |
 | B3 | 〃 | 중복 pending id는 무시되고 activation 유지(261, 515 반전). 형식 오류 메시지가 activation을 끊지 않음 |
@@ -918,9 +981,14 @@ yw-app은 `$BinDir\yw-app.exe`로 실행하는 것을 기본으로 한다(yw-hos
 | B5 | 〃 | 기한 타이머: `eth_blockNumber` 60 s·`personal_sign` 600 s(봉투 `deadlineUnixMs`도 같은 값) → content에 -32603, native `cancel`이 `v1-cancel.golden.json` 형태 |
 | B6 | 〃 | native 끊김 후 backoff: `healthy` 아닌 연결 반복 시 1 s, 2 s, 4 s… 30 s 상한, 그동안 로컬 4900 "Wallet is unavailable." |
 | B7 | 〃 | `deriveSenderContext`: §2.4 표 전부 |
+| B8 | 〃 (§2.12) | content `compatMode` → 그 요청 봉투 `context.compatMode`만(activation context 불변, 기본 모드 9개 키), `"off"`·모르는 값·null·숫자는 무시(형식 오류); `nativeStatus()`: 처음 `unknown` → 요청 중 `checking` → 응답 `connected` → 정상 연결 종료 `unknown` → 4900만 받고 끊김 `unavailable`, 상태 조회가 native를 열지 않음; `popupStatusMessage` 형식; `isPopupSender`: 팝업 페이지만 허용, 탭·다른 확장·다른 페이지·웹 페이지 거부 |
+| S4 | `tests/shared.test.mjs` | `COMPAT_MODES`·`normalizeCompatMode`·`POPUP_PORT_NAME`, content→bg `compatMode` 선택 키 규칙, page `request`의 `compatMode` 거부 |
+| PO1 | `tests/popup.test.mjs`(신규) | 모드 라벨 3개·경고 문구·"다음 페이지 로드부터 적용" 문구 정확히, 상태 표시(`연결됨`·`확인 중`·`연결 안 됨`·`확인 불가`, 모르는 값 → `확인 불가`), 상태 메시지 정확한 키, 저장 값 |
+| PO2 | 〃 | `popup.html`: `lang="ko"`, module script 하나(`../src/popup.js`), 인라인 코드·스타일·원격 URL 없음, `popup.js`가 쓰는 id가 모두 있음 |
+| PO3 | 〃 | 가짜 DOM·`chrome`으로 `popup.js` 실행: 저장된 모드 선택 표시, MetaMask 선택 시 `chrome.storage.local.set({ compatMode: "metamask" })`·저장 문구, 팝업 port `your-wallet-popup-v1`의 `connected` → "연결됨" 후 port 닫음 |
 | N1 | `tests/native-contract.test.mjs`(갱신) | request·cancel 골든과 바이트-필드 일치, response·event·unavailable 골든을 받아 올바르게 전달, `validateNativeManifest` + 템플릿은 항상 무효 |
-| M1 | `tests/manifest.test.mjs`(신규) | `JSON.parse`한 manifest에서 `key`를 뺀 값이 §2.2 객체와 deep-equal(키 순서 무관), `extensionIdFromKey(manifest.key)` == `extension-id.txt` |
-| M2 | 〃 | 가짜 `chrome`으로 `background.js`를 로드했을 때 `onConnectExternal`·`onMessageExternal` 등록 0회 |
+| M1 | `tests/manifest.test.mjs`(신규) | `JSON.parse`한 manifest에서 `key`를 뺀 값이 §2.2 객체(`action` 포함)와 deep-equal(키 순서 무관), `extensionIdFromKey(manifest.key)` == `extension-id.txt`, 호스트 권한·선택 권한·CSP 키 없음 |
+| M2 | 〃 | 가짜 `chrome`으로 `background.js`를 로드했을 때 `onConnectExternal`·`onMessageExternal`·`onMessage` 등록 0회. 팝업 port: router 전 `unknown`(native 0회), 응답 받은 뒤 `connected`, 탭 sender·다른 페이지는 port 닫힘·메시지 없음 |
 | H1 | `tests/yw-host-process.test.mjs`(신규, `native-host-process.test.mjs` 대체) | `target/debug/yw-host.exe`가 없으면 `process.env.YW_CHECK === "1"`이면 실패, 아니면 skip([01] §4.1). Node `net.createServer().listen(<테스트 pipe>)`로 가짜 yw-app을 만들고 yw-host를 실행: hello 형식, 바이트 그대로 양방향 중계, 잘못된 origin 인자 → 종료 2·출력 없음, 서버 없음(`YW_TEST_NO_SPAWN=1`) → 4900 응답 후 종료 3, 서버 없음 + `YW_TEST_DATA_DIR`의 settings.json `{"version":1,"browserAutoLaunch":false}`(`YW_TEST_NO_SPAWN` 없음) → 2 s 안에 4900·종료 3 |
 
 H1을 위해 yw-host는 **debug 빌드에서만**(`cfg!(debug_assertions)`) 환경 변수 `YW_TEST_PIPE_NAME`(pipe 전체 이름 대체), `YW_TEST_NO_SPAWN=1`(yw-app 실행 생략, `browserAutoLaunch` false와 같음), `YW_TEST_DATA_DIR`(settings.json 폴더 대체, §7.4)을 읽는다. release 빌드는 무시한다. yw-app도 **debug 빌드에서만** `YW_TEST_PIPE_NAME`(`\.pipe`로 시작할 때)을 pipe 이름으로 쓴다(M5 headless E2E: 버리는 `LOCALAPPDATA` + 테스트 pipe로 실제 yw-host ↔ yw-app 중계 확인).
@@ -938,6 +1006,7 @@ H1을 위해 yw-host는 **debug 빌드에서만**(`cfg!(debug_assertions)`) 환�
 | R-P2 | yw-app(Windows) | 테스트 이름으로 pipe 서버 생성 → `GetSecurityInfo`로 DACL이 사용자 SID ACE 1개뿐인지, 두 번째 프로세스의 첫 인스턴스 생성이 `ERROR_ACCESS_DENIED`인지, 5번째 클라이언트가 `ERROR_PIPE_BUSY`인지 |
 | R-E1 | yw-app `envelope` | request·cancel 골든 → 기대 구조체. `archive/spec-v2.4:crates/native-host/src/wire.rs:1118-1143,1195-1255`(모르는 키·폭·리터럴·route, cancel 순번) 이식 |
 | R-E2 | yw-app `envelope` | `encode_response`·`encode_event`가 골든과 값 동일, 1 MiB 초과 결과 → -32603 "Response too large." |
+| R-E3 | yw-app `envelope`·디스패처 (§2.12) | 골든 context에 `compatMode` `"metamask"`·`"rabby"` → `Some`, 골든(키 없음) → `None`; `"off"`·`"MetaMask"`·`"RABBY"`·`""`·끝 공백·null·숫자·bool·배열·객체 → 그 요청만 -32600; `compatMode` + 추가 키, `compatMode` + 필수 키 누락 → -32600; 연결 요청이 승인 큐에 실제 origin과 `compat_mode`로 들어감, 잘못된 모드 뒤에도 연결 유지; 배지 문구 `호환 모드: MetaMask`·`호환 모드: Rabby` |
 | R-M1 | yw-core `policy` | `Method::ALL`·route가 `v1-methods.golden.json`과 같고 `rejected`는 `Method::parse`가 `None` |
 | R-V1 | yw-app `params` | `archive/spec-v2.4:crates/broker/src/params.rs:673-829` 이식 + 반전·추가: EIP-55 체크섬 주소 허용·틀린 체크섬 거부, 대문자·앞자리 0 quantity 정규화, `to` 없는 `eth_call`, personal_sign UTF-8·hex, typedData 객체·문자열, EIP-1898 객체, `data`=`input` 허용·불일치 거부, getLogs 범위 규칙(§3.4, B = 20,000을 인자로 주입): 숫자 쌍 `to − from` 10,000 통과·10,001 거부·`from > to` 거부, `fromBlock` B−10,000 + `toBlock` `latest` 통과·B−10,001 거부, `fromBlock` 0x0 + `safe` 거부, `fromBlock` B+1 + `latest` 통과, 둘 다 태그·둘 다 생략 통과, `fromBlock`·`toBlock`의 `earliest`·`pending` → -32602 |
 | R-ERR | yw-core `policy`·yw-app | `ProviderError` 전 변형의 code·message가 §5 표와 일치(yw-core), `BrowserOrigin::parse`가 §4.7 규칙(yw-core), 상위 RPC 오류 정화 규칙(yw-app) |
@@ -980,6 +1049,7 @@ response 프로필 사례: `array` n=262,141 ok, n=262,142 거부(nodes 262,145.
 5. 오류 요청(잘못된 params, 4200, 2 MiB 요청) 뒤 같은 탭의 다음 요청 성공. 승인 창이 열린 동안 다른 탭 읽기 응답, 탭을 닫으면 창 닫힘. 승인 창 120 s 방치 → 4001 "Request expired."(D23). 대기열에서 600 s 초과 → -32603 "Request timed out.".
 6. `chrome://serviceworker-internals`에서 worker 중지 후 새로고침 없이 다음 요청 성공. 잠금·해제·연결 해제 시 `accountsChanged`. localhost 토글 꺼짐 → 4100.
 7. `chrome://flags#launch-windows-native-hosts-directly` 켬·끔 각각에서 1–2 반복.
+8. 호환 모드(§2.12): 팝업 상태·모드 저장, 모드마다 test-dapp C01–C05와 실제 MetaMask 전용 Sepolia dApp(연결·SIWE), 실제 MetaMask·Rabby를 끈 상태와 켠 상태 각각. 판정 절차는 [09](09-testing.md) §5.6 M5-15–M5-20.
 
 ---
 

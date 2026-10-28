@@ -22,7 +22,7 @@ use yw_json::Value;
 use yw_win::http::HttpsUrl;
 
 pub use dispatch::BrowserCore;
-use envelope::{BrowserEvent, Correlation, Id16, Id32};
+use envelope::{BrowserEvent, CompatMode, Correlation, Id16, Id32};
 use params::TxParams;
 
 /// The pinned extension id file, compiled in (spec/05 §2.3).
@@ -280,6 +280,9 @@ pub struct SiteRequest {
     pub method: Method,
     /// What to do.
     pub kind: SiteKind,
+    /// The extension compatibility mode of the requesting page (spec/05 §2.12): a badge in the
+    /// connect and approval windows only, the origin above stays the real site.
+    pub compat_mode: Option<CompatMode>,
 }
 
 /// A grant change made by the reader thread that the UI must persist in meta.

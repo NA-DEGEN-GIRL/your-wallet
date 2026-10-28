@@ -9,10 +9,16 @@ const ANNOUNCE_EVENT = "eip6963:announceProvider";
 const REQUEST_EVENT = "eip6963:requestProvider";
 const CHANNEL = "ab".repeat(32);
 const OTHER_CHANNEL = "cd".repeat(32);
+const OUR_RDNS = "io.github.na-degen-girl.yourwallet";
 
 class TestEvent {
   constructor(type) {
     this.type = type;
+    this.immediatePropagationStopped = false;
+  }
+
+  stopImmediatePropagation() {
+    this.immediatePropagationStopped = true;
   }
 }
 
@@ -23,7 +29,14 @@ class TestCustomEvent extends TestEvent {
   }
 }
 
-function createPage({ existingEthereum, lockedUndefinedEthereum = false, randomStart = 0, href = `${ORIGIN}/app`, top } = {}) {
+// `foreignEthereum`: another wallet assigned `window.ethereum = value` before us (plain data
+// property). `existingEthereum` / `lockedUndefinedEthereum`: a non-configurable, non-writable
+// incumbent. `beforeInstall(page)`: anything else to set up before provider-main.js runs.
+// `init`: a compatibility mode delivered with bridge-init right after load, or false for none.
+function createPage({
+  existingEthereum, lockedUndefinedEthereum = false, foreignEthereum, beforeInstall,
+  randomStart = 0, href = `${ORIGIN}/app`, top, init = "off"
+} = {}) {
   const listeners = new Map();
   const dispatched = [];
   const posted = [];
@@ -49,15 +62,28 @@ function createPage({ existingEthereum, lockedUndefinedEthereum = false, randomS
     },
     location: { href: url.href, origin: url.origin, protocol: url.protocol, hostname: url.hostname }
   };
-  page.addEventListener = (type, listener) => {
-    const current = listeners.get(type) ?? new Set();
-    current.add(listener);
+  // DOM order at the target: capture listeners first, then the others, each in registration
+  // order; stopImmediatePropagation ends delivery.
+  page.addEventListener = (type, listener, options) => {
+    const capture = options === true || (typeof options === "object" && options !== null && options.capture === true);
+    const current = listeners.get(type) ?? [];
+    if (!current.some((entry) => entry.listener === listener && entry.capture === capture)) {
+      current.push({ listener, capture });
+    }
     listeners.set(type, current);
+  };
+  page.removeEventListener = (type, listener, options) => {
+    const capture = options === true || (typeof options === "object" && options !== null && options.capture === true);
+    listeners.set(type, (listeners.get(type) ?? []).filter((entry) => entry.listener !== listener || entry.capture !== capture));
   };
   page.dispatchEvent = (event) => {
     dispatched.push(event);
-    for (const listener of [...(listeners.get(event.type) ?? [])]) {
-      listener.call(page, event);
+    const current = listeners.get(event.type) ?? [];
+    for (const entry of [...current.filter((item) => item.capture), ...current.filter((item) => !item.capture)]) {
+      entry.listener.call(page, event);
+      if (event.immediatePropagationStopped) {
+        break;
+      }
     }
     return true;
   };
@@ -72,11 +98,21 @@ function createPage({ existingEthereum, lockedUndefinedEthereum = false, randomS
       writable: false
     });
   }
+  if (foreignEthereum !== undefined) {
+    page.ethereum = foreignEthereum;
+  }
+  if (beforeInstall) {
+    beforeInstall(page);
+  }
 
   const context = vm.createContext(page);
   context.top = top === undefined ? context : top;
   vm.runInContext(source, context, { filename: "provider-main.js" });
-  return { context, dispatched, listeners, posted };
+  const result = { context, dispatched, listeners, posted };
+  if (init !== false) {
+    bridgeInit(result, CHANNEL, init);
+  }
+  return result;
 }
 
 function announcements(page) {
@@ -85,6 +121,22 @@ function announcements(page) {
 
 function providerOf(page) {
   return announcements(page)[0].detail.provider;
+}
+
+// What a dApp listener registered after the provider (the normal page order) receives.
+function dappListener(page, { capture = false } = {}) {
+  const seen = [];
+  page.context.addEventListener(ANNOUNCE_EVENT, (event) => seen.push(event.detail), capture);
+  return seen;
+}
+
+function foreignAnnouncement(page, rdns, name = rdns, provider = { foreign: rdns }) {
+  const detail = Object.freeze({
+    info: Object.freeze({ uuid: "00000000-0000-4000-8000-000000000000", name, icon: "data:image/png;base64,AA==", rdns }),
+    provider
+  });
+  page.context.dispatchEvent(new TestCustomEvent(ANNOUNCE_EVENT, { detail }));
+  return detail;
 }
 
 function dispatchMessage(page, data, { origin } = {}) {
@@ -110,8 +162,8 @@ function pageValue(page, value) {
   return vm.runInContext(`(${JSON.stringify(value)})`, page.context);
 }
 
-function bridgeInit(page, channel = CHANNEL) {
-  dispatchMessage(page, { namespace: "your-wallet", version: 1, kind: "bridge-init", channel });
+function bridgeInit(page, channel = CHANNEL, compatMode = "off") {
+  dispatchMessage(page, { namespace: "your-wallet", version: 1, kind: "bridge-init", channel, compatMode });
 }
 
 function respond(page, id, body, channel = CHANNEL) {
@@ -133,6 +185,10 @@ function requests(page) {
   return page.posted.filter((entry) => entry.message.kind === "request").map((entry) => entry.message);
 }
 
+function initializedCount(page) {
+  return page.dispatched.filter((event) => event.type === "ethereum#initialized").length;
+}
+
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 // Every test runs on mocked timers so pending 605 s / 10 s timers never keep the process alive.
@@ -146,7 +202,7 @@ test("P1 window.ethereum is defined configurable only when absent, with ethereum
   assert.equal(descriptor.configurable, true);
   assert.equal(descriptor.enumerable, true);
   assert.equal(descriptor.writable, true);
-  assert.equal(page.dispatched.filter((event) => event.type === "ethereum#initialized").length, 1);
+  assert.equal(initializedCount(page), 1);
   assert.equal("yourWallet" in page.context, false);
   assert.equal(page.dispatched.some((event) => event.type === "yourWallet#initialized"), false);
   // Another wallet may replace it later.
@@ -157,7 +213,7 @@ test("P1 window.ethereum is defined configurable only when absent, with ethereum
   const occupied = createPage({ existingEthereum: incumbent });
   assert.equal(occupied.context.ethereum, incumbent);
   assert.notEqual(providerOf(occupied), incumbent);
-  assert.equal(occupied.dispatched.some((event) => event.type === "ethereum#initialized"), false);
+  assert.equal(initializedCount(occupied), 0);
 
   const reserved = createPage({ lockedUndefinedEthereum: true });
   assert.equal(reserved.context.ethereum, undefined);
@@ -173,7 +229,7 @@ test("P1 announces one frozen EIP-6963 detail with the io.github rdns, page UUID
   assert.deepEqual(Object.keys(announcement.detail.info).sort(), ["icon", "name", "rdns", "uuid"]);
   assert.match(announcement.detail.info.uuid, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
   assert.equal(announcement.detail.info.name, "Your Wallet");
-  assert.equal(announcement.detail.info.rdns, "io.github.na-degen-girl.yourwallet");
+  assert.equal(announcement.detail.info.rdns, OUR_RDNS);
   assert.match(announcement.detail.info.icon, /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/u);
   const png = Buffer.from(announcement.detail.info.icon.split(",")[1], "base64");
   assert.equal(png.subarray(1, 4).toString("ascii"), "PNG");
@@ -198,6 +254,27 @@ test("P1 announces one frozen EIP-6963 detail with the io.github rdns, page UUID
   assert.equal(announcements(second).length, 2);
 });
 
+test("P1 the first announcement waits for the mode in bridge-init; earlier requests are answered then", () => {
+  const page = createPage({ init: false });
+  assert.equal(announcements(page).length, 0);
+  page.context.dispatchEvent(new TestEvent(REQUEST_EVENT));
+  page.context.dispatchEvent(new TestEvent(REQUEST_EVENT));
+  assert.equal(announcements(page).length, 0);
+  // window.ethereum (default rule) is installed at once; only the announcement waits.
+  assert.equal(typeof page.context.ethereum.request, "function");
+  bridgeInit(page);
+  assert.equal(announcements(page).length, 1);
+  assert.equal(announcements(page)[0].detail.provider, page.context.ethereum);
+
+  // Without any bridge-init the default identity is announced after 10 s.
+  const silent = createPage({ init: false });
+  mock.timers.tick(9_999);
+  assert.equal(announcements(silent).length, 0);
+  mock.timers.tick(1);
+  assert.equal(announcements(silent).length, 1);
+  assert.equal(announcements(silent)[0].detail.info.rdns, OUR_RDNS);
+});
+
 test("P1 a reentrant hostile request cannot recurse announcements", () => {
   const page = createPage();
   const initial = announcements(page)[0];
@@ -216,15 +293,19 @@ test("P1 a reentrant hostile request cannot recurse announcements", () => {
 
 test("P1 unsupported pages and subframes install nothing", () => {
   for (const href of ["http://example.com/", "http://[::1]:5173/", "file:///C:/x.html"]) {
-    const page = createPage({ href });
+    const page = createPage({ href, init: false });
+    mock.timers.tick(10_000);
     assert.equal(announcements(page).length, 0, href);
     assert.equal("ethereum" in page.context, false, href);
+    assert.equal(page.posted.length, 0, href);
   }
-  const frame = createPage({ top: {} });
+  const frame = createPage({ top: {}, init: false });
+  mock.timers.tick(10_000);
   assert.equal(announcements(frame).length, 0);
-  const local = createPage({ href: "http://localhost:5173/" });
-  assert.equal(announcements(local).length, 1);
+  const local = createPage({ href: "http://localhost:5173/", init: false });
   assert.equal(local.posted[0].targetOrigin, "http://localhost:5173");
+  dispatchMessage(local, { namespace: "your-wallet", version: 1, kind: "bridge-init", channel: CHANNEL, compatMode: "off" });
+  assert.equal(announcements(local).length, 1);
   assert.equal(announcements(createPage({ href: "http://127.0.0.1/" })).length, 1);
 });
 
@@ -236,7 +317,7 @@ test("P2 the provider is extensible and its built-in members cannot be overwritt
   provider.legacyFlag = 1;
   assert.equal(provider.legacyFlag, 1);
   for (const name of [
-    "isYourWallet", "isMetaMask", "chainId", "selectedAddress", "isConnected", "request", "enable",
+    "isYourWallet", "isMetaMask", "isRabby", "_metamask", "chainId", "selectedAddress", "isConnected", "request", "enable",
     "on", "addListener", "once", "off", "removeListener", "removeAllListeners", "listenerCount"
   ]) {
     const descriptor = Object.getOwnPropertyDescriptor(provider, name);
@@ -254,6 +335,8 @@ test("P2 the provider is extensible and its built-in members cannot be overwritt
   }
   assert.equal(provider.isYourWallet, true);
   assert.equal(provider.isMetaMask, false);
+  assert.equal(provider.isRabby, false);
+  assert.equal(provider._metamask, undefined);
   assert.equal(provider.chainId, null);
   assert.equal(provider.selectedAddress, null);
 });
@@ -261,7 +344,6 @@ test("P2 the provider is extensible and its built-in members cannot be overwritt
 test("P3 EventEmitter API: on/addListener/once/off/removeListener/removeAllListeners/listenerCount", () => {
   const page = createPage();
   const provider = providerOf(page);
-  bridgeInit(page);
   const calls = [];
   const a = (value) => calls.push(["a", value]);
   const b = (value) => calls.push(["b", value]);
@@ -318,8 +400,8 @@ test("P3 EventEmitter API: on/addListener/once/off/removeListener/removeAllListe
 });
 
 test("P4 connect fires once when chainId is first learned; transient 4900 never emits disconnect", async () => {
-  const page = createPage();
-  const provider = providerOf(page);
+  const page = createPage({ init: false });
+  const provider = page.context.ethereum;
   const connects = [];
   const disconnects = [];
   provider.on("connect", (info) => connects.push(info));
@@ -327,6 +409,7 @@ test("P4 connect fires once when chainId is first learned; transient 4900 never 
   assert.equal(provider.isConnected(), false);
   bridgeInit(page);
   assert.equal(provider.isConnected(), true);
+  assert.equal(providerOf(page), provider);
 
   const chainPromise = provider.request(pageValue(page, { method: "eth_chainId" }));
   await flush();
@@ -369,8 +452,8 @@ test("P4 connect fires once when chainId is first learned; transient 4900 never 
 });
 
 test("P4 a chainChanged event can be the first chainId and emits connect before chainChanged", () => {
-  const page = createPage();
-  const provider = providerOf(page);
+  const page = createPage({ init: false });
+  const provider = page.context.ethereum;
   const order = [];
   provider.on("connect", () => order.push("connect"));
   provider.on("chainChanged", () => order.push("chainChanged"));
@@ -383,7 +466,6 @@ test("P4 a chainChanged event can be the first chainId and emits connect before 
 test("P4 request validation: method format 4200, params -32602, size -32600, pending -32005", async () => {
   const page = createPage();
   const provider = providerOf(page);
-  bridgeInit(page);
   for (const args of [undefined, null, "eth_chainId", { method: 1 }, { method: "" }, { method: "eth chainId" }, { method: "x".repeat(97) }]) {
     await assert.rejects(provider.request(args === undefined || args === null || typeof args === "string" ? args : pageValue(page, args)),
       (error) => error.code === 4200 && error.message === "Unsupported method.");
@@ -414,7 +496,6 @@ test("P4 request validation: method format 4200, params -32602, size -32600, pen
 test("P5 a 605 s timeout rejects -32603 and posts a page cancel; 604 s is still pending", async () => {
   const page = createPage();
   const provider = providerOf(page);
-  bridgeInit(page);
   let settled = false;
   const promise = provider.request(pageValue(page, { method: "personal_sign", params: ["0x00", `0x${"12".repeat(20)}`] }));
   promise.then(() => {
@@ -442,14 +523,14 @@ test("P5 a 605 s timeout rejects -32603 and posts a page cancel; 604 s is still 
 });
 
 test("P6 bridge-request at start; same-channel bridge-init is accepted again, other channels ignored", async () => {
-  const page = createPage();
-  const provider = providerOf(page);
+  const page = createPage({ init: false });
+  const provider = page.context.ethereum;
   assert.deepEqual({ ...page.posted[0].message }, { namespace: "your-wallet", version: 1, kind: "bridge-request" });
   assert.equal(page.posted[0].targetOrigin, ORIGIN);
   bridgeInit(page);
   bridgeInit(page);
   bridgeInit(page, OTHER_CHANNEL);
-  dispatchMessage(page, { namespace: "your-wallet", version: 1, kind: "bridge-init", channel: OTHER_CHANNEL }, { origin: "https://evil.example" });
+  dispatchMessage(page, { namespace: "your-wallet", version: 1, kind: "bridge-init", channel: OTHER_CHANNEL, compatMode: "off" }, { origin: "https://evil.example" });
   const promise = provider.request(pageValue(page, { method: "eth_chainId" }));
   await flush();
   assert.equal(requests(page)[0].channel, CHANNEL);
@@ -460,8 +541,8 @@ test("P6 bridge-request at start; same-channel bridge-init is accepted again, ot
 });
 
 test("P6 without a channel a request waits 10 s and then fails 4900; a late bridge-init unblocks waiters", async () => {
-  const page = createPage();
-  const provider = providerOf(page);
+  const page = createPage({ init: false });
+  const provider = page.context.ethereum;
   let settled = false;
   const waiting = provider.request(pageValue(page, { method: "eth_chainId" }));
   waiting.then(() => {
@@ -483,4 +564,230 @@ test("P6 without a channel a request waits 10 s and then fails 4900; a late brid
   assert.equal(requests(page).length, 1);
   respond(page, requests(page)[0].id, { result: "0xaa36a7" });
   assert.equal(await second, "0xaa36a7");
+});
+
+// ---------- spec/05 §2.12 compatibility mode (P7–P11) ----------
+
+test("P7 mode delivery: bridge-init must carry a valid compatMode; the first one settles the document", () => {
+  const page = createPage({ init: false });
+  const provider = page.context.ethereum;
+  // Missing, unknown or differently cased modes are not a valid bridge-init (no channel, no mode).
+  dispatchMessage(page, { namespace: "your-wallet", version: 1, kind: "bridge-init", channel: CHANNEL });
+  for (const compatMode of ["MetaMask", "on", "", 1, null]) {
+    dispatchMessage(page, { namespace: "your-wallet", version: 1, kind: "bridge-init", channel: CHANNEL, compatMode });
+  }
+  dispatchMessage(page, { namespace: "your-wallet", version: 1, kind: "bridge-init", channel: CHANNEL, compatMode: "metamask", extra: 1 });
+  assert.equal(provider.isConnected(), false);
+  assert.equal(announcements(page).length, 0);
+  assert.equal(provider.isMetaMask, false);
+
+  bridgeInit(page, CHANNEL, "metamask");
+  assert.equal(provider.isConnected(), true);
+  assert.equal(provider.isMetaMask, true);
+  // Later bridge-inits (same channel, another mode) never change the settled mode.
+  bridgeInit(page, CHANNEL, "rabby");
+  bridgeInit(page, CHANNEL, "off");
+  assert.equal(provider.isRabby, false);
+  assert.equal(provider.isMetaMask, true);
+  page.context.dispatchEvent(new TestEvent(REQUEST_EVENT));
+  assert.deepEqual(announcements(page).map((event) => event.detail.info.name), ["MetaMask", "MetaMask"]);
+
+  // After the 10 s fallback the default identity is fixed; a late bridge-init only opens the channel.
+  const late = createPage({ init: false });
+  mock.timers.tick(10_000);
+  bridgeInit(late, CHANNEL, "metamask");
+  assert.equal(late.context.ethereum.isConnected(), true);
+  assert.equal(late.context.ethereum.isMetaMask, false);
+  assert.deepEqual(announcements(late).map((event) => event.detail.info.rdns), [OUR_RDNS]);
+});
+
+test("P8 identity flags and EIP-6963 info per mode (getters read the current mode)", () => {
+  const expected = {
+    off: { isMetaMask: false, isRabby: false, name: "Your Wallet", rdns: OUR_RDNS, metamask: false },
+    metamask: { isMetaMask: true, isRabby: false, name: "MetaMask", rdns: "io.metamask", metamask: true },
+    rabby: { isMetaMask: true, isRabby: true, name: "Rabby Wallet", rdns: "io.rabby", metamask: true }
+  };
+  const offIcon = announcements(createPage())[0].detail.info.icon;
+  for (const [mode, want] of Object.entries(expected)) {
+    const page = createPage({ init: false });
+    const provider = page.context.ethereum;
+    // Before the mode is known every flag reads as the default.
+    assert.equal(provider.isMetaMask, false, mode);
+    assert.equal(provider._metamask, undefined, mode);
+    bridgeInit(page, CHANNEL, mode);
+    assert.equal(provider.isYourWallet, true, mode);
+    assert.equal(provider.isMetaMask, want.isMetaMask, mode);
+    assert.equal(provider.isRabby, want.isRabby, mode);
+    assert.equal(typeof provider._metamask?.isUnlocked, want.metamask ? "function" : "undefined", mode);
+    if (want.metamask) {
+      assert.equal(Object.isFrozen(provider._metamask), true, mode);
+      assert.equal("requestBatch" in provider._metamask, false, mode);
+    }
+    // Exactly one identity: the compat identity replaces "Your Wallet" (no duplicate entries).
+    page.context.dispatchEvent(new TestEvent(REQUEST_EVENT));
+    const events = announcements(page);
+    assert.equal(events.length, 2, mode);
+    for (const event of events) {
+      assert.equal(event.detail, events[0].detail, mode);
+      assert.equal(event.detail.provider, provider, mode);
+      assert.equal(event.detail.info.name, want.name, mode);
+      assert.equal(event.detail.info.rdns, want.rdns, mode);
+      // Our own PNG, never a third-party logo.
+      assert.equal(event.detail.info.icon, offIcon, mode);
+      assert.match(event.detail.info.uuid, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u, mode);
+    }
+    assert.equal(Object.isFrozen(events[0].detail.info), true, mode);
+  }
+});
+
+test("P9 window.ethereum precedence vs a MetaMask injection before and after ours", () => {
+  const metamask = Object.freeze({ isMetaMask: true, request: () => "real metamask" });
+
+  // Compat, MetaMask assigned after us but before the mode arrived: taken back when the mode settles.
+  const early = createPage({ init: false });
+  const provider = early.context.ethereum;
+  early.context.ethereum = metamask;
+  assert.equal(early.context.ethereum, metamask);
+  bridgeInit(early, CHANNEL, "metamask");
+  assert.equal(early.context.ethereum, provider);
+  assert.equal(initializedCount(early), 2);
+  const descriptor = Object.getOwnPropertyDescriptor(early.context, "ethereum");
+  assert.equal(typeof descriptor.get, "function");
+  assert.equal(typeof descriptor.set, "function");
+  assert.equal(descriptor.configurable, true);
+  assert.equal(descriptor.enumerable, true);
+  // MetaMask assigning after the mode is known: accepted without throwing (strict mode), ignored.
+  early.context.ethereum = metamask;
+  vm.runInContext(`"use strict"; globalThis.ethereum = { late: true };`, early.context);
+  assert.equal(early.context.ethereum, provider);
+  // A configurable redefinition does not throw for the other script; it is reclaimed at the next
+  // checkpoint (eip6963:requestProvider, DOMContentLoaded, load).
+  for (const checkpoint of [REQUEST_EVENT, "DOMContentLoaded", "load"]) {
+    Object.defineProperty(early.context, "ethereum", { value: metamask, configurable: true, writable: true, enumerable: true });
+    assert.equal(early.context.ethereum, metamask);
+    early.context.dispatchEvent(new TestEvent(checkpoint));
+    assert.equal(early.context.ethereum, provider, checkpoint);
+  }
+
+  // Compat, MetaMask injected before us (plain assignment): ours after the mode settles.
+  for (const mode of ["metamask", "rabby"]) {
+    const before = createPage({ foreignEthereum: metamask, init: false });
+    assert.equal(before.context.ethereum, metamask);
+    assert.equal(initializedCount(before), 0);
+    bridgeInit(before, CHANNEL, mode);
+    assert.equal(before.context.ethereum, providerOf(before), mode);
+    assert.equal(before.context.ethereum.isMetaMask, true, mode);
+    assert.equal(initializedCount(before), 1, mode);
+  }
+
+  // A wallet that made window.ethereum non-configurable but caches assignments (Rabby style):
+  // our provider gets in through its setter.
+  let cached;
+  const rabbyLike = createPage({
+    init: "metamask",
+    beforeInstall: (page) => Object.defineProperty(page, "ethereum", {
+      configurable: false,
+      enumerable: true,
+      get: () => cached ?? metamask,
+      set: (value) => {
+        cached = value;
+      }
+    })
+  });
+  assert.equal(rabbyLike.context.ethereum, providerOf(rabbyLike));
+
+  // Non-configurable and not assignable: nothing throws, the incumbent stays, discovery still works.
+  const locked = createPage({ existingEthereum: metamask, init: "metamask" });
+  assert.equal(locked.context.ethereum, metamask);
+  assert.equal(announcements(locked).length, 1);
+  assert.equal(announcements(locked)[0].detail.info.rdns, "io.metamask");
+  locked.context.dispatchEvent(new TestEvent(REQUEST_EVENT));
+  assert.equal(locked.context.ethereum, metamask);
+
+  // Off: unchanged rules. Ours only when absent; a later wallet replaces it; an earlier one stays.
+  const off = createPage();
+  off.context.ethereum = metamask;
+  off.context.dispatchEvent(new TestEvent(REQUEST_EVENT));
+  off.context.dispatchEvent(new TestEvent("load"));
+  assert.equal(off.context.ethereum, metamask);
+  const offBefore = createPage({ foreignEthereum: metamask });
+  assert.equal(offBefore.context.ethereum, metamask);
+  assert.equal(initializedCount(offBefore), 0);
+});
+
+test("P10 EIP-6963 interception: foreign MetaMask/Rabby announcements are hidden only in compat modes", () => {
+  const blocked = ["io.metamask", "io.metamask.flask", "io.rabby", "IO.MetaMask"];
+  const passing = ["io.coinbase.wallet", "app.phantom", OUR_RDNS, "io.metamask.evil", "com.example"];
+
+  for (const mode of ["metamask", "rabby"]) {
+    const page = createPage({ init: mode });
+    const seen = dappListener(page);
+    const seenCapture = dappListener(page, { capture: true });
+    for (const rdns of blocked) {
+      foreignAnnouncement(page, rdns);
+    }
+    for (const rdns of passing) {
+      foreignAnnouncement(page, rdns);
+    }
+    page.context.dispatchEvent(new TestEvent(REQUEST_EVENT));
+    const rdnsSeen = seen.map((detail) => detail.info.rdns);
+    assert.deepEqual(rdnsSeen, [...passing, mode === "metamask" ? "io.metamask" : "io.rabby"], mode);
+    assert.deepEqual(seenCapture.map((detail) => detail.info.rdns), rdnsSeen, mode);
+    // The only MetaMask/Rabby entry the dApp sees is ours.
+    assert.equal(seen.at(-1).provider, page.context.ethereum, mode);
+    // Hostile or odd details never throw and are not blocked.
+    const hostile = {};
+    Object.defineProperty(hostile, "info", {
+      get() {
+        throw new Error("hostile getter");
+      }
+    });
+    for (const detail of [hostile, null, undefined, 7, { info: null }, { info: { rdns: 5 } }]) {
+      page.context.dispatchEvent(new TestCustomEvent(ANNOUNCE_EVENT, { detail }));
+    }
+    assert.equal(seen.length, passing.length + 1 + 6, mode);
+  }
+
+  // Off: nothing is intercepted.
+  const off = createPage();
+  const seenOff = dappListener(off);
+  for (const rdns of [...blocked, ...passing]) {
+    foreignAnnouncement(off, rdns);
+  }
+  assert.deepEqual(seenOff.map((detail) => detail.info.rdns), [...blocked, ...passing]);
+
+  // Before the mode is known nothing is intercepted either (documented best-effort window).
+  const early = createPage({ init: false });
+  const seenEarly = dappListener(early);
+  foreignAnnouncement(early, "io.metamask");
+  bridgeInit(early, CHANNEL, "metamask");
+  foreignAnnouncement(early, "io.metamask");
+  assert.deepEqual(seenEarly.map((detail) => [detail.info.name, detail.provider === early.context.ethereum]), [
+    ["io.metamask", false],
+    ["MetaMask", true]
+  ]);
+});
+
+test("P11 _metamask.isUnlocked() reflects eth_accounts for this origin and never rejects", async () => {
+  const page = createPage({ init: "metamask" });
+  const provider = providerOf(page);
+  const answers = [
+    [{ result: [] }, false],
+    [{ result: [`0x${"ab".repeat(20)}`] }, true],
+    [{ error: { code: 4100, message: "Unauthorized." } }, false],
+    [{ result: "not an array" }, false]
+  ];
+  for (const [index, [body, expected]] of answers.entries()) {
+    const unlocked = provider._metamask.isUnlocked();
+    await flush();
+    const request = requests(page)[index];
+    assert.equal(request.method, "eth_accounts");
+    assert.equal(JSON.stringify(request.params), "[]");
+    respond(page, request.id, body);
+    assert.equal(await unlocked, expected, JSON.stringify(body));
+  }
+  pageDisconnect(page);
+  assert.equal(await provider._metamask.isUnlocked(), false);
+  // Off mode has no _metamask at all.
+  assert.equal(providerOf(createPage())._metamask, undefined);
 });

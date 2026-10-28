@@ -5,6 +5,7 @@ const shared = globalThis.__YOUR_WALLET_SHARED__;
 const core = globalThis.__YOUR_WALLET_BACKGROUND_CORE__;
 const PROFILE_INSTALL_ID_KEY = "profileInstallIdV1";
 const PROFILE_ID_PATTERN = /^[0-9a-f]{64}$/u;
+const POPUP_PAGE = "popup/popup.html";
 
 // Router creation is retried on the next content connection if loading the
 // profile identifier fails. Connections from other extensions or web pages are
@@ -33,6 +34,10 @@ function getRouter() {
 }
 
 chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === core.POPUP_PORT_NAME) {
+    answerPopup(port);
+    return;
+  }
   if (port.name !== core.CONTENT_PORT_NAME) {
     port.disconnect();
     return;
@@ -76,6 +81,25 @@ chrome.runtime.onConnect.addListener((port) => {
     }
   });
 });
+
+// spec/05 §2.12: the action popup asks once for the observed yw-app connection state. The router
+// is not created for this (a status query must not touch storage or native messaging).
+function answerPopup(port) {
+  if (!core.isPopupSender(port.sender, chrome.runtime.id, chrome.runtime.getURL(POPUP_PAGE))) {
+    port.disconnect();
+    return;
+  }
+  const pending = routerPromise === null
+    ? Promise.resolve("unknown")
+    : routerPromise.then((router) => router.nativeStatus(), () => "unknown");
+  pending.then((status) => {
+    try {
+      port.postMessage(core.popupStatusMessage(status));
+    } catch (_error) {
+      // The popup closed before the answer.
+    }
+  });
+}
 
 chrome.runtime.onInstalled.addListener(() => {
   getRouter().catch(() => {});

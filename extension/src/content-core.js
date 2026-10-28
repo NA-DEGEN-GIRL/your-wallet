@@ -13,6 +13,9 @@
   const MAX_PENDING = 64;
   const CONNECT_TIMEOUT_MS = 5_000;
   const MIN_RECONNECT_INTERVAL_MS = 250;
+  // Upper bound for the document_start `chrome.storage.local` read of the compatibility mode
+  // (spec/05 §2.12). A read that fails or takes longer falls back to `off`.
+  const MODE_READ_TIMEOUT_MS = 3_000;
   const STATES = Object.freeze({
     IDLE: "IDLE",
     CONNECTING: "CONNECTING",
@@ -22,9 +25,12 @@
 
   // spec/05 §2.7. The bridge never touches Chrome APIs directly; content.js supplies adapters.
   class ContentBridge {
-    constructor({ channelNonce, connectPort, postToPage, isContextValid, setTimer, clearTimer, now }) {
+    constructor({ channelNonce, compatMode = "off", connectPort, postToPage, isContextValid, setTimer, clearTimer, now }) {
       if (!shared.isId64(channelNonce)) {
         throw new TypeError("Invalid page channel nonce.");
+      }
+      if (!shared.isCompatMode(compatMode)) {
+        throw new TypeError("Invalid compatibility mode.");
       }
       for (const adapter of [connectPort, postToPage, isContextValid, setTimer, clearTimer, now]) {
         if (typeof adapter !== "function") {
@@ -32,6 +38,8 @@
         }
       }
       this.channelNonce = channelNonce;
+      // Fixed for the document's lifetime: a mode change applies on the next page load.
+      this.compatMode = compatMode;
       this.connectPort = connectPort;
       this.postToPage = postToPage;
       this.isContextValid = isContextValid;
@@ -51,7 +59,7 @@
     }
 
     announce() {
-      this.post({ kind: "bridge-init" });
+      this.post({ kind: "bridge-init", compatMode: this.compatMode });
     }
 
     receivePage(value) {
@@ -278,7 +286,9 @@
         activationNonce: this.activationNonce,
         id: entry.id,
         method: entry.method,
-        params: entry.params
+        params: entry.params,
+        // Display-only note for the yw-app windows (spec/05 §2.12); omitted in the default mode.
+        ...(this.compatMode === "off" ? {} : { compatMode: this.compatMode })
       });
     }
 
@@ -358,6 +368,42 @@
     }
   }
 
+  // spec/05 §2.12: reads the stored mode once at document_start. Resolves (never rejects) with a
+  // valid mode; a missing or corrupted value, a throwing or rejecting read, or a read slower than
+  // MODE_READ_TIMEOUT_MS yields `off`. `readStorage()` returns `chrome.storage.local.get(key)`.
+  function loadCompatMode({ readStorage, setTimer, clearTimer, timeoutMs = MODE_READ_TIMEOUT_MS }) {
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer = null;
+      const finish = (mode) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timer !== null) {
+          clearTimer(timer);
+        }
+        resolve(mode);
+      };
+      timer = setTimer(() => {
+        timer = null;
+        finish("off");
+      }, timeoutMs);
+      try {
+        Promise.resolve(readStorage()).then((stored) => {
+          const key = shared.COMPAT_MODE_STORAGE_KEY;
+          const value = stored !== null && typeof stored === "object" && Object.prototype.hasOwnProperty.call(stored, key)
+            ? stored[key]
+            : undefined;
+          finish(shared.normalizeCompatMode(value));
+        }, () => finish("off"));
+      } catch (_error) {
+        // Extension context invalidated: the bridge will enter DEAD on the first request anyway.
+        finish("off");
+      }
+    });
+  }
+
   Object.defineProperty(root, "__YOUR_WALLET_CONTENT_CORE__", {
     configurable: false,
     enumerable: false,
@@ -367,7 +413,9 @@
       STATES,
       MAX_PENDING,
       CONNECT_TIMEOUT_MS,
-      MIN_RECONNECT_INTERVAL_MS
+      MIN_RECONNECT_INTERVAL_MS,
+      MODE_READ_TIMEOUT_MS,
+      loadCompatMode
     })
   });
 }(globalThis));

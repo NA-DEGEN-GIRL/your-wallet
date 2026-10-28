@@ -448,6 +448,14 @@ pub fn view(
     }
 }
 
+/// The compatibility-mode badge of the connect and site approval windows (spec/05 §2.12, §4.2):
+/// the request came from a page where the extension presented itself as another wallet. The
+/// origin shown above it is still the real site origin.
+#[must_use]
+pub fn compat_mode_badge(mode: crate::browser::envelope::CompatMode) -> String {
+    format!("호환 모드: {}", mode.label())
+}
+
 /// The connect window content (spec/05 §4.2): the origin in large type, the http and punycode
 /// badges, the fixed guidance, the account checkboxes and the origin chain.
 #[must_use]

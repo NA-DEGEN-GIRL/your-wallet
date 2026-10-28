@@ -1,0 +1,87 @@
+:root {
+  color-scheme: light dark;
+  --fg: #1b1b1b;
+  --bg: #ffffff;
+  --muted: #5a5a5a;
+  --line: #d6d6d6;
+  --ok: #1a7f37;
+  --bad: #b42318;
+  --warn-bg: #fff4e5;
+  --warn-fg: #7a4100;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e8e8e8;
+    --bg: #1e1e1e;
+    --muted: #a8a8a8;
+    --line: #3c3c3c;
+    --ok: #4ac26b;
+    --bad: #ff7b72;
+    --warn-bg: #3a2a12;
+    --warn-fg: #f5c77e;
+  }
+}
+
+body {
+  width: 340px;
+  margin: 0;
+  padding: 12px 14px;
+  font: 13px/1.45 system-ui, "Malgun Gothic", sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+h1 {
+  font-size: 16px;
+  margin: 0 0 8px;
+}
+
+h2 {
+  font-size: 13px;
+  margin: 12px 0 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+p {
+  margin: 4px 0;
+}
+
+.status {
+  font-weight: 600;
+}
+
+.status[data-tone="ok"] {
+  color: var(--ok);
+}
+
+.status[data-tone="bad"] {
+  color: var(--bad);
+}
+
+.note {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mode {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  cursor: pointer;
+}
+
+.explanation {
+  margin-top: 6px;
+}
+
+.warning {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  font-size: 12px;
+}

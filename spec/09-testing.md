@@ -551,6 +551,7 @@ Issued At: 2026-10-25T23:59:00Z
 | 취소 전파 | 05 P5, B5, R-D3 |
 | pipe DACL·첫 인스턴스 | 05 R-P2 |
 | 메서드 목록 일치 | 05 S1, R-M1(`v1-methods.golden.json`) |
+| 호환 모드(D22, 05 §2.12) | 05 P7–P11(모드 전달·플래그·`window.ethereum` 우선권·EIP-6963 가로채기·`_metamask.isUnlocked`), C5, E1–E2(저장소 → 페이지 → native 봉투), B8, S4, PO1–PO3(팝업), M1·M2(`action`, 팝업 port), R-E3(선택 `context.compatMode` 엄격 검사·승인 큐 전달·배지), audit(`action`·`popup/` 검사) |
 
 ### 4.4 Solana·Bitcoin (M7, M8)
 
@@ -659,7 +660,16 @@ Issued At: 2026-10-25T23:59:00Z
 - [ ] M5-11 05 §10.4 7번(직접 실행 플래그 켬·끔 각각 T01–T06).
 - [ ] M5-12 `settings.json`에 `"browserAutoLaunch": false`, yw-app 종료 상태에서 T03 → 4900 `Wallet is unavailable.`, 작업 관리자에 yw-app 없음(yw-host가 실행하지 않음). true로 되돌림.
 - [ ] M5-13 T03으로 yw-app 자동 실행 → Chrome 완전 종료(백그라운드 실행 포함) → yw-app 생존 여부 기록(D24 job object). 함께 종료되면 D24 대안 적용: `browserAutoLaunch` 기본값을 false로 바꾸고 수동 실행 안내, M5-6을 "yw-app 수동 실행 후 T03 성공"으로 재판정.
-- [ ] M5-14 자동: 05 §10.1·§10.2 전 사례(JS S1–S3·P1–P6·C1–C4·B1–B7·N1·manifest M1·M2·H1, Rust R-F1·R-J1·R-H1–R-H4·R-P1·R-P2·R-E1·R-E2·R-M1·R-V1·R-ERR·R-D1–R-D5·R-G1)와 X-1–X-3·X-25 통과(H1은 `YW_CHECK=1`이라 skip 없이 실행됨, §2.2). 퍼징 `frame`·`envelope` 각 600 s, 충돌 0.
+- [ ] M5-14 자동: 05 §10.1·§10.2 전 사례(JS S1–S4·P1–P11·C1–C5·E1–E2·B1–B8·PO1–PO3·N1·manifest M1·M2·H1, Rust R-F1·R-J1·R-H1–R-H4·R-P1·R-P2·R-E1–R-E3·R-M1·R-V1·R-ERR·R-D1–R-D5·R-G1)와 X-1–X-3·X-25 통과(H1은 `YW_CHECK=1`이라 skip 없이 실행됨, §2.2). 퍼징 `frame`·`envelope` 각 600 s, 충돌 0.
+
+호환 모드(D22, 05 §2.12) 준비: 확장 카드의 새로고침 버튼으로 확장을 다시 읽고 열린 탭을 새로고침한다. 툴바의 퍼즐 아이콘 → Your Wallet 옆 핀을 눌러 아이콘("Y")을 고정한다. 모드를 바꾼 뒤에는 **항상 dApp 탭을 새로고침**한다(다음 페이지 로드부터 적용). 실제 MetaMask·Rabby 켬/끔은 `chrome://extensions`의 사용 토글로 한다.
+
+- [ ] M5-15 팝업: Your Wallet 아이콘 클릭 → "yw-app 연결 상태", 모드 3개("기본 (Your Wallet)", "MetaMask처럼 보이기", "Rabby처럼 보이기"), 선택 모드 한 줄 설명, "모드 변경은 다음 페이지 로드부터 적용됩니다…" 안내, 경고 "실제 MetaMask/Rabby가 켜져 있으면 가로채기가 완벽하지 않을 수 있습니다. 함께 쓰지 않을 때 가장 확실합니다."가 보인다. Chrome을 새로 켠 직후(요청 전) 상태 "확인 불가". test-dapp T03 뒤 다시 열면 "연결됨". `browserAutoLaunch` false + yw-app 종료 상태에서 T03(4900) 뒤 "연결 안 됨". 팝업을 닫았다 열어도 고른 모드가 유지된다. 팝업 우클릭 → "검사"의 콘솔에 오류·CSP 위반이 없다.
+- [ ] M5-16 MetaMask·Rabby 끔, 모드 "MetaMask처럼 보이기" → test-dapp 새로고침: C01 PASS(`isMetaMask` true, `isYourWallet` true, accessor), C05 PASS(목록에 "MetaMask (io.metamask)" 하나뿐, Your Wallet 항목 없음). C02 → yw-app 연결 창: 큰 글씨 origin `http://localhost:5173`(실제 사이트), 배지 "호환 모드: MetaMask" → 연결 → 계정. C03 → SIWE 서명 창(S09 정보, 필드 표, 같은 배지) → 승인 → ecrecover PASS. C04 → `true`. yw-app 잠금 → C04 → `false`. 해제 후 C05 목록의 "MetaMask (io.metamask)로 연결" 버튼 → 창 없이 계정.
+- [ ] M5-17 같은 조건에서 "Rabby처럼 보이기" → 새로고침: C01(`isRabby` true), C05 "Rabby Wallet (io.rabby)" 하나, C02 연결 창 배지 "호환 모드: Rabby"(연결 해제 후 확인), C03 SIWE 서명 창에도 같은 배지.
+- [ ] M5-18 "기본 (Your Wallet)"로 되돌림 → **새로고침 전** C01은 이전 모드 그대로(문서마다 고정), 새로고침 후 C01 "default mode" PASS(`isMetaMask` false), C05·T32 Your Wallet 하나, T01 연결 창에 호환 모드 배지 없음.
+- [ ] M5-19 실제 MetaMask 켬(가능하면 Rabby도 따로 켬)에서 M5-16을 반복하고 C01·C05·C02 결과를 기록한다. 기대: Your Wallet이 MetaMask 자리를 차지하고 실제 MetaMask 알림은 C05 목록에 없다. 실제 지갑이 이기면(C01 "another MetaMask-like wallet", C05에 io.metamask 둘, 또는 MetaMask 팝업이 뜸) 05 §2.12 한계로 기록하고 팝업 경고와 일치함을 확인한다. 같은 상태에서 기본 모드로 바꾸면 C05 목록에 실제 MetaMask·Rabby가 그대로 보인다(가로채지 않음).
+- [ ] M5-20 실제 MetaMask 전용 dApp, Sepolia(구현 시 확인: MetaMask 버튼만 있거나 `window.ethereum.isMetaMask`만 검사하는 dApp. 후보: MetaMask 공식 Test Dapp `https://metamask.github.io/test-dapp/`). 실제 MetaMask 끔·켬 각각, 모드 "MetaMask처럼 보이기": dApp의 MetaMask 연결 → yw-app 연결 창(그 사이트의 실제 https origin + "호환 모드: MetaMask") → 연결; SIWE 로그인(있으면, 없으면 personal_sign) → yw-app 서명 창 → 승인 → dApp이 로그인·서명 결과를 받음; `eth_signTypedData_v4` 1회. yw-app "연결된 사이트"에 그 origin이 보인다. 맞는 dApp이 없으면 C01–C05를 판정 근거로 하고 "해당 없음"으로 기록한다.
 
 ### 5.7 `extension/test-dapp/`
 
@@ -668,8 +678,8 @@ Issued At: 2026-10-25T23:59:00Z
 | 파일 | 내용 |
 |---|---|
 | `serve.mjs` | `node:http` 정적 서버. `127.0.0.1:5173`과 `[::1]:5173`에만 바인드, 이 폴더 파일만, 디렉터리 목록 없음, `Content-Type` 고정 표, 30줄 안팎 |
-| `index.html` | 버튼 T01–T32(T20b 포함), 입력칸(수신 주소, 금액, 토큰 주소), 결과 로그(`<pre>`, `textContent`만) |
-| `app.js` | EIP-6963 `requestProvider`로 Your Wallet 선택, 없으면 `window.ethereum` |
+| `index.html` | 버튼 T01–T32(T20b 포함), "MetaMask 전용 dApp 흉내" 구역 C01–C05와 지갑 선택 목록, 입력칸(수신 주소, 금액, 토큰 주소), 결과 로그(`<pre>`, `textContent`만) |
+| `app.js` | T01–T32: EIP-6963 `requestProvider`로 Your Wallet 선택, 없으면 `window.ethereum`(호환 모드에서는 Your Wallet rdns 알림이 없으므로 `window.ethereum` = 우리 provider). C01–C04: `window.ethereum.isMetaMask`만 검사하고 `window.ethereum`만 쓴다. C05: 받은 EIP-6963 알림을 uuid로 모아 이름·rdns 목록과 항목별 연결 버튼을 만든다 |
 | `keccak.js` | 시험용 Keccak-256(약 80줄). personal_sign·SIWE 서명을 ecrecover 프리컴파일(`0x…01`) `eth_call`로 검증 |
 
 WETH = Sepolia `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14`(03 §1.2, 구현 시 확인), Permit2 = `0x000000000022D473030F116dDEE9F6B43aC78BA3`, A0/A1 = 연결 계정 0/1.
@@ -708,7 +718,17 @@ WETH = Sepolia `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14`(03 §1.2, 구현 시
 | T29 | 2 MiB 문자열 `personal_sign` / 깊이 40 params | 확장에서 -32600 "Request too large." / 같음 |
 | T30 | `eth_blockNumber` 순차 5,000회 | 5,000 성공(속도 제한 -32005가 나오면 250 ms 대기 후 재시도해 최종 성공) |
 | T31 | T07을 보낸 뒤 승인 창에서 결정하지 않고 탭 닫기 | M5-7 기대 |
-| T32 | `eip6963:requestProvider` | 공지 1개, rdns `io.github.na-degen-girl.yourwallet` |
+| T32 | `eip6963:requestProvider` | 공지 1개, rdns `io.github.na-degen-girl.yourwallet`(기본 모드. 호환 모드에서는 C05로 판정) |
+
+"MetaMask 전용 dApp 흉내"(05 §2.12, 모드를 바꾼 뒤 새로고침):
+
+| ID | 동작 | 기대(MetaMask 모드 / Rabby 모드 / 기본 모드) |
+|---|---|---|
+| C01 | `window.ethereum` 속성 종류와 `isMetaMask`·`isRabby`·`isYourWallet`·`_metamask.isUnlocked` 표시 | accessor, `true`·`false`·`true`·function / accessor, `true`·`true`·`true`·function / data, `false`·`false`·`true`·undefined("MetaMask 전용 dApp은 지갑을 못 찾음"이 기본 모드의 PASS) |
+| C02 | `window.ethereum`으로 `eth_requestAccounts`(`isMetaMask`가 아니면 "MetaMask를 찾을 수 없습니다") | 연결 창(실제 origin + "호환 모드: MetaMask" / "호환 모드: Rabby") → `[A0]` / 같음 / "MetaMask를 찾을 수 없습니다" |
+| C03 | `window.ethereum`으로 SIWE(T20과 같은 메시지) `personal_sign` + ecrecover | 서명 창(S09 정보, 배지) → ecrecover = A0 / 같음 / 동작 안 함 |
+| C04 | `window.ethereum._metamask.isUnlocked()` | 연결·해제 상태 `true`, 잠김·미연결 `false` / 같음 / 동작 안 함 |
+| C05 | `requestProvider` 뒤 300 ms 동안 모은 알림을 이름·rdns·uuid로 나열, 항목별 "…로 연결" 버튼 | MetaMask·Rabby rdns 항목이 정확히 하나(`io.metamask`, `isYourWallet` true)이고 Your Wallet rdns 항목 없음 / 같음(`io.rabby`) / Your Wallet 하나, 다른 지갑은 그대로 |
 
 ### 5.8 M6 LLM 설명 (선택)
 

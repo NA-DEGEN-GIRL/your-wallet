@@ -92,9 +92,8 @@ fn encode(inbound: &Inbound) -> Vec<u8> {
             ("method", s(&request.method)),
             ("params", request.params.clone()),
             ("route", s(request.route.as_str())),
-            (
-                "context",
-                object(vec![
+            ("context", {
+                let mut context = vec![
                     ("browserFamily", s("chrome")),
                     ("extensionId", s(GOLDEN_ID)),
                     ("tabId", n(request.context.tab_id)),
@@ -104,8 +103,12 @@ fn encode(inbound: &Inbound) -> Vec<u8> {
                     ("frameOrigin", s(request.context.origin.as_str())),
                     ("documentLifecycle", s("active")),
                     ("channelNonce", s(&request.context.channel_nonce.hex())),
-                ]),
-            ),
+                ];
+                if let Some(mode) = request.context.compat_mode {
+                    context.push(("compatMode", s(mode.as_str())));
+                }
+                object(context)
+            }),
         ]),
         Inbound::Cancel(cancel) => object(vec![
             ("namespace", s("your-wallet")),

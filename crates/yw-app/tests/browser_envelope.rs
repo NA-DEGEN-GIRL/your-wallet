@@ -1,16 +1,17 @@
 //! spec/05 §10.2 R-E1 (request/cancel goldens → structures, unknown keys, widths, literals,
 //! cancel sequencing; ported from `archive/spec-v2.4:crates/native-host/src/wire.rs:1118-1143,
-//! 1195-1255`), R-E2 (response/event encoders against the goldens, oversize result → -32603) and
-//! R-P1 (app side of the pipe hello).
+//! 1195-1255`), R-E2 (response/event encoders against the goldens, oversize result → -32603),
+//! R-E3 (optional `context.compatMode`, spec/05 §2.12) and R-P1 (app side of the pipe hello).
 
 mod common;
 
 use common::browser::{GOLDEN_ID, golden_request, json};
 use yw_app::browser::envelope::{
-    BrowserEvent, CancelEnvelope, Correlation, EnvelopeError, HelloReject, Id16, Id32, Inbound,
-    encode_event, encode_hello_ack, encode_hello_reject, encode_response, parse_hello,
+    BrowserEvent, CancelEnvelope, CompatMode, Correlation, EnvelopeError, HelloReject, Id16, Id32,
+    Inbound, encode_event, encode_hello_ack, encode_hello_reject, encode_response, parse_hello,
     parse_inbound,
 };
+use yw_app::ui::approval_view::compat_mode_badge;
 use yw_core::policy::{ProviderError, Route};
 use yw_json::{Limits, Number, Object, Value};
 
@@ -93,6 +94,76 @@ fn r_e1_golden_request_maps_to_the_exact_structure() -> TestResult {
     let mut channel = [0; 32];
     channel[31] = 0x0d;
     assert_eq!(request.context.channel_nonce, Id32(channel));
+    // The golden (default mode) has no compatMode.
+    assert_eq!(request.context.compat_mode, None);
+    Ok(())
+}
+
+#[test]
+fn r_e3_optional_compat_mode_context_is_strict() -> TestResult {
+    // spec/05 §2.12, §6.1: optional `context.compatMode` ∈ {"metamask", "rabby"}; version 1 is
+    // unchanged (absent = default mode).
+    for (wire, expected) in [
+        ("\"metamask\"", CompatMode::MetaMask),
+        ("\"rabby\"", CompatMode::Rabby),
+    ] {
+        let frame = with_context("compatMode", Some(json(wire)))?;
+        let Ok(Inbound::Request(request)) = parse_inbound(&frame, GOLDEN_ID, false) else {
+            return Err(format!("compatMode {wire} did not parse").into());
+        };
+        assert_eq!(request.context.compat_mode, Some(expected));
+        // Everything else is the golden context.
+        assert_eq!(request.context.origin.as_str(), "https://dapp.example");
+        assert_eq!(request.context.tab_id, 17);
+    }
+    let invalid = EnvelopeError::Invalid(golden_correlation());
+    for wire in [
+        "\"off\"",
+        "\"MetaMask\"",
+        "\"RABBY\"",
+        "\"\"",
+        "\"metamask \"",
+        "null",
+        "1",
+        "true",
+        "[\"metamask\"]",
+        "{}",
+    ] {
+        let frame = with_context("compatMode", Some(json(wire)))?;
+        assert_eq!(
+            parse_inbound(&frame, GOLDEN_ID, false),
+            Err(invalid),
+            "compatMode {wire}"
+        );
+    }
+    // The optional key does not open the context to other keys.
+    let frame = with_context("compatMode", Some(json("\"metamask\"")))?;
+    let parsed = yw_json::parse(&frame, &Limits::REQUEST)?;
+    let context = parsed
+        .as_object()
+        .and_then(|object| object.get("context"))
+        .ok_or("no context")?
+        .clone();
+    let extra = yw_json::parse(&with(&context, "extra", Some(json("1")))?, &Limits::REQUEST)?;
+    assert_eq!(
+        parse_inbound(&with(&parsed, "context", Some(extra))?, GOLDEN_ID, false),
+        Err(invalid)
+    );
+    let missing = yw_json::parse(&with(&context, "tabId", None)?, &Limits::REQUEST)?;
+    assert_eq!(
+        parse_inbound(&with(&parsed, "context", Some(missing))?, GOLDEN_ID, false),
+        Err(invalid)
+    );
+    // Wire values, labels and the window badge.
+    for mode in [CompatMode::MetaMask, CompatMode::Rabby] {
+        assert_eq!(CompatMode::parse(mode.as_str()), Some(mode));
+    }
+    assert_eq!(CompatMode::parse("off"), None);
+    assert_eq!(
+        compat_mode_badge(CompatMode::MetaMask),
+        "호환 모드: MetaMask"
+    );
+    assert_eq!(compat_mode_badge(CompatMode::Rabby), "호환 모드: Rabby");
     Ok(())
 }
 

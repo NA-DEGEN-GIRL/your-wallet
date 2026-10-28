@@ -1364,6 +1364,10 @@ impl App {
         };
         let wide_layout = ui.window.client_rect().w >= ui.window.px(80 * 8);
         if let QueuedItem::Site(site) = &ui.item {
+            // spec/05 §2.12: after the http/punycode badges, connect and approval views alike.
+            if let Some(mode) = site.compat_mode {
+                badges.insert(0, crate::ui::approval_view::compat_mode_badge(mode));
+            }
             if let (Some(connect), PrepareState::Ready(ReadyContent::Connect(_))) =
                 (&ui.connect, &ui.session.gate.prepare)
             {

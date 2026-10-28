@@ -8,9 +8,11 @@ mod common;
 
 use std::sync::{Arc, Mutex};
 
-use common::browser::{Harness, NOW_UNIX, activation, events_of, json, wallet};
+use common::browser::{
+    Harness, NOW_UNIX, RequestSpec, activation, events_of, json, request_frame, wallet,
+};
 use common::{Answer, FakeRpc, hex};
-use yw_app::browser::envelope::{BrowserEvent, Correlation};
+use yw_app::browser::envelope::{BrowserEvent, CompatMode, Correlation};
 use yw_app::browser::read::{ReadContext, execute};
 use yw_app::browser::{BrowserCore, DappEvent, GrantChange, SiteKind, VaultView, outcome_error};
 use yw_app::flow::evm::SharedTransport;
@@ -21,7 +23,7 @@ use yw_core::evm::address::{Address, parse_address};
 use yw_core::evm::chain::{SEPOLIA, SimulationSupport};
 const MAINNET: u64 = 1;
 use yw_core::policy::{BrowserOrigin, ConnectedSite, ProviderError};
-use yw_json::Value;
+use yw_json::{Limits, Object, Value};
 use yw_win::http::{HttpError, HttpsUrl};
 
 const SITE: &str = "https://app.example";
@@ -462,6 +464,95 @@ fn r_d4_approval_limits_and_duplicate_connect() -> TestResult {
     let other = h.send(OTHER, 3, "eth_requestAccounts", json("[]"));
     assert!(h.responses().iter().all(|(c, _)| *c != other));
     assert_eq!(h.sink.requests().len(), 2);
+    Ok(())
+}
+
+/// A request frame whose context carries `compatMode` (spec/05 §2.12, §6.1).
+fn compat_frame(spec: &RequestSpec<'_>, mode: Option<&str>) -> TestResult<Vec<u8>> {
+    let frame = request_frame(spec);
+    let Some(mode) = mode else {
+        return Ok(frame);
+    };
+    let value = yw_json::parse(&frame, &Limits::REQUEST)?;
+    let mut pairs = Vec::new();
+    for (key, item) in value.as_object().ok_or("not an object")?.iter() {
+        if key == "context" {
+            let mut context: Vec<(String, Value)> = item
+                .as_object()
+                .ok_or("no context")?
+                .iter()
+                .map(|(name, entry)| (name.to_owned(), entry.clone()))
+                .collect();
+            context.push(("compatMode".to_owned(), Value::String(mode.to_owned())));
+            pairs.push((
+                key.to_owned(),
+                Value::Object(Object::from_pairs(context).ok_or("duplicate")?),
+            ));
+        } else {
+            pairs.push((key.to_owned(), item.clone()));
+        }
+    }
+    Ok(yw_json::to_vec(&Value::Object(
+        Object::from_pairs(pairs).ok_or("duplicate")?,
+    )))
+}
+
+#[test]
+fn r_e3_compat_mode_reaches_the_approval_queue_with_the_real_origin() -> TestResult {
+    let mut h = Harness::new();
+    let cases = [
+        (SITE, Some("metamask"), Some(CompatMode::MetaMask)),
+        (OTHER, Some("rabby"), Some(CompatMode::Rabby)),
+        ("https://third.example", None, None),
+    ];
+    for (index, (site, wire, _)) in cases.iter().enumerate() {
+        let document = u8::try_from(index + 1)?;
+        let sequence = h.next_sequence();
+        let frame = compat_frame(
+            &RequestSpec {
+                sequence,
+                request: 0x40 + document,
+                document,
+                origin: site,
+                method: "eth_requestAccounts",
+                params: json("[]"),
+                route: "permission",
+                deadline: NOW_UNIX + 600_000,
+            },
+            *wire,
+        )?;
+        h.raw(&frame);
+    }
+    // Queued for the connect window without an answer; the mode is a note, not a rule change.
+    assert!(h.responses().is_empty());
+    let requests = h.sink.requests();
+    assert_eq!(requests.len(), cases.len());
+    for (request, (site, _, expected)) in requests.iter().zip(cases) {
+        assert_eq!(request.origin.as_str(), site);
+        assert_eq!(request.compat_mode, expected);
+        assert!(matches!(request.kind, SiteKind::RequestAccounts));
+    }
+    // An invalid mode is an invalid envelope for that request only (-32600); the stream lives on.
+    let sequence = h.next_sequence();
+    let bad = compat_frame(
+        &RequestSpec {
+            sequence,
+            request: 0x50,
+            document: 9,
+            origin: "https://fourth.example",
+            method: "eth_chainId",
+            params: json("[]"),
+            route: "permission",
+            deadline: NOW_UNIX + 600_000,
+        },
+        Some("off"),
+    )?;
+    h.raw(&bad);
+    let answered = h.responses();
+    assert_eq!(answered.len(), 1);
+    assert_eq!(answered[0].1, Err(ProviderError::InvalidRequest));
+    let next = h.send(SITE, 1, "eth_chainId", json("[]"));
+    assert_eq!(text(&single(&h, &next)?), "\"0xaa36a7\"");
     Ok(())
 }
 

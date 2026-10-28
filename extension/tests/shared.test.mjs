@@ -206,3 +206,28 @@ test("shared error strings are exactly the spec/05 §5 messages", () => {
     assert.deepEqual({ ...shared.ERRORS[name] }, { code, message }, name);
   }
 });
+
+test("S4 compatibility mode values, normalization and the optional content→background compatMode", () => {
+  assert.deepEqual([...shared.COMPAT_MODES], ["off", "metamask", "rabby"]);
+  assert.equal(shared.COMPAT_MODE_STORAGE_KEY, "compatMode");
+  assert.equal(shared.POPUP_PORT_NAME, "your-wallet-popup-v1");
+  for (const mode of ["off", "metamask", "rabby"]) {
+    assert.equal(shared.isCompatMode(mode), true, mode);
+    assert.equal(shared.normalizeCompatMode(mode), mode, mode);
+  }
+  for (const value of ["MetaMask", "RABBY", "on", "", " metamask", null, undefined, 1, {}, ["metamask"]]) {
+    assert.equal(shared.isCompatMode(value), false, String(value));
+    assert.equal(shared.normalizeCompatMode(value), "off", String(value));
+  }
+  const activation = "c".repeat(64);
+  const request = { namespace: "your-wallet", version: 1, kind: "request", activationNonce: activation, id: "01".repeat(16), method: "eth_chainId", params: [] };
+  assert.equal(shared.parseContentMessage(request, activation).compatMode, "off");
+  assert.equal(shared.parseContentMessage({ ...request, compatMode: "metamask" }, activation).compatMode, "metamask");
+  assert.equal(shared.parseContentMessage({ ...request, compatMode: "rabby" }, activation).compatMode, "rabby");
+  for (const compatMode of ["off", "MetaMask", "x", null, 1, true]) {
+    assert.equal(shared.parseContentMessage({ ...request, compatMode }, activation), null, String(compatMode));
+  }
+  // Page messages never carry a mode (the page cannot choose it).
+  const channel = "d".repeat(64);
+  assert.equal(shared.parsePageMessage({ namespace: "your-wallet", version: 1, kind: "request", channel, id: "01".repeat(16), method: "eth_chainId", params: [], compatMode: "metamask" }, channel), null);
+});

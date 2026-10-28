@@ -170,7 +170,10 @@
         method: request.method,
         params: request.params,
         route,
-        context: activation.context
+        // spec/05 §2.12, §6.1: optional display-only `compatMode`, absent in the default mode.
+        context: request.compatMode === "off"
+          ? activation.context
+          : { ...activation.context, compatMode: request.compatMode }
       };
       if (!Number.isSafeInteger(sequence) || !Number.isSafeInteger(envelope.deadlineUnixMs)) {
         return this.reject(activation, request.id, shared.ERRORS.INTERNAL);
@@ -458,6 +461,39 @@
         this.teardownNative(this.native, { disconnect: true, countFailure: false });
       }
     }
+
+    // spec/05 §2.12 popup status. Envelope v1 has no ping, so this is what the router last
+    // observed; it never opens a native connection (that would launch yw-app):
+    // `connected` = open and yw-app answered, `checking` = open, no answer yet,
+    // `unavailable` = the last connection failed (backoff), `unknown` = nothing observed.
+    nativeStatus() {
+      if (this.native !== null) {
+        return this.native.healthy ? "connected" : "checking";
+      }
+      return this.failures > 0 ? "unavailable" : "unknown";
+    }
+  }
+
+  const NATIVE_STATUSES = Object.freeze(["connected", "checking", "unavailable", "unknown"]);
+
+  // The popup port (spec/05 §2.12) is accepted only from this extension's own action popup page,
+  // never from a tab (content scripts can open runtime ports too).
+  function isPopupSender(sender, extensionId, popupUrl) {
+    return sender !== null
+      && typeof sender === "object"
+      && sender.id === extensionId
+      && sender.tab === undefined
+      && typeof popupUrl === "string"
+      && sender.url === popupUrl;
+  }
+
+  function popupStatusMessage(status) {
+    return {
+      namespace: shared.NAMESPACE,
+      version: shared.PROTOCOL_VERSION,
+      kind: "status",
+      native: NATIVE_STATUSES.includes(status) ? status : "unknown"
+    };
   }
 
   function validNativeMessage(native, value) {
@@ -543,7 +579,11 @@
       RATE_BURST,
       NATIVE_BACKOFF_BASE_MS,
       NATIVE_BACKOFF_MAX_MS,
-      deriveSenderContext
+      NATIVE_STATUSES,
+      POPUP_PORT_NAME: shared.POPUP_PORT_NAME,
+      deriveSenderContext,
+      isPopupSender,
+      popupStatusMessage
     })
   });
 }(globalThis));

@@ -185,7 +185,7 @@ function randomAlphanumeric(length) {
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 // ---------- verification helpers ----------
-async function ecrecoverPersonal(label, messageBytes, signature, expected) {
+async function ecrecoverPersonal(label, messageBytes, signature, expected, call = rpc) {
   if (typeof signature !== "string" || !/^0x[0-9a-fA-F]{130}$/u.test(signature)) {
     write(`${label} signature has unexpected shape: ${show(signature)}`);
     return;
@@ -197,7 +197,7 @@ async function ecrecoverPersonal(label, messageBytes, signature, expected) {
   const digest = bytesToHex(keccak256(preimage));
   const body = signature.slice(2).toLowerCase();
   const data = `0x${digest}${word(body.slice(128, 130))}${body.slice(0, 64)}${body.slice(64, 128)}`;
-  const outcome = await rpc(label, "eth_call", [{ to: ECRECOVER, data }, "latest"], { quiet: true });
+  const outcome = await call(label, "eth_call", [{ to: ECRECOVER, data }, "latest"], { quiet: true });
   const recovered = outcome.ok && typeof outcome.result === "string" && outcome.result.length === 66
     ? `0x${outcome.result.slice(-40)}`
     : null;
@@ -583,6 +583,150 @@ const TESTS = {
     verdict("T32", ours.length === 1, `${seen.length} announcement(s), ${ours.length} with rdns ${RDNS}`);
   }
 };
+
+// ---------- MetaMask-only dApp imitation (spec/05 §2.12, spec/09 §5.7 C01–C05) ----------
+// Like a dApp that supports only MetaMask: no Your Wallet rdns, only window.ethereum.isMetaMask.
+// The picker keeps every EIP-6963 announcement by uuid, as wallet-picker libraries do.
+const COMPAT_RDNS = new Set(["io.metamask", "io.metamask.flask", "io.rabby"]);
+const pickerEntries = new Map();
+window.addEventListener("eip6963:announceProvider", (event) => {
+  const detail = event.detail;
+  if (detail && detail.info && typeof detail.info.uuid === "string" && !pickerEntries.has(detail.info.uuid)) {
+    pickerEntries.set(detail.info.uuid, detail);
+  }
+});
+
+function ourMode(candidate) {
+  if (!candidate || candidate.isYourWallet !== true) {
+    return "not Your Wallet";
+  }
+  if (candidate.isRabby === true) {
+    return "rabby";
+  }
+  return candidate.isMetaMask === true ? "metamask" : "off";
+}
+
+function metamaskOnlyProvider(label) {
+  const candidate = window.ethereum;
+  if (!candidate || candidate.isMetaMask !== true) {
+    write(`${label} MetaMask를 찾을 수 없습니다(이 dApp은 MetaMask만 지원). 확장 팝업에서 "MetaMask처럼 보이기"를 고르고 새로고침하세요.`);
+    return null;
+  }
+  return candidate;
+}
+
+async function mmRpc(label, method, params, { quiet = false } = {}) {
+  const target = metamaskOnlyProvider(label);
+  if (target === null) {
+    return { ok: false, code: undefined, message: "no MetaMask" };
+  }
+  try {
+    const result = await target.request(params === undefined ? { method } : { method, params });
+    if (!quiet) {
+      write(`${label} ${method} -> ${show(result)}`);
+    }
+    return { ok: true, result };
+  } catch (error) {
+    if (!quiet) {
+      write(`${label} ${method} -> ERROR ${error?.code} ${error?.message}`);
+    }
+    return { ok: false, code: error?.code, message: error?.message };
+  }
+}
+
+function renderPicker() {
+  const container = document.getElementById("picker");
+  container.replaceChildren();
+  for (const detail of pickerEntries.values()) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = `${detail.info.name} (${detail.info.rdns}) 로 연결`;
+    button.addEventListener("click", async () => {
+      write(`---- picker ${detail.info.name} (${detail.info.rdns})`);
+      try {
+        const accounts = await detail.provider.request({ method: "eth_requestAccounts" });
+        write(`picker eth_requestAccounts -> ${show(accounts)}`);
+      } catch (error) {
+        write(`picker eth_requestAccounts -> ERROR ${error?.code} ${error?.message}`);
+      }
+    });
+    container.append(button);
+  }
+}
+
+Object.assign(TESTS, {
+  async C01() {
+    const candidate = window.ethereum;
+    const descriptor = Object.getOwnPropertyDescriptor(window, "ethereum");
+    write(`C01 window.ethereum: ${candidate ? "present" : "absent"}; property ${descriptor === undefined ? "none" : "get" in descriptor ? "accessor" : "data"}, configurable=${descriptor?.configurable}`);
+    write(`C01 flags isMetaMask=${show(candidate?.isMetaMask)} isRabby=${show(candidate?.isRabby)} isYourWallet=${show(candidate?.isYourWallet)} _metamask.isUnlocked=${typeof candidate?._metamask?.isUnlocked}`);
+    const mode = ourMode(candidate);
+    write(`C01 Your Wallet mode as seen by the page: ${mode}`);
+    if (mode === "metamask" || mode === "rabby") {
+      verdict("C01", candidate.isMetaMask === true && typeof candidate._metamask?.isUnlocked === "function",
+        `MetaMask-only check passes and the provider is Your Wallet (${mode})`);
+    } else if (candidate?.isMetaMask === true) {
+      verdict("C01", false, "window.ethereum is another MetaMask-like wallet, not Your Wallet (interception lost; disable the real MetaMask/Rabby)");
+    } else {
+      verdict("C01", mode === "off", "default mode: isMetaMask is false, so a MetaMask-only dApp would not find a wallet (expected in 기본 mode)");
+    }
+  },
+  async C02() {
+    write("C02 expect the yw-app connect window: real origin of this page + badge 호환 모드: MetaMask (or Rabby).");
+    const outcome = await mmRpc("C02", "eth_requestAccounts", []);
+    if (outcome.ok && Array.isArray(outcome.result) && outcome.result.length > 0) {
+      account0 = outcome.result[0];
+    }
+    verdict("C02", outcome.ok && Array.isArray(outcome.result) && outcome.result.length > 0, "connected through window.ethereum");
+  },
+  async C03() {
+    const accounts = await mmRpc("C03", "eth_requestAccounts", [], { quiet: true });
+    if (!accounts.ok || !Array.isArray(accounts.result) || accounts.result.length === 0) {
+      write("C03 not connected: run C02 first");
+      return;
+    }
+    const address = accounts.result[0];
+    const message = siweMessage({ prefix: `${location.protocol}//${location.host}`, uri: location.origin, address });
+    write(`C03 message:\n${message}`);
+    const outcome = await mmRpc("C03", "personal_sign", [utf8Hex(message), address]);
+    if (outcome.ok) {
+      await ecrecoverPersonal("C03", new TextEncoder().encode(message), outcome.result, address, mmRpc);
+    }
+  },
+  async C04() {
+    const target = metamaskOnlyProvider("C04");
+    if (target === null) {
+      return;
+    }
+    if (typeof target._metamask?.isUnlocked !== "function") {
+      verdict("C04", false, "_metamask.isUnlocked is missing");
+      return;
+    }
+    const unlocked = await target._metamask.isUnlocked();
+    write(`C04 _metamask.isUnlocked() -> ${show(unlocked)} (true only while connected and yw-app unlocked)`);
+    verdict("C04", typeof unlocked === "boolean", "resolves to a boolean");
+  },
+  async C05() {
+    window.dispatchEvent(new Event("eip6963:requestProvider"));
+    await sleep(300);
+    const entries = [...pickerEntries.values()];
+    for (const detail of entries) {
+      write(`C05 ${detail.info.name} rdns=${detail.info.rdns} uuid=${detail.info.uuid} isYourWallet=${show(detail.provider?.isYourWallet)} same-as-window.ethereum=${detail.provider === window.ethereum}`);
+    }
+    renderPicker();
+    const mode = ourMode(window.ethereum);
+    const compatEntries = entries.filter((detail) => COMPAT_RDNS.has(detail.info.rdns));
+    if (mode === "metamask" || mode === "rabby") {
+      const expectedRdns = mode === "metamask" ? "io.metamask" : "io.rabby";
+      verdict("C05", compatEntries.length === 1 && compatEntries[0].info.rdns === expectedRdns
+        && compatEntries[0].provider?.isYourWallet === true && !entries.some((detail) => detail.info.rdns === RDNS),
+      `${entries.length} provider(s); exactly one MetaMask/Rabby entry (${expectedRdns}) and it is Your Wallet; no separate Your Wallet entry`);
+    } else {
+      verdict("C05", entries.filter((detail) => detail.info.rdns === RDNS).length === 1,
+        `${entries.length} provider(s); default mode lists Your Wallet (${RDNS}); other wallets are listed unchanged`);
+    }
+  }
+});
 
 for (const button of document.querySelectorAll("button[data-test]")) {
   button.addEventListener("click", async () => {

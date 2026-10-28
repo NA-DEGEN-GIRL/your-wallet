@@ -9,10 +9,33 @@ const MAX_SOURCE_FILE_BYTES = 256 * 1024;
 const MAX_PACKAGE_SOURCE_BYTES = 1024 * 1024;
 const REQUIRED_PERMISSIONS = ["nativeMessaging", "storage"];
 const EXTENSION_NAME = "Your Wallet";
-// Exactly the ten top-level keys of spec/05 §2.2 (including the pinned `key`).
-const MANIFEST_KEYS = ["background", "content_scripts", "description", "incognito", "key", "manifest_version", "minimum_chrome_version", "name", "permissions", "version"];
+// Exactly the eleven top-level keys of spec/05 §2.2 (including the pinned `key` and the
+// compatibility-mode popup `action`, §2.12).
+const MANIFEST_KEYS = ["action", "background", "content_scripts", "description", "incognito", "key", "manifest_version", "minimum_chrome_version", "name", "permissions", "version"];
 // spec/05 §2.2: both content scripts match exactly these three patterns.
 const CONTENT_SCRIPT_MATCHES = ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"];
+// spec/05 §2.12: the action popup is one local HTML page plus one local stylesheet.
+const POPUP_PAGE = "popup/popup.html";
+const POPUP_FILES = ["popup/popup.css", "popup/popup.html"];
+const POPUP_STYLESHEET = "popup.css";
+// Popup HTML: no inline script/style, no event-handler attributes, no URL schemes or
+// protocol-relative references, no embedding or navigation elements (MV3 CSP is the second line).
+const FORBIDDEN_POPUP_HTML_PATTERNS = [
+  [/\son[a-z]+\s*=/iu, "inline event handler"],
+  [/\sstyle\s*=/iu, "inline style attribute"],
+  [/<style\b/iu, "inline style element"],
+  [/<(?:iframe|frame|frameset|object|embed|applet|portal|base|form|img|video|audio|source|svg|math)\b/iu, "embedding or navigation element"],
+  [/<meta\b[^>]*http-equiv/iu, "meta http-equiv"],
+  [/[a-z][a-z0-9+.-]*:\/\//iu, "URL with a scheme"],
+  [/\b(?:javascript|data|blob|filesystem|chrome|chrome-extension)\s*:/iu, "URL scheme"],
+  [/(?:src|href|action|srcset|poster)\s*=\s*["']?\s*\/\//iu, "protocol-relative URL"],
+];
+const FORBIDDEN_POPUP_CSS_PATTERNS = [
+  [/\burl\s*\(/iu, "url() reference"],
+  [/@import\b/iu, "@import"],
+  [/\bexpression\s*\(/iu, "CSS expression"],
+  [/[a-z][a-z0-9+.-]*:\/\//iu, "URL with a scheme"],
+];
 const FORBIDDEN_SOURCE_PATTERNS = [
   [/\beval\s*\(/u, "eval"],
   [/\bnew\s+Function\b/u, "Function constructor"],
@@ -107,6 +130,9 @@ function validateManifest(manifest) {
   exactKeys(manifest.background, ["service_worker", "type"], "extension background");
   if (manifest.background.service_worker !== "src/background.js" || manifest.background.type !== "module") fail("extension background worker contract changed");
 
+  exactKeys(manifest.action, ["default_popup", "default_title"], "extension action");
+  if (manifest.action.default_popup !== POPUP_PAGE || manifest.action.default_title !== EXTENSION_NAME) fail("extension action popup contract changed");
+
   if (!Array.isArray(manifest.content_scripts) || manifest.content_scripts.length !== 2) fail("extension must have the two reviewed content-script declarations");
   const [mainWorld, isolatedWorld] = manifest.content_scripts;
   for (const [entry, label] of [[mainWorld, "MAIN content script"], [isolatedWorld, "ISOLATED content script"]]) {
@@ -131,6 +157,52 @@ function manifestExtensionId(key) {
   }
 }
 
+async function listPopupFiles(rootReal) {
+  const popupRoot = path.join(rootReal, "popup");
+  const popupStatus = await lstat(popupRoot);
+  if (!popupStatus.isDirectory() || popupStatus.isSymbolicLink()) fail("extension/popup must be a real directory");
+  const entries = await readdir(popupRoot, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || entry.isSymbolicLink()) fail(`extension/popup contains a forbidden entry: ${entry.name}`);
+    files.push(`popup/${entry.name}`);
+  }
+  files.sort();
+  exactArray(files, POPUP_FILES, "extension/popup files");
+  return files;
+}
+
+// Returns the package paths (`src/*.js`) of the popup's module scripts.
+function auditPopupHtml(source) {
+  for (const [pattern, description] of FORBIDDEN_POPUP_HTML_PATTERNS) {
+    if (pattern.test(source)) fail(`${POPUP_PAGE} contains forbidden ${description}`);
+  }
+  const scripts = [];
+  const scriptPattern = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/giu;
+  for (const match of source.matchAll(scriptPattern)) {
+    const attributes = /^\s+type="module"\s+src="\.\.\/(src\/[A-Za-z0-9._-]+\.js)"\s*$/u.exec(match[1]);
+    if (attributes === null) fail(`${POPUP_PAGE} script must be exactly type="module" src="../src/<name>.js"`);
+    if (match[2].trim() !== "") fail(`${POPUP_PAGE} contains an inline script`);
+    scripts.push(normalizePackagePath(attributes[1], `${POPUP_PAGE} script`));
+  }
+  if ((source.match(/<script\b/giu) ?? []).length !== scripts.length) fail(`${POPUP_PAGE} contains a malformed script element`);
+  if (scripts.length === 0) fail(`${POPUP_PAGE} must load its module script`);
+  const links = [...source.matchAll(/<link\b([^>]*)>/giu)];
+  for (const link of links) {
+    if (!/^\s+rel="stylesheet"\s+href="([A-Za-z0-9._-]+\.css)"\s*$/u.test(link[1]) || !link[1].includes(`href="${POPUP_STYLESHEET}"`)) {
+      fail(`${POPUP_PAGE} may link only its local stylesheet ${POPUP_STYLESHEET}`);
+    }
+  }
+  if (links.length !== 1) fail(`${POPUP_PAGE} must link exactly one local stylesheet`);
+  return scripts;
+}
+
+function auditPopupCss(source) {
+  for (const [pattern, description] of FORBIDDEN_POPUP_CSS_PATTERNS) {
+    if (pattern.test(source)) fail(`popup/${POPUP_STYLESHEET} contains forbidden ${description}`);
+  }
+}
+
 function staticImports(source) {
   const imports = [];
   const pattern = /\bimport\s+(?:[^"']+?\s+from\s+)?["']([^"']+)["']/gu;
@@ -151,12 +223,19 @@ export async function auditExtensionRoot(extensionRoot) {
   }
   const extensionId = validateManifest(manifest);
 
+  const popupFiles = await listPopupFiles(rootReal);
+  const popupHtmlBytes = await readRegularFile(rootReal, POPUP_PAGE);
+  const popupScripts = auditPopupHtml(decodeUtf8(popupHtmlBytes, POPUP_PAGE));
+  const popupCssBytes = await readRegularFile(rootReal, `popup/${POPUP_STYLESHEET}`);
+  auditPopupCss(decodeUtf8(popupCssBytes, `popup/${POPUP_STYLESHEET}`));
+
   const sourceFiles = await listSourceFiles(rootReal);
   const expectedFiles = new Set([
     manifest.background.service_worker,
     ...manifest.content_scripts.flatMap((entry) => entry.js),
+    ...popupScripts,
   ]);
-  let totalBytes = manifestBytes.length;
+  let totalBytes = manifestBytes.length + popupHtmlBytes.length + popupCssBytes.length;
   for (const relativePath of sourceFiles) {
     const bytes = await readRegularFile(rootReal, relativePath);
     totalBytes += bytes.length;
@@ -179,7 +258,7 @@ export async function auditExtensionRoot(extensionRoot) {
     if (!expectedFiles.has(sourceFile)) fail(`unreferenced executable source is forbidden from the package: ${sourceFile}`);
   }
 
-  return { packagedFiles: ["manifest.json", ...sourceFiles], extensionId };
+  return { packagedFiles: ["manifest.json", ...popupFiles, ...sourceFiles], extensionId };
 }
 
 function parseArguments(argv) {

@@ -8,6 +8,8 @@
   }
 
   const targetOrigin = root.location.origin;
+  const setTimer = (callback, milliseconds) => root.setTimeout(callback, milliseconds);
+  const clearTimer = (handle) => root.clearTimeout(handle);
 
   function connectPort() {
     // Throws when the extension context is invalidated; the bridge then enters DEAD.
@@ -31,27 +33,40 @@
     }
   }
 
-  const bridge = new contentCore.ContentBridge({
-    channelNonce: shared.randomHex(32),
-    connectPort,
-    postToPage: (message) => root.postMessage(message, targetOrigin),
-    isContextValid,
-    setTimer: (callback, milliseconds) => root.setTimeout(callback, milliseconds),
-    clearTimer: (handle) => root.clearTimeout(handle),
-    now: () => Date.now()
-  });
+  // spec/05 §2.12: the compatibility mode is read once at document_start and handed to the MAIN
+  // world in `bridge-init`. The page provider waits for that message (a few ms) before its first
+  // EIP-6963 announcement, so no listener is needed until the mode is known: a `bridge-request`
+  // posted earlier is answered by the `announce()` below.
+  contentCore.loadCompatMode({
+    readStorage: () => chrome.storage.local.get(shared.COMPAT_MODE_STORAGE_KEY),
+    setTimer,
+    clearTimer
+  }).then(start);
 
-  // No `once`: the document can be restored from bfcache and hidden again.
-  // `beforeunload` is deliberately ignored because the user may cancel the unload.
-  root.addEventListener("message", (event) => {
-    if (event.source !== root || event.origin !== targetOrigin) {
-      return;
-    }
-    bridge.receivePage(event.data);
-  });
-  root.addEventListener("pagehide", () => bridge.closeForDocument("document-pagehide"));
-  // Page Lifecycle `freeze` is fired at the Document (non-bubbling), not at the Window.
-  root.document.addEventListener("freeze", () => bridge.closeForDocument("document-freeze"));
+  function start(compatMode) {
+    const bridge = new contentCore.ContentBridge({
+      channelNonce: shared.randomHex(32),
+      compatMode,
+      connectPort,
+      postToPage: (message) => root.postMessage(message, targetOrigin),
+      isContextValid,
+      setTimer,
+      clearTimer,
+      now: () => Date.now()
+    });
 
-  bridge.announce();
+    // No `once`: the document can be restored from bfcache and hidden again.
+    // `beforeunload` is deliberately ignored because the user may cancel the unload.
+    root.addEventListener("message", (event) => {
+      if (event.source !== root || event.origin !== targetOrigin) {
+        return;
+      }
+      bridge.receivePage(event.data);
+    });
+    root.addEventListener("pagehide", () => bridge.closeForDocument("document-pagehide"));
+    // Page Lifecycle `freeze` is fired at the Document (non-bubbling), not at the Window.
+    root.document.addEventListener("freeze", () => bridge.closeForDocument("document-freeze"));
+
+    bridge.announce();
+  }
 }(globalThis));

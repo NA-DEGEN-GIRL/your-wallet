@@ -82,6 +82,47 @@ impl fmt::Debug for Id16 {
     }
 }
 
+/// The extension compatibility mode the page was served under (spec/05 §2.12, §6.1 optional
+/// `context.compatMode`). Display only: it never changes origin, permission or approval rules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CompatMode {
+    /// `"metamask"`: the page saw the provider under the `MetaMask` identity.
+    MetaMask,
+    /// `"rabby"`: the page saw the provider under the `Rabby Wallet` identity.
+    Rabby,
+}
+
+impl CompatMode {
+    /// Parses the wire value. The default mode is the absence of the key, so `"off"` (like any
+    /// other value) is not accepted.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "metamask" => Some(Self::MetaMask),
+            "rabby" => Some(Self::Rabby),
+            _ => None,
+        }
+    }
+
+    /// The wire value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MetaMask => "metamask",
+            Self::Rabby => "rabby",
+        }
+    }
+
+    /// The wallet name shown in the approval windows.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::MetaMask => "MetaMask",
+            Self::Rabby => "Rabby",
+        }
+    }
+}
+
 /// The browser context of a request (spec/05 §6.1 `context`, after validation).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BrowserContext {
@@ -93,6 +134,8 @@ pub struct BrowserContext {
     pub origin: BrowserOrigin,
     /// Page channel nonce.
     pub channel_nonce: Id32,
+    /// Optional compatibility mode (spec/05 §2.12); `None` = default mode (key absent).
+    pub compat_mode: Option<CompatMode>,
 }
 
 /// The four correlation fields every response echoes.
@@ -273,9 +316,19 @@ fn common_literals(object: &Object, kind: &str) -> bool {
         && str_field(object, "kind") == Some(kind)
 }
 
+/// The optional context key (spec/05 §6.1); envelope version 1 is unchanged without it.
+const CONTEXT_COMPAT_KEY: &str = "compatMode";
+
 fn parse_context(value: &Value, pinned_extension_id: &str) -> Option<BrowserContext> {
     let object = value.as_object()?;
-    if !exact_keys(object, &CONTEXT_KEYS)
+    // Present → must be exactly "metamask" or "rabby" (a string); absent → default mode.
+    let compat_mode = match object.get(CONTEXT_COMPAT_KEY) {
+        None => None,
+        Some(mode) => Some(CompatMode::parse(mode.as_str()?)?),
+    };
+    let expected_len = CONTEXT_KEYS.len() + usize::from(compat_mode.is_some());
+    if object.len() != expected_len
+        || !CONTEXT_KEYS.iter().all(|key| object.get(key).is_some())
         || str_field(object, "browserFamily") != Some("chrome")
         || str_field(object, "extensionId") != Some(pinned_extension_id)
         || int_field(object.get("frameId")) != Some(0)
@@ -294,6 +347,7 @@ fn parse_context(value: &Value, pinned_extension_id: &str) -> Option<BrowserCont
         document_id: document_id.to_owned(),
         origin: BrowserOrigin::parse(top)?,
         channel_nonce: Id32::parse(str_field(object, "channelNonce")?)?,
+        compat_mode,
     })
 }
 

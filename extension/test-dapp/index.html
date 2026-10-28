@@ -81,6 +81,17 @@
     <button type="button" id="clear">Clear log</button>
   </div>
 
+  <h2>MetaMask 전용 dApp 흉내 (호환 모드, spec/05 §2.12)</h2>
+  <p class="note">이 구역은 Your Wallet rdns를 찾지 않습니다. C01–C04는 <code>window.ethereum.isMetaMask</code>만 보고 <code>window.ethereum</code>을 씁니다(MetaMask 전용 dApp과 같음). C05는 EIP-6963 알림을 이름·rdns로 나열하는 지갑 선택 목록입니다. 확장 팝업에서 모드를 바꾼 뒤 이 페이지를 새로고침하세요.</p>
+  <div class="tests">
+    <button type="button" data-test="C01">C01 window.ethereum 플래그(isMetaMask 검사)</button>
+    <button type="button" data-test="C02">C02 MetaMask로 연결</button>
+    <button type="button" data-test="C03">C03 MetaMask로 SIWE 로그인</button>
+    <button type="button" data-test="C04">C04 _metamask.isUnlocked()</button>
+    <button type="button" data-test="C05">C05 EIP-6963 지갑 선택 목록</button>
+  </div>
+  <div id="picker" class="tests"></div>
+
   <h2>Log</h2>
   <pre id="log"></pre>
   <script type="module" src="app.js"></script>

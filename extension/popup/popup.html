@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>Your Wallet</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <h1 id="title">Your Wallet</h1>
+  <section aria-labelledby="status-heading">
+    <h2 id="status-heading"></h2>
+    <p><span id="status-value" class="status"></span></p>
+    <p id="status-detail" class="note"></p>
+  </section>
+  <section aria-labelledby="mode-heading">
+    <h2 id="mode-heading"></h2>
+    <div id="modes" role="radiogroup" aria-labelledby="mode-heading"></div>
+    <p id="mode-explanation" class="explanation"></p>
+    <p id="mode-saved" class="note" role="status"></p>
+    <p id="apply-note" class="note"></p>
+    <p id="warning" class="warning"></p>
+  </section>
+  <script type="module" src="../src/popup.js"></script>
+</body>
+</html>

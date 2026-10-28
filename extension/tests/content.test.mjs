@@ -102,13 +102,14 @@ class FakePort {
   }
 }
 
-function harness({ connectThrows = false } = {}) {
+function harness({ connectThrows = false, compatMode } = {}) {
   const clock = new FakeClock();
   const page = [];
   const ports = [];
   let contextValid = true;
   const bridge = new ContentBridge({
     channelNonce: CHANNEL,
+    ...(compatMode === undefined ? {} : { compatMode }),
     connectPort: () => {
       if (connectThrows) {
         throw new Error("Extension context invalidated.");
@@ -142,7 +143,7 @@ function harness({ connectThrows = false } = {}) {
 test("C1 no port before the first request; IDLE -> CONNECTING -> ACTIVE keeps queue order", () => {
   const h = harness();
   h.bridge.announce();
-  assert.deepEqual(h.page, [{ namespace: "your-wallet", version: 1, kind: "bridge-init", channel: CHANNEL }]);
+  assert.deepEqual(h.page, [{ namespace: "your-wallet", version: 1, kind: "bridge-init", channel: CHANNEL, compatMode: "off" }]);
   h.bridge.receivePage({ namespace: "your-wallet", version: 1, kind: "bridge-request" });
   assert.equal(h.page.filter((message) => message.kind === "bridge-init").length, 2);
   assert.equal(h.ports.length, 0);
@@ -375,4 +376,84 @@ test("C4 disallowed methods (including wallet_addEthereumChain) get 4200 without
   assert.equal(h.ports.length, 0);
   assert.equal(h.bridge.state, STATES.IDLE);
   assert.equal(shared.methodRoute("wallet_addEthereumChain"), null);
+});
+
+// ---------- spec/05 §2.12 compatibility mode delivery (C5) ----------
+
+test("C5 bridge-init carries the document's mode; requests carry compatMode only in compat modes", () => {
+  for (const compatMode of ["off", "metamask", "rabby"]) {
+    const h = harness({ compatMode });
+    h.bridge.announce();
+    h.bridge.receivePage({ namespace: "your-wallet", version: 1, kind: "bridge-request" });
+    assert.deepEqual(h.page, [
+      { namespace: "your-wallet", version: 1, kind: "bridge-init", channel: CHANNEL, compatMode },
+      { namespace: "your-wallet", version: 1, kind: "bridge-init", channel: CHANNEL, compatMode }
+    ], compatMode);
+    h.request(rid(1), "eth_requestAccounts");
+    h.ports[0].activate();
+    const expected = {
+      namespace: "your-wallet", version: 1, kind: "request", activationNonce: ACTIVATION, id: rid(1), method: "eth_requestAccounts", params: []
+    };
+    assert.deepEqual(h.ports[0].sent[0], compatMode === "off" ? expected : { ...expected, compatMode }, compatMode);
+    // The background accepts exactly what the bridge sends.
+    assert.equal(shared.parseContentMessage(h.ports[0].sent[0], ACTIVATION)?.compatMode, compatMode, compatMode);
+  }
+  // A page cannot change the mode: page requests with extra keys are dropped.
+  const h = harness({ compatMode: "metamask" });
+  assert.equal(h.bridge.receivePage({ namespace: "your-wallet", version: 1, kind: "request", channel: CHANNEL, id: rid(2), method: "eth_chainId", params: [], compatMode: "off" }), false);
+  assert.equal(h.ports.length, 0);
+  for (const compatMode of ["MetaMask", "on", "", null, 1]) {
+    assert.throws(() => new ContentBridge({
+      channelNonce: CHANNEL, compatMode, connectPort: () => null, postToPage: () => {}, isContextValid: () => true,
+      setTimer: () => 0, clearTimer: () => {}, now: () => 0
+    }), TypeError, String(compatMode));
+  }
+  // The default is off.
+  const plain = harness();
+  plain.bridge.announce();
+  assert.equal(plain.page[0].compatMode, "off");
+});
+
+test("C5 loadCompatMode reads compatMode once and falls back to off on bad values, errors and timeouts", async () => {
+  const { loadCompatMode, MODE_READ_TIMEOUT_MS } = globalThis.__YOUR_WALLET_CONTENT_CORE__;
+  assert.equal(MODE_READ_TIMEOUT_MS, 3_000);
+  const run = (readStorage, clock = new FakeClock()) => loadCompatMode({ readStorage, setTimer: clock.setTimer, clearTimer: clock.clearTimer });
+  for (const [stored, expected] of [
+    [{ compatMode: "metamask" }, "metamask"],
+    [{ compatMode: "rabby" }, "rabby"],
+    [{ compatMode: "off" }, "off"],
+    [{}, "off"],
+    [{ compatMode: "MetaMask" }, "off"],
+    [{ compatMode: 1 }, "off"],
+    [{ compatMode: null }, "off"],
+    [null, "off"],
+    ["metamask", "off"]
+  ]) {
+    const clock = new FakeClock();
+    assert.equal(await run(() => Promise.resolve(stored), clock), expected, JSON.stringify(stored));
+    assert.equal(clock.timers.size, 0, "timer cleared");
+  }
+  assert.equal(await run(() => Promise.reject(new Error("storage unavailable"))), "off");
+  assert.equal(await run(() => {
+    throw new Error("Extension context invalidated.");
+  }), "off");
+
+  // A read that never answers resolves off after 3 s; a late answer is ignored.
+  const clock = new FakeClock();
+  let late = null;
+  const pending = run(() => new Promise((resolve) => {
+    late = resolve;
+  }), clock);
+  let result = null;
+  pending.then((mode) => {
+    result = mode;
+  });
+  clock.advance(2_999);
+  await Promise.resolve();
+  assert.equal(result, null);
+  clock.advance(1);
+  assert.equal(await pending, "off");
+  late({ compatMode: "metamask" });
+  await Promise.resolve();
+  assert.equal(result, "off");
 });

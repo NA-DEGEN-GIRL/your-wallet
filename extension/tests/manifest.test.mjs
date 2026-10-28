@@ -17,6 +17,8 @@ const EXPECTED_MANIFEST = {
   incognito: "not_allowed",
   permissions: ["nativeMessaging", "storage"],
   background: { service_worker: "src/background.js", type: "module" },
+  // spec/05 §2.12 compatibility-mode popup. No icons: Chrome shows the name's first letter.
+  action: { default_title: "Your Wallet", default_popup: "popup/popup.html" },
   content_scripts: [
     {
       matches: MATCHES,
@@ -44,7 +46,7 @@ test("M1 manifest equals spec/05 §2.2 and its key yields extension-id.txt", asy
   const idText = await readFile(EXTENSION_ID_FILE, "utf8");
   assert.match(idText, /^[a-p]{32}\n$/u);
   assert.equal(extensionIdFromKey(key), idText.trimEnd());
-  for (const forbidden of ["host_permissions", "externally_connectable", "web_accessible_resources"]) {
+  for (const forbidden of ["host_permissions", "optional_host_permissions", "optional_permissions", "externally_connectable", "web_accessible_resources", "content_security_policy"]) {
     assert.equal(Object.hasOwn(manifest, forbidden), false, forbidden);
   }
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
@@ -104,6 +106,7 @@ test("M2 background.js registers no external listeners and closes the port when 
     runtime: {
       id: "nnpjlobjgbanccjddghlpaafpohfkeph",
       lastError: undefined,
+      getURL: (path) => `chrome-extension://nnpjlobjgbanccjddghlpaafpohfkeph/${path}`,
       onConnect: fakeEvent("onConnect", registrations),
       onConnectExternal: fakeEvent("onConnectExternal", registrations),
       onMessage: fakeEvent("onMessage", registrations),
@@ -155,6 +158,32 @@ test("M2 background.js registers no external listeners and closes the port when 
   onConnect(stranger);
   assert.equal(stranger.disconnected, true);
 
+  // spec/05 §2.12 popup status: only from the action popup page; before any router exists the
+  // answer is "unknown" and nothing touches storage or native messaging.
+  const popupSender = {
+    id: "nnpjlobjgbanccjddghlpaafpohfkeph",
+    url: "chrome-extension://nnpjlobjgbanccjddghlpaafpohfkeph/popup/popup.html",
+    origin: "chrome-extension://nnpjlobjgbanccjddghlpaafpohfkeph"
+  };
+  const popupStatus = async () => {
+    const port = fakePort("your-wallet-popup-v1", popupSender);
+    onConnect(port);
+    await settle();
+    await settle();
+    assert.equal(port.disconnected, false);
+    assert.equal(port.posted.length, 1);
+    return port.posted[0];
+  };
+  assert.deepEqual(await popupStatus(), { namespace: "your-wallet", version: 1, kind: "status", native: "unknown" });
+  assert.equal(nativePorts.length, 0);
+  for (const forged of [sender, { ...popupSender, tab: { id: 3 } }, { ...popupSender, url: "chrome-extension://nnpjlobjgbanccjddghlpaafpohfkeph/x.html" }]) {
+    const port = fakePort("your-wallet-popup-v1", forged);
+    onConnect(port);
+    await settle();
+    assert.equal(port.disconnected, true);
+    assert.deepEqual(port.posted, []);
+  }
+
   // Router initialization failure: the port is closed, no `fatal` (or any) message is sent.
   const failed = fakePort("your-wallet-content-v1", sender);
   onConnect(failed);
@@ -188,6 +217,9 @@ test("M2 background.js registers no external listeners and closes the port when 
   assert.deepEqual(content.posted.at(-1), {
     namespace: "your-wallet", version: 1, kind: "response", activationNonce, id: "01".repeat(16), result: "0xaa36a7"
   });
+  // yw-app answered on this native connection: the popup now reports "connected".
+  assert.equal((await popupStatus()).native, "connected");
+  assert.equal(nativePorts.length, 1);
 
   // onSuspend closes only the native connection; pending requests get 4900, the content port stays.
   content.deliver({ namespace: "your-wallet", version: 1, kind: "request", activationNonce, id: "02".repeat(16), method: "eth_blockNumber", params: [] });
