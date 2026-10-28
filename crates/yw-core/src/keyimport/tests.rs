@@ -2,13 +2,14 @@
 //! (abandon mnemonic), BIP173 and BIP86 addresses, Solana keypairs built from the RFC 8032 test 1
 //! seed and the spec/07 §17.1 abandon seed, and the rejection tables. Public test vectors only.
 
-use secp256k1::{PublicKey, Secp256k1};
+use secp256k1::{PublicKey, Secp256k1, XOnlyPublicKey};
 
-use super::btc::{BtcScriptType, address, taproot_output_key};
 use super::sol::{encode_keypair, parse_sol_secret};
 use super::{ImportChain, ImportKey, ImportPreview, ImportSpec};
+use crate::btc::account::{BtcAccountId, BtcPubKey, ScriptType, kind_for_key};
 use crate::btc::address::{ScriptKind, encode_address};
 use crate::btc::network::BtcNetwork;
+use crate::btc::taproot::output_key;
 use crate::codec::base58;
 use crate::codec::wif::{encode_wif_for_tests, parse_wif};
 use crate::error::KeyError;
@@ -61,7 +62,7 @@ fn evm_of(preview: &ImportPreview) -> Option<String> {
     }
 }
 
-fn btc_preview(text: &str, script: BtcScriptType) -> super::BtcKeyInfo {
+fn btc_preview(text: &str, script: ScriptType) -> super::BtcKeyInfo {
     btc_of(
         ImportKey::parse(ImportSpec::Btc(script), text)
             .unwrap()
@@ -170,56 +171,70 @@ fn wif_rejections() {
 #[test]
 fn btc_imported_addresses_match_bip_vectors() {
     // BIP84: native segwit, mainnet.
-    let info = btc_preview(BIP84_WIF, BtcScriptType::P2wpkh);
+    let info = btc_preview(BIP84_WIF, ScriptType::P2wpkh);
     assert_eq!(info.address, BIP84_ADDRESS);
     assert_eq!(info.network, BtcNetwork::Mainnet);
     assert_eq!(
-        hex::encode(&info.public_key),
+        hex::encode(info.public_key.as_bytes()),
         "0330d54fd0dd420a6e5f8d3624f5f3482cae350f79d5f0753bf5beef9c2d91af3c"
     );
+    // Its Bitcoin account: one imported single key with the same address (spec/08 §3.5).
+    let account = info.account_key([0x42; 16]).unwrap();
+    assert_eq!(account.id(), BtcAccountId::Imported { id: [0x42; 16] });
+    assert_eq!(
+        account
+            .address(
+                BtcNetwork::Mainnet,
+                crate::bip32::path::BtcChain::Receive,
+                0
+            )
+            .unwrap()
+            .as_str(),
+        BIP84_ADDRESS
+    );
     // BIP49: nested segwit, testnet WIF → testnet4 address prefix `2`.
-    let info = btc_preview(BIP49_WIF, BtcScriptType::P2shP2wpkh);
+    let info = btc_preview(BIP49_WIF, ScriptType::P2shP2wpkh);
     assert_eq!(info.address, BIP49_ADDRESS);
     assert_eq!(info.network, BtcNetwork::Testnet4);
     // Secret 1 (= G): P2PKH compressed/uncompressed, BIP173 P2WPKH on both networks.
     for (wif, script, expected) in [
         (
             ONE_WIF_MAIN_COMPRESSED,
-            BtcScriptType::P2pkh,
+            ScriptType::P2pkh,
             "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH",
         ),
         (
             ONE_WIF_MAIN_UNCOMPRESSED,
-            BtcScriptType::P2pkh,
+            ScriptType::P2pkh,
             "1EHNa6Q4Jz2uvNExL497mE43ikXhwF6kZm",
         ),
         (
             ONE_WIF_TEST_COMPRESSED,
-            BtcScriptType::P2pkh,
+            ScriptType::P2pkh,
             "mrCDrCybB6J1vRfbwM5hemdJz73FwDBC8r",
         ),
         (
             ONE_WIF_MAIN_COMPRESSED,
-            BtcScriptType::P2wpkh,
+            ScriptType::P2wpkh,
             "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
         ),
         (
             ONE_WIF_TEST_COMPRESSED,
-            BtcScriptType::P2wpkh,
+            ScriptType::P2wpkh,
             "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
         ),
     ] {
         assert_eq!(btc_preview(wif, script).address, expected, "{wif}");
     }
-    let uncompressed = btc_preview(ONE_WIF_MAIN_UNCOMPRESSED, BtcScriptType::P2pkh);
-    assert_eq!(uncompressed.public_key.len(), 65);
+    let uncompressed = btc_preview(ONE_WIF_MAIN_UNCOMPRESSED, ScriptType::P2pkh);
+    assert_eq!(uncompressed.public_key.as_bytes().len(), 65);
     assert!(!uncompressed.compressed);
+    assert!(matches!(
+        uncompressed.public_key,
+        BtcPubKey::Uncompressed(_)
+    ));
     // An uncompressed key is P2PKH only.
-    for script in [
-        BtcScriptType::P2shP2wpkh,
-        BtcScriptType::P2wpkh,
-        BtcScriptType::P2tr,
-    ] {
+    for script in [ScriptType::P2shP2wpkh, ScriptType::P2wpkh, ScriptType::P2tr] {
         assert_eq!(
             ImportKey::parse(ImportSpec::Btc(script), ONE_WIF_MAIN_UNCOMPRESSED).err(),
             Some(KeyError::WifUncompressedScript),
@@ -230,14 +245,12 @@ fn btc_imported_addresses_match_bip_vectors() {
 
 #[test]
 fn bip86_taproot_output_key_and_address() {
-    // BIP86 test vector (abandon mnemonic, m/86'/0'/0'/0/0): internal key → output key → address.
+    // BIP86 test vector (abandon mnemonic, m/86'/0'/0'/0/0): internal key → output key → address,
+    // through the shared Taproot code (`btc::taproot::output_key`, `btc::account::kind_for_key`).
     let ctx = Secp256k1::verification_only();
-    let mut compressed = vec![0x02];
-    compressed.extend_from_slice(&bytes32(
-        "cc8a4bc64d897bddc5fbc2f670f7a8ba0b386779106cf1223c6fc5d7cd6fc115",
-    ));
-    let internal = PublicKey::from_slice(&compressed).unwrap();
-    let output = taproot_output_key(&ctx, &internal).unwrap();
+    let x = bytes32("cc8a4bc64d897bddc5fbc2f670f7a8ba0b386779106cf1223c6fc5d7cd6fc115");
+    let internal = XOnlyPublicKey::from_byte_array(x).unwrap();
+    let output = output_key(&ctx, &internal, None).unwrap().serialize();
     assert_eq!(
         hex::encode(&output),
         "a60869f0dbcf1dc659c9cecbaf8050135ea9e8cdc487053f1dc6880949dc684c"
@@ -246,36 +259,46 @@ fn bip86_taproot_output_key_and_address() {
         encode_address(&ScriptKind::P2tr(output), BtcNetwork::Mainnet),
         "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr"
     );
-    // The odd-y lift of the same x gives the same output key (x-only internal key).
-    *compressed.first_mut().unwrap() = 0x03;
-    let odd = PublicKey::from_slice(&compressed).unwrap();
-    assert_eq!(taproot_output_key(&ctx, &odd).unwrap(), output);
-    // And through the address helper for an imported key (bc1p…, 62 characters).
-    let info = btc_preview(BIP84_WIF, BtcScriptType::P2tr);
+    // The even- and odd-y lifts of the same x give the same output key (x-only internal key).
+    for prefix in [0x02_u8, 0x03] {
+        let mut compressed = vec![prefix];
+        compressed.extend_from_slice(&x);
+        assert!(PublicKey::from_slice(&compressed).is_ok());
+        assert_eq!(
+            kind_for_key(
+                &ctx,
+                ScriptType::P2tr,
+                &BtcPubKey::parse(&compressed).unwrap()
+            )
+            .unwrap(),
+            ScriptKind::P2tr(output)
+        );
+    }
+    // And an imported key used as P2TR (bc1p…, 62 characters) gets the same address its account
+    // derives.
+    let info = btc_preview(BIP84_WIF, ScriptType::P2tr);
     assert!(info.address.starts_with("bc1p") && info.address.len() == 62);
-    let pubkey = PublicKey::from_slice(&info.public_key).unwrap();
     assert_eq!(
-        address(
-            &ctx,
-            &pubkey,
-            true,
-            BtcScriptType::P2tr,
+        encode_address(
+            &kind_for_key(&ctx, ScriptType::P2tr, &info.public_key).unwrap(),
             BtcNetwork::Mainnet
-        )
-        .unwrap(),
+        ),
         info.address
     );
 }
 
 #[test]
-fn script_type_bytes_and_names() {
-    for kind in BtcScriptType::ALL {
-        assert_eq!(BtcScriptType::from_id(kind.id()), Some(kind));
-        assert_eq!(BtcScriptType::parse_name(kind.name()), Some(kind));
+fn script_type_codes_and_names() {
+    // The vault record byte is the account type's stable code (spec/02 §4.6 tag 4).
+    for kind in ScriptType::CHOICES {
+        assert_eq!(ScriptType::from_code(kind.code()), Some(kind));
+        assert_eq!(ScriptType::parse_json_name(kind.json_name()), Some(kind));
     }
-    assert_eq!(BtcScriptType::from_id(0), None);
-    assert_eq!(BtcScriptType::from_id(5), None);
-    assert_eq!(BtcScriptType::parse_name("P2WPKH"), None);
+    assert_eq!(ScriptType::P2pkh.code(), 1);
+    assert_eq!(ScriptType::P2tr.code(), 4);
+    assert_eq!(ScriptType::from_code(0), None);
+    assert_eq!(ScriptType::from_code(5), None);
+    assert_eq!(ScriptType::parse_json_name("P2WPKH"), None);
 }
 
 // ---------------------------------------------------------------- Solana

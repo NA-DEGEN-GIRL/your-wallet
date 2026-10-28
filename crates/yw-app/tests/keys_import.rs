@@ -14,12 +14,15 @@ use common::{Answer, FakeRpc, url};
 use yw_app::events::{ImportedAccount, KeyJob, KeyOutcome, RevealWhat};
 use yw_app::sol::flow::{PreviewJob, PreviewOutcome, SolEndpoint, preview};
 use yw_app::store::{FileStorage, LockedSlotBox};
+use yw_app::workers::journal::btc::BtcMetaDone;
 use yw_app::workers::journal::{JournalState, SolSignTimes};
 use yw_app::workers::key::KeyWorker;
 use yw_core::approval::ApprovalStore;
+use yw_core::bip32::path::BtcChain;
+use yw_core::btc::{BtcAccountId, BtcNetwork, ScriptType};
 use yw_core::codec::base58;
 use yw_core::error::{KeyError, VaultError};
-use yw_core::keyimport::{BtcScriptType, ImportKey, ImportPreview, ImportSpec};
+use yw_core::keyimport::{ImportKey, ImportPreview, ImportSpec};
 use yw_core::password::VaultPassword;
 use yw_core::secret::Zeroizing;
 use yw_core::slip10::SolKeySource;
@@ -28,7 +31,7 @@ use yw_core::sol::keys::verify_strict;
 use yw_core::sol::message::parse_transaction;
 use yw_core::sol::recipient::check_recipient;
 use yw_core::sol::{SolAddress, SolAsset, SolCluster};
-use yw_core::vault::{KeyRef, Vault, VaultStatus};
+use yw_core::vault::{Vault, VaultStatus};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -120,7 +123,7 @@ fn key_only_vault_through_the_key_worker() -> TestResult {
         &mut worker,
         KeyJob::PreviewKeyStart {
             password: Some(Zeroizing::new(PASSWORD.to_vec())),
-            spec: ImportSpec::Btc(BtcScriptType::P2tr),
+            spec: ImportSpec::Btc(ScriptType::P2tr),
             key: bytes(BIP84_WIF),
         },
     )?
@@ -196,7 +199,7 @@ fn key_only_vault_through_the_key_worker() -> TestResult {
     let ImportedAccount::Btc(btc_id, btc_info) = imported(one(
         &mut worker,
         KeyJob::ImportKey {
-            spec: ImportSpec::Btc(BtcScriptType::P2wpkh),
+            spec: ImportSpec::Btc(ScriptType::P2wpkh),
             key: bytes(BIP84_WIF),
         },
     )?)?
@@ -204,9 +207,16 @@ fn key_only_vault_through_the_key_worker() -> TestResult {
         return Err("not Bitcoin".into());
     };
     assert_eq!(btc_info.address, BIP84_ADDRESS);
-    let (key_ref, signer_info) = worker.btc_imported_signer(btc_id)?;
-    assert_eq!(key_ref, KeyRef::BtcImported(btc_id));
-    assert_eq!(signer_info, btc_info);
+    // Its Bitcoin account (the UI sends `AddImported` with it; meta load adds a missing one).
+    let btc_account = btc_info
+        .account_key(*btc_id.as_bytes())
+        .map_err(|error| format!("{error:?}"))?;
+    assert_eq!(
+        btc_account
+            .address(BtcNetwork::Mainnet, BtcChain::Receive, 0)?
+            .as_str(),
+        BIP84_ADDRESS
+    );
     assert!(matches!(
         one(
             &mut worker,
@@ -241,22 +251,29 @@ fn key_only_vault_through_the_key_worker() -> TestResult {
         return Err("meta".into());
     };
     assert!(!loaded.has_mnemonic);
+    // The tag-4 record had no account yet (no `AddImported` in this test): meta load adds it.
+    assert!(loaded.mismatch);
     assert_eq!(
         (
             loaded.meta.evm_raw_accounts.len(),
             loaded.meta.sol_raw_accounts.len(),
-            loaded.meta.btc_raw_accounts.len()
+            loaded.meta.btc_accounts.accounts.len()
         ),
         (1, 1, 1)
     );
     assert_eq!(
         loaded
             .meta
-            .btc_raw_accounts
-            .first()
-            .map(|raw| (raw.address.as_str(), raw.script)),
-        Some((BIP84_ADDRESS, BtcScriptType::P2wpkh))
+            .btc_accounts
+            .get(BtcNetwork::Mainnet, btc_account.id())
+            .map(|meta| *meta.account()),
+        Some(btc_account)
     );
+    // Written back: the next load matches.
+    let KeyOutcome::Meta(Ok(again)) = one(&mut worker, KeyJob::LoadMeta)? else {
+        return Err("meta".into());
+    };
+    assert!(!again.mismatch);
     // Reveal gives the WIF back.
     let KeyOutcome::Revealed(Ok((_, wif, None))) = one(
         &mut worker,
@@ -280,18 +297,42 @@ fn key_only_vault_through_the_key_worker() -> TestResult {
         )?,
         KeyOutcome::ImportedKeyRemoved(Err(VaultError::UnlockFailed))
     ));
-    for id in [evm_id, btc_id] {
-        assert!(matches!(
-            one(
-                &mut worker,
-                KeyJob::RemoveImportedKey {
-                    password: Zeroizing::new(PASSWORD.to_vec()),
-                    id,
-                },
-            )?,
-            KeyOutcome::ImportedKeyRemoved(Ok(_))
-        ));
-    }
+    assert!(matches!(
+        one(
+            &mut worker,
+            KeyJob::RemoveImportedKey {
+                password: Zeroizing::new(PASSWORD.to_vec()),
+                id: evm_id,
+            },
+        )?,
+        KeyOutcome::ImportedKeyRemoved(Ok(_))
+    ));
+    // The Bitcoin key: the vault record, then its account in meta `btc_accounts`.
+    let outcomes = worker.handle(KeyJob::RemoveImportedKey {
+        password: Zeroizing::new(PASSWORD.to_vec()),
+        id: btc_id,
+    });
+    assert!(matches!(
+        outcomes.first(),
+        Some(KeyOutcome::ImportedKeyRemoved(Ok(_)))
+    ));
+    let Some(KeyOutcome::BtcMeta(Ok(update))) = outcomes.get(1) else {
+        return Err("no BtcMeta outcome after removing the Bitcoin key".into());
+    };
+    assert_eq!(
+        update.done,
+        BtcMetaDone::Removed(BtcAccountId::Imported {
+            id: *btc_id.as_bytes()
+        })
+    );
+    assert!(update.accounts.accounts.is_empty());
+    let KeyOutcome::Meta(Ok(loaded_after)) = one(&mut worker, KeyJob::LoadMeta)? else {
+        return Err("meta".into());
+    };
+    // The worker already wrote meta without the Bitcoin account (the EVM key's list entry is
+    // the UI's to drop, so this load reconciles that one).
+    assert!(loaded_after.meta.btc_accounts.accounts.is_empty());
+    assert!(loaded_after.meta.evm_raw_accounts.is_empty());
     let sol_id = loaded
         .meta
         .sol_raw_accounts

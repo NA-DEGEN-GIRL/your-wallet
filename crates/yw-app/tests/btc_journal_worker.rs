@@ -675,14 +675,14 @@ fn accounts_on_disk(vault: &Vault) -> TestResult<yw_core::btc::BtcAccounts> {
 /// spec/08 §3, §12.3a: `계정 추가` (HD) and an imported key's account on the key worker: stored in
 /// meta `btc_accounts` (BIP84 account 0 untouched) and selected before they are reported;
 /// selection switches; a refresh of another account changes only that account; a duplicate add
-/// is refused; signing with an imported key stops at the vault hook (not connected yet) with
-/// nothing journaled.
+/// is refused; signing for an imported account whose vault record does not exist (public data
+/// only here: the record would be vault tag 4) stops with `RecordNotFound` and nothing journaled.
 #[test]
 #[expect(
     clippy::too_many_lines,
     reason = "the account ops in order on one vault"
 )]
-fn accounts_are_stored_selected_and_imported_keys_wait_for_the_vault() -> TestResult {
+fn accounts_are_stored_selected_and_imported_keys_need_their_record() -> TestResult {
     use yw_core::btc::{BtcAccountId, BtcAccountKey, BtcPubKey, ScriptType, SignError};
     let mut fixture = fixture("accounts")?;
     funded(&mut fixture)?;
@@ -806,7 +806,7 @@ fn accounts_are_stored_selected_and_imported_keys_wait_for_the_vault() -> TestRe
         .clone();
     assert!(single.discovery_done() && single.is_single());
     assert_eq!(single.receive_next(), 1);
-    // Fund its one address and try to sign: the vault hook refuses, nothing is journaled.
+    // Fund its one address and try to sign: no vault record [0x77; 16], nothing is journaled.
     let imported_outpoint = OutPoint {
         txid: Txid::from_bytes([0x66; 32]),
         vout: 0,
@@ -857,7 +857,7 @@ fn accounts_are_stored_selected_and_imported_keys_wait_for_the_vault() -> TestRe
     assert!(matches!(
         outcomes.first(),
         Some(KeyOutcome::SignedBtc(Err(BtcSignFailure::Sign(
-            SignError::ImportedKeyUnavailable
+            SignError::Vault(yw_core::error::VaultError::RecordNotFound)
         ))))
     ));
     assert_eq!(reload(&fixture)?.len(), before);

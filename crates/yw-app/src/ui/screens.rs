@@ -705,11 +705,9 @@ impl App {
             return;
         }
         if self.btc_tab_active() {
-            // A key-only wallet has no derived Bitcoin account: its imported keys only.
-            if !self.key_only() {
-                self.btc_main_screen(items);
-            }
-            self.btc_imported_card(items);
+            // Imported keys are accounts of the Bitcoin account list (a key-only wallet has
+            // only those).
+            self.btc_main_screen(items);
             return;
         }
         let chains = self.settings.registered_evm();

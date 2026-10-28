@@ -471,14 +471,6 @@ impl Vault {
                     .ok_or(VaultError::RecordNotFound)?;
                 return SecretKey::from_byte_array(*raw.key).map_err(|_| INTERNAL);
             }
-            KeyRef::BtcImported(id) => {
-                let btc = payload
-                    .btc_keys
-                    .iter()
-                    .find(|btc| btc.record_id == *id.as_bytes())
-                    .ok_or(VaultError::RecordNotFound)?;
-                return SecretKey::from_byte_array(*btc.secret).map_err(|_| INTERNAL);
-            }
             KeyRef::Evm(EvmKeySource::Derived(index)) => evm_path(index),
             KeyRef::Btc { coin, chain, index } => btc_path(coin, chain, index)?,
         };
@@ -1478,6 +1470,35 @@ impl Vault {
         seed.copy_from_slice(record.seed.as_slice());
         drop(payload);
         f(&seed)
+    }
+
+    /// The signing secret of imported Bitcoin key `id` (vault tag 4) with the record's
+    /// compression flag, network and address type, for the Bitcoin signer only
+    /// (`btc::sign::BtcImportedKeys`, spec/08 §11.1; `Unlocked` only). The decrypted payload is
+    /// wiped when this returns; the returned secret is crate-internal (no accessor outside
+    /// `btc::sign`, which lends it to its signing closure) and erased on drop.
+    ///
+    /// # Errors
+    ///
+    /// `BackupNotConfirmed`/`InvalidState` (locked), `RecordNotFound` (no tag-4 record `id`).
+    pub(crate) fn imported_btc_secret(
+        &self,
+        id: &[u8; 16],
+    ) -> Result<crate::btc::sign::ImportedBtcSecret, VaultError> {
+        self.require_signing()?;
+        let payload = self.payload()?;
+        let record = payload
+            .btc_keys
+            .iter()
+            .find(|btc| btc.record_id == *id)
+            .ok_or(VaultError::RecordNotFound)?;
+        let secret = SecretKey::from_byte_array(*record.secret).map_err(|_| INTERNAL)?;
+        Ok(crate::btc::sign::ImportedBtcSecret::new(
+            secret,
+            record.compressed,
+            record.network,
+            record.script,
+        ))
     }
 
     fn set_known(&self, index: usize, value: Known) {

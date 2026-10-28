@@ -26,12 +26,15 @@ use yw_app::btc::Trigger;
 use yw_app::btc::chain::ChainInput;
 use yw_app::btc::flow::RefreshJob;
 use yw_app::btc::work::{BtcRpcEvent, BtcRpcJob, BtcTarget};
-use yw_app::events::{EventQueue, JournalView, KeyJob, KeyOutcome, RpcEvent, UiEvent};
+use yw_app::events::{
+    EventQueue, ImportedAccount, JournalView, KeyJob, KeyOutcome, RpcEvent, UiEvent,
+};
 use yw_app::flow::evm::{Clock, Limits};
 use yw_app::meta::Meta;
 use yw_app::network::{BtcNet, NetworkId};
 use yw_app::settings::{BitcoinSettings, BtcIndexer};
 use yw_app::ui::approval_view::Block;
+use yw_app::workers::journal::btc::BtcMetaOp;
 use yw_app::workers::key::KeyWorker;
 use yw_app::workers::rpc::{RpcJob, RpcWorker};
 use yw_core::approval::{ApprovalId, ApprovalStore};
@@ -42,13 +45,17 @@ use yw_core::btc::script::p2wpkh_script_pubkey;
 use yw_core::btc::tx::{
     Transaction, TxIn, TxOut, parse_transaction, serialize, txid, vsize, wtxid,
 };
-use yw_core::btc::{BtcNetwork, OutPoint, Sats, Txid, parse_address};
+use yw_core::btc::{
+    BtcAccountId, BtcAccountKey, BtcNetwork, OutPoint, Sats, ScriptType, Txid, parse_address,
+};
 use yw_core::journal::btc::BtcTxState;
+use yw_core::keyimport::{ImportPreview, ImportSpec};
 use yw_core::secret::Zeroizing;
 use yw_win::http::HttpsUrl;
 
 const ABANDON: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+const PASSWORD: &[u8] = b"m8-btc-flow-test!";
 /// BIP173 testnet P2WPKH example (not ours).
 const RECIPIENT: &str = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
 const FUNDING_VALUE: u64 = 100_000;
@@ -427,6 +434,8 @@ struct Harness {
     meta: Option<Meta>,
     journal: Option<JournalView>,
     unlocked: bool,
+    /// `false` for a wallet started from a private key (`MetaLoaded.has_mnemonic`).
+    has_mnemonic: bool,
     queued: Vec<BtcApprovalItem>,
     confirms: usize,
     screens: Vec<BtcScreen>,
@@ -435,7 +444,21 @@ struct Harness {
 }
 
 impl Harness {
+    /// A wallet imported from `abandon … about`.
     fn new(tag: &str) -> TestResult<Self> {
+        let mut harness = Self::bare(tag)?;
+        harness.import();
+        Ok(harness)
+    }
+
+    /// A key-only wallet started from the Bitcoin WIF `wif` used as `script_type`.
+    fn key_only(tag: &str, wif: &str, script_type: ScriptType) -> TestResult<Self> {
+        let mut harness = Self::bare(tag)?;
+        harness.start_with_key(wif, script_type)?;
+        Ok(harness)
+    }
+
+    fn bare(tag: &str) -> TestResult<Self> {
         let dir = temp_dir(tag)?;
         let clock = ManualClock::new();
         let world = Arc::new(Mutex::new(World::default()));
@@ -459,7 +482,7 @@ impl Harness {
             esplora_testnet4: ESPLORA_BASE.to_owned(),
             ..BitcoinSettings::default()
         };
-        let mut harness = Self {
+        let harness = Self {
             key: KeyWorker::new(&dir),
             dir,
             rpc,
@@ -473,21 +496,80 @@ impl Harness {
             meta: None,
             journal: None,
             unlocked: false,
+            has_mnemonic: true,
             queued: Vec::new(),
             confirms: 0,
             screens: Vec::new(),
             banners: Vec::new(),
             work: VecDeque::new(),
         };
-        harness.import();
         Ok(harness)
+    }
+
+    /// "개인키로 시작하기" with a Bitcoin key through the key worker (S18 → S19 → commit), then
+    /// what the App does on `KeyStartCommitted`: Bitcoin on with the key's network, meta and
+    /// journal loaded like the unlock path.
+    fn start_with_key(&mut self, wif: &str, script_type: ScriptType) -> TestResult {
+        let _ = self.key.handle(KeyJob::Load);
+        let preview = self.key.handle(KeyJob::PreviewKeyStart {
+            password: Some(Zeroizing::new(PASSWORD.to_vec())),
+            spec: ImportSpec::Btc(script_type),
+            key: Zeroizing::new(wif.as_bytes().to_vec()),
+        });
+        let Some(KeyOutcome::KeyStartPreview(Ok(ImportPreview::Btc(info)))) = preview.first()
+        else {
+            return Err("no Bitcoin preview".into());
+        };
+        let network = info.network;
+        let committed = self.key.handle(KeyJob::CommitKeyStart);
+        if !matches!(
+            committed.first(),
+            Some(KeyOutcome::KeyStartCommitted(Ok(())))
+        ) {
+            return Err("key start not committed".into());
+        }
+        self.settings.enabled = true;
+        self.settings.network = yw_app::btc::app_network(network);
+        self.unlocked = true;
+        self.key_job(KeyJob::LoadMeta);
+        self.key_job(KeyJob::LoadJournal);
+        self.drain();
+        if self.meta.is_none() || self.journal.is_none() || self.has_mnemonic {
+            return Err("key-only meta not loaded".into());
+        }
+        Ok(())
+    }
+
+    /// `개인키 가져오기` on the Bitcoin tab like the App (`on_key_imported`): the vault stores the
+    /// tag-4 record, then `AddImported` stores and selects its account (a refresh follows).
+    fn import_key(&mut self, wif: &str, script_type: ScriptType) -> TestResult<BtcAccountKey> {
+        let outcomes = self.key.handle(KeyJob::ImportKey {
+            spec: ImportSpec::Btc(script_type),
+            key: Zeroizing::new(wif.as_bytes().to_vec()),
+        });
+        let Some(KeyOutcome::KeyImported(Ok(ImportedAccount::Btc(id, info)))) =
+            outcomes.into_iter().next()
+        else {
+            return Err("Bitcoin key not imported".into());
+        };
+        let key = info
+            .account_key(*id.as_bytes())
+            .map_err(|error| format!("{error:?}"))?;
+        self.key_job(KeyJob::BtcMeta {
+            op: BtcMetaOp::AddImported {
+                network: info.network,
+                key,
+            },
+        });
+        self.drain();
+        Ok(key)
     }
 
     /// Imports `abandon … about` and loads meta and the journal like the unlock path.
     fn import(&mut self) {
         let _ = self.key.handle(KeyJob::Load);
         let preview = self.key.handle(KeyJob::PreviewImport {
-            password: Some(Zeroizing::new(b"m8-btc-flow-test!".to_vec())),
+            password: Some(Zeroizing::new(PASSWORD.to_vec())),
             phrase: Zeroizing::new(ABANDON.as_bytes().to_vec()),
             passphrase: None,
         });
@@ -512,6 +594,7 @@ impl Harness {
                 meta: self.meta.as_ref(),
                 journal: self.journal.as_ref(),
                 unlocked: self.unlocked,
+                has_mnemonic: self.has_mnemonic,
                 now_ms: self.clock.now_ms(),
                 now_unix_ms: self.clock.now_unix_ms(),
             };
@@ -527,6 +610,7 @@ impl Harness {
             meta: self.meta.as_ref(),
             journal: self.journal.as_ref(),
             unlocked: self.unlocked,
+            has_mnemonic: self.has_mnemonic,
             now_ms: self.clock.now_ms(),
             now_unix_ms: self.clock.now_unix_ms(),
         }
@@ -570,7 +654,10 @@ impl Harness {
 
     fn key_outcome(&mut self, outcome: KeyOutcome) {
         match outcome {
-            KeyOutcome::Meta(Ok(loaded)) => self.meta = Some(loaded.meta),
+            KeyOutcome::Meta(Ok(loaded)) => {
+                self.has_mnemonic = loaded.has_mnemonic;
+                self.meta = Some(loaded.meta);
+            }
             KeyOutcome::Journal(Ok(view)) => {
                 self.journal = Some(view);
                 self.call(BtcUi::journal_changed);
@@ -1569,7 +1656,6 @@ fn funding_to(script: Vec<u8>, value: u64, salt: u8) -> TestResult<(Transaction,
 #[test]
 #[expect(clippy::too_many_lines, reason = "one account of each type end to end")]
 fn every_address_type_end_to_end() -> TestResult {
-    use yw_core::btc::{BtcAccountId, ScriptType};
     for (round, script_type) in ScriptType::CHOICES.into_iter().enumerate() {
         let salt = u8::try_from(round).unwrap_or(0).saturating_add(0x60);
         let number = u32::from(script_type == ScriptType::P2wpkh);
@@ -1731,5 +1817,442 @@ fn every_address_type_end_to_end() -> TestResult {
         );
         assert!(harness.banners.is_empty(), "{:?}", harness.banners);
     }
+    Ok(())
+}
+
+// ----- imported keys (spec/08 §3.5, spec/04 §2.18) -----------------------------------------------
+
+/// BIP49 test vector key (abandon `m/49'/1'/0'/0/0`), compressed, testnet WIF (public).
+const BIP49_TEST_WIF: &str = "cULrpoZGXiuC19Uhvykx7NugygA3k86b3hmdCeyvHYQZSxojGyXJ";
+/// Secret 1 (public key = G), uncompressed, testnet WIF (public).
+const ONE_TEST_UNCOMPRESSED_WIF: &str = "91avARGdfge8E4tZfYLoxeJ5sGBdNJQH4kvjJoQFacbgwmaKkrx";
+
+/// One imported key of each address type: compressed for the three segwit/Taproot types,
+/// uncompressed for P2PKH (the only type an uncompressed key may have).
+const IMPORTED: [(&str, ScriptType); 4] = [
+    (BIP49_TEST_WIF, ScriptType::P2wpkh),
+    (BIP49_TEST_WIF, ScriptType::P2tr),
+    (BIP49_TEST_WIF, ScriptType::P2shP2wpkh),
+    (ONE_TEST_UNCOMPRESSED_WIF, ScriptType::P2pkh),
+];
+
+/// The public facts of `wif` used as `script_type` (what S19 shows).
+fn imported_info(wif: &str, script_type: ScriptType) -> TestResult<yw_core::keyimport::BtcKeyInfo> {
+    match yw_core::keyimport::ImportKey::parse(ImportSpec::Btc(script_type), wif)?.preview()? {
+        ImportPreview::Btc(info) => Ok(info),
+        ImportPreview::Evm(_) | ImportPreview::Sol(_) => Err("not a Bitcoin key".into()),
+    }
+}
+
+/// One imported key end to end: funded on the fake chain, listed (badge, balance, selected),
+/// received to, sent from (prepare → approve → sign with the vault's tag-4 record → post-sign
+/// verification → pre-check → send), tracked to 6 confirmations with the change back to the same
+/// address inserted into the imported account, and its activity tag.
+#[expect(clippy::too_many_lines, reason = "one imported account end to end")]
+fn imported_round(key_only: bool, salt: u8, wif: &str, script_type: ScriptType) -> TestResult {
+    let info = imported_info(wif, script_type)?;
+    assert_eq!(info.network, BtcNetwork::Testnet4);
+    let ours = script_pubkey(&info.kind);
+    let tag = format!(
+        "imported-{}-{}",
+        if key_only { "keyonly" } else { "mnemonic" },
+        script_type.json_name()
+    );
+    let (funding, raw) = funding_to(ours.clone(), FUNDING_VALUE, salt)?;
+    let mut harness = if key_only {
+        Harness::key_only(&tag, wif, script_type)?
+    } else {
+        let mut harness = Harness::new(&tag)?;
+        harness.enable();
+        harness
+    };
+    if let Ok(mut world) = harness.world.lock() {
+        world.txs.push((funding, raw, Some(FUNDING_HEIGHT)));
+    }
+    let primary_before = harness.btc_meta().cloned();
+    let account = if key_only {
+        // The key start wrote its account; the tab opens with a refresh (no discovery).
+        let account = *harness
+            .ctx()
+            .btc_meta()
+            .ok_or("imported account")?
+            .account();
+        assert!(harness.ctx().primary_meta().is_none());
+        assert_eq!(harness.ctx().gate(), Ok(()));
+        harness.run(BtcUi::open_tab);
+        account
+    } else {
+        // `AddImported` stores and selects it; the refresh of the new account follows.
+        harness.import_key(wif, script_type)?
+    };
+    assert!(account.is_single());
+    let BtcAccountId::Imported { id } = account.id() else {
+        return Err("not an imported account".into());
+    };
+    let meta = harness.meta.as_ref().ok_or("meta")?;
+    assert_eq!(meta.btc_accounts.selected, Some(account.id()));
+    let active = harness.ctx().btc_meta().ok_or("active")?.clone();
+    assert_eq!(active.account(), &account);
+    assert!(active.discovery_done(), "a single key needs no discovery");
+    assert_eq!(active.verified().len(), 1, "{script_type:?}");
+    assert_eq!(
+        harness
+            .ui
+            .balance(&harness.ctx())
+            .ok_or("balance")?
+            .available
+            .get(),
+        FUNDING_VALUE
+    );
+    // The account list: the imported row with its badge, short address, type and balance.
+    let rows = harness.ui.account_rows(&harness.ctx());
+    let row = rows.iter().find(|row| row.imported).ok_or("imported row")?;
+    assert!(row.selected && row.id == account.id());
+    assert_eq!(row.name, yw_app::app_btc::short_address(&info.address));
+    assert!(row.kind.starts_with(script_type.name()));
+    assert_eq!(row.available.get(), FUNDING_VALUE);
+    if key_only {
+        // No BIP84 account 0: the imported key is the only account and holds the tip.
+        assert_eq!(rows.len(), 1);
+        let ctx = harness.ctx();
+        let holder = ctx.tip_meta().ok_or("tip holder")?;
+        assert_eq!(holder.id(), account.id());
+        assert_eq!(holder.max_tip_seen(), TIP);
+    } else {
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, BtcAccountId::PRIMARY);
+        assert!(!rows[0].imported);
+    }
+    // Receive: its one address (stored as receive 0), the path "가져온 키".
+    harness.run(BtcUi::open_receive);
+    let view = harness.ui.receive.clone().ok_or("receive view")?;
+    assert_eq!(view.address, info.address);
+    assert_eq!(view.path, "가져온 키");
+    assert!(view.kind.starts_with(script_type.name()));
+    // Send through the RPC worker and the key worker.
+    send_form(&mut harness, "30000", "2");
+    harness.run(|ui, ctx| ui.review(ctx, [salt; 32]));
+    assert_eq!(harness.queued.len(), 1, "{:?}", harness.ui.send.info);
+    let item = harness.queued[0].clone();
+    assert_eq!(item.plan.account(), &account);
+    let change = item.plan.change().ok_or("change")?;
+    assert_eq!(account.change_path(change.index), (BtcChain::Receive, 0));
+    harness.approve()?;
+    let record = harness
+        .records()
+        .into_iter()
+        .find(|record| record.account == account.id())
+        .ok_or("record of the imported account")?;
+    assert_eq!(record.state, BtcTxState::Submitted);
+    assert_eq!(record.script_type, script_type);
+    let sent = parse_transaction(&record.raw)?;
+    assert_eq!(sent.has_witness(), script_type.is_segwit());
+    let input = sent.inputs.first().ok_or("input")?;
+    let pubkey = info.public_key.as_bytes();
+    match script_type {
+        ScriptType::P2pkh => {
+            // `<sig> <K>` with the 65-byte uncompressed key, no witness.
+            assert!(input.witness.is_empty());
+            assert!(input.script_sig.ends_with(pubkey) && pubkey.len() == 65);
+        }
+        ScriptType::P2shP2wpkh => {
+            assert_eq!(input.script_sig.len(), 23);
+            assert_eq!(input.witness.get(1).map(Vec::as_slice), Some(pubkey));
+        }
+        ScriptType::P2wpkh => {
+            assert!(input.script_sig.is_empty());
+            assert_eq!(input.witness.get(1).map(Vec::as_slice), Some(pubkey));
+        }
+        ScriptType::P2tr => {
+            assert!(input.script_sig.is_empty());
+            assert_eq!(input.witness.len(), 1);
+            assert_eq!(input.witness.first().map(Vec::len), Some(64));
+        }
+    }
+    // The change goes back to the same address.
+    let vout = usize::try_from(change.vout)?;
+    assert_eq!(
+        sent.outputs.get(vout).map(|out| &out.script_pubkey),
+        Some(&ours)
+    );
+    let sent_txid = record.txid;
+    // D20 per account: no second send while in flight.
+    assert_eq!(
+        harness.ui.send_block(&harness.ctx()).as_deref(),
+        Some(yw_core::btc::policy::texts::IN_FLIGHT)
+    );
+    // Tracking to 6 confirmations: the change is inserted into the imported account.
+    harness.clock.advance(60_000);
+    harness.run(BtcUi::tick);
+    if let Ok(mut world) = harness.world.lock() {
+        world.confirm(&sent_txid, CONFIRM_HEIGHT);
+    }
+    harness.clock.advance(60_000);
+    harness.run(BtcUi::tick);
+    let record = harness
+        .records()
+        .into_iter()
+        .find(|record| record.txid == sent_txid)
+        .ok_or("record")?;
+    assert_eq!(record.state, BtcTxState::Confirmed);
+    let change = record.change_outpoint().ok_or("change outpoint")?;
+    let active = harness.ctx().btc_meta().ok_or("active")?.clone();
+    let own = active
+        .verified()
+        .iter()
+        .find(|utxo| utxo.outpoint == change)
+        .ok_or("own change in the imported account")?;
+    assert!(own.own && own.chain == BtcChain::Receive && own.index == 0);
+    if !key_only {
+        // BIP84 account 0 did not move.
+        assert_eq!(harness.btc_meta().cloned(), primary_before);
+    }
+    let activity = harness
+        .meta
+        .as_ref()
+        .ok_or("meta")?
+        .activity_of("bitcoin:testnet4");
+    let row = activity
+        .iter()
+        .find(|row| row.tx_id == sent_txid.to_display_hex())
+        .ok_or("activity row")?;
+    assert_eq!(
+        row.account,
+        format!("imported/{}", yw_core::hex::encode(&id))
+    );
+    assert_eq!(row.status, "succeeded");
+    assert_eq!(harness.ui.send_block(&harness.ctx()), None);
+    assert!(harness.banners.is_empty(), "{:?}", harness.banners);
+    Ok(())
+}
+
+/// spec/08 §3.5 at the app level, mnemonic wallet: every address type of an imported WIF key
+/// (`개인키 가져오기` → `AddImported`) next to BIP84 account 0.
+#[test]
+fn imported_keys_in_a_mnemonic_wallet_end_to_end() -> TestResult {
+    for (round, (wif, script_type)) in IMPORTED.into_iter().enumerate() {
+        let salt = u8::try_from(round).unwrap_or(0).saturating_add(0x70);
+        imported_round(false, salt, wif, script_type)?;
+    }
+    Ok(())
+}
+
+/// spec/08 §3.5 at the app level, key-only wallet ("개인키로 시작하기" with a Bitcoin key): no
+/// BIP84 account 0, no discovery; the imported key's account holds the wallet-level tip.
+#[test]
+fn imported_keys_in_a_key_only_wallet_end_to_end() -> TestResult {
+    for (round, (wif, script_type)) in IMPORTED.into_iter().enumerate() {
+        let salt = u8::try_from(round).unwrap_or(0).saturating_add(0x80);
+        imported_round(true, salt, wif, script_type)?;
+    }
+    Ok(())
+}
+
+/// A key-only wallet with only a Bitcoin key: lock and unlock keep its account (and the tip it
+/// holds); `계정 추가` is refused (no recovery words); its last key cannot be removed.
+#[test]
+fn key_only_bitcoin_wallet_locks_and_keeps_its_account() -> TestResult {
+    let mut harness = Harness::key_only("keyonly-lock", BIP49_TEST_WIF, ScriptType::P2tr)?;
+    harness.run(BtcUi::open_tab);
+    let account = *harness.ctx().btc_meta().ok_or("account")?.account();
+    let BtcAccountId::Imported { id } = account.id() else {
+        return Err("not imported".into());
+    };
+    assert_eq!(
+        harness
+            .ctx()
+            .tip_meta()
+            .map(yw_core::btc::BtcMeta::max_tip_seen),
+        Some(TIP)
+    );
+    // No HD accounts in a key-only wallet.
+    harness.run(|ui, ctx| {
+        ui.open_add_account(ctx);
+        Vec::new()
+    });
+    assert!(!harness.ui.add_account_open);
+    harness.run(|ui, ctx| ui.add_account(ctx, ScriptType::P2wpkh));
+    assert_eq!(
+        harness
+            .meta
+            .as_ref()
+            .ok_or("meta")?
+            .btc_accounts
+            .accounts
+            .len(),
+        1
+    );
+    // Lock, reload, unlock: straight to `Unlocked`; the account (and its tip) come back.
+    harness.unlocked = false;
+    harness.run(|ui, _| ui.lock());
+    let _ = harness.key.handle(KeyJob::Lock);
+    harness.meta = None;
+    harness.journal = None;
+    let loaded = harness.key.handle(KeyJob::Load);
+    assert!(matches!(
+        loaded.first(),
+        Some(KeyOutcome::Loaded {
+            status: yw_core::vault::VaultStatus::Locked,
+            ..
+        })
+    ));
+    let unlocked = harness.key.handle(KeyJob::Unlock {
+        password: Zeroizing::new(PASSWORD.to_vec()),
+    });
+    assert!(matches!(
+        unlocked.first(),
+        Some(KeyOutcome::Status(Ok(
+            yw_core::vault::VaultStatus::Unlocked {
+                alt_passphrase: false
+            }
+        )))
+    ));
+    harness.unlocked = true;
+    harness.key_job(KeyJob::LoadMeta);
+    harness.key_job(KeyJob::LoadJournal);
+    harness.drain();
+    assert!(!harness.has_mnemonic);
+    let ctx = harness.ctx();
+    assert_eq!(ctx.gate(), Ok(()));
+    assert_eq!(ctx.btc_meta().map(|meta| *meta.account()), Some(account));
+    assert_eq!(
+        ctx.tip_meta().map(yw_core::btc::BtcMeta::max_tip_seen),
+        Some(TIP)
+    );
+    // The only key of a key-only wallet stays (`LastKey`), with its account.
+    let outcomes = harness.key.handle(KeyJob::RemoveImportedKey {
+        password: Zeroizing::new(PASSWORD.to_vec()),
+        id: yw_core::vault::RecordId::from_bytes(id),
+    });
+    assert!(matches!(
+        outcomes.as_slice(),
+        [KeyOutcome::ImportedKeyRemoved(Err(
+            yw_core::error::VaultError::LastKey
+        ))]
+    ));
+    Ok(())
+}
+
+/// Removing an imported Bitcoin key (spec/04 §2.18): refused while its account has an in-flight
+/// transaction (the UI says why before the password; the key worker refuses too); once the
+/// transaction is confirmed the vault record and the account go, the selection falls back to
+/// BIP84 account 0, and the next meta load agrees.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "refusal, removal and reload in order"
+)]
+fn imported_key_removal() -> TestResult {
+    let info = imported_info(BIP49_TEST_WIF, ScriptType::P2wpkh)?;
+    let (funding, raw) = funding_to(script_pubkey(&info.kind), FUNDING_VALUE, 0x90)?;
+    let mut harness = Harness::new("imported-remove")?;
+    harness.enable();
+    if let Ok(mut world) = harness.world.lock() {
+        world.txs.push((funding, raw, Some(FUNDING_HEIGHT)));
+    }
+    let account = harness.import_key(BIP49_TEST_WIF, ScriptType::P2wpkh)?;
+    let BtcAccountId::Imported { id } = account.id() else {
+        return Err("not imported".into());
+    };
+    let record_id = yw_core::vault::RecordId::from_bytes(id);
+    // An open approval of this account: the UI refuses before the password.
+    send_form(&mut harness, "30000", "2");
+    harness.run(|ui, ctx| ui.review(ctx, [0x91; 32]));
+    assert!(harness.ui.slot);
+    assert_eq!(
+        harness.ctx().remove_block(id, harness.ui.slot),
+        Some(yw_app::app_btc::REMOVE_BUSY_APPROVAL)
+    );
+    harness.approve()?;
+    // In flight: the UI and the key worker both refuse; nothing is removed.
+    assert_eq!(
+        harness.ctx().remove_block(id, harness.ui.slot),
+        Some(yw_app::app_btc::REMOVE_BUSY_IN_FLIGHT)
+    );
+    let outcomes = harness.key.handle(KeyJob::RemoveImportedKey {
+        password: Zeroizing::new(PASSWORD.to_vec()),
+        id: record_id,
+    });
+    assert!(matches!(
+        outcomes.as_slice(),
+        [KeyOutcome::ImportedKeyBusy(busy)] if *busy == record_id
+    ));
+    assert!(
+        harness
+            .meta
+            .as_ref()
+            .ok_or("meta")?
+            .btc_accounts
+            .get(BtcNetwork::Testnet4, account.id())
+            .is_some()
+    );
+    // Confirmed (6 confirmations): removal goes through.
+    let sent_txid = harness
+        .records()
+        .first()
+        .map(|record| record.txid)
+        .ok_or("record")?;
+    harness.clock.advance(60_000);
+    harness.run(BtcUi::tick);
+    if let Ok(mut world) = harness.world.lock() {
+        world.confirm(&sent_txid, CONFIRM_HEIGHT);
+    }
+    harness.clock.advance(60_000);
+    harness.run(BtcUi::tick);
+    assert_eq!(harness.ctx().remove_block(id, harness.ui.slot), None);
+    // A wrong password removes nothing.
+    let outcomes = harness.key.handle(KeyJob::RemoveImportedKey {
+        password: Zeroizing::new(b"not the password 1".to_vec()),
+        id: record_id,
+    });
+    assert!(matches!(
+        outcomes.as_slice(),
+        [KeyOutcome::ImportedKeyRemoved(Err(
+            yw_core::error::VaultError::UnlockFailed
+        ))]
+    ));
+    let outcomes = harness.key.handle(KeyJob::RemoveImportedKey {
+        password: Zeroizing::new(PASSWORD.to_vec()),
+        id: record_id,
+    });
+    let mut outcomes = outcomes.into_iter();
+    assert!(matches!(
+        outcomes.next(),
+        Some(KeyOutcome::ImportedKeyRemoved(Ok((
+            removed,
+            yw_core::keyimport::ImportChain::Btc
+        )))) if removed == record_id
+    ));
+    for outcome in outcomes {
+        harness.key_outcome(outcome);
+    }
+    harness.drain();
+    let meta = harness.meta.as_ref().ok_or("meta")?;
+    assert!(
+        meta.btc_accounts
+            .get(BtcNetwork::Testnet4, account.id())
+            .is_none()
+    );
+    assert_eq!(meta.btc_accounts.selected, None);
+    assert_eq!(harness.ctx().active_id(), BtcAccountId::PRIMARY);
+    assert!(
+        harness
+            .ui
+            .account_rows(&harness.ctx())
+            .iter()
+            .all(|row| !row.imported)
+    );
+    // Its finished activity row stays; the next meta load agrees (no stale account, no mismatch).
+    assert!(
+        meta.activity_of("bitcoin:testnet4")
+            .iter()
+            .any(|row| row.tx_id == sent_txid.to_display_hex())
+    );
+    let loaded = harness.key.handle(KeyJob::LoadMeta);
+    let Some(KeyOutcome::Meta(Ok(loaded))) = loaded.first() else {
+        return Err("meta".into());
+    };
+    assert!(!loaded.mismatch);
+    assert!(loaded.meta.btc_accounts.accounts.is_empty());
     Ok(())
 }

@@ -566,6 +566,9 @@ pub enum KeyOutcome {
     KeyImported(Result<ImportedAccount, VaultError>),
     /// An imported key removed (its chain).
     ImportedKeyRemoved(Result<(RecordId, ImportChain), VaultError>),
+    /// `삭제` refused before the password check: the imported Bitcoin key's account has an
+    /// in-flight transaction (nothing removed).
+    ImportedKeyBusy(RecordId),
     /// Meta loaded.
     Meta(Result<MetaLoaded, VaultError>),
     /// Meta saved.
@@ -869,8 +872,8 @@ pub enum RpcEvent {
 /// An event for the UI thread.
 #[derive(Debug)]
 pub enum UiEvent {
-    /// Key worker result.
-    Key(KeyResult),
+    /// Key worker result (boxed: meta documents make it the largest event).
+    Key(Box<KeyResult>),
     /// RPC worker result.
     Rpc(RpcEvent),
     /// Browser bridge event (spec/05).
@@ -1062,13 +1065,13 @@ mod tests {
     }
 
     fn key(ticket: u64) -> UiEvent {
-        UiEvent::Key(KeyResult {
+        UiEvent::Key(Box::new(KeyResult {
             epoch: 1,
             outcome: KeyOutcome::SignedEvm(EvmSigned {
                 ticket: SignTicket(ticket),
                 result: Err(SignFailure::JournalFull),
             }),
-        })
+        }))
     }
 
     fn rpc() -> UiEvent {
@@ -1113,10 +1116,10 @@ mod tests {
         let tickets: Vec<u64> = drained
             .iter()
             .filter_map(|event| match event {
-                UiEvent::Key(KeyResult {
-                    outcome: KeyOutcome::SignedEvm(signed),
-                    ..
-                }) => Some(signed.ticket.0),
+                UiEvent::Key(result) => match &result.outcome {
+                    KeyOutcome::SignedEvm(signed) => Some(signed.ticket.0),
+                    _ => None,
+                },
                 _ => None,
             })
             .collect();

@@ -6,10 +6,13 @@
 //! |---|---|
 //! | EVM | optional `0x` + 64 hex (spec/02 §8.2) |
 //! | Solana | base58 64-byte keypair (Phantom/Solflare) or `solana-keygen` JSON array of 64 numbers |
-//! | Bitcoin | WIF (mainnet `0x80` / test `0xef` → testnet4, compressed or not) + a chosen script type |
+//! | Bitcoin | WIF (mainnet `0x80` / test `0xef` → testnet4, compressed or not) + a chosen address type |
 //!
 //! Every parser ignores surrounding ASCII whitespace, accepts ASCII only, keeps decoded secrets in
-//! `Zeroizing` buffers and never echoes input in errors.
+//! `Zeroizing` buffers and never echoes input in errors. A Bitcoin key's address type is the
+//! account [`ScriptType`] of `btc::account` (same stable codes 1–4 in the vault record), and its
+//! output and address come from the same code as every other Bitcoin account
+//! (`btc::account::kind_for_key`, BIP86 tweak in `btc::taproot`).
 #![deny(clippy::indexing_slicing)]
 
 use core::fmt;
@@ -17,13 +20,12 @@ use core::fmt;
 use secp256k1::{PublicKey, SecretKey};
 use zeroize::Zeroizing;
 
-pub mod btc;
 pub(crate) mod sol;
 
-pub use btc::BtcScriptType;
 pub use sol::SOL_KEY_TEXT_MAX;
 
-use crate::btc::address::ScriptKind;
+use crate::btc::account::{AccountKeyError, BtcAccountKey, BtcPubKey, ScriptType, kind_for_key};
+use crate::btc::address::{ScriptKind, encode_address};
 use crate::btc::network::BtcNetwork;
 use crate::codec::wif::parse_wif;
 use crate::entropy::{OsRandom, secp_context};
@@ -58,15 +60,15 @@ impl ImportChain {
     }
 }
 
-/// What is being imported: the chain, and for Bitcoin the chosen script type.
+/// What is being imported: the chain, and for Bitcoin the chosen address type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ImportSpec {
     /// EVM hex key.
     Evm,
     /// Solana keypair.
     Sol,
-    /// Bitcoin WIF used as this script type.
-    Btc(BtcScriptType),
+    /// Bitcoin WIF used as this address type.
+    Btc(ScriptType),
 }
 
 impl ImportSpec {
@@ -92,7 +94,7 @@ pub(crate) enum ImportInner {
         secret: Zeroizing<[u8; 32]>,
         compressed: bool,
         network: BtcNetwork,
-        script: BtcScriptType,
+        script: ScriptType,
     },
 }
 
@@ -109,21 +111,33 @@ impl fmt::Debug for ImportKey {
     }
 }
 
-/// Public facts of an imported Bitcoin key (preview and listing).
+/// Public facts of an imported Bitcoin key (preview, listing, and its Bitcoin account).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BtcKeyInfo {
     /// Network of the WIF version byte.
     pub network: BtcNetwork,
-    /// Chosen script type.
-    pub script: BtcScriptType,
+    /// Chosen address type.
+    pub script: ScriptType,
     /// The public key is used compressed.
     pub compressed: bool,
     /// The public key as used (33 bytes compressed, 65 uncompressed).
-    pub public_key: Vec<u8>,
+    pub public_key: BtcPubKey,
     /// Output script kind (hash/program/output key).
     pub kind: ScriptKind,
     /// Address string on `network`.
     pub address: String,
+}
+
+impl BtcKeyInfo {
+    /// The Bitcoin account of this key stored as vault record `id` (spec/08 §3.5: one address,
+    /// change back to it, no gap scan).
+    ///
+    /// # Errors
+    ///
+    /// [`AccountKeyError::UncompressedNotP2pkh`] (never for a parsed key).
+    pub const fn account_key(&self, id: [u8; 16]) -> Result<BtcAccountKey, AccountKeyError> {
+        BtcAccountKey::single(id, self.script, self.public_key)
+    }
 }
 
 /// What the user confirms before an import is stored.
@@ -152,28 +166,30 @@ fn trim_blank(text: &str) -> &str {
     text.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\r' | '\n'))
 }
 
-/// The facts of a Bitcoin key: public key, script kind, address.
+/// The facts of a Bitcoin key: public key, output kind and address, computed like every
+/// Bitcoin account's ([`kind_for_key`]: HASH160 for P2PKH / P2SH-P2WPKH / P2WPKH, the BIP86
+/// key-path output key for P2TR).
 pub(crate) fn btc_info(
     secret: &[u8; 32],
     compressed: bool,
     network: BtcNetwork,
-    script: BtcScriptType,
+    script: ScriptType,
 ) -> Result<BtcKeyInfo, KeyError> {
+    if !compressed && script != ScriptType::P2pkh {
+        return Err(KeyError::WifUncompressedScript);
+    }
     let ctx = secp_context(&mut OsRandom)?;
     let mut key = SecretKey::from_byte_array(*secret).map_err(|_| KeyError::InvalidPrivateKey)?;
     let public = PublicKey::from_secret_key(&ctx, &key);
     key.non_secure_erase();
-    let kind = btc::script_kind(&ctx, &public, compressed, script)?;
+    let public_key = BtcPubKey::of_point(&public, compressed);
+    let kind = kind_for_key(&ctx, script, &public_key)?;
     Ok(BtcKeyInfo {
         network,
         script,
         compressed,
-        public_key: if compressed {
-            public.serialize().to_vec()
-        } else {
-            public.serialize_uncompressed().to_vec()
-        },
-        address: crate::btc::address::encode_address(&kind, network),
+        public_key,
+        address: encode_address(&kind, network),
         kind,
     })
 }
@@ -204,7 +220,8 @@ impl ImportKey {
             }
             ImportSpec::Btc(script) => {
                 let wif = parse_wif(text)?;
-                if !wif.compressed() && !script.allows_uncompressed() {
+                // Segwit and Taproot need a compressed (or x-only) key (spec/08 §3.5).
+                if !wif.compressed() && script != ScriptType::P2pkh {
                     return Err(KeyError::WifUncompressedScript);
                 }
                 let mut secret = Zeroizing::new([0_u8; 32]);

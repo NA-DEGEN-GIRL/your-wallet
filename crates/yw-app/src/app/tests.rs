@@ -799,7 +799,9 @@ fn control_ids(items: &[Item]) -> Vec<u16> {
 )]
 fn key_start_creates_a_key_only_wallet() {
     use crate::ui::screens_keys::{self as keys_ui, ids as key_ids};
-    use yw_core::keyimport::{BtcScriptType, ImportChain, ImportSpec};
+    use yw_core::bip32::path::BtcChain;
+    use yw_core::btc::ScriptType;
+    use yw_core::keyimport::{ImportChain, ImportSpec};
 
     let mut h = Harness::new("keystart");
     assert_eq!(h.app.screen, Screen::FirstRun);
@@ -882,19 +884,36 @@ fn key_start_creates_a_key_only_wallet() {
     h.app
         .set_screen(Screen::Settings(super::SettingsSection::Security));
     assert!(!control_ids(&h.app.items()).contains(&ids::REVEAL_MNEMONIC));
-    // A Bitcoin WIF as P2WPKH.
+    // A Bitcoin WIF as P2WPKH: a single-key account of the Bitcoin list (`AddImported`).
     h.app.set_screen(Screen::Main);
     h.submit(
-        Purpose::ImportChainKey(ImportSpec::Btc(BtcScriptType::P2wpkh)),
+        Purpose::ImportChainKey(ImportSpec::Btc(ScriptType::P2wpkh)),
         &[BIP84_WIF.as_bytes()],
     );
     h.pump();
     let meta = h.app.meta.clone().unwrap();
-    assert_eq!(meta.btc_raw_accounts.len(), 1);
-    assert_eq!(meta.btc_raw_accounts[0].address, BIP84_ADDRESS);
+    assert_eq!(meta.btc_accounts.accounts.len(), 1);
+    let account = &meta.btc_accounts.accounts[0];
+    assert!(account.is_single() && account.discovery_done());
+    assert_eq!(
+        account.address(BtcChain::Receive, 0).unwrap().as_str(),
+        BIP84_ADDRESS
+    );
+    assert_eq!(meta.btc_accounts.selected, Some(account.id()));
+    // Bitcoin on (mainnet, the key's network): the account list shows it with the badge, the
+    // selected imported account's `개인키 보기`·`삭제`, no `계정 추가`, and no placeholder.
+    h.app.settings.bitcoin.enabled = true;
     let items = h.app.items();
-    assert!(has_text(&items, keys_ui::T_BTC_IMPORTED_PENDING));
-    assert!(has_text(&items, "[가져온 키]"));
+    assert!(
+        controls(&items)
+            .iter()
+            .any(|ctl| ctl.text.starts_with("[가져온 키] bc1qcr") && ctl.checked == Some(true))
+    );
+    let ids_now = control_ids(&items);
+    assert!(ids_now.contains(&key_ids::BTC_REVEAL) && ids_now.contains(&key_ids::BTC_REMOVE));
+    assert!(ids_now.contains(&key_ids::BTC_IMPORT));
+    assert!(!ids_now.contains(&crate::ui::screens_btc::ids::ACCOUNT_ADD));
+    assert!(!has_text(&items, "통합 후"));
     // Lock and unlock: straight to S10, meta and the key-only flag come back.
     h.app.lock(LockReason::Manual);
     h.pump();
@@ -910,7 +929,10 @@ fn key_start_creates_a_key_only_wallet() {
     assert!(h.app.key_only());
     let meta = h.app.meta.clone().unwrap();
     assert_eq!(
-        (meta.sol_raw_accounts.len(), meta.btc_raw_accounts.len()),
+        (
+            meta.sol_raw_accounts.len(),
+            meta.btc_accounts.accounts.len()
+        ),
         (1, 1)
     );
     // Remove the Solana key (export-first overlay, then W03).
@@ -930,7 +952,7 @@ fn key_start_creates_a_key_only_wallet() {
     assert!(!h.app.can_remove_imported());
     h.app.btc_select_tab();
     let items = h.app.items();
-    let remove = key_ids::btc_row_id(0, key_ids::BtcRowAction::Remove).unwrap();
+    let remove = key_ids::BTC_REMOVE;
     assert!(
         controls(&items)
             .iter()
@@ -1002,4 +1024,126 @@ fn imports_into_a_mnemonic_wallet() {
         &result.outcome,
         KeyOutcome::Revealed(Ok((_, text, None))) if text.expose() == sol_keypair_text()
     )));
+}
+
+/// "개인키로 시작하기" with a Bitcoin key (spec/04 §2.18, spec/08 §3.5): Bitcoin is turned on
+/// with the key's network, the Bitcoin tab lists the imported account with its badge (no BIP84
+/// account 0, no `계정 추가`), lock/unlock keeps it, the EVM tab says it has no account and a dApp
+/// connect is refused at once with 4100 `NoEvmAccount`.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one key-only Bitcoin wallet from S01 to a dApp"
+)]
+fn key_start_with_a_bitcoin_key() {
+    use crate::browser::envelope::{Correlation, Id16, Id32};
+    use crate::browser::{DappEvent, Reply, SiteKind, SiteRequest};
+    use crate::network::BtcNet;
+    use crate::ui::screens_btc::ids as btc_ids;
+    use crate::ui::screens_keys::{self as keys_ui, ids as key_ids};
+    use yw_core::btc::{BtcNetwork, ScriptType};
+    use yw_core::keyimport::ImportChain;
+    use yw_core::policy::ProviderError;
+    /// BIP49 test vector key (abandon `m/49'/1'/0'/0/0`), compressed testnet WIF (public).
+    const BIP49_TEST_WIF: &str = "cULrpoZGXiuC19Uhvykx7NugygA3k86b3hmdCeyvHYQZSxojGyXJ";
+
+    let mut h = Harness::new("keystart-btc");
+    h.app.on_command(key_ids::FIRST_KEY);
+    h.app.on_command(key_ids::START_CHAIN_BTC);
+    h.app.on_command(key_ids::script_id(ScriptType::P2tr));
+    assert_eq!(h.app.keys.start.script, ScriptType::P2tr);
+    let items = h.app.items();
+    assert!(
+        controls(&items)
+            .iter()
+            .any(|ctl| ctl.text == "P2TR (탭루트, bc1p…)" && ctl.checked == Some(true))
+    );
+    h.submit(Purpose::KeyStartPassword, &[WALLET_PW]);
+    h.submit(Purpose::KeyStartKey, &[BIP49_TEST_WIF.as_bytes()]);
+    h.pump();
+    let Screen::KeyStartAddress(view) = h.app.screen.clone() else {
+        unreachable!("S19 expected, got {:?}", h.app.screen);
+    };
+    assert_eq!(view.btc, Some((ScriptType::P2tr, BtcNetwork::Testnet4)));
+    assert!(view.address.starts_with("tb1p"));
+    assert!(h.app.items().iter().any(|item| matches!(
+        item,
+        Item::Field(label, value) if label == "주소 형식" && value == "P2TR (탭루트, tb1p…)"
+    )));
+    h.app.on_command(key_ids::START_CORRECT);
+    h.pump();
+    assert_eq!(h.app.screen, Screen::Done);
+    // Bitcoin on, on the key's network.
+    assert!(h.app.settings.bitcoin.enabled);
+    assert_eq!(h.app.settings.bitcoin.network, BtcNet::Testnet4);
+    h.app.on_command(ids::DONE_CONTINUE);
+    assert_eq!(h.app.screen, Screen::Main);
+    assert!(h.app.key_only());
+    let meta = h.app.meta.clone().unwrap();
+    assert_eq!(meta.prefs.tab, Tab::Btc);
+    assert!(meta.btc.is_none());
+    assert_eq!(meta.btc_accounts.accounts.len(), 1);
+    let address = meta.btc_accounts.accounts[0]
+        .address(yw_core::bip32::path::BtcChain::Receive, 0)
+        .unwrap();
+    assert_eq!(address.as_str(), view.address);
+    // The Bitcoin tab (no RPC URL here: the E-KEY-005 banner) lists the imported account.
+    let items = h.app.items();
+    assert!(
+        controls(&items)
+            .iter()
+            .any(|ctl| ctl.text.starts_with("[가져온 키] tb1p") && ctl.checked == Some(true))
+    );
+    let ids_now = control_ids(&items);
+    assert!(!ids_now.contains(&btc_ids::ACCOUNT_ADD));
+    assert!(ids_now.contains(&key_ids::BTC_REVEAL) && ids_now.contains(&key_ids::BTC_REMOVE));
+    assert!(ids_now.contains(&key_ids::BTC_IMPORT));
+    assert!(!has_text(&items, "통합 후"));
+    // Lock and unlock: straight to S10 with the same account.
+    h.app.lock(LockReason::Manual);
+    h.pump();
+    assert_eq!(h.app.mode, AppMode::Locked);
+    h.submit(Purpose::Unlock, &[WALLET_PW]);
+    h.pump();
+    assert_eq!(
+        h.app.mode,
+        AppMode::Unlocked {
+            alt_passphrase: false
+        }
+    );
+    assert!(h.app.key_only());
+    let meta = h.app.meta.clone().unwrap();
+    assert_eq!(meta.btc_accounts.accounts.len(), 1);
+    assert!(meta.btc.is_none());
+    // The EVM tab: no account, `개인키 가져오기` offered.
+    h.app.sol_select_tab(Tab::Evm);
+    let items = h.app.items();
+    assert!(has_text(
+        &items,
+        &keys_ui::no_accounts_text(ImportChain::Evm)
+    ));
+    assert!(control_ids(&items).contains(&ids::IMPORT_KEY));
+    // A dApp connect: 4100 `NoEvmAccount` at once, never queued.
+    let site = SiteRequest {
+        reply: Reply {
+            conn: 1,
+            correlation: Correlation {
+                session_id: Id32([1; 32]),
+                sequence: 1,
+                activation_nonce: Id32([2; 32]),
+                request_id: Id16([3; 16]),
+            },
+        },
+        origin: yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
+        chain_id: yw_core::evm::chain::SEPOLIA,
+        deadline_ms: u64::MAX,
+        method: yw_core::policy::Method::RequestAccounts,
+        kind: SiteKind::RequestAccounts,
+        compat_mode: None,
+    };
+    let refusal = h.app.unlocked_refusal(&site);
+    assert_eq!(refusal, Some(ProviderError::NoEvmAccount));
+    assert_eq!(refusal.map(|error| error.code()), Some(4100));
+    h.app.on_dapp_event(DappEvent::Request(Box::new(site)));
+    assert!(h.app.evm.queue.is_empty());
 }

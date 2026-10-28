@@ -455,6 +455,20 @@ impl App {
             .any(|(chain, held)| *chain == chain_id && held == account)
     }
 
+    /// The immediate answer to a site request while unlocked, before any queue entry: a send
+    /// from an account whose signing slot is held (`TransactionPending`), or a connect in a
+    /// key-only wallet without an EVM key (4100 `NoEvmAccount`, spec/05 §4.2 — e.g. a wallet
+    /// started from a Bitcoin or Solana key).
+    pub(crate) fn unlocked_refusal(&self, site: &SiteRequest) -> Option<ProviderError> {
+        if let SiteKind::Send(tx) = &site.kind
+            && self.slot_held(site.chain_id, &tx.from)
+        {
+            return Some(ProviderError::TransactionPending);
+        }
+        (site.kind.is_connect() && self.own_accounts().is_empty())
+            .then_some(ProviderError::NoEvmAccount)
+    }
+
     fn on_site_request(&mut self, site: SiteRequest) {
         logging::info(
             "browser",
@@ -482,15 +496,8 @@ impl App {
                 }
             }
             AppMode::Unlocked { .. } => {
-                if let SiteKind::Send(tx) = &site.kind
-                    && self.slot_held(site.chain_id, &tx.from)
-                {
-                    self.respond(&site.reply, Err(ProviderError::TransactionPending));
-                    return;
-                }
-                if site.kind.is_connect() && self.own_accounts().is_empty() {
-                    // A key-only wallet without an EVM key (spec/05 §4.2): 4100 with the reason.
-                    self.respond(&site.reply, Err(ProviderError::NoEvmAccount));
+                if let Some(error) = self.unlocked_refusal(&site) {
+                    self.respond(&site.reply, Err(error));
                     return;
                 }
             }

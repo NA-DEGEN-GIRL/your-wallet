@@ -2229,7 +2229,7 @@ fn sol_import(seed: [u8; 32]) -> crate::keyimport::ImportKey {
 fn btc_import(
     secret: [u8; 32],
     compressed: bool,
-    script: crate::keyimport::BtcScriptType,
+    script: crate::btc::ScriptType,
 ) -> crate::keyimport::ImportKey {
     crate::keyimport::ImportKey {
         inner: crate::keyimport::ImportInner::Btc {
@@ -2437,7 +2437,7 @@ fn largest_payload_fits_and_seals() {
             secret: Zeroizing::new([byte; 32]),
             compressed: true,
             network: crate::btc::network::BtcNetwork::Testnet4,
-            script: crate::keyimport::BtcScriptType::P2tr,
+            script: crate::btc::ScriptType::P2tr,
         });
     }
     let encoded = payload.encode().unwrap();
@@ -2578,7 +2578,8 @@ fn key_only_vault_lifecycle() {
 #[test]
 #[expect(clippy::too_many_lines, reason = "one table / one scenario")]
 fn imported_keys_caps_duplicates_signing_and_removal() {
-    use crate::keyimport::{BtcScriptType, ImportChain};
+    use crate::btc::ScriptType;
+    use crate::keyimport::ImportChain;
     let (_, mut vault) = imported(None);
     assert_eq!(vault.has_mnemonic(), Ok(true));
     // Solana: 15 per chain, duplicate public key refused.
@@ -2597,7 +2598,7 @@ fn imported_keys_caps_duplicates_signing_and_removal() {
     // Bitcoin: the cap is separate; the same secret as another script type is allowed, the same
     // use is a duplicate.
     let wif = crate::keyimport::ImportKey::parse(
-        crate::keyimport::ImportSpec::Btc(BtcScriptType::P2wpkh),
+        crate::keyimport::ImportSpec::Btc(ScriptType::P2wpkh),
         BIP84_TEST_WIF,
     )
     .unwrap();
@@ -2605,7 +2606,7 @@ fn imported_keys_caps_duplicates_signing_and_removal() {
     assert_eq!(
         vault.import_key(
             crate::keyimport::ImportKey::parse(
-                crate::keyimport::ImportSpec::Btc(BtcScriptType::P2wpkh),
+                crate::keyimport::ImportSpec::Btc(ScriptType::P2wpkh),
                 BIP84_TEST_WIF,
             )
             .unwrap(),
@@ -2616,7 +2617,7 @@ fn imported_keys_caps_duplicates_signing_and_removal() {
     let taproot = vault
         .import_key(
             crate::keyimport::ImportKey::parse(
-                crate::keyimport::ImportSpec::Btc(BtcScriptType::P2tr),
+                crate::keyimport::ImportSpec::Btc(ScriptType::P2tr),
                 BIP84_TEST_WIF,
             )
             .unwrap(),
@@ -2625,11 +2626,11 @@ fn imported_keys_caps_duplicates_signing_and_removal() {
         .unwrap();
     for byte in 1..=13_u8 {
         vault
-            .import_key(btc_import([byte; 32], true, BtcScriptType::P2pkh), 3)
+            .import_key(btc_import([byte; 32], true, ScriptType::P2pkh), 3)
             .unwrap();
     }
     assert_eq!(
-        vault.import_key(btc_import([0x55; 32], false, BtcScriptType::P2pkh), 3),
+        vault.import_key(btc_import([0x55; 32], false, ScriptType::P2pkh), 3),
         Err(VaultError::RecordLimit)
     );
     // EVM keeps its own cap of 15 next to full Solana and Bitcoin lists.
@@ -2647,7 +2648,7 @@ fn imported_keys_caps_duplicates_signing_and_removal() {
     );
     let (_, info) = keys.btc.iter().find(|(id, _)| *id == bip84).unwrap();
     assert_eq!(info.address, "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu");
-    assert_eq!(info.script, BtcScriptType::P2wpkh);
+    assert_eq!(info.script, ScriptType::P2wpkh);
     // The full vault survives lock/unlock (payload ≈ 3.2 KB > the old 2,048-byte bound).
     vault.lock();
     assert_eq!(
@@ -2657,26 +2658,45 @@ fn imported_keys_caps_duplicates_signing_and_removal() {
         })
     );
     assert_eq!(vault.imported_keys().unwrap(), keys);
-    // An imported Bitcoin key signs through `KeyRef::BtcImported` (BIP84 public key).
-    let public = vault
-        .with_secp_key(
-            super::BtcKeySource::Imported(bip84).key_ref(),
-            |ctx, secret| Ok(secp256k1::PublicKey::from_secret_key(ctx, secret).serialize()),
-        )
-        .unwrap();
-    assert_eq!(
-        hex::encode(&public),
-        "0330d54fd0dd420a6e5f8d3624f5f3482cae350f79d5f0753bf5beef9c2d91af3c"
-    );
-    assert_eq!(
-        vault
-            .with_secp_key(
-                KeyRef::BtcImported(RecordId::from_bytes([0xee; 16])),
-                |_, _| Ok(())
-            )
-            .err(),
-        Some(VaultError::RecordNotFound)
-    );
+    // An imported Bitcoin key is lent to the Bitcoin signer with its record's facts (BIP84
+    // public key, mainnet, P2WPKH, compressed); an unknown id is `RecordNotFound`.
+    {
+        use crate::btc::sign::{BtcImportedKeys, BtcKeys, SignError};
+        use crate::btc::{BtcKeySource, BtcNetwork, ScriptType};
+        let source = BtcKeySource::Imported {
+            id: *bip84.as_bytes(),
+            script_type: ScriptType::P2wpkh,
+            compressed: true,
+        };
+        let public = vault
+            .with_btc_key(BtcNetwork::Mainnet, source, 0, |ctx, secret| {
+                Ok(secp256k1::PublicKey::from_secret_key(ctx, secret).serialize())
+            })
+            .unwrap();
+        assert_eq!(
+            hex::encode(&public),
+            "0330d54fd0dd420a6e5f8d3624f5f3482cae350f79d5f0753bf5beef9c2d91af3c"
+        );
+        // The same record used as another network or type is not this account's key.
+        for (network, script_type) in [
+            (BtcNetwork::Testnet4, ScriptType::P2wpkh),
+            (BtcNetwork::Mainnet, ScriptType::P2tr),
+        ] {
+            let other = BtcKeySource::Imported {
+                id: *bip84.as_bytes(),
+                script_type,
+                compressed: true,
+            };
+            assert_eq!(
+                vault.with_btc_key(network, other, 3, |_, _| Ok(())).err(),
+                Some(SignError::KeyMismatch { input: 3 })
+            );
+        }
+        assert_eq!(
+            vault.btc_imported_secret(&[0xee; 16]).err(),
+            Some(SignError::Vault(VaultError::RecordNotFound))
+        );
+    }
     // Reveal gives the WIF back; removal works for every chain.
     let (chain, text) = vault.reveal_imported_key(&pw(PASSWORD), bip84).unwrap();
     assert_eq!((chain, text.expose()), (ImportChain::Btc, BIP84_TEST_WIF));

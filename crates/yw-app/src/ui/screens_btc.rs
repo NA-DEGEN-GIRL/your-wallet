@@ -421,7 +421,8 @@ impl App {
     /// The gate reason of the tab (disabled is handled by the caller).
     fn btc_gate_items(gate: BtcGate, items: &mut Vec<Item>) {
         match gate {
-            BtcGate::Disabled => {}
+            // NoAccount: the account card says it, next to `개인키 가져오기`.
+            BtcGate::Disabled | BtcGate::NoAccount => {}
             BtcGate::Locked | BtcGate::NoMeta | BtcGate::JournalLoading => {
                 items.push(Item::Muted(gate.text()));
             }
@@ -516,17 +517,30 @@ impl App {
         }
     }
 
-    /// The account list (name, address type with prefix, balance; the selected one marked) and
-    /// `계정 추가` with its address-type chooser.
+    /// The account list (name, address type with prefix, balance; the selected one marked;
+    /// imported keys with the "[가져온 키]" badge), `계정 추가` with its address-type chooser
+    /// (wallets with recovery words), and the imported-key actions (`개인키 보기`·`삭제` of the
+    /// selected imported account, `개인키 가져오기`).
     fn btc_account_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
         let net = ctx.net();
         items.push(Item::Subtitle("Bitcoin 계정".to_owned()));
         let usable = ctx.gate().is_ok() && !self.btc.slot;
         let rows = self.btc.account_rows(ctx);
+        if rows.is_empty() {
+            let none_at_all = ctx
+                .meta
+                .is_none_or(|meta| meta.btc_accounts.accounts.is_empty());
+            items.push(Item::Muted(if none_at_all {
+                crate::ui::screens_keys::no_accounts_text(yw_core::keyimport::ImportChain::Btc)
+            } else {
+                BtcGate::NoAccount.text()
+            }));
+        }
         for (index, row) in rows.iter().take(usize::from(ids::ACCOUNT_SPAN)).enumerate() {
             let id = ids::ACCOUNT_BASE.saturating_add(u16::try_from(index).unwrap_or(0));
             let label = format!(
-                "{} · {} · {}",
+                "{}{} · {} · {}",
+                if row.imported { "[가져온 키] " } else { "" },
                 row.name,
                 row.kind,
                 BtcUi::amount_text(row.available)
@@ -537,6 +551,11 @@ impl App {
         }
         if let Some(message) = &self.btc.account_message {
             items.push(Item::Banner(message.clone(), Tone::Warn));
+        }
+        if !ctx.has_mnemonic {
+            // A key-only wallet has no recovery words to derive accounts from.
+            self.btc_imported_items(ctx, items);
+            return;
         }
         if self.btc.add_account_open {
             items.push(Item::Help(ADD_ACCOUNT_HELP.to_owned()));
@@ -556,6 +575,7 @@ impl App {
             ]));
         }
         items.push(Item::Help(ACCOUNTS_HELP.to_owned()));
+        self.btc_imported_items(ctx, items);
     }
 
     fn btc_balance_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
@@ -766,22 +786,40 @@ impl App {
         }
     }
 
+    /// The tab while Bitcoin is off (`설정 → Bitcoin`; a key-only wallet without a Bitcoin key
+    /// may import one now).
+    fn btc_disabled_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
+        items.push(Item::CardStart(Some("Bitcoin".to_owned())));
+        items.push(Item::Text(BtcGate::Disabled.text()));
+        items.push(Item::Help(if ctx.has_mnemonic {
+                "설정 → Bitcoin에서 켜면 네이티브 세그윗(bc1q…) 계정 0의 주소를 찾아 잔액을 보여줍니다. 다른 주소 형식(탭루트·호환 세그윗·레거시)은 켠 뒤 [계정 추가]로 더하고, 다른 지갑의 WIF 개인키는 [개인키 가져오기]로 더합니다. 먼저 네트워크(RPC)에 bitcoin 주소가 있어야 합니다."
+                    .to_owned()
+            } else {
+                "설정 → Bitcoin에서 켜면 가져온 Bitcoin 개인키의 잔액을 보여주고 받기·보내기를 할 수 있습니다. 먼저 네트워크(RPC)에 bitcoin 주소가 있어야 합니다."
+                    .to_owned()
+            }));
+        items.push(Item::Row(vec![Ctl::primary(
+            ids::SECTION_BTC,
+            "Bitcoin 설정",
+        )]));
+        items.push(Item::CardEnd);
+        if !ctx.has_mnemonic
+            && ctx
+                .meta
+                .is_some_and(|meta| meta.btc_accounts.accounts.is_empty())
+        {
+            // A key-only wallet without a Bitcoin key: it can be imported now (the account
+            // waits for Bitcoin to be turned on).
+            self.no_accounts_card(yw_core::keyimport::ImportChain::Btc, items);
+        }
+    }
+
     /// The S10 Bitcoin tab.
     pub fn btc_main_screen(&self, items: &mut Vec<Item>) {
         let ctx = self.btc_ctx();
         let net = ctx.net();
         if !ctx.settings.enabled {
-            items.push(Item::CardStart(Some("Bitcoin".to_owned())));
-            items.push(Item::Text(BtcGate::Disabled.text()));
-            items.push(Item::Help(
-                "설정 → Bitcoin에서 켜면 네이티브 세그윗(bc1q…) 계정 0의 주소를 찾아 잔액을 보여줍니다. 다른 주소 형식(탭루트·호환 세그윗·레거시)은 켠 뒤 [계정 추가]로 더합니다. 먼저 네트워크(RPC)에 bitcoin 주소가 있어야 합니다."
-                    .to_owned(),
-            ));
-            items.push(Item::Row(vec![Ctl::primary(
-                ids::SECTION_BTC,
-                "Bitcoin 설정",
-            )]));
-            items.push(Item::CardEnd);
+            self.btc_disabled_items(&ctx, items);
             return;
         }
         items.push(Item::CardStart(None));
@@ -830,10 +868,15 @@ impl App {
         let usable = gate.is_ok();
         self.btc_refresh_row(&ctx, usable, items);
         items.push(Item::CardEnd);
-        if ctx.primary_meta().is_some() && ctx.mismatch().is_none() {
+        // The account card: a mnemonic wallet once BIP84 account 0 exists, a key-only wallet
+        // always (its imported keys are its accounts; none yet: only `개인키 가져오기`).
+        if (ctx.primary_meta().is_some() || !ctx.has_mnemonic) && ctx.mismatch().is_none() {
             items.push(Item::CardStart(None));
             self.btc_account_items(&ctx, items);
             items.push(Item::CardEnd);
+        }
+        if ctx.btc_meta().is_none() && !ctx.has_mnemonic {
+            return;
         }
         items.push(Item::CardStart(None));
         self.btc_balance_items(&ctx, items);

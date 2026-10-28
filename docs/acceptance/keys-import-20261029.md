@@ -1,21 +1,22 @@
 # 개인키 가져오기·개인키로 시작하기 판정 기록 — 2026-10-29
 
-- 범위: spec.md D9·D25·D29 개정, spec/02 §4.6(tag 3 `SolKey`·tag 4 `BtcKey`, `Bip39` 선택), §5.3(선택 최상위 키 `sol_raw_accounts`·`btc_raw_accounts`·`sol_raw_selected`), §8.4(가져온 개인키), §8.5(키 전용 vault), §9·§10, spec/04 §2.2·§2.6·§2.12·§2.16·§2.18·§4.1–§4.2·§6.6·§7, spec/05 §4.2·§5(`NoEvmAccount`), spec/07 §1·§3.2·§3.4·§13.2·§14.1.
+- 범위: spec.md D9·D25·D29 개정, spec/02 §4.6(tag 3 `SolKey`·tag 4 `BtcKey`, `Bip39` 선택), §5.3(선택 최상위 키 `sol_raw_accounts`·`sol_raw_selected`; 가져온 Bitcoin 키는 통합 뒤 `btc_accounts`의 계정), §8.4(가져온 개인키), §8.5(키 전용 vault), §9·§10, spec/04 §2.2·§2.6·§2.12·§2.16·§2.18·§4.1–§4.2·§6.6·§7, spec/05 §4.2·§5(`NoEvmAccount`), spec/07 §1·§3.2·§3.4·§13.2·§14.1.
 - 사용자 요청: 통합 니모닉 관리는 그대로 두고, 개별 개인키도 가져와 쓸 수 있게 한다 — (1) 니모닉 없이 개인키만으로 지갑 시작, (2) Solana 개인키 가져오기, (3) Bitcoin WIF 가져오기(주소 형식 포함).
 - 기준 트리: `efdbacb feat: app and extension icon` 위의 이 브랜치 커밋들.
 - 의존성: **추가 없음**(`Cargo.lock` 변경 없음, `scripts/check-core-deps.mjs` 허용 목록 그대로). taproot 출력 키는 기존 `secp256k1`(`XOnlyPublicKey::add_tweak`), 태그 해시는 `sha2`, WIF는 기존 `codec::base58`. `unsafe` 추가 없음.
 - 경계: Bitcoin 주소 형식 작업(병렬)의 파일 `crates/yw-core/src/btc/*`, `crates/yw-app/src/flow/btc*`, BTC 서명 작업자는 고치지 않았다. 주소 문자열은 `btc::address::encode_address`·`hash160`을 호출만 한다.
+- **통합(2026-10-29, `feat: wire imported Bitcoin keys into address-type accounts`)**: 두 브랜치를 합친 뒤 가져온 Bitcoin 키를 주소 형식 계정에 연결했다 — 아래 "통합" 절. Bitcoin 가져온 키의 수동 항목(옛 KI-18·KI-19)은 [btc-types-20261029.md](btc-types-20261029.md) §E로 옮겨 한곳에 모았다.
 
 ## 구현 요약
 
 | 부분 | 내용 |
 |---|---|
 | vault payload (`vault::format`) | `Bip39` 0–1개 → `EvmRawKey`(tag 2) → `SolKey`(tag 3, 89 B: 시드 + 공개키, 디코드 때 공개키 재계산) → `BtcKey`(tag 4, 60 B: secret, compressed, network 1/2, script 1–4) 순서. 체인별 15개, `MAX_RECORDS` 46, `PAYLOAD_CT_MAX` 4,096(최대 평문 3,170 B). tag 1·2 바이트 그대로(골든 G1–G5 불변) |
-| 파서 (`keyimport`, `codec::wif`) | EVM hex, Solana base58 64바이트 keypair·`solana-keygen` JSON(64개), Bitcoin WIF(0x80/0xef, 압축·비압축). 앞뒤 공백 무시, ASCII만, `Zeroizing`, 오류에 입력 없음. 주소: P2PKH·P2SH-P2WPKH·P2WPKH·P2TR(BIP86) |
-| Vault API | `create_with_key`, `import_key`, `remove_imported_key`(`LastKey`), `reveal_imported_key`, `imported_keys`, `has_mnemonic`, `with_imported_ed25519_seed`, `KeyRef::BtcImported`·`BtcKeySource`. 키 전용 vault는 잠금 해제 → 곧바로 `Unlocked`, 파생·복구 단어·passphrase는 `NoMnemonic` |
+| 파서 (`keyimport`, `codec::wif`) | EVM hex, Solana base58 64바이트 keypair·`solana-keygen` JSON(64개), Bitcoin WIF(0x80/0xef, 압축·비압축). 앞뒤 공백 무시, ASCII만, `Zeroizing`, 오류에 입력 없음. 주소: P2PKH·P2SH-P2WPKH·P2WPKH·P2TR(BIP86) — 통합 뒤 형식은 `btc::ScriptType`, 출력·주소는 `btc::account::kind_for_key`·`btc::taproot`(구현 하나; `keyimport/btc.rs` 삭제) |
+| Vault API | `create_with_key`, `import_key`, `remove_imported_key`(`LastKey`), `reveal_imported_key`, `imported_keys`, `has_mnemonic`, `with_imported_ed25519_seed`, (통합 뒤) crate 내부 `imported_btc_secret` — `KeyRef::BtcImported`·`vault::BtcKeySource`는 없앴다. 키 전용 vault는 잠금 해제 → 곧바로 `Unlocked`, 파생·복구 단어·passphrase는 `NoMnemonic` |
 | Solana 서명 | `SolKeySource::Imported`(태그 6, 매개변수 0·0): 공개키(`from`)로 record를 찾아 서명, 비표준 경로 규칙·`L07` 없음, 저널 태그 6 |
-| 키 작업자 | `PreviewKeyStart`·`DiscardKeyStart`·`CommitKeyStart`, `ImportKey`, `RemoveImportedKey`, `Reveal(ImportedKey)`, meta 재조정(`reconcile_imported`), `btc_imported_signer`(통합용) |
-| 화면 | S01 셋째 카드 "개인키만 있습니다"/`개인키로 시작하기` → S18(체인·주소 형식) → W01 → W07 → S19(주소 확인) → S08. 체인 탭마다 `개인키 가져오기`, "[가져온 키]" 배지, Solana 가져온 계정의 `개인키 보기`·`삭제`, Bitcoin 탭 "가져온 Bitcoin 개인키" 카드(보내기: 통합 후 지원). 키 전용 지갑: 계정 추가·다른 경로 스캔·복구 단어 보기·파생 BTC 숨김, 계정 없는 체인 "이 지갑에는 {체인} 계정이 없습니다" |
+| 키 작업자 | `PreviewKeyStart`·`DiscardKeyStart`·`CommitKeyStart`, `ImportKey`, `RemoveImportedKey`, `Reveal(ImportedKey)`, meta 재조정(`reconcile_imported`; 통합 뒤 Bitcoin은 `btc_accounts` 계정과 맞춤), `RemoveImportedKey`의 Bitcoin 계정 삭제·`ImportedKeyBusy` (`btc_imported_signer`는 통합 때 없앴다) |
+| 화면 | S01 셋째 카드 "개인키만 있습니다"/`개인키로 시작하기` → S18(체인·주소 형식) → W01 → W07 → S19(주소 확인) → S08. 체인 탭마다 `개인키 가져오기`, "[가져온 키]" 배지, Solana 가져온 계정의 `개인키 보기`·`삭제`, Bitcoin 가져온 키는 통합 뒤 Bitcoin 계정 목록의 "[가져온 키]" 행(잔액·받기·보내기, 선택 시 `개인키 보기`·`삭제`). 키 전용 지갑: 계정 추가·다른 경로 스캔·복구 단어 보기·파생 BTC 숨김, 계정 없는 체인 "이 지갑에는 {체인} 계정이 없습니다" |
 | 오류 | E-INP-020–024, E-VLT-012(`NoMnemonic`)·013(`LastKey`), E-VLT-010 문구 "체인마다", dApp 4100 `NoEvmAccount` |
 
 ## 자동 항목
@@ -23,7 +24,7 @@
 | 항목 | 판정 | 근거 |
 |---|---|---|
 | WIF 벡터(위키 예제, secret 1의 네 형식) 왕복·거부 표 | 통과 | `keyimport::tests::wif_wiki_vectors_round_trip`, `wif_rejections` |
-| BIP84·BIP49·BIP173·BIP86 주소, 비압축 키 형식 제한 | 통과 | `btc_imported_addresses_match_bip_vectors`, `bip86_taproot_output_key_and_address`, `script_type_bytes_and_names` |
+| BIP84·BIP49·BIP173·BIP86 주소(공유 btc 코드), 비압축 키 형식 제한, 형식 코드 1–4 | 통과 | `btc_imported_addresses_match_bip_vectors`, `bip86_taproot_output_key_and_address`, `script_type_codes_and_names` |
 | Solana keypair(base58·JSON 3종) 같은 키, 내보내기 왕복, spec/07 §17.1 주소 | 통과 | `solana_keypair_formats_parse_to_the_same_key` |
 | Solana 거부 표(주소·불일치·길이·JSON 형식) | 통과 | `solana_rejections` |
 | EVM 공백 무시·주소 미리보기 | 통과 | `evm_import_trims_and_previews_the_known_address` |
@@ -31,13 +32,14 @@
 | tag 3·4 코덱·거부 표, 키 전용 payload | 통과 | `tagged_records_codec_and_rejections` |
 | 최대 payload 봉인·개봉, 16번째 키 거부 | 통과 | `largest_payload_fits_and_seals` |
 | 키 전용 vault 생명 주기(`NoMnemonic` 표, 서명 시드, 내보내기, `LastKey`) | 통과 | `key_only_vault_lifecycle` |
-| 체인별 상한·중복 규칙·`KeyRef::BtcImported`·WIF 내보내기·삭제 | 통과 | `imported_keys_caps_duplicates_signing_and_removal`, `backup_pending_refuses_key_import` |
+| 체인별 상한·중복 규칙·가져온 Bitcoin 키를 서명자에게 빌려 줌(network·형식 불일치 `KeyMismatch`, 없는 id `RecordNotFound`)·WIF 내보내기·삭제 | 통과 | `imported_keys_caps_duplicates_signing_and_removal`, `backup_pending_refuses_key_import` |
 | 가져온 Solana 키 서명 = 파생 키 서명, `L07` 없음, 저널 태그 6 | 통과 | `sol::tests::imported_key_signs_the_golden_transfer_without_the_move_rule`, `imported_source_needs_the_matching_imported_key`, `slip10::tests::key_source_tags_and_parts_round_trip` |
 | meta 선택 키 왕복·이전 파일·검증 | 통과 | `meta::tests::imported_lists_and_key_only_meta_round_trip`, `imported_lists_are_validated` |
 | W07 체인별 문자 집합·붙여넣기 정규화 | 통과 | `ui::secret::tests::w07_solana_and_bitcoin_fields_take_their_formats`, `w07_warns_that_imported_keys_are_not_in_the_recovery_words` |
-| 개인키로 시작하기(앱 상태, 창 없이): S01 → S18 → 주소 오입력 → S19 → S08, 탭별 숨김·빈 체인 카드, BTC 가져오기, 잠금·해제, 삭제·마지막 키 | 통과 | `app::tests::key_start_creates_a_key_only_wallet` |
+| 개인키로 시작하기(앱 상태, 창 없이): S01 → S18 → 주소 오입력 → S19 → S08, 탭별 숨김·빈 체인 카드, BTC 가져오기(계정 목록 "[가져온 키]" 행, `개인키 보기`·`삭제`, `계정 추가` 없음), 잠금·해제, 삭제·마지막 키 | 통과 | `app::tests::key_start_creates_a_key_only_wallet` |
+| Bitcoin 키로 시작(앱 상태): S18 형식 라디오 → S19 "P2TR (탭루트, tb1p…)" → Bitcoin 켜짐(그 키의 네트워크) → 계정 목록, 잠금·해제, EVM 탭 계정 없음, dApp 연결 4100 `NoEvmAccount`(대기열 없음) | 통과 | `app::tests::key_start_with_a_bitcoin_key` |
 | 니모닉 지갑에 Solana 키 가져오기·선택·서명 출처·중복·내보내기 | 통과 | `app::tests::imports_into_a_mnemonic_wallet` |
-| 키 작업자(실제 파일, 256 MiB KDF): 키 전용 지갑 전 과정 | 통과 | `tests/keys_import.rs::key_only_vault_through_the_key_worker` |
+| 키 작업자(실제 파일, 256 MiB KDF): 키 전용 지갑 전 과정(계정 없는 태그 4 레코드 → meta 읽기에서 계정 추가, Bitcoin 키 삭제 → `BtcMetaDone::Removed`) | 통과 | `tests/keys_import.rs::key_only_vault_through_the_key_worker` |
 | 가져온 Solana 키 보내기 준비(가짜 RPC)·승인·서명·`Pending` 기록 | 통과 | `tests/keys_import.rs::imported_sol_key_prepares_and_signs_a_devnet_transfer` |
 | dApp 4100 `NoEvmAccount` 코드·문구 | 통과 | `yw-core/tests/policy.rs` 오류 표 |
 | `scripts/check.ps1 -Offline` | 통과 | 아래 게이트 줄 |
@@ -72,8 +74,7 @@
 
 ### Bitcoin 가져온 키
 
-- [ ] KI-18 Bitcoin 탭 "가져온 Bitcoin 개인키" 카드: 주소 형식·네트워크·주소, `주소 복사`, T-BTC-IMPORTED-PENDING(보내기: 통합 후 지원). 파생 BIP84 계정 화면(켜져 있으면)은 그대로 위에 있다.
-- [ ] KI-19 `개인키 보기` → W09의 WIF가 가져온 WIF와 같다. 키 전용 지갑의 마지막 키는 `삭제`가 꺼져 있다.
+- KI-18·KI-19는 통합 때 [btc-types-20261029.md](btc-types-20261029.md) §E(E1–E7)로 합쳤다: 계정 목록의 "[가져온 키]" 행, 잔액·받기·보내기(형식별·비압축 P2PKH), `개인키 보기`(WIF), `삭제`(승인·진행 중 거래면 거절, 키 전용 지갑의 마지막 키는 꺼짐), 키 전용 지갑의 Bitcoin 탭. 체크는 그 문서에서 한다.
 
 ### 브라우저
 
@@ -84,11 +85,16 @@
 - [ ] KI-21 이전 버전 앱의 `v3` 폴더(니모닉 + EVM 개인키)를 이 버전으로 열면 그대로 열리고 계정·라벨이 같다(폴더를 먼저 통째로 복사해 둔다).
 - [ ] KI-22 이 버전으로 Solana·Bitcoin 키를 가져온 폴더를 이전 버전으로 열면 E-VLT-008(또는 E-VLT-002)이 보이고 파일은 바뀌지 않는다 — `.prev` 복구를 하지 말고 새 버전을 다시 설치한다(spec/04 §6.6).
 
-## 통합 때 남은 일 (Bitcoin 주소 형식 작업과 함께)
+## 통합 (Bitcoin 주소 형식 작업과 함께, 2026-10-29)
 
-- 가져온 Bitcoin 키의 잔액 조회·UTXO·보내기: BTC 흐름이 `BtcKeySource::Imported(id)`를 받아 `KeyWorker::btc_imported_signer(id)`가 돌려준 `KeyRef::BtcImported`로 `Vault::with_secp_key`를 부르고, `BtcKeyInfo.kind`(scriptPubKey)·`public_key`(33/65바이트)·`script`로 형식별 sighash(P2PKH 레거시, P2SH-P2WPKH·P2WPKH BIP143, P2TR BIP341 key-path: BIP86 tweak 개인키)와 witness/scriptSig를 만든다. 지금은 주소·내보내기·삭제만 된다(화면 "통합 후 지원").
-- 그때 Bitcoin 탭 카드의 잔액(주소 하나 조회)과 `보내기`를 연결하고 이 문서의 KI-18을 갱신한다.
+- 서명 경로 하나: `btc::sign::sign_plan(&Vault, ..)`이 가져온 키 계정의 입력마다 crate 내부 `BtcImportedKeys::btc_imported_secret` → `Vault::imported_btc_secret`(태그 4 레코드, `Unlocked`만)으로 비밀키를 받아 서명 클로저에만 빌려 준다(`ImportedBtcSecret`: 복제 없음, `Debug` 가림, drop 때 지움). 레코드의 network·형식·압축이 계정과 다르면 `KeyMismatch`. 키를 빌려 주는 `BtcKeys`도 crate 내부다. 이 문서가 쓴 `KeyRef::BtcImported`·`vault::BtcKeySource`·`KeyWorker::btc_imported_signer`는 없앴다(중복 경로).
+- meta: `btc_raw_accounts` 목록을 없애고 가져온 Bitcoin 키는 `btc_accounts`의 `BtcAccountKey::Single` 계정이다. 가져오기는 vault 저장 뒤 `BtcMetaOp::AddImported`, 개인키로 시작하기는 첫 meta에 같은 계정(+ 설정 Bitcoin 켬, 그 키의 네트워크). meta 읽기는 계정 없는 태그 4 레코드에 계정을 더하고 레코드 없는 계정을 지운다.
+- 키 전용 지갑의 Bitcoin 탭: 기본 계정·발견·계정 추가 없음, 최고 블록 높이는 그 네트워크의 첫 계정이 보관(`BtcAccounts::tip_holder`).
+- 주소 계산 중복 제거: `keyimport::btc` 삭제, 형식은 `btc::ScriptType`(같은 코드 1–4).
+- 화면: "가져온 Bitcoin 개인키" 카드·T-BTC-IMPORTED-PENDING("통합 후 지원")을 없애고 계정 목록 행으로 옮겼다(T-BTC-IMPORTED).
+- 자동 시험: `btc::types_tests::vault_signs_every_hd_and_imported_type`, `accounts_without_primary`, `tests/btc_app_flow.rs`의 `imported_keys_in_a_mnemonic_wallet_end_to_end`·`imported_keys_in_a_key_only_wallet_end_to_end`·`key_only_bitcoin_wallet_locks_and_keeps_its_account`·`imported_key_removal`, `app::tests::key_start_with_a_bitcoin_key`.
 
 ## 게이트
 
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 -Offline` → 종료 코드 0(`check: OK`): fmt, deps(yw-core 40·yw-json 0·yw-win 2·yw-app 43·yw-host 2, 변경 없음), clippy `-D warnings`, cargo 테스트 894 통과·27 무시·0 실패(이 작업이 더한 테스트 23개: yw-core 16, yw-app 7), fuzz-lite, build, ext-test 84, script-test 44, privacy scan, `EXTENSION_STATIC_AUDIT_PASS`, icons.
+- 통합 뒤(`feat: wire imported Bitcoin keys into address-type accounts`): `scripts/check.ps1 -Offline` → 종료 코드 0(`check: OK`): deps 변경 없음(yw-core 40·yw-json 0·yw-win 2·yw-app 43·yw-host 2), cargo 테스트 921 통과·27 무시·0 실패, fuzz-lite, build, ext-test 84, script-test 44 통과(1 건너뜀)·0 실패, privacy scan, `EXTENSION_STATIC_AUDIT_PASS`, icons.

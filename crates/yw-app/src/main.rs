@@ -224,7 +224,7 @@ fn main() -> ExitCode {
                     KeyWorker::new(&dir),
                     &queue,
                     &|result| {
-                        if key_events.push(UiEvent::Key(result)).is_err() {
+                        if key_events.push(UiEvent::Key(Box::new(result))).is_err() {
                             logging::warn("key", "E-APP-005", &[]);
                         }
                     },

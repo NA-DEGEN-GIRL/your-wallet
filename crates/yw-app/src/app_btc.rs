@@ -81,12 +81,18 @@ pub const INDEXER_ONLY: &str = "인덱서만 확인(노드 미확인)";
 pub const ACCOUNT_SWITCH_BUSY: &str =
     "Bitcoin 승인이 진행 중이라 계정을 바꾸거나 추가할 수 없습니다";
 
+/// Account delete refused while a BTC approval is open (spec/04 §2.18).
+pub const REMOVE_BUSY_APPROVAL: &str = "Bitcoin 승인이 진행 중이라 이 가져온 키를 지울 수 없습니다. 승인을 끝내거나 거절한 뒤 다시 하세요";
+/// Account delete refused while the account has an in-flight transaction (spec/04 §2.18).
+pub const REMOVE_BUSY_IN_FLIGHT: &str = "이 가져온 키로 보낸 거래가 아직 진행 중입니다(확정 전·전송 결과 확인 필요 등). 추적과 수수료 올리기에 이 키가 필요하므로, 거래가 확정되거나 끝난 뒤에 지울 수 있습니다";
+
 /// One row of the Bitcoin account list (spec/04 §2.6 Bitcoin).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BtcAccountRow {
     /// Identity.
     pub id: BtcAccountId,
-    /// `네이티브 세그윗 계정 0`, `탭루트 계정 1`, `가져온 키 · 레거시`.
+    /// `네이티브 세그윗 계정 0`, `탭루트 계정 1`; an imported key: its shortened address
+    /// (`tb1q6r…cpvkl`).
     pub name: String,
     /// The address type with its prefix: `네이티브 세그윗 (bc1q…)`.
     pub kind: String,
@@ -94,6 +100,20 @@ pub struct BtcAccountRow {
     pub available: Sats,
     /// The selected account.
     pub selected: bool,
+    /// An imported single key (the "[가져온 키]" badge; not restored by the recovery words).
+    pub imported: bool,
+}
+
+/// The shortened address of a single-key account row: first 6 and last 6 characters.
+#[must_use]
+pub fn short_address(address: &str) -> String {
+    let chars: Vec<char> = address.chars().collect();
+    if chars.len() <= 14 {
+        return address.to_owned();
+    }
+    let head: String = chars.iter().take(6).collect();
+    let tail: String = chars.iter().skip(chars.len().saturating_sub(6)).collect();
+    format!("{head}…{tail}")
 }
 
 /// `네이티브 세그윗 계정 0` / `가져온 키 · 레거시`.
@@ -109,18 +129,13 @@ pub fn account_type_text(account: &BtcAccountKey, net: BtcNetwork) -> String {
     format!("{} ({})", script_type.name(), script_type.prefix(net))
 }
 
-/// The selected account of `net` in a persisted update (BIP84 account 0 unless another one of
-/// `net` is selected).
+/// The active account of `net` in a persisted update (`BtcAccounts::active_on`: the selected
+/// one, else BIP84 account 0, else — a key-only wallet — the first account of `net`).
 fn active_of(update: &BtcMetaUpdate, net: BtcNetwork) -> Option<BtcMeta> {
-    let id = update.accounts.selected_on(net);
-    if id == BtcAccountId::PRIMARY {
-        update
-            .meta
-            .as_deref()
-            .filter(|meta| meta.network() == net)
-            .cloned()
-    } else {
-        update.accounts.get(net, id).cloned()
+    let primary = update.meta.as_deref().filter(|meta| meta.network() == net);
+    match update.accounts.active_on(net, primary.is_some())? {
+        BtcAccountId::PRIMARY => primary.cloned(),
+        id => update.accounts.get(net, id).cloned(),
     }
 }
 
@@ -136,6 +151,9 @@ pub struct BtcCtx<'a> {
     pub journal: Option<&'a JournalView>,
     /// `AppMode::Unlocked`.
     pub unlocked: bool,
+    /// The wallet has recovery words (`false`: a key-only wallet, whose Bitcoin accounts are
+    /// imported single keys only — no BIP84 account 0, no discovery, no `계정 추가`).
+    pub has_mnemonic: bool,
     /// Monotonic ms.
     pub now_ms: u64,
     /// Wall clock, Unix ms.
@@ -157,6 +175,8 @@ pub enum BtcGate {
     Locked,
     /// No `BtcMeta` yet (being created).
     NoMeta,
+    /// A key-only wallet without an imported Bitcoin key on the settings network.
+    NoAccount,
     /// settings `bitcoin.network` ≠ `BtcMeta.network`.
     Mismatch {
         /// `BtcMeta.network`.
@@ -180,6 +200,9 @@ impl BtcGate {
             }
             Self::Locked => "잠금을 해제하세요.".to_owned(),
             Self::NoMeta => "Bitcoin 계정을 준비하는 중입니다…".to_owned(),
+            Self::NoAccount => {
+                "이 네트워크에는 가져온 Bitcoin 개인키가 없습니다. 개인키를 가져오세요.".to_owned()
+            }
             Self::Mismatch { .. } => texts::NETWORK_MISMATCH.to_owned(),
             Self::NoEndpoint => ErrorCode::Key005.text(),
             Self::JournalLoading => "불러오는 중…".to_owned(),
@@ -194,31 +217,62 @@ impl BtcCtx<'_> {
         core_network(self.settings.network)
     }
 
-    /// The meta mirror's BIP84 account 0 (meta `btc`): the wallet's network copy and
-    /// `max_tip_seen` live here.
+    /// The meta mirror's BIP84 account 0 (meta `btc`): a mnemonic wallet's network copy and
+    /// `max_tip_seen` live here. A key-only wallet has none.
     #[must_use]
     pub fn primary_meta(&self) -> Option<&BtcMeta> {
         self.meta.and_then(|meta| meta.btc.as_deref())
     }
 
-    /// The selected account of the settings network (BIP84 account 0 unless another one of
-    /// this network is selected).
+    /// BIP84 account 0 exists on the settings network.
+    fn has_primary(&self) -> bool {
+        self.primary_meta()
+            .is_some_and(|meta| meta.network() == self.net())
+    }
+
+    /// The active account of the settings network: the selected one, else BIP84 account 0,
+    /// else (a key-only wallet) the first imported key of this network.
     #[must_use]
     pub fn active_id(&self) -> BtcAccountId {
-        self.meta.map_or(BtcAccountId::PRIMARY, |meta| {
-            meta.btc_accounts.selected_on(self.net())
-        })
+        self.meta
+            .and_then(|meta| meta.btc_accounts.active_on(self.net(), self.has_primary()))
+            .unwrap_or(BtcAccountId::PRIMARY)
+    }
+
+    /// Account `id` of the settings network (BIP84 account 0 is meta `btc`).
+    fn account(&self, id: BtcAccountId) -> Option<&BtcMeta> {
+        if id == BtcAccountId::PRIMARY {
+            self.primary_meta()
+                .filter(|meta| meta.network() == self.net())
+        } else {
+            self.meta?.btc_accounts.get(self.net(), id)
+        }
     }
 
     /// The selected account's `BtcMeta` (every send, receive, refresh and balance is this
     /// account's).
     #[must_use]
     pub fn btc_meta(&self) -> Option<&BtcMeta> {
-        let id = self.active_id();
-        if id == BtcAccountId::PRIMARY {
-            self.primary_meta()
-        } else {
-            self.meta?.btc_accounts.get(self.net(), id)
+        self.account(self.active_id())
+    }
+
+    /// The account holding the wallet-level `max_tip_seen` of the settings network: BIP84
+    /// account 0, or in a key-only wallet the first account of the network.
+    #[must_use]
+    pub fn tip_meta(&self) -> Option<&BtcMeta> {
+        let id = self
+            .meta?
+            .btc_accounts
+            .tip_holder(self.net(), self.has_primary())?;
+        self.account(id)
+    }
+
+    /// The vault record id of the selected account when it is an imported single key.
+    #[must_use]
+    pub fn selected_imported(&self) -> Option<[u8; 16]> {
+        match self.btc_meta()?.id() {
+            BtcAccountId::Imported { id } => Some(id),
+            BtcAccountId::Hd { .. } => None,
         }
     }
 
@@ -292,8 +346,17 @@ impl BtcCtx<'_> {
         if let Some((meta, settings)) = self.mismatch() {
             return Err(BtcGate::Mismatch { meta, settings });
         }
-        if self.primary_meta().is_none() || self.btc_meta().is_none() {
+        // A mnemonic wallet always has BIP84 account 0 (created when BTC is turned on); a
+        // key-only wallet works with its imported keys of this network only.
+        if self.has_mnemonic && self.primary_meta().is_none() {
             return Err(BtcGate::NoMeta);
+        }
+        if self.btc_meta().is_none() {
+            return Err(if self.has_mnemonic {
+                BtcGate::NoMeta
+            } else {
+                BtcGate::NoAccount
+            });
         }
         if self.core_url(self.net()).is_none() {
             return Err(BtcGate::NoEndpoint);
@@ -326,13 +389,28 @@ impl BtcCtx<'_> {
         })
     }
 
-    /// Chain-check inputs (persisted `max_tip_seen`, local UTC seconds).
+    /// Chain-check inputs (the tip holder's persisted `max_tip_seen`, local UTC seconds).
     #[must_use]
     pub fn chain_input(&self) -> ChainInput {
         ChainInput {
-            max_tip_seen: self.primary_meta().map_or(0, BtcMeta::max_tip_seen),
+            max_tip_seen: self.tip_meta().map_or(0, BtcMeta::max_tip_seen),
             now_unix_secs: self.now_unix_ms / 1_000,
         }
+    }
+
+    /// Why the selected imported key may not be removed now (an approval open, an in-flight
+    /// transaction of its account), `None` when it may.
+    #[must_use]
+    pub fn remove_block(&self, id: [u8; 16], slot: bool) -> Option<&'static str> {
+        let account = BtcAccountId::Imported { id };
+        let selected = self.selected_imported() == Some(id);
+        if slot && selected {
+            return Some(REMOVE_BUSY_APPROVAL);
+        }
+        BtcNetwork::ALL
+            .into_iter()
+            .any(|net| in_flight(&of_account(self.all_records(), net, account), net))
+            .then_some(REMOVE_BUSY_IN_FLIGHT)
     }
 
     /// Records of the selected account on the settings network (D20 and every per-account rule,
@@ -1115,9 +1193,10 @@ impl BtcUi {
     }
 
     /// Meta was loaded after unlock: BTC enabled with `btc == null` (meta reset, alt-passphrase
-    /// session) creates a fresh `BtcMeta` and runs discovery (spec/08 §2).
+    /// session) creates a fresh `BtcMeta` and runs discovery (spec/08 §2). A key-only wallet has
+    /// no BIP84 account 0 to create: its imported keys are its accounts.
     pub fn after_meta(&mut self, ctx: &BtcCtx<'_>) -> Vec<BtcAction> {
-        if !ctx.settings.enabled || !ctx.unlocked || ctx.meta.is_none() {
+        if !ctx.settings.enabled || !ctx.unlocked || ctx.meta.is_none() || !ctx.has_mnemonic {
             return Vec::new();
         }
         if ctx.primary_meta().is_none() {
@@ -1176,7 +1255,7 @@ impl BtcUi {
 
     fn tip_or_meta(&self, ctx: &BtcCtx<'_>) -> u32 {
         self.tip
-            .or_else(|| ctx.primary_meta().map(BtcMeta::max_tip_seen))
+            .or_else(|| ctx.tip_meta().map(BtcMeta::max_tip_seen))
             .unwrap_or(0)
     }
 
@@ -1234,9 +1313,14 @@ impl BtcUi {
             self.settings_message = Some(ErrorCode::Key005.text());
             return Vec::new();
         }
-        let keep = ctx
-            .primary_meta()
-            .is_some_and(|meta| meta.network() == network);
+        // A key-only wallet keeps its imported accounts on both networks: only a network change
+        // matters (nothing to create).
+        let keep = if ctx.has_mnemonic {
+            ctx.primary_meta()
+                .is_some_and(|meta| meta.network() == network)
+        } else {
+            network == ctx.net()
+        };
         if !keep && ctx.any_in_flight() {
             self.settings_message = Some(texts::IN_FLIGHT.to_owned());
             return Vec::new();
@@ -1259,7 +1343,7 @@ impl BtcUi {
             if ctx.btc_meta().is_some_and(|meta| !meta.discovery_done()) {
                 self.discovery.error = Some(DISCOVERY_INCOMPLETE.to_owned());
             }
-        } else {
+        } else if ctx.has_mnemonic {
             actions.push(key_job(KeyJob::BtcMeta {
                 op: BtcMetaOp::Create { network },
             }));
@@ -1451,7 +1535,7 @@ impl BtcUi {
                         "bitcoin.network",
                     ),
                 );
-                if ctx.unlocked {
+                if ctx.unlocked && ctx.has_mnemonic {
                     actions.push(key_job(KeyJob::BtcMeta {
                         op: BtcMetaOp::Create { network: to },
                     }));
@@ -2146,8 +2230,10 @@ impl BtcUi {
 
     // ----- accounts ---------------------------------------------------------------------------
 
-    /// The account list of the settings network (BIP84 account 0 first): name, address type with
-    /// its prefix, available verified balance at the known tip, selection.
+    /// The account list of the settings network (BIP84 account 0 first, then the other HD
+    /// accounts and the imported keys in the order they were added): name (an imported key: its
+    /// shortened address), address type with its prefix, available verified balance at the
+    /// known tip, selection, the imported-key badge.
     #[must_use]
     pub fn account_rows(&self, ctx: &BtcCtx<'_>) -> Vec<BtcAccountRow> {
         let net = ctx.net();
@@ -2157,14 +2243,24 @@ impl BtcUi {
             .into_iter()
             .map(|meta| {
                 let records = of_account(ctx.all_records(), net, meta.id());
+                let imported = meta.is_single();
+                let name = if imported {
+                    meta.address(BtcChain::Receive, 0).map_or_else(
+                        |_| account_label(meta.account()),
+                        |address| short_address(address.as_str()),
+                    )
+                } else {
+                    account_label(meta.account())
+                };
                 BtcAccountRow {
                     id: meta.id(),
-                    name: account_label(meta.account()),
+                    name,
                     kind: account_type_text(meta.account(), net),
                     available: meta
                         .balance(tip, &in_flight_outpoints(&records, net))
                         .available,
                     selected: meta.id() == active,
+                    imported,
                 }
             })
             .collect()
@@ -2211,9 +2307,14 @@ impl BtcUi {
         })]
     }
 
-    /// `계정 추가`: opens the address-type chooser.
+    /// `계정 추가`: opens the address-type chooser (HD accounts need the recovery words: a
+    /// key-only wallet adds Bitcoin accounts with `개인키 가져오기` only).
     pub fn open_add_account(&mut self, ctx: &BtcCtx<'_>) {
-        self.account_message = ctx.gate().err().map(BtcGate::text);
+        self.account_message = if ctx.has_mnemonic {
+            ctx.gate().err().map(BtcGate::text)
+        } else {
+            Some(yw_core::error::VaultError::NoMnemonic.to_string())
+        };
         self.add_account_open = self.account_message.is_none();
     }
 
@@ -2226,6 +2327,11 @@ impl BtcUi {
     /// worker stores and selects it, then discovery runs.
     pub fn add_account(&mut self, ctx: &BtcCtx<'_>, script_type: ScriptType) -> Vec<BtcAction> {
         self.account_message = None;
+        if !ctx.has_mnemonic {
+            self.add_account_open = false;
+            self.account_message = Some(yw_core::error::VaultError::NoMnemonic.to_string());
+            return Vec::new();
+        }
         if let Err(gate) = ctx.gate() {
             self.add_account_open = false;
             self.account_message = Some(gate.text());
@@ -2276,7 +2382,9 @@ impl BtcUi {
                             actions.extend(self.discover_with(ctx, &meta, false));
                         }
                     }
-                    BtcMetaDone::AccountAdded(_) | BtcMetaDone::Selected(_) => {
+                    BtcMetaDone::AccountAdded(_)
+                    | BtcMetaDone::Selected(_)
+                    | BtcMetaDone::Removed(_) => {
                         self.add_account_open = false;
                         self.reset_account_view();
                         if let Some(active) = active {
@@ -2401,13 +2509,16 @@ impl BtcUi {
     }
 
     /// Chain-check inputs for a job on `meta`'s account: the wallet's `max_tip_seen` lives in
-    /// BIP84 account 0 (`meta` itself right after `Create`, before the mirror has it).
+    /// the tip holder — BIP84 account 0 (`meta` itself right after `Create`, before the mirror
+    /// has it), or a key-only wallet's first account (none yet right after its first import:
+    /// then `meta`'s own value).
     fn chain_of(ctx: &BtcCtx<'_>, meta: &BtcMeta) -> ChainInput {
         ChainInput {
             max_tip_seen: if meta.id() == BtcAccountId::PRIMARY {
                 meta.max_tip_seen()
             } else {
-                ctx.chain_input().max_tip_seen
+                ctx.tip_meta()
+                    .map_or(meta.max_tip_seen(), BtcMeta::max_tip_seen)
             },
             now_unix_secs: ctx.now_unix_ms / 1_000,
         }
@@ -2735,7 +2846,9 @@ impl BtcUi {
                     Ok(prepared) => {
                         self.note_chain(prepared.chain.tip_height, prepared.chain.lag_warning);
                         self.floor = Some(prepared.floor);
-                        let Some(meta) = ctx.primary_meta() else {
+                        // The wallet-level tip lives in the tip holder (BIP84 account 0, or a
+                        // key-only wallet's first account of the network).
+                        let Some(meta) = ctx.tip_meta() else {
                             return Vec::new();
                         };
                         let (fee, info) = if bump {
@@ -2908,7 +3021,7 @@ impl BtcUi {
                 self.note_chain(chain.tip_height, chain.lag_warning);
                 if round.observations.is_empty()
                     && ctx
-                        .btc_meta()
+                        .tip_meta()
                         .is_some_and(|meta| meta.max_tip_seen() >= chain.max_tip_seen)
                 {
                     return Vec::new();
@@ -3134,6 +3247,7 @@ impl crate::app::App {
                 meta: self.meta.as_ref(),
                 journal: self.evm.journal.as_ref(),
                 unlocked: matches!(self.mode, crate::app::AppMode::Unlocked { .. }),
+                has_mnemonic: self.keys.has_mnemonic,
                 now_ms: yw_win::time::monotonic_ms(),
                 now_unix_ms: now_unix_ms(),
             };
@@ -3259,19 +3373,13 @@ impl crate::app::App {
             meta.prefs.tab = crate::meta::Tab::Btc;
             self.save_meta();
         }
-        if self.key_only() {
-            // A key-only wallet has no derived Bitcoin account (spec/02 §8.5): imported keys only.
-            self.refresh();
-            return;
-        }
+        // A key-only wallet's tab works on its imported accounts (no BIP84 account 0).
         self.btc_call(BtcUi::open_tab);
     }
 
-    /// Meta was loaded (unlock): `null` meta with BTC enabled → create and discover.
+    /// Meta was loaded (unlock): `null` meta with BTC enabled → create and discover (a mnemonic
+    /// wallet; a key-only wallet has nothing to create).
     pub fn btc_after_meta(&mut self) {
-        if self.key_only() {
-            return;
-        }
         self.btc_call(BtcUi::after_meta);
     }
 
@@ -3279,11 +3387,7 @@ impl crate::app::App {
     /// opened once the journal is read (refresh on open, spec/08 §4.7).
     pub fn btc_journal_changed(&mut self) {
         self.btc_call(BtcUi::journal_changed);
-        if self.btc_tab_active()
-            && !self.key_only()
-            && self.btc.refresh.job == 0
-            && !self.btc.discovery.running
-        {
+        if self.btc_tab_active() && self.btc.refresh.job == 0 && !self.btc.discovery.running {
             self.btc_call(BtcUi::open_tab);
         }
     }
@@ -3301,9 +3405,6 @@ impl crate::app::App {
     /// Main-timer part (60 s cycle while unlocked).
     pub fn btc_tick(&mut self, now: u64) {
         let _ = now;
-        if self.key_only() {
-            return;
-        }
         self.btc_call(BtcUi::tick);
     }
 
@@ -3533,6 +3634,7 @@ impl crate::app::App {
             meta: self.meta.as_ref(),
             journal: self.evm.journal.as_ref(),
             unlocked: matches!(self.mode, crate::app::AppMode::Unlocked { .. }),
+            has_mnemonic: self.keys.has_mnemonic,
             now_ms: yw_win::time::monotonic_ms(),
             now_unix_ms: now_unix_ms(),
         }

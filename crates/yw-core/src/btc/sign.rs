@@ -13,10 +13,12 @@
 //!
 //! [`sign_plan`] (spec/08 §11.1) checks that the one-time `Approved` token is for exactly this
 //! plan (kind, chain, account and the `btc_payload` bytes), then signs one input at a time
-//! through [`BtcKeys`]: derived keys come from `Vault::with_secp_key`, imported single keys from
-//! [`BtcImportedKeys::btc_imported_secret`] (the integration point of the key-import work).
-//! Before signing, the public key computed from the lent secret must be the account's key of
-//! that input (else `KeyMismatch`); the private key never leaves the closure.
+//! through the crate-internal `BtcKeys`: derived keys come from `Vault::with_secp_key`, imported
+//! single keys from `BtcImportedKeys::btc_imported_secret` (vault tag 4, wrapped in the
+//! crate-internal `ImportedBtcSecret` that is erased on drop). Both are lent to the signing
+//! closure only; nothing outside yw-core can reach a lent secret. Before signing, the public key
+//! computed from the lent secret must be the account's key of that input (else `KeyMismatch`);
+//! the private key never leaves the closure.
 //!
 //! | type | sighash | scriptSig | witness |
 //! |---|---|---|---|
@@ -248,16 +250,10 @@ pub enum SignError {
     Taproot(TaprootSigError),
     /// The OS CSPRNG failed (BIP340 auxiliary randomness).
     Randomness,
-    /// The vault cannot lend the secret of an imported key yet (the key-import work connects
-    /// [`BtcImportedKeys::btc_imported_secret`]).
-    ImportedKeyUnavailable,
-    /// The vault refused (locked, backup pending, derivation).
+    /// The vault refused (locked, backup pending, derivation, an imported key's record is gone:
+    /// `RecordNotFound`).
     Vault(VaultError),
 }
-
-/// Text of [`SignError::ImportedKeyUnavailable`].
-pub const IMPORTED_KEY_UNAVAILABLE: &str =
-    "가져온 키로 서명하는 기능이 아직 연결되지 않았습니다. 서명하지 않았습니다";
 
 impl fmt::Display for SignError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -267,7 +263,6 @@ impl fmt::Display for SignError {
             Self::KeyMismatch { .. } => formatter.write_str(texts::KEY_MISMATCH),
             Self::AmountRecordMismatch => formatter.write_str(texts::AMOUNT_RECORD_MISMATCH),
             Self::InputNotRecorded => formatter.write_str(texts::INPUT_NOT_RECORDED),
-            Self::ImportedKeyUnavailable => formatter.write_str(IMPORTED_KEY_UNAVAILABLE),
             Self::PlanInconsistent
             | Self::Derivation
             | Self::Witness(_)
@@ -279,8 +274,9 @@ impl fmt::Display for SignError {
 
 impl std::error::Error for SignError {}
 
-/// The secret of an imported single key as the vault lends it (erased on drop).
-pub struct ImportedBtcSecret {
+/// The secret of an imported single key as the vault lends it to [`sign_plan`]
+/// (crate-internal, not `Clone`, `Debug` redacted, erased on drop).
+pub(crate) struct ImportedBtcSecret {
     secret: SecretKey,
     compressed: bool,
     network: BtcNetwork,
@@ -291,7 +287,7 @@ impl ImportedBtcSecret {
     /// Wraps a decrypted imported key record (vault tag 4): the secret, its compression flag,
     /// network and address type.
     #[must_use]
-    pub const fn new(
+    pub(crate) const fn new(
         secret: SecretKey,
         compressed: bool,
         network: BtcNetwork,
@@ -318,31 +314,27 @@ impl fmt::Debug for ImportedBtcSecret {
     }
 }
 
-/// Access to imported single BTC keys (vault tag 4). **Integration point** of the key-import
-/// work: `Vault`'s implementation below returns [`SignError::ImportedKeyUnavailable`] until it
-/// is connected to the vault record (`Unlocked` only, record id `id`, wrapped with
-/// [`ImportedBtcSecret::new`]).
-pub trait BtcImportedKeys {
-    /// The secret of imported key `id`.
+/// Access to imported single BTC keys (vault tag 4, spec/02 §8.4): crate-internal, used only by
+/// `BtcKeys for Vault` inside [`sign_plan`].
+pub(crate) trait BtcImportedKeys {
+    /// The secret of imported key `id` with its record's network, address type and compression.
     ///
     /// # Errors
     ///
-    /// [`SignError::ImportedKeyUnavailable`] until connected; [`SignError::Vault`] (locked, no
-    /// such record).
+    /// [`SignError::Vault`]: locked or backup pending (`InvalidState` / `BackupNotConfirmed`),
+    /// no tag-4 record `id` (`RecordNotFound`).
     fn btc_imported_secret(&self, id: &[u8; 16]) -> Result<ImportedBtcSecret, SignError>;
 }
 
 impl BtcImportedKeys for Vault {
     fn btc_imported_secret(&self, id: &[u8; 16]) -> Result<ImportedBtcSecret, SignError> {
-        // Integration: look up vault tag 4 record `id` (`require_signing` first) and return
-        // `ImportedBtcSecret::new(secret, compressed, network, script_type)`.
-        let _ = (self, id);
-        Err(SignError::ImportedKeyUnavailable)
+        self.imported_btc_secret(id).map_err(SignError::Vault)
     }
 }
 
-/// Lends BTC signing keys to [`sign_plan`].
-pub trait BtcKeys {
+/// Lends BTC signing keys to [`sign_plan`] (crate-internal: a lent secret never reaches code
+/// outside yw-core).
+pub(crate) trait BtcKeys {
     /// Lends the secret key of `source` on `network` to `f` and erases it afterwards. An imported
     /// key must belong to `network` and `script_type` with the given compression (else
     /// `KeyMismatch { input }`).
@@ -473,7 +465,7 @@ impl BtcKeys for SeedKeys {
                     .imported
                     .iter()
                     .find(|(known, _)| *known == id)
-                    .ok_or(SignError::ImportedKeyUnavailable)?;
+                    .ok_or(SignError::Vault(VaultError::RecordNotFound))?;
                 lend_imported(secret, network, (script_type, compressed), input, f)
             }
         }
@@ -589,7 +581,9 @@ fn check_lent_key(
 
 /// Signs an approved plan (spec/08 §11.1): refuses unless `approved` is this plan's kind, chain,
 /// account and byte-identical `btc_payload` and the plan is `account`'s; then, per input, lends
-/// the input's key ([`BtcAccountKey::key_source`]) through `keys`, checks that it gives the
+/// the input's key ([`BtcAccountKey::key_source`]) from `vault` — a derived key through
+/// `with_secp_key`, an imported single key (vault tag 4) through `BtcImportedKeys`, whose record
+/// must have the account's network, address type and compression — checks that it gives the
 /// account's key of that input (else `KeyMismatch`), computes the sighash of the account type
 /// with the verified amount(s), signs (verified at once) and fills the scriptSig / witness. The
 /// private key never leaves the closure.
@@ -597,11 +591,21 @@ fn check_lent_key(
 /// # Errors
 ///
 /// [`SignError`]; nothing signed is returned on error.
+pub fn sign_plan(
+    vault: &Vault,
+    approved: Approved,
+    plan: &SendPlan,
+    account: &BtcAccountKey,
+) -> Result<SignedTx, SignError> {
+    sign_plan_with(vault, approved, plan, account)
+}
+
+/// [`sign_plan`] with any key lender (unit tests use a seed and a list of imported secrets).
 #[expect(
     clippy::needless_pass_by_value,
     reason = "the one-time approval token is consumed by signing (spec/03 §11.5)"
 )]
-pub fn sign_plan<K: BtcKeys>(
+pub(crate) fn sign_plan_with<K: BtcKeys>(
     keys: &K,
     approved: Approved,
     plan: &SendPlan,

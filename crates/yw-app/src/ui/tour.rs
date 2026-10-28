@@ -405,8 +405,43 @@ fn tour_btc(state: &mut App) {
         })
         .collect();
     let _ = meta.apply_refresh(&listed, &verified, &[], &[]);
+    // An imported key's account next to it (public data only: the BIP84 test vector's public key
+    // used as a testnet4 Taproot key), with one made-up verified output.
+    let imported = yw_core::btc::BtcAccountKey::single(
+        [0x42; 16],
+        yw_core::btc::ScriptType::P2tr,
+        yw_core::btc::BtcPubKey::parse(
+            &yw_core::hex::decode(
+                "0330d54fd0dd420a6e5f8d3624f5f3482cae350f79d5f0753bf5beef9c2d91af3c",
+            )
+            .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mut single = BtcMeta::with_key(BtcNetwork::Testnet4, imported);
+    let listed = vec![ListedUtxo {
+        outpoint: OutPoint {
+            txid: Txid::from_bytes([0x3e; 32]),
+            vout: 0,
+        },
+        chain: BtcChain::Receive,
+        index: 0,
+        height: 119_400,
+    }];
+    let verified = vec![VerifiedUtxo {
+        outpoint: listed[0].outpoint,
+        value: Sats::new(420_000).unwrap(),
+        chain: BtcChain::Receive,
+        index: 0,
+        height: 119_400,
+        is_coinbase: false,
+        own: false,
+    }];
+    let _ = single.apply_refresh(&listed, &verified, &[], &[]);
     if let Some(app_meta) = state.meta.as_mut() {
         app_meta.btc = Some(Box::new(meta));
+        let _ = app_meta.btc_accounts.upsert(single);
     }
     state.btc.tip = Some(120_100);
     state.btc.indexer_verified = true;
@@ -845,6 +880,15 @@ fn screenshot_tour() {
     app.borrow_mut().apikeys = endpoints;
     set_screen(&app, AppMode::NoVault, Screen::ImportIntro);
     save(main_hwnd(&app), "07-import-start");
+    {
+        // "개인키로 시작하기" (S18) with a Bitcoin key: the address-type radios.
+        let mut state = app.borrow_mut();
+        state.keys.start.chain = yw_core::keyimport::ImportChain::Btc;
+        state.keys.start.script = yw_core::btc::ScriptType::P2tr;
+    }
+    set_screen(&app, AppMode::NoVault, Screen::KeyStartIntro);
+    save(main_hwnd(&app), "24-key-start-bitcoin");
+    app.borrow_mut().keys.start = crate::app_keys::KeyStartFlow::default();
 
     // Unlock.
     {
@@ -932,7 +976,17 @@ fn screenshot_tour() {
     set_screen(&app, UNLOCKED, Screen::Main);
     save(main_hwnd(&app), "16-main-bitcoin");
     {
+        // The account card with `계정 추가`'s address-type chooser open, scrolled to it.
         let mut state = app.borrow_mut();
+        state.btc.add_account_open = true;
+        state.scroll = 200;
+        state.refresh();
+    }
+    save(main_hwnd(&app), "25-bitcoin-account-types");
+    {
+        let mut state = app.borrow_mut();
+        state.btc.add_account_open = false;
+        state.scroll = 0;
         if let Some(meta) = state.meta.as_mut() {
             meta.prefs.tab = Tab::Evm;
         }

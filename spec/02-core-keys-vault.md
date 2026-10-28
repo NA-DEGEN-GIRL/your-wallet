@@ -19,7 +19,7 @@
 | `yw_core::password` | `VaultPassword`, `Bip39Passphrase` (D8) |
 | `yw_core::codec::base58` | base58·base58check (D6; [07](07-solana.md)·[08](08-bitcoin.md)과 공유, M1에서 먼저 구현하므로 [01] §2.2 `codec`은 M1부터 있다) |
 | `yw_core::codec::wif` | Bitcoin WIF 디코드·인코드(§8.4) |
-| `yw_core::keyimport` | 가져온 개인키의 형식 파서(`ImportKey::parse`), 주소 미리보기(`ImportPreview`), Bitcoin 주소 형식(`BtcScriptType`, BIP86 taproot 출력 키)(§8.4) |
+| `yw_core::keyimport` | 가져온 개인키의 형식 파서(`ImportKey::parse`), 주소 미리보기(`ImportPreview`). Bitcoin 키의 주소 형식은 계정과 같은 `btc::ScriptType`이고 출력·주소도 같은 코드(`btc::account::kind_for_key`, BIP86 tweak `btc::taproot`)로 계산한다(§8.4, [08] §3.5) |
 | `yw_core::vault` | KDF, v3 헤더·payload 코덱, 사이드카, `VaultStorage`, `LockedSlot`, `Vault` 상태 기계, 백업 확인 |
 | `yw_core::journal` (M4) | journal 평문 컨테이너 코덱(§5.4), `JournalError`(§10.2). 체인별 레코드 본문은 EVM `journal::evm`([03](03-evm.md) §5.1), SOL [07] §14.1, BTC [08] §12.4 |
 
@@ -482,15 +482,12 @@ journal_key = HKDF-SHA256(salt = 없음,                   ikm = DEK, info = "yo
 | `activity` | object: `NetworkId` → `ActivityEntry[]` | 네트워크당 최신순 0..=500개·전체 0..=3,000개, 넘으면 네트워크 상한은 그 네트워크에서, 전체 상한은 모든 네트워크를 통틀어 `time_unix_ms`가 가장 오래된 항목부터 삭제, `tx_id` 중복 금지(같은 `tx_id`는 덮어씀), 빈 배열 키는 쓰지 않음 |
 | `prefs` | object | 개인정보성 UI 상태(선택 계정·탭; 네트워크 선택은 settings.json, D30), [04](04-app-ui.md) §6.4. `evm_account` `{"index": 0}`은 `evm_accounts`가 비어 있으면 "첫 가져온 계정"을 뜻한다 |
 | `sol_raw_accounts` | `SolRawAccount[]` | **선택 키**(가져오기 전 파일에는 없음, 없으면 `[]`). 0..=15개, vault `SolKey` record와 1:1, `record_id` 중복 금지 |
-| `btc_raw_accounts` | `BtcRawAccount[]` | **선택 키**. 0..=15개, vault `BtcKey` record와 1:1 |
 | `sol_raw_selected` | Hex16 \| null | **선택 키**. 선택한 Solana 계정이 가져온 키면 그 `record_id`(`sol_raw_accounts`에 있어야 함), 아니면 `null`(`prefs.sol_account`의 파생 계정) |
 
 ```
 Account          = { "index": u32(0..=999), "label": Label, "address": string, "hidden": bool }
 RawAccount       = { "record_id": Hex16, "label": Label, "address": EvmAddr }
 SolRawAccount    = { "record_id": Hex16, "label": Label, "address": string(정규 base58) }
-BtcRawAccount    = { "record_id": Hex16, "label": Label, "address": string(그 network의 주소),
-                     "network": "mainnet"|"testnet4", "script": "p2pkh"|"p2sh-p2wpkh"|"p2wpkh"|"p2tr" }
 AddressBookEntry = { "chain": "evm"|"sol"|"btc", "address": string, "label": Label,
                      "verified": bool, "added_at_unix_ms": u64 }
 ConnectedSite    = { "origin": string, "accounts": EvmAddr[1..=16], "chain_id": u64(≥ 1, EVM chainId),
@@ -518,8 +515,8 @@ ChainIdDec = u64 값 1..=2^64−1의 10진 표기, 앞자리 0 없음 (예 "eip1
 - `tokens`: 레지스트리 토큰([03] §1.2)은 넣지 않는다. 사용자가 S16([04] §2.6)에서 확인한 라벨만 저장한다.
 - `activity`: 이 지갑이 보낸 종결 거래만, 체인 문서가 종결 저널 레코드를 정리할 때 만든다. `account`·`counterparty`는 체인별 정규형(위 `address_book`과 같음, 받는 주소가 없으면 `""`; BTC는 계정 0 하나뿐이므로 `account` = `""`, [08] §12.3), `tx_id`는 EVM `0x`+소문자 hex 64, SOL base58 서명, BTC 소문자 hex txid(표시 순서). `title`은 서명 당시 승인 제목(≤ 256바이트, [03] §11.1·[07] §13.3·[08] §10), `asset`은 `"native"` 또는 토큰(EVM `EvmAddr`, SOL mint base58), `amount`는 최소 단위 10진 문자열(≤ 78자, 없으면 `"0"`), `time_unix_ms`는 종결 관측 시각. 상태: EVM `Finalized`(영수증 성공 `succeeded`, 실패 `failed`)·`Dropped`·`Replaced`, SOL `Landed`→`succeeded`·`FailedOnChain`→`failed`·`Expired`→`expired`, BTC `Confirmed`→`succeeded`·`Rejected`·`Replaced`·`Conflicted`·`Abandoned`(나머지는 같은 이름의 소문자). 화면은 표시 전용이다([04] §2.6).
 - `ActivityEntry`는 모든 체인이 쓰는 유일한 스키마다. 체인 문서는 필드 대응만 정하고 별도 activity 스키마를 두지 않는다: EVM [03] §5.4; SOL [07] §14.1(`account` = 보낸 주소 from, `tx_id` = base58 서명, `asset` = `"native"`(SOL) 또는 mint base58, `amount` = lamports 또는 토큰 원시 단위, `counterparty` = 받는 주소 to); BTC [08] §12.3.
-- meta가 없고 `.prev`도 없으면(첫 실행, 또는 사용자가 지움) 기본 meta(`evm_accounts = [{index 0, label "계정 1"}]`, 나머지 빈 값)로 시작한다. 키 전용 지갑의 기본 meta는 `evm_accounts = []`이고 가져온 키를 해당 목록에 넣는다(라벨 "가져온 계정 n"·"가져온 Solana n"·"가져온 Bitcoin n").
-- 세 선택 키(`sol_raw_accounts`·`btc_raw_accounts`·`sol_raw_selected`)는 [04] §6.6의 "새 최상위 키" 규칙으로 더했다: 이 버전은 없으면 빈 값으로 읽고 항상 `prefs` 뒤에 쓴다. 이전 버전은 모르는 최상위 키로 보존한다. 잠금 해제 때 yw-app은 `imported_keys`(§10.3)로 세 가져온 키 목록의 주소 캐시를 다시 계산하고 vault에 없는 항목은 지우며 vault에만 있는 항목은 기본 라벨로 더한다(`MetaAddressMismatch` 로그).
+- meta가 없고 `.prev`도 없으면(첫 실행, 또는 사용자가 지움) 기본 meta(`evm_accounts = [{index 0, label "계정 1"}]`, 나머지 빈 값)로 시작한다. 키 전용 지갑의 기본 meta는 `evm_accounts = []`이고 가져온 키를 해당 목록에 넣는다(라벨 "가져온 계정 n"·"가져온 Solana n"; Bitcoin 키는 `btc_accounts`의 가져온 키 계정으로, 선택된 채).
+- 두 선택 키(`sol_raw_accounts`·`sol_raw_selected`)는 [04] §6.6의 "새 최상위 키" 규칙으로 더했다: 이 버전은 없으면 빈 값으로 읽고 항상 `prefs` 뒤에 쓴다. 이전 버전은 모르는 최상위 키로 보존한다. 가져온 Bitcoin 키(`BtcKey` record)는 따로 목록이 없고 선택 최상위 키 `btc_accounts`([08] §12.3a)의 가져온 키 계정(`BtcAccountKey::Single { id = record_id, script_type, pubkey }`, 그 키의 network)과 1:1이다. 잠금 해제 때 yw-app은 `imported_keys`(§10.3)로 가져온 키 목록의 주소 캐시를 다시 계산하고 vault에 없는 항목은 지우며 vault에만 있는 항목은 기본 라벨로 더한다; Bitcoin은 계정이 없는 `BtcKey` record에 계정을 더하고, record가 없거나 키·형식·network가 다른 가져온 키 계정을 지운다(`MetaAddressMismatch` 로그). 그래서 meta 쓰기가 vault 쓰기 뒤에 실패해도, 또는 계정 목록 없이 `BtcKey`만 있는 vault여도 다음 잠금 해제에서 맞춰진다.
 
 ### 5.4 journal 평문 (이진, `yw_core::journal`, M4)과 롤백
 
@@ -709,8 +706,7 @@ pub trait LockedSlot: Send {
 ```rust
 // yw_core::keyimport
 pub enum ImportChain { Evm, Sol, Btc }
-pub enum BtcScriptType { P2pkh = 1, P2shP2wpkh = 2, P2wpkh = 3, P2tr = 4 }
-pub enum ImportSpec { Evm, Sol, Btc(BtcScriptType) }
+pub enum ImportSpec { Evm, Sol, Btc(btc::ScriptType) }   // ScriptType: P2pkh 1, P2shP2wpkh 2, P2wpkh 3, P2tr 4 ([08] §3.5)
 pub struct ImportKey { /* Zeroizing 비밀, Clone 없음, Debug "ImportKey(<체인>, [REDACTED])" */ }
 impl ImportKey {
     pub fn parse(spec: ImportSpec, text: &str) -> Result<Self, KeyError>;
@@ -718,8 +714,9 @@ impl ImportKey {
     pub fn preview(&self) -> Result<ImportPreview, KeyError>;   // 저장 없이 주소만
 }
 pub enum ImportPreview { Evm(Address), Sol(SolAddress), Btc(BtcKeyInfo) }
-pub struct BtcKeyInfo { pub network: BtcNetwork, pub script: BtcScriptType, pub compressed: bool,
-                        pub public_key: Vec<u8> /* 33 또는 65 */, pub kind: ScriptKind, pub address: String }
+pub struct BtcKeyInfo { pub network: BtcNetwork, pub script: ScriptType, pub compressed: bool,
+                        pub public_key: BtcPubKey /* 33 또는 65바이트 */, pub kind: ScriptKind, pub address: String }
+impl BtcKeyInfo { pub const fn account_key(&self, id: [u8; 16]) -> Result<BtcAccountKey, AccountKeyError>; } // Single
 pub const MAX_IMPORTED_PER_CHAIN: usize = 15;
 pub const SOL_KEY_TEXT_MAX: usize = 640;
 // yw_core::codec::wif
@@ -732,14 +729,14 @@ pub fn parse_wif(text: &str) -> Result<WifKey, KeyError>;   // compressed(), net
 |---|---|---|
 | EVM | §8.2와 같음(선택 `0x` + hex 64자, 1 ≤ k < n) | `InvalidPrivateKey` |
 | Solana | base58 64바이트 keypair(`seed ‖ public`) 또는 `solana-keygen` JSON 배열(10진 0–255 정확히 64개), 텍스트 ≤ 640바이트 | 32바이트 → `SolKeyIsAddress`, 공개키 불일치 → `SolKeyMismatch`, 그 밖 → `SolKeyFormat` ([07] §3.4) |
-| Bitcoin | WIF: base58check 51자(`version ‖ secret`, 압축 안 함) 또는 52자(`version ‖ secret ‖ 01`, 압축). `version` 0x80 = mainnet, 0xef = 테스트넷(이 지갑에서는 testnet4). secret 1 ≤ k < n. 주소 형식은 사용자가 고른다(`BtcScriptType`) | 길이·문자·체크섬·version·접미사·범위 → `WifFormat`; 압축 안 한 키 + P2PKH 외 형식 → `WifUncompressedScript` |
+| Bitcoin | WIF: base58check 51자(`version ‖ secret`, 압축 안 함) 또는 52자(`version ‖ secret ‖ 01`, 압축). `version` 0x80 = mainnet, 0xef = 테스트넷(이 지갑에서는 testnet4). secret 1 ≤ k < n. 주소 형식은 사용자가 고른다(`btc::ScriptType`) | 길이·문자·체크섬·version·접미사·범위 → `WifFormat`; 압축 안 한 키 + P2PKH 외 형식 → `WifUncompressedScript` |
 
 - Bitcoin 주소(`keyimport::btc`): P2PKH `HASH160(pubkey)`(압축 33 또는 비압축 65바이트), P2SH-P2WPKH `HASH160(00 14 ‖ HASH160(pubkey33))`, P2WPKH `HASH160(pubkey33)`, P2TR BIP86 key-path 출력 키 `x(P + H_TapTweak(x(P))·G)`(스크립트 트리 없음). 주소 문자열은 [08] `encode_address`. 64자 hex 원시 비밀은 네트워크를 알 수 없으므로 받지 않는다(WIF만).
 - `import_key(key, now_unix) -> RecordId`: `Unlocked`에서만(`BackupPending`은 `BackupNotConfirmed`), 비밀번호 재입력 없음, `PayloadRewrite`. 체인마다 15개(`RecordLimit`). 중복(`DuplicateKey`): EVM은 같은 키, Solana는 같은 공개키, Bitcoin은 (secret, compressed, network, script)가 모두 같을 때(같은 키를 다른 형식으로 다시 가져오는 것은 다른 주소의 다른 계정이다). 파생 계정과 같은 키를 가져오는 것은 막지 않는다. `import_evm_private_key(hex)`는 §8.2 형식 그대로 `import_key(Evm)`를 부른다.
 - `remove_imported_key(password, id) -> ImportChain`: `Unlocked`, 비밀번호 재입력, `PayloadRewrite`. 어느 체인의 가져온 키든 지운다. `Bip39` record는 지울 수 없다. 지운 뒤 record가 0개가 되면(키 전용 vault의 마지막 키) `LastKey`이고 아무것도 쓰지 않는다.
 - `reveal_imported_key(password, id) -> (ImportChain, SecretString)`(§9): EVM 소문자 hex 64자(`0x` 없음), Solana base58 64바이트 keypair, Bitcoin WIF(가져온 그대로의 압축 여부·network).
 - `imported_keys() -> ImportedKeys`(`BackupPending`·`Unlocked`): `has_mnemonic`, EVM `(RecordId, Address)`, Solana `(RecordId, 공개키)`, Bitcoin `(RecordId, BtcKeyInfo)`를 payload 순서로. meta 캐시 재계산(§5.3)에 쓴다.
-- 서명: EVM은 `KeyRef::Evm(EvmKeySource::Raw(id))`, Solana는 `with_imported_ed25519_seed(public, f)`([07] §3.4), Bitcoin은 `KeyRef::BtcImported(id)`(= `BtcKeySource::Imported(id).key_ref()`)를 `with_secp_key`에 넘긴다. Bitcoin 서명 흐름의 연결(주소 형식별 sighash·witness)은 [08]의 주소 형식 작업과 통합할 때 정한다.
+- 서명: EVM은 `KeyRef::Evm(EvmKeySource::Raw(id))`, Solana는 `with_imported_ed25519_seed(public, f)`([07] §3.4), Bitcoin은 `btc::sign::sign_plan(&Vault, ..)`이 입력마다 `BtcKeySource::Imported { id, script_type, compressed }`(가져온 키 계정의 입력)를 crate 내부 `BtcImportedKeys::btc_imported_secret(id)`(→ `Vault::imported_btc_secret`, `pub(crate)`, `Unlocked`만)로 받는다: tag 4 record의 비밀키를 record의 압축·network·형식과 함께 `ImportedBtcSecret`(복제 없음, `Debug` 가림, drop 때 지움)으로 감싸 서명 클로저에만 빌려 주고, 계정의 network·형식·압축과 다르면 `KeyMismatch`, record가 없으면 `RecordNotFound`다([08] §3.5, §11.1). `KeyRef`에는 가져온 Bitcoin 키가 없다.
 - 가져온 키는 니모닉 밖에 있다(D29): 복구 단어로 복구되지 않고 각 키의 백업은 원래 개인키다. UI는 가져오기 창 W07과 계정 목록에 이 사실을 보인다([04] §2.18).
 
 ### 8.5 개인키로 시작 (키 전용 vault)
@@ -850,8 +847,7 @@ pub enum VaultStatus {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub struct RecordId([u8; 16]);
 pub enum EvmKeySource { Derived(AccountIndex), Raw(RecordId) }
-pub enum KeyRef { Evm(EvmKeySource), Btc { coin: BtcCoin, chain: BtcChain, index: u32 }, BtcImported(RecordId) }
-pub enum BtcKeySource { Derived { coin: BtcCoin, chain: BtcChain, index: u32 }, Imported(RecordId) } // key_ref()
+pub enum KeyRef { Evm(EvmKeySource), Btc { coin: BtcCoin, chain: BtcChain, index: u32 } } // coin = 계정 노드([08] §3.1)
 pub struct ImportedKeys { pub has_mnemonic: bool, pub evm: Vec<(RecordId, Address)>,
                           pub sol: Vec<(RecordId, [u8; 32])>, pub btc: Vec<(RecordId, BtcKeyInfo)> }
 
@@ -907,6 +903,7 @@ impl Vault {
         f: impl FnOnce(&[u8; 32]) -> R<T>) -> R<T>;                                              // M7
     pub(crate) fn with_imported_ed25519_seed<T>(&self, public: &[u8; 32],
         f: impl FnOnce(&[u8; 32]) -> R<T>) -> R<T>;                                              // [07] §3.4
+    pub(crate) fn imported_btc_secret(&self, id: &[u8; 16]) -> R<btc::sign::ImportedBtcSecret>; // [08] §11.1
 }
 
 // yw_core::bip32 — vault·슬롯 없이 가져오기 첫 주소 미리보기([04] §2.4 5단계 KeyJob::PreviewImport)
@@ -918,7 +915,7 @@ pub fn preview_evm_address(phrase: &str, passphrase: Option<&Bip39Passphrase>, i
 - `open_sidecar`·`save_sidecar`의 generation CAS는 `Vault`가 기억한 마지막 generation으로 한다(`save_sidecar`가 `commit(kind, Some(last), …)`, 파일이 없으면 `None`). `FileKind::Vault`를 넘기면 `InvalidState`.
 - 이 세션에서 아직 열지 않은 사이드카를 저장할 때는 먼저 `open_sidecar`로 **인증**한다(구조만 보고 generation을 가져다 덮어쓰지 않는다). 열기가 `SidecarCorrupt`·`SidecarVaultMismatch`로 실패한 파일은 다음 열기가 성공할 때까지(사용자가 `.prev`로 되돌리거나 격리한 뒤) 저장을 같은 오류로 거부한다. 남의 vault의 meta나 손상된 파일을 조용히 덮어써 복구 기회를 없애지 않기 위해서다(§6.3).
 - 비밀을 돌려주는 API(`create_wallet`·`reveal_*`·`open_sidecar` 평문, `Mnemonic::phrase`·`to_seed`, `bip32::xkey::encode_xkey`)는 `Debug`가 `[REDACTED]`인 래퍼(`SecretString`·`SecretVec`·`SecretBytes`, [01] §5.3)를 돌려준다. 값은 `expose()`로만 읽는다.
-- `with_secp_key`·`with_ed25519_seed`는 `pub(crate)`이며 키를 클로저 밖으로 내보내는 반환 타입을 만들지 않는다. 서명 API 자체는 [03](03-evm.md)·[07](07-solana.md)·[08](08-bitcoin.md)이 정의한다.
+- `with_secp_key`·`with_ed25519_seed`는 `pub(crate)`이며 키를 클로저 밖으로 내보내는 반환 타입을 만들지 않는다. `imported_btc_secret`의 `ImportedBtcSecret`도 crate 내부 타입이고 비밀키를 읽는 접근자가 없다: `btc::sign`만 그 키를 서명 클로저에 빌려 준다(키를 빌려 주는 `BtcKeys`도 `pub(crate)`, crate 밖 서명은 `sign_plan(&Vault, ..)`뿐). 서명 API 자체는 [03](03-evm.md)·[07](07-solana.md)·[08](08-bitcoin.md)이 정의한다.
 - `with_ed25519_seed(src, f)`: §3.5 표대로 `src`의 32바이트 seed를 만들어 `f`에 빌려주고, 반환 직후 seed·64바이트 BIP39 시드·중간값을 소거한다(§7.3). 표준·비표준 다섯 출처 모두 이 함수 하나로만 서명 키를 얻는다([07] §3.1–§3.3).
 - `sol_public_keys(srcs)`: BIP39 시드를 한 번만 계산하고 각 출처의 seed로 `SigningKey::from_bytes(&k).verifying_key()`를 구해 입력 순서대로 32바이트 공개키를 돌려준다(seed는 출처마다 즉시 소거). 계정 추가·주소 캐시 재계산·복구 스캔([07] §3.3)에 쓴다. 빈 목록은 빈 결과, 129개 이상은 `InvalidState`(호출자 오류)이며 아무것도 파생하지 않는다.
 - `btc_account_xpub(coin)`: `XPriv::from_seed` → `derive_path(m/84'/{coin}'/0')`(`BtcCoin::Mainnet` 0', `Test` 1', D29) → 그 노드의 압축 공개키와 chain code를 `AccountXpub`(§3.1)로 돌려준다. 개인키는 반환하지 않고 중간 `XPriv`·`SecretKey`·시드는 소거한다. 주소 발급은 이 값과 `bip32::derive_public_child`로 vault 없이 한다([08] §3.1). `btc_public_key`는 같은 잎을 개인 파생으로 계산한 값으로, CKDpub 결과와의 대조([08] §14.1)에 쓴다.
@@ -1046,7 +1043,7 @@ payload_nonce 707172…87   record_id 909192…9f   generation 1, backup_state 0
 - WIF(`keyimport::tests`): Bitcoin wiki 예제(비압축 `5HueCGU8…`, 압축 `KwdMAjGm…`)와 secret 1의 네 형식(mainnet·테스트넷 × 압축·비압축) 디코드·인코드 왕복; 체크섬·길이·문자·비ASCII·접미사 02·version 00·0·n 거부.
 - Bitcoin 주소: BIP84 WIF → `bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu`, BIP49 테스트넷 WIF → `2Mww8dCYPUpKHofjgcXcBCEGmniw9CoaiD2`, secret 1의 P2PKH(압축 `1BgGZ9tc…`, 비압축 `1EHNa6Q4…`, 테스트넷 `mrCDrCyb…`)와 BIP173 P2WPKH(`bc1qw508d6…`, `tb1qw508d6…`), BIP86 내부 키 `cc8a4bc6…` → 출력 키 `a60869f0…` → `bc1p5cyxnuxm…`; 비압축 키 + segwit/taproot 형식 거부.
 - Solana: RFC 8032 test 1 시드의 base58 keypair·JSON(콤마, 콤마+공백, 줄바꿈 들여쓰기)이 같은 키로 파싱되고 내보내기 base58이 입력과 같다; [07] §17.1 abandon 표준 0 시드 keypair → `HAgk14Jp…`; 주소(32바이트) → `SolKeyIsAddress`, 공개키 바꿈 → `SolKeyMismatch`, 33·65바이트·63개·256·음수·앞자리 0·빈 항목·괄호 누락·hex 시드 → `SolKeyFormat`.
-- vault(`vault::tests`): 이전 배치(Bip39 + EvmRawKey) payload의 디코드·재인코드 동일성; 모든 tag 조합·키 전용 payload 왕복; `SolKey` 공개키 불일치·중복, `BtcKey` 값 규칙·중복, tag 순서 위반, tag를 넘는 record_id 중복, 47개 → `PayloadCorrupt`; 최대 payload(3,170바이트) 봉인·개봉, 16번째 키 → `RecordLimit`; 키 전용 vault 생성·재잠금 해제(곧바로 `Unlocked`)·`NoMnemonic` 표·서명용 시드·내보내기·`LastKey`; 니모닉 vault의 체인별 상한·중복 규칙·`KeyRef::BtcImported` 공개키(BIP84)·WIF 내보내기·체인별 삭제; `BackupPending`의 `import_key` → `BackupNotConfirmed`.
+- vault(`vault::tests`): 이전 배치(Bip39 + EvmRawKey) payload의 디코드·재인코드 동일성; 모든 tag 조합·키 전용 payload 왕복; `SolKey` 공개키 불일치·중복, `BtcKey` 값 규칙·중복, tag 순서 위반, tag를 넘는 record_id 중복, 47개 → `PayloadCorrupt`; 최대 payload(3,170바이트) 봉인·개봉, 16번째 키 → `RecordLimit`; 키 전용 vault 생성·재잠금 해제(곧바로 `Unlocked`)·`NoMnemonic` 표·서명용 시드·내보내기·`LastKey`; 니모닉 vault의 체인별 상한·중복 규칙·가져온 Bitcoin 키를 서명자에게 빌려 줌(BIP84 공개키, 다른 network·형식 → `KeyMismatch`, 없는 id → `RecordNotFound`)·WIF 내보내기·체인별 삭제; `BackupPending`의 `import_key` → `BackupNotConfirmed`.
 - Solana 서명(`sol::tests`): 가져온 표준 0 키가 골든 전송을 파생 키와 같은 서명으로 서명, `L07`·`NON_STANDARD_PATH` 없음, 저널 태그 6 왕복; 니모닉 vault의 `Imported` 출처 → `RecordNotFound`, 키 전용 vault의 파생 출처 → `NoMnemonic`.
 
 ## 12. 아카이브 이식 출처

@@ -17,9 +17,9 @@ use super::{
     VAULT_HEADER_LEN, VAULT_MAGIC, VAULT_VERSION, WRAPPED_DEK_LEN,
 };
 use crate::bip39::Mnemonic;
+use crate::btc::account::ScriptType;
 use crate::btc::network::BtcNetwork;
 use crate::error::{KeyError, StorageError, VaultError};
-use crate::keyimport::BtcScriptType;
 use crate::password::VaultPassword;
 
 /// Payload plaintext magic.
@@ -377,7 +377,7 @@ pub(crate) struct BtcKeyRecord {
     pub(crate) secret: Zeroizing<[u8; 32]>,
     pub(crate) compressed: bool,
     pub(crate) network: BtcNetwork,
-    pub(crate) script: BtcScriptType,
+    pub(crate) script: ScriptType,
 }
 
 impl Zeroize for BtcKeyRecord {
@@ -533,7 +533,7 @@ impl Payload {
             out.extend_from_slice(btc.secret.as_slice());
             out.push(u8::from(btc.compressed));
             out.push(btc.network.id());
-            out.push(btc.script.id());
+            out.push(btc.script.code());
         }
         if out.len() != len || out.capacity() != len {
             return Err(INTERNAL);
@@ -624,9 +624,9 @@ impl Payload {
             _ => return None,
         };
         let network = BtcNetwork::from_id(reader.u8()?)?;
-        let script = BtcScriptType::from_id(reader.u8()?)?;
+        let script = ScriptType::from_code(reader.u8()?)?;
         if !valid_scalar(&secret)
-            || (!compressed && !script.allows_uncompressed())
+            || (!compressed && script != ScriptType::P2pkh)
             || self.btc_keys.len() >= MAX_RAW_KEYS
         {
             return None;

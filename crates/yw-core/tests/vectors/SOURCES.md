@@ -64,3 +64,16 @@ inline values copied from bitcoin/bips at commit `24e96e870fffaa257b465ce1f0370c
 
 BIP44 publishes no test vector; `bip44_public_equals_private` checks the path against private
 derivation only.
+
+Imported keys (spec/02 §8.4, spec/08 §3.5), 2026-10-29. Inline values transcribed from the sources
+below (this offline session did not re-fetch them, so no commit is recorded); the secret-1 WIFs
+are the encodings of the private key 1 (public key = the generator G):
+
+| Test | Source | License |
+|---|---|---|
+| `src/keyimport/tests.rs` `wif_wiki_vectors_round_trip` (`5HueCGU8…`, `KwdMAjGm…`) | https://en.bitcoin.it/wiki/Wallet_import_format (example) | CC BY 3.0 |
+| `src/keyimport/tests.rs` secret-1 WIFs (mainnet/testnet × compressed/uncompressed), P2PKH `1BgGZ9tc…`/`1EHNa6Q4…`/`mrCDrCyb…`, BIP173 `bc1qw508d6qe…`/`tb1qw508d6qe…`; also `src/btc/types_tests.rs` `vault_signs_every_hd_and_imported_type` and `crates/yw-app/tests/btc_app_flow.rs` (uncompressed testnet WIF as P2PKH) | https://github.com/bitcoin/bips/blob/master/bip-0173.mediawiki (`=== Examples ===`) for the P2WPKH addresses; the WIFs and P2PKH addresses are the standard encodings of key 1 | BSD-2-Clause |
+| `src/keyimport/tests.rs` BIP84 WIF `KyZpNDKn…` → `bc1qcr8te4kr…` (also `src/vault/tests.rs`, `crates/yw-app` tests) | https://github.com/bitcoin/bips/blob/master/bip-0084.mediawiki (`==Test vectors==`, account 0 receive 0) | BSD-2-Clause |
+| `src/keyimport/tests.rs` BIP49 testnet WIF `cULrpoZG…` → `2Mww8dCY…` (also `crates/yw-app/tests/btc_app_flow.rs` imported-key rounds, `crates/yw-app/src/app/tests.rs` `key_start_with_a_bitcoin_key`) | https://github.com/bitcoin/bips/blob/master/bip-0049.mediawiki (`==Test vectors==`, account 0 receive 0) | BSD-2-Clause |
+| `src/keyimport/tests.rs` `bip86_taproot_output_key_and_address` (internal/output key, `bc1p5cyxnuxm…`) | https://github.com/bitcoin/bips/blob/master/bip-0086.mediawiki (`==Test vectors==`, account 0 receive 0) | BSD-2-Clause |
+| `src/keyimport/tests.rs` Solana keypairs | `rfc8032.json` test 1 above, spec/07 §17.1 (abandon `m/44'/501'/0'/0'`) | as above |

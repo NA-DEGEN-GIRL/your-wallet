@@ -52,10 +52,7 @@ pub use select::{
     BumpRequest, BumpSource, PlanError, SendAmount, SendPlan, SendRequest, Utxo, plan_fee_bump,
     plan_send,
 };
-pub use sign::{
-    BtcImportedKeys, BtcKeys, ImportedBtcSecret, SignError, SignedTx, check_recorded_amounts,
-    sign_plan,
-};
+pub use sign::{SignError, SignedTx, check_recorded_amounts, sign_plan};
 pub use tx::{OutPoint, Transaction, TxIn, TxOut, Txid};
 pub use verify::{PostSignError, VerifiedSignedTx, verify_signed};
 

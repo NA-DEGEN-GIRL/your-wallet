@@ -193,46 +193,18 @@ pub enum EvmKeySource {
 pub enum KeyRef {
     /// An EVM key.
     Evm(EvmKeySource),
-    /// A BIP84 key `m/84'/{coin}'/0'/{chain}/{index}`.
+    /// A derived Bitcoin key `m/{purpose}'/{coin}'/{account}'/{chain}/{index}` (the account node
+    /// is `coin`, spec/08 §3.1). Imported Bitcoin keys (vault tag 4) are not lent through
+    /// `KeyRef`: the Bitcoin signer gets them from `btc::sign::BtcImportedKeys` together with the
+    /// record's network, address type and compression (spec/02 §8.4, spec/08 §11.1).
     Btc {
-        /// Coin type.
+        /// Account node (purpose, coin type, account).
         coin: crate::bip32::path::BtcCoin,
         /// Receive or change chain.
         chain: crate::bip32::path::BtcChain,
         /// Non-hardened index.
         index: u32,
     },
-    /// An imported Bitcoin key (`tag 4`); its network and script type are in the record
-    /// ([`Vault::btc_imported_keys`]).
-    BtcImported(RecordId),
-}
-
-/// Source of a Bitcoin signing key: derived from the mnemonic, or an imported WIF key
-/// (spec/02 §8.4). The signer turns it into a [`KeyRef`] for `Vault::with_secp_key`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BtcKeySource {
-    /// `m/84'/{coin}'/0'/{chain}/{index}`.
-    Derived {
-        /// Coin type.
-        coin: crate::bip32::path::BtcCoin,
-        /// Receive or change chain.
-        chain: crate::bip32::path::BtcChain,
-        /// Non-hardened index.
-        index: u32,
-    },
-    /// An imported key record (`tag 4`).
-    Imported(RecordId),
-}
-
-impl BtcKeySource {
-    /// The signing key reference of this source.
-    #[must_use]
-    pub const fn key_ref(self) -> KeyRef {
-        match self {
-            Self::Derived { coin, chain, index } => KeyRef::Btc { coin, chain, index },
-            Self::Imported(id) => KeyRef::BtcImported(id),
-        }
-    }
 }
 
 /// Identifier of the current backup challenge.

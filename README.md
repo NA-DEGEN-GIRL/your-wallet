@@ -10,7 +10,9 @@ Windows 11 PC 한 대에서 작성자 본인이 쓰는 개인용 소프트웨어
 
 - **구현 완료 · 수동 검증 대기.** M0–M8 전 마일스톤을 구현했다: 키·vault(M1), EVM 코어(M2), 앱 뼈대(M3),
   EVM 송금·사용자 체인(M4), 브라우저 연동과 MetaMask·Rabby 호환 모드(M5), 선택 기능 LLM 설명(M6),
-  Solana 송금과 v1.1 SPL 허용 목록(M7), Bitcoin 송금(M8). 자동 검사(`scripts/check.ps1`)는 통과하며,
+  Solana 송금과 v1.1 SPL 허용 목록(M7), Bitcoin 송금(M8). 이후 Bitcoin 계정별 주소 형식 4종(P2WPKH·P2TR·
+  P2SH-P2WPKH·P2PKH)과 개인키 가져오기(EVM·Solana·Bitcoin WIF — 가져온 Bitcoin 키도 계정 목록에서 받기·보내기,
+  복구 단어 없이 개인키로 시작하는 지갑)를 더했다. 자동 검사(`scripts/check.ps1`)는 통과하며,
   마일스톤별 수동 체크리스트와 라이브 확인은 [docs/acceptance/](docs/acceptance/)에서 진행 중이다
   (아직 남은 예: Chrome job object에서 yw-app 생존 확인 M5-13, 메인넷 소액 M9).
 - 미리 빌드한 실행 파일은 배포하지 않는다. 저장소는 소스로만 공개하고, 각자 자기 PC에서 빌드해 설치한다

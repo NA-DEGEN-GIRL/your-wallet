@@ -1117,7 +1117,7 @@ impl App {
         };
         for event in events.drain() {
             match event {
-                UiEvent::Key(result) => self.on_key_result(result),
+                UiEvent::Key(result) => self.on_key_result(*result),
                 UiEvent::Rpc(RpcEvent::Test {
                     network,
                     message,
@@ -1244,6 +1244,20 @@ impl App {
             KeyOutcome::Status(result) => self.on_status(result, now),
             KeyOutcome::KeyStartPreview(result) => self.on_key_start_preview(result),
             KeyOutcome::KeyStartCommitted(Ok(())) => {
+                if let Some(network) = self.keys.start.btc_network
+                    && self.keys.start.chain == yw_core::keyimport::ImportChain::Btc
+                {
+                    // A wallet started from a Bitcoin key: Bitcoin on, on the key's network (the
+                    // WIF version), so its account shows on the Bitcoin tab right away.
+                    let mut bitcoin = self.settings.bitcoin.clone();
+                    bitcoin.enabled = true;
+                    bitcoin.network = crate::btc::app_network(network);
+                    if bitcoin != self.settings.bitcoin {
+                        let mut settings = self.settings.clone();
+                        settings.bitcoin = bitcoin;
+                        self.save_settings(settings, "bitcoin.enabled");
+                    }
+                }
                 self.keys.start = crate::app_keys::KeyStartFlow::default();
                 self.set_mode(AppMode::Unlocked {
                     alt_passphrase: false,
@@ -1267,6 +1281,7 @@ impl App {
             KeyOutcome::ImportedKeyRemoved(Ok((id, chain))) => {
                 self.on_imported_key_removed(id, chain);
             }
+            KeyOutcome::ImportedKeyBusy(_) => self.on_imported_key_busy(),
             KeyOutcome::Cancelled("SignEvm" | "SignMessage", _) => self.evm_sign_cancelled(),
             KeyOutcome::Cancelled("SignSol", _) => self.sol_sign_cancelled(),
             KeyOutcome::Cancelled("SignBtc", _) => {

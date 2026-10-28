@@ -16,7 +16,7 @@
 //! | AI 설명 (`screens_llm`) | 10,000–10,099 | M6 settings |
 //! | EVM accounts (`screens`) | 11,000–11,999 | one radio per row (index range 0..=999) |
 //! | Solana accounts (`screens_sol`) | 12,000–12,999 | one radio per row (index range 0..=999) |
-//! | imported keys (`screens_keys`) | 13,000–13,199 | S18/S19, script radios 13,010–13,013, Bitcoin rows 13,100–13,159 |
+//! | imported keys (`screens_keys`) | 13,000–13,199 | S18/S19, script radios 13,010–13,013, selected imported Solana/Bitcoin account 13,022–13,025 (Bitcoin keys are rows of `btc.accounts`) |
 
 use crate::ui::{
     screens, screens_btc, screens_evm, screens_keys, screens_llm, screens_sites, screens_sol,
@@ -207,13 +207,6 @@ pub fn ranges() -> Vec<IdRange> {
             screens_sol::ids::ACCOUNT_SPAN,
             1,
             MAX_EVM_ACCOUNTS + MAX_RAW_ACCOUNTS,
-        ),
-        range(
-            "keys.btc_rows",
-            screens_keys::ids::BTC_ROW_BASE,
-            screens_keys::ids::BTC_ROW_SPAN,
-            screens_keys::ids::BTC_ROW_STRIDE,
-            MAX_RAW_ACCOUNTS,
         ),
         range(
             "btc.accounts",

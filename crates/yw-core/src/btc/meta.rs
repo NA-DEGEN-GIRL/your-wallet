@@ -1768,6 +1768,64 @@ impl BtcAccounts {
         }
     }
 
+    /// The account the Bitcoin tab works with on `network`: the selected one; otherwise BIP84
+    /// account 0 when the wallet has it on `network` (`has_primary`); otherwise — a key-only
+    /// wallet, whose accounts are all imported single keys — the first account of `network`.
+    /// `None` when `network` has no account at all.
+    #[must_use]
+    pub fn active_on(&self, network: BtcNetwork, has_primary: bool) -> Option<BtcAccountId> {
+        match self.selected_on(network) {
+            BtcAccountId::PRIMARY if !has_primary => self.first_on(network),
+            id => Some(id),
+        }
+    }
+
+    /// The first account of `network` in list order.
+    #[must_use]
+    pub fn first_on(&self, network: BtcNetwork) -> Option<BtcAccountId> {
+        self.of_network(network).next().map(BtcMeta::id)
+    }
+
+    /// The account holding the wallet-level `max_tip_seen` of `network` (the chain check's
+    /// regression bound, spec/08 §2 step 2): BIP84 account 0 when the wallet has it on `network`
+    /// (`has_primary`, meta `btc`), otherwise the first account of `network` (a key-only
+    /// wallet). `None` when `network` has no account.
+    #[must_use]
+    pub fn tip_holder(&self, network: BtcNetwork, has_primary: bool) -> Option<BtcAccountId> {
+        if has_primary {
+            Some(BtcAccountId::PRIMARY)
+        } else {
+            self.first_on(network)
+        }
+    }
+
+    /// Removes account `id` of `network` (a deleted imported key, or an account whose vault
+    /// record is gone) and returns it. The selection falls back when it was this account.
+    /// Without BIP84 account 0 on `network` (`has_primary == false`) the removed account may
+    /// have held the wallet-level tip: the next holder keeps the higher `max_tip_seen`.
+    pub fn remove(
+        &mut self,
+        network: BtcNetwork,
+        id: BtcAccountId,
+        has_primary: bool,
+    ) -> Option<BtcMeta> {
+        let position = self
+            .accounts
+            .iter()
+            .position(|meta| meta.network() == network && meta.id() == id)?;
+        let removed = self.accounts.remove(position);
+        if self.selected == Some(id) {
+            self.selected = None;
+        }
+        if !has_primary
+            && let Some(next) = self.tip_holder(network, false)
+            && let Some(holder) = self.get_mut(network, next)
+        {
+            holder.max_tip_seen = holder.max_tip_seen.max(removed.max_tip_seen);
+        }
+        Some(removed)
+    }
+
     /// The next free HD account number of `script_type` on `network` (the BIP84 account 0 is
     /// meta `btc`, so P2WPKH starts at 1), `None` above [`BTC_MAX_HD_ACCOUNT`] or when the list is
     /// full.

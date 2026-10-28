@@ -1,10 +1,13 @@
 //! Imported private keys in the app (spec/04 §2.18, D9): "개인키로 시작하기" (S01 third card →
 //! S18 → W01 → W07 → S19 → S08), `개인키 가져오기` on the Solana and Bitcoin tabs (the EVM tab keeps
 //! its `ImportPrivateKey` job), reveal and removal of imported Solana/Bitcoin keys, and the
-//! key-only wallet flag (a vault without recovery words hides derivation features).
+//! key-only wallet flag (a vault without recovery words hides derivation features). An imported
+//! Bitcoin key becomes a single-key account of the Bitcoin account list (`BtcMetaOp::AddImported`
+//! after the vault stored it, spec/08 §3.5); its `삭제` also removes that account.
 
+use yw_core::btc::{BtcNetwork, ScriptType};
 use yw_core::error::{KeyError, VaultError};
-use yw_core::keyimport::{BtcScriptType, ImportChain, ImportPreview, ImportSpec};
+use yw_core::keyimport::{ImportChain, ImportPreview, ImportSpec};
 use yw_core::secret::Zeroizing;
 use yw_core::vault::RecordId;
 
@@ -12,15 +15,19 @@ use crate::app::{App, AppMode, Confirm, PasswordAction, Purpose, Screen};
 use crate::errors::{key_code, vault_code};
 use crate::events::{ImportedAccount, KeyJob};
 use crate::logging::{self, Field};
-use crate::meta::{BtcRawAccount, MAX_RAW_ACCOUNTS, RawAccount, SolRawAccount, Tab};
+use crate::meta::{MAX_RAW_ACCOUNTS, RawAccount, SolRawAccount, Tab};
 use crate::ui::secret::SecretKind;
+use crate::workers::journal::btc::BtcMetaOp;
 
 /// "개인키로 시작하기" state (before any vault exists).
 pub struct KeyStartFlow {
     /// Chosen chain.
     pub chain: ImportChain,
-    /// Chosen Bitcoin script type.
-    pub script: BtcScriptType,
+    /// Chosen Bitcoin address type.
+    pub script: ScriptType,
+    /// The network of the previewed Bitcoin key (its WIF version): Bitcoin is turned on with it
+    /// once the wallet exists.
+    pub btc_network: Option<BtcNetwork>,
     /// The password from W01 until the first preview moves it to the key worker.
     password: Option<Zeroizing<Vec<u8>>>,
     /// The key worker holds the password (a preview was sent; `다릅니다` keeps it).
@@ -31,7 +38,8 @@ impl Default for KeyStartFlow {
     fn default() -> Self {
         Self {
             chain: ImportChain::Evm,
-            script: BtcScriptType::P2wpkh,
+            script: ScriptType::P2wpkh,
+            btc_network: None,
             password: None,
             password_held: false,
         }
@@ -67,8 +75,8 @@ pub struct KeyStartView {
     pub chain: ImportChain,
     /// Full address (EVM EIP-55, Solana base58, Bitcoin as encoded).
     pub address: String,
-    /// Bitcoin: script type and network name.
-    pub btc: Option<(BtcScriptType, &'static str)>,
+    /// Bitcoin: address type and network.
+    pub btc: Option<(ScriptType, BtcNetwork)>,
 }
 
 impl KeyStartView {
@@ -89,7 +97,7 @@ impl KeyStartView {
             ImportPreview::Btc(info) => Self {
                 chain: ImportChain::Btc,
                 address: info.address.clone(),
-                btc: Some((info.script, info.network.display_name())),
+                btc: Some((info.script, info.network)),
             },
         }
     }
@@ -102,8 +110,8 @@ pub struct KeysUi {
     pub start: KeyStartFlow,
     /// `false` for a key-only wallet (from `MetaLoaded`; `true` until meta is read).
     pub has_mnemonic: bool,
-    /// Script type for `개인키 가져오기` on the Bitcoin tab.
-    pub btc_script: BtcScriptType,
+    /// Address type for `개인키 가져오기` on the Bitcoin tab.
+    pub btc_script: ScriptType,
     /// The imported Solana/Bitcoin key being revealed or removed.
     pub target: Option<RecordId>,
     /// S08 follows "개인키로 시작하기".
@@ -115,7 +123,7 @@ impl Default for KeysUi {
         Self {
             start: KeyStartFlow::default(),
             has_mnemonic: true,
-            btc_script: BtcScriptType::P2wpkh,
+            btc_script: ScriptType::P2wpkh,
             target: None,
             done_start: false,
         }
@@ -125,6 +133,23 @@ impl Default for KeysUi {
 /// Steps of "개인키로 시작하기" (S18 → W01 → W07 → S19).
 pub const KEY_START_STEPS: [&str; 3] = ["비밀번호 정하기", "개인키 입력", "주소 확인"];
 
+/// Imported Bitcoin keys: the single-key accounts of both networks (one per vault tag-4 record).
+fn btc_imported_count(meta: &crate::meta::Meta) -> usize {
+    meta.btc_accounts
+        .accounts
+        .iter()
+        .filter(|account| account.is_single())
+        .count()
+}
+
+/// The imported Bitcoin account of vault record `id` (any network).
+fn btc_imported_account(meta: &crate::meta::Meta, id: [u8; 16]) -> Option<&yw_core::btc::BtcMeta> {
+    meta.btc_accounts
+        .accounts
+        .iter()
+        .find(|account| account.id() == yw_core::btc::BtcAccountId::Imported { id })
+}
+
 impl App {
     /// The wallet has no recovery words (spec/02 §4.6).
     #[must_use]
@@ -132,14 +157,15 @@ impl App {
         !self.keys.has_mnemonic
     }
 
-    /// Imported keys of every chain (meta lists).
+    /// Imported keys of every chain (meta lists; Bitcoin: the single-key accounts of both
+    /// networks in `btc_accounts`, one per vault tag-4 record).
     #[must_use]
     pub fn imported_count(&self) -> usize {
         self.meta.as_ref().map_or(0, |meta| {
             meta.evm_raw_accounts
                 .len()
                 .saturating_add(meta.sol_raw_accounts.len())
-                .saturating_add(meta.btc_raw_accounts.len())
+                .saturating_add(btc_imported_count(meta))
         })
     }
 
@@ -156,16 +182,24 @@ impl App {
         self.meta.as_ref().map_or(0, |meta| match chain {
             ImportChain::Evm => meta.evm_raw_accounts.len(),
             ImportChain::Sol => meta.sol_raw_accounts.len(),
-            ImportChain::Btc => meta.btc_raw_accounts.len(),
+            ImportChain::Btc => btc_imported_count(meta),
         })
     }
 
     /// `개인키 가져오기` is available (unlocked, below the per-chain cap of 15).
     #[must_use]
     pub fn can_import(&self, chain: ImportChain) -> bool {
+        // A Bitcoin key also needs room in the Bitcoin account list (64 accounts, both networks),
+        // and no open BTC approval (its account becomes the selected one, like `계정 추가`).
+        let btc_room = chain != ImportChain::Btc
+            || (!self.btc.slot
+                && self.meta.as_ref().is_none_or(|meta| {
+                    meta.btc_accounts.accounts.len() < yw_core::btc::meta::MAX_BTC_ACCOUNTS
+                }));
         matches!(self.mode, AppMode::Unlocked { .. })
             && !self.passphrase_unverified()
             && self.imported_of(chain) < MAX_RAW_ACCOUNTS
+            && btc_room
     }
 
     /// Opens W07 for `개인키 가져오기` on a chain tab.
@@ -251,7 +285,9 @@ impl App {
     pub fn on_key_start_preview(&mut self, result: Result<ImportPreview, KeyError>) {
         match result {
             Ok(preview) => {
-                self.set_screen(Screen::KeyStartAddress(KeyStartView::of(&preview)));
+                let view = KeyStartView::of(&preview);
+                self.keys.start.btc_network = view.btc.map(|(_, network)| network);
+                self.set_screen(Screen::KeyStartAddress(view));
             }
             Err(error) => {
                 let message = key_code(error).text();
@@ -324,17 +360,28 @@ impl App {
                     }
                     meta.prefs.tab = Tab::Sol;
                 }
-                ImportedAccount::Btc(id, info) => {
-                    let number = meta.btc_raw_accounts.len().saturating_add(1);
-                    meta.btc_raw_accounts.push(BtcRawAccount {
-                        record_id: *id.as_bytes(),
-                        label: format!("가져온 Bitcoin {number}"),
-                        address: info.address.clone(),
+                ImportedAccount::Btc(..) => meta.prefs.tab = Tab::Btc,
+            }
+        }
+        if let ImportedAccount::Btc(id, info) = &account {
+            // The key worker adds the single-key account (stored and selected) to meta
+            // `btc_accounts`; the account list shows it with balance, receive and send.
+            match info.account_key(*id.as_bytes()) {
+                Ok(key) => self.key(KeyJob::BtcMeta {
+                    op: BtcMetaOp::AddImported {
                         network: info.network,
-                        script: info.script,
-                    });
-                    meta.prefs.tab = Tab::Btc;
-                }
+                        key,
+                    },
+                }),
+                Err(_) => logging::warn("app", "btc.imported_account_invalid", &[]),
+            }
+            let settings_net = crate::btc::core_network(self.settings.bitcoin.network);
+            if info.network != settings_net {
+                self.info = Some(format!(
+                    "가져온 키는 {} 키입니다. 지금 Bitcoin 네트워크가 {}라 계정 목록에 보이지 않습니다. 설정 → Bitcoin에서 네트워크를 바꾸면 보입니다.",
+                    info.network.display_name(),
+                    settings_net.display_name()
+                ));
             }
         }
         let chain = match account {
@@ -356,12 +403,33 @@ impl App {
         }
     }
 
-    /// `삭제` of an imported Solana/Bitcoin account: the export-first confirmation.
+    /// `삭제` of an imported Solana/Bitcoin account: the export-first confirmation. An imported
+    /// Bitcoin key is kept while a BTC approval is open or its account has an in-flight
+    /// transaction (tracking and fee bumps need the account), with the reason shown.
     pub fn imported_remove(&mut self, id: [u8; 16]) {
-        if matches!(self.mode, AppMode::Unlocked { .. }) && self.can_remove_imported() {
-            self.keys.target = Some(RecordId::from_bytes(id));
-            self.set_screen(Screen::Confirm(Confirm::RemoveImported));
+        if !matches!(self.mode, AppMode::Unlocked { .. }) || !self.can_remove_imported() {
+            return;
         }
+        let is_btc = self
+            .meta
+            .as_ref()
+            .is_some_and(|meta| btc_imported_account(meta, id).is_some());
+        if is_btc && let Some(reason) = self.btc_ctx().remove_block(id, self.btc.slot) {
+            self.btc.account_message = Some(reason.to_owned());
+            self.refresh();
+            return;
+        }
+        self.keys.target = Some(RecordId::from_bytes(id));
+        self.set_screen(Screen::Confirm(Confirm::RemoveImported));
+    }
+
+    /// The worker refused `삭제` of an imported Bitcoin key (an in-flight transaction appeared
+    /// meanwhile): the password form shows why, nothing was removed.
+    pub fn on_imported_key_busy(&mut self) {
+        self.with_form(|form| {
+            form.set_busy(false);
+            form.set_error(Some(crate::app_btc::REMOVE_BUSY_IN_FLIGHT.to_owned()));
+        });
     }
 
     /// Overlay `계속` of [`Confirm::RevealImported`] / [`Confirm::RemoveImported`]: W03.
@@ -383,7 +451,8 @@ impl App {
         );
     }
 
-    /// The label and address of an imported Solana/Bitcoin record (overlay text).
+    /// The label and address of an imported Solana/Bitcoin record (overlay text; a Bitcoin key:
+    /// its account name and address).
     #[must_use]
     pub fn imported_target_text(&self) -> Option<(String, String)> {
         let id = *self.keys.target?.as_bytes();
@@ -393,21 +462,25 @@ impl App {
             .find(|raw| raw.record_id == id)
             .map(|raw| (raw.label.clone(), raw.address.clone()))
             .or_else(|| {
-                meta.btc_raw_accounts
-                    .iter()
-                    .find(|raw| raw.record_id == id)
-                    .map(|raw| (raw.label.clone(), raw.address.clone()))
+                let account = btc_imported_account(meta, id)?;
+                let address = account
+                    .address(yw_core::bip32::path::BtcChain::Receive, 0)
+                    .ok()?;
+                Some((
+                    crate::app_btc::account_label(account.account()),
+                    address.as_str().to_owned(),
+                ))
             })
     }
 
-    /// An imported key was removed from the vault: drop it from meta.
+    /// An imported key was removed from the vault: drop it from meta (an imported Bitcoin key's
+    /// account is dropped by the key worker, which owns meta `btc_accounts`).
     pub fn on_imported_key_removed(&mut self, id: RecordId, chain: ImportChain) {
         self.close_secret();
         let id = *id.as_bytes();
         if let Some(meta) = self.meta.as_mut() {
             meta.evm_raw_accounts.retain(|raw| raw.record_id != id);
             meta.sol_raw_accounts.retain(|raw| raw.record_id != id);
-            meta.btc_raw_accounts.retain(|raw| raw.record_id != id);
             if meta.sol_raw_selected == Some(id) {
                 meta.sol_raw_selected = None;
             }
@@ -437,21 +510,6 @@ impl App {
             self.refresh();
             return true;
         }
-        if let Some((row, action)) = ids::btc_row(id) {
-            let target = self
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.btc_raw_accounts.get(row))
-                .map(|raw| (raw.record_id, raw.address.clone()));
-            if let Some((record, address)) = target {
-                match action {
-                    ids::BtcRowAction::Reveal => self.imported_reveal(record),
-                    ids::BtcRowAction::Remove => self.imported_remove(record),
-                    ids::BtcRowAction::Copy => self.copy_plain_address(&address),
-                }
-            }
-            return true;
-        }
         match id {
             ids::FIRST_KEY => self.key_start_open(),
             ids::START_CHAIN_EVM | ids::START_CHAIN_SOL | ids::START_CHAIN_BTC => {
@@ -477,13 +535,18 @@ impl App {
                     }
                 }
             }
+            ids::BTC_REVEAL | ids::BTC_REMOVE => {
+                // The selected account of the Bitcoin list, when it is an imported key.
+                if let Some(record) = self.btc_ctx().selected_imported() {
+                    if id == ids::BTC_REVEAL {
+                        self.imported_reveal(record);
+                    } else {
+                        self.imported_remove(record);
+                    }
+                }
+            }
             _ => return false,
         }
         true
-    }
-
-    /// `주소 복사` of a Bitcoin imported account (an ordinary copy, spec/04 §2.8).
-    fn copy_plain_address(&mut self, address: &str) {
-        self.copy_text(address);
     }
 }

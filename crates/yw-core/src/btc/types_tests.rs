@@ -42,7 +42,9 @@ use super::sighash::{
     bip143_sighash_p2wpkh, hash_outputs, hash_prevouts, hash_sequence, legacy_is_all,
     legacy_sighash,
 };
-use super::sign::{BtcKeys, SeedKeys, SignError, check_recorded_amounts, sign_plan, sign_sighash};
+use super::sign::{
+    BtcKeys, SeedKeys, SignError, check_recorded_amounts, sign_plan, sign_plan_with, sign_sighash,
+};
 use super::taproot::{
     Prevout, check_key_path_witness, output_key, sig_msg_default, sighash_default, sign_key_path,
     tap_tweak_hash, tweaked_keypair,
@@ -836,7 +838,7 @@ fn approve(meta: &BtcMeta, plan: &SendPlan) -> Approved {
 /// sign → verify → parse → journal record round trip, with the fee and size checks.
 fn sign_and_check<K: BtcKeys>(keys: &K, meta: &BtcMeta, plan: &SendPlan) -> Vec<u8> {
     check_recorded_amounts(plan, &meta.recorded_amounts()).unwrap();
-    let signed = sign_plan(keys, approve(meta, plan), plan, meta.account()).unwrap();
+    let signed = sign_plan_with(keys, approve(meta, plan), plan, meta.account()).unwrap();
     let verified = verify_signed(&signed.raw, plan, meta.account()).unwrap();
     let parsed = parse_transaction(&signed.raw).unwrap();
     assert_eq!(serialize(&parsed, true), signed.raw);
@@ -980,10 +982,17 @@ fn full_send_flow_every_type() {
 }
 
 /// The vault lends derived keys of every purpose and account (`KeyRef::Btc` with the account
-/// node), and refuses imported keys until the key-import work connects them.
+/// node) and imported keys (vault tag 4, `BtcImportedKeys`) of every address type: secret 1 in
+/// its public testnet WIF forms, compressed for all four types and uncompressed for P2PKH. A
+/// missing record is `RecordNotFound`, a record used as another type `KeyMismatch`, a locked
+/// vault `InvalidState`; nothing is signed then.
 #[test]
-fn vault_signs_every_hd_type_and_refuses_imported() {
-    let vault = about_vault();
+#[expect(clippy::too_many_lines, reason = "HD types, imported types, refusals")]
+fn vault_signs_every_hd_and_imported_type() {
+    use crate::keyimport::{ImportKey, ImportPreview, ImportSpec};
+    const ONE_TEST_COMPRESSED: &str = "cMahea7zqjxrtgAbB7LSGbcQUr1uX1ojuat9jZodMN87JcbXMTcA";
+    const ONE_TEST_UNCOMPRESSED: &str = "91avARGdfge8E4tZfYLoxeJ5sGBdNJQH4kvjJoQFacbgwmaKkrx";
+    let mut vault = about_vault();
     let seed = about_seed();
     for script_type in ScriptType::CHOICES {
         let account_number = 3;
@@ -1005,24 +1014,87 @@ fn vault_signs_every_hd_type_and_refuses_imported() {
         );
         sign_and_check(&vault, &meta, &plan);
     }
-    let ctx = secp_context(&mut OsRandom).unwrap();
-    let public = PublicKey::from_secret_key(&ctx, &SecretKey::from_byte_array([7; 32]).unwrap());
-    let single = BtcAccountKey::single(
-        [7; 16],
-        ScriptType::P2wpkh,
-        BtcPubKey::Compressed(public.serialize()),
-    )
-    .unwrap();
-    let meta = funded_meta(BtcNetwork::Testnet4, single);
+    // Imported keys: one tag-4 record per (WIF, type), each signs as its own single-key account.
+    let mut imported = Vec::new();
+    for (wif, script_type) in [
+        (ONE_TEST_COMPRESSED, ScriptType::P2wpkh),
+        (ONE_TEST_COMPRESSED, ScriptType::P2tr),
+        (ONE_TEST_COMPRESSED, ScriptType::P2shP2wpkh),
+        (ONE_TEST_COMPRESSED, ScriptType::P2pkh),
+        (ONE_TEST_UNCOMPRESSED, ScriptType::P2pkh),
+    ] {
+        let key = ImportKey::parse(ImportSpec::Btc(script_type), wif).unwrap();
+        let ImportPreview::Btc(info) = key.preview().unwrap() else {
+            unreachable!("a Bitcoin preview")
+        };
+        assert_eq!(info.network, BtcNetwork::Testnet4);
+        let id = vault.import_key(key, 1_800_000_000).unwrap();
+        let account = info.account_key(*id.as_bytes()).unwrap();
+        assert_eq!(
+            account.input_weight(),
+            script_type.input_weight(info.compressed)
+        );
+        let meta = funded_meta(BtcNetwork::Testnet4, account);
+        let plan = plan_for(
+            &meta,
+            recipients()[2],
+            SendAmount::Exact(Sats::new(80_000).unwrap()),
+            5,
+        );
+        // The public entry point (the vault is the only key lender outside the unit tests).
+        let signed = sign_plan(&vault, approve(&meta, &plan), &plan, meta.account()).unwrap();
+        verify_signed(&signed.raw, &plan, meta.account()).unwrap();
+        sign_and_check(&vault, &meta, &plan);
+        imported.push((*id.as_bytes(), info));
+    }
+    // No such record.
+    let (p2wpkh_id, p2wpkh) = imported.first().cloned().unwrap();
+    let missing = funded_meta(
+        BtcNetwork::Testnet4,
+        BtcAccountKey::single([7; 16], ScriptType::P2wpkh, p2wpkh.public_key).unwrap(),
+    );
+    let plan = plan_for(
+        &missing,
+        recipients()[0],
+        SendAmount::Exact(Sats::new(30_000).unwrap()),
+        2,
+    );
+    assert_eq!(
+        sign_plan(&vault, approve(&missing, &plan), &plan, missing.account()),
+        Err(SignError::Vault(crate::error::VaultError::RecordNotFound))
+    );
+    // The P2WPKH record presented as a P2SH-P2WPKH account: the record's type differs.
+    let wrong_type = funded_meta(
+        BtcNetwork::Testnet4,
+        BtcAccountKey::single(p2wpkh_id, ScriptType::P2shP2wpkh, p2wpkh.public_key).unwrap(),
+    );
+    let plan = plan_for(
+        &wrong_type,
+        recipients()[0],
+        SendAmount::Exact(Sats::new(30_000).unwrap()),
+        2,
+    );
+    assert_eq!(
+        sign_plan(
+            &vault,
+            approve(&wrong_type, &plan),
+            &plan,
+            wrong_type.account()
+        ),
+        Err(SignError::KeyMismatch { input: 0 })
+    );
+    // Locked: nothing is lent.
+    let meta = funded_meta(BtcNetwork::Testnet4, p2wpkh.account_key(p2wpkh_id).unwrap());
     let plan = plan_for(
         &meta,
         recipients()[0],
         SendAmount::Exact(Sats::new(30_000).unwrap()),
         2,
     );
+    vault.lock();
     assert_eq!(
         sign_plan(&vault, approve(&meta, &plan), &plan, meta.account()),
-        Err(SignError::ImportedKeyUnavailable)
+        Err(SignError::Vault(crate::error::VaultError::InvalidState))
     );
 }
 
@@ -1058,7 +1130,7 @@ fn imported_key_must_match_account() {
         };
         keys.add_imported(id, secret, compressed, net, script_type);
         assert!(matches!(
-            sign_plan(&keys, approve(&meta, &plan), &plan, meta.account()),
+            sign_plan_with(&keys, approve(&meta, &plan), &plan, meta.account()),
             Err(SignError::KeyMismatch { .. })
         ));
     }
@@ -1076,7 +1148,7 @@ fn imported_key_must_match_account() {
         ScriptType::P2tr,
     );
     assert_eq!(
-        sign_plan(&keys, approve(&meta, &plan), &plan, meta.account()),
+        sign_plan_with(&keys, approve(&meta, &plan), &plan, meta.account()),
         Err(SignError::KeyMismatch { input: 0 })
     );
 }
@@ -1278,7 +1350,7 @@ fn payload_binds_account() {
         aux: [0; 32],
     };
     assert_eq!(
-        sign_plan(&keys, approved, &lied, &lied.account),
+        sign_plan_with(&keys, approved, &lied, &lied.account),
         Err(SignError::ApprovalMismatch)
     );
 }
@@ -1506,4 +1578,96 @@ fn key_sources() {
         single.id().activity_tag(),
         format!("imported/{}", "04".repeat(16))
     );
+}
+
+/// A key-only wallet's accounts (no BIP84 account 0, spec/08 §3.5): the selected account, else
+/// the first account of the network, is active and the first one holds the wallet-level tip;
+/// removing an account clears its selection and the next holder keeps the higher tip.
+#[test]
+fn accounts_without_primary() {
+    let ctx = secp_context(&mut OsRandom).unwrap();
+    let key = |byte: u8, script_type| {
+        let public =
+            PublicKey::from_secret_key(&ctx, &SecretKey::from_byte_array([byte; 32]).unwrap());
+        BtcAccountKey::single(
+            [byte; 16],
+            script_type,
+            BtcPubKey::Compressed(public.serialize()),
+        )
+        .unwrap()
+    };
+    let first = key(0x21, ScriptType::P2tr);
+    let second = key(0x22, ScriptType::P2pkh);
+    let mainnet = key(0x23, ScriptType::P2wpkh);
+    let mut accounts = BtcAccounts::default();
+    assert_eq!(accounts.active_on(BtcNetwork::Testnet4, false), None);
+    assert_eq!(
+        accounts.active_on(BtcNetwork::Testnet4, true),
+        Some(BtcAccountId::PRIMARY)
+    );
+    assert_eq!(accounts.tip_holder(BtcNetwork::Testnet4, false), None);
+    let mut holder = BtcMeta::with_key(BtcNetwork::Testnet4, first);
+    assert_eq!(holder.observe_tip(1_000), Ok(true));
+    accounts.upsert(holder).unwrap();
+    accounts
+        .upsert(BtcMeta::with_key(BtcNetwork::Testnet4, second))
+        .unwrap();
+    accounts
+        .upsert(BtcMeta::with_key(BtcNetwork::Mainnet, mainnet))
+        .unwrap();
+    assert_eq!(
+        accounts.active_on(BtcNetwork::Testnet4, false),
+        Some(first.id())
+    );
+    assert_eq!(
+        accounts.active_on(BtcNetwork::Testnet4, true),
+        Some(BtcAccountId::PRIMARY)
+    );
+    assert_eq!(
+        accounts.tip_holder(BtcNetwork::Testnet4, false),
+        Some(first.id())
+    );
+    assert_eq!(
+        accounts.tip_holder(BtcNetwork::Testnet4, true),
+        Some(BtcAccountId::PRIMARY)
+    );
+    accounts.selected = Some(second.id());
+    assert_eq!(
+        accounts.active_on(BtcNetwork::Testnet4, false),
+        Some(second.id())
+    );
+    // A selection of the other network falls back to that network's first account.
+    assert_eq!(
+        accounts.active_on(BtcNetwork::Mainnet, false),
+        Some(mainnet.id())
+    );
+    // Removing the tip holder: the next account keeps the higher tip; the selection stays.
+    let removed = accounts
+        .remove(BtcNetwork::Testnet4, first.id(), false)
+        .unwrap();
+    assert_eq!(removed.max_tip_seen(), 1_000);
+    assert_eq!(
+        accounts.tip_holder(BtcNetwork::Testnet4, false),
+        Some(second.id())
+    );
+    assert_eq!(
+        accounts
+            .get(BtcNetwork::Testnet4, second.id())
+            .unwrap()
+            .max_tip_seen(),
+        1_000
+    );
+    assert_eq!(accounts.selected, Some(second.id()));
+    // Removing the selected one clears the selection; testnet4 has no account left.
+    accounts
+        .remove(BtcNetwork::Testnet4, second.id(), false)
+        .unwrap();
+    assert_eq!(accounts.selected, None);
+    assert_eq!(accounts.active_on(BtcNetwork::Testnet4, false), None);
+    assert!(
+        accounts
+            .remove(BtcNetwork::Testnet4, second.id(), false)
+            .is_none()
+    );
+    assert_eq!(accounts.accounts.len(), 1);
 }

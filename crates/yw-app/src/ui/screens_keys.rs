@@ -1,17 +1,22 @@
-//! Imported-key screens (spec/04 §2.18): the S01 card "개인키로 시작하기", S18 (chain and script
-//! type), S19 (address confirmation), the empty-chain card of a key-only wallet, and the Bitcoin
-//! tab's "가져온 Bitcoin 개인키" card. Fixed sentences are the T-KEY-* rows of spec/04 §2.16.
+//! Imported-key screens (spec/04 §2.18): the S01 card "개인키로 시작하기", S18 (chain and address
+//! type), S19 (address confirmation), the empty-chain card of a key-only wallet, and the imported
+//! key part of the Bitcoin account card (`개인키 가져오기` with its address-type radios, `개인키
+//! 보기`·`삭제` of the selected imported account; the accounts themselves are rows of the normal
+//! Bitcoin account list with the "[가져온 키]" badge). Fixed sentences are the T-KEY-* rows of
+//! spec/04 §2.16.
 
-use yw_core::keyimport::{BtcScriptType, ImportChain};
+use yw_core::btc::{BtcNetwork, ScriptType};
+use yw_core::keyimport::ImportChain;
 
 use crate::app::App;
+use crate::app_btc::BtcCtx;
 use crate::app_keys::{KEY_START_STEPS, KeyStartView};
 use crate::ui::main_window::{Ctl, Item, Tone};
 use crate::ui::screens::steps;
 
 /// Command ids (block 13,000–13,199, `ui::command_ids`).
 pub mod ids {
-    use yw_core::keyimport::BtcScriptType;
+    use yw_core::btc::ScriptType;
 
     /// S01 개인키로 시작하기.
     pub const FIRST_KEY: u16 = 13_000;
@@ -37,12 +42,10 @@ pub mod ids {
     pub const SOL_REVEAL: u16 = 13_022;
     /// Selected imported Solana account: 삭제.
     pub const SOL_REMOVE: u16 = 13_023;
-    /// Bitcoin imported rows (3 ids per row: 개인키 보기, 삭제, 주소 복사).
-    pub const BTC_ROW_BASE: u16 = 13_100;
-    /// Bitcoin imported rows span (15 rows × 4).
-    pub const BTC_ROW_SPAN: u16 = 60;
-    /// Ids per Bitcoin row.
-    pub const BTC_ROW_STRIDE: u16 = 4;
+    /// Selected imported Bitcoin account: 개인키 보기 (WIF).
+    pub const BTC_REVEAL: u16 = 13_024;
+    /// Selected imported Bitcoin account: 삭제.
+    pub const BTC_REMOVE: u16 = 13_025;
 
     /// Every fixed id of this module.
     pub const FIXED: &[u16] = &[
@@ -61,60 +64,21 @@ pub mod ids {
         BTC_IMPORT,
         SOL_REVEAL,
         SOL_REMOVE,
+        BTC_REVEAL,
+        BTC_REMOVE,
     ];
 
-    /// The radio id of a script type.
+    /// The radio id of an address type (its stable code 1–4).
     #[must_use]
-    pub const fn script_id(script: BtcScriptType) -> u16 {
-        SCRIPT_BASE + script.id() as u16 - 1
+    pub const fn script_id(script: ScriptType) -> u16 {
+        SCRIPT_BASE + script.code() as u16 - 1
     }
 
-    /// The script type of a radio id.
+    /// The address type of a radio id.
     #[must_use]
-    pub fn script_of(id: u16) -> Option<BtcScriptType> {
+    pub fn script_of(id: u16) -> Option<ScriptType> {
         let offset = id.checked_sub(SCRIPT_BASE).filter(|offset| *offset < 4)?;
-        BtcScriptType::from_id(u8::try_from(offset).ok()?.checked_add(1)?)
-    }
-
-    /// What a Bitcoin row button does.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum BtcRowAction {
-        /// 개인키 보기.
-        Reveal,
-        /// 삭제.
-        Remove,
-        /// 주소 복사.
-        Copy,
-    }
-
-    /// The id of a Bitcoin row button.
-    #[must_use]
-    pub fn btc_row_id(row: usize, action: BtcRowAction) -> Option<u16> {
-        let slot = match action {
-            BtcRowAction::Reveal => 0,
-            BtcRowAction::Remove => 1,
-            BtcRowAction::Copy => 2,
-        };
-        let offset = u16::try_from(row)
-            .ok()?
-            .checked_mul(BTC_ROW_STRIDE)?
-            .checked_add(slot)?;
-        (offset < BTC_ROW_SPAN).then(|| BTC_ROW_BASE + offset)
-    }
-
-    /// The row and action of a Bitcoin row id.
-    #[must_use]
-    pub fn btc_row(id: u16) -> Option<(usize, BtcRowAction)> {
-        let offset = id
-            .checked_sub(BTC_ROW_BASE)
-            .filter(|offset| *offset < BTC_ROW_SPAN)?;
-        let action = match offset % BTC_ROW_STRIDE {
-            0 => BtcRowAction::Reveal,
-            1 => BtcRowAction::Remove,
-            2 => BtcRowAction::Copy,
-            _ => return None,
-        };
-        Some((usize::from(offset / BTC_ROW_STRIDE), action))
+        ScriptType::from_code(u8::try_from(offset).ok()?.checked_add(1)?)
     }
 }
 
@@ -125,9 +89,9 @@ pub const T_KEY_START_BACKUP: &str = "복구 단어 없이 개인키로 지갑�
 /// T-KEYSTART-OK (S08 after the flow).
 pub const T_KEY_START_OK: &str = "개인키로 지갑을 만들었습니다. 이제 지갑을 쓸 수 있습니다.";
 /// T-KEYSTART-SCRIPT (S18, Bitcoin tab): which address type to pick.
-pub const T_BTC_SCRIPT: &str = "이전 지갑에서 이 키로 쓰던 주소와 같은 형식을 고르세요. 다음 화면에서 주소를 보고 확인합니다. 5·9로 시작하는 압축되지 않은 WIF는 P2PKH만 쓸 수 있습니다.";
-/// T-IMPORTED-SEND-BTC (Bitcoin tab): imported Bitcoin keys are listed but not yet spendable.
-pub const T_BTC_IMPORTED_PENDING: &str = "가져온 Bitcoin 키의 잔액 조회와 보내기는 주소 형식(P2PKH·P2SH·P2TR) 지원과 함께 제공됩니다(통합 후 지원). 지금은 주소 확인·받기 주소 복사·개인키 내보내기만 할 수 있습니다.";
+pub const T_BTC_SCRIPT: &str = "이전 지갑에서 이 키로 쓰던 주소와 같은 형식을 고르세요. 다음 화면에서 주소를 보고 확인합니다. 5·9로 시작하는 압축되지 않은 WIF는 P2PKH(레거시)만 쓸 수 있습니다.";
+/// T-BTC-IMPORTED (Bitcoin account card): what an imported key's account is.
+pub const T_BTC_IMPORTED: &str = "가져온 개인키는 Bitcoin 계정 목록에 \"[가져온 키]\"로 보입니다. 주소 하나만 쓰고(잔돈도 같은 주소로 돌아옴) 복구 단어로 복구되지 않습니다. 잔액·받기·보내기는 다른 계정과 같습니다.";
 /// T-REMOVE-IMPORTED (S10 overlay for Solana/Bitcoin imported keys).
 pub const T_REMOVE_IMPORTED: &str = "선택한 가져온 개인키 계정을 이 지갑에서 지웁니다. 가져온 개인키는 복구 단어로 복구되지 않으므로, 지우고 나면 원래 개인키 없이는 이 계정의 자산에 다시 접근할 수 없습니다. 지우기 전에 이 계정의 '개인키 보기'로 개인키를 내보내 안전하게 보관했는지 확인하세요. 계속하려면 비밀번호를 입력하세요.";
 
@@ -151,17 +115,29 @@ fn chain_help(chain: ImportChain) -> &'static str {
     }
 }
 
-/// The four script-type radios.
-fn script_radios(selected: BtcScriptType) -> Item {
+/// The label of an address type for an imported key: technical name, plain name and the
+/// mainnet prefix — `P2WPKH (네이티브 세그윗, bc1q…)` (the network comes from the WIF).
+#[must_use]
+pub fn script_choice_label(script: ScriptType) -> String {
+    format!(
+        "{} ({}, {})",
+        script.technical(),
+        script.name(),
+        script.prefix(BtcNetwork::Mainnet)
+    )
+}
+
+/// The four address-type radios (account chooser order: native segwit first).
+fn script_radios(selected: ScriptType) -> Item {
     Item::LabeledRow(
         "주소 형식".to_owned(),
-        BtcScriptType::ALL
+        ScriptType::CHOICES
             .into_iter()
             .enumerate()
             .map(|(index, script)| {
                 Ctl::radio(
                     ids::script_id(script),
-                    script.label(),
+                    &script_choice_label(script),
                     script == selected,
                     index == 0,
                 )
@@ -247,9 +223,17 @@ impl App {
         if let Some((script, network)) = view.btc {
             items.push(Item::Field(
                 "주소 형식".to_owned(),
-                script.label().to_owned(),
+                format!(
+                    "{} ({}, {})",
+                    script.technical(),
+                    script.name(),
+                    script.prefix(network)
+                ),
             ));
-            items.push(Item::Field("네트워크".to_owned(), network.to_owned()));
+            items.push(Item::Field(
+                "네트워크".to_owned(),
+                network.display_name().to_owned(),
+            ));
         }
         items.push(Item::Mono(view.address.clone()));
         items.push(Item::CardEnd);
@@ -288,67 +272,30 @@ impl App {
         items.push(Item::CardEnd);
     }
 
-    /// The Bitcoin tab's imported-key card (every wallet; the whole tab of a key-only wallet).
-    pub fn btc_imported_card(&self, items: &mut Vec<Item>) {
-        let rows = self
-            .meta
-            .as_ref()
-            .map(|meta| meta.btc_raw_accounts.clone())
-            .unwrap_or_default();
-        if rows.is_empty() && self.key_only() {
-            self.no_accounts_card(ImportChain::Btc, items);
-            return;
-        }
+    /// The imported-key part of the Bitcoin account card (inside the card, after the account
+    /// rows): for the selected imported account its backup note and `개인키 보기`·`삭제`; then
+    /// `개인키 가져오기` with the address-type radios.
+    pub fn btc_imported_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
         let unlocked = matches!(self.mode, crate::app::AppMode::Unlocked { .. });
-        items.push(Item::CardStart(Some("가져온 Bitcoin 개인키".to_owned())));
-        items.push(Item::Help(if self.key_only() {
-            crate::ui::secret::T_KEY_ONLY_BACKUP.to_owned()
-        } else {
-            crate::ui::secret::T_IMPORTED_KEY_BACKUP.to_owned()
-        }));
-        items.push(Item::Banner(T_BTC_IMPORTED_PENDING.to_owned(), Tone::Info));
-        if rows.is_empty() {
-            items.push(Item::Muted(
-                "가져온 Bitcoin 개인키가 없습니다. WIF 개인키를 가져오면 여기에 주소가 보입니다."
-                    .to_owned(),
-            ));
-        }
-        let removable = self.can_remove_imported();
-        for (row, raw) in rows.iter().enumerate() {
-            let (Some(reveal), Some(remove), Some(copy)) = (
-                ids::btc_row_id(row, ids::BtcRowAction::Reveal),
-                ids::btc_row_id(row, ids::BtcRowAction::Remove),
-                ids::btc_row_id(row, ids::BtcRowAction::Copy),
-            ) else {
-                break;
-            };
-            items.push(Item::Subtitle(format!("{}  [가져온 키]", raw.label)));
-            items.push(Item::Field(
-                "주소 형식".to_owned(),
-                raw.script.label().to_owned(),
-            ));
-            items.push(Item::Field(
-                "네트워크".to_owned(),
-                raw.network.display_name().to_owned(),
-            ));
-            items.push(Item::Mono(crate::ui::screens_btc::grouped(&raw.address)));
-            items.push(Item::Help(
-                "가져온 키 · 복구 단어로 복구되지 않음 · 보내기: 통합 후 지원".to_owned(),
-            ));
+        if ctx.selected_imported().is_some() {
+            items.push(Item::Help(if self.key_only() {
+                crate::ui::secret::T_KEY_ONLY_BACKUP.to_owned()
+            } else {
+                crate::ui::secret::T_IMPORTED_KEY_BACKUP.to_owned()
+            }));
             items.push(Item::Row(vec![
-                Ctl::button(copy, "주소 복사"),
-                Ctl::button(reveal, "개인키 보기").enabled(unlocked),
-                Ctl::danger(remove, "삭제").enabled(unlocked && removable),
+                Ctl::button(ids::BTC_REVEAL, "개인키 보기").enabled(unlocked),
+                Ctl::danger(ids::BTC_REMOVE, "삭제")
+                    .enabled(unlocked && self.can_remove_imported()),
             ]));
-            items.push(Item::Gap(4));
         }
         items.push(Item::Rule);
+        items.push(Item::Help(T_BTC_IMPORTED.to_owned()));
         items.push(script_radios(self.keys.btc_script));
         items.push(Item::Help(T_BTC_SCRIPT.to_owned()));
         items.push(Item::Row(vec![
             Ctl::button(ids::BTC_IMPORT, "개인키 가져오기")
                 .enabled(self.can_import(ImportChain::Btc)),
         ]));
-        items.push(Item::CardEnd);
     }
 }

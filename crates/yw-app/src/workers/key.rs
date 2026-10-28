@@ -6,15 +6,15 @@ use std::path::{Path, PathBuf};
 
 use yw_core::bip32::path::AccountIndex;
 use yw_core::bip32::preview_evm_address;
+use yw_core::btc::{BtcAccountId, BtcMeta, BtcNetwork};
 use yw_core::error::{KeyError, VaultError};
-use yw_core::keyimport::{BtcKeyInfo, ImportChain, ImportKey, ImportPreview, ImportSpec};
+use yw_core::keyimport::{ImportChain, ImportKey, ImportPreview, ImportSpec};
 use yw_core::password::{Bip39Passphrase, VaultPassword};
 use yw_core::secret::{SecretString, Zeroizing};
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::SolAddress;
 use yw_core::vault::{
-    BtcKeySource, EvmKeySource, FileKind, ImportedKeys, KeyRef, RecordId, Vault, VaultStatus,
-    VaultStorage,
+    EvmKeySource, FileKind, ImportedKeys, RecordId, Vault, VaultStatus, VaultStorage,
 };
 
 use crate::errors::ErrorCode;
@@ -22,9 +22,7 @@ use crate::events::{
     ImportedAccount, KeyJob, KeyOutcome, KeyQueue, KeyResult, LockSignal, MetaLoaded, RevealWhat,
 };
 use crate::logging::{self, Field};
-use crate::meta::{
-    self, Account, BtcRawAccount, EvmAccountPref, Meta, RawAccount, SolRawAccount, Tab,
-};
+use crate::meta::{self, Account, EvmAccountPref, Meta, RawAccount, SolRawAccount, Tab};
 use crate::store::{FileStorage, LockedSlotBox};
 use crate::workers::journal::{JournalState, SolSignTimes};
 
@@ -94,7 +92,8 @@ fn parse_key(spec: ImportSpec, bytes: &[u8]) -> Result<ImportKey, KeyError> {
     ImportKey::parse(spec, text)
 }
 
-/// The meta label of the `n`-th (1-based) imported key of a chain.
+/// The meta label of the `n`-th (1-based) imported EVM or Solana key (an imported Bitcoin key is
+/// a Bitcoin account named by its address type, spec/08 §3.5).
 fn imported_label(chain: ImportChain, n: usize) -> String {
     match chain {
         ImportChain::Evm => format!("가져온 계정 {n}"),
@@ -103,8 +102,60 @@ fn imported_label(chain: ImportChain, n: usize) -> String {
     }
 }
 
+/// Reconciles the imported Bitcoin accounts of meta `btc_accounts` with the vault's tag-4
+/// records (spec/08 §3.5, spec/02 §5.3): a record without its single-key account (an older
+/// vault, or a meta write that failed after the vault write) gets one on its network; an
+/// account whose record is gone, or whose key, type or network differs from the record, is
+/// dropped (and re-added from the record). Returns whether anything changed.
+fn reconcile_btc_accounts(document: &mut Meta, keys: &ImportedKeys) -> bool {
+    let mut changed = false;
+    let mut expected = Vec::with_capacity(keys.btc.len());
+    for (id, info) in &keys.btc {
+        match info.account_key(*id.as_bytes()) {
+            Ok(key) => expected.push((info.network, key)),
+            // A parsed record always gives an account (uncompressed keys are P2PKH only).
+            Err(_) => logging::warn("key", "btc.imported_account_invalid", &[]),
+        }
+    }
+    let stale: Vec<(BtcNetwork, BtcAccountId)> = document
+        .btc_accounts
+        .accounts
+        .iter()
+        .filter(|meta| meta.is_single())
+        .filter(|meta| {
+            !expected
+                .iter()
+                .any(|(network, key)| *network == meta.network() && key == meta.account())
+        })
+        .map(|meta| (meta.network(), meta.id()))
+        .collect();
+    for (network, id) in stale {
+        let has_primary = document
+            .btc
+            .as_deref()
+            .is_some_and(|primary| primary.network() == network);
+        changed |= document
+            .btc_accounts
+            .remove(network, id, has_primary)
+            .is_some();
+    }
+    for (network, key) in expected {
+        if document.btc_accounts.get(network, key.id()).is_none() {
+            match document
+                .btc_accounts
+                .upsert(BtcMeta::with_key(network, key))
+            {
+                Ok(()) => changed = true,
+                Err(_) => logging::warn("key", "btc.accounts_full", &[]),
+            }
+        }
+    }
+    changed
+}
+
 /// Reconciles the meta imported-key lists with the vault (labels kept by record id, address
-/// caches recomputed); returns whether anything changed.
+/// caches recomputed; Bitcoin keys as accounts of `btc_accounts`); returns whether anything
+/// changed.
 fn reconcile_imported(document: &mut Meta, keys: &ImportedKeys) -> bool {
     let mut changed = false;
     let mut evm: Vec<RawAccount> = Vec::with_capacity(keys.evm.len());
@@ -145,34 +196,11 @@ fn reconcile_imported(document: &mut Meta, keys: &ImportedKeys) -> bool {
             address: text,
         });
     }
-    let mut btc: Vec<BtcRawAccount> = Vec::with_capacity(keys.btc.len());
-    for (position, (id, info)) in keys.btc.iter().enumerate() {
-        let existing = document
-            .btc_raw_accounts
-            .iter()
-            .find(|raw| raw.record_id == *id.as_bytes());
-        if existing.is_none_or(|raw| {
-            raw.address != info.address || raw.network != info.network || raw.script != info.script
-        }) {
-            changed = true;
-        }
-        btc.push(BtcRawAccount {
-            record_id: *id.as_bytes(),
-            label: existing.map_or_else(
-                || imported_label(ImportChain::Btc, position.saturating_add(1)),
-                |raw| raw.label.clone(),
-            ),
-            address: info.address.clone(),
-            network: info.network,
-            script: info.script,
-        });
-    }
     changed |= evm.len() != document.evm_raw_accounts.len()
-        || sol.len() != document.sol_raw_accounts.len()
-        || btc.len() != document.btc_raw_accounts.len();
+        || sol.len() != document.sol_raw_accounts.len();
     document.evm_raw_accounts = evm;
     document.sol_raw_accounts = sol;
-    document.btc_raw_accounts = btc;
+    changed |= reconcile_btc_accounts(document, keys);
     if let Some(selected) = document.sol_raw_selected
         && !document
             .sol_raw_accounts
@@ -320,7 +348,8 @@ impl KeyWorker {
     }
 
     /// The default meta of a new key-only wallet: no derived account, the imported key in its
-    /// list, its chain tab selected.
+    /// list (a Bitcoin key as the single-key account of its network in `btc_accounts`, selected),
+    /// its chain tab selected.
     fn write_key_only_meta(vault: &mut Vault, chain: ImportChain) -> Result<(), VaultError> {
         let keys = vault.imported_keys()?;
         let mut document = Meta::key_only();
@@ -329,6 +358,7 @@ impl KeyWorker {
             document.prefs.evm_account = EvmAccountPref::Record(raw.record_id);
         }
         document.sol_raw_selected = document.sol_raw_accounts.first().map(|raw| raw.record_id);
+        document.btc_accounts.selected = document.btc_accounts.accounts.first().map(BtcMeta::id);
         document.prefs.tab = match chain {
             ImportChain::Evm => Tab::Evm,
             ImportChain::Sol => Tab::Sol,
@@ -373,24 +403,27 @@ impl KeyWorker {
         })
     }
 
-    /// The signing key of an imported Bitcoin account, for the BTC signer (spec/08 §3.5): the
-    /// secret never leaves the vault — the signer passes the returned `KeyRef` to the core's
-    /// `with_secp_key` inside this worker, and checks the script against `BtcKeyInfo`.
-    ///
-    /// # Errors
-    ///
-    /// `InvalidState` without an open vault, `RecordNotFound` for an unknown or non-Bitcoin
-    /// record.
-    pub fn btc_imported_signer(&self, id: RecordId) -> Result<(KeyRef, BtcKeyInfo), VaultError> {
-        let vault = self.vault.as_ref().ok_or(VaultError::InvalidState)?;
-        let info = vault
-            .imported_keys()?
-            .btc
-            .into_iter()
-            .find(|(record, _)| *record == id)
-            .map(|(_, info)| info)
-            .ok_or(VaultError::RecordNotFound)?;
-        Ok((BtcKeySource::Imported(id).key_ref(), info))
+    /// `삭제` of an imported key (spec/04 §2.18): refused while an imported Bitcoin key's account
+    /// has an in-flight record (`ImportedKeyBusy`); otherwise the password check and the vault
+    /// removal, then — for a Bitcoin key — its account leaves meta `btc_accounts`.
+    fn remove_imported(&mut self, password_bytes: &[u8], id: RecordId) -> Vec<KeyOutcome> {
+        let alt = self.is_alt();
+        if let Some(vault) = self.vault.as_ref()
+            && self.journal.btc_imported_busy(vault, *id.as_bytes())
+        {
+            return vec![KeyOutcome::ImportedKeyBusy(id)];
+        }
+        let result = (|| {
+            let password = password(password_bytes).map_err(|_| VaultError::UnlockFailed)?;
+            let chain = self.vault()?.remove_imported_key(&password, id)?;
+            Ok((id, chain))
+        })();
+        let btc_removed = matches!(result, Ok((_, ImportChain::Btc)));
+        let mut out = vec![KeyOutcome::ImportedKeyRemoved(result)];
+        if btc_removed && let Some(vault) = self.vault.as_mut() {
+            out.extend(self.journal.btc_remove_imported(vault, *id.as_bytes(), alt));
+        }
+        out
     }
 
     fn reveal(
@@ -607,6 +640,7 @@ impl KeyWorker {
                 Some(vault) => self.journal.apply_sol(vault, &transition, now_unix_ms, alt),
                 None => vec![KeyOutcome::Journal(Err(VaultError::InvalidState))],
             },
+            KeyJob::RemoveImportedKey { password, id } => self.remove_imported(&password, id),
             other => vec![self.handle_single(other)],
         }
     }
@@ -710,14 +744,6 @@ impl KeyWorker {
             KeyJob::ImportKey { spec, key } => {
                 KeyOutcome::KeyImported(self.import_chain_key(spec, &key))
             }
-            KeyJob::RemoveImportedKey {
-                password: bytes,
-                id,
-            } => KeyOutcome::ImportedKeyRemoved((|| {
-                let password = password(&bytes).map_err(|_| VaultError::UnlockFailed)?;
-                let chain = self.vault()?.remove_imported_key(&password, id)?;
-                Ok((id, chain))
-            })()),
             KeyJob::RecoverFromPrev { password: bytes } => KeyOutcome::Status((|| {
                 let password = password(&bytes).map_err(|_| VaultError::UnlockFailed)?;
                 let slot = new_slot()?;
@@ -779,7 +805,10 @@ impl KeyWorker {
             | KeyJob::SolApply { .. }
             | KeyJob::BtcMeta { .. }
             | KeyJob::SignBtc { .. }
-            | KeyJob::BtcJournal { .. } => KeyOutcome::Journal(Err(VaultError::InvalidState)),
+            | KeyJob::BtcJournal { .. }
+            | KeyJob::RemoveImportedKey { .. } => {
+                KeyOutcome::Journal(Err(VaultError::InvalidState))
+            }
             KeyJob::Lock | KeyJob::Shutdown => {
                 self.lock();
                 KeyOutcome::LockDone
