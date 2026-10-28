@@ -42,7 +42,7 @@ yw-app(지갑 본체, D3)의 프로세스·스레드 구조, 화면과 흐름, �
 | LLM `yw-llm` (M6) | 별도 `http::Client` | [06] | DEK 접근 |
 
 - 비동기 런타임 크레이트를 쓰지 않는다. `std::thread`, `std::sync::{mpsc, Mutex, Condvar}`만 쓴다.
-- `KeyQueue { q: Mutex<VecDeque<KeyJob>>, cv: Condvar }`. `KeyJob::Lock`만 `push_front`로 넣는다([02] §7.2 "lock 요청은 큐 맨 앞"). 키 작업자는 `Lock`을 처리하면서 큐에 남은 다른 작업을 모두 yw-app 오류 `KeyJobError::Locked`로 끝낸다(yw-core `KeyError`가 아님). `Lock`은 진행 중인 작업(최대 Argon2 2회) 뒤에 실행된다.
+- `KeyQueue { q: Mutex<VecDeque<KeyJob>>, cv: Condvar }`. `KeyJob::Lock`만 `push_front`로 넣는다([02] §7.2 "lock 요청은 큐 맨 앞"). 키 작업자는 `Lock`을 처리하면서 큐에 남은 다른 작업을 모두 yw-app 오류 `KeyJobError::Locked`로 끝낸다(yw-core `KeyError`가 아님). 제어 작업 `Lock`·`Load`·`Shutdown`은 취소되지 않는다(§5.3이 `Lock` 뒤에 넣는 `Load`가 살아남아야 잠금 뒤의 vault 상태를 UI가 안다). `Lock`은 진행 중인 작업(최대 Argon2 2회) 뒤에 실행된다.
 - 잠금 세대: UI가 `lock_epoch: u64`를 소유하고 §5.3 1단계에서 1 올린다. 모든 `KeyJob`은 넣을 때의 값을 싣고 `KeyResult`가 그 값을 되돌린다. UI는 값이 현재와 다른 결과를 버린다(실린 비밀 버퍼는 drop으로 소거). 예외: `Sign` 결과는 이미 소비된 승인이므로 epoch와 무관하게 처리한다(성공이면 저널 `Signed`가 커밋된 상태이므로 전송까지 진행하고, 잠긴 동안의 상태 처리는 §5.3 마지막 항목). 소비된 `Signing` 항목의 `Sign`이 `Locked`로 끝나면 dApp 4001 `User rejected the request.`, [03] §3.6 송신 슬롯 해제, 저널 기록 없음, 로그 `sign.aborted reason=locked`.
 - 비밀 버퍼(비밀번호, passphrase, 니모닉, 개인키 입력)는 `Zeroizing<Vec<u8>>`로 채널에 이동한다(복사 금지). 받은 쪽은 쓰고 바로 drop한다.
 
@@ -171,7 +171,7 @@ pub enum AppMode { NoVault, Locked, Unlocking, PassphraseRequired, PassphraseMis
 - 별도 최상위 창: W01–W10 비밀 창(§4.1), A01 승인·연결 창(§3).
 - 비밀 창이 열려 있는 동안 주 창은 `EnableWindow(FALSE)`다. 승인 창은 주 창을 막지 않는다.
 - 주 창 자식 컨트롤의 명령 ID(`WM_COMMAND`)는 화면 모듈마다 `ids`에 두고, 고정 ID와 목록형 범위(계정·주소록·스캔 행·사이트 등)가 서로 겹치지 않으며 각 범위가 그 목록의 최대 길이(행 수 × 행당 ID 수)를 담는다. 전체 지도와 시험은 `ui::command_ids`(1·2는 쓰지 않음). 승인 창·비밀 창은 자식 컨트롤 없이 직접 그리고 영역으로 판정하므로 명령 ID가 없다.
-- `Unlocked`의 S10 상단 막대(흰 띠): 왼쪽 "Your Wallet", 오른쪽 `주소록`, `연결된 사이트`, `설정`, `잠금 (Ctrl+L)`. 그 아래 체인 탭(`EVM (이더리움 등)`·`Solana`·`Bitcoin`, 탭 모양)과 네트워크 칩. 다른 화면은 맨 위 링크 `← 메인으로`. `alt_passphrase == true`이면 상시 배너 T-ALT-PASS([02] §7.5).
+- `Unlocked`의 S10 상단 막대(흰 띠): 왼쪽 "Your Wallet", 오른쪽 `주소록`, `연결된 사이트`, `설정`, `잠금 (Ctrl+L)`. 그 아래 체인 탭(`EVM (이더리움 등)`·`Solana`·`Bitcoin`, 탭 모양)과 네트워크 칩. 다른 화면은 맨 위 링크 `← 메인으로`. `alt_passphrase == true`(`App::passphrase_unverified()`)이면 **모든 화면** 맨 위에 닫을 수 없는 고위험 띠 T-ALT-PASS를 보이고, 모든 체인의 `받기`(S12)를 끈다(누르면 T-ALT-PASS-RECV). 브라우저 다리는 이 상태의 연결·서명 요청을 `BackupPending`처럼 4100(`NotReady`)으로 끝낸다([02] §7.5, [05] §4.1). 앱의 보내기는 허용한다.
 - 사용자에게 보이는 용어: "니모닉"은 "복구 단어"로 부르고 처음 나오는 곳에 "(니모닉)"을 붙인다. 오류 문구(§7)와 코드는 바꾸지 않는다.
 
 ### 2.2 첫 실행 (S01)
@@ -188,7 +188,7 @@ pub enum AppMode { NoVault, Locked, Unlocking, PassphraseRequired, PassphraseMis
 | 3 | S03 | `KeyJob::CreateWallet` → `Vault::create_wallet` → `BackupPending`, 24단어 버퍼 반환. 이어서 기본 meta 쓰기. "지갑을 만드는 중입니다. 몇 초 걸립니다." |
 | 4 | W08 | 24단어 + 계정 0 EVM 주소(EIP-55, `m/44'/60'/0'/0/0`). 둘 다 종이에 적게 한다([02] §8.3). 캡처 제외 실패 시 표시하지 않고 E-SEC-001(§4.5 `Required`; 지갑은 `BackupPending`으로 남고 S04에서 다시 시도). `다 적었습니다`를 2초 길게 눌러야 다음으로 간다. |
 | 5 | W10 | `backup_challenge()`의 위치 4개 단어 + 첫 주소 끝 6자. `KeyJob::ConfirmBackup` → `confirm_backup`. `BackupMismatch` → T-BACKUP-FAIL, 새 challenge(새 위치)로 다시 입력. 횟수 제한 없음. |
-| 6 | S08 | 제목 "준비되었습니다", T-BACKUP-OK(완료 띠). 저장된 RPC 엔드포인트(§6.3 `rpc:*`)가 하나도 없으면 카드 "마지막 단계: 블록체인 연결(RPC)"(무엇이고 왜 필요한지 한 줄 + 도움말) 안에 주 버튼 `RPC 설정하기`(S15 `네트워크(RPC)`, §2.11.1)와 `나중에`. 있으면 주 버튼 `지갑 열기`. → S10. |
+| 6 | S08 | 제목 "준비되었습니다", T-BACKUP-OK(완료 띠; 가져오기 흐름 뒤에는 백업 확인을 하지 않았으므로 T-IMPORT-OK와 도움말 "이 지갑의 백업은 방금 입력한 복구 단어(와 passphrase)입니다…"). 저장된 RPC 엔드포인트(§6.3 `rpc:*`)가 하나도 없으면 카드 "마지막 단계: 블록체인 연결(RPC)"(무엇이고 왜 필요한지 한 줄 + 도움말) 안에 주 버튼 `RPC 설정하기`(S15 `네트워크(RPC)`, §2.11.1)와 `나중에`. 있으면 주 버튼 `지갑 열기`. → S10. |
 
 S04(백업 대기): 잠금 해제 직후 백업이 확인되지 않았을 때. 제목 "백업 확인이 필요합니다", T-BACKUP-PENDING(주의 띠), 카드에 무엇을 하는지 한 줄과 주 버튼 `복구 단어 보고 백업 확인`(W03 → W08 → W10), `받기`(S12, 상단 경고 T-BACKUP-RECV), `잠금`. 서명·개인키 표시·개인키 가져오기는 없다([02] §7.1). 이 상태에서 dApp 승인 항목은 즉시 `NotReady`.
 
@@ -210,20 +210,21 @@ S04(백업 대기): 잠금 해제 직후 백업이 확인되지 않았을 때. �
 ### 2.5 잠금 해제 (S07, W02, W06)
 - S07: 큰 제목 "지갑이 잠겨 있습니다", "계정과 잔액을 보려면 비밀번호로 잠금을 해제하세요.", 주 버튼 `잠금 해제`(W02), 도움말로 자동 잠금 조건("{n}분 동안 쓰지 않거나, Windows를 잠그거나 절전에 들어가면…"). 기다리는 dApp 요청이 있으면 T-UNLOCK-PENDING(정보 띠)과 origin 목록(최대 5개, 나머지 "외 n건"). 계정·잔액·주소는 보이지 않는다(meta가 잠겨 있다).
 - W02 비밀번호 → `KeyJob::Unlock` → S03("확인 중…").
-  - `UnlockFailed` → E-VLT-001([02] §7.4 문구). 칸을 비우고 입력과 확인 버튼을 1초 비활성화. 횟수 제한 없음.
-  - `PassphraseRequired` → W06(passphrase 1칸) → `enter_passphrase`. W06 `나중에`(Esc)는 `KeyJob::Lock`으로 `Locked`(S07)에 돌아간다(`PassphraseRequired`에 머물지 않는다). `PassphraseMismatch` → 오버레이 T-PASS-MISMATCH: `다시 입력`(W06), `이 passphrase로 계속`(체크 "다른 passphrase는 다른(빈) 지갑을 엽니다"를 켜야 활성) → `Unlocked { alt_passphrase: true }`.
+  - `UnlockFailed` → E-VLT-001([02] §7.4 문구). 칸을 비우고 입력과 확인 버튼을 1초 비활성화. 횟수 제한 없음. 한 번 실패한 뒤 `.prev`가 있으면 S07에 도움말 T-UNLOCK-PREV와 링크 `이전 사본(.prev)으로 복구`(W03 → `recover_from_prev`, [02] §6.3 `Locked`에서의 복구: 키 구간 손상은 비밀번호 오류와 구분되지 않는다. 본 파일이 열리면 복구하지 않고 그대로 연다)를 보인다.
+  - `PayloadCorrupt` → E-VLT-008, S09로 간다(`Corrupt { prev_available }`). 다시 `Load`하지 않는다(헤더가 정상이라 `Locked`가 되어 S09가 사라진다). 이후 잠금 등으로 `Load`가 `Locked`를 돌려줘도 앱은 "payload 손상" 상태를 기억해 S09를 유지하고, `이전 사본으로 복구`는 `Locked`에서도 동작한다.
+  - `PassphraseRequired` → W06(passphrase 1칸) → `enter_passphrase`. W06 `나중에`(Esc)는 `KeyJob::Lock`으로 `Locked`(S07)에 돌아간다(`PassphraseRequired`에 머물지 않는다). `PassphraseMismatch` → 오버레이 T-PASS-MISMATCH: `다시 입력`(W06), `이 passphrase로 계속`(체크 "다른 passphrase는 다른(빈) 지갑을 엽니다"를 켜야 활성) → `Unlocked { alt_passphrase: true }`(T-ALT-PASS 띠, 받기·dApp 연결·서명 차단, §2.1).
   - VirtualLock 실패(yw-win 슬롯 할당 실패, `OutOfMemory`) → E-VLT-007, 잠금 해제하지 않는다([02] §7.3 권고).
   - 성공: `BackupPending`이면 S04, 아니면 meta 읽기 → S10. meta·journal이 `SidecarCorrupt`·`SidecarVaultMismatch`면 오버레이 E-VLT-006에서 `이전 사본(.prev) 사용` 또는 `격리하고 새로 시작`을 고르게 한다(journal은 T-JOURNAL-RESET 확인 후에만, [02] §6.3). 이어서 저널 복구([03])와 승인 큐 처리(§3.7).
 - dApp 요청 때문에 자동으로 연 W02·W06은 `WS_EX_TOPMOST`이고 전경이 아니면 작업 표시줄을 깜박인다(§3.6). 이 창의 `나중에`(Esc)는 잠금 해제를 기다리던 dApp 항목을 모두 `Rejected`로 끝낸다([05] §4.4: 해제 창은 하나, 결과 공유). 사용자가 직접 연 창의 `나중에`는 창만 닫는다.
-- S09(`Corrupt`·`MainMissing`): E-VLT-002 또는 "지갑 파일이 없고 이전 사본(.prev)이 있습니다." `.prev`가 있으면 `이전 사본으로 복구`(W03 → `recover_from_prev`, 문구 T-RECOVER-PREV), 없으면 폴더 경로와 `폴더 열기`, `종료`. 손상 파일은 덮어쓰지 않는다.
+- S09(`Corrupt`·`MainMissing`): E-VLT-002(payload 손상이면 E-VLT-008) 또는 "지갑 파일이 없고 이전 사본(.prev)이 있습니다." `.prev`가 있으면 `이전 사본으로 복구`(W03 → `recover_from_prev`, 문구 T-RECOVER-PREV), 없으면 폴더 경로와 `폴더 열기`, `종료`. 손상 파일은 덮어쓰지 않는다(격리 이름 `vault.ywv.corrupt-<unix초>`). W03을 취소하거나 틀린 비밀번호면 다시 `Load`하지 않고 요청했던 화면(S09·S07)으로 돌아간다. `.prev`가 없거나 `.prev`도 손상이면 W03에 그 사실을 알린다. 성공하면 S10/S04에 "이전 사본(.prev)으로 복구했습니다…" 정보 띠.
 
 ### 2.6 메인 (S10)
 - 배치(위 → 아래, 체인 탭마다 같음): 상단 막대 → 체인 탭 → 카드 "네트워크"(칩, 테스트넷 띠, 차단·저널 띠, 상태 줄 도움말) → **선택 계정 카드**(계정 이름, 경로, 큰 잔액 20pt와 기준 블록, 전체 주소, 주 버튼 `보내기`·`받기`, 링크 `새로고침`, 엔드포인트가 없으면 링크 `RPC 설정하기`) → 카드 "내 계정"(계정 목록 라디오, 선택 행의 `이름 바꾸기`·`숨기기`/`삭제`(위험), `계정 추가`·`개인키 가져오기`) → 카드 "토큰" → 카드 "활동". 빈 목록에는 다음에 할 일을 알려주는 도움말을 보인다("아직 보낸 거래가 없습니다. 보낸 거래는 여기에서…").
 - 체인 탭: 구현된 단계만(M4 `EVM`, M7 `Solana`, M8 `Bitcoin`). 개인키 계정만으로는 SOL·BTC를 쓸 수 없다.
-- EVM 네트워크 선택: 기본 체인 3개(`Ethereum 메인넷`, `Sepolia 테스트넷`, HyperEVM; 이름은 [03] §1.1) 다음에 사용자 체인(§2.17, `evmChains` 순서, 이름 옆 배지 T-CUSTOM-CHAIN). 차단된 체인(E-RPC-006·E-CHN-008)도 목록에 남기고 "(차단됨)"을 붙인다. 고르면 S10에 그 오류 배너와(E-CHN-008이면) `설정에서 다시 고정`(S15)을 보이고 잔액·보내기는 끈다. 선택은 `settings.json` `evmChainId`(§6.1, D30)이고, 잠긴 동안 [05]가 캐시 없는 origin의 `eth_chainId`로 쓴다. Solana 클러스터는 `solana.cluster`([07] §10), BTC 네트워크는 `bitcoin.network`([08] §2, D26)로 모두 `settings.json`에 있다. 테스트넷(Sepolia, [07]·[08]의 테스트 네트워크)이면 상단에 `TESTNET_BG` 띠 "테스트넷 — 실제 자산이 아닙니다". 사용자 체인에는 테스트넷 구분이 없으므로 띠를 그리지 않는다.
+- EVM 네트워크 선택: 기본 체인 3개(`Ethereum 메인넷`, `Sepolia 테스트넷`, HyperEVM; 이름은 [03] §1.1) 다음에 사용자 체인(§2.17, `evmChains` 순서, 이름 옆 배지 T-CUSTOM-CHAIN). 차단된 체인(E-RPC-006·E-CHN-008)도 목록에 남기고 "(차단됨)"을 붙인다. 고르면 S10에 그 오류 배너와(E-CHN-008이면) `설정에서 다시 고정`(S15)을 보이고 잔액·보내기는 끈다. 선택은 `settings.json` `evmChainId`(§6.1, D30)이고, 잠긴 동안 [05]가 캐시 없는 origin의 `eth_chainId`로 쓴다. Solana 클러스터는 `solana.cluster`([07] §10), BTC 네트워크는 `bitcoin.network`([08] §2, D26)로 모두 `settings.json`에 있다. 테스트넷(Sepolia, [07]·[08]의 테스트 네트워크)이면 상단에 `TESTNET_BG` 띠 "테스트넷 — 실제 자산이 아닙니다". 기본 메인넷(Ethereum 메인넷 1, HyperEVM 999)과 Solana mainnet이면 빨간(`BTC_MAINNET_BG`) 띠 T-MAINNET "메인넷 — 실제 자산"(Bitcoin은 [08] §2 `BITCOIN MAINNET`). 사용자 체인에는 테스트넷 구분이 없으므로 띠를 그리지 않는다. 기본값은 그대로다(EVM Sepolia, Solana mainnet, Bitcoin 꺼짐).
 - 상태 줄: `RPC: 연결됨 | 엔드포인트 없음 (E-KEY-005) | 오류 E-RPC-0nn | 차단 E-CHN-008`(네트워크 이름만, URL·호스트 없음, §1.9), `브라우저: 연결 n개 | 연결 없음 | 사용 불가 E-PIPE-001`. 엔드포인트 없음이면 잔액·보내기를 끄고 `설정에서 URL 입력`(S15 §2.11.1)을 보인다.
-- 계정 목록: 라벨, 전체 주소(§3.3 주소 그리기), 기본 자산 잔액, 경로 또는 `가져온 개인키`. 선택 행 버튼: `보내기`, `받기`, `이름 바꾸기`, 파생 계정 `숨기기`(meta `hidden`), 개인키 계정 `삭제`(W03 → `remove_evm_raw_key`). 숨기기·삭제는 [05] §4.1에 알린다(grant에서 제외).
-- `계정 추가`: 다음 EVM 인덱스(기본 라벨 "계정 {i+1}"), 또는 `개인키 가져오기`(W07 → `import_evm_private_key`, `Unlocked`에서만). 상한은 [02] §5.3(파생 100, 개인키 15).
+- 계정 목록: 라벨, 전체 주소(§3.3 주소 그리기), 기본 자산 잔액, 경로 또는 `가져온 개인키`. 카드 도움말 T-ACCOUNTS(파생 계정만 복구 단어로 복구되고 가져온 개인키는 아니다). 선택 행 버튼: `보내기`, `받기`, `이름 바꾸기`, 파생 계정 `숨기기`(meta `hidden`), 개인키 계정 `삭제`(확인 오버레이 T-REMOVE-KEY → W03 → `remove_evm_raw_key`). 삭제 오버레이는 계정 라벨·주소와 선택한 EVM 네트워크의 마지막으로 읽은 기본 자산 잔액을 보인다: 0보다 크면 고위험 띠 "이 계정에 잔액이 있습니다: … 먼저 옮기거나 개인키를 내보내세요", 모르면 주의 띠 "잔액을 확인하지 못했습니다…", 0이면 "다른 네트워크와 토큰 잔액은 확인하지 않았습니다" 도움말. 숨기기·삭제는 [05] §4.1에 알린다(grant에서 제외).
+- `계정 추가`: 다음 EVM 인덱스(기본 라벨 "계정 {i+1}"), 또는 `개인키 가져오기`(W07 → `import_evm_private_key`, `Unlocked`에서만; W07 안내에 T-IMPORTED-KEY). 상한은 [02] §5.3(파생 100, 개인키 15).
 - 토큰 잔액: 레지스트리 토큰([03])과 meta `tokens`. `토큰 추가`(S16). Solana 탭(v1.1): 카드 "토큰 (선택한 계정)"은 그 클러스터의 [07] §8.3 허용 목록 토큰만 보인다(토큰마다 로컬 파생 ATA 하나만 조회, `토큰 추가` 없음, 다른 토큰·NFT는 받아도 보이지 않는다). 행 = 기호와 잔액(고정 decimals) · 원시 단위·"RPC finalized 기준(참고)" · "mint (허용 목록 고정)"과 mint 전체(묶음) · 링크 `{기호} 보내기`(잔액 > 0·엔드포인트 있음·`Unlocked`일 때만, 그 토큰을 고른 보내기 화면). ATA가 없으면 0과 "이 계정에는 아직 {기호} 토큰 계정(ATA)이 없습니다. 받으면 보내는 쪽이 만듭니다.", 동결이면 동결 안내, ATA 자리에 다른 형식의 계정이면 잔액 대신 "확인할 수 없음". 선택 계정 카드에는 큰 SOL 잔액 아래 한 줄 "허용 목록 토큰: 25.000000 USDC (아래 토큰 카드)".
 - 잔액 갱신: S10 진입 시, `새로고침`, S10이 보이고 `Unlocked`인 동안 60초마다. 값 옆에 기준 블록 번호. 실패하면 이전 값을 `MUTED`로 두고 오류 코드를 붙인다.
 - 활동: meta `activity`([02] §5.3 `ActivityEntry`, 모든 체인 공통 스키마; 이 지갑이 보낸 거래만, 네트워크당 최대 500)와 진행 중 저널 항목. 받은 거래 목록은 만들지 않고, 활동의 주소에는 복사·선택 버튼을 두지 않는다(주소 오염 대비, [07] §12.3). 행 = 로컬 시각(`YYYY-MM-DD HH:MM`, yw-win `time::local_wall_ms`; 변환 실패면 UTC 표기), 계정 라벨, 종류·금액([03]/[07]/[08] 문자열), 상태, 해시 전체, `해시 복사`, 탐색기 URL이 있는 사용자 체인(§2.17)이면 `탐색기 링크 복사`(`{explorer}/tx/{해시}`를 `clipboard::set_text`; 앱은 URL을 열지 않는다, §2.14). 진행 중 EVM 거래에는 `가속`·`취소`([03] `EvmSpeedUp`·`EvmCancel`), BTC 거래에는 `수수료 올리기`([08] §9)가 있고 모두 새 승인 창을 거친다.
@@ -367,13 +368,21 @@ W04(현재, 새, 새 확인) → 새 비밀번호 검사(E-INP-001/002) → `Key
 | T-BACKUP-1 | W10 | 적은 종이를 보고 {p1}, {p2}, {p3}, {p4}번째 단어와 첫 주소의 마지막 6자를 입력하세요. |
 | T-BACKUP-FAIL | W10 | 입력한 단어 또는 주소가 맞지 않습니다. 새 위치로 다시 확인합니다. |
 | T-BACKUP-OK | S08 | 백업을 확인했습니다. 이제 지갑을 쓸 수 있습니다. |
+| T-IMPORT-OK | S08(가져오기 뒤) | 지갑을 가져왔습니다. 이제 지갑을 쓸 수 있습니다. |
 | T-BACKUP-PENDING | S04 | 백업 확인이 끝나지 않았습니다. 확인 전에는 보내기·서명·dApp 승인을 쓸 수 없습니다. |
 | T-BACKUP-RECV | S12 | 백업 확인 전입니다. 확인을 마치기 전에는 큰 금액을 받지 마세요. |
 | T-IMPORT-PASS | W05 | 이전 지갑에서 BIP39 passphrase(25번째 단어)를 썼을 때만 켜세요. ASCII만 지원합니다. |
 | T-IMPORT-ADDR | S06 | 가져온 지갑의 첫 주소입니다. 이전 지갑에서 쓰던 주소와 전체가 같은지 확인하세요. |
 | T-UNLOCK-PENDING | S07·W02 | 잠금 해제를 기다리는 요청 {n}건: {origin 목록} |
 | T-PASS-MISMATCH | S07 | passphrase가 다를 수 있습니다. 다른 passphrase는 다른(빈) 지갑을 엽니다. |
-| T-ALT-PASS | S10 | 가져올 때와 다른 passphrase로 연 지갑입니다. 계정 이름·주소록·연결 기록이 저장되지 않습니다. |
+| T-ALT-PASS | 모든 화면(고위험 띠, 닫기 없음) | passphrase 확인값과 맞지 않는 passphrase로 연 지갑입니다. 오타라면 이 지갑은 원래 지갑이 아닌 다른(빈) 지갑이고, 여기로 받은 자산은 지금 입력한 passphrase와 대소문자·공백까지 정확히 같은 값을 다시 넣어야만 꺼낼 수 있습니다. 그래서 받기와 사이트 연결·서명을 막았습니다. 계정 이름·주소록·연결 기록도 저장되지 않습니다. 잘못 입력했다면 잠그고 다시 여세요. |
+| T-ALT-PASS-RECV | S10(`받기`) | 확인되지 않은 passphrase로 연 지갑에서는 받기를 쓸 수 없습니다. 잠그고 passphrase를 다시 입력하세요. |
+| T-UNLOCK-PREV | S07(잠금 해제 실패 뒤, `.prev` 있음) | 비밀번호가 맞는데도 계속 열리지 않으면 지갑 파일이 손상되었을 수 있습니다. 같은 비밀번호로 이전 사본(.prev) 복구를 시도할 수 있습니다. 지갑 파일이 정상이면 복구하지 않고 그대로 엽니다. |
+| T-ACCOUNTS | S10 `내 계정` | 보내기·받기에 쓸 계정을 고르세요. 경로(m/44'/60'/…)가 있는 계정은 복구 단어로 복구되지만, '가져온 개인키' 계정은 복구 단어로 복구되지 않으니 그 개인키를 따로 백업하세요. |
+| T-IMPORTED-KEY | W07 | 주의: 가져온 개인키는 이 지갑의 복구 단어(24단어)로 복구되지 않습니다. 이 PC나 지갑 파일을 잃으면 이 계정은 원래 개인키로만 되살릴 수 있으니, 원래 개인키를 따로 안전하게 보관하세요. |
+| T-REMOVE-KEY | S10 삭제 확인 | 선택한 가져온 개인키 계정을 이 지갑에서 지웁니다. 가져온 개인키는 복구 단어로 복구되지 않으므로, 지우고 나면 원래 개인키 없이는 이 계정의 자산에 다시 접근할 수 없습니다. 지우기 전에 설정 → 보안 → '개인키 보기'로 개인키를 내보내 안전하게 보관했는지 확인하세요. 계속하려면 비밀번호를 입력하세요. |
+| T-DISCARD | S10 `폐기` 확인 | 폐기는 이 앱에서 추적만 멈추고 '폐기됨'으로 표시합니다. 네트워크에서 거래를 취소하지는 않습니다. 이미 전파된 거래라면 나중에 처리될 수 있고, 그 사이 같은 송금을 다시 보내면 두 거래가 모두 처리되어 두 번 지불될 수 있습니다. 확실히 막으려면 폐기 대신 '취소'(같은 nonce의 취소 거래)를 쓰고, 다시 보내기 전에 탐색기에서 이 거래가 사라졌는지 확인하세요. |
+| T-MAINNET | S10(EVM 기본 메인넷, Solana mainnet) | 메인넷 — 실제 자산 |
 | T-JOURNAL-RESET | S07 | 거래 저널을 새로 시작하면 진행 중 거래 기록이 사라질 수 있습니다. |
 | T-RECOVER-PREV | S09 | 이전 사본으로 복구하면 마지막 변경(예: 가져온 개인키)이 사라질 수 있습니다. |
 | T-REVEAL-WARN | S15 | 화면 근처의 사람이나 카메라가 볼 수 있습니다. 계속하려면 비밀번호를 입력하세요. |
@@ -741,7 +750,7 @@ impl SecretField {
 
 ### 5.3 잠금 절차 (UI 스레드, 순서대로)
 1. `AppMode::Locked`, `lock_epoch += 1`(§1.2), 유휴 타이머 정지.
-2. `KeyQueue.push_front(KeyJob::Lock)`(→ `Vault::lock`: 슬롯 소거·VirtualUnlock, [02] §7.2; 큐의 나머지 작업 `KeyJobError::Locked`).
+2. `KeyQueue.push_front(KeyJob::Lock)`(→ `Vault::lock`: 슬롯 소거·VirtualUnlock, [02] §7.2; 큐의 나머지 작업 `KeyJobError::Locked`). 이어서 `KeyJob::Load`(제어 작업, 취소되지 않음)를 넣어 잠금 뒤의 상태를 다시 읽는다: 잠금 직전에 끝난 `CreateWallet`·`CommitImport`의 결과는 이전 epoch라 버려지지만 vault는 생겼으므로 `Loaded { Locked }`로 S01이 아니라 S07이 된다.
 3. 열린 비밀 창(W01–W10)을 모두 닫는다(§4.9). 진행 중인 생성·가져오기 흐름 취소(`DiscardImport`).
 4. `secret_clip`이 있으면 `clear_if_unchanged`.
 5. 표시 중인 승인 창을 닫고 `Rejected`. 대기 항목은 남긴다(§3.7). [03] `ApprovalStore::invalidate_all`.
@@ -753,7 +762,7 @@ impl SecretField {
 - 잠긴 동안 저널 커밋은 없다(DEK 필요, D10). 진행 중이던 `eth_sendRawTransaction`(그리고 [07]·[08]의 전송) 호출은 끝까지 기다리되 결과 상태는 메모리에만 두고, 영수증 폴링은 멈춘다. 잠금 해제 직후 [03] §5.4 reconcile이 상태를 확정한다([03] §4.5와 같음).
 
 ### 5.4 시험
-- LK-1: 모의 시계로 유휴 = 설정 분 − 1초 → 잠기지 않음, + 0초 → 잠김. 다른 앱 입력만 계속 → 잠김. 승인 창이 열린 채 설정 분 경과 → 잠기지 않고 닫힌 뒤부터 다시 셈.
+- LK-1: 모의 시계로 유휴 = 설정 분 − 1초 → 잠기지 않음, + 0초 → 잠김. 다른 앱 입력만 계속 → 잠김. 승인 창(A01, 모든 체인: 표시 중인 승인 항목)이 열린 채 설정 분 경과 → 잠기지 않고 닫힌 뒤부터 다시 셈.
 - LK-2: `Lock` 전에 큐에 있던 `KeyJob` → `KeyJobError::Locked`. 진행 중 작업 뒤 바로 `Lock` 처리(다른 작업보다 먼저). `Lock` 직전에 끝난 `Unlock`·`Reveal` 결과(이전 `lock_epoch`) → UI가 버리고 `Locked` 유지·버퍼 소거. 소비된 서명 항목의 `Sign`이 `Locked` → dApp 4001, 송신 슬롯 해제, 저널 레코드 없음.
 - LK-3: 주 창 핸들러에 `Msg::SessionDisconnect` → 잠금 `SessionDisconnect`. `Msg::SessionLogoff`·`Msg::EndSession` → §1.5 종료 절차(`LockReason::Shutdown`). `Msg::QueryEndSession` → `Reply::Handled(1)`, 상태 변화 없음.
 
