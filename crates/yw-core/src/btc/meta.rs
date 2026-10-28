@@ -25,8 +25,8 @@ use super::script::p2wpkh_script_pubkey;
 use super::select::{SendPlan, Utxo};
 use super::tx::{OutPoint, Txid};
 use super::{
-    BTC_AUTO_FREEZE_BELOW, BTC_COINBASE_MATURITY, BTC_GAP_HARD_LIMIT, BTC_GAP_LIMIT, BTC_MIN_CONF,
-    MAX_MONEY, conf,
+    BTC_AUTO_FREEZE_BELOW, BTC_COINBASE_MATURITY, BTC_DISCOVERY_MAX_SCAN, BTC_GAP_HARD_LIMIT,
+    BTC_GAP_LIMIT, BTC_LOCKTIME_THRESHOLD, BTC_MAX_ADDRESS_INDEX, BTC_MIN_CONF, MAX_MONEY, conf,
 };
 use crate::bip32::path::BtcChain;
 use crate::bip32::{AccountXpub, HARDENED, derive_public_child_with};
@@ -232,6 +232,8 @@ pub enum MetaError {
     IndexExhausted,
     /// An index outside the issued range.
     OutOfRange,
+    /// A Core tip at or above 500,000,000 (`BTC_LOCKTIME_THRESHOLD`): never stored.
+    TipImplausible,
     /// Core tip more than 6 blocks below `max_tip_seen`.
     TipRegression {
         /// `getblockchaininfo.blocks`.
@@ -264,6 +266,7 @@ impl fmt::Display for MetaError {
             Self::TipRegression { .. } => {
                 formatter.write_str("노드 블록 높이가 이전에 본 값보다 낮습니다")
             }
+            Self::TipImplausible => formatter.write_str(super::policy::texts::TIP_IMPLAUSIBLE),
             Self::NotVerified => formatter.write_str("검증된 UTXO가 아닙니다"),
             Self::Full => formatter.write_str("BTC 데이터 공간이 부족합니다"),
             Self::DiscoveryIncomplete => formatter.write_str("주소 검색 미완료"),
@@ -480,7 +483,7 @@ impl BtcMeta {
     }
 
     /// The watch set (spec/08 §3.3): receive `[0, receive_next)` then change `[0, change_next)`,
-    /// with their addresses.
+    /// with their addresses; each chain stops at `BTC_MAX_ADDRESS_INDEX`.
     ///
     /// # Errors
     ///
@@ -489,7 +492,7 @@ impl BtcMeta {
         let deriver = Deriver::new(&self.account)?;
         let mut out = Vec::new();
         for chain in [BtcChain::Receive, BtcChain::Change] {
-            for index in 0..self.next_of(chain) {
+            for index in 0..self.next_of(chain).min(BTC_MAX_ADDRESS_INDEX) {
                 let program = deriver.program(chain, index)?;
                 out.push((chain, index, BtcAddress::p2wpkh(self.network, &program)));
             }
@@ -513,7 +516,7 @@ impl BtcMeta {
     fn issue_receive(&mut self) -> Result<u32, MetaError> {
         let index = self.receive_next;
         let next = index.checked_add(1).ok_or(MetaError::IndexExhausted)?;
-        if next > MAX_NEXT {
+        if next > MAX_NEXT || next > BTC_MAX_ADDRESS_INDEX {
             return Err(MetaError::IndexExhausted);
         }
         self.receive_next = next;
@@ -804,14 +807,19 @@ impl BtcMeta {
         true
     }
 
-    /// Applies `getblockchaininfo.blocks` (spec/08 §2 step 2): refused when more than 6 below
-    /// `max_tip_seen`, otherwise `max_tip_seen = max(max_tip_seen, blocks)`. Returns whether
-    /// meta changed.
+    /// Applies `getblockchaininfo.blocks` (spec/08 §2 step 2): refused at or above
+    /// 500,000,000 (a lock-time timestamp, never a height) or when more than 6 below
+    /// `max_tip_seen`, otherwise `max_tip_seen = max(max_tip_seen, blocks)`. (The chain check
+    /// passes a value already limited by the indexer tip when it has one.) Returns whether meta
+    /// changed.
     ///
     /// # Errors
     ///
-    /// [`MetaError::TipRegression`].
+    /// [`MetaError::TipImplausible`], [`MetaError::TipRegression`].
     pub fn observe_tip(&mut self, blocks: u32) -> Result<bool, MetaError> {
+        if blocks >= BTC_LOCKTIME_THRESHOLD {
+            return Err(MetaError::TipImplausible);
+        }
         if blocks < self.max_tip_seen.saturating_sub(TIP_REGRESSION_ALLOWANCE) {
             return Err(MetaError::TipRegression {
                 blocks,
@@ -823,6 +831,15 @@ impl BtcMeta {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// "블록 높이 기록 초기화" (spec/08 §2 step 2): forgets `max_tip_seen` after a Core endpoint
+    /// reported a wrong, too high tip that now blocks every check (`TipRegression`). The next
+    /// check stores the tip it sees again. Returns whether meta changed.
+    pub const fn reset_max_tip(&mut self) -> bool {
+        let changed = self.max_tip_seen != 0;
+        self.max_tip_seen = 0;
+        changed
     }
 
     /// Startup reconciliation (spec/08 §3.2): `change_next = max(meta, journal floor)` with the
@@ -848,7 +865,7 @@ impl BtcMeta {
             return Ok(false);
         };
         let next = index.checked_add(1).ok_or(MetaError::IndexExhausted)?;
-        if next > MAX_NEXT {
+        if next > MAX_NEXT || next > BTC_MAX_ADDRESS_INDEX {
             return Err(MetaError::IndexExhausted);
         }
         if next > self.change_next {
@@ -856,6 +873,20 @@ impl BtcMeta {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// A send was refused by the node without being relayed (`sendrawtransaction` `-25`/`-26`,
+    /// spec/08 §3.2): `change_next` goes back to `change_index` when it was raised for this
+    /// transaction only (`change_next == change_index + 1`), so the index is used again. Returns
+    /// whether meta changed.
+    pub fn on_send_rejected(&mut self, change_index: Option<u32>) -> bool {
+        match change_index {
+            Some(index) if index.checked_add(1) == Some(self.change_next) => {
+                self.change_next = index;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// `(chain, index)` when `script` is one of our P2WPKH addresses in
@@ -922,19 +953,29 @@ struct Scan {
     gap: u32,
     last: Option<u32>,
     done: bool,
+    /// The scan stops at this index (`BTC_DISCOVERY_MAX_SCAN` past its start, never above
+    /// `BTC_MAX_ADDRESS_INDEX`).
+    limit: u32,
 }
 
 const CHAINS: [BtcChain; 2] = [BtcChain::Receive, BtcChain::Change];
 
 impl Discovery {
-    /// Full discovery from index 0 of both chains (import, BTC enable, network change).
+    /// Full discovery from index 0 of both chains (import, BTC enable, network change), at most
+    /// `BTC_DISCOVERY_MAX_SCAN` addresses per chain.
     #[must_use]
     pub const fn full() -> Self {
+        let limit = if BTC_DISCOVERY_MAX_SCAN < BTC_MAX_ADDRESS_INDEX {
+            BTC_DISCOVERY_MAX_SCAN
+        } else {
+            BTC_MAX_ADDRESS_INDEX
+        };
         let scan = Scan {
             next_index: 0,
             gap: 0,
             last: None,
             done: false,
+            limit,
         };
         Self {
             scans: [scan, scan],
@@ -943,23 +984,28 @@ impl Discovery {
     }
 
     /// "더 찾기": each chain 20 more addresses from its current `next` (the gap rule continues
-    /// when history appears).
+    /// when history appears), at most `BTC_DISCOVERY_MAX_SCAN` per chain.
     #[must_use]
     pub const fn more(meta: &BtcMeta) -> Self {
+        const fn scan(next: u32, last: Option<u32>) -> Scan {
+            let wanted = next.saturating_add(BTC_DISCOVERY_MAX_SCAN);
+            let limit = if wanted < BTC_MAX_ADDRESS_INDEX {
+                wanted
+            } else {
+                BTC_MAX_ADDRESS_INDEX
+            };
+            Scan {
+                next_index: next,
+                gap: 0,
+                last,
+                done: next >= limit || next >= MAX_NEXT,
+                limit,
+            }
+        }
         Self {
             scans: [
-                Scan {
-                    next_index: meta.receive_next,
-                    gap: 0,
-                    last: meta.last_used_receive,
-                    done: meta.receive_next >= MAX_NEXT,
-                },
-                Scan {
-                    next_index: meta.change_next,
-                    gap: 0,
-                    last: meta.last_used_change,
-                    done: meta.change_next >= MAX_NEXT,
-                },
+                scan(meta.receive_next, meta.last_used_receive),
+                scan(meta.change_next, meta.last_used_change),
             ],
             checked: 0,
         }
@@ -987,7 +1033,8 @@ impl Discovery {
             scan.gap = scan.gap.saturating_add(1);
         }
         scan.next_index = scan.next_index.saturating_add(1);
-        if scan.gap >= BTC_GAP_LIMIT || scan.next_index >= MAX_NEXT {
+        if scan.gap >= BTC_GAP_LIMIT || scan.next_index >= scan.limit || scan.next_index >= MAX_NEXT
+        {
             scan.done = true;
         }
         self.checked = self.checked.saturating_add(1);
@@ -1021,7 +1068,9 @@ impl Discovery {
                 BtcChain::Receive => (&mut meta.receive_next, &mut meta.last_used_receive),
                 BtcChain::Change => (&mut meta.change_next, &mut meta.last_used_change),
             };
-            *next = (*next).max(found_next).min(MAX_NEXT);
+            *next = (*next)
+                .max(found_next.min(BTC_MAX_ADDRESS_INDEX))
+                .min(MAX_NEXT);
             *last_used = match (*last_used, scan.last) {
                 (Some(a), Some(b)) => Some(a.max(b)),
                 (a, b) => a.or(b),

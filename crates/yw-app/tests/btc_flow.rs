@@ -547,13 +547,23 @@ fn esplora_tx_status_ambiguous() -> TestResult {
             TrackObservation::InMempool,
             false,
         ),
-        // -5 + {"confirmed":false} → NotFound (not_found_count + 1).
+        // -5 + {"confirmed":false} + /hex 404 → NotFound (not_found_count + 1).
         (
             Reply::RpcError(-5),
             unknown.to_owned(),
-            None,
+            Some(Reply::fixture(esplora::TESTNET4_TX_HEX_MISSING)),
             true,
             TrackObservation::NotFound,
+            false,
+        ),
+        // Review M1: -5 but the indexer still has it (/hex 200) → InMempool (server based):
+        // the round does not count towards [포기].
+        (
+            Reply::RpcError(-5),
+            unknown.to_owned(),
+            Some(Reply::fixture(esplora::TESTNET4_TX_HEX)),
+            true,
+            TrackObservation::InMempool,
             false,
         ),
         // -5 + confirmed → Confirmed{height}.
@@ -655,6 +665,160 @@ fn esplora_tx_status_ambiguous() -> TestResult {
         TrackObservation::NotFound
     );
     assert!(!rig.fake.methods().contains(&"getmempoolentry".to_owned()));
+    assert_eq!(
+        rig.fake
+            .get_paths()
+            .iter()
+            .filter(|path| path.ends_with("/hex"))
+            .count(),
+        1,
+        "the ambiguous status is probed"
+    );
+    Ok(())
+}
+
+/// Review M5: every candidate is checked with Core `gettxout [txid, vout, true]`: an output
+/// Core reports spent/unknown or unconfirmed is dropped, a confirmed one takes Core's height, a
+/// value that differs from the hash-verified one fails verification, and a failed call leaves
+/// the candidate indexer-only.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one refresh with every gettxout answer"
+)]
+fn refresh_checks_candidates_with_gettxout() -> TestResult {
+    let r0 = ours(BtcChain::Receive, 0)?;
+    let script = r0.script_pubkey();
+    let (raw_a, txid_a) = prev_tx(&[(script, 50_000)], 11)?;
+    let (_, txid_b) = prev_tx(&[(script, 9_000)], 12)?;
+    let (raw_c, txid_c) = prev_tx(&[(script, 3_000)], 13)?;
+    let (_, txid_d) = prev_tx(&[(script, 4_000)], 14)?;
+    let (raw_e, txid_e) = prev_tx(&[(script, 5_000)], 15)?;
+    let raws: HashMap<String, Vec<u8>> = [(txid_a, raw_a), (txid_c, raw_c), (txid_e, raw_e)]
+        .into_iter()
+        .map(|(txid, raw)| (txid.to_display_hex(), raw))
+        .collect();
+    let list = format!(
+        "[{},{},{},{},{}]",
+        utxo_entry(&txid_a, 0, 50_000, Some(TIP - 2)),
+        utxo_entry(&txid_b, 0, 9_000, Some(TIP - 2)),
+        utxo_entry(&txid_c, 0, 3_000, Some(TIP - 2)),
+        utxo_entry(&txid_d, 0, 4_000, Some(TIP - 2)),
+        utxo_entry(&txid_e, 0, 5_000, Some(TIP - 2)),
+    );
+    let hex = yw_core::hex::encode(&script);
+    let txout = move |confirmations: u32, value: &str| {
+        Reply::Result(format!(
+            "{{\"bestblock\":\"{}\",\"confirmations\":{confirmations},\"value\":{value},\"scriptPubKey\":{{\"hex\":\"{hex}\"}},\"coinbase\":false}}",
+            "00".repeat(32)
+        ))
+    };
+    let answers: HashMap<String, Reply> = [
+        // Confirmed for Core: 10 confirmations.
+        (txid_a, txout(10, "0.00050000")),
+        // Spent or unknown.
+        (txid_b, Reply::Result("null".to_owned())),
+        // The call fails: indexer only.
+        (txid_c, Reply::RpcError(-1)),
+        // Only in Core's mempool.
+        (txid_d, txout(0, "0.00004000")),
+        // Another value than the hash-verified one.
+        (txid_e, txout(3, "0.00005001")),
+    ]
+    .into_iter()
+    .map(|(txid, reply)| (txid.to_display_hex(), reply))
+    .collect();
+    let r0_text = r0.as_str().to_owned();
+    let rig = Rig::new(BtcIndexer::Esplora, move |call| match call.verb {
+        Verb::Rpc if call.method == "getrawtransaction" => raws
+            .get(&first_param(call))
+            .map_or(Reply::RpcError(-5), |raw| {
+                Reply::Result(format!("\"{}\"", yw_core::hex::encode(raw)))
+            }),
+        Verb::Rpc if call.method == "gettxout" => answers
+            .get(&first_param(call))
+            .cloned()
+            .unwrap_or_else(|| Reply::Result("null".to_owned())),
+        Verb::Get => {
+            let path = call.path();
+            match path_address(path) {
+                Some(address) if address == r0_text && path.ends_with("/utxo") => {
+                    Reply::json(&list)
+                }
+                Some(address) if address == r0_text => {
+                    Reply::json(&address_json(address, [5, 0, 5], [0, 0, 0]))
+                }
+                _ => healthy(call),
+            }
+        }
+        _ => healthy(call),
+    });
+    let client = BtcClient::new(rig.env(), &rig.endpoint);
+    let mut session = new_session();
+    let result = refresh(&client, &mut session, &refresh_job(1, 0))?;
+    let listed: Vec<(Txid, u32, bool)> = result
+        .candidates
+        .iter()
+        .map(|candidate| {
+            (
+                candidate.outpoint.txid,
+                candidate.height,
+                candidate.core.is_some(),
+            )
+        })
+        .collect();
+    // B (spent/unknown to Core) and D (unconfirmed for Core) are not listed.
+    assert_eq!(
+        listed,
+        [
+            (txid_a, TIP + 1 - 10, true),
+            (txid_c, TIP - 2, false),
+            (txid_e, TIP + 1 - 3, true),
+        ]
+    );
+    assert_eq!(
+        result.indexer_only(),
+        [OutPoint {
+            txid: txid_c,
+            vout: 0
+        }]
+    );
+    let verified: Vec<Txid> = result
+        .verified
+        .iter()
+        .map(|utxo| utxo.outpoint.txid)
+        .collect();
+    assert_eq!(verified, [txid_a, txid_c]);
+    assert_eq!(result.failed.len(), 1);
+    assert_eq!(result.failed[0].outpoint.txid, txid_e);
+    assert_eq!(result.failed[0].reason, VerifyFailure::CoreMismatch);
+    // Without `gettxout` (-32601) every candidate stays, indexer-only, after one call.
+    let list_b = format!("[{}]", utxo_entry(&txid_a, 0, 50_000, Some(TIP - 2)));
+    let r0_b = r0.as_str().to_owned();
+    let rig = Rig::new(BtcIndexer::Esplora, move |call| match call.verb {
+        Verb::Get => match path_address(call.path()) {
+            Some(address) if address == r0_b && call.path().ends_with("/utxo") => {
+                Reply::json(&list_b)
+            }
+            Some(address) if address == r0_b => {
+                Reply::json(&address_json(address, [1, 0, 1], [0, 0, 0]))
+            }
+            _ => healthy(call),
+        },
+        _ => healthy(call),
+    });
+    let client = BtcClient::new(rig.env(), &rig.endpoint);
+    let mut session = new_session();
+    let result = refresh(&client, &mut session, &refresh_job(1, 0))?;
+    assert_eq!(result.indexer_only().len(), 1);
+    assert_eq!(
+        rig.fake
+            .methods()
+            .iter()
+            .filter(|method| *method == "gettxout")
+            .count(),
+        1
+    );
     Ok(())
 }
 

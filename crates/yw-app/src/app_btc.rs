@@ -27,17 +27,19 @@ use yw_core::btc::meta::{BtcBalance, FreezeReason, MetaError};
 use yw_core::btc::policy::{BroadcastOutcome, broadcast_outcome, texts};
 use yw_core::btc::{
     BTC_CONF_TARGETS, BTC_POLL_SECS, BtcMeta, BtcNetwork, BtcSendFacts, Discovery, FeeRate,
-    OutPoint, Sats, SendAmount, SendPlan, Txid, build_btc_request, conf, parse_address,
+    OutPoint, Sats, SendAmount, SendPlan, Txid, build_btc_request, conf, encode_address,
+    parse_address,
 };
 use yw_core::journal::btc::{
-    BTC_TRACK_CONFIRMATIONS, BtcRecord, BtcTxState, TrackMode, bump_target, check_can_send,
-    in_flight, in_flight_outpoints, in_flight_replacements, track_mode,
+    BTC_TRACK_CONFIRMATIONS, BtcRecord, BtcTxState, TrackMode, abandoned_conflicts, bump_target,
+    check_can_send, current_record, in_flight, in_flight_outpoints, in_flight_replacements,
+    track_mode,
 };
 use yw_win::http::HttpsUrl;
 
 use crate::apikeys::ApiKeys;
 use crate::btc::broadcast::{EsploraPostOutcome, ManualBroadcastGate};
-use crate::btc::chain::ChainInput;
+use crate::btc::chain::{BtcBlock, ChainInput, CoreCheckFailure};
 use crate::btc::flow::{DiscoveryJob, RefreshJob, TrackItem};
 use crate::btc::work::{
     BtcRpcEvent, BtcRpcJob, BtcTarget, FeeInput, PrepareError, PrepareJob, PrepareKind, SignedTxRef,
@@ -70,6 +72,10 @@ pub const PENDING_INCOMING: &str = "미확정 입금 있음(미검증, 교체될
 pub const APPROVAL_EXPIRED: &str = "승인 시간이 지났습니다. 다시 검토하세요.";
 /// "(서버 기준)" suffix of confirmations (spec/08 §12.2-4).
 pub const SERVER_BASED: &str = "(서버 기준)";
+/// The "블록 높이 기록 초기화" confirmation (spec/08 §2 step 2).
+pub const RESET_TIP_TEXT: &str = "이 지갑이 기록한 가장 높은 블록 높이를 지웁니다. 노드(RPC)가 전에 잘못된(너무 높은) 높이를 알려 줘 지금 연결 검사가 계속 실패하는 경우에만 하세요. 노드가 오래된 체인을 보여 주는 경우라면 초기화하지 말고 노드 설정을 확인하세요. 초기화할까요?";
+/// UTXO mark of a candidate Core's `gettxout` did not confirm this refresh.
+pub const INDEXER_ONLY: &str = "인덱서만 확인(노드 미확인)";
 
 /// Everything the controller reads from the App (borrowed for one call).
 pub struct BtcCtx<'a> {
@@ -245,14 +251,11 @@ impl BtcCtx<'_> {
             .collect()
     }
 
-    /// The record `txid` of the settings network.
+    /// The record `txid` of the settings network (the current one: the last in journal order,
+    /// yw-core `current_record`).
     #[must_use]
     pub fn record(&self, txid: &Txid) -> Option<BtcRecord> {
-        let net = self.net();
-        self.all_records()
-            .iter()
-            .find(|record| record.network == net && record.txid == *txid)
-            .cloned()
+        current_record(self.all_records(), self.net(), txid).cloned()
     }
 
     /// Whether the settings network has an in-flight record (D20).
@@ -463,6 +466,11 @@ pub struct BtcSendForm {
     pub preparing: Option<u64>,
     /// Message (plan errors, T-APPR-EXPIRED, signing failures).
     pub info: Option<String>,
+    /// W-ADDR-3: the recipient looks like this known address (first 4 and last 4 characters
+    /// after the prefix equal); the note text.
+    pub look_alike: Option<String>,
+    /// `주소 전체를 직접 확인했습니다` (needed for `검토` while `look_alike`).
+    pub ack: bool,
 }
 
 /// The fee-bump form (spec/08 §9).
@@ -541,6 +549,9 @@ pub struct BtcTxFlow {
     pub comm_failure: bool,
     /// The pre-check failed to communicate: [다시 시도] (the record stays `Signed`).
     pub retry_precheck: bool,
+    /// The chain check right before `sendrawtransaction` failed: nothing was sent, the record
+    /// stays `Broadcasting` and [같은 바이트 다시 전송] retries (review fix).
+    pub retry_send: bool,
     /// Job.
     pub job: u64,
 }
@@ -578,6 +589,8 @@ pub enum BtcConfirm {
         /// Record.
         txid: Txid,
     },
+    /// "블록 높이 기록 초기화" after a `TipRegression` block (spec/08 §2 step 2).
+    ResetTip,
 }
 
 impl BtcConfirm {
@@ -613,6 +626,11 @@ impl BtcConfirm {
                 "Esplora로 전송",
                 "Bitcoin 노드(RPC)로 보낸 결과를 확인하지 못했습니다. 같은 서명 거래를 설정한 Esplora 서버로 보냅니다. 거래 내용은 어차피 네트워크에 공개되지만, 그 서버는 이 PC의 IP가 이 거래를 보냈다는 것을 알 수 있습니다. 보낼까요?".to_owned(),
                 "보내기",
+            ),
+            Self::ResetTip => (
+                "블록 높이 기록 초기화",
+                RESET_TIP_TEXT.to_owned(),
+                "초기화",
             ),
         }
     }
@@ -664,6 +682,10 @@ pub struct BtcActivityView {
 
 /// One verified UTXO for the freeze list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent marks of one UTXO row"
+)]
 pub struct BtcUtxoView {
     /// Output.
     pub outpoint: OutPoint,
@@ -679,6 +701,8 @@ pub struct BtcUtxoView {
     pub own: bool,
     /// The indexer's value differed ("서버 응답 불일치").
     pub hint_mismatch: bool,
+    /// Core's `gettxout` did not confirm it in the last refresh ("인덱서만 확인").
+    pub indexer_only: bool,
 }
 
 /// Periodic job state.
@@ -715,6 +739,11 @@ pub struct BtcUi {
     pub verify_failures: u32,
     /// Outputs whose indexer value differed from the verified one ("서버 응답 불일치").
     pub hint_mismatch: Vec<OutPoint>,
+    /// Outputs of the last refresh that only the indexer vouched for (no `gettxout` answer).
+    pub indexer_only: Vec<OutPoint>,
+    /// The session is blocked because the Core tip is below `max_tip_seen - 6`: [블록 높이 기록
+    /// 초기화] is offered.
+    pub tip_regressed: bool,
     /// Small deposits frozen automatically by the last refresh.
     pub auto_frozen: u32,
     /// Refresh.
@@ -764,6 +793,8 @@ impl Default for BtcUi {
             pending_incoming: false,
             verify_failures: 0,
             hint_mismatch: Vec::new(),
+            indexer_only: Vec::new(),
+            tip_regressed: false,
             auto_frozen: 0,
             refresh: BtcJobState::default(),
             track: BtcJobState::default(),
@@ -833,6 +864,69 @@ pub fn confirmations_text(confirmations: u32) -> String {
     }
 }
 
+/// "보내지 않았습니다" of a send stopped by the chain check.
+pub const NOT_SENT: &str =
+    "전송 직전 연결 검사에 실패해 보내지 않았습니다. [같은 바이트 다시 전송]으로 다시 시도하세요";
+
+/// Known addresses of the settings network for W-ADDR-3: Bitcoin address book entries, the
+/// recipients of earlier sends (`activity` counterparties) and this wallet's watched addresses
+/// (spec/08 §3.3), with the name shown in the note.
+fn known_addresses(ctx: &BtcCtx<'_>) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    if let Some(meta) = ctx.meta {
+        for entry in &meta.address_book {
+            let Some(object) = entry.as_object() else {
+                continue;
+            };
+            if object.get("chain").and_then(yw_json::Value::as_str) != Some("btc") {
+                continue;
+            }
+            if let (Some(address), Some(label)) = (
+                object.get("address").and_then(yw_json::Value::as_str),
+                object.get("label").and_then(yw_json::Value::as_str),
+            ) {
+                out.push((address.to_ascii_lowercase(), format!("주소록: {label}")));
+            }
+        }
+        for entry in meta.activity_of(&network_id(ctx.net()).to_string()) {
+            if !entry.counterparty.is_empty() {
+                out.push((
+                    entry.counterparty.to_ascii_lowercase(),
+                    "이전에 보낸 주소".to_owned(),
+                ));
+            }
+        }
+    }
+    if let Some(watch) = ctx.btc_meta().and_then(|meta| meta.watch_set().ok()) {
+        for (chain, index, address) in watch {
+            let name = match chain {
+                BtcChain::Receive => format!("내 받기 주소 #{index}"),
+                BtcChain::Change => format!("내 잔돈 주소 #{index}"),
+            };
+            out.push((address.as_str().to_ascii_lowercase(), name));
+        }
+    }
+    out
+}
+
+/// The W-ADDR-3 note of `address` (spec/04 §2.15 row 7 for Bitcoin), `None` when it is not a
+/// look-alike of a known address (or is exactly one).
+fn look_alike_note(ctx: &BtcCtx<'_>, address: &str) -> Option<String> {
+    let known = known_addresses(ctx);
+    let lower = address.to_ascii_lowercase();
+    if known.iter().any(|(known, _)| *known == lower) {
+        return None;
+    }
+    known
+        .iter()
+        .find(|(known, _)| yw_core::btc::address::is_look_alike(known, &lower))
+        .map(|(_, name)| {
+            format!(
+                "'{name}'과 앞 4자·끝 4자가 같지만 다른 주소입니다. 주소 오염 공격일 수 있습니다."
+            )
+        })
+}
+
 fn activity_status(status: &str) -> String {
     match status {
         "succeeded" => format!("확정(6+) {SERVER_BASED}"),
@@ -870,6 +964,7 @@ impl BtcUi {
             note: None,
             comm_failure: false,
             retry_precheck: false,
+            retry_send: false,
             job,
         });
         job
@@ -1263,7 +1358,26 @@ impl BtcUi {
                 actions.push(BtcAction::Screen(BtcScreen::Back));
                 actions
             }
+            BtcConfirm::ResetTip => {
+                let mut actions = Vec::new();
+                if ctx.unlocked && ctx.btc_meta().is_some() && ctx.mismatch().is_none() {
+                    actions.push(key_job(KeyJob::BtcMeta {
+                        op: BtcMetaOp::ResetTip { network: ctx.net() },
+                    }));
+                }
+                actions.push(BtcAction::Screen(BtcScreen::Back));
+                actions
+            }
         }
+    }
+
+    /// [블록 높이 기록 초기화] (offered while the session is blocked by a tip regression).
+    pub fn reset_tip(&mut self, ctx: &BtcCtx<'_>) -> Vec<BtcAction> {
+        if !self.tip_regressed || !ctx.unlocked || ctx.btc_meta().is_none() {
+            return Vec::new();
+        }
+        self.confirm = Some(BtcConfirm::ResetTip);
+        vec![BtcAction::Confirm]
     }
 
     /// The overlay's no button.
@@ -1453,6 +1567,7 @@ impl BtcUi {
     /// Validates the form (local checks; the plan job does the rest).
     pub fn validate(&mut self, ctx: &BtcCtx<'_>) {
         let net = ctx.net();
+        let previous = self.send.recipient;
         let form = &mut self.send;
         let to = form.to_text.trim();
         if to.is_empty() {
@@ -1469,6 +1584,12 @@ impl BtcUi {
                     form.recipient_error = Some(error.text(net).to_owned());
                 }
             }
+        }
+        if form.recipient != previous {
+            form.ack = false;
+            form.look_alike = form
+                .recipient
+                .and_then(|kind| look_alike_note(ctx, &encode_address(&kind, net)));
         }
         let amount = form.amount_text.trim();
         if form.send_max || amount.is_empty() {
@@ -1581,6 +1702,12 @@ impl BtcUi {
             && (form.send_max || (form.amount.is_some() && form.amount_error.is_none()))
             && form.fee.error.is_none()
             && form.fee.input().is_some()
+            && (form.look_alike.is_none() || form.ack)
+    }
+
+    /// `주소 전체를 직접 확인했습니다` (W-ADDR-3).
+    pub fn toggle_address_ack(&mut self) {
+        self.send.ack = !self.send.ack;
     }
 
     fn prepare_job(
@@ -1596,6 +1723,7 @@ impl BtcUi {
         let job = self.job();
         let work = PrepareJob {
             in_flight: in_flight_outpoints(ctx.all_records(), ctx.net()),
+            conflicts: abandoned_conflicts(ctx.all_records(), ctx.net(), ctx.now_unix_ms / 1_000),
             meta,
             kind,
             fee: fee_input,
@@ -1813,7 +1941,8 @@ impl BtcUi {
         vec![BtcAction::Confirm]
     }
 
-    /// [같은 바이트 다시 전송] of a `BroadcastUnknown` record (spec/08 §12.2-3).
+    /// [같은 바이트 다시 전송] of a `BroadcastUnknown` record (spec/08 §12.2-3), also of a
+    /// `Broadcasting` record whose send stopped at the chain check (nothing was sent).
     pub fn rebroadcast(&mut self, ctx: &BtcCtx<'_>, txid: Txid) -> Vec<BtcAction> {
         if ctx.gate().is_err() {
             return Vec::new();
@@ -1821,7 +1950,10 @@ impl BtcUi {
         let Some(record) = ctx.record(&txid) else {
             return Vec::new();
         };
-        if record.state != BtcTxState::BroadcastUnknown {
+        let retry_send = self.flow(&txid).is_some_and(|flow| flow.retry_send);
+        if record.state != BtcTxState::BroadcastUnknown
+            && !(record.state == BtcTxState::Broadcasting && retry_send)
+        {
             return Vec::new();
         }
         let (Some(tx), Ok(target)) = (signed_ref(&record), ctx.target()) else {
@@ -1854,15 +1986,19 @@ impl BtcUi {
         })
     }
 
-    /// Whether [Esplora로 전송] is offered for `txid` (spec/08 §11.3; the worker re-checks).
+    /// Whether [Esplora로 전송] is offered for `txid` (spec/08 §11.3; the worker re-checks). The
+    /// "last Core send was a communication failure" fact is this session's flow when there is
+    /// one, else the journal's persisted flag (it survives a restart).
     #[must_use]
     pub fn esplora_offered(&self, ctx: &BtcCtx<'_>, txid: &Txid) -> bool {
         ctx.settings.indexer == BtcIndexer::Esplora
             && self.indexer_verified
-            && ctx
-                .record(txid)
-                .is_some_and(|record| record.state == BtcTxState::BroadcastUnknown)
-            && self.flow(txid).is_some_and(|flow| flow.comm_failure)
+            && ctx.record(txid).is_some_and(|record| {
+                record.state == BtcTxState::BroadcastUnknown
+                    && self
+                        .flow(txid)
+                        .map_or(record.last_send_comm_failure, |flow| flow.comm_failure)
+            })
     }
 
     /// [Esplora로 전송] (confirmation T-BTC-ESPLORA-BROADCAST first).
@@ -1968,6 +2104,16 @@ impl BtcUi {
                                 );
                             }
                             actions.push(BtcAction::Screen(BtcScreen::Receive));
+                        }
+                    }
+                    BtcMetaDone::TipReset => {
+                        // Forget the blocked sessions; the next check stores the tip it sees.
+                        self.tip_regressed = false;
+                        self.blocked = None;
+                        self.indexer_verified = false;
+                        actions.push(btc_job(BtcRpcJob::Reset));
+                        if let Some(meta) = meta {
+                            actions.extend(self.refresh_with(ctx, &meta, Trigger::User));
                         }
                     }
                     BtcMetaDone::Tip
@@ -2138,6 +2284,7 @@ impl BtcUi {
         let job = self.job();
         if let Some(flow) = self.flow_mut(&txid) {
             flow.stage = BtcFlowStage::Sending;
+            flow.retry_send = false;
             flow.job = job;
         } else {
             self.flows.push(BtcTxFlow {
@@ -2147,6 +2294,7 @@ impl BtcUi {
                 note: None,
                 comm_failure: false,
                 retry_precheck: false,
+                retry_send: false,
                 job,
             });
         }
@@ -2311,6 +2459,7 @@ impl BtcUi {
                             .filter(|utxo| utxo.hint_mismatch)
                             .map(|utxo| utxo.outpoint)
                             .collect();
+                        self.indexer_only = refreshed.indexer_only();
                         vec![key_job(KeyJob::BtcMeta {
                             op: BtcMetaOp::Refreshed {
                                 network: net,
@@ -2319,6 +2468,7 @@ impl BtcUi {
                                     newly: refreshed.newly(),
                                     history: refreshed.history(),
                                     max_tip_seen: refreshed.chain.max_tip_seen,
+                                    now_unix: ctx.now_unix_ms / 1_000,
                                 }),
                             },
                         })]
@@ -2412,7 +2562,8 @@ impl BtcUi {
                             PrepareError::FeeOverflow
                             | PrepareError::Plan(_)
                             | PrepareError::FeeUnoverridable
-                            | PrepareError::Derivation => *info = Some(text),
+                            | PrepareError::Derivation
+                            | PrepareError::TipAhead { .. } => *info = Some(text),
                         }
                         Vec::new()
                     }
@@ -2467,11 +2618,21 @@ impl BtcUi {
                 let result = match result {
                     Ok(result) => result,
                     Err(error) => {
+                        // The chain check right before `sendrawtransaction` failed: nothing
+                        // was sent. Not `BroadcastUnknown`: the record stays `Broadcasting`
+                        // and [같은 바이트 다시 전송] retries (a restart makes it
+                        // `BroadcastUnknown`, spec/08 §12.1).
+                        let text = error.text(ctx.settings.indexer).map_or_else(
+                            || NOT_SENT.to_owned(),
+                            |text| format!("{NOT_SENT} — {text}"),
+                        );
                         if let Some(flow) = self.flow_mut(&txid) {
-                            flow.note = error.text(ctx.settings.indexer);
+                            flow.stage = BtcFlowStage::Waiting;
+                            flow.retry_send = true;
+                            flow.note = Some(text);
                         }
                         self.note_error(ctx, error);
-                        yw_core::btc::policy::SendRawResult::Refused
+                        return Vec::new();
                     }
                 };
                 if let BroadcastOutcome::BroadcastUnknown { comm_failure, .. } =
@@ -2563,6 +2724,7 @@ impl BtcUi {
         self.tip = Some(tip);
         self.lag_warning = lag;
         self.blocked = None;
+        self.tip_regressed = false;
     }
 
     fn note_error(&mut self, ctx: &BtcCtx<'_>, error: BtcError) {
@@ -2570,6 +2732,7 @@ impl BtcUi {
             BtcError::Blocked(block) => {
                 self.blocked = Some(block.text());
                 self.indexer_verified = false;
+                self.tip_regressed = block == BtcBlock::Core(CoreCheckFailure::TipRegressed);
             }
             BtcError::Cooldown | BtcError::Cancelled => {}
             other => self.status_error = other.text(ctx.settings.indexer),
@@ -2615,6 +2778,7 @@ impl BtcUi {
                 in_flight: in_flight.contains(&utxo.outpoint),
                 own: utxo.own,
                 hint_mismatch: self.hint_mismatch.contains(&utxo.outpoint),
+                indexer_only: self.indexer_only.contains(&utxo.outpoint),
             })
             .collect()
     }
@@ -2633,6 +2797,7 @@ impl BtcUi {
                 let busy = self.flow(&record.txid).is_some_and(|flow| {
                     flow.stage != BtcFlowStage::Done && flow.stage != BtcFlowStage::Waiting
                 });
+                let retry_send = self.flow(&record.txid).is_some_and(|flow| flow.retry_send);
                 BtcActivityView {
                     txid: record.txid.to_display_hex(),
                     title: record.title(),
@@ -2642,7 +2807,9 @@ impl BtcUi {
                     time_unix_ms: record.updated_at_unix.saturating_mul(1_000),
                     journal: true,
                     can_bump: bump == Some(record.txid) && !self.slot,
-                    can_rebroadcast: record.state == BtcTxState::BroadcastUnknown && !busy,
+                    can_rebroadcast: (record.state == BtcTxState::BroadcastUnknown
+                        || (record.state == BtcTxState::Broadcasting && retry_send))
+                        && !busy,
                     can_abandon: record.state == BtcTxState::BroadcastUnknown
                         && record.can_abandon()
                         && !busy,
@@ -3035,6 +3202,16 @@ impl crate::app::App {
     /// [취소] of a `Signed` record.
     pub fn btc_cancel_signed(&mut self, txid: Txid) {
         self.btc_call(|ui, _| ui.cancel_signed(txid));
+    }
+
+    /// [블록 높이 기록 초기화] (confirmation first).
+    pub fn btc_reset_tip(&mut self) {
+        self.btc_call(BtcUi::reset_tip);
+    }
+
+    /// `주소 전체를 직접 확인했습니다` (W-ADDR-3).
+    pub fn btc_toggle_address_ack(&mut self) {
+        self.btc.toggle_address_ack();
     }
 
     /// [같은 바이트 다시 전송].

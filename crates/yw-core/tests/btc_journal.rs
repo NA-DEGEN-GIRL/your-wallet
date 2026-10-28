@@ -17,9 +17,9 @@ use yw_core::btc::select::{BumpRequest, PlanError, SendAmount, SendPlan, plan_fe
 use yw_core::btc::tx::{OutPoint, Txid};
 use yw_core::journal::btc::{
     BTC_ABANDON_WINDOW_SECS, BTC_JOURNAL_HEADER_LEN, BTC_JOURNAL_INPUT_LEN, BTC_JOURNAL_MAX_BODY,
-    BtcEntries, BtcRecord, BtcRecordError, BtcTxState, RecordChange, TrackInput, TrackMode,
-    TrackObservation, TransitionError, TxSeen, activity_row, apply_observation, bump_target,
-    change_next_floor, check_can_send, check_plan_allowed, finished_rows, has_room,
+    BtcEntries, BtcPushError, BtcRecord, BtcRecordError, BtcTxState, RecordChange, TrackInput,
+    TrackMode, TrackObservation, TransitionError, TxSeen, activity_row, apply_observation,
+    bump_target, change_next_floor, check_can_send, check_plan_allowed, finished_rows, has_room,
     hold_confirmation, in_flight, in_flight_outpoints, in_flight_replacements, is_finished,
     make_room, normalize_on_startup, observe, own_outputs, prune_finished, push_record,
     recorded_amounts, replacement_ancestors, set_state, track_mode,
@@ -89,7 +89,7 @@ fn free_position(record: &BtcRecord, position: usize, bit: u8) -> bool {
     let inputs_end = BTC_JOURNAL_HEADER_LEN + BTC_JOURNAL_INPUT_LEN * record.inputs.len();
     match position {
         2 | 4..36 | 100..132 | 148..152 => true,
-        3 => bit < 2,
+        3 => bit < 2 || bit == 6,
         152..184 => record.replaces.is_some(),
         184..216 => record.replaced_by.is_some(),
         216..220 => record.confirmed_height.is_some(),
@@ -128,6 +128,7 @@ fn journal_codec_roundtrip_and_truncation() {
         change_next: 0,
         layout_seed: SEED,
         typed_fee_override: None,
+        conflicts: &[],
     })
     .unwrap();
     let typed = yw_core::btc::select::plan_send(&yw_core::btc::select::SendRequest {
@@ -141,6 +142,7 @@ fn journal_codec_roundtrip_and_truncation() {
         change_next: 0,
         layout_seed: SEED,
         typed_fee_override: Some(over.fee()),
+        conflicts: &[],
     })
     .unwrap();
     assert!(typed.fee_override_typed());
@@ -225,8 +227,14 @@ fn journal_codec_roundtrip_and_truncation() {
     version[0] = 2;
     assert_eq!(BtcRecord::decode(&version), Err(BtcRecordError::Version));
     let mut unknown_flag = body.clone();
-    unknown_flag[3] |= 0x40;
+    unknown_flag[3] |= 0x80;
     assert_eq!(BtcRecord::decode(&unknown_flag), Err(BtcRecordError::Value));
+    // bit6: the last send was a communication failure (kept across restarts).
+    let mut comm = body.clone();
+    comm[3] |= 0x40;
+    let decoded = BtcRecord::decode(&comm).unwrap();
+    assert!(decoded.last_send_comm_failure);
+    assert_eq!(decoded.encode().unwrap(), comm);
     let mut state = body.clone();
     state[2] = 11;
     assert_eq!(BtcRecord::decode(&state), Err(BtcRecordError::Value));
@@ -285,10 +293,10 @@ fn state_table() {
             InMempool,
             &[Confirmed, Replaced, BroadcastUnknown, Conflicted],
         ),
-        (Confirmed, &[]),
+        (Confirmed, &[InMempool, BroadcastUnknown]),
         (Replaced, &[Confirmed, Conflicted]),
         (Conflicted, &[]),
-        (Abandoned, &[Confirmed]),
+        (Abandoned, &[Confirmed, Conflicted]),
     ];
     for (from, targets) in allowed {
         for to in ALL_STATES {
@@ -381,14 +389,22 @@ fn tracking_decisions() {
     use TrackObservation::{Confirmed, InMempool, NeedRawProbe, NotFound};
     let confirmed = TxSeen::Confirmed { height: 7 };
     assert_eq!(observe(TrackInput::MempoolEntry), InMempool);
-    for (seen, expected) in [
-        (confirmed, Confirmed { height: 7 }),
-        (TxSeen::Unconfirmed, NotFound),
-        (TxSeen::NotFound, NotFound),
-        (TxSeen::UnconfirmedOrUnknown, NotFound),
+    // Review fix M1: Core's mempool lacks it, but an indexer that still sees it unconfirmed (or
+    // knows its raw bytes after an ambiguous Esplora status) keeps it "in a mempool": the round
+    // does not count towards [포기].
+    for (seen, raw_found, expected) in [
+        (confirmed, None, Confirmed { height: 7 }),
+        (TxSeen::Unconfirmed, None, InMempool),
+        (TxSeen::NotFound, None, NotFound),
+        (TxSeen::UnconfirmedOrUnknown, None, NeedRawProbe),
+        (TxSeen::UnconfirmedOrUnknown, Some(true), InMempool),
+        (TxSeen::UnconfirmedOrUnknown, Some(false), NotFound),
     ] {
         assert_eq!(
-            observe(TrackInput::NotInMempool { indexer: seen }),
+            observe(TrackInput::NotInMempool {
+                indexer: seen,
+                raw_found
+            }),
             expected
         );
     }
@@ -639,9 +655,13 @@ fn inflight_blocks_new_send() {
     ] {
         let records = vec![record(&first, state, 1)];
         assert_eq!(check_can_send(&records, NET), Err(PlanError::InFlight));
+        // Its inputs, and its own (unconfirmed) change output.
         assert_eq!(
             in_flight_outpoints(&records, NET),
-            vec![first.inputs()[0].outpoint]
+            vec![
+                first.inputs()[0].outpoint,
+                records[0].change_outpoint().unwrap()
+            ]
         );
     }
     for state in [
@@ -877,7 +897,7 @@ fn room_and_full() {
     assert!(!has_room(&plain));
     assert_eq!(
         push_record(&mut plain, &finished[0]),
-        Err(JournalError::Full)
+        Err(BtcPushError::Full)
     );
     let rows = make_room(&mut plain, NET, TIP, 10, 1).unwrap();
     assert_eq!(rows.len(), 1);
@@ -1060,6 +1080,7 @@ fn bump_of_unknown_replacement_while_original_in_mempool() {
             .inputs()
             .iter()
             .map(|input| input.outpoint)
+            .chain(after[2].change_outpoint())
             .collect::<Vec<_>>()
     );
     apply_observation(

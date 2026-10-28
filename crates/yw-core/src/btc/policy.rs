@@ -98,7 +98,16 @@ pub mod texts {
     /// RPC `-26`.
     pub const RPC_REJECTED: &str = "노드가 거래를 거부했습니다";
     /// `Abandoned` confirmation (spec/08 §12.1).
-    pub const ABANDON_CONFIRM: &str = "이미 다른 노드에 퍼졌다면 나중에 확정될 수 있습니다";
+    pub const ABANDON_CONFIRM: &str = "이 거래는 이미 다른 노드에 퍼졌다면 나중에 확정될 수 있습니다. 포기한 뒤 같은 사람에게 다시 보내면 두 거래가 모두 확정되어 두 번 지불될 수 있습니다. 그래서 다음 보내기는 이 거래의 입력을 하나 이상 다시 써서, 둘 중 하나만 확정되게 합니다(30일 동안).";
+    /// A live abandoned transaction cannot be conflicted by the new send (spec/08 §12.1).
+    pub const ABANDONED_NOT_CONFLICTED: &str = "포기한 거래의 입력을 이번 보내기에 쓸 수 없어 보내지 않았습니다(두 번 지불 방지). 그 입력의 동결을 풀거나, 포기한 거래가 확정·충돌로 끝나거나 30일이 지난 뒤 다시 하세요";
+    /// A Core tip at or above 500,000,000 (spec/08 §2 step 2).
+    pub const TIP_IMPLAUSIBLE: &str = "노드가 알려준 블록 높이가 올바르지 않아 보내지 않았습니다";
+    /// The change chain is exhausted (spec/08 §3.2).
+    pub const CHANGE_INDEX_EXHAUSTED: &str =
+        "잔돈 주소 인덱스를 모두 써서 잔돈이 있는 거래를 만들 수 없습니다";
+    /// A planned input is no longer recorded (a refresh during the approval removed it).
+    pub const INPUT_NOT_RECORDED: &str = "승인하는 동안 입력 UTXO가 검증 목록에서 빠졌습니다(이미 사용되었거나 인덱서 목록에서 사라짐). 서명하지 않았습니다. 다시 검토하세요";
 }
 
 fn warning(rule: RuleId, text: String) -> Warning {
@@ -359,7 +368,8 @@ pub enum SendRawResult {
     /// Transport failure (TLS, connection, HTTP 5xx, 429 abort).
     Transport,
     /// No usable answer that is not a communication failure (HTTP 4xx other than 429, a
-    /// malformed envelope) or nothing sent (the chain check before the call failed).
+    /// malformed envelope). (A chain check that fails before the call sends nothing: the app
+    /// keeps the record `Broadcasting` and never maps it here.)
     Refused,
 }
 

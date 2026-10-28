@@ -15,7 +15,8 @@ use btc_support::{
 };
 use yw_app::btc::broadcast::{send_raw_transaction, test_mempool_accept};
 use yw_app::btc::chain::{
-    ChainInput, CoreCheckFailure, check_core, ensure_chain, judge_blockchain_info, lag_warning_text,
+    ChainInput, CoreCheckFailure, check_core, ensure_chain, judge_blockchain_info,
+    lag_warning_text, tip_ahead_check,
 };
 use yw_app::btc::flow::{DiscoveryJob, RefreshJob, TrackJob, discover, observe_tx, refresh};
 use yw_app::btc::rpc::BlockchainInfo;
@@ -474,5 +475,79 @@ fn chain_check_before_broadcast() -> TestResult {
         .is_err()
     );
     assert_eq!(rig.fake.methods(), ["getblockhash"]);
+    Ok(())
+}
+
+/// Review M2: a Core tip at or above 500,000,000 (a lock-time timestamp) blocks the session; a
+/// Core tip far above the Esplora tip raises `max_tip_seen` only to the indexer tip + 3, and
+/// planning is refused while it is more than 6 blocks ahead.
+#[test]
+fn implausible_and_runaway_core_tip() -> TestResult {
+    let net = BtcNetwork::Testnet4;
+    let at = |blocks: u32| BlockchainInfo {
+        chain: Some(net),
+        blocks,
+        headers: blocks,
+        initial_block_download: false,
+        median_time: NOW_UNIX_SECS,
+    };
+    assert_eq!(
+        judge_blockchain_info(&at(499_999_999), net, 0, NOW_UNIX_SECS),
+        Ok(499_999_999)
+    );
+    assert_eq!(
+        judge_blockchain_info(&at(500_000_000), net, 0, NOW_UNIX_SECS),
+        Err(CoreCheckFailure::TipImplausible)
+    );
+    // Through the pipeline: blocked.
+    let rig = Rig::new(BtcIndexer::Esplora, move |call| {
+        if call.method == "getblockchaininfo" {
+            Reply::Result(chain_info(
+                "testnet4",
+                600_000_000,
+                600_000_000,
+                false,
+                MEDIAN_TIME,
+            ))
+        } else {
+            healthy(call)
+        }
+    });
+    let client = BtcClient::new(rig.env(), &rig.endpoint);
+    let mut session = new_session();
+    assert_eq!(
+        ensure_chain(&client, &mut session, chain_input(), false),
+        Err(BtcError::Blocked(BtcBlock::Core(
+            CoreCheckFailure::TipImplausible
+        )))
+    );
+    // Core 100 blocks above the Esplora tip (157,717): `max_tip_seen` stops at indexer + 3.
+    let ahead = TIP + 100;
+    let rig = Rig::new(BtcIndexer::Esplora, move |call| {
+        if call.method == "getblockchaininfo" {
+            Reply::Result(chain_info("testnet4", ahead, ahead, false, MEDIAN_TIME))
+        } else {
+            healthy(call)
+        }
+    });
+    let client = BtcClient::new(rig.env(), &rig.endpoint);
+    let mut session = new_session();
+    let status = ensure_chain(&client, &mut session, chain_input(), false)?;
+    assert_eq!(status.tip_height, ahead);
+    assert_eq!(status.max_tip_seen, TIP + 3);
+    assert_eq!(session.indexer_tip(), Some(TIP));
+    let status = ensure_chain(&client, &mut session, chain_input(), true)?;
+    assert_eq!(status.max_tip_seen, TIP + 3, "cached path capped too");
+    assert_eq!(
+        tip_ahead_check(&client, &mut session, ahead)?,
+        Err((ahead, TIP))
+    );
+    assert_eq!(tip_ahead_check(&client, &mut session, TIP + 6)?, Ok(()));
+    // `bb-*` has no indexer tip: nothing to compare.
+    let rig = Rig::new(BtcIndexer::BbRpc, healthy);
+    let client = BtcClient::new(rig.env(), &rig.endpoint);
+    let mut session = new_session();
+    assert_eq!(tip_ahead_check(&client, &mut session, ahead)?, Ok(()));
+    assert_eq!(rig.fake.count(), 0);
     Ok(())
 }

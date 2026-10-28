@@ -25,8 +25,8 @@ use super::network::BtcNetwork;
 use super::script::{P2WPKH_SPK_LEN, dust_threshold, p2wpkh_script_pubkey, spk_len};
 use super::tx::{OutPoint, Transaction, TxIn, TxOut, Txid, estimate_weight};
 use super::{
-    BTC_CHANGE_DUST, BTC_COINBASE_MATURITY, BTC_MAX_INPUTS, BTC_MIN_CONF, BTC_SEQUENCE,
-    BTC_TX_VERSION, conf,
+    BTC_CHANGE_DUST, BTC_COINBASE_MATURITY, BTC_LOCKTIME_THRESHOLD, BTC_MAX_ADDRESS_INDEX,
+    BTC_MAX_INPUTS, BTC_MIN_CONF, BTC_SEQUENCE, BTC_TX_VERSION, conf,
 };
 use crate::approval::ApprovalKind;
 use crate::bip32::path::BtcChain;
@@ -135,6 +135,14 @@ pub enum PlanError {
     Key(KeyError),
     /// Size or amount arithmetic overflow.
     Overflow,
+    /// A live abandoned transaction (spec/08 §12.1) has no input the send can spend (frozen,
+    /// immature or gone), or the plan spends none of its inputs: sending now could pay twice.
+    AbandonedNotConflicted,
+    /// The Core tip is not a plausible block height (`>= 500,000,000` would make `lock_time` a
+    /// timestamp).
+    TipImplausible,
+    /// The change chain reached `BTC_MAX_ADDRESS_INDEX`.
+    ChangeIndexExhausted,
 }
 
 impl fmt::Display for PlanError {
@@ -157,6 +165,9 @@ impl fmt::Display for PlanError {
             Self::NotBumpable => formatter.write_str(texts::NOT_BUMPABLE),
             Self::Key(_) => formatter.write_str(texts::DERIVATION_FAILED),
             Self::Overflow => formatter.write_str(texts::PLAN_OVERFLOW),
+            Self::AbandonedNotConflicted => formatter.write_str(texts::ABANDONED_NOT_CONFLICTED),
+            Self::TipImplausible => formatter.write_str(texts::TIP_IMPLAUSIBLE),
+            Self::ChangeIndexExhausted => formatter.write_str(texts::CHANGE_INDEX_EXHAUSTED),
         }
     }
 }
@@ -396,6 +407,10 @@ pub struct SendRequest<'a> {
     pub layout_seed: [u8; 32],
     /// The send form's "exact fee" input that lifts the cap (B03) when equal to the plan fee.
     pub typed_fee_override: Option<Sats>,
+    /// The input sets of live abandoned transactions (`journal::btc::abandoned_conflicts`): the
+    /// plan spends at least one outpoint of every set (spec/08 §12.1), so the abandoned
+    /// transaction and this one can never both confirm.
+    pub conflicts: &'a [Vec<OutPoint>],
 }
 
 /// The transaction a fee bump replaces (from `journal::btc::BtcRecord::bump_source`).
@@ -507,10 +522,22 @@ struct BumpMin {
     incremental: FeeRate,
 }
 
+/// Core's truncated rate `floor(fee × 1000 / vsize)` sat/kvB (`CFeeRate(fee, vsize)`), the
+/// value its replacement rule compares.
+fn truncated_rate_kvb(fee: Sats, vsize: u64) -> Option<u128> {
+    u128::from(fee.get())
+        .checked_mul(1_000)?
+        .checked_div(u128::from(vsize))
+}
+
 impl BumpMin {
     /// The smallest fee of a replacement of `new_vsize` (spec/08 §9): at least
-    /// `old_fee + ceil(incremental × new_vsize / 1000)` and a strictly higher rate
-    /// (`new_fee × old_vsize > old_fee × new_vsize`).
+    /// `old_fee + ceil(incremental × new_vsize / 1000)`, a strictly higher exact rate
+    /// (`new_fee × old_vsize > old_fee × new_vsize`), and a strictly higher rate as Core
+    /// compares it (truncated to sat/kvB): the fee is rounded up from
+    /// `floor(old_fee × 1000 / old_vsize) + 1` sat/kvB, so two rates that truncate to the same
+    /// sat/kvB value never count as an increase. The signed vsize is never above `new_vsize`,
+    /// which only raises the replacement's rate.
     fn required(self, new_vsize: u64) -> Result<Sats, PlanError> {
         let increment = fee_for(self.incremental, new_vsize).ok_or(PlanError::Overflow)?;
         let by_increment = self
@@ -526,11 +553,19 @@ impl BumpMin {
             .and_then(|value| u64::try_from(value).ok())
             .and_then(Sats::new)
             .ok_or(PlanError::Overflow)?;
-        Ok(by_increment.max(by_rate))
+        let by_truncated = truncated_rate_kvb(self.old_fee, self.old_vsize)
+            .and_then(|rate| rate.checked_add(1))
+            .and_then(|rate| rate.checked_mul(u128::from(new_vsize)))
+            .map(|product| product.div_ceil(1_000))
+            .and_then(|value| u64::try_from(value).ok())
+            .and_then(Sats::new)
+            .ok_or(PlanError::Overflow)?;
+        Ok(by_increment.max(by_rate).max(by_truncated))
     }
 }
 
-/// Whether a replacement fee satisfies both spec/08 §9 rules.
+/// Whether a replacement fee satisfies the spec/08 §9 rules: the incremental relay fee, a
+/// strictly higher exact rate, and a strictly higher rate after Core's truncation to sat/kvB.
 #[must_use]
 pub fn bump_fee_ok(
     old_fee: Sats,
@@ -545,8 +580,11 @@ pub fn bump_fee_ok(
     };
     let new_side = u128::from(new_fee.get()).checked_mul(u128::from(old_vsize));
     let old_side = u128::from(old_fee.get()).checked_mul(u128::from(new_vsize));
+    let truncated = truncated_rate_kvb(new_fee, new_vsize)
+        .zip(truncated_rate_kvb(old_fee, old_vsize))
+        .is_some_and(|(new_rate, old_rate)| new_rate > old_rate);
     match (new_side, old_side) {
-        (Some(new_side), Some(old_side)) => new_fee >= minimum && new_side > old_side,
+        (Some(new_side), Some(old_side)) => new_fee >= minimum && new_side > old_side && truncated,
         _ => false,
     }
 }
@@ -700,11 +738,17 @@ fn change_script(
     index: u32,
     recipient: &[u8],
 ) -> Result<(u32, [u8; P2WPKH_SPK_LEN]), PlanError> {
+    if index >= BTC_MAX_ADDRESS_INDEX {
+        return Err(PlanError::ChangeIndexExhausted);
+    }
     let script = p2wpkh_script_pubkey(&p2wpkh_program(account, BtcChain::Change, index)?);
     if script.as_slice() != recipient {
         return Ok((index, script));
     }
     let next = index.checked_add(1).ok_or(PlanError::Overflow)?;
+    if next >= BTC_MAX_ADDRESS_INDEX {
+        return Err(PlanError::ChangeIndexExhausted);
+    }
     let script = p2wpkh_script_pubkey(&p2wpkh_program(account, BtcChain::Change, next)?);
     Ok((next, script))
 }
@@ -712,6 +756,9 @@ fn change_script(
 fn assemble(mut parts: Assembly<'_>) -> Result<SendPlan, PlanError> {
     if parts.inputs.is_empty() || parts.inputs.len() > BTC_MAX_INPUTS {
         return Err(PlanError::Overflow);
+    }
+    if parts.tip_height >= BTC_LOCKTIME_THRESHOLD {
+        return Err(PlanError::TipImplausible);
     }
     shuffle_inputs(&mut parts.inputs, &parts.seed)?;
     let recipient_script = script_pubkey(&parts.recipient);
@@ -790,14 +837,55 @@ fn assemble(mut parts: Assembly<'_>) -> Result<SendPlan, PlanError> {
     })
 }
 
+/// One outpoint of every conflict set (spec/08 §12.1), chosen greedily among the eligible
+/// candidates: a set already spent by an earlier choice is skipped; otherwise the candidate of
+/// the set that hits the most remaining sets, then the larger value, then the step-1 tie
+/// break.
+///
+/// # Errors
+///
+/// [`PlanError::AbandonedNotConflicted`] when a set has no eligible candidate.
+fn forced_inputs(candidates: &[Utxo], groups: &[Vec<OutPoint>]) -> Result<Vec<Utxo>, PlanError> {
+    let hits = |utxo: &Utxo| {
+        groups
+            .iter()
+            .filter(|group| group.contains(&utxo.outpoint))
+            .count()
+    };
+    let mut forced: Vec<Utxo> = Vec::new();
+    for group in groups {
+        if forced.iter().any(|utxo| group.contains(&utxo.outpoint)) {
+            continue;
+        }
+        let best = candidates
+            .iter()
+            .filter(|utxo| group.contains(&utxo.outpoint))
+            .max_by(|a, b| {
+                hits(a)
+                    .cmp(&hits(b))
+                    .then_with(|| a.value.cmp(&b.value))
+                    .then_with(|| tie_break(b, a))
+            })
+            .ok_or(PlanError::AbandonedNotConflicted)?;
+        forced.push(*best);
+    }
+    if forced.len() > BTC_MAX_INPUTS {
+        return Err(PlanError::AbandonedNotConflicted);
+    }
+    Ok(forced)
+}
+
 /// Plans a send (spec/08 §7): eligible candidates, selection (§7.4) or send-max (§7.6), change or
-/// fold, layout (§7.5) and fixed fields (§7.1).
+/// fold, layout (§7.5) and fixed fields (§7.1). With live abandoned transactions
+/// (`req.conflicts`), one input of each is spent first and the selection adds candidates by
+/// descending value (spec/08 §12.1).
 ///
 /// # Errors
 ///
 /// [`PlanError::DustAmount`] (amount, or send-max remainder, below the recipient dust),
-/// [`PlanError::InsufficientFunds`], [`PlanError::Key`] (change derivation),
-/// [`PlanError::Overflow`].
+/// [`PlanError::InsufficientFunds`], [`PlanError::AbandonedNotConflicted`],
+/// [`PlanError::TipImplausible`], [`PlanError::ChangeIndexExhausted`], [`PlanError::Key`]
+/// (change derivation), [`PlanError::Overflow`].
 pub fn plan_send(req: &SendRequest<'_>) -> Result<SendPlan, PlanError> {
     let dust = dust_threshold(&req.recipient);
     let recipient_len = spk_len(&req.recipient);
@@ -805,13 +893,20 @@ pub fn plan_send(req: &SendRequest<'_>) -> Result<SendPlan, PlanError> {
         rate: req.fee.rate,
         bump: None,
     };
-    let candidates = eligible(req.candidates, req.tip_height);
+    let eligible_all = eligible(req.candidates, req.tip_height);
+    let forced = forced_inputs(&eligible_all, req.conflicts)?;
+    let candidates: Vec<Utxo> = eligible_all
+        .iter()
+        .filter(|utxo| !forced.iter().any(|f| f.outpoint == utxo.outpoint))
+        .copied()
+        .collect();
     let mut desc = candidates.clone();
     desc.sort_by(descending);
-    let largest = desc.len().min(BTC_MAX_INPUTS);
+    let largest = desc.len().min(BTC_MAX_INPUTS.saturating_sub(forced.len()));
     let (chosen, amount, fit, send_max, excluded) = match req.amount {
         SendAmount::Max => {
-            let chosen = desc.get(..largest).unwrap_or_default().to_vec();
+            let mut chosen = forced.clone();
+            chosen.extend_from_slice(desc.get(..largest).unwrap_or_default());
             if chosen.is_empty() {
                 let (fee, _) = rule.fee(shape(1, &[recipient_len])?.vsize)?;
                 return Err(PlanError::InsufficientFunds {
@@ -840,7 +935,11 @@ pub fn plan_send(req: &SendRequest<'_>) -> Result<SendPlan, PlanError> {
             if amount < dust {
                 return Err(PlanError::DustAmount { threshold: dust });
             }
-            let (chosen, fit) = select(&candidates, &desc, amount, recipient_len, rule)?;
+            let (chosen, fit) = if forced.is_empty() {
+                select(&candidates, &desc, amount, recipient_len, rule)?
+            } else {
+                select_forced(&forced, &desc, amount, recipient_len, rule)?
+            };
             (chosen, amount, fit, false, 0)
         }
     };
@@ -893,6 +992,37 @@ fn select(
     let (fee, _) = rule.fee(shape(largest.max(1), &[recipient_len])?.vsize)?;
     Err(PlanError::InsufficientFunds {
         available,
+        needed: amount.checked_add(fee).ok_or(PlanError::Overflow)?,
+    })
+}
+
+/// Selection with forced inputs (spec/08 §12.1): the forced inputs, then the fewest
+/// candidates by descending value (at most 100 inputs in all).
+fn select_forced(
+    forced: &[Utxo],
+    desc: &[Utxo],
+    amount: Sats,
+    recipient_len: usize,
+    rule: FeeRule,
+) -> Result<(Vec<Utxo>, Fit), PlanError> {
+    let room = BTC_MAX_INPUTS.saturating_sub(forced.len());
+    let mut chosen = forced.to_vec();
+    let mut total = sum_values(forced)?;
+    for added in 0..=desc.len().min(room) {
+        if added > 0 {
+            let extra = desc
+                .get(added.saturating_sub(1))
+                .ok_or(PlanError::Overflow)?;
+            total = total.checked_add(extra.value).ok_or(PlanError::Overflow)?;
+            chosen.push(*extra);
+        }
+        if let Some(fit) = fit(total, amount, chosen.len(), recipient_len, rule, true)? {
+            return Ok((chosen, fit));
+        }
+    }
+    let (fee, _) = rule.fee(shape(chosen.len().max(1), &[recipient_len])?.vsize)?;
+    Err(PlanError::InsufficientFunds {
+        available: total,
         needed: amount.checked_add(fee).ok_or(PlanError::Overflow)?,
     })
 }

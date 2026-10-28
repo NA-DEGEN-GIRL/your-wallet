@@ -60,11 +60,26 @@ const BLOCK_HASH: &str = "000000000000000000000000000000000000000000000000000000
 /// The fake chain shared with the transport handler: transactions with their height (`None` =
 /// in the mempool), answered by Core and by a minimal Esplora indexer computed from them.
 #[derive(Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent fault switches of the fake chain"
+)]
 struct World {
     txs: Vec<(Transaction, Vec<u8>, Option<u32>)>,
     reject: Option<&'static str>,
     /// `sendrawtransaction` answers this RPC error code (nothing reaches the mempool).
     send_error: Option<i64>,
+    /// `sendrawtransaction` fails in transport (a communication failure).
+    send_transport: bool,
+    /// Core's mempool does not see the world's mempool (`getmempoolentry` always `-5`), while
+    /// the indexer does (review M1).
+    core_mempool_blind: bool,
+    /// After an accepted `testmempoolaccept`, `getblockhash` fails once (the chain check right
+    /// before `sendrawtransaction` fails, nothing is sent).
+    fail_chain_after_precheck: bool,
+    prechecked: bool,
+    /// Core `getblockchaininfo.blocks` instead of `TIP`.
+    core_tip: Option<u32>,
 }
 
 impl World {
@@ -218,6 +233,10 @@ fn first_hex(call: &Call) -> Option<Vec<u8>> {
     yw_core::hex::decode(&text).ok()
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per faked Core and Esplora call"
+)]
 fn answer(world: &Mutex<World>, call: &Call) -> Reply {
     let Ok(mut world) = world.lock() else {
         return Reply::status(500);
@@ -248,6 +267,7 @@ fn answer(world: &Mutex<World>, call: &Call) -> Reply {
                 .sum();
             let outputs: u64 = tx.outputs.iter().map(|output| output.value.get()).sum();
             let fee = Sats::new(inputs.saturating_sub(outputs)).unwrap_or(Sats::ZERO);
+            world.prechecked = true;
             Reply::Result(format!(
                 "[{{\"txid\":\"{id}\",\"wtxid\":\"{witness_id}\",\"allowed\":true,\"vsize\":{},\"fees\":{{\"base\":{}}}}}]",
                 vsize(&tx),
@@ -264,6 +284,9 @@ fn answer(world: &Mutex<World>, call: &Call) -> Reply {
             if let Some(code) = world.send_error {
                 return Reply::RpcError(code);
             }
+            if world.send_transport {
+                return Reply::Transport(yw_win::http::HttpError::Timeout);
+            }
             let id = txid(&tx);
             if world.find(&id.to_display_hex()).is_none() {
                 world.txs.push((tx, raw, None));
@@ -271,9 +294,59 @@ fn answer(world: &Mutex<World>, call: &Call) -> Reply {
             Reply::Result(format!("\"{}\"", id.to_display_hex()))
         }
         (Verb::Rpc, "getmempoolentry") => match world.find(&btc_support::first_param(call)) {
-            Some((_, _, None)) => Reply::Result("{\"vsize\":141}".to_owned()),
+            Some((_, _, None)) if !world.core_mempool_blind => {
+                Reply::Result("{\"vsize\":141}".to_owned())
+            }
             _ => Reply::RpcError(-5),
         },
+        (Verb::Rpc, "getblockhash") if world.fail_chain_after_precheck && world.prechecked => {
+            world.fail_chain_after_precheck = false;
+            Reply::Transport(yw_win::http::HttpError::Timeout)
+        }
+        (Verb::Rpc, "getblockchaininfo") if world.core_tip.is_some() => {
+            let tip = world.core_tip.unwrap_or(TIP);
+            Reply::Result(btc_support::chain_info(
+                "testnet4",
+                tip,
+                tip,
+                false,
+                btc_support::MEDIAN_TIME,
+            ))
+        }
+        (Verb::Rpc, "gettxout") => {
+            let value = params(call);
+            let items = value.as_array().map(<[_]>::to_vec).unwrap_or_default();
+            let id = items
+                .first()
+                .and_then(yw_json::Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            let vout = items
+                .get(1)
+                .and_then(yw_json::Value::as_number)
+                .and_then(yw_json::Number::as_u64)
+                .and_then(|vout| u32::try_from(vout).ok())
+                .unwrap_or(u32::MAX);
+            let Some((tx, _, height)) = world.find(&id) else {
+                return Reply::Result("null".to_owned());
+            };
+            let outpoint = OutPoint {
+                txid: txid(tx),
+                vout,
+            };
+            let Some(output) = usize::try_from(vout).ok().and_then(|at| tx.outputs.get(at)) else {
+                return Reply::Result("null".to_owned());
+            };
+            if world.spent_by(&outpoint, None) {
+                return Reply::Result("null".to_owned());
+            }
+            let confirmations = height.map_or(0, |height| TIP.saturating_sub(height) + 1);
+            Reply::Result(format!(
+                "{{\"bestblock\":\"{BLOCK_HASH}\",\"confirmations\":{confirmations},\"value\":{},\"scriptPubKey\":{{\"hex\":\"{}\"}},\"coinbase\":false}}",
+                format_btc(output.value),
+                yw_core::hex::encode(&output.script_pubkey)
+            ))
+        }
         (Verb::Get, _) => {
             let path = call.path();
             if let Some(address) = path_address(path) {
@@ -282,6 +355,14 @@ fn answer(world: &Mutex<World>, call: &Call) -> Reply {
                 } else {
                     world.address(address)
                 });
+            }
+            if let Some(rest) = path.strip_prefix("/tx/")
+                && let Some(id) = rest.strip_suffix("/hex")
+            {
+                return match world.find(id) {
+                    Some((_, raw, _)) => Reply::text(&yw_core::hex::encode(raw)),
+                    None => Reply::status(404),
+                };
             }
             if let Some(rest) = path.strip_prefix("/tx/")
                 && let Some(id) = rest.strip_suffix("/status")
@@ -775,6 +856,223 @@ fn precheck_rejection_keeps_change_index() -> TestResult {
     harness.run(|ui, ctx| ui.review(ctx, [7; 32]));
     let item = harness.queued.first().ok_or("plan")?;
     assert_eq!(item.plan.change().map(|change| change.index), Some(0));
+    // Review H1: the same plan signs to the same txid. The finished `Rejected` record goes to
+    // activity and the new one is sent (it used to stay `Signed` and block every send).
+    let rejected = records[0].txid;
+    assert_eq!(item.plan.txid(), rejected, "byte-identical transaction");
+    harness.approve()?;
+    let records = harness.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].txid, rejected);
+    assert_eq!(records[0].state, BtcTxState::Submitted);
+    let activity = harness
+        .meta
+        .as_ref()
+        .ok_or("meta")?
+        .activity_of("bitcoin:testnet4");
+    assert!(
+        activity
+            .iter()
+            .any(|row| row.tx_id == rejected.to_display_hex() && row.status == "rejected")
+    );
+    assert_eq!(harness.btc_meta().ok_or("meta")?.change_next(), 1);
+    Ok(())
+}
+
+/// Review fix: `sendrawtransaction` `-26` gives the change index back (nothing was relayed).
+#[test]
+fn rejected_send_gives_change_index_back() -> TestResult {
+    let mut harness = Harness::new("send-rejected")?;
+    harness.enable();
+    if let Ok(mut world) = harness.world.lock() {
+        world.send_error = Some(-26);
+    }
+    send_form(&mut harness, "30000", "2");
+    harness.run(|ui, ctx| ui.review(ctx, [7; 32]));
+    harness.approve()?;
+    let records = harness.records();
+    assert_eq!(records[0].state, BtcTxState::Rejected);
+    assert_eq!(harness.btc_meta().ok_or("meta")?.change_next(), 0);
+    Ok(())
+}
+
+/// Review fix: the chain check right before `sendrawtransaction` failed — nothing was sent, so
+/// the record is not `BroadcastUnknown`: it stays `Broadcasting` and the same bytes can be sent
+/// again.
+#[test]
+fn send_stopped_by_chain_check_stays_broadcasting() -> TestResult {
+    let mut harness = Harness::new("send-chain")?;
+    harness.enable();
+    if let Ok(mut world) = harness.world.lock() {
+        world.fail_chain_after_precheck = true;
+    }
+    send_form(&mut harness, "30000", "2");
+    harness.run(|ui, ctx| ui.review(ctx, [7; 32]));
+    harness.approve()?;
+    let record = harness.records()[0].clone();
+    assert_eq!(record.state, BtcTxState::Broadcasting);
+    assert!(
+        !harness
+            .fake
+            .methods()
+            .contains(&"sendrawtransaction".to_owned())
+    );
+    let flow = harness.ui.flow(&record.txid).ok_or("flow")?;
+    assert!(flow.retry_send);
+    assert!(
+        flow.note
+            .as_deref()
+            .is_some_and(|note| note.starts_with(yw_app::app_btc::NOT_SENT))
+    );
+    let view = view_of(&harness, &record.txid)?;
+    assert!(view.can_rebroadcast && !view.can_abandon);
+    harness.run(|ui, ctx| ui.rebroadcast(ctx, record.txid));
+    assert_eq!(harness.records()[0].state, BtcTxState::Submitted);
+    Ok(())
+}
+
+/// Review fix: "the last Core send was a communication failure" is kept in the journal, so
+/// [Esplora로 전송] is still offered after a restart (no session flow any more).
+#[test]
+fn comm_failure_survives_restart() -> TestResult {
+    let mut harness = Harness::new("comm-restart")?;
+    harness.enable();
+    if let Ok(mut world) = harness.world.lock() {
+        world.send_transport = true;
+    }
+    send_form(&mut harness, "30000", "2");
+    harness.run(|ui, ctx| ui.review(ctx, [7; 32]));
+    harness.approve()?;
+    let record = harness.records()[0].clone();
+    assert_eq!(record.state, BtcTxState::BroadcastUnknown);
+    assert!(record.last_send_comm_failure);
+    assert!(view_of(&harness, &record.txid)?.can_esplora);
+    // "Restart": the session flows are gone; a refresh verifies the indexer again.
+    harness.ui = BtcUi::default();
+    harness.run(|ui, ctx| ui.refresh(ctx, yw_app::btc::Trigger::User));
+    assert!(harness.ui.indexer_verified);
+    assert!(harness.ui.flow(&record.txid).is_none());
+    assert!(view_of(&harness, &record.txid)?.can_esplora);
+    Ok(())
+}
+
+/// Review M1: while Core's mempool lacks the transaction but the indexer still has it, the
+/// tracking rounds count it as "in a mempool", so [포기] is never offered.
+#[test]
+fn indexer_unconfirmed_is_never_abandonable() -> TestResult {
+    let mut harness = Harness::new("blind-core")?;
+    harness.enable();
+    if let Ok(mut world) = harness.world.lock() {
+        world.core_mempool_blind = true;
+    }
+    send_form(&mut harness, "30000", "2");
+    harness.run(|ui, ctx| ui.review(ctx, [7; 32]));
+    harness.approve()?;
+    let txid = harness.records()[0].txid;
+    for _ in 0..12 {
+        harness.clock.advance(60_000);
+        harness.run(BtcUi::tick);
+    }
+    let record = harness.records()[0].clone();
+    assert_eq!(record.state, BtcTxState::InMempool);
+    assert_eq!(record.not_found_count, 0);
+    assert!(!view_of(&harness, &txid)?.can_abandon);
+    Ok(())
+}
+
+/// Review M2: planning is refused while the Core tip is far above the indexer tip.
+#[test]
+fn plan_refused_when_core_far_ahead_of_indexer() -> TestResult {
+    let mut harness = Harness::new("tip-ahead")?;
+    harness.enable();
+    if let Ok(mut world) = harness.world.lock() {
+        world.core_tip = Some(TIP + 50);
+    }
+    send_form(&mut harness, "30000", "2");
+    harness.run(|ui, ctx| ui.review(ctx, [7; 32]));
+    assert!(harness.queued.is_empty());
+    assert!(
+        harness
+            .ui
+            .send
+            .info
+            .as_deref()
+            .is_some_and(|info| info.contains("인덱서")),
+        "{:?}",
+        harness.ui.send.info
+    );
+    // The stored `max_tip_seen` did not follow the runaway Core tip.
+    assert!(harness.btc_meta().ok_or("meta")?.max_tip_seen() <= TIP + 3);
+    Ok(())
+}
+
+/// Review fix: a stored `max_tip_seen` above what the node reports blocks every check; after
+/// [블록 높이 기록 초기화] (confirmed) the next refresh works again.
+#[test]
+fn reset_tip_after_regression() -> TestResult {
+    let mut harness = Harness::new("tip-reset")?;
+    harness.enable();
+    // A wrong, too high tip remembered earlier (e.g. by another endpoint without an indexer
+    // tip to cap it); the honest node now looks "regressed".
+    let mut raised = harness.btc_meta().ok_or("meta")?.clone();
+    raised.observe_tip(TIP + 20)?;
+    if let Some(stored) = harness.meta.as_mut() {
+        stored.btc = Some(Box::new(raised));
+    }
+    harness.run(|ui, ctx| ui.refresh(ctx, yw_app::btc::Trigger::User));
+    assert!(harness.ui.tip_regressed, "{:?}", harness.ui.blocked);
+    let confirms = harness.confirms;
+    harness.run(BtcUi::reset_tip);
+    assert_eq!(harness.confirms, confirms + 1);
+    harness.run(BtcUi::confirm_yes);
+    assert!(!harness.ui.tip_regressed);
+    assert!(harness.ui.blocked.is_none(), "{:?}", harness.ui.blocked);
+    assert_eq!(harness.ui.tip, Some(TIP));
+    Ok(())
+}
+
+/// W-ADDR-3 for Bitcoin: a recipient that matches a known address (an earlier recipient) in the
+/// first 4 and last 4 characters after `tb1q` needs `주소 전체를 직접 확인했습니다`.
+#[test]
+fn look_alike_recipient_needs_ack() -> TestResult {
+    let mut harness = Harness::new("look-alike")?;
+    harness.enable();
+    // An earlier recipient in the activity that differs from `RECIPIENT` only in the middle.
+    let earlier = "tb1qw508zzqejxtdg4y5r3zarvary0c5xw7kxpjzsx";
+    assert!(yw_core::btc::address::is_look_alike(earlier, RECIPIENT));
+    if let Some(meta) = harness.meta.as_mut() {
+        meta.upsert_activity(
+            "bitcoin:testnet4",
+            &yw_app::meta::ActivityEntry {
+                account: String::new(),
+                tx_id: "11".repeat(32),
+                title: "[Bitcoin testnet4] 보내기: 0.00010000 BTC".to_owned(),
+                asset: "native".to_owned(),
+                amount: "10000".to_owned(),
+                counterparty: earlier.to_owned(),
+                status: "succeeded".to_owned(),
+                time_unix_ms: 1,
+            },
+        );
+    }
+    send_form(&mut harness, "30000", "2");
+    assert!(harness.ui.send.recipient.is_some());
+    let note = harness.ui.send.look_alike.clone().ok_or("W-ADDR-3")?;
+    assert!(note.contains("주소 오염"), "{note}");
+    assert!(!harness.ui.can_review(&harness.ctx()));
+    harness.ui.toggle_address_ack();
+    assert!(harness.ui.can_review(&harness.ctx()));
+    // Another recipient: no note, the check is cleared.
+    harness.run(|ui, ctx| {
+        ui.set_recipient(
+            ctx,
+            "tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sl5k7",
+        );
+        Vec::new()
+    });
+    assert!(harness.ui.send.recipient.is_some());
+    assert!(harness.ui.send.look_alike.is_none());
+    assert!(!harness.ui.send.ack);
     Ok(())
 }
 
@@ -997,6 +1295,7 @@ fn approval_view_shows_btc_money_rows() -> TestResult {
         change_next: 0,
         layout_seed: [1; 32],
         typed_fee_override: None,
+        conflicts: &[],
     })
     .map_err(|error| format!("{error:?}"))?;
     let item = BtcApprovalItem {
@@ -1144,6 +1443,49 @@ fn abandon_offered_only_after_not_found_limit() -> TestResult {
     assert_eq!(harness.confirms, confirms + 1);
     harness.run(BtcUi::confirm_yes);
     assert_eq!(harness.records()[0].state, BtcTxState::Abandoned);
+    // Review M1: the next send must spend an input of the abandoned transaction, so at most one
+    // of the two can confirm; when the new one confirms the abandoned one is `Conflicted`.
+    let abandoned_inputs: Vec<OutPoint> =
+        record.inputs.iter().map(|input| input.outpoint).collect();
+    if let Ok(mut world) = harness.world.lock() {
+        world.send_error = None;
+    }
+    send_form(&mut harness, "20000", "2");
+    harness.run(|ui, ctx| ui.review(ctx, [8; 32]));
+    let item = harness.queued.first().ok_or("plan")?;
+    assert!(
+        item.plan
+            .inputs()
+            .iter()
+            .any(|input| abandoned_inputs.contains(&input.outpoint))
+    );
+    let new_txid = item.plan.txid();
+    assert_ne!(new_txid, txid);
+    harness.approve()?;
+    let records = harness.records();
+    let new = records
+        .iter()
+        .find(|record| record.txid == new_txid)
+        .ok_or("new record")?;
+    assert_eq!(new.state, BtcTxState::Submitted);
+    if let Ok(mut world) = harness.world.lock() {
+        world.confirm(&new_txid, CONFIRM_HEIGHT);
+    }
+    harness.clock.advance(60_000);
+    harness.run(BtcUi::tick);
+    let states: Vec<(Txid, BtcTxState)> = harness
+        .records()
+        .iter()
+        .map(|record| (record.txid, record.state))
+        .collect();
+    assert!(
+        states.contains(&(new_txid, BtcTxState::Confirmed)),
+        "{states:?}"
+    );
+    assert!(
+        states.contains(&(txid, BtcTxState::Conflicted)),
+        "{states:?}"
+    );
     Ok(())
 }
 

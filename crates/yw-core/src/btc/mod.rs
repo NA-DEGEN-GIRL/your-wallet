@@ -112,6 +112,18 @@ pub const BTC_INDEXER_MAX_UTXOS: usize = 1_000;
 pub const BTC_INDEXER_TIP_LAG_WARN: u32 = 3;
 /// Consecutive "not found" observations before `BroadcastUnknown`.
 pub const BTC_NOT_FOUND_LIMIT: u32 = 10;
+/// Discovery (spec/08 §3.4) scans a chain at most this many addresses past its start index: an
+/// indexer reporting history for every address cannot grow the watch set without bound.
+pub const BTC_DISCOVERY_MAX_SCAN: u32 = 1_000;
+/// Issue indices of each chain stay below this (receive and change, spec/08 §3.2): issuance
+/// stops there and the watch set (§3.3) never has more addresses per chain.
+pub const BTC_MAX_ADDRESS_INDEX: u32 = 10_000;
+/// `nLockTime` values from here on are Unix times, not heights (Core `LOCKTIME_THRESHOLD`): a
+/// Core tip this high is implausible, refused by `check_chain` and never used as a lock time.
+pub const BTC_LOCKTIME_THRESHOLD: u32 = 500_000_000;
+/// Planning is refused while the Core tip is more than this many blocks above the indexer tip
+/// (`esplora` `TipHeight`, spec/08 §2 step 4): `lock_time = tip` would not be final elsewhere.
+pub const BTC_PLAN_TIP_AHEAD_MAX: u32 = 6;
 
 /// Confirmations of a transaction at `height` with the Core tip `tip_height` (spec/08 §4.3):
 /// `tip_height - height + 1`, or 0 when the indexer height is above the tip.

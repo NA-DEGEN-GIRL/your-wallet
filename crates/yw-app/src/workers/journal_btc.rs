@@ -21,9 +21,11 @@ use yw_core::btc::{
 use yw_core::error::{StorageError, VaultError};
 use yw_core::journal::JournalPlain;
 use yw_core::journal::btc::{
-    BtcActivityRow, BtcEntries, BtcRecord, BtcRecordError, BtcTxState, TrackObservation,
-    TransitionError, apply_observation, change_next_floor, check_plan_allowed, finished_rows,
-    make_room, normalize_on_startup, prune_finished, push_record, recorded_amounts, set_state,
+    BtcActivityRow, BtcEntries, BtcPushError, BtcRecord, BtcRecordError, BtcTxState,
+    TrackObservation, TransitionError, apply_observation, change_next_floor,
+    check_abandoned_conflicts, check_plan_allowed, current_record, finished_rows, make_room,
+    normalize_on_startup, prune_finished, push_record, recorded_amounts, refresh_keep_outpoints,
+    set_last_send_comm_failure, set_state_entry, take_finished_duplicates,
 };
 use yw_core::vault::{FileKind, Vault};
 
@@ -46,6 +48,9 @@ pub struct BtcRefreshUpdate {
     pub history: Vec<(BtcChain, u32, u64)>,
     /// `max_tip_seen` to persist (`BtcMeta::observe_tip`).
     pub max_tip_seen: u32,
+    /// Wall clock of the refresh (Unix seconds): the 30-day window of live abandoned records
+    /// whose inputs `apply_refresh` keeps.
+    pub now_unix: u64,
 }
 
 /// A `BtcMeta` change made and persisted by the key worker. Every op names the network it was
@@ -101,6 +106,11 @@ pub enum BtcMetaOp {
         /// `true` = freeze.
         frozen: bool,
     },
+    /// "블록 높이 기록 초기화" (`BtcMeta::reset_max_tip`, spec/08 §2 step 2).
+    ResetTip {
+        /// Network.
+        network: BtcNetwork,
+    },
 }
 
 impl BtcMetaOp {
@@ -115,6 +125,7 @@ impl BtcMetaOp {
             Self::ReceiveAddress { .. } => "receive_address",
             Self::NewReceiveAddress { .. } => "new_receive_address",
             Self::Freeze { .. } => "freeze",
+            Self::ResetTip { .. } => "reset_tip",
         }
     }
 
@@ -126,7 +137,8 @@ impl BtcMetaOp {
             | Self::Tip { network, .. }
             | Self::ReceiveAddress { network }
             | Self::NewReceiveAddress { network, .. }
-            | Self::Freeze { network, .. } => *network,
+            | Self::Freeze { network, .. }
+            | Self::ResetTip { network } => *network,
         }
     }
 }
@@ -153,6 +165,8 @@ pub enum BtcMetaDone {
     Frozen,
     /// Unfrozen.
     Unfrozen,
+    /// `max_tip_seen` forgotten.
+    TipReset,
     /// `change_next` raised (startup reconciliation or `Broadcasting`).
     ChangeNext,
     /// Other bookkeeping of a journal step (sent script, own change, tip).
@@ -221,6 +235,8 @@ pub enum BtcSignFailure {
     JournalDamaged,
     /// No room even after moving finished records ("거래 저널 공간이 부족합니다").
     JournalFull,
+    /// The same transaction (txid) is already in the journal and still tracked.
+    DuplicateTx,
     /// The in-flight re-check refused (`InFlight`, `NotBumpable`, `InputInFlight`).
     Plan(PlanError),
     /// `check_recorded_amounts` or `sign_plan` refused (nothing signed).
@@ -245,6 +261,7 @@ impl BtcSignFailure {
                 "거래 저널이 손상되어 보내기를 멈췄습니다. (E-VLT-006)".to_owned()
             }
             Self::JournalFull => crate::errors::ErrorCode::Tx005.text(),
+            Self::DuplicateTx => BtcPushError::Duplicate.to_string(),
             Self::Plan(error) => error.to_string(),
             Self::Sign(error) => error.to_string(),
             Self::PostSign(_) | Self::Record(_) => texts::POST_SIGN.to_owned(),
@@ -406,12 +423,11 @@ pub fn btc_activity(row: &BtcActivityRow) -> (NetworkId, ActivityEntry) {
     )
 }
 
+/// The current record of `txid` (the last one in journal order, yw-core `current_record`):
+/// a journal step resolves it once and then addresses it by `entry_id`.
 fn find_record(plain: &JournalPlain, network: BtcNetwork, txid: &Txid) -> Option<BtcRecord> {
-    BtcEntries::from_plain(plain)
-        .records
-        .into_iter()
-        .map(|(_, record)| record)
-        .find(|record| record.network == network && record.txid == *txid)
+    let records = BtcEntries::from_plain(plain).records();
+    current_record(&records, network, txid).cloned()
 }
 
 fn commit_journal(vault: &mut Vault, plain: &JournalPlain) -> Result<(), VaultError> {
@@ -555,7 +571,7 @@ impl JournalState {
                 let report = meta.apply_refresh(
                     &update.listed,
                     &update.newly,
-                    &yw_core::journal::btc::in_flight_outpoints(&records, network),
+                    &refresh_keep_outpoints(&records, network, update.now_unix),
                     &yw_core::journal::btc::own_outputs(&records, network),
                 );
                 // A regression was already refused by the chain check; keep the stored value.
@@ -598,6 +614,10 @@ impl JournalState {
                     meta.unfreeze(outpoint);
                     BtcMetaDone::Unfrozen
                 }
+            }
+            BtcMetaOp::ResetTip { .. } => {
+                meta.reset_max_tip();
+                BtcMetaDone::TipReset
             }
         };
         if self.btc.as_ref() != Some(&meta) {
@@ -708,17 +728,11 @@ impl JournalState {
         }
         let now_unix = now_unix_ms / 1_000;
         let mut trial = current;
-        let rows = make_room(&mut trial, network, tip_height, now_unix, now_unix_ms)
+        let mut rows = make_room(&mut trial, network, tip_height, now_unix, now_unix_ms)
             .map_err(|_| BtcSignFailure::JournalFull)?;
-        if !rows.is_empty() {
-            match self.persist_btc(vault, Some(meta.clone()), &rows, alt) {
-                Ok(moved) if !moved.is_empty() => out.push(KeyOutcome::ActivityMoved(moved)),
-                Ok(_) => {}
-                Err(_) => return Err(BtcSignFailure::JournalFull),
-            }
-        }
         let records = BtcEntries::from_plain(&trial).records();
         check_plan_allowed(&records, plan).map_err(BtcSignFailure::Plan)?;
+        check_abandoned_conflicts(&records, plan, now_unix).map_err(BtcSignFailure::Plan)?;
         let mut recorded = meta.recorded_amounts();
         recorded.extend(recorded_amounts(&records, network));
         check_recorded_amounts(plan, &recorded).map_err(BtcSignFailure::Sign)?;
@@ -731,7 +745,23 @@ impl JournalState {
             .ok_or(BtcSignFailure::PostSign(PostSignError::Vsize))?;
         let record = BtcRecord::new_signed(plan, &signed, &verified, now_unix)
             .map_err(BtcSignFailure::Record)?;
-        push_record(&mut trial, &record).map_err(|_| BtcSignFailure::JournalFull)?;
+        // The same transaction signed again (e.g. byte for byte after a pre-check rejection):
+        // the finished old record goes to activity first; a tracked one refuses (review H1).
+        rows.extend(
+            take_finished_duplicates(&mut trial, &record, tip_height, now_unix, now_unix_ms)
+                .map_err(|_| BtcSignFailure::DuplicateTx)?,
+        );
+        if !rows.is_empty() {
+            match self.persist_btc(vault, Some(meta.clone()), &rows, alt) {
+                Ok(moved) if !moved.is_empty() => out.push(KeyOutcome::ActivityMoved(moved)),
+                Ok(_) => {}
+                Err(_) => return Err(BtcSignFailure::JournalFull),
+            }
+        }
+        push_record(&mut trial, &record).map_err(|error| match error {
+            BtcPushError::Full => BtcSignFailure::JournalFull,
+            BtcPushError::Duplicate => BtcSignFailure::DuplicateTx,
+        })?;
         if let Err(error) = commit_journal(vault, &trial) {
             logging::warn("journal", "btc.signed_write_failed", &[]);
             return Err(BtcSignFailure::JournalWrite(error));
@@ -853,14 +883,15 @@ impl JournalState {
                     vsize: u64::from(record.vsize),
                     fee: record.fee,
                 };
+                let entry = record.entry_id;
                 match check_mempool_accept(&accept, &local) {
                     PrecheckOutcome::Accepted => {
                         let tx = signed_ref(&record).ok_or(BtcKeyError::Internal)?;
                         self.raise_change_next(vault, network, &record, alt, out)?;
-                        set_state(
+                        set_state_entry(
                             &mut next,
                             network,
-                            &txid,
+                            &entry,
                             BtcTxState::Broadcasting,
                             now_unix,
                         )
@@ -874,18 +905,18 @@ impl JournalState {
                         // `Broadcasting` (change index used) to `BroadcastUnknown` without a
                         // send; tracking (§12.2) moves it on.
                         self.raise_change_next(vault, network, &record, alt, out)?;
-                        set_state(
+                        set_state_entry(
                             &mut next,
                             network,
-                            &txid,
+                            &entry,
                             BtcTxState::Broadcasting,
                             now_unix,
                         )
                         .map_err(BtcKeyError::Journal)?;
-                        set_state(
+                        set_state_entry(
                             &mut next,
                             network,
-                            &txid,
+                            &entry,
                             BtcTxState::BroadcastUnknown,
                             now_unix,
                         )
@@ -894,7 +925,7 @@ impl JournalState {
                         Ok(BtcJournalDone::PrecheckKnown { txid, text })
                     }
                     PrecheckOutcome::Rejected { text } => {
-                        set_state(&mut next, network, &txid, BtcTxState::Rejected, now_unix)
+                        set_state_entry(&mut next, network, &entry, BtcTxState::Rejected, now_unix)
                             .map_err(BtcKeyError::Journal)?;
                         self.commit_view(vault, next, out)?;
                         Ok(BtcJournalDone::PrecheckRejected { txid, text })
@@ -909,24 +940,49 @@ impl JournalState {
                 let record = find_record(&next, network, &txid)
                     .ok_or(BtcKeyError::Journal(TransitionError::UnknownTx))?;
                 let outcome = broadcast_outcome(&result, &txid);
-                let target = match &outcome {
-                    BroadcastOutcome::Submitted => BtcTxState::Submitted,
-                    BroadcastOutcome::BroadcastUnknown { .. } => BtcTxState::BroadcastUnknown,
-                    BroadcastOutcome::Rejected { .. } => BtcTxState::Rejected,
+                let (target, comm_failure) = match &outcome {
+                    BroadcastOutcome::Submitted => (BtcTxState::Submitted, false),
+                    BroadcastOutcome::BroadcastUnknown { comm_failure, .. } => {
+                        (BtcTxState::BroadcastUnknown, *comm_failure)
+                    }
+                    BroadcastOutcome::Rejected { .. } => (BtcTxState::Rejected, false),
                 };
-                if outcome == BroadcastOutcome::Submitted
-                    && let Some(mut meta) = self.btc.clone()
-                    && meta.network() == network
-                    && let Some(script) = record.recipient_script()
-                    && meta.record_sent_script(&script)
-                {
-                    self.persist_btc(vault, Some(meta), &[], alt)
+                let mut meta_changed = false;
+                let mut meta = self.btc.clone().filter(|meta| meta.network() == network);
+                if let Some(meta) = meta.as_mut() {
+                    if outcome == BroadcastOutcome::Submitted
+                        && let Some(script) = record.recipient_script()
+                    {
+                        meta_changed |= meta.record_sent_script(&script);
+                    }
+                    // `-25`/`-26`: the node refused without relaying; the change index raised
+                    // at `Broadcasting` is used again (spec/08 §3.2).
+                    if record.state == BtcTxState::Broadcasting
+                        && matches!(outcome, BroadcastOutcome::Rejected { .. })
+                    {
+                        meta_changed |=
+                            meta.on_send_rejected(record.change.map(|change| change.index));
+                    }
+                }
+                if meta_changed {
+                    self.persist_btc(vault, meta, &[], alt)
                         .map_err(BtcKeyError::Vault)?;
                     out.push(self.meta_update(BtcMetaDone::Updated));
                 }
+                let entry = record.entry_id;
+                let mut journal_changed = false;
                 if record.state.can_transition_to(target) {
-                    set_state(&mut next, network, &txid, target, now_unix)
+                    set_state_entry(&mut next, network, &entry, target, now_unix)
                         .map_err(BtcKeyError::Journal)?;
+                    journal_changed = true;
+                }
+                // Kept across restarts: the manual Esplora broadcast stays offered (§11.3).
+                if target != BtcTxState::Rejected {
+                    journal_changed |=
+                        set_last_send_comm_failure(&mut next, network, &entry, comm_failure)
+                            .map_err(BtcKeyError::Journal)?;
+                }
+                if journal_changed {
                     self.commit_view(vault, next, out)?;
                 }
                 Ok(BtcJournalDone::Sent { txid, outcome })
@@ -942,6 +998,11 @@ impl JournalState {
                     self.persist_btc(vault, Some(meta), &[], alt)
                         .map_err(BtcKeyError::Vault)?;
                     out.push(self.meta_update(BtcMetaDone::Updated));
+                }
+                if set_last_send_comm_failure(&mut next, network, &record.entry_id, false)
+                    .map_err(BtcKeyError::Journal)?
+                {
+                    self.commit_view(vault, next, out)?;
                 }
                 Ok(BtcJournalDone::EsploraNoted { txid })
             }
@@ -1038,8 +1099,16 @@ impl JournalState {
                 Ok(BtcJournalDone::Tracked { changed })
             }
             BtcJournalOp::Abandon { network, txid } => {
-                set_state(&mut next, network, &txid, BtcTxState::Abandoned, now_unix)
-                    .map_err(BtcKeyError::Journal)?;
+                let record = find_record(&next, network, &txid)
+                    .ok_or(BtcKeyError::Journal(TransitionError::UnknownTx))?;
+                set_state_entry(
+                    &mut next,
+                    network,
+                    &record.entry_id,
+                    BtcTxState::Abandoned,
+                    now_unix,
+                )
+                .map_err(BtcKeyError::Journal)?;
                 self.commit_view(vault, next, out)?;
                 Ok(BtcJournalDone::Abandoned { txid })
             }

@@ -125,6 +125,7 @@ fn funded(fixture: &mut Fixture) -> TestResult<OutPoint> {
                 }],
                 history: vec![(BtcChain::Receive, 0, 1)],
                 max_tip_seen: TIP,
+                now_unix: 1_000,
             }),
         },
     )?;
@@ -150,6 +151,7 @@ fn plan(meta: &BtcMeta, seed: u8) -> TestResult<SendPlan> {
         change_next: meta.change_next(),
         layout_seed: [seed; 32],
         typed_fee_override: None,
+        conflicts: &[],
     })
     .map_err(|error| format!("{error:?}"))?)
 }
