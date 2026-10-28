@@ -1,14 +1,29 @@
-//! ECDSA for P2WPKH witnesses (spec/08 §6.7, §11.2-3).
+//! Signing of an approved plan for every account type (spec/08 §6.7, §11.1–§11.2).
 //!
-//! [`sign_sighash`] runs inside `Vault::with_secp_key` (the context and key it lends): RFC 6979
-//! `sign_ecdsa_low_r`, immediate `verify_ecdsa`, then the same strict check the post-sign
-//! verification applies, returning the witness item `DER ‖ 0x01`. [`check_witness_signature`]
-//! is that strict check: strict DER (`Signature::from_der`) whose `serialize_der` round trip is
-//! identical, at most 70 DER bytes with `r < 2^255` (low-R), low-S (`normalize_s` changes
-//! nothing), suffix `SIGHASH_ALL`, a 33-byte `02`/`03` public key, and a valid signature over the
-//! sighash. [`sign_plan`] (spec/08 §11.1) signs an approved plan with these, one input at a
-//! time inside `Vault::with_secp_key`, after checking that the one-time `Approved` token is for
-//! exactly this plan (kind, chain, account and the `btc_payload` bytes).
+//! ECDSA ([`sign_sighash`]) runs inside the key lending closure (the context and key it lends):
+//! RFC 6979 `sign_ecdsa_low_r`, immediate `verify_ecdsa`, then the same strict check the
+//! post-sign verification applies, returning the signature item `DER ‖ 0x01`.
+//! [`check_witness_signature`] is that strict check for a witness: strict DER
+//! (`Signature::from_der`) whose `serialize_der` round trip is identical, at most 70 DER bytes
+//! with `r < 2^255` (low-R), low-S (`normalize_s` changes nothing), suffix `SIGHASH_ALL`, a
+//! 33-byte `02`/`03` public key, and a valid signature over the sighash.
+//! [`check_p2pkh_signature`] is the same with a 33- or 65-byte key (legacy scriptSig). Taproot
+//! inputs are signed with `taproot::sign_key_path` (BIP340 with OS auxiliary randomness, verified
+//! at once against the output key).
+//!
+//! [`sign_plan`] (spec/08 §11.1) checks that the one-time `Approved` token is for exactly this
+//! plan (kind, chain, account and the `btc_payload` bytes), then signs one input at a time
+//! through [`BtcKeys`]: derived keys come from `Vault::with_secp_key`, imported single keys from
+//! [`BtcImportedKeys::btc_imported_secret`] (the integration point of the key-import work).
+//! Before signing, the public key computed from the lent secret must be the account's key of
+//! that input (else `KeyMismatch`); the private key never leaves the closure.
+//!
+//! | type | sighash | scriptSig | witness |
+//! |---|---|---|---|
+//! | P2PKH | legacy, `SIGHASH_ALL` | `<DER‖01> <K>` | — |
+//! | P2SH-P2WPKH | BIP143, `SIGHASH_ALL` | `16 00 14 <HASH160(K)>` (in the plan) | `[DER‖01, K]` |
+//! | P2WPKH | BIP143, `SIGHASH_ALL` | — | `[DER‖01, K]` |
+//! | P2TR | BIP341 key path, `SIGHASH_DEFAULT` | — | `[schnorr64]` |
 #![deny(clippy::indexing_slicing)]
 
 use core::fmt;
@@ -17,16 +32,19 @@ use secp256k1::ecdsa::Signature;
 use secp256k1::{All, Message, PublicKey, Secp256k1, SecretKey, Verification};
 
 use super::SIGHASH_ALL;
-use super::address::{hash160, p2wpkh_program};
+use super::account::{BtcAccountKey, BtcKeySource, BtcPubKey, ScriptType};
+use super::address::{ScriptKind, hash160, script_pubkey};
 use super::amount::Sats;
 use super::display::btc_payload;
+use super::network::BtcNetwork;
 use super::policy::texts;
+use super::script::p2pkh_script_sig;
 use super::select::SendPlan;
-use super::sighash::bip143_sighash_p2wpkh;
+use super::sighash::{bip143_sighash_p2wpkh, legacy_sighash};
+use super::taproot::{Prevout, TaprootSigError, sighash_default, sign_key_path};
 use super::tx::{OutPoint, serialize};
 use crate::approval::{AccountRef, ApprovalId, Approved, ChainRef, Signer, SigningPayload};
-use crate::bip32::AccountXpub;
-use crate::entropy::{OsRandom, secp_context};
+use crate::entropy::{OsRandom, fill_random, secp_context};
 use crate::error::VaultError;
 use crate::vault::{KeyRef, Vault};
 
@@ -52,7 +70,8 @@ pub enum WitnessSigError {
     HighR,
     /// `s > n/2` (not low-S).
     HighS,
-    /// The key item is not a 33-byte `02`/`03` point on the curve.
+    /// The key item is not a 33-byte `02`/`03` point on the curve (or, for P2PKH, a 65-byte
+    /// `04` point).
     PublicKey,
     /// The signature does not verify for the sighash and key.
     VerifyFailed,
@@ -78,13 +97,39 @@ impl fmt::Display for WitnessSigError {
 
 impl std::error::Error for WitnessSigError {}
 
-/// [`check_witness_signature`] with a caller's context.
+/// The strict rules on a signature item `DER ‖ 0x01` for `public`, then verification.
+fn check_signature_item_with<C: Verification>(
+    ctx: &Secp256k1<C>,
+    sig_item: &[u8],
+    public: &PublicKey,
+    sighash: &[u8; 32],
+) -> Result<(), WitnessSigError> {
+    let signature = check_signature_shape(sig_item)?;
+    ctx.verify_ecdsa(Message::from_digest(*sighash), &signature, public)
+        .map_err(|_| WitnessSigError::VerifyFailed)
+}
+
+/// [`check_witness_signature`] with a caller's context: the signature rules first, then the key
+/// rules, then verification.
 pub(crate) fn check_witness_signature_with<C: Verification>(
     ctx: &Secp256k1<C>,
     sig_item: &[u8],
     pubkey_item: &[u8],
     sighash: &[u8; 32],
 ) -> Result<(), WitnessSigError> {
+    let signature = check_signature_shape(sig_item)?;
+    let key = <[u8; PUBKEY_LEN]>::try_from(pubkey_item).map_err(|_| WitnessSigError::PublicKey)?;
+    if !matches!(key.first(), Some(0x02 | 0x03)) {
+        return Err(WitnessSigError::PublicKey);
+    }
+    let public =
+        PublicKey::from_byte_array_compressed(key).map_err(|_| WitnessSigError::PublicKey)?;
+    ctx.verify_ecdsa(Message::from_digest(*sighash), &signature, &public)
+        .map_err(|_| WitnessSigError::VerifyFailed)
+}
+
+/// The signature-only rules (type byte, DER shape, low-R, low-S), without verification.
+fn check_signature_shape(sig_item: &[u8]) -> Result<Signature, WitnessSigError> {
     let (sighash_type, der) = sig_item.split_last().ok_or(WitnessSigError::SighashType)?;
     if *sighash_type != SIGHASH_ALL {
         return Err(WitnessSigError::SighashType);
@@ -108,17 +153,10 @@ pub(crate) fn check_witness_signature_with<C: Verification>(
     if normalized != signature {
         return Err(WitnessSigError::HighS);
     }
-    let key = <[u8; PUBKEY_LEN]>::try_from(pubkey_item).map_err(|_| WitnessSigError::PublicKey)?;
-    if !matches!(key.first(), Some(0x02 | 0x03)) {
-        return Err(WitnessSigError::PublicKey);
-    }
-    let public =
-        PublicKey::from_byte_array_compressed(key).map_err(|_| WitnessSigError::PublicKey)?;
-    ctx.verify_ecdsa(Message::from_digest(*sighash), &signature, &public)
-        .map_err(|_| WitnessSigError::VerifyFailed)
+    Ok(signature)
 }
 
-/// Strict check of a P2WPKH witness `[sig_item, pubkey_item]` against `sighash`
+/// Strict check of a P2WPKH / P2SH-P2WPKH witness `[sig_item, pubkey_item]` against `sighash`
 /// (spec/08 §11.2-3 and -5).
 ///
 /// # Errors
@@ -133,8 +171,37 @@ pub fn check_witness_signature(
     check_witness_signature_with(&ctx, sig_item, pubkey_item, sighash)
 }
 
-/// Signs `sighash` with `secret` (low-R RFC 6979), verifies at once and returns the witness
-/// signature item `DER ‖ 0x01` (≤ 71 bytes). Called only inside `Vault::with_secp_key`.
+/// [`check_p2pkh_signature`] with a caller's context.
+pub(crate) fn check_p2pkh_signature_with<C: Verification>(
+    ctx: &Secp256k1<C>,
+    sig_item: &[u8],
+    pubkey_item: &[u8],
+    sighash: &[u8; 32],
+) -> Result<(), WitnessSigError> {
+    let signature = check_signature_shape(sig_item)?;
+    let key = BtcPubKey::parse(pubkey_item).map_err(|_| WitnessSigError::PublicKey)?;
+    let public = PublicKey::from_slice(key.as_bytes()).map_err(|_| WitnessSigError::PublicKey)?;
+    ctx.verify_ecdsa(Message::from_digest(*sighash), &signature, &public)
+        .map_err(|_| WitnessSigError::VerifyFailed)
+}
+
+/// Strict check of a P2PKH scriptSig's `<sig_item> <pubkey_item>` against the legacy `sighash`:
+/// the witness rules with a 33-byte `02`/`03` or 65-byte `04` key.
+///
+/// # Errors
+///
+/// The first failing rule's [`WitnessSigError`].
+pub fn check_p2pkh_signature(
+    sig_item: &[u8],
+    pubkey_item: &[u8],
+    sighash: &[u8; 32],
+) -> Result<(), WitnessSigError> {
+    let ctx = secp_context(&mut OsRandom).map_err(|_| WitnessSigError::RandomnessUnavailable)?;
+    check_p2pkh_signature_with(&ctx, sig_item, pubkey_item, sighash)
+}
+
+/// Signs `sighash` with `secret` (low-R RFC 6979), verifies at once and returns the signature
+/// item `DER ‖ 0x01` (≤ 71 bytes). Called only inside the key lending closure.
 pub(crate) fn sign_sighash(
     ctx: &Secp256k1<All>,
     secret: &SecretKey,
@@ -149,7 +216,7 @@ pub(crate) fn sign_sighash(
     let mut item = Vec::with_capacity(MAX_WITNESS_SIG_LEN);
     item.extend_from_slice(der.as_ref());
     item.push(SIGHASH_ALL);
-    check_witness_signature_with(ctx, &item, &public.serialize(), sighash)?;
+    check_signature_item_with(ctx, &item, &public, sighash)?;
     Ok(item)
 }
 
@@ -160,8 +227,9 @@ pub enum SignError {
     ApprovalMismatch,
     /// The plan's inputs do not match its transaction.
     PlanInconsistent,
-    /// The derived key of input `input` does not hash to the cached account's program
-    /// (spec/08 §3.1 `KeyMismatch`).
+    /// The key of input `input` does not give the account's key or output for that input
+    /// (spec/08 §3.1 `KeyMismatch`; also an imported key whose network, type or compression
+    /// differs from the account).
     KeyMismatch {
         /// Input index.
         input: usize,
@@ -172,13 +240,24 @@ pub enum SignError {
     /// A plan input has no record at all (spec/08 §5): typically a refresh during the approval
     /// dropped it from `verified` (spent, or no longer listed). Same hard stop, own text.
     InputNotRecorded,
-    /// Program derivation from the account node failed.
+    /// Key derivation from the account node failed.
     Derivation,
-    /// The fresh signature failed its own strict check.
+    /// The fresh ECDSA signature failed its own strict check.
     Witness(WitnessSigError),
+    /// The fresh Schnorr signature failed its own check.
+    Taproot(TaprootSigError),
+    /// The OS CSPRNG failed (BIP340 auxiliary randomness).
+    Randomness,
+    /// The vault cannot lend the secret of an imported key yet (the key-import work connects
+    /// [`BtcImportedKeys::btc_imported_secret`]).
+    ImportedKeyUnavailable,
     /// The vault refused (locked, backup pending, derivation).
     Vault(VaultError),
 }
+
+/// Text of [`SignError::ImportedKeyUnavailable`].
+pub const IMPORTED_KEY_UNAVAILABLE: &str =
+    "가져온 키로 서명하는 기능이 아직 연결되지 않았습니다. 서명하지 않았습니다";
 
 impl fmt::Display for SignError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -188,20 +267,228 @@ impl fmt::Display for SignError {
             Self::KeyMismatch { .. } => formatter.write_str(texts::KEY_MISMATCH),
             Self::AmountRecordMismatch => formatter.write_str(texts::AMOUNT_RECORD_MISMATCH),
             Self::InputNotRecorded => formatter.write_str(texts::INPUT_NOT_RECORDED),
-            Self::PlanInconsistent | Self::Derivation | Self::Witness(_) => {
-                formatter.write_str(texts::SIGN_INTERNAL)
-            }
+            Self::ImportedKeyUnavailable => formatter.write_str(IMPORTED_KEY_UNAVAILABLE),
+            Self::PlanInconsistent
+            | Self::Derivation
+            | Self::Witness(_)
+            | Self::Taproot(_)
+            | Self::Randomness => formatter.write_str(texts::SIGN_INTERNAL),
         }
     }
 }
 
 impl std::error::Error for SignError {}
 
+/// The secret of an imported single key as the vault lends it (erased on drop).
+pub struct ImportedBtcSecret {
+    secret: SecretKey,
+    compressed: bool,
+    network: BtcNetwork,
+    script_type: ScriptType,
+}
+
+impl ImportedBtcSecret {
+    /// Wraps a decrypted imported key record (vault tag 4): the secret, its compression flag,
+    /// network and address type.
+    #[must_use]
+    pub const fn new(
+        secret: SecretKey,
+        compressed: bool,
+        network: BtcNetwork,
+        script_type: ScriptType,
+    ) -> Self {
+        Self {
+            secret,
+            compressed,
+            network,
+            script_type,
+        }
+    }
+}
+
+impl Drop for ImportedBtcSecret {
+    fn drop(&mut self) {
+        self.secret.non_secure_erase();
+    }
+}
+
+impl fmt::Debug for ImportedBtcSecret {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ImportedBtcSecret([REDACTED])")
+    }
+}
+
+/// Access to imported single BTC keys (vault tag 4). **Integration point** of the key-import
+/// work: `Vault`'s implementation below returns [`SignError::ImportedKeyUnavailable`] until it
+/// is connected to the vault record (`Unlocked` only, record id `id`, wrapped with
+/// [`ImportedBtcSecret::new`]).
+pub trait BtcImportedKeys {
+    /// The secret of imported key `id`.
+    ///
+    /// # Errors
+    ///
+    /// [`SignError::ImportedKeyUnavailable`] until connected; [`SignError::Vault`] (locked, no
+    /// such record).
+    fn btc_imported_secret(&self, id: &[u8; 16]) -> Result<ImportedBtcSecret, SignError>;
+}
+
+impl BtcImportedKeys for Vault {
+    fn btc_imported_secret(&self, id: &[u8; 16]) -> Result<ImportedBtcSecret, SignError> {
+        // Integration: look up vault tag 4 record `id` (`require_signing` first) and return
+        // `ImportedBtcSecret::new(secret, compressed, network, script_type)`.
+        let _ = (self, id);
+        Err(SignError::ImportedKeyUnavailable)
+    }
+}
+
+/// Lends BTC signing keys to [`sign_plan`].
+pub trait BtcKeys {
+    /// Lends the secret key of `source` on `network` to `f` and erases it afterwards. An imported
+    /// key must belong to `network` and `script_type` with the given compression (else
+    /// `KeyMismatch { input }`).
+    ///
+    /// # Errors
+    ///
+    /// [`SignError`] from the vault, the checks or `f`.
+    fn with_btc_key<T>(
+        &self,
+        network: BtcNetwork,
+        source: BtcKeySource,
+        input: usize,
+        f: impl FnOnce(&Secp256k1<All>, &SecretKey) -> Result<T, SignError>,
+    ) -> Result<T, SignError>;
+
+    /// 32 bytes of BIP340 auxiliary randomness (OS CSPRNG).
+    ///
+    /// # Errors
+    ///
+    /// [`SignError::Randomness`].
+    fn aux_rand(&self) -> Result<[u8; 32], SignError> {
+        let mut aux = [0_u8; 32];
+        fill_random(&mut aux).map_err(|_| SignError::Randomness)?;
+        Ok(aux)
+    }
+}
+
+/// [`BtcKeys::with_btc_key`] for an imported secret: network, type and compression must match
+/// the account.
+fn lend_imported<T>(
+    secret: &ImportedBtcSecret,
+    network: BtcNetwork,
+    (script_type, compressed): (ScriptType, bool),
+    input: usize,
+    f: impl FnOnce(&Secp256k1<All>, &SecretKey) -> Result<T, SignError>,
+) -> Result<T, SignError> {
+    if secret.network != network
+        || secret.script_type != script_type
+        || secret.compressed != compressed
+    {
+        return Err(SignError::KeyMismatch { input });
+    }
+    let ctx = secp_context(&mut OsRandom).map_err(|_| SignError::Randomness)?;
+    f(&ctx, &secret.secret)
+}
+
+impl BtcKeys for Vault {
+    fn with_btc_key<T>(
+        &self,
+        network: BtcNetwork,
+        source: BtcKeySource,
+        input: usize,
+        f: impl FnOnce(&Secp256k1<All>, &SecretKey) -> Result<T, SignError>,
+    ) -> Result<T, SignError> {
+        match source {
+            BtcKeySource::Derived { chain, index, .. } => {
+                let coin = source.coin(network).ok_or(SignError::Derivation)?;
+                self.with_secp_key(KeyRef::Btc { coin, chain, index }, |ctx, secret| {
+                    Ok(f(ctx, secret))
+                })
+                .map_err(SignError::Vault)?
+            }
+            BtcKeySource::Imported {
+                id,
+                script_type,
+                compressed,
+            } => {
+                let secret = self.btc_imported_secret(&id)?;
+                lend_imported(&secret, network, (script_type, compressed), input, f)
+            }
+        }
+    }
+}
+
+/// A secret-key provider for tests and tools: derived keys from a BIP39 seed, imported keys from
+/// a list, fixed auxiliary randomness.
+#[cfg(test)]
+pub(crate) struct SeedKeys {
+    pub(crate) seed: [u8; 64],
+    pub(crate) imported: Vec<([u8; 16], ImportedBtcSecret)>,
+    pub(crate) aux: [u8; 32],
+}
+
+#[cfg(test)]
+impl SeedKeys {
+    pub(crate) fn add_imported(
+        &mut self,
+        id: [u8; 16],
+        secret: SecretKey,
+        compressed: bool,
+        network: BtcNetwork,
+        script_type: ScriptType,
+    ) {
+        self.imported.push((
+            id,
+            ImportedBtcSecret::new(secret, compressed, network, script_type),
+        ));
+    }
+}
+
+#[cfg(test)]
+impl BtcKeys for SeedKeys {
+    fn with_btc_key<T>(
+        &self,
+        network: BtcNetwork,
+        source: BtcKeySource,
+        input: usize,
+        f: impl FnOnce(&Secp256k1<All>, &SecretKey) -> Result<T, SignError>,
+    ) -> Result<T, SignError> {
+        match source {
+            BtcKeySource::Derived { chain, index, .. } => {
+                let coin = source.coin(network).ok_or(SignError::Derivation)?;
+                let path = crate::bip32::path::btc_path(coin, chain, index)
+                    .map_err(|_| SignError::Derivation)?;
+                let ctx = secp_context(&mut OsRandom).map_err(|_| SignError::Randomness)?;
+                let mut secret = crate::bip32::secret_key_from_seed(&ctx, &self.seed, &path)
+                    .map_err(|_| SignError::Derivation)?;
+                let result = f(&ctx, &secret);
+                secret.non_secure_erase();
+                result
+            }
+            BtcKeySource::Imported {
+                id,
+                script_type,
+                compressed,
+            } => {
+                let (_, secret) = self
+                    .imported
+                    .iter()
+                    .find(|(known, _)| *known == id)
+                    .ok_or(SignError::ImportedKeyUnavailable)?;
+                lend_imported(secret, network, (script_type, compressed), input, f)
+            }
+        }
+    }
+
+    fn aux_rand(&self) -> Result<[u8; 32], SignError> {
+        Ok(self.aux)
+    }
+}
+
 /// A freshly signed transaction. It must pass `verify::verify_signed` before it is journaled
 /// or sent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SignedTx {
-    /// Signed bytes with witnesses.
+    /// Signed bytes (with witnesses for segwit and Taproot accounts).
     pub raw: Vec<u8>,
     /// The consumed approval's id (the journal `entry_id`).
     pub approval_id: ApprovalId,
@@ -239,25 +526,73 @@ pub fn check_recorded_amounts(
     Ok(())
 }
 
-fn approval_matches(approved: &Approved, plan: &SendPlan, acct: &AccountXpub) -> bool {
+fn approval_matches(approved: &Approved, plan: &SendPlan, account: &BtcAccountKey) -> bool {
     let network = plan.network();
-    approved.kind() == plan.kind()
+    plan.account() == account
+        && approved.kind() == plan.kind()
         && approved.signer() == Signer::FromPayload
         && approved.chain()
             == (ChainRef::Bitcoin {
                 network: network.id(),
                 genesis: network.genesis(),
             })
-        && approved.account() == AccountRef::Bitcoin(acct.pubkey)
+        && approved.account() == AccountRef::Bitcoin(account.identity())
         && matches!(approved.payload(), SigningPayload::Btc(bytes) if *bytes == btc_payload(plan))
 }
 
+/// The public key and our output of every plan input (derived from the account's public data).
+pub(crate) fn expected_inputs(
+    plan: &SendPlan,
+    account: &BtcAccountKey,
+) -> Result<Vec<(BtcPubKey, ScriptKind)>, SignError> {
+    let deriver = account.deriver().map_err(|_| SignError::Derivation)?;
+    plan.inputs()
+        .iter()
+        .map(|input| {
+            let key = deriver
+                .pubkey(input.chain, input.index)
+                .map_err(|_| SignError::Derivation)?;
+            let kind = deriver
+                .kind(input.chain, input.index)
+                .map_err(|_| SignError::Derivation)?;
+            Ok((key, kind))
+        })
+        .collect()
+}
+
+/// The BIP341 prevouts of a plan: every input's verified value and our scriptPubKey.
+pub(crate) fn plan_prevouts(plan: &SendPlan, expected: &[(BtcPubKey, ScriptKind)]) -> Vec<Prevout> {
+    plan.inputs()
+        .iter()
+        .zip(expected)
+        .map(|(input, (_, kind))| Prevout {
+            value: input.value,
+            script_pubkey: script_pubkey(kind),
+        })
+        .collect()
+}
+
+/// The ECDSA public key the lent secret must give for `expected` (same point and compression).
+fn check_lent_key(
+    ctx: &Secp256k1<All>,
+    secret: &SecretKey,
+    expected: &BtcPubKey,
+    input: usize,
+) -> Result<(), SignError> {
+    let public = PublicKey::from_secret_key(ctx, secret);
+    if BtcPubKey::of_point(&public, expected.is_compressed()) == *expected {
+        Ok(())
+    } else {
+        Err(SignError::KeyMismatch { input })
+    }
+}
+
 /// Signs an approved plan (spec/08 §11.1): refuses unless `approved` is this plan's kind, chain,
-/// account and byte-identical `btc_payload`; then, per input inside
-/// `vault.with_secp_key(KeyRef::Btc { coin, chain, index })`, checks that `HASH160(pubkey)` is the
-/// program derived from the cached account node (else `KeyMismatch`), computes the BIP143
-/// sighash with the verified amount, signs (low-R, verified at once) and builds the witness
-/// `[DER ‖ 0x01, pubkey]`. The private key never leaves the closure.
+/// account and byte-identical `btc_payload` and the plan is `account`'s; then, per input, lends
+/// the input's key ([`BtcAccountKey::key_source`]) through `keys`, checks that it gives the
+/// account's key of that input (else `KeyMismatch`), computes the sighash of the account type
+/// with the verified amount(s), signs (verified at once) and fills the scriptSig / witness. The
+/// private key never leaves the closure.
 ///
 /// # Errors
 ///
@@ -266,49 +601,89 @@ fn approval_matches(approved: &Approved, plan: &SendPlan, acct: &AccountXpub) ->
     clippy::needless_pass_by_value,
     reason = "the one-time approval token is consumed by signing (spec/03 §11.5)"
 )]
-pub fn sign_plan(
-    vault: &Vault,
+pub fn sign_plan<K: BtcKeys>(
+    keys: &K,
     approved: Approved,
     plan: &SendPlan,
-    acct: &AccountXpub,
+    account: &BtcAccountKey,
 ) -> Result<SignedTx, SignError> {
-    if !approval_matches(&approved, plan, acct) {
+    if !approval_matches(&approved, plan, account) {
         return Err(SignError::ApprovalMismatch);
     }
     let unsigned = plan.tx();
     let inputs = plan.inputs();
+    let deriver = account.deriver().map_err(|_| SignError::Derivation)?;
     if inputs.len() != unsigned.inputs.len()
-        || inputs
-            .iter()
-            .zip(&unsigned.inputs)
-            .any(|(planned, input)| planned.outpoint != input.prevout || !input.witness.is_empty())
+        || inputs.iter().zip(&unsigned.inputs).any(|(planned, input)| {
+            planned.outpoint != input.prevout
+                || !input.witness.is_empty()
+                || deriver
+                    .unsigned_script_sig(planned.chain, planned.index)
+                    .map_or(true, |script| script != input.script_sig)
+        })
     {
         return Err(SignError::PlanInconsistent);
     }
-    let coin = plan.network().coin_type();
+    let expected = expected_inputs(plan, account)?;
+    let network = plan.network();
+    let script_type = account.script_type();
+    let prevouts = plan_prevouts(plan, &expected);
     let mut signed = unsigned.clone();
-    for (position, (planned, input)) in inputs.iter().zip(signed.inputs.iter_mut()).enumerate() {
-        let program = p2wpkh_program(acct, planned.chain, planned.index)
-            .map_err(|_| SignError::Derivation)?;
-        let sighash = bip143_sighash_p2wpkh(unsigned, position, &program, planned.value)
-            .ok_or(SignError::PlanInconsistent)?;
-        let key = KeyRef::Btc {
-            coin,
-            chain: planned.chain,
-            index: planned.index,
-        };
-        let witness = vault
-            .with_secp_key(key, |ctx, secret| {
-                let public = PublicKey::from_secret_key(ctx, secret).serialize();
-                if hash160(&public) != program {
-                    return Ok(Err(SignError::KeyMismatch { input: position }));
-                }
-                Ok(sign_sighash(ctx, secret, &sighash)
-                    .map(|signature| vec![signature, public.to_vec()])
-                    .map_err(SignError::Witness))
-            })
-            .map_err(SignError::Vault)??;
-        input.witness = witness;
+    for (position, ((planned, input), (pubkey, kind))) in inputs
+        .iter()
+        .zip(signed.inputs.iter_mut())
+        .zip(&expected)
+        .enumerate()
+    {
+        let source = account.key_source(planned.chain, planned.index);
+        match script_type {
+            ScriptType::P2wpkh | ScriptType::P2shP2wpkh => {
+                let BtcPubKey::Compressed(key) = pubkey else {
+                    return Err(SignError::Derivation);
+                };
+                let sighash =
+                    bip143_sighash_p2wpkh(unsigned, position, &hash160(key), planned.value)
+                        .ok_or(SignError::PlanInconsistent)?;
+                let signature = keys.with_btc_key(network, source, position, |ctx, secret| {
+                    check_lent_key(ctx, secret, pubkey, position)?;
+                    sign_sighash(ctx, secret, &sighash).map_err(SignError::Witness)
+                })?;
+                input.witness = vec![signature, key.to_vec()];
+            }
+            ScriptType::P2pkh => {
+                let sighash = legacy_sighash(
+                    unsigned,
+                    position,
+                    &script_pubkey(kind),
+                    u32::from(SIGHASH_ALL),
+                )
+                .ok_or(SignError::PlanInconsistent)?;
+                let signature = keys.with_btc_key(network, source, position, |ctx, secret| {
+                    check_lent_key(ctx, secret, pubkey, position)?;
+                    sign_sighash(ctx, secret, &sighash).map_err(SignError::Witness)
+                })?;
+                input.script_sig = p2pkh_script_sig(&signature, pubkey.as_bytes())
+                    .ok_or(SignError::PlanInconsistent)?;
+            }
+            ScriptType::P2tr => {
+                let ScriptKind::P2tr(output) = kind else {
+                    return Err(SignError::Derivation);
+                };
+                let sighash = sighash_default(unsigned, position, &prevouts)
+                    .ok_or(SignError::PlanInconsistent)?;
+                let aux = keys.aux_rand()?;
+                let signature = keys.with_btc_key(network, source, position, |ctx, secret| {
+                    check_lent_key(ctx, secret, pubkey, position)?;
+                    let (signature, tweaked) = sign_key_path(ctx, secret, None, &sighash, &aux)
+                        .map_err(SignError::Taproot)?;
+                    if tweaked != *output {
+                        return Err(SignError::KeyMismatch { input: position });
+                    }
+                    Ok(signature)
+                })?;
+                input.witness = vec![signature.to_vec()];
+            }
+        }
     }
     Ok(SignedTx {
         raw: serialize(&signed, true),

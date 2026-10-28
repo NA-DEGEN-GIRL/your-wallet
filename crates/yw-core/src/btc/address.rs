@@ -1,7 +1,7 @@
 //! Bitcoin addresses (spec/08 §3.1, §3.3, §6.1, §6.3, §13): the five sendable script kinds, the
 //! paste-input policy table (first matching rule wins), canonical re-encoding, script ↔ kind
-//! conversion, `HASH160`, the receive/change program by public derivation, and `BtcAddress`
-//! (our own P2WPKH addresses only, for indexer requests).
+//! conversion, `HASH160`, the BIP84 receive/change program by public derivation, and
+//! `BtcAddress` (our own addresses of any account type, for indexer requests).
 //!
 //! Displayed addresses are always `encode_address(kind)`, never the pasted text.
 #![deny(clippy::indexing_slicing)]
@@ -440,27 +440,34 @@ pub fn p2wpkh_program(
     Ok(hash160(&leaf.pubkey))
 }
 
-/// One of our own receive/change addresses: lowercase bech32 P2WPKH, built only from a network
-/// and a 20-byte program (spec/08 §3.3), so indexer requests can only carry `[0-9a-z]` text.
+/// One of our own receive/change addresses (any of the four account types, spec/08 §3.3), built
+/// only from a network and our output kind: lowercase bech32/bech32m or base58check, so indexer
+/// requests can only carry `[0-9A-Za-z]` text (no character needs percent-encoding).
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct BtcAddress {
     text: String,
     network: BtcNetwork,
-    program: [u8; 20],
+    kind: ScriptKind,
 }
 
 impl BtcAddress {
     /// The P2WPKH address of `program` on `net`.
     #[must_use]
     pub fn p2wpkh(net: BtcNetwork, program: &[u8; 20]) -> Self {
+        Self::ours(net, ScriptKind::P2wpkh(*program))
+    }
+
+    /// The address of our output `kind` on `net` (`encode_address`).
+    #[must_use]
+    pub fn ours(net: BtcNetwork, kind: ScriptKind) -> Self {
         Self {
-            text: encode_address(&ScriptKind::P2wpkh(*program), net),
+            text: encode_address(&kind, net),
             network: net,
-            program: *program,
+            kind,
         }
     }
 
-    /// The address text (lowercase, `[0-9a-z]` only).
+    /// The address text (`[0-9A-Za-z]` only).
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.text
@@ -472,16 +479,16 @@ impl BtcAddress {
         self.network
     }
 
-    /// The witness program.
+    /// The output kind.
     #[must_use]
-    pub const fn program(&self) -> &[u8; 20] {
-        &self.program
+    pub const fn kind(&self) -> ScriptKind {
+        self.kind
     }
 
-    /// `00 14 <program>`.
+    /// The scriptPubKey.
     #[must_use]
-    pub fn script_pubkey(&self) -> [u8; 22] {
-        script::p2wpkh_script_pubkey(&self.program)
+    pub fn script_pubkey(&self) -> Vec<u8> {
+        script_pubkey(&self.kind)
     }
 }
 

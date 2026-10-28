@@ -547,6 +547,18 @@ const ESTIMATE_MAX_COMPACT: usize = 252;
 /// assumes one-byte `CompactSize` fields).
 #[must_use]
 pub fn estimate_weight(inputs: usize, output_spk_lens: &[usize]) -> Option<u64> {
+    estimate_weight_with(ESTIMATE_INPUT_WEIGHT, inputs, output_spk_lens)
+}
+
+/// [`estimate_weight`] with another per-input weight (`ScriptType::input_weight`: 588/716
+/// P2PKH, 363 P2SH-P2WPKH, 271 P2WPKH, 230 P2TR): `42 + w·k + Σ 4·(9 + len)`. The 2 marker/flag
+/// weight units stay in the base for a P2PKH-only (non-segwit) transaction, an over-estimate.
+#[must_use]
+pub fn estimate_weight_with(
+    input_weight: u64,
+    inputs: usize,
+    output_spk_lens: &[usize],
+) -> Option<u64> {
     if inputs == 0
         || inputs > ESTIMATE_MAX_COMPACT
         || output_spk_lens.is_empty()
@@ -557,7 +569,7 @@ pub fn estimate_weight(inputs: usize, output_spk_lens: &[usize]) -> Option<u64> 
     {
         return None;
     }
-    let mut weight = ESTIMATE_INPUT_WEIGHT
+    let mut weight = input_weight
         .checked_mul(u64::try_from(inputs).ok()?)?
         .checked_add(ESTIMATE_BASE_WEIGHT)?;
     for len in output_spk_lens {

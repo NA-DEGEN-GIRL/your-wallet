@@ -5,10 +5,10 @@
 //! Unknown top-level keys (a newer minor version's) are kept and written back after the known keys
 //! (spec/04 §6.6, spec/02 §5.3). The imported-key keys (`sol_raw_accounts`, `btc_raw_accounts`,
 //! `sol_raw_selected`) are optional on read (files written before key import lack them) and always
-//! written after `prefs`.
+//! written after `prefs`; `btc_accounts` (spec/08 §12.3a) is optional too and written last.
 
 use yw_core::btc::BtcNetwork;
-use yw_core::btc::meta::{BtcMeta, btc_meta_from_json, btc_meta_to_json};
+use yw_core::btc::meta::{BtcAccounts, BtcMeta, btc_meta_from_json, btc_meta_to_json};
 use yw_core::keyimport::BtcScriptType;
 use yw_json::{Limits, Number, Object, Value};
 
@@ -49,6 +49,10 @@ const KEYS: [&str; 10] = [
 ];
 /// Imported-key keys added with key import: optional on read, written after `prefs`.
 const OPTIONAL_KEYS: [&str; 3] = ["sol_raw_accounts", "btc_raw_accounts", "sol_raw_selected"];
+
+/// The optional top-level key of the non-primary BTC accounts (spec/08 §12.3a): written after
+/// the required keys when there is something to store; a file without it has no such accounts.
+pub const BTC_ACCOUNTS_KEY: &str = "btc_accounts";
 
 const LIMITS: Limits = Limits {
     max_bytes: META_MAX_BYTES,
@@ -177,8 +181,13 @@ pub struct Meta {
     pub sol_raw_selected: Option<[u8; 16]>,
     /// Solana standard accounts `m/44'/501'/i'/0'` (M7; `address` = base58 display cache).
     pub sol_accounts: Vec<Account>,
-    /// `btc` (M8, spec/08 §12.3), `None` = `null` (BTC never enabled, or reset).
+    /// `btc` (M8, spec/08 §12.3), `None` = `null` (BTC never enabled, or reset): the BIP84
+    /// account 0.
     pub btc: Option<Box<BtcMeta>>,
+    /// `btc_accounts` (spec/08 §12.3a): the other BTC accounts (address types, account numbers,
+    /// imported keys) and the selected one. An optional top-level key: absent in files of
+    /// earlier versions (= no other accounts), which keep it unread when they write.
+    pub btc_accounts: BtcAccounts,
     /// Address book.
     pub address_book: Vec<Value>,
     /// Connected sites (M5).
@@ -209,6 +218,7 @@ impl Default for Meta {
             sol_raw_selected: None,
             sol_accounts: Vec::new(),
             btc: None,
+            btc_accounts: BtcAccounts::default(),
             address_book: Vec::new(),
             connected_sites: Vec::new(),
             tokens: Vec::new(),
@@ -597,7 +607,9 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
     }
     let unknown: Vec<(String, Value)> = object
         .iter()
-        .filter(|(key, _)| !KEYS.contains(key) && !OPTIONAL_KEYS.contains(key))
+        .filter(|(key, _)| {
+            !KEYS.contains(key) && !OPTIONAL_KEYS.contains(key) && *key != BTC_ACCOUNTS_KEY
+        })
         .map(|(key, value)| (key.to_owned(), value.clone()))
         .collect();
     let get = |key: &str| object.get(key).ok_or(MetaError);
@@ -642,6 +654,8 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
     let btc = btc_meta_from_json(get("btc")?)
         .map_err(|_| MetaError)?
         .map(Box::new);
+    let btc_accounts =
+        BtcAccounts::from_json(object.get(BTC_ACCOUNTS_KEY)).map_err(|_| MetaError)?;
     let address_book = array("address_book")?.to_vec();
     if address_book.len() > MAX_ADDRESS_BOOK || !address_book.iter().all(valid_book_entry) {
         return Err(MetaError);
@@ -676,6 +690,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         sol_raw_selected,
         sol_accounts,
         btc,
+        btc_accounts,
         address_book,
         connected_sites,
         tokens,
@@ -728,7 +743,7 @@ impl Meta {
                 json_object(vec![("record_id", json_str(&yw_core::hex::encode(&id)))])
             }
         };
-        vec![
+        let mut members = vec![
             ("schema", json_str(META_SCHEMA)),
             (
                 "evm_accounts",
@@ -806,7 +821,11 @@ impl Meta {
                 self.sol_raw_selected
                     .map_or(Value::Null, |id| json_str(&yw_core::hex::encode(&id))),
             ),
-        ]
+        ];
+        if self.btc_accounts != BtcAccounts::default() {
+            members.push((BTC_ACCOUNTS_KEY, self.btc_accounts.to_json()));
+        }
+        members
     }
 
     /// The next Solana standard index (largest + 1, or 0 for the first account), `None` at the
@@ -1388,6 +1407,76 @@ mod tests {
         let null = String::from_utf8(Meta::default().to_json()).unwrap();
         assert!(null.contains("\"btc\":null"));
         assert_eq!(parse(null.as_bytes()).unwrap().meta.btc, None);
+    }
+
+    /// spec/08 §12.3a: `btc_accounts` is an optional top-level key. A file without it (every
+    /// earlier version) has no other accounts and is written back without it; with accounts it
+    /// round-trips after the required keys, and meta `btc` keeps its version 1 bytes. An invalid
+    /// `btc_accounts` rejects the document like any known key.
+    #[test]
+    fn btc_accounts_is_an_optional_known_key() {
+        use yw_core::btc::{BtcAccountId, BtcAccountKey, BtcAccounts, BtcMeta, BtcNetwork};
+        let node = yw_core::bip32::AccountXpub {
+            pubkey: yw_core::hex::decode_array::<33>(
+                "03b88e0fbe3f646337ed93bc0c0f3b843fcf7d2589e5ec884754e6402027a890b4",
+            )
+            .unwrap(),
+            chain_code: [7; 32],
+        };
+        let primary = BtcMeta::new(BtcNetwork::Testnet4, node);
+        let without = Meta {
+            btc: Some(Box::new(primary.clone())),
+            ..Meta::default()
+        };
+        let old_bytes = without.to_json();
+        let old_text = String::from_utf8(old_bytes.clone()).unwrap();
+        assert!(!old_text.contains(super::BTC_ACCOUNTS_KEY));
+        let parsed = parse(&old_bytes).unwrap().meta;
+        assert_eq!(parsed.btc_accounts, BtcAccounts::default());
+        assert_eq!(parsed.to_json(), old_bytes);
+        let taproot = BtcAccountKey::hd(yw_core::btc::ScriptType::P2tr, 0, node).unwrap();
+        let mut with = without.clone();
+        with.btc_accounts
+            .upsert(BtcMeta::with_key(BtcNetwork::Testnet4, taproot))
+            .unwrap();
+        with.btc_accounts.selected = Some(taproot.id());
+        let bytes = with.to_json();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        // Meta `btc` is byte-identical; `btc_accounts` follows the required keys.
+        assert!(text.contains(
+            &old_text
+                [old_text.find("\"btc\":").unwrap()..old_text.find(",\"address_book\"").unwrap()]
+        ));
+        assert!(text.find("\"prefs\"").unwrap() < text.find("\"btc_accounts\"").unwrap());
+        let parsed = parse(&bytes).unwrap().meta;
+        assert_eq!(parsed, with);
+        assert_eq!(parsed.to_json(), bytes);
+        assert!(parsed.unknown.is_empty());
+        assert_eq!(
+            parsed.btc_accounts.selected_on(BtcNetwork::Testnet4),
+            BtcAccountId::Hd {
+                script_type: yw_core::btc::ScriptType::P2tr,
+                account: 0
+            }
+        );
+        assert!(
+            parse(
+                text.replacen(
+                    "\"btc_accounts\":{\"version\":1",
+                    "\"btc_accounts\":{\"version\":2",
+                    1
+                )
+                .as_bytes()
+            )
+            .is_err()
+        );
+        assert!(
+            parse(
+                text.replacen("\"selected\":{", "\"selected\":7,\"x\":{", 1)
+                    .as_bytes()
+            )
+            .is_err()
+        );
     }
 
     #[test]

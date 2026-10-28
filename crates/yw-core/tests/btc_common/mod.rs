@@ -10,6 +10,7 @@
 
 use yw_core::bip32::path::BtcChain;
 use yw_core::bip32::{AccountXpub, derive_public_child};
+use yw_core::btc::account::{BtcAccountId, BtcAccountKey, ScriptType};
 use yw_core::btc::address::ScriptKind;
 use yw_core::btc::amount::Sats;
 use yw_core::btc::fee::{FeeChoice, FeeRate, FeeSource};
@@ -26,8 +27,13 @@ pub const TIP: u32 = 200_000;
 /// A fixed layout seed.
 pub const SEED: [u8; 32] = [0x5a; 32];
 
+/// The BIP84 account 0 of [`xpub`] (the account of every fixture plan).
+pub fn account() -> BtcAccountKey {
+    BtcAccountKey::primary(xpub())
+}
+
 /// testnet4 `m/84'/1'/0'` of `abandon`×11 `about` (public data).
-pub fn account() -> AccountXpub {
+pub fn xpub() -> AccountXpub {
     AccountXpub {
         pubkey: hex::decode_array::<33>(
             "03b88e0fbe3f646337ed93bc0c0f3b843fcf7d2589e5ec884754e6402027a890b4",
@@ -42,7 +48,7 @@ pub fn account() -> AccountXpub {
 
 /// `m/84'/1'/0'/{chain}/{index}` public key.
 pub fn pubkey(chain: BtcChain, index: u32) -> [u8; 33] {
-    let chain_node = derive_public_child(&account(), chain.index()).unwrap();
+    let chain_node = derive_public_child(&xpub(), chain.index()).unwrap();
     derive_public_child(&chain_node, index).unwrap().pubkey
 }
 
@@ -132,6 +138,8 @@ pub fn record(plan: &SendPlan, state: BtcTxState, created: u64) -> BtcRecord {
     entry_id[15] = 1;
     BtcRecord {
         network: plan.network(),
+        account: BtcAccountId::PRIMARY,
+        script_type: ScriptType::P2wpkh,
         state,
         send_max: plan.send_max(),
         fee_override_typed: plan.fee_override_typed(),

@@ -11,6 +11,7 @@
 
 use secp256k1::ecdsa::Signature;
 
+use super::account::BtcAccountKey;
 use super::address::parse_address;
 use super::amount::Sats;
 use super::display::{BtcSendFacts, btc_payload, build_btc_request};
@@ -32,7 +33,6 @@ use crate::approval::{
     AccountRef, ApprovalDraft, ApprovalError, ApprovalId, ApprovalKind, ApprovalOrigin,
     ApprovalStore, Approved, ChainRef, FieldKey, Signer, SigningPayload, approval_digest,
 };
-use crate::bip32::AccountXpub;
 use crate::bip32::path::{AccountIndex, BtcChain, BtcCoin};
 use crate::journal::JournalPlain;
 use crate::journal::btc::{
@@ -52,7 +52,7 @@ const P2WSH: &str = "tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sl
 
 struct Fixture {
     vault: Vault,
-    account: AccountXpub,
+    account: BtcAccountKey,
     meta: BtcMeta,
 }
 
@@ -82,8 +82,8 @@ fn fake_prev(program: &[u8; 20], value: u64, salt: u8) -> (Vec<u8>, Txid) {
 /// (receive 0: 50,000, receive 1: 30,000, change 0: 80,000 after one change index is used).
 fn fixture() -> Fixture {
     let vault = about_vault();
-    let account = vault.btc_account_xpub(BtcCoin::Test).unwrap();
-    let mut meta = BtcMeta::new(NET, account);
+    let account = BtcAccountKey::primary(vault.btc_account_xpub(BtcCoin::Test).unwrap());
+    let mut meta = BtcMeta::with_key(NET, account);
     let mut discovery = Discovery::full();
     while let Some((chain, index)) = discovery.next_request() {
         let used =
@@ -192,13 +192,13 @@ fn approve(fixture: &Fixture, plan: &SendPlan, id: u8) -> Approved {
 }
 
 /// A test-only `Approved` for exactly `plan` (bypasses the store for plans the policy blocks).
-fn approved_for(plan: &SendPlan, account: &AccountXpub) -> Approved {
+fn approved_for(plan: &SendPlan, account: &BtcAccountKey) -> Approved {
     Approved::for_test(
         ChainRef::Bitcoin {
             network: plan.network().id(),
             genesis: plan.network().genesis(),
         },
-        AccountRef::Bitcoin(account.pubkey),
+        AccountRef::Bitcoin(account.identity()),
         Signer::FromPayload,
         plan.kind(),
         SigningPayload::Btc(btc_payload(plan)),
@@ -239,7 +239,7 @@ fn approval_btc_digest() {
         genesis: BtcNetwork::Mainnet.genesis(),
     };
     assert_ne!(approval_digest(&other, EXPIRES).unwrap(), base);
-    let mut pubkey = fixture.account.pubkey;
+    let mut pubkey = fixture.account.identity();
     pubkey[32] ^= 1;
     let mut other = draft.clone();
     other.account = AccountRef::Bitcoin(pubkey);
@@ -341,7 +341,7 @@ fn approval_btc_digest() {
         network: 2,
         genesis: NET.genesis(),
     };
-    let account = AccountRef::Bitcoin(fixture.account.pubkey);
+    let account = AccountRef::Bitcoin(fixture.account.identity());
     let payload = SigningPayload::Btc(btc_payload(&plan));
     for approved in [
         Approved::for_test(
@@ -402,13 +402,22 @@ fn approval_btc_digest() {
 /// spec/08 §3.1/§11.1: a key whose HASH160 is not the cached account's program stops signing.
 #[test]
 fn key_mismatch_stops_signing() {
-    let fixture = fixture();
+    let mut fixture = fixture();
+    // A cached node that is not the vault's testnet4 node (here: the mainnet node under the
+    // same BIP84 account 0 identity): the lent keys do not match the plan's keys.
+    let mainnet = BtcAccountKey::primary(fixture.vault.btc_account_xpub(BtcCoin::Mainnet).unwrap());
+    fixture.account = mainnet;
     let plan = two_input_plan(&fixture);
-    let mainnet = fixture.vault.btc_account_xpub(BtcCoin::Mainnet).unwrap();
     let approved = approved_for(&plan, &mainnet);
     assert_eq!(
         sign_plan(&fixture.vault, approved, &plan, &mainnet),
         Err(SignError::KeyMismatch { input: 0 })
+    );
+    // Signing a plan with another account than its own is refused before any key is lent.
+    let real = BtcAccountKey::primary(fixture.vault.btc_account_xpub(BtcCoin::Test).unwrap());
+    assert_eq!(
+        sign_plan(&fixture.vault, approved_for(&plan, &real), &plan, &real),
+        Err(SignError::ApprovalMismatch)
     );
 }
 
@@ -641,10 +650,21 @@ fn post_sign_tamper_each_field() {
         verify_signed(&raw, &tampered, account),
         Err(PostSignError::Vsize)
     );
-    // Another account node: every key mismatches.
-    let mainnet = fixture.vault.btc_account_xpub(BtcCoin::Mainnet).unwrap();
+    // Another account than the plan's: refused before any check.
+    let mainnet = BtcAccountKey::primary(fixture.vault.btc_account_xpub(BtcCoin::Mainnet).unwrap());
     assert_eq!(
         verify_signed(&raw, &plan, &mainnet),
+        Err(PostSignError::PlanInconsistent)
+    );
+    // A witness key that is not the account key of the input's path.
+    let mut swapped = parse_transaction(&raw).unwrap();
+    let other_key = fixture
+        .vault
+        .btc_public_key(BtcCoin::Test, BtcChain::Receive, 5)
+        .unwrap();
+    swapped.inputs[0].witness[1] = other_key.to_vec();
+    assert_eq!(
+        verify_signed(&serialize(&swapped, true), &plan, account),
         Err(PostSignError::KeyMismatch { input: 0 })
     );
 }

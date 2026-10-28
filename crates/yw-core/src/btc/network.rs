@@ -55,13 +55,35 @@ impl BtcNetwork {
         }
     }
 
-    /// The BIP44 coin type of `m/84'/{coin}'/0'` (D29): mainnet `0'`, testnet4 `1'`.
+    /// The BIP84 account 0 node `m/84'/{coin}'/0'` (D29): coin type mainnet `0'`, testnet4 `1'`.
     #[must_use]
     pub const fn coin_type(self) -> BtcCoin {
         match self {
             Self::Mainnet => BtcCoin::Mainnet,
             Self::Testnet4 => BtcCoin::Test,
         }
+    }
+
+    /// The coin type number (0 mainnet, 1 testnet4).
+    #[must_use]
+    pub const fn coin_number(self) -> u32 {
+        match self {
+            Self::Mainnet => 0,
+            Self::Testnet4 => 1,
+        }
+    }
+
+    /// The account node `m/{purpose}'/{coin}'/{account}'` of this network (D29).
+    ///
+    /// # Errors
+    ///
+    /// [`crate::error::KeyError::InvalidPath`] for a hardened `account`.
+    pub const fn account_node(
+        self,
+        purpose: crate::bip32::path::BtcPurpose,
+        account: u32,
+    ) -> Result<BtcCoin, crate::error::KeyError> {
+        BtcCoin::new(matches!(self, Self::Testnet4), purpose, account)
     }
 
     /// Genesis hash bytes in display order (the §2 hex decoded as written).

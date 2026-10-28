@@ -12,7 +12,7 @@
 //! | EVM (`screens_evm`) | 900–3,199, 6,600 | send, book rows 1,020–2,019, chain rows 2,210–2,349, caps 2,400–2,439, activity 2,500–2,899, send assets 3,000–3,199 |
 //! | sites (`screens_sites`) | 6,700–6,965 | S13 rows 6,710–6,965 |
 //! | Solana (`screens_sol`) | 7,000–7,909 | send assets 7,015–7,018, token cards 7,027–7,029, picker 7,030–7,069, scan rows 7,120–7,375, book rows 7,410–7,909 |
-//! | Bitcoin (`screens_btc`) | 9,000–9,899 | UTXO rows 9,200–9,499, activity 9,500–9,899 |
+//! | Bitcoin (`screens_btc`) | 9,000–9,899 | account rows 9,130–9,194, UTXO rows 9,200–9,499, activity 9,500–9,899 |
 //! | AI 설명 (`screens_llm`) | 10,000–10,099 | M6 settings |
 //! | EVM accounts (`screens`) | 11,000–11,999 | one radio per row (index range 0..=999) |
 //! | Solana accounts (`screens_sol`) | 12,000–12,999 | one radio per row (index range 0..=999) |
@@ -214,6 +214,13 @@ pub fn ranges() -> Vec<IdRange> {
             screens_keys::ids::BTC_ROW_SPAN,
             screens_keys::ids::BTC_ROW_STRIDE,
             MAX_RAW_ACCOUNTS,
+        ),
+        range(
+            "btc.accounts",
+            screens_btc::ids::ACCOUNT_BASE,
+            screens_btc::ids::ACCOUNT_SPAN,
+            1,
+            usize::from(screens_btc::ids::ACCOUNT_SPAN),
         ),
         range(
             "btc.utxo_rows",

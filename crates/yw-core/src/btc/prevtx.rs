@@ -34,7 +34,7 @@ pub enum PrevTxError {
     TxidMismatch,
     /// `vout` is not an output index of the transaction.
     VoutOutOfRange,
-    /// The output script is not the expected P2WPKH script of ours.
+    /// The output script is not the expected script of ours.
     ScriptMismatch,
     /// The output value is 0.
     ZeroValue,
@@ -69,7 +69,8 @@ fn txid_of_original(raw: &[u8], inputs_start: usize, outputs_end: usize) -> Opti
 
 /// Verifies output `vout` of the raw previous transaction (spec/08 §5 steps 1–6):
 /// size `<= 400,000`, strict parse, txid of the original bytes `== expected_txid`,
-/// `vout < outputs.len()`, scriptPubKey `== expected_script` (`00 14 <our program>`), value ≥ 1.
+/// `vout < outputs.len()`, scriptPubKey `== expected_script` (our output script of the account
+/// type: P2PKH, P2SH-P2WPKH, P2WPKH or P2TR), value ≥ 1.
 ///
 /// # Errors
 ///
@@ -78,7 +79,7 @@ pub fn verify_prev_output(
     raw: &[u8],
     expected_txid: &Txid,
     vout: u32,
-    expected_script: &[u8; 22],
+    expected_script: &[u8],
 ) -> Result<VerifiedPrevOut, PrevTxError> {
     if raw.len() > BTC_MAX_PREV_TX_BYTES {
         return Err(PrevTxError::TooLarge);
@@ -93,7 +94,7 @@ pub fn verify_prev_output(
         .ok()
         .and_then(|index| tx.outputs.get(index))
         .ok_or(PrevTxError::VoutOutOfRange)?;
-    if output.script_pubkey.as_slice() != expected_script.as_slice() {
+    if output.script_pubkey.as_slice() != expected_script {
         return Err(PrevTxError::ScriptMismatch);
     }
     if output.value == Sats::ZERO {

@@ -10,16 +10,16 @@ D26·D27·D29·D30의 세부 명세다. BTC 기능은 yw-app 화면에서만 쓰
 
 | 항목 | 규칙 |
 |---|---|
-| 받기 | BIP84 P2WPKH 계정 1개, m/84'/{coin}'/0'/{0,1}/i(D26·D29; `coin` = mainnet 0, testnet4 1, §2). 받기 주소는 bech32 v0 20바이트만 쓴다. |
+| 받기 | 계정마다 주소 형식 하나(§3.5): 기본 BIP84 P2WPKH 계정 0 m/84'/{coin}'/0'/{0,1}/i(D26·D29; `coin` = mainnet 0, testnet4 1, §2), [계정 추가]로 BIP86 P2TR·BIP49 P2SH-P2WPKH·BIP44 P2PKH·BIP84 다음 계정, 가져온 단일 키(주소 하나). |
 | 보내기 대상 | P2PKH, P2SH, P2WPKH(v0/20), P2WSH(v0/32), P2TR(v1/32, 유효한 x-only 키) |
 | 보내기 거부 | P2A(`bc1pfeessrawgf`, `tb1pfees9rn5nz`), v1이면서 32바이트가 아닌 프로그램, v2–v16, 사일런트 페이먼트(`sp1`/`tsp1`), 라이트닝(`lnbc`/`lntb`/`lnurl`/`lightning:`), `bitcoin:` URI, 다른 네트워크·다른 코인 주소 |
-| 쓰는 입력 | 이 계정의 P2WPKH UTXO만. 서명은 BIP143 + ECDSA(low-R, low-S) + SIGHASH_ALL. |
+| 쓰는 입력 | 선택한 계정 하나의 UTXO만(한 거래 = 한 주소 형식). 서명: P2PKH 레거시 sighash, P2SH-P2WPKH·P2WPKH BIP143 — 모두 ECDSA(low-R, low-S) + SIGHASH_ALL; P2TR BIP341 키 경로 Schnorr + SIGHASH_DEFAULT(§6.6–§6.7). |
 | 거래 형태 | 수신자 1명 + 잔돈 0–1개, 보내기 최대(send-max), RBF 수수료 올리기 |
 | 데이터 원천 | 네트워크마다 둘(D26, §4): (1) `bitcoin:<net>` 엔드포인트 URL 하나(D13, 공급자 무관, 현재 QuickNode)의 Bitcoin Core JSON-RPC — 네트워크 고정, 이전 거래 원본, 수수료, 사전 검사, 전송. (2) 주소 인덱서 `bitcoin.indexer`(§2): **기본 `esplora`**(Esplora REST GET, 무료·키 없음, 기본 mempool.space), 선택 `bb-rpc`(같은 엔드포인트의 QuickNode BTC Blockbook 애드온 `bb_*`, 유료), 선택 `bb-rest`(알케미 UTXO API REST). 인덱서는 믿지 않고(§4.6, §5) 주소 단위로만 묻고 xpub은 보내지 않는다. v1에는 다른 원천이 없다. |
 
 ### 1.2 제외 (v1)
 
-P2TR 받기(BIP86, v1.1), PSBT, 멀티시그, 메시지 서명, 여러 수신자(batching), coinjoin, 라이트닝, BIP21 URI, 법정화폐 환산, xpub·디스크립터 내보내기, watch-only, 44'/49'/86' 경로 탐색, 계정 1 이상, signet·testnet3·regtest, 남의 미확정 UTXO 사용, CPFP. 다른 경로에 자산이 있는 니모닉을 가져와도 찾지 않는다. 가져오기 화면에 고정 문구 "이 지갑은 BIP84(bc1q…) 주소만 찾습니다"를 표시한다.
+PSBT, 멀티시그, 메시지 서명, 여러 수신자(batching), coinjoin, 라이트닝, BIP21 URI, 법정화폐 환산, xpub·디스크립터 내보내기, watch-only, Taproot 스크립트 경로·비어 있지 않은 스크립트 트리, 여러 계정 입력을 섞는 거래, 계정 자동 탐색(가져온 니모닉에서 44'/49'/86'·다른 account 번호를 스스로 찾지 않는다 — 사용자가 [계정 추가]로 형식을 고르면 그 계정을 §3.4로 찾는다), signet·testnet3·regtest, 남의 미확정 UTXO 사용, CPFP. 가져오기 화면에 고정 문구 `BTC_IMPORT_NOTE` "Bitcoin은 네이티브 세그윗(bc1q…, BIP84) 계정 0을 먼저 찾습니다. 탭루트·호환 세그윗·레거시 주소는 Bitcoin 탭의 [계정 추가]로 더하세요"를 표시한다.
 
 ## 2. 네트워크 고정
 
@@ -73,8 +73,8 @@ BTC 네트워크는 지갑마다 하나다(D26). 선택은 평문 `settings.json
 
 ### 3.1 경로와 키
 
-- 계정 키: m/84'/{coin}'/0' (D29, §2 `coin_type()`). 받기 체인 `chain = 0`(`BtcChain::Receive`), 잔돈 체인 `chain = 1`(`BtcChain::Change`), 인덱스 `0 <= i < 2^31`(비강화).
-- 압축 공개키(33바이트)만 쓴다. 주소 프로그램은 `HASH160(pubkey) = RIPEMD160(SHA256(pubkey))`이다. `ripemd =0.1.3`은 M0부터 yw-core 허용 목록에 있다(D5, [01](01-repo-build.md) §3.3); Bitcoin 단계는 의존성을 추가하지 않는다.
+- 계정 키: 기본 계정 m/84'/{coin}'/0' (D29, §2 `coin_type()`), 추가 계정 m/{44|49|84|86}'/{coin}'/{account}'(§3.5). 받기 체인 `chain = 0`(`BtcChain::Receive`), 잔돈 체인 `chain = 1`(`BtcChain::Change`), 인덱스 `0 <= i < 2^31`(비강화). 계정 노드 선택자는 `bip32::path::BtcCoin { test, purpose, account }`이고(이름은 BIP84 전용이던 때의 것; `BtcCoin::Mainnet`/`BtcCoin::Test`는 BIP84 계정 0), vault는 이를 그대로 `btc_path`·`btc_account_path`에 넘긴다.
+- HD 계정은 압축 공개키(33바이트)만 쓴다. P2WPKH 프로그램은 `HASH160(pubkey) = RIPEMD160(SHA256(pubkey))`이고, 그 밖 형식의 출력은 §3.5 표다. `ripemd =0.1.3`은 M0부터 yw-core 허용 목록에 있다(D5, [01](01-repo-build.md) §3.3); Bitcoin 단계는 의존성을 추가하지 않는다.
 - **계정 공개키 캐시.** BTC를 켤 때 `Vault::btc_account_xpub(&self, coin: BtcCoin) -> R<AccountXpub>`([02](02-core-keys-vault.md) §10.3, m/84'/{coin}'/0')로 압축 공개키 33바이트와 체인 코드 32바이트를 받아 `BtcMeta.account_pubkey`·`account_chain_code`에 저장한다. 주소 생성은 이 값에서 공개 파생(CKDpub, `yw_core::bip32::derive_public_child`)으로 한다. 개인키가 아니므로 D10과 충돌하지 않고, meta.ywm은 암호화되어 있다.
 - **passphrase.** 파생에 쓰는 BIP39 passphrase(가져온 지갑만, D29)는 잠금 해제 동안 DEK와 같은 VirtualLock 슬롯에 있다(D10, [02] §7.3). BTC에 별도 처리는 없다.
 - `AccountXpub`·`derive_public_child`는 `yw_core::bip32`([02] §3.1)가 정의하고 `Vault::btc_account_xpub`는 [02] §10.3이 정의한다(정본은 [02]). 08은 그 이름을 그대로 쓰며 아래는 08이 쓰는 계약의 요약이다(오류는 [02] §10.2 `KeyError`, `Vault` 메서드에서는 `R` = `Result<_, VaultError>`). `p2wpkh_program`만 08 소유(`btc::address`)다.
@@ -106,7 +106,7 @@ pub fn p2wpkh_program(acct: &AccountXpub, chain: BtcChain, index: u32) -> Result
 
 ### 3.3 감시 집합
 
-새로고침 대상 주소는 받기 `[0, receive_next)`와 잔돈 `[0, change_next)`이다(체인마다 `BTC_MAX_ADDRESS_INDEX`를 넘지 않는다). 서버에는 이 주소들을 하나씩만 보낸다. xpub·디스크립터·체인 코드·경로는 어떤 요청에도 넣지 않는다(D26). 인덱서 요청 생성기 `BtcIndexerReq`는 `BtcAddress`(우리 스크립트에서 인코딩한 값)와 `Txid` 타입만 받으므로 다른 문자열이 params·경로에 들어갈 수 없다(§4.3). `esplora` 경로에 들어가는 값은 소문자 bech32 주소(`[0-9a-z]`)·소문자 txid hex뿐이라 퍼센트 인코딩이 필요 없다. `bb_getUTXOs`는 첫 인자로 xpub·디스크립터도 받지만 우리 요청에는 주소만 들어간다.
+새로고침 대상 주소는 선택한 계정(§3.5)의 받기 `[0, receive_next)`와 잔돈 `[0, change_next)`이다(체인마다 `BTC_MAX_ADDRESS_INDEX`를 넘지 않는다). 서버에는 이 주소들을 하나씩만 보낸다. xpub·디스크립터·체인 코드·경로는 어떤 요청에도 넣지 않는다(D26). 인덱서 요청 생성기 `BtcIndexerReq`는 `BtcAddress`(우리 스크립트에서 인코딩한 값)와 `Txid` 타입만 받으므로 다른 문자열이 params·경로에 들어갈 수 없다(§4.3). `esplora` 경로에 들어가는 값은 선택한 계정의 주소(소문자 bech32·bech32m 또는 base58check, `[0-9A-Za-z]`)·소문자 txid hex뿐이라 퍼센트 인코딩이 필요 없다. `bb_getUTXOs`는 첫 인자로 xpub·디스크립터도 받지만 우리 요청에는 주소만 들어간다.
 
 - **프라이버시.** 인덱서 운영자(기본 mempool.space, 선택 QuickNode·알케미)는 질의한 주소 목록과 요청 IP를 보고, 같은 연결·시간대의 질의로 주소들을 한 지갑으로 묶을 수 있다. 주소 단위 질의·xpub 미전송은 묶음을 어렵게 할 뿐 막지 못한다. 이는 spec.md §2.2의 공급자 의존 잔여 위험과 같은 부류로 보고 방어를 주장하지 않는다. 줄이려면 사용자가 `esploraBaseUrl`을 자체 Esplora로 바꾼다. 설정 화면에 고정 안내 T-BTC-ESPLORA-NOTE([04] §2.16)를 보인다.
 
@@ -129,6 +129,31 @@ receive_next = next[0]; change_next = next[1]; last_used_* = last; 그 다음 §
 - "더 찾기" 버튼은 각 체인을 현재 `next`부터 20개 더 검사한다(수동 gap 확장). 이력이 나오면 위 규칙대로 계속한다. 결과는 `next = max(기존 next, last + 1)`로 적용해 발급 인덱스를 줄이지 않는다.
 - **요청량.** 새 지갑이면 인덱서 호출 40회와 연결 검사(§2) 3–4회다. 받기 30개·잔돈 15개를 쓴 지갑이면 (30+20)+(15+20) = 85회에, 확정 미사용 출력이 있는 주소마다 인덱서 `Utxo` 1회, 새 UTXO의 이전 거래마다 Core `getrawtransaction` 1회가 더해진다. 요청 간격 200 ms(§4.4)이면 85회에 약 17초 걸린다(429 재시도 제외).
 - **호출 비용.** 기본 `esplora`(공용 mempool.space)는 무료이고 키가 없다. 대신 공개 한도가 비공개이며 넘으면 429다(§4.4). Core JSON-RPC(현재 QuickNode)는 요금제 크레딧을 쓴다: 메서드별 크레딧은 문서에서 확인하지 못했다(§4.5 C3). 선택 인덱서: QuickNode BTC Blockbook 애드온(`bb-rpc`)은 유료 요금제 위 추가 월 요금(공개 페이지 기준 약 75달러부터)에 마켓플레이스 설명 기준 `bb_*` 호출당 10 크레딧(구 "Blockbook RPC" 애드온 설명은 20; 85회 발견이면 850 크레딧), 알케미 UTXO API(`bb-rest`) 1회당 CU는 미확인(알케미 Bitcoin JSON-RPC는 호출당 10 CU). 실측값은 §15 `BTC_INDEXER_COST_ASSUMED`에 적는다. 설계는 호출 비용에 의존하지 않는다.
+
+### 3.5 주소 형식과 계정 (`btc::account`)
+
+계정마다 주소 형식(`ScriptType`) 하나가 정해진다. `u8` 값은 meta·저널·vault(가져온 키, 태그 4)에 저장되므로 바꾸지 않는다.
+
+| `ScriptType` | 이름(화면) | 접두 mainnet / testnet4 | HD 경로 | 우리 출력 | 입력 서명 | 입력 weight(추정) |
+|---|---|---|---|---|---|---|
+| `P2pkh` = 1 | 레거시 | `1…` / `m·n…` | BIP44 m/44'/c'/a' | `76 a9 14 HASH160(K) 88 ac` | 레거시 sighash, scriptSig `<DER‖01> <K>` | 588 (비압축 키 716) |
+| `P2shP2wpkh` = 2 | 호환 세그윗 | `3…` / `2…` | BIP49 m/49'/c'/a' | `a9 14 HASH160(00 14 HASH160(K)) 87` | BIP143, scriptSig `16 00 14 <HASH160(K)>`(계획에 고정), 증인 `[DER‖01, K]` | 363 |
+| `P2wpkh` = 3 | 네이티브 세그윗 | `bc1q…` / `tb1q…` | BIP84 m/84'/c'/a' | `00 14 HASH160(K)` | BIP143, 증인 `[DER‖01, K]` | 271 |
+| `P2tr` = 4 | 탭루트 | `bc1p…` / `tb1p…` | BIP86 m/86'/c'/a' | `51 20 Q`, `Q = P + TaggedHash("TapTweak", P_x)·G`(스크립트 트리 없음) | BIP341 키 경로 `SIGHASH_DEFAULT`, 증인 `[schnorr64]` | 230 |
+
+- **계정 종류.** `BtcAccountKey::Hd { script_type, account, xpub }`(캐시한 계정 노드에서 공개 파생) 또는 `BtcAccountKey::Single { id, script_type, pubkey }`(가져온 키 하나: 주소 `(Receive, 0)` 하나, `receive_next = 1`, `change_next = 0`, `discovery_done = true`, "새 주소" 없음(`SingleAddress`), 잔돈은 같은 주소). 비압축 공개키(65바이트, `04`)는 `P2pkh`로만 쓸 수 있다(`UncompressedNotP2pkh`). 계정 식별자는 `BtcAccountId::Hd { script_type, account }` / `Imported { id }`이고 `BtcAccountId::PRIMARY` = `Hd { P2wpkh, 0 }`(meta `btc`, §12.3).
+- **입력 키.** 서명할 입력마다 `BtcKeySource::Derived { script_type, account, chain, index }`(vault가 `KeyRef::Btc { coin: BtcCoin(purpose, account), chain, index }`로 파생) 또는 `BtcKeySource::Imported { id, script_type, compressed }`(vault 태그 4 레코드). 가져온 키는 `BtcImportedKeys::btc_imported_secret`(현재 `ImportedKeyUnavailable`을 돌려주는 연결 지점)으로 받고, 레코드의 네트워크·형식·압축 여부가 계정과 다르면 `KeyMismatch`다. 어느 쪽이든 빌린 비밀키로 계산한 공개키(같은 압축 형식)가 계정의 그 입력 공개키와 같아야 서명한다(§3.1 서명 시 확인).
+- **[계정 추가].** Bitcoin 탭에서 형식을 고르면(§3.6 문구) key worker가 그 네트워크·형식의 다음 빈 account 번호(0–`BTC_MAX_HD_ACCOUNT`=99, P2WPKH는 1부터 — 0은 meta `btc`)의 노드를 `Vault::btc_account_xpub(BtcCoin)`로 받아 meta `btc_accounts`에 저장하고 선택한 뒤(meta 쓰기 후 보고) §3.4 발견을 실행한다. 계정은 최대 `MAX_BTC_ACCOUNTS`(64)개(두 네트워크 합)다. 가져온 키 계정은 가져오기 작업이 `BtcMetaOp::AddImported { network, key }`로 더한다(발견 없음).
+- **선택.** 한 번에 한 계정이 선택된다(meta `btc_accounts.selected`, 없으면 기본 계정; 현재 네트워크에 없는 계정이 선택돼 있으면 기본 계정). 보내기·받기·새로고침·잔액·UTXO·활동은 선택한 계정의 것이고, D20(진행 중 1건)·입력 재사용 금지·포기 거래 충돌·검증 금액 기록·잔돈 인덱스 규칙은 **계정마다** 적용한다(`journal::btc::of_account`). 추적(§12.2)은 네트워크의 모든 계정 레코드를 따른다. BTC 승인이 열려 있으면 계정을 바꾸거나 더하지 않는다("Bitcoin 승인이 진행 중이라 계정을 바꾸거나 추가할 수 없습니다").
+- **한 거래 = 한 계정.** 모든 입력은 선택한 계정의 UTXO이고, 잔돈은 그 계정의 잔돈 체인(같은 형식, HD) 또는 같은 주소(가져온 키)다. 받는 주소는 형식과 무관하게 §6.3의 5종 모두 가능하다.
+- **지갑 수준 값.** `max_tip_seen`(§2 2단계)은 기본 계정(meta `btc`)에만 쓰고 읽는다. 네트워크 사본 불일치(§2)도 기본 계정으로 판정한다.
+- **이전 거래 검증(§5)·P2TR.** 모든 형식의 입력은 §5대로 txid 해시 검증한 이전 거래의 금액·스크립트만 쓴다(기대 스크립트 = 위 표의 우리 출력). BIP341은 모든 입력의 금액·scriptPubKey에 서명하므로 P2TR 입력의 sighash에는 검증된 값만 들어간다(한 입력 금액이 틀리면 모든 입력의 서명이 무효). 레거시 sighash는 금액에 서명하지 않으므로 P2PKH 입력 금액은 §5 검증과 §11.2-7 수수료 재계산으로만 보호된다.
+
+### 3.6 [계정 추가] 문구와 화면 (S10 Bitcoin, S12)
+
+- 계정 목록: 행마다 `{이름} · {형식 (접두)} · {사용 가능 잔액}`(예: `탭루트 계정 0 · 탭루트 (bc1p…) · 0.00100000 BTC (100,000 sats)`), 선택한 계정에 표시. 이름: HD `네이티브 세그윗 계정 0`·`탭루트 계정 1`…, 가져온 키 `가져온 키 · 레거시`.
+- [계정 추가] → 선택지(이 순서): mainnet `네이티브 세그윗 (bc1q…, 권장)`, `탭루트 (bc1p…)`, `호환 세그윗 (3…)`, `레거시 (1…)`; testnet4 `네이티브 세그윗 (tb1q…, 권장)`, `탭루트 (tb1p…)`, `호환 세그윗 (2…)`, `레거시 (m·n…)`, 그리고 [취소].
+- 받기(S12): 카드 제목 `{계정 이름} · 받기 주소 {i}번`(가져온 키는 이름만), `주소 형식: {형식 (접두)}`, QR(`bitcoin:` + 인코딩 그대로의 주소 — base58은 대소문자를 바꾸지 않는다), 경로 `m/{p}'/{c}'/{a}'/0/{i}`(가져온 키는 `가져온 키`).
 
 ## 4. 데이터 원천: Core JSON-RPC(`bitcoin:<net>` 엔드포인트) + 주소 인덱서(`bitcoin.indexer`)
 
@@ -316,7 +341,7 @@ pub struct VerifiedPrevOut { pub outpoint: OutPoint, pub value: Sats, pub is_coi
 
 ## 6. 직접 구현 코드 (yw-core `btc`)
 
-모듈: `crates/yw-core/src/btc/{network, amount, bech32, address, script, tx, sighash, sign, prevtx, select, fee, policy, display, verify, meta}.rs`(`btc::*`, [01](01-repo-build.md) §2.2). BTC 저널 레코드 본문 코덱(§12.4)은 `btc` 아래가 아니라 체인 공통 `journal` 모듈의 `journal::btc`에 둔다(EVM `journal::evm`과 같은 배치, [01] §2.2·[03](03-evm.md) §0). 키 파생은 `yw_core::bip32`(§3.1), hex는 yw-core `hex`를 쓴다. 네트워크 호출과 unsafe는 없다(D4). 해시는 `sha2`·`ripemd`, 서명은 `secp256k1 =0.31.1`(`alloc`,`recovery`, 추가 기능 없음)만 쓴다. bech32는 직접 구현하고(D6), base58check는 M1의 `codec::base58`([02](02-core-keys-vault.md) §0)을 쓴다.
+모듈: `crates/yw-core/src/btc/{network, amount, bech32, address, account, script, tx, sighash, taproot, sign, prevtx, select, fee, policy, display, verify, meta}.rs`(`btc::*`, [01](01-repo-build.md) §2.2). BTC 저널 레코드 본문 코덱(§12.4)은 `btc` 아래가 아니라 체인 공통 `journal` 모듈의 `journal::btc`에 둔다(EVM `journal::evm`과 같은 배치, [01] §2.2·[03](03-evm.md) §0). 키 파생은 `yw_core::bip32`(§3.1), hex는 yw-core `hex`를 쓴다. 네트워크 호출과 unsafe는 없다(D4). 해시는 `sha2`·`ripemd`, 서명은 `secp256k1 =0.31.1`(`alloc`,`recovery`, 추가 기능 없음)만 쓴다. bech32는 직접 구현하고(D6), base58check는 M1의 `codec::base58`([02](02-core-keys-vault.md) §0)을 쓴다.
 
 ### 6.1 base58check 주소 정책 (`btc::address`)
 
@@ -376,7 +401,7 @@ pub fn kind_from_script(spk: &[u8]) -> Option<ScriptKind>;             // 표시
 | P2WSH | `00 20 <h32>` | 34 | 43 | 330 |
 | P2TR | `51 20 <x32>` | 34 | 43 | 330 |
 
-dust는 Core `GetDustThreshold`의 dust relay fee 3 sat/vB 기준이다: `(출력 크기 + 소비 입력 크기) × 3`. 소비 입력 크기는 비증인 148, 증인 `32+4+1+107/4+4 = 67`이다. BIP143 scriptCode(P2WPKH)는 `19 76 a9 14 <h20> 88 ac`(길이 접두 0x19 포함)다.
+dust는 Core `GetDustThreshold`의 dust relay fee 3 sat/vB 기준이다: `(출력 크기 + 소비 입력 크기) × 3`. 소비 입력 크기는 비증인 148, 증인 `32+4+1+107/4+4 = 67`이다. BIP143 scriptCode(P2WPKH·P2SH-P2WPKH 공통)는 `19 76 a9 14 <h20> 88 ac`(길이 접두 0x19 포함)다. P2SH-P2WPKH 리딤 스크립트는 `00 14 <h20>`, scriptSig는 그 한 번의 push `16 00 14 <h20>`(23바이트)이고 계획(서명 전 거래)에 들어간다. P2PKH scriptSig는 두 직접 push `<len> DER‖01 <len> K`(각 1–75바이트)만 받는다(`split_p2pkh_script_sig`).
 
 ### 6.5 거래 직렬화·파서
 
@@ -420,18 +445,34 @@ hashPrevouts = SHA256d(모든 입력의 txid[32]||vout u32)   hashSequence = SHA
 hashOutputs  = SHA256d(모든 출력의 value u64||CS len||spk)   sighash = SHA256d(preimage)
 ```
 
+P2SH-P2WPKH 입력도 같은 함수다(BIP143 "P2SH-P2WPKH": scriptCode는 키 해시의 P2WPKH 것).
+
+**레거시 sighash (P2PKH, `btc::sighash::legacy_sighash`).** `SIGHASH_ALL` 의미의 hash type만(하위 5비트가 2·3이 아니고 `ANYONECANPAY` 0x80이 없음; 그 밖은 `None`): 증인 없이 직렬화하되 입력 `index`의 scriptSig = scriptCode(우리 P2PKH scriptPubKey, `OP_CODESEPARATOR` 없음), 다른 입력의 scriptSig = 빈 값, 모든 sequence·출력 유지, 끝에 hash type `u32` LE를 붙여 `SHA256d`. 금액에 서명하지 않는다(§3.5).
+
+**BIP341 sighash (P2TR 키 경로, `btc::taproot::sighash_default`).** `SIGHASH_DEFAULT`(0x00), annex 없음, 스크립트 경로 없음:
+
+```
+sig_msg = 0x00(epoch) ‖ 0x00(hash_type) ‖ nVersion u32 ‖ nLockTime u32
+        ‖ SHA256(모든 outpoint) ‖ SHA256(모든 입력 금액 u64) ‖ SHA256(모든 입력 CS len‖scriptPubKey)
+        ‖ SHA256(모든 sequence) ‖ SHA256(모든 출력) ‖ spend_type 0x00 ‖ input_index u32
+sighash = TaggedHash("TapSighash", sig_msg),  TaggedHash(t, m) = SHA256(SHA256(t) ‖ SHA256(t) ‖ m)
+```
+
+입력 금액·스크립트는 계획의 모든 입력의 검증 금액과 계정이 파생한 우리 scriptPubKey다(`Prevout`). 출력 키 tweak: `t = TaggedHash("TapTweak", P_x)`(BIP86: 머클 루트 없음), `Q = P + t·G`; 서명 키는 `Keypair::add_xonly_tweak`(홀수 Y면 부정 후 더함, BIP341 `taproot_tweak_seckey`).
+
 ### 6.7 ECDSA 서명
 
 - 서명은 `with_secp_key`가 넘겨 주는 컨텍스트(`seeded_randomize`, [02] §1.3)와 키로 그 클로저 안에서만 한다([02] §10.3).
 - `sig = ctx.sign_ecdsa_low_r(Message::from_digest(sighash), sk)`. libsecp256k1 RFC6979 결정적 nonce이고 r의 첫 비트가 0이 될 때까지 extra entropy로 다시 계산한다. libsecp256k1 결과는 항상 low-S다.
-- 증인 = `[sig.serialize_der() || 0x01, pubkey33]`. DER은 70바이트 이하이므로 증인 서명 항목은 71바이트 이하다.
+- 증인 = `[sig.serialize_der() || 0x01, pubkey33]`(P2WPKH·P2SH-P2WPKH). DER은 70바이트 이하이므로 서명 항목은 71바이트 이하다. P2PKH는 같은 서명 항목과 계정 공개키(33 또는 65바이트)를 scriptSig에 push한다.
 - 서명 직후 `verify_ecdsa(msg, &sig, &pk)`를 반드시 수행한다(§11.2에서 다시 한다).
+- **Schnorr (P2TR).** `sign_schnorr_with_aux_rand(sighash, &tweaked_keypair, &aux)`, `aux`는 서명마다 OS CSPRNG 32바이트(`fill_random`, BIP340 보조 난수). 서명 직후 출력 키로 `verify_schnorr`를 하고, tweak한 키의 x좌표가 계정이 파생한 P2TR 프로그램과 같지 않으면 `KeyMismatch`. 증인은 64바이트 서명 하나(hash type 바이트 없음).
 
 ## 7. 거래 구성
 
 ### 7.1 고정 필드
 
-version 2. 모든 입력의 `sequence = 0xFFFF_FFFD`(교체 가능, nLockTime 유효), `script_sig`는 빈 바이트. `lock_time`은 계획 시점의 `tip_height`(anti-fee-sniping, 무작위화 없음). `tip_height >= 500,000,000`이면 계획하지 않는다(`TipImplausible`, §2). 출력은 수신자 1개와 잔돈 0–1개(P2WPKH, m/84'/{coin}'/0'/1/`change_next`). 입력은 최대 `BTC_MAX_INPUTS` = 100개.
+version 2. 모든 입력의 `sequence = 0xFFFF_FFFD`(교체 가능, nLockTime 유효), `script_sig`는 빈 바이트(P2SH-P2WPKH 계정만 리딤 스크립트 push, §6.4). `lock_time`은 계획 시점의 `tip_height`(anti-fee-sniping, 무작위화 없음). `tip_height >= 500,000,000`이면 계획하지 않는다(`TipImplausible`, §2). 출력은 수신자 1개와 잔돈 0–1개(계정 형식의 출력: HD m/{p}'/{coin}'/{a}'/1/`change_next`, 가져온 키는 같은 주소). 입력은 최대 `BTC_MAX_INPUTS` = 100개이고 모두 한 계정의 것이다. 서명 전 txid(`SendPlan::txid`)는 P2PKH 계정에서만 서명 후에 정해진다(`txid_is_final`).
 
 ### 7.2 크기 계산 (서명 전 추정)
 
@@ -441,6 +482,8 @@ vsize = ceil(weight / 4);  fee(rate, vsize) = ceil(rate.sat_per_kvb × vsize / 1
 ```
 
 `42 = (4+4+1+1)·4 + 2`(marker·flag). 입력 271 WU = 41·4 + 증인 107(개수 1 + 길이 1 + 서명 71 + 길이 1 + 공개키 33)이다. 서명 후 실제 크기는 추정 이하여야 한다(§11.2). 예: 1입력 → P2WPKH+잔돈 141 vB, 1입력 1출력 110 vB, 2입력 2출력 208 vB, 3입력 → P2TR 1출력 257 vB.
+
+다른 형식 계정은 `estimate_weight_with(w, k, outs) = 42 + w·k + Σ 4·(9 + len)`의 `w`를 §3.5 표의 입력 weight로 바꾸고, 잔돈 출력 길이는 계정 형식의 scriptPubKey(25 P2PKH, 23 P2SH, 22 P2WPKH, 34 P2TR)다: P2SH-P2WPKH 363 = (41+23)·4 + 107, P2TR 230 = 41·4 + 66(개수 1 + 길이 1 + 서명 64), P2PKH 588 = (41 + 1+71+1+33)·4(비압축 키 716). P2PKH만 쓰는 거래는 marker·flag가 없어 2 WU를 넘게 잡는다(상한이므로 허용). **잔돈 dust**는 P2WPKH 294이고 다른 형식은 §6.4 그 형식의 dust(P2TR 330, P2SH 540, P2PKH 546)다(§7.4 `feasible`의 294 자리).
 
 ### 7.3 금액 규칙
 
@@ -539,24 +582,24 @@ D27·D31에 따라 [03](03-evm.md) §11의 공통 모델(`ApprovalDraft`·`Appro
 |---|---|
 | `origin` / `kind` / `signer` | `App`(`"yw-app"`) / `BtcSend = 0x30`, `BtcFeeBump = 0x31` / `Signer::FromPayload`(입력별 경로) |
 | `chain` | `ChainRef::Bitcoin { network: u8 /* 1·2 */, genesis: [u8; 32] /* §2 표 hex를 디코드한 바이트 */ }` |
-| `account` / `payload` | `AccountRef::Bitcoin([u8; 33])` = `account_pubkey` / `SigningPayload::Btc(btc_payload)`(아래) |
+| `account` / `payload` | `AccountRef::Bitcoin([u8; 33])` = `BtcAccountKey::identity()`(HD: 계정 노드 공개키, 가져온 키: 압축 공개키) / `SigningPayload::Btc(btc_payload)`(아래; 기본 계정이 아니면 끝에 계정 블록 19바이트 `0x01 ‖ source u8 (1 HD, 2 가져온 키) ‖ ScriptType u8 ‖ (HD account u32 ‖ 0^12 \| 레코드 id 16)` — 같은 키를 여러 형식으로 가져와도 승인이 섞이지 않는다; 서명 전 거래에는 P2SH-P2WPKH scriptSig가 들어 있다) |
 | 제목 | `[Bitcoin 메인넷] 보내기: 0.00120000 BTC` / `[Bitcoin testnet4] 수수료 올리기` |
 
 필드(`FieldKey`, 표시 순서). `0x06xx`는 [03] §11.2에 등록하는 BTC 범위다. volatile 필드는 없고, [04] §3.2 자산 변화 영역은 `0x0603`–`0x0607`이다.
 
 | 키 | 이름 | critical | 값 |
 |---|---|---|---|
-| `0x0001`, `0x0002`, `0x0003` | 요청 출처, 네트워크, 서명 계정 | 예 | `Your Wallet (이 앱)`, §2 배너 문구, `Bitcoin 계정 0 (m/84'/{coin}'/0')` |
+| `0x0001`, `0x0002`, `0x0003` | 요청 출처, 네트워크, 서명 계정 | 예 | `Your Wallet (이 앱)`, §2 배너 문구, `Bitcoin {계정 이름} ({노드})`(예: `Bitcoin 네이티브 세그윗 계정 0 (m/84'/0'/0')`, `Bitcoin 탭루트 계정 0 (m/86'/0'/0')`, 가져온 키 `Bitcoin 가져온 키 · 레거시 ({주소})`) |
 | `0x0601` | 받는 주소 | 예 | 출력 스크립트를 다시 인코딩한 소문자 주소(공백 없음). 4자 묶음 간격과 앞 6자·뒤 6자 굵게는 [04] §3.3 그리기 |
 | `0x0602` | 주소 종류 | 예 | `P2PKH(레거시)` / `P2SH(스크립트)` / `P2WPKH` / `P2WSH(스크립트)` / `P2TR` |
 | `0x0603` | 금액 | 예 | `0.00120000 BTC (120,000 sats)` |
-| `0x0604` | 잔돈 | 예 | `0.00050000 BTC — 이 지갑으로 돌아옴 m/84'/{coin}'/0'/1/n` 또는 `잔돈 없음: X sats 수수료에 추가` |
+| `0x0604` | 잔돈 | 예 | `0.00050000 BTC — 이 지갑으로 돌아옴 m/{p}'/{coin}'/{a}'/1/n`(가져온 키는 그 주소) 또는 `잔돈 없음: X sats 수수료에 추가` |
 | `0x0605` | 입력 | 예 | 개수, 합계, 고정 문구 "모든 입력 금액은 이전 거래 해시로 검증됨", 최소 확인 수(서버 기준) |
 | `0x0606` | 수수료 | 예 | sats·BTC, sat/vB(계획 vsize 기준, 서명 후 실제 값은 같거나 높음), 보낸 금액 대비 %(소수 2자리), 출처(§8.2) |
 | `0x0607` | 총 차감 | 예 | 수신 금액 + 수수료 |
 | `0x0608` | 승인 후 잔액 | | 검증 잔액 − 총 차감(= 검증 잔액 − 새로 쓰는 입력 합 + 잔돈. 수수료 올리기는 원래 입력이 이미 잔액에서 빠져 있으므로 추가 입력만 뺀다) |
 | `0x0609` | 교체 대상 | 예 | `BtcFeeBump`만(§9) |
-| `0x0640` | 고급 | | version 2, nLockTime(=블록 높이 N), RBF 가능, vsize·weight, txid(비증인 직렬화로 서명 전에 확정) |
+| `0x0640` | 고급 | | version 2, nLockTime(=블록 높이 N), RBF 가능, `입력 형식 P2WPKH`(P2PKH·P2SH-P2WPKH·P2TR), vsize·weight, txid(비증인 직렬화로 서명 전에 확정; P2PKH 계정은 `서명 후 결정 (레거시 입력)`) |
 
 경고(`Warning`, [03] §10.1; `RuleId` 상위 바이트 `'B'` = 0x42):
 
@@ -599,22 +642,25 @@ plan → policy(§8.3, §10 경고) → ApprovalDraft → A01 표시·issue(§10
 ```
 
 ```rust
-pub fn sign_plan(vault: &Vault, approved: Approved, plan: &SendPlan, acct: &AccountXpub)
+pub fn sign_plan<K: BtcKeys>(keys: &K, approved: Approved, plan: &SendPlan, account: &BtcAccountKey)
     -> Result<SignedTx, SignError>;   // SignedTx { raw, approval_id(= 저널 entry_id), approval_digest }
-// approved의 kind·payload == btc_payload(plan)이 아니면 ApprovalMismatch. 입력 i마다
-// vault.with_secp_key(KeyRef::Btc { coin, chain, index }, |ctx, sk| HASH160 확인(§3.1) → §6.6 sighash(검증 금액)
-//   → sign_ecdsa_low_r → verify_ecdsa)로 서명한다. 키 접근은 [02] §10.3 클로저 안에서만 한다.
-pub fn verify_signed(raw: &[u8], plan: &SendPlan, acct: &AccountXpub) -> Result<VerifiedSignedTx, PostSignError>;
+// plan.account() == account이고 approved의 kind·chain·account(identity)·payload == btc_payload(plan)이
+// 아니면 ApprovalMismatch. 입력 i마다 keys.with_btc_key(net, account.key_source(chain, index), i,
+// |ctx, sk| 공개키 확인(§3.5) → 형식별 sighash(§6.6, 검증 금액) → ECDSA low-R + verify 또는
+// Schnorr + verify(§6.7))로 서명하고 scriptSig·증인을 채운다. Vault는 BtcKeys를 구현한다(파생 키:
+// with_secp_key(KeyRef::Btc{BtcCoin(purpose, account), chain, index}), 가져온 키: BtcImportedKeys).
+pub fn verify_signed(raw: &[u8], plan: &SendPlan, account: &BtcAccountKey)
+    -> Result<VerifiedSignedTx, PostSignError>;
 ```
 
 ### 11.2 서명 후 검증 (모두 필수, 하나라도 실패하면 폐기)
 
 1. `parse_transaction(raw)`가 성공하고 `serialize(parsed, true) == raw`이다.
-2. `serialize(parsed, false)`가 승인된 `unsigned_tx`와 바이트 단위로 같다. 따라서 txid, 입력 순서, sequence, lock_time, version, 출력이 같다.
-3. 입력마다 증인 항목이 정확히 2개다. 항목 0은 `DER || 0x01`이다. DER 부분은 70바이트 이하이고 r < 2^255(low-R)이며 `Signature::from_der`(엄격 DER)로 파싱되며 `serialize_der()` 왕복이 같고 low-S(`normalize_s` 전후 동일)여야 한다. 항목 1은 0x02/0x03으로 시작하는 33바이트다.
-4. `HASH160(항목1)`이 그 입력의 검증된 이전 출력 프로그램과 같고, 그 프로그램은 캐시 공개키로 만든 `(chain, index)` 프로그램과 같다.
-5. BIP143 sighash를 검증 금액으로 다시 계산하고 `verify_ecdsa`가 성공한다.
-6. 잔돈 출력 스크립트를 캐시 공개키로 다시 파생해 비교한다. 잔돈 출력은 최대 1개이고 그 밖의 추가 출력은 없다.
+2. 증인을 빼고(P2PKH 계정은 서명 scriptSig도 비우고) 직렬화한 값이 승인된 `unsigned_tx`와 바이트 단위로 같다. 따라서 입력 순서, P2SH-P2WPKH scriptSig, sequence, lock_time, version, 출력이 같다(P2PKH 외에는 txid도 같다). `verify_signed`의 계정은 계획의 계정이어야 한다.
+3. 형식별 모양: P2WPKH·P2SH-P2WPKH는 증인 항목이 정확히 2개(항목 0 `DER || 0x01`: DER 70바이트 이하, r < 2^255(low-R), `Signature::from_der`(엄격 DER)·`serialize_der()` 왕복 동일, low-S(`normalize_s` 전후 동일); 항목 1은 0x02/0x03으로 시작하는 33바이트). P2PKH는 증인이 없고 scriptSig가 정확히 두 직접 push(서명 항목 같은 규칙, 키 33 또는 65바이트). P2TR은 64바이트 항목 정확히 1개(65바이트 = 기본이 아닌 hash type은 거부).
+4. 키가 계정이 그 입력 `(chain, index)`에 파생한(가져온 키는 그 키) 공개키와 바이트 단위로 같다(P2TR은 5의 출력 키 검증으로 대신한다).
+5. 형식별 sighash를 검증 금액으로 다시 계산하고 서명을 검증한다: BIP143 + `verify_ecdsa`, 레거시 + `verify_ecdsa`, BIP341(모든 입력의 검증 금액·우리 scriptPubKey) + 계정이 파생한 출력 키로 `verify_schnorr`.
+6. 잔돈 출력 스크립트를 계정에서 다시 파생해 비교한다(HD: `(Change, index)`, 가져온 키: 같은 주소). 잔돈 출력은 최대 1개이고 그 밖의 추가 출력은 없다.
 7. `fee = Σ검증 입력 − Σ출력`이 승인 수수료와 같고, §8.3 상한을 넘지 않는다(입력 해제가 있으면 그 값; 승인 표시와 같이 계획 vsize로 계산). 모든 출력이 종류별 dust 이상이고 `<= MAX_MONEY`다.
 8. `weight <= 400,000`이고 `vsize(실제) <= planned_vsize`다.
 
@@ -682,7 +728,22 @@ meta JSON의 `btc`는 `BtcMeta` 객체 또는 `null`(BTC 데이터 없음)이다
 | `unfrozen` | outpoint[] | ≤ 1024 |
 | `sent_scripts` | hex 64자[] (SHA-256(spk)) | ≤ 4096, 넘으면 오래된 것부터 삭제 |
 
-**활동 항목.** 추적이 끝난 BTC 저널 항목은 meta `activity["bitcoin:mainnet" | "bitcoin:testnet4"]`에 [02] §5.3 `ActivityEntry`로 옮긴다: `account` = `""`(BTC 계정은 0 하나, [04]는 `Bitcoin 계정 0`으로 표시), `tx_id` = 소문자 txid hex(표시 순서), `title` = 승인 제목(§10), `asset` = `"native"`, `amount` = 수신 금액 sats 10진 문자열, `counterparty` = 받는 주소(§6.3 정규형), `status` = [02] §5.3의 BTC 대응(`Confirmed` → `succeeded`, 나머지는 소문자 상태 이름), `time_unix_ms` = 종결 관측 시각. 같은 `tx_id`는 덮어쓴다.
+meta `btc`는 언제나 기본 계정(BIP84 계정 0)이고 위 버전 1 형식 그대로다(이전 앱 버전이 읽고 쓰는 바이트가 같다). 다른 계정은 같은 필드에서 `account_pubkey`·`account_chain_code` 대신 `"script_type": "p2pkh"|"p2sh-p2wpkh"|"p2wpkh"|"p2tr"`와 `"key": {"hd": {"account": n, "pubkey": hex66, "chain_code": hex64}}` 또는 `{"imported": {"id": hex32(0 아님), "pubkey": hex66|hex130}}`를 쓰는 `version: 2` 객체다(키 순서: version, network, script_type, key, receive_next, …). 버전 2로 기본 계정을 쓰거나, 가져온 키 객체가 `receive_next ≠ 1`·`change_next ≠ 0`·`(Receive, 0)` 밖의 `verified`를 가지면 검증 실패다.
+
+### 12.3a meta `btc_accounts` (선택 최상위 키)
+
+기본 계정 밖의 계정과 선택은 새 최상위 키 `btc_accounts`에 둔다([04] §6.6: 이전 버전은 모르는 최상위 키로 보존하고 다시 쓴다). 이 키가 없는 파일(이전 버전이 만든 모든 파일) = 다른 계정 없음, 선택은 기본 계정. 내용이 기본값이면 쓰지 않는다(파일이 이전과 같다). 알려진 키이므로 형식 오류는 문서 전체 검증 실패다.
+
+```
+"btc_accounts": { "version": 1,
+                  "selected": null | {"hd": {"script_type": "p2tr", "account": 0}} | {"imported": hex32},
+                  "accounts": [ BtcMeta 버전 2 객체, … ] }      // ≤ 64개, (network, 계정 식별자) 중복 금지
+```
+
+- 두 네트워크의 계정을 함께 둔다. 화면·작업은 현재 `bitcoin.network`의 계정만 쓰고, 네트워크를 바꿔도 다른 네트워크 계정은 지우지 않는다(돌아오면 다시 보인다). 네트워크 바꾸기(§2)는 기본 계정만 새로 만든다.
+- key worker가 유일한 작성자이고(§12.4 앞 규칙과 같이 meta 쓰기 후 보고), UI가 저장하는 meta 문서에는 worker의 `btc`·`btc_accounts` 사본을 넣는다.
+
+**활동 항목.** 추적이 끝난 BTC 저널 항목은 meta `activity["bitcoin:mainnet" | "bitcoin:testnet4"]`에 [02] §5.3 `ActivityEntry`로 옮긴다: `account` = `BtcAccountId::activity_tag()`(기본 계정 `""` — 이전과 같음, HD `p2tr/0` 꼴, 가져온 키 `imported/<id hex>`; 화면은 선택한 계정의 행만 보인다), `tx_id` = 소문자 txid hex(표시 순서), `title` = 승인 제목(§10), `asset` = `"native"`, `amount` = 수신 금액 sats 10진 문자열, `counterparty` = 받는 주소(§6.3 정규형), `status` = [02] §5.3의 BTC 대응(`Confirmed` → `succeeded`, 나머지는 소문자 상태 이름), `time_unix_ms` = 종결 관측 시각. 같은 `tx_id`는 덮어쓴다.
 
 ### 12.4 BTC 저널 레코드 본문 (`yw_core::journal::btc`)
 
@@ -702,6 +763,8 @@ journal.ywj의 컨테이너·암호화·원자적 쓰기는 [02](02-core-keys-va
 [238] input_count × 49: txid[32] vout u32 value u64 chain u8 index u32
 [238 + 49n] raw_len 바이트: 서명된 거래(증인 포함)
 ```
+
+**레코드 버전 2 (기본 계정 밖의 계정).** 기본 계정 레코드는 위 버전 1 그대로다. 다른 계정은 `record_version = 2`이고 고정 헤더 238바이트 뒤 `[238]`에 계정 블록 18바이트(`source u8` 1 HD / 2 가져온 키, `script_type u8`, HD account u32 + 0 12바이트 또는 레코드 id 16바이트)가 오고 입력 목록은 `[256]`부터다(최대 본문 238 + 18 + 49 × 100 + 32,768 = 37,924). 블록이 기본 계정을 가리키거나 패딩이 0이 아니거나 알 수 없는 값이면 거부한다. P2PKH 계정의 raw는 증인이 없어야 하고(다른 형식은 증인 필수), `bump_source`·`own_change_utxo`는 레코드 계정이 그 계정일 때만 값을 준다(P2TR 입력은 저장된 서명을 BIP341로 다시 검증해 경로를 대조한다). 이전 앱 버전은 버전 2 본문을 본문 오류로 보고 BTC 보내기만 멈춘다(바이트는 보존).
 
 디코드 검증: 길이가 정확해야 하고, raw가 §6.5로 파싱되며(증인 포함, 재직렬화가 같음), txid·wtxid가 다시 계산한 값과 같아야 한다. 입력 목록은 raw의 입력 순서와 같고(index < 2^31, value ≥ 1), vout 필드는 출력 개수 미만이며(잔돈 vout ≠ 수신 vout, 수신 출력은 §6.4 5종), `fee_sats` = Σ입력 − Σ출력, `vsize`·`lock_time`이 raw와 같고, flags와 0 필드가 서로 일관되고(`confirmed_height`는 `Confirmed`에서만 있고 0이 아님, `Replaced`는 `replaced_by` 필수), `entry_id`가 0이 아니고, 알 수 없는 state나 flags 비트가 없어야 한다. raw에서 다시 만들 수 없는 값(state, send_max·fee_override_typed·last_send_comm_failure 비트, entry_id, 시각, approval_digest, not_found_count, 선택 필드 값, 입력 경로 chain·index)은 디코더가 검증할 수 없다. 입력 경로는 RBF 계획 전에 `bump_source`가 증인 공개키를 계정 공개키로 다시 파생해 대조한다. 하나라도 어긋나면 [02] §5.4 본문 오류로 처리한다(BTC 보내기만 끄고 E-VLT-006, 본문은 그대로 보존).
 
@@ -808,6 +871,20 @@ CKDpub(`Vault::btc_account_xpub` 캐시 공개키 → `bip32::derive_public_chil
 
 **크기·dust**: §6.4·§7.2 표의 값이 그대로 나와야 한다.
 
+**다른 주소 형식** (`crates/yw-core/src/btc/types_tests.rs`, 공식 벡터만; 출처·커밋은 `tests/vectors/SOURCES.md`):
+
+| 벡터 | 확인 |
+|---|---|
+| BIP49 (`abandon`×11 `about`, m/49'/1'/0') | 계정 `uprv`/`upub`의 버전 뒤 74바이트 = 우리 `tprv`/`tpub` 직렬화, 0/0 개인키 `c9bdb4…67e8`·공개키 `03a1af…e77f`, keyhash `38971f…35b3`, 리딤 스크립트 `0014…`, 주소 `2Mww8dCYPUpKHofjgcXcBCEGmniw9CoaiD2`(testnet 0xc4 = testnet4) |
+| BIP84 | 0/0·0/1·1/0 주소를 `BtcAccountKey`로 다시 확인 |
+| BIP86 (m/86'/0'/0') | root `xprv`, 계정 `xprv`/`xpub`, 0/0·0/1·1/0의 internal key·output key·scriptPubKey·bech32m 주소, tweak한 개인키의 x = output key |
+| BIP44 | 공개 벡터가 없어 개인 파생 = 공개 파생, `HASH160` P2PKH, 접두 `1`/`m·n`만 확인(base58 인코딩은 Core key_io로 확인) |
+| BIP143 P2SH-P2WPKH | hashPrevouts·hashSequence·hashOutputs, sighash `64f3b0…9fb6`, `sign_ecdsa_low_r` 서명 = 원문 서명, 우리 scriptSig·증인으로 만든 거래 = 원문 서명 거래(바이트 동일), 우리 P2SH 출력 = 원문 scriptPubKey |
+| BIP341 `wallet-test-vectors.json` (`tests/vectors/btc/bip341_wallet_test_vectors.json`) | scriptPubKey 7건 모두: tweak(머클 루트 포함)·tweaked key·scriptPubKey·BIP350 주소. keyPathSpending 7입력 모두: internal key·tweak·tweaked 개인키. `hashType = 0` 입력: sigMsg·sigHash·서명(보조 난수 0) 바이트 동일. fullySignedTx: P2TR 입력의 엄격 검증 통과(다른 입력 금액 1 sat 변경 시 실패), P2PKH 입력 서명을 레거시 sighash로, P2WPKH 입력 서명을 BIP143으로 검증 |
+| Core `sighash.json` (`tests/vectors/btc/sighash.json`) | `SIGHASH_ALL` 의미(하위 5비트 ≠ 2·3, 0x80 없음)이고 스크립트에 0xab 바이트가 없는 139건 모두 레거시 sighash 일치. NONE·SINGLE·ANYONECANPAY는 `None` |
+
+전송 흐름(같은 파일과 `crates/yw-app/tests/btc_app_flow.rs` `every_address_type_end_to_end`): HD 4형식 × 두 네트워크와 가져온 키(압축 4형식, 비압축 P2PKH) 계정마다 검증된 UTXO → 5종 받는 주소 각각·보내기 최대·자기 주소 → 승인 저장소 issue/consume → `sign_plan` → `verify_signed` → 파싱·재직렬화 → 수수료 = 계획 수수료, 실제 vsize ≤ 계획 vsize ≤ 실제 + 입력당 2 vB + 1, 실제 수수료율 ≥ 선택 수수료율 → 저널 레코드 버전 1/2 왕복. vault 경로는 HD 4형식 계정 3에서 같은 흐름, 가져온 키는 `ImportedKeyUnavailable`. 앱 수준에서는 [계정 추가](4형식) → 발견 → 받기 → 가짜 체인 입금 → 새로고침 검증 → RPC 작업자(prepare, 가짜 Core·Esplora) → 승인 → 서명 → 사전 검사·전송 → 추적 6확인 → 그 계정의 잔돈 삽입·활동 태그 → 기본 계정으로 전환. 금액 위조: P2TR은 다른 입력 금액이 바뀌면 입력 0 서명부터 실패, BIP143은 그 입력만, 레거시는 수수료 검사(`FeeMismatch`)로 잡는다.
+
 ### 14.2 정책·픽스처 테스트
 
 | 이름 | 기대 |
@@ -861,7 +938,8 @@ CKDpub(`Vault::btc_account_xpub` 캐시 공개키 → `bip32::derive_public_chil
 5. 하한 수수료로 보낸 뒤 RBF → 교체본 확정, 원본 `Replaced`.
 6. `Broadcasting` 직후 앱 강제 종료 → 재시작하면 `BroadcastUnknown`이 되고 이후 `InMempool`/`Confirmed`로 바뀜.
 7. 거부 확인: mainnet 주소, P2A, v2 주소, dust 금액, 진행 중 두 번째 송금, 600 sat/vB(보내기 폼 입력 해제 경로 포함), 동결 UTXO 제외, settings.json `bitcoin.network`를 손으로 바꾼 뒤 재시작(불일치 차단).
-8. 인덱서: 설정에서 `esploraBaseUrl.testnet4`를 `https://mempool.space/api`(mainnet)로 바꿈 → `Esplora 테스트`와 BTC 새로고침 모두 E-BTC-003, 주소 요청 없음 → `기본값으로` → 정상. `https://mempool.space/testnet/api`(testnet3)도 E-BTC-003. (선택 인덱서를 쓰지 않으면) `indexer`를 `bb-rpc`로 바꿈 → 애드온 없는 엔드포인트에서 E-BTC-007 → `esplora`로 되돌림.
+8. 주소 형식(§3.5): [계정 추가]로 탭루트·호환 세그윗·레거시·네이티브 세그윗 계정 1을 하나씩 만들고 각각 입금 → 검증 잔액 → 송금(형식마다 1회 이상, 받는 주소 종류를 섞음) → 확정·잔돈이 그 계정으로 돌아옴. 체크리스트는 `docs/acceptance/btc-types-20261029.md`.
+9. 인덱서: 설정에서 `esploraBaseUrl.testnet4`를 `https://mempool.space/api`(mainnet)로 바꿈 → `Esplora 테스트`와 BTC 새로고침 모두 E-BTC-003, 주소 요청 없음 → `기본값으로` → 정상. `https://mempool.space/testnet/api`(testnet3)도 E-BTC-003. (선택 인덱서를 쓰지 않으면) `indexer`를 `bb-rpc`로 바꿈 → 애드온 없는 엔드포인트에서 E-BTC-007 → `esplora`로 되돌림.
 
 ### 14.5 복구 확인 (체크리스트 1회 + 자동)
 
@@ -894,6 +972,10 @@ spec.md M8의 "BIP143·BIP173/350·BIP84 벡터"는 §14.1(자동), "testnet4 E2
 | `BTC_INDEXER_MAX_UTXOS` / `BTC_INDEXER_TIP_LAG_WARN` | 1,000 / 3 블록 |
 | `BTC_DISCOVERY_MAX_SCAN` / `BTC_MAX_ADDRESS_INDEX` | 체인마다 1,000개(한 번의 발견·"더 찾기") / 10,000(발급 인덱스 상한) |
 | `BTC_LOCKTIME_THRESHOLD` / `BTC_PLAN_TIP_AHEAD_MAX` | 500,000,000 / 6 블록 |
+| `ScriptType` 코드 | `P2pkh` 1 / `P2shP2wpkh` 2 / `P2wpkh` 3 / `P2tr` 4 (meta·저널·vault 태그 4에 저장, 바꾸지 않음) |
+| `BTC_MAX_HD_ACCOUNT` / `MAX_BTC_ACCOUNTS` | 99(추가 HD 계정 번호 상한) / 64(`btc_accounts` 계정 수, 두 네트워크 합) |
+| 입력 weight 추정 (§3.5) | P2PKH 588(비압축 716) / P2SH-P2WPKH 363 / P2WPKH 271 / P2TR 230 |
+| `BTC_RECORD_VERSION` / `BTC_RECORD_VERSION_V2` / `BTC_JOURNAL_ACCOUNT_LEN` | 1 (기본 계정) / 2 (그 밖 계정) / 18 |
 | `BTC_NOT_FOUND_LIMIT` / `BTC_INDEXER_COST_ASSUMED` | 10 / `esplora` 0(무료). Core 메서드 크레딧과 선택 인덱서 비용은 미정(§4.5 C3·B4에서 측정; QuickNode 크레딧 또는 알케미 CU, 설명 기준 `bb_*` 10 크레딧) |
 
 ## 16. 작업량 (집중 작업일)

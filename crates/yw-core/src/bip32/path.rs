@@ -35,13 +35,103 @@ impl AccountIndex {
     }
 }
 
-/// Bitcoin coin type: mainnet `0'`, testnet4 `1'`.
+/// BIP43 purpose of a Bitcoin account node: BIP44 (P2PKH), BIP49 (P2SH-P2WPKH), BIP84 (P2WPKH),
+/// BIP86 (P2TR key path).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BtcPurpose {
+    /// `44'`.
+    Bip44,
+    /// `49'`.
+    Bip49,
+    /// `84'`.
+    Bip84,
+    /// `86'`.
+    Bip86,
+}
+
+impl BtcPurpose {
+    /// The purpose number (44, 49, 84, 86).
+    #[must_use]
+    pub const fn number(self) -> u32 {
+        match self {
+            Self::Bip44 => 44,
+            Self::Bip49 => 49,
+            Self::Bip84 => 84,
+            Self::Bip86 => 86,
+        }
+    }
+}
+
+/// A Bitcoin account node `m/{purpose}'/{coin}'/{account}'` (coin type: mainnet `0'`, testnet4
+/// `1'`). The name is kept from the BIP84-only version, where it selected the coin type alone:
+/// the vault passes it through unchanged (`Vault::btc_account_xpub`, `KeyRef::Btc`), and
+/// [`BtcCoin::Mainnet`] / [`BtcCoin::Test`] are still the BIP84 account 0 nodes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum BtcCoin {
-    /// `m/84'/0'/0'`.
-    Mainnet,
-    /// `m/84'/1'/0'` (testnet4).
-    Test,
+pub struct BtcCoin {
+    test: bool,
+    purpose: BtcPurpose,
+    account: u32,
+}
+
+#[expect(
+    non_upper_case_globals,
+    reason = "the former enum variants `BtcCoin::Mainnet` / `BtcCoin::Test` keep their names"
+)]
+impl BtcCoin {
+    /// `m/84'/0'/0'` (mainnet BIP84 account 0).
+    pub const Mainnet: Self = Self {
+        test: false,
+        purpose: BtcPurpose::Bip84,
+        account: 0,
+    };
+    /// `m/84'/1'/0'` (testnet4 BIP84 account 0).
+    pub const Test: Self = Self {
+        test: true,
+        purpose: BtcPurpose::Bip84,
+        account: 0,
+    };
+}
+
+impl BtcCoin {
+    /// The node `m/{purpose}'/{0|1}'/{account}'`.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError::InvalidPath`] when `account` is hardened (≥ 2^31).
+    pub const fn new(test: bool, purpose: BtcPurpose, account: u32) -> Result<Self, KeyError> {
+        if account >= HARDENED {
+            return Err(KeyError::InvalidPath);
+        }
+        Ok(Self {
+            test,
+            purpose,
+            account,
+        })
+    }
+
+    /// Coin type `1'` (testnet4) instead of `0'`.
+    #[must_use]
+    pub const fn is_test(self) -> bool {
+        self.test
+    }
+
+    /// The coin type number (0 or 1).
+    #[must_use]
+    pub const fn coin_index(self) -> u32 {
+        if self.test { 1 } else { 0 }
+    }
+
+    /// The purpose.
+    #[must_use]
+    pub const fn purpose(self) -> BtcPurpose {
+        self.purpose
+    }
+
+    /// The account number (`< 2^31`).
+    #[must_use]
+    pub const fn account(self) -> u32 {
+        self.account
+    }
 }
 
 /// Bitcoin chain: receive `0`, change `1`.
@@ -65,22 +155,19 @@ pub fn evm_path(index: AccountIndex) -> Bip32Path {
     }
 }
 
-const fn coin_index(coin: BtcCoin) -> u32 {
-    match coin {
-        BtcCoin::Mainnet => 0,
-        BtcCoin::Test => 1,
-    }
-}
-
-/// The BIP84 account node `m/84'/{0|1}'/0'` (cached as `AccountXpub`, spec/08 §3.1).
+/// The account node `m/{purpose}'/{0|1}'/{account}'` (cached as `AccountXpub`, spec/08 §3.1).
 #[must_use]
 pub fn btc_account_path(coin: BtcCoin) -> Bip32Path {
     Bip32Path {
-        components: vec![hardened(84), hardened(coin_index(coin)), hardened(0)],
+        components: vec![
+            hardened(coin.purpose.number()),
+            hardened(coin.coin_index()),
+            hardened(coin.account & !HARDENED),
+        ],
     }
 }
 
-/// `m/84'/{0|1}'/0'/{0|1}/index` (BIP84).
+/// `m/{purpose}'/{0|1}'/{account}'/{0|1}/index` (BIP44/49/84/86).
 ///
 /// # Errors
 ///
@@ -89,15 +176,10 @@ pub fn btc_path(coin: BtcCoin, chain: BtcChain, index: u32) -> Result<Bip32Path,
     if index >= HARDENED {
         return Err(KeyError::InvalidPath);
     }
-    Ok(Bip32Path {
-        components: vec![
-            hardened(84),
-            hardened(coin_index(coin)),
-            hardened(0),
-            chain.index(),
-            index,
-        ],
-    })
+    let mut path = btc_account_path(coin);
+    path.components.push(chain.index());
+    path.components.push(index);
+    Ok(path)
 }
 
 impl BtcChain {

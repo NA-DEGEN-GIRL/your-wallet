@@ -61,6 +61,7 @@ pub struct JournalState {
     plain: Option<JournalPlain>,
     overlay: Vec<(NetworkId, ActivityEntry)>,
     btc: Option<yw_core::btc::BtcMeta>,
+    btc_accounts: yw_core::btc::BtcAccounts,
     btc_loaded: bool,
 }
 
@@ -128,6 +129,7 @@ impl JournalState {
         self.plain = None;
         self.overlay.clear();
         self.btc = None;
+        self.btc_accounts = yw_core::btc::BtcAccounts::default();
         self.btc_loaded = false;
     }
 

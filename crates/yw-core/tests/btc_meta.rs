@@ -10,7 +10,7 @@
 
 mod btc_common;
 
-use btc_common::{NET, TIP, account, simple_plan};
+use btc_common::{NET, TIP, simple_plan, xpub};
 use yw_core::bip32::path::BtcChain;
 use yw_core::btc::address::p2wpkh_program;
 use yw_core::btc::amount::Sats;
@@ -67,7 +67,7 @@ fn json_text(meta: &BtcMeta) -> String {
 #[test]
 #[expect(clippy::too_many_lines, reason = "one corruption per field")]
 fn json_codec_exact_and_strict() {
-    let fresh = BtcMeta::new(NET, account());
+    let fresh = BtcMeta::new(NET, xpub());
     assert_eq!(
         json_text(&fresh),
         concat!(
@@ -220,7 +220,7 @@ fn json_codec_exact_and_strict() {
 /// spec/08 §3.4 discovery: gap 20 per chain, `next = last + 1`, "더 찾기" from `next`.
 #[test]
 fn discovery_gap_rules() {
-    let mut meta = BtcMeta::new(NET, account());
+    let mut meta = BtcMeta::new(NET, xpub());
     let mut discovery = Discovery::full();
     let used_receive = [0_u32, 5, 25];
     let mut requests = Vec::new();
@@ -288,7 +288,7 @@ fn discovery_gap_rules() {
 /// spec/08 §3.2 receive addresses: smallest unused, issue-before-show, gap warning and limit.
 #[test]
 fn receive_issuance_and_gap() {
-    let mut meta = BtcMeta::new(NET, account());
+    let mut meta = BtcMeta::new(NET, xpub());
     assert_eq!(meta.receive_address(), Ok(ReceiveAddress::Issued(0)));
     assert_eq!(meta.receive_next(), 1);
     assert_eq!(meta.receive_address(), Ok(ReceiveAddress::Existing(0)));
@@ -335,7 +335,7 @@ fn receive_issuance_and_gap() {
     assert_eq!(watch[0].2, address);
     assert_eq!(
         meta.expected_script(BtcChain::Change, 4).unwrap(),
-        p2wpkh_script_pubkey(&p2wpkh_program(&account(), BtcChain::Change, 4).unwrap())
+        p2wpkh_script_pubkey(&p2wpkh_program(&xpub(), BtcChain::Change, 4).unwrap())
     );
 }
 
@@ -344,7 +344,7 @@ fn receive_issuance_and_gap() {
 #[test]
 #[expect(clippy::too_many_lines, reason = "one block per refresh rule")]
 fn verified_set_refresh_rules() {
-    let mut meta = BtcMeta::new(NET, account());
+    let mut meta = BtcMeta::new(NET, xpub());
     let a = listed(1, BtcChain::Receive, 0, TIP - 1);
     let small = listed(2, BtcChain::Receive, 1, TIP - 2);
     let edge = listed(3, BtcChain::Receive, 1, TIP - 3);
@@ -416,7 +416,7 @@ fn verified_set_refresh_rules() {
     let report = meta.apply_refresh(&[a, small, edge], &[verified(&stray, 5_000)], &[], &[]);
     assert_eq!(report.inserted, 0);
     // Confirmation rules: unconfirmed and immature coinbase are pending.
-    let mut meta = BtcMeta::new(NET, account());
+    let mut meta = BtcMeta::new(NET, xpub());
     let unconfirmed = listed(8, BtcChain::Receive, 0, TIP + 1);
     let coinbase = listed(9, BtcChain::Receive, 0, TIP - 98);
     let mut coinbase_utxo = verified(&coinbase, 10_000);
@@ -458,7 +458,7 @@ fn verified_set_refresh_rules() {
 /// The frozen bound: small deposits beyond 1,024 frozen entries are not added (reported).
 #[test]
 fn frozen_bound_skips() {
-    let mut meta = BtcMeta::new(NET, account());
+    let mut meta = BtcMeta::new(NET, xpub());
     let items: Vec<ListedUtxo> = (0..=u32::try_from(MAX_FROZEN).unwrap())
         .map(|n| ListedUtxo {
             outpoint: OutPoint {
@@ -481,7 +481,7 @@ fn frozen_bound_skips() {
 /// Sent scripts (B05), the tip rule, `change_next`, network check and own-address detection.
 #[test]
 fn sent_scripts_tip_change_and_own() {
-    let mut meta = BtcMeta::new(NET, account());
+    let mut meta = BtcMeta::new(NET, xpub());
     assert!(meta.is_first_time(&[0x51]));
     assert!(meta.record_sent_script(&[0x51]));
     assert!(!meta.record_sent_script(&[0x51]));
@@ -527,7 +527,7 @@ fn sent_scripts_tip_change_and_own() {
         "BTC 네트워크 설정이 지갑 데이터와 다릅니다"
     );
     // Own addresses within next + 20.
-    let program = |chain, index| p2wpkh_program(&account(), chain, index).unwrap();
+    let program = |chain, index| p2wpkh_program(&xpub(), chain, index).unwrap();
     let script = |chain, index| p2wpkh_script_pubkey(&program(chain, index)).to_vec();
     assert_eq!(
         meta.own_recipient(&script(BtcChain::Receive, 19)),

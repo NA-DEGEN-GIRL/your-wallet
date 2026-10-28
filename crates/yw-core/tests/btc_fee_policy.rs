@@ -362,7 +362,8 @@ fn b_rule_levels_and_texts() {
     );
     assert_eq!(
         BtcWarning::OwnAddress {
-            coin: 1,
+            account: account(),
+            network: NET,
             chain: BtcChain::Change,
             index: 4
         }
@@ -378,7 +379,8 @@ fn b_rule_levels_and_texts() {
         BtcWarning::RecipientDecreased,
         BtcWarning::UtxosExcluded { count: 1 },
         BtcWarning::OwnAddress {
-            coin: 0,
+            account: account(),
+            network: yw_core::btc::network::BtcNetwork::Mainnet,
             chain: BtcChain::Receive,
             index: 0,
         },

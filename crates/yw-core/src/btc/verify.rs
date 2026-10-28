@@ -1,23 +1,28 @@
 //! Post-sign verification (spec/08 §11.2): every check is mandatory and any failure discards the
 //! signed bytes. The raw transaction is re-parsed and compared with the approved unsigned
 //! transaction, each witness is checked strictly against a sighash recomputed with the verified
-//! amount and the key derived from the cached account node, the change is re-derived, and the
+//! amount(s) and the key the account derives for each input (ECDSA witness or scriptSig, or the
+//! Taproot key-path signature under the derived output key), the change is re-derived, and the
 //! fee, caps, dust and sizes are recomputed.
 #![deny(clippy::indexing_slicing)]
 
 use core::fmt;
 
-use super::address::{hash160, kind_from_script, p2wpkh_program};
+use super::SIGHASH_ALL;
+use super::account::{BtcAccountKey, ScriptType};
+use super::address::{ScriptKind, hash160, kind_from_script, script_pubkey};
 use super::amount::Sats;
 use super::fee::{check_fee, maxfeerate_literal, rate_kvb};
 use super::policy::LocalTx;
-use super::script::{dust_threshold, p2wpkh_script_pubkey};
+use super::script::{dust_threshold, split_p2pkh_script_sig};
 use super::select::SendPlan;
-use super::sighash::bip143_sighash_p2wpkh;
-use super::sign::{PUBKEY_LEN, WitnessSigError, check_witness_signature_with};
+use super::sighash::{bip143_sighash_p2wpkh, legacy_sighash};
+use super::sign::{
+    PUBKEY_LEN, WitnessSigError, check_p2pkh_signature_with, check_witness_signature_with,
+    expected_inputs, plan_prevouts,
+};
+use super::taproot::{TaprootSigError, check_key_path_witness, sighash_default};
 use super::tx::{Transaction, Txid, parse_transaction, serialize, txid, vsize, weight, wtxid};
-use crate::bip32::AccountXpub;
-use crate::bip32::path::BtcChain;
 use crate::entropy::{OsRandom, secp_context};
 
 /// Standard transaction weight limit.
@@ -119,7 +124,14 @@ pub enum PostSignError {
         /// The failing rule.
         reason: WitnessSigError,
     },
-    /// 4: `HASH160(pubkey)` is not the program of the input's `(chain, index)`.
+    /// 3/5: the Taproot key-path signature failed.
+    Taproot {
+        /// Input index.
+        input: usize,
+        /// The failing rule.
+        reason: TaprootSigError,
+    },
+    /// 4: the key is not the account's key of the input's `(chain, index)`.
     KeyMismatch {
         /// Input index.
         input: usize,
@@ -148,7 +160,21 @@ impl fmt::Display for PostSignError {
 
 impl std::error::Error for PostSignError {}
 
-/// Verifies `raw` against the approved plan (spec/08 §11.2 items 1–8).
+/// The transaction as approved: witnesses removed and, for a P2PKH account, the signature
+/// scriptSigs emptied (the plan carries every other scriptSig: empty, or the P2SH-P2WPKH
+/// redeem-script push).
+fn as_unsigned(parsed: &Transaction, script_type: ScriptType) -> Transaction {
+    let mut out = parsed.clone();
+    for input in &mut out.inputs {
+        input.witness.clear();
+        if script_type == ScriptType::P2pkh {
+            input.script_sig.clear();
+        }
+    }
+    out
+}
+
+/// Verifies `raw` against the approved plan of `account` (spec/08 §11.2 items 1–8).
 ///
 /// # Errors
 ///
@@ -156,15 +182,19 @@ impl std::error::Error for PostSignError {}
 pub fn verify_signed(
     raw: &[u8],
     plan: &SendPlan,
-    acct: &AccountXpub,
+    account: &BtcAccountKey,
 ) -> Result<VerifiedSignedTx, PostSignError> {
+    if plan.account() != account {
+        return Err(PostSignError::PlanInconsistent);
+    }
     // 1. Strict parse and identical re-serialization.
     let parsed = parse_transaction(raw).map_err(|_| PostSignError::Parse)?;
     if serialize(&parsed, true) != raw {
         return Err(PostSignError::Reserialize);
     }
-    // 2. The non-witness serialization is the approved unsigned transaction.
-    if serialize(&parsed, false) != serialize(plan.tx(), false) {
+    // 2. The transaction without signatures is the approved unsigned transaction.
+    if serialize(&as_unsigned(&parsed, account.script_type()), false) != serialize(plan.tx(), false)
+    {
         return Err(PostSignError::UnsignedMismatch);
     }
     let inputs = plan.inputs();
@@ -176,8 +206,8 @@ pub fn verify_signed(
     {
         return Err(PostSignError::PlanInconsistent);
     }
-    check_witnesses(&parsed, plan, acct)?;
-    check_outputs(&parsed, plan, acct)?;
+    check_witnesses(&parsed, plan, account)?;
+    check_outputs(&parsed, plan, account)?;
     // 7. Fee from the verified inputs, caps, dust.
     let input_total = plan.input_total().ok_or(PostSignError::FeeMismatch)?;
     let output_total = Sats::checked_sum(parsed.outputs.iter().map(|output| output.value))
@@ -218,39 +248,90 @@ pub fn verify_signed(
     })
 }
 
-/// Checks 3–5 for every input.
+/// Checks 3–5 for every input, by account type:
+///
+/// - P2WPKH / P2SH-P2WPKH: exactly `[DER ‖ 0x01, K]` (the P2SH scriptSig was compared in check
+///   2), `K` is the account key of `(chain, index)`, BIP143 with the verified amount;
+/// - P2PKH: no witness, scriptSig exactly `<DER ‖ 0x01> <K>` with the account key (33 or 65
+///   bytes), the legacy sighash;
+/// - P2TR: exactly one 64-byte Schnorr signature valid under the derived output key for the
+///   BIP341 sighash over every input's verified amount and script.
 fn check_witnesses(
     parsed: &Transaction,
     plan: &SendPlan,
-    acct: &AccountXpub,
+    account: &BtcAccountKey,
 ) -> Result<(), PostSignError> {
+    let expected = expected_inputs(plan, account).map_err(|_| PostSignError::Derivation)?;
+    let prevouts = plan_prevouts(plan, &expected);
     let ctx = secp_context(&mut OsRandom).map_err(|_| PostSignError::Derivation)?;
-    for (position, (planned, input)) in plan.inputs().iter().zip(&parsed.inputs).enumerate() {
-        // 3. Exactly two items: `DER ‖ 0x01` and a compressed key.
-        let [sig_item, key_item] = input.witness.as_slice() else {
-            return Err(PostSignError::WitnessShape { input: position });
+    let script_type = account.script_type();
+    for (position, ((planned, input), (pubkey, kind))) in plan
+        .inputs()
+        .iter()
+        .zip(&parsed.inputs)
+        .zip(&expected)
+        .enumerate()
+    {
+        let signature_error = |reason| PostSignError::Signature {
+            input: position,
+            reason,
         };
-        if key_item.len() != PUBKEY_LEN {
-            return Err(PostSignError::Signature {
-                input: position,
-                reason: WitnessSigError::PublicKey,
-            });
-        }
-        // 4. The key hashes to the program of (chain, index) from the cached account node.
-        let program = p2wpkh_program(acct, planned.chain, planned.index)
-            .map_err(|_| PostSignError::Derivation)?;
-        if hash160(key_item) != program {
-            return Err(PostSignError::KeyMismatch { input: position });
-        }
-        // 5. BIP143 with the verified amount, strict DER/low-R/low-S and verify.
-        let sighash = bip143_sighash_p2wpkh(parsed, position, &program, planned.value)
-            .ok_or(PostSignError::PlanInconsistent)?;
-        check_witness_signature_with(&ctx, sig_item, key_item, &sighash).map_err(|reason| {
-            PostSignError::Signature {
-                input: position,
-                reason,
+        match script_type {
+            ScriptType::P2wpkh | ScriptType::P2shP2wpkh => {
+                // 3. Exactly two items: `DER ‖ 0x01` and a compressed key.
+                let [sig_item, key_item] = input.witness.as_slice() else {
+                    return Err(PostSignError::WitnessShape { input: position });
+                };
+                if key_item.len() != PUBKEY_LEN {
+                    return Err(signature_error(WitnessSigError::PublicKey));
+                }
+                // 4. The key is the account's key of (chain, index).
+                if key_item.as_slice() != pubkey.as_bytes() {
+                    return Err(PostSignError::KeyMismatch { input: position });
+                }
+                // 5. BIP143 with the verified amount, strict DER/low-R/low-S and verify.
+                let sighash =
+                    bip143_sighash_p2wpkh(parsed, position, &hash160(key_item), planned.value)
+                        .ok_or(PostSignError::PlanInconsistent)?;
+                check_witness_signature_with(&ctx, sig_item, key_item, &sighash)
+                    .map_err(signature_error)?;
             }
-        })?;
+            ScriptType::P2pkh => {
+                if !input.witness.is_empty() {
+                    return Err(PostSignError::WitnessShape { input: position });
+                }
+                let (sig_item, key_item) = split_p2pkh_script_sig(&input.script_sig)
+                    .ok_or(PostSignError::WitnessShape { input: position })?;
+                if key_item != pubkey.as_bytes() {
+                    return Err(PostSignError::KeyMismatch { input: position });
+                }
+                let sighash = legacy_sighash(
+                    parsed,
+                    position,
+                    &script_pubkey(kind),
+                    u32::from(SIGHASH_ALL),
+                )
+                .ok_or(PostSignError::PlanInconsistent)?;
+                check_p2pkh_signature_with(&ctx, sig_item, key_item, &sighash)
+                    .map_err(signature_error)?;
+            }
+            ScriptType::P2tr => {
+                let ScriptKind::P2tr(output) = kind else {
+                    return Err(PostSignError::Derivation);
+                };
+                let sighash = sighash_default(parsed, position, &prevouts)
+                    .ok_or(PostSignError::PlanInconsistent)?;
+                check_key_path_witness(&ctx, &input.witness, output, &sighash).map_err(
+                    |reason| match reason {
+                        TaprootSigError::Shape => PostSignError::WitnessShape { input: position },
+                        other => PostSignError::Taproot {
+                            input: position,
+                            reason: other,
+                        },
+                    },
+                )?;
+            }
+        }
     }
     Ok(())
 }
@@ -259,17 +340,17 @@ fn check_witnesses(
 fn check_outputs(
     parsed: &Transaction,
     plan: &SendPlan,
-    acct: &AccountXpub,
+    account: &BtcAccountKey,
 ) -> Result<(), PostSignError> {
     let expected_outputs = 1_usize.saturating_add(usize::from(plan.change().is_some()));
     if parsed.outputs.len() != expected_outputs {
         return Err(PostSignError::Outputs);
     }
     if let Some(change) = plan.change() {
-        let script = p2wpkh_script_pubkey(
-            &p2wpkh_program(acct, BtcChain::Change, change.index)
-                .map_err(|_| PostSignError::Derivation)?,
-        );
+        let (chain, index) = account.change_path(change.index);
+        let script = account
+            .script(chain, index)
+            .map_err(|_| PostSignError::Derivation)?;
         let output = usize::try_from(change.vout)
             .ok()
             .and_then(|vout| parsed.outputs.get(vout))

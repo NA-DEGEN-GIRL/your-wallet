@@ -1,7 +1,9 @@
 //! Coin selection and transaction planning (spec/08 §7, §9): eligible candidates, the
-//! single-input-then-fewest-inputs selection, change at 294 sats or folded into the fee,
+//! single-input-then-fewest-inputs selection, change at the account type's dust or folded into
+//! the fee, sizes by the account type (spec/08 §3.5, §7.2),
 //! send-max, the layout seed (Fisher–Yates input order and change position), the fixed fields
-//! (version 2, sequence `0xFFFFFFFD`, empty scriptSig, `lock_time = tip_height`), and RBF fee
+//! (version 2, sequence `0xFFFFFFFD`, empty scriptSig but the P2SH-P2WPKH redeem push,
+//! `lock_time = tip_height`), and RBF fee
 //! bumps with the BIP125 minimum. Every amount is a checked [`Sats`] operation; plans are
 //! deterministic for a fixed `layout_seed`.
 //!
@@ -16,21 +18,22 @@ use core::fmt;
 
 use sha2::{Digest, Sha256};
 
-use super::address::{ScriptKind, p2wpkh_program, script_pubkey};
+use super::account::{BtcAccountKey, ScriptType};
+use super::address::{ScriptKind, script_pubkey};
 use super::amount::{Sats, format_sats_grouped};
 use super::fee::{
     FeeCheck, FeeChoice, FeeRate, FeeSource, check_fee, fee_for, incremental_or_default,
 };
 use super::network::BtcNetwork;
-use super::script::{P2WPKH_SPK_LEN, dust_threshold, p2wpkh_script_pubkey, spk_len};
-use super::tx::{OutPoint, Transaction, TxIn, TxOut, Txid, estimate_weight};
+use super::script::{dust_threshold, spk_len};
+use super::tx::{OutPoint, Transaction, TxIn, TxOut, Txid, estimate_weight_with};
 use super::{
     BTC_CHANGE_DUST, BTC_COINBASE_MATURITY, BTC_LOCKTIME_THRESHOLD, BTC_MAX_ADDRESS_INDEX,
     BTC_MAX_INPUTS, BTC_MIN_CONF, BTC_SEQUENCE, BTC_TX_VERSION, conf,
 };
 use crate::approval::ApprovalKind;
+use crate::bip32::HARDENED;
 use crate::bip32::path::BtcChain;
-use crate::bip32::{AccountXpub, HARDENED};
 use crate::error::KeyError;
 
 /// Input-order domain of the layout seed (spec/08 §7.5).
@@ -85,14 +88,16 @@ impl From<&Utxo> for PlanInput {
     }
 }
 
-/// The change output of a plan (P2WPKH at `m/84'/{coin}'/0'/1/index`).
+/// The change output of a plan: our output of the account type at the change index (HD:
+/// `m/{p}'/{coin}'/{a}'/1/index`; a single key: its one address, index 0).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PlanChange {
     /// Output index.
     pub vout: u32,
     /// Change chain index.
     pub index: u32,
-    /// Value (≥ 294 sats).
+    /// Value (at least the change dust of the account type: 294 P2WPKH, 330 P2TR, 540 P2SH, 546
+    /// P2PKH).
     pub value: Sats,
 }
 
@@ -184,6 +189,7 @@ impl From<KeyError> for PlanError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SendPlan {
     pub(crate) network: BtcNetwork,
+    pub(crate) account: BtcAccountKey,
     pub(crate) tx: Transaction,
     pub(crate) inputs: Vec<PlanInput>,
     pub(crate) recipient: ScriptKind,
@@ -211,7 +217,14 @@ impl SendPlan {
         self.network
     }
 
-    /// The unsigned transaction (empty scriptSigs and witnesses).
+    /// The spending account (address type and keys of every input and of the change).
+    #[must_use]
+    pub const fn account(&self) -> &BtcAccountKey {
+        &self.account
+    }
+
+    /// The unsigned transaction: no witnesses; empty scriptSigs except the fixed redeem-script
+    /// push of P2SH-P2WPKH inputs.
     #[must_use]
     pub const fn tx(&self) -> &Transaction {
         &self.tx
@@ -368,10 +381,17 @@ impl SendPlan {
             .is_some_and(|check| check.over_cap && !self.fee_override_typed)
     }
 
-    /// The txid of the unsigned transaction (final: no witness data in it).
+    /// The txid of the unsigned transaction: final for segwit and Taproot accounts (signatures
+    /// live in the witness), not for P2PKH accounts (the signatures go into the scriptSigs).
     #[must_use]
     pub fn txid(&self) -> Txid {
         super::tx::txid(&self.tx)
+    }
+
+    /// Whether [`SendPlan::txid`] is the final txid (every type but P2PKH).
+    #[must_use]
+    pub const fn txid_is_final(&self) -> bool {
+        self.account.script_type().is_segwit()
     }
 }
 
@@ -389,8 +409,8 @@ pub enum SendAmount {
 pub struct SendRequest<'a> {
     /// Wallet network.
     pub network: BtcNetwork,
-    /// Cached account node (`BtcMeta` account key).
-    pub account: &'a AccountXpub,
+    /// The spending account (`BtcMeta::account`).
+    pub account: &'a BtcAccountKey,
     /// Parsed recipient.
     pub recipient: ScriptKind,
     /// Amount or send-max.
@@ -441,8 +461,8 @@ pub struct BumpSource {
 pub struct BumpRequest<'a> {
     /// The replaced transaction.
     pub source: &'a BumpSource,
-    /// Cached account node.
-    pub account: &'a AccountXpub,
+    /// The account of the replaced transaction (`BtcMeta::account`).
+    pub account: &'a BtcAccountKey,
     /// The new rate (raised to the BIP125 minimum when needed).
     pub fee: FeeChoice,
     /// `getmempoolinfo.incrementalrelayfee` (1,000 sat/kvB when missing).
@@ -507,12 +527,48 @@ struct Shape {
     weight: u64,
 }
 
-fn shape(inputs: usize, outputs: &[usize]) -> Result<Shape, PlanError> {
-    let weight = estimate_weight(inputs, outputs).ok_or(PlanError::Overflow)?;
-    Ok(Shape {
-        vsize: weight.div_ceil(4),
-        weight,
-    })
+/// The size and change parameters of an account's transactions (spec/08 §7.2): the per-input
+/// weight of its type, its change scriptPubKey length and change dust threshold.
+#[derive(Clone, Copy, Debug)]
+struct AccountShape {
+    input_weight: u64,
+    change_len: usize,
+    change_dust: Sats,
+}
+
+impl AccountShape {
+    fn of(account: &BtcAccountKey) -> Self {
+        let script_type = account.script_type();
+        let change_dust = if script_type == ScriptType::P2wpkh {
+            CHANGE_DUST
+        } else {
+            dust_threshold(&change_kind_template(script_type))
+        };
+        Self {
+            input_weight: account.input_weight(),
+            change_len: script_type.spk_len(),
+            change_dust,
+        }
+    }
+
+    fn shape(self, inputs: usize, outputs: &[usize]) -> Result<Shape, PlanError> {
+        let weight =
+            estimate_weight_with(self.input_weight, inputs, outputs).ok_or(PlanError::Overflow)?;
+        Ok(Shape {
+            vsize: weight.div_ceil(4),
+            weight,
+        })
+    }
+}
+
+/// A kind of `script_type` (only its template matters: dust and length).
+const fn change_kind_template(script_type: ScriptType) -> ScriptKind {
+    match script_type {
+        ScriptType::P2pkh => ScriptKind::P2pkh([0; 20]),
+        ScriptType::P2shP2wpkh => ScriptKind::P2sh([0; 20]),
+        ScriptType::P2wpkh => ScriptKind::P2wpkh([0; 20]),
+        ScriptType::P2tr => ScriptKind::P2tr([0; 32]),
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -593,9 +649,14 @@ pub fn bump_fee_ok(
 struct FeeRule {
     rate: FeeRate,
     bump: Option<BumpMin>,
+    account: AccountShape,
 }
 
 impl FeeRule {
+    fn shape(self, inputs: usize, outputs: &[usize]) -> Result<Shape, PlanError> {
+        self.account.shape(inputs, outputs)
+    }
+
     /// The fee for `vsize` and whether the bump minimum raised it.
     fn fee(self, vsize: u64) -> Result<(Sats, bool), PlanError> {
         let by_rate = fee_for(self.rate, vsize).ok_or(PlanError::Overflow)?;
@@ -632,11 +693,11 @@ fn fit(
     allow_change: bool,
 ) -> Result<Option<Fit>, PlanError> {
     if allow_change {
-        let with_change = shape(inputs, &[recipient_len, P2WPKH_SPK_LEN])?;
+        let with_change = rule.shape(inputs, &[recipient_len, rule.account.change_len])?;
         let (fee, min_applied) = rule.fee(with_change.vsize)?;
         let needed = amount
             .checked_add(fee)
-            .and_then(|sum| sum.checked_add(CHANGE_DUST));
+            .and_then(|sum| sum.checked_add(rule.account.change_dust));
         if needed.is_some_and(|needed| total >= needed) {
             let change = total
                 .checked_sub(amount)
@@ -651,7 +712,7 @@ fn fit(
             }));
         }
     }
-    let without = shape(inputs, &[recipient_len])?;
+    let without = rule.shape(inputs, &[recipient_len])?;
     let (base, min_applied) = rule.fee(without.vsize)?;
     if amount
         .checked_add(base)
@@ -716,7 +777,7 @@ fn change_first(seed: &[u8; 32]) -> bool {
 
 struct Assembly<'a> {
     network: BtcNetwork,
-    account: &'a AccountXpub,
+    account: &'a BtcAccountKey,
     recipient: ScriptKind,
     inputs: Vec<PlanInput>,
     amount: Sats,
@@ -733,15 +794,23 @@ struct Assembly<'a> {
     new_input_total: Sats,
 }
 
+/// The change output of `account`: HD accounts use change index `index` (the next one when it
+/// equals the recipient script); a single-key account sends change back to its one address
+/// (index 0, even when that is the recipient).
 fn change_script(
-    account: &AccountXpub,
+    account: &BtcAccountKey,
     index: u32,
     recipient: &[u8],
-) -> Result<(u32, [u8; P2WPKH_SPK_LEN]), PlanError> {
+) -> Result<(u32, Vec<u8>), PlanError> {
+    if account.is_single() {
+        let (chain, single) = account.change_path(0);
+        return Ok((0, account.script(chain, single)?));
+    }
     if index >= BTC_MAX_ADDRESS_INDEX {
         return Err(PlanError::ChangeIndexExhausted);
     }
-    let script = p2wpkh_script_pubkey(&p2wpkh_program(account, BtcChain::Change, index)?);
+    let deriver = account.deriver()?;
+    let script = deriver.script(BtcChain::Change, index)?;
     if script.as_slice() != recipient {
         return Ok((index, script));
     }
@@ -749,7 +818,7 @@ fn change_script(
     if next >= BTC_MAX_ADDRESS_INDEX {
         return Err(PlanError::ChangeIndexExhausted);
     }
-    let script = p2wpkh_script_pubkey(&p2wpkh_program(account, BtcChain::Change, next)?);
+    let script = deriver.script(BtcChain::Change, next)?;
     Ok((next, script))
 }
 
@@ -773,7 +842,7 @@ fn assemble(mut parts: Assembly<'_>) -> Result<SendPlan, PlanError> {
                 change_script(parts.account, parts.change_index, &recipient_script)?;
             let change_output = TxOut {
                 value,
-                script_pubkey: script.to_vec(),
+                script_pubkey: script,
             };
             let (outputs, recipient_vout, change_vout) = if change_first(&parts.seed) {
                 (vec![change_output, recipient_output], 1, 0)
@@ -791,18 +860,21 @@ fn assemble(mut parts: Assembly<'_>) -> Result<SendPlan, PlanError> {
             )
         }
     };
+    let deriver = parts.account.deriver()?;
     let tx = Transaction {
         version: BTC_TX_VERSION,
         inputs: parts
             .inputs
             .iter()
-            .map(|input| TxIn {
-                prevout: input.outpoint,
-                script_sig: Vec::new(),
-                sequence: BTC_SEQUENCE,
-                witness: Vec::new(),
+            .map(|input| {
+                Ok(TxIn {
+                    prevout: input.outpoint,
+                    script_sig: deriver.unsigned_script_sig(input.chain, input.index)?,
+                    sequence: BTC_SEQUENCE,
+                    witness: Vec::new(),
+                })
             })
-            .collect(),
+            .collect::<Result<Vec<_>, KeyError>>()?,
         outputs,
         lock_time: parts.tip_height,
     };
@@ -816,6 +888,7 @@ fn assemble(mut parts: Assembly<'_>) -> Result<SendPlan, PlanError> {
     });
     Ok(SendPlan {
         network: parts.network,
+        account: *parts.account,
         tx,
         inputs: parts.inputs,
         recipient: parts.recipient,
@@ -892,6 +965,7 @@ pub fn plan_send(req: &SendRequest<'_>) -> Result<SendPlan, PlanError> {
     let rule = FeeRule {
         rate: req.fee.rate,
         bump: None,
+        account: AccountShape::of(req.account),
     };
     let eligible_all = eligible(req.candidates, req.tip_height);
     let forced = forced_inputs(&eligible_all, req.conflicts)?;
@@ -908,14 +982,14 @@ pub fn plan_send(req: &SendRequest<'_>) -> Result<SendPlan, PlanError> {
             let mut chosen = forced.clone();
             chosen.extend_from_slice(desc.get(..largest).unwrap_or_default());
             if chosen.is_empty() {
-                let (fee, _) = rule.fee(shape(1, &[recipient_len])?.vsize)?;
+                let (fee, _) = rule.fee(rule.shape(1, &[recipient_len])?.vsize)?;
                 return Err(PlanError::InsufficientFunds {
                     available: Sats::ZERO,
                     needed: dust.checked_add(fee).ok_or(PlanError::Overflow)?,
                 });
             }
             let total = sum_values(&chosen)?;
-            let without = shape(chosen.len(), &[recipient_len])?;
+            let without = rule.shape(chosen.len(), &[recipient_len])?;
             let (fee, _) = rule.fee(without.vsize)?;
             let amount = total
                 .checked_sub(fee)
@@ -989,7 +1063,7 @@ fn select(
         }
     }
     let available = sum_values(desc.iter().take(largest))?;
-    let (fee, _) = rule.fee(shape(largest.max(1), &[recipient_len])?.vsize)?;
+    let (fee, _) = rule.fee(rule.shape(largest.max(1), &[recipient_len])?.vsize)?;
     Err(PlanError::InsufficientFunds {
         available,
         needed: amount.checked_add(fee).ok_or(PlanError::Overflow)?,
@@ -1020,7 +1094,7 @@ fn select_forced(
             return Ok((chosen, fit));
         }
     }
-    let (fee, _) = rule.fee(shape(chosen.len().max(1), &[recipient_len])?.vsize)?;
+    let (fee, _) = rule.fee(rule.shape(chosen.len().max(1), &[recipient_len])?.vsize)?;
     Err(PlanError::InsufficientFunds {
         available: total,
         needed: amount.checked_add(fee).ok_or(PlanError::Overflow)?,
@@ -1050,6 +1124,7 @@ pub fn plan_fee_bump(req: &BumpRequest<'_>) -> Result<SendPlan, PlanError> {
             old_vsize: source.vsize,
             incremental: incremental_or_default(req.incremental),
         }),
+        account: AccountShape::of(req.account),
     };
     let dust = dust_threshold(&source.recipient);
     let recipient_len = spk_len(&source.recipient);
@@ -1062,7 +1137,7 @@ pub fn plan_fee_bump(req: &BumpRequest<'_>) -> Result<SendPlan, PlanError> {
         min_applied: false,
     };
     let (inputs, amount, fit, added_total) = if source.send_max {
-        let without = shape(source.inputs.len(), &[recipient_len])?;
+        let without = rule.shape(source.inputs.len(), &[recipient_len])?;
         let (fee, min_applied) = rule.fee(without.vsize)?;
         let amount = base_total
             .checked_sub(fee)
@@ -1159,7 +1234,7 @@ fn bump_select(
             return Ok((added, fit));
         }
     }
-    let (fee, _) = rule.fee(shape(last_count, &[recipient_len])?.vsize)?;
+    let (fee, _) = rule.fee(rule.shape(last_count, &[recipient_len])?.vsize)?;
     Err(PlanError::InsufficientFunds {
         available: total,
         needed: source.amount.checked_add(fee).ok_or(PlanError::Overflow)?,

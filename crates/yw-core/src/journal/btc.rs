@@ -19,6 +19,13 @@
 //! [238] input_count × 49: txid[32] vout u32 value u64 chain u8 index u32
 //! [238 + 49n] raw_len bytes: the signed transaction
 //! ```
+//!
+//! Records of BIP84 account 0 keep exactly this layout (`record_version = 1`). Every other account
+//! (another address type or account number, or an imported key) writes `record_version = 2`:
+//! the same 238-byte header, an 18-byte account block at `[238]` (`source u8` 1 HD / 2
+//! imported, `script_type u8`, then the HD account `u32` and 12 zero bytes, or the 16-byte record
+//! id), then the inputs at `[256]` and the raw bytes. A P2PKH account's raw transaction has no
+//! witness.
 #![deny(clippy::indexing_slicing)]
 
 use core::fmt;
@@ -26,16 +33,18 @@ use core::fmt;
 use super::{
     ENTRY_HEADER_LEN, Entry, EntryKind, JournalError, JournalPlain, MAX_ENTRIES, MAX_PLAINTEXT,
 };
+use crate::bip32::HARDENED;
 use crate::bip32::path::BtcChain;
-use crate::bip32::{AccountXpub, HARDENED};
-use crate::btc::address::{ScriptKind, encode_address, hash160, kind_from_script, p2wpkh_program};
+use crate::btc::account::{BtcAccountId, BtcAccountKey, ScriptType};
+use crate::btc::address::{ScriptKind, encode_address, kind_from_script, script_pubkey};
 use crate::btc::amount::Sats;
 use crate::btc::display::btc_title;
 use crate::btc::meta::VerifiedUtxo;
 use crate::btc::network::BtcNetwork;
-use crate::btc::script::p2wpkh_script_pubkey;
+use crate::btc::script::split_p2pkh_script_sig;
 use crate::btc::select::{BumpSource, PlanError, PlanInput, SendPlan};
 use crate::btc::sign::SignedTx;
+use crate::btc::taproot::{Prevout, check_key_path_witness, sighash_default};
 use crate::btc::tx::{
     OutPoint, Transaction, Txid, parse_transaction, serialize, txid, vsize, wtxid,
 };
@@ -44,14 +53,21 @@ use crate::btc::{
     BTC_JOURNAL_FINAL_KEEP, BTC_MAX_INPUTS, BTC_MAX_JOURNAL_RAW, BTC_NOT_FOUND_LIMIT, conf,
 };
 
-/// `record_version`.
+/// `record_version` of BIP84 account 0 records (unchanged layout).
 pub const BTC_RECORD_VERSION: u8 = 1;
+/// `record_version` of every other account's records: the version 1 header, then an 18-byte
+/// account block, then inputs and raw bytes.
+pub const BTC_RECORD_VERSION_V2: u8 = 2;
 /// Fixed header length.
 pub const BTC_JOURNAL_HEADER_LEN: usize = 238;
+/// The version 2 account block: `source u8 (1 HD, 2 imported) ‖ script_type u8 ‖ (HD: account
+/// u32 ‖ 0^12 | imported: record id 16)`.
+pub const BTC_JOURNAL_ACCOUNT_LEN: usize = 18;
 /// Bytes per input record.
 pub const BTC_JOURNAL_INPUT_LEN: usize = 49;
-/// Largest BTC body: 238 + 49 × 100 + 32,768 = 37,906 (spec/02 §5.4).
-pub const BTC_JOURNAL_MAX_BODY: usize = 37_906;
+/// Largest BTC body: 238 + 18 + 49 × 100 + 32,768 = 37,924 (spec/02 §5.4; version 1 bodies are
+/// at most 37,906).
+pub const BTC_JOURNAL_MAX_BODY: usize = 37_924;
 /// Confirmations after which tracking stops (spec/08 §12.2-4).
 pub const BTC_TRACK_CONFIRMATIONS: u32 = 6;
 /// `Abandoned` records may still become `Confirmed` within this window, and are finished after
@@ -274,6 +290,10 @@ pub struct RecordChange {
 pub struct BtcRecord {
     /// Network.
     pub network: BtcNetwork,
+    /// The spending account.
+    pub account: BtcAccountId,
+    /// Its address type (of every input and of the change; P2WPKH for version 1 records).
+    pub script_type: ScriptType,
     /// State.
     pub state: BtcTxState,
     /// Send-max.
@@ -368,6 +388,56 @@ fn chain_from_code(code: u8) -> Option<BtcChain> {
     }
 }
 
+/// `count` input records (49 bytes each).
+fn read_inputs(reader: &mut Reader<'_>, count: usize) -> Result<Vec<PlanInput>, BtcRecordError> {
+    let mut inputs = Vec::with_capacity(count);
+    for _ in 0..count {
+        let outpoint = OutPoint {
+            txid: Txid::from_bytes(reader.array::<32>()?),
+            vout: reader.u32()?,
+        };
+        let value = Sats::new(reader.u64()?).ok_or(BtcRecordError::Inputs)?;
+        let chain = chain_from_code(reader.u8()?).ok_or(BtcRecordError::Inputs)?;
+        let index = reader.u32()?;
+        inputs.push(PlanInput {
+            outpoint,
+            value,
+            chain,
+            index,
+        });
+    }
+    Ok(inputs)
+}
+
+/// The version 2 account block: a known source and type, zero padding after an HD account
+/// number, a non-zero imported id, and never BIP84 account 0 (that is version 1).
+fn decode_account_block(
+    block: &[u8; BTC_JOURNAL_ACCOUNT_LEN],
+) -> Result<(BtcAccountId, ScriptType), BtcRecordError> {
+    let [source, code, rest @ ..] = block;
+    let script_type = ScriptType::from_code(*code).ok_or(BtcRecordError::Value)?;
+    let id = <[u8; 16]>::try_from(rest.as_slice()).map_err(|_| BtcRecordError::Length)?;
+    let account = match source {
+        1 => {
+            let (number, padding) = id.split_first_chunk::<4>().ok_or(BtcRecordError::Length)?;
+            let account = u32::from_be_bytes(*number);
+            if padding.iter().any(|byte| *byte != 0) || account & HARDENED != 0 {
+                return Err(BtcRecordError::Value);
+            }
+            BtcAccountId::Hd {
+                script_type,
+                account,
+            }
+        }
+        2 if id != [0; 16] => BtcAccountId::Imported { id },
+        _ => return Err(BtcRecordError::Value),
+    };
+    if account == BtcAccountId::PRIMARY {
+        return Err(BtcRecordError::Version);
+    }
+    Ok((account, script_type))
+}
+
 /// Checks the record against its parsed transaction (shared by `decode` and `encode`).
 fn check_against_raw(record: &BtcRecord) -> Result<Transaction, BtcRecordError> {
     if record.raw.is_empty() || record.raw.len() > BTC_MAX_JOURNAL_RAW {
@@ -376,8 +446,14 @@ fn check_against_raw(record: &BtcRecord) -> Result<Transaction, BtcRecordError> 
     if record.inputs.is_empty() || record.inputs.len() > BTC_MAX_INPUTS {
         return Err(BtcRecordError::Length);
     }
+    if matches!(record.account, BtcAccountId::Hd { script_type, .. } if script_type != record.script_type)
+    {
+        return Err(BtcRecordError::Value);
+    }
     let parsed = parse_transaction(&record.raw).map_err(|_| BtcRecordError::Raw)?;
-    if !parsed.has_witness() || serialize(&parsed, true) != record.raw {
+    if parsed.has_witness() != record.script_type.is_segwit()
+        || serialize(&parsed, true) != record.raw
+    {
         return Err(BtcRecordError::Raw);
     }
     if txid(&parsed) != record.txid || wtxid(&parsed) != record.wtxid {
@@ -460,6 +536,8 @@ impl BtcRecord {
         }
         let record = Self {
             network: plan.network(),
+            account: plan.account().id(),
+            script_type: plan.account().script_type(),
             state: BtcTxState::Signed,
             send_max: plan.send_max(),
             fee_override_typed: plan.fee_override_typed(),
@@ -516,7 +594,35 @@ impl BtcRecord {
         out
     }
 
-    /// Encodes the body (`238 + 49 × inputs + raw_len` bytes).
+    /// Whether this record keeps the version 1 layout (BIP84 account 0).
+    fn is_v1(&self) -> bool {
+        self.account == BtcAccountId::PRIMARY
+    }
+
+    /// The version 2 account block.
+    fn account_block(&self) -> [u8; BTC_JOURNAL_ACCOUNT_LEN] {
+        let mut out = [0_u8; BTC_JOURNAL_ACCOUNT_LEN];
+        let (source, body) = match self.account {
+            BtcAccountId::Hd { account, .. } => {
+                let mut body = [0_u8; 16];
+                for (slot, byte) in body.iter_mut().zip(account.to_be_bytes()) {
+                    *slot = byte;
+                }
+                (1_u8, body)
+            }
+            BtcAccountId::Imported { id } => (2_u8, id),
+        };
+        for (slot, byte) in out
+            .iter_mut()
+            .zip([source, self.script_type.code()].iter().chain(body.iter()))
+        {
+            *slot = *byte;
+        }
+        out
+    }
+
+    /// Encodes the body (`238 + 49 × inputs + raw_len` bytes; version 2 adds the 18-byte account
+    /// block after the header).
     ///
     /// # Errors
     ///
@@ -529,11 +635,16 @@ impl BtcRecord {
         let mut out = Vec::with_capacity(
             BTC_JOURNAL_MAX_BODY.min(
                 BTC_JOURNAL_HEADER_LEN
+                    .saturating_add(BTC_JOURNAL_ACCOUNT_LEN)
                     .saturating_add(BTC_JOURNAL_INPUT_LEN.saturating_mul(self.inputs.len()))
                     .saturating_add(self.raw.len()),
             ),
         );
-        out.push(BTC_RECORD_VERSION);
+        out.push(if self.is_v1() {
+            BTC_RECORD_VERSION
+        } else {
+            BTC_RECORD_VERSION_V2
+        });
         out.push(self.network.id());
         out.push(self.state.code());
         out.push(self.flags());
@@ -555,6 +666,9 @@ impl BtcRecord {
         out.extend_from_slice(&self.recipient_vout.to_be_bytes());
         out.extend_from_slice(&count.to_be_bytes());
         out.extend_from_slice(&raw_len.to_be_bytes());
+        if !self.is_v1() {
+            out.extend_from_slice(&self.account_block());
+        }
         for input in &self.inputs {
             out.extend_from_slice(input.outpoint.txid.as_bytes());
             out.extend_from_slice(&input.outpoint.vout.to_be_bytes());
@@ -576,9 +690,11 @@ impl BtcRecord {
             return Err(BtcRecordError::Length);
         }
         let mut reader = Reader { body, at: 0 };
-        if reader.u8()? != BTC_RECORD_VERSION {
-            return Err(BtcRecordError::Version);
-        }
+        let v2 = match reader.u8()? {
+            BTC_RECORD_VERSION => false,
+            BTC_RECORD_VERSION_V2 => true,
+            _ => return Err(BtcRecordError::Version),
+        };
         let network = BtcNetwork::from_id(reader.u8()?).ok_or(BtcRecordError::Value)?;
         let state = BtcTxState::from_code(reader.u8()?).ok_or(BtcRecordError::Value)?;
         let flag_bits = reader.u8()?;
@@ -622,30 +738,24 @@ impl BtcRecord {
         let expected = BTC_JOURNAL_INPUT_LEN
             .checked_mul(count)
             .and_then(|inputs| inputs.checked_add(BTC_JOURNAL_HEADER_LEN))
+            .and_then(|fixed| fixed.checked_add(if v2 { BTC_JOURNAL_ACCOUNT_LEN } else { 0 }))
             .and_then(|fixed| fixed.checked_add(raw_len))
             .ok_or(BtcRecordError::Length)?;
         if body.len() != expected {
             return Err(BtcRecordError::Length);
         }
-        let mut inputs = Vec::with_capacity(count);
-        for _ in 0..count {
-            let outpoint = OutPoint {
-                txid: Txid::from_bytes(reader.array::<32>()?),
-                vout: reader.u32()?,
-            };
-            let value = Sats::new(reader.u64()?).ok_or(BtcRecordError::Inputs)?;
-            let chain = chain_from_code(reader.u8()?).ok_or(BtcRecordError::Inputs)?;
-            let index = reader.u32()?;
-            inputs.push(PlanInput {
-                outpoint,
-                value,
-                chain,
-                index,
-            });
-        }
+        let (account, script_type) = if v2 {
+            let block = reader.array::<BTC_JOURNAL_ACCOUNT_LEN>()?;
+            decode_account_block(&block)?
+        } else {
+            (BtcAccountId::PRIMARY, ScriptType::P2wpkh)
+        };
+        let inputs = read_inputs(&mut reader, count)?;
         let raw = reader.take(raw_len)?.to_vec();
         let record = Self {
             network,
+            account,
+            script_type,
             state,
             send_max: has(flags::SEND_MAX),
             fee_override_typed: has(flags::FEE_OVERRIDE_TYPED),
@@ -773,19 +883,16 @@ impl BtcRecord {
     /// witness key hashes to the program of its recorded `(chain, index)` under `account` (the
     /// journal paths are re-signed by the replacement, so they are checked here).
     #[must_use]
-    pub fn bump_source(&self, account: &AccountXpub) -> Option<BumpSource> {
-        if !self.state.can_bump() {
+    pub fn bump_source(&self, account: &BtcAccountKey) -> Option<BumpSource> {
+        if !self.state.can_bump()
+            || self.account != account.id()
+            || self.script_type != account.script_type()
+        {
             return None;
         }
         let tx = self.transaction()?;
-        for (input, tx_input) in self.inputs.iter().zip(&tx.inputs) {
-            let [_, key] = tx_input.witness.as_slice() else {
-                return None;
-            };
-            let program = p2wpkh_program(account, input.chain, input.index).ok()?;
-            if hash160(key) != program {
-                return None;
-            }
+        if !inputs_signed_by(self, &tx, account) {
+            return None;
         }
         Some(BumpSource {
             network: self.network,
@@ -817,7 +924,10 @@ impl BtcRecord {
     /// from `account` (a record of another account, e.g. an alt-passphrase session sharing the
     /// journal, is never inserted into that account's `verified`).
     #[must_use]
-    pub fn own_change_utxo(&self, account: &AccountXpub) -> Option<VerifiedUtxo> {
+    pub fn own_change_utxo(&self, account: &BtcAccountKey) -> Option<VerifiedUtxo> {
+        if self.account != account.id() {
+            return None;
+        }
         let height = self.confirmed_height?;
         let change = self.change?;
         let output = self
@@ -825,8 +935,8 @@ impl BtcRecord {
             .outputs
             .into_iter()
             .nth(usize::try_from(change.vout).ok()?)?;
-        let program = p2wpkh_program(account, BtcChain::Change, change.index).ok()?;
-        if output.script_pubkey.as_slice() != p2wpkh_script_pubkey(&program).as_slice() {
+        let (chain, index) = account.change_path(change.index);
+        if output.script_pubkey != account.script(chain, index).ok()? {
             return None;
         }
         Some(VerifiedUtxo {
@@ -835,13 +945,61 @@ impl BtcRecord {
                 vout: change.vout,
             },
             value: output.value,
-            chain: BtcChain::Change,
-            index: change.index,
+            chain,
+            index,
             height,
             is_coinbase: false,
             own: true,
         })
     }
+}
+
+/// Whether every input of `tx` (the record's signed bytes) carries the key or signature of the
+/// record's `(chain, index)` under `account` (the replacement re-signs these paths): the
+/// witness or scriptSig key for ECDSA types, a valid key-path signature for P2TR.
+fn inputs_signed_by(record: &BtcRecord, tx: &Transaction, account: &BtcAccountKey) -> bool {
+    let Ok(deriver) = account.deriver() else {
+        return false;
+    };
+    let mut prevouts = Vec::with_capacity(record.inputs.len());
+    let mut keys = Vec::with_capacity(record.inputs.len());
+    for input in &record.inputs {
+        let (Ok(key), Ok(kind)) = (
+            deriver.pubkey(input.chain, input.index),
+            deriver.kind(input.chain, input.index),
+        ) else {
+            return false;
+        };
+        prevouts.push(Prevout {
+            value: input.value,
+            script_pubkey: script_pubkey(&kind),
+        });
+        keys.push((key, kind));
+    }
+    record
+        .inputs
+        .iter()
+        .zip(&tx.inputs)
+        .zip(&keys)
+        .enumerate()
+        .all(|(position, ((_, tx_input), (key, kind)))| {
+            match account.script_type() {
+                ScriptType::P2wpkh | ScriptType::P2shP2wpkh => {
+                    matches!(tx_input.witness.as_slice(), [_, item] if item.as_slice() == key.as_bytes())
+                }
+                ScriptType::P2pkh => split_p2pkh_script_sig(&tx_input.script_sig)
+                    .is_some_and(|(_, item)| item == key.as_bytes()),
+                ScriptType::P2tr => {
+                    let ScriptKind::P2tr(output) = kind else {
+                        return false;
+                    };
+                    sighash_default(tx, position, &prevouts).is_some_and(|sighash| {
+                        check_key_path_witness(deriver.ctx(), &tx_input.witness, output, &sighash)
+                            .is_ok()
+                    })
+                }
+            }
+        })
 }
 
 /// The BTC entries of a journal with their entry indices.
@@ -884,6 +1042,22 @@ fn of_network(records: &[BtcRecord], network: BtcNetwork) -> impl Iterator<Item 
     records
         .iter()
         .filter(move |record| record.network == network)
+}
+
+/// The records of `account` on `network`. The per-account rules (D20 in-flight, input reuse,
+/// abandoned conflicts, recorded amounts, own change, `change_next` floor, bump target) take
+/// these: the functions below filter by network only, so the caller passes one account's
+/// records.
+#[must_use]
+pub fn of_account(
+    records: &[BtcRecord],
+    network: BtcNetwork,
+    account: BtcAccountId,
+) -> Vec<BtcRecord> {
+    of_network(records, network)
+        .filter(|record| record.account == account)
+        .cloned()
+        .collect()
 }
 
 /// Whether a transaction of `network`'s account is in flight (D20).
@@ -1761,7 +1935,8 @@ pub fn apply_observation(
 pub struct BtcActivityRow {
     /// Network (`activity["bitcoin:<net>"]`).
     pub network: BtcNetwork,
-    /// Always `""` (one BTC account).
+    /// `BtcAccountId::activity_tag`: `""` for BIP84 account 0, `p2tr/0`-style for other HD
+    /// accounts, `imported/<id hex>` for imported keys.
     pub account: String,
     /// Display-order lowercase txid.
     pub tx_id: String,
@@ -1784,7 +1959,7 @@ pub struct BtcActivityRow {
 pub fn activity_row(record: &BtcRecord, time_unix_ms: u64) -> Option<BtcActivityRow> {
     Some(BtcActivityRow {
         network: record.network,
-        account: String::new(),
+        account: record.account.activity_tag(),
         tx_id: record.txid.to_display_hex(),
         title: record.title(),
         asset: "native".to_owned(),
@@ -1912,7 +2087,7 @@ pub fn prune_finished(
 }
 
 /// The pre-add check for a new `Signed` record (spec/02 §5.4): `entry_count + 1 <= 256` and
-/// `plaintext + 5 + 37,906 <= 16 MiB`.
+/// `plaintext + 5 + 37,924 <= 16 MiB`.
 #[must_use]
 pub fn has_room(plain: &JournalPlain) -> bool {
     plain.entries.len() < MAX_ENTRIES

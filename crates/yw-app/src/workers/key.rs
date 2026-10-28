@@ -485,7 +485,10 @@ impl KeyWorker {
                 vault.save_sidecar(FileKind::Meta, &document.to_json())?;
             }
         }
-        self.journal.set_btc_meta(document.btc.as_deref().cloned());
+        self.journal.set_btc_meta(
+            document.btc.as_deref().cloned(),
+            document.btc_accounts.clone(),
+        );
         Ok(MetaLoaded {
             meta: document,
             mismatch,

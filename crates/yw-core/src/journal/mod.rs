@@ -65,7 +65,7 @@ impl EntryKind {
         }
     }
 
-    /// The largest body of this chain (spec/02 §5.4: EVM 131,761, SOL 1,321, BTC 37,906).
+    /// The largest body of this chain (spec/02 §5.4: EVM 131,761, SOL 1,321, BTC 37,924).
     #[must_use]
     pub const fn max_body(self) -> usize {
         match self {

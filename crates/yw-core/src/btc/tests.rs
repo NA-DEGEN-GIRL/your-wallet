@@ -23,7 +23,8 @@ use crate::entropy::{OsRandom, secp_context};
 use crate::hex;
 use crate::vault::tests::unlocked_with;
 
-const ABOUT: &str =
+/// The BIP39 test mnemonic (`abandon`×11 `about`; also used by `types_tests`).
+pub(super) const ABOUT: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
 /// The unlocked `abandon`×11 `about` test vault (shared with `send_tests`, which holds no key
@@ -135,7 +136,7 @@ fn bip84_addresses() {
         assert_eq!(ours.as_str(), address);
         assert_eq!(ours.to_string(), address);
         assert_eq!(ours.network(), net);
-        assert_eq!(ours.program(), &program);
+        assert_eq!(ours.kind(), ScriptKind::P2wpkh(program));
         assert_eq!(&ours.script_pubkey()[2..], program.as_slice());
         assert_eq!(parse_address(address, net), Ok(ScriptKind::P2wpkh(program)));
     }

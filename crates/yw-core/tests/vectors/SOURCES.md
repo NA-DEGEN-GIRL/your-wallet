@@ -48,3 +48,19 @@ fetched 2026-10-27; BSD-2-Clause):
 | `src/btc/tests.rs` BIP84 account node, `0/0`, `0/1`, `1/0` keys and addresses (`abandon`×11 `about`); testnet4 `m/84'/1'/0'` rows and the 24-word `art` rows are spec/08 §14.1 / spec/09 §3.10 [local] values | https://github.com/bitcoin/bips/blob/master/bip-0084.mediawiki (`==Test vectors==`) |
 | `src/btc/tests.rs`, `tests/btc_tx.rs`, `tests/btc_fuzz_lite.rs` BIP143 native P2WPKH example (unsigned and signed transactions, hash parts, sighash, private key, signature) | https://github.com/bitcoin/bips/blob/master/bip-0143.mediawiki (`=== Native P2WPKH ===`) |
 | `src/bip32/tests.rs` `derive_public_child` (CKDpub) | the existing `bip32.json` vectors 1–2 |
+
+Address types (spec/08 §3.5), fetched 2026-10-29; files in `btc/` (commits in `btc/README.md`),
+inline values copied from bitcoin/bips at commit `24e96e870fffaa257b465ce1f0370c14aac588e8`
+(BSD-2-Clause):
+
+| Test (`src/btc/types_tests.rs`) | Source |
+|---|---|
+| `bip49_vector` (`uprv`/`upub` body, `0/0` key, key hash, redeem script, `2Mww8dCYPUpKHofjgcXcBCEGmniw9CoaiD2`) | https://github.com/bitcoin/bips/blob/master/bip-0049.mediawiki (`==Test vectors==`) |
+| `bip84_vector_through_accounts` | https://github.com/bitcoin/bips/blob/master/bip-0084.mediawiki (`==Test vectors==`) |
+| `bip86_vector` (root/account `xprv`/`xpub`, internal/output keys, scriptPubKeys, addresses) | https://github.com/bitcoin/bips/blob/master/bip-0086.mediawiki (`==Test vectors==`) |
+| `bip143_p2sh_p2wpkh_vector` | https://github.com/bitcoin/bips/blob/master/bip-0143.mediawiki (`=== P2SH-P2WPKH ===`) |
+| `bip341_script_pubkey_vectors`, `bip341_key_path_vectors` | `btc/bip341_wallet_test_vectors.json` (bitcoin/bips `bip-0341/wallet-test-vectors.json`) |
+| `legacy_sighash_core_vectors` | `btc/sighash.json` (Bitcoin Core `src/test/data/sighash.json`, MIT) |
+
+BIP44 publishes no test vector; `bip44_public_equals_private` checks the path against private
+derivation only.

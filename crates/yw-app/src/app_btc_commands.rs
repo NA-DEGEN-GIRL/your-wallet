@@ -3,7 +3,7 @@
 //! Buttons, checks and radios act on the controller state, not on the control's own check
 //! state, so a `WM_COMMAND` without a click behaves the same.
 
-use yw_core::btc::{BtcNetwork, Txid};
+use yw_core::btc::{BtcNetwork, ScriptType, Txid};
 
 use crate::app::{App, Screen, SettingsSection};
 use crate::app_btc::{BtcAction, BtcAmountUnit, BtcBumpForm, BtcSendForm};
@@ -214,6 +214,14 @@ impl App {
             ids::MISMATCH_KEEP_META => self.btc_mismatch_keep_meta(),
             ids::MISMATCH_USE_SETTINGS => self.btc_mismatch_use_settings(),
             ids::RESET_TIP => self.btc_reset_tip(),
+            ids::ACCOUNT_ADD => self.btc_call(|ui, ctx| {
+                ui.open_add_account(ctx);
+                Vec::new()
+            }),
+            ids::ACCOUNT_ADD_CANCEL => self.btc_call(|ui, _| {
+                ui.close_add_account();
+                Vec::new()
+            }),
             ids::SEND_ADDR_ACK => self.btc_toggle_address_ack(),
             ids::UNIT_BTC => self.btc_set_unit(BtcAmountUnit::Btc),
             ids::UNIT_SATS => self.btc_set_unit(BtcAmountUnit::Sats),
@@ -279,6 +287,25 @@ impl App {
                 Vec::new()
             });
             self.btc_drop_stale_typed(bump);
+            return true;
+        }
+        if let Some(choice) = offset(id, ids::ACCOUNT_ADD_TYPE, 4) {
+            if let Some(script_type) = ScriptType::CHOICES.get(usize::from(choice)).copied() {
+                self.btc_call(|ui, ctx| ui.add_account(ctx, script_type));
+            }
+            return true;
+        }
+        if let Some(row) = offset(id, ids::ACCOUNT_BASE, ids::ACCOUNT_SPAN) {
+            let account = {
+                let ctx = self.btc_ctx();
+                self.btc
+                    .account_rows(&ctx)
+                    .get(usize::from(row))
+                    .map(|row| row.id)
+            };
+            if let Some(account) = account {
+                self.btc_call(|ui, ctx| ui.select_account(ctx, account));
+            }
             return true;
         }
         if let Some(row) = offset(id, ids::UTXO_BASE, ids::UTXO_SPAN) {
@@ -513,7 +540,8 @@ mod tests {
             job,
             KeyJob::BtcMeta {
                 op: BtcMetaOp::ReceiveAddress {
-                    network: BtcNetwork::Testnet4
+                    network: BtcNetwork::Testnet4,
+                    ..
                 }
             }
         )));

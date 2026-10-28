@@ -15,8 +15,9 @@ use yw_core::btc::policy::{
     check_mempool_accept,
 };
 use yw_core::btc::{
-    BtcMeta, BtcNetwork, Discovery, OutPoint, PlanError, PostSignError, SendPlan, SignError, Txid,
-    check_recorded_amounts, sign_plan, verify_signed,
+    BtcAccountId, BtcAccountKey, BtcAccounts, BtcMeta, BtcNetwork, Discovery, OutPoint, PlanError,
+    PostSignError, ScriptType, SendPlan, SignError, Txid, check_recorded_amounts, sign_plan,
+    verify_signed,
 };
 use yw_core::error::{StorageError, VaultError};
 use yw_core::journal::JournalPlain;
@@ -24,8 +25,8 @@ use yw_core::journal::btc::{
     BtcActivityRow, BtcEntries, BtcPushError, BtcRecord, BtcRecordError, BtcTxState,
     TrackObservation, TransitionError, apply_observation, change_next_floor,
     check_abandoned_conflicts, check_plan_allowed, current_record, finished_rows, make_room,
-    normalize_on_startup, prune_finished, push_record, recorded_amounts, refresh_keep_outpoints,
-    set_last_send_comm_failure, set_state_entry, take_finished_duplicates,
+    normalize_on_startup, of_account, prune_finished, push_record, recorded_amounts,
+    refresh_keep_outpoints, set_last_send_comm_failure, set_state_entry, take_finished_duplicates,
 };
 use yw_core::vault::{FileKind, Vault};
 
@@ -54,19 +55,45 @@ pub struct BtcRefreshUpdate {
 }
 
 /// A `BtcMeta` change made and persisted by the key worker. Every op names the network it was
-/// made for; a different `BtcMeta.network` refuses it (`NetworkMismatch`).
+/// made for; a different `BtcMeta.network` refuses it (`NetworkMismatch`). Ops on one account
+/// name it (`account`); wallet-level facts (`max_tip_seen`) live in BIP84 account 0.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BtcMetaOp {
-    /// A fresh `BtcMeta` for `network` (BTC enable, network change, `null` meta with BTC
-    /// enabled): `Vault::btc_account_xpub` of the network's coin (spec/08 §2, §3.1).
+    /// A fresh BIP84 account 0 `BtcMeta` for `network` (BTC enable, network change, `null` meta
+    /// with BTC enabled): `Vault::btc_account_xpub` of the network's coin (spec/08 §2, §3.1).
     Create {
         /// Network.
         network: BtcNetwork,
+    },
+    /// `계정 추가`: the next HD account of `script_type` on `network` (`m/{44|49|84|86}'/c'/a'`,
+    /// spec/08 §3.1), stored and selected; discovery follows.
+    AddAccount {
+        /// Network.
+        network: BtcNetwork,
+        /// Address type.
+        script_type: ScriptType,
+    },
+    /// An imported single key's account (the key-import work calls this after storing the vault
+    /// record): stored and selected; no discovery.
+    AddImported {
+        /// Network of the key.
+        network: BtcNetwork,
+        /// `BtcAccountKey::single(record id, type, public key)`.
+        key: BtcAccountKey,
+    },
+    /// The selected account (meta `btc_accounts.selected`).
+    Select {
+        /// Network.
+        network: BtcNetwork,
+        /// Account.
+        account: BtcAccountId,
     },
     /// A finished discovery (`Discovery::apply`, spec/08 §3.4).
     Discovered {
         /// Network.
         network: BtcNetwork,
+        /// Account.
+        account: BtcAccountId,
         /// The finished state machine.
         discovery: Box<Discovery>,
     },
@@ -74,10 +101,12 @@ pub enum BtcMetaOp {
     Refreshed {
         /// Network.
         network: BtcNetwork,
+        /// Account.
+        account: BtcAccountId,
         /// Refresh results.
         update: Box<BtcRefreshUpdate>,
     },
-    /// A Core tip seen (`observe_tip`).
+    /// A Core tip seen (`observe_tip`, BIP84 account 0).
     Tip {
         /// Network.
         network: BtcNetwork,
@@ -89,11 +118,15 @@ pub enum BtcMetaOp {
     ReceiveAddress {
         /// Network.
         network: BtcNetwork,
+        /// Account.
+        account: BtcAccountId,
     },
     /// "새 주소" (`new_receive_address`).
     NewReceiveAddress {
         /// Network.
         network: BtcNetwork,
+        /// Account.
+        account: BtcAccountId,
         /// The 20-unused warning was confirmed ([그래도 발급]).
         gap_confirmed: bool,
     },
@@ -101,12 +134,14 @@ pub enum BtcMetaOp {
     Freeze {
         /// Network.
         network: BtcNetwork,
+        /// Account.
+        account: BtcAccountId,
         /// Output.
         outpoint: OutPoint,
         /// `true` = freeze.
         frozen: bool,
     },
-    /// "블록 높이 기록 초기화" (`BtcMeta::reset_max_tip`, spec/08 §2 step 2).
+    /// "블록 높이 기록 초기화" (`BtcMeta::reset_max_tip`, spec/08 §2 step 2; BIP84 account 0).
     ResetTip {
         /// Network.
         network: BtcNetwork,
@@ -119,6 +154,9 @@ impl BtcMetaOp {
     pub const fn name(&self) -> &'static str {
         match self {
             Self::Create { .. } => "create",
+            Self::AddAccount { .. } => "add_account",
+            Self::AddImported { .. } => "add_imported",
+            Self::Select { .. } => "select",
             Self::Discovered { .. } => "discovered",
             Self::Refreshed { .. } => "refreshed",
             Self::Tip { .. } => "tip",
@@ -132,13 +170,33 @@ impl BtcMetaOp {
     const fn network(&self) -> BtcNetwork {
         match self {
             Self::Create { network }
+            | Self::AddAccount { network, .. }
+            | Self::AddImported { network, .. }
+            | Self::Select { network, .. }
             | Self::Discovered { network, .. }
             | Self::Refreshed { network, .. }
             | Self::Tip { network, .. }
-            | Self::ReceiveAddress { network }
+            | Self::ReceiveAddress { network, .. }
             | Self::NewReceiveAddress { network, .. }
             | Self::Freeze { network, .. }
             | Self::ResetTip { network } => *network,
+        }
+    }
+
+    /// The account an op changes (`None`: BIP84 account 0 / wallet level).
+    const fn account(&self) -> Option<BtcAccountId> {
+        match self {
+            Self::Select { account, .. }
+            | Self::Discovered { account, .. }
+            | Self::Refreshed { account, .. }
+            | Self::ReceiveAddress { account, .. }
+            | Self::NewReceiveAddress { account, .. }
+            | Self::Freeze { account, .. } => Some(*account),
+            Self::Create { .. }
+            | Self::AddAccount { .. }
+            | Self::AddImported { .. }
+            | Self::Tip { .. }
+            | Self::ResetTip { .. } => None,
         }
     }
 }
@@ -171,13 +229,19 @@ pub enum BtcMetaDone {
     ChangeNext,
     /// Other bookkeeping of a journal step (sent script, own change, tip).
     Updated,
+    /// A new account was stored and selected.
+    AccountAdded(BtcAccountId),
+    /// The selected account changed.
+    Selected(BtcAccountId),
 }
 
-/// A persisted `BtcMeta` (the UI replaces its mirror with it).
+/// The persisted BTC accounts (the UI replaces its mirror with them).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BtcMetaUpdate {
-    /// The key worker's `BtcMeta` after the change.
+    /// The key worker's BIP84 account 0 `BtcMeta` after the change.
     pub meta: Option<Box<BtcMeta>>,
+    /// The key worker's other accounts after the change.
+    pub accounts: Box<BtcAccounts>,
     /// What changed.
     pub done: BtcMetaDone,
 }
@@ -438,40 +502,65 @@ fn commit_journal(vault: &mut Vault, plain: &JournalPlain) -> Result<(), VaultEr
 }
 
 impl JournalState {
-    /// Sets the session's `BtcMeta` from the loaded meta document (`LoadMeta`).
-    pub fn set_btc_meta(&mut self, meta: Option<BtcMeta>) {
+    /// Sets the session's BTC accounts from the loaded meta document (`LoadMeta`): meta `btc`
+    /// (BIP84 account 0) and meta `btc_accounts` (the others).
+    pub fn set_btc_meta(&mut self, meta: Option<BtcMeta>, accounts: BtcAccounts) {
         self.btc = meta;
+        self.btc_accounts = accounts;
         self.btc_loaded = true;
     }
 
-    /// The session's `BtcMeta`.
+    /// The session's BIP84 account 0 `BtcMeta`.
     #[must_use]
     pub const fn btc_meta(&self) -> Option<&BtcMeta> {
         self.btc.as_ref()
     }
 
-    /// Puts the worker's `BtcMeta` into a meta document about to be written (the UI's copy is
-    /// only a mirror).
+    /// The session's other BTC accounts.
+    #[must_use]
+    pub const fn btc_accounts(&self) -> &BtcAccounts {
+        &self.btc_accounts
+    }
+
+    /// Account `id` of `network` (BIP84 account 0 is meta `btc`).
+    fn account_meta(&self, network: BtcNetwork, id: BtcAccountId) -> Option<BtcMeta> {
+        if id == BtcAccountId::PRIMARY {
+            self.btc.clone().filter(|meta| meta.network() == network)
+        } else {
+            self.btc_accounts.get(network, id).cloned()
+        }
+    }
+
+    /// Puts the worker's BTC accounts into a meta document about to be written (the UI's copy
+    /// is only a mirror).
     pub fn apply_btc_meta(&self, document: &mut Meta) {
         if self.btc_loaded {
             document.btc = self.btc.clone().map(Box::new);
+            document.btc_accounts = self.btc_accounts.clone();
+        }
+    }
+
+    fn update_of(&self, done: BtcMetaDone) -> BtcMetaUpdate {
+        BtcMetaUpdate {
+            meta: self.btc.clone().map(Box::new),
+            accounts: Box::new(self.btc_accounts.clone()),
+            done,
         }
     }
 
     fn meta_update(&self, done: BtcMetaDone) -> KeyOutcome {
-        KeyOutcome::BtcMeta(Ok(BtcMetaUpdate {
-            meta: self.btc.clone().map(Box::new),
-            done,
-        }))
+        KeyOutcome::BtcMeta(Ok(self.update_of(done)))
     }
 
-    /// Writes `candidate` as meta `btc` together with the activity rows not stored yet (same
-    /// `tx_id` and status), then adopts it. In alt-passphrase sessions nothing is written (meta
-    /// is never stored) and the copy lives in memory only.
-    fn persist_btc(
+    /// Writes `primary` as meta `btc` and `accounts` as meta `btc_accounts` together with the
+    /// activity rows not stored yet (same `tx_id` and status), then adopts them. In
+    /// alt-passphrase sessions nothing is written (meta is never stored) and the copy lives in
+    /// memory only.
+    fn persist_state(
         &mut self,
         vault: &mut Vault,
-        candidate: Option<BtcMeta>,
+        primary: Option<BtcMeta>,
+        accounts: BtcAccounts,
         rows: &[BtcActivityRow],
         alt: bool,
     ) -> Result<Vec<(NetworkId, ActivityEntry)>, VaultError> {
@@ -485,7 +574,8 @@ impl JournalState {
                         .meta
                 }
             };
-            document.btc = candidate.clone().map(Box::new);
+            document.btc = primary.clone().map(Box::new);
+            document.btc_accounts = accounts.clone();
             for row in rows {
                 let (network, entry) = btc_activity(row);
                 let key = network.to_string();
@@ -501,10 +591,44 @@ impl JournalState {
             }
             vault.save_sidecar(FileKind::Meta, &document.to_json())?;
         }
-        self.btc = candidate;
+        self.btc = primary;
+        self.btc_accounts = accounts;
         self.btc_loaded = true;
         self.overlay.extend(moved.iter().cloned());
         Ok(moved)
+    }
+
+    /// [`Self::persist_state`] with `candidate` as meta `btc` and the current other accounts.
+    fn persist_btc(
+        &mut self,
+        vault: &mut Vault,
+        candidate: Option<BtcMeta>,
+        rows: &[BtcActivityRow],
+        alt: bool,
+    ) -> Result<Vec<(NetworkId, ActivityEntry)>, VaultError> {
+        let accounts = self.btc_accounts.clone();
+        self.persist_state(vault, candidate, accounts, rows, alt)
+    }
+
+    /// [`Self::persist_state`] with `meta` stored in its slot (meta `btc` for BIP84 account 0,
+    /// `btc_accounts` otherwise).
+    fn persist_account(
+        &mut self,
+        vault: &mut Vault,
+        meta: BtcMeta,
+        rows: &[BtcActivityRow],
+        alt: bool,
+    ) -> Result<Vec<(NetworkId, ActivityEntry)>, BtcKeyError> {
+        if meta.id() == BtcAccountId::PRIMARY {
+            return self
+                .persist_btc(vault, Some(meta), rows, alt)
+                .map_err(BtcKeyError::Vault);
+        }
+        let mut accounts = self.btc_accounts.clone();
+        accounts.upsert(meta).map_err(BtcKeyError::Meta)?;
+        let primary = self.btc.clone();
+        self.persist_state(vault, primary, accounts, rows, alt)
+            .map_err(BtcKeyError::Vault)
     }
 
     fn log_meta(op: &'static str, network: BtcNetwork, ok: bool) {
@@ -527,10 +651,89 @@ impl JournalState {
         let network = op.network();
         let result = self.btc_meta_op_inner(vault, op, alt);
         Self::log_meta(name, network, result.is_ok());
-        vec![KeyOutcome::BtcMeta(result.map(|done| BtcMetaUpdate {
-            meta: self.btc.clone().map(Box::new),
-            done,
-        }))]
+        vec![KeyOutcome::BtcMeta(result.map(|done| self.update_of(done)))]
+    }
+
+    /// The account ops: create (BIP84 account 0), add (HD or imported) and select.
+    fn btc_account_op(
+        &mut self,
+        vault: &mut Vault,
+        op: &BtcMetaOp,
+        alt: bool,
+    ) -> Result<BtcMetaDone, BtcKeyError> {
+        match *op {
+            BtcMetaOp::Create { network } => {
+                let account = vault
+                    .btc_account_xpub(network.coin_type())
+                    .map_err(BtcKeyError::Vault)?;
+                let fresh = BtcMeta::new(network, account);
+                self.persist_btc(vault, Some(fresh), &[], alt)
+                    .map_err(BtcKeyError::Vault)?;
+                Ok(BtcMetaDone::Created)
+            }
+            BtcMetaOp::AddAccount {
+                network,
+                script_type,
+            } => {
+                self.btc
+                    .as_ref()
+                    .ok_or(BtcKeyError::NoMeta)?
+                    .check_network(network)
+                    .map_err(BtcKeyError::Meta)?;
+                let number = self
+                    .btc_accounts
+                    .next_hd_account(network, script_type)
+                    .ok_or(BtcKeyError::Meta(MetaError::Full))?;
+                let coin = network
+                    .account_node(script_type.purpose(), number)
+                    .map_err(|error| BtcKeyError::Meta(MetaError::Key(error)))?;
+                let xpub = vault.btc_account_xpub(coin).map_err(BtcKeyError::Vault)?;
+                let key = BtcAccountKey::hd(script_type, number, xpub)
+                    .map_err(|_| BtcKeyError::Internal)?;
+                self.add_and_select(vault, BtcMeta::with_key(network, key), alt)
+            }
+            BtcMetaOp::AddImported { network, key } => {
+                if !key.is_single() {
+                    return Err(BtcKeyError::Internal);
+                }
+                self.add_and_select(vault, BtcMeta::with_key(network, key), alt)
+            }
+            BtcMetaOp::Select { network, account } => {
+                if self.account_meta(network, account).is_none() {
+                    return Err(BtcKeyError::NoMeta);
+                }
+                let mut accounts = self.btc_accounts.clone();
+                accounts.selected = (account != BtcAccountId::PRIMARY).then_some(account);
+                if accounts != self.btc_accounts {
+                    let primary = self.btc.clone();
+                    self.persist_state(vault, primary, accounts, &[], alt)
+                        .map_err(BtcKeyError::Vault)?;
+                }
+                Ok(BtcMetaDone::Selected(account))
+            }
+            _ => Err(BtcKeyError::Internal),
+        }
+    }
+
+    /// Stores a new account (refused when one with its identity exists on `network`) and
+    /// selects it.
+    fn add_and_select(
+        &mut self,
+        vault: &mut Vault,
+        meta: BtcMeta,
+        alt: bool,
+    ) -> Result<BtcMetaDone, BtcKeyError> {
+        let id = meta.id();
+        if self.account_meta(meta.network(), id).is_some() {
+            return Err(BtcKeyError::Meta(MetaError::NotVerified));
+        }
+        let mut accounts = self.btc_accounts.clone();
+        accounts.upsert(meta).map_err(BtcKeyError::Meta)?;
+        accounts.selected = Some(id);
+        let primary = self.btc.clone();
+        self.persist_state(vault, primary, accounts, &[], alt)
+            .map_err(BtcKeyError::Vault)?;
+        Ok(BtcMetaDone::AccountAdded(id))
     }
 
     fn btc_meta_op_inner(
@@ -539,20 +742,28 @@ impl JournalState {
         op: BtcMetaOp,
         alt: bool,
     ) -> Result<BtcMetaDone, BtcKeyError> {
-        if let BtcMetaOp::Create { network } = op {
-            let account = vault
-                .btc_account_xpub(network.coin_type())
-                .map_err(BtcKeyError::Vault)?;
-            let fresh = BtcMeta::new(network, account);
-            self.persist_btc(vault, Some(fresh), &[], alt)
-                .map_err(BtcKeyError::Vault)?;
-            return Ok(BtcMetaDone::Created);
+        if matches!(
+            op,
+            BtcMetaOp::Create { .. }
+                | BtcMetaOp::AddAccount { .. }
+                | BtcMetaOp::AddImported { .. }
+                | BtcMetaOp::Select { .. }
+        ) {
+            return self.btc_account_op(vault, &op, alt);
         }
-        let mut meta = self.btc.clone().ok_or(BtcKeyError::NoMeta)?;
-        meta.check_network(op.network())
-            .map_err(BtcKeyError::Meta)?;
+        let network = op.network();
+        // Wallet-level facts (`max_tip_seen`) live in BIP84 account 0.
+        let mut primary = self.btc.clone().ok_or(BtcKeyError::NoMeta)?;
+        primary.check_network(network).map_err(BtcKeyError::Meta)?;
+        let target = op.account().unwrap_or(BtcAccountId::PRIMARY);
+        let mut meta = self
+            .account_meta(network, target)
+            .ok_or(BtcKeyError::NoMeta)?;
         let done = match op {
-            BtcMetaOp::Create { .. } => BtcMetaDone::Created,
+            BtcMetaOp::Create { .. }
+            | BtcMetaOp::AddAccount { .. }
+            | BtcMetaOp::AddImported { .. }
+            | BtcMetaOp::Select { .. } => return Err(BtcKeyError::Internal),
             BtcMetaOp::Discovered { discovery, .. } => {
                 discovery.apply(&mut meta).map_err(BtcKeyError::Meta)?;
                 BtcMetaDone::Discovered
@@ -562,12 +773,12 @@ impl JournalState {
                     // An index the indexer answered for but meta never issued is ignored.
                     let _ = meta.mark_history(*chain, *index, *tx_count);
                 }
-                let records = self
+                let all = self
                     .plain
                     .as_ref()
                     .map(|plain| BtcEntries::from_plain(plain).records())
                     .unwrap_or_default();
-                let network = meta.network();
+                let records = of_account(&all, network, meta.id());
                 let report = meta.apply_refresh(
                     &update.listed,
                     &update.newly,
@@ -575,7 +786,11 @@ impl JournalState {
                     &yw_core::journal::btc::own_outputs(&records, network),
                 );
                 // A regression was already refused by the chain check; keep the stored value.
-                let _ = meta.observe_tip(update.max_tip_seen);
+                if target == BtcAccountId::PRIMARY {
+                    let _ = meta.observe_tip(update.max_tip_seen);
+                } else {
+                    let _ = primary.observe_tip(update.max_tip_seen);
+                }
                 BtcMetaDone::Refreshed(report)
             }
             BtcMetaOp::Tip { max_tip_seen, .. } => {
@@ -620,11 +835,31 @@ impl JournalState {
                 BtcMetaDone::TipReset
             }
         };
-        if self.btc.as_ref() != Some(&meta) {
-            self.persist_btc(vault, Some(meta), &[], alt)
+        self.store_changed(vault, primary, meta, alt)?;
+        Ok(done)
+    }
+
+    /// Persists `meta` (an account changed by an op) and `primary` (BIP84 account 0, possibly
+    /// with a new `max_tip_seen`) when either changed.
+    fn store_changed(
+        &mut self,
+        vault: &mut Vault,
+        primary: BtcMeta,
+        meta: BtcMeta,
+        alt: bool,
+    ) -> Result<(), BtcKeyError> {
+        let mut accounts = self.btc_accounts.clone();
+        let new_primary = if meta.id() == BtcAccountId::PRIMARY {
+            meta
+        } else {
+            accounts.upsert(meta).map_err(BtcKeyError::Meta)?;
+            primary
+        };
+        if self.btc.as_ref() != Some(&new_primary) || accounts != self.btc_accounts {
+            self.persist_state(vault, Some(new_primary), accounts, &[], alt)
                 .map_err(BtcKeyError::Vault)?;
         }
-        Ok(done)
+        Ok(())
     }
 
     /// Startup work after the journal is read (spec/08 §3.2, §12.1): `Broadcasting` records
@@ -635,11 +870,21 @@ impl JournalState {
         let Some(mut next) = self.plain.clone() else {
             return out;
         };
-        if let Some(mut meta) = self.btc.clone() {
+        {
+            // Every account's `change_next` against its own records.
             let records = BtcEntries::from_plain(&next).records();
-            let floor = change_next_floor(&records, meta.network());
-            if meta.reconcile_change_next(floor) {
-                match self.persist_btc(vault, Some(meta), &[], alt) {
+            let reconcile = |meta: &mut BtcMeta| {
+                let mine = of_account(&records, meta.network(), meta.id());
+                meta.reconcile_change_next(change_next_floor(&mine, meta.network()))
+            };
+            let mut primary = self.btc.clone();
+            let mut accounts = self.btc_accounts.clone();
+            let mut changed = primary.as_mut().is_some_and(&reconcile);
+            for meta in &mut accounts.accounts {
+                changed |= reconcile(meta);
+            }
+            if changed {
+                match self.persist_state(vault, primary, accounts, &[], alt) {
                     Ok(_) => out.push(self.meta_update(BtcMetaDone::ChangeNext)),
                     Err(error) => out.push(KeyOutcome::BtcMeta(Err(BtcKeyError::Vault(error)))),
                 }
@@ -719,9 +964,16 @@ impl JournalState {
         out: &mut Vec<KeyOutcome>,
     ) -> Result<BtcSignedSummary, BtcSignFailure> {
         let network = plan.network();
-        let meta = self.btc.clone().ok_or(BtcSignFailure::NoMeta)?;
-        meta.check_network(network)
+        self.btc
+            .as_ref()
+            .ok_or(BtcSignFailure::NoMeta)?
+            .check_network(network)
             .map_err(|_| BtcSignFailure::NetworkMismatch)?;
+        // The plan's account, from the worker's own copy (its cached keys are what sign_plan
+        // and verify_signed check against).
+        let meta = self
+            .account_meta(network, plan.account().id())
+            .ok_or(BtcSignFailure::NoMeta)?;
         let current = self.current(vault).map_err(BtcSignFailure::JournalWrite)?;
         if BtcEntries::from_plain(&current).corrupt > 0 {
             return Err(BtcSignFailure::JournalDamaged);
@@ -730,7 +982,12 @@ impl JournalState {
         let mut trial = current;
         let mut rows = make_room(&mut trial, network, tip_height, now_unix, now_unix_ms)
             .map_err(|_| BtcSignFailure::JournalFull)?;
-        let records = BtcEntries::from_plain(&trial).records();
+        // D20 and every input rule per account (spec/08 §12.1).
+        let records = of_account(
+            &BtcEntries::from_plain(&trial).records(),
+            network,
+            meta.id(),
+        );
         check_plan_allowed(&records, plan).map_err(BtcSignFailure::Plan)?;
         check_abandoned_conflicts(&records, plan, now_unix).map_err(BtcSignFailure::Plan)?;
         let mut recorded = meta.recorded_amounts();
@@ -752,7 +1009,8 @@ impl JournalState {
                 .map_err(|_| BtcSignFailure::DuplicateTx)?,
         );
         if !rows.is_empty() {
-            match self.persist_btc(vault, Some(meta.clone()), &rows, alt) {
+            let (primary, accounts) = (self.btc.clone(), self.btc_accounts.clone());
+            match self.persist_state(vault, primary, accounts, &rows, alt) {
                 Ok(moved) if !moved.is_empty() => out.push(KeyOutcome::ActivityMoved(moved)),
                 Ok(_) => {}
                 Err(_) => return Err(BtcSignFailure::JournalFull),
@@ -824,14 +1082,21 @@ impl JournalState {
         alt: bool,
         out: &mut Vec<KeyOutcome>,
     ) -> Result<(), BtcKeyError> {
-        let mut meta = self.btc.clone().ok_or(BtcKeyError::NoMeta)?;
-        meta.check_network(network).map_err(BtcKeyError::Meta)?;
+        self.btc
+            .as_ref()
+            .ok_or(BtcKeyError::NoMeta)?
+            .check_network(network)
+            .map_err(BtcKeyError::Meta)?;
+        // The record's own account (a record of an account this session does not have, e.g. an
+        // alt-passphrase session sharing the journal, changes no meta).
+        let Some(mut meta) = self.account_meta(network, record.account) else {
+            return Ok(());
+        };
         if meta
             .on_broadcasting(record.change.map(|change| change.index))
             .map_err(BtcKeyError::Meta)?
         {
-            self.persist_btc(vault, Some(meta), &[], alt)
-                .map_err(BtcKeyError::Vault)?;
+            self.persist_account(vault, meta, &[], alt)?;
             out.push(self.meta_update(BtcMetaDone::ChangeNext));
         }
         Ok(())
@@ -948,7 +1213,7 @@ impl JournalState {
                     BroadcastOutcome::Rejected { .. } => (BtcTxState::Rejected, false),
                 };
                 let mut meta_changed = false;
-                let mut meta = self.btc.clone().filter(|meta| meta.network() == network);
+                let mut meta = self.account_meta(network, record.account);
                 if let Some(meta) = meta.as_mut() {
                     if outcome == BroadcastOutcome::Submitted
                         && let Some(script) = record.recipient_script()
@@ -964,9 +1229,8 @@ impl JournalState {
                             meta.on_send_rejected(record.change.map(|change| change.index));
                     }
                 }
-                if meta_changed {
-                    self.persist_btc(vault, meta, &[], alt)
-                        .map_err(BtcKeyError::Vault)?;
+                if meta_changed && let Some(meta) = meta {
+                    self.persist_account(vault, meta, &[], alt)?;
                     out.push(self.meta_update(BtcMetaDone::Updated));
                 }
                 let entry = record.entry_id;
@@ -990,13 +1254,11 @@ impl JournalState {
             BtcJournalOp::EsploraSent { network, txid } => {
                 let record = find_record(&next, network, &txid)
                     .ok_or(BtcKeyError::Journal(TransitionError::UnknownTx))?;
-                if let Some(mut meta) = self.btc.clone()
-                    && meta.network() == network
+                if let Some(mut meta) = self.account_meta(network, record.account)
                     && let Some(script) = record.recipient_script()
                     && meta.record_sent_script(&script)
                 {
-                    self.persist_btc(vault, Some(meta), &[], alt)
-                        .map_err(BtcKeyError::Vault)?;
+                    self.persist_account(vault, meta, &[], alt)?;
                     out.push(self.meta_update(BtcMetaDone::Updated));
                 }
                 if set_last_send_comm_failure(&mut next, network, &record.entry_id, false)
@@ -1039,22 +1301,33 @@ impl JournalState {
                 }
                 let journal_changed = Some(&next) != self.plain.as_ref();
                 let mut meta = self.btc.clone();
-                if let Some(meta) = meta.as_mut()
-                    && meta.network() == network
+                let mut accounts = self.btc_accounts.clone();
+                if let Some(primary) = meta.as_mut()
+                    && primary.network() == network
                 {
                     if let Some(max) = max_tip_seen {
                         // A regression was refused by the chain check; keep the stored value.
-                        let _ = meta.observe_tip(max);
+                        let _ = primary.observe_tip(max);
                     }
-                    let account = *meta.account();
                     for (txid, state) in &changed {
-                        // Only change paying this session's account (an alt-passphrase session
-                        // shares the journal of another account).
-                        if *state == BtcTxState::Confirmed
-                            && let Some(utxo) = find_record(&next, network, txid)
-                                .and_then(|record| record.own_change_utxo(&account))
+                        // Our change goes to the record's own account, and only when the output
+                        // is that account's script (an alt-passphrase session shares the journal
+                        // of another wallet).
+                        let Some(record) = find_record(&next, network, txid) else {
+                            continue;
+                        };
+                        if *state != BtcTxState::Confirmed {
+                            continue;
+                        }
+                        let target = if record.account == BtcAccountId::PRIMARY {
+                            Some(&mut *primary)
+                        } else {
+                            accounts.get_mut(network, record.account)
+                        };
+                        if let Some(target) = target
+                            && let Some(utxo) = record.own_change_utxo(target.account())
                         {
-                            let _ = meta.insert_own(utxo);
+                            let _ = target.insert_own(utxo);
                         }
                     }
                 }
@@ -1070,10 +1343,10 @@ impl JournalState {
                         rows.push(row);
                     }
                 }
-                let meta_changed = meta != self.btc;
+                let meta_changed = meta != self.btc || accounts != self.btc_accounts;
                 let mut final_plain = next;
                 if meta_changed || !rows.is_empty() {
-                    match self.persist_btc(vault, meta, &rows, alt) {
+                    match self.persist_state(vault, meta, accounts, &rows, alt) {
                         Ok(moved) => {
                             if meta_changed {
                                 out.push(self.meta_update(BtcMetaDone::Updated));
