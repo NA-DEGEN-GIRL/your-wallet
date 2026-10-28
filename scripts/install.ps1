@@ -232,8 +232,8 @@ function Format-Source([string]$Version, $Commit) {
     return "버전 $Version, 커밋 $Commit"
 }
 
-# 설치할 확장 런타임 파일: scripts/audit-extension.mjs auditExtensionRoot().packagedFiles와 같은 목록
-# (manifest.json, popup/*, src/*.js)과 icons/(있으면). tests/·native-host/·test-dapp/·package.json은 넣지 않는다.
+# 설치할 확장 런타임 파일: scripts/audit-extension.mjs auditExtensionRoot().packagedFiles와 같은 목록, 같은 순서
+# (manifest.json, popup/*, src/*.js, icons/*.png). tests/·native-host/·test-dapp/·package.json은 넣지 않는다.
 # 두 목록이 같은지는 scripts/install.test.mjs가, 파일 내용은 scripts/check.ps1의 audit-ext 단계가 확인한다.
 function Get-ExtensionRuntimeFiles([string]$ExtensionRoot) {
     $reparse = [IO.FileAttributes]::ReparsePoint
@@ -241,30 +241,18 @@ function Get-ExtensionRuntimeFiles([string]$ExtensionRoot) {
     $manifest = Get-Item -LiteralPath (Join-Path $ExtensionRoot 'manifest.json') -Force -ErrorAction SilentlyContinue
     if ($null -eq $manifest -or $manifest.PSIsContainer -or ($manifest.Attributes -band $reparse)) { throw 'extension\manifest.json이 없거나 일반 파일이 아닙니다.' }
     $files.Add('manifest.json')
-    foreach ($dir in 'popup', 'src') {
+    foreach ($dir in 'popup', 'src', 'icons') {
         $item = Get-Item -LiteralPath (Join-Path $ExtensionRoot $dir) -Force -ErrorAction SilentlyContinue
         if ($null -eq $item -or -not $item.PSIsContainer -or ($item.Attributes -band $reparse)) { throw "extension\$dir 폴더가 없거나 일반 폴더가 아닙니다." }
         $names = New-Object 'System.Collections.Generic.List[string]'
         foreach ($entry in @(Get-ChildItem -LiteralPath $item.FullName -Force)) {
             if ($entry.PSIsContainer -or ($entry.Attributes -band $reparse)) { throw "extension\$dir 안에 쓸 수 없는 항목이 있습니다: $($entry.Name)" }
             if ($dir -eq 'src' -and $entry.Name -cnotmatch '^[A-Za-z0-9._-]+\.js$') { throw "extension\src 안에 .js가 아닌 파일이 있습니다: $($entry.Name)" }
+            if ($dir -eq 'icons' -and $entry.Name -cnotmatch '^[A-Za-z0-9._-]+\.png$') { throw "extension\icons 안에 .png가 아닌 파일이 있습니다: $($entry.Name)" }
             $names.Add("$dir/$($entry.Name)")
         }
         if ($names.Count -eq 0) { throw "extension\$dir 폴더가 비어 있습니다." }
         $sorted = $names.ToArray()
-        [Array]::Sort($sorted, [StringComparer]::Ordinal)
-        $files.AddRange($sorted)
-    }
-    $icons = Join-Path $ExtensionRoot 'icons'
-    if (Test-Path -LiteralPath $icons -PathType Container) {
-        $iconFiles = New-Object 'System.Collections.Generic.List[string]'
-        $iconsFull = (Get-Item -LiteralPath $icons -Force).FullName.TrimEnd('\')
-        foreach ($file in @(Get-ChildItem -LiteralPath $iconsFull -Recurse -File -Force)) {
-            $relative = $file.FullName.Substring($iconsFull.Length + 1).Replace('\', '/')
-            if ($relative -match '(^|/)\.') { continue }   # 점 파일 제외
-            $iconFiles.Add("icons/$relative")
-        }
-        $sorted = $iconFiles.ToArray()
         [Array]::Sort($sorted, [StringComparer]::Ordinal)
         $files.AddRange($sorted)
     }

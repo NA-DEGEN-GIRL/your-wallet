@@ -116,7 +116,8 @@ crates/
   yw-win/    Cargo.toml  src/{lib.rs, error.rs, time.rs, mem.rs, file.rs, dpapi.rs, clipboard.rs,
                               http.rs, pipe.rs, session.rs, process.rs, input.rs, ui/{mod.rs, window.rs,
                               msg.rs, paint.rs, controls.rs, secure_text.rs}}  tests/   (API §7)
-  yw-app/    Cargo.toml  build.rs(선택, [04](04-app-ui.md) §1.6)  tests/
+  yw-app/    Cargo.toml  build.rs(선택, [04](04-app-ui.md) §1.6)  yw-app.manifest  tests/
+             icons/{yw-app.ico, yw-app.res}   (앱 아이콘, `scripts/make-icons.mjs`가 만들고 커밋, [04](04-app-ui.md) §1.7)
              src/{lib.rs, main.rs, app.rs, events.rs, errors.rs, settings.rs, apikeys.rs(네트워크별 RPC 엔드포인트 URL
                   `rpc:eip155:<chainId>`·`rpc:solana:<cluster>`·`rpc:bitcoin:<net>`·공급자 템플릿 자격 정보·LLM 키, D13, [04](04-app-ui.md) §6.3), logging.rs,
                   store.rs(`VaultStorage` 구현, [09](09-testing.md) §2.1), workers/{key, rpc, read}.rs([04](04-app-ui.md) §1.2),
@@ -126,7 +127,8 @@ crates/
                   ui/{main_window, screens/*, approval, interaction, secret, secure_field, text_layout, qr, theme}.rs}
                   (배치 [04](04-app-ui.md) §1.8, EVM 모듈 이름 [03](03-evm.md) §0)
   yw-host/   Cargo.toml  src/{lib.rs, main.rs}  tests/               ([05](05-browser.md))
-extension/   manifest.json  package.json  extension-id.txt(M5)  src/*.js  native-host/*  tests/*.test.mjs  test-dapp/(M5)
+extension/   manifest.json  package.json  extension-id.txt(M5)  src/*.js  popup/*  icons/icon-{16,32,48,128}.png([05] §2.2)
+             native-host/*  tests/*.test.mjs  test-dapp/(M5)
 scripts/     check.ps1  check-core-deps.mjs  privacy-scan.mjs  privacy-scan.test.mjs
              audit-extension.mjs  audit-extension.test.mjs  lib/strict-json.mjs
              extension-key.mjs   (M5, [05](05-browser.md) §2.3)
@@ -134,11 +136,13 @@ scripts/     check.ps1  check-core-deps.mjs  privacy-scan.mjs  privacy-scan.test
              probe-rpc.mjs   (수동 실서비스 프로브, M2 전. check.ps1 대상 아님, §4.7)
              dev-rpc-setup.ps1 (개발용 rpc.json 대화형 생성, §4.8)
              screenshot-tour.ps1(화면 투어, [04](04-app-ui.md) §11)
+             make-icons.mjs  lib/png.mjs   (앱·확장 아이콘 생성기와 PNG 도우미, Node 내장 모듈만. `--check`는 check.ps1 icons 단계, §4.1)
 fuzz/        퍼징, 별도 워크스페이스·루트 exclude([09](09-testing.md) §2.4) — 아직 없음(만들 때 이 위치)
 tools/       btc-oracle/(M8, [08](08-bitcoin.md) §14.3)  sol-oracle/(M7, [07](07-solana.md) §17.3) — 개발 전용 차등 오라클. 각각 자체 [workspace]·Cargo.lock,
              루트 exclude(§3.1), check.ps1·허용 목록 대상 아님, 설치되지 않음 — 아직 없음(만들 때 이 위치)
 spec/        01 … 09
 docs/        install.ko.md(설치·업데이트·제거)  recovery-guide.ko.md  acceptance/(체크리스트·라이브 확인 기록, [09](09-testing.md) §1·§2.5)
+             icon-preview.png(아이콘 미리 보기, make-icons.mjs 출력)
 ```
 
 ### 2.2 yw-core 모듈
@@ -210,7 +214,7 @@ pub enum ParseError { TooLarge, InvalidUtf8, Syntax { offset: usize }, Duplicate
 | yw-app | yw-core, yw-json, yw-win | qrcodegen | bin (`#![windows_subsystem = "windows"]`) |
 | yw-host | yw-json, yw-win | 없음 | bin (콘솔 서브시스템) |
 
-yw-app·yw-host는 창·OS 호출이 없는 로직을 `lib.rs`에 두고 `tests/`로 시험하며 `main.rs`는 진입만 한다([09](09-testing.md) §2.1). 모든 멤버: `[dev-dependencies]` 금지, `build.rs` 금지(예외: yw-app은 실행 파일 manifest 링크 인자만 출력하는 `build.rs`를 [04](04-app-ui.md)가 필요로 할 때 둘 수 있다).
+yw-app·yw-host는 창·OS 호출이 없는 로직을 `lib.rs`에 두고 `tests/`로 시험하며 `main.rs`는 진입만 한다([09](09-testing.md) §2.1). 모든 멤버: `[dev-dependencies]` 금지, `build.rs` 금지(예외: yw-app은 실행 파일 링크 인자만 출력하는 `build.rs`를 [04](04-app-ui.md)가 필요로 할 때 둘 수 있다. 허용되는 링크 인자는 manifest 포함(`/MANIFEST:EMBED`·`/MANIFESTINPUT:`)과 커밋된 Win32 리소스 파일 `crates/yw-app/icons/yw-app.res`(앱 아이콘, link.exe가 cvtres로 변환)뿐이다. `build.rs`는 무엇도 컴파일·생성·다운로드하지 않는다. `.res`는 `scripts/make-icons.mjs`가 만들고 check.ps1 icons 단계가 커밋본과 같은지 확인한다).
 
 ---
 
@@ -437,7 +441,7 @@ rustflags = ["--cfg", 'curve25519_dalek_backend="serial"', "-C", "link-arg=/Brep
 # scripts/check.ps1 — 저장소 게이트. 사용: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 [-Step <name>] [-Offline]
 [CmdletBinding()]
 param(
-    [ValidateSet("all", "fmt", "deps", "clippy", "test", "fuzz", "build", "ext-test", "script-test", "privacy", "audit-ext")]
+    [ValidateSet("all", "fmt", "deps", "clippy", "test", "fuzz", "build", "ext-test", "script-test", "privacy", "audit-ext", "icons")]
     [string]$Step = "all",
     [switch]$Offline
 )
@@ -485,11 +489,12 @@ if ($Step -in "all", "ext-test") { Invoke-Step "ext-test" 25 "node" (@("--test")
 if ($Step -in "all", "script-test") { Invoke-Step "script-test" 26 "node" (@("--test") + (Get-Tests "scripts" 26)) }
 Invoke-Step "privacy" 27 "node" @("scripts/privacy-scan.mjs")
 Invoke-Step "audit-ext" 28 "node" @("scripts/audit-extension.mjs", "check", "--extension-root", "extension")
+Invoke-Step "icons" 30 "node" @("scripts/make-icons.mjs", "--check")   # 커밋된 아이콘 = 생성기 출력([04] §1.7, [05] §2.2)
 Write-Host "check: OK"
 exit 0
 ```
 
-종료 코드: 0 통과, 1 스크립트 자체 오류(잘못된 `-Step` 포함), 10 cargo 1.95.0 또는 Node 22+ 없음, 11 rustflags 환경 변수 설정됨, 20 fmt, 21 의존성 허용 목록, 22 clippy, 23 cargo test, 29 fuzz-lite 스모크(`fuzz`, test 다음·build 앞: `#[ignore]`된 `fuzz_lite_*` 테스트를 `YW_FUZZ_RUNS=20000`으로 디버그 빌드에서 실행; 각 테스트는 이 변수가 없으면 1,000,000회), 24 cargo build, 25 확장 테스트, 26 스크립트 테스트, 27 privacy scan, 28 확장 정적 감사. 첫 실패에서 멈춘다. 모든 마일스톤 완료 조건은 이 스크립트의 0을 포함한다. (PowerShell 5.1에서 단계 선택, 종료 코드 11, 잘못된 `-Step`의 1을 확인함.)
+종료 코드: 0 통과, 1 스크립트 자체 오류(잘못된 `-Step` 포함), 10 cargo 1.95.0 또는 Node 22+ 없음, 11 rustflags 환경 변수 설정됨, 20 fmt, 21 의존성 허용 목록, 22 clippy, 23 cargo test, 29 fuzz-lite 스모크(`fuzz`, test 다음·build 앞: `#[ignore]`된 `fuzz_lite_*` 테스트를 `YW_FUZZ_RUNS=20000`으로 디버그 빌드에서 실행; 각 테스트는 이 변수가 없으면 1,000,000회), 24 cargo build, 25 확장 테스트, 26 스크립트 테스트, 27 privacy scan, 28 확장 정적 감사, 30 아이콘(`scripts/make-icons.mjs --check`: 앱 `.ico`·`.res`, 확장 `icons/*.png`, `provider-main.js`의 `PROVIDER_ICON`, `docs/icon-preview.png`를 메모리에서 다시 만들어 커밋본과 바이트 비교; 다르거나 없으면 생성기 종료 1, 사용법·입출력 오류 2). 첫 실패에서 멈춘다. 모든 마일스톤 완료 조건은 이 스크립트의 0을 포함한다. (PowerShell 5.1에서 단계 선택, 종료 코드 11, 잘못된 `-Step`의 1을 확인함.)
 
 ### 4.2 `scripts/check-core-deps.mjs` (전체)
 
@@ -997,7 +1002,9 @@ pub fn init() -> Result<(), WinError>;   // SetProcessDpiAwarenessContext(PER_MO
                                          // 매니페스트가 이미 PMv2를 정한 경우의 ERROR_ACCESS_DENIED(5)는 성공으로 본다([04] §1.6)
 pub enum CaptureExclusion { Required /* 니모닉·개인키 표시 창 */, Preferred /* 비밀번호·니모닉·개인키 입력 창 */ }
 pub struct ClassSpec { pub name: &'static str, pub secret: bool, pub capture: CaptureExclusion }   // capture는 secret = true일 때만 의미
-pub fn register_class(spec: &ClassSpec) -> Result<(), WinError>;                 // 이름마다 1회, 두 번째는 Ok(())
+pub fn register_class(spec: &ClassSpec) -> Result<(), WinError>;                 // 이름마다 1회, 두 번째는 Ok(()). 클래스 아이콘([04] §1.7):
+                                         // 실행 파일의 RT_GROUP_ICON 1을 LoadImageW로 SM_CXICON·SM_CXSMICON(시스템 DPI) 크기로 한 번 읽어
+                                         // hIcon·hIconSm에 쓴다(프로세스 수명, 해제하지 않음). 리소스가 없으면(테스트 바이너리) IDI_APPLICATION
 pub enum WindowKind { Main, Owned { owner: Hwnd }, Floating /* 소유자 없는 대화 상자형: 승인 창 */, Child { parent: Hwnd } /* WS_CHILD|WS_VSCROLL 패널 */, HiddenTopLevel }
 pub struct WindowSpec { /* builder: WindowSpec::new(class, kind).title(&str).size(w, h /* DIP */).min_size(w, h).visible(bool).topmost(bool).resizable(bool) */ }
 pub fn create_window(spec: &WindowSpec, handler: Box<dyn Handler>) -> Result<Window, UiError>;
@@ -1093,14 +1100,14 @@ impl SecureTextField {
 
 1. 환경: Windows, 64비트, `LOCALAPPDATA` 절대 경로, 빌드 22621 미만이면 경고. 출력이 리디렉션되면 UTF-8로 쓴다.
 2. 설치 경로: 정규화한 절대 경로, `"`·`%`·`&`·`^`·`|`·`<`·`>`·`!`·제어 문자 금지([05] §9.1과 같은 규칙), 드라이브 문자로 시작하고 루트가 아님, 지갑 데이터 폴더 `%LOCALAPPDATA%\YourWallet`·저장소·빌드 결과 폴더(`target\release`, `CARGO_TARGET_DIR`가 있으면 그 아래 `release`)와 겹치지 않음, 그 경로로 만든 manifest가 8의 검증을 통과. 위반은 종료 1.
-3. 확장: 런타임 파일 = `manifest.json` + `popup/*`(파일만) + `src/*.js`(`^[A-Za-z0-9._-]+\.js$`인 파일만) + `icons/**`(있으면, 점 파일 제외). 하위 폴더·다른 파일·reparse point가 있으면 종료 2. 이 목록은 `scripts/audit-extension.mjs`의 `auditExtensionRoot().packagedFiles`와 같아야 한다(설치에 Node가 필요 없도록 재구현, 일치는 §9.4; 파일 내용 감사는 check.ps1 audit-ext). `package.json`·`extension-id.txt`·`native-host/`·`tests/`·`test-dapp/`은 설치하지 않는다. `manifest.json`의 `key`로 계산한 ID([05] §2.3)가 `nnpjlobjgbanccjddghlpaafpohfkeph`가 아니면 아무것도 바꾸지 않고 종료 2.
+3. 확장: 런타임 파일 = `manifest.json` + `popup/*`(파일만) + `src/*.js`(`^[A-Za-z0-9._-]+\.js$`인 파일만) + `icons/*.png`(`^[A-Za-z0-9._-]+\.png$`인 파일만), 이 순서이고 폴더마다 서수 정렬. 세 폴더는 모두 있어야 하고 비어 있으면 안 된다. 하위 폴더·다른 파일·reparse point가 있으면 종료 2. 이 목록은 `scripts/audit-extension.mjs`의 `auditExtensionRoot().packagedFiles`와 같아야 한다(설치에 Node가 필요 없도록 재구현, 일치는 §9.4; 파일 내용 감사는 check.ps1 audit-ext). `package.json`·`extension-id.txt`·`native-host/`·`tests/`·`test-dapp/`은 설치하지 않는다. `manifest.json`의 `key`로 계산한 ID([05] §2.3)가 `nnpjlobjgbanccjddghlpaafpohfkeph`가 아니면 아무것도 바꾸지 않고 종료 2.
 4. 빌드 도구(`-NoBuild`면 건너뜀): `rustup`·`cargo`(PATH에 없으면 `%CARGO_HOME%\bin`·`%USERPROFILE%\.cargo\bin`에서 찾아 이 프로세스의 PATH 앞에 더한다)와 MSVC(`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64`가 설치 경로를 돌려줌). Windows SDK(`Windows Kits\10\Lib\*\um\x64\kernel32.lib`)가 없으면 경고만 한다. 없는 도구와 §3.8의 winget 명령을 출력하고, 대화형이면 `Y/N`을 물어 **Y일 때만** 그 명령을 실행(콘솔 상속, 순서대로)한 뒤 다시 확인한다. N, 비대화형(`UserInteractive` 아님·입력 리디렉션·`-NonInteractive`), winget 없음, 설치 뒤에도 없음은 종료 7. `-DryRun`은 묻지도 실행하지도 않는다. Node.js는 확인하지 않는다(필요 없음).
 5. 빌드(`-NoBuild`·`-DryRun`이면 하지 않음): rustflags 환경 변수 4개(§4.1)가 있으면 이 프로세스에서만 지운다. 저장소 루트에서 `cargo --version`(rustup이 `rust-toolchain.toml`의 1.95.0을 처음 한 번 받는다. 실패하면 `rustup toolchain install <channel> --profile minimal` 후 재시도), `rustc -vV`의 host가 `x86_64-pc-windows-msvc`가 아니면 종료 7, `cargo build --release --locked -p yw-app -p yw-host`(출력 그대로; 네트워크는 첫 crate 내려받기에만 쓰고 내용은 `Cargo.lock` 체크섬으로 고정). 실패는 흔한 원인 안내와 함께 종료 8. `-NoBuild`인데 `yw-app.exe`·`yw-host.exe`가 없으면 종료 2. 경로 정리(`--remap-path-prefix`)는 하지 않는다(§3.9).
 6. 설치 폴더 상태: 없음·빈 폴더 → 새 설치. 설치 기록 `yw-install.json`(UTF-8 BOM 없음, `{"product":"YourWallet","version","commit","state":"installing"|"installed","files":[상대 경로…]}`; 예전 배포 zip 설치의 기록(`commit` 없음)도 읽는다)이 있으면 "기존 설치를 찾았습니다 … 업그레이드합니다"(같은 버전·커밋이면 "바뀐 파일만 고칩니다", 낮은 버전이면 경고)를 출력한다. 기록 없이 비어 있지 않거나 기록이 손상된 폴더는 종료 1.
 7. 계획과 복사: 설치 파일 = `yw-app.exe`·`yw-host.exe`(빌드 결과), `uninstall.ps1`, `extension/<3의 목록>`. 대상 SHA-256이 같으면 건너뛰고, 이전 기록에만 있는 파일은 지운다. 덮어쓰거나 지울 파일을 `FileShare.None` 쓰기 열기로 시험해 잠긴 파일과 그 파일을 실행 중인 yw-app·yw-host(PID)를 보이고, 닫는 방법(yw-app 창 닫기 = 잠금 후 정상 종료, 창이 숨어 있으면 시작 메뉴 실행으로 창 표시, yw-host는 Chrome 종료)을 안내한 뒤 Enter(다시 확인)·`C`(yw-app에 `CloseMainWindow` = `WM_CLOSE`, 15초 대기)·`Q`(종료 3)를 묻는다. **프로세스를 강제 종료하지 않는다.** 비대화형이면 묻지 않고 종료 3. 다른 경로의 yw-app이 실행 중이면 단일 인스턴스([04] §1.1) 때문에 설치본이 그 창을 띄운다고 경고한다. 복사: 기록을 `installing`(이전 ∪ 새 목록)으로 먼저 쓰고, 파일마다 복사 후 해시 재확인, 이전 설치 파일 삭제와 빈 하위 폴더 정리. 실패는 종료 4. 확장은 사본이므로 `git pull`만으로는 Chrome에 로드된 확장이 바뀌지 않는다.
 8. manifest: `<설치 폴더>\com.your_wallet.native.json`, [05] §9.1 형식의 `[ordered]` → `ConvertTo-Json -Depth 3`, UTF-8 BOM 없음, 내용이 같으면 쓰지 않는다. 쓴 파일을 [05] §9.3 `validate-manifest.mjs`와 같은 규칙의 PowerShell 구현으로 검증(정확한 키 5개, 이름·`stdio`, 설명 1–128자, `path` = 드라이브 절대 경로·구간 규칙·마지막 `yw-host.exe`(대소문자 무시)·`%&^!`·자리표시자 없음, `allowed_origins` = 정확히 `chrome-extension://<id>/` 하나, BOM·잘못된 UTF-8 거부). 두 구현의 일치는 §9.4가 시험한다. 실패는 종료 5. `-NoNativeHost`여도 manifest는 쓴다.
 9. 등록(`-NoNativeHost`가 아니면): `HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.your_wallet.native` 기본값 = manifest 경로(`New-Item -Force` + 다시 읽기). 이미 같으면 그대로, 다른 값(예: 예전 개발용 `%LOCALAPPDATA%\YourWallet\bin`)이면 이전 값을 출력하고 바꾼다. 실패는 종료 5. Chrome 외 브라우저(Edge 등)는 등록하지 않는다.
-10. 바로가기(`-NoShortcut`가 아니면): `[Environment]::GetFolderPath('Programs')\Your Wallet.lnk`, `WScript.Shell` COM, 대상 `yw-app.exe`, 인자 없음, 작업 폴더 = 설치 폴더. 실패는 종료 6.
+10. 바로가기(`-NoShortcut`가 아니면): `[Environment]::GetFolderPath('Programs')\Your Wallet.lnk`, `WScript.Shell` COM, 대상 `yw-app.exe`, 인자 없음, 작업 폴더 = 설치 폴더, 아이콘 `yw-app.exe,0`(exe의 첫 아이콘 그룹 = 앱 아이콘, [04] §1.7). 실패는 종료 6.
 11. 기록을 `installed`(새 목록)로 쓰고(같으면 쓰지 않음), 대화형이면 `<설치 폴더>\extension` 경로를 클립보드에 넣은 뒤 요약을 출력한다: 설치 경로와 소스(버전·커밋), "Chrome → chrome://extensions → 개발자 모드 → 압축해제된 확장 프로그램 로드 → `<설치 폴더>\extension`"(클립보드에 넣었으면 그 안내, ID 확인), 업그레이드면 "확장 카드에서 새로고침", 첫 실행·RPC 안내, 업데이트(`git pull` → `install.cmd`), 제거(`uninstall.cmd`), 지갑 데이터 위치.
 
 `-DryRun`은 1–4의 확인과 5–10의 할 일 출력만 하고 빌드·winget·파일·레지스트리·바로가기·클립보드를 바꾸지 않는다(7에서 묻지 않는다). 같은 소스로 다시 실행하면 아무 파일도 다시 쓰지 않는다(멱등; 변경 없는 재빌드는 exe를 다시 링크하지 않고, `/Brepro`라 같은 입력은 같은 exe다). 예상하지 못한 예외는 줄 번호와 함께 종료 9. 지갑 데이터 `%LOCALAPPDATA%\YourWallet\`은 어떤 경로로도 읽거나 쓰지 않는다. 점 소싱(`. .\scripts\install.ps1`)하면 함수만 정의된다(§9.4).
@@ -1139,7 +1146,7 @@ check.ps1 script-test 단계(26)에서 실행한다. `install.cmd`가 쓰는 Win
 
 - INS-1 일치(5.1, 그리고 `pwsh.exe`가 있으면 7): 점 소싱한 `Test-NativeManifestFile`과 `validateNativeManifestFile`의 판정이 manifest 표본 44개(정상, 대문자 `YW-HOST.EXE`, 공백·한글 경로, 드라이브 바로 아래, 설명 128·129자·이모지 130단위·빈 설명, 다른 ID, origin 2개, 끝 `/` 없음, 끝 `\n`, 대문자 ID, 와일드카드, 자리표시자, origin 문자열·빈 배열, 키 추가·누락, 이름·`type`, `%`·`&`·`^`·`!`, 제어 문자, 상대·UNC·`..`·끝 점·끝 공백·빈 구간·`/` 구분·드라이브 루트, `yw-app.exe`, 접미사만 일치, 숫자 `path`, JSON 아님, 최상위 배열·null, UTF-8 BOM, 잘못된 UTF-8)에서 같다. `Get-ExtensionRuntimeFiles extension` = `auditExtensionRoot("extension").packagedFiles`, `$ExtensionId` = `extension/extension-id.txt`, `Get-ExtensionIdFromKey` = `extensionIdFromKey`.
 - 흐름(5.1): 기본 폴더 `-DryRun` → 0, 폴더 없음. 설치 → 0, 설치 폴더 = 설치 파일 + manifest + 기록, 확장 파일 바이트 일치, manifest가 `validateNativeManifestFile` 통과, 기록의 버전·상태·목록. 재실행 → 수정 시각 불변. 예전 zip 기록(`README-설치.txt` 포함)에서 업그레이드 → 바뀐 exe 복사, 그 파일 삭제, 기록 갱신. 거부(`a&b` 경로, 기록 없는 비어 있지 않은 폴더, 데이터 폴더 아래, 저장소 아래 → 1; exe 없는 `-NoBuild` → 2) 때 아무것도 생기거나 바뀌지 않음. 설치 폴더의 `uninstall.ps1`로 `-DryRun` → 불변, `-RemoveWalletData`(비대화형) → 3·불변, 제거 → 0·설치 폴더 없음·데이터 폴더 그대로·그 경로 출력, 다시 제거 → 0.
-- 소스 거부(저장소 사본): manifest `key`가 다른 ID → 2, `extension/src`에 `.js`가 아닌 파일 → 2, 둘 다 설치 폴더가 생기지 않음.
+- 소스 거부(저장소 사본): manifest `key`가 다른 ID → 2, `extension/icons`에 `.png`가 아닌 파일 → 2, `extension/src`에 `.js`가 아닌 파일 → 2, 모두 설치 폴더가 생기지 않음.
 
 빌드 도구 확인·winget 제안·실제 빌드·HKCU 등록·바로가기·클립보드·잠긴 파일 대화는 자동 시험하지 않는다([09] §5.12 수동).
 

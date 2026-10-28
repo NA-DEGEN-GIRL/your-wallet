@@ -42,6 +42,7 @@ page ──window.ethereum / EIP-6963──▶ provider-main.js (MAIN world)
 |---|---|
 | `manifest.json` | §2.2 내용으로 교체(이름, 버전 0.3.0, `key`, localhost 매치, 호환 모드 팝업 `action`) |
 | `popup/popup.html`, `popup/popup.css`, `src/popup.js`, `src/popup-core.js` | 신규. 호환 모드 액션 팝업(§2.12) |
+| `icons/icon-16.png`, `icon-32.png`, `icon-48.png`, `icon-128.png` | 신규. 앱 아이콘([04] §1.7)과 같은 도안, `scripts/make-icons.mjs`가 만든다(§2.2). 손으로 고치지 않는다 |
 | `extension-id.txt` | 신규. 32자 a–p ID + LF. `scripts/extension-key.mjs generate`가 만든다(§2.3) |
 | `package.json` | `version` → `0.3.0`. 스크립트는 `"test": "node --test tests/*.test.mjs"` 유지 |
 | `src/shared.js` | 메서드 표 단일 정본(§3.1), `REQUEST_LIMITS`/`RESPONSE_LIMITS`·`checkJson`(§2.9), `isSupportedPageUrl`, 새 메시지 파서(§2.6), 호환 모드 값(`COMPAT_MODES`, `normalizeCompatMode`, §2.12). 수명 상한 제거 |
@@ -56,7 +57,7 @@ page ──window.ethereum / EIP-6963──▶ provider-main.js (MAIN world)
 | `tests/*` | §10.1 |
 
 ### 2.2 manifest.json (최종)
-`key` 값만 생성 결과로 채운다. 그 밖의 내용은 아래와 같아야 한다(값 비교, 키 순서 무관, 테스트 M1). `action`은 호환 모드 팝업(§2.12)이며 아이콘은 두지 않는다(Chrome이 이름 첫 글자를 표시).
+`key` 값만 생성 결과로 채운다. 그 밖의 내용은 아래와 같아야 한다(값 비교, 키 순서 무관, 테스트 M1). `action`은 호환 모드 팝업(§2.12)이다. `icons`(확장 관리 페이지·권한 창)와 `action.default_icon`(툴바)은 같은 네 파일이며, 앱 아이콘([04] §1.7)과 같은 도안의 8비트 RGBA PNG(보조 청크 없음)를 `scripts/make-icons.mjs`가 만들고 check.ps1 icons 단계가 커밋본과 같은지 확인한다. 아이콘을 더해도 `key`(확장 ID `nnpjlobjgbanccjddghlpaafpohfkeph`)는 바뀌지 않는다.
 
 ```json
 {
@@ -64,12 +65,17 @@ page ──window.ethereum / EIP-6963──▶ provider-main.js (MAIN world)
   "name": "Your Wallet",
   "version": "0.3.0",
   "description": "Connects web pages to the local Your Wallet app.",
+  "icons": { "16": "icons/icon-16.png", "32": "icons/icon-32.png", "48": "icons/icon-48.png", "128": "icons/icon-128.png" },
   "minimum_chrome_version": "120",
   "incognito": "not_allowed",
   "key": "<base64 DER SubjectPublicKeyInfo, RSA-2048, 392 chars>",
   "permissions": ["nativeMessaging", "storage"],
   "background": { "service_worker": "src/background.js", "type": "module" },
-  "action": { "default_title": "Your Wallet", "default_popup": "popup/popup.html" },
+  "action": {
+    "default_title": "Your Wallet",
+    "default_popup": "popup/popup.html",
+    "default_icon": { "16": "icons/icon-16.png", "32": "icons/icon-32.png", "48": "icons/icon-48.png", "128": "icons/icon-128.png" }
+  },
   "content_scripts": [
     {
       "matches": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
@@ -174,7 +180,7 @@ fn pinned_extension_id() -> Option<&'static str> {
 
 **전역 등록**
 
-- EIP-6963: 모드가 정해지는 순간(§2.12: 첫 유효 `bridge-init`, 또는 로드 후 `MODE_WAIT_MS = 10_000` 동안 없으면 `off`) 한 번, 그 뒤 `eip6963:requestProvider` 이벤트마다 항상 `eip6963:announceProvider`를 보낸다. 모드가 정해지기 전에 받은 `requestProvider`는 그 첫 알림으로 답한다(보통 document_start 뒤 수 ms). `info = Object.freeze({ uuid: <페이지마다 UUIDv4>, name: "Your Wallet", icon: <기존 PNG data URI>, rdns: "io.github.na-degen-girl.yourwallet" })`(기본 모드, 호환 모드의 이름·rdns는 §2.12). 재귀 방지(`archive/spec-v2.4:extension/src/provider-main.js:111-126`) 유지.
+- EIP-6963: 모드가 정해지는 순간(§2.12: 첫 유효 `bridge-init`, 또는 로드 후 `MODE_WAIT_MS = 10_000` 동안 없으면 `off`) 한 번, 그 뒤 `eip6963:requestProvider` 이벤트마다 항상 `eip6963:announceProvider`를 보낸다. 모드가 정해지기 전에 받은 `requestProvider`는 그 첫 알림으로 답한다(보통 document_start 뒤 수 ms). `info = Object.freeze({ uuid: <페이지마다 UUIDv4>, name: "Your Wallet", icon: <앱 아이콘 96×96 PNG data URI, `scripts/make-icons.mjs`가 이 줄을 쓴다>, rdns: "io.github.na-degen-girl.yourwallet" })`(기본 모드, 호환 모드의 이름·rdns는 §2.12). 재귀 방지(`archive/spec-v2.4:extension/src/provider-main.js:111-126`) 유지.
 - `window.ethereum`(로드 시, 모드와 무관): `!("ethereum" in window)`일 때만 `Object.defineProperty(window, "ethereum", { value: provider, configurable: true, enumerable: true, writable: true })` 후 `window.dispatchEvent(new Event("ethereum#initialized"))`. 이미 있으면 건드리지 않는다. 예외는 삼킨다. 기본 모드는 이것으로 끝이고, 호환 모드는 모드가 정해질 때 §2.12 규칙으로 차지한다.
 
 **provider 객체**: 확장 가능한(extensible) 일반 객체. 아래 멤버는 `writable:false, configurable:false`로 정의한다. 객체를 freeze하지 않는다(레거시 dApp의 속성 대입이 strict mode에서 실패하지 않도록).
@@ -370,7 +376,7 @@ yw-json은 같은 정의의 `yw_json::Limits { max_bytes, max_depth, max_nodes, 
 ### 2.11 audit-extension.mjs
 spec.md §6에 따라 유지한다. 이동·정리는 [01](01-repo-build.md) §4.4가 M0에 한다: `release-manifest.mjs` 의존은 `scripts/lib/strict-json.mjs`(`parseStrictJson`·`decodeUtf8`)로 옮기고 `canonicalEncode`·evidence(해시 출력) 모드는 삭제, CLI는 `check`만. M5에서 같은 커밋으로 바꿀 점: manifest 최상위 키 허용 집합에 `key` 추가, `name` 정확히 `"Your Wallet"`, 두 content script의 `matches`를 §2.2의 세 패턴으로 고정, 통과 시 확장 ID 출력([01] §4.4). 금지 패턴 검사(eval, `Function`, 동적 `import()`, `fetch`, `innerHTML`, URL 리터럴 등)는 그대로 둔다.
 
-호환 모드(§2.12)에서 더한 점: 최상위 키는 정확히 §2.2의 11개(`action` 포함). `action`은 정확히 `{ default_title: "Your Wallet", default_popup: "popup/popup.html" }`. `popup/` 폴더는 정확히 `popup.html`·`popup.css` 두 일반 파일. `popup.html`: `<script type="module" src="../src/<이름>.js"></script>` 형태만(내용 없는 것), 인라인 이벤트 처리기·`style` 속성·`<style>`·`iframe`/`object`/`embed`/`base`/`form`/`img` 등 삽입·이동 요소·`meta http-equiv`·scheme 있는 URL·`javascript:`/`data:` 등 scheme·protocol-relative URL 금지, `<link rel="stylesheet" href="popup.css">` 하나만. `popup.css`: `url(`·`@import`·`expression(`·scheme 있는 URL 금지. 팝업 script와 그 정적 import는 `src/`의 다른 파일과 같은 금지 패턴·"참조되지 않은 소스 금지" 검사를 받는다. 패키지 목록은 `manifest.json`, `popup/*`, `src/*` 순서.
+호환 모드(§2.12)에서 더한 점: 최상위 키는 정확히 §2.2의 12개(`action`·`icons` 포함). `action`은 정확히 `{ default_title: "Your Wallet", default_popup: "popup/popup.html", default_icon }`. 아이콘에서 더한 점: `icons`와 `action.default_icon`은 둘 다 정확히 `{"16","32","48","128"} → icons/icon-<크기>.png`, `icons/` 폴더는 정확히 그 네 일반 파일(하위 폴더·링크·다른 파일 금지), 각 파일은 64 KiB 이하, PNG 서명·청크 길이·CRC가 맞고 IHDR = 그 크기의 정사각형·8비트 RGBA·비인터레이스, 청크는 IHDR·IDAT·IEND만(텍스트·메타데이터 청크 금지). 아이콘 바이트도 패키지 1 MiB 상한에 센다. `popup/` 폴더는 정확히 `popup.html`·`popup.css` 두 일반 파일. `popup.html`: `<script type="module" src="../src/<이름>.js"></script>` 형태만(내용 없는 것), 인라인 이벤트 처리기·`style` 속성·`<style>`·`iframe`/`object`/`embed`/`base`/`form`/`img` 등 삽입·이동 요소·`meta http-equiv`·scheme 있는 URL·`javascript:`/`data:` 등 scheme·protocol-relative URL 금지, `<link rel="stylesheet" href="popup.css">` 하나만. `popup.css`: `url(`·`@import`·`expression(`·scheme 있는 URL 금지. 팝업 script와 그 정적 import는 `src/`의 다른 파일과 같은 금지 패턴·"참조되지 않은 소스 금지" 검사를 받는다. 패키지 목록은 `manifest.json`, `popup/*`, `src/*`, `icons/*` 순서(폴더 안은 서수 정렬, `install.ps1`과 같음).
 
 ### 2.12 호환 모드 (D22: MetaMask·Rabby처럼 보이기)
 목적: MetaMask(또는 Rabby)만 지원하는 dApp에서도 연결·SIWE 로그인·서명이 Your Wallet으로 오게 한다. 모드는 표시 방식만 바꾼다. 메서드 표·권한·승인 창·origin 도출·비밀 경계(§1)와 레거시 API(`enable`·`send`·`sendAsync`, §2.5)는 모드와 무관하게 같다.
@@ -1007,7 +1013,7 @@ yw-host는 자기와 같은 폴더의 yw-app을 실행하므로 yw-app은 등록
 | PO2 | 〃 | `popup.html`: `lang="ko"`, module script 하나(`../src/popup.js`), 인라인 코드·스타일·원격 URL 없음, `popup.js`가 쓰는 id가 모두 있음. `popup.css`: 라이트 전용(`prefers-color-scheme`·`@font-face` 없음), §2.12 모양의 토큰 값, ok → 성공·bad → 고위험·경고 → 주의 색 |
 | PO3 | 〃 | 가짜 DOM·`chrome`으로 `popup.js` 실행: 모드마다 카드(`label.mode` > 라디오 + 이름·한 줄 설명), 저장된 모드 선택 표시, MetaMask 선택 시 `chrome.storage.local.set({ compatMode: "metamask" })`·저장 문구, 팝업 port `your-wallet-popup-v1`의 `connected` → "연결됨" 후 port 닫음 |
 | N1 | `tests/native-contract.test.mjs`(갱신) | request·cancel 골든과 바이트-필드 일치, response·event·unavailable 골든을 받아 올바르게 전달, `validateNativeManifest` + 템플릿은 항상 무효 |
-| M1 | `tests/manifest.test.mjs`(신규) | `JSON.parse`한 manifest에서 `key`를 뺀 값이 §2.2 객체(`action` 포함)와 deep-equal(키 순서 무관), `extensionIdFromKey(manifest.key)` == `extension-id.txt`, 호스트 권한·선택 권한·CSP 키 없음 |
+| M1 | `tests/manifest.test.mjs`(신규) | `JSON.parse`한 manifest에서 `key`를 뺀 값이 §2.2 객체(`action` 포함)와 deep-equal(키 순서 무관, `action.default_icon`·`icons` 포함), `extensionIdFromKey(manifest.key)` == `extension-id.txt`, 호스트 권한·선택 권한·CSP 키 없음 |
 | M2 | 〃 | 가짜 `chrome`으로 `background.js`를 로드했을 때 `onConnectExternal`·`onMessageExternal`·`onMessage` 등록 0회. 팝업 port: router 전 `unknown`(native 0회), 응답 받은 뒤 `connected`, 탭 sender·다른 페이지는 port 닫힘·메시지 없음 |
 | H1 | `tests/yw-host-process.test.mjs`(신규, `native-host-process.test.mjs` 대체) | `target/debug/yw-host.exe`가 없으면 `process.env.YW_CHECK === "1"`이면 실패, 아니면 skip([01] §4.1). yw-host 프로세스마다 `LOCALAPPDATA`는 빈 임시 폴더다. Node `net.createServer().listen(<테스트 pipe>)`로 가짜 yw-app을 만들고 yw-host를 실행(중계·hello-reject 사례는 `YW_TEST_NO_SPAWN=1`): hello 형식, 바이트 그대로 양방향 중계, 잘못된 origin 인자 → 종료 2·출력 없음, 서버 없음(`YW_TEST_NO_SPAWN=1`) → 4900 응답 후 종료 3, 서버 없음 + `YW_TEST_DATA_DIR`의 settings.json `{"version":1,"browserAutoLaunch":false}`(`YW_TEST_NO_SPAWN` 없음) → 8 s 안에(§7.6 연결 기한 10 s보다 짧게) 4900·종료 3. pipe 소유자 검사(yw-host는 hello 전에 서버 pipe의 소유자가 현재 사용자인지 `GetSecurityInfo` OWNER로 확인하고, 아니면 UNAVAILABLE·요청마다 4900)는 Node 서버로 다른 소유자를 만들 수 없으므로 `crates/yw-host/tests/owner.rs`(기대 SID 주입: 일치 → 중계, 불일치 → 4900)와 yw-win `tests/pipe.rs`(나중 인스턴스의 소유자·DACL 불일치 → `AlreadyExists`)가 맡는다 |
 

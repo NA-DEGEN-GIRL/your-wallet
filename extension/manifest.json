@@ -3,6 +3,12 @@
   "name": "Your Wallet",
   "version": "0.3.0",
   "description": "Connects web pages to the local Your Wallet app.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "minimum_chrome_version": "120",
   "incognito": "not_allowed",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA01AXbmPTeTuaFnN2Obm0w31vtAX1UxsqbAXjnyrjXgIGoyLaEQd44tRb8tk5iVtVJIKcW8x2HLAHNmaciZ5YCAhugY3houYskug+nkc23YmHaWjzXEjDkQT9L84jw3yskduvOtw3I/v22H5M+61OawePdxzP06nqrH78q/guKSVgRObBf+4Wg5RqgYN7oSnvFiSLqNmFE+V/UNbrEKgGO0sg/3jbfeHt3dxPdX++bom5HvMx5283UolxcOGH5gmjr9Bi94g4Hzr1FZg/qrJz6FEWPMLYC+x9uvMbGoyUhXsAiG6PbytOgBmA6FnCtwqfPfynuDVKnRdcKbG3XDAiIQIDAQAB",
@@ -16,7 +22,13 @@
   },
   "action": {
     "default_title": "Your Wallet",
-    "default_popup": "popup/popup.html"
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
   },
   "content_scripts": [
     {

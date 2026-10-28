@@ -181,8 +181,8 @@ for (const [label, shell] of parityShells) {
       assert.equal(result.extensionId, extensionIdFile);
       assert.equal(result.idFromKey, extensionIdFromKey(manifest.key));
       const audited = await auditExtensionRoot(extensionRoot);
-      assert.equal(existsSync(path.join(extensionRoot, "icons")), false, "icons/ would be installed too; extend this assertion");
       assert.deepEqual(result.files, audited.packagedFiles);
+      assert.deepEqual(result.files.filter((file) => file.startsWith("icons/")), ["icons/icon-128.png", "icons/icon-16.png", "icons/icon-32.png", "icons/icon-48.png"]);
 
       assert.equal(result.verdicts.length, samples.length);
       samples.forEach(([name], index) => {
@@ -335,6 +335,14 @@ test("install.ps1 refuses a source tree whose extension is not the reviewed one"
     assert.equal(run.status, 2, run.out);
     assert.equal(existsSync(installDir), false);
     await writeFile(manifestPath, original);
+
+    // A non-PNG file in extension/icons is refused (the static audit would reject it too).
+    const iconNote = path.join(root, "extension", "icons", "notes.txt");
+    await writeFile(iconNote, "x\n");
+    run = install();
+    assert.equal(run.status, 2, run.out);
+    assert.equal(existsSync(installDir), false);
+    await rm(iconNote);
 
     // A non-JavaScript file in extension/src is refused (the static audit would reject it too).
     await writeFile(path.join(root, "extension", "src", "notes.txt"), "x\n");

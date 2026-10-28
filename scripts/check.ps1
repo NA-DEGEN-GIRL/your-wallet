@@ -1,7 +1,7 @@
 ﻿# scripts/check.ps1 — 저장소 게이트. 사용: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 [-Step <name>] [-Offline]
 [CmdletBinding()]
 param(
-    [ValidateSet("all", "fmt", "deps", "clippy", "test", "fuzz", "build", "ext-test", "script-test", "privacy", "audit-ext")]
+    [ValidateSet("all", "fmt", "deps", "clippy", "test", "fuzz", "build", "ext-test", "script-test", "privacy", "audit-ext", "icons")]
     [string]$Step = "all",
     [switch]$Offline
 )
@@ -49,5 +49,6 @@ if ($Step -in "all", "ext-test") { Invoke-Step "ext-test" 25 "node" (@("--test")
 if ($Step -in "all", "script-test") { Invoke-Step "script-test" 26 "node" (@("--test") + (Get-Tests "scripts" 26)) }
 Invoke-Step "privacy" 27 "node" @("scripts/privacy-scan.mjs")
 Invoke-Step "audit-ext" 28 "node" @("scripts/audit-extension.mjs", "check", "--extension-root", "extension")
+Invoke-Step "icons" 30 "node" @("scripts/make-icons.mjs", "--check")   # 커밋된 아이콘 = 생성기 출력([04] §1.7, [05] §2.2)
 Write-Host "check: OK"
 exit 0

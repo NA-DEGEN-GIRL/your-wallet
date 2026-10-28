@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { auditExtensionRoot } from "./audit-extension.mjs";
+import { crc32 } from "./lib/png.mjs";
 
 const repositoryExtension = path.resolve("extension");
 
@@ -32,6 +33,10 @@ test("the repository extension passes the release static audit", async () => {
     "src/popup.js",
     "src/provider-main.js",
     "src/shared.js",
+    "icons/icon-128.png",
+    "icons/icon-16.png",
+    "icons/icon-32.png",
+    "icons/icon-48.png",
   ]);
   const expectedId = (await readFile(path.join(repositoryExtension, "extension-id.txt"), "utf8")).trim();
   assert.match(expectedId, /^[a-p]{32}$/u);
@@ -48,9 +53,12 @@ async function withManifest(mutate, expected) {
   });
 }
 
-test("the manifest top-level keys are exactly the eleven spec/05 §2.2 keys", async () => {
+test("the manifest top-level keys are exactly the twelve spec/05 §2.2 keys", async () => {
   await withManifest((manifest) => {
     delete manifest.key;
+  }, /extension manifest members must be exactly/u);
+  await withManifest((manifest) => {
+    delete manifest.icons;
   }, /extension manifest members must be exactly/u);
   await withManifest((manifest) => {
     delete manifest.action;
@@ -129,8 +137,66 @@ test("the action popup contract is exactly popup/popup.html titled Your Wallet",
     manifest.action.default_title = "MetaMask";
   }, /extension action popup contract changed/u);
   await withManifest((manifest) => {
-    manifest.action.default_icon = "popup/icon.png";
+    delete manifest.action.default_icon;
   }, /extension action members must be exactly/u);
+  await withManifest((manifest) => {
+    manifest.action.default_state = "enabled";
+  }, /extension action members must be exactly/u);
+});
+
+test("icons and action.default_icon map exactly 16/32/48/128 to icons/icon-<size>.png", async () => {
+  await withManifest((manifest) => {
+    manifest.action.default_icon = "icons/icon-16.png";
+  }, /extension action\.default_icon must be an object/u);
+  await withManifest((manifest) => {
+    delete manifest.icons["128"];
+  }, /extension icons members must be exactly/u);
+  await withManifest((manifest) => {
+    manifest.icons["64"] = "icons/icon-64.png";
+  }, /extension icons members must be exactly/u);
+  await withManifest((manifest) => {
+    manifest.icons["16"] = "icons/icon-32.png";
+  }, /extension icons must map 16 to icons\/icon-16\.png/u);
+  await withManifest((manifest) => {
+    manifest.action.default_icon["32"] = "popup/icon.png";
+  }, /extension action\.default_icon must map 32/u);
+});
+
+async function withIconFile(name, mutate, expected) {
+  return withExtensionCopy(async (extensionRoot) => {
+    const filePath = path.join(extensionRoot, "icons", name);
+    await writeFile(filePath, await mutate(await readFile(filePath), extensionRoot));
+    await assert.rejects(auditExtensionRoot(extensionRoot), expected);
+  });
+}
+
+test("icon files are exactly four plain RGBA PNGs of the declared sizes", async () => {
+  await withExtensionCopy(async (extensionRoot) => {
+    await writeFile(path.join(extensionRoot, "icons", "icon-64.png"), await readFile(path.join(extensionRoot, "icons", "icon-48.png")));
+    await assert.rejects(auditExtensionRoot(extensionRoot), /extension\/icons files/u);
+  });
+  await withExtensionCopy(async (extensionRoot) => {
+    await rm(path.join(extensionRoot, "icons", "icon-48.png"));
+    await assert.rejects(auditExtensionRoot(extensionRoot), /extension\/icons files/u);
+  });
+  await withIconFile("icon-16.png", (_bytes, root) => readFile(path.join(root, "icons", "icon-32.png")), /icons\/icon-16\.png must be 16x16/u);
+  await withIconFile("icon-16.png", () => Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'/>"), /icons\/icon-16\.png is not a valid PNG/u);
+  await withIconFile("icon-32.png", (bytes) => {
+    // Signature (8) + IHDR chunk (25) + IDAT length and type (8): the first IDAT data byte.
+    const corrupt = Buffer.from(bytes);
+    corrupt[41] ^= 0xff;
+    return corrupt;
+  }, /icons\/icon-32\.png is not a valid PNG: PNG chunk \w+ CRC mismatch/u);
+  // A text chunk (metadata) inserted after IHDR, with a correct CRC.
+  await withIconFile("icon-48.png", (bytes) => {
+    const data = Buffer.from("Comment\0hello", "latin1");
+    const chunk = Buffer.alloc(12 + data.length);
+    chunk.writeUInt32BE(data.length, 0);
+    chunk.write("tEXt", 4, "latin1");
+    data.copy(chunk, 8);
+    chunk.writeUInt32BE(crc32(chunk.subarray(4, 8 + data.length)), 8 + data.length);
+    return Buffer.concat([bytes.subarray(0, 33), chunk, bytes.subarray(33)]);
+  }, /icons\/icon-48\.png may contain only IHDR, IDAT and IEND chunks/u);
 });
 
 async function withPopupFile(name, mutate, expected) {

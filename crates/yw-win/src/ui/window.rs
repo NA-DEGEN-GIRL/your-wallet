@@ -18,7 +18,7 @@ use core::cell::{Cell, RefCell};
 use core::fmt;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use windows_sys::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, ERROR_INVALID_WINDOW_HANDLE, HWND, LPARAM, LRESULT, POINT, RECT,
@@ -33,8 +33,8 @@ use windows_sys::Win32::UI::Controls::{
     ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, SetScrollInfo,
 };
 use windows_sys::Win32::UI::HiDpi::{
-    AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
-    SetProcessDpiAwarenessContext,
+    AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem,
+    GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetFocus, ReleaseCapture, SetCapture, SetFocus,
@@ -44,19 +44,20 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     DestroyWindow, DispatchMessageW, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO, FindWindowW,
     FlashWindowEx, GA_ROOT, GWLP_USERDATA, GetAncestor, GetClientRect, GetForegroundWindow,
     GetMessageW, GetScrollInfo, GetWindowDisplayAffinity, GetWindowLongPtrW,
-    GetWindowThreadProcessId, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDI_APPLICATION, IsChild,
-    IsDialogMessageW, IsIconic, KillTimer, LoadCursorW, LoadIconW, MB_ICONERROR,
-    MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MINMAXINFO, MSG, MessageBoxW, PostMessageW,
-    PostQuitMessage, RegisterClassExW, SB_VERT, SCROLLINFO, SIF_PAGE, SIF_POS, SIF_RANGE,
-    SIF_TRACKPOS, SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowDisplayAffinity, SetWindowLongPtrW,
-    SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WM_APP,
-    WM_CHAR, WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM,
-    WM_GETMINMAXINFO, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN,
-    WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WNDCLASSEXW,
-    WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_EX_CONTROLPARENT,
-    WS_EX_DLGMODALFRAME, WS_EX_TOPMOST, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW,
-    WS_SYSMENU, WS_THICKFRAME, WS_VSCROLL,
+    GetWindowThreadProcessId, HICON, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDI_APPLICATION,
+    IMAGE_ICON, IsChild, IsDialogMessageW, IsIconic, KillTimer, LR_DEFAULTCOLOR, LoadCursorW,
+    LoadIconW, LoadImageW, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MINMAXINFO,
+    MSG, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, SB_VERT, SCROLLINFO,
+    SIF_PAGE, SIF_POS, SIF_RANGE, SIF_TRACKPOS, SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON,
+    SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SYSTEM_METRICS_INDEX, SetForegroundWindow, SetTimer, SetWindowDisplayAffinity,
+    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage,
+    WDA_EXCLUDEFROMCAPTURE, WM_APP, WM_CHAR, WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC,
+    WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_GETMINMAXINFO, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
+    WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_RBUTTONDOWN,
+    WM_SYSKEYDOWN, WNDCLASSEXW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_APPWINDOW,
+    WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_EX_TOPMOST, WS_MINIMIZEBOX, WS_OVERLAPPED,
+    WS_OVERLAPPEDWINDOW, WS_SYSMENU, WS_THICKFRAME, WS_VSCROLL,
 };
 
 use super::msg::{
@@ -200,6 +201,59 @@ fn module_handle() -> Result<windows_sys::Win32::Foundation::HINSTANCE, WinError
     Ok(module)
 }
 
+/// Integer resource identifier of the application icon group (`RT_GROUP_ICON 1` in
+/// `crates/yw-app/icons/yw-app.res`, spec/04 §1.7).
+const APP_ICON_ID: usize = 1;
+
+/// The application icon at the system large and small icon sizes (system DPI), loaded once from
+/// the executable and kept for the process lifetime (shared by every class, never destroyed). The
+/// class icons are what the caption (also with `WS_EX_DLGMODALFRAME`), taskbar and Alt-Tab show.
+/// `None` when the executable has no such resource (test binaries): classes then use the shared
+/// system application icon.
+fn app_icons() -> Option<(HICON, HICON)> {
+    static ICONS: OnceLock<Option<(usize, usize)>> = OnceLock::new();
+    let icons = *ICONS.get_or_init(|| {
+        let instance = module_handle().ok()?;
+        // SAFETY: No arguments; returns the system DPI.
+        let dpi = unsafe { GetDpiForSystem() };
+        let big = load_app_icon(instance, SM_CXICON, SM_CYICON, dpi)?;
+        let small = load_app_icon(instance, SM_CXSMICON, SM_CYSMICON, dpi)?;
+        Some((big.expose_provenance(), small.expose_provenance()))
+    });
+    icons.map(|(big, small)| {
+        (
+            core::ptr::with_exposed_provenance_mut(big),
+            core::ptr::with_exposed_provenance_mut(small),
+        )
+    })
+}
+
+fn load_app_icon(
+    instance: windows_sys::Win32::Foundation::HINSTANCE,
+    width_metric: SYSTEM_METRICS_INDEX,
+    height_metric: SYSTEM_METRICS_INDEX,
+    dpi: u32,
+) -> Option<HICON> {
+    // SAFETY: Metric query; no pointers.
+    let width = unsafe { GetSystemMetricsForDpi(width_metric, dpi) };
+    // SAFETY: Metric query; no pointers.
+    let height = unsafe { GetSystemMetricsForDpi(height_metric, dpi) };
+    // SAFETY: `instance` is this executable's module handle and the name is an integer resource
+    // identifier (MAKEINTRESOURCEW), which the call does not dereference. Without LR_SHARED the
+    // icon is a private copy at the requested size; it is intentionally never destroyed.
+    let icon = unsafe {
+        LoadImageW(
+            instance,
+            core::ptr::without_provenance(APP_ICON_ID),
+            IMAGE_ICON,
+            width,
+            height,
+            LR_DEFAULTCOLOR,
+        )
+    };
+    (!icon.is_null()).then_some(icon)
+}
+
 /// Per-process UI setup before the first window: Per-Monitor-V2 DPI awareness and
 /// `InitCommonControlsEx`.
 ///
@@ -243,8 +297,11 @@ pub fn register_class(spec: &ClassSpec) -> Result<(), WinError> {
     let instance = module_handle()?;
     // SAFETY: Loads the shared system arrow cursor (no module, no ownership).
     let cursor = unsafe { LoadCursorW(core::ptr::null_mut(), IDC_ARROW) };
-    // SAFETY: Loads the shared system application icon.
-    let icon = unsafe { LoadIconW(core::ptr::null_mut(), IDI_APPLICATION) };
+    let (icon, small_icon) = app_icons().unwrap_or_else(|| {
+        // SAFETY: Loads the shared system application icon (the system derives the small one).
+        let shared = unsafe { LoadIconW(core::ptr::null_mut(), IDI_APPLICATION) };
+        (shared, core::ptr::null_mut())
+    });
     // SAFETY: Returns the shared stock white brush (never deleted).
     let background = unsafe { GetStockObject(WHITE_BRUSH) };
     let class = WNDCLASSEXW {
@@ -259,7 +316,7 @@ pub fn register_class(spec: &ClassSpec) -> Result<(), WinError> {
         hbrBackground: background,
         lpszMenuName: core::ptr::null(),
         lpszClassName: name.as_ptr(),
-        hIconSm: core::ptr::null_mut(),
+        hIconSm: small_icon,
     };
     // SAFETY: `class` and the NUL-terminated class name are valid for the call (the system copies
     // the name).

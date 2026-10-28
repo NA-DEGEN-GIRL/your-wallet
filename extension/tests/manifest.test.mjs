@@ -6,6 +6,13 @@ import { extensionIdFromKey } from "../../scripts/extension-key.mjs";
 
 const EXTENSION_ID_FILE = new URL("../extension-id.txt", import.meta.url);
 const MATCHES = ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"];
+// spec/05 §2.2 app icon (scripts/make-icons.mjs), the same map for the toolbar action.
+const ICONS = {
+  16: "icons/icon-16.png",
+  32: "icons/icon-32.png",
+  48: "icons/icon-48.png",
+  128: "icons/icon-128.png"
+};
 
 // spec/05 §2.2 without `key`.
 const EXPECTED_MANIFEST = {
@@ -13,12 +20,13 @@ const EXPECTED_MANIFEST = {
   name: "Your Wallet",
   version: "0.3.0",
   description: "Connects web pages to the local Your Wallet app.",
+  icons: ICONS,
   minimum_chrome_version: "120",
   incognito: "not_allowed",
   permissions: ["nativeMessaging", "storage"],
   background: { service_worker: "src/background.js", type: "module" },
-  // spec/05 §2.12 compatibility-mode popup. No icons: Chrome shows the name's first letter.
-  action: { default_title: "Your Wallet", default_popup: "popup/popup.html" },
+  // spec/05 §2.12 compatibility-mode popup.
+  action: { default_title: "Your Wallet", default_popup: "popup/popup.html", default_icon: ICONS },
   content_scripts: [
     {
       matches: MATCHES,

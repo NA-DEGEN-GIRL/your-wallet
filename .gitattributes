@@ -13,4 +13,7 @@
 .gitattributes text eol=lf
 *.ps1 text eol=crlf
 *.cmd text eol=crlf
+*.png binary
+*.ico binary
+*.res binary
 crates/yw-core/tests/vectors/btc/esplora/*.http -text

@@ -3,15 +3,23 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { extensionIdFromKey } from "./extension-key.mjs";
+import { readPng } from "./lib/png.mjs";
 import { decodeUtf8, parseStrictJson } from "./lib/strict-json.mjs";
 
 const MAX_SOURCE_FILE_BYTES = 256 * 1024;
 const MAX_PACKAGE_SOURCE_BYTES = 1024 * 1024;
 const REQUIRED_PERMISSIONS = ["nativeMessaging", "storage"];
 const EXTENSION_NAME = "Your Wallet";
-// Exactly the eleven top-level keys of spec/05 §2.2 (including the pinned `key` and the
-// compatibility-mode popup `action`, §2.12).
-const MANIFEST_KEYS = ["action", "background", "content_scripts", "description", "incognito", "key", "manifest_version", "minimum_chrome_version", "name", "permissions", "version"];
+// Exactly the twelve top-level keys of spec/05 §2.2 (including the pinned `key`, the
+// compatibility-mode popup `action`, §2.12, and the `icons`).
+const MANIFEST_KEYS = ["action", "background", "content_scripts", "description", "icons", "incognito", "key", "manifest_version", "minimum_chrome_version", "name", "permissions", "version"];
+// spec/05 §2.2: `icons` and `action.default_icon` are both exactly this size → file map, and
+// `icons/` holds exactly these files: 8-bit RGBA PNGs of that size with no ancillary chunks
+// (written by scripts/make-icons.mjs).
+const ICON_SIZES = [16, 32, 48, 128];
+const ICON_MAP = Object.fromEntries(ICON_SIZES.map((size) => [String(size), `icons/icon-${size}.png`]));
+const ICON_FILES = Object.values(ICON_MAP).sort();
+const MAX_ICON_FILE_BYTES = 64 * 1024;
 // spec/05 §2.2: both content scripts match exactly these three patterns.
 const CONTENT_SCRIPT_MATCHES = ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"];
 // spec/05 §2.12: the action popup is one local HTML page plus one local stylesheet.
@@ -130,8 +138,10 @@ function validateManifest(manifest) {
   exactKeys(manifest.background, ["service_worker", "type"], "extension background");
   if (manifest.background.service_worker !== "src/background.js" || manifest.background.type !== "module") fail("extension background worker contract changed");
 
-  exactKeys(manifest.action, ["default_popup", "default_title"], "extension action");
+  exactKeys(manifest.action, ["default_icon", "default_popup", "default_title"], "extension action");
   if (manifest.action.default_popup !== POPUP_PAGE || manifest.action.default_title !== EXTENSION_NAME) fail("extension action popup contract changed");
+  exactIconMap(manifest.icons, "extension icons");
+  exactIconMap(manifest.action.default_icon, "extension action.default_icon");
 
   if (!Array.isArray(manifest.content_scripts) || manifest.content_scripts.length !== 2) fail("extension must have the two reviewed content-script declarations");
   const [mainWorld, isolatedWorld] = manifest.content_scripts;
@@ -145,6 +155,42 @@ function validateManifest(manifest) {
   if (isolatedWorld.world !== "ISOLATED") fail("the second content script must run in ISOLATED world");
   exactArray(isolatedWorld.js, ["src/shared.js", "src/content-core.js", "src/content.js"], "ISOLATED content scripts");
   return manifestExtensionId(manifest.key);
+}
+
+function exactIconMap(value, label) {
+  exactKeys(value, Object.keys(ICON_MAP), label);
+  for (const [size, file] of Object.entries(ICON_MAP)) {
+    if (value[size] !== file) fail(`${label} must map ${size} to ${file}`);
+  }
+}
+
+async function listIconFiles(rootReal) {
+  const iconRoot = path.join(rootReal, "icons");
+  const iconStatus = await lstat(iconRoot);
+  if (!iconStatus.isDirectory() || iconStatus.isSymbolicLink()) fail("extension/icons must be a real directory");
+  const entries = await readdir(iconRoot, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || entry.isSymbolicLink()) fail(`extension/icons contains a forbidden entry: ${entry.name}`);
+    files.push(`icons/${entry.name}`);
+  }
+  files.sort();
+  exactArray(files, ICON_FILES, "extension/icons files");
+  return files;
+}
+
+function auditIconPng(bytes, relativePath) {
+  if (bytes.length > MAX_ICON_FILE_BYTES) fail(`${relativePath} exceeds 64 KiB`);
+  const size = Number(/^icons\/icon-([0-9]+)\.png$/u.exec(relativePath)[1]);
+  let png;
+  try {
+    png = readPng(bytes);
+  } catch (error) {
+    fail(`${relativePath} is not a valid PNG: ${error instanceof Error ? error.message : "parse failure"}`);
+  }
+  if (png.width !== size || png.height !== size) fail(`${relativePath} must be ${size}x${size}`);
+  if (png.bitDepth !== 8 || png.colorType !== 6 || png.compression !== 0 || png.filter !== 0 || png.interlace !== 0) fail(`${relativePath} must be a non-interlaced 8-bit RGBA PNG`);
+  if (png.chunkTypes.some((type) => !["IHDR", "IDAT", "IEND"].includes(type))) fail(`${relativePath} may contain only IHDR, IDAT and IEND chunks`);
 }
 
 // Chrome extension ID: SHA-256 of the base64-decoded DER key, first 16 bytes as hex mapped 0-f -> a-p.
@@ -258,7 +304,16 @@ export async function auditExtensionRoot(extensionRoot) {
     if (!expectedFiles.has(sourceFile)) fail(`unreferenced executable source is forbidden from the package: ${sourceFile}`);
   }
 
-  return { packagedFiles: ["manifest.json", ...popupFiles, ...sourceFiles], extensionId };
+  const iconFiles = await listIconFiles(rootReal);
+  for (const relativePath of iconFiles) {
+    const bytes = await readRegularFile(rootReal, relativePath);
+    totalBytes += bytes.length;
+    if (totalBytes > MAX_PACKAGE_SOURCE_BYTES) fail("extension package source exceeds 1 MiB");
+    auditIconPng(bytes, relativePath);
+  }
+
+  // Same order as scripts/install.ps1 Get-ExtensionRuntimeFiles.
+  return { packagedFiles: ["manifest.json", ...popupFiles, ...sourceFiles, ...iconFiles], extensionId };
 }
 
 function parseArguments(argv) {

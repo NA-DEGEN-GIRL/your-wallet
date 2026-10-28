@@ -46,7 +46,7 @@
 
 ### 2.2 `scripts/check.ps1`
 
-단계·순서·종료 코드·인자(`-Step`, `-Offline`)는 [01](01-repo-build.md) §4.1이 정본이다(D31). 요약: 도구 확인(10 = cargo 1.95.0·Node 22+ 없음, 11 = rustflags 환경 변수 설정됨) → fmt 20 → deps 21(`check-core-deps.mjs`) → clippy 22 → test 23 → fuzz 29(fuzz-lite 스모크: `YW_FUZZ_RUNS=20000`으로 `cargo test --workspace --locked -- --ignored fuzz_lite`, 디버그 빌드, §2.4) → build 24(`cargo build --workspace --locked`, 05 H1이 쓰는 `target\debug\yw-host.exe`) → `YW_CHECK=1` 설정 → ext-test 25 → script-test 26 → privacy 27 → audit-ext 28. 0 = 통과, 1 = 스크립트 자체 오류. 첫 실패에서 멈춘다. 대상 PC에서 전체 10분 이내를 목표로 한다(권고).
+단계·순서·종료 코드·인자(`-Step`, `-Offline`)는 [01](01-repo-build.md) §4.1이 정본이다(D31). 요약: 도구 확인(10 = cargo 1.95.0·Node 22+ 없음, 11 = rustflags 환경 변수 설정됨) → fmt 20 → deps 21(`check-core-deps.mjs`) → clippy 22 → test 23 → fuzz 29(fuzz-lite 스모크: `YW_FUZZ_RUNS=20000`으로 `cargo test --workspace --locked -- --ignored fuzz_lite`, 디버그 빌드, §2.4) → build 24(`cargo build --workspace --locked`, 05 H1이 쓰는 `target\debug\yw-host.exe`) → `YW_CHECK=1` 설정 → ext-test 25 → script-test 26 → privacy 27 → audit-ext 28 → icons 30(`node scripts/make-icons.mjs --check`: 앱 `.ico`·`.res`, 확장 `icons/*.png`, `PROVIDER_ICON`, `docs/icon-preview.png`를 메모리에서 다시 만들어 커밋본과 바이트 비교. 생성기 종료 코드 0 = 같음, 1 = 다르거나 없음 → 단계 실패 30, 2 = 사용법·입출력 오류 → 역시 30. 고치려면 `node scripts/make-icons.mjs`로 다시 쓰고 커밋한다; Node 업데이트로 번들 zlib 출력이 바뀐 경우도 같다). 0 = 통과, 1 = 스크립트 자체 오류. 첫 실패에서 멈춘다. 대상 PC에서 전체 10분 이내를 목표로 한다(권고).
 
 - deps 출력 `yw-core deps check OK: <N> crates (x86_64-pc-windows-msvc)`의 `<N>`: M0–M6 = 34(런타임 30 + 빌드 4, D5), M7 이후 40(+런타임 4·빌드 2; M8은 추가 없음). 같은 단계의 yw-app 줄은 37 / 43.
 - `YW_CHECK=1`이면 05 H1은 skip 대신 실패한다.
@@ -663,7 +663,7 @@ Issued At: 2026-10-25T23:59:00Z
 - [ ] M5-13 T03으로 yw-app 자동 실행 → Chrome 완전 종료(백그라운드 실행 포함) → yw-app 생존 여부 기록(D24 job object). 함께 종료되면 D24 대안 적용: `browserAutoLaunch` 기본값을 false로 바꾸고 수동 실행 안내, M5-6을 "yw-app 수동 실행 후 T03 성공"으로 재판정.
 - [ ] M5-14 자동: 05 §10.1·§10.2 전 사례(JS S1–S4·P1–P11·C1–C5·E1–E2·B1–B8·PO1–PO3·N1·manifest M1·M2·H1, Rust R-F1·R-J1·R-H1–R-H4·R-P1·R-P2·R-E1–R-E3·R-M1·R-V1·R-ERR·R-D1–R-D5·R-G1)와 X-1–X-3·X-25 통과(H1은 `YW_CHECK=1`이라 skip 없이 실행됨, §2.2). 퍼징 `frame`·`envelope` 각 600 s, 충돌 0.
 
-호환 모드(D22, 05 §2.12) 준비: 확장 카드의 새로고침 버튼으로 확장을 다시 읽고 열린 탭을 새로고침한다. 툴바의 퍼즐 아이콘 → Your Wallet 옆 핀을 눌러 아이콘("Y")을 고정한다. 모드를 바꾼 뒤에는 **항상 dApp 탭을 새로고침**한다(다음 페이지 로드부터 적용). 실제 MetaMask·Rabby 켬/끔은 `chrome://extensions`의 사용 토글로 한다.
+호환 모드(D22, 05 §2.12) 준비: 확장 카드의 새로고침 버튼으로 확장을 다시 읽고 열린 탭을 새로고침한다. 툴바의 퍼즐 아이콘 → Your Wallet 옆 핀을 눌러 아이콘(남색→청록 타일의 흰 지갑)을 고정한다. 모드를 바꾼 뒤에는 **항상 dApp 탭을 새로고침**한다(다음 페이지 로드부터 적용). 실제 MetaMask·Rabby 켬/끔은 `chrome://extensions`의 사용 토글로 한다.
 
 - [ ] M5-15 팝업: Your Wallet 아이콘 클릭 → 카드 "Your Wallet 앱 연결 상태"(색 상태 표시), 모드 카드 3개("기본 (Your Wallet)", "MetaMask처럼 보이기", "Rabby처럼 보이기", 카드마다 한 줄 설명), "모드 변경은 다음 페이지 로드부터 적용됩니다…" 안내, 경고 "호환 모드를 쓸 때는 실제 MetaMask·Rabby 확장을 꺼 두세요. 켜져 있으면 dApp이 그 지갑에 연결될 수 있습니다."가 보인다. Chrome을 새로 켠 직후(요청 전) 상태 "확인 불가". test-dapp T03 뒤 다시 열면 "연결됨". `browserAutoLaunch` false + yw-app 종료 상태에서 T03(4900) 뒤 "연결 안 됨". 팝업을 닫았다 열어도 고른 모드가 유지된다. 팝업 우클릭 → "검사"의 콘솔에 오류·CSP 위반이 없다.
 - [ ] M5-16 MetaMask·Rabby 끔, 모드 "MetaMask처럼 보이기" → test-dapp 새로고침: C01 PASS(`isMetaMask` true, `isYourWallet` true, accessor), C05 PASS(목록에 "MetaMask (io.metamask)" 하나뿐, Your Wallet 항목 없음). C02 → yw-app 연결 창: 큰 글씨 origin `http://localhost:5173`(실제 사이트), 배지 "호환 모드: MetaMask" → 연결 → 계정. C03 → SIWE 서명 창(S09 정보, 필드 표, 같은 배지) → 승인 → ecrecover PASS. C04 → `true`. yw-app 잠금 → C04 → `false`. 해제 후 C05 목록의 "MetaMask (io.metamask)로 연결" 버튼 → 창 없이 계정.
