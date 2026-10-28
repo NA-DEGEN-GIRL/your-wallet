@@ -624,8 +624,13 @@ fn unreachable_url() -> HttpsUrl {
     panic!("test URL")
 }
 
-/// The abandon…about testnet4 account.
-pub fn account() -> AccountXpub {
+/// The abandon…about testnet4 BIP84 account 0.
+pub fn account() -> yw_core::btc::BtcAccountKey {
+    yw_core::btc::BtcAccountKey::primary(xpub())
+}
+
+/// The abandon…about testnet4 node `m/84'/1'/0'`.
+pub fn xpub() -> AccountXpub {
     AccountXpub {
         pubkey: yw_core::hex::decode_array::<33>(ACCOUNT_PUBKEY).unwrap_or([2; 33]),
         chain_code: yw_core::hex::decode_array::<32>(ACCOUNT_CHAIN_CODE).unwrap_or([0; 32]),

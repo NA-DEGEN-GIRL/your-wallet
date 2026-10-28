@@ -18,9 +18,9 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use yw_core::bip32::AccountXpub;
 use yw_core::bip32::path::BtcChain;
-use yw_core::btc::address::{BtcAddress, p2wpkh_program};
+use yw_core::btc::account::BtcAccountKey;
+use yw_core::btc::address::BtcAddress;
 use yw_core::btc::meta::{ListedUtxo, VerifiedUtxo as CoreVerifiedUtxo};
 use yw_core::btc::prevtx::{PrevTxError, verify_prev_output};
 use yw_core::btc::{BTC_MAX_ADDRESS_INDEX, BtcNetwork, Discovery, OutPoint, Sats, Txid, conf};
@@ -144,13 +144,20 @@ pub fn esplora_test(
 }
 
 fn our_address(
-    account: &AccountXpub,
+    account: &BtcAccountKey,
     net: BtcNetwork,
     chain: BtcChain,
     index: u32,
 ) -> Result<BtcAddress, BtcError> {
-    p2wpkh_program(account, chain, index)
-        .map(|program| BtcAddress::p2wpkh(net, &program))
+    account
+        .address(net, chain, index)
+        .map_err(|_| BtcError::Derivation)
+}
+
+/// Our scriptPubKey of `(chain, index)` (the account type's output).
+fn our_script(account: &BtcAccountKey, chain: BtcChain, index: u32) -> Result<Vec<u8>, BtcError> {
+    account
+        .script(chain, index)
         .map_err(|_| BtcError::Derivation)
 }
 
@@ -203,7 +210,7 @@ pub(crate) fn cooldown_gate(client: &BtcClient<'_>, trigger: Trigger) -> Result<
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiscoveryJob {
     /// Cached account public key (`BtcMeta`).
-    pub account: AccountXpub,
+    pub account: BtcAccountKey,
     /// The state machine to drive (yw-core decides the gap rule).
     pub discovery: Discovery,
     /// Chain-check inputs.
@@ -282,7 +289,7 @@ pub fn discover(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RefreshJob {
     /// Cached account public key.
-    pub account: AccountXpub,
+    pub account: BtcAccountKey,
     /// Watch set receive `[0, receive_count)` (= `receive_next`).
     pub receive_count: u32,
     /// Watch set change `[0, change_count)` (= `change_next`).
@@ -514,7 +521,6 @@ const fn verify_word(failure: VerifyFailure) -> &'static str {
 fn core_check(
     client: &BtcClient<'_>,
     job: &RefreshJob,
-    net: BtcNetwork,
     tip_height: u32,
     candidates: Vec<Candidate>,
 ) -> Result<Vec<Candidate>, BtcError> {
@@ -539,12 +545,7 @@ fn core_check(
         };
         match rpc::get_tx_out(client, &outpoint) {
             Ok(TxOutAnswer::Unspent(info)) => {
-                let expected = BtcAddress::p2wpkh(
-                    net,
-                    &p2wpkh_program(&job.account, candidate.chain, candidate.index)
-                        .map_err(|_| BtcError::Derivation)?,
-                )
-                .script_pubkey();
+                let expected = our_script(&job.account, candidate.chain, candidate.index)?;
                 if info.script_pubkey != expected {
                     dropped("script");
                 } else if info.confirmations == 0 {
@@ -629,7 +630,7 @@ pub fn refresh(
             }
         }
     }
-    let candidates = core_check(client, job, net, status.tip_height, candidates)?;
+    let candidates = core_check(client, job, status.tip_height, candidates)?;
     let (verified, failed) = verify_candidates(client, session, job, &candidates)?;
     Ok(RefreshResult {
         chain: status,
@@ -659,12 +660,7 @@ fn verify_candidates(
         if let Entry::Vacant(slot) = raws.entry(txid) {
             slot.insert(prev_transaction(client, session, &txid)?);
         }
-        let expected = BtcAddress::p2wpkh(
-            session.network(),
-            &p2wpkh_program(&job.account, candidate.chain, candidate.index)
-                .map_err(|_| BtcError::Derivation)?,
-        )
-        .script_pubkey();
+        let expected = our_script(&job.account, candidate.chain, candidate.index)?;
         let outcome = match raws.get(&txid) {
             Some(Some((raw, source))) => {
                 verify_prev_output(raw, &txid, candidate.outpoint.vout, &expected)

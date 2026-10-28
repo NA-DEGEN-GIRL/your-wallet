@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use btc_support::{
     ACCOUNT_CHAIN_CODE, ACCOUNT_PUBKEY, CORE_URL, Call, ESPLORA_BASE, FakeBtc, ManualClock, Reply,
-    TIP, TestResult, Verb, account, address_json, healthy, params, path_address,
+    TIP, TestResult, Verb, account, address_json, healthy, params, path_address, xpub,
 };
 use yw_app::apikeys::ApiKeys;
 use yw_app::app_btc::{
@@ -200,7 +200,7 @@ impl World {
 }
 
 fn funding_tx() -> TestResult<(Transaction, Vec<u8>)> {
-    let program = yw_core::btc::address::p2wpkh_program(&account(), BtcChain::Receive, 0)
+    let program = yw_core::btc::address::p2wpkh_program(&xpub(), BtcChain::Receive, 0)
         .map_err(|error| format!("{error:?}"))?;
     let tx = Transaction {
         version: 2,
@@ -553,9 +553,10 @@ impl Harness {
                         }
                     }
                 }
-                BtcAction::SetMeta(btc) => {
+                BtcAction::SetMeta(btc, accounts) => {
                     if let Some(meta) = self.meta.as_mut() {
                         meta.btc = btc;
+                        meta.btc_accounts = *accounts;
                     }
                 }
                 BtcAction::Enqueue(item) => self.queued.push(*item),
@@ -656,9 +657,12 @@ fn testnet4_send_end_to_end() -> TestResult {
     assert_eq!(harness.settings.network, BtcNet::Testnet4);
     let meta = harness.btc_meta().ok_or("btc meta")?;
     assert_eq!(meta.network(), BtcNetwork::Testnet4);
-    assert_eq!(yw_core::hex::encode(&meta.account().pubkey), ACCOUNT_PUBKEY);
     assert_eq!(
-        yw_core::hex::encode(&meta.account().chain_code),
+        yw_core::hex::encode(&meta.account().identity()),
+        ACCOUNT_PUBKEY
+    );
+    assert_eq!(
+        yw_core::hex::encode(&meta.account().xpub().ok_or("xpub")?.chain_code),
         ACCOUNT_CHAIN_CODE
     );
     assert!(meta.discovery_done());
@@ -1255,7 +1259,7 @@ fn corrupt_btc_journal_stops_btc_sending_only() -> TestResult {
 )]
 fn approval_view_shows_btc_money_rows() -> TestResult {
     // Planning needs no key: the public account node and one verified output.
-    let mut meta = yw_core::btc::BtcMeta::new(BtcNetwork::Testnet4, account());
+    let mut meta = yw_core::btc::BtcMeta::new(BtcNetwork::Testnet4, xpub());
     let outpoint = OutPoint {
         txid: Txid::from_bytes([0x44; 32]),
         vout: 0,
@@ -1529,5 +1533,203 @@ fn precheck_already_in_mempool_keeps_tracking() -> TestResult {
     }
     harness.run(BtcUi::tick);
     assert_eq!(harness.records()[0].state, BtcTxState::InMempool);
+    Ok(())
+}
+
+/// A confirmed transaction paying `value` to `script` (a funding of another account).
+fn funding_to(script: Vec<u8>, value: u64, salt: u8) -> TestResult<(Transaction, Vec<u8>)> {
+    let tx = Transaction {
+        version: 2,
+        inputs: vec![TxIn {
+            prevout: OutPoint {
+                txid: Txid::from_bytes([salt; 32]),
+                vout: 0,
+            },
+            script_sig: Vec::new(),
+            sequence: 0xffff_fffd,
+            witness: vec![vec![0x30; 71], vec![0x02; 33]],
+        }],
+        outputs: vec![TxOut {
+            value: Sats::new(value).ok_or("sats")?,
+            script_pubkey: script,
+        }],
+        lock_time: 0,
+    };
+    let raw = serialize(&tx, true);
+    Ok((tx, raw))
+}
+
+/// spec/08 §3 every address type at the app level: `계정 추가` of each type (the key worker derives
+/// `m/{44|49|84|86}'/1'/n'`, stores and selects it), discovery and a refresh that verifies a
+/// funding of its receive address 0, the account rows, the receive screen, a send through the
+/// real RPC worker (prepare → approval → sign → post-sign verification → pre-check → send), the
+/// version 2 journal record of that account, tracking to 6 confirmations with the own change
+/// inserted into that account (not BIP84 account 0), the activity row's account tag, and the
+/// switch back.
+#[test]
+#[expect(clippy::too_many_lines, reason = "one account of each type end to end")]
+fn every_address_type_end_to_end() -> TestResult {
+    use yw_core::btc::{BtcAccountId, ScriptType};
+    for (round, script_type) in ScriptType::CHOICES.into_iter().enumerate() {
+        let salt = u8::try_from(round).unwrap_or(0).saturating_add(0x60);
+        let number = u32::from(script_type == ScriptType::P2wpkh);
+        let mut harness = Harness::new(&format!("types-{}", script_type.json_name()))?;
+        harness.enable();
+        let primary_before = harness.btc_meta().ok_or("primary")?.clone();
+        harness.run(|ui, ctx| {
+            ui.open_add_account(ctx);
+            Vec::new()
+        });
+        assert!(harness.ui.add_account_open);
+        harness.run(|ui, ctx| ui.add_account(ctx, script_type));
+        assert!(!harness.ui.add_account_open);
+        // BIP84 account 0 is meta `btc`: the first added native segwit account is 1.
+        let expected_id = BtcAccountId::Hd {
+            script_type,
+            account: number,
+        };
+        let meta = harness.meta.as_ref().ok_or("meta")?;
+        assert_eq!(meta.btc_accounts.selected, Some(expected_id));
+        let account = harness.ctx().btc_meta().ok_or("active account")?.clone();
+        assert_eq!(account.id(), expected_id);
+        assert!(
+            account.discovery_done(),
+            "discovery ran for the new account"
+        );
+        // BIP84 account 0 is unchanged.
+        assert_eq!(harness.btc_meta(), Some(&primary_before));
+        // The receive screen issues receive 0 (stored first) and shows the type and the path;
+        // fund it and refresh.
+        let address = account.address(BtcChain::Receive, 0)?;
+        harness.run(BtcUi::open_receive);
+        let view = harness.ui.receive.clone().ok_or("receive view")?;
+        assert_eq!(view.address, address.as_str());
+        assert!(view.kind.starts_with(script_type.name()));
+        assert_eq!(
+            view.path,
+            format!("m/{}'/1'/{number}'/0/0", script_type.purpose().number())
+        );
+        let first = address.as_str().chars().next().ok_or("address")?;
+        assert!(match script_type {
+            ScriptType::P2pkh => matches!(first, 'm' | 'n'),
+            ScriptType::P2shP2wpkh => first == '2',
+            ScriptType::P2wpkh => address.as_str().starts_with("tb1q"),
+            ScriptType::P2tr => address.as_str().starts_with("tb1p"),
+        });
+        let (funding, raw) = funding_to(address.script_pubkey(), FUNDING_VALUE, salt)?;
+        if let Ok(mut world) = harness.world.lock() {
+            world.txs.push((funding, raw, Some(FUNDING_HEIGHT)));
+        }
+        harness.run(|ui, ctx| ui.refresh(ctx, Trigger::User));
+        let account = harness.ctx().btc_meta().ok_or("active")?.clone();
+        assert_eq!(account.verified().len(), 1, "{script_type:?}");
+        assert_eq!(
+            harness
+                .ui
+                .balance(&harness.ctx())
+                .ok_or("balance")?
+                .available
+                .get(),
+            FUNDING_VALUE
+        );
+        let rows = harness.ui.account_rows(&harness.ctx());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, BtcAccountId::PRIMARY);
+        assert!(rows[1].selected && rows[1].id == expected_id);
+        assert_eq!(rows[1].available.get(), FUNDING_VALUE);
+        assert!(rows[1].kind.starts_with(script_type.name()));
+        // Send through the RPC worker and the key worker.
+        send_form(&mut harness, "30000", "2");
+        harness.run(|ui, ctx| ui.review(ctx, [salt; 32]));
+        assert_eq!(harness.queued.len(), 1, "{:?}", harness.ui.send.info);
+        let item = harness.queued[0].clone();
+        assert_eq!(item.plan.account(), account.account());
+        harness.approve()?;
+        let records = harness.records();
+        let record = records
+            .iter()
+            .find(|record| record.account == expected_id)
+            .ok_or("record of the account")?;
+        assert_eq!(record.state, BtcTxState::Submitted);
+        assert_eq!(record.script_type, script_type);
+        let sent = parse_transaction(&record.raw)?;
+        assert_eq!(sent.has_witness(), script_type.is_segwit());
+        let sent_txid = record.txid;
+        // The change index moved in this account, not in BIP84 account 0.
+        let account = harness.ctx().btc_meta().ok_or("active")?.clone();
+        assert_eq!(account.change_next(), 1);
+        assert_eq!(harness.btc_meta().ok_or("primary")?.change_next(), 0);
+        // Tracking to 6 confirmations: own change into this account.
+        harness.clock.advance(60_000);
+        harness.run(BtcUi::tick);
+        if let Ok(mut world) = harness.world.lock() {
+            world.confirm(&sent_txid, CONFIRM_HEIGHT);
+        }
+        harness.clock.advance(60_000);
+        harness.run(BtcUi::tick);
+        let record = harness
+            .records()
+            .into_iter()
+            .find(|record| record.txid == sent_txid)
+            .ok_or("record")?;
+        assert_eq!(record.state, BtcTxState::Confirmed);
+        let change = record.change_outpoint().ok_or("change")?;
+        let account = harness.ctx().btc_meta().ok_or("active")?.clone();
+        assert!(
+            account
+                .verified()
+                .iter()
+                .any(|utxo| utxo.outpoint == change && utxo.own)
+        );
+        assert!(
+            !harness
+                .btc_meta()
+                .ok_or("primary")?
+                .verified()
+                .iter()
+                .any(|utxo| utxo.outpoint == change)
+        );
+        let activity = harness
+            .meta
+            .as_ref()
+            .ok_or("meta")?
+            .activity_of("bitcoin:testnet4");
+        let row = activity
+            .iter()
+            .find(|row| row.tx_id == sent_txid.to_display_hex())
+            .ok_or("activity row")?;
+        assert_eq!(row.account, expected_id.activity_tag());
+        assert!(
+            harness
+                .ui
+                .activity_rows(&harness.ctx())
+                .iter()
+                .any(|view| view.txid == sent_txid.to_display_hex())
+        );
+        // Back to BIP84 account 0: its activity list does not show the other account's row.
+        harness.run(|ui, ctx| ui.select_account(ctx, BtcAccountId::PRIMARY));
+        assert_eq!(harness.ctx().active_id(), BtcAccountId::PRIMARY);
+        assert_eq!(
+            harness.meta.as_ref().ok_or("meta")?.btc_accounts.selected,
+            None
+        );
+        assert!(
+            !harness
+                .ui
+                .activity_rows(&harness.ctx())
+                .iter()
+                .any(|view| view.txid == sent_txid.to_display_hex())
+        );
+        assert_eq!(
+            harness
+                .ui
+                .balance(&harness.ctx())
+                .ok_or("balance")?
+                .available
+                .get(),
+            FUNDING_VALUE
+        );
+        assert!(harness.banners.is_empty(), "{:?}", harness.banners);
+    }
     Ok(())
 }

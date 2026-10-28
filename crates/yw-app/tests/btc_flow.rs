@@ -16,6 +16,7 @@ use btc_support::{
     ADDRESS_0_0, ESPLORA_BASE, MAINNET_GENESIS, REAL_PROGRAM, REAL_TXID, REAL_VALUE, Reply, Rig,
     SERVER_STRING, TESTNET3_GENESIS, TESTNET4_GENESIS, TIP, TestResult, Verb, account,
     address_json, chain_input, core, esplora, first_param, fixture_body, healthy, path_address,
+    xpub,
 };
 use yw_app::btc::broadcast::{
     EsploraPostOutcome, ManualBroadcastGate, esplora_broadcast_confirmed, manual_broadcast_offered,
@@ -44,7 +45,7 @@ fn new_session() -> ChainSession {
 }
 
 fn ours(chain: BtcChain, index: u32) -> TestResult<BtcAddress> {
-    let program = p2wpkh_program(&account(), chain, index).map_err(|error| format!("{error:?}"))?;
+    let program = p2wpkh_program(&xpub(), chain, index).map_err(|error| format!("{error:?}"))?;
     Ok(BtcAddress::p2wpkh(BtcNetwork::Testnet4, &program))
 }
 
@@ -105,7 +106,7 @@ fn discovery_gap_rule_and_more() -> TestResult {
     )?;
     assert!(result.discovery.is_done());
     assert_eq!(result.discovery.checked(), 46);
-    let mut meta = BtcMeta::new(BtcNetwork::Testnet4, account());
+    let mut meta = BtcMeta::new(BtcNetwork::Testnet4, xpub());
     result.discovery.apply(&mut meta)?;
     // Receive: 0 and 3 used, then 20 unused (4..=23); index 25 is beyond the gap.
     assert_eq!(meta.receive_next(), 4);
@@ -193,7 +194,7 @@ fn discovery_cancel_and_progress() {
 }
 
 /// A segwit previous transaction with `outputs`; returns (raw, txid).
-fn prev_tx(outputs: &[([u8; 22], u64)], salt: u8) -> TestResult<(Vec<u8>, Txid)> {
+fn prev_tx(outputs: &[(Vec<u8>, u64)], salt: u8) -> TestResult<(Vec<u8>, Txid)> {
     let tx = Transaction {
         version: 2,
         inputs: vec![TxIn {
@@ -210,7 +211,7 @@ fn prev_tx(outputs: &[([u8; 22], u64)], salt: u8) -> TestResult<(Vec<u8>, Txid)>
             .map(|(script, value)| {
                 Ok(TxOut {
                     value: Sats::new(*value).ok_or("sats")?,
-                    script_pubkey: script.to_vec(),
+                    script_pubkey: script.clone(),
                 })
             })
             .collect::<TestResult<Vec<TxOut>>>()?,
@@ -689,11 +690,11 @@ fn esplora_tx_status_ambiguous() -> TestResult {
 fn refresh_checks_candidates_with_gettxout() -> TestResult {
     let r0 = ours(BtcChain::Receive, 0)?;
     let script = r0.script_pubkey();
-    let (raw_a, txid_a) = prev_tx(&[(script, 50_000)], 11)?;
-    let (_, txid_b) = prev_tx(&[(script, 9_000)], 12)?;
-    let (raw_c, txid_c) = prev_tx(&[(script, 3_000)], 13)?;
-    let (_, txid_d) = prev_tx(&[(script, 4_000)], 14)?;
-    let (raw_e, txid_e) = prev_tx(&[(script, 5_000)], 15)?;
+    let (raw_a, txid_a) = prev_tx(&[(script.clone(), 50_000)], 11)?;
+    let (_, txid_b) = prev_tx(&[(script.clone(), 9_000)], 12)?;
+    let (raw_c, txid_c) = prev_tx(&[(script.clone(), 3_000)], 13)?;
+    let (_, txid_d) = prev_tx(&[(script.clone(), 4_000)], 14)?;
+    let (raw_e, txid_e) = prev_tx(&[(script.clone(), 5_000)], 15)?;
     let raws: HashMap<String, Vec<u8>> = [(txid_a, raw_a), (txid_c, raw_c), (txid_e, raw_e)]
         .into_iter()
         .map(|(txid, raw)| (txid.to_display_hex(), raw))

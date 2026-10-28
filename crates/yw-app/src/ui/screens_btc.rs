@@ -5,7 +5,6 @@
 //! shown. Addresses are shown in full in 4-character groups, the first and last 6 characters
 //! bold (spec/04 §3.3); activity addresses have no copy or select buttons.
 
-use yw_core::btc::display::coin_number;
 use yw_core::btc::meta::FreezeReason;
 use yw_core::btc::policy::texts;
 use yw_core::btc::{BtcMeta, BtcNetwork, FeeRate, Sats, Txid, encode_address};
@@ -153,13 +152,26 @@ pub mod ids {
     pub const ACT_CONTINUE: u16 = 5;
     /// Activity offset: 취소 (a `Signed` record).
     pub const ACT_CANCEL: u16 = 6;
+    /// `계정 추가` (opens the address-type chooser).
+    pub const ACCOUNT_ADD: u16 = 9_012;
+    /// The chooser's `취소`.
+    pub const ACCOUNT_ADD_CANCEL: u16 = 9_013;
+    /// The chooser's four address types, in `ScriptType::CHOICES` order (9,014–9,017).
+    pub const ACCOUNT_ADD_TYPE: u16 = 9_014;
+    /// Account rows: `ACCOUNT_BASE + row` selects that account.
+    pub const ACCOUNT_BASE: u16 = 9_130;
+    /// Most account rows with a button (1 + `MAX_BTC_ACCOUNTS`).
+    pub const ACCOUNT_SPAN: u16 = 65;
 
     const _: () = assert!(ACT_CANCEL < ACTIVITY_STRIDE);
+    const _: () = assert!(ACCOUNT_ADD_TYPE + 4 <= ESPLORA_MAINNET_EDIT);
+    const _: () = assert!(ESPLORA_TESTNET4_TEST < ACCOUNT_BASE);
+    const _: () = assert!(ACCOUNT_BASE + ACCOUNT_SPAN <= UTXO_BASE);
     const _: () = assert!(UTXO_BASE + UTXO_SPAN <= ACTIVITY_BASE);
     const _: () = assert!(ACTIVITY_BASE + ACTIVITY_SPAN <= 10_000);
 
     /// Every fixed id (tests check uniqueness and the range).
-    pub const FIXED: [u16; 53] = [
+    pub const FIXED: [u16; 59] = [
         TAB_BTC,
         SECTION_BTC,
         REFRESH,
@@ -172,6 +184,12 @@ pub mod ids {
         MISMATCH_KEEP_META,
         MISMATCH_USE_SETTINGS,
         RESET_TIP,
+        ACCOUNT_ADD,
+        ACCOUNT_ADD_CANCEL,
+        ACCOUNT_ADD_TYPE,
+        ACCOUNT_ADD_TYPE + 1,
+        ACCOUNT_ADD_TYPE + 2,
+        ACCOUNT_ADD_TYPE + 3,
         SEND_TO_EDIT,
         SEND_AMOUNT_EDIT,
         UNIT_BTC,
@@ -225,8 +243,10 @@ const TESTNET_RECEIVE: &str = "테스트넷 주소입니다 — 실제 자산이
 /// Journal damage of the BTC entries (spec/08 §12.4, E-VLT-006).
 const JOURNAL_DAMAGED: &str =
     "거래 저널의 Bitcoin 기록이 손상되어 Bitcoin 보내기를 멈췄습니다. (E-VLT-006)";
-/// The account line (one account, spec/08 §12.3 "Bitcoin 계정 0").
-const ACCOUNT_LABEL: &str = "Bitcoin 계정 0";
+/// Help under the account list (spec/04 §2.6 Bitcoin).
+const ACCOUNTS_HELP: &str = "계정마다 주소 형식이 정해집니다. 새 계정은 같은 니모닉에서 만들어지며 다른 지갑에서도 같은 형식(BIP44·49·84·86)을 고르면 복구됩니다.";
+/// Help of the add-account chooser.
+const ADD_ACCOUNT_HELP: &str = "주소 형식을 고르세요. 잘 모르면 네이티브 세그윗을 고르세요(수수료가 낮고 대부분의 거래소·지갑이 지원). 탭루트는 수수료가 가장 낮지만 일부 거래소는 보내기를 지원하지 않습니다. 레거시·호환 세그윗은 오래된 서비스와 호환용입니다.";
 
 /// The fee choices in radio order.
 const FEE_CHOICES: [BtcFeeChoice; 4] = [
@@ -356,8 +376,25 @@ fn record_rate(fee: Sats, vsize: u32) -> String {
     FeeRate::from_sat_per_kvb(kvb).to_string()
 }
 
-fn account_path(net: BtcNetwork) -> String {
-    format!("m/84'/{}'/0'", coin_number(net))
+/// The selected account's name (`네이티브 세그윗 계정 0`), `Bitcoin 계정` before BTC has one.
+fn active_label(ctx: &BtcCtx<'_>) -> String {
+    ctx.btc_meta().map_or_else(
+        || "Bitcoin 계정".to_owned(),
+        |meta| crate::app_btc::account_label(meta.account()),
+    )
+}
+
+/// The selected account's node and type line: `m/86'/0'/0' · 탭루트 (bc1p…)`, or for an
+/// imported key `가져온 키 · 레거시 (1…)`.
+fn active_detail(ctx: &BtcCtx<'_>) -> String {
+    let net = ctx.net();
+    ctx.btc_meta().map_or_else(String::new, |meta| {
+        format!(
+            "{} · {}",
+            meta.account().node_text(net),
+            crate::app_btc::account_type_text(meta.account(), net)
+        )
+    })
 }
 
 fn flow_stage_text(stage: BtcFlowStage) -> Option<&'static str> {
@@ -462,10 +499,68 @@ impl App {
         }
     }
 
-    fn btc_balance_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
+    /// `새로고침` and, for an HD account after discovery, `더 찾기`.
+    fn btc_refresh_row(&self, ctx: &BtcCtx<'_>, usable: bool, items: &mut Vec<Item>) {
+        let discovery_done = ctx.btc_meta().is_some_and(BtcMeta::discovery_done);
+        let single = ctx.btc_meta().is_some_and(BtcMeta::is_single);
+        let mut row = vec![
+            Ctl::button(ids::REFRESH, "새로고침")
+                .enabled(usable && !self.btc.refresh.busy && !self.btc.discovery.running),
+        ];
+        if discovery_done && !single && !self.btc.discovery.running {
+            row.push(Ctl::button(ids::DISCOVER_MORE, "더 찾기").enabled(usable));
+        }
+        items.push(Item::Row(row));
+        if self.btc.refresh.busy {
+            items.push(Item::Help("새로고침 중…".to_owned()));
+        }
+    }
+
+    /// The account list (name, address type with prefix, balance; the selected one marked) and
+    /// `계정 추가` with its address-type chooser.
+    fn btc_account_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
         let net = ctx.net();
-        items.push(Item::Subtitle(ACCOUNT_LABEL.to_owned()));
-        items.push(Item::Help(format!("{}, BIP84 bc1q…", account_path(net))));
+        items.push(Item::Subtitle("Bitcoin 계정".to_owned()));
+        let usable = ctx.gate().is_ok() && !self.btc.slot;
+        let rows = self.btc.account_rows(ctx);
+        for (index, row) in rows.iter().take(usize::from(ids::ACCOUNT_SPAN)).enumerate() {
+            let id = ids::ACCOUNT_BASE.saturating_add(u16::try_from(index).unwrap_or(0));
+            let label = format!(
+                "{} · {} · {}",
+                row.name,
+                row.kind,
+                BtcUi::amount_text(row.available)
+            );
+            items.push(Item::Row(vec![
+                Ctl::radio(id, &label, row.selected, index == 0).enabled(usable || row.selected),
+            ]));
+        }
+        if let Some(message) = &self.btc.account_message {
+            items.push(Item::Banner(message.clone(), Tone::Warn));
+        }
+        if self.btc.add_account_open {
+            items.push(Item::Help(ADD_ACCOUNT_HELP.to_owned()));
+            for (offset, script_type) in yw_core::btc::ScriptType::CHOICES.iter().enumerate() {
+                let id = ids::ACCOUNT_ADD_TYPE.saturating_add(u16::try_from(offset).unwrap_or(0));
+                items.push(Item::Row(vec![
+                    Ctl::button(id, &script_type.label(net)).enabled(usable),
+                ]));
+            }
+            items.push(Item::Row(vec![Ctl::button(
+                ids::ACCOUNT_ADD_CANCEL,
+                "취소",
+            )]));
+        } else {
+            items.push(Item::Row(vec![
+                Ctl::button(ids::ACCOUNT_ADD, "계정 추가").enabled(usable),
+            ]));
+        }
+        items.push(Item::Help(ACCOUNTS_HELP.to_owned()));
+    }
+
+    fn btc_balance_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
+        items.push(Item::Subtitle(active_label(ctx)));
+        items.push(Item::Help(active_detail(ctx)));
         if let Some(balance) = self.btc.balance(ctx) {
             items.push(Item::Display(BtcUi::amount_text(balance.available)));
             items.push(Item::Help("사용 가능 (확인 1 이상, 서버 기준)".to_owned()));
@@ -591,8 +686,9 @@ impl App {
                     .saturating_mul(ids::ACTIVITY_STRIDE),
             );
             items.push(Item::Text(format!(
-                "{} · {ACCOUNT_LABEL} · {}",
+                "{} · {} · {}",
                 local_time(row.time_unix_ms),
+                active_label(ctx),
                 row.title
             )));
             items.push(Item::Muted(format!("상태: {}", row.status)));
@@ -678,7 +774,7 @@ impl App {
             items.push(Item::CardStart(Some("Bitcoin".to_owned())));
             items.push(Item::Text(BtcGate::Disabled.text()));
             items.push(Item::Help(
-                "설정 → Bitcoin에서 켜면 BIP84(bc1q…) 주소를 찾아 잔액을 보여줍니다. 먼저 네트워크(RPC)에 bitcoin 주소가 있어야 합니다."
+                "설정 → Bitcoin에서 켜면 네이티브 세그윗(bc1q…) 계정 0의 주소를 찾아 잔액을 보여줍니다. 다른 주소 형식(탭루트·호환 세그윗·레거시)은 켠 뒤 [계정 추가]로 더합니다. 먼저 네트워크(RPC)에 bitcoin 주소가 있어야 합니다."
                     .to_owned(),
             ));
             items.push(Item::Row(vec![Ctl::primary(
@@ -732,19 +828,13 @@ impl App {
         }
         self.btc_discovery_items(&ctx, items);
         let usable = gate.is_ok();
-        let discovery_done = ctx.btc_meta().is_some_and(BtcMeta::discovery_done);
-        let mut row = vec![
-            Ctl::button(ids::REFRESH, "새로고침")
-                .enabled(usable && !self.btc.refresh.busy && !self.btc.discovery.running),
-        ];
-        if discovery_done && !self.btc.discovery.running {
-            row.push(Ctl::button(ids::DISCOVER_MORE, "더 찾기").enabled(usable));
-        }
-        items.push(Item::Row(row));
-        if self.btc.refresh.busy {
-            items.push(Item::Help("새로고침 중…".to_owned()));
-        }
+        self.btc_refresh_row(&ctx, usable, items);
         items.push(Item::CardEnd);
+        if ctx.primary_meta().is_some() && ctx.mismatch().is_none() {
+            items.push(Item::CardStart(None));
+            self.btc_account_items(&ctx, items);
+            items.push(Item::CardEnd);
+        }
         items.push(Item::CardStart(None));
         self.btc_balance_items(&ctx, items);
         let send_block = self.btc.send_block(&ctx);
@@ -845,10 +935,8 @@ impl App {
             items.push(Item::Banner(JOURNAL_DAMAGED.to_owned(), Tone::Blocked));
         }
         items.push(Item::CardStart(Some("보내는 계정".to_owned())));
-        items.push(Item::Text(format!(
-            "{ACCOUNT_LABEL} ({})",
-            account_path(net)
-        )));
+        items.push(Item::Text(active_label(&ctx)));
+        items.push(Item::Help(active_detail(&ctx)));
         if let Some(balance) = self.btc.balance(&ctx) {
             items.push(Item::Help(format!(
                 "사용 가능 {} (검증됨, 확인 1 이상 서버 기준)",
@@ -1095,21 +1183,28 @@ impl App {
             }
             return;
         };
-        items.push(Item::CardStart(Some(format!(
-            "{ACCOUNT_LABEL} · 받기 주소 {}번",
-            view.index
-        ))));
+        let single = ctx.btc_meta().is_some_and(BtcMeta::is_single);
+        items.push(Item::CardStart(Some(if single {
+            view.account.clone()
+        } else {
+            format!("{} · 받기 주소 {}번", view.account, view.index)
+        })));
+        items.push(Item::Text(format!("주소 형식: {}", view.kind)));
         items.push(Item::Qr(view.qr.clone()));
         items.push(Item::Mono(grouped(&view.address)));
         items.push(Item::Help(view.path.clone()));
-        items.push(Item::Row(vec![
-            Ctl::primary(ids::COPY_ADDRESS, "주소 복사"),
-            Ctl::button(ids::NEW_ADDRESS, "새 주소").enabled(ctx.gate().is_ok()),
-        ]));
-        items.push(Item::Help(
+        let mut row = vec![Ctl::primary(ids::COPY_ADDRESS, "주소 복사")];
+        if !single {
+            row.push(Ctl::button(ids::NEW_ADDRESS, "새 주소").enabled(ctx.gate().is_ok()));
+        }
+        items.push(Item::Row(row));
+        items.push(Item::Help(if single {
+            "가져온 키 계정은 주소가 하나입니다. 주소를 복사한 뒤 붙여넣은 곳에서 주소 전체를 확인하세요."
+                .to_owned()
+        } else {
             "주소를 복사한 뒤 붙여넣은 곳에서 주소 전체를 확인하세요. 새 주소는 아직 쓰지 않은 주소가 20개 이상이면 경고하고 100개면 발급하지 않습니다."
-                .to_owned(),
-        ));
+                .to_owned()
+        }));
         items.push(Item::CardEnd);
     }
 
@@ -1458,6 +1553,57 @@ mod tests {
         let items = app.items();
         assert!(control(&items, ids::MISMATCH_KEEP_META).is_some());
         assert!(control(&items, ids::MISMATCH_USE_SETTINGS).is_some());
+    }
+
+    /// spec/04 §2.6 Bitcoin: the account card lists each account with its type and prefix, and
+    /// `계정 추가` opens the four plain-Korean choices with the network's prefixes, native segwit
+    /// first and recommended.
+    #[test]
+    fn account_card_and_type_chooser() {
+        for (net, settings_net, labels) in [
+            (
+                BtcNetwork::Mainnet,
+                BtcNet::Mainnet,
+                [
+                    "네이티브 세그윗 (bc1q…, 권장)",
+                    "탭루트 (bc1p…)",
+                    "호환 세그윗 (3…)",
+                    "레거시 (1…)",
+                ],
+            ),
+            (
+                BtcNetwork::Testnet4,
+                BtcNet::Testnet4,
+                [
+                    "네이티브 세그윗 (tb1q…, 권장)",
+                    "탭루트 (tb1p…)",
+                    "호환 세그윗 (2…)",
+                    "레거시 (m·n…)",
+                ],
+            ),
+        ] {
+            let mut app = app(true, settings_net, Some(net), true);
+            let items = app.items();
+            let row = control(&items, ids::ACCOUNT_BASE).expect("account row");
+            assert!(
+                row.text
+                    .starts_with("네이티브 세그윗 계정 0 · 네이티브 세그윗 (")
+            );
+            assert_eq!(row.checked, Some(true));
+            assert!(control(&items, ids::ACCOUNT_ADD).is_some_and(|ctl| ctl.text == "계정 추가"));
+            assert!(has_text(&items, "네이티브 세그윗 계정 0"));
+            app.btc.add_account_open = true;
+            let items = app.items();
+            for (offset, label) in labels.iter().enumerate() {
+                let id = ids::ACCOUNT_ADD_TYPE + u16::try_from(offset).unwrap();
+                assert_eq!(
+                    control(&items, id).map(|ctl| ctl.text),
+                    Some((*label).to_owned())
+                );
+            }
+            assert!(control(&items, ids::ACCOUNT_ADD_CANCEL).is_some());
+            assert!(control(&items, ids::ACCOUNT_ADD).is_none());
+        }
     }
 
     #[test]

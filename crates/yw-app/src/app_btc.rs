@@ -18,12 +18,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use yw_core::approval::{ApprovalDraft, ApprovalId, Approved};
-use yw_core::bip32::AccountXpub;
 use yw_core::bip32::path::BtcChain;
+use yw_core::btc::account::{BtcAccountId, BtcAccountKey, ScriptType};
 use yw_core::btc::address::ScriptKind;
 use yw_core::btc::amount::{format_btc_and_sats, parse_user_btc, parse_user_sats};
 use yw_core::btc::fee::parse_user_sat_per_vb;
-use yw_core::btc::meta::{BtcBalance, FreezeReason, MetaError};
+use yw_core::btc::meta::{BtcAccounts, BtcBalance, FreezeReason, MetaError};
 use yw_core::btc::policy::{BroadcastOutcome, broadcast_outcome, texts};
 use yw_core::btc::{
     BTC_CONF_TARGETS, BTC_POLL_SECS, BtcMeta, BtcNetwork, BtcSendFacts, Discovery, FeeRate,
@@ -33,7 +33,7 @@ use yw_core::btc::{
 use yw_core::journal::btc::{
     BTC_TRACK_CONFIRMATIONS, BtcRecord, BtcTxState, TrackMode, abandoned_conflicts, bump_target,
     check_can_send, current_record, in_flight, in_flight_outpoints, in_flight_replacements,
-    track_mode,
+    of_account, track_mode,
 };
 use yw_win::http::HttpsUrl;
 
@@ -59,7 +59,7 @@ use crate::workers::journal::btc::{
 use crate::workers::rpc::RpcJob;
 
 /// Fixed text of the import screen (spec/08 §1.2).
-pub const BTC_IMPORT_NOTE: &str = "이 지갑은 BIP84(bc1q…) 주소만 찾습니다";
+pub const BTC_IMPORT_NOTE: &str = "Bitcoin은 네이티브 세그윗(bc1q…, BIP84) 계정 0을 먼저 찾습니다. 탭루트·호환 세그윗·레거시 주소는 Bitcoin 탭의 [계정 추가]로 더하세요";
 /// Refresh / tracking period while unlocked (spec/08 §4.7, §12.2).
 pub const BTC_TICK_MS: u64 = BTC_POLL_SECS * 1_000;
 /// Activity rows shown.
@@ -76,6 +76,53 @@ pub const SERVER_BASED: &str = "(서버 기준)";
 pub const RESET_TIP_TEXT: &str = "이 지갑이 기록한 가장 높은 블록 높이를 지웁니다. 노드(RPC)가 전에 잘못된(너무 높은) 높이를 알려 줘 지금 연결 검사가 계속 실패하는 경우에만 하세요. 노드가 오래된 체인을 보여 주는 경우라면 초기화하지 말고 노드 설정을 확인하세요. 초기화할까요?";
 /// UTXO mark of a candidate Core's `gettxout` did not confirm this refresh.
 pub const INDEXER_ONLY: &str = "인덱서만 확인(노드 미확인)";
+
+/// Account switch / add refused while a BTC approval is open.
+pub const ACCOUNT_SWITCH_BUSY: &str =
+    "Bitcoin 승인이 진행 중이라 계정을 바꾸거나 추가할 수 없습니다";
+
+/// One row of the Bitcoin account list (spec/04 §2.6 Bitcoin).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BtcAccountRow {
+    /// Identity.
+    pub id: BtcAccountId,
+    /// `네이티브 세그윗 계정 0`, `탭루트 계정 1`, `가져온 키 · 레거시`.
+    pub name: String,
+    /// The address type with its prefix: `네이티브 세그윗 (bc1q…)`.
+    pub kind: String,
+    /// Available verified balance at the known tip (the account's last refresh).
+    pub available: Sats,
+    /// The selected account.
+    pub selected: bool,
+}
+
+/// `네이티브 세그윗 계정 0` / `가져온 키 · 레거시`.
+#[must_use]
+pub fn account_label(account: &BtcAccountKey) -> String {
+    account.display_name()
+}
+
+/// The address type with its prefix: `탭루트 (bc1p…)`, `레거시 (m·n…)`.
+#[must_use]
+pub fn account_type_text(account: &BtcAccountKey, net: BtcNetwork) -> String {
+    let script_type = account.script_type();
+    format!("{} ({})", script_type.name(), script_type.prefix(net))
+}
+
+/// The selected account of `net` in a persisted update (BIP84 account 0 unless another one of
+/// `net` is selected).
+fn active_of(update: &BtcMetaUpdate, net: BtcNetwork) -> Option<BtcMeta> {
+    let id = update.accounts.selected_on(net);
+    if id == BtcAccountId::PRIMARY {
+        update
+            .meta
+            .as_deref()
+            .filter(|meta| meta.network() == net)
+            .cloned()
+    } else {
+        update.accounts.get(net, id).cloned()
+    }
+}
 
 /// Everything the controller reads from the App (borrowed for one call).
 pub struct BtcCtx<'a> {
@@ -147,10 +194,47 @@ impl BtcCtx<'_> {
         core_network(self.settings.network)
     }
 
-    /// The meta mirror's `BtcMeta`.
+    /// The meta mirror's BIP84 account 0 (meta `btc`): the wallet's network copy and
+    /// `max_tip_seen` live here.
+    #[must_use]
+    pub fn primary_meta(&self) -> Option<&BtcMeta> {
+        self.meta.and_then(|meta| meta.btc.as_deref())
+    }
+
+    /// The selected account of the settings network (BIP84 account 0 unless another one of
+    /// this network is selected).
+    #[must_use]
+    pub fn active_id(&self) -> BtcAccountId {
+        self.meta.map_or(BtcAccountId::PRIMARY, |meta| {
+            meta.btc_accounts.selected_on(self.net())
+        })
+    }
+
+    /// The selected account's `BtcMeta` (every send, receive, refresh and balance is this
+    /// account's).
     #[must_use]
     pub fn btc_meta(&self) -> Option<&BtcMeta> {
-        self.meta.and_then(|meta| meta.btc.as_deref())
+        let id = self.active_id();
+        if id == BtcAccountId::PRIMARY {
+            self.primary_meta()
+        } else {
+            self.meta?.btc_accounts.get(self.net(), id)
+        }
+    }
+
+    /// Every account of the settings network, BIP84 account 0 first (the account list).
+    #[must_use]
+    pub fn accounts(&self) -> Vec<&BtcMeta> {
+        let net = self.net();
+        let mut out: Vec<&BtcMeta> = self
+            .primary_meta()
+            .filter(|meta| meta.network() == net)
+            .into_iter()
+            .collect();
+        if let Some(meta) = self.meta {
+            out.extend(meta.btc_accounts.of_network(net));
+        }
+        out
     }
 
     /// BTC records of every network.
@@ -160,10 +244,21 @@ impl BtcCtx<'_> {
             .map_or(&[], |journal| journal.btc_records.as_slice())
     }
 
+    /// Records of every account of the settings network (tracking follows all of them).
+    #[must_use]
+    pub fn network_records(&self) -> Vec<BtcRecord> {
+        let net = self.net();
+        self.all_records()
+            .iter()
+            .filter(|record| record.network == net)
+            .cloned()
+            .collect()
+    }
+
     /// The settings / meta mismatch, if any.
     #[must_use]
     pub fn mismatch(&self) -> Option<(BtcNetwork, BtcNetwork)> {
-        let meta = self.btc_meta()?.network();
+        let meta = self.primary_meta()?.network();
         (meta != self.net()).then_some((meta, self.net()))
     }
 
@@ -197,7 +292,7 @@ impl BtcCtx<'_> {
         if let Some((meta, settings)) = self.mismatch() {
             return Err(BtcGate::Mismatch { meta, settings });
         }
-        if self.btc_meta().is_none() {
+        if self.primary_meta().is_none() || self.btc_meta().is_none() {
             return Err(BtcGate::NoMeta);
         }
         if self.core_url(self.net()).is_none() {
@@ -219,7 +314,7 @@ impl BtcCtx<'_> {
         let core_url = self.core_url(net).ok_or(ErrorCode::Key005)?;
         let esplora_base =
             HttpsUrl::parse(self.esplora_text(net)).map_err(|_| ErrorCode::Btc006)?;
-        let meta_net = self.btc_meta().map_or(net, BtcMeta::network);
+        let meta_net = self.primary_meta().map_or(net, BtcMeta::network);
         Ok(BtcTarget {
             endpoint: BtcEndpoint {
                 net,
@@ -235,20 +330,16 @@ impl BtcCtx<'_> {
     #[must_use]
     pub fn chain_input(&self) -> ChainInput {
         ChainInput {
-            max_tip_seen: self.btc_meta().map_or(0, BtcMeta::max_tip_seen),
+            max_tip_seen: self.primary_meta().map_or(0, BtcMeta::max_tip_seen),
             now_unix_secs: self.now_unix_ms / 1_000,
         }
     }
 
-    /// Records of the settings network.
+    /// Records of the selected account on the settings network (D20 and every per-account rule,
+    /// spec/08 §12.1).
     #[must_use]
     pub fn records(&self) -> Vec<BtcRecord> {
-        let net = self.net();
-        self.all_records()
-            .iter()
-            .filter(|record| record.network == net)
-            .cloned()
-            .collect()
+        of_account(self.all_records(), self.net(), self.active_id())
     }
 
     /// The record `txid` of the settings network (the current one: the last in journal order,
@@ -258,9 +349,15 @@ impl BtcCtx<'_> {
         current_record(self.all_records(), self.net(), txid).cloned()
     }
 
-    /// Whether the settings network has an in-flight record (D20).
+    /// Whether the selected account has an in-flight record (D20: per account).
     #[must_use]
     pub fn in_flight(&self) -> bool {
+        in_flight(&self.records(), self.net())
+    }
+
+    /// Whether any account of the settings network has an in-flight record (tracking).
+    #[must_use]
+    pub fn network_in_flight(&self) -> bool {
         in_flight(self.all_records(), self.net())
     }
 
@@ -303,8 +400,8 @@ pub enum BtcAction {
     Key(Box<KeyJob>),
     /// Send an RPC worker job.
     Rpc(Box<RpcJob>),
-    /// Replace the meta mirror's `btc` (the key worker persisted it).
-    SetMeta(Option<Box<BtcMeta>>),
+    /// Replace the meta mirror's `btc` and `btc_accounts` (the key worker persisted them).
+    SetMeta(Option<Box<BtcMeta>>, Box<BtcAccounts>),
     /// Queue an approval item (A01).
     Enqueue(Box<BtcApprovalItem>),
     /// Write settings.json `bitcoin` (`key` = log name); a failed write stops the remaining
@@ -327,8 +424,8 @@ pub struct BtcApprovalItem {
     pub plan: SendPlan,
     /// Approval facts.
     pub facts: BtcSendFacts,
-    /// The account node.
-    pub account: AccountXpub,
+    /// The spending account (address type and keys).
+    pub account: BtcAccountKey,
     /// Core tip of the plan.
     pub tip_height: u32,
 }
@@ -493,10 +590,14 @@ pub struct BtcReceiveView {
     pub network: BtcNetwork,
     /// Receive index.
     pub index: u32,
-    /// Lowercase address.
+    /// The address as encoded (bech32 lowercase, base58 case-sensitive).
     pub address: String,
-    /// `m/84'/{coin}'/0'/0/{index}`.
+    /// `m/{44|49|84|86}'/{coin}'/{account}'/0/{index}`, or `가져온 키`.
     pub path: String,
+    /// The account name (`탭루트 계정 0`, `가져온 키 · 레거시`).
+    pub account: String,
+    /// The address type with its prefix (`탭루트 (bc1p…)`).
+    pub kind: String,
     /// QR payload `bitcoin:` + lowercase address.
     pub qr: String,
     /// The network banner (§2 table).
@@ -504,7 +605,7 @@ pub struct BtcReceiveView {
 }
 
 /// Discovery progress (spec/08 §3.4).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct BtcDiscoveryState {
     /// Running.
     pub running: bool,
@@ -516,7 +617,23 @@ pub struct BtcDiscoveryState {
     pub error: Option<String>,
     /// Job.
     pub job: u64,
+    /// The account being discovered (its result is applied to it).
+    pub account: BtcAccountId,
     cancel: Option<Arc<AtomicBool>>,
+}
+
+impl Default for BtcDiscoveryState {
+    fn default() -> Self {
+        Self {
+            running: false,
+            more: false,
+            checked: 0,
+            error: None,
+            job: 0,
+            account: BtcAccountId::PRIMARY,
+            cancel: None,
+        }
+    }
 }
 
 /// Where a signed transaction is in its send flow (spec/08 §11.1).
@@ -779,6 +896,12 @@ pub struct BtcUi {
     /// The send form of the last signed send, restored when the pre-check rejects it.
     last_form: Option<BtcSendForm>,
     receive_pending: bool,
+    /// The account of the running refresh (its result is applied to it).
+    refresh_account: BtcAccountId,
+    /// The account list message (switch refused, add failed).
+    pub account_message: Option<String>,
+    /// The add-account chooser is open (spec/04 BTC 계정 추가).
+    pub add_account_open: bool,
     next_job: u64,
 }
 
@@ -813,6 +936,9 @@ impl Default for BtcUi {
             slot: false,
             last_form: None,
             receive_pending: false,
+            refresh_account: BtcAccountId::PRIMARY,
+            account_message: None,
+            add_account_open: false,
             next_job: 0,
         }
     }
@@ -1026,7 +1152,9 @@ impl BtcUi {
     /// (yw-core `in_flight_replacements`, the Core check before a `Confirmed`, spec/08 §12.2).
     #[must_use]
     pub fn tracked(&self, ctx: &BtcCtx<'_>) -> Vec<TrackItem> {
-        let records = ctx.records();
+        // Every account of the network: a record keeps being tracked when another account is
+        // selected.
+        let records = ctx.network_records();
         let tip = self.tip_or_meta(ctx);
         let now_unix = ctx.now_unix_ms / 1_000;
         records
@@ -1048,7 +1176,7 @@ impl BtcUi {
 
     fn tip_or_meta(&self, ctx: &BtcCtx<'_>) -> u32 {
         self.tip
-            .or_else(|| ctx.btc_meta().map(BtcMeta::max_tip_seen))
+            .or_else(|| ctx.primary_meta().map(BtcMeta::max_tip_seen))
             .unwrap_or(0)
     }
 
@@ -1411,66 +1539,25 @@ impl BtcUi {
         if ctx.gate().is_err() || self.refresh.busy {
             return Vec::new();
         }
-        let (Some(meta), Ok(target)) = (ctx.btc_meta(), ctx.target()) else {
+        let Some(meta) = ctx.btc_meta().cloned() else {
             return Vec::new();
         };
-        let records = ctx.records();
-        let inflight_change = records
-            .iter()
-            .filter(|record| record.state.is_in_flight())
-            .filter_map(|record| record.change.map(|change| change.index))
-            .collect();
-        let work = RefreshJob {
-            account: *meta.account(),
-            receive_count: meta.receive_next(),
-            change_count: meta.change_next(),
-            known: meta.verified().iter().map(|utxo| utxo.outpoint).collect(),
-            inflight_change,
-            chain: ctx.chain_input(),
-            trigger,
-        };
-        let job = self.job();
-        self.refresh = BtcJobState {
-            job,
-            busy: true,
-            next_ms: ctx.now_ms.saturating_add(BTC_TICK_MS),
-        };
-        vec![btc_job(BtcRpcJob::Refresh { job, target, work })]
+        self.refresh_with(ctx, &meta, trigger)
     }
 
-    /// Discovery (spec/08 §3.4): full (also [다시 시도]) or "더 찾기" (`more`).
+    /// Discovery (spec/08 §3.4) of the selected account: full (also [다시 시도]) or "더 찾기"
+    /// (`more`). An imported key has one address and no discovery.
     pub fn discover(&mut self, ctx: &BtcCtx<'_>, more: bool) -> Vec<BtcAction> {
         if ctx.gate().is_err() || self.discovery.running {
             return Vec::new();
         }
-        let (Some(meta), Ok(target)) = (ctx.btc_meta(), ctx.target()) else {
+        let Some(meta) = ctx.btc_meta().cloned() else {
             return Vec::new();
         };
-        let discovery = if more {
-            Discovery::more(meta)
-        } else {
-            Discovery::full()
-        };
-        let cancel = Arc::new(AtomicBool::new(false));
-        let job = self.job();
-        self.discovery = BtcDiscoveryState {
-            running: true,
-            more,
-            checked: 0,
-            error: None,
-            job,
-            cancel: Some(Arc::clone(&cancel)),
-        };
-        vec![btc_job(BtcRpcJob::Discover {
-            job,
-            target,
-            work: DiscoveryJob {
-                account: *meta.account(),
-                discovery,
-                chain: ctx.chain_input(),
-            },
-            cancel,
-        })]
+        if meta.is_single() {
+            return Vec::new();
+        }
+        self.discover_with(ctx, &meta, more)
     }
 
     /// Cancels the running discovery (`discovery_done` stays false).
@@ -1495,13 +1582,15 @@ impl BtcUi {
         }
         self.receive_pending = true;
         let network = ctx.net();
+        let account = ctx.active_id();
         let op = if new {
             BtcMetaOp::NewReceiveAddress {
                 network,
+                account,
                 gap_confirmed,
             }
         } else {
-            BtcMetaOp::ReceiveAddress { network }
+            BtcMetaOp::ReceiveAddress { network, account }
         };
         vec![key_job(KeyJob::BtcMeta { op })]
     }
@@ -1521,14 +1610,15 @@ impl BtcUi {
     fn receive_view(meta: &BtcMeta, index: u32) -> Option<BtcReceiveView> {
         let address = meta.address(BtcChain::Receive, index).ok()?;
         let network = meta.network();
-        let text = address.as_str().to_ascii_lowercase();
+        // Exactly as encoded: bech32 is lowercase already, base58 is case-sensitive.
+        let text = address.as_str().to_owned();
+        let account = meta.account();
         Some(BtcReceiveView {
             network,
             index,
-            path: format!(
-                "m/84'/{}'/0'/0/{index}",
-                yw_core::btc::display::coin_number(network)
-            ),
+            path: account.path_text(network, BtcChain::Receive, index),
+            account: account_label(account),
+            kind: account_type_text(account, network),
             qr: format!("bitcoin:{text}"),
             address: text,
             banner: network.banner(),
@@ -1549,7 +1639,7 @@ impl BtcUi {
         if !ctx.btc_meta().is_some_and(BtcMeta::discovery_done) {
             return Some(DISCOVERY_INCOMPLETE.to_owned());
         }
-        if let Err(error) = check_can_send(ctx.all_records(), ctx.net()) {
+        if let Err(error) = check_can_send(&ctx.records(), ctx.net()) {
             return Some(error.to_string());
         }
         if self.slot {
@@ -1722,8 +1812,8 @@ impl BtcUi {
         let fee_input = fee.input()?;
         let job = self.job();
         let work = PrepareJob {
-            in_flight: in_flight_outpoints(ctx.all_records(), ctx.net()),
-            conflicts: abandoned_conflicts(ctx.all_records(), ctx.net(), ctx.now_unix_ms / 1_000),
+            in_flight: in_flight_outpoints(&ctx.records(), ctx.net()),
+            conflicts: abandoned_conflicts(&ctx.records(), ctx.net(), ctx.now_unix_ms / 1_000),
             meta,
             kind,
             fee: fee_input,
@@ -1781,7 +1871,7 @@ impl BtcUi {
     /// The record a fee bump replaces now (spec/08 §9: always the latest), with its source.
     #[must_use]
     pub fn bump_target(ctx: &BtcCtx<'_>) -> Option<BtcRecord> {
-        bump_target(ctx.all_records(), ctx.net()).cloned()
+        bump_target(&ctx.records(), ctx.net()).cloned()
     }
 
     /// Opens the fee-bump form for the current bump target (D20 allows it while in flight).
@@ -2045,8 +2135,109 @@ impl BtcUi {
         vec![key_job(KeyJob::BtcMeta {
             op: BtcMetaOp::Freeze {
                 network: ctx.net(),
+                account: ctx.active_id(),
                 outpoint,
                 frozen,
+            },
+        })]
+    }
+
+    // ----- accounts ---------------------------------------------------------------------------
+
+    /// The account list of the settings network (BIP84 account 0 first): name, address type with
+    /// its prefix, available verified balance at the known tip, selection.
+    #[must_use]
+    pub fn account_rows(&self, ctx: &BtcCtx<'_>) -> Vec<BtcAccountRow> {
+        let net = ctx.net();
+        let active = ctx.active_id();
+        let tip = self.tip_or_meta(ctx);
+        ctx.accounts()
+            .into_iter()
+            .map(|meta| {
+                let records = of_account(ctx.all_records(), net, meta.id());
+                BtcAccountRow {
+                    id: meta.id(),
+                    name: account_label(meta.account()),
+                    kind: account_type_text(meta.account(), net),
+                    available: meta
+                        .balance(tip, &in_flight_outpoints(&records, net))
+                        .available,
+                    selected: meta.id() == active,
+                }
+            })
+            .collect()
+    }
+
+    /// Clears what belongs to the previously selected account (forms, receive address,
+    /// per-account refresh facts, running discovery).
+    fn reset_account_view(&mut self) {
+        self.cancel_discovery();
+        self.discovery = BtcDiscoveryState::default();
+        self.refresh.busy = false;
+        self.refresh.job = 0;
+        self.send = BtcSendForm::default();
+        self.bump = BtcBumpForm::default();
+        self.receive = None;
+        self.receive_message = None;
+        self.pending_incoming = false;
+        self.verify_failures = 0;
+        self.hint_mismatch.clear();
+        self.indexer_only.clear();
+        self.auto_frozen = 0;
+        self.account_message = None;
+    }
+
+    /// Selects another account of the settings network (refused while a BTC approval is open).
+    pub fn select_account(&mut self, ctx: &BtcCtx<'_>, account: BtcAccountId) -> Vec<BtcAction> {
+        self.account_message = None;
+        if let Err(gate) = ctx.gate() {
+            self.account_message = Some(gate.text());
+            return Vec::new();
+        }
+        if account == ctx.active_id() {
+            return Vec::new();
+        }
+        if self.slot {
+            self.account_message = Some(ACCOUNT_SWITCH_BUSY.to_owned());
+            return Vec::new();
+        }
+        vec![key_job(KeyJob::BtcMeta {
+            op: BtcMetaOp::Select {
+                network: ctx.net(),
+                account,
+            },
+        })]
+    }
+
+    /// `계정 추가`: opens the address-type chooser.
+    pub fn open_add_account(&mut self, ctx: &BtcCtx<'_>) {
+        self.account_message = ctx.gate().err().map(BtcGate::text);
+        self.add_account_open = self.account_message.is_none();
+    }
+
+    /// Closes the chooser without adding.
+    pub fn close_add_account(&mut self) {
+        self.add_account_open = false;
+    }
+
+    /// Adds the next HD account of `script_type` (`m/{44|49|84|86}'/{coin}'/{n}'`); the key
+    /// worker stores and selects it, then discovery runs.
+    pub fn add_account(&mut self, ctx: &BtcCtx<'_>, script_type: ScriptType) -> Vec<BtcAction> {
+        self.account_message = None;
+        if let Err(gate) = ctx.gate() {
+            self.add_account_open = false;
+            self.account_message = Some(gate.text());
+            return Vec::new();
+        }
+        if self.slot {
+            self.add_account_open = false;
+            self.account_message = Some(ACCOUNT_SWITCH_BUSY.to_owned());
+            return Vec::new();
+        }
+        vec![key_job(KeyJob::BtcMeta {
+            op: BtcMetaOp::AddAccount {
+                network: ctx.net(),
+                script_type,
             },
         })]
     }
@@ -2071,7 +2262,10 @@ impl BtcUi {
         match result {
             Ok(update) => {
                 let meta = update.meta.clone();
-                let mut actions = vec![BtcAction::SetMeta(update.meta)];
+                // The selected account after the change (the mirror is updated by the first
+                // action, `ctx` still shows the previous one).
+                let active = active_of(&update, ctx.net());
+                let mut actions = vec![BtcAction::SetMeta(update.meta, update.accounts)];
                 match update.done {
                     BtcMetaDone::Created => {
                         logging::info("app", "btc.meta_created", &[]);
@@ -2080,10 +2274,29 @@ impl BtcUi {
                             actions.extend(self.discover_with(ctx, &meta, false));
                         }
                     }
+                    BtcMetaDone::AccountAdded(_) | BtcMetaDone::Selected(_) => {
+                        self.add_account_open = false;
+                        self.reset_account_view();
+                        if let Some(active) = active {
+                            logging::info(
+                                "app",
+                                "btc.account",
+                                &[(
+                                    "type",
+                                    Field::Word(active.account().script_type().json_name()),
+                                )],
+                            );
+                            actions.extend(if active.discovery_done() {
+                                self.refresh_with(ctx, &active, Trigger::User)
+                            } else {
+                                self.discover_with(ctx, &active, false)
+                            });
+                        }
+                    }
                     BtcMetaDone::Discovered => {
                         self.discovery.running = false;
                         self.discovery.error = None;
-                        if let Some(meta) = meta {
+                        if let Some(meta) = active {
                             actions.extend(self.refresh_with(ctx, &meta, Trigger::User));
                         }
                     }
@@ -2093,8 +2306,8 @@ impl BtcUi {
                     BtcMetaDone::Receive { index, issued } => {
                         if self.receive_pending {
                             self.receive_pending = false;
-                            self.receive = meta
-                                .as_deref()
+                            self.receive = active
+                                .as_ref()
                                 .and_then(|meta| Self::receive_view(meta, index));
                             if issued {
                                 logging::info(
@@ -2112,7 +2325,7 @@ impl BtcUi {
                         self.blocked = None;
                         self.indexer_verified = false;
                         actions.push(btc_job(BtcRpcJob::Reset));
-                        if let Some(meta) = meta {
+                        if let Some(meta) = active {
                             actions.extend(self.refresh_with(ctx, &meta, Trigger::User));
                         }
                     }
@@ -2125,6 +2338,11 @@ impl BtcUi {
                 actions
             }
             Err(error) => {
+                if self.add_account_open {
+                    self.add_account_open = false;
+                    self.account_message = Some(error.text());
+                    return Vec::new();
+                }
                 if self.receive_pending {
                     self.receive_pending = false;
                     if let BtcKeyError::Meta(MetaError::GapWarning { unused }) = error {
@@ -2165,6 +2383,7 @@ impl BtcUi {
             checked: 0,
             error: None,
             job,
+            account: meta.id(),
             cancel: Some(Arc::clone(&cancel)),
         };
         vec![btc_job(BtcRpcJob::Discover {
@@ -2173,13 +2392,23 @@ impl BtcUi {
             work: DiscoveryJob {
                 account: *meta.account(),
                 discovery,
-                chain: ChainInput {
-                    max_tip_seen: meta.max_tip_seen(),
-                    now_unix_secs: ctx.now_unix_ms / 1_000,
-                },
+                chain: Self::chain_of(ctx, meta),
             },
             cancel,
         })]
+    }
+
+    /// Chain-check inputs for a job on `meta`'s account: the wallet's `max_tip_seen` lives in
+    /// BIP84 account 0 (`meta` itself right after `Create`, before the mirror has it).
+    fn chain_of(ctx: &BtcCtx<'_>, meta: &BtcMeta) -> ChainInput {
+        ChainInput {
+            max_tip_seen: if meta.id() == BtcAccountId::PRIMARY {
+                meta.max_tip_seen()
+            } else {
+                ctx.chain_input().max_tip_seen
+            },
+            now_unix_secs: ctx.now_unix_ms / 1_000,
+        }
     }
 
     fn refresh_with(
@@ -2195,21 +2424,23 @@ impl BtcUi {
             return Vec::new();
         }
         target.meta_net = meta.network();
-        let records = ctx.records();
+        let records = of_account(ctx.all_records(), meta.network(), meta.id());
         let work = RefreshJob {
             account: *meta.account(),
             receive_count: meta.receive_next(),
             change_count: meta.change_next(),
             known: meta.verified().iter().map(|utxo| utxo.outpoint).collect(),
-            inflight_change: records
-                .iter()
-                .filter(|record| record.state.is_in_flight())
-                .filter_map(|record| record.change.map(|change| change.index))
-                .collect(),
-            chain: ChainInput {
-                max_tip_seen: meta.max_tip_seen(),
-                now_unix_secs: ctx.now_unix_ms / 1_000,
+            inflight_change: if meta.is_single() {
+                // One address: its own in-flight change shows no "미확정 입금".
+                Vec::new()
+            } else {
+                records
+                    .iter()
+                    .filter(|record| record.state.is_in_flight())
+                    .filter_map(|record| record.change.map(|change| change.index))
+                    .collect()
             },
+            chain: Self::chain_of(ctx, meta),
             trigger,
         };
         let job = self.job();
@@ -2218,6 +2449,7 @@ impl BtcUi {
             busy: true,
             next_ms: ctx.now_ms.saturating_add(BTC_TICK_MS),
         };
+        self.refresh_account = meta.id();
         vec![btc_job(BtcRpcJob::Refresh { job, target, work })]
     }
 
@@ -2422,6 +2654,7 @@ impl BtcUi {
                         vec![key_job(KeyJob::BtcMeta {
                             op: BtcMetaOp::Discovered {
                                 network: net,
+                                account: self.discovery.account,
                                 discovery: Box::new(found.discovery),
                             },
                         })]
@@ -2463,6 +2696,7 @@ impl BtcUi {
                         vec![key_job(KeyJob::BtcMeta {
                             op: BtcMetaOp::Refreshed {
                                 network: net,
+                                account: self.refresh_account,
                                 update: Box::new(BtcRefreshUpdate {
                                     listed: refreshed.listed(),
                                     newly: refreshed.newly(),
@@ -2499,7 +2733,7 @@ impl BtcUi {
                     Ok(prepared) => {
                         self.note_chain(prepared.chain.tip_height, prepared.chain.lag_warning);
                         self.floor = Some(prepared.floor);
-                        let Some(meta) = ctx.btc_meta() else {
+                        let Some(meta) = ctx.primary_meta() else {
                             return Vec::new();
                         };
                         let (fee, info) = if bump {
@@ -2525,7 +2759,7 @@ impl BtcUi {
                         actions.push(BtcAction::Enqueue(Box::new(BtcApprovalItem {
                             network: net,
                             facts: prepared.facts,
-                            account: *meta.account(),
+                            account: *prepared.plan.account(),
                             tip_height: prepared.chain.tip_height,
                             plan: prepared.plan,
                         })));
@@ -2750,7 +2984,7 @@ impl BtcUi {
         }
         Some(meta.balance(
             self.tip_or_meta(ctx),
-            &in_flight_outpoints(ctx.all_records(), ctx.net()),
+            &in_flight_outpoints(&ctx.records(), ctx.net()),
         ))
     }
 
@@ -2767,7 +3001,7 @@ impl BtcUi {
             return Vec::new();
         };
         let tip = self.tip_or_meta(ctx);
-        let in_flight = in_flight_outpoints(ctx.all_records(), ctx.net());
+        let in_flight = in_flight_outpoints(&ctx.records(), ctx.net());
         meta.verified()
             .iter()
             .map(|utxo| BtcUtxoView {
@@ -2789,7 +3023,7 @@ impl BtcUi {
     pub fn activity_rows(&self, ctx: &BtcCtx<'_>) -> Vec<BtcActivityView> {
         let net = ctx.net();
         let tip = self.tip_or_meta(ctx);
-        let bump = bump_target(ctx.all_records(), net).map(|record| record.txid);
+        let bump = bump_target(&ctx.records(), net).map(|record| record.txid);
         let mut rows: Vec<BtcActivityView> = ctx
             .records()
             .iter()
@@ -2820,7 +3054,11 @@ impl BtcUi {
             })
             .collect();
         if let Some(meta) = ctx.meta {
+            let tag = ctx.active_id().activity_tag();
             for entry in meta.activity_of(&network_id(net).to_string()) {
+                if entry.account != tag {
+                    continue;
+                }
                 if rows.iter().any(|row| row.txid == entry.tx_id) {
                     continue;
                 }
@@ -2849,7 +3087,7 @@ impl BtcUi {
     /// `Signed` records found in the journal ([전송 계속] / [취소], spec/08 §12.1).
     #[must_use]
     pub fn signed_records(&self, ctx: &BtcCtx<'_>) -> Vec<Txid> {
-        ctx.records()
+        ctx.network_records()
             .iter()
             .filter(|record| record.state == BtcTxState::Signed)
             .filter(|record| {
@@ -2932,9 +3170,10 @@ impl crate::app::App {
                         self.btc.status_error = Some(ErrorCode::Rpc001.text());
                     }
                 }
-                BtcAction::SetMeta(btc) => {
+                BtcAction::SetMeta(btc, accounts) => {
                     if let Some(meta) = self.meta.as_mut() {
                         meta.btc = btc;
+                        meta.btc_accounts = *accounts;
                     }
                 }
                 BtcAction::Enqueue(item) => {

@@ -340,7 +340,7 @@ fn probe_network(report: &mut Report, net: BtcNetwork, core_url: &HttpsUrl) -> T
     }
     let account = account().ok_or("account")?;
     let job = DiscoveryJob {
-        account,
+        account: yw_core::btc::BtcAccountKey::primary(account),
         discovery: yw_core::btc::Discovery::full(),
         chain: input,
     };

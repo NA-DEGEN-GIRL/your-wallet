@@ -68,7 +68,7 @@ fn fixture(tag: &str) -> TestResult<Fixture> {
     let slot = Box::new(LockedSlotBox::new().map_err(|error| format!("{error:?}"))?);
     vault.import_mnemonic(&password, ABANDON, None, slot, 1_793_000_000)?;
     let mut state = JournalState::default();
-    state.set_btc_meta(None);
+    state.set_btc_meta(None, yw_core::btc::BtcAccounts::default());
     Ok(Fixture { dir, vault, state })
 }
 
@@ -107,6 +107,7 @@ fn funded(fixture: &mut Fixture) -> TestResult<OutPoint> {
         fixture,
         BtcMetaOp::Refreshed {
             network: BtcNetwork::Testnet4,
+            account: yw_core::btc::BtcAccountId::PRIMARY,
             update: Box::new(BtcRefreshUpdate {
                 listed: vec![ListedUtxo {
                     outpoint,
@@ -227,6 +228,7 @@ fn meta_changes_are_persisted_before_they_are_reported() -> TestResult {
         &mut fixture,
         BtcMetaOp::ReceiveAddress {
             network: BtcNetwork::Testnet4,
+            account: yw_core::btc::BtcAccountId::PRIMARY,
         },
     )?;
     assert_eq!(
@@ -245,6 +247,7 @@ fn meta_changes_are_persisted_before_they_are_reported() -> TestResult {
         &mut fixture,
         BtcMetaOp::ReceiveAddress {
             network: BtcNetwork::Testnet4,
+            account: yw_core::btc::BtcAccountId::PRIMARY,
         },
     )?;
     assert_eq!(
@@ -258,6 +261,7 @@ fn meta_changes_are_persisted_before_they_are_reported() -> TestResult {
         &mut fixture,
         BtcMetaOp::NewReceiveAddress {
             network: BtcNetwork::Testnet4,
+            account: yw_core::btc::BtcAccountId::PRIMARY,
             gap_confirmed: false,
         },
     )?;
@@ -277,7 +281,8 @@ fn meta_changes_are_persisted_before_they_are_reported() -> TestResult {
         meta_op(
             &mut fixture,
             BtcMetaOp::ReceiveAddress {
-                network: BtcNetwork::Mainnet
+                network: BtcNetwork::Mainnet,
+                account: yw_core::btc::BtcAccountId::PRIMARY,
             }
         )
         .is_err()
@@ -331,7 +336,7 @@ fn startup_broadcasting_becomes_broadcast_unknown() -> TestResult {
     // Crash after the commit (`btc.after_broadcasting`) with a meta that still had
     // change_next 0: the restart normalizes the record and reconciles change_next.
     let mut restarted = JournalState::default();
-    restarted.set_btc_meta(Some(before));
+    restarted.set_btc_meta(Some(before), yw_core::btc::BtcAccounts::default());
     restarted.load(&fixture.vault)?;
     let outcomes = restarted.btc_startup(&mut fixture.vault, NOW_MS / 1_000 + 60, false);
     assert!(outcomes.iter().any(|outcome| matches!(
@@ -362,7 +367,10 @@ fn signed_record_kept_at_startup_then_cancelled() -> TestResult {
     let meta = fixture.state.btc_meta().ok_or("meta")?.clone();
     let txid = sign(&mut fixture, &plan(&meta, 5)?)?;
     let mut restarted = JournalState::default();
-    restarted.set_btc_meta(meta_on_disk(&fixture.vault)?);
+    restarted.set_btc_meta(
+        meta_on_disk(&fixture.vault)?,
+        yw_core::btc::BtcAccounts::default(),
+    );
     restarted.load(&fixture.vault)?;
     let outcomes = restarted.btc_startup(&mut fixture.vault, NOW_MS / 1_000, false);
     // Nothing to normalize: `Signed` stays for [전송 계속] / [취소].
@@ -421,7 +429,10 @@ fn damaged_btc_entry_stops_btc_signing_only() -> TestResult {
     let bytes = damaged.encode().map_err(|error| format!("{error:?}"))?;
     fixture.vault.save_sidecar(FileKind::Journal, &bytes)?;
     let mut state = JournalState::default();
-    state.set_btc_meta(fixture.state.btc_meta().cloned());
+    state.set_btc_meta(
+        fixture.state.btc_meta().cloned(),
+        yw_core::btc::BtcAccounts::default(),
+    );
     let view = state.load(&fixture.vault)?;
     assert_eq!(view.btc_corrupt, 1);
     assert!(view.btc_records.is_empty());
@@ -614,10 +625,13 @@ fn own_change_inserted_only_for_its_account() -> TestResult {
     let confirmed = TrackObservation::Confirmed { height: TIP - 1 };
     // Another account on the same journal (alt passphrase: meta in memory only).
     let main = fixture.state.btc_meta().ok_or("meta")?.clone();
-    let other = yw_core::bip32::derive_public_child(main.account(), 9)
+    let other = yw_core::bip32::derive_public_child(main.account().xpub().ok_or("xpub")?, 9)
         .map_err(|error| format!("{error:?}"))?;
     let mut alt = JournalState::default();
-    alt.set_btc_meta(Some(BtcMeta::new(BtcNetwork::Testnet4, other)));
+    alt.set_btc_meta(
+        Some(BtcMeta::new(BtcNetwork::Testnet4, other)),
+        yw_core::btc::BtcAccounts::default(),
+    );
     alt.load(&fixture.vault)?;
     let outcomes = alt.btc_journal(&mut fixture.vault, tracked(txid, confirmed), NOW_MS, true);
     assert!(matches!(
@@ -644,5 +658,205 @@ fn own_change_inserted_only_for_its_account() -> TestResult {
     assert_eq!(own.chain, BtcChain::Change);
     assert_eq!(own.index, change.index);
     assert_eq!(own.value, change.value);
+    Ok(())
+}
+
+/// The meta `btc_accounts` document on disk.
+fn accounts_on_disk(vault: &Vault) -> TestResult<yw_core::btc::BtcAccounts> {
+    let Some((_, plaintext)) = vault.open_sidecar(FileKind::Meta)? else {
+        return Ok(yw_core::btc::BtcAccounts::default());
+    };
+    Ok(meta::parse(plaintext.expose())
+        .map_err(|_| "meta parse")?
+        .meta
+        .btc_accounts)
+}
+
+/// spec/08 §3, §12.3a: `계정 추가` (HD) and an imported key's account on the key worker: stored in
+/// meta `btc_accounts` (BIP84 account 0 untouched) and selected before they are reported;
+/// selection switches; a refresh of another account changes only that account; a duplicate add
+/// is refused; signing with an imported key stops at the vault hook (not connected yet) with
+/// nothing journaled.
+#[test]
+#[expect(clippy::too_many_lines, reason = "the account ops in order on one vault")]
+fn accounts_are_stored_selected_and_imported_keys_wait_for_the_vault() -> TestResult {
+    use yw_core::btc::{BtcAccountId, BtcAccountKey, BtcPubKey, ScriptType, SignError};
+    let mut fixture = fixture("accounts")?;
+    funded(&mut fixture)?;
+    let primary = meta_on_disk(&fixture.vault)?.ok_or("primary")?;
+    let done = meta_op(
+        &mut fixture,
+        BtcMetaOp::AddAccount {
+            network: BtcNetwork::Testnet4,
+            script_type: ScriptType::P2shP2wpkh,
+        },
+    )?;
+    let nested = BtcAccountId::Hd {
+        script_type: ScriptType::P2shP2wpkh,
+        account: 0,
+    };
+    assert_eq!(done, BtcMetaDone::AccountAdded(nested));
+    let stored = accounts_on_disk(&fixture.vault)?;
+    assert_eq!(stored.selected, Some(nested));
+    let added = stored
+        .get(BtcNetwork::Testnet4, nested)
+        .ok_or("nested account")?;
+    assert!(!added.discovery_done());
+    assert_eq!(
+        added.account().node_text(BtcNetwork::Testnet4),
+        "m/49'/1'/0'"
+    );
+    assert_eq!(meta_on_disk(&fixture.vault)?, Some(primary.clone()));
+    // The same type again gets the next account number; the list never holds a duplicate.
+    let done = meta_op(
+        &mut fixture,
+        BtcMetaOp::AddAccount {
+            network: BtcNetwork::Testnet4,
+            script_type: ScriptType::P2shP2wpkh,
+        },
+    )?;
+    assert_eq!(
+        done,
+        BtcMetaDone::AccountAdded(BtcAccountId::Hd {
+            script_type: ScriptType::P2shP2wpkh,
+            account: 1,
+        })
+    );
+    // A refresh of the nested account changes it only.
+    let outpoint = OutPoint {
+        txid: Txid::from_bytes([0x55; 32]),
+        vout: 1,
+    };
+    meta_op(
+        &mut fixture,
+        BtcMetaOp::Refreshed {
+            network: BtcNetwork::Testnet4,
+            account: nested,
+            update: Box::new(BtcRefreshUpdate {
+                listed: vec![ListedUtxo {
+                    outpoint,
+                    chain: BtcChain::Receive,
+                    index: 0,
+                    height: TIP - 3,
+                }],
+                newly: vec![VerifiedUtxo {
+                    outpoint,
+                    value: Sats::new(42_000).ok_or("sats")?,
+                    chain: BtcChain::Receive,
+                    index: 0,
+                    height: TIP - 3,
+                    is_coinbase: false,
+                    own: false,
+                }],
+                history: Vec::new(),
+                max_tip_seen: TIP,
+                now_unix: 1_000,
+            }),
+        },
+    )?;
+    let stored = accounts_on_disk(&fixture.vault)?;
+    let nested_meta = stored.get(BtcNetwork::Testnet4, nested).ok_or("nested")?;
+    // Receive 0 was never issued: the listing is applied, history ignored.
+    assert_eq!(nested_meta.verified().len(), 1);
+    assert_eq!(
+        meta_on_disk(&fixture.vault)?.ok_or("primary")?.verified(),
+        primary.verified()
+    );
+    // Select back.
+    let done = meta_op(
+        &mut fixture,
+        BtcMetaOp::Select {
+            network: BtcNetwork::Testnet4,
+            account: BtcAccountId::PRIMARY,
+        },
+    )?;
+    assert_eq!(done, BtcMetaDone::Selected(BtcAccountId::PRIMARY));
+    assert_eq!(accounts_on_disk(&fixture.vault)?.selected, None);
+    // An imported key (public data only; the secret would be vault tag 4).
+    let public = yw_core::hex::decode_array::<33>(
+        "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    )?;
+    let key = BtcAccountKey::single([0x77; 16], ScriptType::P2tr, BtcPubKey::Compressed(public))
+        .map_err(|error| format!("{error:?}"))?;
+    let done = meta_op(
+        &mut fixture,
+        BtcMetaOp::AddImported {
+            network: BtcNetwork::Testnet4,
+            key,
+        },
+    )?;
+    assert_eq!(done, BtcMetaDone::AccountAdded(key.id()));
+    assert!(
+        meta_op(
+            &mut fixture,
+            BtcMetaOp::AddImported {
+                network: BtcNetwork::Testnet4,
+                key,
+            },
+        )
+        .is_err()
+    );
+    let stored = accounts_on_disk(&fixture.vault)?;
+    let single = stored
+        .get(BtcNetwork::Testnet4, key.id())
+        .ok_or("imported account")?
+        .clone();
+    assert!(single.discovery_done() && single.is_single());
+    assert_eq!(single.receive_next(), 1);
+    // Fund its one address and try to sign: the vault hook refuses, nothing is journaled.
+    let imported_outpoint = OutPoint {
+        txid: Txid::from_bytes([0x66; 32]),
+        vout: 0,
+    };
+    meta_op(
+        &mut fixture,
+        BtcMetaOp::Refreshed {
+            network: BtcNetwork::Testnet4,
+            account: key.id(),
+            update: Box::new(BtcRefreshUpdate {
+                listed: vec![ListedUtxo {
+                    outpoint: imported_outpoint,
+                    chain: BtcChain::Receive,
+                    index: 0,
+                    height: TIP - 3,
+                }],
+                newly: vec![VerifiedUtxo {
+                    outpoint: imported_outpoint,
+                    value: Sats::new(80_000).ok_or("sats")?,
+                    chain: BtcChain::Receive,
+                    index: 0,
+                    height: TIP - 3,
+                    is_coinbase: false,
+                    own: false,
+                }],
+                history: vec![(BtcChain::Receive, 0, 1)],
+                max_tip_seen: TIP,
+                now_unix: 1_000,
+            }),
+        },
+    )?;
+    let single = accounts_on_disk(&fixture.vault)?
+        .get(BtcNetwork::Testnet4, key.id())
+        .ok_or("imported account")?
+        .clone();
+    let plan = plan(&single, 3)?;
+    assert_eq!(plan.change().map(|change| change.index), Some(0));
+    let approved = approve(&single, &plan)?;
+    let before = reload(&fixture)?.len();
+    let outcomes = fixture.state.sign_btc(
+        &mut fixture.vault,
+        Box::new(approved),
+        &plan,
+        TIP,
+        NOW_MS,
+        false,
+    );
+    assert!(matches!(
+        outcomes.first(),
+        Some(KeyOutcome::SignedBtc(Err(BtcSignFailure::Sign(
+            SignError::ImportedKeyUnavailable
+        ))))
+    ));
+    assert_eq!(reload(&fixture)?.len(), before);
     Ok(())
 }
