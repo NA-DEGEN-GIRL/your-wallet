@@ -1,5 +1,5 @@
 //! ST-1 (spec/04 §6.5): `settings.json` validation, per-key fallback with banners, and the
-//! fixed-order round trip.
+//! fixed-order round trip. Format compatibility with fixture files is in `compat.rs`.
 
 use yw_app::network::{BtcNet, SolCluster};
 use yw_app::settings::{
@@ -28,13 +28,17 @@ fn absent_file_and_whole_file_errors_use_defaults() {
     assert!(load(None).banners.is_empty());
     for bad in [
         b"not json".as_slice(),
-        br#"{"version":2}"#,
+        br#"{"version":0}"#,
+        br#"{"version":"2"}"#,
+        br#"{"version":-1}"#,
+        br#"{"version":1.5}"#,
         br"[]",
         br#"{"version":1,"version":1}"#,
         br#"{"autoLockMinutes":5}"#,
     ] {
         let loaded = load(Some(bad));
         assert_eq!(loaded.settings, Settings::default());
+        assert_eq!(loaded.settings.read_only(), None);
         assert_eq!(loaded.banners, ["settings.json"]);
     }
     let oversized = format!(r#"{{"version":1,"logLevel":"{}"}}"#, "x".repeat(70_000));
@@ -192,7 +196,15 @@ fn scalar_keys_and_unknown_keys() {
     assert_eq!(loaded.settings.log_level, LogLevel::Debug);
     assert_eq!(loaded.settings.solana.cluster, SolCluster::Devnet);
     assert!(!loaded.settings.llm_explain.enabled);
-    assert_eq!(loaded.banners, ["autoLockMinutes", "rpcUrl", "llm_explain"]);
+    // An unknown top-level key is a newer minor version's: kept without a banner (§6.6); unknown
+    // keys inside a known object still reset that object.
+    assert_eq!(loaded.banners, ["autoLockMinutes", "llm_explain"]);
+    assert_eq!(loaded.settings.compat.unknown_keys(), ["rpcUrl"]);
+    let text = String::from_utf8(loaded.settings.to_json()).unwrap();
+    assert!(
+        text.ends_with(r#""logLevel":"debug","rpcUrl":"x"}"#),
+        "{text}"
+    );
 }
 
 #[test]

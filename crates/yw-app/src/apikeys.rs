@@ -3,7 +3,12 @@
 //! encrypted with DPAPI for the current user. A whole URL is a secret (token in the path, endpoint
 //! name in the host): values are never logged or displayed; screens use [`mask_url`].
 //!
-//! Also the pure helpers of spec/04 §2.11.1: [`template_url`] and [`mask_url`].
+//! Also the pure helpers of spec/04 §2.11.1: [`template_url`] and [`mask_url`], and the S15
+//! `QuickNode` input helper [`quicknode_credentials`] that accepts a pasted endpoint URL.
+//!
+//! Format compatibility (spec/04 §6.6): `rpc:` entries of networks that are not registered now
+//! (orphans) and entries with names this version does not know are never used, but they are kept
+//! ("dormant") and written back on every save until the user removes them explicitly.
 
 use core::fmt;
 
@@ -102,10 +107,36 @@ fn valid_value(name: KeyName, value: &str) -> bool {
     }
 }
 
+/// The name of a newer version's entry: `^[a-z0-9][a-z0-9:._-]*$` (length checked by the caller),
+/// not a malformed name of a known family (`rpc:eip155:<not a canonical chain id>`).
+fn valid_unknown_name(text: &str) -> bool {
+    let mut bytes = text.bytes();
+    bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        && bytes.all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b':' | b'.' | b'_' | b'-')
+        })
+        && !text.starts_with("rpc:eip155:")
+        && text != "rpc:"
+}
+
+/// An entry kept only to be written back (spec/04 §6.6): never an endpoint, credential or key.
+struct Dormant {
+    /// Entry name (ASCII, not secret).
+    name: String,
+    /// Value bytes as read (may be secret).
+    value: Zeroizing<Vec<u8>>,
+}
+
 /// The decrypted entries, owned by the UI thread (spec/04 §6.3).
 #[derive(Default)]
 pub struct ApiKeys {
     entries: Vec<(KeyName, Zeroizing<String>)>,
+    /// Orphan `rpc:` entries and unknown names, in file order (spec/04 §6.6).
+    dormant: Vec<Dormant>,
 }
 
 impl fmt::Debug for ApiKeys {
@@ -118,16 +149,17 @@ impl fmt::Debug for ApiKeys {
         formatter
             .debug_struct("ApiKeys")
             .field("names", &names)
+            .field("dormant", &self.dormant_names())
             .finish()
     }
 }
 
-/// Decoding result: entries plus the names of ignored orphan `rpc:eip155:*` entries.
+/// Decoding result: entries plus the names of orphan `rpc:` entries (networks not registered now).
 #[derive(Debug)]
 pub struct Decoded {
-    /// Registered entries.
+    /// Registered entries (orphans and unknown names are kept dormant inside, never used).
     pub keys: ApiKeys,
-    /// Orphans (logged by name, dropped at the next save).
+    /// Orphans (logged by name; kept and written back, spec/04 §6.6).
     pub orphans: Vec<KeyName>,
 }
 
@@ -151,12 +183,16 @@ impl<'a> Reader<'a> {
 
 impl ApiKeys {
     /// Decodes the plaintext. `registered(network)` answers whether an `rpc:` network is known
-    /// (built-in, user EVM chain from settings, Solana, Bitcoin); unknown `rpc:eip155:*` entries are
-    /// orphans and dropped.
+    /// (built-in, user EVM chain from settings, Solana, Bitcoin); other `rpc:` entries are orphans.
+    /// Orphans and entries whose name this version does not know (a newer version's) are kept
+    /// dormant: never used, written back by [`ApiKeys::encode`] (spec/04 §6.6).
     ///
     /// # Errors
     ///
-    /// [`ApiKeysFormatError`] for any format violation (all entries then count as absent).
+    /// [`ApiKeysFormatError`] for any format violation (all entries then count as absent): bad
+    /// magic, count, lengths, duplicate names, a malformed name of a known family
+    /// (`rpc:eip155:01`), a name outside `[a-z0-9:._-]`, an invalid value of a known name, or
+    /// trailing bytes.
     pub fn decode(
         plain: &[u8],
         registered: &dyn Fn(NetworkId) -> bool,
@@ -177,21 +213,19 @@ impl ApiKeys {
         }
         let mut keys = ApiKeys::default();
         let mut orphans = Vec::new();
-        let mut seen: Vec<KeyName> = Vec::new();
+        let mut seen: Vec<&str> = Vec::new();
         for _ in 0..count {
             let name_len = usize::from(reader.byte().ok_or(ApiKeysFormatError)?);
             if !(1..=MAX_NAME).contains(&name_len) {
                 return Err(ApiKeysFormatError);
             }
             let name_bytes = reader.take(name_len).ok_or(ApiKeysFormatError)?;
-            let name = core::str::from_utf8(name_bytes)
-                .ok()
-                .and_then(KeyName::parse)
-                .ok_or(ApiKeysFormatError)?;
-            if seen.contains(&name) {
+            let name_text = core::str::from_utf8(name_bytes).map_err(|_| ApiKeysFormatError)?;
+            let name = KeyName::parse(name_text);
+            if (name.is_none() && !valid_unknown_name(name_text)) || seen.contains(&name_text) {
                 return Err(ApiKeysFormatError);
             }
-            seen.push(name);
+            seen.push(name_text);
             let length_bytes = reader.take(2).ok_or(ApiKeysFormatError)?;
             let value_len = usize::from(u16::from_be_bytes(
                 length_bytes.try_into().map_err(|_| ApiKeysFormatError)?,
@@ -200,6 +234,14 @@ impl ApiKeys {
                 return Err(ApiKeysFormatError);
             }
             let value_bytes = reader.take(value_len).ok_or(ApiKeysFormatError)?;
+            let Some(name) = name else {
+                // A newer version's entry: opaque bytes, kept for write-back.
+                keys.dormant.push(Dormant {
+                    name: name_text.to_owned(),
+                    value: Zeroizing::new(value_bytes.to_vec()),
+                });
+                continue;
+            };
             let value = core::str::from_utf8(value_bytes).map_err(|_| ApiKeysFormatError)?;
             if !valid_value(name, value) {
                 return Err(ApiKeysFormatError);
@@ -208,6 +250,10 @@ impl ApiKeys {
                 && !registered(network)
             {
                 orphans.push(name);
+                keys.dormant.push(Dormant {
+                    name: name_text.to_owned(),
+                    value: Zeroizing::new(value_bytes.to_vec()),
+                });
                 continue;
             }
             let mut owned = Zeroizing::new(String::with_capacity(value.len()));
@@ -220,26 +266,64 @@ impl ApiKeys {
         Ok(Decoded { keys, orphans })
     }
 
-    /// Builds the plaintext from the current entries.
+    /// Builds the plaintext from the current entries followed by the dormant ones (spec/04 §6.6).
+    /// Dormant entries beyond the 48-entry bound are left out (the active entries always fit).
     #[must_use]
     pub fn encode(&self) -> Zeroizing<Vec<u8>> {
+        let dormant_room = APIKEYS_MAX_ENTRIES.saturating_sub(self.entries.len());
+        let dormant = self.dormant.iter().take(dormant_room);
         let mut out = Zeroizing::new(Vec::with_capacity(
             self.entries
                 .iter()
-                .map(|(_, value)| value.len().saturating_add(40))
+                .map(|(_, value)| value.len())
+                .chain(dormant.clone().map(|entry| entry.value.len()))
+                .map(|len| len.saturating_add(40))
                 .sum::<usize>()
                 .saturating_add(9),
         ));
         out.extend_from_slice(APIKEYS_MAGIC);
-        out.push(u8::try_from(self.entries.len()).unwrap_or(0));
-        for (name, value) in &self.entries {
-            let name = name.to_string();
+        let count = self
+            .entries
+            .len()
+            .saturating_add(self.dormant.len().min(dormant_room));
+        out.push(u8::try_from(count).unwrap_or(0));
+        let mut push = |name: &str, value: &[u8]| {
             out.push(u8::try_from(name.len()).unwrap_or(0));
             out.extend_from_slice(name.as_bytes());
             out.extend_from_slice(&u16::try_from(value.len()).unwrap_or(0).to_be_bytes());
-            out.extend_from_slice(value.as_bytes());
+            out.extend_from_slice(value);
+        };
+        for (name, value) in &self.entries {
+            push(&name.to_string(), value.as_bytes());
+        }
+        for entry in dormant {
+            push(&entry.name, &entry.value);
         }
         out
+    }
+
+    /// Names of the dormant entries (orphan `rpc:` entries and unknown names), not secret.
+    #[must_use]
+    pub fn dormant_names(&self) -> Vec<String> {
+        self.dormant
+            .iter()
+            .map(|entry| entry.name.clone())
+            .collect()
+    }
+
+    /// Removes every dormant entry (an explicit user action only, spec/04 §6.6); returns how many
+    /// were removed. The caller saves.
+    pub fn prune_dormant(&mut self) -> usize {
+        let count = self.dormant.len();
+        self.dormant.clear();
+        count
+    }
+
+    fn drop_dormant(&mut self, name: KeyName) -> bool {
+        let text = name.to_string();
+        let before = self.dormant.len();
+        self.dormant.retain(|entry| entry.name != text);
+        before != self.dormant.len()
     }
 
     fn get(&self, name: KeyName) -> Option<&str> {
@@ -252,6 +336,8 @@ impl ApiKeys {
     fn set(&mut self, name: KeyName, value: &str) {
         let mut owned = Zeroizing::new(String::with_capacity(value.len()));
         owned.push_str(value);
+        // A new value replaces a dormant entry of the same name (e.g. a chain added again).
+        self.drop_dormant(name);
         if let Some(slot) = self.entries.iter_mut().find(|(entry, _)| *entry == name) {
             slot.1 = owned;
         } else {
@@ -259,11 +345,12 @@ impl ApiKeys {
         }
     }
 
-    /// Removes an entry; returns whether it existed.
+    /// Removes an entry (also a dormant one of the same name); returns whether one existed.
     pub fn remove(&mut self, name: KeyName) -> bool {
         let before = self.entries.len();
         self.entries.retain(|(entry, _)| *entry != name);
-        before != self.entries.len()
+        let dormant = self.drop_dormant(name);
+        before != self.entries.len() || dormant
     }
 
     /// Whether `name` is stored.
@@ -535,6 +622,109 @@ pub fn template_url(
         _ => return None,
     }
     HttpsUrl::parse(&text).ok()
+}
+
+/// Takes apart a `QuickNode` endpoint URL copied from the dashboard: `https://<name>.quiknode.pro/
+/// <token>/…` or `https://<name>.<subdomain>.quiknode.pro/<token>/…` (the WSS form `wss://…` shows
+/// the same name and token). Returns the lowercase endpoint name and the token; the subdomain and
+/// any path after the token (`nanoreth`, `evm`) are dropped because the template tables add them
+/// per network (spec/04 §2.11.1). `None` when `text` is not such a URL.
+#[must_use]
+pub fn parse_quicknode_url(text: &str) -> Option<(String, Zeroizing<String>)> {
+    let text = text.trim();
+    let scheme_end = text.find("://")?;
+    let scheme = text.get(..scheme_end)?;
+    if !scheme.eq_ignore_ascii_case("https") && !scheme.eq_ignore_ascii_case("wss") {
+        return None;
+    }
+    let rest = text.get(scheme_end.checked_add(3)?..)?;
+    let mut https = Zeroizing::new(String::with_capacity(rest.len().saturating_add(8)));
+    https.push_str("https://");
+    https.push_str(rest);
+    let url = HttpsUrl::parse(&https).ok()?;
+    if url.port().is_some() {
+        return None;
+    }
+    let labels = url.host().strip_suffix(".quiknode.pro")?;
+    let mut parts = labels.split('.');
+    let name = parts.next().filter(|name| valid_quicknode_name(name))?;
+    match (parts.next(), parts.next()) {
+        (None, _) => {}
+        (Some(subdomain), None) if is_dns_label(subdomain) => {}
+        _ => return None,
+    }
+    let token = url
+        .path()
+        .strip_prefix('/')?
+        .split(['/', '?'])
+        .next()
+        .filter(|token| valid_provider_token(token))?;
+    let mut secret = Zeroizing::new(String::with_capacity(token.len()));
+    secret.push_str(token);
+    Some((name.to_owned(), secret))
+}
+
+/// The S15 `QuickNode` field an input error refers to (the E-KEY-002 `{항목}`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuickNodeField {
+    /// `엔드포인트 이름`.
+    Name,
+    /// `토큰`.
+    Token,
+}
+
+impl QuickNodeField {
+    /// The item name shown in E-KEY-002.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Name => "엔드포인트 이름",
+            Self::Token => "토큰",
+        }
+    }
+}
+
+/// The `QuickNode` credential from the two S15 fields (spec/04 §2.11): either field may hold the
+/// whole endpoint URL from the dashboard ([`parse_quicknode_url`]); the other field is then empty,
+/// the same URL or the matching part. Otherwise the name is lowercased and both are checked
+/// (`^[a-z0-9]+(-[a-z0-9]+)*$` 1–63, token `^[A-Za-z0-9_-]{16,128}$`). Surrounding spaces are
+/// ignored.
+///
+/// # Errors
+///
+/// The [`QuickNodeField`] to name in E-KEY-002.
+pub fn quicknode_credentials(
+    name_field: &str,
+    token_field: &str,
+) -> Result<(String, Zeroizing<String>), QuickNodeField> {
+    let name_in = name_field.trim();
+    let token_in = token_field.trim();
+    let from_name = parse_quicknode_url(name_in);
+    let from_token = parse_quicknode_url(token_in);
+    let Some((name, token)) = from_name.as_ref().or(from_token.as_ref()) else {
+        let lower = name_in.to_ascii_lowercase();
+        if !valid_quicknode_name(&lower) {
+            return Err(QuickNodeField::Name);
+        }
+        if !valid_provider_token(token_in) {
+            return Err(QuickNodeField::Token);
+        }
+        let mut secret = Zeroizing::new(String::with_capacity(token_in.len()));
+        secret.push_str(token_in);
+        return Ok((lower, secret));
+    };
+    let same = |parsed: &Option<(String, Zeroizing<String>)>| {
+        parsed
+            .as_ref()
+            .is_some_and(|(other_name, other_token)| other_name == name && other_token == token)
+    };
+    if !(name_in.is_empty() || name_in.eq_ignore_ascii_case(name) || same(&from_name)) {
+        return Err(QuickNodeField::Name);
+    }
+    if !(token_in.is_empty() || token_in == token.as_str() || same(&from_token)) {
+        return Err(QuickNodeField::Token);
+    }
+    Ok((name.clone(), token.clone()))
 }
 
 /// `mask_url` (spec/04 §2.11.1): `https://●●●●` + provider suffix (`.quiknode.pro` /

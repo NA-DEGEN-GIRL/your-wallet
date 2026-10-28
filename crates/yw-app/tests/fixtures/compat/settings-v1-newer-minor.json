@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "autoLockMinutes": 15,
+  "uiTheme": "dark",
+  "evmChainId": 84532,
+  "evmChains": [
+    {
+      "chainId": 84532,
+      "name": "Base Sepolia",
+      "symbol": "ETH",
+      "decimals": 18,
+      "simulation": "auto",
+      "genesisHash": "0xba5eba5eba5eba5eba5eba5eba5eba5eba5eba5eba5eba5eba5eba5eba5eba5e"
+    }
+  ],
+  "rpc": { "template": "manual" },
+  "logLevel": "info",
+  "addressLabels": { "enabled": true, "sources": ["local", "ens"], "limit": 500 }
+}

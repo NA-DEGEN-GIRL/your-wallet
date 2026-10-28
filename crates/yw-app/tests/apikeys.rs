@@ -100,7 +100,20 @@ fn format_errors_reject_everything() {
         format!("rpc:eip155:{}", "1".repeat(22)),
         long_url(1),
     )]));
-    cases.push(plaintext(&[("tpl:infura".to_owned(), KEY.to_owned())]));
+    // Names outside `[a-z0-9:._-]` and malformed names of a known family are damage, not a newer
+    // version's entry.
+    cases.push(plaintext(&[("TPL:infura".to_owned(), KEY.to_owned())]));
+    cases.push(plaintext(&[("tpl infura".to_owned(), KEY.to_owned())]));
+    cases.push(plaintext(&[("rpc:eip155:abc".to_owned(), long_url(1))]));
+    cases.push(plaintext(&[("rpc:".to_owned(), long_url(1))]));
+    cases.push(plaintext(&[
+        ("tpl:infura".to_owned(), KEY.to_owned()),
+        ("tpl:infura".to_owned(), KEY.to_owned()),
+    ]));
+    cases.push(plaintext(&[(
+        "rpc:eip155:84532".to_owned(),
+        "http://h.example/".to_owned(),
+    )]));
     cases.push(plaintext(&[(
         "tpl:quicknode".to_owned(),
         format!("{NAME}{TOKEN}"),
@@ -131,7 +144,7 @@ fn format_errors_reject_everything() {
 }
 
 #[test]
-fn unregistered_rpc_entries_are_orphans_and_dropped_on_save() {
+fn unregistered_rpc_entries_are_orphans_kept_on_save() {
     let settings = Settings::default();
     let registered = |network: NetworkId| yw_app::apikeys::is_registered(&settings, network);
     let bytes = plaintext(&[
@@ -140,12 +153,147 @@ fn unregistered_rpc_entries_are_orphans_and_dropped_on_save() {
     ]);
     let decoded = ApiKeys::decode(&bytes, &registered).unwrap();
     assert_eq!(decoded.orphans, [KeyName::Rpc(NetworkId::Eip155(8_453))]);
+    // Not an endpoint while unregistered, but written back (spec/04 §6.6).
+    assert_eq!(
+        decoded.keys.names(),
+        [KeyName::Rpc(NetworkId::Eip155(11_155_111))]
+    );
+    assert_eq!(decoded.keys.endpoints().len(), 1);
+    assert_eq!(decoded.keys.dormant_names(), ["rpc:eip155:8453"]);
     let saved = decoded.keys.encode();
     let again = ApiKeys::decode(&saved, &all_registered).unwrap();
     assert_eq!(
         again.keys.names(),
+        [
+            KeyName::Rpc(NetworkId::Eip155(11_155_111)),
+            KeyName::Rpc(NetworkId::Eip155(8_453))
+        ]
+    );
+    assert_eq!(
+        again
+            .keys
+            .rpc_url(NetworkId::Eip155(8_453))
+            .unwrap()
+            .expose(),
+        long_url(1)
+    );
+    // Setting the network again replaces the dormant entry; removing it removes it.
+    let mut keys = ApiKeys::decode(&bytes, &registered).unwrap().keys;
+    let fresh = HttpsUrl::parse("https://fresh.example/rpc").unwrap();
+    keys.set_rpc(NetworkId::Eip155(8_453), &fresh);
+    assert!(keys.dormant_names().is_empty());
+    let replaced = ApiKeys::decode(&keys.encode(), &all_registered).unwrap();
+    assert_eq!(
+        replaced
+            .keys
+            .rpc_url(NetworkId::Eip155(8_453))
+            .unwrap()
+            .expose(),
+        fresh.expose()
+    );
+    let mut keys = ApiKeys::decode(&bytes, &registered).unwrap().keys;
+    assert!(keys.remove(KeyName::Rpc(NetworkId::Eip155(8_453))));
+    assert!(keys.dormant_names().is_empty());
+    let mut keys = ApiKeys::decode(&bytes, &registered).unwrap().keys;
+    assert_eq!(keys.prune_dormant(), 1);
+    assert_eq!(
+        ApiKeys::decode(&keys.encode(), &all_registered)
+            .unwrap()
+            .keys
+            .names(),
         [KeyName::Rpc(NetworkId::Eip155(11_155_111))]
     );
+}
+
+#[test]
+fn unknown_entry_names_are_kept_verbatim() {
+    // A newer version's entries: opaque values (not UTF-8 here), never used, written back.
+    let mut entries = full_set();
+    entries.truncate(10);
+    let mut bytes = plaintext(&entries);
+    let opaque: [u8; 4] = [0xff, 0x00, 0x80, 0x7f];
+    bytes[8] += 2;
+    bytes.extend(entry("tpl:infura", KEY));
+    bytes.push(u8::try_from("rpc:solana:testnet".len()).unwrap());
+    bytes.extend_from_slice(b"rpc:solana:testnet");
+    bytes.extend_from_slice(&4_u16.to_be_bytes());
+    bytes.extend_from_slice(&opaque);
+    let decoded = ApiKeys::decode(&bytes, &all_registered).unwrap();
+    assert!(decoded.orphans.is_empty());
+    assert_eq!(
+        decoded.keys.dormant_names(),
+        ["tpl:infura", "rpc:solana:testnet"]
+    );
+    assert_eq!(decoded.keys.names().len(), 10);
+    assert_eq!(decoded.keys.encode().as_slice(), bytes.as_slice());
+    // Dormant entries give way to the 48-entry bound; the active entries always fit.
+    let mut keys = ApiKeys::decode(&bytes, &all_registered).unwrap().keys;
+    for index in 0..38_u64 {
+        keys.set_rpc(
+            NetworkId::Eip155(20_000 + index),
+            &HttpsUrl::parse(&format!("https://h{index}.example/")).unwrap(),
+        );
+    }
+    let capped = keys.encode();
+    assert_eq!(capped[8], 48);
+    let again = ApiKeys::decode(&capped, &all_registered).unwrap();
+    assert_eq!(again.keys.names().len(), 48);
+    assert!(again.keys.dormant_names().is_empty());
+}
+
+#[test]
+fn pasted_quicknode_urls_give_name_and_token() {
+    use yw_app::apikeys::{QuickNodeField, parse_quicknode_url, quicknode_credentials};
+    let host = ".quiknode.pro/";
+    let mainnet = format!("https://{NAME}{host}{TOKEN}/");
+    let sepolia = format!("  https://Fake-Node.ethereum-sepolia{host}{TOKEN}/  ");
+    let hyperevm = format!("https://{NAME}.hype-mainnet{host}{TOKEN}/nanoreth");
+    let wss = format!("wss://{NAME}.btc-testnet4{host}{TOKEN}/");
+    for url in [&mainnet, &sepolia, &hyperevm, &wss] {
+        let (name, token) = parse_quicknode_url(url).unwrap();
+        assert_eq!(name, NAME, "{url}");
+        assert_eq!(token.as_str(), TOKEN, "{url}");
+    }
+    for bad in [
+        format!("http://{NAME}{host}{TOKEN}/"),
+        format!("https://{NAME}.a.b{host}{TOKEN}/"),
+        format!("https://{NAME}.quiknode.pro:8443/{TOKEN}/"),
+        format!("https://{NAME}{host}short/"),
+        format!("https://{NAME}.g.alchemy.com/v2/{KEY}"),
+        format!("https://{NAME}{host}"),
+        NAME.to_owned(),
+    ] {
+        assert!(parse_quicknode_url(&bad).is_none(), "{bad}");
+    }
+    // Either field may hold the whole URL.
+    for (name_field, token_field) in [
+        (mainnet.as_str(), ""),
+        ("", hyperevm.as_str()),
+        (sepolia.as_str(), TOKEN),
+        ("FAKE-NODE", mainnet.as_str()),
+        (mainnet.as_str(), mainnet.as_str()),
+        (" Fake-Node ", TOKEN),
+    ] {
+        let (name, token) = quicknode_credentials(name_field, token_field).unwrap();
+        assert_eq!((name.as_str(), token.as_str()), (NAME, TOKEN));
+    }
+    assert_eq!(
+        quicknode_credentials(&mainnet, "OtherToken_0123456789abcdef"),
+        Err(QuickNodeField::Token)
+    );
+    assert_eq!(
+        quicknode_credentials("other-node", &mainnet),
+        Err(QuickNodeField::Name)
+    );
+    assert_eq!(
+        quicknode_credentials("fake_node", TOKEN),
+        Err(QuickNodeField::Name)
+    );
+    assert_eq!(
+        quicknode_credentials(NAME, &TOKEN[..15]),
+        Err(QuickNodeField::Token)
+    );
+    assert_eq!(QuickNodeField::Token.label(), "토큰");
 }
 
 #[test]

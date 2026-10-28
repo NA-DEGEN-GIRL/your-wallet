@@ -1,4 +1,5 @@
-//! Receive QR (spec/04 §2.8): EIP-681 `ethereum:<EIP-55 address>@<chainId>` encoded with
+//! Receive QR (spec/04 §2.8): EIP-681 `ethereum:<EIP-55 address>@<chainId>` (or, by
+//! [`EvmQrKind::PlainAddress`], the bare EIP-55 address for exchange apps) encoded with
 //! `qrcodegen` (ECC Medium) and painted with GDI rectangles, four quiet-zone modules, integer
 //! modules of `max(6, round(8 × dpi / 96))` pixels (down to 6 when the space is short). The matrix
 //! is never cached. Ported from `archive/spec-v2.4:demo/sepolia-wallet/src/receive_qr.rs:1-262`
@@ -18,10 +19,44 @@ pub const QR_DARK: Color = Color(0x0000_0000);
 /// QR light color.
 pub const QR_LIGHT: Color = Color(0x00FF_FFFF);
 
+/// What the EVM receive QR encodes (spec/04 §2.8).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EvmQrKind {
+    /// EIP-681 `ethereum:<EIP-55 address>@<chainId>` (default; wallets pick the network).
+    #[default]
+    Eip681,
+    /// The bare EIP-55 address, for exchange apps that reject `ethereum:` URIs.
+    PlainAddress,
+}
+
+impl EvmQrKind {
+    /// The choice label for the receive screen.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Eip681 => "지갑 앱용 QR (네트워크 포함)",
+            Self::PlainAddress => "주소만 QR (거래소 앱용)",
+        }
+    }
+}
+
+/// Receive-screen note: one EVM address serves every EVM chain, but the screen shows only the
+/// selected network's assets.
+pub const RECEIVE_SHARED_ADDRESS_NOTE: &str = "이 주소는 다른 EVM 체인(예: Ethereum·Base·Arbitrum)에서도 같은 주소이지만, 여기에는 선택한 네트워크의 자산만 보입니다. 다른 체인으로 받은 자산은 그 체인을 추가·선택해야 보입니다.";
+
 /// The EVM receive payload (EIP-681).
 #[must_use]
 pub fn evm_payload(address: &Address, chain_id: u64) -> String {
     format!("ethereum:{}@{chain_id}", address.to_checksum())
+}
+
+/// The EVM receive payload of `kind`: EIP-681 or the bare EIP-55 address.
+#[must_use]
+pub fn evm_receive_payload(address: &Address, chain_id: u64, kind: EvmQrKind) -> String {
+    match kind {
+        EvmQrKind::Eip681 => evm_payload(address, chain_id),
+        EvmQrKind::PlainAddress => address.to_checksum(),
+    }
 }
 
 /// Encodes `payload` (ECC Medium).
@@ -100,8 +135,28 @@ pub fn paint(dc: &mut PaintDc<'_>, x: i32, y: i32, code: &QrCode, layout: &QrLay
 
 #[cfg(test)]
 mod tests {
-    use super::{encode, evm_payload, layout, preferred_module};
+    use super::{EvmQrKind, encode, evm_payload, evm_receive_payload, layout, preferred_module};
     use yw_core::evm::address::parse_address;
+
+    #[test]
+    fn plain_address_payload_is_the_bare_eip55_address() {
+        let address = parse_address("0x52908400098527886E0F7030069857D2E4169EE7").unwrap();
+        assert_eq!(EvmQrKind::default(), EvmQrKind::Eip681);
+        assert_eq!(
+            evm_receive_payload(&address, 1, EvmQrKind::Eip681),
+            evm_payload(&address, 1)
+        );
+        let plain = evm_receive_payload(&address, 1, EvmQrKind::PlainAddress);
+        assert_eq!(plain, "0x52908400098527886E0F7030069857D2E4169EE7");
+        // Same address on every chain: the plain payload does not depend on the chain id.
+        assert_eq!(
+            evm_receive_payload(&address, 84_532, EvmQrKind::PlainAddress),
+            plain
+        );
+        let code = encode(&plain).unwrap();
+        assert!(code.size() >= 21);
+        assert_ne!(EvmQrKind::Eip681.label(), EvmQrKind::PlainAddress.label());
+    }
 
     /// The archive matrix digest: SHA-256 of `size` (i32 BE) and one byte per module, row-major.
     fn matrix_digest(code: &qrcodegen::QrCode) -> [u8; 32] {

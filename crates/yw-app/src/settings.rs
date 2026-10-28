@@ -1,6 +1,10 @@
 //! `settings.json` (spec/04 §6.1–§6.2, D30): plaintext, no secrets, ≤ 64 KiB, strict yw-json
 //! parsing, per-key validation with fallback to defaults (each failure becomes a banner entry), and
 //! a fixed key order on write.
+//!
+//! Format compatibility (spec/04 §6.6): unknown top-level keys (a newer minor version's) are kept
+//! and written back after the known keys; a file with a newer `version` is opened read-only with
+//! defaults, and every write reproduces its original bytes instead of overwriting it.
 
 use yw_core::evm::amount::{U256, parse_units};
 use yw_core::evm::chain::{MAX_CHAIN_ID, SimulationSupport, builtin_chains};
@@ -15,6 +19,8 @@ use crate::text::{
 
 /// File size bound.
 pub const SETTINGS_MAX_BYTES: usize = 65_536;
+/// The `settings.json` format version this build reads and writes (spec/04 §6.6).
+pub const SETTINGS_VERSION: u64 = 1;
 /// Maximum number of user EVM chains (spec/04 §2.17).
 pub const MAX_CUSTOM_EVM_CHAINS: usize = 32;
 /// Default Esplora base URLs (spec/08 §15).
@@ -212,6 +218,41 @@ pub struct LlmSettings {
     pub privacy_notice_version: u64,
 }
 
+/// Format-compatibility state of the loaded file (spec/04 §6.6). It travels with every clone of
+/// [`Settings`], so each write keeps it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SettingsCompat {
+    /// Top-level keys this version does not know, in file order (written back after the known
+    /// keys while the file stays within [`SETTINGS_MAX_BYTES`]).
+    unknown: Vec<(String, Value)>,
+    /// A file written by a newer format version: that version and the original bytes.
+    newer: Option<(u64, Vec<u8>)>,
+}
+
+impl SettingsCompat {
+    /// Names of the unknown top-level keys kept for write-back.
+    #[must_use]
+    pub fn unknown_keys(&self) -> Vec<&str> {
+        self.unknown.iter().map(|(key, _)| key.as_str()).collect()
+    }
+
+    /// `Some(version)` when the file came from a newer format version: values are defaults, the
+    /// file is never rewritten (writes reproduce its original bytes) and changes last only for this
+    /// run.
+    #[must_use]
+    pub fn read_only_version(&self) -> Option<u64> {
+        self.newer.as_ref().map(|(version, _)| *version)
+    }
+}
+
+/// The E-APP-001 banner entry of a newer-version file (spec/04 §6.6).
+#[must_use]
+pub fn newer_version_banner(version: u64) -> String {
+    format!(
+        "settings.json은 더 새로운 버전({version})의 앱이 쓴 파일입니다 — 읽기 전용으로 열었고 이번 실행의 설정 변경은 저장되지 않습니다. 앱을 최신 버전으로 업데이트하세요"
+    )
+}
+
 /// The whole settings file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
@@ -241,6 +282,8 @@ pub struct Settings {
     pub llm_explain: LlmSettings,
     /// Log level.
     pub log_level: LogLevel,
+    /// Format compatibility (unknown keys, read-only newer file; spec/04 §6.6).
+    pub compat: SettingsCompat,
 }
 
 fn caps(fee: &str, tip: &str, total: &str) -> FeeCapsText {
@@ -309,6 +352,7 @@ impl Default for Settings {
             bitcoin: BitcoinSettings::default(),
             llm_explain: LlmSettings::default(),
             log_level: LogLevel::Info,
+            compat: SettingsCompat::default(),
         }
     }
 }
@@ -629,18 +673,33 @@ pub fn load(bytes: Option<&[u8]>) -> SettingsLoad {
         return SettingsLoad { settings, banners };
     };
     let root = yw_json::parse(bytes, &LIMITS).ok();
-    let Some(object) = root.as_ref().and_then(Value::as_object).filter(|object| {
-        object
-            .get("version")
-            .and_then(Value::as_number)
-            .and_then(yw_json::Number::as_u64)
-            == Some(1)
-    }) else {
+    let Some(object) = root.as_ref().and_then(Value::as_object) else {
         return SettingsLoad {
             settings,
             banners: vec!["settings.json".to_owned()],
         };
     };
+    match object
+        .get("version")
+        .and_then(Value::as_number)
+        .and_then(yw_json::Number::as_u64)
+    {
+        Some(SETTINGS_VERSION) => {}
+        Some(newer) if newer > SETTINGS_VERSION => {
+            // Read-only: defaults for this run, the newer file is kept byte for byte (§6.6).
+            settings.compat.newer = Some((newer, bytes.to_vec()));
+            return SettingsLoad {
+                settings,
+                banners: vec![newer_version_banner(newer)],
+            };
+        }
+        _ => {
+            return SettingsLoad {
+                settings,
+                banners: vec!["settings.json".to_owned()],
+            };
+        }
+    }
     settings.evm_chains = load_chains(object.get("evmChains"), &mut banners);
     let registered: Vec<u64> = BUILTIN_EVM
         .iter()
@@ -749,10 +808,62 @@ pub fn load(bytes: Option<&[u8]>) -> SettingsLoad {
                 Some(level) => settings.log_level = level,
                 None => banners.push(key.to_owned()),
             },
-            _ => banners.push(key.to_owned()),
+            // A newer minor version's key: kept and written back unchanged (§6.6).
+            _ => settings
+                .compat
+                .unknown
+                .push((key.to_owned(), value.clone())),
         }
     }
     SettingsLoad { settings, banners }
+}
+
+/// Serializes the `known` members (fixed order) followed by as many `unknown` members, in order,
+/// as fit in `max_bytes` (spec/04 §6.6: the known keys always keep their place in the size bound).
+/// `known` is called once, or twice when the unknown members do not all fit.
+pub(crate) fn serialize_with_unknown(
+    known: &dyn Fn() -> Vec<(&'static str, Value)>,
+    unknown: &[(String, Value)],
+    max_bytes: usize,
+) -> Vec<u8> {
+    let build = |count: usize| {
+        let mut members: Vec<(String, Value)> = known()
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect();
+        members.extend(unknown.iter().take(count).cloned());
+        yw_json::to_vec(&json_object_owned(members).unwrap_or_else(|| json_object(Vec::new())))
+    };
+    let all = build(unknown.len());
+    if all.len() <= max_bytes || unknown.is_empty() {
+        return all;
+    }
+    // The writer is compact: one more member adds its `{…}` length minus the braces plus a comma.
+    let extra: Vec<usize> = unknown
+        .iter()
+        .map(|(key, value)| {
+            let alone = yw_json::to_vec(
+                &json_object_owned(vec![(key.clone(), value.clone())])
+                    .unwrap_or_else(|| json_object(Vec::new())),
+            );
+            alone.len().saturating_sub(1)
+        })
+        .collect();
+    let mut size = all.len().saturating_sub(extra.iter().sum::<usize>());
+    let mut keep = 0_usize;
+    for length in &extra {
+        size = size.saturating_add(*length);
+        if size > max_bytes {
+            break;
+        }
+        keep = keep.saturating_add(1);
+    }
+    let fitted = build(keep);
+    if fitted.len() <= max_bytes {
+        fitted
+    } else {
+        build(0)
+    }
 }
 
 fn chain_json(chain: &EvmChainDef) -> Value {
@@ -799,9 +910,29 @@ impl Settings {
             .map(|chain| chain.name.clone())
     }
 
-    /// Deterministic serialization in the spec/04 §6.1 key order.
+    /// Deterministic serialization in the spec/04 §6.1 key order, followed by the unknown keys
+    /// kept from the file (§6.6). A newer-version file opened read-only is reproduced byte for
+    /// byte, so saving never changes it.
     #[must_use]
     pub fn to_json(&self) -> Vec<u8> {
+        if let Some((_, original)) = &self.compat.newer {
+            return original.clone();
+        }
+        serialize_with_unknown(
+            &|| self.known_members(),
+            &self.compat.unknown,
+            SETTINGS_MAX_BYTES,
+        )
+    }
+
+    /// `Some(version)` when the file came from a newer format version and is not written
+    /// (spec/04 §6.6).
+    #[must_use]
+    pub fn read_only(&self) -> Option<u64> {
+        self.compat.read_only_version()
+    }
+
+    fn known_members(&self) -> Vec<(&'static str, Value)> {
         let pins = json_object_owned(
             self.evm_genesis_pins
                 .iter()
@@ -833,8 +964,8 @@ impl Settings {
                 .collect(),
         )
         .unwrap_or_else(|| json_object(Vec::new()));
-        let root = json_object(vec![
-            ("version", json_u64(1)),
+        vec![
+            ("version", json_u64(SETTINGS_VERSION)),
             (
                 "autoLockMinutes",
                 json_u64(u64::from(self.auto_lock_minutes)),
@@ -900,7 +1031,6 @@ impl Settings {
                 ]),
             ),
             ("logLevel", json_str(self.log_level.as_str())),
-        ]);
-        yw_json::to_vec(&root)
+        ]
     }
 }

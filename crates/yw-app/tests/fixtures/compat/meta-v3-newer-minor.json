@@ -1,0 +1,30 @@
+{
+  "schema": "yw-meta/3",
+  "evm_accounts": [
+    { "index": 0, "label": "계정 1", "address": "0x52908400098527886e0f7030069857d2e4169ee7", "hidden": false }
+  ],
+  "evm_raw_accounts": [],
+  "sol_accounts": [],
+  "watch_only": [
+    { "chain": "evm", "address": "0x8617e340b3d01fa5f11f306f4090fd50e238070d", "label": "보관" }
+  ],
+  "btc": null,
+  "address_book": [
+    { "chain": "evm", "address": "0x8617e340b3d01fa5f11f306f4090fd50e238070d", "label": "친구",
+      "verified": true, "added_at_unix_ms": 1793000000000 }
+  ],
+  "connected_sites": [],
+  "tokens": {
+    "eip155:84532": [ { "address": "0x036cbd53842c5426634e7929541ec2318f3dcf7e", "label": "USDC", "decimals": 6 } ]
+  },
+  "activity": {
+    "eip155:84532": [
+      { "account": "0x52908400098527886e0f7030069857d2e4169ee7",
+        "tx_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "title": "ETH 보내기", "asset": "native", "amount": "1000", "counterparty": "0x8617e340b3d01fa5f11f306f4090fd50e238070d",
+        "status": "succeeded", "time_unix_ms": 1793000000000 }
+    ]
+  },
+  "prefs": { "evm_account": { "index": 0 }, "sol_account": 0, "tab": "evm" },
+  "ui_layout": { "columns": 2 }
+}

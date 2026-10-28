@@ -211,7 +211,7 @@ pub mod ids {
 }
 
 /// T-BTC-ESPLORA-NOTE (spec/04 §2.16).
-pub const T_BTC_ESPLORA_NOTE: &str = "인덱서(Esplora 서버)는 조회하는 주소와 이 PC의 IP를 봅니다. 기본값은 mempool.space이며 자체 Esplora 서버로 바꿀 수 있습니다. Esplora URL은 평문으로 저장되므로 토큰·API 키가 들어 있는 URL은 넣지 마세요.";
+pub const T_BTC_ESPLORA_NOTE: &str = "인덱서(Esplora 서버)는 조회하는 주소와 이 PC의 IP를 봅니다. 기본값은 mempool.space이며 자체 Esplora 서버로 바꿀 수 있습니다. mempool.space에 연결되지 않으면 아래 Esplora URL을 https://blockstream.info/api (testnet4는 https://blockstream.info/testnet4/api)로 바꾸고 테스트하세요. Esplora URL은 평문으로 저장되므로 토큰·API 키가 들어 있는 URL은 넣지 마세요.";
 /// The testnet band of S10/S11 (spec/04 §2.6).
 const TESTNET_BAND: &str = "테스트넷 — 실제 자산이 아닙니다";
 /// The testnet badge of S12 (spec/04 §2.8).

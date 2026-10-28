@@ -174,9 +174,11 @@ fn chain_check_genesis() {
         assert_eq!(rig.fake.methods(), ["getblockhash"]);
         assert_eq!(session.blocked(), Some(blocked));
         assert_eq!(blocked.code(), Some(ErrorCode::Rpc006));
-        assert_eq!(
-            blocked.text(),
-            "RPC가 다른 네트워크를 가리킵니다. 작업을 중단했습니다. (E-RPC-006)"
+        assert_eq!(blocked.text(), ErrorCode::Rpc006.text());
+        assert!(
+            blocked
+                .text()
+                .starts_with("RPC가 다른 네트워크를 가리킵니다. 작업을 중단했습니다.")
         );
         every_pipeline_blocked(&rig, &mut session, blocked);
         assert!(rig.fake.get_paths().is_empty(), "no address sent");

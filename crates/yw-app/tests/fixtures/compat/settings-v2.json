@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "security": { "autoLockMinutes": 15, "allowSecretCopy": false },
+  "networks": {
+    "active": "eip155:84532",
+    "evm": [
+      { "chainId": 84532, "name": "Base Sepolia", "symbol": "ETH", "decimals": 18,
+        "simulation": "auto",
+        "genesisHash": "0xba5eba5eba5eba5eba5eba5eba5eba5eba5eba5eba5eba5eba5eba5eba5eba5e" }
+    ]
+  },
+  "browserAutoLaunch": true,
+  "logLevel": "info"
+}
