@@ -51,13 +51,18 @@ fn b39_1_trezor_vectors_round_trip_seed_and_master_xprv() {
         let entropy = hex::decode(entropy_hex).unwrap();
         sizes.push(entropy.len());
         let from_entropy = Mnemonic::from_entropy(&entropy).unwrap();
-        assert_eq!(from_entropy.phrase().as_str(), phrase);
+        assert_eq!(from_entropy.phrase().expose(), phrase);
         let parsed = Mnemonic::parse(phrase).unwrap();
         assert_eq!(parsed.entropy(), entropy.as_slice());
         let seed = parsed.to_seed(&passphrase);
-        assert_eq!(hex::encode(seed.as_slice()), seed_hex);
-        let master = derive_xkey(seed.as_slice(), &Bip32Path::master(), XKeyVersion::Xprv).unwrap();
-        assert_eq!(encode_xkey(&master).as_str(), xprv);
+        assert_eq!(hex::encode(seed.expose().as_slice()), seed_hex);
+        let master = derive_xkey(
+            seed.expose().as_slice(),
+            &Bip32Path::master(),
+            XKeyVersion::Xprv,
+        )
+        .unwrap();
+        assert_eq!(encode_xkey(&master).expose(), xprv);
     }
     sizes.sort_unstable();
     sizes.dedup();
@@ -68,32 +73,32 @@ fn b39_1_trezor_vectors_round_trip_seed_and_master_xprv() {
 fn b39_1_representative_values() {
     let trezor = Bip39Passphrase::new("TREZOR").unwrap();
     let about = Mnemonic::from_entropy(&[0; 16]).unwrap();
-    assert_eq!(about.phrase().as_str(), ABOUT);
+    assert_eq!(about.phrase().expose(), ABOUT);
     assert_eq!(
-        hex::encode(about.to_seed(&trezor).as_slice()),
+        hex::encode(about.to_seed(&trezor).expose().as_slice()),
         "c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e53495531f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04"
     );
     let zoo = Mnemonic::from_entropy(&[0xff; 16]).unwrap();
-    assert_eq!(zoo.phrase().as_str(), repeat_then("zoo", 11, "wrong"));
+    assert_eq!(zoo.phrase().expose(), repeat_then("zoo", 11, "wrong"));
     assert!(
-        hex::encode(zoo.to_seed(&trezor).as_slice())
+        hex::encode(zoo.to_seed(&trezor).expose().as_slice())
             .starts_with("ac27495480225222079d7be181583751")
     );
     let art = Mnemonic::from_entropy(&[0; 32]).unwrap();
-    assert_eq!(art.phrase().as_str(), repeat_then("abandon", 23, "art"));
+    assert_eq!(art.phrase().expose(), repeat_then("abandon", 23, "art"));
     assert!(
-        hex::encode(art.to_seed(&trezor).as_slice())
+        hex::encode(art.to_seed(&trezor).expose().as_slice())
             .starts_with("bda85446c68413707090a52022edd26a")
     );
     let ozone =
         Mnemonic::from_entropy(&hex::decode("9e885d952ad362caeb4efe34a8e91bd2").unwrap()).unwrap();
     assert_eq!(
-        ozone.phrase().as_str(),
+        ozone.phrase().expose(),
         "ozone drill grab fiber curtain grace pudding thank cruise elder eight picnic"
     );
     let legal = Mnemonic::from_entropy(&[0x7f; 16]).unwrap();
     assert!(
-        hex::encode(legal.to_seed(&trezor).as_slice())
+        hex::encode(legal.to_seed(&trezor).expose().as_slice())
             .starts_with("2e8905819b8723fe2c1d161860e5ee18")
     );
 }
@@ -109,7 +114,7 @@ fn b39_2_zero_entropy_covers_every_word_count() {
     ] {
         let mnemonic = Mnemonic::from_entropy(&vec![0; len]).unwrap();
         let expected = repeat_then("abandon", words, last);
-        assert_eq!(mnemonic.phrase().as_str(), expected);
+        assert_eq!(mnemonic.phrase().expose(), expected);
         assert_eq!(mnemonic.word_count(), count);
         assert_eq!(count.words(), words + 1);
         assert_eq!(count.entropy_len(), len);
@@ -140,7 +145,13 @@ fn b39_2_zero_entropy_covers_every_word_count() {
 fn b39_3_empty_passphrase_seeds() {
     let empty = Bip39Passphrase::empty();
     assert_eq!(
-        hex::encode(Mnemonic::parse(ABOUT).unwrap().to_seed(&empty).as_slice()),
+        hex::encode(
+            Mnemonic::parse(ABOUT)
+                .unwrap()
+                .to_seed(&empty)
+                .expose()
+                .as_slice()
+        ),
         "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4"
     );
     assert_eq!(
@@ -148,6 +159,7 @@ fn b39_3_empty_passphrase_seeds() {
             Mnemonic::from_entropy(&[0; 32])
                 .unwrap()
                 .to_seed(&empty)
+                .expose()
                 .as_slice()
         ),
         "408b285c123836004f4b8842c89324c1f01382450c0d439af345ba7fc49acf705489c6fc77dbd4e3dc1dd8cc6bc9f043db8ada1e243c4a0eafb290d399480840"
@@ -223,9 +235,9 @@ fn v6_passphrase_changes_seed() {
     let mnemonic = Mnemonic::parse(ABOUT).unwrap();
     let plain = mnemonic.to_seed(&Bip39Passphrase::new("TREZOR").unwrap());
     let spaced = mnemonic.to_seed(&Bip39Passphrase::new(" TREZOR").unwrap());
-    assert_ne!(plain.as_slice(), spaced.as_slice());
+    assert_ne!(plain.expose().as_slice(), spaced.expose().as_slice());
     let long = mnemonic.to_seed(&Bip39Passphrase::new(&"~".repeat(256)).unwrap());
-    assert_ne!(long.as_slice(), plain.as_slice());
+    assert_ne!(long.expose().as_slice(), plain.expose().as_slice());
 }
 
 #[test]

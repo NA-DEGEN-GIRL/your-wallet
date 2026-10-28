@@ -7,6 +7,11 @@
 //! (3) new bytes → `<name>.tmp` (`CREATE_NEW`) → flush → close, (4) `MoveFileExW` over the main
 //! file, (5) flush the folder, (6) read back and compare. Orphan `*.tmp` files are removed when the
 //! storage is opened.
+//!
+//! A failure reported after step 4 (the read-back of step 6) does not mean nothing was written:
+//! the replace already happened. `Vault` re-reads the main file after every failed commit and
+//! treats bytes identical to the ones it wrote as success (spec/02 §6.2), so its in-memory
+//! generation never falls behind the disk.
 
 use std::fs;
 use std::io;
@@ -45,6 +50,13 @@ const fn max_size(kind: FileKind) -> u64 {
 
 fn with_suffix(dir: &Path, kind: FileKind, suffix: &str) -> PathBuf {
     dir.join(format!("{}{suffix}", file_name(kind)))
+}
+
+/// Whether `<name>.prev` exists in `dir` (a metadata check only, no read; the UI uses it to offer
+/// `.prev` recovery, spec/04 §2.5 S07/S09).
+#[must_use]
+pub fn prev_exists(dir: &Path, kind: FileKind) -> bool {
+    with_suffix(dir, kind, ".prev").is_file()
 }
 
 fn storage_error(error: FileError) -> StorageError {

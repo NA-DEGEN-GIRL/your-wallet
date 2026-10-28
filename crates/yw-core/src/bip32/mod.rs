@@ -365,7 +365,7 @@ pub fn preview_evm_address(
     };
     let seed = mnemonic.to_seed(passphrase);
     let ctx = secp_context(&mut OsRandom)?;
-    evm_address_from_seed(&ctx, &seed, index)
+    evm_address_from_seed(&ctx, seed.expose(), index)
 }
 
 #[cfg(test)]

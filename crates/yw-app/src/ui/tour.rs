@@ -813,7 +813,9 @@ fn screenshot_tour() {
         SecretKind::ShowMnemonic { create: true },
         Purpose::ShowForBackup,
         DisplaySecret {
-            text: yw_core::secret::Zeroizing::new(test_phrase_24()),
+            text: yw_core::secret::SecretString::from_zeroizing(yw_core::secret::Zeroizing::new(
+                test_phrase_24(),
+            )),
             address: Some(recipient().to_checksum()),
             passphrase_note: false,
             copy_allowed: false,

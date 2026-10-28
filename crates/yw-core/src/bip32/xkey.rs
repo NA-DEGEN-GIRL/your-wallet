@@ -16,6 +16,7 @@ use super::{Bip32Path, XPriv};
 use crate::codec::base58;
 use crate::entropy::{OsRandom, secp_context};
 use crate::error::KeyError;
+use crate::secret::SecretString;
 
 const SERIALIZED_LEN: usize = 78;
 
@@ -125,9 +126,10 @@ pub fn derive_xkey(
     })
 }
 
-/// Serializes and Base58Check-encodes the extended key.
+/// Serializes and Base58Check-encodes the extended key (a redacting [`SecretString`]: an
+/// `xprv` is a private key).
 #[must_use]
-pub fn encode_xkey(parts: &XKeyParts) -> Zeroizing<String> {
+pub fn encode_xkey(parts: &XKeyParts) -> SecretString {
     let mut raw: Zeroizing<Vec<u8>> = Zeroizing::new(Vec::with_capacity(SERIALIZED_LEN));
     raw.extend_from_slice(&parts.version.bytes());
     raw.push(parts.depth);
@@ -139,7 +141,7 @@ pub fn encode_xkey(parts: &XKeyParts) -> Zeroizing<String> {
         SERIALIZED_LEN + 4,
     )));
     base58::encode_check_into(&raw, &mut out);
-    out
+    SecretString::from_zeroizing(out)
 }
 
 fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], KeyError> {

@@ -302,8 +302,18 @@ fn check_draft(draft: &ApprovalDraft) -> Result<(), ApprovalError> {
         ApprovalKind::EvmTransaction | ApprovalKind::EvmSpeedUp | ApprovalKind::EvmCancel => {
             matches!(draft.payload, SigningPayload::EvmTx(_))
         }
-        ApprovalKind::EvmPersonalSign => matches!(draft.payload, SigningPayload::EvmPersonal(_)),
-        ApprovalKind::EvmTypedData => matches!(draft.payload, SigningPayload::EvmTypedData(_)),
+        // The exact EIP-191 / EIP-712 prefixes, so a message approval can never carry a bare
+        // digest or another kind's preimage (signing checks them again).
+        ApprovalKind::EvmPersonalSign => matches!(
+            &draft.payload,
+            SigningPayload::EvmPersonal(preimage)
+                if crate::evm::sign::is_personal_preimage(preimage)
+        ),
+        ApprovalKind::EvmTypedData => matches!(
+            &draft.payload,
+            SigningPayload::EvmTypedData(preimage)
+                if crate::evm::sign::is_typed_data_preimage(preimage)
+        ),
         ApprovalKind::SolTransfer => {
             matches!(
                 (&draft.payload, &draft.chain, &draft.account, &draft.origin),

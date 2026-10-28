@@ -134,7 +134,7 @@ impl JournalState {
     pub fn load(&mut self, vault: &Vault) -> Result<JournalView, VaultError> {
         let plain = match vault.open_sidecar(FileKind::Journal)? {
             None => JournalPlain::default(),
-            Some((_, bytes)) => JournalPlain::decode(&bytes)?,
+            Some((_, bytes)) => JournalPlain::decode(bytes.expose())?,
         };
         let view = view_of(&plain);
         self.plain = Some(plain);
@@ -164,7 +164,7 @@ impl JournalState {
         let mut document = match vault.open_sidecar(FileKind::Meta)? {
             None => Meta::default(),
             Some((_, plaintext)) => {
-                meta::parse(&plaintext)
+                meta::parse(plaintext.expose())
                     .map_err(|_| VaultError::SidecarCorrupt(FileKind::Meta))?
                     .meta
             }
@@ -200,7 +200,7 @@ impl JournalState {
         let mut document = match vault.open_sidecar(FileKind::Meta)? {
             None => Meta::default(),
             Some((_, plaintext)) => {
-                meta::parse(&plaintext)
+                meta::parse(plaintext.expose())
                     .map_err(|_| VaultError::SidecarCorrupt(FileKind::Meta))?
                     .meta
             }

@@ -154,7 +154,7 @@ fn bip84_addresses() {
 #[test]
 fn bip84_art_rows() {
     let art = Mnemonic::from_entropy(&[0; 32]).unwrap().phrase();
-    let vault = unlocked_with(&art);
+    let vault = unlocked_with(art.expose());
     let account = vault.btc_account_xpub(BtcCoin::Mainnet).unwrap();
     assert_eq!(
         hex::encode(

@@ -15,7 +15,7 @@ use yw_core::evm::sign::SignError;
 use yw_core::journal::btc::BtcRecord;
 use yw_core::journal::evm::{EvmRecord, GroupKey, Role, Transition};
 use yw_core::journal::sol::{SolRecord, SolTransition};
-use yw_core::secret::Zeroizing;
+use yw_core::secret::{SecretString, Zeroizing};
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::{SolAddress, SolCluster, SolSignError};
 use yw_core::vault::{BackupChallenge, ChallengeId, EvmKeySource, FileKind, RecordId, VaultStatus};
@@ -385,8 +385,11 @@ impl KeyJob {
         }
     }
 
+    /// Control jobs survive `Lock`'s cancellation. `Load` is one: the lock procedure queues it
+    /// right after `Lock` (spec/04 §5.3) so the UI learns the vault status the lock left, e.g.
+    /// `Locked` after a `CreateWallet`/`CommitImport` whose result the lock discarded.
     const fn is_control(&self) -> bool {
-        matches!(self, Self::Lock | Self::Shutdown)
+        matches!(self, Self::Lock | Self::Shutdown | Self::Load)
     }
 }
 
@@ -424,7 +427,7 @@ pub enum KeyOutcome {
         leftover: bool,
     },
     /// Wallet created: the phrase for W08 and account 0.
-    Created(Result<(Zeroizing<String>, Address), VaultError>),
+    Created(Result<(SecretString, Address), VaultError>),
     /// Import preview.
     Preview(Result<Address, KeyError>),
     /// Import committed.
@@ -438,7 +441,7 @@ pub enum KeyOutcome {
     /// Backup confirmation.
     BackupConfirmed(Result<(), VaultError>),
     /// Revealed mnemonic (+ account 0) or private key.
-    Revealed(Result<(RevealWhat, Zeroizing<String>, Option<Address>), VaultError>),
+    Revealed(Result<(RevealWhat, SecretString, Option<Address>), VaultError>),
     /// Password changed.
     PasswordChanged(Result<(), VaultError>),
     /// Raw key imported.
@@ -539,7 +542,8 @@ impl KeyQueue {
         }
     }
 
-    /// Removes and returns every queued non-control job (processing `Lock`).
+    /// Removes and returns every queued non-control job (processing `Lock`); `Lock`, `Load` and
+    /// `Shutdown` stay queued.
     pub fn cancel_pending(&self) -> Vec<(u64, KeyJob)> {
         let Ok(mut queue) = self.queue.lock() else {
             return Vec::new();

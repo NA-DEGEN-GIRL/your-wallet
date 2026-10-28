@@ -67,6 +67,37 @@ fn keccak(bytes: &[u8]) -> [u8; 32] {
     Keccak256::digest(bytes).into()
 }
 
+/// EIP-191 version 0x45 prefix of a `personal_sign` preimage.
+const PERSONAL_PREFIX: &[u8] = b"\x19Ethereum Signed Message:\n";
+/// EIP-712 prefix of a typed-data preimage.
+const TYPED_PREFIX: [u8; 2] = [0x19, 0x01];
+
+/// Whether `preimage` is exactly `0x19 ‖ "Ethereum Signed Message:\n" ‖ decimal(len) ‖ message`
+/// for some message of at most [`super::eip191::MAX_PERSONAL_MESSAGE`] bytes (the form built by
+/// [`super::eip191::personal_preimage`]): the decimal length has no leading zero and equals the
+/// number of bytes after it. Anything else — a raw 32-byte digest, a transaction or a typed-data
+/// preimage presented as a message — is refused before it can be signed.
+#[must_use]
+pub fn is_personal_preimage(preimage: &[u8]) -> bool {
+    let Some(rest) = preimage.strip_prefix(PERSONAL_PREFIX) else {
+        return false;
+    };
+    let max_digits = super::eip191::MAX_PERSONAL_MESSAGE.to_string().len();
+    (1..=max_digits).any(|digits| {
+        let Some((length, message)) = rest.split_at_checked(digits) else {
+            return false;
+        };
+        message.len() <= super::eip191::MAX_PERSONAL_MESSAGE
+            && message.len().to_string().as_bytes() == length
+    })
+}
+
+/// Whether `preimage` is an EIP-712 preimage `0x19 ‖ 0x01 ‖ domainSeparator ‖ hashStruct`.
+#[must_use]
+pub fn is_typed_data_preimage(preimage: &[u8; 66]) -> bool {
+    preimage.starts_with(&TYPED_PREFIX)
+}
+
 /// RFC 6979 recoverable signature of a 32-byte digest: `(y_parity, r ‖ s)` (low-s).
 pub(crate) fn sign_digest(
     ctx: &Secp256k1<All>,
@@ -238,7 +269,8 @@ pub fn sign_transaction(vault: &Vault, approved: Approved) -> Result<SignedTx, S
 ///
 /// # Errors
 ///
-/// [`SignError::KindMismatch`], [`SignError::Vault`], [`SignError::PostSignVerification`].
+/// [`SignError::KindMismatch`] (also for a payload that is not an exact EIP-191 preimage,
+/// [`is_personal_preimage`]), [`SignError::Vault`], [`SignError::PostSignVerification`].
 #[expect(
     clippy::needless_pass_by_value,
     reason = "the one-time approval token is consumed by signing (spec/03 §11.5)"
@@ -247,7 +279,7 @@ pub fn sign_personal(vault: &Vault, approved: Approved) -> Result<[u8; 65], Sign
     let SigningPayload::EvmPersonal(preimage) = approved.payload() else {
         return Err(SignError::KindMismatch);
     };
-    if approved.kind() != ApprovalKind::EvmPersonalSign {
+    if approved.kind() != ApprovalKind::EvmPersonalSign || !is_personal_preimage(preimage) {
         return Err(SignError::KindMismatch);
     }
     let digest = keccak(preimage);
@@ -260,7 +292,8 @@ pub fn sign_personal(vault: &Vault, approved: Approved) -> Result<[u8; 65], Sign
 ///
 /// # Errors
 ///
-/// [`SignError::KindMismatch`], [`SignError::Vault`], [`SignError::PostSignVerification`].
+/// [`SignError::KindMismatch`] (also without the `0x19 0x01` prefix,
+/// [`is_typed_data_preimage`]), [`SignError::Vault`], [`SignError::PostSignVerification`].
 #[expect(
     clippy::needless_pass_by_value,
     reason = "the one-time approval token is consumed by signing (spec/03 §11.5)"
@@ -269,7 +302,7 @@ pub fn sign_typed_data(vault: &Vault, approved: Approved) -> Result<[u8; 65], Si
     let SigningPayload::EvmTypedData(preimage) = approved.payload() else {
         return Err(SignError::KindMismatch);
     };
-    if approved.kind() != ApprovalKind::EvmTypedData {
+    if approved.kind() != ApprovalKind::EvmTypedData || !is_typed_data_preimage(preimage) {
         return Err(SignError::KindMismatch);
     }
     let digest = keccak(preimage);

@@ -195,7 +195,9 @@ fn signed_record_is_committed_then_tracked_and_moved_to_activity() -> TestResult
     let Some((_, sidecar)) = vault.open_sidecar(FileKind::Meta)? else {
         return Err("meta".into());
     };
-    let document = meta::parse(&sidecar).map_err(|_| "meta parse")?.meta;
+    let document = meta::parse(sidecar.expose())
+        .map_err(|_| "meta parse")?
+        .meta;
     let activity = document.activity_of("eip155:11155111");
     assert_eq!(activity.len(), 1);
     assert_eq!(activity[0].status, "succeeded");

@@ -15,6 +15,7 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::entropy::{RandomSource, random_secret32_with};
 use crate::error::KeyError;
 use crate::password::Bip39Passphrase;
+use crate::secret::{SecretBytes, SecretString};
 
 /// PBKDF2 iteration count for the seed.
 pub const BIP39_PBKDF2_ROUNDS: u32 = 2_048;
@@ -268,11 +269,12 @@ impl Mnemonic {
         value
     }
 
-    /// The phrase: words joined by single 0x20 bytes.
+    /// The phrase: words joined by single 0x20 bytes, in a redacting [`SecretString`] whose
+    /// capacity is computed before the first push (no reallocation copies).
     #[must_use]
-    pub fn phrase(&self) -> Zeroizing<String> {
+    pub fn phrase(&self) -> SecretString {
         let Ok(list) = wordlist() else {
-            return Zeroizing::new(String::new());
+            return SecretString::with_capacity(0);
         };
         let bits = self.bit_buffer();
         let words = self.count.words();
@@ -281,12 +283,16 @@ impl Mnemonic {
             .map(|word| word.len())
             .sum::<usize>()
             .saturating_add(words.saturating_sub(1));
-        let mut phrase = Zeroizing::new(String::with_capacity(length));
+        let mut phrase = SecretString::with_capacity(length);
         for word in 0..words {
-            if word != 0 {
-                phrase.push(' ');
+            // The capacity is exact, so neither push can fail.
+            if word != 0 && phrase.push_str(" ").is_err() {
+                return SecretString::with_capacity(0);
             }
-            phrase.push_str(list.get(Self::index_at(&bits, word)).copied().unwrap_or(""));
+            let text = list.get(Self::index_at(&bits, word)).copied().unwrap_or("");
+            if phrase.push_str(text).is_err() {
+                return SecretString::with_capacity(0);
+            }
         }
         phrase
     }
@@ -306,9 +312,10 @@ impl Mnemonic {
             .ok_or(KeyError::Internal)
     }
 
-    /// `PBKDF2-HMAC-SHA512(phrase, "mnemonic" ‖ passphrase, 2048, 64)` (spec/02 §2.5).
+    /// `PBKDF2-HMAC-SHA512(phrase, "mnemonic" ‖ passphrase, 2048, 64)` (spec/02 §2.5), in a
+    /// redacting [`SecretBytes`].
     #[must_use]
-    pub fn to_seed(&self, passphrase: &Bip39Passphrase) -> Zeroizing<[u8; 64]> {
+    pub fn to_seed(&self, passphrase: &Bip39Passphrase) -> SecretBytes<64> {
         let phrase = self.phrase();
         let pass = passphrase.as_bytes();
         let mut salt = Zeroizing::new(Vec::with_capacity(
@@ -317,8 +324,13 @@ impl Mnemonic {
         salt.extend_from_slice(BIP39_SALT_PREFIX);
         salt.extend_from_slice(pass);
         let mut seed = Zeroizing::new([0_u8; 64]);
-        pbkdf2::pbkdf2_hmac::<Sha512>(phrase.as_bytes(), &salt, BIP39_PBKDF2_ROUNDS, seed.as_mut());
-        seed
+        pbkdf2::pbkdf2_hmac::<Sha512>(
+            phrase.expose().as_bytes(),
+            &salt,
+            BIP39_PBKDF2_ROUNDS,
+            seed.as_mut(),
+        );
+        SecretBytes::new(&mut seed)
     }
 }
 

@@ -76,7 +76,9 @@ fn meta_on_disk(vault: &Vault) -> TestResult<Option<BtcMeta>> {
     let Some((_, plaintext)) = vault.open_sidecar(FileKind::Meta)? else {
         return Ok(None);
     };
-    let document = meta::parse(&plaintext).map_err(|_| "meta parse")?.meta;
+    let document = meta::parse(plaintext.expose())
+        .map_err(|_| "meta parse")?
+        .meta;
     Ok(document.btc.map(|btc| *btc))
 }
 
@@ -441,7 +443,7 @@ fn damaged_btc_entry_stops_btc_signing_only() -> TestResult {
         .vault
         .open_sidecar(FileKind::Journal)?
         .ok_or("journal")?;
-    assert_eq!(JournalPlain::decode(&disk)?, damaged);
+    assert_eq!(JournalPlain::decode(disk.expose())?, damaged);
     Ok(())
 }
 

@@ -464,7 +464,7 @@ impl JournalState {
             let mut document = match vault.open_sidecar(FileKind::Meta)? {
                 None => Meta::default(),
                 Some((_, plaintext)) => {
-                    meta::parse(&plaintext)
+                    meta::parse(plaintext.expose())
                         .map_err(|_| VaultError::SidecarCorrupt(FileKind::Meta))?
                         .meta
                 }

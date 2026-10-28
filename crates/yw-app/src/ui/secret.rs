@@ -12,7 +12,7 @@
 
 use yw_core::bip39::is_word;
 use yw_core::password::VaultPassword;
-use yw_core::secret::Zeroizing;
+use yw_core::secret::{SecretString, Zeroizing};
 use yw_win::ui::{DrawFlags, PaintDc, Rect, scale};
 
 use crate::errors::ErrorCode;
@@ -38,6 +38,8 @@ pub const SECRET_TIMER_ID: usize = 1;
 pub const SECRET_TIMER_MS: u32 = 50;
 /// Mnemonic entry buffer (24 × 8 + 23 + 1).
 pub const MNEMONIC_TEXT_MAX: usize = 216;
+/// T-IMPORTED-KEY (W07, spec/04 §2.16): imported keys are not covered by the recovery words.
+pub const T_IMPORTED_KEY_BACKUP: &str = "주의: 가져온 개인키는 이 지갑의 복구 단어(24단어)로 복구되지 않습니다. 이 PC나 지갑 파일을 잃으면 이 계정은 원래 개인키로만 되살릴 수 있으니, 원래 개인키를 따로 안전하게 보관하세요.";
 const VK_TAB: u16 = 0x09;
 const VK_ESCAPE: u16 = 0x1B;
 const VK_INSERT: u16 = 0x2D;
@@ -146,7 +148,8 @@ impl SecretKind {
         match self {
             Self::ShowMnemonic { .. } | Self::ShowKey => (820, 680),
             Self::Mnemonic => (720, 600),
-            Self::Backup { .. } | Self::ChangePassword => (640, 560),
+            // W07 also carries the T-IMPORTED-KEY backup warning.
+            Self::Backup { .. } | Self::ChangePassword | Self::PrivateKey => (640, 560),
             _ => (640, 480),
         }
     }
@@ -263,7 +266,7 @@ pub enum FormAction {
 /// The secret shown by W08/W09.
 pub struct DisplaySecret {
     /// Words joined by single spaces (W08) or 64 hex (W09).
-    pub text: Zeroizing<String>,
+    pub text: SecretString,
     /// EIP-55 account-0 address (W08).
     pub address: Option<String>,
     /// The wallet uses a BIP39 passphrase (W08 reveal note).
@@ -431,7 +434,10 @@ fn intro(kind: SecretKind, words: usize) -> Vec<String> {
         SecretKind::Passphrase { confirm: false } => {
             vec!["이 지갑의 BIP39 passphrase를 입력하세요.".to_owned()]
         }
-        SecretKind::PrivateKey => vec!["가져올 EVM 개인키(16진수 64자리, 0x 선택)를 입력하세요.".to_owned()],
+        SecretKind::PrivateKey => vec![
+            "가져올 EVM 개인키(16진수 64자리, 0x 선택)를 입력하세요.".to_owned(),
+            T_IMPORTED_KEY_BACKUP.to_owned(),
+        ],
         SecretKind::ShowMnemonic { .. } => vec![format!(
             "아래 {words}단어와 첫 주소를 순서대로 종이에 적으세요. 이 단어들이 지갑의 유일한 백업이며, 아는 사람은 누구든 자산을 옮길 수 있습니다. 이 창은 화면 캡처에서 제외됩니다."
         )],
@@ -1093,8 +1099,8 @@ impl SecretForm {
     #[must_use]
     pub fn copy_units(&self) -> Option<Zeroizing<Vec<u16>>> {
         let display = self.display.as_ref()?;
-        let mut units = Zeroizing::new(Vec::with_capacity(display.text.len()));
-        units.extend(display.text.encode_utf16());
+        let mut units = Zeroizing::new(Vec::with_capacity(display.text.expose().len()));
+        units.extend(display.text.expose().encode_utf16());
         Some(units)
     }
 
@@ -1156,7 +1162,7 @@ impl SecretForm {
         let words = self
             .display
             .as_ref()
-            .map_or(24, |display| display.text.split(' ').count());
+            .map_or(24, |display| display.text.expose().split(' ').count());
         dc.select_font(&fonts.body);
         dc.set_text_color(theme::MUTED);
         for paragraph in intro(self.kind, words) {
@@ -1309,14 +1315,14 @@ impl SecretForm {
         dc.set_text_color(theme::TEXT);
         if self.kind == SecretKind::ShowKey {
             dc.select_font(&fonts.mono_large);
-            let mut units = Zeroizing::new(Vec::with_capacity(display.text.len()));
-            units.extend(display.text.encode_utf16());
+            let mut units = Zeroizing::new(Vec::with_capacity(display.text.expose().len()));
+            units.extend(display.text.expose().encode_utf16());
             let box_rect = Rect::new(margin, y, width, px(80));
             dc.round_rect(box_rect, px(6), theme::BG, theme::CARD_BORDER);
             dc.draw_text(&units, box_rect.inset(px(12)), DrawFlags::WRAP);
             return box_rect.bottom().saturating_add(px(12));
         }
-        let words: Vec<&str> = display.text.split(' ').collect();
+        let words: Vec<&str> = display.text.expose().split(' ').collect();
         let rows = words.len().div_ceil(3).max(1);
         let cell_h = px(32);
         let col_w = width / 3;

@@ -9,7 +9,7 @@ use super::{
 };
 use crate::errors::ErrorCode;
 use crate::ui::secure_field::{Charset, PushResult, SecretField};
-use yw_core::secret::Zeroizing;
+use yw_core::secret::{SecretString, Zeroizing};
 
 fn type_text(form: &mut SecretForm, text: &str, now: u64) {
     for unit in text.encode_utf16() {
@@ -125,7 +125,7 @@ fn sw1_timeout_wipes_and_focus_loss_masks() {
         SecretKind::ShowKey,
         5_000,
         DisplaySecret {
-            text: Zeroizing::new("ab".repeat(32)),
+            text: SecretString::from_zeroizing(Zeroizing::new("ab".repeat(32))),
             address: None,
             passphrase_note: false,
             copy_allowed: false,
@@ -249,4 +249,28 @@ fn sw4_capture_decisions() {
     }
     let protected = SecretForm::new(SecretKind::SetPassword, 0, true);
     assert!(protected.reveal_enabled(0));
+}
+
+#[test]
+fn w07_warns_that_imported_keys_are_not_in_the_recovery_words() {
+    let lines = super::intro(SecretKind::PrivateKey, 0);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == super::T_IMPORTED_KEY_BACKUP)
+    );
+    assert!(super::T_IMPORTED_KEY_BACKUP.contains("복구 단어(24단어)로 복구되지 않습니다"));
+    assert_eq!(SecretKind::PrivateKey.size(), (640, 560));
+    // The redacting display buffer still renders its content for copy.
+    let form = SecretForm::display(
+        SecretKind::ShowKey,
+        0,
+        DisplaySecret {
+            text: SecretString::from_zeroizing(Zeroizing::new("cd".repeat(32))),
+            address: None,
+            passphrase_note: false,
+            copy_allowed: true,
+        },
+    );
+    assert_eq!(form.copy_units().map(|units| units.len()), Some(64));
 }

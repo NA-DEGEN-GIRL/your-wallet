@@ -102,10 +102,10 @@ impl Mnemonic {
     pub fn from_entropy(entropy: &[u8]) -> Result<Self, KeyError>;
     pub fn parse(phrase: &str) -> Result<Self, KeyError>;
     pub fn word_count(&self) -> WordCount;
-    pub fn phrase(&self) -> Zeroizing<String>;           // 단어를 0x20 하나로 연결
+    pub fn phrase(&self) -> SecretString;                // 단어를 0x20 하나로 연결(용량을 미리 계산, `Debug` 가림)
     pub(crate) fn word_at(&self, position: u8) -> Result<&'static str, KeyError>; // 1-based
     pub(crate) fn entropy(&self) -> &[u8];
-    pub fn to_seed(&self, passphrase: &Bip39Passphrase) -> Zeroizing<[u8; 64]>;
+    pub fn to_seed(&self, passphrase: &Bip39Passphrase) -> SecretBytes<64>;
 }
 
 // yw_core::password
@@ -556,6 +556,8 @@ yw-app이 yw-win 파일 함수로 구현한다(출처: 데모 원자적 쓰기, 
 5. 부모 디렉터리 flush(권고, 데모 `DurableParentDirectory`).
 6. 본 파일을 다시 읽어 바이트가 같지 않으면 `Io`. 호출자는 메모리 상태(generation 등)를 커밋 성공 후에만 갱신한다.
 
+- **반영됐지만 실패로 보고된 커밋:** 4 뒤의 실패(예: 6의 다시 읽기 오류)는 이미 본 파일이 바뀐 상태다. `Vault`는 `commit` 오류마다 본 파일을 다시 읽어 방금 쓴 바이트와 같으면 성공으로 본다(쓰기마다 새 난수 nonce라 같은 바이트는 이 커밋에서만 나온다). 그래서 메모리의 generation·vault 바이트가 디스크보다 뒤처져 다음 CAS가 영구히 실패하는 일이 없다(생성·가져오기·`PayloadRewrite`·`Rewrap`·복구·사이드카 모두).
+
 - 2와 4 사이에 중단되면 `.prev`와 본 파일이 같은 세대다(허용). 4 전에 중단되면 본 파일은 이전 세대 그대로다.
 - 시작 시 `*.tmp` 고아 파일은 지운다. 이동 전 임시 파일은 커밋된 적 없는 내용이므로 유일한 사본이 아니다.
 - 임시 파일은 같은 디렉터리(같은 볼륨)에 만든다. 파일 ACL은 `%LOCALAPPDATA%` 상속(현재 사용자)을 그대로 쓴다.
@@ -571,7 +573,8 @@ yw-app이 yw-win 파일 함수로 구현한다(출처: 데모 원자적 쓰기, 
 
 - **손상 파일은 절대 덮어쓰지 않는다.** 생성·가져오기는 `NoVault`에서만 가능하다. 다른 지갑으로 바꾸려면 사용자가 폴더의 파일을 직접 옮긴다(앱은 폴더 경로만 보여준다, [04](04-app-ui.md) §2.2·§2.14).
 - `recover_from_prev(password)`: `.prev`를 잠금 해제한다. 성공하면 본 파일이 있을 경우 `quarantine` → `.prev` 내용을 `PayloadRewrite`(generation = prev.generation + 1)로 `commit(Vault, None, …)` → `Unlocked`/`BackupPending`. 본 파일에 있던 더 새로운 변경(예: 추가한 raw key)은 잃는다고 UI가 알린다.
-- payload 인증 실패(`PayloadCorrupt`)는 잠금 해제 시점에 드러난다. 이때도 본 파일은 그대로 두고 `.prev` 복구를 제안한다.
+- payload 인증 실패(`PayloadCorrupt`)는 잠금 해제 시점에 드러난다. 이때도 본 파일은 그대로 두고 `.prev` 복구를 제안한다. 헤더는 정상이라 다시 `load`하면 `Locked`가 되므로, yw-app은 이 상태를 기억해 S09(복구 화면)를 유지한다([04] §2.5).
+- **`Locked`에서의 복구(사용자의 명시적 요청):** 키 구간(`header[0..130]`)이 손상되면 `unlock`은 비밀번호 오류와 구분할 수 없는 `UnlockFailed`만 낸다(§7.4). 그래서 `recover_from_prev`는 `Locked`에서도 받는다. 이때는 먼저 본 파일을 같은 비밀번호로 연다: 열리면 **아무것도 복구하지 않고** `unlock`과 똑같이 세션을 연다. 본 파일이 열리지 않을 때(`UnlockFailed`·`PayloadCorrupt`·구조 오류·없음)만 `.prev`를 같은 비밀번호로 열어 위 절차로 복구한다. 틀린 비밀번호는 두 파일 모두 실패해 `UnlockFailed`이고 어떤 파일도 바뀌지 않는다(Argon2 최대 2회).
 - meta·journal: 구조 손상이나 `SidecarCorrupt`(journal 프레이밍 오류 포함, §5.4)면 해당 파일 쓰기를 멈추고 사용자에게 (a) `.prev` 사용, (b) 격리 후 새로 시작 중 하나를 고르게 한다(E-VLT-006, [04] §2.5). journal 새로 시작은 "진행 중 거래 기록이 사라질 수 있음" 경고 후에만 한다. 파일이 없는 것은 손상이 아니다(§5.3 기본값, journal은 entry 0개).
 
 ## 7. 잠금 상태 기계
@@ -604,9 +607,12 @@ yw-app이 yw-win 파일 함수로 구현한다(출처: 데모 원자적 쓰기, 
 | `BackupPending` | `confirm_backup` | 일치, 커밋 성공 | `Unlocked { alt: false }` |
 | `PassphraseRequired`, `PassphraseMismatch`, `BackupPending`, `Unlocked` | `lock` | — | `Locked` |
 | `Corrupt`, `MainMissing` | `recover_from_prev` | 성공 | `unlock`과 같은 규칙(`BackupPending`·`Unlocked`·`PassphraseRequired`) |
+| `Locked` | `recover_from_prev` | 본 파일이 열림 | 복구 없이 `unlock`과 같은 규칙 |
+| `Locked` | `recover_from_prev` | 본 파일이 안 열리고 `.prev`가 열림 | 복구 후 `unlock`과 같은 규칙 |
 
 - 커밋 실패 시 상태는 바뀌지 않는다(생성·가져오기 실패는 `NoVault` 유지, 메모리 비밀 소거).
 - `lock`: 슬롯 전체를 `zeroize`하고 슬롯을 해제(yw-win이 VirtualUnlock·VirtualFree)하며, 백업 challenge와 보관 중인 vault 바이트를 버린다. 진행 중 승인·비밀 창 취소는 [04](04-app-ui.md) §5.3·[05](05-browser.md) §4.4.
+- `Vault`의 `Drop`은 `lock`을 부른다(작업자 종료, `Load`로 교체될 때 등). 슬롯 소거 계약: `Vault`는 슬롯을 놓기 전에 언제나 전체를 0으로 쓴다(`lock`, 슬롯을 받은 작업의 실패, 새 세션이 이전 슬롯을 대체할 때, `Vault` drop). `LockedSlot` 구현은 자체 drop에서 지우지 않아도 된다(yw-app `LockedBox`는 그래도 지운다).
 - 잠금 계기(D12, yw-app이 `lock()` 호출): 유휴 10분(설정 1–60분), `WM_WTSSESSION_CHANGE`/`WTS_SESSION_LOCK`, `WM_POWERBROADCAST`/`PBT_APMSUSPEND`(최대 절전 이미지에 DEK가 남지 않게 절전 전에 소거), 수동 잠금, 앱 종료. 코어에는 타이머가 없다.
 - `Vault`는 `Send`이며 `Sync`가 아니다. yw-app은 코어 작업 스레드 하나에서만 호출하고, Argon2가 드는 호출(`create_wallet`, `import_mnemonic`, `unlock`, `reveal_*`, `change_password`, `remove_evm_raw_key`, `recover_from_prev`)을 UI 스레드에서 실행하지 않는다. `lock` 요청은 큐 맨 앞에 넣는다.
 
@@ -631,6 +637,7 @@ pub trait LockedSlot: Send {
   3. 필요한 키만 파생한다: `Mnemonic` → `to_seed(passphrase)` → `secp_context` → `XPriv::from_seed` → `derive_path` → `SecretKey`(또는 raw record의 key). Ed25519는 `to_seed` 뒤 §3.5 `SolKeySource` 표대로 32바이트 seed.
   4. 사용한다(서명·주소 계산).
   5. `SecretKey::non_secure_erase`, 시드·평문·중간값 `Zeroizing` drop.
+- 디코드한 `Payload.raw_keys`는 처음부터 용량 15(`MAX_RAW_KEYS`)로 잡는다. `push`가 재할당하면 이전 버퍼(키 사본 포함)가 지워지지 않고 해제되기 때문이다. `retain`은 레코드를 앞으로 옮기며 `len` 뒤에 사본을 남기므로 `Payload`의 `Drop`은 살아 있는 레코드가 아니라 **용량 전체**를 지운다.
 - 비용 기준: PBKDF2 2048회 + 파생은 release에서 수 ms다. 주소 여러 개는 시드를 한 번만 계산한다(`evm_addresses`).
 - 페이징·최대 절전: 슬롯은 VirtualLock으로 pagefile에서 제외되고 절전 전 소거된다. 짧게 존재하는 평문·키 버퍼는 일반 힙이며 BitLocker로 완화한다. VirtualLock·슬롯 할당이 실패하면 잠금 해제하지 않는다(E-VLT-007, [04](04-app-ui.md) §2.5).
 
@@ -645,7 +652,7 @@ pub trait LockedSlot: Send {
 
 - `enter_passphrase(pp)`: `pp`가 비면 `KeyError::PassphraseEmpty`(`passphrase_used` vault에서 빈 passphrase는 받지 않음). `addr0 = EVM 계정 0 주소(pp)`, `SHA-256(addr0)[0..4]`를 저장값과 상수 시간 비교한다.
 - 불일치 → `PassphraseMismatch`. UI는 **"passphrase가 다를 수 있습니다"** 대화상자에 [다시 입력]과 [이 passphrase로 계속]을 보여준다. 계속은 "다른 passphrase는 다른(빈) 지갑을 엽니다" 확인 체크를 켠 뒤에만 활성화된다([04](04-app-ui.md) §2.5).
-- `Unlocked { alt_passphrase: true }` 세션: 서명 포함 모든 기능이 동작한다. yw-app은 meta를 디스크에서 읽지도 쓰지도 않고 메모리 기본 meta(§5.3)로 동작하며, 상시 배너를 보여준다. journal은 정상 저장한다(진행 중 거래 보호). 확인값은 바꾸지 않는다.
+- `Unlocked { alt_passphrase: true }` 세션: 코어에서는 서명 포함 모든 기능이 동작한다. 그러나 이 passphrase는 오타일 수 있고, 이 지갑으로 받은 자산은 대소문자·공백까지 같은 passphrase로만 다시 꺼낼 수 있다. 그래서 yw-app은 모든 화면에 닫을 수 없는 경고 띠 T-ALT-PASS를 보이고, **받기(S12, 모든 체인)와 브라우저 연결·서명을 막는다**(`App::passphrase_unverified()`, [04] §2.1·§2.5; dApp은 `BackupPending`처럼 4100). 앱 자신의 보내기는 허용한다(일부러 다른 passphrase 지갑을 쓰는 경우 자산을 옮길 수 있게). meta는 디스크에서 읽지도 쓰지도 않고 메모리 기본 meta(§5.3)로 동작한다. journal은 정상 저장한다(진행 중 거래 보호). 확인값은 바꾸지 않는다.
 
 ## 8. 생성·가져오기·백업 확인
 
@@ -774,7 +781,7 @@ impl Vault {
     pub fn vault_id(&self) -> Option<[u8; 16]>;
 
     // 아래에서 R<T> = Result<T, VaultError>, Slot = Box<dyn LockedSlot>, Pw = &VaultPassword
-    pub fn create_wallet(&mut self, password: Pw, slot: Slot, now_unix: u64) -> R<Zeroizing<String>>;
+    pub fn create_wallet(&mut self, password: Pw, slot: Slot, now_unix: u64) -> R<SecretString>;
     pub fn import_mnemonic(&mut self, password: Pw, phrase: &str, passphrase: Option<Bip39Passphrase>,
                            slot: Slot, now_unix: u64) -> R<()>;
     pub fn unlock(&mut self, password: Pw, slot: Slot) -> R<VaultStatus>;
@@ -782,7 +789,7 @@ impl Vault {
     pub fn retry_passphrase(&mut self) -> R<VaultStatus>;
     pub fn accept_mismatched_passphrase(&mut self) -> R<VaultStatus>;
     pub fn lock(&mut self);
-    pub fn recover_from_prev(&mut self, password: Pw, slot: Slot, now_unix: u64) -> R<VaultStatus>;
+    pub fn recover_from_prev(&mut self, password: Pw, slot: Slot, now_unix: u64) -> R<VaultStatus>; // Corrupt·MainMissing·Locked(§6.3)
 
     pub fn backup_challenge(&mut self) -> R<BackupChallenge>;
     pub fn confirm_backup(&mut self, id: ChallengeId, words: [&str; 4], address_suffix: &str) -> R<()>;
@@ -790,8 +797,8 @@ impl Vault {
     pub fn import_evm_private_key(&mut self, hex: &str, now_unix: u64) -> R<RecordId>;
     pub fn remove_evm_raw_key(&mut self, password: Pw, id: RecordId) -> R<()>;
     pub fn change_password(&mut self, old: Pw, new: Pw) -> R<()>;
-    pub fn reveal_mnemonic(&self, password: Pw) -> R<Zeroizing<String>>;
-    pub fn reveal_evm_private_key(&self, password: Pw, src: EvmKeySource) -> R<Zeroizing<String>>;
+    pub fn reveal_mnemonic(&self, password: Pw) -> R<SecretString>;
+    pub fn reveal_evm_private_key(&self, password: Pw, src: EvmKeySource) -> R<SecretString>;
 
     // 공개 정보 (BackupPending·Unlocked)
     pub fn evm_address(&self, src: EvmKeySource) -> R<crate::evm::Address>;
@@ -802,7 +809,7 @@ impl Vault {
     pub fn btc_public_key(&self, coin: BtcCoin, chain: BtcChain, index: u32) -> R<[u8; 33]>;      // M8, 개인 파생 잎 공개키
 
     // 사이드카 (BackupPending·Unlocked)
-    pub fn open_sidecar(&self, kind: FileKind) -> R<Option<(u64, Zeroizing<Vec<u8>>)>>;
+    pub fn open_sidecar(&self, kind: FileKind) -> R<Option<(u64, SecretVec)>>;
     pub fn save_sidecar(&mut self, kind: FileKind, plaintext: &[u8]) -> R<u64>;       // 새 generation
 
     // 서명 모듈 전용 (03·07·08), Unlocked만
@@ -819,6 +826,8 @@ pub fn preview_evm_address(phrase: &str, passphrase: Option<&Bip39Passphrase>, i
 
 - `preview_evm_address`: `Mnemonic::parse` → (`Some`인데 비어 있으면 `PassphraseEmpty`) → `to_seed` → `secp_context`(`OsRandom`) → `XPriv::from_seed` → `derive_path(evm_path(index))` → 주소. 중간값은 모두 `Zeroizing`·`non_secure_erase`로 지우고 아무것도 저장하지 않는다. 오류는 `import_mnemonic`의 `KeyError`와 같다.
 - `open_sidecar`·`save_sidecar`의 generation CAS는 `Vault`가 기억한 마지막 generation으로 한다(`save_sidecar`가 `commit(kind, Some(last), …)`, 파일이 없으면 `None`). `FileKind::Vault`를 넘기면 `InvalidState`.
+- 이 세션에서 아직 열지 않은 사이드카를 저장할 때는 먼저 `open_sidecar`로 **인증**한다(구조만 보고 generation을 가져다 덮어쓰지 않는다). 열기가 `SidecarCorrupt`·`SidecarVaultMismatch`로 실패한 파일은 다음 열기가 성공할 때까지(사용자가 `.prev`로 되돌리거나 격리한 뒤) 저장을 같은 오류로 거부한다. 남의 vault의 meta나 손상된 파일을 조용히 덮어써 복구 기회를 없애지 않기 위해서다(§6.3).
+- 비밀을 돌려주는 API(`create_wallet`·`reveal_*`·`open_sidecar` 평문, `Mnemonic::phrase`·`to_seed`, `bip32::xkey::encode_xkey`)는 `Debug`가 `[REDACTED]`인 래퍼(`SecretString`·`SecretVec`·`SecretBytes`, [01] §5.3)를 돌려준다. 값은 `expose()`로만 읽는다.
 - `with_secp_key`·`with_ed25519_seed`는 `pub(crate)`이며 키를 클로저 밖으로 내보내는 반환 타입을 만들지 않는다. 서명 API 자체는 [03](03-evm.md)·[07](07-solana.md)·[08](08-bitcoin.md)이 정의한다.
 - `with_ed25519_seed(src, f)`: §3.5 표대로 `src`의 32바이트 seed를 만들어 `f`에 빌려주고, 반환 직후 seed·64바이트 BIP39 시드·중간값을 소거한다(§7.3). 표준·비표준 다섯 출처 모두 이 함수 하나로만 서명 키를 얻는다([07] §3.1–§3.3).
 - `sol_public_keys(srcs)`: BIP39 시드를 한 번만 계산하고 각 출처의 seed로 `SigningKey::from_bytes(&k).verifying_key()`를 구해 입력 순서대로 32바이트 공개키를 돌려준다(seed는 출처마다 즉시 소거). 계정 추가·주소 캐시 재계산·복구 스캔([07] §3.3)에 쓴다. 빈 목록은 빈 결과, 129개 이상은 `InvalidState`(호출자 오류)이며 아무것도 파생하지 않는다.

@@ -14,7 +14,9 @@ use sha2::{Digest, Sha256};
 use subtle::{Choice, ConstantTimeEq};
 use zeroize::{Zeroize, Zeroizing};
 
-use super::format::{self, Bip39Record, MAX_RAW_KEYS, Payload, RawKeyRecord, SealMaterial};
+use super::format::{
+    self, Bip39Record, MAX_RAW_KEYS, Payload, RawKeyRecord, SealMaterial, raw_key_list,
+};
 use super::{
     BackupChallenge, ChallengeId, EvmKeySource, FileKind, KDF_V3, KdfParams, KeyRef, LockedSlot,
     RecordId, SLOT_LEN, VaultStatus, VaultStorage,
@@ -32,6 +34,7 @@ use crate::error::{KeyError, StorageError, VaultError};
 use crate::evm::Address;
 use crate::hex;
 use crate::password::{Bip39Passphrase, VaultPassword};
+use crate::secret::{SecretBytes, SecretString, SecretVec};
 use crate::slip10::SolKeySource;
 
 const MAX_ADDRESS_BATCH: usize = 100;
@@ -49,18 +52,25 @@ const INTERNAL: VaultError = VaultError::Key(KeyError::Internal);
 
 type Slot = Box<dyn LockedSlot>;
 
-/// A sidecar's generation plus its plaintext.
-pub type SidecarContents = (u64, Zeroizing<Vec<u8>>);
+/// A sidecar's generation plus its plaintext (redacting [`SecretVec`]).
+pub type SidecarContents = (u64, SecretVec);
+
+/// An opened vault file: its bytes, `vault_id`, the unwrapped DEK and the status it unlocks to.
+type Opened = (Vec<u8>, [u8; 16], Zeroizing<[u8; 32]>, VaultStatus);
 
 /// What the vault knows about a sidecar file's generation (for the commit CAS).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Known {
-    /// Not read or written in this session.
+    /// Not read or written in this session: `save_sidecar` authenticates the file first.
     Unknown,
     /// The file did not exist.
     Absent,
     /// The last generation read or written.
     Generation(u64),
+    /// The last open failed authentication or structure (`SidecarCorrupt`,
+    /// `SidecarVaultMismatch`): saving is refused until a later open succeeds, so a file that
+    /// may still be restored (spec/02 §6.3, E-VLT-006) is never overwritten.
+    Failed(VaultError),
 }
 
 impl Known {
@@ -98,6 +108,25 @@ impl fmt::Debug for Vault {
 fn wipe_and_drop(mut slot: Slot) {
     slot.bytes_mut().zeroize();
     drop(slot);
+}
+
+/// `commit`, and when the storage reports a failure, a re-read of the main file: bytes equal
+/// to the ones written mean the commit landed (e.g. the spec/02 §6.2 step 6 read-back failed
+/// after the replace) and count as success, so the in-memory state follows the disk. Each
+/// written file carries a fresh random nonce, so equal bytes can only come from this commit.
+fn commit_landed(
+    storage: &mut dyn VaultStorage,
+    kind: FileKind,
+    expected: Option<u64>,
+    bytes: &[u8],
+) -> Result<(), StorageError> {
+    let Err(error) = storage.commit(kind, expected, bytes) else {
+        return Ok(());
+    };
+    match storage.load(kind) {
+        Ok(Some(current)) if current == bytes => Ok(()),
+        _ => Err(error),
+    }
 }
 
 fn slot_dek(slot: Option<&Slot>) -> Result<&[u8; 32], VaultError> {
@@ -207,7 +236,11 @@ fn address_zero(
     passphrase: &Bip39Passphrase,
 ) -> Result<Address, VaultError> {
     let seed = mnemonic.to_seed(passphrase);
-    Ok(evm_address_from_seed(ctx, &seed, AccountIndex::ZERO)?)
+    Ok(evm_address_from_seed(
+        ctx,
+        seed.expose(),
+        AccountIndex::ZERO,
+    )?)
 }
 
 /// Optional lowercase `0x` + exactly 64 hex digits, value in [1, n−1] (spec/02 §8.2).
@@ -317,7 +350,7 @@ impl Vault {
         )
     }
 
-    fn seed(&self, payload: &Payload) -> Result<Zeroizing<[u8; 64]>, VaultError> {
+    fn seed(&self, payload: &Payload) -> Result<SecretBytes<64>, VaultError> {
         Ok(payload
             .bip39
             .mnemonic
@@ -343,15 +376,40 @@ impl Vault {
             KeyRef::Btc { coin, chain, index } => btc_path(coin, chain, index)?,
         };
         let seed = self.seed(payload)?;
-        Ok(secret_key_from_seed(ctx, &seed, &path)?)
+        Ok(secret_key_from_seed(ctx, seed.expose(), &path)?)
     }
 
     fn commit_vault(&mut self, expected: Option<u64>, bytes: Vec<u8>) -> Result<(), VaultError> {
-        self.storage
-            .commit(FileKind::Vault, expected, &bytes)
+        commit_landed(self.storage.as_mut(), FileKind::Vault, expected, &bytes)
             .map_err(VaultError::Storage)?;
         self.ciphertext = Some(bytes);
         Ok(())
+    }
+
+    /// The main `vault.ywv` bytes (`Storage(NotFound)` when absent).
+    fn load_main(&self) -> Result<Vec<u8>, VaultError> {
+        self.storage
+            .load(FileKind::Vault)
+            .map_err(VaultError::Storage)?
+            .ok_or(VaultError::Storage(StorageError::NotFound))
+    }
+
+    /// spec/02 §4.5 steps 1–9 on `bytes`: KEK, DEK unwrap and payload authentication.
+    fn open_bytes(&self, bytes: Vec<u8>, password: &VaultPassword) -> Result<Opened, VaultError> {
+        let (header, dek) = format::unwrap_dek(&bytes, password, &self.kdf)?;
+        let payload = format::decrypt_payload(&bytes, &dek, &self.kdf)?;
+        let next = status_after_unlock(&payload.bip39);
+        Ok((bytes, header.vault_id, dek, next))
+    }
+
+    /// Opens the session on an opened file.
+    fn finish_open(&mut self, slot: Slot, opened: Opened) -> Result<VaultStatus, VaultError> {
+        let (bytes, vault_id, dek, next) = opened;
+        self.open_session(slot, &dek, None)?;
+        self.ciphertext = Some(bytes);
+        self.id = Some(vault_id);
+        self.status = next;
+        Ok(next)
     }
 
     /// `PayloadRewrite` (spec/02 §4.4): no KDF, key section unchanged, `generation + 1`.
@@ -411,7 +469,7 @@ impl Vault {
         password: &VaultPassword,
         slot: Slot,
         now_unix: u64,
-    ) -> Result<Zeroizing<String>, VaultError> {
+    ) -> Result<SecretString, VaultError> {
         self.create_wallet_with_rng(&mut OsRandom, password, slot, now_unix)
     }
 
@@ -421,7 +479,7 @@ impl Vault {
         password: &VaultPassword,
         slot: Slot,
         now_unix: u64,
-    ) -> Result<Zeroizing<String>, VaultError> {
+    ) -> Result<SecretString, VaultError> {
         if self.status != VaultStatus::NoVault {
             wipe_and_drop(slot);
             return Err(VaultError::InvalidState);
@@ -443,7 +501,7 @@ impl Vault {
                     backup_confirmed: false,
                     passphrase_check: [0; 4],
                 },
-                raw_keys: Vec::new(),
+                raw_keys: raw_key_list(),
             };
             let material = SealMaterial {
                 password,
@@ -465,7 +523,7 @@ impl Vault {
                 return Err(error);
             }
         };
-        if let Err(error) = self.storage.commit(FileKind::Vault, None, &bytes) {
+        if let Err(error) = commit_landed(self.storage.as_mut(), FileKind::Vault, None, &bytes) {
             wipe_and_drop(slot);
             return Err(VaultError::Storage(error));
         }
@@ -536,7 +594,7 @@ impl Vault {
                     backup_confirmed: true,
                     passphrase_check,
                 },
-                raw_keys: Vec::new(),
+                raw_keys: raw_key_list(),
             };
             let material = SealMaterial {
                 password,
@@ -561,7 +619,7 @@ impl Vault {
                 return Err(error);
             }
         };
-        if let Err(error) = self.storage.commit(FileKind::Vault, None, &bytes) {
+        if let Err(error) = commit_landed(self.storage.as_mut(), FileKind::Vault, None, &bytes) {
             wipe_and_drop(slot);
             return Err(VaultError::Storage(error));
         }
@@ -590,23 +648,11 @@ impl Vault {
             wipe_and_drop(slot);
             return Err(VaultError::InvalidState);
         }
-        let opened = (|| -> Result<_, VaultError> {
-            let bytes = self
-                .storage
-                .load(FileKind::Vault)
-                .map_err(VaultError::Storage)?
-                .ok_or(VaultError::Storage(StorageError::NotFound))?;
-            let (header, dek) = format::unwrap_dek(&bytes, password, &self.kdf)?;
-            let payload = format::decrypt_payload(&bytes, &dek, &self.kdf)?;
-            Ok((
-                bytes,
-                header.vault_id,
-                dek,
-                status_after_unlock(&payload.bip39),
-            ))
-        })();
-        let (bytes, vault_id, dek, next) = match opened {
-            Ok(values) => values,
+        let opened = self
+            .load_main()
+            .and_then(|bytes| self.open_bytes(bytes, password));
+        match opened {
+            Ok(opened) => self.finish_open(slot, opened),
             Err(error) => {
                 wipe_and_drop(slot);
                 if error == VaultError::PayloadCorrupt {
@@ -617,14 +663,9 @@ impl Vault {
                         .is_some();
                     self.status = VaultStatus::Corrupt { prev_available };
                 }
-                return Err(error);
+                Err(error)
             }
-        };
-        self.open_session(slot, &dek, None)?;
-        self.ciphertext = Some(bytes);
-        self.id = Some(vault_id);
-        self.status = next;
-        Ok(next)
+        }
     }
 
     /// Checks the BIP39 passphrase against the stored 4-byte value (spec/02 §7.5).
@@ -719,22 +760,50 @@ impl Vault {
     /// Restores `vault.ywv.prev` (spec/02 §6.3): unlock it, quarantine a damaged main file, and
     /// commit its content as a new generation.
     ///
+    /// From `Locked` (an explicit user request: a damaged key section `header[0..130]` looks
+    /// like a wrong password, so `unlock` alone can never offer `.prev`) the main file is tried
+    /// first with `password`. If it opens, nothing is restored: the session opens on the main
+    /// file exactly like [`Vault::unlock`]. Only when it cannot be opened (`UnlockFailed`,
+    /// `PayloadCorrupt`, structure, or missing) is `.prev` unlocked with the same password and
+    /// restored. A wrong password fails both and leaves every file untouched.
+    ///
     /// # Errors
     ///
-    /// `InvalidState` outside `Corrupt`/`MainMissing`, `Storage(NotFound)` without `.prev`, and
-    /// the unlock errors of the `.prev` file.
+    /// `InvalidState` outside `Locked`/`Corrupt`/`MainMissing`, `Storage(NotFound)` without
+    /// `.prev`, and the unlock errors of the `.prev` file.
     pub fn recover_from_prev(
         &mut self,
         password: &VaultPassword,
         slot: Slot,
         now_unix: u64,
     ) -> Result<VaultStatus, VaultError> {
-        if !matches!(
-            self.status,
-            VaultStatus::Corrupt { .. } | VaultStatus::MainMissing
-        ) {
-            wipe_and_drop(slot);
-            return Err(VaultError::InvalidState);
+        let from_locked = match self.status {
+            VaultStatus::Corrupt { .. } | VaultStatus::MainMissing => false,
+            VaultStatus::Locked => true,
+            _ => {
+                wipe_and_drop(slot);
+                return Err(VaultError::InvalidState);
+            }
+        };
+        if from_locked {
+            let main = self
+                .load_main()
+                .and_then(|bytes| self.open_bytes(bytes, password));
+            match main {
+                Ok(opened) => return self.finish_open(slot, opened),
+                Err(
+                    VaultError::UnlockFailed
+                    | VaultError::PayloadCorrupt
+                    | VaultError::Malformed
+                    | VaultError::UnsupportedVersion
+                    | VaultError::UnsupportedParams
+                    | VaultError::Storage(StorageError::NotFound),
+                ) => {}
+                Err(error) => {
+                    wipe_and_drop(slot);
+                    return Err(error);
+                }
+            }
         }
         let recovered = (|| -> Result<_, VaultError> {
             let prev = self
@@ -756,8 +825,7 @@ impl Vault {
                     .quarantine(FileKind::Vault, now_unix)
                     .map_err(VaultError::Storage)?;
             }
-            self.storage
-                .commit(FileKind::Vault, None, &bytes)
+            commit_landed(self.storage.as_mut(), FileKind::Vault, None, &bytes)
                 .map_err(VaultError::Storage)?;
             Ok((
                 bytes,
@@ -766,18 +834,13 @@ impl Vault {
                 status_after_unlock(&payload.bip39),
             ))
         })();
-        let (bytes, vault_id, dek, next) = match recovered {
-            Ok(values) => values,
+        match recovered {
+            Ok(opened) => self.finish_open(slot, opened),
             Err(error) => {
                 wipe_and_drop(slot);
-                return Err(error);
+                Err(error)
             }
-        };
-        self.open_session(slot, &dek, None)?;
-        self.ciphertext = Some(bytes);
-        self.id = Some(vault_id);
-        self.status = next;
-        Ok(next)
+        }
     }
 
     /// Picks 4 distinct word positions (partial Fisher–Yates over `random_below`). A new
@@ -970,10 +1033,7 @@ impl Vault {
     /// # Errors
     ///
     /// `InvalidState` outside `BackupPending`/`Unlocked`, or `UnlockFailed`.
-    pub fn reveal_mnemonic(
-        &self,
-        password: &VaultPassword,
-    ) -> Result<Zeroizing<String>, VaultError> {
+    pub fn reveal_mnemonic(&self, password: &VaultPassword) -> Result<SecretString, VaultError> {
         self.require_public()?;
         self.verify_password(password)?;
         Ok(self.payload()?.bip39.mnemonic.phrase())
@@ -988,7 +1048,7 @@ impl Vault {
         &self,
         password: &VaultPassword,
         src: EvmKeySource,
-    ) -> Result<Zeroizing<String>, VaultError> {
+    ) -> Result<SecretString, VaultError> {
         self.require_signing()?;
         self.verify_password(password)?;
         let payload = self.payload()?;
@@ -998,7 +1058,7 @@ impl Vault {
         secret.non_secure_erase();
         let mut out = Zeroizing::new(String::with_capacity(64));
         hex::encode_into(raw.as_slice(), &mut out);
-        Ok(out)
+        Ok(SecretString::from_zeroizing(out))
     }
 
     /// The address of one EVM key source.
@@ -1031,7 +1091,9 @@ impl Vault {
         let ctx = secp_context(&mut OsRandom)?;
         indices
             .iter()
-            .map(|index| evm_address_from_seed(&ctx, &seed, *index).map_err(VaultError::from))
+            .map(|index| {
+                evm_address_from_seed(&ctx, seed.expose(), *index).map_err(VaultError::from)
+            })
             .collect()
     }
 
@@ -1068,7 +1130,7 @@ impl Vault {
         let payload = self.payload()?;
         let seed = self.seed(&payload)?;
         let ctx = secp_context(&mut OsRandom)?;
-        Ok(btc_account_xpub_from_seed(&ctx, &seed, coin)?)
+        Ok(btc_account_xpub_from_seed(&ctx, seed.expose(), coin)?)
     }
 
     /// The compressed public key of `m/84'/{coin}'/0'/{chain}/{index}` by private derivation
@@ -1094,7 +1156,17 @@ impl Vault {
         Ok(public.serialize())
     }
 
-    /// Opens `meta.ywm` or `journal.ywj`; `None` if the file does not exist.
+    fn set_known(&self, index: usize, value: Known) {
+        let mut known = self.sidecar_generations.get();
+        if let Some(entry) = known.get_mut(index) {
+            *entry = value;
+        }
+        self.sidecar_generations.set(known);
+    }
+
+    /// Opens `meta.ywm` or `journal.ywj`; `None` if the file does not exist. A structure or
+    /// authentication failure blocks [`Vault::save_sidecar`] for that file until a later open
+    /// succeeds (after the user restored `.prev` or quarantined the file).
     ///
     /// # Errors
     ///
@@ -1103,46 +1175,50 @@ impl Vault {
         self.require_public()?;
         let index = sidecar_index(kind)?;
         let vault_id = self.id.ok_or(VaultError::InvalidState)?;
+        let dek = slot_dek(self.slot.as_ref())?;
         let opened = match self.storage.load(kind).map_err(VaultError::Storage)? {
             None => None,
-            Some(bytes) => Some(format::open_sidecar(
-                kind,
-                &bytes,
-                &vault_id,
-                slot_dek(self.slot.as_ref())?,
-            )?),
+            Some(bytes) => match format::open_sidecar(kind, &bytes, &vault_id, dek) {
+                Ok((generation, plaintext)) => {
+                    Some((generation, SecretVec::from_zeroizing(plaintext)))
+                }
+                Err(error) => {
+                    if matches!(
+                        error,
+                        VaultError::SidecarCorrupt(_) | VaultError::SidecarVaultMismatch(_)
+                    ) {
+                        self.set_known(index, Known::Failed(error));
+                    }
+                    return Err(error);
+                }
+            },
         };
-        let mut known = self.sidecar_generations.get();
-        if let Some(entry) = known.get_mut(index) {
-            *entry = Known::from_option(opened.as_ref().map(|(generation, _)| *generation));
-        }
-        self.sidecar_generations.set(known);
+        self.set_known(
+            index,
+            Known::from_option(opened.as_ref().map(|(generation, _)| *generation)),
+        );
         Ok(opened)
     }
 
     /// Seals and commits a sidecar with generation CAS against the last generation seen.
-    /// Returns the new generation.
+    /// Returns the new generation. A file not yet opened in this session is opened (and so
+    /// authenticated) first: a file that fails is never overwritten.
     ///
     /// # Errors
     ///
-    /// `InvalidState` (also for `FileKind::Vault`), `Storage(GenerationConflict)` and other
-    /// storage errors, `Storage(TooLarge)` above the plaintext bound.
+    /// `InvalidState` (also for `FileKind::Vault`), `SidecarCorrupt`/`SidecarVaultMismatch` while
+    /// the file failed to open, `Storage(GenerationConflict)` and other storage errors,
+    /// `Storage(TooLarge)` above the plaintext bound.
     pub fn save_sidecar(&mut self, kind: FileKind, plaintext: &[u8]) -> Result<u64, VaultError> {
         self.require_public()?;
         let index = sidecar_index(kind)?;
         let vault_id = self.id.ok_or(VaultError::InvalidState)?;
-        let mut known = self.sidecar_generations.get();
+        let known = self.sidecar_generations.get();
         let expected = match known.get(index).copied().unwrap_or(Known::Unknown) {
             Known::Generation(last) => Some(last),
             Known::Absent => None,
-            Known::Unknown => self
-                .storage
-                .load(kind)
-                .map_err(VaultError::Storage)?
-                .map(|bytes| {
-                    format::decode_sidecar_header(kind, &bytes).map(|header| header.generation)
-                })
-                .transpose()?,
+            Known::Failed(error) => return Err(error),
+            Known::Unknown => self.open_sidecar(kind)?.map(|(generation, _)| generation),
         };
         let generation = expected
             .map_or(Some(1), |last| last.checked_add(1))
@@ -1156,13 +1232,9 @@ impl Vault {
             slot_dek(self.slot.as_ref())?,
             plaintext,
         )?;
-        self.storage
-            .commit(kind, expected, &bytes)
+        commit_landed(self.storage.as_mut(), kind, expected, &bytes)
             .map_err(VaultError::Storage)?;
-        if let Some(entry) = known.get_mut(index) {
-            *entry = Known::Generation(generation);
-        }
-        self.sidecar_generations.set(known);
+        self.set_known(index, Known::Generation(generation));
         Ok(generation)
     }
 
@@ -1201,7 +1273,7 @@ impl Vault {
         let seed = self.seed(&payload)?;
         srcs.iter()
             .map(|src| {
-                let secret = src.ed25519_seed(&seed)?;
+                let secret = src.ed25519_seed(seed.expose())?;
                 Ok(crate::sol::keys::public_key(&secret))
             })
             .collect()
@@ -1218,7 +1290,7 @@ impl Vault {
         self.require_signing()?;
         let payload = self.payload()?;
         let seed = self.seed(&payload)?;
-        let secret = src.ed25519_seed(&seed)?;
+        let secret = src.ed25519_seed(seed.expose())?;
         drop(seed);
         drop(payload);
         f(&secret)
@@ -1232,5 +1304,13 @@ impl Vault {
     #[cfg(test)]
     pub(crate) fn held_bytes(&self) -> Option<&[u8]> {
         self.ciphertext.as_deref()
+    }
+}
+
+/// Dropping the vault (worker shutdown, a replaced `Load`, a panic-free early return) locks it:
+/// the slot is zeroized before it is released, as on [`Vault::lock`].
+impl Drop for Vault {
+    fn drop(&mut self) {
+        self.lock();
     }
 }

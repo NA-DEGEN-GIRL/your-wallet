@@ -657,3 +657,72 @@ fn invalid_transaction_is_never_signed() {
         Err(SignError::KindMismatch)
     );
 }
+
+#[test]
+fn message_preimages_need_their_exact_prefixes() {
+    use super::{is_personal_preimage, is_typed_data_preimage};
+    assert!(is_personal_preimage(&personal_preimage(b"")));
+    assert!(is_personal_preimage(&personal_preimage(b"Some data")));
+    // A message that starts with digits still has exactly one valid split.
+    assert!(is_personal_preimage(&personal_preimage(b"12345678901")));
+    assert!(is_personal_preimage(&personal_preimage(&vec![7; 65_536])));
+    assert!(!is_personal_preimage(&personal_preimage(&vec![7; 65_537])));
+    for bad in [
+        b"\x19Ethereum Signed Message:\n10Some data".as_slice(),
+        b"\x19Ethereum Signed Message:\n09Some data".as_slice(),
+        b"\x19Ethereum Signed Message:\nSome data".as_slice(),
+        b"\x19Ethereum Signed Message:\n".as_slice(),
+        b"\x19Ethereum Signed Message:\r9Some data".as_slice(),
+        b"Ethereum Signed Message:\n9Some data".as_slice(),
+        &[0xab; 32],
+        &[0x19, 0x01, 0, 0],
+    ] {
+        assert!(!is_personal_preimage(bad), "{bad:?}");
+    }
+    let mut typed = [0_u8; 66];
+    typed[0] = 0x19;
+    typed[1] = 0x01;
+    assert!(is_typed_data_preimage(&typed));
+    typed[1] = 0x00;
+    assert!(!is_typed_data_preimage(&typed));
+    assert!(!is_typed_data_preimage(&[0; 66]));
+
+    // Signing refuses them before the key is used.
+    let vault = unlocked_vault();
+    assert_eq!(
+        sign_personal(
+            &vault,
+            approved(
+                ACC1,
+                ApprovalKind::EvmPersonalSign,
+                SigningPayload::EvmPersonal(vec![0xab; 32]),
+                11_155_111
+            )
+        ),
+        Err(SignError::KindMismatch)
+    );
+    assert_eq!(
+        sign_personal(
+            &vault,
+            approved(
+                ACC1,
+                ApprovalKind::EvmPersonalSign,
+                SigningPayload::EvmPersonal(b"\x19Ethereum Signed Message:\n10Some data".to_vec()),
+                11_155_111
+            )
+        ),
+        Err(SignError::KindMismatch)
+    );
+    assert_eq!(
+        sign_typed_data(
+            &vault,
+            approved(
+                ACC1,
+                ApprovalKind::EvmTypedData,
+                SigningPayload::EvmTypedData([0; 66]),
+                11_155_111
+            )
+        ),
+        Err(SignError::KindMismatch)
+    );
+}

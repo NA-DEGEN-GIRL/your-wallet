@@ -25,10 +25,10 @@ fn account(phrase: &str, passphrase: &str, i: u32) -> (String, String) {
     let seed = Mnemonic::parse(phrase)
         .unwrap()
         .to_seed(&Bip39Passphrase::new(passphrase).unwrap());
-    let mut secret = secret_key_from_seed(&ctx, &seed, &evm_path(index(i))).unwrap();
+    let mut secret = secret_key_from_seed(&ctx, seed.expose(), &evm_path(index(i))).unwrap();
     let key = hex::encode(&secret.secret_bytes());
     secret.non_secure_erase();
-    let address = evm_address_from_seed(&ctx, &seed, index(i)).unwrap();
+    let address = evm_address_from_seed(&ctx, seed.expose(), index(i)).unwrap();
     (address.to_checksum(), key)
 }
 
@@ -54,14 +54,14 @@ fn acc_1_2_about_accounts_0_and_1() {
 fn acc_3_art_accounts_0_and_1() {
     let art = Mnemonic::from_entropy(&[0; 32]).unwrap().phrase();
     assert_eq!(
-        account(&art, "", 0),
+        account(art.expose(), "", 0),
         (
             "0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb".to_owned(),
             "1053fae1b3ac64f178bcc21026fd06a3f4544ec2f35338b001f02d1d8efa3d5f".to_owned()
         )
     );
     assert_eq!(
-        account(&art, "", 1),
+        account(art.expose(), "", 1),
         (
             "0xf785bD075874b8423D3583728a981399f31e95aA".to_owned(),
             "0855b75d03a8830e390b5483d81694c9c7121d971e092145cf8b9c6fa3a5b373".to_owned()

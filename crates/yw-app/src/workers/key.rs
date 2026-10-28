@@ -8,7 +8,7 @@ use yw_core::bip32::path::AccountIndex;
 use yw_core::bip32::preview_evm_address;
 use yw_core::error::{KeyError, VaultError};
 use yw_core::password::{Bip39Passphrase, VaultPassword};
-use yw_core::secret::Zeroizing;
+use yw_core::secret::{SecretString, Zeroizing};
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::SolAddress;
 use yw_core::vault::{EvmKeySource, FileKind, Vault, VaultStatus, VaultStorage};
@@ -141,7 +141,7 @@ impl KeyWorker {
     fn create(
         &mut self,
         password_bytes: &[u8],
-    ) -> Result<(Zeroizing<String>, yw_core::evm::address::Address), VaultError> {
+    ) -> Result<(SecretString, yw_core::evm::address::Address), VaultError> {
         let password = password(password_bytes)?;
         let slot = new_slot()?;
         let vault = self.vault()?;
@@ -199,7 +199,7 @@ impl KeyWorker {
     ) -> Result<
         (
             RevealWhat,
-            Zeroizing<String>,
+            SecretString,
             Option<yw_core::evm::address::Address>,
         ),
         VaultError,
@@ -228,7 +228,7 @@ impl KeyWorker {
             match vault.open_sidecar(FileKind::Meta)? {
                 None => (Meta::default(), false),
                 Some((_, plaintext)) => {
-                    let parsed = meta::parse(&plaintext)
+                    let parsed = meta::parse(plaintext.expose())
                         .map_err(|_| VaultError::SidecarCorrupt(FileKind::Meta))?;
                     (parsed.meta, parsed.prefs_reset)
                 }
@@ -561,6 +561,44 @@ pub fn new_account(index: u32, address: &yw_core::evm::address::Address) -> Acco
     }
 }
 
+/// Runs one popped job; `false` after `Shutdown` (the loop ends).
+pub fn step(
+    worker: &mut KeyWorker,
+    queue: &KeyQueue,
+    (epoch, job): (u64, KeyJob),
+    sink: &dyn Fn(KeyResult),
+    lock_signal: &LockSignal,
+) -> bool {
+    match job {
+        KeyJob::Shutdown => {
+            worker.lock();
+            lock_signal.signal();
+            false
+        }
+        KeyJob::Lock => {
+            worker.lock();
+            for (cancelled_epoch, cancelled) in queue.cancel_pending() {
+                sink(KeyResult {
+                    epoch: cancelled_epoch,
+                    outcome: KeyOutcome::Cancelled(cancelled.name(), KeyJobError::Locked),
+                });
+            }
+            lock_signal.signal();
+            sink(KeyResult {
+                epoch,
+                outcome: KeyOutcome::LockDone,
+            });
+            true
+        }
+        other => {
+            for outcome in worker.handle(other) {
+                sink(KeyResult { epoch, outcome });
+            }
+            true
+        }
+    }
+}
+
 /// The worker loop: runs until `Shutdown`.
 pub fn run(
     mut worker: KeyWorker,
@@ -568,32 +606,9 @@ pub fn run(
     sink: &dyn Fn(KeyResult),
     lock_signal: &LockSignal,
 ) {
-    while let Some((epoch, job)) = queue.pop() {
-        match job {
-            KeyJob::Shutdown => {
-                worker.lock();
-                lock_signal.signal();
-                break;
-            }
-            KeyJob::Lock => {
-                worker.lock();
-                for (cancelled_epoch, cancelled) in queue.cancel_pending() {
-                    sink(KeyResult {
-                        epoch: cancelled_epoch,
-                        outcome: KeyOutcome::Cancelled(cancelled.name(), KeyJobError::Locked),
-                    });
-                }
-                lock_signal.signal();
-                sink(KeyResult {
-                    epoch,
-                    outcome: KeyOutcome::LockDone,
-                });
-            }
-            other => {
-                for outcome in worker.handle(other) {
-                    sink(KeyResult { epoch, outcome });
-                }
-            }
+    while let Some(entry) = queue.pop() {
+        if !step(&mut worker, queue, entry, sink, lock_signal) {
+            break;
         }
     }
 }
@@ -639,13 +654,10 @@ mod tests {
                 _ => "other".to_owned(),
             })
             .collect();
+        // `Load` is a control job: it survives the lock (spec/04 §5.3 reloads after locking).
         assert_eq!(
             names,
-            [
-                "cancelled:Load:1",
-                "cancelled:BackupChallenge:1",
-                "lockdone:2"
-            ]
+            ["cancelled:BackupChallenge:1", "lockdone:2", "other"]
         );
         assert!(signal.count() >= before + 2);
         // A result from before the lock (epoch 1) is dropped once the UI is at epoch 2.
@@ -654,7 +666,7 @@ mod tests {
             outcome: KeyOutcome::Preview(Err(yw_core::error::KeyError::MnemonicChecksum)),
         };
         assert!(!accept_result(&stale, 2));
-        assert!(accept_result(&results[2], 7));
+        assert!(accept_result(&results[1], 7));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
