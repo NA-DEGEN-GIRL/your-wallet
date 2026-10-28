@@ -7,7 +7,7 @@
 
 use core::fmt::Write as _;
 
-use yw_core::evm::chain::SEPOLIA;
+use yw_core::evm::chain::{ETHEREUM_MAINNET, HYPEREVM_MAINNET, SEPOLIA};
 use yw_core::evm::display::format_address;
 
 use crate::apikeys::{KeyName, mask_url};
@@ -256,7 +256,41 @@ pub const T_FIRST: [&str; 3] = [
     "지갑을 만들 때 받는 복구 단어 24개가 유일한 백업입니다. 종이에 적어 안전한 곳에 보관하세요.",
 ];
 
+/// T-ALT-PASS (every screen while `App::passphrase_unverified`, spec/04 §2.1): not dismissible.
+pub const T_ALT_PASS: &str = "passphrase 확인값과 맞지 않는 passphrase로 연 지갑입니다. 오타라면 이 지갑은 원래 지갑이 아닌 다른(빈) 지갑이고, 여기로 받은 자산은 지금 입력한 passphrase와 대소문자·공백까지 정확히 같은 값을 다시 넣어야만 꺼낼 수 있습니다. 그래서 받기와 사이트 연결·서명을 막았습니다. 계정 이름·주소록·연결 기록도 저장되지 않습니다. 잘못 입력했다면 잠그고 다시 여세요.";
+/// Shown when `받기` is pressed in that mode.
+pub const T_ALT_PASS_RECEIVE: &str = "확인되지 않은 passphrase로 연 지갑에서는 받기를 쓸 수 없습니다. 잠그고 passphrase를 다시 입력하세요.";
+/// T-MAINNET: the main-screen badge of a network with real assets (EVM mainnets, Solana mainnet;
+/// Bitcoin shows `BITCOIN MAINNET`, spec/08 §2).
+pub const T_MAINNET: &str = "메인넷 — 실제 자산";
+/// S10 `내 계정` help: only derived accounts come back from the recovery words.
+pub const T_ACCOUNTS_BACKUP: &str = "보내기·받기에 쓸 계정을 고르세요. 경로(m/44'/60'/…)가 있는 계정은 복구 단어로 복구되지만, '가져온 개인키' 계정은 복구 단어로 복구되지 않으니 그 개인키를 따로 백업하세요.";
+/// The imported-key removal confirmation (export first: imported keys are not in the 24 words).
+pub const T_REMOVE_KEY: &str = "선택한 가져온 개인키 계정을 이 지갑에서 지웁니다. 가져온 개인키는 복구 단어로 복구되지 않으므로, 지우고 나면 원래 개인키 없이는 이 계정의 자산에 다시 접근할 수 없습니다. 지우기 전에 설정 → 보안 → '개인키 보기'로 개인키를 내보내 안전하게 보관했는지 확인하세요. 계속하려면 비밀번호를 입력하세요.";
+/// The EVM `폐기` confirmation: discarding only stops tracking; a resend may pay twice.
+pub const T_DISCARD: &str = "폐기는 이 앱에서 추적만 멈추고 '폐기됨'으로 표시합니다. 네트워크에서 거래를 취소하지는 않습니다. 이미 전파된 거래라면 나중에 처리될 수 있고, 그 사이 같은 송금을 다시 보내면 두 거래가 모두 처리되어 두 번 지불될 수 있습니다. 확실히 막으려면 폐기 대신 '취소'(같은 nonce의 취소 거래)를 쓰고, 다시 보내기 전에 탐색기에서 이 거래가 사라졌는지 확인하세요.";
+/// Every chain's `받기` (S12) command.
+pub const RECEIVE_IDS: [u16; 3] = [
+    crate::ui::screens_evm::ids::RECEIVE_OPEN,
+    crate::ui::screens_sol::ids::RECEIVE_OPEN,
+    crate::ui::screens_btc::ids::RECEIVE_OPEN,
+];
+
+/// Turns off every `받기` control in `items` (unverified-passphrase sessions).
+fn disable_receive(items: &mut [Item]) {
+    for item in items {
+        if let Item::Row(ctls) | Item::LabeledRow(_, ctls) | Item::Toolbar(_, ctls) = item {
+            for ctl in ctls.iter_mut().filter(|ctl| RECEIVE_IDS.contains(&ctl.id)) {
+                ctl.enabled = false;
+            }
+        }
+    }
+}
+
 fn header(app: &App, items: &mut Vec<Item>) {
+    if app.passphrase_unverified() {
+        items.push(Item::Banner(T_ALT_PASS.to_owned(), Tone::HighRisk));
+    }
     for banner in &app.banners {
         items.push(Item::Banner(banner.text.clone(), Tone::Danger));
     }
@@ -325,6 +359,9 @@ impl App {
             Screen::BtcSendResult => self.btc_send_result_screen(&mut items),
             Screen::BtcBump => self.btc_bump_screen(&mut items),
             Screen::BtcReceive => self.btc_receive_screen(&mut items),
+        }
+        if self.passphrase_unverified() {
+            disable_receive(&mut items);
         }
         items
     }
@@ -468,6 +505,18 @@ impl App {
             "{}분 동안 쓰지 않거나, Windows를 잠그거나 절전에 들어가면 지갑이 자동으로 잠깁니다.",
             self.settings.auto_lock_minutes
         )));
+        if self.unlock_failed && self.prev_on_disk && self.mode == AppMode::Locked {
+            // spec/02 §6.3: a damaged key section is indistinguishable from a wrong password.
+            items.push(Item::Gap(8));
+            items.push(Item::Help(
+                "비밀번호가 맞는데도 계속 열리지 않으면 지갑 파일이 손상되었을 수 있습니다. 같은 비밀번호로 이전 사본(.prev) 복구를 시도할 수 있습니다. 지갑 파일이 정상이면 복구하지 않고 그대로 엽니다."
+                    .to_owned(),
+            ));
+            items.push(Item::Row(vec![Ctl::link(
+                ids::RECOVER,
+                "이전 사본(.prev)으로 복구",
+            )]));
+        }
     }
 
     fn pass_mismatch(&self, items: &mut Vec<Item>) {
@@ -492,10 +541,22 @@ impl App {
 
     fn done(&self, items: &mut Vec<Item>) {
         items.push(Item::Title("준비되었습니다".to_owned()));
-        items.push(Item::Banner(
-            "백업을 확인했습니다. 이제 지갑을 쓸 수 있습니다.".to_owned(),
-            Tone::Success,
-        ));
+        if self.done_imported {
+            // No backup check runs on import: the words came from the user's existing backup.
+            items.push(Item::Banner(
+                "지갑을 가져왔습니다. 이제 지갑을 쓸 수 있습니다.".to_owned(),
+                Tone::Success,
+            ));
+            items.push(Item::Help(
+                "이 지갑의 백업은 방금 입력한 복구 단어(와 passphrase)입니다. 그 종이 백업을 계속 안전하게 보관하세요."
+                    .to_owned(),
+            ));
+        } else {
+            items.push(Item::Banner(
+                "백업을 확인했습니다. 이제 지갑을 쓸 수 있습니다.".to_owned(),
+                Tone::Success,
+            ));
+        }
         if self.apikeys.endpoints().is_empty() {
             items.push(Item::CardStart(Some(
                 "마지막 단계: 블록체인 연결(RPC)".to_owned(),
@@ -526,7 +587,12 @@ impl App {
         items.push(Item::CardStart(None));
         let prev = match self.mode {
             AppMode::Corrupt { prev_available } => {
-                items.push(Item::Banner(ErrorCode::Vlt002.text(), Tone::Danger));
+                let code = if self.payload_damaged {
+                    ErrorCode::Vlt008
+                } else {
+                    ErrorCode::Vlt002
+                };
+                items.push(Item::Banner(code.text(), Tone::Danger));
                 prev_available
             }
             AppMode::MainMissing => {
@@ -612,19 +678,12 @@ impl App {
 
     #[expect(clippy::too_many_lines, reason = "the S10 sections in order")]
     fn main_screen(&self, items: &mut Vec<Item>) {
-        if matches!(
-            self.mode,
-            AppMode::Unlocked {
-                alt_passphrase: true
-            }
-        ) {
-            items.push(Item::Banner(
-                "가져올 때와 다른 passphrase로 연 지갑입니다. 계정 이름·주소록·연결 기록이 저장되지 않습니다.".to_owned(),
-                Tone::Warn,
-            ));
-        }
+        // T-ALT-PASS is drawn by `header` on every screen.
         self.tab_row(items);
         if self.sol_tab_active() {
+            if self.sol_cluster() == yw_core::sol::SolCluster::Mainnet {
+                items.push(Item::Banner(T_MAINNET.to_owned(), Tone::BtcMainnet));
+            }
             self.sol_main_screen(items);
             return;
         }
@@ -652,15 +711,19 @@ impl App {
                 "테스트넷 — 실제 자산이 아닙니다".to_owned(),
                 Tone::Testnet,
             ));
+        } else if matches!(
+            self.settings.evm_chain_id,
+            ETHEREUM_MAINNET | HYPEREVM_MAINNET
+        ) {
+            // The built-in mainnets (user chains carry no testnet flag, so no badge).
+            items.push(Item::Banner(T_MAINNET.to_owned(), Tone::BtcMainnet));
         }
         self.evm_banners(items);
         items.push(Item::Help(self.evm_status_line()));
         items.push(Item::CardEnd);
         self.evm_hero(items);
         items.push(Item::CardStart(Some("내 계정".to_owned())));
-        items.push(Item::Help(
-            "보내기·받기에 쓸 계정을 고르세요. 모든 계정은 같은 복구 단어로 복구됩니다.".to_owned(),
-        ));
+        items.push(Item::Help(T_ACCOUNTS_BACKUP.to_owned()));
         let selected = self.meta.as_ref().map(|meta| meta.prefs.evm_account);
         for (row, (pref, label, address, path)) in self
             .account_rows()
@@ -1082,7 +1145,7 @@ impl App {
             ),
             Confirm::RemoveKey => (
                 "가져온 개인키 삭제",
-                "선택한 가져온 개인키를 지갑에서 지웁니다. 계속하려면 비밀번호를 입력하세요.".to_owned(),
+                T_REMOVE_KEY.to_owned(),
                 "계속",
             ),
             Confirm::JournalCorrupt => (
@@ -1107,11 +1170,7 @@ impl App {
                 "연결된 모든 사이트의 연결을 해제합니다. 사이트는 다시 연결을 요청해야 계정을 볼 수 있습니다.".to_owned(),
                 "모두 해제",
             ),
-            Confirm::Discard => (
-                "거래 폐기",
-                "이 거래를 폐기로 표시하고 추적을 멈춥니다. 이미 네트워크에 전파됐다면 나중에 처리될 수 있습니다.".to_owned(),
-                "폐기",
-            ),
+            Confirm::Discard => ("거래 폐기", T_DISCARD.to_owned(), "폐기"),
             Confirm::LlmOn => (
                 "AI 설명 켜기",
                 self.llm_notice_text().unwrap_or_default(),
@@ -1130,6 +1189,9 @@ impl App {
         items.push(Item::Title(title.to_owned()));
         items.push(Item::CardStart(None));
         items.push(Item::Text(text));
+        if kind == Confirm::RemoveKey {
+            self.remove_key_balance(items);
+        }
         if kind == Confirm::Generate {
             items.push(Item::Row(vec![Ctl::check(
                 ids::OVERWRITE_CHECK,
@@ -1179,6 +1241,44 @@ impl App {
             ]));
         }
         items.push(Item::CardEnd);
+    }
+
+    /// The balance check of the imported key about to be removed (the selected EVM network's
+    /// native balance as last read; other networks and tokens are not checked).
+    fn remove_key_balance(&self, items: &mut Vec<Item>) {
+        let chain_id = self.settings.evm_chain_id;
+        let account = self.pending_remove.and_then(|id| {
+            self.meta.as_ref()?.evm_raw_accounts.iter().find_map(|raw| {
+                (raw.record_id == *id.as_bytes())
+                    .then(|| yw_core::evm::address::parse_address(&raw.address).ok())
+                    .flatten()
+                    .map(|address| (raw.label.clone(), address))
+            })
+        });
+        let Some((label, address)) = account else {
+            return;
+        };
+        items.push(Item::Field("계정".to_owned(), label));
+        items.push(Item::Mono(format_address(&address)));
+        let network = self.network_label(chain_id);
+        match self.native_balance(chain_id, &address) {
+            Some(balance) if !balance.is_zero() => items.push(Item::Banner(
+                format!(
+                    "이 계정에 잔액이 있습니다: {} ({network}). 지우기 전에 다른 계정으로 옮기거나, 설정 → 보안 → '개인키 보기'로 개인키를 먼저 내보내세요.",
+                    self.native_text(chain_id, &balance)
+                ),
+                Tone::HighRisk,
+            )),
+            Some(_) => items.push(Item::Help(format!(
+                "{network} 잔액: 0. 다른 네트워크와 토큰 잔액은 여기서 확인하지 않았습니다."
+            ))),
+            None => items.push(Item::Banner(
+                format!(
+                    "이 계정의 잔액을 확인하지 못했습니다({network}). 자산이 남아 있을 수 있으니 개인키를 먼저 내보내세요."
+                ),
+                Tone::Warn,
+            )),
+        }
     }
 
     fn generate_text(&self) -> String {

@@ -414,6 +414,19 @@ pub struct App {
     pub(crate) replace_target: Option<NetworkId>,
     pub(crate) rpc_messages: Vec<(NetworkId, String, bool)>,
     pub(crate) passphrase_session: bool,
+    /// `unlock` reported `PayloadCorrupt` (spec/02 §6.3): the header is intact, so a reload
+    /// reports `Locked`; this keeps S09 (and `.prev` recovery) until a session opens.
+    pub(crate) payload_damaged: bool,
+    /// An unlock failed with `UnlockFailed` since the last session: S07 then offers `.prev`
+    /// recovery for a damaged key section (spec/02 §6.3).
+    pub(crate) unlock_failed: bool,
+    /// `vault.ywv.prev` exists (checked at load and after a failed unlock).
+    pub(crate) prev_on_disk: bool,
+    /// S08 follows an import (no backup check ran) rather than a backup confirmation.
+    pub(crate) done_imported: bool,
+    /// While a `.prev` recovery submitted from W03 is pending or failed: the mode to return to
+    /// when it fails or the window is cancelled.
+    recover_return: Option<AppMode>,
     pub(crate) scroll: i32,
     pub(crate) controls: ControlSet,
     pub(crate) placed: Placed,
@@ -551,6 +564,11 @@ impl App {
             replace_target: None,
             rpc_messages: Vec::new(),
             passphrase_session: false,
+            payload_damaged: false,
+            unlock_failed: false,
+            prev_on_disk: false,
+            done_imported: false,
+            recover_return: None,
             scroll: 0,
             controls: ControlSet::default(),
             placed: Placed::default(),
@@ -688,7 +706,36 @@ impl App {
         }
     }
 
+    /// The session was opened with a BIP39 passphrase that failed the stored check value and the
+    /// user chose `이 passphrase로 계속` (`Unlocked { alt_passphrase: true }`, spec/02 §7.5).
+    ///
+    /// Funds sent to this wallet can only be reached again with that exact passphrase, which may
+    /// be a typo. While this is `true`: every screen shows the blocking banner T-ALT-PASS, every
+    /// `받기` (S12 EVM/Solana/Bitcoin) is refused, and the browser bridge must refuse connect
+    /// and signing requests like `BackupPending` (`NotReady` / 4100, spec/05 §4.1) — the
+    /// dispatcher state (`WalletView`) is built from this query. Sending from the app stays
+    /// possible (moving funds out of a deliberately used other-passphrase wallet).
+    #[must_use]
+    pub const fn passphrase_unverified(&self) -> bool {
+        matches!(
+            self.mode,
+            AppMode::Unlocked {
+                alt_passphrase: true
+            }
+        )
+    }
+
     pub(crate) fn set_screen(&mut self, screen: Screen) {
+        if self.passphrase_unverified()
+            && matches!(
+                screen,
+                Screen::Receive | Screen::SolReceive | Screen::BtcReceive
+            )
+        {
+            self.info = Some(crate::ui::screens::T_ALT_PASS_RECEIVE.to_owned());
+            self.refresh();
+            return;
+        }
         if matches!(screen, Screen::Confirm(_)) && !matches!(self.screen, Screen::Confirm(_)) {
             self.previous_screen = self.screen.clone();
         }
@@ -859,17 +906,7 @@ impl App {
         if self.session_retries > 0 && now >= self.session_next_ms {
             self.register_session();
         }
-        let paused = self
-            .secret
-            .as_ref()
-            .is_some_and(|secret| secret.form.kind().is_display());
-        self.idle.set_paused(now, paused);
-        if self.mode.holds_secrets()
-            && self.mode != AppMode::Unlocking
-            && self.idle.should_lock(now, self.settings.auto_lock_minutes)
-        {
-            self.lock(LockReason::Idle);
-        }
+        self.idle_tick(now);
         if let Some((seq, at)) = self.secret_clip
             && now.saturating_sub(at) >= SECRET_CLIPBOARD_TTL_MS
         {
@@ -881,6 +918,29 @@ impl App {
         if now.saturating_sub(self.last_flush_ms) >= LOG_FLUSH_MS {
             self.last_flush_ms = now;
             logging::flush();
+        }
+    }
+
+    /// Whether the idle clock is paused (spec/04 §5.1, LK-1): a W08/W09 display window or an
+    /// approval window (A01, any chain) is open. Each has its own time limit; the count restarts
+    /// when it closes.
+    fn idle_paused(&self) -> bool {
+        self.secret
+            .as_ref()
+            .is_some_and(|secret| secret.form.kind().is_display())
+            || self.evm.window.is_some()
+            || self.evm.queue.shown().is_some()
+    }
+
+    /// The idle part of the main timer: pause/resume, then `LockReason::Idle` when due.
+    fn idle_tick(&mut self, now: u64) {
+        let paused = self.idle_paused();
+        self.idle.set_paused(now, paused);
+        if self.mode.holds_secrets()
+            && self.mode != AppMode::Unlocking
+            && self.idle.should_lock(now, self.settings.auto_lock_minutes)
+        {
+            self.lock(LockReason::Idle);
         }
     }
 
@@ -927,6 +987,7 @@ impl App {
         self.rename = None;
         self.pending_remove = None;
         self.passphrase_session = false;
+        self.recover_return = None;
         logging::info("app", "lock", &[("reason", Field::Word(reason.as_str()))]);
         if reason == LockReason::Suspend {
             let _ = self
@@ -943,6 +1004,10 @@ impl App {
         } else if self.mode == AppMode::NoVault {
             self.set_screen(Screen::FirstRun);
         }
+        // `Load` is a control job (it survives `Lock`): its result tells what the lock left on
+        // disk. A `CreateWallet`/`CommitImport` that finished just before the lock had its
+        // result dropped (old epoch), but the vault exists: `Loaded { Locked }` moves the UI
+        // from S01 to S07 instead of offering creation over an existing vault.
         self.key(KeyJob::Load);
     }
 
@@ -1040,6 +1105,22 @@ impl App {
         match result.outcome {
             KeyOutcome::Loaded { status, leftover } => {
                 self.leftover = leftover;
+                self.prev_on_disk = crate::store::prev_exists(&self.paths.data, FileKind::Vault);
+                if status == VaultStatus::Locked && self.payload_damaged {
+                    // The payload failed authentication at unlock; the intact header makes a
+                    // reload report `Locked`. Stay on S09: `recover_from_prev` also works from
+                    // `Locked` (it tries the main file first).
+                    self.set_mode(AppMode::Corrupt {
+                        prev_available: self.prev_on_disk,
+                    });
+                    self.set_screen(Screen::Recovery);
+                    self.startup_load = false;
+                    self.browser_vault_loaded();
+                    return;
+                }
+                if status != VaultStatus::Locked {
+                    self.payload_damaged = false;
+                }
                 self.set_mode(AppMode::from_status(status));
                 let screen = match status {
                     VaultStatus::NoVault => Screen::FirstRun,
@@ -1099,6 +1180,8 @@ impl App {
                 });
                 self.idle.input(now);
                 self.key(KeyJob::LoadMeta);
+                // S08 after an import: no backup check ran (the words came from the user).
+                self.done_imported = true;
                 self.set_screen(Screen::Done);
             }
             KeyOutcome::Imported(Err(error)) if error != VaultError::InvalidState => {
@@ -1160,7 +1243,8 @@ impl App {
                 });
                 self.idle.input(now);
                 self.key(KeyJob::LoadMeta);
-                self.info = Some("백업을 확인했습니다. 이제 지갑을 쓸 수 있습니다.".to_owned());
+                // S08 shows T-BACKUP-OK itself.
+                self.done_imported = false;
                 self.set_screen(Screen::Done);
             }
             KeyOutcome::BackupConfirmed(Err(
@@ -1324,8 +1408,24 @@ impl App {
     }
 
     fn on_status(&mut self, result: Result<VaultStatus, VaultError>, now: u64) {
+        let recovering = self.recover_return;
         match result {
             Ok(status) => {
+                if matches!(
+                    status,
+                    VaultStatus::PassphraseRequired
+                        | VaultStatus::PassphraseMismatch
+                        | VaultStatus::BackupPending
+                        | VaultStatus::Unlocked { .. }
+                ) {
+                    // A session is open: the files opened, damaged or not before.
+                    self.payload_damaged = false;
+                    self.unlock_failed = false;
+                    self.recover_return = None;
+                    if let Some(from) = recovering {
+                        self.info = Some(Self::recovered_text(from).to_owned());
+                    }
+                }
                 self.set_mode(AppMode::from_status(status));
                 match status {
                     VaultStatus::PassphraseRequired => {
@@ -1353,10 +1453,7 @@ impl App {
                         self.idle.input(now);
                         logging::info("app", "unlock.ok", &[]);
                         if alt_passphrase {
-                            self.banner(
-                                None,
-                                "가져올 때와 다른 passphrase로 연 지갑입니다. 계정 이름·주소록·연결 기록이 저장되지 않습니다.".to_owned(),
-                            );
+                            logging::warn("app", "unlock.alt_passphrase", &[]);
                         }
                         self.key(KeyJob::LoadMeta);
                         self.set_screen(Screen::Processing("불러오는 중…"));
@@ -1371,21 +1468,78 @@ impl App {
                     }
                 }
             }
-            Err(VaultError::PayloadCorrupt) => {
+            Err(VaultError::PayloadCorrupt) if recovering.is_none() => {
+                // spec/02 §6.3: the payload failed authentication at unlock. The worker's vault
+                // is now `Corrupt`; no reload (the intact header would report `Locked` and hide
+                // S09), and `payload_damaged` keeps S09 through any later reload.
                 self.close_secret();
                 self.error_banner(ErrorCode::Vlt008);
+                self.payload_damaged = true;
+                self.prev_on_disk = crate::store::prev_exists(&self.paths.data, FileKind::Vault);
                 self.set_mode(AppMode::Corrupt {
-                    prev_available: true,
+                    prev_available: self.prev_on_disk,
                 });
                 self.set_screen(Screen::Recovery);
-                self.key(KeyJob::Load);
             }
             Err(error) => {
                 if self.mode == AppMode::Unlocking {
-                    self.set_mode(AppMode::Locked);
+                    self.set_mode(recovering.unwrap_or(AppMode::Locked));
                 }
-                self.password_failure(error, now);
+                if recovering.is_some() {
+                    self.recovery_failure(error, now);
+                } else {
+                    if error == VaultError::UnlockFailed {
+                        self.unlock_failed = true;
+                        self.prev_on_disk =
+                            crate::store::prev_exists(&self.paths.data, FileKind::Vault);
+                    }
+                    self.password_failure(error, now);
+                }
             }
+        }
+    }
+
+    /// The S10 note after a successful `.prev` recovery started from `from`.
+    const fn recovered_text(from: AppMode) -> &'static str {
+        match from {
+            AppMode::Corrupt { .. } | AppMode::MainMissing => {
+                "이전 사본(.prev)으로 복구했습니다. 마지막 변경(예: 가져온 개인키)이 빠졌을 수 있으니 확인하세요. 손상된 파일은 데이터 폴더에 .corrupt-<시각> 이름으로 남겨 두었습니다."
+            }
+            _ => {
+                "지갑을 열었습니다. 지갑 파일을 열 수 없었다면 이전 사본(.prev)으로 복구했고, 손상된 파일은 데이터 폴더에 .corrupt-<시각> 이름으로 남겨 두었습니다."
+            }
+        }
+    }
+
+    /// A failed `.prev` recovery: the W03 window stays open for another try.
+    fn recovery_failure(&mut self, error: VaultError, now: u64) {
+        let text = match error {
+            VaultError::UnlockFailed => {
+                logging::info("app", "recover.failed", &[]);
+                self.with_form(|form| form.fail_password(now));
+                return;
+            }
+            VaultError::Storage(yw_core::error::StorageError::NotFound) => {
+                "이전 사본(.prev)이 없어 복구할 수 없습니다. 복구 단어로 지갑을 다시 가져오세요. 데이터 폴더의 파일은 그대로 두었습니다.".to_owned()
+            }
+            VaultError::PayloadCorrupt => {
+                "이전 사본(.prev)도 손상되어 복구할 수 없습니다. 복구 단어로 지갑을 다시 가져오세요. 데이터 폴더의 파일은 그대로 두었습니다.".to_owned()
+            }
+            other => vault_code(other).text(),
+        };
+        logging::warn(
+            "app",
+            "recover.failed",
+            &[("code", Field::Code(vault_code(error)))],
+        );
+        if self.secret.is_some() {
+            self.with_form(|form| {
+                form.set_busy(false);
+                form.set_error(Some(text));
+            });
+        } else {
+            self.banner(None, text);
+            self.refresh();
         }
     }
 
@@ -1810,6 +1964,11 @@ impl App {
                         self.key(KeyJob::RemoveRawKey { password, id });
                     }
                     PasswordAction::Recover => {
+                        // Where to return on failure or cancel (S09, or S07 after a failed
+                        // unlock); a retry after a failure is already back in that mode.
+                        if self.mode != AppMode::Unlocking {
+                            self.recover_return = Some(self.mode);
+                        }
                         self.set_mode(AppMode::Unlocking);
                         self.key(KeyJob::RecoverFromPrev { password });
                     }
@@ -1873,8 +2032,19 @@ impl App {
                 self.set_screen(Screen::BackupPending);
             }
             Purpose::ConfirmPassword(PasswordAction::Recover) => {
-                self.set_mode(AppMode::from_status(VaultStatus::MainMissing));
-                self.key(KeyJob::Load);
+                // Back to where recovery was asked from, without a reload (a reload of a
+                // payload-damaged vault would report `Locked` and hide S09).
+                let back = self.recover_return.take().unwrap_or(self.mode);
+                let back = if back == AppMode::Unlocking {
+                    AppMode::Locked
+                } else {
+                    back
+                };
+                self.set_mode(back);
+                self.set_screen(match back {
+                    AppMode::Corrupt { .. } | AppMode::MainMissing => Screen::Recovery,
+                    _ => Screen::Locked,
+                });
             }
             Purpose::ConfirmPassword(_)
             | Purpose::ShowRevealed
@@ -1985,11 +2155,21 @@ impl App {
                     self.set_screen(Screen::Processing("불러오는 중…"));
                 }
             }
-            ids::RECOVER => self.open_input(
-                SecretKind::ConfirmPassword,
-                Purpose::ConfirmPassword(PasswordAction::Recover),
-                false,
-            ),
+            ids::RECOVER => {
+                // S09, or S07 after a failed unlock (a damaged key section looks like a wrong
+                // password; `recover_from_prev` from `Locked` tries the main file first).
+                if !matches!(
+                    self.mode,
+                    AppMode::Corrupt { .. } | AppMode::MainMissing | AppMode::Locked
+                ) {
+                    return;
+                }
+                self.open_input(
+                    SecretKind::ConfirmPassword,
+                    Purpose::ConfirmPassword(PasswordAction::Recover),
+                    false,
+                );
+            }
             ids::EXIT => self.shutdown(),
             ids::MISMATCH_RETRY => {
                 self.key(KeyJob::RetryPassphrase);
@@ -2148,6 +2328,14 @@ impl App {
                 }
                 let previous = self.previous_screen.clone();
                 self.set_screen(previous);
+            }
+            receive
+                if self.passphrase_unverified()
+                    && crate::ui::screens::RECEIVE_IDS.contains(&receive) =>
+            {
+                // Before any chain handler runs (BTC would derive and store a new address).
+                self.info = Some(crate::ui::screens::T_ALT_PASS_RECEIVE.to_owned());
+                self.refresh();
             }
             other => {
                 if !self.on_sol_command(other)
@@ -2730,3 +2918,6 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

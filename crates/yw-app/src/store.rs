@@ -52,6 +52,13 @@ fn with_suffix(dir: &Path, kind: FileKind, suffix: &str) -> PathBuf {
     dir.join(format!("{}{suffix}", file_name(kind)))
 }
 
+/// Whether `<name>.prev` exists in `dir` (a metadata check only, no read; the UI uses it to offer
+/// `.prev` recovery, spec/04 §2.5 S07/S09).
+#[must_use]
+pub fn prev_exists(dir: &Path, kind: FileKind) -> bool {
+    with_suffix(dir, kind, ".prev").is_file()
+}
+
 fn storage_error(error: FileError) -> StorageError {
     match error {
         FileError::NotFound => StorageError::NotFound,

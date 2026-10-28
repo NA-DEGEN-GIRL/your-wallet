@@ -385,8 +385,11 @@ impl KeyJob {
         }
     }
 
+    /// Control jobs survive `Lock`'s cancellation. `Load` is one: the lock procedure queues it
+    /// right after `Lock` (spec/04 §5.3) so the UI learns the vault status the lock left, e.g.
+    /// `Locked` after a `CreateWallet`/`CommitImport` whose result the lock discarded.
     const fn is_control(&self) -> bool {
-        matches!(self, Self::Lock | Self::Shutdown)
+        matches!(self, Self::Lock | Self::Shutdown | Self::Load)
     }
 }
 
@@ -539,7 +542,8 @@ impl KeyQueue {
         }
     }
 
-    /// Removes and returns every queued non-control job (processing `Lock`).
+    /// Removes and returns every queued non-control job (processing `Lock`); `Lock`, `Load` and
+    /// `Shutdown` stay queued.
     pub fn cancel_pending(&self) -> Vec<(u64, KeyJob)> {
         let Ok(mut queue) = self.queue.lock() else {
             return Vec::new();
