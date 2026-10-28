@@ -55,8 +55,13 @@ pub enum KnownKind {
         /// Account index.
         index: u32,
     },
-    /// A recipient of an earlier send (activity / journal).
+    /// A recipient of an earlier successful send on the same cluster (activity / journal): the
+    /// address is known (no `FirstTime`).
     Sent,
+    /// Any other address of the sent history — a failed, expired or still pending send, or one
+    /// on the other cluster: compared for lookalikes only, it does not make the address known
+    /// (spec/07 §12.1-8).
+    History,
 }
 
 /// A known address with its name (address-book label, account label, or empty for sent).
@@ -121,9 +126,14 @@ pub fn check_recipient(
     }
     let exact = known
         .iter()
-        .find(|entry| entry.address == to && !matches!(entry.kind, KnownKind::Sent))
+        .find(|entry| {
+            entry.address == to
+                && matches!(entry.kind, KnownKind::Book { .. } | KnownKind::Own { .. })
+        })
         .cloned();
-    let seen = known.iter().any(|entry| entry.address == to);
+    let seen = known
+        .iter()
+        .any(|entry| entry.address == to && entry.kind != KnownKind::History);
     let mut lookalikes: Vec<KnownAddress> = Vec::new();
     for entry in known {
         if is_lookalike(&entry.address, &to)
@@ -282,6 +292,32 @@ mod tests {
         }];
         let repeat = check_recipient(OTHER, &from, &sent).unwrap();
         assert!(!repeat.first_time && repeat.exact.is_none());
+    }
+
+    #[test]
+    fn history_that_did_not_succeed_here_is_not_known_but_is_compared() {
+        let from = addr(FROM);
+        // A failed / expired / pending send, or one on the other cluster: still a first time.
+        let history = vec![KnownAddress {
+            address: addr(OTHER),
+            label: String::new(),
+            kind: KnownKind::History,
+        }];
+        let again = check_recipient(OTHER, &from, &history).unwrap();
+        assert!(again.first_time && again.exact.is_none());
+        assert!(
+            again.lookalikes.is_empty(),
+            "the address itself is no lookalike"
+        );
+        // …but a lookalike of it is still flagged (L03).
+        let poisoned = check_recipient(
+            "7WktogJEd2wQ9eH2oWuszcoFTgeYi6rS632UviTBJ2jm",
+            &from,
+            &history,
+        )
+        .unwrap();
+        assert!(poisoned.first_time);
+        assert_eq!(poisoned.lookalikes, history);
     }
 
     #[test]

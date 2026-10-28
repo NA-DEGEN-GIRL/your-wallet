@@ -284,7 +284,9 @@ fn lookalike_text(recipient: &RecipientCheck) -> String {
             KnownKind::Own { .. } => {
                 format!("내 계정 '{name}'과 비슷함: {}", grouped(&entry.address))
             }
-            KnownKind::Sent => format!("보낸 내역의 주소와 비슷함: {}", grouped(&entry.address)),
+            KnownKind::Sent | KnownKind::History => {
+                format!("보낸 내역의 주소와 비슷함: {}", grouped(&entry.address))
+            }
         });
     }
     lines.join("\n")
@@ -391,7 +393,7 @@ fn recipient_text(core: &SolTransferCore, facts: &SolPreviewFacts) -> String {
             KnownKind::Own { index } => {
                 write!(text, "\n내 계정 #{}: {name}", index.saturating_add(1))
             }
-            KnownKind::Sent => write!(text, "\n보낸 적 있는 주소"),
+            KnownKind::Sent | KnownKind::History => write!(text, "\n보낸 적 있는 주소"),
         };
     }
     if facts.recipient_account == AccountClass::Missing {

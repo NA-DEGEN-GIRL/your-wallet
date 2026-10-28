@@ -337,7 +337,7 @@ pub const SOL_RENT165_SANITY_MAX: u64 = 5_000_000;
 | 5 | `to`가 자기 다른 Solana 계정 | 허용, "내 계정 #i" 표시 |
 | 6 | `is_on_curve_solana(to) == false` | SOL: 고위험 `OffCurve`(`L02`, "일반 지갑이 아님: 프로그램 소유 주소(PDA)나 토큰 계정일 수 있음"). SPL(v1.1): 차단 `OffCurveOwner`(E-SOL-006, 입력 단계; `check_recipient_for(input, from, known, asset)`). 곡선 밖 주소를 소유자로 한 ATA의 토큰은 아무도 옮길 수 없고, 흔한 실수(상대의 토큰 계정 주소를 붙여넣기)를 막는다. 파서도 `RecipientOffCurve`로 거부한다(§9) |
 | 7 | 주소록·자기 계정·보낸 내역의 주소 E(≠ to)와 앞 `SOL_LOOKALIKE_CHARS`자 또는 뒤 `SOL_LOOKALIKE_CHARS`자가 같음 | 고위험 `Lookalike`(`L03`, "주소록 '<라벨>'과 앞/뒤가 같은 다른 주소"), 해당 항목 이름 표시 |
-| 8 | 주소록·자기 계정·보낸 내역 어디에도 없음 | 주의 `FirstTime`(`L06`, "처음 보내는 주소", 체크 없음), 소액 시험 송금 권고 문구. 중독 주소는 7번이 고위험으로 잡는다 |
+| 8 | 주소록·자기 계정·**선택한 클러스터에서 성공한(`Landed`/`"succeeded"`) 전송**의 받는 주소 어디에도 없음 | 주의 `FirstTime`(`L06`, "처음 보내는 주소", 체크 없음), 소액 시험 송금 권고 문구. 실패·만료·진행 중 전송과 다른 클러스터의 전송은 받는 주소를 "아는 주소"로 만들지 않고(`KnownKind::History`) 7번 비교에만 쓴다. 중독 주소는 7번이 고위험으로 잡는다 |
 
 ```rust
 pub const SOL_LOOKALIKE_CHARS: usize = 3;   // 관측된 중독 주소는 양끝 3자 이상 일치

@@ -447,9 +447,13 @@ impl App {
             .map_or_else(|| address.to_owned(), |(_, label, _)| label)
     }
 
-    /// Address book, own accounts and sent history for the §12.1 checks.
+    /// Address book, own accounts and sent history for the §12.1 checks. Only recipients of
+    /// successful sends on the selected cluster are `Sent` (known: no first-time warning); every
+    /// other sent-history address (failed, expired, pending, other cluster) is `History`, which
+    /// is compared for lookalikes only.
     #[must_use]
     pub fn sol_known(&self) -> Vec<KnownAddress> {
+        let selected = self.sol_cluster();
         let mut known = Vec::new();
         if let Some(meta) = self.meta.as_ref() {
             for entry in meta.sol_book() {
@@ -471,6 +475,13 @@ impl App {
                 kind: KnownKind::Own { index },
             });
         }
+        let sent = |succeeded: bool| {
+            if succeeded {
+                KnownKind::Sent
+            } else {
+                KnownKind::History
+            }
+        };
         if let Some(meta) = self.meta.as_ref() {
             for cluster in [SolCluster::Mainnet, SolCluster::Devnet] {
                 for entry in meta.activity_of(cluster.network_id()) {
@@ -478,7 +489,7 @@ impl App {
                         known.push(KnownAddress {
                             address,
                             label: String::new(),
-                            kind: KnownKind::Sent,
+                            kind: sent(cluster == selected && entry.status == "succeeded"),
                         });
                     }
                 }
@@ -489,7 +500,7 @@ impl App {
                 known.push(KnownAddress {
                     address: core.to,
                     label: String::new(),
-                    kind: KnownKind::Sent,
+                    kind: sent(record.cluster == selected && record.state == SolTxState::Landed),
                 });
             }
         }
@@ -1684,6 +1695,7 @@ mod tests {
     use yw_core::slip10::SolKeySource;
     use yw_core::sol::broadcast::{LoopState, Outcome};
     use yw_core::sol::message::{assemble_transaction, encode_message};
+    use yw_core::sol::recipient::KnownKind;
     use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolTransferCore};
 
     use super::{
@@ -1694,7 +1706,7 @@ mod tests {
     use crate::app::{App, AppMode, Paths, Screen};
     use crate::errors::ErrorCode;
     use crate::events::JournalView;
-    use crate::meta::{Account, Meta, Tab};
+    use crate::meta::{Account, ActivityEntry, Meta, Tab};
     use crate::settings::Settings;
     use crate::sol::flow::TrackResult;
 
@@ -1851,6 +1863,70 @@ mod tests {
         });
         app.sol_schedule_tracking();
         assert!(app.sol.tracking.is_empty());
+    }
+
+    #[test]
+    fn only_successful_sends_on_this_cluster_make_a_recipient_known() {
+        const TO_C: &str = "GjJyeC1r2RgkuoCWMyPYkCWSGSGLcz266EaAkLA27AhL";
+        const TO_D: &str = "ANf3TEKFL6jPWjzkndo4CbnNdUNkBk4KHPggJs2nu8Xi";
+        const TO_E: &str = "D2PPQSYFe83nDzk96FqGumVU8JA7J8vj2Rhjc2oXzEi5";
+        let mut app = app();
+        let row = |to: &str, status: &str, sig: u8| ActivityEntry {
+            account: SolAddress::from_bytes(OWN).to_base58(),
+            tx_id: SolAddress::from_bytes([sig; 32]).to_base58(),
+            title: "SOL 전송".to_owned(),
+            asset: "native".to_owned(),
+            amount: "1".to_owned(),
+            counterparty: to.to_owned(),
+            status: status.to_owned(),
+            time_unix_ms: u64::from(sig),
+        };
+        let mainnet = SolCluster::Mainnet.network_id();
+        let devnet = SolCluster::Devnet.network_id();
+        {
+            let meta = app.meta.as_mut().unwrap();
+            meta.upsert_activity(mainnet, &row(TO_A, "expired", 1));
+            meta.upsert_activity(mainnet, &row(TO_B, "failed", 2));
+            meta.upsert_activity(devnet, &row(TO_C, "succeeded", 3));
+        }
+        app.evm.journal = Some(JournalView {
+            sol_records: vec![
+                record(SolCluster::Mainnet, SolTxState::Pending, TO_D, 4),
+                record(SolCluster::Devnet, SolTxState::Landed, TO_E, 5),
+            ],
+            ..JournalView::default()
+        });
+        let first_time = |app: &mut App, to: &str| {
+            app.sol.send.to_text = to.to_owned();
+            app.sol_validate_send();
+            app.sol.send.check.as_ref().unwrap().first_time
+        };
+        // Expired, failed, pending, or a success on the other cluster: still a first time.
+        for to in [TO_A, TO_B, TO_C, TO_D, TO_E] {
+            assert!(first_time(&mut app, to), "{to}");
+        }
+        assert_eq!(
+            app.sol_known()
+                .iter()
+                .filter(|known| known.kind == KnownKind::History)
+                .count(),
+            5
+        );
+        // A success on this cluster makes it known (activity, or a `Landed` journal record).
+        app.meta
+            .as_mut()
+            .unwrap()
+            .upsert_activity(mainnet, &row(TO_A, "succeeded", 6));
+        assert!(!first_time(&mut app, TO_A));
+        app.evm.journal = Some(JournalView {
+            sol_records: vec![record(SolCluster::Mainnet, SolTxState::Landed, TO_D, 4)],
+            ..JournalView::default()
+        });
+        assert!(!first_time(&mut app, TO_D));
+        // On devnet the devnet successes are the known ones.
+        app.settings.solana.cluster = crate::network::SolCluster::Devnet;
+        assert!(!first_time(&mut app, TO_C));
+        assert!(first_time(&mut app, TO_A));
     }
 
     #[test]
