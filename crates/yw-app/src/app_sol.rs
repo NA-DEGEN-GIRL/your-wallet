@@ -272,12 +272,16 @@ pub enum ScanStage {
     Done,
 }
 
+/// Shown when the selected cluster is not the one whose scan notice was confirmed.
+pub const SOL_SCAN_RECONFIRM_TEXT: &str =
+    "클러스터가 바뀌었습니다. 이 클러스터의 RPC 공급자에 대한 안내를 다시 확인하세요.";
+
 /// Recovery scan state.
 #[derive(Clone, Debug, Default)]
 pub struct SolScanState {
     /// Stage.
     pub stage: ScanStage,
-    /// Cluster scanned.
+    /// The cluster whose disclosure notice was confirmed (from `Deriving` on), then scanned.
     pub cluster: Option<SolCluster>,
     /// Rows.
     pub rows: Vec<ScanRow>,
@@ -654,6 +658,20 @@ impl App {
             }
             (SolKeysPurpose::Scan, Ok(keys)) => {
                 let cluster = self.sol_cluster();
+                // The disclosure was confirmed for one cluster's provider (spec/07 §3.3). A scan
+                // reset while deriving (cluster switch) queries nothing; a cluster that differs
+                // from the confirmed one needs the notice confirmed again.
+                if self.sol.scan.stage != ScanStage::Deriving {
+                    return;
+                }
+                if self.sol.scan.cluster != Some(cluster) {
+                    self.sol.scan = SolScanState {
+                        message: Some(SOL_SCAN_RECONFIRM_TEXT.to_owned()),
+                        ..SolScanState::default()
+                    };
+                    self.refresh();
+                    return;
+                }
                 match self.sol_endpoint(cluster) {
                     Ok(endpoint) => {
                         let job = self.sol.job();
@@ -1572,14 +1590,20 @@ impl App {
         self.set_screen(Screen::SolScan);
     }
 
-    /// Starts the scan after the disclosure was confirmed (spec/07 §3.3).
+    /// Starts the scan after the disclosure was confirmed (spec/07 §3.3) for the selected
+    /// cluster; the scan only runs against that cluster.
     pub fn sol_start_scan(&mut self) {
-        if self.sol_endpoint(self.sol_cluster()).is_err() {
+        if self.sol.scan.stage != ScanStage::Notice {
+            return;
+        }
+        let cluster = self.sol_cluster();
+        if self.sol_endpoint(cluster).is_err() {
             self.sol.scan.message = Some(ErrorCode::Key005.text());
             self.refresh();
             return;
         }
         self.sol.scan.stage = ScanStage::Deriving;
+        self.sol.scan.cluster = Some(cluster);
         self.sol.scan.message = None;
         self.key(KeyJob::SolKeys {
             purpose: SolKeysPurpose::Scan,
@@ -1700,12 +1724,12 @@ mod tests {
 
     use super::{
         ReviewRefusal, SOL_APPLY_RETRY_MS, SOL_REVIEW_CHANGED_TEXT, SOL_SAVE_FAILED_TEXT,
-        SOL_SAVING_TEXT, SolHalt, now_ms,
+        SOL_SAVING_TEXT, SOL_SCAN_RECONFIRM_TEXT, ScanStage, SolHalt, now_ms,
     };
     use crate::apikeys::ApiKeys;
     use crate::app::{App, AppMode, Paths, Screen};
     use crate::errors::ErrorCode;
-    use crate::events::JournalView;
+    use crate::events::{JournalView, SolKeysPurpose};
     use crate::meta::{Account, ActivityEntry, Meta, Tab};
     use crate::settings::Settings;
     use crate::sol::flow::TrackResult;
@@ -1927,6 +1951,56 @@ mod tests {
         app.settings.solana.cluster = crate::network::SolCluster::Devnet;
         assert!(!first_time(&mut app, TO_C));
         assert!(first_time(&mut app, TO_A));
+    }
+
+    #[test]
+    fn the_scan_runs_only_for_the_cluster_whose_notice_was_confirmed() {
+        let _ = std::fs::create_dir_all(
+            std::env::temp_dir().join(format!("yw-app-sol-ui-{}", std::process::id())),
+        );
+        let mut app = app();
+        let url = yw_win::http::HttpsUrl::parse("https://rpc.example.test/v1").unwrap();
+        for cluster in [
+            crate::network::SolCluster::Mainnet,
+            crate::network::SolCluster::Devnet,
+        ] {
+            app.apikeys
+                .set_rpc(crate::network::NetworkId::Solana(cluster), &url);
+        }
+        app.sol_open_scan();
+        app.sol_start_scan();
+        assert_eq!(app.sol.scan.stage, ScanStage::Deriving);
+        assert_eq!(app.sol.scan.cluster, Some(SolCluster::Mainnet));
+        // The cluster is switched while the keys are derived: back to the notice, and the keys
+        // that arrive afterwards query nothing.
+        assert!(app.on_sol_command(crate::ui::screens_sol::ids::CLUSTER_DEVNET));
+        assert_eq!(app.sol_cluster(), SolCluster::Devnet);
+        assert_eq!(app.sol.scan.stage, ScanStage::Notice);
+        app.on_sol_keys(SolKeysPurpose::Scan, Ok(Vec::new()));
+        assert_eq!(app.sol.scan.stage, ScanStage::Notice);
+        assert_eq!(app.sol.scan.job, 0);
+        // Confirmed for devnet, then the selection changes without a reset: confirm again.
+        app.sol_start_scan();
+        assert_eq!(app.sol.scan.cluster, Some(SolCluster::Devnet));
+        app.settings.solana.cluster = crate::network::SolCluster::Mainnet;
+        app.on_sol_keys(SolKeysPurpose::Scan, Ok(Vec::new()));
+        assert_eq!(app.sol.scan.stage, ScanStage::Notice);
+        assert_eq!(
+            app.sol.scan.message.as_deref(),
+            Some(SOL_SCAN_RECONFIRM_TEXT)
+        );
+        assert_eq!(app.sol.scan.job, 0);
+        // Confirmed for the selected cluster: the scan runs there.
+        app.sol_start_scan();
+        app.on_sol_keys(SolKeysPurpose::Scan, Ok(Vec::new()));
+        assert_eq!(app.sol.scan.stage, ScanStage::Running);
+        assert_eq!(app.sol.scan.cluster, Some(SolCluster::Mainnet));
+        assert_ne!(app.sol.scan.job, 0);
+        // A second confirmation click while it runs starts nothing.
+        let job = app.sol.scan.job;
+        app.sol_start_scan();
+        assert_eq!(app.sol.scan.stage, ScanStage::Running);
+        assert_eq!(app.sol.scan.job, job);
     }
 
     #[test]

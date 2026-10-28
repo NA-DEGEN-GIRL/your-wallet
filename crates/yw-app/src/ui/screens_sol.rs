@@ -950,8 +950,10 @@ impl App {
                         .to_owned(),
                 ));
                 items.push(Item::Banner(
-                    "조회하는 모든 주소가 RPC 공급자(설정한 solana 엔드포인트의 운영자)에 전달되어 서로 연결될 수 있습니다."
-                        .to_owned(),
+                    format!(
+                        "조회하는 모든 주소가 RPC 공급자(설정한 {} 엔드포인트의 운영자)에 전달되어 서로 연결될 수 있습니다.",
+                        self.sol_cluster().network_id()
+                    ),
                     Tone::Warn,
                 ));
                 items.push(Item::Row(vec![
