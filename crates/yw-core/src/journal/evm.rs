@@ -48,7 +48,11 @@ pub const REBROADCAST_INTERVAL_MS: u64 = 60_000;
 pub const FLAG_RPC_HASH_MISMATCH: u8 = 0x01;
 /// `flags` bit 1: the user discarded the candidate set.
 pub const FLAG_USER_DISCARDED: u8 = 0x02;
-const KNOWN_FLAGS: u8 = FLAG_RPC_HASH_MISMATCH | FLAG_USER_DISCARDED;
+/// `flags` bit 2: the broadcast was refused for good (unknown to the node, or the chain no longer
+/// matched) and the dApp was told it failed — no automatic re-broadcast, only the user's `재전송`
+/// (spec/03 §4.4, §5.4-3). Records without it decode as before.
+pub const FLAG_MANUAL_RESEND: u8 = 0x04;
+const KNOWN_FLAGS: u8 = FLAG_RPC_HASH_MISMATCH | FLAG_USER_DISCARDED | FLAG_MANUAL_RESEND;
 
 /// Candidate state (§5.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -661,6 +665,14 @@ pub enum Transition {
         /// Observation time.
         at_unix_ms: u64,
     },
+    /// The broadcast was refused for good: stays `Signed` with `manual_resend` (no automatic
+    /// re-broadcast; cleared by a later `Broadcast`).
+    ManualResend {
+        /// Candidate.
+        tx_hash: [u8; 32],
+        /// Observation time.
+        at_unix_ms: u64,
+    },
     /// A valid receipt: `Included`; other non-terminal candidates of the nonce → `Replaced`.
     Included {
         /// Candidate.
@@ -712,6 +724,7 @@ impl Transition {
             Self::Broadcast { .. } => "Broadcast",
             Self::Rebroadcast { .. } => "Rebroadcast",
             Self::HashMismatch { .. } => "HashMismatch",
+            Self::ManualResend { .. } => "ManualResend",
             Self::Included { .. } => "Included",
             Self::Finalized { .. } => "Finalized",
             Self::Reorged { .. } => "Reorged",
@@ -746,7 +759,7 @@ pub fn apply(records: &mut [EvmRecord], transition: &Transition) -> Vec<usize> {
                 && record.state == TxState::Signed
             {
                 record.state = TxState::Broadcast;
-                record.flags &= !FLAG_RPC_HASH_MISMATCH;
+                record.flags &= !(FLAG_RPC_HASH_MISMATCH | FLAG_MANUAL_RESEND);
                 record.updated_unix_ms = at_unix_ms;
                 if record.last_broadcast_unix_ms == 0 {
                     record.last_broadcast_unix_ms = at_unix_ms;
@@ -777,6 +790,20 @@ pub fn apply(records: &mut [EvmRecord], transition: &Transition) -> Vec<usize> {
                 record.flags |= FLAG_RPC_HASH_MISMATCH;
                 record.updated_unix_ms = at_unix_ms;
                 record.last_broadcast_unix_ms = at_unix_ms;
+                changed.push(index);
+            }
+        }
+        Transition::ManualResend {
+            tx_hash,
+            at_unix_ms,
+        } => {
+            if let Some(index) = position(records, &tx_hash)
+                && let Some(record) = records.get_mut(index)
+                && record.state == TxState::Signed
+                && !record.has_flag(FLAG_MANUAL_RESEND)
+            {
+                record.flags |= FLAG_MANUAL_RESEND;
+                record.updated_unix_ms = at_unix_ms;
                 changed.push(index);
             }
         }

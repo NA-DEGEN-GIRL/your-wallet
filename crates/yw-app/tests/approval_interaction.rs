@@ -402,6 +402,39 @@ fn ap2_arm_delay_ignores_a_click_at_999_ms() {
     assert_eq!(s.event(11_001, RELEASE), InteractionStatus::Approved);
 }
 
+/// C1: `Approved` is terminal (every later tick returns it). After the window acts on it (a
+/// re-simulation dispatched, `submitting` set) the interaction restarts: ticks stay pending and
+/// nothing approves until `submitting` clears and new input arrives.
+#[test]
+fn ap2_restart_after_acting_on_an_approval() {
+    let mut s = session(message(RiskLevel::Info, false, 0), 0);
+    s.event(1_000, PRESS);
+    assert_eq!(s.event(1_001, RELEASE), InteractionStatus::Approved);
+    assert_eq!(
+        s.event(1_050, InteractionEvent::Tick),
+        InteractionStatus::Approved,
+        "terminal: the window must act only on the transition"
+    );
+    s.gate.submitting = true;
+    s.restart_interaction(1_060)
+        .unwrap_or_else(|_| unreachable!("deadline ahead"));
+    for tick in 0..100 {
+        assert_eq!(
+            s.event(1_100 + tick * 50, InteractionEvent::Tick),
+            InteractionStatus::Pending
+        );
+    }
+    s.event(7_000, PRESS);
+    assert_eq!(
+        s.event(7_001, RELEASE),
+        InteractionStatus::Pending,
+        "submitting disarms"
+    );
+    s.gate.submitting = false;
+    s.event(8_000, PRESS);
+    assert_eq!(s.event(8_001, RELEASE), InteractionStatus::Approved);
+}
+
 #[test]
 fn ap2_replacement_during_hold_cancels_and_unchecks() {
     let request = message(RiskLevel::High, true, 1);

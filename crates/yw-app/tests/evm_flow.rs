@@ -30,7 +30,9 @@ use yw_core::evm::chain::{
     GenesisRule, SEPOLIA_GENESIS, SimulationSupport, hyperevm_mainnet, sepolia,
 };
 use yw_core::evm::risk::{E05, E06, E34, E35, E36, E37, E38};
-use yw_core::journal::evm::{EvmRecord, FLAG_RPC_HASH_MISMATCH, Role, Transition, TxState};
+use yw_core::journal::evm::{
+    EvmRecord, FLAG_MANUAL_RESEND, FLAG_RPC_HASH_MISMATCH, Role, Transition, TxState,
+};
 use yw_json::Value;
 
 const BESU_SIGNED: &str = "02f86e048203338301284d8301d97c828ae094000000000000000000000000000000000000aaaa8402933bc980c080a00f924cb68412c8f1cfd74d9b581c71eeaf94fff6abdde3e5b02ca6b2931dcf47a07dd1c50027c3e31f8b565e25ce68a5072110f61fce5eee81b195dd51273c2f83";
@@ -41,6 +43,11 @@ macro_rules! fixture {
     ($name:literal) => {
         include_bytes!(concat!("fixtures/eth_simulateV1/", $name, ".response.json")).to_vec()
     };
+}
+
+/// The chain of the Besu record (chain id 4, genesis `0x44…`).
+fn besu_chain() -> yw_core::evm::chain::ChainInfo {
+    user_chain(4, [0x44; 32], SimulationSupport::Auto)
 }
 
 fn besu_record() -> TestResult<EvmRecord> {
@@ -752,21 +759,148 @@ fn resimulation_same_changed_and_no_result() -> TestResult {
     Ok(())
 }
 
+const SPENDER: &str = "0x5555555555555555555555555555555555555555";
+
+/// The S2 answer with its transfer log turned into an ERC-20 `Approval(USER → SPENDER)` of a
+/// token the first preparation never saw.
+fn approval_envelope() -> Vec<u8> {
+    let text = String::from_utf8_lossy(&fixture!("S2"))
+        .replace(
+            "0xfffffffffffffffffffffffffffffffffffffffe",
+            "0x1111111111111111111111111111111111111111",
+        )
+        .replace(
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925",
+        )
+        .replace(
+            "0x000000000000000000000000f278cf59f82edcf871d630f28ecc8056f25c1cdb",
+            "0x0000000000000000000000005555555555555555555555555555555555555555",
+        );
+    text.into_bytes()
+}
+
+fn resim_with(
+    request: &yw_core::approval::ApprovalRequest,
+    prepared: &Prepared,
+    rpc: &std::sync::Arc<FakeRpc>,
+) -> yw_app::flow::evm::prepare::ResimResult {
+    let clock = FakeClock::at(S2_UNIX_MS + 61_000);
+    let chain = sepolia();
+    let resim_job = ResimJob {
+        job: 3,
+        chain: ChainJob {
+            caps: chain.default_caps,
+            info: chain,
+            url: url(),
+        },
+        request: request.clone(),
+        context: prepared.context.clone(),
+        address_book: Vec::new(),
+        extra_warnings: Vec::new(),
+        limits: limits(),
+    };
+    resimulate(
+        &rpc.shared(),
+        &mut ChainCache::default(),
+        &resim_job,
+        &clock,
+    )
+}
+
+/// spec/03 §6.6-3: a spender that appears only in the re-simulated diff is classified now (E16
+/// for an EOA), and an `eth_getCode` failure raises the request to high risk instead of leaving
+/// the spender silently unclassified.
 #[test]
+fn resimulation_classifies_new_spenders() -> TestResult {
+    let (prepared, request, _) = issued_happy()?;
+    assert!(prepared.context.facts.code_of(&address(SPENDER)?).is_none());
+    let script = world(
+        11_155_111,
+        SEPOLIA_GENESIS,
+        vec![("eth_simulateV1", Answer::Envelope(approval_envelope()))],
+    );
+    let rpc = fake(script.clone());
+    let result = resim_with(&request, &prepared, &rpc);
+    assert_eq!(result.kind, ResimKind::Changed);
+    assert!(
+        rpc.params_of("eth_getCode")
+            .iter()
+            .any(|params| params.contains(&SPENDER[2..]))
+    );
+    let replacement = result.prepared.ok_or("no draft")?;
+    assert_eq!(
+        replacement.context.facts.code_of(&address(SPENDER)?),
+        Some(yw_core::approval::CodeKind::Eoa)
+    );
+    assert!(rules(&replacement).contains(&yw_core::evm::risk::E16.label()));
+    // The spender's code lookup fails: high risk with the unclassified warning.
+    let failing = FakeRpc::new(move |method, params| {
+        if method == "eth_getCode" && param_str(params, 0).eq_ignore_ascii_case(SPENDER) {
+            return Answer::Transport(yw_win::http::HttpError::Timeout);
+        }
+        script.get(method)
+    });
+    let result = resim_with(&request, &prepared, &failing);
+    let replacement = result.prepared.ok_or("no draft")?;
+    assert!(
+        replacement
+            .context
+            .facts
+            .code_of(&address(SPENDER)?)
+            .is_none()
+    );
+    assert!(
+        replacement
+            .draft
+            .display
+            .warnings
+            .iter()
+            .any(|warning| warning.level == RiskLevel::High && warning.text.contains("eth_getCode"))
+    );
+    assert!(replacement.draft.display.risk >= RiskLevel::High);
+    Ok(())
+}
+
+/// A chain mismatch found at re-simulation blocks (`Failed`, E34) instead of becoming an
+/// approvable "no simulation" request.
+#[test]
+fn resimulation_chain_mismatch_fails() -> TestResult {
+    let (prepared, request, _) = issued_happy()?;
+    let rpc = fake(world(11_155_111, [0xee; 32], Vec::new()));
+    let result = resim_with(&request, &prepared, &rpc);
+    assert_eq!(result.kind, ResimKind::Failed);
+    assert!(result.prepared.is_none());
+    let failure = result.failure.ok_or("no failure")?;
+    assert_eq!(failure.rule(), E34);
+    assert_eq!(failure.code, ErrorCode::Rpc006);
+    assert_eq!(rpc.count("eth_simulateV1"), 0);
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one block per row of the spec/03 §4.4 table"
+)]
 fn broadcast_outcomes() -> TestResult {
     let raw = yw_core::hex::decode(BESU_SIGNED)?;
     let hash: [u8; 32] = yw_core::hex::decode_array(BESU_HASH.trim_start_matches("0x"))?;
     let clock = FakeClock::at(1_790_000_000_000);
+    let chain = besu_chain();
     let run = |overrides: Vec<(&str, Answer)>| {
         let rpc = fake(world(4, [0x44; 32], overrides));
         let outcome = broadcast(
             &rpc.shared(),
             &url(),
-            4,
+            &chain,
             &raw,
             &hash,
             &clock,
-            [2_000, 5_000],
+            &yw_app::flow::evm::Limits {
+                broadcast_retry_ms: [2_000, 5_000],
+                ..limits()
+            },
         );
         (outcome, rpc)
     };
@@ -803,7 +937,25 @@ fn broadcast_outcomes() -> TestResult {
         Answer::Error(-32_000, None),
     )]);
     assert_eq!(rejected, BroadcastOutcome::Rejected { known: false });
-    assert_eq!(rejected.transition(hash, 1), None);
+    // The dApp is told it failed, so the record is journaled manual-resend-only (no automatic
+    // re-broadcast, not even after a restart).
+    assert_eq!(
+        rejected.transition(hash, 1),
+        Some(Transition::ManualResend {
+            tx_hash: hash,
+            at_unix_ms: 1
+        })
+    );
+    assert!(!rejected.resends_automatically());
+    let mut manual = vec![besu_record()?];
+    let _ = yw_core::journal::evm::apply(
+        &mut manual,
+        &Transition::ManualResend {
+            tx_hash: hash,
+            at_unix_ms: 1,
+        },
+    );
+    assert!(manual[0].has_flag(FLAG_MANUAL_RESEND));
     // Transport errors: resent after 2 s and 5 s, then asked; known → Broadcast.
     let (unconfirmed, rpc) = run(vec![
         (
@@ -821,6 +973,46 @@ fn broadcast_outcomes() -> TestResult {
     let (wrong, rpc) = run(vec![("eth_chainId", Answer::Result("\"0x1\"".to_owned()))]);
     assert_eq!(wrong, BroadcastOutcome::ChainMismatch);
     assert_eq!(rpc.count("eth_sendRawTransaction"), 0);
+    assert_eq!(
+        wrong.transition(hash, 2),
+        Some(Transition::ManualResend {
+            tx_hash: hash,
+            at_unix_ms: 2
+        })
+    );
+    // D14: the genesis is re-checked on every broadcast too (not once per app run).
+    let (genesis, rpc) = run(vec![(
+        "eth_getBlockByNumber",
+        Answer::Result(block(&[0x45; 32], 0)),
+    )]);
+    assert_eq!(genesis, BroadcastOutcome::ChainMismatch);
+    assert_eq!(rpc.count("eth_getBlockByNumber"), 1);
+    assert_eq!(rpc.count("eth_sendRawTransaction"), 0);
+    // A transport failure of the chain check is retried (3×), never a "chain mismatch": nothing
+    // is sent, the record stays Signed and tracking re-sends it — the dApp gets the hash.
+    let (unverified, rpc) = run(vec![(
+        "eth_chainId",
+        Answer::Transport(yw_win::http::HttpError::Timeout),
+    )]);
+    assert_eq!(unverified, BroadcastOutcome::ChainUnverified);
+    assert_eq!(rpc.count("eth_chainId"), 4);
+    assert_eq!(rpc.count("eth_sendRawTransaction"), 0);
+    assert_eq!(unverified.transition(hash, 3), None);
+    assert!(unverified.resends_automatically());
+    assert_eq!(
+        yw_app::app_browser::broadcast_answer(hash, unverified),
+        Ok(yw_json::Value::String(BESU_HASH.to_owned()))
+    );
+    for failed in [
+        BroadcastOutcome::ChainMismatch,
+        BroadcastOutcome::Rejected { known: false },
+        BroadcastOutcome::HashMismatch,
+    ] {
+        assert_eq!(
+            yw_app::app_browser::broadcast_answer(hash, failed),
+            Err(yw_core::policy::ProviderError::BroadcastFailed)
+        );
+    }
     record.state = TxState::Broadcast;
     Ok(())
 }
@@ -843,6 +1035,7 @@ fn track(
     track_group(
         &rpc.shared(),
         &url(),
+        &besu_chain(),
         &TrackInput {
             group: records,
             drop_seen_unix_ms: drop_seen,
@@ -928,6 +1121,7 @@ fn tracking_receipts_finality_reorg_and_drop() -> TestResult {
         let result = track_group(
             &rpc.shared(),
             &url(),
+            &besu_chain(),
             &TrackInput {
                 group: vec![included.clone()],
                 drop_seen_unix_ms: None,
@@ -961,6 +1155,7 @@ fn tracking_receipts_finality_reorg_and_drop() -> TestResult {
     let result = track_group(
         &fallback.shared(),
         &url(),
+        &besu_chain(),
         &TrackInput {
             group: vec![included],
             drop_seen_unix_ms: None,
@@ -1000,6 +1195,7 @@ fn tracking_receipts_finality_reorg_and_drop() -> TestResult {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "one block per spec/03 §5.4 rule")]
 fn reconcile_rebroadcast_rules() -> TestResult {
     let mut record = besu_record()?;
     let script = || {
@@ -1032,8 +1228,9 @@ fn reconcile_rebroadcast_rules() -> TestResult {
     let result = track_group(
         &rpc.shared(),
         &url(),
+        &besu_chain(),
         &TrackInput {
-            group: vec![record],
+            group: vec![record.clone()],
             drop_seen_unix_ms: None,
             now_unix_ms: 1_790_000_100_000,
             allow_rebroadcast: true,
@@ -1041,6 +1238,81 @@ fn reconcile_rebroadcast_rules() -> TestResult {
     );
     assert!(!result.rebroadcast);
     assert_eq!(rpc.count("eth_sendRawTransaction"), 0);
+    // manual_resend (the dApp was told the broadcast failed) → never re-sent automatically.
+    record.flags = FLAG_MANUAL_RESEND;
+    let rpc = fake(script());
+    let result = track_group(
+        &rpc.shared(),
+        &url(),
+        &besu_chain(),
+        &TrackInput {
+            group: vec![record.clone()],
+            drop_seen_unix_ms: None,
+            now_unix_ms: 1_790_000_100_000,
+            allow_rebroadcast: true,
+        },
+    );
+    assert!(!result.rebroadcast);
+    assert_eq!(rpc.count("eth_sendRawTransaction"), 0);
+    assert!(result.transitions.is_empty());
+    // D14: right before a re-broadcast the chain id and genesis are checked again; another
+    // genesis sends nothing and reports the mismatch (the worker blocks the chain).
+    record.flags = 0;
+    let other_genesis = fake(world(
+        4,
+        [0x45; 32],
+        vec![(
+            "eth_getTransactionCount",
+            Answer::Result("\"0x333\"".to_owned()),
+        )],
+    ));
+    let result = track_group(
+        &other_genesis.shared(),
+        &url(),
+        &besu_chain(),
+        &TrackInput {
+            group: vec![record.clone()],
+            drop_seen_unix_ms: None,
+            now_unix_ms: 1_790_000_100_000,
+            allow_rebroadcast: true,
+        },
+    );
+    assert!(!result.rebroadcast);
+    assert_eq!(other_genesis.count("eth_sendRawTransaction"), 0);
+    assert_eq!(other_genesis.count("eth_getBlockByNumber"), 1);
+    assert_eq!(
+        result.chain_mismatch,
+        Some(MismatchKind::PinnedGenesis {
+            observed: [0x45; 32]
+        })
+    );
+    // The same found during preparation's reconcile blocks the preparation with E34.
+    let mut prepare_job = job(besu_chain(), address(BESU_SENDER)?, send_intent()?);
+    prepare_job.records = vec![record];
+    let mut cache = ChainCache::default();
+    cache.store(
+        4,
+        ChainCheck::Verified {
+            genesis: [0x44; 32],
+            pinned_now: false,
+        },
+    );
+    let result = prepare(
+        &other_genesis.shared(),
+        &mut cache,
+        &prepare_job,
+        &FakeClock::at(1_790_000_100_000),
+        &|_| {},
+    );
+    let PrepareOutcome::Failed(failure) = result.outcome else {
+        return Err("expected E34".into());
+    };
+    assert_eq!((failure.rule(), failure.code), (E34, ErrorCode::Chn008));
+    assert_eq!(other_genesis.count("eth_sendRawTransaction"), 0);
+    assert!(matches!(
+        cache.get(4),
+        Some(ChainCheck::Mismatch(MismatchKind::PinnedGenesis { .. }))
+    ));
     Ok(())
 }
 

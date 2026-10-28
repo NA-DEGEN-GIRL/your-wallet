@@ -3,6 +3,7 @@
 //! re-simulation, broadcast, receipt tracking and user-chain checks. It never touches the DEK.
 //! URLs travel inside jobs and are never logged (D13): logs carry `net=<NetworkId>` only.
 
+use std::collections::VecDeque;
 use std::sync::mpsc::Receiver;
 
 use yw_core::approval::TokenMeta;
@@ -16,10 +17,10 @@ use crate::flow::evm::form::quote;
 use crate::flow::evm::prepare::{
     ChainEvent, PrepareJob, ResimJob, SendIntent, prepare, resimulate,
 };
-use crate::flow::evm::track::{TrackInput, broadcast, track_group};
+use crate::flow::evm::track::{TrackInput, broadcast_checked, track_group};
 use crate::flow::evm::user_chain::probe_chain;
 use crate::flow::evm::{
-    ChainCache, ChainCheck, ChainJob, Clock, Limits, SharedTransport, SystemClock,
+    ChainCache, ChainCheck, ChainJob, Clock, Limits, MismatchKind, SharedTransport, SystemClock,
 };
 use crate::logging::{self, Field};
 use crate::network::NetworkId;
@@ -338,6 +339,15 @@ impl RpcWorker {
         check
     }
 
+    /// A send-time re-check found another chain: block it here and in the UI (spec/03 §1.4
+    /// `RpcMismatch` until restart or URL change).
+    fn chain_mismatch(&mut self, chain_id: u64, kind: MismatchKind, events: &EventQueue) {
+        let check = ChainCheck::Mismatch(kind);
+        self.cache.store(chain_id, check);
+        log_check(chain_id, &check);
+        push(events, RpcEvent::Chain { chain_id, check });
+    }
+
     fn balances(
         &mut self,
         transport: &SharedTransport,
@@ -582,15 +592,18 @@ impl RpcWorker {
                 raw,
                 tx_hash,
             } => {
-                let outcome = broadcast(
+                let (outcome, check) = broadcast_checked(
                     &transport,
                     &chain.url,
-                    chain.info.chain_id,
+                    &chain.info,
                     &raw,
                     &tx_hash,
                     &*self.clock,
-                    self.limits.broadcast_retry_ms,
+                    &self.limits,
                 );
+                if let ChainCheck::Mismatch(kind) = check {
+                    self.chain_mismatch(chain.info.chain_id, kind, events);
+                }
                 fault_point("evm.after_send_raw");
                 logging::info(
                     "rpc",
@@ -620,13 +633,18 @@ impl RpcWorker {
                     return;
                 };
                 let result = match self.ensure(&transport, &chain, events) {
-                    ChainCheck::Verified { .. } => track_group(&transport, &chain.url, &input),
+                    ChainCheck::Verified { .. } => {
+                        track_group(&transport, &chain.url, &chain.info, &input)
+                    }
                     other => crate::flow::evm::track::TrackResult {
                         drop_seen_unix_ms: input.drop_seen_unix_ms,
                         error: Some(other.code().unwrap_or(ErrorCode::App009)),
                         ..crate::flow::evm::track::TrackResult::default()
                     },
                 };
+                if let Some(kind) = result.chain_mismatch {
+                    self.chain_mismatch(chain.info.chain_id, kind, events);
+                }
                 if let Some(code) = result.error {
                     logging::warn(
                         "rpc",
@@ -750,11 +768,36 @@ fn sol_net(endpoint: &SolEndpoint) -> NetworkId {
     crate::workers::journal::sol_network(endpoint.cluster)
 }
 
-/// The worker loop.
+/// Whether `job` is a re-simulation that a later queued one replaces: only one approval window
+/// exists, so the UI takes the newest re-simulation's result and would drop the older one's
+/// (a stale job must not hold the worker for up to 10 s of simulation).
+#[must_use]
+pub fn superseded(job: &RpcJob, queued: &VecDeque<RpcJob>) -> bool {
+    matches!(job, RpcJob::Resimulate(_))
+        && queued
+            .iter()
+            .any(|later| matches!(later, RpcJob::Resimulate(_)))
+}
+
+/// The worker loop: jobs run in FIFO order, except that a re-simulation with a newer one already
+/// queued is dropped ([`superseded`]).
 pub fn run(mut worker: RpcWorker, jobs: &Receiver<RpcJob>, events: &EventQueue) {
-    while let Ok(job) = jobs.recv() {
+    let mut queued: VecDeque<RpcJob> = VecDeque::new();
+    loop {
+        let job = match queued.pop_front() {
+            Some(job) => job,
+            None => match jobs.recv() {
+                Ok(job) => job,
+                Err(_) => break,
+            },
+        };
+        queued.extend(jobs.try_iter());
         if matches!(job, RpcJob::Shutdown) {
             break;
+        }
+        if superseded(&job, &queued) {
+            logging::info("rpc", "evm.resim_superseded", &[]);
+            continue;
         }
         worker.handle(job, events);
     }

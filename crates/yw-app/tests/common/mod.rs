@@ -261,6 +261,7 @@ pub fn param_str(params: &Value, index: usize) -> String {
 }
 
 /// A per-method answer table with a default.
+#[derive(Clone)]
 pub struct Script {
     /// Method → answer.
     pub answers: HashMap<String, Answer>,

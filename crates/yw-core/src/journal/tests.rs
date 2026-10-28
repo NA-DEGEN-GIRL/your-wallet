@@ -11,10 +11,10 @@
 use secp256k1::{Secp256k1, SecretKey};
 
 use super::evm::{
-    ActivityStatus, EvmEntries, EvmRecord, FLAG_RPC_HASH_MISMATCH, FLAG_USER_DISCARDED, GroupKey,
-    NonceBlock, ReceiptStatus, RecordError, Role, Transition, TxState, apply, apply_to_plain,
-    group_activity, groups, in_flight, latest_candidate, make_room, plan_nonce, push_record,
-    room_after_cleanup, take_expired, transfer_summary,
+    ActivityStatus, EvmEntries, EvmRecord, FLAG_MANUAL_RESEND, FLAG_RPC_HASH_MISMATCH,
+    FLAG_USER_DISCARDED, GroupKey, NonceBlock, ReceiptStatus, RecordError, Role, Transition,
+    TxState, apply, apply_to_plain, group_activity, groups, in_flight, latest_candidate, make_room,
+    plan_nonce, push_record, room_after_cleanup, take_expired, transfer_summary,
 };
 use super::{Entry, EntryKind, JournalError, JournalPlain, MAX_ENTRIES, PLAIN_MAGIC};
 use crate::error::VaultError;
@@ -285,10 +285,15 @@ fn record_read_checks() {
         Err(RecordError::Value)
     );
     assert_eq!(
-        EvmRecord::decode(&tamper(&body, 41, 4)),
+        EvmRecord::decode(&tamper(&body, 41, 8)),
         Err(RecordError::Flags)
     );
     assert!(EvmRecord::decode(&tamper(&body, 41, 3)).is_ok());
+    // bit 2 `manual_resend` (old records without it decode unchanged, see above).
+    let manual = EvmRecord::decode(&tamper(&body, 41, 4)).unwrap();
+    assert!(manual.has_flag(FLAG_MANUAL_RESEND));
+    assert_eq!(manual.encode().unwrap(), tamper(&body, 41, 4));
+    assert!(EvmRecord::decode(&tamper(&body, 41, 7)).is_ok());
     // tx_hash.
     assert_eq!(
         EvmRecord::decode(&tamper(&body, 66, body[66] ^ 1)),
@@ -528,6 +533,47 @@ fn dropped_and_discarded_groups() {
     assert_eq!(changed, [2]);
     assert_eq!(records[2].state, TxState::Dropped);
     assert!(records[2].has_flag(FLAG_USER_DISCARDED));
+}
+
+#[test]
+fn manual_resend_flag_is_set_on_signed_and_cleared_by_broadcast() {
+    let signer = Signer::new(10);
+    let record = signer.record(&signer.tx(1, 0, 100, 0), Role::Original, T0);
+    let mut records = vec![record.clone()];
+    let manual = Transition::ManualResend {
+        tx_hash: record.tx_hash,
+        at_unix_ms: T0 + 1,
+    };
+    assert_eq!(manual.name(), "ManualResend");
+    assert_eq!(apply(&mut records, &manual), [0]);
+    assert_eq!(records[0].state, TxState::Signed);
+    assert!(records[0].has_flag(FLAG_MANUAL_RESEND));
+    assert_eq!(records[0].updated_unix_ms, T0 + 1);
+    // Idempotent; the persisted flag survives a round trip.
+    assert!(apply(&mut records, &manual).is_empty());
+    let decoded = EvmRecord::decode(&records[0].encode().unwrap()).unwrap();
+    assert!(decoded.has_flag(FLAG_MANUAL_RESEND));
+    // A later broadcast (user `재전송` accepted) clears it.
+    apply(
+        &mut records,
+        &Transition::Broadcast {
+            tx_hash: record.tx_hash,
+            at_unix_ms: T0 + 2,
+        },
+    );
+    assert_eq!(records[0].state, TxState::Broadcast);
+    assert!(!records[0].has_flag(FLAG_MANUAL_RESEND));
+    // Only `Signed` takes it.
+    assert!(
+        apply(
+            &mut records,
+            &Transition::ManualResend {
+                tx_hash: record.tx_hash,
+                at_unix_ms: T0 + 3,
+            }
+        )
+        .is_empty()
+    );
 }
 
 #[test]

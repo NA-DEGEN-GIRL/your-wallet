@@ -63,9 +63,20 @@
       }
       bridge.receivePage(event.data);
     });
-    root.addEventListener("pagehide", () => bridge.closeForDocument("document-pagehide"));
+    // Only the browser's own lifecycle events count: the page shares this window and document
+    // and could dispatch a synthetic `pagehide`/`freeze` to tear down the activation (and fail
+    // every pending request) at will.
+    root.addEventListener("pagehide", (event) => {
+      if (event.isTrusted === true) {
+        bridge.closeForDocument("document-pagehide");
+      }
+    });
     // Page Lifecycle `freeze` is fired at the Document (non-bubbling), not at the Window.
-    root.document.addEventListener("freeze", () => bridge.closeForDocument("document-freeze"));
+    root.document.addEventListener("freeze", (event) => {
+      if (event.isTrusted === true) {
+        bridge.closeForDocument("document-freeze");
+      }
+    });
 
     bridge.announce();
   }

@@ -274,7 +274,7 @@ fn pinned_extension_id() -> Option<&'static str> {
 | ACTIVE | bg `response`/`event` | 형식·`RESPONSE_LIMITS` 검사 후 페이지로 전달. 이벤트 이름은 `accountsChanged`·`chainChanged`만 |
 | CONNECTING/ACTIVE | port `onDisconnect` | pending·큐 전부 4900 "Wallet connection closed." → IDLE. 단 `chrome.runtime?.id === undefined`면 DEAD |
 | CONNECTING/ACTIVE | page `cancel` | 큐에 있으면 제거. 전송했으면 bg `cancel`(reason `page-cancel`) 후 pending에서 제거. 페이지에 응답하지 않음 |
-| CONNECTING/ACTIVE | `pagehide` 또는 `freeze` | bg `disconnect`(reason `document-pagehide`/`document-freeze`), port 닫기, pending 4900 "Wallet connection closed." → IDLE |
+| CONNECTING/ACTIVE | 브라우저의 `pagehide` 또는 `freeze`(`event.isTrusted === true`만; 페이지가 `dispatchEvent`로 만든 이벤트는 무시) | bg `disconnect`(reason `document-pagehide`/`document-freeze`), port 닫기, pending 4900 "Wallet connection closed." → IDLE |
 | DEAD | 진입 | pending 전부 4900 "Wallet extension was reloaded.", page `disconnect` 1회 |
 | DEAD | 요청 | 4900 "Wallet extension was reloaded." |
 
@@ -540,9 +540,9 @@ pub struct ConnectedSite {
 ### 4.3 체인 상태
 - **등록된 EVM 체인**(D14): 내장 Ethereum mainnet(1)·Sepolia(11155111)·HyperEVM(999)과 `settings.json` `evmChains`의 사용자 추가 체인([04](04-app-ui.md) §6.1, 정의·추가 시 검증은 [03](03-evm.md) §1). yw-app은 settings를 읽거나 바꿀 때 메모리 레지스트리를 갱신하고, dApp 요청은 이 레지스트리로 판정한다(평문 설정이므로 잠김과 무관, D30). 이후 규칙은 내장·사용자 체인을 구분하지 않는다.
 - **차단 체인**: [03] §1.4 체인 상태가 `RpcMismatch`(`eth_chainId` 또는 블록 0 해시가 고정값과 다름)인 체인. `Unverified`, 아직 확인 전, 엔드포인트 없음은 차단이 아니다(전환은 성공하고 그 체인의 read가 §3.5대로 4901). 상태가 초기화되면([03] §1.4: 앱 재시작, 그 체인 RPC URL 변경) 차단도 풀린다.
-- origin마다 활성 체인 하나. 메모리 캐시 `chain_cache: HashMap<BrowserOrigin, u64>`(최대 512, LRU)가 앱 실행 중 정본이다.
+- origin마다 활성 체인 하나. 메모리 캐시 `chain_cache: HashMap<BrowserOrigin, u64>`(최대 512, LRU)가 앱 실행 중 정본이다. 가득 차서 밀어낼 때 문서 표(§4.8)에 문서가 남아 있는 origin(그 체인을 안내받은 살아 있는 페이지)은 밀어내지 않는다(밀려나면 다음 요청에서 체인이 알림 없이 바뀐다).
 - 캐시에 없는 origin의 체인은 `settings.json`의 EVM 활성 체인 `evmChainId`(D30, 기본값은 [04](04-app-ui.md) §6.1)이며, 처음 쓰는 순간 그 값을 캐시에 넣는다(이후 앱에서 활성 체인을 바꿔도 그 origin의 체인은 그대로이므로 알리지 않은 체인 변경이 없다). 연결 안 된 origin의 체인은 디스크에 저장하지 않는다(앱 재시작 시 초기화).
-- `wallet_switchEthereumChain`: 대상이 등록된 체인이고 차단 체인이 아니면 캐시를 바꾸고, 연결되어 있고 잠금 해제 상태면 grant `chain_id`도 저장한다. 값이 바뀌었으면 그 origin 문서에 `chainChanged`(같은 체인이면 `null`만, 이벤트 없음). 미등록 → 4902, 차단 → 4901이고 둘 다 캐시·grant·이벤트 변화 없음. 판정은 메모리 레지스트리·체인 상태만 쓰고 RPC를 호출하지 않는다(§8.4 즉시). 승인 창은 띄우지 않는다(서명 창마다 체인을 크게 표시하므로).
+- `wallet_switchEthereumChain`: 대상이 등록된 체인이고 차단 체인이 아니면 캐시를 바꾸고, 연결되어 있고 잠금 해제 상태면 grant `chain_id`도 저장한다(응답·이벤트는 즉시, meta 쓰기는 2 s에 한 번으로 모아 마지막 값만 쓴다. 전환을 반복하는 페이지가 vault 쓰기를 연달아 일으키지 못한다. 그 사이 잠기면 캐시 값이 해제 병합에서 저장된다). 값이 바뀌었으면 그 origin 문서에 `chainChanged`(같은 체인이면 `null`만, 이벤트 없음). 미등록 → 4902, 차단 → 4901이고 둘 다 캐시·grant·이벤트 변화 없음. 판정은 메모리 레지스트리·체인 상태만 쓰고 RPC를 호출하지 않는다(§8.4 즉시). 승인 창은 띄우지 않는다(서명 창마다 체인을 크게 표시하므로).
 - 사용자 체인 삭제([04](04-app-ui.md)): 레지스트리에서 빼는 순간 그 체인을 가진 캐시 항목을 삭제 후의 `evmChainId`로 바꾸고 해당 origin에 `chainChanged`. 잠금 해제 상태면 같은 grant `chain_id`도 저장한다. 그 체인으로 승인 전(큐·창)인 signing 요청은 창을 닫고 4901, 진행 중인 read는 그대로 끝난다.
 - 잠금 해제 시: 각 grant에 대해 캐시에 항목이 있으면 grant `chain_id`를 캐시 값으로 저장하고, 없으면 캐시를 grant 값으로 채운다. grant `chain_id`가 레지스트리에 없으면(잠긴 동안 삭제) `evmChainId`로 바꿔 저장한다. 달라진 origin에는 `chainChanged`.
 - `chainChanged`는 origin 체인이 실제로 바뀔 때마다(전환, 사용자 체인 삭제, 잠금 해제 병합) 보내며 대상이 사용자 체인이어도 같다. payload는 §3.1 `eth_chainId`와 같은 정규 hex다.
@@ -559,14 +559,16 @@ meta가 암호화되어 있으므로(D7) 잠긴 동안 grant를 알 수 없다.
 | `eth_requestAccounts`, `wallet_requestPermissions`, signing | 잠금 해제 창 → 해제 후 정상 처리(요청 기한 600 s에 해제 시간 포함, D23). 여러 요청이 기다리면 해제 창은 하나만 띄우고 결과를 공유한다. 거부 → 모두 4001 |
 | `wallet_revokePermissions` | 잠금 해제 창 → 해제 후 처리 |
 
-잠금 시 연결된 origin의 문서에 `accountsChanged([])`, 해제 시 `accountsChanged(grant.accounts)`를 보낸다. 잠금 순간 진행 중이던 승인 창은 닫고 4001로 응답한다.
+잠금 시 연결된 origin의 문서에 `accountsChanged([])`, 해제 시 `accountsChanged(grant.accounts)`를 보낸다. 잠금 순간 진행 중이던 승인 창은 닫고 4001로 응답한다. 디스패처는 잠금 절차가 시작되는 순간 잠긴 상태가 된다(절전 잠금의 `LockDone` 대기 1.5 s 동안에도 `eth_accounts`가 계정을 돌려주지 않는다).
+
+dApp 요청으로 띄운 잠금 해제 창을 `나중에`로 닫으면 `UNLOCK_PROMPT_COOLDOWN_MS`(30 s) 동안, 잠글 때 연결되어 있지 않던 origin(메모리에만 두고 해제 시 지움; 잠긴 채 시작했으면 모든 origin)의 잠금 해제를 기다릴 요청은 창을 다시 띄우지 않고 즉시 4001이다. 연결되어 있던 origin의 요청은 그대로 창을 띄운다.
 
 ### 4.5 연결 해제
 - `wallet_revokePermissions` 또는 yw-app 화면의 연결된 사이트 목록에서 해제([04](04-app-ui.md)) → grant 삭제·저장, 그 origin 문서에 `accountsChanged([])`. 대기 중인 그 origin의 signing 요청은 4100.
 - yw-app 화면은 grant의 계정 목록 변경을 제공할 수 있다(선택). 변경 시 `accountsChanged`.
 
 ### 4.6 localhost 토글
-`settings.json`의 `allowLocalhostDapps`(bool, 기본 `false`, 정의는 [04](04-app-ui.md)). `false`이면 `http://localhost[:port]`·`http://127.0.0.1[:port]` origin의 모든 요청에 4100. 값 변경은 다음 요청부터 적용한다. 기존 grant는 지우지 않는다.
+`settings.json`의 `allowLocalhostDapps`(bool, 기본 `false`, 정의는 [04](04-app-ui.md)). `false`이면 `http://localhost[:port]`·`http://127.0.0.1[:port]` origin의 모든 요청에 4100이고 그 origin 문서에 이벤트(§4.8)도 보내지 않는다. 값 변경은 다음 요청·이벤트부터 적용한다. 기존 grant는 지우지 않는다.
 
 ### 4.7 Origin 형식 (yw-core `policy::BrowserOrigin::parse`, [01](01-repo-build.md) §2.2)
 - 길이 ≤ 256 B, ASCII.
@@ -576,7 +578,7 @@ meta가 암호화되어 있으므로(D7) 잠긴 동안 grant를 알 수 없다.
 - SIWE 도메인 비교([03](03-evm.md) D18)와 승인 창 표시는 이 값을 쓴다.
 
 ### 4.8 이벤트 전달
-- yw-app은 연결마다 문서 표 `activationNonce → (origin, connection_id)`를 둔다(전체 최대 512, LRU). 요청을 받을 때마다 갱신하고, 연결이 닫히면 그 연결의 항목을 지운다.
+- yw-app은 연결마다 문서 표 `activationNonce → (origin, connection_id)`를 둔다(전체 최대 512, LRU). 요청을 받을 때마다 갱신하고, 연결이 닫히면 그 연결의 항목을 지운다. 가득 차면 pending 요청이 있는 문서는 밀어내지 않고, 이미 `MAX_DOCUMENTS_PER_ORIGIN`(64)개를 가진 origin의 새 문서는 그 origin의 가장 오래된 문서를 밀어낸다(activation을 계속 새로 만드는 페이지가 다른 사이트 문서의 이벤트를 끊지 못한다).
 - 이벤트는 origin이 같은 모든 항목으로 보낸다(§6.1 event 봉투). 요청을 한 번도 보내지 않은 문서는 이벤트를 받지 않는다.
 
 | 원인 | 이벤트 |
@@ -593,7 +595,7 @@ meta가 암호화되어 있으므로(D7) 잠긴 동안 grant를 알 수 없다.
 
 | code | Rust `ProviderError` | message | 발생 |
 |---|---|---|---|
-| 4001 | `UserRejected` | `User rejected the request.` | 승인·연결·잠금 해제 창 거부·닫기(D16 차단 창 포함), 잠금으로 창 닫힘 |
+| 4001 | `UserRejected` | `User rejected the request.` | 승인·연결·잠금 해제 창 거부·닫기(D16 차단 창 포함), 잠금으로 창 닫힘, 잠금 해제 창 쿨다운(§4.4) |
 | 4001 | `Expired` | `Request expired.` | 승인·연결 창 표시 후 120 s 만료(D23, [03] §11.5) |
 | 4100 | `Unauthorized` | `Unauthorized.` | 미연결 origin의 계정 요구 메서드, grant에 없는 계정, localhost 토글 꺼짐, vault 없음, vault가 `BackupPending`(백업 미확인)인 동안의 signing·연결 요청, 대기 중 연결 해제(§4.5), grant 256개 상태에서 새 origin 연결(§4.1) |
 | 4200 | `UnsupportedMethod` | `Unsupported method.` | 허용 표 밖(`wallet_addEthereumChain` 포함, D14·§3.2), method 형식 오류 |
@@ -612,7 +614,7 @@ meta가 암호화되어 있으므로(D7) 잠긴 동안 grant를 알 수 없다.
 | -32603 | `Internal` | `Internal error.` | 그 밖의 내부 오류 |
 | -32603 | `TimedOut` | `Request timed out.` | 기한 만료(확장·yw-app) |
 | -32603 | `ResponseTooLarge` | `Response too large.` | §3.5 |
-| -32603 | `BroadcastFailed` | `Transaction broadcast failed.` | 서명 후 RPC가 확정적으로 거부(판정은 [03](03-evm.md)). 결과가 불확실(시간 초과)하면 tx hash를 반환한다 |
+| -32603 | `BroadcastFailed` | `Transaction broadcast failed.` | 서명 후 RPC가 확정적으로 거부, 다른 해시 반환, 전송 직전 체인 재확인 불일치(판정은 [03](03-evm.md) §4.4). 자동 재전송이 이어지지 않는 경우만이다: 결과가 불확실(시간 초과)하거나 체인 재확인이 전송 오류로 끝나 자동 재전송이 이어지면 tx hash를 반환한다 |
 | 그대로 | `Upstream { code, message, data }` | §3.5 정화 규칙 | read의 상위 JSON-RPC 오류 |
 
 `eth_sendTransaction`의 dApp 응답(D15–D16, 상황별 매핑은 [03](03-evm.md) §11.6): 시뮬레이션 결과(성공·revert·RPC 오류·시간 초과·응답 이상·`simulation = unsupported`)는 승인 창의 경고와 고위험 확인에만 영향을 주고 **어떤 오류 코드로도 바꾸지 않는다**. 결과는 승인 → tx hash(브로드캐스트 결과가 불확실해도 hash), 확정적 브로드캐스트 거부 → -32603 `BroadcastFailed`, 거부·창 닫기·잠금(D16 차단 창 포함) → 4001, 창 표시 후 120 s → 4001 `Request expired.`, 요청 기한 → -32603 `Request timed out.`, 창 없는 사전 거부(§3.3–3.4, [03] §11.6) → -32602·4100·-32002 중 하나, 승인 전 사용자 체인 삭제 → 4901(§4.3)이다.
@@ -898,21 +900,26 @@ pub const READ_DEADLINE_MS: u64 = 60_000;        pub const INTERACTIVE_DEADLINE_
 pub const HELLO_TIMEOUT_MS: u64 = 2_000;
 pub const RATE_PER_DOCUMENT: u32 = 20;           pub const RATE_BURST: u32 = 40;          // 토큰/초, 용량·초기값
 pub const MAX_READS_PER_DOCUMENT: usize = 64;    pub const MAX_READS_GLOBAL: usize = 256; // 대기+실행
+pub const MAX_READS_PER_UNCONNECTED_ORIGIN: usize = 64;                                  // 미연결 origin의 모든 문서 합
 pub const READ_WORKERS: usize = 4;               pub const PIPE_INSTANCES: u32 = 4;
 pub const MAX_APPROVALS_PER_ORIGIN: usize = 16;  pub const MAX_APPROVALS_GLOBAL: usize = 64;
 pub const MAX_DOCUMENTS: usize = 512;            pub const MAX_RESULT_BYTES: usize = 1_044_480;
+pub const MAX_DOCUMENTS_PER_ORIGIN: usize = 64;                                          // §4.8 밀어내기
 pub const MAX_LOGS_BLOCK_RANGE: u64 = 10_000;    pub const LOGS_BLOCK_CACHE_MS: u64 = 12_000; // §3.4 eth_getLogs
+pub const UNLOCK_PROMPT_COOLDOWN_MS: u64 = 30_000;                                       // §4.4 해제 창 쿨다운
 ```
 
 | 분류 | 대상 | 처리 |
 |---|---|---|
 | 즉시 | `eth_accounts`, `eth_chainId`, `net_version`, `wallet_getPermissions`, `web3_clientVersion`, `wallet_switchEthereumChain`, 창이 필요 없는 `eth_requestAccounts`·`wallet_revokePermissions` | reader 스레드에서 메모리 상태(체인 캐시·레지스트리·체인 상태 포함, RPC 없음)로 응답(meta 쓰기는 저장 스레드에 위임) |
-| read | route `read` | 작업 큐 → 워커 4개. 문서당 64, 전체 256. 한쪽만 태그인 `eth_getLogs` 범위 검사(§3.4)는 워커가 전달 직전에 한다 |
+| read | route `read` | 작업 큐 → 워커 4개. 문서당 64, 연결되지 않은 origin(잠금 해제 상태의 grant 없음)은 모든 문서 합쳐 64(한 사이트가 전체 슬롯을 차지하지 못한다), 전체 256. 한쪽만 태그인 `eth_getLogs` 범위 검사(§3.4)는 워커가 전달 직전에 한다 |
 | 승인 | signing, 창이 필요한 연결 요청, 잠금 해제를 기다리는 요청 | 전역 FIFO 승인 큐 → GUI 스레드([04](04-app-ui.md)). 창은 한 번에 하나. origin당 16, 전체 64 |
 
 - 토큰 버킷은 문서(`activationNonce`)마다 모든 요청에 적용한다(cancel 제외).
 - reader 스레드는 승인·RPC를 기다리지 않는다. 승인 창이 열려 있어도 read와 cancel은 계속 처리된다.
-- signing 요청은 도착 시 grant를 검사한다(잠김이면 해제 후 검사). 미연결 또는 vault `BackupPending` → 4100([04] §3.1 `NotReady`). 연결 창이 대기 중인 origin의 signing 요청은 큐에서 기다린다.
+- signing 요청은 도착 시 grant를 검사한다(잠김이면 해제 후 검사). 미연결 또는 vault `BackupPending` → 4100([04] §3.1 `NotReady`). 연결 창이 대기 중인 origin의 signing 요청은 4100 없이 큐에서 기다리고, 창이 표시될 때 grant를 다시 검사한다(연결되지 않았거나 그 계정이 아니면 4100).
+- 승인 요청의 입장 검사는 디스패처 잠금 안에서 값싼 검사만 한다(vault·grant·대기 중인 연결 창·§4.4 쿨다운·한도·`eth_sendTransaction`의 `chainId`). `eth_signTypedData_v4`의 origin 체인 검증([03] §8.1 T01·T02 → -32602)은 잠금 해제 상태에서만, 잠금을 놓은 뒤 하고, 잠긴 동안에는 하지 않고 큐에 넣는다(해제 후 승인 흐름이 같은 검증을 한다).
+- 응답은 pending 표의 `(activationNonce, requestId)`와 `sequence`가 모두 맞을 때만 보내고, 그때 그 요청의 승인 기록도 지운다(같은 id를 다시 쓰는 새 요청의 기록은 늦은 응답이 지우지 않는다).
 - cancel: 큐에 있으면 제거, 창이 열려 있으면 창을 닫는다(거부와 같은 내부 처리, 응답 없음). read 실행 중이면 결과를 버린다.
 - 서명·브로드캐스트가 끝난 뒤 연결이 사라졌으면 결과만 버린다(트랜잭션 처리는 [03](03-evm.md) 저널을 따른다).
 

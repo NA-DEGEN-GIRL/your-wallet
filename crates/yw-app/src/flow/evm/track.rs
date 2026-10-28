@@ -1,13 +1,14 @@
 //! Broadcast (spec/03 §4.4) and receipt tracking / reconcile (§4.5, §5.4) of journaled
 //! transactions. Signed bytes are only ever re-sent as they are: nothing here signs.
 
+use yw_core::evm::chain::ChainInfo;
 use yw_core::journal::evm::{
-    DROP_CONFIRM_MS, EvmRecord, FLAG_RPC_HASH_MISMATCH, REBROADCAST_INTERVAL_MS, Transition,
-    TxState, latest_candidate,
+    DROP_CONFIRM_MS, EvmRecord, FLAG_MANUAL_RESEND, FLAG_RPC_HASH_MISMATCH,
+    REBROADCAST_INTERVAL_MS, Transition, TxState, latest_candidate,
 };
 use yw_win::http::HttpsUrl;
 
-use super::{Clock, SharedTransport};
+use super::{ChainCheck, Clock, Limits, MismatchKind, SharedTransport, check_chain, check_once};
 use crate::errors::ErrorCode;
 use crate::rpc::evm::{self as rpc, ReceiptLookup};
 use crate::rpc::{RpcClient, RpcFailure, canonical_quantity, classify};
@@ -32,12 +33,17 @@ pub enum BroadcastOutcome {
         /// The node knows the transaction.
         known: bool,
     },
-    /// `eth_chainId` no longer matches: nothing sent.
+    /// `eth_chainId` or the block-0 hash no longer matches: nothing sent, manual resend only.
     ChainMismatch,
+    /// The chain could not be re-checked (transport failures after the retries of spec/03
+    /// §1.4): nothing sent, the record stays `Signed` and tracking re-sends it automatically.
+    ChainUnverified,
 }
 
 impl BroadcastOutcome {
-    /// The journal transition of this outcome.
+    /// The journal transition of this outcome: a definite refusal (unknown to the node) and a
+    /// chain mismatch persist `manual_resend` so no automatic re-broadcast follows the failure
+    /// the dApp was told about — not even after a restart.
     #[must_use]
     pub const fn transition(self, tx_hash: [u8; 32], at_unix_ms: u64) -> Option<Transition> {
         match self {
@@ -51,10 +57,25 @@ impl BroadcastOutcome {
                 tx_hash,
                 at_unix_ms,
             }),
-            Self::Rejected { known: false }
-            | Self::Unconfirmed { known: false }
-            | Self::ChainMismatch => None,
+            Self::Rejected { known: false } | Self::ChainMismatch => {
+                Some(Transition::ManualResend {
+                    tx_hash,
+                    at_unix_ms,
+                })
+            }
+            Self::Unconfirmed { known: false } | Self::ChainUnverified => None,
         }
+    }
+
+    /// Whether an automatic re-broadcast follows this outcome (§5.4-2). Only then may the dApp be
+    /// given the hash of a transaction the node does not know yet; otherwise it is told the
+    /// broadcast failed (spec/05 §5 `BroadcastFailed`).
+    #[must_use]
+    pub const fn resends_automatically(self) -> bool {
+        matches!(
+            self,
+            Self::Unconfirmed { known: false } | Self::ChainUnverified
+        )
     }
 
     /// Fixed name for logs.
@@ -68,6 +89,7 @@ impl BroadcastOutcome {
             Self::Unconfirmed { known: true } => "UnconfirmedKnown",
             Self::Unconfirmed { known: false } => "Unconfirmed",
             Self::ChainMismatch => "ChainMismatch",
+            Self::ChainUnverified => "ChainUnverified",
         }
     }
 }
@@ -79,48 +101,74 @@ const fn is_transport(failure: RpcFailure) -> bool {
     )
 }
 
-/// Sends the signed bytes (spec/03 §4.4): `eth_chainId` re-check, then
-/// `eth_sendRawTransaction`; transport errors resend the same bytes after `retry_ms[0]` and
-/// `retry_ms[1]` and then ask `eth_getTransactionByHash`.
+/// Sends the signed bytes (spec/03 §4.4); see [`broadcast_checked`].
 #[must_use]
 pub fn broadcast(
     transport: &SharedTransport,
     url: &HttpsUrl,
-    chain_id: u64,
+    chain: &ChainInfo,
+    raw: &[u8],
+    tx_hash: &[u8; 32],
+    clock: &dyn Clock,
+    limits: &Limits,
+) -> BroadcastOutcome {
+    broadcast_checked(transport, url, chain, raw, tx_hash, clock, limits).0
+}
+
+/// Sends the signed bytes (spec/03 §4.4) after the full chain re-check of this connection
+/// (spec/03 §1.4, D14: `eth_chainId` and the block-0 hash against the genesis rule, every
+/// broadcast regardless of any cached state; transport failures retried `retry_delay_ms` apart)
+/// — a mismatch sends nothing (`ChainMismatch`), an unverifiable chain sends nothing
+/// (`ChainUnverified`, re-sent by tracking). Then `eth_sendRawTransaction`; transport errors
+/// resend the same bytes after `broadcast_retry_ms[0]` and `[1]` and then ask
+/// `eth_getTransactionByHash`. Returns the outcome and the chain check made.
+#[must_use]
+pub fn broadcast_checked(
+    transport: &SharedTransport,
+    url: &HttpsUrl,
+    chain: &ChainInfo,
+    raw: &[u8],
+    tx_hash: &[u8; 32],
+    clock: &dyn Clock,
+    limits: &Limits,
+) -> (BroadcastOutcome, ChainCheck) {
+    let client = RpcClient::new(&**transport);
+    let check = check_chain(&client, url, chain, clock, limits.retry_delay_ms);
+    let outcome = match check {
+        ChainCheck::Verified { .. } => {
+            send_raw_with_retries(&client, url, raw, tx_hash, clock, limits.broadcast_retry_ms)
+        }
+        ChainCheck::Mismatch(_) => BroadcastOutcome::ChainMismatch,
+        ChainCheck::Unverified(_) => BroadcastOutcome::ChainUnverified,
+    };
+    (outcome, check)
+}
+
+fn send_raw_with_retries(
+    client: &RpcClient<'_>,
+    url: &HttpsUrl,
     raw: &[u8],
     tx_hash: &[u8; 32],
     clock: &dyn Clock,
     retry_ms: [u64; 2],
 ) -> BroadcastOutcome {
-    let client = RpcClient::new(&**transport);
-    match rpc::chain_id_text(&client, url) {
-        Ok(text) if text.to_ascii_lowercase() == canonical_quantity(chain_id) => {}
-        _ => return BroadcastOutcome::ChainMismatch,
-    }
-    let known =
-        |client: &RpcClient<'_>| rpc::transaction_known(client, url, tx_hash).unwrap_or(false);
-    match rpc::send_raw(&client, url, raw) {
+    let known = || rpc::transaction_known(client, url, tx_hash).unwrap_or(false);
+    match rpc::send_raw(client, url, raw) {
         Ok(hash) if hash == *tx_hash => return BroadcastOutcome::Sent,
         Ok(_) => return BroadcastOutcome::HashMismatch,
-        Err(RpcFailure::Rpc(_)) => {
-            return BroadcastOutcome::Rejected {
-                known: known(&client),
-            };
-        }
+        Err(RpcFailure::Rpc(_)) => return BroadcastOutcome::Rejected { known: known() },
         Err(_) => {}
     }
     for delay in retry_ms {
         clock.sleep_ms(delay);
-        match rpc::send_raw(&client, url, raw) {
+        match rpc::send_raw(client, url, raw) {
             Ok(hash) if hash == *tx_hash => return BroadcastOutcome::Sent,
             Ok(_) => return BroadcastOutcome::HashMismatch,
             Err(failure) if !is_transport(failure) => break,
             Err(_) => {}
         }
     }
-    BroadcastOutcome::Unconfirmed {
-        known: known(&client),
-    }
+    BroadcastOutcome::Unconfirmed { known: known() }
 }
 
 /// Tracking input for one nonce group.
@@ -149,6 +197,9 @@ pub struct TrackResult {
     pub invalid_receipts: u32,
     /// The latest candidate was re-sent.
     pub rebroadcast: bool,
+    /// The chain re-check right before a re-broadcast found another chain (nothing was sent;
+    /// the worker blocks the chain, spec/03 §1.4 `RpcMismatch`).
+    pub chain_mismatch: Option<MismatchKind>,
 }
 
 fn finality(
@@ -215,6 +266,7 @@ fn receipts(
 fn rebroadcast(
     client: &RpcClient<'_>,
     url: &HttpsUrl,
+    chain: &ChainInfo,
     latest: &EvmRecord,
     now: u64,
     result: &mut TrackResult,
@@ -230,8 +282,15 @@ fn rebroadcast(
         return Ok(());
     }
     if latest.has_flag(FLAG_RPC_HASH_MISMATCH)
+        || latest.has_flag(FLAG_MANUAL_RESEND)
         || now.saturating_sub(latest.last_broadcast_unix_ms) < REBROADCAST_INTERVAL_MS
     {
+        return Ok(());
+    }
+    // spec/03 §1.4, D14: chain id and genesis again on this connection right before
+    // `eth_sendRawTransaction` (a transport failure ends the round; the next one retries).
+    if let ChainCheck::Mismatch(kind) = check_once(client, url, chain)? {
+        result.chain_mismatch = Some(kind);
         return Ok(());
     }
     result.rebroadcast = true;
@@ -258,6 +317,7 @@ fn rebroadcast(
 fn track_inner(
     client: &RpcClient<'_>,
     url: &HttpsUrl,
+    chain: &ChainInfo,
     input: &TrackInput,
     result: &mut TrackResult,
 ) -> Result<(), RpcFailure> {
@@ -305,22 +365,27 @@ fn track_inner(
         && input.allow_rebroadcast
         && let Some(latest) = latest_candidate(&open)
     {
-        rebroadcast(client, url, latest, now, result)?;
+        rebroadcast(client, url, chain, latest, now, result)?;
     }
     Ok(())
 }
 
 /// One tracking round for a nonce group (spec/03 §4.5 receipts and finality, §5.2 drop rule,
 /// §5.4 reconcile with the re-broadcast of the newest candidate at most once per 60 s, never for
-/// `rpc_hash_mismatch`).
+/// `rpc_hash_mismatch` or `manual_resend`, and only after the chain re-check of `chain`).
 #[must_use]
-pub fn track_group(transport: &SharedTransport, url: &HttpsUrl, input: &TrackInput) -> TrackResult {
+pub fn track_group(
+    transport: &SharedTransport,
+    url: &HttpsUrl,
+    chain: &ChainInfo,
+    input: &TrackInput,
+) -> TrackResult {
     let client = RpcClient::new(&**transport);
     let mut result = TrackResult {
         drop_seen_unix_ms: input.drop_seen_unix_ms,
         ..TrackResult::default()
     };
-    if let Err(failure) = track_inner(&client, url, input, &mut result) {
+    if let Err(failure) = track_inner(&client, url, chain, input, &mut result) {
         result.error = Some(classify(failure));
     }
     result

@@ -47,6 +47,7 @@ const settle = async (turns = 6) => {
 let seed = 1;
 function world(extra) {
   const listeners = new Map();
+  const documentListeners = new Map();
   const dispatched = [];
   const url = new URL(`${ORIGIN}/login`);
   const global = {
@@ -66,7 +67,11 @@ function world(extra) {
       }
     },
     location: { href: url.href, origin: url.origin, protocol: url.protocol, hostname: url.hostname },
-    document: { addEventListener() {} },
+    document: {
+      addEventListener(type, listener) {
+        documentListeners.set(type, [...(documentListeners.get(type) ?? []), listener]);
+      }
+    },
     ...extra
   };
   global.addEventListener = (type, listener, options) => {
@@ -86,7 +91,7 @@ function world(extra) {
   };
   const context = vm.createContext(global);
   context.top = context;
-  return { context, dispatched };
+  return { context, dispatched, documentListeners };
 }
 
 // One document: both worlds see every window.postMessage, asynchronously, each with its own
@@ -265,4 +270,44 @@ test("E2 a failing storage read means off: Your Wallet identity and no compatMod
     assert.equal(Object.hasOwn(background.native[0].message.context, "compatMode"), false);
     assert.equal(Object.keys(background.native[0].message.context).length, 9);
   }
+});
+
+// The page shares the window and document with content.js: a synthetic `pagehide`/`freeze`
+// (isTrusted false) must not tear down the activation and fail the pending requests.
+async function activeDocument() {
+  const doc = documentWith((context) => Promise.resolve(vm.runInContext("({})", context)));
+  await settle();
+  const pending = doc.main.context.ethereum.request(vm.runInContext(`({ method: "eth_chainId" })`, doc.main.context));
+  pending.catch(() => {});
+  await settle();
+  const port = doc.ports[0];
+  backgroundFor(port, doc);
+  await settle();
+  assert.equal(port.sent.length, 1);
+  assert.equal(port.sent[0].kind, "request");
+  return { doc, port };
+}
+
+test("E3 untrusted pagehide/freeze from the page are ignored; the browser's own close the activation", async () => {
+  const { doc, port } = await activeDocument();
+  // Page-dispatched events (isTrusted absent or false).
+  vm.runInContext(`dispatchEvent(new Event("pagehide"))`, doc.isolated.context);
+  for (const listener of doc.isolated.documentListeners.get("freeze") ?? []) {
+    listener({ type: "freeze", isTrusted: false });
+  }
+  await settle();
+  assert.equal(port.sent.length, 1, "no disconnect for synthetic events");
+  assert.equal(port.disconnected, false);
+  // The browser's `freeze` (trusted) closes the activation.
+  for (const listener of doc.isolated.documentListeners.get("freeze") ?? []) {
+    listener({ type: "freeze", isTrusted: true });
+  }
+  assert.equal(port.sent.at(-1).kind, "disconnect");
+  assert.equal(port.sent.at(-1).reason, "document-freeze");
+  assert.equal(port.disconnected, true);
+
+  const second = await activeDocument();
+  vm.runInContext(`{ const event = new Event("pagehide"); event.isTrusted = true; dispatchEvent(event); }`, second.doc.isolated.context);
+  assert.equal(second.port.sent.at(-1).kind, "disconnect");
+  assert.equal(second.port.sent.at(-1).reason, "document-pagehide");
 });

@@ -607,6 +607,19 @@ impl ApprovalSession {
         Ok(())
     }
 
+    /// Starts a fresh interaction for the same content and gate (checkbox, arm delay and
+    /// `submitting` unchanged): an `Approved` status is terminal for the state machine, so once
+    /// it has been acted on (a re-simulation dispatched, spec/03 §6.6) the next approval must
+    /// come from new input, never from the stale status on the following tick.
+    ///
+    /// # Errors
+    ///
+    /// [`InteractionError`] when the deadline has passed.
+    pub fn restart_interaction(&mut self, now_ms: u64) -> Result<(), InteractionError> {
+        self.interaction = Self::interaction_for(&self.gate, now_ms)?;
+        Ok(())
+    }
+
     /// The interaction (read-only).
     #[must_use]
     pub const fn interaction(&self) -> &ApprovalInteraction {

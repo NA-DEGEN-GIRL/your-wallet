@@ -1180,6 +1180,188 @@ fn r_g2_locked_switch_unlock_merge_and_chain_removal() -> TestResult {
     Ok(())
 }
 
+/// C8: while locked, typed data is queued for the unlock window without being validated by the
+/// dispatcher (the approval flow validates it later); cheap limits still apply first.
+#[test]
+fn locked_typed_data_is_queued_without_validation() -> TestResult {
+    let mut h = Harness::with(VaultView::Locked, &Settings::default());
+    // Domain chainId 1 on a Sepolia origin: unlocked this is -32602 at once (X-3 above).
+    let typed = r#"{"types":{"EIP712Domain":[{"name":"chainId","type":"uint256"}],"Mail":[{"name":"x","type":"uint256"}]},"primaryType":"Mail","domain":{"chainId":1},"message":{"x":1}}"#;
+    let params = json(&format!(r#"["{A0}",{typed}]"#));
+    for _ in 0..16 {
+        h.clock.advance(100);
+        h.send(SITE, 1, "eth_signTypedData_v4", params.clone());
+    }
+    assert!(h.responses().is_empty());
+    assert_eq!(h.sink.requests().len(), 16);
+    let over = h.send(SITE, 1, "eth_signTypedData_v4", params);
+    assert_eq!(
+        text(&single(&h, &over)?),
+        "error -32005 Too many pending requests."
+    );
+    Ok(())
+}
+
+/// A stale answer for request ids that another pending request reuses leaves that request's
+/// approval record alone (the duplicate-connect rule still sees it).
+#[test]
+fn respond_checks_the_sequence_before_dropping_the_approval() -> TestResult {
+    let mut h = Harness::new();
+    let connect = h.send(SITE, 1, "eth_requestAccounts", json("[]"));
+    let stale = yw_app::browser::Reply {
+        conn: h.conn,
+        correlation: Correlation {
+            sequence: connect.sequence + 100,
+            ..connect
+        },
+    };
+    assert!(!h.core.respond(&stale, Err(ProviderError::Internal)));
+    let duplicate = h.send(SITE, 2, "eth_requestAccounts", json("[]"));
+    assert_eq!(
+        text(&single(&h, &duplicate)?),
+        "error -32002 Request already pending."
+    );
+    assert!(h.take_response(&connect).is_empty());
+    Ok(())
+}
+
+/// spec/05 §4.6: with the localhost toggle off, localhost documents get no events either.
+#[test]
+fn localhost_events_follow_the_toggle() -> TestResult {
+    const LOCAL: &str = "http://localhost:5173";
+    let mut settings = Settings {
+        allow_localhost_dapps: true,
+        ..Settings::default()
+    };
+    let mut h = Harness::with(VaultView::Unlocked, &settings);
+    let _ = h.send(LOCAL, 1, "eth_chainId", json("[]"));
+    h.out.take();
+    settings.allow_localhost_dapps = false;
+    h.core.set_wallet(wallet(VaultView::Unlocked, &settings));
+    h.core.upsert_grant(grant(LOCAL, &[A0], SEPOLIA)?);
+    assert!(events_of(&h.out.take(), 1).is_empty());
+    settings.allow_localhost_dapps = true;
+    h.core.set_wallet(wallet(VaultView::Unlocked, &settings));
+    h.core.remove_grant(&origin(LOCAL)?);
+    assert_eq!(
+        events_of(&h.out.take(), 1),
+        vec![BrowserEvent::AccountsChanged(Vec::new())]
+    );
+    Ok(())
+}
+
+/// spec/05 §8.4: an unconnected origin has a read budget over all its documents; connected
+/// origins and other sites keep their reads.
+#[test]
+fn unconnected_origins_have_a_read_budget() -> TestResult {
+    let mut h = Harness::new();
+    let mut answered = Vec::new();
+    for document in 1..=4 {
+        for _ in 0..16 {
+            let c = h.send(OTHER, document, "eth_blockNumber", json("[]"));
+            answered.extend(h.take_response(&c));
+        }
+    }
+    assert!(answered.is_empty(), "64 reads queued");
+    let over = h.send(OTHER, 5, "eth_blockNumber", json("[]"));
+    assert_eq!(
+        text(&single(&h, &over)?),
+        "error -32005 Too many pending requests."
+    );
+    let elsewhere = h.send(SITE, 6, "eth_blockNumber", json("[]"));
+    assert!(
+        h.take_response(&elsewhere).is_empty(),
+        "another site still reads"
+    );
+    // A connected origin is not held to the per-origin budget.
+    h.core.unlock_wallet(vec![grant(SITE, &[A0], SEPOLIA)?]);
+    for document in 7..=11 {
+        for _ in 0..14 {
+            let c = h.send(SITE, document, "eth_blockNumber", json("[]"));
+            assert!(h.take_response(&c).is_empty());
+        }
+    }
+    // Finishing reads frees the budget.
+    while let Some(task) = h.core.try_next_read() {
+        h.core
+            .finish_read(&task, Err(ProviderError::ChainUnavailable));
+    }
+    h.out.take();
+    let again = h.send(OTHER, 12, "eth_blockNumber", json("[]"));
+    assert!(h.take_response(&again).is_empty());
+    Ok(())
+}
+
+/// A signing request sent while the site's connect window is still pending waits behind it in
+/// the queue (the UI checks the grant when it is shown) instead of failing with 4100.
+#[test]
+fn signing_waits_behind_a_pending_connect() -> TestResult {
+    let mut h = Harness::new();
+    h.send(SITE, 1, "eth_requestAccounts", json("[]"));
+    let sign = h.send(
+        SITE,
+        1,
+        "personal_sign",
+        json(&format!(r#"["0x00","{A0}"]"#)),
+    );
+    assert!(h.take_response(&sign).is_empty());
+    let kinds: Vec<SiteKind> = h.sink.requests().into_iter().map(|r| r.kind).collect();
+    assert!(matches!(
+        kinds.as_slice(),
+        [SiteKind::RequestAccounts, SiteKind::PersonalSign { .. }]
+    ));
+    // Another origin without a pending connect: 4100 as before.
+    let stranger = h.send(
+        OTHER,
+        2,
+        "personal_sign",
+        json(&format!(r#"["0x00","{A0}"]"#)),
+    );
+    assert_eq!(text(&single(&h, &stranger)?), "error 4100 Unauthorized.");
+    Ok(())
+}
+
+/// spec/05 §4.4: after `나중에` on the dApp unlock window, origins that were not connected at
+/// lock time cannot pop it again for the cooldown (4001 at once); connected ones still can.
+#[test]
+fn unlock_window_cooldown_for_unconnected_origins() -> TestResult {
+    let mut h = Harness::new();
+    h.core.unlock_wallet(vec![grant(SITE, &[A0], SEPOLIA)?]);
+    h.core.lock_wallet();
+    h.core
+        .set_wallet(wallet(VaultView::Locked, &Settings::default()));
+    h.out.take();
+    // Before any dismissal every origin queues for the unlock window.
+    let first = h.send(OTHER, 2, "eth_requestAccounts", json("[]"));
+    assert!(h.take_response(&first).is_empty());
+    // `나중에`: the UI answers the waiting requests with 4001 and tells the dispatcher.
+    for request in h.sink.requests() {
+        h.core
+            .respond(&request.reply, Err(ProviderError::UserRejected));
+    }
+    h.out.take();
+    h.core.dapp_unlock_dismissed();
+    let stranger = h.send(OTHER, 3, "eth_requestAccounts", json("[]"));
+    assert_eq!(
+        text(&single(&h, &stranger)?),
+        "error 4001 User rejected the request."
+    );
+    let connected = h.send(
+        SITE,
+        1,
+        "personal_sign",
+        json(&format!(r#"["0x00","{A0}"]"#)),
+    );
+    assert!(h.take_response(&connected).is_empty());
+    assert_eq!(h.sink.requests().len(), 1);
+    h.clock
+        .advance(yw_app::browser::UNLOCK_PROMPT_COOLDOWN_MS + 1);
+    let later = h.send(OTHER, 4, "eth_requestAccounts", json("[]"));
+    assert!(h.take_response(&later).is_empty());
+    assert_eq!(h.sink.requests().len(), 1);
+    Ok(())
+}
+
 trait ClockNow {
     fn clock_now(&self) -> u64;
 }

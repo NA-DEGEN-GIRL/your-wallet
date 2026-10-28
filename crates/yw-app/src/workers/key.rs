@@ -14,9 +14,7 @@ use yw_core::sol::SolAddress;
 use yw_core::vault::{EvmKeySource, FileKind, Vault, VaultStatus, VaultStorage};
 
 use crate::errors::ErrorCode;
-use crate::events::{
-    KeyJob, KeyJobError, KeyOutcome, KeyQueue, KeyResult, LockSignal, MetaLoaded, RevealWhat,
-};
+use crate::events::{KeyJob, KeyOutcome, KeyQueue, KeyResult, LockSignal, MetaLoaded, RevealWhat};
 use crate::logging::{self, Field};
 use crate::meta::{self, Account, Meta, RawAccount};
 use crate::store::{FileStorage, LockedSlotBox};
@@ -362,11 +360,18 @@ impl KeyWorker {
                     crate::workers::journal::btc::BtcKeyError::Vault(VaultError::InvalidState),
                 ))],
             },
-            KeyJob::SignEvm { approved, info } => match self.vault.as_mut() {
-                Some(vault) => self.journal.sign(vault, approved, &info, alt),
-                None => vec![KeyOutcome::SignedEvm(Err(
-                    crate::events::SignFailure::JournalWrite(VaultError::InvalidState),
-                ))],
+            KeyJob::SignEvm {
+                ticket,
+                approved,
+                info,
+            } => match self.vault.as_mut() {
+                Some(vault) => self.journal.sign(vault, ticket, approved, &info, alt),
+                None => vec![KeyOutcome::SignedEvm(crate::events::EvmSigned {
+                    ticket,
+                    result: Err(crate::events::SignFailure::JournalWrite(
+                        VaultError::InvalidState,
+                    )),
+                })],
             },
             KeyJob::JournalApply {
                 transitions,
@@ -514,15 +519,21 @@ impl KeyWorker {
                 let addresses = self.vault()?.evm_addresses(&parsed)?;
                 Ok(indices.into_iter().zip(addresses).collect())
             })()),
-            KeyJob::SignMessage { approved, typed } => {
-                KeyOutcome::SignedMessage(match self.vault.as_ref() {
+            KeyJob::SignMessage {
+                ticket,
+                approved,
+                typed,
+            } => KeyOutcome::SignedMessage(crate::events::MessageSigned {
+                ticket,
+                result: match self.vault.as_ref() {
                     Some(vault) if typed => yw_core::evm::sign::sign_typed_data(vault, *approved),
                     Some(vault) => yw_core::evm::sign::sign_personal(vault, *approved),
                     None => Err(yw_core::evm::sign::SignError::Vault(
                         VaultError::InvalidState,
                     )),
-                })
-            }
+                }
+                .map_err(crate::events::MessageSignFailure::Sign),
+            }),
             KeyJob::SolKeys { purpose, sources } => KeyOutcome::SolKeys(
                 purpose,
                 self.vault().and_then(|vault| {
@@ -580,7 +591,7 @@ pub fn run(
                 for (cancelled_epoch, cancelled) in queue.cancel_pending() {
                     sink(KeyResult {
                         epoch: cancelled_epoch,
-                        outcome: KeyOutcome::Cancelled(cancelled.name(), KeyJobError::Locked),
+                        outcome: cancelled.cancelled_outcome(),
                     });
                 }
                 lock_signal.signal();

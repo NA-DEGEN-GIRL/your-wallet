@@ -373,8 +373,37 @@ fn token_meta(
     }
 }
 
+/// What step 9 could not settle.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FactGaps {
+    /// Lookup limit or budget reached (E27).
+    limited: bool,
+    /// An `eth_getCode` failed: an address stays unclassified (see [`unclassified_warning`]).
+    unclassified: bool,
+}
+
+/// An address whose `eth_getCode` failed cannot be ruled out as an EOA spender (E16) or an
+/// unregistered contract (E21): the request is raised to high risk instead of silently showing
+/// it unclassified. (Stands in for an `Unknown` code classification in the core rules.)
+fn unclassified_warning() -> Warning {
+    Warning {
+        rule: E27,
+        level: RiskLevel::High,
+        text: "주소 분류 조회(eth_getCode)에 실패했습니다 — 승인 대상이 일반 계정(EOA)인지 확인할 수 없습니다"
+            .to_owned(),
+    }
+}
+
+/// Adds `warning` once.
+fn push_unique(warnings: &mut Vec<Warning>, warning: Warning) {
+    if !warnings.contains(&warning) {
+        warnings.push(warning);
+    }
+}
+
 /// Step 9 lookups (token metadata, classification, approval balances) within the budget and the
-/// 16-lookup limits; returns whether E27 applies.
+/// 16-lookup limits. Facts already in `facts` are not looked up again, so a re-simulation only
+/// classifies the spenders and tokens its new diff adds (spec/03 §6.6-3).
 #[expect(
     clippy::too_many_arguments,
     reason = "the step 9 inputs of spec/03 §3.7"
@@ -388,12 +417,18 @@ fn gather_facts(
     sim: &SimResult,
     facts: &mut ChainFacts,
     budget: &Budget<'_>,
-) -> bool {
+) -> FactGaps {
     let (tokens, addresses) = fact_targets(decoded, sim);
-    let mut limited = tokens.len() > MAX_FACT_LOOKUPS || addresses.len() > MAX_FACT_LOOKUPS;
+    let mut gaps = FactGaps {
+        limited: tokens.len() > MAX_FACT_LOOKUPS || addresses.len() > MAX_FACT_LOOKUPS,
+        unclassified: false,
+    };
     for token in tokens.iter().take(MAX_FACT_LOOKUPS) {
+        if facts.token(token).is_some() {
+            continue;
+        }
         if budget.over() {
-            limited = true;
+            gaps.limited = true;
             break;
         }
         let meta = token_meta(client, url, chain, token);
@@ -402,7 +437,7 @@ fn gather_facts(
     let approvals = calldata_approvals(&decoded.call, &decoded.tx.to);
     for intent in approvals.iter().take(MAX_FACT_LOOKUPS) {
         if budget.over() {
-            limited = true;
+            gaps.limited = true;
             break;
         }
         if facts.balance(&intent.token).is_none()
@@ -419,18 +454,29 @@ fn gather_facts(
         }
     }
     for address in addresses.iter().take(MAX_FACT_LOOKUPS) {
-        if budget.over() {
-            limited = true;
-            break;
-        }
         if chain.label(address).is_some() || facts.code_of(address).is_some() {
             continue;
         }
-        if let Ok(code) = rpc::code(client, url, address) {
-            facts.code.push((*address, CodeKind::from_code(&code)));
+        if budget.over() {
+            gaps.limited = true;
+            break;
+        }
+        match rpc::code(client, url, address) {
+            Ok(code) => facts.code.push((*address, CodeKind::from_code(&code))),
+            Err(_) => gaps.unclassified = true,
         }
     }
-    limited
+    gaps
+}
+
+/// Step 9 warnings of `gaps` added to `warnings` (once each).
+fn gap_warnings(gaps: FactGaps, warnings: &mut Vec<Warning>) {
+    if gaps.limited {
+        push_unique(warnings, warning(E27, None));
+    }
+    if gaps.unclassified {
+        push_unique(warnings, unclassified_warning());
+    }
 }
 
 fn blocked(text: Option<&str>, rule: RuleId) -> Warning {
@@ -561,16 +607,26 @@ fn build_replacement(
     })
 }
 
-/// Reconciles the open groups of `(chain, account)` before the nonce rule (spec/03 §3.6, §5.4)
-/// and returns the transitions plus the records after applying them.
+/// What reconcile produced: transitions, the records after them, and a chain mismatch found by
+/// the re-check before a re-broadcast (nothing was sent then).
+struct Reconciled {
+    transitions: Vec<Transition>,
+    records: Vec<EvmRecord>,
+    mismatch: Option<super::MismatchKind>,
+}
+
+/// Reconciles the open groups of `(chain, account)` before the nonce rule (spec/03 §3.6, §5.4);
+/// a re-broadcast re-checks `chain` first (§1.4) and honours `manual_resend`.
 fn reconcile_account(
     transport: &SharedTransport,
     url: &HttpsUrl,
+    chain: &ChainInfo,
     job: &PrepareJob,
     clock: &dyn Clock,
-) -> (Vec<Transition>, Vec<EvmRecord>) {
+) -> Reconciled {
     let mut records = job.records.clone();
     let mut transitions = Vec::new();
+    let mut mismatch = None;
     let open: Vec<Vec<EvmRecord>> = groups(&records)
         .into_iter()
         .filter(|(key, members)| {
@@ -584,6 +640,7 @@ fn reconcile_account(
         let result = track_group(
             transport,
             url,
+            chain,
             &TrackInput {
                 group,
                 drop_seen_unix_ms: None,
@@ -591,12 +648,17 @@ fn reconcile_account(
                 allow_rebroadcast: true,
             },
         );
+        mismatch = mismatch.or(result.chain_mismatch);
         for transition in result.transitions {
             let _ = apply(&mut records, &transition);
             transitions.push(transition);
         }
     }
-    (transitions, records)
+    Reconciled {
+        transitions,
+        records,
+        mismatch,
+    }
 }
 
 /// Step 4 nonce: the in-flight rule for new transactions, or the replaced group's nonce.
@@ -805,8 +867,18 @@ pub fn prepare(
         Ok(code) => facts.account_code = CodeKind::from_code(&code),
         Err(failure) => return fail(result, PrepareFailure::rpc(failure)),
     }
-    let (transitions, records) = reconcile_account(transport, url, job, clock);
-    result.transitions = transitions;
+    let reconciled = reconcile_account(transport, url, &chain, job, clock);
+    result.transitions = reconciled.transitions;
+    if let Some(kind) = reconciled.mismatch {
+        let check = ChainCheck::Mismatch(kind);
+        cache.store(job.chain.info.chain_id, check);
+        result.chain_events.push(ChainEvent::Checked {
+            chain_id: job.chain.info.chain_id,
+            check,
+        });
+        return fail(result, PrepareFailure::new(blocked(None, E34), kind.code()));
+    }
+    let records = reconciled.records;
     let (nonce, latest) = match nonce_step(&client, url, job, &records) {
         Ok(found) => found,
         Err(failure) => return fail(result, failure),
@@ -886,7 +958,7 @@ pub fn prepare(
         call: decode_call(&chain, &built.tx.to, &built.tx.data),
         tx: built.tx.clone(),
     };
-    if gather_facts(
+    let gaps = gather_facts(
         &client,
         url,
         &chain,
@@ -895,9 +967,8 @@ pub fn prepare(
         &sim,
         &mut facts,
         &budget,
-    ) {
-        built.pre_warnings.push(warning(E27, None));
-    }
+    );
+    gap_warnings(gaps, &mut built.pre_warnings);
     // Step 10: draft.
     result.outcome = finish(
         job,
@@ -941,6 +1012,9 @@ pub enum ResimKind {
     NoResult,
     /// The fee recomputation broke a cap (E05): replace with a blocked request.
     Blocked,
+    /// The chain check found another chain (E34): nothing to replace, the window shows the
+    /// failure and only `거부` remains (spec/03 §3.7 steps 3–4 rule, spec/04 §3.5 `Failed`).
+    Failed,
 }
 
 /// Re-simulation result.
@@ -952,7 +1026,7 @@ pub struct ResimResult {
     pub kind: ResimKind,
     /// The replacement draft (same id, kind, origin, chain, account and signer).
     pub prepared: Option<Box<Prepared>>,
-    /// A chain failure that prevents re-simulation (shown as no result).
+    /// The blocking failure of [`ResimKind::Failed`].
     pub failure: Option<PrepareFailure>,
 }
 
@@ -1020,6 +1094,34 @@ fn rebuild(
     }
 }
 
+/// §6.6-3: the re-simulated diff may name spenders and tokens the first preparation never
+/// classified (an approval that appeared since): they are looked up now instead of reusing the
+/// old facts; what cannot be settled adds E27 / the unclassified warning.
+fn reclassify(
+    client: &RpcClient<'_>,
+    url: &HttpsUrl,
+    account: &Address,
+    sim: &SimResult,
+    context: &mut TxContext,
+    budget: &Budget<'_>,
+) {
+    let decoded = DecodedTx {
+        call: decode_call(&context.chain, &context.tx.to, &context.tx.data),
+        tx: context.tx.clone(),
+    };
+    let gaps = gather_facts(
+        client,
+        url,
+        &context.chain,
+        account,
+        &decoded,
+        sim,
+        &mut context.facts,
+        budget,
+    );
+    gap_warnings(gaps, &mut context.pre_warnings);
+}
+
 /// Re-simulates the shown transaction at click (spec/03 §6.6-3/4). The expiry is unchanged by
 /// the caller (`ApprovalStore::replace`).
 #[must_use]
@@ -1040,6 +1142,7 @@ pub fn resimulate(
     let yw_core::approval::AccountRef::Evm(account) = job.request.account else {
         return result;
     };
+    let started = clock.now_ms();
     let check = cache.ensure(
         &client,
         url,
@@ -1056,9 +1159,11 @@ pub fn resimulate(
             true,
             job.limits.sim_wait_ms,
         ),
+        // A chain mismatch blocks: it is never an approvable "no simulation" warning.
         ChainCheck::Mismatch(kind) => {
+            result.kind = ResimKind::Failed;
             result.failure = Some(PrepareFailure::new(blocked(None, E34), kind.code()));
-            SimOutcome::Transport(TransportKind::Other)
+            return result;
         }
         ChainCheck::Unverified(_) => SimOutcome::Transport(TransportKind::Other),
     };
@@ -1106,6 +1211,14 @@ pub fn resimulate(
         &outcome,
         clock.now_unix_ms(),
     );
+    if matches!(check, ChainCheck::Verified { .. }) {
+        let budget = Budget {
+            clock,
+            started,
+            limit: job.limits.budget_ms,
+        };
+        reclassify(&client, url, &account, &sim, &mut context, &budget);
+    }
     let simulated = matches!(sim.binding(), SimulationBinding::Simulated { .. });
     result.prepared = rebuild(job, context, &sim, received, clock.now_unix_ms());
     result.kind = match &result.prepared {

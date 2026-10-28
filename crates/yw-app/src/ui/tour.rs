@@ -325,10 +325,12 @@ fn tour_browser(state: &mut App) {
         server,
         threads: Vec::new(),
         connections: 1,
-        waiters: std::collections::VecDeque::new(),
+        waiters: std::collections::HashMap::new(),
         broadcasts: std::collections::HashMap::new(),
         dapp_unlock: false,
         unlocked: false,
+        locking: false,
+        grant_write: crate::app_browser::GrantWrite::default(),
     });
     let sites = [
         (

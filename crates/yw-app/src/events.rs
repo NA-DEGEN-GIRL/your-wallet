@@ -165,6 +165,8 @@ pub enum KeyJob {
     /// Sign an approved EVM transaction, verify it and commit the `Signed` record before anything
     /// is sent (spec/03 §4.2–§4.3, §5.3).
     SignEvm {
+        /// Who answers the result ([`KeyOutcome::SignedEvm`] carries it back).
+        ticket: SignTicket,
         /// The one-time approval (moved).
         approved: Box<Approved>,
         /// Record fields from the approval.
@@ -172,6 +174,8 @@ pub enum KeyJob {
     },
     /// Sign an approved `personal_sign` or `eth_signTypedData_v4` (spec/03 §4.2, §9, §8).
     SignMessage {
+        /// Who answers the result ([`KeyOutcome::SignedMessage`] carries it back).
+        ticket: SignTicket,
         /// The one-time approval (moved).
         approved: Box<Approved>,
         /// `true` = typed data.
@@ -239,6 +243,39 @@ pub enum KeyJob {
     },
     /// Stop the worker (after locking).
     Shutdown,
+}
+
+/// Ties a signing job to the waiter that answers its result. The UI matches results by this id,
+/// never by queue order (a result can arrive for a job whose waiter is gone, and a lock cancels
+/// queued jobs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SignTicket(pub u64);
+
+/// A finished `SignEvm` job (or one cancelled by `Lock` before it ran).
+#[derive(Debug, PartialEq, Eq)]
+pub struct EvmSigned {
+    /// The job's ticket.
+    pub ticket: SignTicket,
+    /// The journaled transaction or why there is none.
+    pub result: Result<SignedSummary, SignFailure>,
+}
+
+/// Why a message signature was not produced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MessageSignFailure {
+    /// Signing refused.
+    Sign(SignError),
+    /// Cancelled by `Lock` before it ran (spec/04 §1.2).
+    Locked,
+}
+
+/// A finished `SignMessage` job (or one cancelled by `Lock` before it ran).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MessageSigned {
+    /// The job's ticket.
+    pub ticket: SignTicket,
+    /// The 65-byte `r ‖ s ‖ v` signature or why there is none.
+    pub result: Result<[u8; 65], MessageSignFailure>,
 }
 
 /// Journal record fields taken from the approval at signing time.
@@ -343,6 +380,8 @@ pub enum SignFailure {
     JournalFull,
     /// The `Signed` record could not be committed ("저널 저장 실패"; nothing sent).
     JournalWrite(VaultError),
+    /// Cancelled by `Lock` before it ran (spec/04 §1.2; nothing signed or stored).
+    Locked,
 }
 
 impl KeyJob {
@@ -387,6 +426,24 @@ impl KeyJob {
 
     const fn is_control(&self) -> bool {
         matches!(self, Self::Lock | Self::Shutdown)
+    }
+
+    /// What a job cancelled by `Lock` reports: signing jobs answer their ticket's waiter
+    /// ([`SignFailure::Locked`] / [`MessageSignFailure::Locked`]), every other job
+    /// [`KeyOutcome::Cancelled`]. The job (and any approval or secret it holds) is dropped here.
+    #[must_use]
+    pub fn cancelled_outcome(self) -> KeyOutcome {
+        match self {
+            Self::SignEvm { ticket, .. } => KeyOutcome::SignedEvm(EvmSigned {
+                ticket,
+                result: Err(SignFailure::Locked),
+            }),
+            Self::SignMessage { ticket, .. } => KeyOutcome::SignedMessage(MessageSigned {
+                ticket,
+                result: Err(MessageSignFailure::Locked),
+            }),
+            other => KeyOutcome::Cancelled(other.name(), KeyJobError::Locked),
+        }
     }
 }
 
@@ -455,10 +512,10 @@ pub enum KeyOutcome {
     Addresses(Result<Vec<(u32, Address)>, VaultError>),
     /// Journal loaded or changed.
     Journal(Result<JournalView, VaultError>),
-    /// `SignEvm` finished.
-    SignedEvm(Result<SignedSummary, SignFailure>),
-    /// `SignMessage` finished: the 65-byte `r ‖ s ‖ v` signature.
-    SignedMessage(Result<[u8; 65], SignError>),
+    /// `SignEvm` finished (or was cancelled by `Lock`), with its ticket.
+    SignedEvm(EvmSigned),
+    /// `SignMessage` finished (or was cancelled by `Lock`), with its ticket.
+    SignedMessage(MessageSigned),
     /// Terminal journal records moved to activity (spec/03 §5.4).
     ActivityMoved(Vec<(NetworkId, ActivityEntry)>),
     /// Solana public keys.
@@ -769,9 +826,81 @@ impl crate::browser::DappSink for EventQueue {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QueueFull;
 
+/// Bound of the queued browser-bridge events (a share of [`EVENT_QUEUE_CAP`], so a flood of dApp
+/// traffic never crowds out worker results).
+pub const DAPP_EVENT_CAP: usize = 1_024;
+
+/// The queued events and how many of each bounded lane they hold.
+#[derive(Default)]
+struct Lanes {
+    events: VecDeque<UiEvent>,
+    /// Queued [`UiEvent::Dapp`] events (bounded by [`DAPP_EVENT_CAP`]).
+    dapp: usize,
+    /// Queued RPC and LLM events (bounded by [`EVENT_QUEUE_CAP`]).
+    other: usize,
+}
+
+impl Lanes {
+    /// Folds `event` into an equivalent queued one: the connection count and a pending chain
+    /// switch of the same origin keep only their latest value; an `Unverified` chain check adds
+    /// nothing to a queued check of the same chain and is replaced by a conclusive one.
+    fn merge(&mut self, event: &crate::browser::DappEvent) -> bool {
+        use crate::browser::{DappEvent, GrantChange};
+        for queued in self.events.iter_mut().rev() {
+            let UiEvent::Dapp(queued) = queued else {
+                continue;
+            };
+            match (queued, event) {
+                (DappEvent::Connections(count), DappEvent::Connections(new)) => {
+                    *count = *new;
+                    return true;
+                }
+                (
+                    DappEvent::GrantChanged { origin, change },
+                    DappEvent::GrantChanged {
+                        origin: new_origin,
+                        change: GrantChange::Chain(new_target),
+                    },
+                ) if origin == new_origin => {
+                    // Never across another change of the same origin (a revoke stays ordered).
+                    let GrantChange::Chain(target) = change else {
+                        return false;
+                    };
+                    *target = *new_target;
+                    return true;
+                }
+                (
+                    DappEvent::ChainChecked { chain_id, check },
+                    DappEvent::ChainChecked {
+                        chain_id: new_chain,
+                        check: new_check,
+                    },
+                ) if chain_id == new_chain => {
+                    if matches!(new_check, ChainCheck::Unverified(_)) {
+                        return true;
+                    }
+                    if matches!(check, ChainCheck::Unverified(_)) {
+                        *check = *new_check;
+                        return true;
+                    }
+                    // Two conclusive results stay in order (a URL change may sit between).
+                    return false;
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+}
+
 /// The UI event queue: workers push, the UI thread drains on `WM_YW_EVENTS` and on its timer.
+///
+/// Three lanes share one FIFO: key worker results are never refused (they are bounded by the key
+/// queue and a dropped signing result would leave its dApp waiter unanswered, spec/04 §1.2),
+/// browser-bridge events are merged where only the latest value matters and bounded by
+/// [`DAPP_EVENT_CAP`], everything else by [`EVENT_QUEUE_CAP`].
 pub struct EventQueue {
-    queue: Mutex<VecDeque<UiEvent>>,
+    queue: Mutex<Lanes>,
     wake: Box<dyn Fn() + Send + Sync>,
 }
 
@@ -786,24 +915,44 @@ impl EventQueue {
     #[must_use]
     pub fn new(wake: Box<dyn Fn() + Send + Sync>) -> Self {
         Self {
-            queue: Mutex::new(VecDeque::new()),
+            queue: Mutex::new(Lanes::default()),
             wake,
         }
     }
 
-    /// Adds an event; rings the doorbell when the queue was empty.
+    /// Adds an event; rings the doorbell when the queue was empty. Key results are always
+    /// accepted; browser events may be merged into a queued one.
     ///
     /// # Errors
     ///
-    /// [`QueueFull`] at [`EVENT_QUEUE_CAP`].
+    /// [`QueueFull`] when the event's lane is at its bound ([`DAPP_EVENT_CAP`] for browser
+    /// events, [`EVENT_QUEUE_CAP`] for RPC and LLM events).
     pub fn push(&self, event: UiEvent) -> Result<(), QueueFull> {
         let was_empty = {
-            let mut queue = self.queue.lock().map_err(|_| QueueFull)?;
-            if queue.len() >= EVENT_QUEUE_CAP {
-                return Err(QueueFull);
+            let mut lanes = self
+                .queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match &event {
+                UiEvent::Key(_) => {}
+                UiEvent::Dapp(dapp) => {
+                    if lanes.merge(dapp) {
+                        return Ok(());
+                    }
+                    if lanes.dapp >= DAPP_EVENT_CAP {
+                        return Err(QueueFull);
+                    }
+                    lanes.dapp += 1;
+                }
+                UiEvent::Rpc(_) | UiEvent::Llm(_) | UiEvent::LlmTest(_) => {
+                    if lanes.other >= EVENT_QUEUE_CAP {
+                        return Err(QueueFull);
+                    }
+                    lanes.other += 1;
+                }
             }
-            let was_empty = queue.is_empty();
-            queue.push_back(event);
+            let was_empty = lanes.events.is_empty();
+            lanes.events.push_back(event);
             was_empty
         };
         if was_empty {
@@ -815,9 +964,176 @@ impl EventQueue {
     /// Takes all events (UI thread only).
     #[must_use]
     pub fn drain(&self) -> Vec<UiEvent> {
-        self.queue
+        let mut lanes = self
+            .queue
             .lock()
-            .map(|mut queue| queue.drain(..).collect())
-            .unwrap_or_default()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        lanes.dapp = 0;
+        lanes.other = 0;
+        lanes.events.drain(..).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::{
+        DAPP_EVENT_CAP, EVENT_QUEUE_CAP, EventQueue, EvmSigned, KeyJob, KeyOutcome, KeyResult,
+        MessageSignFailure, MessageSigned, QueueFull, RpcEvent, SignFailure, SignTicket, UiEvent,
+    };
+    use crate::browser::{DappEvent, GrantChange};
+    use crate::flow::evm::ChainCheck;
+    use crate::rpc::RpcFailure;
+
+    fn queue() -> (EventQueue, Arc<AtomicUsize>) {
+        let rings = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&rings);
+        let queue = EventQueue::new(Box::new(move || {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }));
+        (queue, rings)
+    }
+
+    fn key(ticket: u64) -> UiEvent {
+        UiEvent::Key(KeyResult {
+            epoch: 1,
+            outcome: KeyOutcome::SignedEvm(EvmSigned {
+                ticket: SignTicket(ticket),
+                result: Err(SignFailure::JournalFull),
+            }),
+        })
+    }
+
+    fn rpc() -> UiEvent {
+        UiEvent::Rpc(RpcEvent::Simulating {
+            job: 1,
+            since_ms: 0,
+        })
+    }
+
+    #[test]
+    fn key_results_are_never_dropped_when_the_other_lanes_are_full() {
+        let (queue, rings) = queue();
+        for _ in 0..EVENT_QUEUE_CAP {
+            assert_eq!(queue.push(rpc()), Ok(()));
+        }
+        assert_eq!(queue.push(rpc()), Err(QueueFull));
+        for index in 0..DAPP_EVENT_CAP {
+            let origin =
+                yw_core::policy::BrowserOrigin::parse(&format!("https://s{index}.example"))
+                    .unwrap();
+            let event = DappEvent::GrantChanged {
+                origin,
+                change: GrantChange::Revoked,
+            };
+            assert_eq!(queue.push(UiEvent::Dapp(event)), Ok(()));
+        }
+        assert_eq!(
+            queue.push(UiEvent::Dapp(DappEvent::Cancel(
+                crate::browser::RequestKey {
+                    conn: 1,
+                    activation: crate::browser::envelope::Id32([1; 32]),
+                    request: crate::browser::envelope::Id16([1; 16]),
+                }
+            ))),
+            Err(QueueFull)
+        );
+        for ticket in 0..64 {
+            assert_eq!(queue.push(key(ticket)), Ok(()));
+        }
+        assert_eq!(rings.load(Ordering::Relaxed), 1, "doorbell only when empty");
+        let drained = queue.drain();
+        let tickets: Vec<u64> = drained
+            .iter()
+            .filter_map(|event| match event {
+                UiEvent::Key(KeyResult {
+                    outcome: KeyOutcome::SignedEvm(signed),
+                    ..
+                }) => Some(signed.ticket.0),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tickets, (0..64).collect::<Vec<_>>());
+        // Drained: the lanes are free again.
+        assert_eq!(queue.push(rpc()), Ok(()));
+    }
+
+    #[test]
+    fn dapp_events_merge_where_only_the_latest_value_matters() {
+        let (queue, _) = queue();
+        let site = yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap();
+        let other = yw_core::policy::BrowserOrigin::parse("https://other.example").unwrap();
+        let switch = |origin: &yw_core::policy::BrowserOrigin, target| {
+            UiEvent::Dapp(DappEvent::GrantChanged {
+                origin: origin.clone(),
+                change: GrantChange::Chain(target),
+            })
+        };
+        for count in 1..=5 {
+            queue
+                .push(UiEvent::Dapp(DappEvent::Connections(count)))
+                .unwrap();
+        }
+        for target in [1, 999, 11_155_111] {
+            queue.push(switch(&site, target)).unwrap();
+        }
+        queue.push(switch(&other, 1)).unwrap();
+        let unverified = ChainCheck::Unverified(RpcFailure::Late);
+        let verified = ChainCheck::Verified {
+            genesis: [1; 32],
+            pinned_now: true,
+        };
+        for check in [unverified, unverified, verified, unverified] {
+            queue
+                .push(UiEvent::Dapp(DappEvent::ChainChecked {
+                    chain_id: 999,
+                    check,
+                }))
+                .unwrap();
+        }
+        let events: Vec<DappEvent> = queue
+            .drain()
+            .into_iter()
+            .filter_map(|event| match event {
+                UiEvent::Dapp(event) => Some(event),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            events,
+            vec![
+                DappEvent::Connections(5),
+                DappEvent::GrantChanged {
+                    origin: site,
+                    change: GrantChange::Chain(11_155_111)
+                },
+                DappEvent::GrantChanged {
+                    origin: other,
+                    change: GrantChange::Chain(1)
+                },
+                // The first-use pin is never lost to a later inconclusive check.
+                DappEvent::ChainChecked {
+                    chain_id: 999,
+                    check: verified
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn lock_cancelled_jobs_and_signing_results_of_old_epochs() {
+        assert!(matches!(
+            KeyJob::LoadMeta.cancelled_outcome(),
+            KeyOutcome::Cancelled("LoadMeta", super::KeyJobError::Locked)
+        ));
+        // Signing results (with their ticket) are accepted from any epoch so the right waiter
+        // is answered (4001 for a lock-cancelled one).
+        let outcome = KeyOutcome::SignedMessage(MessageSigned {
+            ticket: SignTicket(7),
+            result: Err(MessageSignFailure::Locked),
+        });
+        assert!(super::accept_result(&KeyResult { epoch: 0, outcome }, 9));
     }
 }

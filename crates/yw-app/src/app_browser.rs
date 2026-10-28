@@ -5,7 +5,7 @@
 //! signatures and broadcasts, grant persistence in meta (spec/02 §5.3) and the connected-sites
 //! screen actions (spec/04 §2.9).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
@@ -25,7 +25,7 @@ use crate::browser::{
     pinned_origin,
 };
 use crate::errors::ErrorCode;
-use crate::events::EventQueue;
+use crate::events::{EventQueue, MessageSignFailure, MessageSigned, SignTicket};
 use crate::flow::evm::track::BroadcastOutcome;
 use crate::flow::evm::{SharedTransport, SystemClock, chain_info};
 use crate::logging::{self, Field};
@@ -33,8 +33,12 @@ use crate::network::NetworkId;
 use crate::ui::approval::{QueueOutcome, QueueSource};
 use crate::ui::secret::SecretKind;
 
-/// What answers a queued signing job when the key worker finishes it (FIFO: key jobs complete
-/// in queue order, spec/04 §1.2).
+/// Chain-switch grant writes are coalesced: at most one meta write per this interval (a page
+/// switching chains in a loop must not turn into a stream of vault writes).
+pub const GRANT_WRITE_INTERVAL_MS: u64 = 2_000;
+
+/// What answers a signing job when the key worker finishes it, found by the job's
+/// [`SignTicket`] (never by queue order, spec/04 §1.2).
 #[derive(Clone, Copy, Debug)]
 pub enum SignWaiter {
     /// An app send (no dApp answer).
@@ -57,14 +61,53 @@ pub struct BrowserUi {
     pub threads: Vec<JoinHandle<()>>,
     /// Live pipe connections.
     pub connections: usize,
-    /// Pending signing jobs in key-queue order.
-    pub waiters: VecDeque<SignWaiter>,
+    /// Pending signing jobs by ticket.
+    pub waiters: HashMap<SignTicket, SignWaiter>,
     /// dApp transactions waiting for their broadcast.
     pub broadcasts: HashMap<[u8; 32], Reply>,
     /// The unlock window was opened for dApp requests (spec/04 §2.5 `나중에` rejects them).
     pub dapp_unlock: bool,
     /// Grants are loaded into the dispatcher (unlocked with meta).
     pub unlocked: bool,
+    /// The lock procedure has started: the dispatcher already behaves as locked while the UI
+    /// thread still finishes the lock (no `eth_accounts` answers during the suspend wait).
+    pub locking: bool,
+    /// Chain-switch grant changes not yet written to meta, and when the last write happened.
+    pub grant_write: GrantWrite,
+}
+
+/// Coalesced grant writes ([`GRANT_WRITE_INTERVAL_MS`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GrantWrite {
+    /// A chain switch is waiting to be written.
+    pub dirty: bool,
+    /// Monotonic ms of the last grant write.
+    pub last_ms: Option<u64>,
+}
+
+impl GrantWrite {
+    /// Notes a chain switch; returns whether to write now (the interval since the last write
+    /// has passed) — otherwise the main timer writes it later ([`Self::due`]).
+    pub const fn note_chain_switch(&mut self, now_ms: u64) -> bool {
+        self.dirty = true;
+        self.due(now_ms)
+    }
+
+    /// Whether a pending write is due.
+    #[must_use]
+    pub const fn due(&self, now_ms: u64) -> bool {
+        self.dirty
+            && match self.last_ms {
+                Some(last) => now_ms.saturating_sub(last) >= GRANT_WRITE_INTERVAL_MS,
+                None => true,
+            }
+    }
+
+    /// A write happened (any grant change).
+    pub const fn written(&mut self, now_ms: u64) {
+        self.dirty = false;
+        self.last_ms = Some(now_ms);
+    }
 }
 
 impl core::fmt::Debug for BrowserUi {
@@ -113,10 +156,12 @@ impl BrowserUi {
             server,
             threads,
             connections: 0,
-            waiters: VecDeque::new(),
+            waiters: HashMap::new(),
             broadcasts: HashMap::new(),
             dapp_unlock: false,
             unlocked: false,
+            locking: false,
+            grant_write: GrantWrite::default(),
         }
     }
 
@@ -145,13 +190,45 @@ fn hex_signature(signature: &[u8; 65]) -> Value {
     Value::String(format!("0x{}", yw_core::hex::encode(signature)))
 }
 
+/// The dApp answer of a broadcast outcome (spec/03 §4.4 table, spec/05 §5): the hash when the
+/// node has the transaction or an automatic re-broadcast follows.
+///
+/// # Errors
+///
+/// [`ProviderError::BroadcastFailed`] when nothing sends it without the user (definitely
+/// refused, another hash, chain mismatch).
+pub fn broadcast_answer(
+    tx_hash: [u8; 32],
+    outcome: BroadcastOutcome,
+) -> Result<Value, ProviderError> {
+    let known = matches!(
+        outcome,
+        BroadcastOutcome::Sent
+            | BroadcastOutcome::Rejected { known: true }
+            | BroadcastOutcome::Unconfirmed { known: true }
+    );
+    if known || outcome.resends_automatically() {
+        Ok(Value::String(format!(
+            "0x{}",
+            yw_core::hex::encode(&tx_hash)
+        )))
+    } else {
+        Err(ProviderError::BroadcastFailed)
+    }
+}
+
+fn now_ms() -> u64 {
+    yw_win::time::monotonic_ms()
+}
+
 impl App {
     fn vault_view(&self) -> VaultView {
+        let locking = self.browser.as_ref().is_some_and(|browser| browser.locking);
         match self.mode {
             AppMode::Starting => VaultView::Starting,
             AppMode::NoVault => VaultView::NoVault,
             AppMode::BackupPending => VaultView::BackupPending,
-            AppMode::Unlocked { .. } if self.meta.is_some() => VaultView::Unlocked,
+            AppMode::Unlocked { .. } if self.meta.is_some() && !locking => VaultView::Unlocked,
             AppMode::Locked
             | AppMode::Unlocking
             | AppMode::PassphraseRequired
@@ -198,9 +275,13 @@ impl App {
     pub fn sync_browser(&mut self) {
         let view = self.wallet_view();
         let unlocked_now = view.vault == VaultView::Unlocked;
+        let left_unlocked = !matches!(self.mode, AppMode::Unlocked { .. });
         let Some(browser) = self.browser.as_mut() else {
             return;
         };
+        if left_unlocked {
+            browser.locking = false;
+        }
         let core = Arc::clone(&browser.core);
         match (browser.unlocked, unlocked_now) {
             (false, true) => {
@@ -229,18 +310,52 @@ impl App {
         }
     }
 
-    /// Writes the dispatcher's grants to meta and saves it.
-    fn write_grants(&mut self) {
-        let Some(core) = self
-            .browser
-            .as_ref()
-            .map(|browser| Arc::clone(&browser.core))
-        else {
+    /// The lock procedure starts (minimal hook at the top of `App::lock`): the dispatcher is
+    /// locked right away — grants dropped, `accountsChanged([])` sent — instead of after the
+    /// suspend wait, so no reader thread answers `eth_accounts` with accounts meanwhile. The
+    /// flag holds the locked view until the mode leaves `Unlocked`.
+    pub fn browser_lock_begin(&mut self) {
+        self.flush_grant_writes();
+        let Some(browser) = self.browser.as_mut() else {
             return;
         };
+        browser.locking = true;
+        self.sync_browser();
+    }
+
+    /// Writes the dispatcher's grants to meta and saves it.
+    fn write_grants(&mut self) {
+        let Some(browser) = self.browser.as_mut() else {
+            return;
+        };
+        browser.grant_write.written(now_ms());
+        let core = Arc::clone(&browser.core);
         if let Some(meta) = self.meta.as_mut() {
             meta.connected_sites = sites_to_values(&core.grants());
             self.save_meta();
+        }
+    }
+
+    /// Writes a coalesced chain switch now if one is pending (lock, shutdown paths).
+    pub(crate) fn flush_grant_writes(&mut self) {
+        if self
+            .browser
+            .as_ref()
+            .is_some_and(|browser| browser.grant_write.dirty)
+            && matches!(self.mode, AppMode::Unlocked { .. })
+        {
+            self.write_grants();
+        }
+    }
+
+    /// Main-timer part of the bridge: a coalesced chain-switch grant write that came due.
+    pub(crate) fn browser_tick(&mut self, now: u64) {
+        if self
+            .browser
+            .as_ref()
+            .is_some_and(|browser| browser.grant_write.due(now))
+        {
+            self.flush_grant_writes();
         }
     }
 
@@ -401,6 +516,10 @@ impl App {
         if !opened_for_dapp {
             return;
         }
+        // Unconnected pages may not pop the window right back up (spec/05 §4.4 cooldown).
+        if let Some(browser) = self.browser.as_ref() {
+            browser.core.dapp_unlock_dismissed();
+        }
         let finished = self.evm.queue.drain_waiting_matching(
             |item| matches!(item, QueuedItem::Site(_)),
             QueueOutcome::Rejected,
@@ -500,13 +619,26 @@ impl App {
         }
     }
 
-    /// A reader-thread grant change to persist (spec/05 §4.3, §4.5).
+    /// A reader-thread grant change to persist (spec/05 §4.3, §4.5): a revoke is written at once;
+    /// chain switches are coalesced to one write per [`GRANT_WRITE_INTERVAL_MS`] (the dispatcher
+    /// already answers from memory; the write follows on the main timer).
     fn persist_grant_change(&mut self, origin: &BrowserOrigin, change: GrantChange) {
-        if change == GrantChange::Revoked {
-            self.revoke_waiting(origin);
+        match change {
+            GrantChange::Revoked => {
+                self.revoke_waiting(origin);
+                self.write_grants();
+            }
+            GrantChange::Chain(_) => {
+                let now = now_ms();
+                let write = self
+                    .browser
+                    .as_mut()
+                    .is_some_and(|browser| browser.grant_write.note_chain_switch(now));
+                if write {
+                    self.write_grants();
+                }
+            }
         }
-        self.write_grants();
-        let _ = change;
         self.refresh();
     }
 
@@ -632,22 +764,26 @@ impl App {
         );
     }
 
-    /// Records who answers the next signing job.
-    pub(crate) fn push_sign_waiter(&mut self, waiter: SignWaiter) {
+    /// Registers who answers a signing job and returns the job's ticket (the key job and its
+    /// result carry it; results are matched by it, never by order).
+    pub(crate) fn push_sign_waiter(&mut self, waiter: SignWaiter) -> SignTicket {
+        self.evm.next_ticket = self.evm.next_ticket.wrapping_add(1);
+        let ticket = SignTicket(self.evm.next_ticket);
         if let Some(browser) = self.browser.as_mut() {
-            browser.waiters.push_back(waiter);
+            browser.waiters.insert(ticket, waiter);
         }
+        ticket
     }
 
-    fn pop_sign_waiter(&mut self) -> Option<SignWaiter> {
+    fn take_sign_waiter(&mut self, ticket: SignTicket) -> Option<SignWaiter> {
         self.browser
             .as_mut()
-            .and_then(|browser| browser.waiters.pop_front())
+            .and_then(|browser| browser.waiters.remove(&ticket))
     }
 
     /// `SignEvm` finished: a dApp transaction waits for its broadcast; a failure answers -32603.
-    pub(crate) fn browser_tx_signed(&mut self, result: Result<[u8; 32], ()>) {
-        if let Some(SignWaiter::Tx(reply)) = self.pop_sign_waiter() {
+    pub(crate) fn browser_tx_signed(&mut self, ticket: SignTicket, result: Result<[u8; 32], ()>) {
+        if let Some(SignWaiter::Tx(reply)) = self.take_sign_waiter(ticket) {
             match result {
                 Ok(hash) => {
                     if let Some(browser) = self.browser.as_mut() {
@@ -659,13 +795,14 @@ impl App {
         }
     }
 
-    /// `SignMessage` finished.
-    pub(crate) fn browser_message_signed(
-        &mut self,
-        result: Result<[u8; 65], yw_core::evm::sign::SignError>,
-    ) {
-        if let Some(SignWaiter::Message(reply)) = self.pop_sign_waiter() {
-            match result {
+    /// `SignMessage` finished (a lock-cancelled one answers 4001, spec/04 §1.2).
+    pub(crate) fn browser_message_signed(&mut self, signed: MessageSigned) {
+        if signed.result == Err(MessageSignFailure::Locked) {
+            self.evm_sign_locked(signed.ticket);
+            return;
+        }
+        if let Some(SignWaiter::Message(reply)) = self.take_sign_waiter(signed.ticket) {
+            match signed.result {
                 Ok(signature) => self.respond(&reply, Ok(hex_signature(&signature))),
                 Err(_) => self.respond(&reply, Err(ProviderError::Internal)),
             }
@@ -673,8 +810,8 @@ impl App {
     }
 
     /// A consumed signing job was cancelled by the lock: 4001 (spec/04 §1.2).
-    pub(crate) fn browser_sign_cancelled(&mut self) {
-        match self.pop_sign_waiter() {
+    pub(crate) fn browser_sign_cancelled(&mut self, ticket: SignTicket) {
+        match self.take_sign_waiter(ticket) {
             Some(SignWaiter::Tx(reply) | SignWaiter::Message(reply)) => {
                 self.respond(&reply, Err(ProviderError::UserRejected));
             }
@@ -682,8 +819,10 @@ impl App {
         }
     }
 
-    /// The broadcast of a dApp transaction finished (spec/05 §5, spec/03 §11.6): the hash when
-    /// sent or uncertain, -32603 `Transaction broadcast failed.` when definitely refused.
+    /// The broadcast of a dApp transaction finished (spec/05 §5, spec/03 §4.4, §11.6): the hash
+    /// when the node has it or an automatic re-broadcast follows; -32603 `Transaction broadcast
+    /// failed.` only when nothing will send it without the user (refused, other hash, chain
+    /// mismatch — all journaled as manual-resend-only).
     pub(crate) fn browser_broadcast(&mut self, tx_hash: [u8; 32], outcome: BroadcastOutcome) {
         let Some(reply) = self
             .browser
@@ -692,18 +831,7 @@ impl App {
         else {
             return;
         };
-        let body = match outcome {
-            BroadcastOutcome::Sent
-            | BroadcastOutcome::Rejected { known: true }
-            | BroadcastOutcome::Unconfirmed { .. } => Ok(Value::String(format!(
-                "0x{}",
-                yw_core::hex::encode(&tx_hash)
-            ))),
-            BroadcastOutcome::HashMismatch
-            | BroadcastOutcome::Rejected { known: false }
-            | BroadcastOutcome::ChainMismatch => Err(ProviderError::BroadcastFailed),
-        };
-        self.respond(&reply, body);
+        self.respond(&reply, broadcast_answer(tx_hash, outcome));
     }
 
     /// An endpoint URL changed (spec/03 §1.4): the chain's verification restarts in the RPC
@@ -741,5 +869,118 @@ impl App {
             }
         }
         origins
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use super::{BrowserUi, GRANT_WRITE_INTERVAL_MS, GrantWrite, SignWaiter};
+    use crate::apikeys::ApiKeys;
+    use crate::app::{App, Paths};
+    use crate::browser::Reply;
+    use crate::browser::envelope::{Correlation, Id16, Id32};
+    use crate::events::{EventQueue, MessageSignFailure, MessageSigned};
+    use crate::settings::Settings;
+
+    fn app() -> App {
+        let dir = std::env::temp_dir().join(format!("yw-app-tickets-{}", std::process::id()));
+        let mut app = App::new(
+            Paths {
+                data: dir.clone(),
+                logs: dir.join("logs"),
+            },
+            true,
+            Settings::default(),
+            ApiKeys::default(),
+        );
+        let events = Arc::new(EventQueue::new(Box::new(|| {})));
+        let core = crate::browser::BrowserCore::new(
+            "abcdefghijklmnopabcdefghijklmnop",
+            events as Arc<dyn crate::browser::DappSink>,
+            Arc::new(crate::flow::evm::SystemClock),
+        );
+        app.browser = Some(BrowserUi {
+            core,
+            reads: Arc::new(crate::browser::read::ReadContext::new(None)),
+            server: None,
+            threads: Vec::new(),
+            connections: 0,
+            waiters: HashMap::new(),
+            broadcasts: HashMap::new(),
+            dapp_unlock: false,
+            unlocked: false,
+            locking: false,
+            grant_write: GrantWrite::default(),
+        });
+        app
+    }
+
+    fn reply(n: u8) -> Reply {
+        Reply {
+            conn: 1,
+            correlation: Correlation {
+                session_id: Id32([1; 32]),
+                sequence: u64::from(n),
+                activation_nonce: Id32([2; 32]),
+                request_id: Id16([n; 16]),
+            },
+        }
+    }
+
+    fn broadcast_reply(app: &App, hash: [u8; 32]) -> Option<Reply> {
+        app.browser
+            .as_ref()
+            .and_then(|browser| browser.broadcasts.get(&hash).copied())
+    }
+
+    /// C2: signing results are matched to their waiters by ticket, so a result for a later job
+    /// (or a dropped one) never answers another dApp request.
+    #[test]
+    fn signing_results_answer_their_own_ticket() {
+        let mut app = app();
+        let first = app.push_sign_waiter(SignWaiter::Tx(reply(1)));
+        let message = app.push_sign_waiter(SignWaiter::Message(reply(2)));
+        let second = app.push_sign_waiter(SignWaiter::Tx(reply(3)));
+        let own = app.push_sign_waiter(SignWaiter::App);
+        assert!(first != message && message != second && second != own);
+        // Out of queue order: the second transaction finishes first.
+        app.browser_tx_signed(second, Ok([0x33; 32]));
+        assert_eq!(broadcast_reply(&app, [0x33; 32]), Some(reply(3)));
+        // The message result only takes the message waiter.
+        app.browser_message_signed(MessageSigned {
+            ticket: message,
+            result: Err(MessageSignFailure::Locked),
+        });
+        app.browser_tx_signed(first, Ok([0x11; 32]));
+        assert_eq!(broadcast_reply(&app, [0x11; 32]), Some(reply(1)));
+        // The app send's result answers nobody; an unknown ticket is ignored.
+        app.browser_tx_signed(own, Ok([0x44; 32]));
+        app.browser_tx_signed(crate::events::SignTicket(999), Ok([0x55; 32]));
+        assert_eq!(broadcast_reply(&app, [0x44; 32]), None);
+        assert_eq!(broadcast_reply(&app, [0x55; 32]), None);
+        assert!(
+            app.browser
+                .as_ref()
+                .is_some_and(|browser| browser.waiters.is_empty())
+        );
+    }
+
+    #[test]
+    fn chain_switch_grant_writes_are_coalesced() {
+        let mut write = GrantWrite::default();
+        assert!(
+            write.note_chain_switch(1_000),
+            "the first one writes at once"
+        );
+        write.written(1_000);
+        assert!(!write.note_chain_switch(1_100));
+        assert!(!write.note_chain_switch(1_200));
+        assert!(!write.due(1_000 + GRANT_WRITE_INTERVAL_MS - 1));
+        assert!(write.due(1_000 + GRANT_WRITE_INTERVAL_MS));
+        write.written(1_000 + GRANT_WRITE_INTERVAL_MS);
+        assert!(!write.due(u64::MAX), "nothing pending");
     }
 }
