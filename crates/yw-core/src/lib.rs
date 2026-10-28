@@ -7,6 +7,7 @@
 pub mod approval;
 pub mod bip32;
 pub mod bip39;
+pub mod btc;
 pub mod codec;
 pub mod entropy;
 pub mod error;

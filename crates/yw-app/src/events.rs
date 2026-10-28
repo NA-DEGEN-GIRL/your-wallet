@@ -7,10 +7,12 @@ use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 use yw_core::approval::{Approved, TokenMeta};
+use yw_core::btc::SendPlan;
 use yw_core::error::{KeyError, VaultError};
 use yw_core::evm::address::Address;
 use yw_core::evm::amount::U256;
 use yw_core::evm::sign::SignError;
+use yw_core::journal::btc::BtcRecord;
 use yw_core::journal::evm::{EvmRecord, GroupKey, Role, Transition};
 use yw_core::journal::sol::{SolRecord, SolTransition};
 use yw_core::secret::Zeroizing;
@@ -18,6 +20,7 @@ use yw_core::slip10::SolKeySource;
 use yw_core::sol::{SolAddress, SolCluster, SolSignError};
 use yw_core::vault::{BackupChallenge, ChallengeId, EvmKeySource, FileKind, RecordId, VaultStatus};
 
+use crate::btc::work::BtcRpcEvent;
 use crate::errors::ErrorCode;
 use crate::flow::evm::ChainCheck;
 use crate::flow::evm::form::Quote;
@@ -28,6 +31,10 @@ use crate::meta::{ActivityEntry, Meta};
 use crate::network::NetworkId;
 use crate::sol::flow::{PreSignError, PreviewResult, TrackResult as SolTrackResult};
 use crate::sol::scan::ScanRow;
+use crate::workers::journal::btc::{
+    BtcJournalDone, BtcJournalOp, BtcKeyError, BtcMetaOp, BtcMetaUpdate, BtcSignFailure,
+    BtcSignedSummary,
+};
 
 /// Event queue doorbell (`WM_APP + 1`).
 pub const WM_YW_EVENTS: u32 = 0x8001;
@@ -205,6 +212,31 @@ pub enum KeyJob {
         /// Wall clock.
         now_unix_ms: u64,
     },
+    /// Create, change or mutate the session's `BtcMeta` and persist it before the result is
+    /// reported (spec/08 §2, §3.2, §3.4, §4.7, §7.6).
+    BtcMeta {
+        /// The change.
+        op: BtcMetaOp,
+    },
+    /// Sign an approved BTC plan, verify it and commit its `Signed` record before anything is
+    /// sent (spec/08 §11.1).
+    SignBtc {
+        /// The one-time approval (moved).
+        approved: Box<Approved>,
+        /// The approved plan (its payload is bound by the approval).
+        plan: Box<SendPlan>,
+        /// Core tip of the plan (journal clean-up).
+        tip_height: u32,
+        /// Wall clock.
+        now_unix_ms: u64,
+    },
+    /// Apply a BTC journal step (spec/08 §11.3, §12.1–§12.4).
+    BtcJournal {
+        /// The step.
+        op: BtcJournalOp,
+        /// Wall clock.
+        now_unix_ms: u64,
+    },
     /// Stop the worker (after locking).
     Shutdown,
 }
@@ -237,6 +269,12 @@ pub struct JournalView {
     pub sol_corrupt: usize,
     /// A new SOL `Pending` record fits after clean-up.
     pub sol_room: bool,
+    /// Decoded BTC records (spec/08 §12.4), every network.
+    pub btc_records: Vec<BtcRecord>,
+    /// BTC entries the decoder rejected (BTC sending stops, bytes kept, E-VLT-006).
+    pub btc_corrupt: usize,
+    /// A new BTC `Signed` record fits without clean-up.
+    pub btc_room: bool,
 }
 
 /// Why Solana public keys were asked for.
@@ -340,6 +378,9 @@ impl KeyJob {
             Self::SolKeys { .. } => "SolKeys",
             Self::SignSol { .. } => "SignSol",
             Self::SolApply { .. } => "SolApply",
+            Self::BtcMeta { .. } => "BtcMeta",
+            Self::SignBtc { .. } => "SignBtc",
+            Self::BtcJournal { .. } => "BtcJournal",
             Self::Shutdown => "Shutdown",
         }
     }
@@ -427,6 +468,12 @@ pub enum KeyOutcome {
     ),
     /// `SignSol` finished.
     SignedSol(Result<SolSignedSummary, SolSignFailure>),
+    /// A `BtcMeta` job finished (the meta is persisted when `Ok`).
+    BtcMeta(Result<BtcMetaUpdate, BtcKeyError>),
+    /// `SignBtc` finished.
+    SignedBtc(Result<BtcSignedSummary, BtcSignFailure>),
+    /// A BTC journal step finished.
+    BtcJournal(Result<BtcJournalDone, BtcKeyError>),
     /// The job was cancelled by `Lock`.
     Cancelled(&'static str, KeyJobError),
 }
@@ -456,7 +503,8 @@ pub fn accept_result(result: &KeyResult, current_epoch: u64) -> bool {
             | KeyOutcome::SignedEvm(_)
             | KeyOutcome::SignedMessage(_)
             | KeyOutcome::SignedSol(_)
-            | KeyOutcome::Cancelled("SignEvm" | "SignMessage" | "SignSol", _)
+            | KeyOutcome::SignedBtc(_)
+            | KeyOutcome::Cancelled("SignEvm" | "SignMessage" | "SignSol" | "SignBtc", _)
     ) || result.epoch == current_epoch
 }
 
@@ -692,6 +740,8 @@ pub enum RpcEvent {
         /// Rows or error.
         result: Result<Vec<ScanRow>, ErrorCode>,
     },
+    /// A Bitcoin job result (spec/08).
+    Btc(Box<BtcRpcEvent>),
 }
 
 /// An event for the UI thread.

@@ -3,6 +3,7 @@
 //! Unknown or duplicate keys reject the whole document (treated as `SidecarCorrupt`, E-VLT-006),
 //! except `prefs`, which falls back to its default on any error.
 
+use yw_core::btc::meta::{BtcMeta, btc_meta_from_json, btc_meta_to_json};
 use yw_json::{Limits, Number, Object, Value};
 
 use crate::network::NetworkId;
@@ -70,6 +71,8 @@ pub enum Tab {
     Evm,
     /// `"sol"` (M7).
     Sol,
+    /// `"btc"` (M8).
+    Btc,
 }
 
 impl Tab {
@@ -79,6 +82,7 @@ impl Tab {
         match self {
             Self::Evm => "evm",
             Self::Sol => "sol",
+            Self::Btc => "btc",
         }
     }
 }
@@ -104,8 +108,8 @@ impl Default for Prefs {
     }
 }
 
-/// The meta document. Sections not used before M4/M5/M7/M8 are kept as validated JSON values so
-/// they round-trip unchanged.
+/// The meta document. Sections without a typed model (address book, sites, tokens, activity) are
+/// kept as validated JSON values so they round-trip unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Meta {
     /// Derived EVM accounts (index ascending, index 0 present).
@@ -114,8 +118,8 @@ pub struct Meta {
     pub evm_raw_accounts: Vec<RawAccount>,
     /// Solana standard accounts `m/44'/501'/i'/0'` (M7; `address` = base58 display cache).
     pub sol_accounts: Vec<Account>,
-    /// `btc` (M8), `null` before.
-    pub btc: Value,
+    /// `btc` (M8, spec/08 §12.3), `None` = `null` (BTC never enabled, or reset).
+    pub btc: Option<Box<BtcMeta>>,
     /// Address book.
     pub address_book: Vec<Value>,
     /// Connected sites (M5).
@@ -139,7 +143,7 @@ impl Default for Meta {
             }],
             evm_raw_accounts: Vec::new(),
             sol_accounts: Vec::new(),
-            btc: Value::Null,
+            btc: None,
             address_book: Vec::new(),
             connected_sites: Vec::new(),
             tokens: Vec::new(),
@@ -406,6 +410,7 @@ fn parse_prefs(value: &Value, meta: &Meta) -> Option<Prefs> {
                 prefs.tab = match entry.as_str()? {
                     "evm" => Tab::Evm,
                     "sol" => Tab::Sol,
+                    "btc" => Tab::Btc,
                     _ => return None,
                 };
             }
@@ -476,10 +481,10 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
     {
         return Err(MetaError);
     }
-    let btc = get("btc")?.clone();
-    if !btc.is_null() && btc.as_object().is_none() {
-        return Err(MetaError);
-    }
+    // Strict BtcMeta decoding: any violation rejects the document like other keys (spec/02 §5.3).
+    let btc = btc_meta_from_json(get("btc")?)
+        .map_err(|_| MetaError)?
+        .map(Box::new);
     let address_book = array("address_book")?.to_vec();
     if address_book.len() > MAX_ADDRESS_BOOK || !address_book.iter().all(valid_book_entry) {
         return Err(MetaError);
@@ -576,7 +581,7 @@ impl Meta {
                 "sol_accounts",
                 Value::Array(self.sol_accounts.iter().map(account_json).collect()),
             ),
-            ("btc", self.btc.clone()),
+            ("btc", btc_meta_to_json(self.btc.as_deref())),
             ("address_book", Value::Array(self.address_book.clone())),
             (
                 "connected_sites",
@@ -1034,6 +1039,44 @@ mod tests {
             .unwrap()
             .replacen("HAgk14", "0xHAgk", 1);
         assert!(parse(bad.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn bitcoin_meta_and_tab_round_trip_strictly() {
+        let account = yw_core::bip32::AccountXpub {
+            pubkey: yw_core::hex::decode_array::<33>(
+                "03b88e0fbe3f646337ed93bc0c0f3b843fcf7d2589e5ec884754e6402027a890b4",
+            )
+            .unwrap(),
+            chain_code: [7; 32],
+        };
+        let mut meta = Meta {
+            btc: Some(Box::new(yw_core::btc::BtcMeta::new(
+                yw_core::btc::BtcNetwork::Testnet4,
+                account,
+            ))),
+            ..Meta::default()
+        };
+        meta.prefs.tab = Tab::Btc;
+        let bytes = meta.to_json();
+        let parsed = parse(&bytes).unwrap();
+        assert!(!parsed.prefs_reset);
+        assert_eq!(parsed.meta, meta);
+        assert_eq!(parsed.meta.to_json(), bytes);
+        // A strict BtcMeta violation rejects the whole document (spec/02 §5.3).
+        let text = String::from_utf8(bytes).unwrap();
+        for bad in [
+            text.replacen("\"version\":1", "\"version\":2", 1),
+            text.replacen("\"network\":\"testnet4\"", "\"network\":\"signet\"", 1),
+            text.replacen("\"receive_next\":0", "\"receive_next\":0,\"extra\":1", 1),
+            text.replacen("\"btc\":{", "\"btc\":[{", 1),
+        ] {
+            assert!(parse(bad.as_bytes()).is_err(), "{bad}");
+        }
+        // `null` stays `null`.
+        let null = String::from_utf8(Meta::default().to_json()).unwrap();
+        assert!(null.contains("\"btc\":null"));
+        assert_eq!(parse(null.as_bytes()).unwrap().meta.btc, None);
     }
 
     #[test]

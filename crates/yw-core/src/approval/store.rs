@@ -203,10 +203,16 @@ fn digest_parts(parts: &Parts<'_>, expires_unix_ms: u64) -> Result<[u8; 32], App
             transcript.push_u8(cluster.code());
             transcript.push_bytes(genesis)?;
         }
+        ChainRef::Bitcoin { network, genesis } => {
+            transcript.push_u8(3);
+            transcript.push_u8(*network);
+            transcript.push_bytes(genesis)?;
+        }
     }
     match parts.account {
         AccountRef::Evm(address) => transcript.push_bytes(address.as_bytes())?,
         AccountRef::Sol(public) => transcript.push_bytes(public)?,
+        AccountRef::Bitcoin(public) => transcript.push_bytes(public)?,
     }
     transcript.push_bytes(&parts.payload.digest_bytes())?;
     transcript.push_bytes(&parts.display.digest()?)?;
@@ -251,6 +257,35 @@ pub fn approval_digest(
     )
 }
 
+/// BTC drafts (spec/08 §10): app origin, `Signer::FromPayload`, a Bitcoin chain whose genesis is
+/// the network's pinned hash, a Bitcoin account, and a well-formed `btc_payload` whose network
+/// byte is the chain's and whose `has_replaces` matches the kind.
+fn btc_draft_ok(draft: &ApprovalDraft) -> bool {
+    let (
+        SigningPayload::Btc(payload),
+        ChainRef::Bitcoin { network, genesis },
+        AccountRef::Bitcoin(_),
+        ApprovalOrigin::App,
+        Signer::FromPayload,
+    ) = (
+        &draft.payload,
+        &draft.chain,
+        &draft.account,
+        &draft.origin,
+        &draft.signer,
+    )
+    else {
+        return false;
+    };
+    let pinned = crate::btc::BtcNetwork::from_id(*network).map(crate::btc::BtcNetwork::genesis);
+    let header = crate::btc::display::payload_header(payload);
+    pinned == Some(*genesis)
+        && header.is_some_and(|header| {
+            header.network == *network
+                && header.has_replaces == (draft.kind == ApprovalKind::BtcFeeBump)
+        })
+}
+
 fn check_draft(draft: &ApprovalDraft) -> Result<(), ApprovalError> {
     let binding_ok = if draft.kind.is_evm_transaction() {
         matches!(
@@ -280,6 +315,7 @@ fn check_draft(draft: &ApprovalDraft) -> Result<(), ApprovalError> {
                 ) if intent.cluster == *cluster && intent.core.from.as_bytes() == from
             )
         }
+        ApprovalKind::BtcSend | ApprovalKind::BtcFeeBump => btc_draft_ok(draft),
     };
     if !payload_ok {
         return Err(ApprovalError::PayloadMismatch);

@@ -19,7 +19,8 @@ pub const MAX_APPROVALS_GLOBAL: usize = 64;
 /// Ready display lifetime (D23).
 pub const APPROVAL_DISPLAY_MS: u64 = 120_000;
 
-/// yw-app's field label table (spec/03 §11.2 names). Keys outside it are not displayed.
+/// yw-app's field label table (spec/03 §11.2, spec/07 §13.3 and spec/08 §10 names). Keys
+/// outside it are not displayed.
 #[must_use]
 pub const fn field_label(key: FieldKey) -> Option<&'static str> {
     Some(match key.0 {
@@ -51,15 +52,23 @@ pub const fn field_label(key: FieldKey) -> Option<&'static str> {
         0x0402 => "메시지 hex",
         0x0403 => "바이트 수",
         0x0404 => "SIWE 필드",
-        0x0501 => "받는 주소",
+        0x0501 | 0x0601 => "받는 주소",
         0x0502 => "자산·금액",
         0x0503 => "ATA 생성",
-        0x0504 => "수수료",
+        0x0504 | 0x0606 => "수수료",
         0x0505 => "최대 총 차감",
         0x0506 => "잔액 (RPC 참고)",
         0x0507 => "시뮬레이션 (참고)",
         0x0508 => "유효 시간",
         0x0509 => "감사",
+        0x0602 => "주소 종류",
+        0x0603 => "금액",
+        0x0604 => "잔돈",
+        0x0605 => "입력",
+        0x0607 => "총 차감",
+        0x0608 => "승인 후 잔액",
+        0x0609 => "교체 대상",
+        0x0640 => "고급",
         _ => return None,
     })
 }

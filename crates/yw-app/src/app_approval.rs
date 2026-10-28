@@ -363,6 +363,17 @@ fn build_layout(
             }
             Block::Field { label, value, mono } => {
                 builder.text(label, FontRole::Body, theme::MUTED, margin, inner);
+                // A Bitcoin address (0x0601, no spaces in the value) is drawn in 4-character
+                // groups with the first and last 6 characters bold (spec/04 §3.3, spec/08 §10).
+                let grouped = crate::ui::screens_btc::grouped(value);
+                let value = if *mono
+                    && !value.contains(' ')
+                    && crate::ui::theme::btc_address_segments(&grouped).is_some()
+                {
+                    &grouped
+                } else {
+                    value
+                };
                 let role = if *mono {
                     if label.starts_with("calldata") {
                         FontRole::MonoSmall
@@ -446,7 +457,7 @@ fn draw_line(
     widths: &HashMap<(FontRole, char), i32>,
 ) {
     if line.font == FontRole::Mono
-        && let Some(segments) = crate::ui::theme::sol_address_segments(&line.text)
+        && let Some(segments) = crate::ui::theme::address_segments(&line.text)
     {
         dc.set_text_color(line.color);
         let rect = Rect::new(
@@ -631,7 +642,9 @@ impl App {
         let panel = create_window(&panel_spec, panel_handler).map_err(|_| ())?;
         let deadline_ms = match &item {
             QueuedItem::Site(site) => site.deadline_ms,
-            QueuedItem::App(_) | QueuedItem::Sol(_) => now.saturating_add(MAX_LIFETIME_MS),
+            QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => {
+                now.saturating_add(MAX_LIFETIME_MS)
+            }
         };
         let gate = ApprovalGate {
             prepare: PrepareState::Preparing(PrepareStage::Building),
@@ -692,6 +705,7 @@ impl App {
             QueuedItem::App(app) => self.prepare_transaction(job, &app, None),
             QueuedItem::Site(site) => self.prepare_site(job, &site),
             QueuedItem::Sol(sol) => self.prepare_sol(job, &sol),
+            QueuedItem::Btc(btc) => self.prepare_btc(&btc),
         }
         self.rebuild_view();
     }
@@ -987,7 +1001,7 @@ impl App {
                 );
                 let site = self.evm.window.as_ref().and_then(|ui| match &ui.item {
                     QueuedItem::Site(site) => Some(site.reply),
-                    QueuedItem::App(_) | QueuedItem::Sol(_) => None,
+                    QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => None,
                 });
                 if failure.invalid_params
                     && let Some(reply) = site
@@ -1180,7 +1194,7 @@ impl App {
         let chain_id = ui.item.chain_id();
         let extra_warnings = match &ui.item {
             QueuedItem::Site(site) => site_fee_warning(site),
-            QueuedItem::App(_) | QueuedItem::Sol(_) => Vec::new(),
+            QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => Vec::new(),
         };
         let Ok(chain) = self.chain_job(chain_id) else {
             return;
@@ -1216,12 +1230,19 @@ impl App {
                 );
                 let reply = match &item {
                     QueuedItem::Site(site) => Some(site.reply),
-                    QueuedItem::App(_) | QueuedItem::Sol(_) => None,
+                    QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => None,
                 };
                 if let QueuedItem::Sol(sol) = &item
                     && request.kind == yw_core::approval::ApprovalKind::SolTransfer
                 {
                     self.sol_consumed(approved, sol.cluster, now);
+                    self.finish_approval(QueueOutcome::Approved);
+                    return;
+                }
+                if let QueuedItem::Btc(btc) = &item
+                    && request.kind.is_btc()
+                {
+                    self.btc_consumed(approved, btc);
                     self.finish_approval(QueueOutcome::Approved);
                     return;
                 }
@@ -1245,7 +1266,7 @@ impl App {
                                 site.origin.as_str().to_owned(),
                                 crate::app_browser::SignWaiter::Tx(site.reply),
                             ),
-                            QueuedItem::App(_) | QueuedItem::Sol(_) => {
+                            QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => {
                                 ("yw-app".to_owned(), crate::app_browser::SignWaiter::App)
                             }
                         };
@@ -1381,6 +1402,10 @@ impl App {
             site_badges.extend(badges);
             badges = site_badges;
         }
+        let btc_banner = match &ui.item {
+            QueuedItem::Btc(item) => Some(crate::ui::approval_view::BtcBanner::of(item.network)),
+            QueuedItem::App(_) | QueuedItem::Site(_) | QueuedItem::Sol(_) => None,
+        };
         match view(
             &ui.session.gate.prepare,
             now,
@@ -1390,7 +1415,8 @@ impl App {
             testnet,
             ui.failure.as_deref(),
         ) {
-            Ok(view) => {
+            Ok(mut view) => {
+                view.btc_banner = btc_banner;
                 ui.view = view;
                 ui.layout = None;
                 ui.window.invalidate();
@@ -1803,6 +1829,13 @@ impl App {
         if header_lines.is_empty() {
             header_lines.push(("요청 출처: Your Wallet (이 앱)".to_owned(), FontRole::Body));
         }
+        if let Some(banner) = ui.view.btc_banner
+            && !header_lines
+                .iter()
+                .any(|(text, _)| text.contains(banner.text()))
+        {
+            header_lines.push((banner.text().to_owned(), FontRole::BodyBold));
+        }
         for badge in &ui.view.badges {
             header_lines.push((badge.clone(), FontRole::BodyBold));
         }
@@ -1813,7 +1846,17 @@ impl App {
                 .measure_wrapped(&wide(text), width, DrawFlags::WRAP)
                 .saturating_add(px(2));
         }
-        if ui.view.testnet {
+        let (header_fill, header_text) = match ui.view.btc_banner {
+            Some(crate::ui::approval_view::BtcBanner::Mainnet) => {
+                (Some(theme::BTC_MAINNET_BG), theme::BTC_MAINNET_TEXT)
+            }
+            Some(crate::ui::approval_view::BtcBanner::Testnet4) => {
+                (Some(theme::BTC_TESTNET4_BG), theme::TEXT)
+            }
+            None if ui.view.testnet => (Some(theme::TESTNET_BG), theme::TEXT),
+            None => (None, theme::TEXT),
+        };
+        if let Some(fill) = header_fill {
             dc.fill_rect(
                 Rect::new(
                     0,
@@ -1821,12 +1864,12 @@ impl App {
                     client.w,
                     header_height.saturating_add(margin.saturating_mul(2)),
                 ),
-                theme::TESTNET_BG,
+                fill,
             );
         }
         for (text, role) in &header_lines {
             dc.select_font(fonts.get(*role));
-            dc.set_text_color(theme::TEXT);
+            dc.set_text_color(header_text);
             let height = dc.measure_wrapped(&wide(text), width, DrawFlags::WRAP);
             let rect = Rect::new(margin, y, width, height);
             let emphasized = *role == FontRole::Mono

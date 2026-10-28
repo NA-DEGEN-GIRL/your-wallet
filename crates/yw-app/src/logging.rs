@@ -32,10 +32,14 @@ pub enum Field<'a> {
     Code(ErrorCode),
     /// A number.
     Num(u64),
+    /// A signed number (JSON-RPC error codes).
+    Int(i64),
     /// An EVM address (allowed by D28): 20 raw bytes, written as lowercase hex.
     Address(&'a [u8; 20]),
     /// A transaction hash (allowed by D28): written as `0x` + lowercase hex.
     Hash(&'a [u8; 32]),
+    /// A Bitcoin txid (allowed by D28): display-order lowercase hex without prefix.
+    BtcTxid(yw_core::btc::Txid),
 }
 
 /// UTC `YYYY-MM-DDTHH:MM:SS.mmmZ` from Unix milliseconds.
@@ -112,6 +116,7 @@ pub fn format_line(
             Field::Net(network) => push_sanitized(&mut line, &network.to_string()),
             Field::Code(code) => push_sanitized(&mut line, code.code()),
             Field::Num(number) => line.push_str(&number.to_string()),
+            Field::Int(number) => line.push_str(&number.to_string()),
             Field::Address(bytes) => {
                 line.push_str("0x");
                 line.push_str(&yw_core::hex::encode(bytes.as_slice()));
@@ -120,6 +125,7 @@ pub fn format_line(
                 line.push_str("0x");
                 line.push_str(&yw_core::hex::encode(bytes.as_slice()));
             }
+            Field::BtcTxid(txid) => line.push_str(&txid.to_display_hex()),
         }
     }
     if line.len() > LOG_LINE_MAX_BYTES - 1 {

@@ -2,7 +2,7 @@
 //! `"YWJPL003" ‖ entry_count u16 ‖ reserved[6] ‖ entries` with
 //! `entry = kind u8 ‖ body_len u32 BE ‖ body`, its count and size bounds, and
 //! [`JournalError::Full`]. Chain record bodies live in the chain submodules (`journal::evm` at M4,
-//! `journal::sol` at M7; BTC bodies arrive at M8 and are kept as opaque bytes until then).
+//! `journal::sol` at M7, `journal::btc` at M8).
 //!
 //! Patterns from `archive/spec-v2.4:crates/key-agent/src/durable.rs:725-806,1100-1129`
 //! (signed-before-broadcast records, interrupted-broadcast recovery) re-specified for v3: the
@@ -10,6 +10,7 @@
 //! `VaultError::SidecarCorrupt(Journal)`.
 #![deny(clippy::indexing_slicing)]
 
+pub mod btc;
 pub mod evm;
 pub mod sol;
 
@@ -70,7 +71,7 @@ impl EntryKind {
         match self {
             Self::Evm => evm::MAX_BODY,
             Self::Sol => sol::SOL_JOURNAL_MAX_BODY,
-            Self::Btc => 37_906,
+            Self::Btc => btc::BTC_JOURNAL_MAX_BODY,
         }
     }
 }

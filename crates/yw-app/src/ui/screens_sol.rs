@@ -129,6 +129,12 @@ impl App {
             vec![
                 Ctl::radio(ids::TAB_EVM, "EVM", tab == Tab::Evm, true),
                 Ctl::radio(ids::TAB_SOL, "Solana", tab == Tab::Sol, false),
+                Ctl::radio(
+                    crate::ui::screens_btc::ids::TAB_BTC,
+                    "Bitcoin",
+                    tab == Tab::Btc,
+                    false,
+                ),
             ],
         ));
     }

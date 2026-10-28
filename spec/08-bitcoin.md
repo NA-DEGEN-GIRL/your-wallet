@@ -63,7 +63,7 @@ BTC 네트워크는 지갑마다 하나다(D26). 선택은 평문 `settings.json
 1. `getblockhash [0]` 결과는 소문자 hex 64자이고 위 상수와 같아야 한다.
 2. `getblockchaininfo []`: `chain`이 위 값과 같아야 한다. `initialblockdownload == false`, `headers - blocks <= 2`, `mediantime`은 `now - 86400 <= mediantime <= now + 7200`(로컬 UTC 초) 범위여야 한다. `blocks`는 팁 높이(`tip_height`)로 쓴다. `blocks < BtcMeta.max_tip_seen - 6`이면 거부하고, 아니면 `max_tip_seen = max(max_tip_seen, blocks)`로 갱신한다.
 3. 인덱서 제네시스 `GenesisHash`(§4.3): `esplora` `GET /block-height/0`(text/plain 본문 = 소문자 hex 64자, 2026-10-27 mempool.space 두 네트워크 모두 위 상수와 일치), `bb-rpc` `bb_getBlockHash ["0"]`·`bb-rest` `GET block-index/0`의 `blockHash`가 위 상수와 같아야 한다. `esplora`는 생략할 수 없다. `bb-*`는 그 인덱서가 이 호출을 지원하지 않음이 §4.5 B3에서 확인되면 3단계를 빼고, 인덱서 응답은 §5 검증(원본은 1·2단계를 통과한 Core에서 txid로 받음)에만 의존한다. 3단계를 통과하기 전에는 그 인덱서에 주소를 보내지 않는다.
-4. (`esplora`만, 차단 아님) 인덱서 팁 `TipHeight`(`GET /blocks/tip/height`)와 2단계 `blocks`의 차가 `BTC_INDEXER_TIP_LAG_WARN`(3)을 넘으면 배너 W-BTC-IDX-LAG "인덱서와 노드의 블록 높이가 {n} 차이 납니다. 잔액·확인 수가 늦게 반영될 수 있습니다"를 보이고 계속한다. 이 호출이 실패하면 로그만 남긴다. 거짓 높이는 확인 수 표시와 DoS로만 이어진다(§4.6).
+4. (`esplora`만, 차단 아님) 인덱서 팁 `TipHeight`(`GET /blocks/tip/height`)와 2단계 `blocks`의 차가 `BTC_INDEXER_TIP_LAG_WARN`(3)을 넘으면 배너 W-BTC-IDX-LAG "인덱서와 노드의 블록 높이가 {n} 차이 납니다. 잔액·확인 수가 늦게 반영될 수 있습니다"를 보이고 계속한다. 이 호출이 실패하면 로그만 남긴다(단 429 재시도 초과는 §4.4대로 그 작업을 중단한다). 거짓 높이는 확인 수 표시와 DoS로만 이어진다(§4.6).
 
 **다른 네트워크를 쓰지 않는 이유.** QuickNode Bitcoin은 mainnet·testnet4만 제공하고(공식 API 개요, 2026-10 확인) 알케미 UTXO API도 mainnet·testnet4만이다. mempool.space는 testnet3(`/testnet/api`)·signet(`/signet/api`)도 제공하지만 지원하지 않는다. testnet3은 Core 28부터 폐기 예정이다. testnet3(`000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943`)나 signet(`00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6`)의 제네시스가 오면 위 1단계(인덱서면 3단계 — 예: `esploraBaseUrl.testnet4`를 `…/testnet/api`로 잘못 넣은 경우)에서 실패한다. 이 셋은 `tb`·`0x6f`·`0xc4`를 testnet4와 함께 쓰므로 제네시스 검사가 유일한 구분 수단이다.
 
@@ -125,7 +125,7 @@ receive_next = next[0]; change_next = next[1]; last_used_* = last; 그 다음 §
 ```
 
 - 발견 중에는 진행률(검사한 주소 수)을 표시하고 취소할 수 있다. 취소하거나 실패하면 `discovery_done = false`로 남겨 송금을 막고 "주소 검색 미완료"와 [다시 시도]를 표시한다.
-- "더 찾기" 버튼은 각 체인을 현재 `next`부터 20개 더 검사한다(수동 gap 확장). 이력이 나오면 위 규칙대로 계속한다.
+- "더 찾기" 버튼은 각 체인을 현재 `next`부터 20개 더 검사한다(수동 gap 확장). 이력이 나오면 위 규칙대로 계속한다. 결과는 `next = max(기존 next, last + 1)`로 적용해 발급 인덱스를 줄이지 않는다.
 - **요청량.** 새 지갑이면 인덱서 호출 40회와 연결 검사(§2) 3–4회다. 받기 30개·잔돈 15개를 쓴 지갑이면 (30+20)+(15+20) = 85회에, 확정 미사용 출력이 있는 주소마다 인덱서 `Utxo` 1회, 새 UTXO의 이전 거래마다 Core `getrawtransaction` 1회가 더해진다. 요청 간격 200 ms(§4.4)이면 85회에 약 17초 걸린다(429 재시도 제외).
 - **호출 비용.** 기본 `esplora`(공용 mempool.space)는 무료이고 키가 없다. 대신 공개 한도가 비공개이며 넘으면 429다(§4.4). Core JSON-RPC(현재 QuickNode)는 요금제 크레딧을 쓴다: 메서드별 크레딧은 문서에서 확인하지 못했다(§4.5 C3). 선택 인덱서: QuickNode BTC Blockbook 애드온(`bb-rpc`)은 유료 요금제 위 추가 월 요금(공개 페이지 기준 약 75달러부터)에 마켓플레이스 설명 기준 `bb_*` 호출당 10 크레딧(구 "Blockbook RPC" 애드온 설명은 20; 85회 발견이면 850 크레딧), 알케미 UTXO API(`bb-rest`) 1회당 CU는 미확인(알케미 Bitcoin JSON-RPC는 호출당 10 CU). 실측값은 §15 `BTC_INDEXER_COST_ASSUMED`에 적는다. 설계는 호출 비용에 의존하지 않는다.
 
@@ -151,7 +151,7 @@ receive_next = next[0]; change_next = next[1]; last_used_* = last; 그 다음 §
 
 ### 4.2 Core JSON-RPC (POST, §2 엔드포인트 URL)
 
-요청: `{"jsonrpc":"2.0","id":<u64 증가>,"method":M,"params":[...]}`. 응답의 `id`는 요청과 같아야 하고, `result`와 `error` 중 정확히 하나만 null이 아니어야 한다. `jsonrpc` 필드가 있으면 값은 `"2.0"`이어야 한다(Core 1.0식 `{"result","error","id"}`도 받는다). 이 봉투 규칙은 `bb-rpc` 인덱서 호출(§4.3)에도 그대로 쓴다.
+요청: `{"jsonrpc":"2.0","id":<u64 증가>,"method":M,"params":[...]}`. 응답의 `id`는 요청과 같아야 하고, `result`와 `error` 중 정확히 하나만 null이 아니어야 한다. `jsonrpc` 필드가 있으면 값은 `"2.0"`이어야 한다(Core 1.0식 `{"result","error","id"}`도 받는다). HTTP 401·403·429가 아닌 2xx 밖의 상태라도 본문이 이 규칙의 `error` 봉투이면 그 `code`로 분류한다(Core는 1.0식 요청의 RPC 오류를 HTTP 500·404로 준다). 이 봉투 규칙은 `bb-rpc` 인덱서 호출(§4.3)에도 그대로 쓴다.
 
 | 메서드 | params | 용도 | 응답 검사 | 응답 상한 |
 |---|---|---|---|---|
@@ -226,7 +226,7 @@ pub fn conf(height: u32, tip_height: u32) -> u32;   // tip_height >= height ? ti
 - 선택 인덱서 사용 시 확인(§4.5 B1–B3): QuickNode `bb_getTx` 문서의 응답 예시는 Ethereum 형식이라 Bitcoin 응답의 `hex`·`blockHeight`(미확정)·`confirmations` 값을 실측으로 확정한다. `bb_getBlockHash`가 숫자 인자도 받는지, 알케미가 `block-index/`를 지원하는지 확인한다.
 - 만들지 않는 요청: xpub·디스크립터 인자, `bb_getXpub`·`/xpub/`, `bb_sendTransaction`·`sendtx`, `bb_getBalanceHistory`, tickers, `details:"txids"`·`"txs"`, Esplora `/address/{a}/txs*`(받은 거래 목록을 만들지 않는다, §1.2; 이력 판정은 개수로 충분하다), `/scripthash/*`, `/tx/{txid}`(전체 JSON; `status`·`hex`로 충분), `/tx/{txid}/outspend*`, `/mempool*`, `/fee-estimates`·mempool.space `/v1/fees/*`(수수료는 Core만, §8), `POST /tx`(§11.3 수동 전송 함수만 만들고 요청 생성기에는 없다). 전송은 Core `sendrawtransaction`이 기본이다.
 - `value_hint`·`balance`를 금액으로 쓰지 않는다. 금액은 §5 검증 값만 쓴다. 두 값이 다르면 해당 UTXO에 "서버 응답 불일치" 표시를 붙이고 검증 값을 쓴다. `bb_getUTXOs`의 `coinbase` 필드(문서상 확인 수 100까지만 판정)는 쓰지 않고 §5가 원본에서 판정한다.
-- `bb-*` 오류: HTTP 401/403과 애드온이 꺼진 엔드포인트의 `bb_*` 오류(QuickNode `-32601`, §4.5 사전 실측)는 E-BTC-007, 거래 없음(`bb-rest` 404, `bb-rpc`는 §4.5 B3에서 기록한 오류 코드)은 `NotFound`, 429는 §4.4, 5xx·시간 초과는 E-BTC-001이다. 서버 문자열은 표시하지 않는다(§13).
+- `bb-*` 오류: HTTP 401/403과 애드온이 꺼진 엔드포인트의 `bb_*` 오류(QuickNode `-32601`, §4.5 사전 실측)는 E-BTC-007, 거래 없음(`bb-rest` 404, `bb-rpc`는 §4.5 B3에서 기록한 오류 코드)은 `NotFound`, 429는 §4.4, 5xx·시간 초과는 E-BTC-001이다. B3에서 거래 없음 코드를 기록하기 전에는 `bb-rpc`의 그 밖 오류 코드와 `bb-rest`의 그 밖 상태(400 포함)도 E-BTC-001, `bb-rest` 404(거래 외 요청)는 E-BTC-004다. 서버 문자열은 표시하지 않는다(§13).
 
 ### 4.4 속도 제한
 
@@ -280,7 +280,7 @@ pub fn conf(height: u32, tip_height: u32) -> u32;   // tip_height >= height ? ti
 
 BTC 화면을 열 때, 사용자가 누를 때, 진행 중 거래가 있으면 60초마다(잠금 해제 상태일 때만, §4.4 429 쿨다운 중이면 건너뜀) 실행한다.
 
-1. `check_chain()`(10분 캐시)과 `getmempoolinfo`.
+1. `check_chain()`(10분 캐시; 캐시가 유효해도 팁 높이를 새로 받기 위해 2단계 `getblockchaininfo`는 매번 한다)과 `getmempoolinfo`.
 2. 감시 집합의 주소마다 인덱서 `Address`(§4.3)를 호출해 `tx_count`로 이력을 판정(§3.2)하고, `unconfirmed_incoming`이면(진행 중 저널 항목의 잔돈 주소는 제외) "미확정 입금 있음(미검증, 교체될 수 있음)"을 표시한다.
 3. `confirmed_unspent`인 주소마다 인덱서 `Utxo`(§4.3)를 호출한다. 후보는 `height`가 있고 `conf(height, tip_height) >= 1`인 원소뿐이다(`esplora`가 주는 미확정 원소는 버린다, §7.4).
 4. 처음 보는 outpoint마다 Core `getrawtransaction`으로 원본을 받아 §5로 검증하고 `BtcMeta.verified`에 넣는다. Core가 원본을 주지 못하면(RPC 오류·전송 실패) 인덱서 `TxRaw`로 1회 받아 같은 §5 검증을 한다(§4.5 C1). 검증에 실패한 outpoint는 "검증 실패 UTXO n개"로만 세고 잔액·선택에서 뺀다.
@@ -306,10 +306,10 @@ pub struct VerifiedPrevOut { pub outpoint: OutPoint, pub value: Sats, pub is_coi
 3. txid = SHA256d(non-witness 직렬화)를 **원본 바이트 조각**으로 계산한다: `raw[0..4] || raw[s..e] || raw[len-4..]`. `s`는 입력 개수 CompactSize의 시작(세그윗이면 6, 아니면 4), `e`는 마지막 출력의 끝이다. 재직렬화하지 않는다. 계산값(내부 바이트 순서)이 `expected_txid`와 다르면 `TxidMismatch`.
 4. `vout < outputs.len()`이어야 한다. 아니면 `VoutOutOfRange`.
 5. `outputs[vout].script_pubkey == expected_script`(바이트 단위). 아니면 `ScriptMismatch`.
-6. `value`는 `outputs[vout].value`(1 이상, `<= MAX_MONEY`)다. `is_coinbase`는 입력이 1개이고 prevout이 `0^32:0xFFFFFFFF`인지로 판정한다. coinbase이면 확인 수 100 이상이어야 선택 후보가 된다.
+6. `value`는 `outputs[vout].value`(1 이상, `<= MAX_MONEY`; 0이면 `ZeroValue`)다. `is_coinbase`는 입력이 1개이고 prevout이 `0^32:0xFFFFFFFF`인지로 판정한다. coinbase이면 확인 수 100 이상이어야 선택 후보가 된다.
 
-- **검증 금액 기록.** `BtcMeta.verified`와 저널 입력 기록(§12.4)에 `outpoint → value`를 남긴다. 서명 직전에 계획의 각 입력 금액이 기록된 모든 값과 같아야 한다. 다르면 `AmountRecordMismatch`로 하드 중단한다(버그·변조 신호).
-- **같은 outpoint 재서명 거부.** 진행 중 상태(§12.1) 저널 항목이 쓰는 outpoint를 포함한 새 계획은 거부한다. 예외는 그 항목의 RBF 교체(§9)뿐이다.
+- **검증 금액 기록.** `BtcMeta.verified`와 저널 입력 기록(§12.4)에 `outpoint → value`를 남긴다. 서명 직전에 계획의 각 입력 금액이 기록된 모든 값과 같아야 한다(기록이 하나도 없어도 불일치). 다르면 `AmountRecordMismatch`로 하드 중단한다(버그·변조 신호). 검사 함수는 `sign::check_recorded_amounts(plan, recorded)`이고 yw-app이 `sign_plan` 직전에 부른다.
+- **같은 outpoint 재서명 거부.** 진행 중 상태(§12.1) 저널 항목이 쓰는 outpoint를 포함한 새 계획은 거부한다. 예외는 그 항목의 RBF 교체(§9)뿐이다(교체 대상과 그 앞 원본들, 곧 대상의 `replaces` 사슬이 쓰는 outpoint. 대상을 교체하는 다른 진행 중 항목은 예외가 아니다).
 - 이 검증 덕분에 BIP143(입력 금액을 해당 입력에만 커밋)에서도 금액 위조로 수수료를 부풀릴 수 없다.
 
 ## 6. 직접 구현 코드 (yw-core `btc`)
@@ -325,7 +325,7 @@ pub struct VerifiedPrevOut { pub outpoint: OutPoint, pub value: Sats, pub is_coi
 
 ### 6.2 bech32 / bech32m (BIP173·BIP350, 약 150줄)
 
-- 길이 8–90자, 문자 0x21–0x7E. 전부 소문자이거나 전부 대문자여야 하고 섞이면 `MixedCase`. 이후 소문자로 처리한다.
+- 길이 8–90자, 문자 0x21–0x7E. 전부 소문자이거나 전부 대문자여야 하고 섞이면 `MixedCase`. 이후 소문자로 처리한다. 길이 위반과 데이터부 6자 미만은 주소 단계에서 `InvalidProgramLength`(형식 오류)로 바꾼다.
 - 구분자는 마지막 `'1'`이다. HRP는 1자 이상이고, 데이터부는 6자 이상이며 문자는 `qpzry9x8gf2tvdw0s3jn54khce6mua7l`만 쓴다(아니면 `InvalidCharacter`).
 - polymod 생성자 `[0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]`. 결과가 `1`이면 bech32, `0x2bc830a3`이면 bech32m, 그 밖이면 `Bech32Checksum`.
 - 데이터부(체크섬 6자 제외)의 첫 값이 증인 버전(0–16)이다. 비어 있거나 16을 넘으면 `InvalidWitnessVersion`. 나머지는 5→8비트로 변환한다. 패딩은 4비트 이하이고 0이어야 한다(아니면 `InvalidPadding`). 프로그램은 2–40바이트다.
@@ -361,6 +361,7 @@ pub fn kind_from_script(spk: &[u8]) -> Option<ScriptKind>;             // 표시
 | 7 | 그 밖 | `NotBitcoinAddress` |
 
 - HRP를 알 수 없고 base58 알파벳 밖 문자(`0OIl` 등)가 있으면 7번이다(예: `ltc1…`, `tc1…`).
+- 2·3번 접두와 5번 HRP는 ASCII 대소문자를 무시하고, 4번 확장 개인키 접두는 대소문자를 구분한다. 1번 공백·제어문자는 유니코드 공백·제어문자 전부다.
 - 표시는 항상 `encode_address(kind_from_script(spk))`로 만든 문자열을 쓴다. 붙여넣은 문자열은 표시하지 않는다.
 
 ### 6.4 스크립트 템플릿
@@ -407,7 +408,7 @@ version u32 | [marker 0x00 | flag 0x01] | n_in CS | n_in × (prev_txid[32] | pre
 ### 6.6 BIP143 sighash (P2WPKH, SIGHASH_ALL)
 
 ```rust
-pub fn bip143_sighash_p2wpkh(tx: &Transaction, index: usize, program: &[u8; 20], amount: Sats) -> [u8; 32];
+pub fn bip143_sighash_p2wpkh(tx: &Transaction, index: usize, program: &[u8; 20], amount: Sats) -> Option<[u8; 32]>; // index가 입력 범위 밖이면 None
 ```
 
 ```
@@ -455,7 +456,7 @@ feasible(S, A): k=|S|, V=ΣS
    V >= A + fee_c + 294          → WithChange { change = V - A - fee_c }
    else V >= A + fee_n           → NoChange { fee = V - A }   // 잔돈 없이 남는 금액을 수수료로
    else                          → infeasible
-1. 단일 입력: C를 (value 오름차순, height 오름차순, txid, vout)으로 정렬해 처음으로 feasible한 u 하나
+1. 단일 입력: C를 (value 오름차순, height 오름차순, txid(표시 순서 hex), vout)으로 정렬해 처음으로 feasible한 u 하나
 2. 아니면 C를 (value 내림차순, height 오름차순, txid, vout)으로 정렬하고 k=2..=min(|C|,100)에서 처음 feasible한 앞부분 k개
 3. 아니면 InsufficientFunds { available: Σ C(최대 100개), needed: A + fee_n(k) }
 ```
@@ -472,7 +473,7 @@ feasible(S, A): k=|S|, V=ΣS
 ### 7.6 보내기 최대와 동결
 
 - **보내기 최대(send-max):** 입력은 `C`를 2번 정렬로 최대 100개 쓰고, 출력은 수신자 1개다. `amount = V - fee_n(k)`이고 수신 종류 dust 미만이면 `DustAmount`. `C`가 100개를 넘으면 "UTXO n개는 포함되지 않음"(§10 B06)을 표시한다.
-- **동결:** UTXO 목록에서 outpoint별로 동결·해제한다(`BtcMeta.frozen`, 사유 1=사용자, 2=자동). 처음 본 남의 UTXO가 `BTC_AUTO_FREEZE_BELOW`(1,000 sats) 미만이면 자동 동결하고 "작은 입금 자동 동결(먼지 공격 방지)"을 표시한다. 사용자가 해제할 수 있고, 해제 기록은 `BtcMeta.unfrozen`에 남겨 다시 동결하지 않는다.
+- **동결:** UTXO 목록(S10 Bitcoin 탭, 한 번에 300행까지 보이고 나머지는 개수만 적는다)에서 outpoint별로 동결·해제한다(`BtcMeta.frozen`, 사유 1=사용자, 2=자동). 처음 본 남의 UTXO가 `BTC_AUTO_FREEZE_BELOW`(1,000 sats) 미만이면 자동 동결하고 "작은 입금 자동 동결(먼지 공격 방지)"을 표시한다. 사용자가 해제할 수 있고, 해제 기록은 `BtcMeta.unfrozen`에 남겨 다시 동결하지 않는다.
 
 ## 8. 수수료
 
@@ -492,7 +493,7 @@ pub fn parse_user_sat_per_vb(text: &str) -> Result<FeeRate, AmountError>; // ^[0
 ### 8.2 수수료율 정하기
 
 - 선택지: 빠름 / 보통(기본) / 느림 = `estimatesmartfee [2 / 6 / 24, "economical"]`의 `feerate`, 또는 직접 입력(`parse_user_sat_per_vb`). 추정이 없으면(`feerate` 없음·오류, testnet4에서 흔함) 직접 입력만 허용하고 기본값은 하한이다.
-- 하한 `floor = max(1,000 sat/kvB, mempoolminfee, minrelaytxfee)`. 추정이 하한보다 낮으면 하한으로 올리고 "하한 적용"을 표시한다. 직접 입력이 하한 미만이면 거부한다.
+- 하한 `floor = max(1,000 sat/kvB, mempoolminfee, minrelaytxfee)`. 추정이 하한보다 낮으면 하한으로 올리고 "하한 적용"을 표시한다(출처 `Floor`). 직접 입력이 하한 미만이면 거부한다.
 - 출처(`FeeSource::Estimate{target}` / `Manual` / `Floor`)를 수수료 필드(§10 `0x0606`)에 표시한다.
 
 ### 8.3 상한·비율·입력 확인
@@ -506,8 +507,8 @@ pub fn parse_user_sat_per_vb(text: &str) -> Result<FeeRate, AmountError>; // ^[0
 | `fee × 50 > amount`(2% 초과) | B04 고위험 |
 | `rate_kvb > 10,000,000`(10,000 sat/vB, `BTC_FEE_RATE_UNOVERRIDABLE`) | B01 차단, 어떤 입력으로도 해제 불가 |
 
-- **해제 입력.** 승인 창에는 입력 칸이 없다([04] §2.7). 상한을 넘으면 BTC 보내기 폼(수수료 올리기 폼 포함)이 오류와 함께 "수수료(sats)를 정확히 입력해 상한 해제" 칸을 보이고, 입력값이 계획 수수료와 정확히 같을 때만 계획을 만들어 승인 요청을 낸다. 이 계획은 `fee_override_typed = true`이고 저널 `flags.fee_override_typed`에 기록한다.
-- `maxfeerate`(testmempoolaccept·sendrawtransaction) = `ceil(rate_kvb / 1000) + 1` sat/vB를 BTC/kvB 10진 문자열(소수 8자리)로 JSON 숫자 리터럴에 넣는다. 예: 10.2 sat/vB → `0.00012000`. 리터럴은 `Number::from_literal`로 넣고 `to_vec`가 그대로 출력한다([01] §2.3).
+- **해제 입력.** 승인 창에는 입력 칸이 없다([04] §2.7). 상한을 넘으면 BTC 보내기 폼(수수료 올리기 폼 포함)이 오류와 함께 "수수료(sats)를 정확히 입력해 상한 해제" 칸을 보이고, 입력값이 계획 수수료와 정확히 같을 때만 계획을 만들어 승인 요청을 낸다. 이 계획은 `fee_override_typed = true`이고 저널 `flags.fee_override_typed`에 기록한다. 받는 주소·금액·수수료 선택이 바뀌어 해제 요청이 없어지면 칸을 숨기고 입력값도 지운다.
+- `maxfeerate`(testmempoolaccept·sendrawtransaction) = `ceil(rate_kvb / 1000) + 1` sat/vB(`rate_kvb`는 서명된 거래의 실제 vsize로 계산, `VerifiedSignedTx::maxfeerate`)를 BTC/kvB 10진 문자열(소수 8자리)로 JSON 숫자 리터럴에 넣는다. 예: 10.2 sat/vB → `0.00012000`. 리터럴은 `Number::from_literal`로 넣고 `to_vec`가 그대로 출력한다([01] §2.3).
 
 ## 9. RBF 수수료 올리기
 
@@ -524,7 +525,7 @@ pub fn parse_user_sat_per_vb(text: &str) -> Result<FeeRate, AmountError>; // ^[0
 | 사전 검사 | `testmempoolaccept`. 거부되면 §13 메시지(예: "교체 수수료 부족")를 표시하고 수수료를 더 올리게 한다. Core 31 클러스터 멤풀의 feerate-diagram 판정은 노드에 맡긴다. |
 | 승인 | 매번 새 승인(`BtcFeeBump`, §10). 필드 `0x0609`에 "교체 대상 `<txid>`; 수수료 X → Y(+Δ); 수신자 변경 없음 / 수신 금액 감소(B06)"를 표시한다. |
 
-교체본이 `Submitted`가 되면 `T`를 `Replaced{by}`로 바꾸되 둘 다 계속 추적한다. `T`가 먼저 확정되면 `T`를 `Confirmed`, 교체본을 `Conflicted`로 바꾼다.
+교체본이 `Submitted`가 되면 `T`를 `Replaced{by}`로 바꾸되 둘 다 계속 추적한다. 사슬 앞쪽 원본 중 아직 `Submitted`·`BroadcastUnknown`·`InMempool`인 것(중간 교체본이 노드에 닿지 않은 경우)도 함께 `Replaced{by: 사슬의 다음 거래}`로 바꾼다. `T`가 먼저 확정되면 `T`를 `Confirmed`, 교체본을 `Conflicted`로 바꾼다.
 
 ## 10. 승인 표시와 digest
 
@@ -549,7 +550,7 @@ D27·D31에 따라 [03](03-evm.md) §11의 공통 모델(`ApprovalDraft`·`Appro
 | `0x0605` | 입력 | 예 | 개수, 합계, 고정 문구 "모든 입력 금액은 이전 거래 해시로 검증됨", 최소 확인 수(서버 기준) |
 | `0x0606` | 수수료 | 예 | sats·BTC, sat/vB(계획 vsize 기준, 서명 후 실제 값은 같거나 높음), 보낸 금액 대비 %(소수 2자리), 출처(§8.2) |
 | `0x0607` | 총 차감 | 예 | 수신 금액 + 수수료 |
-| `0x0608` | 승인 후 잔액 | | 검증 잔액 − 총 차감 |
+| `0x0608` | 승인 후 잔액 | | 검증 잔액 − 총 차감(= 검증 잔액 − 새로 쓰는 입력 합 + 잔돈. 수수료 올리기는 원래 입력이 이미 잔액에서 빠져 있으므로 추가 입력만 뺀다) |
 | `0x0609` | 교체 대상 | 예 | `BtcFeeBump`만(§9) |
 | `0x0640` | 고급 | | version 2, nLockTime(=블록 높이 N), RBF 가능, vsize·weight, txid(비증인 직렬화로 서명 전에 확정) |
 
@@ -579,7 +580,7 @@ btc_payload    = network_id u8 ‖ u32 len ‖ unsigned_tx(= serialize(tx,false)
                ‖ fee_override_typed u8                                   // 정수 BE, [ ]는 앞 바이트가 1일 때만
 ```
 
-- 발급·소비: 코어가 `ApprovalDraft`를 만들고, A01이 처음 표시할 때 `ApprovalStore::issue` → 승인 → `consume(id, shown_digest)` → `Approved`(1회, [03] §11.5). 만료는 표시 시각 + 120 s다(D23). 재시뮬레이션이 없으므로 `replace`를 쓰지 않는다.
+- 발급·소비: 코어가 `ApprovalDraft`를 만들고, A01이 처음 표시할 때 `ApprovalStore::issue` → 승인 → `consume(id, shown_digest)` → `Approved`(1회, [03] §11.5). 만료는 표시 시각 + 120 s다(D23). 재시뮬레이션이 없으므로 `replace`를 쓰지 않는다. `issue`는 BTC 초안의 origin `App`, `Signer::FromPayload`, `ChainRef::Bitcoin`(네트워크 고정 제네시스), `AccountRef::Bitcoin`, `btc_payload` 형식(첫 바이트 = 체인 network, `has_replaces` = `BtcFeeBump`)을 검사한다(위반 `PayloadMismatch`).
 - `sign_plan`(§11.1)은 `Approved`를 값으로 받아 `kind`·payload가 `btc_payload(plan)`과 바이트 단위로 같을 때만 서명한다. 계획을 바꿔야 하면(팁·수수료·UTXO 변화) 새 요청으로 다시 승인받는다.
 
 ## 11. 서명·서명 후 검증·전송
@@ -595,7 +596,7 @@ plan → policy(§8.3, §10 경고) → ApprovalDraft → A01 표시·issue(§10
 
 ```rust
 pub fn sign_plan(vault: &Vault, approved: Approved, plan: &SendPlan, acct: &AccountXpub)
-    -> Result<SignedTx, SignError>;
+    -> Result<SignedTx, SignError>;   // SignedTx { raw, approval_id(= 저널 entry_id), approval_digest }
 // approved의 kind·payload == btc_payload(plan)이 아니면 ApprovalMismatch. 입력 i마다
 // vault.with_secp_key(KeyRef::Btc { coin, chain, index }, |ctx, sk| HASH160 확인(§3.1) → §6.6 sighash(검증 금액)
 //   → sign_ecdsa_low_r → verify_ecdsa)로 서명한다. 키 접근은 [02] §10.3 클로저 안에서만 한다.
@@ -606,18 +607,18 @@ pub fn verify_signed(raw: &[u8], plan: &SendPlan, acct: &AccountXpub) -> Result<
 
 1. `parse_transaction(raw)`가 성공하고 `serialize(parsed, true) == raw`이다.
 2. `serialize(parsed, false)`가 승인된 `unsigned_tx`와 바이트 단위로 같다. 따라서 txid, 입력 순서, sequence, lock_time, version, 출력이 같다.
-3. 입력마다 증인 항목이 정확히 2개다. 항목 0은 `DER || 0x01`이다. DER 부분은 70바이트 이하(low-R)이고 `Signature::from_der`(엄격 DER)로 파싱되며 `serialize_der()` 왕복이 같고 low-S(`normalize_s` 전후 동일)여야 한다. 항목 1은 0x02/0x03으로 시작하는 33바이트다.
+3. 입력마다 증인 항목이 정확히 2개다. 항목 0은 `DER || 0x01`이다. DER 부분은 70바이트 이하이고 r < 2^255(low-R)이며 `Signature::from_der`(엄격 DER)로 파싱되며 `serialize_der()` 왕복이 같고 low-S(`normalize_s` 전후 동일)여야 한다. 항목 1은 0x02/0x03으로 시작하는 33바이트다.
 4. `HASH160(항목1)`이 그 입력의 검증된 이전 출력 프로그램과 같고, 그 프로그램은 캐시 공개키로 만든 `(chain, index)` 프로그램과 같다.
 5. BIP143 sighash를 검증 금액으로 다시 계산하고 `verify_ecdsa`가 성공한다.
 6. 잔돈 출력 스크립트를 캐시 공개키로 다시 파생해 비교한다. 잔돈 출력은 최대 1개이고 그 밖의 추가 출력은 없다.
-7. `fee = Σ검증 입력 − Σ출력`이 승인 수수료와 같고, §8.3 상한을 넘지 않는다(입력 해제가 있으면 그 값). 모든 출력이 종류별 dust 이상이고 `<= MAX_MONEY`다.
+7. `fee = Σ검증 입력 − Σ출력`이 승인 수수료와 같고, §8.3 상한을 넘지 않는다(입력 해제가 있으면 그 값; 승인 표시와 같이 계획 vsize로 계산). 모든 출력이 종류별 dust 이상이고 `<= MAX_MONEY`다.
 8. `weight <= 400,000`이고 `vsize(실제) <= planned_vsize`다.
 
 ### 11.3 전송
 
-- `testmempoolaccept [[hex], maxfeerate]`: 결과가 원소 1개 배열이고 `allowed == true`, `txid`·`wtxid`가 로컬 값과 같고, `vsize`가 로컬 vsize와 같고, `fees.base`(`parse_btc_decimal`)가 로컬 수수료와 같아야 한다. 하나라도 다르면 `Rejected`로 두고 "노드 검사 결과가 로컬 계산과 다릅니다"를 표시한다. `allowed == false`면 `reject-reason`을 §13 표로 바꿔 표시하고 `Rejected`로 둔다. 통신 오류면 `Signed`로 두고 [다시 시도]를 표시한다.
+- `testmempoolaccept [[hex], maxfeerate]`: 결과가 원소 1개 배열이고 `allowed == true`, `txid`·`wtxid`가 로컬 값과 같고, `vsize`가 로컬 vsize와 같고, `fees.base`(`parse_btc_decimal`)가 로컬 수수료와 같아야 한다. 하나라도 다르면 `Rejected`로 두고 "노드 검사 결과가 로컬 계산과 다릅니다"를 표시한다. `allowed == false`면 `reject-reason`을 §13 표로 바꿔 표시하고 `Rejected`로 둔다. 예외: `txn-already-in-mempool`·`txn-already-known`이고 `txid`·`wtxid`가 로컬 값과 같으면(노드가 이미 가진 거래) `Rejected`로 두지 않는다. `change_next`를 갱신하고 `Broadcasting`을 거쳐 `BroadcastUnknown`으로 두며(§12.1 표의 두 전이, `sendrawtransaction`은 보내지 않는다. 사전 검사는 전송 결과가 아니고 `vsize`·`fees.base`도 없으므로 `Submitted`로 보지 않는다) "이미 전송된 거래입니다"를 표시한다. 이후 §12.2 추적이 `InMempool`·`Confirmed`로 바꾼다. 통신 오류면 `Signed`로 두고 [다시 시도]를 표시한다.
 - `sendrawtransaction [hex, maxfeerate, 0]`: 응답 txid가 로컬 txid와 같으면 `Submitted`, 다르면 `BroadcastUnknown` + "응답 txid 불일치". 오류 `-27`(이미 체인에 있음)이면 `Submitted`로 두고 확인을 추적한다. `-26`·`-25`면 `Rejected`, 시간 초과·전송 오류·그 밖 코드면 `BroadcastUnknown`.
-- **Esplora 수동 전송(선택, 자동 경로 아님).** 조건: `indexer == "esplora"`, 저널 상태 `BroadcastUnknown`, 마지막 Core `sendrawtransaction`이 통신 실패(시간 초과·전송 오류·HTTP 5xx·429 중단; `-25`·`-26` 등 RPC 거부가 아님), 이번 세션에 §2 3단계를 통과했고 그 뒤 `esploraBaseUrl`이 바뀌지 않음. 이때만 [Esplora로 전송]을 보이고, 누르면 확인 오버레이 T-BTC-ESPLORA-BROADCAST([04] §2.16)를 거친 뒤 `http::Client::post(&EndpointUrl::Https(<esploraBaseUrl> ‖ "/tx"), &[("Content-Type", "text/plain")], <저널 원본 바이트의 소문자 hex>, 4 KiB)`를 1회 보낸다(429는 §4.4). 200 `text/plain` 본문이 `^[0-9a-f]{64}$`이고 로컬 txid와 같으면 `Submitted`, 다른 txid·형식 이상이면 `BroadcastUnknown` 유지 + "응답 txid 불일치", 400이면 `BroadcastUnknown` 유지 + E-BTC-008(본문의 노드 거부 사유는 표시하지 않고 `debug` 로그만, [04] §7), 그 밖은 E-BTC-001. 이후 추적은 §12.2 그대로다. 수수료 추정·사전 검사는 Esplora로 하지 않는다(§4).
+- **Esplora 수동 전송(선택, 자동 경로 아님).** 조건: `indexer == "esplora"`, 저널 상태 `BroadcastUnknown`, 마지막 Core `sendrawtransaction`이 통신 실패(시간 초과·전송 오류·HTTP 5xx·429 중단; `-25`·`-26` 등 RPC 거부가 아님), 이번 세션에 §2 3단계를 통과했고 그 뒤 `esploraBaseUrl`이 바뀌지 않음. 이때만 [Esplora로 전송]을 보이고, 누르면 확인 오버레이 T-BTC-ESPLORA-BROADCAST([04] §2.16)를 거친 뒤 `http::Client::post(&EndpointUrl::Https(<esploraBaseUrl> ‖ "/tx"), &[("Content-Type", "text/plain")], <저널 원본 바이트의 소문자 hex>, 4 KiB)`를 1회 보낸다(429는 §4.4). 200 `text/plain` 본문이 `^[0-9a-f]{64}$`이고 로컬 txid와 같으면 `Submitted`, 다른 txid·형식 이상이면 `BroadcastUnknown` 유지 + "응답 txid 불일치", 400이면 `BroadcastUnknown` 유지 + E-BTC-008(본문의 노드 거부 사유는 표시하지 않고 `debug` 로그만, [04] §7), 그 밖은 E-BTC-001. 이후 추적은 §12.2 그대로다. 수수료 추정·사전 검사는 Esplora로 하지 않는다(§4). 이 수동 전송이나 같은 바이트 재전송(§12.2-3)이 `Submitted`로 판정되어도 §12.1 표에 `BroadcastUnknown → Submitted`가 없으므로 저널 상태는 `BroadcastUnknown`에 두고(받는 스크립트는 `sent_scripts`에 넣는다) 추적이 `InMempool`·`Confirmed`로 바꾼다.
 
 - `Submitted`가 되면 수신 스크립트의 SHA-256을 `BtcMeta.sent_scripts`에 넣고, 잔돈 출력을 자기 미확정 잔돈으로 기록한다.
 - 화면에는 로컬 txid를 표시한다. 서버가 돌려준 txid는 비교에만 쓴다.
@@ -631,17 +632,17 @@ pub fn verify_signed(raw: &[u8], plan: &SendPlan, acct: &AccountXpub) -> Result<
 | 1 | `Signed` | 예 | `Broadcasting`, `Rejected`, `Abandoned`(사용자 취소) |
 | 2 | `Rejected` | 아니오 | — |
 | 3 | `Broadcasting` | 예 | `Submitted`, `BroadcastUnknown`, `Rejected` |
-| 4 | `Submitted` | 예 | `InMempool`, `Confirmed`, `Replaced`, `BroadcastUnknown` |
-| 5 | `BroadcastUnknown` | 예 | `InMempool`, `Confirmed`, `Replaced`, `Abandoned` |
-| 6 | `InMempool` | 예 | `Confirmed`, `Replaced`, `BroadcastUnknown`(사라짐) |
+| 4 | `Submitted` | 예 | `InMempool`, `Confirmed`, `Replaced`, `BroadcastUnknown`, `Conflicted` |
+| 5 | `BroadcastUnknown` | 예 | `InMempool`, `Confirmed`, `Replaced`, `Abandoned`, `Conflicted` |
+| 6 | `InMempool` | 예 | `Confirmed`, `Replaced`, `BroadcastUnknown`(사라짐), `Conflicted` |
 | 7 | `Confirmed` | 아니오 | — |
-| 8 | `Replaced` | 교체본 확정 전까지 추적 | `Confirmed`(원본이 확정됨) |
+| 8 | `Replaced` | 교체본 확정 전까지 추적 | `Confirmed`(원본이 확정됨), `Conflicted`(더 앞선 원본이 확정됨) |
 | 9 | `Conflicted` | 아니오 | — |
 | 10 | `Abandoned` | 아니오 | `Confirmed`(30일 안에 확정이 관측되면) |
 
 - **D20 적용:** BTC 계정마다 "진행 중" 항목(1·3·4·5·6)은 교체 사슬 하나만 허용한다. 진행 중이면 새 송금은 `InFlight`("진행 중인 Bitcoin 거래가 확인된 뒤 보낼 수 있습니다. 수수료 올리기는 가능합니다")로 막는다. 확인 수 1 이상이 관측되면 해제한다.
 - 시작할 때 `Broadcasting` 항목은 `BroadcastUnknown`으로 바꾼다. `Signed` 항목은 [전송 계속] / [취소] 중 선택을 받는다.
-- `Abandoned`는 멤풀에도 없고 확정도 아닌 `BroadcastUnknown`에서만 허용한다. 확인 창에 "이미 다른 노드에 퍼졌다면 나중에 확정될 수 있습니다"를 표시한다.
+- `Abandoned`는 멤풀에도 없고 확정도 아닌 `BroadcastUnknown`에서만 허용한다. 곧 §12.2-3의 `not_found_count >= 10`이어야 한다(전송 직후 시간 초과·전송 오류·txid 불일치로 된 `BroadcastUnknown`은 아직 포기할 수 없다). `Signed`의 [취소]는 그대로 허용한다. 확인 창에 "이미 다른 노드에 퍼졌다면 나중에 확정될 수 있습니다"를 표시한다.
 
 ### 12.2 확인 추적
 
@@ -650,9 +651,10 @@ pub fn verify_signed(raw: &[u8], plan: &SendPlan, acct: &AccountXpub) -> Result<
 1. `getmempoolentry [txid]`가 객체를 돌려주면 `InMempool`.
 2. `-5`이면 인덱서 `TxStatus`(§4.3: `esplora` `GET /tx/{txid}/status`, `bb-rpc` `bb_getTx [txid]`, `bb-rest` `GET tx/{txid}`)를 호출한다. `Confirmed { height }`이면 `Confirmed{height}`(확인 수 = `conf(height, tip_height)`). `Unconfirmed`·`NotFound`·`UnconfirmedOrUnknown`이면 `not_found_count += 1`(Core 멤풀에 없다고 이미 확인했다).
    - `getmempoolentry`를 쓸 수 없는 엔드포인트(§4.5 C2)면 1단계를 빼고 2단계에서 판정한다: `Unconfirmed` → `InMempool`(서버 기준), `NotFound` → `not_found_count += 1`, `UnconfirmedOrUnknown`(`esplora`: 없는 txid도 `{"confirmed":false}`, §4.3) → 인덱서 `TxRaw`(`GET /tx/{txid}/hex`)를 1회 더 호출해 200이면 `InMempool`(서버 기준; 본문은 쓰지 않는다), `NotFound`(404)면 `not_found_count += 1`.
-3. `not_found_count >= 10`이면 `BroadcastUnknown`으로 바꾸고 [같은 바이트 다시 전송] / [수수료 올리기] / [포기]를 표시한다. 재전송은 저널의 원본 바이트를 그대로 `sendrawtransaction`으로 보낸다. `indexer = esplora`이고 마지막 Core 전송이 통신 실패였으면 [Esplora로 전송](§11.3 수동 전송)도 표시한다.
-4. 표시: `확인 대기` / `확인 n/6` / `확정(6+)`. 확인 수는 서버 기준이라고 함께 적는다. 6 이상이면 추적을 멈춘다.
-5. `Confirmed`가 되면 우리 잔돈 출력을 `verified`에 `(outpoint, value, chain=1, index, height)`로 넣는다. 원본이 로컬에 있으므로 다시 받지 않는다.
+   - 진행 중 교체본(§9, 이 항목을 직접 또는 다른 교체본을 거쳐 교체하는 `Signed`·`Broadcasting`·`Submitted`·`BroadcastUnknown`·`InMempool` 항목)이 있는 항목의 `Confirmed`(확인만 하는 `Replaced`·`Abandoned` 포함)는 그 교체본마다 Core `getmempoolentry`가 `-5`일 때만 반영한다. 반영하면 교체본이 `Conflicted`가 되므로 인덱서만 믿지 않는다. 교체본이 Core 멤풀에 있으면 이번 라운드에는 반영하지 않는다. `getmempoolentry`를 쓸 수 없는 엔드포인트는 Core 답이 없으므로 서버 기준 그대로 반영한다.
+3. 멤풀에서 관측되면 `not_found_count = 0`으로 되돌린다. 인덱서 높이가 Core 팁보다 커서 `conf = 0`인 `Confirmed{height}`는 아직 확정으로 보지 않는다. `not_found_count >= 10`이면 `BroadcastUnknown`으로 바꾸고 [같은 바이트 다시 전송] / [수수료 올리기] / [포기]를 표시한다. 재전송은 저널의 원본 바이트를 그대로 `sendrawtransaction`으로 보낸다. `indexer = esplora`이고 마지막 Core 전송이 통신 실패였으면 [Esplora로 전송](§11.3 수동 전송)도 표시한다.
+4. 표시: `확인 대기` / `확인 n/6` / `확정(6+)`. 확인 수는 서버 기준이라고 함께 적는다. 6 이상이면 추적을 멈춘다. 그 밖의 상태는 고정 문구로 보인다: `Signed` "서명됨(전송 전)", `Broadcasting` "전송 중", `BroadcastUnknown` "전송 결과 확인 필요", `Rejected` "거부됨", `Replaced` "교체됨", `Conflicted` "충돌(다른 거래가 확정됨)", `Abandoned` "포기함".
+5. `Confirmed`가 되면 우리 잔돈 출력을 `verified`에 `(outpoint, value, chain=1, index, height)`로 넣는다. 원본이 로컬에 있으므로 다시 받지 않는다. 단, 출력 스크립트가 현재 세션의 계정 공개키로 파생한 `(1, index)` P2WPKH 스크립트와 같을 때만 넣는다(다른 패스프레이즈 세션이 같은 저널을 볼 때 등).
 
 ### 12.3 `BtcMeta` (meta.ywm 키 `btc`, [02] §5.3)
 
@@ -692,9 +694,9 @@ journal.ywj의 컨테이너·암호화·원자적 쓰기는 [02](02-core-keys-va
 [238 + 49n] raw_len 바이트: 서명된 거래(증인 포함)
 ```
 
-디코드 검증: 길이가 정확해야 하고, raw가 §6.5로 파싱되며, txid·wtxid가 다시 계산한 값과 같아야 한다. 입력 목록은 raw의 입력 순서와 같고, vout 필드는 출력 개수 미만이며, flags와 0 필드가 서로 일관되고, 알 수 없는 state나 flags 비트가 없어야 한다. 하나라도 어긋나면 [02] §5.4 본문 오류로 처리한다(BTC 보내기만 끄고 E-VLT-006, 본문은 그대로 보존).
+디코드 검증: 길이가 정확해야 하고, raw가 §6.5로 파싱되며(증인 포함, 재직렬화가 같음), txid·wtxid가 다시 계산한 값과 같아야 한다. 입력 목록은 raw의 입력 순서와 같고(index < 2^31, value ≥ 1), vout 필드는 출력 개수 미만이며(잔돈 vout ≠ 수신 vout, 수신 출력은 §6.4 5종), `fee_sats` = Σ입력 − Σ출력, `vsize`·`lock_time`이 raw와 같고, flags와 0 필드가 서로 일관되고(`confirmed_height`는 `Confirmed`에서만 있고 0이 아님, `Replaced`는 `replaced_by` 필수), `entry_id`가 0이 아니고, 알 수 없는 state나 flags 비트가 없어야 한다. raw에서 다시 만들 수 없는 값(state, send_max·fee_override_typed 비트, entry_id, 시각, approval_digest, not_found_count, 선택 필드 값, 입력 경로 chain·index)은 디코더가 검증할 수 없다. 입력 경로는 RBF 계획 전에 `bump_source`가 증인 공개키를 계정 공개키로 다시 파생해 대조한다. 하나라도 어긋나면 [02] §5.4 본문 오류로 처리한다(BTC 보내기만 끄고 E-VLT-006, 본문은 그대로 보존).
 
-**상한·정리.** 종결 BTC 항목은 최대 `BTC_JOURNAL_FINAL_KEEP`(64)개다([02] §5.4). 추적이 끝난 항목(`Rejected`·`Conflicted`, 확인 6 이상인 `Confirmed`, 교체본이 확인 6 이상인 `Replaced`, 30일 지난 `Abandoned`)은 그때 위 활동 항목을 meta에 쓰고, 64개를 넘으면 그런 항목부터 오래된 순으로 저널에서 지운다(meta 쓰기 → 저널 삭제 순서). 추적 중인 항목은 지우지 않는다. 새 `Signed` 레코드 전의 개수·용량(평문 16 MiB) 검사와 `journal::JournalError::Full` 차단(서명·전송 없음, 문구 "거래 저널 공간이 부족합니다")은 [02] §5.4·[04] §7을 따른다.
+**상한·정리.** 종결 BTC 항목은 최대 `BTC_JOURNAL_FINAL_KEEP`(64)개다([02] §5.4). 추적이 끝난 항목(`Rejected`·`Conflicted`, 확인 6 이상인 `Confirmed`, 교체본이 확인 6 이상이거나 저널에 없는 `Replaced`, 30일 지난 `Abandoned`; 현재 네트워크가 아닌 항목의 `Confirmed`는 확인 수와 무관하게 끝난 것으로 본다)은 그때 위 활동 항목을 meta에 쓰고, 64개를 넘으면 그런 항목부터 오래된 순으로 저널에서 지운다(meta 쓰기 → 저널 삭제 순서). 추적 중인 항목은 지우지 않는다. 새 `Signed` 레코드 전의 개수·용량(평문 16 MiB) 검사와 `journal::JournalError::Full` 차단(서명·전송 없음, 문구 "거래 저널 공간이 부족합니다")은 [02] §5.4·[04] §7을 따른다.
 
 ## 13. 오류 표시 (고정 문구만)
 
@@ -712,6 +714,7 @@ journal.ywj의 컨테이너·암호화·원자적 쓰기는 [02](02-core-keys-va
 | `LooksLikePrivateKey` | 개인키처럼 보입니다. 다른 곳에 붙여넣지 마세요 |
 | `DustAmount` / `InsufficientFunds` | 받는 금액이 최소값({n} sats) 미만입니다 / 잔액이 부족합니다(필요 {a}, 사용 가능 {b}) |
 | `NetworkMismatch` / `KeyMismatch` | BTC 네트워크 설정이 지갑 데이터와 다릅니다 / 파생한 키가 계정 공개키와 다릅니다. 서명을 중단했습니다 |
+| `AmountRecordMismatch` / `InFlight`(§12.1) | 기록된 입력 금액과 계획 금액이 다릅니다. 서명을 중단했습니다 / 진행 중인 Bitcoin 거래가 확인된 뒤 보낼 수 있습니다. 수수료 올리기는 가능합니다 |
 | `journal::JournalError::Full`(§12.4, [02] §5.4) | 거래 저널 공간이 부족합니다 |
 | 인덱서 오류(§4.3–§4.4, §11.3): `IndexerUnreachable` / `IndexerRateLimited` / `IndexerNetworkMismatch` / `IndexerMalformed` / `IndexerRejected`(HTTP 400) / `IndexerAuth` / `EsploraBroadcastRejected` | [04] §7 E-BTC-001 / 002 / 003 / 004 / 005 / 007 / 008 문구 |
 | 인덱서 팁 지연(§2 4단계) | W-BTC-IDX-LAG([04] §2.16) |
@@ -786,7 +789,7 @@ CKDpub(`Vault::btc_account_xpub` 캐시 공개키 → `bip32::derive_public_chil
 
 **Bitcoin Core 데이터**: `src/test/data/{key_io_valid,key_io_invalid,tx_valid,tx_invalid}.json`을 `crates/yw-core/tests/vectors/btc/`에 복사하고 출처 커밋을 파일 머리 주석이 아닌 `README`에 적는다(MIT).
 - base58: `base58_encode_decode.json`은 M1 `codec::base58` 시험이 이미 쓴다([02] §0, [09](09-testing.md)). BTC는 §6.1 정책만 시험한다.
-- key_io_valid: `isPrivkey == false`이고 `chain`이 `main`/`test`인 항목은 `main`은 mainnet, `test`는 testnet4 지갑에서 우리 정책 결과와 맞아야 한다: 5종이면 같은 scriptPubKey(P2TR 프로그램이 유효한 x-only 키가 아니면 `InvalidTaprootKey`), 그 밖이면 §6.3 거부 코드. `signet` 항목은 testnet4 지갑에서 `test`와 같은 규칙, `regtest` 항목은 bech32(`bcrt`)면 `WrongNetwork`, base58이면 버전을 공유하므로 testnet4 결과와 같다.
+- key_io_valid: `isPrivkey == false`이고 `chain`이 `main`/`test`(복사한 Core 커밋 `2b5b6fe`에서는 `testnet4`)인 항목은 `main`은 mainnet, `test`는 testnet4 지갑에서 우리 정책 결과와 맞아야 한다: 5종이면 같은 scriptPubKey(P2TR 프로그램이 유효한 x-only 키가 아니면 `InvalidTaprootKey`), 그 밖이면 §6.3 거부 코드. `signet` 항목은 testnet4 지갑에서 `test`와 같은 규칙, `regtest` 항목은 bech32(`bcrt`)면 `WrongNetwork`, base58이면 버전을 공유하므로 testnet4 결과와 같다.
 - key_io_invalid: 모두 거부되어야 한다.
 - tx_valid: 주석 항목(문자열 1개짜리 배열)을 뺀 모든 직렬화가 파싱되고 재직렬화 결과가 같아야 한다. tx_invalid: 패닉 없이 처리되어야 한다(파싱 성공 여부는 따지지 않는다).
 
@@ -878,10 +881,10 @@ spec.md M8의 "BIP143·BIP173/350·BIP84 벡터"는 §14.1(자동), "testnet4 E2
 
 ## 미결 사항
 
-1. **구현 시 확인 — Esplora 기본 인덱서(§4.5 E1–E3).** 공용 mempool.space의 응답 형태가 2026-10-27 실측(§4.5)과 같은지, 실제 사용량에서 429가 나는지(한도 비공개, §4.4). 대안: 다른 Esplora URL(blockstream.info·자체 운영) 또는 선택 인덱서(§4.5 B). 쓸 수 있는 인덱서가 없을 때만 M8 보류(D26).
+1. **구현 시 확인 — Esplora 기본 인덱서(§4.5 E1–E3).** 공용 mempool.space의 응답 형태가 2026-10-27 실측(§4.5)과 같은지, 실제 사용량에서 429가 나는지(한도 비공개, §4.4). 대안: 다른 Esplora URL(blockstream.info·자체 운영) 또는 선택 인덱서(§4.5 B). 쓸 수 있는 인덱서가 없을 때만 M8 보류(D26). **M8에서 확인함(2026-10-27, `docs/acceptance/m8-live-20261027.md`):** 응답 형태는 §4.5와 같다. 같은 날 반복 조회에 429가 났고(§4.4 백오프·중단 동작), 이 PC의 네트워크에서 mempool.space IPv4 6개 중 2개가 응답하지 않아 WinHTTP 호출이 간헐적으로 E-BTC-001이 되었다(blockstream.info는 정상).
 2. **선택 — Blockbook 인덱서(§4.5 B1–B4).** `bitcoin.indexer`를 `bb-rpc`(QuickNode BTC Blockbook 애드온, 유료 요금제 위 월 약 75달러부터)·`bb-rest`(알케미 UTXO API)로 쓰기로 할 때만: 활성화·요금제, `bb_*` 응답 필드 이름·타입(`bb_getTx`의 Bitcoin `hex`·미확정 `blockHeight`), `bb_getBlockHash` 인자 형식, 애드온 미활성·거래 없음 오류 코드, 호출당 크레딧·CU. 애드온이 꺼져 있음(2026-10-27 `-32601`)은 **M8을 막지 않는다**.
-3. **구현 시 확인 — 임의 거래 `getrawtransaction`(§4.5 C1, txindex).** QuickNode(현재 공급자)·알케미·직접 입력 엔드포인트 모두. 대안: 인덱서 `TxRaw`(`esplora` `/tx/{txid}/hex`, `bb-*` `hex`; §5 검증 동일).
-4. **구현 시 확인 — §4.5 C2 Core JSON-RPC 세부**(봉투 형식, testnet4 `estimatesmartfee`, `getmempoolentry` 제공 여부(QuickNode 문서 페이지 없음), `maxfeerate` 인자). testnet4 `chain` 값은 2026-10-27 확인. 대안: 추정이 없으면 직접 입력만(§8.2), `getmempoolentry`가 없으면 §12.2의 인덱서 판정(`esplora`는 `TxRaw` 존재 확인 포함), `maxfeerate`를 거부하면 인자를 빼고 §8.3 로컬 상한에만 의존한다.
+3. **구현 시 확인 — 임의 거래 `getrawtransaction`(§4.5 C1, txindex).** QuickNode(현재 공급자)·알케미·직접 입력 엔드포인트 모두. 대안: 인덱서 `TxRaw`(`esplora` `/tx/{txid}/hex`, `bb-*` `hex`; §5 검증 동일). **QuickNode 확인함(2026-10-27):** mainnet 블록 170 거래·testnet4 거래 모두 원본을 준다(txindex), 없는 txid는 `-5`.
+4. **구현 시 확인 — §4.5 C2 Core JSON-RPC 세부**(봉투 형식, testnet4 `estimatesmartfee`, `getmempoolentry` 제공 여부(QuickNode 문서 페이지 없음), `maxfeerate` 인자). testnet4 `chain` 값은 2026-10-27 확인. 대안: 추정이 없으면 직접 입력만(§8.2), `getmempoolentry`가 없으면 §12.2의 인덱서 판정(`esplora`는 `TxRaw` 존재 확인 포함), `maxfeerate`를 거부하면 인자를 빼고 §8.3 로컬 상한에만 의존한다. **QuickNode 확인함(2026-10-27):** 봉투 `{"jsonrpc":"2.0","result"|"error","id"}`(반대쪽 키 없음), testnet4 `estimatesmartfee`는 `errors`만(추정 없음), `getmempoolinfo` 세 값 0.00000100, `getmempoolentry` 제공(확정 거래 `-5`), `testmempoolaccept`가 숫자 `maxfeerate`를 받음. `sendrawtransaction`의 `maxfeerate`와 멤풀 안 거래의 `getmempoolentry`는 M8-4에서 확인.
 5. **구현 시 확인 — §13 `reject-reason` 토큰을 Core 31 소스와 대조.** 대안: 모르는 토큰은 "알 수 없는 거부 사유"로 표시(기능 영향 없음).
 6. **구현 시 확인 — Sparrow·Electrum testnet4 지원 버전(§14.5-2), rust-bitcoin 0.32.x 패치 고정(§14.3).** 대안: 주소 비교(§14.5-1)와 공개 블록 탐색기 잔액 확인.
 7. ~~다른 문서 반영 — `bitcoin.indexer`·`esploraBaseUrl`~~ 완료([04] §1.9·§2.11·§2.16·§6.1·§7, [09] §2.5·§4.4·§5.10·§6). `probe-rpc.mjs`(01 §4.7)의 `bb_getBlockHash 0` 줄은 애드온이 없으면 `err`가 정상이다.

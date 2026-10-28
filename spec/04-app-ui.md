@@ -101,6 +101,7 @@ BG #FFFFFF 창 배경          TEXT #1F1F1F 본문             MUTED #5F6368 보
 BORDER #C8C8C8 구분선        FOCUS #0F6CBD 포커스·진행 막대   ESCAPE_TEXT #A4262C 이스케이프 표기(§3.3)
 DANGER_BG #FDE7E9 / DANGER_TEXT #A4262C 고위험·차단        WARN_BG #FFF4CE / WARN_TEXT #7A5C00 주의·주소 주석
 TESTNET_BG #E8F0FE 테스트넷 띠·배지   AI_PANEL_BG #F3F0FA [06] AI 패널   QR_DARK #000000 / QR_LIGHT #FFFFFF
+BTC_MAINNET_BG #C42B1C / BTC_MAINNET_TEXT #FFFFFF, BTC_TESTNET4_BG #F7A23B(글자 TEXT) [08] §2 네트워크 배너(A01 헤더)
 ```
 
 ### 1.7 창 클래스
@@ -256,7 +257,7 @@ S16 토큰 추가: 컨트랙트 주소(§2.15) → RPC `decimals()`·`symbol()`(
 | 네트워크 | EVM 체인 | 목록: 기본 3개(1·11155111·999) + 사용자 체인(최대 32, §2.17). 행 = 이름, chainId, 네이티브 심볼·소수 자릿수, 엔드포인트 상태(설정됨·없음; URL은 `네트워크 URL` 목록에서 가린 형태로만), 사용자 체인의 템플릿 식별자(`quicknodeSubdomain`·`alchemyLabel`, 있으면; 비밀 아님), 시뮬레이션 `auto`/`unsupported`, 고정 제네시스 해시(전체 hex; HyperEVM 고정 전은 "첫 연결 때 고정"), 상태(연결됨·확인 전·차단). `추가`(S17), 사용자 체인 행의 `편집`(S17)·`삭제`(§2.17.3), 최초 신뢰 체인이 E-CHN-008이면 `다시 고정`(§2.17.4). 기본 체인은 편집·삭제가 없다 |
 | 네트워크 | EVM 수수료 상한 | 체인 선택(기본 3 + 사용자 체인) + 3값(§6.1 `feeCaps`), `기본값으로`. 기본값은 [03] §3.4(기본 체인 `default_caps`, 사용자 체인은 [03]의 보수적 기본값) |
 | Solana (M7) | 클러스터, 수수료 상한, 다른 경로 스캔 | [07] §10·§3.3. 엔드포인트는 `네트워크 URL` 목록의 `solana:<cluster>` 행(§6.3 `rpc:solana:<cluster>`) |
-| Bitcoin (M8) | 켜기·네트워크 선택 | `bitcoin.enabled`·`bitcoin.network`(§6.1), 켜기·네트워크 변경 조건은 [08] §2(그 네트워크의 `rpc:bitcoin:<net>` URL이 없으면 켤 수 없음, E-KEY-005; 인덱서와 무관). Core 엔드포인트는 `네트워크 URL` 목록의 `bitcoin:<net>` 행([08] §4.2) |
+| Bitcoin (M8) | 켜기·네트워크 선택 | `bitcoin.enabled`·`bitcoin.network`(§6.1), 켜기·네트워크 변경 조건은 [08] §2(그 네트워크의 `rpc:bitcoin:<net>` URL이 없으면 켤 수 없음, E-KEY-005; 인덱서와 무관). 체크박스 `Bitcoin 사용`(켜기·끄기) + 네트워크 라디오 `mainnet`/`testnet4`: 꺼져 있을 때 라디오는 `bitcoin.network`만 쓰고(확인 창·`BtcMeta` 변경 없음) `Bitcoin 사용`이 그 네트워크로 켠다. 켜진 뒤 라디오는 [08] §2 네트워크 바꾸기(확인 창). Core 엔드포인트는 `네트워크 URL` 목록의 `bitcoin:<net>` 행([08] §4.2) |
 | Bitcoin (M8) | 인덱서 | 라디오 `bitcoin.indexer`: `Esplora`(기본, 무료·키 없음) / `Blockbook JSON-RPC (bb-rpc)`(Core URL에 `bb_*`, QuickNode BTC Blockbook 유료 애드온 필요) / `Blockbook REST (bb-rest)`(Core URL `/api/v2/`, 알케미 UTXO API). 형식은 URL·호스트에서 추론하지 않는다([08] §2). `bb-rpc`·`bb-rest`를 고르면 오버레이 T-BTC-BB-OPTIN 확인 뒤 저장한다. 언제든 바꿀 수 있고 바꾸면 새 `RpcConfig` + [08] §2 연결 검사. 라디오 아래 고정 문구 T-BTC-ESPLORA-NOTE |
 | Bitcoin (M8) | Esplora URL | 네트워크마다 한 줄(`mainnet`·`testnet4`): 현재 값 전체(비밀이 아니므로 가리지 않음) + 일반 EDIT(붙여넣기·복사 허용) + `저장`(§6.1 형식, 위반 E-BTC-006) · `기본값으로`([08] §15 `BTC_ESPLORA_DEFAULT_*`) · `테스트`. `테스트` = EDIT 값(비어 있으면 저장된 값)으로 `GET <URL>/block-height/0` 1회(호출당 10 s, 재시도 없음; 주소를 보내지 않으므로 잠긴 상태에서도 허용, [08] §4.4): 본문이 그 네트워크의 [08] §2 제네시스면 T-BTC-IDX-OK, 다른 64자 hex면 E-BTC-003, 그 밖은 [08] §4.3 분류(E-BTC-001·004·007). `저장`은 `테스트`를 요구하지 않는다(사용 전 [08] §2 연결 검사 3단계가 다시 확인). `indexer`가 `esplora`가 아니어도 편집할 수 있다. 저장 → 새 `RpcConfig` + [08] §2 연결 검사, 로그 `btc.esplora_url_set net=<NetworkId>`(URL 없음) |
 | 브라우저 | localhost dApp 허용 | 켤 때 T-LOCALHOST-ON 확인, `allowLocalhostDapps`(D22, [05] §4.6) |

@@ -13,3 +13,4 @@
 .gitattributes text eol=lf
 *.ps1 text eol=crlf
 *.cmd text eol=crlf
+crates/yw-core/tests/vectors/btc/esplora/*.http -text

@@ -139,6 +139,8 @@ pub enum QueuedItem {
     Site(Box<crate::browser::SiteRequest>),
     /// A Solana transfer of this app (spec/07 §13).
     Sol(Box<crate::app_sol::SolApprovalItem>),
+    /// A Bitcoin send or fee bump of this app (spec/08 §10).
+    Btc(Box<crate::app_btc::BtcApprovalItem>),
 }
 
 impl QueuedItem {
@@ -148,7 +150,7 @@ impl QueuedItem {
         match self {
             Self::App(item) => item.chain_id,
             Self::Site(site) => site.chain_id,
-            Self::Sol(_) => 0,
+            Self::Sol(_) | Self::Btc(_) => 0,
         }
     }
 
@@ -159,6 +161,7 @@ impl QueuedItem {
             Self::App(item) => NetworkId::Eip155(item.chain_id),
             Self::Site(site) => NetworkId::Eip155(site.chain_id),
             Self::Sol(item) => crate::workers::journal::sol_network(item.cluster),
+            Self::Btc(item) => item.network_id(),
         }
     }
 }
@@ -552,9 +555,16 @@ impl App {
                         "거래 저널이 손상되어 보내기를 멈췄습니다. (E-VLT-006)".to_owned(),
                     );
                 }
+                if view.btc_corrupt > 0 {
+                    self.banner(
+                        Some(ErrorCode::Vlt006),
+                        "거래 저널이 손상되어 보내기를 멈췄습니다. (E-VLT-006)".to_owned(),
+                    );
+                }
                 self.evm.journal = Some(view);
                 self.schedule_tracking(true);
                 self.sol_schedule_tracking();
+                self.btc_journal_changed();
                 self.refresh();
             }
             KeyOutcome::Journal(Err(
@@ -750,6 +760,7 @@ impl App {
             | RpcEvent::SolPreSigned { .. }
             | RpcEvent::SolTracked(_)
             | RpcEvent::SolScanned { .. }) => self.sol_rpc_event(event),
+            RpcEvent::Btc(event) => self.btc_rpc_event(*event),
         }
     }
 
@@ -1341,6 +1352,10 @@ impl App {
             QueuedItem::App(item) => item,
             QueuedItem::Sol(item) => {
                 self.sol_approval_finished(item, outcome);
+                return;
+            }
+            QueuedItem::Btc(item) => {
+                self.btc_approval_finished(item, outcome);
                 return;
             }
             QueuedItem::Site(site) => {

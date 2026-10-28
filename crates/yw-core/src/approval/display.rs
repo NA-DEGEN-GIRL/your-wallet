@@ -101,6 +101,26 @@ impl FieldKey {
     pub const SOL_VALIDITY: Self = Self(0x0508);
     /// SOL 감사(`intent_hash`).
     pub const SOL_AUDIT: Self = Self(0x0509);
+    /// BTC 받는 주소.
+    pub const BTC_TO: Self = Self(0x0601);
+    /// BTC 주소 종류.
+    pub const BTC_TYPE: Self = Self(0x0602);
+    /// BTC 금액.
+    pub const BTC_AMOUNT: Self = Self(0x0603);
+    /// BTC 잔돈.
+    pub const BTC_CHANGE: Self = Self(0x0604);
+    /// BTC 입력.
+    pub const BTC_INPUTS: Self = Self(0x0605);
+    /// BTC 수수료.
+    pub const BTC_FEE: Self = Self(0x0606);
+    /// BTC 총 차감.
+    pub const BTC_TOTAL: Self = Self(0x0607);
+    /// BTC 승인 후 잔액.
+    pub const BTC_BALANCE: Self = Self(0x0608);
+    /// BTC 교체 대상(`BtcFeeBump`만).
+    pub const BTC_REPLACES: Self = Self(0x0609);
+    /// BTC 고급(version·nLockTime·RBF·vsize·weight·txid).
+    pub const BTC_ADVANCED: Self = Self(0x0640);
 
     /// `(critical, volatile)` for keys of the §11.2 table; `None` for unknown keys.
     #[must_use]
@@ -115,9 +135,18 @@ impl FieldKey {
             | 0x0401
             | 0x0402
             | 0x0404
-            | 0x0501..=0x0505 => (true, false),
+            | 0x0501..=0x0505
+            | 0x0601..=0x0607
+            | 0x0609 => (true, false),
             0x0121 | 0x0130 => (false, true),
-            0x0113 | 0x0122..=0x0124 | 0x0140 | 0x0141 | 0x0403 | 0x0506..=0x0509 => (false, false),
+            0x0113
+            | 0x0122..=0x0124
+            | 0x0140
+            | 0x0141
+            | 0x0403
+            | 0x0506..=0x0509
+            | 0x0608
+            | 0x0640 => (false, false),
             _ => return None,
         })
     }

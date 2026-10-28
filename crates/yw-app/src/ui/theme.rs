@@ -26,6 +26,12 @@ pub const WARN_BG: Color = Color(0x00FF_F4CE);
 pub const WARN_TEXT: Color = Color(0x007A_5C00);
 /// Testnet band.
 pub const TESTNET_BG: Color = Color(0x00E8_F0FE);
+/// Bitcoin mainnet banner (spec/08 §2 "빨강 배경").
+pub const BTC_MAINNET_BG: Color = Color(0x00C4_2B1C);
+/// Bitcoin testnet4 banner (spec/08 §2 "주황 배경").
+pub const BTC_TESTNET4_BG: Color = Color(0x00F7_A23B);
+/// Text on the Bitcoin mainnet banner.
+pub const BTC_MAINNET_TEXT: Color = Color(0x00FF_FFFF);
 /// Disabled control fill.
 pub const DISABLED_BG: Color = Color(0x00F2_F2F2);
 /// Primary button fill.
@@ -162,6 +168,66 @@ pub fn sol_address_segments(text: &str) -> Option<Vec<(&str, bool)>> {
         segments.push((group, index != 0 && index != last));
     }
     Some(segments)
+}
+
+/// Characters drawn bold at each end of a Bitcoin address (spec/04 §3.3, spec/08 §10).
+pub const BTC_BOLD_ENDS: usize = 6;
+
+/// The segments of a grouped Bitcoin address line (spec/04 §3.3: the whole address in
+/// 4-character groups, the first 6 and the last 6 characters bold): `(text, bold)` with the
+/// separating spaces as regular segments; a group crossing a boundary is split there. `None`
+/// unless `text` is exactly [`crate::ui::screens_btc::grouped`] of an address that parses on
+/// mainnet or testnet4, so no other text changes weight.
+#[must_use]
+pub fn btc_address_segments(text: &str) -> Option<Vec<(&str, bool)>> {
+    let groups: Vec<&str> = text.split(' ').collect();
+    if groups.len() < 3
+        || groups
+            .iter()
+            .any(|group| group.is_empty() || group.len() > 4 || !group.is_ascii())
+    {
+        return None;
+    }
+    let address = groups.concat();
+    let parses = yw_core::btc::BtcNetwork::ALL
+        .into_iter()
+        .any(|net| yw_core::btc::parse_address(&address, net).is_ok());
+    if !parses || crate::ui::screens_btc::grouped(&address) != text {
+        return None;
+    }
+    let tail = address.len().checked_sub(BTC_BOLD_ENDS)?;
+    let mut segments = Vec::with_capacity(groups.len().saturating_mul(3));
+    let mut start = 0_usize;
+    for (index, group) in groups.into_iter().enumerate() {
+        if index != 0 {
+            segments.push((" ", false));
+        }
+        let end = start.saturating_add(group.len());
+        let mut cuts = vec![0_usize];
+        for boundary in [BTC_BOLD_ENDS, tail] {
+            if boundary > start && boundary < end {
+                cuts.push(boundary.saturating_sub(start));
+            }
+        }
+        cuts.push(group.len());
+        cuts.dedup();
+        for pair in cuts.windows(2) {
+            let (Some(&from), Some(&to)) = (pair.first(), pair.get(1)) else {
+                continue;
+            };
+            let piece = group.get(from..to)?;
+            let at = start.saturating_add(from);
+            segments.push((piece, at < BTC_BOLD_ENDS || at >= tail));
+        }
+        start = end;
+    }
+    Some(segments)
+}
+
+/// The emphasized segments of a grouped Solana or Bitcoin address line, if `text` is one.
+#[must_use]
+pub fn address_segments(text: &str) -> Option<Vec<(&str, bool)>> {
+    sol_address_segments(text).or_else(|| btc_address_segments(text))
 }
 
 /// Draws `segments` on one line from `(x, y)` with the regular / bold mono fonts in the current

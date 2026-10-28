@@ -31,3 +31,20 @@ sources below; this offline session did not re-fetch the sources, so no commit i
 | `src/evm/sign/tests.rs`, `tests/evm_eip712.rs` Ether Mail | EIPs `assets/eip-712/Example.js` (JSON as in `archive/spec-v2.4:crates/eip712/tests/vectors.rs:6-42`) | CC0-1.0 |
 | `tests/evm_consts.rs` selectors, topics, typeHashes, domain separators | computed by the test from the signature strings of spec/09 §3.6–§3.7 | — |
 | `crates/yw-app/tests/fixtures/eth_simulateV1/*.response.json` | spec/09 §3.8 S1–S16 shapes; S1h/S3c/S4h/S16 follow the 2026-10-27 probe (`docs/acceptance/probe-20261027.md`) | — |
+
+M8 Bitcoin data (`btc/`, details and the Esplora recording list in `btc/README.md`):
+
+| File | Source | Commit | License | Notes |
+|---|---|---|---|---|
+| `btc/key_io_valid.json`, `btc/key_io_invalid.json`, `btc/tx_valid.json`, `btc/tx_invalid.json` | https://github.com/bitcoin/bitcoin/tree/master/src/test/data | `2b5b6fe231ff45a09d9e24411e4420d51ed45cab` | MIT | Unchanged. At this commit `key_io_valid.json` names its chains `main`, `testnet4`, `signet`, `regtest`; `tests/btc_address.rs` maps `testnet4` and `signet` to the testnet4 wallet (spec/08 §14.1 `test`), regtest bech32 (`bcrt`) to `WrongNetwork` and regtest base58 to the testnet4 result. Used by `tests/btc_address.rs`, `tests/btc_tx.rs`, `tests/btc_fuzz_lite.rs`. |
+| `btc/esplora/*.http` | public mempool.space Esplora API (URLs in `btc/README.md`) | recorded 2026-10-27 | — (server responses, no token) | Raw `curl -i` output kept byte-for-byte (`-text`). `testnet4-tx-hex.http` (tx `005aa50e…77f1`, vout 0 = 5,840,453,620,191 sats to program `7b458433…ac75`) is the real-world spec/08 §5 fixture of `tests/btc_prevtx.rs` and a `btc_fuzz_lite` seed. |
+
+M8 inline vectors (copied from bitcoin/bips at commit `24e96e870fffaa257b465ce1f0370c14aac588e8`,
+fetched 2026-10-27; BSD-2-Clause):
+
+| Test | Source |
+|---|---|
+| `tests/btc_bech32.rs` string vectors (BIP173 valid 7 / invalid 12, BIP350 valid 7 / invalid 14) and the segwit address lists; `tests/btc_address.rs` BIP350 address vectors (valid 8 / invalid 15) and the spec/08 §14.1 table | https://github.com/bitcoin/bips/blob/master/bip-0173.mediawiki (`===Test vectors===`), https://github.com/bitcoin/bips/blob/master/bip-0350.mediawiki (`==Test vectors==`) |
+| `src/btc/tests.rs` BIP84 account node, `0/0`, `0/1`, `1/0` keys and addresses (`abandon`×11 `about`); testnet4 `m/84'/1'/0'` rows and the 24-word `art` rows are spec/08 §14.1 / spec/09 §3.10 [local] values | https://github.com/bitcoin/bips/blob/master/bip-0084.mediawiki (`==Test vectors==`) |
+| `src/btc/tests.rs`, `tests/btc_tx.rs`, `tests/btc_fuzz_lite.rs` BIP143 native P2WPKH example (unsigned and signed transactions, hash parts, sighash, private key, signature) | https://github.com/bitcoin/bips/blob/master/bip-0143.mediawiki (`=== Native P2WPKH ===`) |
+| `src/bip32/tests.rs` `derive_public_child` (CKDpub) | the existing `bip32.json` vectors 1–2 |

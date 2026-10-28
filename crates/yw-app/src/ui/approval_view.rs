@@ -82,6 +82,36 @@ pub enum Block {
     },
 }
 
+/// The Bitcoin network banner of the A01 header (spec/08 §2 table: mainnet red, testnet4
+/// orange).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BtcBanner {
+    /// `BITCOIN MAINNET`.
+    Mainnet,
+    /// `BITCOIN TESTNET4 — 가치 없음`.
+    Testnet4,
+}
+
+impl BtcBanner {
+    /// The banner of a network.
+    #[must_use]
+    pub const fn of(network: yw_core::btc::BtcNetwork) -> Self {
+        match network {
+            yw_core::btc::BtcNetwork::Mainnet => Self::Mainnet,
+            yw_core::btc::BtcNetwork::Testnet4 => Self::Testnet4,
+        }
+    }
+
+    /// The fixed text (spec/08 §2).
+    #[must_use]
+    pub const fn text(self) -> &'static str {
+        match self {
+            Self::Mainnet => yw_core::btc::BtcNetwork::Mainnet.banner(),
+            Self::Testnet4 => yw_core::btc::BtcNetwork::Testnet4.banner(),
+        }
+    }
+}
+
 /// The whole A01 content.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[expect(
@@ -95,6 +125,8 @@ pub struct ApprovalView {
     pub badges: Vec<String>,
     /// Testnet coloring.
     pub testnet: bool,
+    /// Bitcoin network banner (header colored red / orange instead of the testnet band).
+    pub btc_banner: Option<BtcBanner>,
     /// Simulation band.
     pub band: Option<Band>,
     /// Scrolling blocks.
@@ -151,7 +183,7 @@ const fn is_raw(field: &DisplayField) -> bool {
 const fn is_mono(key: FieldKey) -> bool {
     matches!(
         key.0,
-        0x0003 | 0x0101 | 0x0125 | 0x0140 | 0x0141 | 0x0501 | 0x0509
+        0x0003 | 0x0101 | 0x0125 | 0x0140 | 0x0141 | 0x0501 | 0x0509 | 0x0601
     )
 }
 
@@ -159,6 +191,12 @@ const fn is_mono(key: FieldKey) -> bool {
 /// 금액·수수료 행").
 const fn is_sol_money(key: FieldKey) -> bool {
     matches!(key.0, 0x0502..=0x0505)
+}
+
+/// BTC amount, change, inputs, fee and total rows (spec/08 §10: the asset-change area is
+/// `0x0603`–`0x0607`).
+const fn is_btc_money(key: FieldKey) -> bool {
+    matches!(key.0, 0x0603..=0x0607)
 }
 
 fn label_of(field: &DisplayField) -> String {
@@ -310,13 +348,11 @@ pub fn signing_view(
     }
     let show_diff = matches!(state, Some(SimState::Ok | SimState::Incomplete));
     let sol = request.kind == yw_core::approval::ApprovalKind::SolTransfer;
-    if sol {
+    let btc = request.kind.is_btc();
+    let money = |key: FieldKey| (sol && is_sol_money(key)) || (btc && is_btc_money(key));
+    if sol || btc {
         view.blocks.push(Block::Section("금액·수수료"));
-        for field in display
-            .fields
-            .iter()
-            .filter(|field| is_sol_money(field.key))
-        {
+        for field in display.fields.iter().filter(|field| money(field.key)) {
             view.blocks.push(Block::Field {
                 label: label_of(field),
                 value: field.value.clone(),
@@ -329,7 +365,7 @@ pub fn signing_view(
     view.blocks.push(Block::Section("상세"));
     for field in &display.fields {
         let shown_above = is_header(field.key)
-            || (sol && is_sol_money(field.key))
+            || money(field.key)
             || (show_diff && (is_diff(field.key) || field.key == FieldKey::SIMULATION));
         if shown_above || is_raw(field) {
             continue;

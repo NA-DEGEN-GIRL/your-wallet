@@ -50,11 +50,18 @@ pub struct SolSignTimes {
     pub now_unix_ms: u64,
 }
 
-/// The journal state the key worker keeps between jobs.
+#[path = "journal_btc.rs"]
+pub mod btc;
+
+/// The journal state the key worker keeps between jobs, with the authoritative `BtcMeta` of
+/// the unlocked session (spec/08 §12.3: the key worker is the only writer of meta `btc`; every
+/// meta document the UI saves gets this copy).
 #[derive(Debug, Default)]
 pub struct JournalState {
     plain: Option<JournalPlain>,
     overlay: Vec<(NetworkId, ActivityEntry)>,
+    btc: Option<yw_core::btc::BtcMeta>,
+    btc_loaded: bool,
 }
 
 /// The view sent to the UI.
@@ -62,6 +69,7 @@ pub struct JournalState {
 pub fn view_of(plain: &JournalPlain) -> JournalView {
     let entries = EvmEntries::from_plain(plain);
     let sol = SolEntries::from_plain(plain);
+    let btc = yw_core::journal::btc::BtcEntries::from_plain(plain);
     let mut trial = plain.clone();
     JournalView {
         records: entries.records(),
@@ -70,6 +78,9 @@ pub fn view_of(plain: &JournalPlain) -> JournalView {
         sol_records: sol.records(),
         sol_corrupt: sol.corrupt,
         sol_room: sol_make_room(&mut trial, 0).is_ok(),
+        btc_records: btc.records(),
+        btc_corrupt: btc.corrupt,
+        btc_room: yw_core::journal::btc::has_room(plain),
     }
 }
 
@@ -105,6 +116,8 @@ impl JournalState {
     pub fn clear(&mut self) {
         self.plain = None;
         self.overlay.clear();
+        self.btc = None;
+        self.btc_loaded = false;
     }
 
     /// Activity rows moved this session (re-applied to every meta save from the UI).
@@ -168,6 +181,7 @@ impl JournalState {
         for (network, entry) in &moved {
             document.upsert_activity(&network.to_string(), entry);
         }
+        self.apply_btc_meta(&mut document);
         vault.save_sidecar(FileKind::Meta, &document.to_json())?;
         self.overlay.extend(moved.iter().cloned());
         Ok(moved)
@@ -195,6 +209,7 @@ impl JournalState {
         for (network, entry) in &moved {
             document.upsert_activity(&network.to_string(), entry);
         }
+        self.apply_btc_meta(&mut document);
         vault.save_sidecar(FileKind::Meta, &document.to_json())?;
         self.overlay.extend(moved.iter().cloned());
         Ok(moved)
@@ -340,11 +355,13 @@ impl JournalState {
         }
     }
 
-    /// Re-applies this session's moved activity rows to a meta document from the UI.
+    /// Re-applies this session's moved activity rows and the key worker's `BtcMeta` to a meta
+    /// document from the UI.
     pub fn merge_overlay(&self, document: &mut Meta) {
         for (network, entry) in &self.overlay {
             document.upsert_activity(&network.to_string(), entry);
         }
+        self.apply_btc_meta(document);
     }
 
     /// Prunes 7-day-old terminal groups into activity (when that write succeeds), then commits.

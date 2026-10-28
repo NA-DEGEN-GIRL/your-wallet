@@ -19,8 +19,10 @@ use super::{
     BackupChallenge, ChallengeId, EvmKeySource, FileKind, KDF_V3, KdfParams, KeyRef, LockedSlot,
     RecordId, SLOT_LEN, VaultStatus, VaultStorage,
 };
-use crate::bip32::path::{AccountIndex, btc_path, evm_path};
-use crate::bip32::{evm_address_from_seed, secret_key_from_seed};
+use crate::bip32::path::{AccountIndex, BtcChain, BtcCoin, btc_path, evm_path};
+use crate::bip32::{
+    AccountXpub, btc_account_xpub_from_seed, evm_address_from_seed, secret_key_from_seed,
+};
 use crate::bip39::Mnemonic;
 use crate::entropy::{
     OsRandom, RandomSource, random_array_with, random_below_with, random_nonzero_id_with,
@@ -1052,6 +1054,44 @@ impl Vault {
                 Ok((RecordId(raw.record_id), Address::from_public_key(&public)))
             })
             .collect()
+    }
+
+    /// The Bitcoin account node `m/84'/{coin}'/0'` as public information (compressed public key
+    /// and chain code, spec/02 §10.3, spec/08 §3.1). Addresses are derived from it with
+    /// `bip32::derive_public_child`; the seed, private nodes and keys are wiped on return.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` outside `BackupPending`/`Unlocked`, or a derivation error.
+    pub fn btc_account_xpub(&self, coin: BtcCoin) -> Result<AccountXpub, VaultError> {
+        self.require_public()?;
+        let payload = self.payload()?;
+        let seed = self.seed(&payload)?;
+        let ctx = secp_context(&mut OsRandom)?;
+        Ok(btc_account_xpub_from_seed(&ctx, &seed, coin)?)
+    }
+
+    /// The compressed public key of `m/84'/{coin}'/0'/{chain}/{index}` by private derivation
+    /// (spec/02 §10.3), for cross-checking the public (`CKDpub`) derivation (spec/08 §14.1).
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` outside `BackupPending`/`Unlocked`, `Key(InvalidPath)` for a hardened
+    /// `index`, or a derivation error.
+    pub fn btc_public_key(
+        &self,
+        coin: BtcCoin,
+        chain: BtcChain,
+        index: u32,
+    ) -> Result<[u8; 33], VaultError> {
+        self.require_public()?;
+        btc_path(coin, chain, index)?;
+        let payload = self.payload()?;
+        let ctx = secp_context(&mut OsRandom)?;
+        let mut secret = self.secret_for(&ctx, &payload, KeyRef::Btc { coin, chain, index })?;
+        let public = PublicKey::from_secret_key(&ctx, &secret);
+        secret.non_secure_erase();
+        Ok(public.serialize())
     }
 
     /// Opens `meta.ywm` or `journal.ywj`; `None` if the file does not exist.

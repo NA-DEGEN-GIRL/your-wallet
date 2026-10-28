@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","error":{"code":-5,"message":"No such mempool or blockchain transaction. Use gettransaction for wallet transactions."},"id":1}

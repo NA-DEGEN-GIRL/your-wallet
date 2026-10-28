@@ -6,9 +6,9 @@ use core::str::FromStr;
 
 use yw_json::Limits;
 
-use super::path::{AccountIndex, BtcChain, BtcCoin, btc_path, evm_path};
+use super::path::{AccountIndex, BtcChain, BtcCoin, btc_account_path, btc_path, evm_path};
 use super::xkey::{XKeyVersion, decode_xkey, derive_xkey, encode_xkey, fingerprint};
-use super::{Bip32Path, HARDENED, XPriv, ckd_from_il};
+use super::{AccountXpub, Bip32Path, HARDENED, XPriv, ckd_from_il, derive_public_child};
 use crate::bip39::Mnemonic;
 use crate::entropy::{OsRandom, secp_context};
 use crate::error::KeyError;
@@ -287,4 +287,123 @@ fn xkey_debug_is_redacted() {
     assert!(encode_xkey(&parts).starts_with("tprv"));
     let node = XPriv::from_seed(&seed).unwrap();
     assert_eq!(format!("{node:?}"), "XPriv([REDACTED])");
+}
+
+fn account_xpub(xpub: &str) -> AccountXpub {
+    let parts = decode_xkey(xpub).unwrap();
+    AccountXpub {
+        pubkey: *parts.key,
+        chain_code: parts.chain_code,
+    }
+}
+
+/// spec/02 §11.3 M8: every vector 1–2 node whose last component is non-hardened is the `CKDpub`
+/// child of its parent's (public key, chain code).
+#[test]
+fn derive_public_child_matches_bip32_vectors() {
+    let root = yw_json::parse(BIP32_JSON.as_bytes(), &Limits::RESPONSE).unwrap();
+    let valid = root
+        .as_object()
+        .unwrap()
+        .get("valid")
+        .unwrap()
+        .as_array()
+        .unwrap();
+    let mut checked = Vec::new();
+    for vector in valid {
+        let chains = vector
+            .as_object()
+            .unwrap()
+            .get("chains")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        let nodes: Vec<(&str, &str)> = chains
+            .iter()
+            .map(|chain| {
+                let chain = chain.as_object().unwrap();
+                (field(chain, "path"), field(chain, "xpub"))
+            })
+            .collect();
+        for (path, xpub) in &nodes {
+            let parsed = Bip32Path::from_str(path).unwrap();
+            let Some(last) = parsed.components().last() else {
+                continue;
+            };
+            if last & HARDENED != 0 {
+                continue;
+            }
+            let parent_path = &path[..path.rfind('/').unwrap()];
+            let parent = nodes
+                .iter()
+                .find(|(candidate, _)| *candidate == parent_path)
+                .map(|(_, parent_xpub)| account_xpub(parent_xpub))
+                .unwrap();
+            assert_eq!(
+                derive_public_child(&parent, *last).unwrap(),
+                account_xpub(xpub),
+                "{path}"
+            );
+            checked.push((*path).to_owned());
+        }
+    }
+    assert_eq!(
+        checked,
+        [
+            "m/0'/1",
+            "m/0'/1/2'/2",
+            "m/0'/1/2'/2/1000000000",
+            "m/0",
+            "m/0/2147483647'/1",
+            "m/0/2147483647'/1/2147483646'/2",
+        ]
+    );
+}
+
+#[test]
+fn derive_public_child_rejections() {
+    let master = account_xpub(
+        "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8",
+    );
+    assert_eq!(
+        derive_public_child(&master, HARDENED),
+        Err(KeyError::InvalidPath)
+    );
+    assert_eq!(
+        derive_public_child(&master, u32::MAX),
+        Err(KeyError::InvalidPath)
+    );
+    assert!(derive_public_child(&master, HARDENED - 1).is_ok());
+    let mut uncompressed_prefix = master;
+    uncompressed_prefix.pubkey[0] = 0x04;
+    assert_eq!(
+        derive_public_child(&uncompressed_prefix, 0),
+        Err(KeyError::DerivationFailed)
+    );
+    // x = 5: 5^3 + 7 is not a square mod p, so no curve point has this x.
+    let mut off_curve = master;
+    off_curve.pubkey = [0; 33];
+    off_curve.pubkey[0] = 0x02;
+    off_curve.pubkey[32] = 5;
+    assert_eq!(
+        derive_public_child(&off_curve, 0),
+        Err(KeyError::DerivationFailed)
+    );
+    let mut zero_prefix = master;
+    zero_prefix.pubkey[0] = 0x00;
+    assert_eq!(
+        derive_public_child(&zero_prefix, 0),
+        Err(KeyError::DerivationFailed)
+    );
+}
+
+#[test]
+fn btc_account_path_text() {
+    assert_eq!(
+        btc_account_path(BtcCoin::Mainnet).to_string(),
+        "m/84'/0'/0'"
+    );
+    assert_eq!(btc_account_path(BtcCoin::Test).to_string(), "m/84'/1'/0'");
+    assert_eq!(BtcChain::Receive.index(), 0);
+    assert_eq!(BtcChain::Change.index(), 1);
 }

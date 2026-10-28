@@ -208,6 +208,7 @@ impl App {
             Screen::ImportIntro => {
                 items.push(Item::Title("기존 지갑 가져오기".to_owned()));
                 items.push(Item::Text("12·15·18·21·24단어 BIP39 영어 니모닉을 가져옵니다. EVM 개인키는 지갑을 만든 뒤 메인 화면의 '개인키 가져오기'에서 가져옵니다.".to_owned()));
+                items.push(Item::Muted(crate::app_btc::BTC_IMPORT_NOTE.to_owned()));
                 items.push(Item::Row(vec![
                     Ctl::button(ids::IMPORT_NEXT, "다음"),
                     Ctl::button(ids::INTRO_CANCEL, "취소"),
@@ -276,6 +277,10 @@ impl App {
             Screen::SolSendResult => self.sol_send_result_screen(&mut items),
             Screen::SolReceive => self.sol_receive_screen(&mut items),
             Screen::SolScan => self.sol_scan_screen(&mut items),
+            Screen::BtcSend => self.btc_send_screen(&mut items),
+            Screen::BtcSendResult => self.btc_send_result_screen(&mut items),
+            Screen::BtcBump => self.btc_bump_screen(&mut items),
+            Screen::BtcReceive => self.btc_receive_screen(&mut items),
         }
         items
     }
@@ -355,6 +360,10 @@ impl App {
         self.tab_row(items);
         if self.sol_tab_active() {
             self.sol_main_screen(items);
+            return;
+        }
+        if self.btc_tab_active() {
+            self.btc_main_screen(items);
             return;
         }
         items.push(Item::Title("EVM".to_owned()));
@@ -455,6 +464,8 @@ impl App {
                 .enabled(section != SettingsSection::Chains),
             Ctl::button(crate::ui::screens_sol::ids::SECTION_SOL, "Solana")
                 .enabled(section != SettingsSection::Solana),
+            Ctl::button(crate::ui::screens_btc::ids::SECTION_BTC, "Bitcoin")
+                .enabled(section != SettingsSection::Bitcoin),
             Ctl::button(ids::SECTION_OTHER, "브라우저·진단·정보")
                 .enabled(section != SettingsSection::Other),
         ]));
@@ -463,6 +474,7 @@ impl App {
             SettingsSection::Network => self.network_section(items),
             SettingsSection::Chains => self.chains_section(items),
             SettingsSection::Solana => self.sol_settings_section(items),
+            SettingsSection::Bitcoin => self.btc_settings_section(items),
             SettingsSection::Other => self.other_section(items),
         }
     }
@@ -607,7 +619,9 @@ impl App {
                 ));
             }
         }
-        items.push(Item::Muted("URL에는 토큰이 들어 있어 화면에는 가린 형태만 보입니다. Bitcoin 네트워크는 M8에서 목록에 추가됩니다.".to_owned()));
+        items.push(Item::Muted(
+            "URL에는 토큰이 들어 있어 화면에는 가린 형태만 보입니다.".to_owned(),
+        ));
     }
 
     fn other_section(&self, items: &mut Vec<Item>) {
@@ -650,7 +664,11 @@ impl App {
     }
 
     fn confirm(&self, kind: Confirm, items: &mut Vec<Item>) {
+        let btc = self.btc.confirm;
         let (title, text, yes) = match kind {
+            Confirm::Btc => btc.map_or(("Bitcoin", String::new(), "확인"), |confirm| {
+                confirm.texts()
+            }),
             Confirm::CopyOn => (
                 "복사 허용",
                 "복사를 허용하면 니모닉·개인키를 클립보드에 넣을 수 있습니다. 클립보드 기록·클라우드 동기화에서는 제외하고 30초 뒤 지우지만, 그 사이에는 다른 프로그램이 읽을 수 있습니다.".to_owned(),
@@ -733,9 +751,13 @@ impl App {
                 Ctl::button(ids::SIDECAR_FRESH, "격리하고 새로 시작"),
             ]));
         } else {
+            let no = match (kind, btc) {
+                (Confirm::Btc, Some(confirm)) => confirm.no_label(),
+                _ => "취소",
+            };
             items.push(Item::Row(vec![
                 Ctl::button(ids::CONFIRM_YES, yes),
-                Ctl::button(ids::CONFIRM_NO, "취소"),
+                Ctl::button(ids::CONFIRM_NO, no),
             ]));
         }
     }

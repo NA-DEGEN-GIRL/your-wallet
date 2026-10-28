@@ -4,8 +4,8 @@
 //! Ported from `archive/spec-v2.4:crates/wallet-protocol/src/approval.rs:16-22,163-189,466-541`
 //! (transcript digest, constant-time one-shot consume) without registry/ruleset/RPC-observation/
 //! protocol-validity bindings, and with the simulation state always bound (D15). Display rules
-//! come from `archive/spec-v2.4:crates/approval-wire/src/lib.rs:231-777,1212-1300`. SOL and BTC
-//! variants are added at M7/M8.
+//! come from `archive/spec-v2.4:crates/approval-wire/src/lib.rs:231-777,1212-1300`. SOL (M7) and
+//! BTC (M8) variants are included.
 
 mod display;
 mod store;
@@ -77,7 +77,7 @@ impl ApprovalOrigin {
     }
 }
 
-/// Chain reference bound into the digest (`chain_tag` 1 = EVM, 2 = Solana).
+/// Chain reference bound into the digest (`chain_tag` 1 = EVM, 2 = Solana, 3 = Bitcoin).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChainRef {
     /// EVM chain with its verified genesis hash.
@@ -94,6 +94,13 @@ pub enum ChainRef {
         /// `getGenesisHash` value (= the cluster's pinned hash).
         genesis: [u8; 32],
     },
+    /// Bitcoin network with its pinned genesis hash (spec/08 §2, §10).
+    Bitcoin {
+        /// Network id: 1 mainnet, 2 testnet4.
+        network: u8,
+        /// Genesis hash bytes in display order (the §2 hex decoded).
+        genesis: [u8; 32],
+    },
 }
 
 /// Signing account.
@@ -103,6 +110,8 @@ pub enum AccountRef {
     Evm(Address),
     /// Solana sender public key.
     Sol([u8; 32]),
+    /// Bitcoin account public key `m/84'/{coin}'/0'` (`BtcMeta.account_pubkey`).
+    Bitcoin([u8; 33]),
 }
 
 /// Approval kind (digest byte).
@@ -121,6 +130,10 @@ pub enum ApprovalKind {
     EvmTypedData = 0x14,
     /// Solana transfer (spec/07 §13.1; origin is always the app).
     SolTransfer = 0x20,
+    /// Bitcoin send (spec/08 §10; origin is always the app).
+    BtcSend = 0x30,
+    /// Bitcoin RBF fee bump (spec/08 §9).
+    BtcFeeBump = 0x31,
 }
 
 impl ApprovalKind {
@@ -128,6 +141,12 @@ impl ApprovalKind {
     #[must_use]
     pub const fn code(self) -> u8 {
         self as u8
+    }
+
+    /// Whether this is a Bitcoin kind.
+    #[must_use]
+    pub const fn is_btc(self) -> bool {
+        matches!(self, Self::BtcSend | Self::BtcFeeBump)
     }
 
     /// Whether this is one of the three EVM transaction kinds.
@@ -151,6 +170,8 @@ pub enum SigningPayload {
     EvmTypedData([u8; 66]),
     /// A Solana transfer intent (spec/07 §13.2).
     SolTransfer(SolTransferIntent),
+    /// The Bitcoin `btc_payload` bytes (spec/08 §10).
+    Btc(Vec<u8>),
 }
 
 impl SigningPayload {
@@ -162,6 +183,7 @@ impl SigningPayload {
             Self::EvmPersonal(preimage) => preimage.clone(),
             Self::EvmTypedData(preimage) => preimage.to_vec(),
             Self::SolTransfer(intent) => intent.transcript(),
+            Self::Btc(payload) => payload.clone(),
         }
     }
 }
@@ -171,7 +193,8 @@ impl SigningPayload {
 pub enum Signer {
     /// An EVM key from the vault.
     Evm(EvmKeySource),
-    /// The key source is in the payload (SOL intent `source`; the signing check binds `from`).
+    /// The key source is in the payload (SOL intent `source`; BTC per-input paths; the signing
+    /// check binds the account).
     FromPayload,
 }
 
@@ -227,7 +250,7 @@ pub enum SimNoneReason {
 /// Simulation state bound into the approval digest (`sim_tag`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SimulationBinding {
-    /// 0: messages (and SOL/BTC).
+    /// 0: messages, SOL and BTC.
     NotApplicable,
     /// 1: a simulation block exists.
     Simulated {

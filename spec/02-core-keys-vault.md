@@ -228,6 +228,7 @@ pub enum BtcCoin { Mainnet, Test }            // 0' mainnet / 1' testnet4 (D29)
 pub enum BtcChain { Receive, Change }         // 0 / 1
 pub fn evm_path(i: AccountIndex) -> Bip32Path;
 pub fn btc_path(coin: BtcCoin, chain: BtcChain, index: u32) -> Result<Bip32Path, KeyError>; // index ≥ 2^31 → InvalidPath
+pub fn btc_account_path(coin: BtcCoin) -> Bip32Path;                                    // m/84'/{0|1}'/0' (M8)
 pub fn sol_path(i: AccountIndex) -> Slip10Path;      // M7(`slip10`과 함께 추가)
 ```
 

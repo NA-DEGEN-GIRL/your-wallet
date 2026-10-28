@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use yw_core::evm::amount::U256;
 use yw_json::{Limits, Number, Value};
-use yw_win::http::{Client, HttpError, HttpsUrl, Timeouts};
+use yw_win::http::{Client, EndpointUrl, HttpError, HttpsUrl, Response, Timeouts};
 
 use crate::errors::ErrorCode;
 use crate::network::{BtcNet, NetworkId, SolCluster};
@@ -53,6 +53,33 @@ pub trait Transport: Send + Sync {
         body: &[u8],
         max_response: usize,
     ) -> Result<HttpReply, HttpError>;
+
+    /// GETs `url` with `Accept: application/json` and returns status, `Content-Type` and body
+    /// (Bitcoin `esplora`/`bb-rest` indexers, spec/08 §4.1). Transports that only speak JSON-RPC
+    /// keep the default, which sends nothing and fails with [`HttpError::InvalidUrl`].
+    ///
+    /// # Errors
+    ///
+    /// [`HttpError`].
+    fn http_get(&self, _url: &HttpsUrl, _max_response: usize) -> Result<Response, HttpError> {
+        Err(HttpError::InvalidUrl)
+    }
+
+    /// POSTs `body` with exactly `Content-Type: text/plain` (only the user-confirmed Esplora
+    /// `POST /tx`, spec/08 §11.3). The default sends nothing and fails with
+    /// [`HttpError::InvalidUrl`].
+    ///
+    /// # Errors
+    ///
+    /// [`HttpError`].
+    fn http_post_text(
+        &self,
+        _url: &HttpsUrl,
+        _body: &[u8],
+        _max_response: usize,
+    ) -> Result<Response, HttpError> {
+        Err(HttpError::InvalidUrl)
+    }
 }
 
 impl Transport for Client {
@@ -66,6 +93,24 @@ impl Transport for Client {
             status: response.status,
             body: response.body,
         })
+    }
+
+    fn http_get(&self, url: &HttpsUrl, max_response: usize) -> Result<Response, HttpError> {
+        self.get(url, max_response)
+    }
+
+    fn http_post_text(
+        &self,
+        url: &HttpsUrl,
+        body: &[u8],
+        max_response: usize,
+    ) -> Result<Response, HttpError> {
+        self.post(
+            &EndpointUrl::Https(url.clone()),
+            &[("Content-Type", "text/plain")],
+            body,
+            max_response,
+        )
     }
 }
 
@@ -83,6 +128,15 @@ pub enum RpcFailure {
     /// Returned after the per-call deadline.
     Late,
 }
+
+impl core::fmt::Display for RpcFailure {
+    /// The classified code only (no URL, host or remote text).
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str(classify(*self).code())
+    }
+}
+
+impl std::error::Error for RpcFailure {}
 
 /// spec/04 §1.9 classification.
 #[must_use]

@@ -1,0 +1,1384 @@
+//! `BtcMeta`, the `btc` key of meta.ywm (spec/08 §12.3, spec/02 §5.3): the cached account node,
+//! issue indices (§3.2), discovery (§3.4) as a pure state machine driven by indexer `tx_count`
+//! observations, history marking, the verified UTXO set with its update rules (§4.7-4/5/6,
+//! auto-freeze, user freeze), spendable candidates and balance (§7.4), sent-script hashes,
+//! the tip regression rule (§2 step 2), `change_next` reconciliation with the journal (§3.2) and
+//! own change insertion on confirmation (§12.2-5), and the strict JSON codec.
+//!
+//! The JSON writer emits the §12.3 key order; the reader rejects unknown or missing keys, wrong
+//! types and formats (lowercase hex, sats as decimal strings, outpoints `"<txid>:<vout>"`) and
+//! bound violations, which the app handles as a meta validation failure (spec/02 §5.3).
+#![deny(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
+
+use core::fmt;
+
+use secp256k1::{All, PublicKey, Secp256k1};
+use sha2::{Digest, Sha256};
+use yw_json::{Number, Object, Value};
+
+use super::address::{BtcAddress, ScriptKind, hash160, kind_from_script};
+use super::amount::Sats;
+use super::display::BtcSendFacts;
+use super::network::BtcNetwork;
+use super::prevtx::VerifiedPrevOut;
+use super::script::p2wpkh_script_pubkey;
+use super::select::{SendPlan, Utxo};
+use super::tx::{OutPoint, Txid};
+use super::{
+    BTC_AUTO_FREEZE_BELOW, BTC_COINBASE_MATURITY, BTC_GAP_HARD_LIMIT, BTC_GAP_LIMIT, BTC_MIN_CONF,
+    MAX_MONEY, conf,
+};
+use crate::bip32::path::BtcChain;
+use crate::bip32::{AccountXpub, HARDENED, derive_public_child_with};
+use crate::entropy::{OsRandom, secp_context};
+use crate::error::KeyError;
+
+/// `BtcMeta.version`.
+pub const BTC_META_VERSION: u64 = 1;
+/// Most `verified` entries.
+pub const MAX_VERIFIED: usize = 4_096;
+/// Most `frozen` entries.
+pub const MAX_FROZEN: usize = 1_024;
+/// Most `unfrozen` entries (oldest dropped first).
+pub const MAX_UNFROZEN: usize = 1_024;
+/// Most `sent_scripts` entries (oldest dropped first).
+pub const MAX_SENT_SCRIPTS: usize = 4_096;
+/// A Core tip this far below `max_tip_seen` is refused (spec/08 §2 step 2).
+pub const TIP_REGRESSION_ALLOWANCE: u32 = 6;
+
+const KEYS: [&str; 14] = [
+    "version",
+    "network",
+    "account_pubkey",
+    "account_chain_code",
+    "receive_next",
+    "change_next",
+    "last_used_receive",
+    "last_used_change",
+    "discovery_done",
+    "max_tip_seen",
+    "verified",
+    "frozen",
+    "unfrozen",
+    "sent_scripts",
+];
+const VERIFIED_KEYS: [&str; 7] = [
+    "outpoint",
+    "value",
+    "chain",
+    "index",
+    "height",
+    "is_coinbase",
+    "own",
+];
+const FROZEN_KEYS: [&str; 2] = ["outpoint", "reason"];
+/// Largest storable `receive_next`/`change_next` (`< 2^31`).
+const MAX_NEXT: u32 = HARDENED - 1;
+
+/// Why an outpoint is frozen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum FreezeReason {
+    /// Frozen by the user.
+    User = 1,
+    /// A small foreign deposit frozen automatically (dust attack defence).
+    Auto = 2,
+}
+
+impl FreezeReason {
+    /// JSON code.
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        self as u8
+    }
+
+    /// Inverse of [`FreezeReason::code`].
+    #[must_use]
+    pub const fn from_code(code: u64) -> Option<Self> {
+        match code {
+            1 => Some(Self::User),
+            2 => Some(Self::Auto),
+            _ => None,
+        }
+    }
+}
+
+/// One verified output of ours (spec/08 §5, §12.3 `verified`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct VerifiedUtxo {
+    /// Outpoint.
+    pub outpoint: OutPoint,
+    /// Value taken from the hash-verified previous transaction.
+    pub value: Sats,
+    /// Our chain.
+    pub chain: BtcChain,
+    /// Our index.
+    pub index: u32,
+    /// Block height (server based).
+    pub height: u32,
+    /// Coinbase output.
+    pub is_coinbase: bool,
+    /// Our own change, inserted from the journal (never auto-frozen).
+    pub own: bool,
+}
+
+impl VerifiedUtxo {
+    /// A verified previous output of a listed UTXO.
+    #[must_use]
+    pub const fn from_prev(prev: &VerifiedPrevOut, listed: &ListedUtxo) -> Self {
+        Self {
+            outpoint: prev.outpoint,
+            value: prev.value,
+            chain: listed.chain,
+            index: listed.index,
+            height: listed.height,
+            is_coinbase: prev.is_coinbase,
+            own: false,
+        }
+    }
+
+    /// As a selection candidate.
+    #[must_use]
+    pub const fn utxo(&self) -> Utxo {
+        Utxo {
+            outpoint: self.outpoint,
+            value: self.value,
+            chain: self.chain,
+            index: self.index,
+            height: self.height,
+            is_coinbase: self.is_coinbase,
+        }
+    }
+
+    /// Confirmed (coinbase: mature) at `tip_height`.
+    #[must_use]
+    pub const fn is_mature(&self, tip_height: u32) -> bool {
+        let confirmations = conf(self.height, tip_height);
+        confirmations >= BTC_MIN_CONF
+            && (!self.is_coinbase || confirmations >= BTC_COINBASE_MATURITY)
+    }
+}
+
+/// A confirmed UTXO candidate the indexer listed for one of our addresses in this refresh
+/// (`UtxoCandidate` with `conf(height, tip) >= 1`, mapped to our path).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ListedUtxo {
+    /// Outpoint.
+    pub outpoint: OutPoint,
+    /// Chain of the address queried.
+    pub chain: BtcChain,
+    /// Index of the address queried.
+    pub index: u32,
+    /// Block height.
+    pub height: u32,
+}
+
+/// What a refresh changed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct RefreshReport {
+    /// Newly verified outputs added.
+    pub inserted: u32,
+    /// Outputs no longer listed (spent or hidden) removed.
+    pub removed: u32,
+    /// Small foreign outputs frozen automatically ("작은 입금 자동 동결(먼지 공격 방지)").
+    pub auto_frozen: u32,
+    /// Outputs not added because a bound (4,096 verified / 1,024 frozen) is full.
+    pub skipped: u32,
+}
+
+/// Balance summary (spec/08 §4.7-6); in-flight outpoints are excluded everywhere.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct BtcBalance {
+    /// Confirmed (coinbase mature), not frozen: what selection may use.
+    pub available: Sats,
+    /// Confirmed, frozen (shown separately).
+    pub frozen: Sats,
+    /// Verified but not yet confirmed enough (unconfirmed own change, immature coinbase).
+    pub pending: Sats,
+}
+
+/// The receive address to show (spec/08 §3.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ReceiveAddress {
+    /// An issued, unused index.
+    Existing(u32),
+    /// A newly issued index: `receive_next` was incremented, persist meta **before** showing it.
+    Issued(u32),
+}
+
+impl ReceiveAddress {
+    /// The receive index.
+    #[must_use]
+    pub const fn index(self) -> u32 {
+        match self {
+            Self::Existing(index) | Self::Issued(index) => index,
+        }
+    }
+}
+
+/// A `BtcMeta` operation refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetaError {
+    /// settings `bitcoin.network` differs from `BtcMeta.network` (all BTC calls blocked).
+    NetworkMismatch,
+    /// "새 주소": 20 or more unused receive addresses; confirm with the warning first.
+    GapWarning {
+        /// `unused_tail`.
+        unused: u32,
+    },
+    /// "새 주소": 100 or more unused receive addresses.
+    GapHardLimit,
+    /// No non-hardened index left.
+    IndexExhausted,
+    /// An index outside the issued range.
+    OutOfRange,
+    /// Core tip more than 6 blocks below `max_tip_seen`.
+    TipRegression {
+        /// `getblockchaininfo.blocks`.
+        blocks: u32,
+        /// `max_tip_seen`.
+        max_tip_seen: u32,
+    },
+    /// The outpoint is not in `verified`.
+    NotVerified,
+    /// A bound (`verified`, `frozen`) is full.
+    Full,
+    /// Discovery is not finished.
+    DiscoveryIncomplete,
+    /// Public derivation failed.
+    Key(KeyError),
+}
+
+impl fmt::Display for MetaError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NetworkMismatch => formatter.write_str(super::policy::texts::NETWORK_MISMATCH),
+            Self::GapWarning { .. } => formatter.write_str(
+                "미사용 주소가 20개를 넘으면 다른 지갑으로 복구할 때 이후 입금이 보이지 않을 수 있습니다",
+            ),
+            Self::GapHardLimit => {
+                formatter.write_str("미사용 주소가 100개 이상이라 새 주소를 발급할 수 없습니다")
+            }
+            Self::IndexExhausted => formatter.write_str("더 발급할 주소 인덱스가 없습니다"),
+            Self::OutOfRange => formatter.write_str("발급하지 않은 주소입니다"),
+            Self::TipRegression { .. } => {
+                formatter.write_str("노드 블록 높이가 이전에 본 값보다 낮습니다")
+            }
+            Self::NotVerified => formatter.write_str("검증된 UTXO가 아닙니다"),
+            Self::Full => formatter.write_str("BTC 데이터 공간이 부족합니다"),
+            Self::DiscoveryIncomplete => formatter.write_str("주소 검색 미완료"),
+            Self::Key(_) => formatter.write_str(super::policy::texts::DERIVATION_FAILED),
+        }
+    }
+}
+
+impl std::error::Error for MetaError {}
+
+impl From<KeyError> for MetaError {
+    fn from(error: KeyError) -> Self {
+        Self::Key(error)
+    }
+}
+
+/// The meta `btc` JSON is invalid (spec/02 §5.3 meta validation failure); names the field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BtcMetaError(pub &'static str);
+
+impl fmt::Display for BtcMetaError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "invalid btc meta field: {}", self.0)
+    }
+}
+
+impl std::error::Error for BtcMetaError {}
+
+/// Public derivation of our programs with one context and the two chain nodes.
+struct Deriver {
+    ctx: Secp256k1<All>,
+    receive: AccountXpub,
+    change: AccountXpub,
+}
+
+impl Deriver {
+    fn new(account: &AccountXpub) -> Result<Self, KeyError> {
+        let ctx = secp_context(&mut OsRandom)?;
+        let receive = derive_public_child_with(&ctx, account, BtcChain::Receive.index())?;
+        let change = derive_public_child_with(&ctx, account, BtcChain::Change.index())?;
+        Ok(Self {
+            ctx,
+            receive,
+            change,
+        })
+    }
+
+    fn program(&self, chain: BtcChain, index: u32) -> Result<[u8; 20], KeyError> {
+        let parent = match chain {
+            BtcChain::Receive => &self.receive,
+            BtcChain::Change => &self.change,
+        };
+        Ok(hash160(
+            &derive_public_child_with(&self.ctx, parent, index)?.pubkey,
+        ))
+    }
+}
+
+/// The meta `btc` object (spec/08 §12.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BtcMeta {
+    pub(crate) network: BtcNetwork,
+    pub(crate) account: AccountXpub,
+    pub(crate) receive_next: u32,
+    pub(crate) change_next: u32,
+    pub(crate) last_used_receive: Option<u32>,
+    pub(crate) last_used_change: Option<u32>,
+    pub(crate) discovery_done: bool,
+    pub(crate) max_tip_seen: u32,
+    pub(crate) verified: Vec<VerifiedUtxo>,
+    pub(crate) frozen: Vec<(OutPoint, FreezeReason)>,
+    pub(crate) unfrozen: Vec<OutPoint>,
+    pub(crate) sent_scripts: Vec<[u8; 32]>,
+}
+
+fn script_hash(script: &[u8]) -> [u8; 32] {
+    Sha256::digest(script).into()
+}
+
+impl BtcMeta {
+    /// Fresh meta for `network` with the account node from `Vault::btc_account_xpub` (BTC
+    /// enable, network change, meta reset): indices 0, nothing verified, discovery pending.
+    #[must_use]
+    pub const fn new(network: BtcNetwork, account: AccountXpub) -> Self {
+        Self {
+            network,
+            account,
+            receive_next: 0,
+            change_next: 0,
+            last_used_receive: None,
+            last_used_change: None,
+            discovery_done: false,
+            max_tip_seen: 0,
+            verified: Vec::new(),
+            frozen: Vec::new(),
+            unfrozen: Vec::new(),
+            sent_scripts: Vec::new(),
+        }
+    }
+
+    /// Network copy.
+    #[must_use]
+    pub const fn network(&self) -> BtcNetwork {
+        self.network
+    }
+
+    /// Cached account node `m/84'/{coin}'/0'`.
+    #[must_use]
+    pub const fn account(&self) -> &AccountXpub {
+        &self.account
+    }
+
+    /// Next receive index to issue.
+    #[must_use]
+    pub const fn receive_next(&self) -> u32 {
+        self.receive_next
+    }
+
+    /// Next change index to use.
+    #[must_use]
+    pub const fn change_next(&self) -> u32 {
+        self.change_next
+    }
+
+    /// Highest receive index with history.
+    #[must_use]
+    pub const fn last_used_receive(&self) -> Option<u32> {
+        self.last_used_receive
+    }
+
+    /// Highest change index with history.
+    #[must_use]
+    pub const fn last_used_change(&self) -> Option<u32> {
+        self.last_used_change
+    }
+
+    /// Discovery finished (sending is refused otherwise).
+    #[must_use]
+    pub const fn discovery_done(&self) -> bool {
+        self.discovery_done
+    }
+
+    /// Highest Core tip seen.
+    #[must_use]
+    pub const fn max_tip_seen(&self) -> u32 {
+        self.max_tip_seen
+    }
+
+    /// Verified outputs.
+    #[must_use]
+    pub fn verified(&self) -> &[VerifiedUtxo] {
+        &self.verified
+    }
+
+    /// Frozen outpoints.
+    #[must_use]
+    pub fn frozen(&self) -> &[(OutPoint, FreezeReason)] {
+        &self.frozen
+    }
+
+    /// Outpoints the user unfroze (never auto-frozen again).
+    #[must_use]
+    pub fn unfrozen(&self) -> &[OutPoint] {
+        &self.unfrozen
+    }
+
+    /// `SHA-256(scriptPubKey)` of recipients we sent to.
+    #[must_use]
+    pub fn sent_scripts(&self) -> &[[u8; 32]] {
+        &self.sent_scripts
+    }
+
+    /// The settings network must equal the meta copy (spec/08 §2).
+    ///
+    /// # Errors
+    ///
+    /// [`MetaError::NetworkMismatch`]: block every BTC call and send.
+    pub fn check_network(&self, settings: BtcNetwork) -> Result<(), MetaError> {
+        if settings == self.network {
+            Ok(())
+        } else {
+            Err(MetaError::NetworkMismatch)
+        }
+    }
+
+    const fn next_of(&self, chain: BtcChain) -> u32 {
+        match chain {
+            BtcChain::Receive => self.receive_next,
+            BtcChain::Change => self.change_next,
+        }
+    }
+
+    /// Our P2WPKH address `m/84'/{coin}'/0'/{chain}/{index}` by public derivation.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError`] (hardened index, derivation, randomness).
+    pub fn address(&self, chain: BtcChain, index: u32) -> Result<BtcAddress, KeyError> {
+        let program = super::address::p2wpkh_program(&self.account, chain, index)?;
+        Ok(BtcAddress::p2wpkh(self.network, &program))
+    }
+
+    /// The `verify_prev_output` expected script `00 14 <program>` of `(chain, index)`.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError`].
+    pub fn expected_script(&self, chain: BtcChain, index: u32) -> Result<[u8; 22], KeyError> {
+        Ok(p2wpkh_script_pubkey(&super::address::p2wpkh_program(
+            &self.account,
+            chain,
+            index,
+        )?))
+    }
+
+    /// The watch set (spec/08 §3.3): receive `[0, receive_next)` then change `[0, change_next)`,
+    /// with their addresses.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError`].
+    pub fn watch_set(&self) -> Result<Vec<(BtcChain, u32, BtcAddress)>, KeyError> {
+        let deriver = Deriver::new(&self.account)?;
+        let mut out = Vec::new();
+        for chain in [BtcChain::Receive, BtcChain::Change] {
+            for index in 0..self.next_of(chain) {
+                let program = deriver.program(chain, index)?;
+                out.push((chain, index, BtcAddress::p2wpkh(self.network, &program)));
+            }
+        }
+        Ok(out)
+    }
+
+    const fn receive_start(&self) -> u32 {
+        match self.last_used_receive {
+            Some(used) => used.saturating_add(1),
+            None => 0,
+        }
+    }
+
+    /// `unused_tail = receive_next − (last_used_receive + 1 or 0)`.
+    #[must_use]
+    pub const fn unused_receive_tail(&self) -> u32 {
+        self.receive_next.saturating_sub(self.receive_start())
+    }
+
+    fn issue_receive(&mut self) -> Result<u32, MetaError> {
+        let index = self.receive_next;
+        let next = index.checked_add(1).ok_or(MetaError::IndexExhausted)?;
+        if next > MAX_NEXT {
+            return Err(MetaError::IndexExhausted);
+        }
+        self.receive_next = next;
+        Ok(index)
+    }
+
+    /// The receive screen's address (spec/08 §3.2): the smallest index of
+    /// `[last_used_receive + 1 (or 0), receive_next)`, or a newly issued one when that range is
+    /// empty (persist meta before showing it).
+    ///
+    /// # Errors
+    ///
+    /// [`MetaError::IndexExhausted`].
+    pub fn receive_address(&mut self) -> Result<ReceiveAddress, MetaError> {
+        let start = self.receive_start();
+        if start < self.receive_next {
+            return Ok(ReceiveAddress::Existing(start));
+        }
+        self.issue_receive().map(ReceiveAddress::Issued)
+    }
+
+    /// "새 주소" (spec/08 §3.2): issues `receive_next`. With 20 or more unused addresses the
+    /// warning must be confirmed first (`gap_confirmed`); with 100 or more it is refused. Persist
+    /// meta before showing the address.
+    ///
+    /// # Errors
+    ///
+    /// [`MetaError::GapWarning`], [`MetaError::GapHardLimit`], [`MetaError::IndexExhausted`].
+    pub fn new_receive_address(&mut self, gap_confirmed: bool) -> Result<u32, MetaError> {
+        let unused = self.unused_receive_tail();
+        if unused >= BTC_GAP_HARD_LIMIT {
+            return Err(MetaError::GapHardLimit);
+        }
+        if unused >= BTC_GAP_LIMIT && !gap_confirmed {
+            return Err(MetaError::GapWarning { unused });
+        }
+        self.issue_receive()
+    }
+
+    /// Marks discovery as not finished (sending blocked until [`Discovery::apply`]).
+    pub const fn mark_discovery_pending(&mut self) {
+        self.discovery_done = false;
+    }
+
+    /// History of the watched address `(chain, index)` from the indexer `tx_count`
+    /// (spec/08 §3.2): `tx_count > 0` raises `last_used_*`. Returns whether meta changed.
+    ///
+    /// # Errors
+    ///
+    /// [`MetaError::OutOfRange`] for an index that was never issued.
+    pub fn mark_history(
+        &mut self,
+        chain: BtcChain,
+        index: u32,
+        tx_count: u64,
+    ) -> Result<bool, MetaError> {
+        if index >= self.next_of(chain) {
+            return Err(MetaError::OutOfRange);
+        }
+        if tx_count == 0 {
+            return Ok(false);
+        }
+        let slot = match chain {
+            BtcChain::Receive => &mut self.last_used_receive,
+            BtcChain::Change => &mut self.last_used_change,
+        };
+        if slot.is_some_and(|used| used >= index) {
+            return Ok(false);
+        }
+        *slot = Some(index);
+        Ok(true)
+    }
+
+    /// The listed outputs that still need `getrawtransaction` + `verify_prev_output`.
+    #[must_use]
+    pub fn unverified(&self, listed: &[ListedUtxo]) -> Vec<ListedUtxo> {
+        listed
+            .iter()
+            .filter(|item| !self.verified.iter().any(|v| v.outpoint == item.outpoint))
+            .copied()
+            .collect()
+    }
+
+    /// Applies a complete refresh (spec/08 §4.7-4/5, §7.6). `listed` is every confirmed
+    /// candidate of the watch set in this refresh (call only when the refresh completed),
+    /// `newly` the outputs of `listed` that passed `verify_prev_output` now, `in_flight` the
+    /// outpoints of in-flight journal entries (`journal::btc::in_flight_outpoints`), `own` our
+    /// change outpoints (`journal::btc::own_outputs`). Heights follow the listing; entries not
+    /// listed are removed unless in flight; new foreign outputs below 1,000 sats are frozen
+    /// automatically unless the user unfroze them; frozen entries of removed outputs go too.
+    pub fn apply_refresh(
+        &mut self,
+        listed: &[ListedUtxo],
+        newly: &[VerifiedUtxo],
+        in_flight: &[OutPoint],
+        own: &[OutPoint],
+    ) -> RefreshReport {
+        let mut report = RefreshReport::default();
+        for entry in &mut self.verified {
+            if let Some(item) = listed.iter().find(|item| item.outpoint == entry.outpoint) {
+                entry.height = item.height;
+            }
+        }
+        let before = self.verified.len();
+        self.verified.retain(|entry| {
+            listed.iter().any(|item| item.outpoint == entry.outpoint)
+                || in_flight.contains(&entry.outpoint)
+        });
+        report.removed =
+            u32::try_from(before.saturating_sub(self.verified.len())).unwrap_or(u32::MAX);
+        for candidate in newly {
+            let is_listed = listed
+                .iter()
+                .any(|item| item.outpoint == candidate.outpoint);
+            let known = self
+                .verified
+                .iter()
+                .any(|entry| entry.outpoint == candidate.outpoint);
+            if !is_listed || known {
+                continue;
+            }
+            if self.verified.len() >= MAX_VERIFIED {
+                report.skipped = report.skipped.saturating_add(1);
+                continue;
+            }
+            let mut entry = *candidate;
+            entry.own = entry.own || own.contains(&entry.outpoint);
+            let small = entry.value.get() < BTC_AUTO_FREEZE_BELOW;
+            if !entry.own && small && !self.unfrozen.contains(&entry.outpoint) {
+                if self.frozen.len() >= MAX_FROZEN {
+                    report.skipped = report.skipped.saturating_add(1);
+                    continue;
+                }
+                if !self.frozen.iter().any(|(op, _)| *op == entry.outpoint) {
+                    self.frozen.push((entry.outpoint, FreezeReason::Auto));
+                }
+                report.auto_frozen = report.auto_frozen.saturating_add(1);
+            }
+            self.verified.push(entry);
+            report.inserted = report.inserted.saturating_add(1);
+        }
+        let verified = &self.verified;
+        self.frozen
+            .retain(|(outpoint, _)| verified.iter().any(|entry| entry.outpoint == *outpoint));
+        report
+    }
+
+    /// Inserts our own change after its transaction confirmed (spec/08 §12.2-5); updates the
+    /// height if present. Returns whether meta changed.
+    ///
+    /// # Errors
+    ///
+    /// [`MetaError::Full`] when `verified` is full.
+    pub fn insert_own(&mut self, utxo: VerifiedUtxo) -> Result<bool, MetaError> {
+        let utxo = VerifiedUtxo { own: true, ..utxo };
+        if let Some(entry) = self
+            .verified
+            .iter_mut()
+            .find(|entry| entry.outpoint == utxo.outpoint)
+        {
+            let changed = *entry != utxo;
+            *entry = utxo;
+            return Ok(changed);
+        }
+        if self.verified.len() >= MAX_VERIFIED {
+            return Err(MetaError::Full);
+        }
+        self.verified.push(utxo);
+        Ok(true)
+    }
+
+    /// The freeze reason of `outpoint`.
+    #[must_use]
+    pub fn frozen_reason(&self, outpoint: &OutPoint) -> Option<FreezeReason> {
+        self.frozen
+            .iter()
+            .find_map(|(op, reason)| (op == outpoint).then_some(*reason))
+    }
+
+    /// User freeze of a verified output.
+    ///
+    /// # Errors
+    ///
+    /// [`MetaError::NotVerified`], [`MetaError::Full`].
+    pub fn freeze(&mut self, outpoint: OutPoint) -> Result<(), MetaError> {
+        if !self.verified.iter().any(|entry| entry.outpoint == outpoint) {
+            return Err(MetaError::NotVerified);
+        }
+        self.unfrozen.retain(|op| *op != outpoint);
+        if let Some(entry) = self.frozen.iter_mut().find(|(op, _)| *op == outpoint) {
+            entry.1 = FreezeReason::User;
+            return Ok(());
+        }
+        if self.frozen.len() >= MAX_FROZEN {
+            return Err(MetaError::Full);
+        }
+        self.frozen.push((outpoint, FreezeReason::User));
+        Ok(())
+    }
+
+    /// Unfreezes an outpoint and remembers it in `unfrozen` (never auto-frozen again; the
+    /// oldest record is dropped above 1,024).
+    pub fn unfreeze(&mut self, outpoint: OutPoint) {
+        self.frozen.retain(|(op, _)| *op != outpoint);
+        if !self.unfrozen.contains(&outpoint) {
+            self.unfrozen.push(outpoint);
+            while self.unfrozen.len() > MAX_UNFROZEN {
+                self.unfrozen.remove(0);
+            }
+        }
+    }
+
+    /// Selection candidates (spec/08 §7.4): confirmed (coinbase: 100), not frozen, not in flight.
+    #[must_use]
+    pub fn spendable(&self, tip_height: u32, in_flight: &[OutPoint]) -> Vec<Utxo> {
+        self.verified
+            .iter()
+            .filter(|entry| {
+                entry.is_mature(tip_height)
+                    && self.frozen_reason(&entry.outpoint).is_none()
+                    && !in_flight.contains(&entry.outpoint)
+            })
+            .map(VerifiedUtxo::utxo)
+            .collect()
+    }
+
+    /// Balance (spec/08 §4.7-6), in-flight outpoints excluded.
+    #[must_use]
+    pub fn balance(&self, tip_height: u32, in_flight: &[OutPoint]) -> BtcBalance {
+        let mut out = BtcBalance::default();
+        for entry in &self.verified {
+            if in_flight.contains(&entry.outpoint) {
+                continue;
+            }
+            let slot = if !entry.is_mature(tip_height) {
+                &mut out.pending
+            } else if self.frozen_reason(&entry.outpoint).is_some() {
+                &mut out.frozen
+            } else {
+                &mut out.available
+            };
+            *slot = slot.checked_add(entry.value).unwrap_or(Sats::MAX);
+        }
+        out
+    }
+
+    /// Every `outpoint → value` of `verified` (for `sign::check_recorded_amounts`).
+    #[must_use]
+    pub fn recorded_amounts(&self) -> Vec<(OutPoint, Sats)> {
+        self.verified
+            .iter()
+            .map(|entry| (entry.outpoint, entry.value))
+            .collect()
+    }
+
+    /// The smallest confirmation count of `outpoints` (server based); `None` if one is unknown.
+    #[must_use]
+    pub fn min_confirmations(&self, outpoints: &[OutPoint], tip_height: u32) -> Option<u32> {
+        let mut minimum: Option<u32> = None;
+        for outpoint in outpoints {
+            let entry = self
+                .verified
+                .iter()
+                .find(|entry| entry.outpoint == *outpoint)?;
+            let confirmations = conf(entry.height, tip_height);
+            minimum = Some(minimum.map_or(confirmations, |m| m.min(confirmations)));
+        }
+        minimum
+    }
+
+    /// Whether we never sent to `script` (B05).
+    #[must_use]
+    pub fn is_first_time(&self, script: &[u8]) -> bool {
+        !self.sent_scripts.contains(&script_hash(script))
+    }
+
+    /// Records a recipient after `Submitted` (spec/08 §11.3); the oldest of more than 4,096 is
+    /// dropped. Returns whether meta changed.
+    pub fn record_sent_script(&mut self, script: &[u8]) -> bool {
+        let hash = script_hash(script);
+        if self.sent_scripts.contains(&hash) {
+            return false;
+        }
+        self.sent_scripts.push(hash);
+        while self.sent_scripts.len() > MAX_SENT_SCRIPTS {
+            self.sent_scripts.remove(0);
+        }
+        true
+    }
+
+    /// Applies `getblockchaininfo.blocks` (spec/08 §2 step 2): refused when more than 6 below
+    /// `max_tip_seen`, otherwise `max_tip_seen = max(max_tip_seen, blocks)`. Returns whether
+    /// meta changed.
+    ///
+    /// # Errors
+    ///
+    /// [`MetaError::TipRegression`].
+    pub fn observe_tip(&mut self, blocks: u32) -> Result<bool, MetaError> {
+        if blocks < self.max_tip_seen.saturating_sub(TIP_REGRESSION_ALLOWANCE) {
+            return Err(MetaError::TipRegression {
+                blocks,
+                max_tip_seen: self.max_tip_seen,
+            });
+        }
+        if blocks > self.max_tip_seen {
+            self.max_tip_seen = blocks;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Startup reconciliation (spec/08 §3.2): `change_next = max(meta, journal floor)` with the
+    /// floor from `journal::btc::change_next_floor`. Returns whether meta changed.
+    pub fn reconcile_change_next(&mut self, journal_floor: Option<u32>) -> bool {
+        match journal_floor {
+            Some(floor) if floor > self.change_next && floor <= MAX_NEXT => {
+                self.change_next = floor;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// A transaction entered `Broadcasting` (spec/08 §3.2): `change_next = max(change_next,
+    /// change_index + 1)`. Returns whether meta changed.
+    ///
+    /// # Errors
+    ///
+    /// [`MetaError::IndexExhausted`].
+    pub fn on_broadcasting(&mut self, change_index: Option<u32>) -> Result<bool, MetaError> {
+        let Some(index) = change_index else {
+            return Ok(false);
+        };
+        let next = index.checked_add(1).ok_or(MetaError::IndexExhausted)?;
+        if next > MAX_NEXT {
+            return Err(MetaError::IndexExhausted);
+        }
+        if next > self.change_next {
+            self.change_next = next;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// `(chain, index)` when `script` is one of our P2WPKH addresses in
+    /// `[0, next + BTC_GAP_LIMIT)` of either chain (B07).
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError`].
+    pub fn own_recipient(&self, script: &[u8]) -> Result<Option<(BtcChain, u32)>, KeyError> {
+        let Some(ScriptKind::P2wpkh(program)) = kind_from_script(script) else {
+            return Ok(None);
+        };
+        let deriver = Deriver::new(&self.account)?;
+        for chain in [BtcChain::Receive, BtcChain::Change] {
+            let end = self
+                .next_of(chain)
+                .saturating_add(BTC_GAP_LIMIT)
+                .min(HARDENED);
+            for index in 0..end {
+                if deriver.program(chain, index)? == program {
+                    return Ok(Some((chain, index)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// The approval facts of `plan` (spec/08 §10): available balance, minimum input
+    /// confirmations, first-time and own-address recipient.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError`].
+    pub fn send_facts(
+        &self,
+        plan: &SendPlan,
+        tip_height: u32,
+        in_flight: &[OutPoint],
+    ) -> Result<BtcSendFacts, KeyError> {
+        let script = plan.recipient_script();
+        let outpoints: Vec<OutPoint> = plan.inputs().iter().map(|input| input.outpoint).collect();
+        Ok(BtcSendFacts {
+            verified_balance: self.balance(tip_height, in_flight).available,
+            min_confirmations: self.min_confirmations(&outpoints, tip_height),
+            first_time_recipient: self.is_first_time(&script),
+            own_recipient: self.own_recipient(&script)?,
+        })
+    }
+}
+
+/// Discovery of spec/08 §3.4 as a state machine: ask [`Discovery::next_request`], query the
+/// indexer `Address` of that `(chain, index)`, feed `tx_count` to [`Discovery::observe`], repeat
+/// until it returns `None`, then [`Discovery::apply`]. A cancelled or failed run is simply
+/// dropped (meta keeps `discovery_done == false`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Discovery {
+    scans: [Scan; 2],
+    checked: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Scan {
+    next_index: u32,
+    gap: u32,
+    last: Option<u32>,
+    done: bool,
+}
+
+const CHAINS: [BtcChain; 2] = [BtcChain::Receive, BtcChain::Change];
+
+impl Discovery {
+    /// Full discovery from index 0 of both chains (import, BTC enable, network change).
+    #[must_use]
+    pub const fn full() -> Self {
+        let scan = Scan {
+            next_index: 0,
+            gap: 0,
+            last: None,
+            done: false,
+        };
+        Self {
+            scans: [scan, scan],
+            checked: 0,
+        }
+    }
+
+    /// "더 찾기": each chain 20 more addresses from its current `next` (the gap rule continues
+    /// when history appears).
+    #[must_use]
+    pub const fn more(meta: &BtcMeta) -> Self {
+        Self {
+            scans: [
+                Scan {
+                    next_index: meta.receive_next,
+                    gap: 0,
+                    last: meta.last_used_receive,
+                    done: meta.receive_next >= MAX_NEXT,
+                },
+                Scan {
+                    next_index: meta.change_next,
+                    gap: 0,
+                    last: meta.last_used_change,
+                    done: meta.change_next >= MAX_NEXT,
+                },
+            ],
+            checked: 0,
+        }
+    }
+
+    /// The address to query next, `None` when finished.
+    #[must_use]
+    pub fn next_request(&self) -> Option<(BtcChain, u32)> {
+        self.scans
+            .iter()
+            .zip(CHAINS)
+            .find(|(scan, _)| !scan.done)
+            .map(|(scan, chain)| (chain, scan.next_index))
+    }
+
+    /// Feeds the `tx_count` of the address returned by [`Discovery::next_request`].
+    pub fn observe(&mut self, tx_count: u64) {
+        let Some(scan) = self.scans.iter_mut().find(|scan| !scan.done) else {
+            return;
+        };
+        if tx_count > 0 {
+            scan.last = Some(scan.next_index);
+            scan.gap = 0;
+        } else {
+            scan.gap = scan.gap.saturating_add(1);
+        }
+        scan.next_index = scan.next_index.saturating_add(1);
+        if scan.gap >= BTC_GAP_LIMIT || scan.next_index >= MAX_NEXT {
+            scan.done = true;
+        }
+        self.checked = self.checked.saturating_add(1);
+    }
+
+    /// Addresses checked so far (progress).
+    #[must_use]
+    pub const fn checked(&self) -> u32 {
+        self.checked
+    }
+
+    /// Both chains finished.
+    #[must_use]
+    pub fn is_done(&self) -> bool {
+        self.scans.iter().all(|scan| scan.done)
+    }
+
+    /// Writes the result: `next = max(next, last + 1 or 0)`, `last_used_* = max(..)`,
+    /// `discovery_done = true`.
+    ///
+    /// # Errors
+    ///
+    /// [`MetaError::DiscoveryIncomplete`] before both chains finished.
+    pub fn apply(&self, meta: &mut BtcMeta) -> Result<(), MetaError> {
+        if !self.is_done() {
+            return Err(MetaError::DiscoveryIncomplete);
+        }
+        for (scan, chain) in self.scans.iter().zip(CHAINS) {
+            let found_next = scan.last.map_or(0, |last| last.saturating_add(1));
+            let (next, last_used) = match chain {
+                BtcChain::Receive => (&mut meta.receive_next, &mut meta.last_used_receive),
+                BtcChain::Change => (&mut meta.change_next, &mut meta.last_used_change),
+            };
+            *next = (*next).max(found_next).min(MAX_NEXT);
+            *last_used = match (*last_used, scan.last) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            };
+        }
+        meta.discovery_done = true;
+        Ok(())
+    }
+}
+
+// ---- JSON codec ----
+
+fn object_with<'a>(
+    value: &'a Value,
+    keys: &[&str],
+    field: &'static str,
+) -> Result<&'a Object, BtcMetaError> {
+    let object = value.as_object().ok_or(BtcMetaError(field))?;
+    if object.len() != keys.len()
+        || object.keys().any(|key| !keys.contains(&key))
+        || keys.iter().any(|key| object.get(key).is_none())
+    {
+        return Err(BtcMetaError(field));
+    }
+    Ok(object)
+}
+
+fn get<'a>(object: &'a Object, key: &'static str) -> Result<&'a Value, BtcMetaError> {
+    object.get(key).ok_or(BtcMetaError(key))
+}
+
+fn integer(value: &Value, max: u64, field: &'static str) -> Result<u64, BtcMetaError> {
+    value
+        .as_number()
+        .and_then(Number::as_u64)
+        .filter(|number| *number <= max)
+        .ok_or(BtcMetaError(field))
+}
+
+fn u32_field(value: &Value, max: u32, field: &'static str) -> Result<u32, BtcMetaError> {
+    integer(value, u64::from(max), field)
+        .and_then(|n| u32::try_from(n).map_err(|_| BtcMetaError(field)))
+}
+
+fn optional_u32(value: &Value, max: u32, field: &'static str) -> Result<Option<u32>, BtcMetaError> {
+    if value.is_null() {
+        Ok(None)
+    } else {
+        u32_field(value, max, field).map(Some)
+    }
+}
+
+fn boolean(value: &Value, field: &'static str) -> Result<bool, BtcMetaError> {
+    value.as_bool().ok_or(BtcMetaError(field))
+}
+
+fn hex_array<const N: usize>(value: &Value, field: &'static str) -> Result<[u8; N], BtcMetaError> {
+    value
+        .as_str()
+        .and_then(|text| crate::hex::decode_array::<N>(text).ok())
+        .ok_or(BtcMetaError(field))
+}
+
+fn decimal_u64(text: &str) -> Option<u64> {
+    let bytes = text.as_bytes();
+    let canonical = match bytes {
+        [b'0'] => true,
+        [first, ..] => (b'1'..=b'9').contains(first) && bytes.iter().all(u8::is_ascii_digit),
+        [] => false,
+    };
+    if !canonical || bytes.len() > 20 {
+        return None;
+    }
+    text.parse::<u64>().ok()
+}
+
+fn sats_string(value: &Value, field: &'static str) -> Result<Sats, BtcMetaError> {
+    value
+        .as_str()
+        .and_then(decimal_u64)
+        .filter(|sats| *sats <= MAX_MONEY)
+        .and_then(Sats::new)
+        .ok_or(BtcMetaError(field))
+}
+
+/// Parses `"<txid display hex>:<vout decimal>"` (lowercase hex, canonical decimal).
+#[must_use]
+pub fn parse_outpoint(text: &str) -> Option<OutPoint> {
+    let (txid, vout) = text.split_once(':')?;
+    let txid = Txid::from_display_hex(txid).ok()?;
+    let vout = u32::try_from(decimal_u64(vout)?).ok()?;
+    Some(OutPoint { txid, vout })
+}
+
+fn outpoint(value: &Value, field: &'static str) -> Result<OutPoint, BtcMetaError> {
+    value
+        .as_str()
+        .and_then(parse_outpoint)
+        .ok_or(BtcMetaError(field))
+}
+
+fn chain_of(value: &Value) -> Result<BtcChain, BtcMetaError> {
+    match integer(value, 1, "verified.chain")? {
+        0 => Ok(BtcChain::Receive),
+        _ => Ok(BtcChain::Change),
+    }
+}
+
+fn array<'a>(
+    value: &'a Value,
+    max: usize,
+    field: &'static str,
+) -> Result<&'a [Value], BtcMetaError> {
+    value
+        .as_array()
+        .filter(|items| items.len() <= max)
+        .ok_or(BtcMetaError(field))
+}
+
+fn verified_entry(value: &Value) -> Result<VerifiedUtxo, BtcMetaError> {
+    let object = object_with(value, &VERIFIED_KEYS, "verified")?;
+    let value_sats = sats_string(get(object, "value")?, "verified.value")?;
+    if value_sats == Sats::ZERO {
+        return Err(BtcMetaError("verified.value"));
+    }
+    Ok(VerifiedUtxo {
+        outpoint: outpoint(get(object, "outpoint")?, "verified.outpoint")?,
+        value: value_sats,
+        chain: chain_of(get(object, "chain")?)?,
+        index: u32_field(
+            get(object, "index")?,
+            HARDENED.saturating_sub(1),
+            "verified.index",
+        )?,
+        height: u32_field(get(object, "height")?, u32::MAX, "verified.height")?,
+        is_coinbase: boolean(get(object, "is_coinbase")?, "verified.is_coinbase")?,
+        own: boolean(get(object, "own")?, "verified.own")?,
+    })
+}
+
+fn has_duplicates<T: PartialEq>(items: &[T]) -> bool {
+    items.iter().enumerate().any(|(position, item)| {
+        items
+            .iter()
+            .skip(position.saturating_add(1))
+            .any(|other| other == item)
+    })
+}
+
+fn string(text: impl Into<String>) -> Value {
+    Value::String(text.into())
+}
+
+fn number(value: u64) -> Value {
+    Value::Number(Number::from_u64(value))
+}
+
+fn optional(value: Option<u32>) -> Value {
+    value.map_or(Value::Null, |value| number(u64::from(value)))
+}
+
+fn object(members: Vec<(&str, Value)>) -> Value {
+    Object::from_pairs(
+        members
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect(),
+    )
+    .map_or(Value::Null, Value::Object)
+}
+
+impl BtcMeta {
+    /// Strict decode of the meta `btc` object (spec/08 §12.3).
+    ///
+    /// # Errors
+    ///
+    /// [`BtcMetaError`] naming the first invalid field: unknown or missing keys, wrong types or
+    /// formats, `version != 1`, an invalid account key, indices `>= 2^31`, `last_used >= next`,
+    /// bounds (4,096 / 1,024 / 1,024 / 4,096) or duplicates.
+    pub fn from_json(value: &Value) -> Result<Self, BtcMetaError> {
+        let root = object_with(value, &KEYS, "btc")?;
+        if integer(get(root, "version")?, u64::MAX, "version")? != BTC_META_VERSION {
+            return Err(BtcMetaError("version"));
+        }
+        let network = get(root, "network")?
+            .as_str()
+            .and_then(BtcNetwork::parse_settings_name)
+            .ok_or(BtcMetaError("network"))?;
+        let pubkey = hex_array::<33>(get(root, "account_pubkey")?, "account_pubkey")?;
+        if !matches!(pubkey.first(), Some(0x02 | 0x03))
+            || PublicKey::from_byte_array_compressed(pubkey).is_err()
+        {
+            return Err(BtcMetaError("account_pubkey"));
+        }
+        let chain_code = hex_array::<32>(get(root, "account_chain_code")?, "account_chain_code")?;
+        let index_max = MAX_NEXT;
+        let receive_next = u32_field(get(root, "receive_next")?, index_max, "receive_next")?;
+        let change_next = u32_field(get(root, "change_next")?, index_max, "change_next")?;
+        let last_used_receive = optional_u32(
+            get(root, "last_used_receive")?,
+            index_max,
+            "last_used_receive",
+        )?;
+        let last_used_change = optional_u32(
+            get(root, "last_used_change")?,
+            index_max,
+            "last_used_change",
+        )?;
+        if last_used_receive.is_some_and(|used| used >= receive_next) {
+            return Err(BtcMetaError("last_used_receive"));
+        }
+        if last_used_change.is_some_and(|used| used >= change_next) {
+            return Err(BtcMetaError("last_used_change"));
+        }
+        let verified = array(get(root, "verified")?, MAX_VERIFIED, "verified")?
+            .iter()
+            .map(verified_entry)
+            .collect::<Result<Vec<_>, _>>()?;
+        let outpoints: Vec<OutPoint> = verified.iter().map(|entry| entry.outpoint).collect();
+        if has_duplicates(&outpoints) {
+            return Err(BtcMetaError("verified"));
+        }
+        let frozen = array(get(root, "frozen")?, MAX_FROZEN, "frozen")?
+            .iter()
+            .map(|item| {
+                let object = object_with(item, &FROZEN_KEYS, "frozen")?;
+                let reason = FreezeReason::from_code(integer(
+                    get(object, "reason")?,
+                    u64::MAX,
+                    "frozen.reason",
+                )?)
+                .ok_or(BtcMetaError("frozen.reason"))?;
+                Ok((
+                    outpoint(get(object, "outpoint")?, "frozen.outpoint")?,
+                    reason,
+                ))
+            })
+            .collect::<Result<Vec<_>, BtcMetaError>>()?;
+        let frozen_outpoints: Vec<OutPoint> = frozen.iter().map(|(op, _)| *op).collect();
+        if has_duplicates(&frozen_outpoints) {
+            return Err(BtcMetaError("frozen"));
+        }
+        let unfrozen = array(get(root, "unfrozen")?, MAX_UNFROZEN, "unfrozen")?
+            .iter()
+            .map(|item| outpoint(item, "unfrozen"))
+            .collect::<Result<Vec<_>, _>>()?;
+        if has_duplicates(&unfrozen) {
+            return Err(BtcMetaError("unfrozen"));
+        }
+        let sent_scripts = array(get(root, "sent_scripts")?, MAX_SENT_SCRIPTS, "sent_scripts")?
+            .iter()
+            .map(|item| hex_array::<32>(item, "sent_scripts"))
+            .collect::<Result<Vec<_>, _>>()?;
+        if has_duplicates(&sent_scripts) {
+            return Err(BtcMetaError("sent_scripts"));
+        }
+        Ok(Self {
+            network,
+            account: AccountXpub { pubkey, chain_code },
+            receive_next,
+            change_next,
+            last_used_receive,
+            last_used_change,
+            discovery_done: boolean(get(root, "discovery_done")?, "discovery_done")?,
+            max_tip_seen: u32_field(get(root, "max_tip_seen")?, u32::MAX, "max_tip_seen")?,
+            verified,
+            frozen,
+            unfrozen,
+            sent_scripts,
+        })
+    }
+
+    /// The meta `btc` object in §12.3 key order (lowercase hex, sats as decimal strings,
+    /// outpoints `"<txid>:<vout>"`).
+    #[must_use]
+    pub fn to_json(&self) -> Value {
+        let verified = self
+            .verified
+            .iter()
+            .map(|entry| {
+                object(vec![
+                    ("outpoint", string(entry.outpoint.to_string())),
+                    ("value", string(entry.value.get().to_string())),
+                    ("chain", number(u64::from(entry.chain.index()))),
+                    ("index", number(u64::from(entry.index))),
+                    ("height", number(u64::from(entry.height))),
+                    ("is_coinbase", Value::Bool(entry.is_coinbase)),
+                    ("own", Value::Bool(entry.own)),
+                ])
+            })
+            .collect();
+        let frozen = self
+            .frozen
+            .iter()
+            .map(|(outpoint, reason)| {
+                object(vec![
+                    ("outpoint", string(outpoint.to_string())),
+                    ("reason", number(u64::from(reason.code()))),
+                ])
+            })
+            .collect();
+        object(vec![
+            ("version", number(BTC_META_VERSION)),
+            ("network", string(self.network.settings_name())),
+            (
+                "account_pubkey",
+                string(crate::hex::encode(&self.account.pubkey)),
+            ),
+            (
+                "account_chain_code",
+                string(crate::hex::encode(&self.account.chain_code)),
+            ),
+            ("receive_next", number(u64::from(self.receive_next))),
+            ("change_next", number(u64::from(self.change_next))),
+            ("last_used_receive", optional(self.last_used_receive)),
+            ("last_used_change", optional(self.last_used_change)),
+            ("discovery_done", Value::Bool(self.discovery_done)),
+            ("max_tip_seen", number(u64::from(self.max_tip_seen))),
+            ("verified", Value::Array(verified)),
+            ("frozen", Value::Array(frozen)),
+            (
+                "unfrozen",
+                Value::Array(
+                    self.unfrozen
+                        .iter()
+                        .map(|outpoint| string(outpoint.to_string()))
+                        .collect(),
+                ),
+            ),
+            (
+                "sent_scripts",
+                Value::Array(
+                    self.sent_scripts
+                        .iter()
+                        .map(|hash| string(crate::hex::encode(hash)))
+                        .collect(),
+                ),
+            ),
+        ])
+    }
+}
+
+/// The meta `btc` value: `null` → `None`, an object → [`BtcMeta::from_json`].
+///
+/// # Errors
+///
+/// [`BtcMetaError`].
+pub fn btc_meta_from_json(value: &Value) -> Result<Option<BtcMeta>, BtcMetaError> {
+    if value.is_null() {
+        Ok(None)
+    } else {
+        BtcMeta::from_json(value).map(Some)
+    }
+}
+
+/// `None` → `null`, `Some` → [`BtcMeta::to_json`].
+#[must_use]
+pub fn btc_meta_to_json(meta: Option<&BtcMeta>) -> Value {
+    meta.map_or(Value::Null, BtcMeta::to_json)
+}

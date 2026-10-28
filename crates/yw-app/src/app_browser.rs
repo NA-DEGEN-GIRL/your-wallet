@@ -712,6 +712,9 @@ impl App {
         if let NetworkId::Solana(cluster) = network {
             self.sol_url_changed(cluster);
         }
+        if let NetworkId::Bitcoin(net) = network {
+            self.btc_url_changed(net);
+        }
         if let NetworkId::Eip155(chain_id) = network {
             self.evm.chain_checks.remove(&chain_id);
             let _ = self.rpc(crate::workers::rpc::RpcJob::ResetChain { chain_id });

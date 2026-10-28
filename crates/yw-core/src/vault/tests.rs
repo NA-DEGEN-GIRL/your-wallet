@@ -1872,3 +1872,52 @@ fn with_ed25519_seed_lends_the_spec_seeds() {
         Err(VaultError::RecordNotFound)
     );
 }
+
+// ---------------------------------------------------------------- Bitcoin (M8, spec/02 §10.3)
+
+/// Public Bitcoin information is available in `BackupPending` and `Unlocked`, not when locked;
+/// hardened leaf indices are refused before anything is derived.
+#[test]
+fn btc_public_info_states() {
+    let (_, pending, _) = created();
+    assert_eq!(pending.status(), VaultStatus::BackupPending);
+    let account = pending.btc_account_xpub(BtcCoin::Mainnet).unwrap();
+    assert!(matches!(account.pubkey.first(), Some(0x02 | 0x03)));
+    let leaf = pending
+        .btc_public_key(BtcCoin::Test, BtcChain::Change, 7)
+        .unwrap();
+    assert_eq!(
+        crate::bip32::derive_public_child(
+            &crate::bip32::derive_public_child(
+                &pending.btc_account_xpub(BtcCoin::Test).unwrap(),
+                1
+            )
+            .unwrap(),
+            7
+        )
+        .unwrap()
+        .pubkey,
+        leaf
+    );
+    let (_, mut vault) = imported(None);
+    assert_eq!(
+        vault.btc_public_key(BtcCoin::Mainnet, BtcChain::Receive, 0x8000_0000),
+        Err(VaultError::Key(KeyError::InvalidPath))
+    );
+    vault.lock();
+    assert_eq!(
+        vault.btc_account_xpub(BtcCoin::Mainnet),
+        Err(VaultError::InvalidState)
+    );
+    assert_eq!(
+        vault.btc_public_key(BtcCoin::Mainnet, BtcChain::Receive, 0),
+        Err(VaultError::InvalidState)
+    );
+    // A passphrase changes the account node.
+    let (_, with_passphrase) = imported(Some("TREZOR"));
+    let (_, without) = imported(None);
+    assert_ne!(
+        with_passphrase.btc_account_xpub(BtcCoin::Mainnet).unwrap(),
+        without.btc_account_xpub(BtcCoin::Mainnet).unwrap()
+    );
+}

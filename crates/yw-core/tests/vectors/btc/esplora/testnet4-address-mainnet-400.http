@@ -1,0 +1,11 @@
+HTTP/1.1 400 Bad Request
+Server: nginx
+Date: Tue, 27 Oct 2026 02:29:34 GMT
+Content-Type: text/plain
+Content-Length: 26
+Connection: keep-alive
+x-powered-by: mempool-electrs 3.4.0-dev-160585b
+access-control-allow-origin: *
+x-bitcoin-version: /Satoshi:32.0.0(@wiz)/
+
+Address on invalid network

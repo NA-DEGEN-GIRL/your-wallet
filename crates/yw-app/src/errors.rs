@@ -160,6 +160,23 @@ pub enum ErrorCode {
     Sol004,
     /// SOL signature status: network/RPC check needed (§14.2, 120 s pending).
     Sol005,
+    /// Bitcoin indexer unreachable: transport error, timeout, TLS, HTTP 3xx/5xx/other
+    /// (spec/08 §4.3; `{인덱서}` = indexer display name, optional cause code).
+    Btc001,
+    /// Bitcoin indexer HTTP 429 after three retries (spec/08 §4.4).
+    Btc002,
+    /// Bitcoin indexer genesis mismatch (spec/08 §2 step 3): BTC blocked for the session.
+    Btc003,
+    /// Bitcoin indexer response malformed (fields, integers, hex, `Content-Type`, 404).
+    Btc004,
+    /// Esplora address lookup HTTP 400.
+    Btc005,
+    /// Esplora URL format (settings).
+    Btc006,
+    /// Bitcoin indexer authentication / add-on refused (HTTP 401·403, `bb-*` `-32601`).
+    Btc007,
+    /// Manual Esplora `POST /tx` HTTP 400 (spec/08 §11.3).
+    Btc008,
 }
 
 impl ErrorCode {
@@ -244,12 +261,24 @@ impl ErrorCode {
             Self::Sol003 => "E-SOL-003",
             Self::Sol004 => "E-SOL-004",
             Self::Sol005 => "E-SOL-005",
+            Self::Btc001 => "E-BTC-001",
+            Self::Btc002 => "E-BTC-002",
+            Self::Btc003 => "E-BTC-003",
+            Self::Btc004 => "E-BTC-004",
+            Self::Btc005 => "E-BTC-005",
+            Self::Btc006 => "E-BTC-006",
+            Self::Btc007 => "E-BTC-007",
+            Self::Btc008 => "E-BTC-008",
         }
     }
 
     /// The fixed Korean sentence (without the code). `{n}`/`{키}`-style parts are filled by
     /// [`ErrorCode::render`].
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one fixed sentence per code, the spec/04 §7 table"
+    )]
     pub const fn message(self) -> &'static str {
         match self {
             Self::App001 => "설정 파일을 읽지 못해 기본값을 사용합니다.",
@@ -345,6 +374,28 @@ impl ErrorCode {
             Self::Sol005 => {
                 "전송 확인이 오래 걸립니다. 네트워크·RPC 상태를 확인하세요(자동 재서명 없음)."
             }
+            Self::Btc001 => {
+                "Bitcoin 인덱서({인덱서})에 연결할 수 없습니다. 잠시 후 다시 시도하거나 설정 → Bitcoin에서 인덱서를 바꾸세요."
+            }
+            Self::Btc002 => {
+                "Bitcoin 인덱서 요청 한도를 넘었습니다. 몇 분 뒤 다시 시도하세요. 공용 서버(mempool.space 등)는 요청 수를 제한합니다."
+            }
+            Self::Btc003 => {
+                "Bitcoin 인덱서가 다른 네트워크를 가리킵니다. 설정 → Bitcoin에서 인덱서와 Esplora URL을 확인하세요."
+            }
+            Self::Btc004 => "Bitcoin 인덱서 응답 형식이 올바르지 않습니다.",
+            Self::Btc005 => {
+                "인덱서가 주소 조회를 거부했습니다. 주소의 UTXO가 너무 많거나(공용 mempool.space는 500개 초과 시 거부) 인덱서의 네트워크가 다를 수 있습니다."
+            }
+            Self::Btc006 => {
+                "Esplora URL은 https:// 로 시작하고 ?·#·끝 '/'가 없어야 하며, 토큰이 들어가는 공급자 URL(QuickNode·알케미)은 쓸 수 없습니다."
+            }
+            Self::Btc007 => {
+                "Bitcoin 인덱서가 요청을 거부했습니다(인증 또는 인덱서 애드온 권한). 설정 → Bitcoin에서 인덱서를 Esplora로 바꾸거나 공급자 대시보드에서 애드온을 켜세요."
+            }
+            Self::Btc008 => {
+                "Esplora 서버가 거래 전송을 거부했습니다. 활동에서 상태를 확인하고 필요하면 수수료를 올리세요."
+            }
         }
     }
 
@@ -369,6 +420,21 @@ impl ErrorCode {
             _ => message.to_owned(),
         };
         format!("{filled} ({})", self.code())
+    }
+
+    /// Like [`ErrorCode::render`] with an optional cause code after the main code, e.g.
+    /// `"… (E-BTC-001, E-RPC-002)"` (spec/04 §7 E-BTC-001).
+    #[must_use]
+    pub fn render_with_cause(self, value: &str, cause: Option<Self>) -> String {
+        let rendered = self.render(value);
+        match cause {
+            Some(cause) => {
+                let suffix = format!(" ({})", self.code());
+                let head = rendered.strip_suffix(&suffix).unwrap_or(&rendered);
+                format!("{head} ({}, {})", self.code(), cause.code())
+            }
+            None => rendered,
+        }
     }
 }
 

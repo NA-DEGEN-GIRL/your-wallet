@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","result":{"loaded":true,"size":234,"bytes":41263,"usage":324288,"total_fee":8.50681473,"maxmempool":2674000000,"mempoolminfee":0.00000100,"minrelaytxfee":0.00000100,"incrementalrelayfee":0.00000100,"unbroadcastcount":0,"fullrbf":true,"permitbaremultisig":true,"maxdatacarriersize":100000,"limitclustercount":64,"limitclustersize":101000,"optimal":true},"id":1}

@@ -1,0 +1,20 @@
+HTTP/1.1 200 OK
+Server: nginx
+Date: Tue, 27 Oct 2026 02:29:31 GMT
+Content-Type: application/json
+Content-Length: 19
+Connection: keep-alive
+cache-control: no-cache
+x-powered-by: mempool-electrs 3.4.0-dev-160585b
+access-control-allow-origin: *
+x-bitcoin-version: /Satoshi:32.0.0(@wiz)/
+Expires: Tue, 27 Oct 2026 02:29:30 GMT
+Onion-Location: http://mempoolhqx4isw62xs7abwphsq7ldayuidyx2v2oethdhhj6mlo2r6ad.onion/testnet4/api/tx/05a4e2d0e59fa96e8aa280038aec7e3bc517d12a0bb8c6b7e1b411422446217a/status
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Content-Security-Policy: frame-ancestors 'self'
+Pragma: public
+Cache-Control: public
+Vary: Accept-Language
+Vary: Cookie
+
+{"confirmed":false}

@@ -161,6 +161,8 @@ pub enum RpcJob {
         /// Sources and their addresses.
         keys: Vec<(yw_core::slip10::SolKeySource, yw_core::sol::SolAddress)>,
     },
+    /// A Bitcoin job (spec/08).
+    Btc(Box<crate::btc::work::BtcRpcJob>),
     /// Stop.
     Shutdown,
 }
@@ -193,6 +195,7 @@ impl RpcJob {
             Self::SolPreSign { .. } => "SolPreSign",
             Self::SolTrack(_) => "SolTrack",
             Self::SolScan { .. } => "SolScan",
+            Self::Btc(job) => job.name(),
             Self::Shutdown => "Shutdown",
         }
     }
@@ -241,12 +244,14 @@ impl Transport for Unavailable {
     }
 }
 
-/// The worker's state: transport, chain verification cache, clock and limits.
+/// The worker's state: transport, chain verification cache, clock, limits and the Bitcoin
+/// sessions.
 pub struct RpcWorker {
     transport: SharedTransport,
     cache: ChainCache,
     clock: Box<dyn Clock>,
     limits: Limits,
+    btc: crate::btc::work::BtcWorker,
 }
 
 impl core::fmt::Debug for RpcWorker {
@@ -297,6 +302,7 @@ impl RpcWorker {
             cache: ChainCache::default(),
             clock,
             limits,
+            btc: crate::btc::work::BtcWorker::new(),
         }
     }
 
@@ -409,6 +415,12 @@ impl RpcWorker {
         let transport = std::sync::Arc::clone(&self.transport);
         match job {
             RpcJob::Shutdown => {}
+            RpcJob::Btc(btc_job) => {
+                self.btc
+                    .handle(&*transport, &*self.clock, *btc_job, &mut |event| {
+                        push(events, RpcEvent::Btc(Box::new(event)));
+                    });
+            }
             RpcJob::Test { network, name, url } => {
                 push(events, run_test(&*transport, network, &name, &url));
             }

@@ -293,6 +293,7 @@ impl KeyWorker {
                 vault.save_sidecar(FileKind::Meta, &document.to_json())?;
             }
         }
+        self.journal.set_btc_meta(document.btc.as_deref().cloned());
         Ok(MetaLoaded {
             meta: document,
             mismatch,
@@ -317,10 +318,50 @@ impl KeyWorker {
     pub fn handle(&mut self, job: KeyJob) -> Vec<KeyOutcome> {
         let alt = self.is_alt();
         match job {
-            KeyJob::LoadJournal => vec![KeyOutcome::Journal(match self.vault.as_ref() {
-                Some(vault) => self.journal.load(vault),
-                None => Err(VaultError::InvalidState),
-            })],
+            KeyJob::LoadJournal => match self.vault.as_mut() {
+                Some(vault) => match self.journal.load(vault) {
+                    Ok(view) => {
+                        let mut out = self.journal.btc_startup(vault, now_unix(), alt);
+                        if !out
+                            .iter()
+                            .any(|outcome| matches!(outcome, KeyOutcome::Journal(Ok(_))))
+                        {
+                            out.push(KeyOutcome::Journal(Ok(view)));
+                        }
+                        out
+                    }
+                    Err(error) => vec![KeyOutcome::Journal(Err(error))],
+                },
+                None => vec![KeyOutcome::Journal(Err(VaultError::InvalidState))],
+            },
+            KeyJob::BtcMeta { op } => match self.vault.as_mut() {
+                Some(vault) => self.journal.btc_meta_op(vault, op, alt),
+                None => vec![KeyOutcome::BtcMeta(Err(
+                    crate::workers::journal::btc::BtcKeyError::Vault(VaultError::InvalidState),
+                ))],
+            },
+            KeyJob::SignBtc {
+                approved,
+                plan,
+                tip_height,
+                now_unix_ms,
+            } => match self.vault.as_mut() {
+                Some(vault) => {
+                    self.journal
+                        .sign_btc(vault, approved, &plan, tip_height, now_unix_ms, alt)
+                }
+                None => vec![KeyOutcome::SignedBtc(Err(
+                    crate::workers::journal::btc::BtcSignFailure::JournalWrite(
+                        VaultError::InvalidState,
+                    ),
+                ))],
+            },
+            KeyJob::BtcJournal { op, now_unix_ms } => match self.vault.as_mut() {
+                Some(vault) => self.journal.btc_journal(vault, op, now_unix_ms, alt),
+                None => vec![KeyOutcome::BtcJournal(Err(
+                    crate::workers::journal::btc::BtcKeyError::Vault(VaultError::InvalidState),
+                ))],
+            },
             KeyJob::SignEvm { approved, info } => match self.vault.as_mut() {
                 Some(vault) => self.journal.sign(vault, approved, &info, alt),
                 None => vec![KeyOutcome::SignedEvm(Err(
@@ -497,7 +538,10 @@ impl KeyWorker {
             | KeyJob::SignEvm { .. }
             | KeyJob::JournalApply { .. }
             | KeyJob::SignSol { .. }
-            | KeyJob::SolApply { .. } => KeyOutcome::Journal(Err(VaultError::InvalidState)),
+            | KeyJob::SolApply { .. }
+            | KeyJob::BtcMeta { .. }
+            | KeyJob::SignBtc { .. }
+            | KeyJob::BtcJournal { .. } => KeyOutcome::Journal(Err(VaultError::InvalidState)),
             KeyJob::Lock | KeyJob::Shutdown => {
                 self.lock();
                 KeyOutcome::LockDone

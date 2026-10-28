@@ -19,6 +19,10 @@ pub enum Tone {
     Info,
     /// `TESTNET_BG`.
     Testnet,
+    /// `BTC_MAINNET_BG` / `BTC_MAINNET_TEXT` (spec/08 §2 `BITCOIN MAINNET`).
+    BtcMainnet,
+    /// `BTC_TESTNET4_BG` / `TEXT` (spec/08 §2 `BITCOIN TESTNET4 — 가치 없음`).
+    BtcTestnet4,
 }
 
 /// A control in a row.
@@ -301,6 +305,8 @@ pub fn layout(
                     Tone::Warn => (theme::WARN_BG, theme::WARN_TEXT),
                     Tone::Info => (theme::DISABLED_BG, theme::TEXT),
                     Tone::Testnet => (theme::TESTNET_BG, theme::TEXT),
+                    Tone::BtcMainnet => (theme::BTC_MAINNET_BG, theme::BTC_MAINNET_TEXT),
+                    Tone::BtcTestnet4 => (theme::BTC_TESTNET4_BG, theme::TEXT),
                 };
                 push_text(
                     &mut placed,
@@ -422,7 +428,7 @@ pub fn paint(dc: &mut PaintDc<'_>, client: Rect, placed: &Placed, fonts: &Fonts)
         dc.set_text_color(yw_win::ui::Color(text.color));
         if text.font == FontRole::Mono
             && text.fill.is_none()
-            && let Some(segments) = crate::ui::theme::sol_address_segments(&text.text)
+            && let Some(segments) = crate::ui::theme::address_segments(&text.text)
             && crate::ui::theme::paint_sol_address(dc, fonts, &segments, text.rect)
         {
             continue;

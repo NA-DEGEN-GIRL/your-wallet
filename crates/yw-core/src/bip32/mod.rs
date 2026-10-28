@@ -9,7 +9,7 @@ use core::fmt;
 use core::str::FromStr;
 
 use hmac::{Hmac, Mac};
-use secp256k1::{All, PublicKey, Scalar, Secp256k1, SecretKey};
+use secp256k1::{All, PublicKey, Scalar, Secp256k1, SecretKey, Verification};
 use sha2::Sha512;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -257,6 +257,72 @@ impl XPriv {
     pub(crate) const fn child_number(&self) -> u32 {
         self.child_number
     }
+}
+
+/// A public BIP32 node: compressed public key and chain code (spec/02 §3.1). Public information
+/// (not a secret type); the Bitcoin account node `m/84'/{coin}'/0'` is cached in `BtcMeta`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AccountXpub {
+    /// Compressed public key (`02`/`03` prefix).
+    pub pubkey: [u8; 33],
+    /// Chain code.
+    pub chain_code: [u8; 32],
+}
+
+/// `CKDpub` with a caller-provided context (one context for several steps).
+pub(crate) fn derive_public_child_with<C: Verification>(
+    ctx: &Secp256k1<C>,
+    parent: &AccountXpub,
+    index: u32,
+) -> Result<AccountXpub, KeyError> {
+    if index & HARDENED != 0 {
+        return Err(KeyError::InvalidPath);
+    }
+    if !matches!(parent.pubkey.first(), Some(0x02 | 0x03)) {
+        return Err(KeyError::DerivationFailed);
+    }
+    let parent_key = PublicKey::from_byte_array_compressed(parent.pubkey)
+        .map_err(|_| KeyError::DerivationFailed)?;
+    let output = hmac_sha512(&parent.chain_code, &[&parent.pubkey, &index.to_be_bytes()])?;
+    let (il, chain_code) = split_halves(&output);
+    let tweak = Scalar::from_be_bytes(*il).map_err(|_| KeyError::DerivationFailed)?;
+    let child = parent_key
+        .add_exp_tweak(ctx, &tweak)
+        .map_err(|_| KeyError::DerivationFailed)?;
+    Ok(AccountXpub {
+        pubkey: child.serialize(),
+        chain_code: *chain_code,
+    })
+}
+
+/// `CKDpub` (spec/02 §3.1): `I = HMAC-SHA512(chain_code, pubkey ‖ ser32(index))`,
+/// `K_i = point(IL) + K_par`, `c_i = IR`. Non-hardened indices only; an invalid child is an error,
+/// never the next index. The context comes from `secp_context(OsRandom)` and is dropped on return.
+///
+/// # Errors
+///
+/// [`KeyError::InvalidPath`] for `index ≥ 2^31`; [`KeyError::DerivationFailed`] when the parent
+/// key is not a valid compressed point, `IL ≥ n`, or the child is the point at infinity;
+/// [`KeyError::RandomnessUnavailable`] for the context seed.
+pub fn derive_public_child(parent: &AccountXpub, index: u32) -> Result<AccountXpub, KeyError> {
+    if index & HARDENED != 0 {
+        return Err(KeyError::InvalidPath);
+    }
+    let ctx = secp_context(&mut OsRandom)?;
+    derive_public_child_with(&ctx, parent, index)
+}
+
+/// The account node `m/84'/{coin}'/0'` of a 64-byte BIP39 seed as public information.
+pub(crate) fn btc_account_xpub_from_seed(
+    ctx: &Secp256k1<All>,
+    seed: &[u8; 64],
+    coin: path::BtcCoin,
+) -> Result<AccountXpub, KeyError> {
+    let node = XPriv::from_seed(seed)?.derive_path(ctx, &path::btc_account_path(coin))?;
+    Ok(AccountXpub {
+        pubkey: node.public_key(ctx)?.serialize(),
+        chain_code: *node.chain_code(),
+    })
 }
 
 /// The EVM address of account `index` (`m/44'/60'/0'/0/i`) for a 64-byte BIP39 seed.

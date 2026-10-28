@@ -36,7 +36,7 @@ impl AccountIndex {
 }
 
 /// Bitcoin coin type: mainnet `0'`, testnet4 `1'`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BtcCoin {
     /// `m/84'/0'/0'`.
     Mainnet,
@@ -45,7 +45,7 @@ pub enum BtcCoin {
 }
 
 /// Bitcoin chain: receive `0`, change `1`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BtcChain {
     /// External chain `0`.
     Receive,
@@ -65,6 +65,21 @@ pub fn evm_path(index: AccountIndex) -> Bip32Path {
     }
 }
 
+const fn coin_index(coin: BtcCoin) -> u32 {
+    match coin {
+        BtcCoin::Mainnet => 0,
+        BtcCoin::Test => 1,
+    }
+}
+
+/// The BIP84 account node `m/84'/{0|1}'/0'` (cached as `AccountXpub`, spec/08 §3.1).
+#[must_use]
+pub fn btc_account_path(coin: BtcCoin) -> Bip32Path {
+    Bip32Path {
+        components: vec![hardened(84), hardened(coin_index(coin)), hardened(0)],
+    }
+}
+
 /// `m/84'/{0|1}'/0'/{0|1}/index` (BIP84).
 ///
 /// # Errors
@@ -74,15 +89,24 @@ pub fn btc_path(coin: BtcCoin, chain: BtcChain, index: u32) -> Result<Bip32Path,
     if index >= HARDENED {
         return Err(KeyError::InvalidPath);
     }
-    let coin = match coin {
-        BtcCoin::Mainnet => 0,
-        BtcCoin::Test => 1,
-    };
-    let chain = match chain {
-        BtcChain::Receive => 0,
-        BtcChain::Change => 1,
-    };
     Ok(Bip32Path {
-        components: vec![hardened(84), hardened(coin), hardened(0), chain, index],
+        components: vec![
+            hardened(84),
+            hardened(coin_index(coin)),
+            hardened(0),
+            chain.index(),
+            index,
+        ],
     })
+}
+
+impl BtcChain {
+    /// The path component: receive `0`, change `1`.
+    #[must_use]
+    pub const fn index(self) -> u32 {
+        match self {
+            Self::Receive => 0,
+            Self::Change => 1,
+        }
+    }
 }

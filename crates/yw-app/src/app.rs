@@ -159,6 +159,8 @@ pub enum SettingsSection {
     Chains,
     /// Solana: 클러스터, 수수료 상한, 다른 경로 스캔 (M7).
     Solana,
+    /// Bitcoin: 켜기·네트워크, 인덱서, Esplora URL (M8).
+    Bitcoin,
 }
 
 /// Confirmation overlays.
@@ -192,6 +194,8 @@ pub enum Confirm {
     BookDelete,
     /// S13 `모두 해제`.
     DisconnectAll,
+    /// A Bitcoin overlay (`BtcUi::confirm` holds which one and its texts).
+    Btc,
 }
 
 /// Screens S01–S15 (M3 subset).
@@ -247,6 +251,14 @@ pub enum Screen {
     SolReceive,
     /// The recovery scan (spec/07 §3.3).
     SolScan,
+    /// S11 for Bitcoin.
+    BtcSend,
+    /// S11 result for Bitcoin.
+    BtcSendResult,
+    /// The Bitcoin fee-bump form (S10 `수수료 올리기`).
+    BtcBump,
+    /// S12 for Bitcoin.
+    BtcReceive,
 }
 
 /// What a password-confirm window (W03) is for.
@@ -401,6 +413,7 @@ pub struct App {
     pub(crate) placed: Placed,
     pub(crate) evm: crate::app_evm::EvmUi,
     pub(crate) sol: crate::app_sol::SolUi,
+    pub(crate) btc: crate::app_btc::BtcUi,
     pub(crate) browser: Option<crate::app_browser::BrowserUi>,
     secret: Option<SecretWin>,
     secret_serial: u64,
@@ -511,6 +524,7 @@ impl App {
             placed: Placed::default(),
             evm: crate::app_evm::EvmUi::default(),
             sol: crate::app_sol::SolUi::default(),
+            btc: crate::app_btc::BtcUi::default(),
             browser: None,
             secret: None,
             secret_serial: 0,
@@ -729,7 +743,10 @@ impl App {
             Msg::Command { id, code } => {
                 if *code == 0 {
                     self.on_command(*id);
-                } else if *code == EN_CHANGE && !self.on_sol_edit_change(*id) {
+                } else if *code == EN_CHANGE
+                    && !self.on_sol_edit_change(*id)
+                    && !self.on_btc_edit_change(*id)
+                {
                     self.on_edit_change(*id);
                 }
                 Reply::Handled(0)
@@ -823,6 +840,7 @@ impl App {
         }
         self.evm_tick(now);
         self.sol_tick(now);
+        self.btc_tick(now);
         if now.saturating_sub(self.last_flush_ms) >= LOG_FLUSH_MS {
             self.last_flush_ms = now;
             logging::flush();
@@ -867,6 +885,7 @@ impl App {
         }
         self.evm_lock();
         self.sol_lock();
+        self.btc_lock();
         self.meta = None;
         self.rename = None;
         self.pending_remove = None;
@@ -1044,6 +1063,13 @@ impl App {
             KeyOutcome::Status(result) => self.on_status(result, now),
             KeyOutcome::Cancelled("SignEvm" | "SignMessage", _) => self.evm_sign_cancelled(),
             KeyOutcome::Cancelled("SignSol", _) => self.sol_sign_cancelled(),
+            KeyOutcome::Cancelled("SignBtc", _) => {
+                self.btc.sign_cancelled();
+                self.refresh();
+            }
+            outcome @ (KeyOutcome::BtcMeta(_)
+            | KeyOutcome::SignedBtc(_)
+            | KeyOutcome::BtcJournal(_)) => self.btc_key_outcome(outcome),
             KeyOutcome::SolKeys(purpose, result) => self.on_sol_keys(purpose, result),
             KeyOutcome::SignedSol(result) => self.on_sol_signed(result),
             KeyOutcome::SignedMessage(result) => self.browser_message_signed(result),
@@ -1211,6 +1237,7 @@ impl App {
                 if self.sol_tab_active() {
                     self.sol_ensure_account();
                 }
+                self.btc_after_meta();
             }
             KeyOutcome::Meta(Err(
                 VaultError::SidecarCorrupt(_) | VaultError::SidecarVaultMismatch(_),
@@ -2051,6 +2078,9 @@ impl App {
                 self.refresh();
             }
             ids::CONFIRM_YES => self.confirm_yes(),
+            ids::CONFIRM_NO if matches!(self.screen, Screen::Confirm(Confirm::Btc)) => {
+                self.btc_confirm_no();
+            }
             ids::CONFIRM_NO => {
                 self.pending_remove = None;
                 self.evm.discard = None;
@@ -2068,6 +2098,7 @@ impl App {
             }
             other => {
                 if !self.on_sol_command(other)
+                    && !self.on_btc_command(other)
                     && !self.on_evm_command(other)
                     && !self.on_sites_command(other)
                 {
@@ -2126,7 +2157,7 @@ impl App {
         }
     }
 
-    /// Networks in the URL list (spec/04 §2.11.1 order; BTC rows join at M8).
+    /// Networks in the URL list (spec/04 §2.11.1 order).
     #[must_use]
     pub fn url_networks(&self) -> Vec<NetworkId> {
         let mut networks: Vec<NetworkId> = self
@@ -2137,6 +2168,8 @@ impl App {
             .collect();
         networks.push(NetworkId::Solana(crate::network::SolCluster::Mainnet));
         networks.push(NetworkId::Solana(crate::network::SolCluster::Devnet));
+        networks.push(NetworkId::Bitcoin(crate::network::BtcNet::Mainnet));
+        networks.push(NetworkId::Bitcoin(crate::network::BtcNet::Testnet4));
         networks
     }
 
@@ -2151,7 +2184,7 @@ impl App {
             NetworkId::Solana(cluster) => crate::app_sol::core_cluster(cluster)
                 .display_name()
                 .to_owned(),
-            other @ NetworkId::Bitcoin(_) => other.to_string(),
+            NetworkId::Bitcoin(net) => crate::btc::core_network(net).display_name().to_owned(),
         }
     }
 
@@ -2583,6 +2616,7 @@ impl App {
                 self.delete_book_entry();
                 self.set_screen(Screen::AddressBook);
             }
+            Confirm::Btc => self.btc_confirm_yes(),
             Confirm::RemoveKey => {
                 self.set_screen(previous);
                 if let Some(id) = self.pending_remove.take() {
