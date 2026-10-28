@@ -4,6 +4,7 @@
 //! core (encodeType, typeHash, hashStruct, arrays, string/bytes) is unchanged. Hashing also
 //! builds the display value tree in the same traversal so every displayed value was validated.
 
+use core::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
 use sha3::{Digest, Keccak256};
@@ -24,6 +25,22 @@ const MAX_OBJECT_ENTRIES: usize = 4_096;
 const MAX_TYPES: usize = 256;
 const MAX_FIELDS: usize = 256;
 const MAX_ARRAY_DIMENSIONS: usize = 8;
+/// v3: longest struct, field or primary type name (bytes).
+pub(super) const MAX_IDENTIFIER_BYTES: usize = 256;
+/// v3: longest field type string (identifier plus array suffixes).
+const MAX_TYPE_BYTES: usize = 512;
+/// v3: fields declared over all types.
+const MAX_TOTAL_FIELDS: usize = 1_024;
+/// v3: total `encodeType` bytes one request may build (each type is encoded once and cached).
+pub(super) const MAX_ENCODE_TYPE_BYTES: usize = 262_144;
+/// The standard `EIP712Domain` fields and their only allowed types (spec/03 §8.1 #9).
+const DOMAIN_FIELDS: [(&str, &str); 5] = [
+    ("name", "string"),
+    ("version", "string"),
+    ("chainId", "uint256"),
+    ("verifyingContract", "address"),
+    ("salt", "bytes32"),
+];
 
 /// A typed-data value tree node (display).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -271,6 +288,8 @@ struct FieldDefinition {
 struct StructDefinition {
     name: String,
     fields: Vec<FieldDefinition>,
+    /// Field name → position (names are unique, [`TypedDataError::DuplicateField`]).
+    positions: BTreeMap<String, usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -280,6 +299,9 @@ enum VisitState {
 }
 
 fn is_identifier(value: &str) -> bool {
+    if value.len() > MAX_IDENTIFIER_BYTES {
+        return false;
+    }
     let mut bytes = value.bytes();
     let Some(first) = bytes.next() else {
         return false;
@@ -345,6 +367,9 @@ fn is_primitive_name(name: &str) -> bool {
 
 impl SolidityType {
     fn parse(source: &str) -> Result<Self, TypedDataError> {
+        if source.len() > MAX_TYPE_BYTES {
+            return Err(TypedDataError::InvalidTypeDefinition);
+        }
         let array_start = source.find('[').unwrap_or(source.len());
         let (base_source, mut suffix) = source.split_at(array_start);
         let base = BaseType::parse(base_source)?;
@@ -384,9 +409,14 @@ impl SolidityType {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Parsed type definitions plus the per-request `typeHash` cache: every struct type is encoded
+/// at most once, so validation cost grows with the number of values, not values × type size.
+#[derive(Debug)]
 pub(super) struct Schema {
     definitions: BTreeMap<String, StructDefinition>,
+    type_hashes: RefCell<BTreeMap<String, [u8; 32]>>,
+    encoded_bytes: Cell<usize>,
+    encodings: Cell<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -401,6 +431,7 @@ impl Schema {
             return Err(TypedDataError::LimitExceeded(LimitKind::Types));
         }
         let mut parsed = BTreeMap::new();
+        let mut total_fields = 0_usize;
         for (name, value) in definitions.iter() {
             if !is_identifier(name) || is_primitive_name(name) {
                 return Err(TypedDataError::InvalidTypeDefinition);
@@ -408,11 +439,12 @@ impl Schema {
             let fields = value
                 .as_array()
                 .ok_or(TypedDataError::InvalidTypeDefinition)?;
-            if fields.len() > MAX_FIELDS {
+            total_fields = total_fields.saturating_add(fields.len());
+            if fields.len() > MAX_FIELDS || total_fields > MAX_TOTAL_FIELDS {
                 return Err(TypedDataError::LimitExceeded(LimitKind::Fields));
             }
             let mut parsed_fields = Vec::with_capacity(fields.len());
-            let mut field_names = BTreeSet::new();
+            let mut positions = BTreeMap::new();
             for field in fields {
                 let object = field
                     .as_object()
@@ -433,7 +465,10 @@ impl Schema {
                 if !is_identifier(field_name) {
                     return Err(TypedDataError::InvalidTypeDefinition);
                 }
-                if !field_names.insert(field_name.to_owned()) {
+                if positions
+                    .insert(field_name.to_owned(), parsed_fields.len())
+                    .is_some()
+                {
                     return Err(TypedDataError::DuplicateField);
                 }
                 parsed_fields.push(FieldDefinition {
@@ -446,6 +481,7 @@ impl Schema {
                 StructDefinition {
                     name: name.to_owned(),
                     fields: parsed_fields,
+                    positions,
                 },
             );
         }
@@ -454,7 +490,37 @@ impl Schema {
         }
         Ok(Self {
             definitions: parsed,
+            type_hashes: RefCell::new(BTreeMap::new()),
+            encoded_bytes: Cell::new(0),
+            encodings: Cell::new(0),
         })
+    }
+
+    /// v3: `EIP712Domain` may declare only the five standard fields, each with its standard
+    /// type (spec/03 §8.1 #9). Other fields — including nested structs and arrays — would be
+    /// signed without being understood, so the request is rejected (T02). A non-standard
+    /// `chainId`/`verifyingContract` type stays [`TypedDataError::InvalidDomainBindingType`].
+    pub(super) fn check_domain_fields(&self) -> Result<(), TypedDataError> {
+        for field in &self.definition(DOMAIN_TYPE)?.fields {
+            let Some((name, standard)) = DOMAIN_FIELDS.iter().find(|(name, _)| *name == field.name)
+            else {
+                return Err(TypedDataError::NonStandardDomain);
+            };
+            if field.field_type.canonical != *standard {
+                return Err(if matches!(*name, "chainId" | "verifyingContract") {
+                    TypedDataError::InvalidDomainBindingType
+                } else {
+                    TypedDataError::NonStandardDomain
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Number of `encodeType` computations so far (cache misses; perf guard).
+    #[cfg(test)]
+    pub(super) fn encodings(&self) -> usize {
+        self.encodings.get()
     }
 
     /// Every referenced struct is declared and the graph is acyclic. Unreachable types are
@@ -550,8 +616,23 @@ impl Schema {
         Ok(encoded)
     }
 
+    /// `typeHash(name)`, computed once per type and request; the total `encodeType` bytes are
+    /// capped by [`MAX_ENCODE_TYPE_BYTES`].
     pub(super) fn type_hash(&self, name: &str) -> Result<[u8; 32], TypedDataError> {
-        Ok(keccak(self.encode_type(name)?.as_bytes()))
+        let cached = self.type_hashes.borrow().get(name).copied();
+        if let Some(hash) = cached {
+            return Ok(hash);
+        }
+        let encoded = self.encode_type(name)?;
+        let total = self.encoded_bytes.get().saturating_add(encoded.len());
+        if total > MAX_ENCODE_TYPE_BYTES {
+            return Err(TypedDataError::LimitExceeded(LimitKind::Types));
+        }
+        self.encoded_bytes.set(total);
+        self.encodings.set(self.encodings.get().saturating_add(1));
+        let hash = keccak(encoded.as_bytes());
+        self.type_hashes.borrow_mut().insert(name.to_owned(), hash);
+        Ok(hash)
     }
 
     /// `hashStruct(name, value)` and the display tree of `value`.
@@ -565,13 +646,12 @@ impl Schema {
             return Err(TypedDataError::LimitExceeded(LimitKind::Depth));
         }
         let definition = self.definition(name)?;
-        validate_struct_shape(definition, value)?;
+        let values = struct_values(definition, value)?;
         let mut encoded =
             Vec::with_capacity(definition.fields.len().saturating_add(1).saturating_mul(32));
         encoded.extend_from_slice(&self.type_hash(name)?);
         let mut fields = Vec::with_capacity(definition.fields.len());
-        for field in &definition.fields {
-            let field_value = value.get(&field.name).ok_or(TypedDataError::MissingValue)?;
+        for (field, field_value) in definition.fields.iter().zip(values) {
             let (word, node) = self.encode_type_parts(
                 &field.field_type.base,
                 &field.field_type.arrays,
@@ -776,22 +856,34 @@ impl Schema {
     }
 }
 
-fn validate_struct_shape(
+/// The value of every declared field in declaration order: a missing field is
+/// [`TypedDataError::MissingValue`] (checked first), an undeclared key
+/// [`TypedDataError::ExtraValue`]. One pass over the members with a name index, so a wide struct
+/// costs O(fields · log fields) per instance.
+fn struct_values<'v>(
     definition: &StructDefinition,
-    value: &Object,
-) -> Result<(), TypedDataError> {
-    for field in &definition.fields {
-        if value.get(&field.name).is_none() {
-            return Err(TypedDataError::MissingValue);
+    value: &'v Object,
+) -> Result<Vec<&'v Value>, TypedDataError> {
+    let mut slots: Vec<Option<&'v Value>> = vec![None; definition.fields.len()];
+    let mut extra = false;
+    for (key, item) in value.iter() {
+        match definition
+            .positions
+            .get(key)
+            .and_then(|position| slots.get_mut(*position))
+        {
+            Some(slot) => *slot = Some(item),
+            None => extra = true,
         }
     }
-    if value
-        .keys()
-        .any(|key| !definition.fields.iter().any(|field| field.name == key))
-    {
+    let values = slots
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .ok_or(TypedDataError::MissingValue)?;
+    if extra {
         return Err(TypedDataError::ExtraValue);
     }
-    Ok(())
+    Ok(values)
 }
 
 fn parse_address_value(value: &Value) -> Result<Address, TypedDataError> {

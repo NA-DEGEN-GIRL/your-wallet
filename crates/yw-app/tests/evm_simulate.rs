@@ -327,7 +327,8 @@ fn s5_unknown_fields_are_ignored() -> TestResult {
         return Err("parse".into());
     };
     assert_eq!(s2, s5);
-    assert_eq!(sim_digest(&s2)?, sim_digest(&s5)?);
+    let tx = s2_tx()?;
+    assert_eq!(sim_digest(&tx, &s2)?, sim_digest(&tx, &s5)?);
     Ok(())
 }
 

@@ -6,7 +6,10 @@
 //! chainId/verifyingContract no longer require a schema exception (T03/T10 instead); a chainId
 //! mismatch is still rejected (T01); unreachable types are allowed; hex integers may have leading
 //! zeros and uppercase digits; mixed-case addresses follow EIP-55 (§2.1); the source limit is
-//! 131,072 bytes; the other `Limits::default` values stay.
+//! 131,072 bytes; the other `Limits::default` values stay. Added in v3: `EIP712Domain` may only
+//! declare the five standard fields with their standard types; identifiers ≤ 256 bytes, type
+//! strings ≤ 512 bytes, ≤ 1,024 fields over all types, and each `typeHash` is computed once per
+//! request with ≤ 262,144 `encodeType` bytes in total (validation cost guard).
 #![deny(clippy::indexing_slicing)]
 
 mod schema;
@@ -19,7 +22,7 @@ pub use schema::{TdNode, TdValue};
 
 use super::address::Address;
 use super::amount::U256;
-use super::chain::{ContractRole, builtin_chain};
+use super::chain::{ContractRole, TokenRole, builtin_chain};
 use crate::hex::const_decode;
 
 /// Maximum source bytes (spec/03 §8.1 #8).
@@ -96,6 +99,9 @@ pub enum TypedDataError {
     ChainIdMismatch,
     /// `chainId`/`verifyingContract` declared with a non-standard type.
     InvalidDomainBindingType,
+    /// `EIP712Domain` declares a field other than name/version/chainId/verifyingContract/salt,
+    /// or name/version/salt with a non-standard type (v3, spec/03 §8.1 #9).
+    NonStandardDomain,
     /// Permit2/Seaport verifying contract with a schema outside the table, or Seaport `BulkOrder`.
     SchemaMismatch,
 }
@@ -114,6 +120,7 @@ impl fmt::Display for TypedDataError {
             Self::ExtraValue => "unexpected EIP-712 value",
             Self::ChainIdMismatch => "typed-data chain ID mismatch",
             Self::InvalidDomainBindingType => "invalid domain-binding type",
+            Self::NonStandardDomain => "non-standard EIP-712 domain field",
             Self::SchemaMismatch => "schema does not match the verifying contract",
         })
     }
@@ -260,6 +267,7 @@ pub fn validate_typed_data_v4(
     let envelope = schema::Envelope::parse(value)?;
     let types = schema::Schema::parse(envelope.types)?;
     types.validate_graph(envelope.primary_type)?;
+    types.check_domain_fields()?;
     let (domain_separator, domain_tree) =
         types.hash_struct_tree(schema::DOMAIN_TYPE, envelope.domain, 0)?;
     let (message_hash, root) =
@@ -339,7 +347,16 @@ fn recognize(
         if primary_hash == TYPEHASH_EIP2612_PERMIT && domain.verifying_contract.is_some() {
             return Ok(Some(KnownSchema::Eip2612Permit));
         }
-        if primary_hash == TYPEHASH_DAI_PERMIT {
+        // The DAI layout is recognized only at the chain's registry DAI (spec/03 §8.2): its
+        // `allowed=false` reads as a harmless revocation (T15), which an unknown contract must
+        // not borrow.
+        let registry_dai = domain.verifying_contract.is_some_and(|address| {
+            chain
+                .as_ref()
+                .and_then(|chain| chain.token(&address))
+                .is_some_and(|token| token.role == TokenRole::Dai)
+        });
+        if primary_hash == TYPEHASH_DAI_PERMIT && registry_dai {
             return Ok(Some(KnownSchema::DaiPermit));
         }
     }
@@ -370,4 +387,85 @@ fn permit2_schema(
             .map(|witness_type| KnownSchema::Permit2BatchWitnessTransfer { witness_type }),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use yw_json::Limits;
+
+    use super::schema::{Envelope, MAX_ENCODE_TYPE_BYTES, MAX_IDENTIFIER_BYTES, Schema};
+    use super::{LimitKind, TypedDataError, validate_typed_data_v4};
+
+    /// A field name of exactly [`MAX_IDENTIFIER_BYTES`].
+    fn long_name(index: usize) -> String {
+        format!("f{index:03}{}", "x".repeat(MAX_IDENTIFIER_BYTES - 4))
+    }
+
+    /// `Big` declares `fields` long-named fields (a large `encodeType`); `Item` reaches it through
+    /// an always-empty `Big[]`, and the message is an array of `elements` small `Item`s. Before
+    /// the cache every element rebuilt `Item`'s whole `encodeType` (C8).
+    fn wide_document(fields: usize, elements: usize) -> String {
+        let big = (0..fields)
+            .map(|index| format!(r#"{{"name":"{}","type":"uint256"}}"#, long_name(index)))
+            .collect::<Vec<_>>()
+            .join(",");
+        let items = vec![r#"{"a":1,"pad":[]}"#; elements].join(",");
+        format!(
+            r#"{{"types":{{"EIP712Domain":[{{"name":"chainId","type":"uint256"}}],"Big":[{big}],"Item":[{{"name":"a","type":"uint8"}},{{"name":"pad","type":"Big[]"}}],"Msg":[{{"name":"items","type":"Item[]"}}]}},"primaryType":"Msg","domain":{{"chainId":1}},"message":{{"items":[{items}]}}}}"#
+        )
+    }
+
+    #[test]
+    fn type_hashes_are_computed_once_per_type() {
+        // At the dApp request limits (yw-json `Limits::REQUEST`: 4,096 items, 8,192 nodes).
+        let source = wide_document(120, 1_200);
+        assert!(source.len() > 50_000, "{}", source.len());
+        let value = yw_json::parse(source.as_bytes(), &Limits::REQUEST).unwrap();
+        let envelope = Envelope::parse(&value).unwrap();
+        let types = Schema::parse(envelope.types).unwrap();
+        types.validate_graph(envelope.primary_type).unwrap();
+        let (_, tree) = types
+            .hash_struct_tree(envelope.primary_type, envelope.message, 0)
+            .unwrap();
+        // 1,201 struct instances, 2 encodeType computations (Msg, Item) — bounded by the number
+        // of declared types, not by the number of values.
+        assert_eq!(types.encodings(), 2);
+        let items = tree.field("items").and_then(super::TdNode::elements);
+        assert_eq!(items.map(<[_]>::len), Some(1_200));
+        // The whole request validates, and repeating it stays cheap (perf guard: a regression
+        // to per-instance encoding makes this loop take tens of seconds in a debug build).
+        for _ in 0..20 {
+            assert!(validate_typed_data_v4(source.as_bytes(), &value, 1).is_ok());
+        }
+    }
+
+    #[test]
+    fn encode_type_budget_is_enforced() {
+        // 12 instantiated types each reaching a ~27 KB declaration: > 262,144 encodeType bytes.
+        let big = (0..100)
+            .map(|index| format!(r#"{{"name":"{}","type":"uint256"}}"#, long_name(index)))
+            .collect::<Vec<_>>()
+            .join(",");
+        let holders = (0..12)
+            .map(|index| format!(r#"{{"name":"t{index}","type":"T{index}"}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let referrers = (0..12)
+            .map(|index| format!(r#""T{index}":[{{"name":"pad","type":"Big[]"}}]"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let message = (0..12)
+            .map(|index| format!(r#""t{index}":{{"pad":[]}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let source = format!(
+            r#"{{"types":{{"EIP712Domain":[],"Big":[{big}],{referrers},"Holder":[{holders}]}},"primaryType":"Holder","domain":{{}},"message":{{{message}}}}}"#
+        );
+        let value = yw_json::parse(source.as_bytes(), &Limits::REQUEST).unwrap();
+        assert_eq!(
+            validate_typed_data_v4(source.as_bytes(), &value, 1),
+            Err(TypedDataError::LimitExceeded(LimitKind::Types))
+        );
+        const { assert!(MAX_ENCODE_TYPE_BYTES < 12 * 100 * MAX_IDENTIFIER_BYTES) };
+    }
 }

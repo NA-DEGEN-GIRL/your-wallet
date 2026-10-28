@@ -503,8 +503,8 @@ G1과 같은 절차로 고정한다: 테스트가 아래 입력으로 바이트�
 | X-6 | typed data domain.chainId = 1, 활성 Sepolia | T01 거부, 창 없음 | 03 §10.3 |
 | X-7 | chainId 없음 / verifyingContract 없음 / Permit2 주소인데 다른 스키마 / `BulkOrder` | T03 고위험 / T10 주의 / T02 거부 / T02 거부 | 03 §8.3 |
 | X-8 | 중복 타입 키, 순환 타입, 정수 `-0`·`1.0`·`1e0` | 거부 | `archive/spec-v2.4:crates/eip712/tests/vectors.rs:93-210` |
-| X-9 | SIWE(origin `https://app.example`, 기본형 아래) 변형: domain `evil.example`; `http://app.example`; address 다름·체크섬 오류; Expiration `2020-01-01T00:00:00Z`; port `:8443`; Chain ID 1; Not Before `2099-01-01T00:00:00Z`; Nonce 7자; CR 포함 | S01·S02·S03·S04 차단, S05·S06·S07 주의, S08 고위험(마지막 두 개) | 03 §9.4 |
-| X-10 | personal_sign `0xff00fe` / U+202E 포함 텍스트 | P01 고위험·hex 표시 / `[U+202E]` 이스케이프·P02 | 03 §9.2 |
+| X-9 | SIWE(origin `https://app.example`, 기본형 아래) 변형: domain `evil.example`; `http://app.example`; address 다름·체크섬 오류; Expiration `2020-01-01T00:00:00Z`; port `:8443`; Chain ID 1; Not Before `2099-01-01T00:00:00Z`; Nonce 7자; CR 포함 / Nonce 7자에 domain `evil.example`·`http://`·userinfo·`ftp://`·앞에 다른 글자 | S01·S02·S03·S04 차단, S05·S06·S07 주의, S08 고위험(마지막 두 개) / S08 + S01 또는 S02 차단(첫 줄 authority 검사, 읽을 수 없으면 S01) | 03 §9.3–§9.4 |
+| X-10 | personal_sign `0xff00fe` / U+202E 포함 텍스트 / 정확히 32바이트 ASCII·C0 제어 문자(0x01, 0x7F) 포함 텍스트 / 여러 줄 텍스트 | P01 고위험·hex 표시 / `[U+202E]` 이스케이프·P02 / P04 고위험·hex 표시(SIWE 표지면 도메인 검사 유지) / 줄바꿈마다 `[U+000A]` 표지 | 03 §9.2 |
 | X-11 | 시뮬레이션 실패 S3·S3b(E02), S4·S9·S11·S12(E01), S7(E04)·S8·S8b(E03)·S13(E07)(S15 E36은 X-24) | §3.8 배너가 맨 위, 등급 고위험(차단 아님). 체크 끔 + 2초 누르기 / 체크 켬 + 1.9초 → `Pending`, 체크 켬 + 2.0초 → `Approved`(04 AP-2·AP-6) | D15·D16, 03 §10.1 |
 | X-12 | 이중 계수 S6 | 네이티브 1회 계수 | 03 §1.3 |
 | X-13 | 해석 불가 calldata + 시뮬레이션 성공 / + [결과 없음](S12 방식) | E12 고위험, 확인 체크 전 누르기 불가 / E12와 [결과 없음] 두 경고 함께, 체크박스 1개 + 2초 누르기로 `Approved` | D16, 03 §7.2 R7 |
@@ -514,7 +514,7 @@ G1과 같은 절차로 고정한다: 테스트가 아래 입력으로 바이트�
 | X-17 | 서명 후 검증 실패 주입(서명 바이트 1비트, 다른 키로 서명) | `PostSignVerification`, 저널 0, 전송 0 | 03 §4.3 |
 | X-18 | RPC가 다른 tx hash 반환 | 저널 `Signed` + `rpc_hash_mismatch`, 자동 재전송 없음 | 03 §4.4 |
 | X-19 | LLM: 꺼짐 / AI 상태 6종 / 날조된 주소·금액·숫자 | 전송 0회 / `can_approve`·digest·위험 동일 / `Mismatch`로 AI 텍스트 전부 숨김 | 06 §10 E1, E2, E4 |
-| X-20 | 표시 문자열에 U+202E·U+200B·U+FEFF(토큰 심볼·typed data string·SIWE statement) | `[U+XXXX]` 이스케이프, `DisplayField::new` 재검사 통과 | 03 §9.2, §11.2 |
+| X-20 | 표시 문자열에 U+202E·U+200B·U+FEFF·U+00A0·U+2007·U+3000·U+0336·U+2800·U+FFFC(토큰 심볼·typed data string·SIWE statement·메시지), typed data string·도메인 name의 LF | `[U+XXXX]` 이스케이프(LF는 `[U+000A]`), `DisplayField::new` 재검사 통과 | 03 §9.2, §11.2 |
 | X-21 | 사용자 체인 추가: 입력 chainId 8453, 가짜 RPC `eth_chainId` = `0x1` | 거부, 저장 0, 체인 목록 불변 | D14 |
 | X-22 | 사용자 체인 추가: chainId 1·11155111·999 / 이미 추가한 사용자 체인과 같은 chainId | 각각 거부(RPC 호출 0), 기존 항목 불변 | D14 |
 | X-23 | 추가 시 블록 0 해시 H1 고정 → 재시작(또는 RPC URL 변경) 뒤 연결에서 (a) 블록 0 = H2 (b) `eth_chainId` ≠ 등록값 | (a) 그 체인 읽기·보내기·서명·dApp 읽기 전부 체인 불일치 오류. H2를 보여 주는 확인 창에서 사용자가 다시 고정해야만 해제(취소 → 계속 오류), 재고정 뒤 정상 (b) 같은 오류, 재고정 없이 URL을 고칠 때까지 유지. 기본 제공 체인은 §3.11 상수와 비교(03 §1.4) | D14 |

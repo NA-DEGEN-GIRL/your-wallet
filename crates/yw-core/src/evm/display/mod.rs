@@ -15,14 +15,15 @@ use super::address::{Address, to_checksum};
 use super::amount::{Delta, U256, format_amount, format_gwei, format_units};
 use super::chain::{ChainInfo, OPENSEA_CONDUIT_KEY};
 use super::decode::{AMOUNT_OR_TOKEN_ID, DecodedCall, DecodedTx, resolve_token_standard};
-use super::eip191::{DecodedPersonalMessage, personal_preimage};
+use super::eip191::{DecodedPersonalMessage, HexReason, personal_preimage};
 use super::eip712::{DecodedTypedData, KnownSchema, TdNode, TdValue};
 use super::fee::{expected_fee, max_total_fee};
 use super::risk::{
-    self, P01, P02, P03, T16, TxRiskInput, TypedRiskInput, sort_warnings, tx_rules, typed_rules,
+    self, P01, P02, P03, P04, T16, TxRiskInput, TypedRiskInput, sort_warnings, tx_rules,
+    typed_rules,
 };
 use super::simulate::{ApprovalChange, ApprovalKindEvm, AssetChange, AssetId, SimResult};
-use super::siwe::{SiweContext, check_siwe, marker_only_warning};
+use super::siwe::{SiweContext, check_marker_only, check_siwe};
 use crate::approval::{
     AccountRef, ApprovalDisplay, ApprovalDraft, ApprovalId, ApprovalKind, ApprovalOrigin,
     ChainFacts, ChainRef, CodeKind, DisplayError, DisplayField, FieldKey, MAX_DISPLAY_WARNINGS,
@@ -60,14 +61,27 @@ fn escape_inline(text: &str) -> (String, bool) {
     (escaped.text.replace('\n', "[U+000A]"), escaped.hidden)
 }
 
-/// Escapes a whole untrusted value so it is a valid display string (non-empty, no edges).
+/// Escapes a whole untrusted single-line value (typed-data strings, SIWE statement) so it is a
+/// valid display string (non-empty, no edges). LF becomes `[U+000A]`: a line break inside the
+/// value must not pass for another `path = value` row (spec/03 §9.2).
 fn escape_value(text: &str) -> (String, bool) {
-    let escaped = escape_untrusted(text);
-    let value = escape_edges(&escaped.text);
+    let (inline, hidden) = escape_inline(text);
+    let value = escape_edges(&inline);
     if value.is_empty() {
-        ("(빈 문자열)".to_owned(), escaped.hidden)
+        ("(빈 문자열)".to_owned(), hidden)
     } else {
-        (value, escaped.hidden)
+        (value, hidden)
+    }
+}
+
+/// A multi-line message value: edges escaped, and every inner LF marked `[U+000A]` before the
+/// break so a message line is visibly part of the message, never a separate row.
+fn message_value(escaped_text: &str) -> String {
+    let value = escape_edges(escaped_text);
+    if value.is_empty() {
+        "(빈 메시지)".to_owned()
+    } else {
+        value.replace('\n', "[U+000A]\n")
     }
 }
 
@@ -88,6 +102,7 @@ pub fn describe_address(chain: &ChainInfo, facts: &ChainFacts, address: &Address
                 out.push_str(&format_address(&target));
                 out.push(']');
             }
+            Some(CodeKind::Unknown) => out.push_str(" [계정 종류 확인 불가]"),
             None => {}
         }
     }
@@ -99,7 +114,9 @@ pub fn describe_address(chain: &ChainInfo, facts: &ChainFacts, address: &Address
     out
 }
 
-/// Token amount with trusted or unverified metadata (spec/03 §2.5).
+/// Token amount with trusted or unverified metadata (spec/03 §2.5). Decimals of an unregistered
+/// token come from its own contract via RPC, so the raw integer is always shown next to the
+/// formatted amount.
 #[must_use]
 pub fn format_token_amount(
     chain: &ChainInfo,
@@ -116,9 +133,13 @@ pub fn format_token_amount(
     let symbol = meta
         .and_then(|meta| meta.symbol.as_deref())
         .map_or_else(|| "?".to_owned(), |symbol| escape_inline(symbol).0);
+    let raw = format_units(amount, 0);
     match meta.and_then(|meta| meta.decimals) {
-        Some(decimals) => format!("{} {symbol} (미확인)", format_units(amount, decimals)),
-        None => format!("{} (원시 단위) {symbol} (미확인)", format_units(amount, 0)),
+        Some(decimals) => format!(
+            "{} {symbol} (미확인 · 원시 단위 {raw})",
+            format_units(amount, decimals)
+        ),
+        None => format!("{raw} (원시 단위) {symbol} (미확인)"),
     }
 }
 
@@ -160,11 +181,18 @@ impl Ctx<'_> {
         describe_address(self.chain, self.facts, address)
     }
 
+    /// An amount; for allowances (`unlimited` = the type maximum) the maximum is "무제한" and
+    /// any value of at least 2^128 is marked "사실상 무제한" (E14).
     fn token_amount(&self, token: &Address, amount: &U256, unlimited: Option<U256>) -> String {
         if unlimited == Some(*amount) {
             return "무제한".to_owned();
         }
-        format_token_amount(self.chain, self.facts, token, amount)
+        let text = format_token_amount(self.chain, self.facts, token, amount);
+        if unlimited.is_some() && !amount.fits_bits(risk::EFFECTIVELY_UNLIMITED_BITS) {
+            format!("{text} (사실상 무제한)")
+        } else {
+            text
+        }
     }
 
     fn uint_arg(&self, call: &DecodedCall, kind: &str, name: &str, value: &U256) -> String {
@@ -352,11 +380,14 @@ fn change_row(ctx: &Ctx<'_>, change: &AssetChange) -> String {
                 format!("{text} · {}", format_address(&token))
             }
         }
-        (AssetId::Token(token), Some(id)) if amount == U256::ONE => {
-            format!("NFT #{} · {}", id.to_decimal_string(), ctx.address(&token))
-        }
+        // NFTs are never registry assets: any contract can emit their Transfer logs (E40).
+        (AssetId::Token(token), Some(id)) if amount == U256::ONE => format!(
+            "NFT #{} · {} (미확인)",
+            id.to_decimal_string(),
+            ctx.address(&token)
+        ),
         (AssetId::Token(token), Some(id)) => format!(
-            "{} × {} · {}",
+            "{} × {} · {} (미확인)",
             id.to_decimal_string(),
             amount.to_decimal_string(),
             ctx.address(&token)
@@ -743,27 +774,32 @@ pub fn build_personal_request(
     let mut warnings = Vec::new();
     let text = message
         .text
-        .as_ref()
-        .filter(|text| text.len() <= crate::approval::MAX_DISPLAY_VALUE_BYTES);
+        .as_deref()
+        .map(message_value)
+        .filter(|value| value.len() <= crate::approval::MAX_DISPLAY_VALUE_BYTES);
     if message.text.is_some() && text.is_none() {
         warnings.push(risk::warning(P02, None));
     }
-    if let Some(text) = text {
-        let value = escape_edges(text);
-        let value = if value.is_empty() {
-            "(빈 메시지)".to_owned()
-        } else {
-            value
-        };
+    if let Some(value) = text {
         fields.push(FieldKey::MESSAGE_TEXT, "", value)?;
         if message.escaped {
             warnings.push(risk::warning(P02, None));
         }
     } else {
-        // Non-UTF-8 (P01), or UTF-8 whose escaped form exceeds the value limit (P02 above).
+        // Non-UTF-8 (P01), UTF-8 that looks binary (P04), or UTF-8 whose escaped form exceeds
+        // the value limit (P02 above).
         fields.push(FieldKey::MESSAGE_HEX, "", hex_lines(&message.bytes))?;
-        if message.text.is_none() {
-            warnings.push(risk::warning(P01, None));
+        match message.hex_reason {
+            Some(HexReason::Hash32) => warnings.push(risk::warning(
+                P04,
+                Some("정확히 32바이트입니다 — 해시에 서명하는 것일 수 있습니다"),
+            )),
+            Some(HexReason::Control) => warnings.push(risk::warning(
+                P04,
+                Some("TAB·줄바꿈 외의 제어 문자가 있습니다"),
+            )),
+            None if message.text.is_none() => warnings.push(risk::warning(P01, None)),
+            None => {}
         }
     }
     fields.push(
@@ -771,25 +807,25 @@ pub fn build_personal_request(
         "",
         format!("{}바이트", message.bytes.len()),
     )?;
+    let site = match &origin {
+        ApprovalOrigin::Site(site) => Some(site),
+        ApprovalOrigin::App => None,
+    };
+    let context = SiweContext {
+        origin: site,
+        account: &account,
+        active_chain_id: chain.chain_id,
+        now_unix_ms,
+    };
     let action = if let Some(siwe) = &message.siwe {
         siwe_fields(&mut fields, siwe, now_unix_ms)?;
-        let site = match &origin {
-            ApprovalOrigin::Site(site) => Some(site),
-            ApprovalOrigin::App => None,
-        };
-        warnings.extend(check_siwe(
-            siwe,
-            &SiweContext {
-                origin: site,
-                account: &account,
-                active_chain_id: chain.chain_id,
-                now_unix_ms,
-            },
-        ));
+        warnings.extend(check_siwe(siwe, &context));
         "로그인 요청 (SIWE)"
     } else {
         if message.siwe_marker_only {
-            warnings.push(marker_only_warning());
+            // S08 plus the first-line domain checks (S01/S02 block; unreadable domain → S01).
+            let raw = core::str::from_utf8(&message.bytes).unwrap_or("");
+            warnings.extend(check_marker_only(raw, &context));
         } else if message.text.is_some() && !message.escaped {
             warnings.push(risk::warning(P03, None));
         }

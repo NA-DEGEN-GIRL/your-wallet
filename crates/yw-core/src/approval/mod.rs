@@ -343,6 +343,10 @@ pub enum CodeKind {
     },
     /// Contract code.
     Contract,
+    /// The lookup failed (`eth_getCode` error or malformed result): treated as risky — E39 for an
+    /// approval spender, T18 for a typed-data spender (spec/03 §8.5). yw-app records this instead
+    /// of leaving the address unclassified.
+    Unknown,
 }
 
 impl CodeKind {
