@@ -1,7 +1,7 @@
 # Your Wallet — 개인용 소프트웨어 지갑 명세 v3
 
 - 상태: **구현 완료 · 수동 검증 대기** (M0–M8 구현, 마일스톤별 수동 체크리스트와 M9는 [spec/09](spec/09-testing.md)·`docs/acceptance/`에서 진행)
-- 기준일: 2026-10-28
+- 기준일: 2026-10-29
 - 대상: Windows 11 x64 데스크톱 1대, Chrome 1개, 사용자 1명(작성자 본인)
 - 이전 명세: v2.4와 Windows 격리 설계는 git 태그 `archive/spec-v2.4`(브랜치 `archive/windows-isolation`)에 보존. v3는 그 내용을 **대체**한다.
 - 규범 용어: **MUST/반드시**, **SHOULD/권고**, **MAY/선택**. 이 문서와 `spec/` 세부 문서가 충돌하면 이 문서가 우선한다.
@@ -51,7 +51,7 @@
 - 같은 Windows 사용자 권한으로 실행된 악성코드, 관리자·커널·드라이버·펌웨어 장악, UAC 우회. **PC가 장악되면 지갑도 장악된 것으로 본다.**
 - 전원이 켜진 상태의 탈취, evil maid, DMA, cold boot, 사이드채널. 최대 절전 파일(hiberfil.sys)·페이지 파일에 비밀이 남을 가능성(VirtualLock은 최대 절전을 막지 못한다 — BitLocker로 완화).
 - 사용자가 정확히 표시된 악성 거래를 승인하는 것.
-- 다중 사용자, 타인 배포, 코드 서명·자동 업데이트, 고액 장기 보관. 배포 zip(D1)은 작성자 본인 PC에 설치하기 위한 형태일 뿐이며 다른 사람에게 배포하는 제품이 아니다.
+- 다중 사용자, 바이너리 배포(미리 빌드한 실행 파일·설치 패키지), 코드 서명·자동 업데이트, 고액 장기 보관. 저장소는 소스로만 공개할 수 있고(예: GitHub), 설치는 각자 자기 PC에서 소스를 빌드해 한다(D1). 다른 사람의 사용을 지원하는 제품이 아니다.
 - 비ASCII 비밀번호·BIP39 passphrase(다른 지갑에서 만든 한글 passphrase 복구 포함).
 - RPC 공급자 단일 의존에서 오는 잔여 위험: 잔액·확인 수·UTXO 완전성 위조, Solana 만료 판정 위조에 의한 이중 지불(로컬 시계 90초 검사로 범위를 줄인다). 서명 대상 자체는 RPC가 바꿀 수 없다.
 - LLM 설명(D21)의 정확성. AI 텍스트는 별도 패널의 참고 정보이며 승인 근거가 아니다.
@@ -77,7 +77,7 @@
 
 | ID | 결정 |
 |---|---|
-| D1 | 대상 환경: Windows 11 x64(22H2 이상), Chrome 120 이상. 배포 형태: 미리 빌드된 zip(`YourWallet-<버전>-win-x64.zip`: yw-app.exe, yw-host.exe, extension/, install.ps1·uninstall.ps1, SHA256SUMS). 설치는 관리자 권한 없이 현재 사용자 범위(`%LOCALAPPDATA%\Programs\YourWallet`, HKCU native host 등록, 시작 메뉴 바로가기)에서 한다. 코드 서명은 하지 않으므로 SmartScreen 경고가 뜰 수 있고, 무결성은 SHA256SUMS와 소스 재빌드로 확인한다. 소스 빌드도 계속 지원한다. |
+| D1 | 대상 환경: Windows 11 x64(22H2 이상), Chrome 120 이상. 배포 형태: **소스만**. 미리 빌드한 실행 파일·zip·설치 패키지는 만들지도 배포하지도 않는다. 설치는 소스 체크아웃(Git 또는 GitHub "Download ZIP")의 루트 `install.cmd`(→ `scripts/install.ps1`) 한 번으로 한다: 빌드 도구(rustup, Visual Studio Build Tools C++) 확인 — 없으면 winget 명령을 보여 주고 사용자가 동의할 때만 실행 — → `cargo build --release --locked -p yw-app -p yw-host` → 관리자 권한 없이 현재 사용자 범위(`%LOCALAPPDATA%\Programs\YourWallet`: 두 exe와 확장 런타임 파일 사본, HKCU native host 등록, 시작 메뉴 바로가기)에 설치. Chrome 확장은 사용자가 설치 폴더의 `extension\`을 직접 압축해제 로드한다. 업데이트는 `git pull` 후 `install.cmd` 재실행, 제거는 `uninstall.cmd`. 코드 서명은 하지 않는다. 무결성의 기준은 소스 커밋과 `Cargo.lock` 체크섬이다([spec/01](spec/01-repo-build.md) §9). |
 | D2 | 위협 모델은 §2를 따른다. 별도 Windows 계정·서비스·LPAC·프로세스 격리 장치는 만들지 않는다. |
 | D3 | 프로세스: `extension`(순수 JS) → Chrome이 실행하는 `yw-host.exe` → 사용자 전용 named pipe → `yw-app.exe`(지갑 본체, 단일 인스턴스). 키·vault·승인 창·RPC는 모두 yw-app에 있다. |
 | D4 | 크레이트: `yw-core`(플랫폼 독립, 네트워크·GUI·unsafe 없음), `yw-json`(자체 엄격 JSON, 의존성 0), `yw-win`(windows-sys 래퍼, **unsafe는 이 크레이트에만 허용**), `yw-app`(바이너리), `yw-host`(바이너리). |

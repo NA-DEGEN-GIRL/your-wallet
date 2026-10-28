@@ -1,8 +1,10 @@
-﻿# packaging/uninstall.ps1 - Your Wallet 제거 (spec.md D1, spec/01 §9.4). install.ps1이 설치 폴더에 함께 복사한다.
+﻿# scripts/uninstall.ps1 - Your Wallet 제거 (spec.md D1, spec/01 §9.3). 저장소 루트의 uninstall.cmd가 이 스크립트를
+# 실행한다. scripts/install.ps1이 설치 폴더에도 사본을 둔다(저장소를 지운 뒤에도 제거할 수 있게).
 # Windows PowerShell 5.1과 PowerShell 7에서 동작한다. 관리자 권한이 필요 없다.
 #
 # 사용:
-#   powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\YourWallet\uninstall.ps1" [-InstallDir <폴더>] [-NoShortcut] [-NoNativeHost] [-RemoveWalletData] [-DryRun]
+#   uninstall.cmd [-InstallDir <폴더>] [-NoShortcut] [-NoNativeHost] [-RemoveWalletData] [-DryRun]
+#   powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\YourWallet\uninstall.ps1" [같은 옵션]
 #
 #   -InstallDir        설치 폴더. 기본: 이 스크립트가 설치 폴더 안의 사본이면(옆에 yw-install.json) 그 폴더,
 #                      아니면 %LOCALAPPDATA%\Programs\YourWallet
@@ -82,6 +84,13 @@ function Get-InnerException($ErrorRecordOrException) {
     if ($ex -is [System.Management.Automation.ErrorRecord]) { $ex = $ex.Exception }
     while ($null -ne $ex.InnerException -and $ex -is [System.Management.Automation.RuntimeException]) { $ex = $ex.InnerException }
     return $ex
+}
+
+# 출력이 파일·파이프로 갈 때 한글이 콘솔 코드 페이지로 깨지지 않게 UTF-8로 쓴다(콘솔 창에서는 바꾸지 않는다).
+function Set-RedirectedOutputUtf8 {
+    try {
+        if ([Console]::IsOutputRedirected) { [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false) }
+    } catch { }
 }
 
 function ConvertTo-FullPath([string]$Path) {
@@ -193,6 +202,7 @@ function Invoke-Uninstall {
         Write-RecoveryReminder
         exit 9
     }
+    Set-RedirectedOutputUtf8
     $failures = New-Object 'System.Collections.Generic.List[string]'
     $localAppData = $env:LOCALAPPDATA
     if ([string]::IsNullOrEmpty($localAppData) -or -not [IO.Path]::IsPathRooted($localAppData)) {
@@ -381,7 +391,7 @@ function Invoke-Uninstall {
     Write-Step '4/4 지갑 데이터'
     if (-not $removeData) {
         Write-Host "  지우지 않았습니다: $dataDir"
-        Write-Host '  다시 설치하면 같은 데이터를 그대로 씁니다. 완전히 지우려면 -RemoveWalletData를 쓰세요.'
+        Write-Host '  다시 설치(저장소의 install.cmd)하면 같은 데이터를 그대로 씁니다. 완전히 지우려면 -RemoveWalletData를 쓰세요.'
     } elseif ($DryRun) {
         Write-Plan "폴더 전체 삭제: $dataDir"
     } else {
@@ -411,6 +421,7 @@ function Invoke-Uninstall {
     } else {
         Write-Host '제거 완료.' -ForegroundColor Green
     }
+    Write-Host "지갑 데이터 폴더: $dataDir"
     exit 0
 }
 

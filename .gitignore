@@ -32,4 +32,7 @@ __pycache__/
 *private*.pem
 /extension/native-host/com.your_wallet.native.json
 !/extension/native-host/com.your_wallet.native.json.template
+# 실행 파일·zip은 커밋하지 않는다(spec.md D1). 예전 패키지 출력 폴더도 무시한다.
 /dist/
+# Claude Code 작업 폴더(로컬 설정·worktree)
+/.claude/

@@ -13,20 +13,32 @@ Windows 11 PC 한 대에서 작성자 본인이 쓰는 개인용 소프트웨어
   Solana 송금과 v1.1 SPL 허용 목록(M7), Bitcoin 송금(M8). 자동 검사(`scripts/check.ps1`)는 통과하며,
   마일스톤별 수동 체크리스트와 라이브 확인은 [docs/acceptance/](docs/acceptance/)에서 진행 중이다
   (아직 남은 예: Chrome job object에서 yw-app 생존 확인 M5-13, 메인넷 소액 M9).
-- 설치는 미리 빌드된 배포 zip과 `install.ps1`로 한다(아래 "설치", [docs/install.ko.md](docs/install.ko.md)).
-  배포 zip은 작성자 본인 PC 설치용이며 다른 사람에게 배포하는 제품이 아니다(spec.md §2.2).
+- 미리 빌드한 실행 파일은 배포하지 않는다. 저장소는 소스로만 공개하고, 각자 자기 PC에서 빌드해 설치한다
+  (아래 "설치", spec.md D1·§2.2).
 - 실제 자산을 넣지 않는다. 메인넷 사용은 M9 체크리스트 이후 소액만.
 - 마일스톤과 완료 조건: [spec.md](spec.md) §5, 판정 기준: [spec/09-testing.md](spec/09-testing.md).
 
-## 빌드 전제 ([spec/01](spec/01-repo-build.md) §3.8)
+## 설치
 
-- Windows 11 x64 22H2 이상
-- rustup + `rust-toolchain.toml`(Rust 1.95.0, clippy·rustfmt)
-- Visual Studio Build Tools "C++를 사용한 데스크톱 개발"(MSVC + Windows SDK; secp256k1-sys 빌드·링크)
-- Node.js 22 이상(npm 패키지 설치 없음), Git 2.x, Windows PowerShell 5.1 또는 PowerShell 7
-- Chrome 120 이상(M5부터). 확장은 `extension\` 폴더를 압축해제 로드하고 native host는 `scripts\register-native-host.ps1`로 HKCU에 등록한다(spec/05 §9, 확장 ID `nnpjlobjgbanccjddghlpaafpohfkeph`).
+준비: Windows 11 x64, Chrome. 소스는 `git clone` 또는 GitHub의 **Code → Download ZIP**(압축 풀기)으로 받는다.
+Rust(rustup)나 Visual Studio C++ 빌드 도구가 없으면 설치 스크립트가 무엇이 없는지 보여 주고, 동의하면 winget으로 설치한다.
 
-## 빌드와 검사
+1. 저장소 폴더의 **`install.cmd`** 를 더블클릭한다. 소스를 빌드하고(처음에는 몇 분) 현재 사용자에게
+   `%LOCALAPPDATA%\Programs\YourWallet`으로 설치한다(관리자 권한 불필요).
+2. Chrome → `chrome://extensions` → 개발자 모드 → 압축해제된 확장 프로그램 로드 →
+   `%LOCALAPPDATA%\Programs\YourWallet\extension`(설치가 끝나면 이 경로가 클립보드에 있다).
+3. 시작 메뉴 → **Your Wallet** → 지갑 만들기(24단어 종이 백업) → 설정 → 네트워크(RPC)
+   ([docs/install.ko.md](docs/install.ko.md) "첫 실행").
+
+업데이트는 `git pull` 후 `install.cmd`를 다시 실행하고 확장 카드에서 새로고침한다. 제거는 `uninstall.cmd`
+(지갑 데이터 `%LOCALAPPDATA%\YourWallet`은 남긴다). 옵션·백업·문제 해결: [docs/install.ko.md](docs/install.ko.md).
+
+## 개발
+
+빌드 전제([spec/01](spec/01-repo-build.md) §3.8): Windows 11 x64 22H2 이상, rustup + `rust-toolchain.toml`(Rust 1.95.0,
+clippy·rustfmt), Visual Studio Build Tools "C++를 사용한 데스크톱 개발"(MSVC + Windows SDK; secp256k1-sys 빌드·링크),
+Node.js 22 이상(검사·확장 테스트용, npm 패키지 설치 없음, 설치에는 필요 없음), Git 2.x,
+Windows PowerShell 5.1 또는 PowerShell 7, Chrome 120 이상.
 
 ```powershell
 cargo build --release --locked        # target\release\yw-app.exe, target\release\yw-host.exe
@@ -37,23 +49,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 -Offline  
 `scripts/check.ps1`은 fmt, 의존성 허용 목록, clippy, test, build, 확장·스크립트 테스트,
 privacy scan, 확장 정적 감사를 차례로 실행하고 첫 실패에서 멈춘다(종료 코드는 spec/01 §4.1).
 `Cargo.lock`은 커밋하며 `cargo update`·`cargo generate-lockfile`을 쓰지 않는다(spec/01 §3.6).
-
-## 설치 (배포 zip)
-
-미리 빌드된 `YourWallet-<버전>-win-x64.zip`의 SHA-256을 배포자가 따로 알려 준 값과 비교한 뒤 풀고,
-그 폴더에서 실행한다. 관리자 권한 없이 현재 사용자에게만 설치된다(`%LOCALAPPDATA%\Programs\YourWallet`,
-HKCU native host 등록, 시작 메뉴 바로가기). 지갑 데이터 `%LOCALAPPDATA%\YourWallet\`은 건드리지 않는다.
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -DryRun   # 할 일만 보기
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1           # SHA256SUMS 확인 후 설치
-```
-
-확장은 `chrome://extensions` → 개발자 모드 → 압축해제된 확장 프로그램 로드 →
-`%LOCALAPPDATA%\Programs\YourWallet\extension`(ID `nnpjlobjgbanccjddghlpaafpohfkeph` 확인).
-코드 서명을 하지 않으므로 SmartScreen 창이 뜨면 "추가 정보 → 실행". 확인·업그레이드·제거(`uninstall.ps1`)·
-데이터 위치·백업은 [docs/install.ko.md](docs/install.ko.md). zip은 `scripts\package.ps1`로 만든다
-(`check.ps1 -Offline` 게이트 → `cargo build --release --locked --offline` → `dist\`, spec/01 §9).
+native host 등록은 `install.cmd`가 한다(spec/05 §9). 확장 소스를 고치며 시험할 때는 저장소의 `extension\`을
+압축해제 로드해도 된다(manifest `key`가 같아 ID `nnpjlobjgbanccjddghlpaafpohfkeph`도 같다).
 
 ## 문서
 
@@ -61,6 +58,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1           # SH
 |---|---|
 | [spec.md](spec.md) | 목표, 위협 모델, 결정 사항, 아키텍처, 마일스톤 |
 | [spec/](spec/) | 01 저장소·빌드, 02 키·vault, 03 EVM, 04 앱 UI, 05 브라우저, 06 LLM 설명, 07 Solana, 08 Bitcoin, 09 테스트 |
+| [docs/install.ko.md](docs/install.ko.md) | 설치·업데이트·제거, 첫 실행(RPC), 파일 위치, 문제 해결 |
 | [docs/recovery-guide.ko.md](docs/recovery-guide.ko.md) | 백업·복구 안내 |
 | [docs/acceptance/](docs/acceptance/) | 체크리스트·라이브 확인 기록 |
 

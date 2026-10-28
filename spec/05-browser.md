@@ -926,51 +926,44 @@ pub const UNLOCK_PROMPT_COOLDOWN_MS: u64 = 30_000;                              
 
 ---
 
-## 9. 등록 (소스 빌드용; 배포 설치는 D1 `install.ps1`, Web Store 없음)
-배포 zip을 쓰는 일반 설치는 D1의 현재 사용자 설치 프로그램 `install.ps1`([01](01-repo-build.md) §9.3)이 한다: 실행 파일과 native host manifest를 `%LOCALAPPDATA%\Programs\YourWallet\`에 두고 같은 HKCU 키에 등록한다. 이 절의 두 스크립트는 저장소에서 직접 빌드해 쓰는 개발용 경로이며 기본 `$BinDir`은 `%LOCALAPPDATA%\YourWallet\bin`이다. 두 경로는 같은 HKCU 키를 쓰므로 마지막에 실행한 쪽이 등록을 가진다.
+## 9. 등록 (D1 `install.cmd`, Web Store 없음)
+native host 등록은 소스 설치 스크립트 `scripts/install.ps1`(루트 `install.cmd`, [01](01-repo-build.md) §9.2)이 한다: 그 PC에서 빌드한 `yw-app.exe`·`yw-host.exe`와 확장 런타임 파일 사본, native host manifest를 설치 폴더(기본 `%LOCALAPPDATA%\Programs\YourWallet\`)에 두고 HKCU에 등록한다. 개발 중에도 같은 스크립트를 쓴다(exe를 다시 빌드했으면 `install.cmd`를 다시 실행). 별도 개발용 등록 스크립트는 없다.
 
-### 9.1 `scripts/register-native-host.ps1`
-Windows PowerShell 5.1과 PowerShell 7 모두에서 동작해야 한다. 관리자 권한 불필요(HKCU만).
+### 9.1 manifest와 HKCU 등록 (`scripts/install.ps1`)
+Windows PowerShell 5.1과 PowerShell 7 모두에서 동작한다. 관리자 권한 불필요(HKCU만). 설치에 Node가 필요 없도록 ID 계산과 manifest 검증을 PowerShell로 재구현한다(§9.3과의 일치는 [01] §9.4 시험).
 
-```
-param(
-  [string]$BinDir = "$env:LOCALAPPDATA\YourWallet\bin",
-  [ValidateSet('release','debug')] [string]$BuildProfile = 'release'
-)
-```
-
-1. `node scripts/extension-key.mjs check` 실패 → 중단. `extension/extension-id.txt`에서 ID를 읽는다.
-2. `$BinDir`을 절대 경로로 정규화. `"`, `%`, `&`, `^`, `|`, `<`, `>`, `!`, 제어 문자가 있으면 중단(cmd.exe 경유 실행 대비, §11-5).
-3. `target\<BuildProfile>\yw-host.exe`, `yw-app.exe`가 없으면 `cargo build -p yw-host -p yw-app`(release면 `--release` 추가) 안내 후 중단. 있으면 `$BinDir`을 만들고 두 파일을 복사한다. 복사가 잠금으로 실패하면 "yw-app·Chrome을 종료한 뒤 다시 실행"을 출력하고 중단.
-4. `$BinDir\com.your_wallet.native.json`을 쓴다. `[ordered]` 해시테이블(`allowed_origins = @("chrome-extension://<id>/")`) → `ConvertTo-Json -InputObject $m -Depth 3` → `[IO.File]::WriteAllText($path, $json, [Text.UTF8Encoding]::new($false))`(BOM 없음).
+1. `extension/manifest.json`의 `key`로 계산한 ID(§2.3, `extension/extension-id.txt`와 같은 값)가 스크립트의 고정값과 다르면 중단.
+2. 설치 폴더를 절대 경로로 정규화. `"`, `%`, `&`, `^`, `|`, `<`, `>`, `!`, 제어 문자가 있으면 중단(cmd.exe 경유 실행 대비, §11-5).
+3. 설치 폴더에 `yw-host.exe`·`yw-app.exe`를 복사한다. 파일이 잠겨 있으면 yw-app·Chrome을 닫아 달라고 묻는다(강제 종료 없음).
+4. `<설치 폴더>\com.your_wallet.native.json`을 쓴다. `[ordered]` 해시테이블(`allowed_origins = @("chrome-extension://<id>/")`) → `ConvertTo-Json -InputObject $m -Depth 3` → UTF-8 BOM 없음.
 
 ```json
 {
   "name": "com.your_wallet.native",
   "description": "Your Wallet native messaging host",
-  "path": "C:\\Users\\<user>\\AppData\\Local\\YourWallet\\bin\\yw-host.exe",
+  "path": "C:\Users\<user>\AppData\Local\Programs\YourWallet\yw-host.exe",
   "type": "stdio",
   "allowed_origins": ["chrome-extension://<id>/"]
 }
 ```
 
-5. `node extension/native-host/validate-manifest.mjs <manifest> --expect-id <id>` 실패 → 중단.
-6. `New-Item -Path 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.your_wallet.native' -Value <manifest 절대 경로> -Force | Out-Null`(기본값 설정). 다시 읽어 같은지 확인.
-7. 출력: 확장 ID, manifest 경로, 다음 단계(§9.4).
+5. 쓴 파일을 §9.3과 같은 규칙으로 검증한다. 실패 → 중단.
+6. `New-Item -Path 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.your_wallet.native' -Value <manifest 절대 경로> -Force | Out-Null`(기본값 설정). 다시 읽어 같은지 확인. 다른 값이 있었으면 이전 값을 출력하고 바꾼다(`-NoNativeHost`면 등록하지 않음).
+7. 출력: 확장 로드 방법(§9.4), 업그레이드면 확장 카드 새로고침.
 
-yw-host는 자기와 같은 폴더의 yw-app을 실행하므로 yw-app은 등록한 host 옆의 사본으로 실행하는 것을 기본으로 한다: 배포 설치는 `%LOCALAPPDATA%\Programs\YourWallet\yw-app.exe`(시작 메뉴 바로가기), 이 스크립트로 등록했으면 `$BinDir\yw-app.exe`. 다른 위치에서 실행 중이어도 단일 인스턴스 규칙으로 하나만 남는다.
+yw-host는 자기와 같은 폴더의 yw-app을 실행하므로 yw-app은 등록한 host 옆의 사본(`<설치 폴더>\yw-app.exe`, 시작 메뉴 바로가기)으로 실행하는 것을 기본으로 한다. 다른 위치(예: `target\release`)에서 실행 중이어도 단일 인스턴스 규칙으로 하나만 남는다.
 
-### 9.2 `scripts/unregister-native-host.ps1`
-`param([string]$BinDir = "$env:LOCALAPPDATA\YourWallet\bin", [switch]$RemoveBinaries)`. 레지스트리 키 `HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.your_wallet.native`와 `$BinDir\com.your_wallet.native.json`을 지운다. `-RemoveBinaries`일 때만 두 exe를 지운다. vault·설정(`%LOCALAPPDATA%\YourWallet\v3\`)은 건드리지 않는다.
+### 9.2 등록 해제 (`scripts/uninstall.ps1`)
+루트 `uninstall.cmd`([01] §9.3). HKCU 키는 기본값이 그 설치의 manifest를 가리킬 때만 지우고(다른 등록은 남기고 출력), manifest와 설치 기록의 프로그램 파일을 지운다. vault·설정(`%LOCALAPPDATA%\YourWallet\v3\`)은 `-RemoveWalletData`와 확인 문구 없이는 건드리지 않는다.
 
 ### 9.3 `extension/native-host/validate-manifest.mjs`
 - export 이름 `validateReleaseNativeManifest` → `validateNativeManifest`. 기존 검사(`archive/spec-v2.4:extension/native-host/validate-manifest.mjs:23-62`) 유지 + 추가: `path`의 마지막 구성 요소가 정확히 `yw-host.exe`(대소문자 무시), `path`에 `%`·`&`·`^`·`!`가 없음.
 - CLI: `node validate-manifest.mjs <file> [--expect-id <id>]`. UTF-8(BOM 있으면 오류)로 읽고 `JSON.parse` → 검증 → 성공 시 `OK <id>` 출력·종료 코드 0, 실패 시 `INVALID` 출력·종료 코드 1. `--expect-id`가 있으면 ID 일치도 요구.
 
 ### 9.4 확장 로드
-1. `chrome://extensions` → 개발자 모드 켜기 → "압축해제된 확장 프로그램을 로드합니다" → 저장소의 `extension\` 폴더 선택.
-2. 표시된 ID가 `extension/extension-id.txt`와 같은지 확인.
-3. `register-native-host.ps1` 실행(순서는 1과 바꿔도 됨). 확장 소스를 고친 뒤에는 확장 카드의 새로고침 버튼을 누르고 열린 탭을 새로고침한다(MV3는 기존 탭에 다시 주입하지 않으며, 옛 content script는 DEAD 상태가 된다).
+1. `chrome://extensions` → 개발자 모드 켜기 → "압축해제된 확장 프로그램을 로드합니다" → `<설치 폴더>\extension` 선택(`install.cmd`가 경로를 클립보드에 넣는다). 확장 소스를 고치며 시험할 때는 저장소의 `extension\`을 로드해도 된다(같은 `key` → 같은 ID, 등록은 확장 경로와 무관).
+2. 표시된 ID가 `extension/extension-id.txt`(`nnpjlobjgbanccjddghlpaafpohfkeph`)와 같은지 확인.
+3. `install.cmd` 실행(순서는 1과 바꿔도 됨). 다시 설치했거나 확장 소스를 고친 뒤에는 확장 카드의 새로고침 버튼을 누르고 열린 탭을 새로고침한다(MV3는 기존 탭에 다시 주입하지 않으며, 옛 content script는 DEAD 상태가 된다).
 4. Chrome 시작 시 "개발자 모드 확장 프로그램" 경고가 뜰 수 있다. Web Store·CRX 패키징은 하지 않는다.
 
 ---
@@ -1087,7 +1080,7 @@ response 프로필 사례: `array` n=262,141 ok, n=262,142 거부(nodes 262,145.
 | 2 | yw-host의 `AllowSetForegroundWindow`로 승인 창이 앞으로 오는가(직접 실행·cmd 경유 각각) | E2E 3 | [04](04-app-ui.md)의 `FlashWindowEx` 작업 표시줄 알림만 사용 |
 | 3 | yw-host가 실행한 yw-app이 yw-host 종료 후에도 살아 있는가(Chrome job 객체) | Chrome 종료 후 작업 관리자 확인(M5) | `CREATE_BREAKAWAY_FROM_JOB` 실패 시 플래그 없이 실행(§7.4). 그래도 같이 죽으면 D24에 따라 자동 실행을 끈다: `browserAutoLaunch` 기본값을 `false`로 바꾸고([04] §6.1과 §7.4 `auto_launch_enabled`의 기본값 함께) 사용자가 yw-app을 먼저 수동 실행 |
 | 4 | Chrome이 2^31 이상 정수(`deadlineUnixMs`)를 정수 어휘로 넘기는가 | 첫 request 프레임 로그(디버그 빌드에서 바이트 덤프) | 이미 `.0` 허용 규칙으로 대비됨. 다른 형태(지수 표기 등)가 보이면 §6.1 규칙에 추가 |
-| 5 | cmd.exe 경유 실행 시 사용자 이름에 공백·비ASCII가 있는 경로가 동작하는가 | 해당 경로로 `-BinDir` 지정 후 E2E 1 | `-BinDir C:\YourWallet\bin` 같은 단순 경로 사용 |
+| 5 | cmd.exe 경유 실행 시 사용자 이름에 공백·비ASCII가 있는 경로가 동작하는가 | 해당 경로로 `install.cmd -InstallDir <경로>` 후 E2E 1 | `-InstallDir C:\YourWallet` 같은 단순 경로 사용 |
 | 6 | MV3 worker가 native 포트 연결 중 유지되고, idle 종료 후 content 재연결이 worker를 깨우는가 | E2E 6 | 없음(§2.7 설계가 두 경우를 모두 처리) |
 
 ---

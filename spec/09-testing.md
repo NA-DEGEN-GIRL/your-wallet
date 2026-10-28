@@ -34,7 +34,7 @@
 | `scripts/probe-rpc.mjs` | §2.5 L-SIM·L-REVERT·L-HYPEREVM·L-GENESIS. 정본 01 §4.7(Node 22, npm 의존성 0). `*.test.mjs`가 아니므로 `node --test`·check.ps1 대상 아님 | 수동 |
 | `crates/yw-host/src/lib.rs` + `tests/` | 인자(R-H1)·UNAVAILABLE 응답기(R-H2)·중계·크기 초과 종료 코드(R-H3)·`auto_launch_enabled`와 연결 루프(R-H4) — 05 §10.2 R-H1–R-H4. 실제 프로세스 시험은 05 H1(`extension/tests/yw-host-process.test.mjs`) | `cargo test` |
 | `extension/tests/*.test.mjs` | node:test(05 §10.1) | `node --test` |
-| `scripts/*.test.mjs` | privacy-scan, check-core-deps | `node --test` |
+| `scripts/*.test.mjs` | privacy-scan, check-core-deps, audit-extension, strict-json, install(01 §9.4: Windows PowerShell 5.1로 `install.ps1 -NoBuild`·`uninstall.ps1`을 임시 폴더에 실행, §5.12 INS-1) | `node --test` |
 | `fuzz/` | 별도 워크스페이스(§2.4) | 수동 |
 | `tools/btc-oracle/`, `tools/sol-oracle/` | 차등 오라클(08 §14.3, 07 §17.3 교차 확인). 저장소 안의 별도 워크스페이스(각자 `[workspace]`·`Cargo.lock`), 루트 `Cargo.toml` `[workspace] exclude`(01 §3.1). 의존성 허용 목록·`check-core-deps.mjs`·check.ps1 대상이 아니고 어떤 배포 바이너리에도 들어가지 않는다 | 수동 |
 | `extension/test-dapp/` | M5 수동 E2E 페이지(§5.7) | 수동 |
@@ -646,7 +646,7 @@ Issued At: 2026-10-25T23:59:00Z
 
 ### 5.6 M5 브라우저 연동 (자동 + 수동, 05 §10 포함)
 
-준비: `cargo build --release`, `scripts/register-native-host.ps1`, 확장 로드(05 §9.4), yw-app `allowLocalhostDapps` 켬, M4-14 사용자 체인 등록 유지(chainId 137이 아닐 것), `node extension/test-dapp/serve.mjs` → `http://localhost:5173/`.
+준비: `install.cmd`(릴리스 빌드·설치·native host 등록, 01 §9.2), 확장 로드(05 §9.4), yw-app `allowLocalhostDapps` 켬, M4-14 사용자 체인 등록 유지(chainId 137이 아닐 것), `node extension/test-dapp/serve.mjs` → `http://localhost:5173/`.
 
 - [ ] M5-1 test-dapp 전 버튼(§5.7 T01–T32) 기대 결과 일치.
 - [ ] M5-2 다른 확장 ID: `extension/`을 복사해 `manifest.json`의 `key` 삭제 후 로드(원본 확장은 끔) → 사본으로 T03 → 4900, 사본 service worker 콘솔에 `Access to the specified native messaging host is forbidden`, 작업 관리자에 새 yw-host 없음.
@@ -760,7 +760,7 @@ WETH = Sepolia `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14`(03 §1.2, 구현 시
 
 ### 5.11 M9 메인넷 소액 (수동, 1회)
 
-- [ ] M9-1 판정 커밋에서 `check.ps1` 통과, M0–M8(M6 선택) 기록이 모두 있음. 그 커밋에서 `scripts/package.ps1`로 만든 배포 zip을 §5.12(INS-*)대로 확인하고 `install.ps1`로 설치한다(`register-native-host.ps1` 등록이 남아 있으면 `install.ps1`이 교체한다). 설치·업그레이드 전에 앱을 닫고 `%LOCALAPPDATA%\YourWallet\v3` 폴더를 복사해 둔다(docs/install.ko.md §5).
+- [ ] M9-1 판정 커밋에서 `check.ps1` 통과, M0–M8(M6 선택) 기록이 모두 있음. 그 커밋(작업 트리 변경 없음)에서 `install.cmd`로 빌드·설치하고 §5.12(INS-*)를 확인한다(설치 요약에 그 커밋이 나온다). 설치·업그레이드 전에 앱을 닫고 `%LOCALAPPDATA%\YourWallet\v3` 폴더를 복사해 둔다(docs/install.ko.md §5).
 - [ ] M9-2 Glamsterdam 상태 확인: EIP-7773 표에 mainnet 활성 시각이 있으면 §6 R1을 먼저 마쳤음.
 - [ ] M9-3 독립 도구 호환 훈련(가치 없는 시험 니모닉): yw-app 시험 vault가 만든 24단어 → (a) MetaMask 또는 Rabby: EVM 계정 0·1 (b) Phantom 또는 Solflare: SOL 계정 0·1 (c) Sparrow(Native Segwit, m/84'/0'/0')와 Electrum(BIP39 seed, p2wpkh): BTC 받기 0–4·잔돈 0–1 → 모두 yw-app과 같음. 같은 단계에서 ACC-3·BIP84 art 값(§3.10)도 도구 하나로 1회 대조한다. 도구는 공식 배포처에서 받는다. 시험 니모닉은 이후 쓰지 않는다.
 - [ ] M9-4 실제 지갑 생성: 새 vault(24단어), 종이(또는 금속)에 단어와 계정 0 주소 기록, 백업 확인 완료. 사진·클라우드·메신저에 남기지 않음(spec §2.4).
@@ -771,24 +771,25 @@ WETH = Sepolia `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14`(03 §1.2, 구현 시
 - [ ] M9-9 운영 권고(spec §2.4): 일상 계정이 표준 사용자(`net user <이름>`에 Administrators 없음), `manage-bde -status C:` 보호 켜짐, 핫 잔액 상한 결정·기록.
 - [ ] M9-10 이후 소액만 사용. 상한을 넘기려면 이 체크리스트를 다시 수행하지 않고 spec §2.2(고액 장기 보관 비목표)를 따른다.
 
-### 5.12 배포 zip 설치 (D1, 수동, 배포할 zip마다)
+### 5.12 소스 설치 (D1, 자동 + 수동, 설치 스크립트를 바꿀 때와 M9-1)
 
-규칙은 01 §9, 사용자 안내는 `docs/install.ko.md`. 준비: `scripts\package.ps1`(게이트 포함, `-SkipCheck` 아님)으로 만든 zip과 출력된 SHA-256. 설치·제거는 HKCU 등록과 시작 메뉴를 바꾸므로 가능하면 지갑 데이터가 없는 별도 Windows **표준 사용자** 계정에서 한다. Chrome 120 이상. 결과는 원칙 7대로 `docs/acceptance/install-<YYYYMMDD>.md`에 기록한다.
+규칙은 01 §9, 사용자 안내는 `docs/install.ko.md`. 미리 빌드한 실행 파일은 배포하지 않으므로 판정 대상은 저장소의 `install.cmd`·`uninstall.cmd`와 그 스크립트다. 수동 항목은 HKCU 등록과 시작 메뉴를 바꾸므로 가능하면 지갑 데이터가 없는 별도 Windows **표준 사용자** 계정(INS-2는 빌드 도구가 없는 PC나 VM)에서 한다. Chrome 120 이상. 결과는 원칙 7대로 `docs/acceptance/install-<YYYYMMDD>.md`에 기록한다.
 
-- [ ] INS-1 검증 함수 일치(저장소 PC, Windows PowerShell 5.1과 7 각각): `. .\packaging\install.ps1`(점 소싱 = 함수만 정의) 뒤 manifest 표본마다 `Test-NativeManifestFile <파일> nnpjlobjgbanccjddghlpaafpohfkeph`와 `node extension/native-host/validate-manifest.mjs <파일> --expect-id nnpjlobjgbanccjddghlpaafpohfkeph`의 판정이 같다. 표본: 정상, `YW-HOST.EXE`, 공백·한글 경로, 다른 ID, origin 2개, origin 끝 `/` 없음, origin 끝 `\n`, 키 추가, 이름·`type`·빈 설명, `%`·`&`·`^`·`!`, 상대·UNC·`..`·끝 점·끝 공백·빈 구간·`/` 구분·드라이브 루트 경로, `yw-app.exe`, `__X__` 자리표시자, JSON 아님, UTF-8 BOM. `Get-ExtensionIdFromKey`(manifest `key`) = `node scripts/extension-key.mjs id`.
-- [ ] INS-2 zip: `Get-FileHash` = package.ps1 출력 = `.sha256` 파일. 항목이 최상위 `YourWallet-<버전>/` 아래 `README-설치.txt`, `SHA256SUMS`, `extension/manifest.json`, `extension/popup/popup.css`·`popup.html`, `extension/src/*.js`(audit-extension 목록), `install.ps1`, `uninstall.ps1`, `yw-app.exe`, `yw-host.exe`뿐이다(`tests/`·`native-host/`·`test-dapp/`·`package.json`·`extension-id.txt` 없음). 탐색기 "압축 풀기"에서 `README-설치.txt` 이름이 깨지지 않는다. 푼 폴더에서 Git Bash `sha256sum -c SHA256SUMS` 전부 OK.
-- [ ] INS-3 `install.ps1 -DryRun` → 종료 0, 6단계 할 일 출력. 이후 `%LOCALAPPDATA%\Programs\YourWallet` 없음, `reg query "HKCU\Software\Google\Chrome\NativeMessagingHosts\com.your_wallet.native" /ve` 결과 변화 없음, 시작 메뉴 변화 없음.
-- [ ] INS-4 부정(압축을 푼 사본에서, 매번 새 `-InstallDir`): (a) `extension\src\shared.js` 1바이트 변경 (b) `yw-host.exe` 삭제 (c) `SHA256SUMS`에 `../x.txt` 줄 추가 → 각각 종료 2, 설치 폴더가 생기지 않음. (d) `-InstallDir C:\a&b` → 종료 1, 폴더 없음. (e) 다른 파일이 있는 폴더 → 종료 1, 그 파일 그대로.
-- [ ] INS-5 설치(표준 사용자, 관리자 아님) → 종료 0. 설치 폴더 = zip의 파일(`install.ps1`·`SHA256SUMS` 제외) + `com.your_wallet.native.json` + `yw-install.json`. `reg query … /ve` = 그 manifest 경로, 저장소 PC면 `validate-manifest.mjs`로 `OK`. 시작 메뉴 "Your Wallet". 설치 전후 `%LOCALAPPDATA%\YourWallet` 목록·해시 같음(없었으면 계속 없음).
-- [ ] INS-6 설치 폴더의 `extension` 압축해제 로드 → ID `nnpjlobjgbanccjddghlpaafpohfkeph`. 시작 메뉴로 yw-app 실행(내려받은 zip이면 SmartScreen 창의 문구와 "추가 정보 → 실행" 동작 기록) → 지갑 생성 또는 잠금 해제. 저장소의 `node extension/test-dapp/serve.mjs` + `allowLocalhostDapps` 켬 → T01·T03·T07 성공, 작업 관리자의 yw-host 경로가 설치 폴더.
+- [ ] INS-1 자동(`scripts/install.test.mjs`, check.ps1 script-test, 01 §9.4): 검증 함수 일치(Windows PowerShell 5.1, `pwsh.exe`가 있으면 7도), 확장 런타임 파일 목록 = audit-extension 목록, 임시 폴더 설치·재설치(멱등)·예전 zip 기록에서 업그레이드·거부 사례·제거(`-NoBuild -NoShortcut -NoNativeHost`, 가짜 exe), 다른 확장 ID·`src`의 `.js` 아닌 파일 → 종료 2. 수동 판정 때는 check.ps1 종료 0을 기록한다.
+- [ ] INS-2 빌드 도구 없음(rustup·Build Tools가 없는 PC 또는 VM): `install.cmd` 더블클릭 → 없는 도구와 winget 명령 2개 출력, Y/N 질문. `N` → 종료 7, 바뀐 것 없음(설치 폴더·HKCU·시작 메뉴). `powershell -NonInteractive -ExecutionPolicy Bypass -File scripts\install.ps1` → 묻지 않고 종료 7, winget 실행 없음. 다시 `install.cmd` → `Y` → winget 설치(Build Tools는 관리자 확인 창) → 다시 확인 → 빌드(rustup이 1.95.0을 받음) → 설치 종료 0. 이미 있는 Visual Studio에 C++ 도구만 없을 때는 "수정" 안내가 나온다.
+- [ ] INS-3 `install.cmd -DryRun` → 종료 0, 1–8단계 할 일 출력(빌드는 "[DryRun] 실행: cargo build …"). 이후 `%LOCALAPPDATA%\Programs\YourWallet` 없음, `reg query "HKCU\Software\Google\Chrome\NativeMessagingHosts\com.your_wallet.native" /ve` 결과 변화 없음, 시작 메뉴 변화 없음, `target\release`의 exe 수정 시각 불변.
+- [ ] INS-4 부정: `install.cmd -InstallDir "C:\a&b"` → 종료 1, 폴더 없음. 다른 파일이 있는 폴더 → 종료 1, 그 파일 그대로. (확장 ID·파일 부정은 INS-1.)
+- [ ] INS-5 설치(표준 사용자, 관리자 아님): 저장소의 `install.cmd` 더블클릭 → cargo 출력이 보이고 종료 0, 창이 키 입력을 기다림. 설치 폴더 = `yw-app.exe`, `yw-host.exe`, `uninstall.ps1`, `extension\`(audit-extension 목록만; `tests\`·`native-host\`·`test-dapp\`·`package.json`·`extension-id.txt` 없음) + `com.your_wallet.native.json` + `yw-install.json`(버전·커밋). `reg query … /ve` = 그 manifest 경로, 저장소 PC면 `validate-manifest.mjs`로 `OK`. 시작 메뉴 "Your Wallet". 클립보드 = `<설치 폴더>\extension`. 설치 전후 `%LOCALAPPDATA%\YourWallet` 목록·해시 같음(없었으면 계속 없음).
+- [ ] INS-6 설치 폴더의 `extension` 압축해제 로드 → ID `nnpjlobjgbanccjddghlpaafpohfkeph`. 시작 메뉴로 yw-app 실행(SmartScreen 창이 뜨지 않음을 기록; 스마트 앱 컨트롤 상태도 기록) → 지갑 생성 또는 잠금 해제. 저장소의 `node extension/test-dapp/serve.mjs` + `allowLocalhostDapps` 켬 → T01·T03·T07 성공, 작업 관리자의 yw-host 경로가 설치 폴더.
 - [ ] INS-7 yw-app 종료 상태에서 T03 → 설치 폴더의 yw-app이 `--background`로 실행되고 응답(D24).
-- [ ] INS-8 멱등: yw-app·Chrome 실행 중 같은 zip으로 다시 설치 → 종료 0, "복사할 파일 0개", 묻지 않음, 설치 폴더 파일 수정 시각 불변.
-- [ ] INS-9 업그레이드(버전을 올린 zip 또는 yw-app.exe가 다른 빌드): yw-app 실행 중 설치 → 잠긴 파일·PID와 닫는 방법 안내, 프로세스는 계속 실행 중(강제 종료 없음). `Q` → 종료 3, 설치 폴더 불변. 다시 실행 → `C` → 앱이 잠긴 뒤 정상 종료(로그 `lock reason=` 확인) → 설치 계속 → 종료 0, "업그레이드: <이전> -> <새>", 이전 버전에만 있던 파일 삭제. `%LOCALAPPDATA%\YourWallet\v3` 파일 해시 불변. 확장 카드·탭 새로고침 후 T03 성공.
-- [ ] INS-10 비대화형: yw-app 실행 중 `powershell -NonInteractive -ExecutionPolicy Bypass -File install.ps1`(exe가 바뀐 zip) → 종료 3, 설치 폴더 불변.
-- [ ] INS-11 제거: `uninstall.ps1 -DryRun` → 종료 0, 변화 없음. `uninstall.ps1`(설치 폴더 안의 사본으로) → 종료 0, 바로가기·HKCU 키·설치 폴더 없음, `%LOCALAPPDATA%\YourWallet\v3` 그대로, "지우지 않았습니다"와 24단어 안내 출력. 다시 실행 → 종료 0. 설치 폴더에 직접 만든 파일이 있으면 그 파일과 폴더만 남는다.
-- [ ] INS-12 `-RemoveWalletData`(시험 계정의 시험 vault만): 틀린 문구 → 종료 3, 아무것도 지워지지 않음(프로그램 파일 포함). `-NonInteractive` → 종료 3. 정확한 `DELETE MY WALLET` → `%LOCALAPPDATA%\YourWallet` 없음.
-- [ ] INS-13 경로(05 §11-5): 사용자 이름에 공백·한글이 있는 계정에서 INS-5·INS-6(가능할 때). `-InstallDir`로 다른 드라이브의 단순 경로에 설치·연결·제거 1회.
-- [ ] INS-14 개발 등록에서 옮기기: `scripts\register-native-host.ps1`로 등록된 상태에서 설치 → 이전 등록 값을 출력하고 교체, T03 성공. 다른 위치 yw-app 실행 중이면 경고가 나온다. 제거 뒤 개발용으로 돌아가려면 `register-native-host.ps1`을 다시 실행한다.
+- [ ] INS-8 멱등: yw-app·Chrome 실행 중 같은 커밋으로 `install.cmd` 다시 실행 → 종료 0, "기존 설치를 찾았습니다(같은 소스…)", "복사할 파일 0개", 묻지 않음, 설치 폴더 파일 수정 시각 불변.
+- [ ] INS-9 업그레이드(`git pull` 또는 yw-app 소스를 바꾼 커밋): yw-app 실행 중 `install.cmd` → "업그레이드합니다 -> …", 잠긴 파일·PID와 닫는 방법 안내, 프로세스는 계속 실행 중(강제 종료 없음). `Q` → 종료 3, 설치 폴더 불변. 다시 실행 → `C` → 앱이 잠긴 뒤 정상 종료(로그 `lock reason=` 확인) → 설치 계속 → 종료 0, "업그레이드 완료"와 "확장 카드에서 새로고침" 안내. `%LOCALAPPDATA%\YourWallet\v3` 파일 해시 불변. 확장 카드·탭 새로고침 후 T03 성공. `git pull`만 하고 설치하지 않은 동안에는 설치 폴더의 `extension`이 바뀌지 않는다.
+- [ ] INS-10 비대화형: yw-app 실행 중 `powershell -NonInteractive -ExecutionPolicy Bypass -File scripts\install.ps1`(exe가 바뀌는 커밋) → 종료 3, 설치 폴더 불변.
+- [ ] INS-11 제거: `uninstall.cmd -DryRun` → 종료 0, 변화 없음. `uninstall.cmd` → 종료 0, 바로가기·HKCU 키·설치 폴더 없음, `%LOCALAPPDATA%\YourWallet\v3` 그대로, "지우지 않았습니다"·24단어 안내·데이터 폴더 위치 출력. 다시 실행 → 종료 0. 다시 설치한 뒤 저장소 폴더를 다른 이름으로 옮기고 설치 폴더의 `uninstall.ps1`로 제거 → 종료 0. 설치 폴더에 직접 만든 파일이 있으면 그 파일과 폴더만 남는다.
+- [ ] INS-12 `uninstall.cmd -RemoveWalletData`(시험 계정의 시험 vault만): 틀린 문구 → 종료 3, 아무것도 지워지지 않음(프로그램 파일 포함). `-NonInteractive` → 종료 3. 정확한 `DELETE MY WALLET` → `%LOCALAPPDATA%\YourWallet` 없음.
+- [ ] INS-13 경로(05 §11-5): 사용자 이름에 공백·한글이 있는 계정에서 INS-5·INS-6(가능할 때). 저장소 경로에 공백·한글·`#`이 있을 때 `install.cmd`. `-InstallDir`로 다른 드라이브의 단순 경로에 설치·연결·제거 1회.
+- [ ] INS-14 이전 설치에서 옮기기: (a) 예전 배포 zip의 `install.ps1`로 설치된 폴더 → `install.cmd` → "업그레이드", `README-설치.txt` 삭제, 기록에 커밋 추가. (b) 예전 `register-native-host.ps1`(`%LOCALAPPDATA%\YourWallet\bin`) 등록이 남은 PC → 이전 등록 값을 출력하고 교체, T03 성공, `%LOCALAPPDATA%\YourWallet\bin`은 그대로(사용자가 직접 지움). 다른 위치 yw-app 실행 중이면 경고가 나온다.
+- [ ] INS-15 GitHub "Download ZIP"(또는 `git archive --format=zip HEAD`) 사본: `.git` 없이 `install.cmd` → 종료 0, 기록의 `commit`이 null, 요약에 커밋 없이 버전만. `install.cmd`·`.ps1`이 CRLF로 풀린다. MOTW가 붙은 zip이면 `install.cmd`를 열 때의 경고와 "차단 해제" 후 경고 없음을 기록.
 
 ## 6. 프로토콜 변경 회귀 절차
 
