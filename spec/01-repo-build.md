@@ -409,7 +409,20 @@ feature 선택에 따른 코드 의무(세부 [02](02-core-keys-vault.md)):
 | PowerShell | Windows PowerShell 5.1 또는 7.x |
 | Chrome | 120 이상(M5부터) |
 
-빌드: `cargo build --release --locked` → `target\release\yw-app.exe`, `target\release\yw-host.exe`. 첫 빌드는 crates.io 다운로드가 필요할 수 있다. 이후 `check.ps1 -Offline` 가능.
+빌드: `cargo build --release --locked` → `target\release\yw-app.exe`, `target\release\yw-host.exe`. 첫 빌드는 crates.io 다운로드가 필요할 수 있다. 이후 `check.ps1 -Offline` 가능. 배포할 exe는 §3.9의 경로 정리를 하는 `scripts/package.ps1`(§9.2)로만 만든다.
+
+### 3.9 재현성과 빌드 경로
+
+`.cargo/config.toml`(전체):
+
+```toml
+[target.x86_64-pc-windows-msvc]
+rustflags = ["--cfg", 'curve25519_dalek_backend="serial"', "-C", "link-arg=/Brepro"]
+```
+
+- `--cfg curve25519_dalek_backend="serial"`: §3.4 M7.
+- `/Brepro`: MSVC 링커가 PE 헤더·디버그 디렉터리의 시각 대신 내용 해시를 쓴다(같은 입력 → 같은 exe). PDB 경로는 rustc가 이미 `/PDBALTPATH:%_PDB%`로 파일 이름만 남긴다(확인함).
+- 의존성과 std의 패닉 위치 문자열에는 이 PC의 절대 경로가 들어간다(`C:\Users\<이름>\.cargo\registry\src\…`, rust-src가 설치된 툴체인의 `…\lib\rustlib\src\rust\library\…`; 워크스페이스 크레이트는 상대 경로라 해당 없음). `--remap-path-prefix`는 접두사 일치뿐이라 사용자 이름을 숨기는 값을 PC와 무관하게 config에 적을 수 없고(`C:\Users\=~`는 `~<이름>\…`를 남긴다), cargo `trim-paths`는 1.95에서 불안정(확인함, 2026-10-28), rustflags 환경 변수는 §3.4·§4.1이 금지한다. 그래서 `scripts/package.ps1`이 이 PC의 값으로 `--config 'target.x86_64-pc-windows-msvc.rustflags=[…]'`를 덧붙인다(배열은 config.toml 값 뒤에 이어진다): `%USERPROFILE%` → `~`, cargo 홈 → `/cargo`, sysroot → `/rust`, `<sysroot>\lib\rustlib\src\rust` → `/rustc/<rustc commit>`, 저장소 루트 → `.`(나중 매핑이 이긴다). 빌드 뒤 두 exe에 `%USERPROFILE%`·cargo 홈·sysroot 문자열이 없는지 확인하고 있으면 실패한다. `cargo build --release`를 직접 실행한 exe에는 경로가 남는다(개발용).
 
 ---
 
@@ -1048,13 +1061,13 @@ impl SecureTextField {
 2. `-SkipCheck`가 아니면 같은 PowerShell로 `scripts/check.ps1 -Offline`. 실패하면 중단. `-SkipCheck` zip은 배포하지 않는다(경고 출력).
 3. `node scripts/extension-key.mjs check`, `extension/extension-id.txt`의 ID가 `packaging/install.ps1`의 `$ExtensionId`와 같음, install.ps1의 `'@YW_VERSION@'`이 정확히 1개, 두 packaging 스크립트 BOM.
 4. 확장 런타임 파일 = `scripts/audit-extension.mjs`의 `auditExtensionRoot("extension").packagedFiles`(`manifest.json`, `popup/*`, `src/*.js`; 정본이 하나뿐이도록 재구현하지 않는다)와 `extension/icons/`(있으면). `package.json`, `extension-id.txt`, `native-host/`, `tests/`는 넣지 않는다. `test-dapp/`은 `-IncludeTestDapp`일 때만 `extension/test-dapp/`으로 넣는다.
-5. `cargo build --release --locked --offline -p yw-app -p yw-host`.
+5. `cargo build --release --locked --offline --config 'target.x86_64-pc-windows-msvc.rustflags=[<§3.9 --remap-path-prefix 목록>]' -p yw-app -p yw-host`. 빌드 뒤 두 exe에 `%USERPROFILE%`·cargo 홈·sysroot 경로 문자열이 있으면 실패한다(§3.9).
 6. `dist/YourWallet-<버전>/`을 새로 만들고 다음을 복사한다: `yw-app.exe`, `yw-host.exe`, `extension/…`, `install.ps1`(버전 치환, BOM 유지), `uninstall.ps1`, `README-설치.txt`(생성, 한국어, UTF-8 BOM, CRLF: 확인·설치·확장 로드·SmartScreen·제거·소스 커밋), 루트의 `LICENSE`·`LICENSE.txt`·`LICENSE.md`·`COPYING`(있는 것만). 스테이징한 `extension/`에 `audit-extension.mjs check`를 다시 실행한다.
 7. `SHA256SUMS`: 자기 자신을 뺀 모든 파일, 한 줄 `<소문자 hex 64>␠␠<'/' 구분 상대 경로>`, LF, UTF-8(BOM 없음), 경로 서수(ordinal) 정렬. `sha256sum -c`와 호환.
 8. `dist/YourWallet-<버전>-win-x64.zip`: 최상위 폴더 `YourWallet-<버전>/` 하나, 항목은 서수 정렬, 시각은 1의 커밋 시각(UTC), 이름은 UTF-8(일반 목적 플래그 bit 11, `README-설치.txt`), 디렉터리 항목 없음, Deflate. 만든 뒤 다시 열어 항목 목록·각 항목 SHA-256이 스테이징과 같은지 확인한다.
 9. `dist/YourWallet-<버전>-win-x64.zip.sha256`(`<hex>␠␠<zip 이름>` LF)을 쓰고 경로·크기·SHA-256을 출력한다. 배포자는 이 값을 zip과 다른 경로로 알린다.
 
-재현성: 확장·스크립트·README는 같은 커밋(작업 트리 변경 없음)이면 바이트가 같고, zip 항목 순서·시각도 고정이다. `yw-*.exe`가 다른 PC·경로에서 바이트 단위로 재현되는지는 확인하지 않았다(MSVC 링커 시각·PDB 경로가 들어갈 수 있다). 따라서 소스 재빌드 확인(D1)의 기준은 같은 커밋으로 package.ps1을 실행해 exe 외 줄의 `SHA256SUMS`가 같은지이며, exe 줄이 다르면 그 사실을 기록한다.
+재현성: 확장·스크립트·README는 같은 커밋(작업 트리 변경 없음)이면 바이트가 같고, zip 항목 순서·시각도 고정이다. `yw-*.exe`가 다른 PC·경로에서 바이트 단위로 재현되는지는 확인하지 않았다. 링커 시각은 `/Brepro`가, PDB 경로는 rustc의 `/PDBALTPATH:%_PDB%`가, 이 PC의 소스 경로는 §3.9의 `--remap-path-prefix`가 없애지만 툴체인·SDK 차이는 남을 수 있다. 따라서 소스 재빌드 확인(D1)의 기준은 같은 커밋으로 package.ps1을 실행해 exe 외 줄의 `SHA256SUMS`가 같은지이며, exe 줄이 다르면 그 사실을 기록한다.
 
 ### 9.3 `packaging/install.ps1`
 
