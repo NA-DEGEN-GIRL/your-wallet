@@ -11,41 +11,43 @@
   }
 
   // spec/05 §2.12: pure text and parsing for the action popup (no Chrome or DOM APIs here).
+  // `explanation` is the one-line description shown on each mode card.
   const MODE_OPTIONS = Object.freeze([
     Object.freeze({
       value: "off",
       label: "기본 (Your Wallet)",
-      explanation: "dApp에 Your Wallet로 표시됩니다. 다른 지갑 확장의 window.ethereum과 알림은 건드리지 않습니다."
+      explanation: "Your Wallet 이름 그대로 보이며, 다른 지갑 확장은 건드리지 않습니다."
     }),
     Object.freeze({
       value: "metamask",
       label: "MetaMask처럼 보이기",
-      explanation: "MetaMask만 지원하는 dApp이 이 지갑을 MetaMask로 인식합니다. 연결·서명은 Your Wallet 승인 창에서 합니다."
+      explanation: "MetaMask만 지원하는 dApp에서 쓰며, 승인 창은 그대로 Your Wallet 앱에 뜹니다."
     }),
     Object.freeze({
       value: "rabby",
       label: "Rabby처럼 보이기",
-      explanation: "Rabby만 지원하는 dApp이 이 지갑을 Rabby Wallet로 인식합니다. 연결·서명은 Your Wallet 승인 창에서 합니다."
+      explanation: "Rabby만 지원하는 dApp에서 쓰며, 승인 창은 그대로 Your Wallet 앱에 뜹니다."
     })
   ]);
 
   const TEXT = Object.freeze({
     title: "Your Wallet",
-    statusHeading: "yw-app 연결 상태",
-    statusLoading: "조회 중…",
+    statusHeading: "Your Wallet 앱 연결 상태",
+    statusLoading: "확인하는 중…",
     modeHeading: "dApp에 보이는 지갑",
-    warning: "실제 MetaMask/Rabby가 켜져 있으면 가로채기가 완벽하지 않을 수 있습니다. 함께 쓰지 않을 때 가장 확실합니다.",
+    warning: "호환 모드를 쓸 때는 실제 MetaMask·Rabby 확장을 꺼 두세요. 켜져 있으면 dApp이 그 지갑에 연결될 수 있습니다.",
     applyNote: "모드 변경은 다음 페이지 로드부터 적용됩니다. 열려 있는 dApp 탭은 새로고침하세요.",
     saved: "저장했습니다. 다음 페이지 로드부터 적용됩니다.",
-    saveFailed: "저장하지 못했습니다. 확장을 다시 열어 보세요.",
-    loadFailed: "저장된 모드를 읽지 못해 기본으로 표시합니다."
+    saveFailed: "저장하지 못했습니다. 팝업을 닫았다가 다시 열어 보세요.",
+    loadFailed: "저장된 모드를 읽지 못해 기본 모드로 표시합니다."
   });
 
+  // tone: ok → 성공 colors, bad → 고위험 colors, neutral → 정보 colors (popup.css).
   const STATUS_VIEWS = Object.freeze({
-    connected: Object.freeze({ text: "연결됨", tone: "ok", detail: "yw-app이 이 브라우저의 마지막 요청에 응답했습니다." }),
-    checking: Object.freeze({ text: "확인 중", tone: "neutral", detail: "yw-app에 연결하고 응답을 기다리는 중입니다." }),
-    unavailable: Object.freeze({ text: "연결 안 됨", tone: "bad", detail: "마지막 연결 시도가 실패했습니다. yw-app 실행과 native host 등록을 확인하세요." }),
-    unknown: Object.freeze({ text: "확인 불가", tone: "neutral", detail: "아직 확인할 정보가 없습니다. dApp에서 지갑 요청이 한 번 오가면 상태가 표시됩니다." })
+    connected: Object.freeze({ text: "연결됨", tone: "ok", detail: "Your Wallet 앱이 마지막 요청에 응답했습니다." }),
+    checking: Object.freeze({ text: "확인 중", tone: "neutral", detail: "Your Wallet 앱에 연결해 응답을 기다리는 중입니다." }),
+    unavailable: Object.freeze({ text: "연결 안 됨", tone: "bad", detail: "Your Wallet 앱에 연결하지 못했습니다. 앱이 실행 중인지, native host가 등록되어 있는지 확인하세요." }),
+    unknown: Object.freeze({ text: "확인 불가", tone: "neutral", detail: "아직 확인한 기록이 없습니다. dApp에서 지갑을 한 번 사용하면 표시됩니다." })
   });
 
   function modeOption(mode) {

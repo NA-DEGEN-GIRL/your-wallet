@@ -124,19 +124,15 @@ impl App {
     /// The chain tab row of S10 (spec/04 §2.6).
     pub fn tab_row(&self, items: &mut Vec<Item>) {
         let tab = self.meta.as_ref().map_or(Tab::Evm, |meta| meta.prefs.tab);
-        items.push(Item::LabeledRow(
-            "체인".to_owned(),
-            vec![
-                Ctl::radio(ids::TAB_EVM, "EVM", tab == Tab::Evm, true),
-                Ctl::radio(ids::TAB_SOL, "Solana", tab == Tab::Sol, false),
-                Ctl::radio(
-                    crate::ui::screens_btc::ids::TAB_BTC,
-                    "Bitcoin",
-                    tab == Tab::Btc,
-                    false,
-                ),
-            ],
-        ));
+        items.push(Item::Row(vec![
+            Ctl::tab(ids::TAB_EVM, "  EVM (이더리움 등)  ", tab == Tab::Evm),
+            Ctl::tab(ids::TAB_SOL, "  Solana  ", tab == Tab::Sol),
+            Ctl::tab(
+                crate::ui::screens_btc::ids::TAB_BTC,
+                "  Bitcoin  ",
+                tab == Tab::Btc,
+            ),
+        ]));
     }
 
     fn sol_cluster_banner(&self, items: &mut Vec<Item>) {
@@ -152,21 +148,19 @@ impl App {
     #[expect(clippy::too_many_lines, reason = "the S10 Solana sections in order")]
     pub fn sol_main_screen(&self, items: &mut Vec<Item>) {
         let cluster = self.sol_cluster();
-        items.push(Item::Title("Solana".to_owned()));
+        items.push(Item::CardStart(None));
         items.push(Item::LabeledRow(
-            "클러스터".to_owned(),
+            "네트워크".to_owned(),
             vec![
-                Ctl::radio(
+                Ctl::tab(
                     ids::CLUSTER_MAINNET,
                     "Solana mainnet",
                     cluster == SolCluster::Mainnet,
-                    true,
                 ),
-                Ctl::radio(
+                Ctl::tab(
                     ids::CLUSTER_DEVNET,
                     "Solana devnet (테스트)",
                     cluster == SolCluster::Devnet,
-                    false,
                 ),
             ],
         ));
@@ -175,11 +169,12 @@ impl App {
             items.push(Item::Banner(
                 "거래 저널의 Solana 기록이 손상되어 Solana 보내기를 멈췄습니다. (E-VLT-006)"
                     .to_owned(),
-                Tone::Danger,
+                Tone::Blocked,
             ));
         }
         let network = crate::network::NetworkId::Solana(self.settings.solana.cluster);
-        let rpc = if self.sol_endpoint(cluster).is_err() {
+        let no_endpoint = self.sol_endpoint(cluster).is_err();
+        let rpc = if no_endpoint {
             "엔드포인트 없음 (E-KEY-005)".to_owned()
         } else if let Some(code) = self.sol.balance_error.get(&cluster) {
             format!("오류 {}", code.code())
@@ -188,20 +183,45 @@ impl App {
         } else {
             "확인 전".to_owned()
         };
-        items.push(Item::Muted(format!("RPC ({network}): {rpc}")));
-        let mut row = vec![
-            Ctl::button(ids::REFRESH, "새로고침"),
-            Ctl::button(ids::SCAN_OPEN, "다른 경로 스캔"),
-        ];
-        if self.sol_endpoint(cluster).is_err() {
-            row.push(Ctl::button(
-                crate::ui::screens::ids::SECTION_NETWORK,
-                "설정에서 URL 입력",
-            ));
+        items.push(Item::Help(format!("RPC ({network}): {rpc}")));
+        items.push(Item::CardEnd);
+        let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
+        let selected = self.sol_selected();
+        if let Some((index, label, address)) = &selected {
+            items.push(Item::CardStart(None));
+            items.push(Item::Subtitle(label.clone()));
+            items.push(Item::Help(format!("m/44'/501'/{index}'/0'")));
+            if let Some(lamports) = self.sol_balance(address) {
+                items.push(Item::Display(App::sol_text(lamports)));
+                items.push(Item::Help(format!(
+                    "{} lamports · RPC finalized 기준(참고)",
+                    format_raw(lamports)
+                )));
+            } else {
+                items.push(Item::Display("잔액 —".to_owned()));
+                items.push(Item::Help(
+                    "잔액을 아직 읽지 못했습니다. RPC 연결을 확인하고 새로고침하세요.".to_owned(),
+                ));
+            }
+            items.push(Item::Mono(grouped(address)));
+            let mut row = vec![
+                Ctl::primary(ids::SEND_OPEN, "보내기").enabled(unlocked),
+                Ctl::primary(ids::RECEIVE_OPEN, "받기"),
+                Ctl::link(ids::REFRESH, "새로고침"),
+            ];
+            if no_endpoint {
+                row.push(Ctl::link(
+                    crate::ui::screens::ids::SECTION_NETWORK,
+                    "설정에서 URL 입력",
+                ));
+            }
+            items.push(Item::Row(row));
+            items.push(Item::CardEnd);
         }
-        items.push(Item::Row(row));
-        items.push(Item::Rule);
-        items.push(Item::Text("계정 (m/44'/501'/i'/0')".to_owned()));
+        items.push(Item::CardStart(Some("내 Solana 계정".to_owned())));
+        items.push(Item::Help(
+            "경로 m/44'/501'/i'/0' (Phantom·Solflare와 같은 표준 경로)".to_owned(),
+        ));
         let rows = self.sol_account_rows();
         if rows.is_empty() {
             items.push(Item::Muted(if self.sol.creating {
@@ -210,8 +230,7 @@ impl App {
                 "Solana 계정이 없습니다.".to_owned()
             }));
         }
-        let selected = self.sol_selected().map(|(index, ..)| index);
-        let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
+        let selected = selected.map(|(index, ..)| index);
         for (row, (index, label, address)) in rows.into_iter().enumerate() {
             let is_selected = selected == Some(index);
             items.push(Item::Row(vec![
@@ -234,18 +253,16 @@ impl App {
                     )
                 },
             );
-            items.push(Item::Muted(format!("m/44'/501'/{index}'/0' · {balance}")));
+            items.push(Item::Help(format!("m/44'/501'/{index}'/0' · {balance}")));
             if is_selected {
                 if self.sol.rename == Some(index) {
                     items.push(Item::Row(vec![
                         Ctl::edit(ids::RENAME_EDIT, &label, 260, false, 64),
-                        Ctl::button(ids::RENAME_SAVE, "저장"),
+                        Ctl::primary(ids::RENAME_SAVE, "저장"),
                         Ctl::button(ids::RENAME_CANCEL, "취소"),
                     ]));
                 } else {
                     items.push(Item::Row(vec![
-                        Ctl::button(ids::SEND_OPEN, "보내기").enabled(unlocked),
-                        Ctl::button(ids::RECEIVE_OPEN, "받기"),
                         Ctl::button(ids::RENAME, "이름 바꾸기"),
                         Ctl::button(ids::HIDE, "숨기기").enabled(index != 0),
                     ]));
@@ -253,6 +270,7 @@ impl App {
             }
             items.push(Item::Gap(4));
         }
+        items.push(Item::Rule);
         items.push(Item::Row(vec![
             Ctl::button(ids::ADD_ACCOUNT, "계정 추가").enabled(
                 !self.sol.creating
@@ -262,9 +280,16 @@ impl App {
                         .and_then(crate::meta::Meta::next_sol_index)
                         .is_some(),
             ),
+            Ctl::button(ids::SCAN_OPEN, "다른 경로 스캔"),
         ]));
-        items.push(Item::Rule);
-        items.push(Item::Text("활동 (이 지갑이 보낸 거래)".to_owned()));
+        items.push(Item::Help(
+            "다른 지갑에서 쓰던 계정이 안 보이면 '다른 경로 스캔'으로 찾을 수 있습니다(읽기 전용)."
+                .to_owned(),
+        ));
+        items.push(Item::CardEnd);
+        items.push(Item::CardStart(Some(
+            "활동 (이 지갑이 보낸 거래)".to_owned(),
+        )));
         let mut shown = 0_usize;
         for record in self.sol_records() {
             if record.cluster != cluster {
@@ -279,12 +304,12 @@ impl App {
                     yw_core::sol::display::transfer_title(record.cluster, &core)
                 })
             )));
-            items.push(Item::Muted(format!(
+            items.push(Item::Help(format!(
                 "상태: {}",
                 self.sol_record_status(&record)
             )));
             if let Some(core) = core {
-                items.push(Item::Muted(format!("받는 주소 {}", grouped(&core.to))));
+                items.push(Item::Help(format!("받는 주소 {}", grouped(&core.to))));
             }
             items.push(Item::Mono(record.tx_id()));
             shown = shown.saturating_add(1);
@@ -300,7 +325,7 @@ impl App {
                     self.sol_label(&entry.account),
                     entry.title
                 )));
-                items.push(Item::Muted(format!(
+                items.push(Item::Help(format!(
                     "상태: {} · 받는 주소 {}",
                     status_word(&entry.status),
                     SolAddress::parse(&entry.counterparty)
@@ -311,14 +336,19 @@ impl App {
             }
         }
         if shown == 0 {
-            items.push(Item::Muted("아직 보낸 거래가 없습니다.".to_owned()));
+            items.push(Item::Help(
+                "아직 보낸 거래가 없습니다. 보낸 거래는 여기에서 진행 상태와 함께 보입니다."
+                    .to_owned(),
+            ));
         }
+        items.push(Item::CardEnd);
     }
 
     /// The SOL send form.
     #[expect(clippy::too_many_lines, reason = "the send-form fields in order")]
     pub fn sol_send_screen(&self, items: &mut Vec<Item>) {
         let cluster = self.sol_cluster();
+        items.push(crate::ui::screens::back_main());
         items.push(Item::Title(format!("보내기 — {}", cluster.display_name())));
         self.sol_cluster_banner(items);
         let form = &self.sol.send;
@@ -329,7 +359,7 @@ impl App {
             items.push(Item::Banner(
                 "거래 저널의 Solana 기록이 손상되어 Solana 보내기를 멈췄습니다. (E-VLT-006)"
                     .to_owned(),
-                Tone::Danger,
+                Tone::Blocked,
             ));
         }
         let Some((source, from, label)) = self.sol_form_sender() else {
@@ -341,17 +371,20 @@ impl App {
                 "이 계정의 이전 전송을 확인 중입니다. 확정된 뒤 보낼 수 있습니다.".to_owned(),
                 Tone::Warn,
             ));
-            items.push(Item::Muted(self.sol_record_status(&record)));
+            items.push(Item::Help(self.sol_record_status(&record)));
             items.push(Item::Mono(record.tx_id()));
         }
-        items.push(Item::Text(format!("보내는 계정: {label}")));
+        items.push(Item::CardStart(Some("보내는 계정".to_owned())));
+        items.push(Item::Text(label));
         items.push(Item::Mono(grouped(&from)));
         let balance = self
             .sol_balance(&from)
             .map_or_else(String::new, |lamports| {
                 format!(" · 잔액 {} (RPC 참고)", App::sol_text(lamports))
             });
-        items.push(Item::Muted(format!("{}{balance}", source.path_text())));
+        items.push(Item::Help(format!("{}{balance}", source.path_text())));
+        items.push(Item::CardEnd);
+        items.push(Item::CardStart(Some("받는 사람".to_owned())));
         if form.moving.is_some() {
             items.push(Item::Banner(
                 "비표준 경로 계정의 자금을 내 표준 계정으로 옮깁니다. 받는 주소와 '보내기 최대'는 바꿀 수 없습니다."
@@ -369,6 +402,10 @@ impl App {
             to_row.push(Ctl::button(ids::SEND_PICK, "주소록에서 선택"));
         }
         items.push(Item::LabeledRow("받는 주소".to_owned(), to_row));
+        items.push(Item::Help(
+            "Solana 주소(base58, 32–44자)입니다. 붙여넣은 뒤 굵게 표시된 가운데 부분까지 전체를 확인하세요."
+                .to_owned(),
+        ));
         if form.picker && form.moving.is_none() {
             self.sol_picker_rows(items);
         }
@@ -401,7 +438,7 @@ impl App {
                     format!(
                         "{name}와(과) 앞 3자 또는 뒤 3자가 같지만 다른 주소입니다. 주소 오염 공격일 수 있습니다. (승인 창 고위험 L03)"
                     ),
-                    Tone::Danger,
+                    Tone::HighRisk,
                 ));
                 items.push(Item::Mono(grouped(&lookalike.address)));
             }
@@ -409,7 +446,7 @@ impl App {
                 items.push(Item::Banner(
                     "일반 지갑이 아님: 프로그램 소유 주소(PDA)나 토큰 계정일 수 있음 (승인 창 고위험 L02)"
                         .to_owned(),
-                    Tone::Danger,
+                    Tone::HighRisk,
                 ));
             }
             if check.first_time {
@@ -420,6 +457,8 @@ impl App {
                 ));
             }
         }
+        items.push(Item::CardEnd);
+        items.push(Item::CardStart(Some("금액".to_owned())));
         let mut amount_row = vec![
             Ctl::edit(ids::SEND_AMOUNT_EDIT, &form.amount_text, 260, false, 32)
                 .enabled(!form.send_max),
@@ -429,7 +468,7 @@ impl App {
         }
         items.push(Item::LabeledRow("금액 (SOL)".to_owned(), amount_row));
         if form.send_max {
-            items.push(Item::Muted(
+            items.push(Item::Help(
                 "보내기 최대: 잔액 − 최대 수수료를 보내고 이 계정의 SOL 잔액은 0이 됩니다(승인 창에서 확인)."
                     .to_owned(),
             ));
@@ -437,13 +476,14 @@ impl App {
         if let Some(code) = form.amount_error {
             items.push(Item::Banner(code.text(), Tone::Danger));
         }
-        items.push(Item::Muted(format!(
+        items.push(Item::Help(format!(
             "수수료는 지갑이 계산합니다: 기본 5,000 lamports + 우선 수수료(CU 한도 {}), 상한 {} lamports.",
             yw_core::sol::fee::SOL_TRANSFER_CU_LIMIT,
             format_raw(self.settings.solana.max_fee_lamports)
         )));
+        items.push(Item::CardEnd);
         items.push(Item::Row(vec![
-            Ctl::button(ids::SEND_REVIEW, "검토").enabled(self.sol_can_review()),
+            Ctl::primary(ids::SEND_REVIEW, "검토").enabled(self.sol_can_review()),
             Ctl::button(ids::SEND_CANCEL, "취소"),
         ]));
     }
@@ -488,12 +528,11 @@ impl App {
     pub fn sol_send_result_screen(&self, items: &mut Vec<Item>) {
         items.push(Item::Title("보내기 결과".to_owned()));
         if let Some((cluster, signature)) = self.sol.sent {
-            items.push(Item::Text(
+            items.push(Item::Banner(
                 "서명하고 저널에 기록한 뒤 전송했습니다.".to_owned(),
+                Tone::Success,
             ));
-            items.push(Item::Mono(yw_core::codec::base58::base58_encode(
-                &signature,
-            )));
+            items.push(Item::CardStart(None));
             let status = self
                 .sol_records()
                 .iter()
@@ -502,24 +541,29 @@ impl App {
                     || "종결 (활동 참고)".to_owned(),
                     |record| self.sol_record_status(record),
                 );
-            items.push(Item::Muted(format!(
-                "상태: {status} ({})",
-                cluster.display_name()
+            items.push(Item::Field(
+                "상태".to_owned(),
+                format!("{status} ({})", cluster.display_name()),
+            ));
+            items.push(Item::Field("서명(거래 ID)".to_owned(), String::new()));
+            items.push(Item::Mono(yw_core::codec::base58::base58_encode(
+                &signature,
             )));
+            items.push(Item::CardEnd);
         }
-        let mut row = Vec::new();
+        let mut row = vec![Ctl::primary(crate::ui::screens::ids::BACK_MAIN, "메인으로")];
         if self.sol_can_resend() {
             row.push(Ctl::button(ids::SEND_AGAIN, "다시 보내기"));
-            items.push(Item::Muted(
+            items.push(Item::Help(
                 "같은 받는 주소·금액으로 보내기 화면을 다시 엽니다. 새로 검토하고 새로 승인해야 합니다(이전 승인은 쓰지 않음).".to_owned(),
             ));
         }
-        row.push(Ctl::button(crate::ui::screens::ids::BACK_MAIN, "메인으로"));
         items.push(Item::Row(row));
     }
 
     /// S12 for Solana: full address, QR = the base58 text, path, cluster.
     pub fn sol_receive_screen(&self, items: &mut Vec<Item>) {
+        items.push(crate::ui::screens::back_main());
         items.push(Item::Title("받기 — Solana".to_owned()));
         if self.mode == AppMode::BackupPending {
             items.push(Item::Banner(
@@ -531,32 +575,40 @@ impl App {
             items.push(Item::Muted("계정을 불러오는 중…".to_owned()));
             return;
         };
-        items.push(Item::Text(format!(
+        items.push(Item::CardStart(Some(format!(
             "{label} · {}",
             self.sol_cluster().display_name()
-        )));
+        ))));
         if self.sol_cluster() == SolCluster::Devnet {
             items.push(Item::Banner(
                 "devnet(테스트) 주소입니다. 주소 자체는 mainnet과 같습니다.".to_owned(),
                 Tone::Testnet,
             ));
         }
-        items.push(Item::Mono(grouped(&address)));
-        items.push(Item::Muted(format!("m/44'/501'/{index}'/0'")));
+        items.push(Item::Help(
+            "보내는 사람에게 아래 주소나 QR을 알려주세요. SOL만 보내야 합니다.".to_owned(),
+        ));
         items.push(Item::Qr(address.to_base58()));
-        items.push(Item::Row(vec![
-            Ctl::button(ids::COPY_ADDRESS, "주소 복사"),
-            Ctl::button(crate::ui::screens::ids::BACK_MAIN, "← 메인"),
-        ]));
-        items.push(Item::Muted(
+        items.push(Item::Mono(grouped(&address)));
+        items.push(Item::Help(format!("m/44'/501'/{index}'/0'")));
+        items.push(Item::Row(vec![Ctl::primary(
+            ids::COPY_ADDRESS,
+            "주소 복사",
+        )]));
+        items.push(Item::Help(
             "주소를 복사한 뒤 붙여넣은 곳에서 주소 전체를 확인하세요.".to_owned(),
         ));
+        items.push(Item::CardEnd);
     }
 
     /// S15 Solana section (spec/07 §10, §3.3).
     pub fn sol_settings_section(&self, items: &mut Vec<Item>) {
         let solana = &self.settings.solana;
-        items.push(Item::Title("Solana".to_owned()));
+        items.push(Item::CardStart(Some("Solana 네트워크".to_owned())));
+        items.push(Item::Help(
+            "메인 화면 Solana 탭에서 쓸 네트워크입니다. devnet은 시험용이며 실제 자산이 아닙니다."
+                .to_owned(),
+        ));
         items.push(Item::LabeledRow(
             "클러스터".to_owned(),
             vec![
@@ -574,35 +626,8 @@ impl App {
                 ),
             ],
         ));
-        items.push(Item::Muted(
-            "엔드포인트는 '네트워크' 구역의 solana:mainnet·solana:devnet URL입니다.".to_owned(),
-        ));
-        items.push(Item::LabeledRow(
-            "수수료 상한 (lamports)".to_owned(),
-            vec![Ctl::edit(
-                ids::FEE_CAP_EDIT,
-                &solana.max_fee_lamports.to_string(),
-                200,
-                false,
-                12,
-            )],
-        ));
-        items.push(Item::LabeledRow(
-            "CU 가격 상한 (micro-lamports/CU)".to_owned(),
-            vec![Ctl::edit(
-                ids::CU_PRICE_EDIT,
-                &solana.max_cu_price_micro.to_string(),
-                200,
-                false,
-                12,
-            )],
-        ));
-        items.push(Item::Row(vec![
-            Ctl::button(ids::FEE_SAVE, "저장"),
-            Ctl::button(ids::FEE_DEFAULT, "기본값으로"),
-        ]));
-        items.push(Item::Muted(
-            "수수료 상한 10,000–10,000,000, CU 가격 상한 0–100,000,000. 우선 수수료 가격은 최근 값의 p75와 두 상한 중 작은 값입니다."
+        items.push(Item::Help(
+            "엔드포인트는 '네트워크(RPC)' 구역의 solana:mainnet·solana:devnet URL입니다."
                 .to_owned(),
         ));
         items.push(Item::Rule);
@@ -610,15 +635,55 @@ impl App {
             ids::SCAN_OPEN,
             "다른 경로 스캔",
         )]));
+        items.push(Item::Help(
+            "다른 지갑(Ledger Live, solana-keygen 등)에서 쓰던 경로의 계정을 찾습니다.".to_owned(),
+        ));
+        items.push(Item::CardEnd);
+        if self.show_advanced {
+            items.push(Item::CardStart(Some(
+                "Solana 수수료 상한 (고급)".to_owned(),
+            )));
+            items.push(Item::Help(
+                "지갑이 계산한 수수료가 이 값을 넘으면 보내기를 막습니다. 보통은 바꿀 필요가 없습니다."
+                    .to_owned(),
+            ));
+            items.push(Item::LabeledRow(
+                "수수료 상한 (lamports)".to_owned(),
+                vec![Ctl::edit(
+                    ids::FEE_CAP_EDIT,
+                    &solana.max_fee_lamports.to_string(),
+                    200,
+                    false,
+                    12,
+                )],
+            ));
+            items.push(Item::LabeledRow(
+                "CU 가격 상한 (micro-lamports/CU)".to_owned(),
+                vec![Ctl::edit(
+                    ids::CU_PRICE_EDIT,
+                    &solana.max_cu_price_micro.to_string(),
+                    200,
+                    false,
+                    12,
+                )],
+            ));
+            items.push(Item::Row(vec![
+                Ctl::primary(ids::FEE_SAVE, "저장"),
+                Ctl::button(ids::FEE_DEFAULT, "기본값으로"),
+            ]));
+            items.push(Item::Help(
+                "수수료 상한 10,000–10,000,000, CU 가격 상한 0–100,000,000. 우선 수수료 가격은 최근 값의 p75와 두 상한 중 작은 값입니다."
+                    .to_owned(),
+            ));
+            items.push(Item::CardEnd);
+        }
+        self.advanced_toggle(items);
     }
 
     /// The recovery scan screen (spec/07 §3.3).
     pub fn sol_scan_screen(&self, items: &mut Vec<Item>) {
         use crate::app_sol::ScanStage;
-        items.push(Item::Row(vec![Ctl::button(
-            crate::ui::screens::ids::BACK_MAIN,
-            "← 메인",
-        )]));
+        items.push(crate::ui::screens::back_main());
         items.push(Item::Title(format!(
             "다른 경로 스캔 — {}",
             self.sol_cluster().display_name()
@@ -681,12 +746,11 @@ impl App {
 
     /// The Solana part of S14.
     pub fn sol_book_section(&self, items: &mut Vec<Item>) {
-        items.push(Item::Rule);
-        items.push(Item::Title("Solana 주소록".to_owned()));
         let form = &self.sol.book;
         if let Some(message) = &form.message {
             items.push(Item::Banner(message.clone(), Tone::Danger));
         }
+        items.push(Item::CardStart(Some("Solana 주소 추가".to_owned())));
         items.push(Item::LabeledRow(
             "주소".to_owned(),
             vec![Ctl::edit(
@@ -706,27 +770,33 @@ impl App {
             "다른 경로(전화·대면 등)로 이 주소를 확인했습니다",
             form.verified,
         )]));
-        items.push(Item::Row(vec![Ctl::button(ids::BOOK_SAVE, "추가")]));
+        items.push(Item::Row(vec![Ctl::primary(ids::BOOK_SAVE, "추가")]));
+        items.push(Item::CardEnd);
         let entries = self
             .meta
             .as_ref()
             .map(crate::meta::Meta::sol_book)
             .unwrap_or_default();
+        items.push(Item::CardStart(Some(format!(
+            "Solana 주소록 ({}개)",
+            entries.len()
+        ))));
         if entries.is_empty() {
-            items.push(Item::Muted("Solana 주소록이 비어 있습니다.".to_owned()));
+            items.push(Item::Help("Solana 주소록이 비어 있습니다.".to_owned()));
         }
         for (index, entry) in entries.iter().enumerate() {
             let verified = if entry.verified { " ✓ 확인됨" } else { "" };
-            items.push(Item::Text(format!("{}{verified}", entry.label)));
+            items.push(Item::Subtitle(format!("{}{verified}", entry.label)));
             items.push(Item::Mono(SolAddress::parse(&entry.address).map_or_else(
                 |_| entry.address.clone(),
                 |address| grouped(&address),
             )));
-            items.push(Item::Row(vec![Ctl::button(
+            items.push(Item::Row(vec![Ctl::danger(
                 ids::BOOK_ROW_BASE.saturating_add(u16::try_from(index).unwrap_or(0)),
                 "삭제",
             )]));
         }
+        items.push(Item::CardEnd);
     }
 
     /// Whether the main screen shows the Solana tab.

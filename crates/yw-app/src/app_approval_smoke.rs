@@ -41,8 +41,8 @@ use crate::workers::rpc::RpcJob;
 const TIMER_CLASS: &str = "YourWalletV3SmokeTimer";
 const S2_UNIX_MS: u64 = 0x6ac6_4ee0 * 1_000;
 
-struct FixtureRpc {
-    simulate: Vec<u8>,
+pub(crate) struct FixtureRpc {
+    pub(crate) simulate: Vec<u8>,
 }
 
 fn envelope(id: &Value, member: &str, value: Value) -> Vec<u8> {
@@ -132,8 +132,8 @@ impl Transport for FixtureRpc {
 }
 
 /// The fixture block's wall time (so the 300 s block-time rule holds).
-struct FixtureClock {
-    now_ms: AtomicU64,
+pub(crate) struct FixtureClock {
+    pub(crate) now_ms: AtomicU64,
 }
 
 impl Clock for FixtureClock {
@@ -162,7 +162,7 @@ impl Handler for QuitOnTimer {
     }
 }
 
-fn fixture(name: &str) -> Vec<u8> {
+pub(crate) fn fixture(name: &str) -> Vec<u8> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/eth_simulateV1")
         .join(format!("{name}.response.json"));

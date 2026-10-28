@@ -1,6 +1,6 @@
 //! The A01 content model (spec/04 §3.2–§3.3): which fields go to the fixed header, the fixed
-//! simulation band, the scrolling title/warnings/acknowledgement/asset-change/detail/raw-data
-//! areas. Pure, so AP-4/AP-6 are tested without windows; `ui::approval_window` paints it.
+//! simulation band, and the scrolling summary / asset-change / warnings + acknowledgement /
+//! critical-field areas and the folded 자세히 (non-critical fields and raw data). Pure, so AP-4/AP-6 are tested without windows; `ui::approval_window` paints it.
 
 use core::fmt::Write as _;
 
@@ -16,8 +16,10 @@ use crate::ui::interaction::{
 /// Text tone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tone {
-    /// `DANGER_BG`: high risk and blocked.
+    /// `DANGER_BG`: 고위험.
     Danger,
+    /// `BLOCKED_BG`: 차단 (the request cannot be approved).
+    Blocked,
     /// `WARN_BG`: caution.
     Warn,
     /// Plain information.
@@ -38,7 +40,19 @@ pub struct Band {
 /// A block of the scrolling area.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Block {
-    /// `display.title` (bold 12 pt).
+    /// The one-sentence summary (bold 12 pt) with the full address it refers to and the
+    /// display title under it (spec/04 §3.2 `요약`).
+    Summary {
+        /// The sentence.
+        sentence: String,
+        /// The full recipient / contract address, if the sentence refers to one.
+        address: Option<String>,
+        /// What the wallet knows about that address ("일반 계정(EOA) · 주소록: …"), or empty.
+        notes: String,
+        /// `display.title`.
+        title: String,
+    },
+    /// A large title line (the connect window's origin).
     Title(String),
     /// A warning (or the preparation failure).
     Warning {
@@ -62,7 +76,7 @@ pub enum Block {
     },
     /// Secondary text.
     Muted(String),
-    /// `원본 데이터 ▸/▾`.
+    /// `자세히 ▸/▾`: the non-critical fields and the raw data.
     RawToggle {
         /// Open.
         open: bool,
@@ -135,7 +149,7 @@ pub struct ApprovalView {
     pub blocked: bool,
     /// High-risk interaction: 2 s hold.
     pub high: bool,
-    /// Raw-data fields exist.
+    /// Foldable details (non-critical fields, raw data) exist.
     pub has_raw: bool,
 }
 
@@ -257,9 +271,141 @@ pub fn calldata_rows(value: &str, wide: bool) -> String {
 
 fn tone_of(level: RiskLevel) -> Tone {
     match level {
-        RiskLevel::High | RiskLevel::Blocked => Tone::Danger,
+        RiskLevel::High => Tone::Danger,
+        RiskLevel::Blocked => Tone::Blocked,
         RiskLevel::Caution => Tone::Warn,
         RiskLevel::Info => Tone::Plain,
+    }
+}
+
+fn first_line(value: &str) -> &str {
+    value.split('\n').next().unwrap_or("")
+}
+
+fn field_value(display: &yw_core::approval::ApprovalDisplay, key: u16) -> Option<&str> {
+    display
+        .fields
+        .iter()
+        .find(|field| field.key.0 == key)
+        .map(|field| field.value.as_str())
+}
+
+/// The network name of the header value (`Sepolia 테스트넷 (chainId 11155111)` → the name).
+fn network_name(display: &yw_core::approval::ApprovalDisplay) -> String {
+    let value = field_value(display, 0x0002).map_or("", first_line);
+    value
+        .split(" (chainId ")
+        .next()
+        .unwrap_or(value)
+        .trim()
+        .to_owned()
+}
+
+/// The bracketed notes of a recipient value (`0x… [일반 계정(EOA)] [주소록: A]` →
+/// `일반 계정(EOA) · 주소록: A`).
+fn address_notes(value: &str) -> String {
+    first_line(value)
+        .split(" [")
+        .skip(1)
+        .map(|note| note.trim_end().trim_end_matches(']'))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// The address part of a recipient value (`0x… [일반 계정(EOA)]` → `0x…`).
+fn address_part(value: &str) -> String {
+    first_line(value)
+        .split(" [")
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_owned()
+}
+
+/// The action of `[{network}] {action}`.
+fn title_action(title: &str) -> &str {
+    title
+        .split_once("] ")
+        .map_or(title, |(_, action)| action)
+        .trim()
+}
+
+/// The one-sentence plain-Korean summary at the top of A01 (spec/04 §3.2 `요약`) and the full
+/// address it refers to. Derived only from the validated display model (the digest is
+/// unchanged); addresses are never shortened (spec/04 §0): the sentence says `아래 주소` and
+/// the full grouped address follows it.
+#[must_use]
+pub fn summary(request: &ApprovalRequest) -> (String, Option<String>) {
+    use yw_core::approval::ApprovalKind;
+    let display = &request.display;
+    let network = network_name(display);
+    let place = if network.is_empty() {
+        String::new()
+    } else {
+        format!("{network}에서 ")
+    };
+    let send = |amount: &str, to: Option<&str>| {
+        let amount = first_line(amount).trim();
+        (
+            format!(
+                "{place}{amount}{} 아래 주소로 보냅니다.",
+                crate::ui::theme::object_particle(amount)
+            ),
+            to.map(address_part).filter(|address| !address.is_empty()),
+        )
+    };
+    match request.kind {
+        ApprovalKind::EvmTransaction => {
+            // The core names a plain native transfer "{symbol} 보내기" (spec/03 §9) and gives it
+            // no call arguments.
+            let call = field_value(display, 0x0103).map(first_line);
+            let plain = call.is_none_or(|call| call.ends_with(" 보내기"))
+                && field_value(display, 0x0104).is_none();
+            match (plain, field_value(display, 0x0102)) {
+                (true, Some(amount)) => send(amount, field_value(display, 0x0101)),
+                _ => (
+                    format!(
+                        "{place}컨트랙트를 호출합니다: {}. 아래 자산 변화와 경고를 확인하세요.",
+                        title_action(&display.title)
+                    ),
+                    field_value(display, 0x0101)
+                        .map(address_part)
+                        .filter(|address| !address.is_empty()),
+                ),
+            }
+        }
+        ApprovalKind::EvmSpeedUp => (
+            format!("{place}아직 확정되지 않은 거래를 더 높은 수수료로 다시 보냅니다(가속)."),
+            None,
+        ),
+        ApprovalKind::EvmCancel => (
+            format!("{place}아직 확정되지 않은 거래를 취소합니다(같은 nonce로 0을 보내는 거래)."),
+            None,
+        ),
+        ApprovalKind::EvmPersonalSign => (
+            format!(
+                "{place}메시지에 서명합니다. 거래를 보내지는 않지만, 서명은 로그인이나 권한 확인에 쓰일 수 있습니다."
+            ),
+            None,
+        ),
+        ApprovalKind::EvmTypedData => (
+            format!(
+                "{place}구조화된 데이터(EIP-712)에 서명합니다. 토큰 사용 권한(permit) 같은 권한을 줄 수 있으니 아래 내용을 확인하세요."
+            ),
+            None,
+        ),
+        ApprovalKind::SolTransfer => match field_value(display, 0x0502) {
+            Some(amount) => send(amount, field_value(display, 0x0501)),
+            None => (format!("{place}SOL을 보냅니다."), None),
+        },
+        ApprovalKind::BtcSend => match field_value(display, 0x0603) {
+            Some(amount) => send(amount, field_value(display, 0x0601)),
+            None => (format!("{place}BTC를 보냅니다."), None),
+        },
+        ApprovalKind::BtcFeeBump => (
+            format!("{place}아직 확정되지 않은 거래의 수수료를 올려 다시 보냅니다."),
+            None,
+        ),
     }
 }
 
@@ -269,7 +415,8 @@ fn push_simulation_section(
     state: Option<SimState>,
     show_diff: bool,
 ) {
-    view.blocks.push(Block::Section("시뮬레이션 결과"));
+    view.blocks
+        .push(Block::Section("자산 변화 (시뮬레이션 결과)"));
     if show_diff {
         for field in display
             .fields
@@ -294,14 +441,17 @@ fn push_simulation_section(
     }
 }
 
-/// Builds the view of a signing request.
+/// Builds the view of a signing request: summary, asset changes, warnings with the single
+/// acknowledgement, the critical fields, then `자세히` (every non-critical field and the raw
+/// data, folded unless `details_open`; spec/04 §3.2).
 ///
 /// # Errors
 ///
 /// [`ErrorCode::Ui001`] when the request must not be displayed (spec/04 §3.3, AP-4).
+#[expect(clippy::too_many_lines, reason = "the A01 areas in order")]
 pub fn signing_view(
     request: &ApprovalRequest,
-    raw_open: bool,
+    details_open: bool,
     wide: bool,
     badges: Vec<String>,
     testnet: bool,
@@ -333,22 +483,27 @@ pub fn signing_view(
             retry: state == SimState::NoResult,
         });
     }
-    view.blocks.push(Block::Title(display.title.clone()));
-    for (index, warning) in display.warnings.iter().enumerate() {
-        if band_index.is_some_and(|(band, _)| band == index) {
-            continue;
-        }
-        view.blocks.push(Block::Warning {
-            text: warning.text.clone(),
-            tone: tone_of(warning.level),
-        });
-    }
-    if view.high && !view.blocked {
-        view.blocks.push(Block::Ack);
-    }
+    let (sentence, address) = summary(request);
+    let notes = [0x0101, 0x0501, 0x0601]
+        .into_iter()
+        .find_map(|key| field_value(display, key))
+        .filter(|_| address.is_some())
+        .map(address_notes)
+        .unwrap_or_default();
+    view.blocks.push(Block::Summary {
+        sentence,
+        address,
+        notes,
+        title: display.title.clone(),
+    });
     let show_diff = matches!(state, Some(SimState::Ok | SimState::Incomplete));
     let sol = request.kind == yw_core::approval::ApprovalKind::SolTransfer;
     let btc = request.kind.is_btc();
+    let message = matches!(
+        request.kind,
+        yw_core::approval::ApprovalKind::EvmPersonalSign
+            | yw_core::approval::ApprovalKind::EvmTypedData
+    );
     let money = |key: FieldKey| (sol && is_sol_money(key)) || (btc && is_btc_money(key));
     if sol || btc {
         view.blocks.push(Block::Section("금액·수수료"));
@@ -359,38 +514,77 @@ pub fn signing_view(
                 mono: false,
             });
         }
-    } else {
+    } else if !message {
         push_simulation_section(&mut view, display, state, show_diff);
     }
-    view.blocks.push(Block::Section("상세"));
-    for field in &display.fields {
-        let shown_above = is_header(field.key)
+    let shown_warnings: Vec<&Warning> = display
+        .warnings
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| band_index.is_none_or(|(band, _)| band != *index))
+        .map(|(_, warning)| warning)
+        .collect();
+    let acknowledge = view.high && !view.blocked;
+    if !shown_warnings.is_empty() || acknowledge {
+        view.blocks.push(Block::Section("확인할 경고"));
+    }
+    if shown_warnings.is_empty() && acknowledge {
+        view.blocks.push(Block::Muted(
+            "맨 위의 고위험 경고를 읽고, 이해했으면 아래에 체크하세요.".to_owned(),
+        ));
+    }
+    for warning in shown_warnings {
+        view.blocks.push(Block::Warning {
+            text: warning.text.clone(),
+            tone: tone_of(warning.level),
+        });
+    }
+    if acknowledge {
+        view.blocks.push(Block::Ack);
+    }
+    let shown_above = |field: &DisplayField| {
+        is_header(field.key)
             || money(field.key)
-            || (show_diff && (is_diff(field.key) || field.key == FieldKey::SIMULATION));
-        if shown_above || is_raw(field) {
-            continue;
-        }
+            || (show_diff && (is_diff(field.key) || field.key == FieldKey::SIMULATION))
+    };
+    let key_fields: Vec<&DisplayField> = display
+        .fields
+        .iter()
+        .filter(|field| field.critical && !shown_above(field))
+        .collect();
+    if !key_fields.is_empty() {
+        view.blocks.push(Block::Section("핵심 정보"));
+    }
+    for field in key_fields {
         view.blocks.push(Block::Field {
             label: label_of(field),
             value: field.value.clone(),
             mono: is_mono(field.key),
         });
     }
-    view.has_raw = display.fields.iter().any(is_raw);
+    let details: Vec<&DisplayField> = display
+        .fields
+        .iter()
+        .filter(|field| !field.critical && !shown_above(field))
+        .collect();
+    view.has_raw = !details.is_empty();
     if view.has_raw {
-        view.blocks.push(Block::RawToggle { open: raw_open });
-        if raw_open {
-            for field in display.fields.iter().filter(|field| is_raw(field)) {
-                let value = if field.key == FieldKey::CALLDATA {
-                    calldata_rows(&field.value, wide)
-                } else {
-                    field.value.clone()
-                };
-                view.blocks.push(Block::Field {
-                    label: label_of(field),
-                    value,
-                    mono: true,
-                });
+        view.blocks.push(Block::RawToggle { open: details_open });
+        if details_open {
+            // Plain details first, then the raw data (access list, calldata) in field order.
+            for raw in [false, true] {
+                for field in details.iter().filter(|field| is_raw(field) == raw) {
+                    let value = if field.key == FieldKey::CALLDATA {
+                        calldata_rows(&field.value, wide)
+                    } else {
+                        field.value.clone()
+                    };
+                    view.blocks.push(Block::Field {
+                        label: label_of(field),
+                        value,
+                        mono: raw || is_mono(field.key),
+                    });
+                }
             }
         }
     }
@@ -405,7 +599,7 @@ pub fn signing_view(
 pub fn view(
     state: &PrepareState,
     now_ms: u64,
-    raw_open: bool,
+    details_open: bool,
     wide: bool,
     badges: Vec<String>,
     testnet: bool,
@@ -413,7 +607,7 @@ pub fn view(
 ) -> Result<ApprovalView, ErrorCode> {
     match state {
         PrepareState::Ready(ReadyContent::Signing(request)) => {
-            signing_view(request, raw_open, wide, badges, testnet)
+            signing_view(request, details_open, wide, badges, testnet)
         }
         PrepareState::Ready(ReadyContent::Connect(_)) => Ok(ApprovalView {
             badges,

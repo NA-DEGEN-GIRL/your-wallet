@@ -6,20 +6,23 @@
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <h1 id="title">Your Wallet</h1>
-  <section aria-labelledby="status-heading">
-    <h2 id="status-heading"></h2>
-    <p><span id="status-value" class="status"></span></p>
-    <p id="status-detail" class="note"></p>
-  </section>
-  <section aria-labelledby="mode-heading">
-    <h2 id="mode-heading"></h2>
-    <div id="modes" role="radiogroup" aria-labelledby="mode-heading"></div>
-    <p id="mode-explanation" class="explanation"></p>
-    <p id="mode-saved" class="note" role="status"></p>
-    <p id="apply-note" class="note"></p>
-    <p id="warning" class="warning"></p>
-  </section>
+  <header class="app-header">
+    <h1 id="title">Your Wallet</h1>
+  </header>
+  <main class="content">
+    <section class="card" aria-labelledby="status-heading">
+      <h2 id="status-heading" class="card-title"></h2>
+      <p id="status-value" class="status-pill" data-tone="neutral"></p>
+      <p id="status-detail" class="caption"></p>
+    </section>
+    <section class="card" aria-labelledby="mode-heading">
+      <h2 id="mode-heading" class="card-title"></h2>
+      <div id="modes" class="modes" role="radiogroup" aria-labelledby="mode-heading"></div>
+      <p id="mode-saved" class="caption" role="status"></p>
+      <p id="apply-note" class="caption"></p>
+      <p id="warning" class="notice-warning"></p>
+    </section>
+  </main>
   <script type="module" src="../src/popup.js"></script>
 </body>
 </html>

@@ -1,0 +1,65 @@
+<!doctype html>
+<!--
+  DEV ONLY: the extension popup outside Chrome for the screenshot tour (scripts/screenshot-tour.ps1).
+  The markup is extension/popup/popup.html's body; the real popup.css and popup.js are loaded
+  unchanged. `chrome` is a stub: the background answers "connected" and the stored mode is
+  "metamask". Nothing here is part of the extension or reaches a wallet.
+-->
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>Your Wallet popup preview</title>
+  <link rel="stylesheet" href="../extension/popup/popup.css">
+  <script>
+    globalThis.chrome = {
+      runtime: {
+        lastError: undefined,
+        connect() {
+          const messageListeners = [];
+          setTimeout(() => {
+            const shared = globalThis.__YOUR_WALLET_SHARED__;
+            const message = {
+              namespace: shared.NAMESPACE,
+              version: shared.PROTOCOL_VERSION,
+              kind: "status",
+              native: "connected"
+            };
+            for (const listener of messageListeners) listener(message);
+          }, 50);
+          return {
+            onMessage: { addListener(listener) { messageListeners.push(listener); } },
+            onDisconnect: { addListener() {} },
+            disconnect() {}
+          };
+        }
+      },
+      storage: {
+        local: {
+          async get() { return { compatMode: "metamask" }; },
+          async set() {}
+        }
+      }
+    };
+  </script>
+</head>
+<body>
+  <header class="app-header">
+    <h1 id="title">Your Wallet</h1>
+  </header>
+  <main class="content">
+    <section class="card" aria-labelledby="status-heading">
+      <h2 id="status-heading" class="card-title"></h2>
+      <p id="status-value" class="status-pill" data-tone="neutral"></p>
+      <p id="status-detail" class="caption"></p>
+    </section>
+    <section class="card" aria-labelledby="mode-heading">
+      <h2 id="mode-heading" class="card-title"></h2>
+      <div id="modes" class="modes" role="radiogroup" aria-labelledby="mode-heading"></div>
+      <p id="mode-saved" class="caption" role="status"></p>
+      <p id="apply-note" class="caption"></p>
+      <p id="warning" class="notice-warning"></p>
+    </section>
+  </main>
+  <script type="module" src="../extension/src/popup.js"></script>
+</body>
+</html>

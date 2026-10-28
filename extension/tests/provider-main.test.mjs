@@ -40,6 +40,7 @@ function createPage({
   const listeners = new Map();
   const dispatched = [];
   const posted = [];
+  const reported = [];
   let randomState = randomStart >>> 0;
   const url = new URL(href);
   const page = {
@@ -47,6 +48,8 @@ function createPage({
     Event: TestEvent,
     TextEncoder,
     URL,
+    // window.reportError: where a throwing legacy callback is reported (spec/05 §2.5).
+    reportError: (error) => reported.push(error),
     // Look the timer functions up at call time so node:test mock.timers can replace them.
     setTimeout: (callback, milliseconds) => setTimeout(callback, milliseconds),
     clearTimeout: (handle) => clearTimeout(handle),
@@ -108,7 +111,7 @@ function createPage({
   const context = vm.createContext(page);
   context.top = top === undefined ? context : top;
   vm.runInContext(source, context, { filename: "provider-main.js" });
-  const result = { context, dispatched, listeners, posted };
+  const result = { context, dispatched, listeners, posted, reported };
   if (init !== false) {
     bridgeInit(result, CHANNEL, init);
   }
@@ -312,14 +315,17 @@ test("P1 unsupported pages and subframes install nothing", () => {
 test("P2 the provider is extensible and its built-in members cannot be overwritten", () => {
   const page = createPage();
   const provider = providerOf(page);
+  const members = [
+    "isYourWallet", "isMetaMask", "isRabby", "_metamask", "chainId", "selectedAddress", "isConnected", "request", "enable",
+    "send", "sendAsync", "on", "addListener", "once", "off", "removeListener", "removeAllListeners", "listenerCount"
+  ];
+  // The exact member set (spec/05 §2.5 table, legacy API included).
+  assert.deepEqual([...Object.keys(provider)], members);
   assert.equal(Object.isExtensible(provider), true);
   assert.equal(Object.isFrozen(provider), false);
   provider.legacyFlag = 1;
   assert.equal(provider.legacyFlag, 1);
-  for (const name of [
-    "isYourWallet", "isMetaMask", "isRabby", "_metamask", "chainId", "selectedAddress", "isConnected", "request", "enable",
-    "on", "addListener", "once", "off", "removeListener", "removeAllListeners", "listenerCount"
-  ]) {
+  for (const name of members) {
     const descriptor = Object.getOwnPropertyDescriptor(provider, name);
     assert.ok(descriptor, name);
     assert.equal(descriptor.configurable, false, name);
@@ -790,4 +796,306 @@ test("P11 _metamask.isUnlocked() reflects eth_accounts for this origin and never
   assert.equal(await provider._metamask.isUnlocked(), false);
   // Off mode has no _metamask at all.
   assert.equal(providerOf(createPage())._metamask, undefined);
+});
+
+// ---------- spec/05 §2.5 legacy API: enable / send / sendAsync (P12) ----------
+
+// JSON round trip into this realm (provider objects come from the page realm).
+const plain = (value) => JSON.parse(JSON.stringify(value));
+// Errors thrown by the provider belong to the page realm, so match by name.
+const isTypeError = (error) => error.name === "TypeError";
+const ACCOUNT = `0x${"5a".repeat(20)}`;
+
+function legacyRecorder() {
+  const calls = [];
+  const callback = (error, response) => calls.push({ error, response });
+  return { calls, callback };
+}
+
+test("P12 enable() and send(method, params) are request() with the same validation and errors", async () => {
+  const page = createPage();
+  const provider = providerOf(page);
+
+  const enabled = provider.enable();
+  await flush();
+  assert.equal(requests(page)[0].method, "eth_requestAccounts");
+  assert.equal(JSON.stringify(requests(page)[0].params), "[]");
+  respond(page, requests(page)[0].id, { result: [ACCOUNT] });
+  assert.equal(JSON.stringify(await enabled), JSON.stringify([ACCOUNT]));
+  assert.equal(provider.selectedAddress, ACCOUNT);
+
+  // send(method) / send(method, params) resolve to the raw result.
+  const chain = provider.send("eth_chainId");
+  assert.equal(typeof chain.then, "function");
+  await flush();
+  assert.equal(requests(page)[1].method, "eth_chainId");
+  assert.equal(JSON.stringify(requests(page)[1].params), "[]");
+  respond(page, requests(page)[1].id, { result: "0x1" });
+  assert.equal(await chain, "0x1");
+  assert.equal(provider.chainId, "0x1");
+
+  const balance = provider.send("eth_getBalance", pageValue(page, [ACCOUNT, "latest"]));
+  await flush();
+  assert.deepEqual(plain(requests(page)[2]).params, [ACCOUNT, "latest"]);
+  respond(page, requests(page)[2].id, { error: { code: 4100, message: "Unauthorized." } });
+  await assert.rejects(balance, (error) => error.name === "ProviderRpcError" && error.code === 4100 && error.message === "Unauthorized.");
+
+  // request() validation applies unchanged (no request leaves the page).
+  await assert.rejects(provider.send("eth chainId"), (error) => error.code === 4200 && error.message === "Unsupported method.");
+  await assert.rejects(provider.send("eth_call", "0x"), (error) => error.code === -32602 && error.message === "Invalid params.");
+  await assert.rejects(provider.send("eth_call", () => {}), (error) => error.code === -32602);
+  assert.equal(requests(page).length, 3);
+});
+
+test("P12 sendAsync / send(payload, cb): JSON-RPC response shapes, id passthrough, asynchronous callback", async () => {
+  const page = createPage();
+  const provider = providerOf(page);
+
+  const ok = legacyRecorder();
+  assert.equal(provider.sendAsync(pageValue(page, { id: 7, jsonrpc: "2.0", method: "eth_getBalance", params: [ACCOUNT, "latest"] }), ok.callback), undefined);
+  await flush();
+  // Only method and params reach the bridge, as with request().
+  assert.deepEqual(Object.keys(requests(page)[0]).sort(), ["channel", "id", "kind", "method", "namespace", "params", "version"]);
+  assert.equal(requests(page)[0].method, "eth_getBalance");
+  assert.deepEqual(plain(requests(page)[0].params), [ACCOUNT, "latest"]);
+  assert.equal(ok.calls.length, 0);
+  respond(page, requests(page)[0].id, { result: "0x10" });
+  await flush();
+  assert.equal(ok.calls.length, 1);
+  assert.equal(ok.calls[0].error, null);
+  assert.deepEqual(plain(ok.calls[0].response), { id: 7, jsonrpc: "2.0", result: "0x10" });
+
+  // Error: callback(error, { id, jsonrpc, error: { code, message } }), `data` only when present.
+  const failed = legacyRecorder();
+  provider.sendAsync(pageValue(page, { id: "a", method: "eth_accounts" }), failed.callback);
+  const reverted = legacyRecorder();
+  provider.sendAsync(pageValue(page, { id: 8, method: "eth_call", params: [{ to: ACCOUNT }] }), reverted.callback);
+  await flush();
+  respond(page, requests(page)[1].id, { error: { code: 4100, message: "Unauthorized." } });
+  respond(page, requests(page)[2].id, { error: { code: 3, message: "execution reverted", data: "0x08c379a0" } });
+  await flush();
+  assert.equal(failed.calls.length, 1);
+  assert.equal(failed.calls[0].error.name, "ProviderRpcError");
+  assert.equal(failed.calls[0].error.code, 4100);
+  assert.deepEqual(plain(failed.calls[0].response), { id: "a", jsonrpc: "2.0", error: { code: 4100, message: "Unauthorized." } });
+  assert.equal("data" in failed.calls[0].response.error, false);
+  assert.deepEqual(plain(reverted.calls[0].response), {
+    id: 8, jsonrpc: "2.0", error: { code: 3, message: "execution reverted", data: "0x08c379a0" }
+  });
+  assert.equal(reverted.calls[0].error.data, "0x08c379a0");
+
+  // A local rejection (no I/O) still calls back asynchronously, never inside sendAsync.
+  const local = legacyRecorder();
+  provider.sendAsync(pageValue(page, { id: 9, method: "eth chainId" }), local.callback);
+  assert.equal(local.calls.length, 0);
+  await flush();
+  assert.equal(local.calls[0].error.code, 4200);
+  assert.deepEqual(plain(local.calls[0].response), { id: 9, jsonrpc: "2.0", error: { code: 4200, message: "Unsupported method." } });
+
+  // send(payload, callback) is sendAsync; a missing id passes through as undefined.
+  const viaSend = legacyRecorder();
+  assert.equal(provider.send(pageValue(page, { method: "net_version" }), viaSend.callback), undefined);
+  await flush();
+  assert.equal(requests(page)[3].method, "net_version");
+  respond(page, requests(page)[3].id, { result: "1" });
+  await flush();
+  assert.equal(viaSend.calls[0].error, null);
+  assert.equal(Object.hasOwn(viaSend.calls[0].response, "id"), true);
+  assert.equal(viaSend.calls[0].response.id, undefined);
+  assert.deepEqual(plain(viaSend.calls[0].response), { jsonrpc: "2.0", result: "1" });
+});
+
+test("P12 sendAsync batch: each element through request(), one callback with ordered responses", async () => {
+  const page = createPage();
+  const provider = providerOf(page);
+  const batch = legacyRecorder();
+  provider.sendAsync(pageValue(page, [
+    { id: 1, jsonrpc: "2.0", method: "eth_chainId" },
+    { id: 2, jsonrpc: "2.0", method: "eth_accounts", params: [] },
+    { id: 3, jsonrpc: "2.0", method: "eth chainId" }
+  ]), batch.callback);
+  await flush();
+  // The malformed method is rejected locally (4200) like request(); two requests go out.
+  assert.deepEqual(requests(page).map((message) => message.method), ["eth_chainId", "eth_accounts"]);
+  // Responses arrive out of order; the batch keeps payload order.
+  respond(page, requests(page)[1].id, { error: { code: 4100, message: "Unauthorized." } });
+  await flush();
+  assert.equal(batch.calls.length, 0);
+  respond(page, requests(page)[0].id, { result: "0xaa36a7" });
+  await flush();
+  assert.equal(batch.calls.length, 1);
+  assert.equal(batch.calls[0].error, null);
+  assert.deepEqual(plain(batch.calls[0].response), [
+    { id: 1, jsonrpc: "2.0", result: "0xaa36a7" },
+    { id: 2, jsonrpc: "2.0", error: { code: 4100, message: "Unauthorized." } },
+    { id: 3, jsonrpc: "2.0", error: { code: 4200, message: "Unsupported method." } }
+  ]);
+
+  // Empty batch → callback(null, []).
+  const empty = legacyRecorder();
+  provider.sendAsync(pageValue(page, []), empty.callback);
+  assert.equal(empty.calls.length, 0);
+  await flush();
+  assert.equal(empty.calls[0].error, null);
+  assert.deepEqual(plain(empty.calls[0].response), []);
+
+  // Every element is validated before anything is sent.
+  assert.throws(() => provider.sendAsync(pageValue(page, [{ id: 4, method: "eth_chainId" }, { id: 5 }]), () => {}), isTypeError);
+  assert.throws(() => provider.send(pageValue(page, [{ id: 6, method: "eth_chainId" }, null]), () => {}), isTypeError);
+  await flush();
+  assert.equal(requests(page).length, 2);
+
+  // The pending limit still applies per element (64 in flight, the 65th answers -32005).
+  const many = legacyRecorder();
+  provider.sendAsync(pageValue(page, Array.from({ length: 65 }, (_, index) => ({ id: index, method: "eth_blockNumber" }))), many.callback);
+  await flush();
+  const outbound = requests(page).slice(2);
+  assert.equal(outbound.length, 64);
+  for (const message of outbound) {
+    respond(page, message.id, { result: "0x1" });
+  }
+  await flush();
+  const responses = plain(many.calls[0].response);
+  assert.equal(responses.length, 65);
+  assert.deepEqual(responses[0], { id: 0, jsonrpc: "2.0", result: "0x1" });
+  assert.deepEqual(responses[64], { id: 64, jsonrpc: "2.0", error: { code: -32005, message: "Too many pending requests." } });
+});
+
+test("P12 synchronous send(payload): eth_accounts, eth_coinbase, net_version from cached state only", () => {
+  const page = createPage();
+  const provider = providerOf(page);
+  const before = page.posted.length;
+  const sync = (method) => plain(provider.send(pageValue(page, { id: 1, jsonrpc: "2.0", method })));
+  assert.deepEqual(sync("eth_accounts"), { id: 1, jsonrpc: "2.0", result: [] });
+  assert.deepEqual(sync("eth_coinbase"), { id: 1, jsonrpc: "2.0", result: null });
+  assert.deepEqual(sync("net_version"), { id: 1, jsonrpc: "2.0", result: null });
+
+  sendEvent(page, "accountsChanged", [ACCOUNT]);
+  sendEvent(page, "chainChanged", "0xaa36a7");
+  assert.deepEqual(sync("eth_accounts"), { id: 1, jsonrpc: "2.0", result: [ACCOUNT] });
+  assert.deepEqual(sync("eth_coinbase"), { id: 1, jsonrpc: "2.0", result: ACCOUNT });
+  assert.deepEqual(sync("net_version"), { id: 1, jsonrpc: "2.0", result: "11155111" });
+  sendEvent(page, "chainChanged", "0x3e7");
+  assert.deepEqual(sync("net_version"), { id: 1, jsonrpc: "2.0", result: "999" });
+  // The id is passed through; a missing one stays undefined.
+  assert.equal(provider.send(pageValue(page, { id: "x", method: "eth_accounts" })).id, "x");
+  const noId = provider.send(pageValue(page, { method: "eth_accounts" }));
+  assert.equal(Object.hasOwn(noId, "id"), true);
+  assert.equal(noId.id, undefined);
+  // The returned array is a copy of the cached view.
+  provider.send(pageValue(page, { method: "eth_accounts" })).result.push("forged");
+  assert.equal(provider.selectedAddress, ACCOUNT);
+
+  // Everything else needs I/O: a plain Error (not an RPC error), nothing sent.
+  for (const method of ["eth_chainId", "eth_requestAccounts", "eth_uninstallFilter", "eth_sendTransaction", "personal_sign", "bad method"]) {
+    assert.throws(() => provider.send(pageValue(page, { id: 2, method })), (error) => {
+      assert.equal(error.constructor.name, "Error", method);
+      assert.equal(error.code, undefined, method);
+      assert.match(error.message, /eth_accounts, eth_coinbase and net_version/u, method);
+      return true;
+    });
+  }
+  assert.equal(page.posted.length, before);
+});
+
+test("P12 invalid legacy payloads and callbacks throw TypeError before any request", async () => {
+  const page = createPage();
+  const provider = providerOf(page);
+  const valid = pageValue(page, { id: 1, method: "eth_chainId" });
+  for (const callback of [undefined, null, "callback", {}, 1]) {
+    assert.throws(() => provider.sendAsync(valid, callback), isTypeError, String(callback));
+  }
+  const badPayloads = [undefined, null, "eth_chainId", 42, true, pageValue(page, {}), pageValue(page, { method: 1 }), pageValue(page, { method: null })];
+  for (const payload of badPayloads) {
+    assert.throws(() => provider.sendAsync(payload, () => {}), isTypeError, String(payload));
+  }
+  // send(): object (or missing) payload without a callback is the synchronous form.
+  for (const payload of [undefined, null, 42, pageValue(page, {}), pageValue(page, { method: 1 }), pageValue(page, [{ method: "eth_accounts" }])]) {
+    assert.throws(() => provider.send(payload), isTypeError, JSON.stringify(payload));
+  }
+  assert.throws(() => provider.send(), isTypeError);
+  // A string method never throws: request() validation answers with a rejected Promise.
+  await assert.rejects(provider.send(""), (error) => error.code === 4200);
+  await flush();
+  assert.equal(requests(page).length, 0);
+});
+
+test("P12 a throwing legacy callback is reported once and never breaks the provider", async () => {
+  const page = createPage();
+  const provider = providerOf(page);
+  let invoked = 0;
+  provider.sendAsync(pageValue(page, { id: 1, method: "eth_chainId" }), () => {
+    invoked += 1;
+    throw new Error("dApp callback bug");
+  });
+  await flush();
+  respond(page, requests(page)[0].id, { result: "0x1" });
+  await flush();
+  // Called exactly once (not again with an error); the exception goes to window.reportError.
+  assert.equal(invoked, 1);
+  assert.equal(page.reported.length, 1);
+  assert.equal(page.reported[0].message, "dApp callback bug");
+
+  // Same for an error response and for a batch callback.
+  provider.sendAsync(pageValue(page, { id: 2, method: "eth chainId" }), () => {
+    throw new Error("error path bug");
+  });
+  provider.sendAsync(pageValue(page, []), () => {
+    throw new Error("batch bug");
+  });
+  await flush();
+  assert.deepEqual(page.reported.map((error) => error.message).sort(), ["batch bug", "dApp callback bug", "error path bug"]);
+
+  // The provider keeps working: request() and sendAsync.
+  const later = legacyRecorder();
+  provider.sendAsync(pageValue(page, { id: 3, method: "eth_blockNumber" }), later.callback);
+  const direct = provider.request(pageValue(page, { method: "eth_chainId" }));
+  await flush();
+  respond(page, requests(page)[1].id, { result: "0x2a" });
+  respond(page, requests(page)[2].id, { result: "0x1" });
+  assert.equal(await direct, "0x1");
+  await flush();
+  assert.deepEqual(plain(later.calls[0].response), { id: 3, jsonrpc: "2.0", result: "0x2a" });
+  assert.equal(provider.isConnected(), true);
+
+  // Without window.reportError the exception is swallowed (no unhandled rejection).
+  const bare = createPage({ beforeInstall: (target) => delete target.reportError });
+  const bareProvider = providerOf(bare);
+  bareProvider.sendAsync(pageValue(bare, { id: 4, method: "eth chainId" }), () => {
+    throw new Error("swallowed");
+  });
+  await flush();
+  assert.equal(bare.reported.length, 0);
+  const after = bareProvider.request(pageValue(bare, { method: "eth_chainId" }));
+  await flush();
+  respond(bare, requests(bare)[0].id, { result: "0x1" });
+  assert.equal(await after, "0x1");
+});
+
+test("P12 the legacy API exists in every mode (and before the mode is known), non-writable", async () => {
+  for (const mode of [false, "off", "metamask", "rabby"]) {
+    const page = createPage({ init: mode });
+    const provider = page.context.ethereum;
+    for (const name of ["enable", "send", "sendAsync"]) {
+      const descriptor = Object.getOwnPropertyDescriptor(provider, name);
+      assert.equal(typeof descriptor.value, "function", `${mode} ${name}`);
+      assert.equal(descriptor.writable, false, `${mode} ${name}`);
+      assert.equal(descriptor.configurable, false, `${mode} ${name}`);
+    }
+    if (mode === false) {
+      continue;
+    }
+    assert.equal(provider.isMetaMask, mode !== "off", mode);
+    const result = legacyRecorder();
+    provider.sendAsync(pageValue(page, { id: 1, method: "eth_accounts" }), result.callback);
+    const sent = provider.send("eth_chainId");
+    await flush();
+    assert.deepEqual(requests(page).map((message) => message.method), ["eth_accounts", "eth_chainId"], mode);
+    respond(page, requests(page)[0].id, { result: [ACCOUNT] });
+    respond(page, requests(page)[1].id, { result: "0x1" });
+    assert.equal(await sent, "0x1");
+    await flush();
+    assert.deepEqual(plain(result.calls[0].response), { id: 1, jsonrpc: "2.0", result: [ACCOUNT] });
+    assert.deepEqual(plain(provider.send(pageValue(page, { id: 2, method: "eth_coinbase" }))), { id: 2, jsonrpc: "2.0", result: ACCOUNT });
+  }
 });

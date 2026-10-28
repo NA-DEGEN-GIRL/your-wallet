@@ -43,7 +43,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SIF_TRACKPOS, SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowDisplayAffinity, SetWindowLongPtrW,
     SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WM_APP,
-    WM_CHAR, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DPICHANGED, WM_GETMINMAXINFO,
+    WM_CHAR, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DPICHANGED, WM_DRAWITEM, WM_GETMINMAXINFO,
     WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEWHEEL,
     WM_NCCREATE, WM_NCDESTROY, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WNDCLASSEXW, WS_CAPTION, WS_CHILD,
     WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_EX_TOPMOST,
@@ -62,7 +62,7 @@ use crate::wide::to_wide;
 pub struct Hwnd(usize);
 
 impl Hwnd {
-    fn raw(self) -> HWND {
+    pub(crate) fn raw(self) -> HWND {
         core::ptr::with_exposed_provenance_mut(self.0)
     }
 
@@ -1018,12 +1018,18 @@ fn dispatch(state: &WindowState, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
         WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
             let hdc: windows_sys::Win32::Graphics::Gdi::HDC =
                 core::ptr::with_exposed_provenance_mut(wparam);
-            // SAFETY: `wParam` is the child control's DC for this notification.
-            unsafe { SetBkColor(hdc, 0x00FF_FFFF) };
-            // SAFETY: Returns the shared stock white brush (never deleted).
-            let brush = unsafe { GetStockObject(WHITE_BRUSH) };
+            let control: HWND = core::ptr::with_exposed_provenance_mut(lparam.cast_unsigned());
+            let brush = super::controls::ctl_color(hdc, control);
+            if brush.is_null() {
+                // SAFETY: `wParam` is the child control's DC for this notification.
+                unsafe { SetBkColor(hdc, 0x00FF_FFFF) };
+                // SAFETY: Returns the shared stock white brush (never deleted).
+                let white = unsafe { GetStockObject(WHITE_BRUSH) };
+                return white.expose_provenance().cast_signed();
+            }
             return brush.expose_provenance().cast_signed();
         }
+        WM_DRAWITEM if super::controls::draw_item(lparam) => return 1,
         WM_GETMINMAXINFO if state.min_size != (0, 0) => {
             // SAFETY: Queries our window's DPI.
             let dpi = match unsafe { GetDpiForWindow(hwnd) } {

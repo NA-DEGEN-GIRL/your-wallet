@@ -41,7 +41,7 @@ use crate::text::is_valid_label;
 use crate::ui::main_window::{ControlSet, Placed, layout, paint};
 use crate::ui::secret::{
     CaptureDecision, DisplaySecret, FormAction, PASTE_MAX_UTF16_UNITS, SECRET_TIMER_ID,
-    SECRET_TIMER_MS, SecretForm, SecretKind, Submission, capture_decision,
+    SECRET_TIMER_MS, SecretForm, SecretKind, SecretStep, Submission, capture_decision,
 };
 use crate::ui::theme::{FontCache, FontRole, wide};
 use crate::workers::key::new_account;
@@ -403,6 +403,8 @@ pub struct App {
     pub(crate) info: Option<String>,
     pub(crate) mismatch_checked: bool,
     pub(crate) overwrite_checked: bool,
+    /// 고급 설정 보기 (technical settings and fee details shown).
+    pub(crate) show_advanced: bool,
     pub(crate) rename: Option<EvmAccountPref>,
     pub(crate) pending_remove: Option<RecordId>,
     pub(crate) replace_target: Option<NetworkId>,
@@ -438,6 +440,27 @@ impl core::fmt::Debug for App {
 
 fn now_ms() -> u64 {
     monotonic_ms()
+}
+
+/// The step indicator of the create and import flows shown in their secret windows
+/// (spec/04 §2.3–§2.4).
+fn flow_step(purpose: Purpose) -> Option<SecretStep> {
+    use crate::ui::screens::{CREATE_STEPS, IMPORT_STEPS};
+    let (flow, labels, current) = match purpose {
+        Purpose::CreatePassword => ("새 지갑 만들기", CREATE_STEPS, 1),
+        Purpose::ShowForBackup => ("새 지갑 만들기", CREATE_STEPS, 2),
+        Purpose::Backup => ("새 지갑 만들기", CREATE_STEPS, 3),
+        Purpose::ImportPassword => ("기존 지갑 가져오기", IMPORT_STEPS, 1),
+        Purpose::ImportMnemonic | Purpose::ImportPassphrase => {
+            ("기존 지갑 가져오기", IMPORT_STEPS, 2)
+        }
+        _ => return None,
+    };
+    Some(SecretStep {
+        flow,
+        labels,
+        current,
+    })
 }
 
 fn eip55(address: &Address) -> String {
@@ -514,6 +537,7 @@ impl App {
             info: None,
             mismatch_checked: false,
             overwrite_checked: false,
+            show_advanced: false,
             rename: None,
             pending_remove: None,
             replace_target: None,
@@ -1434,7 +1458,8 @@ impl App {
                 Self::log_capture(kind, excluded);
                 match capture_decision(kind, Ok(excluded)) {
                     CaptureDecision::Show { warning } => {
-                        let form = SecretForm::new(kind, now_ms(), !warning);
+                        let mut form = SecretForm::new(kind, now_ms(), !warning);
+                        form.set_step(flow_step(purpose));
                         self.show_secret(serial, window, form, purpose);
                     }
                     CaptureDecision::Refuse(code) => {
@@ -1463,7 +1488,8 @@ impl App {
         let decision = capture_decision(kind, excluded);
         match (decision, created) {
             (CaptureDecision::Show { .. }, Ok(window)) => {
-                let form = SecretForm::display(kind, now_ms(), display);
+                let mut form = SecretForm::display(kind, now_ms(), display);
+                form.set_step(flow_step(purpose));
                 self.show_secret(serial, window, form, purpose);
             }
             (CaptureDecision::Refuse(code), _) => {
@@ -1968,6 +1994,10 @@ impl App {
                 self.set_screen(Screen::Settings(SettingsSection::Network));
             }
             ids::SECTION_OTHER => self.set_screen(Screen::Settings(SettingsSection::Other)),
+            ids::ADVANCED_TOGGLE => {
+                self.show_advanced = !self.show_advanced;
+                self.refresh();
+            }
             ids::DISMISS_BANNERS => {
                 self.banners.clear();
                 self.info = None;
@@ -2634,5 +2664,44 @@ impl App {
     #[must_use]
     pub fn challenge_id(&self) -> Option<ChallengeId> {
         self.challenge.map(|challenge| challenge.id)
+    }
+}
+
+/// Hooks for the screenshot tour (`ui::tour`, an `#[ignore]` test; compiled only for tests).
+#[cfg(test)]
+impl App {
+    /// The open secret window.
+    pub(crate) fn tour_secret_window(&self) -> Option<&Window> {
+        self.secret.as_ref().map(|secret| &secret.window)
+    }
+
+    /// Opens a display window (W08/W09) with a non-secret tour value.
+    pub(crate) fn tour_open_display(
+        &mut self,
+        kind: SecretKind,
+        purpose: Purpose,
+        display: DisplaySecret,
+    ) {
+        self.open_display(kind, purpose, display);
+    }
+
+    /// Types `text` into the open secret window's active field (tour values only).
+    pub(crate) fn tour_type(&mut self, text: &str) {
+        let now = now_ms();
+        if let Some(secret) = self.secret.as_mut() {
+            for unit in text.encode_utf16() {
+                let _ = secret.form.on_char(unit, now);
+            }
+            secret.window.invalidate();
+        }
+    }
+
+    /// Moves to the next field of the open secret window (Tab).
+    pub(crate) fn tour_next_field(&mut self) {
+        let now = now_ms();
+        if let Some(secret) = self.secret.as_mut() {
+            let _ = secret.form.on_key(0x09, false, false, false, now);
+            secret.window.invalidate();
+        }
     }
 }

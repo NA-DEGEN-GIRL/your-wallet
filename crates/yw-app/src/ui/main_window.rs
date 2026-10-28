@@ -1,28 +1,82 @@
 //! Main window rendering (spec/04 §2): screens are described as a vertical list of [`Item`]s
-//! (painted text, banners, rows of standard controls for non-secret values); [`layout`] places
-//! them for the current width, DPI and scroll offset, [`paint`] draws the text, and
-//! [`ControlSet::sync`] creates or moves the child controls.
+//! (painted text, cards, banners, rows of standard controls for non-secret values); [`layout`]
+//! places them for the current width, DPI and scroll offset, [`paint`] draws the text and shapes,
+//! and [`ControlSet::sync`] creates or moves the child controls.
+//!
+//! The design system (spec/04 §1.6, `ui::theme`): a light-gray window with white cards
+//! ([`Item::CardStart`] … [`Item::CardEnd`]), one type scale, a 4-DIP spacing grid, owner-drawn
+//! primary / secondary / danger / link / tab buttons, and banners that always name their status
+//! (정보·완료·주의·고위험·차단·오류·테스트넷) in a colored tag.
 
-use yw_win::ui::controls::{Control, ControlKind, create_control};
-use yw_win::ui::{DrawFlags, PaintDc, Rect, Window, scale};
+use yw_win::ui::controls::{ButtonStyle, Control, ControlKind, create_control};
+use yw_win::ui::{Color, DrawFlags, PaintDc, Rect, Window, scale};
 
 use crate::ui::theme::{self, FontRole, Fonts, wide};
 
-/// Banner tone.
+/// Banner tone. Each tone has one meaning everywhere (spec/04 §1.6 status colors).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tone {
-    /// `DANGER_BG`.
+    /// 오류: an error with a code (the action did not happen or cannot start).
     Danger,
-    /// `WARN_BG`.
+    /// 주의: check something before continuing.
     Warn,
-    /// Neutral info.
+    /// 정보: neutral information.
     Info,
-    /// `TESTNET_BG`.
+    /// 테스트넷: `TESTNET_BG`.
     Testnet,
     /// `BTC_MAINNET_BG` / `BTC_MAINNET_TEXT` (spec/08 §2 `BITCOIN MAINNET`).
     BtcMainnet,
     /// `BTC_TESTNET4_BG` / `TEXT` (spec/08 §2 `BITCOIN TESTNET4 — 가치 없음`).
     BtcTestnet4,
+    /// 고위험: a likely loss of funds (address poisoning, program-owned recipient …).
+    HighRisk,
+    /// 차단: the function is stopped until the cause is fixed.
+    Blocked,
+    /// 완료: an action succeeded.
+    Success,
+}
+
+impl Tone {
+    /// The status word drawn in the banner's tag (`None` for the Bitcoin network banners, whose
+    /// text is the whole message).
+    #[must_use]
+    pub const fn label(self) -> Option<&'static str> {
+        match self {
+            Self::Danger => Some("오류"),
+            Self::Warn => Some("주의"),
+            Self::Info => Some("정보"),
+            Self::Testnet => Some("테스트넷"),
+            Self::HighRisk => Some("고위험"),
+            Self::Blocked => Some("차단"),
+            Self::Success => Some("완료"),
+            Self::BtcMainnet | Self::BtcTestnet4 => None,
+        }
+    }
+
+    /// `(background, text, tag)` colors.
+    #[must_use]
+    pub const fn colors(self) -> (Color, Color, Color) {
+        match self {
+            Self::Danger | Self::HighRisk => {
+                (theme::DANGER_BG, theme::DANGER_TEXT, theme::DANGER_ACCENT)
+            }
+            Self::Warn => (theme::WARN_BG, theme::WARN_TEXT, theme::WARN_ACCENT),
+            Self::Info => (theme::INFO_BG, theme::INFO_TEXT, theme::INFO_ACCENT),
+            Self::Testnet => (theme::TESTNET_BG, theme::TEXT, theme::TESTNET_ACCENT),
+            Self::BtcMainnet => (
+                theme::BTC_MAINNET_BG,
+                theme::BTC_MAINNET_TEXT,
+                theme::BTC_MAINNET_BG,
+            ),
+            Self::BtcTestnet4 => (theme::BTC_TESTNET4_BG, theme::TEXT, theme::BTC_TESTNET4_BG),
+            Self::Blocked => (theme::BLOCKED_BG, theme::BLOCKED_TEXT, theme::CARD),
+            Self::Success => (
+                theme::SUCCESS_BG,
+                theme::SUCCESS_TEXT,
+                theme::SUCCESS_ACCENT,
+            ),
+        }
+    }
 }
 
 /// A control in a row.
@@ -38,25 +92,66 @@ pub struct Ctl {
     pub width: i32,
     /// Enabled.
     pub enabled: bool,
-    /// Check state for check boxes and radios.
+    /// Check state for check boxes and radios (and the selected tab).
     pub checked: Option<bool>,
     /// Edit length limit.
     pub limit: Option<u32>,
+    /// The color under the control (set by [`layout`]).
+    pub backdrop: Option<Color>,
 }
 
 impl Ctl {
-    /// A push button.
-    #[must_use]
-    pub fn button(id: u16, text: &str) -> Self {
+    fn styled(id: u16, text: &str, style: ButtonStyle) -> Self {
         Self {
             id,
-            kind: ControlKind::Button,
+            kind: ControlKind::Button(style),
             text: text.to_owned(),
             width: 0,
             enabled: true,
             checked: None,
             limit: None,
+            backdrop: None,
         }
+    }
+
+    /// A secondary push button (every action that is not the screen's main one).
+    #[must_use]
+    pub fn button(id: u16, text: &str) -> Self {
+        Self::styled(id, text, theme::BUTTON_SECONDARY)
+    }
+
+    /// The primary push button (the screen's main action).
+    #[must_use]
+    pub fn primary(id: u16, text: &str) -> Self {
+        Self::styled(id, text, theme::BUTTON_PRIMARY)
+    }
+
+    /// A destructive action (삭제, 연결 해제 …).
+    #[must_use]
+    pub fn danger(id: u16, text: &str) -> Self {
+        Self::styled(id, text, theme::BUTTON_DANGER)
+    }
+
+    /// A text-only navigation or show/hide button (← 메인으로, 고급 ▸).
+    #[must_use]
+    pub fn link(id: u16, text: &str) -> Self {
+        Self::styled(id, text, theme::BUTTON_LINK)
+    }
+
+    /// One segment of a tab or chip row; `checked == Some(selected)`.
+    #[must_use]
+    pub fn tab(id: u16, text: &str, selected: bool) -> Self {
+        let mut ctl = Self::styled(
+            id,
+            text,
+            if selected {
+                theme::BUTTON_TAB_ON
+            } else {
+                theme::BUTTON_TAB_OFF
+            },
+        );
+        ctl.checked = Some(selected);
+        ctl
     }
 
     /// A check box.
@@ -70,6 +165,7 @@ impl Ctl {
             enabled: true,
             checked: Some(checked),
             limit: None,
+            backdrop: None,
         }
     }
 
@@ -86,6 +182,7 @@ impl Ctl {
             enabled: true,
             checked: Some(checked),
             limit: None,
+            backdrop: None,
         }
     }
 
@@ -103,6 +200,7 @@ impl Ctl {
             enabled: true,
             checked: None,
             limit: Some(limit),
+            backdrop: None,
         }
     }
 
@@ -131,20 +229,34 @@ impl Ctl {
         }
         self
     }
+
+    /// Whether this is a push button (any style).
+    #[must_use]
+    pub const fn is_button(&self) -> bool {
+        matches!(self.kind, ControlKind::Button(_))
+    }
 }
 
 /// One element of a screen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Item {
-    /// Screen title.
+    /// Screen title (bold 14 pt).
     Title(String),
     /// Body paragraph.
     Text(String),
     /// Secondary paragraph.
     Muted(String),
-    /// Monospace line (addresses, hashes).
+    /// A plain-language help line under a field (caption size, muted).
+    Help(String),
+    /// A card heading (bold 11 pt).
+    Subtitle(String),
+    /// Large text: a balance or the welcome headline (bold 20 pt).
+    Display(String),
+    /// Monospace line (addresses, hashes). Grouped Solana/Bitcoin addresses get their bold groups.
     Mono(String),
-    /// Colored banner.
+    /// A label and its read-only value on one line (the value wraps).
+    Field(String, String),
+    /// Colored banner with its status tag.
     Banner(String, Tone),
     /// Vertical space (DIP).
     Gap(i32),
@@ -156,6 +268,26 @@ pub enum Item {
     Rule,
     /// A receive QR of this payload (spec/04 §2.8).
     Qr(String),
+    /// Starts a white card (section); the optional heading is drawn at its top.
+    CardStart(Option<String>),
+    /// Ends the current card.
+    CardEnd,
+    /// The step indicator of a multi-step flow: labels and the current step (1-based, 0 = none
+    /// started yet).
+    Steps(Vec<String>, usize),
+    /// The top bar of the unlocked screens: the app name on the left, controls on the right.
+    Toolbar(String, Vec<Ctl>),
+}
+
+/// How a placed text is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextAlign {
+    /// Word-wrapped, left aligned.
+    Wrap,
+    /// One line, left aligned, vertically centered.
+    Line,
+    /// One line, centered both ways.
+    Center,
 }
 
 /// A text to paint.
@@ -169,10 +301,25 @@ pub struct PaintText {
     pub font: FontRole,
     /// Color.
     pub color: theme_color::Value,
-    /// Background fill.
+    /// Background fill (plain rectangle; rounded backgrounds are [`Shape`]s).
     pub fill: Option<theme_color::Value>,
     /// Wrap or single line.
     pub wrap: bool,
+    /// Alignment (overrides `wrap` when not [`TextAlign::Wrap`]).
+    pub align: TextAlign,
+}
+
+/// A filled rounded shape (cards, banner backgrounds, tags, step dots).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shape {
+    /// Rectangle (scrolled).
+    pub rect: Rect,
+    /// Corner radius in pixels.
+    pub radius: i32,
+    /// Fill.
+    pub fill: theme_color::Value,
+    /// Outline.
+    pub border: theme_color::Value,
 }
 
 /// Color values as plain `u32` to keep [`PaintText`] comparable.
@@ -186,6 +333,8 @@ pub mod theme_color {
 pub struct Placed {
     /// Texts and banners.
     pub texts: Vec<PaintText>,
+    /// Rounded shapes, painted before the texts in order.
+    pub shapes: Vec<Shape>,
     /// Separator lines.
     pub rules: Vec<Rect>,
     /// Controls with their pixel rectangles.
@@ -203,16 +352,481 @@ pub type MeasureWidth<'a> = &'a dyn Fn(&str) -> i32;
 
 const fn control_height(kind: ControlKind) -> i32 {
     match kind {
-        ControlKind::Edit { .. } => 28,
-        ControlKind::Button => 32,
+        ControlKind::Edit { .. } => 30,
+        ControlKind::Button(_) => 34,
         ControlKind::CheckBox | ControlKind::Radio { .. } => 24,
         ControlKind::Label => 22,
     }
 }
 
+/// The content box items are placed in: the window margin, or a card's padded inside.
+#[derive(Clone, Copy)]
+struct Frame {
+    x: i32,
+    w: i32,
+    backdrop: Color,
+}
+
+struct Layouter<'m> {
+    px: Box<dyn Fn(i32) -> i32>,
+    measure: Measure<'m>,
+    label_width: MeasureWidth<'m>,
+    scroll: i32,
+    client_w: i32,
+    margin: i32,
+    width: i32,
+    y: i32,
+    frame: Frame,
+    card: Option<i32>,
+    last_gap: i32,
+    placed: Placed,
+}
+
+impl Layouter<'_> {
+    fn px(&self, dip: i32) -> i32 {
+        (self.px)(dip)
+    }
+
+    fn outer(&self) -> Frame {
+        Frame {
+            x: self.margin,
+            w: self.width,
+            backdrop: theme::BG,
+        }
+    }
+
+    fn advance(&mut self, height: i32, gap: i32) {
+        self.y = self.y.saturating_add(height).saturating_add(gap);
+        self.last_gap = gap;
+    }
+
+    fn text(&mut self, text: &str, font: FontRole, color: Color, indent: i32, gap: i32) {
+        let width = self.frame.w.saturating_sub(indent).max(self.px(40));
+        let height = (self.measure)(text, font, width).max(self.px(16));
+        self.placed.texts.push(PaintText {
+            rect: Rect::new(
+                self.frame.x.saturating_add(indent),
+                self.y.saturating_sub(self.scroll),
+                width,
+                height,
+            ),
+            text: text.to_owned(),
+            font,
+            color: color.0,
+            fill: None,
+            wrap: true,
+            align: TextAlign::Wrap,
+        });
+        self.advance(height, gap);
+    }
+
+    fn shape(&mut self, rect: Rect, radius: i32, fill: Color, border: Color) {
+        self.placed.shapes.push(Shape {
+            rect,
+            radius,
+            fill: fill.0,
+            border: border.0,
+        });
+    }
+
+    fn open_card(&mut self, title: Option<&str>) {
+        self.close_card();
+        let pad = self.px(theme::SPACE_L);
+        self.card = Some(self.y);
+        let outer = self.outer();
+        self.frame = Frame {
+            x: outer.x.saturating_add(pad),
+            w: outer.w.saturating_sub(pad.saturating_mul(2)),
+            backdrop: theme::CARD,
+        };
+        self.y = self.y.saturating_add(pad);
+        // The card shape goes in now so it paints under its contents; its height is fixed at
+        // close time.
+        self.shape(
+            Rect::new(outer.x, self.y.saturating_sub(self.scroll), outer.w, 0),
+            self.px(theme::RADIUS_CARD),
+            theme::CARD,
+            theme::CARD_BORDER,
+        );
+        if let Some(title) = title {
+            self.text(
+                title,
+                FontRole::Subtitle,
+                theme::TEXT,
+                0,
+                self.px(theme::SPACE_S),
+            );
+        }
+    }
+
+    fn close_card(&mut self) {
+        let Some(top) = self.card.take() else {
+            return;
+        };
+        let pad = self.px(theme::SPACE_L);
+        self.y = self
+            .y
+            .saturating_sub(self.last_gap)
+            .saturating_add(pad)
+            .max(top.saturating_add(pad.saturating_mul(2)));
+        let outer = self.outer();
+        let rect = Rect::new(
+            outer.x,
+            top.saturating_sub(self.scroll),
+            outer.w,
+            self.y.saturating_sub(top),
+        );
+        // The most recent card shape without a height is this card's.
+        if let Some(shape) = self
+            .placed
+            .shapes
+            .iter_mut()
+            .rev()
+            .find(|shape| shape.rect.h == 0 && shape.fill == theme::CARD.0)
+        {
+            shape.rect = rect;
+        }
+        self.frame = outer;
+        self.advance(0, self.px(theme::SPACE_M));
+    }
+
+    fn banner(&mut self, text: &str, tone: Tone) {
+        let (fill, color, accent) = tone.colors();
+        let pad = self.px(10);
+        let tag = tone.label();
+        let tag_w = tag.map_or(0, |label| {
+            (self.label_width)(label)
+                .saturating_add(self.px(18))
+                .max(self.px(44))
+        });
+        let tag_h = self.px(22);
+        let text_x = if tag_w > 0 {
+            tag_w.saturating_add(self.px(10))
+        } else {
+            0
+        };
+        let inner = self
+            .frame
+            .w
+            .saturating_sub(pad.saturating_mul(2))
+            .saturating_sub(text_x)
+            .max(self.px(40));
+        let bold = matches!(tone, Tone::BtcMainnet | Tone::BtcTestnet4 | Tone::Blocked);
+        let font = if bold {
+            FontRole::BodyBold
+        } else {
+            FontRole::Body
+        };
+        let text_h = (self.measure)(text, font, inner).max(self.px(16));
+        let height = text_h.max(tag_h).saturating_add(pad.saturating_mul(2));
+        let top = self.y.saturating_sub(self.scroll);
+        let rect = Rect::new(self.frame.x, top, self.frame.w, height);
+        self.shape(rect, self.px(theme::RADIUS_CONTROL), fill, fill);
+        if let Some(label) = tag {
+            let tag_rect = Rect::new(
+                self.frame.x.saturating_add(pad),
+                top.saturating_add(pad),
+                tag_w,
+                tag_h,
+            );
+            let (tag_fill, tag_text) = if tone == Tone::Blocked {
+                (theme::CARD, theme::BLOCKED_BG)
+            } else {
+                (accent, theme::CARD)
+            };
+            self.shape(tag_rect, tag_h / 2, tag_fill, tag_fill);
+            self.placed.texts.push(PaintText {
+                rect: tag_rect,
+                text: label.to_owned(),
+                font: FontRole::BodyBold,
+                color: tag_text.0,
+                fill: None,
+                wrap: false,
+                align: TextAlign::Center,
+            });
+        }
+        self.placed.texts.push(PaintText {
+            rect: Rect::new(
+                self.frame.x.saturating_add(pad).saturating_add(text_x),
+                top.saturating_add(pad)
+                    .saturating_add((tag_h - text_h).max(0) / 2),
+                inner,
+                text_h,
+            ),
+            text: text.to_owned(),
+            font,
+            color: color.0,
+            fill: None,
+            wrap: true,
+            align: TextAlign::Wrap,
+        });
+        self.advance(height, self.px(theme::SPACE_S));
+    }
+
+    fn ctl_width(&self, ctl: &Ctl) -> i32 {
+        if ctl.width > 0 {
+            self.px(ctl.width)
+        } else {
+            let pad = if ctl.is_button() { 36 } else { 28 };
+            (self.label_width)(&ctl.text)
+                .saturating_add(self.px(pad))
+                .max(self.px(if ctl.is_button() { 88 } else { 60 }))
+        }
+    }
+
+    fn row(&mut self, label: Option<&str>, ctls: &[Ctl]) {
+        let frame = self.frame;
+        let mut x = frame.x;
+        let right = frame.x.saturating_add(frame.w);
+        let mut row_h = ctls
+            .iter()
+            .map(|ctl| self.px(control_height(ctl.kind)))
+            .max()
+            .unwrap_or(self.px(24))
+            .max(self.px(24));
+        if let Some(label) = label {
+            let label_w = self.px(170).min(frame.w / 3);
+            let label_h = (self.measure)(label, FontRole::Body, label_w).max(row_h);
+            let single = row_h;
+            row_h = label_h;
+            self.placed.texts.push(PaintText {
+                rect: Rect::new(frame.x, self.y.saturating_sub(self.scroll), label_w, row_h),
+                text: label.to_owned(),
+                font: FontRole::Body,
+                color: theme::TEXT.0,
+                fill: None,
+                wrap: label_h > single,
+                align: if label_h > single {
+                    TextAlign::Wrap
+                } else {
+                    TextAlign::Line
+                },
+            });
+            x = frame.x.saturating_add(label_w).saturating_add(self.px(8));
+        }
+        let line_start = x;
+        for ctl in ctls {
+            let w = self
+                .ctl_width(ctl)
+                .min(right.saturating_sub(line_start).max(self.px(40)));
+            if x.saturating_add(w) > right && x > line_start {
+                x = line_start;
+                self.y = self.y.saturating_add(row_h).saturating_add(self.px(6));
+            }
+            let h = self.px(control_height(ctl.kind));
+            let rect = Rect::new(
+                x,
+                self.y
+                    .saturating_add((row_h - h) / 2)
+                    .saturating_sub(self.scroll),
+                w,
+                h,
+            );
+            let mut placed = ctl.clone();
+            placed.backdrop = Some(frame.backdrop);
+            if let ControlKind::Button(style) = placed.kind
+                && style.fill == theme::BG
+                && frame.backdrop != theme::BG
+            {
+                // A link button on a card takes the card color.
+                placed.kind = ControlKind::Button(theme::link_on(frame.backdrop));
+            }
+            self.placed.controls.push((placed, rect));
+            x = x.saturating_add(w).saturating_add(self.px(8));
+        }
+        self.advance(row_h, self.px(10));
+    }
+
+    fn toolbar(&mut self, title: &str, ctls: &[Ctl]) {
+        let bar_h = self.px(56);
+        let full_w = self.client_w;
+        // The bar spans the window top (it is the first item of a screen).
+        let top = self
+            .y
+            .saturating_sub(self.px(theme::SPACE_XL))
+            .saturating_sub(self.scroll);
+        self.shape(
+            Rect::new(0, top, full_w, bar_h),
+            0,
+            theme::CARD,
+            theme::CARD,
+        );
+        self.placed
+            .rules
+            .push(Rect::new(0, top.saturating_add(bar_h), full_w, 1));
+        self.placed.texts.push(PaintText {
+            rect: Rect::new(self.margin, top, self.width / 2, bar_h),
+            text: title.to_owned(),
+            font: FontRole::Subtitle,
+            color: theme::TEXT.0,
+            fill: None,
+            wrap: false,
+            align: TextAlign::Line,
+        });
+        let mut x = self.margin.saturating_add(self.width);
+        for ctl in ctls.iter().rev() {
+            let w = self.ctl_width(ctl);
+            let h = self.px(control_height(ctl.kind));
+            x = x.saturating_sub(w);
+            let mut placed = ctl.clone();
+            placed.backdrop = Some(theme::CARD);
+            if let ControlKind::Button(style) = placed.kind
+                && style.fill == theme::BG
+            {
+                placed.kind = ControlKind::Button(theme::link_on(theme::CARD));
+            }
+            self.placed.controls.push((
+                placed,
+                Rect::new(x, top.saturating_add((bar_h - h) / 2), w, h),
+            ));
+            x = x.saturating_sub(self.px(8));
+        }
+        // Controls were pushed right to left; keep the tab order left to right.
+        let count = ctls.len();
+        let start = self.placed.controls.len().saturating_sub(count);
+        if let Some(slice) = self.placed.controls.get_mut(start..) {
+            slice.reverse();
+        }
+        self.y = self
+            .y
+            .saturating_sub(self.px(theme::SPACE_XL))
+            .saturating_add(bar_h)
+            .saturating_add(self.px(theme::SPACE_L));
+        self.last_gap = 0;
+    }
+
+    fn steps(&mut self, labels: &[String], current: usize) {
+        let count = i32::try_from(labels.len().max(1)).unwrap_or(1);
+        let dot = self.px(26);
+        let column = self.frame.w / count;
+        let top = self.y.saturating_sub(self.scroll);
+        let label_h = self.px(20);
+        for (index, label) in labels.iter().enumerate() {
+            let step = index.saturating_add(1);
+            let offset = i32::try_from(index).unwrap_or(0);
+            let center = self
+                .frame
+                .x
+                .saturating_add(column.saturating_mul(offset))
+                .saturating_add(column / 2);
+            if index > 0 {
+                let previous = center.saturating_sub(column);
+                self.placed.rules.push(Rect::new(
+                    previous.saturating_add(dot / 2).saturating_add(self.px(6)),
+                    top.saturating_add(dot / 2),
+                    column.saturating_sub(dot).saturating_sub(self.px(12)),
+                    self.px(2).max(1),
+                ));
+            }
+            let done = step < current;
+            let active = step == current;
+            let (fill, border, number_color) = if done || active {
+                (theme::PRIMARY_BG, theme::PRIMARY_BG, theme::PRIMARY_TEXT)
+            } else {
+                (theme::CARD, theme::BORDER, theme::MUTED)
+            };
+            let rect = Rect::new(center.saturating_sub(dot / 2), top, dot, dot);
+            self.shape(rect, dot / 2, fill, border);
+            self.placed.texts.push(PaintText {
+                rect,
+                text: if done {
+                    "✓".to_owned()
+                } else {
+                    step.to_string()
+                },
+                font: FontRole::BodyBold,
+                color: number_color.0,
+                fill: None,
+                wrap: false,
+                align: TextAlign::Center,
+            });
+            self.placed.texts.push(PaintText {
+                rect: Rect::new(
+                    center.saturating_sub(column / 2),
+                    top.saturating_add(dot).saturating_add(self.px(6)),
+                    column,
+                    label_h,
+                ),
+                text: label.clone(),
+                font: if active {
+                    FontRole::BodyBold
+                } else {
+                    FontRole::Body
+                },
+                color: if active || done {
+                    theme::TEXT.0
+                } else {
+                    theme::MUTED.0
+                },
+                fill: None,
+                wrap: false,
+                align: TextAlign::Center,
+            });
+        }
+        self.advance(
+            dot.saturating_add(self.px(6)).saturating_add(label_h),
+            self.px(theme::SPACE_L),
+        );
+    }
+
+    fn field(&mut self, label: &str, value: &str) {
+        let label_w = self.px(150).min(self.frame.w / 3);
+        let value_x = label_w.saturating_add(self.px(12));
+        let value_w = self.frame.w.saturating_sub(value_x).max(self.px(40));
+        let mono = value.starts_with("0x")
+            || crate::ui::theme::address_segments(value).is_some()
+            || value.starts_with("m/");
+        let font = if mono { FontRole::Mono } else { FontRole::Body };
+        let value_h = (self.measure)(value, font, value_w).max(self.px(18));
+        let top = self.y.saturating_sub(self.scroll);
+        self.placed.texts.push(PaintText {
+            rect: Rect::new(self.frame.x, top, label_w, self.px(20)),
+            text: label.to_owned(),
+            font: FontRole::Body,
+            color: theme::MUTED.0,
+            fill: None,
+            wrap: false,
+            align: TextAlign::Line,
+        });
+        self.placed.texts.push(PaintText {
+            rect: Rect::new(self.frame.x.saturating_add(value_x), top, value_w, value_h),
+            text: value.to_owned(),
+            font,
+            color: theme::TEXT.0,
+            fill: None,
+            wrap: true,
+            align: TextAlign::Wrap,
+        });
+        self.advance(value_h.max(self.px(20)), self.px(theme::SPACE_S));
+    }
+
+    fn qr(&mut self, payload: &str, dpi: u32) {
+        let available = self.frame.w.min(self.px(420));
+        let geometry = crate::ui::qr::encode(payload)
+            .and_then(|code| crate::ui::qr::layout(code.size(), dpi, available));
+        match geometry {
+            Some(geometry) => {
+                self.placed.qrs.push((
+                    self.frame.x,
+                    self.y.saturating_sub(self.scroll),
+                    geometry.module_pixels,
+                    payload.to_owned(),
+                ));
+                self.advance(geometry.canvas_pixels(), self.px(theme::SPACE_M));
+            }
+            None => self.text(
+                "창을 넓히면 QR이 표시됩니다",
+                FontRole::Body,
+                theme::MUTED,
+                0,
+                self.px(8),
+            ),
+        }
+    }
+}
+
 /// Places `items` in a client area `client_w` pixels wide at `dpi`, scrolled by `scroll` px.
 #[must_use]
-#[expect(clippy::too_many_lines, reason = "one pass over the item kinds")]
 pub fn layout(
     items: &[Item],
     client_w: i32,
@@ -221,190 +835,103 @@ pub fn layout(
     measure: Measure<'_>,
     label_width: MeasureWidth<'_>,
 ) -> Placed {
-    let px = |dip: i32| scale(dip, dpi);
-    let margin = px(24);
-    let width = client_w
+    let px = move |dip: i32| scale(dip, dpi);
+    let margin = px(theme::SPACE_XL);
+    // Content stays readable on wide windows: at most 880 DIP, centered.
+    let max_w = px(880);
+    let available = client_w
         .saturating_sub(margin.saturating_mul(2))
         .max(px(200));
-    let mut y = margin;
-    let mut placed = Placed::default();
-    let push_text = |placed: &mut Placed,
-                     y: &mut i32,
-                     text: &str,
-                     font: FontRole,
-                     color: u32,
-                     fill: Option<u32>,
-                     gap: i32| {
-        let pad = if fill.is_some() { px(10) } else { 0 };
-        let inner = width.saturating_sub(pad.saturating_mul(2));
-        let height = measure(text, font, inner).max(px(16));
-        let rect = Rect::new(
-            margin,
-            y.saturating_sub(scroll),
-            width,
-            height.saturating_add(pad.saturating_mul(2)),
-        );
-        placed.texts.push(PaintText {
-            rect,
-            text: text.to_owned(),
-            font,
-            color,
-            fill,
-            wrap: true,
-        });
-        *y = y.saturating_add(rect.h).saturating_add(gap);
-    };
-    let ctl_width = |ctl: &Ctl| -> i32 {
-        if ctl.width > 0 {
-            px(ctl.width)
-        } else {
-            label_width(&ctl.text).saturating_add(px(28)).max(px(80))
-        }
+    let width = available.min(max_w);
+    let left = margin.saturating_add(available.saturating_sub(width) / 2);
+    let mut layouter = Layouter {
+        px: Box::new(px),
+        measure,
+        label_width,
+        scroll,
+        client_w,
+        margin: left,
+        width,
+        y: margin,
+        frame: Frame {
+            x: left,
+            w: width,
+            backdrop: theme::BG,
+        },
+        card: None,
+        last_gap: 0,
+        placed: Placed::default(),
     };
     for item in items {
         match item {
-            Item::Title(text) => push_text(
-                &mut placed,
-                &mut y,
-                text,
-                FontRole::Title,
-                theme::TEXT.0,
-                None,
-                px(12),
-            ),
-            Item::Text(text) => push_text(
-                &mut placed,
-                &mut y,
-                text,
-                FontRole::Body,
-                theme::TEXT.0,
-                None,
-                px(8),
-            ),
-            Item::Muted(text) => push_text(
-                &mut placed,
-                &mut y,
-                text,
-                FontRole::Body,
-                theme::MUTED.0,
-                None,
-                px(8),
-            ),
-            Item::Mono(text) => push_text(
-                &mut placed,
-                &mut y,
-                text,
-                FontRole::Mono,
-                theme::TEXT.0,
-                None,
-                px(8),
-            ),
-            Item::Banner(text, tone) => {
-                let (fill, color) = match tone {
-                    Tone::Danger => (theme::DANGER_BG, theme::DANGER_TEXT),
-                    Tone::Warn => (theme::WARN_BG, theme::WARN_TEXT),
-                    Tone::Info => (theme::DISABLED_BG, theme::TEXT),
-                    Tone::Testnet => (theme::TESTNET_BG, theme::TEXT),
-                    Tone::BtcMainnet => (theme::BTC_MAINNET_BG, theme::BTC_MAINNET_TEXT),
-                    Tone::BtcTestnet4 => (theme::BTC_TESTNET4_BG, theme::TEXT),
-                };
-                push_text(
-                    &mut placed,
-                    &mut y,
-                    text,
-                    FontRole::Body,
-                    color.0,
-                    Some(fill.0),
-                    px(10),
-                );
+            Item::Title(text) => {
+                layouter.text(text, FontRole::Title, theme::TEXT, 0, px(theme::SPACE_M));
             }
-            Item::Gap(dip) => y = y.saturating_add(px(*dip)),
-            Item::Qr(payload) => {
-                let available = width.min(px(420));
-                let geometry = crate::ui::qr::encode(payload)
-                    .and_then(|code| crate::ui::qr::layout(code.size(), dpi, available));
-                match geometry {
-                    Some(geometry) => {
-                        placed.qrs.push((
-                            margin,
-                            y.saturating_sub(scroll),
-                            geometry.module_pixels,
-                            payload.clone(),
-                        ));
-                        y = y
-                            .saturating_add(geometry.canvas_pixels())
-                            .saturating_add(px(12));
-                    }
-                    None => push_text(
-                        &mut placed,
-                        &mut y,
-                        "창을 넓히면 QR이 표시됩니다",
-                        FontRole::Body,
-                        theme::MUTED.0,
-                        None,
-                        px(8),
-                    ),
-                }
+            Item::Display(text) => {
+                layouter.text(text, FontRole::Display, theme::TEXT, 0, px(theme::SPACE_XS));
             }
+            Item::Subtitle(text) => {
+                layouter.text(text, FontRole::Subtitle, theme::TEXT, 0, px(theme::SPACE_S));
+            }
+            Item::Text(text) => {
+                layouter.text(text, FontRole::Body, theme::TEXT, 0, px(theme::SPACE_S));
+            }
+            Item::Muted(text) => {
+                layouter.text(text, FontRole::Body, theme::MUTED, 0, px(theme::SPACE_S));
+            }
+            Item::Help(text) => {
+                layouter.text(text, FontRole::Caption, theme::MUTED, 0, px(theme::SPACE_S));
+            }
+            Item::Mono(text) => {
+                layouter.text(text, FontRole::Mono, theme::TEXT, 0, px(theme::SPACE_S));
+            }
+            Item::Field(label, value) => layouter.field(label, value),
+            Item::Banner(text, tone) => layouter.banner(text, *tone),
+            Item::Gap(dip) => layouter.advance(0, px(*dip)),
+            Item::Qr(payload) => layouter.qr(payload, dpi),
             Item::Rule => {
-                placed.rules.push(Rect::new(
-                    margin,
-                    y.saturating_add(px(4)).saturating_sub(scroll),
-                    width,
+                let frame = layouter.frame;
+                layouter.placed.rules.push(Rect::new(
+                    frame.x,
+                    layouter
+                        .y
+                        .saturating_add(px(4))
+                        .saturating_sub(layouter.scroll),
+                    frame.w,
                     1,
                 ));
-                y = y.saturating_add(px(12));
+                layouter.advance(px(12), 0);
             }
-            Item::Row(ctls) | Item::LabeledRow(_, ctls) => {
-                let mut x = margin;
-                let row_h = ctls
-                    .iter()
-                    .map(|ctl| px(control_height(ctl.kind)))
-                    .max()
-                    .unwrap_or(px(24))
-                    .max(px(24));
-                if let Item::LabeledRow(label, _) = item {
-                    let label_w = px(180).min(width / 3);
-                    placed.texts.push(PaintText {
-                        rect: Rect::new(margin, y.saturating_sub(scroll), label_w, row_h),
-                        text: label.clone(),
-                        font: FontRole::Body,
-                        color: theme::TEXT.0,
-                        fill: None,
-                        wrap: false,
-                    });
-                    x = margin.saturating_add(label_w).saturating_add(px(8));
-                }
-                for ctl in ctls {
-                    let w = ctl_width(ctl)
-                        .min(margin.saturating_add(width).saturating_sub(x).max(px(40)));
-                    if x.saturating_add(w) > margin.saturating_add(width) && x > margin {
-                        x = margin;
-                        y = y.saturating_add(row_h).saturating_add(px(6));
-                    }
-                    let h = px(control_height(ctl.kind));
-                    let rect = Rect::new(
-                        x,
-                        y.saturating_add((row_h - h) / 2).saturating_sub(scroll),
-                        w,
-                        h,
-                    );
-                    placed.controls.push((ctl.clone(), rect));
-                    x = x.saturating_add(w).saturating_add(px(8));
-                }
-                y = y.saturating_add(row_h).saturating_add(px(8));
-            }
+            Item::Row(ctls) => layouter.row(None, ctls),
+            Item::LabeledRow(label, ctls) => layouter.row(Some(label), ctls),
+            Item::CardStart(title) => layouter.open_card(title.as_deref()),
+            Item::CardEnd => layouter.close_card(),
+            Item::Steps(labels, current) => layouter.steps(labels, *current),
+            Item::Toolbar(title, ctls) => layouter.toolbar(title, ctls),
         }
     }
-    placed.content_height = y.saturating_add(margin);
+    layouter.close_card();
+    let mut placed = layouter.placed;
+    placed.content_height = layouter.y.saturating_add(margin);
     placed
 }
 
-/// Paints the placed texts.
+/// Paints the placed texts and shapes.
 pub fn paint(dc: &mut PaintDc<'_>, client: Rect, placed: &Placed, fonts: &Fonts) {
     dc.fill_rect(client, theme::BG);
+    for shape in &placed.shapes {
+        if shape.rect.bottom() < 0 || shape.rect.y > client.h {
+            continue;
+        }
+        dc.round_rect(
+            shape.rect,
+            shape.radius,
+            Color(shape.fill),
+            Color(shape.border),
+        );
+    }
     for rule in &placed.rules {
-        dc.fill_rect(*rule, theme::BORDER);
+        dc.fill_rect(*rule, theme::CARD_BORDER);
     }
     for (x, y, module, payload) in &placed.qrs {
         if let Some(code) = crate::ui::qr::encode(payload) {
@@ -423,40 +950,30 @@ pub fn paint(dc: &mut PaintDc<'_>, client: Rect, placed: &Placed, fonts: &Fonts)
             continue;
         }
         if let Some(fill) = text.fill {
-            dc.fill_rect(text.rect, yw_win::ui::Color(fill));
+            dc.fill_rect(text.rect, Color(fill));
         }
-        dc.set_text_color(yw_win::ui::Color(text.color));
+        dc.set_text_color(Color(text.color));
         if text.font == FontRole::Mono
-            && text.fill.is_none()
             && let Some(segments) = crate::ui::theme::address_segments(&text.text)
             && crate::ui::theme::paint_sol_address(dc, fonts, &segments, text.rect)
         {
             continue;
         }
         dc.select_font(fonts.get(text.font));
-        let inner = if text.fill.is_some() {
-            let pad = (text.rect.h
-                - dc.measure_wrapped(&wide(&text.text), text.rect.w, DrawFlags::WRAP))
-            .max(0)
-                / 2;
-            Rect::new(
-                text.rect.x.saturating_add(pad),
-                text.rect.y.saturating_add(pad),
-                text.rect.w.saturating_sub(pad.saturating_mul(2)),
-                text.rect.h,
-            )
-        } else {
-            text.rect
+        let flags = match text.align {
+            TextAlign::Center => DrawFlags::CENTER,
+            TextAlign::Wrap if text.wrap => DrawFlags::WRAP,
+            TextAlign::Line | TextAlign::Wrap => DrawFlags::LINE,
         };
-        dc.draw_text(
-            &wide(&text.text),
-            inner,
-            if text.wrap {
-                DrawFlags::WRAP
-            } else {
-                DrawFlags::LINE
-            },
-        );
+        dc.draw_text(&wide(&text.text), text.rect, flags);
+    }
+}
+
+/// The kind of a control without its button colors (a style change keeps the control).
+fn kind_class(kind: ControlKind) -> ControlKind {
+    match kind {
+        ControlKind::Button(_) => ControlKind::Button(theme::BUTTON_SECONDARY),
+        other => other,
     }
 }
 
@@ -468,7 +985,10 @@ pub struct ControlSet {
 
 impl ControlSet {
     fn signature(controls: &[(Ctl, Rect)]) -> Vec<(u16, ControlKind)> {
-        controls.iter().map(|(ctl, _)| (ctl.id, ctl.kind)).collect()
+        controls
+            .iter()
+            .map(|(ctl, _)| (ctl.id, kind_class(ctl.kind)))
+            .collect()
     }
 
     /// Destroys every control.
@@ -523,7 +1043,7 @@ impl ControlSet {
         let current: Vec<(u16, ControlKind)> = self
             .controls
             .iter()
-            .map(|(ctl, _)| (ctl.id, ctl.kind))
+            .map(|(ctl, _)| (ctl.id, kind_class(ctl.kind)))
             .collect();
         if wanted != current {
             self.controls.clear();
@@ -540,12 +1060,19 @@ impl ControlSet {
         for ((ctl, control), (wanted_ctl, rect)) in self.controls.iter_mut().zip(&placed.controls) {
             control.set_rect(*rect);
             control.set_font(&fonts.body);
+            if let Some(backdrop) = wanted_ctl.backdrop {
+                control.set_backdrop(backdrop);
+            }
+            if let ControlKind::Button(style) = wanted_ctl.kind {
+                control.set_button_style(style);
+            }
             let visible = rect.bottom() > 0 && rect.y < client.h;
             control.show(visible);
             if control.is_enabled() != wanted_ctl.enabled {
                 control.enable(wanted_ctl.enabled);
             }
-            if let Some(checked) = wanted_ctl.checked
+            if !wanted_ctl.is_button()
+                && let Some(checked) = wanted_ctl.checked
                 && control.is_checked() != checked
             {
                 control.set_checked(checked);

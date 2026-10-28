@@ -51,12 +51,13 @@ function requestStatus() {
   }
 }
 
+// One selectable card per mode: radio, label and its one-line explanation.
 function renderModes(selected) {
   const group = byId("modes");
   group.replaceChildren();
   for (const option of popup.MODE_OPTIONS) {
-    const label = document.createElement("label");
-    label.className = "mode";
+    const card = document.createElement("label");
+    card.className = "mode";
     const input = document.createElement("input");
     input.type = "radio";
     input.name = "compat-mode";
@@ -68,16 +69,21 @@ function renderModes(selected) {
       }
     });
     const text = document.createElement("span");
-    text.textContent = option.label;
-    label.append(input, text);
-    group.append(label);
+    text.className = "mode-text";
+    const name = document.createElement("span");
+    name.className = "mode-label";
+    name.textContent = option.label;
+    const explanation = document.createElement("span");
+    explanation.className = "mode-explanation";
+    explanation.textContent = option.explanation;
+    text.append(name, explanation);
+    card.append(input, text);
+    group.append(card);
   }
-  setText("mode-explanation", popup.modeOption(selected).explanation);
 }
 
 async function saveMode(mode) {
   const update = popup.storageUpdate(mode);
-  setText("mode-explanation", popup.modeOption(mode).explanation);
   if (update === null) {
     return;
   }

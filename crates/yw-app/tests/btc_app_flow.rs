@@ -1006,7 +1006,35 @@ fn approval_view_shows_btc_money_rows() -> TestResult {
     let draft =
         BtcUi::draft(&item, ApprovalId::random()?).map_err(yw_app::errors::ErrorCode::code)?;
     let request = ApprovalStore::new().issue(draft, 1, 1_793_074_713_000)?;
-    let view = yw_app::ui::approval_view::signing_view(&request, false, true, Vec::new(), false)
+    // Folded (`자세히` closed): the summary, the money rows and the critical fields only.
+    let folded = yw_app::ui::approval_view::signing_view(&request, false, true, Vec::new(), false)
+        .map_err(yw_app::errors::ErrorCode::code)?;
+    let folded_labels: Vec<String> = folded
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Field { label, .. } => Some(label.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        folded_labels,
+        [
+            "금액",
+            "잔돈",
+            "입력",
+            "수수료",
+            "총 차감",
+            "받는 주소",
+            "주소 종류"
+        ]
+    );
+    assert!(folded.has_raw);
+    assert!(matches!(
+        folded.blocks.first(),
+        Some(Block::Summary { sentence, address: Some(_), .. }) if sentence.contains("아래 주소로 보냅니다")
+    ));
+    let view = yw_app::ui::approval_view::signing_view(&request, true, true, Vec::new(), false)
         .map_err(yw_app::errors::ErrorCode::code)?;
     let sections: Vec<&str> = view
         .blocks
@@ -1016,7 +1044,8 @@ fn approval_view_shows_btc_money_rows() -> TestResult {
             _ => None,
         })
         .collect();
-    assert_eq!(sections, ["금액·수수료", "상세"]);
+    // Money first, then this request's warnings (first-time recipient), then the critical fields.
+    assert_eq!(sections, ["금액·수수료", "확인할 경고", "핵심 정보"]);
     assert!(view.band.is_none());
     let fields: Vec<(String, bool)> = view
         .blocks

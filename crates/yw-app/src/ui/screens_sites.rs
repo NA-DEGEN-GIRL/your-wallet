@@ -33,57 +33,65 @@ fn local_time(unix_ms: u64) -> String {
 impl App {
     /// S13.
     pub(crate) fn sites_screen(&self, items: &mut Vec<Item>) {
-        items.push(Item::Row(vec![Ctl::button(
-            crate::ui::screens::ids::BACK_MAIN,
-            "← 메인",
-        )]));
+        items.push(crate::ui::screens::back_main());
         items.push(Item::Title("연결된 사이트".to_owned()));
         let grants = self.browser_grants();
-        if grants.is_empty() {
-            items.push(Item::Muted("연결된 사이트가 없습니다.".to_owned()));
-            return;
-        }
-        items.push(Item::Muted(
+        items.push(Item::Help(
             "연결된 사이트는 선택한 계정의 주소, 잔액, 거래 기록을 볼 수 있습니다. 서명과 전송은 매번 따로 승인합니다."
                 .to_owned(),
         ));
+        if grants.is_empty() {
+            items.push(Item::CardStart(None));
+            items.push(Item::Subtitle("연결된 사이트가 없습니다".to_owned()));
+            items.push(Item::Text(
+                "dApp 사이트에서 '지갑 연결'을 누르고 이 앱의 연결 창에서 승인하면 여기에 표시됩니다."
+                    .to_owned(),
+            ));
+            items.push(Item::CardEnd);
+            return;
+        }
         let labels = self.own_accounts();
         for (index, site) in grants.iter().enumerate() {
-            items.push(Item::Rule);
-            items.push(Item::Text(site.origin.as_str().to_owned()));
+            items.push(Item::CardStart(Some(site.origin.as_str().to_owned())));
             if site.origin.is_http() {
                 items.push(Item::Banner(
                     "로컬 개발 사이트(http)".to_owned(),
                     Tone::Warn,
                 ));
             }
+            let chain = self
+                .settings
+                .evm_chain_name(site.chain_id)
+                .unwrap_or_else(|| format!("chainId {}", site.chain_id));
+            items.push(Item::Field("네트워크".to_owned(), chain));
+            items.push(Item::Field(
+                "연결 시각".to_owned(),
+                local_time(site.granted_at_unix_ms),
+            ));
+            items.push(Item::Field(
+                "볼 수 있는 계정".to_owned(),
+                format!("{}개", site.accounts.len()),
+            ));
             for account in &site.accounts {
                 let label = labels
                     .iter()
                     .find(|(address, _)| address == account)
                     .map_or("", |(_, label)| label.as_str());
-                items.push(Item::Mono(format!("{label}  {}", account.to_checksum())));
+                items.push(Item::Help(label.to_owned()));
+                items.push(Item::Mono(yw_core::evm::display::format_address(account)));
             }
-            let chain = self
-                .settings
-                .evm_chain_name(site.chain_id)
-                .unwrap_or_else(|| format!("chainId {}", site.chain_id));
-            items.push(Item::Muted(format!(
-                "네트워크: {chain}   ·   연결 시각: {}",
-                local_time(site.granted_at_unix_ms)
-            )));
             let id = u16::try_from(index)
                 .ok()
                 .filter(|offset| *offset < ids::SITE_ROW_SPAN)
                 .map_or(0, |offset| ids::SITE_ROW_BASE + offset);
             if id != 0 {
-                items.push(Item::Row(vec![Ctl::button(id, "연결 해제")]));
+                items.push(Item::Row(vec![Ctl::danger(id, "연결 해제")]));
             }
+            items.push(Item::CardEnd);
         }
-        items.push(Item::Rule);
-        items.push(Item::Row(vec![Ctl::button(
+        items.push(Item::Row(vec![Ctl::danger(
             ids::SITES_REVOKE_ALL,
-            "모두 해제",
+            "모든 사이트 연결 해제",
         )]));
     }
 

@@ -16,3 +16,5 @@ pub mod secret;
 pub mod secure_field;
 pub mod text_layout;
 pub mod theme;
+#[cfg(test)]
+mod tour;

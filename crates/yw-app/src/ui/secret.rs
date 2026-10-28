@@ -127,15 +127,15 @@ impl SecretKind {
     #[must_use]
     pub const fn title(self) -> &'static str {
         match self {
-            Self::SetPassword => "비밀번호 설정",
+            Self::SetPassword => "비밀번호 정하기",
             Self::Unlock => "잠금 해제",
             Self::ConfirmPassword => "비밀번호 확인",
             Self::ChangePassword => "비밀번호 변경",
-            Self::Mnemonic => "니모닉 입력",
-            Self::Passphrase { .. } => "passphrase",
+            Self::Mnemonic => "복구 단어 입력",
+            Self::Passphrase { .. } => "passphrase 입력",
             Self::PrivateKey => "개인키 가져오기",
-            Self::ShowMnemonic { .. } => "니모닉 표시",
-            Self::ShowKey => "개인키 표시",
+            Self::ShowMnemonic { .. } => "복구 단어 (니모닉)",
+            Self::ShowKey => "개인키 보기",
             Self::Backup { .. } => "백업 확인",
         }
     }
@@ -322,6 +322,19 @@ pub struct SecretForm {
     pressed: Option<Button>,
     layout: Layout,
     note: Option<String>,
+    step: Option<SecretStep>,
+}
+
+/// The flow a secret window belongs to and its step (the main window's step indicator, spec/04
+/// §2.3–§2.4): the flow title, the three step labels and the current step (1-based).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SecretStep {
+    /// 새 지갑 만들기 / 기존 지갑 가져오기.
+    pub flow: &'static str,
+    /// The three step labels.
+    pub labels: [&'static str; 3],
+    /// Current step, 1-based.
+    pub current: usize,
 }
 
 impl core::fmt::Debug for SecretForm {
@@ -354,7 +367,7 @@ fn slots_for(kind: SecretKind) -> Vec<Slot> {
             slot("새 비밀번호 확인", Charset::Printable, 12, 128, true),
         ],
         SecretKind::Mnemonic => vec![slot(
-            "니모닉",
+            "복구 단어",
             Charset::MnemonicText,
             1,
             MNEMONIC_TEXT_MAX,
@@ -402,7 +415,7 @@ fn slots_for(kind: SecretKind) -> Vec<Slot> {
 }
 
 fn intro(kind: SecretKind, words: usize) -> Vec<String> {
-    let rule = "비밀번호는 영문·숫자·기호(ASCII) 12–128자입니다. 단어 4개 이상을 이은 긴 문장을 권장합니다. 잊으면 니모닉으로만 복구할 수 있습니다.";
+    let rule = "비밀번호는 영문·숫자·기호(ASCII) 12–128자입니다. 단어 4개 이상을 이은 긴 문장을 권장합니다. 잊으면 복구 단어(니모닉)로만 복구할 수 있습니다.";
     match kind {
         SecretKind::SetPassword | SecretKind::ChangePassword => vec![rule.to_owned()],
         SecretKind::Unlock => vec!["지갑을 열려면 비밀번호를 입력하세요.".to_owned()],
@@ -410,7 +423,7 @@ fn intro(kind: SecretKind, words: usize) -> Vec<String> {
             vec!["계속하려면 비밀번호를 다시 입력하세요.".to_owned()]
         }
         SecretKind::Mnemonic => vec![
-            "12·15·18·21·24단어 BIP39 영어 니모닉을 입력하세요. 공백 또는 Tab으로 다음 단어로 넘어갑니다.".to_owned(),
+            "다른 지갑에서 쓰던 영어 복구 단어(BIP39 니모닉) 12·15·18·21·24개를 순서대로 입력하세요. 공백 또는 Tab으로 다음 칸으로 넘어갑니다. 목록에 없는 단어는 빨간색으로 표시합니다.".to_owned(),
         ],
         SecretKind::Passphrase { confirm: true } => vec![
             "이전 지갑에서 쓰던 BIP39 passphrase를 두 번 입력하세요. ASCII만 지원합니다.".to_owned(),
@@ -420,7 +433,7 @@ fn intro(kind: SecretKind, words: usize) -> Vec<String> {
         }
         SecretKind::PrivateKey => vec!["가져올 EVM 개인키(16진수 64자리, 0x 선택)를 입력하세요.".to_owned()],
         SecretKind::ShowMnemonic { .. } => vec![format!(
-            "아래 {words}단어와 첫 주소를 순서대로 적으세요. 이 창은 화면 캡처에서 제외됩니다."
+            "아래 {words}단어와 첫 주소를 순서대로 종이에 적으세요. 이 단어들이 지갑의 유일한 백업이며, 아는 사람은 누구든 자산을 옮길 수 있습니다. 이 창은 화면 캡처에서 제외됩니다."
         )],
         SecretKind::ShowKey => vec![
             "개인키입니다. 다른 사람에게 보여주거나 사진·클라우드에 남기지 마세요. 이 창은 화면 캡처에서 제외됩니다.".to_owned(),
@@ -436,6 +449,75 @@ fn intro(kind: SecretKind, words: usize) -> Vec<String> {
 #[must_use]
 pub const fn valid_word_count(count: usize) -> bool {
     matches!(count, 12 | 15 | 18 | 21 | 24)
+}
+
+/// Draws the flow name, `n/3단계` and the three step dots of a secret window; returns the new y.
+fn paint_steps(
+    dc: &mut PaintDc<'_>,
+    fonts: &Fonts,
+    step: SecretStep,
+    margin: i32,
+    y: i32,
+    width: i32,
+    px: &dyn Fn(i32) -> i32,
+) -> i32 {
+    dc.select_font(&fonts.caption);
+    dc.set_text_color(theme::MUTED);
+    dc.draw_text(
+        &wide(&format!("{} · {}/3단계", step.flow, step.current)),
+        Rect::new(margin, y, width, px(18)),
+        DrawFlags::LINE,
+    );
+    let top = y.saturating_add(px(22));
+    let dot = px(20);
+    let column = width / 3;
+    for (index, label) in step.labels.iter().enumerate() {
+        let number = index.saturating_add(1);
+        let x = margin.saturating_add(column.saturating_mul(i32::try_from(index).unwrap_or(0)));
+        let reached = number <= step.current;
+        dc.ellipse(
+            Rect::new(x, top, dot, dot),
+            if reached {
+                theme::PRIMARY_BG
+            } else {
+                theme::CARD
+            },
+            if reached {
+                theme::PRIMARY_BG
+            } else {
+                theme::BORDER
+            },
+        );
+        dc.select_font(&fonts.caption);
+        dc.set_text_color(if reached {
+            theme::PRIMARY_TEXT
+        } else {
+            theme::MUTED
+        });
+        let mark = if number < step.current {
+            "✓".to_owned()
+        } else {
+            number.to_string()
+        };
+        dc.draw_text(&wide(&mark), Rect::new(x, top, dot, dot), DrawFlags::CENTER);
+        dc.select_font(if number == step.current {
+            &fonts.body_bold
+        } else {
+            &fonts.body
+        });
+        dc.set_text_color(if reached { theme::TEXT } else { theme::MUTED });
+        dc.draw_text(
+            &wide(label),
+            Rect::new(
+                x.saturating_add(dot).saturating_add(px(8)),
+                top,
+                column.saturating_sub(dot).saturating_sub(px(12)),
+                dot,
+            ),
+            DrawFlags::LINE,
+        );
+    }
+    top.saturating_add(dot).saturating_add(px(14))
 }
 
 impl SecretForm {
@@ -461,6 +543,7 @@ impl SecretForm {
             hold: HoldGate::default(),
             pressed: None,
             layout: Layout::default(),
+            step: None,
             note: matches!(kind, SecretKind::Mnemonic).then(|| {
                 "이전 지갑에서 BIP39 passphrase(25번째 단어)를 썼을 때만 켜세요. ASCII만 지원합니다.".to_owned()
             }),
@@ -473,6 +556,11 @@ impl SecretForm {
         let mut form = Self::new(kind, now_ms, true);
         form.display = Some(secret);
         form
+    }
+
+    /// Shows the flow's step indicator above the title.
+    pub const fn set_step(&mut self, step: Option<SecretStep>) {
+        self.step = step;
     }
 
     /// The kind.
@@ -1023,12 +1111,12 @@ impl SecretForm {
         now_ms: u64,
     ) {
         let px = |dip: i32| scale(dip, dpi);
-        let margin = px(20);
+        let margin = px(theme::SPACE_XL);
         let width = client
             .w
             .saturating_sub(margin.saturating_mul(2))
             .max(px(100));
-        let mut y = margin;
+        let mut y = px(theme::SPACE_L);
         let mut layout = Layout::default();
         dc.fill_rect(client, theme::BG);
 
@@ -1036,13 +1124,22 @@ impl SecretForm {
             let text = wide(
                 "화면 캡처 제외가 적용되지 않았습니다. 화면 공유·녹화 중이면 입력하지 마세요.",
             );
-            dc.select_font(&fonts.body);
-            let height = dc.measure_wrapped(&text, width.saturating_sub(px(16)), DrawFlags::WRAP);
-            let banner = Rect::new(margin, y, width, height.saturating_add(px(16)));
-            dc.fill_rect(banner, theme::DANGER_BG);
+            dc.select_font(&fonts.body_bold);
+            let height = dc.measure_wrapped(&text, width.saturating_sub(px(20)), DrawFlags::WRAP);
+            let banner = Rect::new(margin, y, width, height.saturating_add(px(20)));
+            dc.round_rect(
+                banner,
+                px(theme::RADIUS_CONTROL),
+                theme::DANGER_BG,
+                theme::DANGER_ACCENT,
+            );
             dc.set_text_color(theme::DANGER_TEXT);
-            dc.draw_text(&text, banner.inset(px(8)), DrawFlags::WRAP);
+            dc.draw_text(&text, banner.inset(px(10)), DrawFlags::WRAP);
             y = banner.bottom().saturating_add(px(12));
+        }
+
+        if let Some(step) = self.step {
+            y = paint_steps(dc, fonts, step, margin, y, width, &px);
         }
 
         dc.select_font(&fonts.title);
@@ -1054,13 +1151,14 @@ impl SecretForm {
             Rect::new(margin, y, width, title_h),
             DrawFlags::WRAP,
         );
-        y = y.saturating_add(title_h).saturating_add(px(8));
+        y = y.saturating_add(title_h).saturating_add(px(6));
 
         let words = self
             .display
             .as_ref()
             .map_or(24, |display| display.text.split(' ').count());
         dc.select_font(&fonts.body);
+        dc.set_text_color(theme::MUTED);
         for paragraph in intro(self.kind, words) {
             let text = wide(&paragraph);
             let height = dc.measure_wrapped(&text, width, DrawFlags::WRAP);
@@ -1068,45 +1166,81 @@ impl SecretForm {
             y = y.saturating_add(height).saturating_add(px(8));
         }
 
-        let content_top = y;
         let buttons_h = px(36);
-        let buttons_y = client.h.saturating_sub(margin).saturating_sub(buttons_h);
+        let buttons_y = client
+            .h
+            .saturating_sub(px(theme::SPACE_L))
+            .saturating_sub(buttons_h);
+        // The content card between the header and the buttons.
+        let card = Rect::new(
+            margin,
+            y.saturating_add(px(4)),
+            width,
+            buttons_y
+                .saturating_sub(px(theme::SPACE_M))
+                .saturating_sub(y.saturating_add(px(4)))
+                .max(px(40)),
+        );
+        dc.round_rect(
+            card,
+            px(theme::RADIUS_CARD),
+            theme::CARD,
+            theme::CARD_BORDER,
+        );
+        let content_top = card.y;
+        let inner_x = card.x.saturating_add(px(theme::SPACE_L));
+        let inner_w = card.w.saturating_sub(px(theme::SPACE_L).saturating_mul(2));
+        y = card.y.saturating_add(px(theme::SPACE_L));
 
         if let Some(display) = &self.display {
-            y = self.paint_display(dc, display, fonts, margin, y, width, px);
+            y = self.paint_display(dc, display, fonts, inner_x, y, inner_w, px);
         } else if self.kind == SecretKind::Mnemonic {
-            y = self.paint_mnemonic_grid(dc, fonts, margin, y, width, px, &mut layout);
+            y = self.paint_mnemonic_grid(dc, fonts, inner_x, y, inner_w, px, &mut layout);
         } else {
-            y = self.paint_fields(dc, fonts, margin, y, width, px, &mut layout, now_ms);
+            y = self.paint_fields(dc, fonts, inner_x, y, inner_w, px, &mut layout, now_ms);
         }
 
         if let Some((label, checked)) = self.checkbox {
-            let box_rect = Rect::new(margin, y, px(18), px(18));
-            dc.frame_rect(box_rect, theme::TEXT);
+            let box_rect = Rect::new(inner_x, y, px(18), px(18));
+            dc.round_rect(
+                box_rect,
+                px(3),
+                if checked { theme::FOCUS } else { theme::CARD },
+                if checked { theme::FOCUS } else { theme::BORDER },
+            );
             if checked {
-                dc.fill_rect(box_rect.inset(px(4)), theme::FOCUS);
+                dc.select_font(&fonts.body_bold);
+                dc.set_text_color(theme::PRIMARY_TEXT);
+                dc.draw_text(&wide("✓"), box_rect, DrawFlags::CENTER);
             }
+            dc.select_font(&fonts.body);
             dc.set_text_color(theme::TEXT);
             let label_rect = Rect::new(
-                margin.saturating_add(px(26)),
+                inner_x.saturating_add(px(26)),
                 y.saturating_sub(px(2)),
-                width,
+                inner_w,
                 px(22),
             );
             dc.draw_text(&wide(label), label_rect, DrawFlags::LINE);
             layout
                 .buttons
-                .push((Button::Checkbox, Rect::new(margin, y, width / 2, px(20))));
+                .push((Button::Checkbox, Rect::new(inner_x, y, inner_w / 2, px(20))));
             y = y.saturating_add(px(26));
             if checked && let Some(note) = &self.note {
                 dc.set_text_color(theme::MUTED);
+                dc.select_font(&fonts.caption);
                 let text = wide(note);
-                let height = dc.measure_wrapped(&text, width, DrawFlags::WRAP);
-                dc.draw_text(&text, Rect::new(margin, y, width, height), DrawFlags::WRAP);
+                let height = dc.measure_wrapped(&text, inner_w, DrawFlags::WRAP);
+                dc.draw_text(
+                    &text,
+                    Rect::new(inner_x, y, inner_w, height),
+                    DrawFlags::WRAP,
+                );
                 y = y.saturating_add(height).saturating_add(px(6));
             }
         }
 
+        dc.select_font(&fonts.body);
         for (message, color) in [
             (self.error.as_deref(), theme::DANGER_TEXT),
             (
@@ -1119,8 +1253,12 @@ impl SecretForm {
             if let Some(message) = message {
                 let text = wide(message);
                 dc.set_text_color(color);
-                let height = dc.measure_wrapped(&text, width, DrawFlags::WRAP);
-                dc.draw_text(&text, Rect::new(margin, y, width, height), DrawFlags::WRAP);
+                let height = dc.measure_wrapped(&text, inner_w, DrawFlags::WRAP);
+                dc.draw_text(
+                    &text,
+                    Rect::new(inner_x, y, inner_w, height),
+                    DrawFlags::WRAP,
+                );
                 y = y.saturating_add(height).saturating_add(px(4));
             }
         }
@@ -1138,21 +1276,21 @@ impl SecretForm {
         );
 
         if self.masked {
-            let cover = Rect::new(
-                0,
-                content_top,
-                client.w,
-                buttons_y.saturating_sub(content_top),
+            dc.round_rect(
+                card,
+                px(theme::RADIUS_CARD),
+                theme::CARD,
+                theme::CARD_BORDER,
             );
-            dc.fill_rect(cover, theme::BG);
             dc.set_text_color(theme::MUTED);
             dc.select_font(&fonts.body);
             dc.draw_text(
                 &wide("창이 비활성화되어 내용을 가렸습니다. 창을 클릭하면 다시 표시합니다."),
-                cover.inset(margin),
+                card.inset(margin),
                 DrawFlags::WRAP_CENTER,
             );
             layout.fields.clear();
+            let _ = content_top;
         }
         self.layout = layout;
     }
@@ -1174,53 +1312,77 @@ impl SecretForm {
             let mut units = Zeroizing::new(Vec::with_capacity(display.text.len()));
             units.extend(display.text.encode_utf16());
             let box_rect = Rect::new(margin, y, width, px(80));
-            dc.frame_rect(box_rect, theme::BORDER);
+            dc.round_rect(box_rect, px(6), theme::BG, theme::CARD_BORDER);
             dc.draw_text(&units, box_rect.inset(px(12)), DrawFlags::WRAP);
             return box_rect.bottom().saturating_add(px(12));
         }
         let words: Vec<&str> = display.text.split(' ').collect();
         let rows = words.len().div_ceil(3).max(1);
-        let cell_h = px(34);
+        let cell_h = px(32);
         let col_w = width / 3;
-        dc.select_font(&fonts.mono_large);
         let grid_h = cell_h.saturating_mul(i32::try_from(rows).unwrap_or(8));
-        dc.frame_rect(
+        dc.round_rect(
             Rect::new(margin, y, width, grid_h.saturating_add(px(12))),
-            theme::BORDER,
+            px(6),
+            theme::BG,
+            theme::CARD_BORDER,
         );
         for (index, word) in words.iter().enumerate() {
             let column = index / rows;
             let row = index % rows;
             let cell = Rect::new(
                 margin
-                    .saturating_add(px(12))
+                    .saturating_add(px(14))
                     .saturating_add(col_w.saturating_mul(i32::try_from(column).unwrap_or(0))),
                 y.saturating_add(px(6))
                     .saturating_add(cell_h.saturating_mul(i32::try_from(row).unwrap_or(0))),
-                col_w.saturating_sub(px(12)),
+                col_w.saturating_sub(px(14)),
                 cell_h,
             );
+            dc.select_font(&fonts.mono);
+            dc.set_text_color(theme::MUTED);
+            let number = wide(&format!("{:>2}.", index.saturating_add(1)));
+            dc.draw_text(
+                &number,
+                Rect::new(cell.x, cell.y, px(34), cell.h),
+                DrawFlags::LINE,
+            );
+            dc.select_font(&fonts.mono_large);
+            dc.set_text_color(theme::TEXT);
             let mut units = Zeroizing::new(Vec::with_capacity(16));
-            units.extend(format!("{:>2}. ", index.saturating_add(1)).encode_utf16());
             units.extend(word.encode_utf16());
-            dc.draw_text(&units, cell, DrawFlags::LINE);
+            dc.draw_text(
+                &units,
+                Rect::new(
+                    cell.x.saturating_add(px(36)),
+                    cell.y,
+                    cell.w.saturating_sub(px(36)),
+                    cell.h,
+                ),
+                DrawFlags::LINE,
+            );
         }
         y = y.saturating_add(grid_h).saturating_add(px(24));
         if let Some(address) = &display.address {
-            dc.select_font(&fonts.body);
+            dc.select_font(&fonts.body_bold);
+            dc.set_text_color(theme::TEXT);
             dc.draw_text(
-                &wide("첫 주소 (계정 1)"),
+                &wide("첫 주소 (계정 1) — 함께 적어 두면 복구할 때 맞는지 확인할 수 있습니다"),
                 Rect::new(margin, y, width, px(22)),
                 DrawFlags::LINE,
             );
-            y = y.saturating_add(px(24));
-            dc.select_font(&fonts.mono);
+            y = y.saturating_add(px(26));
+            let shown = yw_core::evm::address::parse_address(address).map_or_else(
+                |_| address.clone(),
+                |parsed| yw_core::evm::display::format_address(&parsed),
+            );
+            dc.select_font(&fonts.mono_large);
             dc.draw_text(
-                &wide(address),
-                Rect::new(margin, y, width, px(22)),
+                &wide(&shown),
+                Rect::new(margin, y, width, px(26)),
                 DrawFlags::LINE,
             );
-            y = y.saturating_add(px(30));
+            y = y.saturating_add(px(34));
         }
         if display.passphrase_note {
             dc.select_font(&fonts.body);
@@ -1265,7 +1427,7 @@ impl SecretForm {
             width,
             cell_h.saturating_mul(8).saturating_add(px(12)),
         );
-        dc.frame_rect(grid, theme::FOCUS);
+        dc.round_rect(grid, px(6), theme::CARD, theme::FOCUS);
         layout.fields.push(grid);
         dc.select_font(&fonts.mono);
         for index in 0..24_usize {
@@ -1281,7 +1443,7 @@ impl SecretForm {
                 cell_h.saturating_sub(px(4)),
             );
             if index == typing && index < 24 {
-                dc.frame_rect(cell, theme::FOCUS);
+                dc.round_rect(cell, px(4), theme::INFO_BG, theme::FOCUS);
             }
             let word = words.get(index).copied().unwrap_or(&[]);
             let unknown = index < typing && !core::str::from_utf8(word).is_ok_and(is_word);
@@ -1301,7 +1463,7 @@ impl SecretForm {
         let (count, _, _) = self.mnemonic_status();
         dc.draw_text(
             &wide(&format!(
-                "{count}단어 · {}/{}",
+                "{count}단어 입력 · {}/{}",
                 slot.field.len(),
                 slot.field.limit()
             )),
@@ -1326,13 +1488,14 @@ impl SecretForm {
     ) -> i32 {
         let enabled = self.input_enabled(now_ms);
         for (index, slot) in self.slots.iter().enumerate() {
-            dc.select_font(&fonts.body);
+            dc.select_font(&fonts.body_bold);
             dc.set_text_color(theme::TEXT);
             dc.draw_text(
                 &wide(&slot.label),
                 Rect::new(margin, y, width, px(22)),
                 DrawFlags::LINE,
             );
+            dc.select_font(&fonts.caption);
             dc.set_text_color(theme::MUTED);
             dc.draw_text(
                 &wide(&format!("{}/{}", slot.field.len(), slot.field.limit())),
@@ -1344,14 +1507,20 @@ impl SecretForm {
             let box_w = width
                 .saturating_sub(reveal_w)
                 .saturating_sub(if slot.masked { px(8) } else { 0 });
-            let box_rect = Rect::new(margin, y, box_w, px(34));
-            if !enabled {
-                dc.fill_rect(box_rect, theme::DISABLED_BG);
-            }
+            let box_rect = Rect::new(margin, y, box_w, px(36));
             let focused = index == self.active;
-            dc.frame_rect(box_rect, if focused { theme::FOCUS } else { theme::BORDER });
+            dc.round_rect(
+                box_rect,
+                px(4),
+                if enabled {
+                    theme::CARD
+                } else {
+                    theme::DISABLED_BG
+                },
+                if focused { theme::FOCUS } else { theme::BORDER },
+            );
             if focused {
-                dc.frame_rect(box_rect.inset(1), theme::FOCUS);
+                dc.round_rect(box_rect.inset(1), px(3), theme::CARD, theme::FOCUS);
             }
             let show_plain = !slot.masked || self.revealing == Some(index);
             let units = slot.field.render_utf16(!show_plain);
@@ -1361,30 +1530,35 @@ impl SecretForm {
                 &fonts.mono
             });
             dc.set_text_color(theme::TEXT);
-            dc.draw_text(&units, box_rect.inset(px(8)), DrawFlags::LINE);
+            dc.draw_text(&units, box_rect.inset(px(9)), DrawFlags::LINE);
             layout.fields.push(box_rect);
             if slot.masked {
-                let reveal = Rect::new(box_rect.right().saturating_add(px(8)), y, reveal_w, px(34));
+                let reveal = Rect::new(box_rect.right().saturating_add(px(8)), y, reveal_w, px(36));
                 let reveal_enabled = self.capture_excluded && enabled;
-                dc.fill_rect(
+                dc.round_rect(
                     reveal,
+                    px(theme::RADIUS_CONTROL),
                     if reveal_enabled {
-                        theme::DISABLED_BG
+                        theme::CARD
                     } else {
-                        theme::BG
+                        theme::DISABLED_BG
+                    },
+                    if reveal_enabled {
+                        theme::BORDER
+                    } else {
+                        theme::CARD_BORDER
                     },
                 );
-                dc.frame_rect(reveal, theme::BORDER);
                 dc.select_font(&fonts.body);
                 dc.set_text_color(if reveal_enabled {
                     theme::TEXT
                 } else {
-                    theme::BORDER
+                    theme::DISABLED_TEXT
                 });
                 dc.draw_text(&wide("보기"), reveal, DrawFlags::CENTER);
                 layout.buttons.push((Button::Reveal(index), reveal));
             }
-            y = y.saturating_add(px(44));
+            y = y.saturating_add(px(48));
         }
         y
     }
@@ -1417,7 +1591,7 @@ impl SecretForm {
             SecretKind::ShowMnemonic { create: false } | SecretKind::ShowKey => "닫기".to_owned(),
             SecretKind::Unlock => "잠금 해제".to_owned(),
             SecretKind::ChangePassword => "변경".to_owned(),
-            SecretKind::Mnemonic => "다음".to_owned(),
+            SecretKind::Mnemonic | SecretKind::SetPassword => "다음".to_owned(),
             SecretKind::PrivateKey => "가져오기".to_owned(),
             _ => "확인".to_owned(),
         };
@@ -1451,10 +1625,18 @@ impl SecretForm {
         for (button, label) in right.iter().rev() {
             let text = wide(label);
             let (_, text_w) = dc.measure(&text, i32::MAX);
-            let w = text_w.saturating_add(px(32)).max(px(96));
+            let w = text_w.saturating_add(px(36)).max(px(96));
             x = x.saturating_sub(w);
             let rect = Rect::new(x, y, w, height);
-            self.paint_button(dc, rect, &text, *button, now_ms, px(4));
+            self.paint_button(
+                dc,
+                rect,
+                &text,
+                *button,
+                now_ms,
+                px(4),
+                px(theme::RADIUS_CONTROL),
+            );
             layout.buttons.push((*button, rect));
             x = x.saturating_sub(px(8));
         }
@@ -1462,14 +1644,23 @@ impl SecretForm {
         for (button, label) in &left {
             let text = wide(label);
             let (_, text_w) = dc.measure(&text, i32::MAX);
-            let w = text_w.saturating_add(px(32)).max(px(96));
+            let w = text_w.saturating_add(px(36)).max(px(96));
             let rect = Rect::new(x, y, w, height);
-            self.paint_button(dc, rect, &text, *button, now_ms, px(4));
+            self.paint_button(
+                dc,
+                rect,
+                &text,
+                *button,
+                now_ms,
+                px(4),
+                px(theme::RADIUS_CONTROL),
+            );
             layout.buttons.push((*button, rect));
             x = x.saturating_add(w).saturating_add(px(8));
         }
     }
 
+    #[expect(clippy::too_many_arguments, reason = "plain paint helper")]
     fn paint_button(
         &self,
         dc: &mut PaintDc<'_>,
@@ -1478,23 +1669,20 @@ impl SecretForm {
         button: Button,
         now_ms: u64,
         bar: i32,
+        radius: i32,
     ) {
         let enabled = self.button_enabled(button, now_ms);
         let primary = button == Button::Primary;
-        let fill = match (enabled, primary) {
-            (false, _) => theme::DISABLED_BG,
-            (true, true) => theme::PRIMARY_BG,
-            (true, false) => theme::BG,
+        let (fill, border) = match (enabled, primary) {
+            (false, true) => (
+                theme::BUTTON_PRIMARY.disabled_fill,
+                theme::BUTTON_PRIMARY.disabled_border,
+            ),
+            (false, false) => (theme::DISABLED_BG, theme::CARD_BORDER),
+            (true, true) => (theme::PRIMARY_BG, theme::PRIMARY_BG),
+            (true, false) => (theme::CARD, theme::BUTTON_SECONDARY.border),
         };
-        dc.fill_rect(rect, fill);
-        dc.frame_rect(
-            rect,
-            if primary && enabled {
-                theme::FOCUS
-            } else {
-                theme::BORDER
-            },
-        );
+        dc.round_rect(rect, radius, fill, border);
         if primary && self.hold.active() {
             let done = BACKUP_ACK_HOLD_MS.saturating_sub(self.hold.remaining_ms(now_ms));
             let filled = i64::from(rect.w).saturating_mul(i64::try_from(done).unwrap_or(0)) / 2_000;
@@ -1504,10 +1692,11 @@ impl SecretForm {
                 i32::try_from(filled).unwrap_or(0),
                 bar,
             );
-            dc.fill_rect(bar_rect, theme::WARN_TEXT);
+            dc.fill_rect(bar_rect, theme::WARN_ACCENT);
         }
         dc.set_text_color(match (enabled, primary) {
-            (false, _) => theme::MUTED,
+            (false, true) => theme::CARD,
+            (false, false) => theme::DISABLED_TEXT,
             (true, true) => theme::PRIMARY_TEXT,
             (true, false) => theme::TEXT,
         });

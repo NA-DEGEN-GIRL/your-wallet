@@ -1,6 +1,8 @@
 //! Raw Win32 GUI as a safe API (spec/01 §7.7): classes, windows, the wndproc trampoline, the
 //! message loop, painting, standard controls and the custom secret text field.
 
+#[cfg(debug_assertions)]
+pub mod capture;
 pub mod controls;
 mod msg;
 mod paint;

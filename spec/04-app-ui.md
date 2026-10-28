@@ -93,14 +93,22 @@ impl EventQueue {
 ### 1.6 DPI·글꼴·색
 - 크기 상수는 96 DPI 기준 DIP이고 `GetDpiForWindow`로 환산한다. `WM_DPICHANGED`: lParam 제안 사각형으로 `SetWindowPos`, 새 DPI로 글꼴을 다시 만들고 다시 배치한다.
 - 확인함(M3): yw-app `build.rs`의 `cargo:rustc-link-arg-bins=/MANIFEST:EMBED`·`/MANIFESTINPUT:<yw-app.manifest>`로 comctl32 v6·PerMonitorV2 매니페스트가 들어간다. 매니페스트는 필수다(없으면 `InitCommonControlsEx(ICC_STANDARD_CLASSES)`가 실패). 매니페스트가 DPI를 먼저 정하므로 `ui::init`의 `SetProcessDpiAwarenessContext`는 `ERROR_ACCESS_DENIED`를 돌려주고 이를 성공으로 본다([01] §7.7).
-- 테마는 라이트만. 글꼴: 본문·라벨·버튼 `Malgun Gothic`(없으면 `Segoe UI`) 10pt, 화면 제목 굵게 13pt, 승인 창 제목 굵게 12pt, 주소·해시·hex·개인키 `Consolas` 10pt, 니모닉 표시 `Consolas` 14pt, calldata 등 hex 원본 `Consolas` 9pt.
+- 테마는 라이트만. 모든 창(주 창, 비밀 창 W01–W10, 승인 창 A01)은 아래 디자인 시스템(`ui::theme`)만 쓴다. 검토 기록은 `docs/ux-review-20261028.md`.
+- 글꼴 크기 단계(본문 `Malgun Gothic`, 없으면 `Segoe UI`; 고정폭 `Consolas`): 보조 문구·도움말 9pt, 본문·라벨·버튼 10pt(굵게 = 강조), 카드 제목 굵게 11pt, 승인 창 요약 굵게 12pt, 화면 제목 굵게 14pt, 잔액·환영 제목 굵게 20pt. 주소·해시·hex·개인키 `Consolas` 10pt(강조 묶음 굵게), 니모닉 표시 `Consolas` 14pt, calldata 등 hex 원본 `Consolas` 9pt.
+- 간격은 4 DIP 격자: 4(묶음 안) · 8(관련 줄) · 12(카드 안 항목) · 16(카드 안쪽 여백·카드 사이) · 24(창 여백). 모서리 반지름 카드 8, 버튼·띠 6. 주 창 내용 폭은 최대 880 DIP(넓은 창에서는 가운데).
+- 구성 요소: 회색 창 배경 위의 흰 **카드**(구역마다 하나, 제목 11pt), 카드 제목 아래·기술 입력 칸 아래의 **도움말 줄**(9pt, 평이한 한국어로 "무엇이고 왜 필요한지"), 라벨·값 줄, 단계 표시(1/3 2/3 3/3), 큰 잔액 표시. 기술 설정(수수료 상한, CU 가격, 로그 수준, 제네시스 해시, 가스 계산식)은 `고급 설정 보기 ▸`(보내기 폼은 `수수료 계산 보기 ▸`) 뒤에 둔다.
+- 버튼(yw-win 소유자 그리기 `ControlKind::Button(ButtonStyle)`): **주 버튼**(파랑 채움, 화면마다 하나 — 체인 탭은 `보내기`·`받기` 두 개), **보조 버튼**(흰 바탕·회색 테두리), **위험 버튼**(흰 바탕·빨간 테두리·빨간 글자: 삭제·연결 해제·폐기·격리), **링크 버튼**(글자만: `← 메인으로`, `고급 설정 보기 ▸`, `새로고침`), **탭·칩**(선택 = 파랑 채움: 체인 탭, 네트워크, 설정 구역). 비활성은 회색. 체크박스·라디오·읽기 전용 칸의 배경은 놓인 카드·창 색을 따른다.
+- 상태 색은 뜻마다 하나이고, 띠에는 항상 상태 이름 태그를 붙인다(색만으로 구분하지 않는다): **정보**(파랑), **완료**(초록), **주의**(노랑), **고위험**(빨강 띠), **차단**(진한 빨강 채움·흰 글자: 그 기능을 멈춤 — 차단된 체인, 손상된 저널, 수수료 상한 초과, 승인할 수 없는 요청), **오류**(빨강 띠: 코드가 있는 실패·입력 오류), **테스트넷**(연파랑). Bitcoin 네트워크 배너(`BITCOIN MAINNET`·`BITCOIN TESTNET4 — 가치 없음`)는 태그 없이 전용 색을 쓴다.
 - 색 토큰(`ui::theme`, [06]이 참조):
 
 ```text
-BG #FFFFFF 창 배경          TEXT #1F1F1F 본문             MUTED #5F6368 보조 문구·오래된 잔액
-BORDER #C8C8C8 구분선        FOCUS #0F6CBD 포커스·진행 막대   ESCAPE_TEXT #A4262C 이스케이프 표기(§3.3)
-DANGER_BG #FDE7E9 / DANGER_TEXT #A4262C 고위험·차단        WARN_BG #FFF4CE / WARN_TEXT #7A5C00 주의·주소 주석
-TESTNET_BG #E8F0FE 테스트넷 띠·배지   AI_PANEL_BG #F3F0FA [06] AI 패널   QR_DARK #000000 / QR_LIGHT #FFFFFF
+BG #F3F4F6 창 배경            CARD #FFFFFF 카드              CARD_BORDER #E1E4E8 카드 테두리·구분선
+TEXT #1F1F1F 본문             MUTED #5F6368 보조 문구·오래된 잔액   BORDER #C8C8C8 입력 칸 테두리
+FOCUS·PRIMARY_BG #0F6CBD 포커스·주 버튼·진행   ESCAPE_TEXT #A4262C 이스케이프 표기(§3.3)
+INFO_BG #E8F1FB / INFO_TEXT #0F4C81 정보       SUCCESS_BG #DFF6DD / SUCCESS_TEXT #0E700E 완료
+WARN_BG #FFF4CE / WARN_TEXT #7A5C00 주의·주소 주석   DANGER_BG #FDE7E9 / DANGER_TEXT #A4262C 고위험·오류
+BLOCKED_BG #A4262C / BLOCKED_TEXT #FFFFFF 차단   TESTNET_BG #E8F0FE 테스트넷 띠·배지
+AI_PANEL_BG #F3F0FA [06] AI 패널   QR_DARK #000000 / QR_LIGHT #FFFFFF
 BTC_MAINNET_BG #C42B1C / BTC_MAINNET_TEXT #FFFFFF, BTC_TESTNET4_BG #F7A23B(글자 TEXT) [08] §2 네트워크 배너(A01 헤더)
 ```
 
@@ -127,7 +135,8 @@ BTC_MAINNET_BG #C42B1C / BTC_MAINNET_TEXT #FFFFFF, BTC_TESTNET4_BG #F7A23B(글�
 | 창 | `ui::{init, register_class(&ClassSpec { name, secret, capture: CaptureExclusion }), create_window(&WindowSpec, Box<dyn Handler>) -> Result<Window, UiError>}`, `Handler::on(&mut self, &Window, &Msg) -> Reply`, `Window::{show, hide, …, poster}`, `ui::controls`(비밀 아닌 값) |
 | 루프·깨우기 | `ui::run_loop(observe)`(§5.1 유휴 입력), `ui::Poster::post(msg, wparam)`(§1.3) |
 | 캡처 제외 | `ui::exclude_from_capture(&Window) -> Result<(), UiError>`(`UiError::CaptureExclusionFailed`). 비밀 클래스는 `create_window`가 숨긴 채 적용하고, 실패 처리는 `ClassSpec.capture`(`CaptureExclusion::{Required, Preferred}`)를 따른다(§1.7, §4.5) |
-| 그리기·입력 | `PaintDc::{fill_rect, draw_text, measure, select_font}`, `Font::create`, `input::is_down(vk)` |
+| 그리기·입력 | `PaintDc::{fill_rect, round_rect, ellipse, draw_text, measure, select_font}`, `Font::create`, `input::is_down(vk)`. 버튼은 `ControlKind::Button(ButtonStyle)`(소유자 그리기, §1.6 스타일을 yw-app이 넘긴다), `Control::{set_backdrop, set_button_style}`(체크박스·라디오·버튼 모서리 배경 = 놓인 카드·창 색) |
+| 화면 투어(개발 전용) | `ui::capture::{capture_client, dev_tour_redraw, dev_tour_flush, dev_tour_lift_capture_exclusion}` — `#[cfg(debug_assertions)]`라 release 빌드에 없다. 앱 코드는 쓰지 않고 `ui::tour`(`#[ignore]` 테스트)만 쓴다(§11) |
 | 클립보드 | `clipboard::{set_text, set_secret_text -> u32, read_text(owner, max) -> (WipeBuf<u16>, u32), clear_if_unchanged}`, `ClipError::{Busy, TooLong, Os}` |
 | 단일 인스턴스 | `process::SingleInstance::acquire`, `ui::find_window -> Option<(Poster, u32)>`, `process::allow_set_foreground_window`(§1.1) |
 | 세션·전원·종료 | `session::{register_session_notifications, unregister_session_notifications}`, `Msg::{SessionLock, SessionUnlock, SessionDisconnect, SessionLogoff, Suspend, Resume, QueryEndSession, EndSession}`(§1.5, §5.1) |
@@ -161,39 +170,44 @@ pub enum AppMode { NoVault, Locked, Unlocking, PassphraseRequired, PassphraseMis
 - 주 창 화면: S01 첫 실행(`NoVault`), S02 생성 안내, S03 처리 중(KDF 진행 표시), S04 백업 대기(`BackupPending`), S05 가져오기, S06 첫 주소 확인, S07 잠금 화면(`Locked`·`PassphraseRequired`), S08 완료, S09 복구(`Corrupt`·`MainMissing`), S10 메인(`Unlocked`), S11 보내기·결과, S12 받기, S13 연결된 사이트, S14 주소록, S15 설정, S16 토큰 추가, S17 EVM 체인 추가·편집(§2.17).
 - 별도 최상위 창: W01–W10 비밀 창(§4.1), A01 승인·연결 창(§3).
 - 비밀 창이 열려 있는 동안 주 창은 `EnableWindow(FALSE)`다. 승인 창은 주 창을 막지 않는다.
-- `Unlocked`의 상단 막대: 체인 탭, 네트워크 선택, `연결된 사이트`, `주소록`, `설정`, `잠금`(Ctrl+L). `alt_passphrase == true`이면 상시 배너 T-ALT-PASS([02] §7.5).
+- `Unlocked`의 S10 상단 막대(흰 띠): 왼쪽 "Your Wallet", 오른쪽 `주소록`, `연결된 사이트`, `설정`, `잠금 (Ctrl+L)`. 그 아래 체인 탭(`EVM (이더리움 등)`·`Solana`·`Bitcoin`, 탭 모양)과 네트워크 칩. 다른 화면은 맨 위 링크 `← 메인으로`. `alt_passphrase == true`이면 상시 배너 T-ALT-PASS([02] §7.5).
+- 사용자에게 보이는 용어: "니모닉"은 "복구 단어"로 부르고 처음 나오는 곳에 "(니모닉)"을 붙인다. 오류 문구(§7)와 코드는 바꾸지 않는다.
 
 ### 2.2 첫 실행 (S01)
 - `NoVault`일 때. 데이터 폴더에 `meta.ywm`·`journal.ywj` 또는 그 `.prev`가 남아 있으면 생성·가져오기 버튼을 끄고 T-LEFTOVER와 폴더 경로, `폴더 열기`(§2.14)를 보인다. 파일은 사용자가 직접 옮긴다([02] §6.3). 앱은 지갑 파일을 옮기거나 지우지 않는다.
-- 문구 T-FIRST-1, 버튼 `새 지갑 만들기`, `기존 지갑 가져오기`.
+- 환영 화면: 큰 제목 "Your Wallet", 세 문장 T-FIRST-1(무엇인지 · 모든 서명은 이 앱 확인 창에서 · 복구 단어 24개가 유일한 백업), 카드 두 개 — "처음 사용합니다"(설명 + 주 버튼 `새 지갑 만들기`), "다른 지갑에서 쓰던 복구 단어가 있습니다"(설명 + `기존 지갑 가져오기`).
 
 ### 2.3 새 지갑 만들기
+단계 표시 `1 비밀번호 정하기 · 2 복구 단어 적기 · 3 백업 확인`을 S02(아직 시작 전)와 W01(1/3)·W08(2/3)·W10(3/3) 머리에 보인다(비밀 창은 "새 지갑 만들기 · n/3단계"와 점 세 개).
+
 | 단계 | 화면 | 동작·검증 |
 |---|---|---|
-| 1 | S02 | T-CREATE-1. `다음`. |
+| 1 | S02 | 제목 "새 지갑 만들기", 단계 표시, 카드 "시작하기 전에"(T-CREATE-1 세 줄 + 도움말 "복구 단어를 아는 사람은 누구든 지갑의 자산을 옮길 수 있습니다…"). 주 버튼 `시작하기`, `취소`. |
 | 2 | W01 | 비밀번호 2회. [02] 규칙(D8: 0x20–0x7E, 12–128자) 위반 E-INP-001, 불일치 E-INP-002. passphrase는 묻지 않는다([02] §8.1). |
 | 3 | S03 | `KeyJob::CreateWallet` → `Vault::create_wallet` → `BackupPending`, 24단어 버퍼 반환. 이어서 기본 meta 쓰기. "지갑을 만드는 중입니다. 몇 초 걸립니다." |
 | 4 | W08 | 24단어 + 계정 0 EVM 주소(EIP-55, `m/44'/60'/0'/0/0`). 둘 다 종이에 적게 한다([02] §8.3). 캡처 제외 실패 시 표시하지 않고 E-SEC-001(§4.5 `Required`; 지갑은 `BackupPending`으로 남고 S04에서 다시 시도). `다 적었습니다`를 2초 길게 눌러야 다음으로 간다. |
 | 5 | W10 | `backup_challenge()`의 위치 4개 단어 + 첫 주소 끝 6자. `KeyJob::ConfirmBackup` → `confirm_backup`. `BackupMismatch` → T-BACKUP-FAIL, 새 challenge(새 위치)로 다시 입력. 횟수 제한 없음. |
-| 6 | S08 | T-BACKUP-OK. 저장된 RPC 엔드포인트(§6.3 `rpc:*`)가 하나도 없으면 `RPC 엔드포인트 설정`(S15 `RPC 공급자`, §2.11.1)과 `나중에`. → S10. |
+| 6 | S08 | 제목 "준비되었습니다", T-BACKUP-OK(완료 띠). 저장된 RPC 엔드포인트(§6.3 `rpc:*`)가 하나도 없으면 카드 "마지막 단계: 블록체인 연결(RPC)"(무엇이고 왜 필요한지 한 줄 + 도움말) 안에 주 버튼 `RPC 설정하기`(S15 `네트워크(RPC)`, §2.11.1)와 `나중에`. 있으면 주 버튼 `지갑 열기`. → S10. |
 
-S04(백업 대기): 잠금 해제 직후 백업이 확인되지 않았을 때. T-BACKUP-PENDING, 버튼 `니모닉 보고 백업 확인`(W03 → W08 → W10), `받기`(S12, 상단 경고 T-BACKUP-RECV), `잠금`. 서명·개인키 표시·개인키 가져오기는 없다([02] §7.1). 이 상태에서 dApp 승인 항목은 즉시 `NotReady`.
+S04(백업 대기): 잠금 해제 직후 백업이 확인되지 않았을 때. 제목 "백업 확인이 필요합니다", T-BACKUP-PENDING(주의 띠), 카드에 무엇을 하는지 한 줄과 주 버튼 `복구 단어 보고 백업 확인`(W03 → W08 → W10), `받기`(S12, 상단 경고 T-BACKUP-RECV), `잠금`. 서명·개인키 표시·개인키 가져오기는 없다([02] §7.1). 이 상태에서 dApp 승인 항목은 즉시 `NotReady`.
 
 ### 2.4 기존 지갑 가져오기 (니모닉)
+단계 표시 `1 비밀번호 정하기 · 2 복구 단어 입력 · 3 첫 주소 확인`(S05 시작 전, W01 1/3, W05·W06 2/3, S06 3/3).
+
 | 단계 | 화면 | 동작·검증 |
 |---|---|---|
-| 1 | S05 | 안내 "12·15·18·21·24단어 BIP39 영어 니모닉을 가져옵니다." EVM 개인키는 지갑을 만든 뒤 `계정 추가`에서 가져온다([02] §8.2). |
+| 1 | S05 | 제목 "기존 지갑 가져오기", 단계 표시, 카드 "준비할 것": "다른 지갑에서 쓰던 영어 복구 단어(BIP39 니모닉) 12·15·18·21·24개", "BIP39 passphrase(25번째 단어)를 썼다면 그 passphrase", 도움말로 개인키 안내("EVM 개인키 하나만 가져오려면 먼저 새 지갑을 만든 뒤 메인 화면의 '개인키 가져오기'", [02] §8.2)와 [08] §1.2 고정 문구. 주 버튼 `시작하기`, `취소`. |
 | 2 | W01 | 비밀번호 2회(§2.3). |
 | 3 | W05 | 니모닉 입력(§4.2). 단어마다 BIP39 목록 검사(E-INP-004 "{n}번째 단어"). `다음`은 단어 수가 12/15/18/21/24이고 모든 단어가 목록에 있을 때만 켜진다. 체크박스 `BIP39 passphrase 사용`(기본 끔, T-IMPORT-PASS). |
 | 4 | W06 | (체크한 경우) passphrase 2회, 0x20–0x7E 1–256자(D8). 불일치 E-INP-002. |
-| 5 | S03→S06 | `KeyJob::PreviewImport`: 키 작업자가 버퍼를 `PendingImport`로 보관하고, yw-core 파생 함수로 vault 없이 계정 0 EVM 주소만 계산한다(체크섬 오류 E-INP-005). S06: T-IMPORT-ADDR + 주소 전체. `맞습니다` → 6. `다릅니다`·취소·잠금 → `KeyJob::DiscardImport`(소거) 후 3으로. |
+| 5 | S03→S06 | `KeyJob::PreviewImport`: 키 작업자가 버퍼를 `PendingImport`로 보관하고, yw-core 파생 함수로 vault 없이 계정 0 EVM 주소만 계산한다(체크섬 오류 E-INP-005). S06: 단계 표시 3/3, 카드에 T-IMPORT-ADDR + 주소 전체(4자 묶음). 주 버튼 `맞습니다` → 6. `다릅니다`·취소·잠금 → `KeyJob::DiscardImport`(소거) 후 3으로. 아래 도움말 "다르면 복구 단어의 순서·철자나 passphrase를 확인하세요…". |
 | 6 | S03 | `KeyJob::CommitImport` → `Vault::import_mnemonic`(백업 확인됨, `Unlocked`) → 기본 meta 쓰기 → 버퍼 소거. 계정은 EVM 인덱스 0 하나(자동 계정 탐색 없음). |
 | 7 | S08 | → S10. |
 
 비밀 버퍼는 5단계에서 키 작업자로 이동한다. 그 전에 취소하면 UI가 즉시 소거한다.
 
 ### 2.5 잠금 해제 (S07, W02, W06)
-- S07: "지갑이 잠겨 있습니다.", `잠금 해제`(W02). 기다리는 dApp 요청이 있으면 T-UNLOCK-PENDING과 origin 목록(최대 5개, 나머지 "외 n건"). 계정·잔액·주소는 보이지 않는다(meta가 잠겨 있다).
+- S07: 큰 제목 "지갑이 잠겨 있습니다", "계정과 잔액을 보려면 비밀번호로 잠금을 해제하세요.", 주 버튼 `잠금 해제`(W02), 도움말로 자동 잠금 조건("{n}분 동안 쓰지 않거나, Windows를 잠그거나 절전에 들어가면…"). 기다리는 dApp 요청이 있으면 T-UNLOCK-PENDING(정보 띠)과 origin 목록(최대 5개, 나머지 "외 n건"). 계정·잔액·주소는 보이지 않는다(meta가 잠겨 있다).
 - W02 비밀번호 → `KeyJob::Unlock` → S03("확인 중…").
   - `UnlockFailed` → E-VLT-001([02] §7.4 문구). 칸을 비우고 입력과 확인 버튼을 1초 비활성화. 횟수 제한 없음.
   - `PassphraseRequired` → W06(passphrase 1칸) → `enter_passphrase`. W06 `나중에`(Esc)는 `KeyJob::Lock`으로 `Locked`(S07)에 돌아간다(`PassphraseRequired`에 머물지 않는다). `PassphraseMismatch` → 오버레이 T-PASS-MISMATCH: `다시 입력`(W06), `이 passphrase로 계속`(체크 "다른 passphrase는 다른(빈) 지갑을 엽니다"를 켜야 활성) → `Unlocked { alt_passphrase: true }`.
@@ -203,6 +217,7 @@ S04(백업 대기): 잠금 해제 직후 백업이 확인되지 않았을 때. T
 - S09(`Corrupt`·`MainMissing`): E-VLT-002 또는 "지갑 파일이 없고 이전 사본(.prev)이 있습니다." `.prev`가 있으면 `이전 사본으로 복구`(W03 → `recover_from_prev`, 문구 T-RECOVER-PREV), 없으면 폴더 경로와 `폴더 열기`, `종료`. 손상 파일은 덮어쓰지 않는다.
 
 ### 2.6 메인 (S10)
+- 배치(위 → 아래, 체인 탭마다 같음): 상단 막대 → 체인 탭 → 카드 "네트워크"(칩, 테스트넷 띠, 차단·저널 띠, 상태 줄 도움말) → **선택 계정 카드**(계정 이름, 경로, 큰 잔액 20pt와 기준 블록, 전체 주소, 주 버튼 `보내기`·`받기`, 링크 `새로고침`, 엔드포인트가 없으면 링크 `RPC 설정하기`) → 카드 "내 계정"(계정 목록 라디오, 선택 행의 `이름 바꾸기`·`숨기기`/`삭제`(위험), `계정 추가`·`개인키 가져오기`) → 카드 "토큰" → 카드 "활동". 빈 목록에는 다음에 할 일을 알려주는 도움말을 보인다("아직 보낸 거래가 없습니다. 보낸 거래는 여기에서…").
 - 체인 탭: 구현된 단계만(M4 `EVM`, M7 `Solana`, M8 `Bitcoin`). 개인키 계정만으로는 SOL·BTC를 쓸 수 없다.
 - EVM 네트워크 선택: 기본 체인 3개(`Ethereum 메인넷`, `Sepolia 테스트넷`, HyperEVM; 이름은 [03] §1.1) 다음에 사용자 체인(§2.17, `evmChains` 순서, 이름 옆 배지 T-CUSTOM-CHAIN). 차단된 체인(E-RPC-006·E-CHN-008)도 목록에 남기고 "(차단됨)"을 붙인다. 고르면 S10에 그 오류 배너와(E-CHN-008이면) `설정에서 다시 고정`(S15)을 보이고 잔액·보내기는 끈다. 선택은 `settings.json` `evmChainId`(§6.1, D30)이고, 잠긴 동안 [05]가 캐시 없는 origin의 `eth_chainId`로 쓴다. Solana 클러스터는 `solana.cluster`([07] §10), BTC 네트워크는 `bitcoin.network`([08] §2, D26)로 모두 `settings.json`에 있다. 테스트넷(Sepolia, [07]·[08]의 테스트 네트워크)이면 상단에 `TESTNET_BG` 띠 "테스트넷 — 실제 자산이 아닙니다". 사용자 체인에는 테스트넷 구분이 없으므로 띠를 그리지 않는다.
 - 상태 줄: `RPC: 연결됨 | 엔드포인트 없음 (E-KEY-005) | 오류 E-RPC-0nn | 차단 E-CHN-008`(네트워크 이름만, URL·호스트 없음, §1.9), `브라우저: 연결 n개 | 연결 없음 | 사용 불가 E-PIPE-001`. 엔드포인트 없음이면 잔액·보내기를 끄고 `설정에서 URL 입력`(S15 §2.11.1)을 보인다.
@@ -223,7 +238,8 @@ S16 토큰 추가: 컨트랙트 주소(§2.15) → RPC `decimals()`·`symbol()`(
 | 받는 주소 | EDIT, 붙여넣기 허용, `주소록에서 선택`(주소록·내 계정만, 입력한 글자로 거른 목록). 최근 받는 사람·활동에서 고르기는 없다 | §2.15 |
 | 금액 | EDIT 10진 문자열, `최대` 버튼 | §2.15 |
 
-- 수수료는 지갑이 계산하며(D20, [03] §3.4) 선택지가 없다. 입력이 모두 유효하면(입력 정지 후 500 ms) "예상 최대 수수료: {X} {네이티브 심볼} (가스 한도 {g} × 최대 {f} gwei)"를 보인다. 그 체인의 상한(§6.1 `feeCaps`) 초과는 E-TX-001로 막는다(D16의 차단 조건).
+- 폼은 카드 세 개 — "보내는 계정"(잔액, 전체 주소, 링크 `다른 계정으로 바꾸기 (메인)`), "받는 사람"(주소 칸 + 도움말 "0x로 시작하는 42자 주소입니다. 붙여넣은 뒤에는 앞뒤만이 아니라 주소 전체를 확인하세요."), "보낼 자산과 금액"(자산, 금액 + 도움말, 수수료) — 과 주 버튼 `검토`, `취소`. 아래 도움말 "'검토'를 누르면 승인 창에서 시뮬레이션 결과와 함께 최종 확인합니다. 아직 아무것도 보내지 않습니다."
+- 수수료는 지갑이 계산하며(D20, [03] §3.4) 선택지가 없다. 입력이 모두 유효하면(입력 정지 후 500 ms) "예상 최대 수수료: {X} {네이티브 심볼}"을 보이고, 계산식 "(가스 한도 {g} × 최대 {f} gwei)"는 링크 `수수료 계산 보기 (가스 한도·gwei) ▸`를 펼쳤을 때 도움말 줄로 보인다. 그 체인의 상한(§6.1 `feeCaps`) 초과는 E-TX-001(차단 띠)로 막는다(D16의 차단 조건).
 - `최대`: 네이티브 자산이면 잔액 − 가스 한도 × maxFeePerGas(최신 견적), 0 이하면 E-INP-012. 토큰이면 토큰 잔액 전부.
 - (체인, 계정)에 진행 중 거래가 있으면(D20) 폼을 끄고 T-SEND-INFLIGHT와 그 거래의 상태·해시를 보인다.
 - `검토`는 차단 오류가 없고, W-ADDR-3이면 `주소 전체를 직접 확인했습니다`를 체크했을 때 켜진다.
@@ -231,14 +247,15 @@ S16 토큰 추가: 컨트랙트 주소(§2.15) → RPC `decimals()`·`symbol()`(
 - SOL·BTC 보내기 폼의 필드와 순서는 [07] §13·[08] §7–8이 정하고, 입력 칸·검토·승인 창 규칙은 이 절과 §3을 따른다. 수수료를 직접 입력해 상한을 푸는 [08] §8.3 확인은 보내기 폼에서 한다(승인 창에는 입력 칸이 없다).
 
 ### 2.8 받기 (S12)
-- 표시: 계정 라벨, 네트워크(테스트넷이면 `TESTNET_BG` 배지와 "테스트넷 주소입니다"), 전체 주소(§3.3 주소 그리기, 12pt), 파생 경로, QR. 주소는 vault에서 다시 파생한 값이다([02] §5.3).
+- 표시: 카드 제목 "{계정 라벨} · {네트워크}", 테스트넷이면 테스트넷 띠 "테스트넷 주소입니다", 도움말 "보내는 사람에게 아래 주소나 QR을 알려주세요. 이 네트워크의 자산만 보내야 합니다.", QR, 전체 주소(§3.3 주소 그리기), 파생 경로, 주 버튼 `주소 복사`. 주소는 vault에서 다시 파생한 값이다([02] §5.3).
 - QR 내용: EVM `ethereum:<EIP-55 주소>@<chainId>`(EIP-681, 이식 `archive/spec-v2.4:demo/sepolia-wallet/src/receive_qr.rs:132-139`, chainId 매개변수화), SOL base58 그대로([07] §12.3), BTC `bitcoin:` + 소문자 주소([08]).
 - 생성 `qrcodegen::QrCode::encode_text(payload, QrCodeEcc::Medium)`. 그리기: 조용한 영역 4모듈, 모듈 = max(6, round(8 × dpi / 96)) 정수 픽셀, GDI `FillRect`로 `QR_LIGHT` 바탕에 `QR_DARK`. 6 px 모듈이 들어가지 않으면 QR 대신 "창을 넓히면 QR이 표시됩니다"(배치 규칙 이식 `receive_qr.rs:51-130`). 행렬은 캐시하지 않는다.
 - `주소 복사`: `clipboard::set_text`(일반 복사). 이어서 "주소를 복사했습니다. 붙여넣은 곳에서 주소 전체를 확인하세요."
 
 ### 2.9 연결된 사이트 (S13)
 - meta `connected_sites`([02] §5.3 `ConnectedSite`, 최대 256개, 의미는 [05] §4.1): origin 전체, 허용 계정 `accounts`(1–16개, 반환 순서, 첫 번째 = 선택 계정, 전체 주소), 체인 `chain_id`, 연결 시각 `granted_at_unix_ms`. `http` origin에는 "로컬 개발 사이트(http)" 배지.
-- `연결 해제`(행), `모두 해제`(확인 오버레이) → [05] §4.5. 그 origin의 대기 항목은 `Revoked`(§3.7).
+- 사이트마다 카드(제목 = origin): 네트워크, 연결 시각, 볼 수 있는 계정 수와 각 계정(라벨 + 전체 주소), 위험 버튼 `연결 해제`. 맨 아래 위험 버튼 `모든 사이트 연결 해제`. 연결이 없으면 카드 "연결된 사이트가 없습니다" + "dApp 사이트에서 '지갑 연결'을 누르고 이 앱의 연결 창에서 승인하면 여기에 표시됩니다."
+- `연결 해제`(행), `모든 사이트 연결 해제`(확인 오버레이) → [05] §4.5. 그 origin의 대기 항목은 `Revoked`(§3.7).
 
 ### 2.10 주소록 (S14)
 - 항목 = meta `address_book`의 `AddressBookEntry {chain, address, label, verified, added_at_unix_ms}`([02] §5.3, 최대 500; `added_at_unix_ms` = 추가 시각 unix ms). `verified` = 체크박스 "다른 경로(전화·대면 등)로 이 주소를 확인했습니다".
@@ -247,6 +264,8 @@ S16 토큰 추가: 컨트랙트 주소(§2.15) → RPC `decimals()`·`symbol()`(
 - `추가`, `편집`, `삭제`(확인 오버레이). 쓰기는 키 작업자의 meta 저장(원자적, [02] §6).
 
 ### 2.11 설정 (S15)
+화면: 링크 `← 메인으로`, 제목 "설정", 구역 탭 `보안`·`네트워크(RPC)`·`EVM 체인`·`Solana`·`Bitcoin`·`브라우저·진단·정보`(선택한 탭은 채움). 구역 안의 항목은 카드로 묶고 카드마다 한 줄 설명(도움말)을 둔다 — 보안: "자동 잠금", "복구 단어·개인키", "비밀번호"; 네트워크(RPC): "RPC 공급자"(RPC가 무엇이고 템플릿이 무엇을 해 주는지, 입력 칸마다 어디서 찾는 값인지), "네트워크별 RPC 주소"; EVM 체인: "EVM 체인"; Solana: "Solana 네트워크"; Bitcoin: "Bitcoin 사용과 네트워크", "주소 조회 서버(인덱서)", "Esplora URL"; 브라우저·진단·정보: "브라우저 연결", "진단", "정보". 기술 항목은 `고급 설정 보기 ▸`를 켰을 때만 보인다: EVM 수수료 상한, 체인별 고정 제네시스 해시, Solana 수수료·CU 가격 상한, 로그 수준. `고급 설정 보기`를 켠 상태는 앱이 실행되는 동안만 유지하고 저장하지 않는다(보내기 폼의 `수수료 계산 보기`와 같은 상태). 템플릿 자격 정보의 `삭제`는 위험 버튼 `자격 정보 삭제`, URL이 없는 네트워크 행의 `교체`는 `입력`으로 보인다(같은 동작).
+
 | 구역 | 항목 | 동작 |
 |---|---|---|
 | 보안 | 자동 잠금(분) | 1–60, `autoLockMinutes` |
@@ -338,11 +357,11 @@ W04(현재, 새, 새 확인) → 새 비밀번호 검사(E-INP-001/002) → `Key
 ### 2.16 주요 문구
 | ID | 위치 | 문구 |
 |---|---|---|
-| T-FIRST-1 | S01 | 이 PC에 지갑이 없습니다. 새로 만들거나 기존 니모닉으로 가져오세요. |
+| T-FIRST-1 | S01 | Your Wallet은 이 PC에서만 쓰는 개인용 암호화폐 지갑입니다. / 돈을 보내거나 사이트에 서명할 때는 언제나 이 앱의 확인 창에서 내용을 보고 직접 승인합니다. / 지갑을 만들 때 받는 복구 단어 24개가 유일한 백업입니다. 종이에 적어 안전한 곳에 보관하세요. (세 줄) |
 | T-LEFTOVER | S01 | 이전 지갑의 파일이 데이터 폴더에 남아 있습니다. 앱을 종료하고 파일을 다른 곳으로 옮긴 뒤 다시 실행하세요. |
-| T-CREATE-1 | S02 | 다음 화면에 24단어 니모닉과 첫 주소가 표시됩니다. 종이(또는 금속)에만 적고 사진·클라우드·메신저에 남기지 마세요. 화면 공유·녹화를 끄고 주변에 사람이나 카메라가 없는지 확인하세요. |
-| T-PW-RULE | W01·W04 | 비밀번호는 영문·숫자·기호(ASCII) 12–128자입니다. 단어 4개 이상을 이은 긴 문장을 권장합니다. 잊으면 니모닉으로만 복구할 수 있습니다. |
-| T-MN-SHOW | W08 | 아래 {n}단어와 첫 주소를 순서대로 적으세요. 이 창은 화면 캡처에서 제외됩니다. |
+| T-CREATE-1 | S02 | · 종이와 펜을 준비하세요. 다음 화면들에서 복구 단어 24개와 첫 주소를 적습니다. / · 복구 단어는 종이(또는 금속)에만 적고 사진·클라우드·메신저에 남기지 마세요. / · 화면 공유·녹화를 끄고 주변에 사람이나 카메라가 없는지 확인하세요. (세 줄) |
+| T-PW-RULE | W01·W04 | 비밀번호는 영문·숫자·기호(ASCII) 12–128자입니다. 단어 4개 이상을 이은 긴 문장을 권장합니다. 잊으면 복구 단어(니모닉)로만 복구할 수 있습니다. |
+| T-MN-SHOW | W08 | 아래 {n}단어와 첫 주소를 순서대로 종이에 적으세요. 이 단어들이 지갑의 유일한 백업이며, 아는 사람은 누구든 자산을 옮길 수 있습니다. 이 창은 화면 캡처에서 제외됩니다. |
 | T-BACKUP-1 | W10 | 적은 종이를 보고 {p1}, {p2}, {p3}, {p4}번째 단어와 첫 주소의 마지막 6자를 입력하세요. |
 | T-BACKUP-FAIL | W10 | 입력한 단어 또는 주소가 맞지 않습니다. 새 위치로 다시 확인합니다. |
 | T-BACKUP-OK | S08 | 백업을 확인했습니다. 이제 지갑을 쓸 수 있습니다. |
@@ -356,7 +375,7 @@ W04(현재, 새, 새 확인) → 새 비밀번호 검사(E-INP-001/002) → `Key
 | T-JOURNAL-RESET | S07 | 거래 저널을 새로 시작하면 진행 중 거래 기록이 사라질 수 있습니다. |
 | T-RECOVER-PREV | S09 | 이전 사본으로 복구하면 마지막 변경(예: 가져온 개인키)이 사라질 수 있습니다. |
 | T-REVEAL-WARN | S15 | 화면 근처의 사람이나 카메라가 볼 수 있습니다. 계속하려면 비밀번호를 입력하세요. |
-| T-COPY-ON | S15 | 복사를 허용하면 니모닉·개인키를 클립보드에 넣을 수 있습니다. 클립보드 기록·클라우드 동기화에서는 제외하고 30초 뒤 지우지만, 그 사이에는 다른 프로그램이 읽을 수 있습니다. |
+| T-COPY-ON | S15 | 복사를 허용하면 복구 단어(니모닉)·개인키를 클립보드에 넣을 수 있습니다. 클립보드 기록·클라우드 동기화에서는 제외하고 30초 뒤 지우지만, 그 사이에는 다른 프로그램이 읽을 수 있습니다. |
 | T-COPY-OFF | W08·W09 | 복사가 꺼져 있습니다. 설정에서 바꿀 수 있습니다. |
 | T-COPIED | W08·W09 | 클립보드에 복사했습니다. 30초 뒤 지웁니다. |
 | T-PASTE-CLEARED | W01–W07 | 붙여넣은 뒤 클립보드를 비웠습니다. Windows 클립보드 기록(Win+V)을 쓴다면 그 항목도 지우세요. |
@@ -468,15 +487,15 @@ App 항목(이 앱의 보내기·가속·취소·수수료 올리기)은 dApp �
 | 영역 | 스크롤 | 내용 |
 |---|---|---|
 | 제목 표시줄 | — | 고정 `Your Wallet — 승인 요청`(연결은 `Your Wallet — 사이트 연결`) |
-| 헤더 | 고정 | 키 `0x0001` 요청 출처, `0x0002` 네트워크, `0x0003` 서명 계정([07]·[08]도 같은 키). 출처가 `http`면 "로컬 개발 사이트(http)", 호스트에 `xn--` 라벨이 있으면 "국제화 도메인(punycode)" 배지([05] §4.2). 확장 호환 모드에서 온 요청이면 "호환 모드: MetaMask"·"호환 모드: Rabby" 배지([05] §2.12, 출처는 실제 사이트 origin 그대로). 사용자 체인이면 배지 T-CUSTOM-CHAIN. 테스트넷이면 `TESTNET_BG` |
-| 시뮬레이션 띠 | 고정 | 헤더 바로 아래. `sim_state`가 `Ok`가 아니면 `DANGER_BG` 고위험 띠(§3.2.1). `Ok`·`None`이면 없음 |
-| 제목 | 스크롤 맨 위 | `title`(굵게 12pt, 예 `[Sepolia 테스트넷] 토큰 전송: 10 USDC`) |
-| 경고 | 스크롤 | `warnings` 순서대로(등급 내림차순, [03] §10.1; 띠로 올린 시뮬레이션 경고는 빼고). 고위험·차단 `DANGER_BG`, 주의 `WARN_BG`, 정보는 일반. `ack_needed`(§3.4)면 경고 목록 아래에 체크박스 **1개** "위 경고를 모두 확인했습니다"(D16, 띠 포함 경고 수와 무관) |
-| 자산 변화 | 스크롤 | 머리줄 "시뮬레이션 결과". `Ok`: 키 `0x0110`–`0x0113`, `0x0130`(시뮬레이션 기준). `Incomplete`: 받은 행 + `MUTED` T-SIM-PARTIAL. `Unsupported`·`NoResult`·`Reverted`: `MUTED` T-SIM-NODIFF. SOL·BTC는 해당 문서의 금액·수수료·잔돈 행 |
-| 상세 | 스크롤 | 나머지 필드를 `fields` 순서대로 |
-| 원본 데이터 | 스크롤 | `critical == false`이고 키가 `0x0140`–`0x014F`(액세스 리스트, calldata)인 필드. 머리줄 `원본 데이터 ▸`로 접힘. `risk ≥ High`면 펼친 채 시작 |
+| 헤더 | 고정 | 흰 띠(테스트넷이면 `TESTNET_BG`, BTC는 [08] §2 배너 색)에 라벨·값 두 칸: 키 `0x0001` 요청 출처, `0x0002` 네트워크, `0x0003` 서명 계정([07]·[08]도 같은 키). 아래 배지(둥근 알약): 출처가 `http`면 "로컬 개발 사이트(http)", 호스트에 `xn--` 라벨이 있으면 "국제화 도메인(punycode)"([05] §4.2). 확장 호환 모드에서 온 요청이면 "호환 모드: MetaMask"·"호환 모드: Rabby"([05] §2.12, 출처는 실제 사이트 origin 그대로). 사용자 체인이면 T-CUSTOM-CHAIN, 테스트넷이면 테스트넷 문구 |
+| 시뮬레이션 띠 | 고정 | 헤더 바로 아래. `sim_state`가 `Ok`가 아니면 `고위험` 태그가 붙은 `DANGER_BG` 띠(§3.2.1). `Ok`·`None`이면 없음 |
+| 요약 | 스크롤 맨 위 | 정보색 카드 "요약": 평이한 한국어 한 문장(굵게 12pt) + 그 문장이 가리키는 **전체 주소**(4자 묶음, 줄이지 않음 — §0) + 그 주소에 대한 지갑의 주석(`[ ]` 안의 "일반 계정(EOA)", "주소록: {이름}" 등을 "·"로 이음) + `title`(9pt 보조, 예 `[Sepolia 테스트넷] SepoliaETH 보내기: 0.01 SepoliaETH`). 문장은 표시 모델에서만 만든다(digest 밖, `approval_view::summary`): 네이티브 보내기·SOL·BTC "{네트워크}에서 {금액}을(를) 아래 주소로 보냅니다."(조사는 금액 끝소리로), 그 밖 EVM 거래 "{네트워크}에서 컨트랙트를 호출합니다: {title의 동작}. 아래 자산 변화와 경고를 확인하세요.", 가속·취소·수수료 올리기·`personal_sign`·typed data는 종류별 고정 문장 |
+| 자산 변화 | 스크롤 | 카드 "자산 변화 (시뮬레이션 결과)". `Ok`: 키 `0x0110`–`0x0113`, `0x0130`(시뮬레이션 기준). `Incomplete`: 받은 행 + `MUTED` T-SIM-PARTIAL. `Unsupported`·`NoResult`·`Reverted`: `MUTED` T-SIM-NODIFF. SOL·BTC는 카드 "금액·수수료"(해당 문서의 금액·수수료·잔돈 행). 메시지 서명(`personal_sign`·typed data)에는 이 카드가 없다 |
+| 경고 | 스크롤 | 카드 "확인할 경고": `warnings` 순서대로(등급 내림차순, [03] §10.1; 띠로 올린 시뮬레이션 경고는 빼고) 등급 태그와 함께 — 고위험 `DANGER_BG`, 차단 `BLOCKED_BG`, 주의 `WARN_BG`, 정보 `INFO_BG`. `ack_needed`(§3.4)면 목록 아래에 체크박스 **1개** "위 경고를 모두 확인했습니다"(D16, 띠 포함 경고 수와 무관). 목록이 비어 있고 확인이 필요하면(띠만 있는 경우) "맨 위의 고위험 경고를 읽고, 이해했으면 아래에 체크하세요." |
+| 핵심 정보 | 스크롤 | 카드 "핵심 정보": 위에 나오지 않은 `critical == true` 필드를 `fields` 순서대로. **critical 필드는 접지 않는다** |
+| 자세히 | 스크롤 | 링크 `자세히 ▸ (수수료 계산·nonce·원본 데이터)`로 접힘: 위에 나오지 않은 `critical == false` 필드 전부를 `fields` 순서대로, 원본 데이터(키 `0x0140`–`0x014F`, 액세스 리스트·calldata)는 그 뒤에. `risk ≥ High`면 펼친 채 시작 |
 | AI 설명 | 고정 | M6, [06] §6: 버튼 바로 위, 본문 10줄 높이를 미리 확보 |
-| 하단 | 고정 | 상태 줄(남은 시간 `m:ss`, "대기 중인 다른 요청 n건", 길게 누르기 진행), 버튼 `거부` `승인`, 대기 요청이 있으면 링크 버튼 `이 사이트의 대기 요청 모두 거부` |
+| 하단 | 고정 | 흰 띠. 상태 줄(남은 시간 `m:ss`, "대기 중인 다른 요청 n건", 길게 누르기 진행; 고위험이고 다른 상태가 없으면 "경고를 확인하고 체크한 뒤 '승인'을 2초 동안 누르고 있으세요."), 버튼 `거부`(보조) `승인`(주 버튼, 무장 전에는 회색), 대기 요청이 있으면 링크 버튼 `이 사이트의 대기 요청 모두 거부` |
 
 - 필드 라벨 = [03] §11.2(및 [07]·[08])의 키 이름, `sub_label`이 있으면 "{이름} · {sub_label}". yw-app의 라벨 표에 없는 키가 오면 그 요청을 표시하지 않고 `Rejected` + E-UI-001.
 - `Connect` 내용은 [05] §4.2 그대로다(안내 문구, EVM 계정 체크박스 + 라벨 + 전체 주소, 기본 선택, 현재 체인, `거부`/`연결`). 위험 등급은 정보, 선택이 0개이거나 16개를 넘으면 `연결` 비활성([02] §5.3 `ConnectedSite.accounts` 1..=16).
@@ -499,7 +518,7 @@ App 항목(이 앱의 보내기·가속·취소·수수료 올리기)은 dApp �
 - `NoResult` 띠에는 `시뮬레이션 다시 시도`가 있다: 같은 거래로 [03] §6.6 재시뮬레이션 경로(기한 유지, 결과로 표시 교체·체크 해제). `Unsupported`·`Reverted`·`Incomplete`에는 없다.
 
 ### 3.3 표시 규칙
-- **자르지 않는다.** 값은 줄바꿈하고 넘치면 스크롤한다. 말줄임표·툴팁 전용 표시는 없다. 접을 수 있는 것은 원본 데이터 영역(비-critical)뿐이다.
+- **자르지 않는다.** 값은 줄바꿈하고 넘치면 스크롤한다. 말줄임표·툴팁 전용 표시는 없다. 접을 수 있는 것은 `자세히` 영역(`critical == false` 필드와 원본 데이터)뿐이고, critical 필드·경고·시뮬레이션 띠·요약은 접지 않는다.
 - 줄바꿈(`ui::text_layout`): 공백에서 나누고, 한 단어가 폭을 넘으면 문자 단위로 나눈다. 덧붙이는 문자는 없다. LF는 줄바꿈이다. 값은 최대 270,000바이트·필드 1,024개([03] §11.2)이므로 배치는 폭이 바뀔 때만 다시 하고 보이는 줄만 그린다. 시험: 줄 조각을 이으면 원래 값과 같다(줄바꿈 지점의 공백 1개 제외).
 - 주소 그리기: 전체를 4자 묶음으로 그리기 간격만 넓힌다(문자를 넣지 않는다). 강조는 체인 문서를 따른다: EVM 없음, SOL 가운데 묶음 굵게([07] §12.3), BTC 앞 6자·뒤 6자 굵게([08] §10). 주소가 주소록·내 계정과 정확히 같으면 "주소록: {이름}"(verified면 "✓ 확인됨") / "내 계정: {라벨}", 앞 4·끝 4자만 같으면 W-ADDR-3을 `WARN_BG` 주석으로 값 아래에 붙인다. 이 주석은 yw-app이 meta로 만들며 `ApprovalDisplay`와 digest에 들어가지 않는다([03] 빌더의 주소록 라벨·SOL 경고와는 별개의 보조 표시).
 - hex 원본: 폭이 80열 이상이면 한 줄 32바이트, 아니면 16바이트. 줄 앞에 오프셋 `[0x0000]`. calldata는 첫 줄에 셀렉터 4바이트만.
@@ -551,7 +570,7 @@ pub fn can_approve(g: &ApprovalGate, now: Instant) -> bool {
 
 - 정보·주의: 클릭(같은 버튼 위에서 누르고 떼기) 또는 `승인` 포커스에서 Enter·Space([03] §10.1).
 - 고위험(시뮬레이션 비성공 포함): 버튼 글자 "승인 (2초 길게 누르기)". 확인 체크를 켠 뒤 마우스나 Space로 2초 연속 누른다(D16, 모든 체인 공통). 진행은 버튼 위 막대(`FOCUS`)와 "{0.0}초". Enter 무시. 시뮬레이션 진행 중에는 버튼 글자 "시뮬레이션 중…"과 스피너, 비활성.
-- 초기 포커스 `거부`. Tab: `거부` → 확인 체크박스 → `승인` → `원본 데이터` → 스크롤 영역. 스크롤: 휠, PageUp/PageDown, 스크롤 영역 포커스에서 화살표.
+- 초기 포커스 `거부`. Tab: `거부` → 확인 체크박스 → `승인` → `자세히` → 스크롤 영역. 스크롤: 휠, PageUp/PageDown, 스크롤 영역 포커스에서 화살표.
 - 상호작용이 `Approved`가 되면: `Connect`는 선택 계정으로 바로 `Approved`([05] §4.2 5단계). `Signing`은 `submitting = true`, 상태 줄 "확인 중…", 체인 파이프라인에 `approve(id, shown_digest)`를 보낸다. EVM은 [03] §6.6 결과에 따라:
   - 시뮬레이션이 60 s보다 오래되어 다시 실행하는 동안(D23; `Unsupported`는 다시 실행하지 않음) → 상태 줄·버튼 T-SIM-RUNNING과 스피너, 최대 `SIM_WAIT_MAX_MS`.
   - 소비 성공 → 창을 닫고 서명·전송은 S11 결과 화면·활동에 나온다.
@@ -599,17 +618,18 @@ pub fn can_approve(g: &ApprovalGate, now: Instant) -> bool {
 ### 4.1 창 종류
 | ID | 제목 | 필드: 문자 집합, 길이 | 화면 표시 | 붙여넣기 | 복사 | 캡처 제외(§4.5) |
 |---|---|---|---|---|---|---|
-| W01 | 비밀번호 설정 | 비밀번호·확인 `Printable` 12–128 | 가림(●) | 허용 | 없음 | `Preferred` |
+| W01 | 비밀번호 정하기 | 비밀번호·확인 `Printable` 12–128 | 가림(●) | 허용 | 없음 | `Preferred` |
 | W02 | 잠금 해제 | 비밀번호 `Printable` 1–128 | 가림 | 허용 | 없음 | `Preferred` |
 | W03 | 비밀번호 확인 | 비밀번호 `Printable` 1–128 | 가림 | 허용 | 없음 | `Preferred` |
 | W04 | 비밀번호 변경 | 현재 1–128, 새·확인 12–128 | 가림 | 허용 | 없음 | `Preferred` |
-| W05 | 니모닉 입력 | `MnemonicText` ≤ 216바이트(24 × 8 + 23 + 1) | 평문, 단어별 칸 격자 | 허용 | 없음 | `Preferred` |
-| W06 | passphrase | 가져오기: passphrase·확인, 잠금 해제: 1칸. `Printable` 1–256 | 가림 | 허용 | 없음 | `Preferred` |
+| W05 | 복구 단어 입력 | `MnemonicText` ≤ 216바이트(24 × 8 + 23 + 1) | 평문, 단어별 칸 격자 | 허용 | 없음 | `Preferred` |
+| W06 | passphrase 입력 | 가져오기: passphrase·확인, 잠금 해제: 1칸. `Printable` 1–256 | 가림 | 허용 | 없음 | `Preferred` |
 | W07 | 개인키 가져오기 | `PrivateKeyHex` ≤ 66 | 평문 | 허용 | 없음 | `Preferred` |
-| W08 | 니모닉 표시 | — | 평문 3열 × (n/3)행, 열 우선 번호(24단어: 1–8, 9–16, 17–24) + 첫 주소 | — | 토글 | `Required` |
-| W09 | 개인키 표시 | — | 평문 64 hex | — | 토글 | `Required` |
+| W08 | 복구 단어 (니모닉) | — | 평문 3열 × (n/3)행, 열 우선 번호(24단어: 1–8, 9–16, 17–24) + 첫 주소 | — | 토글 | `Required` |
+| W09 | 개인키 보기 | — | 평문 64 hex | — | 토글 | `Required` |
 | W10 | 백업 확인 | 단어 4칸 `BackupWord` ≤ 8, 주소 끝 `HexSuffix` = 6 | 평문 | 금지 | 없음 | `Preferred` |
 
+- 배치(§1.6): 회색 창 배경에 (만들기·가져오기 흐름이면) "{흐름} · n/3단계"와 단계 점, 제목 14pt, 안내 문구(보조색), 내용을 담는 흰 카드(입력 칸·단어 격자·체크박스·오류), 아래 버튼 줄(왼쪽 `모두 지우기`/`복사`, 오른쪽 `취소`/`나중에`와 주 버튼). W01의 주 버튼은 `다음`, W08 단어 격자는 번호(보조색) + 단어(14pt), 첫 주소는 4자 묶음으로 보인다.
 - 가림 칸은 글자 수만큼 U+25CF를 그린다. 칸 옆 `보기`를 누르고 있는 동안만 평문을 그린다(§4.5 실패 시 비활성).
 - 글자 수 "{len}/{max}". 커서는 항상 끝이다(이동·선택·실행 취소 없음). `모두 지우기` 버튼.
 - `SECRET_WINDOW_TIMEOUT_MS = 300_000`: 입력 창은 마지막 입력 후, 표시 창은 표시 후. 넘으면 버퍼를 소거하고 닫는다("시간이 지나 창을 닫았습니다").
@@ -1009,6 +1029,12 @@ BTC 계정 선택 키는 없다. BTC v1은 계정 0(m/84'/{coin}'/0')만 쓴다(
 | UI-M4-14 | M4 | 앱 종료 → UI-M4-12 체인의 `settings.json` `genesisHash` 마지막 hex 1자 변경 → 실행·그 체인 선택 → S15 `다시 고정`(체크 전/후) | "(차단됨)", 배너 E-CHN-008 "체인 정보가 바뀌었습니다 (제네시스 불일치)", 보내기 불가 / T-CHAIN-REPIN에 두 해시, 체크 전 버튼 비활성, 고정 후 정상 |
 | UI-M4-15 | M4 | 사용자 체인 삭제: 활성 상태 / 미종결 거래 중 / 확정 후 | E-CHN-009 / E-CHN-007 / T-CHAIN-DELETE 후 목록·`settings.json`·`rpc:eip155:<id>`에서 사라지고 다시 추가하면 활동 기록이 다시 보임 |
 | UI-M4-16 | M4 | Sepolia 보내기 승인 창을 61초 이상 열어 둠 → 네트워크 끊고 `승인` → 네트워크 연결 → 체크 + 2초 | 재시뮬레이션 중 "시뮬레이션 중…" 후 띠 E-SIM-002·T-SIM-RESIM-FAILED·체크 해제, 첫 클릭으로 소비되지 않음 / 다음 승인으로 전송 |
+
+## 11. 화면 투어 (개발 전용)
+주요 화면과 창의 스크린샷(`docs/screenshots/`, 목록과 설명은 그 폴더의 `README.md`)을 만드는 개발 도구다. 판정 기준이 아니다.
+- 실행: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/screenshot-tour.ps1`. yw-app의 `#[ignore]` 테스트 `ui::tour::screenshot_tour`(테스트 빌드에만 있다)를 돌려 BMP를 `target/screenshot-tour/`에 쓰고, System.Drawing으로 PNG로 바꾼다. 확장 팝업은 `scripts/popup-preview.html`(팝업 마크업 + `chrome` 대역, 실제 `popup.css`·`popup.js`)을 127.0.0.1 임시 정적 서버로 열어 헤드리스 Edge/Chrome으로 찍는다(브라우저가 없으면 건너뜀).
+- 데이터: 버리는 임시 데이터 폴더(끝나면 삭제)만 쓰고 `%LOCALAPPDATA%\YourWallet`은 읽지도 쓰지도 않는다. vault·키 작업자·RPC 작업자를 만들지 않는다. 생성 흐름 화면의 단어는 BIP39 공개 시험 벡터(엔트로피 0, 24단어), 메인 화면은 공개 시험 니모닉(`abandon` × 11 + `about`) 지갑의 주소이고, 잔액·사이트·UTXO는 지어낸 값이다. RPC URL은 연결하지 않는 `*.example.test`, 승인 창은 `app_approval::smoke`의 고정 응답(`tests/fixtures/eth_simulateV1/S2`·`S4`)으로 준비한다. 브라우저 다리는 투어 전용 pipe 이름(`\\.\pipe\YourWallet.tour.<pid>`)으로 연다.
+- 캡처: yw-win `ui::capture`(`#[cfg(debug_assertions)]`, release 빌드에 없음). `RedrawWindow(RDW_UPDATENOW | RDW_ALLCHILDREN)`로 창과 자식 컨트롤을 동기로 다시 그리고 `GdiFlush` 뒤, 창 자신의 클라이언트 DC에서 `BitBlt`로 복사한다(`PrintWindow(PW_RENDERFULLCONTENT)`는 마지막 DWM 프레임을 돌려줘 반쯤 그린 화면이 찍혔다). 캡처 제외 창(W01–W10)은 검게 찍히므로 **투어 프로세스가 직접 만든 창에 한해** 캡처 직전 `dev_tour_lift_capture_exclusion`(`WDA_NONE`)을 부른다. 앱의 비밀 창 생성 경로(§4.5)는 바뀌지 않는다.
 
 ## 미결 사항
 

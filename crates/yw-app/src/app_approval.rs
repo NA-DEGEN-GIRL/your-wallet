@@ -97,6 +97,11 @@ struct Line {
 struct PanelLayout {
     width: i32,
     lines: Vec<Line>,
+    /// Rounded shapes (cards, warning boxes, tags, check boxes): rect, fill, outline, corner
+    /// radius in pixels.
+    rounds: Vec<(Rect, Color, Color, i32)>,
+    /// Centered bold labels on shapes (status tags, check marks).
+    tags: Vec<(Rect, String, Color)>,
     fills: Vec<(Rect, Color)>,
     frames: Vec<(Rect, Color)>,
     height: i32,
@@ -232,11 +237,24 @@ struct Builder<'a, 'd> {
     y: i32,
     margin: i32,
     dpi: u32,
+    /// Content box: the window margin, or a card's padded inside.
+    x: i32,
+    w: i32,
+    /// Open card: top and fill.
+    card: Option<(i32, Color, Color)>,
+    last_gap: i32,
 }
 
 impl Builder<'_, '_> {
     fn px(&self, dip: i32) -> i32 {
         yw_win::ui::scale(dip, self.dpi)
+    }
+
+    fn outer_w(&self) -> i32 {
+        self.layout
+            .width
+            .saturating_sub(self.margin.saturating_mul(2))
+            .max(40)
     }
 
     fn text(&mut self, text: &str, role: FontRole, color: Color, x: i32, width: i32) {
@@ -260,40 +278,115 @@ impl Builder<'_, '_> {
             });
             self.y = self.y.saturating_add(height);
         }
+        self.last_gap = 0;
     }
 
     fn gap(&mut self, dip: i32) {
-        self.y = self.y.saturating_add(self.px(dip));
+        let gap = self.px(dip);
+        self.y = self.y.saturating_add(gap);
+        self.last_gap = gap;
+    }
+
+    /// Opens a card (closing any open one); its shape is sized when it closes.
+    fn open_card(&mut self, fill: Color, border: Color) {
+        self.close_card();
+        self.card = Some((self.y, fill, border));
+        let pad = self.px(14);
+        self.x = self.margin.saturating_add(pad);
+        self.w = self.outer_w().saturating_sub(pad.saturating_mul(2)).max(40);
+        self.y = self.y.saturating_add(pad);
+        self.last_gap = 0;
+    }
+
+    fn close_card(&mut self) {
+        let Some((top, fill, border)) = self.card.take() else {
+            return;
+        };
+        let pad = self.px(14);
+        self.y = self.y.saturating_sub(self.last_gap).saturating_add(pad);
+        let radius = self.px(theme::RADIUS_CARD);
+        self.layout.rounds.insert(
+            0,
+            (
+                Rect::new(self.margin, top, self.outer_w(), self.y.saturating_sub(top)),
+                fill,
+                border,
+                radius,
+            ),
+        );
+        self.x = self.margin;
+        self.w = self.outer_w();
+        self.gap(10);
     }
 
     fn boxed(&mut self, text: &str, tone: Tone) {
-        let pad = self.px(8);
-        let width = self
-            .layout
-            .width
-            .saturating_sub(self.margin.saturating_mul(2));
-        let (fill, color) = match tone {
-            Tone::Danger => (Some(theme::DANGER_BG), theme::DANGER_TEXT),
-            Tone::Warn => (Some(theme::WARN_BG), theme::WARN_TEXT),
-            Tone::Plain => (None, theme::TEXT),
+        let pad = self.px(10);
+        let (fill, color, tag) = match tone {
+            Tone::Danger => (
+                theme::DANGER_BG,
+                theme::DANGER_TEXT,
+                Some(("고위험", theme::DANGER_ACCENT, theme::CARD)),
+            ),
+            Tone::Blocked => (
+                theme::BLOCKED_BG,
+                theme::BLOCKED_TEXT,
+                Some(("차단", theme::CARD, theme::BLOCKED_BG)),
+            ),
+            Tone::Warn => (
+                theme::WARN_BG,
+                theme::WARN_TEXT,
+                Some(("주의", theme::WARN_ACCENT, theme::CARD)),
+            ),
+            Tone::Plain => (
+                theme::INFO_BG,
+                theme::INFO_TEXT,
+                Some(("정보", theme::INFO_ACCENT, theme::CARD)),
+            ),
         };
         let top = self.y;
+        let tag_h = self.px(22);
+        let tag_w = tag.map_or(0, |(label, _, _)| {
+            self.dc.select_font(&self.fonts.body_bold);
+            self.dc
+                .measure(&wide(label), i32::MAX)
+                .1
+                .saturating_add(self.px(16))
+                .max(self.px(44))
+        });
+        let text_x = self
+            .x
+            .saturating_add(pad)
+            .saturating_add(tag_w)
+            .saturating_add(self.px(10));
+        let text_w = self
+            .w
+            .saturating_sub(pad.saturating_mul(2))
+            .saturating_sub(tag_w)
+            .saturating_sub(self.px(10));
         self.y = self.y.saturating_add(pad);
-        self.text(
-            text,
-            FontRole::Body,
-            color,
-            self.margin.saturating_add(pad),
-            width.saturating_sub(pad.saturating_mul(2)),
-        );
-        self.y = self.y.saturating_add(pad);
-        if let Some(fill) = fill {
-            self.layout.fills.push((
-                Rect::new(self.margin, top, width, self.y.saturating_sub(top)),
-                fill,
-            ));
+        let text_top = self.y;
+        self.text(text, FontRole::Body, color, text_x, text_w);
+        self.y = self
+            .y
+            .max(text_top.saturating_add(tag_h))
+            .saturating_add(pad);
+        let radius = self.px(theme::RADIUS_CONTROL);
+        self.layout.rounds.push((
+            Rect::new(self.x, top, self.w, self.y.saturating_sub(top)),
+            fill,
+            fill,
+            radius,
+        ));
+        if let Some((label, tag_fill, tag_text)) = tag {
+            let tag_rect = Rect::new(self.x.saturating_add(pad), text_top, tag_w, tag_h);
+            self.layout
+                .rounds
+                .push((tag_rect, tag_fill, tag_fill, tag_h / 2));
+            self.layout
+                .tags
+                .push((tag_rect, label.to_owned(), tag_text));
         }
-        self.gap(6);
+        self.gap(8);
     }
 }
 
@@ -319,50 +412,99 @@ fn build_layout(
         y: margin,
         margin,
         dpi,
+        x: margin,
+        w: width.saturating_sub(margin.saturating_mul(2)).max(40),
+        card: None,
+        last_gap: 0,
     };
-    let inner = width.saturating_sub(margin.saturating_mul(2)).max(40);
     for block in &view.blocks {
         match block {
+            Block::Summary {
+                sentence,
+                address,
+                notes,
+                title,
+            } => {
+                builder.open_card(theme::INFO_BG, theme::INFO_ACCENT);
+                let (x, w) = (builder.x, builder.w);
+                builder.text("요약", FontRole::Caption, theme::INFO_TEXT, x, w);
+                builder.gap(2);
+                builder.text(sentence, FontRole::ApprovalTitle, theme::TEXT, x, w);
+                if let Some(address) = address {
+                    builder.gap(6);
+                    let grouped = crate::ui::screens_btc::grouped(address);
+                    let shown = if !address.contains(' ')
+                        && crate::ui::theme::btc_address_segments(&grouped).is_some()
+                    {
+                        grouped
+                    } else {
+                        address.clone()
+                    };
+                    builder.text(&shown, FontRole::Mono, theme::TEXT, x, w);
+                    if !notes.is_empty() {
+                        builder.text(notes, FontRole::Caption, theme::INFO_TEXT, x, w);
+                    }
+                }
+                builder.gap(6);
+                builder.text(title, FontRole::Caption, theme::MUTED, x, w);
+                builder.close_card();
+            }
             Block::Title(text) => {
-                builder.text(text, FontRole::ApprovalTitle, theme::TEXT, margin, inner);
+                let (x, w) = (builder.x, builder.w);
+                builder.text(text, FontRole::ApprovalTitle, theme::TEXT, x, w);
                 builder.gap(10);
             }
             Block::Warning { text, tone } => builder.boxed(text, *tone),
             Block::Ack => {
-                let size = builder.px(16);
+                let size = builder.px(18);
                 let top = builder.y;
-                let rect = Rect::new(margin, top, size, size);
-                builder.layout.frames.push((rect, theme::TEXT));
+                let (x, w) = (builder.x, builder.w);
+                let rect = Rect::new(x, top, size, size);
+                let corner = builder.px(3);
+                builder.layout.rounds.push((
+                    rect,
+                    if ack_checked {
+                        theme::FOCUS
+                    } else {
+                        theme::CARD
+                    },
+                    if ack_checked {
+                        theme::FOCUS
+                    } else {
+                        theme::TEXT
+                    },
+                    corner,
+                ));
                 if ack_checked {
                     builder
                         .layout
-                        .fills
-                        .push((rect.inset(builder.px(3)), theme::FOCUS));
+                        .tags
+                        .push((rect, "✓".to_owned(), theme::PRIMARY_TEXT));
                 }
                 builder.text(
                     "위 경고를 모두 확인했습니다",
                     FontRole::BodyBold,
                     theme::TEXT,
-                    margin.saturating_add(size).saturating_add(builder.px(8)),
-                    inner.saturating_sub(size),
+                    x.saturating_add(size).saturating_add(builder.px(8)),
+                    w.saturating_sub(size),
                 );
                 builder.layout.ack = Some(Rect::new(
-                    margin,
+                    x,
                     top,
-                    inner,
+                    w,
                     builder.y.saturating_sub(top).max(size),
                 ));
                 builder.gap(10);
             }
             Block::Section(title) => {
-                builder.gap(6);
-                builder.text(title, FontRole::BodyBold, theme::TEXT, margin, inner);
-                let rule = Rect::new(margin, builder.y, inner, 1);
-                builder.layout.fills.push((rule, theme::BORDER));
-                builder.gap(6);
+                builder.open_card(theme::CARD, theme::CARD_BORDER);
+                let (x, w) = (builder.x, builder.w);
+                builder.text(title, FontRole::Subtitle, theme::TEXT, x, w);
+                builder.gap(8);
             }
             Block::Field { label, value, mono } => {
-                builder.text(label, FontRole::Body, theme::MUTED, margin, inner);
+                let (x, w) = (builder.x, builder.w);
+                builder.text(label, FontRole::Caption, theme::MUTED, x, w);
                 // A Bitcoin address (0x0601, no spaces in the value) is drawn in 4-character
                 // groups with the first and last 6 characters bold (spec/04 §3.3, spec/08 §10).
                 let grouped = crate::ui::screens_btc::grouped(value);
@@ -383,39 +525,40 @@ fn build_layout(
                 } else {
                     FontRole::Body
                 };
-                builder.text(
-                    value,
-                    role,
-                    theme::TEXT,
-                    margin.saturating_add(builder.px(12)),
-                    inner.saturating_sub(builder.px(12)),
-                );
-                builder.gap(8);
+                builder.gap(2);
+                builder.text(value, role, theme::TEXT, x, w);
+                builder.gap(10);
             }
             Block::Muted(text) => {
-                builder.text(text, FontRole::Body, theme::MUTED, margin, inner);
+                let (x, w) = (builder.x, builder.w);
+                builder.text(text, FontRole::Body, theme::MUTED, x, w);
                 builder.gap(6);
             }
             Block::RawToggle { open } => {
+                builder.close_card();
                 let top = builder.y;
+                let (x, w) = (builder.x, builder.w);
                 builder.text(
                     if *open {
-                        "원본 데이터 ▾"
+                        "자세히 ▾  (수수료 계산·nonce·원본 데이터)"
                     } else {
-                        "원본 데이터 ▸"
+                        "자세히 ▸  (수수료 계산·nonce·원본 데이터)"
                     },
                     FontRole::BodyBold,
                     theme::FOCUS,
-                    margin,
-                    inner,
+                    x,
+                    w,
                 );
-                builder.layout.raw =
-                    Some(Rect::new(margin, top, inner, builder.y.saturating_sub(top)));
-                builder.gap(6);
+                builder.layout.raw = Some(Rect::new(x, top, w, builder.y.saturating_sub(top)));
+                builder.gap(8);
+                if *open {
+                    builder.open_card(theme::CARD, theme::CARD_BORDER);
+                }
             }
             Block::Notice(text) => {
                 builder.gap(20);
-                builder.text(text, FontRole::BodyBold, theme::FOCUS, margin, inner);
+                let (x, w) = (builder.x, builder.w);
+                builder.text(text, FontRole::BodyBold, theme::FOCUS, x, w);
             }
             Block::Account {
                 index,
@@ -423,28 +566,40 @@ fn build_layout(
                 address,
                 checked,
             } => {
-                let size = builder.px(16);
+                let size = builder.px(18);
                 let top = builder.y;
-                let rect = Rect::new(margin, top, size, size);
-                builder.layout.frames.push((rect, theme::TEXT));
+                let (x0, w0) = (builder.x, builder.w);
+                let rect = Rect::new(x0, top, size, size);
+                let corner = builder.px(3);
+                builder.layout.rounds.push((
+                    rect,
+                    if *checked { theme::FOCUS } else { theme::CARD },
+                    if *checked { theme::FOCUS } else { theme::TEXT },
+                    corner,
+                ));
                 if *checked {
                     builder
                         .layout
-                        .fills
-                        .push((rect.inset(builder.px(3)), theme::FOCUS));
+                        .tags
+                        .push((rect, "✓".to_owned(), theme::PRIMARY_TEXT));
                 }
-                let x = margin.saturating_add(size).saturating_add(builder.px(8));
-                let width = inner.saturating_sub(size).saturating_sub(builder.px(8));
+                let x = x0.saturating_add(size).saturating_add(builder.px(8));
+                let width = w0.saturating_sub(size).saturating_sub(builder.px(8));
                 builder.text(label, FontRole::BodyBold, theme::TEXT, x, width);
-                builder.text(address, FontRole::Mono, theme::TEXT, x, width);
+                let shown = yw_core::evm::address::parse_address(address).map_or_else(
+                    |_| address.clone(),
+                    |parsed| yw_core::evm::display::format_address(&parsed),
+                );
+                builder.text(&shown, FontRole::Mono, theme::TEXT, x, width);
                 builder.layout.accounts.push((
                     *index,
-                    Rect::new(margin, top, inner, builder.y.saturating_sub(top).max(size)),
+                    Rect::new(x0, top, w0, builder.y.saturating_sub(top).max(size)),
                 ));
                 builder.gap(8);
             }
         }
     }
+    builder.close_card();
     builder.layout.height = builder.y.saturating_add(margin);
     builder.layout
 }
@@ -1815,83 +1970,137 @@ impl App {
             .max(px(100));
         dc.fill_rect(client, theme::BG);
         let mut y = margin;
-        // Header.
-        // One entry per line; a grouped Solana address line is Consolas with bold middle groups
-        // (spec/07 §12.3).
-        let mut header_lines: Vec<(String, FontRole)> = Vec::new();
+        // Header: one row per field (muted label column, value), then the badges as pills. A
+        // grouped Solana address line is Consolas with bold middle groups (spec/07 §12.3).
+        let label_w = px(84);
+        let value_w = width.saturating_sub(label_w).max(px(60));
+        let mut rows: Vec<(String, String, FontRole)> = Vec::new();
         for (label, value) in &ui.view.header {
             for (index, line) in value.split('\n').enumerate() {
-                if index == 0 {
-                    header_lines.push((format!("{label}: {line}"), FontRole::Body));
-                } else if crate::ui::theme::sol_address_segments(line).is_some() {
-                    header_lines.push((line.to_owned(), FontRole::Mono));
+                let role = if index > 0 && crate::ui::theme::sol_address_segments(line).is_some() {
+                    FontRole::Mono
                 } else {
-                    header_lines.push((line.to_owned(), FontRole::Body));
-                }
+                    FontRole::Body
+                };
+                rows.push((
+                    if index == 0 {
+                        label.clone()
+                    } else {
+                        String::new()
+                    },
+                    line.to_owned(),
+                    role,
+                ));
             }
         }
-        if header_lines.is_empty() {
-            header_lines.push(("요청 출처: Your Wallet (이 앱)".to_owned(), FontRole::Body));
+        if rows.is_empty() {
+            rows.push((
+                "요청 출처".to_owned(),
+                "Your Wallet (이 앱)".to_owned(),
+                FontRole::Body,
+            ));
         }
+        let mut badges: Vec<String> = Vec::new();
         if let Some(banner) = ui.view.btc_banner
-            && !header_lines
+            && !rows
                 .iter()
-                .any(|(text, _)| text.contains(banner.text()))
+                .any(|(_, value, _)| value.contains(banner.text()))
         {
-            header_lines.push((banner.text().to_owned(), FontRole::BodyBold));
+            badges.push(banner.text().to_owned());
         }
-        for badge in &ui.view.badges {
-            header_lines.push((badge.clone(), FontRole::BodyBold));
-        }
+        badges.extend(ui.view.badges.iter().cloned());
         let mut header_height = 0;
-        for (text, role) in &header_lines {
+        for (_, value, role) in &rows {
             dc.select_font(fonts.get(*role));
             header_height += dc
-                .measure_wrapped(&wide(text), width, DrawFlags::WRAP)
-                .saturating_add(px(2));
+                .measure_wrapped(&wide(value), value_w, DrawFlags::WRAP)
+                .saturating_add(px(4));
         }
-        let (header_fill, header_text) = match ui.view.btc_banner {
-            Some(crate::ui::approval_view::BtcBanner::Mainnet) => {
-                (Some(theme::BTC_MAINNET_BG), theme::BTC_MAINNET_TEXT)
-            }
+        if !badges.is_empty() {
+            header_height += px(30);
+        }
+        let (header_fill, header_text, header_muted) = match ui.view.btc_banner {
+            Some(crate::ui::approval_view::BtcBanner::Mainnet) => (
+                theme::BTC_MAINNET_BG,
+                theme::BTC_MAINNET_TEXT,
+                theme::BTC_MAINNET_TEXT,
+            ),
             Some(crate::ui::approval_view::BtcBanner::Testnet4) => {
-                (Some(theme::BTC_TESTNET4_BG), theme::TEXT)
+                (theme::BTC_TESTNET4_BG, theme::TEXT, theme::TEXT)
             }
-            None if ui.view.testnet => (Some(theme::TESTNET_BG), theme::TEXT),
-            None => (None, theme::TEXT),
+            None if ui.view.testnet => (theme::TESTNET_BG, theme::TEXT, theme::MUTED),
+            None => (theme::CARD, theme::TEXT, theme::MUTED),
         };
-        if let Some(fill) = header_fill {
-            dc.fill_rect(
-                Rect::new(
-                    0,
-                    0,
-                    client.w,
-                    header_height.saturating_add(margin.saturating_mul(2)),
-                ),
-                fill,
-            );
-        }
-        for (text, role) in &header_lines {
+        let header_rect = Rect::new(
+            0,
+            0,
+            client.w,
+            header_height.saturating_add(margin.saturating_mul(2)),
+        );
+        dc.fill_rect(header_rect, header_fill);
+        dc.fill_rect(
+            Rect::new(0, header_rect.bottom(), client.w, 1),
+            theme::CARD_BORDER,
+        );
+        for (label, value, role) in &rows {
             dc.select_font(fonts.get(*role));
+            let height = dc.measure_wrapped(&wide(value), value_w, DrawFlags::WRAP);
+            if !label.is_empty() {
+                dc.select_font(&fonts.body);
+                dc.set_text_color(header_muted);
+                dc.draw_text(
+                    &wide(label),
+                    Rect::new(margin, y, label_w, height.max(px(18))),
+                    DrawFlags::WRAP,
+                );
+            }
+            let rect = Rect::new(margin.saturating_add(label_w), y, value_w, height);
             dc.set_text_color(header_text);
-            let height = dc.measure_wrapped(&wide(text), width, DrawFlags::WRAP);
-            let rect = Rect::new(margin, y, width, height);
             let emphasized = *role == FontRole::Mono
-                && crate::ui::theme::sol_address_segments(text).is_some_and(|segments| {
+                && crate::ui::theme::sol_address_segments(value).is_some_and(|segments| {
                     crate::ui::theme::paint_sol_address(&mut dc, fonts, &segments, rect)
                 });
             if !emphasized {
                 dc.select_font(fonts.get(*role));
-                dc.draw_text(&wide(text), rect, DrawFlags::WRAP);
+                dc.draw_text(&wide(value), rect, DrawFlags::WRAP);
             }
-            y = y.saturating_add(height).saturating_add(px(2));
+            y = y.saturating_add(height).saturating_add(px(4));
         }
-        y = y.saturating_add(px(8));
+        if !badges.is_empty() {
+            let mut x = margin;
+            let top = y.saturating_add(px(4));
+            dc.select_font(&fonts.body_bold);
+            for badge in &badges {
+                let text = wide(badge);
+                let w = dc
+                    .measure(&text, i32::MAX)
+                    .1
+                    .saturating_add(px(20))
+                    .min(width);
+                if x > margin && x.saturating_add(w) > margin.saturating_add(width) {
+                    break;
+                }
+                let pill = Rect::new(x, top, w, px(24));
+                dc.round_rect(pill, px(12), theme::CARD, theme::CARD_BORDER);
+                dc.set_text_color(theme::TEXT);
+                dc.draw_text(&text, pill, DrawFlags::CENTER);
+                x = x.saturating_add(w).saturating_add(px(8));
+            }
+        }
+        y = header_rect.bottom().saturating_add(px(10));
         // Simulation band.
         let mut retry = None;
         if let Some(band) = ui.view.band.clone() {
-            let pad = px(10);
-            let inner = width.saturating_sub(pad.saturating_mul(2));
+            let pad = px(12);
+            let tag_w = px(56);
+            let inner = width
+                .saturating_sub(pad.saturating_mul(2))
+                .saturating_sub(tag_w)
+                .saturating_sub(px(10));
+            let text_x = margin
+                .saturating_add(pad)
+                .saturating_add(tag_w)
+                .saturating_add(px(10));
             dc.select_font(&fonts.body_bold);
             let head_h = dc.measure_wrapped(&wide(&band.head), inner, DrawFlags::WRAP);
             dc.select_font(&fonts.body);
@@ -1900,31 +2109,44 @@ impl App {
             } else {
                 dc.measure_wrapped(&wide(&band.detail), inner, DrawFlags::WRAP)
             };
-            let button_h = if band.retry { px(32) } else { 0 };
+            let button_h = if band.retry { px(34) } else { 0 };
             let height = head_h
                 .saturating_add(detail_h)
                 .saturating_add(button_h)
                 .saturating_add(pad.saturating_mul(3))
                 .min(client.h / 3);
             let rect = Rect::new(margin, y, width, height);
-            dc.fill_rect(rect, theme::DANGER_BG);
+            dc.round_rect(
+                rect,
+                px(theme::RADIUS_CONTROL),
+                theme::DANGER_BG,
+                theme::DANGER_ACCENT,
+            );
+            let tag = Rect::new(margin + pad, y + pad, tag_w, px(22));
+            dc.round_rect(tag, px(11), theme::DANGER_ACCENT, theme::DANGER_ACCENT);
             dc.select_font(&fonts.body_bold);
+            dc.set_text_color(theme::CARD);
+            dc.draw_text(&wide("고위험"), tag, DrawFlags::CENTER);
             dc.set_text_color(theme::DANGER_TEXT);
             dc.draw_text(
                 &wide(&band.head),
-                Rect::new(margin + pad, y + pad, inner, head_h),
+                Rect::new(text_x, y + pad, inner, head_h),
                 DrawFlags::WRAP,
             );
             dc.select_font(&fonts.body);
             dc.draw_text(
                 &wide(&band.detail),
-                Rect::new(margin + pad, y + pad + head_h, inner, detail_h),
+                Rect::new(text_x, y + pad + head_h, inner, detail_h),
                 DrawFlags::WRAP,
             );
             if band.retry {
-                let button = Rect::new(margin + pad, y + height - pad - px(28), px(180), px(28));
-                dc.fill_rect(button, theme::BG);
-                dc.frame_rect(button, theme::DANGER_TEXT);
+                let button = Rect::new(text_x, y + height - pad - px(30), px(180), px(30));
+                dc.round_rect(
+                    button,
+                    px(theme::RADIUS_CONTROL),
+                    theme::CARD,
+                    theme::DANGER_ACCENT,
+                );
                 dc.set_text_color(theme::DANGER_TEXT);
                 dc.draw_text(&wide("시뮬레이션 다시 시도"), button, DrawFlags::CENTER);
                 retry = Some(button);
@@ -1934,7 +2156,8 @@ impl App {
         // Bottom bar.
         let bottom_h = px(96);
         let bottom_top = client.h.saturating_sub(bottom_h);
-        dc.fill_rect(Rect::new(0, bottom_top, client.w, 1), theme::BORDER);
+        dc.fill_rect(Rect::new(0, bottom_top, client.w, bottom_h), theme::CARD);
+        dc.fill_rect(Rect::new(0, bottom_top, client.w, 1), theme::CARD_BORDER);
         let gate = &ui.session.gate;
         let remaining = gate.deadline_ms.saturating_sub(now);
         let mut status = String::new();
@@ -1954,11 +2177,14 @@ impl App {
             let done = HIGH_RISK_HOLD_MS.saturating_sub(left);
             let _ = write!(status, "   ·   {}.{}초", done / 1_000, (done % 1_000) / 100);
         }
+        if status.is_empty() && ui.view.high && !ui.view.blocked {
+            status.push_str("경고를 확인하고 체크한 뒤 '승인'을 2초 동안 누르고 있으세요.");
+        }
         dc.select_font(&fonts.body);
         dc.set_text_color(theme::MUTED);
         dc.draw_text(
             &wide(&status),
-            Rect::new(margin, bottom_top + px(8), width, px(22)),
+            Rect::new(margin, bottom_top + px(10), width, px(22)),
             DrawFlags::LINE,
         );
         let button_w = px(220);
@@ -1976,8 +2202,8 @@ impl App {
             px(140),
             button_h,
         );
-        dc.fill_rect(reject, theme::BG);
-        dc.frame_rect(reject, theme::BORDER);
+        let radius = px(theme::RADIUS_CONTROL);
+        dc.round_rect(reject, radius, theme::CARD, theme::BUTTON_SECONDARY.border);
         dc.set_text_color(theme::TEXT);
         dc.draw_text(&wide("거부"), reject, DrawFlags::CENTER);
         let armed =
@@ -2001,13 +2227,16 @@ impl App {
         } else {
             "승인"
         };
-        dc.fill_rect(
+        let (fill, text_color) = if armed {
+            (theme::PRIMARY_BG, theme::PRIMARY_TEXT)
+        } else {
+            (theme::DISABLED_BG, theme::DISABLED_TEXT)
+        };
+        dc.round_rect(
             approve,
-            if armed {
-                theme::PRIMARY_BG
-            } else {
-                theme::DISABLED_BG
-            },
+            radius,
+            fill,
+            if armed { fill } else { theme::CARD_BORDER },
         );
         if let Some(left) = hold {
             let done = HIGH_RISK_HOLD_MS.saturating_sub(left);
@@ -2016,15 +2245,17 @@ impl App {
             )
             .unwrap_or(0);
             dc.fill_rect(
-                Rect::new(approve.x, approve.y, progress, px(4)),
-                theme::FOCUS,
+                Rect::new(
+                    approve.x,
+                    approve.bottom().saturating_sub(px(5)),
+                    progress,
+                    px(5),
+                ),
+                theme::WARN_ACCENT,
             );
         }
-        dc.set_text_color(if armed {
-            theme::PRIMARY_TEXT
-        } else {
-            theme::MUTED
-        });
+        dc.set_text_color(text_color);
+        dc.select_font(&fonts.body_bold);
         dc.draw_text(&wide(label), approve, DrawFlags::CENTER);
         match ui.focus {
             Focus::Approve => dc.frame_rect(approve.inset(-px(3)), theme::FOCUS),
@@ -2090,6 +2321,12 @@ impl App {
             return;
         };
         let offset = ui.scroll;
+        for (rect, fill, border, radius) in &layout.rounds {
+            let shifted = Rect::new(rect.x, rect.y.saturating_sub(offset), rect.w, rect.h);
+            if shifted.bottom() >= 0 && shifted.y <= client.h {
+                dc.round_rect(shifted, *radius, *fill, *border);
+            }
+        }
         for (rect, color) in &layout.fills {
             let shifted = Rect::new(rect.x, rect.y.saturating_sub(offset), rect.w, rect.h);
             if shifted.bottom() >= 0 && shifted.y <= client.h {
@@ -2100,6 +2337,15 @@ impl App {
             dc.frame_rect(
                 Rect::new(rect.x, rect.y.saturating_sub(offset), rect.w, rect.h),
                 *color,
+            );
+        }
+        dc.select_font(&fonts.body_bold);
+        for (rect, text, color) in &layout.tags {
+            dc.set_text_color(*color);
+            dc.draw_text(
+                &wide(text),
+                Rect::new(rect.x, rect.y.saturating_sub(offset), rect.w, rect.h),
+                DrawFlags::CENTER,
             );
         }
         for line in &layout.lines {
@@ -2133,7 +2379,21 @@ impl App {
 
 #[cfg(test)]
 #[path = "app_approval_smoke.rs"]
-mod smoke;
+pub(crate) mod smoke;
+
+/// Hooks for the screenshot tour (`ui::tour`, an `#[ignore]` test; compiled only for tests).
+#[cfg(test)]
+impl App {
+    /// The open approval window.
+    pub(crate) fn tour_approval_window(&self) -> Option<&Window> {
+        self.evm.window.as_ref().map(|ui| &ui.window)
+    }
+
+    /// Rejects the open approval (as `거부` would).
+    pub(crate) fn tour_reject_approval(&mut self) {
+        self.finish_approval(QueueOutcome::Rejected);
+    }
+}
 
 /// E31 for a dApp transaction that carried fee fields (spec/03 §3.4, values ignored).
 fn site_fee_warning(site: &SiteRequest) -> Vec<yw_core::approval::Warning> {

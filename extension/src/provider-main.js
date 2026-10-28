@@ -31,7 +31,12 @@
   const METHOD_PATTERN = /^[A-Za-z0-9_]{1,96}$/u;
   const CHANNEL_PATTERN = /^[0-9a-f]{64}$/u;
   const REQUEST_ID_PATTERN = /^[0-9a-f]{32}$/u;
+  const HEX_CHAIN_ID_PATTERN = /^0x[0-9A-Fa-f]{1,64}$/u;
+  const SYNC_SEND_UNSUPPORTED = "send(payload) without a callback supports only eth_accounts, eth_coinbase and net_version. Use request() or pass a callback.";
   const targetOrigin = root.location.origin;
+  // Captured before any page script runs. Reports a throwing legacy callback like an uncaught
+  // page error without letting it reach provider state (spec/05 §2.5 레거시 API).
+  const nativeReportError = typeof root.reportError === "function" ? root.reportError : null;
 
   class ProviderRpcError extends Error {
     constructor(code, message, data) {
@@ -71,7 +76,11 @@
   defineMember("selectedAddress", { get: () => selectedAddress });
   defineMember("isConnected", { value: () => channel !== null && !dead });
   defineMember("request", { value: request });
+  // Legacy MetaMask API in every mode (spec/05 §2.5 레거시 API). Each one only calls `request`,
+  // so the method table, permissions, limits and error codes are exactly those of `request`.
   defineMember("enable", { value: () => request({ method: "eth_requestAccounts" }) });
+  defineMember("send", { value: send });
+  defineMember("sendAsync", { value: sendAsync });
   defineMember("on", { value: addListener });
   defineMember("addListener", { value: addListener });
   defineMember("once", { value: once });
@@ -357,6 +366,109 @@
       waiter.resolve();
     }
     bridgeWaiters.clear();
+  }
+
+  // MetaMask legacy `send`, three signatures:
+  //   send(method: string, params?)  → request({ method, params }) (Promise of the raw result)
+  //   send(payload, callback)        → sendAsync(payload, callback), returns undefined
+  //   send(payload)                  → synchronous JSON-RPC response from cached state (no I/O)
+  function send(methodOrPayload, paramsOrCallback) {
+    if (typeof methodOrPayload === "string") {
+      return request({ method: methodOrPayload, params: paramsOrCallback });
+    }
+    if (typeof paramsOrCallback === "function") {
+      return sendAsync(methodOrPayload, paramsOrCallback);
+    }
+    return sendSync(methodOrPayload);
+  }
+
+  // Only what the provider already exposes as properties (selectedAddress, chainId); anything
+  // else would need I/O, so it throws instead.
+  function sendSync(payload) {
+    const { id, method } = legacyCall(payload);
+    let result;
+    if (method === "eth_accounts") {
+      result = selectedAddress === null ? [] : [selectedAddress];
+    } else if (method === "eth_coinbase") {
+      result = selectedAddress;
+    } else if (method === "net_version") {
+      result = cachedNetVersion();
+    } else {
+      throw new Error(SYNC_SEND_UNSUPPORTED);
+    }
+    return { id, jsonrpc: "2.0", result };
+  }
+
+  // callback(null, { id, jsonrpc, result }) or callback(error, { id, jsonrpc, error }), always
+  // after the call returns. An array payload is a batch: every element is validated first, then
+  // each runs through `request` and the callback gets callback(null, [responses in order]).
+  function sendAsync(payload, callback) {
+    if (typeof callback !== "function") {
+      throw new TypeError("Legacy JSON-RPC callback must be a function.");
+    }
+    if (Array.isArray(payload)) {
+      const calls = [];
+      for (let index = 0; index < payload.length; index += 1) {
+        calls.push(legacyCall(payload[index]));
+      }
+      Promise.all(calls.map((call) => legacyResponse(call))).then((outcomes) => {
+        invokeLegacyCallback(callback, null, outcomes.map((outcome) => outcome.response));
+      });
+      return undefined;
+    }
+    const call = legacyCall(payload);
+    legacyResponse(call).then((outcome) => invokeLegacyCallback(callback, outcome.error, outcome.response));
+    return undefined;
+  }
+
+  // Reads `id`, `method` and `params` once. Other payload keys (`jsonrpc` etc.) are ignored.
+  function legacyCall(payload) {
+    if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+      throw new TypeError("Legacy JSON-RPC payload must be an object with a string method.");
+    }
+    const method = payload.method;
+    if (typeof method !== "string") {
+      throw new TypeError("Legacy JSON-RPC payload must be an object with a string method.");
+    }
+    return { id: payload.id, method, params: payload.params };
+  }
+
+  // Never rejects.
+  function legacyResponse(call) {
+    return request({ method: call.method, params: call.params }).then(
+      (result) => ({ error: null, response: { id: call.id, jsonrpc: "2.0", result } }),
+      (error) => ({ error, response: { id: call.id, jsonrpc: "2.0", error: legacyErrorObject(error) } })
+    );
+  }
+
+  function legacyErrorObject(error) {
+    if (!(error instanceof ProviderRpcError)) {
+      return { code: -32603, message: "Internal error." };
+    }
+    return error.data === undefined
+      ? { code: error.code, message: error.message }
+      : { code: error.code, message: error.message, data: error.data };
+  }
+
+  // A throwing dApp callback is reported (window.reportError) and otherwise ignored.
+  function invokeLegacyCallback(callback, error, response) {
+    try {
+      callback(error, response);
+    } catch (callbackError) {
+      if (nativeReportError !== null) {
+        try {
+          nativeReportError.call(root, callbackError);
+        } catch (_error) {
+          // Reporting is best effort.
+        }
+      }
+    }
+  }
+
+  function cachedNetVersion() {
+    return typeof activeChainId === "string" && HEX_CHAIN_ID_PATTERN.test(activeChainId)
+      ? BigInt(activeChainId).toString(10)
+      : null;
   }
 
   function addListener(eventName, listener) {

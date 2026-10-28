@@ -314,6 +314,21 @@ impl PaintDc<'_> {
         unsafe { DeleteObject(brush) };
     }
 
+    /// Fills a rounded rectangle (`radius` in pixels) outlined in `border` (pass `fill` for no
+    /// visible outline).
+    pub fn round_rect(&mut self, rect: Rect, radius: i32, fill: Color, border: Color) {
+        if rect.w <= 0 || rect.h <= 0 {
+            return;
+        }
+        super::controls::round_rect(self.hdc(), &rect.to_win(), radius, fill, border);
+    }
+
+    /// Fills a circle or ellipse inscribed in `rect` (a rounded rectangle with full radius).
+    pub fn ellipse(&mut self, rect: Rect, fill: Color, border: Color) {
+        let radius = rect.w.min(rect.h) / 2;
+        self.round_rect(rect, radius, fill, border);
+    }
+
     /// Sets the text color for subsequent draws.
     pub fn set_text_color(&mut self, color: Color) {
         // SAFETY: `hdc` is live during the paint session.
