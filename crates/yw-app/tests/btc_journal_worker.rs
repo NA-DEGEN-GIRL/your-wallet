@@ -49,12 +49,17 @@ impl Drop for Fixture {
     }
 }
 
+/// Distinct temp folder per call (pid + counter: two tests in the same millisecond never share one).
+static NEXT_DIR: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 fn fixture(tag: &str) -> TestResult<Fixture> {
     let dir = std::env::temp_dir().join(format!(
         "yw-app-btc-journal-{tag}-{}-{}",
         std::process::id(),
-        yw_win::time::monotonic_ms()
+        NEXT_DIR.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     ));
+    // A folder left by an earlier run whose pid was the same starts empty again.
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
     let mut vault = Vault::load(Box::new(
         FileStorage::open(&dir).map_err(|error| format!("{error:?}"))?,

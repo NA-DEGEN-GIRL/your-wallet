@@ -53,6 +53,16 @@ impl Mutator {
     }
 }
 
+/// Iterations per target: `YW_FUZZ_RUNS` when set to a positive number (the short smoke run of
+/// `scripts/check.ps1`), otherwise 1,000,000 (spec/09 §2.4).
+fn runs() -> u32 {
+    std::env::var("YW_FUZZ_RUNS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|&runs| runs > 0)
+        .unwrap_or(1_000_000)
+}
+
 #[test]
 #[ignore = "fuzz-lite (spec/09 §2.4 fallback)"]
 fn fuzz_lite_json() {
@@ -66,7 +76,7 @@ fn fuzz_lite_json() {
         state: 0x6a73_6f6e_6675_7a31,
     };
     let mut accepted = 0_u32;
-    for _ in 0..1_000_000 {
+    for _ in 0..runs() {
         let input = mutator.mutate(&seeds);
         if let Ok(value) = parse(&input, &Limits::REQUEST) {
             let written = to_vec(&value);
@@ -109,7 +119,7 @@ fn fuzz_lite_frame() {
         state: 0x6672_616d_6566_7a31,
     };
     let mut frames = 0_u32;
-    for _ in 0..1_000_000 {
+    for _ in 0..runs() {
         let input = mutator.mutate(&seeds);
         let mut reader = Counting {
             inner: Cursor::new(&input),

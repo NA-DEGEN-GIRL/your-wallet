@@ -1,7 +1,7 @@
 ﻿# scripts/check.ps1 — 저장소 게이트. 사용: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 [-Step <name>] [-Offline]
 [CmdletBinding()]
 param(
-    [ValidateSet("all", "fmt", "deps", "clippy", "test", "build", "ext-test", "script-test", "privacy", "audit-ext")]
+    [ValidateSet("all", "fmt", "deps", "clippy", "test", "fuzz", "build", "ext-test", "script-test", "privacy", "audit-ext")]
     [string]$Step = "all",
     [switch]$Offline
 )
@@ -40,6 +40,9 @@ Invoke-Step "fmt" 20 "cargo" @("fmt", "--all", "--", "--check")
 Invoke-Step "deps" 21 "node" $deps
 Invoke-Step "clippy" 22 "cargo" (@("clippy", "--workspace", "--all-targets") + $net + @("--", "-D", "warnings"))
 Invoke-Step "test" 23 "cargo" (@("test", "--workspace") + $net)
+$env:YW_FUZZ_RUNS = "20000"                                           # fuzz-lite 스모크([09] §2.4): 무시된 fuzz_lite_*를 2만 회씩
+Invoke-Step "fuzz" 29 "cargo" (@("test", "--workspace") + $net + @("--", "--ignored", "fuzz_lite"))
+$env:YW_FUZZ_RUNS = $null                                             # 직접 --ignored로 돌리면 1,000,000회
 Invoke-Step "build" 24 "cargo" (@("build", "--workspace") + $net)   # target\debug\yw-host.exe ([09] §2.2, [05] H1)
 $env:YW_CHECK = "1"                                                   # 확장 프로세스 테스트가 skip 대신 실패([09])
 if ($Step -in "all", "ext-test") { Invoke-Step "ext-test" 25 "node" (@("--test") + (Get-Tests "extension/tests" 25)) }

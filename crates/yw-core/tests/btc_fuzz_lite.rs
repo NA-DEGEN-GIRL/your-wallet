@@ -24,7 +24,19 @@ use yw_core::hex;
 use yw_core::journal::btc::{BTC_JOURNAL_MAX_BODY, BtcRecord, BtcTxState};
 use yw_json::{Limits, Value};
 
-const RUNS: u32 = 1_000_000;
+/// Iterations per target: `YW_FUZZ_RUNS` when set to a positive number (the short smoke run of
+/// `scripts/check.ps1`), otherwise 1,000,000 (spec/09 §2.4).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the iteration count of a test tool; yw-core itself never reads the environment"
+)]
+fn runs() -> u32 {
+    std::env::var("YW_FUZZ_RUNS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|&runs| runs > 0)
+        .unwrap_or(1_000_000)
+}
 const ALWAYS_ON_RUNS: u32 = 100_000;
 const TX_MAX_LEN: usize = 65_536;
 const ADDRESS_MAX_LEN: usize = 128;
@@ -358,12 +370,12 @@ fn fuzz_lite_btc_journal() {
     let seeds = journal_seeds();
     let mut mutator = Mutator::new(0x6274_635f_6a6f_7521, BTC_JOURNAL_MAX_BODY + 64);
     let mut accepted = 0_u32;
-    for _ in 0..RUNS {
+    for _ in 0..runs() {
         if check_journal(&mutator.mutate(&seeds)) {
             accepted += 1;
         }
     }
-    assert!(accepted > 0 && accepted < RUNS);
+    assert!(accepted > 0 && accepted < runs());
 }
 
 #[test]
@@ -372,12 +384,12 @@ fn fuzz_lite_btc_tx() {
     let seeds = tx_seeds();
     let mut mutator = Mutator::new(0x6274_635f_7478_2121, TX_MAX_LEN);
     let mut accepted = 0_u32;
-    for _ in 0..RUNS {
+    for _ in 0..runs() {
         if check_tx(&mutator.mutate(&seeds)) {
             accepted += 1;
         }
     }
-    assert!(accepted > 0 && accepted < RUNS);
+    assert!(accepted > 0 && accepted < runs());
 }
 
 #[test]
@@ -386,10 +398,10 @@ fn fuzz_lite_btc_address() {
     let seeds = address_seeds();
     let mut mutator = Mutator::new(0x6274_635f_6164_6421, ADDRESS_MAX_LEN);
     let mut accepted = 0_u32;
-    for _ in 0..RUNS {
+    for _ in 0..runs() {
         if check_address(&mutator.mutate(&seeds)) {
             accepted += 1;
         }
     }
-    assert!(accepted > 0 && accepted < RUNS);
+    assert!(accepted > 0 && accepted < runs());
 }

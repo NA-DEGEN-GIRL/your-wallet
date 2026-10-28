@@ -126,6 +126,16 @@ fn encode(inbound: &Inbound) -> Vec<u8> {
     yw_json::to_vec(&value)
 }
 
+/// Iterations per target: `YW_FUZZ_RUNS` when set to a positive number (the short smoke run of
+/// `scripts/check.ps1`), otherwise 1,000,000 (spec/09 §2.4).
+fn runs() -> u32 {
+    std::env::var("YW_FUZZ_RUNS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|&runs| runs > 0)
+        .unwrap_or(1_000_000)
+}
+
 #[test]
 #[ignore = "fuzz-lite (spec/09 §2.4 fallback)"]
 fn fuzz_lite_envelope() {
@@ -134,7 +144,7 @@ fn fuzz_lite_envelope() {
         state: 0x656e_7665_6c6f_7065,
     };
     let mut accepted = 0_u32;
-    for _ in 0..1_000_000 {
+    for _ in 0..runs() {
         let input = mutator.mutate(&seeds);
         if let Ok(inbound) = parse_inbound(&input, GOLDEN_ID, true) {
             let again = parse_inbound(&encode(&inbound), GOLDEN_ID, true);

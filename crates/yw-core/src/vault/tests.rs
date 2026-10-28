@@ -1658,8 +1658,17 @@ fn vault_is_send() {
 #[ignore = "manual fuzz fallback (spec/09 §2.4); run in release"]
 fn fuzz_lite_vault_header() {
     const SEED: u64 = 0x5957_564c_5430_3033;
-    const RUNS: u32 = 1_000_000;
     const MAX_LEN: usize = 4_096;
+    // `YW_FUZZ_RUNS` (the short smoke run of `scripts/check.ps1`) or 1,000,000.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the iteration count of a test tool; yw-core itself never reads the environment"
+    )]
+    let runs: u32 = std::env::var("YW_FUZZ_RUNS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|&runs| runs > 0)
+        .unwrap_or(1_000_000);
     let seeds = [seal_fixed(&KDF_V3), seal_fixed(&KDF_TEST)];
     let mut state = SEED;
     let mut next = move |bound: usize| {
@@ -1671,7 +1680,7 @@ fn fuzz_lite_vault_header() {
     };
     let before = kdf_calls();
     let mut accepted = 0_u32;
-    for _ in 0..RUNS {
+    for _ in 0..runs {
         let mut input = seeds.get(next(seeds.len())).unwrap().clone();
         for _ in 0..=next(4) {
             match next(4) {
@@ -1698,7 +1707,7 @@ fn fuzz_lite_vault_header() {
         accepted += u32::from(checked.is_ok());
     }
     assert_eq!(kdf_calls(), before);
-    assert!(accepted > 0 && accepted < RUNS);
+    assert!(accepted > 0 && accepted < runs);
 }
 
 /// spec/09 §5.2 M1-4: exactly one production Argon2id (256 MiB, t = 3, p = 4) for timing the

@@ -71,6 +71,16 @@ macro_rules! fixtures {
     };
 }
 
+/// Iterations per target: `YW_FUZZ_RUNS` when set to a positive number (the short smoke run of
+/// `scripts/check.ps1`), otherwise 1,000,000 (spec/09 §2.4).
+fn runs() -> u32 {
+    std::env::var("YW_FUZZ_RUNS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|&runs| runs > 0)
+        .unwrap_or(1_000_000)
+}
+
 #[test]
 #[ignore = "fuzz-lite (spec/09 §2.4 fallback)"]
 fn fuzz_lite_simulate() {
@@ -103,7 +113,7 @@ fn fuzz_lite_simulate() {
         state: 0x7369_6d75_6c61_7465,
     };
     let mut simulated = 0_u32;
-    for _ in 0..1_000_000 {
+    for _ in 0..runs() {
         let input = mutator.mutate(&seeds);
         let outcome = parse_simulate_response(&input, 1);
         let sim = interpret(&chain, &tx, &user, &outcome, 1_791_381_228_000);

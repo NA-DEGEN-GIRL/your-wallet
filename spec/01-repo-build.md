@@ -434,7 +434,7 @@ rustflags = ["--cfg", 'curve25519_dalek_backend="serial"', "-C", "link-arg=/Brep
 # scripts/check.ps1 — 저장소 게이트. 사용: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 [-Step <name>] [-Offline]
 [CmdletBinding()]
 param(
-    [ValidateSet("all", "fmt", "deps", "clippy", "test", "build", "ext-test", "script-test", "privacy", "audit-ext")]
+    [ValidateSet("all", "fmt", "deps", "clippy", "test", "fuzz", "build", "ext-test", "script-test", "privacy", "audit-ext")]
     [string]$Step = "all",
     [switch]$Offline
 )
@@ -473,6 +473,9 @@ Invoke-Step "fmt" 20 "cargo" @("fmt", "--all", "--", "--check")
 Invoke-Step "deps" 21 "node" $deps
 Invoke-Step "clippy" 22 "cargo" (@("clippy", "--workspace", "--all-targets") + $net + @("--", "-D", "warnings"))
 Invoke-Step "test" 23 "cargo" (@("test", "--workspace") + $net)
+$env:YW_FUZZ_RUNS = "20000"                                           # fuzz-lite 스모크([09] §2.4): 무시된 fuzz_lite_*를 2만 회씩
+Invoke-Step "fuzz" 29 "cargo" (@("test", "--workspace") + $net + @("--", "--ignored", "fuzz_lite"))
+$env:YW_FUZZ_RUNS = $null                                             # 직접 --ignored로 돌리면 1,000,000회
 Invoke-Step "build" 24 "cargo" (@("build", "--workspace") + $net)   # target\debug\yw-host.exe ([09] §2.2, [05] H1)
 $env:YW_CHECK = "1"                                                   # 확장 프로세스 테스트가 skip 대신 실패([09])
 if ($Step -in "all", "ext-test") { Invoke-Step "ext-test" 25 "node" (@("--test") + (Get-Tests "extension/tests" 25)) }
@@ -483,21 +486,24 @@ Write-Host "check: OK"
 exit 0
 ```
 
-종료 코드: 0 통과, 1 스크립트 자체 오류(잘못된 `-Step` 포함), 10 cargo 1.95.0 또는 Node 22+ 없음, 11 rustflags 환경 변수 설정됨, 20 fmt, 21 의존성 허용 목록, 22 clippy, 23 cargo test, 24 cargo build, 25 확장 테스트, 26 스크립트 테스트, 27 privacy scan, 28 확장 정적 감사. 첫 실패에서 멈춘다. 모든 마일스톤 완료 조건은 이 스크립트의 0을 포함한다. (PowerShell 5.1에서 단계 선택, 종료 코드 11, 잘못된 `-Step`의 1을 확인함.)
+종료 코드: 0 통과, 1 스크립트 자체 오류(잘못된 `-Step` 포함), 10 cargo 1.95.0 또는 Node 22+ 없음, 11 rustflags 환경 변수 설정됨, 20 fmt, 21 의존성 허용 목록, 22 clippy, 23 cargo test, 29 fuzz-lite 스모크(`fuzz`, test 다음·build 앞: `#[ignore]`된 `fuzz_lite_*` 테스트를 `YW_FUZZ_RUNS=20000`으로 디버그 빌드에서 실행; 각 테스트는 이 변수가 없으면 1,000,000회), 24 cargo build, 25 확장 테스트, 26 스크립트 테스트, 27 privacy scan, 28 확장 정적 감사. 첫 실패에서 멈춘다. 모든 마일스톤 완료 조건은 이 스크립트의 0을 포함한다. (PowerShell 5.1에서 단계 선택, 종료 코드 11, 잘못된 `-Step`의 1을 확인함.)
 
 ### 4.2 `scripts/check-core-deps.mjs` (전체)
 
 ```js
 // scripts/check-core-deps.mjs — 워크스페이스 크레이트별 의존성 폐포를 허용 목록과 정확히 비교한다.
-// Usage: node scripts/check-core-deps.mjs [--offline] [--list]
+// Usage: node scripts/check-core-deps.mjs [--offline] [--list] [--metadata <file>]
+//   --metadata <file>: cargo를 실행하지 않고 그 파일의 `cargo metadata` JSON을 검사한다(scripts/check-core-deps.test.mjs).
 // Exit: 0 = OK, 1 = 정책 위반, 2 = cargo metadata 실행/해석 실패.
 import { execFileSync } from "node:child_process";
-import { dirname } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const TARGET = "x86_64-pc-windows-msvc";
-const CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index";
+export const TARGET = "x86_64-pc-windows-msvc";
+export const CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index";
 // 단계 진입 커밋에서만 바꾼다(spec/01 §3.4): M7 → "sol" 추가.
-const PHASES = new Set([]);
+export const PHASES = new Set([]);
 
 // name=version:n (런타임에 링크) | :b (빌드 시에만 실행: build-dependency와 그 폐포)
 const table = (text) => Object.fromEntries(text.trim().split(/\s+/).map((entry) => entry.split(":")));
@@ -515,16 +521,16 @@ const WIN = table(`windows-sys=0.61.2:n windows-link=0.2.1:n`);
 const APP = table(`qrcodegen=1.8.0:n`);
 
 const CORE = { ...CORE_EVM, ...(PHASES.has("sol") ? CORE_SOL : {}) };
-const POLICY = {
+export const POLICY = {
   "yw-core": { allow: CORE, local: ["yw-json"] },
   "yw-json": { allow: {}, local: [] },
   "yw-win": { allow: WIN, local: [] },
   "yw-app": { allow: { ...CORE, ...WIN, ...APP }, local: ["yw-core", "yw-json", "yw-win"] },
   "yw-host": { allow: WIN, local: ["yw-json", "yw-win"] },
 };
-const BUILD_RS_ALLOW = new Set(["generic-array", "getrandom", "secp256k1-sys", ...(PHASES.has("sol") ? ["curve25519-dalek"] : [])]);
-const OWN_BUILD_RS_ALLOW = new Set(["yw-app"]);
-const FORBIDDEN_FEATURES = {
+export const BUILD_RS_ALLOW = new Set(["generic-array", "getrandom", "secp256k1-sys", ...(PHASES.has("sol") ? ["curve25519-dalek"] : [])]);
+export const OWN_BUILD_RS_ALLOW = new Set(["yw-app"]);
+export const FORBIDDEN_FEATURES = {
   secp256k1: ["rand", "global-context", "hashes", "serde"], argon2: ["alloc", "password-hash", "rand"],
   chacha20poly1305: ["getrandom", "rand_core"], aead: ["getrandom", "rand_core"], zeroize: ["derive"],
   getrandom: ["wasm_js"], "ed25519-dalek": ["asm", "batch", "digest", "hazmat", "legacy_compatibility", "pem", "pkcs8", "rand_core", "serde"],
@@ -532,72 +538,96 @@ const FORBIDDEN_FEATURES = {
   ed25519: ["pem", "pkcs8", "serde", "serde_bytes"], signature: ["derive", "digest", "rand_core"],
 };
 
-let meta;
-try {
+/**
+ * Checks one `cargo metadata --format-version 1` document against the policy.
+ * Returns `{ errors, ok, listing }`: violations, the per-crate OK lines and the `--list` rows.
+ * Throws when the document lacks the fields it reads (the CLI reports that as exit 2).
+ */
+export function checkMetadata(meta) {
+  const pkgs = new Map(meta.packages.map((p) => [p.id, p]));
+  const nodes = new Map(meta.resolve.nodes.map((n) => [n.id, n]));
+  const key = (p) => `${p.name}=${p.version}`;
+  const errors = [];
+  const ok = [];
+  const listing = [];
+
+  for (const id of meta.workspace_members) {
+    const p = pkgs.get(id);
+    if (!(p.name in POLICY)) errors.push(`${p.name}: workspace member without a policy`);
+    if (p.dependencies.some((d) => d.kind === "dev")) errors.push(`${p.name}: dev-dependencies are forbidden`);
+    if (p.targets.some((t) => t.kind.includes("custom-build")) && !OWN_BUILD_RS_ALLOW.has(p.name)) errors.push(`${p.name}: build.rs is forbidden`);
+  }
+
+  for (const [root, policy] of Object.entries(POLICY)) {
+    const rootId = meta.workspace_members.find((id) => pkgs.get(id).name === root);
+    if (!rootId) { errors.push(`${root}: workspace member not found`); continue; }
+    // BFS over normal + build edges (dev edges ignored); a crate reached at runtime is "n".
+    const seen = new Map();
+    const queue = [[rootId, "n"]];
+    while (queue.length) {
+      const [id, mode] = queue.shift();
+      if (seen.get(id) === "n" || seen.get(id) === mode) continue;
+      seen.set(id, mode);
+      for (const d of nodes.get(id).deps) {
+        const kinds = d.dep_kinds.map((k) => k.kind);
+        if (kinds.includes(null)) queue.push([d.pkg, mode]);
+        if (kinds.includes("build")) queue.push([d.pkg, "b"]);
+      }
+    }
+    const reached = new Set();
+    for (const [id, mode] of seen) {
+      if (id === rootId) continue;
+      const p = pkgs.get(id), k = key(p), at = `${root} -> ${k}`;
+      if (p.source === null) {
+        if (!policy.local.includes(p.name)) errors.push(`${at}: local crate not allowed here`);
+        continue;
+      }
+      reached.add(k);
+      listing.push(`${root}\t${mode === "n" ? "runtime" : "build"}\t${k}\t${dirname(p.manifest_path)}`);
+      if (p.source !== CRATES_IO) errors.push(`${at}: non-crates.io source ${p.source}`);
+      if (!(k in policy.allow)) errors.push(`${at}: not in allowlist (${mode === "n" ? "runtime" : "build-time"})`);
+      else if (policy.allow[k] === "b" && mode === "n") errors.push(`${at}: allowlisted build-only but linked at runtime`);
+      if (p.targets.some((t) => t.kind.includes("custom-build")) && !BUILD_RS_ALLOW.has(p.name)) errors.push(`${at}: unreviewed build.rs`);
+      if (p.targets.some((t) => t.kind.includes("proc-macro"))) errors.push(`${at}: proc-macro (curve25519-dalek-derive means the serial backend cfg is missing)`);
+      const bad = (FORBIDDEN_FEATURES[p.name] ?? []).filter((f) => nodes.get(id).features.includes(f));
+      if (bad.length) errors.push(`${at}: forbidden features ${bad.join(",")} (workspace-unified)`);
+    }
+    for (const k of Object.keys(policy.allow)) if (!reached.has(k)) errors.push(`${root}: ${k} allowlisted but not reached (prune or fix phase)`);
+    if (!errors.some((e) => e.startsWith(root))) ok.push(`${root} deps check OK: ${reached.size} crates (${TARGET})`);
+  }
+  return { errors, ok, listing };
+}
+
+function loadMetadata(argv) {
+  const file = argv.indexOf("--metadata");
+  if (file >= 0) {
+    if (!argv[file + 1]) throw new Error("--metadata needs a file");
+    return JSON.parse(readFileSync(argv[file + 1], "utf8"));
+  }
   const args = ["metadata", "--format-version", "1", "--locked", "--filter-platform", TARGET];
-  if (process.argv.includes("--offline")) args.push("--offline");
-  meta = JSON.parse(execFileSync("cargo", args, { encoding: "utf8", maxBuffer: 64 << 20, windowsHide: true }));
-} catch (error) {
-  console.error(`deps check: cargo metadata failed: ${error instanceof Error ? error.message.split("\n")[0] : "unknown"}`);
-  process.exit(2);
-}
-const pkgs = new Map(meta.packages.map((p) => [p.id, p]));
-const nodes = new Map(meta.resolve.nodes.map((n) => [n.id, n]));
-const key = (p) => `${p.name}=${p.version}`;
-const errors = [];
-const listing = [];
-
-for (const id of meta.workspace_members) {
-  const p = pkgs.get(id);
-  if (!(p.name in POLICY)) errors.push(`${p.name}: workspace member without a policy`);
-  if (p.dependencies.some((d) => d.kind === "dev")) errors.push(`${p.name}: dev-dependencies are forbidden`);
-  if (p.targets.some((t) => t.kind.includes("custom-build")) && !OWN_BUILD_RS_ALLOW.has(p.name)) errors.push(`${p.name}: build.rs is forbidden`);
+  if (argv.includes("--offline")) args.push("--offline");
+  return JSON.parse(execFileSync("cargo", args, { encoding: "utf8", maxBuffer: 64 << 20, windowsHide: true }));
 }
 
-for (const [root, policy] of Object.entries(POLICY)) {
-  const rootId = meta.workspace_members.find((id) => pkgs.get(id).name === root);
-  if (!rootId) { errors.push(`${root}: workspace member not found`); continue; }
-  // BFS over normal + build edges (dev edges ignored); a crate reached at runtime is "n".
-  const seen = new Map();
-  const queue = [[rootId, "n"]];
-  while (queue.length) {
-    const [id, mode] = queue.shift();
-    if (seen.get(id) === "n" || seen.get(id) === mode) continue;
-    seen.set(id, mode);
-    for (const d of nodes.get(id).deps) {
-      const kinds = d.dep_kinds.map((k) => k.kind);
-      if (kinds.includes(null)) queue.push([d.pkg, mode]);
-      if (kinds.includes("build")) queue.push([d.pkg, "b"]);
-    }
+const firstLine = (error) => (error instanceof Error ? error.message.split("\n")[0] : "unknown");
+const invokedPath = process.argv[1];
+if (invokedPath !== undefined && resolve(invokedPath) === resolve(fileURLToPath(import.meta.url))) {
+  let result;
+  try {
+    result = checkMetadata(loadMetadata(process.argv));
+  } catch (error) {
+    console.error(`deps check: cargo metadata failed: ${firstLine(error)}`);
+    process.exit(2);
   }
-  const reached = new Set();
-  for (const [id, mode] of seen) {
-    if (id === rootId) continue;
-    const p = pkgs.get(id), k = key(p), at = `${root} -> ${k}`;
-    if (p.source === null) {
-      if (!policy.local.includes(p.name)) errors.push(`${at}: local crate not allowed here`);
-      continue;
-    }
-    reached.add(k);
-    listing.push(`${root}\t${mode === "n" ? "runtime" : "build"}\t${k}\t${dirname(p.manifest_path)}`);
-    if (p.source !== CRATES_IO) errors.push(`${at}: non-crates.io source ${p.source}`);
-    if (!(k in policy.allow)) errors.push(`${at}: not in allowlist (${mode === "n" ? "runtime" : "build-time"})`);
-    else if (policy.allow[k] === "b" && mode === "n") errors.push(`${at}: allowlisted build-only but linked at runtime`);
-    if (p.targets.some((t) => t.kind.includes("custom-build")) && !BUILD_RS_ALLOW.has(p.name)) errors.push(`${at}: unreviewed build.rs`);
-    if (p.targets.some((t) => t.kind.includes("proc-macro"))) errors.push(`${at}: proc-macro (curve25519-dalek-derive means the serial backend cfg is missing)`);
-    const bad = (FORBIDDEN_FEATURES[p.name] ?? []).filter((f) => nodes.get(id).features.includes(f));
-    if (bad.length) errors.push(`${at}: forbidden features ${bad.join(",")} (workspace-unified)`);
-  }
-  for (const k of Object.keys(policy.allow)) if (!reached.has(k)) errors.push(`${root}: ${k} allowlisted but not reached (prune or fix phase)`);
-  if (!errors.some((e) => e.startsWith(root))) console.log(`${root} deps check OK: ${reached.size} crates (${TARGET})`);
+  for (const line of result.ok) console.log(line);
+  const phases = [...PHASES].join(",") || "evm";
+  if (process.argv.includes("--list")) console.log(result.listing.join("\n"));
+  if (result.errors.length) { console.error(`deps check FAILED (${TARGET}, phases: ${phases}):\n  ${result.errors.join("\n  ")}`); process.exit(1); }
+  console.log(`deps check OK (${TARGET}, phases: ${phases})`);
 }
-
-if (process.argv.includes("--list")) console.log(listing.join("\n"));
-if (errors.length) { console.error(`deps check FAILED (${TARGET}, phases: ${[...PHASES].join(",") || "evm"}):\n  ${errors.join("\n  ")}`); process.exit(1); }
-console.log(`deps check OK (${TARGET}, phases: ${[...PHASES].join(",") || "evm"})`);
 ```
 
-`--filter-platform`은 필수다(없으면 오프라인에서 wasi 다운로드를 시도해 실패하고, 비Windows 의존까지 섞인다). 출처의 59줄 검사기(yw-core 단일 루트)를 다섯 루트·단계·멤버 규칙으로 확장한 것이다.
+`--filter-platform`은 필수다(없으면 오프라인에서 wasi 다운로드를 시도해 실패하고, 비Windows 의존까지 섞인다). 출처의 59줄 검사기(yw-core 단일 루트)를 다섯 루트·단계·멤버 규칙으로 확장한 것이다. 검사 본체는 `checkMetadata(meta)`(가져와도 CLI는 실행되지 않는다)이고, `scripts/check-core-deps.test.mjs`가 허용 목록과 정확히 같은 합성 그래프(통과)와 위반 종류별 변형(허용 목록 밖·빌드 전용의 런타임 링크·dev-dependency·자체 build.rs·금지 feature·crates.io 밖 출처·proc-macro·검토 안 된 build.rs·도달하지 않는 허용 항목·허용 안 된 로컬 크레이트·정책 없는/없는 멤버)과 `--metadata` CLI의 종료 코드 0·1·2를 cargo 없이 시험한다(script-test 단계).
 
 ### 4.3 `scripts/privacy-scan.mjs` 변경
 
