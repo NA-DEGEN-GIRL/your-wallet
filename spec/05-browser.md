@@ -918,7 +918,9 @@ pub const MAX_LOGS_BLOCK_RANGE: u64 = 10_000;    pub const LOGS_BLOCK_CACHE_MS: 
 
 ---
 
-## 9. 등록 (D1: 설치 프로그램 없음, Web Store 없음)
+## 9. 등록 (소스 빌드용; 배포 설치는 D1 `install.ps1`, Web Store 없음)
+배포 zip을 쓰는 일반 설치는 D1의 현재 사용자 설치 프로그램 `install.ps1`([01](01-repo-build.md) §9.3)이 한다: 실행 파일과 native host manifest를 `%LOCALAPPDATA%\Programs\YourWallet\`에 두고 같은 HKCU 키에 등록한다. 이 절의 두 스크립트는 저장소에서 직접 빌드해 쓰는 개발용 경로이며 기본 `$BinDir`은 `%LOCALAPPDATA%\YourWallet\bin`이다. 두 경로는 같은 HKCU 키를 쓰므로 마지막에 실행한 쪽이 등록을 가진다.
+
 ### 9.1 `scripts/register-native-host.ps1`
 Windows PowerShell 5.1과 PowerShell 7 모두에서 동작해야 한다. 관리자 권한 불필요(HKCU만).
 
@@ -948,7 +950,7 @@ param(
 6. `New-Item -Path 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.your_wallet.native' -Value <manifest 절대 경로> -Force | Out-Null`(기본값 설정). 다시 읽어 같은지 확인.
 7. 출력: 확장 ID, manifest 경로, 다음 단계(§9.4).
 
-yw-app은 `$BinDir\yw-app.exe`로 실행하는 것을 기본으로 한다(yw-host가 같은 폴더의 yw-app을 실행하므로). 다른 위치에서 실행 중이어도 단일 인스턴스 규칙으로 하나만 남는다.
+yw-host는 자기와 같은 폴더의 yw-app을 실행하므로 yw-app은 등록한 host 옆의 사본으로 실행하는 것을 기본으로 한다: 배포 설치는 `%LOCALAPPDATA%\Programs\YourWallet\yw-app.exe`(시작 메뉴 바로가기), 이 스크립트로 등록했으면 `$BinDir\yw-app.exe`. 다른 위치에서 실행 중이어도 단일 인스턴스 규칙으로 하나만 남는다.
 
 ### 9.2 `scripts/unregister-native-host.ps1`
 `param([string]$BinDir = "$env:LOCALAPPDATA\YourWallet\bin", [switch]$RemoveBinaries)`. 레지스트리 키 `HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.your_wallet.native`와 `$BinDir\com.your_wallet.native.json`을 지운다. `-RemoveBinaries`일 때만 두 exe를 지운다. vault·설정(`%LOCALAPPDATA%\YourWallet\v3\`)은 건드리지 않는다.

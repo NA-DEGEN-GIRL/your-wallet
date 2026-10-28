@@ -115,28 +115,55 @@ Chrome을 켤 때 "개발자 모드 확장 프로그램" 경고가 뜰 수 있�
    바꾸라고 권하지 않는다. 상태는 Windows 보안 → 앱 및 브라우저 컨트롤 → 스마트 앱 컨트롤 설정에서 볼 수 있다.
 3. 새 지갑 만들기 → 24개 복구 단어를 종이에 적고 백업 확인을 마친다([복구 안내](recovery-guide.ko.md)).
 4. RPC 설정(QuickNode 멀티체인 템플릿):
-   1. QuickNode 대시보드에서 엔드포인트 주소 `https://<이름>.quiknode.pro/<토큰>/`의 `<이름>`과 `<토큰>`을 확인한다.
-      쓸 체인(Ethereum, Sepolia, HyperEVM, Solana, Bitcoin)이 그 엔드포인트에서 켜져 있어야 한다.
+   1. QuickNode 대시보드에서 엔드포인트 주소(HTTP Provider)를 확인한다. 모양은 `https://<이름>.quiknode.pro/<토큰>/`
+      또는 체인 서브도메인이 붙은 `https://<이름>.<체인>.quiknode.pro/<토큰>/`이다. `<이름>`은 첫 `.` 앞,
+      `<토큰>`은 `.quiknode.pro/` 바로 뒤의 경로 한 조각이다(뒤에 `nanoreth` 같은 경로가 더 있어도 넣지 않는다).
+      멀티체인 엔드포인트에서 쓸 체인(Ethereum, Sepolia, HyperEVM, Solana, Bitcoin mainnet·testnet4)을 **각각 켜야** 한다.
+      켜지 않은 체인은 테스트가 E-RPC-003(인증 거부) 또는 E-RPC-007(요청 거부, HTTP 404 포함)로 실패한다.
    2. 앱의 **설정** → **네트워크(RPC)** → RPC 공급자에서 **QuickNode 멀티체인**을 고른다.
    3. **엔드포인트 이름**과 **토큰**을 넣고 **저장**한다. 저장한 값은 Windows DPAPI로 암호화되어 다시 보이지 않는다.
-   4. **네트워크 URL 생성** → **생성**. 네트워크별 주소가 한 번에 만들어진다.
-   5. 아래 **네트워크별 RPC 주소**에서 쓰는 네트워크마다 **테스트**. 실패하는 네트워크는 대시보드 설정을 확인하거나
-      **교체**로 `https://` 주소를 직접 넣는다.
+      E-KEY-002가 나오면 이름 칸에 주소 전체나 대문자·`_`가 들어갔는지, 토큰 칸에 `/`가 들어갔는지 확인한다.
+   4. **네트워크 URL 생성** → **생성**. 네트워크별 주소가 한 번에 만들어진다(HyperEVM은 `…/<토큰>/nanoreth`,
+      Bitcoin testnet4는 `<이름>.btc-testnet4.quiknode.pro`).
+   5. 아래 **네트워크별 RPC 주소**에서 쓰는 네트워크마다 **테스트**. 실패하는 네트워크는 대시보드에서 그 체인이 켜져
+      있는지 확인하거나 **교체**로 `https://` 주소를 직접 넣는다.
 
    RPC 주소 전체(이름·토큰 포함)가 비밀이다. 스크린샷·메신저·이슈에 붙이지 않는다. Bitcoin 조회는 기본으로 키가
-   필요 없는 Esplora(mempool.space)를 쓴다(설정 → Bitcoin).
+   필요 없는 Esplora(mempool.space)를 쓴다(설정 → Bitcoin). mempool.space에 연결되지 않으면(E-BTC-001·E-BTC-002가
+   계속됨) 설정 → Bitcoin → **Esplora URL**을 `https://blockstream.info/api`(testnet4는
+   `https://blockstream.info/testnet4/api`)로 바꾸고 **저장** → **테스트**한다. 되돌릴 때는 **기본값으로**.
 5. dApp 연결: 확장이 로드된 Chrome에서 dApp의 지갑 연결을 누르면 yw-app 승인 창이 뜬다. 앱이 꺼져 있으면
    yw-host가 자동으로 실행한다(설정 → 브라우저·진단·정보 → "dApp 요청 시 앱 자동 실행", 기본 켜짐).
 
 ## 5. 업그레이드
 
-1. 새 zip을 받아 1단계대로 확인하고 새 폴더에 푼다.
-2. 그 폴더에서 `install.ps1`을 실행한다. 지갑 앱이 실행 중이면 닫아 달라고 묻는다(강제 종료하지 않음).
+1. **업그레이드 전 v3 폴더 백업.** 지갑 앱을 닫고(가능하면 진행 중인 거래가 없을 때)
+   `%LOCALAPPDATA%\YourWallet\v3` 폴더 전체를 다른 곳(예: `v3-backup-<날짜>`)에 복사한다. 새 버전에 문제가 있어
+   이전 버전으로 되돌릴 때 이 사본을 쓴다. 보관 주의는 8단계와 같다(복사본도 복구 단어 수준으로 보관, 클라우드
+   동기화 폴더에 두지 않는다). 아래 예의 위치는 `uninstall.ps1 -RemoveWalletData`가 함께 지운다.
+
+   ```powershell
+   Copy-Item -Recurse "$env:LOCALAPPDATA\YourWallet\v3" "$env:LOCALAPPDATA\YourWallet\v3-backup-$(Get-Date -Format yyyyMMdd)"
+   ```
+2. 새 zip을 받아 1단계대로 확인하고 새 폴더에 푼다.
+3. 그 폴더에서 `install.ps1`을 실행한다. 지갑 앱이 실행 중이면 닫아 달라고 묻는다(강제 종료하지 않음).
    설치된 버전과 새 버전이 출력되고, 바뀐 파일만 교체한다.
-3. `chrome://extensions`의 Your Wallet 카드에서 새로고침 버튼을 누르고, 열려 있던 dApp 탭도 새로고침한다.
+4. `chrome://extensions`의 Your Wallet 카드에서 새로고침 버튼을 누르고, 열려 있던 dApp 탭도 새로고침한다.
 
 지갑 데이터(`%LOCALAPPDATA%\YourWallet\v3`)는 그대로 남아 새 버전이 이어서 쓴다. 이전 vault 형식(v1·v2)은
 옮기지 않는다(spec.md D7: 복구 단어로 다시 가져온다).
+
+버전 사이의 파일 호환(spec/04 §6.6):
+
+- 새 버전이 설정(`settings.json`)·메타(`meta.ywm`)에 새 항목을 더해도, 그 파일을 이전 버전으로 열면 모르는 항목을
+  지우지 않고 그대로 다시 쓴다. `apikeys.dpapi`의 모르는 항목과 지금 등록되지 않은 체인의 RPC 주소도 지우지 않는다.
+- 새 버전이 설정 형식 자체를 바꾼 경우(`settings.json`의 `version`이 더 큼) 이전 버전은 그 파일을 **읽기 전용**으로
+  열고 "settings.json은 더 새로운 버전…" 배너(E-APP-001)를 보인다. 이때 설정 변경은 이번 실행에만 적용되고 파일에
+  저장되지 않는다. 새 버전을 다시 설치하면 그대로 이어서 쓴다.
+- vault·저널 형식이 바뀌는 큰 변경은 새 데이터 폴더(`v4`)를 쓰므로 `v3` 폴더를 덮어쓰지 않는다.
+- 되돌리기: 앱을 닫고 이전 버전 zip으로 `install.ps1`을 실행한다. 데이터까지 이전 상태로 돌리려면 `v3` 폴더를
+  1단계의 사본으로 통째로 바꾼다(사본 이후의 계정 이름·주소록·활동 기록 변경은 사라진다. 자산은 체인에 있으므로
+  영향이 없다).
 
 ## 6. 제거
 
@@ -202,6 +229,11 @@ RPC 주소는 절대 함께 보내지 않는다.
 | 확장 service worker 콘솔에 `Specified native messaging host not found.` | HKCU 등록이 없다(`-NoNativeHost`로 설치했거나 다른 스크립트가 지웠다). `install.ps1`을 다시 실행 |
 | `Access to the specified native messaging host is forbidden.` | 확장 ID가 다르다. 설치 폴더의 `extension`을 로드했는지, ID가 `nnpjlobjgbanccjddghlpaafpohfkeph`인지 확인 |
 | 설치한 앱 대신 다른 창이 앞으로 나온다 | 다른 위치(예: 소스 빌드)의 yw-app이 이미 실행 중이다. 한 번에 하나만 실행된다. 그 앱을 닫고 다시 실행 |
+| 네트워크 테스트가 E-RPC-003 또는 E-RPC-007 | QuickNode 멀티체인이면 대시보드에서 그 체인을 엔드포인트에 켰는지 확인. 아니면 그 네트워크 URL(토큰)을 다시 만들거나 **교체** |
+| Bitcoin 잔액이 안 보이고 E-BTC-001·E-BTC-002가 계속 | mempool.space에 연결되지 않는다. 설정 → Bitcoin → Esplora URL을 `https://blockstream.info/api`(testnet4: `https://blockstream.info/testnet4/api`)로 바꾸고 테스트 |
+| "settings.json은 더 새로운 버전…읽기 전용" 배너 | 더 새로운 버전으로 쓴 데이터를 이전 버전으로 열었다. 설정 변경이 저장되지 않으니 새 버전을 다시 설치(5단계) |
+| E-APP-009(내부 오류)가 반복 | 앱을 다시 시작. 반복되면 `%LOCALAPPDATA%\YourWallet\v3\logs\yw-app.log`의 오류 코드 줄을 확인(7단계 주의대로 비밀은 빼고 알린다) |
+| 잠금 해제에서 E-VLT-001 | 대부분 입력 실수다. Caps Lock·한/영 상태를 확인하고 다시 입력. 맞는 비밀번호로도 계속 실패하면 [복구 안내](recovery-guide.ko.md) |
 
 ## 10. 소스 빌드에서 옮겨 오는 경우
 

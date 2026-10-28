@@ -131,11 +131,14 @@ scripts/     check.ps1  check-core-deps.mjs  privacy-scan.mjs  privacy-scan.test
              extension-key.mjs  register-native-host.ps1  unregister-native-host.ps1   (M5, [05](05-browser.md) §2.3·§9)
              probe-rpc.mjs   (수동 실서비스 프로브, M2 전. check.ps1 대상 아님, §4.7)
              dev-rpc-setup.ps1 (개발용 rpc.json 대화형 생성, §4.8)
-fuzz/        퍼징, 별도 워크스페이스·루트 exclude([09](09-testing.md) §2.4)
+             package.ps1  (배포 zip 생성, §9.2)   screenshot-tour.ps1(화면 투어, [04](04-app-ui.md) §11)
+packaging/   install.ps1  uninstall.ps1   (zip에 들어가는 현재 사용자 설치·제거 스크립트, §9.3·§9.4)
+dist/        package.ps1 산출물(zip·.sha256), .gitignore 대상 — 커밋하지 않는다
+fuzz/        퍼징, 별도 워크스페이스·루트 exclude([09](09-testing.md) §2.4) — 아직 없음(만들 때 이 위치)
 tools/       btc-oracle/(M8, [08](08-bitcoin.md) §14.3)  sol-oracle/(M7, [07](07-solana.md) §17.3) — 개발 전용 차등 오라클. 각각 자체 [workspace]·Cargo.lock,
-             루트 exclude(§3.1), check.ps1·허용 목록 대상 아님, 배포 산출물에 들어가지 않음
+             루트 exclude(§3.1), check.ps1·허용 목록 대상 아님, 배포 산출물에 들어가지 않음 — 아직 없음(만들 때 이 위치)
 spec/        01 … 09
-docs/        recovery-guide.ko.md  acceptance/(체크리스트·라이브 확인 기록, [09](09-testing.md) §1·§2.5)
+docs/        install.ko.md(설치·업그레이드·제거)  recovery-guide.ko.md  acceptance/(체크리스트·라이브 확인 기록, [09](09-testing.md) §1·§2.5)
 ```
 
 ### 2.2 yw-core 모듈

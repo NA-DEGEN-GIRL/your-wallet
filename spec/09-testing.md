@@ -760,7 +760,7 @@ WETH = Sepolia `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14`(03 §1.2, 구현 시
 
 ### 5.11 M9 메인넷 소액 (수동, 1회)
 
-- [ ] M9-1 판정 커밋에서 `check.ps1` 통과, M0–M8(M6 선택) 기록이 모두 있음. release 빌드를 `register-native-host.ps1`로 설치.
+- [ ] M9-1 판정 커밋에서 `check.ps1` 통과, M0–M8(M6 선택) 기록이 모두 있음. 그 커밋에서 `scripts/package.ps1`로 만든 배포 zip을 §5.12(INS-*)대로 확인하고 `install.ps1`로 설치한다(`register-native-host.ps1` 등록이 남아 있으면 `install.ps1`이 교체한다). 설치·업그레이드 전에 앱을 닫고 `%LOCALAPPDATA%\YourWallet\v3` 폴더를 복사해 둔다(docs/install.ko.md §5).
 - [ ] M9-2 Glamsterdam 상태 확인: EIP-7773 표에 mainnet 활성 시각이 있으면 §6 R1을 먼저 마쳤음.
 - [ ] M9-3 독립 도구 호환 훈련(가치 없는 시험 니모닉): yw-app 시험 vault가 만든 24단어 → (a) MetaMask 또는 Rabby: EVM 계정 0·1 (b) Phantom 또는 Solflare: SOL 계정 0·1 (c) Sparrow(Native Segwit, m/84'/0'/0')와 Electrum(BIP39 seed, p2wpkh): BTC 받기 0–4·잔돈 0–1 → 모두 yw-app과 같음. 같은 단계에서 ACC-3·BIP84 art 값(§3.10)도 도구 하나로 1회 대조한다. 도구는 공식 배포처에서 받는다. 시험 니모닉은 이후 쓰지 않는다.
 - [ ] M9-4 실제 지갑 생성: 새 vault(24단어), 종이(또는 금속)에 단어와 계정 0 주소 기록, 백업 확인 완료. 사진·클라우드·메신저에 남기지 않음(spec §2.4).
