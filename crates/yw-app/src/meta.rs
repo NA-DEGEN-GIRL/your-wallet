@@ -1207,7 +1207,110 @@ impl Meta {
 
 #[cfg(test)]
 mod tests {
-    use super::{Account, EvmAccountPref, Meta, SolBookEntry, Tab, parse};
+    use super::{
+        Account, BtcRawAccount, EvmAccountPref, Meta, RawAccount, SolBookEntry, SolRawAccount, Tab,
+        parse,
+    };
+    use yw_core::btc::BtcNetwork;
+    use yw_core::keyimport::BtcScriptType;
+
+    fn imported_meta() -> Meta {
+        let mut meta = Meta::key_only();
+        meta.evm_raw_accounts.push(RawAccount {
+            record_id: [1; 16],
+            label: "가져온 계정 1".to_owned(),
+            address: "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf".to_owned(),
+        });
+        meta.sol_raw_accounts.push(SolRawAccount {
+            record_id: [2; 16],
+            label: "가져온 Solana 1".to_owned(),
+            address: "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk".to_owned(),
+        });
+        meta.btc_raw_accounts.push(BtcRawAccount {
+            record_id: [3; 16],
+            label: "가져온 Bitcoin 1".to_owned(),
+            address: "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu".to_owned(),
+            network: BtcNetwork::Mainnet,
+            script: BtcScriptType::P2wpkh,
+        });
+        meta.sol_raw_selected = Some([2; 16]);
+        meta.prefs.tab = Tab::Sol;
+        meta
+    }
+
+    #[test]
+    fn imported_lists_and_key_only_meta_round_trip() {
+        let meta = imported_meta();
+        let bytes = meta.to_json();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        // Written after `prefs`, never as unknown keys.
+        assert!(text.contains("\"evm_accounts\":[]"));
+        assert!(
+            text.contains("\"script\":\"p2wpkh\",\"network\":\"mainnet\"")
+                || text.contains("\"network\":\"mainnet\",\"script\":\"p2wpkh\"")
+        );
+        let prefs_at = text.find("\"prefs\"").unwrap();
+        assert!(text.find("\"sol_raw_accounts\"").unwrap() > prefs_at);
+        let parsed = parse(&bytes).unwrap();
+        // `{"index": 0}` without derived accounts is not a reset (key-only wallet).
+        assert!(!parsed.prefs_reset);
+        assert_eq!(parsed.meta, meta);
+        assert!(parsed.meta.unknown.is_empty());
+        assert_eq!(parsed.meta.to_json(), bytes);
+        assert_eq!(
+            parsed.meta.next_index(),
+            None,
+            "no 계정 추가 without derived accounts"
+        );
+        // A file written before key import (no imported keys) still parses, with empty lists.
+        let old = String::from_utf8(Meta::default().to_json()).unwrap();
+        let old = old
+            .split(",\"sol_raw_accounts\"")
+            .next()
+            .unwrap()
+            .to_owned()
+            + "}";
+        let parsed = parse(old.as_bytes()).unwrap();
+        assert!(parsed.meta.sol_raw_accounts.is_empty() && parsed.meta.btc_raw_accounts.is_empty());
+        assert_eq!(parsed.meta.sol_raw_selected, None);
+        assert_eq!(parsed.meta.evm_accounts.len(), 1);
+    }
+
+    #[test]
+    fn imported_lists_are_validated() {
+        let text = String::from_utf8(imported_meta().to_json()).unwrap();
+        for bad in [
+            text.replacen("\"network\":\"mainnet\"", "\"network\":\"signet\"", 1),
+            text.replacen("\"script\":\"p2wpkh\"", "\"script\":\"p2wsh\"", 1),
+            text.replacen(
+                "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu",
+                "tb1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu",
+                1,
+            ),
+            text.replacen("HAgk14", "0xHAgk", 1),
+            text.replacen(
+                "\"sol_raw_selected\":\"02020202020202020202020202020202\"",
+                "\"sol_raw_selected\":\"09090909090909090909090909090909\"",
+                1,
+            ),
+            text.replacen(
+                "\"label\":\"가져온 Solana 1\"",
+                "\"label\":\"가져온 Solana 1\",\"x\":1",
+                1,
+            ),
+        ] {
+            assert!(parse(bad.as_bytes()).is_err(), "{bad}");
+        }
+        // A derived list that does not start at index 0 is still refused.
+        let mut meta = Meta::key_only();
+        meta.evm_accounts.push(Account {
+            index: 1,
+            label: "계정 2".to_owned(),
+            address: String::new(),
+            hidden: false,
+        });
+        assert!(parse(&meta.to_json()).is_err());
+    }
 
     #[test]
     fn solana_accounts_tab_and_book_round_trip() {
