@@ -455,3 +455,82 @@ fn v17_resimulation_freshness() {
         u64::MAX
     ));
 }
+
+#[test]
+fn message_drafts_need_exact_eip191_and_eip712_prefixes() {
+    let mut store = ApprovalStore::new();
+    let message = |id: u8, kind: ApprovalKind, payload: SigningPayload| ApprovalDraft {
+        id: ApprovalId([id; 16]),
+        kind,
+        payload,
+        simulation: SimulationBinding::NotApplicable,
+        ..draft()
+    };
+    let personal = yw_core::evm::eip191::personal_preimage(b"hello");
+    assert!(
+        store
+            .issue(
+                message(
+                    1,
+                    ApprovalKind::EvmPersonalSign,
+                    SigningPayload::EvmPersonal(personal)
+                ),
+                0,
+                0
+            )
+            .is_ok()
+    );
+    for (id, bad) in [
+        (2, vec![0xab; 32]),
+        (3, b"\x19Ethereum Signed Message:\n4hello".to_vec()),
+        (4, b"\x19Ethereum Signed Message:\n05hello".to_vec()),
+        (5, b"\x19Bitcoin Signed Message:\n5hello".to_vec()),
+    ] {
+        assert_eq!(
+            store
+                .issue(
+                    message(
+                        id,
+                        ApprovalKind::EvmPersonalSign,
+                        SigningPayload::EvmPersonal(bad)
+                    ),
+                    0,
+                    0
+                )
+                .unwrap_err(),
+            ApprovalError::PayloadMismatch,
+            "personal draft {id}"
+        );
+    }
+    let mut typed = [0_u8; 66];
+    typed[0] = 0x19;
+    typed[1] = 0x01;
+    assert!(
+        store
+            .issue(
+                message(
+                    6,
+                    ApprovalKind::EvmTypedData,
+                    SigningPayload::EvmTypedData(typed)
+                ),
+                0,
+                0
+            )
+            .is_ok()
+    );
+    typed[1] = 0x45;
+    assert_eq!(
+        store
+            .issue(
+                message(
+                    7,
+                    ApprovalKind::EvmTypedData,
+                    SigningPayload::EvmTypedData(typed)
+                ),
+                0,
+                0
+            )
+            .unwrap_err(),
+        ApprovalError::PayloadMismatch
+    );
+}
