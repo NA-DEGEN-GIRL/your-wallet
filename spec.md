@@ -77,7 +77,7 @@
 
 | ID | 결정 |
 |---|---|
-| D1 | 대상 환경: Windows 11 x64(22H2 이상), Chrome 120 이상. 배포·설치 프로그램 없음. 사용자가 소스에서 빌드한다. |
+| D1 | 대상 환경: Windows 11 x64(22H2 이상), Chrome 120 이상. 배포 형태: 미리 빌드된 zip(`YourWallet-<버전>-win-x64.zip`: yw-app.exe, yw-host.exe, extension/, install.ps1·uninstall.ps1, SHA256SUMS). 설치는 관리자 권한 없이 현재 사용자 범위(`%LOCALAPPDATA%\Programs\YourWallet`, HKCU native host 등록, 시작 메뉴 바로가기)에서 한다. 코드 서명은 하지 않으므로 SmartScreen 경고가 뜰 수 있고, 무결성은 SHA256SUMS와 소스 재빌드로 확인한다. 소스 빌드도 계속 지원한다. |
 | D2 | 위협 모델은 §2를 따른다. 별도 Windows 계정·서비스·LPAC·프로세스 격리 장치는 만들지 않는다. |
 | D3 | 프로세스: `extension`(순수 JS) → Chrome이 실행하는 `yw-host.exe` → 사용자 전용 named pipe → `yw-app.exe`(지갑 본체, 단일 인스턴스). 키·vault·승인 창·RPC는 모두 yw-app에 있다. |
 | D4 | 크레이트: `yw-core`(플랫폼 독립, 네트워크·GUI·unsafe 없음), `yw-json`(자체 엄격 JSON, 의존성 0), `yw-win`(windows-sys 래퍼, **unsafe는 이 크레이트에만 허용**), `yw-app`(바이너리), `yw-host`(바이너리). |

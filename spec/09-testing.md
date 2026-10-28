@@ -771,6 +771,25 @@ WETH = Sepolia `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14`(03 §1.2, 구현 시
 - [ ] M9-9 운영 권고(spec §2.4): 일상 계정이 표준 사용자(`net user <이름>`에 Administrators 없음), `manage-bde -status C:` 보호 켜짐, 핫 잔액 상한 결정·기록.
 - [ ] M9-10 이후 소액만 사용. 상한을 넘기려면 이 체크리스트를 다시 수행하지 않고 spec §2.2(고액 장기 보관 비목표)를 따른다.
 
+### 5.12 배포 zip 설치 (D1, 수동, 배포할 zip마다)
+
+규칙은 01 §9, 사용자 안내는 `docs/install.ko.md`. 준비: `scripts\package.ps1`(게이트 포함, `-SkipCheck` 아님)으로 만든 zip과 출력된 SHA-256. 설치·제거는 HKCU 등록과 시작 메뉴를 바꾸므로 가능하면 지갑 데이터가 없는 별도 Windows **표준 사용자** 계정에서 한다. Chrome 120 이상. 결과는 원칙 7대로 `docs/acceptance/install-<YYYYMMDD>.md`에 기록한다.
+
+- [ ] INS-1 검증 함수 일치(저장소 PC, Windows PowerShell 5.1과 7 각각): `. .\packaging\install.ps1`(점 소싱 = 함수만 정의) 뒤 manifest 표본마다 `Test-NativeManifestFile <파일> nnpjlobjgbanccjddghlpaafpohfkeph`와 `node extension/native-host/validate-manifest.mjs <파일> --expect-id nnpjlobjgbanccjddghlpaafpohfkeph`의 판정이 같다. 표본: 정상, `YW-HOST.EXE`, 공백·한글 경로, 다른 ID, origin 2개, origin 끝 `/` 없음, origin 끝 `\n`, 키 추가, 이름·`type`·빈 설명, `%`·`&`·`^`·`!`, 상대·UNC·`..`·끝 점·끝 공백·빈 구간·`/` 구분·드라이브 루트 경로, `yw-app.exe`, `__X__` 자리표시자, JSON 아님, UTF-8 BOM. `Get-ExtensionIdFromKey`(manifest `key`) = `node scripts/extension-key.mjs id`.
+- [ ] INS-2 zip: `Get-FileHash` = package.ps1 출력 = `.sha256` 파일. 항목이 최상위 `YourWallet-<버전>/` 아래 `README-설치.txt`, `SHA256SUMS`, `extension/manifest.json`, `extension/popup/popup.css`·`popup.html`, `extension/src/*.js`(audit-extension 목록), `install.ps1`, `uninstall.ps1`, `yw-app.exe`, `yw-host.exe`뿐이다(`tests/`·`native-host/`·`test-dapp/`·`package.json`·`extension-id.txt` 없음). 탐색기 "압축 풀기"에서 `README-설치.txt` 이름이 깨지지 않는다. 푼 폴더에서 Git Bash `sha256sum -c SHA256SUMS` 전부 OK.
+- [ ] INS-3 `install.ps1 -DryRun` → 종료 0, 6단계 할 일 출력. 이후 `%LOCALAPPDATA%\Programs\YourWallet` 없음, `reg query "HKCU\Software\Google\Chrome\NativeMessagingHosts\com.your_wallet.native" /ve` 결과 변화 없음, 시작 메뉴 변화 없음.
+- [ ] INS-4 부정(압축을 푼 사본에서, 매번 새 `-InstallDir`): (a) `extension\src\shared.js` 1바이트 변경 (b) `yw-host.exe` 삭제 (c) `SHA256SUMS`에 `../x.txt` 줄 추가 → 각각 종료 2, 설치 폴더가 생기지 않음. (d) `-InstallDir C:\a&b` → 종료 1, 폴더 없음. (e) 다른 파일이 있는 폴더 → 종료 1, 그 파일 그대로.
+- [ ] INS-5 설치(표준 사용자, 관리자 아님) → 종료 0. 설치 폴더 = zip의 파일(`install.ps1`·`SHA256SUMS` 제외) + `com.your_wallet.native.json` + `yw-install.json`. `reg query … /ve` = 그 manifest 경로, 저장소 PC면 `validate-manifest.mjs`로 `OK`. 시작 메뉴 "Your Wallet". 설치 전후 `%LOCALAPPDATA%\YourWallet` 목록·해시 같음(없었으면 계속 없음).
+- [ ] INS-6 설치 폴더의 `extension` 압축해제 로드 → ID `nnpjlobjgbanccjddghlpaafpohfkeph`. 시작 메뉴로 yw-app 실행(내려받은 zip이면 SmartScreen 창의 문구와 "추가 정보 → 실행" 동작 기록) → 지갑 생성 또는 잠금 해제. 저장소의 `node extension/test-dapp/serve.mjs` + `allowLocalhostDapps` 켬 → T01·T03·T07 성공, 작업 관리자의 yw-host 경로가 설치 폴더.
+- [ ] INS-7 yw-app 종료 상태에서 T03 → 설치 폴더의 yw-app이 `--background`로 실행되고 응답(D24).
+- [ ] INS-8 멱등: yw-app·Chrome 실행 중 같은 zip으로 다시 설치 → 종료 0, "복사할 파일 0개", 묻지 않음, 설치 폴더 파일 수정 시각 불변.
+- [ ] INS-9 업그레이드(버전을 올린 zip 또는 yw-app.exe가 다른 빌드): yw-app 실행 중 설치 → 잠긴 파일·PID와 닫는 방법 안내, 프로세스는 계속 실행 중(강제 종료 없음). `Q` → 종료 3, 설치 폴더 불변. 다시 실행 → `C` → 앱이 잠긴 뒤 정상 종료(로그 `lock reason=` 확인) → 설치 계속 → 종료 0, "업그레이드: <이전> -> <새>", 이전 버전에만 있던 파일 삭제. `%LOCALAPPDATA%\YourWallet\v3` 파일 해시 불변. 확장 카드·탭 새로고침 후 T03 성공.
+- [ ] INS-10 비대화형: yw-app 실행 중 `powershell -NonInteractive -ExecutionPolicy Bypass -File install.ps1`(exe가 바뀐 zip) → 종료 3, 설치 폴더 불변.
+- [ ] INS-11 제거: `uninstall.ps1 -DryRun` → 종료 0, 변화 없음. `uninstall.ps1`(설치 폴더 안의 사본으로) → 종료 0, 바로가기·HKCU 키·설치 폴더 없음, `%LOCALAPPDATA%\YourWallet\v3` 그대로, "지우지 않았습니다"와 24단어 안내 출력. 다시 실행 → 종료 0. 설치 폴더에 직접 만든 파일이 있으면 그 파일과 폴더만 남는다.
+- [ ] INS-12 `-RemoveWalletData`(시험 계정의 시험 vault만): 틀린 문구 → 종료 3, 아무것도 지워지지 않음(프로그램 파일 포함). `-NonInteractive` → 종료 3. 정확한 `DELETE MY WALLET` → `%LOCALAPPDATA%\YourWallet` 없음.
+- [ ] INS-13 경로(05 §11-5): 사용자 이름에 공백·한글이 있는 계정에서 INS-5·INS-6(가능할 때). `-InstallDir`로 다른 드라이브의 단순 경로에 설치·연결·제거 1회.
+- [ ] INS-14 개발 등록에서 옮기기: `scripts\register-native-host.ps1`로 등록된 상태에서 설치 → 이전 등록 값을 출력하고 교체, T03 성공. 다른 위치 yw-app 실행 중이면 경고가 나온다. 제거 뒤 개발용으로 돌아가려면 `register-native-host.ps1`을 다시 실행한다.
+
 ## 6. 프로토콜 변경 회귀 절차
 
 변경을 알게 되면 아래를 수행하고 `docs/acceptance/regress-<항목>-<YYYYMMDD>.md`에 남긴다. 확인 주기: R1·R3은 월 1회 공식 페이지(EIP-7773 표, Solana SIMD·릴리스 노트)를 본다(운영 권고).

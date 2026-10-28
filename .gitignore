@@ -32,3 +32,4 @@ __pycache__/
 *private*.pem
 /extension/native-host/com.your_wallet.native.json
 !/extension/native-host/com.your_wallet.native.json.template
+/dist/

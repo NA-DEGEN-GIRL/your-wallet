@@ -1013,3 +1013,86 @@ impl SecureTextField {
 1. **구현 시 확인 — yw-host가 실행한 yw-app의 수명(D24, M5).** Chrome이 native host를 job object에 넣고 연결 종료 때 job을 정리하면 yw-host가 띄운 yw-app도 함께 종료될 수 있다(`spawn_detached`는 `CREATE_BREAKAWAY_FROM_JOB`을 먼저 시도한다, §7.6). 확인: 확장 연결 → yw-app 자동 실행 → Chrome 완전 종료 후 yw-app 생존 여부([09](09-testing.md) M5-13). 함께 종료되면 D24의 대안을 그대로 적용한다: `browserAutoLaunch` 기본값을 `false`로 바꾸고([04](04-app-ui.md) §6.1, [05](05-browser.md) §7.4) 사용자가 yw-app을 먼저 실행한다(yw-app이 없으면 요청마다 4900). D24 변경은 필요 없다.
 2. **구현 시 확인 — `WerAddExcludedApplication`.** feature 이름과 심볼은 windows-sys 0.61.2에 있고 해당 feature로 크레이트 컴파일을 확인했지만, 실제로 Windows 11에서 이 호출이 fast-fail 보고(`panic = "abort"`)를 WER 업로드 대상에서 빼는지는 확인하지 않았다. 확인: 테스트 빌드에서 의도적 abort 후 "안정성 모니터"·`%LOCALAPPDATA%\Microsoft\Windows\WER\ReportQueue`에 보고가 생기는지. 효과가 없으면 이 호출을 빼고 D28의 "크래시 업로드 없음"은 "지갑이 업로드하지 않음"으로 한정한다.
 3. **구현 시 확인 — loopback `[::1]`(§7.4).** `WinHttpConnect`가 IPv6 리터럴을 대괄호 없이 받는지 [06](06-llm-explain.md) §10 mock 테스트에서 확인한다. 대체: 대괄호 포함 형태, 둘 다 실패하면 `LoopbackUrl`에서 `[::1]`을 거부한다.
+
+---
+
+## 9. 배포 패키지 (D1)
+
+미리 빌드된 zip과 현재 사용자 범위 설치·제거 스크립트다. 사용자 안내는 [docs/install.ko.md](../docs/install.ko.md), 수동 판정은 [09](09-testing.md) §5.12. 소스 빌드와 `scripts/register-native-host.ps1`(개발용 등록, [05](05-browser.md) §9)은 그대로 지원한다.
+
+### 9.1 파일
+
+| 경로 | 역할 |
+|---|---|
+| `scripts/package.ps1` | 게이트 → 릴리스 빌드 → 스테이징 → `SHA256SUMS` → zip(§9.2) |
+| `packaging/install.ps1` | zip에 들어가는 설치 스크립트(§9.3). `$PackageVersion = '@YW_VERSION@'` 자리표시자를 package.ps1이 바꾼다. 저장소에서 직접 실행하면 종료 코드 2 |
+| `packaging/uninstall.ps1` | zip에 들어가고 설치 폴더에도 복사되는 제거 스크립트(§9.4) |
+| `dist/` | 산출물. `.gitignore` 대상, 커밋하지 않는다 |
+
+세 스크립트 모두 Windows PowerShell 5.1·PowerShell 7 호환, UTF-8 BOM, CRLF(`.gitattributes` `*.ps1 eol=crlf`). BOM이 없으면 5.1이 한글 문자열을 ANSI로 읽으므로 package.ps1이 두 packaging 스크립트의 BOM을 확인한다.
+
+### 9.2 `scripts/package.ps1`
+
+`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1 [-SkipCheck] [-IncludeTestDapp]`. 첫 실패에서 `package: FAIL <이유>`를 stderr에 쓰고 종료 코드 1, 성공 0. 네트워크를 쓰지 않는다.
+
+1. 버전 = 루트 `Cargo.toml` `[workspace.package] version`(`^\d+\.\d+\.\d+$`). cargo 1.95.0, Node 22+, rustflags 환경 변수 없음(check.ps1과 같은 규칙). `git rev-parse HEAD`·`git status --porcelain`(변경이 있으면 경고하고 README에 "(+ 커밋되지 않은 변경)" 표시)·HEAD 커밋 시각(`SOURCE_DATE_EPOCH`가 있으면 그 값).
+2. `-SkipCheck`가 아니면 같은 PowerShell로 `scripts/check.ps1 -Offline`. 실패하면 중단. `-SkipCheck` zip은 배포하지 않는다(경고 출력).
+3. `node scripts/extension-key.mjs check`, `extension/extension-id.txt`의 ID가 `packaging/install.ps1`의 `$ExtensionId`와 같음, install.ps1의 `'@YW_VERSION@'`이 정확히 1개, 두 packaging 스크립트 BOM.
+4. 확장 런타임 파일 = `scripts/audit-extension.mjs`의 `auditExtensionRoot("extension").packagedFiles`(`manifest.json`, `popup/*`, `src/*.js`; 정본이 하나뿐이도록 재구현하지 않는다)와 `extension/icons/`(있으면). `package.json`, `extension-id.txt`, `native-host/`, `tests/`는 넣지 않는다. `test-dapp/`은 `-IncludeTestDapp`일 때만 `extension/test-dapp/`으로 넣는다.
+5. `cargo build --release --locked --offline -p yw-app -p yw-host`.
+6. `dist/YourWallet-<버전>/`을 새로 만들고 다음을 복사한다: `yw-app.exe`, `yw-host.exe`, `extension/…`, `install.ps1`(버전 치환, BOM 유지), `uninstall.ps1`, `README-설치.txt`(생성, 한국어, UTF-8 BOM, CRLF: 확인·설치·확장 로드·SmartScreen·제거·소스 커밋), 루트의 `LICENSE`·`LICENSE.txt`·`LICENSE.md`·`COPYING`(있는 것만). 스테이징한 `extension/`에 `audit-extension.mjs check`를 다시 실행한다.
+7. `SHA256SUMS`: 자기 자신을 뺀 모든 파일, 한 줄 `<소문자 hex 64>␠␠<'/' 구분 상대 경로>`, LF, UTF-8(BOM 없음), 경로 서수(ordinal) 정렬. `sha256sum -c`와 호환.
+8. `dist/YourWallet-<버전>-win-x64.zip`: 최상위 폴더 `YourWallet-<버전>/` 하나, 항목은 서수 정렬, 시각은 1의 커밋 시각(UTC), 이름은 UTF-8(일반 목적 플래그 bit 11, `README-설치.txt`), 디렉터리 항목 없음, Deflate. 만든 뒤 다시 열어 항목 목록·각 항목 SHA-256이 스테이징과 같은지 확인한다.
+9. `dist/YourWallet-<버전>-win-x64.zip.sha256`(`<hex>␠␠<zip 이름>` LF)을 쓰고 경로·크기·SHA-256을 출력한다. 배포자는 이 값을 zip과 다른 경로로 알린다.
+
+재현성: 확장·스크립트·README는 같은 커밋(작업 트리 변경 없음)이면 바이트가 같고, zip 항목 순서·시각도 고정이다. `yw-*.exe`가 다른 PC·경로에서 바이트 단위로 재현되는지는 확인하지 않았다(MSVC 링커 시각·PDB 경로가 들어갈 수 있다). 따라서 소스 재빌드 확인(D1)의 기준은 같은 커밋으로 package.ps1을 실행해 exe 외 줄의 `SHA256SUMS`가 같은지이며, exe 줄이 다르면 그 사실을 기록한다.
+
+### 9.3 `packaging/install.ps1`
+
+`install.ps1 [-InstallDir <폴더>] [-NoShortcut] [-NoNativeHost] [-DryRun]`. 관리자 권한 불필요. 기본 설치 폴더 `%LOCALAPPDATA%\Programs\YourWallet`.
+
+1. 환경: Windows, 64비트, `LOCALAPPDATA` 절대 경로, 빌드 22621 미만이면 경고. 버전 자리표시자가 치환되지 않았으면 종료 2.
+2. 설치 경로: 정규화한 절대 경로, `"`·`%`·`&`·`^`·`|`·`<`·`>`·`!`·제어 문자 금지([05] §9.1과 같은 규칙), 드라이브 문자로 시작하고 루트가 아님, 지갑 데이터 폴더 `%LOCALAPPDATA%\YourWallet`·zip을 푼 폴더와 겹치지 않음, 그 경로로 만든 manifest가 아래 4의 검증을 통과. 위반은 종료 1.
+3. 무결성: `SHA256SUMS`(UTF-8, BOM·CRLF 허용, 줄 형식 `^[0-9a-f]{64} [ *].+$`) 읽기 → 경로 검사(상대 경로, `..`·빈 구간·끝 공백·점·`\ : * ? " < > |`·제어 문자 금지, 대소문자 무시 중복 금지, `SHA256SUMS`·`yw-install.json`·manifest 이름 금지) → 필수 파일(`yw-app.exe`, `yw-host.exe`, `extension/manifest.json`, `install.ps1`, `uninstall.ps1`) → 모든 파일 해시 비교 → `extension/manifest.json`의 `key`로 계산한 ID([05] §2.3)가 `nnpjlobjgbanccjddghlpaafpohfkeph`. 하나라도 어긋나면 아무것도 바꾸지 않고 종료 2. 목록에 없는 파일은 경고만 하고 설치하지 않는다.
+4. 설치 폴더 상태: 없음·빈 폴더 → 새 설치. 설치 기록 `yw-install.json`(UTF-8 BOM 없음, `{"product":"YourWallet","version","state":"installing"|"installed","files":[상대 경로…]}`)이 있으면 업그레이드·재설치·다운그레이드(경고)를 표시한다. 기록 없이 비어 있지 않거나 기록이 손상된 폴더는 종료 1.
+5. 계획: `SHA256SUMS`의 파일 중 `install.ps1`을 뺀 것을 설치한다. 대상 해시가 같으면 건너뛰고, 이전 기록에만 있는 파일은 지운다.
+6. 실행 중 확인: 덮어쓰거나 지울 파일을 `FileShare.None` 쓰기 열기로 시험해 잠긴 파일과 그 파일을 실행 중인 yw-app·yw-host(PID)를 보인다. 닫는 방법(yw-app 창 닫기 = 잠금 후 정상 종료, 창이 숨어 있으면 시작 메뉴 실행으로 창 표시, yw-host는 Chrome 종료)을 안내하고 Enter(다시 확인)·`C`(yw-app에 `CloseMainWindow` = `WM_CLOSE`, 15초 대기)·`Q`(종료 3)를 묻는다. **프로세스를 강제 종료하지 않는다.** 비대화형(`UserInteractive` 아님, 입력 리디렉션, `-NonInteractive`)이면 묻지 않고 종료 3. 다른 경로의 yw-app이 실행 중이면 단일 인스턴스([04] §1.1) 때문에 설치본이 그 창을 띄운다고 경고한다.
+7. 복사: 기록을 `installing`(이전 ∪ 새 목록)으로 먼저 쓰고, 파일마다 복사 후 해시 재확인, 이전 버전 파일 삭제와 빈 하위 폴더 정리. 실패는 종료 4.
+8. manifest: `<설치 폴더>\com.your_wallet.native.json`, [05] §9.1 4와 같은 `[ordered]` → `ConvertTo-Json -Depth 3`, UTF-8 BOM 없음, 내용이 같으면 쓰지 않는다. 쓴 파일을 [05] §9.3 `validate-manifest.mjs`와 같은 규칙의 PowerShell 구현으로 검증(정확한 키 5개, 이름·`stdio`, 설명 1–128자, `path` = 드라이브 절대 경로·구간 규칙·마지막 `yw-host.exe`(대소문자 무시)·`%&^!`·자리표시자 없음, `allowed_origins` = 정확히 `chrome-extension://<id>/` 하나, BOM·잘못된 UTF-8 거부). 사용자 PC에 Node가 없어도 되도록 재구현했고 두 구현의 일치는 시험으로 확인한다([09] §5.12 INS-1). 실패는 종료 5. `-NoNativeHost`여도 manifest는 쓴다.
+9. 등록(`-NoNativeHost`가 아니면): `HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.your_wallet.native` 기본값 = manifest 경로([05] §9.1 6과 같은 `New-Item -Force` + 다시 읽기). 이미 같으면 그대로, 다른 값(예: 개발용 `%LOCALAPPDATA%\YourWallet\bin`)이면 이전 값을 출력하고 바꾼다. 실패는 종료 5. Chrome 외 브라우저(Edge 등)는 등록하지 않는다.
+10. 바로가기(`-NoShortcut`가 아니면): `[Environment]::GetFolderPath('Programs')\Your Wallet.lnk`, `WScript.Shell` COM, 대상 `yw-app.exe`, 인자 없음, 작업 폴더 = 설치 폴더. 실패는 종료 6.
+11. 기록을 `installed`(새 목록)로 쓰고(같으면 쓰지 않음) 확장 로드(개발자 모드 → 압축해제 로드 → `<설치 폴더>\extension` → ID 확인, 업그레이드면 카드·탭 새로고침)·SmartScreen·첫 RPC 설정·제거 명령을 한국어로 출력한다.
+
+`-DryRun`은 1–6의 확인과 7–10의 할 일 출력만 하고 파일·레지스트리·바로가기를 바꾸지 않는다(6에서 묻지 않는다). 같은 패키지로 다시 실행하면 아무 파일도 다시 쓰지 않는다(멱등). 예상하지 못한 예외는 줄 번호와 함께 종료 9. 지갑 데이터 `%LOCALAPPDATA%\YourWallet\`은 어떤 경로로도 읽거나 쓰지 않는다. 시험용으로 점 소싱(`. .\install.ps1`)하면 함수만 정의된다.
+
+| 종료 코드 | 뜻 |
+|---|---|
+| 0 | 성공(`-DryRun` 포함) |
+| 1 | 환경·인자 오류(2·4의 경로·폴더 규칙 포함) |
+| 2 | 패키지 무결성 오류(3), 버전 자리표시자 미치환 |
+| 3 | 취소 또는 비대화형이라 물을 수 없음(6) |
+| 4 | 파일 복사·삭제·기록 실패 |
+| 5 | manifest 검증·HKCU 등록 실패 |
+| 6 | 시작 메뉴 바로가기 실패 |
+| 9 | 예상하지 못한 오류 |
+
+### 9.4 `packaging/uninstall.ps1`
+
+`uninstall.ps1 [-InstallDir <폴더>] [-NoShortcut] [-NoNativeHost] [-RemoveWalletData] [-DryRun]`. `-InstallDir` 기본값은 스크립트 옆에 `yw-install.json`이 있으면(설치 폴더 안의 사본) 그 폴더, 아니면 `%LOCALAPPDATA%\Programs\YourWallet`.
+
+1. 현재 폴더를 임시 폴더로 옮긴다(설치 폴더 안에서 실행해도 폴더를 지울 수 있게). 설치 경로가 지갑 데이터 폴더와 겹치면 종료 1.
+2. 지울 프로그램 파일 = `yw-install.json` 목록(경로 검사, 설치 폴더 밖 무시) + manifest + 기록 파일. 기록이 없거나 손상된 비어 있지 않은 폴더는 파일을 지우지 않고(바로가기·등록은 처리) 종료 1.
+3. `-RemoveWalletData`: 무엇이든 지우기 전에 `%LOCALAPPDATA%\YourWallet` 전체 삭제 확인을 받는다. 24단어 안내를 출력하고, 대화형일 때만 `DELETE MY WALLET`(대소문자 구분) 입력을 받는다. 불일치·비대화형은 아무것도 지우지 않고 종료 3. 이때는 위치와 상관없이 실행 중인 yw-app도 닫아야 한다.
+4. install.ps1 6과 같은 방식(강제 종료 없음)으로 잠긴 `yw-app.exe`·`yw-host.exe`를 닫아 달라고 묻는다. 취소·비대화형은 종료 3.
+5. 바로가기는 대상이 `<설치 폴더>\yw-app.exe`일 때만, HKCU 키는 기본값이 `<설치 폴더>\com.your_wallet.native.json`일 때만 지운다(다른 설치·개발용 등록은 남기고 출력).
+6. 프로그램 파일 삭제 → 빈 하위 폴더 → 비었으면 설치 폴더. 기록에 없던 파일은 남기고 경고한다.
+7. 지갑 데이터는 3에서 확인받았을 때만 지운다. 그 밖에는 "지우지 않았습니다"와 경로를 출력한다.
+8. 마지막에 Chrome 확장 카드 삭제 안내와 "24개 복구 단어(쓴 경우 passphrase 포함)가 유일한 백업" 안내를 출력한다.
+
+종료 코드: 0 성공(`-DryRun`, 이미 제거됨 포함), 1 환경 오류·기록 없는 폴더, 3 취소·확인 문구 불일치·비대화형, 4 일부 항목 삭제 실패, 9 예상하지 못한 오류.
+
+### 9.5 한계
+
+- 코드 서명을 하지 않는다(D1). 인터넷 영역 표시(MOTW)가 붙은 zip에서 푼 exe는 첫 실행 때 SmartScreen 창이 뜬다("추가 정보 → 실행"). 스마트 앱 컨트롤이 켜진 PC에서는 실행이 막힐 수 있다. install.ps1은 MOTW를 지우지 않는다.
+- zip 안의 `SHA256SUMS`는 손상·불완전 압축 해제만 잡는다. 진본 확인은 zip과 다른 경로로 받은 zip SHA-256, 또는 §9.2의 소스 재빌드 비교뿐이다.
+- 자동 업데이트는 없다. 업그레이드는 새 zip으로 install.ps1을 다시 실행한다.

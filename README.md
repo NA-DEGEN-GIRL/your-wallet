@@ -32,6 +32,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 -Offline  
 privacy scan, 확장 정적 감사를 차례로 실행하고 첫 실패에서 멈춘다(종료 코드는 spec/01 §4.1).
 `Cargo.lock`은 커밋하며 `cargo update`·`cargo generate-lockfile`을 쓰지 않는다(spec/01 §3.6).
 
+## 설치 (배포 zip)
+
+미리 빌드된 `YourWallet-<버전>-win-x64.zip`의 SHA-256을 배포자가 따로 알려 준 값과 비교한 뒤 풀고,
+그 폴더에서 실행한다. 관리자 권한 없이 현재 사용자에게만 설치된다(`%LOCALAPPDATA%\Programs\YourWallet`,
+HKCU native host 등록, 시작 메뉴 바로가기). 지갑 데이터 `%LOCALAPPDATA%\YourWallet\`은 건드리지 않는다.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -DryRun   # 할 일만 보기
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1           # SHA256SUMS 확인 후 설치
+```
+
+확장은 `chrome://extensions` → 개발자 모드 → 압축해제된 확장 프로그램 로드 →
+`%LOCALAPPDATA%\Programs\YourWallet\extension`(ID `nnpjlobjgbanccjddghlpaafpohfkeph` 확인).
+코드 서명을 하지 않으므로 SmartScreen 창이 뜨면 "추가 정보 → 실행". 확인·업그레이드·제거(`uninstall.ps1`)·
+데이터 위치·백업은 [docs/install.ko.md](docs/install.ko.md). zip은 `scripts\package.ps1`로 만든다
+(`check.ps1 -Offline` 게이트 → `cargo build --release --locked --offline` → `dist\`, spec/01 §9).
+
 ## 문서
 
 | 문서 | 내용 |
