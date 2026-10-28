@@ -717,13 +717,13 @@ fn sol_n1_late_landing_found_by_history_wins() {
         let (outcome, _) = run(&rpc, &clock, 3, LoopState::default());
         assert_eq!(outcome, Ok(expected));
     }
-    // A finalized status without history.
+    // A finalized status without history (only the session's first send happened).
     let net = Arc::new(Mutex::new(Net::new(LANDED, NULL_STATUS, 1_000, accepted())));
     let rpc = net_rpc(&net);
     let (outcome, _) = run(&rpc, &FakeClock::at(SIGNED_AT), 1, LoopState::default());
     assert_eq!(outcome, Ok(Outcome::Landed { slot: 9 }));
-    assert_eq!(rpc.count("sendTransaction"), 0);
-    // processed/confirmed: no re-send, not success.
+    assert_eq!(rpc.count("sendTransaction"), 1);
+    // processed/confirmed: no re-send after the first, not success.
     let net = Arc::new(Mutex::new(Net::new(
         PROCESSED,
         NULL_STATUS,
@@ -734,7 +734,41 @@ fn sol_n1_late_landing_found_by_history_wins() {
     let (outcome, state) = run(&rpc, &FakeClock::at(SIGNED_AT), 10, LoopState::default());
     assert!(matches!(outcome, Ok(Outcome::Pending { .. })));
     assert!(state.processing);
-    assert_eq!(rpc.count("sendTransaction"), 0);
+    assert_eq!(rpc.count("sendTransaction"), 1);
+}
+
+#[test]
+fn first_send_goes_out_even_when_the_status_lookup_fails() {
+    // The status lookup times out: the first round of the session still sends the signed bytes
+    // first, records that send (no immediate repeat), and reports the lookup failure.
+    let rpc = FakeRpc::new(|method, _| match method {
+        "getSignatureStatuses" => Answer::Transport(yw_win::http::HttpError::Timeout),
+        "sendTransaction" => accepted(),
+        _ => Answer::Error(-32_601, None),
+    });
+    let clock = FakeClock::at(SIGNED_AT);
+    let result = track_round(&*rpc, &track(LoopState::default()), &clock);
+    assert_eq!(rpc.methods(), ["sendTransaction", "getSignatureStatuses"]);
+    assert_eq!(result.sends, 1);
+    assert_eq!(result.outcome.map_err(ErrorCode::code), Err("E-RPC-002"));
+    assert_eq!(result.state.last_round_ms, Some(clock.now_ms()));
+    // The next rounds are status first; the next send waits for the status and the period.
+    clock.advance(1_000);
+    let again = track_round(&*rpc, &track(result.state), &clock);
+    assert_eq!(again.sends, 0);
+    assert_eq!(rpc.count("sendTransaction"), 1);
+    // A deterministic preflight error of that first send is kept even though the lookup failed.
+    let rpc = FakeRpc::new(|method, _| match method {
+        "getSignatureStatuses" => Answer::Transport(yw_win::http::HttpError::Timeout),
+        "sendTransaction" => preflight("\"InsufficientFundsForFee\""),
+        _ => Answer::Error(-32_601, None),
+    });
+    let result = track_round(&*rpc, &track(LoopState::default()), &clock);
+    assert!(result.state.stop_rebroadcast);
+    assert_eq!(
+        result.state.preflight_err,
+        Some(err::INSUFFICIENT_FUNDS_FOR_FEE)
+    );
 }
 
 fn preflight(err: &str) -> Answer {

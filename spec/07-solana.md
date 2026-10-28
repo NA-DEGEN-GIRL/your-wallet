@@ -520,7 +520,7 @@ pub const SOL_JOURNAL_MAX_BODY: usize = SOL_JOURNAL_HEADER_LEN + SOL_MAX_TX_BYTE
 
 | 주기·사건 | 동작 |
 |---|---|
-| 첫 전송 | 저널에 `Pending` 기록이 디스크에 반영된 뒤 `sendTransaction`(§15.2, `skipPreflight:false`, `maxRetries:0`) |
+| 첫 전송 | 저널에 `Pending` 기록이 디스크에 반영된 뒤 `sendTransaction`(§15.2, `skipPreflight:false`, `maxRetries:0`). 이 세션의 첫 라운드(서명 직후, 재시작·잠금 해제 뒤 재개)는 상태 조회보다 **먼저** 보낸다: 상태 조회 실패가 첫 전송을 막지 않으며, 그 전송 결과(재전송 주기, 결정적 오류 플래그)는 조회가 실패해도 기록한다 |
 | 매 `SOL_POLL_INTERVAL_MS` | `getSignatureStatuses([sig], {searchTransactionHistory:false})` |
 | 매 `SOL_REBROADCAST_INTERVAL_MS` | 상태가 null이고 재전송 중지 플래그가 없으면 **같은 바이트·같은 파라미터**로 `sendTransaction`, 그리고 `getEpochInfo(finalized)`(한 응답의 `blockHeight`·`absoluteSlot`, §14.3) |
 | 상태 `confirmationStatus:"finalized"`, `err:null` | `Landed{slot}` 저장, 종료 |

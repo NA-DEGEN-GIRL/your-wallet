@@ -7,7 +7,8 @@
 
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::broadcast::{
-    LoopState, Observation, Outcome, PendingTx, RoundTimes, SigStatus, decide, plan, wants_history,
+    LoopState, Observation, Outcome, PendingTx, RoundTimes, SigStatus, decide, note_round, plan,
+    wants_history,
 };
 use yw_core::sol::display::{SimSummary, SolBlock, SolPreviewFacts, SplPreviewFacts, intent_flags};
 use yw_core::sol::fee::{
@@ -548,10 +549,11 @@ pub struct TrackResult {
     pub sends: u32,
 }
 
-/// One round (spec/07 §14.2–§14.3): status (history off) → plan → re-send the same bytes and/or
-/// `getEpochInfo` (block height and slot of one view) → history lookup (with its `context.slot`)
-/// only when that height is past `lastValidBlockHeight` → [`decide`] with the wall clock and the
-/// monotonic time since [`TrackJob::tracked_since_ms`]. No re-signing exists here.
+/// One round (spec/07 §14.2–§14.3): (first round of the session: send first) → status (history
+/// off) → plan → re-send the same bytes and/or `getEpochInfo` (block height and slot of one view)
+/// → history lookup (with its `context.slot`) only when that height is past
+/// `lastValidBlockHeight` → [`decide`] with the wall clock and the monotonic time since
+/// [`TrackJob::tracked_since_ms`]. No re-signing exists here.
 #[must_use]
 pub fn track_round(transport: &dyn Transport, job: &TrackJob, clock: &dyn Clock) -> TrackResult {
     let client = RpcClient::new(transport);
@@ -579,18 +581,31 @@ pub fn track_round(transport: &dyn Transport, job: &TrackJob, clock: &dyn Clock)
     }
     let signature_text = yw_core::codec::base58::base58_encode(&job.signature);
     let programs = sol_rpc::programs_of(&job.tx);
+    let now_ms = clock.now_ms();
+    // The first round of the session (just signed, or resumed after start/unlock) sends before it
+    // asks the status: a failing status lookup must not hold back the first broadcast. Sending
+    // the same bytes again is harmless even if they already landed.
+    let first = job.state.last_round_ms.is_none() && !job.state.stop_rebroadcast;
+    let early = first.then(|| {
+        result.sends = result.sends.saturating_add(1);
+        sol_rpc::send_transaction(&client, url, &job.tx, &signature_text)
+    });
     let status = match sol_rpc::signature_status(&client, url, &signature_text, false, programs) {
         Ok(status) => status,
         Err(failure) => {
+            let mut state = job.state;
+            note_round(&mut state, early, false, now_ms);
+            result.state = state;
             result.outcome = Err(classify(failure));
             return result;
         }
     };
-    let now_ms = clock.now_ms();
     let round = plan(&job.state, status, now_ms);
-    let send = round.send.then(|| {
-        result.sends = result.sends.saturating_add(1);
-        sol_rpc::send_transaction(&client, url, &job.tx, &signature_text)
+    let send = early.or_else(|| {
+        round.send.then(|| {
+            result.sends = result.sends.saturating_add(1);
+            sol_rpc::send_transaction(&client, url, &job.tx, &signature_text)
+        })
     });
     let chain = if round.height {
         sol_rpc::epoch_view(&client, url).ok()
