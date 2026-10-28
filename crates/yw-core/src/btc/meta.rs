@@ -1,4 +1,5 @@
-//! `BtcMeta`, the `btc` key of meta.ywm (spec/08 §12.3, spec/02 §5.3): the cached account node,
+//! `BtcMeta` (one BTC account: meta `btc` for BIP84 account 0, `btc_accounts` for the others,
+//! spec/08 §12.3, §12.3a, spec/02 §5.3): the account key (HD node of any type or an imported key),
 //! issue indices (§3.2), discovery (§3.4) as a pure state machine driven by indexer `tx_count`
 //! observations, history marking, the verified UTXO set with its update rules (§4.7-4/5/6,
 //! auto-freeze, user freeze), spendable candidates and balance (§7.4), sent-script hashes,
@@ -7,7 +8,9 @@
 //!
 //! The JSON writer emits the §12.3 key order; the reader rejects unknown or missing keys, wrong
 //! types and formats (lowercase hex, sats as decimal strings, outpoints `"<txid>:<vout>"`) and
-//! bound violations, which the app handles as a meta validation failure (spec/02 §5.3).
+//! bound violations, which the app handles as a meta validation failure (spec/02 §5.3). Version 1
+//! objects are BIP84 account 0 (unchanged bytes); version 2 objects carry `script_type` and `key`.
+//! [`BtcAccounts`] is the `btc_accounts` container (other accounts of both networks, selection).
 #![deny(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 
 use core::fmt;

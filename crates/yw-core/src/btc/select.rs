@@ -1,7 +1,9 @@
 //! Coin selection and transaction planning (spec/08 §7, §9): eligible candidates, the
-//! single-input-then-fewest-inputs selection, change at 294 sats or folded into the fee,
+//! single-input-then-fewest-inputs selection, change at the account type's dust or folded into
+//! the fee, sizes by the account type (spec/08 §3.5, §7.2),
 //! send-max, the layout seed (Fisher–Yates input order and change position), the fixed fields
-//! (version 2, sequence `0xFFFFFFFD`, empty scriptSig, `lock_time = tip_height`), and RBF fee
+//! (version 2, sequence `0xFFFFFFFD`, empty scriptSig but the P2SH-P2WPKH redeem push,
+//! `lock_time = tip_height`), and RBF fee
 //! bumps with the BIP125 minimum. Every amount is a checked [`Sats`] operation; plans are
 //! deterministic for a fixed `layout_seed`.
 //!

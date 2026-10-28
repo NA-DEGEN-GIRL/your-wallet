@@ -1,7 +1,8 @@
 //! Post-sign verification (spec/08 §11.2): every check is mandatory and any failure discards the
 //! signed bytes. The raw transaction is re-parsed and compared with the approved unsigned
 //! transaction, each witness is checked strictly against a sighash recomputed with the verified
-//! amount and the key derived from the cached account node, the change is re-derived, and the
+//! amount(s) and the key the account derives for each input (ECDSA witness or scriptSig, or the
+//! Taproot key-path signature under the derived output key), the change is re-derived, and the
 //! fee, caps, dust and sizes are recomputed.
 #![deny(clippy::indexing_slicing)]
 
