@@ -148,6 +148,39 @@ impl SolSendForm {
     }
 }
 
+/// Shown when the validation at `검토` differs from the one on screen (spec/07 §13.1-1).
+pub const SOL_REVIEW_CHANGED_TEXT: &str =
+    "입력이 바뀌어 다시 확인했습니다. 받는 주소·자산·금액을 확인한 뒤 다시 검토하세요.";
+
+/// Why `검토` did not queue an approval.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReviewRefusal {
+    /// The form cannot be reviewed (input errors, a pending transfer, the lock, …).
+    NotReady,
+    /// The fresh validation differs from the shown one: nothing is queued.
+    Changed,
+}
+
+/// What an approval is built from: the parsed recipient, the asset and the amount.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReviewInputs {
+    to: Option<SolAddress>,
+    asset: SolAsset,
+    send_max: bool,
+    amount: Option<u64>,
+}
+
+impl ReviewInputs {
+    fn of(form: &SolSendForm) -> Self {
+        Self {
+            to: form.check.as_ref().map(|check| check.to),
+            asset: form.asset(),
+            send_max: form.send_max,
+            amount: form.amount,
+        }
+    }
+}
+
 /// Loop scheduling of one `Pending` record.
 #[derive(Clone, Copy, Debug, Default)]
 #[expect(
@@ -910,20 +943,27 @@ impl App {
             && matches!(self.mode, AppMode::Unlocked { .. })
     }
 
-    /// `검토`: queue the approval (spec/07 §13.1 step 1 done, step 2 runs in A01).
-    pub fn sol_review(&mut self) {
-        if !self.sol_can_review() {
-            return;
+    /// The approval item of `검토` (spec/07 §13.1 step 1). The form is validated again first and
+    /// the item is built from that fresh result only: when the fresh recipient, asset or amount
+    /// differs from the last shown validation (an edit inside the debounce), nothing is queued.
+    ///
+    /// # Errors
+    ///
+    /// [`ReviewRefusal`].
+    pub fn sol_review_item(&mut self) -> Result<SolApprovalItem, ReviewRefusal> {
+        let shown = ReviewInputs::of(&self.sol.send);
+        self.sol.send.dirty_ms = None;
+        self.sol_validate_send();
+        if ReviewInputs::of(&self.sol.send) != shown {
+            return Err(ReviewRefusal::Changed);
         }
-        let Some((source, from, label)) = self.sol_form_sender() else {
-            return;
-        };
-        let Some(recipient) = self.sol.send.check.clone() else {
-            return;
-        };
-        let cluster = self.sol_cluster();
-        let item = SolApprovalItem {
-            cluster,
+        if !self.sol_can_review() {
+            return Err(ReviewRefusal::NotReady);
+        }
+        let (source, from, label) = self.sol_form_sender().ok_or(ReviewRefusal::NotReady)?;
+        let recipient = self.sol.send.check.clone().ok_or(ReviewRefusal::NotReady)?;
+        Ok(SolApprovalItem {
+            cluster: self.sol_cluster(),
             source,
             from,
             label,
@@ -934,7 +974,22 @@ impl App {
             } else {
                 self.sol.send.amount
             },
+        })
+    }
+
+    /// `검토`: queue the approval built from a fresh validation (spec/07 §13.1 step 1 done, step
+    /// 2 runs in A01).
+    pub fn sol_review(&mut self) {
+        let item = match self.sol_review_item() {
+            Ok(item) => item,
+            Err(ReviewRefusal::Changed) => {
+                self.sol.send.info = Some(SOL_REVIEW_CHANGED_TEXT.to_owned());
+                self.refresh();
+                return;
+            }
+            Err(ReviewRefusal::NotReady) => return,
         };
+        let (cluster, from) = (item.cluster, item.from);
         if self
             .evm
             .queue
@@ -1542,5 +1597,96 @@ impl App {
     #[must_use]
     pub fn sol_text(lamports: u64) -> String {
         format!("{} SOL", format_amount(lamports, 9))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use yw_core::sol::SolAddress;
+
+    use super::{ReviewRefusal, SOL_REVIEW_CHANGED_TEXT};
+    use crate::apikeys::ApiKeys;
+    use crate::app::{App, AppMode, Paths, Screen};
+    use crate::events::JournalView;
+    use crate::meta::{Account, Meta, Tab};
+    use crate::settings::Settings;
+
+    const OWN: [u8; 32] = [200; 32];
+    const TO_A: &str = "Hh8QwFUA6MtVu1qAoq12ucvFHNwCcVTV7hpWjeY1Hztb";
+    const TO_B: &str = "7WktogJEd2wQ9eH2oWusmcoFTgeYi6rS632UviTBJ2jm";
+
+    /// An unlocked wallet with Solana account 0 on the send screen (mainnet, empty journal).
+    fn app() -> App {
+        let dir = std::env::temp_dir().join(format!("yw-app-sol-ui-{}", std::process::id()));
+        let mut app = App::new(
+            Paths {
+                data: dir.clone(),
+                logs: dir.join("logs"),
+            },
+            true,
+            Settings::default(),
+            ApiKeys::default(),
+        );
+        app.mode = AppMode::Unlocked {
+            alt_passphrase: false,
+        };
+        let mut meta = Meta {
+            sol_accounts: vec![Account {
+                index: 0,
+                label: "Solana 1".to_owned(),
+                address: SolAddress::from_bytes(OWN).to_base58(),
+                hidden: false,
+            }],
+            ..Meta::default()
+        };
+        meta.prefs.tab = Tab::Sol;
+        app.meta = Some(meta);
+        app.evm.journal = Some(JournalView::default());
+        app.screen = Screen::SolSend;
+        app
+    }
+
+    fn addr(text: &str) -> SolAddress {
+        SolAddress::parse(text).unwrap()
+    }
+
+    #[test]
+    fn review_uses_a_fresh_validation_and_refuses_a_changed_input() {
+        let mut app = app();
+        app.sol.send.to_text = TO_A.to_owned();
+        app.sol.send.amount_text = "1".to_owned();
+        app.sol_validate_send();
+        assert_eq!(app.sol.send.check.as_ref().unwrap().to, addr(TO_A));
+        // Edits inside the debounce: the shown validation still says A / 1 SOL.
+        app.sol.send.to_text = TO_B.to_owned();
+        app.sol.send.dirty_ms = Some(1);
+        assert_eq!(app.sol_review_item().unwrap_err(), ReviewRefusal::Changed);
+        assert_eq!(app.sol.send.check.as_ref().unwrap().to, addr(TO_B));
+        assert_eq!(app.sol.send.dirty_ms, None);
+        // The fresh validation is now on screen: the item is built from it.
+        let item = app.sol_review_item().unwrap();
+        assert_eq!(item.recipient.to, addr(TO_B));
+        assert_eq!(item.amount, Some(1_000_000_000));
+        // The amount too.
+        app.sol.send.amount_text = "2".to_owned();
+        assert_eq!(app.sol_review_item().unwrap_err(), ReviewRefusal::Changed);
+        assert_eq!(app.sol_review_item().unwrap().amount, Some(2_000_000_000));
+        // And the asset (a token of another cluster falls back to SOL on validation).
+        let devnet_usdc = yw_core::sol::template::spl_entries(yw_core::sol::SolCluster::Devnet)
+            .next()
+            .unwrap();
+        app.sol.send.token = Some(devnet_usdc);
+        assert_eq!(app.sol_review_item().unwrap_err(), ReviewRefusal::Changed);
+        assert_eq!(app.sol.send.token, None);
+        // `검토` itself: the fixed text, nothing queued.
+        app.sol.send.to_text = TO_A.to_owned();
+        app.sol_review();
+        assert_eq!(app.sol.send.info.as_deref(), Some(SOL_REVIEW_CHANGED_TEXT));
+        assert!(app.sol.slot.is_none());
+        assert_eq!(app.sol.send.check.as_ref().unwrap().to, addr(TO_A));
+        // Not reviewable (input error) is not a change.
+        app.sol.send.amount_text = "x".to_owned();
+        app.sol_validate_send();
+        assert_eq!(app.sol_review_item().unwrap_err(), ReviewRefusal::NotReady);
     }
 }
