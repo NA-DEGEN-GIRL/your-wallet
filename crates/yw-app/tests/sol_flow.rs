@@ -264,6 +264,59 @@ fn rent_fee_and_recipient_blocks() -> TestResult {
 }
 
 #[test]
+fn rent_rule_uses_the_recipient_lamports_and_r0_is_send_max() -> TestResult {
+    let blocks = |world: World, amount: Option<u64>| -> TestResult<Vec<SolBlock>> {
+        Ok(ready(preview(&*fake(world), &job(amount)?).outcome)?
+            .facts
+            .blocks)
+    };
+    // An existing system account below rent0 must end at rent0 or above.
+    let low = World {
+        account: "{\"data\":[\"\",\"base64\"],\"executable\":false,\"lamports\":890000,\"owner\":\"11111111111111111111111111111111\",\"rentEpoch\":0,\"space\":0}",
+        ..World::default()
+    };
+    assert_eq!(
+        blocks(low.clone(), Some(RENT0 - 890_000 - 1))?,
+        [SolBlock::Rent(RentError::RecipientBelowRent {
+            needed: RENT0 - 890_000,
+            rent0: RENT0
+        })]
+    );
+    assert!(blocks(low, Some(RENT0 - 890_000))?.is_empty());
+    // An account reported with 0 lamports is treated as new.
+    let zero = World {
+        account: "{\"data\":[\"\",\"base64\"],\"executable\":false,\"lamports\":0,\"owner\":\"11111111111111111111111111111111\",\"rentEpoch\":0,\"space\":0}",
+        ..World::default()
+    };
+    assert_eq!(
+        blocks(zero, Some(RENT0 - 1))?,
+        [SolBlock::Rent(RentError::BelowRentForNewAccount {
+            rent0: RENT0
+        })]
+    );
+    // A typed amount that leaves the sender exactly 0 is a send max for the fee cross-check: a
+    // lower RPC fee is refused (it would leave dust); one lamport less to send is a normal send.
+    let lower = World {
+        fee: "4999",
+        ..World::default()
+    };
+    let everything = 10 * SOL - 5_000;
+    assert_eq!(
+        blocks(lower.clone(), Some(everything))?,
+        [SolBlock::Fee(FeeError::FeeFormulaChanged)]
+    );
+    let prepared = ready(preview(&*fake(lower.clone()), &job(Some(everything))?).outcome)?;
+    assert_eq!(
+        prepared.flags & flags::SEND_MAX,
+        0,
+        "the typed amount is not flagged"
+    );
+    // Leaving rent0 behind instead: allowed with the lower RPC estimate.
+    assert!(blocks(lower, Some(everything - RENT0))?.is_empty());
+    Ok(())
+}
+
+#[test]
 fn recipient_account_and_pending_blocks() -> TestResult {
     let blocks = |world: World, amount: Option<u64>| -> TestResult<Vec<SolBlock>> {
         Ok(ready(preview(&*fake(world), &job(amount)?).outcome)?

@@ -310,8 +310,12 @@ pub fn preview(transport: &dyn Transport, job: &PreviewJob) -> PreviewResult {
         Ok(balance) => balance,
         Err(failure) => return failed(job.job, failure),
     };
-    let account = match sol_rpc::account_info(&client, url, &job.recipient.to) {
-        Ok(info) => classify_account(info.as_ref().map(|info| (&info.owner, info.executable))),
+    let (account, recipient_lamports) = match sol_rpc::account_info(&client, url, &job.recipient.to)
+    {
+        Ok(info) => (
+            classify_account(info.as_ref().map(|info| (&info.owner, info.executable))),
+            info.map(|info| info.lamports),
+        ),
         Err(failure) => return failed(job.job, failure),
     };
     let spl = match job.asset.spl() {
@@ -372,16 +376,17 @@ pub fn preview(transport: &dyn Transport, job: &PreviewJob) -> PreviewResult {
             0
         }),
     };
+    // What a SOL transfer leaves the sender (`Some(0)`: it empties the account).
+    let mut sender_rest = None;
     if rent_ok && amount > 0 {
         let rule = match &spl {
-            None => check_sol_send(
-                balance,
-                amount,
-                maximum,
-                rent0,
-                account != AccountClass::Missing,
-            )
-            .err(),
+            None => match check_sol_send(balance, amount, maximum, rent0, recipient_lamports) {
+                Ok(rest) => {
+                    sender_rest = Some(rest);
+                    None
+                }
+                Err(error) => Some(error),
+            },
             Some(lookup) => check_spl_send(
                 balance,
                 maximum,
@@ -425,7 +430,10 @@ pub fn preview(transport: &dyn Transport, job: &PreviewJob) -> PreviewResult {
             Err(failure) => return failed(job.job, failure),
         }
     }
-    if let Err(error) = check_rpc_fee(rpc_fee, maximum, send_max && spl.is_none()) {
+    // A SOL transfer that leaves the sender exactly 0 is a "send max" for the cross-check
+    // whatever the amount field said: a lower real fee would leave dust below rent0 (spec/07 §10).
+    let empties_sender = spl.is_none() && (send_max || sender_rest == Some(0));
+    if let Err(error) = check_rpc_fee(rpc_fee, maximum, empties_sender) {
         blocks.push(SolBlock::Fee(error));
     }
     let simulation = sol_rpc::simulate(

@@ -298,7 +298,7 @@ pub const fn template_cu_limit(asset: SolAsset) -> u32;  // Sol → 600, Spl →
 | `max_cu_price_micro` | 1_000_000 | 0–100_000_000 | CU 가격 상한(micro-lamports/CU) |
 | `cluster` | `"mainnet"` | `"mainnet"`, `"devnet"` | 화면의 현재 클러스터 |
 
-- `getFeeForMessage` 교차 확인(미리보기 메시지, §13): `null`이면 새 미리보기 블록해시로 1회 재시도 후 `FeeQueryFailed`(승인 불가). `rpc_fee > max_fee` → `FeeFormulaChanged`(승인 불가, 상수 검토 필요). `rpc_fee < max_fee` → 일반 전송은 허용하고 "RPC 추정 X lamports"를 함께 표시, **SOL 보내기 최대는 거부**(`FeeFormulaChanged`, 잔액이 0이 되지 않아 rent 규칙 위반으로 실패하므로). SPL 보내기 최대는 토큰 전액이고 SOL 계정을 비우지 않으므로 일반 전송처럼 허용한다(v1.1). 같으면 통과.
+- `getFeeForMessage` 교차 확인(미리보기 메시지, §13): `null`이면 새 미리보기 블록해시로 1회 재시도 후 `FeeQueryFailed`(승인 불가). `rpc_fee > max_fee` → `FeeFormulaChanged`(승인 불가, 상수 검토 필요). `rpc_fee < max_fee` → 일반 전송은 허용하고 "RPC 추정 X lamports"를 함께 표시, **SOL 보내기 최대는 거부**(`FeeFormulaChanged`, 잔액이 0이 되지 않아 rent 규칙 위반으로 실패하므로). 직접 입력한 금액이 보낸 뒤 잔액을 정확히 0으로 만드는 경우(§11 `r == 0`)도 보내기 최대로 보고 거부한다. SPL 보내기 최대는 토큰 전액이고 SOL 계정을 비우지 않으므로 일반 전송처럼 허용한다(v1.1). 같으면 통과.
 
 ## 11. rent
 
@@ -307,8 +307,9 @@ pub const fn template_cu_limit(asset: SolAsset) -> u32;  // Sol → 600, Spl →
 
 | 경우 | 규칙 (위반 시 승인 불가) |
 |---|---|
-| SOL, 받는 계정 없음(`getAccountInfo` = null) | `amount ≥ rent0` (`BelowRentForNewAccount`, "새 계정에는 최소 X SOL") |
-| SOL, 보낸 뒤 남는 잔액 `r = balance − amount − max_fee` | `r == 0` 또는 `r ≥ rent0` (`SenderDust`) |
+| SOL, 받는 계정 없음(`getAccountInfo` = null) 또는 `lamports` 0으로 보고됨 | `amount ≥ rent0` (`BelowRentForNewAccount`, "새 계정에는 최소 X SOL") |
+| SOL, 받는 계정이 있고 `0 < lamports < rent0`(rent 납부 계정) | `lamports + amount ≥ rent0` (`RecipientBelowRent { needed = rent0 − lamports }`; 런타임은 rent 기준 미만으로 남는 쓰기 계정을 거부한다). `lamports ≥ rent0`이면 규칙 없음 |
+| SOL, 보낸 뒤 남는 잔액 `r = balance − amount − max_fee` | `r == 0` 또는 `r ≥ rent0` (`SenderDust`). 직접 입력한 금액이라도 `r == 0`이면 §10 `getFeeForMessage` 교차 확인에서 보내기 최대로 본다(RPC 수수료가 더 낮으면 실제로는 rent0 미만이 남아 실패하므로 `FeeFormulaChanged`) |
 | SOL 보내기 최대 | `amount = balance − max_fee`, `r = 0`. `amount ≥ 1`이어야 하고 받는 계정이 없으면 위 첫 규칙도 적용 |
 | SPL, 보내는 SOL 잔액 `r = balance − max_fee − (to_ata 없음 ? rent165 : 0)` | `r ≥ rent0` (`SolReserve { needed = max_fee + rent + rent0, rent0 }`; SOL 계정을 비우는 SPL 전송은 없음) |
 | SPL, 토큰 수량 | `0 < amount ≤ from_ata.amount`(`InsufficientTokens`). `from_ata` 없음 → `NoTokenAccount`. SPL 보내기 최대 = `from_ata.amount` 전부(0이면 `InsufficientTokens`) |
