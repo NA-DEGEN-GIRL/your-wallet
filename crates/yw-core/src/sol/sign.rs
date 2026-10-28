@@ -113,7 +113,7 @@ pub fn fee_policy_ok(intent: &SolTransferIntent) -> bool {
 ///
 /// The vault's refusal (locked, derivation).
 pub fn non_standard_rule_ok(vault: &Vault, intent: &SolTransferIntent) -> Result<bool, VaultError> {
-    if intent.source.is_standard() {
+    if !intent.source.needs_move_rule() {
         return Ok(true);
     }
     if !intent.has(flags::SEND_MAX) {
@@ -218,14 +218,19 @@ pub fn sign_transfer(
         return Err(SolSignError::EncodingMismatch);
     }
     let from = intent.core.from.to_bytes();
-    let signature = vault
-        .with_ed25519_seed(intent.source, |secret| {
-            let key = signing_key(secret);
-            if key.verifying_key().to_bytes() != from {
-                return Ok(Err(SolSignError::KeyMismatch));
-            }
-            Ok(Ok(key.sign(&message).to_bytes()))
-        })
-        .map_err(SolSignError::Vault)??;
+    let sign = |secret: &[u8; 32]| {
+        let key = signing_key(secret);
+        if key.verifying_key().to_bytes() != from {
+            return Ok(Err(SolSignError::KeyMismatch));
+        }
+        Ok(Ok(key.sign(&message).to_bytes()))
+    };
+    // An imported key is looked up by its public key (`from`); a derived one by its path.
+    let signed = if intent.source.is_imported() {
+        vault.with_imported_ed25519_seed(&from, sign)
+    } else {
+        vault.with_ed25519_seed(intent.source, sign)
+    };
+    let signature = signed.map_err(SolSignError::Vault)??;
     finish_signed(&from, &message, signature, intent.cluster)
 }

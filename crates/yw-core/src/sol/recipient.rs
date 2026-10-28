@@ -55,6 +55,8 @@ pub enum KnownKind {
         /// Account index.
         index: u32,
     },
+    /// One of the wallet's imported Solana keys (spec/02 §8.4).
+    OwnImported,
     /// A recipient of an earlier successful send on the same cluster (activity / journal): the
     /// address is known (no `FirstTime`).
     Sent,
@@ -128,7 +130,10 @@ pub fn check_recipient(
         .iter()
         .find(|entry| {
             entry.address == to
-                && matches!(entry.kind, KnownKind::Book { .. } | KnownKind::Own { .. })
+                && matches!(
+                    entry.kind,
+                    KnownKind::Book { .. } | KnownKind::Own { .. } | KnownKind::OwnImported
+                )
         })
         .cloned();
     let seen = known

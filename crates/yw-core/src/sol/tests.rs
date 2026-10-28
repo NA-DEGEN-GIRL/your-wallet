@@ -932,7 +932,15 @@ fn journal_record_round_trip_and_rejections() {
     reject(&|b| b[2] = 5, SolRecordError::Value);
     reject(&|b| b[2] = 0, SolRecordError::Value);
     reject(&|b| b[3] = 3, SolRecordError::Value);
-    reject(&|b| b[4] = 6, SolRecordError::Source);
+    reject(&|b| b[4] = 7, SolRecordError::Source);
+    // Tag 6 (imported key) takes no parameters.
+    reject(
+        &|b| {
+            b[4] = 6;
+            b[8] = 1;
+        },
+        SolRecordError::Source,
+    );
     reject(&|b| b[12] = 1, SolRecordError::Source);
     reject(&|b| b.push(0), SolRecordError::Length);
     reject(&|b| b.truncate(b.len() - 1), SolRecordError::Length);
@@ -1078,4 +1086,92 @@ fn grouped_display_is_the_full_address() {
     let text = grouped(&addr(FROM));
     assert_eq!(text.replace(' ', ""), FROM);
     assert!(!text.contains('…'));
+}
+
+// ---------------------------------------------------------------- imported keys (spec/02 §8.4)
+
+/// The spec/07 §17.1 standard-0 key imported as a Phantom-style base58 keypair.
+fn imported_vault() -> crate::vault::Vault {
+    let mut pair = secret().to_vec();
+    pair.extend_from_slice(&addr(FROM).to_bytes());
+    let key = crate::keyimport::ImportKey::parse(
+        crate::keyimport::ImportSpec::Sol,
+        &base58_encode(&pair),
+    )
+    .unwrap();
+    crate::vault::tests::key_only_with(key)
+}
+
+#[test]
+fn imported_key_signs_the_golden_transfer_without_the_move_rule() {
+    let vault = imported_vault();
+    // Any recipient, not "send max": the non-standard-path rule does not apply to imports.
+    let intent = intent(template_core(), SolKeySource::Imported, flags::FIRST_TIME);
+    let (_, approved) = approved_for(&intent);
+    let signed = sign_transfer(&vault, approved, 2_000, BLOCKHASH, 22_000).unwrap();
+    let message = encode_message(&template_core(), &BLOCKHASH);
+    let reference = SigningKey::from_bytes(&secret()).sign(&message).to_bytes();
+    assert_eq!(signed.signature, reference);
+    // No L07 flag, and the approval shows the import instead of a path.
+    let check = check_recipient(TO, &addr(FROM), &[]).unwrap();
+    let value = intent_flags(
+        false,
+        &check,
+        AccountClass::SystemWallet,
+        SimSummary::Ok { units: 450 },
+        SOL_TRANSFER_CU_LIMIT,
+        SolKeySource::Imported,
+    );
+    assert_eq!(value & flags::NON_STANDARD_PATH, 0);
+    let draft =
+        build_sol_transfer_request(&intent, &intent.cluster.genesis(), &facts(&intent)).unwrap();
+    assert!(
+        !draft
+            .display
+            .warnings
+            .iter()
+            .any(|warning| warning.rule == L07)
+    );
+    assert!(
+        draft
+            .display
+            .fields
+            .iter()
+            .any(|field| field.value.contains("가져온 개인키"))
+    );
+    // The journal record keeps tag 6 and round-trips.
+    let record = SolRecord::new_pending(&intent, &signed, 1_790_000_000_000, 1_234);
+    let body = record.encode().unwrap();
+    assert_eq!(body[4], 6);
+    assert_eq!(SolRecord::decode(&body), Ok(record));
+}
+
+#[test]
+fn imported_source_needs_the_matching_imported_key() {
+    // A mnemonic vault has no imported key for `from`: refused before signing.
+    let derived = unlocked_with(ABOUT);
+    let intent = intent(template_core(), SolKeySource::Imported, 0);
+    let (_, approved) = approved_for(&intent);
+    assert_eq!(
+        sign_transfer(&derived, approved, 0, BLOCKHASH, 0),
+        Err(SolSignError::Vault(
+            crate::error::VaultError::RecordNotFound
+        ))
+    );
+    // A key-only vault cannot sign a derived source.
+    let vault = imported_vault();
+    let standard = intent_with_source(SolKeySource::Standard(AccountIndex::ZERO));
+    let (_, approved) = approved_for(&standard);
+    assert_eq!(
+        sign_transfer(&vault, approved, 0, BLOCKHASH, 0),
+        Err(SolSignError::Vault(crate::error::VaultError::NoMnemonic))
+    );
+    assert_eq!(
+        SolKeySource::from_parts(6, 0, 0),
+        Ok(SolKeySource::Imported)
+    );
+    assert!(SolKeySource::from_parts(6, 1, 0).is_err());
+    assert_eq!(SolKeySource::Imported.params(), (0, 0));
+    assert!(!SolKeySource::Imported.needs_move_rule());
+    assert!(SolKeySource::RawSeed.needs_move_rule());
 }

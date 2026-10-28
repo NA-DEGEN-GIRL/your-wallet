@@ -208,7 +208,7 @@ pub fn intent_flags(
     if simulation.warns(cu_limit) {
         out |= flags::SIM_WARNING;
     }
-    if !source.is_standard() {
+    if source.needs_move_rule() {
         out |= flags::NON_STANDARD_PATH;
     }
     out
@@ -282,7 +282,7 @@ fn lookalike_text(recipient: &RecipientCheck) -> String {
             KnownKind::Book { .. } => {
                 format!("주소록 '{name}'과 비슷함: {}", grouped(&entry.address))
             }
-            KnownKind::Own { .. } => {
+            KnownKind::Own { .. } | KnownKind::OwnImported => {
                 format!("내 계정 '{name}'과 비슷함: {}", grouped(&entry.address))
             }
             KnownKind::Sent | KnownKind::History => {
@@ -394,6 +394,7 @@ fn recipient_text(core: &SolTransferCore, facts: &SolPreviewFacts) -> String {
             KnownKind::Own { index } => {
                 write!(text, "\n내 계정 #{}: {name}", index.saturating_add(1))
             }
+            KnownKind::OwnImported => write!(text, "\n내 계정(가져온 개인키): {name}"),
             KnownKind::Sent | KnownKind::History => write!(text, "\n보낸 적 있는 주소"),
         };
     }

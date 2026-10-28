@@ -38,6 +38,10 @@ pub enum ErrorCode {
     Vlt010,
     /// Duplicate raw key.
     Vlt011,
+    /// Key-only wallet: no recovery words.
+    Vlt012,
+    /// The last key of a key-only wallet.
+    Vlt013,
     /// Password rule.
     Inp001,
     /// Confirmation mismatch.
@@ -62,6 +66,16 @@ pub enum ErrorCode {
     Inp018,
     /// Passphrase rule.
     Inp019,
+    /// Solana key format.
+    Inp020,
+    /// Solana key text is an address (32 bytes).
+    Inp021,
+    /// Solana keypair halves do not match.
+    Inp022,
+    /// Bitcoin WIF format.
+    Inp023,
+    /// Uncompressed WIF with a segwit/taproot type.
+    Inp024,
     /// Capture exclusion failed on a display window.
     Sec001,
     /// Clipboard unavailable.
@@ -202,6 +216,8 @@ impl ErrorCode {
             Self::Vlt009 => "E-VLT-009",
             Self::Vlt010 => "E-VLT-010",
             Self::Vlt011 => "E-VLT-011",
+            Self::Vlt012 => "E-VLT-012",
+            Self::Vlt013 => "E-VLT-013",
             Self::Inp001 => "E-INP-001",
             Self::Inp002 => "E-INP-002",
             Self::Inp003 => "E-INP-003",
@@ -214,6 +230,11 @@ impl ErrorCode {
             Self::Inp017 => "E-INP-017",
             Self::Inp018 => "E-INP-018",
             Self::Inp019 => "E-INP-019",
+            Self::Inp020 => "E-INP-020",
+            Self::Inp021 => "E-INP-021",
+            Self::Inp022 => "E-INP-022",
+            Self::Inp023 => "E-INP-023",
+            Self::Inp024 => "E-INP-024",
             Self::Sec001 => "E-SEC-001",
             Self::Sec002 => "E-SEC-002",
             Self::Key001 => "E-KEY-001",
@@ -306,8 +327,14 @@ impl ErrorCode {
             Self::Vlt007 => "메모리를 잠그지 못해 잠금 해제하지 않았습니다.",
             Self::Vlt008 => "지갑 내용이 손상되었습니다. 이전 사본(.prev)으로 복구할 수 있습니다.",
             Self::Vlt009 => "백업 확인을 먼저 끝내세요.",
-            Self::Vlt010 => "가져온 개인키는 최대 15개입니다.",
+            Self::Vlt010 => "가져온 개인키는 체인마다 최대 15개입니다.",
             Self::Vlt011 => "이미 가져온 개인키입니다.",
+            Self::Vlt012 => {
+                "이 지갑에는 복구 단어가 없습니다. 개인키로 시작한 지갑은 계정 추가·복구 단어 보기를 쓸 수 없습니다."
+            }
+            Self::Vlt013 => {
+                "개인키로 시작한 지갑의 마지막 키는 지울 수 없습니다. 지갑 전체를 지우려면 앱을 닫고 데이터 폴더의 파일을 직접 옮기세요."
+            }
             Self::Inp001 => "비밀번호는 영문·숫자·기호(ASCII) 12–128자여야 합니다.",
             Self::Inp002 => "두 입력이 다릅니다.",
             Self::Inp003 => "단어 수는 12, 15, 18, 21, 24 중 하나여야 합니다.",
@@ -322,6 +349,21 @@ impl ErrorCode {
             }
             Self::Inp018 => "붙여넣은 내용에 허용되지 않는 문자가 있거나 너무 깁니다.",
             Self::Inp019 => "passphrase는 영문·숫자·기호(ASCII) 1–256자여야 합니다.",
+            Self::Inp020 => {
+                "Solana 개인키는 base58 64바이트 keypair(Phantom·Solflare 내보내기) 또는 숫자 64개의 JSON 배열(solana-keygen 파일)이어야 합니다."
+            }
+            Self::Inp021 => {
+                "입력한 값은 32바이트라 개인키가 아니라 Solana 주소(공개키)로 보입니다. 지갑의 '개인키 내보내기'로 받은 값을 넣으세요."
+            }
+            Self::Inp022 => {
+                "keypair의 공개키 부분이 개인키와 맞지 않습니다. 값이 잘리거나 바뀌지 않았는지 확인하세요."
+            }
+            Self::Inp023 => {
+                "Bitcoin 개인키는 WIF(5·K·L·9·c로 시작하는 base58 51–52자)여야 합니다. 글자와 체크섬을 확인하세요."
+            }
+            Self::Inp024 => {
+                "압축되지 않은 키(5·9로 시작하는 WIF)는 P2PKH(레거시) 주소에만 쓸 수 있습니다. 주소 형식을 P2PKH로 고르세요."
+            }
             Self::Sec001 => "화면 캡처 제외를 적용하지 못해 표시하지 않습니다.",
             Self::Sec002 => "클립보드를 사용할 수 없습니다. 잠시 후 다시 시도하세요.",
             Self::Key001 => "저장된 RPC 엔드포인트·API 키를 읽을 수 없습니다. 다시 입력하세요.",
@@ -486,6 +528,8 @@ pub const fn vault_code(error: VaultError) -> ErrorCode {
         VaultError::BackupMismatch | VaultError::ChallengeStale => ErrorCode::Inp013,
         VaultError::RecordLimit => ErrorCode::Vlt010,
         VaultError::DuplicateKey => ErrorCode::Vlt011,
+        VaultError::NoMnemonic => ErrorCode::Vlt012,
+        VaultError::LastKey => ErrorCode::Vlt013,
         VaultError::Key(key) => key_code(key),
         VaultError::InvalidState | VaultError::RecordNotFound => ErrorCode::App009,
     }
@@ -506,6 +550,11 @@ pub const fn key_code(error: KeyError) -> ErrorCode {
         KeyError::MnemonicUnknownWord { .. } => ErrorCode::Inp004,
         KeyError::MnemonicFormat | KeyError::MnemonicChecksum => ErrorCode::Inp005,
         KeyError::InvalidPrivateKey => ErrorCode::Inp007,
+        KeyError::SolKeyFormat => ErrorCode::Inp020,
+        KeyError::SolKeyIsAddress => ErrorCode::Inp021,
+        KeyError::SolKeyMismatch => ErrorCode::Inp022,
+        KeyError::WifFormat => ErrorCode::Inp023,
+        KeyError::WifUncompressedScript => ErrorCode::Inp024,
         KeyError::InvalidEntropyLength
         | KeyError::InvalidPath
         | KeyError::InvalidAccountIndex

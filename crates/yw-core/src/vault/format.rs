@@ -17,18 +17,25 @@ use super::{
     VAULT_HEADER_LEN, VAULT_MAGIC, VAULT_VERSION, WRAPPED_DEK_LEN,
 };
 use crate::bip39::Mnemonic;
+use crate::btc::network::BtcNetwork;
 use crate::error::{KeyError, StorageError, VaultError};
+use crate::keyimport::BtcScriptType;
 use crate::password::VaultPassword;
 
 /// Payload plaintext magic.
 pub(crate) const PAYLOAD_MAGIC: [u8; 8] = *b"YWPAY003";
-pub(crate) const MAX_RAW_KEYS: usize = MAX_RECORDS - 1;
+/// Imported keys per chain (each of tags 2, 3 and 4).
+pub(crate) const MAX_RAW_KEYS: usize = crate::keyimport::MAX_IMPORTED_PER_CHAIN;
 const TAG_LEN: usize = 16;
 const PAYLOAD_HEADER_LEN: usize = 16;
 const BIP39_RECORD_FIXED_LEN: usize = 32;
 const RAW_RECORD_LEN: usize = 57;
+const SOL_RECORD_LEN: usize = 89;
+const BTC_RECORD_LEN: usize = 60;
 const TAG_BIP39: u8 = 1;
 const TAG_RAW_KEY: u8 = 2;
+const TAG_SOL_KEY: u8 = 3;
+const TAG_BTC_KEY: u8 = 4;
 const SIDECAR_VERSION: u16 = 3;
 const HKDF_META_INFO: &[u8] = b"your-wallet/v3/meta";
 const HKDF_JOURNAL_INFO: &[u8] = b"your-wallet/v3/journal";
@@ -346,20 +353,79 @@ impl Zeroize for RawKeyRecord {
     }
 }
 
-/// Decoded payload: exactly one BIP39 record followed by 0–15 raw keys.
+/// One imported Solana key (`tag 3`): the RFC 8032 seed and its public key (checked on decode).
+pub(crate) struct SolKeyRecord {
+    pub(crate) record_id: [u8; 16],
+    pub(crate) created_unix: u64,
+    pub(crate) seed: Zeroizing<[u8; 32]>,
+    pub(crate) public: [u8; 32],
+}
+
+impl Zeroize for SolKeyRecord {
+    fn zeroize(&mut self) {
+        self.record_id.zeroize();
+        self.created_unix.zeroize();
+        self.seed.zeroize();
+        self.public.zeroize();
+    }
+}
+
+/// One imported Bitcoin key (`tag 4`).
+pub(crate) struct BtcKeyRecord {
+    pub(crate) record_id: [u8; 16],
+    pub(crate) created_unix: u64,
+    pub(crate) secret: Zeroizing<[u8; 32]>,
+    pub(crate) compressed: bool,
+    pub(crate) network: BtcNetwork,
+    pub(crate) script: BtcScriptType,
+}
+
+impl Zeroize for BtcKeyRecord {
+    fn zeroize(&mut self) {
+        self.record_id.zeroize();
+        self.created_unix.zeroize();
+        self.secret.zeroize();
+        self.compressed = false;
+    }
+}
+
+impl BtcKeyRecord {
+    /// 1 when both records hold the same key used the same way (secret, compression, network
+    /// and script type), else 0. The secret comparison runs in constant time.
+    fn same_as(&self, other: &Self) -> u8 {
+        let same_secret = self
+            .secret
+            .as_slice()
+            .ct_eq(other.secret.as_slice())
+            .unwrap_u8();
+        let same_use = u8::from(
+            self.compressed == other.compressed
+                && self.network == other.network
+                && self.script == other.script,
+        );
+        same_secret & same_use
+    }
+}
+
+/// Decoded payload: at most one BIP39 record (none in a key-only vault) followed by 0–15 imported
+/// keys of each chain, grouped by tag (2, then 3, then 4).
 ///
-/// `raw_keys` is allocated with room for [`MAX_RAW_KEYS`] records up front, so `push` never
-/// reallocates (a reallocation would free the old buffer with key copies in it). `retain` moves
-/// records down and leaves stale copies past `len`; `Drop` therefore zeroizes the whole
+/// Each imported-key list is allocated with room for [`MAX_RAW_KEYS`] records up front, so `push`
+/// never reallocates (a reallocation would free the old buffer with key copies in it). `retain`
+/// moves records down and leaves stale copies past `len`; `Drop` therefore zeroizes the whole
 /// capacity, not only the live records.
 pub(crate) struct Payload {
-    pub(crate) bip39: Bip39Record,
+    pub(crate) bip39: Option<Bip39Record>,
     pub(crate) raw_keys: Vec<RawKeyRecord>,
+    pub(crate) sol_keys: Vec<SolKeyRecord>,
+    pub(crate) btc_keys: Vec<BtcKeyRecord>,
 }
 
 impl Drop for Payload {
     fn drop(&mut self) {
         self.raw_keys.zeroize();
+        self.sol_keys.zeroize();
+        self.btc_keys.zeroize();
     }
 }
 
@@ -376,36 +442,98 @@ fn valid_scalar(key: &[u8; 32]) -> bool {
 }
 
 impl Payload {
+    /// A payload with the given BIP39 record and no imported keys (every list pre-sized).
+    pub(crate) fn new(bip39: Option<Bip39Record>) -> Self {
+        Self {
+            bip39,
+            raw_keys: raw_key_list(),
+            sol_keys: Vec::with_capacity(MAX_RAW_KEYS),
+            btc_keys: Vec::with_capacity(MAX_RAW_KEYS),
+        }
+    }
+
+    /// Number of records.
+    pub(crate) fn record_count(&self) -> usize {
+        usize::from(self.bip39.is_some())
+            .saturating_add(self.raw_keys.len())
+            .saturating_add(self.sol_keys.len())
+            .saturating_add(self.btc_keys.len())
+    }
+
+    /// Whether `id` names any record.
+    pub(crate) fn has_id(&self, id: &[u8; 16]) -> bool {
+        self.bip39
+            .as_ref()
+            .is_some_and(|bip39| bip39.record_id == *id)
+            || self.raw_keys.iter().any(|raw| raw.record_id == *id)
+            || self.sol_keys.iter().any(|sol| sol.record_id == *id)
+            || self.btc_keys.iter().any(|btc| btc.record_id == *id)
+    }
+
     fn encoded_len(&self) -> Option<usize> {
-        let bip39 = BIP39_RECORD_FIXED_LEN.checked_add(self.bip39.mnemonic.entropy().len())?;
+        let bip39 = match &self.bip39 {
+            Some(record) => BIP39_RECORD_FIXED_LEN.checked_add(record.mnemonic.entropy().len())?,
+            None => 0,
+        };
         let raws = RAW_RECORD_LEN.checked_mul(self.raw_keys.len())?;
-        PAYLOAD_HEADER_LEN.checked_add(bip39)?.checked_add(raws)
+        let sols = SOL_RECORD_LEN.checked_mul(self.sol_keys.len())?;
+        let btcs = BTC_RECORD_LEN.checked_mul(self.btc_keys.len())?;
+        PAYLOAD_HEADER_LEN
+            .checked_add(bip39)?
+            .checked_add(raws)?
+            .checked_add(sols)?
+            .checked_add(btcs)
     }
 
     pub(crate) fn encode(&self) -> Result<Zeroizing<Vec<u8>>, VaultError> {
-        if self.raw_keys.len() > MAX_RAW_KEYS {
+        if self.raw_keys.len() > MAX_RAW_KEYS
+            || self.sol_keys.len() > MAX_RAW_KEYS
+            || self.btc_keys.len() > MAX_RAW_KEYS
+        {
             return Err(VaultError::RecordLimit);
         }
-        let count = u16::try_from(self.raw_keys.len().saturating_add(1)).map_err(|_| INTERNAL)?;
+        let records = self.record_count();
+        if records == 0 || records > MAX_RECORDS {
+            return Err(INTERNAL);
+        }
+        let count = u16::try_from(records).map_err(|_| INTERNAL)?;
         let len = self.encoded_len().ok_or(INTERNAL)?;
-        let entropy = self.bip39.mnemonic.entropy();
         let mut out = Zeroizing::new(Vec::with_capacity(len));
         out.extend_from_slice(&PAYLOAD_MAGIC);
         out.extend_from_slice(&count.to_be_bytes());
         out.extend_from_slice(&[0_u8; 6]);
-        out.push(TAG_BIP39);
-        out.extend_from_slice(&self.bip39.record_id);
-        out.extend_from_slice(&self.bip39.created_unix.to_be_bytes());
-        out.push(u8::try_from(entropy.len()).map_err(|_| INTERNAL)?);
-        out.extend_from_slice(entropy);
-        out.push(u8::from(self.bip39.passphrase_used));
-        out.push(u8::from(self.bip39.backup_confirmed));
-        out.extend_from_slice(&self.bip39.passphrase_check);
+        if let Some(bip39) = &self.bip39 {
+            let entropy = bip39.mnemonic.entropy();
+            out.push(TAG_BIP39);
+            out.extend_from_slice(&bip39.record_id);
+            out.extend_from_slice(&bip39.created_unix.to_be_bytes());
+            out.push(u8::try_from(entropy.len()).map_err(|_| INTERNAL)?);
+            out.extend_from_slice(entropy);
+            out.push(u8::from(bip39.passphrase_used));
+            out.push(u8::from(bip39.backup_confirmed));
+            out.extend_from_slice(&bip39.passphrase_check);
+        }
         for raw in &self.raw_keys {
             out.push(TAG_RAW_KEY);
             out.extend_from_slice(&raw.record_id);
             out.extend_from_slice(&raw.created_unix.to_be_bytes());
             out.extend_from_slice(raw.key.as_slice());
+        }
+        for sol in &self.sol_keys {
+            out.push(TAG_SOL_KEY);
+            out.extend_from_slice(&sol.record_id);
+            out.extend_from_slice(&sol.created_unix.to_be_bytes());
+            out.extend_from_slice(sol.seed.as_slice());
+            out.extend_from_slice(&sol.public);
+        }
+        for btc in &self.btc_keys {
+            out.push(TAG_BTC_KEY);
+            out.extend_from_slice(&btc.record_id);
+            out.extend_from_slice(&btc.created_unix.to_be_bytes());
+            out.extend_from_slice(btc.secret.as_slice());
+            out.push(u8::from(btc.compressed));
+            out.push(btc.network.id());
+            out.push(btc.script.id());
         }
         if out.len() != len || out.capacity() != len {
             return Err(INTERNAL);
@@ -418,28 +546,7 @@ impl Payload {
         Self::decode_inner(bytes).ok_or(VaultError::PayloadCorrupt)
     }
 
-    fn decode_inner(bytes: &[u8]) -> Option<Self> {
-        let mut reader = Reader::new(bytes);
-        if reader.array::<8>()? != PAYLOAD_MAGIC {
-            return None;
-        }
-        let count = usize::from(reader.u16()?);
-        if !(1..=MAX_RECORDS).contains(&count) || reader.array::<6>()? != [0; 6] {
-            return None;
-        }
-        let mut ids: Vec<[u8; 16]> = Vec::with_capacity(count);
-        let mut take_id = |reader: &mut Reader<'_>| -> Option<[u8; 16]> {
-            let id = reader.array::<16>()?;
-            if id == [0; 16] || ids.contains(&id) {
-                return None;
-            }
-            ids.push(id);
-            Some(id)
-        };
-        if reader.u8()? != TAG_BIP39 {
-            return None;
-        }
-        let record_id = take_id(&mut reader)?;
+    fn decode_bip39(reader: &mut Reader<'_>, record_id: [u8; 16]) -> Option<Bip39Record> {
         let created_unix = reader.u64()?;
         let entropy_len = usize::from(reader.u8()?);
         let mnemonic = Mnemonic::from_entropy(reader.slice(entropy_len)?).ok()?;
@@ -461,35 +568,126 @@ impl Payload {
         {
             return None;
         }
-        let bip39 = Bip39Record {
+        Some(Bip39Record {
             record_id,
             created_unix,
             mnemonic,
             passphrase_used,
             backup_confirmed,
             passphrase_check,
-        };
-        let mut raw_keys = raw_key_list();
-        for _ in 1..count {
-            if reader.u8()? != TAG_RAW_KEY {
-                return None;
-            }
-            let record_id = take_id(&mut reader)?;
-            let created_unix = reader.u64()?;
-            let key = Zeroizing::new(reader.array::<32>()?);
-            let duplicate = raw_keys.iter().fold(0_u8, |seen, other| {
-                seen | other.key.as_slice().ct_eq(key.as_slice()).unwrap_u8()
-            });
-            if !valid_scalar(&key) || duplicate != 0 {
-                return None;
-            }
-            raw_keys.push(RawKeyRecord {
-                record_id,
-                created_unix,
-                key,
-            });
+        })
+    }
+
+    fn decode_raw(&mut self, reader: &mut Reader<'_>, record_id: [u8; 16]) -> Option<()> {
+        let created_unix = reader.u64()?;
+        let key = Zeroizing::new(reader.array::<32>()?);
+        let duplicate = self.raw_keys.iter().fold(0_u8, |seen, other| {
+            seen | other.key.as_slice().ct_eq(key.as_slice()).unwrap_u8()
+        });
+        if !valid_scalar(&key) || duplicate != 0 || self.raw_keys.len() >= MAX_RAW_KEYS {
+            return None;
         }
-        reader.is_empty().then_some(Self { bip39, raw_keys })
+        self.raw_keys.push(RawKeyRecord {
+            record_id,
+            created_unix,
+            key,
+        });
+        Some(())
+    }
+
+    fn decode_sol(&mut self, reader: &mut Reader<'_>, record_id: [u8; 16]) -> Option<()> {
+        let created_unix = reader.u64()?;
+        let seed = Zeroizing::new(reader.array::<32>()?);
+        let public = reader.array::<32>()?;
+        let duplicate = self.sol_keys.iter().any(|other| other.public == public);
+        if crate::sol::keys::public_key(&seed) != public
+            || duplicate
+            || self.sol_keys.len() >= MAX_RAW_KEYS
+        {
+            return None;
+        }
+        self.sol_keys.push(SolKeyRecord {
+            record_id,
+            created_unix,
+            seed,
+            public,
+        });
+        Some(())
+    }
+
+    fn decode_btc(&mut self, reader: &mut Reader<'_>, record_id: [u8; 16]) -> Option<()> {
+        let created_unix = reader.u64()?;
+        let secret = Zeroizing::new(reader.array::<32>()?);
+        let compressed = match reader.u8()? {
+            0 => false,
+            1 => true,
+            _ => return None,
+        };
+        let network = BtcNetwork::from_id(reader.u8()?)?;
+        let script = BtcScriptType::from_id(reader.u8()?)?;
+        if !valid_scalar(&secret)
+            || (!compressed && !script.allows_uncompressed())
+            || self.btc_keys.len() >= MAX_RAW_KEYS
+        {
+            return None;
+        }
+        let record = BtcKeyRecord {
+            record_id,
+            created_unix,
+            secret,
+            compressed,
+            network,
+            script,
+        };
+        let duplicate = self
+            .btc_keys
+            .iter()
+            .fold(0_u8, |seen, other| seen | other.same_as(&record));
+        if duplicate != 0 {
+            return None;
+        }
+        self.btc_keys.push(record);
+        Some(())
+    }
+
+    fn decode_inner(bytes: &[u8]) -> Option<Self> {
+        let mut reader = Reader::new(bytes);
+        if reader.array::<8>()? != PAYLOAD_MAGIC {
+            return None;
+        }
+        let count = usize::from(reader.u16()?);
+        if !(1..=MAX_RECORDS).contains(&count) || reader.array::<6>()? != [0; 6] {
+            return None;
+        }
+        let mut ids: Vec<[u8; 16]> = Vec::with_capacity(count);
+        let mut payload = Self::new(None);
+        let mut previous: Option<u8> = None;
+        for _ in 0..count {
+            let tag = reader.u8()?;
+            // Grouped by tag in ascending order; the BIP39 record, if any, is the first and only
+            // tag-1 record.
+            let in_order = match previous {
+                None => true,
+                Some(last) => tag > last || (tag == last && tag != TAG_BIP39),
+            };
+            if !in_order {
+                return None;
+            }
+            previous = Some(tag);
+            let id = reader.array::<16>()?;
+            if id == [0; 16] || ids.contains(&id) {
+                return None;
+            }
+            ids.push(id);
+            match tag {
+                TAG_BIP39 => payload.bip39 = Some(Self::decode_bip39(&mut reader, id)?),
+                TAG_RAW_KEY => payload.decode_raw(&mut reader, id)?,
+                TAG_SOL_KEY => payload.decode_sol(&mut reader, id)?,
+                TAG_BTC_KEY => payload.decode_btc(&mut reader, id)?,
+                _ => return None,
+            }
+        }
+        reader.is_empty().then_some(payload)
     }
 }
 

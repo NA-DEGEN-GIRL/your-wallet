@@ -15,7 +15,8 @@ use subtle::{Choice, ConstantTimeEq};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::format::{
-    self, Bip39Record, MAX_RAW_KEYS, Payload, RawKeyRecord, SealMaterial, raw_key_list,
+    self, Bip39Record, BtcKeyRecord, MAX_RAW_KEYS, Payload, RawKeyRecord, SealMaterial,
+    SolKeyRecord,
 };
 use super::{
     BackupChallenge, ChallengeId, EvmKeySource, FileKind, KDF_V3, KdfParams, KeyRef, LockedSlot,
@@ -33,6 +34,9 @@ use crate::entropy::{
 use crate::error::{KeyError, StorageError, VaultError};
 use crate::evm::Address;
 use crate::hex;
+use crate::keyimport::{
+    BtcKeyInfo, ImportChain, ImportInner, ImportKey, btc_info, parse_evm_private_key,
+};
 use crate::password::{Bip39Passphrase, VaultPassword};
 use crate::secret::{SecretBytes, SecretString, SecretVec};
 use crate::slip10::SolKeySource;
@@ -54,6 +58,20 @@ type Slot = Box<dyn LockedSlot>;
 
 /// A sidecar's generation plus its plaintext (redacting [`SecretVec`]).
 pub type SidecarContents = (u64, SecretVec);
+
+/// Public facts of every imported key, in payload order, and whether the vault has recovery
+/// words (spec/02 §10.3 `imported_keys`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportedKeys {
+    /// `false` for a key-only vault (no `Bip39` record).
+    pub has_mnemonic: bool,
+    /// EVM keys (`tag 2`) and their addresses.
+    pub evm: Vec<(RecordId, Address)>,
+    /// Solana keys (`tag 3`) and their public keys.
+    pub sol: Vec<(RecordId, [u8; 32])>,
+    /// Bitcoin keys (`tag 4`) and their facts.
+    pub btc: Vec<(RecordId, BtcKeyInfo)>,
+}
 
 /// An opened vault file: its bytes, `vault_id`, the unwrapped DEK and the status it unlocks to.
 type Opened = (Vec<u8>, [u8; 16], Zeroizing<[u8; 32]>, VaultStatus);
@@ -199,16 +217,20 @@ fn fill_slot(
     set_slot_passphrase(slot, passphrase)
 }
 
-const fn status_after_unlock(bip39: &Bip39Record) -> VaultStatus {
-    if bip39.passphrase_used {
-        VaultStatus::PassphraseRequired
-    } else if bip39.backup_confirmed {
-        VaultStatus::Unlocked {
+/// The state after opening a payload: a key-only vault has no passphrase and no backup step.
+const fn status_after_unlock(bip39: Option<&Bip39Record>) -> VaultStatus {
+    match bip39 {
+        Some(record) if record.passphrase_used => VaultStatus::PassphraseRequired,
+        Some(record) if !record.backup_confirmed => VaultStatus::BackupPending,
+        _ => VaultStatus::Unlocked {
             alt_passphrase: false,
-        }
-    } else {
-        VaultStatus::BackupPending
+        },
     }
+}
+
+/// The BIP39 record, or `NoMnemonic` for a key-only vault.
+fn mnemonic_record(payload: &Payload) -> Result<&Bip39Record, VaultError> {
+    payload.bip39.as_ref().ok_or(VaultError::NoMnemonic)
 }
 
 const fn sidecar_index(kind: FileKind) -> Result<usize, VaultError> {
@@ -243,25 +265,103 @@ fn address_zero(
     )?)
 }
 
-/// Optional lowercase `0x` + exactly 64 hex digits, value in [1, n−1] (spec/02 §8.2).
-fn parse_private_key(text: &str) -> Result<Zeroizing<[u8; 32]>, KeyError> {
-    let digits = text.strip_prefix("0x").unwrap_or(text);
-    let mut key = Zeroizing::new([0_u8; 32]);
-    hex::decode_into(digits.as_bytes(), key.as_mut(), true)
-        .map_err(|_| KeyError::InvalidPrivateKey)?;
-    let mut check = SecretKey::from_byte_array(*key).map_err(|_| KeyError::InvalidPrivateKey)?;
-    check.non_secure_erase();
-    Ok(key)
-}
-
 fn fresh_record_id(rng: &mut impl RandomSource, payload: &Payload) -> Result<[u8; 16], VaultError> {
     let id = random_nonzero_id_with(rng)?;
-    let taken =
-        payload.bip39.record_id == id || payload.raw_keys.iter().any(|raw| raw.record_id == id);
-    if taken {
+    if payload.has_id(&id) {
         return Err(KeyError::RandomnessUnavailable.into());
     }
     Ok(id)
+}
+
+/// Adds a parsed key to `payload` (per-chain cap 15, duplicates refused).
+fn add_key(
+    payload: &mut Payload,
+    key: ImportKey,
+    record_id: [u8; 16],
+    now_unix: u64,
+) -> Result<(), VaultError> {
+    match key.inner {
+        ImportInner::Evm(secret) => {
+            let duplicate = payload.raw_keys.iter().fold(0_u8, |seen, raw| {
+                seen | raw.key.as_slice().ct_eq(secret.as_slice()).unwrap_u8()
+            });
+            if duplicate != 0 {
+                return Err(VaultError::DuplicateKey);
+            }
+            if payload.raw_keys.len() >= MAX_RAW_KEYS {
+                return Err(VaultError::RecordLimit);
+            }
+            payload.raw_keys.push(RawKeyRecord {
+                record_id,
+                created_unix: now_unix,
+                key: secret,
+            });
+        }
+        ImportInner::Sol { seed, public } => {
+            if payload.sol_keys.iter().any(|sol| sol.public == public) {
+                return Err(VaultError::DuplicateKey);
+            }
+            if payload.sol_keys.len() >= MAX_RAW_KEYS {
+                return Err(VaultError::RecordLimit);
+            }
+            payload.sol_keys.push(SolKeyRecord {
+                record_id,
+                created_unix: now_unix,
+                seed,
+                public,
+            });
+        }
+        ImportInner::Btc {
+            secret,
+            compressed,
+            network,
+            script,
+        } => {
+            let duplicate = payload.btc_keys.iter().fold(0_u8, |seen, btc| {
+                let same_secret = btc.secret.as_slice().ct_eq(secret.as_slice()).unwrap_u8();
+                let same_use = u8::from(
+                    btc.compressed == compressed && btc.network == network && btc.script == script,
+                );
+                seen | (same_secret & same_use)
+            });
+            if duplicate != 0 {
+                return Err(VaultError::DuplicateKey);
+            }
+            if payload.btc_keys.len() >= MAX_RAW_KEYS {
+                return Err(VaultError::RecordLimit);
+            }
+            payload.btc_keys.push(BtcKeyRecord {
+                record_id,
+                created_unix: now_unix,
+                secret,
+                compressed,
+                network,
+                script,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Removes the imported record `id` (any chain); `None` when no imported record has that id.
+fn remove_key(payload: &mut Payload, id: &[u8; 16]) -> Option<ImportChain> {
+    let before = (
+        payload.raw_keys.len(),
+        payload.sol_keys.len(),
+        payload.btc_keys.len(),
+    );
+    payload.raw_keys.retain(|raw| raw.record_id != *id);
+    payload.sol_keys.retain(|sol| sol.record_id != *id);
+    payload.btc_keys.retain(|btc| btc.record_id != *id);
+    if payload.raw_keys.len() != before.0 {
+        Some(ImportChain::Evm)
+    } else if payload.sol_keys.len() != before.1 {
+        Some(ImportChain::Sol)
+    } else if payload.btc_keys.len() != before.2 {
+        Some(ImportChain::Btc)
+    } else {
+        None
+    }
 }
 
 impl Vault {
@@ -351,8 +451,7 @@ impl Vault {
     }
 
     fn seed(&self, payload: &Payload) -> Result<SecretBytes<64>, VaultError> {
-        Ok(payload
-            .bip39
+        Ok(mnemonic_record(payload)?
             .mnemonic
             .to_seed(&slot_passphrase(self.slot.as_ref())?))
     }
@@ -371,6 +470,14 @@ impl Vault {
                     .find(|raw| raw.record_id == *id.as_bytes())
                     .ok_or(VaultError::RecordNotFound)?;
                 return SecretKey::from_byte_array(*raw.key).map_err(|_| INTERNAL);
+            }
+            KeyRef::BtcImported(id) => {
+                let btc = payload
+                    .btc_keys
+                    .iter()
+                    .find(|btc| btc.record_id == *id.as_bytes())
+                    .ok_or(VaultError::RecordNotFound)?;
+                return SecretKey::from_byte_array(*btc.secret).map_err(|_| INTERNAL);
             }
             KeyRef::Evm(EvmKeySource::Derived(index)) => evm_path(index),
             KeyRef::Btc { coin, chain, index } => btc_path(coin, chain, index)?,
@@ -398,7 +505,7 @@ impl Vault {
     fn open_bytes(&self, bytes: Vec<u8>, password: &VaultPassword) -> Result<Opened, VaultError> {
         let (header, dek) = format::unwrap_dek(&bytes, password, &self.kdf)?;
         let payload = format::decrypt_payload(&bytes, &dek, &self.kdf)?;
-        let next = status_after_unlock(&payload.bip39);
+        let next = status_after_unlock(payload.bip39.as_ref());
         Ok((bytes, header.vault_id, dek, next))
     }
 
@@ -492,17 +599,14 @@ impl Vault {
             let kdf_salt = random_array_with::<16>(rng)?;
             let wrap_nonce = random_array_with::<24>(rng)?;
             let payload_nonce = random_array_with::<24>(rng)?;
-            let payload = Payload {
-                bip39: Bip39Record {
-                    record_id,
-                    created_unix: now_unix,
-                    mnemonic,
-                    passphrase_used: false,
-                    backup_confirmed: false,
-                    passphrase_check: [0; 4],
-                },
-                raw_keys: raw_key_list(),
-            };
+            let payload = Payload::new(Some(Bip39Record {
+                record_id,
+                created_unix: now_unix,
+                mnemonic,
+                passphrase_used: false,
+                backup_confirmed: false,
+                passphrase_check: [0; 4],
+            }));
             let material = SealMaterial {
                 password,
                 vault_id,
@@ -514,7 +618,8 @@ impl Vault {
                 payload: &payload,
             };
             let bytes = format::seal_create_with(&material, &self.kdf)?;
-            Ok((bytes, dek, vault_id, payload.bip39.mnemonic.phrase()))
+            let phrase = mnemonic_record(&payload)?.mnemonic.phrase();
+            Ok((bytes, dek, vault_id, phrase))
         })();
         let (bytes, dek, vault_id, phrase) = match sealed {
             Ok(values) => values,
@@ -585,17 +690,14 @@ impl Vault {
             let kdf_salt = random_array_with::<16>(rng)?;
             let wrap_nonce = random_array_with::<24>(rng)?;
             let payload_nonce = random_array_with::<24>(rng)?;
-            let payload = Payload {
-                bip39: Bip39Record {
-                    record_id,
-                    created_unix: now_unix,
-                    mnemonic,
-                    passphrase_used: passphrase.is_some(),
-                    backup_confirmed: true,
-                    passphrase_check,
-                },
-                raw_keys: raw_key_list(),
-            };
+            let payload = Payload::new(Some(Bip39Record {
+                record_id,
+                created_unix: now_unix,
+                mnemonic,
+                passphrase_used: passphrase.is_some(),
+                backup_confirmed: true,
+                passphrase_check,
+            }));
             let material = SealMaterial {
                 password,
                 vault_id,
@@ -688,11 +790,12 @@ impl Vault {
             return Err(KeyError::PassphraseEmpty.into());
         }
         let payload = self.payload()?;
+        let bip39 = mnemonic_record(&payload)?;
         let ctx = secp_context(&mut OsRandom)?;
-        let check = passphrase_check(&address_zero(&ctx, &payload.bip39.mnemonic, &passphrase)?);
+        let check = passphrase_check(&address_zero(&ctx, &bip39.mnemonic, &passphrase)?);
         let matches = check
             .as_slice()
-            .ct_eq(payload.bip39.passphrase_check.as_slice())
+            .ct_eq(bip39.passphrase_check.as_slice())
             .unwrap_u8()
             == 1;
         let slot = self.slot.as_mut().ok_or(VaultError::InvalidState)?;
@@ -831,7 +934,7 @@ impl Vault {
                 bytes,
                 header.vault_id,
                 dek,
-                status_after_unlock(&payload.bip39),
+                status_after_unlock(payload.bip39.as_ref()),
             ))
         })();
         match recovered {
@@ -860,7 +963,10 @@ impl Vault {
         if self.status != VaultStatus::BackupPending {
             return Err(VaultError::InvalidState);
         }
-        let words = self.payload()?.bip39.mnemonic.word_count().words();
+        let words = mnemonic_record(&self.payload()?)?
+            .mnemonic
+            .word_count()
+            .words();
         let mut candidates = [0_u8; 24];
         for (index, slot) in candidates.iter_mut().enumerate() {
             *slot = u8::try_from(index).map_err(|_| INTERNAL)?;
@@ -917,14 +1023,15 @@ impl Vault {
             return Err(VaultError::BackupMismatch);
         }
         let mut payload = self.payload()?;
+        let bip39 = mnemonic_record(&payload)?;
         let mut all = Choice::from(1);
         for (position, answer) in positions.iter().zip(words) {
-            let expected = payload.bip39.mnemonic.word_at(*position)?;
+            let expected = bip39.mnemonic.word_at(*position)?;
             all &= expected.as_bytes().ct_eq(answer.as_bytes());
         }
         let ctx = secp_context(&mut OsRandom)?;
         let address =
-            address_zero(&ctx, &payload.bip39.mnemonic, &Bip39Passphrase::empty())?.to_lower_hex();
+            address_zero(&ctx, &bip39.mnemonic, &Bip39Passphrase::empty())?.to_lower_hex();
         let expected_suffix = address
             .get(address.len().saturating_sub(ADDRESS_SUFFIX_LEN)..)
             .ok_or(INTERNAL)?;
@@ -933,7 +1040,9 @@ impl Vault {
         if all.unwrap_u8() != 1 {
             return Err(VaultError::BackupMismatch);
         }
-        payload.bip39.backup_confirmed = true;
+        if let Some(bip39) = payload.bip39.as_mut() {
+            bip39.backup_confirmed = true;
+        }
         self.rewrite_payload(&payload)?;
         self.status = VaultStatus::Unlocked {
             alt_passphrase: false,
@@ -953,46 +1062,78 @@ impl Vault {
         now_unix: u64,
     ) -> Result<RecordId, VaultError> {
         self.require_signing()?;
-        let key = parse_private_key(hex_key)?;
+        let key = ImportKey {
+            inner: ImportInner::Evm(parse_evm_private_key(hex_key)?),
+        };
+        self.import_key(key, now_unix)
+    }
+
+    /// Imports a parsed key of any chain (spec/02 §8.4): `PayloadRewrite`, no password. The
+    /// per-chain cap is 15; the same key (EVM/Solana) or the same key used the same way
+    /// (Bitcoin: secret, compression, network, script type) is refused.
+    ///
+    /// # Errors
+    ///
+    /// `BackupNotConfirmed`/`InvalidState`, `DuplicateKey`, `RecordLimit`,
+    /// `RandomnessUnavailable` or `Storage`.
+    pub fn import_key(&mut self, key: ImportKey, now_unix: u64) -> Result<RecordId, VaultError> {
+        self.require_signing()?;
         let mut payload = self.payload()?;
-        let duplicate = payload.raw_keys.iter().fold(0_u8, |seen, raw| {
-            seen | raw.key.as_slice().ct_eq(key.as_slice()).unwrap_u8()
-        });
-        if duplicate != 0 {
-            return Err(VaultError::DuplicateKey);
-        }
-        if payload.raw_keys.len() >= MAX_RAW_KEYS {
-            return Err(VaultError::RecordLimit);
-        }
         let record_id = fresh_record_id(&mut OsRandom, &payload)?;
-        payload.raw_keys.push(RawKeyRecord {
-            record_id,
-            created_unix: now_unix,
-            key,
-        });
+        add_key(&mut payload, key, record_id, now_unix)?;
         self.rewrite_payload(&payload)?;
         Ok(RecordId(record_id))
     }
 
-    /// Removes a raw key after re-entering the password. The BIP39 record cannot be removed.
+    /// Removes an imported EVM key after re-entering the password. The BIP39 record cannot be
+    /// removed.
     ///
     /// # Errors
     ///
-    /// `BackupNotConfirmed`/`InvalidState`, `UnlockFailed`, `RecordNotFound` or `Storage`.
+    /// `BackupNotConfirmed`/`InvalidState`, `UnlockFailed`, `RecordNotFound` (also for a
+    /// non-EVM record), `LastKey` or `Storage`.
     pub fn remove_evm_raw_key(
         &mut self,
         password: &VaultPassword,
         id: RecordId,
     ) -> Result<(), VaultError> {
+        self.remove_checked(password, id, Some(ImportChain::Evm))
+            .map(|_| ())
+    }
+
+    /// Removes an imported key of any chain after re-entering the password (spec/02 §8.4). The
+    /// BIP39 record cannot be removed, and neither can the last key of a key-only vault.
+    ///
+    /// # Errors
+    ///
+    /// `BackupNotConfirmed`/`InvalidState`, `UnlockFailed`, `RecordNotFound`, `LastKey` or
+    /// `Storage`.
+    pub fn remove_imported_key(
+        &mut self,
+        password: &VaultPassword,
+        id: RecordId,
+    ) -> Result<ImportChain, VaultError> {
+        self.remove_checked(password, id, None)
+    }
+
+    /// Password check, then removal of `id` (restricted to `only` when given).
+    fn remove_checked(
+        &mut self,
+        password: &VaultPassword,
+        id: RecordId,
+        only: Option<ImportChain>,
+    ) -> Result<ImportChain, VaultError> {
         self.require_signing()?;
         self.verify_password(password)?;
         let mut payload = self.payload()?;
-        let before = payload.raw_keys.len();
-        payload.raw_keys.retain(|raw| raw.record_id != id.0);
-        if payload.raw_keys.len() == before {
-            return Err(VaultError::RecordNotFound);
+        let chain = remove_key(&mut payload, &id.0)
+            .filter(|chain| only.is_none_or(|wanted| wanted == *chain))
+            .ok_or(VaultError::RecordNotFound)?;
+        if payload.record_count() == 0 {
+            return Err(VaultError::LastKey);
         }
-        self.rewrite_payload(&payload)
+        self.rewrite_payload(&payload)?;
+        Ok(chain)
     }
 
     /// `Rewrap` with the new password, then one more `PayloadRewrite` so `.prev` also uses the
@@ -1036,7 +1177,7 @@ impl Vault {
     pub fn reveal_mnemonic(&self, password: &VaultPassword) -> Result<SecretString, VaultError> {
         self.require_public()?;
         self.verify_password(password)?;
-        Ok(self.payload()?.bip39.mnemonic.phrase())
+        Ok(mnemonic_record(&self.payload()?)?.mnemonic.phrase())
     }
 
     /// An EVM private key as 64 lowercase hex digits without `0x`, after re-entering the password.
@@ -1085,6 +1226,9 @@ impl Vault {
         self.require_public()?;
         if indices.len() > MAX_ADDRESS_BATCH {
             return Err(VaultError::InvalidState);
+        }
+        if indices.is_empty() {
+            return Ok(Vec::new());
         }
         let payload = self.payload()?;
         let seed = self.seed(&payload)?;
@@ -1154,6 +1298,186 @@ impl Vault {
         let public = PublicKey::from_secret_key(&ctx, &secret);
         secret.non_secure_erase();
         Ok(public.serialize())
+    }
+
+    /// Whether the vault has recovery words (`false` for a key-only vault, spec/02 §4.6).
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` outside `BackupPending`/`Unlocked`.
+    pub fn has_mnemonic(&self) -> Result<bool, VaultError> {
+        self.require_public()?;
+        Ok(self.payload()?.bip39.is_some())
+    }
+
+    /// Public facts of every imported key (EVM addresses, Solana public keys, Bitcoin addresses
+    /// with their script type and network), in payload order (spec/02 §10.3).
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` outside `BackupPending`/`Unlocked`.
+    pub fn imported_keys(&self) -> Result<ImportedKeys, VaultError> {
+        self.require_public()?;
+        let payload = self.payload()?;
+        let ctx = secp_context(&mut OsRandom)?;
+        let mut evm = Vec::with_capacity(payload.raw_keys.len());
+        for raw in &payload.raw_keys {
+            let mut secret = SecretKey::from_byte_array(*raw.key).map_err(|_| INTERNAL)?;
+            let public = PublicKey::from_secret_key(&ctx, &secret);
+            secret.non_secure_erase();
+            evm.push((RecordId(raw.record_id), Address::from_public_key(&public)));
+        }
+        let sol = payload
+            .sol_keys
+            .iter()
+            .map(|sol| (RecordId(sol.record_id), sol.public))
+            .collect();
+        let mut btc = Vec::with_capacity(payload.btc_keys.len());
+        for record in &payload.btc_keys {
+            let info = btc_info(
+                &record.secret,
+                record.compressed,
+                record.network,
+                record.script,
+            )?;
+            btc.push((RecordId(record.record_id), info));
+        }
+        Ok(ImportedKeys {
+            has_mnemonic: payload.bip39.is_some(),
+            evm,
+            sol,
+            btc,
+        })
+    }
+
+    /// The export text of an imported key after re-entering the password (spec/02 §9): EVM 64
+    /// lowercase hex (no `0x`), Solana the base58 64-byte keypair, Bitcoin the WIF.
+    ///
+    /// # Errors
+    ///
+    /// `BackupNotConfirmed`/`InvalidState`, `UnlockFailed` or `RecordNotFound`.
+    pub fn reveal_imported_key(
+        &self,
+        password: &VaultPassword,
+        id: RecordId,
+    ) -> Result<(ImportChain, SecretString), VaultError> {
+        self.require_signing()?;
+        self.verify_password(password)?;
+        let payload = self.payload()?;
+        if let Some(raw) = payload.raw_keys.iter().find(|raw| raw.record_id == id.0) {
+            let mut out = Zeroizing::new(String::with_capacity(64));
+            hex::encode_into(raw.key.as_slice(), &mut out);
+            return Ok((ImportChain::Evm, SecretString::from_zeroizing(out)));
+        }
+        if let Some(sol) = payload.sol_keys.iter().find(|sol| sol.record_id == id.0) {
+            return Ok((
+                ImportChain::Sol,
+                crate::keyimport::sol::encode_keypair(&sol.seed, &sol.public),
+            ));
+        }
+        if let Some(btc) = payload.btc_keys.iter().find(|btc| btc.record_id == id.0) {
+            return Ok((
+                ImportChain::Btc,
+                crate::codec::wif::encode_wif(&btc.secret, btc.compressed, btc.network),
+            ));
+        }
+        Err(VaultError::RecordNotFound)
+    }
+
+    /// Creates a key-only vault (no recovery words) holding one imported key (spec/02 §8.5):
+    /// `Create`, then `Unlocked { alt: false }` — there is no passphrase and no backup step (the
+    /// backup is the original private key). Returns the key's record id.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` outside `NoVault`, `RandomnessUnavailable`, `OutOfMemory` or `Storage`.
+    /// On failure the state stays `NoVault` and the slot is wiped.
+    pub fn create_with_key(
+        &mut self,
+        password: &VaultPassword,
+        key: ImportKey,
+        slot: Slot,
+        now_unix: u64,
+    ) -> Result<RecordId, VaultError> {
+        self.create_with_key_rng(&mut OsRandom, password, key, slot, now_unix)
+    }
+
+    pub(crate) fn create_with_key_rng(
+        &mut self,
+        rng: &mut impl RandomSource,
+        password: &VaultPassword,
+        key: ImportKey,
+        slot: Slot,
+        now_unix: u64,
+    ) -> Result<RecordId, VaultError> {
+        if self.status != VaultStatus::NoVault {
+            wipe_and_drop(slot);
+            return Err(VaultError::InvalidState);
+        }
+        let sealed = (|| -> Result<_, VaultError> {
+            let dek = random_secret32_with(rng)?;
+            let vault_id = random_nonzero_id_with(rng)?;
+            let record_id = random_nonzero_id_with(rng)?;
+            let kdf_salt = random_array_with::<16>(rng)?;
+            let wrap_nonce = random_array_with::<24>(rng)?;
+            let payload_nonce = random_array_with::<24>(rng)?;
+            let mut payload = Payload::new(None);
+            add_key(&mut payload, key, record_id, now_unix)?;
+            let material = SealMaterial {
+                password,
+                vault_id,
+                dek: &dek,
+                kdf_salt,
+                wrap_nonce,
+                payload_nonce,
+                generation: 1,
+                payload: &payload,
+            };
+            Ok((
+                format::seal_create_with(&material, &self.kdf)?,
+                dek,
+                vault_id,
+                record_id,
+            ))
+        })();
+        let (bytes, dek, vault_id, record_id) = match sealed {
+            Ok(values) => values,
+            Err(error) => {
+                wipe_and_drop(slot);
+                return Err(error);
+            }
+        };
+        if let Err(error) = commit_landed(self.storage.as_mut(), FileKind::Vault, None, &bytes) {
+            wipe_and_drop(slot);
+            return Err(VaultError::Storage(error));
+        }
+        self.ciphertext = Some(bytes);
+        self.id = Some(vault_id);
+        self.open_session(slot, &dek, None)?;
+        self.status = VaultStatus::Unlocked {
+            alt_passphrase: false,
+        };
+        Ok(RecordId(record_id))
+    }
+
+    /// Lends the seed of the imported Solana key whose public key is `public` to the Solana
+    /// signing module (`Unlocked` only, spec/02 §10.3). The seed is wiped when `f` returns.
+    pub(crate) fn with_imported_ed25519_seed<T>(
+        &self,
+        public: &[u8; 32],
+        f: impl FnOnce(&[u8; 32]) -> Result<T, VaultError>,
+    ) -> Result<T, VaultError> {
+        self.require_signing()?;
+        let payload = self.payload()?;
+        let record = payload
+            .sol_keys
+            .iter()
+            .find(|sol| sol.public == *public)
+            .ok_or(VaultError::RecordNotFound)?;
+        let mut seed = Zeroizing::new([0_u8; 32]);
+        seed.copy_from_slice(record.seed.as_slice());
+        drop(payload);
+        f(&seed)
     }
 
     fn set_known(&self, index: usize, value: Known) {
