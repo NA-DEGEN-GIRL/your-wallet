@@ -534,6 +534,7 @@ pub const SOL_JOURNAL_MAX_BODY: usize = SOL_JOURNAL_HEADER_LEN + SOL_MAX_TX_BYTE
 
 - 재전송은 서명 바이트가 같으므로(Ed25519 결정적) 같은 거래를 여러 번 보내도 한 번만 처리된다. **새 블록해시로 다시 서명하는 일은 루프 안에 없다.**
 - yw-app 재시작·잠금 해제 후 `Pending` 레코드마다 루프를 재개한다. 잠금 중에도 루프는 계속할 수 있다(비밀 불필요). 상태 저장은 잠금 해제 후에 한다.
+- 종결 상태를 키 작업자에 저장 요청(`SolApply`)하면 그 레코드의 루프를 멈추고 "결과를 거래 저널에 저장하는 중"을 표시한다. `SOL_APPLY_RETRY_MS`(10 s) 뒤에도 저널에 `Pending`으로 남아 있으면 저장 실패로 보고 "결과를 거래 저널에 저장하지 못했습니다. 다시 확인해 저장합니다 (E-VLT-003)"를 표시하며 루프를 다시 돌려 같은 종결 상태를 다시 저장한다(같은 전이는 멱등). 이때 클러스터 불일치 문구(E-RPC-006)는 쓰지 않는다.
 
 ```rust
 pub const SOL_POLL_INTERVAL_MS: u64 = 1_000;
@@ -568,7 +569,7 @@ pub const SOL_JOURNAL_MAX_RECORDS: usize = 64;
 | devnet | `solana:devnet` | `https://<이름>.solana-devnet.quiknode.pro/<토큰>/` | `https://solana-devnet.g.alchemy.com/v2/<KEY>` | `EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG` |
 
 - 엔드포인트 = `apikeys.dpapi`(DPAPI, spec.md §4.3)에 저장한 그 클러스터의 HTTPS JSON-RPC URL 하나(항목 `rpc:solana:mainnet`·`rpc:solana:devnet`, [04] §6.3, D13). 공급자를 가정하지 않는다: 위 템플릿(QuickNode 멀티체인·알케미)으로 만들거나 직접 입력하며, 템플릿으로 만든 URL도 클러스터별로 덮어쓸 수 있다. 사용자의 현재 공급자는 QuickNode다. 엔드포인트가 없으면 Solana RPC 호출을 하지 않고 미리보기를 시작하지 않는다(설정 → 네트워크 안내). URL 전체를 비밀로 보므로 평문 `settings.json`에는 두지 않는다([04] §6.1). 제네시스 고정은 공급자·URL과 무관하게 같다.
-- `getGenesisHash`를 미리보기 시작, 서명 직전, `Pending` 재개 때마다 호출해 선택한 클러스터 값과 비교한다. 다르면 `ClusterMismatch`로 중단한다(Solana 트랜잭션에는 체인 ID가 없고 블록해시만 클러스터를 묶는다).
+- `getGenesisHash`를 미리보기 시작, 서명 직전, `Pending` 재개 때마다 호출해 선택한 클러스터 값과 비교한다. 다르면 `ClusterMismatch`로 중단한다(Solana 트랜잭션에는 체인 ID가 없고 블록해시만 클러스터를 묶는다). 엔드포인트 URL을 바꾸면 그 클러스터의 `Pending` 레코드마다 세대 번호를 올리고 제네시스를 다시 확인한다. URL을 바꾸기 전에 시작한 라운드의 결과(제네시스 확인 성공·불일치, 상태 판정)는 끝나도 버리고 새 라운드를 바로 시작한다.
 - devnet 시험은 mainnet과 다른 계정 인덱스를 쓰도록 권고한다(운영 권고, 강제 아님).
 - URL에 토큰이 들어가므로 로그·오류 메시지에 URL을 남기지 않는다(D13·D28).
 - 개발 중 실서비스 프로브는 D13대로 저장소 밖 `%USERPROFILE%\.yw-dev\rpc.json`(또는 환경 변수 `YW_RPC_JSON`이 가리키는 파일)의 `"solana:mainnet"`·`"solana:devnet"` 키에서 URL을 읽고, URL·토큰을 출력·로그에 남기지 않는다([09](09-testing.md)).

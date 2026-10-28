@@ -566,6 +566,7 @@ fn track_since(state: LoopState, since: u64) -> TrackJob {
         state,
         check_genesis: false,
         tracked_since_ms: since,
+        generation: 0,
     }
 }
 
@@ -898,7 +899,9 @@ fn resume_checks_the_genesis_first() {
     });
     let mut job = track(LoopState::default());
     job.check_genesis = true;
+    job.generation = 7;
     let result = track_round(&*rpc, &job, &FakeClock::at(SIGNED_AT));
+    assert_eq!(result.generation, 7, "the UI drops results of an older URL");
     assert_eq!(result.genesis_ok, Some(false));
     assert!(result.outcome.is_err());
     assert_eq!(rpc.methods(), ["getGenesisHash"]);

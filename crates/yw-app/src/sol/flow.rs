@@ -540,6 +540,8 @@ pub struct TrackJob {
     /// Monotonic ms (the [`Clock::now_ms`] clock) at which this session started tracking the
     /// record: its signing, or the loop's resumption after start or unlock (spec/07 §14.3).
     pub tracked_since_ms: u64,
+    /// The UI's endpoint generation when the round started (echoed in [`TrackResult`]).
+    pub generation: u64,
 }
 
 /// A round's result.
@@ -555,6 +557,9 @@ pub struct TrackResult {
     pub genesis_ok: Option<bool>,
     /// `sendTransaction` calls made this round (tests: never more than one, same bytes).
     pub sends: u32,
+    /// [`TrackJob::generation`]: a result of an older generation is stale (the URL changed while
+    /// it ran) and is discarded.
+    pub generation: u64,
 }
 
 /// One round (spec/07 §14.2–§14.3): (first round of the session: send first) → status (history
@@ -572,6 +577,7 @@ pub fn track_round(transport: &dyn Transport, job: &TrackJob, clock: &dyn Clock)
         outcome: Ok(Outcome::Pending { notice: false }),
         genesis_ok: None,
         sends: 0,
+        generation: job.generation,
     };
     if job.check_genesis {
         match check_genesis(&client, &job.endpoint) {

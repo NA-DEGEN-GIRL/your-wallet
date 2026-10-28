@@ -181,6 +181,29 @@ impl ReviewInputs {
     }
 }
 
+/// A final state (`SolApply`) still not in the journal after this long is treated as a failed
+/// write: the loop resumes, observes the final state again and asks to write it again.
+pub const SOL_APPLY_RETRY_MS: u64 = 10_000;
+
+/// Fixed text while a final state is being written to the journal.
+pub const SOL_SAVING_TEXT: &str = "결과를 거래 저널에 저장하는 중";
+/// Fixed text after a final state could not be written to the journal (the loop retries).
+pub const SOL_SAVE_FAILED_TEXT: &str =
+    "결과를 거래 저널에 저장하지 못했습니다. 다시 확인해 저장합니다 (E-VLT-003)";
+
+/// Why a record's loop is stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SolHalt {
+    /// Genesis mismatch (E-RPC-006): stopped until restart or a URL change.
+    ClusterMismatch,
+    /// A final state was sent to the key worker (`SolApply`) at monotonic `since_ms`; the record
+    /// leaves tracking when the journal no longer has it `Pending`.
+    Saving {
+        /// When the write was asked.
+        since_ms: u64,
+    },
+}
+
 /// Loop scheduling of one `Pending` record.
 #[derive(Clone, Copy, Debug, Default)]
 #[expect(
@@ -196,8 +219,10 @@ pub struct SolTrackState {
     pub busy: bool,
     /// Genesis checked this session (resume check, spec/07 §15.1).
     pub genesis_checked: bool,
-    /// Genesis mismatch: stopped until restart or a URL change.
-    pub halted: bool,
+    /// Why the loop is stopped, if it is.
+    pub halt: Option<SolHalt>,
+    /// A final state could not be written to the journal (shown until the record leaves).
+    pub save_failed: bool,
     /// "네트워크/RPC 확인 필요".
     pub notice: bool,
     /// Last round failure.
@@ -206,6 +231,9 @@ pub struct SolTrackState {
     /// loop's resumption after start/unlock): the expiry proof's monotonic minimum (spec/07
     /// §14.3) counts from here.
     pub since_ms: u64,
+    /// Endpoint generation: bumped when the cluster's URL changes, so a round started before the
+    /// change (its genesis check, its outcome) is discarded when it completes.
+    pub generation: u64,
 }
 
 impl SolTrackState {
@@ -1264,11 +1292,23 @@ impl App {
 
     fn sol_tick_tracking(&mut self, now: u64) {
         let records = self.sol_records();
+        // A final state that is still not in the journal long after `SolApply`: the write failed
+        // (the key worker reports it only to the log). Resume the loop; it observes the same
+        // final state again and asks to write it again.
+        for state in self.sol.tracking.values_mut() {
+            if let Some(SolHalt::Saving { since_ms }) = state.halt
+                && now.saturating_sub(since_ms) >= SOL_APPLY_RETRY_MS
+            {
+                state.halt = None;
+                state.save_failed = true;
+                state.next_ms = now;
+            }
+        }
         let due: Vec<[u8; 64]> = self
             .sol
             .tracking
             .iter()
-            .filter(|(_, state)| !state.busy && !state.halted && now >= state.next_ms)
+            .filter(|(_, state)| !state.busy && state.halt.is_none() && now >= state.next_ms)
             .map(|(signature, _)| *signature)
             .collect();
         for signature in due {
@@ -1298,6 +1338,7 @@ impl App {
                 state: state.state,
                 check_genesis: !state.genesis_checked,
                 tracked_since_ms: state.since_ms,
+                generation: state.generation,
             };
             state.busy = true;
             if !self.rpc(RpcJob::SolTrack(Box::new(job)))
@@ -1308,17 +1349,25 @@ impl App {
         }
     }
 
+    /// A broadcast round finished (RPC worker).
     fn on_sol_tracked(&mut self, result: &TrackResult) {
         let now = now_ms();
         let Some(state) = self.sol.tracking.get_mut(&result.signature) else {
             return;
         };
         state.busy = false;
+        if result.generation != state.generation {
+            // Started before the URL changed: its genesis check and outcome belong to the old
+            // endpoint. Drop them and run a fresh round (with the genesis check) right away.
+            state.next_ms = now;
+            self.refresh();
+            return;
+        }
         state.next_ms = now.saturating_add(SOL_POLL_INTERVAL_MS);
         state.state = result.state;
         match result.genesis_ok {
             Some(true) => state.genesis_checked = true,
-            Some(false) => state.halted = true,
+            Some(false) => state.halt = Some(SolHalt::ClusterMismatch),
             None => {}
         }
         let transition = match result.outcome {
@@ -1350,17 +1399,15 @@ impl App {
                 "sol.terminal",
                 &[("kind", Field::Word(transition.name()))],
             );
-            state.halted = true;
             if matches!(self.mode, AppMode::Unlocked { .. }) {
+                state.halt = Some(SolHalt::Saving { since_ms: now });
                 self.key(KeyJob::SolApply {
                     transition,
                     now_unix_ms: now_unix_ms(),
                 });
-            } else {
-                // Locked: the journal is written after unlock (spec/07 §14.2); the loop resumes
-                // from the journal then and observes the same final state.
-                state.halted = false;
             }
+            // Locked: the journal is written after unlock (spec/07 §14.2); the loop resumes from
+            // the journal then and observes the same final state.
         }
         self.refresh();
     }
@@ -1387,8 +1434,12 @@ impl App {
                     if state.state.anomaly {
                         text.push_str(" — RPC가 다른 서명을 반환함(RpcAnomaly)");
                     }
-                    if state.halted {
+                    if state.halt == Some(SolHalt::ClusterMismatch) {
                         let _ = write!(text, " — {}", ErrorCode::Rpc006.text());
+                    } else if state.save_failed {
+                        let _ = write!(text, " — {SOL_SAVE_FAILED_TEXT}");
+                    } else if state.halt.is_some() {
+                        let _ = write!(text, " — {SOL_SAVING_TEXT}");
                     } else if let Some(code) = state.error {
                         let _ = write!(text, " — 조회 실패 {}", code.code());
                     }
@@ -1414,7 +1465,9 @@ impl App {
         self.sol.clear_unlocked();
     }
 
-    /// The `solana:<cluster>` URL changed: re-check the genesis on the next rounds.
+    /// The `solana:<cluster>` URL changed: re-check the genesis on the next rounds. The new
+    /// generation makes a round still running against the old URL a stale one: its genesis check
+    /// can neither mark the new URL checked nor halt it.
     pub fn sol_url_changed(&mut self, cluster: crate::network::SolCluster) {
         let cluster = core_cluster(cluster);
         let records = self.sol_records();
@@ -1423,8 +1476,11 @@ impl App {
                 .iter()
                 .any(|record| record.signature() == *signature && record.cluster == cluster)
             {
+                state.generation = state.generation.wrapping_add(1);
                 state.genesis_checked = false;
-                state.halted = false;
+                if state.halt == Some(SolHalt::ClusterMismatch) {
+                    state.halt = None;
+                }
             }
         }
         self.sol.balance_error.remove(&cluster);
@@ -1623,14 +1679,24 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use yw_core::sol::SolAddress;
+    use yw_core::bip32::path::AccountIndex;
+    use yw_core::journal::sol::{SolRecord, SolTxState};
+    use yw_core::slip10::SolKeySource;
+    use yw_core::sol::broadcast::{LoopState, Outcome};
+    use yw_core::sol::message::{assemble_transaction, encode_message};
+    use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolTransferCore};
 
-    use super::{ReviewRefusal, SOL_REVIEW_CHANGED_TEXT};
+    use super::{
+        ReviewRefusal, SOL_APPLY_RETRY_MS, SOL_REVIEW_CHANGED_TEXT, SOL_SAVE_FAILED_TEXT,
+        SOL_SAVING_TEXT, SolHalt, now_ms,
+    };
     use crate::apikeys::ApiKeys;
     use crate::app::{App, AppMode, Paths, Screen};
+    use crate::errors::ErrorCode;
     use crate::events::JournalView;
     use crate::meta::{Account, Meta, Tab};
     use crate::settings::Settings;
+    use crate::sol::flow::TrackResult;
 
     const OWN: [u8; 32] = [200; 32];
     const TO_A: &str = "Hh8QwFUA6MtVu1qAoq12ucvFHNwCcVTV7hpWjeY1Hztb";
@@ -1669,6 +1735,122 @@ mod tests {
 
     fn addr(text: &str) -> SolAddress {
         SolAddress::parse(text).unwrap()
+    }
+
+    /// A journal record of a `T_SOL` transfer from account 0 (fake signature `[sig; 64]`).
+    fn record(cluster: SolCluster, state: SolTxState, to: &str, sig: u8) -> SolRecord {
+        let core = SolTransferCore {
+            from: SolAddress::from_bytes(OWN),
+            to: addr(to),
+            asset: SolAsset::Sol,
+            amount: 1_000_000,
+            cu_limit: 600,
+            cu_price_micro: 0,
+        };
+        SolRecord {
+            state,
+            cluster,
+            source: SolKeySource::Standard(AccountIndex::ZERO),
+            intent_id: [sig; 16],
+            intent_hash: [sig; 32],
+            signed_at_ms: 1,
+            last_valid_block_height: 1_150,
+            terminal_slot: 0,
+            terminal_err: 0,
+            tx: assemble_transaction(&[sig; 64], &encode_message(&core, &[7; 32])),
+        }
+    }
+
+    /// `app()` with one `Pending` mainnet record being tracked.
+    fn tracking_app() -> (App, [u8; 64]) {
+        let mut app = app();
+        let pending = record(SolCluster::Mainnet, SolTxState::Pending, TO_A, 0x5a);
+        let signature = pending.signature();
+        app.evm.journal = Some(JournalView {
+            sol_records: vec![pending],
+            ..JournalView::default()
+        });
+        app.sol_schedule_tracking();
+        (app, signature)
+    }
+
+    fn round(signature: [u8; 64], generation: u64, outcome: Outcome) -> TrackResult {
+        TrackResult {
+            signature,
+            state: LoopState::default(),
+            outcome: Ok(outcome),
+            genesis_ok: Some(true),
+            sends: 0,
+            generation,
+        }
+    }
+
+    #[test]
+    fn a_round_from_before_a_url_change_cannot_set_or_clear_the_genesis_flag() {
+        let (mut app, signature) = tracking_app();
+        // A round with the genesis check runs (generation 0) when the URL changes.
+        app.sol.tracking.get_mut(&signature).unwrap().busy = true;
+        app.sol_url_changed(crate::network::SolCluster::Mainnet);
+        let state = app.sol.tracking[&signature];
+        assert_eq!(state.generation, 1);
+        assert!(!state.genesis_checked);
+        // Its completion is stale: "checked" is not set for the new URL, nothing terminal is
+        // applied, and the next round starts at once.
+        app.on_sol_tracked(&round(signature, 0, Outcome::Landed { slot: 9 }));
+        let state = app.sol.tracking[&signature];
+        assert!(!state.busy);
+        assert!(!state.genesis_checked);
+        assert_eq!(state.halt, None);
+        // A stale mismatch cannot halt the new URL either.
+        let mut mismatch = round(signature, 0, Outcome::Pending { notice: false });
+        mismatch.genesis_ok = Some(false);
+        app.on_sol_tracked(&mismatch);
+        assert_eq!(app.sol.tracking[&signature].halt, None);
+        // The new generation's own check counts.
+        app.on_sol_tracked(&round(signature, 1, Outcome::Pending { notice: false }));
+        assert!(app.sol.tracking[&signature].genesis_checked);
+        mismatch.generation = 1;
+        app.on_sol_tracked(&mismatch);
+        assert_eq!(
+            app.sol.tracking[&signature].halt,
+            Some(SolHalt::ClusterMismatch)
+        );
+        let pending = app.sol_records().remove(0);
+        assert!(
+            app.sol_record_status(&pending)
+                .contains(ErrorCode::Rpc006.text().as_str())
+        );
+        // A URL change lifts the mismatch halt.
+        app.sol_url_changed(crate::network::SolCluster::Mainnet);
+        assert_eq!(app.sol.tracking[&signature].halt, None);
+    }
+
+    #[test]
+    fn a_final_state_not_saved_shows_the_save_texts_not_the_cluster_text() {
+        let (mut app, signature) = tracking_app();
+        app.on_sol_tracked(&round(signature, 0, Outcome::Landed { slot: 9 }));
+        let state = app.sol.tracking[&signature];
+        assert!(matches!(state.halt, Some(SolHalt::Saving { .. })));
+        let pending = app.sol_records().remove(0);
+        let text = app.sol_record_status(&pending);
+        assert!(text.contains(SOL_SAVING_TEXT), "{text}");
+        assert!(!text.contains(ErrorCode::Rpc006.text().as_str()), "{text}");
+        // Still `Pending` in the journal long after `SolApply`: the write failed. The loop
+        // resumes (to observe and save again) and says so.
+        app.sol_tick_tracking(now_ms().saturating_add(SOL_APPLY_RETRY_MS));
+        let state = app.sol.tracking[&signature];
+        assert_eq!(state.halt, None);
+        assert!(state.save_failed);
+        let text = app.sol_record_status(&pending);
+        assert!(text.contains(SOL_SAVE_FAILED_TEXT), "{text}");
+        assert!(!text.contains(ErrorCode::Rpc006.text().as_str()), "{text}");
+        // Once the journal has the final state, the record leaves tracking.
+        app.evm.journal = Some(JournalView {
+            sol_records: vec![record(SolCluster::Mainnet, SolTxState::Landed, TO_A, 0x5a)],
+            ..JournalView::default()
+        });
+        app.sol_schedule_tracking();
+        assert!(app.sol.tracking.is_empty());
     }
 
     #[test]
