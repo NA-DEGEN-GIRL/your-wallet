@@ -6,14 +6,15 @@
 
 use yw_core::approval::{
     ApprovalDraft, ApprovalId, ApprovalKind, ApprovalOrigin, ChainFacts, CodeKind, FieldKey,
-    RiskLevel, build_typed_request,
+    RiskLevel, TokenMeta, build_typed_request,
 };
 use yw_core::bip32::path::AccountIndex;
 use yw_core::evm::address::{Address, parse_address};
-use yw_core::evm::chain::sepolia;
+use yw_core::evm::chain::{ChainInfo, ethereum_mainnet, sepolia};
 use yw_core::evm::eip712::{
     DecodedTypedData, KnownSchema, LimitKind, TypedDataError, eip712_digest, validate_typed_data_v4,
 };
+use yw_core::evm::risk::T08;
 use yw_core::hex;
 use yw_core::policy::BrowserOrigin;
 use yw_core::vault::EvmKeySource;
@@ -348,10 +349,18 @@ fn erc2612(owner: &str, value: &str, deadline: u64) -> String {
     )
 }
 
-fn dai(allowed: bool, expiry: u64) -> String {
+/// Mainnet registry DAI.
+const MAINNET_DAI: &str = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
+
+fn dai_on(chain_id: u64, contract: &str, allowed: bool, expiry: u64) -> String {
     format!(
-        r#"{{"types":{{"EIP712Domain":[{{"name":"name","type":"string"}},{{"name":"version","type":"string"}},{{"name":"chainId","type":"uint256"}},{{"name":"verifyingContract","type":"address"}}],"Permit":[{{"name":"holder","type":"address"}},{{"name":"spender","type":"address"}},{{"name":"nonce","type":"uint256"}},{{"name":"expiry","type":"uint256"}},{{"name":"allowed","type":"bool"}}]}},"primaryType":"Permit","domain":{{"name":"Dai Stablecoin","version":"1","chainId":{SEPOLIA},"verifyingContract":"0x3333333333333333333333333333333333333333"}},"message":{{"holder":"{ACC1}","spender":"0x2222222222222222222222222222222222222222","nonce":"0","expiry":"{expiry}","allowed":{allowed}}}}}"#
+        r#"{{"types":{{"EIP712Domain":[{{"name":"name","type":"string"}},{{"name":"version","type":"string"}},{{"name":"chainId","type":"uint256"}},{{"name":"verifyingContract","type":"address"}}],"Permit":[{{"name":"holder","type":"address"}},{{"name":"spender","type":"address"}},{{"name":"nonce","type":"uint256"}},{{"name":"expiry","type":"uint256"}},{{"name":"allowed","type":"bool"}}]}},"primaryType":"Permit","domain":{{"name":"Dai Stablecoin","version":"1","chainId":{chain_id},"verifyingContract":"{contract}"}},"message":{{"holder":"{ACC1}","spender":"0x2222222222222222222222222222222222222222","nonce":"0","expiry":"{expiry}","allowed":{allowed}}}}}"#
     )
+}
+
+/// DAI permit at the mainnet registry DAI (the only place the layout is recognized).
+fn dai(allowed: bool, expiry: u64) -> String {
+    dai_on(1, MAINNET_DAI, allowed, expiry)
 }
 
 const SEAPORT_TYPES: &str = r#""OrderComponents":[{"name":"offerer","type":"address"},{"name":"zone","type":"address"},{"name":"offer","type":"OfferItem[]"},{"name":"consideration","type":"ConsiderationItem[]"},{"name":"orderType","type":"uint8"},{"name":"startTime","type":"uint256"},{"name":"endTime","type":"uint256"},{"name":"zoneHash","type":"bytes32"},{"name":"salt","type":"uint256"},{"name":"conduitKey","type":"bytes32"},{"name":"counter","type":"uint256"}],"OfferItem":[{"name":"itemType","type":"uint8"},{"name":"token","type":"address"},{"name":"identifierOrCriteria","type":"uint256"},{"name":"startAmount","type":"uint256"},{"name":"endAmount","type":"uint256"}],"ConsiderationItem":[{"name":"itemType","type":"uint8"},{"name":"token","type":"address"},{"name":"identifierOrCriteria","type":"uint256"},{"name":"startAmount","type":"uint256"},{"name":"endAmount","type":"uint256"},{"name":"recipient","type":"address"}]"#;
@@ -371,13 +380,24 @@ fn seaport(
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "table-driven test")]
 fn schema_recognition_table() {
     let cases: Vec<(String, Option<KnownSchema>)> = vec![
         (
             erc2612(ACC1, "5", NOW + 600),
             Some(KnownSchema::Eip2612Permit),
         ),
-        (dai(true, NOW + 600), Some(KnownSchema::DaiPermit)),
+        // The DAI layout away from a registry DAI is unrecognized (T04), so an unknown
+        // contract cannot borrow DAI's "허용 해제" (T15 info) reading.
+        (
+            dai_on(
+                SEPOLIA,
+                "0x3333333333333333333333333333333333333333",
+                true,
+                NOW + 600,
+            ),
+            None,
+        ),
         (
             permit_single(PERMIT2, NOW + 86_400, NOW + 600, ACC1),
             Some(KnownSchema::Permit2Single),
@@ -455,6 +475,139 @@ fn schema_recognition_table() {
         let typed = validate(&source, SEPOLIA).unwrap();
         assert_eq!(typed.schema, expected, "{source}");
     }
+    // DAI: recognized only at the chain's registry DAI.
+    assert_eq!(
+        validate(&dai(true, NOW + 600), 1).unwrap().schema,
+        Some(KnownSchema::DaiPermit)
+    );
+    assert_eq!(
+        validate(
+            &dai_on(
+                1,
+                "0x3333333333333333333333333333333333333333",
+                false,
+                NOW + 600
+            ),
+            1
+        )
+        .unwrap()
+        .schema,
+        None
+    );
+}
+
+#[test]
+fn domain_allows_only_the_standard_fields() {
+    let with_domain = |fields: &str, domain: &str| {
+        format!(
+            r#"{{"types":{{"EIP712Domain":[{fields}],"Inner":[{{"name":"x","type":"uint256"}}],"Message":[{{"name":"a","type":"uint256"}}]}},"primaryType":"Message","domain":{domain},"message":{{"a":"1"}}}}"#
+        )
+    };
+    let all = with_domain(
+        r#"{"name":"name","type":"string"},{"name":"version","type":"string"},{"name":"chainId","type":"uint256"},{"name":"verifyingContract","type":"address"},{"name":"salt","type":"bytes32"}"#,
+        &format!(
+            r#"{{"name":"n","version":"1","chainId":1,"verifyingContract":"0x1111111111111111111111111111111111111111","salt":"0x{}"}}"#,
+            "ab".repeat(32)
+        ),
+    );
+    let typed = validate(&all, 1).unwrap();
+    assert_eq!(typed.domain.salt, Some([0xab; 32]));
+    for (fields, domain) in [
+        // An unknown scalar field.
+        (
+            r#"{"name":"name","type":"string"},{"name":"chain","type":"string"}"#,
+            r#"{"name":"n","chain":"1"}"#,
+        ),
+        // A nested struct and an array would be signed without being shown.
+        (
+            r#"{"name":"name","type":"string"},{"name":"extra","type":"Inner"}"#,
+            r#"{"name":"n","extra":{"x":"1"}}"#,
+        ),
+        (
+            r#"{"name":"name","type":"string"},{"name":"list","type":"uint256[]"}"#,
+            r#"{"name":"n","list":["1"]}"#,
+        ),
+        // Standard names with non-standard types.
+        (
+            r#"{"name":"name","type":"bytes32"}"#,
+            &*format!(r#"{{"name":"0x{}"}}"#, "00".repeat(32)),
+        ),
+        (
+            r#"{"name":"version","type":"uint256"}"#,
+            r#"{"version":"1"}"#,
+        ),
+        (r#"{"name":"salt","type":"bytes"}"#, r#"{"salt":"0x01"}"#),
+    ] {
+        assert_eq!(
+            validate(&with_domain(fields, domain), 1),
+            Err(TypedDataError::NonStandardDomain),
+            "{fields}"
+        );
+    }
+    // A non-standard chainId/verifyingContract type keeps its own error.
+    assert_eq!(
+        validate(
+            &with_domain(
+                r#"{"name":"verifyingContract","type":"bytes20"}"#,
+                &format!(r#"{{"verifyingContract":"0x{}"}}"#, "11".repeat(20))
+            ),
+            1
+        ),
+        Err(TypedDataError::InvalidDomainBindingType)
+    );
+}
+
+#[test]
+fn identifier_and_type_string_limits() {
+    let name = |length: usize| "a".repeat(length);
+    let ok = bound_document(
+        &format!(r#"{{"name":"{}","type":"uint256"}}"#, name(256)),
+        &format!(r#"{{"{}":"1"}}"#, name(256)),
+    );
+    assert!(validate(&ok, 1).is_ok());
+    let long_field = bound_document(
+        &format!(r#"{{"name":"{}","type":"uint256"}}"#, name(257)),
+        &format!(r#"{{"{}":"1"}}"#, name(257)),
+    );
+    assert_eq!(
+        validate(&long_field, 1),
+        Err(TypedDataError::InvalidTypeDefinition)
+    );
+    let long_type = format!(
+        r#"{{"types":{{"EIP712Domain":[],"{0}":[],"Message":[{{"name":"x","type":"{0}"}}]}},"primaryType":"Message","domain":{{}},"message":{{"x":{{}}}}}}"#,
+        "T".repeat(257)
+    );
+    assert_eq!(
+        validate(&long_type, 1),
+        Err(TypedDataError::InvalidTypeDefinition)
+    );
+    let long_primary = format!(
+        r#"{{"types":{{"EIP712Domain":[],"{0}":[]}},"primaryType":"{0}","domain":{{}},"message":{{}}}}"#,
+        "P".repeat(257)
+    );
+    assert_eq!(
+        validate(&long_primary, 1),
+        Err(TypedDataError::InvalidEnvelope)
+    );
+    // ≤ 1,024 fields over all types.
+    let wide: Vec<String> = (0..5)
+        .map(|index| {
+            let fields = (0..205)
+                .map(|field| format!(r#"{{"name":"f{field}","type":"uint8"}}"#))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(r#""U{index}":[{fields}]"#)
+        })
+        .collect();
+    let too_many = format!(
+        r#"{{"types":{{"EIP712Domain":[],{},"Message":[]}},"primaryType":"Message","domain":{{}},"message":{{}}}}"#,
+        wide.join(",")
+    );
+    let value = yw_json::parse(too_many.as_bytes(), &Limits::RESPONSE).unwrap();
+    assert_eq!(
+        validate_typed_data_v4(too_many.as_bytes(), &value, 1),
+        Err(TypedDataError::LimitExceeded(LimitKind::Fields))
+    );
 }
 
 #[test]
@@ -507,19 +660,23 @@ fn x7_schema_mismatches_are_rejected() {
 
 type Fallible<T> = Result<T, Box<dyn std::error::Error>>;
 
-fn draft(source: &str, facts: &ChainFacts) -> Fallible<ApprovalDraft> {
-    let typed = validate(source, SEPOLIA)?;
+fn draft_on(chain: &ChainInfo, source: &str, facts: &ChainFacts) -> Fallible<ApprovalDraft> {
+    let typed = validate(source, chain.chain_id)?;
     Ok(build_typed_request(
         ApprovalId([1; 16]),
         ApprovalOrigin::Site(BrowserOrigin::parse("https://app.example").ok_or("origin")?),
         EvmKeySource::Derived(AccountIndex::ZERO),
         parse_address(ACC1)?,
         ApprovalKind::EvmTypedData,
-        &sepolia(),
+        chain,
         &typed,
         facts,
         NOW_MS,
     )?)
+}
+
+fn draft(source: &str, facts: &ChainFacts) -> Fallible<ApprovalDraft> {
+    draft_on(&sepolia(), source, facts)
 }
 
 fn labels(draft: &ApprovalDraft) -> Vec<String> {
@@ -571,13 +728,27 @@ fn typed_rules_t03_to_t17() {
             .any(|f| f.key == FieldKey::TD_FIELD && f.sub_label == "금액" && f.value == "무제한")
     );
     // DAI allowed=true → T05; expiry 0 = no expiry → T12; allowed=false → T15 (info).
+    let mainnet = ethereum_mainnet();
     assert_eq!(
-        labels(&draft(&dai(true, 0), &none).unwrap()),
+        labels(&draft_on(&mainnet, &dai(true, 0), &none).unwrap()),
         ["T05", "T12"]
     );
-    let revoke = draft(&dai(false, NOW + 600), &none).unwrap();
+    let revoke = draft_on(&mainnet, &dai(false, NOW + 600), &none).unwrap();
     assert_eq!(labels(&revoke), ["T15"]);
     assert_eq!(revoke.display.risk, RiskLevel::Info);
+    // Adversarial: the DAI layout at an unknown contract is not a harmless "revocation".
+    let fake = draft(
+        &dai_on(
+            SEPOLIA,
+            "0x3333333333333333333333333333333333333333",
+            false,
+            NOW + 600,
+        ),
+        &none,
+    )
+    .unwrap();
+    assert_eq!(labels(&fake), ["T04"]);
+    assert_eq!(fake.display.risk, RiskLevel::High);
     // Permit2 single: max expiration → T12, sigDeadline > 1 day → T13, spender EOA → T09.
     let spender = "0x2222222222222222222222222222222222222222";
     let d = draft(
@@ -606,8 +777,9 @@ fn typed_rules_t03_to_t17() {
             && f.sub_label == "witness.note"
             && f.value == "swap")
     );
-    // Seaport: nothing received → T08; CONTRACT order → T14; end > 180 days → T13;
-    // criteria item with identifier 0 → T14.
+    // Seaport: the user is the offerer of a non-empty offer → T19 (high) on every listing;
+    // nothing received → T08; CONTRACT order → T14; end > 180 days → T13; criteria item with
+    // identifier 0 → T14.
     let other = "0x2222222222222222222222222222222222222222";
     assert_eq!(
         labels(
@@ -625,7 +797,7 @@ fn typed_rules_t03_to_t17() {
             )
             .unwrap()
         ),
-        ["T08"]
+        ["T08", "T19"]
     );
     assert_eq!(
         labels(
@@ -643,7 +815,7 @@ fn typed_rules_t03_to_t17() {
             )
             .unwrap()
         ),
-        ["T14"]
+        ["T19", "T14"]
     );
     assert_eq!(
         labels(
@@ -661,7 +833,7 @@ fn typed_rules_t03_to_t17() {
             )
             .unwrap()
         ),
-        ["T13"]
+        ["T19", "T13"]
     );
     assert_eq!(
         labels(
@@ -679,7 +851,7 @@ fn typed_rules_t03_to_t17() {
             )
             .unwrap()
         ),
-        ["T14"]
+        ["T19", "T14"]
     );
     let seaport_ok = draft(
         &seaport(
@@ -717,6 +889,150 @@ fn typed_rules_t03_to_t17() {
     )
     .unwrap();
     assert_eq!(labels(&d), ["T04", "T11"]);
+}
+
+/// Seaport consideration of the user replaced by `item_type`/`token` (ERC-20/NFT).
+fn seaport_receiving(item_type: u8, token: &str) -> String {
+    seaport(
+        "1.6",
+        SEAPORT16,
+        ACC1,
+        0,
+        NOW + 86_400,
+        2,
+        "OrderComponents",
+    )
+    .replace(
+        r#""itemType":"0","token":"0x0000000000000000000000000000000000000000""#,
+        &format!(r#""itemType":"{item_type}","token":"{token}""#),
+    )
+}
+
+fn token_facts(token: &str, symbol: &str) -> Fallible<ChainFacts> {
+    Ok(ChainFacts {
+        tokens: vec![(
+            parse_address(token)?,
+            TokenMeta {
+                symbol: Some(symbol.to_owned()),
+                decimals: Some(6),
+                registered: false,
+            },
+        )],
+        ..ChainFacts::default()
+    })
+}
+
+const SEPOLIA_USDC: &str = "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238";
+const FAKE: &str = "0x5555555555555555555555555555555555555555";
+
+#[test]
+fn c6_seaport_fake_consideration_and_t20() {
+    let none = ChainFacts::default();
+    // Registered ERC-20 consideration counts as received.
+    assert_eq!(
+        labels(&draft(&seaport_receiving(1, SEPOLIA_USDC), &none).unwrap()),
+        ["T19"]
+    );
+    // An unregistered ERC-20 or an NFT paid to the user is not "received" (T08 + cause).
+    for (item_type, token) in [(1, FAKE), (2, FAKE), (3, FAKE)] {
+        let d = draft(&seaport_receiving(item_type, token), &none).unwrap();
+        assert_eq!(labels(&d), ["T08", "T19"], "{item_type}");
+        let t08 = d.display.warnings.iter().find(|w| w.rule == T08).unwrap();
+        assert!(
+            t08.text
+                .ends_with("받는 것이 등록되지 않은 토큰·NFT뿐입니다")
+        );
+        assert!(d.display.ack_required);
+    }
+    // T20: an unregistered consideration token claiming a registry symbol.
+    let d = draft(
+        &seaport_receiving(1, FAKE),
+        &token_facts(FAKE, "usdc").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(labels(&d), ["T08", "T19", "T20"]);
+    // T20 for an EIP-2612 permit whose (unregistered) token claims the native symbol.
+    let fake_permit = erc2612(ACC1, "5", NOW + 600).replace(SEPOLIA_USDC, FAKE);
+    let d = draft(&fake_permit, &token_facts(FAKE, "SepoliaETH").unwrap()).unwrap();
+    assert_eq!(labels(&d), ["T05", "T20"]);
+    // T20 for a Permit2 detail token.
+    let fake_detail =
+        permit_single(PERMIT2, NOW + 86_400, NOW + 600, ACC1).replace(SEPOLIA_USDC, FAKE);
+    let d = draft(&fake_detail, &token_facts(FAKE, "WETH").unwrap()).unwrap();
+    assert!(labels(&d).contains(&"T20".to_owned()), "{:?}", labels(&d));
+    // The registry token itself never triggers T20.
+    let d = draft(
+        &erc2612(ACC1, "5", NOW + 600),
+        &token_facts(SEPOLIA_USDC, "USDC").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(labels(&d), ["T05"]);
+}
+
+#[test]
+fn t18_unknown_spender_classification_is_high() {
+    let spender = "0x2222222222222222222222222222222222222222";
+    let unknown = ChainFacts {
+        code: vec![(parse_address(spender).unwrap(), CodeKind::Unknown)],
+        ..ChainFacts::default()
+    };
+    let d = draft(&erc2612(ACC1, "5", NOW + 600), &unknown).unwrap();
+    assert_eq!(labels(&d), ["T05", "T18"]);
+    let d = draft(
+        &permit_single(PERMIT2, NOW + 86_400, NOW + 600, spender),
+        &unknown,
+    )
+    .unwrap();
+    assert!(labels(&d).contains(&"T18".to_owned()));
+    assert!(
+        d.display
+            .fields
+            .iter()
+            .any(|f| f.sub_label == "사용자" && f.value.ends_with("[계정 종류 확인 불가]"))
+    );
+}
+
+#[test]
+fn c13_line_breaks_in_typed_strings_are_escaped() {
+    let text = r#"{"text":"hello\nspender = 0x2222222222222222222222222222222222222222"}"#;
+    let source = bound_document(r#"{"name":"text","type":"string"}"#, text)
+        .replace("\"chainId\":1", "\"chainId\":11155111");
+    let d = draft(&source, &ChainFacts::default()).unwrap();
+    let field = d
+        .display
+        .fields
+        .iter()
+        .find(|f| f.key == FieldKey::TD_TREE && f.sub_label == "text")
+        .unwrap();
+    assert_eq!(
+        field.value,
+        "hello[U+000A]spender = 0x2222222222222222222222222222222222222222"
+    );
+    assert!(
+        d.display
+            .fields
+            .iter()
+            .filter(|f| f.key == FieldKey::TD_TREE)
+            .all(|f| !f.value.contains('\n'))
+    );
+    // Domain strings too.
+    let domain_lf = ETHER_MAIL
+        .replace("\"chainId\": 1", "\"chainId\": 11155111")
+        .replace("\"Ether Mail\"", "\"Ether\\nverifyingContract: 0xC0FFEE\"");
+    let d = draft(&domain_lf, &ChainFacts::default()).unwrap();
+    let domain = d
+        .display
+        .fields
+        .iter()
+        .find(|f| f.key == FieldKey::TD_DOMAIN)
+        .unwrap();
+    assert!(
+        domain
+            .value
+            .starts_with("name: Ether[U+000A]verifyingContract: 0xC0FFEE\n"),
+        "{}",
+        domain.value
+    );
 }
 
 #[test]

@@ -284,3 +284,160 @@ fn x20_siwe_statement_with_bidi_is_not_siwe_but_escaped() {
             .any(|f| f.key == FieldKey::MESSAGE_TEXT && f.value.contains("Sign in[U+202E]"))
     );
 }
+
+fn message_text(draft: &ApprovalDraft) -> Option<&str> {
+    draft
+        .display
+        .fields
+        .iter()
+        .find(|f| f.key == FieldKey::MESSAGE_TEXT)
+        .map(|f| f.value.as_str())
+}
+
+/// C4: a SIWE first line whose grammar fails still gets the domain checks — otherwise breaking
+/// one field (here a 7-character nonce) would skip S01.
+#[test]
+fn c4_marker_only_still_checks_the_domain() {
+    let broken = BASE.replace("Nonce: 32891756", "Nonce: 3289175");
+    for (message, rules, level) in [
+        (
+            broken.replace("app.example wants", "evil.example wants"),
+            vec!["S01", "S08"],
+            RiskLevel::Blocked,
+        ),
+        (
+            broken.replace("app.example wants", "http://app.example wants"),
+            vec!["S02", "S08"],
+            RiskLevel::Blocked,
+        ),
+        (
+            broken.replace("app.example wants", "user@app.example wants"),
+            vec!["S02", "S08"],
+            RiskLevel::Blocked,
+        ),
+        (
+            broken.replace("app.example wants", "app.example:8443 wants"),
+            vec!["S08", "S05"],
+            RiskLevel::High,
+        ),
+        // Unreadable authority: text before the marker, another scheme, nothing at all.
+        (
+            broken.replace("app.example wants", "Please visit app.example wants"),
+            vec!["S01", "S08"],
+            RiskLevel::Blocked,
+        ),
+        (
+            broken.replace("app.example wants", "ftp://app.example wants"),
+            vec!["S01", "S08"],
+            RiskLevel::Blocked,
+        ),
+        (
+            broken.replace("app.example wants", "wants"),
+            vec!["S01", "S08"],
+            RiskLevel::Blocked,
+        ),
+        // The matching domain with a broken body stays high risk (S08) only.
+        (broken.clone(), vec!["S08"], RiskLevel::High),
+    ] {
+        let draft = try_request(&message, "https://app.example").unwrap();
+        assert_eq!(labels(&draft), rules, "{message:?}");
+        assert_eq!(draft.display.risk, level, "{message:?}");
+    }
+    let unreadable = try_request(
+        &broken.replace("app.example wants", "Please visit app.example wants"),
+        "https://app.example",
+    )
+    .unwrap();
+    assert!(
+        unreadable.display.warnings[0]
+            .text
+            .ends_with("SIWE 형식의 첫 줄에서 도메인을 읽을 수 없습니다")
+    );
+}
+
+/// C5: exactly 32 bytes (a hash) or C0 controls other than TAB/LF/CR → hex, high risk (P04).
+#[test]
+fn c5_binary_looking_messages_are_hex_and_high() {
+    for (message, cause) in [
+        (
+            "0123456789abcdef0123456789abcdef".to_owned(),
+            "정확히 32바이트입니다 — 해시에 서명하는 것일 수 있습니다",
+        ),
+        (
+            "Sign in\u{1}\u{8}\u{8}\u{8} to Example".to_owned(),
+            "TAB·줄바꿈 외의 제어 문자가 있습니다",
+        ),
+        (
+            "bell\u{7f}".to_owned(),
+            "TAB·줄바꿈 외의 제어 문자가 있습니다",
+        ),
+    ] {
+        let draft = try_request(&message, "https://app.example").unwrap();
+        assert_eq!(labels(&draft), ["P04"], "{message:?}");
+        assert!(draft.display.warnings[0].text.ends_with(cause));
+        assert_eq!(draft.display.risk, RiskLevel::High);
+        assert!(message_text(&draft).is_none());
+        assert!(
+            draft
+                .display
+                .fields
+                .iter()
+                .any(|f| f.key == FieldKey::MESSAGE_HEX
+                    && f.value == format!("0x{}", yw_core::hex::encode(message.as_bytes())))
+        );
+    }
+    // A SIWE-looking message with a control character keeps the domain checks.
+    let hidden = format!("{BASE}\u{1}").replace("app.example wants", "evil.example wants");
+    let draft = try_request(&hidden, "https://app.example").unwrap();
+    assert_eq!(labels(&draft), ["S01", "P04", "S08"]);
+    assert_eq!(draft.display.risk, RiskLevel::Blocked);
+    // TAB, LF and CR alone stay text.
+    let ok = try_request("a\tb\r\nc", "https://app.example").unwrap();
+    assert!(message_text(&ok).is_some());
+}
+
+/// C13: line breaks are visible inside the message value, so a line cannot pass for a row.
+#[test]
+fn c13_message_line_breaks_are_marked() {
+    let draft = try_request(
+        "Sign in\n받는 주소: 0x2222222222222222222222222222222222222222",
+        "https://app.example",
+    )
+    .unwrap();
+    assert_eq!(
+        message_text(&draft),
+        Some("Sign in[U+000A]\n받는 주소: 0x2222222222222222222222222222222222222222")
+    );
+    assert_eq!(labels(&draft), ["P03"]);
+    // Every line break of a SIWE message is marked too; the parsed fields are unaffected.
+    let siwe = try_request(BASE, "https://app.example").unwrap();
+    let text = message_text(&siwe).unwrap();
+    assert_eq!(text.matches('\n').count(), BASE.matches('\n').count());
+    assert_eq!(
+        text.matches("[U+000A]\n").count(),
+        BASE.matches('\n').count()
+    );
+    assert_eq!(labels(&siwe), ["S09"]);
+}
+
+/// C14: look-alike spaces and overlay marks in a message are escaped and flagged (P02).
+#[test]
+fn c14_look_alike_characters_in_messages() {
+    for (character, escaped) in [
+        ('\u{00A0}', "[U+00A0]"),
+        ('\u{2007}', "[U+2007]"),
+        ('\u{3000}', "[U+3000]"),
+        ('\u{0336}', "[U+0336]"),
+        ('\u{2800}', "[U+2800]"),
+        ('\u{FFFC}', "[U+FFFC]"),
+    ] {
+        let draft =
+            try_request(&format!("pay 1{character}000 now"), "https://app.example").unwrap();
+        assert_eq!(labels(&draft), ["P02"], "{escaped}");
+        assert_eq!(
+            message_text(&draft),
+            Some(format!("pay 1{escaped}000 now").as_str())
+        );
+        assert!(draft.display.validate().is_ok());
+    }
+}

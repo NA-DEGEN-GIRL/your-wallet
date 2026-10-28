@@ -2,7 +2,8 @@
 //!
 //! The parser accepts exactly the §9.3 grammar with LF line breaks (any CR fails) and at most one
 //! trailing LF. A message whose first line carries the SIWE marker but fails the grammar is
-//! reported as `marker only` (S08). Parsed messages keep their raw tokens so that
+//! reported as `marker only` (S08); its first-line authority is still checked (S01/S02, blocked
+//! when it cannot be read, [`check_marker_only`]). Parsed messages keep their raw tokens so that
 //! [`SiweMessage::to_text`] reproduces the source exactly (fuzz invariant, spec/09 §2.4).
 
 use super::address::{Address, AddressError, parse_address};
@@ -12,6 +13,7 @@ use crate::approval::Warning;
 use crate::policy::BrowserOrigin;
 
 const MARKER: &str = " wants you to sign in with your Ethereum account:";
+const MARKER_PHRASE: &str = " wants you to sign in with your Ethereum account";
 const MAX_URI_BYTES: usize = 2_048;
 const MAX_RESOURCES: usize = 64;
 
@@ -464,20 +466,53 @@ fn seconds_ms(seconds: i64) -> i128 {
     i128::from(seconds) * 1_000
 }
 
-/// The §9.4 warnings (S01–S07, S09) of a parsed message.
+/// The authority of a first line carrying the SIWE marker, read even when the rest of the
+/// grammar fails (spec/03 §9.4: S01/S02 still apply to marker-only messages).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SiweAuthority {
+    /// `https` or `http` (`https` when absent).
+    pub scheme: String,
+    /// Lowercased host.
+    pub host: String,
+    /// Explicit port.
+    pub port: Option<u16>,
+    /// Whether the authority has userinfo (S02).
+    pub has_userinfo: bool,
+}
+
+/// The authority before ` wants you to sign in with your Ethereum account` on the first line;
+/// `None` without the marker or when the text before it is not a valid `[scheme "://"]`
+/// authority (the caller then blocks with S01).
 #[must_use]
-pub fn check_siwe(message: &SiweMessage, context: &SiweContext<'_>) -> Vec<Warning> {
+pub fn marker_authority(text: &str) -> Option<SiweAuthority> {
+    let first_line = text.split('\n').next()?;
+    let (head, _) = first_line.split_once(MARKER_PHRASE)?;
+    let (scheme, domain) = match head.split_once("://") {
+        Some((scheme, domain)) if scheme == "https" || scheme == "http" => (scheme, domain),
+        Some(_) => return None,
+        None => ("https", head),
+    };
+    let (host, port, has_userinfo) = parse_authority(domain)?;
+    Some(SiweAuthority {
+        scheme: scheme.to_owned(),
+        host,
+        port,
+        has_userinfo,
+    })
+}
+
+/// S01, S02 and S05 of an authority against the requesting site (`None` = the app: S01).
+fn domain_warnings(authority: &SiweAuthority, origin: Option<&BrowserOrigin>) -> Vec<Warning> {
     let mut warnings = Vec::new();
-    let now = now_ms_i128(context.now_unix_ms);
-    match context.origin {
+    match origin {
         Some(origin) => {
-            if message.domain_host != origin.host() {
+            if authority.host != origin.host() {
                 warnings.push(risk::warning(S01, None));
             }
-            if message.scheme != origin.scheme() || message.has_userinfo {
+            if authority.scheme != origin.scheme() || authority.has_userinfo {
                 warnings.push(risk::warning(S02, None));
             }
-            if let Some(port) = message.domain_port
+            if let Some(port) = authority.port
                 && port != origin.effective_port()
             {
                 warnings.push(risk::warning(S05, None));
@@ -485,6 +520,37 @@ pub fn check_siwe(message: &SiweMessage, context: &SiweContext<'_>) -> Vec<Warni
         }
         None => warnings.push(risk::warning(S01, None)),
     }
+    warnings
+}
+
+/// The warnings of a marker-only message (`siwe_marker_only`): S08, plus the domain checks of
+/// its first-line authority, or S01 (blocked) when no authority can be read.
+#[must_use]
+pub fn check_marker_only(text: &str, context: &SiweContext<'_>) -> Vec<Warning> {
+    let mut warnings = vec![marker_only_warning()];
+    match marker_authority(text) {
+        Some(authority) => warnings.extend(domain_warnings(&authority, context.origin)),
+        None => warnings.push(risk::warning(
+            S01,
+            Some("SIWE 형식의 첫 줄에서 도메인을 읽을 수 없습니다"),
+        )),
+    }
+    warnings
+}
+
+/// The §9.4 warnings (S01–S07, S09) of a parsed message.
+#[must_use]
+pub fn check_siwe(message: &SiweMessage, context: &SiweContext<'_>) -> Vec<Warning> {
+    let now = now_ms_i128(context.now_unix_ms);
+    let mut warnings = domain_warnings(
+        &SiweAuthority {
+            scheme: message.scheme.clone(),
+            host: message.domain_host.clone(),
+            port: message.domain_port,
+            has_userinfo: message.has_userinfo,
+        },
+        context.origin,
+    );
     let checksum = parse_address(&message.address_text);
     if checksum == Err(AddressError::BadChecksum) || message.address != *context.account {
         warnings.push(risk::warning(S03, None));

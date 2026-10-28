@@ -72,12 +72,15 @@ pub struct DecodedTx {
 }
 
 impl DecodedCall {
-    /// Whether this call or any inner call is uninterpreted (E12).
+    /// Whether this call or any inner call is uninterpreted (E12). A multicall without inner
+    /// calls counts as uninterpreted: its effect is not described by any interpreted call.
     #[must_use]
     pub fn has_uninterpreted(&self) -> bool {
         match self {
             Self::Uninterpreted { .. } => true,
-            Self::Multicall { inner, .. } => inner.iter().any(Self::has_uninterpreted),
+            Self::Multicall { inner, .. } => {
+                inner.is_empty() || inner.iter().any(Self::has_uninterpreted)
+            }
             Self::NativeTransfer | Self::Known { .. } => false,
         }
     }
@@ -165,7 +168,16 @@ fn decode_level(
     allow_multicall: bool,
 ) -> DecodedCall {
     if data.is_empty() {
-        return DecodedCall::NativeTransfer;
+        // Only the top level is a plain native transfer; an empty inner multicall entry is a
+        // call to `to` with no data (fallback/receive), never "보내기" (E12).
+        return if allow_multicall {
+            DecodedCall::NativeTransfer
+        } else {
+            DecodedCall::Uninterpreted {
+                selector: None,
+                label: None,
+            }
+        };
     }
     let Some((selector, params)) = data.split_first_chunk::<4>() else {
         return DecodedCall::Uninterpreted {
@@ -567,5 +579,11 @@ mod tests {
         };
         assert!(nested.has_uninterpreted());
         assert!(!DecodedCall::NativeTransfer.has_uninterpreted());
+        let empty = DecodedCall::Multicall {
+            kind: "multicall",
+            head: Vec::new(),
+            inner: Vec::new(),
+        };
+        assert!(empty.has_uninterpreted());
     }
 }

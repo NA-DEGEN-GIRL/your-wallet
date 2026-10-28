@@ -22,7 +22,8 @@ use yw_core::evm::fee::{FeeCaps, Fees, GasEstimate, plan_gas_limit};
 use yw_core::evm::risk::{self, request_risk};
 use yw_core::evm::simulate::{
     ApprovalKindEvm, AssetId, EIP7708_SYSTEM, ERC7528_NATIVE, SimBlock, SimCall, SimCallError,
-    SimLog, SimOutcome, SimResult, SimStatus, TransportKind, interpret, simulate_request,
+    SimLog, SimOutcome, SimResult, SimStatus, TransportKind, interpret, is_verified_asset,
+    sim_digest, simulate_request,
 };
 use yw_core::evm::tx::{AccessListItem, Eip1559Tx};
 use yw_core::vault::EvmKeySource;
@@ -287,16 +288,18 @@ fn v09_diff_classes() {
         delta(AssetId::Token(weth), None),
         Some(Delta::In(U256::from_u64(6)))
     );
-    // Sends come before receipts.
-    let first_in = diff
-        .changes
-        .iter()
-        .position(|c| matches!(c.delta, Some(Delta::In(_))))
-        .unwrap();
+    // Registry/native rows first (WETH), then the rest; sends before receipts in each group.
+    let rank = |c: &yw_core::evm::simulate::AssetChange| {
+        let unverified = !is_verified_asset(&chain, &c.asset, c.token_id.as_ref());
+        u8::from(unverified) * 2 + u8::from(matches!(c.delta, Some(Delta::In(_))))
+    };
+    assert_eq!(diff.changes[0].asset, AssetId::Token(weth));
+    assert!(diff.changes.windows(2).all(|w| rank(&w[0]) <= rank(&w[1])));
+    // The WETH unwrap is a balance change, not a transfer to the WETH contract (no E18 row).
     assert!(
-        diff.changes[..first_in]
+        diff.transfers
             .iter()
-            .all(|c| matches!(c.delta, Some(Delta::Out(_))))
+            .all(|row| row.to != weth || row.asset != AssetId::Token(weth))
     );
     let kinds: Vec<ApprovalKindEvm> = diff.approvals.iter().map(|change| change.kind).collect();
     assert_eq!(
@@ -830,7 +833,7 @@ fn v17_r8_unlimited_approval_without_logs() {
     let labels = self::labels(&draft);
     assert!(labels.contains(&"E14".to_owned()), "{labels:?}");
     assert!(!labels.contains(&"E13".to_owned()), "{labels:?}");
-    // Finite approval above the balance: E20 with the balance note.
+    // Finite approval above the balance: effectively unlimited (E14 with the balance note).
     let finite = tx(
         TOKEN,
         0,
@@ -856,13 +859,14 @@ fn v17_r8_unlimited_approval_without_logs() {
         Vec::new(),
     )
     .unwrap();
-    let e20 = draft
+    let e14 = draft
         .display
         .warnings
         .iter()
-        .find(|w| w.rule == risk::E20)
+        .find(|w| w.rule == risk::E14)
         .unwrap();
-    assert!(e20.text.ends_with("잔액보다 큰 승인"));
+    assert!(e14.text.ends_with("잔액보다 큰 승인 — 사실상 무제한"));
+    assert!(!self::labels(&draft).contains(&"E20".to_owned()));
     // Revocation: E30 (info). ApprovalForAll(true): E15. EOA operator: E16.
     let revoke = tx(
         TOKEN,
@@ -1231,9 +1235,504 @@ fn x20_token_symbol_is_escaped() {
     )
     .unwrap();
     assert!(draft.display.validate().is_ok());
+    // C11: RPC-supplied decimals are never trusted alone — the raw integer is shown too.
     assert!(
-        draft.display.title.contains("1 US[U+202E]DC (미확인)"),
+        draft
+            .display
+            .title
+            .contains("1 US[U+202E]DC (미확인 · 원시 단위 1,000,000)"),
         "{}",
         draft.display.title
     );
+}
+
+// ------------------------------------------------------------ review fixes (adversarial)
+
+fn site() -> Fallible<ApprovalOrigin> {
+    Ok(ApprovalOrigin::Site(
+        yw_core::policy::BrowserOrigin::parse("https://app.example").ok_or("origin")?,
+    ))
+}
+
+fn nft_transfer(token: Address, from: Address, to: Address, id: u64) -> SimLog {
+    log(
+        token,
+        vec![
+            TOPIC_TRANSFER,
+            pad_address(&from),
+            pad_address(&to),
+            uword(id),
+        ],
+        vec![],
+    )
+}
+
+fn sepolia_usdc() -> Address {
+    sepolia().tokens[1].address
+}
+
+/// C3: a drain that sends real assets and "returns" a fake token or an NFT must not look like a
+/// fair trade: only native/registry receipts count (E23), and the pairing is high risk (E40).
+#[test]
+#[expect(clippy::too_many_lines, reason = "table-driven test")]
+fn c3_fake_incoming_assets_do_not_offset_a_drain() {
+    let chain = sepolia();
+    let drain = tx(OTHER, 5, vec![1, 2, 3, 4]);
+    let paid = native(ERC7528_NATIVE, USER, OTHER, 5);
+    // Fake ERC-20 "receipt" emitted by an arbitrary contract.
+    let draft = try_request(
+        &chain,
+        &drain,
+        &ok(vec![
+            paid.clone(),
+            transfer(TOKEN, OTHER, USER, U256::from_u64(1_000)),
+        ]),
+        site().unwrap(),
+        &facts(),
+        Vec::new(),
+    )
+    .unwrap();
+    let labels = labels(&draft);
+    assert!(labels.contains(&"E40".to_owned()), "{labels:?}");
+    let e23 = draft
+        .display
+        .warnings
+        .iter()
+        .find(|w| w.rule == risk::E23)
+        .unwrap();
+    assert!(
+        e23.text
+            .ends_with("받는 자산은 등록되지 않은 토큰·NFT뿐입니다")
+    );
+    assert_eq!(draft.display.risk, RiskLevel::High);
+    let received: Vec<&str> = draft
+        .display
+        .fields
+        .iter()
+        .filter(|f| f.key == yw_core::approval::FieldKey::RECEIVED)
+        .map(|f| f.value.as_str())
+        .collect();
+    assert_eq!(received.len(), 1);
+    assert!(received[0].contains("(미확인"), "{received:?}");
+    // An NFT "receipt": E40, E33 and the row is marked (미확인).
+    let draft = try_request(
+        &chain,
+        &drain,
+        &ok(vec![paid.clone(), nft_transfer(NFT, OTHER, USER, 9)]),
+        site().unwrap(),
+        &facts(),
+        Vec::new(),
+    )
+    .unwrap();
+    let labels = self::labels(&draft);
+    for rule in ["E23", "E33", "E40"] {
+        assert!(labels.contains(&rule.to_owned()), "{rule}: {labels:?}");
+    }
+    assert!(draft.display.fields.iter().any(|f| {
+        f.key == yw_core::approval::FieldKey::RECEIVED
+            && f.value.starts_with("NFT #9")
+            && f.value.ends_with("(미확인)")
+    }));
+    // A registered token outflow paired with a fake receipt is also E40 (app origin: no E23).
+    let usdc = sepolia_usdc();
+    let send_usdc = tx(usdc, 0, vec![1, 2, 3, 4]);
+    let draft = try_request(
+        &chain,
+        &send_usdc,
+        &ok(vec![
+            transfer(usdc, USER, OTHER, U256::from_u64(10)),
+            transfer(TOKEN, OTHER, USER, U256::from_u64(10)),
+        ]),
+        ApprovalOrigin::App,
+        &facts(),
+        Vec::new(),
+    )
+    .unwrap();
+    let labels = self::labels(&draft);
+    assert!(labels.contains(&"E40".to_owned()), "{labels:?}");
+    assert!(!labels.contains(&"E23".to_owned()), "{labels:?}");
+    // A registered receipt counts: no E23, no E40.
+    let draft = try_request(
+        &chain,
+        &drain,
+        &ok(vec![paid.clone(), transfer(usdc, OTHER, USER, U256::ONE)]),
+        site().unwrap(),
+        &facts(),
+        Vec::new(),
+    )
+    .unwrap();
+    let labels = self::labels(&draft);
+    assert!(
+        !labels.contains(&"E23".to_owned()) && !labels.contains(&"E40".to_owned()),
+        "{labels:?}"
+    );
+    // Unregistered outflow and unregistered receipt (a token swap between unknown tokens):
+    // E23 for the site, no E40.
+    let draft = try_request(
+        &chain,
+        &tx(OTHER, 0, vec![1, 2, 3, 4]),
+        &ok(vec![
+            transfer(TOKEN, USER, OTHER, U256::ONE),
+            transfer(MULTI, OTHER, USER, U256::ONE),
+        ]),
+        site().unwrap(),
+        &facts(),
+        Vec::new(),
+    )
+    .unwrap();
+    let labels = self::labels(&draft);
+    assert!(labels.contains(&"E23".to_owned()), "{labels:?}");
+    assert!(!labels.contains(&"E40".to_owned()), "{labels:?}");
+}
+
+/// C3/R5: `multicall([])` and an empty inner call are E12, never a native transfer.
+#[test]
+fn c3_empty_multicall_and_empty_inner_call_are_e12() {
+    let chain = sepolia();
+    let empty = tx(
+        OTHER,
+        0,
+        encode_call(
+            yw_core::evm::abi::SEL_MULTICALL,
+            &[AbiValue::Array(Vec::new())],
+        ),
+    );
+    let draft = try_request(
+        &chain,
+        &empty,
+        &ok(vec![]),
+        ApprovalOrigin::App,
+        &facts(),
+        Vec::new(),
+    )
+    .unwrap();
+    let e12 = draft
+        .display
+        .warnings
+        .iter()
+        .find(|w| w.rule == risk::E12)
+        .unwrap();
+    assert!(e12.text.ends_with("내부 호출이 없는 묶음 호출"));
+    assert_eq!(draft.display.risk, RiskLevel::High);
+    let inner_empty = tx(
+        OTHER,
+        0,
+        encode_call(
+            yw_core::evm::abi::SEL_MULTICALL,
+            &[AbiValue::Array(vec![AbiValue::Bytes(Vec::new())])],
+        ),
+    );
+    let decoded = decode_call(&chain, &inner_empty.to, &inner_empty.data);
+    assert!(decoded.has_uninterpreted());
+    let draft = try_request(
+        &chain,
+        &inner_empty,
+        &ok(vec![]),
+        ApprovalOrigin::App,
+        &facts(),
+        Vec::new(),
+    )
+    .unwrap();
+    assert!(labels(&draft).contains(&"E12".to_owned()));
+    let first_call = draft
+        .display
+        .fields
+        .iter()
+        .find(|f| f.sub_label == "calls[0]")
+        .unwrap();
+    assert_eq!(first_call.value, "해석되지 않은 컨트랙트 호출");
+}
+
+/// C7: allowances of at least 2^128, or above the known balance, are effectively unlimited.
+#[test]
+fn c7_effectively_unlimited_approvals_are_e14() {
+    let chain = sepolia();
+    let two_128 = {
+        let mut bytes = [0_u8; 32];
+        bytes[15] = 1;
+        U256::from_be_bytes(bytes)
+    };
+    let below = two_128.checked_sub(U256::ONE).unwrap();
+    let approve = |amount: U256| {
+        tx(
+            OTHER,
+            0,
+            encode_call(
+                SEL_APPROVE,
+                &[AbiValue::Address(SPENDER), AbiValue::Uint(amount)],
+            ),
+        )
+    };
+    let no_balance = ChainFacts {
+        balances: Vec::new(),
+        ..facts()
+    };
+    let rules_for = |amount: U256, facts: &ChainFacts| {
+        let draft = try_request(
+            &chain,
+            &approve(amount),
+            &SimOutcome::Malformed,
+            ApprovalOrigin::App,
+            facts,
+            Vec::new(),
+        )
+        .unwrap();
+        draft.display.warnings
+    };
+    let e14 = |warnings: &[Warning]| warnings.iter().find(|w| w.rule == risk::E14).cloned();
+    assert!(
+        e14(&rules_for(two_128, &no_balance))
+            .unwrap()
+            .text
+            .ends_with("2^128 이상의 승인 — 사실상 무제한")
+    );
+    assert!(e14(&rules_for(U256::MAX, &no_balance)).is_some());
+    let finite = rules_for(below, &no_balance);
+    assert!(e14(&finite).is_none());
+    assert!(finite.iter().any(|w| w.rule == risk::E20));
+    // The amount argument and the approval row say so.
+    let approval_log = log(
+        OTHER,
+        vec![TOPIC_APPROVAL, pad_address(&USER), pad_address(&SPENDER)],
+        word(two_128).to_vec(),
+    );
+    let draft = try_request(
+        &chain,
+        &approve(two_128),
+        &ok(vec![approval_log]),
+        ApprovalOrigin::App,
+        &no_balance,
+        Vec::new(),
+    )
+    .unwrap();
+    let marked = draft
+        .display
+        .fields
+        .iter()
+        .filter(|f| f.value.ends_with("(사실상 무제한)"))
+        .count();
+    assert_eq!(marked, 2, "{:?}", draft.display.fields);
+    // Permit2 approve: same rule for uint160 amounts.
+    let permit2 = chain
+        .contract_with_role(yw_core::evm::chain::ContractRole::Permit2)
+        .unwrap()
+        .address;
+    let permit2_approve = tx(
+        permit2,
+        0,
+        encode_call(
+            yw_core::evm::abi::SEL_PERMIT2_APPROVE,
+            &[
+                AbiValue::Address(TOKEN),
+                AbiValue::Address(SPENDER),
+                AbiValue::Uint(two_128),
+                AbiValue::Uint(U256::from_u64(TIMESTAMP + 86_400)),
+            ],
+        ),
+    );
+    let draft = try_request(
+        &chain,
+        &permit2_approve,
+        &SimOutcome::Malformed,
+        ApprovalOrigin::App,
+        &no_balance,
+        Vec::new(),
+    )
+    .unwrap();
+    assert!(
+        labels(&draft).contains(&"E14".to_owned()),
+        "{:?}",
+        labels(&draft)
+    );
+}
+
+/// A failed `eth_getCode` must not hide an EOA spender (E39 high).
+#[test]
+fn getcode_failure_is_e39() {
+    let chain = sepolia();
+    let approve = tx(
+        TOKEN,
+        0,
+        encode_call(
+            SEL_APPROVE,
+            &[AbiValue::Address(OTHER), AbiValue::Uint(U256::from_u64(5))],
+        ),
+    );
+    let unknown = ChainFacts {
+        code: vec![(OTHER, CodeKind::Unknown)],
+        ..facts()
+    };
+    let draft = try_request(
+        &chain,
+        &approve,
+        &SimOutcome::Malformed,
+        ApprovalOrigin::App,
+        &unknown,
+        Vec::new(),
+    )
+    .unwrap();
+    let labels = labels(&draft);
+    assert!(labels.contains(&"E39".to_owned()), "{labels:?}");
+    assert_eq!(draft.display.risk, RiskLevel::High);
+    // A registry spender needs no lookup.
+    let permit2 = chain
+        .contract_with_role(yw_core::evm::chain::ContractRole::Permit2)
+        .unwrap()
+        .address;
+    let registry = tx(
+        TOKEN,
+        0,
+        encode_call(
+            SEL_APPROVE,
+            &[
+                AbiValue::Address(permit2),
+                AbiValue::Uint(U256::from_u64(5)),
+            ],
+        ),
+    );
+    let unknown_registry = ChainFacts {
+        code: vec![(permit2, CodeKind::Unknown)],
+        ..facts()
+    };
+    let labels = self::labels(
+        &try_request(
+            &chain,
+            &registry,
+            &SimOutcome::Malformed,
+            ApprovalOrigin::App,
+            &unknown_registry,
+            Vec::new(),
+        )
+        .unwrap(),
+    );
+    assert!(!labels.contains(&"E39".to_owned()), "{labels:?}");
+}
+
+/// C9: unwrapping WETH (Withdrawal log) is not a transfer to the token contract (no E18).
+#[test]
+fn c9_weth_unwrap_is_not_e18() {
+    let chain = sepolia();
+    let weth = chain.weth().unwrap().address;
+    let unwrap = tx(
+        weth,
+        0,
+        encode_call(
+            yw_core::evm::abi::SEL_WETH_WITHDRAW,
+            &[AbiValue::Uint(U256::from_u64(4))],
+        ),
+    );
+    let logs = vec![
+        log(
+            weth,
+            vec![TOPIC_WETH_WITHDRAWAL, pad_address(&USER)],
+            uword(4).to_vec(),
+        ),
+        native(ERC7528_NATIVE, weth, USER, 4),
+    ];
+    let draft = try_request(
+        &chain,
+        &unwrap,
+        &ok(logs),
+        site().unwrap(),
+        &facts(),
+        Vec::new(),
+    )
+    .unwrap();
+    let labels = labels(&draft);
+    assert!(!labels.contains(&"E18".to_owned()), "{labels:?}");
+    assert!(!labels.contains(&"E13".to_owned()), "{labels:?}");
+    assert_eq!(draft.display.risk, RiskLevel::Info, "{labels:?}");
+    // A real token transfer to the token contract itself is still E18.
+    let to_self = tx(
+        weth,
+        0,
+        yw_core::evm::abi::erc20_transfer_data(&weth, &U256::ONE),
+    );
+    let draft = try_request(
+        &chain,
+        &to_self,
+        &ok(vec![transfer(weth, USER, weth, U256::ONE)]),
+        ApprovalOrigin::App,
+        &facts(),
+        Vec::new(),
+    )
+    .unwrap();
+    assert!(self::labels(&draft).contains(&"E18".to_owned()));
+}
+
+/// C8 (diff): junk Transfer logs cannot push the real outgoing row or a registry approval past
+/// the 64-row limit.
+#[test]
+fn c8_junk_rows_do_not_hide_verified_rows() {
+    let chain = sepolia();
+    let usdc = sepolia_usdc();
+    let mut logs: Vec<SimLog> = (0..70_u8)
+        .map(|index| {
+            transfer(
+                Address::from_bytes([index.wrapping_add(0x40); 20]),
+                USER,
+                OTHER,
+                U256::ONE,
+            )
+        })
+        .collect();
+    logs.push(log(
+        usdc,
+        vec![TOPIC_APPROVAL, pad_address(&USER), pad_address(&SPENDER)],
+        word(U256::MAX).to_vec(),
+    ));
+    logs.push(native(ERC7528_NATIVE, USER, OTHER, 5));
+    let value_tx = tx(OTHER, 5, vec![1, 2, 3, 4]);
+    let result = interpret(&chain, &value_tx, &USER, &ok(logs.clone()), NOW);
+    let (verdict, diff, warnings) = simulated(&result);
+    assert_eq!(verdict, SimVerdict::Incomplete);
+    assert_eq!(warnings[0].rule, risk::E08);
+    assert_eq!(diff.changes[0].asset, AssetId::Native);
+    assert_eq!(diff.changes.len() + diff.approvals.len(), 64);
+    assert_eq!(diff.approvals.len(), 1);
+    assert_eq!(diff.approvals[0].asset, usdc);
+    assert_eq!(diff.omitted_rows, 8);
+    // The approval stays visible to the rules: E14 is raised.
+    let draft = try_request(
+        &chain,
+        &value_tx,
+        &ok(logs),
+        ApprovalOrigin::App,
+        &facts(),
+        Vec::new(),
+    )
+    .unwrap();
+    assert!(labels(&draft).contains(&"E14".to_owned()));
+}
+
+/// C15: the simulation digest binds the transaction it was run for.
+#[test]
+fn c15_sim_digest_binds_the_transaction() {
+    let block = block(
+        SimStatus::Success,
+        21_000,
+        vec![native(ERC7528_NATIVE, USER, OTHER, 5)],
+        None,
+    );
+    let first = tx(OTHER, 5, vec![]);
+    let mut second = first.clone();
+    second.nonce = 1;
+    assert_ne!(
+        sim_digest(&first, &block).unwrap(),
+        sim_digest(&second, &block).unwrap()
+    );
+    assert_eq!(
+        sim_digest(&first, &block).unwrap(),
+        sim_digest(&first.clone(), &block.clone()).unwrap()
+    );
+    let chain = sepolia();
+    let a = interpret(
+        &chain,
+        &first,
+        &USER,
+        &SimOutcome::Block(block.clone()),
+        NOW,
+    );
+    let b = interpret(&chain, &second, &USER, &SimOutcome::Block(block), NOW);
+    assert_ne!(a.binding(), b.binding());
 }

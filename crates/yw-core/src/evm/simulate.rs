@@ -49,6 +49,8 @@ pub const MAX_DIFF_ROWS: usize = 64;
 pub const MAX_CLOCK_SKEW_SECS: u64 = 300;
 /// Transcript domain of the simulation digest (spec/03 §6.5).
 pub const SIM_DIGEST_DOMAIN: &str = "your-wallet/v3/evm-simulation";
+/// Transcript version of the simulation digest (2: the transaction signing hash is bound).
+pub const SIM_DIGEST_VERSION: u16 = 2;
 
 /// Status of the simulated call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,6 +151,17 @@ pub enum AssetId {
     Native,
     /// A token contract (ERC-20/721/1155).
     Token(Address),
+}
+
+/// Whether a diff asset is verified: the native asset or a registry token (not an NFT id). Any
+/// contract can emit a Transfer log naming the user, so only verified assets count as received
+/// (E23/E40), lead the row order and are shown without "(미확인)" (spec/03 §6.4).
+#[must_use]
+pub fn is_verified_asset(chain: &ChainInfo, asset: &AssetId, token_id: Option<&U256>) -> bool {
+    match asset {
+        AssetId::Native => true,
+        AssetId::Token(token) => token_id.is_none() && chain.token(token).is_some(),
+    }
 }
 
 /// Net change of one asset for the signing account.
@@ -346,11 +359,12 @@ pub enum LogEvent {
 pub struct SimulationDiff {
     /// Block binding (number, parent hash, timestamp, base fee, digest).
     pub block: SimBinding,
-    /// Net asset changes: sends (and overflowed rows) first, then receipts.
+    /// Net asset changes: verified assets ([`is_verified_asset`]) first, then the rest; within
+    /// each group sends (and overflowed rows) first, then receipts.
     pub changes: Vec<AssetChange>,
     /// Approval changes.
     pub approvals: Vec<ApprovalChange>,
-    /// Transfers involving the signing account.
+    /// Transfers involving the signing account (a WETH `Withdrawal` is a balance change only).
     pub transfers: Vec<TransferRow>,
     /// Logs classified as "기타" (E32).
     pub other_events: u32,
@@ -510,14 +524,16 @@ pub fn simulate_request(id: u64, tx: &Eip1559Tx, from: &Address, chain_and_type:
     .into_bytes()
 }
 
-/// `sim_digest` of a block (spec/03 §6.5).
+/// `sim_digest` of a block simulated for `tx` (spec/03 §6.5, transcript version 2): the
+/// transaction's signing hash first, so a result can never be bound to another transaction.
 ///
 /// # Errors
 ///
 /// [`CodecError::LengthOverflow`] for fields longer than `u32::MAX` (impossible within limits).
-pub fn sim_digest(block: &SimBlock) -> Result<[u8; 32], CodecError> {
+pub fn sim_digest(tx: &Eip1559Tx, block: &SimBlock) -> Result<[u8; 32], CodecError> {
     let call = &block.call;
-    let mut transcript = Transcript::start_domain(SIM_DIGEST_DOMAIN, 1)?;
+    let mut transcript = Transcript::start_domain(SIM_DIGEST_DOMAIN, SIM_DIGEST_VERSION)?;
+    transcript.push_bytes(&tx.signing_hash())?;
     transcript.push_u64(block.number);
     transcript.push_bytes(&block.parent_hash)?;
     transcript.push_u64(block.timestamp);
@@ -876,8 +892,10 @@ impl DiffBuilder {
                 }
             }
             LogEvent::WethWithdrawal { token, src, wad } => {
+                // An unwrap burns the wrapped token: it changes the balance but is not a
+                // transfer to the token contract (no E18 row, spec/03 §6.4).
                 if *src == self.user {
-                    self.transfer(AssetId::Token(*token), None, *src, *token, *wad);
+                    self.add_sum((AssetId::Token(*token), None), *wad, false);
                 } else {
                     self.other();
                 }
@@ -1015,7 +1033,7 @@ fn interpret_block(
     {
         return none(SimNoneReason::TooLarge, "시뮬레이션 응답이 너무 큽니다");
     }
-    let Ok(digest) = sim_digest(block) else {
+    let Ok(digest) = sim_digest(tx, block) else {
         return none(SimNoneReason::TooLarge, "시뮬레이션 응답이 너무 큽니다");
     };
     let binding = SimBinding {
@@ -1130,32 +1148,41 @@ fn interpret_block(
         warnings.push(risk::warning(E07, Some(&cause)));
     }
 
-    // Asset rows: sends (and overflowed rows) first, then receipts.
-    let mut sends = Vec::new();
-    let mut receipts = Vec::new();
+    // Asset rows (spec/03 §6.4): native and registered tokens first (sends, then receipts), then
+    // every other token and NFT (sends, then receipts); overflowed rows count as sends. Any
+    // contract can emit Transfer logs naming the user, so unverified rows never push a verified
+    // row past the display limit.
+    let mut ranked: Vec<(u8, AssetChange)> = Vec::new();
     let mut overflow = false;
     for ((asset, token_id), received, sent) in &builder.sums {
-        let change = |delta| AssetChange {
-            asset: *asset,
-            token_id: *token_id,
-            delta,
-        };
-        if let (Some(received), Some(sent)) = (received, sent) {
+        let delta = if let (Some(received), Some(sent)) = (received, sent) {
             match Delta::from_sums(*received, *sent) {
-                Delta::Zero => {}
-                delta @ Delta::Out(_) => sends.push(change(Some(delta))),
-                delta @ Delta::In(_) => receipts.push(change(Some(delta))),
+                Delta::Zero => continue,
+                delta => Some(delta),
             }
         } else {
             overflow = true;
-            sends.push(change(None));
-        }
+            None
+        };
+        let unverified = !is_verified_asset(chain, asset, token_id.as_ref());
+        let incoming = matches!(delta, Some(Delta::In(_)));
+        ranked.push((
+            u8::from(unverified)
+                .saturating_mul(2)
+                .saturating_add(u8::from(incoming)),
+            AssetChange {
+                asset: *asset,
+                token_id: *token_id,
+                delta,
+            },
+        ));
     }
+    ranked.sort_by_key(|(rank, _)| *rank);
     if overflow {
         warnings.push(risk::warning(E09, Some("금액 합산이 범위를 넘었습니다")));
     }
-    let mut changes = sends;
-    changes.extend(receipts);
+    let verified_rows = ranked.iter().filter(|(rank, _)| *rank < 2).count();
+    let mut changes: Vec<AssetChange> = ranked.into_iter().map(|(_, change)| change).collect();
     let mut approvals: Vec<ApprovalChange> = builder
         .approvals
         .into_iter()
@@ -1163,13 +1190,25 @@ fn interpret_block(
         .collect();
     let total = changes.len().saturating_add(approvals.len());
     if total > MAX_DIFF_ROWS {
+        // Keep, in this order: verified asset rows, approvals of registered tokens, other
+        // approvals, unverified asset rows.
         let omitted = total.saturating_sub(MAX_DIFF_ROWS);
-        if changes.len() >= MAX_DIFF_ROWS {
-            changes.truncate(MAX_DIFF_ROWS);
-            approvals.clear();
-        } else {
-            approvals.truncate(MAX_DIFF_ROWS.saturating_sub(changes.len()));
+        let mut budget = MAX_DIFF_ROWS;
+        let keep_verified = verified_rows.min(budget);
+        budget = budget.saturating_sub(keep_verified);
+        let mut keep = vec![false; approvals.len()];
+        for registered in [true, false] {
+            for (slot, change) in keep.iter_mut().zip(&approvals) {
+                if budget > 0 && !*slot && chain.token(&change.asset).is_some() == registered {
+                    *slot = true;
+                    budget = budget.saturating_sub(1);
+                }
+            }
         }
+        let keep_unverified = changes.len().saturating_sub(verified_rows).min(budget);
+        changes.truncate(keep_verified.saturating_add(keep_unverified));
+        let mut flags = keep.into_iter();
+        approvals.retain(|_| flags.next().unwrap_or(false));
         diff.omitted_rows = u32::try_from(omitted).unwrap_or(u32::MAX);
         let cause = format!("표시 한도를 넘어 {omitted}행을 생략했습니다");
         warnings.push(risk::warning(E08, Some(&cause)));

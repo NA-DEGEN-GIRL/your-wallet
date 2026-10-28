@@ -8,18 +8,76 @@ pub use rules::*;
 
 use super::abi::AbiValue;
 use super::address::Address;
-use super::amount::U256;
+use super::amount::{Delta, U256};
 use super::chain::ChainInfo;
 use super::decode::DecodedCall;
 use super::eip712::{DecodedTypedData, KnownSchema, TdNode};
-use super::simulate::{ApprovalKindEvm, AssetId, LogEvent, SimResult};
+use super::simulate::{
+    ApprovalKindEvm, AssetChange, AssetId, LogEvent, SimResult, is_verified_asset,
+};
 use super::tx::Eip1559Tx;
-use crate::approval::{ApprovalOrigin, ChainFacts, CodeKind, Warning};
+use crate::approval::{ApprovalOrigin, ChainFacts, CodeKind, RuleId, Warning};
 
 const THIRTY_DAYS: u64 = 30 * 86_400;
 const ONE_DAY: u64 = 86_400;
 const HALF_YEAR: u64 = 180 * 86_400;
 const MAX_U48: u64 = (1 << 48) - 1;
+/// Allowances of at least `2^EFFECTIVELY_UNLIMITED_BITS` are treated as unlimited (E14).
+pub const EFFECTIVELY_UNLIMITED_BITS: u16 = 128;
+
+/// Why an allowance counts as unlimited (E14, spec/03 §10.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unlimited {
+    /// Exactly the type maximum.
+    Maximum,
+    /// At least 2^128.
+    Huge,
+    /// Above the signing account's known balance of the token.
+    AboveBalance,
+}
+
+impl Unlimited {
+    /// The E14 cause line (none for the exact maximum).
+    #[must_use]
+    pub const fn cause(self) -> Option<&'static str> {
+        match self {
+            Self::Maximum => None,
+            Self::Huge => Some("2^128 이상의 승인 — 사실상 무제한"),
+            Self::AboveBalance => Some("잔액보다 큰 승인 — 사실상 무제한"),
+        }
+    }
+}
+
+/// Whether an allowance is unlimited in effect: the type maximum, at least 2^128, or above the
+/// known balance.
+#[must_use]
+pub fn unlimited_allowance(amount: &U256, max: &U256, balance: Option<U256>) -> Option<Unlimited> {
+    if amount == max {
+        Some(Unlimited::Maximum)
+    } else if !amount.fits_bits(EFFECTIVELY_UNLIMITED_BITS) {
+        Some(Unlimited::Huge)
+    } else if balance.is_some_and(|balance| *amount > balance) {
+        Some(Unlimited::AboveBalance)
+    } else {
+        None
+    }
+}
+
+/// Whether a registry-external token claims a registry or native symbol (E19/T20).
+fn claims_known_symbol(chain: &ChainInfo, facts: &ChainFacts, token: &Address) -> bool {
+    if chain.token(token).is_some() {
+        return false;
+    }
+    let Some(symbol) = facts.token(token).and_then(|meta| meta.symbol.as_deref()) else {
+        return false;
+    };
+    let lowered = symbol.to_ascii_lowercase();
+    chain
+        .tokens
+        .iter()
+        .any(|known| known.symbol.to_ascii_lowercase() == lowered)
+        || chain.native_symbol.to_ascii_lowercase() == lowered
+}
 
 /// Inputs of the transaction rules.
 #[derive(Clone, Copy, Debug)]
@@ -263,6 +321,23 @@ fn r6_confirmed(call: &DecodedCall, input: &TxRiskInput<'_>, events: &[LogEvent]
     }
 }
 
+/// Unregistered NFT collections of the diff (E33 only: no symbol/decimals rules).
+fn involved_collections(input: &TxRiskInput<'_>) -> Vec<Address> {
+    let mut collections = Vec::new();
+    if let Some(diff) = input.sim.diff() {
+        for change in &diff.changes {
+            if let AssetId::Token(token) = change.asset
+                && change.token_id.is_some()
+                && input.chain.token(&token).is_none()
+                && !collections.contains(&token)
+            {
+                collections.push(token);
+            }
+        }
+    }
+    collections
+}
+
 fn involved_tokens(input: &TxRiskInput<'_>) -> Vec<Address> {
     let mut tokens = Vec::new();
     let mut push = |token: Address| {
@@ -314,8 +389,13 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
 
     // E12
     if input.call.has_uninterpreted() {
-        let cause = matches!(input.call, DecodedCall::Multicall { .. })
-            .then_some("해석되지 않은 호출 포함");
+        let cause = match input.call {
+            DecodedCall::Multicall { inner, .. } if inner.is_empty() => {
+                Some("내부 호출이 없는 묶음 호출")
+            }
+            DecodedCall::Multicall { .. } => Some("해석되지 않은 호출 포함"),
+            _ => None,
+        };
         warnings.push(warning(E12, cause));
     }
     // E13 (R4/R6, only with usable logs)
@@ -336,18 +416,21 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
             ));
         }
     }
-    // Approvals: E14, E15, E16, E20, E21, E22, E30
+    // Approvals: E14, E15, E16, E20, E21, E22, E30, E39
     let now = now_secs(input.now_unix_ms);
+    let allowance = |amount: &U256, max: &U256, token: &Address| match unlimited_allowance(
+        amount,
+        max,
+        facts.balance(token),
+    ) {
+        Some(unlimited) => warning(E14, unlimited.cause()),
+        None => warning(E20, None),
+    };
     for intent in approval_intents(input) {
         let revocation = match intent.kind {
             ApprovalKindEvm::Erc20 { amount } => {
-                if amount == U256::MAX {
-                    warnings.push(warning(E14, None));
-                } else if !amount.is_zero() {
-                    let over_balance = facts
-                        .balance(&intent.token)
-                        .is_some_and(|balance| amount > balance);
-                    warnings.push(warning(E20, over_balance.then_some("잔액보다 큰 승인")));
+                if !amount.is_zero() {
+                    warnings.push(allowance(&amount, &U256::MAX, &intent.token));
                 }
                 amount.is_zero()
             }
@@ -364,10 +447,8 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
                 !approved
             }
             ApprovalKindEvm::Permit2 { amount, expiration } => {
-                if amount == U256::MAX_U160 {
-                    warnings.push(warning(E14, None));
-                } else if !amount.is_zero() {
-                    warnings.push(warning(E20, None));
+                if !amount.is_zero() {
+                    warnings.push(allowance(&amount, &U256::MAX_U160, &intent.token));
                 }
                 if expiration == MAX_U48 || expiration > now.saturating_add(THIRTY_DAYS) {
                     warnings.push(warning(E22, None));
@@ -380,19 +461,30 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
             warnings.push(warning(E30, None));
             continue;
         }
+        let registered = chain.label(&intent.spender).is_some();
         match facts.code_of(&intent.spender) {
             Some(CodeKind::Eoa | CodeKind::Delegated7702 { .. }) => {
                 warnings.push(warning(E16, None));
             }
-            Some(CodeKind::Contract) if chain.label(&intent.spender).is_none() => {
+            Some(CodeKind::Contract) if !registered => {
                 warnings.push(warning(E21, None));
+            }
+            // A failed lookup must not hide an EOA spender (fail closed, spec/03 §8.5).
+            Some(CodeKind::Unknown) if !registered => {
+                warnings.push(warning(E39, None));
             }
             _ => {}
         }
     }
     // E17
-    if facts.account_code != CodeKind::Eoa {
-        warnings.push(warning(E17, None));
+    match facts.account_code {
+        CodeKind::Eoa => {}
+        CodeKind::Unknown => {
+            warnings.push(warning(E17, Some("서명 계정의 코드를 확인할 수 없습니다")));
+        }
+        CodeKind::Contract | CodeKind::Delegated7702 { .. } => {
+            warnings.push(warning(E17, None));
+        }
     }
     // E18
     let mut zero_or_self = !tx.value.is_zero() && tx.data.is_empty() && is_zero(&tx.to);
@@ -421,39 +513,41 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
             continue;
         }
         let meta = facts.token(&token);
-        let symbol = meta.and_then(|meta| meta.symbol.as_deref());
-        if let Some(symbol) = symbol {
-            let lowered = symbol.to_ascii_lowercase();
-            if chain
-                .tokens
-                .iter()
-                .any(|known| known.symbol.to_ascii_lowercase() == lowered)
-                || chain.native_symbol.to_ascii_lowercase() == lowered
-            {
-                warnings.push(warning(E19, None));
-            }
-        } else {
+        if meta.and_then(|meta| meta.symbol.as_deref()).is_none() {
             warnings.push(warning(E26, None));
+        } else if claims_known_symbol(chain, facts, &token) {
+            warnings.push(warning(E19, None));
         }
         if meta.and_then(|meta| meta.decimals).is_none() {
             warnings.push(warning(E25, None));
         }
         warnings.push(warning(E33, None));
     }
-    // E23
-    if matches!(input.origin, ApprovalOrigin::Site(_))
-        && let Some(diff) = input.sim.diff()
-    {
-        let sends = diff
+    if !involved_collections(input).is_empty() {
+        warnings.push(warning(E33, None));
+    }
+    // E23, E40: only the native asset and registry tokens count as received — any contract can
+    // emit a Transfer log naming the user (spec/03 §6.4).
+    if let Some(diff) = input.sim.diff() {
+        let verified = |change: &AssetChange| {
+            is_verified_asset(chain, &change.asset, change.token_id.as_ref())
+        };
+        let sending = |change: &&AssetChange| matches!(change.delta, Some(Delta::Out(_)) | None);
+        let receiving = |change: &&AssetChange| matches!(change.delta, Some(Delta::In(_)));
+        let sends = diff.changes.iter().any(|change| sending(&change));
+        let verified_sends = diff.changes.iter().filter(sending).any(&verified);
+        let verified_receipts = diff.changes.iter().filter(receiving).any(&verified);
+        let unverified_receipts = diff
             .changes
             .iter()
-            .any(|change| matches!(change.delta, Some(super::amount::Delta::Out(_)) | None));
-        let receives = diff
-            .changes
-            .iter()
-            .any(|change| matches!(change.delta, Some(super::amount::Delta::In(_))));
-        if sends && !receives {
-            warnings.push(warning(E23, None));
+            .filter(receiving)
+            .any(|change| !verified(change));
+        if matches!(input.origin, ApprovalOrigin::Site(_)) && sends && !verified_receipts {
+            let cause = unverified_receipts.then_some("받는 자산은 등록되지 않은 토큰·NFT뿐입니다");
+            warnings.push(warning(E23, cause));
+        }
+        if verified_sends && unverified_receipts {
+            warnings.push(warning(E40, None));
         }
     }
     // E24
@@ -519,16 +613,88 @@ fn deadline_t12(deadline: Option<U256>, now: u64, zero_is_none: bool) -> bool {
     }
 }
 
-fn spender_risky(facts: &ChainFacts, spender: Option<Address>) -> bool {
-    spender.is_some_and(|spender| {
-        matches!(
-            facts.code_of(&spender),
-            Some(CodeKind::Eoa | CodeKind::Delegated7702 { .. })
-        )
-    })
+/// T09 for an EOA/delegated spender, T18 when its classification failed (fail closed).
+fn spender_rule(chain: &ChainInfo, facts: &ChainFacts, spender: Option<Address>) -> Option<RuleId> {
+    let spender = spender?;
+    match facts.code_of(&spender) {
+        Some(CodeKind::Eoa | CodeKind::Delegated7702 { .. }) => Some(T09),
+        Some(CodeKind::Unknown) if chain.label(&spender).is_none() => Some(T18),
+        _ => None,
+    }
 }
 
-/// Typed-data rules T03–T15 and T17 (T16 is added by the display builder).
+/// Seaport item types counted as "received" (T08): native (0) and registry ERC-20 (1).
+fn seaport_item_verified(chain: &ChainInfo, item: &TdNode) -> bool {
+    match item
+        .field("itemType")
+        .and_then(TdNode::uint)
+        .and_then(U256::to_u64)
+    {
+        Some(0) => true,
+        Some(1) => item
+            .field("token")
+            .and_then(TdNode::address)
+            .is_some_and(|token| chain.token(&token).is_some()),
+        _ => false,
+    }
+}
+
+/// ERC-20 tokens named by a recognized typed-data schema (T20 candidates).
+fn typed_tokens(typed: &DecodedTypedData) -> Vec<Address> {
+    let root = &typed.root;
+    let mut tokens = Vec::new();
+    let mut push = |token: Option<Address>| {
+        if let Some(token) = token
+            && !tokens.contains(&token)
+        {
+            tokens.push(token);
+        }
+    };
+    let token_of = |node: &TdNode| node.field("token").and_then(TdNode::address);
+    let items = |name: &str| -> Vec<&TdNode> {
+        match root.field(name) {
+            Some(TdNode::Array(items)) => items.iter().collect(),
+            Some(node) => vec![node],
+            None => Vec::new(),
+        }
+    };
+    match &typed.schema {
+        Some(KnownSchema::Eip2612Permit | KnownSchema::DaiPermit) => {
+            push(typed.domain.verifying_contract);
+        }
+        Some(KnownSchema::Permit2Single | KnownSchema::Permit2Batch) => {
+            for detail in items("details") {
+                push(token_of(detail));
+            }
+        }
+        Some(
+            KnownSchema::Permit2Transfer
+            | KnownSchema::Permit2BatchTransfer
+            | KnownSchema::Permit2WitnessTransfer { .. }
+            | KnownSchema::Permit2BatchWitnessTransfer { .. },
+        ) => {
+            for permitted in items("permitted") {
+                push(token_of(permitted));
+            }
+        }
+        Some(KnownSchema::SeaportOrder) => {
+            for item in items("offer").into_iter().chain(items("consideration")) {
+                let fungible = item
+                    .field("itemType")
+                    .and_then(TdNode::uint)
+                    .and_then(U256::to_u64)
+                    == Some(1);
+                if fungible {
+                    push(token_of(item));
+                }
+            }
+        }
+        None => {}
+    }
+    tokens
+}
+
+/// Typed-data rules T03–T15 and T17–T20 (T16 is added by the display builder).
 #[must_use]
 #[expect(
     clippy::too_many_lines,
@@ -542,6 +708,9 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
     let account = *input.account;
     let field_address = |node: &TdNode, name: &str| node.field(name).and_then(TdNode::address);
     let field_uint = |node: &TdNode, name: &str| node.field(name).and_then(TdNode::uint);
+    let spender = |address: Option<Address>| {
+        spender_rule(input.chain, input.facts, address).map(|rule| warning(rule, None))
+    };
 
     if typed.domain.chain_id.is_none() {
         warnings.push(warning(T03, None));
@@ -554,9 +723,7 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
                 if field_address(root, "owner") != Some(account) {
                     warnings.push(warning(T07, None));
                 }
-                if spender_risky(input.facts, field_address(root, "spender")) {
-                    warnings.push(warning(T09, None));
-                }
+                warnings.extend(spender(field_address(root, "spender")));
                 if deadline_t12(field_uint(root, "deadline"), now, false) {
                     warnings.push(warning(T12, None));
                 }
@@ -571,18 +738,14 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
                 if field_address(root, "holder") != Some(account) {
                     warnings.push(warning(T07, None));
                 }
-                if spender_risky(input.facts, field_address(root, "spender")) {
-                    warnings.push(warning(T09, None));
-                }
+                warnings.extend(spender(field_address(root, "spender")));
                 if allowed == Some(true) && deadline_t12(field_uint(root, "expiry"), now, true) {
                     warnings.push(warning(T12, None));
                 }
             }
             KnownSchema::Permit2Single | KnownSchema::Permit2Batch => {
                 warnings.push(warning(T05, None));
-                if spender_risky(input.facts, field_address(root, "spender")) {
-                    warnings.push(warning(T09, None));
-                }
+                warnings.extend(spender(field_address(root, "spender")));
                 let details: Vec<&TdNode> = match root.field("details") {
                     Some(TdNode::Array(items)) => items.iter().collect(),
                     Some(node) => vec![node],
@@ -620,26 +783,40 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
                         | KnownSchema::Permit2BatchWitnessTransfer { .. }
                 );
                 warnings.push(warning(if witness { T06 } else { T05 }, None));
-                if spender_risky(input.facts, field_address(root, "spender")) {
-                    warnings.push(warning(T09, None));
-                }
+                warnings.extend(spender(field_address(root, "spender")));
                 if deadline_t12(field_uint(root, "deadline"), now, false) {
                     warnings.push(warning(T12, None));
                 }
             }
             KnownSchema::SeaportOrder => {
-                if field_address(root, "offerer") != Some(account) {
+                let offer = root
+                    .field("offer")
+                    .and_then(TdNode::elements)
+                    .unwrap_or(&[]);
+                if field_address(root, "offerer") == Some(account) {
+                    // Signing hands the offer to whoever fulfils the order (T19).
+                    if !offer.is_empty() {
+                        warnings.push(warning(T19, None));
+                    }
+                } else {
                     warnings.push(warning(T07, None));
                 }
                 let consideration = root
                     .field("consideration")
                     .and_then(TdNode::elements)
                     .unwrap_or(&[]);
-                if !consideration
+                let mine: Vec<&TdNode> = consideration
                     .iter()
-                    .any(|item| field_address(item, "recipient") == Some(account))
+                    .filter(|item| field_address(item, "recipient") == Some(account))
+                    .collect();
+                // Only native or registry ERC-20 consideration counts as received (T08).
+                if !mine
+                    .iter()
+                    .any(|item| seaport_item_verified(input.chain, item))
                 {
-                    warnings.push(warning(T08, None));
+                    let cause =
+                        (!mine.is_empty()).then_some("받는 것이 등록되지 않은 토큰·NFT뿐입니다");
+                    warnings.push(warning(T08, cause));
                 }
                 let end = field_uint(root, "endTime");
                 if end.and_then(U256::to_u64).is_some_and(|end| end <= now) {
@@ -651,10 +828,6 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
                 }) {
                     warnings.push(warning(T13, None));
                 }
-                let offer = root
-                    .field("offer")
-                    .and_then(TdNode::elements)
-                    .unwrap_or(&[]);
                 let criteria = offer.iter().chain(consideration).any(|item| {
                     matches!(
                         field_uint(item, "itemType").and_then(U256::to_u64),
@@ -668,6 +841,13 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
                 }
             }
         },
+    }
+    // T20: the typed-data form of E19.
+    if typed_tokens(typed)
+        .iter()
+        .any(|token| claims_known_symbol(input.chain, input.facts, token))
+    {
+        warnings.push(warning(T20, None));
     }
     match typed.domain.verifying_contract {
         None => warnings.push(warning(T10, None)),

@@ -221,7 +221,7 @@ pub enum Delta { Zero, In(U256), Out(U256) }    // Σin − Σout 결과
 ### 2.4 금액 형식
 
 - `format_units(v: &U256, decimals: u8) -> String`: 정확한 10진. 정수부는 3자리마다 `,`, 소수부는 끝 0 제거, 소수부가 없으면 `.` 없음, 반올림 없음. 0 → `0`.
-- `format_amount(v, decimals, symbol)` = `format_units + " " + symbol`. 무제한(§10, 타입 최댓값)은 숫자 대신 `무제한`.
+- `format_amount(v, decimals, symbol)` = `format_units + " " + symbol`. 무제한(§10, 타입 최댓값)은 숫자 대신 `무제한`. 승인 금액이 2^128 이상이면(최댓값 제외) 금액 뒤에 `(사실상 무제한)`을 붙인다(E14).
 - gwei: `format_units(v, 9) + " gwei"`. 승인 창의 모든 금액은 이 함수로만 만든다(wei hex 표시 금지).
 - `parse_units(s: &str, decimals: u8) -> Result<U256, AmountError>`(사용자 입력): 문법 `^(0|[1-9][0-9]*)(\.[0-9]+)?$`, 소수 자릿수 ≤ decimals, 길이 ≤ 128, 오버플로 오류. `+`, `-`, 지수, 공백, `,`, `.5`, `5.` 거부.
 - 벡터: `format_units(1234567890000000000, 18)` = `1.23456789`; `format_units(10^24, 18)` = `1,000,000`; `format_units(1, 18)` = `0.000000000000000001`; `format_units(21000000000, 9)` = `21`; `parse_units("0.1", 18)` = `100000000000000000`; `parse_units("1.0000001", 6)` = 오류.
@@ -232,7 +232,7 @@ pub enum Delta { Zero, In(U256), Out(U256) }    // Σin − Σout 결과
 - 그 밖: `eth_call` at `latest`로 `decimals()`(`0x313ce567`), `symbol()`(`0x95d89b41`).
   - decimals: 결과가 정확히 32바이트, 상위 31바이트 0, 값 ≤ 36. 실패·초과 → 원시 단위(정수) + `(원시 단위)` 표시 + E25.
   - symbol: `archive/spec-v2.4:demo/sepolia-wallet/src/erc20.rs:156-201` 디코더(빈 값, bytes32, 정규 동적 string). 허용 문자 0x21–0x7E, 1–16자. 실패 → `?` + E26.
-  - 미등록 토큰 심볼 뒤에 항상 `(미확인)`을 붙이고 컨트랙트 주소를 함께 보인다(E33).
+  - 미등록 토큰 심볼 뒤에 항상 `(미확인)`을 붙이고 컨트랙트 주소를 함께 보인다(E33). decimals는 그 토큰 컨트랙트가 RPC로 알려 준 값이므로 서식 금액 옆에 원시 정수를 항상 함께 보인다: `{format_units(v, decimals)} {symbol} (미확인 · 원시 단위 {format_units(v, 0)})`(예 `1 TT (미확인 · 원시 단위 1,000,000)`).
 - 캐시: (chain_id, address)별 앱 실행 중 메모리 캐시(디스크에 쓰지 않음). 한 승인 요청에서 조회하는 토큰 ≤ 16, 주소 분류(§8.5) ≤ 16. 넘으면 나머지는 원시 표시 + E27.
 
 ## 3. 트랜잭션 모델
@@ -576,7 +576,7 @@ impl SimResult { pub fn binding(&self) -> SimulationBinding; }        // §11.1
 | ERC-1155 TransferSingle | `0xc3d58168…0f62`, topics 4, data 64 | (emitter, id, from=topics[2], to=topics[3], value) |
 | ERC-1155 TransferBatch | `0x4a39dc06…f7fb`, topics 4, data = 정규 ABI `(uint256[],uint256[])`, 길이 같음, ≤ 64 | 원소마다 Single처럼 |
 | WETH Deposit | emitter == 레지스트리 WETH, `0xe1fffcc4…109c`, topics 2, data 32 | dst==user면 WETH +wad |
-| WETH Withdrawal | emitter == 레지스트리 WETH, `0x7fcf532c…1b65`, topics 2, data 32 | src==user면 WETH −wad |
+| WETH Withdrawal | emitter == 레지스트리 WETH, `0x7fcf532c…1b65`, topics 2, data 32 | src==user면 WETH −wad(잔액 변화만: 토큰 컨트랙트로의 이동 행을 만들지 않으므로 E18 아님) |
 | ERC-20 Approval | `0x8c5be1e5…b925`, topics 3, data 32, owner==user | 승인 (emitter, spender, amount) |
 | ERC-721 Approval | 같은 topic0, topics 4, data 0, owner==user | 개별 승인 (emitter, approved, tokenId); approved==0 → 해제 |
 | ApprovalForAll | `0x17307eab…6c31`, topics 3, data 32(0 또는 1), owner==user | 전체 권한 (emitter, operator, bool) |
@@ -585,17 +585,19 @@ impl SimResult { pub fn binding(&self) -> SimulationBinding; }        // §11.1
 | 기타 | 위에 없음, 모양 불일치, user와 무관한 이동·승인 | "기타 이벤트 N개" (E32) |
 
 - 이동 중 `from==user`는 보냄, `to==user`는 받음. 자산 키 = native / (ERC-20 token) / (ERC-721 token, id) / (ERC-1155 token, id). 자산별 Σin − Σout → `Delta`(오버플로면 그 자산 행을 `합산 불가`로 표시하고 E09). 0이 된 자산은 표시하지 않는다.
+- **확인된 자산**(`is_verified_asset`) = 네이티브 또는 그 체인 레지스트리 토큰(NFT id 없음). Transfer 로그는 어떤 컨트랙트든 user를 넣어 낼 수 있으므로 그 밖의 자산(미등록 토큰, 모든 NFT)은 `(미확인)`으로 표시하고 "받음"으로 치지 않는다(E23·E40).
+- 행 순서: 확인된 자산(보냄 → 받음) → 그 밖 자산(보냄 → 받음). 오버플로 행은 보냄으로 친다.
 - 승인은 같은 (token, spender[, id]) 키의 **마지막** 로그 값을 결과로 한다.
 - 수수료는 diff에 넣지 않고 따로 표시: `예상 수수료 = gas_used × min(max_fee, sim.base_fee_per_gas + tip)`.
-- 표시 행 ≤ 64(보냄+받음+승인). 넘으면 앞 64행만 표시하고 E08.
+- 표시 행 ≤ 64(보냄+받음+승인). 넘으면 확인된 자산 행 → 레지스트리 토큰 승인 → 그 밖 승인 → 그 밖 자산 행 순으로 64행을 남기고 E08(가짜 로그가 실제 보냄·승인 행을 밀어내지 못한다).
 - `Reverted`(§6.3)면 changes·approvals·transfers는 비고 `other_events = 0`이다. 시뮬레이션 결과가 없으면 diff 필드(§11.2 `0x0110`–`0x0113`)를 만들지 않는다.
 
 ```rust
 pub struct SimulationDiff {
     pub block: SimBinding,                  // §11.1: number, parent_hash, timestamp, base_fee, sim_digest
-    pub changes: Vec<AssetChange>,          // { asset: AssetId, token_id: Option<U256>, delta: Option<Delta> } (None = 합산 불가, E09); 보냄(합산 불가 포함) 먼저, 받음 다음
+    pub changes: Vec<AssetChange>,          // { asset: AssetId, token_id: Option<U256>, delta: Option<Delta> } (None = 합산 불가, E09); 확인된 자산 먼저, 각 무리 안에서 보냄(합산 불가 포함) → 받음
     pub approvals: Vec<ApprovalChange>,     // { asset: Address, spender: Address, kind: ApprovalKindEvm }
-    pub transfers: Vec<TransferRow>,        // user가 from/to인 이동 원본 목록
+    pub transfers: Vec<TransferRow>,        // user가 from/to인 이동 원본 목록(WETH Withdrawal은 잔액 변화만, 행 없음)
     pub other_events: u32, pub gas_used: u64,
     pub events: Vec<LogEvent>,              // 분류된 로그 전체(user 무관, 선택 안 된 네이티브 발신자 제외): R4·R6 입력. Reverted면 비어 있음
     pub omitted_rows: u32,                  // E08로 생략한 행 수
@@ -610,7 +612,8 @@ pub enum ApprovalKindEvm { Erc20 { amount: U256 }, Erc721 { token_id: U256, revo
 ### 6.5 시뮬레이션 digest·바인딩
 
 ```
-T = Transcript::start_domain("your-wallet/v3/evm-simulation", 1)
+T = Transcript::start_domain("your-wallet/v3/evm-simulation", 2)
+T.push_bytes(tx.signing_hash())            // 시뮬레이션한 바로 그 거래(§4.2 keccak256(0x02 ‖ rlp)): 결과를 다른 거래에 묶을 수 없다
 T.push_u64(number); T.push_bytes(parent_hash); T.push_u64(timestamp); T.push_bytes(base_fee_be32)
 T.push_u8(status: 1 성공 / 0 실패); T.push_u64(gas_used); T.push_optional(max_used_gas: u64)
 T.push_bytes(return_data)
@@ -668,7 +671,7 @@ sim_digest = SHA-256(T)
 - **R2** 정규 인코딩: address 워드 상위 12바이트 0; bool 0/1; uint160 상위 12바이트 0; uint48 상위 26바이트 0; uint8 상위 31바이트 0; 동적 오프셋은 정규 위치(첫 tail = head 크기, 다음 tail = 앞 tail 끝); 길이 워드 ≤ 남은 바이트; 패딩 0; 뒤 바이트 없음; 배열 ≤ 64; ERC-1155 배치 `ids.len()==amounts.len()`; bytes 인수 ≤ 131,072. 위반 → `Uninterpreted`(안전 아님).
 - **R3** WETH·Permit2·Seaport 셀렉터는 그 체인 레지스트리 주소에서만 해석한다. 다른 주소면 `Uninterpreted`. 사용자 체인은 레지스트리가 비어 있으므로 항상 `Uninterpreted`(§1.2). 그 밖 셀렉터(ERC-20·721·1155 등)는 체인과 무관하게 해석한다.
 - **R4** `0x095ea7b3`, `0x23b872dd`: 시뮬레이션에서 `to`가 낸 Approval/Transfer 로그가 topics 3이면 ERC-20, 4면 ERC-721. 로그가 없으면 인수를 `amount_or_token_id`로 표시하고, 시뮬레이션 로그를 쓸 수 있었으면(verdict `Ok`·`Incomplete`) E13.
-- **R5** multicall: 한 단계만, 내부 호출 ≤ 16, 각 내부 호출은 같은 `to`에 대해 이 표로 해석, 내부 multicall은 `Uninterpreted`. 내부 하나라도 `Uninterpreted`면 전체에 E12("해석되지 않은 호출 포함"). `deadline`은 UTC 시각으로 표시.
+- **R5** multicall: 한 단계만, 내부 호출 ≤ 16, 각 내부 호출은 같은 `to`에 대해 이 표로 해석, 내부 multicall은 `Uninterpreted`. 빈 내부 호출(0바이트)은 네이티브 전송이 아니라 `Uninterpreted { selector: None }`(fallback/receive 호출). 내부 하나라도 `Uninterpreted`면 전체에 E12("해석되지 않은 호출 포함"), 내부 호출이 없는 `multicall([])`도 E12("내부 호출이 없는 묶음 호출"). `deadline`은 UTC 시각으로 표시.
 - **R6** 해석된 승인·이동·WETH 변환마다 emitter == `to`(Permit2 함수는 Permit2)이고 같은 종류(§6.4 분류)·같은 주소 인수(owner/spender/operator/from/to/dst/src)를 가진 로그가 있어야 한다. 금액은 `transfer`·`transferFrom`·`approve`·`deposit`(= value)·`withdraw`에서만 비교한다. 없거나 다르면 E13. 시뮬레이션 로그를 쓸 수 없으면(`None`·`Reverted`) R6 검사와 E13을 생략한다(E01·E02·E36이 이미 고위험). 승인 위험 등급은 시뮬레이션 로그(§6.4)로 판정하고, 로그를 쓸 수 없으면 R8.
 - **R7** (D16) `Uninterpreted`는 허용하고 E12(고위험 → §10.1 공통 체크박스 1개 + 2초 누르기). 시뮬레이션 결과까지 없으면 E12와 E01(또는 E36)을 함께 표시하고 체크박스는 여전히 1개다.
 - **R8** 시뮬레이션 로그를 쓸 수 없을 때(`None`·`Reverted`) 승인 위험(E14–E16, E20–E22, E30)은 해석된 calldata 인수로 판정한다: `approve`(R4로 정할 수 없으면 ERC-20으로 본다), `increaseAllowance`, `setApprovalForAll`, Permit2 `approve`·`lockdown`, multicall 내부 같은 함수.
@@ -710,6 +713,8 @@ pub fn decode_call(chain: &ChainInfo, to: &Address, data: &[u8]) -> DecodedCall;
 | 6 | 대소문자 섞인 주소 무검사(`schema.rs:812-840`) | §2.1 |
 | 7 | primaryType `EIP712Domain` 거부(`schema.rs:265`) | 유지 |
 | 8 | 원문 ≤ 1 MiB | 원문 ≤ 131,072바이트; 그 밖 `Limits::default`(`schema.rs:38-52`) 유지 |
+| 9 | `EIP712Domain` 필드 자유 | 표준 5필드만: `name string`, `version string`, `chainId uint256`, `verifyingContract address`, `salt bytes32`(부분 집합, 순서 자유). 그 밖 필드(중첩 struct·배열 포함, 표시·검사 없이 서명될 값)나 name/version/salt의 다른 타입 → `NonStandardDomain` 거부(T02). chainId/verifyingContract의 다른 타입은 `InvalidDomainBindingType`(T02) 유지 |
+| 10 | 인스턴스마다 typeHash 재계산(`schema.rs:553-571`) | 검증 비용 상한: typeHash는 요청당 타입마다 한 번 계산해 캐시하고 `encodeType` 누적 ≤ 262,144바이트(넘으면 `LimitExceeded(Types)`), 식별자(타입·필드·primaryType 이름) ≤ 256바이트, 필드 타입 문자열 ≤ 512바이트, 전체 타입의 필드 합 ≤ 1,024(`LimitExceeded(Fields)`). struct 값은 필드 이름 색인으로 한 번에 대응시킨다 |
 
 파라미터: `[address, typedData]`, typedData는 JSON 문자열 또는 객체. 문자열이면 그 UTF-8 바이트를 파싱하고, 객체면 yw-json 정규 직렬화 바이트를 원문으로 쓴다. `address`는 연결 계정(아니면 4100).
 
@@ -734,7 +739,7 @@ primaryType 이름 일치 + primaryType의 typeHash(도달 가능 타입 그래�
 | `KnownSchema` (`schema_id`) | primaryType | typeHash | 추가 조건 |
 |---|---|---|---|
 | `Eip2612Permit` (`eip2612-permit`) | `Permit` | `0x6e71edae12b1b97f4d1f60370fef10105fa2faae0126114a169c64845d6126c9` | verifyingContract = 토큰 |
-| `DaiPermit` (`dai-permit`) | `Permit` | `0xea2aa0a1be11a07ed86d755c93467f4f82362b452371d1ba94d1715123511acb` | — |
+| `DaiPermit` (`dai-permit`) | `Permit` | `0xea2aa0a1be11a07ed86d755c93467f4f82362b452371d1ba94d1715123511acb` | verifyingContract = 그 체인 레지스트리 DAI(`TokenRole::Dai`, 메인넷 `0x6B175474E89094C44Da98b954EedeAC495271d0F`). 아니면 미인식(T04): 다른 컨트랙트가 `allowed=false`를 "허용 해제"(T15 정보)로 보이게 할 수 없다 |
 | `Permit2Single` (`permit2-permit-single`) | `PermitSingle` | `0xf3841cd1ff0085026a6327b620b67997ce40f282c88a8e905a7a5626e310f3d0` | P2 |
 | `Permit2Batch` (`permit2-permit-batch`) | `PermitBatch` | `0xaf1b0d30d2cab0380e68f0689007e3254993c596f2fdd0aaa7f4d04f79440863` | P2 |
 | `Permit2Transfer` (`permit2-transfer`) | `PermitTransferFrom` | `0x939c21a48a8dbe3a9a2404a1d46691e4d39f6583d6ec6b35714604c986d80106` | P2 |
@@ -758,14 +763,14 @@ primaryType 이름 일치 + primaryType의 typeHash(도달 가능 타입 그래�
 | Permit2 Single/Batch | Permit2 승인 서명 | 항목별 토큰·금액(2^160−1 → 무제한)·허용 만료 `expiration`(0 → "사용 블록에서만 유효", 2^48−1 → "만료 없음")·nonce, `spender`, 서명 기한 `sigDeadline` |
 | Permit2 Transfer/Batch | Permit2 즉시 이체 서명 | 항목별 토큰·금액, `spender`, nonce, 기한 `deadline`. 문구 "이 서명으로 spender가 토큰을 바로 가져갈 수 있습니다" |
 | Permit2 Witness | Permit2 즉시 이체 서명(조건 포함) | 위 + `witness 타입: {이름}` + witness 트리(§8.4) |
-| Seaport | NFT 마켓 주문 서명 | offerer, zone(+라벨), orderType(`FULL_OPEN`…`CONTRACT`), 시작·종료 시각, **내가 주는 것**(offer 전부), **내가 받는 것**(recipient == 서명 계정인 consideration), **다른 사람이 받는 것**(나머지, recipient 포함), conduitKey(OpenSea 키면 라벨), counter, salt, zoneHash |
+| Seaport | NFT 마켓 주문 서명 | offerer, zone(+라벨), orderType(`FULL_OPEN`…`CONTRACT`), 시작·종료 시각, **내가 주는 것**(offer 전부), **내가 받는 것**(recipient == 서명 계정인 consideration), **다른 사람이 받는 것**(나머지, recipient 포함), conduitKey(OpenSea 키면 라벨), counter, salt, zoneHash. "내가 받는 것" 중 네이티브(itemType 0)·레지스트리 ERC-20(itemType 1)만 받음으로 친다(T08) |
 
 - 시각(uint256 초): `YYYY-MM-DD HH:MM:SS UTC (약 N일 후/전)`. 2^40 이상은 원시 값 + "사실상 만료 없음".
 - Seaport 항목: itemType 0 → 네이티브, 1 → 토큰 금액(§2.5), 2 → `NFT #{id}`, 3 → `{id} × {amount}`, 4·5 → identifier 0이면 "컬렉션의 아무 토큰"(T14), 아니면 "기준 루트 0x…". startAmount ≠ endAmount면 "시작 a → 종료 b (시간에 따라 변함)".
 
 ### 8.4 미인식 스키마 트리
 
-- 도메인 전체 + primaryType + message 리프를 `경로 = 값`으로 나열(경로 예: `order.items[2].amount`). 이름·타입 문자열은 §9.2 이스케이프.
+- 도메인 전체 + primaryType + message 리프를 `경로 = 값`으로 나열(경로 예: `order.items[2].amount`). 이름·타입 문자열은 §9.2 이스케이프. typed data string 값(도메인 name/version 포함)은 한 줄 값이므로 LF도 `[U+000A]`로 바꾼다(줄바꿈으로 다른 `경로 = 값` 행을 흉내 낼 수 없다).
 - 한도: 깊이 ≤ 8, 리프 ≤ 512, string 값 ≤ 1,024바이트, bytes 값 ≤ 1,024바이트. 넘으면 T16(차단).
 - 값 형식: address §2.2, 정수 10진, bool, bytes hex, string 이스케이프.
 
@@ -773,7 +778,8 @@ primaryType 이름 일치 + primaryType의 typeHash(도달 가능 타입 그래�
 
 spender·operator·verifyingContract·사용자 계정에 `eth_getCode(addr, "latest")`:
 - `0x` → `Eoa`; 정확히 23바이트이고 `0xef0100`으로 시작 → `Delegated7702 { target }`; 그 밖 → `Contract`.
-- 표시: 레지스트리 라벨 > `[컨트랙트]` / `[일반 계정(EOA)]` / `[위임된 계정(EIP-7702) → 0x…]`.
+- 조회 실패(전송·RPC 오류, 응답 이상) → `Unknown`. yw-app은 실패한 주소를 빠뜨리지 않고 `CodeKind::Unknown`으로 넣는다(빠뜨리면 EOA spender 경고가 사라진다). 레지스트리 밖 승인 대상이 `Unknown`이면 E39, typed data spender면 T18(둘 다 고위험, fail closed). 한도(E27)로 조회하지 않은 주소는 분류 없음(`None`)이다.
+- 표시: 레지스트리 라벨 > `[컨트랙트]` / `[일반 계정(EOA)]` / `[위임된 계정(EIP-7702) → 0x…]` / `[계정 종류 확인 불가]`.
 
 ## 9. personal_sign·SIWE (D18)
 
@@ -786,12 +792,15 @@ spender·operator·verifyingContract·사용자 계정에 `eth_getCode(addr, "la
 ### 9.2 표시
 
 - 엄격 UTF-8이면 텍스트 표시. 아니면 hex(32바이트마다 줄바꿈) + P01.
-- 이스케이프(텍스트·typed data 문자열·SIWE 필드 공통): LF는 줄바꿈 유지. TAB, CR, 그 밖 제어 문자, 표시 금지 문자(`archive/spec-v2.4:crates/approval-wire/src/lib.rs:1277-1300` 목록)는 `[U+XXXX]`(대문자 hex 4–6자리) 텍스트로 바꾼다. TAB·CR 외 문자가 바뀌면 P02/T17.
+- 엄격 UTF-8이어도 정확히 32바이트(해시에 서명하는 것일 수 있음)이거나 TAB·LF·CR 외 C0 제어 문자(0x00–0x1F)·DEL(0x7F)이 있으면 hex로 표시하고 P04(고위험, 원인 줄 "정확히 32바이트입니다 — 해시에 서명하는 것일 수 있습니다" / "TAB·줄바꿈 외의 제어 문자가 있습니다"). 이때도 SIWE 표지는 검사한다(§9.4 marker-only 도메인 검사).
+- 이스케이프(텍스트·typed data 문자열·SIWE 필드 공통): LF는 줄바꿈 유지. TAB, CR, 그 밖 제어 문자, 표시 금지 문자(`archive/spec-v2.4:crates/approval-wire/src/lib.rs:1277-1300` 목록 + v3 추가: 비ASCII 공백 U+00A0·U+1680·U+2000–U+200A·U+202F·U+205F·U+3000, 결합 문자 U+0300–U+036F(취소선 U+0336 포함)·U+1AB0–U+1AFF·U+1DC0–U+1DFF·U+20D0–U+20FF·U+FE20–U+FE2F, 점자 빈칸 U+2800, 개체 대체 문자 U+FFFC)는 `[U+XXXX]`(대문자 hex 4–6자리) 텍스트로 바꾼다. TAB·CR 외 문자가 바뀌면 P02/T17.
+- 줄바꿈이 다른 표시 행을 흉내 내지 못하게 한다: 메시지 텍스트 값은 줄바꿈마다 그 앞에 `[U+000A]` 표지를 붙여 보이고(값 끝·처음의 LF는 그 자체를 `[U+000A]`로), typed data string·SIWE statement 같은 한 줄 값은 LF를 `[U+000A]`로 바꾼다.
 - 바이트 수를 함께 표시한다. 자르지 않는다(스크롤).
 
 ```rust
 pub struct DecodedPersonalMessage { pub bytes: Vec<u8>, pub text: Option<String>, pub escaped: bool,
-                                    pub siwe: Option<SiweMessage>, pub siwe_marker_only: bool }
+                                    pub siwe: Option<SiweMessage>, pub siwe_marker_only: bool,
+                                    pub hex_reason: Option<HexReason> }   // HexReason { Hash32, Control } → P04
 ```
 
 ### 9.3 SIWE 파서 (ERC-4361)
@@ -820,7 +829,7 @@ LF
 - address: 문법은 `0x` + hex 40자(대소문자 무관). 체크섬(§2.1)은 §9.4 S03에서 검사한다.
 - date-time: RFC 3339 `YYYY-MM-DDTHH:MM:SS[.frac](Z|±HH:MM)`(`T`/`t`, `Z`/`z`) → unix 초.
 - uri·resources: 0x21–0x7E, `scheme:` 형태, 각 ≤ 2,048바이트, resources ≤ 64.
-- 첫 줄에 `wants you to sign in with your Ethereum account`가 있는데 위 문법을 통과하지 못하면 `siwe_marker_only = true`(S08).
+- 첫 줄에 `wants you to sign in with your Ethereum account`가 있는데 위 문법을 통과하지 못하면 `siwe_marker_only = true`(S08). 이때도 첫 줄의 ` wants you to sign in with your Ethereum account` 앞부분을 `[scheme "://"] authority`로 읽어 §9.4 S01·S02·S05를 적용한다(`marker_authority`). 읽을 수 없으면(앞에 다른 글자, `https`/`http` 외 scheme, authority 문법 위반, 앞부분 없음) S01 차단(원인 줄 "SIWE 형식의 첫 줄에서 도메인을 읽을 수 없습니다").
 
 ```rust
 pub struct SiweMessage { pub scheme: String, pub domain_host: String, pub domain_port: Option<u16>,
@@ -843,7 +852,7 @@ pub struct SiweMessage { pub scheme: String, pub domain_host: String, pub domain
 | domain port 있고 ≠ origin 실효 포트(`BrowserOrigin::effective_port`: https 443, http 80) | S05 주의 |
 | Chain ID ≠ 활성 체인 | S06 주의 |
 | Not Before > now | S07 주의 |
-| `siwe_marker_only` | S08 고위험 |
+| `siwe_marker_only` | S08 고위험 + 첫 줄 authority로 위 S01·S02·S05(읽을 수 없으면 S01 차단, §9.3) |
 | 모두 통과 | S09 정보 "로그인 요청 (SIWE)" |
 
 SIWE 표시 필드: 도메인, 주소, 설명(statement), URI, 체인 ID, nonce, 발급·만료·유효 시작 시각(원문 + UTC 상대 시간), 요청 ID, 리소스, 그리고 원문 전체.
@@ -884,18 +893,18 @@ pub struct RuleId(pub u16);   // 상위 바이트 = 'E'(0x45)·'T'(0x54)·'P'(0x
 | E09 | diff 금액 합산 오버플로 | 고위험 |
 | E10 | 가스 추정값 > 16,777,216(거래 가스 상한, D20) | 차단 |
 | E11 | 서명 거래 > 131,072바이트 | 차단 |
-| E12 | 해석되지 않은 calldata, 라벨만, multicall 내 미해석 (D16). 문구 "해석되지 않은 컨트랙트 호출" | 고위험 |
+| E12 | 해석되지 않은 calldata, 라벨만, multicall 내 미해석·빈 내부 호출, 내부 호출 없는 multicall (D16, R5). 문구 "해석되지 않은 컨트랙트 호출" | 고위험 |
 | E13 | 해석된 의도가 시뮬레이션 로그로 확인되지 않음 (R4·R6, 로그를 쓸 수 있을 때만) | 고위험 |
-| E14 | 무제한 승인 로그(로그를 쓸 수 없으면 R8 인수): ERC-20 amount == 2^256−1, Permit2 amount == 2^160−1 | 고위험 |
+| E14 | 사실상 무제한 승인 로그(로그를 쓸 수 없으면 R8 인수): ERC-20 amount == 2^256−1, Permit2 amount == 2^160−1, 또는 (ERC-20·Permit2) amount ≥ 2^128(원인 줄 "2^128 이상의 승인 — 사실상 무제한"), 또는 현재 `balanceOf`를 알 때 amount > 잔액(원인 줄 "잔액보다 큰 승인 — 사실상 무제한") | 고위험 |
 | E15 | ApprovalForAll(true) | 고위험 |
 | E16 | 승인 spender/operator가 `Eoa` 또는 `Delegated7702` | 고위험 |
 | E17 | 서명 계정에 코드 있음(7702 위임 포함) | 고위험 |
 | E18 | 0 주소로 네이티브/토큰 이동(해석 인수 또는 diff), 토큰을 그 토큰 컨트랙트 주소로 전송 | 고위험 |
 | E19 | 미등록 토큰의 symbol이 같은 체인 레지스트리 symbol 또는 그 체인 `native_symbol`(예 `ETH`, `SepoliaETH`, `HYPE`)과 같음(대소문자 무시) | 고위험 |
-| E20 | 유한 ERC-20·Permit2 승인(0 아님), ERC-721 개별 승인 — ERC-20 amount > 현재 `balanceOf`면 문구 "잔액보다 큰 승인" | 주의 |
+| E20 | 유한 ERC-20·Permit2 승인(0 아님, E14 아님), ERC-721 개별 승인 | 주의 |
 | E21 | 승인 대상이 레지스트리 밖 `Contract` | 주의 |
 | E22 | Permit2 approve 만료 > 30일 또는 2^48−1 | 주의 |
-| E23 | dApp 요청에서 보냄은 있고 받음이 없음 | 주의 |
+| E23 | dApp 요청에서 보냄은 있고 **확인된 자산**(네이티브·레지스트리 토큰, §6.4) 받음이 없음. 받은 것이 미등록 토큰·NFT뿐이면 원인 줄 "받는 자산은 등록되지 않은 토큰·NFT뿐입니다" | 주의 |
 | E24 | `to == from`이고 data 있음 | 주의 |
 | E25 | decimals 조회 실패·> 36(원시 단위 표시) | 주의 |
 | E26 | symbol 읽기 실패·형식 위반 | 주의 |
@@ -905,25 +914,27 @@ pub struct RuleId(pub u16);   // 상위 바이트 = 'E'(0x45)·'T'(0x54)·'P'(0x
 | E30 | 승인 해제(0 승인, ApprovalForAll false, ERC-721 approved 0, Permit2 Lockdown) | 정보 |
 | E31 | dApp 수수료 필드 무시(D20) | 정보 |
 | E32 | 기타 이벤트 N개 | 정보 |
-| E33 | 미등록 토큰 `(미확인)` | 정보 |
+| E33 | 미등록 토큰·NFT 컬렉션 `(미확인)` | 정보 |
 | E34 | RPC 체인 불일치: chainId·제네시스(고정값 포함) 불일치(§1.4 `RpcMismatch`). 문구 "RPC 체인 불일치" | 차단 |
 | E35 | 거래를 준비할 수 없음: RPC 엔드포인트 없음(`rpc:eip155:<chainId>` URL 없음, §1.4; 원인 줄 "RPC 엔드포인트 없음 — 설정에서 이 네트워크의 RPC URL을 저장하세요"), 체인 미확인(`Unverified`), 필수 조회(서명 계정 `eth_getCode`, nonce, `eth_feeHistory`) 실패·응답 이상, 단계 3–7 준비 30 s 초과(§1.4, §3.7) | 차단 |
 | E36 | 체인 `simulation = unsupported`(호출하지 않음). 문구 "시뮬레이션 미지원 체인 — 실제 효과를 확인할 수 없습니다" | 고위험 |
 | E37 | 가스 추정 실패(§3.5, 대체 가스 사용). 문구 "가스 추정 실패 — 거래가 실패할 수 있습니다" | 고위험 |
 | E38 | `gas_limit` > `small_block_gas_limit`(HyperEVM 3,000,000, 구현 시 확인 §1.5 A9; §3.5). 문구 "HyperEVM 작은 블록 한도({n})를 넘는 거래입니다 — 계정에 큰 블록 사용이 켜져 있지 않으면 포함되지 않을 수 있습니다" | 주의 |
+| E39 | 레지스트리 밖 승인 spender/operator의 `eth_getCode` 조회 실패(`CodeKind::Unknown`, §8.5). 문구 "승인 대상의 계정 종류를 확인할 수 없습니다(조회 실패)" | 고위험 |
+| E40 | 확인된 자산(네이티브·레지스트리 토큰)을 보내는데 받는 것 중 미등록 토큰·NFT가 있음(가짜 Transfer 로그로 교환처럼 보이게 하는 탈취, §6.4). 문구 "내 자산을 보내고 받는 것은 등록되지 않은 토큰·NFT입니다 — 가짜 자산일 수 있습니다" | 고위험 |
 
 ### 10.3 타입 데이터 규칙 (T)
 
 | ID | 조건 | 등급 |
 |---|---|---|
 | T01 | domain.chainId ≠ 활성 체인 | 요청 거부(§10.4) |
-| T02 | 파싱·스키마 검증 실패, primaryType `EIP712Domain`, Permit2/Seaport 주소인데 스키마 불일치, Seaport `BulkOrder` | 요청 거부 |
+| T02 | 파싱·스키마 검증 실패, primaryType `EIP712Domain`, Permit2/Seaport 주소인데 스키마 불일치, Seaport `BulkOrder`, 비표준 도메인 필드(§8.1 #9), 검증 비용 한도 초과(§8.1 #10) | 요청 거부 |
 | T03 | domain.chainId 없음 | 고위험 |
 | T04 | 미인식 스키마(필드 트리) | 고위험 |
 | T05 | permit 계열: EIP-2612, DAI `allowed=true`, Permit2 Single/Batch/Transfer/BatchTransfer | 고위험 |
 | T06 | Permit2 witness | 고위험 |
 | T07 | owner/holder/offerer ≠ 서명 계정 | 고위험 |
-| T08 | Seaport "내가 받는 것" 없음 | 고위험 |
+| T08 | Seaport "내가 받는 것" 중 네이티브·레지스트리 ERC-20 없음(미등록 토큰·NFT뿐이면 원인 줄 "받는 것이 등록되지 않은 토큰·NFT뿐입니다") | 고위험 |
 | T09 | spender가 `Eoa`/`Delegated7702` | 고위험 |
 | T10 | verifyingContract 없음 또는 0 | 주의 |
 | T11 | verifyingContract가 `Eoa` | 주의 |
@@ -933,12 +944,15 @@ pub struct RuleId(pub u16);   // 상위 바이트 = 'E'(0x45)·'T'(0x54)·'P'(0x
 | T15 | DAI `allowed=false`(해제) | 정보 |
 | T16 | 트리 표시 한도 초과 | 차단 |
 | T17 | 문자열에 숨은·방향 제어 문자 | 주의 |
+| T18 | 레지스트리 밖 spender의 `eth_getCode` 조회 실패(`Unknown`, §8.5) | 고위험 |
+| T19 | Seaport offerer == 서명 계정이고 offer가 비어 있지 않음(서명만으로 내 자산이 주문 체결에 쓰임) | 고위험 |
+| T20 | 인식된 스키마의 미등록 토큰(EIP-2612·DAI verifyingContract, Permit2 토큰, Seaport itemType 1 토큰) symbol이 레지스트리 symbol 또는 `native_symbol`과 같음(E19의 typed data 판) | 고위험 |
 
-무제한 정의: 정확히 타입 최댓값(ERC-20·EIP-2612 2^256−1, Permit2 2^160−1) 또는 DAI `allowed=true`.
+무제한 정의: 정확히 타입 최댓값(ERC-20·EIP-2612 2^256−1, Permit2 2^160−1) 또는 DAI `allowed=true`. 거래 승인(E14)은 2^128 이상·잔액 초과도 사실상 무제한으로 본다.
 
 ### 10.4 메시지 규칙 (P, S)·요청 거부
 
-P01 UTF-8 아님(hex 표시) → 고위험(D18). P02 숨은·방향 제어 문자 → 주의. P03 일반 UTF-8 메시지 → 정보. S01–S09는 §9.4 표.
+P01 UTF-8 아님(hex 표시) → 고위험(D18). P02 숨은·방향 제어 문자 → 주의. P03 일반 UTF-8 메시지 → 정보. P04 정확히 32바이트이거나 TAB·LF·CR 외 C0 제어 문자·DEL이 있는 UTF-8(hex 표시, §9.2) → 고위험. S01–S09는 §9.4 표.
 
 **요청 거부(창 없음)**: §3.2 파라미터 위반(금지 필드·type 1/3/4·blob·배포, D19), T01(domain.chainId 불일치), T02, 서명 계정 불일치, 미지원 메서드(`eth_sign` 등, [05](05-browser.md) §3.2)는 승인 창을 띄우지 않고 오류로 응답한다(§11.6).
 
@@ -1137,10 +1151,10 @@ dApp 오류 코드·문구·상위 오류 정화의 정본은 [05](05-browser.md
 | EVM-V06 | RLP 거부 3종(§4.1), 서명 거래 모든 잘림·뒤 바이트 거부, U256 경계(MAX+1, 0−1), §2.4 형식 표 | M2 |
 | EVM-V07 | §3.4 수수료, §3.5 가스, §4.6 대체 수수료 벡터 | M2 |
 | EVM-V08 | 시뮬레이션 픽스처: mainnet 형식(`0xeeee…`, 21,000), Sepolia Glamsterdam 후(`0xff…fe`, 204,600), 두 발신자 동시 포함(SYSTEM만 계산), value>0 로그 없음(E04, `Incomplete`), revert code 3(E02, `Reverted`), 최상위 -38014(E01, `None RpcError`). 실패 픽스처는 모두 고위험·`ack_required`이고 차단 경고 없음(§6.3) | M2 |
-| EVM-V09 | diff: ERC-20·721·1155(Single/Batch)·WETH Deposit/Withdrawal·Approval·ApprovalForAll·Permit2 Approval/Lockdown, 기타 이벤트 계수 | M2 |
-| EVM-V10 | 해석: 각 셀렉터 정상·R1/R2 위반·R3 비레지스트리·R4 모호·R5 중첩 | M2 |
-| EVM-V11 | typed data: 각 스키마 인식, chainId 불일치 거부, chainId 없음 T03, verifyingContract 없음 T10, witness, BulkOrder 거부, 트리 한도 T16 | M2 |
-| EVM-V12 | SIWE: 정상, S01–S08 각 위반, CR 포함, 끝 LF 1개 | M2 |
+| EVM-V09 | diff: ERC-20·721·1155(Single/Batch)·WETH Deposit/Withdrawal(Withdrawal은 이동 행 없음, E18 아님)·Approval·ApprovalForAll·Permit2 Approval/Lockdown, 기타 이벤트 계수, 확인된 자산 우선 행 순서와 64행 한도(가짜 로그 70개 + 실제 네이티브 보냄 + 레지스트리 토큰 승인 → 둘 다 남음), 가짜 받음(미등록 토큰·NFT) + 확인된 자산 보냄 → E40·E23 원인 줄, `sim_digest`가 거래에 묶임 | M2 |
+| EVM-V10 | 해석: 각 셀렉터 정상·R1/R2 위반·R3 비레지스트리·R4 모호·R5 중첩·`multicall([])`·빈 내부 호출(E12) | M2 |
+| EVM-V11 | typed data: 각 스키마 인식(DAI는 레지스트리 DAI에서만), chainId 불일치 거부, chainId 없음 T03, verifyingContract 없음 T10, witness, BulkOrder 거부, 트리 한도 T16, 비표준 도메인 필드 거부, 식별자·필드 수·`encodeType` 누적 한도, typeHash 타입당 1회(성능 가드), Seaport T19·가짜 consideration T08·T20, T18, string 줄바꿈 이스케이프 | M2 |
+| EVM-V12 | SIWE: 정상, S01–S08 각 위반, CR 포함, 끝 LF 1개, marker-only의 첫 줄 도메인 검사(S01·S02, 읽을 수 없으면 S01); personal_sign 32바이트·C0 제어 문자 → hex·P04, 줄바꿈 표지 | M2 |
 | EVM-V13 | 저널 레코드 골든 바이트([02] §5.4 `kind 0x01` 프레이밍 포함), 상태 전이 표 전부, 손상 레코드 거부, 자리 없음 → E06 (`journal` 모듈과 함께 M4, [01] §2.2) | M4 |
 | EVM-V14 | 표시 바이트·승인 digest 골든(`SimulationBinding` 태그 0·1·2 각각), 1비트 변경(verdict·reason·태그 포함), `consume` 재사용·만료(`issue`의 `now_ms` 기준)·digest 불일치, `replace` 후 만료 불변, EVM 거래 kind에 `NotApplicable`·메시지에 `Simulated` → `SimulationBindingMismatch` | M2 |
 | EVM-V15 | E2E(Sepolia): ETH·ERC-20 송금, 시뮬레이션 실패(잔액보다 큰 토큰) → 고위험 경고가 맨 위 + 체크 1개·2초 누르기 후 승인·전송됨, 강제 종료 후 저널 복구 (M4); HyperEVM 소액 송금(E36 확인 후) (M4); dApp 연결·읽기·송금·personal_sign·SIWE·Permit2 typed data (M5) | M4, M5 |
