@@ -13,6 +13,7 @@ use super::fee::{FeeError, SOL_BASE_FEE_LAMPORTS_PER_SIG, priority_fee};
 use super::intent::{SolTransferIntent, flags};
 use super::recipient::{AccountClass, KnownKind, RecipientCheck};
 use super::rent::{RentError, format_amount, format_raw};
+use super::sign::fee_policy_ok;
 use super::template::{SolAsset, SolTransferCore, SplAccounts};
 use crate::approval::{
     AccountRef, ApprovalDisplay, ApprovalDraft, ApprovalId, ApprovalKind, ApprovalOrigin, ChainRef,
@@ -284,7 +285,9 @@ fn lookalike_text(recipient: &RecipientCheck) -> String {
             KnownKind::Own { .. } => {
                 format!("내 계정 '{name}'과 비슷함: {}", grouped(&entry.address))
             }
-            KnownKind::Sent => format!("보낸 내역의 주소와 비슷함: {}", grouped(&entry.address)),
+            KnownKind::Sent | KnownKind::History => {
+                format!("보낸 내역의 주소와 비슷함: {}", grouped(&entry.address))
+            }
         });
     }
     lines.join("\n")
@@ -391,7 +394,7 @@ fn recipient_text(core: &SolTransferCore, facts: &SolPreviewFacts) -> String {
             KnownKind::Own { index } => {
                 write!(text, "\n내 계정 #{}: {name}", index.saturating_add(1))
             }
-            KnownKind::Sent => write!(text, "\n보낸 적 있는 주소"),
+            KnownKind::Sent | KnownKind::History => write!(text, "\n보낸 적 있는 주소"),
         };
     }
     if facts.recipient_account == AccountClass::Missing {
@@ -548,13 +551,18 @@ fn asset_fields(
 /// # Errors
 ///
 /// [`DisplayError`] (defensive: every string is built or escaped here; an SPL intent without
-/// derivable accounts or preview facts is refused the same way).
+/// derivable accounts or preview facts is refused the same way, and so is an intent whose
+/// compute-unit limit is not the template's, whose maximum fee is not the formula's value or
+/// exceeds the cap, or whose recipient is not the one the shown recipient check parsed).
 pub fn build_sol_transfer_request(
     intent: &SolTransferIntent,
     genesis: &[u8; 32],
     facts: &SolPreviewFacts,
 ) -> Result<ApprovalDraft, DisplayError> {
     let core = &intent.core;
+    if !fee_policy_ok(intent) || facts.recipient.to != core.to {
+        return Err(DisplayError::InvalidText);
+    }
     let mut fields: Vec<DisplayField> = Vec::with_capacity(13);
     fields.push(DisplayField::new(
         FieldKey::ORIGIN,

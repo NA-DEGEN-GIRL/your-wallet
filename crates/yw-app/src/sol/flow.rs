@@ -7,7 +7,8 @@
 
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::broadcast::{
-    LoopState, Observation, Outcome, PendingTx, SigStatus, decide, plan, wants_history,
+    LoopState, Observation, Outcome, PendingTx, RoundTimes, SigStatus, decide, note_round, plan,
+    wants_history,
 };
 use yw_core::sol::display::{SimSummary, SolBlock, SolPreviewFacts, SplPreviewFacts, intent_flags};
 use yw_core::sol::fee::{
@@ -21,7 +22,7 @@ use yw_core::sol::rent::{
     check_rent0, check_rent165, check_sol_send, check_spl_send, send_max_amount,
     spl_send_max_amount,
 };
-use yw_core::sol::sign::SOL_MAX_LVBH_AHEAD;
+use yw_core::sol::sign::{SOL_MAX_LVBH_AHEAD, SOL_MIN_LVBH_AHEAD};
 use yw_core::sol::template::{SplAccounts, spl_entries};
 use yw_core::sol::token::{TokenHolding, check_mint, classify_holding};
 use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolTransferCore, SplAllowEntry};
@@ -309,8 +310,12 @@ pub fn preview(transport: &dyn Transport, job: &PreviewJob) -> PreviewResult {
         Ok(balance) => balance,
         Err(failure) => return failed(job.job, failure),
     };
-    let account = match sol_rpc::account_info(&client, url, &job.recipient.to) {
-        Ok(info) => classify_account(info.as_ref().map(|info| (&info.owner, info.executable))),
+    let (account, recipient_lamports) = match sol_rpc::account_info(&client, url, &job.recipient.to)
+    {
+        Ok(info) => (
+            classify_account(info.as_ref().map(|info| (&info.owner, info.executable))),
+            info.map(|info| info.lamports),
+        ),
         Err(failure) => return failed(job.job, failure),
     };
     let spl = match job.asset.spl() {
@@ -348,15 +353,17 @@ pub fn preview(transport: &dyn Transport, job: &PreviewJob) -> PreviewResult {
     let fees = sol_rpc::prioritization_fees(&client, url, &writable).unwrap_or_default();
     let cu_limit = template_cu_limit(job.asset);
     let price = choose_cu_price(p75(&fees), job.max_cu_price, job.fee_cap, cu_limit);
-    let maximum = match max_fee(cu_limit, price) {
-        Ok(fee) if fee <= job.fee_cap => fee,
+    // A blocked fee falls back to price 0 so the core and its maximum fee still agree (the
+    // approval request refuses an intent whose maximum fee is not the formula's value).
+    let (price, maximum) = match max_fee(cu_limit, price) {
+        Ok(fee) if fee <= job.fee_cap => (price, fee),
         Ok(_) => {
             blocks.push(SolBlock::Fee(FeeError::AboveCap));
-            max_fee(cu_limit, 0).unwrap_or(0)
+            (0, max_fee(cu_limit, 0).unwrap_or(0))
         }
         Err(error) => {
             blocks.push(SolBlock::Fee(error));
-            max_fee(cu_limit, 0).unwrap_or(0)
+            (0, max_fee(cu_limit, 0).unwrap_or(0))
         }
     };
     let send_max = job.amount.is_none();
@@ -371,16 +378,17 @@ pub fn preview(transport: &dyn Transport, job: &PreviewJob) -> PreviewResult {
             0
         }),
     };
+    // What a SOL transfer leaves the sender (`Some(0)`: it empties the account).
+    let mut sender_rest = None;
     if rent_ok && amount > 0 {
         let rule = match &spl {
-            None => check_sol_send(
-                balance,
-                amount,
-                maximum,
-                rent0,
-                account != AccountClass::Missing,
-            )
-            .err(),
+            None => match check_sol_send(balance, amount, maximum, rent0, recipient_lamports) {
+                Ok(rest) => {
+                    sender_rest = Some(rest);
+                    None
+                }
+                Err(error) => Some(error),
+            },
             Some(lookup) => check_spl_send(
                 balance,
                 maximum,
@@ -424,7 +432,10 @@ pub fn preview(transport: &dyn Transport, job: &PreviewJob) -> PreviewResult {
             Err(failure) => return failed(job.job, failure),
         }
     }
-    if let Err(error) = check_rpc_fee(rpc_fee, maximum, send_max && spl.is_none()) {
+    // A SOL transfer that leaves the sender exactly 0 is a "send max" for the cross-check
+    // whatever the amount field said: a lower real fee would leave dust below rent0 (spec/07 §10).
+    let empties_sender = spl.is_none() && (send_max || sender_rest == Some(0));
+    if let Err(error) = check_rpc_fee(rpc_fee, maximum, empties_sender) {
         blocks.push(SolBlock::Fee(error));
     }
     let simulation = sol_rpc::simulate(
@@ -482,12 +493,13 @@ pub enum PreSignError {
     Rpc(ErrorCode),
     /// `getGenesisHash` differs.
     ClusterMismatch,
-    /// `lastValidBlockHeight` outside `h..=h + 300`.
+    /// `lastValidBlockHeight` outside `h + 100..=h + 300`.
     RpcAnomaly,
 }
 
 /// Step 5 (spec/07 §13.1): genesis again, `getLatestBlockhash(finalized)`,
-/// `getBlockHeight(finalized)` and the range check. Returns `(blockhash, lastValidBlockHeight)`.
+/// `getBlockHeight(finalized)` and the range check `h + SOL_MIN_LVBH_AHEAD ≤ lvbh ≤ h +
+/// SOL_MAX_LVBH_AHEAD`. Returns `(blockhash, lastValidBlockHeight)`.
 ///
 /// # Errors
 ///
@@ -504,7 +516,9 @@ pub fn pre_sign(
         .map_err(|failure| PreSignError::Rpc(classify(failure)))?;
     let height = sol_rpc::block_height(&client, &endpoint.url)
         .map_err(|failure| PreSignError::Rpc(classify(failure)))?;
-    if last_valid < height || last_valid > height.saturating_add(SOL_MAX_LVBH_AHEAD) {
+    if last_valid < height.saturating_add(SOL_MIN_LVBH_AHEAD)
+        || last_valid > height.saturating_add(SOL_MAX_LVBH_AHEAD)
+    {
         return Err(PreSignError::RpcAnomaly);
     }
     Ok((blockhash, last_valid))
@@ -525,6 +539,11 @@ pub struct TrackJob {
     pub state: LoopState,
     /// Check `getGenesisHash` first (first round after start/unlock/URL change).
     pub check_genesis: bool,
+    /// Monotonic ms (the [`Clock::now_ms`] clock) at which this session started tracking the
+    /// record: its signing, or the loop's resumption after start or unlock (spec/07 §14.3).
+    pub tracked_since_ms: u64,
+    /// The UI's endpoint generation when the round started (echoed in [`TrackResult`]).
+    pub generation: u64,
 }
 
 /// A round's result.
@@ -540,11 +559,16 @@ pub struct TrackResult {
     pub genesis_ok: Option<bool>,
     /// `sendTransaction` calls made this round (tests: never more than one, same bytes).
     pub sends: u32,
+    /// [`TrackJob::generation`]: a result of an older generation is stale (the URL changed while
+    /// it ran) and is discarded.
+    pub generation: u64,
 }
 
-/// One round (spec/07 §14.2–§14.3): status (history off) → plan → re-send the same bytes and/or
-/// `getBlockHeight` → history lookup only when the height is past `lastValidBlockHeight` →
-/// [`decide`]. No re-signing exists here.
+/// One round (spec/07 §14.2–§14.3): (first round of the session: send first) → status (history
+/// off) → plan → re-send the same bytes and/or `getEpochInfo` (block height and slot of one view)
+/// → history lookup (with its `context.slot`) only when that height is past
+/// `lastValidBlockHeight` → [`decide`] with the wall clock and the monotonic time since
+/// [`TrackJob::tracked_since_ms`]. No re-signing exists here.
 #[must_use]
 pub fn track_round(transport: &dyn Transport, job: &TrackJob, clock: &dyn Clock) -> TrackResult {
     let client = RpcClient::new(transport);
@@ -555,6 +579,7 @@ pub fn track_round(transport: &dyn Transport, job: &TrackJob, clock: &dyn Clock)
         outcome: Ok(Outcome::Pending { notice: false }),
         genesis_ok: None,
         sends: 0,
+        generation: job.generation,
     };
     if job.check_genesis {
         match check_genesis(&client, &job.endpoint) {
@@ -572,43 +597,55 @@ pub fn track_round(transport: &dyn Transport, job: &TrackJob, clock: &dyn Clock)
     }
     let signature_text = yw_core::codec::base58::base58_encode(&job.signature);
     let programs = sol_rpc::programs_of(&job.tx);
+    let now_ms = clock.now_ms();
+    // The first round of the session (just signed, or resumed after start/unlock) sends before it
+    // asks the status: a failing status lookup must not hold back the first broadcast. Sending
+    // the same bytes again is harmless even if they already landed.
+    let first = job.state.last_round_ms.is_none() && !job.state.stop_rebroadcast;
+    let early = first.then(|| {
+        result.sends = result.sends.saturating_add(1);
+        sol_rpc::send_transaction(&client, url, &job.tx, &signature_text)
+    });
     let status = match sol_rpc::signature_status(&client, url, &signature_text, false, programs) {
         Ok(status) => status,
         Err(failure) => {
+            let mut state = job.state;
+            note_round(&mut state, early, false, now_ms);
+            result.state = state;
             result.outcome = Err(classify(failure));
             return result;
         }
     };
-    let now_ms = clock.now_ms();
     let round = plan(&job.state, status, now_ms);
-    let send = round.send.then(|| {
-        result.sends = result.sends.saturating_add(1);
-        sol_rpc::send_transaction(&client, url, &job.tx, &signature_text)
+    let send = early.or_else(|| {
+        round.send.then(|| {
+            result.sends = result.sends.saturating_add(1);
+            sol_rpc::send_transaction(&client, url, &job.tx, &signature_text)
+        })
     });
-    let height = if round.height {
-        sol_rpc::block_height(&client, url).ok()
+    let chain = if round.height {
+        sol_rpc::epoch_view(&client, url).ok()
     } else {
         None
     };
-    let history = if status == SigStatus::NotFound && wants_history(&job.pending, height) {
-        sol_rpc::signature_status(&client, url, &signature_text, true, programs).ok()
+    let history = if status == SigStatus::NotFound && wants_history(&job.pending, chain) {
+        sol_rpc::signature_history(&client, url, &signature_text, programs).ok()
     } else {
         None
     };
     let observation = Observation {
         status,
         send,
-        height,
+        chain,
         history,
     };
-    let mut state = job.state;
-    result.outcome = Ok(decide(
-        &job.pending,
-        &mut state,
-        &observation,
+    let times = RoundTimes {
         now_ms,
-        clock.now_unix_ms(),
-    ));
+        now_unix_ms: clock.now_unix_ms(),
+        mono_elapsed: now_ms.saturating_sub(job.tracked_since_ms),
+    };
+    let mut state = job.state;
+    result.outcome = Ok(decide(&job.pending, &mut state, &observation, &times));
     result.state = state;
     result
 }

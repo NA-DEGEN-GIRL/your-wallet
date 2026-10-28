@@ -621,7 +621,7 @@ impl App {
                     KnownKind::Own { index } => {
                         format!("내 계정 #{}: {}", index.saturating_add(1), exact.label)
                     }
-                    KnownKind::Sent => "보낸 적 있는 주소".to_owned(),
+                    KnownKind::Sent | KnownKind::History => "보낸 적 있는 주소".to_owned(),
                 };
                 items.push(Item::Banner(note, Tone::Info));
             }
@@ -629,7 +629,7 @@ impl App {
                 let name = match lookalike.kind {
                     KnownKind::Book { .. } => format!("주소록 '{}'", lookalike.label),
                     KnownKind::Own { .. } => format!("내 계정 '{}'", lookalike.label),
-                    KnownKind::Sent => "보낸 내역의 주소".to_owned(),
+                    KnownKind::Sent | KnownKind::History => "보낸 내역의 주소".to_owned(),
                 };
                 items.push(Item::Banner(
                     format!(
@@ -756,7 +756,7 @@ impl App {
             .filter_map(|entry| match entry.kind {
                 KnownKind::Book { .. } => Some((format!("주소록: {}", entry.label), entry.address)),
                 KnownKind::Own { .. } => Some((format!("내 계정: {}", entry.label), entry.address)),
-                KnownKind::Sent => None,
+                KnownKind::Sent | KnownKind::History => None,
             })
             .filter(|(label, address)| {
                 filter.is_empty()
@@ -950,8 +950,10 @@ impl App {
                         .to_owned(),
                 ));
                 items.push(Item::Banner(
-                    "조회하는 모든 주소가 RPC 공급자(설정한 solana 엔드포인트의 운영자)에 전달되어 서로 연결될 수 있습니다."
-                        .to_owned(),
+                    format!(
+                        "조회하는 모든 주소가 RPC 공급자(설정한 {} 엔드포인트의 운영자)에 전달되어 서로 연결될 수 있습니다.",
+                        self.sol_cluster().network_id()
+                    ),
                     Tone::Warn,
                 ));
                 items.push(Item::Row(vec![

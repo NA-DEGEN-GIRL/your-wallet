@@ -16,7 +16,7 @@ use super::display::{
     L08, SimSummary, SolPreviewFacts, SplPreviewFacts, build_sol_transfer_request, max_sol_debit,
     transfer_title,
 };
-use super::fee::max_fee;
+use super::fee::{SOL_TRANSFER_CU_LIMIT, SPL_TRANSFER_CU_LIMIT, max_fee};
 use super::intent::{SolTransferIntent, flags};
 use super::message::{
     CompiledIx, SolParseError, assemble_transaction, encode_legacy_message, encode_message,
@@ -581,10 +581,19 @@ fn spl_facts(intent: &SolTransferIntent, to_ata_exists: bool) -> SolPreviewFacts
     }
 }
 
+/// The golden transfer at the template's compute-unit limit (what intents carry; the 40,000-CU
+/// golden is a vector only, which signing and the approval request refuse).
+fn template_core() -> SolTransferCore {
+    SolTransferCore {
+        cu_limit: SPL_TRANSFER_CU_LIMIT,
+        ..golden_core()
+    }
+}
+
 #[test]
-fn spl_signing_reproduces_the_golden_and_journals_526_bytes() {
+fn spl_signing_matches_the_reference_key_and_journals_526_bytes() {
     let vault = unlocked_with(ABOUT);
-    let intent = spl_intent(golden_core(), SolCluster::Mainnet, flags::FIRST_TIME);
+    let intent = spl_intent(template_core(), SolCluster::Mainnet, flags::FIRST_TIME);
     let draft = build_sol_transfer_request(
         &intent,
         &SolCluster::Mainnet.genesis(),
@@ -595,13 +604,22 @@ fn spl_signing_reproduces_the_golden_and_journals_526_bytes() {
     let request = store.issue(draft, 1_000, intent.created_at_ms).unwrap();
     let approved = store.consume(request.id, request.digest, 2_000).unwrap();
     let signed = sign_transfer(&vault, approved, 2_000, BLOCKHASH, 3_000).unwrap();
-    assert_eq!(
-        base58_encode(&signed.signature),
-        "5iVhrE6aU2jjv4CyoJKYkqAd3xpPcdPynaGWW32yt6daMUZm1jAdVWq4aSyFNpB4eyU2SGhB6p7tB8eLrMdoGt8L"
-    );
-    assert_eq!(
-        hex::encode(&Sha256::digest(&signed.tx)),
-        "46315e8842900c9dc7f7fab61f0ed80b71ff5c6b622bdf157b6986acccf95e7f"
+    // The vault signs exactly what the RFC 8032 key of the golden (`t_spl_golden`) signs.
+    let message = encode_message(&template_core(), &BLOCKHASH);
+    assert_eq!(message.len(), T_SPL_MESSAGE_LEN);
+    let key = SigningKey::from_bytes(&hex::decode(STANDARD0_SECRET).unwrap().try_into().unwrap());
+    let reference = key.sign(&message).to_bytes();
+    assert_eq!(signed.signature, reference);
+    assert_eq!(signed.tx, assemble_transaction(&reference, &message));
+    // The 40,000-CU golden itself is refused before any key use.
+    let golden = spl_intent(golden_core(), SolCluster::Mainnet, flags::FIRST_TIME);
+    assert!(
+        build_sol_transfer_request(
+            &golden,
+            &SolCluster::Mainnet.genesis(),
+            &spl_facts(&golden, false)
+        )
+        .is_err()
     );
     // Journal record: body 89 + 437 = 526 bytes, full load-time validation.
     let record = SolRecord::new_pending(&intent, &signed, 1_790_000_000_500, 1_234);
@@ -609,7 +627,7 @@ fn spl_signing_reproduces_the_golden_and_journals_526_bytes() {
     assert_eq!(body.len(), SOL_JOURNAL_HEADER_LEN + T_SPL_TX_LEN);
     assert_eq!(body.len(), 526);
     assert_eq!(SolRecord::decode(&body), Ok(record.clone()));
-    assert_eq!(record.core(), Some(golden_core()));
+    assert_eq!(record.core(), Some(template_core()));
     // The cluster byte decides the allowlist: the same transaction filed under devnet is damaged.
     let mut devnet = body.clone();
     devnet[3] = SolCluster::Devnet.code();
@@ -697,7 +715,7 @@ fn spl_intent_transcript_binds_the_token_fields() {
 )]
 fn spl_approval_fields_rent_display_and_send_max() {
     let intent = spl_intent(
-        golden_core(),
+        template_core(),
         SolCluster::Mainnet,
         flags::FIRST_TIME | flags::SEND_MAX,
     );
@@ -710,7 +728,7 @@ fn spl_approval_fields_rent_display_and_send_max() {
     );
     assert_eq!(
         draft.display.title,
-        transfer_title(SolCluster::Mainnet, &golden_core())
+        transfer_title(SolCluster::Mainnet, &template_core())
     );
     let keys: Vec<u16> = draft
         .display
@@ -763,8 +781,8 @@ fn spl_approval_fields_rent_display_and_send_max() {
     assert!(ata.contains("없습니다"), "{ata}");
     assert!(ata.contains("0.002039280 SOL(2,039,280 lamports)"), "{ata}");
     let total = max_sol_debit(&intent, &facts);
-    assert_eq!(total, 5_040 + RENT165);
-    assert!(value(0x0505).value.contains("2,044,320 lamports"));
+    assert_eq!(total, 5_060 + RENT165);
+    assert!(value(0x0505).value.contains("2,044,340 lamports"));
     assert!(
         value(0x0506)
             .value
@@ -789,7 +807,7 @@ fn spl_approval_fields_rent_display_and_send_max() {
         .find(|field| field.key.0 == 0x0503)
         .unwrap();
     assert!(ata.value.contains("이미 있습니다"));
-    assert_eq!(max_sol_debit(&intent, &existing), 5_040);
+    assert_eq!(max_sol_debit(&intent, &existing), 5_060);
     // An SPL intent without SPL preview facts is refused (defensive).
     let mut missing = spl_facts(&intent, false);
     missing.spl = None;
@@ -801,7 +819,8 @@ fn spl_approval_fields_rent_display_and_send_max() {
     let sol = spl_intent(
         SolTransferCore {
             asset: SolAsset::Sol,
-            ..golden_core()
+            cu_limit: SOL_TRANSFER_CU_LIMIT,
+            ..template_core()
         },
         SolCluster::Mainnet,
         0,

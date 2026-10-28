@@ -4,7 +4,7 @@
 //! strings (`message`, logs) are never read or shown: errors are classified from their JSON
 //! structure only (spec/07 §15.3). Every request uses `"commitment":"finalized"` and base64.
 
-use yw_core::sol::broadcast::{SendResult, SigStatus, err};
+use yw_core::sol::broadcast::{ChainView, HistoryView, SendResult, SigStatus, err};
 use yw_core::sol::display::SimSummary;
 use yw_core::sol::template::T_SPL_HEADER;
 use yw_core::sol::{SolAddress, SolAsset};
@@ -389,6 +389,21 @@ pub fn block_height(client: &RpcClient<'_>, url: &HttpsUrl) -> Result<u64, RpcFa
     u64_of(&result)
 }
 
+/// `getEpochInfo(finalized)` → `blockHeight` and `absoluteSlot` of the same answer (one RPC view
+/// for the expiry proof, spec/07 §14.3).
+///
+/// # Errors
+///
+/// [`RpcFailure`].
+pub fn epoch_view(client: &RpcClient<'_>, url: &HttpsUrl) -> Result<ChainView, RpcFailure> {
+    let result = client.call(url, "getEpochInfo", Value::Array(vec![finalized()]))?;
+    let object = result.as_object().ok_or(RpcFailure::Malformed)?;
+    Ok(ChainView {
+        block_height: u64_of(object.get("blockHeight").ok_or(RpcFailure::Malformed)?)?,
+        slot: u64_of(object.get("absoluteSlot").ok_or(RpcFailure::Malformed)?)?,
+    })
+}
+
 /// `getFeeForMessage(base64(message), finalized)` → `None` for `null`.
 ///
 /// # Errors
@@ -546,13 +561,61 @@ pub fn signature_status(
     history: bool,
     programs: &[IxProgram],
 ) -> Result<SigStatus, RpcFailure> {
+    signature_status_at(client, url, signature, history, programs).map(|(status, _)| status)
+}
+
+/// `result.context.slot` of an `RpcResponse`.
+fn context_slot(result: &Value) -> Result<u64, RpcFailure> {
+    u64_of(
+        result
+            .as_object()
+            .and_then(|object| object.get("context"))
+            .and_then(Value::as_object)
+            .and_then(|context| context.get("slot"))
+            .ok_or(RpcFailure::Malformed)?,
+    )
+}
+
+/// `getSignatureStatuses([sig], {searchTransactionHistory:true})` with the response's
+/// `context.slot` (the expiry proof only trusts a `null` answered at or after the slot of its
+/// height view, spec/07 §14.3).
+///
+/// # Errors
+///
+/// [`RpcFailure`] (a missing `context.slot` is `Malformed`).
+pub fn signature_history(
+    client: &RpcClient<'_>,
+    url: &HttpsUrl,
+    signature: &str,
+    programs: &[IxProgram],
+) -> Result<HistoryView, RpcFailure> {
+    let (status, result) = signature_status_at(client, url, signature, true, programs)?;
+    Ok(HistoryView {
+        status,
+        context_slot: context_slot(&result)?,
+    })
+}
+
+/// The status and the whole `result` (for its `context`).
+fn signature_status_at(
+    client: &RpcClient<'_>,
+    url: &HttpsUrl,
+    signature: &str,
+    history: bool,
+    programs: &[IxProgram],
+) -> Result<(SigStatus, Value), RpcFailure> {
     let config = json_object(vec![("searchTransactionHistory", Value::Bool(history))]);
     let result = client.call(
         url,
         "getSignatureStatuses",
         Value::Array(vec![Value::Array(vec![json_str(signature)]), config]),
     )?;
-    let list = context_value(&result)?
+    let status = status_of(&result, programs)?;
+    Ok((status, result))
+}
+
+fn status_of(result: &Value, programs: &[IxProgram]) -> Result<SigStatus, RpcFailure> {
+    let list = context_value(result)?
         .as_array()
         .ok_or(RpcFailure::Malformed)?;
     let entry = list.first().ok_or(RpcFailure::Malformed)?;

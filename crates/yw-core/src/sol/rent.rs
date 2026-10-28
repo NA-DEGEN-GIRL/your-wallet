@@ -17,6 +17,14 @@ pub enum RentError {
         /// `rent0`.
         rent0: u64,
     },
+    /// An existing recipient below `rent0` (rent-paying) would stay below it: at least `needed`
+    /// lamports must be sent (`rent0 − its lamports`).
+    RecipientBelowRent {
+        /// Lamports the transfer must at least carry.
+        needed: u64,
+        /// `rent0`.
+        rent0: u64,
+    },
     /// The sender would keep `0 < r < rent0` lamports.
     SenderDust {
         /// `rent0`.
@@ -49,6 +57,12 @@ impl fmt::Display for RentError {
                 formatter,
                 "새 계정에는 최소 {} SOL을 보내야 합니다",
                 format_amount(*rent0, 9)
+            ),
+            Self::RecipientBelowRent { needed, rent0 } => write!(
+                formatter,
+                "받는 계정의 잔액이 rent 기준({} SOL)보다 적어 최소 {} SOL을 보내야 합니다",
+                format_amount(*rent0, 9),
+                format_amount(*needed, 9)
             ),
             Self::SenderDust { rent0 } => write!(
                 formatter,
@@ -86,8 +100,12 @@ pub const fn check_rent0(rent0: u64) -> Result<(), RentError> {
     Ok(())
 }
 
-/// SOL transfer rules: a new recipient needs `amount ≥ rent0`, and the sender keeps
-/// `r = balance − amount − max_fee` with `r == 0 || r ≥ rent0`. Returns `r`.
+/// SOL transfer rules (spec/07 §11): the recipient must end at or above `rent0` —
+/// `recipient_lamports` is `None` for a missing account; a missing account or one reported with
+/// 0 lamports needs `amount ≥ rent0`, an existing one below `rent0` needs
+/// `lamports + amount ≥ rent0` — and the sender keeps `r = balance − amount − max_fee` with
+/// `r == 0 || r ≥ rent0`. Returns `r`; `r == 0` empties the account like "send max", so the
+/// `getFeeForMessage` cross-check treats it as one (spec/07 §10).
 ///
 /// # Errors
 ///
@@ -97,7 +115,7 @@ pub const fn check_sol_send(
     amount: u64,
     max_fee: u64,
     rent0: u64,
-    recipient_exists: bool,
+    recipient_lamports: Option<u64>,
 ) -> Result<u64, RentError> {
     if amount == 0 {
         return Err(RentError::ZeroAmount);
@@ -105,8 +123,18 @@ pub const fn check_sol_send(
     if let Err(error) = check_rent0(rent0) {
         return Err(error);
     }
-    if !recipient_exists && amount < rent0 {
-        return Err(RentError::BelowRentForNewAccount { rent0 });
+    match recipient_lamports {
+        None | Some(0) => {
+            if amount < rent0 {
+                return Err(RentError::BelowRentForNewAccount { rent0 });
+            }
+        }
+        Some(lamports) => {
+            let needed = rent0.saturating_sub(lamports);
+            if amount < needed {
+                return Err(RentError::RecipientBelowRent { needed, rent0 });
+            }
+        }
     }
     let Some(spent) = amount.checked_add(max_fee) else {
         return Err(RentError::InsufficientBalance);
@@ -333,44 +361,81 @@ mod tests {
     fn rent_boundaries() {
         // New account: exactly rent0 passes, one less is blocked.
         assert_eq!(
-            check_sol_send(10_000_000, RENT0, 5_000, RENT0, false),
+            check_sol_send(10_000_000, RENT0, 5_000, RENT0, None),
             Ok(10_000_000 - RENT0 - 5_000)
         );
         assert_eq!(
-            check_sol_send(10_000_000, RENT0 - 1, 5_000, RENT0, false),
+            check_sol_send(10_000_000, RENT0 - 1, 5_000, RENT0, None),
             Err(RentError::BelowRentForNewAccount { rent0: RENT0 })
         );
-        assert!(check_sol_send(10_000_000, 1, 5_000, RENT0, true).is_ok());
+        assert!(check_sol_send(10_000_000, 1, 5_000, RENT0, Some(RENT0)).is_ok());
         // Sender remainder r = rent0 − 1 is dust; r = rent0 and r = 0 pass.
         let balance = 2_000_000;
         let fee = 5_000;
         let amount = balance - fee - (RENT0 - 1);
         assert_eq!(
-            check_sol_send(balance, amount, fee, RENT0, true),
+            check_sol_send(balance, amount, fee, RENT0, Some(RENT0)),
             Err(RentError::SenderDust { rent0: RENT0 })
         );
         assert_eq!(
-            check_sol_send(balance, amount - 1, fee, RENT0, true),
+            check_sol_send(balance, amount - 1, fee, RENT0, Some(RENT0)),
             Ok(RENT0)
         );
         assert_eq!(
-            check_sol_send(balance, balance - fee, fee, RENT0, true),
+            check_sol_send(balance, balance - fee, fee, RENT0, Some(RENT0)),
             Ok(0)
         );
         assert_eq!(
-            check_sol_send(balance, balance - fee + 1, fee, RENT0, true),
+            check_sol_send(balance, balance - fee + 1, fee, RENT0, Some(RENT0)),
             Err(RentError::InsufficientBalance)
         );
         assert_eq!(
-            check_sol_send(balance, 0, fee, RENT0, true),
+            check_sol_send(balance, 0, fee, RENT0, Some(RENT0)),
             Err(RentError::ZeroAmount)
         );
         assert_eq!(check_rent0(0), Err(RentError::RpcAnomaly));
         assert_eq!(check_rent0(2_000_001), Err(RentError::RpcAnomaly));
         assert_eq!(check_rent0(2_000_000), Ok(()));
         assert_eq!(
-            check_sol_send(u64::MAX, u64::MAX, 5_000, RENT0, true),
+            check_sol_send(u64::MAX, u64::MAX, 5_000, RENT0, Some(RENT0)),
             Err(RentError::InsufficientBalance)
+        );
+    }
+
+    #[test]
+    fn recipient_must_end_at_or_above_rent0() {
+        let balance = 10_000_000;
+        // An account reported with 0 lamports is a new account.
+        assert_eq!(
+            check_sol_send(balance, RENT0 - 1, 5_000, RENT0, Some(0)),
+            Err(RentError::BelowRentForNewAccount { rent0: RENT0 })
+        );
+        assert!(check_sol_send(balance, RENT0, 5_000, RENT0, Some(0)).is_ok());
+        // An existing rent-paying account below rent0 needs at least the difference.
+        let lamports = RENT0 - 1_000;
+        assert_eq!(
+            check_sol_send(balance, 999, 5_000, RENT0, Some(lamports)),
+            Err(RentError::RecipientBelowRent {
+                needed: 1_000,
+                rent0: RENT0
+            })
+        );
+        assert!(check_sol_send(balance, 1_000, 5_000, RENT0, Some(lamports)).is_ok());
+        // At or above rent0: any amount.
+        assert!(check_sol_send(balance, 1, 5_000, RENT0, Some(RENT0)).is_ok());
+        assert!(check_sol_send(balance, 1, 5_000, RENT0, Some(u64::MAX)).is_ok());
+        assert_eq!(
+            RentError::RecipientBelowRent {
+                needed: 1_000,
+                rent0: 650_240
+            }
+            .to_string(),
+            "받는 계정의 잔액이 rent 기준(0.000650240 SOL)보다 적어 최소 0.000001000 SOL을 보내야 합니다"
+        );
+        // r == 0 is reported as such (the fee cross-check then treats it as send max).
+        assert_eq!(
+            check_sol_send(balance, balance - 5_000, 5_000, RENT0, Some(RENT0)),
+            Ok(0)
         );
     }
 
@@ -388,7 +453,10 @@ mod tests {
         );
         // Send max leaves exactly 0, which the remainder rule accepts.
         let amount = send_max_amount(1_000_000, 5_000).unwrap();
-        assert_eq!(check_sol_send(1_000_000, amount, 5_000, RENT0, true), Ok(0));
+        assert_eq!(
+            check_sol_send(1_000_000, amount, 5_000, RENT0, Some(RENT0)),
+            Ok(0)
+        );
     }
 
     #[test]

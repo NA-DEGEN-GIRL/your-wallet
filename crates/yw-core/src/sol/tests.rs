@@ -12,7 +12,7 @@ use super::display::{
     L01, L02, L03, L06, L07, L08, SimSummary, SolBlock, SolPreviewFacts,
     build_sol_transfer_request, intent_flags, transfer_title,
 };
-use super::fee::{FeeError, max_fee};
+use super::fee::{FeeError, SOL_TRANSFER_CU_LIMIT, max_fee};
 use super::intent::{SolTransferIntent, flags};
 use super::message::{
     CompiledIx, SolParseError, assemble_transaction, encode_legacy_message, encode_message,
@@ -65,6 +65,15 @@ fn golden_core() -> SolTransferCore {
 }
 
 const BLOCKHASH: [u8; 32] = [7; 32];
+
+/// The golden transfer at the template's compute-unit limit (what intents carry; the 450-CU
+/// golden is a vector only, which signing and the approval request refuse).
+fn template_core() -> SolTransferCore {
+    SolTransferCore {
+        cu_limit: SOL_TRANSFER_CU_LIMIT,
+        ..golden_core()
+    }
+}
 
 fn golden_message() -> Vec<u8> {
     hex::decode(concat!(
@@ -391,24 +400,22 @@ fn approved_for(intent: &SolTransferIntent) -> (ApprovalStore, crate::approval::
 }
 
 #[test]
-fn sign_transfer_reproduces_the_golden_and_checks_everything() {
+fn sign_transfer_matches_the_reference_key_and_checks_everything() {
     let vault = unlocked_with(ABOUT);
     let standard0 = SolKeySource::Standard(AccountIndex::ZERO);
-    let intent = intent(golden_core(), standard0, flags::FIRST_TIME);
+    let intent = intent(template_core(), standard0, flags::FIRST_TIME);
     let (mut store, approved) = approved_for(&intent);
     let signed = sign_transfer(&vault, approved, 2_000, BLOCKHASH, 22_000).unwrap();
+    // The vault signs exactly what the RFC 8032 key of the golden (`t_sol_golden`) signs.
+    let message = encode_message(&template_core(), &BLOCKHASH);
+    let reference = SigningKey::from_bytes(&secret()).sign(&message).to_bytes();
+    assert_eq!(signed.signature, reference);
+    assert_eq!(signed.tx, assemble_transaction(&reference, &message));
     assert_eq!(
-        base58_encode(&signed.signature),
-        "5DpEKELbVjwDHeTJzKG8EoYQdahDegeR6onWnyBqhTBiz4b1k1YMEKutLioNjVgc1Z1wTZuFLDLW2Y6vU4cu2k2u"
+        signed.message_sha256,
+        <[u8; 32]>::from(Sha256::digest(&message))
     );
-    assert_eq!(
-        hex::encode(&Sha256::digest(&signed.tx)),
-        "7ecb80478f954ea1a3625bf0ee1776ff0991c3f8e6ceb33c6f7b198f3929f788"
-    );
-    assert_eq!(
-        hex::encode(&signed.message_sha256),
-        "09337675ae070066af49c172b5367e9007f506407d5be1bd73b846972d1edcd4"
-    );
+    assert_eq!(signed.tx.len(), T_SOL_TX_LEN);
     // ④ the same approval cannot be used twice.
     let request_id = crate::approval::ApprovalId(intent.id);
     assert!(matches!(
@@ -458,7 +465,7 @@ fn sign_transfer_reproduces_the_golden_and_checks_everything() {
         Err(SolSignError::KindMismatch)
     );
     // A template-invalid core is refused by the parse step (nothing signed).
-    let mut zero = golden_core();
+    let mut zero = template_core();
     zero.amount = 0;
     let zero_intent = intent_with_core(zero);
     let raw = crate::approval::Approved::for_test(
@@ -486,11 +493,135 @@ fn sign_transfer_reproduces_the_golden_and_checks_everything() {
 }
 
 fn intent_with_source(source: SolKeySource) -> SolTransferIntent {
-    intent(golden_core(), source, 0)
+    intent(template_core(), source, 0)
 }
 
 fn intent_with_core(core: SolTransferCore) -> SolTransferIntent {
     intent(core, SolKeySource::Standard(AccountIndex::ZERO), 0)
+}
+
+/// An approval token for `intent` without the approval request's own checks (to test that
+/// signing checks again).
+fn raw_approval(intent: SolTransferIntent) -> crate::approval::Approved {
+    crate::approval::Approved::for_test(
+        ChainRef::Solana {
+            cluster: intent.cluster,
+            genesis: intent.cluster.genesis(),
+        },
+        AccountRef::Sol(intent.core.from.to_bytes()),
+        Signer::FromPayload,
+        ApprovalKind::SolTransfer,
+        SigningPayload::SolTransfer(intent),
+    )
+}
+
+/// spec/07 §3.3, §10 (defence in depth): signing re-checks the template compute-unit limit, the
+/// maximum fee and its cap, and the non-standard-path rule before any key use.
+#[test]
+fn sign_transfer_rechecks_the_intent_rules() {
+    let vault = unlocked_with(ABOUT);
+    let sign =
+        |intent: SolTransferIntent| sign_transfer(&vault, raw_approval(intent), 0, BLOCKHASH, 0);
+    assert!(sign(intent_with_core(template_core())).is_ok());
+    // The 450-CU golden is a vector, not a template transfer.
+    assert_eq!(
+        sign(intent_with_core(golden_core())),
+        Err(SolSignError::PolicyMismatch)
+    );
+    // A maximum fee other than the formula's, one above the cap, a cap above the settings range.
+    let base = intent_with_core(template_core());
+    for bad in [
+        SolTransferIntent {
+            max_fee_lamports: base.max_fee_lamports + 1,
+            ..base
+        },
+        SolTransferIntent {
+            max_fee_lamports: base.max_fee_lamports - 1,
+            ..base
+        },
+        SolTransferIntent {
+            fee_cap_lamports: base.max_fee_lamports - 1,
+            ..base
+        },
+        SolTransferIntent {
+            fee_cap_lamports: 10_000_001,
+            ..base
+        },
+    ] {
+        assert_eq!(sign(bad), Err(SolSignError::PolicyMismatch), "{bad:?}");
+    }
+    // Non-standard path (m/44'/501'/0'): only "send max" to an own standard account
+    // (`Hh8Qw…` = m/44'/501'/1'/0').
+    let bip44 = SolKeySource::Bip44Account(AccountIndex::ZERO);
+    let moving = SolTransferCore {
+        from: addr("GjJyeC1r2RgkuoCWMyPYkCWSGSGLcz266EaAkLA27AhL"),
+        ..template_core()
+    };
+    let signed = sign(intent(
+        moving,
+        bip44,
+        flags::SEND_MAX | flags::NON_STANDARD_PATH,
+    ))
+    .unwrap();
+    assert_eq!(
+        parse_transaction(&signed.tx, SolCluster::Devnet).unwrap().0,
+        moving
+    );
+    assert_eq!(
+        sign(intent(moving, bip44, flags::NON_STANDARD_PATH)),
+        Err(SolSignError::PolicyMismatch),
+        "not send max"
+    );
+    let elsewhere = SolTransferCore {
+        // The seed's m/44'/501' (not a standard account): every standard index is compared.
+        to: addr("D2PPQSYFe83nDzk96FqGumVU8JA7J8vj2Rhjc2oXzEi5"),
+        ..moving
+    };
+    assert_eq!(
+        sign(intent(
+            elsewhere,
+            bip44,
+            flags::SEND_MAX | flags::NON_STANDARD_PATH
+        )),
+        Err(SolSignError::PolicyMismatch),
+        "not an own standard account"
+    );
+    // The approval request refuses the same intents.
+    let shown = |intent: &SolTransferIntent| {
+        build_sol_transfer_request(intent, &intent.cluster.genesis(), &facts(intent))
+    };
+    assert!(shown(&base).is_ok());
+    assert_eq!(
+        shown(&intent_with_core(golden_core())).unwrap_err(),
+        crate::approval::DisplayError::InvalidText
+    );
+    for bad in [
+        SolTransferIntent {
+            max_fee_lamports: base.max_fee_lamports + 1,
+            ..base
+        },
+        SolTransferIntent {
+            fee_cap_lamports: base.max_fee_lamports - 1,
+            ..base
+        },
+    ] {
+        assert_eq!(
+            shown(&bad).unwrap_err(),
+            crate::approval::DisplayError::InvalidText
+        );
+    }
+    // …and one whose shown recipient check is for another address than the core's recipient.
+    let mut other = facts(&base);
+    other.recipient = check_recipient(
+        "7WktogJEd2wQ9eH2oWusmcoFTgeYi6rS632UviTBJ2jm",
+        &base.core.from,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        build_sol_transfer_request(&base, &base.cluster.genesis(), &other).unwrap_err(),
+        crate::approval::DisplayError::InvalidText
+    );
 }
 
 #[test]
@@ -509,7 +640,7 @@ fn post_sign_verification_failure_is_reported() {
 
 #[test]
 fn approval_request_fields_flags_and_digest() {
-    let core = golden_core();
+    let core = template_core();
     let all = flags::SEND_MAX
         | flags::OFF_CURVE
         | flags::FIRST_TIME
@@ -585,7 +716,7 @@ fn approval_request_fields_flags_and_digest() {
 
 #[test]
 fn approval_digest_binds_every_intent_field() {
-    let core = golden_core();
+    let core = template_core();
     // The digest binds every intent byte: one flipped bit anywhere changes it.
     let base = intent(core, SolKeySource::Standard(AccountIndex::ZERO), 0);
     let draft =
@@ -768,7 +899,7 @@ fn sol_entry(record: &SolRecord) -> Entry {
 
 #[test]
 fn journal_record_round_trip_and_rejections() {
-    let record = signed_record(golden_core(), 1_790_000_000_000);
+    let record = signed_record(template_core(), 1_790_000_000_000);
     let body = record.encode().unwrap();
     assert_eq!(body.len(), SOL_JOURNAL_HEADER_LEN + T_SOL_TX_LEN);
     assert_eq!(body.len(), 356);
@@ -850,7 +981,7 @@ fn journal_record_round_trip_and_rejections() {
 
 #[test]
 fn journal_transitions_activity_and_room() {
-    let pending = signed_record(golden_core(), 1_000);
+    let pending = signed_record(template_core(), 1_000);
     let mut plain = JournalPlain::default();
     assert!(has_room(&plain));
     push_record(&mut plain, &pending).unwrap();
@@ -900,7 +1031,7 @@ fn journal_transitions_activity_and_room() {
         assert_eq!(row.tx_id, pending.tx_id());
         assert_eq!(
             row.title,
-            transfer_title(SolCluster::Devnet, &golden_core())
+            transfer_title(SolCluster::Devnet, &template_core())
         );
         assert_eq!(row.time_unix_ms, 9_999);
         let rows = take_terminal(&mut copy, 9_999);
