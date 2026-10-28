@@ -93,6 +93,17 @@ pub const fn sol_network(cluster: yw_core::sol::SolCluster) -> NetworkId {
     })
 }
 
+/// After a journal write that reported a failure: the journal read back from disk when it holds
+/// `record` exactly (the write landed anyway), `None` when it does not or cannot be read.
+fn written_anyway(vault: &Vault, record: &SolRecord) -> Option<JournalPlain> {
+    let (_, bytes) = vault.open_sidecar(FileKind::Journal).ok().flatten()?;
+    let plain = JournalPlain::decode(&bytes).ok()?;
+    SolEntries::from_plain(&plain)
+        .records()
+        .contains(record)
+        .then_some(plain)
+}
+
 /// A SOL activity row as a meta `ActivityEntry` of `solana:<cluster>` (spec/07 §14.1 table).
 #[must_use]
 pub fn sol_activity(row: &SolActivityRow) -> (NetworkId, ActivityEntry) {
@@ -278,8 +289,16 @@ impl JournalState {
         sol_push_record(&mut trial, &record).map_err(|_| SolSignFailure::JournalFull)?;
         let bytes = trial.encode().map_err(|_| SolSignFailure::JournalFull)?;
         if let Err(error) = vault.save_sidecar(FileKind::Journal, &bytes) {
-            logging::warn("journal", "journal.sol_pending_write_failed", &[]);
-            return Err(SolSignFailure::JournalWrite(error));
+            // A write can reach the disk and still report a failure (e.g. after the rename). A
+            // `Pending` record on disk will be resumed and broadcast after a restart, so it must
+            // never be reported as "not written": read the journal back, and if this record is
+            // there, track it like a written one (spec/07 §13.1-7).
+            let Some(on_disk) = written_anyway(vault, &record) else {
+                logging::warn("journal", "journal.sol_pending_write_failed", &[]);
+                return Err(SolSignFailure::JournalWrite(error));
+            };
+            logging::warn("journal", "journal.sol_pending_write_found_on_disk", &[]);
+            trial = on_disk;
         }
         logging::info(
             "journal",

@@ -388,7 +388,7 @@ RPC 분류로 **차단**하는 것은 실패 방향(서비스 거부만 가능)�
 4. **승인**: [04] §3.4 공통 조작. 고위험 경고가 있으면 D16의 "위 경고를 모두 확인했습니다" 체크박스 1개 + 2초 누르기. `ApprovalStore::consume(id, shown_digest, now)`가 1회용 `Approved`(복제 불가, [03] §11.5)를 돌려주면 그 시각을 `consumed_at_ms`로 기록한다.
 5. **서명 직전 조회**: `getGenesisHash` 재확인 → `getLatestBlockhash({commitment:"finalized"})` → `(blockhash, lastValidBlockHeight)`. 그 뒤 `getBlockHeight(finalized) = h`에 대해 `h + SOL_MIN_LVBH_AHEAD ≤ lvbh ≤ h + SOL_MAX_LVBH_AHEAD`가 아니면 `RpcAnomaly`. finalized 블록해시의 lvbh는 그 블록 높이 + 150이고 `h`는 그 뒤에 묻으므로 `lvbh ≤ h + 150`이다. 하한 `h + 100`은 두 호출 사이 진행 50블록(약 10 s)을 허용하는 가장 좁은 값이며, 너무 낮은 lvbh가 만료 증명(§14.3-1 `높이 > lvbh`)을 앞당기는 것을 막는다.
 6. **서명(yw-core)**: `now_ms ≤ consumed_at_ms + SOL_SIGN_DEADLINE_SECS × 1000` 확인 → `Approved`의 kind = `SolTransfer`·account = `intent.core.from` 확인 → `encode_message` → §9 파싱·재인코딩 동일성 → `with_ed25519_seed(intent.source, |k| …)`(§3.1) 안에서 `signing_key(k)` → 공개키 = from 확인 → 서명 → 키 소거 → `VerifyingKey::verify_strict` → 트랜잭션 조립·재파싱. 이식 근거(서명 후 재검증 패턴): `archive/spec-v2.4:crates/key-agent/src/lib.rs:328-345`.
-7. **저널 기록 후 브로드캐스트**(§14). 저널 쓰기 실패 시 서명 바이트를 버린다(전송한 적 없으므로 안전).
+7. **저널 기록 후 브로드캐스트**(§14). 저널 쓰기가 실패로 보고되면 저널을 디스크에서 다시 읽는다. 새 `Pending` 레코드가 그대로 있으면(쓰기는 반영됨) 기록된 것으로 보고 평소처럼 추적·전송한다(재시작 뒤 재개될 레코드를 "보내지 않음"으로 버리지 않는다). 없을 때만 서명 바이트를 버린다(전송한 적 없으므로 안전).
 
 - 4–6 사이의 어떤 실패(시간 초과, 잠금, RPC 오류, 불일치)도 서명 전이면 아무것도 남기지 않는다. 승인은 소비되었으므로 다시 보내려면 1단계부터 새 승인이 필요하다.
 - 같은 `intent_hash`로 저널에 레코드가 이미 있으면 서명하지 않는다(`AlreadySigned`).

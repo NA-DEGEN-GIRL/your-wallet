@@ -6,6 +6,7 @@
 //! signs a devnet USDC transfer (`T_SPL`, 526-byte body) and checks the activity `asset` = mint.
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use yw_app::events::{KeyOutcome, SolSignFailure};
 use yw_app::meta;
@@ -13,6 +14,7 @@ use yw_app::store::{FileStorage, LockedSlotBox};
 use yw_app::workers::journal::{JournalState, SolSignTimes};
 use yw_core::approval::{ApprovalStore, Approved};
 use yw_core::bip32::path::AccountIndex;
+use yw_core::error::StorageError;
 use yw_core::journal::sol::{SolTransition, SolTxState};
 use yw_core::password::VaultPassword;
 use yw_core::slip10::SolKeySource;
@@ -23,7 +25,7 @@ use yw_core::sol::intent::{SolTransferIntent, flags};
 use yw_core::sol::message::parse_transaction;
 use yw_core::sol::recipient::{AccountClass, check_recipient};
 use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolSignError, SolTransferCore};
-use yw_core::vault::{FileKind, Vault};
+use yw_core::vault::{FileKind, Vault, VaultStorage};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -208,6 +210,115 @@ fn pending_record_first_then_already_signed_then_activity() -> TestResult {
     let (_, plaintext) = vault.open_sidecar(FileKind::Meta)?.ok_or("meta missing")?;
     let document = meta::parse(&plaintext).map_err(|_| "meta parse")?.meta;
     assert_eq!(document.activity_of("solana:devnet").len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// Storage whose next journal commit fails: `Some(true)` after the bytes reached the disk,
+/// `Some(false)` without writing.
+struct FlakyJournal {
+    inner: FileStorage,
+    next: Arc<Mutex<Option<bool>>>,
+}
+
+impl VaultStorage for FlakyJournal {
+    fn load(&self, kind: FileKind) -> Result<Option<Vec<u8>>, StorageError> {
+        self.inner.load(kind)
+    }
+
+    fn load_prev(&self, kind: FileKind) -> Result<Option<Vec<u8>>, StorageError> {
+        self.inner.load_prev(kind)
+    }
+
+    fn commit(
+        &mut self,
+        kind: FileKind,
+        expected_generation: Option<u64>,
+        bytes: &[u8],
+    ) -> Result<(), StorageError> {
+        let fail = if kind == FileKind::Journal {
+            self.next.lock().map_or(None, |mut next| next.take())
+        } else {
+            None
+        };
+        match fail {
+            None => self.inner.commit(kind, expected_generation, bytes),
+            Some(false) => Err(StorageError::Io(5)),
+            Some(true) => {
+                self.inner.commit(kind, expected_generation, bytes)?;
+                Err(StorageError::Io(1_117))
+            }
+        }
+    }
+
+    fn quarantine(&mut self, kind: FileKind, now_unix: u64) -> Result<(), StorageError> {
+        self.inner.quarantine(kind, now_unix)
+    }
+}
+
+/// spec/07 §13.1-7: a journal write that failed leaves nothing and returns no transaction; one
+/// that reached the disk but reported a failure is read back and tracked as written (it would be
+/// resumed after a restart, so it must never be reported as "not sent").
+#[test]
+fn pending_write_reported_failed_but_on_disk_is_tracked() -> TestResult {
+    let dir = temp_dir("flaky")?;
+    let next = Arc::new(Mutex::new(None));
+    let mut vault = Vault::load(Box::new(FlakyJournal {
+        inner: FileStorage::open(&dir).map_err(|error| format!("{error:?}"))?,
+        next: Arc::clone(&next),
+    }))?;
+    let password = VaultPassword::new(b"m7-journal-test!").map_err(|error| format!("{error:?}"))?;
+    let slot = Box::new(LockedSlotBox::new().map_err(|error| format!("{error:?}"))?);
+    vault.import_mnemonic(&password, ABANDON, None, slot, 1_800_000_000)?;
+    let mut state = JournalState::default();
+    // Really failed: no transaction, nothing on disk.
+    *next.lock().map_err(|_| "lock")? = Some(false);
+    let failed = state.sign_sol(
+        &mut vault,
+        Box::new(approve(&intent()?)?),
+        times(yw_win::time::monotonic_ms()),
+        false,
+    );
+    assert!(matches!(
+        failed.first(),
+        Some(KeyOutcome::SignedSol(Err(SolSignFailure::JournalWrite(_))))
+    ));
+    assert!(JournalState::default().load(&vault)?.sol_records.is_empty());
+    // Written, but reported failed: tracked as written.
+    *next.lock().map_err(|_| "lock")? = Some(true);
+    let mut landed_anyway = intent()?;
+    landed_anyway.id = [0x44; 16];
+    let outcomes = state.sign_sol(
+        &mut vault,
+        Box::new(approve(&landed_anyway)?),
+        times(yw_win::time::monotonic_ms()),
+        false,
+    );
+    let Some(KeyOutcome::SignedSol(Ok(summary))) = outcomes.first() else {
+        return Err(format!("not tracked: {:?}", outcomes.first()).into());
+    };
+    let Some(KeyOutcome::Journal(Ok(view))) = outcomes.get(1) else {
+        return Err("no journal view".into());
+    };
+    assert_eq!(view.sol_records.len(), 1);
+    let on_disk = JournalState::default().load(&vault)?;
+    let record = on_disk.sol_records.first().ok_or("no record on disk")?;
+    assert_eq!(record.state, SolTxState::Pending);
+    assert_eq!(record.signature(), summary.signature);
+    assert_eq!(record.intent_hash, landed_anyway.intent_hash());
+    // Later writes still work (the generation was re-read with the journal).
+    let moved = state.apply_sol(
+        &mut vault,
+        &SolTransition::Landed {
+            signature: summary.signature,
+            slot: 9,
+        },
+        NOW + 5_000,
+        false,
+    );
+    assert!(
+        matches!(moved.first(), Some(KeyOutcome::Journal(Ok(view))) if view.sol_records.is_empty())
+    );
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
