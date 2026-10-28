@@ -165,6 +165,10 @@ pub enum VaultView {
     BackupPending,
     /// Unlocked: grants known.
     Unlocked,
+    /// Unlocked with a BIP39 passphrase that failed its check value (`App::passphrase_unverified`,
+    /// spec/02 §7.5): no grants (meta stays in memory), reads continue, connect and signing
+    /// requests end 4100 `ProviderError::PassphraseUnverified`.
+    PassphraseUnverified,
     /// Damaged vault or shutting down: like `NoVault`.
     Unavailable,
 }
@@ -350,6 +354,7 @@ pub const fn outcome_error(
         QueueOutcome::Expired => Some(ProviderError::Expired),
         QueueOutcome::TimedOut => Some(ProviderError::TimedOut),
         QueueOutcome::Revoked | QueueOutcome::NotReady => Some(ProviderError::Unauthorized),
+        QueueOutcome::PassphraseUnverified => Some(ProviderError::PassphraseUnverified),
         QueueOutcome::TooManyPending => Some(ProviderError::TooManyPending),
         QueueOutcome::Shutdown => Some(ProviderError::ConnectionClosed),
     }

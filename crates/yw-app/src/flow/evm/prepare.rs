@@ -378,20 +378,13 @@ fn token_meta(
 struct FactGaps {
     /// Lookup limit or budget reached (E27).
     limited: bool,
-    /// An `eth_getCode` failed: an address stays unclassified (see [`unclassified_warning`]).
-    unclassified: bool,
 }
 
-/// An address whose `eth_getCode` failed cannot be ruled out as an EOA spender (E16) or an
-/// unregistered contract (E21): the request is raised to high risk instead of silently showing
-/// it unclassified. (Stands in for an `Unknown` code classification in the core rules.)
-fn unclassified_warning() -> Warning {
-    Warning {
-        rule: E27,
-        level: RiskLevel::High,
-        text: "주소 분류 조회(eth_getCode)에 실패했습니다 — 승인 대상이 일반 계정(EOA)인지 확인할 수 없습니다"
-            .to_owned(),
-    }
+/// The classification of one `eth_getCode` lookup: a failed lookup is
+/// [`CodeKind::Unknown`] (E39 for an approval spender, T18 for a typed-data spender, spec/03
+/// §8.5), never left out — an unclassified spender would hide the EOA warning.
+fn code_kind(client: &RpcClient<'_>, url: &HttpsUrl, address: &Address) -> CodeKind {
+    rpc::code(client, url, address).map_or(CodeKind::Unknown, |code| CodeKind::from_code(&code))
 }
 
 /// Adds `warning` once.
@@ -421,7 +414,6 @@ fn gather_facts(
     let (tokens, addresses) = fact_targets(decoded, sim);
     let mut gaps = FactGaps {
         limited: tokens.len() > MAX_FACT_LOOKUPS || addresses.len() > MAX_FACT_LOOKUPS,
-        unclassified: false,
     };
     for token in tokens.iter().take(MAX_FACT_LOOKUPS) {
         if facts.token(token).is_some() {
@@ -461,10 +453,7 @@ fn gather_facts(
             gaps.limited = true;
             break;
         }
-        match rpc::code(client, url, address) {
-            Ok(code) => facts.code.push((*address, CodeKind::from_code(&code))),
-            Err(_) => gaps.unclassified = true,
-        }
+        facts.code.push((*address, code_kind(client, url, address)));
     }
     gaps
 }
@@ -473,9 +462,6 @@ fn gather_facts(
 fn gap_warnings(gaps: FactGaps, warnings: &mut Vec<Warning>) {
     if gaps.limited {
         push_unique(warnings, warning(E27, None));
-    }
-    if gaps.unclassified {
-        push_unique(warnings, unclassified_warning());
     }
 }
 
@@ -1096,7 +1082,7 @@ fn rebuild(
 
 /// §6.6-3: the re-simulated diff may name spenders and tokens the first preparation never
 /// classified (an approval that appeared since): they are looked up now instead of reusing the
-/// old facts; what cannot be settled adds E27 / the unclassified warning.
+/// old facts; a failed lookup is recorded as `Unknown` (E39) and a reached limit adds E27.
 fn reclassify(
     client: &RpcClient<'_>,
     url: &HttpsUrl,
@@ -1318,13 +1304,11 @@ pub fn typed_facts(
         if chain.info.label(address).is_some() || facts.code_of(address).is_some() {
             continue;
         }
-        if let Ok(code) = rpc::code(&client, url, address) {
-            let kind = CodeKind::from_code(&code);
-            if address == account {
-                facts.account_code = kind;
-            }
-            facts.code.push((*address, kind));
+        let kind = code_kind(&client, url, address);
+        if address == account {
+            facts.account_code = kind;
         }
+        facts.code.push((*address, kind));
     }
     (facts, check)
 }

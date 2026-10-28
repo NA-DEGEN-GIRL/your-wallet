@@ -46,11 +46,11 @@
 
 ### 2.2 `scripts/check.ps1`
 
-단계·순서·종료 코드·인자(`-Step`, `-Offline`)는 [01](01-repo-build.md) §4.1이 정본이다(D31). 요약: 도구 확인(10 = cargo 1.95.0·Node 22+ 없음, 11 = rustflags 환경 변수 설정됨) → fmt 20 → deps 21(`check-core-deps.mjs`) → clippy 22 → test 23 → build 24(`cargo build --workspace --locked`, 05 H1이 쓰는 `target\debug\yw-host.exe`) → `YW_CHECK=1` 설정 → ext-test 25 → script-test 26 → privacy 27 → audit-ext 28. 0 = 통과, 1 = 스크립트 자체 오류. 첫 실패에서 멈춘다. 대상 PC에서 전체 10분 이내를 목표로 한다(권고).
+단계·순서·종료 코드·인자(`-Step`, `-Offline`)는 [01](01-repo-build.md) §4.1이 정본이다(D31). 요약: 도구 확인(10 = cargo 1.95.0·Node 22+ 없음, 11 = rustflags 환경 변수 설정됨) → fmt 20 → deps 21(`check-core-deps.mjs`) → clippy 22 → test 23 → fuzz 29(fuzz-lite 스모크: `YW_FUZZ_RUNS=20000`으로 `cargo test --workspace --locked -- --ignored fuzz_lite`, 디버그 빌드, §2.4) → build 24(`cargo build --workspace --locked`, 05 H1이 쓰는 `target\debug\yw-host.exe`) → `YW_CHECK=1` 설정 → ext-test 25 → script-test 26 → privacy 27 → audit-ext 28. 0 = 통과, 1 = 스크립트 자체 오류. 첫 실패에서 멈춘다. 대상 PC에서 전체 10분 이내를 목표로 한다(권고).
 
 - deps 출력 `yw-core deps check OK: <N> crates (x86_64-pc-windows-msvc)`의 `<N>`: M0–M6 = 34(런타임 30 + 빌드 4, D5), M7 이후 40(+런타임 4·빌드 2; M8은 추가 없음). 같은 단계의 yw-app 줄은 37 / 43.
 - `YW_CHECK=1`이면 05 H1은 skip 대신 실패한다.
-- check.ps1이 실행하지 않는 것: 퍼징, `--ignored` 테스트, `scripts/probe-rpc.mjs`, 오라클(`tools/`), 체크리스트.
+- check.ps1이 실행하지 않는 것: cargo-fuzz 퍼징(`fuzz/`), fuzz-lite 전체 회수(1,000,000회)와 `fuzz_lite_*` 밖의 `--ignored` 테스트(예: 스크린샷 투어), `scripts/probe-rpc.mjs`, 오라클(`tools/`), 체크리스트. fuzz-lite `#[ignore]` 테스트는 단계 fuzz(29)가 대상당 20,000회로 돌린다.
 
 ### 2.3 이식 테스트
 
@@ -102,7 +102,7 @@
 
 - 판정: 마일스톤에 해당하는 대상 전부 600초씩, 충돌·시간 초과(입력당 2초)·RSS 초과 0건. 파서·디코더 코드가 바뀐 커밋 뒤에도 해당 대상을 다시 돌린다.
 - 충돌 처리: `cargo fuzz tmin`으로 줄인 입력을 소유 크레이트의 `tests/regressions/<target>-<n>.bin`에 넣고 `include_bytes!` 회귀 테스트를 추가한 뒤 고친다.
-- **구현 시 확인:** cargo-fuzz·libFuzzer가 x86_64-pc-windows-msvc nightly에서 `-s none`으로 빌드·실행되는지. 안 되면 대체 경로: 각 대상의 불변식을 소유 크레이트의 `#[test] #[ignore] fn fuzz_lite_<target>()`로 두고, 자체 xorshift64*(고정 seed 기록)로 시드를 비트 반전·바이트 삽입·삭제·잘라내기 변형해 대상당 1,000,000회 실행한다(`cargo test --release -- --ignored fuzz_lite`). 판정 기준은 같다. 외부 크레이트는 쓰지 않는다.
+- **구현 시 확인:** cargo-fuzz·libFuzzer가 x86_64-pc-windows-msvc nightly에서 `-s none`으로 빌드·실행되는지. 안 되면 대체 경로: 각 대상의 불변식을 소유 크레이트의 `#[test] #[ignore] fn fuzz_lite_<target>()`로 두고, 자체 xorshift64*(고정 seed 기록)로 시드를 비트 반전·바이트 삽입·삭제·잘라내기 변형해 대상당 1,000,000회 실행한다(`cargo test --release -- --ignored fuzz_lite`; 각 테스트는 `YW_FUZZ_RUNS`가 있으면 그 회수로 돈다 — check.ps1 단계 fuzz(종료 29)는 20,000회 스모크). 판정 기준은 같다. 외부 크레이트는 쓰지 않는다.
 
 ### 2.5 라이브 확인 (구현 시 확인)
 

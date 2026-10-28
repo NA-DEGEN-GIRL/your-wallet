@@ -132,6 +132,8 @@ pub mod ids {
     pub const TPL_DELETE: u16 = 527;
     /// 네트워크 URL 생성.
     pub const GENERATE: u16 = 528;
+    /// 보관 항목 삭제 (`ApiKeys::prune_dormant`, spec/04 §6.6).
+    pub const PRUNE_DORMANT: u16 = 529;
     /// URL rows base (4 ids per row: 교체, 테스트, 삭제).
     pub const ROW_BASE: u16 = 540;
     /// URL rows span.
@@ -214,6 +216,7 @@ pub mod ids {
         TPL_SAVE,
         TPL_DELETE,
         GENERATE,
+        PRUNE_DORMANT,
         REPLACE_EDIT,
         REPLACE_SAVE,
         REPLACE_CANCEL,
@@ -946,10 +949,10 @@ impl App {
                 )));
                 items.push(Item::LabeledRow(
                     "엔드포인트 이름".to_owned(),
-                    vec![Ctl::edit(ids::QN_NAME_EDIT, "", 320, true, 128)],
+                    vec![Ctl::edit(ids::QN_NAME_EDIT, "", 320, true, 256)],
                 ));
                 items.push(Item::Help(
-                    "QuickNode 엔드포인트 주소 https://<이름>.quiknode.pro/… 의 <이름> 부분입니다."
+                    "QuickNode 엔드포인트 주소 https://<이름>.quiknode.pro/… 의 <이름> 부분입니다. 대시보드의 주소 전체를 이 칸이나 토큰 칸에 붙여넣어도 됩니다(이름과 토큰을 알아서 나눕니다)."
                         .to_owned(),
                 ));
                 items.push(Item::LabeledRow(
@@ -1046,6 +1049,19 @@ impl App {
             }
         }
         items.push(Item::CardEnd);
+        let dormant = self.apikeys.dormant_names();
+        if !dormant.is_empty() {
+            items.push(Item::CardStart(Some("보관 중인 항목".to_owned())));
+            items.push(Item::Help(format!(
+                "이 버전에서 쓰지 않는 RPC 항목 {}개를 지우지 않고 보관하고 있습니다(등록되지 않은 체인의 주소나 다른 버전의 앱이 쓴 항목). 체인을 다시 추가하거나 다른 버전으로 돌아가면 다시 쓰입니다.",
+                dormant.len()
+            )));
+            items.push(Item::Row(vec![Ctl::danger(
+                ids::PRUNE_DORMANT,
+                "보관 항목 삭제",
+            )]));
+            items.push(Item::CardEnd);
+        }
     }
 
     fn other_section(&self, items: &mut Vec<Item>) {
@@ -1176,10 +1192,20 @@ impl App {
                 self.llm_notice_text().unwrap_or_default(),
                 "켜기",
             ),
+            Confirm::PruneDormant => (
+                "보관 항목 삭제",
+                format!(
+                    "이 버전에서 쓰지 않는 항목 {}개({})를 apikeys.dpapi에서 지웁니다. 나중에 그 체인을 다시 추가하거나 다른 버전의 앱을 쓰면 주소·자격 정보를 다시 입력해야 합니다.",
+                    self.apikeys.dormant_names().len(),
+                    self.apikeys.dormant_names().join(", ")
+                ),
+                "삭제",
+            ),
         };
         let destructive = matches!(
             kind,
-            Confirm::ChainDelete
+            Confirm::PruneDormant
+                | Confirm::ChainDelete
                 | Confirm::BookDelete
                 | Confirm::DisconnectAll
                 | Confirm::Discard

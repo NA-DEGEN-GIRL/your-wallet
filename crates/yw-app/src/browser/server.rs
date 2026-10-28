@@ -61,6 +61,53 @@ pub fn pipe_name() -> Result<String, yw_win::WinError> {
     ))
 }
 
+/// Minimum gap between two `accept.failed` warnings: a pipe squatter (another owner holding the
+/// name after our instances closed, `ServerError::AlreadyExists`) fails every attempt.
+pub const ACCEPT_WARN_INTERVAL_MS: u64 = 60_000;
+/// Retry delay after a squatted name (other failures retry after 100 ms).
+const SQUATTED_RETRY_MS: u64 = 1_000;
+
+/// Rate limit of the accept-loop warning: the first failure of a run is logged at once, later
+/// ones at most every [`ACCEPT_WARN_INTERVAL_MS`] with the number left out in between.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AcceptWarnings {
+    last_ms: Option<u64>,
+    suppressed: u64,
+    failures: u64,
+}
+
+impl AcceptWarnings {
+    /// A failed accept at `now_ms`: `Some(suppressed)` when a warning is due now.
+    pub const fn failed(&mut self, now_ms: u64) -> Option<u64> {
+        self.failures = self.failures.saturating_add(1);
+        let due = match self.last_ms {
+            None => true,
+            Some(last) => now_ms.saturating_sub(last) >= ACCEPT_WARN_INTERVAL_MS,
+        };
+        if due {
+            let suppressed = self.suppressed;
+            self.last_ms = Some(now_ms);
+            self.suppressed = 0;
+            Some(suppressed)
+        } else {
+            self.suppressed = self.suppressed.saturating_add(1);
+            None
+        }
+    }
+
+    /// A successful accept: the number of failures since the last success (0 = nothing to
+    /// report); the limiter starts over.
+    pub const fn succeeded(&mut self) -> u64 {
+        let failures = self.failures;
+        *self = Self {
+            last_ms: None,
+            suppressed: 0,
+            failures: 0,
+        };
+        failures
+    }
+}
+
 /// Creates the first instance (call at startup, spec/05 §8.1) and starts the accept thread.
 ///
 /// # Errors
@@ -77,13 +124,41 @@ pub fn start(
     let thread = std::thread::Builder::new()
         .name("yw-pipe".to_owned())
         .spawn(move || {
+            let mut warnings = AcceptWarnings::default();
             loop {
                 match server.accept() {
-                    Ok(duplex) => connection(&core, duplex, &pinned_origin),
+                    Ok(duplex) => {
+                        let failures = warnings.succeeded();
+                        if failures > 0 {
+                            logging::info(
+                                "pipe",
+                                "accept.recovered",
+                                &[("failures", Field::Num(failures))],
+                            );
+                        }
+                        connection(&core, duplex, &pinned_origin);
+                    }
                     Err(ServerError::Stopped) => break,
-                    Err(_) => {
-                        logging::warn("pipe", "accept.failed", &[]);
-                        std::thread::sleep(Duration::from_millis(100));
+                    Err(error) => {
+                        let squatted = matches!(error, ServerError::AlreadyExists);
+                        if let Some(suppressed) = warnings.failed(yw_win::time::monotonic_ms()) {
+                            logging::warn(
+                                "pipe",
+                                "accept.failed",
+                                &[
+                                    (
+                                        "reason",
+                                        Field::Word(if squatted { "squatted" } else { "os" }),
+                                    ),
+                                    ("suppressed", Field::Num(suppressed)),
+                                ],
+                            );
+                        }
+                        std::thread::sleep(Duration::from_millis(if squatted {
+                            SQUATTED_RETRY_MS
+                        } else {
+                            100
+                        }));
                     }
                 }
             }
@@ -243,5 +318,27 @@ fn write_loop(receiver: &Receiver<Outbound>, writer: &mut PipeWriter) {
         if write_frame(writer, &bytes, MAX_FRAME_BYTES).is_err() {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ACCEPT_WARN_INTERVAL_MS, AcceptWarnings};
+
+    /// A squatted pipe name fails every accept: one warning at once, then at most one per
+    /// interval carrying the number left out; a success reports the failures and starts over.
+    #[test]
+    fn accept_warnings_are_rate_limited() {
+        let mut warnings = AcceptWarnings::default();
+        assert_eq!(warnings.failed(1_000), Some(0));
+        for step in 1..=50 {
+            assert_eq!(warnings.failed(1_000 + step * 1_000), None);
+        }
+        assert_eq!(warnings.failed(1_000 + ACCEPT_WARN_INTERVAL_MS - 1), None);
+        assert_eq!(warnings.failed(1_000 + ACCEPT_WARN_INTERVAL_MS), Some(51));
+        assert_eq!(warnings.failed(1_000 + ACCEPT_WARN_INTERVAL_MS + 10), None);
+        assert_eq!(warnings.succeeded(), 54);
+        assert_eq!(warnings.succeeded(), 0);
+        assert_eq!(warnings.failed(500_000), Some(0), "logged at once again");
     }
 }

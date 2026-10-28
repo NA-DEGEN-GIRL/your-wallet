@@ -117,6 +117,14 @@ impl App {
                     self.refresh();
                 }
             }
+            ids::QR_EIP681 | ids::QR_PLAIN => {
+                self.evm.receive_qr = if id == ids::QR_PLAIN {
+                    crate::ui::qr::EvmQrKind::PlainAddress
+                } else {
+                    crate::ui::qr::EvmQrKind::Eip681
+                };
+                self.refresh();
+            }
             ids::BOOK_VERIFIED => {
                 self.evm.book.verified = self.controls.checked(ids::BOOK_VERIFIED).unwrap_or(false);
             }

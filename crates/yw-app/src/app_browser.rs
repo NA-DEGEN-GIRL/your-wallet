@@ -222,12 +222,15 @@ fn now_ms() -> u64 {
 }
 
 impl App {
-    fn vault_view(&self) -> VaultView {
+    pub(crate) fn vault_view(&self) -> VaultView {
         let locking = self.browser.as_ref().is_some_and(|browser| browser.locking);
         match self.mode {
             AppMode::Starting => VaultView::Starting,
             AppMode::NoVault => VaultView::NoVault,
             AppMode::BackupPending => VaultView::BackupPending,
+            AppMode::Unlocked {
+                alt_passphrase: true,
+            } if self.meta.is_some() && !locking => VaultView::PassphraseUnverified,
             AppMode::Unlocked { .. } if self.meta.is_some() && !locking => VaultView::Unlocked,
             AppMode::Locked
             | AppMode::Unlocking
@@ -271,10 +274,14 @@ impl App {
     }
 
     /// Pushes the UI-owned state to the dispatcher and performs the lock/unlock grant
-    /// transitions (spec/05 §4.3–§4.4). Called on every refresh.
+    /// transitions (spec/05 §4.3–§4.4). Called on every refresh. A session opened with an
+    /// unverified passphrase (`VaultView::PassphraseUnverified`) counts as unlocked here, with no
+    /// grants: the unlock still ends the dApp unlock window and drains the queue, where its site
+    /// items finish `PassphraseUnverified` (spec/02 §7.5).
     pub fn sync_browser(&mut self) {
         let view = self.wallet_view();
-        let unlocked_now = view.vault == VaultView::Unlocked;
+        let verified = view.vault == VaultView::Unlocked;
+        let unlocked_now = verified || view.vault == VaultView::PassphraseUnverified;
         let left_unlocked = !matches!(self.mode, AppMode::Unlocked { .. });
         let Some(browser) = self.browser.as_mut() else {
             return;
@@ -286,11 +293,14 @@ impl App {
         match (browser.unlocked, unlocked_now) {
             (false, true) => {
                 browser.unlocked = true;
-                let grants = self
-                    .meta
-                    .as_ref()
-                    .map(|meta| sites_from_values(&meta.connected_sites))
-                    .unwrap_or_default();
+                let grants = if verified {
+                    self.meta
+                        .as_ref()
+                        .map(|meta| sites_from_values(&meta.connected_sites))
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 let mut locked_view = view.clone();
                 locked_view.vault = VaultView::Locked;
                 core.set_wallet(locked_view);
@@ -464,6 +474,13 @@ impl App {
                 self.respond(&site.reply, Err(ProviderError::Unauthorized));
                 return;
             }
+            AppMode::Unlocked { .. } if self.passphrase_unverified() => {
+                // A stale dispatcher view let it through: refused like the dispatcher does.
+                if let Some(error) = Self::passphrase_refusal(&site.kind) {
+                    self.respond(&site.reply, Err(error));
+                    return;
+                }
+            }
             AppMode::Unlocked { .. } => {
                 if let SiteKind::Send(tx) = &site.kind
                     && self.slot_held(site.chain_id, &tx.from)
@@ -564,11 +581,25 @@ impl App {
         }
     }
 
+    /// The refusal of a connect or signing request while the session's passphrase is
+    /// unverified (spec/02 §7.5): 4100 with the reason. A revoke is not refused.
+    const fn passphrase_refusal(kind: &SiteKind) -> Option<ProviderError> {
+        if kind.is_connect() || kind.is_signing() {
+            Some(ProviderError::PassphraseUnverified)
+        } else {
+            None
+        }
+    }
+
     /// Checks of a site item taken from the queue (unlocked): returns `Some(outcome)` when it
     /// finished without a window (already answered or answered by the outcome).
     pub(crate) fn site_preflight(&mut self, site: &SiteRequest) -> Option<QueueOutcome> {
         if self.mode == AppMode::BackupPending {
             return Some(QueueOutcome::NotReady);
+        }
+        if self.passphrase_unverified() && Self::passphrase_refusal(&site.kind).is_some() {
+            // Queued while locked, then unlocked with an unverified passphrase (spec/02 §7.5).
+            return Some(QueueOutcome::PassphraseUnverified);
         }
         let grant = self.grant_of(&site.origin);
         match &site.kind {
@@ -965,6 +996,106 @@ mod tests {
             app.browser
                 .as_ref()
                 .is_some_and(|browser| browser.waiters.is_empty())
+        );
+    }
+
+    fn site(n: u8, kind: crate::browser::SiteKind) -> crate::browser::SiteRequest {
+        let method = match kind {
+            crate::browser::SiteKind::RequestAccounts => yw_core::policy::Method::RequestAccounts,
+            crate::browser::SiteKind::Revoke => yw_core::policy::Method::RevokePermissions,
+            _ => yw_core::policy::Method::PersonalSign,
+        };
+        crate::browser::SiteRequest {
+            reply: reply(n),
+            origin: yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
+            chain_id: yw_core::evm::chain::SEPOLIA,
+            deadline_ms: u64::MAX,
+            method,
+            kind,
+            compat_mode: None,
+        }
+    }
+
+    fn sign_kind() -> crate::browser::SiteKind {
+        crate::browser::SiteKind::PersonalSign {
+            account: yw_core::evm::address::parse_address(
+                "0x9858effd232b4033e47d90003d41ec34ecaeda94",
+            )
+            .unwrap(),
+            message: b"hi".to_vec(),
+        }
+    }
+
+    /// spec/02 §7.5: while `App::passphrase_unverified` the dispatcher view refuses connect and
+    /// signing (4100 `PassphraseUnverified`), a request that slipped through is answered without
+    /// a queue entry, and site requests queued while locked end `PassphraseUnverified` once the
+    /// session turns out unverified. A verified session is unaffected.
+    #[test]
+    fn unverified_passphrase_refuses_dapp_connect_and_signing() {
+        use crate::app::AppMode;
+        use crate::browser::{DappEvent, SiteKind, VaultView};
+        use crate::ui::approval::QueueOutcome;
+
+        let mut app = app();
+        app.meta = Some(crate::meta::Meta::default());
+        app.mode = AppMode::Unlocked {
+            alt_passphrase: false,
+        };
+        assert_eq!(app.vault_view(), VaultView::Unlocked);
+        app.mode = AppMode::Unlocked {
+            alt_passphrase: true,
+        };
+        assert!(app.passphrase_unverified());
+        assert_eq!(app.vault_view(), VaultView::PassphraseUnverified);
+        app.sync_browser();
+        let core = Arc::clone(&app.browser.as_ref().unwrap().core);
+        assert_eq!(core.wallet().vault, VaultView::PassphraseUnverified);
+        assert!(core.grants().is_empty());
+        // Preflight of queued items: connect and signing refused, revoke still answered.
+        for kind in [
+            SiteKind::RequestAccounts,
+            SiteKind::RequestPermissions,
+            sign_kind(),
+        ] {
+            assert_eq!(
+                app.site_preflight(&site(1, kind)),
+                Some(QueueOutcome::PassphraseUnverified)
+            );
+        }
+        assert_eq!(
+            app.site_preflight(&site(1, SiteKind::Revoke)),
+            Some(QueueOutcome::Approved)
+        );
+        // A request delivered with a stale view is answered at once, never queued.
+        app.on_dapp_event(DappEvent::Request(Box::new(site(2, sign_kind()))));
+        app.on_dapp_event(DappEvent::Request(Box::new(site(
+            3,
+            SiteKind::RequestAccounts,
+        ))));
+        assert!(app.evm.queue.is_empty());
+        // Queued while locked, then unlocked with the unverified passphrase: finished, no window.
+        app.mode = AppMode::Locked;
+        app.sync_browser();
+        app.on_dapp_event(DappEvent::Request(Box::new(site(4, sign_kind()))));
+        app.on_dapp_event(DappEvent::Request(Box::new(site(
+            5,
+            SiteKind::RequestAccounts,
+        ))));
+        assert_eq!(app.evm.queue.len(), 2);
+        app.mode = AppMode::Unlocked {
+            alt_passphrase: true,
+        };
+        // The refresh after the unlock (meta loaded) drains the queue: no window opens.
+        app.sync_browser();
+        assert!(app.evm.queue.is_empty());
+        assert!(app.evm.window.is_none());
+        // The same queued request in a verified session reaches its preflight checks normally.
+        app.mode = AppMode::Unlocked {
+            alt_passphrase: false,
+        };
+        assert_eq!(
+            app.site_preflight(&site(6, SiteKind::RequestAccounts)),
+            None
         );
     }
 

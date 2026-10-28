@@ -24,8 +24,8 @@ use yw_win::time::monotonic_ms;
 use yw_win::ui::{Handler, Msg, Reply, UiError, Window, WindowKind, WindowSpec, create_window};
 
 use crate::apikeys::{
-    APIKEYS_ENTROPY, ApiKeys, KeyName, is_registered, template_entry, valid_provider_token,
-    valid_quicknode_name,
+    APIKEYS_ENTROPY, ApiKeys, KeyName, is_registered, quicknode_credentials, template_entry,
+    valid_provider_token,
 };
 use crate::errors::{ErrorCode, key_code, vault_code};
 use crate::events::{
@@ -200,6 +200,8 @@ pub enum Confirm {
     Btc,
     /// The AI explanation privacy notice (spec/06 §2.2).
     LlmOn,
+    /// `보관 항목 삭제`: dormant `apikeys.dpapi` entries (spec/04 §6.6).
+    PruneDormant,
 }
 
 /// Screens S01–S15 (M3 subset).
@@ -488,6 +490,26 @@ fn eip55(address: &Address) -> String {
     address.to_checksum()
 }
 
+/// E-KEY-002 with the item name before the code (spec/04 §2.11, §7).
+fn key002_text(item: &str) -> String {
+    ErrorCode::Key002
+        .text()
+        .replace(" (E-KEY-002)", &format!(" ({item}) (E-KEY-002)"))
+}
+
+/// The S15 `QuickNode` fields at `저장`: `None` when both are empty, else the credential —
+/// either field may hold the whole endpoint URL pasted from the dashboard
+/// ([`quicknode_credentials`]) — or the E-KEY-002 text naming the wrong field
+/// (`QuickNodeField::label`).
+fn quicknode_input(name: &str, token: &str) -> Result<Option<(String, Zeroizing<String>)>, String> {
+    if name.trim().is_empty() && token.trim().is_empty() {
+        return Ok(None);
+    }
+    quicknode_credentials(name, token)
+        .map(Some)
+        .map_err(|field| key002_text(field.label()))
+}
+
 /// Loads `settings.json` (spec/04 §6.2).
 #[must_use]
 pub fn load_settings(paths: &Paths) -> crate::settings::SettingsLoad {
@@ -711,10 +733,12 @@ impl App {
     ///
     /// Funds sent to this wallet can only be reached again with that exact passphrase, which may
     /// be a typo. While this is `true`: every screen shows the blocking banner T-ALT-PASS, every
-    /// `받기` (S12 EVM/Solana/Bitcoin) is refused, and the browser bridge must refuse connect
-    /// and signing requests like `BackupPending` (`NotReady` / 4100, spec/05 §4.1) — the
-    /// dispatcher state (`WalletView`) is built from this query. Sending from the app stays
-    /// possible (moving funds out of a deliberately used other-passphrase wallet).
+    /// `받기` (S12 EVM/Solana/Bitcoin) is refused, and the browser bridge refuses connect and
+    /// signing requests with 4100 `ProviderError::PassphraseUnverified` (the dispatcher view
+    /// `VaultView::PassphraseUnverified` is built from this query; queued site items end
+    /// `QueueOutcome::PassphraseUnverified`) while reads continue (spec/05 §4.2, §5). Sending
+    /// from the app stays possible (moving funds out of a deliberately used other-passphrase
+    /// wallet).
     #[must_use]
     pub const fn passphrase_unverified(&self) -> bool {
         matches!(
@@ -1055,8 +1079,10 @@ impl App {
 
     // ----- events ------------------------------------------------------------------------
 
-    /// Drains the event queue (screenshot tour: the worker results of a scene).
+    /// Drains the event queue (screenshot tour: the worker results of a scene). Gated like
+    /// `ui::tour` (debug test builds only).
     #[cfg(test)]
+    #[cfg(debug_assertions)]
     pub(crate) fn tour_drain_events(&mut self) {
         self.drain_events();
     }
@@ -2065,17 +2091,28 @@ impl App {
         }
     }
 
-    /// Writes `settings` atomically; on failure keeps the previous values (E-APP-002).
+    /// Writes `settings` atomically; on failure keeps the previous values (E-APP-002). A
+    /// `settings.json` of a newer app version (`Settings::read_only`, spec/04 §6.6) is never
+    /// written: the change applies to this run only (its E-APP-001 banner says so).
     pub fn save_settings(&mut self, settings: Settings, key: &'static str) {
-        match atomic_write(&self.paths.settings(), &settings.to_json()) {
-            Ok(()) => {
-                if settings.log_level != self.settings.log_level {
-                    logging::set_level(settings.log_level);
-                }
-                self.settings = settings;
-                logging::info("app", "settings.changed", &[("key", Field::Word(key))]);
+        let written = settings.read_only().is_some()
+            || atomic_write(&self.paths.settings(), &settings.to_json()).is_ok();
+        if written {
+            if settings.log_level != self.settings.log_level {
+                logging::set_level(settings.log_level);
             }
-            Err(_) => self.error_banner(ErrorCode::App002),
+            let memory_only = settings.read_only().is_some();
+            self.settings = settings;
+            logging::info(
+                "app",
+                "settings.changed",
+                &[
+                    ("key", Field::Word(key)),
+                    ("saved", Field::Word(if memory_only { "no" } else { "yes" })),
+                ],
+            );
+        } else {
+            self.error_banner(ErrorCode::App002);
         }
         self.refresh();
     }
@@ -2301,6 +2338,11 @@ impl App {
             }
             ids::TPL_DELETE => self.delete_template_credentials(),
             ids::GENERATE => self.begin_generate(),
+            ids::PRUNE_DORMANT => {
+                if !self.apikeys.dormant_names().is_empty() {
+                    self.set_screen(Screen::Confirm(Confirm::PruneDormant));
+                }
+            }
             ids::OVERWRITE_CHECK => {
                 self.overwrite_checked =
                     self.controls.checked(ids::OVERWRITE_CHECK).unwrap_or(false);
@@ -2570,30 +2612,16 @@ impl App {
         use crate::ui::screens::ids;
         match self.settings.rpc_template {
             RpcTemplate::QuickNode => {
-                let name = self.read_wiping(ids::QN_NAME_EDIT, 128);
+                let name = self.read_wiping(ids::QN_NAME_EDIT, TOKEN_MAX_UNITS);
                 let token = self.read_wiping(ids::QN_TOKEN_EDIT, TOKEN_MAX_UNITS);
-                if name.is_empty() && token.is_empty() {
-                    return Ok(());
+                match quicknode_input(&name, &token) {
+                    Ok(None) => return Ok(()),
+                    Ok(Some((name, token))) => self.apikeys.set_quicknode(&name, &token),
+                    Err(text) => {
+                        self.info = Some(text);
+                        return Err(ErrorCode::Key002);
+                    }
                 }
-                let lower = name.trim().to_ascii_lowercase();
-                if !valid_quicknode_name(&lower) {
-                    self.info = Some(
-                        ErrorCode::Key002
-                            .text()
-                            .replace(" (E-KEY-002)", " (엔드포인트 이름) (E-KEY-002)"),
-                    );
-                    return Err(ErrorCode::Key002);
-                }
-                let token = token.trim();
-                if !valid_provider_token(token) {
-                    self.info = Some(
-                        ErrorCode::Key002
-                            .text()
-                            .replace(" (E-KEY-002)", " (토큰) (E-KEY-002)"),
-                    );
-                    return Err(ErrorCode::Key002);
-                }
-                self.apikeys.set_quicknode(&lower, token);
             }
             RpcTemplate::Alchemy => {
                 let key = self.read_wiping(ids::ALCHEMY_KEY_EDIT, TOKEN_MAX_UNITS);
@@ -2601,11 +2629,7 @@ impl App {
                     return Ok(());
                 }
                 if !valid_provider_token(key.trim()) {
-                    self.info = Some(
-                        ErrorCode::Key002
-                            .text()
-                            .replace(" (E-KEY-002)", " (알케미 키) (E-KEY-002)"),
-                    );
+                    self.info = Some(key002_text("알케미 키"));
                     return Err(ErrorCode::Key002);
                 }
                 self.apikeys.set_alchemy(key.trim());
@@ -2624,6 +2648,20 @@ impl App {
             self.info = Some("템플릿 자격 정보를 저장했습니다.".to_owned());
         }
         Ok(())
+    }
+
+    /// `보관 항목 삭제` confirmed: drops the dormant entries and saves (a failed save reloads
+    /// the file, so they stay; E-APP-002).
+    fn prune_dormant(&mut self) {
+        let removed = self.apikeys.prune_dormant();
+        if removed > 0 && self.save_apikeys() {
+            logging::info(
+                "app",
+                "apikeys.pruned",
+                &[("count", Field::Num(u64::try_from(removed).unwrap_or(0)))],
+            );
+            self.info = Some(format!("보관 항목 {removed}개를 지웠습니다."));
+        }
     }
 
     fn delete_template_credentials(&mut self) {
@@ -2820,6 +2858,10 @@ impl App {
                 self.generate();
                 self.set_screen(previous);
             }
+            Confirm::PruneDormant => {
+                self.prune_dormant();
+                self.set_screen(previous);
+            }
             Confirm::SidecarCorrupt => {}
             Confirm::JournalCorrupt => {
                 self.set_screen(Screen::Main);
@@ -2882,8 +2924,10 @@ impl App {
     }
 }
 
-/// Hooks for the screenshot tour (`ui::tour`, an `#[ignore]` test; compiled only for tests).
+/// Hooks for the screenshot tour (`ui::tour`, an `#[ignore]` test). Gated like the tour module
+/// (`#[cfg(test)]` + `#[cfg(debug_assertions)]`), so `cargo test --release` has no dead code.
 #[cfg(test)]
+#[cfg(debug_assertions)]
 impl App {
     /// The open secret window.
     pub(crate) fn tour_secret_window(&self) -> Option<&Window> {

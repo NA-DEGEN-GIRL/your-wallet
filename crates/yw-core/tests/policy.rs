@@ -53,7 +53,7 @@ fn r_m1_method_table_matches_the_shared_golden() {
 
 #[test]
 fn r_err_provider_errors_match_spec_05_section_5() {
-    let table: [(ProviderError, i64, &str); 20] = [
+    let table: [(ProviderError, i64, &str); 21] = [
         (
             ProviderError::UserRejected,
             4001,
@@ -61,6 +61,11 @@ fn r_err_provider_errors_match_spec_05_section_5() {
         ),
         (ProviderError::Expired, 4001, "Request expired."),
         (ProviderError::Unauthorized, 4100, "Unauthorized."),
+        (
+            ProviderError::PassphraseUnverified,
+            4100,
+            "Unauthorized: the wallet was opened with an unverified passphrase, so connecting and signing are disabled. Lock the wallet and unlock it with the correct passphrase.",
+        ),
         (
             ProviderError::UnsupportedMethod,
             4200,

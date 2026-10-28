@@ -14,6 +14,10 @@ pub enum ProviderError {
     Expired,
     /// 4100 `Unauthorized.`
     Unauthorized,
+    /// 4100 with the reason: the wallet was opened with a BIP39 passphrase that failed its check
+    /// value (`Unlocked { alt_passphrase: true }`, spec/02 §7.5). Connect and signing requests
+    /// are refused; reads continue.
+    PassphraseUnverified,
     /// 4200 `Unsupported method.`
     UnsupportedMethod,
     /// 4900 `Wallet is unavailable.`
@@ -65,7 +69,7 @@ impl ProviderError {
     pub const fn code(&self) -> i64 {
         match self {
             Self::UserRejected | Self::Expired => 4001,
-            Self::Unauthorized => 4100,
+            Self::Unauthorized | Self::PassphraseUnverified => 4100,
             Self::UnsupportedMethod => 4200,
             Self::Unavailable | Self::ConnectionClosed | Self::ExtensionReloaded => 4900,
             Self::ChainUnavailable => 4901,
@@ -88,6 +92,9 @@ impl ProviderError {
             Self::UserRejected => "User rejected the request.",
             Self::Expired => "Request expired.",
             Self::Unauthorized => "Unauthorized.",
+            Self::PassphraseUnverified => {
+                "Unauthorized: the wallet was opened with an unverified passphrase, so connecting and signing are disabled. Lock the wallet and unlock it with the correct passphrase."
+            }
             Self::UnsupportedMethod => "Unsupported method.",
             Self::Unavailable => "Wallet is unavailable.",
             Self::ConnectionClosed => "Wallet connection closed.",

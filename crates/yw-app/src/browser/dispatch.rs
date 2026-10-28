@@ -902,7 +902,9 @@ impl BrowserCore {
                     }
                 }
             }
-            (Method::RevokePermissions, _) if vault == VaultView::Unlocked => {
+            (Method::RevokePermissions, _)
+                if matches!(vault, VaultView::Unlocked | VaultView::PassphraseUnverified) =>
+            {
                 state.grants.retain(|site| site.origin != origin);
                 immediate(&mut state, Ok(Value::Null));
                 if grant.is_some() {
@@ -1059,6 +1061,11 @@ impl BrowserCore {
         match admission.vault {
             VaultView::NoVault | VaultView::Unavailable | VaultView::BackupPending => {
                 return Err(ProviderError::Unauthorized);
+            }
+            // spec/02 §7.5: a mistyped passphrase may have opened another (empty) wallet — no
+            // connect or signing until it is unlocked with the verified passphrase.
+            VaultView::PassphraseUnverified => {
+                return Err(ProviderError::PassphraseUnverified);
             }
             VaultView::Unlocked => {
                 let account = match kind {

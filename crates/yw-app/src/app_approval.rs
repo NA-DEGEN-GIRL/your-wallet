@@ -3028,8 +3028,10 @@ impl App {
 #[path = "app_approval_smoke.rs"]
 pub(crate) mod smoke;
 
-/// Hooks for the screenshot tour (`ui::tour`, an `#[ignore]` test; compiled only for tests).
+/// Hooks for the screenshot tour (`ui::tour`, an `#[ignore]` test). Gated like the tour module
+/// (`#[cfg(test)]` + `#[cfg(debug_assertions)]`), so `cargo test --release` has no dead code.
 #[cfg(test)]
+#[cfg(debug_assertions)]
 impl App {
     /// The open approval window.
     pub(crate) fn tour_approval_window(&self) -> Option<&Window> {

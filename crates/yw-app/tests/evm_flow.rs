@@ -809,8 +809,8 @@ fn resim_with(
 }
 
 /// spec/03 §6.6-3: a spender that appears only in the re-simulated diff is classified now (E16
-/// for an EOA), and an `eth_getCode` failure raises the request to high risk instead of leaving
-/// the spender silently unclassified.
+/// for an EOA), and an `eth_getCode` failure records it as `CodeKind::Unknown` (E39, high risk,
+/// spec/03 §8.5) instead of leaving the spender silently unclassified.
 #[test]
 fn resimulation_classifies_new_spenders() -> TestResult {
     let (prepared, request, _) = issued_happy()?;
@@ -834,7 +834,7 @@ fn resimulation_classifies_new_spenders() -> TestResult {
         Some(yw_core::approval::CodeKind::Eoa)
     );
     assert!(rules(&replacement).contains(&yw_core::evm::risk::E16.label()));
-    // The spender's code lookup fails: high risk with the unclassified warning.
+    // The spender's code lookup fails: `Unknown`, E39 (high risk), no interim E27 stand-in.
     let failing = FakeRpc::new(move |method, params| {
         if method == "eth_getCode" && param_str(params, 0).eq_ignore_ascii_case(SPENDER) {
             return Answer::Transport(yw_win::http::HttpError::Timeout);
@@ -843,22 +843,97 @@ fn resimulation_classifies_new_spenders() -> TestResult {
     });
     let result = resim_with(&request, &prepared, &failing);
     let replacement = result.prepared.ok_or("no draft")?;
+    assert_eq!(
+        replacement.context.facts.code_of(&address(SPENDER)?),
+        Some(yw_core::approval::CodeKind::Unknown)
+    );
+    let found = rules(&replacement);
     assert!(
-        replacement
-            .context
-            .facts
-            .code_of(&address(SPENDER)?)
-            .is_none()
+        found.contains(&yw_core::evm::risk::E39.label()),
+        "{found:?}"
     );
     assert!(
-        replacement
-            .draft
-            .display
-            .warnings
-            .iter()
-            .any(|warning| warning.level == RiskLevel::High && warning.text.contains("eth_getCode"))
+        !found.contains(&yw_core::evm::risk::E16.label()),
+        "{found:?}"
+    );
+    assert!(
+        !found.contains(&yw_core::evm::risk::E27.label()),
+        "{found:?}"
     );
     assert!(replacement.draft.display.risk >= RiskLevel::High);
+    Ok(())
+}
+
+/// spec/03 §8.5: a typed-data spender whose `eth_getCode` fails is recorded as
+/// `CodeKind::Unknown` (T18, high risk) instead of being left unclassified; a working lookup
+/// classifies it (an EOA spender is T09, not T18).
+#[test]
+fn typed_facts_failed_code_lookup_is_unknown_and_t18() -> TestResult {
+    use yw_core::approval::CodeKind;
+    use yw_core::evm::risk::{T09, T18, TypedRiskInput, typed_rules};
+    const TYPED_SPENDER: &str = "0x2222222222222222222222222222222222222222";
+    let deadline = S2_UNIX_MS / 1_000 + 600;
+    let source = format!(
+        r#"{{"types":{{"EIP712Domain":[{{"name":"name","type":"string"}},{{"name":"version","type":"string"}},{{"name":"chainId","type":"uint256"}},{{"name":"verifyingContract","type":"address"}}],"Permit":[{{"name":"owner","type":"address"}},{{"name":"spender","type":"address"}},{{"name":"value","type":"uint256"}},{{"name":"nonce","type":"uint256"}},{{"name":"deadline","type":"uint256"}}]}},"primaryType":"Permit","domain":{{"name":"USDC","version":"2","chainId":11155111,"verifyingContract":"0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"}},"message":{{"owner":"{USER}","spender":"{TYPED_SPENDER}","value":"5","nonce":"0","deadline":"{deadline}"}}}}"#
+    );
+    let value = yw_json::parse(source.as_bytes(), &yw_json::Limits::REQUEST)?;
+    let typed =
+        yw_core::evm::eip712::validate_typed_data_v4(source.as_bytes(), &value, 11_155_111)?;
+    let chain = ChainJob {
+        caps: sepolia().default_caps,
+        info: sepolia(),
+        url: url(),
+    };
+    let account = address(USER)?;
+    let run = |rpc: &std::sync::Arc<FakeRpc>| {
+        yw_app::flow::evm::prepare::typed_facts(
+            &rpc.shared(),
+            &mut ChainCache::default(),
+            &chain,
+            &account,
+            &typed,
+            Vec::new(),
+            &FakeClock::at(S2_UNIX_MS),
+            0,
+        )
+    };
+    let rules_of = |facts: &yw_core::approval::ChainFacts| {
+        typed_rules(
+            &TypedRiskInput {
+                chain: &chain.info,
+                account: &account,
+                typed: &typed,
+                facts,
+                now_unix_ms: S2_UNIX_MS,
+            },
+            false,
+        )
+        .iter()
+        .map(|warning| warning.rule)
+        .collect::<Vec<_>>()
+    };
+    let script = world(11_155_111, SEPOLIA_GENESIS, Vec::new());
+    let failing_script = script.clone();
+    let failing = FakeRpc::new(move |method, params| {
+        if method == "eth_getCode" && param_str(params, 0).eq_ignore_ascii_case(TYPED_SPENDER) {
+            return Answer::Transport(yw_win::http::HttpError::Timeout);
+        }
+        failing_script.get(method)
+    });
+    let (facts, check) = run(&failing);
+    assert!(matches!(check, ChainCheck::Verified { .. }), "{check:?}");
+    assert_eq!(
+        facts.code_of(&address(TYPED_SPENDER)?),
+        Some(CodeKind::Unknown)
+    );
+    let found = rules_of(&facts);
+    assert!(found.contains(&T18), "{found:?}");
+    assert!(!found.contains(&T09), "{found:?}");
+    // The same request with a working lookup: an EOA spender (T09), no T18.
+    let (facts, _) = run(&fake(script));
+    assert_eq!(facts.code_of(&address(TYPED_SPENDER)?), Some(CodeKind::Eoa));
+    let found = rules_of(&facts);
+    assert!(found.contains(&T09) && !found.contains(&T18), "{found:?}");
     Ok(())
 }
 

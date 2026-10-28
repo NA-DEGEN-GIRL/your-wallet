@@ -131,6 +131,8 @@ pub enum QueueOutcome {
     TooManyPending,
     /// `BackupPending` site request.
     NotReady,
+    /// Site connect/signing request while `App::passphrase_unverified` (spec/02 §7.5).
+    PassphraseUnverified,
     /// App shutdown.
     Shutdown,
 }

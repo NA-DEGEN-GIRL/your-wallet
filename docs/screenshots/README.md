@@ -1,4 +1,4 @@
-# 화면 투어 (2026-10-28, M6 AI 설명 화면 추가)
+# 화면 투어 (2026-10-28, M6 AI 설명 화면 추가, 리뷰 수정 통합 후 다시 찍음)
 
 완성된 지갑의 주요 화면과 창입니다. `scripts/screenshot-tour.ps1`이 만듭니다(spec/04 §11, 개발 전용). 바뀐 점과 이유는 [UX 검토](../ux-review-20261028.md)에 있습니다.
 
@@ -23,10 +23,10 @@
 | [11-send.png](11-send.png) | 보내기 — 보내는 계정 / 받는 사람(주소록 확인됨) / 금액, 예상 최대 수수료. |
 | [12-approval-simulated.png](12-approval-simulated.png) | 승인 창(시뮬레이션 성공) — 맨 위 한 문장 요약과 받는 주소 전체, 자산 변화, 핵심 정보. `승인`은 창이 앞에 나온 뒤 1초가 지나야 켜지므로 여기서는 회색입니다. |
 | [13-approval-no-simulation.png](13-approval-no-simulation.png) | 승인 창(시뮬레이션 결과 없음) — 고위험 띠, 확인 체크박스 1개, 2초 길게 누르기. |
-| [14-receive.png](14-receive.png) | 받기 — QR, 4자씩 끊은 전체 주소, 주소 복사. |
+| [14-receive.png](14-receive.png) | 받기 — QR 종류 선택(`지갑 앱용 QR (네트워크 포함)` 기본 / `주소만 QR (거래소 앱용)`), QR, 4자씩 끊은 전체 주소, 주소 복사. 카드 아래(화면 밖)에 같은 주소가 다른 EVM 체인에서도 쓰인다는 안내가 있습니다. |
 | [15-main-solana.png](15-main-solana.png) | 메인(Solana devnet) — 같은 배치, 주소 가운데 묶음 굵게. 큰 SOL 잔액 아래 허용 목록 토큰(USDC) 한 줄 요약(자세한 행은 아래 "토큰" 카드). |
 | [16-main-bitcoin.png](16-main-bitcoin.png) | 메인(Bitcoin testnet4) — 네트워크 배너, 사용 가능 잔액, 검증된 UTXO. |
-| [17-settings-rpc.png](17-settings-rpc.png) | 설정 → 네트워크(RPC) — RPC가 무엇인지, 입력 칸마다 어디서 찾는 값인지 설명. |
+| [17-settings-rpc.png](17-settings-rpc.png) | 설정 → 네트워크(RPC) — RPC가 무엇인지, 입력 칸마다 어디서 찾는 값인지 설명. QuickNode 대시보드의 엔드포인트 주소 전체를 이름 칸이나 토큰 칸에 붙여넣어도 됩니다. |
 | [18-sites.png](18-sites.png) | 연결된 사이트 — 사이트마다 볼 수 있는 계정과 연결 해제. |
 | [19-extension-popup.png](19-extension-popup.png) | 크롬 확장 팝업 — 앱 연결 상태와 dApp에 보이는 지갑(호환 모드) 선택. 실제 Chrome 대신 미리보기 페이지로 찍었습니다. |
 | [20-send-solana-usdc.png](20-send-solana-usdc.png) | Solana 보내기(v1.1) — `자산` 라디오에서 USDC를 고른 모습. 받는 사람은 지갑 주소(토큰 계정 주소가 아님)라는 안내와 보유 잔액·mint. |

@@ -652,7 +652,7 @@ pub trait LockedSlot: Send {
 
 - `enter_passphrase(pp)`: `pp`가 비면 `KeyError::PassphraseEmpty`(`passphrase_used` vault에서 빈 passphrase는 받지 않음). `addr0 = EVM 계정 0 주소(pp)`, `SHA-256(addr0)[0..4]`를 저장값과 상수 시간 비교한다.
 - 불일치 → `PassphraseMismatch`. UI는 **"passphrase가 다를 수 있습니다"** 대화상자에 [다시 입력]과 [이 passphrase로 계속]을 보여준다. 계속은 "다른 passphrase는 다른(빈) 지갑을 엽니다" 확인 체크를 켠 뒤에만 활성화된다([04](04-app-ui.md) §2.5).
-- `Unlocked { alt_passphrase: true }` 세션: 코어에서는 서명 포함 모든 기능이 동작한다. 그러나 이 passphrase는 오타일 수 있고, 이 지갑으로 받은 자산은 대소문자·공백까지 같은 passphrase로만 다시 꺼낼 수 있다. 그래서 yw-app은 모든 화면에 닫을 수 없는 경고 띠 T-ALT-PASS를 보이고, **받기(S12, 모든 체인)와 브라우저 연결·서명을 막는다**(`App::passphrase_unverified()`, [04] §2.1·§2.5; dApp은 `BackupPending`처럼 4100). 앱 자신의 보내기는 허용한다(일부러 다른 passphrase 지갑을 쓰는 경우 자산을 옮길 수 있게). meta는 디스크에서 읽지도 쓰지도 않고 메모리 기본 meta(§5.3)로 동작한다. journal은 정상 저장한다(진행 중 거래 보호). 확인값은 바꾸지 않는다.
+- `Unlocked { alt_passphrase: true }` 세션: 코어에서는 서명 포함 모든 기능이 동작한다. 그러나 이 passphrase는 오타일 수 있고, 이 지갑으로 받은 자산은 대소문자·공백까지 같은 passphrase로만 다시 꺼낼 수 있다. 그래서 yw-app은 모든 화면에 닫을 수 없는 경고 띠 T-ALT-PASS를 보이고, **받기(S12, 모든 체인)와 브라우저 연결·서명을 막는다**(`App::passphrase_unverified()`, [04] §2.1·§2.5; dApp 연결·서명은 4100 `PassphraseUnverified`, 읽기는 계속, [05] §5). 앱 자신의 보내기는 허용한다(일부러 다른 passphrase 지갑을 쓰는 경우 자산을 옮길 수 있게). meta는 디스크에서 읽지도 쓰지도 않고 메모리 기본 meta(§5.3)로 동작한다. journal은 정상 저장한다(진행 중 거래 보호). 확인값은 바꾸지 않는다.
 
 ## 8. 생성·가져오기·백업 확인
 

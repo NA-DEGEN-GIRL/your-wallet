@@ -798,6 +798,66 @@ fn r_g1_connect_lock_unlock_events_and_reads() -> TestResult {
     Ok(())
 }
 
+/// spec/02 §7.5: a session opened with an unverified BIP39 passphrase refuses connect and
+/// signing requests with 4100 and the reason (no window), while reads continue.
+#[test]
+fn passphrase_unverified_refuses_connect_and_signing_but_serves_reads() -> TestResult {
+    let refused = format!(
+        "error 4100 {}",
+        ProviderError::PassphraseUnverified.message()
+    );
+    assert!(refused.contains("unverified passphrase"));
+    let mut h = Harness::with(VaultView::PassphraseUnverified, &Settings::default());
+    for (method, params) in [
+        ("eth_requestAccounts", "[]".to_owned()),
+        (
+            "wallet_requestPermissions",
+            r#"[{"eth_accounts":{}}]"#.to_owned(),
+        ),
+        ("personal_sign", format!(r#"["0x00","{A0}"]"#)),
+        (
+            "eth_sendTransaction",
+            format!(r#"[{{"from":"{A0}","to":"{A1}"}}]"#),
+        ),
+        (
+            "eth_signTypedData_v4",
+            format!(
+                r#"["{A0}","{{\"types\":{{\"EIP712Domain\":[{{\"name\":\"chainId\",\"type\":\"uint256\"}}],\"Note\":[{{\"name\":\"text\",\"type\":\"string\"}}]}},\"primaryType\":\"Note\",\"domain\":{{\"chainId\":11155111}},\"message\":{{\"text\":\"hi\"}}}}"]"#
+            ),
+        ),
+    ] {
+        let request = h.send(SITE, 1, method, json(&params));
+        assert_eq!(text(&single(&h, &request)?), refused, "{method}");
+    }
+    assert!(h.sink.requests().is_empty(), "no approval window");
+    // Reads continue: account reads are empty (no grants), chain reads go to the read workers.
+    let accounts = h.send(SITE, 1, "eth_accounts", json("[]"));
+    assert_eq!(text(&single(&h, &accounts)?), "[]");
+    let chain = h.send(SITE, 1, "eth_chainId", json("[]"));
+    assert_eq!(text(&single(&h, &chain)?), "\"0xaa36a7\"");
+    let revoke = h.send(
+        SITE,
+        1,
+        "wallet_revokePermissions",
+        json(r#"[{"eth_accounts":{}}]"#),
+    );
+    assert_eq!(text(&single(&h, &revoke)?), "null");
+    let read = h.send(SITE, 1, "eth_blockNumber", json("[]"));
+    let context = ReadContext {
+        transport: Some(sepolia_rpc(Vec::new()).shared()),
+        checks: Mutex::new(yw_app::flow::evm::ChainCache::default()),
+        retry_delay_ms: 0,
+    };
+    run_reads(&h.core, &context);
+    assert_eq!(text(&single(&h, &read)?), "\"0x4e20\"");
+    // The outcome of a queued item (queued while locked, then unlocked unverified).
+    assert_eq!(
+        outcome_error(QueueOutcome::PassphraseUnverified),
+        Some(ProviderError::PassphraseUnverified)
+    );
+    Ok(())
+}
+
 #[test]
 fn r_g1_x3_backup_pending_no_vault_and_unconnected_accounts() -> TestResult {
     for vault in [VaultView::BackupPending, VaultView::NoVault] {

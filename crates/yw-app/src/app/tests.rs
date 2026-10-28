@@ -588,3 +588,185 @@ fn backup_discard_mainnet_and_done_texts() {
     assert!(has_text(&app.items(), "백업을 확인했습니다"));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// D2 follow-up: a `settings.json` of a newer app version is read-only — `save_settings`
+/// applies the change in memory and never rewrites the file (spec/04 §6.6).
+#[test]
+fn read_only_settings_are_never_written() {
+    let dir = temp_dir("readonly");
+    let original = br#"{"version":2,"autoLockMinutes":7,"futureKey":true}"#;
+    std::fs::write(dir.join("settings.json"), original).unwrap();
+    let loaded = crate::settings::load(Some(original));
+    assert_eq!(loaded.settings.read_only(), Some(2));
+    let mut app = App::new(
+        Paths {
+            data: dir.clone(),
+            logs: dir.join("logs"),
+        },
+        true,
+        loaded.settings,
+        ApiKeys::default(),
+    );
+    let mut changed = app.settings.clone();
+    changed.auto_lock_minutes = 9;
+    app.save_settings(changed, "autoLockMinutes");
+    assert_eq!(app.settings.auto_lock_minutes, 9, "applied for this run");
+    assert_eq!(std::fs::read(dir.join("settings.json")).unwrap(), original);
+    assert!(app.banners.is_empty(), "no E-APP-002");
+
+    // A current-version file is written as before.
+    let current = dir.join("current");
+    std::fs::create_dir_all(&current).unwrap();
+    let mut app = app_at(&current);
+    let mut changed = app.settings.clone();
+    changed.auto_lock_minutes = 9;
+    app.save_settings(changed, "autoLockMinutes");
+    let written = std::fs::read(current.join("settings.json")).unwrap();
+    let reread = crate::settings::load(Some(&written));
+    assert_eq!(reread.settings.auto_lock_minutes, 9);
+    assert_eq!(reread.settings.read_only(), None);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// D2 follow-up: S15 `QuickNode` 저장 accepts the whole dashboard URL in either field and names
+/// the wrong field in E-KEY-002 (`QuickNodeField::label`).
+#[test]
+fn quicknode_fields_accept_a_pasted_endpoint_url() {
+    use crate::apikeys::QuickNodeField;
+    const TOKEN: &str = "abcdef0123456789abcdef0123456789";
+    let url = format!("https://My-Node.base-sepolia.quiknode.pro/{TOKEN}/");
+    assert_eq!(super::quicknode_input("", ""), Ok(None));
+    assert_eq!(super::quicknode_input("  ", " "), Ok(None));
+    for (name, token) in [
+        (url.as_str(), ""),
+        ("", url.as_str()),
+        (url.as_str(), url.as_str()),
+        ("my-node", TOKEN),
+        (url.as_str(), TOKEN),
+    ] {
+        let (parsed_name, parsed_token) = super::quicknode_input(name, token)
+            .unwrap()
+            .expect("both fields filled");
+        assert_eq!(parsed_name, "my-node");
+        assert_eq!(parsed_token.as_str(), TOKEN);
+    }
+    let name_error = super::quicknode_input("my node", TOKEN).unwrap_err();
+    assert!(
+        name_error.ends_with(&format!(" ({}) (E-KEY-002)", QuickNodeField::Name.label())),
+        "{name_error}"
+    );
+    let token_error = super::quicknode_input("my-node", "short").unwrap_err();
+    assert!(
+        token_error.ends_with(&format!(" ({}) (E-KEY-002)", QuickNodeField::Token.label())),
+        "{token_error}"
+    );
+    // A URL in one field and a different token in the other is the token field's error.
+    let mismatch = super::quicknode_input(&url, "zzzzzzzzzzzzzzzzzzzz").unwrap_err();
+    assert!(
+        mismatch.contains(QuickNodeField::Token.label()),
+        "{mismatch}"
+    );
+}
+
+/// D2 follow-up: dormant `apikeys.dpapi` entries are listed in S15 and removed only through the
+/// `보관 항목 삭제` confirmation (`ApiKeys::prune_dormant`, spec/04 §6.6).
+#[test]
+fn prune_dormant_entries_after_confirmation() {
+    use crate::ui::screens::ids as core_ids;
+    let dir = temp_dir("prune");
+    let mut plain = crate::apikeys::APIKEYS_MAGIC.to_vec();
+    plain.push(1);
+    let name = b"rpc:eip155:8453";
+    let value = b"https://base.example.test/v1";
+    plain.push(u8::try_from(name.len()).unwrap());
+    plain.extend_from_slice(name);
+    plain.extend_from_slice(&u16::try_from(value.len()).unwrap().to_be_bytes());
+    plain.extend_from_slice(value);
+    let decoded = ApiKeys::decode(&plain, &|_| false).unwrap();
+    assert_eq!(decoded.keys.dormant_names(), ["rpc:eip155:8453"]);
+    let mut app = App::new(
+        Paths {
+            data: dir.clone(),
+            logs: dir.join("logs"),
+        },
+        true,
+        Settings::default(),
+        decoded.keys,
+    );
+    app.mode = AppMode::Unlocked {
+        alt_passphrase: false,
+    };
+    app.meta = Some(Meta::default());
+    app.screen = Screen::Settings(super::SettingsSection::Network);
+    let items = app.items();
+    assert!(has_text(&items, "보관하고 있습니다"));
+    assert!(
+        controls(&items)
+            .iter()
+            .any(|ctl| ctl.id == core_ids::PRUNE_DORMANT)
+    );
+    // Cancel keeps them.
+    app.on_command(core_ids::PRUNE_DORMANT);
+    assert_eq!(app.screen, Screen::Confirm(Confirm::PruneDormant));
+    assert!(has_text(&app.items(), "rpc:eip155:8453"));
+    app.on_command(core_ids::CONFIRM_NO);
+    assert_eq!(app.apikeys.dormant_names().len(), 1);
+    // Confirm removes and saves them.
+    app.on_command(core_ids::PRUNE_DORMANT);
+    app.on_command(core_ids::CONFIRM_YES);
+    assert_eq!(
+        app.screen,
+        Screen::Settings(super::SettingsSection::Network)
+    );
+    assert!(app.apikeys.dormant_names().is_empty());
+    assert!(dir.join("apikeys.dpapi").is_file());
+    let (reloaded, unreadable) = super::load_apikeys(&app.paths, &app.settings);
+    assert!(!unreadable);
+    assert!(reloaded.dormant_names().is_empty());
+    let items = app.items();
+    assert!(
+        !controls(&items)
+            .iter()
+            .any(|ctl| ctl.id == core_ids::PRUNE_DORMANT)
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// D2 follow-up: the S12 EVM receive QR can encode the bare address (exchange apps) instead of
+/// EIP-681, with the network note; the shared-address note is always shown.
+#[test]
+fn evm_receive_qr_toggles_to_the_plain_address() {
+    use crate::ui::qr::{EvmQrKind, RECEIVE_SHARED_ADDRESS_NOTE};
+    use crate::ui::screens_evm::ids as evm_ids;
+    let (mut app, dir) = unlocked_app("receive-qr", false);
+    let address = parse_address("0x9858effd232b4033e47d90003d41ec34ecaeda94").unwrap();
+    app.set_screen(Screen::Receive);
+    let qr = |items: &[Item]| {
+        items.iter().find_map(|item| match item {
+            Item::Qr(payload) => Some(payload.clone()),
+            _ => None,
+        })
+    };
+    let items = app.items();
+    assert_eq!(app.evm.receive_qr, EvmQrKind::Eip681);
+    assert_eq!(
+        qr(&items),
+        Some(format!("ethereum:{}@11155111", address.to_checksum()))
+    );
+    assert!(has_text(&items, RECEIVE_SHARED_ADDRESS_NOTE));
+    assert!(!has_text(&items, "네트워크 정보가 없습니다"));
+    app.on_command(evm_ids::QR_PLAIN);
+    let items = app.items();
+    assert_eq!(app.evm.receive_qr, EvmQrKind::PlainAddress);
+    assert_eq!(qr(&items), Some(address.to_checksum()));
+    assert!(has_text(&items, "네트워크 정보가 없습니다"));
+    assert!(has_text(&items, RECEIVE_SHARED_ADDRESS_NOTE));
+    let radios: Vec<Ctl> = controls(&items)
+        .into_iter()
+        .filter(|ctl| ctl.id == evm_ids::QR_EIP681 || ctl.id == evm_ids::QR_PLAIN)
+        .collect();
+    assert_eq!(radios.len(), 2);
+    app.on_command(evm_ids::QR_EIP681);
+    assert!(qr(&app.items()).is_some_and(|payload| payload.starts_with("ethereum:")));
+    let _ = std::fs::remove_dir_all(dir);
+}

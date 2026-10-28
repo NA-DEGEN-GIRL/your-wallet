@@ -19,6 +19,7 @@ use crate::logging::format_utc;
 use crate::meta::ActivityEntry;
 use crate::network::NetworkId;
 use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::qr::{EvmQrKind, RECEIVE_SHARED_ADDRESS_NOTE};
 
 /// T-CUSTOM-CHAIN (spec/04 §2.16): the user-chain badge of S10, S15 and the A01 header.
 #[must_use]
@@ -78,6 +79,10 @@ pub mod ids {
     pub const SEND_PICK_SPAN: u16 = 40;
     /// 주소 복사.
     pub const COPY_ADDRESS: u16 = 1_000;
+    /// Receive QR: EIP-681 (`ui::qr::EvmQrKind::Eip681`).
+    pub const QR_EIP681: u16 = 1_001;
+    /// Receive QR: the bare address (`ui::qr::EvmQrKind::PlainAddress`).
+    pub const QR_PLAIN: u16 = 1_002;
     /// Book address edit.
     pub const BOOK_ADDR_EDIT: u16 = 1_010;
     /// Book label edit.
@@ -167,6 +172,8 @@ pub mod ids {
         SEND_REVIEW,
         SEND_CANCEL,
         COPY_ADDRESS,
+        QR_EIP681,
+        QR_PLAIN,
         BOOK_ADDR_EDIT,
         BOOK_LABEL_EDIT,
         BOOK_VERIFIED,
@@ -839,7 +846,30 @@ impl App {
             "보내는 사람에게 아래 주소나 QR을 알려주세요. 이 네트워크의 자산만 보내야 합니다."
                 .to_owned(),
         ));
-        items.push(Item::Qr(crate::ui::qr::evm_payload(&address, chain_id)));
+        let kind = self.evm.receive_qr;
+        items.push(Item::Row(vec![
+            Ctl::radio(
+                ids::QR_EIP681,
+                EvmQrKind::Eip681.label(),
+                kind == EvmQrKind::Eip681,
+                true,
+            ),
+            Ctl::radio(
+                ids::QR_PLAIN,
+                EvmQrKind::PlainAddress.label(),
+                kind == EvmQrKind::PlainAddress,
+                false,
+            ),
+        ]));
+        if kind == EvmQrKind::PlainAddress {
+            items.push(Item::Help(format!(
+                "주소만 담은 QR에는 네트워크 정보가 없습니다. 보내는 쪽(거래소 출금 화면 등)에서 네트워크를 {}(으)로 직접 고르세요.",
+                self.network_name(NetworkId::Eip155(chain_id))
+            )));
+        }
+        items.push(Item::Qr(crate::ui::qr::evm_receive_payload(
+            &address, chain_id, kind,
+        )));
         items.push(Item::Mono(format_address(&address)));
         items.push(Item::Help(match source {
             yw_core::vault::EvmKeySource::Derived(index) => {
@@ -854,6 +884,7 @@ impl App {
         items.push(Item::Help(
             "주소를 복사한 뒤 붙여넣은 곳에서 주소 전체를 확인하세요.".to_owned(),
         ));
+        items.push(Item::Help(RECEIVE_SHARED_ADDRESS_NOTE.to_owned()));
         items.push(Item::CardEnd);
     }
 

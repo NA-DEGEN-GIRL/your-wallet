@@ -310,6 +310,8 @@ pub struct EvmUi {
     pub delete_chain: Option<u64>,
     /// The approval window.
     pub window: Option<crate::app_approval::ApprovalUi>,
+    /// What the S12 receive QR encodes (session only, spec/04 §2.8).
+    pub receive_qr: crate::ui::qr::EvmQrKind,
 }
 
 impl EvmUi {
@@ -2120,6 +2122,7 @@ pub const fn outcome_name(outcome: QueueOutcome) -> &'static str {
         QueueOutcome::Revoked => "Revoked",
         QueueOutcome::TooManyPending => "TooManyPending",
         QueueOutcome::NotReady => "NotReady",
+        QueueOutcome::PassphraseUnverified => "PassphraseUnverified",
         QueueOutcome::Shutdown => "Shutdown",
     }
 }
