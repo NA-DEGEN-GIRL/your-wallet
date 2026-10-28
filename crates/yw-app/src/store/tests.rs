@@ -51,7 +51,7 @@ fn generations() -> (Vec<u8>, Vec<u8>) {
     let phrase = vault.create_wallet(&password, slot, 1_800_000_000).unwrap();
     let first = fs::read(dir.join("vault.ywv")).unwrap();
     let challenge = vault.backup_challenge().unwrap();
-    let words: Vec<&str> = phrase.split(' ').collect();
+    let words: Vec<&str> = phrase.expose().split(' ').collect();
     let picked = challenge
         .positions
         .map(|position| words[usize::from(position) - 1]);
@@ -154,4 +154,35 @@ fn commit_preconditions_write_nothing() {
     assert!(dir.join("meta.ywm.corrupt-1800000000").exists());
     assert!(!dir.join("meta.ywm").exists());
     fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A commit that lands but reports a failure afterwards (stopped after the replace, steps 4–6:
+/// e.g. the step 6 read-back fails) is success for the vault, which re-reads the main file;
+/// one stopped before the replace (steps 1–3) is a failure that leaves the folder empty.
+#[test]
+fn landed_commit_reported_as_failure_is_success_for_the_vault() {
+    let password = VaultPassword::new(b"m3-test-password!").unwrap();
+    for step in 1..=6_u8 {
+        let dir = temp_dir(&format!("landed{step}"));
+        let mut storage = FileStorage::open(&dir).unwrap();
+        storage.commit_until(step);
+        let mut vault = Vault::load(Box::new(storage)).unwrap();
+        let slot = Box::new(LockedSlotBox::new().unwrap());
+        let created = vault.create_wallet(&password, slot, 1_800_000_000);
+        if step >= 4 {
+            assert!(created.is_ok(), "step {step}");
+            assert_eq!(vault.status(), VaultStatus::BackupPending, "step {step}");
+            assert_eq!(main_generation(&dir), Some(1), "step {step}");
+        } else {
+            assert_eq!(
+                created.err(),
+                Some(yw_core::error::VaultError::Storage(StorageError::Io(0))),
+                "step {step}"
+            );
+            assert_eq!(vault.status(), VaultStatus::NoVault, "step {step}");
+            assert_eq!(main_generation(&dir), None, "step {step}");
+        }
+        drop(vault);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

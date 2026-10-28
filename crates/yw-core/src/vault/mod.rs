@@ -120,6 +120,11 @@ pub trait VaultStorage: Send {
 }
 
 /// The single resident secret buffer (D10), backed by a `VirtualLock` page in yw-app.
+///
+/// Wipe contract: the [`Vault`] zeroizes the whole slot before it releases it — on
+/// [`Vault::lock`], when an operation that received a slot fails, when a new session replaces
+/// the old slot, and when the `Vault` itself is dropped (`Drop` locks). Implementations need
+/// not wipe on their own drop (the yw-app `LockedBox` does so anyway).
 pub trait LockedSlot: Send {
     /// Borrows the slot.
     fn bytes(&self) -> &[u8; SLOT_LEN];

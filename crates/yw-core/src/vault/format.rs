@@ -338,10 +338,34 @@ pub(crate) struct RawKeyRecord {
     pub(crate) key: Zeroizing<[u8; 32]>,
 }
 
+impl Zeroize for RawKeyRecord {
+    fn zeroize(&mut self) {
+        self.record_id.zeroize();
+        self.created_unix.zeroize();
+        self.key.zeroize();
+    }
+}
+
 /// Decoded payload: exactly one BIP39 record followed by 0–15 raw keys.
+///
+/// `raw_keys` is allocated with room for [`MAX_RAW_KEYS`] records up front, so `push` never
+/// reallocates (a reallocation would free the old buffer with key copies in it). `retain` moves
+/// records down and leaves stale copies past `len`; `Drop` therefore zeroizes the whole
+/// capacity, not only the live records.
 pub(crate) struct Payload {
     pub(crate) bip39: Bip39Record,
     pub(crate) raw_keys: Vec<RawKeyRecord>,
+}
+
+impl Drop for Payload {
+    fn drop(&mut self) {
+        self.raw_keys.zeroize();
+    }
+}
+
+/// An empty raw-key list with the fixed capacity of [`Payload::raw_keys`].
+pub(crate) fn raw_key_list() -> Vec<RawKeyRecord> {
+    Vec::with_capacity(MAX_RAW_KEYS)
 }
 
 fn valid_scalar(key: &[u8; 32]) -> bool {
@@ -445,7 +469,7 @@ impl Payload {
             backup_confirmed,
             passphrase_check,
         };
-        let mut raw_keys: Vec<RawKeyRecord> = Vec::with_capacity(count.saturating_sub(1));
+        let mut raw_keys = raw_key_list();
         for _ in 1..count {
             if reader.u8()? != TAG_RAW_KEY {
                 return None;

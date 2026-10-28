@@ -12,7 +12,7 @@
 
 use yw_core::bip39::is_word;
 use yw_core::password::VaultPassword;
-use yw_core::secret::Zeroizing;
+use yw_core::secret::{SecretString, Zeroizing};
 use yw_win::ui::{DrawFlags, PaintDc, Rect, scale};
 
 use crate::errors::ErrorCode;
@@ -263,7 +263,7 @@ pub enum FormAction {
 /// The secret shown by W08/W09.
 pub struct DisplaySecret {
     /// Words joined by single spaces (W08) or 64 hex (W09).
-    pub text: Zeroizing<String>,
+    pub text: SecretString,
     /// EIP-55 account-0 address (W08).
     pub address: Option<String>,
     /// The wallet uses a BIP39 passphrase (W08 reveal note).
@@ -1093,8 +1093,8 @@ impl SecretForm {
     #[must_use]
     pub fn copy_units(&self) -> Option<Zeroizing<Vec<u16>>> {
         let display = self.display.as_ref()?;
-        let mut units = Zeroizing::new(Vec::with_capacity(display.text.len()));
-        units.extend(display.text.encode_utf16());
+        let mut units = Zeroizing::new(Vec::with_capacity(display.text.expose().len()));
+        units.extend(display.text.expose().encode_utf16());
         Some(units)
     }
 
@@ -1156,7 +1156,7 @@ impl SecretForm {
         let words = self
             .display
             .as_ref()
-            .map_or(24, |display| display.text.split(' ').count());
+            .map_or(24, |display| display.text.expose().split(' ').count());
         dc.select_font(&fonts.body);
         dc.set_text_color(theme::MUTED);
         for paragraph in intro(self.kind, words) {
@@ -1309,14 +1309,14 @@ impl SecretForm {
         dc.set_text_color(theme::TEXT);
         if self.kind == SecretKind::ShowKey {
             dc.select_font(&fonts.mono_large);
-            let mut units = Zeroizing::new(Vec::with_capacity(display.text.len()));
-            units.extend(display.text.encode_utf16());
+            let mut units = Zeroizing::new(Vec::with_capacity(display.text.expose().len()));
+            units.extend(display.text.expose().encode_utf16());
             let box_rect = Rect::new(margin, y, width, px(80));
             dc.round_rect(box_rect, px(6), theme::BG, theme::CARD_BORDER);
             dc.draw_text(&units, box_rect.inset(px(12)), DrawFlags::WRAP);
             return box_rect.bottom().saturating_add(px(12));
         }
-        let words: Vec<&str> = display.text.split(' ').collect();
+        let words: Vec<&str> = display.text.expose().split(' ').collect();
         let rows = words.len().div_ceil(3).max(1);
         let cell_h = px(32);
         let col_w = width / 3;

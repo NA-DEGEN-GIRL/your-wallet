@@ -43,11 +43,11 @@ fn vectors_1_to_4_full_strings_and_round_trip() {
             for (version, key) in [(XKeyVersion::Xprv, "xprv"), (XKeyVersion::Xpub, "xpub")] {
                 let official = field(chain, key);
                 let derived = derive_xkey(&seed, &path, version).unwrap();
-                assert_eq!(encode_xkey(&derived).as_str(), official, "{path} {key}");
+                assert_eq!(encode_xkey(&derived).expose(), official, "{path} {key}");
                 let decoded = decode_xkey(official).unwrap();
                 assert_eq!(decoded.version, version);
                 assert_eq!(usize::from(decoded.depth), path.depth());
-                assert_eq!(encode_xkey(&decoded).as_str(), official);
+                assert_eq!(encode_xkey(&decoded).expose(), official);
             }
             paths += 1;
         }
@@ -273,7 +273,7 @@ fn bip84_private_derivation_public_keys() {
         ),
     ] {
         let path = btc_path(BtcCoin::Mainnet, chain, index).unwrap();
-        let node = derive_xkey(seed.as_slice(), &path, XKeyVersion::Xpub).unwrap();
+        let node = derive_xkey(seed.expose().as_slice(), &path, XKeyVersion::Xpub).unwrap();
         assert_eq!(hex::encode(node.key.as_slice()), expected, "{path}");
     }
 }
@@ -284,7 +284,7 @@ fn xkey_debug_is_redacted() {
     let parts = derive_xkey(&seed, &Bip32Path::master(), XKeyVersion::Tprv).unwrap();
     let rendered = format!("{parts:?}");
     assert_eq!(rendered, "XKeyParts([REDACTED])");
-    assert!(encode_xkey(&parts).starts_with("tprv"));
+    assert!(encode_xkey(&parts).expose().starts_with("tprv"));
     let node = XPriv::from_seed(&seed).unwrap();
     assert_eq!(format!("{node:?}"), "XPriv([REDACTED])");
 }

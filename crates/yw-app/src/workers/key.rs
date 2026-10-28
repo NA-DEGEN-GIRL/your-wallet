@@ -8,7 +8,7 @@ use yw_core::bip32::path::AccountIndex;
 use yw_core::bip32::preview_evm_address;
 use yw_core::error::{KeyError, VaultError};
 use yw_core::password::{Bip39Passphrase, VaultPassword};
-use yw_core::secret::Zeroizing;
+use yw_core::secret::{SecretString, Zeroizing};
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::SolAddress;
 use yw_core::vault::{EvmKeySource, FileKind, Vault, VaultStatus, VaultStorage};
@@ -141,7 +141,7 @@ impl KeyWorker {
     fn create(
         &mut self,
         password_bytes: &[u8],
-    ) -> Result<(Zeroizing<String>, yw_core::evm::address::Address), VaultError> {
+    ) -> Result<(SecretString, yw_core::evm::address::Address), VaultError> {
         let password = password(password_bytes)?;
         let slot = new_slot()?;
         let vault = self.vault()?;
@@ -199,7 +199,7 @@ impl KeyWorker {
     ) -> Result<
         (
             RevealWhat,
-            Zeroizing<String>,
+            SecretString,
             Option<yw_core::evm::address::Address>,
         ),
         VaultError,
@@ -228,7 +228,7 @@ impl KeyWorker {
             match vault.open_sidecar(FileKind::Meta)? {
                 None => (Meta::default(), false),
                 Some((_, plaintext)) => {
-                    let parsed = meta::parse(&plaintext)
+                    let parsed = meta::parse(plaintext.expose())
                         .map_err(|_| VaultError::SidecarCorrupt(FileKind::Meta))?;
                     (parsed.meta, parsed.prefs_reset)
                 }

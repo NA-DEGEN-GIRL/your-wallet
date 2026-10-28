@@ -63,6 +63,13 @@ impl SecretVec {
         Self(Zeroizing::new(Vec::with_capacity(capacity)))
     }
 
+    /// Takes ownership of an already filled buffer without copying it; its current capacity
+    /// becomes the fixed capacity.
+    #[must_use]
+    pub const fn from_zeroizing(bytes: Zeroizing<Vec<u8>>) -> Self {
+        Self(bytes)
+    }
+
     /// Appends bytes without reallocating.
     ///
     /// # Errors
@@ -118,6 +125,13 @@ impl SecretString {
         Self(Zeroizing::new(String::with_capacity(capacity)))
     }
 
+    /// Takes ownership of an already filled string without copying it; its current capacity
+    /// becomes the fixed capacity.
+    #[must_use]
+    pub const fn from_zeroizing(text: Zeroizing<String>) -> Self {
+        Self(text)
+    }
+
     /// Appends text without reallocating.
     ///
     /// # Errors
@@ -167,7 +181,7 @@ impl fmt::Debug for SecretString {
 mod tests {
     use subtle::ConstantTimeEq;
 
-    use super::{CapacityError, SecretBytes, SecretString, SecretVec};
+    use super::{CapacityError, SecretBytes, SecretString, SecretVec, Zeroizing};
 
     #[test]
     fn wrappers_fix_capacity_zero_source_and_redact_debug() {
@@ -191,5 +205,18 @@ mod tests {
         let mut other = SecretString::with_capacity(8);
         other.push_str("hunter").unwrap();
         assert_eq!(text.ct_eq(&other).unwrap_u8(), 1);
+    }
+
+    #[test]
+    fn wrapping_a_filled_buffer_keeps_it_redacted() {
+        let text = SecretString::from_zeroizing(Zeroizing::new("abandon about".to_owned()));
+        assert_eq!(text.expose(), "abandon about");
+        assert_eq!(format!("{text:?}"), "SecretString([REDACTED])");
+        let mut full = SecretString::from_zeroizing(Zeroizing::new(String::with_capacity(2)));
+        full.push_str("ab").unwrap();
+        assert_eq!(full.push_str("c"), Err(CapacityError));
+        let bytes = SecretVec::from_zeroizing(Zeroizing::new(b"meta".to_vec()));
+        assert_eq!(bytes.expose(), b"meta");
+        assert_eq!(format!("{bytes:?}"), "SecretVec([REDACTED])");
     }
 }

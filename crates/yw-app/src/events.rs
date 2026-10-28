@@ -15,7 +15,7 @@ use yw_core::evm::sign::SignError;
 use yw_core::journal::btc::BtcRecord;
 use yw_core::journal::evm::{EvmRecord, GroupKey, Role, Transition};
 use yw_core::journal::sol::{SolRecord, SolTransition};
-use yw_core::secret::Zeroizing;
+use yw_core::secret::{SecretString, Zeroizing};
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::{SolAddress, SolCluster, SolSignError};
 use yw_core::vault::{BackupChallenge, ChallengeId, EvmKeySource, FileKind, RecordId, VaultStatus};
@@ -424,7 +424,7 @@ pub enum KeyOutcome {
         leftover: bool,
     },
     /// Wallet created: the phrase for W08 and account 0.
-    Created(Result<(Zeroizing<String>, Address), VaultError>),
+    Created(Result<(SecretString, Address), VaultError>),
     /// Import preview.
     Preview(Result<Address, KeyError>),
     /// Import committed.
@@ -438,7 +438,7 @@ pub enum KeyOutcome {
     /// Backup confirmation.
     BackupConfirmed(Result<(), VaultError>),
     /// Revealed mnemonic (+ account 0) or private key.
-    Revealed(Result<(RevealWhat, Zeroizing<String>, Option<Address>), VaultError>),
+    Revealed(Result<(RevealWhat, SecretString, Option<Address>), VaultError>),
     /// Password changed.
     PasswordChanged(Result<(), VaultError>),
     /// Raw key imported.

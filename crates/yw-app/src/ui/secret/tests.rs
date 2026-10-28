@@ -9,7 +9,7 @@ use super::{
 };
 use crate::errors::ErrorCode;
 use crate::ui::secure_field::{Charset, PushResult, SecretField};
-use yw_core::secret::Zeroizing;
+use yw_core::secret::{SecretString, Zeroizing};
 
 fn type_text(form: &mut SecretForm, text: &str, now: u64) {
     for unit in text.encode_utf16() {
@@ -125,7 +125,7 @@ fn sw1_timeout_wipes_and_focus_loss_masks() {
         SecretKind::ShowKey,
         5_000,
         DisplaySecret {
-            text: Zeroizing::new("ab".repeat(32)),
+            text: SecretString::from_zeroizing(Zeroizing::new("ab".repeat(32))),
             address: None,
             passphrase_note: false,
             copy_allowed: false,

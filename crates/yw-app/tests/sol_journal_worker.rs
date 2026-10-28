@@ -206,7 +206,9 @@ fn pending_record_first_then_already_signed_then_activity() -> TestResult {
         "[Solana devnet (테스트)] SOL 전송: 0.001000000 SOL"
     );
     let (_, plaintext) = vault.open_sidecar(FileKind::Meta)?.ok_or("meta missing")?;
-    let document = meta::parse(&plaintext).map_err(|_| "meta parse")?.meta;
+    let document = meta::parse(plaintext.expose())
+        .map_err(|_| "meta parse")?
+        .meta;
     assert_eq!(document.activity_of("solana:devnet").len(), 1);
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
