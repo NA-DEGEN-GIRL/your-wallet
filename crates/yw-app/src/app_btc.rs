@@ -1120,7 +1120,7 @@ impl BtcUi {
         if !ctx.settings.enabled || !ctx.unlocked || ctx.meta.is_none() {
             return Vec::new();
         }
-        if ctx.btc_meta().is_none() {
+        if ctx.primary_meta().is_none() {
             if ctx.core_url(ctx.net()).is_none() {
                 self.status_error = Some(ErrorCode::Key005.text());
                 return Vec::new();
@@ -1234,7 +1234,9 @@ impl BtcUi {
             self.settings_message = Some(ErrorCode::Key005.text());
             return Vec::new();
         }
-        let keep = ctx.btc_meta().is_some_and(|meta| meta.network() == network);
+        let keep = ctx
+            .primary_meta()
+            .is_some_and(|meta| meta.network() == network);
         if !keep && ctx.any_in_flight() {
             self.settings_message = Some(texts::IN_FLIGHT.to_owned());
             return Vec::new();

@@ -23,7 +23,8 @@ use crate::entropy::{OsRandom, secp_context};
 use crate::hex;
 use crate::vault::tests::unlocked_with;
 
-const ABOUT: &str =
+/// The BIP39 test mnemonic (`abandon`×11 `about`; also used by `types_tests`).
+pub(super) const ABOUT: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
 /// The unlocked `abandon`×11 `about` test vault (shared with `send_tests`, which holds no key

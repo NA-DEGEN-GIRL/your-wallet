@@ -47,7 +47,7 @@ use super::taproot::{
     Prevout, check_key_path_witness, output_key, sig_msg_default, sighash_default, sign_key_path,
     tap_tweak_hash, tweaked_keypair,
 };
-use super::tests::about_vault;
+use super::tests::{ABOUT, about_vault};
 use super::tx::{
     OutPoint, Transaction, TxIn, TxOut, Txid, parse_transaction, serialize, txid, vsize, weight,
 };
@@ -65,8 +65,6 @@ use crate::hex;
 use crate::journal::btc::BtcRecord;
 use crate::password::Bip39Passphrase;
 
-const ABOUT: &str =
-    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const TIP: u32 = 150_000;
 const NOW_MS: u64 = 9_000;
 const NOW_UNIX_MS: u64 = 1_790_000_000_000;
