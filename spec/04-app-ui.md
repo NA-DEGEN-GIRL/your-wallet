@@ -168,7 +168,7 @@ pub enum AppMode { NoVault, Locked, Unlocking, PassphraseRequired, PassphraseMis
                    Unlocked { alt_passphrase: bool }, Corrupt { prev_available: bool }, MainMissing, ShuttingDown }
 ```
 `AppMode`는 [02] `VaultStatus`에 진행 상태(`Unlocking`, `ShuttingDown`)를 더한 화면용 사본이다.
-- 주 창 화면: S01 첫 실행(`NoVault`), S02 생성 안내, S03 처리 중(KDF 진행 표시), S04 백업 대기(`BackupPending`), S05 가져오기, S06 첫 주소 확인, S07 잠금 화면(`Locked`·`PassphraseRequired`), S08 완료, S09 복구(`Corrupt`·`MainMissing`), S10 메인(`Unlocked`), S11 보내기·결과, S12 받기, S13 연결된 사이트, S14 주소록, S15 설정, S16 토큰 추가, S17 EVM 체인 추가·편집(§2.17).
+- 주 창 화면: S01 첫 실행(`NoVault`), S02 생성 안내, S03 처리 중(KDF 진행 표시), S04 백업 대기(`BackupPending`), S05 가져오기, S06 첫 주소 확인, S07 잠금 화면(`Locked`·`PassphraseRequired`), S08 완료, S09 복구(`Corrupt`·`MainMissing`), S10 메인(`Unlocked`), S11 보내기·결과, S12 받기, S13 연결된 사이트, S14 주소록, S15 설정, S16 토큰 추가, S17 EVM 체인 추가·편집(§2.17), S18 개인키로 시작하기(체인·주소 형식), S19 개인키 주소 확인(§2.18).
 - 별도 최상위 창: W01–W10 비밀 창(§4.1), A01 승인·연결 창(§3).
 - 비밀 창이 열려 있는 동안 주 창은 `EnableWindow(FALSE)`다. 승인 창은 주 창을 막지 않는다.
 - 주 창 자식 컨트롤의 명령 ID(`WM_COMMAND`)는 화면 모듈마다 `ids`에 두고, 고정 ID와 목록형 범위(계정·주소록·스캔 행·사이트 등)가 서로 겹치지 않으며 각 범위가 그 목록의 최대 길이(행 수 × 행당 ID 수)를 담는다. 전체 지도와 시험은 `ui::command_ids`(1·2는 쓰지 않음). 승인 창·비밀 창은 자식 컨트롤 없이 직접 그리고 영역으로 판정하므로 명령 ID가 없다.
@@ -177,7 +177,7 @@ pub enum AppMode { NoVault, Locked, Unlocking, PassphraseRequired, PassphraseMis
 
 ### 2.2 첫 실행 (S01)
 - `NoVault`일 때. 데이터 폴더에 `meta.ywm`·`journal.ywj` 또는 그 `.prev`가 남아 있으면 생성·가져오기 버튼을 끄고 T-LEFTOVER와 폴더 경로, `폴더 열기`(§2.14)를 보인다. 파일은 사용자가 직접 옮긴다([02] §6.3). 앱은 지갑 파일을 옮기거나 지우지 않는다.
-- 환영 화면: 큰 제목 "Your Wallet", 세 문장 T-FIRST-1(무엇인지 · 모든 서명은 이 앱 확인 창에서 · 복구 단어 24개가 유일한 백업), 카드 두 개 — "처음 사용합니다"(설명 + 주 버튼 `새 지갑 만들기`), "다른 지갑에서 쓰던 복구 단어가 있습니다"(설명 + `기존 지갑 가져오기`).
+- 환영 화면: 큰 제목 "Your Wallet", 세 문장 T-FIRST-1(무엇인지 · 모든 서명은 이 앱 확인 창에서 · 복구 단어 24개가 유일한 백업), 카드 세 개 — "처음 사용합니다"(설명 + 주 버튼 `새 지갑 만들기`), "다른 지갑에서 쓰던 복구 단어가 있습니다"(설명 + `기존 지갑 가져오기`), "개인키만 있습니다"(T-KEYSTART-CARD + `개인키로 시작하기`, §2.18). T-LEFTOVER면 세 버튼 모두 끈다.
 
 ### 2.3 새 지갑 만들기
 단계 표시 `1 비밀번호 정하기 · 2 복구 단어 적기 · 3 백업 확인`을 S02(아직 시작 전)와 W01(1/3)·W08(2/3)·W10(3/3) 머리에 보인다(비밀 창은 "새 지갑 만들기 · n/3단계"와 점 세 개).
@@ -198,7 +198,7 @@ S04(백업 대기): 잠금 해제 직후 백업이 확인되지 않았을 때. �
 
 | 단계 | 화면 | 동작·검증 |
 |---|---|---|
-| 1 | S05 | 제목 "기존 지갑 가져오기", 단계 표시, 카드 "준비할 것": "다른 지갑에서 쓰던 영어 복구 단어(BIP39 니모닉) 12·15·18·21·24개", "BIP39 passphrase(25번째 단어)를 썼다면 그 passphrase", 도움말로 개인키 안내("EVM 개인키 하나만 가져오려면 먼저 새 지갑을 만든 뒤 메인 화면의 '개인키 가져오기'", [02] §8.2)와 [08] §1.2 고정 문구. 주 버튼 `시작하기`, `취소`. |
+| 1 | S05 | 제목 "기존 지갑 가져오기", 단계 표시, 카드 "준비할 것": "다른 지갑에서 쓰던 영어 복구 단어(BIP39 니모닉) 12·15·18·21·24개", "BIP39 passphrase(25번째 단어)를 썼다면 그 passphrase", 도움말로 개인키 안내("복구 단어 없이 개인키(EVM·Solana·Bitcoin)만 있다면 첫 화면의 '개인키로 시작하기'… 이미 지갑이 있다면 메인 화면의 '개인키 가져오기'", §2.18)와 [08] §1.2 고정 문구. 주 버튼 `시작하기`, `취소`. |
 | 2 | W01 | 비밀번호 2회(§2.3). |
 | 3 | W05 | 니모닉 입력(§4.2). 단어마다 BIP39 목록 검사(E-INP-004 "{n}번째 단어"). `다음`은 단어 수가 12/15/18/21/24이고 모든 단어가 목록에 있을 때만 켜진다. 체크박스 `BIP39 passphrase 사용`(기본 끔, T-IMPORT-PASS). |
 | 4 | W06 | (체크한 경우) passphrase 2회, 0x20–0x7E 1–256자(D8). 불일치 E-INP-002. |
@@ -221,7 +221,7 @@ S04(백업 대기): 잠금 해제 직후 백업이 확인되지 않았을 때. �
 
 ### 2.6 메인 (S10)
 - 배치(위 → 아래, 체인 탭마다 같음): 상단 막대 → 체인 탭 → 카드 "네트워크"(칩, 테스트넷 띠, 차단·저널 띠, 상태 줄 도움말) → **선택 계정 카드**(계정 이름, 경로, 큰 잔액 20pt와 기준 블록, 전체 주소, 주 버튼 `보내기`·`받기`, 링크 `새로고침`, 엔드포인트가 없으면 링크 `RPC 설정하기`) → 카드 "내 계정"(계정 목록 라디오, 선택 행의 `이름 바꾸기`·`숨기기`/`삭제`(위험), `계정 추가`·`개인키 가져오기`) → 카드 "토큰" → 카드 "활동". 빈 목록에는 다음에 할 일을 알려주는 도움말을 보인다("아직 보낸 거래가 없습니다. 보낸 거래는 여기에서…").
-- 체인 탭: 구현된 단계만(M4 `EVM`, M7 `Solana`, M8 `Bitcoin`). 개인키 계정만으로는 SOL·BTC를 쓸 수 없다.
+- 체인 탭: 구현된 단계만(M4 `EVM`, M7 `Solana`, M8 `Bitcoin`). 각 탭의 "내 계정" 카드에 `개인키 가져오기`가 있다(그 체인의 키, §2.18). 가져온 계정은 라벨 뒤에 배지 "[가져온 키]"와 도움말 "가져온 키 · 복구 단어로 복구되지 않음"을 보인다. 키 전용 지갑(복구 단어 없음, [02] §8.5)은 파생 기능(`계정 추가`, `다른 경로 스캔`, 파생 Bitcoin 계정, 복구 단어 보기)을 숨기고, 계정이 없는 체인 탭은 "이 지갑에는 {체인} 계정이 없습니다."와 `개인키 가져오기`만 보인다.
 - EVM 네트워크 선택: 기본 체인 3개(`Ethereum 메인넷`, `Sepolia 테스트넷`, HyperEVM; 이름은 [03] §1.1) 다음에 사용자 체인(§2.17, `evmChains` 순서, 이름 옆 배지 T-CUSTOM-CHAIN). 차단된 체인(E-RPC-006·E-CHN-008)도 목록에 남기고 "(차단됨)"을 붙인다. 고르면 S10에 그 오류 배너와(E-CHN-008이면) `설정에서 다시 고정`(S15)을 보이고 잔액·보내기는 끈다. 선택은 `settings.json` `evmChainId`(§6.1, D30)이고, 잠긴 동안 [05]가 캐시 없는 origin의 `eth_chainId`로 쓴다. Solana 클러스터는 `solana.cluster`([07] §10), BTC 네트워크는 `bitcoin.network`([08] §2, D26)로 모두 `settings.json`에 있다. 테스트넷(Sepolia, [07]·[08]의 테스트 네트워크)이면 상단에 `TESTNET_BG` 띠 "테스트넷 — 실제 자산이 아닙니다". 기본 메인넷(Ethereum 메인넷 1, HyperEVM 999)과 Solana mainnet이면 빨간(`BTC_MAINNET_BG`) 띠 T-MAINNET "메인넷 — 실제 자산"(Bitcoin은 [08] §2 `BITCOIN MAINNET`). 같은 조건에서 승인 창 A01 헤더에도 T-MAINNET 배지를 보인다(§3.2 헤더; 대상은 S10의 선택 네트워크가 아니라 그 요청의 체인·클러스터). 사용자 체인에는 테스트넷 구분이 없으므로 띠·배지를 그리지 않는다. 기본값은 그대로다(EVM Sepolia, Solana mainnet, Bitcoin 꺼짐).
 - 상태 줄: `RPC: 연결됨 | 엔드포인트 없음 (E-KEY-005) | 오류 E-RPC-0nn | 차단 E-CHN-008`(네트워크 이름만, URL·호스트 없음, §1.9), `브라우저: 연결 n개 | 연결 없음 | 사용 불가 E-PIPE-001`. 엔드포인트 없음이면 잔액·보내기를 끄고 `설정에서 URL 입력`(S15 §2.11.1)을 보인다.
 - 계정 목록: 라벨, 전체 주소(§3.3 주소 그리기), 기본 자산 잔액, 경로 또는 `가져온 개인키`. 카드 도움말 T-ACCOUNTS(파생 계정만 복구 단어로 복구되고 가져온 개인키는 아니다). 선택 행 버튼: `보내기`, `받기`, `이름 바꾸기`, 파생 계정 `숨기기`(meta `hidden`), 개인키 계정 `삭제`(확인 오버레이 T-REMOVE-KEY → W03 → `remove_evm_raw_key`). 삭제 오버레이는 계정 라벨·주소와 선택한 EVM 네트워크의 마지막으로 읽은 기본 자산 잔액을 보인다: 0보다 크면 고위험 띠 "이 계정에 잔액이 있습니다: … 먼저 옮기거나 개인키를 내보내세요", 모르면 주의 띠 "잔액을 확인하지 못했습니다…", 0이면 "다른 네트워크와 토큰 잔액은 확인하지 않았습니다" 도움말. 숨기기·삭제는 [05] §4.1에 알린다(grant에서 제외).
@@ -332,7 +332,7 @@ S16 토큰 추가: 컨트랙트 주소(§2.15) → RPC `decimals()`·`symbol()`(
 ### 2.12 니모닉·개인키 보기
 1. `니모닉 보기` → T-REVEAL-WARN → W03 → `KeyJob::Reveal { password, what: Mnemonic }` → `reveal_mnemonic`(`BackupPending`·`Unlocked`, 매번 Argon2, S03 진행 표시).
 2. 성공 → `Zeroizing` 버퍼를 W08로 이동. passphrase 지갑이면 W08 아래에 "이 지갑은 passphrase를 사용합니다. passphrase는 저장되지 않으므로 따로 보관해야 합니다."
-3. `개인키 보기`: EVM 계정 선택 → W03 → `reveal_evm_private_key`(`Unlocked`만) → W09(소문자 hex 64자, [02] §9 형식 그대로). SOL·BTC 개인키 표시는 없다.
+3. `개인키 보기`: EVM 계정 선택 → W03 → `reveal_evm_private_key`(`Unlocked`만) → W09(소문자 hex 64자, [02] §9 형식 그대로). 가져온 Solana·Bitcoin 키는 그 탭의 계정 행 `개인키 보기` → T-REVEAL-WARN → W03 → `reveal_imported_key` → W09(Solana base58 64바이트 keypair, Bitcoin WIF; 64자를 넘으면 44자씩 줄을 나눠 그리고 복사는 원문 그대로). 파생(니모닉) SOL·BTC 개인키 표시는 없다. 키 전용 지갑의 보안 구역에는 `복구 단어 보기`가 없다.
 4. `UnlockFailed` → E-VLT-001, 1초 비활성 후 W03 유지.
 
 ### 2.13 비밀번호 변경
@@ -421,6 +421,22 @@ W04(현재, 새, 새 확인) → 새 비밀번호 검사(E-INP-001/002) → `Key
 
 시뮬레이션 상태 띠 문구는 §7 E-SIM-001–004가 정본이다(§3.2.1).
 
+가져온 개인키(§2.18) 문구:
+
+| ID | 위치 | 문구 |
+|---|---|---|
+| T-KEYSTART-CARD | S01 | MetaMask·Phantom·Electrum 등에서 내보낸 개인키 하나로 지갑을 만듭니다. 복구 단어(24단어)는 만들지 않습니다. |
+| T-KEYSTART-BACKUP | S18·S19·S08 | 복구 단어 없이 개인키로 지갑을 만듭니다. 이 지갑의 백업은 지금 입력할 원래 개인키뿐입니다. 이 PC나 지갑 파일을 잃으면 원래 개인키로만 되살릴 수 있으니, 원래 개인키를 종이 등 안전한 곳에 따로 보관하세요. |
+| T-KEYSTART-OK | S08(개인키로 시작 뒤) | 개인키로 지갑을 만들었습니다. 이제 지갑을 쓸 수 있습니다. |
+| T-KEYSTART-SCRIPT | S18·Bitcoin 탭 | 이전 지갑에서 이 키로 쓰던 주소와 같은 형식을 고르세요. 다음 화면에서 주소를 보고 확인합니다. 5·9로 시작하는 압축되지 않은 WIF는 P2PKH만 쓸 수 있습니다. |
+| T-KEY-ONLY | W07(복구 단어 없는 지갑) | 주의: 이 지갑에는 복구 단어가 없습니다. 이 계정의 백업은 지금 입력하는 원래 개인키뿐입니다. 이 PC나 지갑 파일을 잃으면 원래 개인키로만 되살릴 수 있으니, 원래 개인키를 종이 등 안전한 곳에 따로 보관하세요. |
+| T-SOL-KEY-INPUT | W07(Solana) | Phantom·Solflare의 '개인키 내보내기'로 받은 base58 문자열(64바이트 keypair) 또는 solana-keygen JSON 파일의 내용([숫자 64개])을 붙여넣으세요. 주소(32바이트)는 개인키가 아닙니다. |
+| T-BTC-KEY-INPUT | W07(Bitcoin) | WIF 형식 개인키(5·K·L로 시작하면 mainnet, 9·c로 시작하면 testnet4)를 붙여넣으세요. 주소 형식은 앞 화면에서 고른 것으로 만듭니다. |
+| T-ACCOUNTS-KEY-ONLY | S10 `내 계정`(키 전용 지갑) | 보내기·받기에 쓸 계정을 고르세요. 이 지갑은 개인키로 시작해 복구 단어가 없습니다. 모든 계정은 '가져온 키'이며 각각의 원래 개인키가 유일한 백업입니다. |
+| T-NO-ACCOUNTS | S10(키 전용 지갑, 계정 없는 체인) | 이 지갑에는 {체인} 계정이 없습니다. |
+| T-REMOVE-IMPORTED | S10 Solana·Bitcoin 가져온 키 삭제 확인 | 선택한 가져온 개인키 계정을 이 지갑에서 지웁니다. 가져온 개인키는 복구 단어로 복구되지 않으므로, 지우고 나면 원래 개인키 없이는 이 계정의 자산에 다시 접근할 수 없습니다. 지우기 전에 이 계정의 '개인키 보기'로 개인키를 내보내 안전하게 보관했는지 확인하세요. 계속하려면 비밀번호를 입력하세요. |
+| T-BTC-IMPORTED-PENDING | Bitcoin 탭 "가져온 Bitcoin 개인키" | 가져온 Bitcoin 키의 잔액 조회와 보내기는 주소 형식(P2PKH·P2SH·P2TR) 지원과 함께 제공됩니다(통합 후 지원). 지금은 주소 확인·받기 주소 복사·개인키 내보내기만 할 수 있습니다. |
+
 ### 2.17 EVM 체인 추가·편집·삭제 (S17, D14)
 기본 체인(1·11155111·999)은 [03] §1.1 상수이며 편집·삭제할 수 없다(RPC URL §2.11.1, 수수료 상한, HyperEVM `다시 고정`만). 사용자 체인은 최대 `MAX_CUSTOM_EVM_CHAINS = 32`개이고, 비밀이 아닌 정의(템플릿 식별자 포함)는 `settings.json` `evmChains`(§6.1), RPC URL은 토큰이 들어 있으므로(D13) `apikeys.dpapi` `rpc:eip155:<chainId>`(§6.3)에 둔다. 런타임은 이 URL만 쓴다(§1.9). S15 `EVM 체인`에서 연다. 추가·편집은 S15를 열 수 있으면 언제나(이미 32개면 `추가` → E-CHN-006), 삭제는 `Unlocked`에서만(§2.17.3). dApp은 체인을 추가할 수 없다(`wallet_addEthereumChain` 거부, D14, [05]).
 
@@ -452,6 +468,29 @@ W04(현재, 새, 새 확인) → 새 비밀번호 검사(E-INP-001/002) → `Key
 #### 2.17.4 다시 고정 (E-CHN-008)
 - 대상: 최초 신뢰로 고정한 체인(HyperEVM `evmGenesisPins`, 사용자 체인 `genesisHash`)이 E-CHN-008일 때. 상수 제네시스 체인(1·11155111)에는 없다.
 - `다시 고정` → `eth_chainId`(≠ chainId면 E-RPC-006, 다시 고정 불가)와 블록 0 해시를 새로 받는다(오류는 §2.17.2-2와 같음) → 오버레이 T-CHAIN-REPIN: 고정된 해시와 새 해시 전체를 위아래로(`Consolas`). 체크박스 T-CHAIN-REPIN-ACK를 켜야 `다시 고정`이 켜진다 → `settings.json` 쓰기 → 새 `RpcConfig`, 체인 확인 상태 초기화.
+
+### 2.18 개인키로 시작하기·개인키 가져오기 (S18, S19, D9)
+형식·vault 규칙은 [02] §8.4–§8.5, Solana 서명은 [07] §3.4. 단계 표시 `1 비밀번호 정하기 · 2 개인키 입력 · 3 주소 확인`(S18 시작 전, W01 1/3, W07 2/3, S19 3/3; 비밀 창 머리 "개인키로 시작하기 · n/3단계").
+
+| 단계 | 화면 | 동작·검증 |
+|---|---|---|
+| 1 | S18 | S01 `개인키로 시작하기`. 제목 "개인키로 시작하기", 카드 "어떤 체인의 개인키입니까?": 라디오 `EVM (이더리움 등)`(기본)·`Solana`·`Bitcoin`과 체인별 형식 도움말. Bitcoin이면 라디오 "주소 형식" P2PKH(레거시, 1…)·P2SH-P2WPKH(중첩 세그윗, 3…)·P2WPKH(네이티브 세그윗, bc1q…, 기본)·P2TR(Taproot, bc1p…) + T-KEYSTART-SCRIPT. 카드 "이 지갑의 백업": T-KEYSTART-BACKUP(주의 띠) + 도움말(계정 추가·복구 단어 보기 없음, 다른 체인 키는 나중에 가져올 수 있음, 체인마다 15개). 주 버튼 `시작하기`, `취소`(S01, 보관한 버퍼 소거). |
+| 2 | W01 | 비밀번호 2회(§2.3과 같은 규칙). passphrase는 묻지 않는다. |
+| 3 | W07 | 그 체인의 개인키 입력(§4.1, T-KEY-ONLY). |
+| 4 | S03→S19 | `KeyJob::PreviewKeyStart`: 키 작업자가 비밀번호·키 버퍼를 보관하고 `ImportKey::parse` → `preview`로 주소만 계산한다(vault 없음). 형식 오류는 W07을 다시 열고 그 오류(E-INP-006/007/020–024)를 보인다(비밀번호는 작업자가 계속 보관). S19: 제목 "주소 확인", "입력한 개인키의 {체인} 주소입니다. 이전 지갑에서 쓰던 주소와 전체가 같은지 확인하세요.", Bitcoin이면 "주소 형식"·"네트워크" 줄, 주소 전체, T-KEYSTART-BACKUP, 주 버튼 `맞습니다`, `다릅니다`(`KeyJob::DiscardKeyStart { keep_password: true }` → S18; 다시 `시작하기`는 W01 없이 W07로). |
+| 5 | S03 | `KeyJob::CommitKeyStart` → `Vault::create_with_key`(`Unlocked`) → 키 전용 기본 meta([02] §5.3: `evm_accounts = []`, 그 키의 목록·선택, 그 체인 탭) → 버퍼 소거. |
+| 6 | S08 | T-KEYSTART-OK(완료 띠) + T-KEYSTART-BACKUP(주의 띠). 백업 확인 단계는 없다. 이후 §2.3 6단계와 같다. |
+
+**개인키 가져오기(지갑이 있을 때)**: 각 체인 탭 "내 계정"의 `개인키 가져오기`(`Unlocked`이고 그 체인 가져온 키 < 15일 때만; T-ALT-PASS 세션은 끔) → W07(그 체인, 니모닉 지갑은 T-IMPORTED-KEY, 키 전용 지갑은 T-KEY-ONLY) → EVM `KeyJob::ImportPrivateKey`, Solana·Bitcoin `KeyJob::ImportKey { spec }` → `Vault::import_key` → meta 목록에 "가져온 계정 n"·"가져온 Solana n"·"가져온 Bitcoin n"으로 더한다. Bitcoin 탭은 W07 전에 카드 안 라디오로 주소 형식을 고른다(기본 P2WPKH). 오류는 W07에 남는다(E-VLT-010 체인별 15개, E-VLT-011 중복, 형식 오류).
+
+**계정 목록**
+- EVM: 파생 계정 다음에 가져온 계정(기존). 키 전용 지갑의 EVM 탭에 EVM 키가 없으면 T-NO-ACCOUNTS 카드. 선택 계정 설정(`prefs.evm_account`)이 목록에 없는 계정을 가리키면 첫 행을 선택 계정으로 쓴다.
+- Solana: 표준 계정 다음에 가져온 계정(meta `sol_raw_accounts`). 선택(`sol_raw_selected`)한 가져온 계정으로 보내기 폼을 열면 출처가 `SolKeySource::Imported`이고 SOL·허용 목록 SPL 보내기, 받기, 잔액, 저널, 만료 증명이 표준 계정과 같다([07] §3.4). 선택 행 버튼: 파생 `이름 바꾸기`·`숨기기`, 가져온 키 `이름 바꾸기`·`개인키 보기`·`삭제`(위험). 키 전용 지갑은 계정 0을 파생하지 않는다.
+- Bitcoin: 카드 "가져온 Bitcoin 개인키"(모든 지갑; 키 전용 지갑에서는 탭 전체이며 파생 BIP84 계정·발견·잔액 조회를 하지 않는다). 행 = 라벨 "[가져온 키]", 주소 형식, 네트워크, 주소 전체(묶음), 도움말 "가져온 키 · 복구 단어로 복구되지 않음 · 보내기: 통합 후 지원", 버튼 `주소 복사`(일반 복사, §2.8)·`개인키 보기`·`삭제`. T-BTC-IMPORTED-PENDING(정보 띠). 잔액 조회·보내기는 Bitcoin 주소 형식 작업과 통합할 때 연결한다([02] §8.4 `KeyRef::BtcImported`, `KeyWorker::btc_imported_signer`).
+
+**삭제**: EVM은 기존 `삭제`(T-REMOVE-KEY → W03 → `remove_evm_raw_key`). Solana·Bitcoin은 `삭제` → T-REMOVE-IMPORTED(계정 라벨·주소) → W03 → `KeyJob::RemoveImportedKey` → `Vault::remove_imported_key`. 키 전용 지갑의 마지막 키는 `삭제`가 꺼져 있고 vault도 `LastKey`(E-VLT-013)로 거부한다.
+
+**브라우저**: dApp 연결은 EVM 계정만 쓴다(키 전용 지갑은 가져온 EVM 키). EVM 계정이 하나도 없으면 연결 요청은 4100 `NoEvmAccount`(이유 문구, [05] §5)로 끝나고 연결 창을 열지 않는다. 잠금·자동 잠금·잠금 해제·브라우저 다리는 키 전용 지갑에서도 같다.
 
 ## 3. 승인 창 (A01, 모든 체인)
 
@@ -639,9 +678,9 @@ pub fn can_approve(g: &ApprovalGate, now: Instant) -> bool {
 | W04 | 비밀번호 변경 | 현재 1–128, 새·확인 12–128 | 가림 | 허용 | 없음 | `Preferred` |
 | W05 | 복구 단어 입력 | `MnemonicText` ≤ 216바이트(24 × 8 + 23 + 1) | 평문, 단어별 칸 격자 | 허용 | 없음 | `Preferred` |
 | W06 | passphrase 입력 | 가져오기: passphrase·확인, 잠금 해제: 1칸. `Printable` 1–256 | 가림 | 허용 | 없음 | `Preferred` |
-| W07 | 개인키 가져오기 | `PrivateKeyHex` ≤ 66 | 평문 | 허용 | 없음 | `Preferred` |
+| W07 | 개인키 가져오기 | 체인별: EVM `PrivateKeyHex` ≤ 66, Solana `KeyText` 1–640, Bitcoin `Base58` 51–52 (§2.18) | 평문 | 허용 | 없음 | `Preferred` |
 | W08 | 복구 단어 (니모닉) | — | 평문 3열 × (n/3)행, 열 우선 번호(24단어: 1–8, 9–16, 17–24) + 첫 주소 | — | 토글 | `Required` |
-| W09 | 개인키 보기 | — | 평문 64 hex | — | 토글 | `Required` |
+| W09 | 개인키 보기 | — | 평문(EVM hex 64자, Solana base58 keypair, Bitcoin WIF) | — | 토글 | `Required` |
 | W10 | 백업 확인 | 단어 4칸 `BackupWord` ≤ 8, 주소 끝 `HexSuffix` = 6 | 평문 | 금지 | 없음 | `Preferred` |
 
 - 배치(§1.6): 회색 창 배경에 (만들기·가져오기 흐름이면) "{흐름} · n/3단계"와 단계 점, 제목 14pt, 안내 문구(보조색), 내용을 담는 흰 카드(입력 칸·단어 격자·체크박스·오류), 아래 버튼 줄(왼쪽 `모두 지우기`/`복사`, 오른쪽 `취소`/`나중에`와 주 버튼). W01의 주 버튼은 `다음`, W08 단어 격자는 번호(보조색) + 단어(14pt), 첫 주소는 4자 묶음으로 보인다.
@@ -652,7 +691,7 @@ pub fn can_approve(g: &ApprovalGate, now: Instant) -> bool {
 ### 4.2 입력 버퍼
 `SecureAsciiBuffer`(`archive/spec-v2.4:crates/secret-input-ui/src/recovery_native.rs:118-178`)를 이식해 넓힌다 → `yw_app::ui::secure_field::SecretField`.
 ```rust
-pub enum Charset { Printable, MnemonicText, PrivateKeyHex, BackupWord, HexSuffix }
+pub enum Charset { Printable, MnemonicText, PrivateKeyHex, BackupWord, HexSuffix, Base58, KeyText }
 pub enum PushResult { Accepted, Full, Rejected(RejectReason) }
 pub enum RejectReason { NonAscii, NotAllowed, DoubleSpace, Position }
 pub struct SecretField { bytes: Zeroizing<Vec<u8>>, limit: usize, charset: Charset }
@@ -673,6 +712,8 @@ impl SecretField {
 | `PrivateKeyHex` | `0`–`9`, `a`–`f` | `A`–`F`는 소문자로. `x`는 길이 1이고 첫 글자 `0`일 때만(`Position`, `X` 거부). 확정 시 `0x`를 떼고 정확히 64자(E-INP-006), 범위는 [02] |
 | `BackupWord` | `a`–`z` | `A`–`Z`는 소문자로 |
 | `HexSuffix` | `0`–`9`, `a`–`f`, `A`–`F` | 그대로(비교는 [02] §8.3이 소문자화) |
+| `Base58` | base58 알파벳(`0`·`O`·`I`·`l` 없음) | 그 밖 `NotAllowed`. 확정 시 51자 미만이면 E-INP-023, 나머지 검사는 [02] §8.4 |
+| `KeyText` | ASCII 영숫자, `[`, `]`, `,`, 공백 | 맨 앞·연속 공백은 `DoubleSpace`(조용히 무시), 끝 공백은 확정 때 뗀다. 붙여넣기는 `MnemonicText`처럼 공백·탭·CR·LF 연속을 공백 하나로. 형식 판정은 [02] §8.4 |
 
 - 그리기: 매 `WM_PAINT`마다 `render_utf16` 단기 사본으로 `DrawTextW`를 부르고 바로 drop(이식 `recovery_native.rs:342-367`). 비밀 문자열을 OS EDIT 컨트롤, 창 제목, `WM_SETTEXT`, 툴팁에 넣지 않는다.
 - W05는 [02] §2.4(단어별 입력 칸, 단일 공백 연결)에 맞춰 버퍼를 단어별 칸 격자 "{i}. word"로 그린다. 공백·Tab이 다음 칸으로 가는 키다. 목록에 없는 완성 단어는 `DANGER_TEXT`. 넘기는 값은 소문자 단어를 공백 하나로 이은 문자열이다.
@@ -889,7 +930,8 @@ BTC 계정 선택 키는 없다. BTC v1은 계정 0(m/84'/{coin}'/0')만 쓴다(
 | 파일 | 버전 표시 | 같은 주 버전의 새 부 버전 (읽는 쪽이 모르는 내용) | 더 새로운 주 버전 | 더 오래된 주 버전 |
 |---|---|---|---|---|
 | `settings.json` | `version` 정수(현재 1) | 모르는 **최상위 키**: 배너 없이 보존, 쓰기 때 알려진 키 뒤에 읽은 순서·값 그대로 | `version` > 1: 읽기 전용(값은 기본값, 배너 E-APP-001, 이번 실행의 변경은 메모리에만, 파일 내용 불변) | 알려진 이전 버전은 읽을 때 메모리에서 이행하고 다음 쓰기에 현재 버전으로 쓴다. 현재 1이 첫 버전이므로 이행할 이전 버전은 없고 0·정수 아님은 손상(§6.2) |
-| `meta.ywm` 평문 | `schema` = `"yw-meta/3"` | 모르는 **최상위 키**: 보존, 쓰기 때 알려진 키 뒤에 그대로([02] §5.3) | 없음: `schema`는 데이터 폴더 `v3`과 함께만 바뀐다(다른 `schema`는 형식 오류, E-VLT-006) | 없음(v1·v2는 이행하지 않음, D7) |
+| `meta.ywm` 평문 | `schema` = `"yw-meta/3"` | 모르는 **최상위 키**: 보존, 쓰기 때 알려진 키 뒤에 그대로([02] §5.3). 2026-10-29에 선택 최상위 키 `sol_raw_accounts`·`btc_raw_accounts`·`sol_raw_selected`를 더했다(이전 버전은 보존만 한다) | 없음: `schema`는 데이터 폴더 `v3`과 함께만 바뀐다(다른 `schema`는 형식 오류, E-VLT-006) | 없음(v1·v2는 이행하지 않음, D7) |
+| `vault.ywv` payload | `payload_magic` `YWPAY003` | 2026-10-29 확장(가져온 개인키, [02] §4.6): `tag 3`·`tag 4` record, `Bip39` 없는 키 전용 payload, `payload_ct_len` 상한 4,096. `tag 1`·`tag 2` 배치는 그대로라 이 버전은 이전 vault를 그대로 연다. 이전 버전은 확장된 vault를 E-VLT-008(또는 E-VLT-002)로 본다: 이전 버전으로 되돌렸다면 `.prev` 복구를 하지 말고 새 버전을 다시 설치한다(복구하면 마지막 가져오기가 사라진다, 손상으로 본 파일은 격리 보존) | — | — |
 | `apikeys.dpapi` 평문 | magic `YWAPIK01` | 모르는 **항목 이름**(§6.3 이름 형식): 값 바이트를 해석하지 않고 보존, 저장 때 다시 씀. 등록 안 된 네트워크의 `rpc:*`(고아)도 같이 보존 | 없음: magic은 데이터 폴더와 함께만 바뀐다(다른 magic은 형식 오류, E-KEY-001) | 없음 |
 
 - 새 부 버전이 지켜야 할 것(쓰는 쪽 규칙): 새 데이터는 **새 최상위 키**(settings·meta) 또는 **새 항목 이름**(apikeys)으로만 더한다. 이미 있는 키의 의미·값 범위를 바꾸거나 알려진 객체·레코드 안에 키를 더하는 것은 주 버전 변경이다(settings는 `version` + 1, meta·apikeys·vault·journal은 새 데이터 폴더 `v4`). 이전 버전은 알려진 객체 안의 모르는 키를 지금처럼 그 객체 단위 오류로 처리한다(§6.2, [02] §5.3).
@@ -919,8 +961,10 @@ BTC 계정 선택 키는 없다. BTC v1은 계정 0(m/84'/{coin}'/0')만 쓴다(
 | E-VLT-007 | `OutOfMemory`, VirtualLock 실패 | 메모리를 잠그지 못해 잠금 해제하지 않았습니다. |
 | E-VLT-008 | `PayloadCorrupt` | 지갑 내용이 손상되었습니다. 이전 사본(.prev)으로 복구할 수 있습니다. |
 | E-VLT-009 | `BackupNotConfirmed` | 백업 확인을 먼저 끝내세요. |
-| E-VLT-010 | `RecordLimit` | 가져온 개인키는 최대 15개입니다. |
+| E-VLT-010 | `RecordLimit` | 가져온 개인키는 체인마다 최대 15개입니다. |
 | E-VLT-011 | `DuplicateKey` | 이미 가져온 개인키입니다. |
+| E-VLT-012 | `NoMnemonic` | 이 지갑에는 복구 단어가 없습니다. 개인키로 시작한 지갑은 계정 추가·복구 단어 보기를 쓸 수 없습니다. |
+| E-VLT-013 | `LastKey` | 개인키로 시작한 지갑의 마지막 키는 지울 수 없습니다. 지갑 전체를 지우려면 앱을 닫고 데이터 폴더의 파일을 직접 옮기세요. |
 | E-INP-001 | `PasswordTooShort`·`TooLong`·`InvalidChar` | 비밀번호는 영문·숫자·기호(ASCII) 12–128자여야 합니다. |
 | E-INP-002 | 확인 불일치(UI) | 두 입력이 다릅니다. |
 | E-INP-003 | `MnemonicWordCount` | 단어 수는 12, 15, 18, 21, 24 중 하나여야 합니다. |
@@ -940,6 +984,11 @@ BTC 계정 선택 키는 없다. BTC v1은 계정 0(m/84'/{coin}'/0')만 쓴다(
 | E-INP-017 | 이름 규칙 | 이름은 1–32자이고 앞뒤 공백·제어 문자·보이지 않는 문자를 쓸 수 없습니다. |
 | E-INP-018 | 붙여넣기 거부 | 붙여넣은 내용에 허용되지 않는 문자가 있거나 너무 깁니다. |
 | E-INP-019 | `PassphraseTooLong`·`InvalidChar`·`Empty` | passphrase는 영문·숫자·기호(ASCII) 1–256자여야 합니다. |
+| E-INP-020 | `SolKeyFormat` | Solana 개인키는 base58 64바이트 keypair(Phantom·Solflare 내보내기) 또는 숫자 64개의 JSON 배열(solana-keygen 파일)이어야 합니다. |
+| E-INP-021 | `SolKeyIsAddress` | 입력한 값은 32바이트라 개인키가 아니라 Solana 주소(공개키)로 보입니다. 지갑의 '개인키 내보내기'로 받은 값을 넣으세요. |
+| E-INP-022 | `SolKeyMismatch` | keypair의 공개키 부분이 개인키와 맞지 않습니다. 값이 잘리거나 바뀌지 않았는지 확인하세요. |
+| E-INP-023 | `WifFormat` | Bitcoin 개인키는 WIF(5·K·L·9·c로 시작하는 base58 51–52자)여야 합니다. 글자와 체크섬을 확인하세요. |
+| E-INP-024 | `WifUncompressedScript` | 압축되지 않은 키(5·9로 시작하는 WIF)는 P2PKH(레거시) 주소에만 쓸 수 있습니다. 주소 형식을 P2PKH로 고르세요. |
 | E-SEC-001 | 캡처 제외 실패(`CaptureExclusion::Required` 창 W08·W09, §4.5. `Preferred` 창은 T-CAPTURE-WARN) | 화면 캡처 제외를 적용하지 못해 표시하지 않습니다. |
 | E-SEC-002 | 클립보드 열기 실패 | 클립보드를 사용할 수 없습니다. 잠시 후 다시 시도하세요. |
 | E-KEY-001 | `apikeys.dpapi` 읽기 실패 | 저장된 RPC 엔드포인트·API 키를 읽을 수 없습니다. 다시 입력하세요. |
