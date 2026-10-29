@@ -496,6 +496,27 @@ fn panic_text(code: &abi::AbiValue) -> String {
     }
 }
 
+/// The token recipient of an ERC-20 `transfer(to, amount)` (`a9059cbb`) or
+/// `transferFrom(from, to, amount)` (`23b872dd`) call: the same strict decode as the §7.1 table
+/// rows (exact length, clean address words), without the registry lookup. `None` for any other
+/// calldata.
+#[must_use]
+pub fn token_transfer_recipient(data: &[u8]) -> Option<Address> {
+    let (selector, params) = data.split_first_chunk::<4>()?;
+    let u256 = AbiType::Uint(256);
+    let values = match *selector {
+        SEL_TRANSFER => abi::decode_params(&[AbiType::Address, u256], params)?,
+        SEL_TRANSFER_FROM => {
+            abi::decode_params(&[AbiType::Address, AbiType::Address, u256], params)?
+        }
+        _ => return None,
+    };
+    match values.as_slice() {
+        [AbiValue::Address(to), _] | [_, AbiValue::Address(to), _] => Some(*to),
+        _ => None,
+    }
+}
+
 /// Human-readable revert reason of `error.data` (spec/03 §7.4).
 #[must_use]
 pub fn revert_reason(data: &[u8]) -> String {
@@ -534,9 +555,47 @@ pub fn revert_reason(data: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{DecodedCall, revert_reason};
-    use crate::evm::abi::{AbiValue, SEL_ERROR_STRING, SEL_PANIC_UINT256, encode_call};
+    use super::{DecodedCall, revert_reason, token_transfer_recipient};
+    use crate::evm::abi::{
+        AbiValue, SEL_APPROVE, SEL_ERROR_STRING, SEL_PANIC_UINT256, SEL_TRANSFER,
+        SEL_TRANSFER_FROM, encode_call,
+    };
+    use crate::evm::address::Address;
     use crate::evm::amount::U256;
+
+    #[test]
+    fn token_transfer_recipients() {
+        let from = Address::from_bytes([0x11; 20]);
+        let to = Address::from_bytes([0x22; 20]);
+        let amount = AbiValue::Uint(U256::from_u64(5));
+        let transfer = encode_call(SEL_TRANSFER, &[AbiValue::Address(to), amount.clone()]);
+        assert_eq!(token_transfer_recipient(&transfer), Some(to));
+        let transfer_from = encode_call(
+            SEL_TRANSFER_FROM,
+            &[
+                AbiValue::Address(from),
+                AbiValue::Address(to),
+                amount.clone(),
+            ],
+        );
+        assert_eq!(token_transfer_recipient(&transfer_from), Some(to));
+        // Other selectors, trailing bytes, short data and dirty address words: none.
+        let approve = encode_call(SEL_APPROVE, &[AbiValue::Address(to), amount]);
+        assert_eq!(token_transfer_recipient(&approve), None);
+        let mut long = transfer.clone();
+        long.push(0);
+        assert_eq!(token_transfer_recipient(&long), None);
+        assert_eq!(
+            token_transfer_recipient(transfer.get(..40).unwrap_or(&[])),
+            None
+        );
+        assert_eq!(token_transfer_recipient(&[]), None);
+        let mut dirty = transfer;
+        if let Some(byte) = dirty.get_mut(4) {
+            *byte = 1;
+        }
+        assert_eq!(token_transfer_recipient(&dirty), None);
+    }
 
     #[test]
     fn revert_reasons() {
