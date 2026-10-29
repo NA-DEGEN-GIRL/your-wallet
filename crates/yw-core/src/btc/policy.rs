@@ -99,6 +99,11 @@ pub mod texts {
     pub const RPC_REJECTED: &str = "노드가 거래를 거부했습니다";
     /// `Abandoned` confirmation (spec/08 §12.1).
     pub const ABANDON_CONFIRM: &str = "이 거래는 이미 다른 노드에 퍼졌다면 나중에 확정될 수 있습니다. 포기한 뒤 같은 사람에게 다시 보내면 두 거래가 모두 확정되어 두 번 지불될 수 있습니다. 그래서 다음 보내기는 이 거래의 입력을 하나 이상 다시 써서, 둘 중 하나만 확정되게 합니다(30일 동안).";
+    /// [취소] of a `Signed` record whose bytes were already handed to the RPC (journal flags
+    /// bit7, spec/08 §12.1 "공개된 거래").
+    pub const CANCEL_DISCLOSED_CONFIRM: &str = "서명한 거래를 취소합니다. 이 거래는 이미 노드(RPC)에 전달되었을 수 있어, 그 노드가 퍼뜨렸다면 나중에 확정될 수 있습니다. 두 번 지불되지 않도록 다음 보내기는 이 거래의 입력을 하나 이상 다시 써서 이 거래를 무효로 만듭니다(30일 동안).";
+    /// The result screen of a `Rejected` record whose bytes the RPC received (spec/08 §12.1).
+    pub const REJECTED_DISCLOSED: &str = "노드가 거부했습니다. 다만 노드(RPC)가 이 거래를 이미 받았으므로, 다음 보내기는 이 거래의 입력을 하나 이상 다시 써서 둘 중 하나만 확정되게 합니다(30일 동안). 입력은 보내기 화면에 남아 있으니 수수료를 바꿔 다시 검토하세요.";
     /// A live abandoned transaction cannot be conflicted by the new send (spec/08 §12.1).
     pub const ABANDONED_NOT_CONFLICTED: &str = "포기한 거래의 입력을 이번 보내기에 쓸 수 없어 보내지 않았습니다(두 번 지불 방지). 그 입력의 동결을 풀거나, 포기한 거래가 확정·충돌로 끝나거나 30일이 지난 뒤 다시 하세요";
     /// A Core tip at or above 500,000,000 (spec/08 §2 step 2).

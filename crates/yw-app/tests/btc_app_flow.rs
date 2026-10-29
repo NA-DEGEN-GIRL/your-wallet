@@ -85,6 +85,9 @@ struct World {
     /// before `sendrawtransaction` fails, nothing is sent).
     fail_chain_after_precheck: bool,
     prechecked: bool,
+    /// `testmempoolaccept` fails in transport after receiving the bytes (a communication
+    /// failure of the pre-check: the record stays `Signed`).
+    precheck_transport: bool,
     /// Core `getblockchaininfo.blocks` instead of `TIP`.
     core_tip: Option<u32>,
 }
@@ -262,6 +265,9 @@ fn answer(world: &Mutex<World>, call: &Call) -> Reply {
             };
             let id = txid(&tx).to_display_hex();
             let witness_id = Txid::from_bytes(wtxid(&tx)).to_display_hex();
+            if world.precheck_transport {
+                return Reply::Transport(yw_win::http::HttpError::Timeout);
+            }
             if let Some(reason) = world.reject {
                 return Reply::Result(format!(
                     "[{{\"txid\":\"{id}\",\"wtxid\":\"{witness_id}\",\"allowed\":false,\"reject-reason\":\"{reason}\"}}]"
@@ -2254,5 +2260,194 @@ fn imported_key_removal() -> TestResult {
     };
     assert!(!loaded.mismatch);
     assert!(loaded.meta.btc_accounts.accounts.is_empty());
+    Ok(())
+}
+
+/// A second confirmed funding of receive address 0 (`value` sats), so the planner has a choice.
+fn add_second_funding(harness: &Harness, value: u64) -> TestResult<OutPoint> {
+    let script = funding_tx()?.0.outputs[0].script_pubkey.clone();
+    let (tx, raw) = funding_to(script, value, 0x44)?;
+    let outpoint = OutPoint {
+        txid: txid(&tx),
+        vout: 0,
+    };
+    if let Ok(mut world) = harness.world.lock() {
+        world.txs.push((tx, raw, Some(FUNDING_HEIGHT)));
+    }
+    Ok(outpoint)
+}
+
+fn funding_outpoint() -> TestResult<OutPoint> {
+    Ok(OutPoint {
+        txid: txid(&funding_tx()?.0),
+        vout: 0,
+    })
+}
+
+/// The inputs of the first queued plan.
+fn queued_inputs(harness: &Harness) -> TestResult<Vec<OutPoint>> {
+    let item = harness.queued.first().ok_or("plan")?;
+    Ok(item
+        .plan
+        .inputs()
+        .iter()
+        .map(|input| input.outpoint)
+        .collect())
+}
+
+/// Signs the reviewed plan while the controller sees the wallet locked: the record stays
+/// `Signed` and nothing reaches the RPC (the key worker itself is unlocked).
+fn sign_without_precheck(harness: &mut Harness) -> TestResult<Txid> {
+    harness.unlocked = false;
+    let signed = harness.approve();
+    harness.unlocked = true;
+    signed?;
+    let record = harness.records().last().cloned().ok_or("record")?;
+    assert_eq!(record.state, BtcTxState::Signed);
+    assert!(!record.disclosed);
+    Ok(record.txid)
+}
+
+/// Security review (hostile RPC double payment): the RPC receives the signed bytes through
+/// `testmempoolaccept` and answers "rejected". The record was marked disclosed in the journal
+/// before the call, so the next send (another amount and fee rate) must spend one of its
+/// inputs: at most one of the two can confirm.
+#[test]
+fn hostile_rpc_rejection_after_receiving_constrains_next_send() -> TestResult {
+    let mut harness = Harness::new("hostile-reject")?;
+    let small = add_second_funding(&harness, 60_000)?;
+    let big = funding_outpoint()?;
+    harness.enable();
+    assert_eq!(harness.btc_meta().ok_or("meta")?.verified().len(), 2);
+    if let Ok(mut world) = harness.world.lock() {
+        world.reject = Some("min relay fee not met");
+    }
+    // 70,000 sats need the 100,000 output.
+    send_form(&mut harness, "70000", "2");
+    harness.run(|ui, ctx| ui.review(ctx, [7; 32]));
+    assert_eq!(queued_inputs(&harness)?, vec![big]);
+    harness.approve()?;
+    let rejected = harness.records()[0].clone();
+    assert_eq!(rejected.state, BtcTxState::Rejected);
+    assert!(rejected.disclosed, "marked before testmempoolaccept");
+    assert!(
+        harness
+            .fake
+            .methods()
+            .contains(&"testmempoolaccept".to_owned())
+    );
+    // The next send: another amount and fee rate. Unconstrained, the smallest sufficient input
+    // (60,000) would be chosen; the disclosed record forces its input.
+    if let Ok(mut world) = harness.world.lock() {
+        world.reject = None;
+    }
+    send_form(&mut harness, "20000", "3");
+    harness.run(|ui, ctx| ui.review(ctx, [8; 32]));
+    let inputs = queued_inputs(&harness)?;
+    assert!(inputs.contains(&big), "{inputs:?}");
+    assert!(!inputs.contains(&small), "{inputs:?}");
+    let item = harness.queued.first().ok_or("plan")?;
+    assert_ne!(item.plan.txid(), rejected.txid);
+    harness.approve()?;
+    let records = harness.records();
+    let new = records
+        .iter()
+        .find(|record| record.state == BtcTxState::Submitted)
+        .ok_or("new send")?;
+    assert!(new.disclosed);
+    Ok(())
+}
+
+/// Security review: the pre-check fails in transport after the RPC received the bytes; the
+/// record stays `Signed` but is disclosed. [취소] says so, and the next send must spend one of
+/// its inputs. The journal step comes first: [전송 계속] queues only the `Disclose` journal
+/// job, no RPC call.
+#[test]
+fn cancel_after_precheck_failure_constrains_next_send() -> TestResult {
+    use yw_app::workers::journal::btc::BtcJournalOp;
+    let mut harness = Harness::new("cancel-disclosed")?;
+    let small = add_second_funding(&harness, 60_000)?;
+    let big = funding_outpoint()?;
+    harness.enable();
+    send_form(&mut harness, "70000", "2");
+    harness.run(|ui, ctx| ui.review(ctx, [7; 32]));
+    let txid = sign_without_precheck(&mut harness)?;
+    let before = harness.fake.count();
+    // [전송 계속]: the journal write is queued alone; nothing went to the RPC yet.
+    harness.call(|ui, ctx| ui.continue_signed(ctx, txid));
+    assert_eq!(harness.fake.count(), before);
+    assert_eq!(harness.work.len(), 1);
+    let disclose_first = matches!(
+        harness.work.front(),
+        Some(BtcAction::Key(job)) if matches!(
+            job.as_ref(),
+            KeyJob::BtcJournal { op: BtcJournalOp::Disclose { txid: queued, .. }, .. }
+                if *queued == txid
+        )
+    );
+    assert!(disclose_first);
+    if let Ok(mut world) = harness.world.lock() {
+        world.precheck_transport = true;
+    }
+    harness.drain();
+    assert!(
+        harness
+            .fake
+            .methods()
+            .contains(&"testmempoolaccept".to_owned())
+    );
+    let record = harness.records()[0].clone();
+    assert_eq!(record.state, BtcTxState::Signed);
+    assert!(record.disclosed);
+    assert!(harness.ui.flow(&txid).ok_or("flow")?.retry_precheck);
+    // [취소]: the text says the RPC may have it and the next send reuses an input.
+    harness.run(|ui, ctx| ui.cancel_signed(ctx, txid));
+    let (_, text, _) = harness.ui.confirm.ok_or("confirm")?.texts();
+    assert_eq!(text, yw_core::btc::policy::texts::CANCEL_DISCLOSED_CONFIRM);
+    harness.run(BtcUi::confirm_yes);
+    let cancelled = harness.records()[0].clone();
+    assert_eq!(cancelled.state, BtcTxState::Abandoned);
+    assert_eq!(cancelled.not_found_count, 0);
+    assert!(cancelled.disclosed);
+    if let Ok(mut world) = harness.world.lock() {
+        world.precheck_transport = false;
+    }
+    send_form(&mut harness, "20000", "3");
+    harness.run(|ui, ctx| ui.review(ctx, [8; 32]));
+    let inputs = queued_inputs(&harness)?;
+    assert!(inputs.contains(&big), "{inputs:?}");
+    assert!(!inputs.contains(&small), "{inputs:?}");
+    Ok(())
+}
+
+/// Security review: [취소] of a `Signed` record whose bytes never left the app keeps the
+/// existing behaviour: the old text and no constraint on the next send.
+#[test]
+fn undisclosed_signed_cancel_has_no_constraint() -> TestResult {
+    let mut harness = Harness::new("cancel-undisclosed")?;
+    let small = add_second_funding(&harness, 60_000)?;
+    harness.enable();
+    send_form(&mut harness, "70000", "2");
+    harness.run(|ui, ctx| ui.review(ctx, [7; 32]));
+    let txid = sign_without_precheck(&mut harness)?;
+    assert!(
+        !harness
+            .fake
+            .methods()
+            .contains(&"testmempoolaccept".to_owned())
+    );
+    harness.run(|ui, ctx| ui.cancel_signed(ctx, txid));
+    let (_, text, _) = harness.ui.confirm.ok_or("confirm")?.texts();
+    assert_eq!(
+        text,
+        "서명했지만 보내지 않은 거래를 취소합니다. 이 거래는 전송하지 않습니다."
+    );
+    harness.run(BtcUi::confirm_yes);
+    let cancelled = harness.records()[0].clone();
+    assert_eq!(cancelled.state, BtcTxState::Abandoned);
+    assert!(!cancelled.disclosed);
+    send_form(&mut harness, "20000", "3");
+    harness.run(|ui, ctx| ui.review(ctx, [8; 32]));
+    assert_eq!(queued_inputs(&harness)?, vec![small]);
     Ok(())
 }

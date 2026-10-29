@@ -778,6 +778,9 @@ pub enum BtcConfirm {
     CancelSigned {
         /// Record.
         txid: Txid,
+        /// Its bytes were already handed to the RPC (journal flags bit7): the text says the
+        /// transaction may still confirm and the next send reuses one of its inputs.
+        disclosed: bool,
     },
     /// T-BTC-ESPLORA-BROADCAST.
     EsploraBroadcast {
@@ -812,9 +815,14 @@ impl BtcConfirm {
                 "그래도 발급",
             ),
             Self::Abandon { .. } => ("거래 포기", texts::ABANDON_CONFIRM.to_owned(), "포기"),
-            Self::CancelSigned { .. } => (
+            Self::CancelSigned { disclosed: false, .. } => (
                 "서명한 거래 취소",
                 "서명했지만 보내지 않은 거래를 취소합니다. 이 거래는 전송하지 않습니다.".to_owned(),
+                "취소하기",
+            ),
+            Self::CancelSigned { disclosed: true, .. } => (
+                "서명한 거래 취소",
+                texts::CANCEL_DISCLOSED_CONFIRM.to_owned(),
                 "취소하기",
             ),
             Self::EsploraBroadcast { .. } => (
@@ -1557,7 +1565,7 @@ impl BtcUi {
                 // Tracking found it meanwhile (or the record changed): nothing to give up.
                 vec![BtcAction::Screen(BtcScreen::Back)]
             }
-            BtcConfirm::Abandon { txid } | BtcConfirm::CancelSigned { txid } => vec![
+            BtcConfirm::Abandon { txid } | BtcConfirm::CancelSigned { txid, .. } => vec![
                 key_job(KeyJob::BtcJournal {
                     op: BtcJournalOp::Abandon {
                         network: ctx.net(),
@@ -2077,7 +2085,16 @@ impl BtcUi {
         tx: SignedTxRef,
     ) -> Vec<BtcAction> {
         let txid = tx.txid;
-        let job = self.start_flow(network, txid, BtcFlowStage::Prechecking);
+        // The journal must say "disclosed" before the bytes reach the RPC (spec/08 §11.3): a
+        // record not yet marked goes through the key worker first (`Applying`), and
+        // `BtcJournalDone::Disclosed` starts the pre-check.
+        let disclosed = ctx.record(&txid).is_some_and(|record| record.disclosed);
+        let stage = if disclosed {
+            BtcFlowStage::Prechecking
+        } else {
+            BtcFlowStage::Applying
+        };
+        let job = self.start_flow(network, txid, stage);
         let Ok(target) = ctx.target() else {
             if let Some(flow) = self.flow_mut(&txid) {
                 flow.stage = BtcFlowStage::Waiting;
@@ -2086,6 +2103,12 @@ impl BtcUi {
             }
             return Vec::new();
         };
+        if !disclosed {
+            return vec![key_job(KeyJob::BtcJournal {
+                op: BtcJournalOp::Disclose { network, txid },
+                now_unix_ms: ctx.now_unix_ms,
+            })];
+        }
         vec![btc_job(BtcRpcJob::Precheck {
             job,
             target,
@@ -2111,9 +2134,11 @@ impl BtcUi {
         self.precheck(ctx, record.network, tx)
     }
 
-    /// [취소] of a `Signed` record (confirmation first).
-    pub fn cancel_signed(&mut self, txid: Txid) -> Vec<BtcAction> {
-        self.confirm = Some(BtcConfirm::CancelSigned { txid });
+    /// [취소] of a `Signed` record (confirmation first; the text depends on whether its bytes
+    /// were already handed to the RPC).
+    pub fn cancel_signed(&mut self, ctx: &BtcCtx<'_>, txid: Txid) -> Vec<BtcAction> {
+        let disclosed = ctx.record(&txid).is_some_and(|record| record.disclosed);
+        self.confirm = Some(BtcConfirm::CancelSigned { txid, disclosed });
         vec![BtcAction::Confirm]
     }
 
@@ -2657,6 +2682,9 @@ impl BtcUi {
         result: Result<BtcJournalDone, BtcKeyError>,
     ) -> Vec<BtcAction> {
         match result {
+            Ok(BtcJournalDone::Disclosed { network, tx }) => {
+                self.precheck_disclosed(ctx, network, tx)
+            }
             Ok(BtcJournalDone::Broadcasting { network, tx }) => {
                 self.send_committed(ctx, network, tx)
             }
@@ -2735,10 +2763,59 @@ impl BtcUi {
                 Vec::new()
             }
             Err(error) => {
+                // A journal step that failed before the pre-check ran (disclose, pre-check
+                // result): nothing was sent after it, [다시 시도] stays possible.
+                for flow in &mut self.flows {
+                    if flow.stage == BtcFlowStage::Applying {
+                        flow.stage = BtcFlowStage::Waiting;
+                        flow.retry_precheck = true;
+                        flow.note = Some(error.text());
+                    }
+                }
                 self.status_error = Some(error.text());
                 Vec::new()
             }
         }
+    }
+
+    /// The record is marked disclosed in the journal: now the bytes may go to `testmempoolaccept`
+    /// (only for the flow still waiting for this step, and only while unlocked).
+    fn precheck_disclosed(
+        &mut self,
+        ctx: &BtcCtx<'_>,
+        network: BtcNetwork,
+        tx: SignedTxRef,
+    ) -> Vec<BtcAction> {
+        let txid = tx.txid;
+        let Some(job) = self
+            .flow(&txid)
+            .filter(|flow| flow.stage == BtcFlowStage::Applying && flow.network == network)
+            .map(|flow| flow.job)
+        else {
+            return Vec::new();
+        };
+        let target = if ctx.unlocked {
+            ctx.target().ok()
+        } else {
+            None
+        };
+        let Some(target) = target else {
+            if let Some(flow) = self.flow_mut(&txid) {
+                flow.stage = BtcFlowStage::Waiting;
+                flow.retry_precheck = true;
+                flow.note = Some(ErrorCode::Key005.text());
+            }
+            return Vec::new();
+        };
+        if let Some(flow) = self.flow_mut(&txid) {
+            flow.stage = BtcFlowStage::Prechecking;
+        }
+        vec![btc_job(BtcRpcJob::Precheck {
+            job,
+            target,
+            tx,
+            chain: ctx.chain_input(),
+        })]
     }
 
     /// A BTC RPC worker event.
@@ -3558,7 +3635,7 @@ impl crate::app::App {
 
     /// [취소] of a `Signed` record.
     pub fn btc_cancel_signed(&mut self, txid: Txid) {
-        self.btc_call(|ui, _| ui.cancel_signed(txid));
+        self.btc_call(|ui, ctx| ui.cancel_signed(ctx, txid));
     }
 
     /// [블록 높이 기록 초기화] (confirmation first).

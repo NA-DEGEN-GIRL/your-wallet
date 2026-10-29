@@ -11,8 +11,12 @@
 pub const SOL_POLL_INTERVAL_MS: u64 = 1_000;
 /// Re-send / block-height period.
 pub const SOL_REBROADCAST_INTERVAL_MS: u64 = 2_500;
-/// Local wall-clock minimum before `Expired` (≈ 3 × 150 blocks × 200 ms); the monotonic clock
-/// must show the same minimum.
+/// Local wall-clock minimum before `Expired`; the monotonic clock must show the same minimum.
+/// A floor under the RPC's block-height proof: a blockhash is valid for 150 blocks, about 30 s
+/// at the 200 ms slots spec/07 §18 records (SIMD-0525), so 90 s is 3× that lifetime; at ~400 ms
+/// slots the lifetime is about 60 s and 90 s is only 1.5×. Kept at 90 s (3 × 60 s = 180 s
+/// would double the wait before a re-send is offered); the height proof (`block_height >
+/// lastValidBlockHeight`, two rounds) remains the primary condition.
 pub const SOL_EXPIRY_MIN_WALL_SECS: u64 = 90;
 /// Consecutive height rounds that must each satisfy the whole expiry proof.
 pub const SOL_EXPIRY_ROUNDS: u8 = 2;

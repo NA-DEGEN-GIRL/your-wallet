@@ -24,9 +24,10 @@ use yw_core::journal::JournalPlain;
 use yw_core::journal::btc::{
     BtcActivityRow, BtcEntries, BtcPushError, BtcRecord, BtcRecordError, BtcTxState,
     TrackObservation, TransitionError, apply_observation, change_next_floor,
-    check_abandoned_conflicts, check_plan_allowed, current_record, finished_rows, make_room,
-    normalize_on_startup, of_account, prune_finished, push_record, recorded_amounts,
-    refresh_keep_outpoints, set_last_send_comm_failure, set_state_entry, take_finished_duplicates,
+    check_abandoned_conflicts, check_plan_allowed, current_record, disclosed_duplicate,
+    finished_rows, make_room, normalize_on_startup, of_account, prune_finished, push_record,
+    recorded_amounts, refresh_keep_outpoints, set_disclosed, set_last_send_comm_failure,
+    set_state_entry, take_finished_duplicates,
 };
 use yw_core::vault::{FileKind, Vault};
 
@@ -346,6 +347,16 @@ impl BtcSignFailure {
 /// A BTC journal step (spec/08 §11.3, §12.1–§12.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BtcJournalOp {
+    /// Before the first `testmempoolaccept` of a `Signed` record: flags bit7 ("disclosed",
+    /// yw-core `set_disclosed`) is committed, then the bytes are returned for the pre-check. A
+    /// hostile RPC may relay what it receives, so from now on a `Rejected` answer or [취소]
+    /// still constrains the next send (spec/08 §11.3, §12.1).
+    Disclose {
+        /// Network.
+        network: BtcNetwork,
+        /// Record.
+        txid: Txid,
+    },
     /// The `testmempoolaccept` element of a `Signed` record: yw-core's `check_mempool_accept`
     /// against the record's own txid, wtxid, vsize and fee → `Broadcasting` (with
     /// `on_broadcasting`), `BroadcastUnknown` through `Broadcasting` when the node already has
@@ -403,6 +414,7 @@ impl BtcJournalOp {
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match self {
+            Self::Disclose { .. } => "disclose",
             Self::Precheck { .. } => "precheck",
             Self::Sent { .. } => "sent",
             Self::EsploraSent { .. } => "esplora_sent",
@@ -415,6 +427,13 @@ impl BtcJournalOp {
 /// What a BTC journal step did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BtcJournalDone {
+    /// The record is marked disclosed in the journal: run `testmempoolaccept` with these bytes.
+    Disclosed {
+        /// Network.
+        network: BtcNetwork,
+        /// The journal's bytes.
+        tx: SignedTxRef,
+    },
     /// `Broadcasting` committed (with `change_next`): send these bytes now.
     Broadcasting {
         /// Network.
@@ -1088,8 +1107,11 @@ impl JournalState {
         let maxfeerate = verified
             .maxfeerate()
             .ok_or(BtcSignFailure::PostSign(PostSignError::Vsize))?;
-        let record = BtcRecord::new_signed(plan, &signed, &verified, now_unix)
+        let mut record = BtcRecord::new_signed(plan, &signed, &verified, now_unix)
             .map_err(BtcSignFailure::Record)?;
+        // The same bytes were handed to the RPC before (e.g. re-signed after a pre-check
+        // rejection): the new record is disclosed from the start.
+        record.disclosed = disclosed_duplicate(&trial, &record);
         // The same transaction signed again (e.g. byte for byte after a pre-check rejection):
         // the finished old record goes to activity first; a tracked one refuses (review H1).
         rows.extend(
@@ -1213,6 +1235,24 @@ impl JournalState {
         let now_unix = now_unix_ms / 1_000;
         let mut next = self.current(vault).map_err(BtcKeyError::Vault)?;
         match op {
+            BtcJournalOp::Disclose { network, txid } => {
+                let record = find_record(&next, network, &txid)
+                    .ok_or(BtcKeyError::Journal(TransitionError::UnknownTx))?;
+                if record.state != BtcTxState::Signed {
+                    return Err(BtcKeyError::Journal(TransitionError::NotAllowed {
+                        from: record.state,
+                        to: BtcTxState::Broadcasting,
+                    }));
+                }
+                let tx = signed_ref(&record).ok_or(BtcKeyError::Internal)?;
+                // Committed before any byte leaves the app (the caller sends only on `Ok`).
+                if set_disclosed(&mut next, network, &record.entry_id)
+                    .map_err(BtcKeyError::Journal)?
+                {
+                    self.commit_view(vault, next, out)?;
+                }
+                Ok(BtcJournalDone::Disclosed { network, tx })
+            }
             BtcJournalOp::Precheck {
                 network,
                 txid,
@@ -1233,6 +1273,9 @@ impl JournalState {
                     fee: record.fee,
                 };
                 let entry = record.entry_id;
+                // The RPC answered about these bytes, so it has them (normally already set by
+                // `Disclose`; kept for every outcome, `Rejected` included).
+                set_disclosed(&mut next, network, &entry).map_err(BtcKeyError::Journal)?;
                 match check_mempool_accept(&accept, &local) {
                     PrecheckOutcome::Accepted => {
                         let tx = signed_ref(&record).ok_or(BtcKeyError::Internal)?;
@@ -1318,7 +1361,10 @@ impl JournalState {
                     out.push(self.meta_update(BtcMetaDone::Updated));
                 }
                 let entry = record.entry_id;
-                let mut journal_changed = false;
+                // A send was attempted: the RPC has the bytes whatever it answered (a `-25`/`-26`
+                // `Rejected` record still constrains the next send, spec/08 §12.1).
+                let mut journal_changed =
+                    set_disclosed(&mut next, network, &entry).map_err(BtcKeyError::Journal)?;
                 if record.state.can_transition_to(target) {
                     set_state_entry(&mut next, network, &entry, target, now_unix)
                         .map_err(BtcKeyError::Journal)?;

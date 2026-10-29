@@ -154,6 +154,7 @@ pub fn record(plan: &SendPlan, state: BtcTxState, created: u64) -> BtcRecord {
         lock_time: plan.lock_time(),
         not_found_count: 0,
         last_send_comm_failure: false,
+        disclosed: false,
         replaces: plan.replaces(),
         replaced_by: None,
         confirmed_height: (state == BtcTxState::Confirmed).then_some(TIP),

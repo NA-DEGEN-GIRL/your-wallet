@@ -590,3 +590,187 @@ fn rejected_send_gives_the_change_index_back() {
     assert_eq!(meta.change_next(), 0);
     assert!(!meta.on_send_rejected(None));
 }
+
+/// Security review (hostile RPC double payment): a record whose bytes were handed to the RPC
+/// (flags bit7) and then ended `Rejected` (pre-check or send refusal) or was cancelled from
+/// `Signed` constrains the next send like a live abandoned one for 30 days; an undisclosed
+/// `Rejected` / cancelled record constrains nothing.
+#[test]
+#[expect(clippy::too_many_lines, reason = "the whole disclosed-record flow")]
+fn disclosed_rejected_or_cancelled_must_be_conflicted() {
+    use yw_core::journal::btc::{
+        TrackMode, disclosed_duplicate, set_disclosed, set_state_entry, track_mode,
+    };
+    let account = account();
+    let first_plan = simple_plan(1, 20_000);
+    // Undisclosed: final at once, no constraint, not tracked (existing behaviour).
+    let undisclosed_rejected = record(&first_plan, BtcTxState::Rejected, 1_000);
+    let undisclosed_cancelled = record(&first_plan, BtcTxState::Abandoned, 1_000);
+    for record in [&undisclosed_rejected, &undisclosed_cancelled] {
+        let records = vec![record.clone()];
+        assert!(abandoned_conflicts(&records, NET, 1_000).is_empty());
+        assert!(refresh_keep_outpoints(&records, NET, 1_000).is_empty());
+    }
+    assert!(is_finished(
+        &undisclosed_rejected,
+        std::slice::from_ref(&undisclosed_rejected),
+        Some(TIP),
+        1_000
+    ));
+    assert_eq!(
+        track_mode(&undisclosed_rejected, &[], TIP, 1_000),
+        TrackMode::None
+    );
+
+    // The flag is written through the journal (never cleared) and survives a reload.
+    let mut journal = legacy_plain(&[with_id(record(&first_plan, BtcTxState::Signed, 1_000), 6)]);
+    assert_eq!(set_disclosed(&mut journal, NET, &[6; 16]), Ok(true));
+    assert_eq!(set_disclosed(&mut journal, NET, &[6; 16]), Ok(false));
+    assert_eq!(
+        set_disclosed(&mut journal, NET, &[9; 16]),
+        Err(TransitionError::UnknownTx)
+    );
+    let reloaded = JournalPlain::decode(&journal.encode().unwrap()).unwrap();
+    assert!(records_of(&reloaded)[0].disclosed);
+    // A hostile RPC answers "rejected" after receiving the bytes.
+    set_state_entry(&mut journal, NET, &[6; 16], BtcTxState::Rejected, 1_000).unwrap();
+    let rejected = records_of(&journal)[0].clone();
+    assert!(rejected.disclosed);
+    // [취소] after a failed pre-check (communication error: still `Signed`, but disclosed).
+    let mut cancelled = record(&first_plan, BtcTxState::Abandoned, 1_000);
+    cancelled.disclosed = true;
+    assert_eq!(cancelled.not_found_count, 0);
+
+    let candidates = [
+        utxo(100_000, TIP - 10, 1, 0),
+        utxo(50_000, TIP - 10, 2, 0),
+        utxo(300_000, TIP - 10, 3, 0),
+    ];
+    for given_up in [rejected.clone(), cancelled] {
+        let records = vec![given_up.clone()];
+        assert_eq!(abandoned_conflicts(&records, NET, 1_000), vec![vec![op(1)]]);
+        assert_eq!(refresh_keep_outpoints(&records, NET, 1_000), vec![op(1)]);
+        assert!(in_flight_outpoints(&records, NET).is_empty());
+        assert_eq!(check_can_send(&records, NET), Ok(()), "not in flight");
+        assert!(!is_finished(&given_up, &records, Some(TIP), 1_000));
+        assert_eq!(
+            track_mode(&given_up, &records, TIP, 1_000),
+            TrackMode::ConfirmationOnly
+        );
+        // The next send with another amount (and another fee) must spend op(1).
+        let conflicts = abandoned_conflicts(&records, NET, 1_000);
+        let free = plan_send(&send_request(
+            &candidates,
+            SendAmount::Exact(Sats::new(30_000).unwrap()),
+            &[],
+            TIP,
+            3,
+            &account,
+        ))
+        .unwrap();
+        assert_eq!(spent(&free), vec![op(2)]);
+        assert_eq!(
+            check_abandoned_conflicts(&records, &free, 1_000),
+            Err(PlanError::AbandonedNotConflicted)
+        );
+        let mut request = send_request(
+            &candidates,
+            SendAmount::Exact(Sats::new(30_000).unwrap()),
+            &conflicts,
+            TIP,
+            3,
+            &account,
+        );
+        request.fee = rate(3);
+        let forced = plan_send(&request).unwrap();
+        assert_eq!(spent(&forced), vec![op(1)]);
+        assert_ne!(forced.txid(), first_plan.txid());
+        assert_eq!(check_abandoned_conflicts(&records, &forced, 1_000), Ok(()));
+        // The 30-day window ends: no constraint, finished.
+        let after = 1_001 + BTC_ABANDON_WINDOW_SECS;
+        assert!(abandoned_conflicts(&records, NET, after).is_empty());
+        assert!(is_finished(&given_up, &records, Some(TIP), after));
+
+        // The new send confirms first: the given-up transaction can never confirm (cleared).
+        let new = with_id(record(&forced, BtcTxState::Submitted, 2_000), 7);
+        let mut journal = legacy_plain(&[with_id(given_up.clone(), 6), new.clone()]);
+        let change = apply_observation(
+            &mut journal,
+            NET,
+            &forced.txid(),
+            TrackObservation::Confirmed { height: TIP },
+            TIP,
+            2_100,
+        )
+        .unwrap();
+        assert!(
+            change
+                .changed
+                .contains(&(first_plan.txid(), BtcTxState::Conflicted)),
+            "{change:?}"
+        );
+        let records = records_of(&journal);
+        assert!(abandoned_conflicts(&records, NET, 2_100).is_empty());
+        assert!(is_finished(&records[0], &records, Some(TIP), 2_100));
+        // Or the hostile RPC relayed it and it confirms: recorded, the new send conflicted.
+        let mut journal = legacy_plain(&[with_id(given_up, 6), new]);
+        let change = apply_observation(
+            &mut journal,
+            NET,
+            &first_plan.txid(),
+            TrackObservation::Confirmed { height: TIP },
+            TIP,
+            2_100,
+        )
+        .unwrap();
+        assert!(
+            change
+                .changed
+                .contains(&(first_plan.txid(), BtcTxState::Confirmed))
+        );
+        assert!(
+            change
+                .changed
+                .contains(&(forced.txid(), BtcTxState::Conflicted))
+        );
+    }
+
+    // An undisclosed `Rejected` record is final: neither a confirmation of a send sharing its
+    // input nor an observation moves it.
+    let forced = simple_plan(1, 30_000);
+    let mut journal = legacy_plain(&[
+        with_id(undisclosed_rejected.clone(), 6),
+        with_id(record(&forced, BtcTxState::Submitted, 2_000), 7),
+    ]);
+    apply_observation(
+        &mut journal,
+        NET,
+        &forced.txid(),
+        TrackObservation::Confirmed { height: TIP },
+        TIP,
+        2_100,
+    )
+    .unwrap();
+    apply_observation(
+        &mut journal,
+        NET,
+        &first_plan.txid(),
+        TrackObservation::Confirmed { height: TIP },
+        TIP,
+        2_100,
+    )
+    .unwrap();
+    assert_eq!(records_of(&journal)[0].state, BtcTxState::Rejected);
+
+    // The same transaction signed again supersedes the disclosed `Rejected` record and is
+    // disclosed from the start (a [취소] of it still constrains the next send).
+    let mut journal = legacy_plain(&[with_id(rejected, 6)]);
+    let again = with_id(record(&first_plan, BtcTxState::Signed, 3_000), 8);
+    assert!(disclosed_duplicate(&journal, &again));
+    let rows = take_finished_duplicates(&mut journal, &again, TIP, 3_000, 99).unwrap();
+    assert_eq!(rows[0].status, "rejected");
+    push_record(&mut journal, &again).unwrap();
+    assert_eq!(records_of(&journal).len(), 1);
+    let fresh = legacy_plain(&[with_id(undisclosed_rejected, 6)]);
+    assert!(!disclosed_duplicate(&fresh, &again));
+}

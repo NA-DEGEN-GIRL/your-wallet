@@ -3,10 +3,12 @@
 # Windows PowerShell 5.1과 PowerShell 7에서 동작한다. 관리자 권한이 필요 없다(현재 사용자 범위만 바꾼다).
 #
 # 사용 (저장소 루트에서):
-#   install.cmd [-InstallDir <폴더>] [-NoShortcut] [-NoNativeHost] [-NoBuild] [-DryRun]
+#   install.cmd [-InstallDir <폴더>] [-FixPermissions] [-NoShortcut] [-NoNativeHost] [-NoBuild] [-DryRun]
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1 [같은 옵션]
 #
 #   -InstallDir    설치 폴더. 기본 %LOCALAPPDATA%\Programs\YourWallet
+#   -FixPermissions  이미 있는 설치 폴더를 다른 사용자가 바꿀 수 있으면(아래 권한 규칙) 그 폴더가 현재 사용자 소유일
+#                  때만 권한을 고친다. 없으면 그런 폴더에는 설치하지 않는다.
 #   -NoShortcut    시작 메뉴 바로가기를 만들지 않는다.
 #   -NoNativeHost  HKCU에 Chrome native messaging host를 등록하지 않는다(manifest 파일은 설치 폴더에 쓴다).
 #   -NoBuild       빌드하지 않고 이미 있는 target\release\yw-app.exe·yw-host.exe를 쓴다(빌드 도구 확인도 건너뛴다).
@@ -19,10 +21,17 @@
 # 있던 파일은 지운다 -> (6) native host manifest 쓰기·검증 -> (7) HKCU 등록 -> (8) 시작 메뉴 바로가기 -> 설치 기록, 안내.
 # 지갑 데이터 %LOCALAPPDATA%\YourWallet\ 은 읽지도 바꾸지도 않는다. 같은 소스로 다시 실행해도 결과가 같다(멱등).
 #
+# 설치 폴더 권한: yw-host.exe·yw-app.exe·확장 파일·native host manifest를 다른 로컬 사용자가 바꾸면 지갑이 그 사용자의
+# 코드를 실행한다. 그래서 새 설치 폴더는 현재 사용자·SYSTEM·Administrators만 모든 권한을 갖고 상속을 끊은 DACL로
+# 만든다(C:\ 바로 아래처럼 Authenticated Users가 수정 권한을 물려주는 곳에서도 안전). 이미 있는 폴더(새 설치·업그레이드)는
+# 소유자가 그 셋 중 하나가 아니거나, 그 밖의 SID(Users·Authenticated Users·Everyone 등)에 쓰기·수정·삭제·권한 변경·
+# 소유권 가져오기를 주는 허용 ACE가 폴더나 그 안 항목에 있으면 설치하지 않는다(CREATOR OWNER의 상속 전용 ACE만 예외).
+# -FixPermissions는 폴더가 현재 사용자 소유일 때만 위 DACL로 고친다.
+#
 # 종료 코드:
 #   0  성공(-DryRun 포함)
 #   1  환경·인자 오류(저장소 밖의 사본을 실행, LOCALAPPDATA 없음, 64비트 Windows 아님, 쓸 수 없는 설치 경로,
-#      설치 기록이 없는 비어 있지 않은 폴더 등)
+#      설치 기록이 없는 비어 있지 않은 폴더, 다른 사용자가 바꿀 수 있는 설치 폴더 등)
 #   2  소스·빌드 결과 오류(확장 파일 없음·형식 오류, 확장 ID 불일치, -NoBuild인데 yw-app.exe·yw-host.exe 없음)
 #   3  취소(사용자가 취소함, 또는 실행 중인 yw-app·yw-host를 닫아 달라고 물을 수 없는 비대화형 실행)
 #   4  파일 복사·삭제·설치 기록 실패
@@ -35,6 +44,7 @@
 [CmdletBinding()]
 param(
     [string]$InstallDir = '',
+    [switch]$FixPermissions,
     [switch]$NoShortcut,
     [switch]$NoNativeHost,
     [switch]$NoBuild,
@@ -55,6 +65,14 @@ $RustupWingetArgs = 'install --id Rustlang.Rustup -e'
 $BuildToolsWingetArgs = 'install --id Microsoft.VisualStudio.2022.BuildTools -e --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"'
 $MsvcComponent = 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64'
 $RustflagsVariables = @('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'CARGO_BUILD_RUSTFLAGS', 'CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS')
+# 설치 폴더 권한(위 머리말): 모든 권한을 갖는 SID와, 다른 SID에 주면 안 되는 권한 비트.
+$SidSystem = 'S-1-5-18'
+$SidAdministrators = 'S-1-5-32-544'
+$SidCreatorOwner = 'S-1-3-0'
+# WriteData/AddFile 0x2, AppendData/AddSubdirectory 0x4, WriteExtendedAttributes 0x10, DeleteChild 0x40,
+# WriteAttributes 0x100, DELETE 0x10000, WRITE_DAC 0x40000, WRITE_OWNER 0x80000, GENERIC_ALL 0x10000000,
+# GENERIC_WRITE 0x40000000.
+$UnsafeRightsMask = 0x2 -bor 0x4 -bor 0x10 -bor 0x40 -bor 0x100 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x10000000 -bor 0x40000000
 
 # ---------------------------------------------------------------- 출력·공통
 
@@ -192,6 +210,165 @@ function Write-Utf8NoBom([string]$Path, [string]$Text) {
 
 function Read-Utf8Strict([string]$Path) {
     return [IO.File]::ReadAllText($Path, (New-Object Text.UTF8Encoding($false, $true)))
+}
+
+# ---------------------------------------------------------------- 설치 폴더 권한
+
+function Get-CurrentUserSid {
+    return [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+}
+
+# 보안 설명자(SDDL)가 설치 폴더·파일로 안전하면 $null, 아니면 이유 문장. 소유자는 현재 사용자·SYSTEM·
+# Administrators여야 하고(소유자는 언제든 DACL을 바꿀 수 있다), 그 밖의 SID에 쓰기 계열 권한($UnsafeRightsMask)을
+# 주는 허용 ACE가 없어야 한다. 상속 전용 ACE도 앞으로 만들 파일에 적용되므로 본다(CREATOR OWNER의 상속 전용
+# ACE만 예외: 만든 사람 자신의 ACE가 된다). 거부 ACE는 권한을 줄이기만 하므로 무시한다.
+function Get-AclProblem([string]$Sddl, [string]$UserSid) {
+    $sd = New-Object Security.AccessControl.RawSecurityDescriptor($Sddl)
+    $trusted = @($UserSid, $SidSystem, $SidAdministrators)
+    if ($null -eq $sd.Owner -or $trusted -notcontains $sd.Owner.Value) {
+        return "소유자가 현재 사용자·SYSTEM·Administrators가 아닙니다($(if ($null -eq $sd.Owner) { '없음' } else { $sd.Owner.Value }))"
+    }
+    if ($null -eq $sd.DiscretionaryAcl) { return 'DACL이 없어 모든 사용자가 모든 권한을 가집니다' }
+    foreach ($ace in $sd.DiscretionaryAcl) {
+        if ($ace -isnot [Security.AccessControl.QualifiedAce]) { return '알 수 없는 형식의 ACE가 있습니다' }
+        if ($ace.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessAllowed) { continue }
+        $sid = $ace.SecurityIdentifier.Value
+        if ($trusted -contains $sid) { continue }
+        $inheritOnly = ([int]$ace.AceFlags -band 0x08) -ne 0   # INHERIT_ONLY_ACE
+        if ($sid -eq $SidCreatorOwner -and $inheritOnly) { continue }
+        if (($ace.AccessMask -band $UnsafeRightsMask) -ne 0) {
+            return "다른 사용자($sid)에게 쓰기·수정·삭제·권한 변경 권한이 있습니다(0x$('{0:x}' -f $ace.AccessMask))"
+        }
+    }
+    return $null
+}
+
+# 설치 폴더용 DACL: 현재 사용자·SYSTEM·Administrators 모든 권한(하위 폴더·파일에 상속), 부모에서 상속 끊음.
+function New-InstallDirSecurity([string]$UserSid) {
+    $security = New-Object Security.AccessControl.DirectorySecurity
+    $security.SetAccessRuleProtection($true, $false)
+    $inherit = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+    foreach ($sid in $UserSid, $SidSystem, $SidAdministrators) {
+        $rule = New-Object Security.AccessControl.FileSystemAccessRule(
+            (New-Object Security.Principal.SecurityIdentifier($sid)),
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            $inherit,
+            [Security.AccessControl.PropagationFlags]::None,
+            [Security.AccessControl.AccessControlType]::Allow)
+        $security.AddAccessRule($rule)
+    }
+    return $security
+}
+
+# DACL만 쓴다(소유자·SACL은 그대로). Set-Acl은 새 보안 객체에도 SACL까지 쓰려다 관리자가 아니면 SeSecurityPrivilege
+# 오류가 나므로, 바뀐 부분(DACL)만 쓰는 .NET SetAccessControl을 쓴다: Windows PowerShell 5.1(.NET Framework)은
+# DirectoryInfo/FileInfo의 메서드, PowerShell 7(.NET)은 FileSystemAclExtensions.
+function Set-PathSecurity([string]$Path, $Security) {
+    $item = Get-Item -LiteralPath $Path -Force
+    $extensions = 'System.IO.FileSystemAclExtensions' -as [type]
+    if ($null -eq $extensions) {
+        $item.SetAccessControl($Security)
+    } elseif ($item.PSIsContainer) {
+        $extensions::SetAccessControl([IO.DirectoryInfo]$item, [Security.AccessControl.DirectorySecurity]$Security)
+    } else {
+        $extensions::SetAccessControl([IO.FileInfo]$item, [Security.AccessControl.FileSecurity]$Security)
+    }
+}
+
+# 폴더와 그 안 모든 항목(재분석 지점은 따라가지 않는다)의 권한 문제. 문제가 없으면 빈 배열.
+function Get-InstallDirProblems([string]$Dir, [string]$UserSid) {
+    $problems = New-Object 'System.Collections.Generic.List[string]'
+    $problem = Get-AclProblem (Get-Acl -LiteralPath $Dir).Sddl $UserSid
+    if ($null -ne $problem) { $problems.Add("$Dir : $problem") }
+    foreach ($item in @(Get-ChildItem -LiteralPath $Dir -Recurse -Force -ErrorAction Stop)) {
+        $problem = Get-AclProblem (Get-Acl -LiteralPath $item.FullName).Sddl $UserSid
+        if ($null -ne $problem) { $problems.Add("$($item.FullName) : $problem") }
+    }
+    return , $problems.ToArray()
+}
+
+# 이미 있는 폴더를 고친다(-FixPermissions, 현재 사용자 소유일 때만 호출): 폴더에 설치 DACL, 안의 항목은 명시 ACE를
+# 지우고 상속만 받게 한다.
+function Set-InstallDirPermissions([string]$Dir, [string]$UserSid) {
+    Set-PathSecurity $Dir (New-InstallDirSecurity $UserSid)
+    foreach ($item in @(Get-ChildItem -LiteralPath $Dir -Recurse -Force -ErrorAction Stop)) {
+        if ($item.PSIsContainer) {
+            $security = New-Object Security.AccessControl.DirectorySecurity
+        } else {
+            $security = New-Object Security.AccessControl.FileSecurity
+        }
+        $security.SetAccessRuleProtection($false, $false)
+        Set-PathSecurity $item.FullName $security
+    }
+}
+
+# 새 설치 폴더를 처음부터 설치 DACL로 만든다(부모의 느슨한 ACL을 물려받는 순간이 없게). 경로의 중간 폴더는
+# 보통대로 만든다. 만든 뒤 소유자·DACL과 비어 있음을 다시 확인한다(그 사이 다른 사용자가 같은 이름을 만들었으면
+# CreateDirectory는 그 폴더를 돌려주므로 여기서 거부된다).
+function New-InstallDir([string]$Dir, [string]$UserSid) {
+    $security = New-InstallDirSecurity $UserSid
+    $parent = [IO.Path]::GetDirectoryName($Dir)
+    if (-not [string]::IsNullOrEmpty($parent)) { [void][IO.Directory]::CreateDirectory($parent) }
+    $created = $false
+    try {
+        [void][IO.Directory]::CreateDirectory($Dir, $security)   # .NET Framework (Windows PowerShell 5.1)
+        $created = $true
+    } catch [System.Management.Automation.MethodException] {
+        $created = $false
+    }
+    if (-not $created) {
+        $extensions = 'System.IO.FileSystemAclExtensions' -as [type]   # .NET 6+ (PowerShell 7)
+        if ($null -ne $extensions) {
+            [void]$extensions::CreateDirectory($security, $Dir)
+        } else {
+            [void][IO.Directory]::CreateDirectory($Dir)
+        }
+    }
+    Set-PathSecurity $Dir $security
+    $acl = Get-Acl -LiteralPath $Dir
+    $problem = Get-AclProblem $acl.Sddl $UserSid
+    if ($null -ne $problem -or -not $acl.AreAccessRulesProtected) {
+        throw "새 설치 폴더의 권한을 확인하지 못했습니다: $Dir ($problem)"
+    }
+    if (@(Get-ChildItem -LiteralPath $Dir -Force).Count -gt 0) {
+        throw "새로 만든 설치 폴더가 비어 있지 않습니다(다른 프로그램이 같은 폴더를 만들었을 수 있습니다): $Dir"
+    }
+}
+
+# 이미 있는 설치 폴더(비어 있거나 설치 기록이 있는 폴더)의 권한을 확인한다. 문제가 있으면 -FixPermissions이고 현재
+# 사용자 소유일 때만 고치고, 아니면 종료 1.
+function Confirm-InstallDirPermissions([string]$Dir, [string]$UserSid) {
+    $problems = Get-InstallDirProblems $Dir $UserSid
+    if ($problems.Count -eq 0) {
+        Write-Host '  설치 폴더 권한: 다른 사용자는 바꿀 수 없습니다.'
+        return
+    }
+    Write-Host '  설치 폴더를 다른 사용자가 바꿀 수 있습니다(그 사용자가 yw-host.exe 등을 바꿔치기할 수 있음):' -ForegroundColor Yellow
+    foreach ($problem in @($problems | Select-Object -First 10)) { Write-Host "    - $problem" }
+    $owner = (Get-Acl -LiteralPath $Dir).GetOwner([Security.Principal.SecurityIdentifier]).Value
+    $ownedByUser = $owner -eq $UserSid
+    $elsewhere = "사용자 프로필 아래의 새 폴더(예: -InstallDir `"$env:USERPROFILE\Apps\YourWallet`")를 지정하세요"
+    if (-not $FixPermissions) {
+        if ($ownedByUser) {
+            Stop-Install 1 "이 폴더에는 설치하지 않습니다: $Dir. -FixPermissions를 붙여 다시 실행하면 권한을 현재 사용자·SYSTEM·Administrators만으로 고칩니다. 또는 $elsewhere."
+        }
+        Stop-Install 1 "이 폴더에는 설치하지 않습니다: $Dir (소유자 $owner, 현재 사용자 소유가 아니라 고칠 수 없습니다). $elsewhere."
+    }
+    if (-not $ownedByUser) {
+        Stop-Install 1 "-FixPermissions는 현재 사용자 소유 폴더만 고칩니다(소유자 $owner): $Dir. $elsewhere."
+    }
+    if ($DryRun) {
+        Write-Plan "권한 고치기: $Dir (현재 사용자·SYSTEM·Administrators만, 상속 끊음; 안의 항목은 상속만)"
+        return
+    }
+    try {
+        Set-InstallDirPermissions $Dir $UserSid
+    } catch {
+        Stop-Install 4 "설치 폴더 권한을 고치지 못했습니다: $Dir ($((Get-InnerException $_).Message))"
+    }
+    $problems = Get-InstallDirProblems $Dir $UserSid
+    if ($problems.Count -gt 0) { Stop-Install 1 "권한을 고친 뒤에도 문제가 남았습니다: $($problems[0]). $elsewhere." }
+    Write-Host '  설치 폴더 권한을 고쳤습니다(현재 사용자·SYSTEM·Administrators만).'
 }
 
 # ---------------------------------------------------------------- 소스 트리
@@ -665,7 +842,7 @@ function Invoke-Install {
     # 설치 경로 규칙: cmd.exe 메타문자 금지(Chrome이 cmd.exe로 host를 실행할 수 있다, spec/05 §9.1·§11-5),
     # 드라이브 문자로 시작하는 로컬 경로, 지갑 데이터 폴더·저장소·빌드 폴더와 분리.
     if ($target -match '["%&^|<>!]' -or $target -match '[\x00-\x1f\x7f]') {
-        Stop-Install 1 "설치 경로에 쓸 수 없는 문자(`" % & ^ | < > !)가 있습니다: $target. -InstallDir C:\YourWallet 처럼 단순한 경로를 지정하세요."
+        Stop-Install 1 "설치 경로에 쓸 수 없는 문자(`" % & ^ | < > !)가 있습니다: $target. 사용자 프로필 아래의 단순한 경로(예: -InstallDir `"$env:USERPROFILE\Apps\YourWallet`")를 지정하세요. 프로필 경로 자체에 이 문자가 있으면 그 문자가 없는 경로에 설치 프로그램이 새로 만들 폴더를 지정하세요(새 폴더는 현재 사용자·SYSTEM·Administrators만 바꿀 수 있게 만듭니다)."
     }
     if ($target -cnotmatch '^[A-Za-z]:\\.+') { Stop-Install 1 "설치 경로는 드라이브 문자로 시작하는 폴더여야 합니다(드라이브 루트·네트워크 경로 불가): $target" }
     if ((Test-PathInside $target $dataDir) -or (Test-PathInside $dataDir $target)) {
@@ -756,6 +933,7 @@ function Invoke-Install {
     $newFiles = [string[]]@($sources | ForEach-Object { $_.Path })
     $oldFiles = @()
     $marker = $null
+    $userSid = Get-CurrentUserSid
     if (Test-Path -LiteralPath $target -PathType Leaf) { Stop-Install 1 "설치 경로가 폴더가 아니라 파일입니다: $target" }
     if (Test-Path -LiteralPath $target -PathType Container) {
         $marker = Read-InstallMarker $target
@@ -775,8 +953,10 @@ function Invoke-Install {
             try { $cmp = ([version]$version).CompareTo([version]$marker.Version) } catch { $cmp = 0 }
             if ($cmp -lt 0) { Write-Warn "설치된 버전($($marker.Version))보다 낮은 버전($version)으로 바꿉니다." }
         }
+        # 비어 있거나 이전 설치인 폴더: 다른 사용자가 바꿀 수 있으면 설치하지 않는다(-FixPermissions로 고침).
+        Confirm-InstallDirPermissions $target $userSid
     } else {
-        Write-Host '  새로 설치합니다.'
+        Write-Host '  새로 설치합니다(현재 사용자·SYSTEM·Administrators만 바꿀 수 있는 폴더로 만듭니다).'
     }
 
     $toCopy = New-Object 'System.Collections.Generic.List[object]'
@@ -818,7 +998,7 @@ function Invoke-Install {
     # 5. 파일 복사
     Write-Step '5/8 파일 복사'
     if ($DryRun) {
-        if (-not (Test-Path -LiteralPath $target -PathType Container)) { Write-Plan "폴더 만들기: $target" }
+        if (-not (Test-Path -LiteralPath $target -PathType Container)) { Write-Plan "폴더 만들기: $target (현재 사용자·SYSTEM·Administrators만, 상속 끊음)" }
         foreach ($item in $toCopy) {
             if ($null -eq $item.Hash) { Write-Plan "복사(빌드 후): $($item.Path)" } else { Write-Plan "복사: $($item.Path)" }
         }
@@ -826,7 +1006,7 @@ function Invoke-Install {
         Write-Plan "설치 기록 쓰기: $(Join-Path $target $MarkerName)"
     } else {
         try {
-            [void][IO.Directory]::CreateDirectory($target)
+            if (-not (Test-Path -LiteralPath $target -PathType Container)) { New-InstallDir $target $userSid }
             # 중간에 실패해도 다음 실행과 uninstall.ps1이 남은 파일을 알 수 있게 이전·새 목록을 합쳐 먼저 기록한다.
             if ($toCopy.Count -gt 0 -or $toRemove.Count -gt 0) {
                 Write-InstallMarker $target $version $commit 'installing' ([string[]](@($oldFiles) + @($newFiles) | Sort-Object -Unique))

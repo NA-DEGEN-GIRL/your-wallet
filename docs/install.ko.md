@@ -40,7 +40,8 @@ Chrome은 설치 폴더의 확장 사본을 쓰므로 `git pull`만으로는 로
 | 옵션 (`install.cmd <옵션>`) | 뜻 |
 |---|---|
 | `-DryRun` | 확인과 할 일 출력만 한다(빌드·복사·등록·winget 없음) |
-| `-InstallDir <폴더>` | 설치 폴더(기본 `%LOCALAPPDATA%\Programs\YourWallet`). 비어 있거나 이전 설치 폴더여야 한다 |
+| `-InstallDir <폴더>` | 설치 폴더(기본 `%LOCALAPPDATA%\Programs\YourWallet`). 비어 있거나 이전 설치 폴더여야 하고, 다른 사용자가 바꿀 수 없어야 한다(아래) |
+| `-FixPermissions` | 이미 있는 설치 폴더를 다른 사용자가 바꿀 수 있을 때, 그 폴더가 내 소유이면 권한을 나·SYSTEM·Administrators만으로 고친다 |
 | `-NoBuild` | 빌드하지 않고 이미 있는 `target\release`의 exe를 설치한다 |
 | `-NoShortcut` | 시작 메뉴 바로가기를 만들지 않는다 |
 | `-NoNativeHost` | HKCU 등록을 하지 않는다(그러면 확장이 앱에 연결되지 않는다) |
@@ -48,7 +49,14 @@ Chrome은 설치 폴더의 확장 사본을 쓰므로 `git pull`만으로는 로
 종료 코드: 0 성공, 1 환경·경로 오류, 2 소스·빌드 결과 오류(확장 ID 불일치 등), 3 취소(비대화형이라 물을 수 없음 포함),
 4 파일 복사 실패, 5 native host manifest·등록 실패, 6 바로가기 실패, 7 빌드 도구 없음, 8 빌드 실패, 9 예상하지 못한 오류.
 사용자 이름에 `&`·`%`·`!` 같은 문자가 있으면 기본 경로를 쓸 수 없다(Chrome이 `cmd.exe`로 host를 실행할 수 있어서다).
-`install.cmd -InstallDir C:\YourWallet`처럼 단순한 경로를 준다.
+`install.cmd -InstallDir "%USERPROFILE%\Apps\YourWallet"`처럼 사용자 프로필 아래의 단순한 경로를 준다(프로필 경로
+자체에 그런 문자가 있으면 그 문자가 없는 경로에 설치 프로그램이 새로 만들 폴더를 준다).
+
+설치 폴더 권한: 다른 로컬 사용자가 설치 폴더의 `yw-host.exe`·`yw-app.exe`·확장 파일을 바꾸면 지갑이 그 사용자의 코드를
+실행하게 된다. 그래서 설치 프로그램은 새 설치 폴더를 나·SYSTEM·Administrators만 바꿀 수 있게(상속 끊음) 만들고, 이미 있는
+폴더는 다른 사용자(Users·Authenticated Users·Everyone 등)에게 쓰기·수정 권한이 있거나 내 소유가 아니면 설치하지 않는다(종료 1).
+내 소유 폴더라면 `-FixPermissions`를 붙여 권한을 고칠 수 있다. `C:\` 바로 아래의 기존 폴더는 보통 Authenticated Users가 수정할
+수 있으니 쓰지 않는다.
 
 ## 3. Chrome 확장 로드 (처음 한 번)
 

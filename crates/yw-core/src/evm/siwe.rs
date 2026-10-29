@@ -256,11 +256,18 @@ impl<'a> Lines<'a> {
     }
 }
 
+/// The line that carries the SIWE marker: the first line after leading whitespace and blank
+/// lines. A dApp that prepends `\n` or spaces must not turn a SIWE message into a plain one
+/// (that would skip S01/S02, spec/03 §9.4); strict parsing still sees the original text, so
+/// such a message is marker-only (S08) with the domain checks of this line.
+fn marker_line(text: &str) -> &str {
+    text.trim_start().split('\n').next().unwrap_or("")
+}
+
 /// Looks for a SIWE message in UTF-8 text.
 #[must_use]
 pub fn parse_siwe(text: &str) -> SiweParse {
-    let first_line = text.split('\n').next().unwrap_or("");
-    if !first_line.contains("wants you to sign in with your Ethereum account") {
+    if !marker_line(text).contains("wants you to sign in with your Ethereum account") {
         return SiweParse::NotSiwe;
     }
     parse_strict(text).map_or(SiweParse::MarkerOnly, |message| {
@@ -480,13 +487,13 @@ pub struct SiweAuthority {
     pub has_userinfo: bool,
 }
 
-/// The authority before ` wants you to sign in with your Ethereum account` on the first line;
+/// The authority before ` wants you to sign in with your Ethereum account` on the first line
+/// (after leading whitespace and blank lines);
 /// `None` without the marker or when the text before it is not a valid `[scheme "://"]`
 /// authority (the caller then blocks with S01).
 #[must_use]
 pub fn marker_authority(text: &str) -> Option<SiweAuthority> {
-    let first_line = text.split('\n').next()?;
-    let (head, _) = first_line.split_once(MARKER_PHRASE)?;
+    let (head, _) = marker_line(text).split_once(MARKER_PHRASE)?;
     let (scheme, domain) = match head.split_once("://") {
         Some((scheme, domain)) if scheme == "https" || scheme == "http" => (scheme, domain),
         Some(_) => return None,

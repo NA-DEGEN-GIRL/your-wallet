@@ -404,9 +404,25 @@ fn fee_cap_violation_is_a_blocked_draft_without_simulation() -> TestResult {
         }
     );
     assert_eq!(rpc.count("eth_simulateV1"), 0);
+    assert!(!prepared.context.blocking.is_empty());
     let mut store = ApprovalStore::new();
-    let request = store.issue(prepared.draft, 1, S2_UNIX_MS)?;
+    let request = store.issue(prepared.draft.clone(), 1, S2_UNIX_MS)?;
     assert!(store.consume(request.id, request.digest, 2).is_err());
+    // Review: a re-simulation of the blocked request never simulates and never drops the
+    // blocking warning (the rebuilt draft used to lose E05 and become approvable).
+    let (resimulated, resim_rpc) = resim(
+        &request,
+        &prepared,
+        world(11_155_111, SEPOLIA_GENESIS, Vec::new()),
+    );
+    assert_eq!(resimulated.kind, ResimKind::Blocked);
+    assert_eq!(resim_rpc.count("eth_simulateV1"), 0);
+    let rebuilt = resimulated.prepared.ok_or("no draft")?;
+    assert_eq!(rebuilt.draft.display.risk, RiskLevel::Blocked);
+    assert!(rules(&rebuilt).contains(&E05.label()));
+    assert_eq!(rebuilt.context.blocking, prepared.context.blocking);
+    let replaced = store.replace(request.id, request.digest, rebuilt.draft.clone())?;
+    assert!(store.consume(replaced.id, replaced.digest, 3).is_err());
     Ok(())
 }
 

@@ -89,7 +89,7 @@ fn free_position(record: &BtcRecord, position: usize, bit: u8) -> bool {
     let inputs_end = BTC_JOURNAL_HEADER_LEN + BTC_JOURNAL_INPUT_LEN * record.inputs.len();
     match position {
         2 | 4..36 | 100..132 | 148..152 => true,
-        3 => bit < 2 || bit == 6,
+        3 => !(2..6).contains(&bit),
         152..184 => record.replaces.is_some(),
         184..216 => record.replaced_by.is_some(),
         216..220 => record.confirmed_height.is_some(),
@@ -229,9 +229,14 @@ fn journal_codec_roundtrip_and_truncation() {
     // Version 2 needs the 18-byte account block after the header.
     version[0] = 2;
     assert_eq!(BtcRecord::decode(&version), Err(BtcRecordError::Length));
-    let mut unknown_flag = body.clone();
-    unknown_flag[3] |= 0x80;
-    assert_eq!(BtcRecord::decode(&unknown_flag), Err(BtcRecordError::Value));
+    // bit7: the bytes were handed to the RPC (disclosed). A body written before the bit reads
+    // as not disclosed; the bit round-trips.
+    assert!(!BtcRecord::decode(&body).unwrap().disclosed);
+    let mut disclosed = body.clone();
+    disclosed[3] |= 0x80;
+    let decoded = BtcRecord::decode(&disclosed).unwrap();
+    assert!(decoded.disclosed);
+    assert_eq!(decoded.encode().unwrap(), disclosed);
     // bit6: the last send was a communication failure (kept across restarts).
     let mut comm = body.clone();
     comm[3] |= 0x40;
@@ -282,7 +287,8 @@ fn state_table() {
     };
     let allowed: [(BtcTxState, &[BtcTxState]); 10] = [
         (Signed, &[Broadcasting, Rejected, Abandoned]),
-        (Rejected, &[]),
+        // Only a disclosed `Rejected` record leaves the state (tracking and its cascade).
+        (Rejected, &[Confirmed, Conflicted]),
         (Broadcasting, &[Submitted, BroadcastUnknown, Rejected]),
         (
             Submitted,

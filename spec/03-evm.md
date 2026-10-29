@@ -837,7 +837,7 @@ LF
 - address: 문법은 `0x` + hex 40자(대소문자 무관). 체크섬(§2.1)은 §9.4 S03에서 검사한다.
 - date-time: RFC 3339 `YYYY-MM-DDTHH:MM:SS[.frac](Z|±HH:MM)`(`T`/`t`, `Z`/`z`) → unix 초.
 - uri·resources: 0x21–0x7E, `scheme:` 형태, 각 ≤ 2,048바이트, resources ≤ 64.
-- 첫 줄에 `wants you to sign in with your Ethereum account`가 있는데 위 문법을 통과하지 못하면 `siwe_marker_only = true`(S08). 이때도 첫 줄의 ` wants you to sign in with your Ethereum account` 앞부분을 `[scheme "://"] authority`로 읽어 §9.4 S01·S02·S05를 적용한다(`marker_authority`). 읽을 수 없으면(앞에 다른 글자, `https`/`http` 외 scheme, authority 문법 위반, 앞부분 없음) S01 차단(원인 줄 "SIWE 형식의 첫 줄에서 도메인을 읽을 수 없습니다").
+- 첫 줄(앞의 공백·빈 줄을 건너뛴 첫 줄. 앞에 줄바꿈·공백을 붙여 SIWE 검사를 피하지 못하게 한다)에 `wants you to sign in with your Ethereum account`가 있는데 위 문법을 통과하지 못하면 `siwe_marker_only = true`(S08). 이때도 첫 줄의 ` wants you to sign in with your Ethereum account` 앞부분을 `[scheme "://"] authority`로 읽어 §9.4 S01·S02·S05를 적용한다(`marker_authority`). 읽을 수 없으면(앞에 다른 글자, `https`/`http` 외 scheme, authority 문법 위반, 앞부분 없음) S01 차단(원인 줄 "SIWE 형식의 첫 줄에서 도메인을 읽을 수 없습니다").
 
 ```rust
 pub struct SiweMessage { pub scheme: String, pub domain_host: String, pub domain_port: Option<u16>,

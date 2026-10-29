@@ -313,7 +313,7 @@ BTC 화면을 열 때, 사용자가 누를 때, 진행 중 거래가 있으면 6
 2. 감시 집합의 주소마다 인덱서 `Address`(§4.3)를 호출해 `tx_count`로 이력을 판정(§3.2)하고, `unconfirmed_incoming`이면(진행 중 저널 항목의 잔돈 주소는 제외) "미확정 입금 있음(미검증, 교체될 수 있음)"을 표시한다.
 3. `confirmed_unspent`인 주소마다 인덱서 `Utxo`(§4.3)를 호출한다. 후보는 `height`가 있고 `conf(height, tip_height) >= 1`인 원소뿐이다(`esplora`가 주는 미확정 원소는 버린다, §7.4). 후보마다 Core `gettxout [txid, vout, true]`로 노드 자신의 보기를 확인한다: `null`(체인이나 멤풀에서 사용됨·없음), 그 주소의 스크립트가 아님, `confirmations == 0`이면 후보에서 뺀다. 객체면 높이를 Core 기준 `tip_height + 1 - confirmations`로 쓴다. 엔드포인트에 `gettxout`이 없거나(`-32601`, 이후 그 새로고침에서 부르지 않음) 호출이 실패하면 인덱서 높이를 그대로 쓰고 UTXO 목록에 "인덱서만 확인(노드 미확인)"을 표시한다(429 중단은 §4.4).
 4. 처음 보는 outpoint마다 Core `getrawtransaction`으로 원본을 받아 §5로 검증하고 `BtcMeta.verified`에 넣는다. 3단계 `gettxout`의 `value`·`coinbase`가 검증 값과 다르면 검증 실패로 센다. Core가 원본을 주지 못하면(RPC 오류·전송 실패) 인덱서 `TxRaw`로 1회 받아 같은 §5 검증을 한다(§4.5 C1). 검증에 실패한 outpoint는 "검증 실패 UTXO n개"로만 세고 잔액·선택에서 뺀다.
-5. 최신 목록에 없는 `verified` 항목은 지운다. 단, 진행 중 저널 항목(§12.1)이 쓰는 outpoint·그 잔돈과 살아 있는 `Abandoned` 항목(§12.1)의 입력은 남긴다(멤풀에서 쓰인 출력은 인덱서 목록에서 빠지지만 RBF와 포기 뒤 보내기가 그 값을 쓴다, §9·§12.1). 자기 거래의 잔돈은 저널 원본에서 직접 만든다(§12.2).
+5. 최신 목록에 없는 `verified` 항목은 지운다. 단, 진행 중 저널 항목(§12.1)이 쓰는 outpoint·그 잔돈과 살아 있는 `Abandoned`·공개된 `Rejected` 항목(§12.1)의 입력은 남긴다(멤풀에서 쓰인 출력은 인덱서 목록에서 빠지지만 RBF와 포기 뒤 보내기가 그 값을 쓴다, §9·§12.1). 자기 거래의 잔돈은 저널 원본에서 직접 만든다(§12.2).
 6. 잔액 = 확인 수 1 이상(coinbase는 100 이상)인 검증 UTXO의 합(진행 중 거래가 쓰는 outpoint 제외). 동결분은 따로 표시한다.
 
 ## 5. 이전 거래 검증 (필수)
@@ -670,6 +670,7 @@ pub fn verify_signed(raw: &[u8], plan: &SendPlan, account: &BtcAccountKey)
 
 ### 11.3 전송
 
+- **공개 표시.** `Signed` 레코드의 바이트를 처음 `testmempoolaccept`로 보내기 전에 저널 flags bit7 `disclosed`(§12.4)를 먼저 커밋한다(key worker `Disclose` 단계, 커밋이 실패하면 보내지 않는다). RPC는 받은 바이트를 그대로 퍼뜨릴 수 있으므로, 그 뒤의 `Rejected`·[취소]도 §12.1 "공개된 거래" 규칙을 따른다. 사전 검사 결과와 `sendrawtransaction` 결과를 적용할 때도 같은 비트를 세운다(이 비트 이전 레코드 보수 처리).
 - `testmempoolaccept [[hex], maxfeerate]`: 결과가 원소 1개 배열이고 `allowed == true`, `txid`·`wtxid`가 로컬 값과 같고, `vsize`가 로컬 vsize와 같고, `fees.base`(`parse_btc_decimal`)가 로컬 수수료와 같아야 한다. 하나라도 다르면 `Rejected`로 두고 "노드 검사 결과가 로컬 계산과 다릅니다"를 표시한다. `allowed == false`면 `reject-reason`을 §13 표로 바꿔 표시하고 `Rejected`로 둔다. 예외: `txn-already-in-mempool`·`txn-already-known`이고 `txid`·`wtxid`가 로컬 값과 같으면(노드가 이미 가진 거래) `Rejected`로 두지 않는다. `change_next`를 갱신하고 `Broadcasting`을 거쳐 `BroadcastUnknown`으로 두며(§12.1 표의 두 전이, `sendrawtransaction`은 보내지 않는다. 사전 검사는 전송 결과가 아니고 `vsize`·`fees.base`도 없으므로 `Submitted`로 보지 않는다) "이미 전송된 거래입니다"를 표시한다. 이후 §12.2 추적이 `InMempool`·`Confirmed`로 바꾼다. 통신 오류면 `Signed`로 두고 [다시 시도]를 표시한다.
 - `sendrawtransaction [hex, maxfeerate, 0]`: 응답 txid가 로컬 txid와 같으면 `Submitted`, 다르면 `BroadcastUnknown` + "응답 txid 불일치". 오류 `-27`(이미 체인에 있음)이면 `Submitted`로 두고 확인을 추적한다. `-26`·`-25`면 `Rejected`(잔돈 인덱스는 §3.2대로 되돌림), 시간 초과·전송 오류·그 밖 코드면 `BroadcastUnknown`. 바로 앞 §2 1·2단계 검사가 실패하면 아무것도 보내지 않았으므로 `BroadcastUnknown`으로 바꾸지 않는다: 저널은 `Broadcasting`에 두고 "전송 직전 연결 검사에 실패해 보내지 않았습니다"와 [같은 바이트 다시 전송]을 보인다(그 사이 앱을 다시 시작하면 §12.1 시작 정규화로 `BroadcastUnknown`이 된다).
 - 마지막 Core `sendrawtransaction`이 통신 실패였는지(아래 수동 전송 조건)는 저널 flags bit6(§12.4)에 저장해 재시작 뒤에도 쓴다. 노드가 답하면(txid·RPC 오류) 지우고, 수동 전송이 `Submitted`로 판정되면 지운다.
@@ -685,7 +686,7 @@ pub fn verify_signed(raw: &[u8], plan: &SendPlan, account: &BtcAccountKey)
 | 코드 | 상태 | 진행 중 | 다음 |
 |---|---|---|---|
 | 1 | `Signed` | 예 | `Broadcasting`, `Rejected`, `Abandoned`(사용자 취소) |
-| 2 | `Rejected` | 아니오 | — |
+| 2 | `Rejected` | 아니오 | 공개된(bit7) 레코드만: `Confirmed`(30일 안에 확정이 관측되면), `Conflicted`(입력 하나를 쓴 다른 거래가 확정됨) |
 | 3 | `Broadcasting` | 예 | `Submitted`, `BroadcastUnknown`, `Rejected` |
 | 4 | `Submitted` | 예 | `InMempool`, `Confirmed`, `Replaced`, `BroadcastUnknown`, `Conflicted` |
 | 5 | `BroadcastUnknown` | 예 | `InMempool`, `Confirmed`, `Replaced`, `Abandoned`, `Conflicted` |
@@ -697,14 +698,15 @@ pub fn verify_signed(raw: &[u8], plan: &SendPlan, account: &BtcAccountKey)
 
 - **D20 적용:** BTC 계정마다 "진행 중" 항목(1·3·4·5·6)은 교체 사슬 하나만 허용한다. 진행 중이면 새 송금은 `InFlight`("진행 중인 Bitcoin 거래가 확인된 뒤 보낼 수 있습니다. 수수료 올리기는 가능합니다")로 막는다. 확인 수 1 이상이 관측되면 해제한다.
 - 시작할 때 `Broadcasting` 항목은 `BroadcastUnknown`으로 바꾼다. `Signed` 항목은 [전송 계속] / [취소] 중 선택을 받는다.
-- `Abandoned`는 멤풀에도 없고 확정도 아닌 `BroadcastUnknown`에서만 허용한다. 곧 §12.2-3의 `not_found_count >= 10`이어야 한다(전송 직후 시간 초과·전송 오류·txid 불일치로 된 `BroadcastUnknown`은 아직 포기할 수 없다). `Signed`의 [취소]는 그대로 허용한다(보낸 적이 없으므로 아래 충돌 규칙 대상이 아니다). 확인 창에 "이 거래는 이미 다른 노드에 퍼졌다면 나중에 확정될 수 있습니다. 포기한 뒤 같은 사람에게 다시 보내면 두 거래가 모두 확정되어 두 번 지불될 수 있습니다. 그래서 다음 보내기는 이 거래의 입력을 하나 이상 다시 써서, 둘 중 하나만 확정되게 합니다(30일 동안)."를 표시한다.
-- **포기 뒤 보내기(두 번 지불 방지).** `not_found_count >= 10`인 `Abandoned` 항목은 30일 동안 "살아 있다": 새 보내기(수수료 올리기 제외)는 그런 항목마다 입력 하나 이상을 써야 한다(§7.4 고정 입력, 서명 직전 `check_abandoned_conflicts`로 다시 확인, 어기면 `AbandonedNotConflicted`). 그 입력은 인덱서가 목록에서 빼도 `verified`에 남긴다(§4.7-5). 두 거래가 입력을 공유하므로 둘 중 하나만 확정된다. 어느 한쪽이 확정되면 입력을 공유하는 다른 쪽(`Abandoned`·`Submitted`·`BroadcastUnknown`·`InMempool`)은 `Conflicted`가 된다.
-- **txid는 네트워크마다 저널에 하나다.** 같은 계획을 다시 승인하면 같은 바이트(같은 txid)가 나올 수 있다(예: 사전 검사 거부 뒤 다시 검토). 새 `Signed` 레코드를 넣기 전에 같은 txid의 끝난 레코드(§12.4)와 `Abandoned` 레코드는 activity로 옮기고 지운다. 그 밖의 추적 중 레코드가 있으면 서명한 거래를 버리고 "같은 거래가 이미 저널에 있습니다"로 거부한다. 상태 전이는 단계마다 레코드를 한 번 찾은 뒤 `entry_id`로 한다(이 규칙 이전 저널에 같은 txid가 둘 있으면 저널 순서상 마지막 레코드가 현재 레코드이고, 앞선 것은 activity 행을 만들지 않는다).
+- `Abandoned`는 멤풀에도 없고 확정도 아닌 `BroadcastUnknown`에서만 허용한다. 곧 §12.2-3의 `not_found_count >= 10`이어야 한다(전송 직후 시간 초과·전송 오류·txid 불일치로 된 `BroadcastUnknown`은 아직 포기할 수 없다). `Signed`의 [취소]는 그대로 허용한다. 바이트가 RPC에 간 적이 없으면(bit7 없음) 아래 충돌 규칙 대상이 아니고 확인 창은 "서명했지만 보내지 않은 거래를 취소합니다. 이 거래는 전송하지 않습니다."이다. 사전 검사를 시도한 뒤(bit7, 예: 통신 오류로 `Signed`에 남음)면 확인 창은 "서명한 거래를 취소합니다. 이 거래는 이미 노드(RPC)에 전달되었을 수 있어, 그 노드가 퍼뜨렸다면 나중에 확정될 수 있습니다. 두 번 지불되지 않도록 다음 보내기는 이 거래의 입력을 하나 이상 다시 써서 이 거래를 무효로 만듭니다(30일 동안)."이고 아래 충돌 규칙을 따른다. [포기]의 확인 창에는 "이 거래는 이미 다른 노드에 퍼졌다면 나중에 확정될 수 있습니다. 포기한 뒤 같은 사람에게 다시 보내면 두 거래가 모두 확정되어 두 번 지불될 수 있습니다. 그래서 다음 보내기는 이 거래의 입력을 하나 이상 다시 써서, 둘 중 하나만 확정되게 합니다(30일 동안)."를 표시한다.
+- **포기 뒤 보내기(두 번 지불 방지).** `not_found_count >= 10`이거나 공개된(bit7) `Abandoned` 항목과 공개된 `Rejected` 항목은 `updated_at`부터 30일 동안 "살아 있다"(`BtcRecord::is_live_conflict`): 새 보내기(수수료 올리기 제외)는 그런 항목마다 입력 하나 이상을 써야 한다(§7.4 고정 입력, 서명 직전 `check_abandoned_conflicts`로 다시 확인, 어기면 `AbandonedNotConflicted`). 그 입력은 인덱서가 목록에서 빼도 `verified`에 남긴다(§4.7-5). 두 거래가 입력을 공유하므로 둘 중 하나만 확정된다. 어느 한쪽이 확정되면 입력을 공유하는 다른 쪽(`Abandoned`·공개된 `Rejected`·`Submitted`·`BroadcastUnknown`·`InMempool`)은 `Conflicted`가 된다.
+- **공개된 거래(적대적 RPC 대비).** `testmempoolaccept`·`sendrawtransaction`은 서명한 바이트를 RPC에 넘긴다. RPC가 "거부"(`allowed:false`, `-25`·`-26`, 결과 불일치)로 답해도 이미 퍼뜨렸을 수 있으므로, 그 `Rejected` 레코드와 사전 검사 실패 뒤 [취소]한 `Abandoned` 레코드는 위 "살아 있는" 항목으로 다룬다: 다음 새 보내기(금액·수수료가 달라도)는 그 입력 하나 이상을 써야 하고(§7.4, `check_abandoned_conflicts`), 그 입력은 `verified`에 남기며(§4.7-5), 30일 동안 2단계만 추적해(§12.2) 확정되면 `Confirmed`로 기록한다. 한쪽이 확정되거나 30일이 지나면 풀린다. 같은 txid를 다시 서명하면 새 레코드도 처음부터 공개로 둔다. 결과 화면 문구: "노드가 거부했습니다. 다만 노드(RPC)가 이 거래를 이미 받았으므로, 다음 보내기는 이 거래의 입력을 하나 이상 다시 써서 둘 중 하나만 확정되게 합니다(30일 동안). …"
+- **txid는 네트워크마다 저널에 하나다.** 같은 계획을 다시 승인하면 같은 바이트(같은 txid)가 나올 수 있다(예: 사전 검사 거부 뒤 다시 검토). 새 `Signed` 레코드를 넣기 전에 같은 txid의 끝난 레코드(§12.4)와 `Abandoned`·`Rejected` 레코드는 activity로 옮기고 지운다(옛 레코드가 공개였으면 새 레코드도 bit7). 그 밖의 추적 중 레코드가 있으면 서명한 거래를 버리고 "같은 거래가 이미 저널에 있습니다"로 거부한다. 상태 전이는 단계마다 레코드를 한 번 찾은 뒤 `entry_id`로 한다(이 규칙 이전 저널에 같은 txid가 둘 있으면 저널 순서상 마지막 레코드가 현재 레코드이고, 앞선 것은 activity 행을 만들지 않는다).
 - 수수료 올리기 대상(§9 "최신 교체본")은 저널 순서(추가 순서)상 마지막 `Submitted`·`BroadcastUnknown`·`InMempool` 레코드다. 벽시계 시각은 쓰지 않는다.
 
 ### 12.2 확인 추적
 
-진행 중 항목과 확인 수 6 미만인 `Confirmed`·`Replaced` 항목마다 60초 간격(§4.7)으로 확인한다. `Abandoned` 항목은 30일 동안 새로고침 때마다 2단계만 확인한다.
+진행 중 항목과 확인 수 6 미만인 `Confirmed`·`Replaced` 항목마다 60초 간격(§4.7)으로 확인한다. `Abandoned` 항목과 공개된 `Rejected` 항목은 30일 동안 새로고침 때마다 2단계만 확인한다.
 
 1. `getmempoolentry [txid]`가 객체를 돌려주면 `InMempool`.
 2. `-5`이면 인덱서 `TxStatus`(§4.3: `esplora` `GET /tx/{txid}/status`, `bb-rpc` `bb_getTx [txid]`, `bb-rest` `GET tx/{txid}`)를 호출한다. `Confirmed { height }`이면 `Confirmed{height}`(확인 수 = `conf(height, tip_height)`). `NotFound`이면 `not_found_count += 1`. `Unconfirmed`이면 `InMempool`(서버 기준): Core 멤풀에는 없어도 인덱서 쪽 노드가 아직 가지고 있으므로 퍼지는 중이고, [포기] 쪽으로 세지 않는다. `UnconfirmedOrUnknown`(`esplora`, 없는 txid도 `{"confirmed":false}`)이면 인덱서 `TxRaw`(`GET /tx/{txid}/hex`)를 1회 더 호출해 200이면 `InMempool`(서버 기준; 본문은 쓰지 않는다), 404면 `not_found_count += 1`. 2단계만 하는 항목(`Confirmed`·`Replaced`·`Abandoned`)도 같은 판정을 쓴다.
@@ -757,7 +759,8 @@ journal.ywj의 컨테이너·암호화·원자적 쓰기는 [02](02-core-keys-va
 [0] record_version u8 = 1   [1] network u8 (1 mainnet, 2 testnet4)   [2] state u8 (§12.1 코드)
 [3] flags u8: bit0 send_max, bit1 fee_override_typed, bit2 has_change, bit3 has_replaces,
               bit4 has_replaced_by, bit5 has_confirmed_height,
-              bit6 last_send_comm_failure(마지막 Core 전송이 통신 실패, §11.3), bit7 0
+              bit6 last_send_comm_failure(마지막 Core 전송이 통신 실패, §11.3),
+              bit7 disclosed(바이트를 RPC에 넘김: 첫 testmempoolaccept 전에 커밋, §11.3·§12.1. 이 비트 이전 레코드는 0으로 읽힌다)
 [4] entry_id [16] (getrandom, 0 아님)   [20] created_at_unix u64   [28] updated_at_unix u64
 [36] txid [32] (내부 순서)   [68] wtxid [32]   [100] approval_digest [32]
 [132] fee_sats u64   [140] vsize u32 (실제)   [144] lock_time u32   [148] not_found_count u32
@@ -770,9 +773,9 @@ journal.ywj의 컨테이너·암호화·원자적 쓰기는 [02](02-core-keys-va
 
 **레코드 버전 2 (기본 계정 밖의 계정).** 기본 계정 레코드는 위 버전 1 그대로다. 다른 계정은 `record_version = 2`이고 고정 헤더 238바이트 뒤 `[238]`에 계정 블록 18바이트(`source u8` 1 HD / 2 가져온 키, `script_type u8`, HD account u32 + 0 12바이트 또는 레코드 id 16바이트)가 오고 입력 목록은 `[256]`부터다(최대 본문 238 + 18 + 49 × 100 + 32,768 = 37,924). 블록이 기본 계정을 가리키거나 패딩이 0이 아니거나 알 수 없는 값이면 거부한다. P2PKH 계정의 raw는 증인이 없어야 하고(다른 형식은 증인 필수), `bump_source`·`own_change_utxo`는 레코드 계정이 그 계정일 때만 값을 준다(P2TR 입력은 저장된 서명을 BIP341로 다시 검증해 경로를 대조한다). 이전 앱 버전은 버전 2 본문을 본문 오류로 보고 BTC 보내기만 멈춘다(바이트는 보존).
 
-디코드 검증: 길이가 정확해야 하고, raw가 §6.5로 파싱되며(증인 포함, 재직렬화가 같음), txid·wtxid가 다시 계산한 값과 같아야 한다. 입력 목록은 raw의 입력 순서와 같고(index < 2^31, value ≥ 1), vout 필드는 출력 개수 미만이며(잔돈 vout ≠ 수신 vout, 수신 출력은 §6.4 5종), `fee_sats` = Σ입력 − Σ출력, `vsize`·`lock_time`이 raw와 같고, flags와 0 필드가 서로 일관되고(`confirmed_height`는 `Confirmed`에서만 있고 0이 아님, `Replaced`는 `replaced_by` 필수), `entry_id`가 0이 아니고, 알 수 없는 state나 flags 비트가 없어야 한다. raw에서 다시 만들 수 없는 값(state, send_max·fee_override_typed·last_send_comm_failure 비트, entry_id, 시각, approval_digest, not_found_count, 선택 필드 값, 입력 경로 chain·index)은 디코더가 검증할 수 없다. 입력 경로는 RBF 계획 전에 `bump_source`가 증인 공개키를 계정 공개키로 다시 파생해 대조한다. 하나라도 어긋나면 [02] §5.4 본문 오류로 처리한다(BTC 보내기만 끄고 E-VLT-006, 본문은 그대로 보존).
+디코드 검증: 길이가 정확해야 하고, raw가 §6.5로 파싱되며(증인 포함, 재직렬화가 같음), txid·wtxid가 다시 계산한 값과 같아야 한다. 입력 목록은 raw의 입력 순서와 같고(index < 2^31, value ≥ 1), vout 필드는 출력 개수 미만이며(잔돈 vout ≠ 수신 vout, 수신 출력은 §6.4 5종), `fee_sats` = Σ입력 − Σ출력, `vsize`·`lock_time`이 raw와 같고, flags와 0 필드가 서로 일관되고(`confirmed_height`는 `Confirmed`에서만 있고 0이 아님, `Replaced`는 `replaced_by` 필수), `entry_id`가 0이 아니고, 알 수 없는 state가 없어야 한다(flags 8비트는 모두 정의됨). raw에서 다시 만들 수 없는 값(state, send_max·fee_override_typed·last_send_comm_failure·disclosed 비트, entry_id, 시각, approval_digest, not_found_count, 선택 필드 값, 입력 경로 chain·index)은 디코더가 검증할 수 없다. 입력 경로는 RBF 계획 전에 `bump_source`가 증인 공개키를 계정 공개키로 다시 파생해 대조한다. 하나라도 어긋나면 [02] §5.4 본문 오류로 처리한다(BTC 보내기만 끄고 E-VLT-006, 본문은 그대로 보존).
 
-**상한·정리.** 종결 BTC 항목은 최대 `BTC_JOURNAL_FINAL_KEEP`(64)개다([02] §5.4). 추적이 끝난 항목(`Rejected`·`Conflicted`, 확인 6 이상인 `Confirmed`, 교체 사슬 끝이 확인 6 이상·`Rejected`·`Conflicted`·저널에 없음·30일 지난 `Abandoned`인 `Replaced`, 30일 지난 `Abandoned`; 현재 네트워크가 아닌 항목의 `Confirmed`는 확인 수와 무관하게 끝난 것으로 본다)은 그때 위 활동 항목을 meta에 쓰고, 64개를 넘으면 그런 항목부터 오래된 순으로 저널에서 지운다(meta 쓰기 → 저널 삭제 순서). 추적 중인 항목은 지우지 않는다. 새 `Signed` 레코드 전의 개수·용량(평문 16 MiB) 검사와 `journal::JournalError::Full` 차단(서명·전송 없음, 문구 "거래 저널 공간이 부족합니다")은 [02] §5.4·[04] §7을 따른다.
+**상한·정리.** 종결 BTC 항목은 최대 `BTC_JOURNAL_FINAL_KEEP`(64)개다([02] §5.4). 추적이 끝난 항목(`Rejected`(공개된 것은 30일 지난 뒤)·`Conflicted`, 확인 6 이상인 `Confirmed`, 교체 사슬 끝이 확인 6 이상·`Rejected`·`Conflicted`·저널에 없음·30일 지난 `Abandoned`인 `Replaced`, 30일 지난 `Abandoned`; 현재 네트워크가 아닌 항목의 `Confirmed`는 확인 수와 무관하게 끝난 것으로 본다)은 그때 위 활동 항목을 meta에 쓰고, 64개를 넘으면 그런 항목부터 오래된 순으로 저널에서 지운다(meta 쓰기 → 저널 삭제 순서). 추적 중인 항목은 지우지 않는다. 새 `Signed` 레코드 전의 개수·용량(평문 16 MiB) 검사와 `journal::JournalError::Full` 차단(서명·전송 없음, 문구 "거래 저널 공간이 부족합니다")은 [02] §5.4·[04] §7을 따른다.
 
 ## 13. 오류 표시 (고정 문구만)
 
@@ -901,6 +904,7 @@ CKDpub(`Vault::btc_account_xpub` 캐시 공개키 → `bip32::derive_public_chil
 | `tip_bounds_and_reset` / `implausible_and_runaway_core_tip` / `plan_refused_when_core_far_ahead_of_indexer` / `reset_tip_after_regression` | §2: `blocks >= 500,000,000` 차단, 인덱서 팁 + 3까지만 `max_tip_seen` 상승, 계획 거부, [블록 높이 기록 초기화] |
 | `refresh_checks_candidates_with_gettxout` / `gettxout_answers` | §4.7-3: `null`·미확정·스크립트 다름 → 후보 아님, Core 높이 사용, 값 불일치 → 검증 실패, 실패·`-32601` → 인덱서만 확인 |
 | `reorg_of_a_shallow_confirmation` / `replaced_by_an_abandoned_replacement_finishes` / `bump_minimum_under_truncated_rates` / `discovery_and_issuance_caps` | §12.2-3 재구성 / §12.4 끝난 항목 / §9 버림 비율 / §3.2·§3.4 상한 |
+| `disclosed_rejected_or_cancelled_must_be_conflicted` / `hostile_rpc_rejection_after_receiving_constrains_next_send` / `cancel_after_precheck_failure_constrains_next_send` / `undisclosed_signed_cancel_has_no_constraint` | §12.1 공개된 거래: 사전 검사 전에 bit7 커밋([전송 계속]은 저널 작업만 먼저), RPC가 받은 뒤 거부·사전 검사 통신 실패 뒤 [취소] → 다음 보내기(다른 금액·수수료)가 그 입력을 고정으로 씀, 한쪽 확정 → 다른 쪽 `Conflicted`, 공개 거래가 확정되면 `Confirmed`, 30일 뒤 풀림 / 보낸 적 없는 `Signed`의 [취소]는 이전 문구·제약 없음 |
 | `send_stopped_by_chain_check_stays_broadcasting` / `comm_failure_survives_restart` / `rejected_send_gives_change_index_back` / `look_alike_recipient_needs_ack` | §11.3 / §11.3·§12.4 bit6 / §3.2 / §10 W-ADDR-3 |
 | `inflight_blocks_new_send` / `rbf_allowed_while_inflight` | §12.1 |
 | `selection_single_then_fewest` / `change_fold_below_294` / `send_max_dust` / `recipient_dust_by_type` | §7 결정적 결과(고정 seed) |

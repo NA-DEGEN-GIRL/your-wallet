@@ -355,6 +355,26 @@ fn c4_marker_only_still_checks_the_domain() {
     );
 }
 
+/// Review: leading blank lines or spaces do not hide the SIWE marker. The message is marker-only
+/// (S08, the strict grammar still fails) and its domain is still checked (S01 blocks).
+#[test]
+fn leading_whitespace_keeps_the_siwe_domain_check() {
+    let evil = BASE.replace("app.example wants", "evil.example wants");
+    for prefix in ["\n", "\n\n", "  ", " \t\r\n \n", "\r\n"] {
+        let hidden = format!("{prefix}{evil}");
+        assert_eq!(parse_siwe(&hidden), SiweParse::MarkerOnly, "{prefix:?}");
+        let draft = try_request(&hidden, "https://app.example").unwrap();
+        assert_eq!(labels(&draft), ["S01", "S08"], "{prefix:?}");
+        assert_eq!(draft.display.risk, RiskLevel::Blocked, "{prefix:?}");
+        let padded = format!("{prefix}{BASE}");
+        let draft = try_request(&padded, "https://app.example").unwrap();
+        assert_eq!(labels(&draft), ["S08"], "{prefix:?}");
+        assert_eq!(draft.display.risk, RiskLevel::High, "{prefix:?}");
+    }
+    // A marker that is not on the first non-blank line is not SIWE (plain message).
+    assert_eq!(parse_siwe(&format!("hello\n{evil}")), SiweParse::NotSiwe);
+}
+
 /// C5: exactly 32 bytes (a hash) or C0 controls other than TAB/LF/CR → hex, high risk (P04).
 #[test]
 fn c5_binary_looking_messages_are_hex_and_high() {

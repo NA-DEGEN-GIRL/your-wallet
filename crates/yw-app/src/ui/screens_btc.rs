@@ -1191,12 +1191,16 @@ impl App {
         }
         let rejected = record
             .as_ref()
-            .is_some_and(|record| record.state == yw_core::journal::btc::BtcTxState::Rejected);
-        if rejected && !bump {
-            items.push(Item::Muted(
+            .filter(|record| record.state == yw_core::journal::btc::BtcTxState::Rejected);
+        if let Some(rejected) = rejected
+            && !bump
+        {
+            items.push(Item::Muted(if rejected.disclosed {
+                yw_core::btc::policy::texts::REJECTED_DISCLOSED.to_owned()
+            } else {
                 "전송하지 않았습니다. 입력은 보내기 화면에 남아 있으니 수수료를 바꿔 다시 검토하세요."
-                    .to_owned(),
-            ));
+                    .to_owned()
+            }));
             row.push(Ctl::button(ids::RESULT_TO_SEND, "보내기 화면으로"));
         }
         row.insert(

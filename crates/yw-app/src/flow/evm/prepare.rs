@@ -124,6 +124,8 @@ pub struct TxContext {
     pub facts: ChainFacts,
     /// Steps 1–7 warnings (gas, E31).
     pub pre_warnings: Vec<Warning>,
+    /// Blocking warnings of steps 5–7 (caps, E11): kept so a re-simulation never drops them.
+    pub blocking: Vec<Warning>,
     /// Replaced candidate hash and its maximum fee.
     pub replaced: Option<([u8; 32], Option<U256>)>,
     /// Chain with the verified genesis.
@@ -784,6 +786,7 @@ fn finish(
             role: built.role,
             facts,
             pre_warnings: built.pre_warnings,
+            blocking: built.blocking,
             replaced: built.replaced,
             chain: chain.clone(),
         },
@@ -996,7 +999,8 @@ pub enum ResimKind {
     Changed,
     /// No result: replace with a `None` binding, `T-SIM-RESIM-FAILED`, new click.
     NoResult,
-    /// The fee recomputation broke a cap (E05): replace with a blocked request.
+    /// The fee recomputation broke a cap (E05), or the request was already blocked (no
+    /// re-simulation): replace with a blocked request.
     Blocked,
     /// The chain check found another chain (E34): nothing to replace, the window shows the
     /// failure and only `거부` remains (spec/03 §3.7 steps 3–4 rule, spec/04 §3.5 `Failed`).
@@ -1063,7 +1067,7 @@ fn rebuild(
         role: context.role,
         kind: context.kind,
         pre_warnings: context.pre_warnings,
-        blocking: Vec::new(),
+        blocking: context.blocking,
         replaced: context.replaced,
     };
     match finish(
@@ -1108,6 +1112,23 @@ fn reclassify(
     gap_warnings(gaps, &mut context.pre_warnings);
 }
 
+/// A blocked request is never re-simulated: it cannot be approved, and the rebuilt draft keeps
+/// its blocking warnings (review: the rebuild used to drop them).
+fn blocked_without_resimulation(job: &ResimJob, clock: &dyn Clock) -> ResimResult {
+    ResimResult {
+        job: job.job,
+        kind: ResimKind::Blocked,
+        prepared: rebuild(
+            job,
+            job.context.clone(),
+            &SimResult::skipped(),
+            clock.now_ms(),
+            clock.now_unix_ms(),
+        ),
+        failure: None,
+    }
+}
+
 /// Re-simulates the shown transaction at click (spec/03 §6.6-3/4). The expiry is unchanged by
 /// the caller (`ApprovalStore::replace`).
 #[must_use]
@@ -1128,6 +1149,9 @@ pub fn resimulate(
     let yw_core::approval::AccountRef::Evm(account) = job.request.account else {
         return result;
     };
+    if !job.context.blocking.is_empty() {
+        return blocked_without_resimulation(job, clock);
+    }
     let started = clock.now_ms();
     let check = cache.ensure(
         &client,
@@ -1168,7 +1192,7 @@ pub fn resimulate(
         tx.max_fee_per_gas = fees.max_fee_per_gas;
         if let Err(violation) = check_caps(&fees, tx.gas_limit, &job.chain.caps) {
             context.tx = tx;
-            context.pre_warnings.push(violation.warning(&context.chain));
+            context.blocking.push(violation.warning(&context.chain));
             result.kind = ResimKind::Blocked;
             result.prepared = rebuild(
                 job,

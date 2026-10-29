@@ -555,7 +555,7 @@ pub const SOL_JOURNAL_MAX_BODY: usize = SOL_JOURNAL_HEADER_LEN + SOL_MAX_TX_BYTE
 ```rust
 pub const SOL_POLL_INTERVAL_MS: u64 = 1_000;
 pub const SOL_REBROADCAST_INTERVAL_MS: u64 = 2_500;
-pub const SOL_EXPIRY_MIN_WALL_SECS: u64 = 90;    // 150블록 × 200ms ≈ 30s의 3배 (벽시계·단조 시계 모두)
+pub const SOL_EXPIRY_MIN_WALL_SECS: u64 = 90;    // 블록해시 수명 150블록: 200ms 슬롯(§18 SIMD-0525)이면 ≈ 30s의 3배, 약 400ms 슬롯이면 ≈ 60s의 1.5배 (벽시계·단조 시계 모두; 높이 증명이 주 조건)
 pub const SOL_EXPIRY_ROUNDS: u8 = 2;             // 만료 증명을 만족한 높이 라운드 연속 횟수
 pub const SOL_PENDING_NOTICE_SECS: u64 = 120;
 pub const SOL_JOURNAL_MAX_RECORDS: usize = 64;

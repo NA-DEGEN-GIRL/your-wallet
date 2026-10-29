@@ -351,3 +351,151 @@ test("install.ps1 refuses a source tree whose extension is not the reviewed one"
     assert.equal(existsSync(installDir), false);
   });
 });
+
+// The folder ACL of an install (security review: another local user must not be able to replace
+// yw-host.exe, yw-app.exe, the extension or the native host manifest).
+const ACL_SCRIPT = `param([string]$Path)
+$ErrorActionPreference = 'Stop'
+$acl = Get-Acl -LiteralPath $Path
+$rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object {
+    [ordered]@{ sid = $_.IdentityReference.Value; rights = [int]$_.FileSystemRights; allow = ($_.AccessControlType -eq 'Allow'); inherited = $_.IsInherited }
+})
+$result = [ordered]@{
+    user      = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    owner     = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    protected = $acl.AreAccessRulesProtected
+    rules     = $rules
+}
+[Console]::Out.Write((ConvertTo-Json -InputObject $result -Depth 4 -Compress))
+`;
+
+const ACL_PROBLEM_SCRIPT = `param([string]$Script, [string]$SampleList)
+$ErrorActionPreference = 'Stop'
+. $Script
+$user = Get-CurrentUserSid
+$verdicts = @(foreach ($sddl in [IO.File]::ReadAllLines($SampleList)) { $null -eq (Get-AclProblem $sddl.Replace('USER', $user) $user) })
+[Console]::Out.Write((ConvertTo-Json -InputObject $verdicts -Compress))
+`;
+
+const FULL_CONTROL = 0x1f01ff;
+const SYSTEM = "S-1-5-18";
+const ADMINISTRATORS = "S-1-5-32-544";
+
+async function readAcl(temp, target) {
+  const helper = path.join(temp, "acl.ps1");
+  await writeFile(helper, ACL_SCRIPT);
+  const run = runPowerShell(windowsPowerShell, ["-File", helper, "-Path", target], childEnv());
+  assert.equal(run.status, 0, run.out);
+  return JSON.parse(run.out);
+}
+
+/** Only the current user, SYSTEM and Administrators, each with full control. */
+function assertPrivate(acl, { inherited }) {
+  const sids = acl.rules.map((rule) => rule.sid).sort();
+  assert.deepEqual(sids, [acl.user, SYSTEM, ADMINISTRATORS].sort(), JSON.stringify(acl));
+  for (const rule of acl.rules) {
+    assert.equal(rule.allow, true, JSON.stringify(rule));
+    assert.equal(rule.rights, FULL_CONTROL, JSON.stringify(rule));
+    assert.equal(rule.inherited, inherited, JSON.stringify(rule));
+  }
+}
+
+function icacls(...args) {
+  const result = spawnSync(path.join(systemRoot, "System32", "icacls.exe"), args, { encoding: "utf8", windowsHide: true });
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+}
+
+test("install.ps1 Get-AclProblem: owner, other SIDs with write rights, CREATOR OWNER inherit-only, deny and read-only ACEs", { skip: !windows, timeout: 120_000 }, async () => {
+  await withTemp("your-wallet-install-aclrules-", async (temp) => {
+    const samples = [
+      ["O:USERD:P(A;OICI;FA;;;USER)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", true],
+      ["O:SYD:P(A;OICI;FA;;;USER)", true],
+      ["O:BAD:P(A;OICI;FA;;;USER)", true],
+      ["O:WDD:P(A;OICI;FA;;;USER)", false],
+      ["O:BUD:P(A;OICI;FA;;;USER)", false],
+      ["O:USERD:P(A;OICI;FA;;;USER)(A;OICIIO;FA;;;CO)", true],
+      ["O:USERD:P(A;OICI;FA;;;USER)(A;OICI;FA;;;CO)", false],
+      ["O:USERD:P(A;OICI;FA;;;USER)(A;OICIIO;0x1301bf;;;BU)", false],
+      ["O:USERD:P(A;OICI;FA;;;USER)(A;OICI;0x1301bf;;;AU)", false],
+      ["O:USERD:P(A;OICI;FA;;;USER)(A;OICI;0x1301bf;;;WD)", false],
+      ["O:USERD:P(A;OICI;FA;;;USER)(A;;0x10000;;;BU)", false],
+      ["O:USERD:P(A;OICI;FA;;;USER)(A;;0x40000;;;BU)", false],
+      ["O:USERD:P(A;OICI;FA;;;USER)(A;;0x80000;;;BU)", false],
+      ["O:USERD:P(A;OICI;FA;;;USER)(A;;GA;;;WD)", false],
+      ["O:USERD:P(A;OICI;FA;;;USER)(A;;GW;;;WD)", false],
+      ["O:USERD:P(A;OICI;FA;;;USER)(A;OICI;0x1200a9;;;BU)", true],
+      ["O:USERD:P(A;OICI;FA;;;USER)(D;OICI;FA;;;WD)", true],
+      ["O:USERD:NO_ACCESS_CONTROL", false],
+    ];
+    const sampleList = path.join(temp, "sddl.txt");
+    await writeFile(sampleList, `${samples.map(([sddl]) => sddl).join("\r\n")}\r\n`);
+    const helper = path.join(temp, "problem.ps1");
+    await writeFile(helper, ACL_PROBLEM_SCRIPT);
+    const run = runPowerShell(windowsPowerShell, ["-File", helper, "-Script", installScript, "-SampleList", sampleList], childEnv());
+    assert.equal(run.status, 0, run.out);
+    const verdicts = JSON.parse(run.out);
+    samples.forEach(([sddl, safe], index) => assert.equal(verdicts[index], safe, sddl));
+  });
+});
+
+test("install.ps1 creates a private install folder, refuses one other users can write, -FixPermissions hardens it (Windows PowerShell 5.1)", { skip: !windows, timeout: 300_000 }, async () => {
+  await withTemp("your-wallet-install-acl-", async (temp) => {
+    const localAppData = path.join(temp, "LocalAppData");
+    await mkdir(localAppData, { recursive: true });
+    const cargoTarget = path.join(temp, "cargo-target");
+    const releaseDir = path.join(cargoTarget, "release");
+    await mkdir(releaseDir, { recursive: true });
+    await writeFile(path.join(releaseDir, "yw-app.exe"), "fake yw-app\n");
+    await writeFile(path.join(releaseDir, "yw-host.exe"), "fake yw-host\n");
+    const env = childEnv({ LOCALAPPDATA: localAppData, CARGO_TARGET_DIR: cargoTarget });
+    const install = (...args) => runPowerShell(windowsPowerShell, ["-File", installScript, "-NoBuild", "-NoShortcut", "-NoNativeHost", ...args], env);
+
+    // A fresh install: protected DACL with exactly the current user, SYSTEM and Administrators
+    // (full control, nothing inherited from the temp folder); the files inherit only those.
+    const fresh = path.join(temp, "parent", "YourWallet");
+    let run = install("-InstallDir", fresh);
+    assert.equal(run.status, 0, run.out);
+    let acl = await readAcl(temp, fresh);
+    assert.equal(acl.protected, true);
+    assert.equal(acl.owner, acl.user);
+    assertPrivate(acl, { inherited: false });
+    for (const file of ["yw-host.exe", "yw-app.exe", "com.your_wallet.native.json", "extension/manifest.json"]) {
+      const fileAcl = await readAcl(temp, path.join(fresh, ...file.split("/")));
+      assertPrivate(fileAcl, { inherited: true });
+    }
+    // Re-install (upgrade path) of the private folder: accepted, unchanged.
+    run = install("-InstallDir", fresh);
+    assert.equal(run.status, 0, run.out);
+
+    // An existing empty folder with an extra Everyone:Modify ACE: refused, nothing written.
+    const shared = path.join(temp, "shared");
+    await mkdir(shared);
+    icacls(shared, "/grant", "*S-1-1-0:(OI)(CI)M");
+    run = install("-InstallDir", shared);
+    assert.equal(run.status, 1, run.out);
+    assert.match(run.out, /-FixPermissions/u);
+    assert.deepEqual(await readdir(shared), []);
+    acl = await readAcl(temp, shared);
+    assert.ok(acl.rules.some((rule) => rule.sid === "S-1-1-0"), "the ACL is not changed without -FixPermissions");
+    // -DryRun -FixPermissions plans only.
+    run = install("-InstallDir", shared, "-FixPermissions", "-DryRun");
+    assert.equal(run.status, 0, run.out);
+    acl = await readAcl(temp, shared);
+    assert.ok(acl.rules.some((rule) => rule.sid === "S-1-1-0"));
+    // -FixPermissions (the folder is the current user's): hardened, then installed.
+    run = install("-InstallDir", shared, "-FixPermissions");
+    assert.equal(run.status, 0, run.out);
+    acl = await readAcl(temp, shared);
+    assert.equal(acl.protected, true);
+    assertPrivate(acl, { inherited: false });
+
+    // An upgrade where one installed file got an explicit Everyone:Modify ACE: refused until fixed.
+    icacls(path.join(fresh, "yw-host.exe"), "/grant", "*S-1-1-0:M");
+    run = install("-InstallDir", fresh);
+    assert.equal(run.status, 1, run.out);
+    assert.ok(run.out.includes("yw-host.exe"), run.out);
+    run = install("-InstallDir", fresh, "-FixPermissions");
+    assert.equal(run.status, 0, run.out);
+    assertPrivate(await readAcl(temp, path.join(fresh, "yw-host.exe")), { inherited: true });
+  });
+});
