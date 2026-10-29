@@ -56,6 +56,9 @@ pub const APPROVAL_CLASS: &str = "YourWalletV3Approval";
 pub const PANEL_CLASS: &str = "YourWalletV3Panel";
 const APPROVAL_TIMER_ID: usize = 7;
 const MA_ACTIVATEANDEAT: isize = 2;
+/// `SB_ENDSCROLL`: the scroll-bar button was released (every other `WM_VSCROLL` code comes from
+/// a scroll-bar press or drag, which counts as a press for the press-gap rule).
+const SB_ENDSCROLL: u16 = 8;
 /// Extra window height (DIP) when the AI panel is reserved (spec/06 §6: ten body lines plus the
 /// title row), so the core content area keeps the size it has without the panel.
 const AI_PANEL_EXTRA_DIP: i32 = 240;
@@ -1701,7 +1704,8 @@ impl App {
         let Some(ui) = self.evm.window.as_mut() else {
             return;
         };
-        ui.session.gate.is_foreground = ui.window.is_foreground();
+        // A false → true edge (activation, also within this process) restarts the arm delay.
+        ui.session.set_foreground(now, ui.window.is_foreground());
         let before = ui.session.interaction().status();
         let status = ui.session.event(now, event);
         let deadline = ui.session.gate.deadline_ms;
@@ -1902,6 +1906,8 @@ impl App {
                 if window.is_foreground() {
                     Reply::Default
                 } else {
+                    // The eaten activating click (any button) is a press while not armed.
+                    self.interaction(InteractionEvent::OtherPress);
                     Reply::Handled(MA_ACTIVATEANDEAT)
                 }
             }
@@ -1919,6 +1925,15 @@ impl App {
                 Reply::Handled(0)
             }
             Msg::MouseDown { x, y } => {
+                let on_approve = self
+                    .evm
+                    .window
+                    .as_ref()
+                    .is_some_and(|ui| ui.bottom.approve.contains(*x, *y));
+                if !on_approve {
+                    // Every press counts for the press-gap rule (spec/04 §3.4).
+                    self.interaction(InteractionEvent::OtherPress);
+                }
                 let Some(ui) = self.evm.window.as_mut() else {
                     return Reply::Default;
                 };
@@ -2022,7 +2037,9 @@ impl App {
             }
             Msg::ActivateApp(true) => {
                 if let Some(ui) = self.evm.window.as_mut() {
-                    ui.session.gate.is_foreground = true;
+                    let now = now_ms();
+                    ui.session.restart_arm_delay(now);
+                    ui.session.set_foreground(now, true);
                 }
                 Reply::Default
             }
@@ -2073,6 +2090,17 @@ impl App {
     }
 
     fn on_approval_key(&mut self, vk: u16, repeat: bool) {
+        // Every key press (auto-repeat included) counts for the press-gap rule; Enter and Space
+        // on the approve button are presses of their own (`ApproveActivated`/`SpacePressed`).
+        let approve_input = matches!(vk, VK_RETURN | VK_SPACE)
+            && self
+                .evm
+                .window
+                .as_ref()
+                .is_some_and(|ui| ui.focus == Focus::Approve);
+        if !approve_input {
+            self.interaction(InteractionEvent::OtherPress);
+        }
         let Some(ui) = self.evm.window.as_mut() else {
             return;
         };
@@ -2133,6 +2161,7 @@ impl App {
                 Reply::Handled(0)
             }
             Msg::MouseDown { x, y } => {
+                self.interaction(InteractionEvent::OtherPress);
                 let Some(ui) = self.evm.window.as_mut() else {
                     return Reply::Default;
                 };
@@ -2164,6 +2193,9 @@ impl App {
                 Reply::Handled(0)
             }
             Msg::VScroll { code } => {
+                if *code != SB_ENDSCROLL {
+                    self.interaction(InteractionEvent::OtherPress);
+                }
                 let Some(ui) = self.evm.window.as_ref() else {
                     return Reply::Default;
                 };
@@ -2452,8 +2484,7 @@ impl App {
         dc.round_rect(reject, radius, theme::CARD, theme::BUTTON_SECONDARY.border);
         dc.set_text_color(theme::TEXT);
         dc.draw_text(&wide("거부"), reject, DrawFlags::CENTER);
-        let armed =
-            ui.session.interaction().is_armed() && crate::ui::interaction::can_approve(gate, now);
+        let armed = ui.session.approve_ready(now);
         let simulating = matches!(
             gate.prepare,
             PrepareState::Preparing(PrepareStage::Simulating { .. })
@@ -2678,6 +2709,7 @@ impl App {
                 Reply::Handled(0)
             }
             Msg::MouseDown { .. } => {
+                self.interaction(InteractionEvent::OtherPress);
                 // The panel never takes keyboard focus (spec/04 §3.8).
                 if let Some(ui) = self.evm.window.as_ref() {
                     ui.window.set_focus();
@@ -2690,6 +2722,9 @@ impl App {
                 Reply::Handled(0)
             }
             Msg::VScroll { code } => {
+                if *code != SB_ENDSCROLL {
+                    self.interaction(InteractionEvent::OtherPress);
+                }
                 let page = window.client_rect().h;
                 let line = window.px(20);
                 let current = self
