@@ -815,7 +815,7 @@ hello 교환(§8.2, 2 s) 실패 → UNAVAILABLE
 
 ### 7.5 중계와 종료
 - 스레드 R(stdin 리더): 시작 직후부터 `read_frame(stdin)`을 반복해 용량 64 프레임의 `sync_channel`에 넣는다(가득 차면 블록 = Chrome 쪽 backpressure). EOF → 종료 코드 0.
-- 연결 성공 후 메인 스레드: 채널의 프레임을 꺼낼 때마다 `AllowSetForegroundWindow(app_pid)`(실패 무시, `app_pid = GetNamedPipeServerProcessId`)를 호출하고 바이트 그대로 pipe에 `write_frame`. 승인 창이 앞으로 나오게 하기 위함이다(§11-2).
+- 연결 성공 후 메인 스레드: 채널의 프레임을 꺼낼 때마다 `AllowSetForegroundWindow(app_pid)`(실패 무시, `app_pid = GetNamedPipeServerProcessId`, §8.1의 서버 프로세스 검증을 통과한 pid만 — 검증 전이나 실패한 pid에는 부르지 않는다)를 호출하고 바이트 그대로 pipe에 `write_frame`. 승인 창이 앞으로 나오게 하기 위함이다(§11-2).
 - 스레드 W(pipe 리더): `read_frame(pipe)` → `write_frame(stdout)` 바이트 그대로. pipe EOF → 종료 코드 0.
 - 내용은 해석하지 않는다(spec.md §4.1). 예외는 §7.6 UNAVAILABLE 모드의 `version`·`kind`·상관 필드 4개와 §7.4 `settings.json`의 `version`·`browserAutoLaunch`뿐이다.
 - 종료: yw-host `main.rs`에 단 하나의 `fn terminate(code: u8) -> ! { std::process::exit(i32::from(code)) }`를 두고 `#[expect(clippy::exit, reason = "stdin/pipe 리더 스레드가 메인이 블록된 I/O 중에 프로세스를 끝내야 함")]`를 붙인다([01] §3.1 `exit = "deny"`). 다른 곳에서는 exit를 쓰지 않는다(`lib.rs` 함수는 종료 코드를 돌려주고 `main.rs`의 스레드 본문이 `terminate`를 부른다).
@@ -877,9 +877,15 @@ pub fn allow_set_foreground_window(pid: u32) -> bool;
 | nDefaultTimeOut | 1,000 ms |
 | 프레이밍 | §7.3과 같음(4 B LE 길이 + UTF-8 JSON, ≤ 1 MiB) |
 
-- yw-app은 시작하자마자(vault 잠금 해제 전, 프로세스 시작 2 s 안) 첫 인스턴스를 만든다. 첫 인스턴스 생성이 `ERROR_ACCESS_DENIED`면 다른 yw-app이 실행 중이다. 이후 처리(기존 창 활성화, `--background`면 조용히 종료 코드 0)는 [04](04-app-ui.md)의 단일 인스턴스 규칙을 따른다.
+- yw-app은 시작하자마자(vault 잠금 해제 전, 프로세스 시작 2 s 안) 첫 인스턴스를 만든다. 두 번째 yw-app은 그 전에 단일 인스턴스 뮤텍스에서 걸러진다([04] §1.1: 사용자 SID + Medium 무결성 레이블 경계의 사설 네임스페이스 `YourWalletV3\app.<세션 ID>`, Low 무결성 프로세스나 다른 사용자는 만들 수도 열 수도 없다; 기존 창 활성화는 그 창의 프로세스가 같은 실행 파일·Medium 이상일 때만, `--background`면 조용히 종료 코드 0). 그래서 뮤텍스를 쥔 뒤의 `ERROR_ACCESS_DENIED`(`AlreadyExists`)는 다른 yw-app이 아니라 이름 점유다(아래).
 - 수락 루프: 대기 인스턴스 하나에 `ConnectNamedPipe`(overlapped, `ERROR_PIPE_CONNECTED`도 성공). 연결되면 활성 연결 수 < 4일 때 다음 대기 인스턴스를 만든다. 4개가 모두 연결 중이면 하나가 닫힐 때까지 만들지 않는다(그동안 클라이언트는 `ERROR_PIPE_BUSY`).
 - 클라이언트 PID(`GetNamedPipeClientProcessId`)는 로그에만 쓴다. 같은 사용자 프로세스의 접속은 막지 않는다(§2.2).
+- 이름 점유(yw-app 쪽): 단일 인스턴스 뮤텍스([04] §1.1, 사설 네임스페이스)를 쥔 yw-app의 첫 인스턴스 생성이 `AlreadyExists`(`ERROR_ACCESS_DENIED`)면 다른 프로그램이 이 사용자의 고정 이름을 먼저 만든 것이다(Low 무결성 프로세스도 같은 사용자라면 이 이름의 파이프를 만들 수 있다). 로그 `pipe`/`server.squatted`(E-PIPE-002)와 배너 "다른 프로그램이 지갑 연결 채널을 점유하고 있습니다…"(E-PIPE-002), 상태 줄 `브라우저: 사용 불가 E-PIPE-002`. 브라우저 연동 없이 계속한다.
+- 서버 검증(yw-host 쪽, H1 위협 = 같은 사용자의 Low 무결성 프로세스가 이름을 선점): 연결 뒤 hello를 보내기 **전에** 순서대로 확인하고 하나라도 실패하면 연결을 버리고 UNAVAILABLE(요청마다 4900, 종료 3)로 간다. 서버는 hello를 한 바이트도 받지 못한다.
+  1. pipe 소유자: 클라이언트 핸들의 `owner_sid()`(`GetSecurityInfo(OWNER)`) == 현재 사용자 SID(다른 사용자의 선점).
+  2. 서버 pid: `GetNamedPipeServerProcessId`(실패 → 거부).
+  3. 서버 프로세스(`yw_win::security::verify_process`): `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` → `OpenProcessToken(TOKEN_QUERY)` → `GetTokenInformation(TokenIntegrityLevel)`의 RID ≥ `0x2000`(Medium; Low·Untrusted 거부, 열거나 읽지 못하면 거부) → `QueryFullProcessImageNameW(PROCESS_NAME_WIN32)`가 `<yw-host.exe의 폴더>\yw-app.exe`와 같은 파일(양쪽 `std::fs::canonicalize` 후 유니코드 대문자화 비교, 해석 실패 → 거부). debug 빌드에서만 `YW_TEST_APP_IMAGE`가 기대 이미지 경로를 대신한다(§10.1 H1의 가짜 서버 = node.exe).
+  검증된 pid만 §7.5의 `AllowSetForegroundWindow`에 쓴다. pid 재사용은 연결이 살아 있는 동안 서버 프로세스가 pipe 핸들을 쥐고 있으므로 일어나지 않는다.
 - 이식 참고: `archive/spec-v2.4:crates/platform-windows/src/broker_channel.rs:505-558`(SDDL), `:889-918`(`create_server`). 이름 생성 방식(무작위)은 쓰지 않는다.
 
 ### 8.2 hello
@@ -1016,9 +1022,9 @@ yw-host는 자기와 같은 폴더의 yw-app을 실행하므로 yw-app은 등록
 | N1 | `tests/native-contract.test.mjs`(갱신) | request·cancel 골든과 바이트-필드 일치, response·event·unavailable 골든을 받아 올바르게 전달, `validateNativeManifest` + 템플릿은 항상 무효 |
 | M1 | `tests/manifest.test.mjs`(신규) | `JSON.parse`한 manifest에서 `key`를 뺀 값이 §2.2 객체(`action` 포함)와 deep-equal(키 순서 무관, `action.default_icon`·`icons` 포함), `extensionIdFromKey(manifest.key)` == `extension-id.txt`, 호스트 권한·선택 권한·CSP 키 없음 |
 | M2 | 〃 | 가짜 `chrome`으로 `background.js`를 로드했을 때 `onConnectExternal`·`onMessageExternal`·`onMessage` 등록 0회. 팝업 port: router 전 `unknown`(native 0회), 응답 받은 뒤 `connected`, 탭 sender·다른 페이지는 port 닫힘·메시지 없음 |
-| H1 | `tests/yw-host-process.test.mjs`(신규, `native-host-process.test.mjs` 대체) | `target/debug/yw-host.exe`가 없으면 `process.env.YW_CHECK === "1"`이면 실패, 아니면 skip([01] §4.1). yw-host 프로세스마다 `LOCALAPPDATA`는 빈 임시 폴더다. Node `net.createServer().listen(<테스트 pipe>)`로 가짜 yw-app을 만들고 yw-host를 실행(중계·hello-reject 사례는 `YW_TEST_NO_SPAWN=1`): hello 형식, 바이트 그대로 양방향 중계, 잘못된 origin 인자 → 종료 2·출력 없음, 서버 없음(`YW_TEST_NO_SPAWN=1`) → 4900 응답 후 종료 3, 서버 없음 + `YW_TEST_DATA_DIR`의 settings.json `{"version":1,"browserAutoLaunch":false}`(`YW_TEST_NO_SPAWN` 없음) → 8 s 안에(§7.6 연결 기한 10 s보다 짧게) 4900·종료 3. pipe 소유자 검사(yw-host는 hello 전에 서버 pipe의 소유자가 현재 사용자인지 `GetSecurityInfo` OWNER로 확인하고, 아니면 UNAVAILABLE·요청마다 4900)는 Node 서버로 다른 소유자를 만들 수 없으므로 `crates/yw-host/tests/owner.rs`(기대 SID 주입: 일치 → 중계, 불일치 → 4900)와 yw-win `tests/pipe.rs`(나중 인스턴스의 소유자·DACL 불일치 → `AlreadyExists`)가 맡는다 |
+| H1 | `tests/yw-host-process.test.mjs`(신규, `native-host-process.test.mjs` 대체) | `target/debug/yw-host.exe`가 없으면 `process.env.YW_CHECK === "1"`이면 실패, 아니면 skip([01] §4.1). yw-host 프로세스마다 `LOCALAPPDATA`는 빈 임시 폴더다. Node `net.createServer().listen(<테스트 pipe>)`로 가짜 yw-app을 만들고 yw-host를 실행(중계·hello-reject 사례는 `YW_TEST_NO_SPAWN=1`): hello 형식, 바이트 그대로 양방향 중계, 잘못된 origin 인자 → 종료 2·출력 없음, 서버 없음(`YW_TEST_NO_SPAWN=1`) → 4900 응답 후 종료 3, 서버 없음 + `YW_TEST_DATA_DIR`의 settings.json `{"version":1,"browserAutoLaunch":false}`(`YW_TEST_NO_SPAWN` 없음) → 8 s 안에(§7.6 연결 기한 10 s보다 짧게) 4900·종료 3. 가짜 서버는 node.exe이므로 서버 프로세스 검증(§8.1)의 기대 이미지를 `YW_TEST_APP_IMAGE` = `process.execPath`로 준다. 기대 이미지가 다른 파일(`yw-host.exe`)이면 서버는 연결만 되고 hello를 한 바이트도 받지 못하며 yw-host는 4900·종료 3(impostor 사례). pipe 소유자 검사(yw-host는 hello 전에 서버 pipe의 소유자가 현재 사용자인지 `GetSecurityInfo` OWNER로 확인하고, 아니면 UNAVAILABLE·요청마다 4900)는 Node 서버로 다른 소유자를 만들 수 없으므로 `crates/yw-host/tests/owner.rs`(기대 SID 주입: 일치 → 중계, 불일치 → 4900; 서버 프로세스 검사 주입: 거부 → hello 없음, 검사가 받는 pid = 서버 pid; 실제 검사: 테스트 프로세스는 자기 실행 파일로 통과, cmd.exe·없는 파일·없는 pid로 거부)와 yw-win `tests/pipe.rs`(나중 인스턴스의 소유자·DACL 불일치 → `AlreadyExists`)가 맡는다 |
 
-H1을 위해 yw-host는 **debug 빌드에서만**(`cfg!(debug_assertions)`) 환경 변수 `YW_TEST_PIPE_NAME`(pipe 전체 이름 대체), `YW_TEST_NO_SPAWN=1`(yw-app 실행 생략, `browserAutoLaunch` false와 같음), `YW_TEST_DATA_DIR`(settings.json 폴더 대체, §7.4)을 읽는다. release 빌드는 무시한다. yw-app도 **debug 빌드에서만** `YW_TEST_PIPE_NAME`(`\.pipe`로 시작할 때)을 pipe 이름으로 쓴다(M5 headless E2E: 버리는 `LOCALAPPDATA` + 테스트 pipe로 실제 yw-host ↔ yw-app 중계 확인).
+H1을 위해 yw-host는 **debug 빌드에서만**(`cfg!(debug_assertions)`) 환경 변수 `YW_TEST_PIPE_NAME`(pipe 전체 이름 대체), `YW_TEST_NO_SPAWN=1`(yw-app 실행 생략, `browserAutoLaunch` false와 같음), `YW_TEST_DATA_DIR`(settings.json 폴더 대체, §7.4), `YW_TEST_APP_IMAGE`(서버 프로세스의 기대 이미지 대체, §8.1)를 읽는다. release 빌드는 무시한다. yw-app도 **debug 빌드에서만** `YW_TEST_PIPE_NAME`(`\.pipe`로 시작할 때)을 pipe 이름으로 쓴다(M5 headless E2E: 버리는 `LOCALAPPDATA` + 테스트 pipe로 실제 yw-host ↔ yw-app 중계 확인).
 
 ### 10.2 Rust
 | ID | 크레이트 | 내용 |

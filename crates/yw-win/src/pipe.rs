@@ -544,10 +544,10 @@ impl std::error::Error for ServerError {}
 
 /// A security descriptor from `ConvertStringSecurityDescriptorToSecurityDescriptorW`, freed with
 /// `LocalFree`.
-struct SecurityDescriptor(PSECURITY_DESCRIPTOR);
+pub(crate) struct SecurityDescriptor(PSECURITY_DESCRIPTOR);
 
 impl SecurityDescriptor {
-    fn from_sddl(sddl: &str) -> Result<Self, WinError> {
+    pub(crate) fn from_sddl(sddl: &str) -> Result<Self, WinError> {
         const API: &str = "ConvertStringSecurityDescriptorToSecurityDescriptorW";
         let wide = to_wide(sddl, API)?;
         let mut descriptor: PSECURITY_DESCRIPTOR = core::ptr::null_mut();
@@ -565,6 +565,11 @@ impl SecurityDescriptor {
             return Err(WinError::last(API));
         }
         Ok(Self(descriptor))
+    }
+
+    /// The descriptor, valid while `self` lives.
+    pub(crate) const fn raw(&self) -> PSECURITY_DESCRIPTOR {
+        self.0
     }
 }
 

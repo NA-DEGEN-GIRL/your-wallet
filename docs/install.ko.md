@@ -9,9 +9,12 @@ Your Wallet은 미리 빌드한 실행 파일을 배포하지 않는다(spec.md 
 - Windows 11 x64(22H2 이상), Chrome 120 이상, 인터넷(처음 빌드할 때 Rust 툴체인과 의존성을 내려받는다).
 - 소스: `git clone <저장소 주소>`, 또는 GitHub의 **Code → Download ZIP** → 압축 풀기. ZIP이면 풀기 전에 zip 파일
   우클릭 → 속성 → **차단 해제**를 체크해 두면 `install.cmd`를 열 때 경고 창이 뜨지 않는다(뜨면 "추가 정보 → 실행").
-- 빌드 도구: rustup(Rust 1.95.0은 `rust-toolchain.toml`대로 빌드할 때 자동으로 받는다)과 Visual Studio 2022
-  Build Tools의 "C++를 사용한 데스크톱 개발". 없으면 `install.cmd`가 무엇이 없는지 보여 주고 다음 명령을 지금
-  실행할지 묻는다(`Y`일 때만 실행). Build Tools는 수 GB이고 관리자 권한 확인 창이 뜬다. Node.js는 필요 없다.
+- 빌드 도구: rustup(Rust 1.95.0은 빌드할 때 자동으로 받는다)과 Visual Studio 2022 Build Tools의 "C++를 사용한
+  데스크톱 개발". 없으면 `install.cmd`가 무엇이 없는지 보여 주고 다음 명령을 지금 실행할지 묻는다(`Y`일 때만 실행).
+  Build Tools는 수 GB이고 관리자 권한 확인 창이 뜬다. Node.js는 필요 없다.
+- rustup은 기본 위치(`%USERPROFILE%\.cargo`, 또는 `CARGO_HOME` 환경 변수가 가리키는 폴더)에 있어야 한다. 설치 프로그램은
+  PATH에서 cargo를 찾지 않고 그 폴더의 `bin\rustup.exe`·`cargo.exe`·`rustc.exe`를 전체 경로로 실행한다(PATH의 다른 폴더에
+  누가 `cargo.exe`를 넣어 두어도 쓰이지 않는다). 아래 winget 명령은 기본 위치에 설치한다.
 
   ```
   winget install --id Rustlang.Rustup -e
@@ -22,9 +25,15 @@ Your Wallet은 미리 빌드한 실행 파일을 배포하지 않는다(spec.md 
 
 저장소 폴더의 **`install.cmd`** 를 더블클릭한다. 끝나면 창이 기다리므로 결과를 읽고 아무 키나 누른다.
 
-1. 확장 파일과 확장 ID(`nnpjlobjgbanccjddghlpaafpohfkeph`)를 확인한다.
-2. 빌드 도구를 확인한다(없으면 위 winget 명령을 제안).
-3. `cargo build --release --locked -p yw-app -p yw-host`. cargo 출력이 그대로 보인다. 의존성은 `Cargo.lock`의
+1. 설치 경로와 그 상위 폴더 권한(아래 "설치 폴더 권한"), 확장 파일과 확장 ID(`nnpjlobjgbanccjddghlpaafpohfkeph`)를 확인한다.
+2. 빌드 도구를 확인한다(없으면 위 winget 명령을 제안). rustup·cargo·rustc가 있는 폴더를 다른 사용자가 바꿀 수 있으면
+   멈춘다(아래 "빌드 도구 위치").
+3. `cargo +1.95.0 build --release --locked -p yw-app -p yw-host`. `Cargo.toml`의 릴리스 설정(`codegen-units=1`, `lto='fat'`,
+   `overflow-checks=true`, `panic='abort'`, `strip='symbols'`, `debug=false`)을 명령줄 `--config`로 한 번 더 주므로, 다른
+   곳의 `.cargo\config.toml`이나 `CARGO_PROFILE_RELEASE_*` 환경 변수가 이 값을 바꾸지 못한다. 빌드 동안에만
+   `RUSTFLAGS` 계열, `RUSTC`·`RUSTC_WRAPPER`·`RUSTC_WORKSPACE_WRAPPER`, 이름이 `CARGO_PROFILE_RELEASE_`·`CARGO_BUILD_RUSTC`·
+   `CC`·`CFLAGS`·`CXX`·`CXXFLAGS`로 시작하는 환경 변수를 지우고 끝나면 되돌린다(시스템·사용자 설정은 그대로).
+   cargo·rustc가 1.95.0이 아니면 빌드하지 않고 멈춘다(종료 7). cargo 출력이 그대로 보인다. 의존성은 `Cargo.lock`의
    체크섬으로 고정된다. 처음에는 몇 분 걸린다.
 4. `%LOCALAPPDATA%\Programs\YourWallet\`에 `yw-app.exe`, `yw-host.exe`, `uninstall.ps1`, `extension\`(확장 실행에 필요한
    파일만)을 복사한다. 이전 설치가 있으면 업그레이드라고 알리고 바뀐 파일만 바꾼다. 실행 중인 yw-app·yw-host가 그
@@ -41,22 +50,44 @@ Chrome은 설치 폴더의 확장 사본을 쓰므로 `git pull`만으로는 로
 |---|---|
 | `-DryRun` | 확인과 할 일 출력만 한다(빌드·복사·등록·winget 없음) |
 | `-InstallDir <폴더>` | 설치 폴더(기본 `%LOCALAPPDATA%\Programs\YourWallet`). 비어 있거나 이전 설치 폴더여야 하고, 다른 사용자가 바꿀 수 없어야 한다(아래) |
-| `-FixPermissions` | 이미 있는 설치 폴더를 다른 사용자가 바꿀 수 있을 때, 그 폴더가 내 소유이면 권한을 나·SYSTEM·Administrators만으로 고친다 |
+| `-FixPermissions` | 이미 있는 설치 폴더를 다른 사용자가 바꿀 수 있을 때, 그 폴더가 내 소유이면 권한을 나·SYSTEM·Administrators만으로 고친다(설치 폴더만 고친다) |
+| `-AllowUnsafeToolchainPath` | rustup·cargo·rustc가 있는 폴더를 다른 사용자가 바꿀 수 있어도, 설명을 출력한 뒤 그 도구로 빌드한다(아래 "빌드 도구 위치"를 읽고 위험을 감수할 때만) |
 | `-NoBuild` | 빌드하지 않고 이미 있는 `target\release`의 exe를 설치한다 |
 | `-NoShortcut` | 시작 메뉴 바로가기를 만들지 않는다 |
 | `-NoNativeHost` | HKCU 등록을 하지 않는다(그러면 확장이 앱에 연결되지 않는다) |
 
-종료 코드: 0 성공, 1 환경·경로 오류, 2 소스·빌드 결과 오류(확장 ID 불일치 등), 3 취소(비대화형이라 물을 수 없음 포함),
-4 파일 복사 실패, 5 native host manifest·등록 실패, 6 바로가기 실패, 7 빌드 도구 없음, 8 빌드 실패, 9 예상하지 못한 오류.
+종료 코드: 0 성공, 1 환경·경로 오류(상위 폴더 권한 포함), 2 소스·빌드 결과 오류(확장 ID 불일치 등), 3 취소(비대화형이라
+물을 수 없음 포함), 4 파일 복사 실패, 5 native host manifest·등록 실패, 6 바로가기 실패, 7 빌드 도구 없음·다른 사용자가 바꿀 수
+있는 위치의 빌드 도구·Rust 1.95.0이 아님, 8 빌드 실패, 9 예상하지 못한 오류.
 사용자 이름에 `&`·`%`·`!` 같은 문자가 있으면 기본 경로를 쓸 수 없다(Chrome이 `cmd.exe`로 host를 실행할 수 있어서다).
 `install.cmd -InstallDir "%USERPROFILE%\Apps\YourWallet"`처럼 사용자 프로필 아래의 단순한 경로를 준다(프로필 경로
 자체에 그런 문자가 있으면 그 문자가 없는 경로에 설치 프로그램이 새로 만들 폴더를 준다).
 
 설치 폴더 권한: 다른 로컬 사용자가 설치 폴더의 `yw-host.exe`·`yw-app.exe`·확장 파일을 바꾸면 지갑이 그 사용자의 코드를
-실행하게 된다. 그래서 설치 프로그램은 새 설치 폴더를 나·SYSTEM·Administrators만 바꿀 수 있게(상속 끊음) 만들고, 이미 있는
-폴더는 다른 사용자(Users·Authenticated Users·Everyone 등)에게 쓰기·수정 권한이 있거나 내 소유가 아니면 설치하지 않는다(종료 1).
-내 소유 폴더라면 `-FixPermissions`를 붙여 권한을 고칠 수 있다. `C:\` 바로 아래의 기존 폴더는 보통 Authenticated Users가 수정할
-수 있으니 쓰지 않는다.
+실행하게 된다. 그래서 설치 프로그램은 새 설치 폴더(와 아직 없는 상위 폴더)를 나·SYSTEM·Administrators만 바꿀 수 있게(상속
+끊음) 만들고, 이미 있는 폴더는 다른 사용자(Users·Authenticated Users·Everyone 등)에게 쓰기·수정 권한이 있거나 내 소유가
+아니면 설치하지 않는다(종료 1). 내 소유 폴더라면 `-FixPermissions`를 붙여 그 설치 폴더의 권한만 고칠 수 있다.
+
+상위 폴더: 다른 사용자가 설치 폴더의 상위 폴더를 옮기고 같은 경로에 자기 폴더를 만들 수 있으면, Chrome이 그 사용자의
+`yw-host.exe`를 실행하게 된다. 그래서 `-InstallDir`을 주면 드라이브 루트까지, 기본 경로는 사용자 프로필부터 아래의 이미 있는
+상위 폴더마다, 나·SYSTEM·Administrators·TrustedInstaller가 아닌 계정에 다음 권한이 있으면 설치하지 않는다(종료 1, 문제 폴더와
+이유를 출력):
+
+- 하위 항목 삭제, 권한 변경, 소유권 가져오기(모든 권한 포함), 또는 그 폴더가 다른 계정 소유이거나 링크(정션·심볼릭 링크)
+- 그 폴더의 삭제 권한 + 그 바로 위 폴더의 파일·폴더 만들기 권한(옮긴 뒤 같은 이름으로 다시 만들 수 있다)
+
+읽기 권한이나 "폴더 만들기"만 있는 것(예: `C:\`의 Authenticated Users)은 이미 있는 폴더를 바꿀 수 없으므로 거부하지 않는다.
+설치 프로그램은 상위 폴더나 시스템 폴더의 권한을 바꾸지 않는다. 거부되면 사용자 프로필 아래의 경로
+(예: `install.cmd -InstallDir "%USERPROFILE%\Apps\YourWallet"`)를 지정한다.
+
+빌드 도구 위치: 빌드에 쓰는 `rustup.exe`·`cargo.exe`·`rustc.exe`(링크면 링크 대상까지)와 그 폴더를 다른 계정이 바꿀 수 있으면,
+그 계정이 도구를 바꿔치기해 빌드하는 `yw-app.exe`·`yw-host.exe`에 자기 코드를 넣을 수 있다. 이때 설치 프로그램은 문제 경로와
+위험을 설명하고 멈춘다(종료 7). 실제로 실행하는 그 파일들만 보며 PATH의 다른 폴더는 보지 않는다. `CARGO_HOME`이 여러 사용자가
+쓰는 폴더를 가리킨다면 `CARGO_HOME` 없이 rustup을 내 프로필(`%USERPROFILE%\.cargo`)에 설치해 쓰는 방법이 있다. 위험을 이해하고
+그대로 빌드하려면 `-AllowUnsafeToolchainPath`를 붙인다. git은 커밋 표시에만 쓰며, Program Files 아래이거나 다른 사람이 바꿀 수
+없는 내 폴더에 있는 git만 쓴다(없으면 커밋 표시 없이 설치한다).
+
+설치 프로그램을 깨끗한 환경에서 미리 시험해 보고 싶으면 Windows 샌드박스(Windows Sandbox)에서 실행할 수 있다.
 
 ## 3. Chrome 확장 로드 (처음 한 번)
 
@@ -139,6 +170,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\
 | `%LOCALAPPDATA%\YourWallet\v3\apikeys.dpapi` | RPC 주소·템플릿 자격 정보·LLM 키(Windows DPAPI, 이 PC의 이 사용자만 풀 수 있음) |
 | `%LOCALAPPDATA%\YourWallet\v3\logs\yw-app.log` (+`.1`–`.4`) | 로그(1 MiB씩 5개 순환, 비밀·RPC 주소·dApp origin 없음) |
 
+데이터 폴더 권한: 앱은 시작할 때마다 `%LOCALAPPDATA%\YourWallet`, `v3`, `logs`를 상위 폴더와 상속을 끊은 전용 권한(이 사용자·SYSTEM·Administrators만 모든 권한)과 낮은 무결성 차단 레이블(같은 사용자의 낮은 무결성 프로세스 — 예: 브라우저 샌드박스 — 는 읽기·쓰기 불가)로 만들거나 맞춘다. 안의 파일은 이 권한을 상속한다. 예전 빌드가 만든 폴더가 다른 그룹에도 열려 있었다면(예: 프로필 전체에 상속된 다른 그룹의 읽기 권한) 사용자 소유인 한 자동으로 고치고 로그에 `datadir.acl_repaired`를 남긴다. 앱은 데이터 폴더 밖(`%LOCALAPPDATA%` 등)의 권한은 바꾸지 않으며, 사용자가 시스템 권한을 손볼 필요도 없다.
+
 yw-host는 로그 파일을 쓰지 않는다. 문제를 알릴 때는 `logs\yw-app.log`의 오류 코드 줄만 보내고, 복구 단어·비밀번호·
 RPC 주소는 절대 함께 보내지 않는다.
 
@@ -155,13 +188,18 @@ RPC 주소는 절대 함께 보내지 않는다.
 
 | 증상 | 원인·조치 |
 |---|---|
-| 종료 코드 7(빌드 도구 없음) | 출력된 winget 명령으로 설치하거나 다시 실행해 `Y`. Build Tools를 설치한 직후면 새 창에서 다시 실행(필요하면 재시작) |
+| 종료 코드 7(빌드 도구 없음) | 출력된 winget 명령으로 설치하거나 다시 실행해 `Y`. Build Tools를 설치한 직후면 새 창에서 다시 실행(필요하면 재시작). rustup을 기본 위치가 아닌 곳(scoop 등)에 설치했다면 `CARGO_HOME`이 그 폴더를 가리키게 한다 |
+| 종료 코드 7("다른 사용자가 바꿀 수 있는 위치의 Rust 도구") | 2의 "빌드 도구 위치" 참고. 위험을 감수한다면 `-AllowUnsafeToolchainPath` |
+| 종료 코드 7("Rust 1.95.0이 아닙니다") | `rustup toolchain install 1.95.0` 후 다시 실행 |
+| 종료 코드 1("상위 폴더를 다른 사용자가 바꿀 수 있습니다") | 2의 "상위 폴더" 참고. 사용자 프로필 아래 경로를 `-InstallDir`로 준다 |
 | 종료 코드 8(빌드 실패) | cargo 출력의 첫 `error` 줄을 본다. `link.exe`·`kernel32.lib`이면 Visual Studio Installer → 수정 → "C++를 사용한 데스크톱 개발"·Windows SDK, 내려받기 오류면 인터넷 연결 |
 | 종료 코드 3 | 지갑 앱이나 Chrome이 파일을 쓰고 있다. 앱 창을 닫고(안 보이면 시작 메뉴로 열어서 닫기) Chrome 창을 모두 닫은 뒤 다시 실행 |
 | dApp이 "Wallet is unavailable."(4900) | 앱이 꺼져 있고 자동 실행이 꺼져 있거나 실행에 실패했다. 시작 메뉴로 앱을 먼저 실행한다 |
 | 확장 service worker 콘솔에 `Specified native messaging host not found.` | HKCU 등록이 없다(`-NoNativeHost`로 설치했거나 다른 스크립트가 지웠다). `install.cmd`를 다시 실행 |
 | `Access to the specified native messaging host is forbidden.` | 확장 ID가 다르다. 설치 폴더의 `extension`을 로드했는지, ID가 `nnpjlobjgbanccjddghlpaafpohfkeph`인지 확인 |
-| 설치한 앱 대신 다른 창이 앞으로 나온다 | 다른 위치(예: `target\release`)의 yw-app이 이미 실행 중이다. 한 번에 하나만 실행된다. 그 앱을 닫고 다시 실행 |
+| "실행 중인 Your Wallet 창을 확인하지 못했습니다…" 오류 상자 | 이미 실행 중인 Your Wallet 창이 지금 실행한 파일과 다른 위치(예: `target\release`)의 yw-app이거나, 같은 이름의 창을 만든 다른 프로그램이다. 앱은 같은 실행 파일·보통 이상의 무결성 수준인 창으로만 전환한다. 작업 표시줄에서 실행 중인 창을 직접 열거나, 다른 위치의 앱을 닫고 다시 실행 |
+| 배너 E-PIPE-002("다른 프로그램이 지갑 연결 채널을 점유하고 있습니다") | 지갑보다 먼저 다른 프로그램이 브라우저 연결용 파이프 이름을 만들었다. 지갑은 브라우저 연결 없이 계속하고, yw-host는 그 프로그램에 요청을 보내지 않는다(서버가 설치 폴더의 `yw-app.exe`이고 보통 이상의 무결성 수준일 때만 연결). 모르는 프로그램을 종료하거나 PC를 다시 시작한 뒤 앱을 다시 실행 |
+| "데이터 폴더(%LOCALAPPDATA%\YourWallet)를 열지 않았습니다…" | 데이터 폴더나 안의 파일이 다른 계정의 소유다(이 사용자·SYSTEM·Administrators가 아님). 앱은 지갑 파일을 보호하려고 시작하지 않는다. 그 폴더를 누가 만들었는지 확인한다 |
 | 네트워크 테스트가 E-RPC-003 또는 E-RPC-007 | QuickNode 멀티체인이면 대시보드에서 그 체인을 켰는지 확인. 아니면 그 네트워크 URL을 다시 만들거나 **교체** |
 | "settings.json은 더 새로운 버전…읽기 전용" 배너 | 더 새로운 버전으로 쓴 데이터를 이전 버전으로 열었다. 새 버전을 다시 설치(5) |
 | E-APP-009(내부 오류)가 반복 | 앱을 다시 시작. 반복되면 `logs\yw-app.log`의 오류 코드 줄을 확인(7의 주의대로 비밀은 빼고 알린다) |

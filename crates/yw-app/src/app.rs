@@ -55,8 +55,13 @@ pub const MAIN_CLASS: &str = "YourWalletV3Main";
 pub const SECRET_INPUT_CLASS: &str = "YourWalletV3SecretInput";
 /// Secret display class (W08, W09): `CaptureExclusion::Required`.
 pub const SECRET_VIEW_CLASS: &str = "YourWalletV3SecretView";
-/// Single-instance mutex.
-pub const MUTEX_NAME: &str = "Local\\YourWallet.v3.app";
+/// Single-instance mutex: boundary descriptor name of the private namespace (bound to the user's
+/// SID and Medium integrity, spec/04 §1.1).
+pub const INSTANCE_BOUNDARY: &str = "YourWallet.v3";
+/// Alias prefix of the private namespace.
+pub const INSTANCE_ALIAS: &str = "YourWalletV3";
+/// Mutex name inside the private namespace (`<alias>\app.<session id>`).
+pub const INSTANCE_MUTEX: &str = "app";
 /// Secret clipboard lifetime (D11).
 pub const SECRET_CLIPBOARD_TTL_MS: u64 = 30_000;
 const MAIN_TIMER_ID: usize = 1;
@@ -714,8 +719,9 @@ impl App {
 
     /// Attaches the started browser bridge (spec/05 §8.1).
     pub fn attach_browser(&mut self, browser: crate::app_browser::BrowserUi) {
-        if browser.server.is_none() {
-            self.error_banner(ErrorCode::Pipe001);
+        // The failure was logged by `BrowserUi::start`.
+        if let Some(code) = browser.pipe_error {
+            self.banner(Some(code), code.text());
         }
         self.browser = Some(browser);
     }

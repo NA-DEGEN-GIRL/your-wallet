@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 const execFile = promisify(execFileCallback);
 const root = fileURLToPath(new URL("../", import.meta.url));
 const allowedExtensions = new Set([
+  ".cmd",
+  ".css",
   ".html",
   ".js",
   ".json",
@@ -16,11 +18,72 @@ const allowedExtensions = new Set([
   ".mjs",
   ".ps1",
   ".rs",
+  ".template",
   ".toml",
+  ".txt",
   ".yml",
 ]);
 const TEST_VECTOR_PATH = /^(?:crates\/[^/]+\/tests\/|crates\/[^/]+\/src\/(?:[^/]+\/)*tests\.rs$|tools\/[^/]+\/tests\/|extension\/tests\/|scripts\/[^/]+\.test\.mjs$|spec\/)/u;
 const BIP39_WORDS = new URL("../crates/yw-core/src/bip39/english.txt", import.meta.url); // 스캐너 자신의 저장소에서 읽는다
+
+// --- 개인 정보 규칙(이메일·Windows 프로필 경로·RPC 키 쿼리)의 허용 목록 ---
+// 규칙 전체를 파일 단위로 끄지 않는다. 각 항목은 (경로, 그 경로에서 잡힌 정확한 값) 한 쌍이다.
+// 값은 이 파일 자체가 걸리지 않도록 조각(local/domain, 이름 세그먼트)으로만 적는다.
+
+// 이메일: 실제 사람이 받을 수 없는 주소만 전역 허용.
+//  - 커밋 트레일러 `Co-Authored-By: ... <noreply at anthropic.com>`의 그 주소 하나(정확히 일치).
+//  - RFC 2606 예약 도메인 example.com·example.org(와 그 서브도메인), 예약 TLD `.example`.
+//    (example.net은 저장소에 필요한 곳이 없어 넣지 않았다.)
+const EMAIL_ALLOWED_EXACT = new Set([["noreply", "anthropic.com"].join("@")]);
+const EMAIL_RESERVED_DOMAIN = /(?:^|\.)example\.(?:com|org)$|\.example$/u;
+const EMAIL_FIXTURES = [
+  // URL userinfo 거부 테스트(`https://u@<실제 호스트>/api`): 사람 주소가 아니라 userinfo 형태 픽스처
+  { path: "crates/yw-app/tests/settings.rs", local: "u", domain: "mempool.space" },
+  { path: "spec/04-app-ui.md", local: "u", domain: "mempool.space" },
+];
+
+// Windows 프로필 경로 `<드라이브>:\Users\<이름>` (\, \\, / 모두). `<이름>` 세그먼트 허용 목록:
+//  - `<...>` 꺾쇠 자리표시자(예: <user>, <name>, <사용자>) — `<` `>`는 Windows 파일 이름에 쓸 수 없어 실명일 수 없다.
+//  - 환경 변수 자리표시자: %USERNAME%, $env:USERNAME, ${env:USERNAME}
+//  - 포맷 자리표시자: {user}, {name}, {username}
+//  - Windows 기본 프로필: Public, Default, Default User, All Users
+//  (`%USERPROFILE%\...`·`$env:USERPROFILE\...`는 `X:\Users\` 리터럴이 없어 애초에 걸리지 않는다.)
+//  한 글자 이름 같은 그 밖의 값은 자리표시자로 보지 않는다 — 픽스처는 아래에 파일별로 적는다.
+const PROFILE_PLACEHOLDERS = new Set([
+  "%username%", "$env:username", "${env:username}",
+  "{user}", "{name}", "{username}",
+  "public", "default", "default user", "all users",
+]);
+const PROFILE_FIXTURES = [
+  { path: "crates/yw-win/src/process.rs", name: "x" },                  // file_name_wide 단위 테스트의 가짜 경로
+  { path: "extension/tests/native-contract.test.mjs", name: "Test User" }, // 매니페스트 path 픽스처(공백 포함)
+  { path: "extension/tests/native-contract.test.mjs", name: "Test" },   // 매니페스트 path 픽스처
+  { path: "scripts/install.test.mjs", name: "Test" },                   // 매니페스트 path 픽스처
+  { path: "scripts/install.test.mjs", name: "\uD64D \uAE38\uB3D9" },    // 공백·한글 경로 픽스처("홍 길동")
+  { path: "spec/01-repo-build.md", name: "=~" },                        // --remap-path-prefix 값(Users 접두사 + "=~") 설명
+];
+
+// 쿼리 값 `api-key=`/`apikey=`/`api_key=` 자리표시자: 빈 값, <...>, ${...}, {...}, YOUR_.../YOUR-..., xxx...
+const API_KEY_PLACEHOLDER = /^(?:|<[^<>]*>|\$\{[^{}]*\}|\{[^{}]*\}|your[_-].*|x{3,})$/iu;
+
+function emailAllowed(local, domain, path) {
+  const lowerDomain = domain.toLowerCase();
+  if (EMAIL_ALLOWED_EXACT.has(`${local.toLowerCase()}@${lowerDomain}`)) return true;
+  if (EMAIL_RESERVED_DOMAIN.test(lowerDomain)) return true;
+  return EMAIL_FIXTURES.some((entry) => entry.path === path && entry.local === local && entry.domain === domain);
+}
+
+function profileNameAllowed(name, path) {
+  if (/^<[^<>]*>$/u.test(name)) return true;
+  if (PROFILE_PLACEHOLDERS.has(name.toLowerCase())) return true;
+  return PROFILE_FIXTURES.some((entry) => entry.path === path && entry.name === name);
+}
+
+// 파일 단위 예외(규칙 이름 → 경로): 그 파일이 곧 해당 데이터의 원본인 경우만.
+const RULE_EXEMPT_PATHS = new Map([
+  ["bip39-word-sequence", new Set(["crates/yw-core/src/bip39/english.txt"])], // BIP39 단어 목록 원본
+]);
+
 const forbidden = [
   { name: "private-key-assignment", vectorsAllowed: true, expression: /private[_-]?key\s*[:=]\s*["'][0-9a-f]{64}["']/iu },
   { name: "authorization-header", expression: /authorization\s*:\s*bearer\s+[a-z0-9._~-]{12,}/iu },
@@ -38,6 +101,30 @@ const forbidden = [
         run = words.has(m[0]) ? (joined ? run + 1 : 1) : 0;
         last = m.index + m[0].length;
         if (run >= 12) return true;
+      }
+      return false; } },
+  // Infura 프로젝트 ID: 호스트와 무관하게 `/v3/` 뒤 정확히 32 hex(앞뒤 경계 확인)
+  { name: "infura-project-id-url", expression: /\/v3\/[0-9a-fA-F]{32}(?![0-9A-Za-z_-])/u },
+  { name: "api-key-query-value", detect: (text) => {
+      for (const m of text.matchAll(/(?<![A-Za-z0-9])api[-_]?key=([^\s&#"'`),;\]]*)/giu)) {
+        if (!API_KEY_PLACEHOLDER.test(m[1])) return true;
+      }
+      return false; } },
+  { name: "email-address", detect: (text, _words, path) => {
+      const expression =
+        /(?<![A-Za-z0-9._%+-])([A-Za-z0-9._%+-]+)@([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*\.[A-Za-z]{2,})(?![A-Za-z0-9-])/gu;
+      for (const m of text.matchAll(expression)) {
+        if (!emailAllowed(m[1], m[2], path)) return true;
+      }
+      return false; } },
+  { name: "windows-profile-path", detect: (text, _words, path) => {
+      // 구분자: \, \\(소스 문자열 이스케이프), \\\\, /. 이름은 다음 구분자·따옴표·줄바꿈 전까지(공백 허용).
+      const expression =
+        /(?<![A-Za-z])[A-Za-z]:(?:\\{1,4}|\/)users(?:\\{1,4}|\/)(<[^<>\r\n\\/]*>|\$\{?env:[A-Za-z_]+\}?|[^\\/\r\n"'`|?*:<>]+)/giu;
+      for (const m of text.matchAll(expression)) {
+        const name = m[1].replace(/[\s.,;)\]]+$/u, "");
+        if (name.length === 0) continue;
+        if (!profileNameAllowed(name, path)) return true;
       }
       return false; } },
 ];
@@ -191,8 +278,9 @@ async function loadBip39Words() {
   return words;
 }
 
-function ruleMatches(rule, text, words) {
-  return rule.detect === undefined ? rule.expression.test(text) : rule.detect(text, words);
+function ruleMatches(rule, text, words, path) {
+  if (RULE_EXEMPT_PATHS.get(rule.name)?.has(path) === true) return false;
+  return rule.detect === undefined ? rule.expression.test(text) : rule.detect(text, words, path);
 }
 
 export async function scanRepository(repositoryRoot) {
@@ -210,7 +298,7 @@ export async function scanRepository(repositoryRoot) {
     const vectorPath = TEST_VECTOR_PATH.test(inventoryPath);
     for (const rule of forbidden) {
       if (rule.vectorsAllowed === true && vectorPath) continue;
-      if (ruleMatches(rule, text, words)) findings.push({ rule: rule.name });
+      if (ruleMatches(rule, text, words, inventoryPath)) findings.push({ rule: rule.name });
     }
   }
 

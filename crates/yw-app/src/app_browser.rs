@@ -12,6 +12,7 @@ use std::thread::JoinHandle;
 use yw_core::evm::address::Address;
 use yw_core::policy::{BrowserOrigin, ConnectedSite, ProviderError};
 use yw_json::Value;
+use yw_win::pipe::ServerError;
 
 use crate::app::{App, AppMode};
 use crate::app_evm::QueuedItem;
@@ -55,8 +56,11 @@ pub struct BrowserUi {
     pub core: Arc<BrowserCore>,
     /// Read workers' context (chain checks reset with the RPC worker's).
     pub reads: Arc<ReadContext>,
-    /// Pipe server (`None` = E-PIPE-001).
+    /// Pipe server (`None`: see [`Self::pipe_error`]).
     pub server: Option<PipeServer>,
+    /// Why there is no server: E-PIPE-001, or E-PIPE-002 when the pipe name was already held
+    /// by another server (`ServerError::AlreadyExists`).
+    pub pipe_error: Option<ErrorCode>,
     /// Read worker threads.
     pub threads: Vec<JoinHandle<()>>,
     /// Live pipe connections.
@@ -139,11 +143,26 @@ impl BrowserUi {
                 threads.push(handle);
             }
         }
-        let server = match (pinned_origin(), pipe_name()) {
-            (Some(origin), Ok(name)) => start(Arc::clone(&core), &name, origin).ok(),
-            _ => None,
+        let started = match (pinned_origin(), pipe_name()) {
+            (Some(origin), Ok(name)) => start(Arc::clone(&core), &name, origin).map_err(Some),
+            _ => Err(None),
         };
-        if server.is_none() {
+        // `AlreadyExists` with the single-instance mutex held: the per-user pipe name was taken
+        // by a server this app did not create (spec/05 §8.1, E-PIPE-002).
+        let pipe_squatted = matches!(started, Err(Some(ServerError::AlreadyExists)));
+        let server = started.ok();
+        let pipe_error = match (&server, pipe_squatted) {
+            (Some(_), _) => None,
+            (None, true) => Some(ErrorCode::Pipe002),
+            (None, false) => Some(ErrorCode::Pipe001),
+        };
+        if pipe_squatted {
+            logging::warn(
+                "pipe",
+                "server.squatted",
+                &[("code", Field::Code(ErrorCode::Pipe002))],
+            );
+        } else if server.is_none() {
             logging::warn(
                 "pipe",
                 "server.failed",
@@ -154,6 +173,7 @@ impl BrowserUi {
             core,
             reads,
             server,
+            pipe_error,
             threads,
             connections: 0,
             waiters: HashMap::new(),
@@ -182,7 +202,11 @@ pub fn status_text(browser: Option<&BrowserUi>) -> String {
             0 => "브라우저: 연결 없음".to_owned(),
             count => format!("브라우저: 연결 {count}개"),
         },
-        _ => format!("브라우저: 사용 불가 {}", ErrorCode::Pipe001.code()),
+        Some(browser) => format!(
+            "브라우저: 사용 불가 {}",
+            browser.pipe_error.unwrap_or(ErrorCode::Pipe001).code()
+        ),
+        None => format!("브라우저: 사용 불가 {}", ErrorCode::Pipe001.code()),
     }
 }
 
@@ -949,6 +973,7 @@ mod tests {
             core,
             reads: Arc::new(crate::browser::read::ReadContext::new(None)),
             server: None,
+            pipe_error: None,
             threads: Vec::new(),
             connections: 0,
             waiters: HashMap::new(),

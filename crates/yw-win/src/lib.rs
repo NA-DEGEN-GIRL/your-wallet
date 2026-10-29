@@ -18,6 +18,7 @@ pub mod input;
 pub mod mem;
 pub mod pipe;
 pub mod process;
+pub mod security;
 pub mod session;
 pub mod time;
 pub mod ui;

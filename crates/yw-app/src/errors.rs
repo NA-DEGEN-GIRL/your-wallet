@@ -18,6 +18,8 @@ pub enum ErrorCode {
     App009,
     /// Pipe creation failed.
     Pipe001,
+    /// The pipe name is held by a server this app did not create (squatter).
+    Pipe002,
     /// `UnlockFailed`.
     Vlt001,
     /// Malformed / unsupported vault.
@@ -208,6 +210,7 @@ impl ErrorCode {
             Self::App005 => "E-APP-005",
             Self::App009 => "E-APP-009",
             Self::Pipe001 => "E-PIPE-001",
+            Self::Pipe002 => "E-PIPE-002",
             Self::Vlt001 => "E-VLT-001",
             Self::Vlt002 => "E-VLT-002",
             Self::Vlt003 => "E-VLT-003",
@@ -316,6 +319,9 @@ impl ErrorCode {
                 "내부 오류가 발생했습니다. 앱을 다시 시작해 보고, 반복되면 로그 폴더 %LOCALAPPDATA%\\YourWallet\\v3\\logs의 yw-app.log에서 오류 코드 줄을 확인하세요."
             }
             Self::Pipe001 => "브라우저 연결을 시작하지 못했습니다. 앱을 다시 실행하세요.",
+            Self::Pipe002 => {
+                "다른 프로그램이 지갑 연결 채널을 점유하고 있습니다. 브라우저 연결 없이 계속합니다. 모르는 프로그램이 실행 중인지 확인하고, PC를 다시 시작한 뒤 앱을 다시 실행하세요."
+            }
             Self::Vlt001 => {
                 "비밀번호가 올바르지 않거나 vault 파일이 손상되었습니다. 대부분 입력 실수이니 Caps Lock과 한/영 상태를 확인하고 다시 입력하세요. 맞는 비밀번호로도 계속 실패하면 파일 손상일 수 있습니다(복구 안내 참고)."
             }

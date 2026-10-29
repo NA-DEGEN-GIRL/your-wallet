@@ -3,19 +3,30 @@
 # Windows PowerShell 5.1과 PowerShell 7에서 동작한다. 관리자 권한이 필요 없다(현재 사용자 범위만 바꾼다).
 #
 # 사용 (저장소 루트에서):
-#   install.cmd [-InstallDir <폴더>] [-FixPermissions] [-NoShortcut] [-NoNativeHost] [-NoBuild] [-DryRun]
+#   install.cmd [-InstallDir <폴더>] [-FixPermissions] [-AllowUnsafeToolchainPath] [-NoShortcut] [-NoNativeHost] [-NoBuild] [-DryRun]
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1 [같은 옵션]
 #
 #   -InstallDir    설치 폴더. 기본 %LOCALAPPDATA%\Programs\YourWallet
 #   -FixPermissions  이미 있는 설치 폴더를 다른 사용자가 바꿀 수 있으면(아래 권한 규칙) 그 폴더가 현재 사용자 소유일
 #                  때만 권한을 고친다. 없으면 그런 폴더에는 설치하지 않는다.
+#   -AllowUnsafeToolchainPath  빌드에 쓸 cargo·rustup·rustc(또는 그 폴더)를 다른 사용자가 바꿀 수 있어도(아래 도구 규칙)
+#                  설명을 출력한 뒤 그대로 빌드한다. 없으면 그런 도구로는 빌드하지 않는다(종료 7).
 #   -NoShortcut    시작 메뉴 바로가기를 만들지 않는다.
 #   -NoNativeHost  HKCU에 Chrome native messaging host를 등록하지 않는다(manifest 파일은 설치 폴더에 쓴다).
 #   -NoBuild       빌드하지 않고 이미 있는 target\release\yw-app.exe·yw-host.exe를 쓴다(빌드 도구 확인도 건너뛴다).
 #   -DryRun        확인과 할 일 출력만 하고 아무것도 바꾸지 않는다(빌드·winget도 실행하지 않는다).
 #
+# 빌드 도구: rustup·cargo·rustc는 PATH에서 찾지 않고 %CARGO_HOME%\bin(CARGO_HOME이 드라이브 문자로 시작하는 절대 경로일
+# 때) 또는 %USERPROFILE%\.cargo\bin의 전체 경로로 실행한다. 그 폴더나 파일(심볼릭 링크면 대상 파일과 그 폴더까지)의
+# 소유자가 현재 사용자·SYSTEM·Administrators·TrustedInstaller가 아니거나, 그 밖의 SID에 쓰기·추가·삭제·하위 삭제·권한
+# 변경·소유권 가져오기(GENERIC_WRITE·GENERIC_ALL 포함)를 주는 허용 ACE가 있으면 설명을 출력하고 종료 7
+# (-AllowUnsafeToolchainPath면 계속). 다른 PATH 항목은 보지 않는다. git(커밋 표시용)은 Program Files 아래이거나 현재
+# 사용자 소유 폴더이고 같은 권한 검사를 통과할 때만 쓰고, 아니면 커밋 표시를 건너뛴다. 빌드는 cargo +1.95.0이고
+# Cargo.toml [profile.release]와 같은 값을 명령줄 --config로 다시 주며, 컴파일러·빌드 설정을 바꾸는 환경 변수를 빌드
+# 동안만 지운다(Invoke-Build). cargo·rustc가 1.95.0이 아니면 종료 7.
+#
 # 순서: (1) 확장 파일·ID 확인 -> (2) 빌드 도구 확인(rustup·cargo, Visual Studio C++ 빌드 도구). 없으면 winget 명령을
-# 보여 주고 Y라고 답할 때만 실행 -> (3) cargo build --release --locked -p yw-app -p yw-host -> (4) 설치 폴더 확인(이전
+# 보여 주고 Y라고 답할 때만 실행 -> (3) cargo +1.95.0 build --release --locked -p yw-app -p yw-host -> (4) 설치 폴더 확인(이전
 # 설치가 있으면 업그레이드). 바꿀 파일을 실행 중인 yw-app·yw-host가 쓰고 있으면 닫아 달라고 묻는다(강제 종료하지 않는다)
 # -> (5) yw-app.exe·yw-host.exe·uninstall.ps1·extension\(런타임 파일만) 복사. 내용이 같은 파일은 건너뛰고 이전 설치에만
 # 있던 파일은 지운다 -> (6) native host manifest 쓰기·검증 -> (7) HKCU 등록 -> (8) 시작 메뉴 바로가기 -> 설치 기록, 안내.
@@ -28,16 +39,35 @@
 # 소유권 가져오기를 주는 허용 ACE가 폴더나 그 안 항목에 있으면 설치하지 않는다(CREATOR OWNER의 상속 전용 ACE만 예외).
 # -FixPermissions는 폴더가 현재 사용자 소유일 때만 위 DACL로 고친다.
 #
+# 상위 폴더 권한(Get-InstallAncestorProblems): 설치 폴더의 상위 폴더를 다른 사용자가 지우거나 이름을 바꾼 뒤 같은 경로에
+# 자기 폴더를 만들 수 있으면, HKCU 등록이 가리키는 경로의 yw-host.exe를 그 사용자가 정한다. 그래서 -InstallDir이면
+# 드라이브 루트까지, 기본 경로면 사용자 프로필(%USERPROFILE%)부터 아래의 이미 있는 상위 폴더마다 다음을 본다. "신뢰하지
+# 않는 SID" = 현재 사용자·SYSTEM·Administrators·TrustedInstaller가 아닌 SID(CREATOR OWNER·CREATOR GROUP·OWNER RIGHTS와
+# AppContainer SID S-1-15-2-*·S-1-15-3-*는 뺀다: 앞의 둘은 유효 ACE로는 아무에게도 권한을 주지 않고, OWNER RIGHTS는
+# 아래에서 확인한 소유자에게만, AppContainer SID는 사용자 SID 권한과 함께 있어야만 접근을 준다). 그 폴더 자체에
+# 적용되는 허용 ACE(상속받은 것 포함, 상속 전용 제외; 거부 ACE는 무시)가 신뢰하지 않는 SID들에 주는 권한을 모두 합쳐
+#   (가) 링크(재분석 지점)이거나, 소유자가 신뢰하지 않는 SID이거나, DACL이 없거나, 합친 권한에 FILE_DELETE_CHILD·
+#        WRITE_DAC·WRITE_OWNER·GENERIC_ALL이 있으면 거부.
+#   (나) 합친 권한에 DELETE가 있고, 그 부모 폴더(드라이브 루트가 아닐 때)의 합친 권한에 파일 추가·폴더 추가·
+#        GENERIC_WRITE가 있으면 거부(이 폴더를 옮기고 같은 이름으로 새로 만들 수 있다). 부모에 그 권한이 없으면 DELETE만으로는
+#        옮기거나 지울 수만 있고 바꿔치기할 수 없다(설치 실패일 뿐이다).
+#   읽기 권한, 그리고 파일·폴더 추가만(C:\의 Authenticated Users "폴더 만들기"처럼)은 이미 있는 하위 폴더를 바꿀 수 없으므로
+#   거부하지 않는다. 없는 중간 폴더는 설치 폴더와 같은 DACL로 하나씩 만들고 소유자·DACL을 다시 확인한다(다른 사용자가
+#   먼저 같은 이름을 만들었으면 소유자가 달라 거부된다). 시스템 폴더의 권한은 바꾸지 않는다. 위반은 종료 1.
+#
 # 종료 코드:
 #   0  성공(-DryRun 포함)
 #   1  환경·인자 오류(저장소 밖의 사본을 실행, LOCALAPPDATA 없음, 64비트 Windows 아님, 쓸 수 없는 설치 경로,
-#      설치 기록이 없는 비어 있지 않은 폴더, 다른 사용자가 바꿀 수 있는 설치 폴더 등)
-#   2  소스·빌드 결과 오류(확장 파일 없음·형식 오류, 확장 ID 불일치, -NoBuild인데 yw-app.exe·yw-host.exe 없음)
+#      설치 기록이 없는 비어 있지 않은 폴더, 다른 사용자가 바꿀 수 있는 설치 폴더나 상위 폴더 등)
+#   2  소스·빌드 결과 오류(확장 파일 없음·형식 오류, 확장 ID 불일치, rust-toolchain.toml이 1.95.0이 아님,
+#      -NoBuild인데 yw-app.exe·yw-host.exe 없음)
 #   3  취소(사용자가 취소함, 또는 실행 중인 yw-app·yw-host를 닫아 달라고 물을 수 없는 비대화형 실행)
 #   4  파일 복사·삭제·설치 기록 실패
 #   5  native host manifest 검증 또는 HKCU 등록 실패
 #   6  시작 메뉴 바로가기 생성 실패
-#   7  빌드 도구(Rust·C++ 빌드 도구) 없음: 설치하지 않기로 했거나, 비대화형이라 물을 수 없거나, 설치 뒤에도 찾지 못함
+#   7  빌드 도구(Rust·C++ 빌드 도구) 없음: 설치하지 않기로 했거나, 비대화형이라 물을 수 없거나, 설치 뒤에도 찾지 못함.
+#      다른 사용자가 바꿀 수 있는 위치의 Rust 도구(-AllowUnsafeToolchainPath 없음), cargo·rustc가 1.95.0이 아님,
+#      Rust 기본 대상이 x86_64-pc-windows-msvc가 아님
 #   8  빌드 실패
 #   9  예상하지 못한 오류(스크립트 결함; 출력된 줄 번호와 함께 알려 주세요)
 #Requires -Version 5.1
@@ -45,6 +75,7 @@
 param(
     [string]$InstallDir = '',
     [switch]$FixPermissions,
+    [switch]$AllowUnsafeToolchainPath,
     [switch]$NoShortcut,
     [switch]$NoNativeHost,
     [switch]$NoBuild,
@@ -59,7 +90,15 @@ $HostDescription = 'Your Wallet native messaging host'
 $RegistryKey = "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$HostName"
 $MarkerName = 'yw-install.json'
 $ShortcutName = 'Your Wallet.lnk'
+$RustToolchain = '1.95.0'   # cargo·rustc의 +툴체인. rust-toolchain.toml channel과 같아야 한다(빌드 전에 확인).
 $BuildArgs = @('build', '--release', '--locked', '-p', 'yw-app', '-p', 'yw-host')
+# Cargo.toml [profile.release]와 정확히 같은 값을 명령줄 --config로 다시 준다(명령줄이 환경 변수와 상위 폴더·CARGO_HOME의
+# .cargo\config.toml보다 우선한다). 문자열은 TOML 리터럴('...')로 쓴다: Windows PowerShell 5.1은 네이티브 인자 안의
+# 큰따옴표를 escape하지 않아 "fat"이 cargo에 fat으로 간다. 같은지는 scripts/install.test.mjs가 확인한다.
+$ReleaseProfileOverrides = @('codegen-units=1', "lto='fat'", 'overflow-checks=true', "panic='abort'", "strip='symbols'", 'debug=false')
+# 빌드(cargo·rustc 실행) 동안만 지우는 환경 변수: 정확한 이름과 접두사(대소문자 무시). RUSTFLAGS 계열은 아래 목록.
+$ClearedBuildVariableNames = @('RUSTC', 'RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER')
+$ClearedBuildVariablePrefixes = @('CARGO_PROFILE_RELEASE_', 'CARGO_BUILD_RUSTC', 'CC', 'CFLAGS', 'CXX', 'CXXFLAGS')
 # 사용자가 Y라고 답할 때만 실행하는 winget 명령(인자 문자열 그대로 winget에 넘긴다).
 $RustupWingetArgs = 'install --id Rustlang.Rustup -e'
 $BuildToolsWingetArgs = 'install --id Microsoft.VisualStudio.2022.BuildTools -e --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"'
@@ -68,11 +107,16 @@ $RustflagsVariables = @('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'CARGO_BUILD_RUS
 # 설치 폴더 권한(위 머리말): 모든 권한을 갖는 SID와, 다른 SID에 주면 안 되는 권한 비트.
 $SidSystem = 'S-1-5-18'
 $SidAdministrators = 'S-1-5-32-544'
+$SidTrustedInstaller = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
 $SidCreatorOwner = 'S-1-3-0'
 # WriteData/AddFile 0x2, AppendData/AddSubdirectory 0x4, WriteExtendedAttributes 0x10, DeleteChild 0x40,
 # WriteAttributes 0x100, DELETE 0x10000, WRITE_DAC 0x40000, WRITE_OWNER 0x80000, GENERIC_ALL 0x10000000,
 # GENERIC_WRITE 0x40000000.
 $UnsafeRightsMask = 0x2 -bor 0x4 -bor 0x10 -bor 0x40 -bor 0x100 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x10000000 -bor 0x40000000
+# 상위 폴더 규칙(머리말): (가) DeleteChild·WRITE_DAC·WRITE_OWNER·GENERIC_ALL, (나) DELETE + 부모의 파일·폴더 추가·GENERIC_WRITE.
+$AncestorTakeoverMask = 0x40 -bor 0x40000 -bor 0x80000 -bor 0x10000000
+$AncestorDeleteMask = 0x10000
+$AncestorCreateEntryMask = 0x2 -bor 0x4 -bor 0x40000000
 
 # ---------------------------------------------------------------- 출력·공통
 
@@ -131,10 +175,10 @@ function Invoke-NativeCommand([string]$Exe, [string[]]$ArgList) {
     }
 }
 
-# 네이티브 명령의 stdout 줄을 돌려준다. 명령이 없거나 실패하면 $null.
+# 네이티브 명령의 stdout 줄을 돌려준다. 명령이 없거나 실패하면 $null. $Exe는 전체 경로다(PATH에서 찾지 않는다).
 # -ShowStderr: stderr(예: rustup의 툴체인 내려받기 진행)를 숨기지 않고 화면에 보인다.
 function Get-NativeOutput([string]$Exe, [string[]]$ArgList, [switch]$ShowStderr) {
-    if ($null -eq (Get-Command $Exe -CommandType Application -ErrorAction SilentlyContinue)) { return $null }
+    if ([string]::IsNullOrEmpty($Exe) -or -not [IO.Path]::IsPathRooted($Exe) -or -not (Test-Path -LiteralPath $Exe -PathType Leaf)) { return $null }
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
@@ -218,13 +262,17 @@ function Get-CurrentUserSid {
     return [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 }
 
-# 보안 설명자(SDDL)가 설치 폴더·파일로 안전하면 $null, 아니면 이유 문장. 소유자는 현재 사용자·SYSTEM·
-# Administrators여야 하고(소유자는 언제든 DACL을 바꿀 수 있다), 그 밖의 SID에 쓰기 계열 권한($UnsafeRightsMask)을
+# 보안 설명자(SDDL)가 설치 폴더·파일(그리고 빌드 도구 파일·폴더)로 안전하면 $null, 아니면 이유 문장. 소유자는 현재
+# 사용자·SYSTEM·Administrators·TrustedInstaller여야 하고(소유자는 언제든 DACL을 바꿀 수 있다), 그 밖의 SID에 쓰기 계열 권한($UnsafeRightsMask)을
 # 주는 허용 ACE가 없어야 한다. 상속 전용 ACE도 앞으로 만들 파일에 적용되므로 본다(CREATOR OWNER의 상속 전용
 # ACE만 예외: 만든 사람 자신의 ACE가 된다). 거부 ACE는 권한을 줄이기만 하므로 무시한다.
+function Get-TrustedSids([string]$UserSid) {
+    return @($UserSid, $SidSystem, $SidAdministrators, $SidTrustedInstaller)
+}
+
 function Get-AclProblem([string]$Sddl, [string]$UserSid) {
     $sd = New-Object Security.AccessControl.RawSecurityDescriptor($Sddl)
-    $trusted = @($UserSid, $SidSystem, $SidAdministrators)
+    $trusted = Get-TrustedSids $UserSid
     if ($null -eq $sd.Owner -or $trusted -notcontains $sd.Owner.Value) {
         return "소유자가 현재 사용자·SYSTEM·Administrators가 아닙니다($(if ($null -eq $sd.Owner) { '없음' } else { $sd.Owner.Value }))"
     }
@@ -302,13 +350,23 @@ function Set-InstallDirPermissions([string]$Dir, [string]$UserSid) {
     }
 }
 
-# 새 설치 폴더를 처음부터 설치 DACL로 만든다(부모의 느슨한 ACL을 물려받는 순간이 없게). 경로의 중간 폴더는
-# 보통대로 만든다. 만든 뒤 소유자·DACL과 비어 있음을 다시 확인한다(그 사이 다른 사용자가 같은 이름을 만들었으면
-# CreateDirectory는 그 폴더를 돌려주므로 여기서 거부된다).
-function New-InstallDir([string]$Dir, [string]$UserSid) {
-    $security = New-InstallDirSecurity $UserSid
+# $Dir의 상위 폴더 중 없는 것(위에서 아래 순서).
+function Get-MissingParents([string]$Dir) {
+    $missing = New-Object 'System.Collections.Generic.List[string]'
     $parent = [IO.Path]::GetDirectoryName($Dir)
-    if (-not [string]::IsNullOrEmpty($parent)) { [void][IO.Directory]::CreateDirectory($parent) }
+    while (-not [string]::IsNullOrEmpty($parent) -and -not (Test-Path -LiteralPath $parent)) {
+        $missing.Insert(0, $parent)
+        $parent = [IO.Path]::GetDirectoryName($parent)
+    }
+    return , $missing.ToArray()
+}
+
+# 폴더 하나를 처음부터 설치 DACL로 만든다(부모의 느슨한 ACL을 물려받는 순간이 없게). 만든 뒤 링크가 아님·소유자·
+# DACL을 다시 확인한다(그 사이 다른 사용자가 같은 이름을 만들었으면 CreateDirectory는 그 폴더를 돌려주므로 소유자가
+# 달라 여기서 거부된다).
+function New-PrivateDirectory([string]$Dir, [string]$UserSid) {
+    if (Test-Path -LiteralPath $Dir) { throw "만들려던 폴더가 이미 있습니다(다른 프로그램이 같은 이름을 만들었을 수 있습니다): $Dir" }
+    $security = New-InstallDirSecurity $UserSid
     $created = $false
     try {
         [void][IO.Directory]::CreateDirectory($Dir, $security)   # .NET Framework (Windows PowerShell 5.1)
@@ -324,12 +382,20 @@ function New-InstallDir([string]$Dir, [string]$UserSid) {
             [void][IO.Directory]::CreateDirectory($Dir)
         }
     }
+    $item = Get-Item -LiteralPath $Dir -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "새로 만든 폴더가 링크입니다: $Dir" }
     Set-PathSecurity $Dir $security
     $acl = Get-Acl -LiteralPath $Dir
     $problem = Get-AclProblem $acl.Sddl $UserSid
     if ($null -ne $problem -or -not $acl.AreAccessRulesProtected) {
-        throw "새 설치 폴더의 권한을 확인하지 못했습니다: $Dir ($problem)"
+        throw "새 폴더의 권한을 확인하지 못했습니다: $Dir ($problem)"
     }
+}
+
+# 새 설치 폴더와 없는 상위 폴더를 모두 설치 DACL로 하나씩 만들고(New-PrivateDirectory), 설치 폴더가 비어 있음을 확인한다.
+function New-InstallDir([string]$Dir, [string]$UserSid) {
+    foreach ($parent in (Get-MissingParents $Dir)) { New-PrivateDirectory $parent $UserSid }
+    New-PrivateDirectory $Dir $UserSid
     if (@(Get-ChildItem -LiteralPath $Dir -Force).Count -gt 0) {
         throw "새로 만든 설치 폴더가 비어 있지 않습니다(다른 프로그램이 같은 폴더를 만들었을 수 있습니다): $Dir"
     }
@@ -371,6 +437,77 @@ function Confirm-InstallDirPermissions([string]$Dir, [string]$UserSid) {
     Write-Host '  설치 폴더 권한을 고쳤습니다(현재 사용자·SYSTEM·Administrators만).'
 }
 
+# 상위 폴더의 보안 설명자(SDDL): 소유자·DACL 문제(없으면 $null)와, 신뢰하지 않는 SID(머리말)에 이 폴더 자체에서
+# 주는 권한의 합(유효 허용 ACE만: 상속 전용 ACE는 이 폴더에 적용되지 않고, 이미 있는 하위 폴더는 따로 검사한다).
+function Get-AncestorAccess([string]$Sddl, [string]$UserSid) {
+    $sd = New-Object Security.AccessControl.RawSecurityDescriptor($Sddl)
+    $trusted = Get-TrustedSids $UserSid
+    $problem = $null
+    if ($null -eq $sd.Owner -or $trusted -notcontains $sd.Owner.Value) {
+        $problem = "소유자가 현재 사용자·SYSTEM·Administrators·TrustedInstaller가 아닙니다($(if ($null -eq $sd.Owner) { '없음' } else { $sd.Owner.Value }))"
+    }
+    if ($null -eq $sd.DiscretionaryAcl) {
+        return [pscustomobject]@{ Problem = 'DACL이 없어 모든 사용자가 모든 권한을 가집니다'; Rights = -1 }
+    }
+    $rights = 0
+    foreach ($ace in $sd.DiscretionaryAcl) {
+        if ($ace -isnot [Security.AccessControl.QualifiedAce]) { $problem = '알 수 없는 형식의 ACE가 있습니다'; continue }
+        if ($ace.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessAllowed) { continue }
+        if (([int]$ace.AceFlags -band 0x08) -ne 0) { continue }   # INHERIT_ONLY_ACE
+        $sid = $ace.SecurityIdentifier.Value
+        if ($trusted -contains $sid) { continue }
+        if ($sid -eq 'S-1-3-0' -or $sid -eq 'S-1-3-1' -or $sid -eq 'S-1-3-4') { continue }   # CREATOR OWNER·CREATOR GROUP·OWNER RIGHTS
+        if ($sid.StartsWith('S-1-15-2-') -or $sid.StartsWith('S-1-15-3-')) { continue }       # AppContainer 패키지·capability
+        $rights = $rights -bor $ace.AccessMask
+    }
+    return [pscustomobject]@{ Problem = $problem; Rights = $rights }
+}
+
+function Read-AncestorAccess([string]$Dir, [string]$UserSid) {
+    try {
+        return Get-AncestorAccess (Get-Acl -LiteralPath $Dir).Sddl $UserSid
+    } catch {
+        return [pscustomobject]@{ Problem = "권한을 읽을 수 없습니다($((Get-InnerException $_).Message))"; Rights = -1 }
+    }
+}
+
+# 설치 폴더 $Target의 이미 있는 상위 폴더(드라이브 루트부터; $CheckFrom이 있으면 그 폴더와 그 아래만)가 머리말의
+# 규칙 (가)·(나)를 어기는 이유 목록. 없는 폴더를 만나면 멈춘다(그 아래는 설치 프로그램이 New-InstallDir로 만든다).
+# 설치 폴더 자체는 Get-InstallDirProblems가 본다.
+function Get-InstallAncestorProblems([string]$Target, [string]$UserSid, [string]$CheckFrom) {
+    $problems = New-Object 'System.Collections.Generic.List[string]'
+    $chain = New-Object 'System.Collections.Generic.List[string]'
+    $parent = [IO.Path]::GetDirectoryName($Target)
+    while (-not [string]::IsNullOrEmpty($parent)) {
+        $chain.Insert(0, $parent)
+        $parent = [IO.Path]::GetDirectoryName($parent)
+    }
+    foreach ($dir in $chain) {
+        if (-not [string]::IsNullOrEmpty($CheckFrom) -and -not (Test-PathInside $dir $CheckFrom)) { continue }
+        $item = Get-Item -LiteralPath $dir -Force -ErrorAction SilentlyContinue
+        if ($null -eq $item) { break }
+        if (-not $item.PSIsContainer) { $problems.Add("$dir : 폴더가 아니라 파일입니다"); break }
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            $problems.Add("$dir : 링크(정션·심볼릭 링크)입니다. 링크가 아닌 실제 폴더 경로를 지정하세요")
+            break
+        }
+        $access = Read-AncestorAccess $dir $UserSid
+        if ($null -ne $access.Problem) { $problems.Add("$dir : $($access.Problem)"); continue }
+        if (($access.Rights -band $AncestorTakeoverMask) -ne 0) {
+            $problems.Add("$dir : 다른 사용자에게 하위 항목 삭제·권한 변경·소유권 가져오기 권한이 있습니다(0x$('{0:x}' -f $access.Rights))")
+            continue
+        }
+        $dirParent = [IO.Path]::GetDirectoryName($dir)
+        if (($access.Rights -band $AncestorDeleteMask) -ne 0 -and -not [string]::IsNullOrEmpty($dirParent)) {
+            $parentAccess = Read-AncestorAccess $dirParent $UserSid
+            if ($null -ne $parentAccess.Problem -or ($parentAccess.Rights -band $AncestorCreateEntryMask) -ne 0) {
+                $problems.Add("$dir : 다른 사용자가 이 폴더를 옮기거나 지우고, 상위 폴더($dirParent)에 같은 이름의 폴더를 새로 만들 수 있습니다")
+            }
+        }
+    }
+    return , $problems.ToArray()
+}
+
 # ---------------------------------------------------------------- 소스 트리
 
 # 루트 Cargo.toml [workspace.package] version.
@@ -393,11 +530,15 @@ function Get-ToolchainChannel([string]$Root) {
     return $null
 }
 
-# Git으로 받은 저장소면 HEAD 커밋(12자), GitHub "Download ZIP" 등 .git이 없으면 $null.
-function Get-SourceCommit([string]$Root) {
+# Git으로 받은 저장소면 HEAD 커밋(12자), GitHub "Download ZIP" 등 .git이 없거나 믿을 수 있는 git이 없으면 $null.
+function Get-SourceCommit([string]$Root, [string]$UserSid) {
     if (-not (Test-Path -LiteralPath (Join-Path $Root '.git'))) { return $null }
-    if ($null -eq (Get-Command git -CommandType Application -ErrorAction SilentlyContinue)) { return $null }
-    $lines = Get-NativeOutput 'git' @('-C', $Root, 'rev-parse', '--short=12', 'HEAD')
+    $git = Find-TrustedGit $UserSid
+    if ($null -eq $git) {
+        Write-Host '  참고: Program Files 아래나 다른 사용자가 바꿀 수 없는 내 폴더에서 git을 찾지 못해 커밋 표시를 건너뜁니다.'
+        return $null
+    }
+    $lines = Get-NativeOutput $git @('-C', $Root, 'rev-parse', '--short=12', 'HEAD')
     if ($null -eq $lines -or $lines.Count -lt 1) { return $null }
     $commit = $lines[0].Trim()
     if ($commit -cnotmatch '^[0-9a-f]{7,40}$') { return $null }
@@ -600,20 +741,111 @@ function Wait-FilesReleased([string[]]$Paths) {
 
 # ---------------------------------------------------------------- 빌드 도구
 
-# rustup 기본 위치(%CARGO_HOME%\bin 또는 %USERPROFILE%\.cargo\bin)를 이 프로세스의 PATH 앞에 더한다.
-# rustup을 방금 설치했거나 PATH가 아직 갱신되지 않은 창에서도 찾기 위해서다. 시스템·사용자 PATH는 바꾸지 않는다.
-function Add-CargoBinToPath {
-    if ($null -ne (Get-Command rustup -CommandType Application -ErrorAction SilentlyContinue)) { return }
-    $candidates = @()
-    if (-not [string]::IsNullOrEmpty($env:CARGO_HOME)) { $candidates += (Join-Path $env:CARGO_HOME 'bin') }
-    if (-not [string]::IsNullOrEmpty($env:USERPROFILE)) { $candidates += (Join-Path $env:USERPROFILE '.cargo\bin') }
-    foreach ($bin in $candidates) {
-        if (Test-Path -LiteralPath (Join-Path $bin 'rustup.exe') -PathType Leaf) {
-            $env:PATH = "$bin;$env:PATH"
-            Write-Host "  $bin 을 이 창의 PATH에 더했습니다."
-            return
+# rustup 프록시(rustup·cargo·rustc)가 있는 폴더: CARGO_HOME이 드라이브 문자로 시작하는 절대 경로면 %CARGO_HOME%\bin,
+# 아니면 %USERPROFILE%\.cargo\bin. PATH는 보지 않는다(PATH 앞쪽의 다른 사용자가 쓸 수 있는 폴더에 cargo.exe를 두는
+# 바꿔치기를 막는다). 둘 다 없으면 $null.
+function Get-CargoBinDir {
+    $cargoHome = $env:CARGO_HOME
+    if (-not [string]::IsNullOrEmpty($cargoHome) -and $cargoHome -match '^[A-Za-z]:\\') {
+        return Join-Path (ConvertTo-FullPath $cargoHome) 'bin'
+    }
+    $userProfile = $env:USERPROFILE
+    if (-not [string]::IsNullOrEmpty($userProfile) -and $userProfile -match '^[A-Za-z]:\\') {
+        return Join-Path (ConvertTo-FullPath $userProfile) '.cargo\bin'
+    }
+    return $null
+}
+
+# 빌드에 쓸 도구의 전체 경로(없으면 $null).
+function Get-RustTools {
+    $bin = Get-CargoBinDir
+    $paths = @{}
+    foreach ($name in 'rustup', 'cargo', 'rustc') {
+        $paths[$name] = $null
+        if ($null -ne $bin) {
+            $path = Join-Path $bin "$name.exe"
+            if (Test-Path -LiteralPath $path -PathType Leaf) { $paths[$name] = $path }
         }
     }
+    return [pscustomobject]@{ Bin = $bin; Rustup = $paths['rustup']; Cargo = $paths['cargo']; Rustc = $paths['rustc'] }
+}
+
+function Test-RustToolsPresent($Tools) {
+    return $null -ne $Tools -and $null -ne $Tools.Rustup -and $null -ne $Tools.Cargo -and $null -ne $Tools.Rustc
+}
+
+# 실행할 도구 파일이 안전하면 $null, 아니면 이유 문장. 파일과 그 폴더, 그리고 심볼릭 링크면(rustup은 cargo.exe 등을
+# rustup.exe로의 링크로 만들 수 있다) 링크 대상 파일과 그 폴더를 Get-AclProblem으로 본다. 다른 PATH 항목은 보지 않는다.
+function Get-ToolPathProblem([string]$File, [string]$UserSid) {
+    $paths = New-Object 'System.Collections.Generic.List[string]'
+    $current = $File
+    for ($hop = 0; $true; $hop++) {
+        if ($hop -ge 8) { return "$File : 링크가 너무 많이 이어집니다" }
+        foreach ($path in [IO.Path]::GetDirectoryName($current), $current) {
+            if (-not $paths.Contains($path)) { $paths.Add($path) }
+        }
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) { break }
+        $target = @($item.Target | Where-Object { -not [string]::IsNullOrEmpty($_) }) | Select-Object -First 1
+        if ($null -eq $target) { return "$current : 링크 대상을 알 수 없습니다" }
+        if (-not [IO.Path]::IsPathRooted($target)) { $target = Join-Path ([IO.Path]::GetDirectoryName($current)) $target }
+        $current = [IO.Path]::GetFullPath($target)
+        if (-not (Test-Path -LiteralPath $current -PathType Leaf)) { return "$File : 링크 대상이 없습니다($current)" }
+    }
+    foreach ($path in $paths) {
+        $problem = Get-AclProblem (Get-Acl -LiteralPath $path).Sddl $UserSid
+        if ($null -ne $problem) { return "$path : $problem" }
+    }
+    return $null
+}
+
+# 커밋 표시에 쓸 git: Program Files(x86 포함) 아래이거나 현재 사용자 소유 폴더에 있고 Get-ToolPathProblem을 통과하는
+# 첫 후보. 후보는 Program Files의 Git\cmd\git.exe와 PATH의 git(위치는 위 조건으로 다시 확인한다). 없으면 $null.
+function Find-TrustedGit([string]$UserSid) {
+    $roots = @(@($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramW6432) | Where-Object { -not [string]::IsNullOrEmpty($_) })
+    $candidates = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($root in $roots) { $candidates.Add((Join-Path $root 'Git\cmd\git.exe')) }
+    foreach ($command in @(Get-Command git -CommandType Application -All -ErrorAction SilentlyContinue)) { $candidates.Add($command.Source) }
+    foreach ($candidate in $candidates) {
+        if ($candidate -cnotmatch '^[A-Za-z]:\\' -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        try {
+            $folder = [IO.Path]::GetDirectoryName((ConvertTo-FullPath $candidate))
+            $inProgramFiles = @($roots | Where-Object { Test-PathInside $folder $_ }).Count -gt 0
+            if (-not $inProgramFiles -and (Get-Acl -LiteralPath $folder).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $UserSid) { continue }
+            if ($null -eq (Get-ToolPathProblem $candidate $UserSid)) { return $candidate }
+        } catch {
+            continue
+        }
+    }
+    return $null
+}
+
+# 도구 파일·폴더를 다른 사용자가 바꿀 수 있으면 설명을 출력하고 종료 7(-AllowUnsafeToolchainPath면 경고 후 계속).
+function Confirm-RustToolsTrusted($Tools, [string]$UserSid) {
+    $problems = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($file in $Tools.Rustup, $Tools.Cargo, $Tools.Rustc) {
+        try {
+            $problem = Get-ToolPathProblem $file $UserSid
+        } catch {
+            $problem = "$file : 권한을 확인할 수 없습니다($((Get-InnerException $_).Message))"
+        }
+        if ($null -ne $problem -and -not $problems.Contains($problem)) { $problems.Add($problem) }
+    }
+    if ($problems.Count -eq 0) {
+        Write-Host '  Rust 도구 위치 권한: 다른 사용자는 바꿀 수 없습니다.'
+        return
+    }
+    Write-Host ''
+    Write-Host '  빌드에 쓸 Rust 도구(rustup·cargo·rustc)나 그 폴더를 다른 사용자가 바꿀 수 있습니다:' -ForegroundColor Yellow
+    foreach ($problem in $problems) { Write-Host "    - $problem" }
+    Write-Host '  그 사용자가 이 파일을 바꿔치기하면 빌드하는 yw-app.exe·yw-host.exe에 자기 코드를 넣을 수 있고, 지갑이 그 코드를'
+    Write-Host '  실행합니다. 이 설치 프로그램은 그 폴더의 권한을 바꾸지 않습니다. CARGO_HOME이 여러 사용자가 쓰는 폴더를 가리키면,'
+    Write-Host '  CARGO_HOME 없이 rustup을 내 사용자 프로필(%USERPROFILE%\.cargo)에 설치해 쓰는 방법이 있습니다.'
+    if ($AllowUnsafeToolchainPath) {
+        Write-Warn '-AllowUnsafeToolchainPath: 위 위험을 감수하고 이 도구로 계속합니다.'
+        return
+    }
+    Stop-Install 7 '다른 사용자가 바꿀 수 있는 위치의 Rust 도구로는 빌드하지 않습니다. 위 설명을 읽고 위험을 감수한다면 -AllowUnsafeToolchainPath를 붙여 다시 실행하세요.'
 }
 
 # Visual Studio(Build Tools 포함)의 MSVC x64 C++ 도구가 있으면 설치 경로, 없으면 $null.
@@ -651,21 +883,21 @@ function Test-WindowsSdk {
 }
 
 function Get-Prerequisites {
-    Add-CargoBinToPath
-    $rustup = Get-Command rustup -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    $cargo = Get-Command cargo -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     return [pscustomobject]@{
-        Rustup = $rustup
-        Cargo  = $cargo
-        Msvc   = Find-MsvcBuildTools
+        Tools = Get-RustTools
+        Msvc  = Find-MsvcBuildTools
     }
 }
 
 function Write-Prerequisites($State) {
-    if ($null -ne $State.Rustup -and $null -ne $State.Cargo) {
-        Write-Host "  Rust (rustup, cargo)        : 있음 ($($State.Cargo.Source))"
+    if (Test-RustToolsPresent $State.Tools) {
+        Write-Host "  Rust (rustup, cargo)        : 있음 ($($State.Tools.Bin))"
     } else {
-        Write-Host '  Rust (rustup, cargo)        : 없음' -ForegroundColor Yellow
+        Write-Host "  Rust (rustup, cargo)        : 없음 ($($State.Tools.Bin) 에 rustup.exe·cargo.exe·rustc.exe가 모두 있어야 합니다)" -ForegroundColor Yellow
+        $elsewhere = @(Get-Command cargo -CommandType Application -All -ErrorAction SilentlyContinue | ForEach-Object { $_.Source })
+        if ($elsewhere.Count -gt 0) {
+            Write-Host "    PATH의 cargo($($elsewhere[0]))는 쓰지 않습니다. 설치 프로그램은 CARGO_HOME\bin 또는 %USERPROFILE%\.cargo\bin의 rustup만 씁니다."
+        }
     }
     if ($null -ne $State.Msvc) {
         Write-Host "  C++ 빌드 도구 (MSVC x64)    : 있음 ($($State.Msvc))"
@@ -677,7 +909,7 @@ function Write-Prerequisites($State) {
 # 필요한 winget 인자 문자열 목록. 둘 다 있으면 빈 배열.
 function Get-MissingInstalls($State) {
     $missing = @()
-    if ($null -eq $State.Rustup -or $null -eq $State.Cargo) {
+    if (-not (Test-RustToolsPresent $State.Tools)) {
         $missing += [pscustomobject]@{ Name = 'Rust 툴체인 관리자 rustup (cargo 포함, Rust 1.95.0은 빌드할 때 자동으로 받음)'; Args = $RustupWingetArgs }
     }
     if ($null -eq $State.Msvc) {
@@ -698,8 +930,9 @@ function Write-MissingHelp($Missing) {
     }
 }
 
-# 빌드 도구를 확인하고, 없으면 winget 설치를 제안한다(Y일 때만 실행). 준비되면 반환하고, 아니면 종료 7.
-function Confirm-Prerequisites {
+# 빌드 도구를 확인하고, 없으면 winget 설치를 제안한다(Y일 때만 실행). Rust 도구 위치 권한도 확인한다
+# (Confirm-RustToolsTrusted). 준비되면 반환하고, 아니면 종료 7.
+function Confirm-Prerequisites([string]$UserSid) {
     $state = Get-Prerequisites
     Write-Prerequisites $state
     $missing = Get-MissingInstalls $state
@@ -707,11 +940,13 @@ function Confirm-Prerequisites {
         if (-not (Test-WindowsSdk)) {
             Write-Warn 'Windows SDK(kernel32.lib)를 찾지 못했습니다. 빌드가 링크 단계에서 실패하면 Visual Studio Installer에서 "수정" -> "Windows 11 SDK"를 추가하세요.'
         }
+        Confirm-RustToolsTrusted $state.Tools $UserSid
         return $state
     }
     Write-MissingHelp $missing
     if ($DryRun) {
         Write-Plan '실제 설치 때는 위 명령을 지금 실행할지 묻습니다(Y일 때만 실행). 이번에는 묻지 않습니다.'
+        if (Test-RustToolsPresent $state.Tools) { Confirm-RustToolsTrusted $state.Tools $UserSid }
         return $state
     }
     if (-not (Test-Interactive)) {
@@ -746,42 +981,97 @@ function Confirm-Prerequisites {
         Write-MissingHelp $missing
         Stop-Install 7 '설치 뒤에도 빌드 도구를 찾지 못했습니다. 설치 창이 끝났는지 확인하고, 새 창에서 install.cmd를 다시 실행하세요(필요하면 PC 재시작).'
     }
+    Confirm-RustToolsTrusted $state.Tools $UserSid
     return $state
 }
 
-# rust-toolchain.toml의 툴체인으로 릴리스 빌드한다. 실패하면 종료 8.
-function Invoke-Build([string]$Root, [string]$Channel) {
-    foreach ($name in $RustflagsVariables) {
-        if ([Environment]::GetEnvironmentVariable($name)) {
+# 빌드 동안 지우는 환경 변수인지(대소문자 무시): RUSTFLAGS 계열 4개, RUSTC·RUSTC_WRAPPER·RUSTC_WORKSPACE_WRAPPER,
+# CARGO_PROFILE_RELEASE_*·CARGO_BUILD_RUSTC*·CC*·CFLAGS*·CXX*·CXXFLAGS*.
+function Test-ClearedBuildVariable([string]$Name) {
+    foreach ($exact in @($ClearedBuildVariableNames) + @($RustflagsVariables)) {
+        if ($Name.Equals($exact, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    foreach ($prefix in $ClearedBuildVariablePrefixes) {
+        if ($Name.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
+# 이 프로세스 환경에서 위 변수를 지우고, 되돌릴 이름·값을 돌려준다(Restore-BuildEnvironment). 자식 프로세스(cargo·
+# rustc·빌드 스크립트·cc)는 지운 환경을 물려받는다. 시스템·사용자 환경 변수 설정은 바꾸지 않는다.
+function Clear-BuildEnvironment {
+    $saved = [ordered]@{}
+    $names = @([Environment]::GetEnvironmentVariables('Process').Keys | ForEach-Object { [string]$_ } | Where-Object { Test-ClearedBuildVariable $_ } | Sort-Object)
+    foreach ($name in $names) {
+        $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        # [NullString]::Value: PowerShell 7은 $null을 ""로 넘기고, .NET(Core)는 ""이면 지우지 않고 빈 값으로 둔다.
+        [Environment]::SetEnvironmentVariable($name, [NullString]::Value, 'Process')
+    }
+    return $saved
+}
+
+function Restore-BuildEnvironment($Saved) {
+    foreach ($name in @($Saved.Keys)) { [Environment]::SetEnvironmentVariable($name, $Saved[$name], 'Process') }
+}
+
+# cargo 인자: +툴체인, Cargo.toml [profile.release]를 다시 주는 --config, build 인자. 배열로 넘겨 PowerShell 5.1·7이 같은
+# 명령줄을 만든다(값에 공백·큰따옴표가 없다).
+function Get-CargoBuildArguments {
+    $list = New-Object 'System.Collections.Generic.List[string]'
+    $list.Add("+$RustToolchain")
+    foreach ($setting in $ReleaseProfileOverrides) {
+        $list.Add('--config')
+        $list.Add("profile.release.$setting")
+    }
+    $list.AddRange([string[]]$BuildArgs)
+    return , $list.ToArray()
+}
+
+# Rust $RustToolchain(+툴체인)으로 릴리스 빌드한다. $Tools = Get-RustTools(전체 경로). 컴파일러·빌드 설정을 바꾸는
+# 환경 변수는 이 함수 동안만 지우고 끝나면 되돌린다. 툴체인 버전·대상이 다르면 종료 7, 빌드 실패는 종료 8.
+function Invoke-Build([string]$Root, $Tools) {
+    $saved = Clear-BuildEnvironment
+    foreach ($name in @($saved.Keys)) {
+        if ($RustflagsVariables -contains $name) {
             Write-Warn "환경 변수 $name 이 .cargo\config.toml의 빌드 설정을 덮어쓰므로 이 빌드에서는 지웁니다(시스템 설정은 그대로)."
-            [Environment]::SetEnvironmentVariable($name, $null, 'Process')
         }
+    }
+    $others = @($saved.Keys | Where-Object { $RustflagsVariables -notcontains $_ })
+    if ($others.Count -gt 0) {
+        Write-Warn "컴파일러·빌드 설정을 바꾸는 환경 변수를 이 빌드 동안만 지웁니다(시스템 설정은 그대로): $($others -join ', ')"
     }
     Push-Location -LiteralPath $Root
     try {
-        # rustup이 rust-toolchain.toml의 툴체인을 처음 한 번 내려받는다(자동 설치를 끈 rustup이면 직접 설치한다).
-        Write-Host "  Rust $Channel 확인(처음이면 rustup이 내려받습니다)"
-        $cargoVersion = Get-NativeOutput 'cargo' @('--version') -ShowStderr
-        if ($null -eq $cargoVersion -and -not [string]::IsNullOrEmpty($Channel)) {
-            Write-Host "  rustup toolchain install $Channel --profile minimal"
-            [void](Invoke-NativeCommand 'rustup' @('toolchain', 'install', $Channel, '--profile', 'minimal'))
-            $cargoVersion = Get-NativeOutput 'cargo' @('--version') -ShowStderr
+        $selector = "+$RustToolchain"
+        $versionPattern = [regex]::Escape($RustToolchain) + '(\s|$)'
+        # 툴체인이 없으면 받는다(rustup이 +툴체인을 자동으로 받지 않는 설정이어도).
+        Write-Host "  Rust $RustToolchain 확인(처음이면 rustup이 내려받습니다)"
+        $cargoVersion = Get-NativeOutput $Tools.Cargo @($selector, '--version') -ShowStderr
+        if ($null -eq $cargoVersion) {
+            Write-Host "  rustup toolchain install $RustToolchain --profile minimal"
+            [void](Invoke-NativeCommand $Tools.Rustup @('toolchain', 'install', $RustToolchain, '--profile', 'minimal'))
+            $cargoVersion = Get-NativeOutput $Tools.Cargo @($selector, '--version') -ShowStderr
         }
-        if ($null -eq $cargoVersion -or $cargoVersion.Count -lt 1) { Stop-Install 8 'cargo를 실행할 수 없습니다. 새 창에서 install.cmd를 다시 실행하세요.' }
+        if ($null -eq $cargoVersion -or $cargoVersion.Count -lt 1) { Stop-Install 8 "cargo를 실행할 수 없습니다: $($Tools.Cargo) $selector --version. 새 창에서 install.cmd를 다시 실행하세요." }
         Write-Host "  $($cargoVersion[0])"
-        if (-not [string]::IsNullOrEmpty($Channel) -and $cargoVersion[0] -notmatch ('^cargo ' + [regex]::Escape($Channel) + ' ')) {
-            Write-Warn "rust-toolchain.toml의 Rust $Channel 이 아닌 cargo가 선택되었습니다(RUSTUP_TOOLCHAIN 환경 변수나 rustup override 확인)."
+        if ($cargoVersion[0] -cnotmatch ('^cargo ' + $versionPattern)) {
+            Stop-Install 7 "cargo $selector 가 Rust $RustToolchain 이 아닙니다($($cargoVersion[0])). rustup toolchain install $RustToolchain 으로 정식 툴체인을 설치한 뒤 다시 실행하세요(같은 이름의 rustup toolchain link가 있으면 지우세요)."
         }
-        $rustc = Get-NativeOutput 'rustc' @('-vV')
-        if ($null -ne $rustc) {
-            $hostLine = @($rustc | Where-Object { $_ -match '^host: ' } | Select-Object -First 1)
-            if ($hostLine.Count -eq 1 -and $hostLine[0] -notmatch 'x86_64-pc-windows-msvc') {
-                Stop-Install 7 "Rust 기본 대상이 x86_64-pc-windows-msvc가 아닙니다($($hostLine[0])). rustup set default-host x86_64-pc-windows-msvc 실행 후 다시 실행하세요."
-            }
+        $rustc = Get-NativeOutput $Tools.Rustc @($selector, '-vV')
+        if ($null -eq $rustc -or $rustc.Count -lt 1) { Stop-Install 7 "rustc를 실행할 수 없습니다: $($Tools.Rustc) $selector -vV" }
+        $release = @($rustc | Where-Object { $_ -cmatch '^release: ' } | Select-Object -First 1)
+        if ($rustc[0] -cnotmatch ('^rustc ' + $versionPattern) -or $release.Count -ne 1 -or $release[0].Trim() -cne "release: $RustToolchain") {
+            Stop-Install 7 "rustc $selector 가 Rust $RustToolchain 이 아닙니다($($rustc[0])). rustup toolchain install $RustToolchain 으로 정식 툴체인을 설치한 뒤 다시 실행하세요."
         }
-        Write-Host "  cargo $($BuildArgs -join ' ')"
+        Write-Host "  $($rustc[0])"
+        $hostLine = @($rustc | Where-Object { $_ -cmatch '^host: ' } | Select-Object -First 1)
+        if ($hostLine.Count -ne 1 -or $hostLine[0].Trim() -cne 'host: x86_64-pc-windows-msvc') {
+            Stop-Install 7 "Rust 기본 대상이 x86_64-pc-windows-msvc가 아닙니다($(if ($hostLine.Count -eq 1) { $hostLine[0] } else { 'host 없음' })). rustup set default-host x86_64-pc-windows-msvc 실행 후 다시 실행하세요."
+        }
+        $argList = Get-CargoBuildArguments
+        Write-Host "  $($Tools.Cargo) $($argList -join ' ')"
         Write-Host '  처음 빌드는 crates.io에서 의존성을 내려받고(Cargo.lock 체크섬으로 고정) 몇 분 걸립니다.'
-        $code = Invoke-NativeCommand 'cargo' $BuildArgs
+        $code = Invoke-NativeCommand $Tools.Cargo $argList
         if ($code -ne 0) {
             Write-Host ''
             Write-Host '  빌드가 실패했습니다. 흔한 원인:' -ForegroundColor Yellow
@@ -792,6 +1082,7 @@ function Invoke-Build([string]$Root, [string]$Channel) {
         }
     } finally {
         Pop-Location
+        Restore-BuildEnvironment $saved
     }
 }
 
@@ -818,10 +1109,11 @@ function Invoke-Install {
             Stop-Install 1 "저장소 파일이 없습니다: $required. 저장소 전체(Git 또는 GitHub Download ZIP)의 install.cmd를 실행하세요."
         }
     }
+    $userSid = Get-CurrentUserSid
     $extensionRoot = Join-Path $root 'extension'
     $version = Get-WorkspaceVersion $root
     $channel = Get-ToolchainChannel $root
-    $commit = Get-SourceCommit $root
+    $commit = Get-SourceCommit $root $userSid
     $cargoTarget = Join-Path $root 'target'
     if (-not [string]::IsNullOrEmpty($env:CARGO_TARGET_DIR)) {
         $cargoTarget = $env:CARGO_TARGET_DIR
@@ -834,7 +1126,8 @@ function Invoke-Install {
         Stop-Install 1 'LOCALAPPDATA 환경 변수가 없거나 절대 경로가 아닙니다.'
     }
     $dataDir = ConvertTo-FullPath (Join-Path $localAppData 'YourWallet')
-    if ([string]::IsNullOrWhiteSpace($InstallDir)) {
+    $defaultDir = [string]::IsNullOrWhiteSpace($InstallDir)
+    if ($defaultDir) {
         $script:InstallDir = Join-Path $localAppData 'Programs\YourWallet'
     }
     $target = ConvertTo-FullPath $InstallDir
@@ -860,6 +1153,28 @@ function Invoke-Install {
     $manifestJson = New-NativeManifestJson $hostExe
     if (-not (Test-NativeManifestValue (ConvertFrom-Json -InputObject $manifestJson) $ExtensionId)) {
         Stop-Install 1 "이 설치 경로로는 Chrome native host manifest를 만들 수 없습니다(경로 규칙 위반): $target"
+    }
+    # 상위 폴더 권한(머리말의 규칙). -InstallDir이면 드라이브 루트까지, 기본 경로는 사용자 프로필부터 아래만 본다
+    # (기본 경로가 프로필 아래가 아니면 보지 않는다). 빌드 전에 확인해 오래 빌드한 뒤 거부되는 일이 없게 한다.
+    $checkFrom = $null
+    $checkAncestors = $true
+    if ($defaultDir) {
+        $checkAncestors = $false
+        if (-not [string]::IsNullOrEmpty($env:USERPROFILE) -and $env:USERPROFILE -match '^[A-Za-z]:\\') {
+            $profileDir = ConvertTo-FullPath $env:USERPROFILE
+            if (Test-PathInside $target $profileDir) {
+                $checkFrom = $profileDir
+                $checkAncestors = $true
+            }
+        }
+    }
+    if ($checkAncestors) {
+        $ancestorProblems = Get-InstallAncestorProblems $target $userSid $checkFrom
+        if ($ancestorProblems.Count -gt 0) {
+            Write-Host '  설치 폴더의 상위 폴더를 다른 사용자가 바꿀 수 있습니다:' -ForegroundColor Yellow
+            foreach ($problem in $ancestorProblems) { Write-Host "    - $problem" }
+            Stop-Install 1 "이 경로에는 설치하지 않습니다: $target. 다른 사용자가 상위 폴더를 옮기고 같은 경로에 자기 폴더를 만들면 Chrome이 그 폴더의 yw-host.exe를 실행하게 됩니다(설치 프로그램은 상위 폴더의 권한을 바꾸지 않습니다). 사용자 프로필 아래의 경로(예: -InstallDir `"$env:USERPROFILE\Apps\YourWallet`")를 지정하세요."
+        }
     }
 
     Write-Host "Your Wallet 설치 (소스에서 빌드)" -ForegroundColor Green
@@ -888,14 +1203,18 @@ function Invoke-Install {
 
     # 2. 빌드 도구
     Write-Step '2/8 빌드 도구 확인'
+    $tools = $null
     if ($NoBuild) {
         Write-Host '  건너뜀(-NoBuild).'
     } else {
-        [void](Confirm-Prerequisites)
-        if ($DryRun -and -not [string]::IsNullOrEmpty($channel)) {
-            $toolchains = Get-NativeOutput 'rustup' @('toolchain', 'list')
-            if ($null -ne $toolchains -and @($toolchains | Where-Object { $_ -match ('^' + [regex]::Escape($channel) + '-') }).Count -eq 0) {
-                Write-Plan "rustup이 rust-toolchain.toml의 Rust $channel 을 처음 한 번 내려받습니다."
+        if ($channel -cne $RustToolchain) {
+            Stop-Install 2 "rust-toolchain.toml의 Rust($channel)가 설치 프로그램이 빌드에 쓰는 Rust $RustToolchain 와 다릅니다. 두 곳(rust-toolchain.toml, scripts\install.ps1 `$RustToolchain)을 함께 바꿔야 합니다."
+        }
+        $tools = (Confirm-Prerequisites $userSid).Tools
+        if ($DryRun -and (Test-RustToolsPresent $tools)) {
+            $toolchains = Get-NativeOutput $tools.Rustup @('toolchain', 'list')
+            if ($null -ne $toolchains -and @($toolchains | Where-Object { $_ -match ('^' + [regex]::Escape($RustToolchain) + '-') }).Count -eq 0) {
+                Write-Plan "rustup이 Rust $RustToolchain 을 처음 한 번 내려받습니다."
             }
         }
     }
@@ -912,9 +1231,12 @@ function Invoke-Install {
         }
         Write-Host "  건너뜀(-NoBuild). $releaseDir 의 yw-app.exe·yw-host.exe를 씁니다."
     } elseif ($DryRun) {
-        Write-Plan "실행: cargo $($BuildArgs -join ' ')  (저장소 루트, 결과 $releaseDir)"
+        $cargoExe = 'cargo'
+        if ($null -ne $tools -and $null -ne $tools.Cargo) { $cargoExe = $tools.Cargo }
+        Write-Plan "실행: $cargoExe $((Get-CargoBuildArguments) -join ' ')  (저장소 루트, 결과 $releaseDir)"
+        Write-Plan "빌드 동안만 지울 환경 변수: $((@($ClearedBuildVariableNames) + @($RustflagsVariables)) -join ', '), 이름이 $($ClearedBuildVariablePrefixes -join '·')로 시작하는 것"
     } else {
-        Invoke-Build $root $channel
+        Invoke-Build $root $tools
         foreach ($exe in $sourceApp, $sourceHost) {
             if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { Stop-Install 8 "빌드가 끝났지만 결과 파일이 없습니다: $exe" }
         }
@@ -998,7 +1320,9 @@ function Invoke-Install {
     # 5. 파일 복사
     Write-Step '5/8 파일 복사'
     if ($DryRun) {
-        if (-not (Test-Path -LiteralPath $target -PathType Container)) { Write-Plan "폴더 만들기: $target (현재 사용자·SYSTEM·Administrators만, 상속 끊음)" }
+        if (-not (Test-Path -LiteralPath $target -PathType Container)) {
+            foreach ($dir in ([string[]](Get-MissingParents $target) + $target)) { Write-Plan "폴더 만들기: $dir (현재 사용자·SYSTEM·Administrators만, 상속 끊음)" }
+        }
         foreach ($item in $toCopy) {
             if ($null -eq $item.Hash) { Write-Plan "복사(빌드 후): $($item.Path)" } else { Write-Plan "복사: $($item.Path)" }
         }

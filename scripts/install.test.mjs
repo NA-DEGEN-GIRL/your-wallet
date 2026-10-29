@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -31,11 +31,13 @@ function findOnPath(name) {
 }
 
 // PSModulePath는 넘기지 않는다: PowerShell 7에서 시작한 node가 그 경로를 5.1에 넘기면 5.1이 7의 모듈을 읽으려 한다.
+// overrides의 값이 null이면 그 변수를 넘기지 않는다.
 function childEnv(overrides = {}) {
   const drop = new Set(["psmodulepath", ...Object.keys(overrides).map((key) => key.toLowerCase())]);
   const env = {};
   for (const [key, value] of Object.entries(process.env)) if (!drop.has(key.toLowerCase())) env[key] = value;
-  return { ...env, ...overrides };
+  for (const [key, value] of Object.entries(overrides)) if (value !== null && value !== undefined) env[key] = value;
+  return env;
 }
 
 // 비대화형(-NonInteractive, stdin 없음)이라 스크립트는 묻지 않고, 클립보드도 건드리지 않는다.
@@ -71,8 +73,26 @@ async function workspaceVersion() {
   return /^[ \t]*version[ \t]*=[ \t]*"(\d+\.\d+\.\d+)"/mu.exec(section[1])[1];
 }
 
+let currentUserSid = null;
+function userSid() {
+  if (currentUserSid === null) {
+    const result = spawnSync(path.join(systemRoot, "System32", "whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true });
+    const match = /"(S-1-[0-9-]+)"/u.exec(result.stdout ?? "");
+    assert.ok(match, `whoami /user: ${result.stdout}${result.stderr}`);
+    currentUserSid = match[1];
+  }
+  return currentUserSid;
+}
+
+// Hermetic temp root: a protected DACL with only the current user, SYSTEM and Administrators, so the results do not
+// depend on the host %TEMP% ACL (e.g. sandbox SIDs with Modify inherited into new temp folders).
+function protectDir(dir) {
+  icacls(dir, "/inheritance:r", "/grant:r", `*${userSid()}:(OI)(CI)F`, "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F");
+}
+
 async function withTemp(prefix, callback) {
   const temp = await mkdtemp(path.join(os.tmpdir(), prefix));
+  if (windows) protectDir(temp);
   try {
     return await callback(temp);
   } finally {
@@ -459,6 +479,10 @@ test("install.ps1 creates a private install folder, refuses one other users can 
     assert.equal(acl.protected, true);
     assert.equal(acl.owner, acl.user);
     assertPrivate(acl, { inherited: false });
+    // The missing parent is created the same way (one level at a time, verified).
+    acl = await readAcl(temp, path.dirname(fresh));
+    assert.equal(acl.protected, true);
+    assertPrivate(acl, { inherited: false });
     for (const file of ["yw-host.exe", "yw-app.exe", "com.your_wallet.native.json", "extension/manifest.json"]) {
       const fileAcl = await readAcl(temp, path.join(fresh, ...file.split("/")));
       assertPrivate(fileAcl, { inherited: true });
@@ -499,3 +523,332 @@ test("install.ps1 creates a private install folder, refuses one other users can 
     assertPrivate(await readAcl(temp, path.join(fresh, "yw-host.exe")), { inherited: true });
   });
 });
+
+// Ancestor rule (install.ps1 header, Get-InstallAncestorProblems): with U = rights the untrusted SIDs get on an
+// existing ancestor itself, refuse (a) a link, an untrusted owner, FILE_DELETE_CHILD/WRITE_DAC/WRITE_OWNER/GENERIC_ALL
+// in U, (b) DELETE in U while the ancestor's parent gives the untrusted SIDs add-file/add-subdirectory. Read-only and
+// add-only grants are fine; missing parents are created private.
+test("install.ps1 -InstallDir checks every ancestor: delete-child, inherited Modify, WRITE_DAC and junctions are refused; read-only, add-only and DELETE without a re-creatable parent pass (Windows PowerShell 5.1)", { skip: !windows, timeout: 300_000 }, async () => {
+  await withTemp("your-wallet-install-ancestors-", async (temp) => {
+    const localAppData = path.join(temp, "LocalAppData");
+    await mkdir(localAppData, { recursive: true });
+    const cargoTarget = path.join(temp, "cargo-target");
+    await mkdir(path.join(cargoTarget, "release"), { recursive: true });
+    await writeFile(path.join(cargoTarget, "release", "yw-app.exe"), "fake yw-app\n");
+    await writeFile(path.join(cargoTarget, "release", "yw-host.exe"), "fake yw-host\n");
+    const env = childEnv({ LOCALAPPDATA: localAppData, CARGO_TARGET_DIR: cargoTarget });
+    const install = (...args) => runPowerShell(windowsPowerShell, ["-File", installScript, "-NoBuild", "-NoShortcut", "-NoNativeHost", ...args], env);
+    const refused = (run, dir) => {
+      assert.equal(run.status, 1, run.out);
+      assert.ok(run.out.includes(dir), run.out);
+    };
+
+    // A clean tree with two missing intermediate folders: installed; every created folder is private.
+    const clean = path.join(temp, "clean");
+    await mkdir(clean);
+    const deep = path.join(clean, "new1", "new2", "YourWallet");
+    let run = install("-InstallDir", deep);
+    assert.equal(run.status, 0, run.out);
+    for (const dir of [path.join(clean, "new1"), path.join(clean, "new1", "new2"), deep]) {
+      const acl = await readAcl(temp, dir);
+      assert.equal(acl.protected, true, dir);
+      assertPrivate(acl, { inherited: false });
+    }
+
+    // Everyone may delete children of an ancestor: refused (also in -DryRun, before any build), nothing created.
+    const deleteChild = path.join(temp, "dc");
+    await mkdir(deleteChild);
+    icacls(deleteChild, "/grant", "*S-1-1-0:(DC)");
+    run = install("-InstallDir", path.join(deleteChild, "YourWallet"), "-DryRun");
+    refused(run, deleteChild);
+    run = install("-InstallDir", path.join(deleteChild, "YourWallet"));
+    refused(run, deleteChild);
+    assert.deepEqual(await readdir(deleteChild), []);
+
+    // Users:Modify inherited by an existing intermediate folder: it can be moved away and re-created by others.
+    const modify = path.join(temp, "mod");
+    await mkdir(modify);
+    icacls(modify, "/grant", "*S-1-5-32-545:(OI)(CI)M");
+    const modifySub = path.join(modify, "sub");
+    await mkdir(modifySub);
+    run = install("-InstallDir", path.join(modifySub, "YourWallet"));
+    refused(run, modifySub);
+    assert.deepEqual(await readdir(modifySub), []);
+
+    // WRITE_DAC for Authenticated Users on an ancestor: refused.
+    const writeDac = path.join(temp, "wdac");
+    await mkdir(writeDac);
+    icacls(writeDac, "/grant", "*S-1-5-11:(WDAC)");
+    run = install("-InstallDir", path.join(writeDac, "YourWallet"));
+    refused(run, writeDac);
+    assert.deepEqual(await readdir(writeDac), []);
+
+    // A junction on the path: refused (the real folder's ancestors would not be the ones checked).
+    const junctionTarget = path.join(temp, "jtarget");
+    await mkdir(junctionTarget);
+    const junction = path.join(temp, "link");
+    await symlink(junctionTarget, junction, "junction");
+    run = install("-InstallDir", path.join(junction, "YourWallet"));
+    refused(run, junction);
+    assert.deepEqual(await readdir(junctionTarget), []);
+
+    // Like C:\ : Authenticated Users may create folders here (add-only) and get Modify on what they create
+    // (inherit-only). The missing folder below is created private, so this passes.
+    const addOnly = path.join(temp, "addonly");
+    await mkdir(addOnly);
+    icacls(addOnly, "/grant", "*S-1-5-11:(AD)", "*S-1-5-11:(OI)(CI)(IO)M");
+    const addOnlyTarget = path.join(addOnly, "new", "YourWallet");
+    run = install("-InstallDir", addOnlyTarget);
+    assert.equal(run.status, 0, run.out);
+    assertPrivate(await readAcl(temp, path.join(addOnly, "new")), { inherited: false });
+
+    // Like a %TEMP% shared with sandbox accounts: INTERACTIVE has Modify (DELETE + add) on the folder itself, but
+    // its parent gives them nothing, so the folder cannot be replaced; read-only grants never matter.
+    const tempLike = path.join(temp, "templike");
+    await mkdir(tempLike);
+    icacls(tempLike, "/grant", "*S-1-5-4:M", "*S-1-1-0:(OI)(CI)RX");
+    run = install("-InstallDir", path.join(tempLike, "YourWallet"));
+    assert.equal(run.status, 0, run.out);
+  });
+});
+
+// Build tools: full paths from %CARGO_HOME%\bin or %USERPROFILE%\.cargo\bin only, never PATH; their files and folders
+// must not be writable by other SIDs.
+const TOOLS_SCRIPT = `param([string]$Script, [string]$Out)
+$ErrorActionPreference = 'Stop'
+. $Script
+$user = Get-CurrentUserSid
+$tools = Get-RustTools
+$problems = @(foreach ($file in @($tools.Rustup, $tools.Cargo, $tools.Rustc)) { if ($null -ne $file) { [string](Get-ToolPathProblem $file $user) } })
+$result = [ordered]@{ bin = $tools.Bin; rustup = $tools.Rustup; cargo = $tools.Cargo; rustc = $tools.Rustc; problems = $problems }
+[IO.File]::WriteAllText($Out, (ConvertTo-Json -InputObject $result -Depth 3 -Compress))
+`;
+
+async function fakeRustBin(bin) {
+  await mkdir(bin, { recursive: true });
+  for (const name of ["rustup.exe", "cargo.exe", "rustc.exe"]) await writeFile(path.join(bin, name), "not a real program\n");
+}
+
+test("install.ps1 resolves rustup/cargo/rustc from CARGO_HOME or USERPROFILE only and refuses tool files or folders other users can write (Windows PowerShell 5.1)", { skip: !windows, timeout: 300_000 }, async () => {
+  await withTemp("your-wallet-install-tools-", async (temp) => {
+    const helper = path.join(temp, "tools.ps1");
+    await writeFile(helper, TOOLS_SCRIPT);
+    const out = path.join(temp, "tools.json");
+    const resolve = async (overrides) => {
+      const run = runPowerShell(windowsPowerShell, ["-File", helper, "-Script", installScript, "-Out", out], childEnv(overrides));
+      assert.equal(run.status, 0, run.out);
+      return JSON.parse(await readFile(out, "utf8"));
+    };
+    const cargoHome = path.join(temp, "cargo-home");
+    const cargoHomeBin = path.join(cargoHome, "bin");
+    await fakeRustBin(cargoHomeBin);
+    const profile = path.join(temp, "profile");
+    const profileBin = path.join(profile, ".cargo", "bin");
+    await fakeRustBin(profileBin);
+    const pathDir = path.join(temp, "on-path");
+    await fakeRustBin(pathDir);
+    const PATH = `${pathDir};${process.env.PATH ?? ""}`;
+
+    // CARGO_HOME set (absolute): its bin, not PATH.
+    let result = await resolve({ CARGO_HOME: cargoHome, USERPROFILE: profile, PATH });
+    assert.equal(result.bin, cargoHomeBin);
+    assert.equal(result.cargo, path.join(cargoHomeBin, "cargo.exe"));
+    assert.equal(result.rustup, path.join(cargoHomeBin, "rustup.exe"));
+    assert.equal(result.rustc, path.join(cargoHomeBin, "rustc.exe"));
+    assert.deepEqual(result.problems, ["", "", ""]);
+    // CARGO_HOME unset, or not an absolute drive path: %USERPROFILE%\.cargo\bin.
+    for (const value of [null, "relative\\cargo", ""]) {
+      result = await resolve({ CARGO_HOME: value, USERPROFILE: profile, PATH });
+      assert.equal(result.cargo, path.join(profileBin, "cargo.exe"), String(value));
+      assert.deepEqual(result.problems, ["", "", ""]);
+    }
+    // Only PATH has cargo: nothing is used.
+    const emptyHome = path.join(temp, "empty-home");
+    await mkdir(emptyHome);
+    result = await resolve({ CARGO_HOME: emptyHome, USERPROFILE: path.join(temp, "empty-profile"), PATH });
+    assert.equal(result.cargo, null);
+    assert.equal(result.rustup, null);
+    assert.deepEqual(result.problems, []);
+
+    // Everyone:Modify on one tool file only (USERPROFILE bin): that file is refused.
+    icacls(path.join(profileBin, "rustc.exe"), "/grant", "*S-1-1-0:M");
+    result = await resolve({ CARGO_HOME: null, USERPROFILE: profile, PATH });
+    assert.equal(result.problems[0], "");
+    assert.equal(result.problems[1], "");
+    assert.ok(result.problems[2].includes(path.join(profileBin, "rustc.exe")), result.problems[2]);
+    // Everyone:Modify on the CARGO_HOME bin folder: every tool is refused.
+    icacls(cargoHomeBin, "/grant", "*S-1-1-0:(OI)(CI)M");
+    result = await resolve({ CARGO_HOME: cargoHome, USERPROFILE: profile, PATH });
+    assert.equal(result.problems.length, 3);
+    for (const problem of result.problems) assert.ok(problem.includes(cargoHomeBin), problem);
+
+    // A symlinked proxy (rustup may link cargo.exe to rustup.exe): the link target and its folder are checked too.
+    // Creating symlinks needs Developer Mode or the privilege; skip this part where it is not available.
+    const linkHome = path.join(temp, "link-home");
+    const linkBin = path.join(linkHome, "bin");
+    const realDir = path.join(temp, "real");
+    await fakeRustBin(linkBin);
+    await mkdir(realDir);
+    await writeFile(path.join(realDir, "rustup.exe"), "not a real program\n");
+    let linked = true;
+    try {
+      await rm(path.join(linkBin, "cargo.exe"));
+      await symlink(path.join(realDir, "rustup.exe"), path.join(linkBin, "cargo.exe"), "file");
+    } catch (error) {
+      if (error.code !== "EPERM") throw error;
+      linked = false;
+    }
+    if (linked) {
+      result = await resolve({ CARGO_HOME: linkHome, USERPROFILE: profile, PATH });
+      assert.deepEqual(result.problems, ["", "", ""]);
+      icacls(realDir, "/grant", "*S-1-1-0:(OI)(CI)M");
+      result = await resolve({ CARGO_HOME: linkHome, USERPROFILE: profile, PATH });
+      assert.equal(result.problems[0], "");
+      assert.ok(result.problems[1].includes(realDir), result.problems[1]);
+    }
+
+    // The installer itself: an unsafe tool location stops with 7 unless -AllowUnsafeToolchainPath (after the explanation).
+    const localAppData = path.join(temp, "LocalAppData");
+    await mkdir(localAppData);
+    const env = childEnv({ LOCALAPPDATA: localAppData, CARGO_HOME: cargoHome, PATH });
+    const installDir = path.join(temp, "installed");
+    let run = runPowerShell(windowsPowerShell, ["-File", installScript, "-DryRun", "-NoShortcut", "-NoNativeHost", "-InstallDir", installDir], env);
+    assert.equal(run.status, 7, run.out);
+    assert.ok(run.out.includes("-AllowUnsafeToolchainPath"), run.out);
+    assert.ok(run.out.includes(cargoHomeBin), run.out);
+    run = runPowerShell(windowsPowerShell, ["-File", installScript, "-DryRun", "-AllowUnsafeToolchainPath", "-NoShortcut", "-NoNativeHost", "-InstallDir", installDir], env);
+    assert.equal(run.status, 0, run.out);
+    assert.ok(run.out.includes(path.join(cargoHomeBin, "cargo.exe")), run.out);
+    assert.equal(existsSync(installDir), false);
+    // Only PATH has cargo: reported as missing (the PATH copy is named but not used); -DryRun still ends with 0.
+    run = runPowerShell(windowsPowerShell, ["-File", installScript, "-DryRun", "-NoShortcut", "-NoNativeHost", "-InstallDir", installDir], childEnv({ LOCALAPPDATA: localAppData, CARGO_HOME: emptyHome, PATH }));
+    assert.equal(run.status, 0, run.out);
+    assert.ok(run.out.includes(path.join(pathDir, "cargo.exe")), run.out);
+    assert.ok(!run.out.includes(`${path.join(pathDir, "cargo.exe")} +`), run.out);
+  });
+});
+
+// Invoke-Build with fake rustup/cargo/rustc (.cmd files that log their arguments and environment).
+const BUILD_SCRIPT = `param([string]$Script, [string]$Root, [string]$Bin, [string]$Out, [string]$Names)
+$ErrorActionPreference = 'Stop'
+. $Script
+$tools = [pscustomobject]@{ Bin = $Bin; Rustup = (Join-Path $Bin 'rustup.cmd'); Cargo = (Join-Path $Bin 'cargo.cmd'); Rustc = (Join-Path $Bin 'rustc.cmd') }
+Invoke-Build $Root $tools
+$after = [ordered]@{}
+foreach ($name in $Names.Split(',')) { $after[$name] = [Environment]::GetEnvironmentVariable($name) }
+$result = [ordered]@{ after = $after; args = [string[]](Get-CargoBuildArguments) }
+[IO.File]::WriteAllText($Out, (ConvertTo-Json -InputObject $result -Depth 3 -Compress))
+`;
+
+const FAKE_CARGO = `@echo off\r
+if "%~2"=="--version" goto version\r
+>>"%YW_FAKE_LOG%" echo ARGS %*\r
+set >"%YW_FAKE_ENV%"\r
+exit /b 0\r
+:version\r
+>>"%YW_FAKE_LOG%" echo VERSION %*\r
+echo cargo %YW_FAKE_CARGO_VERSION% (fake 2026-01-01)\r
+exit /b 0\r
+`;
+const FAKE_RUSTC = `@echo off\r
+>>"%YW_FAKE_LOG%" echo RUSTC %*\r
+echo rustc %YW_FAKE_RUSTC_VERSION% (fake 2026-01-01)\r
+echo binary: rustc\r
+echo release: %YW_FAKE_RUSTC_VERSION%\r
+echo host: x86_64-pc-windows-msvc\r
+exit /b 0\r
+`;
+const FAKE_RUSTUP = `@echo off\r
+>>"%YW_FAKE_LOG%" echo RUSTUP %*\r
+exit /b 0\r
+`;
+
+// Variables the build must not see (install.ps1 $ClearedBuildVariableNames/Prefixes and $RustflagsVariables).
+const CLEARED = {
+  CC: "evil-cc", CC_x86_64_pc_windows_msvc: "evil-cc", "CC_x86_64-pc-windows-msvc": "evil-cc", CFLAGS: "-O0", CFLAGS_x86_64_pc_windows_msvc: "-O0",
+  CXX: "evil-cxx", CXXFLAGS: "-O0", "CXXFLAGS_x86_64-pc-windows-msvc": "-O0",
+  RUSTC: "evil-rustc", RUSTC_WRAPPER: "evil-wrapper", RUSTC_WORKSPACE_WRAPPER: "evil-wrapper",
+  CARGO_BUILD_RUSTC: "evil-rustc", CARGO_BUILD_RUSTC_WRAPPER: "evil-wrapper", CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER: "evil-wrapper",
+  CARGO_PROFILE_RELEASE_LTO: "off", CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS: "false", CARGO_PROFILE_RELEASE_PACKAGE_YW_CORE_OPT_LEVEL: "0",
+  RUSTFLAGS: "-Cdebug-assertions", CARGO_ENCODED_RUSTFLAGS: "-Cdebug-assertions",
+};
+
+function releaseProfile(cargoToml) {
+  const section = /^\[profile\.release\][ \t]*\r?$([\s\S]*?)(?=^\[|(?![\s\S]))/mu.exec(cargoToml);
+  assert.ok(section, "Cargo.toml has no [profile.release]");
+  const values = {};
+  for (const line of section[1].split(/\r?\n/u)) {
+    const match = /^[ \t]*([A-Za-z0-9_-]+)[ \t]*=[ \t]*("[^"]*"|'[^']*'|[^ \t#]+)/u.exec(line);
+    if (match) values[match[1]] = match[2].replace(/^["'](.*)["']$/u, "$1");
+  }
+  return values;
+}
+
+const buildShells = windows ? [["Windows PowerShell 5.1", windowsPowerShell], ["PowerShell 7", findOnPath("pwsh.exe")]] : [];
+for (const [label, shell] of buildShells) {
+  test(`install.ps1 Invoke-Build runs cargo +1.95.0 with Cargo.toml's release profile as --config, clears compiler/build env vars only for the build, and stops on a toolchain mismatch (${label})`, { skip: shell === null ? "pwsh.exe not found" : false, timeout: 120_000 }, async () => {
+    await withTemp("your-wallet-install-build-", async (temp) => {
+      const bin = path.join(temp, "bin");
+      await mkdir(bin);
+      await writeFile(path.join(bin, "cargo.cmd"), FAKE_CARGO);
+      await writeFile(path.join(bin, "rustc.cmd"), FAKE_RUSTC);
+      await writeFile(path.join(bin, "rustup.cmd"), FAKE_RUSTUP);
+      const root = path.join(temp, "root");
+      await mkdir(root);
+      const helper = path.join(temp, "build.ps1");
+      await writeFile(helper, BUILD_SCRIPT);
+      const out = path.join(temp, "build.json");
+      const log = path.join(temp, "log.txt");
+      const envDump = path.join(temp, "env.txt");
+      const names = [...Object.keys(CLEARED), "YW_KEEP"];
+      const build = async (versions) => {
+        await rm(log, { force: true });
+        await rm(envDump, { force: true });
+        const env = childEnv({ ...CLEARED, YW_KEEP: "kept", YW_FAKE_LOG: log, YW_FAKE_ENV: envDump, YW_FAKE_CARGO_VERSION: "1.95.0", YW_FAKE_RUSTC_VERSION: "1.95.0", ...versions });
+        const run = runPowerShell(shell, ["-File", helper, "-Script", installScript, "-Root", root, "-Bin", bin, "-Out", out, "-Names", names.join(",")], env);
+        const lines = existsSync(log) ? (await readFile(log, "utf8")).split(/\r?\n/u).map((line) => line.trim()).filter(Boolean) : [];
+        return { run, lines };
+      };
+
+      const { run, lines } = await build({});
+      assert.equal(run.status, 0, run.out);
+      const result = JSON.parse(await readFile(out, "utf8"));
+
+      // The argument list: +1.95.0 first, then Cargo.toml [profile.release] exactly, then the build.
+      const expectedProfile = releaseProfile(await readFile(path.join(repoRoot, "Cargo.toml"), "utf8"));
+      assert.equal(result.args[0], "+1.95.0");
+      const configs = {};
+      let index = 1;
+      while (result.args[index] === "--config") {
+        const match = /^profile\.release\.([a-z-]+)=(.*)$/u.exec(result.args[index + 1]);
+        assert.ok(match, result.args[index + 1]);
+        assert.doesNotMatch(match[2], /[" ]/u, "no double quotes or spaces (Windows PowerShell 5.1 native argument passing)");
+        configs[match[1]] = match[2].replace(/^'(.*)'$/u, "$1");
+        index += 2;
+      }
+      assert.deepEqual(configs, expectedProfile);
+      assert.deepEqual(result.args.slice(index), ["build", "--release", "--locked", "-p", "yw-app", "-p", "yw-host"]);
+
+      // What the fake tools received.
+      assert.deepEqual(lines, ["VERSION +1.95.0 --version", "RUSTC +1.95.0 -vV", `ARGS ${result.args.join(" ")}`]);
+      const seen = new Map();
+      for (const line of (await readFile(envDump, "utf8")).split(/\r?\n/u)) {
+        const eq = line.indexOf("=", 1);
+        if (eq > 0) seen.set(line.slice(0, eq).toUpperCase(), line.slice(eq + 1));
+      }
+      for (const name of Object.keys(CLEARED)) assert.equal(seen.has(name.toUpperCase()), false, `${name} reached cargo`);
+      assert.equal(seen.get("YW_KEEP"), "kept");
+      assert.ok(seen.has("PATH"));
+      // Restored after the build.
+      for (const [name, value] of Object.entries(CLEARED)) assert.equal(result.after[name], value, name);
+      assert.equal(result.after.YW_KEEP, "kept");
+
+      // A different toolchain behind +1.95.0 stops with 7 before building.
+      for (const versions of [{ YW_FAKE_CARGO_VERSION: "1.94.0" }, { YW_FAKE_CARGO_VERSION: "1.95.0-nightly" }, { YW_FAKE_RUSTC_VERSION: "1.96.0" }]) {
+        const mismatch = await build(versions);
+        assert.equal(mismatch.run.status, 7, `${JSON.stringify(versions)}\n${mismatch.run.out}`);
+        assert.equal(mismatch.lines.some((line) => line.startsWith("ARGS")), false, mismatch.lines.join("\n"));
+      }
+    });
+  });
+}

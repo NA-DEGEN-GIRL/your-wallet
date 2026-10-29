@@ -57,10 +57,9 @@ fn main() -> ExitCode {
     let code = match connected {
         Some((mut reader, mut writer, app_pid)) => {
             spawn_or_exit(move || finish(yw_host::pump_app(&mut reader, &mut StdOut)));
+            // `app_pid` passed the server-process check of `handshake` (spec/05 §8.1 H1).
             yw_host::relay_to_app(&frames, &mut writer, || {
-                if let Some(pid) = app_pid {
-                    let _ = allow_set_foreground_window(pid);
-                }
+                let _ = allow_set_foreground_window(app_pid);
             })
         }
         None => yw_host::run_unavailable(

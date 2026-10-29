@@ -42,7 +42,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
-    DestroyWindow, DispatchMessageW, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO, FindWindowW,
+    DestroyWindow, DispatchMessageW, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO, FindWindowExW,
     FlashWindowEx, GA_ROOT, GWLP_USERDATA, GetAncestor, GetClientRect, GetForegroundWindow,
     GetMessageW, GetScrollInfo, GetWindowDisplayAffinity, GetWindowLongPtrW,
     GetWindowThreadProcessId, HICON, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDI_APPLICATION,
@@ -1519,25 +1519,48 @@ pub fn message_box(owner: Option<&Window>, text: &str, caption: &str, kind: MbKi
     MbResult::Ok
 }
 
-/// `FindWindowW(class)` + `GetWindowThreadProcessId`: the existing window's poster and process id
-/// (second-instance hand-off, spec/04 §1.1).
+/// Most top-level windows of one class [`find_windows`] returns.
+const MAX_FOUND_WINDOWS: usize = 16;
+
+/// `FindWindowExW(NULL, after, class)` repeated + `GetWindowThreadProcessId`: every top-level
+/// window of `class` (at most 16) with its poster and process id (second-instance hand-off,
+/// spec/04 §1.1). Any process can register a class of this name, so the caller verifies the
+/// process before trusting a window.
 #[must_use]
-pub fn find_window(class: &'static str) -> Option<(Poster, u32)> {
-    let name = to_wide(class, "FindWindowW").ok()?;
-    // SAFETY: `name` is NUL-terminated and live; no title filter.
-    let hwnd = unsafe { FindWindowW(name.as_ptr(), core::ptr::null()) };
-    if hwnd.is_null() {
-        return None;
+pub fn find_windows(class: &'static str) -> Vec<(Poster, u32)> {
+    let Ok(name) = to_wide(class, "FindWindowExW") else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    let mut after: HWND = core::ptr::null_mut();
+    while found.len() < MAX_FOUND_WINDOWS {
+        // SAFETY: `name` is NUL-terminated and live; null parent = top-level windows; `after`
+        // is null or a window returned by the previous call; no title filter.
+        let hwnd = unsafe {
+            FindWindowExW(
+                core::ptr::null_mut(),
+                after,
+                name.as_ptr(),
+                core::ptr::null(),
+            )
+        };
+        if hwnd.is_null() {
+            break;
+        }
+        let mut pid = 0_u32;
+        // SAFETY: `pid` is writable; the handle may belong to another process (read-only query).
+        unsafe { GetWindowThreadProcessId(hwnd, &raw mut pid) };
+        if pid != 0 {
+            found.push((
+                Poster {
+                    hwnd: hwnd.expose_provenance(),
+                },
+                pid,
+            ));
+        }
+        after = hwnd;
     }
-    let mut pid = 0_u32;
-    // SAFETY: `pid` is writable; the handle may belong to another process (read-only query).
-    unsafe { GetWindowThreadProcessId(hwnd, &raw mut pid) };
-    Some((
-        Poster {
-            hwnd: hwnd.expose_provenance(),
-        },
-        pid,
-    ))
+    found
 }
 
 #[cfg(test)]

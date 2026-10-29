@@ -13,6 +13,6 @@ pub use msg::{CaptureExclusion, CaptureOutcome, Msg, capture_outcome, is_blocked
 pub use paint::{Color, DrawFlags, Font, PaintDc, Rect};
 pub use window::{
     ClassSpec, Handler, Hwnd, InputKind, MbKind, MbResult, Poster, Reply, UiError, Window,
-    WindowKind, WindowSpec, create_window, exclude_from_capture, find_window, init, message_box,
+    WindowKind, WindowSpec, create_window, exclude_from_capture, find_windows, init, message_box,
     quit, register_class, run_loop, scale,
 };

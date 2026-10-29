@@ -6,7 +6,11 @@
 //!
 //! The `WinHTTP` timeouts are per phase and per receive, so a server that trickles its body could
 //! keep a request alive indefinitely; every request therefore also has a total deadline (the sum
-//! of the four phase timeouts) that bounds the body read loop.
+//! of the four phase timeouts). Before each phase the request handle gets that phase's timeout
+//! capped by what is left of the total (`WinHttpSetTimeouts` before the send, plus
+//! `WINHTTP_OPTION_RECEIVE_RESPONSE_TIMEOUT` before the response headers, whose 90 s default
+//! `WinHttpSetTimeouts` does not change), and the body read loop shortens each receive the same
+//! way.
 //!
 //! Certificate revocation checking (`WINHTTP_ENABLE_SSL_REVOCATION`) is deliberately left off:
 //! with it, an unreachable CRL/OCSP responder (captive portal, filtered network, offline
@@ -23,13 +27,13 @@ use windows_sys::Win32::Networking::WinHttp::{
     WINHTTP_DISABLE_AUTHENTICATION, WINHTTP_DISABLE_COOKIES, WINHTTP_DISABLE_REDIRECTS,
     WINHTTP_FLAG_SECURE, WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2, WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3,
     WINHTTP_OPTION_DISABLE_FEATURE, WINHTTP_OPTION_MAX_RESPONSE_HEADER_SIZE,
-    WINHTTP_OPTION_RECEIVE_TIMEOUT, WINHTTP_OPTION_REDIRECT_POLICY,
-    WINHTTP_OPTION_REDIRECT_POLICY_NEVER, WINHTTP_OPTION_SECURE_PROTOCOLS,
-    WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_QUERY_CONTENT_TYPE, WINHTTP_QUERY_FLAG_NUMBER,
-    WINHTTP_QUERY_FLAG_NUMBER64, WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect,
-    WinHttpOpen, WinHttpOpenRequest, WinHttpQueryDataAvailable, WinHttpQueryHeaders,
-    WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetOption,
-    WinHttpSetTimeouts,
+    WINHTTP_OPTION_RECEIVE_RESPONSE_TIMEOUT, WINHTTP_OPTION_RECEIVE_TIMEOUT,
+    WINHTTP_OPTION_REDIRECT_POLICY, WINHTTP_OPTION_REDIRECT_POLICY_NEVER,
+    WINHTTP_OPTION_SECURE_PROTOCOLS, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_QUERY_CONTENT_TYPE,
+    WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_FLAG_NUMBER64, WINHTTP_QUERY_STATUS_CODE,
+    WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryDataAvailable,
+    WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest,
+    WinHttpSetOption, WinHttpSetTimeouts,
 };
 
 use crate::error::WinError;
@@ -375,6 +379,25 @@ fn set_u32_option(handle: &Handle, option: u32, value: u32) -> Result<(), HttpEr
     Ok(())
 }
 
+/// `WinHttpSetTimeouts` on a request handle (resolve, connect, send, receive).
+fn set_timeouts(handle: &Handle, phases: &PhaseTimeouts) -> Result<(), HttpError> {
+    let to_i32 = |ms: u32| i32::try_from(ms).unwrap_or(i32::MAX);
+    // SAFETY: Sets the four timeouts on our live request handle.
+    let ok = unsafe {
+        WinHttpSetTimeouts(
+            handle.0,
+            to_i32(phases.resolve),
+            to_i32(phases.connect),
+            to_i32(phases.send),
+            to_i32(phases.receive),
+        )
+    };
+    if ok == 0 {
+        return Err(os_error("WinHttpSetTimeouts"));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ClientKind {
     Https,
@@ -405,6 +428,30 @@ fn next_receive_timeout(total: Duration, elapsed: Duration, receive_ms: u32) -> 
     let remaining = total.checked_sub(elapsed).filter(|left| !left.is_zero())?;
     let remaining_ms = u32::try_from(remaining.as_millis()).unwrap_or(u32::MAX);
     Some(remaining_ms.clamp(1, receive_ms.max(1)))
+}
+
+/// Per-request `WinHTTP` phase timeouts, each the configured phase timeout capped by what is
+/// left of the total deadline (at least 1 ms), set on the request handle before the phase runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PhaseTimeouts {
+    resolve: u32,
+    connect: u32,
+    send: u32,
+    /// Also used for `WINHTTP_OPTION_RECEIVE_RESPONSE_TIMEOUT` (the response headers).
+    receive: u32,
+}
+
+impl PhaseTimeouts {
+    /// `None` once the total deadline has passed.
+    fn remaining(timeouts: &Timeouts, total: Duration, elapsed: Duration) -> Option<Self> {
+        let cap = |phase_ms: u32| next_receive_timeout(total, elapsed, phase_ms);
+        Some(Self {
+            resolve: cap(timeouts.resolve_ms)?,
+            connect: cap(timeouts.connect_ms)?,
+            send: cap(timeouts.send_ms)?,
+            receive: cap(timeouts.receive_ms)?,
+        })
+    }
 }
 
 impl fmt::Debug for Client {
@@ -624,6 +671,11 @@ impl Client {
             WINHTTP_OPTION_DISABLE_FEATURE,
             WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_REDIRECTS | WINHTTP_DISABLE_AUTHENTICATION,
         )?;
+        // Total deadline, connection phases: resolve, connect and send happen inside
+        // `WinHttpSendRequest`; each is capped by what is left of the total.
+        let phases = PhaseTimeouts::remaining(&self.timeouts, total, started.elapsed())
+            .ok_or(HttpError::Timeout)?;
+        set_timeouts(&request, &phases)?;
         let header_len = u32::try_from(block.len()).map_err(|_| HttpError::InvalidHeader)?;
         let body_len = u32::try_from(body.len()).map_err(|_| HttpError::TooLarge)?;
         let header_ptr = if block.is_empty() {
@@ -647,6 +699,17 @@ impl Client {
         if sent == 0 {
             return Err(os_error("WinHttpSendRequest"));
         }
+        // Total deadline, response headers: `WinHttpReceiveResponse` is bounded by
+        // RECEIVE_RESPONSE_TIMEOUT (default 90 s, not set by `WinHttpSetTimeouts`) and each
+        // receive by RECEIVE_TIMEOUT; both get what is left of the total.
+        let phases = PhaseTimeouts::remaining(&self.timeouts, total, started.elapsed())
+            .ok_or(HttpError::Timeout)?;
+        set_timeouts(&request, &phases)?;
+        set_u32_option(
+            &request,
+            WINHTTP_OPTION_RECEIVE_RESPONSE_TIMEOUT,
+            phases.receive,
+        )?;
         // SAFETY: Waits for the response on our request handle.
         if unsafe { WinHttpReceiveResponse(request.0, core::ptr::null_mut()) } == 0 {
             return Err(os_error("WinHttpReceiveResponse"));
@@ -711,12 +774,12 @@ impl Client {
         let mut body_out = Vec::new();
         loop {
             // Total deadline: a trickling body cannot outlive the sum of the phase timeouts. The
-            // next wait is shortened to what is left (best effort; the check above each read
-            // bounds the loop even if the option cannot be set).
+            // next wait is shortened to what is left (and the check above each read bounds the
+            // loop).
             let wait_ms = next_receive_timeout(total, started.elapsed(), self.timeouts.receive_ms)
                 .ok_or(HttpError::Timeout)?;
             if wait_ms < self.timeouts.receive_ms {
-                let _ = set_u32_option(&request, WINHTTP_OPTION_RECEIVE_TIMEOUT, wait_ms);
+                set_u32_option(&request, WINHTTP_OPTION_RECEIVE_TIMEOUT, wait_ms)?;
             }
             let mut available = 0_u32;
             // SAFETY: `available` is writable.
@@ -766,10 +829,42 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::{
-        EndpointUrl, HttpError, HttpsUrl, LoopbackUrl, Timeouts, header_block,
+        EndpointUrl, HttpError, HttpsUrl, LoopbackUrl, PhaseTimeouts, Timeouts, header_block,
         next_receive_timeout, valid_header,
     };
     use std::time::Duration;
+
+    #[test]
+    fn phase_timeouts_are_capped_by_the_rest_of_the_total() {
+        let timeouts = Timeouts {
+            resolve_ms: 5_000,
+            connect_ms: 5_000,
+            send_ms: 10_000,
+            receive_ms: 10_000,
+        };
+        let total = Duration::from_millis(timeouts.total_ms());
+        let at = Duration::from_millis;
+        assert_eq!(
+            PhaseTimeouts::remaining(&timeouts, total, at(0)),
+            Some(PhaseTimeouts {
+                resolve: 5_000,
+                connect: 5_000,
+                send: 10_000,
+                receive: 10_000,
+            })
+        );
+        // 27 s spent in resolve/connect/send: the response headers get the last 3 s, not 90 s.
+        assert_eq!(
+            PhaseTimeouts::remaining(&timeouts, total, at(27_000)),
+            Some(PhaseTimeouts {
+                resolve: 3_000,
+                connect: 3_000,
+                send: 3_000,
+                receive: 3_000,
+            })
+        );
+        assert_eq!(PhaseTimeouts::remaining(&timeouts, total, at(30_000)), None);
+    }
 
     #[test]
     fn total_deadline_bounds_each_receive() {

@@ -323,6 +323,7 @@ fn tour_browser(state: &mut App) {
         core,
         reads: Arc::new(crate::browser::read::ReadContext::new(None)),
         server,
+        pipe_error: None,
         threads: Vec::new(),
         connections: 1,
         waiters: std::collections::HashMap::new(),

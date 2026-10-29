@@ -20,16 +20,16 @@ yw-app(지갑 본체, D3)의 프로세스·스레드 구조, 화면과 흐름, �
 ## 1. 프로세스와 스레드
 
 ### 1.1 실행 인자와 단일 인스턴스
-상수: 뮤텍스 이름 `Local\YourWallet.v3.app`(Rust 리터럴 `"Local\\YourWallet.v3.app"`), 주 창 클래스 `YourWalletV3Main`, 인자 `--background`.
+상수: 단일 인스턴스 뮤텍스는 사설 네임스페이스 안에 둔다. 경계 설명자 이름 `YourWallet.v3`(`INSTANCE_BOUNDARY`), 별칭 `YourWalletV3`(`INSTANCE_ALIAS`), 뮤텍스 이름 `app.<세션 ID>`(`INSTANCE_MUTEX` + `ProcessIdToSessionId`, 전체 이름 `YourWalletV3\app.<세션 ID>`). 주 창 클래스 `YourWalletV3Main`, 인자 `--background`.
 - 인자는 없음 또는 정확히 `--background` 하나만 허용한다. 그 밖이면 종료 코드 2.
-- `process::SingleInstance::acquire(이름)`([01] §7.6, `CreateMutexW`)의 값은 프로세스 끝까지 유지한다. `Err(InstanceError::AlreadyRunning)`(`ERROR_ALREADY_EXISTS (183)`)이면 두 번째 인스턴스다([05] §8.1의 첫 pipe 인스턴스 검사는 그 뒤의 두 번째 방어선이다).
+- `process::SingleInstance::acquire_private(경계, 별칭, 이름)`([01] §7.6)의 값은 프로세스 끝까지 유지한다. 순서: `CreateBoundaryDescriptorW(경계)` → `AddSIDToBoundaryDescriptor(사용자 SID)` → `AddIntegrityLabelToBoundaryDescriptor(S-1-16-8192 Medium)` → `CreatePrivateNamespaceW(DACL D:P(A;;GA;;;<사용자 SID>), 별칭)`, 이미 있으면(`ERROR_ALREADY_EXISTS`) `OpenPrivateNamespaceW`(사라졌으면 최대 5회 재시도) → `CreateMutexW(같은 DACL, "<별칭>\<이름>")`. `Err(InstanceError::AlreadyRunning)`(`ERROR_ALREADY_EXISTS (183)`, 같은 프로세스가 네임스페이스를 이미 열었을 때의 `ERROR_DUP_NAME (52)`)이면 두 번째 인스턴스다([05] §8.1의 첫 pipe 인스턴스 검사는 그 뒤의 두 번째 방어선이다). 경계에 사용자 SID와 Medium 무결성 레이블이 들어 있으므로 이 사용자의 Medium 이상 프로세스만 네임스페이스를 만들거나 열 수 있다. 예전의 `Local\YourWallet.v3.app`은 세션의 아무 프로세스(Low 무결성 포함)나 먼저 만들어 지갑 시작을 막을 수 있었다(점유). 세션 ID를 이름에 넣어 세션마다 하나라는 예전 `Local\` 범위를 유지한다.
 - 두 번째 인스턴스:
   - `--background`(yw-host가 실행, D24): 아무것도 하지 않고 종료 코드 0.
-  - 인자 없음(사용자 실행): `ui::find_window(YourWalletV3Main)` → `(poster, pid)` → `process::allow_set_foreground_window(pid)` → `poster.post(WM_YW_ACTIVATE, 0)` → 종료 코드 0. 창을 못 찾으면 200 ms 간격 10회 재시도 후 종료 코드 0.
+  - 인자 없음(사용자 실행): `ui::find_windows(YourWalletV3Main)`(`FindWindowExW`로 그 클래스의 최상위 창 최대 16개) → 각 `(poster, pid)`마다 `security::verify_process(pid, 자기 실행 파일)`([01] §7.6: `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` → 토큰 무결성 ≥ Medium(`GetTokenInformation(TokenIntegrityLevel)`) → `QueryFullProcessImageNameW`가 `current_exe()`와 같은 파일(정규화 후 대소문자 무시 비교)). 검증된 창에만 `process::allow_set_foreground_window(pid)` → `poster.post(WM_YW_ACTIVATE, 0)` → 종료 코드 0. 창 클래스 이름은 아무 프로세스나 등록할 수 있으므로, 검증에 실패한 창에는 전경 권한도 메시지도 주지 않는다. 창을 못 찾으면 200 ms 간격 10회 재시도 후 종료 코드 0. 끝까지 검증에 실패한 창만 찾았으면 오류 상자("실행 중인 Your Wallet 창을 확인하지 못했습니다. 같은 이름의 창이 이 실행 파일이 아닌 다른 프로그램(또는 다른 위치의 Your Wallet)에 속해 있어 전환하지 않았습니다. …") 후 종료 코드 10.
 - 첫 인스턴스가 `WM_YW_ACTIVATE`를 받으면 주 창을 보이고(최소화면 `SW_RESTORE`) `SetForegroundWindow`. 잠겨 있으면 W02도 연다.
 - `--background` 첫 인스턴스는 주 창을 숨긴 채 시작하고, 잠금 해제·승인이 필요한 요청이 오면 그 창만 띄운다(§2.5, §3.6).
 - 주 창 닫기(X, Alt+F4) = 앱 종료(§1.5). 트레이 아이콘은 없다. 종료 뒤 dApp 요청이 오면 `settings.json`의 `browserAutoLaunch`가 true일 때만 yw-host가 `--background`로 다시 실행한다(D24, [05] §7.4). false면 yw-host가 요청마다 4900으로 응답한다. M5에서 Chrome job object 때문에 yw-app이 Chrome과 함께 종료되면 자동 실행을 끄고 수동 실행으로 바꾼다(D24, [05] §11-3).
-- 종료 코드: 0 정상·인계, 2 인자 오류, 10 초기화 실패(데이터 폴더, 창 클래스, 주 창).
+- 종료 코드: 0 정상·인계, 2 인자 오류, 10 초기화 실패(데이터 폴더, 창 클래스, 주 창, 두 번째 인스턴스가 검증에 실패한 창만 찾음).
 
 ### 1.2 스레드
 | 스레드 | 소유 | 하는 일 | 하지 않는 일 |
@@ -72,11 +72,15 @@ impl EventQueue {
 ### 1.4 시작 순서
 1. `process::init_process()`(`SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x800)`), `ui::init()`(`SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` + `InitCommonControlsEx`), `process::exclude_from_error_reporting()`([01] §5.4). 실패해도 계속하고 4단계에서 로그로 남긴다.
 2. 인자 확인, 단일 인스턴스 뮤텍스(§1.1).
-3. 환경 변수 `LOCALAPPDATA`가 절대 경로가 아니면 종료 코드 10. `%LOCALAPPDATA%\YourWallet\v3\`와 `logs\`가 없으면 만든다.
+3. 환경 변수 `LOCALAPPDATA`가 절대 경로가 아니면 종료 코드 10. `%LOCALAPPDATA%\YourWallet\`, `v3\`, `logs\`를 이 순서로 `security::ensure_private_dir(폴더, 사용자 SID)`([01] §7.6)로 만들거나 검사한다(아래 1–4).
+   1. 데이터 폴더 ACL(시작마다): 없는 폴더는 `CreateDirectoryW`에 SDDL `O:<사용자 SID>D:PAI(A;OICI;FA;;;<사용자 SID>)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)S:(ML;OICI;NRNW;;;ME)`를 줘서 만든다: 보호된 DACL(상속 끊음) — 사용자·SYSTEM·Administrators 모두 권한, 폴더와 파일에 상속(OI·CI) — 과 Medium 필수 레이블(no-read-up·no-write-up: Low 무결성 프로세스는 같은 사용자여도 안을 읽지도 쓰지도 못한다; DPAPI 사용자 범위의 `apikeys.dpapi`를 Low 프로세스가 읽어 `CryptUnprotectData`하는 길을 막는다). 안에서 만드는 `vault.ywv`·`meta`·저널·`settings.json`·`apikeys.dpapi`·로그는 이 ACE와 레이블을 상속한다(따로 설정하지 않는다).
+   2. 이미 있는 폴더: 소유자·DACL·레이블(`GetNamedSecurityInfoW(OWNER|DACL|LABEL)`)을 읽는다. 소유자가 사용자·SYSTEM(`S-1-5-18`)·Administrators(`S-1-5-32-544`)가 아니면 거부. 위 상태(보호됨, 다른 SID에 허용 ACE 없음 — 상속된 읽기 전용 ACE도 포함, NULL DACL은 모두에게 허용으로 본다 —, 사용자 ACE가 OI·CI 모두 권한, 레이블 ≥ Medium·NR·NW·OI·CI)면 그대로 둔다. 아니면 `SetNamedSecurityInfoW(DACL|PROTECTED_DACL)`와 `(LABEL)`로 위 DACL·레이블을 다시 쓴다(하위 항목의 상속 ACE는 시스템이 다시 계산한다). 예: 프로필 전체에 다른 그룹(샌드박스 그룹 등)의 RX가 상속된 PC에서 예전 빌드가 만든 폴더 — 조용히 고치고 로그 `datadir.acl_repaired`(dir, folder, entries)를 남긴다. 고친 뒤에도 다른 SID가 허용되면 거부. 다시 쓰기에 실패했는데 다른 SID 허용이 없으면(보호·레이블만 빠짐) 계속한다.
+   3. 폴더 바로 안의 항목(재분석 지점 제외): 소유자가 위 세 SID가 아니면 거부. 다른 SID에 허용 ACE가 있으면 명시 DACL을 빈 비보호 DACL로 바꿔(`UNPROTECTED_DACL`) 폴더에서 상속된 ACE만 남긴다.
+   4. 거부(`PrivateDirError::Untrusted`): 오류 상자("데이터 폴더(%LOCALAPPDATA%\YourWallet)를 열지 않았습니다. 이 폴더나 안의 파일이 다른 계정의 소유이거나, 이 사용자가 고칠 수 없는 방식으로 다른 계정에 열려 있습니다. 지갑 파일을 보호하기 위해 시작을 멈춥니다.") 후 종료 코드 10. 폴더가 재분석 지점이거나 폴더가 아니거나 만들 수 없으면 기존 "데이터 폴더를 만들지 못했습니다…" 후 종료 코드 10. 앱은 데이터 폴더 밖의 ACL을 바꾸지 않는다(`%LOCALAPPDATA%` 등 상위 폴더의 상속 상태와 무관하게 동작).
 4. 로그 시작(§8), `app.start`(버전, OS 빌드, `--background` 여부).
 5. `settings.json`(§6.1), `apikeys.dpapi`(§6.3) 읽기. 실패 항목은 기본값 + 배너.
 6. 창 클래스 등록(§1.7), 주 창 생성(숨김). `session::register_session_notifications(&main)`(`WTSRegisterSessionNotification`, `NOTIFY_FOR_THIS_SESSION = 0`). 실패하면 1초 간격 최대 30회 재시도, 끝내 실패하면 배너 E-APP-004.
-7. 키·RPC·read 작업자, pipe 서버 시작([05]: 프로세스 시작 2 s 안). pipe 생성 실패는 치명이 아니다(배너 E-PIPE-001, 브라우저 연동 없이 계속).
+7. 키·RPC·read 작업자, pipe 서버 시작([05]: 프로세스 시작 2 s 안). pipe 생성 실패는 치명이 아니다(배너 E-PIPE-001, 브라우저 연동 없이 계속). 단일 인스턴스 뮤텍스를 쥔 채 첫 인스턴스 생성이 `AlreadyExists`면 이 사용자의 고정 pipe 이름을 다른 프로그램이 점유한 것이다: 로그 `pipe server.squatted`(E-PIPE-002) + 배너 E-PIPE-002, 상태 줄 `브라우저: 사용 불가 E-PIPE-002`, 브라우저 연동 없이 계속([05] §8.1).
 8. 키 작업자가 `Vault::load` → `VaultStatus`([02] §6.3)를 보고한다.
 9. `--background`가 아니면 주 창을 표시한다(S01·S07·S09). `Locked`면 W02를 자동으로 연다.
 10. 메시지 루프.
@@ -139,7 +143,7 @@ BTC_MAINNET_BG #C42B1C / BTC_MAINNET_TEXT #FFFFFF, BTC_TESTNET4_BG #F7A23B(글�
 | 그리기·입력 | `PaintDc::{fill_rect, round_rect, ellipse, draw_text, measure, select_font}`, `Font::create`, `input::is_down(vk)`. 버튼은 `ControlKind::Button(ButtonStyle)`(소유자 그리기, §1.6 스타일을 yw-app이 넘긴다), `Control::{set_backdrop, set_button_style}`(체크박스·라디오·버튼 모서리 배경 = 놓인 카드·창 색) |
 | 화면 투어(개발 전용) | `ui::capture::{capture_client, dev_tour_redraw, dev_tour_flush, dev_tour_lift_capture_exclusion}` — `#[cfg(debug_assertions)]`라 release 빌드에 없다. 앱 코드는 쓰지 않고 `ui::tour`(`#[ignore]` 테스트)만 쓴다(§11) |
 | 클립보드 | `clipboard::{set_text, set_secret_text -> SecretClip, clear_secret(owner, &SecretClip), read_text(owner, max) -> (WipeBuf<u16>, u32), clear_if_unchanged}`, `ClipError::{Busy, TooLong, Os}` |
-| 단일 인스턴스 | `process::SingleInstance::acquire`, `ui::find_window -> Option<(Poster, u32)>`, `process::allow_set_foreground_window`(§1.1) |
+| 단일 인스턴스 | `process::SingleInstance::acquire_private`, `ui::find_windows -> Vec<(Poster, u32)>`, `security::verify_process`, `process::allow_set_foreground_window`(§1.1) |
 | 세션·전원·종료 | `session::{register_session_notifications, unregister_session_notifications}`, `Msg::{SessionLock, SessionUnlock, SessionDisconnect, SessionLogoff, Suspend, Resume, QueryEndSession, EndSession}`(§1.5, §5.1) |
 | DPAPI·파일 | `dpapi::{protect -> Vec<u8>, unprotect -> WipeBuf<u8>}`(`WinError`), `file::{atomic_write, read_limited, ensure_dir}`(`FileError`) |
 | HTTP | `http::{Client, HttpsUrl, Timeouts}`(§1.9) |
@@ -224,7 +228,7 @@ S04(백업 대기): 잠금 해제 직후 백업이 확인되지 않았을 때. �
 - 배치(위 → 아래, 체인 탭마다 같음): 상단 막대 → 체인 탭 → 카드 "네트워크"(칩, 테스트넷 띠, 차단·저널 띠, 상태 줄 도움말) → **선택 계정 카드**(계정 이름, 경로, 큰 잔액 20pt와 기준 블록, 전체 주소, 주 버튼 `보내기`·`받기`, 링크 `새로고침`, 엔드포인트가 없으면 링크 `RPC 설정하기`) → 카드 "내 계정"(계정 목록 라디오, 선택 행의 `이름 바꾸기`·`숨기기`/`삭제`(위험), `계정 추가`·`개인키 가져오기`) → 카드 "토큰" → 카드 "활동". 빈 목록에는 다음에 할 일을 알려주는 도움말을 보인다("아직 보낸 거래가 없습니다. 보낸 거래는 여기에서…").
 - 체인 탭: 구현된 단계만(M4 `EVM`, M7 `Solana`, M8 `Bitcoin`). 각 탭의 "내 계정" 카드에 `개인키 가져오기`가 있다(그 체인의 키, §2.18). 가져온 계정은 라벨 뒤에 배지 "[가져온 키]"와 도움말 "가져온 키 · 복구 단어로 복구되지 않음"을 보인다. 키 전용 지갑(복구 단어 없음, [02] §8.5)은 파생 기능(`계정 추가`, `다른 경로 스캔`, 파생 Bitcoin 계정·발견, 복구 단어 보기)을 숨기고, 계정이 없는 체인 탭은 "이 지갑에는 {체인} 계정이 없습니다."와 `개인키 가져오기`만 보인다.
 - EVM 네트워크 선택: 기본 체인 3개(`Ethereum 메인넷`, `Sepolia 테스트넷`, HyperEVM; 이름은 [03] §1.1) 다음에 사용자 체인(§2.17, `evmChains` 순서, 이름 옆 배지 T-CUSTOM-CHAIN). 차단된 체인(E-RPC-006·E-CHN-008)도 목록에 남기고 "(차단됨)"을 붙인다. 고르면 S10에 그 오류 배너와(E-CHN-008이면) `설정에서 다시 고정`(S15)을 보이고 잔액·보내기는 끈다. 선택은 `settings.json` `evmChainId`(§6.1, D30)이고, 잠긴 동안 [05]가 캐시 없는 origin의 `eth_chainId`로 쓴다. Solana 클러스터는 `solana.cluster`([07] §10), BTC 네트워크는 `bitcoin.network`([08] §2, D26)로 모두 `settings.json`에 있다. 테스트넷(Sepolia, [07]·[08]의 테스트 네트워크)이면 상단에 `TESTNET_BG` 띠 "테스트넷 — 실제 자산이 아닙니다". 기본 메인넷(Ethereum 메인넷 1, HyperEVM 999)과 Solana mainnet이면 빨간(`BTC_MAINNET_BG`) 띠 T-MAINNET "메인넷 — 실제 자산"(Bitcoin은 [08] §2 `BITCOIN MAINNET`). 같은 조건에서 승인 창 A01 헤더에도 T-MAINNET 배지를 보인다(§3.2 헤더; 대상은 S10의 선택 네트워크가 아니라 그 요청의 체인·클러스터). 사용자 체인에는 테스트넷 구분이 없으므로 띠·배지를 그리지 않는다. 기본값은 그대로다(EVM Sepolia, Solana mainnet, Bitcoin 꺼짐).
-- 상태 줄: `RPC: 연결됨 | 엔드포인트 없음 (E-KEY-005) | 오류 E-RPC-0nn | 차단 E-CHN-008`(네트워크 이름만, URL·호스트 없음, §1.9), `브라우저: 연결 n개 | 연결 없음 | 사용 불가 E-PIPE-001`. 엔드포인트 없음이면 잔액·보내기를 끄고 `설정에서 URL 입력`(S15 §2.11.1)을 보인다.
+- 상태 줄: `RPC: 연결됨 | 엔드포인트 없음 (E-KEY-005) | 오류 E-RPC-0nn | 차단 E-CHN-008`(네트워크 이름만, URL·호스트 없음, §1.9), `브라우저: 연결 n개 | 연결 없음 | 사용 불가 E-PIPE-001 | 사용 불가 E-PIPE-002`. 엔드포인트 없음이면 잔액·보내기를 끄고 `설정에서 URL 입력`(S15 §2.11.1)을 보인다.
 - 계정 목록: 라벨, 전체 주소(§3.3 주소 그리기), 기본 자산 잔액, 경로 또는 `가져온 개인키`. 카드 도움말 T-ACCOUNTS(파생 계정만 복구 단어로 복구되고 가져온 개인키는 아니다). 선택 행 버튼: `보내기`, `받기`, `이름 바꾸기`, 파생 계정 `숨기기`(meta `hidden`), 개인키 계정 `삭제`(확인 오버레이 T-REMOVE-KEY → W03 → `remove_evm_raw_key`). 삭제 오버레이는 계정 라벨·주소(라벨은 겹칠 수 있으므로 모든 체인에서 주소를 함께)와 선택한 EVM 네트워크의 마지막으로 읽은 기본 자산 잔액을 보인다: 0보다 크면 고위험 띠 "이 계정에 잔액이 있습니다: … 먼저 옮기거나 개인키를 내보내세요", 모르면 주의 띠 "잔액을 확인하지 못했습니다…", 0이면 "다른 네트워크와 토큰 잔액은 확인하지 않았습니다" 도움말. 숨기기·삭제는 [05] §4.1에 알린다(grant에서 제외). 단, 지우는 가져온 EVM 키의 주소가 (숨기지 않은) 파생 계정의 주소와 같으면(그 계정의 개인키를 가져온 경우) 파생 계정이 남으므로 사이트 연결을 끊지 않는다. 가져온 계정의 기본 라벨(`가져온 계정 N`·`가져온 Solana N`)은 같은 접두어의 기존 라벨 중 가장 큰 N + 1이다(`개수 + 1`은 삭제 뒤 번호가 겹친다).
 - `계정 추가`: 다음 EVM 인덱스(기본 라벨 "계정 {i+1}"), 또는 `개인키 가져오기`(W07 → `import_evm_private_key`, `Unlocked`에서만; W07 안내에 T-IMPORTED-KEY). 상한은 [02] §5.3(파생 100, 개인키 15).
 - **Bitcoin 탭 계정**([08] §3.5–§3.6): 카드 "Bitcoin 계정" — 계정마다 라디오 한 행 `{이름} · {형식 (접두)} · {사용 가능 잔액}`(예: `네이티브 세그윗 계정 0 · 네이티브 세그윗 (bc1q…) · 0.00100000 BTC (100,000 sats)`; 가져온 키는 배지와 줄인 주소 `[가져온 키] {주소 앞 6자}…{끝 6자} · 레거시 (1…) · …`), 고르면 그 계정으로 전환(key worker가 `btc_accounts.selected`를 저장한 뒤 새로고침, 발견 전이면 발견). 아래 `계정 추가` → 같은 카드에 형식 버튼 4개(mainnet `네이티브 세그윗 (bc1q…, 권장)`, `탭루트 (bc1p…)`, `호환 세그윗 (3…)`, `레거시 (1…)`; testnet4 `tb1q`·`tb1p`·`2`·`m·n`)와 `취소`, 도움말 "주소 형식을 고르세요. 잘 모르면 네이티브 세그윗을 고르세요…". 카드 도움말: 계정마다 주소 형식이 정해지고 같은 니모닉에서 BIP44·49·84·86으로 다른 지갑에서도 복구된다. BTC 승인이 열려 있으면 전환·추가를 막는다. 선택 계정 카드 제목은 계정 이름, 그 아래 `{노드} · {형식 (접두)}`(예: `m/86'/0'/0' · 탭루트 (bc1p…)`). 가져온 키 계정에는 `더 찾기`가 없다. 잔액·UTXO·활동(meta 활동은 그 계정의 `account` 태그만)·받기·보내기·수수료 올리기는 선택 계정의 것이다(가져온 키도 같다). 가져온 키 줄이 선택돼 있으면 목록 아래에 백업 도움말과 `개인키 보기`·`삭제`(§2.18). 카드 끝: T-BTC-IMPORTED, 주소 형식 라디오, T-KEYSTART-SCRIPT, `개인키 가져오기`. 키 전용 지갑은 `계정 추가` 없이 이 부분만 있고, 기본 계정 없이 가져온 키 계정만 보인다(그 네트워크에 없으면 "이 네트워크에는 가져온 Bitcoin 개인키가 없습니다…", 하나도 없으면 T-NO-ACCOUNTS; Bitcoin이 꺼져 있으면 꺼짐 카드 아래 T-NO-ACCOUNTS 카드).
@@ -963,6 +967,7 @@ BTC 계정 선택은 `prefs`에 두지 않는다(알려진 객체에 키를 더�
 | E-APP-005 | 이벤트 큐 가득 참 | 요청이 너무 많아 일부를 처리하지 못했습니다. |
 | E-APP-009 | 내부 오류(`InvalidState`, `RecordNotFound`, `KeyError::Internal` 등) | 내부 오류가 발생했습니다. 앱을 다시 시작해 보고, 반복되면 로그 폴더 %LOCALAPPDATA%\YourWallet\v3\logs의 yw-app.log에서 오류 코드 줄을 확인하세요. |
 | E-PIPE-001 | pipe 생성 실패 | 브라우저 연결을 시작하지 못했습니다. 앱을 다시 실행하세요. |
+| E-PIPE-002 | pipe 이름 점유(첫 인스턴스 `AlreadyExists`, [05] §8.1) | 다른 프로그램이 지갑 연결 채널을 점유하고 있습니다. 브라우저 연결 없이 계속합니다. 모르는 프로그램이 실행 중인지 확인하고, PC를 다시 시작한 뒤 앱을 다시 실행하세요. |
 | E-VLT-001 | `UnlockFailed`(비밀번호 오류와 손상을 구분하지 않는다, [02] §10) | 비밀번호가 올바르지 않거나 vault 파일이 손상되었습니다. 대부분 입력 실수이니 Caps Lock과 한/영 상태를 확인하고 다시 입력하세요. 맞는 비밀번호로도 계속 실패하면 파일 손상일 수 있습니다(복구 안내 참고). |
 | E-VLT-002 | `Malformed`, `UnsupportedVersion`, `UnsupportedParams` | 지갑 파일을 읽을 수 없습니다. 손상되었거나 다른 버전의 파일입니다. 더 새로운 버전의 앱이 쓴 파일이면 앱을 최신 버전으로 업데이트하세요. 앱은 이 파일을 지우거나 덮어쓰지 않습니다. |
 | E-VLT-003 | `Storage` | 지갑 파일을 저장하지 못했습니다. 디스크 공간과 권한을 확인하세요. |

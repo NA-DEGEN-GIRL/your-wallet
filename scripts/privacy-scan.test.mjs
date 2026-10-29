@@ -86,7 +86,25 @@ function bip39WordSequence() {
   return ["const words = [", Array.from({ length: 12 }, () => ["\"ab", "le\""].join("")).join(", "), "];\n"].join("");
 }
 
-const NINE_RULES = [
+// The fixtures below are assembled from fragments so this file never carries a
+// literal Infura ID, api-key value, e-mail address or profile path itself.
+function infuraUrl(host = "mainnet.infura.io") {
+  return ["const url = \"https://", host, "/v", "3/", "a1".repeat(16), "\";\n"].join("");
+}
+
+function apiKeyQuery(label = "apikey", value = "Zq9".repeat(6)) {
+  return ["https://api.etherscan.io/api?module=account&", label, "=", value, "&tag=latest\n"].join("");
+}
+
+function emailAddress(local = "alice", domain = ["mail", "provider", "io"].join(".")) {
+  return ["author: ", [local, domain].join("@"), "\n"].join("");
+}
+
+function profilePath(name = "alice", separator = "\\", drive = "C") {
+  return [drive, ":", separator, "Users", separator, name, separator, "AppData", separator, "Local\n"].join("");
+}
+
+const ALL_RULES = [
   "private-key-assignment",
   "authorization-header",
   "seed-phrase-label",
@@ -96,6 +114,10 @@ const NINE_RULES = [
   "llm-api-key",
   "labeled-private-key-hex",
   "bip39-word-sequence",
+  "infura-project-id-url",
+  "api-key-query-value",
+  "email-address",
+  "windows-profile-path",
 ];
 
 function allSignatures() {
@@ -109,6 +131,10 @@ function allSignatures() {
     llmApiKey(),
     labeledPrivateKeyHex(),
     bip39WordSequence(),
+    infuraUrl(),
+    apiKeyQuery(),
+    emailAddress(),
+    profilePath(),
   ].join("\n");
 }
 
@@ -222,12 +248,12 @@ test("reports findings only by fixed rule name and count", async () => {
   }
 });
 
-test("retains all nine forbidden source signatures", async () => {
+test("retains all forbidden source signatures", async () => {
   const repositoryRoot = await createRepository();
   try {
     await writeFile(join(repositoryRoot, "signatures.rs"), allSignatures(), "utf8");
 
-    assert.deepEqual(await scanRepository(repositoryRoot), rules(...NINE_RULES));
+    assert.deepEqual(await scanRepository(repositoryRoot), rules(...ALL_RULES));
   } finally {
     await removeRepository(repositoryRoot);
   }
@@ -352,7 +378,7 @@ test("scans Rust harness sources before and after Git staging", async () => {
     await writeFile(join(repositoryRoot, "harness.rs"), allSignatures(), "utf8");
     // .cs is no longer a scanned extension.
     await writeFile(join(repositoryRoot, "Harness.cs"), allSignatures(), "utf8");
-    const expected = rules(...NINE_RULES);
+    const expected = rules(...ALL_RULES);
     assert.deepEqual(await scanRepository(repositoryRoot), expected);
     await runGit(repositoryRoot, ["add", "--", "harness.rs", "Harness.cs"]);
     assert.deepEqual(await scanRepository(repositoryRoot), expected);
@@ -382,5 +408,134 @@ test("fails closed with a fixed diagnostic when Git inventory is unavailable", a
     assert.equal(output.includes(nonRepository), false);
   } finally {
     await removeRepository(nonRepository);
+  }
+});
+
+test("scans .txt, .cmd, .css and .template sources", async () => {
+  const repositoryRoot = await createRepository();
+  try {
+    for (const name of ["notes.txt", "install.cmd", "popup.css", "host.json.template"]) {
+      await writeFile(join(repositoryRoot, name), secretMarker(), "utf8");
+      assert.deepEqual(await scanRepository(repositoryRoot), rules("production-secret-marker"), name);
+      await rm(join(repositoryRoot, name));
+    }
+    // Extensions outside the list stay unscanned.
+    await writeFile(join(repositoryRoot, "Harness.cs"), secretMarker(), "utf8");
+    assert.deepEqual(await scanRepository(repositoryRoot), []);
+  } finally {
+    await removeRepository(repositoryRoot);
+  }
+});
+
+test("detects personal-data rules: Infura IDs, api-key values, e-mail and profile paths", async () => {
+  const cases = [
+    [infuraUrl(), "infura-project-id-url"],
+    [infuraUrl("rpc.custom-gateway.net"), "infura-project-id-url"],
+    [apiKeyQuery(), "api-key-query-value"],
+    [apiKeyQuery("API-KEY"), "api-key-query-value"],
+    [apiKeyQuery("api_key", "k"), "api-key-query-value"],
+    [emailAddress(), "email-address"],
+    [emailAddress("a.b+tag", ["notexample", "com"].join(".")), "email-address"],
+    [emailAddress("x", ["example", "com", "evil", "io"].join(".")), "email-address"],
+    [emailAddress("x", ["example", "net"].join(".")), "email-address"],
+    [profilePath(), "windows-profile-path"],
+    [profilePath("alice", "/", "D"), "windows-profile-path"],
+    [profilePath("alice", "\\\\"), "windows-profile-path"],
+    [profilePath("Jane Doe"), "windows-profile-path"],
+    [profilePath("x"), "windows-profile-path"],
+    [["\"", "c", ":\\", "users\\", "alice", "\"\n"].join(""), "windows-profile-path"],
+  ];
+  const repositoryRoot = await createRepository();
+  try {
+    for (const [text, rule] of cases) {
+      await writeFile(join(repositoryRoot, "candidate.rs"), text, "utf8");
+      assert.deepEqual(await scanRepository(repositoryRoot), rules(rule), text);
+    }
+  } finally {
+    await removeRepository(repositoryRoot);
+  }
+});
+
+test("ignores personal-data placeholders and reserved example values", async () => {
+  const negatives = [
+    ["infura <id> placeholder", ["https://mainnet.infura.io/v", "3/<PROJECT_ID>"].join("")],
+    ["infura 31 hex", ["/v", "3/", "a".repeat(31)].join("")],
+    ["infura 33 hex", ["/v", "3/", "a".repeat(33)].join("")],
+    ["infura hex then letters", ["/v", "3/", "a".repeat(32), "zz"].join("")],
+    ["api-key empty", apiKeyQuery("apikey", "")],
+    ["api-key <...>", apiKeyQuery("apikey", "<KEY>")],
+    ["api-key ${...}", apiKeyQuery("api-key", "${ETHERSCAN_KEY}")],
+    ["api-key {...}", apiKeyQuery("api_key", "{}")],
+    ["api-key YOUR_", apiKeyQuery("apikey", "YOUR_API_KEY")],
+    ["api-key xxx", apiKeyQuery("apikey", "xxxx")],
+    ["embedded apikey label", ["myapi", "key=", "Zq9Zq9"].join("")],
+    ["commit trailer", ["Co-Authored-By: Claude <", ["noreply", "anthropic.com"].join("@"), ">"].join("")],
+    ["example.com", emailAddress("someone", "example.com")],
+    ["example.com subdomain", emailAddress("someone", "mail.example.com")],
+    ["example.org subdomain", emailAddress("u", "api.example.org")],
+    ["reserved .example TLD", emailAddress("user", "app.example")],
+    ["css at-rule", "@media (prefers-color-scheme: dark) { body { color: white; } }"],
+    ["package specifier", ["pkg", "1.2.3"].join("@")],
+    ["angle placeholder", profilePath("<user>")],
+    ["hangul angle placeholder", profilePath("<사용자>")],
+    ["%USERNAME%", profilePath("%USERNAME%")],
+    ["$env:USERNAME", profilePath("$env:USERNAME")],
+    ["${env:USERNAME}", profilePath("${env:USERNAME}")],
+    ["{user}", profilePath("{user}")],
+    ["Public profile", profilePath("Public")],
+    ["Default profile", profilePath("Default")],
+    ["All Users profile", profilePath("All Users")],
+    ["%USERPROFILE%", "%USERPROFILE%\AppData\Local"],
+    ["$env:USERPROFILE", "$env:USERPROFILE\AppData\Local"],
+  ];
+  const repositoryRoot = await createRepository();
+  try {
+    for (const [label, text] of negatives) {
+      await writeFile(join(repositoryRoot, "candidate.md"), `${text}\n`, "utf8");
+      assert.deepEqual(await scanRepository(repositoryRoot), [], label);
+    }
+  } finally {
+    await removeRepository(repositoryRoot);
+  }
+});
+
+test("personal-data fixture allowlist is per file and per exact value", async () => {
+  const repositoryRoot = await createRepository();
+  try {
+    // Allowlisted pairs pass only at their own path.
+    await writeRepositoryFile(repositoryRoot, "crates/yw-win/src/process.rs", profilePath("x"));
+    await writeRepositoryFile(repositoryRoot, "scripts/install.test.mjs", profilePath("Test", "\\\\"));
+    await writeRepositoryFile(repositoryRoot, "crates/yw-app/tests/settings.rs", emailAddress("u", "mempool.space"));
+    assert.deepEqual(await scanRepository(repositoryRoot), []);
+
+    // A different value at an allowlisted path is still reported.
+    await writeRepositoryFile(repositoryRoot, "crates/yw-win/src/process.rs", profilePath("alice"));
+    assert.deepEqual(await scanRepository(repositoryRoot), rules("windows-profile-path"));
+    await writeRepositoryFile(repositoryRoot, "crates/yw-win/src/process.rs", profilePath("x"));
+
+    await writeRepositoryFile(repositoryRoot, "crates/yw-app/tests/settings.rs", emailAddress("v", "mempool.space"));
+    assert.deepEqual(await scanRepository(repositoryRoot), rules("email-address"));
+    await rm(join(repositoryRoot, "crates", "yw-app", "tests", "settings.rs"));
+
+    // The same value at another path is reported.
+    await writeRepositoryFile(repositoryRoot, "crates/yw-win/src/other.rs", profilePath("x"));
+    await writeRepositoryFile(repositoryRoot, "docs/note.md", emailAddress("u", "mempool.space"));
+    // Findings follow inventory order: crates/... before docs/...
+    assert.deepEqual(await scanRepository(repositoryRoot), rules("windows-profile-path", "email-address"));
+  } finally {
+    await removeRepository(repositoryRoot);
+  }
+});
+
+test("exempts only the BIP39 word list itself from the word-sequence rule", async () => {
+  const wordList = Array.from({ length: 12 }, () => ["ab", "le"].join("")).join("\n");
+  const repositoryRoot = await createRepository();
+  try {
+    await writeRepositoryFile(repositoryRoot, "crates/yw-core/src/bip39/english.txt", wordList);
+    assert.deepEqual(await scanRepository(repositoryRoot), []);
+    await writeRepositoryFile(repositoryRoot, "crates/yw-core/src/bip39/other.txt", wordList);
+    assert.deepEqual(await scanRepository(repositoryRoot), rules("bip39-word-sequence"));
+  } finally {
+    await removeRepository(repositoryRoot);
   }
 });

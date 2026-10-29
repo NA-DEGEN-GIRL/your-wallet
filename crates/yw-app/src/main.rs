@@ -12,8 +12,8 @@ use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use yw_app::app::{
-    App, MAIN_CLASS, MUTEX_NAME, Paths, SECRET_INPUT_CLASS, SECRET_VIEW_CLASS, load_apikeys,
-    load_settings,
+    App, INSTANCE_ALIAS, INSTANCE_BOUNDARY, INSTANCE_MUTEX, MAIN_CLASS, Paths, SECRET_INPUT_CLASS,
+    SECRET_VIEW_CLASS, load_apikeys, load_settings,
 };
 use yw_app::app_approval::{APPROVAL_CLASS, PANEL_CLASS};
 use yw_app::app_browser::BrowserUi;
@@ -36,32 +36,71 @@ const VK_CONTROL: u16 = 0x11;
 const VK_MENU: u16 = 0x12;
 const VK_L: u16 = 0x4C;
 
-/// Second instance started by the user: bring the first one forward (spec/04 §1.1).
-fn hand_off() {
+/// Second instance started by the user: bring the first one forward (spec/04 §1.1). Only a
+/// window whose process runs this executable at Medium integrity or higher gets the foreground
+/// right and the activate message; a window of our class owned by any other process is
+/// ignored. `false` when only such impostor windows were found.
+fn hand_off() -> bool {
+    let own_exe = std::env::current_exe().ok();
+    let mut impostor = false;
     for _ in 0..10 {
-        if let Some((poster, pid)) = ui::find_window(MAIN_CLASS) {
-            let _ = yw_win::allow_set_foreground_window(pid);
-            let _ = poster.post(WM_YW_ACTIVATE, 0);
-            return;
+        for (poster, pid) in ui::find_windows(MAIN_CLASS) {
+            let verified = own_exe
+                .as_deref()
+                .is_some_and(|exe| yw_win::security::verify_process(pid, exe).is_ok());
+            if verified {
+                let _ = yw_win::allow_set_foreground_window(pid);
+                let _ = poster.post(WM_YW_ACTIVATE, 0);
+                return true;
+            }
+            impostor = true;
         }
         std::thread::sleep(Duration::from_millis(200));
     }
+    !impostor
 }
 
-/// `%LOCALAPPDATA%\YourWallet\v3\` and `logs\` (spec/04 §1.4-3).
-fn data_paths() -> Option<Paths> {
-    let local = PathBuf::from(std::env::var_os("LOCALAPPDATA")?);
+/// A data folder check that did something (logged once logging runs).
+type DirReport = (&'static str, yw_win::security::PrivateDir);
+
+/// Why the data folder could not be prepared.
+enum DataDirError {
+    /// `LOCALAPPDATA` missing or relative, or a folder could not be created.
+    Unavailable,
+    /// Owned by someone else or open to others in a way this user cannot repair.
+    Untrusted,
+}
+
+/// `%LOCALAPPDATA%\YourWallet`, `v3\` and `logs\` (spec/04 §1.4-3), each created or checked by
+/// `ensure_private_dir`: protected DACL (user, SYSTEM, Administrators), Medium no-read-up /
+/// no-write-up label, extra grants on a folder the user owns repaired.
+fn data_paths() -> Result<(Paths, Vec<DirReport>), DataDirError> {
+    let local = PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or(DataDirError::Unavailable)?);
     if !local.is_absolute() {
-        return None;
+        return Err(DataDirError::Unavailable);
     }
-    let data = local.join("YourWallet").join("v3");
+    let user = yw_win::current_user_sid_string().map_err(|_| DataDirError::Unavailable)?;
+    let base = local.join("YourWallet");
+    let data = base.join("v3");
     let logs = data.join("logs");
-    yw_win::file::ensure_dir(&data).ok()?;
-    yw_win::file::ensure_dir(&logs).ok()?;
+    let mut reports = Vec::new();
+    for (tag, dir) in [("base", &base), ("data", &data), ("logs", &logs)] {
+        match yw_win::security::ensure_private_dir(dir, &user) {
+            Ok(outcome) => {
+                if outcome.repaired || outcome.entries_repaired > 0 {
+                    reports.push((tag, outcome));
+                }
+            }
+            Err(yw_win::security::PrivateDirError::Untrusted) => {
+                return Err(DataDirError::Untrusted);
+            }
+            Err(_) => return Err(DataDirError::Unavailable),
+        }
+    }
     for name in ["settings.json.tmp", "apikeys.dpapi.tmp"] {
         let _ = std::fs::remove_file(data.join(name));
     }
-    Some(Paths { data, logs })
+    Ok((Paths { data, logs }, reports))
 }
 
 fn fail(text: &str) -> ExitCode {
@@ -91,11 +130,19 @@ fn main() -> ExitCode {
         [arg] if arg == "--background" => true,
         _ => return ExitCode::from(EXIT_ARGUMENTS),
     };
-    let _instance = match SingleInstance::acquire(MUTEX_NAME) {
+    let session = yw_win::security::current_session_id().unwrap_or(0);
+    let instance_name = format!("{INSTANCE_MUTEX}.{session}");
+    let _instance = match SingleInstance::acquire_private(
+        INSTANCE_BOUNDARY,
+        INSTANCE_ALIAS,
+        &instance_name,
+    ) {
         Ok(instance) => instance,
         Err(InstanceError::AlreadyRunning) => {
-            if !background {
-                hand_off();
+            if !background && !hand_off() {
+                return fail(
+                    "실행 중인 Your Wallet 창을 확인하지 못했습니다. 같은 이름의 창이 이 실행 파일이 아닌 다른 프로그램(또는 다른 위치의 Your Wallet)에 속해 있어 전환하지 않았습니다. 작업 표시줄에서 Your Wallet을 직접 여세요.",
+                );
             }
             return ExitCode::SUCCESS;
         }
@@ -105,8 +152,16 @@ fn main() -> ExitCode {
     };
 
     // 3. Data folder.
-    let Some(paths) = data_paths() else {
-        return fail("데이터 폴더를 만들지 못했습니다. LOCALAPPDATA 경로와 권한을 확인하세요.");
+    let (paths, dir_reports) = match data_paths() {
+        Ok(found) => found,
+        Err(DataDirError::Untrusted) => {
+            return fail(
+                "데이터 폴더(%LOCALAPPDATA%\\YourWallet)를 열지 않았습니다. 이 폴더나 안의 파일이 다른 계정의 소유이거나, 이 사용자가 고칠 수 없는 방식으로 다른 계정에 열려 있습니다. 지갑 파일을 보호하기 위해 시작을 멈춥니다.",
+            );
+        }
+        Err(DataDirError::Unavailable) => {
+            return fail("데이터 폴더를 만들지 못했습니다. LOCALAPPDATA 경로와 권한을 확인하세요.");
+        }
     };
 
     // 4. Logging.
@@ -122,6 +177,20 @@ fn main() -> ExitCode {
             ),
         ],
     );
+    for (dir, outcome) in dir_reports {
+        logging::info(
+            "app",
+            "datadir.acl_repaired",
+            &[
+                ("dir", Field::Word(dir)),
+                (
+                    "folder",
+                    Field::Word(if outcome.repaired { "yes" } else { "no" }),
+                ),
+                ("entries", Field::Num(u64::from(outcome.entries_repaired))),
+            ],
+        );
+    }
     for (step, result) in init_results {
         if let Err(error) = result {
             logging::warn(

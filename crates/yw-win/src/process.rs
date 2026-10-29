@@ -8,11 +8,13 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_BROKEN_PIPE, HANDLE,
-    INVALID_HANDLE_VALUE, LocalFree,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_BROKEN_PIPE, ERROR_DUP_NAME,
+    HANDLE, INVALID_HANDLE_VALUE, LocalFree,
 };
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
-use windows_sys::Win32::Security::{GetTokenInformation, PSID, TOKEN_QUERY, TOKEN_USER, TokenUser};
+use windows_sys::Win32::Security::{
+    GetTokenInformation, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+};
 use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType, ReadFile, WriteFile};
 use windows_sys::Win32::System::Console::{
     GetStdHandle, STD_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
@@ -22,13 +24,16 @@ use windows_sys::Win32::System::LibraryLoader::{
     GetModuleFileNameW, LOAD_LIBRARY_SEARCH_SYSTEM32, SetDefaultDllDirectories,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CreateMutexW, CreateProcessW,
-    DETACHED_PROCESS, GetCurrentProcess, OpenProcessToken, PROCESS_CREATION_FLAGS,
+    AddIntegrityLabelToBoundaryDescriptor, AddSIDToBoundaryDescriptor, CREATE_BREAKAWAY_FROM_JOB,
+    CREATE_NEW_PROCESS_GROUP, ClosePrivateNamespace, CreateBoundaryDescriptorW, CreateMutexW,
+    CreatePrivateNamespaceW, CreateProcessW, DETACHED_PROCESS, DeleteBoundaryDescriptor,
+    GetCurrentProcess, OpenPrivateNamespaceW, OpenProcessToken, PROCESS_CREATION_FLAGS,
     PROCESS_INFORMATION, STARTUPINFOW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
 
 use crate::error::WinError;
+use crate::pipe::SecurityDescriptor;
 use crate::wide::{path_wide, to_wide};
 
 /// `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`.
@@ -54,44 +59,161 @@ pub enum InstanceError {
     Os(WinError),
 }
 
-/// Holds the named mutex for the life of the process.
-#[derive(Debug)]
+/// A boundary descriptor, deleted on drop.
+struct Boundary(HANDLE);
+
+impl Drop for Boundary {
+    fn drop(&mut self) {
+        // SAFETY: Created by `CreateBoundaryDescriptorW` and deleted exactly once here.
+        unsafe { DeleteBoundaryDescriptor(self.0) };
+    }
+}
+
+/// An open private namespace, closed (not destroyed) on drop: the namespace lives while any
+/// instance still holds it.
+struct Namespace(HANDLE);
+
+impl Drop for Namespace {
+    fn drop(&mut self) {
+        // SAFETY: Returned by Create/OpenPrivateNamespaceW and closed exactly once here.
+        unsafe { ClosePrivateNamespace(self.0, 0) };
+    }
+}
+
+/// How often a namespace that vanished between "already exists" and the open is retried.
+const NAMESPACE_ATTEMPTS: u32 = 5;
+
+/// Holds the single-instance mutex (and its private namespace) for the life of the process.
 pub struct SingleInstance {
-    handle: HANDLE,
+    // Field order: the mutex closes before the namespace that contains it.
+    _mutex: OwnedHandle,
+    _namespace: Namespace,
+}
+
+impl core::fmt::Debug for SingleInstance {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("SingleInstance")
+            .finish_non_exhaustive()
+    }
 }
 
 impl SingleInstance {
-    /// `CreateMutexW(NULL, FALSE, name)`; `ERROR_ALREADY_EXISTS` closes the handle and returns
-    /// [`InstanceError::AlreadyRunning`].
+    /// The single-instance mutex in a private namespace (spec/04 §1.1): a boundary descriptor
+    /// `boundary` bound to the current user's SID and the Medium integrity label
+    /// (`CreateBoundaryDescriptorW` + `AddSIDToBoundaryDescriptor` +
+    /// `AddIntegrityLabelToBoundaryDescriptor`), the namespace created or opened under `alias`
+    /// (`CreatePrivateNamespaceW`, `OpenPrivateNamespaceW` when it already exists; DACL: the
+    /// user only), then `CreateMutexW("<alias>\<name>")` with the same user-only DACL. Only a
+    /// process of this user at Medium integrity or higher can create or open the namespace, so
+    /// a Low-integrity process or another user cannot squat the name (a plain `Local\` mutex
+    /// could be created first by any process of the session). `ERROR_ALREADY_EXISTS` from the
+    /// mutex is [`InstanceError::AlreadyRunning`].
     ///
     /// # Errors
     ///
     /// [`InstanceError`].
-    pub fn acquire(name: &str) -> Result<Self, InstanceError> {
-        let wide = to_wide(name, "CreateMutexW").map_err(InstanceError::Os)?;
-        // SAFETY: `wide` is NUL-terminated and live; default security, not initially owned.
-        let handle = unsafe { CreateMutexW(core::ptr::null(), 0, wide.as_ptr()) };
+    pub fn acquire_private(boundary: &str, alias: &str, name: &str) -> Result<Self, InstanceError> {
+        let user = current_user_sid_string().map_err(InstanceError::Os)?;
+        let user_sid = crate::security::sid_from_string(&user).map_err(InstanceError::Os)?;
+        let medium = crate::security::medium_label_sid().map_err(InstanceError::Os)?;
+        let boundary_name =
+            to_wide(boundary, "CreateBoundaryDescriptorW").map_err(InstanceError::Os)?;
+        // SAFETY: `boundary_name` is NUL-terminated and live; no flags.
+        let raw = unsafe { CreateBoundaryDescriptorW(boundary_name.as_ptr(), 0) };
+        if raw.is_null() {
+            return Err(InstanceError::Os(WinError::last(
+                "CreateBoundaryDescriptorW",
+            )));
+        }
+        let mut descriptor = Boundary(raw);
+        // SAFETY: `descriptor.0` is our boundary descriptor (the call may reallocate it and
+        // update the handle in place); `user_sid` is a valid SID kept alive for the call.
+        let ok = unsafe { AddSIDToBoundaryDescriptor(&raw mut descriptor.0, user_sid.raw()) };
+        if ok == 0 {
+            return Err(InstanceError::Os(WinError::last(
+                "AddSIDToBoundaryDescriptor",
+            )));
+        }
+        // SAFETY: As above, with the Medium mandatory label SID.
+        let ok =
+            unsafe { AddIntegrityLabelToBoundaryDescriptor(&raw mut descriptor.0, medium.raw()) };
+        if ok == 0 {
+            return Err(InstanceError::Os(WinError::last(
+                "AddIntegrityLabelToBoundaryDescriptor",
+            )));
+        }
+        let security = SecurityDescriptor::from_sddl(&format!("D:P(A;;GA;;;{user})"))
+            .map_err(InstanceError::Os)?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: u32::try_from(core::mem::size_of::<SECURITY_ATTRIBUTES>())
+                .map_err(|_| InstanceError::Os(WinError::invalid_argument("CreateMutexW")))?,
+            lpSecurityDescriptor: security.raw(),
+            bInheritHandle: 0,
+        };
+        let alias_wide = to_wide(alias, "CreatePrivateNamespaceW").map_err(InstanceError::Os)?;
+        let namespace = open_namespace(&descriptor, &alias_wide, &attributes)?;
+        let mutex_name =
+            to_wide(&format!("{alias}\\{name}"), "CreateMutexW").map_err(InstanceError::Os)?;
+        // SAFETY: `mutex_name` is NUL-terminated and live; `attributes` points at a live
+        // descriptor; not initially owned.
+        let handle = unsafe { CreateMutexW(&raw const attributes, 0, mutex_name.as_ptr()) };
         let error = WinError::last("CreateMutexW");
         if handle.is_null() {
             return Err(InstanceError::Os(error));
         }
+        let mutex = OwnedHandle(handle);
         if error.code == ERROR_ALREADY_EXISTS {
-            // SAFETY: Closes the handle just returned to us.
-            unsafe { CloseHandle(handle) };
             return Err(InstanceError::AlreadyRunning);
         }
-        Ok(Self { handle })
+        Ok(Self {
+            _mutex: mutex,
+            _namespace: namespace,
+        })
     }
 }
 
-impl Drop for SingleInstance {
-    fn drop(&mut self) {
-        // SAFETY: Closes the mutex handle owned by `self` exactly once.
-        unsafe { CloseHandle(self.handle) };
+/// `CreatePrivateNamespaceW`, or `OpenPrivateNamespaceW` when it already exists (retried when
+/// the namespace disappears in between because its last holder closed it).
+fn open_namespace(
+    descriptor: &Boundary,
+    alias: &[u16],
+    attributes: &SECURITY_ATTRIBUTES,
+) -> Result<Namespace, InstanceError> {
+    let mut last = WinError::new("OpenPrivateNamespaceW", 0);
+    for _ in 0..NAMESPACE_ATTEMPTS {
+        // SAFETY: `attributes` points at a live descriptor; `descriptor.0` is our boundary
+        // descriptor; `alias` is NUL-terminated and live.
+        let created = unsafe {
+            CreatePrivateNamespaceW(
+                core::ptr::from_ref(attributes),
+                descriptor.0.cast_const(),
+                alias.as_ptr(),
+            )
+        };
+        if !created.is_null() {
+            return Ok(Namespace(created));
+        }
+        let error = WinError::last("CreatePrivateNamespaceW");
+        if error.code != ERROR_ALREADY_EXISTS {
+            return Err(InstanceError::Os(error));
+        }
+        // SAFETY: As above.
+        let opened = unsafe { OpenPrivateNamespaceW(descriptor.0.cast_const(), alias.as_ptr()) };
+        if !opened.is_null() {
+            return Ok(Namespace(opened));
+        }
+        last = WinError::last("OpenPrivateNamespaceW");
+        if last.code == ERROR_DUP_NAME {
+            // This process already holds the namespace under this alias (aliases are unique per
+            // process): a `SingleInstance` is already alive here.
+            return Err(InstanceError::AlreadyRunning);
+        }
     }
+    Err(InstanceError::Os(last))
 }
 
-// SAFETY: A mutex handle may be closed from any thread.
+// SAFETY: The mutex and namespace handles may be closed from any thread.
 unsafe impl Send for SingleInstance {}
 
 /// `AllowSetForegroundWindow(pid)`.

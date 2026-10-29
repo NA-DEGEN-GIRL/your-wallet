@@ -332,25 +332,56 @@ pub fn server_owner_trusted(
     yw_win::pipe::owner_is(duplex.owner_sid(), user_sid())
 }
 
-/// Splits a fresh connection, sends the hello and waits up to 2 s for the ack (spec/05 §8.2).
-/// Returns the halves and `GetNamedPipeServerProcessId`, or `None` (→ UNAVAILABLE). A server
-/// whose pipe is not owned by the current user gets nothing, not even the hello.
+/// The executable the pipe server must run (spec/05 §8.1): debug `YW_TEST_APP_IMAGE` (headless
+/// tests run a fake server), else `yw-app.exe` next to this yw-host. `None` when the folder of
+/// this executable is unknown.
 #[must_use]
-pub fn handshake(duplex: Duplex, origin: &str) -> Option<(PipeReader, PipeWriter, Option<u32>)> {
-    handshake_with(duplex, origin, yw_win::current_user_sid_string)
+pub fn expected_app_image(lookup: Lookup<'_>, debug: bool) -> Option<PathBuf> {
+    if debug && let Some(image) = lookup("YW_TEST_APP_IMAGE") {
+        return Some(PathBuf::from(image));
+    }
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.join("yw-app.exe"))
 }
 
-/// [`handshake`] with the expected owner SID injected (tests simulate a foreign owner).
+/// Whether the server process `pid` is the wallet (spec/05 §8.1 H1): token integrity Medium or
+/// higher and an image that is the same file as `expected` ([`yw_win::security::verify_process`]).
+/// A Low-integrity process of the same user can create the predictable pipe name (the owner
+/// check passes for it), so this is what tells it apart.
+#[must_use]
+pub fn server_process_trusted(pid: u32, expected: Option<&Path>) -> bool {
+    expected.is_some_and(|image| yw_win::security::verify_process(pid, image).is_ok())
+}
+
+/// Splits a fresh connection, sends the hello and waits up to 2 s for the ack (spec/05 §8.2).
+/// Returns the halves and the verified server pid (`GetNamedPipeServerProcessId`), or `None`
+/// (→ UNAVAILABLE). A server whose pipe is not owned by the current user, or whose process is
+/// not `yw-app.exe` next to this yw-host at Medium integrity or higher, gets nothing, not even
+/// the hello; only a verified pid is ever passed to `AllowSetForegroundWindow`.
+#[must_use]
+pub fn handshake(duplex: Duplex, origin: &str) -> Option<(PipeReader, PipeWriter, u32)> {
+    let image = expected_app_image(&|key| std::env::var_os(key), cfg!(debug_assertions));
+    handshake_with(duplex, origin, yw_win::current_user_sid_string, |pid| {
+        server_process_trusted(pid, image.as_deref())
+    })
+}
+
+/// [`handshake`] with the expected owner SID and the server-process check injected (tests
+/// simulate a foreign owner or an impostor process).
 #[must_use]
 pub fn handshake_with(
     duplex: Duplex,
     origin: &str,
     user_sid: impl FnOnce() -> Result<String, WinError>,
-) -> Option<(PipeReader, PipeWriter, Option<u32>)> {
+    server_trusted: impl FnOnce(u32) -> bool,
+) -> Option<(PipeReader, PipeWriter, u32)> {
     if !server_owner_trusted(&duplex, user_sid) {
         return None;
     }
-    let app_pid = duplex.server_pid();
+    let app_pid = duplex.server_pid()?;
+    if !server_trusted(app_pid) {
+        return None;
+    }
     let (mut reader, mut writer) = duplex.split();
     let canceller = reader.cancel_handle();
     let accepted = run_with_deadline(

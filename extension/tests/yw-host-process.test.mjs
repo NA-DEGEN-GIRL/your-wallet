@@ -3,7 +3,9 @@
 // Every case sets YW_TEST_PIPE_NAME to a fresh \\.\pipe\YourWallet.test.h1.<pid>.<n>, so the real
 // wallet pipe is never used, and LOCALAPPDATA to an empty temp folder, so the user's real
 // settings.json is never read. Every case except the browserAutoLaunch one also sets
-// YW_TEST_NO_SPAWN=1, so yw-app is never started even if the fake server goes away early.
+// YW_TEST_NO_SPAWN=1, so yw-app is never started even if the fake server goes away early. The fake
+// server is this node process, so YW_TEST_APP_IMAGE names node.exe as the image yw-host must find
+// behind the pipe (spec/05 §8.1: Medium integrity or higher and the expected image).
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -25,6 +27,9 @@ const ACK = JSON.parse(goldenText("pipe-hello-ack.golden.json"));
 
 const missing = !existsSync(HOST);
 const skip = missing && process.env.YW_CHECK !== "1" ? "target/debug/yw-host.exe not built" : false;
+
+// yw-host verifies the pipe server process; the fake yw-app runs in this node process.
+const FAKE_APP_IMAGE = { YW_TEST_APP_IMAGE: process.execPath };
 
 let nextPipe = 0;
 const uniquePipe = () => `\\\\.\\pipe\\YourWallet.test.h1.${process.pid}.${nextPipe++}`;
@@ -130,7 +135,7 @@ test("H1 hello format and byte-identical relay in both directions", { skip }, as
   const pipeName = uniquePipe();
   const { server, connection } = await startFakeApp(pipeName);
   try {
-    const host = startHost([ORIGIN, "--parent-window=0"], { YW_TEST_PIPE_NAME: pipeName, YW_TEST_NO_SPAWN: "1" });
+    const host = startHost([ORIGIN, "--parent-window=0"], { YW_TEST_PIPE_NAME: pipeName, YW_TEST_NO_SPAWN: "1", ...FAKE_APP_IMAGE });
     const { socket, app, hello, helloFrame } = await connection;
     assert.deepEqual(Object.keys(hello), Object.keys(HELLO));
     assert.deepEqual(hello, { ...HELLO, hostVersion: hello.hostVersion, extensionOrigin: ORIGIN, pid: host.child.pid });
@@ -204,13 +209,42 @@ test("H1 hello-reject switches to UNAVAILABLE", { skip }, async () => {
   const pipeName = uniquePipe();
   const { server, connection } = await startFakeApp(pipeName, { kind: "hello-reject", reason: "protocol" });
   try {
-    const host = startHost([ORIGIN], { YW_TEST_PIPE_NAME: pipeName, YW_TEST_NO_SPAWN: "1" });
+    const host = startHost([ORIGIN], { YW_TEST_PIPE_NAME: pipeName, YW_TEST_NO_SPAWN: "1", ...FAKE_APP_IMAGE });
     host.child.stdin.write(frame(REQUEST_TEXT));
     const { socket } = await connection;
     const response = await host.stdout.next(3_000);
     assert.deepEqual(JSON.parse(response.toString("utf8")), UNAVAILABLE);
     assert.equal(await host.closed, 3);
     socket.destroy();
+  } finally {
+    server.close();
+  }
+});
+
+test("H1 a pipe server that is not the expected image never gets the hello (4900, exit 3)", { skip }, async () => {
+  const pipeName = uniquePipe();
+  const server = net.createServer();
+  let connected = false;
+  let received = 0;
+  server.on("connection", (socket) => {
+    connected = true;
+    socket.on("error", () => {});
+    socket.on("data", (chunk) => { received += chunk.length; });
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(pipeName, resolve);
+  });
+  try {
+    // The server (node.exe) is not yw-host.exe: an impostor of the same user.
+    const host = startHost([ORIGIN], { YW_TEST_PIPE_NAME: pipeName, YW_TEST_NO_SPAWN: "1", YW_TEST_APP_IMAGE: HOST });
+    host.child.stdin.write(frame(REQUEST_TEXT));
+    const response = await host.stdout.next(5_000);
+    assert.deepEqual(JSON.parse(response.toString("utf8")), UNAVAILABLE);
+    assert.equal(await host.closed, 3);
+    assert.match(host.stderr(), /^yw-host: unavailable\r?\n$/u);
+    assert.equal(connected, true);
+    assert.equal(received, 0, "no hello for an unverified server");
   } finally {
     server.close();
   }
