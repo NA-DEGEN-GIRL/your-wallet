@@ -398,10 +398,10 @@ RPC 분류로 **차단**하는 것은 실패 방향(서비스 거부만 가능)�
 ### 13.1 순서
 
 1. **입력·로컬 검사**: 계정, 자산, 받는 주소(§12.1), 금액(§11). 같은 (클러스터, from)에 `Pending`이 있으면 "이전 전송 확인 중"으로 막는다. `검토`를 누르면 입력을 그 자리에서 다시 검사하고, 그 결과(받는 주소·자산·금액)가 화면에 보이던 검사 결과(입력 지연 검사 500 ms)와 다르면 승인을 열지 않고 고정 문구("입력이 바뀌어 다시 확인했습니다…")만 보인다. 승인 요청은 이 새 검사 결과로만 만든다.
-2. **미리보기(RPC, 모두 `commitment:"finalized"`)**: `getGenesisHash`(불일치 시 중단, §15.1) → `getBalance(from)` → `getAccountInfo(to)` → (SPL) `getAccountInfo(mint)`·`getAccountInfo(from_ata)`·`getAccountInfo(to_ata)`(데이터 포함, §15.4) → `getMinimumBalanceForRentExemption(0)`(SPL은 이어서 `(165)`) → `getRecentPrioritizationFees` → `getLatestBlockhash`(미리보기 전용, 서명에 쓰지 않음) → 미리보기 메시지로 `getFeeForMessage`(§10) → `simulateTransaction`(서명 64바이트 0, `sigVerify:false`, `replaceRecentBlockhash:true`, 참고).
+2. **미리보기(RPC, 모두 `commitment:"confirmed"`; D32: 설정한 RPC를 신뢰하고 `confirmed`를 최종으로 본다)**: `getGenesisHash`(불일치 시 중단, §15.1) → `getBalance(from)` → `getAccountInfo(to)` → (SPL) `getAccountInfo(mint)`·`getAccountInfo(from_ata)`·`getAccountInfo(to_ata)`(데이터 포함, §15.4) → `getMinimumBalanceForRentExemption(0)`(SPL은 이어서 `(165)`) → `getRecentPrioritizationFees` → `getLatestBlockhash`(미리보기 전용, 서명에 쓰지 않음) → 미리보기 메시지로 `getFeeForMessage`(§10) → `simulateTransaction`(서명 64바이트 0, `sigVerify:false`, `replaceRecentBlockhash:true`, 참고).
 3. **승인 요청 생성·표시**: §13.2 intent와 §13.3 표시로 [03] §11.1 `ApprovalDraft`를 만들고(`build_sol_transfer_request`), `ApprovalStore::issue`([03] §11.5)가 `ApprovalRequest`(digest는 [03] §11.3·§11.4)를 만든다. 창에 Ready로 표시하는 순간 draft를 만들고 바로 `issue`를 호출하므로 `created_unix_ms` = intent `created_at_ms` = 표시 시각, 만료 = 표시 + 120 s(D23). 기한·만료 동작은 모든 체인 공통으로 [04] §3.5가 정본이다: 남은 시간이 0이 되면 창은 `QueueOutcome::Expired`로 닫히고 보내기 화면으로 돌아간다(입력 값 유지, [04] §2.7 T-APPR-EXPIRED). 다시 `검토`하면 1단계부터 새로 진행한다(새 미리보기, 새 intent id, **새 승인**). 만료된 승인·intent는 재사용하지 않으며, SOL만의 별도 만료 상태나 창 안의 재준비 버튼은 없다. 거부도 같은 화면으로 돌아간다(입력 값 유지). D23의 "60초보다 오래된 시뮬레이션은 클릭 때 재실행"은 승인 근거인 EVM 시뮬레이션(D15)용이다. SOL 시뮬레이션은 참고(D27, `simulation: None`)라 다시 실행하지 않는다.
 4. **승인**: [04] §3.4 공통 조작. 고위험 경고가 있으면 D16의 "위 경고를 모두 확인했습니다" 체크박스 1개 + 2초 누르기. `ApprovalStore::consume(id, shown_digest, now)`가 1회용 `Approved`(복제 불가, [03] §11.5)를 돌려주면 그 시각을 `consumed_at_ms`로 기록한다.
-5. **서명 직전 조회**: `getGenesisHash` 재확인 → `getLatestBlockhash({commitment:"finalized"})` → `(blockhash, lastValidBlockHeight)`. 그 뒤 `getBlockHeight(finalized) = h`에 대해 `h + SOL_MIN_LVBH_AHEAD ≤ lvbh ≤ h + SOL_MAX_LVBH_AHEAD`가 아니면 `RpcAnomaly`. finalized 블록해시의 lvbh는 그 블록 높이 + 150이고 `h`는 그 뒤에 묻으므로 `lvbh ≤ h + 150`이다. 하한 `h + 100`은 두 호출 사이 진행 50블록(약 10 s)을 허용하는 가장 좁은 값이며, 너무 낮은 lvbh가 만료 증명(§14.3-1 `높이 > lvbh`)을 앞당기는 것을 막는다.
+5. **서명 직전 조회**: `getGenesisHash` 재확인 → `getLatestBlockhash({commitment:"confirmed"})` → `(blockhash, lastValidBlockHeight)`. 그 뒤 `getBlockHeight(confirmed) = h`에 대해 `h + SOL_MIN_LVBH_AHEAD ≤ lvbh ≤ h + SOL_MAX_LVBH_AHEAD`가 아니면 `RpcAnomaly`. confirmed 블록해시의 lvbh는 그 블록 높이 + 150이고 `h`는 그 뒤에 묻으므로 `lvbh ≤ h + 150`이다. 하한 `h + 100`은 두 호출 사이 진행 50블록(약 10 s)을 허용하는 가장 좁은 값이며, 너무 낮은 lvbh가 만료 증명(§14.3-1 `높이 > lvbh`)을 앞당기는 것을 막는다.
 6. **서명(yw-core)**: `now_ms ≤ consumed_at_ms + SOL_SIGN_DEADLINE_SECS × 1000` 확인 → `Approved`의 kind = `SolTransfer`·account = `intent.core.from` 확인 → intent 생성 규칙 재확인(키 사용 전, 실패는 `PolicyMismatch`): `cu_limit = template_cu_limit(asset)`, `max_fee_lamports = max_fee(cu_limit, cu_price)`(§10 공식), `max_fee ≤ fee_cap ≤ 10_000_000`(설정 범위), 비표준 경로(§3.3)면 `flags`에 보내기 최대가 있고 받는 주소가 같은 시드의 표준 계정(`Standard(0..=999)`를 128개씩 파생해 대조)일 것 → `encode_message` → §9 파싱·재인코딩 동일성 → `with_ed25519_seed(intent.source, |k| …)`(§3.1) 안에서 `signing_key(k)` → 공개키 = from 확인 → 서명 → 키 소거 → `VerifyingKey::verify_strict` → 트랜잭션 조립·재파싱. 이식 근거(서명 후 재검증 패턴): `archive/spec-v2.4:crates/key-agent/src/lib.rs:328-345`.
 7. **저널 기록 후 브로드캐스트**(§14). 저널 쓰기가 실패로 보고되면 저널을 디스크에서 다시 읽는다. 새 `Pending` 레코드가 그대로 있으면(쓰기는 반영됨) 기록된 것으로 보고 평소처럼 추적·전송한다(재시작 뒤 재개될 레코드를 "보내지 않음"으로 버리지 않는다). 없을 때만 서명 바이트를 버린다(전송한 적 없으므로 안전).
 
@@ -528,8 +528,8 @@ pub const SOL_JOURNAL_MAX_BODY: usize = SOL_JOURNAL_HEADER_LEN + SOL_MAX_TX_BYTE
 ### 14.2 상태 전이
 
 ```text
-(서명 완료) --저널 fsync--> Pending --finalized, err=null--> Landed
-                             |--finalized, err≠null--> FailedOnChain   (수수료 차감됨)
+(서명 완료) --저널 fsync--> Pending --confirmed, err=null--> Landed
+                             |--confirmed, err≠null--> FailedOnChain   (수수료 차감됨)
                              |--만료 증명(§14.3)------> Expired         (전송되지 않음)
 ```
 
@@ -539,14 +539,15 @@ pub const SOL_JOURNAL_MAX_BODY: usize = SOL_JOURNAL_HEADER_LEN + SOL_MAX_TX_BYTE
 |---|---|
 | 첫 전송 | 저널에 `Pending` 기록이 디스크에 반영된 뒤 `sendTransaction`(§15.2, `skipPreflight:false`, `maxRetries:0`). 이 세션의 첫 라운드(서명 직후, 재시작·잠금 해제 뒤 재개)는 상태 조회보다 **먼저** 보낸다: 상태 조회 실패가 첫 전송을 막지 않으며, 그 전송 결과(재전송 주기, 결정적 오류 플래그)는 조회가 실패해도 기록한다 |
 | 매 `SOL_POLL_INTERVAL_MS` | `getSignatureStatuses([sig], {searchTransactionHistory:false})` |
-| 매 `SOL_REBROADCAST_INTERVAL_MS` | 상태가 null이고 재전송 중지 플래그가 없으면 **같은 바이트·같은 파라미터**로 `sendTransaction`, 그리고 `getEpochInfo(finalized)`(한 응답의 `blockHeight`·`absoluteSlot`, §14.3) |
-| 상태 `confirmationStatus:"finalized"`, `err:null` | `Landed{slot}` 저장, 종료 |
-| 상태 `finalized`, `err≠null` | `FailedOnChain{slot, err}` 저장, 종료 |
-| 상태 `processed`/`confirmed` | "처리 중" 표시, 재전송 생략, 계속 조회. 성공으로 보지 않는다 |
+| 매 `SOL_REBROADCAST_INTERVAL_MS` | 상태가 null이고 재전송 중지 플래그가 없으면 **같은 바이트·같은 파라미터**로 `sendTransaction`, 그리고 `getEpochInfo(confirmed)`(한 응답의 `blockHeight`·`absoluteSlot`, §14.3) |
+| 상태 `confirmationStatus:"confirmed"` 또는 `"finalized"`, `err:null` | `Landed{slot}` 저장, 종료(D32: `confirmed`가 최종) |
+| 상태 `confirmed`/`finalized`, `err≠null` | `FailedOnChain{slot, err}` 저장, 종료 |
+| 상태 `processed` | "처리 중" 표시, 재전송 생략, 계속 조회. 아직 최종으로 보지 않는다 |
 | 전송 응답 서명 ≠ 로컬 `base58(sig)` | `RpcAnomaly` 기록, 상태 유지 |
 | preflight 오류: `BlockhashNotFound`·전송 오류·시간 초과 | 계속 재전송 |
 | preflight 오류: 결정적 거래 오류(§15.3 1–6) | 재전송 중지(메모리 플래그), 오류 표시, `Pending` 유지(전달되지 않았음을 증명할 수 없음) |
-| `SOL_PENDING_NOTICE_SECS` 경과 | "네트워크/RPC 확인 필요" 표시. 자동 재서명 없음 |
+| 사용자 "지금 다시 전송"(§14.3) | 다음 라운드를 바로 시작해 상태 조회보다 먼저 **같은 바이트**로 `sendTransaction`(세션 첫 라운드와 같음). 결정적 preflight 오류로 멈춘 재전송 플래그도 풀린다(같은 서명이므로 두 번 처리되지 않음) |
+| `SOL_PENDING_NOTICE_SECS` 경과 | "네트워크/RPC 확인 필요" 표시(안내만, 대기 조건 아님). 자동 재서명 없음 |
 
 - 재전송은 서명 바이트가 같으므로(Ed25519 결정적) 같은 거래를 여러 번 보내도 한 번만 처리된다. **새 블록해시로 다시 서명하는 일은 루프 안에 없다.**
 - yw-app 재시작·잠금 해제 후 `Pending` 레코드마다 루프를 재개한다. 잠금 중에도 루프는 계속할 수 있다(비밀 불필요). 상태 저장은 잠금 해제 후에 한다.
@@ -555,25 +556,23 @@ pub const SOL_JOURNAL_MAX_BODY: usize = SOL_JOURNAL_HEADER_LEN + SOL_MAX_TX_BYTE
 ```rust
 pub const SOL_POLL_INTERVAL_MS: u64 = 1_000;
 pub const SOL_REBROADCAST_INTERVAL_MS: u64 = 2_500;
-pub const SOL_EXPIRY_MIN_WALL_SECS: u64 = 90;    // 블록해시 수명 150블록: 200ms 슬롯(§18 SIMD-0525)이면 ≈ 30s의 3배, 약 400ms 슬롯이면 ≈ 60s의 1.5배 (벽시계·단조 시계 모두; 높이 증명이 주 조건)
-pub const SOL_EXPIRY_ROUNDS: u8 = 2;             // 만료 증명을 만족한 높이 라운드 연속 횟수
 pub const SOL_PENDING_NOTICE_SECS: u64 = 120;
 pub const SOL_JOURNAL_MAX_RECORDS: usize = 64;
 ```
 
 ### 14.3 만료 증명과 재전송
 
-높이 라운드(매 `SOL_REBROADCAST_INTERVAL_MS`, §14.2) 하나가 아래를 이 순서로 모두 만족하면 "만료 라운드"다. `Expired`는 만료 라운드가 **연속 `SOL_EXPIRY_ROUNDS`(2)번**(서로 다른 RPC 관측, 2.5 s 이상 간격) 나왔을 때만 저장한다. 조건을 하나라도 못 채운 높이 라운드(높이 ≤ lvbh, 이력 조회 실패, 슬롯 뒤처짐, 시간 부족)와 상태가 null이 아닌 라운드는 횟수를 0으로 되돌린다. 높이를 묻지 않은 라운드는 횟수를 바꾸지 않는다.
+설정한 RPC를 신뢰한다(D32). 높이 라운드(매 `SOL_REBROADCAST_INTERVAL_MS`, §14.2) **한 번**이 아래를 이 순서로 모두 만족하면 `Expired`를 저장한다. 벽시계·단조 시계 최소 시간과 두 번 관측은 없다(이전의 90초 하한과 연속 2라운드 조건은 D32로 폐지).
 
-1. `getEpochInfo({commitment:"finalized"})` **한 응답**의 `blockHeight > last_valid_block_height`. 같은 응답의 `absoluteSlot`을 `s`로 둔다(높이와 슬롯을 따로 묻지 않는다).
-2. 그 뒤 `getSignatureStatuses([sig], {searchTransactionHistory:true})`의 값이 `null`이고 그 응답의 `context.slot ≥ s`(1과 같거나 더 앞선 RPC 시점에서 본 null만 인정한다. 뒤처진 노드의 null은 무시).
-3. `now − signed_at_ms ≥ SOL_EXPIRY_MIN_WALL_SECS × 1000`(로컬 벽시계, RPC가 블록 높이를 앞당겨 말하는 경우의 방어, spec.md §2.2)
-4. 단조 시계 경과 ≥ `SOL_EXPIRY_MIN_WALL_SECS × 1000`. 기준은 이 세션에서 서명한 때, 재시작·잠금 해제 뒤에는 그 레코드의 루프를 다시 시작한 때다(벽시계를 앞으로 돌려도 줄지 않는다). yw-core는 경과 값을 인자로만 받는다.
+1. `getEpochInfo({commitment:"confirmed"})` **한 응답**의 `blockHeight > last_valid_block_height`. 같은 응답의 `absoluteSlot`을 `s`로 둔다(높이와 슬롯을 따로 묻지 않는다).
+2. 그 뒤 `getSignatureStatuses([sig], {searchTransactionHistory:true})`의 값이 `null`이고 그 응답의 `context.slot ≥ s`(1과 같거나 더 앞선 RPC 시점에서 본 null만 인정한다. 뒤처진 노드의 null은 무시 — 대기가 아니라 응답 일관성 검사다).
 
-- 2에서 null이 아니면(슬롯과 무관하게) 위 전이표대로 처리한다.
+- 2에서 null이 아니면(슬롯과 무관하게) 위 전이표대로 처리한다(`confirmed`/`finalized` → `Landed`/`FailedOnChain`, `processed` → 처리 중).
+- **새 블록해시로 다시 서명**(새 intent·새 승인)은 `Expired` 뒤에만 할 수 있다. 높이 ≤ lvbh인 동안에는 레코드가 `Pending`이라 (클러스터, from)의 새 전송이 막히고(§13.1-1, D20) 재서명은 제공하지 않는다(`may_resign` = 높이 > lvbh).
+- **그 전에는 기다리게 하지 않는다**: 보내기 결과 화면과 보내기 화면의 진행 중 안내에 "지금 다시 전송" 버튼을 둔다. 저널에 기록한 **같은 서명 거래**를 즉시 다시 보낸다(§14.2 표). 서명이 같으므로 몇 번 보내도 한 번만 처리되어 두 번 지불될 수 없다. 루프 정지(클러스터 불일치, 종결 상태 저장 중) 중에는 보이지 않는다.
 - lvbh 자체는 서명 직전에 `h + 100 ≤ lvbh ≤ h + 300`으로 검사했다(§13.1-5).
-- RPC 하나가 1·2를 위조해 만드는 이중 지불은 spec.md §2.2 비목표다. 3·4번 조건과 두 번 관측이 그 범위를 줄인다.
-- `Expired`·`FailedOnChain` 화면의 "다시 보내기"는 같은 입력으로 1단계(§13.1)를 새로 시작한다: 새 intent id, 새 미리보기, **새 승인**. 이전 승인·intent를 재사용하지 않는다.
+- RPC 하나가 1·2를 위조해 만드는 이중 지불은 spec.md §2.2 비목표다(D32: 설정한 RPC를 신뢰한다).
+- `Expired`·`FailedOnChain` 화면의 "다시 보내기"는 같은 입력으로 1단계(§13.1)를 새로 시작한다: 새 intent id, 새 미리보기, **새 승인**. 이전 승인·intent를 재사용하지 않는다. 저널은 언제나 첫 전송 전에 기록한다(§14.2).
 
 ## 15. 클러스터 고정과 RPC
 
@@ -595,16 +594,16 @@ pub const SOL_JOURNAL_MAX_RECORDS: usize = 64;
 | 메서드 | params | 사용 | 신뢰 | CU(알케미 기준 참고) |
 |---|---|---|---|---|
 | `getGenesisHash` | `[]` | §15.1 | 결정(불일치 시 중단) | 10 |
-| `getLatestBlockhash` | `[{"commitment":"finalized"}]` → `{blockhash, lastValidBlockHeight}` | 미리보기·서명 | 블록해시는 수신자·금액을 바꿀 수 없음. lvbh는 §13.1-5 범위 검사 | 20 |
-| `getBlockHeight` | `[{"commitment":"finalized"}]` | 범위 검사(§13.1-5) | lvbh 범위만 | 20 |
-| `getEpochInfo` | `[{"commitment":"finalized"}]` → `{blockHeight, absoluteSlot, …}` | 만료 증명(§14.3-1, 높이·슬롯을 한 응답에서) | §14.3-2 슬롯 대조·3·4 시계·두 번 관측과 함께 | 참고 |
-| `getBalance` | `[addr, {"commitment":"finalized"}]` → `{value}` | 잔액·사전 검사 | 참고 | 10 |
-| `getAccountInfo` | `[addr, {"encoding":"base64","commitment":"finalized","dataSlice":{"offset":0,"length":0}}]`(받는 주소), mint·토큰 계정(파생 ATA)은 dataSlice 없이 base64(§15.4). 잔액도 이것뿐이다: `getTokenAccountsByOwner`·`jsonParsed`는 쓰지 않는다 | §12.2, §15.4, S10 토큰 잔액 | 참고(차단 방향만) | 10 |
-| `getMinimumBalanceForRentExemption` | `[0 \| 165, {"commitment":"finalized"}]` | §11 | 참고 + 범위 검사 | 10 |
+| `getLatestBlockhash` | `[{"commitment":"confirmed"}]` → `{blockhash, lastValidBlockHeight}` | 미리보기·서명 | 블록해시는 수신자·금액을 바꿀 수 없음. lvbh는 §13.1-5 범위 검사 | 20 |
+| `getBlockHeight` | `[{"commitment":"confirmed"}]` | 범위 검사(§13.1-5) | lvbh 범위만 | 20 |
+| `getEpochInfo` | `[{"commitment":"confirmed"}]` → `{blockHeight, absoluteSlot, …}` | 만료 증명(§14.3-1, 높이·슬롯을 한 응답에서) | §14.3-2 슬롯 대조와 함께 | 참고 |
+| `getBalance` | `[addr, {"commitment":"confirmed"}]` → `{value}` | 잔액·사전 검사 | 참고 | 10 |
+| `getAccountInfo` | `[addr, {"encoding":"base64","commitment":"confirmed","dataSlice":{"offset":0,"length":0}}]`(받는 주소), mint·토큰 계정(파생 ATA)은 dataSlice 없이 base64(§15.4). 잔액도 이것뿐이다: `getTokenAccountsByOwner`·`jsonParsed`는 쓰지 않는다 | §12.2, §15.4, S10 토큰 잔액 | 참고(차단 방향만) | 10 |
+| `getMinimumBalanceForRentExemption` | `[0 \| 165, {"commitment":"confirmed"}]` | §11 | 참고 + 범위 검사 | 10 |
 | `getRecentPrioritizationFees` | `[[writable 주소들]]`(SOL: from,to / SPL: from,from_ata,to_ata) | §10 | 참고 + 상한 | 10 |
-| `getFeeForMessage` | `[base64(message), {"commitment":"finalized"}]` → `{value: u64\|null}` | §10 교차 확인 | 참고(불일치는 차단 방향) | 20 |
-| `simulateTransaction` | `[base64(tx), {"encoding":"base64","sigVerify":false,"replaceRecentBlockhash":true,"commitment":"finalized"}]` | 참고 표시 | 참고(D27) | 20 |
-| `sendTransaction` | `[base64(tx), {"encoding":"base64","skipPreflight":false,"preflightCommitment":"finalized","maxRetries":0}]` → 서명 base58 | 브로드캐스트 | 반환 서명은 로컬과 대조 | 20 |
+| `getFeeForMessage` | `[base64(message), {"commitment":"confirmed"}]` → `{value: u64\|null}` | §10 교차 확인 | 참고(불일치는 차단 방향) | 20 |
+| `simulateTransaction` | `[base64(tx), {"encoding":"base64","sigVerify":false,"replaceRecentBlockhash":true,"commitment":"confirmed"}]` | 참고 표시 | 참고(D27) | 20 |
+| `sendTransaction` | `[base64(tx), {"encoding":"base64","skipPreflight":false,"preflightCommitment":"confirmed","maxRetries":0}]` → 서명 base58 | 브로드캐스트 | 반환 서명은 로컬과 대조 | 20 |
 | `getSignatureStatuses` | `[[sig_b58], {"searchTransactionHistory":bool}]` → `{context:{slot}, value:[null \| {slot, confirmations, err, confirmationStatus}]}` | §14 | `Landed` 판정 근거(RPC 의존, spec.md §2.2). 이력 조회는 `context.slot`도 읽는다(§14.3-2, 없으면 응답 오류) | 20 |
 
 - 메서드·params는 Solana 표준 JSON-RPC이며 공급자와 무관하다. 호출 비용 단위는 공급자마다 다르다(알케미 CU, QuickNode 크레딧). 위 CU 열은 알케미 기준 참고값일 뿐이고, QuickNode 메서드별 크레딧은 이 문서에 고정하지 않는다(구현 시 QuickNode 요금 문서·대시보드로 확인). 설계는 호출 비용에 의존하지 않는다.
@@ -620,7 +619,7 @@ pub const SOL_JOURNAL_MAX_RECORDS: usize = 64;
 
 ### 15.4 SPL 계정 데이터(v1.1, 참고 + 교차 확인)
 
-- 조회: `getAccountInfo(addr, {"encoding":"base64","commitment":"finalized"})`(dataSlice 없음, `jsonParsed` 쓰지 않음). `data`는 `["<base64>", "base64"]`여야 하고 엄격 base64(RFC 4648 패딩, 정규 비트, 4,096바이트 상한)로 디코딩한다(yw-app `sol::rpc::account_data`). 어긋나면 응답 오류(`Malformed`).
+- 조회: `getAccountInfo(addr, {"encoding":"base64","commitment":"confirmed"})`(dataSlice 없음, `jsonParsed` 쓰지 않음). `data`는 `["<base64>", "base64"]`여야 하고 엄격 base64(RFC 4648 패딩, 정규 비트, 4,096바이트 상한)로 디코딩한다(yw-app `sol::rpc::account_data`). 어긋나면 응답 오류(`Malformed`).
 - mint(82바이트, yw-core `sol::token::parse_mint`·`check_mint`): owner = 고정 토큰 프로그램, `data.len == 82`, `COption` 태그 0/1, `data[44] == 고정 decimals`, `data[45] == 1`(initialized). 없음·불일치 → `MintMismatch` → `RpcAnomaly`(승인 불가). 메시지의 decimals는 언제나 허용 목록 값이다(RPC가 9라고 해도 6으로 서명하지 않고 막을 뿐).
 - 토큰 계정(165바이트, `parse_token_account`): `mint = [0..32]`, `owner = [32..64]`, `amount = u64 LE [64..72]`, delegate `COption` `[72..108]`, `state = [108]`(0 미초기화, 1 정상, 2 동결, 그 밖 거부), is_native `COption<u64>` `[109..121]`, close authority `COption` `[129..165]`. `classify_holding(entry, wallet, account) -> TokenHolding`: null → `Missing`, 프로그램 = 고정 토큰 프로그램·165바이트·mint 일치·owner = wallet·is_native 없음·state 1 → `Active(amount)`, state 2 → `Frozen(amount)`, 그 밖 → `Invalid`.
 - 미리보기: `from_ata` `Missing` → `NoTokenAccount`(§11), `Frozen` → `TokenAccountFrozen`, `Invalid` → `RpcAnomaly`. `to_ata` `Missing` → 생성(rent165), `Active` → 있음, `Frozen`·`Invalid` → `RecipientTokenAccountUnusable`.
@@ -632,15 +631,15 @@ M7 착수 때 공식 문서로 다시 확인하고, 바뀌었으면 해당 상�
 
 | 사실 (2026-10 기준) | 이 문서의 영향 |
 |---|---|
-| SIMD-0525: 슬롯 200 ms(2026-10-09 완전 적용). 최근 블록해시 유효 150블록 ≈ 30초 | 승인 후 블록해시 조회·즉시 서명(§13), `SOL_EXPIRY_MIN_WALL_SECS` |
-| Alpenglow(2026-10-21): `confirmed`와 `finalized`가 같고 약 150 ms. `confirmed`는 이후 제거 예정, `confirmations`는 최종 전 0·최종 후 null | 모든 조회 `finalized`, `confirmationStatus`만 사용 |
+| SIMD-0525: 슬롯 200 ms(2026-10-09 완전 적용). 최근 블록해시 유효 150블록 ≈ 30초 | 승인 후 블록해시 조회·즉시 서명(§13). 만료는 높이로만 판정(§14.3, 시계 하한 없음) |
+| Alpenglow(2026-10-21): `confirmed`와 `finalized`가 같고 약 150 ms. `confirmed`는 이후 제거 예정, `confirmations`는 최종 전 0·최종 후 null | 모든 조회 `confirmed`(D32: `confirmed`가 최종). `confirmationStatus`가 `confirmed`·`finalized`면 종결. `confirmed`가 제거되면 같은 값인 `finalized`로 바꾼다 |
 | SIMD-0437: rent 단계적 인하(현재 5,080 lamports/byte, 2026-11 이후 696 예상) | rent 매번 조회(§11), 범위 상한만 고정 |
 | durable nonce 폐지 진행(대체안 확정 후 약 6개월) | 사용하지 않음 |
 | v1 트랜잭션 형식(0x81, 4,096바이트; SIMD-0296/0385) 2026-09-15 활성화. legacy·v0는 유지 | legacy만 사용, 파서가 0x80·0x81 거부 |
 | SIMD-0553(기본 수수료 공식 변경) 거버넌스 대기 | `SOL_BASE_FEE_LAMPORTS_PER_SIG`, `getFeeForMessage` 교차 확인(§10) |
 | 기본 수수료 5,000 lamports/서명, 우선 수수료 = 요청 CU 한도 × 가격 | §10 |
 | 템플릿 CU 사용량(System·ComputeBudget 명령 각 150 CU 예상; ATA 생성은 받는 ATA bump에 따라 실패한 bump마다 +1,500 CU) | §10 측정 절차 |
-| 설정한 공급자(현재 QuickNode; 공급자·엔드포인트를 바꾸면 그 공급자로 다시 확인, mainnet·devnet 각각): `getSignatureStatuses`의 `searchTransactionHistory:true` 지원 범위, `getFeeForMessage`에 우선 수수료 포함 여부, `sendTransaction`의 `maxRetries:0` 준수, `getAccountInfo` dataSlice 지원. QuickNode 템플릿 서브도메인(`solana-mainnet`·`solana-devnet`, §15.1)은 대시보드와 대조. **2026-10-27 실측(`docs/acceptance/m7-live-20261027.md`)**: 이력 검색 동작(mainnet 약 5일·devnet 약 31일 전 서명이 `true`에서만 finalized), `getFeeForMessage`는 우선 수수료 포함(600 CU × 1,000,000 µL → 5,600), dataSlice 0/0 동작, rent0 650,240·rent165 1,488,440(5,080 lamports/byte 계열). `maxRetries:0`은 전송 없이 확인할 수 없어 M7-4 devnet E2E에서 본다. **2026-10-28 v1.1 실측(`docs/acceptance/m7-spl-20261028.md`)**: rent165 1,488,440(양 클러스터), T_SPL `getFeeForMessage` 우선 수수료 포함(60,000 CU × 1,000 µL → 5,060), base64 `getAccountInfo`로 mint·ATA 데이터 반환, T_SPL 시뮬레이션 CU는 위 §10 bump 모델과 일치 | 실패 시: 이력 검색이 안 되면 §14.3-2를 `searchTransactionHistory:false`로 하고 3번 조건을 600초로 늘리며, 사용자가 탐색기에서 미처리를 확인했다는 체크를 추가로 요구한다. 우선 수수료 미포함이면 §10 비교를 `rpc_fee + priority == max_fee`로 바꾼다 |
+| 설정한 공급자(현재 QuickNode; 공급자·엔드포인트를 바꾸면 그 공급자로 다시 확인, mainnet·devnet 각각): `getSignatureStatuses`의 `searchTransactionHistory:true` 지원 범위, `getFeeForMessage`에 우선 수수료 포함 여부, `sendTransaction`의 `maxRetries:0` 준수, `getAccountInfo` dataSlice 지원. QuickNode 템플릿 서브도메인(`solana-mainnet`·`solana-devnet`, §15.1)은 대시보드와 대조. **2026-10-27 실측(`docs/acceptance/m7-live-20261027.md`)**: 이력 검색 동작(mainnet 약 5일·devnet 약 31일 전 서명이 `true`에서만 finalized), `getFeeForMessage`는 우선 수수료 포함(600 CU × 1,000,000 µL → 5,600), dataSlice 0/0 동작, rent0 650,240·rent165 1,488,440(5,080 lamports/byte 계열). `maxRetries:0`은 전송 없이 확인할 수 없어 M7-4 devnet E2E에서 본다. **2026-10-28 v1.1 실측(`docs/acceptance/m7-spl-20261028.md`)**: rent165 1,488,440(양 클러스터), T_SPL `getFeeForMessage` 우선 수수료 포함(60,000 CU × 1,000 µL → 5,060), base64 `getAccountInfo`로 mint·ATA 데이터 반환, T_SPL 시뮬레이션 CU는 위 §10 bump 모델과 일치 | 실패 시: 이력 검색이 안 되면 §14.3-2를 `searchTransactionHistory:false`로 하고, 사용자가 탐색기에서 미처리를 확인했다는 체크를 추가로 요구한다(시계 대기는 두지 않는다, D32). 우선 수수료 미포함이면 §10 비교를 `rpc_fee + priority == max_fee`로 바꾼다 |
 
 ## 17. 테스트 벡터와 수락 테스트
 
@@ -709,7 +708,7 @@ SHA-256(tx 267B)  7ecb80478f954ea1a3625bf0ee1776ff0991c3f8e6ceb33c6f7b198f3929f7
 
 - 파서 거부: 명령 추가·삭제·순서 변경, 프로그램 ID 변경, ComputeBudget 중복, header 값 변경, 키 중복, 그룹 정렬 위반, 0x80·0x81 접두, 서명 수 0·2, 남는 바이트, amount 0, cu_limit 0·1_400_001, 허용 목록 밖 mint, decimals 불일치, ATA 불일치, 1바이트 변조 전수(T_SOL 202바이트 각 비트 반전 → 거부되거나 다른 core로 파싱되어 동일성 검사 실패). T_SPL(v1.1): 위 항목 + ATA `Create`(data `00`)·TransferChecked 대신 Transfer(태그 3)·계정 목록 어긋남(payer·owner ≠ 0, 목적지 ≠ 생성 ATA, mint 불일치, System·Token 자리)·Token-2022 프로그램·쓰기 그룹/읽기 그룹 순서·역할 바꿈·곡선 밖·small-order 받는 지갑(`RecipientOffCurve`)·다른 클러스터의 mint·자기 자신(키 중복), 372바이트 각 비트 반전.
 - 재인코딩 동일성: 승인한 core와 다른 core → `EncodingMismatch`.
-- **이중 서명 방지**(M7 완료 조건): 가짜 RPC로 ① 상태 null·높이 ≤ lvbh가 계속되면 재서명 없음, 같은 바이트만 재전송 ② 높이 > lvbh·이력 null이지만 경과 < 90초면 `Pending` 유지(벽시계가 10분을 말해도 단조 시계 90초 전이면 유지, 이력 `context.slot`이 높이 응답의 슬롯보다 뒤면 계속 유지) ③ 네 조건을 만족한 높이 라운드가 연속 2번이면 `Expired`(한 번으로는 안 됨), 재전송은 새 intent·새 승인 없이는 불가 ④ 같은 승인 두 번 사용 불가(`Approved` 복제 불가 + 두 번째 `consume` 오류), `consumed_at_ms` + 20 s 초과 시 서명 거부 ⑤ 같은 intent_hash 저널 레코드가 있으면 `AlreadySigned` ⑥ 이력 검색에서 non-null(지연 착지)이면 `Landed`/`FailedOnChain` ⑦ preflight 결정적 오류 후 재전송 중지·`Pending` 유지 ⑧ 전송 응답 서명 불일치 → `RpcAnomaly`, 상태 유지.
+- **이중 서명 방지**(M7 완료 조건): 가짜 RPC로 ① 상태 null·높이 ≤ lvbh가 계속되면(10분이 지나도) `Pending` 유지·재서명 없음, 같은 바이트만 재전송 ② 이력 `context.slot`이 높이 응답의 슬롯보다 뒤면 `Pending` 유지 ③ `confirmed` 높이 > lvbh·이력 null인 라운드 **한 번**이면 서명 1초 뒤라도(벽시계가 서명 시각보다 뒤여도) 바로 `Expired`, 재전송은 새 intent·새 승인 없이는 불가 ③′ 만료 전 "지금 다시 전송"(`LoopState::send_now`)은 주기를 기다리지 않고 같은 바이트·같은 파라미터로 1회 전송(결정적 preflight 오류로 멈춘 뒤에도) ④ 같은 승인 두 번 사용 불가(`Approved` 복제 불가 + 두 번째 `consume` 오류), `consumed_at_ms` + 20 s 초과 시 서명 거부 ⑤ 같은 intent_hash 저널 레코드가 있으면 `AlreadySigned` ⑥ 이력 검색에서 non-null(지연 착지)이면 `Landed`/`FailedOnChain`, 상태 `confirmed`(1 확인)도 `Landed`, `processed`는 처리 중 ⑦ preflight 결정적 오류 후 재전송 중지·`Pending` 유지 ⑧ 전송 응답 서명 불일치 → `RpcAnomaly`, 상태 유지.
 - 저널: 컨테이너 entry(`kind = 0x02`) 왕복, body = 89 + tx_len(T_SOL 356 B·T_SPL 526 B), `body_len ≠ 89 + tx_len`·`record_kind ≠ 0x02`·알 수 없는 `state`·변조된 tx 바이트·서명 → 본문 오류(SOL 보내기만 꺼짐, 바이트 보존, 전송 안 함), SOL 레코드 64개 상한 → 종결 정리 후에도 넘으면 `JournalError::Full`·서명 0회, 저널 쓰기 실패 주입 → 전송 0회. `ActivityEntry` 변환: §14.1 표의 각 필드·상태 3종.
 - 승인 만료: 표시 후 120 s → `Expired`로 닫히고 보내기 화면 입력 유지, 재검토는 새 intent id·새 승인(만료된 `ApprovalId`의 `consume` 실패).
 - 수수료·rent: 경계값(rent0 정확히, `r = rent0 − 1`, 보내기 최대 r=0), `rpc_fee` 큼/작음/같음 × 일반/보내기 최대, CU 가격 클램프, u128 중간값.
@@ -724,7 +723,7 @@ SHA-256(tx 267B)  7ecb80478f954ea1a3625bf0ee1776ff0991c3f8e6ceb33c6f7b198f3929f7
 
 ### 17.6 E2E(devnet, 체크리스트 1회)
 
-1. 별도 계정 인덱스로 devnet 계정 준비(외부 faucet). 2. 새 주소에 rent0 미만 → 차단 확인, rent0 이상 → `Landed`. 3. 보내기 최대 → 보낸 계정 잔액 정확히 0. 4. 저널 기록 직후 앱 강제 종료(디버그 빌드 장애 주입 지점) → 재시작·잠금 해제 → 같은 서명으로 1회만 착지. 5. 서명 직후 네트워크 차단 → 90초 이상 후 복구 → `Expired` 또는 `Landed`, 재서명 없음. 6. 잘못된 클러스터(devnet 선택 + `solana:devnet` 엔드포인트(`rpc:solana:devnet`)에 mainnet URL) → 중단. 7. 복구 스캔: abandon 니모닉 시험 vault에서 §17.1 주소 표시 확인. 8. (v1.1) devnet USDC: 새 수신자(ATA 생성)·기존 ATA·토큰 보내기 최대·허용 목록 밖 토큰 숨김·곡선 밖 받는 주소 차단(수동 체크리스트 `docs/acceptance/m7-spl-20261028.md` M7-S). 9. CU 한도 측정(§10) 결과를 상수에 반영(T_SOL 2026-10-27, T_SPL 2026-10-28 완료).
+1. 별도 계정 인덱스로 devnet 계정 준비(외부 faucet). 2. 새 주소에 rent0 미만 → 차단 확인, rent0 이상 → `Landed`. 3. 보내기 최대 → 보낸 계정 잔액 정확히 0. 4. 저널 기록 직후 앱 강제 종료(디버그 빌드 장애 주입 지점) → 재시작·잠금 해제 → 같은 서명으로 1회만 착지. 5. 서명 직후 네트워크 차단 → 복구(대기 시간 없음) → `Expired`(RPC 높이 > lvbh이고 이력에 없으면 바로) 또는 `Landed`, 그 전 재서명 없음. 만료 전에는 "지금 다시 전송"이 같은 서명 거래만 다시 보낸다. 6. 잘못된 클러스터(devnet 선택 + `solana:devnet` 엔드포인트(`rpc:solana:devnet`)에 mainnet URL) → 중단. 7. 복구 스캔: abandon 니모닉 시험 vault에서 §17.1 주소 표시 확인. 8. (v1.1) devnet USDC: 새 수신자(ATA 생성)·기존 ATA·토큰 보내기 최대·허용 목록 밖 토큰 숨김·곡선 밖 받는 주소 차단(수동 체크리스트 `docs/acceptance/m7-spl-20261028.md` M7-S). 9. CU 한도 측정(§10) 결과를 상수에 반영(T_SOL 2026-10-27, T_SPL 2026-10-28 완료).
 
 ## 18. 작업량 (집중 작업일, 테스트 포함)
 

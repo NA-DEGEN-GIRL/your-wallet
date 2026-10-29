@@ -31,7 +31,7 @@ use yw_core::btc::{
     parse_address,
 };
 use yw_core::journal::btc::{
-    BTC_TRACK_CONFIRMATIONS, BtcRecord, BtcTxState, TrackMode, abandoned_conflicts, bump_target,
+    BTC_FINAL_CONFIRMATIONS, BtcRecord, BtcTxState, TrackMode, abandoned_conflicts, bump_target,
     check_can_send, current_record, in_flight, in_flight_outpoints, in_flight_replacements,
     of_account, track_mode,
 };
@@ -863,7 +863,7 @@ pub struct BtcActivityView {
     pub amount: Option<Sats>,
     /// Recipient address.
     pub counterparty: String,
-    /// Status text (`확인 대기` / `확인 n/6` / `확정(6+)` + "(서버 기준)", …).
+    /// Status text (`확인 대기` / `확정` + "(서버 기준)", …).
     pub status: String,
     /// Time (Unix ms).
     pub time_unix_ms: u64,
@@ -1064,15 +1064,13 @@ pub fn record_status(record: &BtcRecord, tip_height: u32) -> String {
     }
 }
 
-/// `확인 대기` / `확인 n/6` / `확정(6+)` with "(서버 기준)" (spec/08 §12.2-4).
+/// `확인 대기` / `확정` with "(서버 기준)" (spec/08 §12.2-4): one confirmation is final.
 #[must_use]
 pub fn confirmations_text(confirmations: u32) -> String {
-    if confirmations == 0 {
-        format!("확인 대기 {SERVER_BASED}")
-    } else if confirmations >= BTC_TRACK_CONFIRMATIONS {
-        format!("확정(6+) {SERVER_BASED}")
+    if confirmations >= BTC_FINAL_CONFIRMATIONS {
+        format!("확정 {SERVER_BASED}")
     } else {
-        format!("확인 {confirmations}/6 {SERVER_BASED}")
+        format!("확인 대기 {SERVER_BASED}")
     }
 }
 
@@ -1141,7 +1139,7 @@ fn look_alike_note(ctx: &BtcCtx<'_>, address: &str) -> Option<String> {
 
 fn activity_status(status: &str) -> String {
     match status {
-        "succeeded" => format!("확정(6+) {SERVER_BASED}"),
+        "succeeded" => format!("확정 {SERVER_BASED}"),
         "rejected" => "거부됨".to_owned(),
         "replaced" => "교체됨".to_owned(),
         "conflicted" => "충돌(다른 거래가 확정됨)".to_owned(),

@@ -2,7 +2,8 @@
 //! JSON → core-type conversions. Integers are read with `Number::as_u64` (no `f64`); unknown
 //! fields are ignored; missing or mistyped required fields are `Malformed` (`RpcAnomaly`). RPC
 //! strings (`message`, logs) are never read or shown: errors are classified from their JSON
-//! structure only (spec/07 §15.3). Every request uses `"commitment":"finalized"` and base64.
+//! structure only (spec/07 §15.3). Every request uses `"commitment":"confirmed"` (the configured RPC is trusted: confirmed
+//! is final, spec.md §2.2) and base64.
 
 use yw_core::sol::broadcast::{ChainView, HistoryView, SendResult, SigStatus, err};
 use yw_core::sol::display::SimSummary;
@@ -138,8 +139,8 @@ pub fn base64(bytes: &[u8]) -> String {
     out
 }
 
-fn finalized() -> Value {
-    json_object(vec![("commitment", json_str("finalized"))])
+fn confirmed() -> Value {
+    json_object(vec![("commitment", json_str("confirmed"))])
 }
 
 fn u64_of(value: &Value) -> Result<u64, RpcFailure> {
@@ -173,7 +174,7 @@ pub fn genesis_hash(client: &RpcClient<'_>, url: &HttpsUrl) -> Result<[u8; 32], 
     address_of(&result).map(SolAddress::to_bytes)
 }
 
-/// `getBalance(addr, finalized)` → lamports.
+/// `getBalance(addr, confirmed)` → lamports.
 ///
 /// # Errors
 ///
@@ -186,7 +187,7 @@ pub fn balance(
     let result = client.call(
         url,
         "getBalance",
-        Value::Array(vec![json_str(&address.to_base58()), finalized()]),
+        Value::Array(vec![json_str(&address.to_base58()), confirmed()]),
     )?;
     u64_of(context_value(&result)?)
 }
@@ -202,7 +203,7 @@ pub struct AccountInfo {
     pub lamports: u64,
 }
 
-/// `getAccountInfo(addr, {base64, finalized, dataSlice 0/0})` → `None` for a missing account.
+/// `getAccountInfo(addr, {base64, confirmed, dataSlice 0/0})` → `None` for a missing account.
 ///
 /// # Errors
 ///
@@ -214,7 +215,7 @@ pub fn account_info(
 ) -> Result<Option<AccountInfo>, RpcFailure> {
     let config = json_object(vec![
         ("encoding", json_str("base64")),
-        ("commitment", json_str("finalized")),
+        ("commitment", json_str("confirmed")),
         (
             "dataSlice",
             json_object(vec![("offset", json_u64(0)), ("length", json_u64(0))]),
@@ -265,7 +266,7 @@ impl AccountData {
 /// longer is not an SPL account of the allowlist and is refused as `Malformed`.
 const MAX_ACCOUNT_DATA: usize = 4_096;
 
-/// `getAccountInfo(addr, {base64, finalized})` with the data (mint and token accounts,
+/// `getAccountInfo(addr, {base64, confirmed})` with the data (mint and token accounts,
 /// spec/07 §15.2, §15.4) → `None` for a missing account. The data must be `[<base64>, "base64"]`.
 ///
 /// # Errors
@@ -278,7 +279,7 @@ pub fn account_data(
 ) -> Result<Option<AccountData>, RpcFailure> {
     let config = json_object(vec![
         ("encoding", json_str("base64")),
-        ("commitment", json_str("finalized")),
+        ("commitment", json_str("confirmed")),
     ]);
     let result = client.call(
         url,
@@ -310,7 +311,7 @@ pub fn account_data(
     }))
 }
 
-/// `getMinimumBalanceForRentExemption(size, finalized)`.
+/// `getMinimumBalanceForRentExemption(size, confirmed)`.
 ///
 /// # Errors
 ///
@@ -319,7 +320,7 @@ pub fn minimum_rent(client: &RpcClient<'_>, url: &HttpsUrl, size: u64) -> Result
     let result = client.call(
         url,
         "getMinimumBalanceForRentExemption",
-        Value::Array(vec![json_u64(size), finalized()]),
+        Value::Array(vec![json_u64(size), confirmed()]),
     )?;
     u64_of(&result)
 }
@@ -357,7 +358,7 @@ pub fn prioritization_fees(
         .collect()
 }
 
-/// `getLatestBlockhash(finalized)` → `(blockhash, lastValidBlockHeight)`.
+/// `getLatestBlockhash(confirmed)` → `(blockhash, lastValidBlockHeight)`.
 ///
 /// # Errors
 ///
@@ -366,7 +367,7 @@ pub fn latest_blockhash(
     client: &RpcClient<'_>,
     url: &HttpsUrl,
 ) -> Result<([u8; 32], u64), RpcFailure> {
-    let result = client.call(url, "getLatestBlockhash", Value::Array(vec![finalized()]))?;
+    let result = client.call(url, "getLatestBlockhash", Value::Array(vec![confirmed()]))?;
     let value = context_value(&result)?
         .as_object()
         .ok_or(RpcFailure::Malformed)?;
@@ -379,24 +380,24 @@ pub fn latest_blockhash(
     Ok((blockhash.to_bytes(), height))
 }
 
-/// `getBlockHeight(finalized)`.
+/// `getBlockHeight(confirmed)`.
 ///
 /// # Errors
 ///
 /// [`RpcFailure`].
 pub fn block_height(client: &RpcClient<'_>, url: &HttpsUrl) -> Result<u64, RpcFailure> {
-    let result = client.call(url, "getBlockHeight", Value::Array(vec![finalized()]))?;
+    let result = client.call(url, "getBlockHeight", Value::Array(vec![confirmed()]))?;
     u64_of(&result)
 }
 
-/// `getEpochInfo(finalized)` → `blockHeight` and `absoluteSlot` of the same answer (one RPC view
+/// `getEpochInfo(confirmed)` → `blockHeight` and `absoluteSlot` of the same answer (one RPC view
 /// for the expiry proof, spec/07 §14.3).
 ///
 /// # Errors
 ///
 /// [`RpcFailure`].
 pub fn epoch_view(client: &RpcClient<'_>, url: &HttpsUrl) -> Result<ChainView, RpcFailure> {
-    let result = client.call(url, "getEpochInfo", Value::Array(vec![finalized()]))?;
+    let result = client.call(url, "getEpochInfo", Value::Array(vec![confirmed()]))?;
     let object = result.as_object().ok_or(RpcFailure::Malformed)?;
     Ok(ChainView {
         block_height: u64_of(object.get("blockHeight").ok_or(RpcFailure::Malformed)?)?,
@@ -404,7 +405,7 @@ pub fn epoch_view(client: &RpcClient<'_>, url: &HttpsUrl) -> Result<ChainView, R
     })
 }
 
-/// `getFeeForMessage(base64(message), finalized)` → `None` for `null`.
+/// `getFeeForMessage(base64(message), confirmed)` → `None` for `null`.
 ///
 /// # Errors
 ///
@@ -417,7 +418,7 @@ pub fn fee_for_message(
     let result = client.call(
         url,
         "getFeeForMessage",
-        Value::Array(vec![json_str(&base64(message)), finalized()]),
+        Value::Array(vec![json_str(&base64(message)), confirmed()]),
     )?;
     let value = context_value(&result)?;
     if value.is_null() {
@@ -476,7 +477,7 @@ pub fn simulate(client: &RpcClient<'_>, url: &HttpsUrl, tx: &[u8]) -> SimSummary
         ("encoding", json_str("base64")),
         ("sigVerify", Value::Bool(false)),
         ("replaceRecentBlockhash", Value::Bool(true)),
-        ("commitment", json_str("finalized")),
+        ("commitment", json_str("confirmed")),
     ]);
     let Ok(result) = client.call(
         url,
@@ -501,7 +502,7 @@ pub fn simulate(client: &RpcClient<'_>, url: &HttpsUrl, tx: &[u8]) -> SimSummary
     }
 }
 
-/// `sendTransaction(base64(tx), {skipPreflight:false, preflightCommitment:finalized,
+/// `sendTransaction(base64(tx), {skipPreflight:false, preflightCommitment:confirmed,
 /// maxRetries:0})`, classified for the broadcast loop (spec/07 §14.2): a returned signature is
 /// compared with the local one; preflight errors with a deterministic structure (§15.3 codes 1–6)
 /// stop re-sending; everything else is transient.
@@ -515,7 +516,7 @@ pub fn send_transaction(
     let config = json_object(vec![
         ("encoding", json_str("base64")),
         ("skipPreflight", Value::Bool(false)),
-        ("preflightCommitment", json_str("finalized")),
+        ("preflightCommitment", json_str("confirmed")),
         ("maxRetries", json_u64(0)),
     ]);
     match client.call_detailed(
@@ -629,14 +630,14 @@ fn status_of(result: &Value, programs: &[IxProgram]) -> Result<SigStatus, RpcFai
         .and_then(Value::as_str)
         .ok_or(RpcFailure::Malformed)?;
     match status {
-        "finalized" => {
+        "confirmed" | "finalized" => {
             let error = object.get("err").ok_or(RpcFailure::Malformed)?;
-            Ok(SigStatus::Finalized {
+            Ok(SigStatus::Confirmed {
                 slot,
                 err: (!error.is_null()).then(|| classify_tx_error(error, programs)),
             })
         }
-        "processed" | "confirmed" => Ok(SigStatus::Processing),
+        "processed" => Ok(SigStatus::Processing),
         _ => Err(RpcFailure::Malformed),
     }
 }

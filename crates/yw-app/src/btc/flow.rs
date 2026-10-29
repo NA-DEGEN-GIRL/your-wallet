@@ -725,8 +725,8 @@ pub struct TrackJob {
     pub txid: Txid,
     /// `getmempoolentry` usable (false once the endpoint answered `-32601`, spec/08 §4.5 C2).
     pub mempool_entry: bool,
-    /// Step 2 only (yw-core `TrackMode::ConfirmationOnly`: `Confirmed` below 6, `Replaced`,
-    /// `Abandoned` within 30 days).
+    /// Step 2 only (yw-core `TrackMode::ConfirmationOnly`: `Replaced` until its replacement
+    /// confirms, `Abandoned` within 30 days).
     pub indexer_only: bool,
     /// In-flight replacements of `txid` (yw-core `in_flight_replacements`; usually empty).
     pub replacements: Vec<Txid>,

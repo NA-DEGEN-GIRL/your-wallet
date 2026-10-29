@@ -1,25 +1,17 @@
 //! Broadcast-loop decisions (spec/07 §14.2–§14.3), pure: yw-app makes the RPC calls of one
-//! round and passes what it observed and its clock readings (elapsed values are inputs; nothing
-//! here reads a clock). The loop only ever re-sends the same signed bytes; there is no re-signing
-//! anywhere in it. An expiry round needs, in this order, one `getEpochInfo` view whose finalized
+//! round and passes what it observed and its clock readings (nothing here reads a clock). The
+//! loop only ever re-sends the same signed bytes; there is no re-signing anywhere in it. The
+//! configured RPC is trusted (spec.md §2.2): a `confirmed` (or `finalized`) status is final, and
+//! one round proves expiry, in this order: a `getEpochInfo({commitment:"confirmed"})` view whose
 //! block height is above `lastValidBlockHeight`, then a `null` history status answered at a
-//! `context.slot` not behind that view's slot, and at least [`SOL_EXPIRY_MIN_WALL_SECS`] of both
-//! the local wall clock since signing and the monotonic clock of this session. `Expired` needs
-//! [`SOL_EXPIRY_ROUNDS`] such rounds in a row (separate RPC observations).
+//! `context.slot` not behind that view's slot. There is no wall-clock or monotonic minimum and no
+//! second round. Before that point the user may ask for an immediate re-send of the same bytes
+//! ([`LoopState::send_now`]): one signature can land at most once.
 
 /// Status poll period.
 pub const SOL_POLL_INTERVAL_MS: u64 = 1_000;
 /// Re-send / block-height period.
 pub const SOL_REBROADCAST_INTERVAL_MS: u64 = 2_500;
-/// Local wall-clock minimum before `Expired`; the monotonic clock must show the same minimum.
-/// A floor under the RPC's block-height proof: a blockhash is valid for 150 blocks, about 30 s
-/// at the 200 ms slots spec/07 §18 records (SIMD-0525), so 90 s is 3× that lifetime; at ~400 ms
-/// slots the lifetime is about 60 s and 90 s is only 1.5×. Kept at 90 s (3 × 60 s = 180 s
-/// would double the wait before a re-send is offered); the height proof (`block_height >
-/// lastValidBlockHeight`, two rounds) remains the primary condition.
-pub const SOL_EXPIRY_MIN_WALL_SECS: u64 = 90;
-/// Consecutive height rounds that must each satisfy the whole expiry proof.
-pub const SOL_EXPIRY_ROUNDS: u8 = 2;
 /// "네트워크/RPC 확인 필요" notice after this long.
 pub const SOL_PENDING_NOTICE_SECS: u64 = 120;
 
@@ -72,10 +64,11 @@ pub mod err {
 pub enum SigStatus {
     /// `null`.
     NotFound,
-    /// `processed` / `confirmed`: not success yet.
+    /// `processed`: not final yet.
     Processing,
-    /// `finalized` with `err` classified (`None` = `err: null`).
-    Finalized {
+    /// `confirmed` or `finalized` (final for this wallet) with `err` classified (`None` =
+    /// `err: null`).
+    Confirmed {
         /// Slot.
         slot: u64,
         /// spec/07 §15.3 code.
@@ -117,11 +110,20 @@ pub struct LoopState {
     pub anomaly: bool,
     /// Last deterministic preflight error code shown.
     pub preflight_err: Option<u16>,
-    /// Last status was `processed`/`confirmed`.
+    /// Last status was `processed`.
     pub processing: bool,
-    /// Height rounds in a row that satisfied the whole expiry proof (reset by any other height
-    /// round or a non-`null` status).
-    pub expiry_rounds: u8,
+}
+
+impl LoopState {
+    /// The user asked to re-send the same signed bytes now (spec/07 §14.3 "지금 다시 전송"):
+    /// the next round sends before its status lookup, like the first round of a session, and a
+    /// re-send stop after a deterministic preflight error is lifted. The bytes and signature are
+    /// the journaled ones, so this can never pay twice.
+    pub const fn send_now(&mut self) {
+        self.last_round_ms = None;
+        self.stop_rebroadcast = false;
+        self.preflight_err = None;
+    }
 }
 
 /// What the app should do this round after the status poll.
@@ -129,7 +131,7 @@ pub struct LoopState {
 pub struct RoundPlan {
     /// Re-send the same bytes (`skipPreflight:false`, `maxRetries:0`).
     pub send: bool,
-    /// Ask `getEpochInfo(finalized)` (block height and slot of one view).
+    /// Ask `getEpochInfo(confirmed)` (block height and slot of one view).
     pub height: bool,
 }
 
@@ -146,7 +148,7 @@ pub fn plan(state: &LoopState, status: SigStatus, now_ms: u64) -> RoundPlan {
     }
 }
 
-/// One `getEpochInfo({commitment:"finalized"})` answer: the finalized block height and slot of
+/// One `getEpochInfo({commitment:"confirmed"})` answer: the confirmed block height and slot of
 /// the same RPC view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChainView {
@@ -166,13 +168,21 @@ pub struct HistoryView {
     pub context_slot: u64,
 }
 
-/// Whether the history lookup is needed (finalized height above `lastValidBlockHeight`).
+/// Whether the history lookup is needed (confirmed height above `lastValidBlockHeight`).
 #[must_use]
 pub const fn wants_history(tx: &PendingTx, chain: Option<ChainView>) -> bool {
     match chain {
         Some(chain) => chain.block_height > tx.last_valid_block_height,
         None => false,
     }
+}
+
+/// Whether a new signature with a new blockhash may replace `tx` (spec/07 §14.3): only when
+/// the RPC's confirmed block height is above `lastValidBlockHeight`. At or below it the old
+/// transaction can still land, so only the same bytes may be re-sent.
+#[must_use]
+pub const fn may_resign(tx: &PendingTx, chain: ChainView) -> bool {
+    chain.block_height > tx.last_valid_block_height
 }
 
 /// Everything observed in one round.
@@ -182,7 +192,7 @@ pub struct Observation {
     pub status: SigStatus,
     /// `sendTransaction` result when sent this round.
     pub send: Option<SendResult>,
-    /// `getEpochInfo(finalized)` when asked and answered.
+    /// `getEpochInfo(confirmed)` when asked and answered.
     pub chain: Option<ChainView>,
     /// The history lookup, when asked and answered.
     pub history: Option<HistoryView>,
@@ -193,11 +203,9 @@ pub struct Observation {
 pub struct RoundTimes {
     /// Monotonic ms now (the re-send period).
     pub now_ms: u64,
-    /// Wall-clock Unix ms now (compared with the journal's `signed_at_ms`, spec.md §2.2).
+    /// Wall-clock Unix ms now (only for the "네트워크/RPC 확인 필요" notice; never part of the
+    /// expiry proof).
     pub now_unix_ms: u64,
-    /// Monotonic ms since the record was signed in this session, or since its loop resumed
-    /// (start, unlock): a wall clock that jumps forward cannot shorten it.
-    pub mono_elapsed: u64,
 }
 
 /// The outcome of a round.
@@ -208,12 +216,12 @@ pub enum Outcome {
         /// [`SOL_PENDING_NOTICE_SECS`] passed.
         notice: bool,
     },
-    /// Finalized, `err: null`.
+    /// Confirmed, `err: null`.
     Landed {
         /// Slot.
         slot: u64,
     },
-    /// Finalized with an error (the fee was charged).
+    /// Confirmed with an error (the fee was charged).
     FailedOnChain {
         /// Slot.
         slot: u64,
@@ -226,8 +234,8 @@ pub enum Outcome {
 
 const fn terminal(status: SigStatus) -> Option<Outcome> {
     match status {
-        SigStatus::Finalized { slot, err: None } => Some(Outcome::Landed { slot }),
-        SigStatus::Finalized {
+        SigStatus::Confirmed { slot, err: None } => Some(Outcome::Landed { slot }),
+        SigStatus::Confirmed {
             slot,
             err: Some(err),
         } => Some(Outcome::FailedOnChain { slot, err }),
@@ -251,24 +259,16 @@ pub fn note_round(state: &mut LoopState, send: Option<SendResult>, asked: bool, 
     }
 }
 
-/// Whether one round satisfies the whole expiry proof (spec/07 §14.3): the view's finalized
-/// height is above `lastValidBlockHeight`; the history status is `null` and was answered at a
-/// `context.slot` not behind the view's slot (the same or a later RPC view); and both the wall
-/// clock since signing and the monotonic clock show [`SOL_EXPIRY_MIN_WALL_SECS`].
+/// Whether one round proves expiry (spec/07 §14.3): the view's confirmed height is above
+/// `lastValidBlockHeight` ([`may_resign`]), and the history status is `null` and was answered
+/// at a `context.slot` not behind the view's slot (the same or a later RPC view). One such
+/// round is enough; no clock is involved.
 #[must_use]
-pub fn expiry_round(
-    tx: &PendingTx,
-    chain: ChainView,
-    history: Option<HistoryView>,
-    times: &RoundTimes,
-) -> bool {
-    let minimum = SOL_EXPIRY_MIN_WALL_SECS.saturating_mul(1_000);
-    chain.block_height > tx.last_valid_block_height
+pub fn expiry_round(tx: &PendingTx, chain: ChainView, history: Option<HistoryView>) -> bool {
+    may_resign(tx, chain)
         && history.is_some_and(|history| {
             history.status == SigStatus::NotFound && history.context_slot >= chain.slot
         })
-        && times.now_unix_ms.saturating_sub(tx.signed_at_ms) >= minimum
-        && times.mono_elapsed >= minimum
 }
 
 /// Decides a round (spec/07 §14.2 table, §14.3 expiry proof) and updates `state`.
@@ -282,9 +282,6 @@ pub fn decide(
         return outcome;
     }
     state.processing = obs.status == SigStatus::Processing;
-    if obs.status != SigStatus::NotFound {
-        state.expiry_rounds = 0;
-    }
     note_round(state, obs.send, obs.chain.is_some(), times.now_ms);
     if obs.status == SigStatus::NotFound
         && let Some(chain) = obs.chain
@@ -299,13 +296,8 @@ pub fn decide(
                 state.processing = true;
             }
         }
-        if expiry_round(tx, chain, obs.history, times) {
-            state.expiry_rounds = state.expiry_rounds.saturating_add(1);
-            if state.expiry_rounds >= SOL_EXPIRY_ROUNDS {
-                return Outcome::Expired;
-            }
-        } else {
-            state.expiry_rounds = 0;
+        if expiry_round(tx, chain, obs.history) {
+            return Outcome::Expired;
         }
     }
     Outcome::Pending {
@@ -318,7 +310,7 @@ pub fn decide(
 mod tests {
     use super::{
         ChainView, HistoryView, LoopState, Observation, Outcome, PendingTx, RoundTimes, SendResult,
-        SigStatus, decide, expiry_round, note_round, plan, wants_history,
+        SigStatus, decide, expiry_round, may_resign, note_round, plan, wants_history,
     };
 
     const TX: PendingTx = PendingTx {
@@ -355,11 +347,10 @@ mod tests {
         RoundTimes {
             now_ms: mono,
             now_unix_ms: TX.signed_at_ms + wall,
-            mono_elapsed: mono,
         }
     }
 
-    /// A round where everything satisfies the expiry proof 90 s after signing.
+    /// A round whose confirmed height is past `lastValidBlockHeight` with a `null` history.
     fn expiring() -> Observation {
         let mut round = obs(SigStatus::NotFound);
         round.chain = Some(view(501));
@@ -368,13 +359,13 @@ mod tests {
     }
 
     #[test]
-    fn finalized_statuses_are_terminal() {
+    fn confirmed_statuses_are_terminal() {
         let mut state = LoopState::default();
         assert_eq!(
             decide(
                 &TX,
                 &mut state,
-                &obs(SigStatus::Finalized { slot: 9, err: None }),
+                &obs(SigStatus::Confirmed { slot: 9, err: None }),
                 &at(0, 0)
             ),
             Outcome::Landed { slot: 9 }
@@ -383,7 +374,7 @@ mod tests {
             decide(
                 &TX,
                 &mut state,
-                &obs(SigStatus::Finalized {
+                &obs(SigStatus::Confirmed {
                     slot: 9,
                     err: Some(1)
                 }),
@@ -396,92 +387,39 @@ mod tests {
             Outcome::Pending { .. }
         ));
         assert!(state.processing);
-        // processed/confirmed: no re-send, no height.
+        // processed: no re-send, no height.
         let p = plan(&state, SigStatus::Processing, 100_000);
         assert!(!p.send && !p.height);
     }
 
     #[test]
-    fn expiry_needs_two_rounds_of_one_view_history_and_both_clocks() {
-        // Each condition alone keeps the round from counting.
-        let times = at(90_000, 90_000);
+    fn one_round_past_lvbh_with_a_null_history_expires_at_once() {
         let ok = expiring();
-        assert!(expiry_round(&TX, ok.chain.unwrap(), ok.history, &times));
-        assert!(!expiry_round(&TX, view(500), ok.history, &times));
+        assert!(expiry_round(&TX, view(501), ok.history));
+        // Height not above lvbh, a history answered behind the view, or no history: no proof.
+        assert!(!expiry_round(&TX, view(500), ok.history));
+        assert!(!may_resign(&TX, view(500)));
+        assert!(may_resign(&TX, view(501)));
         assert!(!expiry_round(
             &TX,
             view(501),
-            Some(history(SigStatus::NotFound, VIEW_SLOT - 1)),
-            &times
+            Some(history(SigStatus::NotFound, VIEW_SLOT - 1))
         ));
-        assert!(!expiry_round(&TX, view(501), None, &times));
-        assert!(!expiry_round(
-            &TX,
-            view(501),
-            ok.history,
-            &at(89_999, 90_000)
-        ));
-        assert!(!expiry_round(
-            &TX,
-            view(501),
-            ok.history,
-            &at(90_000, 89_999)
-        ));
-        // A wall clock moved forward by a day does not replace the monotonic minimum.
-        assert!(!expiry_round(
-            &TX,
-            view(501),
-            ok.history,
-            &at(86_400_000, 1_000)
-        ));
-        // Two height rounds in a row are needed.
+        assert!(!expiry_round(&TX, view(501), None));
+        // The first such round expires the record: 1 s after signing, no second round, no clock.
         let mut state = LoopState::default();
-        assert!(matches!(
-            decide(&TX, &mut state, &ok, &at(90_000, 90_000)),
-            Outcome::Pending { .. }
-        ));
-        assert_eq!(state.expiry_rounds, 1);
-        // A round without a height lookup neither counts nor resets.
-        assert!(matches!(
-            decide(
-                &TX,
-                &mut state,
-                &obs(SigStatus::NotFound),
-                &at(91_000, 91_000)
-            ),
-            Outcome::Pending { .. }
-        ));
-        assert_eq!(state.expiry_rounds, 1);
         assert_eq!(
-            decide(&TX, &mut state, &ok, &at(92_500, 92_500)),
+            decide(&TX, &mut state, &ok, &at(1_000, 1)),
             Outcome::Expired
         );
-        // A failing height round in between starts over.
-        let mut state = LoopState::default();
-        let _ = decide(&TX, &mut state, &ok, &at(90_000, 90_000));
-        let mut behind = ok;
-        behind.history = Some(history(SigStatus::NotFound, VIEW_SLOT - 1));
-        let _ = decide(&TX, &mut state, &behind, &at(92_500, 92_500));
-        assert_eq!(state.expiry_rounds, 0);
-        assert!(matches!(
-            decide(&TX, &mut state, &ok, &at(95_000, 95_000)),
-            Outcome::Pending { .. }
-        ));
+        // A wall clock behind the signing time does not matter either.
+        let mut early = TX;
+        early.signed_at_ms = u64::MAX;
         assert_eq!(
-            decide(&TX, &mut state, &ok, &at(97_500, 97_500)),
+            decide(&early, &mut LoopState::default(), &ok, &at(0, 0)),
             Outcome::Expired
         );
-        // A non-null status resets the count.
-        let mut state = LoopState::default();
-        let _ = decide(&TX, &mut state, &ok, &at(90_000, 90_000));
-        let _ = decide(
-            &TX,
-            &mut state,
-            &obs(SigStatus::Processing),
-            &at(91_000, 91_000),
-        );
-        assert_eq!(state.expiry_rounds, 0);
-        // Height not above lvbh: never expired, whatever the history says.
+        // Height at lvbh: never expired, whatever the history says.
         let mut state = LoopState::default();
         let mut low = ok;
         low.chain = Some(view(500));
@@ -495,7 +433,7 @@ mod tests {
         assert!(wants_history(&TX, Some(view(501))));
         // A late landing found by the history search wins (any context slot).
         let mut late = ok;
-        late.history = Some(history(SigStatus::Finalized { slot: 7, err: None }, 0));
+        late.history = Some(history(SigStatus::Confirmed { slot: 7, err: None }, 0));
         assert_eq!(
             decide(&TX, &mut state, &late, &at(900_000, 900_000)),
             Outcome::Landed { slot: 7 }
@@ -505,6 +443,19 @@ mod tests {
             decide(&TX, &mut state, &late, &at(900_000, 900_000)),
             Outcome::Pending { .. }
         ));
+    }
+
+    #[test]
+    fn send_now_resends_the_same_bytes_at_once() {
+        // A round just happened: the next send would wait for the 2.5 s period.
+        let mut state = LoopState::default();
+        note_round(&mut state, Some(SendResult::Deterministic(1)), true, 10_000);
+        assert!(!plan(&state, SigStatus::NotFound, 10_001).send);
+        state.send_now();
+        assert_eq!(state.last_round_ms, None);
+        assert!(!state.stop_rebroadcast);
+        assert_eq!(state.preflight_err, None);
+        assert!(plan(&state, SigStatus::NotFound, 10_001).send);
     }
 
     #[test]

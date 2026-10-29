@@ -557,7 +557,7 @@ fn probe_cluster(report: &mut Report, cluster: SolCluster, url: &HttpsUrl) -> Te
                 "isBlockhashValid",
                 Value::Array(vec![
                     text(&base58_encode(&hash)),
-                    object(vec![("commitment", text("finalized"))]),
+                    object(vec![("commitment", text("confirmed"))]),
                 ]),
             );
             match valid {

@@ -1,9 +1,10 @@
 //! Solana pipelines over the scripted transport (spec/07 §13–§15, spec/09 §4.4): the step-2
 //! preview with its call order, `L01` blocks and flags; the step-5 lookup and its range check;
 //! the broadcast round state machine against a fake RPC and a manual clock (SOL-N1: the same
-//! signed bytes are re-sent, never re-signed; `Expired` only after two height rounds, each with a
-//! `getEpochInfo` height above `lastValidBlockHeight`, a history `null` answered at or after that
-//! view's slot, and 90 s of both the wall and the monotonic clock);
+//! signed bytes are re-sent, never re-signed, and "지금 다시 전송" re-sends them at once;
+//! `Expired` — which allows a new signature — after one round with a confirmed `getEpochInfo`
+//! height above `lastValidBlockHeight` and a history `null` answered at or after that view's
+//! slot, with no clock minimum; never while the height is at or below it);
 //! balances and the recovery scan with the genesis pin.
 
 mod common;
@@ -156,7 +157,7 @@ fn preview_calls_in_spec_order_and_builds_the_core() -> TestResult {
     assert_eq!(prepared.flags, flags::FIRST_TIME);
     let params = rpc.params_of("getAccountInfo").join("");
     assert!(params.contains("\"dataSlice\":{\"offset\":0,\"length\":0}"));
-    assert!(params.contains("\"commitment\":\"finalized\""));
+    assert!(params.contains("\"commitment\":\"confirmed\""));
     let simulate = rpc.params_of("simulateTransaction").join("");
     assert!(simulate.contains("\"sigVerify\":false"));
     assert!(simulate.contains("\"replaceRecentBlockhash\":true"));
@@ -514,7 +515,8 @@ fn ctx_at(value: &str, slot: u64) -> Answer {
 }
 
 const NULL_STATUS: &str = "[null]";
-const PROCESSED: &str = "[{\"slot\":9,\"confirmations\":0,\"err\":null,\"status\":{\"Ok\":null},\"confirmationStatus\":\"confirmed\"}]";
+const PROCESSED: &str = "[{\"slot\":9,\"confirmations\":0,\"err\":null,\"status\":{\"Ok\":null},\"confirmationStatus\":\"processed\"}]";
+const CONFIRMED: &str = "[{\"slot\":9,\"confirmations\":1,\"err\":null,\"status\":{\"Ok\":null},\"confirmationStatus\":\"confirmed\"}]";
 const LANDED: &str = "[{\"slot\":9,\"confirmations\":null,\"err\":null,\"status\":{\"Ok\":null},\"confirmationStatus\":\"finalized\"}]";
 const FAILED: &str = "[{\"slot\":9,\"confirmations\":null,\"err\":{\"InstructionError\":[2,{\"Custom\":1}]},\"status\":{\"Err\":{}},\"confirmationStatus\":\"finalized\"}]";
 
@@ -553,8 +555,8 @@ fn net_rpc(net: &Arc<Mutex<Net>>) -> Arc<FakeRpc> {
 const SIGNATURE: [u8; 64] = [0x5a; 64];
 const SIGNED_AT: u64 = 1_800_000_000_000;
 
-/// A round of the record signed at `SIGNED_AT`, tracked since monotonic `since`.
-fn track_since(state: LoopState, since: u64) -> TrackJob {
+/// A round of the record signed at `SIGNED_AT`.
+fn track(state: LoopState) -> TrackJob {
     TrackJob {
         endpoint: endpoint(),
         signature: SIGNATURE,
@@ -565,20 +567,8 @@ fn track_since(state: LoopState, since: u64) -> TrackJob {
         },
         state,
         check_genesis: false,
-        tracked_since_ms: since,
         generation: 0,
     }
-}
-
-fn track(state: LoopState) -> TrackJob {
-    track_since(state, 0)
-}
-
-/// Monotonic ms of the signing when it happened in this session (both clocks agree).
-fn signed_in_session(clock: &FakeClock) -> u64 {
-    clock
-        .now_ms()
-        .saturating_sub(clock.now_unix_ms().saturating_sub(SIGNED_AT))
 }
 
 fn local_signature() -> String {
@@ -589,28 +579,16 @@ fn accepted() -> Answer {
     Answer::Result(format!("\"{}\"", local_signature()))
 }
 
-/// Runs `rounds` rounds 1 s apart (a record signed in this session); returns the last outcome
-/// and the final state.
+/// Runs `rounds` rounds 1 s apart; returns the last outcome and the final state.
 fn run(
     rpc: &FakeRpc,
     clock: &FakeClock,
     rounds: u32,
-    state: LoopState,
-) -> (Result<Outcome, String>, LoopState) {
-    run_since(rpc, clock, rounds, state, signed_in_session(clock))
-}
-
-/// [`run`] for a record tracked since monotonic `since`.
-fn run_since(
-    rpc: &FakeRpc,
-    clock: &FakeClock,
-    rounds: u32,
     mut state: LoopState,
-    since: u64,
 ) -> (Result<Outcome, String>, LoopState) {
     let mut outcome = Ok(Outcome::Pending { notice: false });
     for _ in 0..rounds {
-        let result = track_round(rpc, &track_since(state, since), clock);
+        let result = track_round(rpc, &track(state), clock);
         state = result.state;
         outcome = result.outcome.map_err(|code| code.code().to_owned());
         if !matches!(outcome, Ok(Outcome::Pending { .. })) {
@@ -642,7 +620,7 @@ fn sol_n1_unseen_transaction_is_resent_unchanged_never_resigned() {
     );
     assert!(sends[0].contains("\"skipPreflight\":false"));
     assert!(sends[0].contains("\"maxRetries\":0"));
-    assert!(sends[0].contains("\"preflightCommitment\":\"finalized\""));
+    assert!(sends[0].contains("\"preflightCommitment\":\"confirmed\""));
     assert!(sends[0].contains("AQIDBAU="), "base64 of the signed bytes");
     assert_eq!(
         rpc.count("getSignatureStatuses"),
@@ -652,8 +630,10 @@ fn sol_n1_unseen_transaction_is_resent_unchanged_never_resigned() {
 }
 
 #[test]
-fn sol_n1_expiry_needs_height_history_and_90_seconds() {
-    // ② height > lvbh and history null but < 90 s since signing: still Pending.
+fn sol_resign_allowed_as_soon_as_the_rpc_height_passes_lvbh() {
+    // Confirmed height 1,151 > lvbh 1,150 and the history search shows nothing: the very first
+    // round proves expiry, 1 s after signing — no wall-clock or monotonic minimum, no second
+    // round. `Expired` frees the account (D20) for a new review, approval and signature.
     let net = Arc::new(Mutex::new(Net::new(
         NULL_STATUS,
         NULL_STATUS,
@@ -661,74 +641,132 @@ fn sol_n1_expiry_needs_height_history_and_90_seconds() {
         accepted(),
     )));
     let rpc = net_rpc(&net);
-    let clock = FakeClock::at(SIGNED_AT + 30_000);
-    let (outcome, state) = run(&rpc, &clock, 50, LoopState::default());
-    assert!(matches!(outcome, Ok(Outcome::Pending { .. })));
-    assert!(
-        rpc.count("getSignatureStatuses") > 50,
-        "history asked after the height"
+    let clock = FakeClock::at(SIGNED_AT + 1_000);
+    let result = track_round(&*rpc, &track(LoopState::default()), &clock);
+    assert_eq!(
+        result.outcome.map_err(ErrorCode::code),
+        Ok(Outcome::Expired)
     );
-    assert!(state.last_round_ms.is_some());
-    // Height and slot come from one getEpochInfo answer; getBlockHeight is not asked.
-    assert!(rpc.count("getEpochInfo") >= 16);
+    // The height and slot come from one confirmed getEpochInfo answer; getBlockHeight is not
+    // asked; the history lookup follows the height.
+    let epoch = rpc.params_of("getEpochInfo");
+    assert_eq!(epoch.len(), 1);
+    assert!(epoch[0].contains("\"commitment\":\"confirmed\""));
     assert_eq!(rpc.count("getBlockHeight"), 0);
     let history = rpc
         .params_of("getSignatureStatuses")
         .into_iter()
         .filter(|params| params.contains("\"searchTransactionHistory\":true"))
         .count();
-    assert_eq!(history, rpc.count("getEpochInfo"));
-    // ③ every condition in two height rounds (2.5 s apart): Expired; a new send needs a new
-    // intent and approval (nothing here re-signs). Height rounds at 89 s (too early), 92 s
-    // (first proof round) and 95 s (second).
+    assert_eq!(history, 1);
+    // The same holds with a wall clock behind the signing time (no clock is consulted).
     let rpc = net_rpc(&net);
-    let clock = FakeClock::at(SIGNED_AT + 89_000);
-    let (outcome, state) = run(&rpc, &clock, 10, LoopState::default());
-    assert_eq!(outcome, Ok(Outcome::Expired), "{state:?}");
-    assert_eq!(rpc.count("getEpochInfo"), 3);
-    assert_eq!(clock.now_unix_ms(), SIGNED_AT + 95_000);
+    let (outcome, _) = run(
+        &rpc,
+        &FakeClock::at(SIGNED_AT - 60_000),
+        1,
+        LoopState::default(),
+    );
+    assert_eq!(outcome, Ok(Outcome::Expired));
 }
 
 #[test]
-fn sol_n1_expiry_needs_one_consistent_view_and_the_monotonic_clock() {
+fn sol_resign_refused_while_the_rpc_height_is_at_or_below_lvbh() {
+    // Height = lvbh: the blockhash can still land the transaction, so the record stays
+    // `Pending` (D20 keeps the account busy; "다시 보내기" with a new signature is not offered)
+    // however long it takes, and only the same bytes are re-sent.
+    for height in [1_000, 1_150] {
+        let net = Arc::new(Mutex::new(Net::new(
+            NULL_STATUS,
+            NULL_STATUS,
+            height,
+            accepted(),
+        )));
+        let rpc = net_rpc(&net);
+        let clock = FakeClock::at(SIGNED_AT + 600_000);
+        let (outcome, _) = run(&rpc, &clock, 20, LoopState::default());
+        assert_eq!(outcome, Ok(Outcome::Pending { notice: true }), "{height}");
+        assert!(
+            rpc.params_of("getSignatureStatuses")
+                .iter()
+                .all(|params| params.contains("\"searchTransactionHistory\":false")),
+            "no history lookup at or below lvbh"
+        );
+        let sends = rpc.params_of("sendTransaction");
+        assert!(sends.len() >= 7);
+        assert!(sends.iter().all(|params| params == &sends[0]));
+    }
+}
+
+#[test]
+fn sol_rebroadcast_the_same_tx_now_before_expiry() {
+    // Before expiry the user can re-send the same signed bytes at once instead of waiting for
+    // the 2.5 s period: one more `sendTransaction` with identical parameters, still `Pending`.
+    let net = Arc::new(Mutex::new(Net::new(
+        NULL_STATUS,
+        NULL_STATUS,
+        1_100,
+        accepted(),
+    )));
+    let rpc = net_rpc(&net);
+    let clock = FakeClock::at(SIGNED_AT);
+    let first = track_round(&*rpc, &track(LoopState::default()), &clock);
+    assert_eq!(first.sends, 1);
+    clock.advance(500);
+    let waiting = track_round(&*rpc, &track(first.state), &clock);
+    assert_eq!(waiting.sends, 0, "the period has not passed");
+    let mut state = waiting.state;
+    state.send_now();
+    let now = track_round(&*rpc, &track(state), &clock);
+    assert_eq!(now.sends, 1);
+    assert!(matches!(now.outcome, Ok(Outcome::Pending { .. })));
+    let sends = rpc.params_of("sendTransaction");
+    assert_eq!(sends.len(), 2);
+    assert_eq!(sends[0], sends[1], "same bytes, same signature");
+    assert!(sends[1].contains("AQIDBAU="));
+    // After a deterministic preflight error stopped the automatic re-sends, "지금 다시 전송"
+    // still sends the same bytes once.
+    let net = Arc::new(Mutex::new(Net::new(
+        NULL_STATUS,
+        NULL_STATUS,
+        1_100,
+        preflight("\"InsufficientFundsForFee\""),
+    )));
+    let rpc = net_rpc(&net);
+    let (_, mut state) = run(&rpc, &clock, 6, LoopState::default());
+    assert!(state.stop_rebroadcast);
+    assert_eq!(rpc.count("sendTransaction"), 1);
+    state.send_now();
+    let again = track_round(&*rpc, &track(state), &clock);
+    assert_eq!(again.sends, 1);
+    assert_eq!(rpc.count("sendTransaction"), 2);
+    let sends = rpc.params_of("sendTransaction");
+    assert_eq!(sends[0], sends[1]);
+}
+
+#[test]
+fn sol_n1_expiry_needs_one_consistent_view() {
     // The history `null` is answered at a slot behind the height view: never Expired.
     let mut behind = Net::new(NULL_STATUS, NULL_STATUS, 1_151, accepted());
     behind.history_slot = behind.view_slot - 1;
     let rpc = net_rpc(&Arc::new(Mutex::new(behind)));
-    let (outcome, state) = run(
-        &rpc,
-        &FakeClock::at(SIGNED_AT + 600_000),
-        20,
-        LoopState::default(),
-    );
-    assert!(matches!(outcome, Ok(Outcome::Pending { notice: true })));
-    assert_eq!(state.expiry_rounds, 0);
-    // A history answer ahead of the view is fine.
-    let mut ahead = Net::new(NULL_STATUS, NULL_STATUS, 1_151, accepted());
-    ahead.history_slot = ahead.view_slot + 50;
-    let rpc = net_rpc(&Arc::new(Mutex::new(ahead)));
     let (outcome, _) = run(
         &rpc,
         &FakeClock::at(SIGNED_AT + 600_000),
         20,
         LoopState::default(),
     );
-    assert_eq!(outcome, Ok(Outcome::Expired));
-    // The wall clock says 10 minutes, but this session started tracking (restart, unlock) just
-    // now: 90 s of monotonic time are still needed.
-    let net = Arc::new(Mutex::new(Net::new(
-        NULL_STATUS,
-        NULL_STATUS,
-        1_151,
-        accepted(),
-    )));
-    let rpc = net_rpc(&net);
-    let clock = FakeClock::at(SIGNED_AT + 600_000);
-    let since = clock.now_ms();
-    let (outcome, state) = run_since(&rpc, &clock, 85, LoopState::default(), since);
-    assert!(matches!(outcome, Ok(Outcome::Pending { .. })));
-    assert_eq!(state.expiry_rounds, 0);
-    let (outcome, _) = run_since(&rpc, &clock, 15, state, since);
+    assert!(matches!(outcome, Ok(Outcome::Pending { notice: true })));
+    // A history answer ahead of the view is fine.
+    let mut ahead = Net::new(NULL_STATUS, NULL_STATUS, 1_151, accepted());
+    ahead.history_slot = ahead.view_slot + 50;
+    let rpc = net_rpc(&Arc::new(Mutex::new(ahead)));
+    let (outcome, _) = run(
+        &rpc,
+        &FakeClock::at(SIGNED_AT + 1_000),
+        1,
+        LoopState::default(),
+    );
     assert_eq!(outcome, Ok(Outcome::Expired));
     // A malformed getEpochInfo (no absoluteSlot) is no height observation.
     let rpc = FakeRpc::new(|method, _| match method {
@@ -737,14 +775,13 @@ fn sol_n1_expiry_needs_one_consistent_view_and_the_monotonic_clock() {
         "sendTransaction" => accepted(),
         _ => Answer::Error(-32_601, None),
     });
-    let (outcome, state) = run(
+    let (outcome, _) = run(
         &rpc,
         &FakeClock::at(SIGNED_AT + 600_000),
         20,
         LoopState::default(),
     );
     assert!(matches!(outcome, Ok(Outcome::Pending { .. })));
-    assert_eq!(state.expiry_rounds, 0);
 }
 
 #[test]
@@ -771,13 +808,16 @@ fn sol_n1_late_landing_found_by_history_wins() {
         let (outcome, _) = run(&rpc, &clock, 3, LoopState::default());
         assert_eq!(outcome, Ok(expected));
     }
-    // A finalized status without history (only the session's first send happened).
-    let net = Arc::new(Mutex::new(Net::new(LANDED, NULL_STATUS, 1_000, accepted())));
-    let rpc = net_rpc(&net);
-    let (outcome, _) = run(&rpc, &FakeClock::at(SIGNED_AT), 1, LoopState::default());
-    assert_eq!(outcome, Ok(Outcome::Landed { slot: 9 }));
-    assert_eq!(rpc.count("sendTransaction"), 1);
-    // processed/confirmed: no re-send after the first, not success.
+    // A confirmed (one confirmation is final) or finalized status without history (only the
+    // session's first send happened): Landed at once.
+    for status in [CONFIRMED, LANDED] {
+        let net = Arc::new(Mutex::new(Net::new(status, NULL_STATUS, 1_000, accepted())));
+        let rpc = net_rpc(&net);
+        let (outcome, _) = run(&rpc, &FakeClock::at(SIGNED_AT), 1, LoopState::default());
+        assert_eq!(outcome, Ok(Outcome::Landed { slot: 9 }));
+        assert_eq!(rpc.count("sendTransaction"), 1);
+    }
+    // processed: no re-send after the first, not final yet.
     let net = Arc::new(Mutex::new(Net::new(
         PROCESSED,
         NULL_STATUS,

@@ -497,8 +497,8 @@ pub enum PreSignError {
     RpcAnomaly,
 }
 
-/// Step 5 (spec/07 §13.1): genesis again, `getLatestBlockhash(finalized)`,
-/// `getBlockHeight(finalized)` and the range check `h + SOL_MIN_LVBH_AHEAD ≤ lvbh ≤ h +
+/// Step 5 (spec/07 §13.1): genesis again, `getLatestBlockhash(confirmed)`,
+/// `getBlockHeight(confirmed)` and the range check `h + SOL_MIN_LVBH_AHEAD ≤ lvbh ≤ h +
 /// SOL_MAX_LVBH_AHEAD`. Returns `(blockhash, lastValidBlockHeight)`.
 ///
 /// # Errors
@@ -539,9 +539,6 @@ pub struct TrackJob {
     pub state: LoopState,
     /// Check `getGenesisHash` first (first round after start/unlock/URL change).
     pub check_genesis: bool,
-    /// Monotonic ms (the [`Clock::now_ms`] clock) at which this session started tracking the
-    /// record: its signing, or the loop's resumption after start or unlock (spec/07 §14.3).
-    pub tracked_since_ms: u64,
     /// The UI's endpoint generation when the round started (echoed in [`TrackResult`]).
     pub generation: u64,
 }
@@ -564,11 +561,11 @@ pub struct TrackResult {
     pub generation: u64,
 }
 
-/// One round (spec/07 §14.2–§14.3): (first round of the session: send first) → status (history
-/// off) → plan → re-send the same bytes and/or `getEpochInfo` (block height and slot of one view)
-/// → history lookup (with its `context.slot`) only when that height is past
-/// `lastValidBlockHeight` → [`decide`] with the wall clock and the monotonic time since
-/// [`TrackJob::tracked_since_ms`]. No re-signing exists here.
+/// One round (spec/07 §14.2–§14.3): (first round of the session, or a user "지금 다시 전송":
+/// send first) → status (history off) → plan → re-send the same bytes and/or `getEpochInfo`
+/// (confirmed block height and slot of one view) → history lookup (with its `context.slot`) only
+/// when that height is past `lastValidBlockHeight` → [`decide`]. One such round with a `null`
+/// history proves expiry. No re-signing exists here.
 #[must_use]
 pub fn track_round(transport: &dyn Transport, job: &TrackJob, clock: &dyn Clock) -> TrackResult {
     let client = RpcClient::new(transport);
@@ -598,9 +595,9 @@ pub fn track_round(transport: &dyn Transport, job: &TrackJob, clock: &dyn Clock)
     let signature_text = yw_core::codec::base58::base58_encode(&job.signature);
     let programs = sol_rpc::programs_of(&job.tx);
     let now_ms = clock.now_ms();
-    // The first round of the session (just signed, or resumed after start/unlock) sends before it
-    // asks the status: a failing status lookup must not hold back the first broadcast. Sending
-    // the same bytes again is harmless even if they already landed.
+    // The first round of the session (just signed, resumed after start/unlock, or the user asked
+    // for an immediate re-send) sends before it asks the status: a failing status lookup must not
+    // hold back that broadcast. Sending the same bytes again is harmless even if they landed.
     let first = job.state.last_round_ms.is_none() && !job.state.stop_rebroadcast;
     let early = first.then(|| {
         result.sends = result.sends.saturating_add(1);
@@ -642,7 +639,6 @@ pub fn track_round(transport: &dyn Transport, job: &TrackJob, clock: &dyn Clock)
     let times = RoundTimes {
         now_ms,
         now_unix_ms: clock.now_unix_ms(),
-        mono_elapsed: now_ms.saturating_sub(job.tracked_since_ms),
     };
     let mut state = job.state;
     result.outcome = Ok(decide(&job.pending, &mut state, &observation, &times));
@@ -657,7 +653,7 @@ pub fn track_round(transport: &dyn Transport, job: &TrackJob, clock: &dyn Clock)
 pub struct SolBalanceRow {
     /// Account.
     pub address: SolAddress,
-    /// Lamports (finalized).
+    /// Lamports (confirmed).
     pub lamports: u64,
     /// Allowlist order of the cluster.
     pub tokens: Vec<(&'static SplAllowEntry, TokenHolding)>,

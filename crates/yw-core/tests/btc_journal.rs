@@ -466,15 +466,16 @@ fn tracking_decisions() {
     assert_eq!(change.changed, vec![(txid, BtcTxState::Confirmed)]);
     let records = records_of(&plain);
     assert_eq!(records[0].confirmed_height, Some(TIP));
+    // One confirmation is final: tracking stops at once (no depth wait). A tip below the
+    // confirmation height (lagging or garbage) keeps it tracked.
+    assert!(is_finished(&records[0], &records, Some(TIP), 205));
+    assert_eq!(track_mode(&records[0], &records, TIP, 205), TrackMode::None);
     assert_eq!(
-        track_mode(&records[0], &records, TIP + 4, 205),
+        track_mode(&records[0], &records, TIP - 1, 205),
         TrackMode::ConfirmationOnly
     );
-    assert_eq!(
-        track_mode(&records[0], &records, TIP + 5, 205),
-        TrackMode::None
-    );
-    // Re-org: the height follows the indexer.
+    // An observation of another height still updates the record (the height follows the
+    // indexer).
     apply_observation(
         &mut plain,
         NET,
@@ -611,16 +612,16 @@ fn replacement_bookkeeping() {
             BtcTxState::Confirmed
         ]
     );
-    for tip in [TIP, TIP + 4] {
-        assert!(!is_finished(&records[0], &records, Some(tip), 10));
-        assert_eq!(
-            track_mode(&records[0], &records, tip, 10),
-            TrackMode::ConfirmationOnly
-        );
-    }
-    assert!(is_finished(&records[0], &records, Some(TIP + 5), 10));
-    assert!(is_finished(&records[1], &records, Some(TIP + 5), 10));
-    let rows = finished_rows(&plain, NET, TIP + 5, 10, 77);
+    // The replacement's first confirmation finishes the whole chain (no depth wait); before it
+    // (a tip below its height) the replaced records stay tracked.
+    assert!(!is_finished(&records[0], &records, Some(TIP - 1), 10));
+    assert_eq!(
+        track_mode(&records[0], &records, TIP - 1, 10),
+        TrackMode::ConfirmationOnly
+    );
+    assert!(is_finished(&records[0], &records, Some(TIP), 10));
+    assert!(is_finished(&records[1], &records, Some(TIP), 10));
+    let rows = finished_rows(&plain, NET, TIP, 10, 77);
     let statuses: Vec<_> = rows.iter().map(|row| row.status).collect();
     assert_eq!(statuses, vec!["replaced", "replaced", "succeeded"]);
     assert_eq!(rows[1].title, "[Bitcoin testnet4] 수수료 올리기");
@@ -1103,7 +1104,7 @@ fn bump_of_unknown_replacement_while_original_in_mempool() {
     .unwrap();
     let after = records_of(&plain);
     assert_eq!(check_can_send(&after, NET), Ok(()));
-    assert!(is_finished(&after[0], &after, Some(TIP + 5), 8));
+    assert!(is_finished(&after[0], &after, Some(TIP), 8));
 }
 
 /// Review fix (spec/08 §12.2): an indexer `Confirmed` of a record with an in-flight

@@ -62,9 +62,10 @@ pub enum TxState {
     Signed = 1,
     /// Known to the network.
     Broadcast = 2,
-    /// A receipt exists.
+    /// A receipt exists. Transient: tracking commits `Finalized` in the same round (one
+    /// confirmation is final); records written by older builds may still hold it.
     Included = 3,
-    /// Finalized (terminal).
+    /// Final: a verified receipt in a block, one confirmation (terminal).
     Finalized = 4,
     /// Another transaction used the nonce, or the user discarded it (terminal).
     Dropped = 5,
@@ -686,15 +687,9 @@ pub enum Transition {
         /// Observation time.
         at_unix_ms: u64,
     },
-    /// Finalized block ≥ inclusion and the block hash matches: `Included → Finalized`.
+    /// One confirmation is final (spec.md §2.2: the configured RPC is trusted):
+    /// `Included → Finalized`, committed together with `Included`.
     Finalized {
-        /// Candidate.
-        tx_hash: [u8; 32],
-        /// Observation time.
-        at_unix_ms: u64,
-    },
-    /// The block hash at the inclusion height changed: `Included → Broadcast`, inclusion cleared.
-    Reorged {
         /// Candidate.
         tx_hash: [u8; 32],
         /// Observation time.
@@ -727,7 +722,6 @@ impl Transition {
             Self::ManualResend { .. } => "ManualResend",
             Self::Included { .. } => "Included",
             Self::Finalized { .. } => "Finalized",
-            Self::Reorged { .. } => "Reorged",
             Self::Dropped { .. } => "Dropped",
             Self::Discarded { .. } => "Discarded",
         }
@@ -852,22 +846,6 @@ pub fn apply(records: &mut [EvmRecord], transition: &Transition) -> Vec<usize> {
                 && record.state == TxState::Included
             {
                 record.state = TxState::Finalized;
-                record.updated_unix_ms = at_unix_ms;
-                changed.push(index);
-            }
-        }
-        Transition::Reorged {
-            tx_hash,
-            at_unix_ms,
-        } => {
-            if let Some(index) = position(records, &tx_hash)
-                && let Some(record) = records.get_mut(index)
-                && record.state == TxState::Included
-            {
-                record.state = TxState::Broadcast;
-                record.receipt_status = ReceiptStatus::None;
-                record.included_block_number = 0;
-                record.included_block_hash = [0; 32];
                 record.updated_unix_ms = at_unix_ms;
                 changed.push(index);
             }

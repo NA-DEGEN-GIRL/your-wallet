@@ -1138,11 +1138,30 @@ fn track(
 
 #[test]
 #[expect(clippy::too_many_lines, reason = "one block per tracking outcome")]
-fn tracking_receipts_finality_reorg_and_drop() -> TestResult {
+fn tracking_receipts_one_confirmation_final_and_drop() -> TestResult {
     let record = besu_record()?;
     let block_hash = [0x5b; 32];
     let receipt = receipt_json(BESU_HASH, BESU_SENDER, "0x1", &block_hash);
-    // Receipt → Included.
+    // A verified receipt in a block (one confirmation) is final: Included and Finalized in the
+    // same round, no `finalized`-tag lookup, no depth.
+    let rpc = fake(world(
+        4,
+        [0x44; 32],
+        vec![("eth_getTransactionReceipt", Answer::Result(receipt.clone()))],
+    ));
+    let _ = track_group(
+        &rpc.shared(),
+        &url(),
+        &besu_chain(),
+        &TrackInput {
+            group: vec![record.clone()],
+            drop_seen_unix_ms: None,
+            now_unix_ms: 10,
+            allow_rebroadcast: true,
+        },
+    );
+    assert_eq!(rpc.count("eth_getBlockByNumber"), 0);
+    assert_eq!(rpc.count("eth_blockNumber"), 0);
     let result = track(
         vec![record.clone()],
         world(
@@ -1155,13 +1174,19 @@ fn tracking_receipts_finality_reorg_and_drop() -> TestResult {
     );
     assert_eq!(
         result.transitions,
-        vec![Transition::Included {
-            tx_hash: record.tx_hash,
-            block_number: 100,
-            block_hash,
-            success: true,
-            at_unix_ms: 10
-        }]
+        vec![
+            Transition::Included {
+                tx_hash: record.tx_hash,
+                block_number: 100,
+                block_hash,
+                success: true,
+                at_unix_ms: 10
+            },
+            Transition::Finalized {
+                tx_hash: record.tx_hash,
+                at_unix_ms: 10
+            }
+        ]
     );
     // A receipt from another sender is ignored (§4.5), counted as invalid.
     let bad = receipt_json(BESU_HASH, NEW, "0x1", &block_hash);
@@ -1193,71 +1218,32 @@ fn tracking_receipts_finality_reorg_and_drop() -> TestResult {
             at_unix_ms: 10
         }]
     );
-    // Included + finalized ≥ N with the same hash → Finalized; another hash → Reorged.
+    // A record an earlier build left `Included` (waiting for the `finalized` tag) is finalized
+    // by the next round without any RPC call.
     let mut included = record.clone();
     included.state = TxState::Included;
     included.included_block_number = 100;
     included.included_block_hash = block_hash;
-    let finality = |hash_at_n: [u8; 32]| {
-        FakeRpc::new(
-            move |method, params| match (method, param_str(params, 0).as_str()) {
-                ("eth_getBlockByNumber", "finalized") => Answer::Result(block(&[0x99; 32], 120)),
-                ("eth_getBlockByNumber", "0x64") => Answer::Result(block(&hash_at_n, 100)),
-                _ => Answer::Error(-32_601, None),
-            },
-        )
-    };
-    for (hash_at_n, finalized) in [(block_hash, true), ([0x77; 32], false)] {
-        let rpc = finality(hash_at_n);
-        let result = track_group(
-            &rpc.shared(),
-            &url(),
-            &besu_chain(),
-            &TrackInput {
-                group: vec![included.clone()],
-                drop_seen_unix_ms: None,
-                now_unix_ms: 20,
-                allow_rebroadcast: true,
-            },
-        );
-        let expected = if finalized {
-            Transition::Finalized {
-                tx_hash: record.tx_hash,
-                at_unix_ms: 20,
-            }
-        } else {
-            Transition::Reorged {
-                tx_hash: record.tx_hash,
-                at_unix_ms: 20,
-            }
-        };
-        assert_eq!(result.transitions, vec![expected]);
-    }
-    // `finalized` rejected by the node → latest − 64 (spec/03 §4.5 note).
-    let fallback =
-        FakeRpc::new(
-            move |method, params| match (method, param_str(params, 0).as_str()) {
-                ("eth_getBlockByNumber", "finalized") => Answer::Error(-32_602, None),
-                ("eth_blockNumber", _) => Answer::Result("\"0xa4\"".to_owned()),
-                ("eth_getBlockByNumber", "0x64") => Answer::Result(block(&[0x5b; 32], 100)),
-                _ => Answer::Error(-32_601, None),
-            },
-        );
+    let silent = FakeRpc::new(|_, _| Answer::Error(-32_601, None));
     let result = track_group(
-        &fallback.shared(),
+        &silent.shared(),
         &url(),
         &besu_chain(),
         &TrackInput {
             group: vec![included],
             drop_seen_unix_ms: None,
-            now_unix_ms: 30,
+            now_unix_ms: 20,
             allow_rebroadcast: true,
         },
     );
-    assert!(matches!(
-        result.transitions.as_slice(),
-        [Transition::Finalized { .. }]
-    ));
+    assert_eq!(
+        result.transitions,
+        vec![Transition::Finalized {
+            tx_hash: record.tx_hash,
+            at_unix_ms: 20,
+        }]
+    );
+    assert!(silent.methods().is_empty());
     // No receipt and latest > nonce twice ≥ 30 s apart → Dropped.
     let moved = || {
         world(

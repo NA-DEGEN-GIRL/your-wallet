@@ -124,6 +124,7 @@ impl App {
             ids::SEND_MAX => self.sol_fill_max(),
             ids::SEND_REVIEW => self.sol_review(),
             ids::SEND_AGAIN => self.sol_send_again(),
+            ids::SEND_NOW => self.sol_send_now(),
             ids::SEND_CANCEL => {
                 self.sol.send = SolSendForm::default();
                 self.set_screen(Screen::Main);

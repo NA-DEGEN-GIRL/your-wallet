@@ -419,8 +419,8 @@ dApp에 실패(`BroadcastFailed`)를 알린 거래는 자동으로 보내지 않
 
 - 폴링: 같은 nonce의 모든 후보 해시에 `eth_getTransactionReceipt`. 전송 후 120 s까지 4 s 간격, 이후 15 s 간격. 저널 쓰기에 DEK가 필요하므로(D10) 잠금 중에는 폴링을 멈추고 잠금 해제 때 §5.4 조정으로 이어 간다.
 - 영수증 검증: `transactionHash == hash`, `from == account`, `status ∈ {0x0,0x1}`, `blockNumber`, `blockHash` 32바이트. 위반 영수증은 무시하고 로컬 로그만 남긴다.
-- 포함: 영수증 존재(1 확인) → `Included`, 표시 `포함됨 (블록 N)`; `status 0x0`이면 `포함됨 (실행 실패)`. 실제 수수료 = `gasUsed × effectiveGasPrice`.
-- 확정: 포함 후 60 s 간격으로 `eth_getBlockByNumber(["finalized", false]).number ≥ N`이고 `eth_getBlockByNumber([N, false]).hash == 영수증 blockHash` → `Finalized`, 표시 `확정`. 해시가 다르면 재구성 → `Broadcast`로 되돌리고 포함 정보 삭제 후 폴링 재개. 노드가 `finalized` 태그를 JSON-RPC 오류로 거부하면 `eth_blockNumber − 64`를 확정 높이로 쓴다(같은 비교).
+- 포함 = 확정(**1 확인이 최종**, spec.md §2.2 설정한 RPC 신뢰): 검증을 통과한 영수증이 블록에 있으면(1 확인) 같은 라운드에서 `Included`와 `Finalized`를 함께 커밋한다(한 번의 저널 쓰기). 표시 `확정 (블록 N)`; `status 0x0`이면 `확정 (실행 실패, 블록 N)`. 실제 수수료 = `gasUsed × effectiveGasPrice`. 추가 확인 수, `finalized` 태그 대기, 포함 블록 해시 재확인(재구성 검사)은 하지 않는다: 1 확인 거래가 재구성으로 빠지는 것은 체인 문제로 보고 범위 밖이다. 진행 중 거래 규칙(§3.6, D20)은 이 커밋으로 바로 풀린다.
+- 이전 빌드가 `Included`(상태 3)로 남긴 레코드는 다음 추적 라운드가 RPC 호출 없이 `Finalized`로 옮긴다(영수증은 기록할 때 검증했다). 저널 형식은 바뀌지 않는다.
 
 ### 4.6 속도 올리기·취소 (앱 화면 전용, origin `yw-app`)
 
@@ -472,11 +472,10 @@ off  size  field
 |---|---|---|
 | (없음) | §4.3 통과 | `Signed` |
 | `Signed` | RPC가 같은 해시 반환 또는 `eth_getTransactionByHash` 존재 | `Broadcast` |
-| `Signed`/`Broadcast` | 이 후보의 영수증 | `Included`; 같은 nonce의 다른 미종결 후보 → `Replaced` |
+| `Signed`/`Broadcast` | 이 후보의 검증된 영수증(1 확인) | `Included` → 같은 커밋에서 `Finalized`; 같은 nonce의 다른 미종결 후보 → `Replaced` |
 | `Signed`/`Broadcast` | 어떤 후보에도 영수증 없음 + `latest nonce > nonce`를 30 s 이상 간격으로 2회 관측 | 모든 후보 `Dropped` ("다른 거래가 이 nonce를 사용") |
 | `Signed`/`Broadcast` | 사용자 폐기 | `Dropped` + `user_discarded` (경고: 이미 전파됐으면 나중에 처리될 수 있음) |
-| `Included` | finalized 조건(§4.5) | `Finalized` |
-| `Included` | 블록 해시 불일치(재구성) | `Broadcast`, 포함 정보 0 |
+| `Included`(이전 빌드가 남긴 레코드) | 다음 추적 라운드(§4.5) | `Finalized` |
 | `Finalized`/`Dropped`/`Replaced` | — | 종결 |
 
 ### 5.3 쓰기 순서

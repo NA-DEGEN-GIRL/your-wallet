@@ -468,9 +468,10 @@ fn bump_minimum_under_truncated_rates() {
     ));
 }
 
-/// A shallow `Confirmed` record that is reorganized back into the mempool is in flight again
-/// (its change is not spendable until it confirms again); one that vanished becomes
-/// `BroadcastUnknown` after 10 rounds.
+/// The core transition table for a `Confirmed` record that is observed back in the mempool or
+/// missing (kept for completeness): in flight again, or `BroadcastUnknown` after 10 rounds.
+/// Tracking never feeds a `Confirmed` record any more — one confirmation is final and its
+/// tracking ends (spec.md D32) — so the app does not reach this path.
 #[test]
 fn reorg_of_a_shallow_confirmation() {
     let plan = simple_plan(2, 20_000);

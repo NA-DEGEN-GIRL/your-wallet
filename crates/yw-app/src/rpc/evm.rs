@@ -316,40 +316,6 @@ pub fn parse_chain_id(text: &str) -> Option<u64> {
     U256::parse_quantity_lenient(text).ok()?.to_u64()
 }
 
-/// A block number and hash.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BlockRef {
-    /// Number.
-    pub number: u64,
-    /// Hash.
-    pub hash: [u8; 32],
-}
-
-/// `eth_getBlockByNumber([tag, false])` → number and hash; `None` for a null result.
-///
-/// # Errors
-///
-/// [`RpcFailure`] (`Malformed` when the result is not an object with a quantity `number` and a
-/// 32-byte `hash`).
-pub fn block_by_tag(
-    client: &RpcClient<'_>,
-    url: &HttpsUrl,
-    tag: &str,
-) -> Result<Option<BlockRef>, RpcFailure> {
-    let result = client.call(
-        url,
-        "eth_getBlockByNumber",
-        array(vec![json_str(tag), Value::Bool(false)]),
-    )?;
-    if result.is_null() {
-        return Ok(None);
-    }
-    let object = result.as_object().ok_or(RpcFailure::Malformed)?;
-    let hash = parse_hash_value(object.get("hash").ok_or(RpcFailure::Malformed)?)?;
-    let number = parse_u64_value(object.get("number").ok_or(RpcFailure::Malformed)?)?;
-    Ok(Some(BlockRef { number, hash }))
-}
-
 /// The block-0 hash (`eth_getBlockByNumber(["0x0", false]).hash`, spec/03 §1.4): a result that is
 /// not an object or a `hash` that is not 32 bytes is `Malformed` (treated like a transport
 /// failure by the chain check).

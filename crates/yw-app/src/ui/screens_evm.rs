@@ -255,18 +255,13 @@ impl App {
                 _ => "서명됨".to_owned(),
             },
             TxState::Broadcast => "전송됨".to_owned(),
-            TxState::Included => {
+            // One confirmation is final; `Included` only remains in records of older builds
+            // until the next tracking round finalizes them.
+            TxState::Included | TxState::Finalized => {
                 if record.receipt_status == ReceiptStatus::Failure {
-                    "포함됨 (실행 실패)".to_owned()
+                    format!("확정 (실행 실패, 블록 {})", record.included_block_number)
                 } else {
-                    format!("포함됨 (블록 {})", record.included_block_number)
-                }
-            }
-            TxState::Finalized => {
-                if record.receipt_status == ReceiptStatus::Failure {
-                    "확정 (실행 실패)".to_owned()
-                } else {
-                    "확정".to_owned()
+                    format!("확정 (블록 {})", record.included_block_number)
                 }
             }
             TxState::Dropped => {
@@ -787,7 +782,7 @@ impl App {
         items.push(Item::Title("보내기 결과".to_owned()));
         if let Some(sent) = self.evm.sent {
             items.push(Item::Banner(
-                "전송했습니다. 확정되면 활동에 '확정'으로 표시됩니다.".to_owned(),
+                "전송했습니다. 블록에 포함되면(확인 1) 활동에 '확정'으로 표시됩니다.".to_owned(),
                 Tone::Success,
             ));
             items.push(Item::CardStart(None));

@@ -227,24 +227,12 @@ pub struct SolTrackState {
     pub notice: bool,
     /// Last round failure.
     pub error: Option<ErrorCode>,
-    /// Monotonic ms at which this session started tracking the record (its signing, or the
-    /// loop's resumption after start/unlock): the expiry proof's monotonic minimum (spec/07
-    /// §14.3) counts from here.
-    pub since_ms: u64,
+    /// The user asked to re-send the same signed bytes now ("지금 다시 전송", spec/07 §14.3):
+    /// the next round starts with `LoopState::send_now`.
+    pub send_now: bool,
     /// Endpoint generation: bumped when the cluster's URL changes, so a round started before the
     /// change (its genesis check, its outcome) is discarded when it completes.
     pub generation: u64,
-}
-
-impl SolTrackState {
-    /// A record tracked from `now` (monotonic ms).
-    #[must_use]
-    pub fn since(now: u64) -> Self {
-        Self {
-            since_ms: now,
-            ..Self::default()
-        }
-    }
 }
 
 /// An approved transfer waiting for its blockhash (spec/07 §13.1 step 5).
@@ -1340,7 +1328,7 @@ impl App {
                         next_ms: 0,
                         // Signed just now after a genesis check (step 5).
                         genesis_checked: true,
-                        ..SolTrackState::since(now_ms())
+                        ..SolTrackState::default()
                     },
                 );
                 if matches!(self.screen, Screen::SolSend) {
@@ -1391,14 +1379,52 @@ impl App {
         self.sol
             .tracking
             .retain(|signature, _| pending.contains(signature));
-        // A record first seen now (start, unlock) counts its monotonic expiry minimum from now.
-        let now = now_ms();
         for signature in pending {
-            self.sol
-                .tracking
-                .entry(signature)
-                .or_insert_with(|| SolTrackState::since(now));
+            self.sol.tracking.entry(signature).or_default();
         }
+    }
+
+    /// The `Pending` record "지금 다시 전송" acts on: the one just sent (result screen), else the
+    /// send form's sender's (spec/07 §14.3). `None` when it is not `Pending`, its loop is stopped
+    /// (cluster mismatch, saving a final state) or the app is not tracking it.
+    #[must_use]
+    pub fn sol_send_now_target(&self) -> Option<[u8; 64]> {
+        let records = self.sol_records();
+        let pending = |signature: [u8; 64]| {
+            records.iter().any(|record| {
+                record.signature() == signature && record.state == SolTxState::Pending
+            }) && self
+                .sol
+                .tracking
+                .get(&signature)
+                .is_some_and(|state| state.halt.is_none())
+        };
+        if matches!(self.screen, Screen::SolSendResult) {
+            return self
+                .sol
+                .sent
+                .map(|(_, signature)| signature)
+                .filter(|signature| pending(*signature));
+        }
+        let (_, from, _) = self.sol_form_sender()?;
+        let record = self.sol_pending(self.sol_cluster(), &from)?;
+        Some(record.signature()).filter(|signature| pending(*signature))
+    }
+
+    /// "지금 다시 전송": re-send the same signed bytes of the pending record right away instead
+    /// of waiting for the next re-send period (spec/07 §14.3). Never re-signs; the signature is
+    /// the journaled one, so the transfer can land at most once.
+    pub fn sol_send_now(&mut self) {
+        let Some(signature) = self.sol_send_now_target() else {
+            return;
+        };
+        if let Some(state) = self.sol.tracking.get_mut(&signature) {
+            state.send_now = true;
+            state.next_ms = 0;
+        }
+        logging::info("app", "sol.send_now", &[]);
+        self.sol_tick_tracking(now_ms());
+        self.refresh();
     }
 
     fn sol_tick_tracking(&mut self, now: u64) {
@@ -1438,6 +1464,9 @@ impl App {
             let Some(state) = self.sol.tracking.get_mut(&signature) else {
                 continue;
             };
+            if std::mem::take(&mut state.send_now) {
+                state.state.send_now();
+            }
             let job = TrackJob {
                 endpoint,
                 signature,
@@ -1448,7 +1477,6 @@ impl App {
                 },
                 state: state.state,
                 check_genesis: !state.genesis_checked,
-                tracked_since_ms: state.since_ms,
                 generation: state.generation,
             };
             state.busy = true;
@@ -1474,7 +1502,12 @@ impl App {
             self.refresh();
             return;
         }
-        state.next_ms = now.saturating_add(SOL_POLL_INTERVAL_MS);
+        // A "지금 다시 전송" asked while this round ran goes out with the next round, right away.
+        state.next_ms = if state.send_now {
+            now
+        } else {
+            now.saturating_add(SOL_POLL_INTERVAL_MS)
+        };
         state.state = result.state;
         match result.genesis_ok {
             Some(true) => state.genesis_checked = true,
@@ -1530,7 +1563,7 @@ impl App {
             SolTxState::Pending => {
                 let state = self.sol.tracking.get(&record.signature());
                 let mut text = if state.is_some_and(|state| state.state.processing) {
-                    "처리 중 (finalized 대기)".to_owned()
+                    "처리 중 (confirmed 대기)".to_owned()
                 } else {
                     "전송 확인 중".to_owned()
                 };

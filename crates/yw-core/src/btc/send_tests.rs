@@ -870,9 +870,13 @@ fn end_to_end_testnet4_core() {
     let own = confirmed.own_change_utxo(fixture.meta.account()).unwrap();
     assert_eq!(own.value, plan.change().unwrap().value);
     assert!(fixture.meta.insert_own(own).unwrap());
+    // One confirmation is final: D20 is released, the inputs and the change are no longer in
+    // flight (the change is spendable), and the record is finished at the same tip. A tip below
+    // the confirmation height (a lagging or garbage tip) does not finish it.
     assert_eq!(check_can_send(&records, NET), Ok(()));
-    assert!(finished_rows(&journal, NET, TIP + 5, NOW_UNIX + 700, 9).is_empty());
-    let rows = finished_rows(&journal, NET, TIP + 6, NOW_UNIX + 700, 9);
+    assert!(in_flight_outpoints(&records, NET).is_empty());
+    assert!(finished_rows(&journal, NET, TIP, NOW_UNIX + 700, 9).is_empty());
+    let rows = finished_rows(&journal, NET, TIP + 1, NOW_UNIX + 700, 9);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].status, "succeeded");
     assert_eq!(rows[0].tx_id, local.txid.to_display_hex());

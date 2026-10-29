@@ -384,10 +384,6 @@ impl Signer {
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one block per row of the spec/03 §5.2 table"
-)]
 fn state_transition_table() {
     let signer = Signer::new(7);
     let original = signer.record(&signer.tx(11_155_111, 5, 100, 0), Role::Original, T0);
@@ -445,29 +441,7 @@ fn state_transition_table() {
     assert_eq!(records[1].included_block_number, 77);
     assert_eq!(records[0].state, TxState::Replaced);
     assert_eq!(in_flight(&records, 11_155_111, &signer.account), Some(5));
-    // Included → Broadcast on a reorg (inclusion cleared).
-    apply(
-        &mut records,
-        &Transition::Reorged {
-            tx_hash: speed.tx_hash,
-            at_unix_ms: T0 + 5,
-        },
-    );
-    assert_eq!(records[1].state, TxState::Broadcast);
-    assert_eq!(records[1].included_block_number, 0);
-    assert_eq!(records[1].included_block_hash, [0; 32]);
-    assert_eq!(records[1].receipt_status, ReceiptStatus::None);
-    // Included again, then Finalized.
-    apply(
-        &mut records,
-        &Transition::Included {
-            tx_hash: speed.tx_hash,
-            block_number: 78,
-            block_hash: [8; 32],
-            success: false,
-            at_unix_ms: T0 + 6,
-        },
-    );
+    // Finalized (one confirmation, committed with Included by tracking): the nonce is free.
     apply(
         &mut records,
         &Transition::Finalized {
@@ -476,7 +450,7 @@ fn state_transition_table() {
         },
     );
     assert_eq!(records[1].state, TxState::Finalized);
-    assert_eq!(records[1].receipt_status, ReceiptStatus::Failure);
+    assert_eq!(records[1].receipt_status, ReceiptStatus::Success);
     assert_eq!(in_flight(&records, 11_155_111, &signer.account), None);
     // Terminal records do not move.
     for transition in [
@@ -484,7 +458,7 @@ fn state_transition_table() {
             tx_hash: speed.tx_hash,
             at_unix_ms: T0 + 8,
         },
-        Transition::Reorged {
+        Transition::Finalized {
             tx_hash: speed.tx_hash,
             at_unix_ms: T0 + 8,
         },
@@ -719,6 +693,43 @@ fn activity_mapping_of_terminal_groups() {
     assert_eq!(amount, "5");
     assert_eq!(counterparty, Address::from_bytes([0x11; 20]).to_lower_hex());
     assert_eq!(latest_candidate(&groups(&pending)[0].1).unwrap().nonce, 3);
+}
+
+#[test]
+fn one_confirmation_is_final_and_frees_the_nonce() {
+    // Tracking commits a verified receipt as Included + Finalized in one write (spec/03 §4.5):
+    // the record is final at one confirmation, the next nonce is free (D20), and the group's
+    // activity row is "succeeded".
+    let signer = Signer::new(14);
+    let mut plain = JournalPlain::default();
+    let sent = signer.record(&signer.tx(1, 0, 100, 0), Role::Original, T0);
+    push_record(&mut plain, &sent).unwrap();
+    let records = EvmEntries::from_plain(&plain).records();
+    assert_eq!(in_flight(&records, 1, &signer.account), Some(0));
+    let changed = apply_to_plain(
+        &mut plain,
+        &[
+            Transition::Included {
+                tx_hash: sent.tx_hash,
+                block_number: 9,
+                block_hash: [9; 32],
+                success: true,
+                at_unix_ms: T0 + 12_000,
+            },
+            Transition::Finalized {
+                tx_hash: sent.tx_hash,
+                at_unix_ms: T0 + 12_000,
+            },
+        ],
+    );
+    assert_eq!(changed, 1);
+    let records = EvmEntries::from_plain(&plain).records();
+    assert_eq!(records[0].state, TxState::Finalized);
+    assert_eq!(records[0].included_block_number, 9);
+    assert_eq!(in_flight(&records, 1, &signer.account), None);
+    let members: Vec<&EvmRecord> = records.iter().collect();
+    let rows = group_activity(&members).unwrap();
+    assert_eq!(rows[0].status, ActivityStatus::Succeeded);
 }
 
 #[test]

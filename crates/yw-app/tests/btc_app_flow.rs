@@ -60,8 +60,8 @@ const PASSWORD: &[u8] = b"m8-btc-flow-test!";
 const RECIPIENT: &str = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
 const FUNDING_VALUE: u64 = 100_000;
 const FUNDING_HEIGHT: u32 = TIP - 10;
-/// Six confirmations at `TIP`.
-const CONFIRM_HEIGHT: u32 = TIP - 5;
+/// One confirmation at `TIP` (final, spec/08 §12.2-4).
+const CONFIRM_HEIGHT: u32 = TIP;
 const BLOCK_HASH: &str = "00000000000000000000000000000000000000000000000000000000000000aa";
 
 /// The fake chain shared with the transport handler: transactions with their height (`None` =
@@ -863,7 +863,7 @@ fn testnet4_send_end_to_end() -> TestResult {
     });
     assert!(!harness.ui.slot);
 
-    // Tracking: in the mempool, then confirmed with 6 confirmations.
+    // Tracking: in the mempool, then confirmed with one confirmation (final).
     harness.clock.advance(60_000);
     harness.run(BtcUi::tick);
     assert_eq!(harness.records()[0].state, BtcTxState::InMempool);
@@ -890,7 +890,7 @@ fn testnet4_send_end_to_end() -> TestResult {
     assert!(own.own);
     assert_eq!(own.chain, BtcChain::Change);
     assert_eq!(own.index, 0);
-    // Finished (6 confirmations) → meta activity `bitcoin:testnet4`.
+    // Finished at one confirmation → meta activity `bitcoin:testnet4`.
     let activity = harness
         .meta
         .as_ref()
@@ -910,7 +910,7 @@ fn testnet4_send_end_to_end() -> TestResult {
         .iter()
         .find(|view| view.txid == sent_txid.to_display_hex())
         .ok_or("tab row")?;
-    assert_eq!(view.status, "확정(6+) (서버 기준)");
+    assert_eq!(view.status, "확정 (서버 기준)");
     assert!(!view.can_bump);
     // New sends are allowed again.
     assert_eq!(harness.ui.send_block(&harness.ctx()), None);
@@ -1656,7 +1656,7 @@ fn funding_to(script: Vec<u8>, value: u64, salt: u8) -> TestResult<(Transaction,
 /// `m/{44|49|84|86}'/1'/n'`, stores and selects it), discovery and a refresh that verifies a
 /// funding of its receive address 0, the account rows, the receive screen, a send through the
 /// real RPC worker (prepare → approval → sign → post-sign verification → pre-check → send), the
-/// version 2 journal record of that account, tracking to 6 confirmations with the own change
+/// version 2 journal record of that account, tracking to one confirmation with the own change
 /// inserted into that account (not BIP84 account 0), the activity row's account tag, and the
 /// switch back.
 #[test]
@@ -1751,7 +1751,7 @@ fn every_address_type_end_to_end() -> TestResult {
         let account = harness.ctx().btc_meta().ok_or("active")?.clone();
         assert_eq!(account.change_next(), 1);
         assert_eq!(harness.btc_meta().ok_or("primary")?.change_next(), 0);
-        // Tracking to 6 confirmations: own change into this account.
+        // Tracking to one confirmation (final): own change into this account.
         harness.clock.advance(60_000);
         harness.run(BtcUi::tick);
         if let Ok(mut world) = harness.world.lock() {
@@ -1852,7 +1852,7 @@ fn imported_info(wif: &str, script_type: ScriptType) -> TestResult<yw_core::keyi
 
 /// One imported key end to end: funded on the fake chain, listed (badge, balance, selected),
 /// received to, sent from (prepare → approve → sign with the vault's tag-4 record → post-sign
-/// verification → pre-check → send), tracked to 6 confirmations with the change back to the same
+/// verification → pre-check → send), tracked to one confirmation with the change back to the same
 /// address inserted into the imported account, and its activity tag.
 #[expect(clippy::too_many_lines, reason = "one imported account end to end")]
 fn imported_round(key_only: bool, salt: u8, wif: &str, script_type: ScriptType) -> TestResult {
@@ -1987,7 +1987,7 @@ fn imported_round(key_only: bool, salt: u8, wif: &str, script_type: ScriptType) 
         harness.ui.send_block(&harness.ctx()).as_deref(),
         Some(yw_core::btc::policy::texts::IN_FLIGHT)
     );
-    // Tracking to 6 confirmations: the change is inserted into the imported account.
+    // Tracking to one confirmation (final): the change is inserted into the imported account.
     harness.clock.advance(60_000);
     harness.run(BtcUi::tick);
     if let Ok(mut world) = harness.world.lock() {
@@ -2192,7 +2192,7 @@ fn imported_key_removal() -> TestResult {
             .get(BtcNetwork::Testnet4, account.id())
             .is_some()
     );
-    // Confirmed (6 confirmations): removal goes through.
+    // Confirmed (one confirmation is final): removal goes through.
     let sent_txid = harness
         .records()
         .first()

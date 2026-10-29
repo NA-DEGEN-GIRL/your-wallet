@@ -79,6 +79,8 @@ pub mod ids {
     pub const SEND_PICK: u16 = 7_025;
     /// "다시 보내기" on the result screen (spec/07 §14.3).
     pub const SEND_AGAIN: u16 = 7_026;
+    /// "지금 다시 전송": the same signed bytes of a pending transfer, now (spec/07 §14.3).
+    pub const SEND_NOW: u16 = 7_019;
     /// Picker rows.
     pub const SEND_PICK_BASE: u16 = 7_030;
     /// Picker span.
@@ -143,6 +145,7 @@ pub mod ids {
         SEND_CANCEL,
         SEND_PICK,
         SEND_AGAIN,
+        SEND_NOW,
         SECTION_SOL,
         FEE_CAP_EDIT,
         CU_PRICE_EDIT,
@@ -602,6 +605,7 @@ impl App {
             ));
             items.push(Item::Help(self.sol_record_status(&record)));
             items.push(Item::Mono(record.tx_id()));
+            self.sol_send_now_row(items);
         }
         items.push(Item::CardStart(Some("보내는 계정".to_owned())));
         items.push(Item::Text(label));
@@ -836,6 +840,7 @@ impl App {
                 &signature,
             )));
             items.push(Item::CardEnd);
+            self.sol_send_now_row(items);
         }
         let mut row = vec![Ctl::primary(crate::ui::screens::ids::BACK_MAIN, "메인으로")];
         if self.sol_can_resend() {
@@ -845,6 +850,22 @@ impl App {
             ));
         }
         items.push(Item::Row(row));
+    }
+
+    /// "지금 다시 전송" for a pending transfer (spec/07 §14.3): the same signed bytes, so it can
+    /// land at most once; a new signature is only offered once the RPC shows the blockhash
+    /// expired (`Expired` → "다시 보내기").
+    fn sol_send_now_row(&self, items: &mut Vec<Item>) {
+        if self.sol_send_now_target().is_none() {
+            return;
+        }
+        items.push(Item::Row(vec![Ctl::button(
+            ids::SEND_NOW,
+            "지금 다시 전송",
+        )]));
+        items.push(Item::Help(
+            "서명한 같은 거래를 바로 다시 보냅니다. 서명이 같아 한 번만 처리됩니다. 블록해시가 만료된 것이 RPC로 확인되면 새로 서명해 다시 보낼 수 있습니다.".to_owned(),
+        ));
     }
 
     /// S12 for Solana: full address, QR = the base58 text, path, cluster.

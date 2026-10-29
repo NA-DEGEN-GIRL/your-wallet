@@ -68,8 +68,10 @@ pub const BTC_JOURNAL_INPUT_LEN: usize = 49;
 /// Largest BTC body: 238 + 18 + 49 × 100 + 32,768 = 37,924 (spec/02 §5.4; version 1 bodies are
 /// at most 37,906).
 pub const BTC_JOURNAL_MAX_BODY: usize = 37_924;
-/// Confirmations after which tracking stops (spec/08 §12.2-4).
-pub const BTC_TRACK_CONFIRMATIONS: u32 = 6;
+/// Confirmations at which a transaction is final and tracking stops (spec/08 §12.2-4): one.
+/// The configured Core RPC and indexer are trusted (spec.md §2.2); a reorg of a one-confirmation
+/// transaction is out of scope.
+pub const BTC_FINAL_CONFIRMATIONS: u32 = 1;
 /// `Abandoned` records may still become `Confirmed` within this window, and are finished after
 /// it (30 days, seconds).
 pub const BTC_ABANDON_WINDOW_SECS: u64 = 30 * 86_400;
@@ -118,9 +120,9 @@ pub enum BtcTxState {
     BroadcastUnknown = 5,
     /// Seen in the mempool (in flight).
     InMempool = 6,
-    /// Confirmed (tracked up to 6 confirmations).
+    /// Confirmed: final at one confirmation (not tracked further).
     Confirmed = 7,
-    /// Replaced by a fee bump (tracked until the replacement has 6 confirmations).
+    /// Replaced by a fee bump (tracked until the replacement confirms).
     Replaced = 8,
     /// The replaced original confirmed first (finished).
     Conflicted = 9,
@@ -194,10 +196,11 @@ impl BtcTxState {
 
     /// The §12.1 transition table (with `Conflicted` reachable from the broadcast states and
     /// `Replaced` when an original confirms first). `BroadcastUnknown → Abandoned` additionally
-    /// needs the record's [`BtcRecord::can_abandon`] (checked by [`set_state`]). A shallow
-    /// `Confirmed` record goes back to `InMempool` / `BroadcastUnknown` on a reorg (tracking
-    /// only), and an `Abandoned` record becomes `Conflicted` when a transaction spending one of
-    /// its inputs confirms.
+    /// needs the record's [`BtcRecord::can_abandon`] (checked by [`set_state`]). The table keeps
+    /// `Confirmed → InMempool / BroadcastUnknown` (a reorg seen by tracking), but a `Confirmed`
+    /// record is final at one confirmation and no longer tracked, so tracking never feeds it.
+    /// An `Abandoned` record becomes `Conflicted` when a transaction spending one of its inputs
+    /// confirms (one confirmation).
     #[must_use]
     pub const fn can_transition_to(self, next: Self) -> bool {
         match self {
@@ -1761,8 +1764,8 @@ pub const fn hold_confirmation(
 pub enum TrackMode {
     /// Steps 1–2 every 60 s (`Submitted`, `BroadcastUnknown`, `InMempool`).
     Full,
-    /// Step 2 only (`Confirmed` below 6 confirmations, `Replaced` until its replacement has 6,
-    /// `Abandoned` and disclosed `Rejected` within 30 days).
+    /// Step 2 only (`Replaced` until its replacement confirms, `Abandoned` and disclosed
+    /// `Rejected` within 30 days).
     ConfirmationOnly,
     /// Not tracked.
     None,
@@ -1785,7 +1788,7 @@ fn chain_end_finished(
         match next.state {
             BtcTxState::Confirmed => {
                 return tip_height
-                    .is_none_or(|tip| next.confirmations(tip) >= BTC_TRACK_CONFIRMATIONS);
+                    .is_none_or(|tip| next.confirmations(tip) >= BTC_FINAL_CONFIRMATIONS);
             }
             BtcTxState::Replaced => current = next.replaced_by,
             // A replacement that was given up: the original may still confirm within the
@@ -1805,10 +1808,12 @@ fn chain_end_finished(
 }
 
 /// Whether tracking of `record` is over (spec/08 §12.4 "추적이 끝난 항목"): `Rejected` (a
-/// disclosed one only after 30 days, like `Abandoned`), `Conflicted`, `Confirmed` with 6+
-/// confirmations, `Replaced` whose replacement chain ends confirmed with 6+, rejected,
-/// conflicted, missing, or abandoned more than 30 days ago, `Abandoned` older than 30 days. `tip_height` is `None` for records of another network
-/// (not queried any more: `Confirmed` counts as finished).
+/// disclosed one only after 30 days, like `Abandoned`), `Conflicted`, `Confirmed` (one
+/// confirmation is final, [`BTC_FINAL_CONFIRMATIONS`]), `Replaced` whose replacement chain ends
+/// confirmed, rejected, conflicted, missing, or abandoned more than 30 days ago, `Abandoned`
+/// older than 30 days. `tip_height` is `None` for records of another network (not queried any
+/// more: `Confirmed` counts as finished); a tip below the confirmation height (a lagging or
+/// garbage tip) does not finish a `Confirmed` record.
 #[must_use]
 pub fn is_finished(
     record: &BtcRecord,
@@ -1819,7 +1824,7 @@ pub fn is_finished(
     match record.state {
         BtcTxState::Conflicted => true,
         BtcTxState::Confirmed => {
-            tip_height.is_none_or(|tip| record.confirmations(tip) >= BTC_TRACK_CONFIRMATIONS)
+            tip_height.is_none_or(|tip| record.confirmations(tip) >= BTC_FINAL_CONFIRMATIONS)
         }
         BtcTxState::Replaced => chain_end_finished(record, records, tip_height, now_unix),
         BtcTxState::Rejected if !record.disclosed => true,
@@ -1860,8 +1865,8 @@ pub fn track_mode(
 
 /// Applies one tracking observation to record `txid` (spec/08 §12.2): `InMempool` moves
 /// `Submitted`/`BroadcastUnknown` to `InMempool` and resets `not_found_count`, and moves a
-/// (shallow, still tracked) `Confirmed` record back to `InMempool` (reorg: its change is in
-/// flight again, [`in_flight_outpoints`]); `Confirmed` (with at least 1 confirmation at
+/// `Confirmed` record back to `InMempool` (only reachable if a caller still tracks one; tracking
+/// stops at the first confirmation); `Confirmed` (with at least 1 confirmation at
 /// `tip_height`) confirms `Submitted`/`BroadcastUnknown`/`InMempool`/`Replaced`, an `Abandoned`
 /// or disclosed `Rejected` record within 30 days, or updates a `Confirmed` height, conflicting every replacement and
 /// every other record spending one of its inputs; `NotFound` increments `not_found_count` of a
@@ -2198,7 +2203,7 @@ impl From<JournalError> for BtcPushError {
 /// inputs, outputs and lock time) and `Abandoned` or disclosed `Rejected` ones (the new record
 /// tracks the same transaction; [`disclosed_duplicate`] says whether to mark it disclosed) are
 /// removed from `plain` and their activity rows returned (write them to meta
-/// before committing the journal). Any other tracked one (in flight, `Confirmed` below 6,
+/// before committing the journal). Any other tracked one (in flight, `Confirmed` above the tip,
 /// `Replaced`) refuses the new record and leaves `plain` unchanged.
 ///
 /// # Errors
