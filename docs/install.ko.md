@@ -52,13 +52,14 @@ Chrome은 설치 폴더의 확장 사본을 쓰므로 `git pull`만으로는 로
 | `-InstallDir <폴더>` | 설치 폴더(기본 `%LOCALAPPDATA%\Programs\YourWallet`). 비어 있거나 이전 설치 폴더여야 하고, 다른 사용자가 바꿀 수 없어야 한다(아래) |
 | `-FixPermissions` | 이미 있는 설치 폴더를 다른 사용자가 바꿀 수 있을 때, 그 폴더가 내 소유이면 권한을 나·SYSTEM·Administrators만으로 고친다(설치 폴더만 고친다) |
 | `-AllowUnsafeToolchainPath` | rustup·cargo·rustc가 있는 폴더를 다른 사용자가 바꿀 수 있어도, 설명을 출력한 뒤 그 도구로 빌드한다(아래 "빌드 도구 위치"를 읽고 위험을 감수할 때만) |
+| `-AllowAncestorCargoConfig` | 저장소 바깥 상위 폴더(예: `D:\`)에 cargo 설정 파일(`.cargo\config.toml`·`.cargo\config`)이 있어도, 목록을 출력한 뒤 그대로 빌드한다(아래 "cargo 설정 파일"을 읽고 그 파일을 직접 둔 경우만) |
 | `-NoBuild` | 빌드하지 않고 이미 있는 `target\release`의 exe를 설치한다 |
 | `-NoShortcut` | 시작 메뉴 바로가기를 만들지 않는다 |
 | `-NoNativeHost` | HKCU 등록을 하지 않는다(그러면 확장이 앱에 연결되지 않는다) |
 
 종료 코드: 0 성공, 1 환경·경로 오류(상위 폴더 권한 포함), 2 소스·빌드 결과 오류(확장 ID 불일치 등), 3 취소(비대화형이라
 물을 수 없음 포함), 4 파일 복사 실패, 5 native host manifest·등록 실패, 6 바로가기 실패, 7 빌드 도구 없음·다른 사용자가 바꿀 수
-있는 위치의 빌드 도구·Rust 1.95.0이 아님, 8 빌드 실패, 9 예상하지 못한 오류.
+있는 위치의 빌드 도구·Rust 1.95.0이 아님·상위 폴더의 cargo 설정 파일, 8 빌드 실패, 9 예상하지 못한 오류.
 사용자 이름에 `&`·`%`·`!` 같은 문자가 있으면 기본 경로를 쓸 수 없다(Chrome이 `cmd.exe`로 host를 실행할 수 있어서다).
 `install.cmd -InstallDir "%USERPROFILE%\Apps\YourWallet"`처럼 사용자 프로필 아래의 단순한 경로를 준다(프로필 경로
 자체에 그런 문자가 있으면 그 문자가 없는 경로에 설치 프로그램이 새로 만들 폴더를 준다).
@@ -86,6 +87,15 @@ Chrome은 설치 폴더의 확장 사본을 쓰므로 `git pull`만으로는 로
 쓰는 폴더를 가리킨다면 `CARGO_HOME` 없이 rustup을 내 프로필(`%USERPROFILE%\.cargo`)에 설치해 쓰는 방법이 있다. 위험을 이해하고
 그대로 빌드하려면 `-AllowUnsafeToolchainPath`를 붙인다. git은 커밋 표시에만 쓰며, Program Files 아래이거나 다른 사람이 바꿀 수
 없는 내 폴더에 있는 git만 쓴다(없으면 커밋 표시 없이 설치한다).
+
+cargo 설정 파일: cargo는 저장소 폴더뿐 아니라 그 **모든 상위 폴더**(예: `D:\#Programming`, `D:\`)의 `.cargo\config.toml`·
+`.cargo\config`와 `CARGO_HOME`(기본 `%USERPROFILE%\.cargo`)의 설정 파일을 빌드에 적용한다. 이 파일은 컴파일러 래퍼·링커·의존성
+소스를 바꿀 수 있고, 드라이브 루트 같은 곳은 다른 계정도 폴더를 만들 수 있다. 그래서 저장소 바깥 상위 폴더에 그런 파일이
+하나라도 있으면 목록을 출력하고 멈춘다(종료 7). 직접 만든 파일이 아니면 내용을 확인한 뒤 지우거나 저장소를 다른 폴더(예: 사용자
+프로필 아래)로 옮긴다. 직접 둔 설정이면 `-AllowAncestorCargoConfig`를 붙인다. `CARGO_HOME`의 설정은 내 설정이므로 멈추지 않고,
+빌드를 바꾸는 키(`build.rustc*`·`build.rustflags`, `target.*.linker`·`target.*.rustflags`, `profile.release.*`, `[patch]`·`[source]`·
+`paths`)가 있을 때 그 키를 경고로 보여 준다. 빌드 명령은 또 컴파일러 래퍼를 끄고(`build.rustc-wrapper`·
+`build.rustc-workspace-wrapper`를 빈 값으로) 링커를 기본 `link.exe`로 고정한다.
 
 설치 프로그램을 깨끗한 환경에서 미리 시험해 보고 싶으면 Windows 샌드박스(Windows Sandbox)에서 실행할 수 있다.
 
@@ -190,6 +200,7 @@ RPC 주소는 절대 함께 보내지 않는다.
 |---|---|
 | 종료 코드 7(빌드 도구 없음) | 출력된 winget 명령으로 설치하거나 다시 실행해 `Y`. Build Tools를 설치한 직후면 새 창에서 다시 실행(필요하면 재시작). rustup을 기본 위치가 아닌 곳(scoop 등)에 설치했다면 `CARGO_HOME`이 그 폴더를 가리키게 한다 |
 | 종료 코드 7("다른 사용자가 바꿀 수 있는 위치의 Rust 도구") | 2의 "빌드 도구 위치" 참고. 위험을 감수한다면 `-AllowUnsafeToolchainPath` |
+| 종료 코드 7("상위 폴더에 cargo 설정 파일이 있습니다") | 2의 "cargo 설정 파일" 참고. 직접 둔 설정이면 `-AllowAncestorCargoConfig` |
 | 종료 코드 7("Rust 1.95.0이 아닙니다") | `rustup toolchain install 1.95.0` 후 다시 실행 |
 | 종료 코드 1("상위 폴더를 다른 사용자가 바꿀 수 있습니다") | 2의 "상위 폴더" 참고. 사용자 프로필 아래 경로를 `-InstallDir`로 준다 |
 | 종료 코드 8(빌드 실패) | cargo 출력의 첫 `error` 줄을 본다. `link.exe`·`kernel32.lib`이면 Visual Studio Installer → 수정 → "C++를 사용한 데스크톱 개발"·Windows SDK, 내려받기 오류면 인터넷 연결 |

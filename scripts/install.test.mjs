@@ -716,12 +716,13 @@ test("install.ps1 resolves rustup/cargo/rustc from CARGO_HOME or USERPROFILE onl
     assert.equal(run.status, 7, run.out);
     assert.ok(run.out.includes("-AllowUnsafeToolchainPath"), run.out);
     assert.ok(run.out.includes(cargoHomeBin), run.out);
-    run = runPowerShell(windowsPowerShell, ["-File", installScript, "-DryRun", "-AllowUnsafeToolchainPath", "-NoShortcut", "-NoNativeHost", "-InstallDir", installDir], env);
+    // -AllowAncestorCargoConfig: this runs the real checkout, whose ancestors (outside the test's control) are not under test here.
+    run = runPowerShell(windowsPowerShell, ["-File", installScript, "-DryRun", "-AllowUnsafeToolchainPath", "-AllowAncestorCargoConfig", "-NoShortcut", "-NoNativeHost", "-InstallDir", installDir], env);
     assert.equal(run.status, 0, run.out);
     assert.ok(run.out.includes(path.join(cargoHomeBin, "cargo.exe")), run.out);
     assert.equal(existsSync(installDir), false);
     // Only PATH has cargo: reported as missing (the PATH copy is named but not used); -DryRun still ends with 0.
-    run = runPowerShell(windowsPowerShell, ["-File", installScript, "-DryRun", "-NoShortcut", "-NoNativeHost", "-InstallDir", installDir], childEnv({ LOCALAPPDATA: localAppData, CARGO_HOME: emptyHome, PATH }));
+    run = runPowerShell(windowsPowerShell, ["-File", installScript, "-DryRun", "-AllowAncestorCargoConfig", "-NoShortcut", "-NoNativeHost", "-InstallDir", installDir], childEnv({ LOCALAPPDATA: localAppData, CARGO_HOME: emptyHome, PATH }));
     assert.equal(run.status, 0, run.out);
     assert.ok(run.out.includes(path.join(pathDir, "cargo.exe")), run.out);
     assert.ok(!run.out.includes(`${path.join(pathDir, "cargo.exe")} +`), run.out);
@@ -818,15 +819,19 @@ for (const [label, shell] of buildShells) {
       const expectedProfile = releaseProfile(await readFile(path.join(repoRoot, "Cargo.toml"), "utf8"));
       assert.equal(result.args[0], "+1.95.0");
       const configs = {};
+      const others = [];
       let index = 1;
       while (result.args[index] === "--config") {
-        const match = /^profile\.release\.([a-z-]+)=(.*)$/u.exec(result.args[index + 1]);
-        assert.ok(match, result.args[index + 1]);
-        assert.doesNotMatch(match[2], /[" ]/u, "no double quotes or spaces (Windows PowerShell 5.1 native argument passing)");
-        configs[match[1]] = match[2].replace(/^'(.*)'$/u, "$1");
+        const setting = result.args[index + 1];
+        assert.doesNotMatch(setting, /[" ]/u, "no double quotes or spaces (Windows PowerShell 5.1 native argument passing)");
+        const match = /^profile\.release\.([a-z-]+)=(.*)$/u.exec(setting);
+        if (match) configs[match[1]] = match[2].replace(/^'(.*)'$/u, "$1");
+        else others.push(setting);
         index += 2;
       }
       assert.deepEqual(configs, expectedProfile);
+      // No compiler wrapper (empty string = none) and rustc's default MSVC linker, over any config file or variable.
+      assert.deepEqual(others, ["build.rustc-wrapper=''", "build.rustc-workspace-wrapper=''", "target.x86_64-pc-windows-msvc.linker='link.exe'"]);
       assert.deepEqual(result.args.slice(index), ["build", "--release", "--locked", "-p", "yw-app", "-p", "yw-host"]);
 
       // What the fake tools received.
@@ -852,3 +857,142 @@ for (const [label, shell] of buildShells) {
     });
   });
 }
+
+// cargo config files (install.ps1 "cargo 설정 규칙"): cargo reads .cargo\config.toml and .cargo\config from the repo root and
+// every ancestor, plus CARGO_HOME. Hermetic: every config file is created inside a temp tree; folders above the temp root
+// are outside the test's control, so results are filtered to the temp tree and never asserted to be empty.
+const CARGO_CONFIG_SCRIPT = `param([string]$Script, [string]$Root, [string]$CargoHome, [string]$Samples, [string]$Out)
+$ErrorActionPreference = 'Stop'
+. $Script
+$keys = @(foreach ($sample in (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Samples)))) { , [string[]](Get-CargoConfigRiskyKeys ([string]$sample)) })
+$result = [ordered]@{ ancestors = [string[]](Get-AncestorCargoConfigs $Root $CargoHome); keys = $keys }
+[IO.File]::WriteAllText($Out, (ConvertTo-Json -InputObject $result -Depth 4 -Compress))
+`;
+
+const RISKY_CONFIG = [
+  "# build.rustc = 'commented out'",
+  "[build]",
+  "rustc-wrapper = \"C:/tools/sccache.exe\" # trailing comment",
+  "jobs = 4",
+  "target-dir = \"t#not-a-comment\"",
+  "[target.x86_64-pc-windows-msvc]",
+  "linker = 'evil.exe'",
+  "runner = \"x\"",
+  "[target.'cfg(windows)']",
+  "rustflags = [\"-C\", \"linker=evil.exe\"]",
+  "[profile.release]",
+  "opt-level = 0",
+  "[profile.dev]",
+  "opt-level = 1",
+  "[patch.crates-io]",
+  "serde = { path = \"../serde\" }",
+  "[source.crates-io]",
+  "replace-with = \"vendored\"",
+  "[net]",
+  "offline = true",
+  "",
+].join("\r\n");
+
+test("install.ps1 finds ancestor cargo configs (not the repo's own, not CARGO_HOME) and the CARGO_HOME keys that change the build", { skip: !windows, timeout: 120_000 }, async () => {
+  await withTemp("your-wallet-install-cargo-config-", async (temp) => {
+    const root = path.join(temp, "outer", "mid", "repo");
+    await mkdir(path.join(root, ".cargo"), { recursive: true });
+    await writeFile(path.join(root, ".cargo", "config.toml"), "[build]\nrustc-wrapper = 'repo-own'\n");
+    await mkdir(path.join(temp, "outer", ".cargo"), { recursive: true });
+    await writeFile(path.join(temp, "outer", ".cargo", "config.toml"), "[build]\n");
+    await mkdir(path.join(temp, "outer", "mid", ".cargo"), { recursive: true });
+    await writeFile(path.join(temp, "outer", "mid", ".cargo", "config"), "[build]\n");
+    const samples = [
+      RISKY_CONFIG,
+      "build.rustc-workspace-wrapper = 'x'\nprofile = { release = { lto = false } }\ntarget.\"x86_64-pc-windows-msvc\".linker = \"a\"\npaths = [\"../x\"]\nbuild = { rustflags = [] }\n",
+      "[build]\nrustdoc = 'x'\njobs = 2\n[env]\nRUSTC_WRAPPER = 'x'\n[target.x86_64-pc-windows-msvc]\nrunner = 'x'\n[profile.dev]\nlto = false\n[registries.x]\nindex = 'y'\n",
+      "",
+    ];
+    const helper = path.join(temp, "cargo-config.ps1");
+    await writeFile(helper, CARGO_CONFIG_SCRIPT);
+    const samplesFile = path.join(temp, "samples.json");
+    await writeFile(samplesFile, JSON.stringify(samples));
+    const out = path.join(temp, "cargo-config.json");
+    const inspect = async (cargoHome) => {
+      const run = runPowerShell(windowsPowerShell, ["-File", helper, "-Script", installScript, "-Root", root, "-CargoHome", cargoHome, "-Samples", samplesFile, "-Out", out], childEnv());
+      assert.equal(run.status, 0, run.out);
+      const result = JSON.parse(await readFile(out, "utf8"));
+      const ancestors = (result.ancestors ?? []).filter((file) => file.toLowerCase().startsWith(temp.toLowerCase()));
+      return { ancestors, keys: result.keys.map((list) => list ?? []) };
+    };
+
+    let result = await inspect(path.join(temp, "elsewhere", ".cargo"));
+    assert.deepEqual(result.ancestors, [path.join(temp, "outer", "mid", ".cargo", "config"), path.join(temp, "outer", ".cargo", "config.toml")]);
+    assert.deepEqual(result.keys[0], [
+      "build.rustc-wrapper", "target.x86_64-pc-windows-msvc.linker", "target.cfg(windows).rustflags", "profile.release.opt-level",
+      "patch.crates-io.serde", "patch.crates-io.serde.path", "source.crates-io.replace-with",
+    ]);
+    assert.deepEqual(result.keys[1], ["build.rustc-workspace-wrapper", "profile.release", "target.x86_64-pc-windows-msvc.linker", "paths", "build.rustflags"]);
+    assert.deepEqual(result.keys[2], []);
+    assert.deepEqual(result.keys[3], []);
+    // The .cargo folder that is CARGO_HOME (any case) is the user's own configuration, not an ancestor config.
+    result = await inspect(path.join(temp, "OUTER", ".cargo"));
+    assert.deepEqual(result.ancestors, [path.join(temp, "outer", "mid", ".cargo", "config")]);
+  });
+});
+
+test("install.ps1 refuses to build under an ancestor cargo config (exit 7) unless -AllowAncestorCargoConfig, and warns about CARGO_HOME keys (Windows PowerShell 5.1)", { skip: !windows, timeout: 300_000 }, async () => {
+  await withTemp("your-wallet-install-cargo-ancestor-", async (temp) => {
+    const outer = path.join(temp, "outer");
+    const root = path.join(outer, "mid", "repo");
+    for (const file of ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml", "scripts/install.ps1", "scripts/uninstall.ps1"]) {
+      await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+      await cp(path.join(repoRoot, file), path.join(root, file));
+    }
+    await cp(extensionRoot, path.join(root, "extension"), { recursive: true });
+    const ancestorDotCargo = path.join(outer, ".cargo");
+    const ancestorConfig = path.join(ancestorDotCargo, "config.toml");
+    await mkdir(ancestorDotCargo, { recursive: true });
+    await writeFile(ancestorConfig, "[build]\nrustc-wrapper = 'C:/evil/wrapper.exe'\n");
+    const cargoHome = path.join(temp, "cargo-home");
+    await fakeRustBin(path.join(cargoHome, "bin"));
+    await writeFile(path.join(cargoHome, "config.toml"), RISKY_CONFIG);
+    // Default install folder under a temp profile: the install-folder ancestor check stays inside the temp tree.
+    const profile = path.join(temp, "profile");
+    const localAppData = path.join(profile, "AppData", "Local");
+    await mkdir(localAppData, { recursive: true });
+    const install = (cargoHomeDir, ...args) => runPowerShell(windowsPowerShell, ["-File", path.join(root, "scripts", "install.ps1"), "-DryRun", "-NoShortcut", "-NoNativeHost", ...args],
+      childEnv({ LOCALAPPDATA: localAppData, USERPROFILE: profile, CARGO_HOME: cargoHomeDir }));
+    const listed = (out) => out.split(/\r?\n/u).map((line) => line.trim()).filter((line) => line.startsWith("- ")).map((line) => line.slice(2));
+    const inTemp = (file) => file.toLowerCase().startsWith(temp.toLowerCase());
+
+    let run = install(cargoHome);
+    assert.equal(run.status, 7, run.out);
+    assert.ok(listed(run.out).includes(ancestorConfig), run.out);
+    assert.ok(run.out.includes("-AllowAncestorCargoConfig"), run.out);
+    assert.ok(!run.out.includes(path.join(root, ".cargo")), "the repo's own .cargo is not an ancestor config");
+    assert.ok(!run.out.includes("[DryRun] 실행:"), "refused before the build plan");
+    assert.equal(existsSync(path.join(localAppData, "Programs")), false);
+
+    run = install(cargoHome, "-AllowAncestorCargoConfig");
+    assert.equal(run.status, 0, run.out);
+    assert.ok(listed(run.out).includes(ancestorConfig), run.out);
+    assert.ok(run.out.includes("[DryRun] 실행:"), run.out);
+    assert.ok(run.out.includes("--config build.rustc-wrapper='' --config build.rustc-workspace-wrapper='' --config target.x86_64-pc-windows-msvc.linker='link.exe'"), run.out);
+    // CARGO_HOME\config.toml: a warning naming the keys, never a refusal.
+    assert.ok(run.out.includes(path.join(cargoHome, "config.toml")), run.out);
+    for (const key of ["build.rustc-wrapper", "target.x86_64-pc-windows-msvc.linker", "profile.release.opt-level", "patch.crates-io.serde", "source.crates-io.replace-with"]) {
+      assert.ok(run.out.includes(key), `${key}\n${run.out}`);
+    }
+    assert.ok(!run.out.includes("profile.dev"), run.out);
+
+    // The ancestor .cargo that is CARGO_HOME itself is the user's configuration: its keys are warned about, not refused.
+    // Folders above the temp root are not under test: if one of them has a cargo config, the refusal lists only those.
+    await fakeRustBin(path.join(ancestorDotCargo, "bin"));
+    run = install(ancestorDotCargo);
+    assert.ok(!listed(run.out).some(inTemp), run.out);
+    assert.ok(run.status === 0 || run.status === 7, run.out);
+    if (run.status === 0) assert.ok(run.out.includes(ancestorConfig) && run.out.includes("build.rustc-wrapper"), run.out);
+
+    // No cargo config left in the temp tree's ancestors.
+    await rm(ancestorDotCargo, { force: true, recursive: true });
+    run = install(cargoHome);
+    assert.ok(!listed(run.out).some(inTemp), run.out);
+    assert.ok(run.status === 0 || run.status === 7, run.out);
+  });
+});

@@ -625,7 +625,7 @@ pub fn can_approve(g: &ApprovalGate, now: Instant) -> bool {
 ```
 매 이벤트와 50 ms 타이머마다 `set_armed(now, can_approve(..))`. `승인` 버튼은 승인 입력이 지금 받아들여질 때만 활성 모양이다(`ApprovalSession::approve_ready`: armed, 게이트 열림, 마지막 누름에서 1초 이상 또는 hold 진행 중). 차단 등급이면 버튼 글자 "승인할 수 없음".
 
-**빠른 클릭 유도 방어.** (1) armed가 아닐 때 받은 모든 포인터·키 누름(창 어디든, 키 자동 반복 포함 — 다른 버튼·본문·AI 패널·스크롤 막대 클릭, 비활성 창을 활성화하며 먹힌 클릭, 승인 버튼에서의 Enter·Space 밖 모든 키는 `InteractionEvent::OtherPress`)은 1초 대기를 다시 시작한다(`ready_at = max(ready_at, now)`). 창이 (다시) 활성화될 때(전경 false → true, 매 이벤트·타이머에서 확인, `WM_ACTIVATEAPP(TRUE)`)도 다시 시작한다. (2) 승인 입력(승인 버튼의 Enter·포인터 누름·Space)은 창 안 **직전 누름에서 1초 이상** 지나 시작해야 한다 — 버튼이 이미 armed였어도 그렇지 않으면 아무 일도 하지 않는다. 직전 누름은 표시 교체·상호작용 재시작을 넘어 기억한다. (yw-win이 디코드하지 않는 오른쪽·가운데·X 버튼과 제목 표시줄 누름은 세지 못한다.)
+**빠른 클릭 유도 방어.** (1) armed가 아닐 때 받은 모든 포인터·키 누름(창 어디든, 키 자동 반복 포함 — 다른 버튼·본문·AI 패널·스크롤 막대 클릭, 비활성 창을 활성화하며 먹힌 클릭, 승인 버튼에서의 Enter·Space 밖 모든 키는 `InteractionEvent::OtherPress`)은 1초 대기를 다시 시작한다(`ready_at = max(ready_at, now)`). 창이 (다시) 활성화될 때(전경 false → true, 매 이벤트·타이머에서 확인, `WM_ACTIVATEAPP(TRUE)`)도 다시 시작한다. (2) 승인 입력(승인 버튼의 Enter·포인터 누름·Space)은 창 안 **직전 누름에서 1초 이상** 지나 시작해야 한다 — 버튼이 이미 armed였어도 그렇지 않으면 아무 일도 하지 않는다. 직전 누름은 표시 교체·상호작용 재시작을 넘어 기억한다. 오른쪽·가운데·X 버튼 누름(`WM_RBUTTONDOWN`·`WM_MBUTTONDOWN`·`WM_XBUTTONDOWN` → `Msg::OtherButtonDown`)과 비클라이언트 영역(제목 표시줄·캡션 버튼·테두리·창 스크롤 막대) 누름·더블클릭(`WM_NC?BUTTONDOWN`·`WM_NC?BUTTONDBLCLK` → `Msg::NonClientButtonDown`)도 승인 창·본문 패널·AI 패널에서 `OtherPress`다(`interaction::stray_press`); 시스템 처리(이동·닫기·스크롤)는 `Reply::Default`로 그대로 둔다.
 
 | Win32 입력 | `InteractionEvent` |
 |---|---|
@@ -676,7 +676,7 @@ pub fn can_approve(g: &ApprovalGate, now: Instant) -> bool {
 
 ### 3.9 시험 (자동)
 - AP-1: 이식 `lib.rs:580-1006` 테스트 전부 통과(위험 사상 적용).
-- AP-2(빠른 클릭): armed 아님에서의 누름은 대기를 다시 시작한다(10,999 ms 누름 뒤 11,000 ms 클릭 무시, 12,000 ms 승인); 창 활성화도 다시 시작; 아무 누름 뒤 999 ms의 승인 누름(포인터·Enter·고위험 포인터·Space hold) 무시, 1,000 ms 수락; 빠른 클릭 연속 + 자동 반복 Enter는 1초 멈춘 뒤의 누름만 승인.
+- AP-2(빠른 클릭): armed 아님에서의 누름은 대기를 다시 시작한다(10,999 ms 누름 뒤 11,000 ms 클릭 무시, 12,000 ms 승인); 창 활성화도 다시 시작; 아무 누름 뒤 999 ms의 승인 누름(포인터·Enter·고위험 포인터·Space hold) 무시, 1,000 ms 수락; 오른쪽·가운데·X 버튼과 비클라이언트 누름도 대기 재시작·누름 간격에 들어감; 빠른 클릭 연속 + 자동 반복 Enter는 1초 멈춘 뒤의 누름만 승인.
 - AP-2: `armed=false`에서 Enter·클릭·2초 hold → `Pending`. 고위험 경고 2개: 체크박스는 1개, 체크 끔 + 2초 hold → `Pending`; 체크 켬 + 1.9초 / 2.0초 → `Pending` / `Approved`. `risk == High`인데 `ack_required == false`인 비정상 입력도 체크 필요(D16, 방어 중복). `Blocked` → 어떤 입력도 `Approved` 아님. `ready_at` + 999 ms 클릭 → 무시. 표시 교체 중 hold → 취소, 체크 해제.
 - AP-3: 같은 origin 17번째·전체 65번째 → `TooManyPending`. 남은 기한 4,999 ms → 창 없이 `TimedOut`. `Preparing` 30 s 뒤 Ready → `Expired`는 Ready 표시 + 120 s(준비 시간 불포함). App 항목 `Expired` → 폼 입력 유지, 다시 검토 시 새 승인 id(이전 id `consume` 실패). `Connect` 선택 16개 → `can_approve` 참, 17개 → 거짓. 표시 중 잠금 → `Rejected`, 대기 항목은 남음. 연결 해제 → 그 origin 대기 항목 `Revoked`.
 - AP-4: 이스케이프되지 않은 U+202E, 라벨 표에 없는 `FieldKey` → 표시 없이 `Rejected` + E-UI-001. 270,000바이트 값과 공백 없는 3,000자 문자열 배치 → 줄 조각을 이으면 원문과 같음.

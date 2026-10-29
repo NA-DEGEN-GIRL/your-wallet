@@ -16,7 +16,7 @@ use yw_app::ui::approval::{
 use yw_app::ui::interaction::{
     ApprovalGate, ApprovalInteraction, ApprovalSession, ConnectView, HIGH_RISK_HOLD_MS, HoldSource,
     InteractionEvent, InteractionRisk, InteractionStatus, PrepareStage, PrepareState, ReadyContent,
-    ack_needed, can_approve,
+    ack_needed, can_approve, stray_press,
 };
 use yw_app::ui::text_layout::{layout, rejoin};
 use yw_core::approval::{
@@ -28,6 +28,7 @@ use yw_core::bip32::path::AccountIndex;
 use yw_core::evm::address::Address;
 use yw_core::evm::chain::SEPOLIA_GENESIS;
 use yw_core::vault::EvmKeySource;
+use yw_win::ui::Msg;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -588,6 +589,40 @@ fn ap2_rapid_click_lure_never_approves() {
     now += 1_000;
     s.event(now, PRESS);
     assert_eq!(s.event(now + 50, RELEASE), InteractionStatus::Approved);
+}
+
+#[test]
+fn ap2_right_middle_x_and_non_client_clicks_restart_the_arm_delay() {
+    // Every mouse button in the client area and any press on the title bar, caption buttons,
+    // frame or scroll bar is a press (spec/04 §3.4).
+    for msg in [Msg::OtherButtonDown, Msg::NonClientButtonDown] {
+        assert_eq!(stray_press(&msg), Some(InteractionEvent::OtherPress));
+        let event = stray_press(&msg).unwrap_or(InteractionEvent::Tick);
+        let mut s = session(message(RiskLevel::Info, false, 0), 10_000);
+        s.event(10_600, event);
+        assert_eq!(s.gate.ready_at_ms, 10_600, "{msg:?} while not armed");
+        assert!(!can_approve(&s.gate, 11_599));
+        s.event(11_599, PRESS);
+        assert_eq!(s.event(11_600, RELEASE), InteractionStatus::Pending);
+        // Armed: a stray press still blocks an approving press for 1 s.
+        let mut s = session(message(RiskLevel::Info, false, 0), 0);
+        s.event(5_000, event);
+        assert!(!s.approve_ready(5_999), "{msg:?} press gap");
+        assert!(s.approve_ready(6_000));
+    }
+    // Releases, moves, the left button and everything else map to nothing here (the left button
+    // has its own `MouseDown` arm).
+    for msg in [
+        Msg::MouseDown { x: 1, y: 1 },
+        Msg::MouseUp { x: 1, y: 1 },
+        Msg::MouseMove { x: 1, y: 1 },
+        Msg::MouseActivate,
+        Msg::Wheel(120),
+        Msg::Paint,
+        Msg::Timer(1),
+    ] {
+        assert_eq!(stray_press(&msg), None, "{msg:?}");
+    }
 }
 
 #[test]

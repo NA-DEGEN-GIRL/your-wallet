@@ -3,7 +3,7 @@
 # Windows PowerShell 5.1과 PowerShell 7에서 동작한다. 관리자 권한이 필요 없다(현재 사용자 범위만 바꾼다).
 #
 # 사용 (저장소 루트에서):
-#   install.cmd [-InstallDir <폴더>] [-FixPermissions] [-AllowUnsafeToolchainPath] [-NoShortcut] [-NoNativeHost] [-NoBuild] [-DryRun]
+#   install.cmd [-InstallDir <폴더>] [-FixPermissions] [-AllowUnsafeToolchainPath] [-AllowAncestorCargoConfig] [-NoShortcut] [-NoNativeHost] [-NoBuild] [-DryRun]
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1 [같은 옵션]
 #
 #   -InstallDir    설치 폴더. 기본 %LOCALAPPDATA%\Programs\YourWallet
@@ -11,7 +11,9 @@
 #                  때만 권한을 고친다. 없으면 그런 폴더에는 설치하지 않는다.
 #   -AllowUnsafeToolchainPath  빌드에 쓸 cargo·rustup·rustc(또는 그 폴더)를 다른 사용자가 바꿀 수 있어도(아래 도구 규칙)
 #                  설명을 출력한 뒤 그대로 빌드한다. 없으면 그런 도구로는 빌드하지 않는다(종료 7).
-#   -NoShortcut    시작 메뉴 바로가기를 만들지 않는다.
+#   -AllowAncestorCargoConfig  저장소 바깥 상위 폴더의 .cargo\config.toml·.cargo\config(아래 cargo 설정 규칙)가 있어도
+#                  목록을 출력한 뒤 그대로 빌드한다. 없으면 그런 폴더에서는 빌드하지 않는다(종료 7).
+#   -NoShortcut   시작 메뉴 바로가기를 만들지 않는다.
 #   -NoNativeHost  HKCU에 Chrome native messaging host를 등록하지 않는다(manifest 파일은 설치 폴더에 쓴다).
 #   -NoBuild       빌드하지 않고 이미 있는 target\release\yw-app.exe·yw-host.exe를 쓴다(빌드 도구 확인도 건너뛴다).
 #   -DryRun        확인과 할 일 출력만 하고 아무것도 바꾸지 않는다(빌드·winget도 실행하지 않는다).
@@ -24,6 +26,15 @@
 # 사용자 소유 폴더이고 같은 권한 검사를 통과할 때만 쓰고, 아니면 커밋 표시를 건너뛴다. 빌드는 cargo +1.95.0이고
 # Cargo.toml [profile.release]와 같은 값을 명령줄 --config로 다시 주며, 컴파일러·빌드 설정을 바꾸는 환경 변수를 빌드
 # 동안만 지운다(Invoke-Build). cargo·rustc가 1.95.0이 아니면 종료 7.
+#
+# cargo 설정 규칙(Confirm-CargoConfigs): cargo는 저장소 루트와 그 모든 상위 폴더(D:\#Programming, D:\ 등)의
+# .cargo\config.toml·.cargo\config, 그리고 CARGO_HOME의 config.toml·config를 빌드에 적용한다. 저장소 자신의 .cargo는
+# 소스의 일부다. CARGO_HOME(위 도구 규칙과 같은 폴더: %CARGO_HOME% 또는 %USERPROFILE%\.cargo)은 사용자 자신의 설정이라
+# 빌드 동작을 바꾸는 키(build.rustc*·build.rustflags, target.*.linker·target.*.rustflags, profile.release.*, [patch]·
+# [source]·paths)가 있을 때 그 키를 출력해 경고만 한다. 그 밖의 상위 폴더에 그런 파일이 하나라도 있으면(드라이브 루트처럼
+# 다른 사용자가 만들 수 있는 곳일 수 있다) 목록을 출력하고 종료 7(-AllowAncestorCargoConfig면 계속). 빌드는 또
+# --config로 build.rustc-wrapper·build.rustc-workspace-wrapper를 빈 값으로, target.x86_64-pc-windows-msvc.linker를 기본
+# link.exe로 고정한다.
 #
 # 순서: (1) 확장 파일·ID 확인 -> (2) 빌드 도구 확인(rustup·cargo, Visual Studio C++ 빌드 도구). 없으면 winget 명령을
 # 보여 주고 Y라고 답할 때만 실행 -> (3) cargo +1.95.0 build --release --locked -p yw-app -p yw-host -> (4) 설치 폴더 확인(이전
@@ -67,7 +78,7 @@
 #   6  시작 메뉴 바로가기 생성 실패
 #   7  빌드 도구(Rust·C++ 빌드 도구) 없음: 설치하지 않기로 했거나, 비대화형이라 물을 수 없거나, 설치 뒤에도 찾지 못함.
 #      다른 사용자가 바꿀 수 있는 위치의 Rust 도구(-AllowUnsafeToolchainPath 없음), cargo·rustc가 1.95.0이 아님,
-#      Rust 기본 대상이 x86_64-pc-windows-msvc가 아님
+#      Rust 기본 대상이 x86_64-pc-windows-msvc가 아님, 저장소 바깥 상위 폴더의 cargo 설정 파일(-AllowAncestorCargoConfig 없음)
 #   8  빌드 실패
 #   9  예상하지 못한 오류(스크립트 결함; 출력된 줄 번호와 함께 알려 주세요)
 #Requires -Version 5.1
@@ -76,6 +87,7 @@ param(
     [string]$InstallDir = '',
     [switch]$FixPermissions,
     [switch]$AllowUnsafeToolchainPath,
+    [switch]$AllowAncestorCargoConfig,
     [switch]$NoShortcut,
     [switch]$NoNativeHost,
     [switch]$NoBuild,
@@ -96,6 +108,9 @@ $BuildArgs = @('build', '--release', '--locked', '-p', 'yw-app', '-p', 'yw-host'
 # .cargo\config.toml보다 우선한다). 문자열은 TOML 리터럴('...')로 쓴다: Windows PowerShell 5.1은 네이티브 인자 안의
 # 큰따옴표를 escape하지 않아 "fat"이 cargo에 fat으로 간다. 같은지는 scripts/install.test.mjs가 확인한다.
 $ReleaseProfileOverrides = @('codegen-units=1', "lto='fat'", 'overflow-checks=true', "panic='abort'", "strip='symbols'", 'debug=false')
+# 같은 방식으로 컴파일러 래퍼를 끄고(빈 문자열 = 래퍼 없음) 링커를 rustc의 MSVC 기본값(link.exe)으로 고정한다. 상위
+# 폴더·CARGO_HOME의 설정이나 환경 변수가 정한 값보다 우선한다.
+$BuildConfigOverrides = @("build.rustc-wrapper=''", "build.rustc-workspace-wrapper=''", "target.x86_64-pc-windows-msvc.linker='link.exe'")
 # 빌드(cargo·rustc 실행) 동안만 지우는 환경 변수: 정확한 이름과 접두사(대소문자 무시). RUSTFLAGS 계열은 아래 목록.
 $ClearedBuildVariableNames = @('RUSTC', 'RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER')
 $ClearedBuildVariablePrefixes = @('CARGO_PROFILE_RELEASE_', 'CARGO_BUILD_RUSTC', 'CC', 'CFLAGS', 'CXX', 'CXXFLAGS')
@@ -745,13 +760,20 @@ function Wait-FilesReleased([string[]]$Paths) {
 # 아니면 %USERPROFILE%\.cargo\bin. PATH는 보지 않는다(PATH 앞쪽의 다른 사용자가 쓸 수 있는 폴더에 cargo.exe를 두는
 # 바꿔치기를 막는다). 둘 다 없으면 $null.
 function Get-CargoBinDir {
+    $cargoHome = Get-CargoHomeDir
+    if ($null -eq $cargoHome) { return $null }
+    return Join-Path $cargoHome 'bin'
+}
+
+# CARGO_HOME 폴더: CARGO_HOME이 드라이브 문자로 시작하는 절대 경로면 그 폴더, 아니면 %USERPROFILE%\.cargo. 둘 다 없으면 $null.
+function Get-CargoHomeDir {
     $cargoHome = $env:CARGO_HOME
     if (-not [string]::IsNullOrEmpty($cargoHome) -and $cargoHome -match '^[A-Za-z]:\\') {
-        return Join-Path (ConvertTo-FullPath $cargoHome) 'bin'
+        return ConvertTo-FullPath $cargoHome
     }
     $userProfile = $env:USERPROFILE
     if (-not [string]::IsNullOrEmpty($userProfile) -and $userProfile -match '^[A-Za-z]:\\') {
-        return Join-Path (ConvertTo-FullPath $userProfile) '.cargo\bin'
+        return Join-Path (ConvertTo-FullPath $userProfile) '.cargo'
     }
     return $null
 }
@@ -1023,8 +1045,142 @@ function Get-CargoBuildArguments {
         $list.Add('--config')
         $list.Add("profile.release.$setting")
     }
+    foreach ($setting in $BuildConfigOverrides) {
+        $list.Add('--config')
+        $list.Add($setting)
+    }
     $list.AddRange([string[]]$BuildArgs)
     return , $list.ToArray()
+}
+
+# ---------------------------------------------------------------- cargo 설정 파일(머리말의 cargo 설정 규칙)
+
+# TOML 키 한 조각(맨 키, "기본 문자열", '리터럴 문자열')과 점으로 이은 키 경로.
+$TomlKeyPart = '(?:"(?:[^"\\]|\\.)*"|''[^'']*''|[A-Za-z0-9_-]+)'
+$TomlKeyPath = "$TomlKeyPart(?:\s*\.\s*$TomlKeyPart)*"
+
+function Split-TomlKeyPath([string]$Path) {
+    $parts = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($match in [regex]::Matches($Path, $TomlKeyPart)) {
+        $value = $match.Value
+        if ($value.StartsWith('"') -or $value.StartsWith("'")) { $value = $value.Substring(1, $value.Length - 2) }
+        $parts.Add($value)
+    }
+    return , $parts.ToArray()
+}
+
+# 줄에서 문자열 밖의 # 주석을 뗀다.
+function Remove-TomlComment([string]$Line) {
+    $quote = [char]0
+    for ($i = 0; $i -lt $Line.Length; $i++) {
+        $ch = $Line[$i]
+        if ($quote -ne [char]0) {
+            if ($ch -eq '\' -and $quote -eq '"') { $i++; continue }
+            if ($ch -eq $quote) { $quote = [char]0 }
+        } elseif ($ch -eq '"' -or $ch -eq "'") {
+            $quote = $ch
+        } elseif ($ch -eq '#') {
+            return $Line.Substring(0, $i)
+        }
+    }
+    return $Line
+}
+
+# 빌드 동작을 바꾸는 cargo 설정 키인지(키 조각 배열, 대소문자 구분): build.rustc*(rustc·rustc-wrapper·
+# rustc-workspace-wrapper)·build.rustflags, target.<대상>.linker·target.<대상>.rustflags, profile.release.*, patch.*·
+# source.*(의존성 소스 바꾸기), paths(경로 재정의).
+function Test-RiskyCargoKey([string[]]$Parts) {
+    if ($Parts.Count -lt 1) { return $false }
+    $first = $Parts[0]
+    if ($first -ceq 'build') { return $Parts.Count -ge 2 -and ($Parts[1].StartsWith('rustc', [StringComparison]::Ordinal) -or $Parts[1] -ceq 'rustflags') }
+    if ($first -ceq 'target') { return $Parts.Count -ge 3 -and ($Parts[2] -ceq 'linker' -or $Parts[2] -ceq 'rustflags') }
+    if ($first -ceq 'profile') { return $Parts.Count -ge 2 -and $Parts[1] -ceq 'release' }
+    return $first -ceq 'patch' -or $first -ceq 'source' -or $first -ceq 'paths'
+}
+
+# cargo 설정 파일 내용에서 위 키를 찾아 점으로 이은 이름으로 돌려준다(중복 없이, 나온 순서). 완전한 TOML 해석기는
+# 아니다: 표 머리 [a.b]·[[a.b]], 점 키 a.b = ..., 한 줄 인라인 표 a = { b = ... }를 본다(경고용이라 여러 줄 문자열 안의
+# "키 = 값" 모양 줄도 키로 셀 수 있다).
+function Get-CargoConfigRiskyKeys([string]$Text) {
+    $keys = New-Object 'System.Collections.Generic.List[string]'
+    $table = [string[]]@()
+    $add = {
+        param([string[]]$Parts)
+        $name = $Parts -join '.'
+        if ((Test-RiskyCargoKey $Parts) -and -not $keys.Contains($name)) { $keys.Add($name) }
+    }
+    foreach ($raw in ($Text -split "\r?\n")) {
+        $line = (Remove-TomlComment $raw).Trim()
+        if ($line.Length -eq 0) { continue }
+        $header = [regex]::Match($line, "^\[\[?\s*($TomlKeyPath)\s*\]\]?$")
+        if ($header.Success) {
+            $table = Split-TomlKeyPath $header.Groups[1].Value
+            continue
+        }
+        $pair = [regex]::Match($line, "^($TomlKeyPath)\s*=\s*(.*)$")
+        if (-not $pair.Success) { continue }
+        $own = Split-TomlKeyPath $pair.Groups[1].Value   # 배열 그대로(@()로 감싸면 한 겹 더 싸인다)
+        $base = [string[]]($table + $own)
+        & $add $base
+        $value = $pair.Groups[2].Value
+        if ($value.StartsWith('{')) {
+            foreach ($inner in [regex]::Matches($value, "[{,]\s*($TomlKeyPath)\s*=")) {
+                $innerParts = Split-TomlKeyPath $inner.Groups[1].Value
+                & $add ([string[]]($base + $innerParts))
+            }
+        }
+    }
+    return , $keys.ToArray()
+}
+
+# 저장소 루트의 상위 폴더(부모부터 드라이브 루트까지)마다 .cargo\config.toml·.cargo\config가 있으면 그 경로. 저장소
+# 자신의 .cargo는 보지 않고, $CargoHome과 같은 .cargo 폴더(사용자 프로필 아래 저장소의 %USERPROFILE%\.cargo 등)는
+# 사용자 설정이라 뺀다(Confirm-CargoConfigs가 키만 경고).
+function Get-AncestorCargoConfigs([string]$Root, [string]$CargoHome) {
+    $found = New-Object 'System.Collections.Generic.List[string]'
+    $homeDir = $null
+    if (-not [string]::IsNullOrEmpty($CargoHome)) { $homeDir = ConvertTo-FullPath $CargoHome }
+    $dir = [IO.Path]::GetDirectoryName((ConvertTo-FullPath $Root))
+    while (-not [string]::IsNullOrEmpty($dir)) {
+        $dotCargo = [IO.Path]::Combine($dir, '.cargo')
+        if ($null -eq $homeDir -or -not $dotCargo.Equals($homeDir, [StringComparison]::OrdinalIgnoreCase)) {
+            foreach ($name in 'config.toml', 'config') {
+                $file = [IO.Path]::Combine($dotCargo, $name)
+                if (Test-Path -LiteralPath $file) { $found.Add($file) }
+            }
+        }
+        $dir = [IO.Path]::GetDirectoryName($dir)
+    }
+    return , $found.ToArray()
+}
+
+# 빌드 전에: 상위 폴더의 cargo 설정 파일이 있으면 목록을 출력하고 종료 7($Allow면 경고 후 계속), CARGO_HOME의 설정
+# 파일(config.toml·config)이 빌드를 바꾸는 키를 정하면 그 키를 경고한다.
+function Confirm-CargoConfigs([string]$Root, [string]$CargoHome, [bool]$Allow) {
+    $ancestors = Get-AncestorCargoConfigs $Root $CargoHome   # 배열 그대로(@()로 감싸면 한 겹 더 싸인다)
+    if ($ancestors.Count -gt 0) {
+        Write-Host '  저장소 바깥의 상위 폴더에 cargo 설정 파일이 있습니다. cargo는 이 파일을 빌드에 그대로 적용합니다(컴파일러·링커·의존성 소스를 바꿀 수 있습니다):' -ForegroundColor Yellow
+        foreach ($file in $ancestors) { Write-Host "    - $file" }
+        if (-not $Allow) {
+            Stop-Install 7 "상위 폴더의 cargo 설정 파일($($ancestors.Count)개) 때문에 빌드하지 않습니다. 직접 만든 파일이 아니면 내용을 확인한 뒤 지우거나, 저장소를 그런 파일이 없는 폴더(예: 사용자 프로필 아래)로 옮겨 다시 실행하세요. 직접 둔 설정이면 -AllowAncestorCargoConfig로 계속할 수 있습니다."
+        }
+        Write-Warn '-AllowAncestorCargoConfig: 위 cargo 설정 파일을 적용한 채로 빌드합니다.'
+    }
+    if ([string]::IsNullOrEmpty($CargoHome)) { return }
+    foreach ($name in 'config.toml', 'config') {
+        $file = [IO.Path]::Combine($CargoHome, $name)
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { continue }
+        try {
+            $text = [IO.File]::ReadAllText($file)
+        } catch {
+            Write-Warn "CARGO_HOME의 cargo 설정 파일을 읽을 수 없습니다: $file"
+            continue
+        }
+        $keys = Get-CargoConfigRiskyKeys $text
+        if ($keys.Count -gt 0) {
+            Write-Warn "CARGO_HOME의 cargo 설정 파일 $file 이 빌드를 바꾸는 키를 정합니다: $($keys -join ', '). 설치 빌드는 컴파일러 래퍼·링커·release 프로필 일부를 명령줄로 다시 정하지만 나머지는 그대로 적용됩니다. 직접 넣은 설정인지 확인하세요."
+        }
+    }
 }
 
 # Rust $RustToolchain(+툴체인)으로 릴리스 빌드한다. $Tools = Get-RustTools(전체 경로). 컴파일러·빌드 설정을 바꾸는
@@ -1231,11 +1387,13 @@ function Invoke-Install {
         }
         Write-Host "  건너뜀(-NoBuild). $releaseDir 의 yw-app.exe·yw-host.exe를 씁니다."
     } elseif ($DryRun) {
+        Confirm-CargoConfigs $root (Get-CargoHomeDir) $AllowAncestorCargoConfig.IsPresent
         $cargoExe = 'cargo'
         if ($null -ne $tools -and $null -ne $tools.Cargo) { $cargoExe = $tools.Cargo }
         Write-Plan "실행: $cargoExe $((Get-CargoBuildArguments) -join ' ')  (저장소 루트, 결과 $releaseDir)"
         Write-Plan "빌드 동안만 지울 환경 변수: $((@($ClearedBuildVariableNames) + @($RustflagsVariables)) -join ', '), 이름이 $($ClearedBuildVariablePrefixes -join '·')로 시작하는 것"
     } else {
+        Confirm-CargoConfigs $root (Get-CargoHomeDir) $AllowAncestorCargoConfig.IsPresent
         Invoke-Build $root $tools
         foreach ($exe in $sourceApp, $sourceHost) {
             if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { Stop-Install 8 "빌드가 끝났지만 결과 파일이 없습니다: $exe" }

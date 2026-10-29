@@ -7,12 +7,14 @@
 //! the stream codec and the one-shot `PRESENTED` guard are gone; (2) an `armed` flag set from
 //! [`can_approve`] on every event and tick; (3) `physical_down` is filled by the window from
 //! `input::is_down` (a consistency check, not a security boundary); (4) rapid-click lure
-//! defence: every pointer or key press received while not armed, and every window
-//! (re)activation, restarts the 1 s arm delay ([`ApprovalSession`]), and an approving press must
-//! start at least 1 s after the previous press anywhere in the window
+//! defence: every pointer or key press received while not armed (any mouse button, client or
+//! non-client area, [`stray_press`]), and every window (re)activation, restarts the 1 s arm
+//! delay ([`ApprovalSession`]), and an approving press must start at least 1 s after the
+//! previous press anywhere in the window
 //! ([`InteractionEvent::is_press`]).
 
 use yw_core::approval::{ApprovalRequest, RiskLevel, SimNoneReason, SimVerdict, SimulationBinding};
+use yw_win::ui::Msg;
 
 use crate::errors::ErrorCode;
 
@@ -125,6 +127,19 @@ impl InteractionEvent {
                 | Self::SpacePressed { .. }
                 | Self::OtherPress
         )
+    }
+}
+
+/// The approval-window (and panel) messages that are presses with no approval meaning of their
+/// own: a right, middle or X button press in the client area, and any button press on the
+/// non-client area (title bar, caption buttons, frame, scroll bar). They count as
+/// [`InteractionEvent::OtherPress`] (press-gap rule, arm-delay restart while not armed); the window
+/// still lets the system handle the message (`Reply::Default`).
+#[must_use]
+pub const fn stray_press(msg: &Msg) -> Option<InteractionEvent> {
+    match msg {
+        Msg::OtherButtonDown | Msg::NonClientButtonDown => Some(InteractionEvent::OtherPress),
+        _ => None,
     }
 }
 

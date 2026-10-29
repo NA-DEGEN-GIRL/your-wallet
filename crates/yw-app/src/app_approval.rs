@@ -45,7 +45,7 @@ use crate::ui::approval::QueueOutcome;
 use crate::ui::approval_view::{ApprovalView, Block, Tone, escape_spans, view};
 use crate::ui::interaction::{
     APPROVAL_TICK_MS, ApprovalGate, ApprovalSession, HIGH_RISK_HOLD_MS, InteractionEvent,
-    InteractionStatus, MAX_LIFETIME_MS, PrepareStage, PrepareState, ReadyContent,
+    InteractionStatus, MAX_LIFETIME_MS, PrepareStage, PrepareState, ReadyContent, stray_press,
 };
 use crate::ui::text_layout;
 use crate::ui::theme::{self, FontRole, Fonts, wide};
@@ -1899,6 +1899,11 @@ impl App {
 
     #[expect(clippy::too_many_lines, reason = "one arm per spec/04 §3.4 input row")]
     pub(crate) fn on_approval_msg(&mut self, window: &Window, msg: &Msg) -> Reply {
+        if let Some(event) = stray_press(msg) {
+            // Right/middle/X button and non-client presses count too (spec/04 §3.4).
+            self.interaction(event);
+            return Reply::Default;
+        }
         match msg {
             Msg::Paint => {
                 self.paint_approval(window);
@@ -2164,6 +2169,11 @@ impl App {
     }
 
     pub(crate) fn on_panel_msg(&mut self, window: &Window, msg: &Msg) -> Reply {
+        if let Some(event) = stray_press(msg) {
+            // Right/middle/X button and non-client presses count too (spec/04 §3.4).
+            self.interaction(event);
+            return Reply::Default;
+        }
         match msg {
             Msg::Paint => {
                 self.paint_panel(window);
@@ -2724,6 +2734,11 @@ impl App {
     }
 
     pub(crate) fn on_ai_body_msg(&mut self, window: &Window, msg: &Msg) -> Reply {
+        if let Some(event) = stray_press(msg) {
+            // Right/middle/X button and non-client presses count too (spec/04 §3.4).
+            self.interaction(event);
+            return Reply::Default;
+        }
         match msg {
             Msg::Paint => {
                 self.paint_ai_body(window);

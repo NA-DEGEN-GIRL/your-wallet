@@ -11,10 +11,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_GETTEXTLENGTH, WM_IME_CHAR, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_KEYDOWN,
     WM_IME_KEYUP, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_PAINT, WM_PASTE, WM_POWERBROADCAST, WM_PRINT, WM_PRINTCLIENT, WM_QUERYENDSESSION,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTEXT, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER,
-    WM_UNDO, WM_VSCROLL, WM_WTSSESSION_CHANGE, WTS_CONSOLE_DISCONNECT, WTS_REMOTE_DISCONNECT,
-    WTS_SESSION_LOCK, WTS_SESSION_LOGOFF, WTS_SESSION_UNLOCK,
+    WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCMBUTTONDBLCLK, WM_NCMBUTTONDOWN, WM_NCRBUTTONDBLCLK,
+    WM_NCRBUTTONDOWN, WM_NCXBUTTONDBLCLK, WM_NCXBUTTONDOWN, WM_PAINT, WM_PASTE, WM_POWERBROADCAST,
+    WM_PRINT, WM_PRINTCLIENT, WM_QUERYENDSESSION, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTEXT,
+    WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_UNDO, WM_VSCROLL, WM_WTSSESSION_CHANGE,
+    WM_XBUTTONDOWN, WTS_CONSOLE_DISCONNECT, WTS_REMOTE_DISCONNECT, WTS_SESSION_LOCK,
+    WTS_SESSION_LOGOFF, WTS_SESSION_UNLOCK,
 };
 
 /// Last application message number (`WM_APP..=0xBFFF`).
@@ -74,6 +76,13 @@ pub enum Msg {
         /// Y.
         y: i32,
     },
+    /// `WM_RBUTTONDOWN` / `WM_MBUTTONDOWN` / `WM_XBUTTONDOWN` in the client area (a secret window
+    /// blocks the first two before decoding). `Reply::Default` keeps the system behaviour.
+    OtherButtonDown,
+    /// Any mouse button pressed (or double-clicked) on the non-client area: the title bar, the
+    /// caption buttons, the frame or a window scroll bar (`WM_NC?BUTTONDOWN` /
+    /// `WM_NC?BUTTONDBLCLK`). Reply `Reply::Default` so moving, closing and scrolling still work.
+    NonClientButtonDown,
     /// `WM_VSCROLL` request (`SB_*` code in the low word of wParam).
     VScroll {
         /// `SB_LINEUP` 0, `SB_LINEDOWN` 1, `SB_PAGEUP` 2, `SB_PAGEDOWN` 3, `SB_THUMBTRACK` 5, `SB_TOP` 6, `SB_BOTTOM` 7, …
@@ -204,6 +213,11 @@ pub(crate) fn decode(
             let (x, y) = point();
             Msg::MouseMove { x, y }
         }
+        WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => Msg::OtherButtonDown,
+        WM_NCLBUTTONDOWN | WM_NCRBUTTONDOWN | WM_NCMBUTTONDOWN | WM_NCXBUTTONDOWN
+        | WM_NCLBUTTONDBLCLK | WM_NCRBUTTONDBLCLK | WM_NCMBUTTONDBLCLK | WM_NCXBUTTONDBLCLK => {
+            Msg::NonClientButtonDown
+        }
         WM_VSCROLL => Msg::VScroll {
             code: loword(wparam),
         },
@@ -311,8 +325,11 @@ mod tests {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         WM_APP, WM_CHAR, WM_COMMAND, WM_CONTEXTMENU, WM_COPY, WM_ENDSESSION, WM_GETTEXT,
         WM_IME_NOTIFY, WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS,
-        WM_LBUTTONDOWN, WM_POWERBROADCAST, WM_QUERYENDSESSION, WM_RBUTTONDBLCLK, WM_SETTEXT,
-        WM_SIZE, WM_TIMER, WM_VSCROLL, WM_WTSSESSION_CHANGE,
+        WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN,
+        WM_NCLBUTTONUP, WM_NCMBUTTONDBLCLK, WM_NCMBUTTONDOWN, WM_NCRBUTTONDBLCLK, WM_NCRBUTTONDOWN,
+        WM_NCXBUTTONDBLCLK, WM_NCXBUTTONDOWN, WM_POWERBROADCAST, WM_QUERYENDSESSION,
+        WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTEXT, WM_SIZE, WM_TIMER, WM_VSCROLL,
+        WM_WTSSESSION_CHANGE, WM_XBUTTONDOWN, WM_XBUTTONUP,
     };
 
     fn plain(msg: u32, wparam: usize, lparam: isize) -> Option<Msg> {
@@ -393,6 +410,32 @@ mod tests {
             Some(Msg::VScroll { code: 5 })
         );
         assert_eq!(plain(WM_RBUTTONDBLCLK, 0, 0), None);
+    }
+
+    #[test]
+    fn every_other_button_and_non_client_press_decodes() {
+        for msg in [WM_RBUTTONDOWN, WM_MBUTTONDOWN, WM_XBUTTONDOWN] {
+            assert_eq!(
+                plain(msg, 0x0001_0000, 0x0005_0005),
+                Some(Msg::OtherButtonDown)
+            );
+        }
+        for msg in [
+            WM_NCLBUTTONDOWN,
+            WM_NCRBUTTONDOWN,
+            WM_NCMBUTTONDOWN,
+            WM_NCXBUTTONDOWN,
+            WM_NCLBUTTONDBLCLK,
+            WM_NCRBUTTONDBLCLK,
+            WM_NCMBUTTONDBLCLK,
+            WM_NCXBUTTONDBLCLK,
+        ] {
+            assert_eq!(plain(msg, 2, 0), Some(Msg::NonClientButtonDown));
+        }
+        // Releases are not presses.
+        for msg in [WM_RBUTTONUP, WM_MBUTTONUP, WM_XBUTTONUP, WM_NCLBUTTONUP] {
+            assert_eq!(plain(msg, 0, 0), None);
+        }
     }
 
     #[test]
