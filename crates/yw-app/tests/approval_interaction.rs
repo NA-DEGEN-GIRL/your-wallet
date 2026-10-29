@@ -134,7 +134,9 @@ fn ap1_pointer_outside_and_focus_loss_reset_and_require_release() {
     i.apply(1_600, PRESS);
     assert_eq!(i.hold_source(), None);
     i.apply(1_700, RELEASE);
-    i.apply(1_800, PRESS);
+    // ≥ 1 s after the refused press at 1 600 (press-gap rule).
+    i.apply(2_600, PRESS);
+    assert_eq!(i.hold_source(), Some(HoldSource::Pointer));
     i.apply(3_000, InteractionEvent::FocusLost);
     assert_eq!(i.hold_source(), None);
     assert!(i.is_blocked(HoldSource::Pointer));
@@ -159,10 +161,11 @@ fn ap1_space_repeat_resets_hold_until_physical_release() {
             physical_down: false,
         },
     );
-    i.apply(900, space(false, true));
+    // ≥ 1 s after the refused press at 700 (press-gap rule).
+    i.apply(1_700, space(false, true));
     assert_eq!(i.hold_source(), Some(HoldSource::Space));
     assert_eq!(
-        i.apply(2_900, InteractionEvent::Tick),
+        i.apply(3_700, InteractionEvent::Tick),
         InteractionStatus::Approved
     );
 }
@@ -398,8 +401,234 @@ fn ap2_arm_delay_ignores_a_click_at_999_ms() {
         s.event(10_999, InteractionEvent::ApproveActivated),
         InteractionStatus::Pending
     );
+    // The presses at 10 999 came while not armed: the delay restarted there, so 11 000 is
+    // refused too (and restarts it again).
     s.event(11_000, PRESS);
-    assert_eq!(s.event(11_001, RELEASE), InteractionStatus::Approved);
+    assert_eq!(s.event(11_001, RELEASE), InteractionStatus::Pending);
+    assert_eq!(s.gate.ready_at_ms, 11_000);
+    s.event(12_000, PRESS);
+    assert_eq!(s.event(12_001, RELEASE), InteractionStatus::Approved);
+}
+
+#[test]
+fn ap2_press_while_not_armed_restarts_the_arm_delay() {
+    let mut s = session(message(RiskLevel::Info, false, 0), 10_000);
+    // A press anywhere (not on the approve button) before the delay elapsed.
+    s.event(10_500, InteractionEvent::OtherPress);
+    assert_eq!(s.gate.ready_at_ms, 10_500);
+    assert!(!can_approve(&s.gate, 11_499));
+    assert!(can_approve(&s.gate, 11_500));
+    // A key press (auto-repeat too) while not armed restarts it again.
+    s.event(11_200, InteractionEvent::OtherPress);
+    assert_eq!(s.gate.ready_at_ms, 11_200);
+    assert!(!can_approve(&s.gate, 12_199));
+    assert_eq!(
+        s.event(12_199, InteractionEvent::Tick),
+        InteractionStatus::Pending
+    );
+    assert!(!s.interaction().is_armed());
+    assert!(!s.approve_ready(12_199));
+    assert_eq!(
+        s.event(12_200, InteractionEvent::Tick),
+        InteractionStatus::Pending
+    );
+    assert!(s.interaction().is_armed());
+    assert!(s.approve_ready(12_200));
+    // A press while armed does not move the delay (the press-gap rule still applies to it).
+    s.event(13_000, InteractionEvent::OtherPress);
+    assert_eq!(s.gate.ready_at_ms, 11_200);
+    s.event(14_000, PRESS);
+    assert_eq!(s.event(14_001, RELEASE), InteractionStatus::Approved);
+}
+
+#[test]
+fn ap2_unarmed_approve_presses_restart_the_delay_for_high_risk_too() {
+    let request = message(RiskLevel::High, true, 1);
+    let mut s = session(request, 0);
+    // The checkbox is unchecked: not armed, so each press restarts the delay.
+    s.event(3_000, InteractionEvent::OtherPress);
+    s.set_ack(3_000, true);
+    assert_eq!(s.gate.ready_at_ms, 3_000);
+    assert_eq!(hold(&mut s, 3_500, 3_000), InteractionStatus::Pending);
+    assert_eq!(s.gate.ready_at_ms, 3_500);
+    s.event(6_600, RELEASE);
+    assert_eq!(
+        hold(&mut s, 7_000, HIGH_RISK_HOLD_MS),
+        InteractionStatus::Approved
+    );
+}
+
+#[test]
+fn ap2_window_activation_restarts_the_arm_delay() {
+    let mut s = session(message(RiskLevel::Info, false, 0), 0);
+    assert_eq!(
+        s.event(5_000, InteractionEvent::Tick),
+        InteractionStatus::Pending
+    );
+    assert!(s.interaction().is_armed());
+    // Losing the foreground, then regaining it, restarts the delay with no press at all.
+    s.set_foreground(5_000, false);
+    assert!(!can_approve(&s.gate, 5_050));
+    s.set_foreground(5_100, true);
+    assert_eq!(s.gate.ready_at_ms, 5_100);
+    assert!(!s.interaction().is_armed(), "disarmed at once");
+    // Staying foreground is not a new activation.
+    s.set_foreground(5_200, true);
+    assert_eq!(s.gate.ready_at_ms, 5_100);
+    assert_eq!(
+        s.event(6_099, InteractionEvent::Tick),
+        InteractionStatus::Pending
+    );
+    assert!(!s.approve_ready(6_099));
+    assert_eq!(
+        s.event(6_100, InteractionEvent::Tick),
+        InteractionStatus::Pending
+    );
+    assert!(s.approve_ready(6_100));
+    s.event(6_100, PRESS);
+    assert_eq!(s.event(6_101, RELEASE), InteractionStatus::Approved);
+
+    // `WM_ACTIVATEAPP(TRUE)`: an explicit restart while foreground.
+    let mut s = session(message(RiskLevel::Info, false, 0), 0);
+    s.event(5_000, InteractionEvent::Tick);
+    s.restart_arm_delay(5_000);
+    assert!(!s.interaction().is_armed());
+    assert_eq!(
+        s.event(5_999, InteractionEvent::ApproveActivated),
+        InteractionStatus::Pending
+    );
+    // That Enter came while not armed: the delay now runs from 5 999.
+    assert_eq!(s.gate.ready_at_ms, 5_999);
+    assert_eq!(
+        s.event(6_999, InteractionEvent::ApproveActivated),
+        InteractionStatus::Approved
+    );
+}
+
+#[test]
+fn ap2_approve_press_under_one_second_after_any_press_is_refused() {
+    // Standard pointer: armed since 1 000; a press elsewhere at 5 000.
+    let mut s = session(message(RiskLevel::Info, false, 0), 0);
+    s.event(5_000, InteractionEvent::OtherPress);
+    assert!(s.interaction().is_armed(), "armed earlier, still armed");
+    assert!(!s.approve_ready(5_999));
+    s.event(5_999, PRESS);
+    assert_eq!(s.interaction().hold_source(), None);
+    assert_eq!(s.event(6_000, RELEASE), InteractionStatus::Pending);
+    // ≥ 1 s after the previous press (the refused one at 5 999) → accepted.
+    assert!(s.approve_ready(6_999));
+    s.event(6_999, PRESS);
+    assert_eq!(s.event(7_000, RELEASE), InteractionStatus::Approved);
+
+    // Enter.
+    let mut s = session(message(RiskLevel::Info, false, 0), 0);
+    s.event(5_000, InteractionEvent::OtherPress);
+    assert_eq!(
+        s.event(5_500, InteractionEvent::ApproveActivated),
+        InteractionStatus::Pending
+    );
+    assert_eq!(
+        s.event(6_499, InteractionEvent::ApproveActivated),
+        InteractionStatus::Pending
+    );
+    assert_eq!(
+        s.event(7_499, InteractionEvent::ApproveActivated),
+        InteractionStatus::Approved
+    );
+
+    // High risk: neither a pointer nor a Space hold starts within 1 s of another press.
+    let space = InteractionEvent::SpacePressed {
+        repeat: false,
+        physical_down: true,
+    };
+    let space_up = InteractionEvent::SpaceReleased {
+        physical_down: false,
+    };
+    let mut s = session(message(RiskLevel::High, true, 1), 0);
+    s.set_ack(1_000, true);
+    s.event(5_000, InteractionEvent::OtherPress);
+    assert_eq!(hold(&mut s, 5_900, 3_000), InteractionStatus::Pending);
+    s.event(8_900, RELEASE);
+    s.event(9_000, InteractionEvent::OtherPress);
+    s.event(9_999, space);
+    assert_eq!(s.interaction().hold_source(), None);
+    s.event(10_000, space_up);
+    s.event(11_000, space);
+    assert_eq!(s.interaction().hold_source(), Some(HoldSource::Space));
+    assert_eq!(
+        s.event(13_000, InteractionEvent::Tick),
+        InteractionStatus::Approved
+    );
+}
+
+#[test]
+fn ap2_rapid_click_lure_never_approves() {
+    // A page lures the user into clicking fast; the clicks walk onto the approve button long
+    // after the window armed. Every click is a press, so none of them can approve.
+    let mut s = session(message(RiskLevel::Info, false, 0), 0);
+    let mut now = 10_000;
+    for _ in 0..10 {
+        s.event(now, InteractionEvent::OtherPress);
+        now += 150;
+    }
+    for _ in 0..10 {
+        s.event(now, PRESS);
+        assert_eq!(s.event(now + 50, RELEASE), InteractionStatus::Pending);
+        now += 150;
+    }
+    // Auto-repeated Enter on the focused button never approves either.
+    for _ in 0..40 {
+        assert_eq!(
+            s.event(now, InteractionEvent::ApproveActivated),
+            InteractionStatus::Pending
+        );
+        now += 33;
+    }
+    // One deliberate press after a 1 s pause does.
+    now += 1_000;
+    s.event(now, PRESS);
+    assert_eq!(s.event(now + 50, RELEASE), InteractionStatus::Approved);
+}
+
+#[test]
+fn ap2_press_gap_spans_an_interaction_restart() {
+    let mut s = session(message(RiskLevel::Info, false, 0), 0);
+    s.event(1_000, PRESS);
+    assert_eq!(s.event(1_001, RELEASE), InteractionStatus::Approved);
+    s.restart_interaction(1_060)
+        .unwrap_or_else(|_| unreachable!("deadline ahead"));
+    assert_eq!(s.interaction().last_press_ms(), Some(1_000));
+    s.event(1_500, PRESS);
+    assert_eq!(s.event(1_501, RELEASE), InteractionStatus::Pending);
+    s.event(2_500, PRESS);
+    assert_eq!(s.event(2_501, RELEASE), InteractionStatus::Approved);
+}
+
+#[test]
+fn ap2_press_classification() {
+    assert!(InteractionEvent::OtherPress.is_press());
+    assert!(InteractionEvent::ApproveActivated.is_press());
+    assert!(PRESS.is_press());
+    assert!(
+        InteractionEvent::SpacePressed {
+            repeat: true,
+            physical_down: true
+        }
+        .is_press()
+    );
+    assert!(!RELEASE.is_press());
+    assert!(!InteractionEvent::Tick.is_press());
+    assert!(!InteractionEvent::PointerMoved { inside: true }.is_press());
+    assert!(!InteractionEvent::RejectActivated.is_press());
+    // An `OtherPress` alone never approves, even with a completed arm delay.
+    let mut i = interaction(InteractionRisk::Standard, 30_000, 0);
+    assert_eq!(
+        i.apply(5_000, InteractionEvent::OtherPress),
+        InteractionStatus::Pending
+    );
+    assert_eq!(i.last_press_ms(), Some(5_000));
+    assert!(!i.press_spaced(5_999));
+    assert!(i.press_spaced(6_000));
 }
 
 /// C1: `Approved` is terminal (every later tick returns it). After the window acts on it (a

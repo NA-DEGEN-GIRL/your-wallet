@@ -607,7 +607,17 @@ pub fn load_apikeys(paths: &Paths, settings: &Settings) -> (ApiKeys, bool) {
                     logging::info("app", "apikeys.orphan", &[("net", Field::Net(network))]);
                 }
             }
-            (decoded.keys, false)
+            let mut keys = decoded.keys;
+            // spec/06 §2.1: an LLM key stored by an older version has no host; it is bound to
+            // the endpoint saved now (in memory; written with the next save, at the latest
+            // before the endpoint changes).
+            if let Some(endpoint) =
+                crate::explain::config::parse_endpoint(&settings.llm_explain.endpoint)
+                && keys.bind_llm_host(&endpoint.host)
+            {
+                logging::info("app", "apikeys.llm_host_bound", &[]);
+            }
+            (keys, false)
         }
         Err(_) => (ApiKeys::default(), true),
     }

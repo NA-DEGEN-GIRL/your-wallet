@@ -25,7 +25,9 @@ use crate::errors::ErrorCode;
 use crate::events::{
     BalanceSnapshot, EvmSigned, JournalView, KeyJob, KeyOutcome, RpcEvent, SignFailure,
 };
-use crate::flow::evm::form::{AddressNote, KnownAddress, Quote, check_recipient, parse_amount};
+use crate::flow::evm::form::{
+    AddressNote, KnownAddress, Quote, add_history, check_recipient, parse_amount, tx_recipients,
+};
 use crate::flow::evm::prepare::{ReplaceMode, ReplaceTarget, SendIntent};
 use crate::flow::evm::track::{BroadcastOutcome, TrackInput, poll_interval_ms};
 use crate::flow::evm::user_chain::{
@@ -501,7 +503,10 @@ impl App {
             .collect()
     }
 
-    /// Address book and own accounts for the form notes.
+    /// Address book, own accounts and sent history for the form notes. History entries (past
+    /// recipients of every EVM chain: the journal records' `to` and decoded ERC-20 recipient,
+    /// then the activity rows' counterparties) are compared for look-alikes only and are not
+    /// offered by the picker; addresses already listed are not repeated.
     #[must_use]
     pub fn known_addresses(&self) -> Vec<KnownAddress> {
         let mut known: Vec<KnownAddress> = self
@@ -516,6 +521,7 @@ impl App {
                             name: entry.label,
                             verified: entry.verified,
                             mine: false,
+                            history: false,
                         })
                     })
                     .collect()
@@ -529,8 +535,25 @@ impl App {
                     name: label,
                     verified: false,
                     mine: true,
+                    history: false,
                 }),
         );
+        let journal = self
+            .evm
+            .records()
+            .iter()
+            .filter_map(EvmRecord::tx)
+            .flat_map(|tx| tx_recipients(&tx));
+        add_history(&mut known, journal);
+        if let Some(meta) = self.meta.as_ref() {
+            let activity = meta
+                .activity
+                .iter()
+                .filter(|(network, _)| network.starts_with("eip155:"))
+                .flat_map(|(network, _)| meta.activity_of(network))
+                .filter_map(|entry| yw_core::evm::address::parse_address(&entry.counterparty).ok());
+            add_history(&mut known, activity);
+        }
         known
     }
 
@@ -2185,6 +2208,87 @@ mod tests {
         .unwrap();
         record.flags = flags;
         record
+    }
+
+    /// Journal records (every chain) and EVM activity rows feed the look-alike history; book
+    /// entries are not repeated and history is not offered by the picker.
+    #[test]
+    fn past_recipients_join_the_known_addresses_as_history() {
+        use crate::apikeys::ApiKeys;
+        use crate::app::{App, AppMode, Paths};
+        use crate::events::JournalView;
+        use crate::meta::{ActivityEntry, BookEntry, Meta};
+        use crate::settings::Settings;
+
+        let dir = std::env::temp_dir().join(format!("yw-app-evm-known-{}", std::process::id()));
+        let mut app = App::new(
+            Paths {
+                data: dir.clone(),
+                logs: dir.join("logs"),
+            },
+            true,
+            Settings::default(),
+            ApiKeys::default(),
+        );
+        app.mode = AppMode::Unlocked {
+            alt_passphrase: false,
+        };
+        let book = "0x52908400098527886e0f7030069857d2e4169ee7";
+        let from_activity = "0xf278cf59f82edcf871d630f28ecc8056f25c1cdb";
+        let mut meta = Meta::default();
+        meta.add_book(&BookEntry {
+            address: book.to_owned(),
+            label: "거래소".to_owned(),
+            verified: false,
+            added_at_unix_ms: 1,
+        })
+        .unwrap();
+        let row = |counterparty: &str, sig: u8| ActivityEntry {
+            account: "0xfe3b557e8fb62b89f4916b721be55ceb828dbd73".to_owned(),
+            tx_id: format!("0x{}", "ab".repeat(31) + &format!("{sig:02x}")),
+            title: "보내기".to_owned(),
+            asset: "native".to_owned(),
+            amount: "1".to_owned(),
+            counterparty: counterparty.to_owned(),
+            status: "succeeded".to_owned(),
+            time_unix_ms: u64::from(sig),
+        };
+        meta.upsert_activity("eip155:84532", &row(from_activity, 1));
+        meta.upsert_activity("eip155:84532", &row(book, 2));
+        // A Solana row is not an EVM recipient.
+        meta.upsert_activity("solana:devnet", &row(from_activity, 3));
+        app.meta = Some(meta);
+        // The Besu record (chain 4) sends to 0x…aaaa.
+        app.evm.journal = Some(JournalView {
+            records: vec![record(0)],
+            ..JournalView::default()
+        });
+        let known = app.known_addresses();
+        let history: Vec<String> = known
+            .iter()
+            .filter(|entry| entry.history)
+            .map(|entry| entry.address.to_lower_hex())
+            .collect();
+        assert_eq!(
+            history,
+            vec![
+                "0x000000000000000000000000000000000000aaaa".to_owned(),
+                from_activity.to_owned(),
+            ]
+        );
+        assert_eq!(
+            known
+                .iter()
+                .filter(|entry| entry.address.to_lower_hex() == book)
+                .count(),
+            1
+        );
+        assert!(
+            app.picker_entries()
+                .iter()
+                .all(|address| address.to_lower_hex() == book)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// After a restart the activity notes come back from the journal flags: a manual-resend-only

@@ -937,6 +937,31 @@ impl BtcMeta {
         Ok(None)
     }
 
+    /// Every scriptPubKey [`BtcMeta::own_recipient`] recognises: `[0, next + BTC_GAP_LIMIT)` of
+    /// both chains (a single key: its one address). The cross-identity journal rules (spec/08
+    /// §12.1 "같은 주소의 다른 계정") and the import alias check (§3.5) match by these scripts.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError`].
+    pub fn owned_scripts(&self) -> Result<Vec<Vec<u8>>, KeyError> {
+        let deriver = self.account.deriver()?;
+        if self.is_single() {
+            return Ok(vec![deriver.script(BtcChain::Receive, 0)?]);
+        }
+        let mut out = Vec::new();
+        for chain in [BtcChain::Receive, BtcChain::Change] {
+            let end = self
+                .next_of(chain)
+                .saturating_add(BTC_GAP_LIMIT)
+                .min(HARDENED);
+            for index in 0..end {
+                out.push(deriver.script(chain, index)?);
+            }
+        }
+        Ok(out)
+    }
+
     /// The approval facts of `plan` (spec/08 §10): available balance, minimum input
     /// confirmations, first-time and own-address recipient.
     ///

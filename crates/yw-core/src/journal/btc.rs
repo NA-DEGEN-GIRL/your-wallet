@@ -36,22 +36,26 @@ use super::{
 use crate::bip32::HARDENED;
 use crate::bip32::path::BtcChain;
 use crate::btc::account::{BtcAccountId, BtcAccountKey, ScriptType};
-use crate::btc::address::{ScriptKind, encode_address, kind_from_script, script_pubkey};
+use crate::btc::address::{ScriptKind, encode_address, hash160, kind_from_script, script_pubkey};
 use crate::btc::amount::Sats;
 use crate::btc::display::btc_title;
-use crate::btc::meta::VerifiedUtxo;
+use crate::btc::meta::{BtcMeta, VerifiedUtxo};
 use crate::btc::network::BtcNetwork;
-use crate::btc::script::split_p2pkh_script_sig;
+use crate::btc::script::{
+    p2pkh_script_pubkey, p2sh_p2wpkh_redeem_script, p2sh_script_pubkey, p2wpkh_script_pubkey,
+    split_p2pkh_script_sig,
+};
 use crate::btc::select::{BumpSource, PlanError, PlanInput, SendPlan};
 use crate::btc::sign::SignedTx;
 use crate::btc::taproot::{Prevout, check_key_path_witness, sighash_default};
 use crate::btc::tx::{
-    OutPoint, Transaction, Txid, parse_transaction, serialize, txid, vsize, wtxid,
+    OutPoint, Transaction, TxIn, Txid, parse_transaction, serialize, txid, vsize, wtxid,
 };
 use crate::btc::verify::VerifiedSignedTx;
 use crate::btc::{
     BTC_JOURNAL_FINAL_KEEP, BTC_MAX_INPUTS, BTC_MAX_JOURNAL_RAW, BTC_NOT_FOUND_LIMIT, conf,
 };
+use crate::error::KeyError;
 
 /// `record_version` of BIP84 account 0 records (unchanged layout).
 pub const BTC_RECORD_VERSION: u8 = 1;
@@ -891,6 +895,20 @@ impl BtcRecord {
         may_confirm && now_unix.saturating_sub(self.updated_at_unix) <= BTC_ABANDON_WINDOW_SECS
     }
 
+    /// Whether this record's transaction may still confirm (spec/04 §2.18: an imported key is
+    /// not removed then): in flight, `Replaced` (tracked until its replacement confirms), a live
+    /// given-up or refused record ([`BtcRecord::is_live_conflict`]), or any `Abandoned` record
+    /// inside the 30-day window (records written before [`flags::DISCLOSED`] existed may have
+    /// reached the RPC without saying so).
+    #[must_use]
+    pub const fn may_still_confirm(&self, now_unix: u64) -> bool {
+        let in_window = now_unix.saturating_sub(self.updated_at_unix) <= BTC_ABANDON_WINDOW_SECS;
+        self.state.is_in_flight()
+            || matches!(self.state, BtcTxState::Replaced)
+            || self.is_live_conflict(now_unix)
+            || (matches!(self.state, BtcTxState::Abandoned) && in_window)
+    }
+
     /// Whether `other` spends one of this record's inputs.
     #[must_use]
     pub fn shares_input(&self, other: &Self) -> bool {
@@ -1083,6 +1101,146 @@ pub fn of_account(
 ) -> Vec<BtcRecord> {
     of_network(records, network)
         .filter(|record| record.account == account)
+        .cloned()
+        .collect()
+}
+
+/// The scriptPubKey an input spends as its signed bytes show it: the public key of a P2WPKH or
+/// P2SH-P2WPKH witness, or of a P2PKH scriptSig. A key-path P2TR input shows no key.
+fn revealed_script(script_type: ScriptType, input: &TxIn) -> Option<Vec<u8>> {
+    match script_type {
+        ScriptType::P2wpkh => match input.witness.as_slice() {
+            [_, key] => Some(p2wpkh_script_pubkey(&hash160(key)).to_vec()),
+            _ => None,
+        },
+        ScriptType::P2shP2wpkh => match input.witness.as_slice() {
+            [_, key] => {
+                let redeem = p2sh_p2wpkh_redeem_script(&hash160(key));
+                Some(p2sh_script_pubkey(&hash160(&redeem)).to_vec())
+            }
+            _ => None,
+        },
+        ScriptType::P2pkh => split_p2pkh_script_sig(&input.script_sig)
+            .map(|(_, key)| p2pkh_script_pubkey(&hash160(key)).to_vec()),
+        ScriptType::P2tr => None,
+    }
+}
+
+/// The scriptPubKey each input of `record` spends, in input order (spec/08 §12.1 "같은 주소의
+/// 다른 계정"): read from the signed bytes for the ECDSA types (the public key of the witness or
+/// scriptSig); for key-path P2TR, derived at the recorded `(chain, index)` from `own` — the
+/// record's own account key when the session has it — once every input carries a valid
+/// signature of that key, else `None`.
+#[must_use]
+pub fn input_scripts(record: &BtcRecord, own: Option<&BtcAccountKey>) -> Vec<Option<Vec<u8>>> {
+    let Some(tx) = record.transaction() else {
+        return vec![None; record.inputs.len()];
+    };
+    if record.script_type != ScriptType::P2tr {
+        return tx
+            .inputs
+            .iter()
+            .map(|input| revealed_script(record.script_type, input))
+            .collect();
+    }
+    let derived = own
+        .filter(|key| key.id() == record.account && key.script_type() == record.script_type)
+        .filter(|key| inputs_signed_by(record, &tx, key))
+        .and_then(|key| key.deriver().ok());
+    record
+        .inputs
+        .iter()
+        .map(|input| {
+            derived
+                .as_ref()
+                .and_then(|deriver| deriver.script(input.chain, input.index).ok())
+        })
+        .collect()
+}
+
+/// One account's footprint for the cross-identity journal rules (spec/08 §12.1 "같은 주소의 다른
+/// 계정"): its identity and key, its scripts ([`BtcMeta::owned_scripts`]) and its verified
+/// outpoints. A record belongs to the account when it is the account's own (same identity) or
+/// spends one of these scripts or outpoints, whatever account identity it was written under.
+#[derive(Clone, Debug)]
+pub struct AccountScope {
+    network: BtcNetwork,
+    key: BtcAccountKey,
+    scripts: Vec<Vec<u8>>,
+    outpoints: Vec<OutPoint>,
+}
+
+impl AccountScope {
+    /// The scope of `meta`'s account.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError`] (derivation of the account's scripts).
+    pub fn of(meta: &BtcMeta) -> Result<Self, KeyError> {
+        Ok(Self {
+            network: meta.network(),
+            key: *meta.account(),
+            scripts: meta.owned_scripts()?,
+            outpoints: meta.verified().iter().map(|utxo| utxo.outpoint).collect(),
+        })
+    }
+
+    /// Whether `record` spends an output of this account: the same identity, an input outpoint
+    /// among its verified outputs, an input script among its scripts ([`input_scripts`] with
+    /// `own`, the record's own account key when the session has it), or (key-path P2TR inputs
+    /// whose script is unknown, e.g. a removed imported key imported again under a new record
+    /// id) valid signatures of this account's keys at the recorded paths.
+    #[must_use]
+    pub fn covers(&self, record: &BtcRecord, own: Option<&BtcAccountKey>) -> bool {
+        if record.network != self.network {
+            return false;
+        }
+        if record.account == self.key.id()
+            || record
+                .inputs
+                .iter()
+                .any(|input| self.outpoints.contains(&input.outpoint))
+        {
+            return true;
+        }
+        // Each address type has its own script form: other types never share a script.
+        if record.script_type != self.key.script_type() {
+            return false;
+        }
+        let scripts = input_scripts(record, own);
+        if scripts
+            .iter()
+            .flatten()
+            .any(|script| self.scripts.contains(script))
+        {
+            return true;
+        }
+        record.script_type == ScriptType::P2tr
+            && scripts.iter().any(Option::is_none)
+            && record
+                .transaction()
+                .is_some_and(|tx| inputs_signed_by(record, &tx, &self.key))
+    }
+}
+
+/// The records of `scope`'s network that touch its account ([`AccountScope::covers`]): its own
+/// records and every record of another identity spending one of its outputs: an imported key
+/// removed and imported again (a new vault record id), or another account with the same address.
+/// `keys` are the session's account keys (a record's own key, when present, gives the scripts of
+/// its key-path P2TR inputs). D20, the abandon rule and the kept outpoints use these, so a new
+/// identity inherits every constraint of the old one (spec/08 §12.1).
+#[must_use]
+pub fn related_records(
+    records: &[BtcRecord],
+    scope: &AccountScope,
+    keys: &[BtcAccountKey],
+) -> Vec<BtcRecord> {
+    records
+        .iter()
+        .filter(|record| {
+            let own = keys.iter().find(|key| key.id() == record.account);
+            scope.covers(record, own)
+        })
         .cloned()
         .collect()
 }

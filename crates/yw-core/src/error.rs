@@ -217,7 +217,9 @@ impl fmt::Display for VaultError {
             Self::BackupMismatch => "입력한 단어 또는 주소가 맞지 않습니다.",
             Self::ChallengeStale => "백업 확인 문항이 바뀌었습니다. 새 문항으로 다시 입력하세요.",
             Self::RecordLimit => "가져온 개인키는 체인마다 최대 15개입니다.",
-            Self::DuplicateKey => "이미 가져온 개인키입니다.",
+            Self::DuplicateKey => {
+                "이미 가져온 개인키이거나, 지갑의 다른 계정과 주소가 같은 키입니다."
+            }
             Self::NoMnemonic => "이 지갑에는 복구 단어가 없습니다(개인키로 시작한 지갑).",
             Self::LastKey => "개인키로 시작한 지갑의 마지막 키는 지울 수 없습니다.",
         };

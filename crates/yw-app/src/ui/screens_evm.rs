@@ -728,6 +728,9 @@ impl App {
         let filter = self.evm.send.to_text.trim().to_ascii_lowercase();
         let mut shown = 0_u16;
         for entry in self.known_addresses() {
+            if entry.history {
+                continue;
+            }
             let hex = entry.address.to_lower_hex();
             if !filter.is_empty()
                 && !hex.contains(filter.trim_start_matches("0x"))
@@ -764,6 +767,7 @@ impl App {
         let filter = self.evm.send.to_text.trim().to_ascii_lowercase();
         self.known_addresses()
             .into_iter()
+            .filter(|entry| !entry.history)
             .filter(|entry| {
                 filter.is_empty()
                     || entry

@@ -6,13 +6,19 @@
 //! `High` → `High`, `Blocked` → no approval at all; any non-`Ok` simulation state → `High`);
 //! the stream codec and the one-shot `PRESENTED` guard are gone; (2) an `armed` flag set from
 //! [`can_approve`] on every event and tick; (3) `physical_down` is filled by the window from
-//! `input::is_down` (a consistency check, not a security boundary).
+//! `input::is_down` (a consistency check, not a security boundary); (4) rapid-click lure
+//! defence: every pointer or key press received while not armed, and every window
+//! (re)activation, restarts the 1 s arm delay ([`ApprovalSession`]), and an approving press must
+//! start at least 1 s after the previous press anywhere in the window
+//! ([`InteractionEvent::is_press`]).
 
 use yw_core::approval::{ApprovalRequest, RiskLevel, SimNoneReason, SimVerdict, SimulationBinding};
 
 use crate::errors::ErrorCode;
 
-/// Delay after content is shown before approval can be armed.
+/// Delay after content is shown (or after a restart: a press while not armed, a window
+/// activation) before approval can be armed; also the minimum gap between the previous press
+/// anywhere in the window and an approving press.
 pub const APPROVE_ARM_DELAY_MS: u64 = 1_000;
 /// Continuous hold for high-risk approval (D16; archive `HIGH_RISK_HOLD_MILLISECONDS`).
 pub const HIGH_RISK_HOLD_MS: u64 = 2_000;
@@ -100,6 +106,26 @@ pub enum InteractionEvent {
     CaptureLost,
     /// `WM_CANCELMODE`.
     CancelMode,
+    /// Any other pointer or key press in the window (another button, the panel, a scroll bar, a
+    /// non-approval key, auto-repeat included): never an approval input, but it counts as the
+    /// previous press for the press-gap rule and, while not armed, restarts the arm delay.
+    OtherPress,
+}
+
+impl InteractionEvent {
+    /// Whether this event is a pointer or key press (auto-repeat included). An approving press
+    /// (`ApproveActivated`, `PointerPressed`, `SpacePressed`) must start at least
+    /// [`APPROVE_ARM_DELAY_MS`] after the previous press of any kind.
+    #[must_use]
+    pub const fn is_press(self) -> bool {
+        matches!(
+            self,
+            Self::ApproveActivated
+                | Self::PointerPressed { .. }
+                | Self::SpacePressed { .. }
+                | Self::OtherPress
+        )
+    }
 }
 
 /// Interaction status.
@@ -127,6 +153,8 @@ pub struct ApprovalInteraction {
     active_hold: Option<(HoldSource, u64)>,
     blocked_inputs: u8,
     armed: bool,
+    /// The most recent press of any kind (see [`InteractionEvent::is_press`]).
+    last_press_ms: Option<u64>,
 }
 
 impl ApprovalInteraction {
@@ -155,6 +183,7 @@ impl ApprovalInteraction {
             active_hold: None,
             blocked_inputs: 0,
             armed: true,
+            last_press_ms: None,
         })
     }
 
@@ -181,6 +210,20 @@ impl ApprovalInteraction {
         self.armed
     }
 
+    /// The most recent press of any kind seen by [`Self::apply`].
+    #[must_use]
+    pub const fn last_press_ms(&self) -> Option<u64> {
+        self.last_press_ms
+    }
+
+    /// Whether a press starting at `now_ms` is far enough from the previous press anywhere in the
+    /// window to be an approving press.
+    #[must_use]
+    pub fn press_spaced(&self, now_ms: u64) -> bool {
+        self.last_press_ms
+            .is_none_or(|last| now_ms.saturating_sub(last) >= APPROVE_ARM_DELAY_MS)
+    }
+
     /// Applies one event.
     pub fn apply(&mut self, now_ms: u64, event: InteractionEvent) -> InteractionStatus {
         if self.status != InteractionStatus::Pending {
@@ -195,6 +238,11 @@ impl ApprovalInteraction {
             self.reject();
             return self.status;
         }
+        // Judged against the press before this one; then this press becomes the previous one.
+        let spaced = !event.is_press() || self.press_spaced(now_ms);
+        if event.is_press() {
+            self.last_press_ms = Some(now_ms);
+        }
         if self.resets_before_completion(event) {
             self.reset_for_event(event);
             return self.status;
@@ -205,7 +253,7 @@ impl ApprovalInteraction {
         }
         match event {
             InteractionEvent::ApproveActivated => {
-                if self.risk == Some(InteractionRisk::Standard) && self.armed {
+                if self.risk == Some(InteractionRisk::Standard) && self.armed && spaced {
                     self.approve();
                 }
             }
@@ -218,7 +266,7 @@ impl ApprovalInteraction {
                 if click_through || !inside {
                     self.block(HoldSource::Pointer);
                 } else {
-                    self.begin_hold(HoldSource::Pointer, now_ms);
+                    self.begin_hold(HoldSource::Pointer, now_ms, spaced);
                 }
             }
             InteractionEvent::PointerReleased {
@@ -227,7 +275,7 @@ impl ApprovalInteraction {
             InteractionEvent::SpacePressed {
                 repeat: false,
                 physical_down: true,
-            } => self.begin_hold(HoldSource::Space, now_ms),
+            } => self.begin_hold(HoldSource::Space, now_ms, spaced),
             InteractionEvent::SpaceReleased {
                 physical_down: false,
             } => self.release_source(HoldSource::Space),
@@ -240,7 +288,8 @@ impl ApprovalInteraction {
             | InteractionEvent::FocusLost
             | InteractionEvent::ForegroundLost
             | InteractionEvent::CaptureLost
-            | InteractionEvent::CancelMode => {}
+            | InteractionEvent::CancelMode
+            | InteractionEvent::OtherPress => {}
         }
         self.status
     }
@@ -279,8 +328,10 @@ impl ApprovalInteraction {
         self.deadline_ms.saturating_sub(now_ms)
     }
 
-    fn begin_hold(&mut self, source: HoldSource, now_ms: u64) {
+    /// `spaced`: the press started at least [`APPROVE_ARM_DELAY_MS`] after the previous press.
+    fn begin_hold(&mut self, source: HoldSource, now_ms: u64, spaced: bool) {
         if self.armed
+            && spaced
             && self.risk.is_some()
             && self.active_hold.is_none()
             && !self.is_blocked(source)
@@ -507,7 +558,8 @@ pub struct ApprovalGate {
     pub ack_checked: bool,
     /// Accounts selected in a connect window.
     pub connect_selected: usize,
-    /// When Ready content was (re)shown.
+    /// Start of the current arm delay: when Ready content was (re)shown, or later when the delay
+    /// was restarted (a press while not armed, a window activation; see [`ApprovalSession`]).
     pub ready_at_ms: u64,
     /// The window is foreground.
     pub is_foreground: bool,
@@ -574,11 +626,42 @@ impl ApprovalSession {
         Ok(Self { gate, interaction })
     }
 
-    /// Re-arms from the gate, then applies `event`.
+    /// Re-arms from the gate, then applies `event`. A press (any pointer or key press, see
+    /// [`InteractionEvent::is_press`]) received while not armed first restarts the arm delay.
     pub fn event(&mut self, now_ms: u64, event: InteractionEvent) -> InteractionStatus {
+        if event.is_press() && !can_approve(&self.gate, now_ms) {
+            self.gate.ready_at_ms = self.gate.ready_at_ms.max(now_ms);
+        }
         let armed = can_approve(&self.gate, now_ms);
         self.interaction.set_armed(now_ms, armed);
         self.interaction.apply(now_ms, event)
+    }
+
+    /// Restarts the 1 s arm delay at `now_ms` (window activation) and disarms at once.
+    pub fn restart_arm_delay(&mut self, now_ms: u64) {
+        self.gate.ready_at_ms = self.gate.ready_at_ms.max(now_ms);
+        let armed = can_approve(&self.gate, now_ms);
+        self.interaction.set_armed(now_ms, armed);
+    }
+
+    /// Records whether the window is foreground; a (re)activation (`false` → `true`) restarts
+    /// the arm delay.
+    pub fn set_foreground(&mut self, now_ms: u64, foreground: bool) {
+        let activated = foreground && !self.gate.is_foreground;
+        self.gate.is_foreground = foreground;
+        if activated {
+            self.restart_arm_delay(now_ms);
+        }
+    }
+
+    /// Whether an approving press starting at `now_ms` would be accepted (the approve button's
+    /// armed look): armed, the gate open, and at least 1 s since the previous press anywhere in
+    /// the window, or a hold already under way.
+    #[must_use]
+    pub fn approve_ready(&self, now_ms: u64) -> bool {
+        self.interaction.is_armed()
+            && can_approve(&self.gate, now_ms)
+            && (self.interaction.hold_source().is_some() || self.interaction.press_spaced(now_ms))
     }
 
     /// Toggles the acknowledgement checkbox.
@@ -603,8 +686,7 @@ impl ApprovalSession {
         self.gate.ack_checked = false;
         self.gate.ready_at_ms = now_ms;
         self.gate.submitting = false;
-        self.interaction = Self::interaction_for(&self.gate, now_ms)?;
-        Ok(())
+        self.renew_interaction(now_ms)
     }
 
     /// Starts a fresh interaction for the same content and gate (checkbox, arm delay and
@@ -616,7 +698,15 @@ impl ApprovalSession {
     ///
     /// [`InteractionError`] when the deadline has passed.
     pub fn restart_interaction(&mut self, now_ms: u64) -> Result<(), InteractionError> {
+        self.renew_interaction(now_ms)
+    }
+
+    /// A fresh interaction that still remembers the last press: the press-gap rule spans
+    /// content replacement and restarts.
+    fn renew_interaction(&mut self, now_ms: u64) -> Result<(), InteractionError> {
+        let last_press_ms = self.interaction.last_press_ms;
         self.interaction = Self::interaction_for(&self.gate, now_ms)?;
+        self.interaction.last_press_ms = last_press_ms;
         Ok(())
     }
 

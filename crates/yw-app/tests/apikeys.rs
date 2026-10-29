@@ -472,3 +472,59 @@ fn generation_keeps_existing_urls_unless_overwrite_is_checked() {
     );
     assert!(empty.endpoints().is_empty());
 }
+
+/// spec/06 §2.1: the LLM key is stored with the endpoint `host[:port]` it was entered for
+/// (`llm:host`), survives a round trip, and goes away with the key.
+#[test]
+fn llm_key_is_bound_to_its_endpoint_host() {
+    let mut keys = ApiKeys::default();
+    keys.set_llm("local-model-key", Some("api.example.org"));
+    assert_eq!(keys.llm_key(), Some("local-model-key"));
+    assert_eq!(keys.llm_host(), Some("api.example.org"));
+    let again = ApiKeys::decode(&keys.encode(), &all_registered)
+        .unwrap()
+        .keys;
+    assert_eq!(again.llm_key(), Some("local-model-key"));
+    assert_eq!(again.llm_host(), Some("api.example.org"));
+    assert!(again.names().contains(&KeyName::LlmHost));
+    // A bound key is never re-bound by the legacy rule.
+    let mut bound = again;
+    assert!(!bound.bind_llm_host("other.example.org"));
+    assert_eq!(bound.llm_host(), Some("api.example.org"));
+    // Entering the key again binds it to the new host; without a host it is stored unbound.
+    bound.set_llm("second-key", Some("127.0.0.1:11434"));
+    assert_eq!(bound.llm_host(), Some("127.0.0.1:11434"));
+    bound.set_llm("third-key", None);
+    assert_eq!(bound.llm_host(), None);
+    assert!(!bound.has(KeyName::LlmHost));
+    // Deleting the key deletes its binding.
+    bound.set_llm("fourth-key", Some("api.example.org"));
+    assert!(bound.remove(KeyName::Llm));
+    assert!(!bound.has(KeyName::LlmHost));
+    assert_eq!(bound.llm_host(), None);
+    // A malformed host value is a format error like any other known entry.
+    let bad = plaintext(&[
+        ("llm".to_owned(), "k".to_owned()),
+        ("llm:host".to_owned(), "API.example.org/path".to_owned()),
+    ]);
+    assert!(ApiKeys::decode(&bad, &all_registered).is_err());
+}
+
+/// spec/06 §2.1 compatibility: a key written by an older version has no `llm:host`; it decodes
+/// unbound and the legacy rule binds it once.
+#[test]
+fn legacy_llm_key_without_a_host_binds_once() {
+    let old = plaintext(&[("llm".to_owned(), "legacy-key".to_owned())]);
+    let mut keys = ApiKeys::decode(&old, &all_registered).unwrap().keys;
+    assert_eq!(keys.llm_key(), Some("legacy-key"));
+    assert_eq!(keys.llm_host(), None);
+    assert!(keys.bind_llm_host("api.example.org"));
+    assert_eq!(keys.llm_host(), Some("api.example.org"));
+    assert!(!keys.bind_llm_host("other.example.org"));
+    let saved = ApiKeys::decode(&keys.encode(), &all_registered)
+        .unwrap()
+        .keys;
+    assert_eq!(saved.llm_host(), Some("api.example.org"));
+    // No key: nothing to bind.
+    assert!(!ApiKeys::default().bind_llm_host("api.example.org"));
+}

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use yw_core::bip32::path::AccountIndex;
 use yw_core::bip32::preview_evm_address;
+use yw_core::btc::address::script_pubkey;
 use yw_core::btc::{BtcAccountId, BtcMeta, BtcNetwork};
 use yw_core::error::{KeyError, VaultError};
 use yw_core::keyimport::{ImportChain, ImportKey, ImportPreview, ImportSpec};
@@ -397,6 +398,17 @@ impl KeyWorker {
     ) -> Result<ImportedAccount, VaultError> {
         let key = parse_key(spec, bytes)?;
         let preview = key.preview()?;
+        if let ImportPreview::Btc(info) = &preview {
+            // Its address must not already belong to an account (an HD address in the scanned
+            // range, another imported key): E-VLT-011 (spec/08 §3.5).
+            let vault = self.vault.as_ref().ok_or(VaultError::InvalidState)?;
+            if self
+                .journal
+                .btc_address_taken(vault, info.network, &script_pubkey(&info.kind))
+            {
+                return Err(VaultError::DuplicateKey);
+            }
+        }
         let id = self.vault()?.import_key(key, now_unix())?;
         Ok(match preview {
             ImportPreview::Evm(address) => ImportedAccount::Evm(id, address),
@@ -411,7 +423,9 @@ impl KeyWorker {
     fn remove_imported(&mut self, password_bytes: &[u8], id: RecordId) -> Vec<KeyOutcome> {
         let alt = self.is_alt();
         if let Some(vault) = self.vault.as_ref()
-            && self.journal.btc_imported_busy(vault, *id.as_bytes())
+            && self
+                .journal
+                .btc_imported_busy(vault, *id.as_bytes(), now_unix())
         {
             return vec![KeyOutcome::ImportedKeyBusy(id)];
         }

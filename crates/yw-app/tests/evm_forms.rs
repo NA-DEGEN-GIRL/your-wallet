@@ -6,11 +6,12 @@
 mod common;
 
 use common::FakeClock;
-use common::evm::{S2_UNIX_MS, TestResult, USER, address, fake, send_intent, world};
+use common::evm::{NEW, S2_UNIX_MS, TestResult, USER, address, fake, send_intent, world};
 use yw_app::apikeys::ApiKeys;
 use yw_app::errors::ErrorCode;
 use yw_app::flow::evm::form::{
-    AddressNote, KnownAddress, check_funds, check_recipient, max_native, parse_amount, quote,
+    AddressNote, KnownAddress, add_history, check_funds, check_recipient, look_alike, max_native,
+    parse_amount, quote, tx_recipients,
 };
 use yw_app::flow::evm::user_chain::{
     ChainForm, FormError, ProbeError, RpcSpec, check_delete, probe_chain, validate_chain_form,
@@ -18,8 +19,12 @@ use yw_app::flow::evm::user_chain::{
 use yw_app::flow::evm::{ChainCache, ChainJob};
 use yw_app::meta::{ActivityEntry, Meta};
 use yw_app::settings::{EvmChainDef, RpcTemplate, Settings};
+use yw_core::evm::abi::{
+    AbiValue, SEL_APPROVE, SEL_TRANSFER_FROM, encode_call, erc20_transfer_data,
+};
 use yw_core::evm::amount::U256;
 use yw_core::evm::chain::{SEPOLIA_GENESIS, SimulationSupport, sepolia};
+use yw_core::evm::tx::Eip1559Tx;
 use yw_core::journal::evm::{EvmRecord, Role, TxState};
 
 const BOOK: &str = "0x52908400098527886E0F7030069857D2E4169EE7";
@@ -33,14 +38,204 @@ fn known() -> TestResult<Vec<KnownAddress>> {
             name: "거래소".to_owned(),
             verified: true,
             mine: false,
+            history: false,
         },
         KnownAddress {
             address: address(USER)?,
             name: "계정 1".to_owned(),
             verified: false,
             mine: true,
+            history: false,
         },
     ])
+}
+
+/// A known address for the look-alike splits.
+const BASE: &str = "0xabcdef0123456789abcdef0123456789abcdef01";
+
+/// `BASE` with exactly the first `prefix` and last `suffix` hex digits kept and every other
+/// digit changed.
+fn poisoned(prefix: usize, suffix: usize) -> TestResult<yw_core::evm::address::Address> {
+    let digits: String = BASE
+        .trim_start_matches("0x")
+        .chars()
+        .enumerate()
+        .map(|(index, digit)| {
+            if index < prefix || index >= 40 - suffix {
+                digit
+            } else {
+                let value = digit.to_digit(16).unwrap_or(0);
+                char::from_digit((value + 8) % 16, 16).unwrap_or('0')
+            }
+        })
+        .collect();
+    address(&format!("0x{digits}"))
+}
+
+#[test]
+fn look_alike_splits_total_six_or_more() -> TestResult {
+    let base = address(BASE)?;
+    for (prefix, suffix) in [
+        (3, 3),
+        (2, 4),
+        (4, 2),
+        (6, 0),
+        (0, 6),
+        (1, 5),
+        (5, 1),
+        (4, 4),
+    ] {
+        assert_eq!(
+            look_alike(&base, &poisoned(prefix, suffix)?),
+            Some((prefix, suffix)),
+            "{prefix}+{suffix}"
+        );
+    }
+    // Five matching end digits in any split are not enough.
+    for (prefix, suffix) in [(3, 2), (2, 3), (5, 0), (0, 5), (1, 4), (4, 1), (0, 0)] {
+        assert_eq!(
+            look_alike(&base, &poisoned(prefix, suffix)?),
+            None,
+            "{prefix}+{suffix}"
+        );
+    }
+    // Equal addresses are never look-alikes (checksum casing is ignored).
+    assert_eq!(look_alike(&base, &base), None);
+    assert_eq!(
+        look_alike(
+            &address(BOOK)?,
+            &address("0x52908400098527886e0f7030069857d2e4169ee7")?
+        ),
+        None
+    );
+    // Through the form: a 3+3 poison of a book entry needs the checkbox and names the split.
+    let book = vec![KnownAddress {
+        address: base,
+        name: "거래소".to_owned(),
+        verified: false,
+        mine: false,
+        history: false,
+    }];
+    let sender = address(USER)?;
+    let typed = poisoned(3, 3)?.to_lower_hex();
+    let (_, notes) = check_recipient(&typed, &sender, None, &book).map_err(ErrorCode::code)?;
+    assert_eq!(
+        notes,
+        vec![AddressNote::LookAlike {
+            name: "거래소".to_owned(),
+            history: false,
+            prefix: 3,
+            suffix: 3,
+        }]
+    );
+    assert!(notes[0].needs_ack());
+    assert!(
+        notes[0].text().contains("앞 3자·끝 3자"),
+        "{}",
+        notes[0].text()
+    );
+    let typed = poisoned(0, 6)?.to_lower_hex();
+    let (_, notes) = check_recipient(&typed, &sender, None, &book).map_err(ErrorCode::code)?;
+    assert!(
+        notes[0].text().starts_with("'거래소'과 끝 6자가"),
+        "{}",
+        notes[0].text()
+    );
+    let typed = poisoned(2, 3)?.to_lower_hex();
+    let (_, notes) = check_recipient(&typed, &sender, None, &book).map_err(ErrorCode::code)?;
+    assert_eq!(notes, vec![AddressNote::NotInBook]);
+    Ok(())
+}
+
+#[test]
+fn past_recipients_become_history_entries() -> TestResult {
+    let token = address("0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238")?;
+    let recipient = address(NEW)?;
+    let tx = |to, data| Eip1559Tx {
+        chain_id: 11_155_111,
+        nonce: 0,
+        max_priority_fee_per_gas: U256::from_u64(1),
+        max_fee_per_gas: U256::from_u64(2),
+        gas_limit: 21_000,
+        to,
+        value: U256::ZERO,
+        data,
+        access_list: Vec::new(),
+    };
+    // Native: `to`. ERC-20 `transfer` / `transferFrom`: the token and the decoded recipient.
+    assert_eq!(tx_recipients(&tx(recipient, Vec::new())), vec![recipient]);
+    let amount = U256::from_u64(5);
+    let transfer = tx(token, erc20_transfer_data(&recipient, &amount));
+    assert_eq!(tx_recipients(&transfer), vec![token, recipient]);
+    let transfer_from = tx(
+        token,
+        encode_call(
+            SEL_TRANSFER_FROM,
+            &[
+                AbiValue::Address(address(USER)?),
+                AbiValue::Address(recipient),
+                AbiValue::Uint(amount),
+            ],
+        ),
+    );
+    assert_eq!(tx_recipients(&transfer_from), vec![token, recipient]);
+    // Other calldata (an approval's spender is not a recipient): only `to`.
+    let approve = tx(
+        token,
+        encode_call(
+            SEL_APPROVE,
+            &[AbiValue::Address(recipient), AbiValue::Uint(amount)],
+        ),
+    );
+    assert_eq!(tx_recipients(&approve), vec![token]);
+
+    // History entries are deduplicated against the book, own accounts and each other.
+    let mut known = known()?;
+    add_history(
+        &mut known,
+        [
+            address(BOOK)?,
+            recipient,
+            recipient,
+            yw_core::evm::address::Address::from_bytes([0; 20]),
+        ]
+        .into_iter()
+        .chain(tx_recipients(&transfer)),
+    );
+    let history: Vec<_> = known.iter().filter(|entry| entry.history).collect();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].address, recipient);
+    assert_eq!(history[0].name, recipient.to_lower_hex());
+    assert_eq!(history[1].address, token);
+    assert!(!history[0].mine && !history[0].verified);
+
+    // A history entry is compared for look-alikes only: an exact match is still not in the
+    // book, and a poison of it is flagged with the history wording.
+    let sender = address(USER)?;
+    let (_, notes) = check_recipient(NEW, &sender, None, &known).map_err(ErrorCode::code)?;
+    assert_eq!(notes, vec![AddressNote::NotInBook]);
+    let mut digits: Vec<char> = NEW
+        .trim_start_matches("0x")
+        .to_ascii_lowercase()
+        .chars()
+        .collect();
+    for digit in digits.iter_mut().skip(2).take(34) {
+        *digit = if *digit == '0' { '1' } else { '0' };
+    }
+    let poison = format!("0x{}", digits.into_iter().collect::<String>());
+    let (_, notes) = check_recipient(&poison, &sender, None, &known).map_err(ErrorCode::code)?;
+    assert_eq!(
+        notes,
+        vec![AddressNote::LookAlike {
+            name: recipient.to_lower_hex(),
+            history: true,
+            prefix: 2,
+            suffix: 4,
+        }]
+    );
+    assert!(notes[0].needs_ack());
+    assert!(notes[0].text().contains("보낸 내역"), "{}", notes[0].text());
+    Ok(())
 }
 
 #[test]
@@ -89,7 +284,10 @@ fn recipient_rules_and_notes() -> TestResult {
     assert_eq!(
         notes,
         vec![AddressNote::LookAlike {
-            name: "거래소".to_owned()
+            name: "거래소".to_owned(),
+            history: false,
+            prefix: 4,
+            suffix: 4,
         }]
     );
     assert!(notes[0].needs_ack() && notes[0].is_warning());

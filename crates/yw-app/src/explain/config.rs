@@ -20,6 +20,10 @@ pub const MODEL_MAX_BYTES: usize = 128;
 pub const API_KEY_MAX_BYTES: usize = 512;
 /// Largest `max_tokens`.
 pub const MAX_TOKENS_LIMIT: u16 = 4_096;
+/// What the connection test and `켜기` say when the stored key is bound to another endpoint host
+/// (spec/06 §2.1): the key is not sent until it is entered again for the current endpoint.
+pub const KEY_REENTER_TEXT: &str =
+    "API 키를 다시 입력하세요. 저장된 키는 다른 엔드포인트 주소에서 입력한 것이라 보내지 않습니다.";
 
 /// `response_format` (§4.5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -170,29 +174,47 @@ impl ModelName {
     }
 }
 
-/// The LLM API key (`apikeys.dpapi` entry `llm`). Not a wallet secret (D10), but never shown,
-/// logged or formatted: `Debug` prints `ApiKey([REDACTED])`.
-pub struct ApiKey(Zeroizing<String>);
+/// The LLM API key (`apikeys.dpapi` entry `llm`) and the endpoint `host[:port]` it is bound to
+/// (`llm:host`, spec/06 §2.1). Not a wallet secret (D10), but never shown, logged or formatted:
+/// `Debug` prints `ApiKey([REDACTED])`.
+pub struct ApiKey {
+    key: Zeroizing<String>,
+    host: String,
+}
 
 impl ApiKey {
-    /// Validates and copies.
+    /// Validates and copies `text`, bound to the endpoint `host` (`host[:port]`, compared
+    /// case-insensitively).
     #[must_use]
-    pub fn parse(text: &str) -> Option<Self> {
-        if !valid_api_key(text) {
+    pub fn parse(text: &str, host: &str) -> Option<Self> {
+        if !valid_api_key(text) || host.is_empty() {
             return None;
         }
         let mut owned = Zeroizing::new(String::with_capacity(text.len()));
         owned.push_str(text);
-        Some(Self(owned))
+        Some(Self {
+            key: owned,
+            host: host.to_ascii_lowercase(),
+        })
     }
 
-    /// The `Authorization` header value `Bearer <key>` in a wiping string.
+    /// The endpoint `host[:port]` the key is bound to.
     #[must_use]
-    pub fn bearer(&self) -> Zeroizing<String> {
-        let mut value = Zeroizing::new(String::with_capacity(self.0.len().saturating_add(7)));
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    /// The `Authorization` header value `Bearer <key>` in a wiping string, only for a request to
+    /// the bound host (`None` for any other `host`: the key is never attached there).
+    #[must_use]
+    pub fn bearer_for(&self, host: &str) -> Option<Zeroizing<String>> {
+        if !self.host.eq_ignore_ascii_case(host) {
+            return None;
+        }
+        let mut value = Zeroizing::new(String::with_capacity(self.key.len().saturating_add(7)));
         value.push_str("Bearer ");
-        value.push_str(&self.0);
-        value
+        value.push_str(&self.key);
+        Some(value)
     }
 }
 
@@ -202,46 +224,91 @@ impl core::fmt::Debug for ApiKey {
     }
 }
 
+/// The stored key as `apikeys.dpapi` holds it: the key and the host it is bound to (`None`: an
+/// older version's key that could not be bound yet).
+#[derive(Clone, Copy)]
+pub struct StoredKey<'a> {
+    /// The key text.
+    pub key: &'a str,
+    /// The bound endpoint `host[:port]`.
+    pub host: Option<&'a str>,
+}
+
+impl core::fmt::Debug for StoredKey<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("StoredKey")
+            .field("host", &self.host)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Everything one request needs (§9 `LlmConfig`).
 #[derive(Debug)]
 pub struct LlmConfig {
     endpoint: Endpoint,
     model: ModelName,
     api_key: Option<ApiKey>,
+    key_withheld: bool,
     response_format: ResponseFormatMode,
     max_tokens: u16,
 }
 
 impl LlmConfig {
-    /// Builds the configuration from parts.
+    /// Builds the configuration from parts. A key bound to another host than `endpoint` is
+    /// dropped (never attached) and the configuration records it ([`LlmConfig::key_withheld`]).
     #[must_use]
-    pub const fn new(
+    pub fn new(
         endpoint: Endpoint,
         model: ModelName,
         api_key: Option<ApiKey>,
         response_format: ResponseFormatMode,
         max_tokens: u16,
     ) -> Self {
+        let key_withheld = api_key
+            .as_ref()
+            .is_some_and(|key| !key.host().eq_ignore_ascii_case(&endpoint.host));
+        let api_key = api_key.filter(|_| !key_withheld);
         Self {
             endpoint,
             model,
             api_key,
+            key_withheld,
             response_format,
             max_tokens,
         }
     }
 
     /// From the settings (the `enabled` flag and the notice are not checked here: the
-    /// connection test runs before consent, §2.2).
+    /// connection test runs before consent, §2.2). A stored key bound to another endpoint host
+    /// (or to none) is not used: the configuration has no key and
+    /// [`LlmConfig::key_withheld`] is set (spec/06 §2.1).
     ///
     /// # Errors
     ///
     /// [`ExplainError::NotConfigured`] when the endpoint, model or stored key is invalid.
-    pub fn from_settings(settings: &LlmSettings, key: Option<&str>) -> Result<Self, ExplainError> {
+    pub fn from_settings(
+        settings: &LlmSettings,
+        key: Option<StoredKey<'_>>,
+    ) -> Result<Self, ExplainError> {
         let endpoint = parse_endpoint(&settings.endpoint).ok_or(ExplainError::NotConfigured)?;
         let model = ModelName::parse(&settings.model).ok_or(ExplainError::NotConfigured)?;
+        let mut withheld = false;
         let api_key = match key {
-            Some(key) => Some(ApiKey::parse(key).ok_or(ExplainError::NotConfigured)?),
+            Some(stored) => {
+                if !valid_api_key(stored.key) {
+                    return Err(ExplainError::NotConfigured);
+                }
+                match stored.host {
+                    Some(host) if host.eq_ignore_ascii_case(&endpoint.host) => {
+                        ApiKey::parse(stored.key, host)
+                    }
+                    _ => {
+                        withheld = true;
+                        None
+                    }
+                }
+            }
             None => None,
         };
         let response_format = ResponseFormatMode::parse(&settings.response_format)
@@ -250,13 +317,17 @@ impl LlmConfig {
             .ok()
             .filter(|tokens| *tokens <= MAX_TOKENS_LIMIT)
             .unwrap_or(0);
-        Ok(Self::new(
-            endpoint,
-            model,
-            api_key,
-            response_format,
-            max_tokens,
-        ))
+        let mut config = Self::new(endpoint, model, api_key, response_format, max_tokens);
+        config.key_withheld |= withheld;
+        Ok(config)
+    }
+
+    /// Whether a stored key exists but is bound to another endpoint host (or to none), so it is
+    /// not sent; the connection test and `켜기` then ask for the key again
+    /// ([`KEY_REENTER_TEXT`]).
+    #[must_use]
+    pub const fn key_withheld(&self) -> bool {
+        self.key_withheld
     }
 
     /// The endpoint URL.
@@ -283,7 +354,7 @@ impl LlmConfig {
         self.model.as_str()
     }
 
-    /// The key, if stored.
+    /// The key, if stored and bound to this endpoint's host.
     #[must_use]
     pub const fn api_key(&self) -> Option<&ApiKey> {
         self.api_key.as_ref()

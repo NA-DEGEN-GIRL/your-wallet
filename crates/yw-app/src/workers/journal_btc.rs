@@ -19,15 +19,15 @@ use yw_core::btc::{
     PostSignError, ScriptType, SendPlan, SignError, Txid, check_recorded_amounts, sign_plan,
     verify_signed,
 };
-use yw_core::error::{StorageError, VaultError};
+use yw_core::error::{KeyError, StorageError, VaultError};
 use yw_core::journal::JournalPlain;
 use yw_core::journal::btc::{
-    BtcActivityRow, BtcEntries, BtcPushError, BtcRecord, BtcRecordError, BtcTxState,
+    AccountScope, BtcActivityRow, BtcEntries, BtcPushError, BtcRecord, BtcRecordError, BtcTxState,
     TrackObservation, TransitionError, apply_observation, change_next_floor,
     check_abandoned_conflicts, check_plan_allowed, current_record, disclosed_duplicate,
     finished_rows, make_room, normalize_on_startup, of_account, prune_finished, push_record,
-    recorded_amounts, refresh_keep_outpoints, set_disclosed, set_last_send_comm_failure,
-    set_state_entry, take_finished_duplicates,
+    recorded_amounts, refresh_keep_outpoints, related_records, set_disclosed,
+    set_last_send_comm_failure, set_state_entry, take_finished_duplicates,
 };
 use yw_core::vault::{FileKind, RecordId, Vault};
 
@@ -582,26 +582,83 @@ impl JournalState {
             .tip_holder(network, self.has_primary(network))
     }
 
-    /// An in-flight BTC record of imported key `id`'s account on any network (its key may not be
-    /// removed then: tracking and fee bumps still need the account).
-    pub fn btc_imported_busy(&mut self, vault: &Vault, id: [u8; 16]) -> bool {
+    /// The session's account keys on `network` (a record's own key gives the scripts of its
+    /// key-path P2TR inputs, `related_records`).
+    fn keys_on(&self, network: BtcNetwork) -> Vec<BtcAccountKey> {
+        self.btc
+            .iter()
+            .filter(|meta| meta.network() == network)
+            .chain(self.btc_accounts.of_network(network))
+            .map(|meta| *meta.account())
+            .collect()
+    }
+
+    /// The records of `meta`'s network touching its account under any identity (spec/08 §12.1
+    /// "같은 주소의 다른 계정": an imported key removed and imported again, an alias address).
+    fn related(&self, all: &[BtcRecord], meta: &BtcMeta) -> Result<Vec<BtcRecord>, KeyError> {
+        let scope = AccountScope::of(meta)?;
+        Ok(related_records(all, &scope, &self.keys_on(meta.network())))
+    }
+
+    /// Whether `script` is already an address of an account on `network` (spec/08 §3.5): an HD
+    /// account's address in its scanned range (`[0, next + gap)` of both chains,
+    /// `BtcMeta::own_recipient`) or another imported key's address. A key with such an address is
+    /// not imported: one address would get two account identities, and the per-account journal
+    /// rules (D20, the abandon rule) could be split between them. An account whose scripts cannot
+    /// be derived counts as taken. Before `LoadMeta` the stored meta document is read.
+    pub fn btc_address_taken(&self, vault: &Vault, network: BtcNetwork, script: &[u8]) -> bool {
+        let (primary, accounts) = if self.btc_loaded {
+            (self.btc.clone(), self.btc_accounts.clone())
+        } else {
+            match vault.open_sidecar(FileKind::Meta) {
+                Ok(None) => (None, BtcAccounts::default()),
+                Ok(Some((_, plaintext))) => match meta::parse(plaintext.expose()) {
+                    Ok(parsed) => (parsed.meta.btc.map(|btc| *btc), parsed.meta.btc_accounts),
+                    // An unreadable meta document: nothing to compare with is not proof of
+                    // a free address.
+                    Err(_) => return true,
+                },
+                Err(_) => return true,
+            }
+        };
+        primary
+            .iter()
+            .filter(|meta| meta.network() == network)
+            .chain(accounts.of_network(network))
+            .any(|meta| meta.own_recipient(script).map_or(true, |hit| hit.is_some()))
+    }
+
+    /// Whether a BTC record of imported key `id`'s address may still confirm on any network
+    /// (in flight, `Replaced`, or given up / refused inside the 30-day window:
+    /// `BtcRecord::may_still_confirm`). Its key may not be removed then: tracking, fee bumps
+    /// and the abandon rule still need the account (spec/04 §2.18).
+    pub fn btc_imported_busy(&mut self, vault: &Vault, id: [u8; 16], now_unix: u64) -> bool {
         let account = BtcAccountId::Imported { id };
-        if !self
+        let metas: Vec<BtcMeta> = self
             .btc_accounts
             .accounts
             .iter()
-            .any(|meta| meta.id() == account)
-        {
-            // Not a Bitcoin account (an EVM or Solana key, or no account yet).
-            return false;
-        }
+            .filter(|meta| meta.id() == account)
+            .cloned()
+            .collect();
         let Ok(plain) = self.current(vault) else {
-            // An unreadable journal: its records cannot be checked, so the key stays.
-            return true;
+            // An unreadable journal: the records of a Bitcoin key cannot be checked, so it stays
+            // (an EVM or Solana key has no Bitcoin account).
+            return !metas.is_empty();
         };
         let records = BtcEntries::from_plain(&plain).records();
-        BtcNetwork::ALL.into_iter().any(|network| {
-            yw_core::journal::btc::in_flight(&of_account(&records, network, account), network)
+        if records
+            .iter()
+            .any(|record| record.account == account && record.may_still_confirm(now_unix))
+        {
+            return true;
+        }
+        metas.iter().any(|meta| {
+            self.related(&records, meta).map_or(true, |related| {
+                related
+                    .iter()
+                    .any(|record| record.may_still_confirm(now_unix))
+            })
         })
     }
 
@@ -888,6 +945,30 @@ impl JournalState {
         Ok(BtcMetaDone::AccountAdded(id))
     }
 
+    /// The history and outputs of a completed refresh applied to `meta` (spec/08 §4.7).
+    fn apply_refreshed(&self, meta: &mut BtcMeta, update: &BtcRefreshUpdate) -> RefreshReport {
+        for (chain, index, tx_count) in &update.history {
+            // An index the indexer answered for but meta never issued is ignored.
+            let _ = meta.mark_history(*chain, *index, *tx_count);
+        }
+        let network = meta.network();
+        let all = self
+            .plain
+            .as_ref()
+            .map(|plain| BtcEntries::from_plain(plain).records())
+            .unwrap_or_default();
+        let records = of_account(&all, network, meta.id());
+        // Kept outpoints across identities: a re-imported key keeps the inputs of the old
+        // identity's live abandoned record (spec/08 §12.1).
+        let related = self.related(&all, meta).unwrap_or_else(|_| records.clone());
+        meta.apply_refresh(
+            &update.listed,
+            &update.newly,
+            &refresh_keep_outpoints(&related, network, update.now_unix),
+            &yw_core::journal::btc::own_outputs(&records, network),
+        )
+    }
+
     fn btc_meta_op_inner(
         &mut self,
         vault: &mut Vault,
@@ -925,22 +1006,7 @@ impl JournalState {
                 BtcMetaDone::Discovered
             }
             BtcMetaOp::Refreshed { update, .. } => {
-                for (chain, index, tx_count) in &update.history {
-                    // An index the indexer answered for but meta never issued is ignored.
-                    let _ = meta.mark_history(*chain, *index, *tx_count);
-                }
-                let all = self
-                    .plain
-                    .as_ref()
-                    .map(|plain| BtcEntries::from_plain(plain).records())
-                    .unwrap_or_default();
-                let records = of_account(&all, network, meta.id());
-                let report = meta.apply_refresh(
-                    &update.listed,
-                    &update.newly,
-                    &refresh_keep_outpoints(&records, network, update.now_unix),
-                    &yw_core::journal::btc::own_outputs(&records, network),
-                );
+                let report = self.apply_refreshed(&mut meta, &update);
                 // A regression was already refused by the chain check; keep the stored value.
                 if target == holder_id {
                     let _ = meta.observe_tip(update.max_tip_seen);
@@ -1142,16 +1208,22 @@ impl JournalState {
         let mut trial = current;
         let mut rows = make_room(&mut trial, network, tip_height, now_unix, now_unix_ms)
             .map_err(|_| BtcSignFailure::JournalFull)?;
-        // D20 and every input rule per account (spec/08 §12.1).
-        let records = of_account(
-            &BtcEntries::from_plain(&trial).records(),
-            network,
-            meta.id(),
-        );
+        // D20 and every input rule per account (spec/08 §12.1). The account's records include
+        // those of every other identity spending its scripts or outputs (a removed and
+        // re-imported key, an alias address): their in-flight inputs and live abandoned or
+        // disclosed rejected records constrain this send as well.
+        let all = BtcEntries::from_plain(&trial).records();
+        let records = of_account(&all, network, meta.id());
+        let related = self
+            .related(&all, &meta)
+            .map_err(|_| BtcSignFailure::Sign(SignError::Derivation))?;
         check_plan_allowed(&records, plan).map_err(BtcSignFailure::Plan)?;
-        check_abandoned_conflicts(&records, plan, now_unix).map_err(BtcSignFailure::Plan)?;
+        if plan.replaces().is_none() {
+            check_plan_allowed(&related, plan).map_err(BtcSignFailure::Plan)?;
+        }
+        check_abandoned_conflicts(&related, plan, now_unix).map_err(BtcSignFailure::Plan)?;
         let mut recorded = meta.recorded_amounts();
-        recorded.extend(recorded_amounts(&records, network));
+        recorded.extend(recorded_amounts(&related, network));
         check_recorded_amounts(plan, &recorded).map_err(BtcSignFailure::Sign)?;
         let signed =
             sign_plan(vault, approved, plan, meta.account()).map_err(BtcSignFailure::Sign)?;
@@ -1520,6 +1592,28 @@ impl JournalState {
                             && let Some(utxo) = record.own_change_utxo(target.account())
                         {
                             let _ = target.insert_own(utxo);
+                        }
+                    }
+                    if !changed.is_empty() {
+                        // A record that left `Rejected` (a disclosed transaction the RPC relayed
+                        // after all) counts for the `change_next` floor again: the change index
+                        // `on_send_rejected` gave back is used on chain (spec/08 §3.2).
+                        let records = BtcEntries::from_plain(&next).records();
+                        let reconcile = |account: &mut BtcMeta| {
+                            let mine = of_account(&records, network, account.id());
+                            account.reconcile_change_next(change_next_floor(&mine, network))
+                        };
+                        if let Some(primary) =
+                            meta.as_mut().filter(|primary| primary.network() == network)
+                        {
+                            let _ = reconcile(primary);
+                        }
+                        for account in accounts
+                            .accounts
+                            .iter_mut()
+                            .filter(|account| account.network() == network)
+                        {
+                            let _ = reconcile(account);
                         }
                     }
                 }

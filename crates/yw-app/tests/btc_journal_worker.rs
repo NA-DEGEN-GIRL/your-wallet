@@ -863,3 +863,65 @@ fn accounts_are_stored_selected_and_imported_keys_need_their_record() -> TestRes
     assert_eq!(reload(&fixture)?.len(), before);
     Ok(())
 }
+
+/// Review fix (spec/08 §3.2): a send refused by the node (`-26`) gives its change index back,
+/// but the RPC had the bytes; when tracking later sees the transaction confirm (`Rejected →
+/// Confirmed`), that change index is used on chain, so the account's `change_next` is reconciled
+/// with the journal floor again (on disk before it is reported).
+#[test]
+fn rejected_then_confirmed_raises_change_next_again() -> TestResult {
+    let mut fixture = fixture("rejconf")?;
+    funded(&mut fixture)?;
+    let (plan, txid) = broadcasting(&mut fixture, 15)?;
+    assert_eq!(plan.change().map(|change| change.index), Some(0));
+    assert_eq!(
+        meta_on_disk(&fixture.vault)?.ok_or("meta")?.change_next(),
+        1
+    );
+    let done = journal(
+        &mut fixture,
+        BtcJournalOp::Sent {
+            network: BtcNetwork::Testnet4,
+            txid,
+            result: SendRawResult::RpcError { code: -26 },
+        },
+    )
+    .map_err(|error| format!("{error:?}"))?;
+    assert!(matches!(
+        done,
+        BtcJournalDone::Sent {
+            outcome: BroadcastOutcome::Rejected { .. },
+            ..
+        }
+    ));
+    let record = reload(&fixture)?.remove(0);
+    assert_eq!(record.state, BtcTxState::Rejected);
+    assert!(record.disclosed);
+    assert_eq!(
+        meta_on_disk(&fixture.vault)?.ok_or("meta")?.change_next(),
+        0,
+        "the change index is given back"
+    );
+    let outcomes = fixture.state.btc_journal(
+        &mut fixture.vault,
+        tracked(txid, TrackObservation::Confirmed { height: TIP - 1 }),
+        NOW_MS,
+        false,
+    );
+    assert!(matches!(
+        outcomes.last(),
+        Some(KeyOutcome::BtcJournal(Ok(BtcJournalDone::Tracked { changed })))
+            if changed.contains(&(txid, BtcTxState::Confirmed))
+    ));
+    assert!(outcomes.iter().any(|outcome| matches!(
+        outcome,
+        KeyOutcome::BtcMeta(Ok(update)) if update.done == BtcMetaDone::Updated
+    )));
+    assert_eq!(reload(&fixture)?[0].state, BtcTxState::Confirmed);
+    assert_eq!(
+        meta_on_disk(&fixture.vault)?.ok_or("meta")?.change_next(),
+        1
+    );
+    assert_eq!(fixture.state.btc_meta().ok_or("meta")?.change_next(), 1);
+    Ok(())
+}

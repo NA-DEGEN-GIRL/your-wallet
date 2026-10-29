@@ -178,7 +178,13 @@ impl App {
         let has_key = self.apikeys.has(KeyName::Llm);
         items.push(Item::Help(format!(
             "저장된 API 키: {} (저장된 값은 다시 보이지 않습니다)",
-            if has_key { "설정됨" } else { "없음" }
+            if !has_key {
+                "없음"
+            } else if self.llm_key_withheld() {
+                "다른 엔드포인트 주소용이라 보내지 않음 — API 키를 다시 입력하세요"
+            } else {
+                "설정됨"
+            }
         )));
         items.push(Item::LabeledRow(
             "API 키".to_owned(),

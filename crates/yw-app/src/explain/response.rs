@@ -3,7 +3,7 @@
 
 use yw_json::{Limits, Object, Value};
 
-use super::input::{ExplainInput, TrustedSets, hex_tokens, norm, number_tokens};
+use super::input::{CriticalAction, ExplainInput, TrustedSets, hex_tokens, norm, number_tokens};
 use super::{ExplainError, HiddenReason, MAX_RESPONSE_BODY, MismatchReason};
 
 const ENVELOPE_LIMITS: Limits = Limits {
@@ -18,25 +18,36 @@ const UNKNOWN_MAX: usize = 200;
 const ACTIONS_MAX: usize = 8;
 const ASSET_MAX_BYTES: usize = 42;
 const AMOUNT_MAX_BYTES: usize = 80;
-/// Verdict expressions (ASCII ones compared case-insensitively, §5.2).
-const VERDICTS: [&str; 17] = [
+/// Verdict and reassurance expressions (§5.2), already in [`verdict_norm`] form: they are
+/// matched against the normalized text (whitespace and punctuation removed, lowercase), so
+/// `안 전`, `S.A.F.E` or `no-risk` match too. This is a safety filter: a false positive only
+/// hides the reference text.
+const VERDICTS: [&str; 25] = [
     "안전",
     "정상",
     "신뢰",
-    "믿을 수",
+    "믿을수",
     "문제없",
-    "문제 없",
     "괜찮",
     "승인해도",
     "승인하세요",
     "승인하십시오",
     "서명해도",
     "서명하세요",
+    "위험이없",
+    "위험없",
+    "위험하지않",
+    "무해",
+    "안심",
+    "검증된",
+    "공식",
     "safe",
+    "harmless",
     "legit",
     "trusted",
     "verified",
-    "no risk",
+    "norisk",
+    "risk free",
 ];
 
 /// The action type enum (§4.5).
@@ -315,9 +326,21 @@ fn has_link(text: &str) -> bool {
     lower.contains("://") || lower.contains("www.")
 }
 
+/// The verdict-matching form of `text` (§5.2): every character that is not a letter or digit
+/// (whitespace, punctuation, symbols) removed, the rest lowercased.
+#[must_use]
+pub fn verdict_norm(text: &str) -> String {
+    text.chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 fn has_verdict(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    VERDICTS.iter().any(|word| lower.contains(word))
+    let normalized = verdict_norm(text);
+    VERDICTS
+        .iter()
+        .any(|word| normalized.contains(&verdict_norm(word)))
 }
 
 /// §5.2 second paragraph.
@@ -411,14 +434,90 @@ fn consistent(
                 return Err(MismatchReason::HexToken);
             }
         }
+        // Every number, however short: a one- or two-digit value ("5 ETH", "1개") is checked
+        // like a long one. Numbers the wallet writes as trusted values (call kinds such as
+        // `erc20_transfer`, token standards, decimals, the chain id) are in `D`; the panel's own
+        // lines (action lines, the footer's seconds) are built locally and never checked here.
         for token in number_tokens(text) {
-            let digits = token.bytes().filter(u8::is_ascii_digit).count();
-            if (token.contains('.') || digits >= 3) && !trusted.has_number(&norm(&token)) {
+            if !trusted.has_number(&norm(&token)) {
                 return Err(MismatchReason::NumberToken);
             }
         }
     }
     Ok(out)
+}
+
+/// Action types that count as mentioning `critical`.
+const fn mentioning_types(critical: CriticalAction) -> &'static [ActionType] {
+    match critical {
+        CriticalAction::Approval => &[
+            ActionType::Approve,
+            ActionType::ApproveAll,
+            ActionType::Permit,
+        ],
+        CriticalAction::Permit => &[ActionType::Permit, ActionType::Approve],
+        CriticalAction::ApprovalForAll => &[ActionType::ApproveAll],
+        CriticalAction::Transfer => &[ActionType::Send],
+    }
+}
+
+/// Summary words (in [`verdict_norm`] form) that count as mentioning `critical`.
+const fn mentioning_words(critical: CriticalAction) -> &'static [&'static str] {
+    match critical {
+        CriticalAction::Approval => &["승인", "허용", "권한", "허가", "approv", "allowance"],
+        CriticalAction::Permit => &[
+            "permit",
+            "서명허가",
+            "허가",
+            "권한",
+            "승인",
+            "허용",
+            "approv",
+            "allowance",
+        ],
+        CriticalAction::ApprovalForAll => &[
+            "setapprovalforall",
+            "approvalforall",
+            "approveall",
+            "전체승인",
+            "전체권한",
+            "컬렉션전체",
+            "모든nft",
+            "전체nft",
+            "모든토큰",
+            "모든자산",
+            "모든권한",
+            "allnft",
+        ],
+        CriticalAction::Transfer => &[
+            "전송", "이체", "보내", "보냅", "보낸", "보낼", "송금", "이동", "출금", "지불", "나갑",
+            "transfer", "send", "sent", "pay",
+        ],
+    }
+}
+
+/// Structural consistency: the effects of the request (from the wallet's own decoding,
+/// [`ExplainInput::critical`]) that neither an action of a matching type nor a matching word of
+/// the normalized summary mentions. Non-empty means the explanation is inconsistent: it is
+/// labelled "설명 불일치 — 무시하세요" and folded away (`panel`).
+#[must_use]
+pub fn omitted_actions(input: &ExplainInput, explanation: &Explanation) -> Vec<CriticalAction> {
+    let summary = verdict_norm(&explanation.summary);
+    input
+        .critical()
+        .iter()
+        .copied()
+        .filter(|critical| {
+            let by_type = explanation
+                .actions
+                .iter()
+                .any(|action| mentioning_types(*critical).contains(&action.kind));
+            let by_word = mentioning_words(*critical)
+                .iter()
+                .any(|word| summary.contains(word));
+            !by_type && !by_word
+        })
+        .collect()
 }
 
 /// The whole of §5 for one HTTP response. No network.

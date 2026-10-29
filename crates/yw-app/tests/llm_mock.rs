@@ -203,10 +203,12 @@ mod llm {
     // ----- inputs and answers ----------------------------------------------------------------
 
     fn config(mock: &Mock, key: Option<&str>) -> LlmConfig {
+        let endpoint = parse_endpoint(&mock.endpoint()).unwrap();
+        let host = endpoint.host.clone();
         LlmConfig::new(
-            parse_endpoint(&mock.endpoint()).unwrap(),
+            endpoint,
             ModelName::parse("mock-model").unwrap(),
-            key.and_then(ApiKey::parse),
+            key.and_then(|key| ApiKey::parse(key, &host)),
             ResponseFormatMode::JsonSchema,
             0,
         )

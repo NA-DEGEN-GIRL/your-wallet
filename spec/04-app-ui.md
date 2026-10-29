@@ -360,9 +360,11 @@ W04(현재, 새, 새 확인) → 새 비밀번호 검사(E-INP-001/002) → `Key
 | 4 | (ERC-20) 선택 토큰의 컨트랙트 주소 | E-INP-015 차단 |
 | 5 | 보내는 계정과 같음 | W-ADDR-1 "보내는 계정과 같은 주소입니다." |
 | 6 | 주소록·내 계정에 정확히 있음 | 주석 "주소록: {이름}"(verified면 "✓ 확인됨" 덧붙임) 또는 "내 계정: {라벨}" |
-| 7 | 같지 않지만 `0x` 뒤 앞 4자와 끝 4자가 주소록·내 계정 주소와 같음(대소문자 무시) | W-ADDR-3 "'{이름}'과 앞 4자·끝 4자가 같지만 다른 주소입니다. 주소 오염 공격일 수 있습니다.", 확인 체크 필요 |
-| 8 | 6·7 해당 없음 | W-ADDR-2 "주소록에 없는 주소입니다. 주소 전체를 확인하세요." |
+| 7 | 같지 않지만 `0x` 뒤 hex 40자의 일치하는 앞 P자 + 일치하는 끝 S자 ≥ 6(어떤 나눔이든: 3+3·2+4·4+2·6+0…, 대소문자 무시)인 주소가 주소록·내 계정·**보낸 내역**에 있음(여럿이면 일치 글자가 가장 많은 것, 같으면 주소록·내 계정 우선) | W-ADDR-3 "'{이름}'과 앞 P자·끝 S자가 같지만 다른 주소입니다. 주소 오염 공격일 수 있습니다."(한쪽이 0이면 그쪽은 빼고, 보낸 내역이면 "보낸 내역에 있는 주소(0x…)와 …"), 확인 체크 필요. 무작위 주소가 아는 주소 하나와 우연히 걸릴 확률 ≈ 16⁻⁶ · (1 + 6·15/16) ≈ 3.9e-7(합 5면 ≈ 5.4e-6) |
+| 8 | 6·7 해당 없음(보낸 내역과 정확히 같아도) | W-ADDR-2 "주소록에 없는 주소입니다. 주소 전체를 확인하세요." |
 | 9 | (네이티브 자산) `eth_getCode`가 비어 있지 않음 | W-ADDR-4 "컨트랙트 주소입니다. 받는 쪽이 이 자산을 처리할 수 있는지 확인하세요." |
+
+**보낸 내역(아는 주소, Solana와 같은 방식).** 모든 EVM 체인 저널 레코드의 거래 `to`와, ERC-20 `transfer`(`a9059cbb`)·`transferFrom`(`23b872dd`) 호출이면 엄격 디코드([03] §7.1)한 받는 주소, 그리고 meta `activity["eip155:*"]`의 상대 주소. 중복과 0 주소는 뺀다. 보낸 내역은 7의 닮은 주소 검사에만 쓰고 받는 사람 고르기 목록에는 넣지 않는다.
 
 **금액**: 이식 `archive/spec-v2.4:demo/sepolia-wallet/src/erc20.rs:222-266` `parse_token_amount`와 [03] `parse_units`. 숫자와 `.` 하나, 부호·지수·쉼표·공백 금지, 소수 자리 ≤ decimals, 0 초과, 입력 ≤ 128바이트 → 위반 E-INP-011. 네이티브 자산(ETH 등, 소수 자릿수는 그 체인 값)은 금액 + 최대 수수료 ≤ 잔액, 토큰은 금액 ≤ 토큰 잔액이고 최대 수수료 ≤ 네이티브 잔액 → 위반 E-INP-012.
 
@@ -492,14 +494,14 @@ W04(현재, 새, 새 확인) → 새 비밀번호 검사(E-INP-001/002) → `Key
 | 5 | S03 | `KeyJob::CommitKeyStart` → `Vault::create_with_key`(`Unlocked`) → 키 전용 기본 meta([02] §5.3: `evm_accounts = []`, 그 키의 목록·선택 — Bitcoin 키는 meta `btc_accounts`의 가져온 키 계정, 그 체인 탭) → 버퍼 소거. Bitcoin 키면 설정 `bitcoin.enabled = true`, `bitcoin.network` = 그 키의 네트워크(WIF 버전 바이트)로 쓴다([08] §3.5). |
 | 6 | S08 | T-KEYSTART-OK(완료 띠) + T-KEYSTART-BACKUP(주의 띠). 백업 확인 단계는 없다. 이후 §2.3 6단계와 같다. |
 
-**개인키 가져오기(지갑이 있을 때)**: 각 체인 탭 "내 계정"의 `개인키 가져오기`(`Unlocked`이고 그 체인 가져온 키 < 15일 때만; T-ALT-PASS 세션은 끔) → W07(그 체인, 니모닉 지갑은 T-IMPORTED-KEY, 키 전용 지갑은 T-KEY-ONLY) → EVM `KeyJob::ImportPrivateKey`, Solana·Bitcoin `KeyJob::ImportKey { spec }` → `Vault::import_key` → meta 목록에 "가져온 계정 n"·"가져온 Solana n"으로 더한다. Bitcoin 키는 목록 대신 Bitcoin 계정이 된다: UI가 `KeyJob::BtcMeta { AddImported { network, key: BtcAccountKey::single(..) } }`를 보내 key worker가 meta `btc_accounts`에 저장·선택한다([08] §3.5). Bitcoin 탭은 W07 전에 카드 안 라디오로 주소 형식을 고른다(기본 P2WPKH). 키의 네트워크가 설정과 다르면 정보 띠로 알린다. 오류는 W07에 남는다(E-VLT-010 체인별 15개, E-VLT-011 중복, 형식 오류).
+**개인키 가져오기(지갑이 있을 때)**: 각 체인 탭 "내 계정"의 `개인키 가져오기`(`Unlocked`이고 그 체인 가져온 키 < 15일 때만; T-ALT-PASS 세션은 끔) → W07(그 체인, 니모닉 지갑은 T-IMPORTED-KEY, 키 전용 지갑은 T-KEY-ONLY) → EVM `KeyJob::ImportPrivateKey`, Solana·Bitcoin `KeyJob::ImportKey { spec }` → `Vault::import_key` → meta 목록에 "가져온 계정 n"·"가져온 Solana n"으로 더한다. Bitcoin 키는 목록 대신 Bitcoin 계정이 된다: UI가 `KeyJob::BtcMeta { AddImported { network, key: BtcAccountKey::single(..) } }`를 보내 key worker가 meta `btc_accounts`에 저장·선택한다([08] §3.5). Bitcoin 탭은 W07 전에 카드 안 라디오로 주소 형식을 고른다(기본 P2WPKH). 키의 네트워크가 설정과 다르면 정보 띠로 알린다. 오류는 W07에 남는다(E-VLT-010 체인별 15개, E-VLT-011 중복 — Bitcoin은 그 주소가 이미 HD 계정의 검색 범위나 다른 가져온 키의 주소일 때도, [08] §3.5 — 형식 오류).
 
 **계정 목록**
 - EVM: 파생 계정 다음에 가져온 계정(기존). 키 전용 지갑의 EVM 탭에 EVM 키가 없으면 T-NO-ACCOUNTS 카드. 선택 계정 설정(`prefs.evm_account`)이 목록에 없는 계정을 가리키면 첫 행을 선택 계정으로 쓴다.
 - Solana: 표준 계정 다음에 가져온 계정(meta `sol_raw_accounts`). 선택(`sol_raw_selected`)한 가져온 계정으로 보내기 폼을 열면 출처가 `SolKeySource::Imported`이고 SOL·허용 목록 SPL 보내기, 받기, 잔액, 저널, 만료 증명이 표준 계정과 같다([07] §3.4). 선택 행 버튼: 파생 `이름 바꾸기`·`숨기기`, 가져온 키 `이름 바꾸기`·`개인키 보기`·`삭제`(위험). 키 전용 지갑은 계정 0을 파생하지 않는다.
 - Bitcoin: 가져온 키는 별도 카드 없이 "Bitcoin 계정" 목록의 행이다(§2.6 Bitcoin 탭 계정, [08] §3.5–§3.6): 배지 "[가져온 키]", 줄인 주소, 형식, 사용 가능 잔액; 고르면 그 계정의 잔액·UTXO·받기(그 주소 하나)·보내기(잔돈은 같은 주소)·활동. 선택한 가져온 계정의 버튼: `개인키 보기`(WIF)·`삭제`(위험). 키 전용 지갑은 기본 BIP84 계정·발견·`계정 추가`가 없고, 가져온 키 계정의 첫 계정이 연결 검사의 최고 블록 높이를 보관한다.
 
-**삭제**: EVM은 기존 `삭제`(T-REMOVE-KEY → W03 → `remove_evm_raw_key`). Solana·Bitcoin은 `삭제` → T-REMOVE-IMPORTED(계정 라벨·주소) → W03 → `KeyJob::RemoveImportedKey` → `Vault::remove_imported_key`. 키 전용 지갑의 마지막 키는 `삭제`가 꺼져 있고 vault도 `LastKey`(E-VLT-013)로 거부한다. Bitcoin 키는 그 계정에 BTC 승인이 열려 있거나 진행 중 거래가 있으면 확인 창 전에 이유를 보이고 멈춘다("Bitcoin 승인이 진행 중이라 이 가져온 키를 지울 수 없습니다…" / "이 가져온 키로 보낸 거래가 아직 진행 중입니다…"; key worker도 다시 확인해 `ImportedKeyBusy`면 W03에 같은 문구). 지운 뒤 key worker가 그 계정을 meta `btc_accounts`에서 지우고(`BtcMetaDone::Removed`) 선택은 기본 계정(키 전용 지갑은 첫 계정)으로 돌아간다. 끝난 거래의 활동 행은 남는다.
+**삭제**: EVM은 기존 `삭제`(T-REMOVE-KEY → W03 → `remove_evm_raw_key`). Solana·Bitcoin은 `삭제` → T-REMOVE-IMPORTED(계정 라벨·주소) → W03 → `KeyJob::RemoveImportedKey` → `Vault::remove_imported_key`. 키 전용 지갑의 마지막 키는 `삭제`가 꺼져 있고 vault도 `LastKey`(E-VLT-013)로 거부한다. Bitcoin 키는 그 계정에 BTC 승인이 열려 있거나 그 주소의 거래가 아직 확정될 수 있으면(진행 중, `Replaced`, 포기·공개된 거부 뒤 30일 이내 — 다시 가져온 같은 키의 옛 레코드 포함, [08] §3.5·§12.1) 확인 창 전에 이유를 보이고 멈춘다("Bitcoin 승인이 진행 중이라 이 가져온 키를 지울 수 없습니다…" / "이 가져온 키의 주소로 보낸 거래가 아직 확정될 수 있습니다(진행 중, 또는 포기·거절 뒤 30일 이내)…"; key worker도 다시 확인해 `ImportedKeyBusy`면 W03에 같은 문구). 지운 뒤 key worker가 그 계정을 meta `btc_accounts`에서 지우고(`BtcMetaDone::Removed`) 선택은 기본 계정(키 전용 지갑은 첫 계정)으로 돌아간다. 끝난 거래의 활동 행은 남는다.
 
 **브라우저**: dApp 연결은 EVM 계정만 쓴다(키 전용 지갑은 가져온 EVM 키). EVM 계정이 하나도 없으면 연결 요청은 4100 `NoEvmAccount`(이유 문구, [05] §5)로 끝나고 연결 창을 열지 않는다. 잠금·자동 잠금·잠금 해제·브라우저 다리는 키 전용 지갑에서도 같다.
 
@@ -621,7 +623,9 @@ pub fn can_approve(g: &ApprovalGate, now: Instant) -> bool {
         && g.is_foreground && now < g.deadline && !g.submitting
 }
 ```
-매 이벤트와 50 ms 타이머마다 `set_armed(now, can_approve(..))`. `승인` 버튼은 `armed`일 때만 활성 모양이다. 차단 등급이면 버튼 글자 "승인할 수 없음".
+매 이벤트와 50 ms 타이머마다 `set_armed(now, can_approve(..))`. `승인` 버튼은 승인 입력이 지금 받아들여질 때만 활성 모양이다(`ApprovalSession::approve_ready`: armed, 게이트 열림, 마지막 누름에서 1초 이상 또는 hold 진행 중). 차단 등급이면 버튼 글자 "승인할 수 없음".
+
+**빠른 클릭 유도 방어.** (1) armed가 아닐 때 받은 모든 포인터·키 누름(창 어디든, 키 자동 반복 포함 — 다른 버튼·본문·AI 패널·스크롤 막대 클릭, 비활성 창을 활성화하며 먹힌 클릭, 승인 버튼에서의 Enter·Space 밖 모든 키는 `InteractionEvent::OtherPress`)은 1초 대기를 다시 시작한다(`ready_at = max(ready_at, now)`). 창이 (다시) 활성화될 때(전경 false → true, 매 이벤트·타이머에서 확인, `WM_ACTIVATEAPP(TRUE)`)도 다시 시작한다. (2) 승인 입력(승인 버튼의 Enter·포인터 누름·Space)은 창 안 **직전 누름에서 1초 이상** 지나 시작해야 한다 — 버튼이 이미 armed였어도 그렇지 않으면 아무 일도 하지 않는다. 직전 누름은 표시 교체·상호작용 재시작을 넘어 기억한다. (yw-win이 디코드하지 않는 오른쪽·가운데·X 버튼과 제목 표시줄 누름은 세지 못한다.)
 
 | Win32 입력 | `InteractionEvent` |
 |---|---|
@@ -668,10 +672,11 @@ pub fn can_approve(g: &ApprovalGate, now: Instant) -> bool {
 - `이 사이트의 대기 요청 모두 거부`: 표시 중 항목과 같은 origin의 대기 항목 모두 `Rejected`.
 
 ### 3.8 AI 설명 패널 (M6)
-내용·상태·문구는 [06]. 이 문서의 규칙: 하단 고정 영역의 버튼 위, 배경 `AI_PANEL_BG`, 제목 "AI 설명 (참고용, 틀릴 수 있음)", 키보드 포커스 없음, 결과가 와도 다른 영역의 배치 불변, 문자열은 §3.3 렌더러로 그린다. `can_approve`·`ApprovalInteraction`·위험 등급·digest는 패널과 무관하다.
+내용·상태·문구는 [06]. 이 문서의 규칙: 하단 고정 영역의 버튼 위, 배경 `AI_PANEL_BG`, 제목 "AI 설명 (참고용, 틀릴 수 있음)", 키보드 포커스 없음, 결과가 와도 다른 영역의 배치 불변, 문자열은 §3.3 렌더러로 그린다. `can_approve`·`ApprovalInteraction`·위험 등급·digest는 패널과 무관하다. 고위험(`High`) 요청은 경고 확인 체크 전까지 본문 대신 안내 한 줄만 보인다([06] §6). "설명 불일치"로 접힌 본문은 패널 클릭으로 펼친다([06] §5.4). 패널 클릭·스크롤은 승인 누름 간격 규칙의 "다른 누름"이다(§3.4).
 
 ### 3.9 시험 (자동)
 - AP-1: 이식 `lib.rs:580-1006` 테스트 전부 통과(위험 사상 적용).
+- AP-2(빠른 클릭): armed 아님에서의 누름은 대기를 다시 시작한다(10,999 ms 누름 뒤 11,000 ms 클릭 무시, 12,000 ms 승인); 창 활성화도 다시 시작; 아무 누름 뒤 999 ms의 승인 누름(포인터·Enter·고위험 포인터·Space hold) 무시, 1,000 ms 수락; 빠른 클릭 연속 + 자동 반복 Enter는 1초 멈춘 뒤의 누름만 승인.
 - AP-2: `armed=false`에서 Enter·클릭·2초 hold → `Pending`. 고위험 경고 2개: 체크박스는 1개, 체크 끔 + 2초 hold → `Pending`; 체크 켬 + 1.9초 / 2.0초 → `Pending` / `Approved`. `risk == High`인데 `ack_required == false`인 비정상 입력도 체크 필요(D16, 방어 중복). `Blocked` → 어떤 입력도 `Approved` 아님. `ready_at` + 999 ms 클릭 → 무시. 표시 교체 중 hold → 취소, 체크 해제.
 - AP-3: 같은 origin 17번째·전체 65번째 → `TooManyPending`. 남은 기한 4,999 ms → 창 없이 `TimedOut`. `Preparing` 30 s 뒤 Ready → `Expired`는 Ready 표시 + 120 s(준비 시간 불포함). App 항목 `Expired` → 폼 입력 유지, 다시 검토 시 새 승인 id(이전 id `consume` 실패). `Connect` 선택 16개 → `can_approve` 참, 17개 → 거짓. 표시 중 잠금 → `Rejected`, 대기 항목은 남음. 연결 해제 → 그 origin 대기 항목 `Revoked`.
 - AP-4: 이스케이프되지 않은 U+202E, 라벨 표에 없는 `FieldKey` → 표시 없이 `Rejected` + E-UI-001. 270,000바이트 값과 공백 없는 3,000자 문자열 배치 → 줄 조각을 이으면 원문과 같음.
@@ -909,6 +914,7 @@ offset 8   count       u8       0..=48
                                 / tpl:quicknode: <이름> ":" <토큰>  (이름 ^[a-z0-9]+(-[a-z0-9]+)*$ 1–63, 토큰 ^[A-Za-z0-9_-]{16,128}$, §2.11)
                                 / tpl:alchemy: ^[A-Za-z0-9_-]{16,128}$ (§2.11)
                                 / llm: 0x21–0x7E 1–512자([06] §2.1)
+                                / llm:host: 키를 저장할 때의 LLM 엔드포인트 소문자 host[:port], 1–300바이트 [a-z0-9.:_\[\]-] (키를 이 호스트에만 보낸다, [06] §2.1; 이전 버전은 모르는 이름으로 보존)
 끝: 남는 바이트 없음
 ```
 - 상한 근거: `tpl:*` 2 + `llm` 1 + EVM 기본 3 + 사용자 체인 32 + SOL 2 + BTC 2 = 42 ≤ 48개, 42 × (1 + 32 + 2 + 2048) < 131,072. 가장 긴 이름 `rpc:eip155:9223372036854775771` = 30바이트 ≤ 32.
@@ -977,7 +983,7 @@ BTC 계정 선택은 `prefs`에 두지 않는다(알려진 객체에 키를 더�
 | E-VLT-008 | `PayloadCorrupt` | 지갑 내용이 손상되었습니다. 이전 사본(.prev)으로 복구할 수 있습니다. |
 | E-VLT-009 | `BackupNotConfirmed` | 백업 확인을 먼저 끝내세요. |
 | E-VLT-010 | `RecordLimit` | 가져온 개인키는 체인마다 최대 15개입니다. |
-| E-VLT-011 | `DuplicateKey` | 이미 가져온 개인키입니다. |
+| E-VLT-011 | `DuplicateKey` | 이미 가져온 개인키이거나, 지갑의 다른 계정과 주소가 같은 키입니다. |
 | E-VLT-012 | `NoMnemonic` | 이 지갑에는 복구 단어가 없습니다. 개인키로 시작한 지갑은 계정 추가·복구 단어 보기를 쓸 수 없습니다. |
 | E-VLT-013 | `LastKey` | 개인키로 시작한 지갑의 마지막 키는 지울 수 없습니다. 지갑 전체를 지우려면 앱을 닫고 데이터 폴더의 파일을 직접 옮기세요. |
 | E-VLT-014 | `UnsupportedPayload` | 새 버전 앱이 저장한 지갑입니다. 앱을 업데이트하세요. 비밀번호는 맞습니다. 이전 사본(.prev)으로 되돌리지 마세요 — 새 버전에서 추가한 키가 빠집니다. 앱은 이 파일을 지우거나 덮어쓰지 않습니다. |

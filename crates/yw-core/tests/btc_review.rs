@@ -775,3 +775,98 @@ fn disclosed_rejected_or_cancelled_must_be_conflicted() {
     let fresh = legacy_plain(&[with_id(undisclosed_rejected, 6)]);
     assert!(!disclosed_duplicate(&fresh, &again));
 }
+
+/// Security review (double payment across account identities, spec/08 §12.1): a disclosed
+/// `Abandoned` record of an imported key that was removed and imported again (a new vault record
+/// id, so a new account identity) still constrains the next send of the new identity: records are
+/// matched by the scripts their inputs spend (and by outpoint), not by account id. The HD account
+/// holding the same address covers it too; another address or address type does not. While the
+/// record may still confirm, the key may not be removed.
+#[test]
+fn reimported_key_inherits_the_abandon_rule() {
+    use yw_core::bip32::path::BtcChain;
+    use yw_core::btc::account::{BtcAccountId, BtcAccountKey, BtcPubKey, ScriptType};
+    use yw_core::journal::btc::{AccountScope, input_scripts, of_account, related_records};
+    let plan = simple_plan(1, 20_000);
+    let input = plan.inputs()[0];
+    let key = btc_common::pubkey(input.chain, input.index);
+    let mut given_up = record(&plan, BtcTxState::Abandoned, 1_000);
+    given_up.disclosed = true;
+    given_up.account = BtcAccountId::Imported { id: [0xa1; 16] };
+    let records = records_of(&legacy_plain(&[given_up.clone()]));
+    assert_eq!(records, vec![given_up.clone()]);
+    // The witness shows the key: the script is known without the removed account.
+    let single = |id: u8, script_type: ScriptType, public: [u8; 33]| {
+        BtcAccountKey::single([id; 16], script_type, BtcPubKey::Compressed(public)).unwrap()
+    };
+    let new_key = single(0xb2, ScriptType::P2wpkh, key);
+    assert_eq!(
+        input_scripts(&given_up, None),
+        vec![Some(new_key.script(BtcChain::Receive, 0).unwrap())]
+    );
+    // By account id the new identity sees nothing (the old rule): unconstrained.
+    assert!(of_account(&records, NET, new_key.id()).is_empty());
+    let scope = AccountScope::of(&BtcMeta::with_key(NET, new_key)).unwrap();
+    let related = related_records(&records, &scope, &[new_key]);
+    assert_eq!(related, records);
+    assert_eq!(abandoned_conflicts(&related, NET, 1_000), vec![vec![op(1)]]);
+    assert_eq!(refresh_keep_outpoints(&related, NET, 1_000), vec![op(1)]);
+    // The next send of the new identity must spend op(1).
+    let account = account();
+    let candidates = [utxo(100_000, TIP - 10, 1, 0), utxo(50_000, TIP - 10, 2, 0)];
+    let free = plan_send(&send_request(
+        &candidates,
+        SendAmount::Exact(Sats::new(30_000).unwrap()),
+        &[],
+        TIP,
+        3,
+        &account,
+    ))
+    .unwrap();
+    assert_eq!(spent(&free), vec![op(2)]);
+    assert_eq!(
+        check_abandoned_conflicts(&related, &free, 1_000),
+        Err(PlanError::AbandonedNotConflicted)
+    );
+    let conflicts = abandoned_conflicts(&related, NET, 1_000);
+    let forced = plan_send(&send_request(
+        &candidates,
+        SendAmount::Exact(Sats::new(30_000).unwrap()),
+        &conflicts,
+        TIP,
+        3,
+        &account,
+    ))
+    .unwrap();
+    assert_eq!(spent(&forced), vec![op(1)]);
+    assert_eq!(check_abandoned_conflicts(&related, &forced, 1_000), Ok(()));
+    // The HD account with the same address (an alias) covers it as well.
+    let hd = AccountScope::of(&BtcMeta::new(NET, xpub())).unwrap();
+    assert_eq!(related_records(&records, &hd, &[]), records);
+    // Another key, or the same key as another address type: unrelated.
+    let other = single(
+        0xc3,
+        ScriptType::P2wpkh,
+        btc_common::pubkey(BtcChain::Receive, 5),
+    );
+    let other_scope = AccountScope::of(&BtcMeta::with_key(NET, other)).unwrap();
+    assert!(related_records(&records, &other_scope, &[]).is_empty());
+    let taproot = single(0xd4, ScriptType::P2tr, key);
+    let taproot_scope = AccountScope::of(&BtcMeta::with_key(NET, taproot)).unwrap();
+    assert!(related_records(&records, &taproot_scope, &[]).is_empty());
+    // Removal block (spec/04 §2.18): may still confirm inside the window, not after.
+    assert!(given_up.may_still_confirm(1_000));
+    assert!(!given_up.may_still_confirm(1_001 + BTC_ABANDON_WINDOW_SECS));
+    let mut cancelled = given_up.clone();
+    cancelled.disclosed = false;
+    assert!(!cancelled.is_live_conflict(1_000));
+    assert!(
+        cancelled.may_still_confirm(1_000),
+        "every abandoned record of the window"
+    );
+    let mut confirmed = record(&plan, BtcTxState::Confirmed, 1_000);
+    assert!(!confirmed.may_still_confirm(1_000));
+    confirmed.state = BtcTxState::Replaced;
+    confirmed.confirmed_height = None;
+    assert!(confirmed.may_still_confirm(1_000 + 2 * BTC_ABANDON_WINDOW_SECS));
+}

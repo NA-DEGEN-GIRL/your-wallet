@@ -10,10 +10,12 @@ use std::sync::Arc;
 use yw_core::approval::ChainFacts;
 use yw_core::evm::address::Address;
 
-use crate::apikeys::KeyName;
+use crate::apikeys::{ApiKeys, KeyName};
 use crate::app::{App, Confirm, Screen, SettingsSection};
 use crate::events::UiEvent;
-use crate::explain::config::{effectively_enabled, parse_endpoint, valid_api_key, valid_model};
+use crate::explain::config::{
+    KEY_REENTER_TEXT, StoredKey, effectively_enabled, parse_endpoint, valid_api_key, valid_model,
+};
 use crate::explain::input::RequestKind;
 use crate::explain::panel::Ended;
 use crate::explain::{
@@ -137,6 +139,15 @@ pub fn transaction_input(
     ))
 }
 
+/// The stored LLM key with the endpoint host it is bound to (spec/06 §2.1).
+#[must_use]
+pub fn stored_llm_key(keys: &ApiKeys) -> Option<StoredKey<'_>> {
+    keys.llm_key().map(|key| StoredKey {
+        key,
+        host: keys.llm_host(),
+    })
+}
+
 /// Writes the one log line of a request (spec/06 §8). Never the prompt, input, response, model
 /// text, key or endpoint path.
 pub fn log_request(host: &str, kind: RequestKind, ended: &Ended, stats: Option<&RequestStats>) {
@@ -182,9 +193,13 @@ impl App {
         let Some(events) = self.events.clone() else {
             return;
         };
-        let Ok(config) = LlmConfig::from_settings(settings, self.apikeys.llm_key()) else {
+        let Ok(config) = LlmConfig::from_settings(settings, stored_llm_key(&self.apikeys)) else {
             return;
         };
+        if config.key_withheld() {
+            // spec/06 §2.1: the key was entered for another endpoint host; it is not sent.
+            logging::warn("llm", "llm.key_withheld", &[]);
+        }
         let host = config.host().to_owned();
         let sink = Box::new(move |done: LlmDone| {
             if events.push(UiEvent::Llm(Box::new(done))).is_err() {
@@ -288,6 +303,10 @@ impl App {
                 );
                 return;
             }
+            if self.llm_key_withheld() {
+                self.llm_message(KEY_REENTER_TEXT, false);
+                return;
+            }
             self.llm_ui.notice_checked = false;
             self.set_screen(Screen::Confirm(Confirm::LlmOn));
         } else if !checked && enabled {
@@ -301,10 +320,25 @@ impl App {
         }
     }
 
-    /// `켜기` of the notice overlay (spec/06 §2.2): only with `이해했습니다` checked.
+    /// Whether a stored LLM key exists but is bound to another endpoint host than the saved one
+    /// (or to none), so it is not sent (spec/06 §2.1).
+    #[must_use]
+    pub fn llm_key_withheld(&self) -> bool {
+        LlmConfig::from_settings(&self.settings.llm_explain, stored_llm_key(&self.apikeys))
+            .is_ok_and(|config| config.key_withheld())
+    }
+
+    /// `켜기` of the notice overlay (spec/06 §2.2): only with `이해했습니다` checked, and not
+    /// while the stored key belongs to another endpoint host (spec/06 §2.1).
     pub fn llm_confirm_on(&mut self) {
         if !self.llm_ui.notice_checked {
             self.refresh();
+            return;
+        }
+        if self.llm_key_withheld() {
+            self.llm_ui.notice_checked = false;
+            self.screen = Screen::Settings(SettingsSection::Ai);
+            self.llm_message(KEY_REENTER_TEXT, false);
             return;
         }
         let mut settings = self.settings.clone();
@@ -322,7 +356,8 @@ impl App {
         self.llm_message(text, self.settings.llm_explain.enabled);
     }
 
-    fn llm_save(&mut self) {
+    /// `저장` of the S15 form with the current drafts.
+    pub(crate) fn llm_save(&mut self) {
         let endpoint = self.llm_ui.endpoint_text.trim().to_owned();
         let model = self.llm_ui.model_text.trim().to_owned();
         if !endpoint.is_empty() && parse_endpoint(&endpoint).is_none() {
@@ -348,6 +383,7 @@ impl App {
             return;
         };
         let mut settings = self.settings.clone();
+        let had_endpoint = parse_endpoint(&settings.llm_explain.endpoint).is_some();
         let changed_endpoint = settings.llm_explain.endpoint != endpoint;
         settings.llm_explain.endpoint = endpoint;
         settings.llm_explain.model = model;
@@ -360,11 +396,27 @@ impl App {
         if changed_endpoint {
             // spec/06 §2.1: a new endpoint needs a new consent.
             settings.llm_explain.enabled = false;
+            // The stored key stays bound to the old host: write that binding (an older
+            // version's key is bound only in memory at load) before the endpoint changes.
+            if self.apikeys.llm_host().is_some() && !self.save_apikeys() {
+                self.llm_message("설정을 저장하지 못했습니다.", false);
+                return;
+            }
         }
         self.save_settings(settings.clone(), "llm_explain");
         if self.settings != settings {
             self.llm_message("설정을 저장하지 못했습니다.", false);
             return;
+        }
+        // A key entered before any endpoint was saved is bound to the first one saved (a key
+        // that is unbound while an endpoint was saved stays unbound: it was never entered for
+        // the new host).
+        if !had_endpoint
+            && let Some(endpoint) = parse_endpoint(&self.settings.llm_explain.endpoint)
+            && self.apikeys.bind_llm_host(&endpoint.host)
+        {
+            logging::info("llm", "llm.key_bound", &[]);
+            let _ = self.save_apikeys();
         }
         self.llm_reconfigure();
         let text = if changed_endpoint && was_enabled {
@@ -382,7 +434,12 @@ impl App {
             .map(yw_core::secret::Zeroizing::new)
             .unwrap_or_default();
         self.controls.clear_text(ids::KEY_EDIT);
-        let key = key.trim();
+        self.llm_store_key(key.trim());
+    }
+
+    /// Stores an entered key bound to the saved endpoint's `host[:port]` (spec/06 §2.1;
+    /// unbound when no valid endpoint is saved yet: it is bound by the next `저장`).
+    pub(crate) fn llm_store_key(&mut self, key: &str) {
         if !valid_api_key(key) {
             self.llm_message(
                 "API 키는 공백 없는 영문·숫자·기호(0x21–0x7E) 1–512자여야 합니다.",
@@ -390,7 +447,9 @@ impl App {
             );
             return;
         }
-        self.apikeys.set_llm(key);
+        let host =
+            parse_endpoint(&self.settings.llm_explain.endpoint).map(|endpoint| endpoint.host);
+        self.apikeys.set_llm(key, host.as_deref());
         if self.save_apikeys() {
             logging::info("llm", "llm.key_set", &[]);
             self.llm_reconfigure();
@@ -402,13 +461,26 @@ impl App {
 
     /// `연결 테스트` (spec/06 §2.2): the fixed sample through §4–§5 once with the saved settings
     /// and key, on a short-lived thread; only the resulting state is shown.
-    fn llm_test(&mut self) {
-        let config = LlmConfig::from_settings(&self.settings.llm_explain, self.apikeys.llm_key());
+    pub(crate) fn llm_test(&mut self) {
+        let config =
+            LlmConfig::from_settings(&self.settings.llm_explain, stored_llm_key(&self.apikeys));
         let Ok(config) = config else {
             self.llm_ui.test_result = Some((ExplainError::NotConfigured.panel_text(), false));
             self.refresh();
             return;
         };
+        if config.key_withheld() {
+            // spec/06 §2.1: nothing is sent; the key must be entered again for this endpoint.
+            self.llm_ui.test_result =
+                Some((format!("연결 테스트 실패: {KEY_REENTER_TEXT}"), false));
+            logging::info(
+                "llm",
+                "llm.test_done",
+                &[("result", Field::Word("KeyWithheld"))],
+            );
+            self.refresh();
+            return;
+        }
         let Some(events) = self.events.clone() else {
             return;
         };
