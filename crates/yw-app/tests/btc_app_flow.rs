@@ -2451,3 +2451,240 @@ fn undisclosed_signed_cancel_has_no_constraint() -> TestResult {
     assert_eq!(queued_inputs(&harness)?, vec![small]);
     Ok(())
 }
+
+// ----- account identities (spec/08 §3.5, §12.1 "같은 주소의 다른 계정") ----------------------------
+
+/// A confirmed funding of `script` (`value` sats, distinguished by `salt`) on the fake chain.
+fn fund_script(harness: &Harness, script: Vec<u8>, value: u64, salt: u8) -> TestResult<OutPoint> {
+    let (tx, raw) = funding_to(script, value, salt)?;
+    let outpoint = OutPoint {
+        txid: txid(&tx),
+        vout: 0,
+    };
+    if let Ok(mut world) = harness.world.lock() {
+        world.txs.push((tx, raw, Some(FUNDING_HEIGHT)));
+    }
+    Ok(outpoint)
+}
+
+/// Removes imported key `id` the way an older build without the removal block could: the
+/// worker is locked, another vault instance on the same folder removes the record, and the
+/// wallet is unlocked again (meta load drops the account).
+fn remove_bypassing_block(harness: &mut Harness, id: [u8; 16]) -> TestResult {
+    use yw_app::store::{FileStorage, LockedSlotBox};
+    harness.unlocked = false;
+    harness.run(|ui, _| ui.lock());
+    let _ = harness.key.handle(KeyJob::Lock);
+    harness.meta = None;
+    harness.journal = None;
+    {
+        let mut vault = yw_core::vault::Vault::load(Box::new(
+            FileStorage::open(&harness.dir).map_err(|error| format!("{error:?}"))?,
+        ))?;
+        let password = yw_core::password::VaultPassword::new(PASSWORD)
+            .map_err(|error| format!("{error:?}"))?;
+        let slot = Box::new(LockedSlotBox::new().map_err(|error| format!("{error:?}"))?);
+        vault.unlock(&password, slot)?;
+        vault.remove_imported_key(&password, yw_core::vault::RecordId::from_bytes(id))?;
+        vault.lock();
+    }
+    let _ = harness.key.handle(KeyJob::Load);
+    let unlocked = harness.key.handle(KeyJob::Unlock {
+        password: Zeroizing::new(PASSWORD.to_vec()),
+    });
+    if !matches!(
+        unlocked.first(),
+        Some(KeyOutcome::Status(Ok(
+            yw_core::vault::VaultStatus::Unlocked { .. }
+        )))
+    ) {
+        return Err("unlock after the removal".into());
+    }
+    harness.unlocked = true;
+    harness.key_job(KeyJob::LoadMeta);
+    harness.key_job(KeyJob::LoadJournal);
+    harness.drain();
+    Ok(())
+}
+
+/// Security review (double payment across account identities): an imported key's send is
+/// cancelled after the RPC received its bytes (`Abandoned`, disclosed). While it may still
+/// confirm the key cannot be removed (UI and key worker). Removed anyway (an older build) and
+/// imported again, the key gets a new vault record id, i.e. a new account identity: the next send
+/// must still spend an input of the abandoned transaction (matched by script, not account id),
+/// so at most one of the two can confirm.
+#[test]
+fn reimported_key_must_conflict_with_its_abandoned_send() -> TestResult {
+    use yw_app::workers::journal::btc::BtcJournalOp;
+    let info = imported_info(BIP49_TEST_WIF, ScriptType::P2wpkh)?;
+    let ours = script_pubkey(&info.kind);
+    let mut harness = Harness::new("reimport-abandoned")?;
+    let big = fund_script(&harness, ours.clone(), FUNDING_VALUE, 0xa0)?;
+    let small = fund_script(&harness, ours, 60_000, 0xa1)?;
+    harness.enable();
+    let first = harness.import_key(BIP49_TEST_WIF, ScriptType::P2wpkh)?;
+    let BtcAccountId::Imported { id } = first.id() else {
+        return Err("not imported".into());
+    };
+    assert_eq!(
+        harness.ctx().btc_meta().ok_or("account")?.verified().len(),
+        2
+    );
+    // 70,000 sats need the 100,000 output; signed while the controller sees the wallet locked.
+    send_form(&mut harness, "70000", "2");
+    harness.run(|ui, ctx| ui.review(ctx, [7; 32]));
+    assert_eq!(queued_inputs(&harness)?, vec![big]);
+    let txid = sign_without_precheck(&mut harness)?;
+    // [전송 계속]: the pre-check fails in transport after the RPC received the bytes; [취소].
+    harness.call(|ui, ctx| ui.continue_signed(ctx, txid));
+    assert!(matches!(
+        harness.work.front(),
+        Some(BtcAction::Key(job)) if matches!(
+            job.as_ref(),
+            KeyJob::BtcJournal { op: BtcJournalOp::Disclose { .. }, .. }
+        )
+    ));
+    if let Ok(mut world) = harness.world.lock() {
+        world.precheck_transport = true;
+    }
+    harness.drain();
+    harness.run(|ui, ctx| ui.cancel_signed(ctx, txid));
+    harness.run(BtcUi::confirm_yes);
+    let abandoned = harness.records()[0].clone();
+    assert_eq!(abandoned.state, BtcTxState::Abandoned);
+    assert!(abandoned.disclosed);
+    assert_eq!(abandoned.account, first.id());
+    if let Ok(mut world) = harness.world.lock() {
+        world.precheck_transport = false;
+    }
+    // It may still confirm: the key stays (UI before the password, and the key worker).
+    assert_eq!(
+        harness.ctx().remove_block(id, harness.ui.slot),
+        Some(yw_app::app_btc::REMOVE_BUSY_IN_FLIGHT)
+    );
+    let record_id = yw_core::vault::RecordId::from_bytes(id);
+    let outcomes = harness.key.handle(KeyJob::RemoveImportedKey {
+        password: Zeroizing::new(PASSWORD.to_vec()),
+        id: record_id,
+    });
+    assert!(matches!(
+        outcomes.as_slice(),
+        [KeyOutcome::ImportedKeyBusy(busy)] if *busy == record_id
+    ));
+    // Removed anyway, then imported again: a new identity of the same address.
+    remove_bypassing_block(&mut harness, id)?;
+    assert!(
+        harness
+            .meta
+            .as_ref()
+            .ok_or("meta")?
+            .btc_accounts
+            .get(BtcNetwork::Testnet4, first.id())
+            .is_none()
+    );
+    let second = harness.import_key(BIP49_TEST_WIF, ScriptType::P2wpkh)?;
+    assert_ne!(second.id(), first.id());
+    assert_eq!(harness.ctx().active_id(), second.id());
+    assert_eq!(
+        harness.ctx().btc_meta().ok_or("account")?.verified().len(),
+        2
+    );
+    // By account id the new identity has no records; the abandoned send still binds it.
+    assert!(harness.ctx().records().is_empty());
+    assert_eq!(harness.ctx().related_records(), vec![abandoned.clone()]);
+    assert_eq!(
+        harness.ctx().remove_block(
+            match second.id() {
+                BtcAccountId::Imported { id } => id,
+                BtcAccountId::Hd { .. } => return Err("not imported".into()),
+            },
+            harness.ui.slot
+        ),
+        Some(yw_app::app_btc::REMOVE_BUSY_IN_FLIGHT)
+    );
+    // Unconstrained, the smallest sufficient input (60,000) would be chosen.
+    send_form(&mut harness, "20000", "3");
+    harness.run(|ui, ctx| ui.review(ctx, [8; 32]));
+    let inputs = queued_inputs(&harness)?;
+    assert!(inputs.contains(&big), "{inputs:?}");
+    assert!(!inputs.contains(&small), "{inputs:?}");
+    harness.approve()?;
+    let records = harness.records();
+    let new = records
+        .iter()
+        .find(|record| record.account == second.id())
+        .ok_or("new send")?;
+    assert_eq!(new.state, BtcTxState::Submitted);
+    assert!(new.inputs.iter().any(|input| input.outpoint == big));
+    Ok(())
+}
+
+/// spec/08 §3.5: a WIF whose address (on its network, as the chosen type) is already an address
+/// of an account — here receive 0 of the HD P2SH-P2WPKH account 0 (`m/49'/1'/0'/0/0`) — is
+/// refused (E-VLT-011): one address never gets two account identities. The same key as another
+/// address type is a different address and is imported.
+#[test]
+fn wif_of_an_hd_address_is_refused() -> TestResult {
+    use yw_app::events::ImportedAccount;
+    let mut harness = Harness::new("wif-alias")?;
+    harness.enable();
+    harness.run(|ui, ctx| ui.add_account(ctx, ScriptType::P2shP2wpkh));
+    let nested = BtcAccountId::Hd {
+        script_type: ScriptType::P2shP2wpkh,
+        account: 0,
+    };
+    let account = harness
+        .meta
+        .as_ref()
+        .ok_or("meta")?
+        .btc_accounts
+        .get(BtcNetwork::Testnet4, nested)
+        .ok_or("nested account")?
+        .clone();
+    let info = imported_info(BIP49_TEST_WIF, ScriptType::P2shP2wpkh)?;
+    assert_eq!(
+        account
+            .address(BtcChain::Receive, 0)
+            .map_err(|error| format!("{error:?}"))?
+            .as_str(),
+        info.address
+    );
+    let outcomes = harness.key.handle(KeyJob::ImportKey {
+        spec: ImportSpec::Btc(ScriptType::P2shP2wpkh),
+        key: Zeroizing::new(BIP49_TEST_WIF.as_bytes().to_vec()),
+    });
+    assert!(matches!(
+        outcomes.as_slice(),
+        [KeyOutcome::KeyImported(Err(
+            yw_core::error::VaultError::DuplicateKey
+        ))]
+    ));
+    // Nothing stored: the vault has no record, meta no new account.
+    let accounts_before = harness
+        .meta
+        .as_ref()
+        .ok_or("meta")?
+        .btc_accounts
+        .accounts
+        .len();
+    harness.key_job(KeyJob::LoadMeta);
+    harness.drain();
+    let meta = harness.meta.as_ref().ok_or("meta")?;
+    assert_eq!(meta.btc_accounts.accounts.len(), accounts_before);
+    assert!(
+        meta.btc_accounts
+            .accounts
+            .iter()
+            .all(|account| !account.is_single())
+    );
+    // As native segwit the key has another address: imported.
+    let outcomes = harness.key.handle(KeyJob::ImportKey {
+        spec: ImportSpec::Btc(ScriptType::P2wpkh),
+        key: Zeroizing::new(BIP49_TEST_WIF.as_bytes().to_vec()),
+    });
+    assert!(matches!(
+        outcomes.as_slice(),
+        [KeyOutcome::KeyImported(Ok(ImportedAccount::Btc(..)))]
+    ));
+    Ok(())
+}

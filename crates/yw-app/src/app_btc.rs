@@ -31,9 +31,9 @@ use yw_core::btc::{
     parse_address,
 };
 use yw_core::journal::btc::{
-    BTC_FINAL_CONFIRMATIONS, BtcRecord, BtcTxState, TrackMode, abandoned_conflicts, bump_target,
-    check_can_send, current_record, in_flight, in_flight_outpoints, in_flight_replacements,
-    of_account, track_mode,
+    AccountScope, BTC_FINAL_CONFIRMATIONS, BtcRecord, BtcTxState, TrackMode, abandoned_conflicts,
+    bump_target, check_can_send, current_record, in_flight, in_flight_outpoints,
+    in_flight_replacements, of_account, related_records, track_mode,
 };
 use yw_win::http::HttpsUrl;
 
@@ -84,7 +84,7 @@ pub const ACCOUNT_SWITCH_BUSY: &str =
 /// Account delete refused while a BTC approval is open (spec/04 §2.18).
 pub const REMOVE_BUSY_APPROVAL: &str = "Bitcoin 승인이 진행 중이라 이 가져온 키를 지울 수 없습니다. 승인을 끝내거나 거절한 뒤 다시 하세요";
 /// Account delete refused while the account has an in-flight transaction (spec/04 §2.18).
-pub const REMOVE_BUSY_IN_FLIGHT: &str = "이 가져온 키로 보낸 거래가 아직 진행 중입니다(확정 전·전송 결과 확인 필요 등). 추적과 수수료 올리기에 이 키가 필요하므로, 거래가 확정되거나 끝난 뒤에 지울 수 있습니다";
+pub const REMOVE_BUSY_IN_FLIGHT: &str = "이 가져온 키의 주소로 보낸 거래가 아직 확정될 수 있습니다(진행 중, 또는 포기·거절 뒤 30일 이내). 추적과 이중 지불 방지에 이 키가 필요하므로, 거래가 확정되거나 끝난 뒤(포기·거절한 거래는 30일 뒤)에 지울 수 있습니다";
 
 /// One row of the Bitcoin account list (spec/04 §2.6 Bitcoin).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -279,7 +279,11 @@ impl BtcCtx<'_> {
     /// Every account of the settings network, BIP84 account 0 first (the account list).
     #[must_use]
     pub fn accounts(&self) -> Vec<&BtcMeta> {
-        let net = self.net();
+        self.accounts_on(self.net())
+    }
+
+    /// Every account of `net`, BIP84 account 0 first.
+    fn accounts_on(&self, net: BtcNetwork) -> Vec<&BtcMeta> {
         let mut out: Vec<&BtcMeta> = self
             .primary_meta()
             .filter(|meta| meta.network() == net)
@@ -398,8 +402,9 @@ impl BtcCtx<'_> {
         }
     }
 
-    /// Why the selected imported key may not be removed now (an approval open, an in-flight
-    /// transaction of its account), `None` when it may.
+    /// Why the selected imported key may not be removed now (an approval open, a transaction of
+    /// its address that may still confirm: in flight, `Replaced`, or given up / refused inside
+    /// the 30-day window, `BtcRecord::may_still_confirm`), `None` when it may (spec/04 §2.18).
     #[must_use]
     pub fn remove_block(&self, id: [u8; 16], slot: bool) -> Option<&'static str> {
         let account = BtcAccountId::Imported { id };
@@ -407,10 +412,46 @@ impl BtcCtx<'_> {
         if slot && selected {
             return Some(REMOVE_BUSY_APPROVAL);
         }
+        let now_unix = self.now_unix_ms / 1_000;
         BtcNetwork::ALL
             .into_iter()
-            .any(|net| in_flight(&of_account(self.all_records(), net, account), net))
+            .any(|net| {
+                let own = of_account(self.all_records(), net, account);
+                let related = self
+                    .accounts_on(net)
+                    .into_iter()
+                    .find(|meta| meta.id() == account)
+                    .map(|meta| self.related_of(meta))
+                    .unwrap_or_default();
+                own.iter()
+                    .chain(&related)
+                    .any(|record| record.may_still_confirm(now_unix))
+            })
             .then_some(REMOVE_BUSY_IN_FLIGHT)
+    }
+
+    /// The records of `meta`'s network touching its account under any identity (spec/08 §12.1
+    /// "같은 주소의 다른 계정": an imported key removed and imported again, an alias address);
+    /// its own records when its scripts cannot be derived.
+    fn related_of(&self, meta: &BtcMeta) -> Vec<BtcRecord> {
+        let net = meta.network();
+        let keys: Vec<BtcAccountKey> = self
+            .accounts_on(net)
+            .into_iter()
+            .map(|account| *account.account())
+            .collect();
+        AccountScope::of(meta).map_or_else(
+            |_| of_account(self.all_records(), net, meta.id()),
+            |scope| related_records(self.all_records(), &scope, &keys),
+        )
+    }
+
+    /// The records touching the selected account under any identity (the in-flight inputs and
+    /// the abandon rule of a new send, spec/08 §12.1).
+    #[must_use]
+    pub fn related_records(&self) -> Vec<BtcRecord> {
+        self.btc_meta()
+            .map_or_else(|| self.records(), |meta| self.related_of(meta))
     }
 
     /// Records of the selected account on the settings network (D20 and every per-account rule,
@@ -1903,9 +1944,11 @@ impl BtcUi {
         let target = ctx.target().ok()?;
         let fee_input = fee.input()?;
         let job = self.job();
+        // Across identities: a re-imported key inherits the old identity's constraints.
+        let related = ctx.related_records();
         let work = PrepareJob {
-            in_flight: in_flight_outpoints(&ctx.records(), ctx.net()),
-            conflicts: abandoned_conflicts(&ctx.records(), ctx.net(), ctx.now_unix_ms / 1_000),
+            in_flight: in_flight_outpoints(&related, ctx.net()),
+            conflicts: abandoned_conflicts(&related, ctx.net(), ctx.now_unix_ms / 1_000),
             meta,
             kind,
             fee: fee_input,

@@ -488,14 +488,14 @@ W04(현재, 새, 새 확인) → 새 비밀번호 검사(E-INP-001/002) → `Key
 | 5 | S03 | `KeyJob::CommitKeyStart` → `Vault::create_with_key`(`Unlocked`) → 키 전용 기본 meta([02] §5.3: `evm_accounts = []`, 그 키의 목록·선택 — Bitcoin 키는 meta `btc_accounts`의 가져온 키 계정, 그 체인 탭) → 버퍼 소거. Bitcoin 키면 설정 `bitcoin.enabled = true`, `bitcoin.network` = 그 키의 네트워크(WIF 버전 바이트)로 쓴다([08] §3.5). |
 | 6 | S08 | T-KEYSTART-OK(완료 띠) + T-KEYSTART-BACKUP(주의 띠). 백업 확인 단계는 없다. 이후 §2.3 6단계와 같다. |
 
-**개인키 가져오기(지갑이 있을 때)**: 각 체인 탭 "내 계정"의 `개인키 가져오기`(`Unlocked`이고 그 체인 가져온 키 < 15일 때만; T-ALT-PASS 세션은 끔) → W07(그 체인, 니모닉 지갑은 T-IMPORTED-KEY, 키 전용 지갑은 T-KEY-ONLY) → EVM `KeyJob::ImportPrivateKey`, Solana·Bitcoin `KeyJob::ImportKey { spec }` → `Vault::import_key` → meta 목록에 "가져온 계정 n"·"가져온 Solana n"으로 더한다. Bitcoin 키는 목록 대신 Bitcoin 계정이 된다: UI가 `KeyJob::BtcMeta { AddImported { network, key: BtcAccountKey::single(..) } }`를 보내 key worker가 meta `btc_accounts`에 저장·선택한다([08] §3.5). Bitcoin 탭은 W07 전에 카드 안 라디오로 주소 형식을 고른다(기본 P2WPKH). 키의 네트워크가 설정과 다르면 정보 띠로 알린다. 오류는 W07에 남는다(E-VLT-010 체인별 15개, E-VLT-011 중복, 형식 오류).
+**개인키 가져오기(지갑이 있을 때)**: 각 체인 탭 "내 계정"의 `개인키 가져오기`(`Unlocked`이고 그 체인 가져온 키 < 15일 때만; T-ALT-PASS 세션은 끔) → W07(그 체인, 니모닉 지갑은 T-IMPORTED-KEY, 키 전용 지갑은 T-KEY-ONLY) → EVM `KeyJob::ImportPrivateKey`, Solana·Bitcoin `KeyJob::ImportKey { spec }` → `Vault::import_key` → meta 목록에 "가져온 계정 n"·"가져온 Solana n"으로 더한다. Bitcoin 키는 목록 대신 Bitcoin 계정이 된다: UI가 `KeyJob::BtcMeta { AddImported { network, key: BtcAccountKey::single(..) } }`를 보내 key worker가 meta `btc_accounts`에 저장·선택한다([08] §3.5). Bitcoin 탭은 W07 전에 카드 안 라디오로 주소 형식을 고른다(기본 P2WPKH). 키의 네트워크가 설정과 다르면 정보 띠로 알린다. 오류는 W07에 남는다(E-VLT-010 체인별 15개, E-VLT-011 중복 — Bitcoin은 그 주소가 이미 HD 계정의 검색 범위나 다른 가져온 키의 주소일 때도, [08] §3.5 — 형식 오류).
 
 **계정 목록**
 - EVM: 파생 계정 다음에 가져온 계정(기존). 키 전용 지갑의 EVM 탭에 EVM 키가 없으면 T-NO-ACCOUNTS 카드. 선택 계정 설정(`prefs.evm_account`)이 목록에 없는 계정을 가리키면 첫 행을 선택 계정으로 쓴다.
 - Solana: 표준 계정 다음에 가져온 계정(meta `sol_raw_accounts`). 선택(`sol_raw_selected`)한 가져온 계정으로 보내기 폼을 열면 출처가 `SolKeySource::Imported`이고 SOL·허용 목록 SPL 보내기, 받기, 잔액, 저널, 만료 증명이 표준 계정과 같다([07] §3.4). 선택 행 버튼: 파생 `이름 바꾸기`·`숨기기`, 가져온 키 `이름 바꾸기`·`개인키 보기`·`삭제`(위험). 키 전용 지갑은 계정 0을 파생하지 않는다.
 - Bitcoin: 가져온 키는 별도 카드 없이 "Bitcoin 계정" 목록의 행이다(§2.6 Bitcoin 탭 계정, [08] §3.5–§3.6): 배지 "[가져온 키]", 줄인 주소, 형식, 사용 가능 잔액; 고르면 그 계정의 잔액·UTXO·받기(그 주소 하나)·보내기(잔돈은 같은 주소)·활동. 선택한 가져온 계정의 버튼: `개인키 보기`(WIF)·`삭제`(위험). 키 전용 지갑은 기본 BIP84 계정·발견·`계정 추가`가 없고, 가져온 키 계정의 첫 계정이 연결 검사의 최고 블록 높이를 보관한다.
 
-**삭제**: EVM은 기존 `삭제`(T-REMOVE-KEY → W03 → `remove_evm_raw_key`). Solana·Bitcoin은 `삭제` → T-REMOVE-IMPORTED(계정 라벨·주소) → W03 → `KeyJob::RemoveImportedKey` → `Vault::remove_imported_key`. 키 전용 지갑의 마지막 키는 `삭제`가 꺼져 있고 vault도 `LastKey`(E-VLT-013)로 거부한다. Bitcoin 키는 그 계정에 BTC 승인이 열려 있거나 진행 중 거래가 있으면 확인 창 전에 이유를 보이고 멈춘다("Bitcoin 승인이 진행 중이라 이 가져온 키를 지울 수 없습니다…" / "이 가져온 키로 보낸 거래가 아직 진행 중입니다…"; key worker도 다시 확인해 `ImportedKeyBusy`면 W03에 같은 문구). 지운 뒤 key worker가 그 계정을 meta `btc_accounts`에서 지우고(`BtcMetaDone::Removed`) 선택은 기본 계정(키 전용 지갑은 첫 계정)으로 돌아간다. 끝난 거래의 활동 행은 남는다.
+**삭제**: EVM은 기존 `삭제`(T-REMOVE-KEY → W03 → `remove_evm_raw_key`). Solana·Bitcoin은 `삭제` → T-REMOVE-IMPORTED(계정 라벨·주소) → W03 → `KeyJob::RemoveImportedKey` → `Vault::remove_imported_key`. 키 전용 지갑의 마지막 키는 `삭제`가 꺼져 있고 vault도 `LastKey`(E-VLT-013)로 거부한다. Bitcoin 키는 그 계정에 BTC 승인이 열려 있거나 그 주소의 거래가 아직 확정될 수 있으면(진행 중, `Replaced`, 포기·공개된 거부 뒤 30일 이내 — 다시 가져온 같은 키의 옛 레코드 포함, [08] §3.5·§12.1) 확인 창 전에 이유를 보이고 멈춘다("Bitcoin 승인이 진행 중이라 이 가져온 키를 지울 수 없습니다…" / "이 가져온 키의 주소로 보낸 거래가 아직 확정될 수 있습니다(진행 중, 또는 포기·거절 뒤 30일 이내)…"; key worker도 다시 확인해 `ImportedKeyBusy`면 W03에 같은 문구). 지운 뒤 key worker가 그 계정을 meta `btc_accounts`에서 지우고(`BtcMetaDone::Removed`) 선택은 기본 계정(키 전용 지갑은 첫 계정)으로 돌아간다. 끝난 거래의 활동 행은 남는다.
 
 **브라우저**: dApp 연결은 EVM 계정만 쓴다(키 전용 지갑은 가져온 EVM 키). EVM 계정이 하나도 없으면 연결 요청은 4100 `NoEvmAccount`(이유 문구, [05] §5)로 끝나고 연결 창을 열지 않는다. 잠금·자동 잠금·잠금 해제·브라우저 다리는 키 전용 지갑에서도 같다.
 
@@ -972,7 +972,7 @@ BTC 계정 선택은 `prefs`에 두지 않는다(알려진 객체에 키를 더�
 | E-VLT-008 | `PayloadCorrupt` | 지갑 내용이 손상되었습니다. 이전 사본(.prev)으로 복구할 수 있습니다. |
 | E-VLT-009 | `BackupNotConfirmed` | 백업 확인을 먼저 끝내세요. |
 | E-VLT-010 | `RecordLimit` | 가져온 개인키는 체인마다 최대 15개입니다. |
-| E-VLT-011 | `DuplicateKey` | 이미 가져온 개인키입니다. |
+| E-VLT-011 | `DuplicateKey` | 이미 가져온 개인키이거나, 지갑의 다른 계정과 주소가 같은 키입니다. |
 | E-VLT-012 | `NoMnemonic` | 이 지갑에는 복구 단어가 없습니다. 개인키로 시작한 지갑은 계정 추가·복구 단어 보기를 쓸 수 없습니다. |
 | E-VLT-013 | `LastKey` | 개인키로 시작한 지갑의 마지막 키는 지울 수 없습니다. 지갑 전체를 지우려면 앱을 닫고 데이터 폴더의 파일을 직접 옮기세요. |
 | E-VLT-014 | `UnsupportedPayload` | 새 버전 앱이 저장한 지갑입니다. 앱을 업데이트하세요. 비밀번호는 맞습니다. 이전 사본(.prev)으로 되돌리지 마세요 — 새 버전에서 추가한 키가 빠집니다. 앱은 이 파일을 지우거나 덮어쓰지 않습니다. |
