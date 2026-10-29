@@ -328,7 +328,11 @@ fn create_draws_entropy_first() {
         .unwrap();
     assert_eq!(
         phrase.expose(),
-        Mnemonic::from_entropy(&script).unwrap().phrase().expose()
+        Mnemonic::from_entropy(&script)
+            .unwrap()
+            .phrase()
+            .unwrap()
+            .expose()
     );
     assert_eq!(storage.commits(), 1);
     assert_eq!(vault.status(), VaultStatus::BackupPending);
@@ -752,7 +756,7 @@ fn payload_codec_rejection_table() {
     for (label, bytes) in cases {
         assert_eq!(
             Payload::decode(&bytes).err(),
-            Some(VaultError::PayloadCorrupt),
+            Some(VaultError::UnsupportedPayload),
             "{label}"
         );
     }
@@ -775,7 +779,7 @@ fn sixteen_records_round_trip_and_seventeen_rejected() {
     seventeen.extend_from_slice(&raw_bytes(16, [16; 32]));
     assert_eq!(
         Payload::decode(&seventeen).err(),
-        Some(VaultError::PayloadCorrupt)
+        Some(VaultError::UnsupportedPayload)
     );
 }
 
@@ -1801,7 +1805,7 @@ fn sol_key_sources_reproduce_the_spec07_table() {
         "BkWizA4ezeYB3jbixzPnzj6r2QuGekZXXFQHstDJE8wK",
         "31fsSBAugfgtWp4WZLgr1D9TBkgiS13d5eK3GWBQwRct",
     ];
-    let art_phrase = Mnemonic::from_entropy(&[0; 32]).unwrap().phrase();
+    let art_phrase = Mnemonic::from_entropy(&[0; 32]).unwrap().phrase().unwrap();
     for (phrase, expected) in [(ABOUT, about), (art_phrase.expose(), art)] {
         let vault = unlocked_with(phrase);
         let keys = vault.sol_public_keys(&sources).unwrap();
@@ -2196,11 +2200,11 @@ fn secret_outputs_redact_debug() {
     assert_eq!(format!("{plaintext:?}"), "SecretVec([REDACTED])");
     let mnemonic = Mnemonic::parse(ABOUT).unwrap();
     assert_eq!(
-        format!("{:?}", mnemonic.phrase()),
+        format!("{:?}", mnemonic.phrase().unwrap()),
         "SecretString([REDACTED])"
     );
     assert_eq!(
-        format!("{:?}", mnemonic.to_seed(&Bip39Passphrase::empty())),
+        format!("{:?}", mnemonic.to_seed(&Bip39Passphrase::empty()).unwrap()),
         "SecretBytes<64>([REDACTED])"
     );
     let (_, created_vault, created_phrase) = created();
@@ -2412,7 +2416,7 @@ fn tagged_records_codec_and_rejections() {
     for (label, bytes) in cases {
         assert_eq!(
             Payload::decode(&bytes).err(),
-            Some(VaultError::PayloadCorrupt),
+            Some(VaultError::UnsupportedPayload),
             "{label}"
         );
     }
@@ -2732,4 +2736,93 @@ fn backup_pending_refuses_key_import() {
         Err(VaultError::BackupNotConfirmed)
     );
     assert!(vault.imported_keys().unwrap().sol.is_empty());
+}
+
+/// Regression (adversarial PoC): a vault written by a NEWER build (same `VAULT_VERSION`, one
+/// record of a tag this build does not know) was classified as damage (`PayloadCorrupt` →
+/// `Corrupt { prev_available }` → a `.prev` restore that dropped the newer records). It now
+/// authenticates and reports `UnsupportedPayload`: the state stays `Locked`, no `.prev` restore
+/// is offered or performed, and nothing is quarantined.
+#[test]
+fn newer_payload_tag_is_unsupported_not_corrupt_and_never_restored_from_prev() {
+    let (storage, mut vault) = imported(None);
+    vault.import_evm_private_key(&"07".repeat(32), 2).unwrap();
+    vault.import_evm_private_key(&"08".repeat(32), 3).unwrap();
+    let dek: [u8; 32] = *vault.slot_bytes().unwrap().first_chunk::<32>().unwrap();
+    drop(vault);
+    let main = storage.main(FileKind::Vault).unwrap();
+    let cipher = XChaCha20Poly1305::new_from_slice(&dek).unwrap();
+    let mut plain = cipher
+        .decrypt(
+            XNonce::from_slice(at(&main, 138..162)),
+            AeadPayload {
+                msg: at(&main, 176..main.len()),
+                aad: at(&main, 0..176),
+            },
+        )
+        .unwrap();
+    // One more record of a future tag 5.
+    let count = u16::from_be_bytes(at(&plain, 8..10).try_into().unwrap()) + 1;
+    put(&mut plain, 8, &count.to_be_bytes());
+    plain.push(5);
+    plain.extend_from_slice(&[0x55; 16]);
+    plain.extend_from_slice(&[0; 9]);
+    let mut header = at(&main, 0..176).to_vec();
+    put(
+        &mut header,
+        162,
+        &u32::try_from(plain.len() + 16).unwrap().to_be_bytes(),
+    );
+    let mut newer = header.clone();
+    newer.extend(
+        cipher
+            .encrypt(
+                XNonce::from_slice(at(&header, 138..162)),
+                AeadPayload {
+                    msg: &plain,
+                    aad: &header,
+                },
+            )
+            .unwrap(),
+    );
+    storage.set_main(FileKind::Vault, Some(newer.clone()));
+
+    let mut vault = reload(&storage);
+    assert_eq!(vault.status(), VaultStatus::Locked);
+    assert_eq!(
+        vault.unlock(&pw(PASSWORD), new_slot()),
+        Err(VaultError::UnsupportedPayload)
+    );
+    assert_eq!(
+        vault.status(),
+        VaultStatus::Locked,
+        "not Corrupt: no .prev offer"
+    );
+    // A `.prev` recovery attempt from Locked refuses too and leaves the newer file in place.
+    assert_eq!(
+        vault.recover_from_prev(&pw(PASSWORD), new_slot(), 9),
+        Err(VaultError::UnsupportedPayload)
+    );
+    assert!(storage.quarantined(FileKind::Vault).is_empty());
+    assert_eq!(storage.main(FileKind::Vault), Some(newer));
+    assert_eq!(vault.quarantined_at(), None);
+    // An AEAD failure is still damage.
+    let mut damaged = storage.main(FileKind::Vault).unwrap();
+    *damaged.last_mut().unwrap() ^= 1;
+    storage.set_main(FileKind::Vault, Some(damaged));
+    let mut vault = reload(&storage);
+    assert_eq!(
+        vault.unlock(&pw(PASSWORD), new_slot()),
+        Err(VaultError::PayloadCorrupt)
+    );
+    assert_eq!(
+        vault.status(),
+        VaultStatus::Corrupt {
+            prev_available: true
+        }
+    );
+    vault
+        .recover_from_prev(&pw(PASSWORD), new_slot(), 9)
+        .unwrap();
+    assert_eq!(vault.quarantined_at(), Some(9));
 }

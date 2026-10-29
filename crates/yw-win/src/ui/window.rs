@@ -36,6 +36,7 @@ use windows_sys::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem,
     GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext,
 };
+use windows_sys::Win32::UI::Input::Ime::ImmAssociateContextEx;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetFocus, ReleaseCapture, SetCapture, SetFocus,
 };
@@ -1112,6 +1113,10 @@ pub fn create_window(spec: &WindowSpec, handler: Box<dyn Handler>) -> Result<Win
             CaptureOutcome::Excluded | CaptureOutcome::Unprotected => {}
         }
         shared.capture_excluded.set(excluded);
+        // No input context at all (spec/04 §4.6): the IME cannot compose into a secret window,
+        // on top of the WM_IME_* blocking below. Best effort: a failure leaves the blocking.
+        // SAFETY: Associates the NULL input context with our live window (flags 0).
+        let _ = unsafe { ImmAssociateContextEx(hwnd, core::ptr::null_mut(), 0) };
         // The registry holds the box adopted at WM_NCCREATE; it must be the one created above.
         let state_ptr = registered_state(hwnd);
         if state_ptr.is_null() || state_ptr != raw_state {

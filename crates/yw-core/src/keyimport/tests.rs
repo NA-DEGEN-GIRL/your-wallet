@@ -438,3 +438,106 @@ fn evm_import_trims_and_previews_the_known_address() {
         );
     }
 }
+
+// ---------------------------------------------------------------- mutation fuzz (adversarial review)
+
+struct XorShift(u64);
+impl XorShift {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+    fn below(&mut self, n: usize) -> usize {
+        usize::try_from(self.next() % (n as u64)).unwrap()
+    }
+}
+
+/// Parsers never panic on mutated keys, and a mutated text that still parses never previews
+/// the same key as its seed (no silently dropped character). Deterministic (fixed seed).
+#[test]
+fn mutated_keys_never_panic_or_alias_their_seed() {
+    let specs = [
+        ImportSpec::Evm,
+        ImportSpec::Sol,
+        ImportSpec::Btc(ScriptType::P2pkh),
+        ImportSpec::Btc(ScriptType::P2shP2wpkh),
+        ImportSpec::Btc(ScriptType::P2wpkh),
+        ImportSpec::Btc(ScriptType::P2tr),
+    ];
+    let seed = bytes32(ABANDON_SOL_SEED);
+    let public = crate::sol::keys::public_key(&seed);
+    let mut seeds: Vec<String> = vec![
+        WIKI_WIF_COMPRESSED.to_owned(),
+        WIKI_WIF_UNCOMPRESSED.to_owned(),
+        ONE_WIF_TEST_COMPRESSED.to_owned(),
+        keypair_base58(&seed, &public),
+        keypair_json(&seed, &public, ","),
+        keypair_json(&seed, &public, ", "),
+        format!("0x{WIKI_SECRET}"),
+    ];
+    // Zero-heavy seed: base58 with leading '1's.
+    let mut zero_seed = [0_u8; 32];
+    zero_seed[31] = 7;
+    let zero_public = crate::sol::keys::public_key(&zero_seed);
+    let zero_text = keypair_base58(&zero_seed, &zero_public);
+    assert!(zero_text.starts_with("1111111111"));
+    let parsed = parse_sol_secret(&zero_text).unwrap();
+    assert_eq!(*parsed.seed, zero_seed);
+    seeds.push(zero_text);
+    let alphabet: Vec<char> =
+        "0123456789abcdefABCDEFxX[], \t\r\n123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz-.+\u{a0}\u{3000}\u{200b}\u{ff10}é"
+            .chars()
+            .collect();
+    let mut rng = XorShift(0x9e37_79b9_7f4a_7c15);
+    // 12k rounds keep this under 2 s in a debug test build.
+    for round in 0..12_000 {
+        let base = seeds.get(rng.below(seeds.len())).unwrap();
+        let mut chars: Vec<char> = base.chars().collect();
+        for _ in 0..=rng.below(3) {
+            match rng.below(3) {
+                0 if !chars.is_empty() => {
+                    let at = rng.below(chars.len());
+                    *chars.get_mut(at).unwrap() = *alphabet.get(rng.below(alphabet.len())).unwrap();
+                }
+                1 => {
+                    let at = rng.below(chars.len() + 1);
+                    chars.insert(at, *alphabet.get(rng.below(alphabet.len())).unwrap());
+                }
+                _ if !chars.is_empty() => {
+                    let at = rng.below(chars.len());
+                    chars.remove(at);
+                }
+                _ => {}
+            }
+        }
+        let text: String = chars.into_iter().collect();
+        let squash = |s: &str| -> String {
+            s.chars()
+                .filter(|c| !matches!(c, ' ' | '\t' | '\r' | '\n'))
+                .collect()
+        };
+        if squash(&text) == squash(base) {
+            continue;
+        }
+        for spec in specs {
+            if spec == ImportSpec::Evm && squash(&text).to_lowercase() == squash(base) {
+                continue;
+            }
+            if let Ok(key) = ImportKey::parse(spec, &text) {
+                let preview = key.preview().unwrap();
+                // A mutated text that parses must not be a canonical-format alias of a seed key
+                // (e.g. an extra char silently dropped) — report it.
+                let original = ImportKey::parse(spec, base)
+                    .ok()
+                    .map(|k| k.preview().unwrap());
+                assert_ne!(
+                    original.as_ref(),
+                    Some(&preview),
+                    "round {round}: mutated {text:?} aliases {base:?} for {spec:?}"
+                );
+            }
+        }
+    }
+}

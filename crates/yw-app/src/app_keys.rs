@@ -34,6 +34,14 @@ pub struct KeyStartFlow {
     pub password_held: bool,
 }
 
+impl KeyStartFlow {
+    /// Whether a password is held here or in the key worker (with a pending key).
+    #[must_use]
+    pub const fn holds_secret(&self) -> bool {
+        self.password.is_some() || self.password_held
+    }
+}
+
 impl Default for KeyStartFlow {
     fn default() -> Self {
         Self {
@@ -340,18 +348,24 @@ impl App {
         if let Some(meta) = self.meta.as_mut() {
             match &account {
                 ImportedAccount::Evm(id, address) => {
-                    let number = meta.evm_raw_accounts.len().saturating_add(1);
+                    let label = crate::meta::next_imported_label(
+                        crate::meta::EVM_IMPORTED_PREFIX,
+                        meta.evm_raw_accounts.iter().map(|raw| raw.label.as_str()),
+                    );
                     meta.evm_raw_accounts.push(RawAccount {
                         record_id: *id.as_bytes(),
-                        label: format!("가져온 계정 {number}"),
+                        label,
                         address: address.to_lower_hex(),
                     });
                 }
                 ImportedAccount::Sol(id, address) => {
-                    let number = meta.sol_raw_accounts.len().saturating_add(1);
+                    let label = crate::meta::next_imported_label(
+                        crate::meta::SOL_IMPORTED_PREFIX,
+                        meta.sol_raw_accounts.iter().map(|raw| raw.label.as_str()),
+                    );
                     meta.sol_raw_accounts.push(SolRawAccount {
                         record_id: *id.as_bytes(),
-                        label: format!("가져온 Solana {number}"),
+                        label,
                         address: address.to_base58(),
                     });
                     // The new account becomes the selected one when the tab had none.
@@ -451,16 +465,23 @@ impl App {
         );
     }
 
-    /// The label and address of an imported Solana/Bitcoin record (overlay text; a Bitcoin key:
-    /// its account name and address).
+    /// The label and address of an imported EVM/Solana/Bitcoin record (overlay text; a Bitcoin
+    /// key: its account name and address). Labels can repeat (a rename), so the address is
+    /// always shown with it.
     #[must_use]
     pub fn imported_target_text(&self) -> Option<(String, String)> {
         let id = *self.keys.target?.as_bytes();
         let meta = self.meta.as_ref()?;
-        meta.sol_raw_accounts
+        meta.evm_raw_accounts
             .iter()
             .find(|raw| raw.record_id == id)
             .map(|raw| (raw.label.clone(), raw.address.clone()))
+            .or_else(|| {
+                meta.sol_raw_accounts
+                    .iter()
+                    .find(|raw| raw.record_id == id)
+                    .map(|raw| (raw.label.clone(), raw.address.clone()))
+            })
             .or_else(|| {
                 let account = btc_imported_account(meta, id)?;
                 let address = account

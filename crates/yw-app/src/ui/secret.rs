@@ -18,8 +18,8 @@ use yw_win::ui::{DrawFlags, PaintDc, Rect, scale};
 
 use crate::errors::ErrorCode;
 use crate::ui::secure_field::{
-    Charset, PushResult, RejectReason, SecretField, finalize_private_key, mnemonic_words,
-    normalize_paste,
+    Charset, PushResult, RejectReason, SecretField, finalize_private_key, has_edge_space,
+    mnemonic_words, normalize_paste,
 };
 use crate::ui::theme::{self, Fonts, wide};
 
@@ -1146,18 +1146,21 @@ impl SecretForm {
     }
 
     /// Applies normalized clipboard text to the active field (all-or-nothing, E-INP-018).
+    /// Returns `true` when a password/passphrase value (`Printable`, pasted exactly) starts or
+    /// ends with a space, so the caller shows T-PASTE-EDGE-SPACE (spec/04 §4.7-3).
     ///
     /// # Errors
     ///
     /// [`ErrorCode::Inp018`].
-    pub fn apply_paste(&mut self, units: &[u16]) -> Result<(), ErrorCode> {
+    pub fn apply_paste(&mut self, units: &[u16]) -> Result<bool, ErrorCode> {
         let slot = self.slots.get_mut(self.active).ok_or(ErrorCode::Inp018)?;
-        let normalized = normalize_paste(units, slot.field.charset(), slot.field.limit())?;
+        let charset = slot.field.charset();
+        let normalized = normalize_paste(units, charset, slot.field.limit())?;
         if !slot.field.replace_with(&normalized) {
             return Err(ErrorCode::Inp018);
         }
         self.error = None;
-        Ok(())
+        Ok(charset == Charset::Printable && has_edge_space(&normalized))
     }
 
     /// The text to copy (W08: words joined by one space; W09: 64 hex) as UTF-16.

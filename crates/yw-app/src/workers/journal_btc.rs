@@ -29,7 +29,7 @@ use yw_core::journal::btc::{
     recorded_amounts, refresh_keep_outpoints, set_disclosed, set_last_send_comm_failure,
     set_state_entry, take_finished_duplicates,
 };
-use yw_core::vault::{FileKind, Vault};
+use yw_core::vault::{FileKind, RecordId, Vault};
 
 use super::{JournalState, fault_point, view_of};
 use crate::btc::network_id;
@@ -264,6 +264,8 @@ pub enum BtcKeyError {
     Journal(TransitionError),
     /// The record's fee/vsize give no `maxfeerate` (never for decoded records).
     Internal,
+    /// The account's imported key is no longer in the vault (removed): no address is handed out.
+    KeyRemoved,
 }
 
 impl BtcKeyError {
@@ -276,6 +278,10 @@ impl BtcKeyError {
             Self::Vault(error) => crate::errors::vault_code(error).text(),
             Self::Journal(error) => error.to_string(),
             Self::Internal => crate::errors::ErrorCode::Tx003.text(),
+            Self::KeyRemoved => {
+                "이 계정의 개인키는 지갑에서 삭제되었습니다. 이 계정의 주소로 받지 마세요."
+                    .to_owned()
+            }
         }
     }
 }
@@ -625,20 +631,64 @@ impl JournalState {
             return Vec::new();
         };
         let primary = self.btc.clone();
-        let result = self.persist_state(vault, primary, accounts, &[], alt);
+        let result = self.persist_state(vault, primary.clone(), accounts.clone(), &[], alt);
         Self::log_meta("remove_imported", network, result.is_ok());
         match result {
             Ok(_) => vec![self.meta_update(BtcMetaDone::Removed(account))],
-            Err(error) => vec![KeyOutcome::BtcMeta(Err(BtcKeyError::Vault(error)))],
+            Err(error) => {
+                // The vault is the source of truth: its record is gone, so the session drops the
+                // account even though meta could not be written (the next write or `LoadMeta`
+                // drops it from the file). The write error is still reported.
+                self.btc = primary;
+                self.btc_accounts = accounts;
+                vec![
+                    self.meta_update(BtcMetaDone::Removed(account)),
+                    KeyOutcome::BtcMeta(Err(BtcKeyError::Vault(error))),
+                ]
+            }
+        }
+    }
+
+    /// `accounts` without imported-key accounts whose vault record is gone (an unreadable
+    /// vault leaves them; no meta write can happen then anyway).
+    fn without_removed_keys(&self, vault: &Vault, mut accounts: BtcAccounts) -> BtcAccounts {
+        let removed: Vec<BtcAccountId> = accounts
+            .accounts
+            .iter()
+            .map(BtcMeta::id)
+            .filter(|account| match account {
+                BtcAccountId::Imported { id } => {
+                    matches!(vault.has_btc_key(RecordId::from_bytes(*id)), Ok(false))
+                }
+                BtcAccountId::Hd { .. } => false,
+            })
+            .collect();
+        for account in removed {
+            for network in BtcNetwork::ALL {
+                let _ = accounts.remove(network, account, self.has_primary(network));
+            }
+        }
+        accounts
+    }
+
+    /// Refuses an op on an imported-key account whose vault record is gone.
+    fn require_key(vault: &Vault, account: BtcAccountId) -> Result<(), BtcKeyError> {
+        match account {
+            BtcAccountId::Imported { id } => match vault.has_btc_key(RecordId::from_bytes(id)) {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(BtcKeyError::KeyRemoved),
+                Err(error) => Err(BtcKeyError::Vault(error)),
+            },
+            BtcAccountId::Hd { .. } => Ok(()),
         }
     }
 
     /// Puts the worker's BTC accounts into a meta document about to be written (the UI's copy
-    /// is only a mirror).
-    pub fn apply_btc_meta(&self, document: &mut Meta) {
+    /// is only a mirror). Imported-key accounts without a vault record are left out.
+    pub fn apply_btc_meta(&self, vault: &Vault, document: &mut Meta) {
         if self.btc_loaded {
             document.btc = self.btc.clone().map(Box::new);
-            document.btc_accounts = self.btc_accounts.clone();
+            document.btc_accounts = self.without_removed_keys(vault, self.btc_accounts.clone());
         }
     }
 
@@ -903,7 +953,9 @@ impl JournalState {
                 meta.observe_tip(max_tip_seen).map_err(BtcKeyError::Meta)?;
                 BtcMetaDone::Tip
             }
-            BtcMetaOp::ReceiveAddress { .. } => match meta.receive_address() {
+            BtcMetaOp::ReceiveAddress { .. } => match Self::require_key(vault, target)
+                .and_then(|()| meta.receive_address().map_err(BtcKeyError::Meta))
+            {
                 Ok(ReceiveAddress::Existing(index)) => {
                     return Ok(BtcMetaDone::Receive {
                         index,
@@ -914,9 +966,10 @@ impl JournalState {
                     index,
                     issued: true,
                 },
-                Err(error) => return Err(BtcKeyError::Meta(error)),
+                Err(error) => return Err(error),
             },
             BtcMetaOp::NewReceiveAddress { gap_confirmed, .. } => {
+                Self::require_key(vault, target)?;
                 let index = meta
                     .new_receive_address(gap_confirmed)
                     .map_err(BtcKeyError::Meta)?;

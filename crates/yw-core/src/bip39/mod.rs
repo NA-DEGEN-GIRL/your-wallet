@@ -271,11 +271,13 @@ impl Mnemonic {
 
     /// The phrase: words joined by single 0x20 bytes, in a redacting [`SecretString`] whose
     /// capacity is computed before the first push (no reallocation copies).
-    #[must_use]
-    pub fn phrase(&self) -> SecretString {
-        let Ok(list) = wordlist() else {
-            return SecretString::with_capacity(0);
-        };
+    ///
+    /// # Errors
+    ///
+    /// `KeyError::Internal` when the word list or the buffer fails (never an empty or partial
+    /// phrase, which would derive a different seed).
+    pub fn phrase(&self) -> Result<SecretString, KeyError> {
+        let list = wordlist()?;
         let bits = self.bit_buffer();
         let words = self.count.words();
         let length = (0..words)
@@ -286,15 +288,16 @@ impl Mnemonic {
         let mut phrase = SecretString::with_capacity(length);
         for word in 0..words {
             // The capacity is exact, so neither push can fail.
-            if word != 0 && phrase.push_str(" ").is_err() {
-                return SecretString::with_capacity(0);
+            if word != 0 {
+                phrase.push_str(" ").map_err(|_| KeyError::Internal)?;
             }
-            let text = list.get(Self::index_at(&bits, word)).copied().unwrap_or("");
-            if phrase.push_str(text).is_err() {
-                return SecretString::with_capacity(0);
-            }
+            let text = list
+                .get(Self::index_at(&bits, word))
+                .copied()
+                .ok_or(KeyError::Internal)?;
+            phrase.push_str(text).map_err(|_| KeyError::Internal)?;
         }
-        phrase
+        Ok(phrase)
     }
 
     /// The word at a 1-based position.
@@ -314,9 +317,12 @@ impl Mnemonic {
 
     /// `PBKDF2-HMAC-SHA512(phrase, "mnemonic" ‖ passphrase, 2048, 64)` (spec/02 §2.5), in a
     /// redacting [`SecretBytes`].
-    #[must_use]
-    pub fn to_seed(&self, passphrase: &Bip39Passphrase) -> SecretBytes<64> {
-        let phrase = self.phrase();
+    ///
+    /// # Errors
+    ///
+    /// `KeyError::Internal` from [`Self::phrase`].
+    pub fn to_seed(&self, passphrase: &Bip39Passphrase) -> Result<SecretBytes<64>, KeyError> {
+        let phrase = self.phrase()?;
         let pass = passphrase.as_bytes();
         let mut salt = Zeroizing::new(Vec::with_capacity(
             BIP39_SALT_PREFIX.len().saturating_add(pass.len()),
@@ -330,7 +336,7 @@ impl Mnemonic {
             BIP39_PBKDF2_ROUNDS,
             seed.as_mut(),
         );
-        SecretBytes::new(&mut seed)
+        Ok(SecretBytes::new(&mut seed))
     }
 }
 

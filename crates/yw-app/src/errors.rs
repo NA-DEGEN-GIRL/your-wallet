@@ -42,6 +42,8 @@ pub enum ErrorCode {
     Vlt012,
     /// The last key of a key-only wallet.
     Vlt013,
+    /// The payload authenticated but was written by a newer build (`UnsupportedPayload`).
+    Vlt014,
     /// Password rule.
     Inp001,
     /// Confirmation mismatch.
@@ -218,6 +220,7 @@ impl ErrorCode {
             Self::Vlt011 => "E-VLT-011",
             Self::Vlt012 => "E-VLT-012",
             Self::Vlt013 => "E-VLT-013",
+            Self::Vlt014 => "E-VLT-014",
             Self::Inp001 => "E-INP-001",
             Self::Inp002 => "E-INP-002",
             Self::Inp003 => "E-INP-003",
@@ -334,6 +337,9 @@ impl ErrorCode {
             }
             Self::Vlt013 => {
                 "개인키로 시작한 지갑의 마지막 키는 지울 수 없습니다. 지갑 전체를 지우려면 앱을 닫고 데이터 폴더의 파일을 직접 옮기세요."
+            }
+            Self::Vlt014 => {
+                "새 버전 앱이 저장한 지갑입니다. 앱을 업데이트하세요. 비밀번호는 맞습니다. 이전 사본(.prev)으로 되돌리지 마세요 — 새 버전에서 추가한 키가 빠집니다. 앱은 이 파일을 지우거나 덮어쓰지 않습니다."
             }
             Self::Inp001 => "비밀번호는 영문·숫자·기호(ASCII) 12–128자여야 합니다.",
             Self::Inp002 => "두 입력이 다릅니다.",
@@ -524,6 +530,7 @@ pub const fn vault_code(error: VaultError) -> ErrorCode {
         VaultError::SidecarCorrupt(_) | VaultError::SidecarVaultMismatch(_) => ErrorCode::Vlt006,
         VaultError::OutOfMemory => ErrorCode::Vlt007,
         VaultError::PayloadCorrupt => ErrorCode::Vlt008,
+        VaultError::UnsupportedPayload => ErrorCode::Vlt014,
         VaultError::BackupNotConfirmed => ErrorCode::Vlt009,
         VaultError::BackupMismatch | VaultError::ChallengeStale => ErrorCode::Inp013,
         VaultError::RecordLimit => ErrorCode::Vlt010,
@@ -615,7 +622,7 @@ mod tests {
                 .contains("설정 → 네트워크(RPC) → 테스트")
         );
         assert!(ErrorCode::Tx001.message().contains("EVM 수수료 상한"));
-        for code in [ErrorCode::Vlt002, ErrorCode::Vlt006] {
+        for code in [ErrorCode::Vlt002, ErrorCode::Vlt006, ErrorCode::Vlt014] {
             assert!(code.message().contains("업데이트"), "{}", code.code());
         }
         for code in [ErrorCode::Rpc003, ErrorCode::Rpc007] {
@@ -655,5 +662,15 @@ mod tests {
             ErrorCode::Inp004
         );
         assert_eq!(vault_code(VaultError::OutOfMemory), ErrorCode::Vlt007);
+        // A newer build's payload is not damage: no `.prev` restore is suggested.
+        assert_eq!(
+            vault_code(VaultError::UnsupportedPayload),
+            ErrorCode::Vlt014
+        );
+        assert!(
+            ErrorCode::Vlt014
+                .text()
+                .starts_with("새 버전 앱이 저장한 지갑입니다. 앱을 업데이트하세요.")
+        );
     }
 }

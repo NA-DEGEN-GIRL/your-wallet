@@ -73,6 +73,17 @@ pub struct ImportedKeys {
     pub btc: Vec<(RecordId, BtcKeyInfo)>,
 }
 
+/// A password change that took effect (spec/02 §4.4): the `Rewrap` commit landed, so the new
+/// password is the one that opens `vault.ywv` from now on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PasswordChange {
+    /// The follow-up `PayloadRewrite` also landed: `vault.ywv.prev` uses the new password too.
+    Complete,
+    /// The follow-up `PayloadRewrite` failed: the new password is in effect, but
+    /// `vault.ywv.prev` may still open only with the OLD password (a later save refreshes it).
+    PrevNotRefreshed,
+}
+
 /// An opened vault file: its bytes, `vault_id`, the unwrapped DEK and the status it unlocks to.
 type Opened = (Vec<u8>, [u8; 16], Zeroizing<[u8; 32]>, VaultStatus);
 
@@ -112,6 +123,9 @@ pub struct Vault {
     /// Last known generation of meta / journal.
     sidecar_generations: Cell<[Known; 2]>,
     kdf: KdfParams,
+    /// `now_unix` of the last `.prev` recovery that moved `vault.ywv` aside
+    /// (`vault.ywv.corrupt-<now_unix>`).
+    quarantined_at: Option<u64>,
 }
 
 impl fmt::Debug for Vault {
@@ -257,7 +271,7 @@ fn address_zero(
     mnemonic: &Mnemonic,
     passphrase: &Bip39Passphrase,
 ) -> Result<Address, VaultError> {
-    let seed = mnemonic.to_seed(passphrase);
+    let seed = mnemonic.to_seed(passphrase)?;
     Ok(evm_address_from_seed(
         ctx,
         seed.expose(),
@@ -408,6 +422,7 @@ impl Vault {
             challenge: None,
             sidecar_generations: Cell::new([Known::Unknown; 2]),
             kdf,
+            quarantined_at: None,
         })
     }
 
@@ -415,6 +430,13 @@ impl Vault {
     #[must_use]
     pub const fn status(&self) -> VaultStatus {
         self.status
+    }
+
+    /// `now_unix` of the last `.prev` recovery in this process that moved the main file aside
+    /// as `vault.ywv.corrupt-<now_unix>` (shown so the user can restore it by hand).
+    #[must_use]
+    pub const fn quarantined_at(&self) -> Option<u64> {
+        self.quarantined_at
     }
 
     /// The vault identifier once known (after load, create, import or recovery).
@@ -453,7 +475,7 @@ impl Vault {
     fn seed(&self, payload: &Payload) -> Result<SecretBytes<64>, VaultError> {
         Ok(mnemonic_record(payload)?
             .mnemonic
-            .to_seed(&slot_passphrase(self.slot.as_ref())?))
+            .to_seed(&slot_passphrase(self.slot.as_ref())?)?)
     }
 
     fn secret_for(
@@ -610,7 +632,7 @@ impl Vault {
                 payload: &payload,
             };
             let bytes = format::seal_create_with(&material, &self.kdf)?;
-            let phrase = mnemonic_record(&payload)?.mnemonic.phrase();
+            let phrase = mnemonic_record(&payload)?.mnemonic.phrase()?;
             Ok((bytes, dek, vault_id, phrase))
         })();
         let (bytes, dek, vault_id, phrase) = match sealed {
@@ -919,6 +941,7 @@ impl Vault {
                 self.storage
                     .quarantine(FileKind::Vault, now_unix)
                     .map_err(VaultError::Storage)?;
+                self.quarantined_at = Some(now_unix);
             }
             commit_landed(self.storage.as_mut(), FileKind::Vault, None, &bytes)
                 .map_err(VaultError::Storage)?;
@@ -1131,15 +1154,19 @@ impl Vault {
     /// `Rewrap` with the new password, then one more `PayloadRewrite` so `.prev` also uses the
     /// new password (spec/02 §4.4). The DEK is unchanged.
     ///
+    /// Once the `Rewrap` commit has landed the change is in effect and this returns `Ok`: a
+    /// failed follow-up rewrite is [`PasswordChange::PrevNotRefreshed`], never an error (the
+    /// old password no longer opens `vault.ywv`, so "failed" would be false).
+    ///
     /// # Errors
     ///
-    /// `InvalidState`, `UnlockFailed` for a wrong old password, `OutOfMemory` or `Storage`.
-    /// If the second commit fails the vault already uses the new password.
+    /// `InvalidState`, `UnlockFailed` for a wrong old password, `OutOfMemory` or `Storage` —
+    /// all with the old password still in effect.
     pub fn change_password(
         &mut self,
         old: &VaultPassword,
         new: &VaultPassword,
-    ) -> Result<(), VaultError> {
+    ) -> Result<PasswordChange, VaultError> {
         self.require_public()?;
         self.verify_password(old)?;
         let payload = self.payload()?;
@@ -1158,7 +1185,10 @@ impl Vault {
         };
         let bytes = format::seal_create_with(&material, &self.kdf)?;
         self.commit_vault(Some(header.generation), bytes)?;
-        self.rewrite_payload(&payload)
+        Ok(match self.rewrite_payload(&payload) {
+            Ok(()) => PasswordChange::Complete,
+            Err(_) => PasswordChange::PrevNotRefreshed,
+        })
     }
 
     /// The mnemonic, after re-entering the password (spec/02 §9).
@@ -1169,7 +1199,7 @@ impl Vault {
     pub fn reveal_mnemonic(&self, password: &VaultPassword) -> Result<SecretString, VaultError> {
         self.require_public()?;
         self.verify_password(password)?;
-        Ok(mnemonic_record(&self.payload()?)?.mnemonic.phrase())
+        Ok(mnemonic_record(&self.payload()?)?.mnemonic.phrase()?)
     }
 
     /// An EVM private key as 64 lowercase hex digits without `0x`, after re-entering the password.
@@ -1300,6 +1330,21 @@ impl Vault {
     pub fn has_mnemonic(&self) -> Result<bool, VaultError> {
         self.require_public()?;
         Ok(self.payload()?.bip39.is_some())
+    }
+
+    /// Whether the vault holds an imported Bitcoin key (`tag 4`) with record id `id` (the vault
+    /// is the source of truth for imported-key accounts, spec/02 §10.3).
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` outside `BackupPending`/`Unlocked`.
+    pub fn has_btc_key(&self, id: RecordId) -> Result<bool, VaultError> {
+        self.require_public()?;
+        Ok(self
+            .payload()?
+            .btc_keys
+            .iter()
+            .any(|record| record.record_id == id.0))
     }
 
     /// Public facts of every imported key (EVM addresses, Solana public keys, Bitcoin addresses

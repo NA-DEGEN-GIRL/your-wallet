@@ -3,13 +3,20 @@
 //!
 //! Secret copies set the three exclusion formats (monitor processing, clipboard history, cloud
 //! upload) to DWORD 0 before the text, all inside one `OpenClipboard`…`CloseClipboard`; if any
-//! exclusion format fails the clipboard is emptied and no text is placed. Automatic clearing is
-//! by sequence number only. The sequencing logic runs over [`ClipOps`] so it is tested without a
-//! real clipboard.
+//! exclusion format fails the clipboard is emptied and no text is placed. A secret copy also
+//! places a private registered format ([`MARKER_FORMAT`]) holding a random per-copy nonce; the
+//! automatic clear empties the clipboard only while that nonce is still there. (The sequence
+//! number cannot identify our copy: `CloseClipboard` itself adds the synthesized `CF_LOCALE`,
+//! `CF_TEXT` and `CF_OEMTEXT` formats and bumps it.) Paste-clear compares the sequence number
+//! read with the text (reading does not change it). The sequencing logic runs over [`ClipOps`] so
+//! it is tested without a real clipboard.
 
 use core::fmt;
 
 use windows_sys::Win32::Foundation::{GlobalFree, HANDLE, HWND};
+use windows_sys::Win32::Security::Cryptography::{
+    BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
+};
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber,
     IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
@@ -32,6 +39,11 @@ pub const EXCLUSION_FORMATS: [&str; 3] = [
     "CanIncludeInClipboardHistory",
     "CanUploadToCloudClipboard",
 ];
+/// Private format beside a secret copy's text: the copy's random nonce ([`SecretClip`]).
+pub const MARKER_FORMAT: &str = "YourWalletV3SecretClipNonce";
+/// Nonce length in bytes.
+const NONCE_LEN: usize = 16;
+const NONCE_LEN_U32: u32 = 16;
 const OPEN_ATTEMPTS: u32 = 5;
 const OPEN_RETRY_MS: u32 = 20;
 
@@ -58,13 +70,31 @@ impl fmt::Display for ClipError {
 
 impl std::error::Error for ClipError {}
 
+/// One secret copy, identified by the random nonce placed beside its text in [`MARKER_FORMAT`].
+/// [`clear_secret`] empties the clipboard only while that nonce is still on it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct SecretClip {
+    nonce: [u8; NONCE_LEN],
+}
+
+impl fmt::Debug for SecretClip {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SecretClip(..)")
+    }
+}
+
 /// The primitive clipboard operations the sequencing logic uses.
 pub(crate) trait ClipOps {
     fn open(&mut self) -> bool;
     fn close(&mut self);
     fn empty(&mut self) -> Result<(), WinError>;
     fn register_format(&mut self, name: &str) -> Result<u32, WinError>;
-    fn set_dword(&mut self, format: u32, value: u32) -> Result<(), WinError>;
+    fn set_dword(&mut self, format: u32, value: u32) -> Result<(), WinError> {
+        self.set_bytes(format, &value.to_le_bytes())
+    }
+    fn set_bytes(&mut self, format: u32, bytes: &[u8]) -> Result<(), WinError>;
+    /// The bytes of `format` when present and at most `max_len` long (`None` otherwise).
+    fn get_bytes(&mut self, format: u32, max_len: usize) -> Result<Option<Vec<u8>>, ClipError>;
     fn set_unicode(&mut self, units_with_nul: &[u16]) -> Result<(), WinError>;
     fn get_unicode(&mut self, max_units: usize) -> Result<Option<WipeBuf<u16>>, ClipError>;
     fn sequence(&mut self) -> u32;
@@ -90,7 +120,11 @@ fn with_nul(text: &[u16]) -> WipeBuf<u16> {
     units
 }
 
-pub(crate) fn set_secret_with(ops: &mut impl ClipOps, text: &[u16]) -> Result<u32, ClipError> {
+pub(crate) fn set_secret_with(
+    ops: &mut impl ClipOps,
+    text: &[u16],
+    nonce: [u8; NONCE_LEN],
+) -> Result<SecretClip, ClipError> {
     if text.len() > MAX_TEXT_UNITS {
         return Err(ClipError::TooLong);
     }
@@ -107,13 +141,38 @@ pub(crate) fn set_secret_with(ops: &mut impl ClipOps, text: &[u16]) -> Result<u3
                 return Err(ClipError::Os(error));
             }
         }
+        let marked = ops
+            .register_format(MARKER_FORMAT)
+            .and_then(|format| ops.set_bytes(format, &nonce));
+        if let Err(error) = marked {
+            let _ = ops.empty();
+            return Err(ClipError::Os(error));
+        }
         if let Err(error) = ops.set_unicode(units.as_slice()) {
             let _ = ops.empty();
             return Err(ClipError::Os(error));
         }
-        // Read while the clipboard is still ours: after `CloseClipboard` another process may
-        // copy at once, and its sequence number must never be the one the auto-clear waits for.
-        Ok(ops.sequence())
+        Ok(SecretClip { nonce })
+    })();
+    ops.close();
+    result
+}
+
+/// Empties the clipboard only while it still carries `clip`'s nonce (our copy, unreplaced).
+pub(crate) fn clear_secret_with(
+    ops: &mut impl ClipOps,
+    clip: &SecretClip,
+) -> Result<bool, ClipError> {
+    open_with_retry(ops)?;
+    let result = (|| {
+        let format = ops.register_format(MARKER_FORMAT).map_err(ClipError::Os)?;
+        let ours = ops
+            .get_bytes(format, NONCE_LEN)?
+            .is_some_and(|bytes| bytes.as_slice() == clip.nonce.as_slice());
+        if ours {
+            ops.empty().map_err(ClipError::Os)?;
+        }
+        Ok(ours)
     })();
     ops.close();
     result
@@ -256,13 +315,39 @@ impl ClipOps for Win32Clip {
         Ok(format)
     }
 
-    fn set_dword(&mut self, format: u32, value: u32) -> Result<(), WinError> {
-        let bytes = value.to_le_bytes();
+    fn set_bytes(&mut self, format: u32, bytes: &[u8]) -> Result<(), WinError> {
         let memory = global_with(bytes.len(), |pointer| {
-            // SAFETY: `pointer` addresses at least 4 writable locked bytes.
+            // SAFETY: `pointer` addresses `bytes.len()` writable locked bytes.
             unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer, bytes.len()) };
         })?;
         Self::place(memory, bytes.len(), format)
+    }
+
+    fn get_bytes(&mut self, format: u32, max_len: usize) -> Result<Option<Vec<u8>>, ClipError> {
+        // SAFETY: Queries the open clipboard.
+        if unsafe { IsClipboardFormatAvailable(format) } == 0 {
+            return Ok(None);
+        }
+        // SAFETY: The clipboard is open; the returned handle stays owned by the system.
+        let handle = unsafe { GetClipboardData(format) };
+        if handle.is_null() {
+            return Ok(None);
+        }
+        // SAFETY: Queries the size of the system-owned global block.
+        let size = unsafe { GlobalSize(handle) };
+        if size == 0 || size > max_len {
+            return Ok(None);
+        }
+        // SAFETY: Locks the system-owned global block for reading.
+        let pointer = unsafe { GlobalLock(handle) };
+        if pointer.is_null() {
+            return Err(ClipError::Os(WinError::last("GlobalLock")));
+        }
+        // SAFETY: The locked block holds `size` readable bytes.
+        let bytes = unsafe { core::slice::from_raw_parts(pointer.cast::<u8>(), size) }.to_vec();
+        // SAFETY: Unlocks the block locked above.
+        unsafe { GlobalUnlock(handle) };
+        Ok(Some(bytes))
     }
 
     #[expect(
@@ -350,13 +435,45 @@ pub fn set_text(owner: &Window, text: &str) -> Result<(), ClipError> {
     set_plain_with(&mut ops_for(owner), &units)
 }
 
-/// Copies secret text with the three exclusion formats; returns the sequence number right after.
+fn random_nonce() -> Result<[u8; NONCE_LEN], ClipError> {
+    let mut nonce = [0_u8; NONCE_LEN];
+    // SAFETY: `nonce` is a writable buffer of exactly the length passed; no algorithm handle is
+    // needed with BCRYPT_USE_SYSTEM_PREFERRED_RNG.
+    let status = unsafe {
+        BCryptGenRandom(
+            core::ptr::null_mut(),
+            nonce.as_mut_ptr(),
+            NONCE_LEN_U32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status != 0 {
+        return Err(ClipError::Os(WinError::new(
+            "BCryptGenRandom",
+            status.cast_unsigned(),
+        )));
+    }
+    Ok(nonce)
+}
+
+/// Copies secret text with the three exclusion formats and a fresh random nonce in
+/// [`MARKER_FORMAT`]; the returned [`SecretClip`] is what [`clear_secret`] looks for.
 ///
 /// # Errors
 ///
 /// [`ClipError`].
-pub fn set_secret_text(owner: &Window, text: &[u16]) -> Result<u32, ClipError> {
-    set_secret_with(&mut ops_for(owner), text)
+pub fn set_secret_text(owner: &Window, text: &[u16]) -> Result<SecretClip, ClipError> {
+    let nonce = random_nonce()?;
+    set_secret_with(&mut ops_for(owner), text, nonce)
+}
+
+/// Empties the clipboard only if it still holds the secret copy `clip` (its nonce is present).
+///
+/// # Errors
+///
+/// [`ClipError`].
+pub fn clear_secret(owner: &Window, clip: &SecretClip) -> Result<bool, ClipError> {
+    clear_secret_with(&mut ops_for(owner), clip)
 }
 
 /// Reads `CF_UNICODETEXT` (≤ `max_units`) and the current sequence number.
@@ -368,7 +485,8 @@ pub fn read_text(owner: &Window, max_units: usize) -> Result<(WipeBuf<u16>, u32)
     read_with(&mut ops_for(owner), max_units)
 }
 
-/// Empties the clipboard only if its sequence number is still `seq`.
+/// Empties the clipboard only if its sequence number is still `seq` (paste-clear: `seq` comes
+/// from [`read_text`], and reading does not change it).
 ///
 /// # Errors
 ///
@@ -380,11 +498,14 @@ pub fn clear_if_unchanged(owner: &Window, seq: u32) -> Result<bool, ClipError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClipError, ClipOps, EXCLUSION_FORMATS, MAX_TEXT_UNITS, clear_if_unchanged_with, read_with,
-        set_plain_with, set_secret_with, text_len_within,
+        ClipError, ClipOps, EXCLUSION_FORMATS, MARKER_FORMAT, MAX_TEXT_UNITS,
+        clear_if_unchanged_with, clear_secret_with, read_with, set_plain_with, set_secret_with,
+        text_len_within,
     };
     use crate::error::WinError;
     use crate::mem::WipeBuf;
+
+    const NONCE: [u8; 16] = [7; 16];
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum Op {
@@ -392,11 +513,15 @@ mod tests {
         Close,
         Empty,
         Dword(String, u32),
+        Bytes(String, Vec<u8>),
         Text(Vec<u16>),
         Sleep,
     }
 
+    /// Models the Windows clipboard: every change bumps the sequence number, and closing after a
+    /// change bumps it again (the synthesized `CF_LOCALE`/`CF_TEXT`/`CF_OEMTEXT`).
     #[derive(Default)]
+    #[expect(clippy::struct_excessive_bools, reason = "independent mock switches")]
     struct Mock {
         ops: Vec<Op>,
         names: Vec<String>,
@@ -405,9 +530,18 @@ mod tests {
         fail_text: bool,
         seq: u32,
         content: Option<Vec<u16>>,
+        formats: Vec<(u32, Vec<u8>)>,
+        changed: bool,
         bump_on_open: bool,
-        /// Another process copies right after our `CloseClipboard`.
-        bump_on_close: bool,
+        /// Another process copies (text only) right after our `CloseClipboard`.
+        other_copies_on_close: bool,
+    }
+
+    impl Mock {
+        fn change(&mut self) {
+            self.seq += 1;
+            self.changed = true;
+        }
     }
 
     impl ClipOps for Mock {
@@ -419,32 +553,61 @@ mod tests {
             if self.bump_on_open {
                 self.seq += 1;
             }
+            self.changed = false;
             self.ops.push(Op::Open);
             true
         }
         fn close(&mut self) {
             self.ops.push(Op::Close);
-            if self.bump_on_close {
-                self.seq += 1;
+            if self.changed {
+                self.seq += 3;
+                self.changed = false;
+            }
+            if self.other_copies_on_close {
+                self.seq += 5;
+                self.formats.clear();
+                self.content = Some(vec![0x6F]);
             }
         }
         fn empty(&mut self) -> Result<(), WinError> {
             self.ops.push(Op::Empty);
-            self.seq += 1;
+            self.change();
             self.content = None;
+            self.formats.clear();
             Ok(())
         }
         fn register_format(&mut self, name: &str) -> Result<u32, WinError> {
             if self.fail_format == Some(name) {
                 return Err(WinError::new("RegisterClipboardFormatW", 5));
             }
-            self.names.push(name.to_owned());
-            Ok(u32::try_from(self.names.len()).unwrap() + 0xC000)
+            let index = if let Some(index) = self.names.iter().position(|known| known == name) {
+                index
+            } else {
+                self.names.push(name.to_owned());
+                self.names.len() - 1
+            };
+            Ok(u32::try_from(index).unwrap() + 0xC001)
         }
         fn set_dword(&mut self, format: u32, value: u32) -> Result<(), WinError> {
             let name = self.names[usize::try_from(format - 0xC001).unwrap()].clone();
             self.ops.push(Op::Dword(name, value));
+            self.formats.push((format, value.to_le_bytes().to_vec()));
+            self.change();
             Ok(())
+        }
+        fn set_bytes(&mut self, format: u32, bytes: &[u8]) -> Result<(), WinError> {
+            let name = self.names[usize::try_from(format - 0xC001).unwrap()].clone();
+            self.ops.push(Op::Bytes(name, bytes.to_vec()));
+            self.formats.push((format, bytes.to_vec()));
+            self.change();
+            Ok(())
+        }
+        fn get_bytes(&mut self, format: u32, max: usize) -> Result<Option<Vec<u8>>, ClipError> {
+            Ok(self
+                .formats
+                .iter()
+                .find(|(known, bytes)| *known == format && bytes.len() <= max)
+                .map(|(_, bytes)| bytes.clone()))
         }
         fn set_unicode(&mut self, units: &[u16]) -> Result<(), WinError> {
             if self.fail_text {
@@ -452,6 +615,7 @@ mod tests {
             }
             self.ops.push(Op::Text(units.to_vec()));
             self.content = Some(units[..units.len() - 1].to_vec());
+            self.change();
             Ok(())
         }
         fn get_unicode(&mut self, max: usize) -> Result<Option<WipeBuf<u16>>, ClipError> {
@@ -478,32 +642,58 @@ mod tests {
     }
 
     #[test]
-    fn secret_copy_sets_three_exclusions_then_text_in_one_session() {
+    fn secret_copy_sets_three_exclusions_marker_then_text_in_one_session() {
         let mut mock = Mock::default();
-        let seq = set_secret_with(&mut mock, &units("abc")).unwrap();
+        set_secret_with(&mut mock, &units("abc"), NONCE).unwrap();
         let mut expected = vec![Op::Open, Op::Empty];
         for name in EXCLUSION_FORMATS {
             expected.push(Op::Dword(name.to_owned(), 0));
         }
+        expected.push(Op::Bytes(MARKER_FORMAT.to_owned(), NONCE.to_vec()));
         let mut text = units("abc");
         text.push(0);
         expected.push(Op::Text(text));
         expected.push(Op::Close);
         assert_eq!(mock.ops, expected);
-        assert_eq!(seq, mock.seq);
+    }
+
+    /// Regression (adversarial PoC): `CloseClipboard` bumps the sequence number after a secret
+    /// copy, so a sequence-based auto-clear never fired. The nonce-based clear still does.
+    #[test]
+    fn secret_copy_is_cleared_although_close_bumped_the_sequence() {
+        let mut mock = Mock::default();
+        let clip = set_secret_with(&mut mock, &units("abandon about"), NONCE).unwrap();
+        assert_eq!(clear_secret_with(&mut mock, &clip), Ok(true));
+        assert!(mock.content.is_none());
+        assert!(mock.formats.is_empty());
+        // A second clear finds nothing of ours.
+        assert_eq!(clear_secret_with(&mut mock, &clip), Ok(false));
     }
 
     #[test]
-    fn secret_copy_sequence_is_read_before_the_clipboard_is_closed() {
+    fn a_copy_by_another_process_after_ours_is_never_cleared() {
         let mut mock = Mock {
-            bump_on_close: true,
+            other_copies_on_close: true,
             ..Mock::default()
         };
-        let seq = set_secret_with(&mut mock, &units("abc")).unwrap();
-        // Our own copy's number, not the one of whatever was copied after we closed.
-        assert_eq!(seq + 1, mock.seq);
-        assert_eq!(clear_if_unchanged_with(&mut mock, seq), Ok(false));
-        assert_eq!(mock.content, Some(units("abc")));
+        let clip = set_secret_with(&mut mock, &units("abc"), NONCE).unwrap();
+        mock.other_copies_on_close = false;
+        assert_eq!(clear_secret_with(&mut mock, &clip), Ok(false));
+        assert_eq!(mock.content, Some(vec![0x6F]));
+
+        // Our own later copy (another nonce) is not the earlier copy either.
+        let mut mock = Mock::default();
+        let first = set_secret_with(&mut mock, &units("abc"), NONCE).unwrap();
+        set_secret_with(&mut mock, &units("def"), [9; 16]).unwrap();
+        assert_eq!(clear_secret_with(&mut mock, &first), Ok(false));
+        assert_eq!(mock.content, Some(units("def")));
+
+        // A plain copy (address) replaced it: kept.
+        let mut mock = Mock::default();
+        let clip = set_secret_with(&mut mock, &units("abc"), NONCE).unwrap();
+        set_plain_with(&mut mock, &units("0xabc")).unwrap();
+        assert_eq!(clear_secret_with(&mut mock, &clip), Ok(false));
+        assert_eq!(mock.content, Some(units("0xabc")));
     }
 
     #[test]
@@ -520,14 +710,14 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_exclusion_format_leaves_no_text() {
-        for name in EXCLUSION_FORMATS {
+    fn a_failing_exclusion_or_marker_format_leaves_no_text() {
+        for name in EXCLUSION_FORMATS.into_iter().chain([MARKER_FORMAT]) {
             let mut mock = Mock {
                 fail_format: Some(name),
                 ..Mock::default()
             };
             assert!(matches!(
-                set_secret_with(&mut mock, &units("secret")),
+                set_secret_with(&mut mock, &units("secret"), NONCE),
                 Err(ClipError::Os(_))
             ));
             assert!(!mock.ops.iter().any(|op| matches!(op, Op::Text(_))));
@@ -538,8 +728,9 @@ mod tests {
             fail_text: true,
             ..Mock::default()
         };
-        assert!(set_secret_with(&mut mock, &units("x")).is_err());
+        assert!(set_secret_with(&mut mock, &units("x"), NONCE).is_err());
         assert!(mock.content.is_none());
+        assert!(mock.formats.is_empty());
     }
 
     #[test]
@@ -549,7 +740,7 @@ mod tests {
             ..Mock::default()
         };
         assert_eq!(
-            set_secret_with(&mut mock, &units("x")),
+            set_secret_with(&mut mock, &units("x"), NONCE),
             Err(ClipError::Busy)
         );
         assert_eq!(mock.ops.iter().filter(|op| **op == Op::Sleep).count(), 4);
@@ -557,28 +748,34 @@ mod tests {
             open_failures: 4,
             ..Mock::default()
         };
-        assert!(set_secret_with(&mut mock, &units("x")).is_ok());
+        assert!(set_secret_with(&mut mock, &units("x"), NONCE).is_ok());
     }
 
     #[test]
     fn too_long_is_rejected_before_opening() {
         let mut mock = Mock::default();
         let long = vec![0x61_u16; MAX_TEXT_UNITS + 1];
-        assert_eq!(set_secret_with(&mut mock, &long), Err(ClipError::TooLong));
+        assert_eq!(
+            set_secret_with(&mut mock, &long, NONCE),
+            Err(ClipError::TooLong)
+        );
         assert_eq!(set_plain_with(&mut mock, &long), Err(ClipError::TooLong));
         assert!(mock.ops.is_empty());
-        assert!(set_secret_with(&mut mock, &long[..MAX_TEXT_UNITS]).is_ok());
+        assert!(set_secret_with(&mut mock, &long[..MAX_TEXT_UNITS], NONCE).is_ok());
     }
 
     #[test]
-    fn clear_only_when_sequence_unchanged() {
+    fn paste_clear_only_when_sequence_unchanged() {
+        // Paste of another app's (closed) copy: reading leaves the sequence alone.
         let mut mock = Mock::default();
-        let seq = set_secret_with(&mut mock, &units("s")).unwrap();
+        set_plain_with(&mut mock, &units("s")).unwrap();
+        let (_, seq) = read_with(&mut mock, 16).unwrap();
         assert_eq!(clear_if_unchanged_with(&mut mock, seq), Ok(true));
         assert!(mock.content.is_none());
 
         let mut mock = Mock::default();
-        let seq = set_secret_with(&mut mock, &units("s")).unwrap();
+        set_plain_with(&mut mock, &units("s")).unwrap();
+        let (_, seq) = read_with(&mut mock, 16).unwrap();
         set_plain_with(&mut mock, &units("other")).unwrap();
         mock.ops.clear();
         assert_eq!(clear_if_unchanged_with(&mut mock, seq), Ok(false));
@@ -598,7 +795,12 @@ mod tests {
     fn plain_copy_has_no_exclusion_formats_and_read_returns_sequence() {
         let mut mock = Mock::default();
         set_plain_with(&mut mock, &units("0xabc")).unwrap();
-        assert!(!mock.ops.iter().any(|op| matches!(op, Op::Dword(..))));
+        assert!(
+            !mock
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::Dword(..) | Op::Bytes(..)))
+        );
         let (text, seq) = read_with(&mut mock, 16).unwrap();
         assert_eq!(text.as_slice(), units("0xabc").as_slice());
         assert_eq!(seq, mock.seq);

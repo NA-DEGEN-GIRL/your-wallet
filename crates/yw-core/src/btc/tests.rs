@@ -154,7 +154,7 @@ fn bip84_addresses() {
 /// spec/09 §3.10 [local] 24-word rows (`abandon`×23 `art`, mainnet).
 #[test]
 fn bip84_art_rows() {
-    let art = Mnemonic::from_entropy(&[0; 32]).unwrap().phrase();
+    let art = Mnemonic::from_entropy(&[0; 32]).unwrap().phrase().unwrap();
     let vault = unlocked_with(art.expose());
     let account = vault.btc_account_xpub(BtcCoin::Mainnet).unwrap();
     assert_eq!(

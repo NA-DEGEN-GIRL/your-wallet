@@ -104,10 +104,10 @@ impl Mnemonic {
     pub fn from_entropy(entropy: &[u8]) -> Result<Self, KeyError>;
     pub fn parse(phrase: &str) -> Result<Self, KeyError>;
     pub fn word_count(&self) -> WordCount;
-    pub fn phrase(&self) -> SecretString;                // 단어를 0x20 하나로 연결(용량을 미리 계산, `Debug` 가림)
+    pub fn phrase(&self) -> Result<SecretString, KeyError>; // 단어를 0x20 하나로 연결(용량을 미리 계산, `Debug` 가림). 내부 실패는 `Internal` — 빈·부분 문장을 돌려주지 않는다(다른 seed가 되므로)
     pub(crate) fn word_at(&self, position: u8) -> Result<&'static str, KeyError>; // 1-based
     pub(crate) fn entropy(&self) -> &[u8];
-    pub fn to_seed(&self, passphrase: &Bip39Passphrase) -> SecretBytes<64>;
+    pub fn to_seed(&self, passphrase: &Bip39Passphrase) -> Result<SecretBytes<64>, KeyError>; // `phrase()` 오류를 그대로 전달
 }
 
 // yw_core::password
@@ -371,6 +371,7 @@ payload_ct  = XChaCha20-Poly1305(key = DEK, nonce = payload_nonce, pt = payload 
 | `Rewrap` | 비밀번호 변경 | `kdf_salt`, `wrap_nonce`, `wrapped_dek`, `payload_nonce`; `generation + 1` | 새 비밀번호 1회 | `vault_id`, DEK, payload 평문 |
 
 - `Rewrap` 직후 같은 내용으로 `PayloadRewrite`를 한 번 더 커밋한다(`generation + 2`). 그래야 `vault.ywv.prev`에도 새 비밀번호로 감싼 세대만 남는다(§6).
+- `Rewrap` 커밋이 반영된 뒤에는 비밀번호 변경이 **성공**이다. 이어지는 `PayloadRewrite`가 실패해도 오류가 아니라 `Ok(PasswordChange::PrevNotRefreshed)`를 돌려준다(이전 비밀번호는 이미 `vault.ywv`를 열지 못하므로 "실패"라고 알리면 틀린 안내가 된다). 이때 `vault.ywv.prev`는 이전 비밀번호로만 열릴 수 있고, 다음 쓰기(`PayloadRewrite`)가 새 비밀번호 세대로 바꾼다. 다 성공하면 `Ok(PasswordChange::Complete)`. `Rewrap` 자체가 실패하면 오류이고 이전 비밀번호가 그대로 유효하다. UI는 두 `Ok` 모두 "새 비밀번호가 적용됨"으로 알린다([04] §2.17).
 - 비밀번호 변경은 DEK를 바꾸지 않는다. 이전 비밀번호와 이전 파일을 함께 가진 사람은 DEK를 얻을 수 있다. 이것을 끊으려면 니모닉으로 새 vault를 만든다(새 DEK). 사용자가 따로 만든 파일 사본·섀도 복사본은 지갑이 지울 수 없다.
 - 모든 쓰기는 커밋 전에 자체 검사를 한다: 새 바이트를 §4.5 순서로 디코드하고, DEK로 payload를 복호화해 원래 평문과 같은지 비교한다. `Create`·`Rewrap`은 손에 있는 KEK로 `wrapped_dek`를 풀어 DEK와 같은지도 비교한다(추가 Argon2 없음).
 
@@ -388,8 +389,10 @@ payload_ct  = XChaCha20-Poly1305(key = DEK, nonce = payload_nonce, pt = payload 
 | 6 | `payload_ct_len` ∈ [80, 4096], 파일 길이 = 176 + `payload_ct_len` | `Malformed` |
 | 7 | `flags == 0`, `reserved` 전부 0 | `Malformed` |
 | 8 | Argon2 → KEK → `wrapped_dek` 복호화 | `UnlockFailed`(비밀번호 오류와 키 구간 변조를 구분하지 않음) |
-| 9 | DEK로 payload 복호화, 평문 디코드(§4.6) | `PayloadCorrupt` |
+| 9 | DEK로 payload 복호화(AEAD 인증) | `PayloadCorrupt` |
+| 10 | 인증된 평문 디코드(§4.6) | `UnsupportedPayload` |
 
+- 9와 10을 나누는 이유: 인증에 성공한 평문은 DEK를 가진 앱(이 앱의 어떤 버전)이 쓴 것이다. 그런 평문이 디코드되지 않으면 손상이 아니라 **이 빌드가 모르는 형식**(새 버전이 더한 tag 등)이다. `UnsupportedPayload`는 상태를 `Locked`로 두고 `.prev` 복구를 제안하지 않으며(`Corrupt`가 아님), `recover_from_prev`도 본 파일이 `UnsupportedPayload`면 거부한다 — `.prev`로 되돌리면 새 버전이 추가한 record가 사라지기 때문이다. UI는 E-VLT-014 "새 버전 앱이 저장한 지갑입니다. 앱을 업데이트하세요"를 보인다([04] §7).
 - 파라미터는 "이상"이 아니라 **정확히 일치**해야 한다. 더 약한·더 강한 값 모두 거부한다.
 - 테스트 빌드에서만 `pub(crate)` 내부 함수가 `&KdfParams`를 받는다. `#[cfg(test)] const KDF_TEST: KdfParams = KdfParams { m_kib: 64, t: 1, p: 1 }`. 공개 API는 항상 `KDF_V3`로 인코드·디코드하므로 `KDF_TEST` 파일은 제품에서 `UnsupportedParams`다(아카이브 데모 `vault_v2.rs`의 축소 파라미터 패턴).
 
@@ -431,9 +434,10 @@ len field                                len field
 - 순서 고정: `Bip39`(있으면 정확히 1개, 맨 앞) → `EvmRawKey`들 → `SolKey`들 → `BtcKey`들. 태그는 오름차순으로 묶이고 `tag 1`은 두 번 나올 수 없다. 각 가져온 키 태그(2·3·4)는 0–15개(체인별 상한, §8.4). `record_count ≥ 1`이므로 `Bip39`가 없으면 가져온 키가 최소 1개 있다.
 - **키 전용 vault**(복구 단어 없음, §8.5): `Bip39` record가 없는 payload. 잠금 해제하면 곧바로 `Unlocked { alt: false }`(passphrase·백업 확인 없음). 파생(`evm_addresses`의 인덱스, `btc_account_xpub`, `sol_public_keys`의 파생 출처), `reveal_mnemonic`, passphrase는 `NoMnemonic`이다.
 - `SolKey`: 디코드 때 `public`을 `seed`에서 다시 계산해 같아야 한다. 같은 `public` 두 개는 거부. `BtcKey`: `secret` 범위, `flags` 예약 비트 0, `network` ∈ {1,2}, `script` ∈ {1..4}, 압축하지 않은 키(bit0 = 0)는 `script = 1`(P2PKH)만. (`secret`, compressed, `network`, `script`)가 모두 같은 두 record는 거부(같은 secret을 다른 형식으로 쓰는 것은 다른 계정이라 허용).
-- 호환: `tag 1`·`tag 2`의 바이트 배치와 의미는 바뀌지 않았다(골든 G1–G5 그대로). 이 버전은 이전 버전이 쓴 vault를 그대로 연다. 이전 버전의 앱은 `tag 3`·`tag 4` record, `Bip39` 없는 payload, 2,048바이트를 넘는 `payload_ct_len`을 모르므로 그런 vault를 `PayloadCorrupt`(또는 구조 단계 `Malformed`)로 본다([04] §6.6: 되돌린 뒤 `.prev` 복구를 하지 말고 새 버전을 다시 설치한다).
+- 호환: `tag 1`·`tag 2`의 바이트 배치와 의미는 바뀌지 않았다(골든 G1–G5 그대로). 이 버전은 이전 버전이 쓴 vault를 그대로 연다. 이전 버전의 앱은 `tag 3`·`tag 4` record, `Bip39` 없는 payload, 2,048바이트를 넘는 `payload_ct_len`을 모르므로 그런 vault를 `PayloadCorrupt`(또는 구조 단계 `Malformed`)로 본다([04] §6.6: 되돌린 뒤 `.prev` 복구를 하지 말고 새 버전을 다시 설치한다). 이 버전부터는 인증된 payload의 디코드 실패가 `UnsupportedPayload`(§4.5 단계 10)라 같은 상황에서 `.prev` 복구를 제안하지 않는다.
+- **형식 확장 규칙(앞으로의 버전):** payload에는 별도 형식 버전 바이트가 없고, 호환은 **tag 집합**으로 정한다. 새 record 종류는 새 tag 번호(5 이상)로만 더하고, 기존 tag의 바이트 배치·의미는 바꾸지 않는다. 그러면 이 버전은 새 tag를 만나 `UnsupportedPayload`(업데이트 안내, `.prev` 제안 없음)로 멈추고, 파일은 그대로 남는다. 기존 tag의 의미를 바꿔야 하면 `VAULT_VERSION`을 올린다(`UnsupportedVersion`). 새 tag를 더하는 변경은 이 경로(`UnsupportedPayload` → E-VLT-014)를 시험에 넣는다(§11.6).
 - `addr0` = 그 passphrase로 파생한 EVM 계정 0(`m/44'/60'/0'/0/0`)의 20바이트 주소. 다른 passphrase도 유효한 다른 지갑을 열기 때문에 BIP39 자체로는 오타를 알 수 없다. 4바이트 확인값은 잠금 해제 때 오타를 잡는다(놓칠 확률 2^-32). 확인값은 암호화된 payload 안에 있어 vault 비밀번호 없이는 passphrase 추측에 쓸 수 없다(비밀번호를 가진 공격자는 어차피 체인 위 주소로 같은 추측을 할 수 있다).
-- 디코드 거부(`PayloadCorrupt`): magic 불일치, `record_count` 범위 밖, reserved ≠ 0, 알 수 없는 tag, 순서 위반, `record_id` 0 또는 (모든 tag를 통틀어) 중복, `entropy_len` 오류, flags 예약 비트, `passphrase_used = 0`인데 확인값 ≠ 0, `backup_state` ∉ {0,1}, `backup_state = 0`이면서 `passphrase_used = 1`(생성 지갑은 passphrase를 쓰지 않음, §8.1), raw key 범위 밖, 같은 raw key 중복, 체인별 16번째 가져온 키, `SolKey` 공개키 불일치·중복, `BtcKey` 값 규칙 위반·중복, 남는 바이트.
+- 디코드 거부(`UnsupportedPayload`, 인증된 평문이므로 손상이 아니다 — §4.5 단계 10): magic 불일치, `record_count` 범위 밖, reserved ≠ 0, 알 수 없는 tag, 순서 위반, `record_id` 0 또는 (모든 tag를 통틀어) 중복, `entropy_len` 오류, flags 예약 비트, `passphrase_used = 0`인데 확인값 ≠ 0, `backup_state` ∉ {0,1}, `backup_state = 0`이면서 `passphrase_used = 1`(생성 지갑은 passphrase를 쓰지 않음, §8.1), raw key 범위 밖, 같은 raw key 중복, 체인별 16번째 가져온 키, `SolKey` 공개키 불일치·중복, `BtcKey` 값 규칙 위반·중복, 남는 바이트.
 - 최대 크기: 16 + `Bip39`(24단어) 64 + 15 × (57 + 89 + 60) = 3,170바이트 평문.
 - 인코더는 `Zeroizing<Vec<u8>>`에 정확한 길이를 먼저 계산해 할당한다.
 
@@ -596,7 +600,7 @@ yw-app이 yw-win 파일 함수로 구현한다(출처: 데모 원자적 쓰기, 
 | 둘 다 없음(`.tmp`만 있거나 아무것도 없음) | `NoVault` | 생성·가져오기 |
 
 - **손상 파일은 절대 덮어쓰지 않는다.** 생성·가져오기는 `NoVault`에서만 가능하다. 다른 지갑으로 바꾸려면 사용자가 폴더의 파일을 직접 옮긴다(앱은 폴더 경로만 보여준다, [04](04-app-ui.md) §2.2·§2.14).
-- `recover_from_prev(password)`: `.prev`를 잠금 해제한다. 성공하면 본 파일이 있을 경우 `quarantine` → `.prev` 내용을 `PayloadRewrite`(generation = prev.generation + 1)로 `commit(Vault, None, …)` → `Unlocked`/`BackupPending`. 본 파일에 있던 더 새로운 변경(예: 추가한 raw key)은 잃는다고 UI가 알린다.
+- `recover_from_prev(password)`: `.prev`를 잠금 해제한다. 성공하면 본 파일이 있을 경우 `quarantine` → `.prev` 내용을 `PayloadRewrite`(generation = prev.generation + 1)로 `commit(Vault, None, …)` → `Unlocked`/`BackupPending`. 본 파일에 있던 더 새로운 변경(예: 추가한 raw key)은 잃는다고 UI가 알린다. 격리한 파일 이름(`vault.ywv.corrupt-<now_unix>`, `quarantined_at()`)을 UI가 그대로 보여 주어 사용자가 직접 되돌릴 수 있게 한다([04] §2.15, `docs/recovery-guide.ko.md`).
 - payload 인증 실패(`PayloadCorrupt`)는 잠금 해제 시점에 드러난다. 이때도 본 파일은 그대로 두고 `.prev` 복구를 제안한다. 헤더는 정상이라 다시 `load`하면 `Locked`가 되므로, yw-app은 이 상태를 기억해 S09(복구 화면)를 유지한다([04] §2.5).
 - **`Locked`에서의 복구(사용자의 명시적 요청):** 키 구간(`header[0..130]`)이 손상되면 `unlock`은 비밀번호 오류와 구분할 수 없는 `UnlockFailed`만 낸다(§7.4). 그래서 `recover_from_prev`는 `Locked`에서도 받는다. 이때는 먼저 본 파일을 같은 비밀번호로 연다: 열리면 **아무것도 복구하지 않고** `unlock`과 똑같이 세션을 연다. 본 파일이 열리지 않을 때(`UnlockFailed`·`PayloadCorrupt`·구조 오류·없음)만 `.prev`를 같은 비밀번호로 열어 위 절차로 복구한다. 틀린 비밀번호는 두 파일 모두 실패해 `UnlockFailed`이고 어떤 파일도 바뀌지 않는다(Argon2 최대 2회).
 - meta·journal: 구조 손상이나 `SidecarCorrupt`(journal 프레이밍 오류 포함, §5.4)면 해당 파일 쓰기를 멈추고 사용자에게 (a) `.prev` 사용, (b) 격리 후 새로 시작 중 하나를 고르게 한다(E-VLT-006, [04] §2.5). journal 새로 시작은 "진행 중 거래 기록이 사라질 수 있음" 경고 후에만 한다. 파일이 없는 것은 손상이 아니다(§5.3 기본값, journal은 entry 0개).
@@ -733,7 +737,7 @@ pub fn parse_wif(text: &str) -> Result<WifKey, KeyError>;   // compressed(), net
 
 - Bitcoin 주소(`keyimport::btc`): P2PKH `HASH160(pubkey)`(압축 33 또는 비압축 65바이트), P2SH-P2WPKH `HASH160(00 14 ‖ HASH160(pubkey33))`, P2WPKH `HASH160(pubkey33)`, P2TR BIP86 key-path 출력 키 `x(P + H_TapTweak(x(P))·G)`(스크립트 트리 없음). 주소 문자열은 [08] `encode_address`. 64자 hex 원시 비밀은 네트워크를 알 수 없으므로 받지 않는다(WIF만).
 - `import_key(key, now_unix) -> RecordId`: `Unlocked`에서만(`BackupPending`은 `BackupNotConfirmed`), 비밀번호 재입력 없음, `PayloadRewrite`. 체인마다 15개(`RecordLimit`). 중복(`DuplicateKey`): EVM은 같은 키, Solana는 같은 공개키, Bitcoin은 (secret, compressed, network, script)가 모두 같을 때(같은 키를 다른 형식으로 다시 가져오는 것은 다른 주소의 다른 계정이다). 파생 계정과 같은 키를 가져오는 것은 막지 않는다. `import_evm_private_key(hex)`는 §8.2 형식 그대로 `import_key(Evm)`를 부른다.
-- `remove_imported_key(password, id) -> ImportChain`: `Unlocked`, 비밀번호 재입력, `PayloadRewrite`. 어느 체인의 가져온 키든 지운다. `Bip39` record는 지울 수 없다. 지운 뒤 record가 0개가 되면(키 전용 vault의 마지막 키) `LastKey`이고 아무것도 쓰지 않는다.
+- `remove_imported_key(password, id) -> ImportChain`: `Unlocked`, 비밀번호 재입력, `PayloadRewrite`. 어느 체인의 가져온 키든 지운다. `Bip39` record는 지울 수 없다. 지운 뒤 record가 0개가 되면(키 전용 vault의 마지막 키) `LastKey`이고 아무것도 쓰지 않는다. **vault가 가져온 키 계정의 진실 원천이다:** Bitcoin 키를 지운 뒤 meta `btc_accounts` 쓰기가 실패해도 yw-app 키 작업자는 그 계정을 세션에서 지우고(쓰기 오류는 알림), `has_btc_key`가 `false`인 단일 키 계정에는 받기 주소(`ReceiveAddress`·`NewReceiveAddress`)를 내주지 않으며 meta에 다시 쓰지 않는다([08] §3.5).
 - `reveal_imported_key(password, id) -> (ImportChain, SecretString)`(§9): EVM 소문자 hex 64자(`0x` 없음), Solana base58 64바이트 keypair, Bitcoin WIF(가져온 그대로의 압축 여부·network).
 - `imported_keys() -> ImportedKeys`(`BackupPending`·`Unlocked`): `has_mnemonic`, EVM `(RecordId, Address)`, Solana `(RecordId, 공개키)`, Bitcoin `(RecordId, BtcKeyInfo)`를 payload 순서로. meta 캐시 재계산(§5.3)에 쓴다.
 - 서명: EVM은 `KeyRef::Evm(EvmKeySource::Raw(id))`, Solana는 `with_imported_ed25519_seed(public, f)`([07] §3.4), Bitcoin은 `btc::sign::sign_plan(&Vault, ..)`이 입력마다 `BtcKeySource::Imported { id, script_type, compressed }`(가져온 키 계정의 입력)를 crate 내부 `BtcImportedKeys::btc_imported_secret(id)`(→ `Vault::imported_btc_secret`, `pub(crate)`, `Unlocked`만)로 받는다: tag 4 record의 비밀키를 record의 압축·network·형식과 함께 `ImportedBtcSecret`(복제 없음, `Debug` 가림, drop 때 지움)으로 감싸 서명 클로저에만 빌려 주고, 계정의 network·형식·압축과 다르면 `KeyMismatch`, record가 없으면 `RecordNotFound`다([08] §3.5, §11.1). `KeyRef`에는 가져온 Bitcoin 키가 없다.
@@ -818,7 +822,8 @@ pub enum VaultError {
     InvalidState,
     Malformed, UnsupportedVersion, UnsupportedParams,
     UnlockFailed,                // 비밀번호 오류 또는 키 구간 변조
-    PayloadCorrupt,
+    PayloadCorrupt,              // payload AEAD 인증 실패(손상, `.prev` 복구 제안)
+    UnsupportedPayload,          // 인증된 payload를 이 빌드가 디코드하지 못함(새 버전의 tag 등, `.prev` 제안 없음)
     SidecarCorrupt(FileKind), SidecarVaultMismatch(FileKind),
     OutOfMemory,
     BackupNotConfirmed, BackupMismatch, ChallengeStale,
@@ -878,7 +883,9 @@ impl Vault {
     pub fn import_key(&mut self, key: ImportKey, now_unix: u64) -> R<RecordId>;                              // §8.4
     pub fn remove_imported_key(&mut self, password: Pw, id: RecordId) -> R<ImportChain>;                       // §8.4
     pub fn reveal_imported_key(&self, password: Pw, id: RecordId) -> R<(ImportChain, SecretString)>;           // §9
-    pub fn change_password(&mut self, old: Pw, new: Pw) -> R<()>;
+    pub fn change_password(&mut self, old: Pw, new: Pw) -> R<PasswordChange>; // §4.4: Complete | PrevNotRefreshed
+    pub fn has_btc_key(&self, id: RecordId) -> R<bool>;                       // tag 4 record 존재(가져온 키 계정의 진실 원천)
+    pub fn quarantined_at(&self) -> Option<u64>;                              // 마지막 `.prev` 복구가 본 파일을 옮긴 `now_unix`
     pub fn reveal_mnemonic(&self, password: Pw) -> R<SecretString>;
     pub fn reveal_evm_private_key(&self, password: Pw, src: EvmKeySource) -> R<SecretString>;
 
@@ -1019,7 +1026,8 @@ payload_nonce 707172…87   record_id 909192…9f   generation 1, backup_state 0
 - `KDF_TEST`로 만든 파일을 공개 API로 열면 `UnsupportedParams`.
 - payload 코덱 거부 표(§4.6 목록 전부) + `Bip39` + `EvmRawKey` 15개 왕복, 16번째 `EvmRawKey` 거부(tag 3·4는 §11.9).
 - `PayloadRewrite`: KDF 호출 0회, `header[0..130]` 불변, `generation + 1`, `payload_nonce` 변경.
-- `change_password`: 이전 비밀번호 `UnlockFailed`, 새 비밀번호 성공, DEK 불변(사이드카가 계속 열림), 커밋 2회(`generation + 2`), `.prev`가 새 비밀번호로 열림.
+- `change_password`: 이전 비밀번호 `UnlockFailed`, 새 비밀번호 성공(`Complete`), DEK 불변(사이드카가 계속 열림), 커밋 2회(`generation + 2`), `.prev`가 새 비밀번호로 열림. `Rewrap` 뒤 두 번째 커밋 실패 → `Ok(PrevNotRefreshed)`, 이후 이전 비밀번호 `UnlockFailed`·새 비밀번호로 잠금 해제(yw-app `tests/vault_edge_cases.rs`).
+- 새 버전 payload: 인증되는 payload에 모르는 tag 5 record → `unlock`은 `UnsupportedPayload`, 상태 `Locked`(`Corrupt` 아님), `recover_from_prev`도 `UnsupportedPayload`이고 격리·복원 없음; payload 바이트 변조(AEAD 실패)는 여전히 `PayloadCorrupt` → `Corrupt { prev_available }` → 복구 시 `quarantined_at`.
 - 자체 검사: 인코더가 손상된 바이트를 만들도록 주입하면 커밋 0회.
 
 ### 11.7 사이드카·저장소
@@ -1043,7 +1051,7 @@ payload_nonce 707172…87   record_id 909192…9f   generation 1, backup_state 0
 - WIF(`keyimport::tests`): Bitcoin wiki 예제(비압축 `5HueCGU8…`, 압축 `KwdMAjGm…`)와 secret 1의 네 형식(mainnet·테스트넷 × 압축·비압축) 디코드·인코드 왕복; 체크섬·길이·문자·비ASCII·접미사 02·version 00·0·n 거부.
 - Bitcoin 주소: BIP84 WIF → `bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu`, BIP49 테스트넷 WIF → `2Mww8dCYPUpKHofjgcXcBCEGmniw9CoaiD2`, secret 1의 P2PKH(압축 `1BgGZ9tc…`, 비압축 `1EHNa6Q4…`, 테스트넷 `mrCDrCyb…`)와 BIP173 P2WPKH(`bc1qw508d6…`, `tb1qw508d6…`), BIP86 내부 키 `cc8a4bc6…` → 출력 키 `a60869f0…` → `bc1p5cyxnuxm…`; 비압축 키 + segwit/taproot 형식 거부.
 - Solana: RFC 8032 test 1 시드의 base58 keypair·JSON(콤마, 콤마+공백, 줄바꿈 들여쓰기)이 같은 키로 파싱되고 내보내기 base58이 입력과 같다; [07] §17.1 abandon 표준 0 시드 keypair → `HAgk14Jp…`; 주소(32바이트) → `SolKeyIsAddress`, 공개키 바꿈 → `SolKeyMismatch`, 33·65바이트·63개·256·음수·앞자리 0·빈 항목·괄호 누락·hex 시드 → `SolKeyFormat`.
-- vault(`vault::tests`): 이전 배치(Bip39 + EvmRawKey) payload의 디코드·재인코드 동일성; 모든 tag 조합·키 전용 payload 왕복; `SolKey` 공개키 불일치·중복, `BtcKey` 값 규칙·중복, tag 순서 위반, tag를 넘는 record_id 중복, 47개 → `PayloadCorrupt`; 최대 payload(3,170바이트) 봉인·개봉, 16번째 키 → `RecordLimit`; 키 전용 vault 생성·재잠금 해제(곧바로 `Unlocked`)·`NoMnemonic` 표·서명용 시드·내보내기·`LastKey`; 니모닉 vault의 체인별 상한·중복 규칙·가져온 Bitcoin 키를 서명자에게 빌려 줌(BIP84 공개키, 다른 network·형식 → `KeyMismatch`, 없는 id → `RecordNotFound`)·WIF 내보내기·체인별 삭제; `BackupPending`의 `import_key` → `BackupNotConfirmed`.
+- vault(`vault::tests`): 이전 배치(Bip39 + EvmRawKey) payload의 디코드·재인코드 동일성; 모든 tag 조합·키 전용 payload 왕복; `SolKey` 공개키 불일치·중복, `BtcKey` 값 규칙·중복, tag 순서 위반, tag를 넘는 record_id 중복, 47개 → `UnsupportedPayload`(디코드 거부); 최대 payload(3,170바이트) 봉인·개봉, 16번째 키 → `RecordLimit`; 키 전용 vault 생성·재잠금 해제(곧바로 `Unlocked`)·`NoMnemonic` 표·서명용 시드·내보내기·`LastKey`; 니모닉 vault의 체인별 상한·중복 규칙·가져온 Bitcoin 키를 서명자에게 빌려 줌(BIP84 공개키, 다른 network·형식 → `KeyMismatch`, 없는 id → `RecordNotFound`)·WIF 내보내기·체인별 삭제; `BackupPending`의 `import_key` → `BackupNotConfirmed`.
 - Solana 서명(`sol::tests`): 가져온 표준 0 키가 골든 전송을 파생 키와 같은 서명으로 서명, `L07`·`NON_STANDARD_PATH` 없음, 저널 태그 6 왕복; 니모닉 vault의 `Imported` 출처 → `RecordNotFound`, 키 전용 vault의 파생 출처 → `NoMnemonic`.
 
 ## 12. 아카이브 이식 출처

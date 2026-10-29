@@ -208,11 +208,17 @@ fn mnemonic_next_requires_valid_count_and_known_words() {
     assert!(matches!(form.on_char(0x0D, 0), FormAction::Redraw));
     let mut paste = SecretForm::new(SecretKind::Mnemonic, 0, true);
     let units: Vec<u16> = "Abandon\r\n abandon\tabout".encode_utf16().collect();
-    assert_eq!(paste.apply_paste(&units), Ok(()));
+    assert_eq!(paste.apply_paste(&units), Ok(false));
     assert_eq!(
         paste.apply_paste(&"abandon 1".encode_utf16().collect::<Vec<_>>()),
         Err(ErrorCode::Inp018)
     );
+    // A passphrase is pasted exactly; an edge space is reported for the notice (§4.7-3).
+    let mut passphrase = SecretForm::new(SecretKind::Passphrase { confirm: false }, 0, true);
+    let units: Vec<u16> = " TREZOR \r\n".encode_utf16().collect();
+    assert_eq!(passphrase.apply_paste(&units), Ok(true));
+    let units: Vec<u16> = "TREZOR".encode_utf16().collect();
+    assert_eq!(passphrase.apply_paste(&units), Ok(false));
 }
 
 #[test]

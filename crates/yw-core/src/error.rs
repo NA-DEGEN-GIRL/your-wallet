@@ -159,8 +159,11 @@ pub enum VaultError {
     UnsupportedParams,
     /// Wrong password or tampered key section (indistinguishable by design).
     UnlockFailed,
-    /// The payload failed authentication or decoding.
+    /// The payload failed authentication (AEAD): the file is damaged.
     PayloadCorrupt,
+    /// The payload authenticated but does not decode with this build's record set: a newer
+    /// build wrote it (spec/02 §4.6, unknown tag). Never offered for `.prev` recovery.
+    UnsupportedPayload,
     /// A sidecar file is malformed or failed authentication.
     SidecarCorrupt(FileKind),
     /// A sidecar file belongs to another vault.
@@ -205,6 +208,7 @@ impl fmt::Display for VaultError {
             Self::PayloadCorrupt => {
                 "지갑 내용이 손상되었습니다. 이전 사본(.prev)으로 복구할 수 있습니다."
             }
+            Self::UnsupportedPayload => "새 버전 앱이 저장한 지갑입니다. 앱을 업데이트하세요.",
             Self::SidecarCorrupt(_) | Self::SidecarVaultMismatch(_) => {
                 "지갑 부가 파일(meta·저널)을 읽을 수 없습니다."
             }

@@ -14,8 +14,10 @@ use std::time::Duration;
 use yw_core::error::VaultError;
 use yw_core::evm::address::Address;
 use yw_core::secret::Zeroizing;
-use yw_core::vault::{BackupChallenge, ChallengeId, EvmKeySource, FileKind, RecordId, VaultStatus};
-use yw_win::clipboard::{self, ClipError};
+use yw_core::vault::{
+    BackupChallenge, ChallengeId, EvmKeySource, FileKind, PasswordChange, RecordId, VaultStatus,
+};
+use yw_win::clipboard::{self, ClipError, SecretClip};
 use yw_win::file::{FileError, atomic_write, read_limited};
 use yw_win::http::HttpsUrl;
 use yw_win::input::is_down;
@@ -440,6 +442,9 @@ pub struct App {
     /// An unlock failed with `UnlockFailed` since the last session: S07 then offers `.prev`
     /// recovery for a damaged key section (spec/02 §6.3).
     pub(crate) unlock_failed: bool,
+    /// The file name the last `.prev` recovery moved `vault.ywv` to (`vault.ywv.corrupt-<t>`),
+    /// shown so the user can restore it by hand (docs/recovery-guide.ko.md).
+    pub(crate) quarantined: Option<String>,
     /// `vault.ywv.prev` exists (checked at load and after a failed unlock).
     pub(crate) prev_on_disk: bool,
     /// S08 follows an import (no backup check ran) rather than a backup confirmation.
@@ -465,7 +470,7 @@ pub struct App {
     import: ImportFlow,
     challenge: Option<BackupChallenge>,
     idle: IdleTracker,
-    secret_clip: Option<(u32, u64)>,
+    secret_clip: Option<(SecretClip, u64)>,
     startup_load: bool,
     session_retries: u32,
     session_next_ms: u64,
@@ -478,6 +483,35 @@ impl core::fmt::Debug for App {
             .debug_struct("App")
             .field("mode", &self.mode)
             .finish_non_exhaustive()
+    }
+}
+
+/// The S-level notice after a password change (spec/04 §2.17): the new password is in effect in
+/// both cases.
+#[must_use]
+pub const fn password_changed_text(change: PasswordChange) -> &'static str {
+    match change {
+        PasswordChange::Complete => "비밀번호를 바꿨습니다.",
+        PasswordChange::PrevNotRefreshed => {
+            "비밀번호를 바꿨습니다. 지금부터는 새 비밀번호로 엽니다. 다만 이전 복사본(vault.ywv.prev)을 새 비밀번호로 다시 쓰지 못해, 그 복사본은 다음 저장 전까지 예전 비밀번호로만 열릴 수 있습니다."
+        }
+    }
+}
+
+/// T-PASTE-CLEARED (spec/04 §4.7-4).
+const PASTE_CLEARED: &str =
+    "붙여넣은 뒤 클립보드를 비웠습니다. Windows 클립보드 기록(Win+V)을 쓴다면 그 항목도 지우세요.";
+/// T-PASTE-EDGE-SPACE (spec/04 §4.7-3): a pasted password/passphrase starts or ends with a space.
+pub const PASTE_EDGE_SPACE: &str =
+    "앞/뒤 공백이 포함되어 있습니다. 공백도 그대로 비밀번호·passphrase의 일부가 됩니다.";
+
+/// The information line after an accepted paste: the edge-space notice first, then the
+/// clipboard note.
+fn paste_notice(edge_space: bool, cleared: Option<String>) -> Option<String> {
+    match (edge_space, cleared) {
+        (false, cleared) => cleared,
+        (true, None) => Some(PASTE_EDGE_SPACE.to_owned()),
+        (true, Some(cleared)) => Some(format!("{PASTE_EDGE_SPACE} {cleared}")),
     }
 }
 
@@ -610,6 +644,7 @@ impl App {
             passphrase_session: false,
             payload_damaged: false,
             unlock_failed: false,
+            quarantined: None,
             prev_on_disk: false,
             done_imported: false,
             recover_return: None,
@@ -954,10 +989,10 @@ impl App {
             self.register_session();
         }
         self.idle_tick(now);
-        if let Some((seq, at)) = self.secret_clip
+        if let Some((clip, at)) = self.secret_clip
             && now.saturating_sub(at) >= SECRET_CLIPBOARD_TTL_MS
         {
-            self.clear_secret_clip(seq);
+            self.clear_secret_clip(clip);
         }
         self.evm_tick(now);
         self.sol_tick(now);
@@ -979,22 +1014,56 @@ impl App {
             || self.evm.queue.shown().is_some()
     }
 
-    /// The idle part of the main timer: pause/resume, then `LockReason::Idle` when due.
+    /// The idle part of the main timer: pause/resume, then `LockReason::Idle` when due. Before
+    /// any vault exists, a pending import (password, words or key held here or in the key
+    /// worker) is discarded after the same idle time.
     fn idle_tick(&mut self, now: u64) {
         let paused = self.idle_paused();
         self.idle.set_paused(now, paused);
-        if self.mode.holds_secrets()
-            && self.mode != AppMode::Unlocking
-            && self.idle.should_lock(now, self.settings.auto_lock_minutes)
-        {
+        if !self.idle.should_lock(now, self.settings.auto_lock_minutes) {
+            return;
+        }
+        if self.mode.holds_secrets() && self.mode != AppMode::Unlocking {
             self.lock(LockReason::Idle);
+        } else if self.mode == AppMode::NoVault && self.first_run_pending() {
+            self.discard_first_run(now);
         }
     }
 
-    fn clear_secret_clip(&mut self, seq: u32) {
+    /// A first-run import holds secrets (here or, after a preview, in the key worker).
+    fn first_run_pending(&self) -> bool {
+        self.import.password.is_some()
+            || self.import.phrase.is_some()
+            || self.import.password_sent
+            || self.keys.start.holds_secret()
+            || self.secret.is_some()
+    }
+
+    /// Wipes a pending first-run import after the idle time (spec/04 §5.1): windows closed,
+    /// buffers dropped here and in the key worker, back to S01.
+    fn discard_first_run(&mut self, now: u64) {
+        logging::info("app", "firstrun.discarded_idle", &[]);
+        self.close_secret();
+        self.import = ImportFlow::default();
+        self.keys.start = crate::app_keys::KeyStartFlow::default();
+        self.key(KeyJob::DiscardImport {
+            keep_password: false,
+        });
+        self.key(KeyJob::DiscardKeyStart {
+            keep_password: false,
+        });
+        self.idle.input(now);
+        self.info = Some(
+            "오래 입력이 없어 입력하던 비밀번호·복구 단어·개인키를 지웠습니다. 처음부터 다시 진행하세요."
+                .to_owned(),
+        );
+        self.set_screen(Screen::FirstRun);
+    }
+
+    fn clear_secret_clip(&mut self, clip: SecretClip) {
         self.secret_clip = None;
         if let Some(main) = self.main.as_ref() {
-            let result = clipboard::clear_if_unchanged(main, seq);
+            let result = clipboard::clear_secret(main, &clip);
             logging::info(
                 "app",
                 "clipboard.secret_clear",
@@ -1026,8 +1095,8 @@ impl App {
         self.close_secret();
         self.import = ImportFlow::default();
         self.challenge = None;
-        if let Some((seq, _)) = self.secret_clip {
-            self.clear_secret_clip(seq);
+        if let Some((clip, _)) = self.secret_clip {
+            self.clear_secret_clip(clip);
         }
         self.evm_lock();
         self.sol_lock();
@@ -1155,6 +1224,7 @@ impl App {
         }
         let now = now_ms();
         match result.outcome {
+            KeyOutcome::Quarantined(name) => self.quarantined = Some(name),
             KeyOutcome::Loaded { status, leftover } => {
                 self.leftover = leftover;
                 self.prev_on_disk = crate::store::prev_exists(&self.paths.data, FileKind::Vault);
@@ -1207,7 +1277,7 @@ impl App {
             }
             KeyOutcome::Created(Err(error)) => {
                 self.error_banner(vault_code(error));
-                self.set_screen(Screen::FirstRun);
+                self.reload_after_failed_start();
             }
             KeyOutcome::Preview(Ok(address)) => {
                 self.set_screen(Screen::ImportAddress(eip55(&address)));
@@ -1239,7 +1309,7 @@ impl App {
             KeyOutcome::Imported(Err(error)) if error != VaultError::InvalidState => {
                 self.import = ImportFlow::default();
                 self.error_banner(vault_code(error));
-                self.set_screen(Screen::FirstRun);
+                self.reload_after_failed_start();
             }
             KeyOutcome::Status(result) => self.on_status(result, now),
             KeyOutcome::KeyStartPreview(result) => self.on_key_start_preview(result),
@@ -1275,7 +1345,7 @@ impl App {
             KeyOutcome::KeyStartCommitted(Err(error)) => {
                 self.keys.start = crate::app_keys::KeyStartFlow::default();
                 self.error_banner(vault_code(error));
-                self.set_screen(Screen::FirstRun);
+                self.reload_after_failed_start();
             }
             KeyOutcome::KeyImported(result) => self.on_key_imported(result),
             KeyOutcome::ImportedKeyRemoved(Ok((id, chain))) => {
@@ -1385,19 +1455,27 @@ impl App {
             | KeyOutcome::PasswordChanged(Err(error))
             | KeyOutcome::RawKeyRemoved(Err(error))
             | KeyOutcome::ImportedKeyRemoved(Err(error)) => self.password_failure(error, now),
-            KeyOutcome::PasswordChanged(Ok(())) => {
+            KeyOutcome::PasswordChanged(Ok(change)) => {
                 self.close_secret();
-                logging::info("app", "password.changed", &[]);
-                self.info = Some("비밀번호를 바꿨습니다.".to_owned());
+                let complete = change == PasswordChange::Complete;
+                logging::info(
+                    "app",
+                    "password.changed",
+                    &[("prev", Field::Word(if complete { "ok" } else { "stale" }))],
+                );
+                self.info = Some(password_changed_text(change).to_owned());
                 self.refresh();
             }
             KeyOutcome::RawKeyImported(Ok((id, address))) => {
                 self.close_secret();
                 if let Some(meta) = self.meta.as_mut() {
-                    let number = meta.evm_raw_accounts.len().saturating_add(1);
+                    let label = crate::meta::next_imported_label(
+                        crate::meta::EVM_IMPORTED_PREFIX,
+                        meta.evm_raw_accounts.iter().map(|raw| raw.label.as_str()),
+                    );
                     meta.evm_raw_accounts.push(RawAccount {
                         record_id: *id.as_bytes(),
-                        label: format!("가져온 계정 {number}"),
+                        label,
                         address: address.to_lower_hex(),
                     });
                 }
@@ -1418,10 +1496,19 @@ impl App {
             KeyOutcome::RawKeyRemoved(Ok(id)) => {
                 self.close_secret();
                 let removed = self.meta.as_ref().and_then(|meta| {
-                    meta.evm_raw_accounts
+                    let raw = meta
+                        .evm_raw_accounts
                         .iter()
-                        .find(|raw| raw.record_id == *id.as_bytes())
-                        .and_then(|raw| yw_core::evm::address::parse_address(&raw.address).ok())
+                        .find(|raw| raw.record_id == *id.as_bytes())?;
+                    // The same key may also be a derived account (its private key was
+                    // imported): that account stays, and so do its site connections.
+                    let still_derived = meta.evm_accounts.iter().any(|account| {
+                        !account.hidden && account.address.eq_ignore_ascii_case(&raw.address)
+                    });
+                    if still_derived {
+                        return None;
+                    }
+                    yw_core::evm::address::parse_address(&raw.address).ok()
                 });
                 if let Some(address) = removed {
                     self.account_removed_from_sites(&address);
@@ -1520,7 +1607,7 @@ impl App {
                     self.unlock_failed = false;
                     self.recover_return = None;
                     if let Some(from) = recovering {
-                        self.info = Some(Self::recovered_text(from).to_owned());
+                        self.info = Some(Self::recovered_text(from, self.quarantined.as_deref()));
                     }
                 }
                 self.set_mode(AppMode::from_status(status));
@@ -1589,6 +1676,10 @@ impl App {
                         self.unlock_failed = true;
                         self.prev_on_disk =
                             crate::store::prev_exists(&self.paths.data, FileKind::Vault);
+                    } else if error == VaultError::UnsupportedPayload {
+                        // The right password, a newer build's file (E-VLT-014): update the app.
+                        // Never offer `.prev`, which would drop the newer records.
+                        self.unlock_failed = false;
                     }
                     self.password_failure(error, now);
                 }
@@ -1596,15 +1687,29 @@ impl App {
         }
     }
 
-    /// The S10 note after a successful `.prev` recovery started from `from`.
-    const fn recovered_text(from: AppMode) -> &'static str {
-        match from {
-            AppMode::Corrupt { .. } | AppMode::MainMissing => {
-                "이전 사본(.prev)으로 복구했습니다. 마지막 변경(예: 가져온 개인키)이 빠졌을 수 있으니 확인하세요. 손상된 파일은 데이터 폴더에 .corrupt-<시각> 이름으로 남겨 두었습니다."
-            }
-            _ => {
-                "지갑을 열었습니다. 지갑 파일을 열 수 없었다면 이전 사본(.prev)으로 복구했고, 손상된 파일은 데이터 폴더에 .corrupt-<시각> 이름으로 남겨 두었습니다."
-            }
+    /// A create/import/key-start that failed: the vault may already be on disk (saved, then a
+    /// later step such as the address lookup failed), so the state is reloaded from the files —
+    /// S07 when a vault exists, S01 when not — instead of assuming first run.
+    fn reload_after_failed_start(&mut self) {
+        self.set_screen(Screen::Processing("불러오는 중…"));
+        self.key(KeyJob::Load);
+    }
+
+    /// The S10 note after a successful `.prev` recovery started from `from`, naming the file
+    /// the damaged `vault.ywv` was moved to when there was one.
+    fn recovered_text(from: AppMode, quarantined: Option<&str>) -> String {
+        let kept = quarantined.map(|name| {
+            format!(
+                " 열리지 않던 지갑 파일은 데이터 폴더에 {name} 이름으로 옮겨 두었습니다. 직접 되돌리는 방법은 복구 안내(recovery-guide)를 보세요."
+            )
+        });
+        match (from, kept) {
+            (AppMode::Corrupt { .. } | AppMode::MainMissing, kept) => format!(
+                "이전 사본(.prev)으로 복구했습니다. 마지막 변경(예: 가져온 개인키)이 빠졌을 수 있으니 확인하세요.{}",
+                kept.unwrap_or_default()
+            ),
+            (_, Some(kept)) => format!("이전 사본(.prev)으로 복구했습니다.{kept}"),
+            (_, None) => "지갑을 열었습니다.".to_owned(),
         }
     }
 
@@ -1921,20 +2026,24 @@ impl App {
         };
         let read = clipboard::read_text(&secret.window, PASTE_MAX_UTF16_UNITS);
         let message = match read {
-            Ok((units, seq)) => match secret.form.apply_paste(units.as_slice()) {
-                Ok(()) => {
-                    drop(units);
-                    match clipboard::clear_if_unchanged(&secret.window, seq) {
-                        Ok(true) => Some("붙여넣은 뒤 클립보드를 비웠습니다. Windows 클립보드 기록(Win+V)을 쓴다면 그 항목도 지우세요.".to_owned()),
-                        Ok(false) => None,
-                        Err(_) => Some(ErrorCode::Sec002.text()),
+            Ok((units, seq)) => {
+                // Accepted or rejected (E-INP-018), the text was secret-shaped and was read: the
+                // clipboard is cleared either way (spec/04 §4.7-4).
+                let applied = secret.form.apply_paste(units.as_slice());
+                drop(units);
+                let cleared = match clipboard::clear_if_unchanged(&secret.window, seq) {
+                    Ok(true) => Some(PASTE_CLEARED.to_owned()),
+                    Ok(false) => None,
+                    Err(_) => Some(ErrorCode::Sec002.text()),
+                };
+                match applied {
+                    Ok(edge_space) => paste_notice(edge_space, cleared),
+                    Err(code) => {
+                        secret.form.set_error(Some(code.text()));
+                        cleared
                     }
                 }
-                Err(code) => {
-                    secret.form.set_error(Some(code.text()));
-                    None
-                }
-            },
+            }
             Err(ClipError::TooLong) => {
                 secret.form.set_error(Some(ErrorCode::Inp018.text()));
                 None
@@ -1968,8 +2077,8 @@ impl App {
             return;
         };
         match clipboard::set_secret_text(&secret.window, &units) {
-            Ok(seq) => {
-                self.secret_clip = Some((seq, now_ms()));
+            Ok(clip) => {
+                self.secret_clip = Some((clip, now_ms()));
                 secret.form.set_info(Some(
                     "클립보드에 복사했습니다. 30초 뒤 지웁니다.".to_owned(),
                 ));
@@ -2074,6 +2183,7 @@ impl App {
                         if self.mode != AppMode::Unlocking {
                             self.recover_return = Some(self.mode);
                         }
+                        self.quarantined = None;
                         self.set_mode(AppMode::Unlocking);
                         self.key(KeyJob::RecoverFromPrev { password });
                     }

@@ -363,7 +363,7 @@ pub fn preview_evm_address(
         Some(value) => value,
         None => &empty,
     };
-    let seed = mnemonic.to_seed(passphrase);
+    let seed = mnemonic.to_seed(passphrase)?;
     let ctx = secp_context(&mut OsRandom)?;
     evm_address_from_seed(&ctx, seed.expose(), index)
 }

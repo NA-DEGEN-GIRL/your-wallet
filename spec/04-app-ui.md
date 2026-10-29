@@ -138,7 +138,7 @@ BTC_MAINNET_BG #C42B1C / BTC_MAINNET_TEXT #FFFFFF, BTC_TESTNET4_BG #F7A23B(글�
 | 캡처 제외 | `ui::exclude_from_capture(&Window) -> Result<(), UiError>`(`UiError::CaptureExclusionFailed`). 비밀 클래스는 `create_window`가 숨긴 채 적용하고, 실패 처리는 `ClassSpec.capture`(`CaptureExclusion::{Required, Preferred}`)를 따른다(§1.7, §4.5) |
 | 그리기·입력 | `PaintDc::{fill_rect, round_rect, ellipse, draw_text, measure, select_font}`, `Font::create`, `input::is_down(vk)`. 버튼은 `ControlKind::Button(ButtonStyle)`(소유자 그리기, §1.6 스타일을 yw-app이 넘긴다), `Control::{set_backdrop, set_button_style}`(체크박스·라디오·버튼 모서리 배경 = 놓인 카드·창 색) |
 | 화면 투어(개발 전용) | `ui::capture::{capture_client, dev_tour_redraw, dev_tour_flush, dev_tour_lift_capture_exclusion}` — `#[cfg(debug_assertions)]`라 release 빌드에 없다. 앱 코드는 쓰지 않고 `ui::tour`(`#[ignore]` 테스트)만 쓴다(§11) |
-| 클립보드 | `clipboard::{set_text, set_secret_text -> u32, read_text(owner, max) -> (WipeBuf<u16>, u32), clear_if_unchanged}`, `ClipError::{Busy, TooLong, Os}` |
+| 클립보드 | `clipboard::{set_text, set_secret_text -> SecretClip, clear_secret(owner, &SecretClip), read_text(owner, max) -> (WipeBuf<u16>, u32), clear_if_unchanged}`, `ClipError::{Busy, TooLong, Os}` |
 | 단일 인스턴스 | `process::SingleInstance::acquire`, `ui::find_window -> Option<(Poster, u32)>`, `process::allow_set_foreground_window`(§1.1) |
 | 세션·전원·종료 | `session::{register_session_notifications, unregister_session_notifications}`, `Msg::{SessionLock, SessionUnlock, SessionDisconnect, SessionLogoff, Suspend, Resume, QueryEndSession, EndSession}`(§1.5, §5.1) |
 | DPAPI·파일 | `dpapi::{protect -> Vec<u8>, unprotect -> WipeBuf<u8>}`(`WinError`), `file::{atomic_write, read_limited, ensure_dir}`(`FileError`) |
@@ -186,7 +186,7 @@ pub enum AppMode { NoVault, Locked, Unlocking, PassphraseRequired, PassphraseMis
 |---|---|---|
 | 1 | S02 | 제목 "새 지갑 만들기", 단계 표시, 카드 "시작하기 전에"(T-CREATE-1 세 줄 + 도움말 "복구 단어를 아는 사람은 누구든 지갑의 자산을 옮길 수 있습니다…"). 주 버튼 `시작하기`, `취소`. |
 | 2 | W01 | 비밀번호 2회. [02] 규칙(D8: 0x20–0x7E, 12–128자) 위반 E-INP-001, 불일치 E-INP-002. passphrase는 묻지 않는다([02] §8.1). |
-| 3 | S03 | `KeyJob::CreateWallet` → `Vault::create_wallet` → `BackupPending`, 24단어 버퍼 반환. 이어서 기본 meta 쓰기. "지갑을 만드는 중입니다. 몇 초 걸립니다." |
+| 3 | S03 | `KeyJob::CreateWallet` → `Vault::create_wallet` → `BackupPending`, 24단어 버퍼 반환. 이어서 기본 meta 쓰기. "지갑을 만드는 중입니다. 몇 초 걸립니다." 생성·가져오기·개인키로 시작하기가 실패하면 오류 띠를 보이고 S01로 가정하지 않고 `KeyJob::Load`로 상태를 다시 읽는다: vault가 이미 저장된 뒤 다음 단계(주소 조회 등)가 실패했으면 S07(잠금 해제하면 S04), 저장 전 실패면 S01. |
 | 4 | W08 | 24단어 + 계정 0 EVM 주소(EIP-55, `m/44'/60'/0'/0/0`). 둘 다 종이에 적게 한다([02] §8.3). 캡처 제외 실패 시 표시하지 않고 E-SEC-001(§4.5 `Required`; 지갑은 `BackupPending`으로 남고 S04에서 다시 시도). `다 적었습니다`를 2초 길게 눌러야 다음으로 간다. |
 | 5 | W10 | `backup_challenge()`의 위치 4개 단어 + 첫 주소 끝 6자. `KeyJob::ConfirmBackup` → `confirm_backup`. `BackupMismatch` → T-BACKUP-FAIL, 새 challenge(새 위치)로 다시 입력. 횟수 제한 없음. |
 | 6 | S08 | 제목 "준비되었습니다", T-BACKUP-OK(완료 띠; 가져오기 흐름 뒤에는 백업 확인을 하지 않았으므로 T-IMPORT-OK와 도움말 "이 지갑의 백업은 방금 입력한 복구 단어(와 passphrase)입니다…"). 저장된 RPC 엔드포인트(§6.3 `rpc:*`)가 하나도 없으면 카드 "마지막 단계: 블록체인 연결(RPC)"(무엇이고 왜 필요한지 한 줄 + 도움말) 안에 주 버튼 `RPC 설정하기`(S15 `네트워크(RPC)`, §2.11.1)와 `나중에`. 있으면 주 버튼 `지갑 열기`. → S10. |
@@ -212,19 +212,20 @@ S04(백업 대기): 잠금 해제 직후 백업이 확인되지 않았을 때. �
 - S07: 큰 제목 "지갑이 잠겨 있습니다", "계정과 잔액을 보려면 비밀번호로 잠금을 해제하세요.", 주 버튼 `잠금 해제`(W02), 도움말로 자동 잠금 조건("{n}분 동안 쓰지 않거나, Windows를 잠그거나 절전에 들어가면…"). 기다리는 dApp 요청이 있으면 T-UNLOCK-PENDING(정보 띠)과 origin 목록(최대 5개, 나머지 "외 n건"). 계정·잔액·주소는 보이지 않는다(meta가 잠겨 있다).
 - W02 비밀번호 → `KeyJob::Unlock` → S03("확인 중…").
   - `UnlockFailed` → E-VLT-001([02] §7.4 문구). 칸을 비우고 입력과 확인 버튼을 1초 비활성화. 횟수 제한 없음. 한 번 실패한 뒤 `.prev`가 있으면 S07에 도움말 T-UNLOCK-PREV와 링크 `이전 사본(.prev)으로 복구`(W03 → `recover_from_prev`, [02] §6.3 `Locked`에서의 복구: 키 구간 손상은 비밀번호 오류와 구분되지 않는다. 본 파일이 열리면 복구하지 않고 그대로 연다)를 보인다.
+  - `UnsupportedPayload`(비밀번호는 맞지만 새 버전 앱이 쓴 payload, [02] §4.5 단계 10) → W02에 E-VLT-014 "새 버전 앱이 저장한 지갑입니다. 앱을 업데이트하세요". S09로 가지 않고 `.prev` 복구를 제안하지 않는다(T-UNLOCK-PREV 링크도 끈다). 파일은 그대로 둔다.
   - `PayloadCorrupt` → E-VLT-008, S09로 간다(`Corrupt { prev_available }`). 다시 `Load`하지 않는다(헤더가 정상이라 `Locked`가 되어 S09가 사라진다). 이후 잠금 등으로 `Load`가 `Locked`를 돌려줘도 앱은 "payload 손상" 상태를 기억해 S09를 유지하고, `이전 사본으로 복구`는 `Locked`에서도 동작한다.
   - `PassphraseRequired` → W06(passphrase 1칸) → `enter_passphrase`. W06 `나중에`(Esc)는 `KeyJob::Lock`으로 `Locked`(S07)에 돌아간다(`PassphraseRequired`에 머물지 않는다). `PassphraseMismatch` → 오버레이 T-PASS-MISMATCH: `다시 입력`(W06), `이 passphrase로 계속`(체크 "다른 passphrase는 다른(빈) 지갑을 엽니다"를 켜야 활성) → `Unlocked { alt_passphrase: true }`(T-ALT-PASS 띠, 받기·dApp 연결·서명 차단, §2.1).
   - VirtualLock 실패(yw-win 슬롯 할당 실패, `OutOfMemory`) → E-VLT-007, 잠금 해제하지 않는다([02] §7.3 권고).
   - 성공: `BackupPending`이면 S04, 아니면 meta 읽기 → S10. meta·journal이 `SidecarCorrupt`·`SidecarVaultMismatch`면 오버레이 E-VLT-006에서 `이전 사본(.prev) 사용` 또는 `격리하고 새로 시작`을 고르게 한다(journal은 T-JOURNAL-RESET 확인 후에만, [02] §6.3). 이어서 저널 복구([03])와 승인 큐 처리(§3.7).
 - dApp 요청 때문에 자동으로 연 W02·W06은 `WS_EX_TOPMOST`이고 전경이 아니면 작업 표시줄을 깜박인다(§3.6). 이 창의 `나중에`(Esc)는 잠금 해제를 기다리던 dApp 항목을 모두 `Rejected`로 끝낸다([05] §4.4: 해제 창은 하나, 결과 공유). 사용자가 직접 연 창의 `나중에`는 창만 닫는다.
-- S09(`Corrupt`·`MainMissing`): E-VLT-002(payload 손상이면 E-VLT-008) 또는 "지갑 파일이 없고 이전 사본(.prev)이 있습니다." `.prev`가 있으면 `이전 사본으로 복구`(W03 → `recover_from_prev`, 문구 T-RECOVER-PREV), 없으면 폴더 경로와 `폴더 열기`, `종료`. 손상 파일은 덮어쓰지 않는다(격리 이름 `vault.ywv.corrupt-<unix초>`). W03을 취소하거나 틀린 비밀번호면 다시 `Load`하지 않고 요청했던 화면(S09·S07)으로 돌아간다. `.prev`가 없거나 `.prev`도 손상이면 W03에 그 사실을 알린다. 성공하면 S10/S04에 "이전 사본(.prev)으로 복구했습니다…" 정보 띠.
+- S09(`Corrupt`·`MainMissing`): E-VLT-002(payload 손상이면 E-VLT-008) 또는 "지갑 파일이 없고 이전 사본(.prev)이 있습니다." `.prev`가 있으면 `이전 사본으로 복구`(W03 → `recover_from_prev`, 문구 T-RECOVER-PREV), 없으면 폴더 경로와 `폴더 열기`, `종료`. 손상 파일은 덮어쓰지 않는다(격리 이름 `vault.ywv.corrupt-<unix초>`). W03을 취소하거나 틀린 비밀번호면 다시 `Load`하지 않고 요청했던 화면(S09·S07)으로 돌아간다. `.prev`가 없거나 `.prev`도 손상이면 W03에 그 사실을 알린다. 성공하면 S10/S04에 "이전 사본(.prev)으로 복구했습니다…" 정보 띠. 본 파일을 격리했으면 그 정확한 파일 이름(`vault.ywv.corrupt-<unix초>`, 키 작업자가 `KeyOutcome::Quarantined`로 알림)을 정보 띠에 넣어 사용자가 직접 되돌릴 수 있게 한다(`docs/recovery-guide.ko.md`). S09 도움말도 복구 전에 "지금 파일은 지우지 않고 `vault.ywv.corrupt-<시각>`으로 옮겨 두며, 복구 뒤 그 이름을 알려 준다"고 알린다.
 
 ### 2.6 메인 (S10)
 - 배치(위 → 아래, 체인 탭마다 같음): 상단 막대 → 체인 탭 → 카드 "네트워크"(칩, 테스트넷 띠, 차단·저널 띠, 상태 줄 도움말) → **선택 계정 카드**(계정 이름, 경로, 큰 잔액 20pt와 기준 블록, 전체 주소, 주 버튼 `보내기`·`받기`, 링크 `새로고침`, 엔드포인트가 없으면 링크 `RPC 설정하기`) → 카드 "내 계정"(계정 목록 라디오, 선택 행의 `이름 바꾸기`·`숨기기`/`삭제`(위험), `계정 추가`·`개인키 가져오기`) → 카드 "토큰" → 카드 "활동". 빈 목록에는 다음에 할 일을 알려주는 도움말을 보인다("아직 보낸 거래가 없습니다. 보낸 거래는 여기에서…").
 - 체인 탭: 구현된 단계만(M4 `EVM`, M7 `Solana`, M8 `Bitcoin`). 각 탭의 "내 계정" 카드에 `개인키 가져오기`가 있다(그 체인의 키, §2.18). 가져온 계정은 라벨 뒤에 배지 "[가져온 키]"와 도움말 "가져온 키 · 복구 단어로 복구되지 않음"을 보인다. 키 전용 지갑(복구 단어 없음, [02] §8.5)은 파생 기능(`계정 추가`, `다른 경로 스캔`, 파생 Bitcoin 계정·발견, 복구 단어 보기)을 숨기고, 계정이 없는 체인 탭은 "이 지갑에는 {체인} 계정이 없습니다."와 `개인키 가져오기`만 보인다.
 - EVM 네트워크 선택: 기본 체인 3개(`Ethereum 메인넷`, `Sepolia 테스트넷`, HyperEVM; 이름은 [03] §1.1) 다음에 사용자 체인(§2.17, `evmChains` 순서, 이름 옆 배지 T-CUSTOM-CHAIN). 차단된 체인(E-RPC-006·E-CHN-008)도 목록에 남기고 "(차단됨)"을 붙인다. 고르면 S10에 그 오류 배너와(E-CHN-008이면) `설정에서 다시 고정`(S15)을 보이고 잔액·보내기는 끈다. 선택은 `settings.json` `evmChainId`(§6.1, D30)이고, 잠긴 동안 [05]가 캐시 없는 origin의 `eth_chainId`로 쓴다. Solana 클러스터는 `solana.cluster`([07] §10), BTC 네트워크는 `bitcoin.network`([08] §2, D26)로 모두 `settings.json`에 있다. 테스트넷(Sepolia, [07]·[08]의 테스트 네트워크)이면 상단에 `TESTNET_BG` 띠 "테스트넷 — 실제 자산이 아닙니다". 기본 메인넷(Ethereum 메인넷 1, HyperEVM 999)과 Solana mainnet이면 빨간(`BTC_MAINNET_BG`) 띠 T-MAINNET "메인넷 — 실제 자산"(Bitcoin은 [08] §2 `BITCOIN MAINNET`). 같은 조건에서 승인 창 A01 헤더에도 T-MAINNET 배지를 보인다(§3.2 헤더; 대상은 S10의 선택 네트워크가 아니라 그 요청의 체인·클러스터). 사용자 체인에는 테스트넷 구분이 없으므로 띠·배지를 그리지 않는다. 기본값은 그대로다(EVM Sepolia, Solana mainnet, Bitcoin 꺼짐).
 - 상태 줄: `RPC: 연결됨 | 엔드포인트 없음 (E-KEY-005) | 오류 E-RPC-0nn | 차단 E-CHN-008`(네트워크 이름만, URL·호스트 없음, §1.9), `브라우저: 연결 n개 | 연결 없음 | 사용 불가 E-PIPE-001`. 엔드포인트 없음이면 잔액·보내기를 끄고 `설정에서 URL 입력`(S15 §2.11.1)을 보인다.
-- 계정 목록: 라벨, 전체 주소(§3.3 주소 그리기), 기본 자산 잔액, 경로 또는 `가져온 개인키`. 카드 도움말 T-ACCOUNTS(파생 계정만 복구 단어로 복구되고 가져온 개인키는 아니다). 선택 행 버튼: `보내기`, `받기`, `이름 바꾸기`, 파생 계정 `숨기기`(meta `hidden`), 개인키 계정 `삭제`(확인 오버레이 T-REMOVE-KEY → W03 → `remove_evm_raw_key`). 삭제 오버레이는 계정 라벨·주소와 선택한 EVM 네트워크의 마지막으로 읽은 기본 자산 잔액을 보인다: 0보다 크면 고위험 띠 "이 계정에 잔액이 있습니다: … 먼저 옮기거나 개인키를 내보내세요", 모르면 주의 띠 "잔액을 확인하지 못했습니다…", 0이면 "다른 네트워크와 토큰 잔액은 확인하지 않았습니다" 도움말. 숨기기·삭제는 [05] §4.1에 알린다(grant에서 제외).
+- 계정 목록: 라벨, 전체 주소(§3.3 주소 그리기), 기본 자산 잔액, 경로 또는 `가져온 개인키`. 카드 도움말 T-ACCOUNTS(파생 계정만 복구 단어로 복구되고 가져온 개인키는 아니다). 선택 행 버튼: `보내기`, `받기`, `이름 바꾸기`, 파생 계정 `숨기기`(meta `hidden`), 개인키 계정 `삭제`(확인 오버레이 T-REMOVE-KEY → W03 → `remove_evm_raw_key`). 삭제 오버레이는 계정 라벨·주소(라벨은 겹칠 수 있으므로 모든 체인에서 주소를 함께)와 선택한 EVM 네트워크의 마지막으로 읽은 기본 자산 잔액을 보인다: 0보다 크면 고위험 띠 "이 계정에 잔액이 있습니다: … 먼저 옮기거나 개인키를 내보내세요", 모르면 주의 띠 "잔액을 확인하지 못했습니다…", 0이면 "다른 네트워크와 토큰 잔액은 확인하지 않았습니다" 도움말. 숨기기·삭제는 [05] §4.1에 알린다(grant에서 제외). 단, 지우는 가져온 EVM 키의 주소가 (숨기지 않은) 파생 계정의 주소와 같으면(그 계정의 개인키를 가져온 경우) 파생 계정이 남으므로 사이트 연결을 끊지 않는다. 가져온 계정의 기본 라벨(`가져온 계정 N`·`가져온 Solana N`)은 같은 접두어의 기존 라벨 중 가장 큰 N + 1이다(`개수 + 1`은 삭제 뒤 번호가 겹친다).
 - `계정 추가`: 다음 EVM 인덱스(기본 라벨 "계정 {i+1}"), 또는 `개인키 가져오기`(W07 → `import_evm_private_key`, `Unlocked`에서만; W07 안내에 T-IMPORTED-KEY). 상한은 [02] §5.3(파생 100, 개인키 15).
 - **Bitcoin 탭 계정**([08] §3.5–§3.6): 카드 "Bitcoin 계정" — 계정마다 라디오 한 행 `{이름} · {형식 (접두)} · {사용 가능 잔액}`(예: `네이티브 세그윗 계정 0 · 네이티브 세그윗 (bc1q…) · 0.00100000 BTC (100,000 sats)`; 가져온 키는 배지와 줄인 주소 `[가져온 키] {주소 앞 6자}…{끝 6자} · 레거시 (1…) · …`), 고르면 그 계정으로 전환(key worker가 `btc_accounts.selected`를 저장한 뒤 새로고침, 발견 전이면 발견). 아래 `계정 추가` → 같은 카드에 형식 버튼 4개(mainnet `네이티브 세그윗 (bc1q…, 권장)`, `탭루트 (bc1p…)`, `호환 세그윗 (3…)`, `레거시 (1…)`; testnet4 `tb1q`·`tb1p`·`2`·`m·n`)와 `취소`, 도움말 "주소 형식을 고르세요. 잘 모르면 네이티브 세그윗을 고르세요…". 카드 도움말: 계정마다 주소 형식이 정해지고 같은 니모닉에서 BIP44·49·84·86으로 다른 지갑에서도 복구된다. BTC 승인이 열려 있으면 전환·추가를 막는다. 선택 계정 카드 제목은 계정 이름, 그 아래 `{노드} · {형식 (접두)}`(예: `m/86'/0'/0' · 탭루트 (bc1p…)`). 가져온 키 계정에는 `더 찾기`가 없다. 잔액·UTXO·활동(meta 활동은 그 계정의 `account` 태그만)·받기·보내기·수수료 올리기는 선택 계정의 것이다(가져온 키도 같다). 가져온 키 줄이 선택돼 있으면 목록 아래에 백업 도움말과 `개인키 보기`·`삭제`(§2.18). 카드 끝: T-BTC-IMPORTED, 주소 형식 라디오, T-KEYSTART-SCRIPT, `개인키 가져오기`. 키 전용 지갑은 `계정 추가` 없이 이 부분만 있고, 기본 계정 없이 가져온 키 계정만 보인다(그 네트워크에 없으면 "이 네트워크에는 가져온 Bitcoin 개인키가 없습니다…", 하나도 없으면 T-NO-ACCOUNTS; Bitcoin이 꺼져 있으면 꺼짐 카드 아래 T-NO-ACCOUNTS 카드).
 - 토큰 잔액: 레지스트리 토큰([03])과 meta `tokens`. `토큰 추가`(S16). Solana 탭(v1.1): 카드 "토큰 (선택한 계정)"은 그 클러스터의 [07] §8.3 허용 목록 토큰만 보인다(토큰마다 로컬 파생 ATA 하나만 조회, `토큰 추가` 없음, 다른 토큰·NFT는 받아도 보이지 않는다). 행 = 기호와 잔액(고정 decimals) · 원시 단위·"RPC finalized 기준(참고)" · "mint (허용 목록 고정)"과 mint 전체(묶음) · 링크 `{기호} 보내기`(잔액 > 0·엔드포인트 있음·`Unlocked`일 때만, 그 토큰을 고른 보내기 화면). ATA가 없으면 0과 "이 계정에는 아직 {기호} 토큰 계정(ATA)이 없습니다. 받으면 보내는 쪽이 만듭니다.", 동결이면 동결 안내, ATA 자리에 다른 형식의 계정이면 잔액 대신 "확인할 수 없음". 선택 계정 카드에는 큰 SOL 잔액 아래 한 줄 "허용 목록 토큰: 25.000000 USDC (아래 토큰 카드)".
@@ -339,7 +340,7 @@ S16 토큰 추가: 컨트랙트 주소(§2.15) → RPC `decimals()`·`symbol()`(
 4. `UnlockFailed` → E-VLT-001, 1초 비활성 후 W03 유지.
 
 ### 2.13 비밀번호 변경
-W04(현재, 새, 새 확인) → 새 비밀번호 검사(E-INP-001/002) → `KeyJob::ChangePassword` → S03 "비밀번호를 바꾸는 중…". DEK는 그대로이고 다시 감싸기만 한다(D7). 현재 비밀번호 오류 → E-VLT-001(1초 비활성). 쓰기 실패 → E-VLT-003, vault는 이전 상태. 성공 → "비밀번호를 바꿨습니다."
+W04(현재, 새, 새 확인) → 새 비밀번호 검사(E-INP-001/002) → `KeyJob::ChangePassword` → S03 "비밀번호를 바꾸는 중…". DEK는 그대로이고 다시 감싸기만 한다(D7). 현재 비밀번호 오류 → E-VLT-001(1초 비활성). `Rewrap` 쓰기 실패 → E-VLT-003, vault는 이전 상태(이전 비밀번호 유효). 성공(`PasswordChange::Complete`) → "비밀번호를 바꿨습니다." `Rewrap`은 반영됐지만 뒤이은 `PayloadRewrite`가 실패(`PrevNotRefreshed`, [02] §4.4) → 실패라고 하지 않는다: "비밀번호를 바꿨습니다. 지금부터는 새 비밀번호로 엽니다. 다만 이전 복사본(vault.ywv.prev)을 새 비밀번호로 다시 쓰지 못해, 그 복사본은 다음 저장 전까지 예전 비밀번호로만 열릴 수 있습니다."
 
 ### 2.14 폴더 열기
 `std::process::Command::new(<%SystemRoot%>\explorer.exe).arg(<폴더>)`(`SystemRoot`가 없으면 `C:\Windows`). 셸 API·URL은 쓰지 않는다. 로그 폴더 버튼 옆에 T-LOG-FOLDER.
@@ -396,6 +397,7 @@ W04(현재, 새, 새 확인) → 새 비밀번호 검사(E-INP-001/002) → `Key
 | T-COPY-OFF | W08·W09 | 복사가 꺼져 있습니다. 설정에서 바꿀 수 있습니다. |
 | T-COPIED | W08·W09 | 클립보드에 복사했습니다. 30초 뒤 지웁니다. |
 | T-PASTE-CLEARED | W01–W07 | 붙여넣은 뒤 클립보드를 비웠습니다. Windows 클립보드 기록(Win+V)을 쓴다면 그 항목도 지우세요. |
+| T-PASTE-EDGE-SPACE | W01–W04·W06 | 앞/뒤 공백이 포함되어 있습니다. 공백도 그대로 비밀번호·passphrase의 일부가 됩니다. |
 | T-MASKED | W05·W07–W10 | 창이 비활성화되어 내용을 가렸습니다. 창을 클릭하면 다시 표시합니다. |
 | T-CAPTURE-WARN | W01–W07·W10 | 화면 캡처 제외가 적용되지 않았습니다. 화면 공유·녹화 중이면 입력하지 마세요. |
 | T-LOCALHOST-ON | S15 | 개발용 설정입니다. 켜면 http://localhost 와 http://127.0.0.1 페이지가 지갑 연결을 요청할 수 있습니다. |
@@ -747,21 +749,23 @@ impl SecretField {
 
 ### 4.6 IME·비ASCII
 - `Msg::KeyDown { vk: VK_PROCESSKEY (0xE5) }`(IME가 처리 중인 키) 또는 `Msg::Char(u ≥ 0x80)` → 칸 아래 E-INP-008을 3초 보이고 입력은 버퍼에 넣지 않는다.
-- 구현 시 확인: 한글 입력 모드에서 IME 메시지를 차단한 상태로 키를 누르면 위 둘 중 하나가 오는지. 둘 다 오지 않으면(UI-M3-05 불합격) 또는 조합 창이 화면에 나타나면 대체안으로 창 생성 시 `ImmAssociateContextEx(hwnd, NULL, 0)`을 yw-win에 넣고(기능 `Win32_UI_Input_Ime` 추가, [01]) UI-M3-05 합격 기준을 "ASCII만 입력됨"으로 바꾼다.
+- 비밀 창은 생성 때(캡처 제외 직후) `ImmAssociateContextEx(hwnd, NULL, 0)`으로 입력 컨텍스트를 떼어 IME가 조합하지 못하게 한다(yw-win, 기능 `Win32_UI_Input_Ime`). `WM_IME_*` 차단(§4.3)은 그대로 둔다(이중 방어). 실패해도 차단만으로 동작한다.
+- 구현 시 확인: 한글 입력 모드에서 키를 누르면 위 둘 중 하나가 오거나 ASCII만 입력되는지(UI-M3-05).
 
 ### 4.7 붙여넣기
 허용: W01–W07. 금지: W10(종이 백업 확인이 목적).
 1. `clipboard::read_text(owner, PASTE_MAX_UTF16_UNITS = 4096)` → `(units: WipeBuf<u16>, seq)`. `TooLong`이거나 텍스트가 없으면 E-INP-018.
-2. 새 `Zeroizing` 버퍼로 정규화: 앞뒤 공백·탭·CR·LF 제거. `MnemonicText`는 공백·탭·CR·LF 연속을 공백 하나로, `A`–`Z`를 소문자로. 모든 단위를 활성 칸 `Charset`으로 검사해 하나라도 거부되거나 길이를 넘으면 전체를 거부하고(부분 삽입 없음) E-INP-018. 클립보드는 건드리지 않는다.
-3. 통과하면 활성 칸 내용을 그 값으로 바꾸고(W05는 단어 칸에 나눠 넣음) `units`를 소거한다.
-4. `clipboard::clear_if_unchanged(owner, seq)`가 true면 T-PASTE-CLEARED. false(사이에 클립보드가 바뀜)면 아무것도 지우지 않는다.
+2. 새 `Zeroizing` 버퍼로 정규화. **`Printable`(비밀번호 W01–W04, BIP39 passphrase W06)은 그대로 쓴다:** 끝의 줄바꿈 하나(`CR LF`, `LF` 또는 `CR`)만 떼고 공백·탭은 절대 다듬지 않는다(passphrase `" TREZOR "`와 `"TREZOR"`는 다른 지갑이다). 그 밖에 바꿔야 할 단위가 있으면(탭, 앞의 줄바꿈, 두 번째 줄바꿈 등) 고치지 않고 전체를 거부한다(E-INP-018). 그 밖의 칸(니모닉·개인키 hex·WIF·base58·키 텍스트)은 앞뒤 공백·탭·CR·LF를 떼고, `MnemonicText`·`KeyText`는 공백·탭·CR·LF 연속을 공백 하나로, `A`–`Z`를 소문자로(해당 칸). 모든 단위를 활성 칸 `Charset`으로 검사해 하나라도 거부되거나 길이를 넘으면 전체를 거부하고(부분 삽입 없음) E-INP-018.
+3. 통과하면 활성 칸 내용을 그 값으로 바꾸고(W05는 단어 칸에 나눠 넣음) `units`를 소거한다. `Printable` 값이 공백으로 시작하거나 끝나면 T-PASTE-EDGE-SPACE를 보인다(값은 그대로).
+4. 통과했든 E-INP-018로 거부했든 읽은 텍스트는 비밀일 수 있으므로 `clipboard::clear_if_unchanged(owner, seq)`를 부른다(읽기는 시퀀스 번호를 바꾸지 않는다). true면 T-PASTE-CLEARED(거부 때는 오류와 함께). false(사이에 클립보드가 바뀜)면 아무것도 지우지 않는다.
 
 `OpenClipboard` 재시도는 yw-win이 한다(20 ms 간격 5회, [01] §7.3). `ClipError::Busy`·`Os`면 추가 재시도 없이 E-SEC-002.
 
 ### 4.8 복사 (설정 토글)
 - `allowSecretCopy == false`(기본): W08·W09에 `복사` 버튼이 없고 Ctrl+C에는 T-COPY-OFF.
 - `true`: `복사` 버튼과 Ctrl+C. 내용은 W08 = 단어를 공백 하나로 이은 문자열, W09 = 64 hex. `clipboard::set_secret_text`가 한 번의 `OpenClipboard`…`CloseClipboard` 안에서 `CF_UNICODETEXT (13)`(문자열 + NUL)과 `RegisterClipboardFormatW`로 등록한 `"ExcludeClipboardContentFromMonitorProcessing"`·`"CanIncludeInClipboardHistory"`·`"CanUploadToCloudClipboard"`를 각각 DWORD 0으로 넣는다(모니터·기록·클라우드 동기화 제외, D11).
-- 반환된 시퀀스 번호를 `App.secret_clip = Some((seq, now))`에 둔다. `SECRET_CLIPBOARD_TTL_MS = 30_000` 뒤, 그리고 잠금·종료 때 `clear_if_unchanged(seq)`. 번호가 바뀌었으면 지우지 않는다. T-COPIED.
+- 같은 `OpenClipboard`…`CloseClipboard` 안에서 등록 형식 `"YourWalletV3SecretClipNonce"`에 복사마다 새 16바이트 난수(`BCryptGenRandom`)를 함께 넣는다. 반환된 `SecretClip`(그 nonce)을 `App.secret_clip = Some((clip, now))`에 둔다. `SECRET_CLIPBOARD_TTL_MS = 30_000` 뒤, 그리고 잠금·종료 때 `clear_secret(clip)`: 클립보드를 열어 그 형식에 같은 nonce가 아직 있을 때만 비운다(다른 복사로 바뀌었으면 지우지 않는다). T-COPIED.
+- 시퀀스 번호로 판정하지 않는 이유: `CloseClipboard`가 합성 형식(`CF_LOCALE`·`CF_TEXT`·`CF_OEMTEXT`)을 더하며 번호를 다시 올리므로, 닫기 전에 읽은 번호는 자동 삭제 때 결코 같지 않았다(적대적 검토로 확인, yw-win `tests/clipboard_winsta.rs`가 사설 window station에서 실제 클립보드로 시험).
 - 한계: 클립보드 전역 메모리는 시스템 소유라 0으로 덮을 수 없다(`EmptyClipboard`는 해제만). 앱이 비정상 종료하면 자동 삭제가 없다.
 
 ### 4.9 비활성화·닫기
@@ -773,7 +777,7 @@ impl SecretField {
 ### 4.10 시험 (자동)
 - SW-1: 이식 `recovery_native.rs:1610-1738` 테스트(2초 hold, 고정 용량 버퍼, 소거, 창 없는 차단 판정, 시간 초과·포커스 잃음) 통과.
 - SW-2: `Printable`에 0x1F·0x7F·0xAC00·서로게이트 → 거부, 버퍼 불변. `MnemonicText`에 `"  Abandon  ABOUT "` 단위 입력 → `abandon about `. `PrivateKeyHex`에 `0X…`·중간 `x`·65자 → 거부. `backspace` 뒤 내부 용량의 지운 위치 = 0.
-- SW-3: 붙여넣기 `"abandon\r\n abandon\tabout"` → `abandon abandon about`, `"abandon 1"` → 전체 거부·클립보드 유지, 성공 후 시퀀스 같음/다름 → 비움/유지.
+- SW-3: 붙여넣기 `"abandon\r\n abandon\tabout"` → `abandon abandon about`, `"abandon 1"` → 전체 거부, 시퀀스 같음/다름 → 비움/유지. `Printable`: `"  pass word \r\n"` → `"  pass word "`, `" TREZOR "` 그대로(같은 지갑 주소) + T-PASTE-EDGE-SPACE, 탭·앞 줄바꿈·줄바꿈 둘 → 거부. 비밀 복사 → 닫기가 번호를 올려도 `clear_secret`이 비움, 다른 복사 뒤에는 유지.
 - SW-4: 차단 목록 22개와 비밀 상태를 붙인 뒤의 `WM_SETTEXT` → 0 반환, 핸들러 미호출. `exclude_from_capture` 실패 모의(설정 실패, 읽기 값 ≠ 0x11 각각) → `Required`(W08·W09)는 창 파괴·`CaptureExclusionFailed`·비밀 버퍼 미전달·E-SEC-001, `Preferred`(W01·W05·W10)는 T-CAPTURE-WARN 배너와 함께 열리고 `보기` 비활성.
 
 ## 5. 자동 잠금 (D12)
@@ -792,6 +796,7 @@ impl SecretField {
 
 - **유휴 기준은 앱 기준 입력이다.** `GetLastInputInfo`(시스템 전체)는 쓰지 않는다(다른 프로그램을 쓰는 동안에도 잠겨야 한다). `ui::run_loop` 관찰 콜백이 yw-app 창으로 가는 `WM_KEYDOWN`, `WM_SYSKEYDOWN`, `WM_CHAR`, `WM_LBUTTONDOWN`, `WM_RBUTTONDOWN`, `WM_MBUTTONDOWN`, `WM_MOUSEWHEEL`마다 `last_input = Instant::now()`. 마우스 이동은 세지 않는다.
 - 승인 창이나 W08·W09가 열려 있는 동안 유휴 판정을 멈추고, 닫히면 그때부터 다시 센다(각 창에 자체 시간 제한이 있다). 잠금 해제 직후 `last_input = now`.
+- vault가 아직 없을 때(`NoVault`, 첫 실행 흐름) 가져오기·생성·개인키로 시작하기 중인 비밀(UI의 비밀번호·복구 단어, 미리보기 뒤 키 작업자가 쥔 비밀번호·니모닉·개인키)이 있으면 같은 유휴 시간 뒤 버린다: 비밀 창을 닫고, UI 버퍼를 지우고, `DiscardImport`·`DiscardKeyStart { keep_password: false }`로 키 작업자 버퍼도 지운 뒤 S01과 정보 띠("오래 입력이 없어 … 지웠습니다").
 - 구현 시 확인(Modern Standby): 대상 PC가 S0ix(`powercfg /a`에 "S0 Low Power Idle")면 시작 메뉴 절전에서 데스크톱 앱이 `PBT_APMSUSPEND`를 받지 못할 수 있다. 이때 UI-M3-08 ③의 합격 로그는 `Suspend` 또는 `SessionLock`이다. 둘 다 없으면 yw-win `session`에 `RegisterSuspendResumeNotification(hwnd, DEVICE_NOTIFY_WINDOW_HANDLE)`을 추가한다([01] §7.6).
 
 ### 5.2 잠긴 동안의 요청
@@ -936,7 +941,7 @@ BTC 계정 선택은 `prefs`에 두지 않는다(알려진 객체에 키를 더�
 |---|---|---|---|---|
 | `settings.json` | `version` 정수(현재 1) | 모르는 **최상위 키**: 배너 없이 보존, 쓰기 때 알려진 키 뒤에 읽은 순서·값 그대로 | `version` > 1: 읽기 전용(값은 기본값, 배너 E-APP-001, 이번 실행의 변경은 메모리에만, 파일 내용 불변) | 알려진 이전 버전은 읽을 때 메모리에서 이행하고 다음 쓰기에 현재 버전으로 쓴다. 현재 1이 첫 버전이므로 이행할 이전 버전은 없고 0·정수 아님은 손상(§6.2) |
 | `meta.ywm` 평문 | `schema` = `"yw-meta/3"` | 모르는 **최상위 키**: 보존, 쓰기 때 알려진 키 뒤에 그대로([02] §5.3). 2026-10-29에 선택 최상위 키 `sol_raw_accounts`·`sol_raw_selected`·`btc_accounts`를 더했다(이전 버전은 보존만 한다; 가져온 Bitcoin 키는 `btc_accounts`의 계정) | 없음: `schema`는 데이터 폴더 `v3`과 함께만 바뀐다(다른 `schema`는 형식 오류, E-VLT-006) | 없음(v1·v2는 이행하지 않음, D7) |
-| `vault.ywv` payload | `payload_magic` `YWPAY003` | 2026-10-29 확장(가져온 개인키, [02] §4.6): `tag 3`·`tag 4` record, `Bip39` 없는 키 전용 payload, `payload_ct_len` 상한 4,096. `tag 1`·`tag 2` 배치는 그대로라 이 버전은 이전 vault를 그대로 연다. 이전 버전은 확장된 vault를 E-VLT-008(또는 E-VLT-002)로 본다: 이전 버전으로 되돌렸다면 `.prev` 복구를 하지 말고 새 버전을 다시 설치한다(복구하면 마지막 가져오기가 사라진다, 손상으로 본 파일은 격리 보존) | — | — |
+| `vault.ywv` payload | `payload_magic` `YWPAY003` | 2026-10-29 확장(가져온 개인키, [02] §4.6): `tag 3`·`tag 4` record, `Bip39` 없는 키 전용 payload, `payload_ct_len` 상한 4,096. `tag 1`·`tag 2` 배치는 그대로라 이 버전은 이전 vault를 그대로 연다. 이전 버전은 확장된 vault를 E-VLT-008(또는 E-VLT-002)로 본다: 이전 버전으로 되돌렸다면 `.prev` 복구를 하지 말고 새 버전을 다시 설치한다(복구하면 마지막 가져오기가 사라진다, 손상으로 본 파일은 격리 보존). 이 버전부터 인증된 payload의 모르는 tag는 E-VLT-014(`UnsupportedPayload`, `.prev` 제안 없음)다. 앞으로 tag를 더하는 버전은 이 경로를 따른다([02] §4.6 형식 확장 규칙) | — | — |
 | `apikeys.dpapi` 평문 | magic `YWAPIK01` | 모르는 **항목 이름**(§6.3 이름 형식): 값 바이트를 해석하지 않고 보존, 저장 때 다시 씀. 등록 안 된 네트워크의 `rpc:*`(고아)도 같이 보존 | 없음: magic은 데이터 폴더와 함께만 바뀐다(다른 magic은 형식 오류, E-KEY-001) | 없음 |
 
 - 새 부 버전이 지켜야 할 것(쓰는 쪽 규칙): 새 데이터는 **새 최상위 키**(settings·meta) 또는 **새 항목 이름**(apikeys)으로만 더한다. 이미 있는 키의 의미·값 범위를 바꾸거나 알려진 객체·레코드 안에 키를 더하는 것은 주 버전 변경이다(settings는 `version` + 1, meta·apikeys·vault·journal은 새 데이터 폴더 `v4`). 이전 버전은 알려진 객체 안의 모르는 키를 지금처럼 그 객체 단위 오류로 처리한다(§6.2, [02] §5.3).
@@ -970,6 +975,7 @@ BTC 계정 선택은 `prefs`에 두지 않는다(알려진 객체에 키를 더�
 | E-VLT-011 | `DuplicateKey` | 이미 가져온 개인키입니다. |
 | E-VLT-012 | `NoMnemonic` | 이 지갑에는 복구 단어가 없습니다. 개인키로 시작한 지갑은 계정 추가·복구 단어 보기를 쓸 수 없습니다. |
 | E-VLT-013 | `LastKey` | 개인키로 시작한 지갑의 마지막 키는 지울 수 없습니다. 지갑 전체를 지우려면 앱을 닫고 데이터 폴더의 파일을 직접 옮기세요. |
+| E-VLT-014 | `UnsupportedPayload` | 새 버전 앱이 저장한 지갑입니다. 앱을 업데이트하세요. 비밀번호는 맞습니다. 이전 사본(.prev)으로 되돌리지 마세요 — 새 버전에서 추가한 키가 빠집니다. 앱은 이 파일을 지우거나 덮어쓰지 않습니다. |
 | E-INP-001 | `PasswordTooShort`·`TooLong`·`InvalidChar` | 비밀번호는 영문·숫자·기호(ASCII) 12–128자여야 합니다. |
 | E-INP-002 | 확인 불일치(UI) | 두 입력이 다릅니다. |
 | E-INP-003 | `MnemonicWordCount` | 단어 수는 12, 15, 18, 21, 24 중 하나여야 합니다. |

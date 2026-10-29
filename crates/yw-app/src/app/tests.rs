@@ -273,17 +273,22 @@ fn payload_damage_keeps_prev_recovery_reachable() {
             .as_deref()
             .is_some_and(|info| info.contains("이전 사본(.prev)으로 복구했습니다"))
     );
-    let quarantined = std::fs::read_dir(&h.dir)
+    let quarantined: Vec<String> = std::fs::read_dir(&h.dir)
         .unwrap()
         .filter_map(Result::ok)
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with("vault.ywv.corrupt-")
-        })
-        .count();
-    assert_eq!(quarantined, 1, "the damaged file is kept aside");
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("vault.ywv.corrupt-"))
+        .collect();
+    assert_eq!(quarantined.len(), 1, "the damaged file is kept aside");
+    // The note names the exact file, so the user can restore it by hand.
+    assert!(
+        h.app
+            .info
+            .as_deref()
+            .is_some_and(|info| info.contains(quarantined[0].as_str())),
+        "{:?}",
+        h.app.info
+    );
 
     // The restored file unlocks normally after a restart-like reload.
     h.app.lock(LockReason::Manual);
@@ -1146,4 +1151,122 @@ fn key_start_with_a_bitcoin_key() {
     assert_eq!(refusal.map(|error| error.code()), Some(4100));
     h.app.on_dapp_event(DappEvent::Request(Box::new(site)));
     assert!(h.app.evm.queue.is_empty());
+}
+
+/// Regression (adversarial PoC): imported-account labels were `len + 1`, so after a removal two
+/// different keys shared one label. They are now numbered after the highest existing number, and
+/// the removal overlay names the account by label AND address.
+#[test]
+fn imported_labels_never_collide_after_removal() {
+    let mut h = Harness::new("advlabel");
+    h.submit(Purpose::ImportPassword, &[WALLET_PW]);
+    h.submit(Purpose::ImportMnemonic, &[ABOUT.as_bytes()]);
+    h.pump();
+    h.app.on_command(ids::IMPORT_CORRECT);
+    h.pump();
+    h.app.on_command(ids::DONE_CONTINUE);
+    h.pump();
+    let key = |n: u8| format!("{}{:02x}", "0".repeat(62), n);
+    for n in [1_u8, 2] {
+        h.submit(Purpose::ImportKey, &[key(n).as_bytes()]);
+        h.pump();
+    }
+    let first = h.app.meta.as_ref().unwrap().evm_raw_accounts[0].record_id;
+    h.app.key(crate::events::KeyJob::RemoveRawKey {
+        password: Zeroizing::new(WALLET_PW.to_vec()),
+        id: yw_core::vault::RecordId::from_bytes(first),
+    });
+    h.pump();
+    h.submit(Purpose::ImportKey, &[key(3).as_bytes()]);
+    h.pump();
+    let raws: Vec<RawAccount> = h.app.meta.as_ref().unwrap().evm_raw_accounts.clone();
+    assert_eq!(raws.len(), 2);
+    assert_eq!(raws[0].label, "가져온 계정 2");
+    assert_eq!(raws[1].label, "가져온 계정 3");
+    assert_ne!(
+        raws[0].label, raws[1].label,
+        "two different keys, two labels"
+    );
+
+    // The removal overlay shows the account's address next to its label.
+    h.app.pending_remove = Some(yw_core::vault::RecordId::from_bytes(raws[1].record_id));
+    h.app.set_screen(Screen::Confirm(Confirm::RemoveKey));
+    let items = h.app.items();
+    assert!(items.iter().any(|item| matches!(
+        item,
+        Item::Mono(text) if text.replace(' ', "").eq_ignore_ascii_case(&raws[1].address)
+    )));
+}
+
+#[test]
+fn next_imported_label_is_one_above_the_highest_default_number() {
+    use crate::meta::{EVM_IMPORTED_PREFIX, SOL_IMPORTED_PREFIX, next_imported_label};
+    assert_eq!(
+        next_imported_label(EVM_IMPORTED_PREFIX, []),
+        "가져온 계정 1"
+    );
+    assert_eq!(
+        next_imported_label(
+            EVM_IMPORTED_PREFIX,
+            ["가져온 계정 2", "내 지갑", "가져온 계정 7"]
+        ),
+        "가져온 계정 8"
+    );
+    assert_eq!(
+        next_imported_label(SOL_IMPORTED_PREFIX, ["가져온 계정 4", "가져온 Solana 1"]),
+        "가져온 Solana 2"
+    );
+}
+
+/// A create whose vault was saved but whose later step (the address lookup) failed: the state
+/// is reloaded from disk (S07: the vault exists), never S01 "first run" over an existing vault.
+#[test]
+fn failed_create_after_the_vault_was_saved_reloads_instead_of_first_run() {
+    let mut h = Harness::new("createfail");
+    h.submit(Purpose::CreatePassword, &[WALLET_PW]);
+    let results: Vec<KeyResult> = h
+        .run_one()
+        .into_iter()
+        .map(|result| KeyResult {
+            epoch: result.epoch,
+            outcome: match result.outcome {
+                KeyOutcome::Created(Ok(_)) => KeyOutcome::Created(Err(
+                    yw_core::error::VaultError::Key(yw_core::error::KeyError::Internal),
+                )),
+                other => other,
+            },
+        })
+        .collect();
+    assert!(h.vault_file().exists(), "the vault was written");
+    h.deliver(results);
+    h.pump();
+    assert_ne!(h.app.screen, Screen::FirstRun);
+    assert_eq!(h.app.mode, AppMode::Locked);
+    assert_eq!(h.app.screen, Screen::Locked);
+}
+
+/// A first-run import left idle (password and words held, the address preview open, no vault
+/// yet) is discarded after the auto-lock time: nothing is left to commit.
+#[test]
+fn idle_first_run_import_is_discarded() {
+    let mut h = Harness::new("firstrunidle");
+    h.submit(Purpose::ImportPassword, &[WALLET_PW]);
+    h.submit(Purpose::ImportMnemonic, &[ABOUT.as_bytes()]);
+    h.pump();
+    assert!(matches!(h.app.screen, Screen::ImportAddress(_)));
+    assert_eq!(h.app.mode, AppMode::NoVault);
+    let start = super::now_ms();
+    h.app.idle = IdleTracker::new(start);
+    let minutes = u64::from(h.app.settings.auto_lock_minutes);
+    h.app.idle_tick(start + minutes * 60_000 - 1);
+    assert!(matches!(h.app.screen, Screen::ImportAddress(_)), "not yet");
+    h.app.idle_tick(start + minutes * 60_000);
+    h.pump();
+    assert_eq!(h.app.screen, Screen::FirstRun);
+    assert!(h.app.import.password.is_none() && h.app.import.phrase.is_none());
+    // The key worker no longer holds the import: `맞습니다` now commits nothing.
+    h.app.key(crate::events::KeyJob::CommitImport);
+    h.pump();
+    assert!(!h.vault_file().exists());
+    assert_eq!(h.app.mode, AppMode::NoVault);
 }

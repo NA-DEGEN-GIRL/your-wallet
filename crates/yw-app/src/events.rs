@@ -19,7 +19,9 @@ use yw_core::keyimport::{BtcKeyInfo, ImportChain, ImportPreview, ImportSpec};
 use yw_core::secret::{SecretString, Zeroizing};
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::{SolAddress, SolCluster, SolSignError};
-use yw_core::vault::{BackupChallenge, ChallengeId, EvmKeySource, FileKind, RecordId, VaultStatus};
+use yw_core::vault::{
+    BackupChallenge, ChallengeId, EvmKeySource, FileKind, PasswordChange, RecordId, VaultStatus,
+};
 
 use crate::btc::work::BtcRpcEvent;
 use crate::errors::ErrorCode;
@@ -552,8 +554,11 @@ pub enum KeyOutcome {
     BackupConfirmed(Result<(), VaultError>),
     /// Revealed mnemonic (+ account 0) or private key.
     Revealed(Result<(RevealWhat, SecretString, Option<Address>), VaultError>),
-    /// Password changed.
-    PasswordChanged(Result<(), VaultError>),
+    /// A `.prev` recovery moved `vault.ywv` aside under this file name (before its `Status`).
+    Quarantined(String),
+    /// Password changed (`Ok` = the new password is in effect; `PrevNotRefreshed` = `.prev`
+    /// could not be rewritten with it).
+    PasswordChanged(Result<PasswordChange, VaultError>),
     /// Raw key imported.
     RawKeyImported(Result<(RecordId, Address), VaultError>),
     /// Raw key removed.

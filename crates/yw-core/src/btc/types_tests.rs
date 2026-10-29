@@ -79,6 +79,7 @@ fn about_seed() -> [u8; 64] {
     *Mnemonic::parse(ABOUT)
         .unwrap()
         .to_seed(&Bip39Passphrase::empty())
+        .unwrap()
         .expose()
 }
 

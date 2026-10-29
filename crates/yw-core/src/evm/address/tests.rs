@@ -24,7 +24,8 @@ fn account(phrase: &str, passphrase: &str, i: u32) -> (String, String) {
     let ctx = secp_context(&mut OsRandom).unwrap();
     let seed = Mnemonic::parse(phrase)
         .unwrap()
-        .to_seed(&Bip39Passphrase::new(passphrase).unwrap());
+        .to_seed(&Bip39Passphrase::new(passphrase).unwrap())
+        .unwrap();
     let mut secret = secret_key_from_seed(&ctx, seed.expose(), &evm_path(index(i))).unwrap();
     let key = hex::encode(&secret.secret_bytes());
     secret.non_secure_erase();
@@ -52,7 +53,7 @@ fn acc_1_2_about_accounts_0_and_1() {
 
 #[test]
 fn acc_3_art_accounts_0_and_1() {
-    let art = Mnemonic::from_entropy(&[0; 32]).unwrap().phrase();
+    let art = Mnemonic::from_entropy(&[0; 32]).unwrap().phrase().unwrap();
     assert_eq!(
         account(art.expose(), "", 0),
         (

@@ -14,7 +14,7 @@ mod format;
 mod session;
 
 pub use format::{check_vault_header, peek_generation};
-pub use session::{ImportedKeys, SidecarContents, Vault};
+pub use session::{ImportedKeys, PasswordChange, SidecarContents, Vault};
 
 /// `vault.ywv` magic.
 pub const VAULT_MAGIC: [u8; 8] = *b"YWVLT003";

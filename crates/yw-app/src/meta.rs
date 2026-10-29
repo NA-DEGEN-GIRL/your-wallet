@@ -73,6 +73,23 @@ pub struct Account {
     pub hidden: bool,
 }
 
+/// Default label prefix of an imported EVM key (`가져온 계정 N`).
+pub const EVM_IMPORTED_PREFIX: &str = "가져온 계정 ";
+/// Default label prefix of an imported Solana key (`가져온 Solana N`).
+pub const SOL_IMPORTED_PREFIX: &str = "가져온 Solana ";
+
+/// The default label for the next imported key: `prefix` + one more than the highest number
+/// among the existing default labels (`len + 1` repeated a number after a removal).
+#[must_use]
+pub fn next_imported_label<'a>(prefix: &str, labels: impl IntoIterator<Item = &'a str>) -> String {
+    let highest = labels
+        .into_iter()
+        .filter_map(|label| label.strip_prefix(prefix)?.parse::<usize>().ok())
+        .max()
+        .unwrap_or(0);
+    format!("{prefix}{}", highest.saturating_add(1))
+}
+
 /// An imported raw EVM key (`RawAccount`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawAccount {

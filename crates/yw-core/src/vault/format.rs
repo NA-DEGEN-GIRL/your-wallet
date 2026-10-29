@@ -541,9 +541,12 @@ impl Payload {
         Ok(out)
     }
 
-    /// Decodes and validates every rule of spec/02 §4.6; any violation is `PayloadCorrupt`.
+    /// Decodes and validates every rule of spec/02 §4.6. Only authenticated plaintext reaches
+    /// this, so a violation (an unknown tag above all) means a build with a different record set
+    /// wrote it: `UnsupportedPayload`, never `PayloadCorrupt` (which would offer a `.prev`
+    /// restore that silently drops the newer records).
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, VaultError> {
-        Self::decode_inner(bytes).ok_or(VaultError::PayloadCorrupt)
+        Self::decode_inner(bytes).ok_or(VaultError::UnsupportedPayload)
     }
 
     fn decode_bip39(reader: &mut Reader<'_>, record_id: [u8; 16]) -> Option<Bip39Record> {

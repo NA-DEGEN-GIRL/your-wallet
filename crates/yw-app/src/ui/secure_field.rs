@@ -269,9 +269,12 @@ const fn is_base58(byte: u8) -> bool {
     matches!(byte, b'1'..=b'9' | b'A'..=b'H' | b'J'..=b'N' | b'P'..=b'Z' | b'a'..=b'k' | b'm'..=b'z')
 }
 
-/// Normalizes clipboard text for a field (spec/04 §4.7-2): trim space/tab/CR/LF; for mnemonic
-/// text collapse runs of them into one space (and lowercase); every unit must pass the field's
-/// character set and the whole value must fit, otherwise nothing is inserted (E-INP-018).
+/// Normalizes clipboard text for a field (spec/04 §4.7-2). `Printable` (passwords, BIP39
+/// passphrases) is taken exactly: only one trailing line break (`CR LF`, `LF` or `CR`) is dropped,
+/// spaces are never trimmed, and a tab or any other unit outside the set rejects the whole paste
+/// rather than being changed. Every other set trims space/tab/CR/LF at both ends; mnemonic and key
+/// text also collapse runs of them into one space (and lowercase). Every unit must pass the
+/// field's character set and the whole value must fit, otherwise nothing is inserted (E-INP-018).
 ///
 /// # Errors
 ///
@@ -281,15 +284,23 @@ pub fn normalize_paste(
     charset: Charset,
     limit: usize,
 ) -> Result<Zeroizing<Vec<u8>>, ErrorCode> {
-    let start = units
-        .iter()
-        .position(|unit| !is_blank(*unit))
-        .unwrap_or(units.len());
-    let end = units
-        .iter()
-        .rposition(|unit| !is_blank(*unit))
-        .map_or(start, |index| index.saturating_add(1));
-    let trimmed = units.get(start..end).unwrap_or(&[]);
+    let trimmed = if charset == Charset::Printable {
+        units
+            .strip_suffix(&[0x0D, 0x0A])
+            .or_else(|| units.strip_suffix(&[0x0A]))
+            .or_else(|| units.strip_suffix(&[0x0D]))
+            .unwrap_or(units)
+    } else {
+        let start = units
+            .iter()
+            .position(|unit| !is_blank(*unit))
+            .unwrap_or(units.len());
+        let end = units
+            .iter()
+            .rposition(|unit| !is_blank(*unit))
+            .map_or(start, |index| index.saturating_add(1));
+        units.get(start..end).unwrap_or(&[])
+    };
     if trimmed.is_empty() {
         return Err(ErrorCode::Inp018);
     }
@@ -312,6 +323,13 @@ pub fn normalize_paste(
         }
     }
     Ok(field.take())
+}
+
+/// Whether a password/passphrase value starts or ends with a space (the paste notice, spec/04
+/// §4.7-3: such a value is kept exactly, but the user is told).
+#[must_use]
+pub fn has_edge_space(value: &[u8]) -> bool {
+    value.first() == Some(&b' ') || value.last() == Some(&b' ')
 }
 
 /// Finishes a private-key entry (spec/04 §4.2): drop `0x`, exactly 64 hex (E-INP-006).
@@ -343,9 +361,13 @@ pub fn mnemonic_words(field: &SecretField) -> Vec<&[u8]> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Charset, PushResult, RejectReason, SecretField, finalize_private_key, normalize_paste,
+        Charset, PushResult, RejectReason, SecretField, finalize_private_key, has_edge_space,
+        normalize_paste,
     };
     use crate::errors::ErrorCode;
+    use yw_core::bip32::path::AccountIndex;
+    use yw_core::bip32::preview_evm_address;
+    use yw_core::password::Bip39Passphrase;
 
     fn feed(field: &mut SecretField, text: &str) -> Vec<PushResult> {
         text.encode_utf16()
@@ -443,16 +465,78 @@ mod tests {
             normalize_paste(&long, Charset::Printable, 128).map(|_| ()),
             Err(ErrorCode::Inp018)
         );
+        // Printable keeps spaces exactly; only one trailing line break goes.
         let padded: Vec<u16> = "  pass word \r\n".encode_utf16().collect();
         assert_eq!(
             normalize_paste(&padded, Charset::Printable, 128)
                 .unwrap()
                 .as_slice(),
-            b"pass word"
+            b"  pass word "
         );
-        assert!(normalize_paste(&[0x20, 0x0A], Charset::Printable, 128).is_err());
+        for (text, exact) in [
+            ("pw\n", &b"pw"[..]),
+            ("pw\r", b"pw"),
+            (" ", b" "),
+            (" \n", b" "),
+        ] {
+            let units: Vec<u16> = text.encode_utf16().collect();
+            assert_eq!(
+                normalize_paste(&units, Charset::Printable, 128)
+                    .unwrap()
+                    .as_slice(),
+                exact,
+                "{text:?}"
+            );
+        }
+        // Anything else that would have to change rejects the paste instead.
+        for text in ["pw\r\n\r\n", "pw\t", "\tpw", "\npw", "pw\n\n", "\r\n"] {
+            let units: Vec<u16> = text.encode_utf16().collect();
+            assert_eq!(
+                normalize_paste(&units, Charset::Printable, 128).map(|_| ()),
+                Err(ErrorCode::Inp018),
+                "{text:?}"
+            );
+        }
+        // Other sets still trim both ends.
+        let hex: Vec<u16> = format!(" \t{}\r\n", "a".repeat(64))
+            .encode_utf16()
+            .collect();
+        assert_eq!(
+            normalize_paste(&hex, Charset::PrivateKeyHex, 66)
+                .unwrap()
+                .as_slice(),
+            "a".repeat(64).as_bytes()
+        );
         let mut field = SecretField::new(Charset::MnemonicText, 216).unwrap();
         assert!(field.replace_with(b"abandon about"));
         assert_eq!(field.as_bytes(), b"abandon about");
+    }
+
+    /// Regression (adversarial PoC): a pasted BIP39 passphrase `" TREZOR "` was trimmed to
+    /// `"TREZOR"`, silently opening a different wallet. Pastes into `Printable` are now exact.
+    #[test]
+    fn pasted_passphrase_keeps_edge_spaces_and_opens_the_same_wallet() {
+        // Built at run time: no word list in this non-test source path (privacy scan).
+        let about = format!("{}about", "abandon ".repeat(11));
+        let original = " TREZOR ";
+        let units: Vec<u16> = original.encode_utf16().collect();
+        let pasted = normalize_paste(&units, Charset::Printable, 256).unwrap();
+        assert_eq!(pasted.as_slice(), original.as_bytes());
+        assert!(has_edge_space(&pasted));
+        let typed = Bip39Passphrase::new(original).unwrap();
+        let stored = Bip39Passphrase::new(core::str::from_utf8(&pasted).unwrap()).unwrap();
+        assert_eq!(
+            preview_evm_address(&about, Some(&typed), AccountIndex::ZERO).unwrap(),
+            preview_evm_address(&about, Some(&stored), AccountIndex::ZERO).unwrap()
+        );
+        // Typing the same units gives the same bytes.
+        let mut field = SecretField::new(Charset::Printable, 256).unwrap();
+        for unit in original.encode_utf16() {
+            field.push_unit(unit);
+        }
+        assert_eq!(field.as_bytes(), pasted.as_slice());
+        assert!(!has_edge_space(b"TREZOR"));
+        assert!(has_edge_space(b"TREZOR "));
+        assert!(has_edge_space(b" "));
     }
 }

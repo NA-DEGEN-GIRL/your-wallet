@@ -194,7 +194,7 @@ impl JournalState {
         for (network, entry) in &moved {
             document.upsert_activity(&network.to_string(), entry);
         }
-        self.apply_btc_meta(&mut document);
+        self.apply_btc_meta(vault, &mut document);
         vault.save_sidecar(FileKind::Meta, &document.to_json())?;
         self.overlay.extend(moved.iter().cloned());
         Ok(moved)
@@ -222,7 +222,7 @@ impl JournalState {
         for (network, entry) in &moved {
             document.upsert_activity(&network.to_string(), entry);
         }
-        self.apply_btc_meta(&mut document);
+        self.apply_btc_meta(vault, &mut document);
         vault.save_sidecar(FileKind::Meta, &document.to_json())?;
         self.overlay.extend(moved.iter().cloned());
         Ok(moved)
@@ -385,12 +385,12 @@ impl JournalState {
     }
 
     /// Re-applies this session's moved activity rows and the key worker's `BtcMeta` to a meta
-    /// document from the UI.
-    pub fn merge_overlay(&self, document: &mut Meta) {
+    /// document from the UI (imported-key accounts without a vault record are left out).
+    pub fn merge_overlay(&self, vault: &Vault, document: &mut Meta) {
         for (network, entry) in &self.overlay {
             document.upsert_activity(&network.to_string(), entry);
         }
-        self.apply_btc_meta(document);
+        self.apply_btc_meta(vault, document);
     }
 
     /// Prunes 7-day-old terminal groups into activity (when that write succeeds), then commits.

@@ -92,16 +92,6 @@ fn parse_key(spec: ImportSpec, bytes: &[u8]) -> Result<ImportKey, KeyError> {
     ImportKey::parse(spec, text)
 }
 
-/// The meta label of the `n`-th (1-based) imported EVM or Solana key (an imported Bitcoin key is
-/// a Bitcoin account named by its address type, spec/08 §3.5).
-fn imported_label(chain: ImportChain, n: usize) -> String {
-    match chain {
-        ImportChain::Evm => format!("가져온 계정 {n}"),
-        ImportChain::Sol => format!("가져온 Solana {n}"),
-        ImportChain::Btc => format!("가져온 Bitcoin {n}"),
-    }
-}
-
 /// Reconciles the imported Bitcoin accounts of meta `btc_accounts` with the vault's tag-4
 /// records (spec/08 §3.5, spec/02 §5.3): a record without its single-key account (an older
 /// vault, or a meta write that failed after the vault write) gets one on its network; an
@@ -159,7 +149,7 @@ fn reconcile_btc_accounts(document: &mut Meta, keys: &ImportedKeys) -> bool {
 fn reconcile_imported(document: &mut Meta, keys: &ImportedKeys) -> bool {
     let mut changed = false;
     let mut evm: Vec<RawAccount> = Vec::with_capacity(keys.evm.len());
-    for (position, (id, address)) in keys.evm.iter().enumerate() {
+    for (id, address) in &keys.evm {
         let text = address.to_lower_hex();
         let existing = document
             .evm_raw_accounts
@@ -171,14 +161,20 @@ fn reconcile_imported(document: &mut Meta, keys: &ImportedKeys) -> bool {
         evm.push(RawAccount {
             record_id: *id.as_bytes(),
             label: existing.map_or_else(
-                || imported_label(ImportChain::Evm, position.saturating_add(1)),
+                || {
+                    let labels = document.evm_raw_accounts.iter().chain(&evm);
+                    meta::next_imported_label(
+                        meta::EVM_IMPORTED_PREFIX,
+                        labels.map(|raw| raw.label.as_str()),
+                    )
+                },
                 |raw| raw.label.clone(),
             ),
             address: text,
         });
     }
     let mut sol: Vec<SolRawAccount> = Vec::with_capacity(keys.sol.len());
-    for (position, (id, public)) in keys.sol.iter().enumerate() {
+    for (id, public) in &keys.sol {
         let text = SolAddress::from_bytes(*public).to_base58();
         let existing = document
             .sol_raw_accounts
@@ -190,7 +186,13 @@ fn reconcile_imported(document: &mut Meta, keys: &ImportedKeys) -> bool {
         sol.push(SolRawAccount {
             record_id: *id.as_bytes(),
             label: existing.map_or_else(
-                || imported_label(ImportChain::Sol, position.saturating_add(1)),
+                || {
+                    let labels = document.sol_raw_accounts.iter().chain(&sol);
+                    meta::next_imported_label(
+                        meta::SOL_IMPORTED_PREFIX,
+                        labels.map(|raw| raw.label.as_str()),
+                    )
+                },
                 |raw| raw.label.clone(),
             ),
             address: text,
@@ -426,6 +428,26 @@ impl KeyWorker {
         out
     }
 
+    /// `.prev` recovery; when it moved `vault.ywv` aside, the quarantined file name is reported
+    /// first so the UI can name it (spec/04 §2.15, docs/recovery-guide.ko.md).
+    fn recover_from_prev(&mut self, bytes: &[u8]) -> Vec<KeyOutcome> {
+        let now = now_unix();
+        let result = (|| {
+            let password = password(bytes).map_err(|_| VaultError::UnlockFailed)?;
+            let slot = new_slot()?;
+            self.vault()?.recover_from_prev(&password, slot, now)
+        })();
+        let mut out = Vec::with_capacity(2);
+        if result.is_ok()
+            && let Some(at) = self.vault.as_ref().and_then(Vault::quarantined_at)
+            && at == now
+        {
+            out.push(KeyOutcome::Quarantined(format!("vault.ywv.corrupt-{at}")));
+        }
+        out.push(KeyOutcome::Status(result));
+        out
+    }
+
     fn reveal(
         &mut self,
         password_bytes: &[u8],
@@ -641,6 +663,7 @@ impl KeyWorker {
                 None => vec![KeyOutcome::Journal(Err(VaultError::InvalidState))],
             },
             KeyJob::RemoveImportedKey { password, id } => self.remove_imported(&password, id),
+            KeyJob::RecoverFromPrev { password: bytes } => self.recover_from_prev(&bytes),
             other => vec![self.handle_single(other)],
         }
     }
@@ -744,19 +767,15 @@ impl KeyWorker {
             KeyJob::ImportKey { spec, key } => {
                 KeyOutcome::KeyImported(self.import_chain_key(spec, &key))
             }
-            KeyJob::RecoverFromPrev { password: bytes } => KeyOutcome::Status((|| {
-                let password = password(&bytes).map_err(|_| VaultError::UnlockFailed)?;
-                let slot = new_slot()?;
-                self.vault()?.recover_from_prev(&password, slot, now_unix())
-            })()),
             KeyJob::LoadMeta => KeyOutcome::Meta(self.load_meta()),
             KeyJob::SaveMeta { meta } => KeyOutcome::MetaSaved((|| {
                 if self.is_alt() {
                     return Ok(());
                 }
                 let mut document = *meta;
-                self.journal.merge_overlay(&mut document);
-                self.vault()?
+                let vault = self.vault.as_mut().ok_or(VaultError::InvalidState)?;
+                self.journal.merge_overlay(vault, &mut document);
+                vault
                     .save_sidecar(FileKind::Meta, &document.to_json())
                     .map(|_| ())
             })()),
@@ -806,9 +825,8 @@ impl KeyWorker {
             | KeyJob::BtcMeta { .. }
             | KeyJob::SignBtc { .. }
             | KeyJob::BtcJournal { .. }
-            | KeyJob::RemoveImportedKey { .. } => {
-                KeyOutcome::Journal(Err(VaultError::InvalidState))
-            }
+            | KeyJob::RemoveImportedKey { .. }
+            | KeyJob::RecoverFromPrev { .. } => KeyOutcome::Journal(Err(VaultError::InvalidState)),
             KeyJob::Lock | KeyJob::Shutdown => {
                 self.lock();
                 KeyOutcome::LockDone

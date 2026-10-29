@@ -254,7 +254,8 @@ fn bip84_private_derivation_public_keys() {
     let about = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
     let seed = Mnemonic::parse(about)
         .unwrap()
-        .to_seed(&Bip39Passphrase::empty());
+        .to_seed(&Bip39Passphrase::empty())
+        .unwrap();
     for (chain, index, expected) in [
         (
             BtcChain::Receive,

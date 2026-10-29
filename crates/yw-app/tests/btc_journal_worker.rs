@@ -289,7 +289,7 @@ fn meta_changes_are_persisted_before_they_are_reported() -> TestResult {
     );
     // Every meta document the UI saves gets the worker's copy.
     let mut document = meta::Meta::default();
-    fixture.state.merge_overlay(&mut document);
+    fixture.state.merge_overlay(&fixture.vault, &mut document);
     assert_eq!(document.btc.as_deref(), fixture.state.btc_meta());
     Ok(())
 }
