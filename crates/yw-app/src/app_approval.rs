@@ -31,6 +31,7 @@ use crate::events::{KeyJob, SignInfo};
 use crate::explain::input::RequestKind;
 use crate::explain::panel::{
     AiPanel, BODY_LINES, Dispatch, Ended, PANEL_TITLE, PanelLine, RETRY_LABEL, body_lines,
+    held_for_ack,
 };
 use crate::explain::{
     ExplainError, ExplainInput, ExplainSource, LlmDone, LlmJob, RequestStats, build_input,
@@ -1816,6 +1817,10 @@ impl App {
                 ui.layout = None;
                 ui.window.invalidate();
                 ui.panel.invalidate();
+                // The risk level or the acknowledgement may have changed (held_for_ack).
+                if let Some(ai) = ui.ai.as_ref() {
+                    ai.body.invalidate();
+                }
             }
             Err(code) => {
                 logging::warn("app", "E-UI-001", &[]);
@@ -1850,6 +1855,10 @@ impl App {
             ui.layout = None;
             ui.panel.invalidate();
             ui.window.invalidate();
+            // A High-risk request's AI panel waits for this checkbox (held_for_ack).
+            if let Some(ai) = ui.ai.as_ref() {
+                ai.body.invalidate();
+            }
         }
     }
 
@@ -2639,10 +2648,22 @@ impl App {
         let Some(ui) = evm.window.as_mut() else {
             return;
         };
-        let ApprovalUi { ai, widths, .. } = ui;
+        let ApprovalUi {
+            ai,
+            widths,
+            request,
+            session,
+            ..
+        } = ui;
         let Some(ai) = ai.as_mut() else {
             return;
         };
+        // A High-risk request shows its warnings first: the AI text waits for the
+        // acknowledgement checkbox (the panel keeps its reserved place).
+        ai.panel.set_held(held_for_ack(
+            request.as_ref().map(|request| request.display.risk),
+            session.gate.ack_checked,
+        ));
         let Ok(mut dc) = window.begin_paint() else {
             return;
         };
@@ -2710,8 +2731,15 @@ impl App {
             }
             Msg::MouseDown { .. } => {
                 self.interaction(InteractionEvent::OtherPress);
-                // The panel never takes keyboard focus (spec/04 §3.8).
-                if let Some(ui) = self.evm.window.as_ref() {
+                // The panel never takes keyboard focus (spec/04 §3.8). A click opens or folds
+                // the body of an inconsistent explanation.
+                if let Some(ui) = self.evm.window.as_mut() {
+                    if let Some(ai) = ui.ai.as_mut()
+                        && ai.panel.toggle_expanded()
+                    {
+                        ai.scroll = 0;
+                        window.invalidate();
+                    }
                     ui.window.set_focus();
                 }
                 Reply::Handled(0)

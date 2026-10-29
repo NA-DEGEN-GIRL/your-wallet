@@ -15,7 +15,7 @@ use yw_core::evm::abi::AbiValue;
 use yw_core::evm::address::Address;
 use yw_core::evm::amount::{Delta, U256, format_units};
 use yw_core::evm::chain::{ChainInfo, TokenRole};
-use yw_core::evm::decode::{DecodedCall, DecodedTx, MAX_MULTICALL_INNER};
+use yw_core::evm::decode::{AMOUNT_OR_TOKEN_ID, DecodedCall, DecodedTx, MAX_MULTICALL_INNER};
 use yw_core::evm::eip191::DecodedPersonalMessage;
 use yw_core::evm::eip712::{DecodedTypedData, KnownSchema, TdNode, TdValue};
 use yw_core::evm::simulate::{ApprovalKindEvm, AssetId, SimResult, SimulationDiff};
@@ -133,6 +133,37 @@ impl RequestKind {
     }
 }
 
+/// An effect of the request, found by the wallet's own decoding (the call table, the simulation
+/// diff, the typed-data schema), that the AI text must mention (structural consistency): an
+/// explanation whose summary and actions say nothing about it is marked inconsistent and folded
+/// away. Ordered for display.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CriticalAction {
+    /// A token allowance: `approve` (amount or approved address not zero), `increaseAllowance`,
+    /// Permit2 `approve`, or an approval in the simulation diff.
+    Approval,
+    /// A permit: an EIP-2612 / DAI / Permit2 typed-data signature or a `permit(…)` submission.
+    Permit,
+    /// `setApprovalForAll(…, true)`: every NFT of a collection.
+    ApprovalForAll,
+    /// Assets leaving the account: native value (not a wrap), a token or NFT transfer call, or
+    /// an outgoing transfer of the account in the simulation diff.
+    Transfer,
+}
+
+impl CriticalAction {
+    /// The Korean name shown in the inconsistency notice.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Approval => "토큰 사용 승인",
+            Self::Permit => "권한 서명(permit)",
+            Self::ApprovalForAll => "전체 승인(setApprovalForAll)",
+            Self::Transfer => "자산 전송",
+        }
+    }
+}
+
 /// The trusted sets of §5.3: values written outside `{"untrusted": …}`.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct TrustedSets {
@@ -209,6 +240,7 @@ pub struct ExplainInput {
     json: Vec<u8>,
     trusted: TrustedSets,
     kind: RequestKind,
+    critical: Vec<CriticalAction>,
 }
 
 impl core::fmt::Debug for ExplainInput {
@@ -218,6 +250,7 @@ impl core::fmt::Debug for ExplainInput {
             .field("kind", &self.kind)
             .field("json_bytes", &self.json.len())
             .field("trusted", &self.trusted)
+            .field("critical", &self.critical)
             .finish()
     }
 }
@@ -237,6 +270,7 @@ impl ExplainInput {
                 symbols: BTreeMap::new(),
             },
             kind,
+            critical: Vec::new(),
         }
     }
 }
@@ -258,6 +292,12 @@ impl ExplainInput {
     #[must_use]
     pub const fn kind(&self) -> RequestKind {
         self.kind
+    }
+
+    /// The effects the AI text must mention (sorted, no duplicates).
+    #[must_use]
+    pub fn critical(&self) -> &[CriticalAction] {
+        &self.critical
     }
 }
 
@@ -401,10 +441,12 @@ struct Builder<'a> {
     untrusted_used: usize,
     exhausted: bool,
     assets: Vec<Asset>,
+    user: [u8; 20],
+    critical: BTreeSet<CriticalAction>,
 }
 
 impl<'a> Builder<'a> {
-    fn new(chain: &'a ChainInfo, facts: &'a ChainFacts) -> Self {
+    fn new(chain: &'a ChainInfo, facts: &'a ChainFacts, user: &Address) -> Self {
         Self {
             chain,
             facts,
@@ -412,6 +454,8 @@ impl<'a> Builder<'a> {
             untrusted_used: 0,
             exhausted: false,
             assets: Vec::new(),
+            user: *user.as_bytes(),
+            critical: BTreeSet::new(),
         }
     }
 
@@ -731,7 +775,47 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// The effect of one decoded call the AI text must mention, if any.
+    fn critical_of(kind: &str, args: &[(&'static str, AbiValue)]) -> Option<CriticalAction> {
+        let nonzero = |names: &[&str]| {
+            args.iter().any(|(name, value)| {
+                names.contains(name) && matches!(value, AbiValue::Uint(number) if !number.is_zero())
+            })
+        };
+        let nonzero_address = |names: &[&str]| {
+            args.iter().any(|(name, value)| {
+                names.contains(name)
+                    && matches!(value, AbiValue::Address(address) if address.as_bytes() != &[0; 20])
+            })
+        };
+        match kind {
+            "erc20_approve" => {
+                nonzero(&["amount", AMOUNT_OR_TOKEN_ID]).then_some(CriticalAction::Approval)
+            }
+            "erc721_approve" => nonzero_address(&["approved"]).then_some(CriticalAction::Approval),
+            "erc20_increase_allowance" => nonzero(&["added"]).then_some(CriticalAction::Approval),
+            "permit2_approve" => nonzero(&["amount"]).then_some(CriticalAction::Approval),
+            "set_approval_for_all" => args
+                .iter()
+                .any(|(name, value)| *name == "approved" && *value == AbiValue::Bool(true))
+                .then_some(CriticalAction::ApprovalForAll),
+            "erc2612_permit_submit" => Some(CriticalAction::Permit),
+            "erc20_transfer"
+            | "erc20_transfer_from"
+            | "erc721_transfer_from"
+            | "erc721_safe_transfer"
+            | "erc1155_safe_transfer"
+            | "erc1155_safe_batch_transfer" => Some(CriticalAction::Transfer),
+            _ => None,
+        }
+    }
+
     fn call_value(&mut self, call: &DecodedCall, to: &Address) -> Value {
+        if let DecodedCall::Known { kind, args, .. } = call
+            && let Some(critical) = Self::critical_of(kind, args)
+        {
+            self.critical.insert(critical);
+        }
         match call {
             DecodedCall::NativeTransfer => {
                 let label = self.label("{native} 보내기");
@@ -786,6 +870,16 @@ impl<'a> Builder<'a> {
 
     fn tx_value(&mut self, decoded: &DecodedTx) -> Value {
         let tx = &decoded.tx;
+        let wrap = matches!(
+            decoded.call,
+            DecodedCall::Known {
+                kind: "weth_deposit",
+                ..
+            }
+        );
+        if !tx.value.is_zero() && !wrap {
+            self.critical.insert(CriticalAction::Transfer);
+        }
         self.add_native();
         let to = self.address(&tx.to);
         let value = self.amount(&tx.value, false, Some(self.chain.native_decimals), false);
@@ -878,6 +972,21 @@ impl<'a> Builder<'a> {
                 truncated = true;
                 break;
             }
+            let granted = match approval.kind {
+                ApprovalKindEvm::Erc20 { amount } | ApprovalKindEvm::Permit2 { amount, .. } => {
+                    (!amount.is_zero()).then_some(CriticalAction::Approval)
+                }
+                ApprovalKindEvm::Erc721 { .. } => {
+                    (approval.spender.as_bytes() != &[0; 20]).then_some(CriticalAction::Approval)
+                }
+                ApprovalKindEvm::ForAll { approved } => {
+                    approved.then_some(CriticalAction::ApprovalForAll)
+                }
+                ApprovalKindEvm::Permit2Lockdown => None,
+            };
+            if let Some(critical) = granted {
+                self.critical.insert(critical);
+            }
             let (standard, amount, all) = match approval.kind {
                 ApprovalKindEvm::Erc20 { amount } => {
                     let decimals = self.decimals_of(&approval.asset);
@@ -915,6 +1024,9 @@ impl<'a> Builder<'a> {
             if transfers.len() >= MAX_TRANSFERS {
                 truncated = true;
                 break;
+            }
+            if *transfer.from.as_bytes() == self.user {
+                self.critical.insert(CriticalAction::Transfer);
             }
             let standard = if transfer.token_id.is_some() {
                 "unknown"
@@ -1001,6 +1113,12 @@ impl<'a> Builder<'a> {
     fn typed_value(&mut self, typed: &DecodedTypedData) -> Value {
         let schema = typed.schema.as_ref();
         let known = schema.is_some();
+        if schema.is_some_and(|schema| {
+            schema.is_permit2()
+                || matches!(schema, KnownSchema::Eip2612Permit | KnownSchema::DaiPermit)
+        }) {
+            self.critical.insert(CriticalAction::Permit);
+        }
         let schema_id = schema.map_or(Value::Null, |schema| self.text(schema.schema_id()));
         let name = match &typed.domain.name {
             Some(name) => self.untrusted(name, CAP_DOMAIN),
@@ -1224,7 +1342,7 @@ pub fn build_input(
     chain: &ChainInfo,
     facts: &ChainFacts,
 ) -> Result<ExplainInput, ExplainError> {
-    let mut builder = Builder::new(chain, facts);
+    let mut builder = Builder::new(chain, facts, user);
     let kind = match src {
         ExplainSource::EvmTx(..) => RequestKind::EvmTx,
         ExplainSource::PersonalSign(_) => RequestKind::PersonalSign,
@@ -1277,5 +1395,6 @@ pub fn build_input(
         json,
         trusted: builder.trusted,
         kind,
+        critical: builder.critical.into_iter().collect(),
     })
 }

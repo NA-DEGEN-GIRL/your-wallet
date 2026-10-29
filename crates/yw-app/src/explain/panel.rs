@@ -3,8 +3,10 @@
 //! model the window paints. Nothing here is an input of `can_approve`, the risk level, the
 //! warnings or the digest (spec/06 §1, E2).
 
-use super::input::{ExplainInput, TrustedSets};
-use super::response::{ExplainAction, Explanation};
+use yw_core::approval::RiskLevel;
+
+use super::input::{CriticalAction, ExplainInput, TrustedSets};
+use super::response::{ExplainAction, Explanation, omitted_actions};
 use super::{
     ExplainError, HiddenReason, MAX_REQUESTS_PER_APPROVAL, MismatchReason, REQUEST_DEADLINE_MS,
 };
@@ -15,6 +17,19 @@ pub const PANEL_TITLE: &str = "AI 설명 (참고용, 틀릴 수 있음)";
 pub const RETRY_LABEL: &str = "다시 요청";
 /// Body lines reserved when the window is created (§6: 10 lines, scrolled inside when longer).
 pub const BODY_LINES: i32 = 10;
+/// The label of an explanation that leaves out an approval, permit, `setApprovalForAll` or
+/// outgoing transfer the wallet's own decoding found (its body is folded away).
+pub const INCONSISTENT_LABEL: &str = "설명 불일치 — 무시하세요";
+/// What a High-risk request's panel shows until `위 경고를 모두 확인했습니다` is checked.
+pub const HELD_TEXT: &str =
+    "위험도가 높은 요청입니다. 위 경고를 모두 확인했다고 표시하면 AI 설명을 보여줍니다.";
+
+/// Whether the AI panel body waits for the warning acknowledgement: a High-risk request whose
+/// `위 경고를 모두 확인했습니다` is not checked (the warnings come first; spec/04 §3.8).
+#[must_use]
+pub fn held_for_ack(risk: Option<RiskLevel>, ack_checked: bool) -> bool {
+    risk == Some(RiskLevel::High) && !ack_checked
+}
 
 /// Panel state (§3.2 table). `Debug` shows kinds only.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,6 +115,12 @@ pub struct AiPanel {
     requests: u8,
     input: Option<ExplainInput>,
     elapsed_ms: Option<u64>,
+    /// Effects of the shown explanation's input that it does not mention.
+    omitted: Vec<CriticalAction>,
+    /// The folded body of an inconsistent explanation was opened by the user.
+    expanded: bool,
+    /// The body waits for the warning acknowledgement ([`held_for_ack`]).
+    held: bool,
 }
 
 impl AiPanel {
@@ -117,7 +138,56 @@ impl AiPanel {
             requests: 0,
             input: None,
             elapsed_ms: None,
+            omitted: Vec::new(),
+            expanded: false,
+            held: false,
         }
+    }
+
+    /// Effects the shown explanation leaves out (empty unless it is inconsistent).
+    #[must_use]
+    pub fn omitted(&self) -> &[CriticalAction] {
+        &self.omitted
+    }
+
+    /// Whether the shown explanation is inconsistent with the request's structure.
+    #[must_use]
+    pub fn inconsistent(&self) -> bool {
+        matches!(self.state, AiPanelState::Shown(_)) && !self.omitted.is_empty()
+    }
+
+    /// Whether the folded body of an inconsistent explanation is open.
+    #[must_use]
+    pub const fn expanded(&self) -> bool {
+        self.expanded
+    }
+
+    /// Opens or folds the body of an inconsistent explanation (a click on the panel body);
+    /// returns whether anything changed.
+    pub fn toggle_expanded(&mut self) -> bool {
+        if !self.inconsistent() || self.held {
+            return false;
+        }
+        self.expanded = !self.expanded;
+        true
+    }
+
+    /// Whether the body waits for the warning acknowledgement.
+    #[must_use]
+    pub const fn held(&self) -> bool {
+        self.held
+    }
+
+    /// Sets [`held_for_ack`] for the current request; returns whether it changed.
+    pub fn set_held(&mut self, held: bool) -> bool {
+        let changed = self.held != held;
+        self.held = held;
+        changed
+    }
+
+    fn clear_result(&mut self) {
+        self.omitted.clear();
+        self.expanded = false;
     }
 
     /// The state.
@@ -199,6 +269,7 @@ impl AiPanel {
         self.input = Some(input);
         self.generation = self.generation.saturating_add(1);
         self.state = AiPanelState::Waiting;
+        self.clear_result();
         (ended, self.start(now_ms, busy))
     }
 
@@ -212,6 +283,7 @@ impl AiPanel {
         self.input = None;
         self.generation = self.generation.saturating_add(1);
         self.state = AiPanelState::Skipped(text);
+        self.clear_result();
         ended
     }
 
@@ -224,6 +296,7 @@ impl AiPanel {
         self.input = None;
         self.generation = self.generation.saturating_add(1);
         self.state = AiPanelState::Failed(error);
+        self.clear_result();
         ended
     }
 
@@ -280,8 +353,14 @@ impl AiPanel {
             return None;
         }
         self.elapsed_ms = Some(now_ms.saturating_sub(started_at_ms));
+        self.clear_result();
         self.state = match result {
-            Ok(explanation) => AiPanelState::Shown(Box::new(explanation)),
+            Ok(explanation) => {
+                if let Some(input) = self.input.as_ref() {
+                    self.omitted = omitted_actions(input, &explanation);
+                }
+                AiPanelState::Shown(Box::new(explanation))
+            }
             Err(ExplainError::Hidden(reason)) => AiPanelState::Hidden(reason),
             Err(ExplainError::Mismatch(reason)) => AiPanelState::Mismatch(reason),
             Err(error) => AiPanelState::Failed(error),
@@ -289,19 +368,24 @@ impl AiPanel {
         Some(Ended {
             generation,
             result: self.state.result_word(),
-            reason: self.state.reason_word(),
+            reason: if self.inconsistent() {
+                "Inconsistent"
+            } else {
+                self.state.reason_word()
+            },
             elapsed_ms: now_ms.saturating_sub(started_at_ms),
         })
     }
 
-    /// Whether `다시 요청` is offered (not for `Shown`, `Off`, `Waiting`, in flight or after the
-    /// limit) and enabled (the worker is free).
+    /// Whether `다시 요청` is offered (not for a consistent `Shown`, `Off`, `Waiting`, in flight
+    /// or after the limit) and enabled (the worker is free).
     #[must_use]
     pub fn retry_offered(&self) -> bool {
-        matches!(
+        (matches!(
             self.state,
             AiPanelState::Hidden(_) | AiPanelState::Mismatch(_) | AiPanelState::Failed(_)
-        ) && self.state != AiPanelState::Failed(ExplainError::LimitReached)
+        ) || self.inconsistent())
+            && self.state != AiPanelState::Failed(ExplainError::LimitReached)
             && self.input.is_some()
     }
 
@@ -312,6 +396,7 @@ impl AiPanel {
         }
         self.generation = self.generation.saturating_add(1);
         self.state = AiPanelState::Waiting;
+        self.clear_result();
         self.start(now_ms, busy)
     }
 
@@ -320,6 +405,7 @@ impl AiPanel {
         let ended = self.end_current(now_ms, "Discarded", "-");
         self.state = AiPanelState::Off;
         self.input = None;
+        self.clear_result();
         ended
     }
 }
@@ -386,7 +472,32 @@ pub fn action_line(action: &ExplainAction, trusted: &TrustedSets) -> String {
     parts.join(" · ")
 }
 
+/// The lines of a validated explanation (summary, action lines, unknowns).
+fn explanation_lines(panel: &AiPanel, explanation: &Explanation, lines: &mut Vec<PanelLine>) {
+    lines.push(PanelLine::Text(explanation.summary.replace('\n', " ")));
+    if let Some(trusted) = panel.trusted()
+        && !explanation.actions.is_empty()
+    {
+        lines.push(PanelLine::Gap);
+        for action in &explanation.actions {
+            lines.push(PanelLine::Action(action_line(action, trusted)));
+        }
+    }
+    if !explanation.unknowns.is_empty() {
+        lines.push(PanelLine::Gap);
+        lines.push(PanelLine::Heading("AI가 판단하지 못한 것:".to_owned()));
+        for unknown in &explanation.unknowns {
+            lines.push(PanelLine::Bullet(format!(
+                "• {}",
+                unknown.replace('\n', " ")
+            )));
+        }
+    }
+}
+
 /// The body lines of the panel (§6–§7). `host` is the `{host}` phrase, `model` the model name.
+/// A held panel ([`held_for_ack`]) shows only [`HELD_TEXT`]; an inconsistent explanation shows
+/// [`INCONSISTENT_LABEL`] and stays folded until the user opens it.
 #[must_use]
 pub fn body_lines(panel: &AiPanel, now_ms: u64, host: &str, model: &str) -> Vec<PanelLine> {
     let footer = |ms: Option<u64>| {
@@ -395,6 +506,9 @@ pub fn body_lines(panel: &AiPanel, now_ms: u64, host: &str, model: &str) -> Vec<
             None => format!("{host} · {model}"),
         })
     };
+    if panel.held() && !matches!(panel.state(), AiPanelState::Off | AiPanelState::Skipped(_)) {
+        return vec![PanelLine::Notice(HELD_TEXT.to_owned()), footer(None)];
+    }
     match panel.state() {
         AiPanelState::Off => Vec::new(),
         AiPanelState::Waiting => vec![
@@ -410,24 +524,29 @@ pub fn body_lines(panel: &AiPanel, now_ms: u64, host: &str, model: &str) -> Vec<
             footer(None),
         ],
         AiPanelState::Shown(explanation) => {
-            let mut lines = vec![PanelLine::Text(explanation.summary.replace('\n', " "))];
-            if let Some(trusted) = panel.trusted()
-                && !explanation.actions.is_empty()
-            {
-                lines.push(PanelLine::Gap);
-                for action in &explanation.actions {
-                    lines.push(PanelLine::Action(action_line(action, trusted)));
+            let mut lines = Vec::new();
+            if panel.inconsistent() {
+                let names = panel
+                    .omitted()
+                    .iter()
+                    .map(|critical| critical.label())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                lines.push(PanelLine::Notice(INCONSISTENT_LABEL.to_owned()));
+                lines.push(PanelLine::Text(format!(
+                    "AI 설명이 이 요청의 {names}을(를) 언급하지 않습니다. 위의 지갑 해석과 경고를 따르세요."
+                )));
+                lines.push(PanelLine::Text(if panel.expanded() {
+                    "▾ 접기 (이 영역을 클릭)".to_owned()
+                } else {
+                    "▸ 무시할 설명 펼쳐 보기 (이 영역을 클릭)".to_owned()
+                }));
+                if panel.expanded() {
+                    lines.push(PanelLine::Gap);
+                    explanation_lines(panel, explanation, &mut lines);
                 }
-            }
-            if !explanation.unknowns.is_empty() {
-                lines.push(PanelLine::Gap);
-                lines.push(PanelLine::Heading("AI가 판단하지 못한 것:".to_owned()));
-                for unknown in &explanation.unknowns {
-                    lines.push(PanelLine::Bullet(format!(
-                        "• {}",
-                        unknown.replace('\n', " ")
-                    )));
-                }
+            } else {
+                explanation_lines(panel, explanation, &mut lines);
             }
             lines.push(PanelLine::Gap);
             lines.push(footer(panel.elapsed_ms()));

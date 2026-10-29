@@ -13,21 +13,27 @@ use yw_core::evm::simulate::{AssetChange, AssetId, SimulationDiff, TransferRow};
 use yw_core::evm::tx::Eip1559Tx;
 use yw_json::{Limits, Value};
 
-use super::config::{ApiKey, LlmConfig, ModelName, ResponseFormatMode, parse_endpoint};
+use yw_core::approval::RiskLevel;
+
+use super::config::{ApiKey, LlmConfig, ModelName, ResponseFormatMode, StoredKey, parse_endpoint};
 use super::input::{
-    ExplainInput, ExplainSim, ExplainSource, RequestKind, build_input, clean_untrusted, norm,
-    tokens,
+    CriticalAction, ExplainInput, ExplainSim, ExplainSource, RequestKind, build_input,
+    clean_untrusted, norm, tokens,
 };
-use super::panel::{AiPanel, AiPanelState, PanelLine, action_line, body_lines};
+use super::panel::{
+    AiPanel, AiPanelState, HELD_TEXT, INCONSISTENT_LABEL, PanelLine, action_line, body_lines,
+    held_for_ack,
+};
 use super::request::{
     HttpResponse, LlmTransport, RESPONSE_FORMAT_SCHEMA, SYSTEM_PROMPT_V1, TransportError,
     build_body, explain_once,
 };
-use super::response::{ActionType, Explanation, parse_response};
+use super::response::{ActionType, Explanation, omitted_actions, parse_response, verdict_norm};
 use super::{
     ExplainError, HiddenReason, MAX_REQUEST_BODY, MAX_RESPONSE_BODY, MismatchReason,
     REQUEST_DEADLINE_MS,
 };
+use crate::settings::LlmSettings;
 use crate::text::{json_object, json_str};
 
 const SPEC: &str = include_str!("../../../../spec/06-llm-explain.md");
@@ -307,8 +313,12 @@ fn e4_fabricated_values_are_mismatches() {
         ),
         Err(ExplainError::Mismatch(MismatchReason::NumberToken))
     );
-    // Small numbers (< 3 digits, no '.') are not checked.
-    assert!(check(&content("10초 안에 끝납니다.", &[], &[]), &scam).is_ok());
+    // Small numbers are checked too ("10" is nowhere in the input); the token's decimals are.
+    assert_eq!(
+        check(&content("10초 안에 끝납니다.", &[], &[]), &scam),
+        Err(ExplainError::Mismatch(MismatchReason::NumberToken))
+    );
+    assert!(check(&content("소수점 6자리 토큰을 보냅니다.", &[], &[]), &scam).is_ok());
 }
 
 #[test]
@@ -398,10 +408,12 @@ fn occurs(value: &Value, needle: &str) -> bool {
 }
 
 fn test_config(key: Option<&str>) -> LlmConfig {
+    let endpoint = parse_endpoint("http://127.0.0.1:9/v1/chat/completions").unwrap();
+    let host = endpoint.host.clone();
     LlmConfig::new(
-        parse_endpoint("http://127.0.0.1:9/v1/chat/completions").unwrap(),
+        endpoint,
         ModelName::parse("test-model").unwrap(),
-        key.and_then(ApiKey::parse),
+        key.and_then(|key| ApiKey::parse(key, &host)),
         ResponseFormatMode::JsonSchema,
         0,
     )
@@ -839,7 +851,7 @@ fn e11_authorization_only_with_a_key() {
     ));
     assert!(body.contains("\"response_format\":{\"type\":\"json_schema\""));
     assert!(!body.contains("max_tokens"));
-    assert!(format!("{:?}", ApiKey::parse(KEY)).contains("REDACTED"));
+    assert!(format!("{:?}", ApiKey::parse(KEY, "127.0.0.1:9")).contains("REDACTED"));
 }
 
 #[test]
@@ -854,4 +866,384 @@ fn debug_output_never_carries_text() {
     for secret in ["USDC", "0x9858", "이동", "모름", "app.example.org"] {
         assert!(!shown.contains(secret), "{secret} in {shown}");
     }
+}
+
+// ----- the key is bound to its endpoint host (spec/06 §2.1) -------------------------------------
+
+#[test]
+fn a_key_bound_to_another_host_is_never_attached() {
+    let diff = usdc_diff();
+    let input = usdc_input(ExplainSim::Success(&diff));
+    let key = ApiKey::parse(KEY, "API.example.org").unwrap();
+    assert_eq!(key.host(), "api.example.org");
+    assert!(key.bearer_for("api.example.org").is_some());
+    assert!(key.bearer_for("api.example.org:8443").is_none());
+    assert!(key.bearer_for("evil.example.org").is_none());
+    // A configuration whose key belongs to another host drops it and says so.
+    let cfg = LlmConfig::new(
+        parse_endpoint("http://127.0.0.1:9/v1/chat/completions").unwrap(),
+        ModelName::parse("test-model").unwrap(),
+        ApiKey::parse(KEY, "api.example.org"),
+        ResponseFormatMode::JsonSchema,
+        0,
+    );
+    assert!(cfg.key_withheld());
+    assert!(cfg.api_key().is_none());
+    let (transport, calls) = recorder(&input);
+    assert!(explain_once(&transport, &cfg, &input).0.is_ok());
+    let recorded = calls.lock().unwrap();
+    let names: Vec<&str> = recorded[0]
+        .0
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(names, ["Content-Type", "Accept"], "no Authorization");
+    assert!(!String::from_utf8_lossy(&recorded[0].1).contains(KEY));
+    // From the settings: only a key bound to the saved endpoint's host is used.
+    let settings = LlmSettings {
+        endpoint: "https://api.example.org/v1/chat/completions".to_owned(),
+        model: "m".to_owned(),
+        ..LlmSettings::default()
+    };
+    let with = |host: Option<&str>| {
+        LlmConfig::from_settings(&settings, Some(StoredKey { key: KEY, host })).unwrap()
+    };
+    let bound = with(Some("api.example.org"));
+    assert!(bound.api_key().is_some() && !bound.key_withheld());
+    for host in [Some("other.example.org"), Some("api.example.org:444"), None] {
+        let config = with(host);
+        assert!(
+            config.api_key().is_none() && config.key_withheld(),
+            "{host:?}"
+        );
+    }
+    let keyless = LlmConfig::from_settings(&settings, None).unwrap();
+    assert!(keyless.api_key().is_none() && !keyless.key_withheld());
+    assert!(
+        format!(
+            "{:?}",
+            StoredKey {
+                key: KEY,
+                host: None
+            }
+        )
+        .contains("StoredKey")
+    );
+    assert!(
+        !format!(
+            "{:?}",
+            StoredKey {
+                key: KEY,
+                host: None
+            }
+        )
+        .contains(KEY)
+    );
+}
+
+// ----- steering resistance (spec/06 §5) -----------------------------------------------------
+
+#[test]
+fn verdicts_match_after_normalization() {
+    let diff = usdc_diff();
+    let input = usdc_input(ExplainSim::Success(&diff));
+    assert_eq!(verdict_norm("No-Risk, 안 전!"), "norisk안전");
+    for summary in [
+        "이 거래는 안 전 합니다.",
+        "안.전.한 요청입니다.",
+        "위험이 없습니다.",
+        "위험 없음",
+        "위험하지 않은 요청입니다.",
+        "무해한 호출입니다.",
+        "안심하고 보내도 됩니다.",
+        "검증된 컨트랙트입니다.",
+        "공식 사이트의 요청입니다.",
+        "This call is harmless",
+        "S.A.F.E",
+        "Le-git request",
+        "TRUSTED",
+        "No-Risk",
+        "no   risk",
+        "risk-free",
+        "문제 없는 요청",
+        "믿을 수 있는 주소",
+    ] {
+        assert_eq!(
+            check(&content(summary, &[send_action()], &[]), &input),
+            Err(ExplainError::Hidden(HiddenReason::Verdict)),
+            "{summary}"
+        );
+    }
+    // Unknowns are checked the same way.
+    assert_eq!(
+        check(
+            &content(
+                SUMMARY,
+                &[send_action()],
+                &["위험이 없는지는 알 수 없습니다."]
+            ),
+            &input
+        ),
+        Err(ExplainError::Hidden(HiddenReason::Verdict))
+    );
+    // Plain descriptions still pass.
+    assert!(check(&content(SUMMARY, &[send_action()], &[]), &input).is_ok());
+}
+
+#[test]
+fn every_number_of_the_text_must_come_from_the_input() {
+    let diff = usdc_diff();
+    let input = usdc_input(ExplainSim::Success(&diff));
+    for summary in [
+        "5 USDC를 보냅니다.",
+        "2개의 토큰을 보냅니다.",
+        "1.5 USDC를 3번 보냅니다.",
+        "0.5 USDC를 보냅니다.",
+    ] {
+        assert_eq!(
+            check(&content(summary, &[send_action()], &[]), &input),
+            Err(ExplainError::Mismatch(MismatchReason::NumberToken)),
+            "{summary}"
+        );
+    }
+    assert_eq!(
+        check(
+            &content(SUMMARY, &[send_action()], &["7일 뒤에 다시 확인하세요."]),
+            &input
+        ),
+        Err(ExplainError::Mismatch(MismatchReason::NumberToken))
+    );
+    // Numbers the wallet wrote as trusted values pass: the standard (`erc20`), the registry
+    // decimals, the amount.
+    for summary in [
+        "ERC-20 토큰 1.5 USDC를 전송합니다.",
+        "소수점 6자리 토큰 1.5 USDC를 보냅니다.",
+    ] {
+        assert!(
+            check(&content(summary, &[send_action()], &[]), &input).is_ok(),
+            "{summary}"
+        );
+    }
+}
+
+fn approve_data(spender: &str, amount: U256) -> Vec<u8> {
+    let mut data = vec![0x09, 0x5e, 0xa7, 0xb3];
+    data.extend_from_slice(&[0; 12]);
+    data.extend_from_slice(address(spender).as_bytes());
+    data.extend_from_slice(&amount.to_be_bytes());
+    data
+}
+
+fn approval_for_all_data(operator: &str, approved: bool) -> Vec<u8> {
+    let mut data = vec![0xa2, 0x2c, 0xb4, 0x65];
+    data.extend_from_slice(&[0; 12]);
+    data.extend_from_slice(address(operator).as_bytes());
+    let mut flag = [0_u8; 32];
+    flag[31] = u8::from(approved);
+    data.extend_from_slice(&flag);
+    data
+}
+
+fn tx_input(to: &str, value: u64, data: Vec<u8>) -> ExplainInput {
+    let tx = decoded(to, value, data);
+    build_input(
+        &ExplainSource::EvmTx(&tx, ExplainSim::Unsupported),
+        "https://app.example.org",
+        &address(USER),
+        &sepolia(),
+        &ChainFacts::default(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn critical_effects_come_from_the_wallet_decoding() {
+    use CriticalAction::{Approval, ApprovalForAll, Permit, Transfer};
+    assert_eq!(
+        tx_input(USDC, 0, approve_data(STRANGER, U256::MAX)).critical(),
+        [Approval]
+    );
+    assert!(
+        tx_input(USDC, 0, approve_data(STRANGER, U256::ZERO))
+            .critical()
+            .is_empty(),
+        "a zero approve is a revocation"
+    );
+    assert_eq!(
+        tx_input(SCAM_TOKEN, 0, approval_for_all_data(STRANGER, true)).critical(),
+        [ApprovalForAll]
+    );
+    assert!(
+        tx_input(SCAM_TOKEN, 0, approval_for_all_data(STRANGER, false))
+            .critical()
+            .is_empty()
+    );
+    assert_eq!(
+        tx_input(RECIPIENT, 10_000_000_000_000_000, Vec::new()).critical(),
+        [Transfer]
+    );
+    assert_eq!(usdc_input(ExplainSim::Unsupported).critical(), [Transfer]);
+    // Value sent with an approval: both.
+    assert_eq!(
+        tx_input(USDC, 1, approve_data(STRANGER, U256::MAX)).critical(),
+        [Approval, Transfer]
+    );
+    let permit = format!(
+        r#"{{"types":{{"EIP712Domain":[{{"name":"name","type":"string"}},{{"name":"version","type":"string"}},{{"name":"chainId","type":"uint256"}},{{"name":"verifyingContract","type":"address"}}],"Permit":[{{"name":"owner","type":"address"}},{{"name":"spender","type":"address"}},{{"name":"value","type":"uint256"}},{{"name":"nonce","type":"uint256"}},{{"name":"deadline","type":"uint256"}}]}},"primaryType":"Permit","domain":{{"name":"USDC","version":"2","chainId":11155111,"verifyingContract":"{USDC}"}},"message":{{"owner":"{USER}","spender":"{STRANGER}","value":"1000000","nonce":"0","deadline":"1893456000"}}}}"#
+    );
+    let value = yw_json::parse(permit.as_bytes(), &LIMITS).unwrap();
+    let typed = yw_core::evm::eip712::validate_typed_data_v4(permit.as_bytes(), &value, 11_155_111)
+        .unwrap();
+    let input = build_input(
+        &ExplainSource::TypedData(&typed),
+        "https://app.example.org",
+        &address(USER),
+        &sepolia(),
+        &ChainFacts::default(),
+    )
+    .unwrap();
+    assert_eq!(input.critical(), [Permit]);
+    let message = yw_core::evm::eip191::decode_personal_message(b"hello".to_vec());
+    let signing = build_input(
+        &ExplainSource::PersonalSign(&message),
+        "https://app.example.org",
+        &address(USER),
+        &sepolia(),
+        &ChainFacts::default(),
+    )
+    .unwrap();
+    assert!(signing.critical().is_empty());
+}
+
+#[test]
+fn an_explanation_that_leaves_out_an_effect_is_folded() {
+    let approve = tx_input(USDC, 0, approve_data(STRANGER, U256::MAX));
+    let plain = "USDC 컨트랙트를 호출합니다.";
+    let shown = check(&content(plain, &[], &[]), &approve).unwrap();
+    assert_eq!(
+        omitted_actions(&approve, &shown),
+        [CriticalAction::Approval]
+    );
+    for mention in [
+        "USDC 사용 권한을 부여합니다.",
+        "USDC 승인 요청입니다.",
+        "Approve USDC",
+        "USDC를 허용합니다.",
+    ] {
+        let explanation = check(&content(mention, &[], &[]), &approve).unwrap();
+        assert!(
+            omitted_actions(&approve, &explanation).is_empty(),
+            "{mention}"
+        );
+    }
+    let by_type = check(
+        &content(plain, &[["approve", USDC, "", "", STRANGER]], &[]),
+        &approve,
+    )
+    .unwrap();
+    assert!(omitted_actions(&approve, &by_type).is_empty());
+    // setApprovalForAll needs its own words: a plain "승인" is not enough.
+    let all = tx_input(SCAM_TOKEN, 0, approval_for_all_data(STRANGER, true));
+    let vague = check(&content("NFT 승인 요청입니다.", &[], &[]), &all).unwrap();
+    assert_eq!(
+        omitted_actions(&all, &vague),
+        [CriticalAction::ApprovalForAll]
+    );
+    let named = check(&content("모든 NFT 권한을 줍니다.", &[], &[]), &all).unwrap();
+    assert!(omitted_actions(&all, &named).is_empty());
+    // An outgoing transfer: a send action or a transfer word.
+    let transfer = usdc_input(ExplainSim::Unsupported);
+    let silent = check(&content(plain, &[], &[]), &transfer).unwrap();
+    assert_eq!(
+        omitted_actions(&transfer, &silent),
+        [CriticalAction::Transfer]
+    );
+    let sent = check(&content(plain, &[send_action()], &[]), &transfer).unwrap();
+    assert!(omitted_actions(&transfer, &sent).is_empty());
+
+    // The panel labels it, folds the body, offers a retry and opens on a click.
+    let mut panel = AiPanel::new(true);
+    let (_, dispatch) = panel.set_input(0, approve.clone(), false);
+    let ended = panel
+        .on_result(500, dispatch.unwrap().generation, Ok(shown))
+        .unwrap();
+    assert_eq!((ended.result, ended.reason), ("Shown", "Inconsistent"));
+    assert!(panel.inconsistent());
+    assert_eq!(INCONSISTENT_LABEL, "설명 불일치 — 무시하세요");
+    let folded = body_lines(&panel, 600, "h", "m");
+    assert_eq!(folded[0], PanelLine::Notice(INCONSISTENT_LABEL.to_owned()));
+    assert!(!folded.contains(&PanelLine::Text(plain.to_owned())));
+    assert!(panel.retry_offered());
+    assert!(panel.toggle_expanded());
+    let open = body_lines(&panel, 600, "h", "m");
+    assert_eq!(open[0], PanelLine::Notice(INCONSISTENT_LABEL.to_owned()));
+    assert!(open.contains(&PanelLine::Text(plain.to_owned())));
+    assert!(panel.toggle_expanded());
+    assert!(!body_lines(&panel, 600, "h", "m").contains(&PanelLine::Text(plain.to_owned())));
+    // A new result clears the mark; a consistent explanation is shown open and cannot fold.
+    let mention = "USDC 사용 권한을 부여합니다.";
+    let generation = panel.retry(700, false).unwrap().generation;
+    let consistent = check(&content(mention, &[], &[]), &approve).unwrap();
+    let ended = panel.on_result(800, generation, Ok(consistent)).unwrap();
+    assert_eq!(ended.reason, "-");
+    assert!(!panel.inconsistent() && !panel.expanded());
+    assert_eq!(
+        body_lines(&panel, 900, "h", "m")[0],
+        PanelLine::Text(mention.to_owned())
+    );
+    assert!(!panel.toggle_expanded());
+    assert!(!panel.retry_offered());
+}
+
+#[test]
+fn high_risk_panels_wait_for_the_acknowledgement() {
+    assert!(held_for_ack(Some(RiskLevel::High), false));
+    assert!(!held_for_ack(Some(RiskLevel::High), true));
+    for risk in [RiskLevel::Info, RiskLevel::Caution, RiskLevel::Blocked] {
+        assert!(!held_for_ack(Some(risk), false), "{risk:?}");
+    }
+    assert!(!held_for_ack(None, false));
+
+    let diff = usdc_diff();
+    let input = usdc_input(ExplainSim::Success(&diff));
+    let held_lines = vec![
+        PanelLine::Notice(HELD_TEXT.to_owned()),
+        PanelLine::Footer("h · m".to_owned()),
+    ];
+    let mut panel = AiPanel::new(true);
+    assert!(panel.set_held(true));
+    assert!(!panel.set_held(true));
+    // Waiting, requesting and shown alike: only the hold notice.
+    assert_eq!(body_lines(&panel, 0, "h", "m"), held_lines);
+    let (_, dispatch) = panel.set_input(0, input.clone(), false);
+    assert_eq!(body_lines(&panel, 100, "h", "m"), held_lines);
+    let explanation = check(&content(SUMMARY, &[send_action()], &[]), &input).unwrap();
+    panel.on_result(200, dispatch.unwrap().generation, Ok(explanation));
+    let lines = body_lines(&panel, 300, "h", "m");
+    assert_eq!(lines, held_lines);
+    assert!(!lines.contains(&PanelLine::Text(SUMMARY.to_owned())));
+    // Checked: the explanation appears.
+    assert!(panel.set_held(false));
+    assert_eq!(
+        body_lines(&panel, 300, "h", "m")[0],
+        PanelLine::Text(SUMMARY.to_owned())
+    );
+    // An inconsistent explanation cannot be opened while held.
+    let approve = tx_input(USDC, 0, approve_data(STRANGER, U256::MAX));
+    let mut panel = AiPanel::new(true);
+    let (_, dispatch) = panel.set_input(0, approve.clone(), false);
+    let shown = check(&content("USDC 컨트랙트를 호출합니다.", &[], &[]), &approve).unwrap();
+    panel.on_result(10, dispatch.unwrap().generation, Ok(shown));
+    panel.set_held(true);
+    assert!(!panel.toggle_expanded());
+    // A skipped panel keeps its sentence.
+    let mut skipped = AiPanel::new(true);
+    skipped.skip(0, "차단된 요청은 설명하지 않습니다.");
+    skipped.set_held(true);
+    assert_eq!(
+        body_lines(&skipped, 0, "h", "m"),
+        [PanelLine::Notice(
+            "차단된 요청은 설명하지 않습니다.".to_owned()
+        )]
+    );
 }

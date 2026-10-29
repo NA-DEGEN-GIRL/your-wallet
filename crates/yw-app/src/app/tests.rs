@@ -1270,3 +1270,153 @@ fn idle_first_run_import_is_discarded() {
     assert!(!h.vault_file().exists());
     assert_eq!(h.app.mode, AppMode::NoVault);
 }
+
+const LLM_A: &str = "https://api.example.org/v1/chat/completions";
+const LLM_B: &str = "https://other.example.net/v1/chat/completions";
+
+/// An app whose saved AI settings use `endpoint` (no window, no worker).
+fn llm_app(tag: &str, endpoint: &str) -> (App, PathBuf) {
+    let dir = temp_dir(tag);
+    let settings = Settings {
+        llm_explain: crate::settings::LlmSettings {
+            endpoint: endpoint.to_owned(),
+            model: "m".to_owned(),
+            ..crate::settings::LlmSettings::default()
+        },
+        ..Settings::default()
+    };
+    let app = App::new(
+        Paths {
+            data: dir.clone(),
+            logs: dir.join("logs"),
+        },
+        true,
+        settings,
+        ApiKeys::default(),
+    );
+    (app, dir)
+}
+
+/// `저장` of the S15 form with a new endpoint draft.
+fn llm_save_endpoint(app: &mut App, endpoint: &str) {
+    app.llm_ui.endpoint_text = endpoint.to_owned();
+    app.llm_ui.model_text = "m".to_owned();
+    app.llm_save();
+    assert_eq!(app.settings.llm_explain.endpoint, endpoint);
+}
+
+/// spec/06 §2.1: the key is bound to the saved endpoint's host when it is entered; after the
+/// endpoint moves to another host it is not sent, the connection test and `켜기` ask for it
+/// again, and entering it again binds it to the new host.
+#[test]
+fn llm_key_is_bound_to_the_saved_endpoint_host() {
+    let (mut app, dir) = llm_app("llm-bind", LLM_A);
+    app.llm_store_key("test-key-01");
+    assert_eq!(app.apikeys.llm_host(), Some("api.example.org"));
+    assert!(!app.llm_key_withheld());
+    let (reloaded, _) = super::load_apikeys(&app.paths, &app.settings);
+    assert_eq!(reloaded.llm_host(), Some("api.example.org"));
+    let config = crate::explain::LlmConfig::from_settings(
+        &app.settings.llm_explain,
+        crate::app_llm::stored_llm_key(&app.apikeys),
+    )
+    .unwrap();
+    assert!(config.api_key().is_some() && !config.key_withheld());
+
+    // Another host: the key is never attached.
+    llm_save_endpoint(&mut app, LLM_B);
+    assert!(app.llm_key_withheld());
+    let config = crate::explain::LlmConfig::from_settings(
+        &app.settings.llm_explain,
+        crate::app_llm::stored_llm_key(&app.apikeys),
+    )
+    .unwrap();
+    assert!(config.api_key().is_none() && config.key_withheld());
+    // A port change is a host change too.
+    let mut keys = ApiKeys::default();
+    keys.set_llm("k", Some("api.example.org"));
+    let on_port = crate::settings::LlmSettings {
+        endpoint: "https://api.example.org:8443/v1/chat/completions".to_owned(),
+        model: "m".to_owned(),
+        ..crate::settings::LlmSettings::default()
+    };
+    let config =
+        crate::explain::LlmConfig::from_settings(&on_port, crate::app_llm::stored_llm_key(&keys))
+            .unwrap();
+    assert!(config.key_withheld());
+
+    // The connection test fails without sending anything.
+    app.llm_test();
+    let (text, ok) = app.llm_ui.test_result.clone().unwrap();
+    assert!(!ok);
+    assert!(text.contains("API 키를 다시 입력하세요"), "{text}");
+    assert!(!app.llm_ui.test_running);
+    // `켜기` after the notice is refused with the same message.
+    app.llm_ui.notice_checked = true;
+    app.llm_confirm_on();
+    assert!(!app.settings.llm_explain.enabled);
+    let (text, ok) = app.llm_ui.message.clone().unwrap();
+    assert!(!ok);
+    assert!(text.contains("API 키를 다시 입력하세요"), "{text}");
+    app.mode = AppMode::Unlocked {
+        alt_passphrase: false,
+    };
+    app.meta = Some(Meta::default());
+    assert_eq!(app.screen, Screen::Settings(super::SettingsSection::Ai));
+    assert!(has_text(
+        &app.items(),
+        "다른 엔드포인트 주소용이라 보내지 않음"
+    ));
+
+    // Entering the key again binds it to the current host; then `켜기` works.
+    app.llm_store_key("test-key-02");
+    assert_eq!(app.apikeys.llm_host(), Some("other.example.net"));
+    assert!(!app.llm_key_withheld());
+    app.llm_ui.notice_checked = true;
+    app.llm_confirm_on();
+    assert!(app.settings.llm_explain.enabled);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// spec/06 §2.1 compatibility: an older version's key (no `llm:host`) is bound to the endpoint
+/// saved when it is loaded, and that binding is written before the endpoint changes.
+#[test]
+fn legacy_llm_key_is_bound_to_the_endpoint_saved_at_load() {
+    let mut plain = crate::apikeys::APIKEYS_MAGIC.to_vec();
+    plain.push(1);
+    let (name, value) = (b"llm".as_slice(), b"legacy-key-01".as_slice());
+    plain.push(u8::try_from(name.len()).unwrap());
+    plain.extend_from_slice(name);
+    plain.extend_from_slice(&u16::try_from(value.len()).unwrap().to_be_bytes());
+    plain.extend_from_slice(value);
+    let blob = yw_win::dpapi::protect(&plain, crate::apikeys::APIKEYS_ENTROPY).unwrap();
+
+    let (mut app, dir) = llm_app("llm-legacy", LLM_A);
+    std::fs::write(app.paths.apikeys(), &blob).unwrap();
+    let (keys, unreadable) = super::load_apikeys(&app.paths, &app.settings);
+    assert!(!unreadable);
+    assert_eq!(keys.llm_key(), Some("legacy-key-01"));
+    assert_eq!(keys.llm_host(), Some("api.example.org"));
+    app.apikeys = keys;
+    assert!(!app.llm_key_withheld());
+    // The endpoint changes: the old binding is on disk first, so a restart with the new
+    // endpoint does not re-bind the key to it.
+    llm_save_endpoint(&mut app, LLM_B);
+    assert!(app.llm_key_withheld());
+    let (reloaded, _) = super::load_apikeys(&app.paths, &app.settings);
+    assert_eq!(reloaded.llm_host(), Some("api.example.org"));
+
+    // No endpoint saved at load: the key stays unbound (never sent) until the first one is.
+    let (mut fresh, fresh_dir) = llm_app("llm-legacy-none", "");
+    std::fs::write(fresh.paths.apikeys(), &blob).unwrap();
+    let (keys, _) = super::load_apikeys(&fresh.paths, &fresh.settings);
+    assert_eq!(keys.llm_host(), None);
+    fresh.apikeys = keys;
+    llm_save_endpoint(&mut fresh, LLM_A);
+    assert_eq!(fresh.apikeys.llm_host(), Some("api.example.org"));
+    assert!(!fresh.llm_key_withheld());
+    let (reloaded, _) = super::load_apikeys(&fresh.paths, &fresh.settings);
+    assert_eq!(reloaded.llm_host(), Some("api.example.org"));
+    let _ = std::fs::remove_dir_all(dir);
+    let _ = std::fs::remove_dir_all(fresh_dir);
+}

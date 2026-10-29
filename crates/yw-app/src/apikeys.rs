@@ -1,6 +1,7 @@
 //! `apikeys.dpapi` (spec/04 §6.3, D13): per-network RPC endpoint URLs (`rpc:<NetworkId>`),
-//! provider template credentials (`tpl:quicknode`, `tpl:alchemy`) and the LLM key (`llm`),
-//! encrypted with DPAPI for the current user. A whole URL is a secret (token in the path, endpoint
+//! provider template credentials (`tpl:quicknode`, `tpl:alchemy`), the LLM key (`llm`) and the
+//! endpoint `host[:port]` that key is bound to (`llm:host`), encrypted with DPAPI for the current
+//! user. A whole URL is a secret (token in the path, endpoint
 //! name in the host): values are never logged or displayed; screens use [`mask_url`].
 //!
 //! Also the pure helpers of spec/04 §2.11.1: [`template_url`] and [`mask_url`], and the S15
@@ -42,6 +43,9 @@ pub enum KeyName {
     TplAlchemy,
     /// `llm`.
     Llm,
+    /// `llm:host`: the endpoint `host[:port]` the `llm` key was entered for (spec/06 §2.1). The
+    /// key is attached only to requests to that host. Older versions keep it dormant.
+    LlmHost,
 }
 
 impl fmt::Display for KeyName {
@@ -51,6 +55,7 @@ impl fmt::Display for KeyName {
             Self::TplQuickNode => formatter.write_str("tpl:quicknode"),
             Self::TplAlchemy => formatter.write_str("tpl:alchemy"),
             Self::Llm => formatter.write_str("llm"),
+            Self::LlmHost => formatter.write_str("llm:host"),
         }
     }
 }
@@ -61,6 +66,7 @@ impl KeyName {
             "tpl:quicknode" => Some(Self::TplQuickNode),
             "tpl:alchemy" => Some(Self::TplAlchemy),
             "llm" => Some(Self::Llm),
+            "llm:host" => Some(Self::LlmHost),
             _ => text
                 .strip_prefix("rpc:")
                 .and_then(NetworkId::parse)
@@ -104,7 +110,20 @@ fn valid_value(name: KeyName, value: &str) -> bool {
             (1..=512).contains(&value.len())
                 && value.bytes().all(|byte| (0x21..=0x7E).contains(&byte))
         }
+        KeyName::LlmHost => valid_llm_host(value),
     }
+}
+
+/// An endpoint `host[:port]` as `explain::config::parse_endpoint` produces it (lowercase):
+/// lowercase ASCII letters, digits and `.:_[]-`, 1–300 bytes.
+#[must_use]
+pub fn valid_llm_host(text: &str) -> bool {
+    (1..=300).contains(&text.len())
+        && text.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'.' | b':' | b'_' | b'-' | b'[' | b']')
+        })
 }
 
 /// The name of a newer version's entry: `^[a-z0-9][a-z0-9:._-]*$` (length checked by the caller),
@@ -346,10 +365,15 @@ impl ApiKeys {
     }
 
     /// Removes an entry (also a dormant one of the same name); returns whether one existed.
+    /// Removing `llm` also removes its `llm:host` binding.
     pub fn remove(&mut self, name: KeyName) -> bool {
         let before = self.entries.len();
         self.entries.retain(|(entry, _)| *entry != name);
         let dormant = self.drop_dormant(name);
+        if name == KeyName::Llm {
+            self.entries.retain(|(entry, _)| *entry != KeyName::LlmHost);
+            self.drop_dormant(KeyName::LlmHost);
+        }
         before != self.entries.len() || dormant
     }
 
@@ -387,15 +411,46 @@ impl ApiKeys {
         self.set(KeyName::TplAlchemy, key);
     }
 
-    /// Stores the LLM API key (validated by the caller, spec/06 §2.1).
-    pub fn set_llm(&mut self, key: &str) {
+    /// Stores the LLM API key (validated by the caller, spec/06 §2.1) bound to the endpoint
+    /// `host[:port]` it was entered for. `None` (no valid endpoint saved yet) stores the key
+    /// unbound: it is never sent until [`ApiKeys::bind_llm_host`] binds it.
+    pub fn set_llm(&mut self, key: &str, host: Option<&str>) {
         self.set(KeyName::Llm, key);
+        if let Some(host) = host.filter(|host| valid_llm_host(host)) {
+            self.set(KeyName::LlmHost, host);
+        } else {
+            self.entries.retain(|(entry, _)| *entry != KeyName::LlmHost);
+            self.drop_dormant(KeyName::LlmHost);
+        }
     }
 
     /// The LLM API key, for building the `yw-llm` configuration only (spec/06 §9).
     #[must_use]
     pub fn llm_key(&self) -> Option<&str> {
         self.get(KeyName::Llm)
+    }
+
+    /// The endpoint `host[:port]` the LLM key is bound to (`None`: no key, or a key stored
+    /// without a host by an older version and not bound yet).
+    #[must_use]
+    pub fn llm_host(&self) -> Option<&str> {
+        self.get(KeyName::Llm)?;
+        self.get(KeyName::LlmHost)
+    }
+
+    /// Binds a stored but unbound LLM key to `host` (a key from an older version, bound to the
+    /// endpoint saved when it is first loaded; or a key entered before any endpoint was saved).
+    /// A key that is already bound is left alone. Returns whether a binding was added (in
+    /// memory; the caller saves).
+    pub fn bind_llm_host(&mut self, host: &str) -> bool {
+        if self.get(KeyName::Llm).is_none()
+            || self.get(KeyName::LlmHost).is_some()
+            || !valid_llm_host(host)
+        {
+            return false;
+        }
+        self.set(KeyName::LlmHost, host);
+        true
     }
 
     /// The credential of `template`, if stored.

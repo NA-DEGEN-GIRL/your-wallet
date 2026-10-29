@@ -193,7 +193,8 @@ pub fn explain_once(
         Err(error) => return (Err(error), stats),
     };
     stats.req_bytes = body.len();
-    let bearer = cfg.api_key().map(super::config::ApiKey::bearer);
+    // The key goes only to the host it was entered for (spec/06 §2.1).
+    let bearer = cfg.api_key().and_then(|key| key.bearer_for(cfg.host()));
     let mut headers: Vec<(&str, &str)> = vec![
         ("Content-Type", "application/json"),
         ("Accept", "application/json"),
