@@ -165,8 +165,8 @@ function pageValue(page, value) {
   return vm.runInContext(`(${JSON.stringify(value)})`, page.context);
 }
 
-function bridgeInit(page, channel = CHANNEL, compatMode = "off") {
-  dispatchMessage(page, { namespace: "your-wallet", version: 1, kind: "bridge-init", channel, compatMode });
+function bridgeInit(page, channel = CHANNEL, compatMode = "off", solCompatMode = "off", btcCompatMode = "off") {
+  dispatchMessage(page, { namespace: "your-wallet", version: 1, kind: "bridge-init", channel, compatMode, solCompatMode, btcCompatMode });
 }
 
 function respond(page, id, body, channel = CHANNEL) {
@@ -307,7 +307,7 @@ test("P1 unsupported pages and subframes install nothing", () => {
   assert.equal(announcements(frame).length, 0);
   const local = createPage({ href: "http://localhost:5173/", init: false });
   assert.equal(local.posted[0].targetOrigin, "http://localhost:5173");
-  dispatchMessage(local, { namespace: "your-wallet", version: 1, kind: "bridge-init", channel: CHANNEL, compatMode: "off" });
+  bridgeInit(local);
   assert.equal(announcements(local).length, 1);
   assert.equal(announcements(createPage({ href: "http://127.0.0.1/" })).length, 1);
 });
@@ -1098,4 +1098,243 @@ test("P12 the legacy API exists in every mode (and before the mode is known), no
     assert.deepEqual(plain(result.calls[0].response), { id: 1, jsonrpc: "2.0", result: [ACCOUNT] });
     assert.deepEqual(plain(provider.send(pageValue(page, { id: 2, method: "eth_coinbase" }))), { id: 2, jsonrpc: "2.0", result: ACCOUNT });
   }
+});
+
+// ---------- spec/05 §2.13 Solana / Bitcoin shims (P13–P16) ----------
+
+const SOL_KEY = "FVen3X669xLzsi6N2V91DoiyzHzg1uAgqiT8jZ9nS96Z";
+const SOL_KEY_2 = "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T";
+const SOL_UNSUPPORTED = "이 지갑은 Solana에서 메시지 서명(소유 증명)만 지원합니다";
+const BTC_UNSUPPORTED = "이 지갑은 Bitcoin에서 메시지 서명(소유 증명)만 지원합니다";
+
+function lastRequest(page) {
+  const all = requests(page);
+  return all[all.length - 1];
+}
+
+function registeredWallets(page) {
+  const wallets = [];
+  for (const event of page.dispatched.filter((item) => item.type === "wallet-standard:register-wallet")) {
+    event.detail({ register: (wallet) => wallets.push(wallet) });
+  }
+  return wallets;
+}
+
+test("P13 Wallet Standard: 'Your Wallet' in off mode, app-ready answered, features and tx rejection", async () => {
+  const page = createPage({ init: false });
+  const early = [];
+  page.context.dispatchEvent(new TestCustomEvent("wallet-standard:app-ready", { detail: { register: (wallet) => early.push(wallet) } }));
+  assert.equal(registeredWallets(page).length, 0, "nothing before the mode is known");
+  bridgeInit(page);
+  const [wallet] = registeredWallets(page);
+  assert.equal(early.length, 1);
+  assert.equal(early[0], wallet);
+  assert.equal(wallet.name, "Your Wallet");
+  assert.equal(wallet.version, "1.0.0");
+  assert.match(wallet.icon, /^data:image\/png;base64,/u);
+  assert.deepEqual(plain(wallet.chains), ["solana:mainnet", "solana:devnet"]);
+  assert.deepEqual(Object.keys(wallet.features).sort(), [
+    "solana:signIn", "solana:signMessage", "solana:signTransaction",
+    "standard:connect", "standard:disconnect", "standard:events"
+  ]);
+  assert.deepEqual(plain(wallet.features["solana:signTransaction"].supportedTransactionVersions), ["legacy"]);
+  await assert.rejects(wallet.features["solana:signTransaction"].signTransaction({}), (error) => error.code === 4200 && error.message === SOL_UNSUPPORTED);
+  // Off modes expose no Phantom, UniSat or Xverse globals.
+  for (const name of ["phantom", "solana", "unisat", "XverseProviders", "BitcoinProvider", "btc_providers"]) {
+    assert.equal(name in page.context, false, name);
+  }
+  // A later app-ready is answered at once.
+  const late = [];
+  page.context.dispatchEvent(new TestCustomEvent("wallet-standard:app-ready", { detail: { register: (item) => late.push(item) } }));
+  assert.equal(late[0], wallet);
+
+  const changes = [];
+  wallet.features["standard:events"].on("change", (properties) => changes.push(properties.accounts.length));
+  const connecting = wallet.features["standard:connect"].connect();
+  const connectRequest = lastRequest(page);
+  assert.equal(connectRequest.method, "sol_connect");
+  assert.equal(JSON.stringify(connectRequest.params), "[]");
+  respond(page, connectRequest.id, { result: { publicKey: SOL_KEY } });
+  const connected = await connecting;
+  assert.equal(connected.accounts[0].address, SOL_KEY);
+  assert.equal(connected.accounts[0].publicKey.length, 32);
+  assert.deepEqual(changes, [1]);
+  // signMessage: the exact bytes as hex, a 64-byte signature back.
+  const message = vm.runInContext("new TextEncoder().encode('Prove it')", page.context);
+  const signing = wallet.features["solana:signMessage"].signMessage({ account: wallet.accounts[0], message });
+  const signRequest = lastRequest(page);
+  assert.equal(signRequest.method, "sol_signMessage");
+  assert.equal(JSON.stringify(signRequest.params), JSON.stringify([{ publicKey: SOL_KEY, message: Buffer.from("Prove it").toString("hex") }]));
+  respond(page, signRequest.id, { result: { publicKey: SOL_KEY, signature: "11".repeat(64) } });
+  const [output] = await signing;
+  assert.equal(output.signature.length, 64);
+  assert.equal(output.signatureType, "ed25519");
+  // Another account is refused locally.
+  await assert.rejects(
+    wallet.features["solana:signMessage"].signMessage({ account: { address: SOL_KEY_2 }, message }),
+    (error) => error.code === 4100
+  );
+  // signIn: the app returns the bytes it built and signed.
+  const signingIn = wallet.features["solana:signIn"].signIn(pageValue(page, { statement: "Hi" }));
+  const signInRequest = lastRequest(page);
+  assert.equal(signInRequest.method, "sol_signIn");
+  assert.equal(JSON.stringify(signInRequest.params), JSON.stringify([{ publicKey: SOL_KEY, input: { statement: "Hi" } }]));
+  respond(page, signInRequest.id, { result: { publicKey: SOL_KEY, signature: "22".repeat(64), signedMessage: "6869" } });
+  const [signedIn] = await signingIn;
+  assert.equal(signedIn.account.address, SOL_KEY);
+  assert.deepEqual(Array.from(signedIn.signedMessage), [0x68, 0x69]);
+  // The wallet locks or the site is disconnected in the app: accounts go away.
+  sendEvent(page, "solAccountsChanged", []);
+  assert.equal(wallet.accounts.length, 0);
+  assert.deepEqual(changes, [1, 0]);
+  // Silent connect never throws.
+  const silent = wallet.features["standard:connect"].connect(pageValue(page, { silent: true }));
+  const silentRequest = lastRequest(page);
+  assert.equal(JSON.stringify(silentRequest.params), JSON.stringify([{ onlyIfTrusted: true }]));
+  respond(page, silentRequest.id, { error: { code: 4001, message: "User rejected the request." } });
+  assert.equal((await silent).accounts.length, 0);
+});
+
+test("P14 phantom mode: window.phantom.solana shim, 'Phantom' Wallet Standard name, our icon", async () => {
+  const page = createPage({ init: false });
+  bridgeInit(page, CHANNEL, "off", "phantom", "off");
+  const [wallet] = registeredWallets(page);
+  assert.equal(wallet.name, "Phantom");
+  const phantom = page.context.phantom.solana;
+  assert.equal(page.context.solana, phantom);
+  assert.equal(phantom.isPhantom, true);
+  assert.equal(phantom.isConnected, false);
+  assert.equal(phantom.publicKey, null);
+  // Assignments by another wallet are ignored; the accessor stays ours.
+  page.context.phantom = { solana: { isPhantom: true, fake: true } };
+  assert.equal(page.context.phantom.solana, phantom);
+  // onlyIfTrusted on an unconnected site: 4001 without a window.
+  const trusted = phantom.connect(pageValue(page, { onlyIfTrusted: true }));
+  const trustedRequest = lastRequest(page);
+  assert.equal(JSON.stringify(trustedRequest.params), JSON.stringify([{ onlyIfTrusted: true }]));
+  respond(page, trustedRequest.id, { error: { code: 4001, message: "User rejected the request." } });
+  await assert.rejects(trusted, (error) => error.code === 4001);
+  const events = [];
+  phantom.on("connect", (key) => events.push(["connect", key.toBase58()]));
+  phantom.on("accountChanged", (key) => events.push(["accountChanged", key === null ? null : key.toString()]));
+  phantom.on("disconnect", () => events.push(["disconnect"]));
+  const connecting = phantom.connect();
+  respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY } });
+  const { publicKey } = await connecting;
+  assert.equal(publicKey.toBase58(), SOL_KEY);
+  assert.equal(publicKey.toJSON(), SOL_KEY);
+  assert.equal(publicKey.toBytes().length, 32);
+  assert.equal(publicKey.equals(SOL_KEY), true);
+  assert.equal(publicKey.equals(phantom.publicKey), true);
+  assert.equal(phantom.isConnected, true);
+  const message = vm.runInContext("new Uint8Array([1, 2, 3])", page.context);
+  const signing = phantom.signMessage(message, "hex");
+  const signRequest = lastRequest(page);
+  assert.equal(JSON.stringify(signRequest.params), JSON.stringify([{ publicKey: SOL_KEY, message: "010203" }]));
+  respond(page, signRequest.id, { result: { publicKey: SOL_KEY, signature: "33".repeat(64) } });
+  const signed = await signing;
+  assert.equal(signed.signature.length, 64);
+  assert.equal(signed.publicKey.toBase58(), SOL_KEY);
+  sendEvent(page, "solAccountsChanged", [SOL_KEY_2]);
+  sendEvent(page, "solAccountsChanged", []);
+  assert.deepEqual(events, [["connect", SOL_KEY], ["accountChanged", SOL_KEY_2], ["disconnect"]]);
+  for (const name of ["signTransaction", "signAllTransactions", "signAndSendTransaction", "signAndSendAllTransactions"]) {
+    await assert.rejects(phantom[name]({}), (error) => error.code === 4200 && error.message === SOL_UNSUPPORTED, name);
+  }
+  await assert.rejects(phantom.request(pageValue(page, { method: "signTransaction" })), (error) => error.code === 4200);
+  const before = requests(page).length;
+  await assert.rejects(phantom.signMessage(message), (error) => error.code === 4100);
+  assert.equal(requests(page).length, before, "not connected: refused locally");
+});
+
+test("P15 unisat mode: window.unisat accounts, network, message signing; PSBT and sends reject", async () => {
+  const page = createPage({ init: false });
+  bridgeInit(page, CHANNEL, "off", "off", "unisat");
+  assert.equal("XverseProviders" in page.context, false);
+  assert.equal(page.context.phantom, undefined);
+  const unisat = page.context.unisat;
+  const account = { address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", publicKey: `02${"79".repeat(32)}`, purpose: "any", addressType: "p2wpkh" };
+  const accounts = unisat.requestAccounts();
+  const connect = lastRequest(page);
+  assert.equal(connect.method, "btc_requestAccounts");
+  assert.equal(JSON.stringify(connect.params), JSON.stringify([{ purposes: ["any"] }]));
+  respond(page, connect.id, { result: [account] });
+  assert.deepEqual(plain(await accounts), [account.address]);
+  assert.equal(await unisat.getPublicKey(), account.publicKey);
+  const network = unisat.getNetwork();
+  await flush();
+  respond(page, lastRequest(page).id, { result: "testnet4" });
+  assert.equal(await network, "testnet");
+  const chain = unisat.getChain();
+  await flush();
+  respond(page, lastRequest(page).id, { result: "mainnet" });
+  assert.deepEqual(plain(await chain), { enum: "BITCOIN_MAINNET", name: "Bitcoin Mainnet", network: "livenet" });
+  const switching = unisat.switchNetwork("testnet");
+  await flush();
+  respond(page, lastRequest(page).id, { result: "mainnet" });
+  await assert.rejects(switching, (error) => error.code === 4200);
+  const signing = unisat.signMessage("hello", "bip322-simple");
+  await flush();
+  const sign = lastRequest(page);
+  assert.equal(sign.method, "btc_signMessage");
+  assert.equal(JSON.stringify(sign.params), JSON.stringify([{ address: account.address, message: "hello", protocol: "bip322" }]));
+  respond(page, sign.id, { result: { address: account.address, signature: "AkcwRA==", messageHash: "00".repeat(32), protocol: "bip322" } });
+  assert.equal(await signing, "AkcwRA==");
+  await assert.rejects(unisat.signMessage("hello", "schnorr"), (error) => error.code === -32602);
+  for (const name of ["signPsbt", "signPsbts", "pushPsbt", "pushTx", "sendBitcoin", "sendInscription", "inscribeTransfer", "getBalance"]) {
+    await assert.rejects(unisat[name]("x"), (error) => error.code === 4200 && error.message === BTC_UNSUPPORTED, name);
+  }
+  const changed = [];
+  unisat.on("accountsChanged", (list) => changed.push(plain(list)));
+  sendEvent(page, "btcAccountsChanged", []);
+  assert.deepEqual(changed, [[]]);
+});
+
+test("P16 xverse mode: sats-connect request() shapes, btc_providers entry, unsupported methods", async () => {
+  const page = createPage({ init: false });
+  bridgeInit(page, CHANNEL, "off", "off", "xverse");
+  const provider = page.context.XverseProviders.BitcoinProvider;
+  assert.equal(page.context.BitcoinProvider, provider);
+  assert.equal("unisat" in page.context, false);
+  const entry = page.context.btc_providers.find((item) => item.id === "XverseProviders.BitcoinProvider");
+  assert.equal(entry.name, "Xverse Wallet");
+  assert.match(entry.icon, /^data:image\/png;base64,/u);
+  const info = await provider.request("getInfo", null);
+  assert.equal(info.jsonrpc, "2.0");
+  assert.equal(typeof info.id, "string");
+  assert.equal(info.result.version, "1.0.0");
+  const taproot = { address: "bc1pss0zhytly75awhm6x2hhvd5lnzv3vssgrf9axfheq8ldyzn88ges79fler", publicKey: `03${"ab".repeat(32)}`, purpose: "ordinals", addressType: "p2tr" };
+  const pending = provider.request("getAccounts", pageValue(page, { purposes: ["payment", "ordinals", "stacks"] }));
+  await flush();
+  const connect = lastRequest(page);
+  assert.equal(JSON.stringify(connect.params), JSON.stringify([{ purposes: ["payment", "ordinals"] }]));
+  respond(page, connect.id, { result: [taproot] });
+  const accounts = await pending;
+  assert.deepEqual(plain(accounts.result), [{ address: taproot.address, publicKey: "ab".repeat(32), purpose: "ordinals", addressType: "p2tr", walletType: "software" }]);
+  const signing = provider.request("signMessage", pageValue(page, { address: taproot.address, message: "hi", protocol: "BIP322" }));
+  await flush();
+  const sign = lastRequest(page);
+  assert.equal(JSON.stringify(sign.params), JSON.stringify([{ address: taproot.address, message: "hi", protocol: "bip322" }]));
+  respond(page, sign.id, { result: { address: taproot.address, signature: "AUA=", messageHash: "aa".repeat(32), protocol: "bip322" } });
+  assert.deepEqual(plain((await signing).result), { signature: "AUA=", messageHash: "aa".repeat(32), address: taproot.address, protocol: "BIP322" });
+  const rejected = provider.request("signMessage", pageValue(page, { address: taproot.address, message: "hi" }));
+  await flush();
+  respond(page, lastRequest(page).id, { error: { code: 4001, message: "User rejected the request." } });
+  assert.equal((await rejected).error.code, -32000);
+  for (const method of ["signPsbt", "sendTransfer", "runes_transfer", "ord_sendInscriptions"]) {
+    const answer = await provider.request(method, pageValue(page, {}));
+    assert.equal(answer.error.code, -32001, method);
+    assert.equal(answer.error.message, BTC_UNSUPPORTED);
+  }
+  const network = provider.request("wallet_getNetwork", null);
+  await flush();
+  respond(page, lastRequest(page).id, { result: "testnet4" });
+  assert.equal((await network).result.bitcoin.name, "Testnet4");
+  const events = [];
+  const unsubscribe = provider.addListener("disconnect", () => events.push("disconnect"));
+  assert.equal(typeof unsubscribe, "function");
+  provider.addListener("accountChange", (event) => events.push(event.type));
+  sendEvent(page, "btcAccountsChanged", [taproot.address]);
+  assert.deepEqual(events, ["accountChange"]);
+  await assert.rejects(provider.signTransaction("jwt"), (error) => error.code === 4200);
 });

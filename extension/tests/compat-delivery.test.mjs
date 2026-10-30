@@ -205,7 +205,7 @@ test("E1 storage compatMode=metamask reaches the page provider and the native en
   assert.equal(ethereum.isMetaMask, false);
   assert.equal(doc.main.dispatched.filter((event) => event.type === "eip6963:announceProvider").length, 0);
   await settle();
-  assert.deepEqual(doc.storageReads, ["compatMode"]);
+  assert.equal(JSON.stringify(doc.storageReads), JSON.stringify([["compatMode", "solCompatMode", "btcCompatMode"]]));
   const announced = doc.main.dispatched.filter((event) => event.type === "eip6963:announceProvider");
   assert.equal(announced.length, 1);
   assert.equal(announced[0].detail.info.name, "MetaMask");

@@ -21,6 +21,11 @@ pub enum ProviderError {
     /// 4100 with the reason: the wallet has no EVM account (a key-only wallet started from a
     /// Solana or Bitcoin key, spec/02 §8.5). Connect is refused until an EVM key is imported.
     NoEvmAccount,
+    /// 4100 with the reason: no Solana account to connect (spec/05 §4.9).
+    NoSolAccount,
+    /// 4100 with the reason: no Bitcoin account of a requested kind on the settings network
+    /// (spec/05 §4.9).
+    NoBtcAccount,
     /// 4200 `Unsupported method.`
     UnsupportedMethod,
     /// 4900 `Wallet is unavailable.`
@@ -72,7 +77,11 @@ impl ProviderError {
     pub const fn code(&self) -> i64 {
         match self {
             Self::UserRejected | Self::Expired => 4001,
-            Self::Unauthorized | Self::PassphraseUnverified | Self::NoEvmAccount => 4100,
+            Self::Unauthorized
+            | Self::PassphraseUnverified
+            | Self::NoEvmAccount
+            | Self::NoSolAccount
+            | Self::NoBtcAccount => 4100,
             Self::UnsupportedMethod => 4200,
             Self::Unavailable | Self::ConnectionClosed | Self::ExtensionReloaded => 4900,
             Self::ChainUnavailable => 4901,
@@ -100,6 +109,12 @@ impl ProviderError {
             }
             Self::NoEvmAccount => {
                 "Unauthorized: this wallet has no EVM account. Import an EVM private key in the Your Wallet app first."
+            }
+            Self::NoSolAccount => {
+                "Unauthorized: this wallet has no Solana account. Add or import one in the Your Wallet app first."
+            }
+            Self::NoBtcAccount => {
+                "Unauthorized: this wallet has no Bitcoin account of the requested type on the selected network. Add one in the Your Wallet app first."
             }
             Self::UnsupportedMethod => "Unsupported method.",
             Self::Unavailable => "Wallet is unavailable.",

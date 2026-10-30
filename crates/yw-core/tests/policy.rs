@@ -45,7 +45,7 @@ fn r_m1_method_table_matches_the_shared_golden() {
     }
     assert_eq!(expected.as_slice(), Method::ALL.as_slice());
     let rejected = names(&golden, "rejected");
-    assert_eq!(rejected.len(), 31);
+    assert_eq!(rejected.len(), 38);
     for name in rejected {
         assert_eq!(Method::parse(&name), None, "{name}");
     }
@@ -53,7 +53,7 @@ fn r_m1_method_table_matches_the_shared_golden() {
 
 #[test]
 fn r_err_provider_errors_match_spec_05_section_5() {
-    let table: [(ProviderError, i64, &str); 22] = [
+    let table: [(ProviderError, i64, &str); 24] = [
         (
             ProviderError::UserRejected,
             4001,
@@ -70,6 +70,16 @@ fn r_err_provider_errors_match_spec_05_section_5() {
             ProviderError::NoEvmAccount,
             4100,
             "Unauthorized: this wallet has no EVM account. Import an EVM private key in the Your Wallet app first.",
+        ),
+        (
+            ProviderError::NoSolAccount,
+            4100,
+            "Unauthorized: this wallet has no Solana account. Add or import one in the Your Wallet app first.",
+        ),
+        (
+            ProviderError::NoBtcAccount,
+            4100,
+            "Unauthorized: this wallet has no Bitcoin account of the requested type on the selected network. Add one in the Your Wallet app first.",
         ),
         (
             ProviderError::UnsupportedMethod,

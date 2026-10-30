@@ -5,7 +5,9 @@
 //! Ported from `archive/spec-v2.4:crates/broker/src/lib.rs:50-225` (`ProviderMethod`,
 //! `ProviderRoute`) narrowed to the 27 v3 methods: `wallet_addEthereumChain`,
 //! `wallet_watchAsset` and `wallet_getCapabilities` are gone (D14, spec/05 §3.2) and
-//! `wallet_revokePermissions`, `web3_clientVersion` are added.
+//! `wallet_revokePermissions`, `web3_clientVersion` are added. The ten Solana (`sol_*`) and
+//! Bitcoin (`btc_*`) methods are connect and message signing only (spec.md D25–D27, spec/05
+//! §3.6): no transaction or PSBT method exists on the wire.
 
 /// The envelope v1 route (spec/05 §6.1). `Permission` = answered by yw-app without RPC.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -43,7 +45,7 @@ impl Route {
 
 macro_rules! methods {
     ($($variant:ident => $name:literal, $route:ident;)*) => {
-        /// The 27 allowed dApp methods (spec/05 §3.1). Anything else is 4200.
+        /// The 37 allowed dApp methods (spec/05 §3.1, §3.6). Anything else is 4200.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub enum Method {
             $(
@@ -54,7 +56,7 @@ macro_rules! methods {
 
         impl Method {
             /// Every method in spec/05 §3.1 order (permission, read, signing).
-            pub const ALL: [Self; 27] = [$(Self::$variant,)*];
+            pub const ALL: [Self; 37] = [$(Self::$variant,)*];
 
             /// Exact, case-sensitive name lookup.
             #[must_use]
@@ -94,6 +96,13 @@ methods! {
     GetPermissions => "wallet_getPermissions", Permission;
     RevokePermissions => "wallet_revokePermissions", Permission;
     ClientVersion => "web3_clientVersion", Permission;
+    SolConnect => "sol_connect", Permission;
+    SolDisconnect => "sol_disconnect", Permission;
+    SolAccounts => "sol_accounts", Permission;
+    BtcRequestAccounts => "btc_requestAccounts", Permission;
+    BtcGetAccounts => "btc_getAccounts", Permission;
+    BtcDisconnect => "btc_disconnect", Permission;
+    BtcGetNetwork => "btc_getNetwork", Permission;
     BlockNumber => "eth_blockNumber", Read;
     Call => "eth_call", Read;
     EstimateGas => "eth_estimateGas", Read;
@@ -112,6 +121,41 @@ methods! {
     SendTransaction => "eth_sendTransaction", Signing;
     PersonalSign => "personal_sign", Signing;
     SignTypedDataV4 => "eth_signTypedData_v4", Signing;
+    SolSignMessage => "sol_signMessage", Signing;
+    SolSignIn => "sol_signIn", Signing;
+    BtcSignMessage => "btc_signMessage", Signing;
+}
+
+/// The chain family of a method: decides which compatibility modes may tag it (spec/05 §2.12)
+/// and which grants it uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Family {
+    /// `eth_*`, `net_*`, `wallet_*`, `personal_*`, `web3_*`.
+    Evm,
+    /// `sol_*`.
+    Solana,
+    /// `btc_*`.
+    Bitcoin,
+}
+
+impl Method {
+    /// The method's chain family.
+    #[must_use]
+    pub const fn family(self) -> Family {
+        match self {
+            Self::SolConnect
+            | Self::SolDisconnect
+            | Self::SolAccounts
+            | Self::SolSignMessage
+            | Self::SolSignIn => Family::Solana,
+            Self::BtcRequestAccounts
+            | Self::BtcGetAccounts
+            | Self::BtcDisconnect
+            | Self::BtcGetNetwork
+            | Self::BtcSignMessage => Family::Bitcoin,
+            _ => Family::Evm,
+        }
+    }
 }
 
 /// Whether `text` matches the method-name grammar `^[A-Za-z0-9_]{1,96}$` (spec/05 §2.5).

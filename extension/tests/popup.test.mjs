@@ -168,9 +168,9 @@ test("PO3 popup.js: shows the stored mode, saves a new one to chrome.storage.loc
     },
     storage: {
       local: {
-        async get(key) {
-          assert.equal(key, "compatMode");
-          return { compatMode: "rabby" };
+        async get(keys) {
+          assert.equal(JSON.stringify(keys), JSON.stringify(["compatMode", "solCompatMode", "btcCompatMode"]));
+          return { compatMode: "rabby", solCompatMode: "phantom", btcCompatMode: "garbage" };
         },
         async set(values) {
           writes.push(values);
@@ -209,6 +209,29 @@ test("PO3 popup.js: shows the stored mode, saves a new one to chrome.storage.loc
     await settle();
     assert.deepEqual(writes, [{ compatMode: "metamask" }]);
     assert.equal(text("mode-saved"), popup.TEXT.saved);
+
+    // spec/05 §2.13: Solana and Bitcoin groups with their own keys; bad stored values show off.
+    assert.equal(text("sol-warning"), popup.TEXT.solWarning);
+    assert.equal(text("chain-note"), popup.TEXT.chainNote);
+    const solInputs = elements.get("sol-modes").children.map((card) => card.children[0]);
+    assert.deepEqual(solInputs.map((input) => [input.name, input.value, input.checked]), [
+      ["sol-compat-mode", "off", false],
+      ["sol-compat-mode", "phantom", true]
+    ]);
+    const btcInputs = elements.get("btc-modes").children.map((card) => card.children[0]);
+    assert.deepEqual(btcInputs.map((input) => [input.name, input.value, input.checked]), [
+      ["btc-compat-mode", "off", true],
+      ["btc-compat-mode", "unisat", false],
+      ["btc-compat-mode", "xverse", false]
+    ]);
+    btcInputs[2].checked = true;
+    for (const listener of btcInputs[2].listeners.get("change")) {
+      listener();
+    }
+    await settle();
+    assert.deepEqual(writes, [{ compatMode: "metamask" }, { btcCompatMode: "xverse" }]);
+    assert.equal(popup.storageUpdateFor("sol", "unisat"), null);
+    assert.deepEqual(popup.storageUpdateFor("sol", "phantom"), { solCompatMode: "phantom" });
 
     // Status over the popup port.
     assert.equal(ports.length, 1);

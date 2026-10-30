@@ -83,6 +83,10 @@ impl FieldKey {
     pub const MESSAGE_BYTES: Self = Self(0x0403);
     /// SIWE 필드.
     pub const SIWE_FIELD: Self = Self(0x0404);
+    /// SIWS 필드 (Sign-In-With-Solana).
+    pub const SIWS_FIELD: Self = Self(0x0405);
+    /// 서명 방식 (Bitcoin BIP137·BIP322, Solana 오프체인 메시지).
+    pub const MESSAGE_FORMAT: Self = Self(0x0406);
     /// SOL 받는 주소.
     pub const SOL_TO: Self = Self(0x0501);
     /// SOL 자산·금액.
@@ -134,7 +138,7 @@ impl FieldKey {
             | 0x0301..=0x0304
             | 0x0401
             | 0x0402
-            | 0x0404
+            | 0x0404..=0x0406
             | 0x0501..=0x0505
             | 0x0601..=0x0607
             | 0x0609 => (true, false),

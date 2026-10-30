@@ -9,13 +9,18 @@
 
 use core::fmt;
 
+mod chain_grant;
 mod error;
 mod grant;
 mod method;
 
+pub use chain_grant::{
+    BtcGrant, BtcGrantAddress, BtcPurpose, MAX_CHAIN_GRANTS, SolGrant, btc_address_type,
+    btc_purposes_valid,
+};
 pub use error::ProviderError;
 pub use grant::{ConnectedSite, MAX_GRANT_ACCOUNTS, MAX_GRANTS, valid_selection};
-pub use method::{Method, Route, is_method_name};
+pub use method::{Family, Method, Route, is_method_name};
 
 /// Maximum serialized origin length (spec/05 §4.7).
 pub const MAX_ORIGIN_BYTES: usize = 256;

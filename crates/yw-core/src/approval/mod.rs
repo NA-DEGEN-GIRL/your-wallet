@@ -8,6 +8,7 @@
 //! BTC (M8) variants are included.
 
 mod display;
+pub(crate) mod message;
 mod store;
 mod text;
 
@@ -28,11 +29,15 @@ pub use crate::evm::display::{build_evm_tx_request, build_personal_request, buil
 
 use core::fmt;
 
+use crate::btc::msgsign::BtcMessageProtocol;
+use crate::btc::{BtcKeySource, BtcNetwork, BtcPubKey, ScriptType};
+use crate::codec::transcript::Transcript;
 use crate::error::KeyError;
 use crate::evm::address::Address;
 use crate::evm::amount::U256;
 use crate::evm::tx::Eip1559Tx;
 use crate::policy::BrowserOrigin;
+use crate::slip10::SolKeySource;
 use crate::sol::{SolCluster, SolTransferIntent};
 use crate::vault::EvmKeySource;
 
@@ -134,6 +139,12 @@ pub enum ApprovalKind {
     BtcSend = 0x30,
     /// Bitcoin RBF fee bump (spec/08 §9).
     BtcFeeBump = 0x31,
+    /// dApp Solana message signature (`sol_signMessage`, spec/07 §19; ownership proof only).
+    SolMessage = 0x21,
+    /// dApp Sign-In-With-Solana (`sol_signIn`, spec/07 §19.4).
+    SolSignIn = 0x22,
+    /// dApp Bitcoin message signature (`btc_signMessage`, spec/08 §17; ownership proof only).
+    BtcMessage = 0x32,
 }
 
 impl ApprovalKind {
@@ -147,6 +158,12 @@ impl ApprovalKind {
     #[must_use]
     pub const fn is_btc(self) -> bool {
         matches!(self, Self::BtcSend | Self::BtcFeeBump)
+    }
+
+    /// Whether this is a Solana or Bitcoin dApp message kind (ownership proof, no transaction).
+    #[must_use]
+    pub const fn is_chain_message(self) -> bool {
+        matches!(self, Self::SolMessage | Self::SolSignIn | Self::BtcMessage)
     }
 
     /// Whether this is one of the three EVM transaction kinds.
@@ -172,6 +189,99 @@ pub enum SigningPayload {
     SolTransfer(SolTransferIntent),
     /// The Bitcoin `btc_payload` bytes (spec/08 §10).
     Btc(Vec<u8>),
+    /// A Solana message (signed as-is with Ed25519) and its key (spec/07 §19).
+    SolMessage(Box<SolMessagePayload>),
+    /// A Bitcoin message (BIP137 or BIP322) and its key (spec/08 §17).
+    BtcMessage(Box<BtcMessagePayload>),
+}
+
+/// What a Solana message approval signs: the exact message bytes with the key of `source`, whose
+/// public key is `public` (the approval account).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SolMessagePayload {
+    /// Key source (standard path or imported key).
+    pub source: SolKeySource,
+    /// Ed25519 public key.
+    pub public: [u8; 32],
+    /// Message bytes (≤ 64 KiB, never a transaction, spec/07 §19.2).
+    pub message: Vec<u8>,
+}
+
+impl SolMessagePayload {
+    /// Digest bytes: transcript `"your-wallet/v3/sol-message"` v1 of the source, key and bytes.
+    #[must_use]
+    pub fn digest_bytes(&self) -> Vec<u8> {
+        let mut transcript = Transcript::default();
+        let _ = transcript.push_bytes(b"your-wallet/v3/sol-message");
+        transcript.push_u16(1);
+        let (a, b) = self.source.params();
+        transcript.push_u8(self.source.tag());
+        transcript.push_u32(a);
+        transcript.push_u32(b);
+        let _ = transcript.push_bytes(&self.public);
+        let _ = transcript.push_bytes(&self.message);
+        transcript.into_bytes()
+    }
+}
+
+/// What a Bitcoin message approval signs (spec/08 §17).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BtcMessagePayload {
+    /// Network of the address.
+    pub network: BtcNetwork,
+    /// Key source (receive index 0 of an HD account, or an imported key).
+    pub source: BtcKeySource,
+    /// Public key of the address.
+    pub pubkey: BtcPubKey,
+    /// Address type.
+    pub script_type: ScriptType,
+    /// The address as encoded.
+    pub address: String,
+    /// BIP137 (`Ecdsa`) or BIP322.
+    pub protocol: BtcMessageProtocol,
+    /// Message bytes (UTF-8 text from the dApp, ≤ 64 KiB).
+    pub message: Vec<u8>,
+}
+
+impl BtcMessagePayload {
+    /// Digest bytes: transcript `"your-wallet/v3/btc-message"` v1 of every field.
+    #[must_use]
+    pub fn digest_bytes(&self) -> Vec<u8> {
+        let mut transcript = Transcript::default();
+        let _ = transcript.push_bytes(b"your-wallet/v3/btc-message");
+        transcript.push_u16(1);
+        transcript.push_u8(self.network.id());
+        match self.source {
+            BtcKeySource::Derived {
+                script_type,
+                account,
+                chain,
+                index,
+            } => {
+                transcript.push_u8(1);
+                transcript.push_u8(script_type.code());
+                transcript.push_u32(account);
+                transcript.push_bool(matches!(chain, crate::bip32::path::BtcChain::Change));
+                transcript.push_u32(index);
+            }
+            BtcKeySource::Imported {
+                id,
+                script_type,
+                compressed,
+            } => {
+                transcript.push_u8(2);
+                let _ = transcript.push_bytes(&id);
+                transcript.push_u8(script_type.code());
+                transcript.push_bool(compressed);
+            }
+        }
+        let _ = transcript.push_bytes(self.pubkey.as_bytes());
+        transcript.push_u8(self.script_type.code());
+        let _ = transcript.push_str(&self.address);
+        transcript.push_u8(self.protocol.code());
+        let _ = transcript.push_bytes(&self.message);
+        transcript.into_bytes()
+    }
 }
 
 impl SigningPayload {
@@ -184,6 +294,8 @@ impl SigningPayload {
             Self::EvmTypedData(preimage) => preimage.to_vec(),
             Self::SolTransfer(intent) => intent.transcript(),
             Self::Btc(payload) => payload.clone(),
+            Self::SolMessage(payload) => payload.digest_bytes(),
+            Self::BtcMessage(payload) => payload.digest_bytes(),
         }
     }
 }

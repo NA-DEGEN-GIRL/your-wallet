@@ -40,7 +40,7 @@ pub const GRANT_WRITE_INTERVAL_MS: u64 = 2_000;
 
 /// What answers a signing job when the key worker finishes it, found by the job's
 /// [`SignTicket`] (never by queue order, spec/04 §1.2).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum SignWaiter {
     /// An app send (no dApp answer).
     App,
@@ -48,6 +48,8 @@ pub enum SignWaiter {
     Tx(Reply),
     /// A dApp message: answered with the signature.
     Message(Reply),
+    /// A Solana/Bitcoin dApp message (spec/07 §19, spec/08 §17).
+    Chain(Reply, Box<crate::app_chain_sites::ChainAnswer>),
 }
 
 /// The UI side of the browser bridge.
@@ -294,6 +296,8 @@ impl App {
             blocked,
             evm_chain_id: self.settings.evm_chain_id,
             allow_localhost: self.settings.allow_localhost_dapps,
+            sol_cluster: self.sol_cluster(),
+            btc_network: self.btc_network_now(),
         }
     }
 
@@ -329,6 +333,12 @@ impl App {
                 locked_view.vault = VaultView::Locked;
                 core.set_wallet(locked_view);
                 let changed = core.unlock_wallet(grants);
+                if verified && let Some(meta) = self.meta.as_ref() {
+                    core.unlock_chains(
+                        crate::browser::grants::sol_sites_from_values(&meta.chain_sites.sol),
+                        crate::browser::grants::btc_sites_from_values(&meta.chain_sites.btc),
+                    );
+                }
                 core.set_wallet(view);
                 if !changed.is_empty() {
                     self.write_grants();
@@ -358,7 +368,7 @@ impl App {
     }
 
     /// Writes the dispatcher's grants to meta and saves it.
-    fn write_grants(&mut self) {
+    pub(crate) fn write_grants(&mut self) {
         let Some(browser) = self.browser.as_mut() else {
             return;
         };
@@ -366,6 +376,16 @@ impl App {
         let core = Arc::clone(&browser.core);
         if let Some(meta) = self.meta.as_mut() {
             meta.connected_sites = sites_to_values(&core.grants());
+            meta.chain_sites.sol = core
+                .sol_grants()
+                .iter()
+                .map(crate::browser::grants::sol_site_to_value)
+                .collect();
+            meta.chain_sites.btc = core
+                .btc_grants()
+                .iter()
+                .map(crate::browser::grants::btc_site_to_value)
+                .collect();
             self.save_meta();
         }
     }
@@ -466,6 +486,19 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// The Solana and Bitcoin grants (empty while locked).
+    pub(crate) fn chain_grants(
+        &self,
+    ) -> (
+        Vec<yw_core::policy::SolGrant>,
+        Vec<yw_core::policy::BtcGrant>,
+    ) {
+        self.browser.as_ref().map_or_else(
+            || (Vec::new(), Vec::new()),
+            |browser| (browser.core.sol_grants(), browser.core.btc_grants()),
+        )
+    }
+
     fn grant_of(&self, origin: &BrowserOrigin) -> Option<ConnectedSite> {
         self.browser_grants()
             .into_iter()
@@ -489,8 +522,13 @@ impl App {
         {
             return Some(ProviderError::TransactionPending);
         }
-        (site.kind.is_connect() && self.own_accounts().is_empty())
-            .then_some(ProviderError::NoEvmAccount)
+        if let Some(error) = self.chain_unlocked_refusal(site) {
+            return Some(error);
+        }
+        (site.kind.is_connect()
+            && site.kind.family() == yw_core::policy::Family::Evm
+            && self.own_accounts().is_empty())
+        .then_some(ProviderError::NoEvmAccount)
     }
 
     fn on_site_request(&mut self, site: SiteRequest) {
@@ -637,8 +675,15 @@ impl App {
             // Queued while locked, then unlocked with an unverified passphrase (spec/02 §7.5).
             return Some(QueueOutcome::PassphraseUnverified);
         }
+        if let Some(outcome) = self.chain_site_preflight(site) {
+            return outcome;
+        }
         let grant = self.grant_of(&site.origin);
         match &site.kind {
+            SiteKind::SolConnect
+            | SiteKind::BtcConnect(_)
+            | SiteKind::SolSign { .. }
+            | SiteKind::BtcSign { .. } => Some(QueueOutcome::Revoked),
             SiteKind::RequestAccounts if grant.is_some() => {
                 let accounts: Vec<[u8; 20]> = grant
                     .iter()
@@ -692,7 +737,15 @@ impl App {
     fn persist_grant_change(&mut self, origin: &BrowserOrigin, change: GrantChange) {
         match change {
             GrantChange::Revoked => {
-                self.revoke_waiting(origin);
+                self.revoke_waiting(origin, yw_core::policy::Family::Evm);
+                self.write_grants();
+            }
+            GrantChange::SolRevoked => {
+                self.revoke_waiting(origin, yw_core::policy::Family::Solana);
+                self.write_grants();
+            }
+            GrantChange::BtcRevoked => {
+                self.revoke_waiting(origin, yw_core::policy::Family::Bitcoin);
                 self.write_grants();
             }
             GrantChange::Chain(_) => {
@@ -709,9 +762,14 @@ impl App {
         self.refresh();
     }
 
-    /// Waiting signing items of `origin` end `Revoked` (4100, spec/05 §4.5); a shown one closes.
-    fn revoke_waiting(&mut self, origin: &BrowserOrigin) {
-        let signing_of = |item: &QueuedItem| matches!(item, QueuedItem::Site(site) if site.origin == *origin && site.kind.is_signing());
+    /// Waiting signing items of `origin` and `family` end `Revoked` (4100, spec/05 §4.5); a shown
+    /// one closes.
+    pub(crate) fn revoke_waiting(
+        &mut self,
+        origin: &BrowserOrigin,
+        family: yw_core::policy::Family,
+    ) {
+        let signing_of = |item: &QueuedItem| matches!(item, QueuedItem::Site(site) if site.origin == *origin && site.kind.is_signing() && site.kind.family() == family);
         let finished = self
             .evm
             .queue
@@ -738,7 +796,7 @@ impl App {
         if let Some(browser) = self.browser.as_ref() {
             browser.core.remove_grant(origin);
         }
-        self.revoke_waiting(origin);
+        self.revoke_waiting(origin, yw_core::policy::Family::Evm);
         self.write_grants();
         logging::info("browser", "site.disconnected", &[]);
         self.refresh();
@@ -748,6 +806,13 @@ impl App {
     pub fn disconnect_all_sites(&mut self) {
         for site in self.browser_grants() {
             self.disconnect_site(&site.origin);
+        }
+        let (sol, btc) = self.chain_grants();
+        for grant in sol {
+            self.disconnect_chain_site(&grant.origin, yw_core::policy::Family::Solana);
+        }
+        for grant in btc {
+            self.disconnect_chain_site(&grant.origin, yw_core::policy::Family::Bitcoin);
         }
     }
 
@@ -842,7 +907,7 @@ impl App {
         ticket
     }
 
-    fn take_sign_waiter(&mut self, ticket: SignTicket) -> Option<SignWaiter> {
+    pub(crate) fn take_sign_waiter(&mut self, ticket: SignTicket) -> Option<SignWaiter> {
         self.browser
             .as_mut()
             .and_then(|browser| browser.waiters.remove(&ticket))
@@ -879,7 +944,9 @@ impl App {
     /// A consumed signing job was cancelled by the lock: 4001 (spec/04 §1.2).
     pub(crate) fn browser_sign_cancelled(&mut self, ticket: SignTicket) {
         match self.take_sign_waiter(ticket) {
-            Some(SignWaiter::Tx(reply) | SignWaiter::Message(reply)) => {
+            Some(
+                SignWaiter::Tx(reply) | SignWaiter::Message(reply) | SignWaiter::Chain(reply, _),
+            ) => {
                 self.respond(&reply, Err(ProviderError::UserRejected));
             }
             Some(SignWaiter::App) | None => {}

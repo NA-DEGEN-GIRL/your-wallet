@@ -326,6 +326,30 @@ fn check_draft(draft: &ApprovalDraft) -> Result<(), ApprovalError> {
             )
         }
         ApprovalKind::BtcSend | ApprovalKind::BtcFeeBump => btc_draft_ok(draft),
+        // dApp messages (spec/07 §19, spec/08 §17): a site origin, the key in the payload, the
+        // pinned genesis of the chain and the payload's own key as the account.
+        ApprovalKind::SolMessage | ApprovalKind::SolSignIn => matches!(
+            (&draft.payload, &draft.chain, &draft.account, &draft.origin, &draft.signer),
+            (
+                SigningPayload::SolMessage(payload),
+                ChainRef::Solana { cluster, genesis },
+                AccountRef::Sol(public),
+                ApprovalOrigin::Site(_),
+                Signer::FromPayload,
+            ) if payload.public == *public && *genesis == cluster.genesis()
+        ),
+        ApprovalKind::BtcMessage => matches!(
+            (&draft.payload, &draft.chain, &draft.account, &draft.origin, &draft.signer),
+            (
+                SigningPayload::BtcMessage(payload),
+                ChainRef::Bitcoin { network, genesis },
+                AccountRef::Bitcoin(public),
+                ApprovalOrigin::Site(_),
+                Signer::FromPayload,
+            ) if payload.network.id() == *network
+                && payload.network.genesis() == *genesis
+                && payload.pubkey.compressed().is_ok_and(|key| key == *public)
+        ),
     };
     if !payload_ok {
         return Err(ApprovalError::PayloadMismatch);

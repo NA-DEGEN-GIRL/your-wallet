@@ -25,11 +25,16 @@
 
   // spec/05 §2.7. The bridge never touches Chrome APIs directly; content.js supplies adapters.
   class ContentBridge {
-    constructor({ channelNonce, compatMode = "off", connectPort, postToPage, isContextValid, setTimer, clearTimer, now }) {
+    constructor({
+      channelNonce, compatMode = "off", solCompatMode = "off", btcCompatMode = "off",
+      connectPort, postToPage, isContextValid, setTimer, clearTimer, now
+    }) {
       if (!shared.isId64(channelNonce)) {
         throw new TypeError("Invalid page channel nonce.");
       }
-      if (!shared.isCompatMode(compatMode)) {
+      if (!shared.isCompatMode(compatMode)
+        || shared.normalizeSolCompatMode(solCompatMode) !== solCompatMode
+        || shared.normalizeBtcCompatMode(btcCompatMode) !== btcCompatMode) {
         throw new TypeError("Invalid compatibility mode.");
       }
       for (const adapter of [connectPort, postToPage, isContextValid, setTimer, clearTimer, now]) {
@@ -40,6 +45,8 @@
       this.channelNonce = channelNonce;
       // Fixed for the document's lifetime: a mode change applies on the next page load.
       this.compatMode = compatMode;
+      this.solCompatMode = solCompatMode;
+      this.btcCompatMode = btcCompatMode;
       this.connectPort = connectPort;
       this.postToPage = postToPage;
       this.isContextValid = isContextValid;
@@ -59,7 +66,12 @@
     }
 
     announce() {
-      this.post({ kind: "bridge-init", compatMode: this.compatMode });
+      this.post({
+        kind: "bridge-init",
+        compatMode: this.compatMode,
+        solCompatMode: this.solCompatMode,
+        btcCompatMode: this.btcCompatMode
+      });
     }
 
     receivePage(value) {
@@ -277,8 +289,17 @@
       this.post({ kind: "disconnect", error: shared.ERRORS.EXTENSION_RELOADED });
     }
 
+    // The mode of the request's family (spec/05 §2.12–§2.13), `off` = no `compatMode` key.
+    modeFor(method) {
+      const family = shared.methodFamily(method);
+      if (family === "sol") return this.solCompatMode;
+      if (family === "btc") return this.btcCompatMode;
+      return this.compatMode;
+    }
+
     sendRequest(entry) {
       entry.sent = true;
+      const mode = this.modeFor(entry.method);
       this.sendToPort({
         namespace: shared.NAMESPACE,
         version: shared.PROTOCOL_VERSION,
@@ -288,7 +309,7 @@
         method: entry.method,
         params: entry.params,
         // Display-only note for the yw-app windows (spec/05 §2.12); omitted in the default mode.
-        ...(this.compatMode === "off" ? {} : { compatMode: this.compatMode })
+        ...(mode === "off" ? {} : { compatMode: mode })
       });
     }
 
@@ -404,6 +425,43 @@
     });
   }
 
+  // All three modes at once (spec/05 §2.13): `{ evm, sol, btc }`, each normalized; a failing or
+  // slow read gives `off` for all. `readStorage()` returns `chrome.storage.local.get([keys])`.
+  function loadCompatModes({ readStorage, setTimer, clearTimer, timeoutMs = MODE_READ_TIMEOUT_MS }) {
+    const fallback = Object.freeze({ evm: "off", sol: "off", btc: "off" });
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer = null;
+      const finish = (modes) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timer !== null) {
+          clearTimer(timer);
+        }
+        resolve(modes);
+      };
+      timer = setTimer(() => {
+        timer = null;
+        finish(fallback);
+      }, timeoutMs);
+      const read = (stored, key) => (stored !== null && typeof stored === "object"
+        && Object.prototype.hasOwnProperty.call(stored, key) ? stored[key] : undefined);
+      try {
+        Promise.resolve(readStorage()).then((stored) => {
+          finish(Object.freeze({
+            evm: shared.normalizeCompatMode(read(stored, shared.COMPAT_MODE_STORAGE_KEY)),
+            sol: shared.normalizeSolCompatMode(read(stored, shared.SOL_COMPAT_MODE_STORAGE_KEY)),
+            btc: shared.normalizeBtcCompatMode(read(stored, shared.BTC_COMPAT_MODE_STORAGE_KEY))
+          }));
+        }, () => finish(fallback));
+      } catch (_error) {
+        finish(fallback);
+      }
+    });
+  }
+
   Object.defineProperty(root, "__YOUR_WALLET_CONTENT_CORE__", {
     configurable: false,
     enumerable: false,
@@ -415,7 +473,8 @@
       CONNECT_TIMEOUT_MS,
       MIN_RECONNECT_INTERVAL_MS,
       MODE_READ_TIMEOUT_MS,
-      loadCompatMode
+      loadCompatMode,
+      loadCompatModes
     })
   });
 }(globalThis));

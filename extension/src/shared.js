@@ -13,6 +13,20 @@
   // and is never sent on the wire (absence means off).
   const COMPAT_MODE_STORAGE_KEY = "compatMode";
   const COMPAT_MODES = Object.freeze(["off", "metamask", "rabby"]);
+  // Solana and Bitcoin compatibility modes (spec/05 §2.13), stored under their own keys. Solana
+  // `off` still registers the Wallet Standard "Your Wallet"; Bitcoin `off` exposes nothing.
+  const SOL_COMPAT_MODE_STORAGE_KEY = "solCompatMode";
+  const SOL_COMPAT_MODES = Object.freeze(["off", "phantom"]);
+  const BTC_COMPAT_MODE_STORAGE_KEY = "btcCompatMode";
+  const BTC_COMPAT_MODES = Object.freeze(["off", "unisat", "xverse"]);
+  // Every non-off mode a content→background request may carry, by method family.
+  const WIRE_COMPAT_MODES = Object.freeze({
+    evm: Object.freeze(["metamask", "rabby"]),
+    sol: Object.freeze(["phantom"]),
+    btc: Object.freeze(["unisat", "xverse"])
+  });
+  const MAX_EVENT_SOL_ACCOUNTS = 1;
+  const MAX_EVENT_BTC_ADDRESSES = 2;
   const MAX_EVENT_ACCOUNTS = 16;
   const MAX_ERROR_MESSAGE_LENGTH = 512;
 
@@ -41,6 +55,15 @@
     wallet_getPermissions: "permission",
     wallet_revokePermissions: "permission",
     web3_clientVersion: "permission",
+    // Solana and Bitcoin: connect and message signing only (spec/05 §3.6). No transaction or
+    // PSBT method exists on the wire; the page shims reject those locally with 4200.
+    sol_connect: "permission",
+    sol_disconnect: "permission",
+    sol_accounts: "permission",
+    btc_requestAccounts: "permission",
+    btc_getAccounts: "permission",
+    btc_disconnect: "permission",
+    btc_getNetwork: "permission",
     eth_blockNumber: "read",
     eth_call: "read",
     eth_estimateGas: "read",
@@ -58,10 +81,13 @@
     eth_getTransactionReceipt: "read",
     eth_sendTransaction: "signing",
     personal_sign: "signing",
-    eth_signTypedData_v4: "signing"
+    eth_signTypedData_v4: "signing",
+    sol_signMessage: "signing",
+    sol_signIn: "signing",
+    btc_signMessage: "signing"
   }));
 
-  const EVENTS = Object.freeze(["accountsChanged", "chainChanged"]);
+  const EVENTS = Object.freeze(["accountsChanged", "chainChanged", "solAccountsChanged", "btcAccountsChanged"]);
 
   const ID64_PATTERN = /^[0-9a-f]{64}$/u;
   const ID32_PATTERN = /^[0-9a-f]{32}$/u;
@@ -70,6 +96,8 @@
   const REASON_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
   const ADDRESS_PATTERN = /^0x[0-9a-f]{40}$/u;
   const CHAIN_ID_PATTERN = /^0x[1-9a-f][0-9a-f]*$/u;
+  const SOL_KEY_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/u;
+  const BTC_ADDRESS_PATTERN = /^[A-Za-z0-9]{14,90}$/u;
 
   const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 
@@ -170,6 +198,25 @@
     return isCompatMode(value) ? value : "off";
   }
 
+  function normalizeSolCompatMode(value) {
+    return typeof value === "string" && SOL_COMPAT_MODES.includes(value) ? value : "off";
+  }
+
+  function normalizeBtcCompatMode(value) {
+    return typeof value === "string" && BTC_COMPAT_MODES.includes(value) ? value : "off";
+  }
+
+  // `sol` for sol_*, `btc` for btc_*, `evm` for everything else.
+  function methodFamily(method) {
+    if (typeof method === "string" && method.startsWith("sol_")) return "sol";
+    if (typeof method === "string" && method.startsWith("btc_")) return "btc";
+    return "evm";
+  }
+
+  function isWireCompatMode(value) {
+    return typeof value === "string" && Object.values(WIRE_COMPAT_MODES).some((modes) => modes.includes(value));
+  }
+
   // `{ code, message, data? }`, exact keys. `data` is checked by the enclosing checkJson.
   function validRpcError(value) {
     return hasExactKeys(value, ["code", "message"], ["data"])
@@ -187,6 +234,16 @@
     }
     if (event === "chainChanged") {
       return typeof payload === "string" && CHAIN_ID_PATTERN.test(payload);
+    }
+    if (event === "solAccountsChanged") {
+      return Array.isArray(payload)
+        && payload.length <= MAX_EVENT_SOL_ACCOUNTS
+        && payload.every((key) => typeof key === "string" && SOL_KEY_PATTERN.test(key));
+    }
+    if (event === "btcAccountsChanged") {
+      return Array.isArray(payload)
+        && payload.length <= MAX_EVENT_BTC_ADDRESSES
+        && payload.every((address) => typeof address === "string" && BTC_ADDRESS_PATTERN.test(address));
     }
     return false;
   }
@@ -230,12 +287,13 @@
       return null;
     }
     if (value.kind === "request") {
-      // `compatMode` is present only in the two compatibility modes (spec/05 §2.12).
+      // `compatMode` is present only in a compatibility mode of the method's family
+      // (spec/05 §2.12–§2.13).
       if (!hasExactKeys(value, ["namespace", "version", "kind", "activationNonce", "id", "method", "params"], ["compatMode"])
         || !isId32(value.id)
         || typeof value.method !== "string"
         || !isParams(value.params)
-        || (hasOwn(value, "compatMode") && (value.compatMode === "off" || !isCompatMode(value.compatMode)))) {
+        || (hasOwn(value, "compatMode") && !WIRE_COMPAT_MODES[methodFamily(value.method)].includes(value.compatMode))) {
         return null;
       }
       return Object.freeze({
@@ -328,6 +386,11 @@
     POPUP_PORT_NAME,
     COMPAT_MODE_STORAGE_KEY,
     COMPAT_MODES,
+    SOL_COMPAT_MODE_STORAGE_KEY,
+    SOL_COMPAT_MODES,
+    BTC_COMPAT_MODE_STORAGE_KEY,
+    BTC_COMPAT_MODES,
+    WIRE_COMPAT_MODES,
     REQUEST_LIMITS,
     RESPONSE_LIMITS,
     METHOD_ROUTE,
@@ -341,8 +404,12 @@
     isPlainObject,
     isReason,
     isSupportedPageUrl,
+    isWireCompatMode,
+    methodFamily,
     methodRoute,
+    normalizeBtcCompatMode,
     normalizeCompatMode,
+    normalizeSolCompatMode,
     parseBackgroundMessage,
     parseContentMessage,
     parsePageMessage,

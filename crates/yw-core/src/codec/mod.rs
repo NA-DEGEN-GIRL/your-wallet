@@ -1,6 +1,7 @@
 //! Binary/text codecs shared across chains (spec/01 §2.2 `codec`).
 
 pub mod base58;
+pub mod base64;
 pub mod transcript;
 pub mod wif;
 

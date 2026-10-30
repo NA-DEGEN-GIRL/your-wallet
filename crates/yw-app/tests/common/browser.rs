@@ -108,6 +108,8 @@ pub fn wallet(vault: VaultView, settings: &Settings) -> WalletView {
         blocked: Vec::new(),
         evm_chain_id: settings.evm_chain_id,
         allow_localhost: settings.allow_localhost_dapps,
+        sol_cluster: yw_core::sol::SolCluster::Mainnet,
+        btc_network: yw_core::btc::BtcNetwork::Mainnet,
     }
 }
 

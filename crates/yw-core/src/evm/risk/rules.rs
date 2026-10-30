@@ -99,6 +99,19 @@ rules! {
     S07 = b'S' 7, Caution, "SIWE 메시지가 아직 유효하지 않습니다(Not Before)";
     S08 = b'S' 8, High, "SIWE 형식처럼 보이지만 형식이 올바르지 않습니다";
     S09 = b'S' 9, Info, "로그인 요청 (SIWE)";
+    M01 = b'M' 1, Blocked, "Solana 거래로 해석되는 바이트입니다 — 메시지 서명으로 거래에 서명할 수 없습니다";
+    M02 = b'M' 2, Blocked, "Solana 오프체인 메시지 머리글이 있지만 형식이 올바르지 않습니다";
+    M03 = b'M' 3, Blocked, "Bitcoin 거래 또는 PSBT로 해석되는 바이트입니다 — 메시지 서명으로 거래에 서명할 수 없습니다";
+    M04 = b'M' 4, Info, "소유 증명용 메시지 서명입니다 — 거래·송금에는 쓰이지 않습니다";
+    M05 = b'M' 5, Info, "Solana 오프체인 메시지(v0)입니다";
+    W01 = b'W' 1, Blocked, "SIWS 도메인이 요청 사이트와 다릅니다";
+    W02 = b'W' 2, Blocked, "SIWS 주소가 서명 계정과 다릅니다";
+    W03 = b'W' 3, Blocked, "SIWS Chain ID가 현재 Solana 클러스터와 다릅니다";
+    W04 = b'W' 4, Blocked, "SIWS 메시지가 만료되었습니다";
+    W05 = b'W' 5, Caution, "SIWS 메시지가 아직 유효하지 않습니다(Not Before)";
+    W06 = b'W' 6, High, "SIWS 발급 시각이 현재 시각과 10분 넘게 다릅니다";
+    W07 = b'W' 7, Blocked, "SIWS 형식이 올바르지 않습니다";
+    W08 = b'W' 8, Info, "로그인 요청 (SIWS)";
 }
 
 /// Simulation-status rules shown first within their level (spec/03 §10.1, D15).

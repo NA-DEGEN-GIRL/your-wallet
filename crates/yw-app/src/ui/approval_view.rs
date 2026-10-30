@@ -406,6 +406,18 @@ pub fn summary(request: &ApprovalRequest) -> (String, Option<String>) {
             format!("{place}아직 확정되지 않은 거래의 수수료를 올려 다시 보냅니다."),
             None,
         ),
+        ApprovalKind::SolMessage | ApprovalKind::BtcMessage => (
+            format!(
+                "{place}메시지에 서명해 이 주소의 소유를 증명합니다. 거래 서명이나 전송은 하지 않습니다."
+            ),
+            None,
+        ),
+        ApprovalKind::SolSignIn => (
+            format!(
+                "{place}사이트 로그인(Sign-In-With-Solana) 메시지에 서명합니다. 거래 서명이나 전송은 하지 않습니다."
+            ),
+            None,
+        ),
     }
 }
 
@@ -659,7 +671,9 @@ pub fn connect_view(
     accounts: &[(String, String)],
     selected: &[bool],
     chain_name: &str,
+    family: yw_core::policy::Family,
 ) -> ApprovalView {
+    use yw_core::policy::Family;
     let mut badges = Vec::new();
     if http {
         badges.push("로컬 개발 사이트(http)".to_owned());
@@ -673,10 +687,18 @@ pub fn connect_view(
     let mut blocks = vec![
         Block::Title(origin.to_owned()),
         Block::Warning {
-            text: "이 사이트는 선택한 계정의 주소, 잔액, 거래 기록을 볼 수 있습니다. 서명과 전송은 매번 따로 승인합니다.".to_owned(),
+            text: match family {
+                Family::Evm => "이 사이트는 선택한 계정의 주소, 잔액, 거래 기록을 볼 수 있습니다. 서명과 전송은 매번 따로 승인합니다.",
+                Family::Solana | Family::Bitcoin => "이 사이트는 선택한 주소와 공개키를 볼 수 있습니다. 이 지갑은 Solana·Bitcoin에서 메시지 서명(소유 증명)만 지원하며, 거래 서명과 전송은 할 수 없습니다. 메시지 서명은 매번 따로 승인합니다.",
+            }
+            .to_owned(),
             tone: Tone::Plain,
         },
-        Block::Section("연결할 계정 (1–16개)"),
+        Block::Section(match family {
+            Family::Evm => "연결할 계정 (1–16개)",
+            Family::Solana => "연결할 Solana 계정 (1개)",
+            Family::Bitcoin => "연결할 Bitcoin 주소 (용도마다 1개, 받기 주소 0번)",
+        }),
     ];
     for (index, (label, address)) in accounts.iter().enumerate() {
         blocks.push(Block::Account {

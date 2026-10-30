@@ -64,6 +64,872 @@
   let modeSettled = false;
   let modeTimer = null;
 
+  // ----- Solana and Bitcoin (spec/05 §2.13): connect and message signing only ---------------
+  // The wire methods are sol_* / btc_* (shared.js METHOD_ROUTE). Transaction and PSBT methods
+  // exist only where dApps need them to detect a wallet and always reject locally with 4200.
+  const SOL_CHAINS = Object.freeze(["solana:mainnet", "solana:devnet"]);
+  const SOL_TX_UNSUPPORTED = "이 지갑은 Solana에서 메시지 서명(소유 증명)만 지원합니다";
+  const BTC_TX_UNSUPPORTED = "이 지갑은 Bitcoin에서 메시지 서명(소유 증명)만 지원합니다";
+  const BTC_NETWORK_FIXED = "Bitcoin 네트워크는 Your Wallet 앱 설정에서만 바꿀 수 있습니다";
+  const SOL_MODES = new Set(["off", "phantom"]);
+  const BTC_MODES = new Set(["off", "unisat", "xverse"]);
+  const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  const XVERSE_PROVIDER_ID = "XverseProviders.BitcoinProvider";
+  const XVERSE_ACCOUNT_ID = "your-wallet";
+  const XVERSE_METHODS = Object.freeze([
+    "getInfo", "getAccounts", "signMessage", "wallet_connect", "wallet_disconnect",
+    "wallet_getAccount", "wallet_getNetwork", "wallet_renouncePermissions"
+  ]);
+  const SOL_ACCOUNT_FEATURES = Object.freeze(["solana:signMessage", "solana:signIn", "solana:signTransaction"]);
+  const HEX_PATTERN = /^(?:[0-9a-f]{2})*$/u;
+  let solCompatMode = "off";
+  let btcCompatMode = "off";
+  let solKey = null;
+  let solAccount = null;
+  let btcAccounts = [];
+  let solRegistered = false;
+  const solChangeListeners = new Set();
+  const phantomListeners = new Map();
+  const unisatListeners = new Map();
+  const xverseListeners = new Map();
+  const appReadyApis = [];
+
+  function base58Encode(bytes) {
+    let zeros = 0;
+    while (zeros < bytes.length && bytes[zeros] === 0) {
+      zeros += 1;
+    }
+    const digits = [];
+    for (let index = zeros; index < bytes.length; index += 1) {
+      let carry = bytes[index];
+      for (let digit = 0; digit < digits.length; digit += 1) {
+        carry += digits[digit] * 256;
+        digits[digit] = carry % 58;
+        carry = Math.floor(carry / 58);
+      }
+      while (carry > 0) {
+        digits.push(carry % 58);
+        carry = Math.floor(carry / 58);
+      }
+    }
+    return "1".repeat(zeros) + digits.reverse().map((digit) => BASE58_ALPHABET[digit]).join("");
+  }
+
+  function base58Decode32(text) {
+    if (typeof text !== "string" || text.length < 32 || text.length > 44) {
+      return null;
+    }
+    const bytes = [];
+    for (const character of text) {
+      const value = BASE58_ALPHABET.indexOf(character);
+      if (value < 0) {
+        return null;
+      }
+      let carry = value;
+      for (let index = 0; index < bytes.length; index += 1) {
+        carry += bytes[index] * 58;
+        bytes[index] = carry & 0xff;
+        carry >>= 8;
+      }
+      while (carry > 0) {
+        bytes.push(carry & 0xff);
+        carry >>= 8;
+      }
+    }
+    for (const character of text) {
+      if (character !== "1") {
+        break;
+      }
+      bytes.push(0);
+    }
+    const out = Uint8Array.from(bytes.reverse());
+    return out.length === 32 ? out : null;
+  }
+
+  function toHex(bytes) {
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  function fromHex(text, length) {
+    if (typeof text !== "string" || !HEX_PATTERN.test(text) || (length !== undefined && text.length !== length * 2)) {
+      throw internalError();
+    }
+    const out = new Uint8Array(text.length / 2);
+    for (let index = 0; index < out.length; index += 1) {
+      out[index] = Number.parseInt(text.slice(index * 2, index * 2 + 2), 16);
+    }
+    return out;
+  }
+
+  function internalError() {
+    return new ProviderRpcError(-32603, "Internal error.");
+  }
+
+  function invalidParams() {
+    return new ProviderRpcError(-32602, "Invalid params.");
+  }
+
+  function unauthorized() {
+    return new ProviderRpcError(4100, "Unauthorized.");
+  }
+
+  // Uint8Array (or any byte view) → a copy; anything else is -32602.
+  function messageBytes(value) {
+    if (value instanceof Uint8Array) {
+      return Uint8Array.from(value);
+    }
+    if (ArrayBuffer.isView(value)) {
+      return new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+    }
+    throw invalidParams();
+  }
+
+  function emitTo(map, eventName, ...args) {
+    for (const listener of [...(map.get(eventName) ?? [])]) {
+      try {
+        listener(...args);
+      } catch (_error) {
+        // A dApp listener must not break the provider.
+      }
+    }
+  }
+
+  function addTo(map, names, eventName, listener) {
+    if (typeof listener !== "function") {
+      throw new TypeError("Provider listener must be a function.");
+    }
+    if (names.has(eventName)) {
+      const list = map.get(eventName) ?? [];
+      list.push(listener);
+      map.set(eventName, list);
+    }
+  }
+
+  function removeFrom(map, eventName, listener) {
+    const list = map.get(eventName);
+    if (list) {
+      const index = list.lastIndexOf(listener);
+      if (index >= 0) {
+        list.splice(index, 1);
+      }
+    }
+  }
+
+  function defineOn(target, name, descriptor) {
+    Object.defineProperty(target, name, {
+      ...descriptor,
+      enumerable: true,
+      configurable: false,
+      ...(Object.prototype.hasOwnProperty.call(descriptor, "value") ? { writable: false } : {})
+    });
+  }
+
+  // A minimal web3.js `PublicKey`-like value (no class from the page realm is needed).
+  function makePublicKey(bytes) {
+    const key = Uint8Array.from(bytes);
+    const text = base58Encode(key);
+    return Object.freeze({
+      toBase58: () => text,
+      toString: () => text,
+      toJSON: () => text,
+      toBytes: () => Uint8Array.from(key),
+      toBuffer: () => Uint8Array.from(key),
+      equals: (other) => {
+        try {
+          const value = other !== null && typeof other === "object" && typeof other.toBase58 === "function"
+            ? other.toBase58()
+            : String(other);
+          return value === text;
+        } catch (_error) {
+          return false;
+        }
+      }
+    });
+  }
+
+  function makeSolAccount(bytes) {
+    const key = Uint8Array.from(bytes);
+    const account = {};
+    Object.defineProperties(account, {
+      address: { value: base58Encode(key), enumerable: true },
+      publicKey: { get: () => key.slice(), enumerable: true },
+      chains: { get: () => SOL_CHAINS.slice(), enumerable: true },
+      features: { get: () => SOL_ACCOUNT_FEATURES.slice(), enumerable: true }
+    });
+    return Object.freeze(account);
+  }
+
+  // One place for every Solana account change (connect, disconnect, wire events).
+  function setSolKey(bytes) {
+    const before = solKey === null ? null : base58Encode(solKey);
+    solKey = bytes === null ? null : Uint8Array.from(bytes);
+    const after = solKey === null ? null : base58Encode(solKey);
+    if (before === after) {
+      return;
+    }
+    solAccount = solKey === null ? null : makeSolAccount(solKey);
+    const accounts = solAccount === null ? [] : [solAccount];
+    for (const listener of [...solChangeListeners]) {
+      try {
+        listener({ accounts });
+      } catch (_error) {
+        // Ignored like every other dApp listener.
+      }
+    }
+    if (after === null) {
+      emitTo(phantomListeners, "disconnect");
+    } else if (before === null) {
+      emitTo(phantomListeners, "connect", makePublicKey(solKey));
+    } else {
+      emitTo(phantomListeners, "accountChanged", makePublicKey(solKey));
+    }
+  }
+
+  async function solConnect(onlyIfTrusted) {
+    const result = await request({ method: "sol_connect", params: onlyIfTrusted ? [{ onlyIfTrusted: true }] : [] });
+    const key = isPlainObject(result) ? base58Decode32(result.publicKey) : null;
+    if (key === null) {
+      throw internalError();
+    }
+    setSolKey(key);
+    return key;
+  }
+
+  async function solDisconnect() {
+    try {
+      await request({ method: "sol_disconnect" });
+    } catch (_error) {
+      // The page forgets the account either way.
+    }
+    setSolKey(null);
+  }
+
+  async function solSignBytes(message) {
+    if (solKey === null) {
+      throw unauthorized();
+    }
+    const result = await request({
+      method: "sol_signMessage",
+      params: [{ publicKey: base58Encode(solKey), message: toHex(message) }]
+    });
+    return fromHex(isPlainObject(result) ? result.signature : undefined, 64);
+  }
+
+  // Sign-In-With-Solana: connects first when needed (its own window), then the app builds the
+  // message from the validated input and the dApp gets exactly the signed bytes back.
+  async function solSignIn(input) {
+    const value = input === undefined || input === null ? {} : input;
+    if (!isPlainObject(value)) {
+      throw invalidParams();
+    }
+    if (solKey === null) {
+      await solConnect(false);
+    }
+    const result = await request({ method: "sol_signIn", params: [{ publicKey: base58Encode(solKey), input: value }] });
+    if (!isPlainObject(result)) {
+      throw internalError();
+    }
+    return { signature: fromHex(result.signature, 64), signedMessage: fromHex(result.signedMessage) };
+  }
+
+  function solTxRejected() {
+    return Promise.reject(new ProviderRpcError(4200, SOL_TX_UNSUPPORTED));
+  }
+
+  function checkSolAccount(account) {
+    let address;
+    try {
+      address = account.address;
+    } catch (_error) {
+      address = undefined;
+    }
+    if (solKey === null || address !== base58Encode(solKey)) {
+      throw unauthorized();
+    }
+  }
+
+  // Wallet Standard features (`@wallet-standard/features`, `@solana/wallet-standard-features`).
+  // `solana:signTransaction` is declared because wallet adapters list only wallets with a
+  // transaction feature; it always rejects (spec.md D25).
+  const solFeatures = Object.freeze({
+    "standard:connect": Object.freeze({
+      version: "1.0.0",
+      connect: async (input) => {
+        const silent = isPlainObject(input) && input.silent === true;
+        if (solKey === null) {
+          try {
+            await solConnect(silent);
+          } catch (error) {
+            if (!silent) {
+              throw error;
+            }
+          }
+        }
+        return { accounts: solAccount === null ? [] : [solAccount] };
+      }
+    }),
+    "standard:disconnect": Object.freeze({ version: "1.0.0", disconnect: () => solDisconnect() }),
+    "standard:events": Object.freeze({
+      version: "1.0.0",
+      on: (eventName, listener) => {
+        if (eventName !== "change" || typeof listener !== "function") {
+          return () => {};
+        }
+        const entry = (properties) => listener(properties);
+        solChangeListeners.add(entry);
+        return () => solChangeListeners.delete(entry);
+      }
+    }),
+    "solana:signMessage": Object.freeze({
+      version: "1.0.0",
+      signMessage: async (...inputs) => {
+        const outputs = [];
+        for (const input of inputs) {
+          if (!input || typeof input !== "object") {
+            throw invalidParams();
+          }
+          checkSolAccount(input.account);
+          const message = messageBytes(input.message);
+          const signature = await solSignBytes(message);
+          outputs.push({ signedMessage: message, signature, signatureType: "ed25519" });
+        }
+        return outputs;
+      }
+    }),
+    "solana:signIn": Object.freeze({
+      version: "1.0.0",
+      signIn: async (...inputs) => {
+        const outputs = [];
+        for (const input of inputs.length === 0 ? [{}] : inputs) {
+          const signed = await solSignIn(input);
+          outputs.push({
+            account: solAccount,
+            signedMessage: signed.signedMessage,
+            signature: signed.signature,
+            signatureType: "ed25519"
+          });
+        }
+        return outputs;
+      }
+    }),
+    "solana:signTransaction": Object.freeze({
+      version: "1.0.0",
+      supportedTransactionVersions: Object.freeze(["legacy"]),
+      signTransaction: () => solTxRejected()
+    })
+  });
+
+  // Phantom mode names the wallet "Phantom" (our icon, never Phantom's logo).
+  const solWallet = Object.freeze(Object.defineProperties({}, {
+    version: { value: "1.0.0", enumerable: true },
+    name: { get: () => (solCompatMode === "phantom" ? "Phantom" : "Your Wallet"), enumerable: true },
+    icon: { value: PROVIDER_ICON, enumerable: true },
+    chains: { get: () => SOL_CHAINS.slice(), enumerable: true },
+    features: { value: solFeatures, enumerable: true },
+    accounts: { get: () => (solAccount === null ? [] : [solAccount]), enumerable: true }
+  }));
+
+  function registerWith(api) {
+    try {
+      if (api !== null && typeof api === "object" && typeof api.register === "function") {
+        api.register(solWallet);
+      }
+    } catch (_error) {
+      // A hostile registry cannot break the provider.
+    }
+  }
+
+  // Wallet Standard registration: announce once the mode (the name) is known, and answer every
+  // app-ready event (an app that started before us got its api queued).
+  function registerSolanaWallet() {
+    if (solRegistered) {
+      return;
+    }
+    solRegistered = true;
+    try {
+      root.dispatchEvent(new CustomEvent("wallet-standard:register-wallet", { detail: registerWith }));
+    } catch (_error) {
+      // Nothing listens yet; app-ready will ask.
+    }
+    for (const api of appReadyApis.splice(0)) {
+      registerWith(api);
+    }
+  }
+
+  function receiveAppReady(event) {
+    let api;
+    try {
+      api = event.detail;
+    } catch (_error) {
+      return;
+    }
+    if (solRegistered) {
+      registerWith(api);
+    } else if (appReadyApis.length < 16) {
+      appReadyApis.push(api);
+    }
+  }
+
+  // window.phantom.solana (phantom mode only).
+  const phantomSolana = {};
+  const PHANTOM_EVENTS = new Set(["connect", "disconnect", "accountChanged"]);
+  defineOn(phantomSolana, "isPhantom", { value: true });
+  defineOn(phantomSolana, "isYourWallet", { value: true });
+  defineOn(phantomSolana, "publicKey", { get: () => (solKey === null ? null : makePublicKey(solKey)) });
+  defineOn(phantomSolana, "isConnected", { get: () => solKey !== null });
+  defineOn(phantomSolana, "connect", {
+    value: async (options) => {
+      const key = await solConnect(isPlainObject(options) && options.onlyIfTrusted === true);
+      return { publicKey: makePublicKey(key) };
+    }
+  });
+  defineOn(phantomSolana, "disconnect", { value: () => solDisconnect() });
+  defineOn(phantomSolana, "signMessage", {
+    value: async (message, _display) => {
+      const signature = await solSignBytes(messageBytes(message));
+      return { signature, publicKey: makePublicKey(solKey) };
+    }
+  });
+  defineOn(phantomSolana, "signIn", {
+    value: async (input) => {
+      const signed = await solSignIn(input);
+      return { address: makePublicKey(solKey), signedMessage: signed.signedMessage, signature: signed.signature };
+    }
+  });
+  for (const name of ["signTransaction", "signAllTransactions", "signAndSendTransaction", "signAndSendAllTransactions"]) {
+    defineOn(phantomSolana, name, { value: () => solTxRejected() });
+  }
+  defineOn(phantomSolana, "request", {
+    value: async (args) => {
+      const method = isPlainObject(args) ? args.method : undefined;
+      const params = isPlainObject(args) && isPlainObject(args.params) ? args.params : {};
+      if (method === "connect") {
+        return phantomSolana.connect(params);
+      }
+      if (method === "disconnect") {
+        return phantomSolana.disconnect();
+      }
+      if (method === "signMessage") {
+        return phantomSolana.signMessage(params.message, params.display);
+      }
+      if (method === "signIn") {
+        return phantomSolana.signIn(params);
+      }
+      throw new ProviderRpcError(4200, SOL_TX_UNSUPPORTED);
+    }
+  });
+  for (const name of ["on", "addListener"]) {
+    defineOn(phantomSolana, name, {
+      value: (eventName, listener) => {
+        addTo(phantomListeners, PHANTOM_EVENTS, eventName, listener);
+        return phantomSolana;
+      }
+    });
+  }
+  for (const name of ["off", "removeListener"]) {
+    defineOn(phantomSolana, name, {
+      value: (eventName, listener) => {
+        removeFrom(phantomListeners, eventName, listener);
+        return phantomSolana;
+      }
+    });
+  }
+  defineOn(phantomSolana, "removeAllListeners", {
+    value: (eventName) => {
+      if (eventName === undefined) {
+        phantomListeners.clear();
+      } else {
+        phantomListeners.delete(eventName);
+      }
+      return phantomSolana;
+    }
+  });
+  const phantomNamespace = Object.freeze({ solana: phantomSolana });
+
+  function phantomGetter() {
+    return phantomNamespace;
+  }
+
+  // ----- Bitcoin ------------------------------------------------------------------------------
+
+  function setBtcAccounts(value) {
+    if (!Array.isArray(value) || !value.every((entry) => isPlainObject(entry) && typeof entry.address === "string")) {
+      throw internalError();
+    }
+    btcAccounts = value.map((entry) => Object.freeze({ ...entry }));
+    return btcAccounts;
+  }
+
+  async function btcConnect(purposes) {
+    return setBtcAccounts(await request({ method: "btc_requestAccounts", params: [{ purposes }] }));
+  }
+
+  async function btcGetAccounts() {
+    return setBtcAccounts(await request({ method: "btc_getAccounts" }));
+  }
+
+  async function btcDisconnect() {
+    try {
+      await request({ method: "btc_disconnect" });
+    } catch (_error) {
+      // Forgotten locally either way.
+    }
+    receiveBtcAddresses([]);
+  }
+
+  async function btcNetwork() {
+    const network = await request({ method: "btc_getNetwork" });
+    if (network !== "mainnet" && network !== "testnet4") {
+      throw internalError();
+    }
+    return network;
+  }
+
+  function btcTxRejected() {
+    return Promise.reject(new ProviderRpcError(4200, BTC_TX_UNSUPPORTED));
+  }
+
+  // A wire `btcAccountsChanged` (or a local disconnect).
+  function receiveBtcAddresses(addresses) {
+    btcAccounts = btcAccounts.filter((entry) => addresses.includes(entry.address));
+    emitTo(unisatListeners, "accountsChanged", addresses.slice());
+    if (addresses.length === 0) {
+      emitTo(xverseListeners, "disconnect", { type: "disconnect" });
+    } else {
+      emitTo(xverseListeners, "accountChange", { type: "accountChange", addresses: xverseAddresses(btcAccounts) });
+    }
+  }
+
+  function unisatChain(network) {
+    return network === "mainnet"
+      ? { enum: "BITCOIN_MAINNET", name: "Bitcoin Mainnet", network: "livenet" }
+      : { enum: "BITCOIN_TESTNET4", name: "Bitcoin Testnet4", network: "testnet" };
+  }
+
+  // window.unisat (unisat mode only).
+  const unisat = {};
+  const UNISAT_EVENTS = new Set(["accountsChanged", "networkChanged"]);
+  defineOn(unisat, "isYourWallet", { value: true });
+  defineOn(unisat, "requestAccounts", { value: async () => (await btcConnect(["any"])).map((entry) => entry.address) });
+  defineOn(unisat, "getAccounts", { value: async () => (await btcGetAccounts()).map((entry) => entry.address) });
+  defineOn(unisat, "getNetwork", { value: async () => unisatChain(await btcNetwork()).network });
+  defineOn(unisat, "switchNetwork", {
+    value: async (network) => {
+      const current = unisatChain(await btcNetwork()).network;
+      if (network === current) {
+        return current;
+      }
+      throw new ProviderRpcError(4200, BTC_NETWORK_FIXED);
+    }
+  });
+  defineOn(unisat, "getChain", { value: async () => unisatChain(await btcNetwork()) });
+  defineOn(unisat, "switchChain", {
+    value: async (chain) => {
+      const current = unisatChain(await btcNetwork());
+      if (chain === current.enum) {
+        return current;
+      }
+      throw new ProviderRpcError(4200, BTC_NETWORK_FIXED);
+    }
+  });
+  defineOn(unisat, "getPublicKey", {
+    value: async () => {
+      const accounts = btcAccounts.length > 0 ? btcAccounts : await btcGetAccounts();
+      if (accounts.length === 0) {
+        throw unauthorized();
+      }
+      return accounts[0].publicKey;
+    }
+  });
+  defineOn(unisat, "signMessage", {
+    value: async (message, type = "ecdsa") => {
+      const protocol = type === "ecdsa" ? "ecdsa" : type === "bip322-simple" ? "bip322" : null;
+      if (typeof message !== "string" || protocol === null) {
+        throw invalidParams();
+      }
+      const accounts = btcAccounts.length > 0 ? btcAccounts : await btcGetAccounts();
+      if (accounts.length === 0) {
+        throw unauthorized();
+      }
+      const result = await request({
+        method: "btc_signMessage",
+        params: [{ address: accounts[0].address, message, protocol }]
+      });
+      if (!isPlainObject(result) || typeof result.signature !== "string") {
+        throw internalError();
+      }
+      return result.signature;
+    }
+  });
+  for (const name of [
+    "getBalance", "getInscriptions", "sendBitcoin", "sendInscription", "inscribeTransfer",
+    "signPsbt", "signPsbts", "pushPsbt", "pushTx", "sendRunes"
+  ]) {
+    defineOn(unisat, name, { value: () => btcTxRejected() });
+  }
+  defineOn(unisat, "on", {
+    value: (eventName, listener) => {
+      addTo(unisatListeners, UNISAT_EVENTS, eventName, listener);
+      return unisat;
+    }
+  });
+  defineOn(unisat, "removeListener", {
+    value: (eventName, listener) => {
+      removeFrom(unisatListeners, eventName, listener);
+      return unisat;
+    }
+  });
+
+  function unisatGetter() {
+    return unisat;
+  }
+
+  // sats-connect (Xverse) shapes: addresses carry walletType, Taproot keys are x-only.
+  function xverseAddresses(accounts) {
+    return accounts.map((entry) => ({
+      address: entry.address,
+      publicKey: entry.addressType === "p2tr" && typeof entry.publicKey === "string" && entry.publicKey.length === 66
+        ? entry.publicKey.slice(2)
+        : entry.publicKey,
+      purpose: entry.purpose === "any" ? "payment" : entry.purpose,
+      addressType: entry.addressType,
+      walletType: "software"
+    }));
+  }
+
+  function xversePurposes(value) {
+    if (!Array.isArray(value)) {
+      throw invalidParams();
+    }
+    const purposes = ["payment", "ordinals"].filter((purpose) => value.includes(purpose));
+    if (purposes.length === 0) {
+      throw invalidParams();
+    }
+    return purposes;
+  }
+
+  async function xverseNetwork() {
+    const network = await btcNetwork();
+    return {
+      bitcoin: { name: network === "mainnet" ? "Mainnet" : "Testnet4" },
+      stacks: { name: "mainnet" },
+      spark: { name: "mainnet" }
+    };
+  }
+
+  async function xverseCall(method, params) {
+    switch (method) {
+      case "getInfo":
+        return { version: "1.0.0", methods: XVERSE_METHODS.slice(), supports: [] };
+      case "getAccounts":
+        return xverseAddresses(await btcConnect(xversePurposes(isPlainObject(params) ? params.purposes : undefined)));
+      case "wallet_connect": {
+        const wanted = isPlainObject(params) && Array.isArray(params.addresses) ? params.addresses : ["payment", "ordinals"];
+        const accounts = await btcConnect(xversePurposes(wanted));
+        return { id: XVERSE_ACCOUNT_ID, addresses: xverseAddresses(accounts), walletType: "software", network: await xverseNetwork() };
+      }
+      case "wallet_getAccount": {
+        const accounts = await btcGetAccounts();
+        if (accounts.length === 0) {
+          throw unauthorized();
+        }
+        return { id: XVERSE_ACCOUNT_ID, addresses: xverseAddresses(accounts), walletType: "software", network: await xverseNetwork() };
+      }
+      case "wallet_disconnect":
+      case "wallet_renouncePermissions":
+        await btcDisconnect();
+        return null;
+      case "wallet_getNetwork":
+        return xverseNetwork();
+      case "signMessage": {
+        if (!isPlainObject(params) || typeof params.address !== "string" || typeof params.message !== "string"
+          || (params.protocol !== undefined && params.protocol !== "ECDSA" && params.protocol !== "BIP322")) {
+          throw invalidParams();
+        }
+        const result = await request({
+          method: "btc_signMessage",
+          params: [{
+            address: params.address,
+            message: params.message,
+            ...(params.protocol === undefined ? {} : { protocol: params.protocol === "BIP322" ? "bip322" : "ecdsa" })
+          }]
+        });
+        if (!isPlainObject(result)) {
+          throw internalError();
+        }
+        return {
+          signature: result.signature,
+          messageHash: result.messageHash,
+          address: result.address,
+          protocol: result.protocol === "bip322" ? "BIP322" : "ECDSA"
+        };
+      }
+      default:
+        throw new ProviderRpcError(4200, BTC_TX_UNSUPPORTED);
+    }
+  }
+
+  // sats-connect RpcErrorCode: USER_REJECTION -32000, METHOD_NOT_SUPPORTED -32001,
+  // ACCESS_DENIED -32002, INVALID_PARAMS -32602, INTERNAL_ERROR -32603.
+  function xverseError(error) {
+    const code = error instanceof ProviderRpcError ? error.code : -32603;
+    const mapped = code === 4001 ? -32000
+      : code === 4200 ? -32001
+        : code === 4100 ? -32002
+          : code === -32602 || code === -32600 ? code
+            : -32603;
+    const message = error instanceof ProviderRpcError ? error.message : "Internal error.";
+    return { code: mapped, message };
+  }
+
+  // window.XverseProviders.BitcoinProvider (xverse mode only): sats-connect `request(method,
+  // params)` answers a JSON-RPC 2.0 response object, success or error.
+  const xverseProvider = {};
+  const XVERSE_EVENTS = new Set(["accountChange", "networkChange", "disconnect"]);
+  defineOn(xverseProvider, "isYourWallet", { value: true });
+  defineOn(xverseProvider, "request", {
+    value: async (method, params) => {
+      const id = randomHex(8);
+      try {
+        const result = await xverseCall(method, params);
+        return { jsonrpc: "2.0", id, result };
+      } catch (error) {
+        return { jsonrpc: "2.0", id, error: xverseError(error) };
+      }
+    }
+  });
+  defineOn(xverseProvider, "addListener", {
+    value: (eventNameOrInfo, maybeListener) => {
+      const info = isPlainObject(eventNameOrInfo) ? eventNameOrInfo : { eventName: eventNameOrInfo, cb: maybeListener };
+      addTo(xverseListeners, XVERSE_EVENTS, info.eventName, info.cb);
+      return () => removeFrom(xverseListeners, info.eventName, info.cb);
+    }
+  });
+  // The pre-RPC sats-connect API (JWT strings): not supported.
+  for (const name of [
+    "connect", "signMessage", "signTransaction", "sendBtcTransaction", "createInscription",
+    "createRepeatInscriptions", "signMultipleTransactions"
+  ]) {
+    defineOn(xverseProvider, name, { value: () => btcTxRejected() });
+  }
+  const xverseNamespace = Object.freeze({ BitcoinProvider: xverseProvider });
+
+  function xverseGetter() {
+    return xverseNamespace;
+  }
+
+  // WBIP004 provider list entry (xverse mode): sats-connect's default provider id, our icon.
+  function ensureBtcProviders() {
+    const entry = Object.freeze({
+      id: XVERSE_PROVIDER_ID,
+      name: "Xverse Wallet",
+      icon: PROVIDER_ICON,
+      methods: Object.freeze(XVERSE_METHODS.slice())
+    });
+    try {
+      if (!Array.isArray(root.btc_providers)) {
+        Object.defineProperty(root, "btc_providers", { value: [], configurable: true, enumerable: true, writable: true });
+      }
+      const list = root.btc_providers;
+      const index = list.findIndex((provider) => provider !== null && typeof provider === "object" && provider.id === XVERSE_PROVIDER_ID);
+      if (index >= 0) {
+        list.splice(index, 1, entry);
+      } else {
+        list.push(entry);
+      }
+    } catch (_error) {
+      // A frozen or hostile list stays as it is.
+    }
+  }
+
+  function ignoreAssignment(_ignored) {
+    // Assignments by other wallets are accepted and ignored (like window.ethereum).
+  }
+
+  // window.phantom / window.unisat / window.XverseProviders in their modes: the same precedence
+  // rules as window.ethereum in a compatibility mode (spec/05 §2.12).
+  function claimGlobal(name, getter) {
+    let descriptor;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(root, name);
+      if (descriptor !== undefined && descriptor.get === getter) {
+        return true;
+      }
+    } catch (_error) {
+      return false;
+    }
+    if (descriptor === undefined || descriptor.configurable === true) {
+      try {
+        Object.defineProperty(root, name, { get: getter, set: ignoreAssignment, configurable: true, enumerable: true });
+        return true;
+      } catch (_error) {
+        // Fall through to assignment.
+      }
+    }
+    try {
+      root[name] = getter();
+    } catch (_error) {
+      // Not assignable: another wallet keeps it.
+    }
+    try {
+      return root[name] === getter();
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function defineIfAbsent(name, value) {
+    try {
+      if (!(name in root)) {
+        Object.defineProperty(root, name, { value, configurable: true, enumerable: true, writable: true });
+      }
+    } catch (_error) {
+      // A page-defined accessor or proxy stays.
+    }
+  }
+
+  function claimChainGlobals() {
+    if (solCompatMode === "phantom") {
+      claimGlobal("phantom", phantomGetter);
+    }
+    if (btcCompatMode === "unisat") {
+      claimGlobal("unisat", unisatGetter);
+    }
+    if (btcCompatMode === "xverse") {
+      claimGlobal("XverseProviders", xverseGetter);
+      ensureBtcProviders();
+    }
+  }
+
+  function settleChainModes(sol, btc) {
+    solCompatMode = SOL_MODES.has(sol) ? sol : "off";
+    btcCompatMode = BTC_MODES.has(btc) ? btc : "off";
+    claimChainGlobals();
+    if (solCompatMode === "phantom") {
+      defineIfAbsent("solana", phantomSolana);
+    }
+    if (btcCompatMode === "xverse") {
+      defineIfAbsent("BitcoinProvider", xverseProvider);
+    }
+    registerSolanaWallet();
+  }
+
+  function receiveChainEvent(eventName, payload) {
+    if (eventName === "solAccountsChanged" && Array.isArray(payload) && payload.length <= 1) {
+      const key = payload.length === 1 ? base58Decode32(payload[0]) : null;
+      if (payload.length === 0 || key !== null) {
+        setSolKey(key);
+      }
+      return true;
+    }
+    if (eventName === "btcAccountsChanged" && Array.isArray(payload)
+      && payload.every((address) => typeof address === "string")) {
+      receiveBtcAddresses(payload);
+      return true;
+    }
+    return false;
+  }
+
   // Extensible plain object: legacy dApps may assign their own properties. The
   // members below cannot be overwritten or reconfigured. Identity flags are getters
   // that read the current mode.
@@ -107,8 +973,11 @@
   root.addEventListener(EIP6963_REQUEST_EVENT, receiveProviderRequest);
   root.addEventListener("DOMContentLoaded", reclaimWindowEthereum);
   root.addEventListener("load", reclaimWindowEthereum);
+  root.addEventListener("DOMContentLoaded", claimChainGlobals);
+  root.addEventListener("load", claimChainGlobals);
+  root.addEventListener("wallet-standard:app-ready", receiveAppReady);
   installWindowEthereum();
-  modeTimer = root.setTimeout(() => settleMode("off"), MODE_WAIT_MS);
+  modeTimer = root.setTimeout(() => settleMode("off", "off", "off"), MODE_WAIT_MS);
   postToBridge({ kind: "bridge-request" });
 
   function defineMember(name, descriptor) {
@@ -230,7 +1099,7 @@
     }
   }
 
-  function settleMode(mode) {
+  function settleMode(mode, sol, btc) {
     if (modeSettled) {
       return;
     }
@@ -244,6 +1113,7 @@
     // The first announcement waits for the mode so the page never sees two identities; any
     // eip6963:requestProvider received before this point is answered here.
     announceProvider();
+    settleChainModes(sol, btc);
   }
 
   function receiveProviderRequest() {
@@ -556,15 +1426,17 @@
       return;
     }
     if (message.kind === "bridge-init") {
-      if (hasExactKeys(message, ["namespace", "version", "kind", "channel", "compatMode"])
+      if (hasExactKeys(message, ["namespace", "version", "kind", "channel", "compatMode", "solCompatMode", "btcCompatMode"])
         && typeof message.channel === "string"
         && CHANNEL_PATTERN.test(message.channel)
         && typeof message.compatMode === "string"
         && Object.prototype.hasOwnProperty.call(IDENTITIES, message.compatMode)
+        && SOL_MODES.has(message.solCompatMode)
+        && BTC_MODES.has(message.btcCompatMode)
         && channel === null
         && !dead) {
         channel = message.channel;
-        settleMode(message.compatMode);
+        settleMode(message.compatMode, message.solCompatMode, message.btcCompatMode);
         releaseBridgeWaiters();
       }
       return;
@@ -610,6 +1482,9 @@
       return;
     }
     const { event: eventName, payload } = message;
+    if (receiveChainEvent(eventName, payload)) {
+      return;
+    }
     if (eventName === "accountsChanged" && Array.isArray(payload)
       && payload.every((account) => typeof account === "string")) {
       selectedAddress = payload.length > 0 ? payload[0] : null;

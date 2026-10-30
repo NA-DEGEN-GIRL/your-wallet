@@ -90,6 +90,12 @@ pub enum CompatMode {
     MetaMask,
     /// `"rabby"`: the page saw the provider under the `Rabby Wallet` identity.
     Rabby,
+    /// `"phantom"`: Solana requests of a page that saw the `Phantom` identity.
+    Phantom,
+    /// `"unisat"`: Bitcoin requests through the `window.unisat` shim.
+    Unisat,
+    /// `"xverse"`: Bitcoin requests through the sats-connect (`XverseProviders`) shim.
+    Xverse,
 }
 
 impl CompatMode {
@@ -100,6 +106,9 @@ impl CompatMode {
         match text {
             "metamask" => Some(Self::MetaMask),
             "rabby" => Some(Self::Rabby),
+            "phantom" => Some(Self::Phantom),
+            "unisat" => Some(Self::Unisat),
+            "xverse" => Some(Self::Xverse),
             _ => None,
         }
     }
@@ -110,6 +119,9 @@ impl CompatMode {
         match self {
             Self::MetaMask => "metamask",
             Self::Rabby => "rabby",
+            Self::Phantom => "phantom",
+            Self::Unisat => "unisat",
+            Self::Xverse => "xverse",
         }
     }
 
@@ -119,6 +131,20 @@ impl CompatMode {
         match self {
             Self::MetaMask => "MetaMask",
             Self::Rabby => "Rabby",
+            Self::Phantom => "Phantom",
+            Self::Unisat => "UniSat",
+            Self::Xverse => "Xverse",
+        }
+    }
+
+    /// The method family the mode may tag (spec/05 §2.12: an EVM mode on a `sol_*` request, or
+    /// the reverse, is a malformed request).
+    #[must_use]
+    pub const fn family(self) -> yw_core::policy::Family {
+        match self {
+            Self::MetaMask | Self::Rabby => yw_core::policy::Family::Evm,
+            Self::Phantom => yw_core::policy::Family::Solana,
+            Self::Unisat | Self::Xverse => yw_core::policy::Family::Bitcoin,
         }
     }
 }
@@ -219,11 +245,19 @@ pub enum EnvelopeError {
 
 /// A provider event (spec/05 §6.1 `event`).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "named after the wire events (accountsChanged, chainChanged, …)"
+)]
 pub enum BrowserEvent {
     /// `accountsChanged` (0..=16 accounts).
     AccountsChanged(Vec<[u8; 20]>),
     /// `chainChanged`.
     ChainChanged(u64),
+    /// `solAccountsChanged`: the connected Solana account (0..=1 public keys, spec/05 §4.9).
+    SolAccountsChanged(Vec<[u8; 32]>),
+    /// `btcAccountsChanged`: the connected Bitcoin addresses (0..=2, spec/05 §4.9).
+    BtcAccountsChanged(Vec<String>),
 }
 
 fn int_field(value: Option<&Value>) -> Option<u64> {
@@ -519,6 +553,18 @@ pub fn encode_event(
         BrowserEvent::ChainChanged(chain_id) => {
             ("chainChanged", json_str(&chain_id_hex(*chain_id)))
         }
+        BrowserEvent::SolAccountsChanged(keys) => (
+            "solAccountsChanged",
+            Value::Array(
+                keys.iter()
+                    .map(|key| json_str(&yw_core::codec::base58::base58_encode(key)))
+                    .collect(),
+            ),
+        ),
+        BrowserEvent::BtcAccountsChanged(addresses) => (
+            "btcAccountsChanged",
+            Value::Array(addresses.iter().map(|address| json_str(address)).collect()),
+        ),
     };
     yw_json::to_vec(&json_object(vec![
         ("namespace", json_str(NAMESPACE)),

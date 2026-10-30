@@ -14,7 +14,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use yw_core::evm::address::Address;
-use yw_core::policy::{BrowserOrigin, ConnectedSite, MAX_GRANTS, Method, ProviderError, Route};
+use yw_core::policy::{
+    BrowserOrigin, BtcGrant, BtcPurpose, ConnectedSite, Family, MAX_CHAIN_GRANTS, MAX_GRANTS,
+    Method, ProviderError, Route, SolGrant,
+};
 use yw_json::Value;
 
 use super::envelope::{
@@ -170,6 +173,7 @@ struct Conn {
 struct ApprovalInfo {
     origin: BrowserOrigin,
     connect: bool,
+    family: Family,
 }
 
 /// What [`BrowserCore::admit_site`] checks an approval-class request against.
@@ -178,6 +182,8 @@ struct Admission<'a> {
     chain_id: u64,
     vault: VaultView,
     grant: Option<&'a ConnectedSite>,
+    sol_grant: Option<&'a SolGrant>,
+    btc_grant: Option<&'a BtcGrant>,
     now_ms: u64,
 }
 
@@ -206,6 +212,10 @@ struct State {
     chain_cache: Lru<BrowserOrigin, u64>,
     wallet: WalletView,
     grants: Vec<ConnectedSite>,
+    /// Solana grants (empty while locked, spec/05 §4.9).
+    sol_grants: Vec<SolGrant>,
+    /// Bitcoin grants (empty while locked).
+    btc_grants: Vec<BtcGrant>,
     approvals: HashMap<RequestKey, ApprovalInfo>,
     reads_total: usize,
     reads_per_document: HashMap<Id32, usize>,
@@ -300,6 +310,8 @@ impl BrowserCore {
                 chain_cache: Lru::new(MAX_CHAIN_CACHE),
                 wallet: WalletView::default(),
                 grants: Vec::new(),
+                sol_grants: Vec::new(),
+                btc_grants: Vec::new(),
                 approvals: HashMap::new(),
                 reads_total: 0,
                 reads_per_document: HashMap::new(),
@@ -496,11 +508,30 @@ impl BrowserCore {
     /// `accountsChanged([])` (spec/05 §4.4).
     pub fn lock_wallet(&self) {
         let mut state = self.lock();
-        let origins: Vec<BrowserOrigin> = state.grants.iter().map(|s| s.origin.clone()).collect();
+        let mut origins: Vec<BrowserOrigin> =
+            state.grants.iter().map(|s| s.origin.clone()).collect();
         state.grants.clear();
         for origin in &origins {
             Self::emit_locked(&state, origin, &BrowserEvent::AccountsChanged(Vec::new()));
         }
+        let sol: Vec<BrowserOrigin> = state.sol_grants.drain(..).map(|g| g.origin).collect();
+        for origin in &sol {
+            Self::emit_locked(
+                &state,
+                origin,
+                &BrowserEvent::SolAccountsChanged(Vec::new()),
+            );
+        }
+        let btc: Vec<BrowserOrigin> = state.btc_grants.drain(..).map(|g| g.origin).collect();
+        for origin in &btc {
+            Self::emit_locked(
+                &state,
+                origin,
+                &BrowserEvent::BtcAccountsChanged(Vec::new()),
+            );
+        }
+        origins.extend(sol);
+        origins.extend(btc);
         if !origins.is_empty() {
             state.locked_connected = origins;
         }
@@ -579,6 +610,94 @@ impl BrowserCore {
         let removed = state.grants.len() != before;
         if removed {
             Self::emit_locked(&state, origin, &BrowserEvent::AccountsChanged(Vec::new()));
+        }
+        removed
+    }
+
+    /// Wallet unlocked: the Solana and Bitcoin grants of meta are loaded and their origins get
+    /// `solAccountsChanged`/`btcAccountsChanged` (spec/05 §4.9; a Bitcoin grant of another network
+    /// than the settings network exposes nothing).
+    pub fn unlock_chains(&self, sol: Vec<SolGrant>, btc: Vec<BtcGrant>) {
+        let mut state = self.lock();
+        state.sol_grants = sol;
+        state.btc_grants = btc;
+        for grant in &state.sol_grants {
+            Self::emit_locked(
+                &state,
+                &grant.origin,
+                &BrowserEvent::SolAccountsChanged(vec![grant.public]),
+            );
+        }
+        for grant in &state.btc_grants {
+            let event = BrowserEvent::BtcAccountsChanged(btc_addresses(&state, grant));
+            Self::emit_locked(&state, &grant.origin, &event);
+        }
+    }
+
+    /// The Solana grants (empty while locked).
+    #[must_use]
+    pub fn sol_grants(&self) -> Vec<SolGrant> {
+        self.lock().sol_grants.clone()
+    }
+
+    /// The Bitcoin grants (empty while locked).
+    #[must_use]
+    pub fn btc_grants(&self) -> Vec<BtcGrant> {
+        self.lock().btc_grants.clone()
+    }
+
+    /// Solana connect approved: stores the grant and sends `solAccountsChanged`.
+    pub fn upsert_sol_grant(&self, grant: SolGrant) {
+        let mut state = self.lock();
+        let origin = grant.origin.clone();
+        let public = grant.public;
+        state.sol_grants.retain(|known| known.origin != origin);
+        state.sol_grants.push(grant);
+        Self::emit_locked(
+            &state,
+            &origin,
+            &BrowserEvent::SolAccountsChanged(vec![public]),
+        );
+    }
+
+    /// Bitcoin connect approved: stores the grant and sends `btcAccountsChanged`.
+    pub fn upsert_btc_grant(&self, grant: BtcGrant) {
+        let mut state = self.lock();
+        let origin = grant.origin.clone();
+        let event = BrowserEvent::BtcAccountsChanged(btc_addresses(&state, &grant));
+        state.btc_grants.retain(|known| known.origin != origin);
+        state.btc_grants.push(grant);
+        Self::emit_locked(&state, &origin, &event);
+    }
+
+    /// Removes the Solana grant of `origin` (S13, `sol_disconnect`); returns whether one existed.
+    pub fn remove_sol_grant(&self, origin: &BrowserOrigin) -> bool {
+        let mut state = self.lock();
+        let before = state.sol_grants.len();
+        state.sol_grants.retain(|grant| grant.origin != *origin);
+        let removed = state.sol_grants.len() != before;
+        if removed {
+            Self::emit_locked(
+                &state,
+                origin,
+                &BrowserEvent::SolAccountsChanged(Vec::new()),
+            );
+        }
+        removed
+    }
+
+    /// Removes the Bitcoin grant of `origin`; returns whether one existed.
+    pub fn remove_btc_grant(&self, origin: &BrowserOrigin) -> bool {
+        let mut state = self.lock();
+        let before = state.btc_grants.len();
+        state.btc_grants.retain(|grant| grant.origin != *origin);
+        let removed = state.btc_grants.len() != before;
+        if removed {
+            Self::emit_locked(
+                &state,
+                origin,
+                &BrowserEvent::BtcAccountsChanged(Vec::new()),
+            );
         }
         removed
     }
@@ -761,7 +880,12 @@ impl BrowserCore {
             Self::log_error(name, &error, conn);
             Self::answer_direct(state, conn, correlation, Err(error));
         };
-        if method.route() != request.route {
+        if method.route() != request.route
+            || request
+                .context
+                .compat_mode
+                .is_some_and(|mode| mode.family() != method.family())
+        {
             reject(&state, ProviderError::InvalidRequest);
             return;
         }
@@ -828,6 +952,25 @@ impl BrowserCore {
         let chain_id = Self::origin_chain_locked(&mut state, &origin);
         let vault = state.wallet.vault;
         let grant = state.grants.iter().find(|s| s.origin == origin).cloned();
+        let sol_grant = (vault == VaultView::Unlocked)
+            .then(|| {
+                state
+                    .sol_grants
+                    .iter()
+                    .find(|g| g.origin == origin)
+                    .cloned()
+            })
+            .flatten();
+        let btc_network = state.wallet.btc_network;
+        let btc_grant = (vault == VaultView::Unlocked)
+            .then(|| {
+                state
+                    .btc_grants
+                    .iter()
+                    .find(|g| g.origin == origin && g.network == btc_network)
+                    .cloned()
+            })
+            .flatten();
         let immediate = |state: &mut State, body: Answer| {
             match &body {
                 Ok(_) => logging::info(
@@ -916,6 +1059,84 @@ impl BrowserCore {
                     });
                 }
             }
+            (Method::SolAccounts, _) => {
+                let list = sol_grant.as_ref().map_or_else(Vec::new, |grant| {
+                    vec![Value::String(yw_core::codec::base58::base58_encode(
+                        &grant.public,
+                    ))]
+                });
+                immediate(&mut state, Ok(Value::Array(list)));
+            }
+            (Method::SolConnect, Validated::SolConnect { only_if_trusted })
+                if sol_grant.is_some() || only_if_trusted =>
+            {
+                // Phantom `onlyIfTrusted`: answered from the grant only, never a window.
+                let body = sol_grant
+                    .as_ref()
+                    .map(|grant| sol_connect_value(&grant.public))
+                    .ok_or(ProviderError::UserRejected);
+                immediate(&mut state, body);
+            }
+            (Method::BtcGetAccounts, _) => {
+                let list = btc_grant
+                    .as_ref()
+                    .map_or_else(|| Value::Array(Vec::new()), |g| btc_accounts_value(g, None));
+                immediate(&mut state, Ok(list));
+            }
+            (Method::BtcGetNetwork, _) => {
+                let name = match btc_network {
+                    yw_core::btc::BtcNetwork::Mainnet => "mainnet",
+                    yw_core::btc::BtcNetwork::Testnet4 => "testnet4",
+                };
+                immediate(&mut state, Ok(Value::String(name.to_owned())));
+            }
+            (Method::BtcRequestAccounts, Validated::BtcRequestAccounts(purposes))
+                if btc_grant.as_ref().is_some_and(|g| {
+                    purposes
+                        .iter()
+                        .all(|purpose| g.addresses.iter().any(|entry| entry.purpose == *purpose))
+                }) =>
+            {
+                let body = btc_grant
+                    .as_ref()
+                    .map(|g| btc_accounts_value(g, Some(&purposes)))
+                    .ok_or(ProviderError::Internal);
+                immediate(&mut state, body);
+            }
+            (Method::SolDisconnect | Method::BtcDisconnect, _) => {
+                // Locked: nothing is known about the grant; the page forgets the account itself
+                // and the grant stays until it is disconnected while unlocked (spec/05 §4.9).
+                let unlocked =
+                    matches!(vault, VaultView::Unlocked | VaultView::PassphraseUnverified);
+                let solana = method == Method::SolDisconnect;
+                let removed = unlocked
+                    && if solana {
+                        let before = state.sol_grants.len();
+                        state.sol_grants.retain(|g| g.origin != origin);
+                        before != state.sol_grants.len()
+                    } else {
+                        let before = state.btc_grants.len();
+                        state.btc_grants.retain(|g| g.origin != origin);
+                        before != state.btc_grants.len()
+                    };
+                immediate(&mut state, Ok(Value::Null));
+                if removed {
+                    let (event, change) = if solana {
+                        (
+                            BrowserEvent::SolAccountsChanged(Vec::new()),
+                            GrantChange::SolRevoked,
+                        )
+                    } else {
+                        (
+                            BrowserEvent::BtcAccountsChanged(Vec::new()),
+                            GrantChange::BtcRevoked,
+                        )
+                    };
+                    Self::emit_locked(&state, &origin, &event);
+                    drop(state);
+                    let _ = self.sink.push(DappEvent::GrantChanged { origin, change });
+                }
+            }
             (Method::RequestAccounts, _) if vault == VaultView::Unlocked && grant.is_some() => {
                 let bytes: Vec<[u8; 20]> = grant
                     .iter()
@@ -972,6 +1193,48 @@ impl BrowserCore {
                         source,
                         value,
                     },
+                    (Method::SolConnect, _) => SiteKind::SolConnect,
+                    (Method::BtcRequestAccounts, Validated::BtcRequestAccounts(purposes)) => {
+                        SiteKind::BtcConnect(purposes)
+                    }
+                    (Method::SolSignMessage, Validated::SolSignMessage { public, message }) => {
+                        SiteKind::SolSign {
+                            public,
+                            message,
+                            sign_in: false,
+                        }
+                    }
+                    (Method::SolSignIn, Validated::SolSignIn { public, mut input }) => {
+                        // The wallet fills the two required fields the dApp may leave out.
+                        if input.domain.is_empty() {
+                            input.domain = origin_authority(&origin);
+                        }
+                        if input.address.is_empty() {
+                            input.address = yw_core::codec::base58::base58_encode(&public);
+                        }
+                        let message = input.to_text().into_bytes();
+                        if message.len() > yw_core::sol::msgsign::MAX_SOL_MESSAGE_BYTES {
+                            immediate(&mut state, Err(ProviderError::InvalidParams));
+                            return;
+                        }
+                        SiteKind::SolSign {
+                            public,
+                            message,
+                            sign_in: true,
+                        }
+                    }
+                    (
+                        Method::BtcSignMessage,
+                        Validated::BtcSignMessage {
+                            address,
+                            message,
+                            protocol,
+                        },
+                    ) => SiteKind::BtcSign {
+                        address,
+                        message,
+                        protocol,
+                    },
                     _ => {
                         immediate(&mut state, Err(ProviderError::Internal));
                         return;
@@ -982,6 +1245,8 @@ impl BrowserCore {
                     chain_id,
                     vault,
                     grant: grant.as_ref(),
+                    sol_grant: sol_grant.as_ref(),
+                    btc_grant: btc_grant.as_ref(),
                     now_ms: now,
                 };
                 if let Err(error) = Self::admit_site(&state, &admission, &kind) {
@@ -1003,6 +1268,7 @@ impl BrowserCore {
                     ApprovalInfo {
                         origin: origin.clone(),
                         connect: kind.is_connect(),
+                        family: kind.family(),
                     },
                 );
                 drop(state);
@@ -1052,11 +1318,12 @@ impl BrowserCore {
         kind: &SiteKind,
     ) -> Result<(), ProviderError> {
         let origin = admission.origin;
+        let family = kind.family();
         let connecting = || {
             state
                 .approvals
                 .values()
-                .any(|info| info.connect && info.origin == *origin)
+                .any(|info| info.connect && info.origin == *origin && info.family == family)
         };
         match admission.vault {
             VaultView::NoVault | VaultView::Unavailable | VaultView::BackupPending => {
@@ -1080,10 +1347,29 @@ impl BrowserCore {
                 {
                     return Err(ProviderError::Unauthorized);
                 }
-                if kind.is_connect()
-                    && admission.grant.is_none()
-                    && state.grants.len() >= MAX_GRANTS
-                {
+                // spec/05 §4.9: a signing request names a granted Solana key / Bitcoin address.
+                let chain_ok = match kind {
+                    SiteKind::SolSign { public, .. } => {
+                        admission.sol_grant.is_some_and(|g| g.public == *public)
+                    }
+                    SiteKind::BtcSign { address, .. } => admission
+                        .btc_grant
+                        .is_some_and(|g| g.entry(address).is_some()),
+                    _ => true,
+                };
+                if !chain_ok && !connecting() {
+                    return Err(ProviderError::Unauthorized);
+                }
+                let full = match family {
+                    Family::Evm => admission.grant.is_none() && state.grants.len() >= MAX_GRANTS,
+                    Family::Solana => {
+                        admission.sol_grant.is_none() && state.sol_grants.len() >= MAX_CHAIN_GRANTS
+                    }
+                    Family::Bitcoin => {
+                        admission.btc_grant.is_none() && state.btc_grants.len() >= MAX_CHAIN_GRANTS
+                    }
+                };
+                if kind.is_connect() && full {
                     return Err(ProviderError::Unauthorized);
                 }
             }
@@ -1214,6 +1500,63 @@ impl BrowserCore {
     pub fn is_stopped(&self) -> bool {
         self.stopped.load(Ordering::Acquire)
     }
+}
+
+/// `host[:port]` of an origin (the SIWS `domain` a wallet fills in).
+fn origin_authority(origin: &BrowserOrigin) -> String {
+    match origin.port() {
+        Some(port) => format!("{}:{port}", origin.host()),
+        None => origin.host().to_owned(),
+    }
+}
+
+/// `{ "publicKey": base58 }` (`sol_connect` result).
+pub(crate) fn sol_connect_value(public: &[u8; 32]) -> Value {
+    crate::text::json_object(vec![(
+        "publicKey",
+        crate::text::json_str(&yw_core::codec::base58::base58_encode(public)),
+    )])
+}
+
+/// The addresses a Bitcoin grant exposes now (none for another network than the settings one).
+fn btc_addresses(state: &State, grant: &BtcGrant) -> Vec<String> {
+    if grant.network == state.wallet.btc_network {
+        grant
+            .addresses
+            .iter()
+            .map(|entry| entry.address.clone())
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// `btc_requestAccounts`/`btc_getAccounts` result: `[{ address, publicKey, purpose,
+/// addressType }]` (sats-connect address fields; `publicKey` lowercase hex of the key the
+/// address commits to), optionally only the requested purposes.
+pub(crate) fn btc_accounts_value(grant: &BtcGrant, purposes: Option<&[BtcPurpose]>) -> Value {
+    use crate::text::{json_object, json_str};
+    Value::Array(
+        grant
+            .addresses
+            .iter()
+            .filter(|entry| purposes.is_none_or(|wanted| wanted.contains(&entry.purpose)))
+            .map(|entry| {
+                json_object(vec![
+                    ("address", json_str(&entry.address)),
+                    (
+                        "publicKey",
+                        json_str(&yw_core::hex::encode(entry.pubkey.as_bytes())),
+                    ),
+                    ("purpose", json_str(entry.purpose.as_str())),
+                    (
+                        "addressType",
+                        json_str(yw_core::policy::btc_address_type(entry.script_type)),
+                    ),
+                ])
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]

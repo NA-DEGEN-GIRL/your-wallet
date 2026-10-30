@@ -20,6 +20,7 @@ pub mod fee;
 pub mod intent;
 pub mod keys;
 pub mod message;
+pub mod msgsign;
 pub mod pda;
 pub mod recipient;
 pub mod rent;

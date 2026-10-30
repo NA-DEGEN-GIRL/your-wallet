@@ -53,6 +53,21 @@ const OPTIONAL_KEYS: [&str; 2] = ["sol_raw_accounts", "sol_raw_selected"];
 /// the required keys when there is something to store; a file without it has no such accounts.
 pub const BTC_ACCOUNTS_KEY: &str = "btc_accounts";
 
+/// The optional top-level keys of the Solana and Bitcoin dApp grants (spec/02 §5.3, spec/05
+/// §4.9): written only when non-empty, kept unread (as unknown keys) by earlier versions.
+pub const SOL_SITES_KEY: &str = "sol_sites";
+/// See [`SOL_SITES_KEY`].
+pub const BTC_SITES_KEY: &str = "btc_sites";
+
+/// meta `sol_sites` and `btc_sites` as validated JSON values (spec/05 §4.9).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChainSites {
+    /// `sol_sites`.
+    pub sol: Vec<Value>,
+    /// `btc_sites`.
+    pub btc: Vec<Value>,
+}
+
 const LIMITS: Limits = Limits {
     max_bytes: META_MAX_BYTES,
     max_depth: 16,
@@ -191,6 +206,9 @@ pub struct Meta {
     pub address_book: Vec<Value>,
     /// Connected sites (M5).
     pub connected_sites: Vec<Value>,
+    /// Solana and Bitcoin dApp grants (`sol_sites`/`btc_sites`, optional keys; boxed to keep
+    /// the document small in key-worker messages).
+    pub chain_sites: Box<ChainSites>,
     /// Tokens per network.
     pub tokens: Vec<(String, Vec<Value>)>,
     /// Activity per network.
@@ -219,6 +237,7 @@ impl Default for Meta {
             btc_accounts: BtcAccounts::default(),
             address_book: Vec::new(),
             connected_sites: Vec::new(),
+            chain_sites: Box::default(),
             tokens: Vec::new(),
             activity: Vec::new(),
             prefs: Prefs::default(),
@@ -561,6 +580,10 @@ fn parse_prefs(value: &Value, meta: &Meta) -> Option<Prefs> {
 ///
 /// [`MetaError`] for any schema violation (outside `prefs`). Unknown top-level keys are not a
 /// violation: they are kept in [`Meta::unknown`] (spec/04 §6.6).
+#[expect(
+    clippy::too_many_lines,
+    reason = "every top-level key of spec/02 §5.3 in order"
+)]
 pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
     let root = yw_json::parse(bytes, &LIMITS).map_err(|_| MetaError)?;
     let object = root.as_object().ok_or(MetaError)?;
@@ -572,7 +595,11 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
     let unknown: Vec<(String, Value)> = object
         .iter()
         .filter(|(key, _)| {
-            !KEYS.contains(key) && !OPTIONAL_KEYS.contains(key) && *key != BTC_ACCOUNTS_KEY
+            !KEYS.contains(key)
+                && !OPTIONAL_KEYS.contains(key)
+                && *key != BTC_ACCOUNTS_KEY
+                && *key != SOL_SITES_KEY
+                && *key != BTC_SITES_KEY
         })
         .map(|(key, value)| (key.to_owned(), value.clone()))
         .collect();
@@ -628,6 +655,20 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
     if connected_sites.len() > MAX_SITES || !connected_sites.iter().all(valid_site) {
         return Err(MetaError);
     }
+    let chain_sites = |key: &str| -> Result<Vec<Value>, MetaError> {
+        match object.get(key) {
+            None => Ok(Vec::new()),
+            Some(value) => {
+                let items = value.as_array().ok_or(MetaError)?;
+                if items.len() > MAX_SITES || !items.iter().all(|item| item.as_object().is_some()) {
+                    return Err(MetaError);
+                }
+                Ok(items.to_vec())
+            }
+        }
+    };
+    let sol_sites = chain_sites(SOL_SITES_KEY)?;
+    let btc_sites = chain_sites(BTC_SITES_KEY)?;
     let tokens = parse_network_map(
         get("tokens")?,
         MAX_TOKENS_PER_NETWORK,
@@ -655,6 +696,10 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         btc_accounts,
         address_book,
         connected_sites,
+        chain_sites: Box::new(ChainSites {
+            sol: sol_sites,
+            btc: btc_sites,
+        }),
         tokens,
         activity,
         prefs: Prefs::default(),
@@ -769,6 +814,12 @@ impl Meta {
         ];
         if self.btc_accounts != BtcAccounts::default() {
             members.push((BTC_ACCOUNTS_KEY, self.btc_accounts.to_json()));
+        }
+        if !self.chain_sites.sol.is_empty() {
+            members.push((SOL_SITES_KEY, Value::Array(self.chain_sites.sol.clone())));
+        }
+        if !self.chain_sites.btc.is_empty() {
+            members.push((BTC_SITES_KEY, Value::Array(self.chain_sites.btc.clone())));
         }
         members
     }

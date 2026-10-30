@@ -102,7 +102,7 @@ class FakePort {
   }
 }
 
-function harness({ connectThrows = false, compatMode } = {}) {
+function harness({ connectThrows = false, compatMode, solCompatMode, btcCompatMode } = {}) {
   const clock = new FakeClock();
   const page = [];
   const ports = [];
@@ -110,6 +110,8 @@ function harness({ connectThrows = false, compatMode } = {}) {
   const bridge = new ContentBridge({
     channelNonce: CHANNEL,
     ...(compatMode === undefined ? {} : { compatMode }),
+    ...(solCompatMode === undefined ? {} : { solCompatMode }),
+    ...(btcCompatMode === undefined ? {} : { btcCompatMode }),
     connectPort: () => {
       if (connectThrows) {
         throw new Error("Extension context invalidated.");
@@ -143,7 +145,7 @@ function harness({ connectThrows = false, compatMode } = {}) {
 test("C1 no port before the first request; IDLE -> CONNECTING -> ACTIVE keeps queue order", () => {
   const h = harness();
   h.bridge.announce();
-  assert.deepEqual(h.page, [{ namespace: "your-wallet", version: 1, kind: "bridge-init", channel: CHANNEL, compatMode: "off" }]);
+  assert.deepEqual(h.page, [{ namespace: "your-wallet", version: 1, kind: "bridge-init", channel: CHANNEL, compatMode: "off", solCompatMode: "off", btcCompatMode: "off" }]);
   h.bridge.receivePage({ namespace: "your-wallet", version: 1, kind: "bridge-request" });
   assert.equal(h.page.filter((message) => message.kind === "bridge-init").length, 2);
   assert.equal(h.ports.length, 0);
@@ -386,8 +388,8 @@ test("C5 bridge-init carries the document's mode; requests carry compatMode only
     h.bridge.announce();
     h.bridge.receivePage({ namespace: "your-wallet", version: 1, kind: "bridge-request" });
     assert.deepEqual(h.page, [
-      { namespace: "your-wallet", version: 1, kind: "bridge-init", channel: CHANNEL, compatMode },
-      { namespace: "your-wallet", version: 1, kind: "bridge-init", channel: CHANNEL, compatMode }
+      { namespace: "your-wallet", version: 1, kind: "bridge-init", channel: CHANNEL, compatMode, solCompatMode: "off", btcCompatMode: "off" },
+      { namespace: "your-wallet", version: 1, kind: "bridge-init", channel: CHANNEL, compatMode, solCompatMode: "off", btcCompatMode: "off" }
     ], compatMode);
     h.request(rid(1), "eth_requestAccounts");
     h.ports[0].activate();
@@ -412,6 +414,41 @@ test("C5 bridge-init carries the document's mode; requests carry compatMode only
   const plain = harness();
   plain.bridge.announce();
   assert.equal(plain.page[0].compatMode, "off");
+});
+
+test("C6 Solana/Bitcoin modes go to bridge-init and only to requests of their own family", () => {
+  const h = harness({ compatMode: "metamask", solCompatMode: "phantom", btcCompatMode: "xverse" });
+  h.bridge.announce();
+  assert.deepEqual(h.page[0], {
+    namespace: "your-wallet", version: 1, kind: "bridge-init", channel: CHANNEL,
+    compatMode: "metamask", solCompatMode: "phantom", btcCompatMode: "xverse"
+  });
+  h.request(rid(1), "eth_chainId");
+  h.request(rid(2), "sol_connect");
+  h.request(rid(3), "btc_getNetwork");
+  h.ports[0].activate();
+  assert.deepEqual(h.ports[0].sent.map((message) => message.compatMode), ["metamask", "phantom", "xverse"]);
+  for (const message of h.ports[0].sent) {
+    assert.notEqual(shared.parseContentMessage(message, ACTIVATION), null);
+  }
+  // A mode of another family is a malformed content message.
+  assert.equal(shared.parseContentMessage({ ...h.ports[0].sent[1], compatMode: "metamask" }, ACTIVATION), null);
+  assert.equal(shared.parseContentMessage({ ...h.ports[0].sent[0], compatMode: "phantom" }, ACTIVATION), null);
+  for (const [solCompatMode, btcCompatMode] of [["metamask", "off"], ["off", "phantom"], ["Phantom", "off"]]) {
+    assert.throws(() => new ContentBridge({
+      channelNonce: CHANNEL, solCompatMode, btcCompatMode, connectPort: () => null, postToPage: () => {},
+      isContextValid: () => true, setTimer: () => 0, clearTimer: () => {}, now: () => 0
+    }), TypeError);
+  }
+});
+
+test("C6 loadCompatModes reads the three keys and normalizes each", async () => {
+  const { loadCompatModes } = globalThis.__YOUR_WALLET_CONTENT_CORE__;
+  const clock = new FakeClock();
+  const run = (stored) => loadCompatModes({ readStorage: () => Promise.resolve(stored), setTimer: clock.setTimer, clearTimer: clock.clearTimer });
+  assert.deepEqual({ ...await run({ compatMode: "rabby", solCompatMode: "phantom", btcCompatMode: "unisat" }) }, { evm: "rabby", sol: "phantom", btc: "unisat" });
+  assert.deepEqual({ ...await run({ solCompatMode: "metamask", btcCompatMode: "phantom" }) }, { evm: "off", sol: "off", btc: "off" });
+  assert.deepEqual({ ...await loadCompatModes({ readStorage: () => Promise.reject(new Error("x")), setTimer: clock.setTimer, clearTimer: clock.clearTimer }) }, { evm: "off", sol: "off", btc: "off" });
 });
 
 test("C5 loadCompatMode reads compatMode once and falls back to off on bad values, errors and timeouts", async () => {

@@ -37,16 +37,22 @@
   // world in `bridge-init`. The page provider waits for that message (a few ms) before its first
   // EIP-6963 announcement, so no listener is needed until the mode is known: a `bridge-request`
   // posted earlier is answered by the `announce()` below.
-  contentCore.loadCompatMode({
-    readStorage: () => chrome.storage.local.get(shared.COMPAT_MODE_STORAGE_KEY),
+  contentCore.loadCompatModes({
+    readStorage: () => chrome.storage.local.get([
+      shared.COMPAT_MODE_STORAGE_KEY,
+      shared.SOL_COMPAT_MODE_STORAGE_KEY,
+      shared.BTC_COMPAT_MODE_STORAGE_KEY
+    ]),
     setTimer,
     clearTimer
   }).then(start);
 
-  function start(compatMode) {
+  function start(modes) {
     const bridge = new contentCore.ContentBridge({
       channelNonce: shared.randomHex(32),
-      compatMode,
+      compatMode: modes.evm,
+      solCompatMode: modes.sol,
+      btcCompatMode: modes.btc,
       connectPort,
       postToPage: (message) => root.postMessage(message, targetOrigin),
       isContextValid,

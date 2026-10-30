@@ -820,6 +820,24 @@ impl KeyWorker {
                 }
                 .map_err(crate::events::MessageSignFailure::Sign),
             }),
+            KeyJob::SignChainMessage { ticket, approved } => {
+                KeyOutcome::SignedChainMessage(crate::events::ChainMessageSigned {
+                    ticket,
+                    result: match self.vault.as_ref() {
+                        Some(vault)
+                            if approved.kind() == yw_core::approval::ApprovalKind::BtcMessage =>
+                        {
+                            yw_core::btc::msgsign::sign_message(vault, *approved)
+                                .map(crate::events::ChainSignature::Btc)
+                                .map_err(|_| false)
+                        }
+                        Some(vault) => yw_core::sol::msgsign::sign_message(vault, *approved)
+                            .map(crate::events::ChainSignature::Sol)
+                            .map_err(|_| false),
+                        None => Err(false),
+                    },
+                })
+            }
             KeyJob::SolKeys { purpose, sources } => KeyOutcome::SolKeys(
                 purpose,
                 self.vault().and_then(|vault| {

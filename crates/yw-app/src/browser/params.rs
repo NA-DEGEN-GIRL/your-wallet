@@ -132,6 +132,36 @@ pub enum Validated {
         /// The typed-data object.
         value: Value,
     },
+    /// `sol_connect`.
+    SolConnect {
+        /// Answer from the grant only, never open a window (Phantom `onlyIfTrusted`).
+        only_if_trusted: bool,
+    },
+    /// `sol_signMessage`.
+    SolSignMessage {
+        /// Signing account.
+        public: [u8; 32],
+        /// Message bytes.
+        message: Vec<u8>,
+    },
+    /// `sol_signIn` (`domain`/`address` empty when the dApp left them out).
+    SolSignIn {
+        /// Signing account.
+        public: [u8; 32],
+        /// The validated sign-in input.
+        input: Box<yw_core::sol::msgsign::SiwsMessage>,
+    },
+    /// `btc_requestAccounts`.
+    BtcRequestAccounts(Vec<yw_core::policy::BtcPurpose>),
+    /// `btc_signMessage`.
+    BtcSignMessage {
+        /// Signing address (a granted one).
+        address: String,
+        /// UTF-8 message bytes.
+        message: Vec<u8>,
+        /// Requested protocol (`None`: the address type's default).
+        protocol: Option<yw_core::btc::msgsign::BtcMessageProtocol>,
+    },
 }
 
 fn array(params: &Value) -> Checked<&[Value]> {
@@ -727,7 +757,17 @@ pub fn validate(method: Method, params: &Value) -> Result<Validated, ProviderErr
         | Method::ChainId
         | Method::NetVersion
         | Method::GetPermissions
-        | Method::ClientVersion => exactly_empty(values),
+        | Method::ClientVersion
+        | Method::SolDisconnect
+        | Method::SolAccounts
+        | Method::BtcGetAccounts
+        | Method::BtcDisconnect
+        | Method::BtcGetNetwork => exactly_empty(values),
+        Method::SolConnect => super::chain_params::sol_connect(values),
+        Method::SolSignMessage => super::chain_params::sol_sign_message(values),
+        Method::SolSignIn => super::chain_params::sol_sign_in(values),
+        Method::BtcRequestAccounts => super::chain_params::btc_request_accounts(values),
+        Method::BtcSignMessage => super::chain_params::btc_sign_message(values),
         Method::BlockNumber | Method::GasPrice | Method::MaxPriorityFeePerGas => {
             exactly_empty(values).map(|_| read(Vec::new()))
         }

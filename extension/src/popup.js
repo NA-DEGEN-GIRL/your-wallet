@@ -51,21 +51,22 @@ function requestStatus() {
   }
 }
 
-// One selectable card per mode: radio, label and its one-line explanation.
-function renderModes(selected) {
-  const group = byId("modes");
+// One selectable card per mode: radio, label and its one-line explanation. `kind` is the group
+// (evm, sol, btc), each with its own storage key and radio name.
+function renderModes(selected, kind = "evm", containerId = "modes") {
+  const group = byId(containerId);
   group.replaceChildren();
-  for (const option of popup.MODE_OPTIONS) {
+  for (const option of popup.GROUPS[kind].options) {
     const card = document.createElement("label");
     card.className = "mode";
     const input = document.createElement("input");
     input.type = "radio";
-    input.name = "compat-mode";
+    input.name = kind === "evm" ? "compat-mode" : `${kind}-compat-mode`;
     input.value = option.value;
     input.checked = option.value === selected;
     input.addEventListener("change", () => {
       if (input.checked) {
-        void saveMode(option.value);
+        void saveMode(option.value, kind);
       }
     });
     const text = document.createElement("span");
@@ -82,8 +83,8 @@ function renderModes(selected) {
   }
 }
 
-async function saveMode(mode) {
-  const update = popup.storageUpdate(mode);
+async function saveMode(mode, kind = "evm") {
+  const update = popup.storageUpdateFor(kind, mode);
   if (update === null) {
     return;
   }
@@ -95,12 +96,21 @@ async function saveMode(mode) {
   }
 }
 
-async function loadMode() {
+async function loadModes() {
   try {
-    const stored = await chrome.storage.local.get(shared.COMPAT_MODE_STORAGE_KEY);
-    return { mode: shared.normalizeCompatMode(stored?.[shared.COMPAT_MODE_STORAGE_KEY]), failed: false };
+    const stored = await chrome.storage.local.get([
+      shared.COMPAT_MODE_STORAGE_KEY,
+      shared.SOL_COMPAT_MODE_STORAGE_KEY,
+      shared.BTC_COMPAT_MODE_STORAGE_KEY
+    ]);
+    return {
+      mode: shared.normalizeCompatMode(stored?.[shared.COMPAT_MODE_STORAGE_KEY]),
+      sol: shared.normalizeSolCompatMode(stored?.[shared.SOL_COMPAT_MODE_STORAGE_KEY]),
+      btc: shared.normalizeBtcCompatMode(stored?.[shared.BTC_COMPAT_MODE_STORAGE_KEY]),
+      failed: false
+    };
   } catch (_error) {
-    return { mode: "off", failed: true };
+    return { mode: "off", sol: "off", btc: "off", failed: true };
   }
 }
 
@@ -110,10 +120,17 @@ async function main() {
   setText("mode-heading", popup.TEXT.modeHeading);
   setText("apply-note", popup.TEXT.applyNote);
   setText("warning", popup.TEXT.warning);
+  setText("sol-heading", popup.TEXT.solHeading);
+  setText("btc-heading", popup.TEXT.btcHeading);
+  setText("sol-warning", popup.TEXT.solWarning);
+  setText("btc-warning", popup.TEXT.btcWarning);
+  setText("chain-note", popup.TEXT.chainNote);
   setText("status-value", popup.TEXT.statusLoading);
   requestStatus();
-  const { mode, failed } = await loadMode();
+  const { mode, sol, btc, failed } = await loadModes();
   renderModes(mode);
+  renderModes(sol, "sol", "sol-modes");
+  renderModes(btc, "btc", "btc-modes");
   if (failed) {
     setText("mode-saved", popup.TEXT.loadFailed);
   }

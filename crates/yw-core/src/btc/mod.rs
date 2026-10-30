@@ -30,6 +30,7 @@ pub mod bech32;
 pub mod display;
 pub mod fee;
 pub mod meta;
+pub mod msgsign;
 pub mod network;
 pub mod policy;
 pub mod prevtx;

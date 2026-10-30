@@ -8,6 +8,7 @@
 //! [`DappEvent::Request`]. The UI owns meta; grants changed by the reader thread (revoke,
 //! chain switch) are mirrored to meta through [`DappEvent::GrantChanged`].
 
+pub mod chain_params;
 pub mod dispatch;
 pub mod envelope;
 pub mod grants;
@@ -201,6 +202,10 @@ pub struct WalletView {
     pub evm_chain_id: u64,
     /// `allowLocalhostDapps`.
     pub allow_localhost: bool,
+    /// The settings Solana cluster (SIWS `Chain ID`, approval binding).
+    pub sol_cluster: yw_core::sol::SolCluster,
+    /// The settings Bitcoin network (`btc_getNetwork`; grants of another network are unused).
+    pub btc_network: yw_core::btc::BtcNetwork,
 }
 
 impl Default for WalletView {
@@ -211,6 +216,8 @@ impl Default for WalletView {
             blocked: Vec::new(),
             evm_chain_id: yw_core::evm::chain::SEPOLIA,
             allow_localhost: false,
+            sol_cluster: yw_core::sol::SolCluster::Devnet,
+            btc_network: yw_core::btc::BtcNetwork::Testnet4,
         }
     }
 }
@@ -260,13 +267,51 @@ pub enum SiteKind {
         /// The object.
         value: Value,
     },
+    /// `sol_connect` (window: pick one Solana account).
+    SolConnect,
+    /// `btc_requestAccounts` (window: one address per purpose).
+    BtcConnect(Vec<yw_core::policy::BtcPurpose>),
+    /// `sol_signMessage` / `sol_signIn` (the SIWS text already built from the validated input).
+    SolSign {
+        /// Signing account (a granted one).
+        public: [u8; 32],
+        /// Message bytes.
+        message: Vec<u8>,
+        /// `sol_signIn`.
+        sign_in: bool,
+    },
+    /// `btc_signMessage`.
+    BtcSign {
+        /// Signing address (a granted one).
+        address: String,
+        /// Message bytes (UTF-8).
+        message: Vec<u8>,
+        /// Requested protocol, `None` = the address type's default.
+        protocol: Option<yw_core::btc::msgsign::BtcMessageProtocol>,
+    },
 }
 
 impl SiteKind {
     /// Connect-window requests (`-32002` duplicates, spec/05 §4.2-1).
     #[must_use]
     pub const fn is_connect(&self) -> bool {
-        matches!(self, Self::RequestAccounts | Self::RequestPermissions)
+        matches!(
+            self,
+            Self::RequestAccounts
+                | Self::RequestPermissions
+                | Self::SolConnect
+                | Self::BtcConnect(_)
+        )
+    }
+
+    /// The chain family (grants, revocation and duplicate-window checks are per family).
+    #[must_use]
+    pub const fn family(&self) -> yw_core::policy::Family {
+        match self {
+            Self::SolConnect | Self::SolSign { .. } => yw_core::policy::Family::Solana,
+            Self::BtcConnect(_) | Self::BtcSign { .. } => yw_core::policy::Family::Bitcoin,
+            _ => yw_core::policy::Family::Evm,
+        }
     }
 
     /// Signing requests (spec/05 §4.5: revoked while waiting → 4100).
@@ -274,7 +319,11 @@ impl SiteKind {
     pub const fn is_signing(&self) -> bool {
         matches!(
             self,
-            Self::Send(_) | Self::PersonalSign { .. } | Self::TypedData { .. }
+            Self::Send(_)
+                | Self::PersonalSign { .. }
+                | Self::TypedData { .. }
+                | Self::SolSign { .. }
+                | Self::BtcSign { .. }
         )
     }
 }
@@ -306,6 +355,10 @@ pub enum GrantChange {
     Chain(u64),
     /// `wallet_revokePermissions` while unlocked.
     Revoked,
+    /// `sol_disconnect` while unlocked.
+    SolRevoked,
+    /// `btc_disconnect` while unlocked.
+    BtcRevoked,
 }
 
 /// Events for the UI thread.

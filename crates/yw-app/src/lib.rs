@@ -9,6 +9,7 @@ pub mod app_approval;
 pub mod app_browser;
 pub mod app_btc;
 pub mod app_btc_commands;
+pub mod app_chain_sites;
 pub mod app_evm;
 pub mod app_evm_commands;
 pub mod app_keys;

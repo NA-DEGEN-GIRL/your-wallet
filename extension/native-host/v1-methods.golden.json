@@ -8,7 +8,14 @@
     "wallet_requestPermissions",
     "wallet_getPermissions",
     "wallet_revokePermissions",
-    "web3_clientVersion"
+    "web3_clientVersion",
+    "sol_connect",
+    "sol_disconnect",
+    "sol_accounts",
+    "btc_requestAccounts",
+    "btc_getAccounts",
+    "btc_disconnect",
+    "btc_getNetwork"
   ],
   "read": [
     "eth_blockNumber",
@@ -30,7 +37,10 @@
   "signing": [
     "eth_sendTransaction",
     "personal_sign",
-    "eth_signTypedData_v4"
+    "eth_signTypedData_v4",
+    "sol_signMessage",
+    "sol_signIn",
+    "btc_signMessage"
   ],
   "rejected": [
     "eth_sign",
@@ -63,6 +73,13 @@
     "personal_sendTransaction",
     "eth_getProof",
     "debug_traceCall",
-    "eth_simulateV1"
+    "eth_simulateV1",
+    "sol_signTransaction",
+    "sol_signAllTransactions",
+    "sol_signAndSendTransaction",
+    "btc_signPsbt",
+    "btc_sendBitcoin",
+    "btc_pushTx",
+    "btc_sendTransfer"
   ]
 }

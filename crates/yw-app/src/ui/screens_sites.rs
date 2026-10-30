@@ -1,5 +1,7 @@
 //! S13 연결된 사이트 (spec/04 §2.9): every grant with its origin (http badge), accounts in return
 //! order, origin chain and connection time; `연결 해제` per row and `모두 해제` (confirmation).
+//! Solana and Bitcoin connections (spec/05 §4.9: ownership proof only) follow the EVM grants with
+//! their own `연결 해제` rows; row ids count over the combined list.
 //! Also the S07 T-UNLOCK-PENDING line (spec/04 §2.5, §2.16).
 
 use core::fmt::Write as _;
@@ -21,6 +23,13 @@ pub mod ids {
     pub const FIXED: &[u16] = &[SITES_OPEN, SITES_REVOKE_ALL];
 }
 
+fn row_id(index: usize) -> u16 {
+    u16::try_from(index)
+        .ok()
+        .filter(|offset| *offset < ids::SITE_ROW_SPAN)
+        .map_or(0, |offset| ids::SITE_ROW_BASE + offset)
+}
+
 fn local_time(unix_ms: u64) -> String {
     let local = yw_win::time::local_wall_ms(unix_ms);
     let text = crate::logging::format_utc(local.unwrap_or(unix_ms));
@@ -38,11 +47,12 @@ impl App {
         items.push(crate::ui::screens::back_main());
         items.push(Item::Title("연결된 사이트".to_owned()));
         let grants = self.browser_grants();
+        let (sol_grants, btc_grants) = self.chain_grants();
         items.push(Item::Help(
             "연결된 사이트는 선택한 계정의 주소, 잔액, 거래 기록을 볼 수 있습니다. 서명과 전송은 매번 따로 승인합니다."
                 .to_owned(),
         ));
-        if grants.is_empty() {
+        if grants.is_empty() && sol_grants.is_empty() && btc_grants.is_empty() {
             items.push(Item::CardStart(None));
             items.push(Item::Subtitle("연결된 사이트가 없습니다".to_owned()));
             items.push(Item::Text(
@@ -82,14 +92,53 @@ impl App {
                 items.push(Item::Help(label.to_owned()));
                 items.push(Item::Mono(yw_core::evm::display::format_address(account)));
             }
-            let id = u16::try_from(index)
-                .ok()
-                .filter(|offset| *offset < ids::SITE_ROW_SPAN)
-                .map_or(0, |offset| ids::SITE_ROW_BASE + offset);
+            let id = row_id(index);
             if id != 0 {
                 items.push(Item::Row(vec![Ctl::danger(id, "연결 해제")]));
             }
             items.push(Item::CardEnd);
+        }
+        let mut index = grants.len();
+        for grant in &sol_grants {
+            items.push(Item::CardStart(Some(grant.origin.as_str().to_owned())));
+            items.push(Item::Field(
+                "네트워크".to_owned(),
+                "Solana (메시지 서명·소유 증명만)".to_owned(),
+            ));
+            items.push(Item::Field(
+                "연결 시각".to_owned(),
+                local_time(grant.granted_at_unix_ms),
+            ));
+            items.push(Item::Mono(yw_core::codec::base58::base58_encode(
+                &grant.public,
+            )));
+            let id = row_id(index);
+            if id != 0 {
+                items.push(Item::Row(vec![Ctl::danger(id, "연결 해제")]));
+            }
+            items.push(Item::CardEnd);
+            index += 1;
+        }
+        for grant in &btc_grants {
+            items.push(Item::CardStart(Some(grant.origin.as_str().to_owned())));
+            items.push(Item::Field(
+                "네트워크".to_owned(),
+                format!("{} (메시지 서명·소유 증명만)", grant.network.display_name()),
+            ));
+            items.push(Item::Field(
+                "연결 시각".to_owned(),
+                local_time(grant.granted_at_unix_ms),
+            ));
+            for entry in &grant.addresses {
+                items.push(Item::Help(entry.purpose.label().to_owned()));
+                items.push(Item::Mono(entry.address.clone()));
+            }
+            let id = row_id(index);
+            if id != 0 {
+                items.push(Item::Row(vec![Ctl::danger(id, "연결 해제")]));
+            }
+            items.push(Item::CardEnd);
+            index += 1;
         }
         items.push(Item::Row(vec![Ctl::danger(
             ids::SITES_REVOKE_ALL,
@@ -135,9 +184,18 @@ impl App {
                 else {
                     return false;
                 };
-                if let Some(site) = self.browser_grants().get(usize::from(offset)) {
+                let offset = usize::from(offset);
+                let grants = self.browser_grants();
+                let (sol, btc) = self.chain_grants();
+                if let Some(site) = grants.get(offset) {
                     let origin = site.origin.clone();
                     self.disconnect_site(&origin);
+                } else if let Some(grant) = sol.get(offset - grants.len()) {
+                    let origin = grant.origin.clone();
+                    self.disconnect_chain_site(&origin, yw_core::policy::Family::Solana);
+                } else if let Some(grant) = btc.get(offset - grants.len() - sol.len()) {
+                    let origin = grant.origin.clone();
+                    self.disconnect_chain_site(&origin, yw_core::policy::Family::Bitcoin);
                 }
                 true
             }

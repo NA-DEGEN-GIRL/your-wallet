@@ -1380,6 +1380,7 @@ impl App {
             KeyOutcome::SolKeys(purpose, result) => self.on_sol_keys(purpose, result),
             KeyOutcome::SignedSol(result) => self.on_sol_signed(result),
             KeyOutcome::SignedMessage(result) => self.browser_message_signed(result),
+            KeyOutcome::SignedChainMessage(result) => self.browser_chain_message_signed(&result),
             KeyOutcome::Imported(Err(_))
             | KeyOutcome::LockDone
             | KeyOutcome::Cancelled(..)

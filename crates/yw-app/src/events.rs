@@ -229,6 +229,13 @@ pub enum KeyJob {
         /// `true` = typed data.
         typed: bool,
     },
+    /// Sign an approved Solana or Bitcoin dApp message (spec/07 §19, spec/08 §17).
+    SignChainMessage {
+        /// Who answers the result.
+        ticket: SignTicket,
+        /// The one-time approval (moved).
+        approved: Box<Approved>,
+    },
     /// Apply and commit journal transitions (§5.2).
     JournalApply {
         /// Transitions.
@@ -324,6 +331,24 @@ pub struct MessageSigned {
     pub ticket: SignTicket,
     /// The 65-byte `r ‖ s ‖ v` signature or why there is none.
     pub result: Result<[u8; 65], MessageSignFailure>,
+}
+
+/// A Solana or Bitcoin message signature.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChainSignature {
+    /// Ed25519 signature.
+    Sol([u8; 64]),
+    /// Base64 Bitcoin signature and the committed hash.
+    Btc(yw_core::btc::msgsign::BtcMessageSignature),
+}
+
+/// A finished `SignChainMessage` job (or one cancelled by `Lock` before it ran).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChainMessageSigned {
+    /// The job's ticket.
+    pub ticket: SignTicket,
+    /// The signature, `Err(true)` when cancelled by the lock, `Err(false)` when refused.
+    pub result: Result<ChainSignature, bool>,
 }
 
 /// Journal record fields taken from the approval at signing time.
@@ -466,6 +491,7 @@ impl KeyJob {
             Self::LoadJournal => "LoadJournal",
             Self::SignEvm { .. } => "SignEvm",
             Self::SignMessage { .. } => "SignMessage",
+            Self::SignChainMessage { .. } => "SignChainMessage",
             Self::JournalApply { .. } => "JournalApply",
             Self::SolKeys { .. } => "SolKeys",
             Self::SignSol { .. } => "SignSol",
@@ -498,6 +524,12 @@ impl KeyJob {
                 ticket,
                 result: Err(MessageSignFailure::Locked),
             }),
+            Self::SignChainMessage { ticket, .. } => {
+                KeyOutcome::SignedChainMessage(ChainMessageSigned {
+                    ticket,
+                    result: Err(true),
+                })
+            }
             other => KeyOutcome::Cancelled(other.name(), KeyJobError::Locked),
         }
     }
@@ -588,6 +620,8 @@ pub enum KeyOutcome {
     SignedEvm(EvmSigned),
     /// `SignMessage` finished (or was cancelled by `Lock`), with its ticket.
     SignedMessage(MessageSigned),
+    /// A Solana or Bitcoin dApp message signature (or why there is none).
+    SignedChainMessage(ChainMessageSigned),
     /// Terminal journal records moved to activity (spec/03 §5.4).
     ActivityMoved(Vec<(NetworkId, ActivityEntry)>),
     /// Solana public keys.
@@ -631,6 +665,7 @@ pub fn accept_result(result: &KeyResult, current_epoch: u64) -> bool {
         KeyOutcome::LockDone
             | KeyOutcome::SignedEvm(_)
             | KeyOutcome::SignedMessage(_)
+            | KeyOutcome::SignedChainMessage(_)
             | KeyOutcome::SignedSol(_)
             | KeyOutcome::SignedBtc(_)
             | KeyOutcome::Cancelled("SignEvm" | "SignMessage" | "SignSol" | "SignBtc", _)

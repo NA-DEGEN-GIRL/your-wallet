@@ -156,15 +156,64 @@ struct PanelLayout {
     accounts: Vec<(usize, Rect)>,
 }
 
-/// Connect-window state (spec/05 §4.2).
+/// Connect-window state (spec/05 §4.2, §4.9).
 #[derive(Clone, Debug)]
 pub struct ConnectState {
-    /// Offered accounts (address, label) in list order.
-    pub accounts: Vec<(yw_core::evm::address::Address, String)>,
+    /// Offered accounts `(choice, label, address text, group)` in list order. EVM accounts are
+    /// checkboxes (1–16); Solana and Bitcoin choices are one radio group per purpose.
+    pub accounts: Vec<crate::app_chain_sites::ConnectEntry>,
     /// Selection.
     pub selected: Vec<bool>,
     /// Origin chain name.
     pub chain_name: String,
+    /// The request's chain family.
+    pub family: yw_core::policy::Family,
+    /// Number of radio groups (Solana 1, Bitcoin one per purpose; unused for EVM).
+    pub groups: u8,
+}
+
+impl ConnectState {
+    /// The gate's `connect_selected`: the checked count for EVM; for Solana/Bitcoin the count
+    /// when every group has exactly one choice, else 0 (approve disabled).
+    #[must_use]
+    pub fn gate_count(&self) -> usize {
+        let count = self.selected.iter().filter(|checked| **checked).count();
+        if self.family == yw_core::policy::Family::Evm {
+            return count;
+        }
+        let complete = (0..self.groups).all(|group| {
+            self.accounts
+                .iter()
+                .zip(&self.selected)
+                .filter(|((_, _, _, of), checked)| *of == group && **checked)
+                .count()
+                == 1
+        });
+        if complete { count } else { 0 }
+    }
+
+    /// Toggles entry `index`: a checkbox for EVM, a radio button within its group otherwise.
+    pub fn toggle(&mut self, index: usize) {
+        if self.family == yw_core::policy::Family::Evm {
+            if let Some(slot) = self.selected.get_mut(index) {
+                *slot = !*slot;
+            }
+            return;
+        }
+        let Some(group) = self.accounts.get(index).map(|(_, _, _, group)| *group) else {
+            return;
+        };
+        for (position, ((_, _, _, of), slot)) in self
+            .accounts
+            .iter()
+            .zip(self.selected.iter_mut())
+            .enumerate()
+        {
+            if *of == group {
+                *slot = position == index;
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -860,6 +909,21 @@ impl App {
     }
 
     fn connect_state(&self, site: &SiteRequest) -> ConnectState {
+        let family = site.kind.family();
+        if family != yw_core::policy::Family::Evm {
+            let (accounts, selected, chain_name) = self.chain_connect_choices(site);
+            let groups = match &site.kind {
+                SiteKind::BtcConnect(purposes) => u8::try_from(purposes.len()).unwrap_or(1),
+                _ => 1,
+            };
+            return ConnectState {
+                accounts,
+                selected,
+                chain_name,
+                family,
+                groups,
+            };
+        }
         let granted: Vec<yw_core::evm::address::Address> = self
             .browser_grants()
             .into_iter()
@@ -879,12 +943,24 @@ impl App {
             })
             .collect();
         ConnectState {
-            accounts,
+            accounts: accounts
+                .into_iter()
+                .map(|(address, label)| {
+                    (
+                        crate::app_chain_sites::ConnectChoice::Evm(address),
+                        label,
+                        address.to_checksum(),
+                        0,
+                    )
+                })
+                .collect(),
             selected,
             chain_name: self
                 .settings
                 .evm_chain_name(site.chain_id)
                 .unwrap_or_else(|| format!("chainId {}", site.chain_id)),
+            family,
+            groups: 1,
         }
     }
 
@@ -914,7 +990,13 @@ impl App {
                 SiteKind::Send(_) => Some(RequestKind::EvmTx),
                 SiteKind::PersonalSign { .. } => Some(RequestKind::PersonalSign),
                 SiteKind::TypedData { .. } => Some(RequestKind::TypedData),
-                SiteKind::RequestAccounts | SiteKind::RequestPermissions | SiteKind::Revoke => None,
+                SiteKind::RequestAccounts
+                | SiteKind::RequestPermissions
+                | SiteKind::Revoke
+                | SiteKind::SolConnect
+                | SiteKind::BtcConnect(_)
+                | SiteKind::SolSign { .. }
+                | SiteKind::BtcSign { .. } => None,
             },
             QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => None,
         }
@@ -1095,7 +1177,10 @@ impl App {
     fn prepare_site(&mut self, job: u64, site: &SiteRequest) {
         let now = now_ms();
         match &site.kind {
-            SiteKind::RequestAccounts | SiteKind::RequestPermissions => {
+            SiteKind::RequestAccounts
+            | SiteKind::RequestPermissions
+            | SiteKind::SolConnect
+            | SiteKind::BtcConnect(_) => {
                 self.evm.queue.mark_ready(now);
                 let deadline = self
                     .evm
@@ -1103,9 +1188,7 @@ impl App {
                     .shown_deadline()
                     .unwrap_or(now.saturating_add(120_000));
                 if let Some(ui) = self.evm.window.as_mut() {
-                    let selected = ui.connect.as_ref().map_or(0, |connect| {
-                        connect.selected.iter().filter(|checked| **checked).count()
-                    });
+                    let selected = ui.connect.as_ref().map_or(0, ConnectState::gate_count);
                     let accounts = ui.connect.as_ref().map_or(0, |c| c.accounts.len());
                     ui.session.gate.deadline_ms = deadline;
                     let _ = ui.session.replace_content(
@@ -1200,6 +1283,12 @@ impl App {
                         ..yw_core::approval::ChainFacts::default()
                     };
                     self.on_typed_facts(job, &facts);
+                }
+            }
+            SiteKind::SolSign { .. } | SiteKind::BtcSign { .. } => {
+                match self.chain_sign_draft(site) {
+                    Some(draft) => self.show_ready_draft(draft, None),
+                    None => self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text()),
                 }
             }
             SiteKind::Revoke => self.finish_approval(QueueOutcome::Cancelled),
@@ -1509,14 +1598,28 @@ impl App {
                 _ => None,
             });
         if let Some((site, connect)) = connect {
-            let accounts: Vec<yw_core::evm::address::Address> = connect
+            if connect.gate_count() == 0 {
+                return;
+            }
+            let choices: Vec<crate::app_chain_sites::ConnectChoice> = connect
                 .accounts
                 .iter()
                 .zip(&connect.selected)
                 .filter(|(_, checked)| **checked)
-                .map(|((address, _), _)| *address)
+                .map(|((choice, _, _, _), _)| choice.clone())
                 .collect();
-            self.connect_approved(&site, accounts);
+            if connect.family == yw_core::policy::Family::Evm {
+                let accounts = choices
+                    .iter()
+                    .filter_map(|choice| match choice {
+                        crate::app_chain_sites::ConnectChoice::Evm(address) => Some(*address),
+                        _ => None,
+                    })
+                    .collect();
+                self.connect_approved(&site, accounts);
+            } else {
+                self.chain_connect_approved(&site, &choices);
+            }
             self.finish_approval(QueueOutcome::Approved);
             return;
         }
@@ -1599,6 +1702,10 @@ impl App {
         self.rebuild_view();
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one branch per approval kind, in the order of spec/03 §11.5"
+    )]
     fn consume_and_sign(&mut self) {
         let now = now_ms();
         let Some(ui) = self.evm.window.as_ref() else {
@@ -1631,6 +1738,23 @@ impl App {
                     && request.kind.is_btc()
                 {
                     self.btc_consumed(approved, btc);
+                    self.finish_approval(QueueOutcome::Approved);
+                    return;
+                }
+                if request.kind.is_chain_message() {
+                    let waiter = match &item {
+                        QueuedItem::Site(site) => Self::chain_waiter(site, approved.payload()),
+                        _ => None,
+                    };
+                    let Some(waiter) = waiter else {
+                        self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
+                        return;
+                    };
+                    let ticket = self.push_sign_waiter(waiter);
+                    self.key(KeyJob::SignChainMessage {
+                        ticket,
+                        approved: Box::new(approved),
+                    });
                     self.finish_approval(QueueOutcome::Approved);
                     return;
                 }
@@ -1726,6 +1850,10 @@ impl App {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "badges, connect view and signing view of every queue item kind"
+    )]
     fn rebuild_view(&mut self) {
         let now = now_ms();
         let testnet_chain = self.evm.window.as_ref().map(|ui| ui.item.chain_id());
@@ -1733,19 +1861,30 @@ impl App {
             return;
         };
         let mut badges = Vec::new();
-        if self
-            .settings
-            .evm_chains
-            .iter()
-            .any(|def| def.chain_id == chain_id)
+        let family = match self.evm.window.as_ref().map(|ui| &ui.item) {
+            Some(QueuedItem::Site(site)) => site.kind.family(),
+            _ => yw_core::policy::Family::Evm,
+        };
+        if family == yw_core::policy::Family::Evm
+            && self
+                .settings
+                .evm_chains
+                .iter()
+                .any(|def| def.chain_id == chain_id)
         {
             badges.push(crate::ui::screens_evm::custom_chain_badge(chain_id));
         }
-        let (evm_chain, sol_cluster) = match self.evm.window.as_ref().map(|ui| &ui.item) {
-            Some(QueuedItem::Sol(item)) => (None, Some(item.cluster)),
-            Some(QueuedItem::App(_) | QueuedItem::Site(_)) => (Some(chain_id), None),
-            Some(QueuedItem::Btc(_)) | None => (None, None),
+        let (evm_chain, sol_cluster) = match (self.evm.window.as_ref().map(|ui| &ui.item), family) {
+            (Some(QueuedItem::Sol(item)), _) => (None, Some(item.cluster)),
+            (Some(QueuedItem::Site(_)), yw_core::policy::Family::Solana) => {
+                (None, Some(self.sol_cluster()))
+            }
+            (Some(QueuedItem::Site(_)), yw_core::policy::Family::Bitcoin)
+            | (Some(QueuedItem::Btc(_)) | None, _) => (None, None),
+            (Some(QueuedItem::App(_) | QueuedItem::Site(_)), _) => (Some(chain_id), None),
         };
+        let site_btc_banner = (family == yw_core::policy::Family::Bitcoin)
+            .then(|| crate::ui::approval_view::BtcBanner::of(self.btc_network_now()));
         let mut testnet = false;
         if let Some((text, test)) = network_badge(evm_chain, sol_cluster) {
             testnet = test;
@@ -1766,7 +1905,7 @@ impl App {
                 let accounts: Vec<(String, String)> = connect
                     .accounts
                     .iter()
-                    .map(|(address, label)| (label.clone(), address.to_checksum()))
+                    .map(|(_, label, address, _)| (label.clone(), address.clone()))
                     .collect();
                 let mut connect_view = crate::ui::approval_view::connect_view(
                     site.origin.as_str(),
@@ -1774,6 +1913,7 @@ impl App {
                     &accounts,
                     &connect.selected,
                     &connect.chain_name,
+                    connect.family,
                 );
                 connect_view.badges.extend(badges);
                 connect_view.testnet = testnet;
@@ -1800,7 +1940,8 @@ impl App {
         }
         let btc_banner = match &ui.item {
             QueuedItem::Btc(item) => Some(crate::ui::approval_view::BtcBanner::of(item.network)),
-            QueuedItem::App(_) | QueuedItem::Site(_) | QueuedItem::Sol(_) => None,
+            QueuedItem::Site(_) => site_btc_banner,
+            QueuedItem::App(_) | QueuedItem::Sol(_) => None,
         };
         match view(
             &ui.session.gate.prepare,
@@ -1866,11 +2007,10 @@ impl App {
         let now = now_ms();
         if let Some(ui) = self.evm.window.as_mut()
             && let Some(connect) = ui.connect.as_mut()
-            && let Some(slot) = connect.selected.get_mut(index)
+            && index < connect.selected.len()
         {
-            *slot = !*slot;
-            let count = connect.selected.iter().filter(|checked| **checked).count();
-            ui.session.gate.connect_selected = count;
+            connect.toggle(index);
+            ui.session.gate.connect_selected = connect.gate_count();
             ui.session.set_ack(now, false);
         }
         self.rebuild_view();

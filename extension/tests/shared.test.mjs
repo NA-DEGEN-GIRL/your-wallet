@@ -52,14 +52,14 @@ test("S1 METHOD_ROUTE equals v1-methods.golden.json and contains no rejected met
     Object.keys(shared.METHOD_ROUTE),
     [...methods.permission, ...methods.read, ...methods.signing]
   );
-  assert.equal(Object.keys(shared.METHOD_ROUTE).length, 27);
+  assert.equal(Object.keys(shared.METHOD_ROUTE).length, 37);
   assert.equal(Object.isFrozen(shared.METHOD_ROUTE), true);
   for (const [route, list] of Object.entries({ permission: methods.permission, read: methods.read, signing: methods.signing })) {
     for (const method of list) {
       assert.equal(shared.methodRoute(method), route, method);
     }
   }
-  assert.equal(methods.rejected.length, 31);
+  assert.equal(methods.rejected.length, 38);
   for (const method of methods.rejected) {
     assert.equal(Object.hasOwn(shared.METHOD_ROUTE, method), false, method);
     assert.equal(shared.methodRoute(method), null, method);
@@ -230,4 +230,25 @@ test("S4 compatibility mode values, normalization and the optional content→bac
   // Page messages never carry a mode (the page cannot choose it).
   const channel = "d".repeat(64);
   assert.equal(shared.parsePageMessage({ namespace: "your-wallet", version: 1, kind: "request", channel, id: "01".repeat(16), method: "eth_chainId", params: [], compatMode: "metamask" }, channel), null);
+});
+
+test("S9 Solana/Bitcoin: method families, wire compat modes and account events", () => {
+  assert.equal(shared.methodFamily("sol_connect"), "sol");
+  assert.equal(shared.methodFamily("btc_signMessage"), "btc");
+  assert.equal(shared.methodFamily("eth_chainId"), "evm");
+  for (const method of ["sol_signTransaction", "sol_signAndSendTransaction", "btc_signPsbt", "btc_sendBitcoin"]) {
+    assert.equal(shared.methodRoute(method), null, method);
+  }
+  assert.equal(shared.normalizeSolCompatMode("phantom"), "phantom");
+  assert.equal(shared.normalizeSolCompatMode("metamask"), "off");
+  assert.equal(shared.normalizeBtcCompatMode("xverse"), "xverse");
+  assert.equal(shared.normalizeBtcCompatMode("Xverse"), "off");
+  const key = "FVen3X669xLzsi6N2V91DoiyzHzg1uAgqiT8jZ9nS96Z";
+  assert.equal(shared.validEvent("solAccountsChanged", [key]), true);
+  assert.equal(shared.validEvent("solAccountsChanged", []), true);
+  assert.equal(shared.validEvent("solAccountsChanged", [key, key]), false);
+  assert.equal(shared.validEvent("solAccountsChanged", ["0OIl"]), false);
+  assert.equal(shared.validEvent("btcAccountsChanged", ["bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"]), true);
+  assert.equal(shared.validEvent("btcAccountsChanged", ["a", "b", "c"]), false);
+  assert.equal(shared.validEvent("btcAccountsChanged", ["bc1q w508"]), false);
 });
