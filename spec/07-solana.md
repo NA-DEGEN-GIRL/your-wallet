@@ -2,7 +2,7 @@
 
 상위 문서: [spec.md](../spec.md)
 
-D25·D27·D29의 세부 명세다. Solana는 yw-app 화면에서만 쓰는 보내기·받기 기능이며 브라우저(dApp)와 연결하지 않는다(spec.md §4.1). 지갑이 정해진 템플릿으로만 거래를 만들고, 승인 창은 서명할 바이트를 다시 파싱한 결과로 그린다. 시뮬레이션은 참고 정보다(D27). 키 파생 알고리즘·키 접근 API는 [02](02-core-keys-vault.md) §3.5·§10.3, meta·주소록·계정·`ActivityEntry` 스키마와 저널 컨테이너 프레이밍은 [02] §5.3·§5.4(SOL 저널 본문 바이트 형식은 이 문서 §14.1), 승인 요청 모델·digest는 [03](03-evm.md) §11, 승인 창 동작·설정 파일은 [04](04-app-ui.md) §3·§6, 의존성 검사는 [01](01-repo-build.md), 테스트 판정은 [09](09-testing.md)를 따른다(D31). 상수는 각 절의 `rust` 코드 블록에 있다.
+D25·D27·D29의 세부 명세다. Solana 보내기·받기는 yw-app 화면에서만 한다. 브라우저(dApp)와는 **소유 증명(연결 + 메시지 서명·SIWS)만** 한다(§19, 2026-10-31). 지갑이 정해진 템플릿으로만 거래를 만들고, 승인 창은 서명할 바이트를 다시 파싱한 결과로 그린다. 시뮬레이션은 참고 정보다(D27). 키 파생 알고리즘·키 접근 API는 [02](02-core-keys-vault.md) §3.5·§10.3, meta·주소록·계정·`ActivityEntry` 스키마와 저널 컨테이너 프레이밍은 [02] §5.3·§5.4(SOL 저널 본문 바이트 형식은 이 문서 §14.1), 승인 요청 모델·digest는 [03](03-evm.md) §11, 승인 창 동작·설정 파일은 [04](04-app-ui.md) §3·§6, 의존성 검사는 [01](01-repo-build.md), 테스트 판정은 [09](09-testing.md)를 따른다(D31). 상수는 각 절의 `rust` 코드 블록에 있다.
 
 ## 1. 범위
 
@@ -11,7 +11,7 @@ D25·D27·D29의 세부 명세다. Solana는 yw-app 화면에서만 쓰는 보�
 | **v1 (M7)** | SOL 받기(주소·QR), SOL 잔액(참고), SOL 보내기(템플릿 T_SOL), 보내기 최대, 복구 스캔(§3.3)과 비표준 경로 자금 이동, mainnet·devnet | 필수 |
 | **v1.1 (M7 후속)** | 허용 목록 SPL 토큰(USDC·USDT, classic Token program `Tokenkeg…`만) 받기·잔액·보내기(템플릿 T_SPL), 받는 쪽 ATA 자동 생성(CreateIdempotent), 복구 스캔의 토큰 잔액·토큰별 전액 이동 | v1 완료 조건을 깨지 않는다. 구현 2026-10-28([acceptance](../docs/acceptance/m7-spl-20261028.md)) |
 | **가져온 개인키 (2026-10-29)** | base58 64바이트 keypair(Phantom·Solflare 내보내기)·`solana-keygen` JSON 배열 가져오기(§3.4), 그 계정의 SOL·허용 목록 SPL 받기·잔액·보내기(T_SOL·T_SPL 그대로), 가져온 키 내보내기(base58 keypair)·삭제, 개인키로 시작한 지갑(복구 단어 없음, [02] §8.5) | D9·D25. 구현 2026-10-29([acceptance](../docs/acceptance/keys-import-20261029.md)) |
-| **범위 밖** | Token-2022, 허용 목록 밖 토큰·NFT(잔액도 숨김), v0·v1(0x81) 트랜잭션, address lookup table, durable nonce, 스테이킹, 스왑, 계정 닫기, memo, dApp 연결(Wallet Standard), 외부 트랜잭션·메시지 서명(`signMessage` 포함), 파생(니모닉) 계정의 개인키 내보내기, Solana Pay URI(`solana:`), 받은 거래 내역, testnet 클러스터, 다중 서명자 | 추가하려면 spec.md D25를 먼저 고친다 |
+| **범위 밖** | Token-2022, 허용 목록 밖 토큰·NFT(잔액도 숨김), v0·v1(0x81) 트랜잭션, address lookup table, durable nonce, 스테이킹, 스왑, 계정 닫기, memo, dApp의 트랜잭션 서명·전송(dApp은 §19의 연결·메시지 서명만), 파생(니모닉) 계정의 개인키 내보내기, Solana Pay URI(`solana:`), 받은 거래 내역, testnet 클러스터, 다중 서명자 | 추가하려면 spec.md D25를 먼저 고친다 |
 
 - 수수료 지불자는 항상 보내는 계정이다. 서명자는 항상 1명이다.
 - 한 (클러스터, 보내는 계정)에 진행 중(`Pending`, §14) 전송은 1개만 허용한다(D20과 같은 규칙).
@@ -730,6 +730,31 @@ SHA-256(tx 267B)  7ecb80478f954ea1a3625bf0ee1776ff0991c3f8e6ceb33c6f7b198f3929f7
 - v1: SLIP-0010 연결·키 출처 5종·벡터 2–3 / ed25519-dalek 통합·키 소거·의존성 검사 갱신 2–3 / base58·주소 분류·PDA·퍼징 1–2 / 메시지 인코더·템플릿·엄격 파서·sdk 벡터·차등 확인 4–6 / 수수료·rent·보내기 최대 1–2 / Solana RPC·제네시스 고정 3–4 / 저널·브로드캐스트·만료 증명 3–5 / 승인 표시·주소록·중독 방지 3–5 / 복구 스캔 1–2 / devnet E2E·소액 mainnet 3–4. **합계 23–36일.**
 - v1.1 SPL(USDC·USDT): ATA·T_SPL·계정 데이터 교차 확인·벡터 **+8–12일.**
 - 프로토콜 변경 대응 여유로 20–30%를 더 잡는다.
+
+## 19. dApp 연결: 소유 증명 전용 (2026-10-31, D25·D27)
+
+dApp은 Solana 계정을 **연결**하고 **메시지에 서명**(Sign-In-With-Solana 포함)하게 할 수만 있다. 거래 서명·전송 요청은 받지 않는다(페이지 shim이 4200으로 거부, 와이어 메서드 없음 — [05] §2.13, §3.6). 연결·grant는 [05] §4.9, 승인 창은 [04] §3.
+
+### 19.1 코어 (`yw_core::sol::msgsign`)
+- `ApprovalKind::SolMessage = 0x21`(`sol_signMessage`), `SolSignIn = 0x22`(`sol_signIn`). origin은 사이트, `ChainRef::Solana { cluster, genesis = 고정 제네시스 }`(settings 클러스터), `AccountRef::Sol(public)`, `Signer::FromPayload`, `SigningPayload::SolMessage { source, public, message }`(digest 바이트 = transcript `"your-wallet/v3/sol-message"` v1: 출처 태그·인자, 공개키, 메시지). 승인 digest·일회 소비·120 s 만료는 [03] §11 그대로.
+- 서명(`sign_message(vault, approved)`): 종류·체인·계정·payload 일치 확인 → §19.2 규칙 재확인 → 표준 경로는 `with_ed25519_seed`, 가져온 키는 공개키로 `with_imported_ed25519_seed` → 파생 공개키 = 승인 계정 확인 → Ed25519로 **메시지 바이트 그대로** 서명 → `verify_strict`. 결과는 64바이트 서명.
+
+### 19.2 서명할 수 없는 바이트 (차단, `M01`·`M02`)
+- 길이 > 65,536 B.
+- 레거시 또는 v0(`0x80`) 메시지로 **정확히** 파싱되는 바이트(헤더: 서명자 ≥ 1, 읽기 전용 서명자 < 서명자, 키 수 ≥ 서명자, 키·블록해시·명령(프로그램·계정 인덱스 < 전체 키 수)·v0 주소 조회 테이블을 끝까지 소비), 또는 `shortvec(서명 수 n ≥ 1) ‖ 64n ‖ 메시지`(헤더 서명자 = n)인 서명된 거래. → `M01` 차단 "Solana 거래로 해석되는 바이트입니다".
+- 오프체인 서명 도메인 `\xffsolana offchain`으로 시작하면 버전 0으로 파싱되어야 한다: `solana-sdk` 형식(`0 ‖ format ‖ len u16 LE ‖ message`) 또는 제안서 형식(`0 ‖ application domain 32 ‖ format ‖ 서명자 수 ≥ 1 ‖ 서명자 32×n ‖ len u16 LE ‖ message`), 길이가 정확히 맞고 형식 0(출력 가능 ASCII ≤ 1,212 B)·1(UTF-8 ≤ 1,212 B)·2(UTF-8). 실패 → `M02` 차단. 성공 → `M05` 정보 + `서명 방식` 필드, 본문 표시는 머리글을 뺀 메시지. 제안서 형식인데 서명자 목록에 이 계정이 없으면 `M02` 차단.
+
+### 19.3 표시
+제목 `[Solana mainnet] 메시지 서명 (소유 증명)` 또는 `[…] 로그인 요청 (SIWS)`. 필드: 요청 출처(origin 전체), 네트워크(클러스터), 서명 계정(라벨·경로·**전체 base58 주소**), (오프체인이면) 서명 방식, 메시지(텍스트 또는 hex), 바이트 수, (SIWS면) SIWS 필드. 경고: 항상 `M04` 정보 "소유 증명용 메시지 서명입니다 — 거래·송금에는 쓰이지 않습니다". 엄격 UTF-8이고 제어 문자(TAB·LF·CR 제외)가 없고 32바이트가 아니면 텍스트(숨은·방향 제어 문자는 `[U+XXXX]`로 바꾸고 `P02`), 그 밖은 hex + `P01`/`P04`(고위험) — `personal_sign`([03] §9.2)과 같은 규칙.
+
+### 19.4 Sign-In-With-Solana
+- 형식은 `@solana/wallet-standard-util` `createSignInMessageText`(2026-10-31 `anza-xyz/wallet-standard` 소스로 확인)와 바이트 단위로 같다: `${domain} wants you to sign in with your Solana account:\n${address}`, 설명이 있으면 `\n\n${statement}`, 필드가 있으면 `\n\n` + `URI: `·`Version: `·`Chain ID: `·`Nonce: `·`Issued At: `·`Expiration Time: `·`Not Before: `·`Request ID: `·`Resources:`(+ `- ${resource}` 줄)을 이 순서로 `\n` 연결. 빈 값은 쓰지 않는다. 지갑은 dApp이 주지 않은 필드를 더하지 않는다(`verifySignIn`은 입력에 없는 필드가 메시지에 있으면 실패한다). 예외: 필수인 `domain`(빠지면 origin의 `host[:port]`)과 `address`(빠지면 서명 계정).
+- `sol_signIn` 입력 검증은 [05] §3.6(모르는 키 거부, 줄바꿈 등 제어 문자 거부). 앱이 텍스트를 만들고, `sol_signMessage`의 텍스트가 SIWS 첫 줄 표지를 가지면 같은 파서·검사를 적용한다(표지는 있는데 문법이 틀리면 `W07` 차단).
+- 검사(`SiwsContext { origin, account, cluster, now }`): 도메인 ≠ 요청 사이트(호스트 다름, 명시 포트 ≠ 사이트 유효 포트, scheme·userinfo·경로 포함) → `W01` 차단. 주소 ≠ 서명 계정 → `W02` 차단. `Chain ID`가 있고 settings 클러스터가 아님(`mainnet`·`mainnet-beta`·`devnet`, `solana:` 접두 허용) → `W03` 차단. `Expiration Time` ≤ 지금 → `W04` 차단. `Not Before` > 지금 → `W05` 주의. `Issued At`이 지금과 10분 넘게 다름 → `W06` 고위험. `Version` ≠ `1`, 시각 형식 오류(RFC 3339, SIWE 파서 `parse_date_time` 재사용) → `W07` 차단. 경고가 없으면 `W08` 정보.
+- 결과: `{ publicKey, signature, signedMessage }` — `signedMessage`는 앱이 만든 바이트 그대로.
+
+### 19.5 시험 (자동)
+RFC 8032 벡터 1·2를 메시지 서명기로 재현, 레거시·v0·서명된 거래 탐지와 오탐 없음, 오프체인 두 형식·깨진 머리글, SIWS 텍스트 레이아웃(전 필드·최소·설명 없음)·파서 왕복·W01–W08, 승인 수준(텍스트 Info, 이진 High, 거래 Blocked). 디스패처·확장 shim 시험은 [05] §10, 수동 체크리스트는 `docs/acceptance/msgsign-20261031.md`.
 
 ## 미결 사항
 

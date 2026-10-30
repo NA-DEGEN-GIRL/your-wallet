@@ -2,7 +2,7 @@
 
 상위 문서: [spec.md](../spec.md)
 
-D26·D27·D29·D30의 세부 명세다. BTC 기능은 yw-app 화면에서만 쓰고 브라우저·dApp과 무관하다(spec.md §4.1). 이식할 아카이브 코드는 없다(전부 새 코드). 예외는 BIP32 파생([02](02-core-keys-vault.md) §3.1, 근거 `archive/spec-v2.4:crates/secret-core/src/bip32.rs:12-225,273-298,392-426`)과 공통 승인 모델([03](03-evm.md) §11, D27·D31)이다. 상수는 §15에 모아 둔다.
+D26·D27·D29·D30의 세부 명세다. BTC 보내기·받기는 yw-app 화면에서만 한다. 브라우저·dApp과는 확장 호환 모드에서 **소유 증명(주소 연결 + 메시지 서명)만** 한다(§17, 2026-10-31). 이식할 아카이브 코드는 없다(전부 새 코드). 예외는 BIP32 파생([02](02-core-keys-vault.md) §3.1, 근거 `archive/spec-v2.4:crates/secret-core/src/bip32.rs:12-225,273-298,392-426`)과 공통 승인 모델([03](03-evm.md) §11, D27·D31)이다. 상수는 §15에 모아 둔다.
 
 ## 1. 범위
 
@@ -19,7 +19,7 @@ D26·D27·D29·D30의 세부 명세다. BTC 기능은 yw-app 화면에서만 쓰
 
 ### 1.2 제외 (v1)
 
-PSBT, 멀티시그, 메시지 서명, 여러 수신자(batching), coinjoin, 라이트닝, BIP21 URI, 법정화폐 환산, xpub·디스크립터 내보내기, watch-only, Taproot 스크립트 경로·비어 있지 않은 스크립트 트리, 여러 계정 입력을 섞는 거래, 계정 자동 탐색(가져온 니모닉에서 44'/49'/86'·다른 account 번호를 스스로 찾지 않는다 — 사용자가 [계정 추가]로 형식을 고르면 그 계정을 §3.4로 찾는다), signet·testnet3·regtest, 남의 미확정 UTXO 사용, CPFP. 가져오기 화면에 고정 문구 `BTC_IMPORT_NOTE` "Bitcoin은 네이티브 세그윗(bc1q…, BIP84) 계정 0을 먼저 찾습니다. 탭루트·호환 세그윗·레거시 주소는 Bitcoin 탭의 [계정 추가]로 더하세요"를 표시한다.
+PSBT, 멀티시그, dApp의 거래·PSBT 서명과 전송(dApp은 §17의 연결·메시지 서명만), 여러 수신자(batching), coinjoin, 라이트닝, BIP21 URI, 법정화폐 환산, xpub·디스크립터 내보내기, watch-only, Taproot 스크립트 경로·비어 있지 않은 스크립트 트리, 여러 계정 입력을 섞는 거래, 계정 자동 탐색(가져온 니모닉에서 44'/49'/86'·다른 account 번호를 스스로 찾지 않는다 — 사용자가 [계정 추가]로 형식을 고르면 그 계정을 §3.4로 찾는다), signet·testnet3·regtest, 남의 미확정 UTXO 사용, CPFP. **비목표: 오디널스·인스크립션·룬은 범위 밖이다. 코인 선택은 모든 UTXO를 평범한 BTC로 보며(인스크립션이 실린 UTXO도 일반 입력·수수료로 쓰일 수 있다) 지갑은 인스크립션 탐지를 더하지 않는다(Bitcoin은 보관용).** 가져오기 화면에 고정 문구 `BTC_IMPORT_NOTE` "Bitcoin은 네이티브 세그윗(bc1q…, BIP84) 계정 0을 먼저 찾습니다. 탭루트·호환 세그윗·레거시 주소는 Bitcoin 탭의 [계정 추가]로 더하세요"를 표시한다.
 
 ## 2. 네트워크 고정
 
@@ -990,6 +990,36 @@ spec.md M8의 "BIP143·BIP173/350·BIP84 벡터"는 §14.1(자동), "testnet4 E2
 ## 16. 작업량 (집중 작업일)
 
 주소·base58check 정책·bech32·스크립트·거래 모델·엄격 파서 + 벡터 8–12일, BIP143·서명·서명 후 검증·CKDpub·발급·발견 7–11일, Core RPC·인덱서 3형식(`esplora`·`bb-rpc`·`bb-rest`, 공통 `BtcIndexerResp`)·10진/정수 파싱·새로고침·이전 거래 검증 9–12일, 코인 선택·수수료·dust·send-max·동결·RBF 7–9일, 승인 표시·digest·저널·확인 추적·화면 6–9일, 차등 오라클·testnet4 E2E·복구 확인 3–7일. 합계 40–60일로 spec.md §5와 같다.
+
+## 17. dApp 연결: 소유 증명 전용 (2026-10-31, D26·D27)
+
+dApp은 Bitcoin 주소를 **연결**하고 **메시지에 서명**하게 할 수만 있다. PSBT·거래 서명, dApp발 전송, 인스크립션은 없다(UniSat·Xverse shim이 4200으로 거부, 와이어 메서드 없음 — [05] §2.13, §3.6). Bitcoin dApp 노출은 확장 호환 모드(`unisat`·`xverse`)에서만 한다. 연결·grant는 [05] §4.9(목적마다 계정 하나의 받기 주소 0번, 가져온 키는 그 주소), 승인 창은 [04] §3.
+
+### 17.1 코어 (`yw_core::btc::msgsign`)
+- `ApprovalKind::BtcMessage = 0x32`, origin은 사이트, `ChainRef::Bitcoin { network, genesis = 고정 제네시스 }`, `AccountRef::Bitcoin(주소 공개키의 압축 형식)`, `Signer::FromPayload`, `SigningPayload::BtcMessage { network, source, pubkey, script_type, address, protocol, message }`(digest 바이트 = transcript `"your-wallet/v3/btc-message"` v1의 모든 필드).
+- 서명(`sign_message(vault, approved)`): 종류·체인·계정 확인 → 메시지 ≤ 65,536 B이고 §17.2 차단 아님 → `address_of(network, script_type, pubkey)` = 승인 주소 → 키 출처의 형식 = 주소 형식 → `BtcKeys::with_btc_key`로 빌린 키의 공개키 = 승인 공개키 → 아래 방식으로 서명 → 즉시 검증.
+
+### 17.2 방식과 인코딩
+| 주소 형식 | `ecdsa`(BIP137) | `bip322` |
+|---|---|---|
+| P2PKH | 헤더 27+recid(비압축)·31+recid(압축) | **지원 안 함**(legacy BIP322는 구현하지 않음) → -32602 |
+| P2SH-P2WPKH | 35+recid | full: 서명된 `to_sign` 거래 전체(scriptSig = 리딤 스크립트 push, 증인 `[sig, pubkey]`) |
+| P2WPKH | 39+recid | simple: 증인 스택 `[sig, pubkey]` |
+| P2TR(키 경로, BIP86) | **지원 안 함**(BIP137 헤더 없음) → -32602 | simple: 증인 `[schnorr sig 64B]`(SIGHASH_DEFAULT, BIP340 보조 난수) |
+
+- BIP137: `SHA256d("\x18Bitcoin Signed Message:\n" ‖ CompactSize(len) ‖ message)`에 RFC 6979 복구 가능 서명, `header ‖ r ‖ s` 65바이트 base64. 서명 후 복구한 키·압축·헤더가 같은지 확인한다.
+- BIP322: `message_hash = TaggedHash("BIP0322-signed-message", message)`, `to_spend`(version 0, 입력 `0^32:0xFFFFFFFF` scriptSig `OP_0 PUSH32[message_hash]` sequence 0, 출력 0 sat·주소 scriptPubKey), `to_sign`(version 0, `to_spend` 출력 0 소비, sequence 0, 출력 0 sat `OP_RETURN`, lock time 0). ECDSA는 기존 `sign_sighash`(low-R RFC 6979, BIP143), Schnorr는 `sign_key_path`. 결과는 base64이며 최종 BIP의 `smp`/`ful` 접두사를 **붙이지 않는다**(BIP가 허용하는 이전 인코딩, UniSat·Xverse·`bip322-js`와 같음).
+- 기본 방식(dApp이 정하지 않을 때): P2TR → `bip322`, 그 밖 → `ecdsa`(sats-connect 기본과 같음). UniSat `signMessage(msg)`의 기본은 `ecdsa`.
+- 응답 `messageHash`: BIP137은 magic hash, BIP322는 message hash(hex).
+
+### 17.3 차단 (`M03`)
+메시지 바이트가 Bitcoin 거래로 엄격 파싱되거나 PSBT magic `psbt\xff`로 시작하면, 또는 텍스트가 그런 바이트의 hex(`0x` 허용)·base64 표현이면 `M03` 차단. 64 KiB 초과도 `M03`.
+
+### 17.4 표시
+제목 `[Bitcoin 메인넷] 메시지 서명 (소유 증명)`. 필드: 요청 출처, 네트워크, 서명 계정(라벨·경로·**전체 주소**), 서명 방식(`BIP137 ECDSA (Bitcoin Signed Message)` / `BIP322 (simple)` / `BIP322 (full)`), 메시지(텍스트 또는 hex, [07] §19.3과 같은 규칙), 바이트 수. 항상 `M04` 정보. BTC 네트워크 배너(§2)를 그대로 쓴다.
+
+### 17.5 시험 벡터 (자동, `btc::msgsign::tests`)
+BIP322 `basic-test-vectors.json`(2026-10-31 `bitcoin/bips` 저장소): `""`·`"Hello World"`·UTF-8 메시지의 message hash와 `to_spend`/`to_sign` txid, P2WPKH simple 서명(`L3VFeEuj…` 키) 바이트 단위 재현(low-R 벡터)과 두 벡터·`smp` 접두 검증, 오류 벡터(틀린 메시지·빈 스택·잘못된 base64), P2TR "No prefix fallback" 서명 검증과 같은 키로 만든 서명 검증. BIP137: bitcoinjs-message 픽스처(개인키 1, "vires is numeris")의 비압축·압축 P2PKH·P2SH-P2WPKH·P2WPKH 서명 재현, magic hash 2개, verify 픽스처 4개. P2SH-P2WPKH full은 `to_sign` 재파싱과 BIP143 증인 검증. 거래·PSBT·hex·base64 탐지, P2PKH+BIP322·P2TR+ECDSA 거부, 다른 키 거부.
 
 ## 미결 사항
 

@@ -269,6 +269,7 @@ S16 토큰 추가: 컨트랙트 주소(§2.15) → RPC `decimals()`·`symbol()`(
 - meta `connected_sites`([02] §5.3 `ConnectedSite`, 최대 256개, 의미는 [05] §4.1): origin 전체, 허용 계정 `accounts`(1–16개, 반환 순서, 첫 번째 = 선택 계정, 전체 주소), 체인 `chain_id`, 연결 시각 `granted_at_unix_ms`. `http` origin에는 "로컬 개발 사이트(http)" 배지.
 - 사이트마다 카드(제목 = origin): 네트워크, 연결 시각, 볼 수 있는 계정 수와 각 계정(라벨 + 전체 주소), 위험 버튼 `연결 해제`. 맨 아래 위험 버튼 `모든 사이트 연결 해제`. 연결이 없으면 카드 "연결된 사이트가 없습니다" + "dApp 사이트에서 '지갑 연결'을 누르고 이 앱의 연결 창에서 승인하면 여기에 표시됩니다."
 - `연결 해제`(행), `모든 사이트 연결 해제`(확인 오버레이) → [05] §4.5. 그 origin의 대기 항목은 `Revoked`(§3.7).
+- Solana·Bitcoin 연결(meta `sol_sites`·`btc_sites`, [05] §4.9)은 EVM 카드 다음에 같은 모양의 카드로 보인다: 네트워크(`Solana (메시지 서명·소유 증명만)`, `Bitcoin 메인넷 (메시지 서명·소유 증명만)`), 연결 시각, Solana는 base58 공개키, Bitcoin은 목적(`결제용 주소 (payment…)`·`오디널스용 주소 (ordinals…)`·`연결할 주소`)과 전체 주소, 위험 버튼 `연결 해제`(그 계열 grant만 지우고 그 계열의 대기 서명 항목만 `Revoked`). 행 버튼 id는 EVM·Solana·Bitcoin을 이은 목록의 순번(최대 256행). `모든 사이트 연결 해제`는 세 계열 모두 지운다.
 
 ### 2.10 주소록 (S14)
 - 항목 = meta `address_book`의 `AddressBookEntry {chain, address, label, verified, added_at_unix_ms}`([02] §5.3, 최대 500; `added_at_unix_ms` = 추가 시각 unix ms). `verified` = 체크박스 "다른 경로(전화·대면 등)로 이 주소를 확인했습니다".
@@ -548,13 +549,15 @@ pub enum QueueOutcome {
 
 App 항목(이 앱의 보내기·가속·취소·수수료 올리기)은 dApp 응답이 없다. `Rejected`·`Expired`면 그 흐름을 시작한 화면으로 돌아간다(보내기 폼은 입력 유지, §2.7; `Expired`는 T-APPR-EXPIRED). 다시 검토하면 새 승인을 만든다.
 
+**Solana·Bitcoin dApp 항목(2026-10-31, [05] §3.6·§4.9, [07] §19, [08] §17)**: 연결(`sol_connect`·`btc_requestAccounts`)은 같은 "사이트 연결" 창을 쓰되 계정 목록이 **라디오**다(Solana 1개; Bitcoin은 목적마다 한 그룹, 행 라벨 앞에 `[결제용] `·`[오디널스용] `, 주소는 받기 주소 0번 전체). 안내 문구는 `이 사이트는 선택한 주소와 공개키를 볼 수 있습니다. 이 지갑은 Solana·Bitcoin에서 메시지 서명(소유 증명)만 지원하며, 거래 서명과 전송은 할 수 없습니다. 메시지 서명은 매번 따로 승인합니다.`, 구역 제목 `연결할 Solana 계정 (1개)`·`연결할 Bitcoin 주소 (용도마다 1개, 받기 주소 0번)`. 모든 그룹에 하나씩 골라야 `연결`이 켜진다. 메시지 서명(`ApprovalKind::SolMessage`·`SolSignIn`·`BtcMessage`)은 EVM `personal_sign`과 같은 창·준비 시간(1 s)·고위험 확인·일회 소비·120 s 만료·digest 규칙을 쓰고, 요약 문장은 "{네트워크}에서 메시지에 서명해 이 주소의 소유를 증명합니다. 거래 서명이나 전송은 하지 않습니다."(SIWS는 "사이트 로그인(Sign-In-With-Solana) 메시지에 서명합니다. …"). 차단 경고(`M01`–`M03`, `W01`–`W04`, `W07`)가 있으면 `거부`만 가능하다. AI 설명 패널은 없다. 서명은 키 작업 `SignChainMessage`가 하고 잠금으로 취소되면 4001이다.
+
 ### 3.2 배치 (위 → 아래)
 `ApprovalDisplay { title, fields, warnings, risk, ack_required }`와 `DisplayField { key, sub_label, value, critical, volatile }`([03] §11.1)를 다음 영역에 나눠 그린다.
 
 | 영역 | 스크롤 | 내용 |
 |---|---|---|
 | 제목 표시줄 | — | 고정 `Your Wallet — 승인 요청`(연결은 `Your Wallet — 사이트 연결`) |
-| 헤더 | 고정 | 흰 띠(테스트넷이면 `TESTNET_BG`, BTC는 [08] §2 배너 색)에 라벨·값 두 칸: 키 `0x0001` 요청 출처, `0x0002` 네트워크, `0x0003` 서명 계정([07]·[08]도 같은 키). 아래 배지(둥근 알약): 출처가 `http`면 "로컬 개발 사이트(http)", 호스트에 `xn--` 라벨이 있으면 "국제화 도메인(punycode)"([05] §4.2). 확장 호환 모드에서 온 요청이면 "호환 모드: MetaMask"·"호환 모드: Rabby"([05] §2.12, 출처는 실제 사이트 origin 그대로). 사용자 체인이면 T-CUSTOM-CHAIN, 테스트넷(Sepolia·Solana devnet)이면 테스트넷 문구, 기본 메인넷(Ethereum 1·HyperEVM 999)·Solana mainnet이면 빨간 배지 T-MAINNET(§2.6과 같은 조건·문구, BTC는 [08] §2 배너) |
+| 헤더 | 고정 | 흰 띠(테스트넷이면 `TESTNET_BG`, BTC는 [08] §2 배너 색)에 라벨·값 두 칸: 키 `0x0001` 요청 출처, `0x0002` 네트워크, `0x0003` 서명 계정([07]·[08]도 같은 키). 아래 배지(둥근 알약): 출처가 `http`면 "로컬 개발 사이트(http)", 호스트에 `xn--` 라벨이 있으면 "국제화 도메인(punycode)"([05] §4.2). 확장 호환 모드에서 온 요청이면 "호환 모드: MetaMask"·"호환 모드: Rabby"·"호환 모드: Phantom"·"호환 모드: UniSat"·"호환 모드: Xverse"([05] §2.12–§2.13, 출처는 실제 사이트 origin 그대로). Solana·Bitcoin dApp 요청은 네트워크 배지를 그 체인의 것(Solana 클러스터, BTC 배너)으로 그린다. 사용자 체인이면 T-CUSTOM-CHAIN, 테스트넷(Sepolia·Solana devnet)이면 테스트넷 문구, 기본 메인넷(Ethereum 1·HyperEVM 999)·Solana mainnet이면 빨간 배지 T-MAINNET(§2.6과 같은 조건·문구, BTC는 [08] §2 배너) |
 | 시뮬레이션 띠 | 고정 | 헤더 바로 아래. `sim_state`가 `Ok`가 아니면 `고위험` 태그가 붙은 `DANGER_BG` 띠(§3.2.1). `Ok`·`None`이면 없음 |
 | 요약 | 스크롤 맨 위 | 정보색 카드 "요약": 평이한 한국어 한 문장(굵게 12pt) + 그 문장이 가리키는 **전체 주소**(4자 묶음, 줄이지 않음 — §0) + 그 주소에 대한 지갑의 주석(`[ ]` 안의 "일반 계정(EOA)", "주소록: {이름}" 등을 "·"로 이음) + `title`(9pt 보조, 예 `[Sepolia 테스트넷] SepoliaETH 보내기: 0.01 SepoliaETH`). 문장은 표시 모델에서만 만든다(digest 밖, `approval_view::summary`): 네이티브 보내기·SOL·BTC "{네트워크}에서 {금액}을(를) 아래 주소로 보냅니다."(조사는 금액 끝소리로), 그 밖 EVM 거래 "{네트워크}에서 컨트랙트를 호출합니다: {title의 동작}. 아래 자산 변화와 경고를 확인하세요.", 가속·취소·수수료 올리기·`personal_sign`·typed data는 종류별 고정 문장 |
 | 자산 변화 | 스크롤 | 카드 "자산 변화 (시뮬레이션 결과)". `Ok`: 키 `0x0110`–`0x0113`, `0x0130`(시뮬레이션 기준). `Incomplete`: 받은 행 + `MUTED` T-SIM-PARTIAL. `Unsupported`·`NoResult`·`Reverted`: `MUTED` T-SIM-NODIFF. SOL·BTC는 카드 "금액·수수료"(해당 문서의 금액·수수료·잔돈 행). 메시지 서명(`personal_sign`·typed data)에는 이 카드가 없다 |

@@ -470,7 +470,7 @@ journal_key = HKDF-SHA256(salt = 없음,                   ikm = DEK, info = "yo
 
 ### 5.3 meta JSON (`schema = "yw-meta/3"`)
 
-최상위 객체. 중복 키·아래 키(선택 키 `btc_accounts` 제외)의 누락은 거부한다. 아래 표에 없는 **최상위** 키는 같은 `schema`의 새 부 버전이 더한 키로 보고 보존해 다음 쓰기에서 알려진 키 뒤에 그대로 쓴다([04](04-app-ui.md) §6.6). 레코드·객체 안의 알 수 없는 키는 거부한다(`prefs`는 기본값으로 되돌림, [04] §6.4). 정수는 JSON 정수(소수·지수 금지), 64비트 금액은 10진 문자열(각 체인 문서).
+최상위 객체. 중복 키·아래 키(선택 키 `btc_accounts`·`sol_sites`·`btc_sites` 제외)의 누락은 거부한다. 아래 표에 없는 **최상위** 키는 같은 `schema`의 새 부 버전이 더한 키로 보고 보존해 다음 쓰기에서 알려진 키 뒤에 그대로 쓴다([04](04-app-ui.md) §6.6). 레코드·객체 안의 알 수 없는 키는 거부한다(`prefs`는 기본값으로 되돌림, [04] §6.4). 정수는 JSON 정수(소수·지수 금지), 64비트 금액은 10진 문자열(각 체인 문서).
 
 | 키 | 타입 | 규칙 |
 |---|---|---|
@@ -482,6 +482,7 @@ journal_key = HKDF-SHA256(salt = 없음,                   ikm = DEK, info = "yo
 | `btc_accounts` (선택) | object | 이 키만 없어도 된다(없음 = 다른 BTC 계정 없음, 기본값이면 쓰지 않음). 다른 BTC 계정(주소 형식·계정 번호·가져온 키, 두 네트워크)과 선택: [08](08-bitcoin.md) §12.3a. 있으면 알려진 키로 엄격 검증 |\| null | BTC를 켜기 전(M8 전 포함) `null`. 필드는 [08](08-bitcoin.md) §12.3 이름 그대로, 바이트 배열은 소문자 hex 문자열, 없음은 `null` |
 | `address_book` | `AddressBookEntry[]` | 0..=500개, (`chain`, `address`) 중복 금지 |
 | `connected_sites` | `ConnectedSite[]` | 0..=256개, `origin` 중복 금지([05](05-browser.md) §4.1) |
+| `sol_sites`·`btc_sites` (선택, 2026-10-31) | object[] | Solana·Bitcoin dApp 연결([05] §4.9). 각 0..=256개의 객체 배열, 비어 있으면 쓰지 않는다(이전 버전은 모르는 키로 보존). 항목: `sol_sites` `{ origin, public_key: base58, granted_at_unix_ms }`, `btc_sites` `{ origin, network: 1|2, addresses: [{ purpose: "payment"|"ordinals"|"any", address, public_key: hex, script_type }], granted_at_unix_ms }`. 쓸 수 없는 항목은 읽을 때 건너뛴다 |
 | `tokens` | object: `NetworkId` → `TokenEntry[]` | `eip155:*` 키만(SOL 토큰은 고정 허용 목록, D25), 네트워크당 0..=100개·전체 0..=1,000개(어느 쪽이든 상한이면 S16 저장 거부), `address` 중복 금지, 빈 배열 키는 쓰지 않음 |
 | `activity` | object: `NetworkId` → `ActivityEntry[]` | 네트워크당 최신순 0..=500개·전체 0..=3,000개, 넘으면 네트워크 상한은 그 네트워크에서, 전체 상한은 모든 네트워크를 통틀어 `time_unix_ms`가 가장 오래된 항목부터 삭제, `tx_id` 중복 금지(같은 `tx_id`는 덮어씀), 빈 배열 키는 쓰지 않음 |
 | `prefs` | object | 개인정보성 UI 상태(선택 계정·탭; 네트워크 선택은 settings.json, D30), [04](04-app-ui.md) §6.4. `evm_account` `{"index": 0}`은 `evm_accounts`가 비어 있으면 "첫 가져온 계정"을 뜻한다 |

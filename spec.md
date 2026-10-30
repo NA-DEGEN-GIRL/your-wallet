@@ -17,8 +17,8 @@
 | [spec/04-app-ui.md](spec/04-app-ui.md) | yw-app 화면·흐름, 승인 창, 비밀 표시 보호, 설정, 자동 잠금, 파일 위치 |
 | [spec/05-browser.md](spec/05-browser.md) | 크롬 확장, native messaging, yw-host, named pipe 프로토콜, dApp 메서드·권한 |
 | [spec/06-llm-explain.md](spec/06-llm-explain.md) | 선택 기능: LLM 거래 설명 |
-| [spec/07-solana.md](spec/07-solana.md) | Solana 전송 전용 |
-| [spec/08-bitcoin.md](spec/08-bitcoin.md) | Bitcoin 전송 전용 |
+| [spec/07-solana.md](spec/07-solana.md) | Solana 전송 전용, dApp은 소유 증명(연결·메시지 서명·SIWS)만(§19) |
+| [spec/08-bitcoin.md](spec/08-bitcoin.md) | Bitcoin 전송 전용, dApp은 소유 증명(연결·메시지 서명)만(§17) |
 | [spec/09-testing.md](spec/09-testing.md) | 테스트 벡터, 퍼징, 수동 체크리스트, 마일스톤별 판정 기준 |
 
 ---
@@ -29,7 +29,7 @@
 2. **공급망 오염 차단.** 지갑 본체는 고정·검토된 소수 크레이트만 쓰고, 크롬 확장은 npm 의존성 0인 순수 JS로 만든다. 확장은 비밀을 전혀 갖지 않는다.
 3. **무엇에 서명하는지 정확히 안다.** 승인 창은 dApp·확장이 보낸 설명이 아니라 코어가 실제 서명 대상을 직접 해석한 내용과 **시뮬레이션 결과**를 보여준다. 시뮬레이션을 할 수 없거나 실패한 경우에는 그 사실을 고위험 경고로 분명히 보여주고, 사용자가 확인하면 서명할 수 있다.
 4. **표준 복구.** 24단어 BIP39 니모닉 하나로 다른 표준 지갑에서 모든 체인 자산을 복구할 수 있다. 예외: 가져온 개인키 계정은 니모닉 밖이며 원래 개인키로만 복구한다(D9, D29).
-5. **실사용.** EVM은 dApp 연결까지, Solana·Bitcoin은 지갑 앱에서 보내기·받기만 한다.
+5. **실사용.** EVM은 dApp 연결까지, Solana·Bitcoin은 지갑 앱에서 보내기·받기를 하고 dApp과는 소유 증명(연결 + 메시지 서명)만 한다(D25–D27).
 
 ## 2. 위협 모델
 
@@ -99,12 +99,12 @@
 | D19 | 트랜잭션은 EIP-1559(type 2)만 만든다. 컨트랙트 배포(`to` 없음), type 1/3/4(EIP-7702), blob은 거부한다. |
 | D20 | (체인, 계정)마다 진행 중인 트랜잭션은 1개만 허용한다(진행 중 = D32의 확정 전). 수수료는 지갑이 계산하고 dApp이 보낸 수수료 필드는 무시한다. 가스 한도는 dApp 값과 추정치×1.2 중 큰 값, 상한 16,777,216. |
 | D21 | LLM 거래 설명은 선택 기능(기본 꺼짐, M6)이다. 참고용이며 승인 판단·위험 표시·승인 digest에 영향을 주지 않는다. 엔드포인트는 HTTPS, 또는 로컬 모델용 `http://127.0.0.1`·`http://localhost`·`http://[::1]`만 허용한다. |
-| D22 | 확장은 기존 `extension/`을 유지하고 알려진 버그를 고친다. manifest `key`로 ID를 고정한다. https 페이지만 지원하고, `http://localhost`·`http://127.0.0.1`은 yw-app 설정 토글(기본 꺼짐)로 허용한다. 최상위 프레임만 지원한다. 호환 모드(확장 팝업에서 선택, 기본 꺼짐): `metamask` = 우리 provider가 `window.ethereum`을 차지하고 `isMetaMask: true`와 최소 `_metamask` 호환 API를 제공하며 EIP-6963 목록에 "MetaMask" 이름(rdns `io.metamask`)으로 알린다. `rabby` = 같은 방식에 `isRabby: true`, 이름 "Rabby Wallet"(rdns `io.rabby`). 호환 모드에서는 다른 확장의 EIP-6963 알림 중 같은 rdns 및 MetaMask·Rabby의 것을 가로채 dApp에 전달하지 않는다(최선 노력이다. 실제 MetaMask·Rabby를 꺼 두는 것을 권장한다). 어느 모드든 비밀은 확장에 들어가지 않고 모든 요청은 yw-app 승인 창으로 간다. |
+| D22 | 확장은 기존 `extension/`을 유지하고 알려진 버그를 고친다. manifest `key`로 ID를 고정한다. https 페이지만 지원하고, `http://localhost`·`http://127.0.0.1`은 yw-app 설정 토글(기본 꺼짐)로 허용한다. 최상위 프레임만 지원한다. 호환 모드(확장 팝업에서 선택, 기본 꺼짐): `metamask` = 우리 provider가 `window.ethereum`을 차지하고 `isMetaMask: true`와 최소 `_metamask` 호환 API를 제공하며 EIP-6963 목록에 "MetaMask" 이름(rdns `io.metamask`)으로 알린다. `rabby` = 같은 방식에 `isRabby: true`, 이름 "Rabby Wallet"(rdns `io.rabby`). 호환 모드에서는 다른 확장의 EIP-6963 알림 중 같은 rdns 및 MetaMask·Rabby의 것을 가로채 dApp에 전달하지 않는다(최선 노력이다. 실제 MetaMask·Rabby를 꺼 두는 것을 권장한다). 어느 모드든 비밀은 확장에 들어가지 않고 모든 요청은 yw-app 승인 창으로 간다. **Solana·Bitcoin 호환 모드(2026-10-31)**는 EVM 모드와 별개로 팝업에서 고른다([05] §2.13): `solCompatMode` = `off`(기본, Wallet Standard 지갑 "Your Wallet"만 등록) / `phantom`(Wallet Standard 이름 "Phantom" + `window.phantom.solana` shim, 아이콘은 우리 것 — Wallet Standard 목록에서는 실제 Phantom을 숨길 수 없으므로 팝업이 실제 Phantom을 끄라고 경고), `btcCompatMode` = `off`(기본, Bitcoin은 아무것도 주입하지 않음) / `unisat`(`window.unisat`) / `xverse`(sats-connect `XverseProviders.BitcoinProvider` + WBIP004 `btc_providers`). Solana·Bitcoin dApp 지원은 연결 + 메시지 서명뿐이다(D25–D27). |
 | D23 | 확장↔yw-host 메시지는 기존 v1 봉투 형식을 유지한다. 단, 요청 단위 오류는 해당 요청에만 오류로 응답하고 스트림을 끊지 않는다. 요청 기한: 읽기 60초, 연결·서명 600초(잠금 해제·검토 시간 포함). 승인 창 자체는 표시 후 120초에 만료되고, 시뮬레이션이 60초보다 오래되면 승인 클릭 시 다시 실행한다. |
 | D24 | named pipe 이름은 `\\.\pipe\YourWallet.v3.<사용자 SID>`, 현재 사용자 전용 DACL, `FILE_FLAG_FIRST_PIPE_INSTANCE`, `PIPE_REJECT_REMOTE_CLIENTS`. yw-app이 꺼져 있고 `settings.json`의 `browserAutoLaunch`가 true(기본)면 yw-host가 yw-app을 실행시키고 최대 10초 기다린다. 실패하면 yw-host가 요청마다 4900으로 응답한다. Chrome의 job object 때문에 yw-app이 Chrome과 함께 종료되는지는 **아직 확인하지 않았다**(수동 체크 [spec/09](spec/09-testing.md) M5-13 대기; `spawn_detached`는 `CREATE_BREAKAWAY_FROM_JOB`을 먼저 시도한다). 함께 종료되면 `browserAutoLaunch` 기본값을 false로 바꾸고 수동 실행으로 바꾼다. |
-| D25 | Solana: 전송 전용. v1은 SOL만, v1.1은 허용 목록 SPL 토큰(USDC·USDT). 경로 m/44'/501'/{i}'/0'. 가져온 개인키 계정(D9, [spec/07](spec/07-solana.md) §3.4)도 같은 보내기·받기 흐름을 쓴다(키 출처 태그 6 `Imported`, 비표준 경로 규칙 없음). |
-| D26 | Bitcoin: 전송 전용. 주소 형식은 **계정마다** 하나다: 네이티브 세그윗 P2WPKH(BIP84, 기본·계정 0), 탭루트 P2TR(BIP86 키 경로), 호환 세그윗 P2SH-P2WPKH(BIP49), 레거시 P2PKH(BIP44). 기본 계정은 BIP84 계정 0(메인넷 m/84'/0'/0', testnet4 m/84'/1'/0')이고, Bitcoin 탭의 [계정 추가]로 형식을 골라 같은 니모닉의 다음 계정(`m/{44\|49\|84\|86}'/{coin}'/{n}'`)을 더한다. 가져온 단일 키(WIF, vault 태그 4)도 계정 하나가 된다(주소 하나, gap 검색 없음, 잔돈은 같은 주소). 한 거래는 한 계정의 입력만 쓰고 잔돈은 그 계정의 잔돈 체인(같은 형식)으로 간다([spec/08](spec/08-bitcoin.md) §3.5). 지갑마다 네트워크 하나(mainnet 또는 testnet4). 주소별 UTXO·내역 조회 인덱서는 설정 `bitcoin.indexer`로 고른다: **기본 `esplora`**(무료·키 없음, 기본 URL `https://mempool.space/api`, testnet4 `https://mempool.space/testnet4/api`, 설정에서 다른 Esplora URL로 변경 가능), 선택 `bb-rpc`(QuickNode BTC Blockbook 애드온, 유료 추가 요금), 선택 `bb-rest`(알케미 UTXO API). 어느 인덱서든 주소 단위로만 호출하고(선택한 계정의 주소: bech32·bech32m 소문자 또는 base58check, 질의 경로는 바뀌지 않음) xpub은 보내지 않는다. 인덱서는 믿지 않는다: 입력 금액·스크립트는 Bitcoin Core RPC(`getrawtransaction`, 현재 QuickNode `bitcoin:<net>` 엔드포인트)로 받은 원 거래의 해시를 txid와 대조해 검증한다. Core가 원 거래를 주지 못하면(txindex 없음 등) 인덱서의 원본 hex(`TxRaw`)로 받아 같은 해시 검증을 한다(검증 실패 UTXO는 쓰지 않음, [spec/08](spec/08-bitcoin.md) §4.7-4). 브로드캐스트·수수료 추정도 Core RPC로 한다. 예외: Core 전송이 통신 실패로 결과 불명(`BroadcastUnknown`)이고 인덱서가 `esplora`이면 사용자가 확인한 경우에만 같은 바이트를 Esplora `POST /tx`로 1회 수동 전송할 수 있다([spec/08](spec/08-bitcoin.md) §11.3). |
-| D27 | 모든 체인의 서명은 같은 승인 창 구조를 쓴다. BTC·SOL은 지갑이 정해진 템플릿으로 거래를 만들므로 시뮬레이션 없이 결정적 해석만으로 표시한다(SOL은 `simulateTransaction`을 참고 정보로만 사용). |
+| D25 | Solana: 전송 전용(지갑 앱의 보내기·받기). **dApp 연결은 소유 증명만**(2026-10-31, [07] §19, [05] §3.6): 계정 1개 연결과 메시지 서명(Sign-In-With-Solana 포함)만 하고, dApp의 거래 서명·전송은 없다 — 거래 메서드는 dApp 감지에 필요한 곳(Wallet Standard `solana:signTransaction`, Phantom shim)에만 두고 항상 4200 "이 지갑은 Solana에서 메시지 서명(소유 증명)만 지원합니다"로 거부한다. 거래로 해석되는 바이트·형식이 틀린 오프체인 메시지는 서명하지 않는다. v1은 SOL만, v1.1은 허용 목록 SPL 토큰(USDC·USDT). 경로 m/44'/501'/{i}'/0'. 가져온 개인키 계정(D9, [spec/07](spec/07-solana.md) §3.4)도 같은 보내기·받기 흐름을 쓴다(키 출처 태그 6 `Imported`, 비표준 경로 규칙 없음). |
+| D26 | Bitcoin: 전송 전용(지갑 앱의 보내기·받기, 보관용 — 오디널스·인스크립션·룬은 범위 밖). **dApp 연결은 소유 증명만**(2026-10-31, [08] §17, [05] §3.6): UniSat·Xverse 호환 모드에서만 주소(목적마다 계정 하나의 받기 주소 0번)를 연결하고 메시지에 서명(BIP137 ECDSA, BIP322 simple·full)한다. PSBT·거래 서명·전송·인스크립션 메서드는 항상 4200 "이 지갑은 Bitcoin에서 메시지 서명(소유 증명)만 지원합니다". 주소 형식은 **계정마다** 하나다: 네이티브 세그윗 P2WPKH(BIP84, 기본·계정 0), 탭루트 P2TR(BIP86 키 경로), 호환 세그윗 P2SH-P2WPKH(BIP49), 레거시 P2PKH(BIP44). 기본 계정은 BIP84 계정 0(메인넷 m/84'/0'/0', testnet4 m/84'/1'/0')이고, Bitcoin 탭의 [계정 추가]로 형식을 골라 같은 니모닉의 다음 계정(`m/{44\|49\|84\|86}'/{coin}'/{n}'`)을 더한다. 가져온 단일 키(WIF, vault 태그 4)도 계정 하나가 된다(주소 하나, gap 검색 없음, 잔돈은 같은 주소). 한 거래는 한 계정의 입력만 쓰고 잔돈은 그 계정의 잔돈 체인(같은 형식)으로 간다([spec/08](spec/08-bitcoin.md) §3.5). 지갑마다 네트워크 하나(mainnet 또는 testnet4). 주소별 UTXO·내역 조회 인덱서는 설정 `bitcoin.indexer`로 고른다: **기본 `esplora`**(무료·키 없음, 기본 URL `https://mempool.space/api`, testnet4 `https://mempool.space/testnet4/api`, 설정에서 다른 Esplora URL로 변경 가능), 선택 `bb-rpc`(QuickNode BTC Blockbook 애드온, 유료 추가 요금), 선택 `bb-rest`(알케미 UTXO API). 어느 인덱서든 주소 단위로만 호출하고(선택한 계정의 주소: bech32·bech32m 소문자 또는 base58check, 질의 경로는 바뀌지 않음) xpub은 보내지 않는다. 인덱서는 믿지 않는다: 입력 금액·스크립트는 Bitcoin Core RPC(`getrawtransaction`, 현재 QuickNode `bitcoin:<net>` 엔드포인트)로 받은 원 거래의 해시를 txid와 대조해 검증한다. Core가 원 거래를 주지 못하면(txindex 없음 등) 인덱서의 원본 hex(`TxRaw`)로 받아 같은 해시 검증을 한다(검증 실패 UTXO는 쓰지 않음, [spec/08](spec/08-bitcoin.md) §4.7-4). 브로드캐스트·수수료 추정도 Core RPC로 한다. 예외: Core 전송이 통신 실패로 결과 불명(`BroadcastUnknown`)이고 인덱서가 `esplora`이면 사용자가 확인한 경우에만 같은 바이트를 Esplora `POST /tx`로 1회 수동 전송할 수 있다([spec/08](spec/08-bitcoin.md) §11.3). |
+| D27 | 모든 체인의 서명은 같은 승인 창 구조를 쓴다. BTC·SOL은 지갑이 정해진 템플릿으로 거래를 만들므로 시뮬레이션 없이 결정적 해석만으로 표시한다(SOL은 `simulateTransaction`을 참고 정보로만 사용). SOL·BTC의 dApp 서명은 **메시지 서명뿐**이며(`ApprovalKind::SolMessage`·`SolSignIn`·`BtcMessage`) EVM `personal_sign`과 같은 창·digest·일회 소비·만료 규칙을 쓴다. 승인 창에는 origin(+ punycode 배지), 호환 모드 배지, 체인·네트워크, 서명 계정 주소 전체, 메시지, 경고가 보인다. |
 | D28 | 텔레메트리·크래시 업로드 없음. `panic = "abort"`. 로그는 로컬 파일만, 비밀·주소 외 개인정보·API 키를 기록하지 않는다. |
 | D29 | 니모닉 하나로 모든 체인 키를 파생한다. 체인별 경로: EVM m/44'/60'/0'/0/i(테스트넷 동일), Solana m/44'/501'/i'/0'(devnet 동일), Bitcoin `m/{purpose}'/{coin}'/{account}'/{0,1}/i` — purpose는 계정의 주소 형식(44 P2PKH, 49 P2SH-P2WPKH, 84 P2WPKH, 86 P2TR), coin은 메인넷 0·testnet4 1, 기본 계정은 m/84'/0'/0'(testnet4 m/84'/1'/0'), 추가 계정은 형식별 다음 account 번호(0–99; P2WPKH는 1부터). 새 지갑 생성 시에는 BIP39 passphrase를 쓰지 않고, passphrase는 가져오기에서만 지원한다. 가져온 개인키(D9)는 니모닉 밖에 있다: 복구 단어로 복구되지 않고, 화면은 가져온 계정마다 "가져온 키" 배지와 그 사실을 보인다. 키 전용 지갑에는 파생 계정이 없다. |
 | D30 | 네트워크 선택(EVM 활성 체인, Solana 클러스터, Bitcoin 네트워크)과 `browserAutoLaunch`는 평문 `settings.json`에 둔다. 사이트별 연결·체인 권한은 암호화된 meta에 둔다. 잠긴 동안 `eth_accounts`는 `[]`, `eth_chainId`는 사이트별 메모리 캐시 또는 활성 체인을 돌려준다. |
@@ -136,7 +136,7 @@
 
 - 확장은 비밀을 저장·처리하지 않는다. 계정 주소, 체인 ID, 요청·응답만 지나간다.
 - yw-host는 메시지 내용을 해석하지 않는다. 길이·크기만 검사하고 pipe로 넘긴다. 예외: yw-app에 연결할 수 없을 때 요청마다 4900을 응답하기 위해 `version`·`kind`와 상관 필드 4개(`sessionId`, `activationNonce`, `requestId`, `sequence`)만 읽는다. 또 yw-app을 실행하기 전 `settings.json`의 `version`과 `browserAutoLaunch`만 읽는다(D24). 모든 검증과 정책은 yw-app이 한다.
-- BTC·SOL 기능은 브라우저와 무관하게 yw-app 화면에서만 쓴다.
+- BTC·SOL 보내기·받기는 yw-app 화면에서만 쓴다. 브라우저와는 소유 증명(연결 + 메시지 서명)만 한다(D25–D27, [05] §2.13·§3.6).
 
 ### 4.2 크레이트 계층
 
@@ -168,7 +168,7 @@ yw-host  (yw-json + yw-win, unsafe 금지)
   logs\            로컬 로그 (비밀 없음)
 ```
 
-확장의 호환 모드(D22, `metamask`·`rabby`)는 이 폴더가 아니라 Chrome 확장 저장소(`chrome.storage.local`)에 둔다([spec/05](spec/05-browser.md) §2.12).
+확장의 호환 모드(D22, `compatMode` `metamask`·`rabby`, `solCompatMode` `phantom`, `btcCompatMode` `unisat`·`xverse`)는 이 폴더가 아니라 Chrome 확장 저장소(`chrome.storage.local`)에 둔다([spec/05](spec/05-browser.md) §2.12–§2.13). Solana·Bitcoin dApp 연결은 meta의 선택 키 `sol_sites`·`btc_sites`([05] §4.9)에 둔다.
 
 쓰기는 모두 "임시 파일 → FlushFileBuffers → MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)"로 한다. 세부는 [spec/02](spec/02-core-keys-vault.md), [spec/04](spec/04-app-ui.md). 여러 앱 버전이 이 폴더를 번갈아 써도 서로의 데이터를 지우지 않도록 형식 호환 규칙(모르는 키·항목 보존, 더 새로운 `settings.json`은 읽기 전용)을 [spec/04](spec/04-app-ui.md) §6.6이 정한다. 형식을 깨는 변경은 새 폴더(`v4`)로 한다.
 

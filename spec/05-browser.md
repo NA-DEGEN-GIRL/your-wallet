@@ -97,7 +97,7 @@ page ──window.ethereum / EIP-6963──▶ provider-main.js (MAIN world)
 
 - `host_permissions`, `optional_host_permissions`, `optional_permissions`, `externally_connectable`, `web_accessible_resources`, `content_security_policy`는 두지 않는다. 호환 모드(§2.12)도 `scripting`·호스트 권한 없이 동작한다.
 - localhost 매치는 항상 주입한다. 허용 여부는 yw-app 설정 토글이 정한다(§4.6). 포트 없는 패턴이 모든 포트에 매치되는지는 §11-1에서 확인한다.
-- `storage`(`chrome.storage.local`)는 두 키에만 쓴다: `profileInstallIdV1`(64 hex, background, `archive/spec-v2.4:extension/src/background.js:72-84` 유지)과 `compatMode`(`"off"`·`"metamask"`·`"rabby"`, 팝업이 쓰고 content script가 읽는다, §2.12).
+- `storage`(`chrome.storage.local`)는 네 키에만 쓴다: `profileInstallIdV1`(64 hex, background, `archive/spec-v2.4:extension/src/background.js:72-84` 유지), `compatMode`(`"off"`·`"metamask"`·`"rabby"`, §2.12), `solCompatMode`(`"off"`·`"phantom"`)·`btcCompatMode`(`"off"`·`"unisat"`·`"xverse"`, §2.13). 모드 키는 팝업이 쓰고 content script가 읽는다.
 
 ### 2.3 manifest 키와 확장 ID
 절차(M5 첫 작업, 1회):
@@ -245,11 +245,11 @@ fn pinned_extension_id() -> Option<&'static str> {
 | page→content | `bridge-request` | (없음) |
 | page→content | `request` | `channel`, `id`(32 hex), `method`, `params` |
 | page→content | `cancel` | `channel`, `id` |
-| content→page | `bridge-init` | `channel`(64 hex), `compatMode`(`"off"`\|`"metamask"`\|`"rabby"`, §2.12) |
+| content→page | `bridge-init` | `channel`(64 hex), `compatMode`(`"off"`\|`"metamask"`\|`"rabby"`, §2.12), `solCompatMode`(`"off"`\|`"phantom"`), `btcCompatMode`(`"off"`\|`"unisat"`\|`"xverse"`, §2.13) |
 | content→page | `response` | `channel`, `id`, `result` \| `error` |
 | content→page | `event` | `channel`, `event`, `payload` |
 | content→page | `disconnect` | `channel`, `error` (DEAD 진입 시 1회) |
-| content→bg | `request` | `activationNonce`, `id`, `method`, `params`, 선택 `compatMode`(`"metamask"`\|`"rabby"`만, 기본 모드에서는 키 없음. `"off"`·그 밖 값은 형식 오류) |
+| content→bg | `request` | `activationNonce`, `id`, `method`, `params`, 선택 `compatMode`(메서드 계열의 모드: EVM `"metamask"`\|`"rabby"`, `sol_*` `"phantom"`, `btc_*` `"unisat"`\|`"xverse"`. 그 계열이 기본 모드면 키 없음. `"off"`·다른 계열 값은 형식 오류, §2.13) |
 | content→bg | `cancel` | `activationNonce`, `id`, `reason`(`^[A-Za-z0-9_-]{1,128}$`) |
 | content→bg | `disconnect` | `activationNonce`, `reason` |
 | bg→content | `activated` | `activationNonce`(64 hex) |
@@ -304,7 +304,7 @@ fn pinned_extension_id() -> Option<&'static str> {
 
 **cancel/disconnect**: content `cancel` → pending이면 타이머 해제, 제거, native `cancel`(reason `page-cancel`). content `disconnect` 또는 port 끊김 → 그 activation의 pending 모두 native `cancel`(reason은 받은 값, 없으면 `content-port-disconnect`) 후 activation 삭제.
 
-**native 수신**: `checkJson(msg, RESPONSE_LIMITS)`, 정확한 키 집합(§6.1), `sessionId` 일치, `sequence === last + 1`. 위반 또는 알 수 없는 `kind`, 이벤트 이름이 `accountsChanged`·`chainChanged`가 아님, payload 형식(`accountsChanged`: `^0x[0-9a-f]{40}$` 문자열 0–16개 배열(grant 계정 한도, §4.1), `chainChanged`: `^0x[1-9a-f][0-9a-f]*$`)이 틀림 → native 연결만 끊는다(`dropNativeConnection`). response는 `(activationNonce, requestId)`로 pending을 찾고 `requestSequence`가 같을 때만 전달한다. 없으면 버린다.
+**native 수신**: `checkJson(msg, RESPONSE_LIMITS)`, 정확한 키 집합(§6.1), `sessionId` 일치, `sequence === last + 1`. 위반 또는 알 수 없는 `kind`, 이벤트 이름이 `accountsChanged`·`chainChanged`·`solAccountsChanged`·`btcAccountsChanged`가 아님, payload 형식(`accountsChanged`: `^0x[0-9a-f]{40}$` 문자열 0–16개 배열(grant 계정 한도, §4.1), `chainChanged`: `^0x[1-9a-f][0-9a-f]*$`, `solAccountsChanged`: base58 32–44자 0–1개, `btcAccountsChanged`: `^[A-Za-z0-9]{14,90}$` 0–2개)이 틀림 → native 연결만 끊는다(`dropNativeConnection`). response는 `(activationNonce, requestId)`로 pending을 찾고 `requestSequence`가 같을 때만 전달한다. 없으면 버린다.
 
 **native 연결 끊김**(port `onDisconnect`, drop 포함): 모든 pending에 4900 "Wallet connection closed." 응답, 타이머 해제. **activation은 유지한다**(기존 `cancelAllPending`이 문서를 죽이던 버그 수정). 다음 요청이 새로 연결한다. 연결마다 새 `sessionId = randomHex(32)`, 송신 `sequence`는 0부터 다시 센다.
 
@@ -424,10 +424,44 @@ Object.defineProperty(window, "ethereum", { get: () => provider, set: (_ignored)
 - 모드 선택: 고를 수 있는 라디오 카드 3개("기본 (Your Wallet)", "MetaMask처럼 보이기", "Rabby처럼 보이기", 카드마다 그 모드가 하는 일을 쉬운 말로 한 줄 설명), 저장 결과, "모드 변경은 다음 페이지 로드부터 적용됩니다. 열려 있는 dApp 탭은 새로고침하세요.", 위 경고.
 - 모양: 데스크톱 앱([04](04-app-ui.md))과 같은 라이트 테마 하나(다크 변형 없음). 배경 `#F3F4F6`, 카드 `#FFFFFF`·테두리 1px `#E1E4E8`·모서리 8px, 글자 `#1F1F1F`, 보조 글자 `#5F6368`, 강조(선택 카드 테두리·라디오) `#0F6CBD`, 글꼴 `"Malgun Gothic", "Segoe UI", system-ui`(본문 13px, 설명 12px, 제목 굵게 16px), 간격 4/8/12/16px. 상단에 앱 이름 머리글, 연결 상태는 색 알약(`connected` 성공 `#DFF6DD`/`#0E700E`, `unavailable` 고위험 `#FDE7E9`/`#A4262C`, 그 밖 정보 `#E8F1FB`/`#0F4C81`), 경고는 주의 색(`#FFF4CE`/`#7A5C00`). 원격 글꼴·이미지 없음(§2.11 검사).
 
+### 2.13 Solana·Bitcoin dApp 연결 (D22·D25·D26·D27: 소유 증명 전용)
+목적: Solana·Bitcoin dApp에서 **지갑 소유 증명**(연결 + 메시지 서명, Sign-In-With-Solana 포함)만 하게 한다. 거래·PSBT 서명과 dApp발 전송은 없다. 거래 메서드는 dApp이 지갑을 찾는 데 꼭 필요한 곳에만 두고 **항상** 4200 + 고정 문구 `이 지갑은 Solana에서 메시지 서명(소유 증명)만 지원합니다` / `이 지갑은 Bitcoin에서 메시지 서명(소유 증명)만 지원합니다`로 거부한다(페이지 쪽에서 즉시, 와이어로 보내지 않는다. 와이어에도 그런 메서드는 없다 — §3.2 `rejected`).
+
+**저장과 전달**: 팝업이 `chrome.storage.local`의 `solCompatMode`(`"off"`·`"phantom"`)와 `btcCompatMode`(`"off"`·`"unisat"`·`"xverse"`)를 쓴다(EVM `compatMode`와 별개, 그 밖 값·없음은 `off`). content는 document_start에 세 키를 한 번에 읽고(`MODE_READ_TIMEOUT_MS`, 실패는 셋 다 `off`) `bridge-init`의 `solCompatMode`·`btcCompatMode`로 넘긴다. content→bg `request`의 `compatMode`는 **메서드 계열의** 모드다: `eth_*` 등은 `metamask`·`rabby`, `sol_*`는 `phantom`, `btc_*`는 `unisat`·`xverse`(그 계열이 `off`면 키 없음). 다른 계열의 모드가 붙은 content 메시지는 형식 오류, yw-app은 -32600(§6.1).
+
+| 계열·모드 | 페이지에 보이는 것 |
+|---|---|
+| Solana `off`(기본) | Wallet Standard 지갑 하나(이름 `Your Wallet`)만 등록. `window.phantom`·`window.solana` 없음 |
+| Solana `phantom` | Wallet Standard 지갑 이름 `Phantom`(아이콘은 우리 PNG, Phantom 로고를 쓰지 않는다) + `window.phantom.solana`(접근자로 차지·재차지, `window.ethereum` 호환 모드와 같은 규칙 §2.12) + `window.solana`(없을 때만 데이터 속성) |
+| Bitcoin `off`(기본) | **아무것도 주입하지 않는다**(Bitcoin dApp 지원은 호환 모드에서만) |
+| Bitcoin `unisat` | `window.unisat`(접근자로 차지·재차지) |
+| Bitcoin `xverse` | `window.XverseProviders.BitcoinProvider`(차지·재차지) + `window.BitcoinProvider`(없을 때만) + `window.btc_providers`(WBIP004) 항목 `{ id: "XverseProviders.BitcoinProvider", name: "Xverse Wallet", icon: <우리 PNG>, methods }`(같은 id 항목이 있으면 교체) |
+
+Wallet Standard에는 숨기기가 없다: 실제 Phantom이 켜져 있으면 `Phantom` 이름 지갑이 둘 보일 수 있다. 팝업 경고: `Phantom처럼 보이기를 쓸 때는 실제 Phantom 확장을 꺼 두세요. Solana 지갑 목록(Wallet Standard)에서는 실제 Phantom을 숨길 수 없어 두 지갑이 함께 보일 수 있습니다.` Bitcoin: `UniSat·Xverse처럼 보이기를 쓸 때는 실제 UniSat·Xverse 확장을 꺼 두세요. 켜져 있으면 dApp이 그 지갑에 연결될 수 있습니다.` 공통 안내: `이 지갑은 Solana·Bitcoin에서 연결과 메시지 서명(소유 증명)만 지원합니다. 거래 서명과 전송은 할 수 없습니다.`
+
+**Wallet Standard 지갑**(`provider-main.js`, 모드가 정해질 때 등록): `wallet-standard:register-wallet` 이벤트(`detail` = `({ register }) => register(wallet)`)를 한 번 보내고, `wallet-standard:app-ready`에는 그때마다 `detail.register(wallet)`로 답한다(모드 확정 전에 온 것은 확정 때 답한다, 최대 16개). `wallet = { version: "1.0.0", name, icon, chains: ["solana:mainnet","solana:devnet"], features, accounts }`(동결, `name`·`accounts`는 getter). 계정 `{ address, publicKey(32바이트 사본), chains, features: ["solana:signMessage","solana:signIn","solana:signTransaction"] }`.
+
+| feature | 동작 |
+|---|---|
+| `standard:connect` `{ silent? }` | `sol_connect`(`silent` → `onlyIfTrusted`). silent 실패는 `{ accounts: [] }`, 그 밖 실패는 거부 |
+| `standard:disconnect` | `sol_disconnect` 후 계정 비움 |
+| `standard:events` `on("change", fn)` | 계정 변화마다 `fn({ accounts })`, 해제 함수 반환 |
+| `solana:signMessage` `(...inputs)` | 입력마다 `account`가 현재 계정이어야 함(아니면 4100, 와이어 없음) → `sol_signMessage` → `{ signedMessage, signature(64B), signatureType: "ed25519" }` |
+| `solana:signIn` `(...inputs)` | 연결 전이면 먼저 `sol_connect`(창) → `sol_signIn` → `{ account, signedMessage(앱이 만든 바이트), signature, signatureType }` |
+| `solana:signTransaction` `supportedTransactionVersions: ["legacy"]` | wallet-adapter 목록에 들기 위한 선언. **항상 4200**(위 문구) |
+
+**Phantom shim** `window.phantom.solana`(멤버는 쓰기·재구성 불가): `isPhantom: true`, `publicKey`(getter, PublicKey 유사 객체 `{ toBase58, toString, toJSON, toBytes, toBuffer, equals }` 또는 `null`), `isConnected`, `connect({ onlyIfTrusted }?)` → `{ publicKey }`(`onlyIfTrusted`이고 연결 안 됨 → 4001, 창 없음), `disconnect()`, `signMessage(Uint8Array, display?)` → `{ signature, publicKey }`(연결 전 4100, `display`는 무시 — 표시는 앱이 정한다), `signIn(input?)` → `{ address: PublicKey, signedMessage, signature }`, `request({ method: "connect"|"disconnect"|"signMessage"|"signIn", params })`, 이벤트 `on`/`addListener`/`off`/`removeListener`/`removeAllListeners`(`connect`·`disconnect`·`accountChanged`). `signTransaction`·`signAllTransactions`·`signAndSendTransaction`·`signAndSendAllTransactions`·그 밖 `request` 메서드 → 4200.
+
+**UniSat shim** `window.unisat`: `requestAccounts()` → `btc_requestAccounts [{ purposes: ["any"] }]` → 주소 배열, `getAccounts()`, `getNetwork()`(`"livenet"`·`"testnet"`), `getChain()`(`{ enum: "BITCOIN_MAINNET"|"BITCOIN_TESTNET4", name, network }`), `switchNetwork(n)`·`switchChain(c)`(현재 설정과 같을 때만 성공, 아니면 4200 `Bitcoin 네트워크는 Your Wallet 앱 설정에서만 바꿀 수 있습니다`), `getPublicKey()`, `signMessage(msg: string, type = "ecdsa"|"bip322-simple")` → base64 서명, `on`/`removeListener`(`accountsChanged`·`networkChanged`). `signPsbt`·`signPsbts`·`pushPsbt`·`pushTx`·`sendBitcoin`·`sendInscription`·`inscribeTransfer`·`sendRunes`·`getBalance`·`getInscriptions` → 4200.
+
+**Xverse shim**(sats-connect `request(method, params)`, 2026-10-31 `secretkeylabs/sats-connect-core` 소스로 형태 확인): 결과는 JSON-RPC 2.0 객체 `{ jsonrpc: "2.0", id: <문자열>, result }` 또는 `{ jsonrpc, id, error: { code, message } }`. `getInfo` → `{ version: "1.0.0", methods, supports: [] }`. `getAccounts { purposes }`·`wallet_connect { addresses? }`(기본 `["payment","ordinals"]`) → `btc_requestAccounts`(목적은 `payment`·`ordinals`만 남기고 `stacks` 등은 버림, 남는 것이 없으면 -32602) → 주소 객체 `{ address, publicKey, purpose, addressType, walletType: "software" }`(P2TR은 x-only 64 hex). `wallet_connect`·`wallet_getAccount`는 `{ id: "your-wallet", addresses, walletType, network }`, `wallet_getNetwork` → `{ bitcoin: { name: "Mainnet"|"Testnet4" }, stacks, spark }`, `wallet_disconnect`·`wallet_renouncePermissions` → `btc_disconnect`. `signMessage { address, message, protocol?: "ECDSA"|"BIP322" }` → `{ signature, messageHash, address, protocol }`. 그 밖(`signPsbt`·`sendTransfer`·`runes_*`·`ord_*` 등) → 오류 -32001(`METHOD_NOT_SUPPORTED`) + 위 문구. 오류 코드 변환: 4001 → -32000(`USER_REJECTION`), 4100 → -32002(`ACCESS_DENIED`), 4200 → -32001, -32602·-32600 그대로, 그 밖 -32603. `addListener(eventName, cb)`와 `addListener({ eventName, cb })` 모두 해제 함수 반환(`accountChange`·`networkChange`·`disconnect`). JWT 기반 구 API(`connect(jwt)`·`signMessage(jwt)` 등)는 거부.
+
+**이벤트**: yw-app이 `solAccountsChanged`(payload: base58 공개키 0–1개)와 `btcAccountsChanged`(주소 0–2개)를 보낸다(§4.9, §6.1). shim은 이것으로 계정을 갱신한다: 빈 배열이면 Phantom `disconnect`, Wallet Standard `change { accounts: [] }`, UniSat `accountsChanged([])`, Xverse `disconnect`.
+
 ---
 
 ## 3. 메서드 허용 목록
-### 3.1 허용 메서드 (27개, 정본: JS `shared.js METHOD_ROUTE`, Rust `yw_core::policy::Method`)
+### 3.1 허용 메서드 (37개 = 아래 27개 + §3.6의 Solana·Bitcoin 10개, 정본: JS `shared.js METHOD_ROUTE`, Rust `yw_core::policy::Method`)
 `route`는 봉투 v1의 `"permission" | "read" | "signing"`이다. `permission`은 RPC 없이 yw-app이 답하는 메서드를 뜻한다.
 
 | 메서드 | route | 연결 필요 | 동작 | 결과 |
@@ -451,7 +485,7 @@ EIP-2255 권한 객체: `{ "invoker": "<origin>", "parentCapability": "eth_accou
 ### 3.2 명시적 거부 (4200 "Unsupported method.")
 허용 표에 없는 모든 메서드는 4200이다. 아래는 골든 파일의 `rejected` 목록으로 양쪽 테스트가 "허용 표에 없음"을 확인한다:
 
-`eth_sign`, `eth_signTransaction`, `eth_sendRawTransaction`, `eth_signTypedData`, `eth_signTypedData_v1`, `eth_signTypedData_v3`, `wallet_addEthereumChain`, `wallet_watchAsset`, `wallet_getCapabilities`, `wallet_sendCalls`, `wallet_getCallsStatus`, `wallet_showCallsStatus`, `wallet_registerOnboarding`, `wallet_scanQRCode`, `eth_subscribe`, `eth_unsubscribe`, `eth_newFilter`, `eth_newBlockFilter`, `eth_newPendingTransactionFilter`, `eth_getFilterChanges`, `eth_getFilterLogs`, `eth_uninstallFilter`, `eth_coinbase`, `eth_getEncryptionPublicKey`, `eth_decrypt`, `personal_ecRecover`, `personal_unlockAccount`, `personal_sendTransaction`, `eth_getProof`, `debug_traceCall`, `eth_simulateV1`.
+`sol_signTransaction`, `sol_signAllTransactions`, `sol_signAndSendTransaction`, `btc_signPsbt`, `btc_sendBitcoin`, `btc_pushTx`, `btc_sendTransfer`(Solana·Bitcoin은 메시지 서명만, §3.6), `eth_sign`, `eth_signTransaction`, `eth_sendRawTransaction`, `eth_signTypedData`, `eth_signTypedData_v1`, `eth_signTypedData_v3`, `wallet_addEthereumChain`, `wallet_watchAsset`, `wallet_getCapabilities`, `wallet_sendCalls`, `wallet_getCallsStatus`, `wallet_showCallsStatus`, `wallet_registerOnboarding`, `wallet_scanQRCode`, `eth_subscribe`, `eth_unsubscribe`, `eth_newFilter`, `eth_newBlockFilter`, `eth_newPendingTransactionFilter`, `eth_getFilterChanges`, `eth_getFilterLogs`, `eth_uninstallFilter`, `eth_coinbase`, `eth_getEncryptionPublicKey`, `eth_decrypt`, `personal_ecRecover`, `personal_unlockAccount`, `personal_sendTransaction`, `eth_getProof`, `debug_traceCall`, `eth_simulateV1`.
 
 `eth_coinbase`는 계정 노출 경로를 줄이기 위해 지원하지 않는다. `wallet_addEthereumChain`은 D14에 따라 params와 무관하게(이미 등록된 체인이어도) 4200이다. 체인 추가는 yw-app 설정([04](04-app-ui.md) §6.1 `evmChains`)에서만 한다. dApp이 4902를 받은 뒤 이어 부르는 `wallet_addEthereumChain`도 4200이며 레지스트리는 바뀌지 않는다.
 
@@ -511,6 +545,24 @@ EIP-55 판정과 주소 파싱은 yw-core 함수를 쓴다(이름은 [03](03-evm
 - 성공: `result`를 yw-json으로 파싱한 값 그대로 반환. `checkJson` 기준 `RESPONSE_LIMITS`를 넘거나 직렬화 크기 > 1,044,480 B(1 MiB − 4 KiB)면 -32603 "Response too large.".
 - RPC 엔드포인트 없음(`endpoint(chain)` 없음: 그 체인의 `rpc:eip155:<chainId>` URL이 저장되지 않음), 체인 상태 `RpcMismatch`·`Unverified`([03] §1.4), 연결·TLS·시간 초과·HTTP 비-2xx(429 제외)·JSON 오류 → 4901 "Chain RPC is unavailable.". HTTP 429 → -32005 "Rate limit exceeded.".
 - 상위 JSON-RPC `error` 전달(revert 데이터를 dApp이 해석하도록): code가 `3`, −32099…−32000, −32600…−32603이면 유지하고 그 밖은 −32603. message는 0x20–0x7E 문자 1–256자면 유지, 아니면 `"RPC error."`. data는 `^0x([0-9a-fA-F]{2})*$`이고 ≤ 131,074자인 문자열이면 소문자로 유지, 아니면 생략. 이 문자열은 dApp에만 가고 yw-app 화면에는 표시하지 않는다.
+
+### 3.6 Solana·Bitcoin 메서드 (연결·메시지 서명만, D25–D27)
+10개. 거래·PSBT 메서드는 없다(§3.2 `rejected`의 `sol_signTransaction`·`sol_signAllTransactions`·`sol_signAndSendTransaction`·`btc_signPsbt`·`btc_sendBitcoin`·`btc_pushTx`·`btc_sendTransfer`, 페이지 shim은 §2.13대로 4200). 이름은 `^[A-Za-z0-9_]{1,96}$`.
+
+| 메서드 | route | params(정확한 키) | 동작 | 결과 |
+|---|---|---|---|---|
+| `sol_connect` | permission | `[]` 또는 `[{ "onlyIfTrusted"?: bool }]` | 연결·잠금 해제면 창 없이 반환. `onlyIfTrusted`이고 미연결 → 4001(창 없음). 그 밖은 연결 창(Solana 계정 1개 선택, §4.9) | `{ "publicKey": base58 }` |
+| `sol_disconnect` | permission | `[]` | 잠금 해제면 Solana grant 삭제 + `solAccountsChanged([])`. 잠김이면 아무것도 바꾸지 않음 | `null` |
+| `sol_accounts` | permission | `[]` | 연결·잠금 해제면 `[base58]`, 아니면 `[]` | 배열 |
+| `sol_signMessage` | signing | `[{ "publicKey": base58, "message": hex }]`(≤ 65,536 B) | grant 계정이어야 함(4100). 승인 창([07] §19) | `{ "publicKey", "signature": hex(64B) }` |
+| `sol_signIn` | signing | `[{ "publicKey": base58, "input": SolanaSignInInput }]` | `input` 키는 `domain address statement uri version chainId nonce issuedAt expirationTime notBefore requestId resources`의 부분집합(그 밖 키, 예 `useOffchainMessage` → -32602), 문자열 ≤ 1,024 B·제어 문자 없음, `resources` ≤ 32개. 빈 문자열은 없는 것으로 본다. 디스패처가 빠진 `domain`(origin의 `host[:port]`)·`address`(계정)를 채우고 [07] §19.4의 텍스트를 만든다(≤ 64 KiB) | `{ "publicKey", "signature", "signedMessage": hex }` |
+| `btc_requestAccounts` | permission | `[{ "purposes": [...] }]` — `payment`·`ordinals` 1–2개(중복 없음) 또는 `["any"]`(UniSat) | 잠금 해제 grant가 요청 목적을 모두 갖고 있으면 창 없이 반환(요청 목적만). 그 밖은 연결 창(목적마다 주소 1개, §4.9) | `[{ "address", "publicKey": hex, "purpose", "addressType": "p2pkh"|"p2sh"|"p2wpkh"|"p2tr" }]` |
+| `btc_getAccounts` | permission | `[]` | 잠금 해제 grant(설정 네트워크와 같은 네트워크)의 주소, 아니면 `[]` | 같은 형식 |
+| `btc_disconnect` | permission | `[]` | `sol_disconnect`와 같은 규칙(`btcAccountsChanged([])`) | `null` |
+| `btc_getNetwork` | permission | `[]` | settings Bitcoin 네트워크 | `"mainnet"` 또는 `"testnet4"` |
+| `btc_signMessage` | signing | `[{ "address", "message": UTF-8 문자열 ≤ 65,536 B, "protocol"?: "ecdsa"|"bip322" }]` | grant 주소여야 함(4100). `protocol` 생략 = 주소 형식 기본값(P2TR → `bip322`, 그 밖 `ecdsa`). 주소 형식이 그 방식을 못 쓰면(P2TR+ECDSA, P2PKH+BIP322) -32602. 승인 창([08] §17) | `{ "address", "signature": base64, "messageHash": hex, "protocol" }` |
+
+`context.compatMode`가 메서드 계열과 맞지 않으면 -32600(§2.13). 잠김·`BackupPending`·`PassphraseUnverified`·vault 없음 규칙은 EVM 연결·서명과 같다(§4.2, §4.4).
 
 ---
 
@@ -594,6 +646,13 @@ dApp 요청으로 띄운 잠금 해제 창을 `나중에`로 닫으면 `UNLOCK_P
 | 잠금 해제 | `accountsChanged(accounts)` + 필요 시 `chainChanged` |
 | origin 체인 변경(`wallet_switchEthereumChain`, 사용자 체인 삭제, §4.3) | `chainChanged("0x…")`(사용자 체인 포함) |
 
+### 4.9 Solana·Bitcoin grant (meta `sol_sites`·`btc_sites`, [02] §5.3)
+- EVM `connected_sites`와 **별개**다. origin마다 Solana grant 1개(`SolGrant { origin, public: [u8;32], granted_at_unix_ms }`), Bitcoin grant 1개(`BtcGrant { origin, network, addresses: 1–2 × { purpose, address, pubkey, script_type }, granted_at_unix_ms }`). 각 0..=256개. 키는 선택 최상위 키로 비어 있지 않을 때만 쓰고, 이전 버전은 모르는 키로 보존한다([04] §6.6).
+- 연결 창은 계정을 **하나** 고른다(라디오). Solana: 숨기지 않은 표준 경로 계정과 가져온 키. Bitcoin: settings 네트워크의 계정마다 **안정 주소**(받기 주소 0번, 가져온 키는 그 주소) 하나 — `payment`는 P2WPKH·P2SH-P2WPKH, `ordinals`는 P2TR, `any`(UniSat)는 모든 형식. 고를 계정이 없으면 창 없이 4100 `NoSolAccount`/`NoBtcAccount`(§5). 기본 선택은 기존 grant의 계정, 없으면 각 그룹 첫 계정.
+- 잠그면 grant를 잊고 해당 origin 문서에 `solAccountsChanged([])`·`btcAccountsChanged([])`, 잠금 해제 때 meta에서 다시 읽어 계정을 보낸다. 설정 네트워크와 다른 네트워크의 Bitcoin grant는 아무것도 노출하지 않는다(주소 0개).
+- 서명 요청은 grant의 계정·주소만(4100). 큐에서 꺼낼 때 그 계정이 지갑에서 사라졌으면 `Revoked`(4100).
+- 해제: `sol_disconnect`·`btc_disconnect`(잠금 해제 중), 연결된 사이트 화면([04] §2.9)의 `연결 해제`. 그 계열의 대기 서명 항목만 `Revoked`.
+
 ---
 
 ## 5. 오류 코드
@@ -606,6 +665,8 @@ dApp 요청으로 띄운 잠금 해제 창을 `나중에`로 닫으면 `UNLOCK_P
 | 4100 | `Unauthorized` | `Unauthorized.` | 미연결 origin의 계정 요구 메서드, grant에 없는 계정, localhost 토글 꺼짐, vault 없음, vault가 `BackupPending`(백업 미확인)인 동안의 signing·연결 요청, 대기 중 연결 해제(§4.5), grant 256개 상태에서 새 origin 연결(§4.1) |
 | 4100 | `PassphraseUnverified` | `Unauthorized: the wallet was opened with an unverified passphrase, so connecting and signing are disabled. Lock the wallet and unlock it with the correct passphrase.` | 확인값과 맞지 않는 BIP39 passphrase로 연 세션(`Unlocked { alt_passphrase: true }`, `App::passphrase_unverified()`, [02] §7.5)의 연결·signing 요청(디스패처 상태 `VaultView::PassphraseUnverified`, 잠김 중 큐에 들어갔다가 이 세션으로 풀린 요청은 [04] §3.1 `PassphraseUnverified`). 읽기 메서드는 계속 동작하고 grant는 없다(`eth_accounts` `[]`, `wallet_revokePermissions` `null`) |
 | 4100 | `NoEvmAccount` | `Unauthorized: this wallet has no EVM account. Import an EVM private key in the Your Wallet app first.` | EVM 계정(파생·가져온 키)이 하나도 없는 지갑(키 전용 지갑, [02] §8.5)의 연결 요청(§4.2). 앱에서 EVM 개인키를 가져오면 연결할 수 있다 |
+| 4100 | `NoSolAccount` | `Unauthorized: this wallet has no Solana account. Add or import one in the Your Wallet app first.` | Solana 계정이 하나도 없는 지갑의 `sol_connect`(§4.9) |
+| 4100 | `NoBtcAccount` | `Unauthorized: this wallet has no Bitcoin account of the requested type on the selected network. Add one in the Your Wallet app first.` | 요청 목적에 맞는 Bitcoin 계정이 settings 네트워크에 없음(`btc_requestAccounts`, §4.9) |
 | 4200 | `UnsupportedMethod` | `Unsupported method.` | 허용 표 밖(`wallet_addEthereumChain` 포함, D14·§3.2), method 형식 오류 |
 | 4900 | `Unavailable` | `Wallet is unavailable.` | yw-host가 yw-app에 연결 실패(§7.6, `browserAutoLaunch` 꺼짐 포함), 확장 backoff 중, `connectNative` 실패 |
 | 4900 | `ConnectionClosed` | `Wallet connection closed.` | content port·native 연결이 끊길 때 진행 중인 요청, yw-app 종료 |
@@ -649,7 +710,7 @@ dApp 요청으로 띄운 잠금 해제 창을 `나중에`로 닫으면 `UNLOCK_P
 | `route` | `"permission"` \| `"read"` \| `"signing"` |
 | `context` | 객체, 아래 9개 키 + 선택 키 1개 |
 
-`context`: `browserFamily` = `"chrome"`, `extensionId` = 고정 ID, `tabId` = 0..=2^53−1 정수, `frameId` = `0`, `documentId` = `^[A-Za-z0-9._:-]{1,256}$`, `topOrigin` = §4.7 `BrowserOrigin`, `frameOrigin` = `topOrigin`과 같음, `documentLifecycle` = `"active"`, `channelNonce` = id64. 선택 `compatMode` = 문자열 `"metamask"` 또는 `"rabby"`(§2.12, 표시 전용). 기본 모드는 키가 없다. `"off"`·대소문자 다른 값·문자열이 아닌 값은 그 요청만 -32600이다. 이 선택 키는 v1 호환 확장이므로 `version`은 1 그대로이고 골든 `v1-request.golden.json`(키 없음)도 그대로다.
+`context`: `browserFamily` = `"chrome"`, `extensionId` = 고정 ID, `tabId` = 0..=2^53−1 정수, `frameId` = `0`, `documentId` = `^[A-Za-z0-9._:-]{1,256}$`, `topOrigin` = §4.7 `BrowserOrigin`, `frameOrigin` = `topOrigin`과 같음, `documentLifecycle` = `"active"`, `channelNonce` = id64. 선택 `compatMode` = 문자열 `"metamask"`·`"rabby"`(EVM 메서드), `"phantom"`(`sol_*`), `"unisat"`·`"xverse"`(`btc_*`)(§2.12–§2.13, 표시 전용, 계열이 다르면 -32600). 기본 모드는 키가 없다. `"off"`·대소문자 다른 값·문자열이 아닌 값은 그 요청만 -32600이다. 이 선택 키는 v1 호환 확장이므로 `version`은 1 그대로이고 골든 `v1-request.golden.json`(키 없음)도 그대로다.
 
 **cancel** (extension → app) — 신규 골든 `v1-cancel.golden.json`
 
@@ -680,7 +741,7 @@ dApp 요청으로 띄운 잠금 해제 창을 `나중에`로 닫으면 `UNLOCK_P
  "event":"chainChanged","payload":"0x1"}
 ```
 
-`event` ∈ {`accountsChanged`, `chainChanged`}. `sessionId`는 그 연결에서 마지막으로 받은 request의 값이다.
+`event` ∈ {`accountsChanged`, `chainChanged`, `solAccountsChanged`, `btcAccountsChanged`}(뒤의 둘은 §4.9: base58 공개키 0–1개, 주소 0–2개). `sessionId`는 그 연결에서 마지막으로 받은 request의 값이다.
 
 ### 6.2 yw-app 수신 처리 순서
 1. 프레임을 UTF-8 + `REQUEST_LIMITS`로 파싱. 실패 → 로그 후 버림(상관 정보가 없으므로 응답 불가. 확장 기한이 처리). 연결은 유지한다.
@@ -719,8 +780,8 @@ D23: 요청 기한은 읽기 60 s, 연결·서명 600 s(잠금 해제·승인 �
 ```rust
 // yw-core src/policy (플랫폼 독립, 시간·I/O 없음)
 pub enum Route { Permission, Read, Signing }
-pub enum Method { /* §3.1의 27개 */ }
-impl Method { pub const ALL: [Method; 27]; pub fn parse(s: &str) -> Option<Method>;
+pub enum Method { /* §3.1·§3.6의 37개 */ }
+impl Method { pub const ALL: [Method; 37]; pub fn parse(s: &str) -> Option<Method>;
               pub fn as_str(self) -> &'static str; pub fn route(self) -> Route; }
 pub struct BrowserOrigin(/* §4.7 정규 문자열 */);
 impl BrowserOrigin { pub fn parse(s: &str) -> Option<Self>; pub fn is_http(&self) -> bool /* §4.6 토글 */; pub fn as_str(&self) -> &str; }
@@ -733,7 +794,7 @@ pub const NAMESPACE: &str = "your-wallet";
 pub const PROTOCOL_VERSION: u64 = 1;
 pub struct Id32(pub [u8; 32]);   // 와이어: id64(64 hex)
 pub struct Id16(pub [u8; 16]);   // 와이어: id32(32 hex)
-pub enum CompatMode { MetaMask, Rabby }   // parse("metamask"|"rabby"), as_str, label() = "MetaMask"|"Rabby" (§2.12)
+pub enum CompatMode { MetaMask, Rabby, Phantom, Unisat, Xverse }   // parse/as_str/label, family() = 메서드 계열 (§2.12–§2.13)
 pub struct BrowserContext { pub tab_id: u64, pub document_id: String, pub origin: BrowserOrigin, pub channel_nonce: Id32,
     pub compat_mode: Option<CompatMode> }      // SiteRequest.compat_mode로 승인 큐에 전달, 배지 ui::approval_view::compat_mode_badge
 pub struct Correlation { pub session_id: Id32, pub sequence: u64, pub activation_nonce: Id32, pub request_id: Id16 }
@@ -745,7 +806,8 @@ pub struct CancelEnvelope { pub session_id: Id32, pub sequence: u64, pub activat
     pub request_id: Id16, pub request_sequence: u64, pub reason: String }
 pub enum Inbound { Request(Box<RequestEnvelope>), Cancel(CancelEnvelope) }
 pub enum EnvelopeError { Uncorrelated, Invalid(Correlation), LocalhostDisabled(Correlation) }
-pub enum BrowserEvent { AccountsChanged(Vec<[u8; 20]>) /* 0..=16, §4.1 */, ChainChanged(u64) }
+pub enum BrowserEvent { AccountsChanged(Vec<[u8; 20]>) /* 0..=16, §4.1 */, ChainChanged(u64),
+    SolAccountsChanged(Vec<[u8; 32]>) /* 0..=1 */, BtcAccountsChanged(Vec<String>) /* 0..=2, §4.9 */ }
 
 pub fn parse_inbound(frame: &[u8], pinned_extension_id: &str, allow_localhost: bool)
     -> Result<Inbound, EnvelopeError>;
