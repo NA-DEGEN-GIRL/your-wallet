@@ -454,7 +454,7 @@ intent_hash = SHA-256(transcript)
 
 | 키 | 필드 | 출처 | critical | 비고 |
 |---|---|---|---|---|
-| `0x0001` | 요청 출처 | 로컬 | 예 | `ApprovalOrigin::App`("yw-app") |
+| `0x0001` | 요청 출처 | 로컬 | 예 | `ApprovalOrigin::App`("yw-app"), 표시 값 `Your Wallet 앱` |
 | `0x0002` | 네트워크 | 로컬 + 제네시스 확인 | 예 | "Solana mainnet" / devnet은 별도 색 배너 "Solana devnet (테스트)" |
 | `0x0003` | 보내는 계정 | meta + intent | 예 | 라벨, 경로(`m/44'/501'/0'/0'` 등), 주소 전체. 비표준 경로면 `L07` |
 | `0x0501` | 받는 주소 | intent | 예 | §12.3 묶음 표시, 주소록 라벨·verified, "내 계정 #i". SPL: 받는 **지갑**(소유자) 주소임을 밝히고 토큰은 `0x0502`의 받는 ATA로 간다고 적는다. SOL 계정이 없으면 "SOL 계정 없음(새 지갑일 수 있음 — 토큰을 받는 데는 문제없음)" |

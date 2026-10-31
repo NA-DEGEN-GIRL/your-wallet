@@ -434,7 +434,7 @@ pub fn build_btc_request(
         .ok_or(DisplayError::InvalidText)?;
     let kind = plan.recipient();
     let mut fields = vec![
-        DisplayField::new(FieldKey::ORIGIN, "", "Your Wallet (이 앱)")?,
+        DisplayField::new(FieldKey::ORIGIN, "", crate::approval::APP_ORIGIN_TEXT)?,
         DisplayField::new(FieldKey::NETWORK, "", network.banner())?,
         DisplayField::new(FieldKey::ACCOUNT, "", account_text(account, network))?,
         DisplayField::new(FieldKey::BTC_TO, "", recipient_address(plan)?)?,
