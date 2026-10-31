@@ -269,7 +269,8 @@ S16 토큰 추가: 컨트랙트 주소(§2.15) → RPC `decimals()`·`symbol()`(
 - meta `connected_sites`([02] §5.3 `ConnectedSite`, 최대 256개, 의미는 [05] §4.1): origin 전체, 허용 계정 `accounts`(1–16개, 반환 순서, 첫 번째 = 선택 계정, 전체 주소), 체인 `chain_id`, 연결 시각 `granted_at_unix_ms`. `http` origin에는 "로컬 개발 사이트(http)" 배지.
 - 사이트마다 카드(제목 = origin): 네트워크, 연결 시각, 볼 수 있는 계정 수와 각 계정(라벨 + 전체 주소), 위험 버튼 `연결 해제`. 맨 아래 위험 버튼 `모든 사이트 연결 해제`. 연결이 없으면 카드 "연결된 사이트가 없습니다" + "dApp 사이트에서 '지갑 연결'을 누르고 이 앱의 연결 창에서 승인하면 여기에 표시됩니다."
 - `연결 해제`(행), `모든 사이트 연결 해제`(확인 오버레이) → [05] §4.5. 그 origin의 대기 항목은 `Revoked`(§3.7).
-- Solana·Bitcoin 연결(meta `sol_sites`·`btc_sites`, [05] §4.9)은 EVM 카드 다음에 같은 모양의 카드로 보인다: 네트워크(`Solana (메시지 서명·소유 증명만)`, `Bitcoin 메인넷 (메시지 서명·소유 증명만)`), 연결 시각, Solana는 base58 공개키, Bitcoin은 목적(`결제용 주소 (payment…)`·`오디널스용 주소 (ordinals…)`·`연결할 주소`)과 전체 주소, 위험 버튼 `연결 해제`(그 계열 grant만 지우고 그 계열의 대기 서명 항목만 `Revoked`). 행 버튼 id는 EVM·Solana·Bitcoin을 이은 목록의 순번(최대 256행). `모든 사이트 연결 해제`는 세 계열 모두 지운다.
+- Solana·Bitcoin 연결(meta `sol_sites`·`btc_sites`, [05] §4.9)은 EVM 카드 다음에 같은 모양의 카드로 보인다: 네트워크(`Solana (메시지 서명·소유 증명만)`, `Bitcoin 메인넷 (메시지 서명·소유 증명만)`), 연결 시각, Solana는 base58 공개키, Bitcoin은 목적(`결제용 주소 (payment…)`·`오디널스용 주소 (ordinals…)`·`연결할 주소`)과 전체 주소, 위험 버튼 `연결 해제`(그 계열 grant만 지우고 그 계열의 대기 서명 항목만 `Revoked`). `모든 사이트 연결 해제`는 세 계열 모두 지운다.
+- 쪽: EVM·Solana·Bitcoin을 이은 목록(최대 3 × 256개)을 한 쪽에 50개씩 보인다(행 수 제한 없음). 쪽이 둘 이상이면 카드 아래에 `n / m쪽 (연결 k곳, 한 쪽에 50곳)`과 `이전 쪽`·`다음 쪽`(해당할 때만, id 6,702·6,703). 행 버튼 id(6,710 + 쪽 안 순번)는 그 화면을 그릴 때 기록한 **(origin, 계열)** 을 가리킨다(`app_browser::SiteRows`): 그린 뒤 목록이 바뀌어도(dApp의 해제 등) 버튼은 그려진 사이트만 해제하고 다른 사이트로 밀리지 않는다.
 
 ### 2.10 주소록 (S14)
 - 항목 = meta `address_book`의 `AddressBookEntry {chain, address, label, verified, added_at_unix_ms}`([02] §5.3, 최대 500; `added_at_unix_ms` = 추가 시각 unix ms). `verified` = 체크박스 "다른 경로(전화·대면 등)로 이 주소를 확인했습니다".

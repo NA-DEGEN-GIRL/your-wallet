@@ -741,7 +741,8 @@ dApp은 Solana 계정을 **연결**하고 **메시지에 서명**(Sign-In-With-S
 
 ### 19.2 서명할 수 없는 바이트 (차단, `M01`·`M02`)
 - 길이 > 65,536 B.
-- 레거시 또는 v0(`0x80`) 메시지로 **정확히** 파싱되는 바이트(헤더: 서명자 ≥ 1, 읽기 전용 서명자 < 서명자, 키 수 ≥ 서명자, 키·블록해시·명령(프로그램·계정 인덱스 < 전체 키 수)·v0 주소 조회 테이블을 끝까지 소비), 또는 `shortvec(서명 수 n ≥ 1) ‖ 64n ‖ 메시지`(헤더 서명자 = n)인 서명된 거래. → `M01` 차단 "Solana 거래로 해석되는 바이트입니다".
+- 레거시 또는 v0(`0x80`) 메시지로 파싱되는 바이트(헤더: 서명자 ≥ 1, 읽기 전용 서명자 < 서명자, 키 수 ≥ 서명자, 키·블록해시·명령(프로그램·계정 인덱스 < 전체 키 수)·v0 주소 조회 테이블), 또는 `shortvec(서명 수 n ≥ 1) ‖ 64n ‖ 메시지`(헤더 서명자 = n)인 서명된 거래. **앞부분만** 그렇게 파싱되고 뒤에 바이트가 남아도 같다(뒤 바이트로 차단을 피하지 못한다). → `M01` 차단 "Solana 거래로 해석되는 바이트입니다".
+- 아직 모르는 메시지 버전: 첫 바이트가 `0x80`–`0xfe`(버전 플래그; `0xff`는 오프체인 도메인의 첫 바이트)이고 버퍼 **전체**가 유효한 UTF-8이 아니면 → `M01` 차단 "버전이 붙은 Solana 거래 메시지처럼 시작합니다"(`looks_like_versioned_message`). `가`처럼 멀티바이트 문자로 시작하는 UTF-8 텍스트는 해당하지 않는다.
 - 오프체인 서명 도메인 `\xffsolana offchain`으로 시작하면 버전 0으로 파싱되어야 한다: `solana-sdk` 형식(`0 ‖ format ‖ len u16 LE ‖ message`) 또는 제안서 형식(`0 ‖ application domain 32 ‖ format ‖ 서명자 수 ≥ 1 ‖ 서명자 32×n ‖ len u16 LE ‖ message`), 길이가 정확히 맞고 형식 0(출력 가능 ASCII ≤ 1,212 B)·1(UTF-8 ≤ 1,212 B)·2(UTF-8). 실패 → `M02` 차단. 성공 → `M05` 정보 + `서명 방식` 필드, 본문 표시는 머리글을 뺀 메시지. 제안서 형식인데 서명자 목록에 이 계정이 없으면 `M02` 차단.
 
 ### 19.3 표시
@@ -750,11 +751,11 @@ dApp은 Solana 계정을 **연결**하고 **메시지에 서명**(Sign-In-With-S
 ### 19.4 Sign-In-With-Solana
 - 형식은 `@solana/wallet-standard-util` `createSignInMessageText`(2026-10-31 `anza-xyz/wallet-standard` 소스로 확인)와 바이트 단위로 같다: `${domain} wants you to sign in with your Solana account:\n${address}`, 설명이 있으면 `\n\n${statement}`, 필드가 있으면 `\n\n` + `URI: `·`Version: `·`Chain ID: `·`Nonce: `·`Issued At: `·`Expiration Time: `·`Not Before: `·`Request ID: `·`Resources:`(+ `- ${resource}` 줄)을 이 순서로 `\n` 연결. 빈 값은 쓰지 않는다. 지갑은 dApp이 주지 않은 필드를 더하지 않는다(`verifySignIn`은 입력에 없는 필드가 메시지에 있으면 실패한다). 예외: 필수인 `domain`(빠지면 origin의 `host[:port]`)과 `address`(빠지면 서명 계정).
 - `sol_signIn` 입력 검증은 [05] §3.6(모르는 키 거부, 줄바꿈 등 제어 문자 거부). 앱이 텍스트를 만들고, `sol_signMessage`의 텍스트가 SIWS 첫 줄 표지를 가지면 같은 파서·검사를 적용한다(표지는 있는데 문법이 틀리면 `W07` 차단).
-- 검사(`SiwsContext { origin, account, cluster, now }`): 도메인 ≠ 요청 사이트(호스트 다름, 명시 포트 ≠ 사이트 유효 포트, scheme·userinfo·경로 포함) → `W01` 차단. 주소 ≠ 서명 계정 → `W02` 차단. `Chain ID`가 있고 settings 클러스터가 아님(`mainnet`·`mainnet-beta`·`devnet`, `solana:` 접두 허용) → `W03` 차단. `Expiration Time` ≤ 지금 → `W04` 차단. `Not Before` > 지금 → `W05` 주의. `Issued At`이 지금과 10분 넘게 다름 → `W06` 고위험. `Version` ≠ `1`, 시각 형식 오류(RFC 3339, SIWE 파서 `parse_date_time` 재사용) → `W07` 차단. 경고가 없으면 `W08` 정보.
+- 검사(`SiwsContext { origin, account, cluster, now }`): 도메인 ≠ 요청 사이트(호스트 다름, 명시 포트 ≠ 사이트 유효 포트, 사이트가 기본이 아닌 포트(`https://a.example:8443`, `http://localhost:5173`)인데 도메인에 포트가 없음, scheme·userinfo·경로 포함) → `W01` 차단. 포트 없는 도메인은 기본 포트의 사이트만 가리킨다. 주소 ≠ 서명 계정 → `W02` 차단. `Chain ID`가 있고 settings 클러스터가 아님(`mainnet`·`mainnet-beta`·`devnet`, `solana:` 접두 허용) → `W03` 차단. `Expiration Time` ≤ 지금 → `W04` 차단. `Not Before` > 지금 → `W05` 주의. `Issued At`이 지금과 10분 넘게 다름 → `W06` 고위험. `Version` ≠ `1`, 시각 형식 오류(RFC 3339, SIWE 파서 `parse_date_time` 재사용) → `W07` 차단. 경고가 없으면 `W08` 정보.
 - 결과: `{ publicKey, signature, signedMessage }` — `signedMessage`는 앱이 만든 바이트 그대로.
 
 ### 19.5 시험 (자동)
-RFC 8032 벡터 1·2를 메시지 서명기로 재현, 레거시·v0·서명된 거래 탐지와 오탐 없음, 오프체인 두 형식·깨진 머리글, SIWS 텍스트 레이아웃(전 필드·최소·설명 없음)·파서 왕복·W01–W08, 승인 수준(텍스트 Info, 이진 High, 거래 Blocked). 디스패처·확장 shim 시험은 [05] §10, 수동 체크리스트는 `docs/acceptance/msgsign-20261031.md`.
+RFC 8032 벡터 1·2를 메시지 서명기로 재현, 레거시·v0·서명된 거래 탐지(뒤 바이트가 붙은 것 포함)와 오탐 없음, 버전 접두 `0x80`–`0xfe` 전부 차단·UTF-8 텍스트 허용, 오프체인 두 형식·깨진 머리글, SIWS 도메인 포트 규칙, SIWS 텍스트 레이아웃(전 필드·최소·설명 없음)·파서 왕복·W01–W08, 승인 수준(텍스트 Info, 이진 High, 거래 Blocked). fuzz-lite `fuzz_lite_sol_msgsign`(`crates/yw-core/tests/msgsign_fuzz_lite.rs`: 탐지·`signable`·승인 창 차단 일치, 뒤 바이트로 차단이 풀리지 않음, 오프체인 파서, SIWS 파서 왕복)과 `fuzz_lite_base64`, 매개변수·grant 파서는 `fuzz_lite_chain_params`(yw-app). 디스패처·확장 shim 시험은 [05] §10, 수동 체크리스트는 `docs/acceptance/msgsign-20261031.md`.
 
 ## 미결 사항
 

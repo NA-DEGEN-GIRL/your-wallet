@@ -993,7 +993,7 @@ spec.md M8의 "BIP143·BIP173/350·BIP84 벡터"는 §14.1(자동), "testnet4 E2
 
 ## 17. dApp 연결: 소유 증명 전용 (2026-10-31, D26·D27)
 
-dApp은 Bitcoin 주소를 **연결**하고 **메시지에 서명**하게 할 수만 있다. PSBT·거래 서명, dApp발 전송, 인스크립션은 없다(UniSat·Xverse shim이 4200으로 거부, 와이어 메서드 없음 — [05] §2.13, §3.6). Bitcoin dApp 노출은 확장 호환 모드(`unisat`·`xverse`)에서만 한다. 연결·grant는 [05] §4.9(목적마다 계정 하나의 받기 주소 0번, 가져온 키는 그 주소), 승인 창은 [04] §3.
+dApp은 Bitcoin 주소를 **연결**하고 **메시지에 서명**하게 할 수만 있다. PSBT·거래 서명, dApp발 전송, 인스크립션은 없다(UniSat·Xverse shim이 4200으로 거부, 와이어 메서드 없음 — [05] §2.13, §3.6). Bitcoin dApp 노출은 확장 호환 모드(`unisat`·`xverse`)에서만 한다(`off`면 content가 `btc_*`를 와이어로 보내지 않고 4200). settings에서 Bitcoin을 끄면(§2 BTC 끄기) yw-app은 `btc_getNetwork`·`btc_disconnect` 밖의 `btc_*`를 4100 `NoBtcAccount`로 거부하고 Bitcoin grant는 남지만 쓰지 않는다. 연결·grant는 [05] §4.9(목적마다 계정 하나의 받기 주소 0번, 가져온 키는 그 주소; 가져온 키를 지우면 그 주소를 가진 grant는 통째로 삭제, 연결 창이 열린 사이 네트워크를 바꾸면 승인 때 다시 대조해 4100), 승인 창은 [04] §3.
 
 ### 17.1 코어 (`yw_core::btc::msgsign`)
 - `ApprovalKind::BtcMessage = 0x32`, origin은 사이트, `ChainRef::Bitcoin { network, genesis = 고정 제네시스 }`, `AccountRef::Bitcoin(주소 공개키의 압축 형식)`, `Signer::FromPayload`, `SigningPayload::BtcMessage { network, source, pubkey, script_type, address, protocol, message }`(digest 바이트 = transcript `"your-wallet/v3/btc-message"` v1의 모든 필드).
@@ -1019,7 +1019,7 @@ dApp은 Bitcoin 주소를 **연결**하고 **메시지에 서명**하게 할 수
 제목 `[Bitcoin 메인넷] 메시지 서명 (소유 증명)`. 필드: 요청 출처, 네트워크, 서명 계정(라벨·경로·**전체 주소**), 서명 방식(`BIP137 ECDSA (Bitcoin Signed Message)` / `BIP322 (simple)` / `BIP322 (full)`), 메시지(텍스트 또는 hex, [07] §19.3과 같은 규칙), 바이트 수. 항상 `M04` 정보. BTC 네트워크 배너(§2)를 그대로 쓴다.
 
 ### 17.5 시험 벡터 (자동, `btc::msgsign::tests`)
-BIP322 `basic-test-vectors.json`(2026-10-31 `bitcoin/bips` 저장소): `""`·`"Hello World"`·UTF-8 메시지의 message hash와 `to_spend`/`to_sign` txid, P2WPKH simple 서명(`L3VFeEuj…` 키) 바이트 단위 재현(low-R 벡터)과 두 벡터·`smp` 접두 검증, 오류 벡터(틀린 메시지·빈 스택·잘못된 base64), P2TR "No prefix fallback" 서명 검증과 같은 키로 만든 서명 검증. BIP137: bitcoinjs-message 픽스처(개인키 1, "vires is numeris")의 비압축·압축 P2PKH·P2SH-P2WPKH·P2WPKH 서명 재현, magic hash 2개, verify 픽스처 4개. P2SH-P2WPKH full은 `to_sign` 재파싱과 BIP143 증인 검증. 거래·PSBT·hex·base64 탐지, P2PKH+BIP322·P2TR+ECDSA 거부, 다른 키 거부.
+BIP322 `basic-test-vectors.json`(2026-10-31 `bitcoin/bips` 저장소): `""`·`"Hello World"`·UTF-8 메시지의 message hash와 `to_spend`/`to_sign` txid, P2WPKH simple 서명(`L3VFeEuj…` 키) 바이트 단위 재현(low-R 벡터)과 두 벡터·`smp` 접두 검증, 오류 벡터(틀린 메시지·빈 스택·잘못된 base64), P2TR "No prefix fallback" 서명 검증과 같은 키로 만든 서명 검증. BIP137: bitcoinjs-message 픽스처(개인키 1, "vires is numeris")의 비압축·압축 P2PKH·P2SH-P2WPKH·P2WPKH 서명 재현, magic hash 2개, verify 픽스처 4개. P2SH-P2WPKH full은 `to_sign` 재파싱과 BIP143 증인 검증. 거래·PSBT·hex·base64 탐지, P2PKH+BIP322·P2TR+ECDSA 거부, 다른 키 거부. fuzz-lite `fuzz_lite_btc_msgsign`(`crates/yw-core/tests/msgsign_fuzz_lite.rs`: 원시 거래·PSBT는 항상 탐지, 12바이트 이상이면 그 hex(`0x`·공백 포함)와 base64도 탐지)과 `fuzz_lite_base64`(엄격 디코딩 = 정규 인코딩).
 
 ## 미결 사항
 
