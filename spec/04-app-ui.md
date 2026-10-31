@@ -629,7 +629,7 @@ pub fn can_approve(g: &ApprovalGate, now: Instant) -> bool {
         && g.is_foreground && now < g.deadline && !g.submitting
 }
 ```
-매 이벤트와 50 ms 타이머마다 `set_armed(now, can_approve(..))`. `승인` 버튼은 승인 입력이 지금 받아들여질 때만 활성 모양이다(`ApprovalSession::approve_ready`: armed, 게이트 열림, 마지막 누름에서 1초 이상 또는 hold 진행 중). 차단 등급이면 버튼 글자 "승인할 수 없음".
+매 이벤트와 50 ms 타이머마다 `set_armed(now, can_approve(..))`. 타이머·상호작용 이벤트는 아래 막대(상태 줄·버튼·hold 진행 막대)만, 그 표시 내용(남은 시간 초, hold 진행, 활성 모양, 버튼 글자)이 바뀐 때만 다시 그린다(`invalidate_rect`). 머리·시뮬레이션 띠·스크롤 패널은 내용이 바뀔 때만 다시 그린다(시뮬레이션 카운트다운도 보기가 같으면 그리지 않음). `승인` 버튼은 승인 입력이 지금 받아들여질 때만 활성 모양이다(`ApprovalSession::approve_ready`: armed, 게이트 열림, 마지막 누름에서 1초 이상 또는 hold 진행 중). 차단 등급이면 버튼 글자 "승인할 수 없음".
 
 **빠른 클릭 유도 방어.** (1) armed가 아닐 때 받은 모든 포인터·키 누름(창 어디든, 키 자동 반복 포함 — 다른 버튼·본문·AI 패널·스크롤 막대 클릭, 비활성 창을 활성화하며 먹힌 클릭, 승인 버튼에서의 Enter·Space 밖 모든 키는 `InteractionEvent::OtherPress`)은 1초 대기를 다시 시작한다(`ready_at = max(ready_at, now)`). 창이 (다시) 활성화될 때(전경 false → true, 매 이벤트·타이머에서 확인, `WM_ACTIVATEAPP(TRUE)`)도 다시 시작한다. (2) 승인 입력(승인 버튼의 Enter·포인터 누름·Space)은 창 안 **직전 누름에서 1초 이상** 지나 시작해야 한다 — 버튼이 이미 armed였어도 그렇지 않으면 아무 일도 하지 않는다. 직전 누름은 표시 교체·상호작용 재시작을 넘어 기억한다. 오른쪽·가운데·X 버튼 누름(`WM_RBUTTONDOWN`·`WM_MBUTTONDOWN`·`WM_XBUTTONDOWN` → `Msg::OtherButtonDown`)과 비클라이언트 영역(제목 표시줄·캡션 버튼·테두리·창 스크롤 막대) 누름·더블클릭(`WM_NC?BUTTONDOWN`·`WM_NC?BUTTONDBLCLK` → `Msg::NonClientButtonDown`)도 승인 창·본문 패널·AI 패널에서 `OtherPress`다(`interaction::stray_press`); 시스템 처리(이동·닫기·스크롤)는 `Reply::Default`로 그대로 둔다.
 

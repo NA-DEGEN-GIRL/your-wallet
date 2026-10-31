@@ -40,7 +40,7 @@
 | `extension/test-dapp/` | M5 수동 E2E 페이지(§5.7) | 수동 |
 
 - yw-app·yw-host는 `src/lib.rs`(로직)와 `src/main.rs`(진입점)로 나눈다. 퍼징·통합 테스트가 파서를 직접 부르기 위해서다.
-- GUI(창·그리기)는 자동 테스트하지 않는다. 승인 창 A01은 렌더 하네스 `cargo test -p yw-app --lib app_approval::smoke -- --ignored`(픽스처 준비 결과를 실제 `App` 승인 경로에 넣어 몇 초 띄움, 네트워크·키 없음; `YW_SMOKE_FIXTURE`·`YW_SMOKE_HOLD_MS`)로 사람이 캡처해 확인한다(판정용 자동 테스트 아님). 승인 상호작용·비밀 입력 버퍼·잠금 판정은 순수 상태 기계로 분리해 테스트한다([04](04-app-ui.md) §3.9, §4.10, §5.4).
+- GUI(창·그리기)는 자동 테스트하지 않는다. 승인 창 A01은 렌더 하네스 `cargo test -p yw-app --lib app_approval::smoke -- --ignored`(픽스처 준비 결과를 실제 `App` 승인 경로에 넣어 몇 초 띄움, 네트워크·키 없음; `YW_SMOKE_FIXTURE`·`YW_SMOKE_HOLD_MS`)로 사람이 캡처해 확인한다(판정용 자동 테스트 아님). 같은 하네스의 `approval_hold_repaints_only_the_bottom_bar`(S3 고위험, 시험 전용 전경 간주)는 hold 1초 동안 A01의 `WM_PAINT` 갱신 영역이 아래 막대 안에만 있고 스크롤 패널은 다시 그려지지 않으며 놓으면 승인 없이 hold가 풀리는지 확인하고, `YW_SMOKE_OUT`이 있으면 프레임을 저장한다. 승인 상호작용·비밀 입력 버퍼·잠금 판정은 순수 상태 기계로 분리해 테스트한다([04](04-app-ui.md) §3.9, §4.10, §5.4).
 - 장애 주입: yw-app은 **debug 빌드에서만**(`cfg!(debug_assertions)`) 환경 변수 `YW_FAULT_POINT`를 읽고, 이름이 같은 지점에 도달하면 `std::process::abort()`한다. release 빌드는 읽지 않는다(05 §10.1의 yw-host 시험용 변수 `YW_TEST_PIPE_NAME`·`YW_TEST_NO_SPAWN`·`YW_TEST_DATA_DIR`과 같은 방식). 지점 이름은 §5.5(M4-8)·§5.9(M7-4)·§5.10(M8-4).
 - 프로필: 루트 `Cargo.toml`의 `[profile.dev.package."*"] opt-level = 3`(01 §3.1, argon2·blake2 포함). 운영 파라미터 Argon2(256 MiB)는 §3.12 G1·G3·G4·G5의 4회만 쓰고, 나머지는 `KDF_TEST`(02 §4.5)를 쓴다.
 

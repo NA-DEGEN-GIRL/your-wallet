@@ -558,6 +558,12 @@ impl Control {
     pub fn set_font(&self, font: &Font) {
         let Some(hwnd) = self.live() else { return };
         let handle = font.raw().expose_provenance();
+        // SAFETY: WM_GETFONT has no parameters and returns the control's current font handle.
+        let current = unsafe { SendMessageW(hwnd, WM_GETFONT, 0, 0) };
+        if current.cast_unsigned() == handle {
+            // Unchanged: a WM_SETFONT with redraw would repaint (and flash) the control.
+            return;
+        }
         // SAFETY: Sends WM_SETFONT with our font handle and redraw = TRUE to our live control.
         unsafe { SendMessageW(hwnd, WM_SETFONT, handle, 1) };
     }

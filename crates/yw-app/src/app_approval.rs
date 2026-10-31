@@ -218,12 +218,80 @@ impl ConnectState {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Bottom {
+    /// The whole bottom bar (status line and buttons): what a tick repaints.
+    bar: Rect,
     approve: Rect,
     reject: Rect,
     retry: Option<Rect>,
     panel: Rect,
     ai_retry: Option<Rect>,
     ai_body: Rect,
+}
+
+/// What the bottom bar shows. The 50 ms tick repaints only the bar, and only when this changes
+/// (the hold progress, the countdown second, the armed look), so the rest of the window is never
+/// redrawn by the timer.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct BarState {
+    status: String,
+    label: &'static str,
+    armed: bool,
+    /// Milliseconds held so far while a high-risk hold is under way.
+    held_ms: Option<u64>,
+    focus: Option<Focus>,
+}
+
+fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
+    let gate = &ui.session.gate;
+    let remaining = gate.deadline_ms.saturating_sub(now);
+    let mut status = String::new();
+    if matches!(gate.prepare, PrepareState::Ready(_)) {
+        let _ = write!(status, "남은 시간 {}", remaining_text(remaining));
+    }
+    if waiting > 0 {
+        let _ = write!(status, "   ·   대기 중인 다른 요청 {waiting}건");
+    }
+    if let Some(message) = &ui.status {
+        status.push_str("   ·   ");
+        status.push_str(message);
+    }
+    let held_ms = ui
+        .session
+        .interaction()
+        .hold_remaining_ms(now)
+        .map(|left| HIGH_RISK_HOLD_MS.saturating_sub(left));
+    if let Some(done) = held_ms {
+        let _ = write!(status, "   ·   {}.{}초", done / 1_000, (done % 1_000) / 100);
+    }
+    if status.is_empty() && ui.view.high && !ui.view.blocked {
+        status.push_str("경고를 확인하고 체크한 뒤 '승인'을 2초 동안 누르고 있으세요.");
+    }
+    let simulating = matches!(
+        gate.prepare,
+        PrepareState::Preparing(PrepareStage::Simulating { .. })
+    ) || (gate.submitting
+        && ui
+            .status
+            .as_deref()
+            .is_some_and(|s| s.starts_with("시뮬레이션")));
+    let label = if ui.connect.is_some() {
+        "연결"
+    } else if ui.view.blocked {
+        "승인할 수 없음"
+    } else if simulating {
+        "시뮬레이션 중…"
+    } else if ui.view.high {
+        "승인 (2초 길게 누르기)"
+    } else {
+        "승인"
+    };
+    BarState {
+        status,
+        label,
+        armed: ui.session.approve_ready(now),
+        held_ms,
+        focus: matches!(ui.focus, Focus::Approve | Focus::Reject).then_some(ui.focus),
+    }
 }
 
 /// The open approval window and its flow state.
@@ -247,6 +315,8 @@ pub struct ApprovalUi {
     view: ApprovalView,
     layout: Option<PanelLayout>,
     bottom: Bottom,
+    /// The bottom bar as last painted.
+    bar: BarState,
     widths: HashMap<(FontRole, char), i32>,
     ai: Option<AiUi>,
 }
@@ -791,6 +861,23 @@ fn draw_line(
     );
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Render harness only (`smoke`): treat A01 as the foreground window, since a test process
+    /// usually may not take the foreground.
+    pub(crate) static TEST_FORCE_FOREGROUND: core::cell::Cell<bool> =
+        const { core::cell::Cell::new(false) };
+}
+
+/// Whether A01 is the foreground window (the gate input, spec/04 §3.4).
+fn window_is_foreground(window: &Window) -> bool {
+    #[cfg(test)]
+    if TEST_FORCE_FOREGROUND.with(core::cell::Cell::get) {
+        return true;
+    }
+    window.is_foreground()
+}
+
 fn remaining_text(ms: u64) -> String {
     let seconds = ms / 1_000;
     format!("{}:{:02}", seconds / 60, seconds % 60)
@@ -1095,6 +1182,7 @@ impl App {
             view: ApprovalView::default(),
             layout: None,
             bottom: Bottom::default(),
+            bar: BarState::default(),
             widths: HashMap::new(),
             ai,
         });
@@ -1830,7 +1918,8 @@ impl App {
             return;
         };
         // A false → true edge (activation, also within this process) restarts the arm delay.
-        ui.session.set_foreground(now, ui.window.is_foreground());
+        ui.session
+            .set_foreground(now, window_is_foreground(&ui.window));
         let before = ui.session.interaction().status();
         let status = ui.session.event(now, event);
         let deadline = ui.session.gate.deadline_ms;
@@ -1842,19 +1931,32 @@ impl App {
                 self.finish_approval(QueueOutcome::Rejected);
             }
             StatusAction::Repaint => {
+                // Only the bottom bar changes with interaction events and ticks: repaint just it,
+                // and only when what it shows changed (no full-window redraw every 50 ms).
+                let waiting = self.evm.queue.len().saturating_sub(1);
                 if let Some(ui) = self.evm.window.as_ref() {
-                    ui.window.invalidate();
+                    if ui.bottom.bar.w <= 0 {
+                        ui.window.invalidate();
+                    } else if bar_state(ui, waiting, now_ms()) != ui.bar {
+                        ui.window.invalidate_rect(ui.bottom.bar);
+                    }
                 }
             }
             StatusAction::Nothing => {}
         }
     }
 
+    fn rebuild_view(&mut self) {
+        self.rebuild_view_with(true);
+    }
+
+    /// Rebuilds the view; with `force == false` (the simulation countdown tick) nothing is
+    /// invalidated when the rebuilt view is the one already shown.
     #[expect(
         clippy::too_many_lines,
         reason = "badges, connect view and signing view of every queue item kind"
     )]
-    fn rebuild_view(&mut self) {
+    fn rebuild_view_with(&mut self, force: bool) {
         let now = now_ms();
         let testnet_chain = self.evm.window.as_ref().map(|ui| ui.item.chain_id());
         let Some(chain_id) = testnet_chain else {
@@ -1954,6 +2056,9 @@ impl App {
         ) {
             Ok(mut view) => {
                 view.btc_banner = btc_banner;
+                if !force && view == ui.view {
+                    return;
+                }
                 ui.view = view;
                 ui.layout = None;
                 ui.window.invalidate();
@@ -2074,7 +2179,7 @@ impl App {
                         PrepareState::Preparing(PrepareStage::Simulating { .. })
                     )
                 {
-                    self.rebuild_view();
+                    self.rebuild_view_with(false);
                 }
                 Reply::Handled(0)
             }
@@ -2595,32 +2700,12 @@ impl App {
         let bottom_top = client.h.saturating_sub(bottom_h);
         dc.fill_rect(Rect::new(0, bottom_top, client.w, bottom_h), theme::CARD);
         dc.fill_rect(Rect::new(0, bottom_top, client.w, 1), theme::CARD_BORDER);
-        let gate = &ui.session.gate;
-        let remaining = gate.deadline_ms.saturating_sub(now);
-        let mut status = String::new();
-        if matches!(gate.prepare, PrepareState::Ready(_)) {
-            let _ = write!(status, "남은 시간 {}", remaining_text(remaining));
-        }
         let waiting = evm.queue.len().saturating_sub(1);
-        if waiting > 0 {
-            let _ = write!(status, "   ·   대기 중인 다른 요청 {waiting}건");
-        }
-        if let Some(message) = &ui.status {
-            status.push_str("   ·   ");
-            status.push_str(message);
-        }
-        let hold = ui.session.interaction().hold_remaining_ms(now);
-        if let Some(left) = hold {
-            let done = HIGH_RISK_HOLD_MS.saturating_sub(left);
-            let _ = write!(status, "   ·   {}.{}초", done / 1_000, (done % 1_000) / 100);
-        }
-        if status.is_empty() && ui.view.high && !ui.view.blocked {
-            status.push_str("경고를 확인하고 체크한 뒤 '승인'을 2초 동안 누르고 있으세요.");
-        }
+        let bar = bar_state(ui, waiting, now);
         dc.select_font(&fonts.body);
         dc.set_text_color(theme::MUTED);
         dc.draw_text(
-            &wide(&status),
+            &wide(&bar.status),
             Rect::new(margin, bottom_top + px(10), width, px(22)),
             DrawFlags::LINE,
         );
@@ -2643,26 +2728,8 @@ impl App {
         dc.round_rect(reject, radius, theme::CARD, theme::BUTTON_SECONDARY.border);
         dc.set_text_color(theme::TEXT);
         dc.draw_text(&wide("거부"), reject, DrawFlags::CENTER);
-        let armed = ui.session.approve_ready(now);
-        let simulating = matches!(
-            gate.prepare,
-            PrepareState::Preparing(PrepareStage::Simulating { .. })
-        ) || (gate.submitting
-            && ui
-                .status
-                .as_deref()
-                .is_some_and(|s| s.starts_with("시뮬레이션")));
-        let label = if ui.connect.is_some() {
-            "연결"
-        } else if ui.view.blocked {
-            "승인할 수 없음"
-        } else if simulating {
-            "시뮬레이션 중…"
-        } else if ui.view.high {
-            "승인 (2초 길게 누르기)"
-        } else {
-            "승인"
-        };
+        let armed = bar.armed;
+        let label = bar.label;
         let (fill, text_color) = if armed {
             (theme::PRIMARY_BG, theme::PRIMARY_TEXT)
         } else {
@@ -2674,8 +2741,7 @@ impl App {
             fill,
             if armed { fill } else { theme::CARD_BORDER },
         );
-        if let Some(left) = hold {
-            let done = HIGH_RISK_HOLD_MS.saturating_sub(left);
+        if let Some(done) = bar.held_ms {
             let progress = i32::try_from(
                 u64::try_from(approve.w.max(0)).unwrap_or(0) * done / HIGH_RISK_HOLD_MS,
             )
@@ -2775,7 +2841,21 @@ impl App {
             ui.layout = None;
             ui.panel.invalidate();
         }
+        let bar_rect = Rect::new(0, bottom_top, client.w, bottom_h);
+        // A paint that did not cover the whole bar leaves part of it stale: the next tick
+        // repaints it.
+        let update = dc.update_rect();
+        ui.bar = if update.x <= bar_rect.x
+            && update.y <= bar_rect.y
+            && update.right() >= bar_rect.right()
+            && update.bottom() >= bar_rect.bottom()
+        {
+            bar
+        } else {
+            BarState::default()
+        };
         ui.bottom = Bottom {
+            bar: bar_rect,
             approve,
             reject,
             retry,

@@ -25,7 +25,7 @@ use windows_sys::Win32::Foundation::{
     WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, GetStockObject, InvalidateRect, MONITOR_DEFAULTTONEAREST,
+    GetMonitorInfoW, GetStockObject, GetUpdateRect, InvalidateRect, MONITOR_DEFAULTTONEAREST,
     MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromWindow, SetBkColor, WHITE_BRUSH,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -54,11 +54,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SYSTEM_METRICS_INDEX, SetForegroundWindow, SetTimer, SetWindowDisplayAffinity,
     SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage,
     WDA_EXCLUDEFROMCAPTURE, WM_APP, WM_CHAR, WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC,
-    WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_GETMINMAXINFO, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_RBUTTONDOWN,
-    WM_SYSKEYDOWN, WNDCLASSEXW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_APPWINDOW,
-    WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_EX_TOPMOST, WS_MINIMIZEBOX, WS_OVERLAPPED,
-    WS_OVERLAPPEDWINDOW, WS_SYSMENU, WS_THICKFRAME, WS_VSCROLL,
+    WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND, WM_GETMINMAXINFO,
+    WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEWHEEL,
+    WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WNDCLASSEXW, WS_CAPTION,
+    WS_CHILD, WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME,
+    WS_EX_TOPMOST, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW, WS_SYSMENU, WS_THICKFRAME,
+    WS_VSCROLL,
 };
 
 use super::msg::{
@@ -483,6 +484,40 @@ struct Shared {
     adopted: Cell<bool>,
     armed: Cell<bool>,
     capture_excluded: Cell<bool>,
+    paints: Cell<PaintStats>,
+}
+
+/// `WM_PAINT` messages a window received and the bounding box of their update rectangles
+/// (client pixels), for repaint checks ([`Window::take_paint_stats`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PaintStats {
+    /// Number of `WM_PAINT` messages.
+    pub count: u32,
+    /// Bounding box of their update rectangles (empty when `count` is 0).
+    pub area: Rect,
+}
+
+impl PaintStats {
+    fn record(self, rect: Rect) -> Self {
+        let area = if self.count == 0 {
+            rect
+        } else {
+            let left = self.area.x.min(rect.x);
+            let top = self.area.y.min(rect.y);
+            let right = self.area.right().max(rect.right());
+            let bottom = self.area.bottom().max(rect.bottom());
+            Rect::new(
+                left,
+                top,
+                right.saturating_sub(left),
+                bottom.saturating_sub(top),
+            )
+        };
+        Self {
+            count: self.count.saturating_add(1),
+            area,
+        }
+    }
 }
 
 struct WindowState {
@@ -623,11 +658,30 @@ impl Window {
         unsafe { FlashWindowEx(&raw const info) };
     }
 
-    /// Invalidates the whole client area.
+    /// Invalidates the whole client area. No background erase: every paint session draws the
+    /// full update area into a back buffer ([`PaintDc`]).
     pub fn invalidate(&self) {
         let Some(hwnd) = self.live() else { return };
         // SAFETY: Invalidates our live window's client area (null rect = everything).
-        unsafe { InvalidateRect(hwnd, core::ptr::null(), 1) };
+        unsafe { InvalidateRect(hwnd, core::ptr::null(), 0) };
+    }
+
+    /// Invalidates only `rect` (client pixels), without background erase, so a periodic update
+    /// (a progress bar, a countdown) repaints just that part.
+    pub fn invalidate_rect(&self, rect: Rect) {
+        let Some(hwnd) = self.live() else { return };
+        if rect.w <= 0 || rect.h <= 0 {
+            return;
+        }
+        let win = rect.to_win();
+        // SAFETY: Invalidates part of our live window's client area; `win` is valid for the call.
+        unsafe { InvalidateRect(hwnd, &raw const win, 0) };
+    }
+
+    /// The `WM_PAINT` statistics since the previous call (then resets them).
+    #[must_use]
+    pub fn take_paint_stats(&self) -> PaintStats {
+        self.shared.paints.replace(PaintStats::default())
     }
 
     /// Sets the title (never pass secrets).
@@ -1228,6 +1282,10 @@ fn dispatch(state: &WindowState, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             return brush.expose_provenance().cast_signed();
         }
         WM_DRAWITEM if super::controls::draw_item(hwnd, wparam, lparam) => return 1,
+        // Never erase: `PaintDc` fills its back buffer (white, like the class brush) and copies
+        // it in one step, so an erase would only flash the background before every repaint.
+        WM_ERASEBKGND => return 1,
+        WM_PAINT => record_paint(&state.shared, hwnd),
         WM_GETMINMAXINFO if state.min_size != (0, 0) => {
             // SAFETY: Queries our window's DPI.
             let dpi = match unsafe { GetDpiForWindow(hwnd) } {
@@ -1291,6 +1349,22 @@ fn dispatch(state: &WindowState, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             0
         }
         Reply::Default => default_proc(hwnd, msg, wparam, lparam),
+    }
+}
+
+/// Counts a `WM_PAINT` and its update rectangle ([`Window::take_paint_stats`]).
+fn record_paint(shared: &Shared, hwnd: HWND) {
+    let mut update = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    // SAFETY: Reads our live window's update rectangle into writable storage (no erase).
+    if unsafe { GetUpdateRect(hwnd, &raw mut update, 0) } != 0 {
+        shared
+            .paints
+            .set(shared.paints.get().record(Rect::from_win(&update)));
     }
 }
 

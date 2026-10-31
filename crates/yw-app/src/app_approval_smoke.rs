@@ -22,7 +22,8 @@ use yw_core::vault::EvmKeySource;
 use yw_json::{Limits, Number, Object, Value};
 use yw_win::http::{HttpError, HttpsUrl};
 use yw_win::ui::{
-    self, CaptureExclusion, ClassSpec, Handler, Msg, Reply, Window, WindowKind, WindowSpec,
+    self, CaptureExclusion, ClassSpec, Handler, Msg, PaintStats, Rect, Reply, Window, WindowKind,
+    WindowSpec,
 };
 
 use super::{APPROVAL_CLASS, PANEL_CLASS};
@@ -169,16 +170,9 @@ pub(crate) fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(path).unwrap_or_default()
 }
 
-#[test]
-#[expect(clippy::print_stdout, reason = "the harness reports what it painted")]
-#[expect(clippy::too_many_lines, reason = "one end-to-end render scenario")]
-#[ignore = "opens a window for a few seconds (render harness, spec/09 smoke run)"]
-fn approval_window_renders_a_fixture_dry_run() {
-    let name = std::env::var("YW_SMOKE_FIXTURE").unwrap_or_else(|_| "S2".to_owned());
-    let hold: u32 = std::env::var("YW_SMOKE_HOLD_MS")
-        .ok()
-        .and_then(|text| text.parse().ok())
-        .unwrap_or(3_000);
+/// Opens A01 for a Sepolia send whose preparation is answered from fixture `name`; returns the
+/// app and its scratch data folder (a temp folder, removed by the caller).
+fn open_dry_run(name: &str) -> (Rc<RefCell<App>>, std::path::PathBuf) {
     for (class, secret) in [
         (APPROVAL_CLASS, false),
         (PANEL_CLASS, false),
@@ -242,7 +236,7 @@ fn approval_window_renders_a_fixture_dry_run() {
         unreachable!("no preparation job");
     };
     let transport: SharedTransport = std::sync::Arc::new(FixtureRpc {
-        simulate: fixture(&name),
+        simulate: fixture(name),
     });
     let clock = FixtureClock {
         now_ms: AtomicU64::new(0),
@@ -261,13 +255,31 @@ fn approval_window_renders_a_fixture_dry_run() {
         app.borrow_mut().on_simulating(job.job, at);
     }
     app.borrow_mut().on_prepared(result);
+    (app, dir)
+}
+
+/// Runs the message loop for `ms` milliseconds (timers, paint).
+fn pump(ms: u32) {
     let timer = ui::create_window(
         &WindowSpec::new(TIMER_CLASS, WindowKind::HiddenTopLevel),
         Box::new(QuitOnTimer),
     )
     .unwrap();
-    timer.set_timer(1, hold).unwrap();
+    timer.set_timer(1, ms).unwrap();
     let _ = ui::run_loop(&mut |_, _| {});
+}
+
+#[test]
+#[expect(clippy::print_stdout, reason = "the harness reports what it painted")]
+#[ignore = "opens a window for a few seconds (render harness, spec/09 smoke run)"]
+fn approval_window_renders_a_fixture_dry_run() {
+    let name = std::env::var("YW_SMOKE_FIXTURE").unwrap_or_else(|_| "S2".to_owned());
+    let hold: u32 = std::env::var("YW_SMOKE_HOLD_MS")
+        .ok()
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(3_000);
+    let (app, dir) = open_dry_run(&name);
+    pump(hold);
     {
         let state = app.borrow();
         let window = state.evm.window.as_ref().expect("window open");
@@ -286,6 +298,103 @@ fn approval_window_renders_a_fixture_dry_run() {
         );
     }
     app.borrow_mut().close_approval_window();
-    drop(timer);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Whether `inner` lies inside `outer`.
+fn within(inner: Rect, outer: Rect) -> bool {
+    inner.x >= outer.x
+        && inner.y >= outer.y
+        && inner.right() <= outer.right()
+        && inner.bottom() <= outer.bottom()
+}
+
+/// Paint statistics of A01 and its scrolling panel since the previous call, and the bar.
+fn take_stats(app: &Rc<RefCell<App>>) -> (PaintStats, PaintStats, Rect) {
+    let state = app.borrow();
+    let window = state.evm.window.as_ref().expect("window open");
+    (
+        window.window.take_paint_stats(),
+        window.panel.take_paint_stats(),
+        window.bottom.bar,
+    )
+}
+
+/// A01 flicker check: during a high-risk 2 s hold the 50 ms timer repaints only the bottom bar
+/// (status line, approve button and its progress), never the header, the band or the scrolling
+/// panel, and a paint never erases first. Frames are written to `YW_SMOKE_OUT` when set.
+#[test]
+#[expect(clippy::print_stdout, reason = "the harness reports what it repainted")]
+#[ignore = "opens a window for a few seconds (render harness, spec/09 smoke run)"]
+fn approval_hold_repaints_only_the_bottom_bar() {
+    let (app, dir) = open_dry_run("S3");
+    super::TEST_FORCE_FOREGROUND.with(|force| force.set(true));
+    let out = std::env::var_os("YW_SMOKE_OUT").map(std::path::PathBuf::from);
+    assert!(
+        app.borrow()
+            .evm
+            .window
+            .as_ref()
+            .is_some_and(|ui| ui.view.high),
+        "S3 is a high-risk approval"
+    );
+    app.borrow_mut().toggle_ack();
+    // The arm delay (1 s) passes; the first paints settle.
+    pump(1_500);
+    let _ = take_stats(&app);
+    pump(1_000);
+    let (idle, idle_panel, bar) = take_stats(&app);
+    println!("idle 1 s: window {idle:?} panel {idle_panel:?} bar {bar:?}");
+    assert!(idle.count <= 2, "idle: only the countdown second repaints");
+    assert!(idle.count == 0 || within(idle.area, bar));
+    assert_eq!(idle_panel.count, 0);
+
+    app.borrow_mut()
+        .interaction(super::InteractionEvent::PointerPressed {
+            inside: true,
+            click_through: false,
+            physical_down: true,
+        });
+    let _ = take_stats(&app);
+    let mut frames = 0_u32;
+    for frame in 0..4_u32 {
+        pump(250);
+        let (painted, panel, bar) = take_stats(&app);
+        let state = app.borrow();
+        let ui = state.evm.window.as_ref().expect("window open");
+        let held = ui.bar.held_ms;
+        println!("hold frame {frame}: held {held:?} window {painted:?} panel {panel:?}");
+        assert!(
+            ui.session.interaction().hold_source().is_some(),
+            "the hold is under way"
+        );
+        assert!(painted.count >= 2, "the progress repaints");
+        assert!(within(painted.area, bar), "only the bottom bar repaints");
+        assert_eq!(panel.count, 0, "the panel never repaints during a hold");
+        frames = frames.saturating_add(painted.count);
+        if let Some(out) = out.as_ref() {
+            let capture = yw_win::ui::capture::capture_client(ui.window.hwnd()).unwrap();
+            let path = out.join(format!("a01-hold-{frame}.bmp"));
+            std::fs::write(&path, &capture.bmp).unwrap();
+            println!("frame: {}", path.display());
+        }
+    }
+    // Released before 2 s: the hold is cancelled and nothing is approved.
+    app.borrow_mut()
+        .interaction(super::InteractionEvent::PointerReleased {
+            physical_down: false,
+        });
+    {
+        let state = app.borrow();
+        let ui = state.evm.window.as_ref().expect("window open");
+        assert!(ui.session.interaction().hold_source().is_none());
+        assert_eq!(
+            ui.session.interaction().status(),
+            crate::ui::interaction::InteractionStatus::Pending
+        );
+    }
+    println!("hold 1 s: {frames} bottom-bar paints, 0 panel paints");
+    super::TEST_FORCE_FOREGROUND.with(|force| force.set(false));
+    app.borrow_mut().close_approval_window();
     let _ = std::fs::remove_dir_all(&dir);
 }

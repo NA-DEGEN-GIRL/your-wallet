@@ -1,16 +1,23 @@
 #![allow(unsafe_code)]
 //! GDI painting (spec/01 §7.7): `PaintDc` (BeginPaint/EndPaint RAII), fonts, rectangles, colors.
 //! Text is always drawn with `DT_NOPREFIX` (spec/01 §5.5).
+//!
+//! `PaintDc` is double-buffered: drawing goes to a memory bitmap of the update rectangle, which
+//! starts white (the class background) and is copied to the window in one `BitBlt` when the
+//! session ends. Together with `WM_ERASEBKGND` being answered without erasing (window.rs), a
+//! repaint never shows a half-drawn or blank frame, so periodic updates (hold progress,
+//! countdowns) do not flicker.
 
 use core::marker::PhantomData;
 
 use windows_sys::Win32::Foundation::{HWND, RECT, SIZE};
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreateSolidBrush,
-    DEFAULT_CHARSET, DEFAULT_PITCH, DT_CALCRECT, DT_CENTER, DT_LEFT, DT_NOPREFIX, DT_RIGHT,
-    DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, DeleteObject, DrawTextW, EndPaint, FF_DONTCARE,
-    FW_BOLD, FW_NORMAL, FillRect, FrameRect, GetTextExtentExPointW, HDC, HFONT, HGDIOBJ,
-    OUT_DEFAULT_PRECIS, PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
+    BeginPaint, BitBlt, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateCompatibleBitmap,
+    CreateCompatibleDC, CreateFontW, CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CALCRECT,
+    DT_CENTER, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, DeleteDC,
+    DeleteObject, DrawTextW, EndPaint, FF_DONTCARE, FW_BOLD, FW_NORMAL, FillRect, FrameRect,
+    GetTextExtentExPointW, HBITMAP, HDC, HFONT, HGDIOBJ, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PatBlt,
+    SRCCOPY, SelectObject, SetBkMode, SetTextColor, SetViewportOrgEx, TRANSPARENT, WHITENESS,
 };
 
 use crate::error::WinError;
@@ -236,8 +243,91 @@ pub(crate) fn measure_with(
 pub struct PaintDc<'w> {
     hwnd: HWND,
     paint: PAINTSTRUCT,
+    /// The back buffer, when it could be created (otherwise drawing goes to the window DC).
+    buffer: Option<BackBuffer>,
     previous_font: Option<HGDIOBJ>,
     _window: PhantomData<&'w ()>,
+}
+
+/// A memory DC with a bitmap covering the update rectangle; its viewport origin is shifted so
+/// client coordinates draw at the right place.
+struct BackBuffer {
+    dc: HDC,
+    bitmap: HBITMAP,
+    previous: HGDIOBJ,
+    width: i32,
+    height: i32,
+}
+
+impl BackBuffer {
+    fn new(target: HDC, area: &RECT) -> Option<Self> {
+        let width = area.right.saturating_sub(area.left);
+        let height = area.bottom.saturating_sub(area.top);
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        // SAFETY: Creates a memory DC compatible with the live paint DC (deleted in `Drop`).
+        let dc = unsafe { CreateCompatibleDC(target) };
+        if dc.is_null() {
+            return None;
+        }
+        // SAFETY: Creates a bitmap compatible with the window DC (deleted in `Drop`).
+        let bitmap = unsafe { CreateCompatibleBitmap(target, width, height) };
+        if bitmap.is_null() {
+            // SAFETY: Deletes the memory DC created above (nothing selected into it).
+            unsafe { DeleteDC(dc) };
+            return None;
+        }
+        // SAFETY: Selects our bitmap into our memory DC; the previous object is restored in Drop.
+        let previous = unsafe { SelectObject(dc, bitmap) };
+        // SAFETY: Fills the fresh bitmap white (what the class background erase painted).
+        unsafe { PatBlt(dc, 0, 0, width, height, WHITENESS) };
+        // SAFETY: Shifts the origin so client coordinates map onto the update rectangle.
+        unsafe { SetViewportOrgEx(dc, -area.left, -area.top, core::ptr::null_mut()) };
+        Some(Self {
+            dc,
+            bitmap,
+            previous,
+            width,
+            height,
+        })
+    }
+
+    /// Copies the buffer onto `target` at `area`.
+    fn present(&self, target: HDC, area: &RECT) {
+        // SAFETY: Both DCs are live; the source origin is the update rectangle's corner in
+        // client coordinates (the buffer's shifted viewport).
+        unsafe {
+            BitBlt(
+                target,
+                area.left,
+                area.top,
+                self.width,
+                self.height,
+                self.dc,
+                area.left,
+                area.top,
+                SRCCOPY,
+            )
+        };
+    }
+}
+
+impl Drop for BackBuffer {
+    fn drop(&mut self) {
+        // SAFETY: Resets the origin of our live memory DC.
+        unsafe { SetViewportOrgEx(self.dc, 0, 0, core::ptr::null_mut()) };
+        // SAFETY: Overwrites the drawn pixels (they may show secrets) before the bitmap is freed.
+        unsafe { PatBlt(self.dc, 0, 0, self.width, self.height, WHITENESS) };
+        if !self.previous.is_null() {
+            // SAFETY: Restores the memory DC's original bitmap so ours can be deleted.
+            unsafe { SelectObject(self.dc, self.previous) };
+        }
+        // SAFETY: Deletes our bitmap (no longer selected) and our memory DC, once.
+        unsafe { DeleteObject(self.bitmap) };
+        // SAFETY: As above.
+        unsafe { DeleteDC(self.dc) };
+    }
 }
 
 impl core::fmt::Debug for PaintDc<'_> {
@@ -266,18 +356,30 @@ impl PaintDc<'_> {
         if hdc.is_null() {
             return Err(WinError::last("BeginPaint"));
         }
-        // SAFETY: `hdc` is the live paint DC returned above.
-        unsafe { SetBkMode(hdc, i32::try_from(TRANSPARENT).unwrap_or(1)) };
+        let buffer = BackBuffer::new(hdc, &paint.rcPaint);
+        let draw = buffer.as_ref().map_or(hdc, |buffer| buffer.dc);
+        // SAFETY: `draw` is the live paint DC returned above or our memory DC.
+        unsafe { SetBkMode(draw, i32::try_from(TRANSPARENT).unwrap_or(1)) };
         Ok(Self {
             hwnd,
             paint,
+            buffer,
             previous_font: None,
             _window: PhantomData,
         })
     }
 
-    const fn hdc(&self) -> HDC {
-        self.paint.hdc
+    /// The DC drawing goes to: the back buffer, or the window DC without one.
+    fn hdc(&self) -> HDC {
+        self.buffer
+            .as_ref()
+            .map_or(self.paint.hdc, |buffer| buffer.dc)
+    }
+
+    /// Whether this session draws into a back buffer (one copy to the window at the end).
+    #[must_use]
+    pub const fn is_buffered(&self) -> bool {
+        self.buffer.is_some()
     }
 
     /// The invalidated area.
@@ -413,6 +515,9 @@ impl Drop for PaintDc<'_> {
         if let Some(previous) = self.previous_font.take() {
             // SAFETY: Restores the DC's original font before EndPaint.
             unsafe { SelectObject(self.hdc(), previous) };
+        }
+        if let Some(buffer) = self.buffer.take() {
+            buffer.present(self.paint.hdc, &self.paint.rcPaint);
         }
         // SAFETY: Ends the paint session begun in `begin` for the same window.
         unsafe { EndPaint(self.hwnd, &raw const self.paint) };
