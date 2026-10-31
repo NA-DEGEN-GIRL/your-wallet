@@ -1399,13 +1399,6 @@ fn altered(mut words: [String; 4], position: usize, change: fn(&str) -> String) 
 #[test]
 fn backup_confirmation() {
     let (storage, mut vault, phrase) = created();
-    let suffix = {
-        let address = vault
-            .evm_address(EvmKeySource::Derived(index(0)))
-            .unwrap()
-            .to_lower_hex();
-        address.get(36..).unwrap().to_owned()
-    };
     let challenge = vault
         .backup_challenge_with_rng(&mut ScriptedRandom::new(&challenge_script()))
         .unwrap();
@@ -1421,37 +1414,26 @@ fn backup_confirmation() {
     };
     let upper: fn(&str) -> String = str::to_ascii_uppercase;
     let too_long: fn(&str) -> String = |_| "abandonnn".to_owned();
-    let wrong_suffix = if suffix == "000000" {
-        "000001"
-    } else {
-        "000000"
-    };
-    for label in [
-        "word",
-        "uppercase",
-        "long word",
-        "suffix",
-        "short suffix",
-        "non-hex suffix",
+    let empty: fn(&str) -> String = |_| String::new();
+    let non_letter: fn(&str) -> String = |word| format!("{word}1");
+    for (label, position, change) in [
+        ("word", 2, other_word),
+        ("uppercase", 0, upper),
+        ("long word", 3, too_long),
+        ("empty word", 1, empty),
+        ("non-letter", 1, non_letter),
     ] {
         let challenge = vault.backup_challenge().unwrap();
         let expected = answers(phrase.expose(), challenge.positions);
-        let (words, suffix_value) = match label {
-            "word" => (altered(expected.clone(), 2, other_word), suffix.as_str()),
-            "uppercase" => (altered(expected.clone(), 0, upper), suffix.as_str()),
-            "long word" => (altered(expected.clone(), 3, too_long), suffix.as_str()),
-            "suffix" => (expected.clone(), wrong_suffix),
-            "short suffix" => (expected.clone(), "12345"),
-            _ => (expected.clone(), "12345g"),
-        };
+        let words = altered(expected.clone(), position, change);
         assert_eq!(
-            vault.confirm_backup(challenge.id, refs(&words), suffix_value),
+            vault.confirm_backup(challenge.id, refs(&words)),
             Err(VaultError::BackupMismatch),
             "{label}"
         );
         assert_eq!(vault.status(), VaultStatus::BackupPending);
         assert_eq!(
-            vault.confirm_backup(challenge.id, refs(&expected), &suffix),
+            vault.confirm_backup(challenge.id, refs(&expected)),
             Err(VaultError::ChallengeStale),
             "{label}"
         );
@@ -1463,21 +1445,15 @@ fn backup_confirmation() {
         .backup_challenge_with_rng(&mut ScriptedRandom::new(&challenge_script()))
         .unwrap();
     assert_eq!(
-        vault.confirm_backup(
-            stale.id,
-            refs(&answers(phrase.expose(), stale.positions)),
-            &suffix
-        ),
+        vault.confirm_backup(stale.id, refs(&answers(phrase.expose(), stale.positions))),
         Err(VaultError::ChallengeStale)
     );
     assert_eq!(vault.status(), VaultStatus::BackupPending);
     let commits = storage.commits();
-    let upper_suffix = suffix.to_ascii_uppercase();
     vault
         .confirm_backup(
             current.id,
             refs(&answers(phrase.expose(), current.positions)),
-            &upper_suffix,
         )
         .unwrap();
     assert_eq!(

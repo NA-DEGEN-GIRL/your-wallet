@@ -761,13 +761,13 @@ pub struct BackupChallenge { pub id: ChallengeId, pub positions: [u8; 4] } // 1-
 
 - 백업 화면([04](04-app-ui.md) §2.3 W08)은 24단어와 함께 계정 0 EVM 주소(EIP-55)를 보여주고, 사용자는 둘 다 종이에 적는다. 주소는 나중에 복구가 같은 지갑인지 확인하는 데 쓴다(`docs/recovery-guide.ko.md`).
 - `backup_challenge()`: `BackupPending`에서만. 단어 수 w(생성 지갑은 24) 중 4개 위치를 부분 Fisher–Yates로 고른다: `for o in 0..4 { j = o + random_below(w − o); swap(o, j) }`, 앞 4개를 1-based로 바꿔 정렬. `random_below(u)`는 `u32` 거부 표본추출(`acceptance = u32::MAX − (u32::MAX % u)`, 그 이상이면 다시 뽑음). 새 challenge는 이전 challenge를 무효로 한다.
-- `confirm_backup(id, words: [&str; 4], address_suffix: &str)`:
+- `confirm_backup(id, words: [&str; 4])`:
   1. `BackupPending`이 아니면 `InvalidState`. `id`가 현재 challenge가 아니면 `ChallengeStale`.
-  2. 형식: 각 단어 1–8바이트 `[a-z]`, `address_suffix` 정확히 6자 `[0-9a-fA-F]`. 위반도 `BackupMismatch`로 처리한다.
-  3. 4개 단어를 `word_at(position)`과, 소문자화한 `address_suffix`를 계정 0 주소 hex(소문자 40자)의 마지막 6자와 비교한다. 5개 비교를 모두 상수 시간으로 수행해 합친 뒤 한 번에 판정한다.
+  2. 형식: 각 단어 1–8바이트 `[a-z]`. 위반도 `BackupMismatch`로 처리한다.
+  3. 4개 단어를 `word_at(position)`과 비교한다. 4개 비교를 모두 상수 시간으로 수행해 합친 뒤 한 번에 판정한다. 주소는 묻지 않는다(W08에 적어 두는 것은 복구 확인용이다).
   4. 불일치 → `BackupMismatch`, challenge 폐기(UI는 새 challenge를 요청). 시도 횟수 제한 없음.
   5. 일치 → `backup_state = 1`로 `PayloadRewrite` → `Unlocked { alt: false }`.
-- 아카이브 대비 변경: 계정 0·1 주소 영속 레코드 대신 매번 재파생, 전체 주소 입력 대신 끝 6자, 단어 최대 길이 16 → 8, 일회성 표시 능력 토큰·deadline 제거, passphrase 지갑은 이 흐름에 들어오지 않음(디코드 규칙으로 보장).
+- 아카이브 대비 변경: 계정 0·1 주소 영속 레코드 대신 매번 재파생, 주소 입력 없음(단어 4개만), 단어 최대 길이 16 → 8, 일회성 표시 능력 토큰·deadline 제거, passphrase 지갑은 이 흐름에 들어오지 않음(디코드 규칙으로 보장).
 
 ## 9. 비밀 표시 (reveal)
 
@@ -876,7 +876,7 @@ impl Vault {
     pub fn recover_from_prev(&mut self, password: Pw, slot: Slot, now_unix: u64) -> R<VaultStatus>; // Corrupt·MainMissing·Locked(§6.3)
 
     pub fn backup_challenge(&mut self) -> R<BackupChallenge>;
-    pub fn confirm_backup(&mut self, id: ChallengeId, words: [&str; 4], address_suffix: &str) -> R<()>;
+    pub fn confirm_backup(&mut self, id: ChallengeId, words: [&str; 4]) -> R<()>;
 
     pub fn import_evm_private_key(&mut self, hex: &str, now_unix: u64) -> R<RecordId>;
     pub fn remove_evm_raw_key(&mut self, password: Pw, id: RecordId) -> R<()>;
@@ -1044,7 +1044,7 @@ payload_nonce 707172…87   record_id 909192…9f   generation 1, backup_state 0
 - `BackupPending`에서 `with_secp_key`·`reveal_evm_private_key`·`import_evm_private_key` → `BackupNotConfirmed`, `evm_address`는 성공.
 - `lock` 후 `HeapSlot` 소거 플래그 참, 이후 `evm_address` → `InvalidState`.
 - passphrase: 일치 → `Unlocked{alt:false}`, 불일치 → `PassphraseMismatch` → 계속 → `Unlocked{alt:true}`, 다시 입력 → 슬롯의 passphrase 영역이 0.
-- 백업: `ScriptedRandom`으로 위치 고정 후 정답 → Confirmed 커밋 1회; 단어 하나 오답, 주소 끝 6자 오답, 대문자 단어, 오래된 `ChallengeId` 각각 실패하고 상태 `BackupPending` 유지; 위치는 항상 서로 다르고 오름차순이며 1..=24.
+- 백업: `ScriptedRandom`으로 위치 고정 후 정답 → Confirmed 커밋 1회; 단어 하나 오답, 빈 단어·영문 소문자 밖 문자, 9자 이상 단어, 대문자 단어, 오래된 `ChallengeId` 각각 실패하고 상태 `BackupPending` 유지; 위치는 항상 서로 다르고 오름차순이며 1..=24.
 - 디버그 출력 가림: 모든 비밀 타입의 `format!("{:?}")`에 입력 문자열·hex가 없다.
 
 ### 11.9 가져온 개인키·키 전용 vault

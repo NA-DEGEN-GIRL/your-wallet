@@ -214,7 +214,7 @@ impl fmt::Display for VaultError {
             }
             Self::OutOfMemory => "메모리를 잠그지 못해 잠금 해제하지 않았습니다.",
             Self::BackupNotConfirmed => "백업 확인을 먼저 끝내세요.",
-            Self::BackupMismatch => "입력한 단어 또는 주소가 맞지 않습니다.",
+            Self::BackupMismatch => "입력한 단어가 맞지 않습니다.",
             Self::ChallengeStale => "백업 확인 문항이 바뀌었습니다. 새 문항으로 다시 입력하세요.",
             Self::RecordLimit => "가져온 개인키는 체인마다 최대 15개입니다.",
             Self::DuplicateKey => {

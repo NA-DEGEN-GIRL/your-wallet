@@ -1418,7 +1418,7 @@ impl App {
                         form.reset_backup(
                             challenge.positions,
                             Some(
-                                "입력한 단어 또는 주소가 맞지 않습니다. 새 위치로 다시 확인합니다."
+                                "입력한 단어가 맞지 않습니다. 새 위치로 다시 확인합니다."
                                     .to_owned(),
                             ),
                         );
@@ -2187,12 +2187,10 @@ impl App {
                     return;
                 };
                 let words = [next(), next(), next(), next()];
-                let suffix = next();
                 self.with_form(|form| form.set_busy(true));
                 self.key(KeyJob::ConfirmBackup {
                     id: challenge.id,
                     words,
-                    suffix,
                 });
             }
             Purpose::ConfirmPassword(action) => {

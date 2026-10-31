@@ -46,7 +46,6 @@ const MAX_ADDRESS_BATCH: usize = 100;
 const MAX_SOL_KEY_BATCH: usize = 128;
 const CHALLENGE_WORDS: usize = 4;
 const MAX_BACKUP_WORD: usize = 8;
-const ADDRESS_SUFFIX_LEN: usize = 6;
 const SLOT_DEK_END: usize = 32;
 const SLOT_FLAG: usize = 32;
 const SLOT_PASSPHRASE_LEN: usize = 33;
@@ -1008,19 +1007,14 @@ impl Vault {
         Ok(BackupChallenge { id, positions })
     }
 
-    /// Verifies 4 words and the last 6 hex characters of the account-0 address (spec/02 §8.3).
-    /// All 5 comparisons run in constant time and are decided once.
+    /// Verifies the 4 challenged mnemonic words (spec/02 §8.3).
+    /// All 4 comparisons run in constant time and are decided once.
     ///
     /// # Errors
     ///
     /// `InvalidState` outside `BackupPending`; `ChallengeStale` for an unknown id; `BackupMismatch`
     /// for wrong or malformed answers (the challenge is discarded); `Storage` if the commit fails.
-    pub fn confirm_backup(
-        &mut self,
-        id: ChallengeId,
-        words: [&str; 4],
-        address_suffix: &str,
-    ) -> Result<(), VaultError> {
+    pub fn confirm_backup(&mut self, id: ChallengeId, words: [&str; 4]) -> Result<(), VaultError> {
         if self.status != VaultStatus::BackupPending {
             return Err(VaultError::InvalidState);
         }
@@ -1032,8 +1026,7 @@ impl Vault {
         let well_formed = words.iter().all(|word| {
             (1..=MAX_BACKUP_WORD).contains(&word.len())
                 && word.bytes().all(|b| b.is_ascii_lowercase())
-        }) && address_suffix.len() == ADDRESS_SUFFIX_LEN
-            && address_suffix.bytes().all(|b| b.is_ascii_hexdigit());
+        });
         if !well_formed {
             return Err(VaultError::BackupMismatch);
         }
@@ -1044,14 +1037,6 @@ impl Vault {
             let expected = bip39.mnemonic.word_at(*position)?;
             all &= expected.as_bytes().ct_eq(answer.as_bytes());
         }
-        let ctx = secp_context(&mut OsRandom)?;
-        let address =
-            address_zero(&ctx, &bip39.mnemonic, &Bip39Passphrase::empty())?.to_lower_hex();
-        let expected_suffix = address
-            .get(address.len().saturating_sub(ADDRESS_SUFFIX_LEN)..)
-            .ok_or(INTERNAL)?;
-        let answer_suffix = address_suffix.to_ascii_lowercase();
-        all &= expected_suffix.as_bytes().ct_eq(answer_suffix.as_bytes());
         if all.unwrap_u8() != 1 {
             return Err(VaultError::BackupMismatch);
         }

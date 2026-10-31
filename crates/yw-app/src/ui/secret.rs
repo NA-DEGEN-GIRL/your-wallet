@@ -420,28 +420,18 @@ fn slots_for(kind: SecretKind) -> Vec<Slot> {
             chain: ImportChain::Btc,
             ..
         } => vec![slot("Bitcoin 개인키 (WIF)", Charset::Base58, 51, 52, false)],
-        SecretKind::Backup { positions } => {
-            let mut out: Vec<Option<Slot>> = positions
-                .iter()
-                .map(|position| {
-                    slot(
-                        &format!("{position}번째 단어"),
-                        Charset::BackupWord,
-                        1,
-                        8,
-                        false,
-                    )
-                })
-                .collect();
-            out.push(slot(
-                "첫 주소의 마지막 6자",
-                Charset::HexSuffix,
-                6,
-                6,
-                false,
-            ));
-            out
-        }
+        SecretKind::Backup { positions } => positions
+            .iter()
+            .map(|position| {
+                slot(
+                    &format!("{position}번째 단어"),
+                    Charset::BackupWord,
+                    1,
+                    8,
+                    false,
+                )
+            })
+            .collect(),
         SecretKind::ShowMnemonic { .. } | SecretKind::ShowKey => Vec::new(),
     };
     slots.into_iter().flatten().collect()
@@ -485,7 +475,7 @@ fn intro(kind: SecretKind, words: usize) -> Vec<String> {
             "개인키입니다. 다른 사람에게 보여주거나 사진·클라우드에 남기지 마세요. 이 창은 화면 캡처에서 제외됩니다.".to_owned(),
         ],
         SecretKind::Backup { positions } => vec![format!(
-            "적은 종이를 보고 {}, {}, {}, {}번째 단어와 첫 주소의 마지막 6자를 입력하세요.",
+            "적은 종이를 보고 {}, {}, {}, {}번째 단어를 입력하세요.",
             positions[0], positions[1], positions[2], positions[3]
         )],
     }

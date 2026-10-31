@@ -193,7 +193,7 @@ pub enum AppMode { NoVault, Locked, Unlocking, PassphraseRequired, PassphraseMis
 | 2 | W01 | 비밀번호 2회. [02] 규칙(D8: 0x20–0x7E, 12–128자) 위반 E-INP-001, 불일치 E-INP-002. passphrase는 묻지 않는다([02] §8.1). |
 | 3 | S03 | `KeyJob::CreateWallet` → `Vault::create_wallet` → `BackupPending`, 24단어 버퍼 반환. 이어서 기본 meta 쓰기. "지갑을 만드는 중입니다. 몇 초 걸립니다." 생성·가져오기·개인키로 시작하기가 실패하면 오류 띠를 보이고 S01로 가정하지 않고 `KeyJob::Load`로 상태를 다시 읽는다: vault가 이미 저장된 뒤 다음 단계(주소 조회 등)가 실패했으면 S07(잠금 해제하면 S04), 저장 전 실패면 S01. |
 | 4 | W08 | 24단어 + 계정 0 EVM 주소(EIP-55, `m/44'/60'/0'/0/0`). 둘 다 종이에 적게 한다([02] §8.3). 캡처 제외 실패 시 표시하지 않고 E-SEC-001(§4.5 `Required`; 지갑은 `BackupPending`으로 남고 S04에서 다시 시도). `다 적었습니다`를 2초 길게 눌러야 다음으로 간다. |
-| 5 | W10 | `backup_challenge()`의 위치 4개 단어 + 첫 주소 끝 6자. `KeyJob::ConfirmBackup` → `confirm_backup`. `BackupMismatch` → T-BACKUP-FAIL, 새 challenge(새 위치)로 다시 입력. 횟수 제한 없음. |
+| 5 | W10 | `backup_challenge()`의 위치 4개 단어(주소는 묻지 않는다). `KeyJob::ConfirmBackup` → `confirm_backup`. `BackupMismatch` → T-BACKUP-FAIL, 새 challenge(새 위치)로 다시 입력. 횟수 제한 없음. |
 | 6 | S08 | 제목 "준비되었습니다", T-BACKUP-OK(완료 띠; 가져오기 흐름 뒤에는 백업 확인을 하지 않았으므로 T-IMPORT-OK와 도움말 "이 지갑의 백업은 방금 입력한 복구 단어(와 passphrase)입니다…"). 저장된 RPC 엔드포인트(§6.3 `rpc:*`)가 하나도 없으면 카드 "마지막 단계: 블록체인 연결(RPC)"(무엇이고 왜 필요한지 한 줄 + 도움말) 안에 주 버튼 `RPC 설정하기`(S15 `네트워크(RPC)`, §2.11.1)와 `나중에`. 있으면 주 버튼 `지갑 열기`. → S10. |
 
 S04(백업 대기): 잠금 해제 직후 백업이 확인되지 않았을 때. 제목 "백업 확인이 필요합니다", T-BACKUP-PENDING(주의 띠), 카드에 무엇을 하는지 한 줄과 주 버튼 `복구 단어 보고 백업 확인`(W03 → W08 → W10), `받기`(S12, 상단 경고 T-BACKUP-RECV), `잠금`. 서명·개인키 표시·개인키 가져오기는 없다([02] §7.1). 이 상태에서 dApp 승인 항목은 즉시 `NotReady`.
@@ -382,8 +382,8 @@ W04(현재, 새, 새 확인) → 새 비밀번호 검사(E-INP-001/002) → `Key
 | T-CREATE-1 | S02 | · 종이와 펜을 준비하세요. 다음 화면들에서 복구 단어 24개와 첫 주소를 적습니다. / · 복구 단어는 종이(또는 금속)에만 적고 사진·클라우드·메신저에 남기지 마세요. / · 화면 공유·녹화를 끄고 주변에 사람이나 카메라가 없는지 확인하세요. (세 줄) |
 | T-PW-RULE | W01·W04 | 비밀번호는 영문·숫자·기호(ASCII) 12–128자입니다. 단어 4개 이상을 이은 긴 문장을 권장합니다. 잊으면 복구 단어(니모닉)로만 복구할 수 있습니다. |
 | T-MN-SHOW | W08 | 아래 {n}단어와 첫 주소를 순서대로 종이에 적으세요. 이 단어들이 지갑의 유일한 백업이며, 아는 사람은 누구든 자산을 옮길 수 있습니다. 이 창은 화면 캡처에서 제외됩니다. |
-| T-BACKUP-1 | W10 | 적은 종이를 보고 {p1}, {p2}, {p3}, {p4}번째 단어와 첫 주소의 마지막 6자를 입력하세요. |
-| T-BACKUP-FAIL | W10 | 입력한 단어 또는 주소가 맞지 않습니다. 새 위치로 다시 확인합니다. |
+| T-BACKUP-1 | W10 | 적은 종이를 보고 {p1}, {p2}, {p3}, {p4}번째 단어를 입력하세요. |
+| T-BACKUP-FAIL | W10 | 입력한 단어가 맞지 않습니다. 새 위치로 다시 확인합니다. |
 | T-BACKUP-OK | S08 | 백업을 확인했습니다. 이제 지갑을 쓸 수 있습니다. |
 | T-IMPORT-OK | S08(가져오기 뒤) | 지갑을 가져왔습니다. 이제 지갑을 쓸 수 있습니다. |
 | T-BACKUP-PENDING | S04 | 백업 확인이 끝나지 않았습니다. 확인 전에는 보내기·서명·dApp 승인을 쓸 수 없습니다. |
@@ -703,7 +703,7 @@ pub fn can_approve(g: &ApprovalGate, now: Instant) -> bool {
 | W07 | 개인키 가져오기 | 체인별: EVM `PrivateKeyHex` ≤ 66, Solana `KeyText` 1–640, Bitcoin `Base58` 51–52 (§2.18) | 평문 | 허용 | 없음 | `Preferred` |
 | W08 | 복구 단어 (니모닉) | — | 평문 3열 × (n/3)행, 열 우선 번호(24단어: 1–8, 9–16, 17–24) + 첫 주소 | — | 토글 | `Required` |
 | W09 | 개인키 보기 | — | 평문(EVM hex 64자, Solana base58 keypair, Bitcoin WIF) | — | 토글 | `Required` |
-| W10 | 백업 확인 | 단어 4칸 `BackupWord` ≤ 8, 주소 끝 `HexSuffix` = 6 | 평문 | 금지 | 없음 | `Preferred` |
+| W10 | 백업 확인 | 단어 4칸 `BackupWord` ≤ 8 | 평문 | 금지 | 없음 | `Preferred` |
 
 - 배치(§1.6): 회색 창 배경에 (만들기·가져오기 흐름이면) "{흐름} · n/3단계"와 단계 점, 제목 14pt, 안내 문구(보조색), 내용을 담는 흰 카드(입력 칸·단어 격자·체크박스·오류), 아래 버튼 줄(왼쪽 `모두 지우기`/`복사`, 오른쪽 `취소`/`나중에`와 주 버튼). W01의 주 버튼은 `다음`, W08 단어 격자는 번호(보조색) + 단어(14pt), 첫 주소는 4자 묶음으로 보인다.
 - 가림 칸은 글자 수만큼 U+25CF를 그린다. 칸 옆 `보기`를 누르고 있는 동안만 평문을 그린다(§4.5 실패 시 비활성).
@@ -713,7 +713,7 @@ pub fn can_approve(g: &ApprovalGate, now: Instant) -> bool {
 ### 4.2 입력 버퍼
 `SecureAsciiBuffer`(`archive/spec-v2.4:crates/secret-input-ui/src/recovery_native.rs:118-178`)를 이식해 넓힌다 → `yw_app::ui::secure_field::SecretField`.
 ```rust
-pub enum Charset { Printable, MnemonicText, PrivateKeyHex, BackupWord, HexSuffix, Base58, KeyText }
+pub enum Charset { Printable, MnemonicText, PrivateKeyHex, BackupWord, Base58, KeyText }
 pub enum PushResult { Accepted, Full, Rejected(RejectReason) }
 pub enum RejectReason { NonAscii, NotAllowed, DoubleSpace, Position }
 pub struct SecretField { bytes: Zeroizing<Vec<u8>>, limit: usize, charset: Charset }
@@ -733,7 +733,6 @@ impl SecretField {
 | `MnemonicText` | `a`–`z`, 공백 | `A`–`Z`는 소문자로. 맨 앞 공백·연속 공백은 `DoubleSpace`(조용히 무시). 끝 공백은 확정 때 뗀다. 그 밖 `NotAllowed` |
 | `PrivateKeyHex` | `0`–`9`, `a`–`f` | `A`–`F`는 소문자로. `x`는 길이 1이고 첫 글자 `0`일 때만(`Position`, `X` 거부). 확정 시 `0x`를 떼고 정확히 64자(E-INP-006), 범위는 [02] |
 | `BackupWord` | `a`–`z` | `A`–`Z`는 소문자로 |
-| `HexSuffix` | `0`–`9`, `a`–`f`, `A`–`F` | 그대로(비교는 [02] §8.3이 소문자화) |
 | `Base58` | base58 알파벳(`0`·`O`·`I`·`l` 없음) | 그 밖 `NotAllowed`. 확정 시 51자 미만이면 E-INP-023, 나머지 검사는 [02] §8.4 |
 | `KeyText` | ASCII 영숫자, `[`, `]`, `,`, 공백 | 맨 앞·연속 공백은 `DoubleSpace`(조용히 무시), 끝 공백은 확정 때 뗀다. 붙여넣기는 `MnemonicText`처럼 공백·탭·CR·LF 연속을 공백 하나로. 형식 판정은 [02] §8.4 |
 
@@ -1005,7 +1004,7 @@ BTC 계정 선택은 `prefs`에 두지 않는다(알려진 객체에 키를 더�
 | E-INP-010 | EIP-55 불일치 | 주소의 대소문자 체크섬이 맞지 않습니다. 주소를 다시 확인하세요. |
 | E-INP-011 | 금액 형식 | 금액 형식이 올바르지 않습니다. |
 | E-INP-012 | 잔액 부족 | 잔액이 부족합니다(수수료 포함). |
-| E-INP-013 | `BackupMismatch` | 입력한 단어 또는 주소가 맞지 않습니다. |
+| E-INP-013 | `BackupMismatch` | 입력한 단어가 맞지 않습니다. |
 | E-INP-014 | 0 주소 | 0 주소로는 보낼 수 없습니다. |
 | E-INP-015 | 토큰 컨트랙트로 전송 | 받는 주소가 이 토큰의 컨트랙트입니다. 보내면 잃습니다. |
 | E-INP-016 | 주소록 중복 | 이미 주소록에 있는 주소입니다. |

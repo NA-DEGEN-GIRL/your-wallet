@@ -37,22 +37,16 @@ fn sw1_backup_buffers_are_bounded_and_need_no_window_text() {
     assert_eq!(word.push_unit(u16::from(b'a')), PushResult::Accepted);
     assert_eq!(word.push_unit(u16::from(b'B')), PushResult::Accepted);
     assert_eq!(word.as_bytes(), b"ab");
+    assert!(matches!(
+        word.push_unit(u16::from(b'1')),
+        PushResult::Rejected(_)
+    ));
     assert!(word.backspace());
     for _ in 0..7 {
         word.push_unit(u16::from(b'z'));
     }
     assert_eq!(word.push_unit(u16::from(b'z')), PushResult::Full);
     assert_eq!(word.limit(), 8);
-    let mut suffix = SecretField::new(Charset::HexSuffix, 6).unwrap();
-    assert!(matches!(
-        suffix.push_unit(u16::from(b'x')),
-        PushResult::Rejected(_)
-    ));
-    for byte in b"aBc123" {
-        assert_eq!(suffix.push_unit(u16::from(*byte)), PushResult::Accepted);
-    }
-    assert_eq!(suffix.as_bytes(), b"aBc123");
-    assert_eq!(suffix.push_unit(u16::from(b'4')), PushResult::Full);
 }
 
 #[test]
@@ -64,11 +58,12 @@ fn sw1_backup_form_collects_only_owned_buffers() {
         0,
         true,
     );
-    for word in ["apple", "breeze", "cedar", "dune"] {
+    for (index, word) in ["apple", "breeze", "cedar", "dune"].into_iter().enumerate() {
+        if index > 0 {
+            form.on_key(0x09, false, false, false, 10);
+        }
         type_text(&mut form, word, 10);
-        form.on_key(0x09, false, false, false, 10);
     }
-    type_text(&mut form, "ABCDEF", 10);
     let FormAction::Submit(submission) = form.on_char(0x0D, 20) else {
         unreachable!("expected submit");
     };
@@ -77,10 +72,7 @@ fn sw1_backup_form_collects_only_owned_buffers() {
         .iter()
         .map(|value| value.as_slice())
         .collect();
-    assert_eq!(
-        values,
-        [b"apple".as_slice(), b"breeze", b"cedar", b"dune", b"ABCDEF"]
-    );
+    assert_eq!(values, [b"apple".as_slice(), b"breeze", b"cedar", b"dune"]);
     // Paste is refused in W10 (paper backup check).
     assert!(matches!(
         form.on_key(u16::from(b'V'), true, false, false, 30),

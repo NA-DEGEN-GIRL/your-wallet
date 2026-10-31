@@ -452,7 +452,7 @@ impl App {
         ));
         items.push(Item::CardStart(None));
         items.push(Item::Text(
-            "복구 단어를 다시 보고, 그중 몇 개와 첫 주소 끝 6자를 입력해 종이에 바르게 적었는지 확인합니다."
+            "복구 단어를 다시 보고, 그중 단어 4개를 입력해 종이에 바르게 적었는지 확인합니다."
                 .to_owned(),
         ));
         items.push(Item::Row(vec![

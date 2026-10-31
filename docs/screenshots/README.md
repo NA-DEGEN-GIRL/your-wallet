@@ -16,7 +16,7 @@
 | [02-create-start.png](02-create-start.png) | 새 지갑 만들기 안내 — 1·2·3 단계 표시와 시작 전에 준비할 것. |
 | [03-create-password.png](03-create-password.png) | 1/3단계 비밀번호 정하기 — 입력은 가려지고 글자 수가 보입니다. |
 | [04-create-recovery-words.png](04-create-recovery-words.png) | 2/3단계 복구 단어 적기 — 24단어와 첫 주소, 2초 길게 눌러 다음으로. |
-| [05-create-backup-check.png](05-create-backup-check.png) | 3/3단계 백업 확인 — 적은 종이를 보고 단어 4개와 주소 끝 6자를 입력합니다. |
+| [05-create-backup-check.png](05-create-backup-check.png) | 3/3단계 백업 확인 — 적은 종이를 보고 단어 4개를 입력합니다. |
 | [06-create-done.png](06-create-done.png) | 완료 — 마지막 단계로 블록체인 연결(RPC)이 왜 필요한지 안내합니다. |
 | [07-import-start.png](07-import-start.png) | 기존 지갑 가져오기 안내 — 단계 표시와 준비할 것. 개인키만 있으면 `개인키로 시작하기`를 쓰라는 안내와, Bitcoin은 네이티브 세그윗 계정 0을 먼저 찾고 다른 주소 형식은 [계정 추가]로 더한다는 안내. |
 | [08-locked.png](08-locked.png) | 잠금 화면 — 언제 자동으로 잠기는지 함께 보입니다. |

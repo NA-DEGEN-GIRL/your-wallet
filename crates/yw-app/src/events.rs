@@ -126,8 +126,6 @@ pub enum KeyJob {
         id: ChallengeId,
         /// Four answers.
         words: [Zeroizing<Vec<u8>>; 4],
-        /// Last 6 hex of account 0.
-        suffix: Zeroizing<Vec<u8>>,
     },
     /// `reveal_mnemonic` / `reveal_evm_private_key`.
     Reveal {

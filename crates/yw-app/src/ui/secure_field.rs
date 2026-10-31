@@ -19,8 +19,6 @@ pub enum Charset {
     PrivateKeyHex,
     /// `a`–`z` (`A`–`Z` lowercased): backup words.
     BackupWord,
-    /// `0-9a-fA-F` as typed: address suffix.
-    HexSuffix,
     /// The base58 alphabet (Bitcoin WIF).
     Base58,
     /// ASCII letters, digits, `[`, `]`, `,` and single spaces: a Solana base58 keypair or a
@@ -160,10 +158,6 @@ impl SecretField {
                 b'A'..=b'Z' => Ok(byte.to_ascii_lowercase()),
                 _ => Err(RejectReason::NotAllowed),
             },
-            Charset::HexSuffix => byte
-                .is_ascii_hexdigit()
-                .then_some(byte)
-                .ok_or(RejectReason::NotAllowed),
             Charset::Base58 => is_base58(byte)
                 .then_some(byte)
                 .ok_or(RejectReason::NotAllowed),

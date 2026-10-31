@@ -723,7 +723,7 @@ impl KeyWorker {
             KeyJob::BackupChallenge => {
                 KeyOutcome::Challenge(self.vault().and_then(Vault::backup_challenge))
             }
-            KeyJob::ConfirmBackup { id, words, suffix } => KeyOutcome::BackupConfirmed((|| {
+            KeyJob::ConfirmBackup { id, words } => KeyOutcome::BackupConfirmed((|| {
                 let texts: Vec<&str> = words
                     .iter()
                     .map(|word| core::str::from_utf8(word).unwrap_or(""))
@@ -734,10 +734,8 @@ impl KeyWorker {
                     texts.get(2).copied().unwrap_or(""),
                     texts.get(3).copied().unwrap_or(""),
                 ];
-                let suffix = core::str::from_utf8(&suffix).unwrap_or("");
-                self.vault()?.confirm_backup(id, answers, suffix)
-            })(
-            )),
+                self.vault()?.confirm_backup(id, answers)
+            })()),
             KeyJob::Reveal { password, what } => KeyOutcome::Revealed(self.reveal(&password, what)),
             KeyJob::ChangePassword { old, new } => KeyOutcome::PasswordChanged((|| {
                 let old = password(&old).map_err(|_| VaultError::UnlockFailed)?;

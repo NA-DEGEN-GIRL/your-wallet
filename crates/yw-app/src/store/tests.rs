@@ -5,10 +5,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use yw_core::bip32::path::AccountIndex;
 use yw_core::error::StorageError;
 use yw_core::password::VaultPassword;
-use yw_core::vault::{EvmKeySource, FileKind, Vault, VaultStatus, VaultStorage, peek_generation};
+use yw_core::vault::{FileKind, Vault, VaultStatus, VaultStorage, peek_generation};
 
 use super::{FileStorage, LockedSlotBox, file_name};
 
@@ -55,13 +54,7 @@ fn generations() -> (Vec<u8>, Vec<u8>) {
     let picked = challenge
         .positions
         .map(|position| words[usize::from(position) - 1]);
-    let address = vault
-        .evm_address(EvmKeySource::Derived(AccountIndex::ZERO))
-        .unwrap()
-        .to_lower_hex();
-    vault
-        .confirm_backup(challenge.id, picked, &address[address.len() - 6..])
-        .unwrap();
+    vault.confirm_backup(challenge.id, picked).unwrap();
     assert_eq!(
         vault.status(),
         VaultStatus::Unlocked {
