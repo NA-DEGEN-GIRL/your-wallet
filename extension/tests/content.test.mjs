@@ -442,6 +442,27 @@ test("C6 Solana/Bitcoin modes go to bridge-init and only to requests of their ow
   }
 });
 
+test("C6 Bitcoin off: btc_* gets 4200 without connecting; Solana off still forwards sol_*", () => {
+  const h = harness({ solCompatMode: "off", btcCompatMode: "off" });
+  for (const [index, method] of ["btc_requestAccounts", "btc_getAccounts", "btc_getNetwork", "btc_signMessage", "btc_disconnect"].entries()) {
+    assert.equal(h.request(rid(index + 1), method), false, method);
+    assert.deepEqual(h.responses(rid(index + 1))[0].error, { code: 4200, message: "Unsupported method." }, method);
+  }
+  assert.equal(h.ports.length, 0);
+  assert.equal(h.bridge.state, STATES.IDLE);
+  assert.equal(h.request(rid(10), "sol_connect"), true);
+  h.ports[0].activate();
+  assert.deepEqual(h.ports[0].sent.map((message) => message.method), ["sol_connect"]);
+  assert.equal(h.ports[0].sent[0].compatMode, undefined);
+  // Any Bitcoin mode forwards btc_*.
+  for (const btcCompatMode of ["unisat", "xverse"]) {
+    const on = harness({ btcCompatMode });
+    assert.equal(on.request(rid(1), "btc_getNetwork"), true, btcCompatMode);
+    on.ports[0].activate();
+    assert.equal(on.ports[0].sent[0].method, "btc_getNetwork");
+  }
+});
+
 test("C6 loadCompatModes reads the three keys and normalizes each", async () => {
   const { loadCompatModes } = globalThis.__YOUR_WALLET_CONTENT_CORE__;
   const clock = new FakeClock();
