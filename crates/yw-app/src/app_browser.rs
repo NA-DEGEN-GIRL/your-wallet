@@ -80,6 +80,18 @@ pub struct BrowserUi {
     pub locking: bool,
     /// Chain-switch grant changes not yet written to meta, and when the last write happened.
     pub grant_write: GrantWrite,
+    /// S13 as last drawn: which grant each `연결 해제` button disconnects.
+    pub site_rows: SiteRows,
+}
+
+/// The S13 page and the grant behind each row button as last drawn (spec/04 §2.9): a button
+/// disconnects the `(origin, family)` it was drawn for, even if the lists changed since.
+#[derive(Debug, Default)]
+pub struct SiteRows {
+    /// The page shown (0-based).
+    pub page: usize,
+    /// `(origin, family)` per row button of that page, in id order.
+    pub keys: std::cell::RefCell<Vec<(BrowserOrigin, yw_core::policy::Family)>>,
 }
 
 /// Coalesced grant writes ([`GRANT_WRITE_INTERVAL_MS`]).
@@ -184,6 +196,7 @@ impl BrowserUi {
             unlocked: false,
             locking: false,
             grant_write: GrantWrite::default(),
+            site_rows: SiteRows::default(),
         }
     }
 
@@ -290,14 +303,34 @@ impl App {
             .filter(|(_, check)| matches!(check, crate::flow::evm::ChainCheck::Mismatch(_)))
             .map(|(chain_id, _)| *chain_id)
             .collect();
+        let vault = self.vault_view();
+        // The accounts dApps may use now (spec/05 §4.9); none unless unlocked with meta, and no
+        // Bitcoin address derivation while Bitcoin is off (no Bitcoin grant is usable then).
+        let unlocked = vault == VaultView::Unlocked;
+        let sol_accounts = if unlocked {
+            self.sol_dapp_rows().iter().map(|row| row.public).collect()
+        } else {
+            Vec::new()
+        };
+        let btc_accounts = if unlocked && self.settings.bitcoin.enabled {
+            self.btc_dapp_rows()
+                .into_iter()
+                .map(|row| row.entry.address)
+                .collect()
+        } else {
+            Vec::new()
+        };
         WalletView {
-            vault: self.vault_view(),
+            vault,
             chains,
             blocked,
             evm_chain_id: self.settings.evm_chain_id,
             allow_localhost: self.settings.allow_localhost_dapps,
             sol_cluster: self.sol_cluster(),
             btc_network: self.btc_network_now(),
+            btc_enabled: self.settings.bitcoin.enabled,
+            sol_accounts,
+            btc_accounts,
         }
     }
 
@@ -333,14 +366,16 @@ impl App {
                 locked_view.vault = VaultView::Locked;
                 core.set_wallet(locked_view);
                 let changed = core.unlock_wallet(grants);
+                // Disconnects received while locked are applied here and written below.
+                let mut revoked = false;
                 if verified && let Some(meta) = self.meta.as_ref() {
-                    core.unlock_chains(
+                    revoked = core.unlock_chains(
                         crate::browser::grants::sol_sites_from_values(&meta.chain_sites.sol),
                         crate::browser::grants::btc_sites_from_values(&meta.chain_sites.btc),
                     );
                 }
                 core.set_wallet(view);
-                if !changed.is_empty() {
+                if !changed.is_empty() || revoked {
                     self.write_grants();
                 }
                 self.after_browser_unlock();
@@ -1049,6 +1084,7 @@ mod tests {
             unlocked: false,
             locking: false,
             grant_write: GrantWrite::default(),
+            site_rows: super::SiteRows::default(),
         });
         app
     }

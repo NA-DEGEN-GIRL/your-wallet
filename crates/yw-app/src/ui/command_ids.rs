@@ -90,7 +90,7 @@ fn max_spl_tokens() -> usize {
 #[must_use]
 #[expect(clippy::too_many_lines, reason = "one entry per indexed list")]
 pub fn ranges() -> Vec<IdRange> {
-    use crate::meta::{MAX_ADDRESS_BOOK, MAX_EVM_ACCOUNTS, MAX_RAW_ACCOUNTS, MAX_SITES};
+    use crate::meta::{MAX_ADDRESS_BOOK, MAX_EVM_ACCOUNTS, MAX_RAW_ACCOUNTS};
     use crate::settings::MAX_CUSTOM_EVM_CHAINS;
     let evm_chains = crate::network::BUILTIN_EVM.len() + MAX_CUSTOM_EVM_CHAINS;
     // URL rows: every EVM chain, solana:mainnet/devnet, bitcoin:mainnet/testnet4 (spec/04 §2.11.1).
@@ -164,7 +164,7 @@ pub fn ranges() -> Vec<IdRange> {
             screens_sites::ids::SITE_ROW_BASE,
             screens_sites::ids::SITE_ROW_SPAN,
             1,
-            MAX_SITES,
+            screens_sites::ids::SITES_PAGE_ROWS,
         ),
         range(
             "sol.send_assets",

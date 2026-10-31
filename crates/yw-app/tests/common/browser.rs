@@ -110,8 +110,19 @@ pub fn wallet(vault: VaultView, settings: &Settings) -> WalletView {
         allow_localhost: settings.allow_localhost_dapps,
         sol_cluster: yw_core::sol::SolCluster::Mainnet,
         btc_network: yw_core::btc::BtcNetwork::Mainnet,
+        btc_enabled: true,
+        // The accounts of the chain-dispatch fixtures (`browser_chain_dispatch.rs`).
+        sol_accounts: yw_core::codec::base58::base58_decode_32(FIXTURE_SOL_KEY)
+            .into_iter()
+            .collect(),
+        btc_accounts: vec![FIXTURE_BTC_ADDRESS.to_owned()],
     }
 }
+
+/// The Solana key the fixture wallet holds.
+pub const FIXTURE_SOL_KEY: &str = "FVen3X669xLzsi6N2V91DoiyzHzg1uAgqiT8jZ9nS96Z";
+/// The Bitcoin address the fixture wallet holds (mainnet P2WPKH).
+pub const FIXTURE_BTC_ADDRESS: &str = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
 
 impl Harness {
     /// A dispatcher pinned to the golden id, unlocked, with the default settings.

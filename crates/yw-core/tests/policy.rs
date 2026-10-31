@@ -152,3 +152,14 @@ fn r_err_provider_errors_match_spec_05_section_5() {
     assert_eq!(upstream.code(), -32_000);
     assert_eq!(upstream.message(), "nonce too low");
 }
+
+#[test]
+fn r_err_too_many_sites_matches_spec_05_section_5() {
+    let error = ProviderError::TooManySites;
+    assert_eq!(error.code(), 4100);
+    assert_eq!(
+        error.message(),
+        "Unauthorized: too many sites are connected on this chain (256). Disconnect one in the Your Wallet app first."
+    );
+    assert_eq!(error.data(), None);
+}

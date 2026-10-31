@@ -673,15 +673,21 @@ impl App {
         if index == 0 {
             return;
         }
+        let mut hidden = None;
         if let Some(meta) = self.meta.as_mut() {
             for account in &mut meta.sol_accounts {
                 if account.index == index {
                     account.hidden = true;
+                    hidden = SolAddress::parse(&account.address).ok();
                 }
             }
             meta.prefs.sol_account = 0;
         }
         self.save_meta();
+        // A hidden account leaves every dApp connection (spec/05 §4.9).
+        if let Some(address) = hidden {
+            self.sol_account_removed_from_sites(&address.to_bytes());
+        }
         self.refresh();
     }
 

@@ -228,7 +228,15 @@ struct State {
     locked_connected: Vec<BrowserOrigin>,
     /// Monotonic ms until which unconnected origins cannot reopen the dApp unlock window.
     unlock_cooldown_until_ms: u64,
+    /// `sol_disconnect`/`btc_disconnect` received while locked (the grants are not loaded):
+    /// applied by [`BrowserCore::unlock_chains`] before any account event (in memory only,
+    /// at most [`MAX_LOCKED_REVOCATIONS`], oldest dropped first).
+    revoked_while_locked: Vec<(BrowserOrigin, Family)>,
 }
+
+/// Bound of the disconnects remembered while locked (one per origin and family; twice the
+/// Solana plus Bitcoin grant limit).
+pub const MAX_LOCKED_REVOCATIONS: usize = 4 * MAX_CHAIN_GRANTS;
 
 impl State {
     /// Activations with a request still pending on their connection.
@@ -320,6 +328,7 @@ impl BrowserCore {
                 block_numbers: HashMap::new(),
                 locked_connected: Vec::new(),
                 unlock_cooldown_until_ms: 0,
+                revoked_while_locked: Vec::new(),
             }),
             reads_ready: Condvar::new(),
             sink,
@@ -614,23 +623,73 @@ impl BrowserCore {
         removed
     }
 
-    /// Wallet unlocked: the Solana and Bitcoin grants of meta are loaded and their origins get
-    /// `solAccountsChanged`/`btcAccountsChanged` (spec/05 §4.9; a Bitcoin grant of another network
-    /// than the settings network exposes nothing).
-    pub fn unlock_chains(&self, sol: Vec<SolGrant>, btc: Vec<BtcGrant>) {
+    /// Wallet unlocked: the Solana and Bitcoin grants of meta are loaded, minus the disconnects
+    /// received while locked, and the origins of usable grants get `solAccountsChanged`/
+    /// `btcAccountsChanged` (spec/05 §4.9). A grant whose account is not one dApps may use now
+    /// ([`WalletView::sol_usable`]/[`WalletView::btc_usable`]: hidden or removed account, another
+    /// Bitcoin network, Bitcoin off) is kept but exposes nothing. Call after
+    /// [`BrowserCore::set_wallet`] with the account lists. Returns whether a locked-time
+    /// disconnect removed a grant (meta must be written).
+    pub fn unlock_chains(&self, sol: Vec<SolGrant>, btc: Vec<BtcGrant>) -> bool {
         let mut state = self.lock();
-        state.sol_grants = sol;
-        state.btc_grants = btc;
+        let revoked = std::mem::take(&mut state.revoked_while_locked);
+        let kept = |origin: &BrowserOrigin, family: Family| {
+            !revoked
+                .iter()
+                .any(|(known, which)| known == origin && *which == family)
+        };
+        let before = sol.len() + btc.len();
+        state.sol_grants = sol
+            .into_iter()
+            .filter(|grant| kept(&grant.origin, Family::Solana))
+            .collect();
+        state.btc_grants = btc
+            .into_iter()
+            .filter(|grant| kept(&grant.origin, Family::Bitcoin))
+            .collect();
+        let changed = state.sol_grants.len() + state.btc_grants.len() != before;
         for grant in &state.sol_grants {
-            Self::emit_locked(
-                &state,
-                &grant.origin,
-                &BrowserEvent::SolAccountsChanged(vec![grant.public]),
-            );
+            if state.wallet.sol_usable(grant) {
+                Self::emit_locked(
+                    &state,
+                    &grant.origin,
+                    &BrowserEvent::SolAccountsChanged(vec![grant.public]),
+                );
+            }
         }
         for grant in &state.btc_grants {
-            let event = BrowserEvent::BtcAccountsChanged(btc_addresses(&state, grant));
-            Self::emit_locked(&state, &grant.origin, &event);
+            if state.wallet.btc_usable(grant) {
+                let event = BrowserEvent::BtcAccountsChanged(btc_addresses(&state, grant));
+                Self::emit_locked(&state, &grant.origin, &event);
+            }
+        }
+        changed
+    }
+
+    /// The disconnects received while locked and not yet applied (tests).
+    #[must_use]
+    pub fn locked_revocations(&self) -> Vec<(BrowserOrigin, Family)> {
+        self.lock().revoked_while_locked.clone()
+    }
+
+    /// Whether one more Solana/Bitcoin grant fits (an origin that already has one of `family`
+    /// replaces it; otherwise at most [`MAX_CHAIN_GRANTS`] per family, the meta limit).
+    #[must_use]
+    pub fn chain_grant_room(&self, origin: &BrowserOrigin, family: Family) -> bool {
+        let state = self.lock();
+        match family {
+            Family::Solana => {
+                state.sol_grants.iter().any(|grant| grant.origin == *origin)
+                    || state.sol_grants.len() < MAX_CHAIN_GRANTS
+            }
+            Family::Bitcoin => {
+                state.btc_grants.iter().any(|grant| grant.origin == *origin)
+                    || state.btc_grants.len() < MAX_CHAIN_GRANTS
+            }
+            Family::Evm => {
+                state.grants.iter().any(|site| site.origin == *origin)
+                    || state.grants.len() < MAX_GRANTS
+            }
         }
     }
 
@@ -646,11 +705,17 @@ impl BrowserCore {
         self.lock().btc_grants.clone()
     }
 
-    /// Solana connect approved: stores the grant and sends `solAccountsChanged`.
-    pub fn upsert_sol_grant(&self, grant: SolGrant) {
+    /// Solana connect approved: stores the grant and sends `solAccountsChanged`. Refused
+    /// (`false`, nothing stored) when a new origin would exceed [`MAX_CHAIN_GRANTS`]: meta with
+    /// more entries would not parse.
+    pub fn upsert_sol_grant(&self, grant: SolGrant) -> bool {
         let mut state = self.lock();
         let origin = grant.origin.clone();
         let public = grant.public;
+        let known = state.sol_grants.iter().any(|g| g.origin == origin);
+        if !known && state.sol_grants.len() >= MAX_CHAIN_GRANTS {
+            return false;
+        }
         state.sol_grants.retain(|known| known.origin != origin);
         state.sol_grants.push(grant);
         Self::emit_locked(
@@ -658,16 +723,69 @@ impl BrowserCore {
             &origin,
             &BrowserEvent::SolAccountsChanged(vec![public]),
         );
+        true
     }
 
-    /// Bitcoin connect approved: stores the grant and sends `btcAccountsChanged`.
-    pub fn upsert_btc_grant(&self, grant: BtcGrant) {
+    /// Bitcoin connect approved: stores the grant and sends `btcAccountsChanged`. Refused like
+    /// [`BrowserCore::upsert_sol_grant`] past [`MAX_CHAIN_GRANTS`].
+    pub fn upsert_btc_grant(&self, grant: BtcGrant) -> bool {
         let mut state = self.lock();
         let origin = grant.origin.clone();
+        let known = state.btc_grants.iter().any(|g| g.origin == origin);
+        if !known && state.btc_grants.len() >= MAX_CHAIN_GRANTS {
+            return false;
+        }
         let event = BrowserEvent::BtcAccountsChanged(btc_addresses(&state, &grant));
         state.btc_grants.retain(|known| known.origin != origin);
         state.btc_grants.push(grant);
         Self::emit_locked(&state, &origin, &event);
+        true
+    }
+
+    /// A Solana account was hidden or its imported key removed: every grant naming it is deleted
+    /// and its origin gets `solAccountsChanged([])` (spec/05 §4.9: importing the key again does
+    /// not bring the connection back). Returns the origins that lost their grant.
+    pub fn remove_sol_account(&self, public: &[u8; 32]) -> Vec<BrowserOrigin> {
+        let mut state = self.lock();
+        let mut removed = Vec::new();
+        state.sol_grants.retain(|grant| {
+            let gone = grant.public == *public;
+            if gone {
+                removed.push(grant.origin.clone());
+            }
+            !gone
+        });
+        for origin in &removed {
+            Self::emit_locked(
+                &state,
+                origin,
+                &BrowserEvent::SolAccountsChanged(Vec::new()),
+            );
+        }
+        removed
+    }
+
+    /// A Bitcoin address left the wallet (imported key removed): every grant listing it is
+    /// deleted as a whole (a grant is one address per purpose; a partial one is not kept) and
+    /// its origin gets `btcAccountsChanged([])`. Returns the origins that lost their grant.
+    pub fn remove_btc_address(&self, address: &str) -> Vec<BrowserOrigin> {
+        let mut state = self.lock();
+        let mut removed = Vec::new();
+        state.btc_grants.retain(|grant| {
+            let gone = grant.entry(address).is_some();
+            if gone {
+                removed.push(grant.origin.clone());
+            }
+            !gone
+        });
+        for origin in &removed {
+            Self::emit_locked(
+                &state,
+                origin,
+                &BrowserEvent::BtcAccountsChanged(Vec::new()),
+            );
+        }
+        removed
     }
 
     /// Removes the Solana grant of `origin` (S13, `sol_disconnect`); returns whether one existed.
@@ -952,12 +1070,14 @@ impl BrowserCore {
         let chain_id = Self::origin_chain_locked(&mut state, &origin);
         let vault = state.wallet.vault;
         let grant = state.grants.iter().find(|s| s.origin == origin).cloned();
+        // Only grants of accounts dApps may use now count (a hidden or removed account, another
+        // Bitcoin network or Bitcoin off: as if not connected, spec/05 §4.9).
         let sol_grant = (vault == VaultView::Unlocked)
             .then(|| {
                 state
                     .sol_grants
                     .iter()
-                    .find(|g| g.origin == origin)
+                    .find(|g| g.origin == origin && state.wallet.sol_usable(g))
                     .cloned()
             })
             .flatten();
@@ -967,10 +1087,18 @@ impl BrowserCore {
                 state
                     .btc_grants
                     .iter()
-                    .find(|g| g.origin == origin && g.network == btc_network)
+                    .find(|g| g.origin == origin && state.wallet.btc_usable(g))
                     .cloned()
             })
             .flatten();
+        // Bitcoin off (spec/05 §4.9): only the network name and a disconnect are answered.
+        if !state.wallet.btc_enabled
+            && method.family() == Family::Bitcoin
+            && !matches!(method, Method::BtcGetNetwork | Method::BtcDisconnect)
+        {
+            reject(&state, ProviderError::NoBtcAccount);
+            return;
+        }
         let immediate = |state: &mut State, body: Answer| {
             match &body {
                 Ok(_) => logging::info(
@@ -1104,21 +1232,34 @@ impl BrowserCore {
                 immediate(&mut state, body);
             }
             (Method::SolDisconnect | Method::BtcDisconnect, _) => {
-                // Locked: nothing is known about the grant; the page forgets the account itself
-                // and the grant stays until it is disconnected while unlocked (spec/05 §4.9).
-                let unlocked =
-                    matches!(vault, VaultView::Unlocked | VaultView::PassphraseUnverified);
+                // Locked: the grants are not loaded; the disconnect is remembered and applied
+                // at unlock before any account event, then written to meta (spec/05 §4.9).
+                // A passphrase-unverified session has no grants and remembers nothing.
                 let solana = method == Method::SolDisconnect;
-                let removed = unlocked
-                    && if solana {
-                        let before = state.sol_grants.len();
-                        state.sol_grants.retain(|g| g.origin != origin);
-                        before != state.sol_grants.len()
-                    } else {
-                        let before = state.btc_grants.len();
-                        state.btc_grants.retain(|g| g.origin != origin);
-                        before != state.btc_grants.len()
-                    };
+                let family = if solana {
+                    Family::Solana
+                } else {
+                    Family::Bitcoin
+                };
+                // Grants are loaded only while unlocked (and in the instant between the unlock
+                // merge and the unlocked view): a loaded grant goes at once.
+                let removed = if solana {
+                    let before = state.sol_grants.len();
+                    state.sol_grants.retain(|g| g.origin != origin);
+                    before != state.sol_grants.len()
+                } else {
+                    let before = state.btc_grants.len();
+                    state.btc_grants.retain(|g| g.origin != origin);
+                    before != state.btc_grants.len()
+                };
+                if !removed && matches!(vault, VaultView::Locked | VaultView::Starting) {
+                    let list = &mut state.revoked_while_locked;
+                    list.retain(|(known, which)| !(*known == origin && *which == family));
+                    if list.len() >= MAX_LOCKED_REVOCATIONS {
+                        list.remove(0);
+                    }
+                    list.push((origin.clone(), family));
+                }
                 immediate(&mut state, Ok(Value::Null));
                 if removed {
                     let (event, change) = if solana {
@@ -1362,15 +1503,22 @@ impl BrowserCore {
                 }
                 let full = match family {
                     Family::Evm => admission.grant.is_none() && state.grants.len() >= MAX_GRANTS,
+                    // A stored grant of the origin (usable or not) is replaced by a connect.
                     Family::Solana => {
-                        admission.sol_grant.is_none() && state.sol_grants.len() >= MAX_CHAIN_GRANTS
+                        !state.sol_grants.iter().any(|g| g.origin == *origin)
+                            && state.sol_grants.len() >= MAX_CHAIN_GRANTS
                     }
                     Family::Bitcoin => {
-                        admission.btc_grant.is_none() && state.btc_grants.len() >= MAX_CHAIN_GRANTS
+                        !state.btc_grants.iter().any(|g| g.origin == *origin)
+                            && state.btc_grants.len() >= MAX_CHAIN_GRANTS
                     }
                 };
                 if kind.is_connect() && full {
-                    return Err(ProviderError::Unauthorized);
+                    return Err(if family == Family::Evm {
+                        ProviderError::Unauthorized
+                    } else {
+                        ProviderError::TooManySites
+                    });
                 }
             }
             VaultView::Locked | VaultView::Starting => {
@@ -1518,9 +1666,10 @@ pub(crate) fn sol_connect_value(public: &[u8; 32]) -> Value {
     )])
 }
 
-/// The addresses a Bitcoin grant exposes now (none for another network than the settings one).
+/// The addresses a Bitcoin grant exposes now (none for another network than the settings one,
+/// with Bitcoin off, or when an address is no longer the wallet's).
 fn btc_addresses(state: &State, grant: &BtcGrant) -> Vec<String> {
-    if grant.network == state.wallet.btc_network {
+    if state.wallet.btc_usable(grant) {
         grant
             .addresses
             .iter()

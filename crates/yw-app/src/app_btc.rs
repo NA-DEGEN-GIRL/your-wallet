@@ -3405,9 +3405,25 @@ impl crate::app::App {
                     }
                 }
                 BtcAction::SetMeta(btc, accounts) => {
+                    // Accounts that left `btc_accounts` (an imported key removed): their stable
+                    // addresses leave every dApp grant (spec/05 §4.9).
+                    let gone: Vec<String> = self.meta.as_ref().map_or_else(Vec::new, |meta| {
+                        meta.btc_accounts
+                            .accounts
+                            .iter()
+                            .filter(|old| accounts.get(old.network(), old.id()).is_none())
+                            .filter_map(|old| {
+                                let address = old.address(BtcChain::Receive, 0).ok()?;
+                                Some(address.as_str().to_owned())
+                            })
+                            .collect()
+                    });
                     if let Some(meta) = self.meta.as_mut() {
                         meta.btc = btc;
                         meta.btc_accounts = *accounts;
+                    }
+                    if !gone.is_empty() {
+                        self.btc_addresses_removed_from_sites(&gone);
                     }
                 }
                 BtcAction::Enqueue(item) => {

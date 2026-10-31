@@ -1,10 +1,14 @@
 //! S13 연결된 사이트 (spec/04 §2.9): every grant with its origin (http badge), accounts in return
 //! order, origin chain and connection time; `연결 해제` per row and `모두 해제` (confirmation).
 //! Solana and Bitcoin connections (spec/05 §4.9: ownership proof only) follow the EVM grants with
-//! their own `연결 해제` rows; row ids count over the combined list.
+//! their own `연결 해제` rows. The combined list (up to 3 × 256 grants) is shown
+//! [`ids::SITES_PAGE_ROWS`] cards per page; each button disconnects the `(origin, family)` it was
+//! drawn for ([`crate::app_browser::SiteRows`]), never "the n-th row of the list now".
 //! Also the S07 T-UNLOCK-PENDING line (spec/04 §2.5, §2.16).
 
 use core::fmt::Write as _;
+
+use yw_core::policy::{BrowserOrigin, Family};
 
 use crate::app::{App, Confirm};
 use crate::ui::main_window::{Ctl, Item, Tone};
@@ -15,19 +19,69 @@ pub mod ids {
     pub const SITES_OPEN: u16 = 6_700;
     /// 모두 해제.
     pub const SITES_REVOKE_ALL: u16 = 6_701;
-    /// Row buttons (`연결 해제`), one per grant.
+    /// 이전 쪽.
+    pub const SITES_PREV: u16 = 6_702;
+    /// 다음 쪽.
+    pub const SITES_NEXT: u16 = 6_703;
+    /// Row buttons (`연결 해제`), one per card of the page shown.
     pub const SITE_ROW_BASE: u16 = 6_710;
-    /// Row span (256 grants, spec/02 §5.3).
+    /// Row span (reserved ids; a page uses [`SITES_PAGE_ROWS`]).
     pub const SITE_ROW_SPAN: u16 = 256;
+    /// Cards per page.
+    pub const SITES_PAGE_ROWS: usize = 50;
     /// Every fixed id of this module.
-    pub const FIXED: &[u16] = &[SITES_OPEN, SITES_REVOKE_ALL];
+    pub const FIXED: &[u16] = &[SITES_OPEN, SITES_REVOKE_ALL, SITES_PREV, SITES_NEXT];
 }
 
-fn row_id(index: usize) -> u16 {
-    u16::try_from(index)
-        .ok()
-        .filter(|offset| *offset < ids::SITE_ROW_SPAN)
-        .map_or(0, |offset| ids::SITE_ROW_BASE + offset)
+/// The page being drawn: which cards of the combined list it shows, and the grant behind each
+/// row button (recorded for [`App::on_sites_command`]).
+struct Page<'a> {
+    start: usize,
+    end: usize,
+    keys: Option<core::cell::RefMut<'a, Vec<(BrowserOrigin, Family)>>>,
+}
+
+impl Page<'_> {
+    fn shows(&self, index: usize) -> bool {
+        (self.start..self.end).contains(&index)
+    }
+
+    /// The `연결 해제` row of a card (none when the id range or the record is unavailable).
+    fn button(&mut self, origin: &BrowserOrigin, family: Family) -> Option<Item> {
+        let keys = self.keys.as_mut()?;
+        let id = u16::try_from(keys.len())
+            .ok()
+            .filter(|offset| usize::from(*offset) < ids::SITES_PAGE_ROWS)
+            .map(|offset| ids::SITE_ROW_BASE + offset)?;
+        keys.push((origin.clone(), family));
+        Some(Item::Row(vec![Ctl::danger(id, "연결 해제")]))
+    }
+}
+
+/// Pages of `total` cards and the page shown for the wanted one (clamped to the last page).
+fn page_of(total: usize, wanted: usize) -> (usize, usize) {
+    let pages = total.div_ceil(ids::SITES_PAGE_ROWS).max(1);
+    (pages, wanted.min(pages - 1))
+}
+
+/// The page line and `이전 쪽`/`다음 쪽` (only with more than one page).
+fn page_nav(items: &mut Vec<Item>, total: usize, pages: usize, shown: usize) {
+    if pages <= 1 {
+        return;
+    }
+    items.push(Item::Text(format!(
+        "{} / {pages}쪽 (연결 {total}곳, 한 쪽에 {}곳)",
+        shown + 1,
+        ids::SITES_PAGE_ROWS
+    )));
+    let mut nav = Vec::new();
+    if shown > 0 {
+        nav.push(Ctl::button(ids::SITES_PREV, "이전 쪽"));
+    }
+    if shown + 1 < pages {
+        nav.push(Ctl::button(ids::SITES_NEXT, "다음 쪽"));
+    }
+    items.push(Item::Row(nav));
 }
 
 fn local_time(unix_ms: u64) -> String {
@@ -42,6 +96,23 @@ fn local_time(unix_ms: u64) -> String {
 }
 
 impl App {
+    /// The S13 page to draw for `total` cards (its button record cleared), the page count, the
+    /// page index and `total`.
+    fn sites_page(&self, total: usize) -> (Page<'_>, usize, usize, usize) {
+        let browser = self.browser.as_ref();
+        let (pages, shown) = page_of(total, browser.map_or(0, |browser| browser.site_rows.page));
+        let page = Page {
+            start: shown * ids::SITES_PAGE_ROWS,
+            end: (shown + 1) * ids::SITES_PAGE_ROWS,
+            keys: browser.map(|browser| {
+                let mut keys = browser.site_rows.keys.borrow_mut();
+                keys.clear();
+                keys
+            }),
+        };
+        (page, pages, shown, total)
+    }
+
     /// S13.
     pub(crate) fn sites_screen(&self, items: &mut Vec<Item>) {
         items.push(crate::ui::screens::back_main());
@@ -62,8 +133,13 @@ impl App {
             items.push(Item::CardEnd);
             return;
         }
+        let (mut page, pages, shown, total) =
+            self.sites_page(grants.len() + sol_grants.len() + btc_grants.len());
         let labels = self.own_accounts();
         for (index, site) in grants.iter().enumerate() {
+            if !page.shows(index) {
+                continue;
+            }
             items.push(Item::CardStart(Some(site.origin.as_str().to_owned())));
             if site.origin.is_http() {
                 items.push(Item::Banner(
@@ -92,14 +168,13 @@ impl App {
                 items.push(Item::Help(label.to_owned()));
                 items.push(Item::Mono(yw_core::evm::display::format_address(account)));
             }
-            let id = row_id(index);
-            if id != 0 {
-                items.push(Item::Row(vec![Ctl::danger(id, "연결 해제")]));
-            }
+            items.extend(page.button(&site.origin, Family::Evm));
             items.push(Item::CardEnd);
         }
-        let mut index = grants.len();
-        for grant in &sol_grants {
+        for (offset, grant) in sol_grants.iter().enumerate() {
+            if !page.shows(grants.len() + offset) {
+                continue;
+            }
             items.push(Item::CardStart(Some(grant.origin.as_str().to_owned())));
             items.push(Item::Field(
                 "네트워크".to_owned(),
@@ -112,14 +187,13 @@ impl App {
             items.push(Item::Mono(yw_core::codec::base58::base58_encode(
                 &grant.public,
             )));
-            let id = row_id(index);
-            if id != 0 {
-                items.push(Item::Row(vec![Ctl::danger(id, "연결 해제")]));
-            }
+            items.extend(page.button(&grant.origin, Family::Solana));
             items.push(Item::CardEnd);
-            index += 1;
         }
-        for grant in &btc_grants {
+        for (offset, grant) in btc_grants.iter().enumerate() {
+            if !page.shows(grants.len() + sol_grants.len() + offset) {
+                continue;
+            }
             items.push(Item::CardStart(Some(grant.origin.as_str().to_owned())));
             items.push(Item::Field(
                 "네트워크".to_owned(),
@@ -133,13 +207,10 @@ impl App {
                 items.push(Item::Help(entry.purpose.label().to_owned()));
                 items.push(Item::Mono(entry.address.clone()));
             }
-            let id = row_id(index);
-            if id != 0 {
-                items.push(Item::Row(vec![Ctl::danger(id, "연결 해제")]));
-            }
+            items.extend(page.button(&grant.origin, Family::Bitcoin));
             items.push(Item::CardEnd);
-            index += 1;
         }
+        page_nav(items, total, pages, shown);
         items.push(Item::Row(vec![Ctl::danger(
             ids::SITES_REVOKE_ALL,
             "모든 사이트 연결 해제",
@@ -177,6 +248,22 @@ impl App {
                 self.set_screen(crate::app::Screen::Confirm(Confirm::DisconnectAll));
                 true
             }
+            ids::SITES_PREV | ids::SITES_NEXT => {
+                let total = self.browser_grants().len() + {
+                    let (sol, btc) = self.chain_grants();
+                    sol.len() + btc.len()
+                };
+                if let Some(browser) = self.browser.as_mut() {
+                    let (pages, shown) = page_of(total, browser.site_rows.page);
+                    browser.site_rows.page = if id == ids::SITES_PREV {
+                        shown.saturating_sub(1)
+                    } else {
+                        (shown + 1).min(pages - 1)
+                    };
+                }
+                self.refresh();
+                true
+            }
             _ => {
                 let Some(offset) = id
                     .checked_sub(ids::SITE_ROW_BASE)
@@ -184,18 +271,20 @@ impl App {
                 else {
                     return false;
                 };
-                let offset = usize::from(offset);
-                let grants = self.browser_grants();
-                let (sol, btc) = self.chain_grants();
-                if let Some(site) = grants.get(offset) {
-                    let origin = site.origin.clone();
-                    self.disconnect_site(&origin);
-                } else if let Some(grant) = sol.get(offset - grants.len()) {
-                    let origin = grant.origin.clone();
-                    self.disconnect_chain_site(&origin, yw_core::policy::Family::Solana);
-                } else if let Some(grant) = btc.get(offset - grants.len() - sol.len()) {
-                    let origin = grant.origin.clone();
-                    self.disconnect_chain_site(&origin, yw_core::policy::Family::Bitcoin);
+                // The grant this button was drawn for (a list that changed since does not move
+                // the click to another site).
+                let key = self.browser.as_ref().and_then(|browser| {
+                    browser
+                        .site_rows
+                        .keys
+                        .borrow()
+                        .get(usize::from(offset))
+                        .cloned()
+                });
+                match key {
+                    Some((origin, Family::Evm)) => self.disconnect_site(&origin),
+                    Some((origin, family)) => self.disconnect_chain_site(&origin, family),
+                    None => {}
                 }
                 true
             }
