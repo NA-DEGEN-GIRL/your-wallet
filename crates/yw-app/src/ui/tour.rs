@@ -1087,6 +1087,53 @@ fn screenshot_tour() {
     );
     save(approval_hwnd(&app), "27-approval-sol-message");
     app.borrow_mut().tour_reject_approval();
+    // Sign-In-With-Solana from the same site (the app builds the text from the dApp's fields).
+    let siws = yw_core::sol::msgsign::SiwsMessage {
+        domain: "app.example.org".to_owned(),
+        address: "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk".to_owned(),
+        statement: Some("app.example.org에 로그인합니다.".to_owned()),
+        uri: Some("https://app.example.org/login".to_owned()),
+        version: Some("1".to_owned()),
+        chain_id: Some("devnet".to_owned()),
+        nonce: Some("7f3a91c2".to_owned()),
+        ..yw_core::sol::msgsign::SiwsMessage::default()
+    };
+    dapp_request(
+        &app,
+        "https://app.example.org",
+        yw_core::policy::Method::SolSignIn,
+        crate::browser::SiteKind::SolSign {
+            public: SolAddress::parse("HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk")
+                .unwrap()
+                .to_bytes(),
+            message: siws.to_text().into_bytes(),
+            sign_in: true,
+        },
+    );
+    save(approval_hwnd(&app), "28-approval-sol-signin");
+    app.borrow_mut().tour_reject_approval();
+    // Bitcoin message signing right after (the payment address of the site's grant).
+    let payment = app
+        .borrow()
+        .btc_dapp_rows()
+        .into_iter()
+        .find(|row| row.entry.script_type == yw_core::btc::ScriptType::P2wpkh)
+        .map(|row| row.entry.address)
+        .unwrap();
+    dapp_request(
+        &app,
+        "https://app.example.org",
+        yw_core::policy::Method::BtcSignMessage,
+        crate::browser::SiteKind::BtcSign {
+            address: payment,
+            message: "app.example.org 로그인: 이 주소의 소유를 확인합니다. (nonce 7f3a91)"
+                .as_bytes()
+                .to_vec(),
+            protocol: None,
+        },
+    );
+    save(approval_hwnd(&app), "30-approval-btc-message");
+    app.borrow_mut().tour_reject_approval();
     {
         let mut state = app.borrow_mut();
         if let Some(meta) = state.meta.as_mut() {
