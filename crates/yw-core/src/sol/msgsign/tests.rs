@@ -9,7 +9,7 @@
 use super::{
     OffchainMessage, SiwsContext, SiwsMessage, SolMessageError, SolMessageRequest,
     build_sol_message_request, chain_matches, check_siws, domain_matches, looks_like_transaction,
-    parse_offchain, sign_with_seed, signable,
+    looks_like_versioned_message, parse_offchain, sign_with_seed, signable,
 };
 use crate::approval::{ApprovalId, ApprovalKind, FieldKey, RiskLevel};
 use crate::bip32::path::AccountIndex;
@@ -80,14 +80,63 @@ fn transactions_are_detected() {
     let index = bad_index.len() - 7;
     bad_index[index] = 9;
     assert!(!looks_like_transaction(&bad_index));
-    let mut trailing = legacy;
+    // A parsable message prefix with trailing bytes is still a transaction (M01).
+    let mut trailing = legacy.clone();
     trailing.push(0);
-    assert!(!looks_like_transaction(&trailing));
+    assert!(looks_like_transaction(&trailing));
+    assert!(!signable(&trailing));
+    let mut signed_trailing = signed.clone();
+    signed_trailing.extend_from_slice(b"tail");
+    assert!(looks_like_transaction(&signed_trailing));
+    let mut v0_trailing = v0.clone();
+    v0_trailing.extend_from_slice(&[7; 40]);
+    assert!(looks_like_transaction(&v0_trailing));
     assert!(!looks_like_transaction(b"Sign in to example.com"));
     assert!(!looks_like_transaction(b""));
     assert!(!signable(&signed));
     assert!(signable(b"hello"));
     assert!(!signable(&vec![b'a'; 65_537]));
+}
+
+#[test]
+fn future_message_versions_are_blocked() {
+    let legacy = legacy_message();
+    // Every version prefix 0x81..=0xfe (and a broken v0 = 0x80) is blocked when not UTF-8 text.
+    for prefix in 0x80_u8..=0xfe {
+        let mut future = vec![prefix];
+        future.extend_from_slice(&legacy);
+        future.extend_from_slice(&[0xfe, 0x00]);
+        assert!(looks_like_versioned_message(&future), "{prefix:#04x}");
+        assert!(looks_like_transaction(&future), "{prefix:#04x}");
+        assert!(!signable(&future), "{prefix:#04x}");
+        let draft = build_sol_message_request(&request(future, false), NOW_MS).unwrap();
+        assert_eq!(draft.display.risk, RiskLevel::Blocked, "{prefix:#04x}");
+        assert!(rules(&draft.display.warnings).contains(&M01));
+    }
+    for short in [&[0x81_u8][..], &[0xc0], &[0xfe, 0x01, 0x02]] {
+        assert!(looks_like_transaction(short));
+        assert!(!signable(short));
+    }
+    // Valid UTF-8 text starting with a multibyte character stays signable.
+    let korean = "가나다 소유 증명".as_bytes();
+    assert!(korean[0] >= 0x80);
+    assert!(!looks_like_versioned_message(korean));
+    assert!(signable(korean));
+    let plain = build_sol_message_request(&request(korean.to_vec(), false), NOW_MS).unwrap();
+    assert_eq!(plain.display.risk, RiskLevel::Info);
+    // The same lead byte followed by non-UTF-8 bytes is blocked.
+    let mut broken = korean.to_vec();
+    broken.push(0xff);
+    assert!(!signable(&broken));
+    // 0xff is the off-chain domain's first byte, not a version prefix.
+    assert!(!looks_like_versioned_message(&[0xff, 0xfe, 0x00]));
+    let mut sdk = super::OFFCHAIN_DOMAIN.to_vec();
+    sdk.extend_from_slice(&[0, 0, 5, 0]);
+    sdk.extend_from_slice(b"hello");
+    assert!(!looks_like_versioned_message(&sdk));
+    assert!(signable(&sdk));
+    assert!(signable(&[0x01, 0x02, 0x03]));
+    assert!(signable(b""));
 }
 
 #[test]
@@ -240,6 +289,16 @@ fn siws_checks() {
     assert!(!domain_matches("user@app.example", &origin));
     let local = BrowserOrigin::parse("http://localhost:5173").unwrap();
     assert!(domain_matches("localhost:5173", &local));
+    // A site on a non-default port must name its port: a bare host matches no port but the default.
+    assert!(!domain_matches("localhost", &local));
+    assert!(!domain_matches("localhost:80", &local));
+    let custom = BrowserOrigin::parse("https://app.example:8443").unwrap();
+    assert!(domain_matches("app.example:8443", &custom));
+    assert!(!domain_matches("app.example", &custom));
+    assert!(!domain_matches("app.example:443", &custom));
+    let local_default = BrowserOrigin::parse("http://localhost").unwrap();
+    assert!(domain_matches("localhost", &local_default));
+    assert!(domain_matches("localhost:80", &local_default));
     assert!(chain_matches("solana:mainnet", SolCluster::Mainnet));
     assert!(chain_matches("devnet", SolCluster::Devnet));
     assert!(!chain_matches("devnet", SolCluster::Mainnet));
