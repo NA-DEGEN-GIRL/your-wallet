@@ -237,14 +237,12 @@ pub mod ids {
 /// T-BTC-ESPLORA-NOTE (spec/04 §2.16).
 pub const T_BTC_ESPLORA_NOTE: &str = "인덱서(Esplora 서버)는 조회하는 주소와 이 PC의 IP를 봅니다. 기본값은 mempool.space이며 자체 Esplora 서버로 바꿀 수 있습니다. mempool.space에 연결되지 않으면 아래 Esplora URL을 https://blockstream.info/api (testnet4는 https://blockstream.info/testnet4/api)로 바꾸고 테스트하세요. Esplora URL은 평문으로 저장되므로 토큰·API 키가 들어 있는 URL은 넣지 마세요.";
 /// The testnet band of S10/S11 (spec/04 §2.6).
-const TESTNET_BAND: &str = "테스트넷 — 실제 자산이 아닙니다";
 /// The testnet badge of S12 (spec/04 §2.8).
-const TESTNET_RECEIVE: &str = "테스트넷 주소입니다 — 실제 자산이 아닙니다";
 /// Journal damage of the BTC entries (spec/08 §12.4, E-VLT-006).
 const JOURNAL_DAMAGED: &str =
     "거래 저널의 Bitcoin 기록이 손상되어 Bitcoin 보내기를 멈췄습니다. (E-VLT-006)";
 /// Help under the account list (spec/04 §2.6 Bitcoin).
-const ACCOUNTS_HELP: &str = "계정마다 주소 형식이 정해집니다. 새 계정은 같은 니모닉에서 만들어지며 다른 지갑에서도 같은 형식(BIP44·49·84·86)을 고르면 복구됩니다.";
+const ACCOUNTS_HELP: &str = "계정마다 주소 형식이 정해집니다. 새 계정은 같은 복구 단어에서 만들어지며 다른 지갑에서도 같은 형식(BIP44·49·84·86)을 고르면 복구됩니다.";
 /// Help of the add-account chooser.
 const ADD_ACCOUNT_HELP: &str = "주소 형식을 고르세요. 잘 모르면 네이티브 세그윗을 고르세요(수수료가 낮고 대부분의 거래소·지갑이 지원). 탭루트는 수수료가 가장 낮지만 일부 거래소는 보내기를 지원하지 않습니다. 레거시·호환 세그윗은 오래된 서비스와 호환용입니다.";
 
@@ -348,11 +346,10 @@ pub const fn network_tone(net: BtcNetwork) -> Tone {
     }
 }
 
-fn network_banners(net: BtcNetwork, testnet_text: &str, items: &mut Vec<Item>) {
+/// The network banner (spec/08 §2). Testnet4 shows only `BITCOIN TESTNET4 — 가치 없음` (it already
+/// says the coins have no value; a second generic testnet band under it was noise).
+fn network_banners(net: BtcNetwork, items: &mut Vec<Item>) {
     items.push(Item::Banner(net.banner().to_owned(), network_tone(net)));
-    if net == BtcNetwork::Testnet4 {
-        items.push(Item::Banner(testnet_text.to_owned(), Tone::Testnet));
-    }
 }
 
 /// `YYYY-MM-DD HH:MM` in local time (spec/04 §2.6); UTC with a suffix if the conversion fails.
@@ -823,7 +820,7 @@ impl App {
             return;
         }
         items.push(Item::CardStart(None));
-        network_banners(net, TESTNET_BAND, items);
+        network_banners(net, items);
         let gate = ctx.gate();
         if let Err(reason) = gate {
             Self::btc_gate_items(reason, items);
@@ -868,34 +865,46 @@ impl App {
         let usable = gate.is_ok();
         self.btc_refresh_row(&ctx, usable, items);
         items.push(Item::CardEnd);
+        let show_accounts =
+            (ctx.primary_meta().is_some() || !ctx.has_mnemonic) && ctx.mismatch().is_none();
+        if ctx.btc_meta().is_none() && !ctx.has_mnemonic {
+            // A key-only wallet without a Bitcoin key yet: only the account card.
+            if show_accounts {
+                items.push(Item::CardStart(None));
+                self.btc_account_items(&ctx, items);
+                items.push(Item::CardEnd);
+            }
+            return;
+        }
+        // Same order as the EVM and Solana tabs (spec/04 §2.6): the selected account's balance
+        // with `보내기`·`받기` first, then the account list.
+        {
+            items.push(Item::CardStart(None));
+            self.btc_balance_items(&ctx, items);
+            let send_block = self.btc.send_block(&ctx);
+            let mut actions = vec![
+                Ctl::primary(ids::SEND_OPEN, "보내기").enabled(send_block.is_none()),
+                Ctl::primary(ids::RECEIVE_OPEN, "받기").enabled(self.btc_unlocked()),
+            ];
+            if BtcUi::bump_target(&ctx).is_some() {
+                actions.push(
+                    Ctl::button(ids::BUMP_OPEN, "수수료 올리기")
+                        .enabled(usable && !self.btc.slot && !ctx.journal_damaged()),
+                );
+            }
+            items.push(Item::Row(actions));
+            if let Some(reason) = send_block {
+                items.push(Item::Help(format!("보내기: {reason}")));
+            }
+            items.push(Item::CardEnd);
+        }
         // The account card: a mnemonic wallet once BIP84 account 0 exists, a key-only wallet
-        // always (its imported keys are its accounts; none yet: only `개인키 가져오기`).
-        if (ctx.primary_meta().is_some() || !ctx.has_mnemonic) && ctx.mismatch().is_none() {
+        // always (its imported keys are its accounts).
+        if show_accounts {
             items.push(Item::CardStart(None));
             self.btc_account_items(&ctx, items);
             items.push(Item::CardEnd);
         }
-        if ctx.btc_meta().is_none() && !ctx.has_mnemonic {
-            return;
-        }
-        items.push(Item::CardStart(None));
-        self.btc_balance_items(&ctx, items);
-        let send_block = self.btc.send_block(&ctx);
-        let mut actions = vec![
-            Ctl::primary(ids::SEND_OPEN, "보내기").enabled(send_block.is_none()),
-            Ctl::primary(ids::RECEIVE_OPEN, "받기").enabled(self.btc_unlocked()),
-        ];
-        if BtcUi::bump_target(&ctx).is_some() {
-            actions.push(
-                Ctl::button(ids::BUMP_OPEN, "수수료 올리기")
-                    .enabled(usable && !self.btc.slot && !ctx.journal_damaged()),
-            );
-        }
-        items.push(Item::Row(actions));
-        if let Some(reason) = send_block {
-            items.push(Item::Help(format!("보내기: {reason}")));
-        }
-        items.push(Item::CardEnd);
         items.push(Item::CardStart(None));
         self.btc_utxo_items(&ctx, items);
         items.push(Item::CardEnd);
@@ -967,7 +976,7 @@ impl App {
         let net = ctx.net();
         items.push(crate::ui::screens::back_main());
         items.push(Item::Title(format!("보내기 — {}", net.display_name())));
-        network_banners(net, TESTNET_BAND, items);
+        network_banners(net, items);
         let form = &self.btc.send;
         if let Some(info) = &form.info {
             items.push(Item::Banner(info.clone(), Tone::Warn));
@@ -1079,7 +1088,7 @@ impl App {
             "수수료 올리기 — {}",
             net.display_name()
         )));
-        network_banners(net, TESTNET_BAND, items);
+        network_banners(net, items);
         let form = &self.btc.bump;
         if let Some(info) = &form.info {
             items.push(Item::Banner(info.clone(), Tone::Warn));
@@ -1147,7 +1156,7 @@ impl App {
             }
             .to_owned(),
         ));
-        network_banners(net, TESTNET_BAND, items);
+        network_banners(net, items);
         let Some(txid) = self.btc.result else {
             items.push(Item::Muted("표시할 결과가 없습니다.".to_owned()));
             items.push(Item::Row(vec![Ctl::button(
@@ -1220,7 +1229,7 @@ impl App {
             .map_or_else(|| ctx.net(), |view| view.network);
         items.push(crate::ui::screens::back_main());
         items.push(Item::Title(format!("받기 — {}", net.display_name())));
-        network_banners(net, TESTNET_RECEIVE, items);
+        network_banners(net, items);
         if let Some(message) = &self.btc.receive_message {
             items.push(Item::Banner(message.clone(), Tone::Danger));
         }
@@ -1311,7 +1320,7 @@ impl App {
             items.push(Item::Help(format!("Core 엔드포인트 {network}: {state}")));
         }
         items.push(Item::Row(vec![Ctl::button(
-            crate::ui::screens::ids::SECTION_NETWORK,
+            crate::ui::screens::ids::GO_NETWORK,
             "네트워크(RPC) 설정으로",
         )]));
         items.push(Item::CardEnd);
@@ -1653,6 +1662,45 @@ mod tests {
         }
     }
 
+    /// Same order as the other tabs: the selected account's `보내기`·`받기` come before the
+    /// account list; `개인키 가져오기` opens its address-type chooser on demand.
+    #[test]
+    fn selected_account_first_and_import_chooser_on_demand() {
+        use crate::ui::screens_keys::ids as key_ids;
+        let mut app = app(true, BtcNet::Testnet4, Some(BtcNetwork::Testnet4), true);
+        let items = app.items();
+        let order: Vec<u16> = controls(&items).iter().map(|ctl| ctl.id).collect();
+        let position = |id: u16| order.iter().position(|each| *each == id).unwrap();
+        assert!(position(ids::SEND_OPEN) < position(ids::ACCOUNT_BASE));
+        assert!(position(ids::RECEIVE_OPEN) < position(ids::ACCOUNT_ADD));
+        // Closed: one line and the button, no radios.
+        assert!(order.contains(&key_ids::BTC_IMPORT));
+        assert!(!order.contains(&key_ids::BTC_IMPORT_NEXT));
+        assert!(!order.contains(&key_ids::SCRIPT_BASE));
+        assert!(has_text(&items, "누르면 주소 형식을 고릅니다"));
+        assert!(app.on_keys_command(key_ids::BTC_IMPORT));
+        let items = app.items();
+        let open: Vec<Ctl> = controls(&items);
+        assert!(open.iter().any(|ctl| ctl.id == key_ids::BTC_IMPORT_NEXT));
+        assert!(open.iter().any(|ctl| ctl.id == key_ids::BTC_IMPORT_CANCEL));
+        assert!(!open.iter().any(|ctl| ctl.id == key_ids::BTC_IMPORT));
+        assert!(
+            open.iter()
+                .any(|ctl| ctl.text == "네이티브 세그윗 (bc1q…, P2WPKH)"
+                    && ctl.checked == Some(true))
+        );
+        assert!(app.on_keys_command(key_ids::BTC_IMPORT_CANCEL));
+        assert!(control(&app.items(), key_ids::BTC_IMPORT).is_some());
+        // One Bitcoin banner, not a second generic testnet band.
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| matches!(item, Item::Banner(_, Tone::BtcTestnet4 | Tone::Testnet)))
+                .count(),
+            1
+        );
+    }
+
     #[test]
     fn gate_texts_of_the_tab() {
         // Disabled: the fixed text and a way to the settings section, no banner.
@@ -1672,7 +1720,7 @@ mod tests {
             Item::Banner(text, Tone::BtcTestnet4) if text == "BITCOIN TESTNET4 — 가치 없음"
         )));
         assert!(
-            items
+            !items
                 .iter()
                 .any(|item| matches!(item, Item::Banner(_, Tone::Testnet)))
         );

@@ -20,6 +20,7 @@ use yw_app::app_browser::BrowserUi;
 use yw_app::errors::ErrorCode;
 use yw_app::events::{
     EventQueue, KeyJob, UiEvent, WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT,
+    WM_YW_TAB_SHORTCUT,
 };
 use yw_app::logging::{self, Field};
 use yw_app::rpc::{RPC_TIMEOUTS, Transport};
@@ -35,6 +36,8 @@ const EXIT_INIT: u8 = 10;
 const VK_CONTROL: u16 = 0x11;
 const VK_MENU: u16 = 0x12;
 const VK_L: u16 = 0x4C;
+const VK_1: u16 = 0x31;
+const VK_3: u16 = 0x33;
 
 /// Second instance started by the user: bring the first one forward (spec/04 §1.1). Only a
 /// window whose process runs this executable at Medium integrity or higher gets the foreground
@@ -338,6 +341,15 @@ fn main() -> ExitCode {
         }
         if kind == (InputKind::Key { vk: Some(VK_L) }) && is_down(VK_CONTROL) && !is_down(VK_MENU) {
             let _ = poster.post(WM_YW_LOCK_SHORTCUT, 0);
+        }
+        // Ctrl+1/2/3: chain tabs (the main window decides whether it applies).
+        if let InputKind::Key {
+            vk: Some(vk @ VK_1..=VK_3),
+        } = kind
+            && is_down(VK_CONTROL)
+            && !is_down(VK_MENU)
+        {
+            let _ = poster.post(WM_YW_TAB_SHORTCUT, usize::from(vk - VK_1) + 1);
         }
     });
     logging::flush();

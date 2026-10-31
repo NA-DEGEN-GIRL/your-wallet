@@ -511,11 +511,12 @@ pub fn signing_view(
     let show_diff = matches!(state, Some(SimState::Ok | SimState::Incomplete));
     let sol = request.kind == yw_core::approval::ApprovalKind::SolTransfer;
     let btc = request.kind.is_btc();
+    // Message signatures move no assets: no "자산 변화" card (it would only say "no simulation").
     let message = matches!(
         request.kind,
         yw_core::approval::ApprovalKind::EvmPersonalSign
             | yw_core::approval::ApprovalKind::EvmTypedData
-    );
+    ) || request.kind.is_chain_message();
     let money = |key: FieldKey| (sol && is_sol_money(key)) || (btc && is_btc_money(key));
     if sol || btc {
         view.blocks.push(Block::Section("금액·수수료"));

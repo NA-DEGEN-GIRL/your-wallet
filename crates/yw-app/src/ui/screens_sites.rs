@@ -41,6 +41,22 @@ fn local_time(unix_ms: u64) -> String {
     }
 }
 
+/// A site card title: the full origin, then the chain family (one site may be connected on
+/// several chains and gets one card per family).
+fn card_title(origin: &yw_core::policy::BrowserOrigin, family: &str) -> String {
+    format!("{}  ·  {family}", origin.as_str())
+}
+
+/// The count line above the cards ("EVM 2곳 · Solana 1곳").
+fn sites_summary(evm: usize, sol: usize, btc: usize) -> String {
+    let parts: Vec<String> = [("EVM", evm), ("Solana", sol), ("Bitcoin", btc)]
+        .into_iter()
+        .filter(|(_, count)| *count > 0)
+        .map(|(family, count)| format!("{family} {count}곳"))
+        .collect();
+    format!("연결 {}", parts.join(" · "))
+}
+
 impl App {
     /// S13.
     pub(crate) fn sites_screen(&self, items: &mut Vec<Item>) {
@@ -49,9 +65,16 @@ impl App {
         let grants = self.browser_grants();
         let (sol_grants, btc_grants) = self.chain_grants();
         items.push(Item::Help(
-            "연결된 사이트는 선택한 계정의 주소, 잔액, 거래 기록을 볼 수 있습니다. 서명과 전송은 매번 따로 승인합니다."
+            "연결된 사이트는 아래 계정의 주소를 볼 수 있고, EVM 사이트는 잔액과 거래 기록도 읽을 수 있습니다. 서명과 전송은 매번 이 앱의 확인 창에서 따로 승인합니다."
                 .to_owned(),
         ));
+        if !(grants.is_empty() && sol_grants.is_empty() && btc_grants.is_empty()) {
+            items.push(Item::Text(sites_summary(
+                grants.len(),
+                sol_grants.len(),
+                btc_grants.len(),
+            )));
+        }
         if grants.is_empty() && sol_grants.is_empty() && btc_grants.is_empty() {
             items.push(Item::CardStart(None));
             items.push(Item::Subtitle("연결된 사이트가 없습니다".to_owned()));
@@ -64,7 +87,7 @@ impl App {
         }
         let labels = self.own_accounts();
         for (index, site) in grants.iter().enumerate() {
-            items.push(Item::CardStart(Some(site.origin.as_str().to_owned())));
+            items.push(Item::CardStart(Some(card_title(&site.origin, "EVM"))));
             if site.origin.is_http() {
                 items.push(Item::Banner(
                     "로컬 개발 사이트(http)".to_owned(),
@@ -98,9 +121,25 @@ impl App {
             }
             items.push(Item::CardEnd);
         }
-        let mut index = grants.len();
-        for grant in &sol_grants {
-            items.push(Item::CardStart(Some(grant.origin.as_str().to_owned())));
+        self.chain_site_cards(grants.len(), &sol_grants, &btc_grants, items);
+        items.push(Item::Row(vec![Ctl::danger(
+            ids::SITES_REVOKE_ALL,
+            "모든 사이트 연결 해제",
+        )]));
+    }
+
+    /// The Solana and Bitcoin cards of S13 (row ids continue after the `first` EVM rows).
+    fn chain_site_cards(
+        &self,
+        first: usize,
+        sol_grants: &[yw_core::policy::SolGrant],
+        btc_grants: &[yw_core::policy::BtcGrant],
+        items: &mut Vec<Item>,
+    ) {
+        let mut index = first;
+        let sol_labels = self.sol_dapp_rows();
+        for grant in sol_grants {
+            items.push(Item::CardStart(Some(card_title(&grant.origin, "Solana"))));
             items.push(Item::Field(
                 "네트워크".to_owned(),
                 "Solana (메시지 서명·소유 증명만)".to_owned(),
@@ -108,6 +147,12 @@ impl App {
             items.push(Item::Field(
                 "연결 시각".to_owned(),
                 local_time(grant.granted_at_unix_ms),
+            ));
+            items.push(Item::Help(
+                sol_labels
+                    .iter()
+                    .find(|row| row.public == grant.public)
+                    .map_or_else(String::new, |row| row.label.clone()),
             ));
             items.push(Item::Mono(yw_core::codec::base58::base58_encode(
                 &grant.public,
@@ -119,8 +164,8 @@ impl App {
             items.push(Item::CardEnd);
             index += 1;
         }
-        for grant in &btc_grants {
-            items.push(Item::CardStart(Some(grant.origin.as_str().to_owned())));
+        for grant in btc_grants {
+            items.push(Item::CardStart(Some(card_title(&grant.origin, "Bitcoin"))));
             items.push(Item::Field(
                 "네트워크".to_owned(),
                 format!("{} (메시지 서명·소유 증명만)", grant.network.display_name()),
@@ -140,10 +185,6 @@ impl App {
             items.push(Item::CardEnd);
             index += 1;
         }
-        items.push(Item::Row(vec![Ctl::danger(
-            ids::SITES_REVOKE_ALL,
-            "모든 사이트 연결 해제",
-        )]));
     }
 
     /// S07 T-UNLOCK-PENDING (at most 5 origins, then "외 n건").

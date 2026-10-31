@@ -80,6 +80,12 @@ h1 {
   color: var(--muted);
 }
 
+/* A note between cards (no card of its own). */
+.section-note {
+  margin-top: 0;
+  padding: 0 var(--space-1);
+}
+
 /* Empty live regions keep no space but stay in the accessibility tree. */
 .caption:empty {
   margin-top: 0;
@@ -166,6 +172,10 @@ h1 {
 .mode-explanation {
   font-size: 12px;
   color: var(--muted);
+}
+
+.notice-warning[hidden] {
+  display: none;
 }
 
 .notice-warning {

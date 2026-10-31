@@ -213,6 +213,12 @@ test("PO3 popup.js: shows the stored mode, saves a new one to chrome.storage.loc
     // spec/05 §2.13: Solana and Bitcoin groups with their own keys; bad stored values show off.
     assert.equal(text("sol-warning"), popup.TEXT.solWarning);
     assert.equal(text("chain-note"), popup.TEXT.chainNote);
+    // A group's "turn off the real wallet" warning shows only while its look-alike mode is on.
+    assert.equal(elements.get("warning").hidden, false);
+    assert.equal(elements.get("sol-warning").hidden, false);
+    assert.equal(elements.get("btc-warning").hidden, true);
+    assert.equal(popup.warningShown("off"), false);
+    assert.equal(popup.warningShown("unisat"), true);
     const solInputs = elements.get("sol-modes").children.map((card) => card.children[0]);
     assert.deepEqual(solInputs.map((input) => [input.name, input.value, input.checked]), [
       ["sol-compat-mode", "off", false],
@@ -230,6 +236,9 @@ test("PO3 popup.js: shows the stored mode, saves a new one to chrome.storage.loc
     }
     await settle();
     assert.deepEqual(writes, [{ compatMode: "metamask" }, { btcCompatMode: "xverse" }]);
+    assert.equal(elements.get("btc-warning").hidden, false);
+    assert.equal(text("btc-saved"), popup.TEXT.saved);
+    assert.equal(text("sol-saved"), "");
     assert.equal(popup.storageUpdateFor("sol", "unisat"), null);
     assert.deepEqual(popup.storageUpdateFor("sol", "phantom"), { solCompatMode: "phantom" });
 

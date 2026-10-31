@@ -84,7 +84,7 @@ createServer(async (request, response) => {
                 "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
                 "--disable-extensions", "--hide-scrollbars", "--force-device-scale-factor=1",
                 "--user-data-dir=`"$profile`"", "--virtual-time-budget=3000",
-                "--window-size=340,640", "--screenshot=`"$png`"",
+                "--window-size=340,1160", "--screenshot=`"$png`"",
                 "http://127.0.0.1:$port/scripts/popup-preview.html"
             )
             $process = Start-Process -FilePath $browser -ArgumentList $arguments -PassThru -Wait -WindowStyle Hidden

@@ -46,6 +46,11 @@ pub mod ids {
     pub const BTC_REVEAL: u16 = 13_024;
     /// Selected imported Bitcoin account: 삭제.
     pub const BTC_REMOVE: u16 = 13_025;
+    /// Bitcoin tab: `다음 (개인키 입력)` of the opened address-type chooser (W07); also the
+    /// primary button of a key-only wallet's empty Bitcoin card.
+    pub const BTC_IMPORT_NEXT: u16 = 13_026;
+    /// Bitcoin tab: `취소` of the opened address-type chooser.
+    pub const BTC_IMPORT_CANCEL: u16 = 13_027;
 
     /// Every fixed id of this module.
     pub const FIXED: &[u16] = &[
@@ -66,6 +71,8 @@ pub mod ids {
         SOL_REMOVE,
         BTC_REVEAL,
         BTC_REMOVE,
+        BTC_IMPORT_NEXT,
+        BTC_IMPORT_CANCEL,
     ];
 
     /// The radio id of an address type (its stable code 1–4).
@@ -92,6 +99,8 @@ pub const T_KEY_START_OK: &str = "개인키로 지갑을 만들었습니다. 이
 pub const T_BTC_SCRIPT: &str = "이전 지갑에서 이 키로 쓰던 주소와 같은 형식을 고르세요. 다음 화면에서 주소를 보고 확인합니다. 5·9로 시작하는 압축되지 않은 WIF는 P2PKH(레거시)만 쓸 수 있습니다.";
 /// T-BTC-IMPORTED (Bitcoin account card): what an imported key's account is.
 pub const T_BTC_IMPORTED: &str = "가져온 개인키는 Bitcoin 계정 목록에 \"[가져온 키]\"로 보입니다. 주소 하나만 쓰고(잔돈도 같은 주소로 돌아옴) 복구 단어로 복구되지 않습니다. 잔액·받기·보내기는 다른 계정과 같습니다.";
+/// The closed Bitcoin-tab import row: what `개인키 가져오기` is for.
+pub const T_BTC_IMPORT_HINT: &str = "다른 지갑에서 쓰던 Bitcoin 개인키(WIF)도 이 목록에 더할 수 있습니다. 누르면 주소 형식을 고릅니다.";
 /// T-REMOVE-IMPORTED (S10 overlay for Solana/Bitcoin imported keys).
 pub const T_REMOVE_IMPORTED: &str = "선택한 가져온 개인키 계정을 이 지갑에서 지웁니다. 가져온 개인키는 복구 단어로 복구되지 않으므로, 지우고 나면 원래 개인키 없이는 이 계정의 자산에 다시 접근할 수 없습니다. 지우기 전에 이 계정의 '개인키 보기'로 개인키를 내보내 안전하게 보관했는지 확인하세요. 계속하려면 비밀번호를 입력하세요.";
 
@@ -115,15 +124,16 @@ fn chain_help(chain: ImportChain) -> &'static str {
     }
 }
 
-/// The label of an address type for an imported key: technical name, plain name and the
-/// mainnet prefix — `P2WPKH (네이티브 세그윗, bc1q…)` (the network comes from the WIF).
+/// The label of an address type for an imported key: plain name (as in `계정 추가`), the mainnet
+/// prefix and the technical name — `네이티브 세그윗 (bc1q…, P2WPKH)` (the network comes from the
+/// WIF).
 #[must_use]
 pub fn script_choice_label(script: ScriptType) -> String {
     format!(
         "{} ({}, {})",
-        script.technical(),
         script.name(),
-        script.prefix(BtcNetwork::Mainnet)
+        script.prefix(BtcNetwork::Mainnet),
+        script.technical()
     )
 }
 
@@ -225,9 +235,9 @@ impl App {
                 "주소 형식".to_owned(),
                 format!(
                     "{} ({}, {})",
-                    script.technical(),
                     script.name(),
-                    script.prefix(network)
+                    script.prefix(network),
+                    script.technical()
                 ),
             ));
             items.push(Item::Field(
@@ -253,7 +263,7 @@ impl App {
         let import_id = match chain {
             ImportChain::Evm => crate::ui::screens::ids::IMPORT_KEY,
             ImportChain::Sol => ids::SOL_IMPORT,
-            ImportChain::Btc => ids::BTC_IMPORT,
+            ImportChain::Btc => ids::BTC_IMPORT_NEXT,
         };
         items.push(Item::CardStart(None));
         items.push(Item::Subtitle(no_accounts_text(chain)));
@@ -290,12 +300,23 @@ impl App {
             ]));
         }
         items.push(Item::Rule);
+        if !self.keys.btc_import_open {
+            // Closed by default, like `계정 추가`: one short line and the button; the address
+            // type chooser opens on demand (an uncommon action that used to fill the card).
+            items.push(Item::Help(T_BTC_IMPORT_HINT.to_owned()));
+            items.push(Item::Row(vec![
+                Ctl::button(ids::BTC_IMPORT, "개인키 가져오기")
+                    .enabled(self.can_import(ImportChain::Btc)),
+            ]));
+            return;
+        }
         items.push(Item::Help(T_BTC_IMPORTED.to_owned()));
         items.push(script_radios(self.keys.btc_script));
         items.push(Item::Help(T_BTC_SCRIPT.to_owned()));
         items.push(Item::Row(vec![
-            Ctl::button(ids::BTC_IMPORT, "개인키 가져오기")
+            Ctl::primary(ids::BTC_IMPORT_NEXT, "다음 (개인키 입력)")
                 .enabled(self.can_import(ImportChain::Btc)),
+            Ctl::button(ids::BTC_IMPORT_CANCEL, "취소"),
         ]));
     }
 }

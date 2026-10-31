@@ -120,6 +120,8 @@ pub struct KeysUi {
     pub has_mnemonic: bool,
     /// Address type for `개인키 가져오기` on the Bitcoin tab.
     pub btc_script: ScriptType,
+    /// The Bitcoin tab's address-type chooser of `개인키 가져오기` is open (run time only).
+    pub btc_import_open: bool,
     /// The imported Solana/Bitcoin key being revealed or removed.
     pub target: Option<RecordId>,
     /// S08 follows "개인키로 시작하기".
@@ -132,6 +134,7 @@ impl Default for KeysUi {
             start: KeyStartFlow::default(),
             has_mnemonic: true,
             btc_script: ScriptType::P2wpkh,
+            btc_import_open: false,
             target: None,
             done_start: false,
         }
@@ -545,7 +548,18 @@ impl App {
             ids::START_CORRECT => self.key_start_commit(),
             ids::START_WRONG => self.key_start_wrong(),
             ids::SOL_IMPORT => self.open_key_import(ImportChain::Sol),
-            ids::BTC_IMPORT => self.open_key_import(ImportChain::Btc),
+            ids::BTC_IMPORT => {
+                self.keys.btc_import_open = true;
+                self.refresh();
+            }
+            ids::BTC_IMPORT_CANCEL => {
+                self.keys.btc_import_open = false;
+                self.refresh();
+            }
+            ids::BTC_IMPORT_NEXT => {
+                self.keys.btc_import_open = false;
+                self.open_key_import(ImportChain::Btc);
+            }
             ids::SOL_REVEAL | ids::SOL_REMOVE => {
                 let selected = self.meta.as_ref().and_then(|meta| meta.sol_raw_selected);
                 if let Some(record) = selected {

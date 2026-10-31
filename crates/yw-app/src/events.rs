@@ -47,6 +47,8 @@ pub const WM_YW_ACTIVATE: u32 = 0x8002;
 pub const WM_YW_CHILD_DONE: u32 = 0x8003;
 /// Ctrl+L observed by the message loop (`WM_APP + 4`).
 pub const WM_YW_LOCK_SHORTCUT: u32 = 0x8004;
+/// Ctrl+1/2/3 observed by the message loop (`WM_APP + 5`, wParam = tab 1–3): the chain tabs.
+pub const WM_YW_TAB_SHORTCUT: u32 = 0x8005;
 /// Event queue bound.
 pub const EVENT_QUEUE_CAP: usize = 4_096;
 /// Main window timer.

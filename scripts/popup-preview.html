@@ -2,8 +2,9 @@
 <!--
   DEV ONLY: the extension popup outside Chrome for the screenshot tour (scripts/screenshot-tour.ps1).
   The markup is extension/popup/popup.html's body; the real popup.css and popup.js are loaded
-  unchanged. `chrome` is a stub: the background answers "connected" and the stored mode is
-  "metamask". Nothing here is part of the extension or reaches a wallet.
+  unchanged. `chrome` is a stub: the background answers "connected" and the stored modes are
+  EVM "metamask", Solana and Bitcoin "off". Nothing here is part of the extension or reaches a
+  wallet. scripts/popup-preview.test.mjs keeps the body equal to popup.html's.
 -->
 <html lang="ko">
 <head>
@@ -35,7 +36,7 @@
       },
       storage: {
         local: {
-          async get() { return { compatMode: "metamask" }; },
+          async get() { return { compatMode: "metamask", solCompatMode: "off", btcCompatMode: "off" }; },
           async set() {}
         }
       }
@@ -58,6 +59,19 @@
       <p id="mode-saved" class="caption" role="status"></p>
       <p id="apply-note" class="caption"></p>
       <p id="warning" class="notice-warning"></p>
+    </section>
+    <p id="chain-note" class="caption section-note"></p>
+    <section class="card" aria-labelledby="sol-heading">
+      <h2 id="sol-heading" class="card-title"></h2>
+      <div id="sol-modes" class="modes" role="radiogroup" aria-labelledby="sol-heading"></div>
+      <p id="sol-saved" class="caption" role="status"></p>
+      <p id="sol-warning" class="notice-warning"></p>
+    </section>
+    <section class="card" aria-labelledby="btc-heading">
+      <h2 id="btc-heading" class="card-title"></h2>
+      <div id="btc-modes" class="modes" role="radiogroup" aria-labelledby="btc-heading"></div>
+      <p id="btc-saved" class="caption" role="status"></p>
+      <p id="btc-warning" class="notice-warning"></p>
     </section>
   </main>
   <script type="module" src="../extension/src/popup.js"></script>

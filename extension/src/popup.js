@@ -83,16 +83,29 @@ function renderModes(selected, kind = "evm", containerId = "modes") {
   }
 }
 
+// Per group: where its "saved" line goes and which look-alike warning it has. The warning
+// matters only while that group's look-alike mode is on, so it is hidden for "off".
+const GROUP_IDS = Object.freeze({
+  evm: Object.freeze({ saved: "mode-saved", warning: "warning" }),
+  sol: Object.freeze({ saved: "sol-saved", warning: "sol-warning" }),
+  btc: Object.freeze({ saved: "btc-saved", warning: "btc-warning" })
+});
+
+function showWarning(kind, mode) {
+  byId(GROUP_IDS[kind].warning).hidden = !popup.warningShown(mode);
+}
+
 async function saveMode(mode, kind = "evm") {
   const update = popup.storageUpdateFor(kind, mode);
   if (update === null) {
     return;
   }
+  showWarning(kind, mode);
   try {
     await chrome.storage.local.set(update);
-    setText("mode-saved", popup.TEXT.saved);
+    setText(GROUP_IDS[kind].saved, popup.TEXT.saved);
   } catch (_error) {
-    setText("mode-saved", popup.TEXT.saveFailed);
+    setText(GROUP_IDS[kind].saved, popup.TEXT.saveFailed);
   }
 }
 
@@ -131,6 +144,9 @@ async function main() {
   renderModes(mode);
   renderModes(sol, "sol", "sol-modes");
   renderModes(btc, "btc", "btc-modes");
+  showWarning("evm", mode);
+  showWarning("sol", sol);
+  showWarning("btc", btc);
   if (failed) {
     setText("mode-saved", popup.TEXT.loadFailed);
   }

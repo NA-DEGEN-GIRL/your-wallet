@@ -66,7 +66,7 @@
     title: "Your Wallet",
     statusHeading: "Your Wallet 앱 연결 상태",
     statusLoading: "확인하는 중…",
-    modeHeading: "dApp에 보이는 지갑",
+    modeHeading: "EVM (이더리움 등) dApp에 보이는 지갑",
     warning: "호환 모드를 쓸 때는 실제 MetaMask·Rabby 확장을 꺼 두세요. 켜져 있으면 dApp이 그 지갑에 연결될 수 있습니다.",
     applyNote: "모드 변경은 다음 페이지 로드부터 적용됩니다. 열려 있는 dApp 탭은 새로고침하세요.",
     saved: "저장했습니다. 다음 페이지 로드부터 적용됩니다.",
@@ -121,6 +121,11 @@
     return value.native;
   }
 
+  // A group's "turn off the real wallet" warning is shown only while a look-alike mode is on.
+  function warningShown(mode) {
+    return mode !== "off";
+  }
+
   // What the popup writes to chrome.storage.local for a selection (null for anything else).
   function storageUpdate(mode) {
     return shared.isCompatMode(mode) ? { [shared.COMPAT_MODE_STORAGE_KEY]: mode } : null;
@@ -142,7 +147,8 @@
       parseStatusMessage,
       statusView,
       storageUpdate,
-      storageUpdateFor
+      storageUpdateFor,
+      warningShown
     })
   });
 }(globalThis));

@@ -659,6 +659,16 @@ mod tests {
         let draft = app.chain_sign_draft(&sign).unwrap();
         assert_eq!(draft.kind, ApprovalKind::SolMessage);
         assert_eq!(draft.display.risk, RiskLevel::Info);
+        // A message signature moves no assets: no "자산 변화" card in the window.
+        let request = yw_core::approval::ApprovalStore::new()
+            .issue(draft.clone(), 1, 1_793_074_713_000)
+            .unwrap();
+        let view = crate::ui::approval_view::signing_view(&request, false, true, Vec::new(), true)
+            .unwrap();
+        assert!(!view.blocks.iter().any(|block| matches!(
+            block,
+            crate::ui::approval_view::Block::Section(title) if title.starts_with("자산 변화")
+        )));
         // Transaction bytes are blocked in the window.
         let mut tx = vec![1, 0, 1, 2];
         tx.extend_from_slice(&[0x11; 96]);

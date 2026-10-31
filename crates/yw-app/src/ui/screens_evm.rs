@@ -574,7 +574,7 @@ impl App {
             items.push(Item::Text(format!("{label}{balance}")));
             items.push(Item::Mono(format_address(&account)));
             items.push(Item::Row(vec![Ctl::link(
-                crate::ui::screens::ids::BACK_MAIN,
+                crate::ui::screens::ids::SWITCH_ACCOUNT,
                 "다른 계정으로 바꾸기 (메인)",
             )]));
             items.push(Item::CardEnd);

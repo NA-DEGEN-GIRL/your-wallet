@@ -1061,7 +1061,7 @@ fn key_start_with_a_bitcoin_key() {
     assert!(
         controls(&items)
             .iter()
-            .any(|ctl| ctl.text == "P2TR (탭루트, bc1p…)" && ctl.checked == Some(true))
+            .any(|ctl| ctl.text == "탭루트 (bc1p…, P2TR)" && ctl.checked == Some(true))
     );
     h.submit(Purpose::KeyStartPassword, &[WALLET_PW]);
     h.submit(Purpose::KeyStartKey, &[BIP49_TEST_WIF.as_bytes()]);
@@ -1073,7 +1073,7 @@ fn key_start_with_a_bitcoin_key() {
     assert!(view.address.starts_with("tb1p"));
     assert!(h.app.items().iter().any(|item| matches!(
         item,
-        Item::Field(label, value) if label == "주소 형식" && value == "P2TR (탭루트, tb1p…)"
+        Item::Field(label, value) if label == "주소 형식" && value == "탭루트 (tb1p…, P2TR)"
     )));
     h.app.on_command(key_ids::START_CORRECT);
     h.pump();
@@ -1419,4 +1419,72 @@ fn legacy_llm_key_is_bound_to_the_endpoint_saved_at_load() {
     assert_eq!(reloaded.llm_host(), Some("api.example.org"));
     let _ = std::fs::remove_dir_all(dir);
     let _ = std::fs::remove_dir_all(fresh_dir);
+}
+
+/// Two child controls with the same command id on one screen: the owner-drawn button lookup
+/// (`yw_win::ui::controls::draw_item`) finds only the first, so the second is never drawn (the
+/// send form's `다른 계정으로 바꾸기` link was invisible next to `← 메인으로`). Every screen of an
+/// unlocked wallet, on every chain tab, has unique ids.
+#[test]
+fn every_screen_has_unique_control_ids() {
+    use super::SettingsSection;
+    let (mut app, dir) = unlocked_app("unique-ids", false);
+    app.settings.bitcoin.enabled = true;
+    let screens = [
+        Screen::Main,
+        Screen::Send,
+        Screen::SendResult,
+        Screen::Receive,
+        Screen::AddressBook,
+        Screen::TokenAdd,
+        Screen::ChainEdit,
+        Screen::Sites,
+        Screen::SolSend,
+        Screen::SolSendResult,
+        Screen::SolReceive,
+        Screen::SolScan,
+        Screen::BtcSend,
+        Screen::BtcSendResult,
+        Screen::BtcBump,
+        Screen::BtcReceive,
+        Screen::Settings(SettingsSection::Security),
+        Screen::Settings(SettingsSection::Network),
+        Screen::Settings(SettingsSection::Chains),
+        Screen::Settings(SettingsSection::Solana),
+        Screen::Settings(SettingsSection::Bitcoin),
+        Screen::Settings(SettingsSection::Ai),
+        Screen::Settings(SettingsSection::Other),
+        Screen::Done,
+    ];
+    for tab in [Tab::Evm, Tab::Sol, Tab::Btc] {
+        if let Some(meta) = app.meta.as_mut() {
+            meta.prefs.tab = tab;
+        }
+        for screen in &screens {
+            app.screen = screen.clone();
+            let ids = control_ids(&app.items());
+            let mut seen = std::collections::HashSet::new();
+            for id in ids {
+                assert!(seen.insert(id), "{tab:?} {screen:?}: id {id} twice");
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Ctrl+1/2/3 press the chain tabs on S10 only (not on other screens, not over a secret window).
+#[test]
+fn tab_shortcuts_switch_chain_tabs_on_the_main_screen() {
+    let (mut app, dir) = unlocked_app("tab-shortcut", false);
+    let tab = |app: &App| app.meta.as_ref().map(|meta| meta.prefs.tab);
+    app.tab_shortcut(2);
+    assert_eq!(tab(&app), Some(Tab::Sol));
+    app.tab_shortcut(1);
+    assert_eq!(tab(&app), Some(Tab::Evm));
+    app.tab_shortcut(9);
+    assert_eq!(tab(&app), Some(Tab::Evm));
+    app.screen = Screen::Sites;
+    app.tab_shortcut(2);
+    assert_eq!(tab(&app), Some(Tab::Evm));
+    let _ = std::fs::remove_dir_all(dir);
 }

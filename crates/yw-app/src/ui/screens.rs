@@ -66,6 +66,12 @@ pub mod ids {
     pub const OPEN_SETTINGS: u16 = 200;
     /// ← 메인으로.
     pub const BACK_MAIN: u16 = 202;
+    /// The send forms' `다른 계정으로 바꾸기 (메인)` link (same action as `BACK_MAIN`; a second
+    /// control with the same id on one screen would not be drawn).
+    pub const SWITCH_ACCOUNT: u16 = 201;
+    /// A `네트워크(RPC) 설정으로` button inside a settings section (same action as the
+    /// `SECTION_NETWORK` tab, which is on the same screen).
+    pub const GO_NETWORK: u16 = 205;
     /// 알림 닫기.
     pub const DISMISS_BANNERS: u16 = 203;
     /// `고급 설정 보기 ▸` / `고급 설정 숨기기 ▾` (and the send form's `수수료 계산 보기`).
@@ -188,6 +194,8 @@ pub mod ids {
         SIDECAR_FRESH,
         OPEN_SETTINGS,
         BACK_MAIN,
+        SWITCH_ACCOUNT,
+        GO_NETWORK,
         DISMISS_BANNERS,
         ADVANCED_TOGGLE,
         ADD_ACCOUNT,
@@ -1178,6 +1186,10 @@ impl App {
             ids::OPEN_DATA_FOLDER,
             "폴더 열기",
         )]));
+        items.push(Item::Field(
+            "단축키".to_owned(),
+            "Ctrl+L 잠금 · Ctrl+1 / 2 / 3 체인 탭(EVM·Solana·Bitcoin) · Tab 다음 칸".to_owned(),
+        ));
         items.push(Item::CardEnd);
     }
 

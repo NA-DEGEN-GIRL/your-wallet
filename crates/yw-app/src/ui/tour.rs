@@ -788,6 +788,85 @@ fn site_approval(app: &Rc<RefCell<App>>) {
     app.borrow_mut().on_prepared(result);
 }
 
+/// A dApp request from `origin` (no RPC needed: connect windows and message signing).
+fn dapp_request(
+    app: &Rc<RefCell<App>>,
+    origin: &str,
+    method: yw_core::policy::Method,
+    kind: crate::browser::SiteKind,
+) {
+    use crate::browser::envelope::{Correlation, Id16, Id32};
+    use crate::browser::{DappEvent, Reply, SiteRequest};
+    use std::sync::atomic::{AtomicU8, Ordering};
+    // A fresh request id and sequence per request (a repeated id is a duplicate).
+    static NEXT: AtomicU8 = AtomicU8::new(10);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let site = SiteRequest {
+        reply: Reply {
+            conn: 1,
+            correlation: Correlation {
+                session_id: Id32([1; 32]),
+                sequence: u64::from(n),
+                activation_nonce: Id32([2; 32]),
+                request_id: Id16([n; 16]),
+            },
+        },
+        origin: yw_core::policy::BrowserOrigin::parse(origin).unwrap(),
+        chain_id: SEPOLIA,
+        deadline_ms: yw_win::time::monotonic_ms().saturating_add(600_000),
+        method,
+        kind,
+        compat_mode: None,
+    };
+    app.borrow_mut()
+        .on_dapp_event(DappEvent::Request(Box::new(site)));
+}
+
+/// Made-up Solana and Bitcoin connections of `https://app.example.org` (the tour's own browser
+/// core; nothing is written): Solana account 0, and the Bitcoin native segwit account 0 for
+/// payments with the imported Taproot key for ordinals (testnet4).
+fn tour_chain_grants(state: &App) {
+    let origin = yw_core::policy::BrowserOrigin::parse("https://app.example.org").unwrap();
+    let sol = SolAddress::parse("HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk").unwrap();
+    let rows = state.btc_dapp_rows();
+    let pick = |script: yw_core::btc::ScriptType, purpose: yw_core::policy::BtcPurpose| {
+        rows.iter()
+            .find(|row| row.entry.script_type == script)
+            .map(|row| yw_core::policy::BtcGrantAddress {
+                purpose,
+                ..row.entry.clone()
+            })
+    };
+    let addresses: Vec<_> = [
+        pick(
+            yw_core::btc::ScriptType::P2wpkh,
+            yw_core::policy::BtcPurpose::Payment,
+        ),
+        pick(
+            yw_core::btc::ScriptType::P2tr,
+            yw_core::policy::BtcPurpose::Ordinals,
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if let Some(browser) = state.browser.as_ref() {
+        browser.core.upsert_sol_grant(yw_core::policy::SolGrant {
+            origin: origin.clone(),
+            public: sol.to_bytes(),
+            granted_at_unix_ms: 1_793_246_000_000,
+        });
+        if let Some(grant) = yw_core::policy::BtcGrant::new(
+            origin,
+            yw_core::btc::BtcNetwork::Testnet4,
+            addresses,
+            1_793_247_000_000,
+        ) {
+            browser.core.upsert_btc_grant(grant);
+        }
+    }
+}
+
 /// Pumps until the AI panel left `Waiting`/`Requesting` (at most 5 s).
 fn wait_for_ai(app: &Rc<RefCell<App>>) {
     for _ in 0..50 {
@@ -980,7 +1059,7 @@ fn screenshot_tour() {
         // The account card with `계정 추가`'s address-type chooser open, scrolled to it.
         let mut state = app.borrow_mut();
         state.btc.add_account_open = true;
-        state.scroll = 200;
+        state.scroll = 420;
         state.refresh();
     }
     save(main_hwnd(&app), "25-bitcoin-account-types");
@@ -988,6 +1067,27 @@ fn screenshot_tour() {
         let mut state = app.borrow_mut();
         state.btc.add_account_open = false;
         state.scroll = 0;
+        tour_chain_grants(&state);
+    }
+    // Message signing on Solana (ownership proof only, no transaction).
+    dapp_request(
+        &app,
+        "https://app.example.org",
+        yw_core::policy::Method::SolSignMessage,
+        crate::browser::SiteKind::SolSign {
+            public: SolAddress::parse("HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk")
+                .unwrap()
+                .to_bytes(),
+            message: "app.example.org 로그인: 이 지갑의 소유를 확인합니다. (nonce 7f3a91)"
+                .as_bytes()
+                .to_vec(),
+            sign_in: false,
+        },
+    );
+    save(approval_hwnd(&app), "27-approval-sol-message");
+    app.borrow_mut().tour_reject_approval();
+    {
+        let mut state = app.borrow_mut();
         if let Some(meta) = state.meta.as_mut() {
             meta.prefs.tab = Tab::Evm;
         }
@@ -996,6 +1096,24 @@ fn screenshot_tour() {
     save(main_hwnd(&app), "17-settings-rpc");
     set_screen(&app, UNLOCKED, Screen::Sites);
     save(main_hwnd(&app), "18-sites");
+    {
+        // Scrolled past the EVM cards: the Solana and Bitcoin connections of the same site.
+        let mut state = app.borrow_mut();
+        state.scroll = 560;
+        state.refresh();
+    }
+    save(main_hwnd(&app), "29-sites-solana-bitcoin");
+    app.borrow_mut().scroll = 0;
+    // A new site asks to connect (EVM): the account chooser of the connect window.
+    set_screen(&app, UNLOCKED, Screen::Main);
+    dapp_request(
+        &app,
+        "https://swap.example.org",
+        yw_core::policy::Method::RequestAccounts,
+        crate::browser::SiteKind::RequestAccounts,
+    );
+    save(approval_hwnd(&app), "26-approval-connect");
+    app.borrow_mut().tour_reject_approval();
 
     // M6: the optional AI explanation, answered by the tour's own loopback mock.
     let endpoint = tour_llm_mock();

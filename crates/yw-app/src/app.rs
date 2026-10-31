@@ -32,7 +32,7 @@ use crate::apikeys::{
 use crate::errors::{ErrorCode, key_code, vault_code};
 use crate::events::{
     KeyJob, KeyOutcome, KeyQueue, KeyResult, LockSignal, MetaLoaded, RevealWhat, RpcEvent, UiEvent,
-    WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT, accept_result,
+    WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT, WM_YW_TAB_SHORTCUT, accept_result,
 };
 use crate::lock::{IdleTracker, LockReason, SystemAction, system_action};
 use crate::logging::{self, Field};
@@ -943,11 +943,12 @@ impl App {
                 self.refresh();
                 Reply::Handled(0)
             }
-            Msg::App { msg, .. } => {
+            Msg::App { msg, wparam } => {
                 match *msg {
                     WM_YW_EVENTS => self.drain_events(),
                     WM_YW_ACTIVATE => self.activate(),
                     WM_YW_LOCK_SHORTCUT => self.lock_shortcut(),
+                    WM_YW_TAB_SHORTCUT if window.is_foreground() => self.tab_shortcut(*wparam),
                     _ => {}
                 }
                 Reply::Handled(0)
@@ -978,6 +979,28 @@ impl App {
     fn lock_shortcut(&mut self) {
         if self.mode.holds_secrets() {
             self.lock(LockReason::Manual);
+        }
+    }
+
+    /// Ctrl+1/2/3 (posted by the loop observer; the main window is in the foreground): the
+    /// chain tab, exactly as clicking it, when S10 shows that tab enabled and no secret window
+    /// is open.
+    pub(crate) fn tab_shortcut(&mut self, tab: usize) {
+        let id = match tab {
+            1 => crate::ui::screens_sol::ids::TAB_EVM,
+            2 => crate::ui::screens_sol::ids::TAB_SOL,
+            3 => crate::ui::screens_btc::ids::TAB_BTC,
+            _ => return,
+        };
+        if self.screen != Screen::Main || self.secret.is_some() {
+            return;
+        }
+        let shown = self.items().iter().any(|item| {
+            matches!(item, crate::ui::main_window::Item::Row(ctls)
+                if ctls.iter().any(|ctl| ctl.id == id && ctl.enabled))
+        });
+        if shown {
+            self.on_command(id);
         }
     }
 
@@ -2403,7 +2426,7 @@ impl App {
                 false,
             ),
             ids::LOCK => self.lock(LockReason::Manual),
-            ids::DONE_CONTINUE | ids::BACK_MAIN => {
+            ids::DONE_CONTINUE | ids::BACK_MAIN | ids::SWITCH_ACCOUNT => {
                 self.info = None;
                 self.keys.done_start = false;
                 if self.meta.is_some() {
@@ -2450,7 +2473,7 @@ impl App {
             ids::OPEN_SETTINGS | ids::SECTION_SECURITY => {
                 self.set_screen(Screen::Settings(SettingsSection::Security));
             }
-            ids::DONE_RPC | ids::SECTION_NETWORK => {
+            ids::DONE_RPC | ids::SECTION_NETWORK | ids::GO_NETWORK => {
                 self.set_screen(Screen::Settings(SettingsSection::Network));
             }
             ids::SECTION_OTHER => self.set_screen(Screen::Settings(SettingsSection::Other)),

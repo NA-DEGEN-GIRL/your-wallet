@@ -658,9 +658,9 @@ fn build_layout(
                 let (x, w) = (builder.x, builder.w);
                 builder.text(
                     if *open {
-                        "자세히 ▾  (수수료 계산·nonce·원본 데이터)"
+                        "자세히 ▾  (나머지 항목·원본 데이터)"
                     } else {
-                        "자세히 ▸  (수수료 계산·nonce·원본 데이터)"
+                        "자세히 ▸  (나머지 항목·원본 데이터)"
                     },
                     FontRole::BodyBold,
                     theme::FOCUS,
