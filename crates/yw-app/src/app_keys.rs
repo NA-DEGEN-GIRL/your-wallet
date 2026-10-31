@@ -502,6 +502,13 @@ impl App {
     pub fn on_imported_key_removed(&mut self, id: RecordId, chain: ImportChain) {
         self.close_secret();
         let id = *id.as_bytes();
+        let sol_removed = self.meta.as_ref().and_then(|meta| {
+            let raw = meta
+                .sol_raw_accounts
+                .iter()
+                .find(|raw| raw.record_id == id)?;
+            yw_core::sol::SolAddress::parse(&raw.address).ok()
+        });
         if let Some(meta) = self.meta.as_mut() {
             meta.evm_raw_accounts.retain(|raw| raw.record_id != id);
             meta.sol_raw_accounts.retain(|raw| raw.record_id != id);
@@ -519,6 +526,10 @@ impl App {
         };
         logging::info("app", "key.removed", &[("chain", Field::Word(word))]);
         self.save_meta();
+        // Its Solana connections go with it (an imported Bitcoin key's: `btc_meta_replaced`).
+        if let Some(address) = sol_removed {
+            self.sol_account_removed_from_sites(&address.to_bytes());
+        }
         self.refresh();
     }
 

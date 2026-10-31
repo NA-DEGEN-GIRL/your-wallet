@@ -52,6 +52,8 @@ pub const fn field_label(key: FieldKey) -> Option<&'static str> {
         0x0402 => "메시지 hex",
         0x0403 => "바이트 수",
         0x0404 => "SIWE 필드",
+        0x0405 => "SIWS 필드",
+        0x0406 => "서명 방식",
         0x0501 | 0x0601 => "받는 주소",
         0x0502 => "자산·금액",
         0x0503 => "ATA 생성",

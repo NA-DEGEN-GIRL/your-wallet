@@ -185,8 +185,16 @@ impl App {
     }
 
     /// The immediate refusal of a Solana/Bitcoin connect while unlocked: no account to offer
-    /// (4100 with the reason, spec/05 §4.9).
+    /// (4100 with the reason, spec/05 §4.9). With Bitcoin off every Bitcoin request is
+    /// `NoBtcAccount`.
     pub(crate) fn chain_unlocked_refusal(&self, site: &SiteRequest) -> Option<ProviderError> {
+        if matches!(
+            site.kind,
+            SiteKind::BtcConnect(_) | SiteKind::BtcSign { .. }
+        ) && !self.settings.bitcoin.enabled
+        {
+            return Some(ProviderError::NoBtcAccount);
+        }
         match &site.kind {
             SiteKind::SolConnect => self
                 .sol_dapp_rows()
@@ -284,14 +292,53 @@ impl App {
         }
     }
 
+    /// Whether the chosen accounts are still the wallet's on the settings network (the window
+    /// may have been open across a Bitcoin network change, a hidden account or a removed key).
+    fn chain_choices_current(&self, choices: &[ConnectChoice]) -> bool {
+        let sol = self.sol_dapp_rows();
+        let btc = if choices
+            .iter()
+            .any(|choice| matches!(choice, ConnectChoice::Btc(_)))
+        {
+            self.btc_dapp_rows()
+        } else {
+            Vec::new()
+        };
+        choices.iter().all(|choice| match choice {
+            ConnectChoice::Sol(public) => sol.iter().any(|row| row.public == *public),
+            ConnectChoice::Btc(entry) => btc.iter().any(|row| {
+                row.entry.address == entry.address
+                    && row.entry.pubkey == entry.pubkey
+                    && row.entry.script_type == entry.script_type
+            }),
+            ConnectChoice::Evm(_) => false,
+        })
+    }
+
     /// A Solana/Bitcoin connect window was approved with `choices`: grant saved, answer sent,
-    /// then the account event to the origin's documents.
+    /// then the account event to the origin's documents. The choices are checked against the
+    /// accounts of now (4100 `Unauthorized` when one is gone, e.g. after a Bitcoin network
+    /// change while the window was open) and the 256-grant limit (4100 `TooManySites`).
     pub(crate) fn chain_connect_approved(&mut self, site: &SiteRequest, choices: &[ConnectChoice]) {
         let now = now_unix_ms();
         let Some(browser) = self.browser.as_ref() else {
             return;
         };
         let core = std::sync::Arc::clone(&browser.core);
+        let family = site.kind.family();
+        if family == Family::Bitcoin && !self.settings.bitcoin.enabled {
+            self.respond(&site.reply, Err(ProviderError::NoBtcAccount));
+            return;
+        }
+        if !self.chain_choices_current(choices) {
+            logging::info("browser", "site.connect_stale", &[]);
+            self.respond(&site.reply, Err(ProviderError::Unauthorized));
+            return;
+        }
+        if !core.chain_grant_room(&site.origin, family) {
+            self.respond(&site.reply, Err(ProviderError::TooManySites));
+            return;
+        }
         match &site.kind {
             SiteKind::SolConnect => {
                 let [ConnectChoice::Sol(public)] = choices else {
@@ -302,7 +349,7 @@ impl App {
                     &site.reply,
                     Ok(crate::browser::dispatch::sol_connect_value(public)),
                 );
-                core.upsert_sol_grant(SolGrant {
+                let _ = core.upsert_sol_grant(SolGrant {
                     origin: site.origin.clone(),
                     public: *public,
                     granted_at_unix_ms: now,
@@ -327,7 +374,7 @@ impl App {
                     &site.reply,
                     Ok(crate::browser::dispatch::btc_accounts_value(&grant, None)),
                 );
-                core.upsert_btc_grant(grant);
+                let _ = core.upsert_btc_grant(grant);
             }
             _ => return,
         }
@@ -346,26 +393,40 @@ impl App {
         site: &SiteRequest,
     ) -> Option<Option<QueueOutcome>> {
         let core = std::sync::Arc::clone(&self.browser.as_ref()?.core);
+        // Queued while locked (no dispatcher check then): no account to offer, Bitcoin off, or
+        // a new origin past the 256-grant limit end here with the reason (spec/05 §4.9).
+        let refusal = || {
+            self.chain_unlocked_refusal(site).or_else(|| {
+                (site.kind.is_connect() && !core.chain_grant_room(&site.origin, site.kind.family()))
+                    .then_some(ProviderError::TooManySites)
+            })
+        };
         Some(match &site.kind {
             SiteKind::SolConnect => {
-                if let Some(grant) = core
-                    .sol_grants()
-                    .into_iter()
-                    .find(|g| g.origin == site.origin)
-                {
+                // A grant answers at once only while its account is still a visible one.
+                let rows = self.sol_dapp_rows();
+                if let Some(grant) = core.sol_grants().into_iter().find(|g| {
+                    g.origin == site.origin && rows.iter().any(|row| row.public == g.public)
+                }) {
                     self.respond(
                         &site.reply,
                         Ok(crate::browser::dispatch::sol_connect_value(&grant.public)),
                     );
                     Some(QueueOutcome::Approved)
-                } else if let Some(error) = self.chain_unlocked_refusal(site) {
+                } else if let Some(error) = refusal() {
                     self.respond(&site.reply, Err(error));
                     Some(QueueOutcome::Cancelled)
                 } else {
                     None
                 }
             }
-            SiteKind::BtcConnect(_) => self.chain_unlocked_refusal(site).map(|error| {
+            SiteKind::BtcConnect(_) | SiteKind::BtcSign { .. }
+                if !self.settings.bitcoin.enabled =>
+            {
+                self.respond(&site.reply, Err(ProviderError::NoBtcAccount));
+                Some(QueueOutcome::Cancelled)
+            }
+            SiteKind::BtcConnect(_) => refusal().map(|error| {
                 self.respond(&site.reply, Err(error));
                 QueueOutcome::Cancelled
             }),
@@ -501,6 +562,62 @@ impl App {
         self.respond(&reply, body);
     }
 
+    /// A Solana account was hidden or its imported key removed: every grant naming it is
+    /// deleted and written to meta, its origins get `solAccountsChanged([])` and their waiting
+    /// Solana signing items end `Revoked` (spec/05 §4.9; importing the key again does not bring
+    /// a connection back).
+    pub(crate) fn sol_account_removed_from_sites(&mut self, public: &[u8; 32]) {
+        // The same key may still be a visible account (an imported copy of a derived key).
+        if self.sol_dapp_rows().iter().any(|row| row.public == *public) {
+            return;
+        }
+        let origins = self
+            .browser
+            .as_ref()
+            .map(|browser| browser.core.remove_sol_account(public))
+            .unwrap_or_default();
+        self.chain_grants_removed(&origins, Family::Solana);
+    }
+
+    /// Bitcoin addresses left the wallet (an imported key removed): every grant listing one is
+    /// deleted as a whole, like [`Self::sol_account_removed_from_sites`].
+    pub(crate) fn btc_addresses_removed_from_sites(&mut self, addresses: &[String]) {
+        // An address another account still has (any network) stays connected.
+        let held: Vec<String> = self.meta.as_ref().map_or_else(Vec::new, |meta| {
+            meta.btc
+                .as_deref()
+                .into_iter()
+                .chain(meta.btc_accounts.accounts.iter())
+                .filter_map(|account| {
+                    let address = account.address(BtcChain::Receive, 0).ok()?;
+                    Some(address.as_str().to_owned())
+                })
+                .collect()
+        });
+        let mut origins = Vec::new();
+        if let Some(browser) = self.browser.as_ref() {
+            for address in addresses.iter().filter(|address| !held.contains(address)) {
+                origins.extend(browser.core.remove_btc_address(address));
+            }
+        }
+        self.chain_grants_removed(&origins, Family::Bitcoin);
+    }
+
+    fn chain_grants_removed(&mut self, origins: &[BrowserOrigin], family: Family) {
+        if origins.is_empty() {
+            return;
+        }
+        for origin in origins {
+            self.revoke_waiting(origin, family);
+        }
+        self.write_grants();
+        logging::info(
+            "browser",
+            "site.account_removed",
+            &[("sites", Field::Num(origins.len() as u64))],
+        );
+    }
+
     /// Disconnects the Solana or Bitcoin grant of `origin` (S13, dApp disconnect after unlock).
     pub fn disconnect_chain_site(&mut self, origin: &BrowserOrigin, family: Family) {
         if let Some(browser) = self.browser.as_ref() {
@@ -573,6 +690,7 @@ mod tests {
             unlocked: false,
             locking: false,
             grant_write: GrantWrite::default(),
+            site_rows: crate::app_browser::SiteRows::default(),
         });
         let mut meta = crate::meta::Meta::default();
         if with_sol {
@@ -736,6 +854,421 @@ mod tests {
         state.toggle(1);
         assert_eq!(state.selected, vec![false, true, true]);
         assert_eq!(state.gate_count(), 2);
+    }
+
+    fn sol_grant(origin: &str, public: [u8; 32]) -> yw_core::policy::SolGrant {
+        yw_core::policy::SolGrant {
+            origin: BrowserOrigin::parse(origin).unwrap(),
+            public,
+            granted_at_unix_ms: 1,
+        }
+    }
+
+    fn core(app: &App) -> Arc<crate::browser::BrowserCore> {
+        Arc::clone(&app.browser.as_ref().unwrap().core)
+    }
+
+    /// The dispatcher view of an unlocked wallet with the app's current accounts.
+    fn unlocked_view(app: &App) -> crate::browser::WalletView {
+        crate::browser::WalletView {
+            vault: crate::browser::VaultView::Unlocked,
+            sol_accounts: app.sol_dapp_rows().iter().map(|row| row.public).collect(),
+            btc_enabled: true,
+            btc_network: app.btc_network_now(),
+            btc_accounts: app
+                .btc_dapp_rows()
+                .into_iter()
+                .map(|row| row.entry.address)
+                .collect(),
+            ..crate::browser::WalletView::default()
+        }
+    }
+
+    /// Lock, then unlock with the grants meta holds now (what the next session sees).
+    fn relock(app: &App) -> bool {
+        let core = core(app);
+        core.lock_wallet();
+        core.set_wallet(unlocked_view(app));
+        let meta = app.meta.as_ref().unwrap();
+        core.unlock_chains(
+            crate::browser::grants::sol_sites_from_values(&meta.chain_sites.sol),
+            crate::browser::grants::btc_sites_from_values(&meta.chain_sites.btc),
+        )
+    }
+
+    #[test]
+    fn removed_or_hidden_solana_accounts_lose_their_grants_for_good() {
+        let mut app = app(true);
+        let key7 = yw_core::sol::SolAddress::from_bytes([7; 32]).to_base58();
+        let imported = crate::meta::SolRawAccount {
+            record_id: [5; 16],
+            label: "가져온 키".to_owned(),
+            address: key7,
+        };
+        // A second imported copy of the derived account 0 key.
+        let duplicate = crate::meta::SolRawAccount {
+            record_id: [6; 16],
+            label: "같은 키".to_owned(),
+            address: SOL_KEY.to_owned(),
+        };
+        let meta = app.meta.as_mut().unwrap();
+        meta.sol_raw_accounts.push(imported.clone());
+        meta.sol_raw_accounts.push(duplicate);
+        let core = core(&app);
+        assert!(core.upsert_sol_grant(sol_grant("https://app.example", [7; 32])));
+        assert!(core.upsert_sol_grant(sol_grant("https://other.example", [9; 32])));
+        assert!(core.upsert_sol_grant(sol_grant("https://dup.example", public())));
+        app.write_grants();
+        assert_eq!(app.meta.as_ref().unwrap().chain_sites.sol.len(), 3);
+        // The imported key is removed: its grant leaves the dispatcher and meta.
+        app.on_imported_key_removed(
+            yw_core::vault::RecordId::from_bytes([5; 16]),
+            yw_core::keyimport::ImportChain::Sol,
+        );
+        let left: Vec<[u8; 32]> = core.sol_grants().iter().map(|g| g.public).collect();
+        assert_eq!(left, vec![[9; 32], public()]);
+        assert_eq!(app.meta.as_ref().unwrap().chain_sites.sol.len(), 2);
+        // Removing an imported copy of a key that is still a visible account keeps its grant.
+        app.on_imported_key_removed(
+            yw_core::vault::RecordId::from_bytes([6; 16]),
+            yw_core::keyimport::ImportChain::Sol,
+        );
+        assert_eq!(core.sol_grants().len(), 2);
+        // Importing the same key again does not bring the connection back.
+        app.meta.as_mut().unwrap().sol_raw_accounts.push(imported);
+        assert!(!relock(&app));
+        assert!(
+            core.sol_grants()
+                .iter()
+                .all(|grant| grant.public != [7; 32])
+        );
+        // Hiding a derived account (index 1) drops its grants the same way.
+        let meta = app.meta.as_mut().unwrap();
+        meta.sol_raw_accounts.clear();
+        meta.sol_accounts.push(crate::meta::Account {
+            index: 1,
+            label: "SOL 2".to_owned(),
+            address: yw_core::sol::SolAddress::from_bytes([9; 32]).to_base58(),
+            hidden: false,
+        });
+        meta.prefs.sol_account = 1;
+        app.sol_hide_selected();
+        let left: Vec<[u8; 32]> = core.sol_grants().iter().map(|g| g.public).collect();
+        assert_eq!(left, vec![public()]);
+        assert_eq!(app.meta.as_ref().unwrap().chain_sites.sol.len(), 1);
+    }
+
+    #[test]
+    fn removed_bitcoin_account_drops_every_grant_listing_its_address() {
+        use yw_core::btc::{BtcAccountKey, BtcAccounts, BtcMeta, BtcNetwork};
+        let mut app = app(false);
+        let node = yw_core::bip32::AccountXpub {
+            pubkey: yw_core::hex::decode_array::<33>(
+                "03b88e0fbe3f646337ed93bc0c0f3b843fcf7d2589e5ec884754e6402027a890b4",
+            )
+            .unwrap(),
+            chain_code: [7; 32],
+        };
+        let key = BtcAccountKey::hd(ScriptType::P2wpkh, 1, node).unwrap();
+        let account = BtcMeta::with_key(BtcNetwork::Mainnet, key);
+        let address = account
+            .address(yw_core::bip32::path::BtcChain::Receive, 0)
+            .unwrap()
+            .as_str()
+            .to_owned();
+        let mut accounts = BtcAccounts::default();
+        accounts.upsert(account).unwrap();
+        app.meta.as_mut().unwrap().btc_accounts = accounts;
+        let grant = yw_core::policy::BtcGrant::new(
+            BrowserOrigin::parse("https://app.example").unwrap(),
+            BtcNetwork::Mainnet,
+            vec![BtcGrantAddress {
+                purpose: BtcPurpose::Payment,
+                address,
+                pubkey: BtcPubKey::Compressed([2; 33]),
+                script_type: ScriptType::P2wpkh,
+            }],
+            1,
+        )
+        .unwrap();
+        let core = core(&app);
+        assert!(core.upsert_btc_grant(grant));
+        app.write_grants();
+        // The key worker reports the account gone (imported key removed).
+        app.btc_apply(vec![crate::app_btc::BtcAction::SetMeta(
+            None,
+            Box::default(),
+        )]);
+        assert!(core.btc_grants().is_empty());
+        assert!(app.meta.as_ref().unwrap().chain_sites.btc.is_empty());
+    }
+
+    #[test]
+    fn preflight_checks_hidden_accounts_bitcoin_off_and_the_grant_limit() {
+        let mut app = app(true);
+        let core = core(&app);
+        // A grant of a key that is no longer a visible account: the window, not the old key.
+        assert!(core.upsert_sol_grant(sol_grant("https://app.example", [9; 32])));
+        assert_eq!(
+            app.chain_site_preflight(&site(SiteKind::SolConnect)),
+            Some(None)
+        );
+        assert!(core.upsert_sol_grant(sol_grant("https://app.example", public())));
+        assert_eq!(
+            app.chain_site_preflight(&site(SiteKind::SolConnect)),
+            Some(Some(QueueOutcome::Approved))
+        );
+        // Bitcoin off: every Bitcoin request ends with NoBtcAccount, without a window.
+        app.settings.bitcoin.enabled = false;
+        let btc_connect = site(SiteKind::BtcConnect(vec![BtcPurpose::Payment]));
+        assert_eq!(
+            app.chain_unlocked_refusal(&btc_connect),
+            Some(ProviderError::NoBtcAccount)
+        );
+        let btc_sign = site(SiteKind::BtcSign {
+            address: "bc1q".to_owned(),
+            message: b"hi".to_vec(),
+            protocol: None,
+        });
+        assert_eq!(
+            app.chain_site_preflight(&btc_sign),
+            Some(Some(QueueOutcome::Cancelled))
+        );
+        assert_eq!(
+            app.chain_site_preflight(&btc_connect),
+            Some(Some(QueueOutcome::Cancelled))
+        );
+        // 256 Solana grants (queued while locked, so the dispatcher never checked): a new origin
+        // is refused before the window; the granted origin is still answered.
+        for index in 0..yw_core::policy::MAX_CHAIN_GRANTS - 1 {
+            assert!(
+                core.upsert_sol_grant(sol_grant(&format!("https://s{index}.example"), [9; 32]))
+            );
+        }
+        let mut other = site(SiteKind::SolConnect);
+        other.origin = BrowserOrigin::parse("https://new.example").unwrap();
+        assert_eq!(
+            app.chain_site_preflight(&other),
+            Some(Some(QueueOutcome::Cancelled))
+        );
+        assert_eq!(
+            app.chain_site_preflight(&site(SiteKind::SolConnect)),
+            Some(Some(QueueOutcome::Approved))
+        );
+        // An approval that would pass the limit stores nothing.
+        app.chain_connect_approved(&other, &[ConnectChoice::Sol(public())]);
+        assert_eq!(core.sol_grants().len(), yw_core::policy::MAX_CHAIN_GRANTS);
+        assert!(core.sol_grants().iter().all(|g| g.origin != other.origin));
+    }
+
+    #[test]
+    fn stale_connect_choices_are_refused() {
+        let mut app = app(true);
+        let core = core(&app);
+        // The chosen key is not (or no longer) one of the wallet's accounts.
+        app.chain_connect_approved(&site(SiteKind::SolConnect), &[ConnectChoice::Sol([9; 32])]);
+        assert!(core.sol_grants().is_empty());
+        // A Bitcoin address of the other network (the network changed while the window was open).
+        let choice = ConnectChoice::Btc(BtcGrantAddress {
+            purpose: BtcPurpose::Payment,
+            address: "tb1qstale".to_owned(),
+            pubkey: BtcPubKey::Compressed([2; 33]),
+            script_type: ScriptType::P2wpkh,
+        });
+        app.settings.bitcoin.enabled = true;
+        app.chain_connect_approved(
+            &site(SiteKind::BtcConnect(vec![BtcPurpose::Payment])),
+            &[choice],
+        );
+        assert!(core.btc_grants().is_empty());
+        app.chain_connect_approved(&site(SiteKind::SolConnect), &[ConnectChoice::Sol(public())]);
+        assert_eq!(core.sol_grants().len(), 1);
+    }
+
+    #[test]
+    fn site_rows_disconnect_the_grant_they_were_drawn_for_and_page() {
+        use crate::ui::screens_sites::ids;
+        let mut app = app(true);
+        let core = core(&app);
+        for index in 0..120 {
+            assert!(
+                core.upsert_sol_grant(sol_grant(&format!("https://s{index}.example"), [9; 32]))
+            );
+        }
+        let keys = |app: &App| -> Vec<String> {
+            app.browser
+                .as_ref()
+                .unwrap()
+                .site_rows
+                .keys
+                .borrow()
+                .iter()
+                .map(|(origin, family)| {
+                    assert_eq!(*family, Family::Solana);
+                    origin.as_str().to_owned()
+                })
+                .collect()
+        };
+        let mut items = Vec::new();
+        app.sites_screen(&mut items);
+        let drawn = keys(&app);
+        assert_eq!(drawn.len(), ids::SITES_PAGE_ROWS);
+        assert_eq!(drawn[0], "https://s0.example");
+        // The list changes under the screen (a dApp disconnected s0 meanwhile): the first
+        // button still means s0 — nothing else is disconnected.
+        assert!(core.remove_sol_grant(&BrowserOrigin::parse("https://s0.example").unwrap()));
+        assert!(app.on_sites_command(ids::SITE_ROW_BASE));
+        assert_eq!(core.sol_grants().len(), 119);
+        assert!(app.on_sites_command(ids::SITE_ROW_BASE + 1));
+        assert_eq!(core.sol_grants().len(), 118);
+        assert!(
+            core.sol_grants()
+                .iter()
+                .all(|g| g.origin.as_str() != "https://s1.example")
+        );
+        // Pages: every grant gets a button (no 256-row limit), 50 per page.
+        assert!(app.on_sites_command(ids::SITES_NEXT));
+        app.sites_screen(&mut Vec::new());
+        assert_eq!(keys(&app)[0], "https://s52.example");
+        assert!(app.on_sites_command(ids::SITES_NEXT));
+        assert!(app.on_sites_command(ids::SITES_NEXT));
+        app.sites_screen(&mut Vec::new());
+        assert_eq!(keys(&app).len(), 18);
+        assert_eq!(keys(&app).last().unwrap(), "https://s119.example");
+        assert!(app.on_sites_command(ids::SITES_PREV));
+        app.sites_screen(&mut Vec::new());
+        assert_eq!(keys(&app)[0], "https://s52.example");
+    }
+
+    /// What `show_next_approval` does up to the window: the next shown site item that passed its
+    /// preflight (items finished by the preflight are answered and skipped).
+    fn next_window(app: &mut App) -> Option<SiteRequest> {
+        use crate::app_evm::QueuedItem;
+        loop {
+            let mut finished = Vec::new();
+            let shown = app.evm.queue.show_next(0, &mut finished);
+            for (item, outcome) in finished {
+                app.approval_finished(&item.payload, outcome);
+            }
+            shown?;
+            let QueuedItem::Site(site) = app.evm.queue.shown()?.payload.clone() else {
+                return None;
+            };
+            match app.site_preflight(&site) {
+                Some(outcome) => {
+                    if let Some((done, outcome)) = app.evm.queue.finish_shown(outcome) {
+                        app.approval_finished(&done.payload, outcome);
+                    }
+                }
+                None => return Some(*site),
+            }
+        }
+    }
+
+    /// Regression (screenshot tour): after a rejected `sol_signMessage`, the following
+    /// `btc_signMessage` of the same site never got a window. The queue was fine; every Bitcoin
+    /// message draft (and every SIWS / off-chain Solana draft) carried a display key without a
+    /// window label (0x0406 `서명 방식`, 0x0405 SIWS), so `validate_for_display` failed and the
+    /// window closed at once with E-UI-001.
+    #[test]
+    fn chain_message_windows_follow_each_other_after_a_rejection() {
+        use crate::app_evm::QueuedItem;
+        use crate::ui::approval::{QueueSource, field_label, validate_for_display};
+        use yw_core::btc::{BtcAccountKey, BtcMeta};
+        for key in 0..=u16::MAX {
+            let key = yw_core::approval::FieldKey(key);
+            assert!(
+                key.flags().is_none() || field_label(key).is_some(),
+                "display key {key:?} has no window label"
+            );
+        }
+        let mut app = app(true);
+        app.settings.bitcoin.enabled = true;
+        let node = yw_core::bip32::AccountXpub {
+            pubkey: yw_core::hex::decode_array::<33>(
+                "03b88e0fbe3f646337ed93bc0c0f3b843fcf7d2589e5ec884754e6402027a890b4",
+            )
+            .unwrap(),
+            chain_code: [7; 32],
+        };
+        let key = BtcAccountKey::hd(ScriptType::P2wpkh, 1, node).unwrap();
+        let account = BtcMeta::with_key(app.btc_network_now(), key);
+        app.meta
+            .as_mut()
+            .unwrap()
+            .btc_accounts
+            .upsert(account)
+            .unwrap();
+        let row = app.btc_dapp_rows().pop().unwrap();
+        let core = core(&app);
+        assert!(core.upsert_sol_grant(sol_grant("https://app.example", public())));
+        let grant = yw_core::policy::BtcGrant::new(
+            BrowserOrigin::parse("https://app.example").unwrap(),
+            app.btc_network_now(),
+            vec![BtcGrantAddress {
+                purpose: BtcPurpose::Payment,
+                ..row.entry.clone()
+            }],
+            1,
+        )
+        .unwrap();
+        assert!(core.upsert_btc_grant(grant));
+        let siws = yw_core::sol::msgsign::SiwsMessage {
+            domain: "app.example".to_owned(),
+            address: SOL_KEY.to_owned(),
+            statement: Some("Sign in".to_owned()),
+            ..yw_core::sol::msgsign::SiwsMessage::default()
+        };
+        let sol = |sign_in: bool| {
+            site(SiteKind::SolSign {
+                public: public(),
+                message: if sign_in {
+                    siws.to_text().into_bytes()
+                } else {
+                    b"Prove it".to_vec()
+                },
+                sign_in,
+            })
+        };
+        let btc = site(SiteKind::BtcSign {
+            address: row.entry.address.clone(),
+            message: b"Prove it".to_vec(),
+            protocol: None,
+        });
+        let evm = site(SiteKind::RequestAccounts);
+        for order in [
+            vec![sol(false), btc.clone()],
+            vec![btc.clone(), sol(false)],
+            vec![sol(true), evm.clone(), btc.clone(), sol(false)],
+            vec![evm.clone(), btc.clone(), evm.clone(), sol(true)],
+        ] {
+            for request in &order {
+                let source = QueueSource::Site {
+                    origin: request.origin.as_str().to_owned(),
+                    deadline_ms: u64::MAX,
+                };
+                app.evm
+                    .queue
+                    .enqueue(source, QueuedItem::Site(Box::new(request.clone())))
+                    .unwrap();
+            }
+            for expected in &order {
+                // Each request of the site gets its window in turn, and is then rejected.
+                let shown = next_window(&mut app).expect("a window for the next request");
+                assert_eq!(shown.kind, expected.kind);
+                if shown.kind.is_signing() {
+                    let draft = app.chain_sign_draft(&shown).unwrap();
+                    assert_eq!(validate_for_display(&draft.display), Ok(()));
+                    let request = app.evm.store.issue(draft, 0, 0).unwrap();
+                    app.evm.store.reject(request.id);
+                }
+                if let Some((done, outcome)) = app.evm.queue.finish_shown(QueueOutcome::Rejected) {
+                    app.approval_finished(&done.payload, outcome);
+                }
+            }
+            assert!(next_window(&mut app).is_none());
+            assert!(app.evm.queue.is_empty());
+        }
     }
 
     #[test]

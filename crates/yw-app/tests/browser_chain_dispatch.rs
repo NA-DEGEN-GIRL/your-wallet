@@ -233,7 +233,8 @@ fn lock_unlock_disconnect_and_states() -> TestResult {
     assert!(events.contains(&BrowserEvent::SolAccountsChanged(Vec::new())));
     assert!(events.contains(&BrowserEvent::BtcAccountsChanged(Vec::new())));
     assert!(h.core.sol_grants().is_empty());
-    // Locked: nothing exposed, disconnect is a no-op answer, signing waits for the unlock.
+    // Locked: nothing exposed, disconnect answers null and is remembered for the unlock,
+    // signing waits for the unlock.
     let mut view = h.core.wallet();
     view.vault = VaultView::Locked;
     h.core.set_wallet(view.clone());
@@ -241,22 +242,32 @@ fn lock_unlock_disconnect_and_states() -> TestResult {
     assert_eq!(text(&single(&h, &accounts)?), "[]");
     let disconnect = h.send(SITE, 1, "sol_disconnect", json("[]"));
     assert_eq!(text(&single(&h, &disconnect)?), "null");
+    assert_eq!(
+        h.core.locked_revocations(),
+        vec![(origin(SITE)?, yw_core::policy::Family::Solana)]
+    );
     let sign = h.send(SITE, 1, "sol_signMessage", json(&sign_params()));
     assert!(h.take_response(&sign).is_empty());
     assert_eq!(h.sink.requests().len(), 1);
-    // A wallet on another network: the Bitcoin grant is not used.
+    // A wallet on another network: the Bitcoin grant is not used. The locked-time disconnect
+    // removes the Solana grant before any event (meta must be written: `true`).
     view.vault = VaultView::Unlocked;
     view.btc_network = BtcNetwork::Testnet4;
     h.core.set_wallet(view.clone());
-    h.core.unlock_chains(
+    h.out.take();
+    assert!(h.core.unlock_chains(
         vec![sol_grant(SITE)?],
         vec![btc_grant(SITE, BtcNetwork::Mainnet)?],
-    );
+    ));
+    assert!(h.core.sol_grants().is_empty());
+    assert!(h.core.locked_revocations().is_empty());
+    assert!(events_of(&h.out.take(), 1).is_empty());
     let btc = h.send(SITE, 1, "btc_getAccounts", json("[]"));
     assert_eq!(text(&single(&h, &btc)?), "[]");
     let network = h.send(SITE, 1, "btc_getNetwork", json("[]"));
     assert_eq!(text(&single(&h, &network)?), "\"testnet4\"");
     // Unlocked disconnect removes the grant and tells the UI to persist it.
+    assert!(h.core.upsert_sol_grant(sol_grant(SITE)?));
     h.sink.take();
     let disconnect = h.send(SITE, 1, "sol_disconnect", json("[]"));
     assert_eq!(text(&single(&h, &disconnect)?), "null");
@@ -288,6 +299,190 @@ fn lock_unlock_disconnect_and_states() -> TestResult {
         );
         assert_eq!(single(&h, &btc)?, Err(error));
     }
+    Ok(())
+}
+
+fn two_address_grant(site: &str) -> TestResult<BtcGrant> {
+    let mut grant = btc_grant(site, BtcNetwork::Mainnet)?;
+    let key = yw_core::hex::decode_array::<33>(
+        "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+    )?;
+    grant.addresses.push(BtcGrantAddress {
+        purpose: BtcPurpose::Ordinals,
+        address: "bc1pordinals".to_owned(),
+        pubkey: BtcPubKey::Compressed(key),
+        script_type: ScriptType::P2tr,
+    });
+    Ok(grant)
+}
+
+#[test]
+fn grants_of_accounts_no_longer_usable_answer_nothing() -> TestResult {
+    let mut h = Harness::new();
+    let first = h.send(SITE, 1, "sol_accounts", json("[]"));
+    let _ = single(&h, &first)?;
+    // The Solana account was hidden and the Bitcoin address left the wallet (an older meta
+    // still lists their grants): unlock sends no account event for them.
+    let mut view = h.core.wallet();
+    view.sol_accounts.clear();
+    view.btc_accounts.clear();
+    h.core.set_wallet(view.clone());
+    assert!(!h.core.unlock_chains(
+        vec![sol_grant(SITE)?],
+        vec![btc_grant(SITE, BtcNetwork::Mainnet)?],
+    ));
+    assert!(events_of(&h.out.take(), 1).is_empty());
+    let accounts = h.send(SITE, 1, "sol_accounts", json("[]"));
+    assert_eq!(text(&single(&h, &accounts)?), "[]");
+    let trusted = h.send(SITE, 1, "sol_connect", json(r#"[{"onlyIfTrusted":true}]"#));
+    assert_eq!(single(&h, &trusted)?, Err(ProviderError::UserRejected));
+    let btc = h.send(SITE, 1, "btc_getAccounts", json("[]"));
+    assert_eq!(text(&single(&h, &btc)?), "[]");
+    let sign = h.send(SITE, 1, "sol_signMessage", json(&sign_params()));
+    assert_eq!(single(&h, &sign)?, Err(ProviderError::Unauthorized));
+    // A connect is not answered from the stale grant: it opens the window.
+    let connect = h.send(SITE, 1, "sol_connect", json("[]"));
+    assert!(h.take_response(&connect).is_empty());
+    let request = h.send(
+        SITE,
+        1,
+        "btc_requestAccounts",
+        json(r#"[{"purposes":["payment"]}]"#),
+    );
+    assert!(h.take_response(&request).is_empty());
+    let kinds: Vec<SiteKind> = h.sink.requests().into_iter().map(|r| r.kind).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            SiteKind::SolConnect,
+            SiteKind::BtcConnect(vec![BtcPurpose::Payment])
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn removed_accounts_drop_their_grants_with_events() -> TestResult {
+    let mut h = Harness::new();
+    let first = h.send(SITE, 1, "sol_accounts", json("[]"));
+    let _ = single(&h, &first)?;
+    let other = h.send(OTHER, 2, "sol_accounts", json("[]"));
+    let _ = single(&h, &other)?;
+    assert!(h.core.upsert_sol_grant(sol_grant(SITE)?));
+    assert!(h.core.upsert_sol_grant(SolGrant {
+        public: [9; 32],
+        ..sol_grant(OTHER)?
+    }));
+    assert!(h.core.upsert_btc_grant(two_address_grant(SITE)?));
+    assert!(
+        h.core
+            .upsert_btc_grant(btc_grant(OTHER, BtcNetwork::Testnet4)?)
+    );
+    h.out.take();
+    // Only the grants naming the removed key go, with `solAccountsChanged([])`.
+    assert_eq!(
+        h.core.remove_sol_account(&sol_public()?),
+        vec![origin(SITE)?]
+    );
+    assert_eq!(h.core.sol_grants().len(), 1);
+    assert_eq!(
+        events_of(&h.out.take(), 1),
+        vec![BrowserEvent::SolAccountsChanged(Vec::new())]
+    );
+    assert!(h.core.remove_sol_account(&sol_public()?).is_empty());
+    // A Bitcoin grant listing the address goes as a whole (also its ordinals address), on every
+    // network; an unknown address removes nothing.
+    assert!(h.core.remove_btc_address("bc1qunknown").is_empty());
+    let removed = h.core.remove_btc_address(P2WPKH);
+    assert_eq!(removed, vec![origin(SITE)?, origin(OTHER)?]);
+    assert!(h.core.btc_grants().is_empty());
+    assert_eq!(
+        events_of(&h.out.take(), 1),
+        vec![BrowserEvent::BtcAccountsChanged(Vec::new())]
+    );
+    let btc = h.send(SITE, 1, "btc_getAccounts", json("[]"));
+    assert_eq!(text(&single(&h, &btc)?), "[]");
+    Ok(())
+}
+
+#[test]
+fn bitcoin_off_refuses_bitcoin_requests() -> TestResult {
+    let mut settings = Settings::default();
+    settings.bitcoin.enabled = false;
+    for vault in [VaultView::Unlocked, VaultView::Locked] {
+        let mut h = Harness::with(vault, &settings);
+        let mut view = h.core.wallet();
+        view.btc_enabled = false;
+        h.core.set_wallet(view);
+        let _ = h
+            .core
+            .upsert_btc_grant(btc_grant(SITE, BtcNetwork::Mainnet)?);
+        for (method, params) in [
+            (
+                "btc_requestAccounts",
+                r#"[{"purposes":["payment"]}]"#.to_owned(),
+            ),
+            ("btc_getAccounts", "[]".to_owned()),
+            (
+                "btc_signMessage",
+                format!(r#"[{{"address":"{P2WPKH}","message":"hi"}}]"#),
+            ),
+        ] {
+            let sent = h.send(SITE, 1, method, json(&params));
+            assert_eq!(
+                single(&h, &sent)?,
+                Err(ProviderError::NoBtcAccount),
+                "{method} {vault:?}"
+            );
+        }
+        assert!(h.sink.requests().is_empty(), "no window, no unlock prompt");
+        let network = h.send(SITE, 1, "btc_getNetwork", json("[]"));
+        assert_eq!(text(&single(&h, &network)?), "\"mainnet\"");
+        let disconnect = h.send(SITE, 1, "btc_disconnect", json("[]"));
+        assert_eq!(text(&single(&h, &disconnect)?), "null");
+        // Solana is not affected.
+        let accounts = h.send(SITE, 1, "sol_accounts", json("[]"));
+        assert!(single(&h, &accounts)?.is_ok());
+    }
+    Ok(())
+}
+
+#[test]
+fn chain_grant_limit_holds() -> TestResult {
+    let mut h = Harness::new();
+    for index in 0..yw_core::policy::MAX_CHAIN_GRANTS {
+        let site = format!("https://s{index}.example");
+        assert!(h.core.upsert_sol_grant(sol_grant(&site)?));
+        assert!(
+            h.core
+                .upsert_btc_grant(btc_grant(&site, BtcNetwork::Mainnet)?)
+        );
+    }
+    // A new origin is refused (meta would not parse); a known one is replaced.
+    assert!(!h.core.upsert_sol_grant(sol_grant(SITE)?));
+    assert!(
+        !h.core
+            .upsert_btc_grant(btc_grant(SITE, BtcNetwork::Mainnet)?)
+    );
+    assert!(h.core.upsert_sol_grant(sol_grant("https://s0.example")?));
+    assert_eq!(h.core.sol_grants().len(), yw_core::policy::MAX_CHAIN_GRANTS);
+    assert!(
+        !h.core
+            .chain_grant_room(&origin(SITE)?, yw_core::policy::Family::Solana)
+    );
+    assert!(h.core.chain_grant_room(
+        &origin("https://s1.example")?,
+        yw_core::policy::Family::Bitcoin
+    ));
+    let connect = h.send(SITE, 1, "sol_connect", json("[]"));
+    assert_eq!(single(&h, &connect)?, Err(ProviderError::TooManySites));
+    let btc = h.send(
+        SITE,
+        1,
+        "btc_requestAccounts",
+        json(r#"[{"purposes":["payment"]}]"#),
+    );
+    assert_eq!(single(&h, &btc)?, Err(ProviderError::TooManySites));
     Ok(())
 }
 

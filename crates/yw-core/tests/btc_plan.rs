@@ -689,7 +689,7 @@ fn display_fields_and_warnings() {
         draft.display.title,
         "[Bitcoin testnet4] 보내기: 0.00020000 BTC"
     );
-    assert_eq!(field(&draft, FieldKey::ORIGIN), "Your Wallet (이 앱)");
+    assert_eq!(field(&draft, FieldKey::ORIGIN), "Your Wallet 앱");
     assert_eq!(
         field(&draft, FieldKey::NETWORK),
         "BITCOIN TESTNET4 — 가치 없음"

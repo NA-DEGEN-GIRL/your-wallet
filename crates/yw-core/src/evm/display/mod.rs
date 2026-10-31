@@ -324,7 +324,7 @@ fn header(
     account: &Address,
 ) -> Result<(), DisplayError> {
     let origin_text = match origin {
-        ApprovalOrigin::App => "Your Wallet 앱 (yw-app)".to_owned(),
+        ApprovalOrigin::App => crate::approval::APP_ORIGIN_TEXT.to_owned(),
         ApprovalOrigin::Site(site) => site.as_str().to_owned(),
     };
     fields.push(FieldKey::ORIGIN, "", origin_text)?;

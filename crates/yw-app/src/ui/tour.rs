@@ -332,6 +332,7 @@ fn tour_browser(state: &mut App) {
         unlocked: false,
         locking: false,
         grant_write: crate::app_browser::GrantWrite::default(),
+        site_rows: crate::app_browser::SiteRows::default(),
     });
     let sites = [
         (

@@ -93,7 +93,11 @@
       if (this.pending.has(request.id)) {
         return false;
       }
-      if (shared.methodRoute(request.method) === null) {
+      // Bitcoin off (spec/05 §2.13): no Bitcoin provider is registered, so btc_* never reaches the
+      // wallet from this page. Solana off still registers the "Your Wallet" Wallet Standard
+      // wallet, so sol_* stays allowed.
+      if (shared.methodRoute(request.method) === null
+        || (this.btcCompatMode === "off" && shared.methodFamily(request.method) === "btc")) {
         this.respond(request.id, { error: shared.ERRORS.UNSUPPORTED_METHOD });
         return false;
       }

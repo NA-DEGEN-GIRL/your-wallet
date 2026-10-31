@@ -2,8 +2,9 @@
 //! over the exact bytes) and Sign-In-With-Solana (`sol_signIn`, the message the app builds from
 //! validated fields in the `@solana/wallet-standard-util` `createSignInMessageText` layout).
 //!
-//! Never a transaction: bytes that parse as a legacy or v0 message, or as a whole signed
-//! transaction, are blocked (M01); bytes with the off-chain signing domain `\xffsolana offchain`
+//! Never a transaction: bytes that are or begin with a legacy or v0 message or a signed
+//! transaction, or that start with a version prefix `0x80`–`0xfe` and are not UTF-8 text (a
+//! message version this wallet cannot parse), are blocked (M01); bytes with the off-chain signing domain `\xffsolana offchain`
 //! must parse as an off-chain message version 0 (either the `solana-sdk` layout or the proposal
 //! layout with application domain and signers) or are blocked (M02).
 #![deny(clippy::indexing_slicing)]
@@ -73,6 +74,8 @@ impl Reader<'_> {
 }
 
 /// Parses a legacy or v0 message structurally from `reader`; returns its required signer count.
+/// Later versions (prefix `0x81`–`0xff`) are not parsed here: [`looks_like_versioned_message`]
+/// blocks them by their prefix alone.
 fn parse_message(reader: &mut Reader<'_>) -> Option<usize> {
     let first = *reader.bytes.get(reader.at)?;
     let versioned = first & 0x80 != 0;
@@ -127,11 +130,28 @@ fn parse_message(reader: &mut Reader<'_>) -> Option<usize> {
         .then_some(required)
 }
 
-/// Whether `bytes` are exactly a legacy/v0 Solana message or a signed transaction (M01).
+/// Whether `bytes` start like a versioned Solana message of any version, including versions this
+/// wallet cannot parse yet: a first byte `0x80`–`0xfe` (the version flag; `0xff` begins the
+/// off-chain domain) — unless the whole buffer is valid UTF-8 text (M01).
+#[must_use]
+pub fn looks_like_versioned_message(bytes: &[u8]) -> bool {
+    bytes
+        .first()
+        .is_some_and(|first| (0x80..=0xfe).contains(first))
+        && !bytes.starts_with(OFFCHAIN_DOMAIN)
+        && core::str::from_utf8(bytes).is_err()
+}
+
+/// Whether `bytes` are, or begin with, a legacy/v0 Solana message or a signed transaction, or
+/// start like a versioned message of a later version (M01). Trailing bytes after a parsable
+/// message do not make the bytes safe to sign.
 #[must_use]
 pub fn looks_like_transaction(bytes: &[u8]) -> bool {
+    if looks_like_versioned_message(bytes) {
+        return true;
+    }
     let mut message = Reader { bytes, at: 0 };
-    if parse_message(&mut message).is_some() && message.done() {
+    if parse_message(&mut message).is_some() {
         return true;
     }
     let mut transaction = Reader { bytes, at: 0 };
@@ -144,7 +164,6 @@ pub fn looks_like_transaction(bytes: &[u8]) -> bool {
             .and_then(|length| transaction.skip(length))
             .is_some()
         && parse_message(&mut transaction) == Some(signatures)
-        && transaction.done()
 }
 
 /// A parsed off-chain message (version 0).
@@ -395,7 +414,8 @@ pub fn chain_matches(chain_id: &str, cluster: SolCluster) -> bool {
 }
 
 /// `domain` (`host[:port]`, no scheme, userinfo or path) names the requesting site: same host,
-/// and an explicit port equal to the site's effective port.
+/// and an explicit port equal to the site's effective port, or no port only when the site uses
+/// its scheme's default port (a site on `:5173` must say `host:5173`).
 #[must_use]
 pub fn domain_matches(domain: &str, origin: &BrowserOrigin) -> bool {
     if domain.contains(['/', '@', '?', '#', '[', ']', ' ']) {
@@ -415,7 +435,10 @@ pub fn domain_matches(domain: &str, origin: &BrowserOrigin) -> bool {
         None => (domain, None),
     };
     host.eq_ignore_ascii_case(origin.host())
-        && port.is_none_or(|port| port == origin.effective_port())
+        && match port {
+            Some(port) => port == origin.effective_port(),
+            None => origin.port().is_none(),
+        }
 }
 
 fn ms_of(seconds: i64) -> i128 {
@@ -549,6 +572,19 @@ fn title(cluster: SolCluster, action: &str) -> String {
     }
 }
 
+/// M01 when the bytes are or begin like a transaction message (a later message version gets
+/// its own detail line).
+fn transaction_warning(bytes: &[u8]) -> Option<Warning> {
+    if looks_like_versioned_message(bytes) {
+        Some(risk::warning(
+            M01,
+            Some("버전이 붙은 Solana 거래 메시지처럼 시작합니다"),
+        ))
+    } else {
+        looks_like_transaction(bytes).then(|| risk::warning(M01, None))
+    }
+}
+
 /// Builds the approval draft of a Solana message or sign-in request (spec/07 §19.3).
 ///
 /// # Errors
@@ -582,9 +618,7 @@ pub fn build_sol_message_request(
     if bytes.len() > MAX_SOL_MESSAGE_BYTES {
         warnings.push(risk::warning(M01, Some("64KiB를 넘는 메시지입니다")));
     }
-    if looks_like_transaction(bytes) {
-        warnings.push(risk::warning(M01, None));
-    }
+    warnings.extend(transaction_warning(bytes));
     let offchain = parse_offchain(bytes);
     if bytes.starts_with(OFFCHAIN_DOMAIN) {
         match &offchain {

@@ -206,6 +206,15 @@ pub struct WalletView {
     pub sol_cluster: yw_core::sol::SolCluster,
     /// The settings Bitcoin network (`btc_getNetwork`; grants of another network are unused).
     pub btc_network: yw_core::btc::BtcNetwork,
+    /// settings `bitcoin.enabled`: when off, `btc_*` requests other than `btc_getNetwork` and
+    /// `btc_disconnect` end 4100 `NoBtcAccount` (spec/05 §4.9).
+    pub btc_enabled: bool,
+    /// The Solana public keys dApps may use now (the visible accounts, `App::sol_dapp_rows`;
+    /// empty while locked): a grant naming another key is not used (spec/05 §4.9).
+    pub sol_accounts: Vec<[u8; 32]>,
+    /// The Bitcoin addresses dApps may use now on `btc_network` (`App::btc_dapp_rows`; empty
+    /// while locked): a grant with any other address is not used.
+    pub btc_accounts: Vec<String>,
 }
 
 impl Default for WalletView {
@@ -218,6 +227,9 @@ impl Default for WalletView {
             allow_localhost: false,
             sol_cluster: yw_core::sol::SolCluster::Devnet,
             btc_network: yw_core::btc::BtcNetwork::Testnet4,
+            btc_enabled: false,
+            sol_accounts: Vec::new(),
+            btc_accounts: Vec::new(),
         }
     }
 }
@@ -237,6 +249,24 @@ impl WalletView {
         self.chains
             .iter()
             .find(|entry| entry.info.chain_id == chain_id)
+    }
+
+    /// Whether a Solana grant names a key dApps may use now.
+    #[must_use]
+    pub fn sol_usable(&self, grant: &yw_core::policy::SolGrant) -> bool {
+        self.sol_accounts.contains(&grant.public)
+    }
+
+    /// Whether a Bitcoin grant may be used now: Bitcoin on, the settings network, and every
+    /// address still one of the wallet's (a grant with a missing address is not used at all).
+    #[must_use]
+    pub fn btc_usable(&self, grant: &yw_core::policy::BtcGrant) -> bool {
+        self.btc_enabled
+            && grant.network == self.btc_network
+            && grant
+                .addresses
+                .iter()
+                .all(|entry| self.btc_accounts.contains(&entry.address))
     }
 }
 

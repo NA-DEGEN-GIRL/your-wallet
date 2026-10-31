@@ -27,6 +27,10 @@ pub use text::{
 
 pub use crate::evm::display::{build_evm_tx_request, build_personal_request, build_typed_request};
 
+/// The `요청 출처` value of every app-initiated approval (EVM, Solana and Bitcoin sends). It is
+/// display text and therefore part of `display_bytes` and the approval digest (spec/03 §11.3).
+pub const APP_ORIGIN_TEXT: &str = "Your Wallet 앱";
+
 use core::fmt;
 
 use crate::btc::msgsign::BtcMessageProtocol;

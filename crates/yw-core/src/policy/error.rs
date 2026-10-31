@@ -26,6 +26,9 @@ pub enum ProviderError {
     /// 4100 with the reason: no Bitcoin account of a requested kind on the settings network
     /// (spec/05 §4.9).
     NoBtcAccount,
+    /// 4100 with the reason: a new Solana/Bitcoin connection would exceed the 256 grants of that
+    /// chain (meta `sol_sites`/`btc_sites`, spec/05 §4.9).
+    TooManySites,
     /// 4200 `Unsupported method.`
     UnsupportedMethod,
     /// 4900 `Wallet is unavailable.`
@@ -81,7 +84,8 @@ impl ProviderError {
             | Self::PassphraseUnverified
             | Self::NoEvmAccount
             | Self::NoSolAccount
-            | Self::NoBtcAccount => 4100,
+            | Self::NoBtcAccount
+            | Self::TooManySites => 4100,
             Self::UnsupportedMethod => 4200,
             Self::Unavailable | Self::ConnectionClosed | Self::ExtensionReloaded => 4900,
             Self::ChainUnavailable => 4901,
@@ -115,6 +119,9 @@ impl ProviderError {
             }
             Self::NoBtcAccount => {
                 "Unauthorized: this wallet has no Bitcoin account of the requested type on the selected network. Add one in the Your Wallet app first."
+            }
+            Self::TooManySites => {
+                "Unauthorized: too many sites are connected on this chain (256). Disconnect one in the Your Wallet app first."
             }
             Self::UnsupportedMethod => "Unsupported method.",
             Self::Unavailable => "Wallet is unavailable.",

@@ -568,7 +568,7 @@ pub fn build_sol_transfer_request(
     fields.push(DisplayField::new(
         FieldKey::ORIGIN,
         "",
-        "Your Wallet 앱 (yw-app)",
+        crate::approval::APP_ORIGIN_TEXT,
     )?);
     fields.push(DisplayField::new(
         FieldKey::NETWORK,

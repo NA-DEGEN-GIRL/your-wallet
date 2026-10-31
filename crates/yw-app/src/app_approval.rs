@@ -2433,7 +2433,7 @@ impl App {
         if rows.is_empty() {
             rows.push((
                 "요청 출처".to_owned(),
-                "Your Wallet (이 앱)".to_owned(),
+                yw_core::approval::APP_ORIGIN_TEXT.to_owned(),
                 FontRole::Body,
             ));
         }

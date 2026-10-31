@@ -433,7 +433,7 @@ Object.defineProperty(window, "ethereum", { get: () => provider, set: (_ignored)
 |---|---|
 | Solana `off`(기본) | Wallet Standard 지갑 하나(이름 `Your Wallet`)만 등록. `window.phantom`·`window.solana` 없음 |
 | Solana `phantom` | Wallet Standard 지갑 이름 `Phantom`(아이콘은 우리 PNG, Phantom 로고를 쓰지 않는다) + `window.phantom.solana`(접근자로 차지·재차지, `window.ethereum` 호환 모드와 같은 규칙 §2.12) + `window.solana`(없을 때만 데이터 속성) |
-| Bitcoin `off`(기본) | **아무것도 주입하지 않는다**(Bitcoin dApp 지원은 호환 모드에서만) |
+| Bitcoin `off`(기본) | **아무것도 주입하지 않는다**(Bitcoin dApp 지원은 호환 모드에서만). content의 `ContentBridge`도 이 문서의 `btc_*` 요청을 와이어로 보내지 않고 즉시 4200 `Unsupported method.`로 답한다(페이지가 채널 메시지를 직접 만들어도 같다). Solana `off`는 `Your Wallet` 지갑을 등록하므로 `sol_*`는 그대로 보낸다 |
 | Bitcoin `unisat` | `window.unisat`(접근자로 차지·재차지) |
 | Bitcoin `xverse` | `window.XverseProviders.BitcoinProvider`(차지·재차지) + `window.BitcoinProvider`(없을 때만) + `window.btc_providers`(WBIP004) 항목 `{ id: "XverseProviders.BitcoinProvider", name: "Xverse Wallet", icon: <우리 PNG>, methods }`(같은 id 항목이 있으면 교체) |
 
@@ -552,7 +552,7 @@ EIP-55 판정과 주소 파싱은 yw-core 함수를 쓴다(이름은 [03](03-evm
 | 메서드 | route | params(정확한 키) | 동작 | 결과 |
 |---|---|---|---|---|
 | `sol_connect` | permission | `[]` 또는 `[{ "onlyIfTrusted"?: bool }]` | 연결·잠금 해제면 창 없이 반환. `onlyIfTrusted`이고 미연결 → 4001(창 없음). 그 밖은 연결 창(Solana 계정 1개 선택, §4.9) | `{ "publicKey": base58 }` |
-| `sol_disconnect` | permission | `[]` | 잠금 해제면 Solana grant 삭제 + `solAccountsChanged([])`. 잠김이면 아무것도 바꾸지 않음 | `null` |
+| `sol_disconnect` | permission | `[]` | 잠금 해제면 Solana grant 삭제 + `solAccountsChanged([])`. 잠김(`Locked`·`Starting`)이면 (origin, 계열)을 메모리에 기억했다가 잠금 해제 때 grant를 읽은 직후·계정 이벤트 전에 지우고 meta에 쓴다(§4.9) | `null` |
 | `sol_accounts` | permission | `[]` | 연결·잠금 해제면 `[base58]`, 아니면 `[]` | 배열 |
 | `sol_signMessage` | signing | `[{ "publicKey": base58, "message": hex }]`(≤ 65,536 B) | grant 계정이어야 함(4100). 승인 창([07] §19) | `{ "publicKey", "signature": hex(64B) }` |
 | `sol_signIn` | signing | `[{ "publicKey": base58, "input": SolanaSignInInput }]` | `input` 키는 `domain address statement uri version chainId nonce issuedAt expirationTime notBefore requestId resources`의 부분집합(그 밖 키, 예 `useOffchainMessage` → -32602), 문자열 ≤ 1,024 B·제어 문자 없음, `resources` ≤ 32개. 빈 문자열은 없는 것으로 본다. 디스패처가 빠진 `domain`(origin의 `host[:port]`)·`address`(계정)를 채우고 [07] §19.4의 텍스트를 만든다(≤ 64 KiB) | `{ "publicKey", "signature", "signedMessage": hex }` |
@@ -562,7 +562,7 @@ EIP-55 판정과 주소 파싱은 yw-core 함수를 쓴다(이름은 [03](03-evm
 | `btc_getNetwork` | permission | `[]` | settings Bitcoin 네트워크 | `"mainnet"` 또는 `"testnet4"` |
 | `btc_signMessage` | signing | `[{ "address", "message": UTF-8 문자열 ≤ 65,536 B, "protocol"?: "ecdsa"|"bip322" }]` | grant 주소여야 함(4100). `protocol` 생략 = 주소 형식 기본값(P2TR → `bip322`, 그 밖 `ecdsa`). 주소 형식이 그 방식을 못 쓰면(P2TR+ECDSA, P2PKH+BIP322) -32602. 승인 창([08] §17) | `{ "address", "signature": base64, "messageHash": hex, "protocol" }` |
 
-`context.compatMode`가 메서드 계열과 맞지 않으면 -32600(§2.13). 잠김·`BackupPending`·`PassphraseUnverified`·vault 없음 규칙은 EVM 연결·서명과 같다(§4.2, §4.4).
+`context.compatMode`가 메서드 계열과 맞지 않으면 -32600(§2.13). 잠김·`BackupPending`·`PassphraseUnverified`·vault 없음 규칙은 EVM 연결·서명과 같다(§4.2, §4.4). settings에서 Bitcoin이 꺼져 있으면(`bitcoin.enabled = false`, `WalletView::btc_enabled`) `btc_getNetwork`·`btc_disconnect` 밖의 `btc_*`는 vault 상태와 관계없이 창 없이 4100 `NoBtcAccount`이다(큐에 들어간 뒤 꺼졌으면 꺼낼 때 같은 답).
 
 ---
 
@@ -650,8 +650,12 @@ dApp 요청으로 띄운 잠금 해제 창을 `나중에`로 닫으면 `UNLOCK_P
 - EVM `connected_sites`와 **별개**다. origin마다 Solana grant 1개(`SolGrant { origin, public: [u8;32], granted_at_unix_ms }`), Bitcoin grant 1개(`BtcGrant { origin, network, addresses: 1–2 × { purpose, address, pubkey, script_type }, granted_at_unix_ms }`). 각 0..=256개. 키는 선택 최상위 키로 비어 있지 않을 때만 쓰고, 이전 버전은 모르는 키로 보존한다([04] §6.6).
 - 연결 창은 계정을 **하나** 고른다(라디오). Solana: 숨기지 않은 표준 경로 계정과 가져온 키. Bitcoin: settings 네트워크의 계정마다 **안정 주소**(받기 주소 0번, 가져온 키는 그 주소) 하나 — `payment`는 P2WPKH·P2SH-P2WPKH, `ordinals`는 P2TR, `any`(UniSat)는 모든 형식. 고를 계정이 없으면 창 없이 4100 `NoSolAccount`/`NoBtcAccount`(§5). 기본 선택은 기존 grant의 계정, 없으면 각 그룹 첫 계정.
 - 잠그면 grant를 잊고 해당 origin 문서에 `solAccountsChanged([])`·`btcAccountsChanged([])`, 잠금 해제 때 meta에서 다시 읽어 계정을 보낸다. 설정 네트워크와 다른 네트워크의 Bitcoin grant는 아무것도 노출하지 않는다(주소 0개).
+- **쓸 수 있는 grant만 센다**: 디스패처는 UI가 넘긴 지금의 계정 목록(`WalletView::sol_accounts` = 숨기지 않은 Solana 계정·가져온 키, `btc_accounts` = settings 네트워크 계정의 안정 주소, 잠금 해제 중에만 채움)으로 grant를 거른다. Solana grant는 그 키가 목록에 있어야, Bitcoin grant는 Bitcoin이 켜져 있고 settings 네트워크이며 **모든** 주소가 목록에 있어야 쓴다. 쓸 수 없는 grant는 meta에 남지만 즉시 답(`sol_accounts`·`sol_connect`·`btc_getAccounts`·`btc_requestAccounts`)·서명 허가·잠금 해제 이벤트에서 없는 것으로 본다(연결 요청은 창을 연다). 큐에서 꺼낸 `sol_connect`도 grant 계정이 지금 목록에 있을 때만 창 없이 답한다.
+- **계정이 사라지면 grant도 지운다**: Solana 계정 숨기기·가져온 Solana 키 삭제는 그 키를 가진 grant를, 가져온 Bitcoin 키 삭제(meta `btc_accounts`에서 계정이 빠짐)는 그 안정 주소를 가진 grant를 **통째로**(목적 하나만 남기지 않는다, 네트워크 무관) 지운다. 해당 origin에 `solAccountsChanged([])`·`btcAccountsChanged([])`, meta 쓰기, 그 계열의 대기 서명 항목 `Revoked`. 같은 키를 다시 가져와도 연결은 돌아오지 않는다.
+- 연결 창 승인 때 고른 계정·주소를 지금 목록과 다시 대조한다(창이 열린 사이 Bitcoin 네트워크가 바뀌었거나 계정이 숨겨졌으면 4100 `Unauthorized`, grant 없음). Bitcoin이 꺼졌으면 4100 `NoBtcAccount`.
+- **256개 한도**: 계열마다 grant ≤ 256(meta `sol_sites`·`btc_sites` 검증 한도). 새 origin의 연결은 잠금 해제 중 디스패처에서, 잠김 중 큐에 들어간 것은 꺼낼 때, 승인 때 한 번 더 4100 `TooManySites`로 거부하고 grant를 쓰지 않는다(이미 grant가 있는 origin은 교체).
 - 서명 요청은 grant의 계정·주소만(4100). 큐에서 꺼낼 때 그 계정이 지갑에서 사라졌으면 `Revoked`(4100).
-- 해제: `sol_disconnect`·`btc_disconnect`(잠금 해제 중), 연결된 사이트 화면([04] §2.9)의 `연결 해제`. 그 계열의 대기 서명 항목만 `Revoked`.
+- 해제: `sol_disconnect`·`btc_disconnect`, 연결된 사이트 화면([04] §2.9)의 `연결 해제`. 그 계열의 대기 서명 항목만 `Revoked`. 잠김 중 해제는 디스패처가 (origin, 계열)을 메모리에 기억해(중복 없이 최대 1,024개, 넘치면 가장 오래된 것부터 버림) 잠금 해제 때 meta grant를 읽은 직후·계정 이벤트 전에 적용하고 meta를 쓴다. grant를 읽고 잠금 해제 상태가 되기 전 순간에 온 해제는 읽힌 grant에 바로 적용한다.
 
 ---
 
@@ -666,7 +670,8 @@ dApp 요청으로 띄운 잠금 해제 창을 `나중에`로 닫으면 `UNLOCK_P
 | 4100 | `PassphraseUnverified` | `Unauthorized: the wallet was opened with an unverified passphrase, so connecting and signing are disabled. Lock the wallet and unlock it with the correct passphrase.` | 확인값과 맞지 않는 BIP39 passphrase로 연 세션(`Unlocked { alt_passphrase: true }`, `App::passphrase_unverified()`, [02] §7.5)의 연결·signing 요청(디스패처 상태 `VaultView::PassphraseUnverified`, 잠김 중 큐에 들어갔다가 이 세션으로 풀린 요청은 [04] §3.1 `PassphraseUnverified`). 읽기 메서드는 계속 동작하고 grant는 없다(`eth_accounts` `[]`, `wallet_revokePermissions` `null`) |
 | 4100 | `NoEvmAccount` | `Unauthorized: this wallet has no EVM account. Import an EVM private key in the Your Wallet app first.` | EVM 계정(파생·가져온 키)이 하나도 없는 지갑(키 전용 지갑, [02] §8.5)의 연결 요청(§4.2). 앱에서 EVM 개인키를 가져오면 연결할 수 있다 |
 | 4100 | `NoSolAccount` | `Unauthorized: this wallet has no Solana account. Add or import one in the Your Wallet app first.` | Solana 계정이 하나도 없는 지갑의 `sol_connect`(§4.9) |
-| 4100 | `NoBtcAccount` | `Unauthorized: this wallet has no Bitcoin account of the requested type on the selected network. Add one in the Your Wallet app first.` | 요청 목적에 맞는 Bitcoin 계정이 settings 네트워크에 없음(`btc_requestAccounts`, §4.9) |
+| 4100 | `NoBtcAccount` | `Unauthorized: this wallet has no Bitcoin account of the requested type on the selected network. Add one in the Your Wallet app first.` | 요청 목적에 맞는 Bitcoin 계정이 settings 네트워크에 없음(`btc_requestAccounts`, §4.9), settings에서 Bitcoin이 꺼짐(`btc_getNetwork`·`btc_disconnect` 밖의 `btc_*`, §3.6) |
+| 4100 | `TooManySites` | `Unauthorized: too many sites are connected on this chain (256). Disconnect one in the Your Wallet app first.` | Solana·Bitcoin grant가 이미 256개인 계열에 새 origin 연결(§4.9) |
 | 4200 | `UnsupportedMethod` | `Unsupported method.` | 허용 표 밖(`wallet_addEthereumChain` 포함, D14·§3.2), method 형식 오류 |
 | 4900 | `Unavailable` | `Wallet is unavailable.` | yw-host가 yw-app에 연결 실패(§7.6, `browserAutoLaunch` 꺼짐 포함), 확장 backoff 중, `connectNative` 실패 |
 | 4900 | `ConnectionClosed` | `Wallet connection closed.` | content port·native 연결이 끊길 때 진행 중인 요청, yw-app 종료 |
@@ -1066,6 +1071,7 @@ yw-host는 자기와 같은 폴더의 yw-app을 실행하므로 yw-app은 등록
 | C2 | 〃 | port 끊김 → pending 4900, IDLE. 다음 요청이 재연결해 성공 |
 | C3 | 〃 | `isContextValid() === false` → DEAD, page `disconnect` 1회, 이후 4900 "Wallet extension was reloaded." |
 | C4 | 〃 | `pagehide` 후 IDLE(DEAD 아님), 5 s 연결 시간 초과, 250 ms 재연결 간격, 미허용 메서드(`wallet_addEthereumChain` 포함)는 연결 없이 4200 |
+| C6 | 〃 (§2.13) | `btcCompatMode = "off"`: `btc_requestAccounts`·`btc_getAccounts`·`btc_getNetwork`·`btc_signMessage`·`btc_disconnect`는 연결 없이 4200; `solCompatMode = "off"`의 `sol_connect`는 그대로 전달(`compatMode` 없음); `unisat`·`xverse`는 `btc_*` 전달 |
 | C5 | 〃 (§2.12) | `bridge-init`에 문서 모드, content→bg `request`에 호환 모드일 때만 `compatMode`(background 파서가 그대로 수락), 페이지 요청의 `compatMode` 키는 거부, 잘못된 모드로 `ContentBridge` 생성 시 TypeError; `loadCompatMode`: 유효 값 그대로, 없음·대소문자 다름·숫자·null·객체 아님 → `off`, 거부·예외 → `off`, 응답 없음 → 3 s에 `off`·늦은 응답 무시 |
 | E1 | `tests/compat-delivery.test.mjs`(신규) | 실제 `provider-main.js`(MAIN)와 `shared.js`·`content-core.js`·`content.js`(ISOLATED)를 두 VM world + 공유 postMessage로 실행: `chrome.storage.local.get("compatMode")` = metamask → 저장소 응답 전에는 기본 플래그·알림 없음 → 응답 후 MetaMask 알림 1개·`isMetaMask` true → `window.ethereum.request(eth_requestAccounts)` → content port 요청 `compatMode` → `BackgroundRouter` native 봉투 `context.compatMode = "metamask"`, `topOrigin` = sender origin, 10개 키 → 응답이 페이지까지 돌아옴 |
 | E2 | 〃 | 저장소 거부·`"MetaMask"` 값·예외 → 기본 신원, port 요청·봉투 context에 `compatMode` 없음(9개 키) |
