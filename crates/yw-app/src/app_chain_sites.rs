@@ -1130,6 +1130,137 @@ mod tests {
         assert_eq!(keys(&app)[0], "https://s52.example");
     }
 
+    /// What `show_next_approval` does up to the window: the next shown site item that passed its
+    /// preflight (items finished by the preflight are answered and skipped).
+    fn next_window(app: &mut App) -> Option<SiteRequest> {
+        use crate::app_evm::QueuedItem;
+        loop {
+            let mut finished = Vec::new();
+            let shown = app.evm.queue.show_next(0, &mut finished);
+            for (item, outcome) in finished {
+                app.approval_finished(&item.payload, outcome);
+            }
+            shown?;
+            let QueuedItem::Site(site) = app.evm.queue.shown()?.payload.clone() else {
+                return None;
+            };
+            match app.site_preflight(&site) {
+                Some(outcome) => {
+                    if let Some((done, outcome)) = app.evm.queue.finish_shown(outcome) {
+                        app.approval_finished(&done.payload, outcome);
+                    }
+                }
+                None => return Some(*site),
+            }
+        }
+    }
+
+    /// Regression (screenshot tour): after a rejected `sol_signMessage`, the following
+    /// `btc_signMessage` of the same site never got a window. The queue was fine; every Bitcoin
+    /// message draft (and every SIWS / off-chain Solana draft) carried a display key without a
+    /// window label (0x0406 `서명 방식`, 0x0405 SIWS), so `validate_for_display` failed and the
+    /// window closed at once with E-UI-001.
+    #[test]
+    fn chain_message_windows_follow_each_other_after_a_rejection() {
+        use crate::app_evm::QueuedItem;
+        use crate::ui::approval::{QueueSource, field_label, validate_for_display};
+        use yw_core::btc::{BtcAccountKey, BtcMeta};
+        for key in 0..=u16::MAX {
+            let key = yw_core::approval::FieldKey(key);
+            assert!(
+                key.flags().is_none() || field_label(key).is_some(),
+                "display key {key:?} has no window label"
+            );
+        }
+        let mut app = app(true);
+        app.settings.bitcoin.enabled = true;
+        let node = yw_core::bip32::AccountXpub {
+            pubkey: yw_core::hex::decode_array::<33>(
+                "03b88e0fbe3f646337ed93bc0c0f3b843fcf7d2589e5ec884754e6402027a890b4",
+            )
+            .unwrap(),
+            chain_code: [7; 32],
+        };
+        let key = BtcAccountKey::hd(ScriptType::P2wpkh, 1, node).unwrap();
+        let account = BtcMeta::with_key(app.btc_network_now(), key);
+        app.meta
+            .as_mut()
+            .unwrap()
+            .btc_accounts
+            .upsert(account)
+            .unwrap();
+        let row = app.btc_dapp_rows().pop().unwrap();
+        let core = core(&app);
+        assert!(core.upsert_sol_grant(sol_grant("https://app.example", public())));
+        let grant = yw_core::policy::BtcGrant::new(
+            BrowserOrigin::parse("https://app.example").unwrap(),
+            app.btc_network_now(),
+            vec![BtcGrantAddress {
+                purpose: BtcPurpose::Payment,
+                ..row.entry.clone()
+            }],
+            1,
+        )
+        .unwrap();
+        assert!(core.upsert_btc_grant(grant));
+        let siws = yw_core::sol::msgsign::SiwsMessage {
+            domain: "app.example".to_owned(),
+            address: SOL_KEY.to_owned(),
+            statement: Some("Sign in".to_owned()),
+            ..yw_core::sol::msgsign::SiwsMessage::default()
+        };
+        let sol = |sign_in: bool| {
+            site(SiteKind::SolSign {
+                public: public(),
+                message: if sign_in {
+                    siws.to_text().into_bytes()
+                } else {
+                    b"Prove it".to_vec()
+                },
+                sign_in,
+            })
+        };
+        let btc = site(SiteKind::BtcSign {
+            address: row.entry.address.clone(),
+            message: b"Prove it".to_vec(),
+            protocol: None,
+        });
+        let evm = site(SiteKind::RequestAccounts);
+        for order in [
+            vec![sol(false), btc.clone()],
+            vec![btc.clone(), sol(false)],
+            vec![sol(true), evm.clone(), btc.clone(), sol(false)],
+            vec![evm.clone(), btc.clone(), evm.clone(), sol(true)],
+        ] {
+            for request in &order {
+                let source = QueueSource::Site {
+                    origin: request.origin.as_str().to_owned(),
+                    deadline_ms: u64::MAX,
+                };
+                app.evm
+                    .queue
+                    .enqueue(source, QueuedItem::Site(Box::new(request.clone())))
+                    .unwrap();
+            }
+            for expected in &order {
+                // Each request of the site gets its window in turn, and is then rejected.
+                let shown = next_window(&mut app).expect("a window for the next request");
+                assert_eq!(shown.kind, expected.kind);
+                if shown.kind.is_signing() {
+                    let draft = app.chain_sign_draft(&shown).unwrap();
+                    assert_eq!(validate_for_display(&draft.display), Ok(()));
+                    let request = app.evm.store.issue(draft, 0, 0).unwrap();
+                    app.evm.store.reject(request.id);
+                }
+                if let Some((done, outcome)) = app.evm.queue.finish_shown(QueueOutcome::Rejected) {
+                    app.approval_finished(&done.payload, outcome);
+                }
+            }
+            assert!(next_window(&mut app).is_none());
+            assert!(app.evm.queue.is_empty());
+        }
+    }
+
     #[test]
     fn answers_and_defaults() {
         assert_eq!(
