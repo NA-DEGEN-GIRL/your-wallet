@@ -90,17 +90,48 @@ struct Parts {
 }
 
 fn valid_https_host(host: &str) -> bool {
+    if let Some(literal) = host
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+    {
+        return valid_ipv6_literal(literal);
+    }
     (1..=253).contains(&host.len())
         && host.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'.' || byte == b'-'
         })
 }
 
+/// A bracketed IPv6 literal's inside (already lowercased): hex groups and `:` (one `::`), an
+/// optional dotted IPv4 tail, no zone id (`%`), 2–45 bytes. `WinHttpConnect` gets it without
+/// the brackets, like the loopback `[::1]`.
+fn valid_ipv6_literal(literal: &str) -> bool {
+    (2..=45).contains(&literal.len())
+        && literal.contains(':')
+        && literal.matches("::").count() <= 1
+        && !literal.contains(":::")
+        && literal
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() || byte == b':' || byte == b'.')
+        && literal
+            .split(':')
+            .all(|group| group.len() <= 4 || (group.contains('.') && group.split('.').count() == 4))
+}
+
+/// `input` without its `scheme` prefix, the scheme compared case-insensitively (RFC 3986 §3.1;
+/// the normalized text is lowercase).
+fn strip_scheme<'a>(input: &'a str, scheme: &str) -> Option<&'a str> {
+    let head = input.get(..scheme.len())?;
+    head.eq_ignore_ascii_case(scheme)
+        .then(|| input.get(scheme.len()..))
+        .flatten()
+}
+
 fn parse_parts(input: &str, scheme: &str) -> Result<Parts, HttpError> {
     if input.len() > MAX_URL_BYTES || !input.bytes().all(|byte| (0x21..=0x7E).contains(&byte)) {
         return Err(HttpError::InvalidUrl);
     }
-    let rest = input.strip_prefix(scheme).ok_or(HttpError::InvalidUrl)?;
+    let rest = strip_scheme(input, scheme).ok_or(HttpError::InvalidUrl)?;
     if rest.contains('#') {
         return Err(HttpError::InvalidUrl);
     }
@@ -120,7 +151,10 @@ fn parse_parts(input: &str, scheme: &str) -> Result<Parts, HttpError> {
         let close = inner.find(']').ok_or(HttpError::InvalidUrl)?;
         let (literal, after) = inner.split_at(close);
         let after = after.get(1..).unwrap_or("");
-        (format!("[{literal}]"), after)
+        if !after.is_empty() && !after.starts_with(':') {
+            return Err(HttpError::InvalidUrl);
+        }
+        (format!("[{}]", literal.to_ascii_lowercase()), after)
     } else {
         match authority.split_once(':') {
             Some((host, port)) => (host.to_ascii_lowercase(), port),
@@ -268,9 +302,9 @@ impl EndpointUrl {
     ///
     /// [`HttpError::InvalidUrl`].
     pub fn parse(text: &str) -> Result<Self, HttpError> {
-        if text.starts_with("https://") {
+        if strip_scheme(text, "https://").is_some() {
             HttpsUrl::parse(text).map(Self::Https)
-        } else if text.starts_with("http://") {
+        } else if strip_scheme(text, "http://").is_some() {
             LoopbackUrl::parse(text).map(Self::Loopback)
         } else {
             Err(HttpError::InvalidUrl)
@@ -909,6 +943,25 @@ mod tests {
             Some(8443)
         );
         assert!(HttpsUrl::parse(&format!("https://h.example/{}", "a".repeat(2_028))).is_ok());
+        // Security review S16: the scheme is case-insensitive and an IPv6 literal is a host,
+        // as for the loopback `http://[::1]`; both normalize to lowercase.
+        assert_eq!(
+            HttpsUrl::parse("HTTPS://Example.com/x").unwrap().expose(),
+            "https://example.com/x"
+        );
+        let v6 = HttpsUrl::parse("https://[2001:DB8::1]:8545/rpc").unwrap();
+        assert_eq!(v6.host(), "[2001:db8::1]");
+        assert_eq!(v6.port(), Some(8545));
+        assert_eq!(v6.expose(), "https://[2001:db8::1]:8545/rpc");
+        assert!(HttpsUrl::parse("https://[::ffff:192.0.2.1]/").is_ok());
+        assert!(matches!(
+            EndpointUrl::parse("Https://api.example/v1"),
+            Ok(EndpointUrl::Https(_))
+        ));
+        assert!(matches!(
+            EndpointUrl::parse("HTTP://[::1]:11434/v1"),
+            Ok(EndpointUrl::Loopback(_))
+        ));
     }
 
     #[test]
@@ -924,9 +977,17 @@ mod tests {
             "https://example.com:65536/",
             "https://example.com:/",
             "https://example.com:08/",
-            "https://[::1]/",
+            "https://[::1",
+            "https://[::1]x/",
+            "https://[g::1]/",
+            "https://[::1%25eth0]/",
+            "https://[:::1]/",
+            "https://[1::2::3]/",
+            "https://[12345::1]/",
+            "https://[]/",
+            "https://[1.2.3.4]/",
             "ftp://example.com/",
-            "HTTPS://example.com/",
+            "httpsx://example.com/",
             "https://example.com/\u{e9}",
         ] {
             assert_eq!(HttpsUrl::parse(bad), Err(HttpError::InvalidUrl), "{bad}");
