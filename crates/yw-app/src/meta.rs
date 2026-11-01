@@ -59,6 +59,24 @@ pub const SOL_SITES_KEY: &str = "sol_sites";
 /// See [`SOL_SITES_KEY`].
 pub const BTC_SITES_KEY: &str = "btc_sites";
 
+/// The optional top-level key of the security settings snapshot (review M1/L15,
+/// `crate::settings::SecuritySnapshot`): written whenever the app has one; absent in files of
+/// earlier versions, which keep it unread (as an unknown key) when they write.
+pub const SECURITY_KEY: &str = "security_settings";
+/// The optional top-level key of the highest `vault.ywv` generation seen with this meta
+/// (review L17): a smaller generation at the next unlock means `vault.ywv` was rolled back on its
+/// own. Written when non-zero.
+pub const VAULT_SEEN_KEY: &str = "vault_generation_seen";
+
+/// meta `security_settings` and `vault_generation_seen` (review M1/L15/L17).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MetaSecurity {
+    /// The security settings snapshot (`None` until the first check after an unlock creates it).
+    pub snapshot: Option<crate::settings::SecuritySnapshot>,
+    /// The highest `vault.ywv` generation seen (0 = none recorded).
+    pub vault_generation_seen: u64,
+}
+
 /// meta `sol_sites` and `btc_sites` as validated JSON values (spec/05 §4.9).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChainSites {
@@ -215,6 +233,9 @@ pub struct Meta {
     pub activity: Vec<(String, Vec<Value>)>,
     /// Preferences.
     pub prefs: Prefs,
+    /// `security_settings` and `vault_generation_seen` (boxed to keep the document small in
+    /// key-worker messages).
+    pub security: Box<MetaSecurity>,
     /// Top-level keys this version does not know (a newer minor version's), in file order; written
     /// back after the known keys while the plaintext stays within 8 MiB (spec/04 §6.6).
     pub unknown: Vec<(String, Value)>,
@@ -241,6 +262,7 @@ impl Default for Meta {
             tokens: Vec::new(),
             activity: Vec::new(),
             prefs: Prefs::default(),
+            security: Box::default(),
             unknown: Vec::new(),
         }
     }
@@ -600,6 +622,8 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
                 && *key != BTC_ACCOUNTS_KEY
                 && *key != SOL_SITES_KEY
                 && *key != BTC_SITES_KEY
+                && *key != SECURITY_KEY
+                && *key != VAULT_SEEN_KEY
         })
         .map(|(key, value)| (key.to_owned(), value.clone()))
         .collect();
@@ -686,6 +710,14 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
     )
     .ok_or(MetaError)?;
     let (sol_raw_accounts, sol_raw_selected) = parse_raw_lists(object).ok_or(MetaError)?;
+    let snapshot = match object.get(SECURITY_KEY) {
+        None => None,
+        Some(value) => Some(crate::settings::SecuritySnapshot::from_json(value).ok_or(MetaError)?),
+    };
+    let vault_generation_seen = match object.get(VAULT_SEEN_KEY) {
+        None => 0,
+        Some(value) => u64_of(value).ok_or(MetaError)?,
+    };
     let mut meta = Meta {
         evm_accounts,
         evm_raw_accounts,
@@ -703,6 +735,10 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         tokens,
         activity,
         prefs: Prefs::default(),
+        security: Box::new(MetaSecurity {
+            snapshot,
+            vault_generation_seen,
+        }),
         unknown,
     };
     let prefs = parse_prefs(get("prefs")?, &meta);
@@ -820,6 +856,15 @@ impl Meta {
         }
         if !self.chain_sites.btc.is_empty() {
             members.push((BTC_SITES_KEY, Value::Array(self.chain_sites.btc.clone())));
+        }
+        if let Some(snapshot) = &self.security.snapshot {
+            members.push((SECURITY_KEY, snapshot.to_json()));
+        }
+        if self.security.vault_generation_seen != 0 {
+            members.push((
+                VAULT_SEEN_KEY,
+                json_u64(self.security.vault_generation_seen),
+            ));
         }
         members
     }

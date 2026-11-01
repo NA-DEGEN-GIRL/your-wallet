@@ -750,7 +750,13 @@ fn reset_to_inherited(path: &Path) -> Result<(), WinError> {
 ///   ([`PrivateDirError::Untrusted`]: another owner, or extra grants that could not be removed);
 /// - then every entry directly inside → [`decide_entry`]: an entry with explicit extra grants
 ///   is reset to inherit only; an entry owned by someone else is refused. Reparse points inside
-///   are left alone (the storage code rejects them).
+///   are skipped here: neither the link nor its target is ACL-checked or repaired. What keeps
+///   them harmless is the file code: yw-app's `FileStorage` refuses to read or commit
+///   `vault.ywv`, `meta.ywm`, `journal.ywj` or their `.prev` when it is a reparse point
+///   ([`crate::file::read_limited_no_reparse`], [`crate::file::reject_reparse_point`]), and
+///   [`crate::file::atomic_write`] refuses to replace one; `settings.json` and `apikeys.dpapi`
+///   are read with the same no-follow read. Other files (e.g. the logs) are not checked
+///   (review L8, S17).
 ///
 /// # Errors
 ///

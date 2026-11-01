@@ -1034,3 +1034,482 @@ impl Settings {
         ]
     }
 }
+
+// ----- security settings snapshot (review M1, L15) -------------------------------------------
+//
+// `settings.json` is plaintext and unauthenticated (D30). The values that decide where wallet
+// data goes or how much a transaction may cost are therefore also kept in the vault-encrypted
+// `meta.ywm` (`security_settings`, AEAD under a DEK-derived key, so a change made outside the app
+// is detected). The app writes the snapshot whenever it changes one of these values itself; after
+// each unlock `reconcile` compares the file with it.
+
+/// `security_settings.version`.
+pub const SNAPSHOT_VERSION: u64 = 1;
+/// The `App::save_settings` key of `파일 값 사용` (accepting every differing file value).
+pub const ACCEPT_FILE_KEY: &str = "settingsFileAccepted";
+/// The E-APP-001-style banner of a settings file changed outside the app.
+pub const SETTINGS_TAMPERED_TEXT: &str = "설정 파일이 앱 밖에서 바뀌었습니다 — 확인하세요";
+/// The banner when the AI explanation was on in `settings.json` without the user's consent for
+/// that endpoint host in the snapshot.
+pub const LLM_FORCED_OFF_TEXT: &str = "AI 설명 설정이 앱 밖에서 바뀌어(동의한 주소와 다름) AI 설명을 껐습니다. 아무것도 보내지 않습니다. 쓰려면 설정 → AI 설명에서 주소를 확인하고 다시 켜세요.";
+/// The banner when a genesis pin was missing or changed in `settings.json`.
+pub const PIN_RESTORED_TEXT: &str = "설정 파일의 체인 genesis 고정값이 앱 밖에서 지워지거나 바뀌어, 앱에 저장된 값으로 되돌렸습니다.";
+
+/// The consent part of `llm_explain` the user last gave through the app (spec/06 §2.1-2.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LlmConsent {
+    /// `enabled` as the app last wrote it.
+    pub enabled: bool,
+    /// The endpoint `host[:port]` (lowercase) the app last wrote; empty when no valid endpoint.
+    pub host: String,
+    /// `privacy_notice_version` as the app last wrote it.
+    pub notice: u64,
+}
+
+/// The security-relevant settings as the app last wrote them (meta `security_settings`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecuritySnapshot {
+    /// LLM consent.
+    pub llm: LlmConsent,
+    /// Genesis pins of every EVM chain that has one (`HyperEVM` from `evmGenesisPins`, user chains
+    /// from `evmChains[].genesisHash`), by chain id ascending.
+    pub genesis_pins: Vec<(u64, [u8; 32])>,
+    /// `feeCaps`, by chain id ascending.
+    pub fee_caps: Vec<(u64, FeeCapsText)>,
+    /// `autoLockMinutes`.
+    pub auto_lock_minutes: u8,
+    /// `bitcoin.indexer`.
+    pub btc_indexer: BtcIndexer,
+    /// `bitcoin.esploraBaseUrl.mainnet`.
+    pub esplora_mainnet: String,
+    /// `bitcoin.esploraBaseUrl.testnet4`.
+    pub esplora_testnet4: String,
+}
+
+fn endpoint_host(llm: &LlmSettings) -> String {
+    crate::explain::config::parse_endpoint(&llm.endpoint).map_or_else(String::new, |e| e.host)
+}
+
+fn sorted_caps(caps: &[(u64, FeeCapsText)]) -> Vec<(u64, FeeCapsText)> {
+    let mut out = caps.to_vec();
+    out.sort_by_key(|(id, _)| *id);
+    out
+}
+
+fn pins_of(settings: &Settings) -> Vec<(u64, [u8; 32])> {
+    let mut pins: Vec<(u64, [u8; 32])> = settings
+        .evm_genesis_pins
+        .iter()
+        .copied()
+        .chain(
+            settings
+                .evm_chains
+                .iter()
+                .map(|chain| (chain.chain_id, chain.genesis_hash)),
+        )
+        .collect();
+    pins.sort_by_key(|(id, _)| *id);
+    pins.dedup_by_key(|(id, _)| *id);
+    pins
+}
+
+fn caps_text_valid(text: &str) -> bool {
+    (1..=40).contains(&text.len()) && text.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+}
+
+impl SecuritySnapshot {
+    /// The snapshot of `settings`.
+    #[must_use]
+    pub fn of(settings: &Settings) -> Self {
+        Self {
+            llm: LlmConsent {
+                enabled: settings.llm_explain.enabled,
+                host: endpoint_host(&settings.llm_explain),
+                notice: settings.llm_explain.privacy_notice_version,
+            },
+            genesis_pins: pins_of(settings),
+            fee_caps: sorted_caps(&settings.fee_caps),
+            auto_lock_minutes: settings.auto_lock_minutes,
+            btc_indexer: settings.bitcoin.indexer,
+            esplora_mainnet: settings.bitcoin.esplora_mainnet.clone(),
+            esplora_testnet4: settings.bitcoin.esplora_testnet4.clone(),
+        }
+    }
+
+    /// The pinned genesis of `chain_id`, if any.
+    #[must_use]
+    pub fn pin(&self, chain_id: u64) -> Option<[u8; 32]> {
+        self.genesis_pins
+            .iter()
+            .find(|(id, _)| *id == chain_id)
+            .map(|(_, hash)| *hash)
+    }
+
+    /// Whether the user consented to send AI-explanation data to `host` with the current notice.
+    #[must_use]
+    pub fn llm_consented_to(&self, host: &str) -> bool {
+        self.llm.enabled
+            && !host.is_empty()
+            && self.llm.host.eq_ignore_ascii_case(host)
+            && self.llm.notice >= u64::from(crate::explain::config::PRIVACY_NOTICE_VERSION)
+    }
+
+    /// The meta JSON value (fixed key order).
+    #[must_use]
+    pub fn to_json(&self) -> Value {
+        let pins = json_object_owned(
+            self.genesis_pins
+                .iter()
+                .map(|(id, hash)| {
+                    (
+                        NetworkId::Eip155(*id).to_string(),
+                        json_str(&hash32_text(hash)),
+                    )
+                })
+                .collect(),
+        )
+        .unwrap_or_else(|| json_object(Vec::new()));
+        let caps = json_object_owned(
+            self.fee_caps
+                .iter()
+                .map(|(id, caps)| {
+                    (
+                        NetworkId::Eip155(*id).to_string(),
+                        json_object(vec![
+                            ("maxFeePerGasGwei", json_str(&caps.max_fee_per_gas_gwei)),
+                            (
+                                "maxPriorityFeePerGasGwei",
+                                json_str(&caps.max_priority_fee_per_gas_gwei),
+                            ),
+                            ("maxTotalFee", json_str(&caps.max_total_fee)),
+                        ]),
+                    )
+                })
+                .collect(),
+        )
+        .unwrap_or_else(|| json_object(Vec::new()));
+        json_object(vec![
+            ("version", json_u64(SNAPSHOT_VERSION)),
+            (
+                "llm",
+                json_object(vec![
+                    ("enabled", Value::Bool(self.llm.enabled)),
+                    ("host", json_str(&self.llm.host)),
+                    ("privacy_notice_version", json_u64(self.llm.notice)),
+                ]),
+            ),
+            ("genesisPins", pins),
+            ("feeCaps", caps),
+            (
+                "autoLockMinutes",
+                json_u64(u64::from(self.auto_lock_minutes)),
+            ),
+            (
+                "bitcoin",
+                json_object(vec![
+                    ("indexer", json_str(self.btc_indexer.as_str())),
+                    ("esploraMainnet", json_str(&self.esplora_mainnet)),
+                    ("esploraTestnet4", json_str(&self.esplora_testnet4)),
+                ]),
+            ),
+        ])
+    }
+
+    /// Parses the meta JSON value strictly (exact keys, valid values); `None` on any violation.
+    #[must_use]
+    pub fn from_json(value: &Value) -> Option<Self> {
+        let exact = |object: &Object, keys: &[&str]| {
+            object.len() == keys.len() && keys.iter().all(|key| object.get(key).is_some())
+        };
+        let object = value.as_object()?;
+        if !exact(
+            object,
+            &[
+                "version",
+                "llm",
+                "genesisPins",
+                "feeCaps",
+                "autoLockMinutes",
+                "bitcoin",
+            ],
+        ) || object.get("version")?.as_number()?.as_u64()? != SNAPSHOT_VERSION
+        {
+            return None;
+        }
+        let llm = object.get("llm")?.as_object()?;
+        if !exact(llm, &["enabled", "host", "privacy_notice_version"]) {
+            return None;
+        }
+        let host = llm.get("host")?.as_str()?;
+        if host.len() > 300 || !host.is_ascii() {
+            return None;
+        }
+        let consent = LlmConsent {
+            enabled: llm.get("enabled")?.as_bool()?,
+            host: host.to_owned(),
+            notice: llm.get("privacy_notice_version")?.as_number()?.as_u64()?,
+        };
+        let mut genesis_pins = Vec::new();
+        for (network, hash) in object.get("genesisPins")?.as_object()?.iter() {
+            let NetworkId::Eip155(id) = NetworkId::parse(network)? else {
+                return None;
+            };
+            genesis_pins.push((id, parse_hash32(hash.as_str()?)?));
+        }
+        let mut fee_caps = Vec::new();
+        for (network, entry) in object.get("feeCaps")?.as_object()?.iter() {
+            let NetworkId::Eip155(id) = NetworkId::parse(network)? else {
+                return None;
+            };
+            let entry = entry.as_object()?;
+            if !exact(
+                entry,
+                &[
+                    "maxFeePerGasGwei",
+                    "maxPriorityFeePerGasGwei",
+                    "maxTotalFee",
+                ],
+            ) {
+                return None;
+            }
+            let text = |key: &str| {
+                entry
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .filter(|text| caps_text_valid(text))
+            };
+            fee_caps.push((
+                id,
+                caps(
+                    text("maxFeePerGasGwei")?,
+                    text("maxPriorityFeePerGasGwei")?,
+                    text("maxTotalFee")?,
+                ),
+            ));
+        }
+        let minutes = object.get("autoLockMinutes")?.as_number()?.as_u64()?;
+        if !(1..=60).contains(&minutes) {
+            return None;
+        }
+        let bitcoin = object.get("bitcoin")?.as_object()?;
+        if !exact(bitcoin, &["indexer", "esploraMainnet", "esploraTestnet4"]) {
+            return None;
+        }
+        let url = |key: &str| {
+            let text = bitcoin.get(key)?.as_str()?;
+            (validate_esplora_url(text)? == text).then(|| text.to_owned())
+        };
+        genesis_pins.sort_by_key(|(id, _)| *id);
+        fee_caps.sort_by_key(|(id, _)| *id);
+        Some(Self {
+            llm: consent,
+            genesis_pins,
+            fee_caps,
+            auto_lock_minutes: u8::try_from(minutes).ok()?,
+            btc_indexer: BtcIndexer::parse(bitcoin.get("indexer")?.as_str()?)?,
+            esplora_mainnet: url("esploraMainnet")?,
+            esplora_testnet4: url("esploraTestnet4")?,
+        })
+    }
+}
+
+/// A component of the snapshot whose file value differs and is not taken over silently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Differing {
+    /// `feeCaps`.
+    FeeCaps,
+    /// `autoLockMinutes`.
+    AutoLock,
+    /// `bitcoin.indexer` / `bitcoin.esploraBaseUrl`.
+    Indexer,
+    /// User EVM chains present in the file but not in the snapshot (their genesis was never
+    /// pinned by the app).
+    NewChains,
+}
+
+impl Differing {
+    /// The settings key named in the banner.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::FeeCaps => "feeCaps",
+            Self::AutoLock => "autoLockMinutes",
+            Self::Indexer => "bitcoin.indexer/esploraBaseUrl",
+            Self::NewChains => "evmChains",
+        }
+    }
+}
+
+/// The outcome of [`reconcile`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reconciled {
+    /// The settings to use from now on: the snapshot's value for every difference.
+    pub effective: Settings,
+    /// The file's settings with only the non-negotiable repairs (pins restored, LLM switched
+    /// off): written to `settings.json` when `write_file`, and the values `파일 값 사용` takes.
+    pub file: Settings,
+    /// `file` differs from the input (a pin was restored or the LLM switched off).
+    pub write_file: bool,
+    /// The LLM was on in the file without a matching consent: it is off now.
+    pub llm_forced_off: bool,
+    /// Chains whose genesis pin was restored from the snapshot.
+    pub pins_restored: Vec<u64>,
+    /// Components that use the snapshot value until the user decides.
+    pub differing: Vec<Differing>,
+    /// The snapshot to store: the input plus what was taken over (keys the app itself saved
+    /// before the check, and pins recorded on first use that the snapshot did not have yet).
+    pub snapshot: SecuritySnapshot,
+}
+
+/// Compares the settings in use with the snapshot (after unlock). `accepted` are the save keys
+/// (`App::save_settings`) the app itself wrote before the snapshot was available: those values
+/// are taken over. A genesis pin that differs from the snapshot is always restored, even then.
+///
+/// - LLM: switched on (effectively) without a consent for the current endpoint host in the
+///   snapshot → off (`file` and `effective`).
+/// - Genesis pins: missing or changed → the snapshot's pin (`file` and `effective`); a pin the
+///   snapshot lacks (first use) is taken over.
+/// - Fee caps, auto-lock, Bitcoin indexer/Esplora URLs, user chains unknown to the snapshot →
+///   `effective` uses the snapshot value, `file` keeps the file value ([`Differing`]).
+#[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pass over the snapshot components in a fixed order"
+)]
+pub fn reconcile(current: &Settings, snapshot: &SecuritySnapshot, accepted: &[&str]) -> Reconciled {
+    // `파일 값 사용` pressed while locked takes over every component except the LLM consent
+    // (which only the S15 consent flow records).
+    let all = accepted.contains(&ACCEPT_FILE_KEY);
+    let saved = |prefix: &str| all || accepted.iter().any(|key| key.starts_with(prefix));
+    let llm_saved = accepted.iter().any(|key| key.starts_with("llm_explain"));
+    let mut file = current.clone();
+    let mut next = snapshot.clone();
+    let mut llm_forced_off = false;
+    let mut pins_restored = Vec::new();
+    let mut differing = Vec::new();
+
+    // LLM consent.
+    let host = endpoint_host(&current.llm_explain);
+    if llm_saved {
+        next.llm = SecuritySnapshot::of(current).llm;
+    } else if crate::explain::config::effectively_enabled(&current.llm_explain)
+        && !snapshot.llm_consented_to(&host)
+    {
+        file.llm_explain.enabled = false;
+        llm_forced_off = true;
+    }
+
+    // Genesis pins.
+    for (id, pin) in &snapshot.genesis_pins {
+        if BUILTIN_EVM.contains(id) {
+            let found = file
+                .evm_genesis_pins
+                .iter()
+                .find(|(pinned, _)| pinned == id);
+            if found.map(|(_, hash)| hash) != Some(pin) {
+                file.evm_genesis_pins.retain(|(pinned, _)| pinned != id);
+                file.evm_genesis_pins.push((*id, *pin));
+                pins_restored.push(*id);
+            }
+        } else if let Some(chain) = file.evm_chains.iter_mut().find(|c| c.chain_id == *id)
+            && chain.genesis_hash != *pin
+        {
+            chain.genesis_hash = *pin;
+            pins_restored.push(*id);
+        }
+    }
+    for (id, hash) in &current.evm_genesis_pins {
+        if next.pin(*id).is_none() {
+            next.genesis_pins.push((*id, *hash));
+        }
+    }
+    let mut effective = file.clone();
+    let unknown_chains: Vec<u64> = current
+        .evm_chains
+        .iter()
+        .map(|chain| chain.chain_id)
+        .filter(|id| snapshot.pin(*id).is_none())
+        .collect();
+    if !unknown_chains.is_empty() {
+        if saved("evmChains") {
+            for chain in current
+                .evm_chains
+                .iter()
+                .filter(|chain| unknown_chains.contains(&chain.chain_id))
+            {
+                next.genesis_pins.push((chain.chain_id, chain.genesis_hash));
+            }
+        } else {
+            differing.push(Differing::NewChains);
+            effective
+                .evm_chains
+                .retain(|chain| !unknown_chains.contains(&chain.chain_id));
+            if !effective.registered_evm().contains(&effective.evm_chain_id) {
+                effective.evm_chain_id = Settings::default().evm_chain_id;
+            }
+            let registered = effective.registered_evm();
+            effective.fee_caps.retain(|(id, _)| registered.contains(id));
+        }
+    }
+    next.genesis_pins.sort_by_key(|(id, _)| *id);
+
+    // Fee caps (only for chains registered in what is used).
+    let registered = effective.registered_evm();
+    let snapshot_caps: Vec<(u64, FeeCapsText)> = snapshot
+        .fee_caps
+        .iter()
+        .filter(|(id, _)| registered.contains(id))
+        .cloned()
+        .collect();
+    let current_caps: Vec<(u64, FeeCapsText)> = sorted_caps(&effective.fee_caps)
+        .into_iter()
+        .filter(|(id, _)| registered.contains(id))
+        .collect();
+    if saved("feeCaps") {
+        next.fee_caps = sorted_caps(&current.fee_caps);
+    } else if current_caps != snapshot_caps {
+        differing.push(Differing::FeeCaps);
+        effective.fee_caps = snapshot_caps;
+    }
+
+    // Auto-lock.
+    if saved("autoLockMinutes") {
+        next.auto_lock_minutes = current.auto_lock_minutes;
+    } else if current.auto_lock_minutes != snapshot.auto_lock_minutes {
+        differing.push(Differing::AutoLock);
+        effective.auto_lock_minutes = snapshot.auto_lock_minutes;
+    }
+
+    // Bitcoin indexer and Esplora URLs.
+    let bitcoin = &current.bitcoin;
+    if saved("bitcoin") {
+        next.btc_indexer = bitcoin.indexer;
+        next.esplora_mainnet.clone_from(&bitcoin.esplora_mainnet);
+        next.esplora_testnet4.clone_from(&bitcoin.esplora_testnet4);
+    } else if bitcoin.indexer != snapshot.btc_indexer
+        || bitcoin.esplora_mainnet != snapshot.esplora_mainnet
+        || bitcoin.esplora_testnet4 != snapshot.esplora_testnet4
+    {
+        differing.push(Differing::Indexer);
+        effective.bitcoin.indexer = snapshot.btc_indexer;
+        effective
+            .bitcoin
+            .esplora_mainnet
+            .clone_from(&snapshot.esplora_mainnet);
+        effective
+            .bitcoin
+            .esplora_testnet4
+            .clone_from(&snapshot.esplora_testnet4);
+    }
+
+    let write_file = file != *current;
+    Reconciled {
+        effective,
+        file,
+        write_file,
+        llm_forced_off,
+        pins_restored,
+        differing,
+        snapshot: next,
+    }
+}

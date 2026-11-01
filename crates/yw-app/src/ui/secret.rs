@@ -440,7 +440,13 @@ fn slots_for(kind: SecretKind) -> Vec<Slot> {
 fn intro(kind: SecretKind, words: usize) -> Vec<String> {
     let rule = "비밀번호는 영문·숫자·기호(ASCII) 12–128자입니다. 단어 4개 이상을 이은 긴 문장을 권장합니다. 잊으면 복구 단어(니모닉)로만 복구할 수 있습니다.";
     match kind {
-        SecretKind::SetPassword | SecretKind::ChangePassword => vec![rule.to_owned()],
+        SecretKind::SetPassword => vec![rule.to_owned()],
+        // Review L1: the DEK is kept, so older copies of the wallet file keep the old password.
+        SecretKind::ChangePassword => vec![
+            rule.to_owned(),
+            "바꾸기 전에 만든 지갑 파일 사본(백업한 vault.ywv, .prev)은 예전 비밀번호로 계속 열립니다."
+                .to_owned(),
+        ],
         SecretKind::Unlock => vec!["지갑을 열려면 비밀번호를 입력하세요.".to_owned()],
         SecretKind::ConfirmPassword => {
             vec!["계속하려면 비밀번호를 다시 입력하세요.".to_owned()]

@@ -8,6 +8,12 @@
 //! file, (5) flush the folder, (6) read back and compare. Orphan `*.tmp` files are removed when the
 //! storage is opened.
 //!
+//! Links (review L8): `vault.ywv`, `meta.ywm`, `journal.ywj` and their `.prev` are never followed.
+//! Reads open the file itself (`read_limited_no_reparse`) and refuse a reparse point; a commit
+//! refuses before writing anything when the folder, the main file or `.prev` is one. Folder
+//! flush failures are errors (step 5 and `restore_prev`), and the folder is flushed once before
+//! anything is written too, so a folder that cannot be flushed fails the commit up front.
+//!
 //! A failure reported after step 4 (the read-back of step 6) does not mean nothing was written:
 //! the replace already happened. `Vault` re-reads the main file after every failed commit and
 //! treats bytes identical to the ones it wrote as success (spec/02 §6.2), so its in-memory
@@ -21,8 +27,8 @@ use yw_core::error::StorageError;
 use yw_core::vault::{FileKind, LockedSlot, SLOT_LEN, VaultStorage, peek_generation};
 use yw_win::WinError;
 use yw_win::file::{
-    FileError, ensure_dir, flush_dir, read_limited, rename_no_replace, replace_file,
-    write_new_synced,
+    FileError, ensure_dir, flush_dir, read_limited_no_reparse, reject_reparse_point,
+    rename_no_replace, replace_file, write_new_synced,
 };
 use yw_win::mem::LockedBox;
 
@@ -121,7 +127,7 @@ impl FileStorage {
     }
 
     fn read(path: &Path, kind: FileKind) -> Result<Option<Vec<u8>>, StorageError> {
-        match read_limited(path, max_size(kind)) {
+        match read_limited_no_reparse(path, max_size(kind)) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(FileError::NotFound) => Ok(None),
             Err(error) => Err(storage_error(error)),
@@ -144,8 +150,16 @@ impl FileStorage {
         remove_if_present(&tmp)?;
         write_new_synced(&tmp, &prev).map_err(storage_error)?;
         replace_file(&tmp, &self.path(kind)).map_err(storage_error)?;
-        let _ = flush_dir(&self.dir);
-        Ok(())
+        flush_dir(&self.dir).map_err(storage_error)
+    }
+
+    /// Refuses (before anything is written) a folder, main file or `.prev` that is a reparse
+    /// point, and a folder that cannot be flushed (review L8).
+    fn precheck(&self, kind: FileKind) -> Result<(), StorageError> {
+        reject_reparse_point(&self.dir).map_err(storage_error)?;
+        reject_reparse_point(&self.path(kind)).map_err(storage_error)?;
+        reject_reparse_point(&with_suffix(&self.dir, kind, ".prev")).map_err(storage_error)?;
+        flush_dir(&self.dir).map_err(storage_error)
     }
 
     /// Stops `commit` with `Io(0)` right after step `step` (1–6) — V-FS fault injection.
@@ -192,6 +206,7 @@ impl VaultStorage for FileStorage {
             return Err(StorageError::TooLarge);
         }
         // 1. Read the main file and check the precondition; nothing is written on failure.
+        self.precheck(kind)?;
         let current = self.load(kind)?;
         match (expected_generation, &current) {
             (None, None) => {}
@@ -224,8 +239,9 @@ impl VaultStorage for FileStorage {
             return Err(storage_error(error));
         }
         self.stop(4)?;
-        // 5. Folder flush (recommended).
-        let _ = flush_dir(&self.dir);
+        // 5. Folder flush. A failure is an error (review L8); the replace already happened, so
+        //    `Vault`'s re-read (commit_landed) still follows the disk.
+        flush_dir(&self.dir).map_err(storage_error)?;
         self.stop(5)?;
         // 6. Read back.
         if self.load(kind)?.as_deref() != Some(bytes) {

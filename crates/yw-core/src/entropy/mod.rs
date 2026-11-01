@@ -108,12 +108,21 @@ pub(crate) fn random_secret32_with(
     Ok(out)
 }
 
-/// `N` random bytes for salts and nonces.
+/// `N` random bytes for salts and nonces (`N` is 16 or 24 at every call site).
+///
+/// All-equal output is treated as a stuck source, exactly like [`random_secret32_with`]: a nonce
+/// source that is stuck mid-session would otherwise reuse an `XChaCha20` nonce under the same DEK
+/// (review L16). For `N >= 16` an honest source produces all-equal bytes with probability
+/// `2^-(8(N-1))`, so the check never fires in practice.
 pub(crate) fn random_array_with<const N: usize>(
     rng: &mut impl RandomSource,
 ) -> Result<[u8; N], KeyError> {
     let mut out = [0_u8; N];
     rng.fill(&mut out)?;
+    let first = out.first().copied().unwrap_or(0);
+    if N >= 2 && out.iter().all(|byte| *byte == first) {
+        return Err(KeyError::RandomnessUnavailable);
+    }
     Ok(out)
 }
 

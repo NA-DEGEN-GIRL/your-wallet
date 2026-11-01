@@ -32,6 +32,27 @@ fn stuck_rng_rejected() {
 }
 
 #[test]
+fn stuck_rng_rejected_for_salts_and_nonces() {
+    // Review L16: the salt/nonce helper applies the same all-equal check as the DEK.
+    for stuck in [0x00_u8, 0x5a, 0xff] {
+        let mut rng = ScriptedRandom::new(&[stuck; 24]);
+        assert_eq!(
+            random_array_with::<24>(&mut rng),
+            Err(KeyError::RandomnessUnavailable)
+        );
+        let mut rng = ScriptedRandom::new(&[stuck; 16]);
+        assert_eq!(
+            random_array_with::<16>(&mut rng),
+            Err(KeyError::RandomnessUnavailable)
+        );
+    }
+    let mut almost = [0x5a_u8; 24];
+    almost[0] = 0x00;
+    let mut rng = ScriptedRandom::new(&almost);
+    assert_eq!(random_array_with::<24>(&mut rng), Ok(almost));
+}
+
+#[test]
 fn zero_id_redrawn_then_fails() {
     let mut rng = ScriptedRandom::new(&[0_u8; 64]);
     assert_eq!(

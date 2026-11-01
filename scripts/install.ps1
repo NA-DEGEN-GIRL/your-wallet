@@ -3,7 +3,7 @@
 # Windows PowerShell 5.1과 PowerShell 7에서 동작한다. 관리자 권한이 필요 없다(현재 사용자 범위만 바꾼다).
 #
 # 사용 (저장소 루트에서):
-#   install.cmd [-InstallDir <폴더>] [-FixPermissions] [-AllowUnsafeToolchainPath] [-AllowAncestorCargoConfig] [-NoShortcut] [-NoNativeHost] [-NoBuild] [-DryRun]
+#   install.cmd [-InstallDir <폴더>] [-FixPermissions] [-AllowUnsafeToolchainPath] [-AllowAncestorCargoConfig] [-AllowUnsafeSourcePath] [-NoShortcut] [-NoNativeHost] [-NoBuild] [-DryRun]
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1 [같은 옵션]
 #
 #   -InstallDir    설치 폴더. 기본 %LOCALAPPDATA%\Programs\YourWallet
@@ -13,6 +13,8 @@
 #                  설명을 출력한 뒤 그대로 빌드한다. 없으면 그런 도구로는 빌드하지 않는다(종료 7).
 #   -AllowAncestorCargoConfig  저장소 바깥 상위 폴더의 .cargo\config.toml·.cargo\config(아래 cargo 설정 규칙)가 있어도
 #                  목록을 출력한 뒤 그대로 빌드한다. 없으면 그런 폴더에서는 빌드하지 않는다(종료 7).
+#   -AllowUnsafeSourcePath  설치할 파일이 나오는 저장소 폴더·extension\·빌드 폴더(target\release)를 다른 사용자가 바꿀 수
+#                  있어도(아래 소스 폴더 규칙) 목록을 출력한 뒤 그대로 설치한다. 없으면 그런 소스로는 설치하지 않는다(종료 1).
 #   -NoShortcut   시작 메뉴 바로가기를 만들지 않는다.
 #   -NoNativeHost  HKCU에 Chrome native messaging host를 등록하지 않는다(manifest 파일은 설치 폴더에 쓴다).
 #   -NoBuild       빌드하지 않고 이미 있는 target\release\yw-app.exe·yw-host.exe를 쓴다(빌드 도구 확인도 건너뛴다).
@@ -50,6 +52,16 @@
 # 소유권 가져오기를 주는 허용 ACE가 폴더나 그 안 항목에 있으면 설치하지 않는다(CREATOR OWNER의 상속 전용 ACE만 예외).
 # -FixPermissions는 폴더가 현재 사용자 소유일 때만 위 DACL로 고친다.
 #
+# 소스 폴더 권한(Confirm-SourcePathsTrusted, 2026-11-01 검토 L7): 설치 폴더가 안전해도 복사해 오는 파일을 다른 사용자가
+# 미리 바꿔 둘 수 있으면 그 사용자의 코드가 사설 폴더에 설치된다. 그래서 저장소 루트·scripts\·uninstall.ps1·extension\과
+# 그 안의 런타임 파일·폴더, 그리고 빌드 뒤(또는 -NoBuild) 빌드 폴더(target 또는 CARGO_TARGET_DIR)·release\·yw-app.exe·
+# yw-host.exe에 설치 폴더와 같은 권한 규칙(Get-AclProblem)을 적용한다. 예외: S-1-4-*(non-unique authority)과
+# AppContainer(S-1-15-2-*·S-1-15-3-*) SID의 ACE는 무시한다 — 로그온 세션에 주어지는 SID가 아니고(샌드박스가 현재 사용자의
+# 제한 토큰에 넣는 제한 SID·AppContainer SID), 그런 토큰은 사용자 SID 권한이 함께 있어야만 접근한다. 위반이면 목록을
+# 출력하고 종료 1(-AllowUnsafeSourcePath면 경고 후 계속).
+# 설치 기록(yw-install.json)에는 설치한 파일마다 SHA-256(hashes)을 남기고, 다음 실행에서 설치 폴더의 파일과 비교해 설치 뒤에
+# 바뀐 파일을 경고한다(이번 설치가 소스의 파일로 다시 쓴다). 이전 버전의 기록(hashes 없음)은 비교하지 않는다.
+#
 # 상위 폴더 권한(Get-InstallAncestorProblems): 설치 폴더의 상위 폴더를 다른 사용자가 지우거나 이름을 바꾼 뒤 같은 경로에
 # 자기 폴더를 만들 수 있으면, HKCU 등록이 가리키는 경로의 yw-host.exe를 그 사용자가 정한다. 그래서 -InstallDir이면
 # 드라이브 루트까지, 기본 경로면 사용자 프로필(%USERPROFILE%)부터 아래의 이미 있는 상위 폴더마다 다음을 본다. "신뢰하지
@@ -69,7 +81,8 @@
 # 종료 코드:
 #   0  성공(-DryRun 포함)
 #   1  환경·인자 오류(저장소 밖의 사본을 실행, LOCALAPPDATA 없음, 64비트 Windows 아님, 쓸 수 없는 설치 경로,
-#      설치 기록이 없는 비어 있지 않은 폴더, 다른 사용자가 바꿀 수 있는 설치 폴더나 상위 폴더 등)
+#      설치 기록이 없는 비어 있지 않은 폴더, 다른 사용자가 바꿀 수 있는 설치 폴더나 상위 폴더, 다른 사용자가 바꿀 수
+#      있는 소스·빌드 폴더(-AllowUnsafeSourcePath 없음) 등)
 #   2  소스·빌드 결과 오류(확장 파일 없음·형식 오류, 확장 ID 불일치, rust-toolchain.toml이 1.95.0이 아님,
 #      -NoBuild인데 yw-app.exe·yw-host.exe 없음)
 #   3  취소(사용자가 취소함, 또는 실행 중인 yw-app·yw-host를 닫아 달라고 물을 수 없는 비대화형 실행)
@@ -88,6 +101,7 @@ param(
     [switch]$FixPermissions,
     [switch]$AllowUnsafeToolchainPath,
     [switch]$AllowAncestorCargoConfig,
+    [switch]$AllowUnsafeSourcePath,
     [switch]$NoShortcut,
     [switch]$NoNativeHost,
     [switch]$NoBuild,
@@ -348,6 +362,50 @@ function Get-InstallDirProblems([string]$Dir, [string]$UserSid) {
         if ($null -ne $problem) { $problems.Add("$($item.FullName) : $problem") }
     }
     return , $problems.ToArray()
+}
+
+# 소스 폴더 규칙(머리말): Get-AclProblem과 같되, 로그온 세션에 주어지지 않는 SID(S-1-4-*, AppContainer S-1-15-2-*·
+# S-1-15-3-*)의 ACE는 빼고 본다.
+$SourceIgnoredSidPattern = '^S-1-(4|15-2|15-3)-'
+
+function Get-SourceAclProblem([string]$Sddl, [string]$UserSid) {
+    $sd = New-Object Security.AccessControl.RawSecurityDescriptor($Sddl)
+    if ($null -ne $sd.DiscretionaryAcl) {
+        for ($index = $sd.DiscretionaryAcl.Count - 1; $index -ge 0; $index--) {
+            $ace = $sd.DiscretionaryAcl[$index]
+            if ($ace -is [Security.AccessControl.QualifiedAce] -and $ace.SecurityIdentifier.Value -match $SourceIgnoredSidPattern) {
+                $sd.DiscretionaryAcl.RemoveAce($index)
+            }
+        }
+    }
+    return Get-AclProblem ($sd.GetSddlForm([Security.AccessControl.AccessControlSections]::All)) $UserSid
+}
+
+# $Paths 중 있는 것마다 Get-SourceAclProblem. 문제 문장 목록(없으면 빈 배열).
+function Get-SourcePathProblems([string[]]$Paths, [string]$UserSid) {
+    $problems = New-Object 'System.Collections.Generic.List[string]'
+    $seen = @{}
+    foreach ($path in $Paths) {
+        if ([string]::IsNullOrEmpty($path) -or $seen.ContainsKey($path.ToLowerInvariant())) { continue }
+        $seen[$path.ToLowerInvariant()] = $true
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        $problem = Get-SourceAclProblem (Get-Acl -LiteralPath $path).Sddl $UserSid
+        if ($null -ne $problem) { $problems.Add("$path : $problem") }
+    }
+    return , $problems.ToArray()
+}
+
+# 소스·빌드 폴더 확인: 문제가 있으면 목록을 출력하고 종료 1(-AllowUnsafeSourcePath면 경고 후 계속).
+function Confirm-SourcePathsTrusted([string[]]$Paths, [string]$UserSid, [bool]$Allow) {
+    $problems = Get-SourcePathProblems $Paths $UserSid
+    if ($problems.Count -eq 0) { return }
+    Write-Host '  설치할 파일이 나오는 소스·빌드 폴더를 다른 사용자가 바꿀 수 있습니다:' -ForegroundColor Yellow
+    foreach ($problem in $problems) { Write-Host "    - $problem" }
+    if ($Allow) {
+        Write-Warn '-AllowUnsafeSourcePath: 그대로 설치합니다. 그 사용자가 실행 파일이나 확장 파일을 바꿔 두었다면 그대로 설치됩니다.'
+        return
+    }
+    Stop-Install 1 '이 소스로는 설치하지 않습니다. 다른 사용자가 저장소나 빌드 폴더의 파일을 바꿔 두면 그 코드가 지갑으로 설치됩니다. 저장소를 사용자 프로필 아래(예: %USERPROFILE%\src)에 다시 받아 설치하거나, 폴더 권한을 확인한 뒤 -AllowUnsafeSourcePath로 실행하세요.'
 }
 
 # 이미 있는 폴더를 고친다(-FixPermissions, 현재 사용자 소유일 때만 호출): 폴더에 설치 DACL, 안의 항목은 명시 ACE를
@@ -681,13 +739,23 @@ function Read-InstallMarker([string]$Dir) {
         $commit = $null
         $commitProperty = $value.PSObject.Properties['commit']
         if ($null -ne $commitProperty -and $commitProperty.Value -is [string]) { $commit = $commitProperty.Value }
-        return [pscustomobject]@{ Version = $value.version; Commit = $commit; Files = [string[]]$files }
+        # 파일별 SHA-256(2026-11-01부터). 없으면(이전 기록) 비교하지 않는다.
+        $hashes = $null
+        $hashesProperty = $value.PSObject.Properties['hashes']
+        if ($null -ne $hashesProperty -and $null -ne $hashesProperty.Value) {
+            $hashes = @{}
+            foreach ($entry in $hashesProperty.Value.PSObject.Properties) {
+                if (-not (Test-RelativePackagePath $entry.Name) -or -not ($entry.Value -is [string]) -or $entry.Value -cnotmatch '^[0-9a-f]{64}$') { throw 'hashes' }
+                $hashes[$entry.Name] = $entry.Value
+            }
+        }
+        return [pscustomobject]@{ Version = $value.version; Commit = $commit; Files = [string[]]$files; Hashes = $hashes }
     } catch {
         Stop-Install 1 "설치 기록 파일이 손상되었습니다: $path. 이 폴더에는 설치하지 않습니다. -InstallDir로 다른 빈 폴더를 지정하세요."
     }
 }
 
-function Write-InstallMarker([string]$Dir, [string]$Version, $Commit, [string]$State, [string[]]$Files) {
+function Write-InstallMarker([string]$Dir, [string]$Version, $Commit, [string]$State, [string[]]$Files, $Hashes = $null) {
     $sorted = [string[]]@($Files)
     [Array]::Sort($sorted, [StringComparer]::Ordinal)
     $marker = [ordered]@{
@@ -696,6 +764,11 @@ function Write-InstallMarker([string]$Dir, [string]$Version, $Commit, [string]$S
         commit  = $Commit
         state   = $State
         files   = $sorted
+    }
+    if ($null -ne $Hashes) {
+        $ordered = [ordered]@{}
+        foreach ($file in $sorted) { if ($Hashes.ContainsKey($file)) { $ordered[$file] = $Hashes[$file] } }
+        $marker['hashes'] = $ordered
     }
     $path = Join-Path $Dir $MarkerName
     $json = (ConvertTo-Json -InputObject $marker -Depth 3) + "`n"
@@ -1356,6 +1429,15 @@ function Invoke-Install {
         Stop-Install 2 "확장 ID가 다릅니다(manifest $sourceExtensionId, 기대 $ExtensionId). 이 소스로 설치하지 마세요."
     }
     Write-Host "  런타임 파일 $($extensionFiles.Count)개, 확장 ID $ExtensionId 확인."
+    # 소스 폴더 권한(머리말의 규칙): 저장소 루트, scripts\, extension\과 그 안의 런타임 파일·폴더.
+    $sourcePaths = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($path in $root, (Join-Path $root 'scripts'), (Join-Path $root 'scripts\uninstall.ps1'), $extensionRoot) { $sourcePaths.Add($path) }
+    foreach ($rel in $extensionFiles) {
+        $file = Join-RelativePath $extensionRoot $rel
+        $sourcePaths.Add([IO.Path]::GetDirectoryName($file))
+        $sourcePaths.Add($file)
+    }
+    Confirm-SourcePathsTrusted $sourcePaths.ToArray() $userSid $AllowUnsafeSourcePath.IsPresent
 
     # 2. 빌드 도구
     Write-Step '2/8 빌드 도구 확인'
@@ -1400,6 +1482,8 @@ function Invoke-Install {
         }
         Write-Host '  빌드 완료.'
     }
+    # 빌드 폴더 권한(머리말의 소스 폴더 규칙): 복사해 올 실행 파일과 그 폴더.
+    Confirm-SourcePathsTrusted @((ConvertTo-FullPath $cargoTarget), $releaseDir, $sourceApp, $sourceHost) $userSid $AllowUnsafeSourcePath.IsPresent
 
     # 4. 설치 폴더 상태와 계획
     Write-Step '4/8 설치 폴더 확인'
@@ -1432,6 +1516,18 @@ function Invoke-Install {
             $cmp = 0
             try { $cmp = ([version]$version).CompareTo([version]$marker.Version) } catch { $cmp = 0 }
             if ($cmp -lt 0) { Write-Warn "설치된 버전($($marker.Version))보다 낮은 버전($version)으로 바꿉니다." }
+            # 설치 뒤에 바뀐 파일(설치 기록의 SHA-256과 비교, 2026-11-01 검토 L7).
+            if ($null -ne $marker.Hashes) {
+                $changed = New-Object 'System.Collections.Generic.List[string]'
+                foreach ($rel in @($marker.Hashes.Keys | Sort-Object)) {
+                    $path = Join-RelativePath $target $rel
+                    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { $changed.Add("$rel (없음)"); continue }
+                    if ((Get-Sha256Hex $path) -ne $marker.Hashes[$rel]) { $changed.Add($rel) }
+                }
+                if ($changed.Count -gt 0) {
+                    Write-Warn "설치한 뒤 바뀐 파일이 있습니다(다른 프로그램이나 사용자가 바꿨을 수 있습니다): $($changed -join ', '). 이번 설치가 소스의 파일로 다시 씁니다. 직접 바꾼 것이 아니면 이 PC에서 다른 프로그램이 지갑 파일을 건드리는지 확인하세요."
+                }
+            }
         }
         # 비어 있거나 이전 설치인 폴더: 다른 사용자가 바꿀 수 있으면 설치하지 않는다(-FixPermissions로 고침).
         Confirm-InstallDirPermissions $target $userSid
@@ -1585,7 +1681,11 @@ function Invoke-Install {
     }
 
     if (-not $DryRun) {
-        try { Write-InstallMarker $target $version $commit 'installed' $newFiles } catch {
+        try {
+            $installedHashes = @{}
+            foreach ($file in $newFiles) { $installedHashes[$file] = Get-Sha256Hex (Join-RelativePath $target $file) }
+            Write-InstallMarker $target $version $commit 'installed' $newFiles $installedHashes
+        } catch {
             Stop-Install 4 "설치 기록을 쓸 수 없습니다: $((Get-InnerException $_).Message)"
         }
     }
