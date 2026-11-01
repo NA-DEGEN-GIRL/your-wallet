@@ -21,6 +21,7 @@ use yw_win::clipboard;
 
 use crate::apikeys::{KeyName, mask_url};
 use crate::app::{App, AppMode, Confirm, Screen, SettingsSection};
+use crate::app_sol::{ReviewRefusal, SOL_REVIEW_CHANGED_TEXT as REVIEW_CHANGED_TEXT};
 use crate::errors::ErrorCode;
 use crate::events::{
     BalanceSnapshot, EvmSigned, JournalView, KeyJob, KeyOutcome, RpcEvent, SignFailure,
@@ -98,6 +99,24 @@ pub struct SendForm {
     pub max_pending: bool,
     /// Message (T-APPR-EXPIRED, errors).
     pub info: Option<String>,
+}
+
+/// What a send approval is built from: the parsed recipient, the asset and the amount.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EvmReviewInputs {
+    to: Option<Address>,
+    asset: SendAsset,
+    amount: Option<U256>,
+}
+
+impl EvmReviewInputs {
+    fn of(form: &SendForm) -> Self {
+        Self {
+            to: form.recipient.as_ref().map(|(address, _)| *address),
+            asset: form.asset,
+            amount: form.amount,
+        }
+    }
 }
 
 /// Balances of one chain.
@@ -1389,7 +1408,8 @@ impl App {
         }
     }
 
-    /// Whether `검토` is enabled (spec/04 §2.7).
+    /// Whether `검토` is enabled (spec/04 §2.7). Off while an edit awaits its debounced
+    /// validation (`dirty_ms`): the shown result is not the input's yet.
     #[must_use]
     pub fn can_review(&self) -> bool {
         let form = &self.evm.send;
@@ -1398,7 +1418,8 @@ impl App {
             .recipient
             .as_ref()
             .is_some_and(|(_, notes)| notes.iter().any(AddressNote::needs_ack));
-        form.recipient.is_some()
+        form.dirty_ms.is_none()
+            && form.recipient.is_some()
             && form.amount.is_some()
             && form.amount_error.is_none()
             && form.recipient_error.is_none()
@@ -1414,25 +1435,48 @@ impl App {
             && matches!(self.mode, AppMode::Unlocked { .. })
     }
 
-    /// `검토`: queue the approval and open A01 (spec/04 §2.7, §3.5).
-    pub fn review_send(&mut self) {
-        if !self.can_review() {
-            return;
+    /// The approval item of `검토` (spec/04 §2.7, the EVM counterpart of spec/07 §13.1-1). The
+    /// form is validated again first, without any call, and the item is built from that fresh
+    /// result only: when the fresh recipient, asset or amount differs from the last shown
+    /// validation (an edit inside the 500 ms debounce), nothing is queued and the quote for the
+    /// new input is asked for.
+    ///
+    /// # Errors
+    ///
+    /// [`ReviewRefusal`].
+    pub fn review_item(&mut self) -> Result<AppApproval, ReviewRefusal> {
+        let shown = EvmReviewInputs::of(&self.evm.send);
+        self.evm.send.dirty_ms = None;
+        self.validate_send(false);
+        if EvmReviewInputs::of(&self.evm.send) != shown {
+            self.request_quote();
+            return Err(ReviewRefusal::Changed);
         }
-        let Some((account, signer, _)) = self.selected_account() else {
-            return;
-        };
-        let Some(intent) = self.intent() else {
-            return;
-        };
-        let chain_id = self.settings.evm_chain_id;
-        self.enqueue_app(AppApproval {
-            chain_id,
+        if !self.can_review() {
+            return Err(ReviewRefusal::NotReady);
+        }
+        let (account, signer, _) = self.selected_account().ok_or(ReviewRefusal::NotReady)?;
+        let intent = self.intent().ok_or(ReviewRefusal::NotReady)?;
+        Ok(AppApproval {
+            chain_id: self.settings.evm_chain_id,
             account,
             signer,
             intent,
             replace: None,
-        });
+        })
+    }
+
+    /// `검토`: queue the approval built from a fresh validation and open A01 (spec/04 §2.7,
+    /// §3.5).
+    pub fn review_send(&mut self) {
+        match self.review_item() {
+            Ok(item) => self.enqueue_app(item),
+            Err(ReviewRefusal::Changed) => {
+                self.evm.send.info = Some(REVIEW_CHANGED_TEXT.to_owned());
+                self.refresh();
+            }
+            Err(ReviewRefusal::NotReady) => {}
+        }
     }
 
     /// Queues an app approval if its send slot is free (spec/03 §3.6).
@@ -2288,6 +2332,87 @@ mod tests {
                 .iter()
                 .all(|address| address.to_lower_hex() == book)
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// spec/04 §2.7 (security review M2): `검토` validates again without a call and refuses when
+    /// the fresh recipient or amount differs from the shown one (an edit inside the debounce);
+    /// it is off while an edit awaits validation; the item is built from the fresh result only.
+    #[test]
+    fn review_revalidates_and_refuses_an_edit_inside_the_debounce() {
+        use crate::apikeys::ApiKeys;
+        use crate::app::{App, AppMode, Paths};
+        use crate::app_sol::{ReviewRefusal, SOL_REVIEW_CHANGED_TEXT};
+        use crate::events::JournalView;
+        use crate::flow::evm::form::Quote;
+        use crate::meta::{Account, Meta};
+        use crate::settings::Settings;
+        use yw_core::evm::amount::U256;
+
+        const TO_A: &str = "0x52908400098527886e0f7030069857d2e4169ee7";
+        const TO_B: &str = "0xf278cf59f82edcf871d630f28ecc8056f25c1cdb";
+        let dir = std::env::temp_dir().join(format!("yw-app-evm-review-{}", std::process::id()));
+        let mut app = App::new(
+            Paths {
+                data: dir.clone(),
+                logs: dir.join("logs"),
+            },
+            true,
+            Settings::default(),
+            ApiKeys::default(),
+        );
+        app.mode = AppMode::Unlocked {
+            alt_passphrase: false,
+        };
+        app.meta = Some(Meta {
+            evm_accounts: vec![Account {
+                index: 0,
+                label: "계정 1".to_owned(),
+                address: "0xfe3b557e8fb62b89f4916b721be55ceb828dbd73".to_owned(),
+                hidden: false,
+            }],
+            ..Meta::default()
+        });
+        app.evm.journal = Some(JournalView::default());
+        let quote = Quote {
+            gas_limit: 21_000,
+            max_fee_per_gas: U256::from_u64(1),
+            max_total: U256::from_u64(21_000),
+            cap_violation: None,
+            estimate_failed: false,
+        };
+        let to = |text: &str| yw_core::evm::address::parse_address(text).unwrap();
+        let one_eth = U256::from_u64(1_000_000_000_000_000_000);
+        app.evm.send.to_text = TO_A.to_owned();
+        app.evm.send.amount_text = "1".to_owned();
+        app.validate_send(false);
+        app.evm.send.quote = Some(quote.clone());
+        assert!(app.can_review());
+        // B / 10 pasted, the debounce has not run: `검토` is off and the shown result is A / 1.
+        app.evm.send.to_text = TO_B.to_owned();
+        app.evm.send.amount_text = "10".to_owned();
+        app.evm.send.dirty_ms = Some(1);
+        assert!(!app.can_review());
+        assert_eq!(app.review_item().unwrap_err(), ReviewRefusal::Changed);
+        assert_eq!(app.evm.send.dirty_ms, None);
+        assert_eq!(app.evm.send.recipient.as_ref().unwrap().0, to(TO_B));
+        // `review_send` itself shows the fixed text and queues nothing.
+        app.evm.send.amount_text = "2".to_owned();
+        app.review_send();
+        assert_eq!(app.evm.send.info.as_deref(), Some(SOL_REVIEW_CHANGED_TEXT));
+        assert!(app.evm.slots.is_empty());
+        // The fresh validation is now on screen: the item is built from it (B / 2).
+        app.evm.send.quote = Some(quote);
+        let item = app.review_item().unwrap();
+        assert_eq!(item.intent.to, to(TO_B));
+        assert_eq!(
+            item.intent.value,
+            one_eth.checked_mul_u64(2).unwrap()
+        );
+        // An input error is "not ready", not a change.
+        app.evm.send.amount_text = "x".to_owned();
+        app.validate_send(false);
+        assert_eq!(app.review_item().unwrap_err(), ReviewRefusal::NotReady);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -65,6 +65,7 @@ native host 등록은 `install.cmd`가 한다(spec/05 §9). 확장 소스를 고
 | [docs/acceptance/](docs/acceptance/) | 체크리스트·라이브 확인 기록 |
 | [docs/screenshots/](docs/screenshots/) | 화면 투어(주요 화면·승인 창·확장 팝업, 시험용 값) |
 | [docs/ux-review-20261031.md](docs/ux-review-20261031.md) | 최근 UI/UX 검토(고친 것·남긴 것) |
+| [docs/security-review-20261101.md](docs/security-review-20261101.md) | 보안 검토(발견·권고 순서·스펙 편차) |
 
 ## 보안 범위
 

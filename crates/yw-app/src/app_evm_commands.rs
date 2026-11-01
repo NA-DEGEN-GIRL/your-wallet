@@ -20,17 +20,24 @@ impl App {
     }
 
     /// `EN_CHANGE` of an EVM edit: keep the text (controls may be recreated) and debounce the
-    /// send-form validation (spec/04 §2.7: 500 ms after typing stops).
+    /// send-form validation (spec/04 §2.7: 500 ms after typing stops). `검토` is off until that
+    /// validation runs; the first edit of a burst repaints it so (the picker, whose rows follow
+    /// the text, keeps its controls until the validation).
     pub fn on_edit_change(&mut self, id: u16) {
         let now = yw_win::time::monotonic_ms();
         match id {
-            ids::SEND_TO_EDIT => {
-                self.evm.send.to_text = self.edit_text(id);
-                self.evm.send.dirty_ms = Some(now);
-            }
-            ids::SEND_AMOUNT_EDIT => {
-                self.evm.send.amount_text = self.edit_text(id);
-                self.evm.send.dirty_ms = Some(now);
+            ids::SEND_TO_EDIT | ids::SEND_AMOUNT_EDIT => {
+                let text = self.edit_text(id);
+                let form = &mut self.evm.send;
+                if id == ids::SEND_TO_EDIT {
+                    form.to_text = text;
+                } else {
+                    form.amount_text = text;
+                }
+                let first = form.dirty_ms.replace(now).is_none();
+                if first && !form.picker {
+                    self.refresh();
+                }
             }
             ids::BOOK_ADDR_EDIT => self.evm.book.address = self.edit_text(id),
             ids::BOOK_LABEL_EDIT => self.evm.book.label = self.edit_text(id),
