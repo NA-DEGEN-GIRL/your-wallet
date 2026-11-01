@@ -166,6 +166,9 @@ pub struct ConnectState {
     pub selected: Vec<bool>,
     /// Origin chain name.
     pub chain_name: String,
+    /// EVM: the origin chain shown (`chain_name`). Re-read from the dispatcher at every render
+    /// and checked at approval, which stores exactly this chain (security review L4(c)).
+    pub chain_id: u64,
     /// The request's chain family.
     pub family: yw_core::policy::Family,
     /// Number of radio groups (Solana 1, Bitcoin one per purpose; unused for EVM).
@@ -995,7 +998,7 @@ impl App {
         }
     }
 
-    fn connect_state(&self, site: &SiteRequest) -> ConnectState {
+    pub(crate) fn connect_state(&self, site: &SiteRequest) -> ConnectState {
         let family = site.kind.family();
         if family != yw_core::policy::Family::Evm {
             let (accounts, selected, chain_name) = self.chain_connect_choices(site);
@@ -1007,6 +1010,7 @@ impl App {
                 accounts,
                 selected,
                 chain_name,
+                chain_id: site.chain_id,
                 family,
                 groups,
             };
@@ -1042,13 +1046,55 @@ impl App {
                 })
                 .collect(),
             selected,
-            chain_name: self
-                .settings
-                .evm_chain_name(site.chain_id)
-                .unwrap_or_else(|| format!("chainId {}", site.chain_id)),
+            chain_name: self.evm_chain_label(self.connect_origin_chain(site)),
+            chain_id: self.connect_origin_chain(site),
             family,
             groups: 1,
         }
+    }
+
+    /// The origin's chain now (spec/05 §4.3), or the request's without a dispatcher.
+    fn connect_origin_chain(&self, site: &SiteRequest) -> u64 {
+        self.browser.as_ref().map_or(site.chain_id, |browser| {
+            browser.core.origin_chain(&site.origin)
+        })
+    }
+
+    fn evm_chain_label(&self, chain_id: u64) -> String {
+        self.settings
+            .evm_chain_name(chain_id)
+            .unwrap_or_else(|| format!("chainId {chain_id}"))
+    }
+
+    /// Security review L4(c): an open EVM connect window shows the origin's chain of now (a
+    /// window-less `wallet_switchEthereumChain` may have changed it). Returns whether it changed.
+    fn refresh_connect_chain(&mut self) -> bool {
+        let Some(site) = self
+            .evm
+            .window
+            .as_ref()
+            .and_then(|ui| match (&ui.item, &ui.connect) {
+                (QueuedItem::Site(site), Some(connect))
+                    if connect.family == yw_core::policy::Family::Evm =>
+                {
+                    Some(site.clone())
+                }
+                _ => None,
+            })
+        else {
+            return false;
+        };
+        let chain_id = self.connect_origin_chain(&site);
+        let name = self.evm_chain_label(chain_id);
+        let Some(connect) = self.evm.window.as_mut().and_then(|ui| ui.connect.as_mut()) else {
+            return false;
+        };
+        if connect.chain_id == chain_id {
+            return false;
+        }
+        connect.chain_id = chain_id;
+        connect.chain_name = name;
+        true
     }
 
     #[expect(
@@ -1697,6 +1743,15 @@ impl App {
                 .map(|((choice, _, _, _), _)| choice.clone())
                 .collect();
             if connect.family == yw_core::policy::Family::Evm {
+                // L4(c): the chain changed since the window was drawn — show the new one and
+                // wait for a new click (re-armed), never store a chain the user did not see.
+                if self.refresh_connect_chain() {
+                    if let Some(ui) = self.evm.window.as_mut() {
+                        ui.session.restart_arm_delay(now);
+                    }
+                    self.rebuild_view();
+                    return;
+                }
                 let accounts = choices
                     .iter()
                     .filter_map(|choice| match choice {
@@ -1704,7 +1759,7 @@ impl App {
                         _ => None,
                     })
                     .collect();
-                self.connect_approved(&site, accounts);
+                self.connect_approved(&site, accounts, connect.chain_id);
             } else {
                 self.chain_connect_approved(&site, &choices);
             }
@@ -1958,7 +2013,11 @@ impl App {
     )]
     fn rebuild_view_with(&mut self, force: bool) {
         let now = now_ms();
-        let testnet_chain = self.evm.window.as_ref().map(|ui| ui.item.chain_id());
+        self.refresh_connect_chain();
+        let testnet_chain = self.evm.window.as_ref().map(|ui| match &ui.connect {
+            Some(connect) if connect.family == yw_core::policy::Family::Evm => connect.chain_id,
+            _ => ui.item.chain_id(),
+        });
         let Some(chain_id) = testnet_chain else {
             return;
         };

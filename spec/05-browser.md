@@ -587,7 +587,7 @@ pub struct ConnectedSite {
 - 한도 정본은 [02] §5.3이다: grant 0..=256개, grant당 계정 1..=16개. 연결 창은 17개 이상을 고를 수 없고(§4.2), `accountsChanged` payload도 최대 16개다(§2.8). grant가 256개인 상태에서 새 origin이 연결을 요청하면 창을 띄우지 않고 4100(연결된 사이트 화면에서 해제한 뒤 다시 요청).
 - 계정 주소는 연결된 origin에만 노출한다. 연결되지 않은 origin이 계정을 요구하는 메서드를 부르면 4100이다. 연결 안 된 계정을 지정한 경우도 같은 4100이다(계정 존재 여부를 구분해 알려주지 않는다).
 - 지갑(vault)이 없으면 계정 관련 메서드는 4100, `eth_accounts`는 `[]`다.
-- 계정을 지갑에서 숨기거나 지우면([04](04-app-ui.md)) 모든 grant에서 빼고, 빈 grant는 삭제한다.
+- 계정을 지갑에서 숨기거나 지우면([04](04-app-ui.md)) 모든 grant에서 빼고, 빈 grant는 삭제한다. 그 계정을 서명 계정으로 하는 dApp 서명 요청(`eth_sendTransaction`·`personal_sign`·`eth_signTypedData_v4`)은 대기 중이든 표시 중이든 `Revoked`(4100)로 끝나고 표시 중인 창은 닫힌다(체인 삭제 §4.3과 같은 방식, 보안 검토 L4(b)).
 
 ### 4.2 연결 흐름 (`eth_requestAccounts`, `wallet_requestPermissions`)
 1. 같은 origin의 연결 창이 이미 대기·표시 중 → -32002 "Request already pending.".
@@ -597,9 +597,9 @@ pub struct ConnectedSite {
    - 제목 `사이트 연결`, origin 전체(scheme://host[:port]) 크게 표시. `http` origin이면 `로컬 개발 사이트(http)` 표시. 호스트에 `xn--` 라벨이 있으면 `국제화 도메인(punycode)` 경고. 요청 `context.compatMode`가 있으면 배지 `호환 모드: MetaMask` 또는 `호환 모드: Rabby`(§2.12, 서명 승인 창도 같은 배지). origin은 바뀌지 않는다.
    - 안내: `이 사이트는 선택한 계정의 주소, 잔액, 거래 기록을 볼 수 있습니다. 서명과 전송은 매번 따로 승인합니다.`
    - EVM 계정 목록: 체크박스 + 라벨 + 전체 주소(EIP-55 표기). 기본 선택: 기존 grant가 있으면 그 계정, 없으면 계정 0.
-   - 현재 origin 체인 이름 표시.
+   - 현재 origin 체인 이름 표시. 창을 그릴 때마다 origin 체인을 다시 읽는다(창 없는 `wallet_switchEthereumChain`이 그 사이 바꿀 수 있다, 보안 검토 L4(c)).
    - 버튼 `거부`, `연결`(선택 0개 또는 16개 초과면 비활성, [02] §5.3). 창 닫기 = 거부.
-5. `연결` → grant 저장(meta 원자적 쓰기), origin 체인 = 현재 origin 체인. 결과 반환 후 그 origin의 모든 문서에 `accountsChanged`. `거부` → 4001. 창 표시 후 120 s(D23) → 창 닫고 4001 "Request expired.". 요청 기한(§6.4) 만료 → 창 닫고 -32603 "Request timed out.". 확장 cancel·연결 끊김 → 창 닫고 응답 없음.
+5. `연결` → 먼저 다시 검사한다: origin 체인이 창에 그려진 값과 다르면 승인하지 않고 새 체인으로 다시 그린 뒤 1 s 무장 지연부터 다시 시작한다(새 클릭 필요). 고른 계정 중 창이 열린 사이 숨기거나 지운 계정이 있으면 4100 `Unauthorized`(Solana·Bitcoin 연결의 같은 경우와 같다, 보안 검토 L4(a)). 통과하면 grant 저장(meta 원자적 쓰기), origin 체인 = 창에 보인 origin 체인. 결과 반환 후 그 origin의 모든 문서에 `accountsChanged`. `거부` → 4001. 창 표시 후 120 s(D23) → 창 닫고 4001 "Request expired.". 요청 기한(§6.4) 만료 → 창 닫고 -32603 "Request timed out.". 확장 cancel·연결 끊김 → 창 닫고 응답 없음.
 
 ### 4.3 체인 상태
 - **등록된 EVM 체인**(D14): 내장 Ethereum mainnet(1)·Sepolia(11155111)·HyperEVM(999)과 `settings.json` `evmChains`의 사용자 추가 체인([04](04-app-ui.md) §6.1, 정의·추가 시 검증은 [03](03-evm.md) §1). yw-app은 settings를 읽거나 바꿀 때 메모리 레지스트리를 갱신하고, dApp 요청은 이 레지스트리로 판정한다(평문 설정이므로 잠김과 무관, D30). 이후 규칙은 내장·사용자 체인을 구분하지 않는다.

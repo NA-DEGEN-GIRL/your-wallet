@@ -1463,7 +1463,9 @@ fn user_chain_probe() {
 fn approvals_envelope(count: usize) -> Vec<u8> {
     let text = String::from_utf8_lossy(&approval_envelope()).into_owned();
     let start = text.find("\"logs\":[").unwrap_or(0) + "\"logs\":[".len();
-    let end = text[start..].find("}]").map_or(text.len(), |offset| start + offset + 1);
+    let end = text[start..]
+        .find("}]")
+        .map_or(text.len(), |offset| start + offset + 1);
     let log = &text[start..end];
     let logs: Vec<String> = (1..=count)
         .map(|index| {
@@ -1471,7 +1473,10 @@ fn approvals_envelope(count: usize) -> Vec<u8> {
                 "0x0000000000000000000000005555555555555555555555555555555555555555",
                 &format!("0x{:064x}", 0x5500 + index),
             )
-            .replace("\"logIndex\":\"0x0\"", &format!("\"logIndex\":\"0x{index:x}\""))
+            .replace(
+                "\"logIndex\":\"0x0\"",
+                &format!("\"logIndex\":\"0x{index:x}\""),
+            )
         })
         .collect();
     format!("{}{}{}", &text[..start], logs.join(","), &text[end..]).into_bytes()
@@ -1542,7 +1547,10 @@ fn diff_only_approvals_get_balances_and_sixteen_spenders_are_classified() -> Tes
     }
     assert!(facts.code_of(&address(NEW)?).is_some(), "`to` classified");
     let found = rules(&prepared);
-    assert!(found.contains(&yw_core::evm::risk::E14.label()), "{found:?}");
+    assert!(
+        found.contains(&yw_core::evm::risk::E14.label()),
+        "{found:?}"
+    );
     assert!(
         prepared
             .draft

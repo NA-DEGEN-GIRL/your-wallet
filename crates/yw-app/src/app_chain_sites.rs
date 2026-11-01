@@ -845,6 +845,7 @@ mod tests {
             ],
             selected: vec![true, false, false],
             chain_name: String::new(),
+            chain_id: 0,
             family: Family::Bitcoin,
             groups: 2,
         };

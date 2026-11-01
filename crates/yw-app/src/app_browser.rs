@@ -851,12 +851,41 @@ impl App {
         }
     }
 
-    /// An account was hidden or its raw key removed: it leaves every grant (spec/05 §4.1).
+    /// An account was hidden or its raw key removed: it leaves every grant (spec/05 §4.1), and
+    /// dApp signing requests for it — waiting or shown — end `Revoked` (4100) like a revoked
+    /// grant's (security review L4(b); the shown window closes, as on a chain deletion).
     pub fn account_removed_from_sites(&mut self, account: &Address) {
         if let Some(browser) = self.browser.as_ref() {
             browser.core.remove_account(account);
         }
         self.write_grants();
+        let for_account = |item: &QueuedItem| {
+            matches!(item, QueuedItem::Site(site) if match &site.kind {
+                SiteKind::Send(tx) => tx.from == *account,
+                SiteKind::PersonalSign { account: signer, .. }
+                | SiteKind::TypedData { account: signer, .. } => signer == account,
+                _ => false,
+            })
+        };
+        let finished = self
+            .evm
+            .queue
+            .drain_waiting_matching(for_account, QueueOutcome::Revoked);
+        for (item, outcome) in finished {
+            self.approval_finished(&item.payload, outcome);
+        }
+        if self
+            .evm
+            .queue
+            .shown()
+            .is_some_and(|item| for_account(&item.payload))
+        {
+            self.close_approval_window();
+            if let Some((item, outcome)) = self.evm.queue.finish_shown(QueueOutcome::Revoked) {
+                self.approval_finished(&item.payload, outcome);
+            }
+            self.show_next_approval();
+        }
     }
 
     /// A user chain was deleted (spec/05 §4.3): origins move to `evmChainId`, grants are
@@ -895,12 +924,26 @@ impl App {
         }
     }
 
-    /// A connect window was approved with `accounts` (spec/05 §4.2-5): grant saved, the answer
-    /// sent, then `accountsChanged` to the origin's documents.
-    pub(crate) fn connect_approved(&mut self, site: &SiteRequest, accounts: Vec<Address>) {
-        let chain_id = self.browser.as_ref().map_or(site.chain_id, |browser| {
-            browser.core.origin_chain(&site.origin)
-        });
+    /// A connect window was approved with `accounts` on the shown `chain_id` (spec/05 §4.2-5):
+    /// grant saved, the answer sent, then `accountsChanged` to the origin's documents. The
+    /// accounts are checked against the visible accounts of now — one hidden or removed while
+    /// the window was open is refused with 4100 `Unauthorized` like a stale Solana/Bitcoin choice
+    /// (security review L4(a)); the caller already made sure `chain_id` is the origin's chain.
+    pub(crate) fn connect_approved(
+        &mut self,
+        site: &SiteRequest,
+        accounts: Vec<Address>,
+        chain_id: u64,
+    ) {
+        let own = self.own_accounts();
+        if !accounts
+            .iter()
+            .all(|account| own.iter().any(|(known, _)| known == account))
+        {
+            logging::info("browser", "site.connect_stale", &[]);
+            self.respond(&site.reply, Err(ProviderError::Unauthorized));
+            return;
+        }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(0));
@@ -1237,6 +1280,121 @@ mod tests {
             app.site_preflight(&site(6, SiteKind::RequestAccounts)),
             None
         );
+    }
+
+    const ACCOUNT_A: &str = "0x9858effd232b4033e47d90003d41ec34ecaeda94";
+    const ACCOUNT_B: &str = "0xf278cf59f82edcf871d630f28ecc8056f25c1cdb";
+
+    fn addr(text: &str) -> yw_core::evm::address::Address {
+        yw_core::evm::address::parse_address(text).unwrap()
+    }
+
+    /// `app()` unlocked with EVM accounts A (index 0) and B (index 1, hidden when `b_hidden`).
+    fn accounts_app(b_hidden: bool) -> App {
+        let mut app = app();
+        app.mode = crate::app::AppMode::Unlocked {
+            alt_passphrase: false,
+        };
+        let account = |index: u32, address: &str, hidden: bool| crate::meta::Account {
+            index,
+            label: format!("계정 {}", index + 1),
+            address: address.to_owned(),
+            hidden,
+        };
+        app.meta = Some(crate::meta::Meta {
+            evm_accounts: vec![
+                account(0, ACCOUNT_A, false),
+                account(1, ACCOUNT_B, b_hidden),
+            ],
+            ..crate::meta::Meta::default()
+        });
+        app
+    }
+
+    /// Security review L4(a): an account hidden while the connect window was open is not
+    /// granted (4100, nothing stored); visible accounts are, on the chain passed (L4(c): the
+    /// shown one).
+    #[test]
+    fn connect_approval_rechecks_the_accounts_and_stores_the_shown_chain() {
+        use crate::browser::SiteKind;
+        let mut app = accounts_app(true);
+        let core = Arc::clone(&app.browser.as_ref().unwrap().core);
+        let request = site(1, SiteKind::RequestAccounts);
+        app.connect_approved(
+            &request,
+            vec![addr(ACCOUNT_A), addr(ACCOUNT_B)],
+            yw_core::evm::chain::SEPOLIA,
+        );
+        assert!(
+            core.grants().is_empty(),
+            "hidden B: refused, nothing stored"
+        );
+        app.connect_approved(
+            &request,
+            vec![addr("0x000000000000000000000000000000000000dead")],
+            yw_core::evm::chain::SEPOLIA,
+        );
+        assert!(core.grants().is_empty(), "not an account of this wallet");
+        app.connect_approved(&request, vec![addr(ACCOUNT_A)], 1);
+        let grants = core.grants();
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].accounts, vec![addr(ACCOUNT_A)]);
+        assert_eq!(grants[0].chain_id, 1);
+    }
+
+    /// Security review L4(c): the connect window shows the origin's chain of now (not the
+    /// request-time chain), the same value the approval then stores.
+    #[test]
+    fn connect_window_shows_the_origin_chain_of_now() {
+        use crate::browser::SiteKind;
+        let mut app = accounts_app(false);
+        app.sync_browser();
+        let core = Arc::clone(&app.browser.as_ref().unwrap().core);
+        let request = site(1, SiteKind::RequestPermissions);
+        assert_eq!(request.chain_id, yw_core::evm::chain::SEPOLIA);
+        // The origin's grant moved to mainnet after the request was queued.
+        core.upsert_grant(
+            yw_core::policy::ConnectedSite::new(
+                request.origin.clone(),
+                vec![addr(ACCOUNT_A)],
+                yw_core::evm::chain::ETHEREUM_MAINNET,
+                0,
+            )
+            .unwrap(),
+        );
+        let state = app.connect_state(&request);
+        assert_eq!(state.chain_id, yw_core::evm::chain::ETHEREUM_MAINNET);
+        assert_eq!(
+            Some(state.chain_name),
+            app.settings
+                .evm_chain_name(yw_core::evm::chain::ETHEREUM_MAINNET)
+        );
+    }
+
+    /// Security review L4(b): hiding or removing an account ends the dApp signing requests for
+    /// it (4100 `Revoked`); other accounts' requests stay queued.
+    #[test]
+    fn removing_an_account_revokes_its_waiting_signing_requests() {
+        use crate::browser::{DappEvent, SiteKind};
+        let mut app = accounts_app(false);
+        // Queued while locked: they wait.
+        app.mode = crate::app::AppMode::Locked;
+        app.sync_browser();
+        let sign = |account: &str| SiteKind::PersonalSign {
+            account: addr(account),
+            message: b"hi".to_vec(),
+        };
+        app.on_dapp_event(DappEvent::Request(Box::new(site(1, sign(ACCOUNT_B)))));
+        app.on_dapp_event(DappEvent::Request(Box::new(site(2, sign(ACCOUNT_A)))));
+        app.on_dapp_event(DappEvent::Request(Box::new(site(3, sign(ACCOUNT_B)))));
+        assert_eq!(app.evm.queue.len(), 3);
+        app.account_removed_from_sites(&addr(ACCOUNT_B));
+        assert_eq!(app.evm.queue.len(), 1);
+        assert!(app.evm.queue.waiting_payloads().all(|item| matches!(
+            item,
+            crate::app_evm::QueuedItem::Site(site)
+                if matches!(&site.kind, SiteKind::PersonalSign { account, .. } if *account == addr(ACCOUNT_A))
+        )));
     }
 
     #[test]
