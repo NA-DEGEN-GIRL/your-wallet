@@ -873,6 +873,20 @@ fn r_g1_x3_backup_pending_no_vault_and_unconnected_accounts() -> TestResult {
         assert_eq!(text(&single(&h, &sign)?), "error 4100 Unauthorized.");
         let accounts = h.send(SITE, 1, "eth_accounts", json("[]"));
         assert_eq!(text(&single(&h, &accounts)?), "[]");
+        // spec/05 §5 (security review L14/S8): no grants are loaded and no window can open, so
+        // `wallet_revokePermissions` (it would need the revoke window) is 4100; the Solana and
+        // Bitcoin disconnects have nothing to remove and answer `null` (nothing remembered).
+        let revoke = h.send(
+            SITE,
+            1,
+            "wallet_revokePermissions",
+            json(r#"[{"eth_accounts":{}}]"#),
+        );
+        assert_eq!(text(&single(&h, &revoke)?), "error 4100 Unauthorized.");
+        for method in ["sol_disconnect", "btc_disconnect"] {
+            let disconnect = h.send(SITE, 1, method, json("[]"));
+            assert_eq!(text(&single(&h, &disconnect)?), "null", "{method}");
+        }
         assert!(h.sink.requests().is_empty());
     }
     // X-3: `from` not a granted account → 4100, no window; unconnected origin → 4100.
