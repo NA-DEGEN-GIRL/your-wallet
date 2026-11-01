@@ -1397,6 +1397,27 @@ mod tests {
         )));
     }
 
+    /// Security review L12: `personal_sign`/`eth_signTypedData_v4` on a chain whose check found
+    /// `RpcMismatch` are blocked with E34 (as sends are); an unchecked chain is not blocked.
+    #[test]
+    fn message_signing_is_blocked_on_a_mismatched_chain() {
+        use crate::flow::evm::{ChainCheck, MismatchKind};
+        let mut app = app();
+        let sepolia = yw_core::evm::chain::SEPOLIA;
+        assert!(app.message_chain_failure(sepolia).is_none());
+        app.evm
+            .chain_checks
+            .insert(sepolia, ChainCheck::Mismatch(MismatchKind::ConstantGenesis));
+        let failure = app.message_chain_failure(sepolia).unwrap();
+        assert_eq!(failure.rule(), yw_core::evm::risk::E34);
+        assert_eq!(failure.code, crate::errors::ErrorCode::Rpc006);
+        assert!(!failure.retryable);
+        assert!(
+            app.message_chain_failure(yw_core::evm::chain::ETHEREUM_MAINNET)
+                .is_none()
+        );
+    }
+
     #[test]
     fn chain_switch_grant_writes_are_coalesced() {
         let mut write = GrantWrite::default();

@@ -1355,6 +1355,14 @@ impl App {
                 };
                 self.prepare_transaction(job, &item, Some(site));
             }
+            SiteKind::PersonalSign { .. } | SiteKind::TypedData { .. }
+                if self.message_chain_failure(site.chain_id).is_some() =>
+            {
+                // L12: a chain known to answer for another chain blocks signatures too (E34).
+                if let Some(failure) = self.message_chain_failure(site.chain_id) {
+                    self.show_failure(failure.code, false, failure.message());
+                }
+            }
             SiteKind::PersonalSign { account, message } => {
                 let decoded = yw_core::evm::eip191::decode_personal_message(message.clone());
                 let draft = self.message_chain(site.chain_id).and_then(|chain| {
@@ -1427,6 +1435,18 @@ impl App {
             }
             SiteKind::Revoke => self.finish_approval(QueueOutcome::Cancelled),
         }
+    }
+
+    /// spec/03 §1.4 (security review L12): message signatures (`personal_sign`,
+    /// `eth_signTypedData_v4`) on a chain whose last check found `RpcMismatch` are blocked with
+    /// E34 like a send. No RPC is called for a message, so only a known mismatch blocks.
+    pub(crate) fn message_chain_failure(
+        &self,
+        chain_id: u64,
+    ) -> Option<crate::flow::evm::prepare::PrepareFailure> {
+        self.evm
+            .blocked(chain_id)
+            .map(crate::flow::evm::prepare::PrepareFailure::chain_mismatch)
     }
 
     /// The chain of a message signature: the registered definition with the verified genesis

@@ -192,6 +192,13 @@ impl PrepareFailure {
         Self::e35(classify(failure))
     }
 
+    /// The chain is known to answer for another chain (`RpcMismatch`): E34, blocked (spec/03
+    /// §1.4 — sends and signatures alike).
+    #[must_use]
+    pub fn chain_mismatch(kind: super::MismatchKind) -> Self {
+        Self::new(blocked(None, E34), kind.code())
+    }
+
     /// No endpoint for the chain: E35 without any call (spec/04 §1.9).
     #[must_use]
     pub fn no_endpoint() -> Self {
