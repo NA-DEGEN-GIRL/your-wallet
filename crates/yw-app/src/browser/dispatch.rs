@@ -164,6 +164,10 @@ struct Pending {
 struct Conn {
     outlet: Box<dyn Outlet>,
     max_sequence: u64,
+    /// The native session of this pipe connection: one yw-host process serves one Chrome
+    /// native port, i.e. one `sessionId` (spec/05 §6.3). Bound by the first request; an envelope
+    /// of another session is refused (security review INFO: no mixing or replaying another
+    /// session's envelopes on a live connection).
     last_session: Option<Id32>,
     pending: HashMap<(Id32, super::envelope::Id16), Pending>,
     buckets: Lru<Id32, Bucket>,
@@ -915,6 +919,14 @@ impl BrowserCore {
         );
     }
 
+    /// Whether `session` is this connection's session (or the connection has none yet).
+    fn session_matches(state: &State, conn: ConnId, session: Id32) -> bool {
+        state
+            .conns
+            .get(&conn)
+            .is_some_and(|entry| entry.last_session.is_none_or(|bound| bound == session))
+    }
+
     /// spec/05 §6.2-3: `sequence` must exceed the largest seen on this connection.
     fn advance_sequence(state: &mut State, conn: ConnId, sequence: u64) -> bool {
         let Some(conn) = state.conns.get_mut(&conn) else {
@@ -930,7 +942,9 @@ impl BrowserCore {
     fn cancel(&self, conn: ConnId, cancel: &CancelEnvelope) {
         let approval = {
             let mut state = self.lock();
-            if !Self::advance_sequence(&mut state, conn, cancel.sequence) {
+            if !Self::session_matches(&state, conn, cancel.session_id)
+                || !Self::advance_sequence(&mut state, conn, cancel.sequence)
+            {
                 return;
             }
             let Some(entry) = state.conns.get_mut(&conn) else {
@@ -965,8 +979,11 @@ impl BrowserCore {
         let correlation = request.correlation;
         let reply = Reply { conn, correlation };
         let mut state = self.lock();
-        // 3. Sequence.
-        if !Self::advance_sequence(&mut state, conn, correlation.sequence) {
+        // 3. Session (bound by the first request of the connection) and sequence. A foreign
+        // session's envelope neither runs nor moves the sequence.
+        if !Self::session_matches(&state, conn, correlation.session_id)
+            || !Self::advance_sequence(&mut state, conn, correlation.sequence)
+        {
             Self::log_error("-", &ProviderError::InvalidRequest, conn);
             Self::answer_direct(
                 &state,

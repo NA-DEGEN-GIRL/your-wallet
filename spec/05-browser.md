@@ -773,7 +773,7 @@ dApp 요청으로 띄운 잠금 해제 창을 `나중에`로 닫으면 `UNLOCK_P
 | app → extension | 연결마다 1부터 +1(response·event 공통, writer 스레드가 쓰는 순간 부여) | 정확히 +1 | 확장이 native 연결만 끊음 |
 
 - `requestSequence`는 원 요청의 `sequence`다. 확장은 `(activationNonce, requestId, requestSequence)`가 모두 맞을 때만 응답을 전달한다.
-- yw-app은 세션 값을 응답에 되돌려 쓸 뿐 세션 단위 상태를 두지 않는다. 상태 단위는 pipe 연결이다.
+- 상태 단위는 pipe 연결이다. yw-host 프로세스 하나가 Chrome native port 하나(= `sessionId` 하나)를 맡으므로, yw-app은 연결의 첫 request가 가진 `sessionId`를 그 연결의 세션으로 묶고 다른 `sessionId`의 request는 -32600(cancel은 버림)으로 거부하며 그때 순번도 올리지 않는다(보안 검토 INFO: 이전 세션 봉투를 살아 있는 연결에 섞거나 재생할 수 없다). 새 연결의 첫 봉투로 재생하는 것은 막지 못한다 — pipe에 붙을 수 있는 같은 사용자 프로세스가 전제이고(§8.1) 서명 대상은 같은 창의 승인이 필요하다.
 
 ### 6.4 기한
 D23: 요청 기한은 읽기 60 s, 연결·서명 600 s(잠금 해제·승인 대기·검토 포함). route 단위로 적용한다: `read` → 60 s, `permission`·`signing` → 600 s(창 없는 `permission` 메서드는 즉시 응답하므로 값이 의미 없다).

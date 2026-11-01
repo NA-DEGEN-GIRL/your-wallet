@@ -208,6 +208,29 @@ fn r_d2_errors_keep_the_connection() -> TestResult {
     assert_eq!(regressed[0].1, Err(ProviderError::InvalidRequest));
     let next = h.send(SITE, 1, "eth_chainId", json("[]"));
     assert_eq!(text(&single(&h, &next)?), "\"0xaa36a7\"");
+    // Security review INFO: the connection's session is bound by its first request. An
+    // envelope of another session (a replay from an earlier native session) is -32600 and does
+    // not move the sequence (a huge sequence there would otherwise lock the connection).
+    let foreign = String::from_utf8(common::browser::request_frame(
+        &common::browser::RequestSpec {
+            sequence: 9_007_199_254_740_991,
+            request: 0x78,
+            document: 1,
+            origin: SITE,
+            method: "eth_chainId",
+            params: json("[]"),
+            route: "permission",
+            deadline: NOW_UNIX + 600_000,
+        },
+    ))?
+    .replace(&"bb".repeat(32), &"cc".repeat(32));
+    assert!(foreign.contains(&"cc".repeat(32)));
+    h.raw(foreign.as_bytes());
+    let refused = h.responses();
+    assert_eq!(refused.len(), 1);
+    assert_eq!(refused[0].1, Err(ProviderError::InvalidRequest));
+    let after = h.send(SITE, 1, "eth_chainId", json("[]"));
+    assert_eq!(text(&single(&h, &after)?), "\"0xaa36a7\"");
     Ok(())
 }
 
