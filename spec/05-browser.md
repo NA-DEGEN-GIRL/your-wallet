@@ -283,7 +283,7 @@ fn pinned_extension_id() -> Option<&'static str> {
 | CONNECTING | `activated` | nonce 저장, 큐를 순서대로 전송, 타이머 해제 → ACTIVE |
 | CONNECTING | 5 s 경과 | port 닫기, 큐 전부 4900 "Wallet connection closed." → IDLE |
 | ACTIVE | 유효 요청 | 전송 |
-| ACTIVE | bg `response`/`event` | 형식·`RESPONSE_LIMITS` 검사 후 페이지로 전달. 이벤트 이름은 `accountsChanged`·`chainChanged`만 |
+| ACTIVE | bg `response`/`event` | 형식·`RESPONSE_LIMITS` 검사 후 페이지로 전달. 이벤트 이름은 `accountsChanged`·`chainChanged`·`solAccountsChanged`·`btcAccountsChanged`만(payload 형식은 §2.8 native 수신과 같은 `shared.validEvent`, §4.8·§4.9) |
 | CONNECTING/ACTIVE | port `onDisconnect` | pending·큐 전부 4900 "Wallet connection closed." → IDLE. 단 `chrome.runtime?.id === undefined`면 DEAD |
 | CONNECTING/ACTIVE | page `cancel` | 큐에 있으면 제거. 전송했으면 bg `cancel`(reason `page-cancel`) 후 pending에서 제거. 페이지에 응답하지 않음 |
 | CONNECTING/ACTIVE | 브라우저의 `pagehide` 또는 `freeze`(`event.isTrusted === true`만; 페이지가 `dispatchEvent`로 만든 이벤트는 무시) | bg `disconnect`(reason `document-pagehide`/`document-freeze`), port 닫기, pending 4900 "Wallet connection closed." → IDLE |
