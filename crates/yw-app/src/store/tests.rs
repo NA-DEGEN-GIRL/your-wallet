@@ -11,11 +11,15 @@ use yw_core::vault::{FileKind, Vault, VaultStatus, VaultStorage, peek_generation
 
 use super::{FileStorage, LockedSlotBox, file_name};
 
+/// A fresh folder per call: tests run in parallel and several call `generations()` (tag "seed")
+/// within the same millisecond, so the name also carries a per-process counter.
 fn temp_dir(tag: &str) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "yw-app-vfs-{tag}-{}-{}",
+        "yw-app-vfs-{tag}-{}-{}-{}",
         std::process::id(),
-        yw_win::time::monotonic_ms()
+        yw_win::time::monotonic_ms(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     fs::create_dir_all(&dir).unwrap();
     dir
