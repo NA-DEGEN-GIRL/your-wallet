@@ -340,6 +340,24 @@ fn r_v1_personal_sign_utf8_or_hex() -> TestResult {
     ));
     // Swapped order rejected.
     bad(Method::PersonalSign, &format!(r#"["{A}","0x48656c6c6f"]"#));
+    // Security review L11: both look like addresses — ambiguous order, refused (never signs A's
+    // 20 bytes for B), whatever the case of the first.
+    bad(Method::PersonalSign, &format!(r#"["{A}","{B}"]"#));
+    bad(
+        Method::PersonalSign,
+        &format!(
+            r#"["{}","{B}"]"#,
+            A.to_ascii_uppercase().replacen("0X", "0x", 1)
+        ),
+    );
+    // A 19- or 21-byte hex message is not address-shaped and still signs.
+    for len in [19, 21] {
+        let message = format!("0x{}", "ab".repeat(len));
+        assert!(matches!(
+            ok(Method::PersonalSign, &format!(r#"["{message}","{B}"]"#))?,
+            Validated::PersonalSign { .. }
+        ));
+    }
     bad(Method::PersonalSign, &format!(r#"["0x00","{A}","extra"]"#));
     let largest = format!("0x{}", "00".repeat(65_536));
     assert!(matches!(

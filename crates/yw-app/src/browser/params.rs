@@ -693,12 +693,26 @@ fn permissions(values: &[Value]) -> Checked<Validated> {
     }
 }
 
+/// `0x` + 40 hex digits, any case (an address, checksum valid or not).
+fn address_shaped(text: &str) -> bool {
+    text.len() == 42
+        && (text.starts_with("0x") || text.starts_with("0X"))
+        && text.bytes().skip(2).all(|byte| byte.is_ascii_hexdigit())
+}
+
 fn personal_sign(values: &[Value]) -> Checked<Validated> {
     let [message, account] = values else {
         return invalid();
     };
     let account = address(account)?;
-    let message = yw_core::evm::eip191::parse_personal_param(text(message)?)
+    let message = text(message)?;
+    // spec/05 §3.4: the swapped `[address, message]` is refused. When the "message" is itself
+    // address-shaped the order cannot be told apart (`[A0, A1]` would sign A0's 20 bytes for
+    // A1), so it is refused as swapped rather than guessed (security review L11).
+    if address_shaped(message) {
+        return invalid();
+    }
+    let message = yw_core::evm::eip191::parse_personal_param(message)
         .map_err(|_| ProviderError::InvalidParams)?;
     if message.len() > MAX_PERSONAL_MESSAGE_BYTES {
         return invalid();
