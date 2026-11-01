@@ -26,7 +26,8 @@ use super::simulate::{ApprovalChange, ApprovalKindEvm, AssetChange, AssetId, Sim
 use super::siwe::{SiweContext, check_marker_only, check_siwe};
 use crate::approval::{
     AccountRef, ApprovalDisplay, ApprovalDraft, ApprovalId, ApprovalKind, ApprovalOrigin,
-    ChainFacts, ChainRef, CodeKind, DisplayError, DisplayField, FieldKey, MAX_DISPLAY_WARNINGS,
+    ChainFacts, ChainRef, CodeKind, DisplayError, DisplayField, FieldKey, MAX_DISPLAY_FIELDS,
+    MAX_DISPLAY_WARNINGS,
     MAX_TITLE_BYTES, Signer, SigningPayload, SimNoneReason, SimulationBinding, Warning,
     escape_edges, escape_untrusted,
 };
@@ -307,12 +308,52 @@ fn title(chain: &ChainInfo, action: &str) -> String {
     short.trim_end().to_owned() + "…"
 }
 
-struct Fields(Vec<DisplayField>);
+struct Fields(Vec<DisplayField>, FieldCap);
+
+/// What [`Fields::push`] does at [`MAX_DISPLAY_FIELDS`].
+#[derive(Clone, Copy)]
+enum FieldCap {
+    /// Keep pushing: [`ApprovalDisplay::new`] fails with `TooMany` (transactions, messages).
+    Fail,
+    /// Typed data (spec/03 §8.4): stop at one below the cap, count what was left out and leave
+    /// the last slot for the note; the builder adds T16 (blocked), so the request is shown and
+    /// refused instead of failing as an internal error.
+    Truncate { dropped: usize },
+}
 
 impl Fields {
+    const fn new() -> Self {
+        Self(Vec::new(), FieldCap::Fail)
+    }
+
+    const fn truncating() -> Self {
+        Self(Vec::new(), FieldCap::Truncate { dropped: 0 })
+    }
+
     fn push(&mut self, key: FieldKey, sub_label: &str, value: String) -> Result<(), DisplayError> {
+        if let FieldCap::Truncate { dropped } = &mut self.1
+            && self.0.len() >= MAX_DISPLAY_FIELDS.saturating_sub(1)
+        {
+            *dropped = dropped.saturating_add(1);
+            return Ok(());
+        }
         self.0.push(DisplayField::new(key, sub_label, value)?);
         Ok(())
+    }
+
+    /// Fields left out by a truncating list (0 otherwise); when any, the note takes the last slot.
+    fn close_truncated(&mut self) -> Result<usize, DisplayError> {
+        let FieldCap::Truncate { dropped } = self.1 else {
+            return Ok(0);
+        };
+        if dropped > 0 {
+            self.0.push(DisplayField::new(
+                FieldKey::TD_TREE,
+                "",
+                format!("(표시 한도 초과: 항목 {dropped}개 생략)"),
+            )?);
+        }
+        Ok(dropped)
     }
 }
 
@@ -546,7 +587,7 @@ pub fn build_evm_tx_request(
         to: tx.to,
         now_unix_ms,
     };
-    let mut fields = Fields(Vec::new());
+    let mut fields = Fields::new();
     header(&mut fields, &origin, chain, facts, &account)?;
     fields.push(FieldKey::TO, "", ctx.address(&tx.to))?;
     fields.push(FieldKey::VALUE, "", native_amount(chain, &tx.value))?;
@@ -769,7 +810,7 @@ pub fn build_personal_request(
     now_unix_ms: u64,
 ) -> Result<ApprovalDraft, DisplayError> {
     let facts = ChainFacts::default();
-    let mut fields = Fields(Vec::new());
+    let mut fields = Fields::new();
     header(&mut fields, &origin, chain, &facts, &account)?;
     let mut warnings = Vec::new();
     let text = message
@@ -1345,7 +1386,7 @@ pub fn build_typed_request(
             .unwrap_or_else(|| Address::from_bytes([0; 20])),
         now_unix_ms,
     };
-    let mut fields = Fields(Vec::new());
+    let mut fields = Fields::truncating();
     header(&mut fields, &origin, chain, facts, &account)?;
     let (domain, mut hidden, domain_exceeded) = domain_text(&ctx, typed);
     fields.push(FieldKey::TD_DOMAIN, "", domain)?;
@@ -1361,18 +1402,18 @@ pub fn build_typed_request(
     };
     match &typed.schema {
         None => tree.walk(&typed.root, "", 0)?,
-        Some(
-            KnownSchema::Permit2WitnessTransfer { .. }
-            | KnownSchema::Permit2BatchWitnessTransfer { .. },
-        ) => {
-            if let TdNode::Struct { fields: items, .. } = &typed.root
+        Some(schema) => {
+            if matches!(
+                schema,
+                KnownSchema::Permit2WitnessTransfer { .. }
+                    | KnownSchema::Permit2BatchWitnessTransfer { .. }
+            ) && let TdNode::Struct { fields: items, .. } = &typed.root
                 && let Some((name, witness)) = items.get(4)
             {
                 tree.walk(witness, &escape_inline(name).0, 1)?;
             }
-        }
-        Some(_) => {
-            // Strings of recognized schemas are still checked for hidden characters (T17).
+            // The whole message of a recognized schema is still measured against the tree
+            // limits (T16, spec/03 §8.4) and its strings checked for hidden characters (T17).
             let mut scan = Tree {
                 fields: None,
                 leaves: 0,
@@ -1381,10 +1422,13 @@ pub fn build_typed_request(
             };
             scan.walk(&typed.root, "", 0)?;
             tree.hidden |= scan.hidden;
+            tree.exceeded |= scan.exceeded;
         }
     }
-    let exceeded = tree.exceeded || domain_exceeded;
-    hidden |= tree.hidden;
+    let (tree_exceeded, tree_hidden) = (tree.exceeded, tree.hidden);
+    let truncated = fields.close_truncated()? > 0;
+    let exceeded = tree_exceeded || domain_exceeded || truncated;
+    hidden |= tree_hidden;
     let mut warnings = typed_rules(
         &TypedRiskInput {
             chain,

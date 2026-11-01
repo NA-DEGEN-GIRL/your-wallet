@@ -2405,10 +2405,7 @@ mod tests {
         app.evm.send.quote = Some(quote);
         let item = app.review_item().unwrap();
         assert_eq!(item.intent.to, to(TO_B));
-        assert_eq!(
-            item.intent.value,
-            one_eth.checked_mul_u64(2).unwrap()
-        );
+        assert_eq!(item.intent.value, one_eth.checked_mul_u64(2).unwrap());
         // An input error is "not ready", not a change.
         app.evm.send.amount_text = "x".to_owned();
         app.validate_send(false);

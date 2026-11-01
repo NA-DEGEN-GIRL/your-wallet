@@ -287,6 +287,26 @@ fn permit_single(contract: &str, expiration: u64, sig_deadline: u64, spender: &s
     )
 }
 
+/// `PermitBatch` with `count` copies of one detail.
+fn permit_batch_of(count: usize) -> String {
+    let detail = format!(
+        r#"{{"token":"0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238","amount":"5","expiration":"{}","nonce":"1"}}"#,
+        NOW + 86_400
+    );
+    permit2_doc(
+        "PermitBatch",
+        &format!(
+            r#"{PD_TYPES},"PermitBatch":[{{"name":"details","type":"PermitDetails[]"}},{{"name":"spender","type":"address"}},{{"name":"sigDeadline","type":"uint256"}}]"#
+        ),
+        &format!(
+            r#"{{"details":[{}],"spender":"0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b","sigDeadline":"{}"}}"#,
+            vec![detail; count].join(","),
+            NOW + 600
+        ),
+        PERMIT2,
+    )
+}
+
 fn permit_batch() -> String {
     permit2_doc(
         "PermitBatch",
@@ -1086,6 +1106,35 @@ fn t16_tree_limits_and_t17_hidden_characters() {
             .fields
             .iter()
             .any(|f| f.sub_label == "values[1]" && f.value == "2")
+    );
+}
+
+/// Security review M3/S1: a recognized schema is measured against the tree limits too (T16),
+/// and one whose structured fields reach the field cap is a blocked request, not an error.
+#[test]
+fn t16_applies_to_recognized_schemas_and_the_field_cap_blocks() {
+    let none = ChainFacts::default();
+    // 2 details: under every limit.
+    let d = draft(&permit_batch_of(2), &none).unwrap();
+    assert!(!labels(&d).contains(&"T16".to_owned()));
+    // 200 details = 800 leaves > 512: T16, blocked (was approvable).
+    let d = draft(&permit_batch_of(200), &none).unwrap();
+    assert!(labels(&d).contains(&"T16".to_owned()));
+    assert_eq!(d.display.risk, RiskLevel::Blocked);
+    // 300 details ≈ 1,200 structured fields > 1,024: still a draft (was `TooMany`), the list
+    // stops at the cap with a note in the last slot, T16, blocked.
+    let d = draft(&permit_batch_of(300), &none).unwrap();
+    assert!(labels(&d).contains(&"T16".to_owned()));
+    assert_eq!(d.display.risk, RiskLevel::Blocked);
+    assert_eq!(
+        d.display.fields.len(),
+        yw_core::approval::MAX_DISPLAY_FIELDS
+    );
+    let last = d.display.fields.last().unwrap();
+    assert!(
+        last.value.starts_with("(표시 한도 초과: 항목 ") && last.value.ends_with("개 생략)"),
+        "{}",
+        last.value
     );
 }
 
