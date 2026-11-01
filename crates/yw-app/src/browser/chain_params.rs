@@ -188,8 +188,8 @@ pub(super) fn btc_sign_message(values: &[Value]) -> Checked<Validated> {
         .get("address")
         .and_then(Value::as_str)
         .filter(|text| (1..=100).contains(&text.len()) && text.is_ascii())
-        .ok_or(ProviderError::InvalidParams)?
-        .to_owned();
+        .ok_or(ProviderError::InvalidParams)?;
+    let address = normalize_btc_address(address).ok_or(ProviderError::InvalidParams)?;
     let message = object
         .get("message")
         .and_then(Value::as_str)
@@ -211,6 +211,23 @@ pub(super) fn btc_sign_message(values: &[Value]) -> Checked<Validated> {
         message,
         protocol,
     })
+}
+
+/// The wallet's spelling of a requested Bitcoin address (security review L13): a bech32/bech32m
+/// address (`bc1`/`tb1`/`bcrt1`, BIP173 allows all-uppercase) is matched in lowercase, as the
+/// wallet stores it; a mixed-case one is invalid (BIP173), `None`. Base58 addresses are
+/// case-sensitive and kept as given.
+fn normalize_btc_address(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    if !["bc1", "tb1", "bcrt1"]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+    {
+        return Some(text.to_owned());
+    }
+    let upper = text.bytes().any(|byte| byte.is_ascii_uppercase());
+    let lowercase = text.bytes().any(|byte| byte.is_ascii_lowercase());
+    (!(upper && lowercase)).then_some(lower)
 }
 
 #[cfg(test)]
@@ -330,5 +347,40 @@ mod tests {
         );
         assert!(check(Method::BtcGetAccounts, "[]").is_ok());
         assert!(check(Method::BtcGetNetwork, "[1]").is_err());
+    }
+
+    /// Security review L13: an all-uppercase bech32/bech32m address (valid per BIP173) is
+    /// matched in the wallet's lowercase spelling; mixed case is invalid; base58 is kept.
+    #[test]
+    fn btc_sign_message_addresses_are_normalized() {
+        let address_of = |address: &str| match check(
+            Method::BtcSignMessage,
+            &format!(r#"[{{"address":"{address}","message":"hi"}}]"#),
+        ) {
+            Ok(Validated::BtcSignMessage { address, .. }) => Ok(address),
+            Err(error) => Err(error),
+            Ok(_) => Err(ProviderError::Internal),
+        };
+        let taproot = "bc1p5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3297";
+        assert_eq!(
+            address_of(&taproot.to_ascii_uppercase()).as_deref(),
+            Ok(taproot)
+        );
+        assert_eq!(address_of(taproot).as_deref(), Ok(taproot));
+        let testnet = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
+        assert_eq!(
+            address_of(&testnet.to_ascii_uppercase()).as_deref(),
+            Ok(testnet)
+        );
+        assert_eq!(
+            address_of("BCRT1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KYGT080").as_deref(),
+            Ok("bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080")
+        );
+        assert_eq!(
+            address_of("bc1P5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3297"),
+            Err(ProviderError::InvalidParams)
+        );
+        let legacy = "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2";
+        assert_eq!(address_of(legacy).as_deref(), Ok(legacy));
     }
 }

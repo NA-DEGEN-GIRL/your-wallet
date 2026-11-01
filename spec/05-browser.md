@@ -566,7 +566,7 @@ EIP-55 판정과 주소 파싱은 yw-core 함수를 쓴다(이름은 [03](03-evm
 | `btc_getAccounts` | permission | `[]` | 잠금 해제 grant(설정 네트워크와 같은 네트워크)의 주소, 아니면 `[]` | 같은 형식 |
 | `btc_disconnect` | permission | `[]` | `sol_disconnect`와 같은 규칙(`btcAccountsChanged([])`) | `null` |
 | `btc_getNetwork` | permission | `[]` | settings Bitcoin 네트워크 | `"mainnet"` 또는 `"testnet4"` |
-| `btc_signMessage` | signing | `[{ "address", "message": UTF-8 문자열 ≤ 65,536 B, "protocol"?: "ecdsa"|"bip322" }]` | grant 주소여야 함(4100). `protocol` 생략 = 주소 형식 기본값(P2TR → `bip322`, 그 밖 `ecdsa`). 주소 형식이 그 방식을 못 쓰면(P2TR+ECDSA, P2PKH+BIP322) -32602. 승인 창([08] §17) | `{ "address", "signature": base64, "messageHash": hex, "protocol" }` |
+| `btc_signMessage` | signing | `[{ "address", "message": UTF-8 문자열 ≤ 65,536 B, "protocol"?: "ecdsa"|"bip322" }]` | grant 주소여야 함(4100). bech32·bech32m 주소(`bc1`·`tb1`·`bcrt1`)는 소문자로 바꿔 대조한다(BIP173이 전체 대문자를 허용, 대소문자 섞임은 -32602), base58은 그대로(보안 검토 L13). `protocol` 생략 = 주소 형식 기본값(P2TR → `bip322`, 그 밖 `ecdsa`). 주소 형식이 그 방식을 못 쓰면(P2TR+ECDSA, P2PKH+BIP322) -32602. 승인 창([08] §17) | `{ "address", "signature": base64, "messageHash": hex, "protocol" }` |
 
 `context.compatMode`가 메서드 계열과 맞지 않으면 -32600(§2.13). 잠김·`BackupPending`·`PassphraseUnverified`·vault 없음 규칙은 EVM 연결·서명과 같다(§4.2, §4.4). settings에서 Bitcoin이 꺼져 있으면(`bitcoin.enabled = false`, `WalletView::btc_enabled`) `btc_getNetwork`·`btc_disconnect` 밖의 `btc_*`는 vault 상태와 관계없이 창 없이 4100 `NoBtcAccount`이다(큐에 들어간 뒤 꺼졌으면 꺼낼 때 같은 답).
 
