@@ -89,6 +89,10 @@
 
   const EVENTS = Object.freeze(["accountsChanged", "chainChanged", "solAccountsChanged", "btcAccountsChanged"]);
 
+  // spec/05 §4.7 (yw-core `BrowserOrigin::parse`).
+  const MAX_ORIGIN_LENGTH = 256;
+  const MAX_HOST_LENGTH = 253;
+  const HOST_LABEL_PATTERN = /^[a-z0-9_-]{1,63}$/u;
   const ID64_PATTERN = /^[0-9a-f]{64}$/u;
   const ID32_PATTERN = /^[0-9a-f]{32}$/u;
   const ALL_ZERO_PATTERN = /^0+$/u;
@@ -148,7 +152,10 @@
     return typeof text === "string" && new TextEncoder().encode(text).byteLength <= limits.maxBytes;
   }
 
-  // spec/05 §2.4: https, or http with hostname exactly localhost / 127.0.0.1 (any port).
+  // spec/05 §2.4: https, or http with hostname exactly localhost / 127.0.0.1 (any port), and the
+  // serialized origin must pass yw-core `BrowserOrigin::parse` (§4.7): DNS-style labels of
+  // [a-z0-9_-]{1,63} (no trailing dot, no empty label), host ≤ 253 bytes, origin ≤ 256 bytes, no
+  // port 0. Same rule in provider-main.js (copy); vectors in native-host/v1-origins.golden.json.
   function isSupportedPageUrl(value) {
     let url;
     try {
@@ -157,11 +164,13 @@
       return false;
     }
     if (url.username !== "" || url.password !== "" || url.origin === "null"
-      || url.hostname === "" || url.hostname.startsWith("[")) {
+      || url.hostname === "" || url.hostname.startsWith("[")
+      || url.port === "0" || url.origin.length > MAX_ORIGIN_LENGTH) {
       return false;
     }
     if (url.protocol === "https:") {
-      return true;
+      return url.hostname.length <= MAX_HOST_LENGTH
+        && url.hostname.split(".").every((label) => HOST_LABEL_PATTERN.test(label));
     }
     return url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
   }

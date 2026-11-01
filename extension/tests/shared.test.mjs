@@ -252,3 +252,17 @@ test("S9 Solana/Bitcoin: method families, wire compat modes and account events",
   assert.equal(shared.validEvent("btcAccountsChanged", ["a", "b", "c"]), false);
   assert.equal(shared.validEvent("btcAccountsChanged", ["bc1q w508"]), false);
 });
+
+// Security review L6: the page-origin rule is the same in all four places (provider-main.js,
+// shared.js, background deriveSenderContext, yw-core BrowserOrigin::parse); the shared vectors pin
+// it (provider: provider-main.test.mjs, background: extension.test.mjs, Rust: yw-core policy.rs).
+test("S3 isSupportedPageUrl matches every v1-origins.golden.json case", async () => {
+  const { cases } = await golden("v1-origins.golden.json");
+  assert.ok(cases.length >= 20);
+  for (const { url, origin, ok, note } of cases) {
+    assert.equal(shared.isSupportedPageUrl(url), ok, note);
+    if (origin !== null) {
+      assert.equal(new URL(url).origin, origin, note);
+    }
+  }
+});

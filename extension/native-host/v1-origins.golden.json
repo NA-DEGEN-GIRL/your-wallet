@@ -1,0 +1,173 @@
+{
+  "comment": "spec/05 §2.4/§4.7: the page-origin rule shared by provider-main.js isSupportedPage, shared.js isSupportedPageUrl, background deriveSenderContext and yw-core BrowserOrigin::parse. url = the page URL (JS), origin = its serialized origin (Rust), null when it has none; ok = accepted by all four.",
+  "cases": [
+    {
+      "url": "https://app.example/path?q=1#f",
+      "origin": "https://app.example",
+      "ok": true,
+      "note": "plain https"
+    },
+    {
+      "url": "https://app.example:8443/",
+      "origin": "https://app.example:8443",
+      "ok": true,
+      "note": "explicit port"
+    },
+    {
+      "url": "https://APP.Example:443/x",
+      "origin": "https://app.example",
+      "ok": true,
+      "note": "case and default port normalized by URL"
+    },
+    {
+      "url": "https://a-b_c.d1.example/",
+      "origin": "https://a-b_c.d1.example",
+      "ok": true,
+      "note": "hyphen, underscore, digits"
+    },
+    {
+      "url": "https://bücher.example/",
+      "origin": "https://xn--bcher-kva.example",
+      "ok": true,
+      "note": "IDN as punycode"
+    },
+    {
+      "url": "https://1.2.3.4/",
+      "origin": "https://1.2.3.4",
+      "ok": true,
+      "note": "IPv4 literal"
+    },
+    {
+      "url": "https://localhost/",
+      "origin": "https://localhost",
+      "ok": true,
+      "note": "https localhost"
+    },
+    {
+      "url": "http://localhost/",
+      "origin": "http://localhost",
+      "ok": true,
+      "note": "http localhost"
+    },
+    {
+      "url": "http://localhost:5173/",
+      "origin": "http://localhost:5173",
+      "ok": true,
+      "note": "http localhost port"
+    },
+    {
+      "url": "http://127.0.0.1:8080/",
+      "origin": "http://127.0.0.1:8080",
+      "ok": true,
+      "note": "http loopback port"
+    },
+    {
+      "url": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example/",
+      "origin": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example",
+      "ok": true,
+      "note": "63-byte label"
+    },
+    {
+      "url": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
+      "origin": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ok": true,
+      "note": "248-byte host = 256-byte origin"
+    },
+    {
+      "url": "https://example.com./x",
+      "origin": "https://example.com.",
+      "ok": false,
+      "note": "trailing dot (absolute FQDN)"
+    },
+    {
+      "url": "https://example.com:0/",
+      "origin": "https://example.com:0",
+      "ok": false,
+      "note": "port 0"
+    },
+    {
+      "url": "https://a..b.example/",
+      "origin": "https://a..b.example",
+      "ok": false,
+      "note": "empty label"
+    },
+    {
+      "url": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example/",
+      "origin": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example",
+      "ok": false,
+      "note": "64-byte label"
+    },
+    {
+      "url": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
+      "origin": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ok": false,
+      "note": "249-byte host = 257-byte origin"
+    },
+    {
+      "url": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.a/",
+      "origin": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.a",
+      "ok": false,
+      "note": "253-byte host"
+    },
+    {
+      "url": "https://a$b.example/",
+      "origin": "https://a$b.example",
+      "ok": false,
+      "note": "dollar sign in host"
+    },
+    {
+      "url": "https://a!b.example/",
+      "origin": "https://a!b.example",
+      "ok": false,
+      "note": "exclamation mark in host"
+    },
+    {
+      "url": "https://a~b.example/",
+      "origin": "https://a~b.example",
+      "ok": false,
+      "note": "tilde in host"
+    },
+    {
+      "url": "https://[::1]/",
+      "origin": "https://[::1]",
+      "ok": false,
+      "note": "IPv6 literal"
+    },
+    {
+      "url": "https://user:pw@app.example/",
+      "origin": null,
+      "ok": false,
+      "note": "userinfo"
+    },
+    {
+      "url": "http://app.example/",
+      "origin": "http://app.example",
+      "ok": false,
+      "note": "http other than localhost/127.0.0.1"
+    },
+    {
+      "url": "http://127.0.0.2/",
+      "origin": "http://127.0.0.2",
+      "ok": false,
+      "note": "http other loopback"
+    },
+    {
+      "url": "ftp://app.example/",
+      "origin": null,
+      "ok": false,
+      "note": "other scheme"
+    },
+    {
+      "url": "file:///C:/x.html",
+      "origin": null,
+      "ok": false,
+      "note": "file"
+    },
+    {
+      "url": "about:blank",
+      "origin": null,
+      "ok": false,
+      "note": "about"
+    }
+  ]
+}

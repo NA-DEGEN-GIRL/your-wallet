@@ -546,6 +546,48 @@ test("P6 bridge-request at start; same-channel bridge-init is accepted again, ot
   assert.equal(await promise, "0x1");
 });
 
+// Security review M4: a page script that posts its own bridge-init (or bridge-claim) cannot take
+// the channel once the content script's synchronous bridge-claim was delivered, and cannot move
+// it afterwards; requests flow only after bridge-init on the claimed channel.
+test("P6 bridge-claim reserves the channel: forged bridge-init/claim from the page are ignored", async () => {
+  const page = createPage({ init: false });
+  const provider = page.context.ethereum;
+  const claim = (channel, extra = {}) => dispatchMessage(page, { namespace: "your-wallet", version: 1, kind: "bridge-claim", channel, ...extra });
+  // Malformed claims take nothing.
+  claim("AB".repeat(32));
+  claim(CHANNEL, { compatMode: "off" });
+  claim(CHANNEL);
+  // The page's forged claim and bridge-init on another channel lose to the content's claim.
+  claim(OTHER_CHANNEL);
+  bridgeInit(page, OTHER_CHANNEL, "metamask");
+  assert.equal(provider.isConnected(), false);
+  assert.equal(provider.isMetaMask, false);
+  assert.equal(announcements(page).length, 0);
+  // Claimed but not open: a request waits for bridge-init instead of going out.
+  const promise = provider.request(pageValue(page, { method: "eth_chainId" }));
+  await flush();
+  assert.equal(requests(page).length, 0);
+  // The content's bridge-init (claimed channel, stored mode) opens the bridge.
+  bridgeInit(page, CHANNEL, "rabby");
+  assert.equal(provider.isConnected(), true);
+  assert.equal(provider.isRabby, true);
+  await flush();
+  assert.equal(requests(page).length, 1);
+  assert.equal(requests(page)[0].channel, CHANNEL);
+  respond(page, requests(page)[0].id, { result: "0x1" });
+  assert.equal(await promise, "0x1");
+  // Later forgeries move neither the channel nor the mode, and responses on them are ignored.
+  claim(OTHER_CHANNEL);
+  bridgeInit(page, OTHER_CHANNEL, "off");
+  const next = provider.request(pageValue(page, { method: "eth_chainId" }));
+  await flush();
+  assert.equal(requests(page)[1].channel, CHANNEL);
+  respond(page, requests(page)[1].id, { result: "0x5" }, OTHER_CHANNEL);
+  respond(page, requests(page)[1].id, { result: "0x2" });
+  assert.equal(await next, "0x2");
+  assert.equal(provider.isRabby, true);
+});
+
 test("P6 without a channel a request waits 10 s and then fails 4900; a late bridge-init unblocks waiters", async () => {
   const page = createPage({ init: false });
   const provider = page.context.ethereum;
@@ -1337,4 +1379,13 @@ test("P16 xverse mode: sats-connect request() shapes, btc_providers entry, unsup
   sendEvent(page, "btcAccountsChanged", [taproot.address]);
   assert.deepEqual(events, ["accountChange"]);
   await assert.rejects(provider.signTransaction("jwt"), (error) => error.code === 4200);
+});
+
+test("P1 the provider installs exactly on the v1-origins.golden.json pages (security review L6)", async () => {
+  const { cases } = JSON.parse(await readFile(new URL("../native-host/v1-origins.golden.json", import.meta.url), "utf8"));
+  for (const { url, ok, note } of cases) {
+    const page = createPage({ href: url, init: false });
+    assert.equal("ethereum" in page.context, ok, note);
+    assert.equal(page.posted.length, ok ? 1 : 0, note);
+  }
 });

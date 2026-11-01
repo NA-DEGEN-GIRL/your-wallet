@@ -515,3 +515,15 @@ test("C5 loadCompatMode reads compatMode once and falls back to off on bad value
   await Promise.resolve();
   assert.equal(result, "off");
 });
+
+test("C1 bridgeClaim is the exact channel-only claim posted before the mode read (spec/05 §2.5)", () => {
+  const { bridgeClaim } = globalThis.__YOUR_WALLET_CONTENT_CORE__;
+  assert.deepEqual({ ...bridgeClaim(CHANNEL) }, { namespace: "your-wallet", version: 1, kind: "bridge-claim", channel: CHANNEL });
+  assert.equal(Object.isFrozen(bridgeClaim(CHANNEL)), true);
+  for (const bad of ["00".repeat(32), "AB".repeat(32), "ab", 1, null]) {
+    assert.throws(() => bridgeClaim(bad), TypeError);
+  }
+  // A page echoing the claim back to content is not a page message.
+  const h = harness();
+  assert.equal(h.bridge.receivePage({ ...bridgeClaim(CHANNEL) }), false);
+});

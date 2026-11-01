@@ -53,7 +53,11 @@
   const listeners = new Map();
   const pending = new Map();
   const bridgeWaiters = new Set();
+  // spec/05 §2.5: `channel` is claimed by the content script's synchronous `bridge-claim` (queued
+  // before any page script can post) or, failing that, by the first valid `bridge-init`; requests
+  // flow only once `bridge-init` on that channel opened the bridge.
   let channel = null;
+  let bridgeOpen = false;
   let dead = false;
   let activeChainId = null;
   let selectedAddress = null;
@@ -941,7 +945,7 @@
   defineMember("_metamask", { get: () => (compatMode === "off" ? undefined : metamaskApi) });
   defineMember("chainId", { get: () => activeChainId });
   defineMember("selectedAddress", { get: () => selectedAddress });
-  defineMember("isConnected", { value: () => channel !== null && !dead });
+  defineMember("isConnected", { value: () => bridgeOpen && !dead });
   defineMember("request", { value: request });
   // Legacy MetaMask API in every mode (spec/05 §2.5 레거시 API). Each one only calls `request`,
   // so the method table, permissions, limits and error codes are exactly those of `request`.
@@ -1160,13 +1164,13 @@
     if (!Array.isArray(params) && !isPlainObject(params)) {
       throw new ProviderRpcError(-32602, "Invalid params.");
     }
-    if (channel === null && !dead) {
+    if (!bridgeOpen && !dead) {
       await waitForBridge();
     }
     if (dead) {
       throw reloadedError();
     }
-    if (channel === null) {
+    if (!bridgeOpen) {
       throw new ProviderRpcError(4900, "Wallet connection closed.");
     }
     if (pending.size >= MAX_PENDING) {
@@ -1425,6 +1429,19 @@
     if (!isPlainObject(message) || message.namespace !== NAMESPACE || message.version !== VERSION) {
       return;
     }
+    if (message.kind === "bridge-claim") {
+      // The content script posts this synchronously at document_start, before any page script
+      // runs; window messages are delivered in posting order, so a page's forged bridge-init or
+      // bridge-claim always arrives after it and finds the channel taken.
+      if (hasExactKeys(message, ["namespace", "version", "kind", "channel"])
+        && typeof message.channel === "string"
+        && CHANNEL_PATTERN.test(message.channel)
+        && channel === null
+        && !dead) {
+        channel = message.channel;
+      }
+      return;
+    }
     if (message.kind === "bridge-init") {
       if (hasExactKeys(message, ["namespace", "version", "kind", "channel", "compatMode", "solCompatMode", "btcCompatMode"])
         && typeof message.channel === "string"
@@ -1433,15 +1450,17 @@
         && Object.prototype.hasOwnProperty.call(IDENTITIES, message.compatMode)
         && SOL_MODES.has(message.solCompatMode)
         && BTC_MODES.has(message.btcCompatMode)
-        && channel === null
+        && (channel === null || channel === message.channel)
+        && !bridgeOpen
         && !dead) {
         channel = message.channel;
+        bridgeOpen = true;
         settleMode(message.compatMode, message.solCompatMode, message.btcCompatMode);
         releaseBridgeWaiters();
       }
       return;
     }
-    if (channel === null || message.channel !== channel) {
+    if (!bridgeOpen || message.channel !== channel) {
       return;
     }
     if (message.kind === "response") {
@@ -1569,6 +1588,9 @@
   }
 
   // Own copy of spec/05 §2.4 (this script runs in the page world without shared.js).
+  // Copy of shared.js isSupportedPageUrl (spec/05 §2.4/§4.7, native-host/v1-origins.golden.json).
+  // Function declarations are hoisted, so the constants live inside: this runs before the
+  // provider's top-level `const`s are initialized.
   function isSupportedPage(location) {
     let url;
     try {
@@ -1577,11 +1599,13 @@
       return false;
     }
     if (url.username !== "" || url.password !== "" || url.origin === "null"
-      || url.hostname === "" || url.hostname.startsWith("[")) {
+      || url.hostname === "" || url.hostname.startsWith("[")
+      || url.port === "0" || url.origin.length > 256) {
       return false;
     }
     if (url.protocol === "https:") {
-      return true;
+      return url.hostname.length <= 253
+        && url.hostname.split(".").every((label) => /^[a-z0-9_-]{1,63}$/u.test(label));
     }
     return url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
   }

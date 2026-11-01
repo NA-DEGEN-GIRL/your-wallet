@@ -2,10 +2,38 @@
 //! `ProviderError` code and message against the spec/05 §5 table; `BrowserOrigin` rules are the
 //! unit tests of `policy`).
 
-use yw_core::policy::{Method, ProviderError, Route};
+use yw_core::policy::{BrowserOrigin, Method, ProviderError, Route};
 use yw_json::{Limits, Value, parse};
 
 const METHODS_GOLDEN: &str = include_str!("../../../extension/native-host/v1-methods.golden.json");
+const ORIGINS_GOLDEN: &str = include_str!("../../../extension/native-host/v1-origins.golden.json");
+
+/// Security review L6 (spec/05 §2.4 "같은 규칙을 네 곳"): `BrowserOrigin::parse` accepts exactly the
+/// serialized origins of the pages the extension accepts (the same vectors pin `shared.js`,
+/// `provider-main.js` and background `deriveSenderContext`).
+#[test]
+fn r_origin_rule_matches_the_shared_golden() {
+    let golden = parse(ORIGINS_GOLDEN.as_bytes(), &Limits::RESPONSE).unwrap();
+    let cases = golden
+        .as_object()
+        .and_then(|object| object.get("cases"))
+        .and_then(Value::as_array)
+        .unwrap();
+    let mut checked = 0;
+    for case in cases {
+        let case = case.as_object().unwrap();
+        let note = case.get("note").and_then(Value::as_str).unwrap();
+        let ok = matches!(case.get("ok"), Some(Value::Bool(true)));
+        match case.get("origin").and_then(Value::as_str) {
+            Some(origin) => {
+                assert_eq!(BrowserOrigin::parse(origin).is_some(), ok, "{note}");
+                checked += 1;
+            }
+            None => assert!(!ok, "{note}"),
+        }
+    }
+    assert!(checked >= 20);
+}
 
 fn names(golden: &Value, key: &str) -> Vec<String> {
     golden

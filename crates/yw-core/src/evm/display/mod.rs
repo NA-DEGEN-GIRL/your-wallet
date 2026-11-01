@@ -27,9 +27,8 @@ use super::siwe::{SiweContext, check_marker_only, check_siwe};
 use crate::approval::{
     AccountRef, ApprovalDisplay, ApprovalDraft, ApprovalId, ApprovalKind, ApprovalOrigin,
     ChainFacts, ChainRef, CodeKind, DisplayError, DisplayField, FieldKey, MAX_DISPLAY_FIELDS,
-    MAX_DISPLAY_WARNINGS,
-    MAX_TITLE_BYTES, Signer, SigningPayload, SimNoneReason, SimulationBinding, Warning,
-    escape_edges, escape_untrusted,
+    MAX_DISPLAY_WARNINGS, MAX_TITLE_BYTES, Signer, SigningPayload, SimNoneReason,
+    SimulationBinding, Warning, escape_edges, escape_untrusted,
 };
 use crate::vault::EvmKeySource;
 use time::{format_utc, format_utc_relative};

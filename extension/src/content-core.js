@@ -466,6 +466,20 @@
     });
   }
 
+  // spec/05 §2.5/§2.7: the channel claim content.js posts synchronously at document_start, before
+  // the asynchronous mode read, so it is queued ahead of anything a page script can post.
+  function bridgeClaim(channelNonce) {
+    if (!shared.isId64(channelNonce)) {
+      throw new TypeError("Invalid page channel nonce.");
+    }
+    return Object.freeze({
+      namespace: shared.NAMESPACE,
+      version: shared.PROTOCOL_VERSION,
+      kind: "bridge-claim",
+      channel: channelNonce
+    });
+  }
+
   Object.defineProperty(root, "__YOUR_WALLET_CONTENT_CORE__", {
     configurable: false,
     enumerable: false,
@@ -478,7 +492,8 @@
       MIN_RECONNECT_INTERVAL_MS,
       MODE_READ_TIMEOUT_MS,
       loadCompatMode,
-      loadCompatModes
+      loadCompatModes,
+      bridgeClaim
     })
   });
 }(globalThis));

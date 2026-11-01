@@ -311,3 +311,45 @@ test("E3 untrusted pagehide/freeze from the page are ignored; the browser's own 
   assert.equal(second.port.sent.at(-1).kind, "disconnect");
   assert.equal(second.port.sent.at(-1).reason, "document-pagehide");
 });
+
+// Security review M4 (spec/05 §2.5): a page script that runs right after document_start and posts
+// a forged bridge-init (its own channel, any mode) — and then a `disconnect` on that channel —
+// cannot take the bridge: content's synchronous bridge-claim is delivered first, so the provider
+// keeps the content's channel and the page's requests still reach the wallet.
+test("E4 a page-forged bridge-init before the storage read cannot pre-empt the channel", async () => {
+  let answer;
+  const doc = documentWith(() => new Promise((resolve) => {
+    answer = resolve;
+  }));
+  const forged = "ee".repeat(32);
+  const pagePost = (text) => vm.runInContext(`postMessage(${text}, location.origin)`, doc.main.context);
+  pagePost(`({ namespace: "your-wallet", version: 1, kind: "bridge-init", channel: "${forged}", compatMode: "off", solCompatMode: "off", btcCompatMode: "off" })`);
+  pagePost(`({ namespace: "your-wallet", version: 1, kind: "bridge-claim", channel: "${forged}" })`);
+  await settle();
+  const ethereum = doc.main.context.ethereum;
+  assert.equal(ethereum.isConnected(), false, "the forged bridge-init did not open the bridge");
+  pagePost(`({ namespace: "your-wallet", version: 1, kind: "disconnect", channel: "${forged}", error: { code: 4900, message: "x" } })`);
+  // The request waits for the content's bridge-init (the mode read is still outstanding).
+  const pending = ethereum.request(vm.runInContext(`({ method: "eth_chainId" })`, doc.main.context));
+  await settle();
+  assert.equal(doc.ports.length, 0);
+  answer(vm.runInContext(`({ compatMode: "metamask" })`, doc.isolated.context));
+  await settle();
+  assert.equal(ethereum.isConnected(), true);
+  assert.equal(ethereum.isMetaMask, true, "the content's stored mode, not the forged one");
+  assert.equal(doc.ports.length, 1, "the request reached the content port");
+  const port = doc.ports[0];
+  const background = backgroundFor(port, doc);
+  await settle();
+  assert.equal(port.sent.length, 1);
+  assert.equal(port.sent[0].method, "eth_chainId");
+  background.handle.receive(port.sent[0]);
+  const { message: envelope, onMessage } = background.native[0];
+  onMessage({
+    namespace: "your-wallet", version: 1, role: "native-host", kind: "response", sessionId: envelope.sessionId,
+    sequence: 1, requestSequence: envelope.sequence, activationNonce: envelope.activationNonce,
+    requestId: envelope.requestId, result: "0xaa36a7"
+  });
+  await settle();
+  assert.equal(await pending, "0xaa36a7");
+});

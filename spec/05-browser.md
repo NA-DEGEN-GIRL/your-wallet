@@ -165,14 +165,14 @@ fn pinned_extension_id() -> Option<&'static str> {
 ```
 
 ### 2.4 지원 페이지 규칙
-같은 규칙을 네 곳에서 적용한다: `provider-main.js`(자체 사본), `shared.js isSupportedPageUrl`, background `deriveSenderContext`, yw-core `policy::BrowserOrigin::parse`(§4.7).
+같은 규칙을 네 곳에서 적용한다: `provider-main.js`(자체 사본), `shared.js isSupportedPageUrl`, background `deriveSenderContext`, yw-core `policy::BrowserOrigin::parse`(§4.7). JS 세 곳은 URL 파서가 정규화한 origin에 §4.7 문법을 그대로 건다 — https host는 `[a-z0-9_-]{1,63}` 라벨만(끝 점·빈 라벨·그 밖 문자 거부), host ≤ 253, origin ≤ 256바이트, 포트 0 거부(보안 검토 L6: 이전에는 JS가 받아들이고 앱이 매 요청 -32600으로 끊던 `https://example.com.`·`:0`·긴 host가 있었다). 공유 벡터 `extension/native-host/v1-origins.golden.json`(페이지 URL·직렬화 origin·수용 여부)을 네 곳의 테스트(S3·B7·P1·yw-core `r_origin_rule_matches_the_shared_golden`)가 함께 쓴다.
 
 | 조건 | 결과 |
 |---|---|
 | 최상위 프레임이 아님(`window.top !== window`, `sender.frameId !== 0`) | 주입·연결 안 함 |
-| `https:` | 지원 |
+| `https:`이고 origin이 §4.7을 만족 | 지원 |
 | `http:`이고 `hostname`이 정확히 `localhost` 또는 `127.0.0.1`(포트 무관) | 확장은 지원. yw-app은 토글이 꺼져 있으면 4100(§4.6) |
-| 그 밖(`http:` 다른 호스트, `file:`, `data:`, IPv6 리터럴 등) | 주입·연결 안 함 |
+| 그 밖(`http:` 다른 호스트, `file:`, `data:`, IPv6 리터럴, §4.7 밖 https host·포트 0 등) | 주입·연결 안 함 |
 | URL에 userinfo, `origin === "null"`, `sender.origin`과 URL origin 불일치, incognito, `documentLifecycle !== "active"` | background가 연결 거부(`archive/spec-v2.4:extension/src/background-core.js:526-568` 규칙 유지, 프로토콜 조건만 위 표로 교체) |
 
 ### 2.5 provider-main.js
@@ -237,7 +237,12 @@ fn pinned_extension_id() -> Option<&'static str> {
 - 검사: `callback`이 함수가 아니거나, `payload`(배치 원소 포함)가 배열이 아닌 객체가 아니거나 `typeof payload.method !== "string"`이면 아무것도 보내기 전에 `TypeError`를 동기로 던진다. method 형식·params 형식 오류는 `request` 규칙(4200·-32602)대로 콜백의 오류 응답이 된다.
 - 콜백: 항상 호출이 반환된 뒤(비동기) 정확히 1회 부른다. 콜백이 던진 예외는 provider가 잡아 로드 시 잡아 둔 `window.reportError`로 알리고(콘솔에 미처리 오류로 보임) 그 밖에는 무시한다. provider 상태·다른 요청·리스너에 영향이 없다.
 
-**브리지**: 시작 시 page `bridge-request`를 보낸다. `bridge-init`은 정확한 키 집합(§2.6, `compatMode` 포함)이고 `compatMode`가 세 값 중 하나일 때만 유효하다. 채널이 없을 때 받아들여 채널과 모드(아직 정해지지 않았다면)를 정하고, 같은 채널 값이면 다시 받아도 무시하고(모드도 바뀌지 않는다), 다른 채널 값이면 무시한다. 수신 메시지는 `event.source === window && event.origin === location.origin`인 것만 본다.
+**브리지**: 시작 시 page `bridge-request`를 보낸다. 채널은 두 단계로 정해진다.
+
+1. **채널 선점(`bridge-claim`)**: content는 document_start에 저장소를 읽기 **전에** 동기로 `bridge-claim`(채널만, §2.6)을 보낸다. provider는 채널이 없을 때 정확한 키 집합·64 hex인 첫 `bridge-claim`의 값을 채널로 잡는다. 이 단계로는 브리지가 열리지 않는다(`isConnected()` 거짓, 요청은 아래 `bridge-init`을 기다린다).
+2. **브리지 열기(`bridge-init`)**: 정확한 키 집합(§2.6, `compatMode` 포함)이고 `compatMode`가 세 값 중 하나일 때만 유효하다. 브리지가 아직 열리지 않았고 채널이 없거나 **잡힌 채널과 같을 때만** 받아들여 브리지를 열고(요청 대기 해제) 모드(아직 정해지지 않았다면)를 정한다. 열린 뒤에는 같은 채널이든 다른 채널이든 다시 받아도 무시한다(채널·모드가 바뀌지 않는다). 다른 채널 값의 `bridge-claim`·`bridge-init`은 언제나 무시한다.
+
+선점 근거(보안 검토 M4): 같은 창의 `postMessage`는 보낸 순서대로 전달되고, ISOLATED content script는 document_start에 **어떤 페이지 스크립트보다 먼저** 실행되므로 content의 `bridge-claim`이 페이지가 보낼 수 있는 어떤 메시지보다 먼저 provider에 도착한다. 그래서 페이지가 위조한 `bridge-init`·`bridge-claim`은 채널이 이미 잡혀 무시되고, 브리지가 열린 뒤에는 채널을 바꾸는 규칙이 없으므로 "요청이 없을 때(pending 0) 새 `bridge-init`으로 갈아타기" 같은 재수용도 두지 않는다 — 그 규칙은 페이지가 유휴 시점마다 채널을 다시 가로챌 수 있게 하기 때문이다. 남는 한계: (a) 채널 값은 비밀이 아니다(페이지도 `bridge-claim`·`bridge-init`을 관찰한다). 페이지는 그 채널로 자기 provider에 응답·이벤트·`disconnect`를 위조하거나 content보다 먼저 `bridge-init`을 보내 자기 페이지의 모드만 바꿀 수 있다 — 자기 자신을 속이는 것뿐이며 yw-app에 가는 origin·모드는 content·background가 정한다(§1: 브리지는 보안 경계가 아니다). (b) 같은 페이지에 document_start MAIN world 스크립트를 넣는 **다른 확장**은 content보다 먼저 보낼 수 있다(그 확장은 페이지를 이미 마음대로 바꿀 수 있어 범위 밖). (c) `bridge-claim`이 전달되지 않으면(주입 실패) 첫 유효 `bridge-init`이 채널을 정하는 이전 규칙으로 돌아간다. 수신 메시지는 `event.source === window && event.origin === location.origin`인 것만 본다.
 
 ### 2.6 확장 내부 메시지 (정확한 키 집합, 모든 메시지에 `namespace:"your-wallet"`, `version:1`)
 | 방향 | kind | 나머지 키 |
@@ -245,6 +250,7 @@ fn pinned_extension_id() -> Option<&'static str> {
 | page→content | `bridge-request` | (없음) |
 | page→content | `request` | `channel`, `id`(32 hex), `method`, `params` |
 | page→content | `cancel` | `channel`, `id` |
+| content→page | `bridge-claim` | `channel`(64 hex). document_start에 동기로 1회(§2.5) |
 | content→page | `bridge-init` | `channel`(64 hex), `compatMode`(`"off"`\|`"metamask"`\|`"rabby"`, §2.12), `solCompatMode`(`"off"`\|`"phantom"`), `btcCompatMode`(`"off"`\|`"unisat"`\|`"xverse"`, §2.13) |
 | content→page | `response` | `channel`, `id`, `result` \| `error` |
 | content→page | `event` | `channel`, `event`, `payload` |
@@ -263,7 +269,7 @@ fn pinned_extension_id() -> Option<&'static str> {
 `error` 형식(모든 구간 공통): `{ code: 안전 정수, message: 1–512 UTF-16 단위, data?: JSON }`, 정확한 키 집합.
 
 ### 2.7 content 상태 기계
-상수: `MAX_PENDING = 64`, `CONNECT_TIMEOUT_MS = 5_000`, `MIN_RECONNECT_INTERVAL_MS = 250`, `MODE_READ_TIMEOUT_MS = 3_000`. 채널 nonce는 문서 수명 동안 하나(`randomHex(32)`)다. content는 document_start에 `chrome.storage.local.get("compatMode")`로 모드를 한 번 읽고(§2.12, 실패·형식 오류·3 s 초과는 `off`) 그 즉시 bridge를 만들어 `bridge-init`을 보내며, 이후 `bridge-request` 수신마다 다시 보낸다. 모드는 문서 수명 동안 고정이다. port는 **첫 요청 때** 연다(모든 https 페이지에서 service worker와 yw-app을 깨우지 않기 위해).
+상수: `MAX_PENDING = 64`, `CONNECT_TIMEOUT_MS = 5_000`, `MIN_RECONNECT_INTERVAL_MS = 250`, `MODE_READ_TIMEOUT_MS = 3_000`. 채널 nonce는 문서 수명 동안 하나(`randomHex(32)`)다. content는 document_start에 먼저 그 nonce로 `bridge-claim`을 동기로 보내고(§2.5), `chrome.storage.local.get("compatMode")`로 모드를 한 번 읽고(§2.12, 실패·형식 오류·3 s 초과는 `off`) 그 즉시 bridge를 만들어 `bridge-init`을 보내며, 이후 `bridge-request` 수신마다 다시 보낸다. 모드는 문서 수명 동안 고정이다. port는 **첫 요청 때** 연다(모든 https 페이지에서 service worker와 yw-app을 깨우지 않기 위해).
 
 | 상태 | 사건 | 동작 → 다음 상태 |
 |---|---|---|
@@ -1054,13 +1060,13 @@ yw-host는 자기와 같은 폴더의 yw-app을 실행하므로 yw-app은 등록
 |---|---|---|
 | S1 | `tests/shared.test.mjs`(신규) | `METHOD_ROUTE`가 `v1-methods.golden.json`의 permission/read/signing과 정확히 같고 `rejected`는 하나도 없음 |
 | S2 | 〃 | `v1-limits.golden.json` 모든 사례에서 `checkJson` 결과 일치, 고립 surrogate 문자열·키 거부 |
-| S3 | 〃 | `isSupportedPageUrl`: https 허용, `http://localhost:5173`·`http://127.0.0.1` 허용, `http://example.com`·`http://[::1]`·`file:` 거부 |
+| S3 | 〃 | `isSupportedPageUrl`: https 허용, `http://localhost:5173`·`http://127.0.0.1` 허용, `http://example.com`·`http://[::1]`·`file:` 거부. `v1-origins.golden.json` 전 사례(끝 점·포트 0·빈 라벨·64자 라벨·257바이트 origin·`$`·`!`·`~` host 거부, 248바이트 host·IDN·IPv4 허용)가 S3·B7(background)·P1(provider 사본)·yw-core와 같은 결과 |
 | P1 | `tests/provider-main.test.mjs`(갱신) | `ethereum` 없으면 `configurable:true` 등록 + `ethereum#initialized`, 있으면 그대로(기존 159-181 유지), announce는 항상(모드 확정 후. 그 전 `requestProvider`는 확정 시 1회로 답함, `bridge-init` 없으면 10 s 뒤 기본 신원), rdns 값, `window.yourWallet` 없음 |
 | P2 | 〃 | provider 객체가 확장 가능하고 내장 멤버(`isRabby`·`_metamask`·`send`·`sendAsync` 포함)는 덮어쓸 수 없음, 열거 멤버 집합이 §2.5 표와 정확히 같음 |
 | P3 | 〃 | `on/addListener/once/off/removeListener/removeAllListeners/listenerCount`, 알 수 없는 이벤트 등록이 throw하지 않음, 리스너 예외 격리 |
 | P4 | 〃 | `connect`는 chainId를 처음 알 때 1회. 일시적 끊김(content 4900 응답)에 `disconnect` 없음. page `disconnect` 수신 시 `disconnect` 1회 |
 | P5 | 〃 | 605 s 시간 초과(`mock.timers`)에 -32603 + page `cancel` 전송, 604 s에는 아직 대기 |
-| P6 | 〃 | 같은 채널 `bridge-init` 재수신 허용, 다른 채널 무시, 채널 없을 때 10 s 대기 후 4900 |
+| P6 | 〃 | 같은 채널 `bridge-init` 재수신 허용, 다른 채널 무시, 채널 없을 때 10 s 대기 후 4900. `bridge-claim`(보안 검토 M4): 형식 오류 무시, 먼저 잡힌 채널이 이김 — 다른 채널의 `bridge-claim`·`bridge-init`(모드 포함) 무시, 잡힌 뒤 `bridge-init` 전에는 미연결이고 요청은 대기, 잡힌 채널의 `bridge-init`이 열고 저장 모드를 정함, 열린 뒤 위조 claim·init·다른 채널 응답은 채널·모드를 바꾸지 않음 |
 | P7 | 〃 (§2.12) | 모드 전달: `compatMode` 없음·`"MetaMask"`·`"on"`·`""`·숫자·null·추가 키인 `bridge-init` 무시(채널·모드 없음), 첫 유효 값이 문서 모드, 이후 다른 모드 무시, 10 s 기본값 확정 뒤 늦은 `bridge-init`은 채널만 |
 | P8 | 〃 | 모드별 플래그(`isMetaMask`·`isRabby`·`_metamask`, 확정 전에는 기본값)와 EIP-6963 `name`·`rdns`, 우리 PNG 아이콘, 페이지 uuid 하나, 호환 모드에서 "Your Wallet" 알림 없음(신원 1개) |
 | P9 | 〃 | `window.ethereum` 우선권: 임시 구간에 MetaMask가 대입 → 확정 시 되찾음 + `ethereum#initialized`; 확정 뒤 대입(strict 포함)은 예외 없이 무시; configurable 재정의는 예외 없이 성공하고 `requestProvider`·`DOMContentLoaded`·`load`에서 되찾음; 우리보다 먼저 있던 MetaMask(일반 대입) → 우리 것(두 호환 모드); non-configurable 캐시 setter(Rabby 방식) → setter로 들어감; non-configurable 쓰기 불가 → 그대로·예외 없음·알림은 감; 기본 모드는 종전 규칙 |
@@ -1075,6 +1081,7 @@ yw-host는 자기와 같은 폴더의 yw-app을 실행하므로 yw-app은 등록
 | C5 | 〃 (§2.12) | `bridge-init`에 문서 모드, content→bg `request`에 호환 모드일 때만 `compatMode`(background 파서가 그대로 수락), 페이지 요청의 `compatMode` 키는 거부, 잘못된 모드로 `ContentBridge` 생성 시 TypeError; `loadCompatMode`: 유효 값 그대로, 없음·대소문자 다름·숫자·null·객체 아님 → `off`, 거부·예외 → `off`, 응답 없음 → 3 s에 `off`·늦은 응답 무시 |
 | E1 | `tests/compat-delivery.test.mjs`(신규) | 실제 `provider-main.js`(MAIN)와 `shared.js`·`content-core.js`·`content.js`(ISOLATED)를 두 VM world + 공유 postMessage로 실행: `chrome.storage.local.get("compatMode")` = metamask → 저장소 응답 전에는 기본 플래그·알림 없음 → 응답 후 MetaMask 알림 1개·`isMetaMask` true → `window.ethereum.request(eth_requestAccounts)` → content port 요청 `compatMode` → `BackgroundRouter` native 봉투 `context.compatMode = "metamask"`, `topOrigin` = sender origin, 10개 키 → 응답이 페이지까지 돌아옴 |
 | E2 | 〃 | 저장소 거부·`"MetaMask"` 값·예외 → 기본 신원, port 요청·봉투 context에 `compatMode` 없음(9개 키) |
+| E4 | 〃 (§2.5, 보안 검토 M4) | 두 스크립트 로드 직후 저장소 응답 전에 페이지가 자기 채널로 `bridge-init`·`bridge-claim`·`disconnect`를 보냄 → 미연결 유지, 요청 대기 → 저장소 응답 뒤 content 채널·저장 모드(metamask)로 열림, 요청이 content port와 native 봉투까지 가고 응답이 페이지로 돌아옴 |
 | B1 | `tests/extension.test.mjs`(갱신) | 한 activation에서 요청 5,000개 순차 성공(가짜 `now()`를 요청마다 25 ms 진행, 수명 상한 회귀). `MAX_NATIVE_CONNECTION_ATTEMPTS` 테스트(433)는 "재연결 횟수 무제한 + backoff 간격"으로 반전 |
 | B2 | 〃 | 토큰 버킷: 81번째 즉시 요청 -32005, 1 s 뒤 회복 |
 | B3 | 〃 | 중복 pending id는 무시되고 activation 유지(261, 515 반전). 형식 오류 메시지가 activation을 끊지 않음 |

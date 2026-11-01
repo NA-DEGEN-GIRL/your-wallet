@@ -33,10 +33,20 @@
     }
   }
 
+  // spec/05 §2.5: claim the page channel now, synchronously, before any page script can run.
+  // Window messages are delivered in posting order, so a page that forges a `bridge-claim` or
+  // `bridge-init` later finds the channel taken (the mode follows in `bridge-init`).
+  const channelNonce = shared.randomHex(32);
+  try {
+    root.postMessage(contentCore.bridgeClaim(channelNonce), targetOrigin);
+  } catch (_error) {
+    // The page is tearing down; `bridge-init` below still opens the bridge if it survives.
+  }
+
   // spec/05 §2.12: the compatibility mode is read once at document_start and handed to the MAIN
   // world in `bridge-init`. The page provider waits for that message (a few ms) before its first
-  // EIP-6963 announcement, so no listener is needed until the mode is known: a `bridge-request`
-  // posted earlier is answered by the `announce()` below.
+  // EIP-6963 announcement and its first request, so no listener is needed until the mode is
+  // known: a `bridge-request` posted earlier is answered by the `announce()` below.
   contentCore.loadCompatModes({
     readStorage: () => chrome.storage.local.get([
       shared.COMPAT_MODE_STORAGE_KEY,
@@ -49,7 +59,7 @@
 
   function start(modes) {
     const bridge = new contentCore.ContentBridge({
-      channelNonce: shared.randomHex(32),
+      channelNonce,
       compatMode: modes.evm,
       solCompatMode: modes.sol,
       btcCompatMode: modes.btc,

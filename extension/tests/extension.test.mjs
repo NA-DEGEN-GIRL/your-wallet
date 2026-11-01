@@ -720,3 +720,16 @@ test("test fixtures avoid credential-shaped material", async () => {
   assert.doesNotMatch(source, bannedTerms);
   assert.doesNotMatch(source, /0x[0-9a-f]{64}/iu);
 });
+
+test("B7 deriveSenderContext accepts exactly the v1-origins.golden.json pages (security review L6)", async () => {
+  const { cases } = JSON.parse(await readFile(new URL("../native-host/v1-origins.golden.json", import.meta.url), "utf8"));
+  const configuration = (value) => ({ sender: value, extensionId: EXTENSION_ID, channelNonce: "d".repeat(64) });
+  for (const { url, origin, ok, note } of cases) {
+    const value = { ...sender(), url, origin: origin ?? "null" };
+    if (ok) {
+      assert.equal(deriveSenderContext(configuration(value)).topOrigin, origin, note);
+    } else {
+      assert.throws(() => deriveSenderContext(configuration(value)), Error, note);
+    }
+  }
+});
