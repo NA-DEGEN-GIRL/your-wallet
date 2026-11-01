@@ -429,30 +429,42 @@ PoC(모두 `target/tmp/`, 저장소 무변경):
 
 ## 8. 처리 결과 (2026-11-01)
 
-이 저장소 `main`에서 아래 항목을 처리했다(각 항목에 회귀 테스트). M1·L1·L7·L8·L9·L15·L16·L17과 S10·S11·S13·S17은
-설정·vault·설치·yw-win 저장소 담당 작업자의 범위라 여기서 다루지 않았다. S14·S15는 "설계"라 조치 없음.
+이 저장소 `main`에서 아래 항목을 처리했다(각 항목에 회귀 테스트). 설정·vault·설치·yw-win 저장소 항목(M1·L1·L7·L8·L9·
+L15·L16·L17, S10·S11·S13·S17, INFO `check.ps1` 환경 위생)은 다른 작업자가 `b0deb44`에서 처리했고 병합 커밋으로 `main`에
+들어왔다. S14·S15는 "설계"라 조치 없음.
 
 | 항목 | 결과 | 커밋 | 비고 |
 |---|---|---|---|
+| M1 / L15 | 고침 | `b0deb44` | vault로 암호화된 meta `security_settings` 스냅샷(LLM 동의 host·enabled·안내 버전, genesis 고정값, `feeCaps`, `autoLockMinutes`, BTC indexer·Esplora). 앱이 설정을 쓸 때마다 갱신, 잠금 해제 뒤마다 대조: 동의 없는 엔드포인트로 켜진 LLM → 끄고(파일도) 배너, 대조 전에는 `yw-llm` 작업자를 만들지 않음. 묶이지 않은 옛 LLM 키는 스냅샷의 동의 host에만 묶음. genesis 고정값이 없어지거나 바뀌면 되돌림(다시 TOFU 안 함). 나머지는 스냅샷 값 + 배너(`파일 값 사용` / `앱에 저장된 값으로 되돌리기`). spec/02 §5.3, spec/04 §6.7, spec/06 |
 | M2 / S2 | 고침 | `2c83c07` | `검토`가 RPC 없이 다시 검사하고, 화면 값과 다르면 SOL과 같은 "입력이 바뀌어 다시 확인했습니다…"로 승인을 열지 않는다. `dirty_ms` 동안 `검토` 비활성(첫 입력 때 다시 그림). spec/04 §2.7 |
 | M3 / S1 | 고침 | `2d913a9` | 인식 스키마도 message 전체를 트리 한도로 재서 T16. typed data 필드 목록은 1,023개에서 멈추고 마지막 칸에 "(표시 한도 초과: 항목 N개 생략)" + T16(차단) — `TooMany` 내부 오류가 아니다. spec/03 §8.4 |
 | M4 / S6 | 고침 | `cdd620f` | content가 저장소 읽기 **전에** 채널만 담은 `bridge-claim`을 동기로 보낸다(페이지 스크립트보다 먼저 큐에 들어가 먼저 전달). provider는 그 채널로만 `bridge-init`을 받아 브리지를 연다. 제안된 "pending 0이면 `bridge-init` 재수용"은 **채택하지 않았다**: 페이지가 유휴 때마다 채널을 다시 가로챌 수 있다. 남는 한계(채널은 관찰 가능 — 페이지는 자기 자신만 속인다, 다른 확장의 document_start MAIN 스크립트, claim 미전달 시 이전 규칙)는 spec/05 §2.5에 적었다. P6·C1·E4(실제 스크립트 종단) 테스트 |
+| L1 | 문서 | `b0deb44` | DEK는 회전하지 않는다(vault·meta·journal이 따로 커밋되어 형식 변경 없이는 중단에 안전하지 않음, spec/02 §4.4). 복구 안내서·W04·설정 → 보안·변경 완료 문구에 "옛 사본은 옛 비밀번호로 열린다"와 대처(니모닉으로 새 vault)를 적음 |
 | L2 | 고침 | `43336f8`, `6f85ae1` | 잔액 조회 = calldata 승인 ∪ diff ERC-20 승인(0 아닌 금액), `MAX_FACT_LOOKUPS`/E27 안에서 |
 | L3 | 고침 | `43336f8`, `6f85ae1` | `to`는 16칸 밖의 자기 칸(목록 1 + 16). 16 spender 모두 분류, 17이면 E27 |
 | L4 (a)(b)(c) | 고침 | `845b2ff` | (a) 승인 시 보이는 계정과 다시 대조, 숨김·삭제 계정이 있으면 SOL/BTC와 같은 4100(요청이 끝나므로 창은 닫힘 — "창 유지"는 SOL/BTC 대칭으로 해석). (b) 숨김·삭제 시 그 계정의 대기·표시 중 서명 요청을 `Revoked`(4100)로 끝내고 표시 창을 닫는다(체인 삭제 경로와 같은 방식). (c) 연결 창은 그릴 때마다 origin 체인을 다시 읽고, 승인 시 그려진 체인과 다르면 승인하지 않고 새 체인으로 다시 그려 1 s 재무장, grant에는 보인 체인을 저장. (c)의 승인 시점 분기는 실제 창이 필요해 단위 테스트는 `connect_state`의 현재 체인 읽기와 `connect_approved`의 저장 체인까지 |
 | L5 / S18 | 고침 | `3d49b7b` | `ApproveActivated { physical }`: `GetKeyState`(메시지 시점 키 상태 — 게시·전송된 `WM_KEYDOWN`은 바꾸지 않음, 새 `input::is_down_in_message`) && `!input::injected()`(이제 호출처 있음). 합성 Enter는 승인하지 않고 누름으로만 센다. yw-win 테스트가 실제 창에 `PostMessage`·`SendMessage`한 Enter가 "안 눌림"으로 읽히는지 확인 |
 | L6 / S5 | 고침 | `cdd620f` | JS 3곳(shared.js·provider-main.js 사본·background)이 §4.7 문법(라벨 `[a-z0-9_-]{1,63}`, 끝 점·빈 라벨 거부, host ≤ 253, origin ≤ 256, 포트 0 거부)을 적용. 공유 벡터 `extension/native-host/v1-origins.golden.json`을 S3·B7·P1·yw-core `r_origin_rule_matches_the_shared_golden`이 함께 쓴다 |
+| L7 | 고침 | `b0deb44` | `install.ps1`이 저장소 루트·`scripts\`·`extension\`과 빌드 결과(`target\release` 또는 `CARGO_TARGET_DIR`) ACL을 확인(다른 사용자가 쓸 수 있으면 종료 1, `-AllowUnsafeSourcePath`면 경고 후 계속), 설치한 파일마다 SHA-256을 기록하고 바뀌면 경고. spec/01 §9 |
+| L8 / S17 | 고침 | `b0deb44` | `FileStorage`가 vault·meta·journal과 `.prev`의 재분석 지점을 읽기(`FILE_FLAG_OPEN_REPARSE_POINT` 핸들 확인)·커밋 모두에서 거부, 폴더 flush 실패는 오류(쓰기 전 미리 flush). `settings.json`·`apikeys.dpapi`도 링크를 따라 읽지 않음. `security.rs` 주석 정정. spec/02 §6.2 |
+| L9 | 고침 | `b0deb44` | WER 제외 실패 → 배너 + 설정 → 보안 한 줄. spec/04 |
 | L10 | 고침 | `0a62dbc` | 미등록 토큰: `{원시} (원시 단위) {기호} (미확인 · decimals {d} 적용 시 {환산})` — decimals 조회 실패와 같은 모양으로 원시 값이 앞 |
 | L11 / S4 | 고침(거부) | `c68ea63` | message 자리가 주소 모양(`0x`+40 hex)이면 스펙대로 -32602. 20바이트 hex 그 자체를 메시지로 보내는 알려진 dApp이 없어 경고 대신 거부 |
 | L12 / S3 | 고침 | `48aea42` | `personal_sign`·`eth_signTypedData_v4`도 체인이 `RpcMismatch`면 E34 실패 창(RPC를 부르지 않으므로 이미 알려진 불일치만) |
 | L13 | 고침 | `c147a9a` | `bc1`/`tb1`/`bcrt1` 주소는 파라미터 검사에서 소문자로 정규화, 대소문자 섞임은 -32602(BIP173), base58은 그대로 |
 | L14 / S8 | 문서 + 일부 반박 | `5fda2f6` | spec/05 §5에 기록. 실측: `BackupPending`(과 vault 없음)에서 `wallet_revokePermissions`는 4100이지만 **`sol_disconnect`·`btc_disconnect`는 4100이 아니라 `null`**(지울 grant가 없고 아무것도 기억하지 않음) — 검토문의 그 부분은 코드와 다르다. 세 경우를 테스트로 고정 |
+| L16 | 고침 | `b0deb44` | `random_array_with`(salt·nonce)도 DEK처럼 모든 바이트가 같으면 `RandomnessUnavailable`. spec/02 |
+| L17 | 고침(표시) | `b0deb44` | 잠금 화면·설정 → 보안에 vault generation과 마지막 쓰기 시각 표시. meta가 본 가장 큰 generation(`vault_generation_seen`)을 기억하고 `vault.ywv`가 되감기면 배너 + 로그 `vault.generation_backwards`. 거부는 하지 않음(spec/02 롤백 문단) |
 | S7 | 고침 | `8e52979` | `sender.origin`이 없으면 거부(Chrome ≥ 80은 항상 줌, manifest 최소 120) |
 | S9 | 스펙 | `a1011c4` | §11.2: 보냄·받음 행은 키 순서가 아니라 §6.4 행 순서 |
+| S10 | 스펙 | `b0deb44` | spec/02: `BackupPending`에서 비밀번호 변경 허용(코드가 맞음) |
+| S11 | 스펙 | `b0deb44` | spec/02 §9: `reveal_*` 반환 타입을 `SecretString`으로(§10.3과 일치) |
 | S12 | 스펙 | `a1011c4` | §2.7: content가 넘기는 이벤트 4종으로 갱신(코드가 맞음) |
+| S13 | 고침 | `b0deb44` | 쓰지 않는 `browser::PIPE_INSTANCES` 삭제(`pipe.rs`의 값 하나만 남음) |
 | S16 | 고침 | `73c43c8` | `HttpsUrl` 스킴 대소문자 무관(소문자 정규화), 대괄호 IPv6 리터럴 host 허용(zone id 없음). spec/01 §7.4 |
 | S19 | 스펙 | `a1011c4` | §9.1: `0x`+홀수 hex는 문자열로 서명·표시(의도한 호환 차이) |
 | INFO `sessionId` | 고침 | `e546ed1` | 연결의 첫 request가 세션을 묶고, 다른 세션 봉투는 -32600(cancel은 버림)·순번 불변. 새 연결의 첫 봉투 재생은 남는 한계(spec/05 §6.3) |
+| INFO `check.ps1` 환경 | 고침 | `b0deb44` | 게이트가 설치와 같은 빌드 변수(`RUSTC*`, `CARGO_PROFILE_*`, `CC`·`CFLAGS` 등)를 지우고 같은 `--config`(래퍼 끄기, 링커 `link.exe`)를 준다. 목록 일치는 `install.test.mjs`. spec/01 §4.1 |
 
 게이트(`scripts/check.ps1 -Offline`)와 환경 메모: 이 PC에서는 저장소의 `target\` 아래에 있는 실행 파일만 제한을 받는다.
 `%TEMP%`에 폴더를 만들면 액세스 거부(os error 5)가 나고, yw-host `owner` 테스트의 무결성 검사도 실패한다. 같은 바이너리를

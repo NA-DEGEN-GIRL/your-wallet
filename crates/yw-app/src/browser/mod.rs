@@ -68,8 +68,6 @@ pub const MAX_DOCUMENTS_PER_ORIGIN: usize = 64;
 pub const UNLOCK_PROMPT_COOLDOWN_MS: u64 = 30_000;
 /// Read worker threads.
 pub const READ_WORKERS: usize = 4;
-/// Pipe instances.
-pub const PIPE_INSTANCES: u32 = 4;
 /// Approval items per origin (shared with the UI queue).
 pub const MAX_APPROVALS_PER_ORIGIN: usize = crate::ui::approval::MAX_APPROVALS_PER_ORIGIN;
 /// Approval items overall.

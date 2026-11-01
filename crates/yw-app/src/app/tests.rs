@@ -1378,8 +1378,21 @@ fn llm_key_is_bound_to_the_saved_endpoint_host() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// spec/06 §2.1 compatibility: an older version's key (no `llm:host`) is bound to the endpoint
-/// saved when it is loaded, and that binding is written before the endpoint changes.
+/// The meta of an unlocked wallet whose settings snapshot was taken of `settings`.
+fn meta_with_snapshot(settings: &Settings) -> Meta {
+    Meta {
+        security: Box::new(crate::meta::MetaSecurity {
+            snapshot: Some(crate::settings::SecuritySnapshot::of(settings)),
+            vault_generation_seen: 0,
+        }),
+        ..Meta::default()
+    }
+}
+
+/// spec/06 §2.1 compatibility: an older version's key (no `llm:host`) is not bound when
+/// `apikeys.dpapi` is loaded (`settings.json` is plain text, review M1); the check after unlock
+/// binds it to the host in the vault-encrypted snapshot, and that binding is written before the
+/// endpoint changes.
 #[test]
 fn legacy_llm_key_is_bound_to_the_endpoint_saved_at_load() {
     let mut plain = crate::apikeys::APIKEYS_MAGIC.to_vec();
@@ -1396,8 +1409,12 @@ fn legacy_llm_key_is_bound_to_the_endpoint_saved_at_load() {
     let (keys, unreadable) = super::load_apikeys(&app.paths, &app.settings);
     assert!(!unreadable);
     assert_eq!(keys.llm_key(), Some("legacy-key-01"));
-    assert_eq!(keys.llm_host(), Some("api.example.org"));
+    assert_eq!(keys.llm_host(), None);
     app.apikeys = keys;
+    assert!(app.llm_key_withheld());
+    app.meta = Some(meta_with_snapshot(&app.settings));
+    app.verify_settings();
+    assert_eq!(app.apikeys.llm_host(), Some("api.example.org"));
     assert!(!app.llm_key_withheld());
     // The endpoint changes: the old binding is on disk first, so a restart with the new
     // endpoint does not re-bind the key to it.
@@ -1419,6 +1436,249 @@ fn legacy_llm_key_is_bound_to_the_endpoint_saved_at_load() {
     assert_eq!(reloaded.llm_host(), Some("api.example.org"));
     let _ = std::fs::remove_dir_all(dir);
     let _ = std::fs::remove_dir_all(fresh_dir);
+}
+
+/// Review M1: `settings.json` edited to point the AI at another host (with `enabled` and the
+/// notice version forged). Before unlock no worker runs; after the check the AI is off in memory
+/// and in the file, the legacy key is bound to the consented host only (never sent to the new
+/// one), a banner says so, and only a new consent in the UI switches it back on.
+#[test]
+fn llm_endpoint_swapped_in_the_file_needs_a_new_consent() {
+    let mut plain = crate::apikeys::APIKEYS_MAGIC.to_vec();
+    plain.push(1);
+    let (name, value) = (b"llm".as_slice(), b"legacy-key-01".as_slice());
+    plain.push(u8::try_from(name.len()).unwrap());
+    plain.extend_from_slice(name);
+    plain.extend_from_slice(&u16::try_from(value.len()).unwrap().to_be_bytes());
+    plain.extend_from_slice(value);
+    let blob = yw_win::dpapi::protect(&plain, crate::apikeys::APIKEYS_ENTROPY).unwrap();
+
+    let (mut app, dir) = llm_app("llm-swap", LLM_B);
+    let consented = Settings {
+        llm_explain: crate::settings::LlmSettings {
+            enabled: true,
+            endpoint: LLM_A.to_owned(),
+            model: "m".to_owned(),
+            privacy_notice_version: 1,
+            ..crate::settings::LlmSettings::default()
+        },
+        ..Settings::default()
+    };
+    app.settings.llm_explain.enabled = true;
+    app.settings.llm_explain.privacy_notice_version = 1;
+    std::fs::write(app.paths.apikeys(), &blob).unwrap();
+    let (keys, _) = super::load_apikeys(&app.paths, &app.settings);
+    assert_eq!(keys.llm_host(), None);
+    app.apikeys = keys;
+    app.events = Some(std::sync::Arc::new(crate::events::EventQueue::new(
+        Box::new(|| {}),
+    )));
+    app.llm_reconfigure();
+    assert!(!app.llm_running(), "no worker before the snapshot check");
+
+    app.meta = Some(meta_with_snapshot(&consented));
+    app.verify_settings();
+    assert!(!app.settings.llm_explain.enabled);
+    assert!(!app.llm_running());
+    let on_disk = crate::settings::load(Some(&std::fs::read(app.paths.settings()).unwrap()));
+    assert!(!on_disk.settings.llm_explain.enabled);
+    assert_eq!(app.apikeys.llm_host(), Some("api.example.org"));
+    assert!(
+        app.llm_key_withheld(),
+        "the key is never attached for the new host"
+    );
+    assert!(
+        app.banners
+            .iter()
+            .any(|banner| banner.text == crate::settings::LLM_FORCED_OFF_TEXT)
+    );
+    // The snapshot keeps the old consent; a new key and consent for the new host in the UI
+    // switch it on and move the consent.
+    let snapshot = app
+        .meta
+        .as_ref()
+        .unwrap()
+        .security
+        .snapshot
+        .clone()
+        .unwrap();
+    assert_eq!(snapshot.llm.host, "api.example.org");
+    app.llm_store_key("test-key-02");
+    app.llm_ui.notice_checked = true;
+    app.llm_confirm_on();
+    assert!(app.settings.llm_explain.enabled);
+    assert!(app.llm_running());
+    let snapshot = app
+        .meta
+        .as_ref()
+        .unwrap()
+        .security
+        .snapshot
+        .clone()
+        .unwrap();
+    assert!(snapshot.llm_consented_to("other.example.net"));
+    app.llm_shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Review L15: fee caps and auto-lock changed in the file use the snapshot values; the banner's
+/// `파일 값 사용` takes the file values (and the snapshot follows), `되돌리기` rewrites the file;
+/// a deleted `HyperEVM` pin is restored in memory and on disk.
+#[test]
+fn settings_changed_outside_the_app_banner_accept_and_restore() {
+    use crate::ui::screens::ids;
+    let pin = [0x99; 32];
+    let written = Settings {
+        evm_genesis_pins: vec![(yw_core::evm::chain::HYPEREVM_MAINNET, pin)],
+        ..Settings::default()
+    };
+    for accept in [true, false] {
+        let (mut app, dir) = llm_app(
+            if accept {
+                "snap-accept"
+            } else {
+                "snap-restore"
+            },
+            "",
+        );
+        std::fs::create_dir_all(&app.paths.data).unwrap();
+        let mut file = written.clone();
+        file.evm_genesis_pins.clear();
+        file.auto_lock_minutes = 60;
+        file.fee_caps[0].1.max_fee_per_gas_gwei = "10000".to_owned();
+        app.settings = crate::settings::load(Some(&file.to_json())).settings;
+        app.meta = Some(meta_with_snapshot(&written));
+        app.mode = AppMode::Unlocked {
+            alt_passphrase: false,
+        };
+        app.verify_settings();
+        assert_eq!(app.settings.evm_genesis_pins, written.evm_genesis_pins);
+        assert_eq!(app.settings.auto_lock_minutes, 10);
+        assert_eq!(app.settings.fee_caps, written.fee_caps);
+        let settings_path = app.paths.settings();
+        let on_disk =
+            || crate::settings::load(Some(&std::fs::read(&settings_path).unwrap())).settings;
+        // The pin is restored on disk at once; the other values wait for the user.
+        assert_eq!(on_disk().evm_genesis_pins, written.evm_genesis_pins);
+        assert_eq!(on_disk().auto_lock_minutes, 60);
+        assert!(app.guard.pending.is_some());
+        app.set_screen(Screen::Main);
+        assert!(has_text(
+            &app.items(),
+            crate::settings::SETTINGS_TAMPERED_TEXT
+        ));
+        if accept {
+            app.on_command(ids::SETTINGS_ACCEPT_FILE);
+            assert_eq!(app.settings.auto_lock_minutes, 60);
+            let snapshot = app
+                .meta
+                .as_ref()
+                .unwrap()
+                .security
+                .snapshot
+                .clone()
+                .unwrap();
+            assert_eq!(snapshot.auto_lock_minutes, 60);
+            assert_eq!(snapshot.fee_caps, {
+                let mut caps = on_disk().fee_caps;
+                caps.sort_by_key(|(id, _)| *id);
+                caps
+            });
+        } else {
+            app.on_command(ids::SETTINGS_RESTORE);
+            assert_eq!(app.settings.auto_lock_minutes, 10);
+            assert_eq!(on_disk().auto_lock_minutes, 10);
+            assert_eq!(on_disk().fee_caps, written.fee_caps);
+        }
+        assert!(app.guard.pending.is_none());
+        assert!(!has_text(
+            &app.items(),
+            crate::settings::SETTINGS_TAMPERED_TEXT
+        ));
+        // A second check (next unlock) finds nothing.
+        app.verify_settings();
+        assert!(app.guard.pending.is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// Review M1/L15: the first check without a snapshot (an upgrade) creates it from the settings
+/// in use; settings saved while locked are taken over at the next check, not flagged.
+#[test]
+fn snapshot_created_once_and_early_saves_taken_over() {
+    let (mut app, dir) = llm_app("snap-create", "");
+    std::fs::create_dir_all(&app.paths.data).unwrap();
+    app.meta = Some(Meta::default());
+    app.verify_settings();
+    let created = app
+        .meta
+        .as_ref()
+        .unwrap()
+        .security
+        .snapshot
+        .clone()
+        .unwrap();
+    assert_eq!(
+        created,
+        crate::settings::SecuritySnapshot::of(&app.settings)
+    );
+    // Locked: the meta is gone; a change made now is remembered by key.
+    app.meta = None;
+    let mut changed = app.settings.clone();
+    changed.auto_lock_minutes = 30;
+    app.save_settings(changed, "autoLockMinutes");
+    assert_eq!(app.guard.saved_early, vec!["autoLockMinutes"]);
+    app.meta = Some(Meta {
+        security: Box::new(crate::meta::MetaSecurity {
+            snapshot: Some(created),
+            vault_generation_seen: 0,
+        }),
+        ..Meta::default()
+    });
+    app.verify_settings();
+    assert!(app.guard.pending.is_none());
+    assert_eq!(app.settings.auto_lock_minutes, 30);
+    assert_eq!(
+        app.meta
+            .as_ref()
+            .unwrap()
+            .security
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .auto_lock_minutes,
+        30
+    );
+    assert!(app.guard.saved_early.is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Review L17: the meta remembers the newest `vault.ywv` generation; a smaller one at the next
+/// check shows the rollback banner. The generation is shown on the lock screen.
+#[test]
+fn vault_generation_going_backwards_is_flagged() {
+    let mut h = Harness::new("rollback");
+    h.create_and_confirm();
+    let now = super::vault_file_info(&h.app.paths.data).unwrap().0;
+    assert!(now >= 2);
+    h.app.verify_settings();
+    assert_eq!(
+        h.app.meta.as_ref().unwrap().security.vault_generation_seen,
+        now
+    );
+    assert!(h.app.guard.rollback.is_none());
+    // The meta remembers a newer generation than the file: the file was rolled back.
+    h.app.meta.as_mut().unwrap().security.vault_generation_seen = now + 3;
+    h.app.verify_settings();
+    assert_eq!(h.app.guard.rollback, Some((now + 3, now)));
+    h.app.set_screen(Screen::Main);
+    assert!(has_text(
+        &h.app.items(),
+        &crate::ui::screens::rollback_text(now + 3, now)
+    ));
+    h.app.guard.vault_file = super::vault_file_info(&h.app.paths.data);
+    h.app.set_screen(Screen::Locked);
+    assert!(has_text(&h.app.items(), &format!("저장 횟수(세대) {now}")));
 }
 
 /// Two child controls with the same command id on one screen: the owner-drawn button lookup

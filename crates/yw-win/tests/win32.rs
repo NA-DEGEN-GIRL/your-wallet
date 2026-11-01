@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use yw_win::dpapi::{protect, unprotect};
 use yw_win::file::{
     AtomicWrite, FileError, atomic_write, atomic_write_detailed, ensure_dir, flush_dir,
-    read_limited, rename_no_replace, tmp_path,
+    read_limited, read_limited_no_reparse, rename_no_replace, tmp_path,
 };
 use yw_win::mem::LockedBox;
 use yw_win::process::{InstanceError, SingleInstance};
@@ -113,6 +113,51 @@ fn flush_dir_opens_a_junction_itself_and_rejects_it() -> TestResult {
     assert_eq!(flush_dir(&link), Err(FileError::ReparsePoint));
     fs::remove_dir(&link)?;
     assert!(real.exists());
+    fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// Review L8: a vault file that is a link is refused on read, never followed out of the folder.
+#[test]
+fn read_limited_no_reparse_refuses_links() -> TestResult {
+    let dir = temp_folder("noreparse")?;
+    let real = dir.join("real.ywv");
+    fs::write(&real, b"ciphertext")?;
+    assert_eq!(read_limited_no_reparse(&real, 64)?, b"ciphertext");
+    assert_eq!(read_limited_no_reparse(&real, 4), Err(FileError::TooLarge));
+    assert_eq!(
+        read_limited_no_reparse(&dir.join("missing"), 64),
+        Err(FileError::NotFound)
+    );
+    // A junction (no privilege needed) standing where a vault file is expected.
+    let target_dir = dir.join("elsewhere");
+    ensure_dir(&target_dir)?;
+    let junction = dir.join("vault.ywv");
+    let status = Command::new("cmd")
+        .args(["/d", "/c", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&target_dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    assert!(status.success(), "mklink /J failed");
+    assert_eq!(
+        read_limited_no_reparse(&junction, 64),
+        Err(FileError::ReparsePoint)
+    );
+    fs::remove_dir(&junction)?;
+    // A file symlink needs SeCreateSymbolicLinkPrivilege or Developer Mode; when it can be made,
+    // the link is refused although its target is a readable ordinary file. Without that
+    // privilege the junction case above already covered the refusal.
+    let link = dir.join("meta.ywm");
+    if std::os::windows::fs::symlink_file(&real, &link).is_ok() {
+        assert_eq!(read_limited(&link, 64)?, b"ciphertext");
+        assert_eq!(
+            read_limited_no_reparse(&link, 64),
+            Err(FileError::ReparsePoint)
+        );
+        fs::remove_file(&link)?;
+    }
     fs::remove_dir_all(&dir)?;
     Ok(())
 }

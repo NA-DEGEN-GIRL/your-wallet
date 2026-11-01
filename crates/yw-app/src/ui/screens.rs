@@ -74,6 +74,10 @@ pub mod ids {
     pub const GO_NETWORK: u16 = 205;
     /// 알림 닫기.
     pub const DISMISS_BANNERS: u16 = 203;
+    /// Settings-file banner: `파일 값 사용` (review M1/L15).
+    pub const SETTINGS_ACCEPT_FILE: u16 = 206;
+    /// Settings-file banner: `앱에 저장된 값으로 되돌리기`.
+    pub const SETTINGS_RESTORE: u16 = 207;
     /// `고급 설정 보기 ▸` / `고급 설정 숨기기 ▾` (and the send form's `수수료 계산 보기`).
     pub const ADVANCED_TOGGLE: u16 = 204;
     /// Network chips base.
@@ -197,6 +201,8 @@ pub mod ids {
         SWITCH_ACCOUNT,
         GO_NETWORK,
         DISMISS_BANNERS,
+        SETTINGS_ACCEPT_FILE,
+        SETTINGS_RESTORE,
         ADVANCED_TOGGLE,
         ADD_ACCOUNT,
         IMPORT_KEY,
@@ -300,9 +306,52 @@ fn disable_receive(items: &mut [Item]) {
     }
 }
 
+/// The `vault.ywv` facts line (review L17): generation and last write time, so a file swapped
+/// for an older copy is noticeable.
+#[must_use]
+pub fn vault_file_text(generation: u64, written_unix_ms: u64) -> String {
+    let wall = yw_win::time::local_wall_ms(written_unix_ms);
+    let text = crate::logging::format_utc(wall.unwrap_or(written_unix_ms));
+    let short = text.get(..16).unwrap_or(&text).replace('T', " ");
+    let when = if wall.is_some() {
+        short
+    } else {
+        format!("{short} UTC")
+    };
+    format!(
+        "지갑 파일(vault.ywv): 저장 횟수(세대) {generation} · 마지막 저장 {when}. 기억하는 것보다 작거나 이전 시각이면 파일이 예전 사본으로 바뀌었을 수 있습니다."
+    )
+}
+
+/// The banner when the meta remembers a newer `vault.ywv` generation (review L17).
+#[must_use]
+pub fn rollback_text(seen: u64, found: u64) -> String {
+    format!(
+        "지갑 파일(vault.ywv)이 예전 사본으로 바뀌었을 수 있습니다: 이 지갑은 세대 {seen}까지 저장했는데 지금 파일은 세대 {found}입니다. 직접 백업에서 되돌린 것이 아니라면 지운 계정·키가 다시 나타나거나 최근 변경이 사라졌을 수 있으니 확인하세요."
+    )
+}
+
+/// The banner when the crash-report exclusion failed at startup (review L9).
+pub const T_WER_UNPROTECTED: &str = "Windows 오류 보고(WER) 제외 등록에 실패했습니다. 이 앱이 비정상 종료되면 메모리 덤프가 남을 수 있고, 덤프에는 잠금 해제 중인 지갑 키가 들어 있을 수 있습니다.";
+
 fn header(app: &App, items: &mut Vec<Item>) {
     if app.passphrase_unverified() {
         items.push(Item::Banner(T_ALT_PASS.to_owned(), Tone::HighRisk));
+    }
+    if let Some(pending) = &app.guard.pending {
+        let keys: Vec<&str> = pending.1.iter().map(|differing| differing.key()).collect();
+        items.push(Item::Banner(
+            format!(
+                "{} ({}). 지금은 앱에 저장된 값을 씁니다. 직접 바꾼 것이면 '파일 값 사용'을 누르세요.",
+                crate::settings::SETTINGS_TAMPERED_TEXT,
+                keys.join(", ")
+            ),
+            Tone::Warn,
+        ));
+        items.push(Item::Row(vec![
+            Ctl::button(ids::SETTINGS_ACCEPT_FILE, "파일 값 사용"),
+            Ctl::button(ids::SETTINGS_RESTORE, "앱에 저장된 값으로 되돌리기"),
+        ]));
     }
     for banner in &app.banners {
         items.push(Item::Banner(banner.text.clone(), Tone::Danger));
@@ -521,6 +570,9 @@ impl App {
             "{}분 동안 쓰지 않거나, Windows를 잠그거나 절전에 들어가면 지갑이 자동으로 잠깁니다.",
             self.settings.auto_lock_minutes
         )));
+        if let Some((generation, written)) = self.guard.vault_file {
+            items.push(Item::Muted(vault_file_text(generation, written)));
+        }
         if self.unlock_failed && self.prev_on_disk && self.mode == AppMode::Locked {
             // spec/02 §6.3: a damaged key section is indistinguishable from a wrong password.
             items.push(Item::Gap(8));
@@ -958,9 +1010,21 @@ impl App {
             "이 PC에서 지갑을 열 때 쓰는 비밀번호입니다. 바꿔도 복구 단어와 주소는 그대로입니다."
                 .to_owned(),
         ));
+        items.push(Item::Help(crate::app::T_PASSWORD_OLD_COPIES.to_owned()));
         items.push(Item::Row(vec![
             Ctl::button(ids::CHANGE_PASSWORD, "비밀번호 변경").enabled(public),
         ]));
+        items.push(Item::CardEnd);
+        items.push(Item::CardStart(Some("지갑 파일과 보호 상태".to_owned())));
+        if let Some((generation, written)) = self.guard.vault_file {
+            items.push(Item::Text(vault_file_text(generation, written)));
+        }
+        items.push(Item::Help(if self.guard.wer_unprotected {
+            T_WER_UNPROTECTED.to_owned()
+        } else {
+            "Windows 오류 보고(WER)에서 이 앱을 제외했습니다: 비정상 종료 때 메모리 덤프를 남기지 않습니다."
+                .to_owned()
+        }));
         items.push(Item::CardEnd);
     }
 

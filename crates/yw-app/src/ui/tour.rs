@@ -1177,6 +1177,8 @@ fn screenshot_tour() {
         state.events = Some(std::sync::Arc::new(crate::events::EventQueue::new(
             Box::new(|| {}),
         )));
+        // The tour's wallet is unlocked: the settings snapshot check has run.
+        state.guard.verified = true;
         state.llm_reconfigure();
     }
     set_screen(&app, UNLOCKED, Screen::Main);

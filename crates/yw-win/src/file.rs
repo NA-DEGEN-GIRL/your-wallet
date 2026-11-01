@@ -242,6 +242,43 @@ pub fn read_limited(path: &Path, max: u64) -> Result<Vec<u8>, FileError> {
     Ok(bytes)
 }
 
+/// [`read_limited`] that refuses to follow a reparse point (symlink, junction, mount point) at
+/// `path` itself. A cheap `symlink_metadata` check gives a clear [`FileError::ReparsePoint`] for
+/// a directory junction; the file is then opened with `FILE_FLAG_OPEN_REPARSE_POINT`, so a link
+/// swapped in after that check is opened as the link rather than its target, and the handle's
+/// attributes are checked before any byte is read (no window between the decisive check and the
+/// read).
+///
+/// # Errors
+///
+/// [`FileError::NotFound`], [`FileError::ReparsePoint`], [`FileError::TooLarge`] or an I/O error.
+pub fn read_limited_no_reparse(path: &Path, max: u64) -> Result<Vec<u8>, FileError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 => {
+            return Err(FileError::ReparsePoint);
+        }
+        Ok(_) => {}
+        Err(error) => return Err(error.into()),
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(FileError::ReparsePoint);
+    }
+    if metadata.len() > max {
+        return Err(FileError::TooLarge);
+    }
+    let mut bytes = Vec::new();
+    file.take(max.saturating_add(1)).read_to_end(&mut bytes)?;
+    if u64::try_from(bytes.len()).map_or(true, |len| len > max) {
+        return Err(FileError::TooLarge);
+    }
+    Ok(bytes)
+}
+
 /// `create_dir_all(path)`, rejecting a final component that is a reparse point.
 ///
 /// # Errors

@@ -179,3 +179,57 @@ fn landed_commit_reported_as_failure_is_success_for_the_vault() {
         fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+fn junction(link: &Path, target: &Path) {
+    let status = std::process::Command::new("cmd")
+        .args(["/d", "/c", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "mklink /J failed");
+}
+
+/// Review L8: a reparse point standing for `vault.ywv`, `meta.ywm`, `journal.ywj` or a `.prev`
+/// is refused on read and on commit, and a refused commit writes nothing.
+#[test]
+fn reparse_points_are_refused_on_read_and_commit() {
+    const REPARSE: StorageError = StorageError::Io(0x0000_1126);
+    let (first, second) = generations();
+    let dir = temp_dir("reparse");
+    let elsewhere = temp_dir("reparse-target");
+    for kind in [FileKind::Vault, FileKind::Meta, FileKind::Journal] {
+        let main = dir.join(file_name(kind));
+        junction(&main, &elsewhere);
+        let mut storage = FileStorage::open(&dir).unwrap();
+        assert_eq!(storage.load(kind), Err(REPARSE), "{kind:?}");
+        assert_eq!(storage.commit(kind, None, b"x"), Err(REPARSE), "{kind:?}");
+        fs::remove_dir(&main).unwrap();
+        let prev = dir.join(format!("{}.prev", file_name(kind)));
+        junction(&prev, &elsewhere);
+        assert_eq!(storage.load_prev(kind), Err(REPARSE), "{kind:?}");
+        assert_eq!(storage.commit(kind, None, b"x"), Err(REPARSE), "{kind:?}");
+        assert!(
+            !main.exists(),
+            "{kind:?}: a refused commit wrote the main file"
+        );
+        fs::remove_dir(&prev).unwrap();
+    }
+    assert!(fs::read_dir(&elsewhere).unwrap().next().is_none());
+    // `.prev` recovery refuses a linked `.prev` and leaves the main file alone.
+    let mut storage = FileStorage::open(&dir).unwrap();
+    storage.commit(FileKind::Vault, None, &first).unwrap();
+    storage.commit(FileKind::Vault, Some(1), &second).unwrap();
+    drop(storage);
+    let prev = dir.join("vault.ywv.prev");
+    fs::remove_file(&prev).unwrap();
+    junction(&prev, &elsewhere);
+    let mut storage = FileStorage::open(&dir).unwrap();
+    assert_eq!(storage.restore_prev(FileKind::Vault, 1), Err(REPARSE));
+    assert_eq!(main_generation(&dir), Some(2));
+    fs::remove_dir(&prev).unwrap();
+    fs::remove_dir_all(&dir).unwrap();
+    fs::remove_dir_all(&elsewhere).unwrap();
+}

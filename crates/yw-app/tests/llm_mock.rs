@@ -408,14 +408,25 @@ mod llm {
         }
         std::thread::sleep(Duration::from_millis(300));
         assert_eq!(mock.accepts(), 0, "no connection while off");
-        // Sanity: the same settings switched on do start the worker (still no request).
-        assert!(
-            app_with(LlmSettings {
-                enabled: true,
-                ..configured
-            })
-            .llm_running()
-        );
+        // Review M1: switched on in the (plain) settings file but not yet checked against the
+        // vault-encrypted snapshot (no unlock yet): still no worker.
+        let on = LlmSettings {
+            enabled: true,
+            ..configured
+        };
+        let mut app = app_with(on.clone());
+        assert!(!app.llm_running());
+        // After the check (here: the first one, which creates the snapshot) it starts (still
+        // no request).
+        let snapshot = app.reconcile_settings(None);
+        assert!(app.llm_running());
+        assert!(snapshot.llm.enabled);
+        // A snapshot without that consent (another host) switches it off instead.
+        let mut other = app_with(on);
+        let mut elsewhere = snapshot;
+        elsewhere.llm.host = "consented.example.org".to_owned();
+        let _ = other.reconcile_settings(Some(elsewhere));
+        assert!(!other.llm_running());
         assert_eq!(mock.accepts(), 0);
     }
 

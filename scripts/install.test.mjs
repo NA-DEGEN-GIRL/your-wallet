@@ -3,6 +3,7 @@
 // CARGO_TARGET_DIR). LOCALAPPDATA와 설치 폴더는 임시 폴더이고 -NoShortcut -NoNativeHost라 HKCU·시작 메뉴를 바꾸지 않는다.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -258,13 +259,27 @@ test("install.ps1 -NoBuild installs, re-installs, upgrades, refuses unsafe folde
     assert.equal(record.state, "installed");
     assert.ok(record.commit === null || /^[0-9a-f]{12}$/u.test(record.commit), String(record.commit));
     assert.deepEqual(record.files, programFiles);
+    // Review L7: the record keeps the SHA-256 of every installed file.
+    assert.deepEqual(Object.keys(record.hashes), programFiles);
+    for (const file of programFiles) {
+      const bytes = await readFile(path.join(installDir, ...file.split("/")));
+      assert.equal(record.hashes[file], createHash("sha256").update(bytes).digest("hex"), file);
+    }
     assert.equal(await readFile(sentinel, "utf8"), "{\"version\":1}\n");
 
     // Same source again: nothing is rewritten.
     const before = await modifiedTimes(installDir);
     run = install("-InstallDir", installDir);
     assert.equal(run.status, 0, run.out);
+    assert.doesNotMatch(run.out, /설치한 뒤 바뀐 파일/u);
     assert.deepEqual(await modifiedTimes(installDir), before);
+
+    // An installed file changed after the install: the next run warns (by name) and rewrites it.
+    await writeFile(path.join(installDir, "yw-host.exe"), "tampered\n");
+    run = install("-InstallDir", installDir);
+    assert.equal(run.status, 0, run.out);
+    assert.match(run.out, /설치한 뒤 바뀐 파일이 있습니다[^\n]*yw-host\.exe/u);
+    assert.equal(await readFile(path.join(installDir, "yw-host.exe"), "utf8"), "fake yw-host 1\n");
 
     // Upgrade from an older install record (the former zip layout): the changed exe is copied, files only the
     // old record listed are removed, and the record is rewritten.
@@ -369,6 +384,76 @@ test("install.ps1 refuses a source tree whose extension is not the reviewed one"
     run = install();
     assert.equal(run.status, 2, run.out);
     assert.equal(existsSync(installDir), false);
+  });
+});
+
+// Review L7: the source tree and the build folder the files are copied from get the same ACL rule as the install
+// folder (another user who can modify them could plant yw-host.exe or extension code). SIDs never given to a logon
+// session (S-1-4-*, AppContainer) are ignored.
+test("install.ps1 refuses a source or build folder other users can modify unless -AllowUnsafeSourcePath (Windows PowerShell 5.1)", { skip: !windows, timeout: 300_000 }, async () => {
+  await withTemp("your-wallet-install-srcacl-", async (temp) => {
+    const root = path.join(temp, "repo");
+    for (const file of ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "scripts/install.ps1", "scripts/uninstall.ps1"]) {
+      await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+      await cp(path.join(repoRoot, file), path.join(root, file));
+    }
+    await cp(extensionRoot, path.join(root, "extension"), { recursive: true });
+    const cargoTarget = path.join(temp, "cargo-target");
+    const releaseDir = path.join(cargoTarget, "release");
+    await mkdir(releaseDir, { recursive: true });
+    await writeFile(path.join(releaseDir, "yw-app.exe"), "fake\n");
+    await writeFile(path.join(releaseDir, "yw-host.exe"), "fake\n");
+    const env = childEnv({ LOCALAPPDATA: path.join(temp, "LocalAppData"), CARGO_TARGET_DIR: cargoTarget });
+    const installDir = path.join(temp, "installed");
+    const install = (...extra) => runPowerShell(windowsPowerShell, ["-File", path.join(root, "scripts", "install.ps1"), "-NoBuild", "-NoShortcut", "-NoNativeHost", "-InstallDir", installDir, ...extra], env);
+    const AUTHENTICATED_USERS = "*S-1-5-11";
+
+    // An AppContainer SID with write rights is ignored (not a logon principal) ...
+    icacls(root, "/grant", "*S-1-15-2-1:(OI)(CI)M");
+    let run = install();
+    assert.equal(run.status, 0, run.out);
+    await rm(installDir, { force: true, recursive: true });
+    // ... and so is a sandbox's restricting SID (S-1-4-*; icacls cannot name an unmapped SID, so the rule is
+    // checked on the SDDL directly), while the same rights for Authenticated Users are refused.
+    const helper = path.join(temp, "source-acl.ps1");
+    await writeFile(helper, `param([string]$Script)
+$ErrorActionPreference = 'Stop'
+. $Script
+$user = Get-CurrentUserSid
+$base = "O:$($user)D:(A;OICI;FA;;;$($user))(A;OICI;FA;;;SY)"
+$verdicts = @(
+    (Get-SourceAclProblem "$base(A;OICI;0x110156;;;S-1-4-554837906-625088534)" $user),
+    (Get-SourceAclProblem "$base(A;OICI;0x1301bf;;;S-1-15-3-1)" $user),
+    (Get-SourceAclProblem "$base(A;OICI;0x1301bf;;;AU)" $user),
+    (Get-AclProblem "$base(A;OICI;0x110156;;;S-1-4-554837906-625088534)" $user)
+) | ForEach-Object { $null -eq $_ }
+[Console]::Out.Write((ConvertTo-Json -InputObject $verdicts -Compress))
+`);
+    const verdicts = runPowerShell(windowsPowerShell, ["-File", helper, "-Script", path.join(root, "scripts", "install.ps1")], childEnv());
+    assert.equal(verdicts.status, 0, verdicts.out);
+    // Install-folder rule (Get-AclProblem) is unchanged: it still refuses the S-1-4 ACE.
+    assert.deepEqual(JSON.parse(verdicts.out), [true, true, false, false]);
+
+    for (const [label, target, grant] of [
+      ["repo root", root, `${AUTHENTICATED_USERS}:(OI)(CI)M`],
+      ["one extension file", path.join(root, "extension", "manifest.json"), `${AUTHENTICATED_USERS}:M`],
+      ["release folder", releaseDir, `${AUTHENTICATED_USERS}:(OI)(CI)M`],
+      ["yw-host.exe", path.join(releaseDir, "yw-host.exe"), `${AUTHENTICATED_USERS}:W`],
+    ]) {
+      icacls(target, "/grant", grant);
+      run = install();
+      assert.equal(run.status, 1, `${label}: ${run.out}`);
+      assert.match(run.out, /소스·빌드 폴더를 다른 사용자가 바꿀 수 있습니다/u, label);
+      assert.equal(existsSync(installDir), false, label);
+      // The override installs with a warning.
+      run = install("-AllowUnsafeSourcePath");
+      assert.equal(run.status, 0, `${label}: ${run.out}`);
+      assert.match(run.out, /-AllowUnsafeSourcePath: 그대로 설치합니다/u, label);
+      await rm(installDir, { force: true, recursive: true });
+      icacls(target, "/remove:g", AUTHENTICATED_USERS);
+    }
+    run = install();
+    assert.equal(run.status, 0, run.out);
   });
 });
 
@@ -995,4 +1080,30 @@ test("install.ps1 refuses to build under an ancestor cargo config (exit 7) unles
     assert.ok(!listed(run.out).some(inTemp), run.out);
     assert.ok(run.status === 0 || run.status === 7, run.out);
   });
+});
+
+// Review INFO: the gate (scripts/check.ps1) builds under the same conditions as the installer: the same cleared
+// variables (the gate clears every CARGO_PROFILE_*, since it builds dev and test profiles) and the same --config
+// overrides (clippy keeps cargo-clippy's own workspace wrapper).
+test("check.ps1 clears the installer's build variables and passes its --config overrides", async () => {
+  const checkText = await readFile(path.join(repoRoot, "scripts", "check.ps1"), "utf8");
+  const installText = await readFile(installScript, "utf8");
+  const list = (text, name) => {
+    const match = new RegExp(`^\\$${name} = @\\((.*)\\)\\r?$`, "mu").exec(text);
+    assert.ok(match, `${name} not found`);
+    return [...match[1].matchAll(/(["'])(.*?)\1/gu)].map((item) => item[2]);
+  };
+  assert.deepEqual(list(checkText, "ClearedBuildVariableNames"), list(installText, "ClearedBuildVariableNames"));
+  assert.deepEqual(list(checkText, "BuildConfigOverrides"), list(installText, "BuildConfigOverrides"));
+  const checkPrefixes = list(checkText, "ClearedBuildVariablePrefixes");
+  for (const prefix of list(installText, "ClearedBuildVariablePrefixes")) {
+    assert.ok(checkPrefixes.some((ours) => prefix.toUpperCase().startsWith(ours.toUpperCase())), `check.ps1 does not clear ${prefix}*`);
+  }
+  assert.ok(checkPrefixes.includes("CARGO_PROFILE_"));
+  // Every cargo build step of the gate passes the overrides.
+  for (const step of ["clippy", "test", "fuzz", "build"]) {
+    const line = new RegExp(`^Invoke-Step "${step}" .*$`, "mu").exec(checkText);
+    assert.ok(line, step);
+    assert.match(line[0], step === "clippy" ? /\$clippyConfig/u : /\$config\b/u, step);
+  }
 });

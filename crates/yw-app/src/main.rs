@@ -194,8 +194,10 @@ fn main() -> ExitCode {
             ],
         );
     }
+    let mut wer_unprotected = false;
     for (step, result) in init_results {
         if let Err(error) = result {
+            wer_unprotected |= step == "wer_exclude";
             logging::warn(
                 "app",
                 "init.failed",
@@ -237,6 +239,10 @@ fn main() -> ExitCode {
                 &[("code", Field::Code(ErrorCode::Key001))],
             );
             state.banner(Some(ErrorCode::Key001), ErrorCode::Key001.text());
+        }
+        if wer_unprotected {
+            // Review L9: crash dumps are possible; say so instead of only logging it.
+            state.note_wer_unprotected();
         }
     }
 

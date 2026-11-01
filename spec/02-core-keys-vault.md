@@ -51,7 +51,7 @@ impl RandomSource for OsRandom {
 
 - `getrandom = "=0.3.3"`, `default-features = false`. rustc 1.95.0에서 Windows 백엔드는 `bcryptprimitives.dll!ProcessPrng`(raw-dylib)이다. `getrandom_backend` cfg, `windows_legacy`, 다른 난수 크레이트는 금지([01](01-repo-build.md) §3.5·§4.2 검사 스크립트가 차단).
 - **fail-closed:** `fill` 오류는 즉시 `KeyError::RandomnessUnavailable`로 해당 작업 전체를 중단한다. 같은 작업 안에서 재시도하지 않고, 시간·카운터·사용자 입력·RDRAND 등 대체 난수원을 절대 쓰지 않는다. 디스크에는 아무것도 쓰지 않은 상태로 끝난다.
-- **고착 검사:** 32바이트 비밀(니모닉 엔트로피, DEK)은 32바이트가 모두 같은 값이면 `RandomnessUnavailable`. 16바이트 식별자(`vault_id`, `record_id`, 백업 challenge id)는 0이 아니어야 하며, 0이면 최대 4회까지 다시 뽑고 그래도 0이면 `RandomnessUnavailable`(아카이브 `fill_random_nonzero`).
+- **고착 검사:** 32바이트 비밀(니모닉 엔트로피, DEK)은 32바이트가 모두 같은 값이면 `RandomnessUnavailable`. salt(16바이트)·nonce(24바이트)도 같은 검사를 한다(모든 바이트가 같으면 `RandomnessUnavailable`, 그 작업은 아무것도 쓰지 않고 실패; 세션 중 난수원이 고착되어 같은 DEK로 같은 XChaCha20 nonce를 다시 쓰는 일을 막는다, 2026-11-01 검토 L16). 16바이트 식별자(`vault_id`, `record_id`, 백업 challenge id)는 0이 아니어야 하며, 0이면 최대 4회까지 다시 뽑고 그래도 0이면 `RandomnessUnavailable`(아카이브 `fill_random_nonzero`).
 - `RandomSource` 주입은 `pub(crate)` 함수(`*_with_rng`)로만 한다. 공개 API는 항상 `OsRandom`을 쓴다. 테스트 전용 구현(`ScriptedRandom`, `FailingRandom`)은 `#[cfg(test)]`에만 두고, 주입용 cargo feature는 만들지 않는다.
 
 ### 1.2 난수 사용처
@@ -372,7 +372,8 @@ payload_ct  = XChaCha20-Poly1305(key = DEK, nonce = payload_nonce, pt = payload 
 
 - `Rewrap` 직후 같은 내용으로 `PayloadRewrite`를 한 번 더 커밋한다(`generation + 2`). 그래야 `vault.ywv.prev`에도 새 비밀번호로 감싼 세대만 남는다(§6).
 - `Rewrap` 커밋이 반영된 뒤에는 비밀번호 변경이 **성공**이다. 이어지는 `PayloadRewrite`가 실패해도 오류가 아니라 `Ok(PasswordChange::PrevNotRefreshed)`를 돌려준다(이전 비밀번호는 이미 `vault.ywv`를 열지 못하므로 "실패"라고 알리면 틀린 안내가 된다). 이때 `vault.ywv.prev`는 이전 비밀번호로만 열릴 수 있고, 다음 쓰기(`PayloadRewrite`)가 새 비밀번호 세대로 바꾼다. 다 성공하면 `Ok(PasswordChange::Complete)`. `Rewrap` 자체가 실패하면 오류이고 이전 비밀번호가 그대로 유효하다. UI는 두 `Ok` 모두 "새 비밀번호가 적용됨"으로 알린다([04] §2.17).
-- 비밀번호 변경은 DEK를 바꾸지 않는다. 이전 비밀번호와 이전 파일을 함께 가진 사람은 DEK를 얻을 수 있다. 이것을 끊으려면 니모닉으로 새 vault를 만든다(새 DEK). 사용자가 따로 만든 파일 사본·섀도 복사본은 지갑이 지울 수 없다.
+- 비밀번호 변경은 DEK를 바꾸지 않는다. 이전 비밀번호와 이전 파일을 함께 가진 사람은 DEK를 얻을 수 있다. 이것을 끊으려면 니모닉으로 새 vault를 만든다(새 DEK). 사용자가 따로 만든 파일 사본·섀도 복사본은 지갑이 지울 수 없다. yw-app은 이 사실을 비밀번호 변경 창(W04)·설정 → 보안 → 비밀번호·변경 완료 문구에 적고, `docs/recovery-guide.ko.md`가 대처를 안내한다(2026-11-01 검토 L1).
+- **DEK 회전을 하지 않는 이유(L1 검토 결론):** 사이드카 키(`meta_key`·`journal_key`, §5.1)가 DEK에서 나오므로 DEK를 바꾸면 `vault.ywv`·`meta.ywm`·`journal.ywj` 세 파일을 함께 다시 써야 한다. 세 파일은 따로 커밋되므로(§6.2) 그 사이 중단되면 새 DEK의 vault와 옛 DEK의 사이드카가 남아 사이드카가 `SidecarCorrupt`가 된다. 이를 안전하게 하려면 payload에 "이전 DEK" 레코드를 두는 2단계 이행(새 vault 커밋 → 사이드카 이행 → 이전 DEK 레코드 제거)과 그 형식·복구 규칙이 필요하다. 형식 변경 없이 충돌 안전을 보장할 수 없어 이번 판에서는 문서·화면 안내만 한다.
 - 모든 쓰기는 커밋 전에 자체 검사를 한다: 새 바이트를 §4.5 순서로 디코드하고, DEK로 payload를 복호화해 원래 평문과 같은지 비교한다. `Create`·`Rewrap`은 손에 있는 KEK로 `wrapped_dek`를 풀어 DEK와 같은지도 비교한다(추가 Argon2 없음).
 
 ### 4.5 디코드 순서
@@ -488,6 +489,8 @@ journal_key = HKDF-SHA256(salt = 없음,                   ikm = DEK, info = "yo
 | `prefs` | object | 개인정보성 UI 상태(선택 계정·탭; 네트워크 선택은 settings.json, D30), [04](04-app-ui.md) §6.4. `evm_account` `{"index": 0}`은 `evm_accounts`가 비어 있으면 "첫 가져온 계정"을 뜻한다 |
 | `sol_raw_accounts` | `SolRawAccount[]` | **선택 키**(가져오기 전 파일에는 없음, 없으면 `[]`). 0..=15개, vault `SolKey` record와 1:1, `record_id` 중복 금지 |
 | `sol_raw_selected` | Hex16 \| null | **선택 키**. 선택한 Solana 계정이 가져온 키면 그 `record_id`(`sol_raw_accounts`에 있어야 함), 아니면 `null`(`prefs.sol_account`의 파생 계정) |
+| `security_settings` (선택, 2026-11-01) | object | 평문 `settings.json`의 보안 관련 값을 앱이 마지막으로 쓴 그대로 둔 스냅샷([04](04-app-ui.md) §6.7). 없으면 잠금 해제 뒤 첫 검사가 만든다. 있으면 아래 형식으로 엄격 검증(위반은 문서 거부) |
+| `vault_generation_seen` (선택, 2026-11-01) | u64 | 이 meta와 함께 본 가장 큰 `vault.ywv` `generation`. 0이면 쓰지 않는다. 잠금 해제 때 본 파일의 generation이 이보다 작으면 경고 배너([04] §6.7) |
 
 ```
 Account          = { "index": u32(0..=999), "label": Label, "address": string, "hidden": bool }
@@ -505,6 +508,16 @@ Label    = UTF-8 문자열 1..=32 스칼라. C0·C1 제어문자, U+200B–U+200
            선후행 공백 금지
 EvmAddr  = "0x" + 소문자 hex 40자 (표시용 EIP-55는 UI가 만든다)
 Hex16    = 소문자 hex 32자
+SecuritySettings = { "version": 1,
+                     "llm": { "enabled": bool, "host": string(≤ 300 ASCII, 소문자 host[:port] 또는 ""),
+                              "privacy_notice_version": u64 },
+                     "genesisPins": { "eip155:<id>": Hash32 },     // HyperEVM 핀 + 사용자 체인 genesisHash
+                     "feeCaps": { "eip155:<id>": { "maxFeePerGasGwei": Dec, "maxPriorityFeePerGasGwei": Dec,
+                                                    "maxTotalFee": Dec } },
+                     "autoLockMinutes": u8(1..=60),
+                     "bitcoin": { "indexer": "esplora"|"bb-rpc"|"bb-rest",
+                                  "esploraMainnet": EsploraBaseUrl, "esploraTestnet4": EsploraBaseUrl } }
+Hash32   = "0x" + 소문자 hex 64자;  Dec = 숫자와 "." 1..=40자
 NetworkId = "eip155:" ChainIdDec | "solana:mainnet" | "solana:devnet"
           | "bitcoin:mainnet" | "bitcoin:testnet4"   (SOL·BTC 추가는 해당 체인 문서가 정의)
 ChainIdDec = u64 값 1..=2^64−1의 10진 표기, 앞자리 0 없음 (예 "eip155:1", "eip155:11155111", "eip155:999")
@@ -544,7 +557,7 @@ kind  = 0x01 EVM ([03](03-evm.md) §5.1, body[0] = record_kind 0x01이어야 함
 - **용량 상한**: 평문 ≤ 16 MiB(16,777,216바이트, §5.2). 체인별 최대 본문: EVM 131,761(172 + 255 + 2 + 256 + 4 + 131,072), SOL 1,321(고정 헤더 89 + 트랜잭션 1,232, [07] §14.1), BTC 37,924(238 + 18 + 49 × 100 + 32,768; 레코드 버전 1은 37,906, [08] §12.4).
 - **추가 전 검사(서명 전)**: 새 레코드(EVM `Signed` 원본·SpeedUp·Cancel, SOL `Pending`, BTC `Signed`)를 만들 서명 전에 `entry_count + 1 ≤ 256`·체인 상한과 `현재 평문 길이 + 5 + 그 체인 최대 본문 ≤ 16 MiB`를 본다. 넘으면 종결 레코드를 체인 문서의 정리 순서대로(오래된 것부터, activity로 옮긴 뒤) 지우며 다시 보고, 그래도 넘으면 `journal::JournalError::Full`(§10.2)로 차단한다: 서명·전송 없음, 문구 "거래 저널 공간이 부족합니다"([04] §7 오류 표; EVM은 [03] §5.4의 E06 거부와 같은 경로).
 
-**롤백은 방어하지 않는다.** vault·meta·journal을 이전 세대 파일로 바꿔치기하는 것은 탐지하지 않는다. 파일 쓰기 권한이 있는 공격자는 §2.2 비목표(PC 장악)이고, 사용자가 직접 예전 사본을 복원하는 경우도 정상 동작으로 본다. `generation`은 동시 쓰기 충돌(CAS)과 `.prev` 구분에만 쓴다.
+**롤백은 막지 않는다(알아챌 수 있게만 한다).** vault·meta·journal을 이전 세대 파일로 바꿔치기하는 것은 거부하지 않는다. 파일 쓰기 권한이 있는 공격자는 §2.2 비목표(PC 장악)이고, 사용자가 직접 예전 사본을 복원하는 경우도 정상 동작으로 본다. `generation`은 동시 쓰기 충돌(CAS)과 `.prev` 구분에 쓰고, 다음 두 가지로 되감기를 보이게 한다(2026-11-01 검토 L17): (1) 잠금 화면과 설정 → 보안에 `vault.ywv`의 `generation`과 마지막 저장 시각을 표시한다. (2) meta의 `vault_generation_seen`(§5.3, AEAD로 보호)이 본 파일의 generation보다 크면 잠금 해제 뒤 배너로 알린다. `vault.ywv`만 되돌린 경우는 이렇게 드러나고, vault·meta를 같은 백업에서 함께 되돌린 경우는 드러나지 않는다(서로 맞는 옛 상태라 구분할 근거가 없다).
 
 ## 6. 파일 쓰기와 손상 처리
 
@@ -582,7 +595,7 @@ yw-app이 yw-win 파일 함수로 구현한다(출처: 데모 원자적 쓰기, 
 2. 본 파일이 있으면 그 바이트를 `<name>.prev.tmp`에 쓰고 → `FlushFileBuffers` → `MoveFileExW(<name>.prev.tmp, <name>.prev, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`.
 3. 새 바이트를 `<name>.tmp`에 `CREATE_NEW`로 쓰고 → `FlushFileBuffers` → 닫기.
 4. `MoveFileExW(<name>.tmp, <name>, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`.
-5. 부모 디렉터리 flush(권고, 데모 `DurableParentDirectory`).
+5. 부모 디렉터리 flush(데모 `DurableParentDirectory`). 실패는 오류다(1 전에도 한 번 flush해 보고 실패하면 아무것도 쓰지 않는다; 4 뒤의 실패는 아래 "반영됐지만 실패로 보고된 커밋" 규칙을 따른다).
 6. 본 파일을 다시 읽어 바이트가 같지 않으면 `Io`. 호출자는 메모리 상태(generation 등)를 커밋 성공 후에만 갱신한다.
 
 - **반영됐지만 실패로 보고된 커밋:** 4 뒤의 실패(예: 6의 다시 읽기 오류)는 이미 본 파일이 바뀐 상태다. `Vault`는 `commit` 오류마다 본 파일을 다시 읽어 방금 쓴 바이트와 같으면 성공으로 본다(쓰기마다 새 난수 nonce라 같은 바이트는 이 커밋에서만 나온다). 그래서 메모리의 generation·vault 바이트가 디스크보다 뒤처져 다음 CAS가 영구히 실패하는 일이 없다(생성·가져오기·`PayloadRewrite`·`Rewrap`·복구·사이드카 모두).
@@ -590,6 +603,7 @@ yw-app이 yw-win 파일 함수로 구현한다(출처: 데모 원자적 쓰기, 
 - 2와 4 사이에 중단되면 `.prev`와 본 파일이 같은 세대다(허용). 4 전에 중단되면 본 파일은 이전 세대 그대로다.
 - 시작 시 `*.tmp` 고아 파일은 지운다. 이동 전 임시 파일은 커밋된 적 없는 내용이므로 유일한 사본이 아니다.
 - 임시 파일은 같은 디렉터리(같은 볼륨)에 만든다. 파일 ACL은 `%LOCALAPPDATA%` 상속(현재 사용자)을 그대로 쓴다.
+- **재분석 지점(심볼릭 링크·정션) 거부(2026-11-01 검토 L8):** 폴더, 본 파일, `<name>.prev`가 재분석 지점이면 `load`·`load_prev`는 링크를 따라가지 않고 오류 `Io(0x1126)`(yw-app이 재분석 지점 거부에 쓰는 고정 코드)를 돌려주고, `commit`은 1에서 아무것도 쓰지 않고 실패한다. 읽기는 `FILE_FLAG_OPEN_REPARSE_POINT`로 연 핸들의 속성을 확인한 뒤 읽는다(확인과 읽기 사이 틈 없음). 데이터 폴더의 ACL 검사([04] §1.4-3)는 재분석 지점의 대상을 보지 않으므로 이 거부가 폴더 DACL 보장을 그 파일들에 잇는다.
 
 ### 6.3 시작 시 분류 (`Vault::load`)
 
@@ -616,7 +630,7 @@ yw-app이 yw-win 파일 함수로 구현한다(출처: 데모 원자적 쓰기, 
 | `Locked` | 없음 | 잠금 해제 |
 | `PassphraseRequired` | DEK | passphrase 입력, 잠금 |
 | `PassphraseMismatch` | DEK, 입력한 passphrase | 다시 입력, 확인 후 계속, 잠금 |
-| `BackupPending` | DEK | 받기 주소 표시, 니모닉 표시(비밀번호 재입력), 백업 확인. **서명·개인키 표시·raw key 가져오기 불가** |
+| `BackupPending` | DEK | 받기 주소 표시, 니모닉 표시(비밀번호 재입력), 백업 확인, 비밀번호 변경(`change_password`, §4.4). **서명·개인키 표시·raw key 가져오기 불가** |
 | `Unlocked { alt_passphrase }` | DEK, (`passphrase_used`이면) passphrase | 모든 기능 |
 | `Corrupt`, `MainMissing` | 없음 | `.prev` 복구 |
 
@@ -773,8 +787,8 @@ pub struct BackupChallenge { pub id: ChallengeId, pub positions: [u8; 4] } // 1-
 
 | 함수 | 허용 상태 | 반환 형식 |
 |---|---|---|
-| `reveal_mnemonic(password)` | `BackupPending`, `Unlocked` | `Zeroizing<String>`, 단어를 공백 하나로 연결 |
-| `reveal_evm_private_key(password, src)` | `Unlocked` | `Zeroizing<String>`, 소문자 hex 64자, `0x` 없음 |
+| `reveal_mnemonic(password)` | `BackupPending`, `Unlocked` | `SecretString`(`Debug` 가림, §10.3), 단어를 공백 하나로 연결 |
+| `reveal_evm_private_key(password, src)` | `Unlocked` | `SecretString`, 소문자 hex 64자, `0x` 없음 |
 | `reveal_imported_key(password, id)` | `Unlocked` | `(ImportChain, SecretString)`: EVM hex 64자, Solana base58 64바이트 keypair, Bitcoin WIF(§8.4) |
 
 - 잠금 해제 상태여도 매번 비밀번호를 다시 받는다: 현재 vault 바이트의 `kdf_salt`로 Argon2 → KEK → `wrapped_dek` 복호화. 실패는 `UnlockFailed`(§7.4 규칙). 성공하면 풀린 DEK와 슬롯의 DEK를 상수 시간 비교하고, 다르면 `UnlockFailed`.

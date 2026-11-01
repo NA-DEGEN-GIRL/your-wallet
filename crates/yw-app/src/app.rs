@@ -18,7 +18,7 @@ use yw_core::vault::{
     BackupChallenge, ChallengeId, EvmKeySource, FileKind, PasswordChange, RecordId, VaultStatus,
 };
 use yw_win::clipboard::{self, ClipError, SecretClip};
-use yw_win::file::{FileError, atomic_write, read_limited};
+use yw_win::file::{FileError, atomic_write, read_limited_no_reparse};
 use yw_win::http::HttpsUrl;
 use yw_win::input::is_down;
 use yw_win::session;
@@ -398,6 +398,43 @@ impl Handler for Forward {
     }
 }
 
+/// `settings.json` integrity and other startup facts shown to the user (review M1/L15, L9, L17).
+#[derive(Debug, Default)]
+pub(crate) struct SettingsGuard {
+    /// The settings in use were compared with the meta snapshot after an unlock in this process
+    /// (or the snapshot was created). Until then the `yw-llm` worker never starts.
+    pub(crate) verified: bool,
+    /// Save keys (`App::save_settings`) written while no snapshot was available (locked, or
+    /// before the meta loaded): taken over at the next check.
+    pub(crate) saved_early: Vec<&'static str>,
+    /// The file values that differ from the snapshot and are not used, until the user picks
+    /// `파일 값 사용` or `되돌리기` (the settings in use hold the snapshot values meanwhile).
+    pub(crate) pending: Option<Box<(Settings, Vec<crate::settings::Differing>)>>,
+    /// `WerAddExcludedApplication` failed at startup (crash reports may be written).
+    pub(crate) wer_unprotected: bool,
+    /// `vault.ywv` generation and last write time (Unix ms), read from the file header.
+    pub(crate) vault_file: Option<(u64, u64)>,
+    /// `(seen, found)`: the meta remembers a newer `vault.ywv` generation than the file has.
+    pub(crate) rollback: Option<(u64, u64)>,
+}
+
+/// The `vault.ywv` generation and last write time (Unix ms) from the file itself (review L17);
+/// `None` when absent, unreadable or not a vault.
+#[must_use]
+pub fn vault_file_info(data: &Path) -> Option<(u64, u64)> {
+    let path = data.join(crate::store::file_name(FileKind::Vault));
+    let bytes = read_limited_no_reparse(&path, 65_536).ok()?;
+    let generation = yw_core::vault::peek_generation(FileKind::Vault, &bytes)?;
+    let written = std::fs::symlink_metadata(&path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        });
+    Some((generation, written))
+}
+
 /// Import flow buffers held on the UI thread until `PreviewImport` moves them.
 #[derive(Default)]
 struct ImportFlow {
@@ -470,6 +507,8 @@ pub struct App {
     pub(crate) llm: Option<crate::explain::ExplainService>,
     /// S15 `AI 설명` form.
     pub(crate) llm_ui: crate::app_llm::LlmUi,
+    /// `settings.json` integrity (meta snapshot) and the startup facts shown with it.
+    pub(crate) guard: SettingsGuard,
     secret: Option<SecretWin>,
     secret_serial: u64,
     import: ImportFlow,
@@ -496,12 +535,19 @@ impl core::fmt::Debug for App {
 #[must_use]
 pub const fn password_changed_text(change: PasswordChange) -> &'static str {
     match change {
-        PasswordChange::Complete => "비밀번호를 바꿨습니다.",
+        PasswordChange::Complete => {
+            "비밀번호를 바꿨습니다. 이미 만들어 둔 지갑 파일 사본(백업한 vault.ywv, 이전 사본, 격리된 손상 파일)은 예전 비밀번호로 계속 열립니다 — 예전 비밀번호가 샜다면 그런 사본을 지우세요."
+        }
         PasswordChange::PrevNotRefreshed => {
-            "비밀번호를 바꿨습니다. 지금부터는 새 비밀번호로 엽니다. 다만 이전 복사본(vault.ywv.prev)을 새 비밀번호로 다시 쓰지 못해, 그 복사본은 다음 저장 전까지 예전 비밀번호로만 열릴 수 있습니다."
+            "비밀번호를 바꿨습니다. 지금부터는 새 비밀번호로 엽니다. 다만 이전 복사본(vault.ywv.prev)을 새 비밀번호로 다시 쓰지 못해, 그 복사본은 다음 저장 전까지 예전 비밀번호로만 열릴 수 있습니다. 이미 만들어 둔 지갑 파일 사본도 예전 비밀번호로 계속 열립니다."
         }
     }
 }
+
+/// The W04 / settings note on what a password change does not do (review L1): the data key
+/// (DEK) stays the same, so copies of the wallet file made before the change still open with the
+/// old password and, once opened, reveal everything in the current file too.
+pub const T_PASSWORD_OLD_COPIES: &str = "비밀번호를 바꿔도 지갑의 암호화 키는 그대로입니다. 바꾸기 전에 만든 지갑 파일 사본(백업해 둔 vault.ywv, vault.ywv.prev, vault.ywv.corrupt-…)은 예전 비밀번호로 계속 열리고, 그 사본과 예전 비밀번호를 함께 얻은 사람은 지금 파일도 풀 수 있습니다. 예전 비밀번호가 샜다면 그런 사본을 지우고, 자산을 새 지갑(새 복구 단어)으로 옮기는 것이 확실합니다.";
 
 /// T-PASTE-CLEARED (spec/04 §4.7-4).
 const PASTE_CLEARED: &str =
@@ -574,7 +620,7 @@ fn quicknode_input(name: &str, token: &str) -> Result<Option<(String, Zeroizing<
 /// Loads `settings.json` (spec/04 §6.2).
 #[must_use]
 pub fn load_settings(paths: &Paths) -> crate::settings::SettingsLoad {
-    match read_limited(
+    match read_limited_no_reparse(
         &paths.settings(),
         u64::try_from(crate::settings::SETTINGS_MAX_BYTES).unwrap_or(65_536),
     ) {
@@ -588,9 +634,14 @@ pub fn load_settings(paths: &Paths) -> crate::settings::SettingsLoad {
 }
 
 /// Loads `apikeys.dpapi` (spec/04 §6.3): `(keys, unreadable)`.
+///
+/// An LLM key stored by an older version has no `llm:host`. It is no longer bound here to the
+/// endpoint in `settings.json` (a plain file anyone can edit, review M1): it stays unbound —
+/// never attached to a request — until the first check after an unlock binds it to the host
+/// in the vault-encrypted settings snapshot (`App::reconcile_settings`).
 #[must_use]
 pub fn load_apikeys(paths: &Paths, settings: &Settings) -> (ApiKeys, bool) {
-    let blob = match read_limited(&paths.apikeys(), 1_048_576) {
+    let blob = match read_limited_no_reparse(&paths.apikeys(), 1_048_576) {
         Ok(blob) => blob,
         Err(FileError::NotFound) => return (ApiKeys::default(), false),
         Err(_) => return (ApiKeys::default(), true),
@@ -607,17 +658,7 @@ pub fn load_apikeys(paths: &Paths, settings: &Settings) -> (ApiKeys, bool) {
                     logging::info("app", "apikeys.orphan", &[("net", Field::Net(network))]);
                 }
             }
-            let mut keys = decoded.keys;
-            // spec/06 §2.1: an LLM key stored by an older version has no host; it is bound to
-            // the endpoint saved now (in memory; written with the next save, at the latest
-            // before the endpoint changes).
-            if let Some(endpoint) =
-                crate::explain::config::parse_endpoint(&settings.llm_explain.endpoint)
-                && keys.bind_llm_host(&endpoint.host)
-            {
-                logging::info("app", "apikeys.llm_host_bound", &[]);
-            }
-            (keys, false)
+            (decoded.keys, false)
         }
         Err(_) => (ApiKeys::default(), true),
     }
@@ -673,6 +714,7 @@ impl App {
             browser: None,
             llm: None,
             llm_ui: crate::app_llm::LlmUi::default(),
+            guard: SettingsGuard::default(),
             secret: None,
             secret_serial: 0,
             import: ImportFlow::default(),
@@ -684,6 +726,13 @@ impl App {
             session_next_ms: 0,
             last_flush_ms: now,
         }
+    }
+
+    /// `WerAddExcludedApplication` failed at startup (review L9): a banner now and a line in
+    /// settings → 보안 for the rest of the run.
+    pub fn note_wer_unprotected(&mut self) {
+        self.guard.wer_unprotected = true;
+        self.banner(None, crate::ui::screens::T_WER_UNPROTECTED.to_owned());
     }
 
     /// Adds a banner once per code.
@@ -1504,6 +1553,8 @@ impl App {
                     &[("prev", Field::Word(if complete { "ok" } else { "stale" }))],
                 );
                 self.info = Some(password_changed_text(change).to_owned());
+                // Review L17: the meta remembers the new vault generation.
+                self.save_meta();
                 self.refresh();
             }
             KeyOutcome::RawKeyImported(Ok((id, address))) => {
@@ -1575,6 +1626,8 @@ impl App {
                 }
                 self.keys.has_mnemonic = has_mnemonic;
                 self.meta = Some(meta);
+                // Review M1/L15/L17: compare settings.json with the snapshot in the meta.
+                self.verify_settings();
                 if matches!(self.mode, AppMode::Unlocked { .. })
                     && matches!(
                         self.screen,
@@ -1688,6 +1741,7 @@ impl App {
                     }
                     VaultStatus::Locked | VaultStatus::NoVault => {
                         self.close_secret();
+                        self.guard.vault_file = vault_file_info(&self.paths.data);
                         self.set_screen(Screen::Locked);
                     }
                 }
@@ -2320,6 +2374,17 @@ impl App {
     // ----- meta, settings, apikeys -------------------------------------------------------
 
     pub(crate) fn save_meta(&mut self) {
+        // Review L17: remember the newest `vault.ywv` generation with every meta write, so a
+        // `vault.ywv` rolled back on its own is noticed at the next unlock.
+        if let Some((found, written)) = vault_file_info(&self.paths.data) {
+            self.guard.vault_file = Some((found, written));
+            if let Some(meta) = self.meta.as_mut()
+                && found > meta.security.vault_generation_seen
+                && self.guard.rollback.is_none()
+            {
+                meta.security.vault_generation_seen = found;
+            }
+        }
         if let Some(meta) = self.meta.clone() {
             self.key(KeyJob::SaveMeta {
                 meta: Box::new(meta),
@@ -2347,6 +2412,7 @@ impl App {
                     ("saved", Field::Word(if memory_only { "no" } else { "yes" })),
                 ],
             );
+            self.after_settings_saved(key, memory_only);
         } else {
             self.error_banner(ErrorCode::App002);
         }
@@ -2362,9 +2428,175 @@ impl App {
         if !written {
             let (keys, _) = load_apikeys(&self.paths, &self.settings);
             self.apikeys = keys;
+            if self.guard.verified
+                && let Some(host) = self
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.security.snapshot.as_ref())
+                    .map(|snapshot| snapshot.llm.host.clone())
+            {
+                self.bind_llm_key_to(&host);
+            }
             self.error_banner(ErrorCode::App002);
         }
         written
+    }
+
+    // ----- settings snapshot (review M1, L15) and vault generation (L17) ----------------------
+
+    /// After a successful `save_settings`: the app itself changed the values, so the snapshot
+    /// follows (written with the meta). Without a snapshot yet (locked, meta not loaded) the key
+    /// is remembered and taken over at the next check.
+    fn after_settings_saved(&mut self, key: &'static str, memory_only: bool) {
+        if !self.guard.verified || self.meta.is_none() {
+            if !self.guard.saved_early.contains(&key) {
+                self.guard.saved_early.push(key);
+            }
+            return;
+        }
+        if !memory_only {
+            // The file now holds exactly the values in use.
+            self.guard.pending = None;
+        }
+        let snapshot = crate::settings::SecuritySnapshot::of(&self.settings);
+        if let Some(meta) = self.meta.as_mut()
+            && meta.security.snapshot.as_ref() != Some(&snapshot)
+        {
+            meta.security.snapshot = Some(snapshot);
+            self.save_meta();
+        }
+    }
+
+    /// Binds a stored LLM key that has no host yet (an older version's) to `host`, the host the
+    /// user consented to in the snapshot — never to whatever `settings.json` names (review M1).
+    /// In memory; written with the next `apikeys.dpapi` save.
+    fn bind_llm_key_to(&mut self, host: &str) {
+        if !host.is_empty() && self.apikeys.bind_llm_host(host) {
+            logging::info("app", "apikeys.llm_host_bound", &[]);
+        }
+    }
+
+    /// Compares the settings in use with `stored` (the meta snapshot) and returns the snapshot
+    /// to keep (review M1, L15). `None` (a meta written before snapshots existed, or a new
+    /// wallet): the snapshot is created from the settings in use, once, and logged.
+    ///
+    /// With a snapshot: the LLM is switched off when it is on without a consent for the current
+    /// endpoint host; a missing or changed genesis pin is restored; fee caps, auto-lock, the
+    /// Bitcoin indexer and user chains the snapshot does not know use the snapshot values while
+    /// a banner offers the file values. Keys the app saved itself before the check are taken
+    /// over. Afterwards the `yw-llm` worker may start ([`SettingsGuard::verified`]).
+    pub fn reconcile_settings(
+        &mut self,
+        stored: Option<crate::settings::SecuritySnapshot>,
+    ) -> crate::settings::SecuritySnapshot {
+        let early = core::mem::take(&mut self.guard.saved_early);
+        let Some(stored) = stored else {
+            logging::info("app", "settings.snapshot_created", &[]);
+            let snapshot = crate::settings::SecuritySnapshot::of(&self.settings);
+            self.guard.verified = true;
+            self.bind_llm_key_to(&snapshot.llm.host);
+            self.llm_reconfigure();
+            return snapshot;
+        };
+        let outcome = crate::settings::reconcile(&self.settings, &stored, &early);
+        if outcome.write_file
+            && outcome.file.read_only().is_none()
+            && atomic_write(&self.paths.settings(), &outcome.file.to_json()).is_err()
+        {
+            self.error_banner(ErrorCode::App002);
+        }
+        if outcome.llm_forced_off {
+            logging::warn("app", "settings.llm_consent_missing", &[]);
+            self.banner(None, crate::settings::LLM_FORCED_OFF_TEXT.to_owned());
+        }
+        for id in &outcome.pins_restored {
+            logging::warn(
+                "app",
+                "settings.pin_restored",
+                &[("net", Field::Net(NetworkId::Eip155(*id)))],
+            );
+        }
+        if !outcome.pins_restored.is_empty() {
+            self.banner(None, crate::settings::PIN_RESTORED_TEXT.to_owned());
+        }
+        if !outcome.differing.is_empty() {
+            logging::warn(
+                "app",
+                "settings.file_differs",
+                &[(
+                    "count",
+                    Field::Num(u64::try_from(outcome.differing.len()).unwrap_or(0)),
+                )],
+            );
+            self.guard.pending = Some(Box::new((outcome.file.clone(), outcome.differing.clone())));
+        }
+        if outcome.effective.log_level != self.settings.log_level {
+            logging::set_level(outcome.effective.log_level);
+        }
+        self.settings = outcome.effective;
+        self.guard.verified = true;
+        self.bind_llm_key_to(&outcome.snapshot.llm.host);
+        self.llm_reconfigure();
+        outcome.snapshot
+    }
+
+    /// The check after the meta loaded (unlock): the settings snapshot (review M1, L15) and the
+    /// remembered `vault.ywv` generation (review L17).
+    pub(crate) fn verify_settings(&mut self) {
+        let Some(stored) = self
+            .meta
+            .as_ref()
+            .map(|meta| meta.security.snapshot.clone())
+        else {
+            return;
+        };
+        let snapshot = self.reconcile_settings(stored);
+        let file = vault_file_info(&self.paths.data);
+        self.guard.vault_file = file;
+        let Some(meta) = self.meta.as_mut() else {
+            return;
+        };
+        let mut changed = meta.security.snapshot.as_ref() != Some(&snapshot);
+        meta.security.snapshot = Some(snapshot);
+        if let Some((found, _)) = file {
+            let seen = meta.security.vault_generation_seen;
+            if found < seen {
+                self.guard.rollback = Some((seen, found));
+                self.banner(None, crate::ui::screens::rollback_text(seen, found));
+                logging::warn(
+                    "app",
+                    "vault.generation_backwards",
+                    &[("seen", Field::Num(seen)), ("found", Field::Num(found))],
+                );
+            } else if found > seen {
+                meta.security.vault_generation_seen = found;
+                changed = true;
+            }
+        }
+        if changed {
+            self.save_meta();
+        }
+    }
+
+    /// `파일 값 사용`: the values found in `settings.json` become the ones in use and the
+    /// snapshot follows.
+    pub(crate) fn settings_accept_file(&mut self) {
+        let Some(pending) = self.guard.pending.take() else {
+            return;
+        };
+        let (file, _) = *pending;
+        logging::info("app", "settings.file_accepted", &[]);
+        self.save_settings(file, crate::settings::ACCEPT_FILE_KEY);
+    }
+
+    /// `앱에 저장된 값으로 되돌리기`: `settings.json` is rewritten with the values in use (the
+    /// snapshot's).
+    pub(crate) fn settings_restore(&mut self) {
+        if self.guard.pending.take().is_none() {
+            return;
+        }
+        logging::info("app", "settings.file_restored", &[]);
+        self.save_settings(self.settings.clone(), "settingsFileRestored");
     }
 
     fn open_folder(path: &Path) {
@@ -2481,9 +2713,14 @@ impl App {
             }
             ids::DISMISS_BANNERS => {
                 self.banners.clear();
+                // Review L17: a dismissed rollback warning is acknowledged; the next meta write
+                // remembers the current generation.
+                self.guard.rollback = None;
                 self.info = None;
                 self.refresh();
             }
+            ids::SETTINGS_ACCEPT_FILE => self.settings_accept_file(),
+            ids::SETTINGS_RESTORE => self.settings_restore(),
             ids::ADD_ACCOUNT => {
                 if let Some(index) = self.meta.as_ref().and_then(Meta::next_index) {
                     self.key(KeyJob::DeriveAddresses {

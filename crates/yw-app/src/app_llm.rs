@@ -4,6 +4,8 @@
 //!
 //! The worker exists only while `llm_explain` is effectively on (spec/06 §9): when it is off,
 //! no thread runs, no `WinHTTP` session is opened and the `llm` key is not handed to anyone.
+//! "On" also needs the consent recorded in the vault-encrypted settings snapshot for the current
+//! endpoint host (review M1): the worker starts only after the check that follows an unlock.
 
 use std::sync::Arc;
 
@@ -188,6 +190,13 @@ impl App {
         }
         let settings = &self.settings.llm_explain;
         if !effectively_enabled(settings) {
+            return;
+        }
+        // Review M1: `settings.json` is plain text. Until the settings were checked against the
+        // vault-encrypted snapshot after an unlock (`App::reconcile_settings`), an `enabled`
+        // flag in it is not a consent: no worker, nothing sent. Approvals (the only requests)
+        // need an unlocked wallet anyway.
+        if !self.guard.verified {
             return;
         }
         let Some(events) = self.events.clone() else {

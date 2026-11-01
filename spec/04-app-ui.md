@@ -71,7 +71,7 @@ impl EventQueue {
 - 메시지 루프는 앱 전체에 하나다. 중첩 모달 루프(`MessageBoxW`, `DialogBox*`, 이식 코드의 `run_loop`)를 쓰지 않는다. 확인 대화상자는 주 창 안의 오버레이 패널이다. 이식 코드의 `PostQuitMessage`는 `WM_YW_CHILD_DONE`으로 바꾼다.
 
 ### 1.4 시작 순서
-1. `process::init_process()`(`SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x800)`), `ui::init()`(`SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` + `InitCommonControlsEx`), `process::exclude_from_error_reporting()`([01] §5.4). 실패해도 계속하고 4단계에서 로그로 남긴다.
+1. `process::init_process()`(`SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x800)`), `ui::init()`(`SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` + `InitCommonControlsEx`), `process::exclude_from_error_reporting()`([01] §5.4). 실패해도 계속하고 4단계에서 로그로 남긴다. WER 제외 실패는 로그만이 아니라 5단계 뒤 배너("Windows 오류 보고(WER) 제외 등록에 실패했습니다. 이 앱이 비정상 종료되면 메모리 덤프가 남을 수 있고, 덤프에는 잠금 해제 중인 지갑 키가 들어 있을 수 있습니다.")와 설정 → 보안 → "지갑 파일과 보호 상태" 줄로도 보인다(2026-11-01 검토 L9).
 2. 인자 확인, 단일 인스턴스 뮤텍스(§1.1).
 3. 환경 변수 `LOCALAPPDATA`가 절대 경로가 아니면 종료 코드 10. `%LOCALAPPDATA%\YourWallet\`, `v3\`, `logs\`를 이 순서로 `security::ensure_private_dir(폴더, 사용자 SID)`([01] §7.6)로 만들거나 검사한다(아래 1–4).
    1. 데이터 폴더 ACL(시작마다): 없는 폴더는 `CreateDirectoryW`에 SDDL `O:<사용자 SID>D:PAI(A;OICI;FA;;;<사용자 SID>)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)S:(ML;OICI;NRNW;;;ME)`를 줘서 만든다: 보호된 DACL(상속 끊음) — 사용자·SYSTEM·Administrators 모두 권한, 폴더와 파일에 상속(OI·CI) — 과 Medium 필수 레이블(no-read-up·no-write-up: Low 무결성 프로세스는 같은 사용자여도 안을 읽지도 쓰지도 못한다; DPAPI 사용자 범위의 `apikeys.dpapi`를 Low 프로세스가 읽어 `CryptUnprotectData`하는 길을 막는다). 안에서 만드는 `vault.ywv`·`meta`·저널·`settings.json`·`apikeys.dpapi`·로그는 이 ACE와 레이블을 상속한다(따로 설정하지 않는다).
@@ -348,7 +348,8 @@ S16 토큰 추가: 컨트랙트 주소(§2.15) → RPC `decimals()`·`symbol()`(
 4. `UnlockFailed` → E-VLT-001, 1초 비활성 후 W03 유지.
 
 ### 2.13 비밀번호 변경
-W04(현재, 새, 새 확인) → 새 비밀번호 검사(E-INP-001/002) → `KeyJob::ChangePassword` → S03 "비밀번호를 바꾸는 중…". DEK는 그대로이고 다시 감싸기만 한다(D7). 현재 비밀번호 오류 → E-VLT-001(1초 비활성). `Rewrap` 쓰기 실패 → E-VLT-003, vault는 이전 상태(이전 비밀번호 유효). 성공(`PasswordChange::Complete`) → "비밀번호를 바꿨습니다." `Rewrap`은 반영됐지만 뒤이은 `PayloadRewrite`가 실패(`PrevNotRefreshed`, [02] §4.4) → 실패라고 하지 않는다: "비밀번호를 바꿨습니다. 지금부터는 새 비밀번호로 엽니다. 다만 이전 복사본(vault.ywv.prev)을 새 비밀번호로 다시 쓰지 못해, 그 복사본은 다음 저장 전까지 예전 비밀번호로만 열릴 수 있습니다."
+W04(현재, 새, 새 확인) → 새 비밀번호 검사(E-INP-001/002) → `KeyJob::ChangePassword` → S03 "비밀번호를 바꾸는 중…". DEK는 그대로이고 다시 감싸기만 한다(D7). 현재 비밀번호 오류 → E-VLT-001(1초 비활성). `Rewrap` 쓰기 실패 → E-VLT-003, vault는 이전 상태(이전 비밀번호 유효). 성공(`PasswordChange::Complete`) → "비밀번호를 바꿨습니다. 이미 만들어 둔 지갑 파일 사본(백업한 vault.ywv, 이전 사본, 격리된 손상 파일)은 예전 비밀번호로 계속 열립니다 — 예전 비밀번호가 샜다면 그런 사본을 지우세요." `Rewrap`은 반영됐지만 뒤이은 `PayloadRewrite`가 실패(`PrevNotRefreshed`, [02] §4.4) → 실패라고 하지 않는다: "비밀번호를 바꿨습니다. 지금부터는 새 비밀번호로 엽니다. 다만 이전 복사본(vault.ywv.prev)을 새 비밀번호로 다시 쓰지 못해, 그 복사본은 다음 저장 전까지 예전 비밀번호로만 열릴 수 있습니다. 이미 만들어 둔 지갑 파일 사본도 예전 비밀번호로 계속 열립니다."
+- DEK를 바꾸지 않으므로 비밀번호 변경은 이미 새어 나간 사본을 회수하지 못한다(2026-11-01 검토 L1, [02] §4.4). W04 안내에 "바꾸기 전에 만든 지갑 파일 사본(백업한 vault.ywv, .prev)은 예전 비밀번호로 계속 열립니다."를, 설정 → 보안 → 비밀번호 카드에 `T_PASSWORD_OLD_COPIES`(사본은 예전 비밀번호로 열리고 사본 + 예전 비밀번호로 지금 파일도 풀린다; 예전 비밀번호가 샜다면 사본을 지우고 자산을 새 지갑으로 옮기는 것이 확실하다)를 보인다. 대처는 `docs/recovery-guide.ko.md`.
 
 ### 2.14 폴더 열기
 `std::process::Command::new(<%SystemRoot%>\explorer.exe).arg(<폴더>)`(`SystemRoot`가 없으면 `C:\Windows`). 셸 API·URL은 쓰지 않는다. 로그 폴더 버튼 옆에 T-LOG-FOLDER.
@@ -901,6 +902,7 @@ EsploraBaseUrls = { "mainnet": EsploraBaseUrl, "testnet4": EsploraBaseUrl }   //
 - 최상위 키마다 따로 검증한다. 틀린 키는 그 키만 기본값이고 배너에 키 이름을 보인다. 객체 값(`feeCaps`의 네트워크 항목, `rpc`, `solana`, `bitcoin`, `llm_explain`)은 그 객체 단위로 되돌린다(예외: `bitcoin.esploraBaseUrl`은 네트워크 키 단위, §6.1). 모르는 최상위 키는 새 부 버전의 키로 보고 배너 없이 보존해 다음 쓰기에서 알려진 키 뒤에 읽은 순서대로 다시 쓴다(§6.6). 모르는 `feeCaps` 네트워크 키는 무시하고 배너에 보이며 다음 쓰기에서 사라진다.
 - 검증 순서: `evmChains` → `evmChainId`·`evmGenesisPins`·`feeCaps`(등록된 체인 집합에 의존). `evmChains`는 항목 단위다: 무효 항목, 기본 체인·앞 항목과 chainId 또는 이름이 겹치는 항목, 33번째부터는 버리고 배너 "evmChains[i]"(배열이 아니면 전체 `[]`). 버린 체인의 `feeCaps`·`rpc:*` 항목은 고아로 무시된다. `evmGenesisPins`는 키 단위(모르는 키·형식 오류는 그 키만 버림).
 - 쓰기: 메모리의 전체 설정을 직렬화해 §9 원자적 쓰기(알려진 키는 §6.1 순서, 그 뒤 보존한 모르는 최상위 키). 검증을 통과한 값만 메모리에 들어간다.
+- 무결성: 평문 파일이라 앱 밖에서 바뀔 수 있다. 보안 관련 값은 잠금 해제 뒤 meta의 스냅샷과 대조한다(§6.7). `settings.json`·`apikeys.dpapi`가 재분석 지점이면 읽지 않는다(파일 전체 무효와 같음).
 - 반영: `autoLockMinutes` 다음 판정부터, `allowLocalhostDapps` [05]의 다음 요청부터, `browserAutoLaunch` yw-host의 다음 실행 판단부터, `evmChainId` 즉시(S10 새로고침), `evmChains`·`evmGenesisPins` 즉시(새 `RpcConfig`, 그 체인 확인 상태 초기화, §1.9), `feeCaps` 다음 준비부터, `rpc.template` 즉시(S15·S17 입력 해석만), `bitcoin.indexer`·`bitcoin.esploraBaseUrl` 즉시(새 `RpcConfig`, [08] §2 연결 검사 다시), `logLevel` 다음 줄부터.
 
 ### 6.3 apikeys.dpapi
@@ -963,6 +965,20 @@ BTC 계정 선택은 `prefs`에 두지 않는다(알려진 객체에 키를 더�
 - 보존한 키·항목은 이 버전에서 쓰지 않는다(엔드포인트·설정값으로 해석하지 않음). 크기 상한(settings 64 KiB, meta 8 MiB, apikeys 48개)을 넘게 되면 알려진 값이 우선이고, 보존한 것을 뒤에서부터 빼고 쓴다.
 - 손상과 구별: 알려진 키의 형식 오류·중복 키·필수 키 없음은 지금까지처럼 그 키(또는 파일) 단위 오류다.
 - 사용자 안내: 업그레이드 전에 앱을 닫고 `%LOCALAPPDATA%\YourWallet\v3` 폴더를 통째로 복사해 둔다(docs/install.ko.md §5). 새 버전에서 이전 버전으로 되돌린 경우 `settings.json`이 읽기 전용이면 새 버전을 다시 설치한다.
+
+### 6.7 보안 설정 스냅샷 (2026-11-01 검토 M1·L15·L17)
+`settings.json`은 평문이고 인증이 없다(D30). 그래서 어디로 데이터를 보내고 거래에 얼마까지 쓰는지를 정하는 값은 vault로 암호화된 meta의 선택 키 `security_settings`([02] §5.3, AEAD — 앱 밖에서 바꾸면 복호화가 실패하거나 값이 맞지 않는다)에도 둔다.
+
+- **담는 값**: `llm_explain`의 동의(`enabled`, 엔드포인트 소문자 `host[:port]`, `privacy_notice_version`), genesis 고정값(`evmGenesisPins`의 HyperEVM + 사용자 체인 `genesisHash`), `feeCaps`, `autoLockMinutes`, `bitcoin.indexer`·`bitcoin.esploraBaseUrl`.
+- **쓰기**: 앱이 `settings.json`을 쓸 때마다(UI 변경, 첫 사용 고정, 다시 고정) meta가 열려 있으면 메모리의 설정으로 스냅샷을 다시 만들어 meta와 함께 쓴다. 잠긴 동안(meta 없음) 쓴 키는 이름을 기억해 두었다가 다음 대조에서 그 값을 받아들인다(genesis 고정값은 예외: 스냅샷과 다르면 언제나 되돌림).
+- **대조**: 잠금 해제 뒤 meta를 읽으면 메모리의 설정(= 시작 때 읽은 파일 + 그 뒤 앱이 바꾼 값)과 스냅샷을 비교한다.
+  - LLM: 파일에서 켜져 있는데(실효) 스냅샷에 지금 엔드포인트 호스트에 대한 동의(켜짐 + 같은 호스트 + 현재 안내 버전)가 없으면 `enabled = false`로 바꿔 파일에도 쓰고 배너("AI 설명 설정이 앱 밖에서 바뀌어(동의한 주소와 다름) AI 설명을 껐습니다. …"). 사용자가 S15에서 다시 켜고 안내에 동의해야 켜진다. `yw-llm` 작업자는 이 대조가 끝나기 전(잠금 해제 전 포함)에는 시작하지 않는다.
+  - LLM 키: 호스트가 묶이지 않은 이전 버전의 키(`llm:host` 없음, §6.3)는 시작 때 `settings.json`의 엔드포인트에 묶지 않는다. 대조 뒤 스냅샷의 동의 호스트에만 묶는다(메모리; 다음 `apikeys.dpapi` 저장 때 기록).
+  - genesis 고정값: 스냅샷에 있는 체인의 고정값이 파일에서 없어졌거나 다르면 스냅샷 값으로 되돌려 파일에도 쓰고 배너("설정 파일의 체인 genesis 고정값이 앱 밖에서 지워지거나 바뀌어, 앱에 저장된 값으로 되돌렸습니다."). 다시 첫 사용 고정(TOFU)하지 않는다. 스냅샷에 없는 HyperEVM 고정값(잠긴 동안의 첫 사용 고정)은 받아들인다.
+  - `feeCaps`·`autoLockMinutes`·`bitcoin.indexer`/`esploraBaseUrl`·스냅샷에 없는 사용자 체인: 스냅샷 값을 쓰고(없는 체인은 쓰지 않음, 활성 체인이면 11155111로) 파일은 그대로 둔다. 배너 "설정 파일이 앱 밖에서 바뀌었습니다 — 확인하세요 (키 목록). 지금은 앱에 저장된 값을 씁니다. 직접 바꾼 것이면 '파일 값 사용'을 누르세요." + 버튼 `파일 값 사용`(파일 값으로 바꾸고 스냅샷 갱신) · `앱에 저장된 값으로 되돌리기`(파일을 스냅샷 값으로 다시 씀). 결정 전에 다른 설정을 바꿔 저장하면 파일은 쓰고 있는 값(스냅샷 값)으로 쓰여 배너가 사라진다.
+  - 스냅샷이 없으면(이 기능 이전의 meta, 새 지갑, meta를 새로 시작함) 그때의 설정으로 한 번 만들고 로그 `settings.snapshot_created`를 남긴다(업그레이드 경로: 그 순간의 파일을 믿는다).
+- **vault 세대(L17)**: meta는 함께 본 가장 큰 `vault.ywv` `generation`(`vault_generation_seen`)을 meta를 쓸 때마다·비밀번호 변경 뒤 기록한다. 잠금 해제 뒤 파일의 generation이 그보다 작으면 배너 "지갑 파일(vault.ywv)이 예전 사본으로 바뀌었을 수 있습니다: …"와 로그 `vault.generation_backwards`. 잠금 화면(S07)과 설정 → 보안 "지갑 파일과 보호 상태"에 "지갑 파일(vault.ywv): 저장 횟수(세대) n · 마지막 저장 YYYY-MM-DD HH:MM"을 보인다.
+- 남는 위험: meta를 지우거나 손상시켜 "새로 시작"(E-VLT-006)을 고르게 하면 스냅샷이 없어져 그때의 파일 값을 다시 믿는다. vault·meta를 같은 백업에서 함께 되돌리면 서로 맞는 옛 상태라 드러나지 않는다.
 
 ## 7. 오류·메시지 정책
 - RPC·LLM·OS가 준 문자열은 화면에 그대로 보이지 않는다(spec.md §2.1). 예외: AI 설명 패널(§3.8)은 [06] §5–§6 필터를 거친 파생 텍스트를 별도 패널에만 표시한다(spec.md §2.1 예외). 모든 오류는 `ErrorCode`로 분류해 고정 한국어 문구 + `(코드)`로 보인다. 문구는 원인 한 문장 다음에 사용자가 할 수 있는 다음 행동을 적는다. 예: "RPC 응답 시간이 초과되었습니다. 잠시 후 다시 시도하고, 계속되면 설정 → 네트워크(RPC)에서 테스트하거나 다른 RPC URL로 바꾸세요. (E-RPC-002)". 체인 문서가 정한 고정 문구 표([08] §13 등)는 그 표를 쓴다.

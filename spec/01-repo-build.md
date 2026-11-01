@@ -466,6 +466,25 @@ function Get-Tests([string]$Dir, [int]$Code) {
     return $files
 }
 
+# 설치(scripts/install.ps1 Invoke-Build)와 같은 빌드 조건: 컴파일러·빌드 설정을 바꾸는 환경 변수를 이 게이트 프로세스에서만
+# 지우고(시스템·사용자 설정은 그대로), cargo에 --config로 컴파일러 래퍼를 끄고 링커를 기본 link.exe로 고정한다. 그래야 게이트
+# 통과가 설치 빌드와 같은 조건을 뜻한다. 이름·접두사·--config 값은 install.ps1과 같아야 한다(scripts/install.test.mjs가 확인;
+# 게이트는 dev·test 프로필도 빌드하므로 CARGO_PROFILE_RELEASE_ 대신 CARGO_PROFILE_ 전체를 지운다). RUSTFLAGS 계열은 지우지
+# 않고 거부한다(아래, 종료 11).
+$ClearedBuildVariableNames = @('RUSTC', 'RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER')
+$ClearedBuildVariablePrefixes = @('CARGO_PROFILE_', 'CARGO_BUILD_RUSTC', 'CC', 'CFLAGS', 'CXX', 'CXXFLAGS')
+$BuildConfigOverrides = @("build.rustc-wrapper=''", "build.rustc-workspace-wrapper=''", "target.x86_64-pc-windows-msvc.linker='link.exe'")
+$clearedNames = @([Environment]::GetEnvironmentVariables('Process').Keys | ForEach-Object { [string]$_ } | Where-Object {
+    $name = $_
+    @($ClearedBuildVariableNames | Where-Object { $name.Equals($_, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0 -or
+    @($ClearedBuildVariablePrefixes | Where-Object { $name.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
+} | Sort-Object)
+foreach ($name in $clearedNames) { [Environment]::SetEnvironmentVariable($name, [NullString]::Value, 'Process') }
+if ($clearedNames.Count -gt 0) { Write-Host "check: cleared for this run: $($clearedNames -join ', ')" }
+$config = @(foreach ($setting in $BuildConfigOverrides) { '--config'; $setting })
+# clippy는 cargo-clippy가 RUSTC_WORKSPACE_WRAPPER(clippy-driver)로 돌므로 그 키는 덮어쓰지 않는다.
+$clippyConfig = @(foreach ($setting in $BuildConfigOverrides | Where-Object { $_ -notlike 'build.rustc-workspace-wrapper=*' }) { '--config'; $setting })
+
 $cargoVersion = & cargo --version 2>$null
 if ($LASTEXITCODE -ne 0 -or "$cargoVersion" -notmatch '^cargo 1\.95\.0 ') { Fail 10 "cargo 1.95.0 required (rust-toolchain.toml)" }
 $nodeVersion = & node --version 2>$null
@@ -478,12 +497,12 @@ $deps = @("scripts/check-core-deps.mjs"); if ($Offline) { $deps += "--offline" }
 
 Invoke-Step "fmt" 20 "cargo" @("fmt", "--all", "--", "--check")
 Invoke-Step "deps" 21 "node" $deps
-Invoke-Step "clippy" 22 "cargo" (@("clippy", "--workspace", "--all-targets") + $net + @("--", "-D", "warnings"))
-Invoke-Step "test" 23 "cargo" (@("test", "--workspace") + $net)
+Invoke-Step "clippy" 22 "cargo" (@("clippy", "--workspace", "--all-targets") + $net + $clippyConfig + @("--", "-D", "warnings"))
+Invoke-Step "test" 23 "cargo" (@("test", "--workspace") + $net + $config)
 $env:YW_FUZZ_RUNS = "20000"                                           # fuzz-lite 스모크([09] §2.4): 무시된 fuzz_lite_*를 2만 회씩
-Invoke-Step "fuzz" 29 "cargo" (@("test", "--workspace") + $net + @("--", "--ignored", "fuzz_lite"))
+Invoke-Step "fuzz" 29 "cargo" (@("test", "--workspace") + $net + $config + @("--", "--ignored", "fuzz_lite"))
 $env:YW_FUZZ_RUNS = $null                                             # 직접 --ignored로 돌리면 1,000,000회
-Invoke-Step "build" 24 "cargo" (@("build", "--workspace") + $net)   # target\debug\yw-host.exe ([09] §2.2, [05] H1)
+Invoke-Step "build" 24 "cargo" (@("build", "--workspace") + $net + $config)   # target\debug\yw-host.exe ([09] §2.2, [05] H1)
 $env:YW_CHECK = "1"                                                   # 확장 프로세스 테스트가 skip 대신 실패([09])
 if ($Step -in "all", "ext-test") { Invoke-Step "ext-test" 25 "node" (@("--test") + (Get-Tests "extension/tests" 25)) }
 if ($Step -in "all", "script-test") { Invoke-Step "script-test" 26 "node" (@("--test") + (Get-Tests "scripts" 26)) }
@@ -493,6 +512,8 @@ Invoke-Step "icons" 30 "node" @("scripts/make-icons.mjs", "--check")   # 커밋�
 Write-Host "check: OK"
 exit 0
 ```
+
+빌드 조건은 설치(§9.2-5)와 같다(2026-11-01 검토 INFO): `RUSTC`·`RUSTC_WRAPPER`·`RUSTC_WORKSPACE_WRAPPER`와 이름이 `CARGO_PROFILE_`·`CARGO_BUILD_RUSTC`·`CC`·`CFLAGS`·`CXX`·`CXXFLAGS`로 시작하는 변수를 게이트 프로세스에서 지우고(지운 이름을 한 줄 출력), clippy·test·fuzz·build에 설치와 같은 `--config`(래퍼 끄기, 링커 `link.exe`)를 준다(clippy는 `build.rustc-workspace-wrapper`를 빼고: cargo-clippy가 그 변수로 clippy-driver를 건다). 목록 일치는 `scripts/install.test.mjs`가 확인한다. rustflags 4개는 지우지 않고 거부한다(11).
 
 종료 코드: 0 통과, 1 스크립트 자체 오류(잘못된 `-Step` 포함), 10 cargo 1.95.0 또는 Node 22+ 없음, 11 rustflags 환경 변수 설정됨, 20 fmt, 21 의존성 허용 목록, 22 clippy, 23 cargo test, 29 fuzz-lite 스모크(`fuzz`, test 다음·build 앞: `#[ignore]`된 `fuzz_lite_*` 테스트를 `YW_FUZZ_RUNS=20000`으로 디버그 빌드에서 실행; 각 테스트는 이 변수가 없으면 1,000,000회), 24 cargo build, 25 확장 테스트, 26 스크립트 테스트, 27 privacy scan, 28 확장 정적 감사, 30 아이콘(`scripts/make-icons.mjs --check`: 앱 `.ico`·`.res`, 확장 `icons/*.png`, `provider-main.js`의 `PROVIDER_ICON`, `docs/icon-preview.png`를 메모리에서 다시 만들어 커밋본과 바이트 비교; 다르거나 없으면 생성기 종료 1, 사용법·입출력 오류 2). 첫 실패에서 멈춘다. 모든 마일스톤 완료 조건은 이 스크립트의 0을 포함한다. (PowerShell 5.1에서 단계 선택, 종료 코드 11, 잘못된 `-Step`의 1을 확인함.)
 
@@ -877,6 +898,10 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), FileError>;        
 pub enum AtomicWrite { Durable, DirFlushFailed(FileError) }                      // 교체는 끝남; DirFlushFailed = 경고
 pub fn atomic_write_detailed(path: &Path, bytes: &[u8]) -> Result<AtomicWrite, FileError>;   // 아래 (5) 실패를 경고로 구분
 pub fn read_limited(path: &Path, max: u64) -> Result<Vec<u8>, FileError>;        // 크기 > max → TooLarge
+pub fn read_limited_no_reparse(path: &Path, max: u64) -> Result<Vec<u8>, FileError>; // 재분석 지점이면 ReparsePoint(따라가지 않음):
+                                                                                  // symlink_metadata 확인 후 FILE_FLAG_OPEN_REPARSE_POINT로
+                                                                                  // 열어 핸들 속성을 다시 확인하고 읽는다(검토 L8). vault·meta·
+                                                                                  // journal(+.prev)·settings.json·apikeys.dpapi 읽기에 쓴다
 pub fn ensure_dir(path: &Path) -> Result<(), FileError>;                         // create_dir_all, 재분석 지점 거부
 // atomic_write의 단계를 yw-app VaultStorage([02] §6.2 커밋 1–6단계)가 따로 쓰도록 공개한다(M3):
 pub fn tmp_path(path: &Path) -> PathBuf;                                          // <target>.tmp
@@ -1114,7 +1139,7 @@ impl SecureTextField {
 
 ### 9.2 `scripts/install.ps1`
 
-`install.cmd [-InstallDir <폴더>] [-FixPermissions] [-AllowUnsafeToolchainPath] [-AllowAncestorCargoConfig] [-NoShortcut] [-NoNativeHost] [-NoBuild] [-DryRun]`. 관리자 권한 불필요. 기본 설치 폴더 `%LOCALAPPDATA%\Programs\YourWallet`. 저장소 루트 = 스크립트 폴더의 `..`(`Cargo.toml`·`Cargo.lock`·`extension\manifest.json`·`scripts\uninstall.ps1`이 없으면 종료 1). 버전 = 루트 `Cargo.toml` `[workspace.package] version`, 커밋 = `.git`이 있고 믿을 수 있는 git(4)이 있을 때 `<git 전체 경로> -C <루트> rev-parse --short=12 HEAD`(없으면 null; `.git`은 있는데 그런 git이 없으면 "커밋 표시를 건너뜁니다"를 출력하고 계속).
+`install.cmd [-InstallDir <폴더>] [-FixPermissions] [-AllowUnsafeToolchainPath] [-AllowAncestorCargoConfig] [-AllowUnsafeSourcePath] [-NoShortcut] [-NoNativeHost] [-NoBuild] [-DryRun]`. 관리자 권한 불필요. 기본 설치 폴더 `%LOCALAPPDATA%\Programs\YourWallet`. 저장소 루트 = 스크립트 폴더의 `..`(`Cargo.toml`·`Cargo.lock`·`extension\manifest.json`·`scripts\uninstall.ps1`이 없으면 종료 1). 버전 = 루트 `Cargo.toml` `[workspace.package] version`, 커밋 = `.git`이 있고 믿을 수 있는 git(4)이 있을 때 `<git 전체 경로> -C <루트> rev-parse --short=12 HEAD`(없으면 null; `.git`은 있는데 그런 git이 없으면 "커밋 표시를 건너뜁니다"를 출력하고 계속).
 
 **신뢰하는 SID**(이 절 전체): 현재 사용자, SYSTEM `S-1-5-18`, Administrators `S-1-5-32-544`, TrustedInstaller `S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464`. 그 밖의 SID(Users `S-1-5-32-545`, Authenticated Users `S-1-5-11`, Everyone `S-1-1-0`, INTERACTIVE `S-1-5-4`, 다른 사용자 SID 등)는 신뢰하지 않는다. 설치 프로그램은 설치 폴더(6의 `-FixPermissions`) 밖의 어떤 폴더 권한도 바꾸지 않는다.
 
@@ -1134,19 +1159,21 @@ impl SecureTextField {
    `profile.release.*` 값은 §3.1 `[profile.release]`와 정확히 같다(같은지는 §9.4가 확인). 빈 래퍼 두 개는 설정 파일의 컴파일러 래퍼를 끄고(빈 문자열 = 래퍼 없음), 링커는 rustc의 MSVC 기본값 `link.exe`로 고정한다. 명령줄 `--config`는 환경 변수와 상위 폴더·`CARGO_HOME`의 `.cargo\config.toml`보다 우선하므로 그쪽의 profile 설정이 릴리스 빌드를 바꾸지 못한다. 문자열은 TOML 리터럴(`'fat'`)로 쓴다: Windows PowerShell 5.1은 네이티브 인자 안의 큰따옴표를 escape하지 않아 `"fat"`이 cargo에 `fat`(잘못된 TOML)으로 간다; 리터럴 문자열은 5.1과 PowerShell 7에서 같은 명령줄이 된다. 출력은 그대로 보이고, 네트워크는 첫 crate 내려받기에만 쓰며 내용은 `Cargo.lock` 체크섬으로 고정한다. 실패는 흔한 원인 안내와 함께 종료 8. `-NoBuild`인데 `yw-app.exe`·`yw-host.exe`가 없으면 종료 2.
    **cargo 설정 파일**(`Confirm-CargoConfigs`, 빌드 직전, `-DryRun`에서도; `-NoBuild`면 보지 않음): cargo는 저장소 루트와 그 모든 상위 폴더의 `.cargo\config.toml`·`.cargo\config`, 그리고 `CARGO_HOME`의 것을 적용한다. 저장소 루트의 부모부터 드라이브 루트까지 각 폴더의 `.cargo\config.toml`·`.cargo\config`가 있으면(저장소 자신의 `.cargo`와, 4의 CARGO_HOME 폴더 — `%CARGO_HOME%` 또는 `%USERPROFILE%\.cargo` — 와 같은 `.cargo`는 빼고, 대소문자 무시) 그 목록을 출력하고 **종료 7**; `-AllowAncestorCargoConfig`면 목록과 경고 뒤 계속. `CARGO_HOME\config.toml`·`CARGO_HOME\config`는 사용자 설정이라 거부하지 않고, 빌드를 바꾸는 키(`build.rustc*`·`build.rustflags`, `target.<대상>.linker`·`target.<대상>.rustflags`, `profile.release.*`, `patch.*`·`source.*`·`paths`)가 있으면 그 키 이름을 경고로 출력한다(키 찾기는 표 머리·점 키·한 줄 인라인 표를 보는 근사; 경고 전용).
    경로 정리(`--remap-path-prefix`)는 하지 않는다(§3.9).
-6. 설치 폴더 상태: 없음·빈 폴더 → 새 설치. 설치 기록 `yw-install.json`(UTF-8 BOM 없음, `{"product":"YourWallet","version","commit","state":"installing"|"installed","files":[상대 경로…]}`; 예전 배포 zip 설치의 기록(`commit` 없음)도 읽는다)이 있으면 "기존 설치를 찾았습니다 … 업그레이드합니다"(같은 버전·커밋이면 "바뀐 파일만 고칩니다", 낮은 버전이면 경고)를 출력한다. 기록 없이 비어 있지 않거나 기록이 손상된 폴더는 종료 1. **권한:** 다른 로컬 사용자가 설치 폴더의 `yw-host.exe`·`yw-app.exe`·확장 파일·manifest를 바꾸면 지갑이 그 코드를 실행하므로, 남은 폴더(빈 폴더·이전 설치, 기본 경로 포함)는 폴더와 안의 모든 항목의 보안 설명자를 검사한다: 소유자가 현재 사용자·SYSTEM(`S-1-5-18`)·Administrators(`S-1-5-32-544`)가 아니거나, 그 밖의 SID(Users·Authenticated Users·Everyone 등)에 쓰기·추가·쓰기 특성·하위 삭제·삭제·권한 변경·소유권 가져오기(`GENERIC_WRITE`·`GENERIC_ALL` 포함)를 주는 허용 ACE가 있으면(상속 전용 ACE 포함, CREATOR OWNER의 상속 전용 ACE만 예외, 거부 ACE 무시) 종료 1. `-FixPermissions`이고 폴더가 현재 사용자 소유일 때만 폴더에 아래 DACL을 쓰고 안의 항목은 명시 ACE를 지워 상속만 받게 한 뒤 다시 검사한다. 새 폴더는 7에서 처음부터 현재 사용자·SYSTEM·Administrators 모든 권한(하위 상속), 부모 상속을 끊은 DACL로 만들고(`DirectorySecurity`로 생성, DACL만 `SetAccessControl`; `Set-Acl`은 SACL까지 써서 표준 사용자에게 `SeSecurityPrivilege` 오류), 만든 뒤 링크가 아님·소유자·DACL(보호됨, `Get-AclProblem` 통과)·빈 폴더를 다시 확인한다. 없는 상위 폴더(기본 경로의 `Programs` 포함)도 위에서 아래로 하나씩 같은 DACL로 만들고 같은 확인을 한다(만들기 직전에 이미 있으면, 또는 다른 사용자가 먼저 만들어 소유자가 다르면 종료 4). 그래서 `C:\` 바로 아래처럼 Authenticated Users가 폴더를 만들 수 있고 만든 폴더에 수정 권한을 물려주는 곳에서도 새 폴더는 안전하지만, 안내 문구는 사용자 프로필 아래 경로를 권한다.
+**소스·빌드 폴더 권한(2026-11-01 검토 L7, `Confirm-SourcePathsTrusted`):** 3의 확장 확인 직후 저장소 루트·`scripts\`·`scripts\uninstall.ps1`·`extension\`과 3의 런타임 파일·그 폴더, 5의 빌드 뒤(또는 `-NoBuild`) 빌드 폴더(`target` 또는 `CARGO_TARGET_DIR`)·`release\`·`yw-app.exe`·`yw-host.exe`의 보안 설명자에 6의 설치 폴더 규칙(`Get-AclProblem`)을 적용한다. 단 로그온 세션에 주어지지 않는 SID — S-1-4-*(non-unique authority; 샌드박스가 현재 사용자의 제한 토큰에 넣는 제한 SID)와 AppContainer S-1-15-2-*·S-1-15-3-* — 의 ACE는 뺀다(그런 토큰은 사용자 SID 권한도 함께 있어야 접근한다). 위반은 목록 출력 후 **종료 1**, `-AllowUnsafeSourcePath`면 경고 후 계속. 이유: 설치 폴더가 사설이어도, 다른 사용자가 저장소·빌드 폴더의 파일을 미리 바꿔 두면 그 코드가 사설 폴더에 설치된다(원본·복사본 해시 비교는 같은 출처라 막지 못한다).
+
+6. 설치 폴더 상태: 없음·빈 폴더 → 새 설치. 설치 기록 `yw-install.json`(UTF-8 BOM 없음, `{"product":"YourWallet","version","commit","state":"installing"|"installed","files":[상대 경로…],"hashes":{상대 경로: 소문자 SHA-256 hex}}`; `hashes`는 `installed` 기록에만 있고(2026-11-01부터) 예전 기록(`hashes`·`commit` 없음, 예전 배포 zip 설치)도 읽는다)이 있으면 `hashes`의 각 파일을 설치 폴더의 파일과 비교해 다르거나 없으면 경고("설치한 뒤 바뀐 파일이 있습니다 … 이번 설치가 소스의 파일로 다시 씁니다")를 출력하고, "기존 설치를 찾았습니다 … 업그레이드합니다"(같은 버전·커밋이면 "바뀐 파일만 고칩니다", 낮은 버전이면 경고)를 출력한다. 기록 없이 비어 있지 않거나 기록이 손상된 폴더는 종료 1. **권한:** 다른 로컬 사용자가 설치 폴더의 `yw-host.exe`·`yw-app.exe`·확장 파일·manifest를 바꾸면 지갑이 그 코드를 실행하므로, 남은 폴더(빈 폴더·이전 설치, 기본 경로 포함)는 폴더와 안의 모든 항목의 보안 설명자를 검사한다: 소유자가 현재 사용자·SYSTEM(`S-1-5-18`)·Administrators(`S-1-5-32-544`)가 아니거나, 그 밖의 SID(Users·Authenticated Users·Everyone 등)에 쓰기·추가·쓰기 특성·하위 삭제·삭제·권한 변경·소유권 가져오기(`GENERIC_WRITE`·`GENERIC_ALL` 포함)를 주는 허용 ACE가 있으면(상속 전용 ACE 포함, CREATOR OWNER의 상속 전용 ACE만 예외, 거부 ACE 무시) 종료 1. `-FixPermissions`이고 폴더가 현재 사용자 소유일 때만 폴더에 아래 DACL을 쓰고 안의 항목은 명시 ACE를 지워 상속만 받게 한 뒤 다시 검사한다. 새 폴더는 7에서 처음부터 현재 사용자·SYSTEM·Administrators 모든 권한(하위 상속), 부모 상속을 끊은 DACL로 만들고(`DirectorySecurity`로 생성, DACL만 `SetAccessControl`; `Set-Acl`은 SACL까지 써서 표준 사용자에게 `SeSecurityPrivilege` 오류), 만든 뒤 링크가 아님·소유자·DACL(보호됨, `Get-AclProblem` 통과)·빈 폴더를 다시 확인한다. 없는 상위 폴더(기본 경로의 `Programs` 포함)도 위에서 아래로 하나씩 같은 DACL로 만들고 같은 확인을 한다(만들기 직전에 이미 있으면, 또는 다른 사용자가 먼저 만들어 소유자가 다르면 종료 4). 그래서 `C:\` 바로 아래처럼 Authenticated Users가 폴더를 만들 수 있고 만든 폴더에 수정 권한을 물려주는 곳에서도 새 폴더는 안전하지만, 안내 문구는 사용자 프로필 아래 경로를 권한다.
 7. 계획과 복사: 설치 파일 = `yw-app.exe`·`yw-host.exe`(빌드 결과), `uninstall.ps1`, `extension/<3의 목록>`. 대상 SHA-256이 같으면 건너뛰고, 이전 기록에만 있는 파일은 지운다. 덮어쓰거나 지울 파일을 `FileShare.None` 쓰기 열기로 시험해 잠긴 파일과 그 파일을 실행 중인 yw-app·yw-host(PID)를 보이고, 닫는 방법(yw-app 창 닫기 = 잠금 후 정상 종료, 창이 숨어 있으면 시작 메뉴 실행으로 창 표시, yw-host는 Chrome 종료)을 안내한 뒤 Enter(다시 확인)·`C`(yw-app에 `CloseMainWindow` = `WM_CLOSE`, 15초 대기)·`Q`(종료 3)를 묻는다. **프로세스를 강제 종료하지 않는다.** 비대화형이면 묻지 않고 종료 3. 다른 경로의 yw-app이 실행 중이면 단일 인스턴스([04] §1.1) 때문에 설치본이 그 창을 띄운다고 경고한다. 복사: 기록을 `installing`(이전 ∪ 새 목록)으로 먼저 쓰고, 파일마다 복사 후 해시 재확인, 이전 설치 파일 삭제와 빈 하위 폴더 정리. 실패는 종료 4. 확장은 사본이므로 `git pull`만으로는 Chrome에 로드된 확장이 바뀌지 않는다.
 8. manifest: `<설치 폴더>\com.your_wallet.native.json`, [05] §9.1 형식의 `[ordered]` → `ConvertTo-Json -Depth 3`, UTF-8 BOM 없음, 내용이 같으면 쓰지 않는다. 쓴 파일을 [05] §9.3 `validate-manifest.mjs`와 같은 규칙의 PowerShell 구현으로 검증(정확한 키 5개, 이름·`stdio`, 설명 1–128자, `path` = 드라이브 절대 경로·구간 규칙·마지막 `yw-host.exe`(대소문자 무시)·`%&^!`·자리표시자 없음, `allowed_origins` = 정확히 `chrome-extension://<id>/` 하나, BOM·잘못된 UTF-8 거부). 두 구현의 일치는 §9.4가 시험한다. 실패는 종료 5. `-NoNativeHost`여도 manifest는 쓴다.
 9. 등록(`-NoNativeHost`가 아니면): `HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.your_wallet.native` 기본값 = manifest 경로(`New-Item -Force` + 다시 읽기). 이미 같으면 그대로, 다른 값(예: 예전 개발용 `%LOCALAPPDATA%\YourWallet\bin`)이면 이전 값을 출력하고 바꾼다. 실패는 종료 5. Chrome 외 브라우저(Edge 등)는 등록하지 않는다.
 10. 바로가기(`-NoShortcut`가 아니면): `[Environment]::GetFolderPath('Programs')\Your Wallet.lnk`, `WScript.Shell` COM, 대상 `yw-app.exe`, 인자 없음, 작업 폴더 = 설치 폴더, 아이콘 `yw-app.exe,0`(exe의 첫 아이콘 그룹 = 앱 아이콘, [04] §1.7). 실패는 종료 6.
-11. 기록을 `installed`(새 목록)로 쓰고(같으면 쓰지 않음), 대화형이면 `<설치 폴더>\extension` 경로를 클립보드에 넣은 뒤 요약을 출력한다: 설치 경로와 소스(버전·커밋), "Chrome → chrome://extensions → 개발자 모드 → 압축해제된 확장 프로그램 로드 → `<설치 폴더>\extension`"(클립보드에 넣었으면 그 안내, ID 확인), 업그레이드면 "확장 카드에서 새로고침", 첫 실행·RPC 안내, 업데이트(`git pull` → `install.cmd`), 제거(`uninstall.cmd`), 지갑 데이터 위치.
+11. 기록을 `installed`(새 목록, 설치 폴더 파일마다 SHA-256 `hashes`)로 쓰고(같으면 쓰지 않음), 대화형이면 `<설치 폴더>\extension` 경로를 클립보드에 넣은 뒤 요약을 출력한다: 설치 경로와 소스(버전·커밋), "Chrome → chrome://extensions → 개발자 모드 → 압축해제된 확장 프로그램 로드 → `<설치 폴더>\extension`"(클립보드에 넣었으면 그 안내, ID 확인), 업그레이드면 "확장 카드에서 새로고침", 첫 실행·RPC 안내, 업데이트(`git pull` → `install.cmd`), 제거(`uninstall.cmd`), 지갑 데이터 위치.
 
 `-DryRun`은 1–4의 확인과 5–10의 할 일 출력만 하고 빌드·winget·파일·레지스트리·바로가기·클립보드를 바꾸지 않는다(7에서 묻지 않는다). 같은 소스로 다시 실행하면 아무 파일도 다시 쓰지 않는다(멱등; 변경 없는 재빌드는 exe를 다시 링크하지 않고, `/Brepro`라 같은 입력은 같은 exe다). 예상하지 못한 예외는 줄 번호와 함께 종료 9. 지갑 데이터 `%LOCALAPPDATA%\YourWallet\`은 어떤 경로로도 읽거나 쓰지 않는다. 점 소싱(`. .\scripts\install.ps1`)하면 함수만 정의된다(§9.4).
 
 | 종료 코드 | 뜻 |
 |---|---|
 | 0 | 성공(`-DryRun` 포함) |
-| 1 | 환경·인자 오류(저장소 파일 없음, 2·6의 경로·상위 폴더·폴더·권한 규칙) |
+| 1 | 환경·인자 오류(저장소 파일 없음, 2·6의 경로·상위 폴더·폴더·권한 규칙, 소스·빌드 폴더 권한(`-AllowUnsafeSourcePath` 없음)) |
 | 2 | 소스·빌드 결과 오류(3의 확장 파일·ID, `rust-toolchain.toml`이 1.95.0이 아님, `-NoBuild`인데 exe 없음) |
 | 3 | 취소 또는 비대화형이라 물을 수 없음(7) |
 | 4 | 파일 복사·삭제·기록 실패 |
@@ -1183,6 +1210,7 @@ check.ps1 script-test 단계(26)에서 실행한다. `install.cmd`가 쓰는 Win
 - 빌드 도구 위치(5.1, 점 소싱한 `Get-RustTools`·`Get-ToolPathProblem`): `CARGO_HOME` 절대 경로 → `<CARGO_HOME>\bin\*.exe`; 없음·상대 경로·빈 값 → `%USERPROFILE%\.cargo\bin`; 두 곳에 없고 PATH에만 가짜 `cargo.exe` → 모두 null. 도구 파일 하나에 Everyone:M → 그 파일만 문제, bin 폴더에 Everyone `(OI)(CI)M` → 세 파일 모두 문제(경로에 bin 포함). 심볼릭 링크를 만들 수 있으면 링크 대상 폴더에 Everyone:M → 링크한 도구가 문제(대상 경로 포함). 실제 스크립트 `-DryRun`: 위 쓰기 가능 bin → 7, 출력에 `-AllowUnsafeToolchainPath`; 그 스위치를 붙이면 0이고 계획에 그 cargo 전체 경로; PATH에만 cargo → 0, 그 경로는 "쓰지 않는다"로만 나온다.
 - cargo 설정 파일(5.1, 밀폐: 설정 파일은 모두 임시 트리 안에 만들고, 임시 루트 위 폴더의 결과는 걸러 낸다): 점 소싱한 `Get-AncestorCargoConfigs` — `<t>\outer\mid\repo`의 상위 `<t>\outer\mid\.cargo\config`·`<t>\outer\.cargo\config.toml` → 두 경로(가까운 것부터), 저장소 자신의 `.cargo` 제외, CARGO_HOME = `<t>\OUTER\.cargo`(대소문자 다름)이면 그 폴더 제외. `Get-CargoConfigRiskyKeys` 표본: 주석·문자열 안 `#`, `[build] rustc-wrapper`, `[target.<triple>] linker`, `[target.'cfg(windows)'] rustflags`, `[profile.release]` vs `[profile.dev]`, `[patch.crates-io]` 인라인 표, `[source.crates-io] replace-with`, 점 키·따옴표 키·중첩 인라인 표·`paths`; `rustdoc`·`[env]`·`runner`·`[registries]`는 키 아님. 저장소 사본 `-DryRun`(기본 폴더 = 임시 프로필 아래): 상위 `.cargo\config.toml` → 7, 목록에 그 경로, 출력에 `-AllowAncestorCargoConfig`, 빌드 계획 없음; 스위치 → 0, 계획에 새 `--config` 세 개, `CARGO_HOME\config.toml`의 위험 키 이름 경고(`profile.dev` 아님); CARGO_HOME이 그 상위 `.cargo`이면 임시 트리 경로는 거부 목록에 없음.
 - 빌드(5.1, 그리고 `pwsh.exe`가 있으면 7; 점 소싱한 `Invoke-Build`에 가짜 `rustup.cmd`·`cargo.cmd`·`rustc.cmd`): `CC`·`CC_<triple>`(밑줄·하이픈)·`CFLAGS`·`CFLAGS_<triple>`·`CXX`·`CXXFLAGS`·`CXXFLAGS_<triple>`·`RUSTC`·`RUSTC_WRAPPER`·`RUSTC_WORKSPACE_WRAPPER`·`CARGO_BUILD_RUSTC`·`CARGO_BUILD_RUSTC_WRAPPER`·`CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER`·`CARGO_PROFILE_RELEASE_*`(패키지별 포함)·`RUSTFLAGS`·`CARGO_ENCODED_RUSTFLAGS`를 설정해 실행 → 0. 가짜 도구가 받은 호출이 정확히 `+1.95.0 --version`, `+1.95.0 -vV`, 빌드 인자 하나씩이고, 빌드 인자 = `+1.95.0`, `--config profile.release.<키>=<값>`(큰따옴표·공백 없음; 따옴표를 뗀 값의 집합이 저장소 `Cargo.toml` `[profile.release]`와 같음), `--config build.rustc-wrapper=''`·`--config build.rustc-workspace-wrapper=''`·`--config target.x86_64-pc-windows-msvc.linker='link.exe'`, `build --release --locked -p yw-app -p yw-host`. 빌드 프로세스 환경에 위 변수가 하나도 없고 관계없는 변수와 PATH는 남음, `Invoke-Build`가 끝난 뒤 위 변수가 원래 값으로 돌아옴. 가짜 cargo가 `1.94.0`·`1.95.0-nightly`, 가짜 rustc가 `1.96.0`이면 → 7, 빌드 호출 없음.
+- 소스·빌드 폴더 권한·설치 기록 해시(5.1, 2026-11-01 검토 L7, 밀폐 저장소 사본): AppContainer SID(`*S-1-15-2-1`)의 수정 권한 → 무시하고 0; 점 소싱한 `Get-SourceAclProblem`은 S-1-4-* 쓰기 ACE 무시·Authenticated Users 거부, `Get-AclProblem`(설치 폴더 규칙)은 S-1-4-*도 거부. Authenticated Users 수정 권한을 저장소 루트·`extension\manifest.json`·release 폴더·`yw-host.exe`에 각각 주면 → 1, 설치 폴더 없음, `-AllowUnsafeSourcePath` → 0 + 경고. 흐름 시험: 설치 기록 `hashes` 키 = 설치 파일 목록, 값 = 각 파일 SHA-256; 같은 소스 재실행에 경고 없음; 설치된 `yw-host.exe`를 바꾸면 다음 실행이 그 이름으로 경고하고 원래 내용으로 되돌림. `check.ps1`의 지울 변수 이름·접두사·`--config`가 install.ps1과 같고(게이트는 `CARGO_PROFILE_` 전체) clippy·test·fuzz·build 단계가 그 `--config`를 넘김(정적 비교).
 
 winget 제안·실제 빌드·HKCU 등록·바로가기·클립보드·잠긴 파일 대화는 자동 시험하지 않는다([09] §5.12 수동). 깨끗한 환경에서 설치 프로그램을 손으로 시험할 때는 Windows 샌드박스(Windows Sandbox)를 쓸 수 있다.
 
