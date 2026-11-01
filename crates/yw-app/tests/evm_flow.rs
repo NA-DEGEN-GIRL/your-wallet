@@ -1457,3 +1457,121 @@ fn user_chain_probe() {
     );
     let _ = Value::Null;
 }
+
+/// The S2 answer with its one log replaced by `count` ERC-20 `Approval(USER → 0x55…{i})` logs of
+/// token `0x1111…` (0.01 × 10^18 each).
+fn approvals_envelope(count: usize) -> Vec<u8> {
+    let text = String::from_utf8_lossy(&approval_envelope()).into_owned();
+    let start = text.find("\"logs\":[").unwrap_or(0) + "\"logs\":[".len();
+    let end = text[start..].find("}]").map_or(text.len(), |offset| start + offset + 1);
+    let log = &text[start..end];
+    let logs: Vec<String> = (1..=count)
+        .map(|index| {
+            log.replace(
+                "0x0000000000000000000000005555555555555555555555555555555555555555",
+                &format!("0x{:064x}", 0x5500 + index),
+            )
+            .replace("\"logIndex\":\"0x0\"", &format!("\"logIndex\":\"0x{index:x}\""))
+        })
+        .collect();
+    format!("{}{}{}", &text[..start], logs.join(","), &text[end..]).into_bytes()
+}
+
+fn spender(index: usize) -> TestResult<yw_core::evm::address::Address> {
+    address(&format!("0x{:040x}", 0x5500 + index))
+}
+
+/// The `eth_call` data of a `balanceOf` call, or "".
+fn call_data(params: &Value) -> String {
+    params
+        .as_array()
+        .and_then(|items| items.first())
+        .and_then(Value::as_object)
+        .and_then(|call| call.get("data").or_else(|| call.get("input")))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned()
+}
+
+/// Security review L2: an ERC-20 approval seen only in the simulation diff (not in the calldata)
+/// has its balance looked up too, so "잔액보다 큰 승인" (E14) can fire for it. L3: `to` has its
+/// own classification slot — 16 diff spenders are all classified and no E27 is added.
+#[test]
+fn diff_only_approvals_get_balances_and_sixteen_spenders_are_classified() -> TestResult {
+    let token = "0x1111111111111111111111111111111111111111";
+    let script = world(
+        11_155_111,
+        SEPOLIA_GENESIS,
+        vec![("eth_simulateV1", Answer::Envelope(approvals_envelope(16)))],
+    );
+    let rpc = FakeRpc::new(move |method, params| {
+        if method == "eth_call" && call_data(params).starts_with("0x70a08231") {
+            // balanceOf(USER) = 1 wei, far below the 0.01 × 10^18 approvals.
+            return Answer::Result(format!("\"0x{:064x}\"", 1));
+        }
+        if method == "eth_call" {
+            return Answer::Error(-32_000, None);
+        }
+        script.get(method)
+    });
+    let clock = FakeClock::at(S2_UNIX_MS);
+    let job = job(sepolia(), address(USER)?, send_intent()?);
+    let prepared = ready(
+        prepare(
+            &rpc.shared(),
+            &mut ChainCache::default(),
+            &job,
+            &clock,
+            &|_| {},
+        )
+        .outcome,
+    )?;
+    let facts = &prepared.context.facts;
+    assert_eq!(facts.balance(&address(token)?), Some(U256::from_u64(1)));
+    assert!(
+        rpc.params_of("eth_call")
+            .iter()
+            .any(|params| params.contains("70a08231") && params.contains(&token[2..])),
+        "balanceOf of the diff-only token"
+    );
+    for index in 1..=16 {
+        assert!(
+            facts.code_of(&spender(index)?).is_some(),
+            "spender {index} classified"
+        );
+    }
+    assert!(facts.code_of(&address(NEW)?).is_some(), "`to` classified");
+    let found = rules(&prepared);
+    assert!(found.contains(&yw_core::evm::risk::E14.label()), "{found:?}");
+    assert!(
+        prepared
+            .draft
+            .display
+            .warnings
+            .iter()
+            .any(|warning| warning.text.contains("잔액보다 큰 승인")),
+        "{found:?}"
+    );
+    assert!(
+        !found.contains(&yw_core::evm::risk::E27.label()),
+        "{found:?}"
+    );
+    // 17 spenders exceed the limit: E27.
+    let script = world(
+        11_155_111,
+        SEPOLIA_GENESIS,
+        vec![("eth_simulateV1", Answer::Envelope(approvals_envelope(17)))],
+    );
+    let prepared = ready(
+        prepare(
+            &fake(script).shared(),
+            &mut ChainCache::default(),
+            &job,
+            &clock,
+            &|_| {},
+        )
+        .outcome,
+    )?;
+    assert!(rules(&prepared).contains(&yw_core::evm::risk::E27.label()));
+    Ok(())
+}

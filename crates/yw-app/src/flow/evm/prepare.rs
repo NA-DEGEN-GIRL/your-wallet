@@ -27,7 +27,9 @@ use yw_core::evm::fee::{
     speed_up_tx, suggest_fees,
 };
 use yw_core::evm::risk::{E05, E11, E27, E34, E35, calldata_approvals, warning};
-use yw_core::evm::simulate::{AssetId, SimOutcome, SimResult, TransportKind, interpret};
+use yw_core::evm::simulate::{
+    ApprovalKindEvm, AssetId, SimOutcome, SimResult, TransportKind, interpret,
+};
 use yw_core::evm::tx::{AccessListItem, Eip1559Tx, MAX_SIGNED_TX_BYTES, SIGNATURE_OVERHEAD};
 use yw_core::journal::evm::{
     EvmRecord, MAX_CANDIDATES, NonceBlock, Role, Transition, apply, groups, in_flight,
@@ -310,10 +312,24 @@ fn gas_estimate(outcome: &EstimateOutcome) -> GasEstimate<'_> {
     }
 }
 
+/// What step 9 looks up (spec/03 §2.5, §8.5): token metadata, address classification (the
+/// transaction's `to` first, outside the 16-lookup limit, then the spenders) and the account's
+/// balance of every approved ERC-20 token — of the calldata approvals and of the simulated
+/// diff's approvals alike, since the rules judge the diff's approvals when there is one (E14
+/// "잔액보다 큰 승인", security review L2).
+struct FactTargets {
+    tokens: Vec<Address>,
+    /// `[to, spenders…]`: `to` has its own slot (security review L3), so 16 spenders (the R5
+    /// multicall limit) are all classified.
+    addresses: Vec<Address>,
+    balance_tokens: Vec<Address>,
+}
+
 /// Collects the tokens and addresses whose facts the display and rules use (spec/03 §2.5, §8.5).
-fn fact_targets(decoded: &DecodedTx, sim: &SimResult) -> (Vec<Address>, Vec<Address>) {
+fn fact_targets(decoded: &DecodedTx, sim: &SimResult) -> FactTargets {
     let mut tokens: Vec<Address> = Vec::new();
     let mut addresses: Vec<Address> = vec![decoded.tx.to];
+    let mut balance_tokens: Vec<Address> = Vec::new();
     let push = |list: &mut Vec<Address>, address: Address| {
         if !list.contains(&address) {
             list.push(address);
@@ -334,6 +350,7 @@ fn fact_targets(decoded: &DecodedTx, sim: &SimResult) -> (Vec<Address>, Vec<Addr
     for intent in calldata_approvals(&decoded.call, &decoded.tx.to) {
         push(&mut tokens, intent.token);
         push(&mut addresses, intent.spender);
+        push(&mut balance_tokens, intent.token);
     }
     if let Some(diff) = sim.diff() {
         for change in &diff.changes {
@@ -344,9 +361,18 @@ fn fact_targets(decoded: &DecodedTx, sim: &SimResult) -> (Vec<Address>, Vec<Addr
         for approval in &diff.approvals {
             push(&mut tokens, approval.asset);
             push(&mut addresses, approval.spender);
+            if let ApprovalKindEvm::Erc20 { amount } = approval.kind
+                && !amount.is_zero()
+            {
+                push(&mut balance_tokens, approval.asset);
+            }
         }
     }
-    (tokens, addresses)
+    FactTargets {
+        tokens,
+        addresses,
+        balance_tokens,
+    }
 }
 
 fn token_meta(
@@ -413,9 +439,17 @@ fn gather_facts(
     facts: &mut ChainFacts,
     budget: &Budget<'_>,
 ) -> FactGaps {
-    let (tokens, addresses) = fact_targets(decoded, sim);
+    let FactTargets {
+        tokens,
+        addresses,
+        balance_tokens,
+    } = fact_targets(decoded, sim);
+    // `addresses[0]` is `to`, outside the limit.
+    let address_slots = MAX_FACT_LOOKUPS.saturating_add(1);
     let mut gaps = FactGaps {
-        limited: tokens.len() > MAX_FACT_LOOKUPS || addresses.len() > MAX_FACT_LOOKUPS,
+        limited: tokens.len() > MAX_FACT_LOOKUPS
+            || addresses.len() > address_slots
+            || balance_tokens.len() > MAX_FACT_LOOKUPS,
     };
     for token in tokens.iter().take(MAX_FACT_LOOKUPS) {
         if facts.token(token).is_some() {
@@ -428,26 +462,21 @@ fn gather_facts(
         let meta = token_meta(client, url, chain, token);
         facts.tokens.push((*token, meta));
     }
-    let approvals = calldata_approvals(&decoded.call, &decoded.tx.to);
-    for intent in approvals.iter().take(MAX_FACT_LOOKUPS) {
+    for token in balance_tokens.iter().take(MAX_FACT_LOOKUPS) {
+        if facts.balance(token).is_some() {
+            continue;
+        }
         if budget.over() {
             gaps.limited = true;
             break;
         }
-        if facts.balance(&intent.token).is_none()
-            && let Ok(output) = rpc::eth_call(
-                client,
-                url,
-                &intent.token,
-                &balance_of_data(account),
-                "latest",
-            )
+        if let Ok(output) = rpc::eth_call(client, url, token, &balance_of_data(account), "latest")
             && let Some(balance) = decode_uint256_result(&output)
         {
-            facts.balances.push((intent.token, balance));
+            facts.balances.push((*token, balance));
         }
     }
-    for address in addresses.iter().take(MAX_FACT_LOOKUPS) {
+    for address in addresses.iter().take(address_slots) {
         if chain.label(address).is_some() || facts.code_of(address).is_some() {
             continue;
         }
