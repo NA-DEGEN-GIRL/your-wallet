@@ -495,6 +495,119 @@ foreach ($name in "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS
 $net = @("--locked"); if ($Offline) { $net += "--offline" }
 $deps = @("scripts/check-core-deps.mjs"); if ($Offline) { $deps += "--offline" }
 
+# 빌드 폴더([09] §2.2): 결과가 호스트 ACL 특성에 좌우되지 않게 한다. 빌드 폴더(CARGO_TARGET_DIR, 없으면 target\)나 그것을 담은
+# 저장소 루트에 Medium보다 낮은 무결성 레이블(Low·Untrusted; 일부 샌드박스 도구가 저장소에 붙인다)이 있으면 그 아래 만든 exe가
+# 레이블을 물려받아 Low 무결성으로 돌고(yw-win·yw-host 무결성 검사, H1, %TEMP% 쓰기가 실패한다), 빌드 폴더가 재분석 지점이면
+# 다른 곳에 쓴다. 그때는 이 실행에서만 저장소 밖 사설 폴더 %LOCALAPPDATA%\YourWallet-dev\target(현재 사용자·SYSTEM·
+# Administrators만, 상속 끊음, 레이블 없음)을 CARGO_TARGET_DIR로 쓰고 한 줄 출력한다. 저장소의 ACL은 바꾸지 않는다.
+# 레이블은 Get-Acl이 돌려주지 않으므로 GetNamedSecurityInfoW(LABEL_SECURITY_INFORMATION)로 읽는다(메모리에서만 만드는
+# P/Invoke: Add-Type처럼 %TEMP%에 쓰지 않는다).
+$UserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$TrustedSids = @($UserSid, 'S-1-5-18', 'S-1-5-32-544')
+$script:NativeSecurity = $null
+function Get-NativeSecurity {
+    if ($null -ne $script:NativeSecurity) { return $script:NativeSecurity }
+    $assembly = [Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly((New-Object Reflection.AssemblyName('YwCheckNative')), [Reflection.Emit.AssemblyBuilderAccess]::Run)
+    $type = $assembly.DefineDynamicModule('YwCheckNative').DefineType('YwCheckNative.Advapi', 'Public, Class')
+    $out = [IntPtr].MakeByRefType()
+    foreach ($m in @(
+        @('advapi32.dll', 'GetNamedSecurityInfoW', [int], @([string], [int], [int], $out, $out, $out, $out, $out)),
+        @('advapi32.dll', 'ConvertSecurityDescriptorToStringSecurityDescriptorW', [bool], @([IntPtr], [int], [int], $out, [IntPtr])),
+        @('kernel32.dll', 'LocalFree', [IntPtr], @([IntPtr])))) {
+        $method = $type.DefinePInvokeMethod($m[1], $m[0], [Reflection.MethodAttributes]'Public, Static, PinvokeImpl',
+            [Reflection.CallingConventions]::Standard, $m[2], [type[]]$m[3],
+            [Runtime.InteropServices.CallingConvention]::Winapi, [Runtime.InteropServices.CharSet]::Unicode)
+        $method.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
+    }
+    $script:NativeSecurity = $type.CreateType()
+    return $script:NativeSecurity
+}
+# $Path의 무결성 레이블이 Medium보다 낮으면 이유 문장, 아니면 $null(레이블 없음 = Medium).
+function Get-LowLabel([string]$Path) {
+    $native = Get-NativeSecurity
+    $owner = [IntPtr]::Zero; $group = [IntPtr]::Zero; $dacl = [IntPtr]::Zero; $sacl = [IntPtr]::Zero; $sd = [IntPtr]::Zero
+    $status = $native::GetNamedSecurityInfoW($Path, 1, 0x10, [ref]$owner, [ref]$group, [ref]$dacl, [ref]$sacl, [ref]$sd)   # SE_FILE_OBJECT, LABEL_SECURITY_INFORMATION
+    if ($status -ne 0) { return "integrity label unreadable (error $status)" }
+    try {
+        $text = [IntPtr]::Zero
+        if (-not $native::ConvertSecurityDescriptorToStringSecurityDescriptorW($sd, 1, 0x10, [ref]$text, [IntPtr]::Zero)) { return "integrity label unreadable" }
+        try { $sddl = [Runtime.InteropServices.Marshal]::PtrToStringUni($text) } finally { [void]$native::LocalFree($text) }
+    } finally { [void]$native::LocalFree($sd) }
+    foreach ($ace in [regex]::Matches($sddl, '\(ML;[^;]*;[^;]*;[^;]*;[^;]*;([^)]+)\)')) {
+        $sid = $ace.Groups[1].Value
+        $level = switch -Regex ($sid) { '^LW$' { 0x1000 } '^(ME|MP|HI|SI)$' { 0x2000 } '^S-1-16-(\d+)$' { [int]$Matches[1] } default { 0 } }
+        if ($level -lt 0x2000) { return "integrity label $sid (below Medium)" }
+    }
+    return $null
+}
+# 빌드 폴더로 쓸 수 없으면 이유, 아니면 $null. 아직 없는 폴더는 가장 가까운 있는 상위 폴더의 레이블을 본다(물려받으므로).
+function Get-BuildDirProblem([string]$Dir) {
+    $paths = @()
+    if (Test-Path -LiteralPath $Dir) {
+        $item = Get-Item -LiteralPath $Dir -Force
+        if (-not $item.PSIsContainer) { return "not a folder" }
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return "reparse point (link)" }
+        $paths += $Dir
+    } else {
+        $parent = [IO.Path]::GetDirectoryName($Dir)
+        while (-not [string]::IsNullOrEmpty($parent) -and -not (Test-Path -LiteralPath $parent)) { $parent = [IO.Path]::GetDirectoryName($parent) }
+        if (-not [string]::IsNullOrEmpty($parent)) { $paths += $parent }
+    }
+    $rootPrefix = $Root.TrimEnd('\') + '\'
+    if ($Dir.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) { $paths += $Root }
+    foreach ($path in $paths) {
+        $problem = Get-LowLabel $path
+        if ($null -ne $problem) { return "$problem on $path" }
+    }
+    return $null
+}
+# 사설 폴더 확인: 링크가 아니고, 소유자·허용 ACE가 현재 사용자·SYSTEM·Administrators뿐이고, 낮은 레이블이 없다. $Protected면
+# 상속도 끊겨 있어야 한다. 문제가 없으면 $null.
+function Get-PrivateDirProblem([string]$Dir, [bool]$Protected) {
+    $item = Get-Item -LiteralPath $Dir -Force
+    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return "not a plain folder" }
+    $acl = Get-Acl -LiteralPath $Dir
+    if ($Protected -and -not $acl.AreAccessRulesProtected) { return "inherits permissions from its parent" }
+    $sd = New-Object Security.AccessControl.RawSecurityDescriptor($acl.Sddl)
+    if ($null -eq $sd.Owner -or $TrustedSids -notcontains $sd.Owner.Value) { return "owner is not the current user, SYSTEM or Administrators" }
+    if ($null -eq $sd.DiscretionaryAcl) { return "no DACL" }
+    foreach ($ace in $sd.DiscretionaryAcl) {
+        if ($ace -isnot [Security.AccessControl.QualifiedAce]) { return "unknown ACE" }
+        if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessAllowed -and $TrustedSids -notcontains $ace.SecurityIdentifier.Value) {
+            return "access granted to $($ace.SecurityIdentifier.Value)"
+        }
+    }
+    return Get-LowLabel $Dir
+}
+function New-PrivateDir([string]$Dir) {
+    $security = New-Object Security.AccessControl.DirectorySecurity
+    $security.SetAccessRuleProtection($true, $false)
+    foreach ($sid in $TrustedSids) {
+        $security.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($sid)),
+            [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
+            [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)))
+    }
+    $extensions = 'System.IO.FileSystemAclExtensions' -as [type]   # PowerShell 7(.NET); 5.1(.NET Framework)은 CreateDirectory(path, security)
+    if ($null -ne $extensions) { [void]$extensions::CreateDirectory($security, $Dir) } else { [void][IO.Directory]::CreateDirectory($Dir, $security) }
+}
+$TargetDir = if ([string]::IsNullOrEmpty($env:CARGO_TARGET_DIR)) { Join-Path $Root "target" } else { [IO.Path]::GetFullPath([IO.Path]::Combine($Root, $env:CARGO_TARGET_DIR)) }
+$problem = Get-BuildDirProblem $TargetDir
+if ($null -ne $problem) {
+    if ([string]::IsNullOrEmpty($env:LOCALAPPDATA)) { Fail 12 "build folder $TargetDir unsuitable ($problem) and LOCALAPPDATA is not set" }
+    $privateBase = Join-Path $env:LOCALAPPDATA "YourWallet-dev"
+    $privateTarget = Join-Path $privateBase "target"
+    try {
+        if (-not (Test-Path -LiteralPath $privateBase)) { New-PrivateDir $privateBase }
+        $privateProblem = Get-PrivateDirProblem $privateBase $true
+        if ($null -eq $privateProblem -and (Test-Path -LiteralPath $privateTarget)) { $privateProblem = Get-PrivateDirProblem $privateTarget $false }
+    } catch {
+        $privateProblem = $_.Exception.Message
+    }
+    if ($null -ne $privateProblem) { Fail 12 "build folder $TargetDir unsuitable ($problem); private folder $privateBase unusable ($privateProblem): remove it and run again" }
+    Write-Host "check: build folder $TargetDir unsuitable ($problem); using CARGO_TARGET_DIR=$privateTarget"
+    $env:CARGO_TARGET_DIR = $privateTarget
+}
+
 Invoke-Step "fmt" 20 "cargo" @("fmt", "--all", "--", "--check")
 Invoke-Step "deps" 21 "node" $deps
 Invoke-Step "clippy" 22 "cargo" (@("clippy", "--workspace", "--all-targets") + $net + $clippyConfig + @("--", "-D", "warnings"))
@@ -502,7 +615,7 @@ Invoke-Step "test" 23 "cargo" (@("test", "--workspace") + $net + $config)
 $env:YW_FUZZ_RUNS = "20000"                                           # fuzz-lite 스모크([09] §2.4): 무시된 fuzz_lite_*를 2만 회씩
 Invoke-Step "fuzz" 29 "cargo" (@("test", "--workspace") + $net + $config + @("--", "--ignored", "fuzz_lite"))
 $env:YW_FUZZ_RUNS = $null                                             # 직접 --ignored로 돌리면 1,000,000회
-Invoke-Step "build" 24 "cargo" (@("build", "--workspace") + $net + $config)   # target\debug\yw-host.exe ([09] §2.2, [05] H1)
+Invoke-Step "build" 24 "cargo" (@("build", "--workspace") + $net + $config)   # <빌드 폴더>\debug\yw-host.exe ([09] §2.2, [05] H1)
 $env:YW_CHECK = "1"                                                   # 확장 프로세스 테스트가 skip 대신 실패([09])
 if ($Step -in "all", "ext-test") { Invoke-Step "ext-test" 25 "node" (@("--test") + (Get-Tests "extension/tests" 25)) }
 if ($Step -in "all", "script-test") { Invoke-Step "script-test" 26 "node" (@("--test") + (Get-Tests "scripts" 26)) }
@@ -515,7 +628,9 @@ exit 0
 
 빌드 조건은 설치(§9.2-5)와 같다(2026-11-01 검토 INFO): `RUSTC`·`RUSTC_WRAPPER`·`RUSTC_WORKSPACE_WRAPPER`와 이름이 `CARGO_PROFILE_`·`CARGO_BUILD_RUSTC`·`CC`·`CFLAGS`·`CXX`·`CXXFLAGS`로 시작하는 변수를 게이트 프로세스에서 지우고(지운 이름을 한 줄 출력), clippy·test·fuzz·build에 설치와 같은 `--config`(래퍼 끄기, 링커 `link.exe`)를 준다(clippy는 `build.rustc-workspace-wrapper`를 빼고: cargo-clippy가 그 변수로 clippy-driver를 건다). 목록 일치는 `scripts/install.test.mjs`가 확인한다. rustflags 4개는 지우지 않고 거부한다(11).
 
-종료 코드: 0 통과, 1 스크립트 자체 오류(잘못된 `-Step` 포함), 10 cargo 1.95.0 또는 Node 22+ 없음, 11 rustflags 환경 변수 설정됨, 20 fmt, 21 의존성 허용 목록, 22 clippy, 23 cargo test, 29 fuzz-lite 스모크(`fuzz`, test 다음·build 앞: `#[ignore]`된 `fuzz_lite_*` 테스트를 `YW_FUZZ_RUNS=20000`으로 디버그 빌드에서 실행; 각 테스트는 이 변수가 없으면 1,000,000회), 24 cargo build, 25 확장 테스트, 26 스크립트 테스트, 27 privacy scan, 28 확장 정적 감사, 30 아이콘(`scripts/make-icons.mjs --check`: 앱 `.ico`·`.res`, 확장 `icons/*.png`, `provider-main.js`의 `PROVIDER_ICON`, `docs/icon-preview.png`를 메모리에서 다시 만들어 커밋본과 바이트 비교; 다르거나 없으면 생성기 종료 1, 사용법·입출력 오류 2). 첫 실패에서 멈춘다. 모든 마일스톤 완료 조건은 이 스크립트의 0을 포함한다. (PowerShell 5.1에서 단계 선택, 종료 코드 11, 잘못된 `-Step`의 1을 확인함.)
+빌드 폴더(2026-11-01): 게이트 결과는 호스트 ACL 특성에 좌우되지 않아야 한다. 빌드 폴더(`CARGO_TARGET_DIR`, 없으면 `target\`; 저장소 안이면 저장소 루트도)에 Medium보다 낮은 무결성 레이블(Low·Untrusted — 일부 샌드박스 도구가 저장소에 붙인다)이 있거나 빌드 폴더가 재분석 지점이면, 그 실행에서만 `CARGO_TARGET_DIR`을 저장소 밖 사설 폴더 `%LOCALAPPDATA%\YourWallet-dev\target`으로 바꾸고 한 줄(`check: build folder … unsuitable (…); using CARGO_TARGET_DIR=…`) 출력한다. 레이블이 붙은 폴더에서 만든 exe는 Low 무결성으로 실행되어 yw-win·yw-host 무결성 검사, [05] H1, `%TEMP%` 쓰기가 환경 때문에 실패하기 때문이다. `YourWallet-dev`는 없으면 현재 사용자·SYSTEM·Administrators 모든 권한·상속 끊음으로 만들고, 있으면 링크가 아님·소유자와 허용 ACE가 그 셋뿐·상속 끊김·낮은 레이블 없음을 확인한다(그 아래 `target`도 링크·다른 SID·낮은 레이블 없음). 저장소의 ACL은 바꾸지 않는다. 바뀐 `CARGO_TARGET_DIR`은 모든 단계(확장·스크립트 테스트 포함)에 넘어가고, `extension/tests/yw-host-process.test.mjs`는 `CARGO_TARGET_DIR`(상대 경로면 작업 폴더 기준, cargo와 같음)의 `debug\yw-host.exe`를 실행한다.
+
+종료 코드: 0 통과, 1 스크립트 자체 오류(잘못된 `-Step` 포함), 10 cargo 1.95.0 또는 Node 22+ 없음, 11 rustflags 환경 변수 설정됨, 12 빌드 폴더가 부적합한데 사설 폴더를 만들거나 쓸 수 없음(`LOCALAPPDATA` 없음, 기존 `YourWallet-dev`의 권한이 다름 — 지우고 다시 실행), 20 fmt, 21 의존성 허용 목록, 22 clippy, 23 cargo test, 29 fuzz-lite 스모크(`fuzz`, test 다음·build 앞: `#[ignore]`된 `fuzz_lite_*` 테스트를 `YW_FUZZ_RUNS=20000`으로 디버그 빌드에서 실행; 각 테스트는 이 변수가 없으면 1,000,000회), 24 cargo build, 25 확장 테스트, 26 스크립트 테스트, 27 privacy scan, 28 확장 정적 감사, 30 아이콘(`scripts/make-icons.mjs --check`: 앱 `.ico`·`.res`, 확장 `icons/*.png`, `provider-main.js`의 `PROVIDER_ICON`, `docs/icon-preview.png`를 메모리에서 다시 만들어 커밋본과 바이트 비교; 다르거나 없으면 생성기 종료 1, 사용법·입출력 오류 2). 첫 실패에서 멈춘다. 모든 마일스톤 완료 조건은 이 스크립트의 0을 포함한다. (PowerShell 5.1에서 단계 선택, 종료 코드 11, 잘못된 `-Step`의 1을 확인함.)
 
 ### 4.2 `scripts/check-core-deps.mjs` (전체)
 

@@ -1,4 +1,6 @@
 // H1 (spec/05 §10.1): runs the real target/debug/yw-host.exe against a fake yw-app pipe server.
+// The build folder is CARGO_TARGET_DIR when set (as cargo does, relative to the working directory; scripts/check.ps1
+// sets it when the repo's target\ is unsuitable, spec/09 §2.2), otherwise the repo's target\.
 // Missing binary: fails when YW_CHECK=1 (scripts/check.ps1), otherwise the tests are skipped.
 // Every case sets YW_TEST_PIPE_NAME to a fresh \\.\pipe\YourWallet.test.h1.<pid>.<n>, so the real
 // wallet pipe is never used, and LOCALAPPDATA to an empty temp folder, so the user's real
@@ -11,11 +13,14 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 
-const HOST = fileURLToPath(new URL("../../target/debug/yw-host.exe", import.meta.url));
+const TARGET_DIR = process.env.CARGO_TARGET_DIR
+  ? resolve(process.env.CARGO_TARGET_DIR)
+  : fileURLToPath(new URL("../../target", import.meta.url));
+const HOST = join(TARGET_DIR, "debug", "yw-host.exe");
 const ID = readFileSync(new URL("../extension-id.txt", import.meta.url), "utf8").trim();
 const ORIGIN = `chrome-extension://${ID}/`;
 const goldenText = (name) => readFileSync(new URL(`../native-host/${name}`, import.meta.url), "utf8");
@@ -26,7 +31,7 @@ const HELLO = JSON.parse(goldenText("pipe-hello.golden.json"));
 const ACK = JSON.parse(goldenText("pipe-hello-ack.golden.json"));
 
 const missing = !existsSync(HOST);
-const skip = missing && process.env.YW_CHECK !== "1" ? "target/debug/yw-host.exe not built" : false;
+const skip = missing && process.env.YW_CHECK !== "1" ? `${HOST} not built` : false;
 
 // yw-host verifies the pipe server process; the fake yw-app runs in this node process.
 const FAKE_APP_IMAGE = { YW_TEST_APP_IMAGE: process.execPath };
@@ -128,7 +133,7 @@ async function startFakeApp(pipeName, reply = ACK) {
 }
 
 test("H1 yw-host.exe is built", { skip }, () => {
-  assert.equal(missing, false, "target/debug/yw-host.exe missing: cargo build -p yw-host --offline --locked");
+  assert.equal(missing, false, `${HOST} missing: cargo build -p yw-host --offline --locked`);
 });
 
 test("H1 hello format and byte-identical relay in both directions", { skip }, async () => {

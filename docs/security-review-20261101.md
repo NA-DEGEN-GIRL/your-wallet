@@ -472,3 +472,8 @@ L15·L16·L17, S10·S11·S13·S17, INFO `check.ps1` 환경 위생)은 다른 작
 게이트를 돌렸다. fmt·deps·clippy·test·fuzz·build는 통과했다. ext-test는 8개 파일이 모두 통과했지만 H1
 `yw-host-process.test.mjs`는 저장소의 `target\debug\yw-host.exe`를 직접 실행해서 멈췄다(같은 시각 다른 작업자의 worktree
 게이트도 같은 곳에서 멈춤). script-test·privacy·audit-ext·icons는 단계별로 돌려 모두 통과했다.
+
+원인과 조치(병합 뒤): 저장소 루트에 외부 도구가 붙인 Low 무결성 레이블(`(ML;OICI;NW;;;LW)`)이 `target\`으로 상속되어, 그
+아래 빌드된 exe가 Low 무결성으로 실행된 것이다. 이제 `check.ps1`이 이를 감지해 그 실행에서만 `CARGO_TARGET_DIR`을 저장소 밖
+사설 폴더 `%LOCALAPPDATA%\YourWallet-dev\target`(현재 사용자·SYSTEM·Administrators만, 상속 끊음)으로 바꾸고 한 줄 알린다.
+H1도 `CARGO_TARGET_DIR`을 따른다. 저장소의 ACL은 바꾸지 않는다(spec/01 §4.1, spec/09 §2.2).
