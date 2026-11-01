@@ -1766,6 +1766,59 @@ mod tests {
         assert!(registered_state(hwnd).is_null());
     }
 
+    /// Records, for every `WM_KEYDOWN`, the physical-input checks the approval window uses.
+    struct KeyProbe(Rc<core::cell::RefCell<Vec<(u16, bool, bool)>>>);
+
+    impl Handler for KeyProbe {
+        fn on(&mut self, _window: &Window, msg: &Msg) -> Reply {
+            if let Msg::KeyDown { vk, .. } = msg {
+                self.0.borrow_mut().push((
+                    *vk,
+                    crate::input::is_down_in_message(*vk),
+                    crate::input::injected(),
+                ));
+            }
+            Reply::Default
+        }
+    }
+
+    /// Security review L5: a `WM_KEYDOWN(VK_RETURN)` posted or sent by a program (no keyboard
+    /// input) reads "not down" in the message's key state, so the approval window's Enter check
+    /// (`is_down_in_message && !injected`) refuses it.
+    #[test]
+    fn posted_and_sent_enter_are_not_physical() {
+        const CLASS: &str = "YourWalletV3UnitTestKeyProbe";
+        const VK_RETURN: u16 = 0x0D;
+        register_class(&ClassSpec {
+            name: CLASS,
+            secret: false,
+            capture: CaptureExclusion::Preferred,
+        })
+        .unwrap();
+        let seen = Rc::new(core::cell::RefCell::new(Vec::new()));
+        let window = create_window(
+            &WindowSpec::new(CLASS, WindowKind::HiddenTopLevel),
+            Box::new(KeyProbe(Rc::clone(&seen))),
+        )
+        .unwrap();
+        let hwnd = window.hwnd().raw();
+        // SAFETY: Sends a plain-value key message to our own test window.
+        unsafe { SendMessageW(hwnd, WM_KEYDOWN, usize::from(VK_RETURN), 0x001C_0001) };
+        // SAFETY: Posts a plain-value key message to our own test window.
+        unsafe { PostMessageW(hwnd, WM_KEYDOWN, usize::from(VK_RETURN), 0x001C_0001) };
+        // SAFETY: Posts WM_QUIT to this thread's queue (retrieved after the message above).
+        unsafe { PostQuitMessage(0) };
+        assert_eq!(run_loop(&mut |_, _| {}), 0);
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        for (vk, down, injected) in seen.iter() {
+            assert_eq!(*vk, VK_RETURN);
+            assert!(!*down, "a synthetic Enter must not read as pressed");
+            assert!(!*injected);
+        }
+        drop(window);
+    }
+
     #[test]
     fn exclusion_requires_set_and_exact_read_back() {
         assert!(exclusion_verified(true, Some(0x11)));

@@ -638,7 +638,7 @@ pub fn can_approve(g: &ApprovalGate, now: Instant) -> bool {
 | `승인` 위 `WM_LBUTTONDOWN`(+`SetCapture`) | `PointerPressed { inside, click_through: !창이 전경이었음, physical_down }` |
 | 캡처 중 `WM_MOUSEMOVE` / `WM_LBUTTONUP`(+`ReleaseCapture`) | `PointerMoved { inside }` / `PointerReleased { physical_down }` |
 | `승인` 포커스에서 `WM_KEYDOWN VK_SPACE` / `WM_KEYUP VK_SPACE` | `SpacePressed { repeat: lParam bit 30, physical_down }` / `SpaceReleased { physical_down }` |
-| `승인` 포커스에서 Enter | `ApproveActivated`(High에서는 무시) |
+| `승인` 포커스에서 Enter | `ApproveActivated { physical }`(High에서는 무시). `physical` = 그 메시지의 키 상태에서 Enter가 눌려 있음(`GetKeyState`, `input::is_down_in_message`) **그리고** 주입 입력이 아님(`input::injected`). 다른 프로그램이 `PostMessage`·`SendMessage`로 넣은 `WM_KEYDOWN`은 키 상태를 바꾸지 않으므로 `physical == false` → 승인하지 않고 누름으로만 센다(Space·포인터의 `is_down` 대조와 같은 취지, 보안 검토 L5) |
 | `거부` 클릭, `거부` 포커스에서 Enter·Space, Esc, X, Alt+F4 | `RejectActivated` |
 | `WM_KILLFOCUS`(다른 창으로) / `WM_ACTIVATEAPP(0)` / 예기치 않은 `WM_CAPTURECHANGED` / `WM_CANCELMODE` | `FocusLost` / `ForegroundLost` / `CaptureLost` / `CancelMode` |
 | `WM_TIMER` 50 ms | `Tick` |

@@ -131,7 +131,7 @@ fn assert_checkbox_and_hold(request: &ApprovalRequest) -> TestResult {
     let mut s = session(signing(request))?;
     s.set_ack(start, true);
     assert_eq!(
-        s.event(start, InteractionEvent::ApproveActivated),
+        s.event(start, InteractionEvent::ApproveActivated { physical: true }),
         InteractionStatus::Pending
     );
     // Unchecked + 2 s hold → pending.
@@ -251,7 +251,10 @@ fn ap6_blocked_never_approves_whatever_the_simulation() -> TestResult {
     let mut s = session(signing(&request))?;
     s.set_ack(READY_AT + 1_500, true);
     assert_eq!(
-        s.event(READY_AT + 2_000, InteractionEvent::ApproveActivated),
+        s.event(
+            READY_AT + 2_000,
+            InteractionEvent::ApproveActivated { physical: true }
+        ),
         InteractionStatus::Pending
     );
     assert_eq!(
@@ -273,7 +276,10 @@ fn ap6_inputs_are_ignored_while_simulating() -> TestResult {
     s.set_ack(READY_AT + 1_500, true);
     assert!(!can_approve(&s.gate, READY_AT + 5_000));
     assert_eq!(
-        s.event(READY_AT + 5_000, InteractionEvent::ApproveActivated),
+        s.event(
+            READY_AT + 5_000,
+            InteractionEvent::ApproveActivated { physical: true }
+        ),
         InteractionStatus::Pending
     );
     s.event(READY_AT + 5_100, PRESS);

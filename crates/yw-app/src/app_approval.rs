@@ -2439,7 +2439,12 @@ impl App {
             }
             VK_ESCAPE => self.interaction(InteractionEvent::RejectActivated),
             VK_RETURN => match focus {
-                Focus::Approve => self.interaction(InteractionEvent::ApproveActivated),
+                // L5: a posted/sent WM_KEYDOWN (not in the thread's key state) or an injected
+                // one never approves, like Space and the pointer (`is_down`).
+                Focus::Approve => self.interaction(InteractionEvent::ApproveActivated {
+                    physical: yw_win::input::is_down_in_message(VK_RETURN)
+                        && !yw_win::input::injected(),
+                }),
                 Focus::Reject => self.interaction(InteractionEvent::RejectActivated),
                 Focus::Ack => self.toggle_ack(),
                 Focus::Raw => self.toggle_raw(),

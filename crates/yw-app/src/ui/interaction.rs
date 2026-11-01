@@ -65,8 +65,14 @@ impl HoldSource {
 pub enum InteractionEvent {
     /// Timer update.
     Tick,
-    /// Enter on the approve button.
-    ApproveActivated,
+    /// Enter on the approve button. `physical`: the key was down in the message's own key state
+    /// (`GetKeyState`, which a posted `WM_KEYDOWN` does not set) and the message was not injected
+    /// (`GetCurrentInputMessageSource`). Only a physical Enter approves (security review L5); a
+    /// synthetic one still counts as a press for the press-gap rule.
+    ApproveActivated {
+        /// Physical-input check passed.
+        physical: bool,
+    },
     /// Reject, close, Escape.
     RejectActivated,
     /// Primary pointer pressed over the approve button.
@@ -122,7 +128,7 @@ impl InteractionEvent {
     pub const fn is_press(self) -> bool {
         matches!(
             self,
-            Self::ApproveActivated
+            Self::ApproveActivated { .. }
                 | Self::PointerPressed { .. }
                 | Self::SpacePressed { .. }
                 | Self::OtherPress
@@ -267,7 +273,7 @@ impl ApprovalInteraction {
             return self.status;
         }
         match event {
-            InteractionEvent::ApproveActivated => {
+            InteractionEvent::ApproveActivated { physical: true } => {
                 if self.risk == Some(InteractionRisk::Standard) && self.armed && spaced {
                     self.approve();
                 }
@@ -304,6 +310,7 @@ impl ApprovalInteraction {
             | InteractionEvent::ForegroundLost
             | InteractionEvent::CaptureLost
             | InteractionEvent::CancelMode
+            | InteractionEvent::ApproveActivated { physical: false }
             | InteractionEvent::OtherPress => {}
         }
         self.status

@@ -55,7 +55,40 @@ fn ap1_standard_requires_explicit_activation() {
         InteractionStatus::Pending
     );
     assert_eq!(
-        i.apply(20_001, InteractionEvent::ApproveActivated),
+        i.apply(
+            20_001,
+            InteractionEvent::ApproveActivated { physical: true }
+        ),
+        InteractionStatus::Approved
+    );
+}
+
+/// Security review L5: a synthetic Enter (posted `WM_KEYDOWN`, injected input) never approves a
+/// Standard request, and as a press it still pushes the next approving press 1 s out.
+#[test]
+fn ap1_synthetic_enter_never_approves() {
+    let mut i = interaction(InteractionRisk::Standard, 30_000, 100);
+    assert_eq!(
+        i.apply(
+            20_000,
+            InteractionEvent::ApproveActivated { physical: false }
+        ),
+        InteractionStatus::Pending
+    );
+    assert!(InteractionEvent::ApproveActivated { physical: false }.is_press());
+    assert_eq!(
+        i.apply(
+            20_500,
+            InteractionEvent::ApproveActivated { physical: true }
+        ),
+        InteractionStatus::Pending,
+        "within 1 s of the synthetic press"
+    );
+    assert_eq!(
+        i.apply(
+            21_600,
+            InteractionEvent::ApproveActivated { physical: true }
+        ),
         InteractionStatus::Approved
     );
 }
@@ -106,7 +139,7 @@ fn ap1_inconsistent_physical_input_cannot_approve_standard() {
 fn ap1_high_risk_ignores_ordinary_activation() {
     let mut i = interaction(InteractionRisk::High, 30_000, 0);
     assert_eq!(
-        i.apply(10, InteractionEvent::ApproveActivated),
+        i.apply(10, InteractionEvent::ApproveActivated { physical: true }),
         InteractionStatus::Pending
     );
 }
@@ -248,7 +281,7 @@ fn ap1_expiry_and_backwards_time_reject_terminally() {
     );
     let mut backwards = interaction(InteractionRisk::Standard, 30_000, 500);
     assert_eq!(
-        backwards.apply(499, InteractionEvent::ApproveActivated),
+        backwards.apply(499, InteractionEvent::ApproveActivated { physical: true }),
         InteractionStatus::Rejected
     );
     assert!(ApprovalInteraction::new(InteractionRisk::High, 0, 0).is_err());
@@ -332,7 +365,7 @@ fn ap2_unarmed_input_is_ignored() {
     let mut i = interaction(InteractionRisk::Standard, 30_000, 0);
     i.set_armed(0, false);
     assert_eq!(
-        i.apply(10, InteractionEvent::ApproveActivated),
+        i.apply(10, InteractionEvent::ApproveActivated { physical: true }),
         InteractionStatus::Pending
     );
     i.apply(20, PRESS);
@@ -381,7 +414,7 @@ fn ap2_blocked_never_approves() {
     let mut s = session(message(RiskLevel::Blocked, false, 1), 0);
     s.set_ack(1_500, true);
     assert_eq!(
-        s.event(2_000, InteractionEvent::ApproveActivated),
+        s.event(2_000, InteractionEvent::ApproveActivated { physical: true }),
         InteractionStatus::Pending
     );
     assert_eq!(hold(&mut s, 3_000, 5_000), InteractionStatus::Pending);
@@ -399,7 +432,10 @@ fn ap2_arm_delay_ignores_a_click_at_999_ms() {
     s.event(10_999, PRESS);
     assert_eq!(s.event(10_999, RELEASE), InteractionStatus::Pending);
     assert_eq!(
-        s.event(10_999, InteractionEvent::ApproveActivated),
+        s.event(
+            10_999,
+            InteractionEvent::ApproveActivated { physical: true }
+        ),
         InteractionStatus::Pending
     );
     // The presses at 10 999 came while not armed: the delay restarted there, so 11 000 is
@@ -495,13 +531,13 @@ fn ap2_window_activation_restarts_the_arm_delay() {
     s.restart_arm_delay(5_000);
     assert!(!s.interaction().is_armed());
     assert_eq!(
-        s.event(5_999, InteractionEvent::ApproveActivated),
+        s.event(5_999, InteractionEvent::ApproveActivated { physical: true }),
         InteractionStatus::Pending
     );
     // That Enter came while not armed: the delay now runs from 5 999.
     assert_eq!(s.gate.ready_at_ms, 5_999);
     assert_eq!(
-        s.event(6_999, InteractionEvent::ApproveActivated),
+        s.event(6_999, InteractionEvent::ApproveActivated { physical: true }),
         InteractionStatus::Approved
     );
 }
@@ -525,15 +561,15 @@ fn ap2_approve_press_under_one_second_after_any_press_is_refused() {
     let mut s = session(message(RiskLevel::Info, false, 0), 0);
     s.event(5_000, InteractionEvent::OtherPress);
     assert_eq!(
-        s.event(5_500, InteractionEvent::ApproveActivated),
+        s.event(5_500, InteractionEvent::ApproveActivated { physical: true }),
         InteractionStatus::Pending
     );
     assert_eq!(
-        s.event(6_499, InteractionEvent::ApproveActivated),
+        s.event(6_499, InteractionEvent::ApproveActivated { physical: true }),
         InteractionStatus::Pending
     );
     assert_eq!(
-        s.event(7_499, InteractionEvent::ApproveActivated),
+        s.event(7_499, InteractionEvent::ApproveActivated { physical: true }),
         InteractionStatus::Approved
     );
 
@@ -580,7 +616,7 @@ fn ap2_rapid_click_lure_never_approves() {
     // Auto-repeated Enter on the focused button never approves either.
     for _ in 0..40 {
         assert_eq!(
-            s.event(now, InteractionEvent::ApproveActivated),
+            s.event(now, InteractionEvent::ApproveActivated { physical: true }),
             InteractionStatus::Pending
         );
         now += 33;
@@ -642,7 +678,7 @@ fn ap2_press_gap_spans_an_interaction_restart() {
 #[test]
 fn ap2_press_classification() {
     assert!(InteractionEvent::OtherPress.is_press());
-    assert!(InteractionEvent::ApproveActivated.is_press());
+    assert!(InteractionEvent::ApproveActivated { physical: true }.is_press());
     assert!(PRESS.is_press());
     assert!(
         InteractionEvent::SpacePressed {
@@ -734,7 +770,7 @@ fn ap2_simulation_failure_maps_to_high_even_for_caution() {
     assert!(ack_needed(&failed));
     let mut s = session(failed, 0);
     assert_eq!(
-        s.event(2_000, InteractionEvent::ApproveActivated),
+        s.event(2_000, InteractionEvent::ApproveActivated { physical: true }),
         InteractionStatus::Pending
     );
     s.set_ack(2_000, true);
