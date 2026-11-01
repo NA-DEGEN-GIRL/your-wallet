@@ -232,7 +232,7 @@ pub enum Delta { Zero, In(U256), Out(U256) }    // Σin − Σout 결과
 - 그 밖: `eth_call` at `latest`로 `decimals()`(`0x313ce567`), `symbol()`(`0x95d89b41`).
   - decimals: 결과가 정확히 32바이트, 상위 31바이트 0, 값 ≤ 36. 실패·초과 → 원시 단위(정수) + `(원시 단위)` 표시 + E25.
   - symbol: `archive/spec-v2.4:demo/sepolia-wallet/src/erc20.rs:156-201` 디코더(빈 값, bytes32, 정규 동적 string). 허용 문자 0x21–0x7E, 1–16자. 실패 → `?` + E26.
-  - 미등록 토큰 심볼 뒤에 항상 `(미확인)`을 붙이고 컨트랙트 주소를 함께 보인다(E33). decimals는 그 토큰 컨트랙트가 RPC로 알려 준 값이므로 서식 금액 옆에 원시 정수를 항상 함께 보인다: `{format_units(v, decimals)} {symbol} (미확인 · 원시 단위 {format_units(v, 0)})`(예 `1 TT (미확인 · 원시 단위 1,000,000)`).
+  - 미등록 토큰 심볼 뒤에 항상 `(미확인)`을 붙이고 컨트랙트 주소를 함께 보인다(E33). decimals는 그 토큰 컨트랙트가 RPC로 알려 준 값이므로 주 금액을 만들지 않는다: decimals 조회 실패와 같은 모양으로 원시 정수를 앞에 두고, RPC decimals로 환산한 값은 꼬리표를 단 참고로만 붙인다 — `{format_units(v, 0)} (원시 단위) {symbol} (미확인 · decimals {d} 적용 시 {format_units(v, d)})`(예 `1,000,000 (원시 단위) TT (미확인 · decimals 6 적용 시 1)`). 악성 RPC가 `decimals = 0`을 줘도 미등록 토큰이 등록 토큰(`1,000,000 USDC`)과 같은 모양으로 보이지 않는다(보안 검토 L10).
 - 캐시: (chain_id, address)별 앱 실행 중 메모리 캐시(디스크에 쓰지 않음). 한 승인 요청에서 조회하는 토큰 ≤ 16, 주소 분류(§8.5) ≤ 16(거래의 `to`는 이 한도 밖의 자기 칸이다 — multicall 승인 16건의 spender가 모두 분류된다), 승인 잔액 `balanceOf` ≤ 16. 넘으면 나머지는 원시 표시 + E27. 잔액은 calldata 승인(R8)과 시뮬레이션 diff 승인(ERC-20, 0이 아닌 금액)의 합집합에서 조회한다 — 규칙은 diff가 있으면 diff 승인을 판정하므로(E14 "잔액보다 큰 승인") diff에만 있는 승인도 잔액을 알아야 한다.
 
 ## 3. 트랜잭션 모델

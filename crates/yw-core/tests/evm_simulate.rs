@@ -1235,14 +1235,37 @@ fn x20_token_symbol_is_escaped() {
     )
     .unwrap();
     assert!(draft.display.validate().is_ok());
-    // C11: RPC-supplied decimals are never trusted alone — the raw integer is shown too.
+    // C11 / security review L10: RPC-supplied decimals never shape the primary amount — the raw
+    // integer leads (the decimals-unknown form) and the scaled value is a labelled hint.
     assert!(
         draft
             .display
             .title
-            .contains("1 US[U+202E]DC (미확인 · 원시 단위 1,000,000)"),
+            .contains("1,000,000 (원시 단위) US[U+202E]DC (미확인 · decimals 6 적용 시 1)"),
         "{}",
         draft.display.title
+    );
+    // A lying `decimals = 0` cannot make 1,000,000 raw units read like a registered amount.
+    let zero = ChainFacts {
+        tokens: vec![(
+            TOKEN,
+            TokenMeta {
+                symbol: Some("USDC".to_owned()),
+                decimals: Some(0),
+                registered: false,
+            },
+        )],
+        ..ChainFacts::default()
+    };
+    let text = yw_core::evm::display::format_token_amount(
+        &sepolia(),
+        &zero,
+        &TOKEN,
+        &U256::from_u64(1_000_000),
+    );
+    assert_eq!(
+        text,
+        "1,000,000 (원시 단위) USDC (미확인 · decimals 0 적용 시 1,000,000)"
     );
 }
 

@@ -115,8 +115,10 @@ pub fn describe_address(chain: &ChainInfo, facts: &ChainFacts, address: &Address
 }
 
 /// Token amount with trusted or unverified metadata (spec/03 §2.5). Decimals of an unregistered
-/// token come from its own contract via RPC, so the raw integer is always shown next to the
-/// formatted amount.
+/// token come from its own contract via RPC, so they never shape the primary amount: the raw
+/// integer leads exactly as when decimals are unknown, and the RPC-scaled value follows as a
+/// labelled hint (security review L10) — an unregistered token never looks like a registered
+/// `1,000,000 USDC`.
 #[must_use]
 pub fn format_token_amount(
     chain: &ChainInfo,
@@ -136,7 +138,7 @@ pub fn format_token_amount(
     let raw = format_units(amount, 0);
     match meta.and_then(|meta| meta.decimals) {
         Some(decimals) => format!(
-            "{} {symbol} (미확인 · 원시 단위 {raw})",
+            "{raw} (원시 단위) {symbol} (미확인 · decimals {decimals} 적용 시 {})",
             format_units(amount, decimals)
         ),
         None => format!("{raw} (원시 단위) {symbol} (미확인)"),
