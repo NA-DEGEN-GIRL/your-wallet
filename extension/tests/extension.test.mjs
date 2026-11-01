@@ -598,8 +598,10 @@ test("B7 deriveSenderContext follows the spec/05 §2.4 table", () => {
   assert.equal(deriveSenderContext(configuration(sender("http://localhost:5173/"))).topOrigin, "http://localhost:5173");
   assert.equal(deriveSenderContext(configuration(sender("http://127.0.0.1/"))).topOrigin, "http://127.0.0.1");
   assert.equal(deriveSenderContext(configuration(sender("https://dapp.example:8443/"))).topOrigin, "https://dapp.example:8443");
+  // Security review S7: `sender.origin` is required (Chrome ≥ 80 always sets it).
   const { origin: _origin, ...withoutOrigin } = sender();
-  assert.equal(deriveSenderContext(configuration(withoutOrigin)).topOrigin, "https://dapp.example");
+  assert.throws(() => deriveSenderContext(configuration(withoutOrigin)), Error);
+  assert.throws(() => deriveSenderContext(configuration({ ...sender(), origin: 1 })), Error);
 
   const rejected = {
     "subframe": { ...sender(), frameId: 2 },

@@ -546,7 +546,9 @@
       throw new Error("Content connection page is not a supported origin.");
     }
     const { origin } = new URL(sender.url);
-    if (sender.origin !== undefined && sender.origin !== origin) {
+    // Chrome sets `sender.origin` for every content-script port since Chrome 80 (the manifest
+    // requires 120), so a missing one is refused like a mismatch (security review S7).
+    if (typeof sender.origin !== "string" || sender.origin !== origin) {
       throw new Error("Content connection origin does not match its URL.");
     }
     return Object.freeze({

@@ -173,7 +173,7 @@ fn pinned_extension_id() -> Option<&'static str> {
 | `https:`이고 origin이 §4.7을 만족 | 지원 |
 | `http:`이고 `hostname`이 정확히 `localhost` 또는 `127.0.0.1`(포트 무관) | 확장은 지원. yw-app은 토글이 꺼져 있으면 4100(§4.6) |
 | 그 밖(`http:` 다른 호스트, `file:`, `data:`, IPv6 리터럴, §4.7 밖 https host·포트 0 등) | 주입·연결 안 함 |
-| URL에 userinfo, `origin === "null"`, `sender.origin`과 URL origin 불일치, incognito, `documentLifecycle !== "active"` | background가 연결 거부(`archive/spec-v2.4:extension/src/background-core.js:526-568` 규칙 유지, 프로토콜 조건만 위 표로 교체) |
+| URL에 userinfo, `origin === "null"`, `sender.origin`이 없거나 URL origin과 불일치(Chrome 80부터 항상 있고 manifest 최소 버전은 120이므로 없으면 거부, 보안 검토 S7), incognito, `documentLifecycle !== "active"` | background가 연결 거부(`archive/spec-v2.4:extension/src/background-core.js:526-568` 규칙 유지, 프로토콜 조건만 위 표로 교체) |
 
 ### 2.5 provider-main.js
 상수: `REQUEST_TIMEOUT_MS = 605_000`(background 최장 기한 600 s + 5 s. provider에는 메서드 표가 없으므로 최댓값 하나만 쓴다, §6.4), `MAX_PENDING = 64`, `BRIDGE_WAIT_MS = 10_000`, `MAX_MESSAGE_BYTES = 1_048_576`. 삭제: `allowedMethods`, `MAX_REQUESTS`, `MAX_LISTENERS_PER_EVENT`, `window.yourWallet`, `yourWallet#initialized`.
