@@ -1716,19 +1716,70 @@ fn every_screen_has_unique_control_ids() {
         Screen::Settings(SettingsSection::Other),
         Screen::Done,
     ];
-    for tab in [Tab::Evm, Tab::Sol, Tab::Btc] {
-        if let Some(meta) = app.meta.as_mut() {
-            meta.prefs.tab = tab;
-        }
-        for screen in &screens {
-            app.screen = screen.clone();
-            let ids = control_ids(&app.items());
-            let mut seen = std::collections::HashSet::new();
-            for id in ids {
-                assert!(seen.insert(id), "{tab:?} {screen:?}: id {id} twice");
+    let check = |app: &mut App, screens: &[Screen], pass: &str| {
+        for tab in [Tab::Evm, Tab::Sol, Tab::Btc] {
+            if let Some(meta) = app.meta.as_mut() {
+                meta.prefs.tab = tab;
+            }
+            for screen in screens {
+                app.screen = screen.clone();
+                let ids = control_ids(&app.items());
+                let mut seen = std::collections::HashSet::new();
+                for id in ids {
+                    assert!(seen.insert(id), "{pass} {tab:?} {screen:?}: id {id} twice");
+                }
             }
         }
+    };
+    check(&mut app, &screens, "plain");
+    // Token rows (2026-11-03): user tokens, hidden registry/user/Solana rows with both hidden
+    // lists and the send form's hidden radios expanded, the zero toggle on, the delete overlay.
+    {
+        let meta = app.meta.as_mut().unwrap();
+        for (n, label) in [(1_u8, "SCAM"), (2, "GOOD")] {
+            let address = format!("0x{}", format!("{n:02x}").repeat(20));
+            meta.add_token(
+                "eip155:11155111",
+                &crate::meta::TokenEntry {
+                    address: address.clone(),
+                    label: label.to_owned(),
+                    decimals: 18,
+                },
+            )
+            .unwrap();
+            if n == 1 {
+                assert!(
+                    meta.token_view
+                        .set_hidden("eip155:11155111", &address, true)
+                );
+            }
+        }
+        meta.token_view.hide_zero = true;
     }
+    let first = app.chain_tokens(11_155_111)[0].0;
+    app.meta.as_mut().unwrap().token_view.set_hidden(
+        "eip155:11155111",
+        &first.to_lower_hex(),
+        true,
+    );
+    if let Some(entry) = yw_core::sol::template::spl_entries(app.sol_cluster()).next() {
+        let network = app.sol_token_network();
+        app.meta
+            .as_mut()
+            .unwrap()
+            .token_view
+            .set_hidden(&network, &entry.mint.to_base58(), true);
+    }
+    app.evm.show_hidden_tokens = true;
+    app.sol.show_hidden_tokens = true;
+    app.evm.send_show_hidden = true;
+    app.evm.token_delete = Some((
+        11_155_111,
+        parse_address("0x0202020202020202020202020202020202020202").unwrap(),
+    ));
+    let mut with_tokens = screens.to_vec();
+    with_tokens.push(Screen::Confirm(Confirm::TokenDelete));
+    check(&mut app, &with_tokens, "tokens");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -1746,5 +1797,363 @@ fn tab_shortcuts_switch_chain_tabs_on_the_main_screen() {
     app.screen = Screen::Sites;
     app.tab_shortcut(2);
     assert_eq!(tab(&app), Some(Tab::Evm));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+// ---------------------------------------------------------------- token rows (spec/04 §2.6)
+
+const SCAM: &str = "0x1111111111111111111111111111111111111111";
+const GOOD: &str = "0x2222222222222222222222222222222222222222";
+
+/// An unlocked wallet on Sepolia with two user tokens (`SCAM`, `GOOD`) after the registry ones.
+fn token_app(tag: &str) -> (App, PathBuf) {
+    let (mut app, dir) = unlocked_app(tag, false);
+    let meta = app.meta.as_mut().unwrap();
+    for (address, label) in [(SCAM, "SCAM"), (GOOD, "GOOD")] {
+        meta.add_token(
+            "eip155:11155111",
+            &crate::meta::TokenEntry {
+                address: address.to_owned(),
+                label: label.to_owned(),
+                decimals: 18,
+            },
+        )
+        .unwrap();
+    }
+    (app, dir)
+}
+
+fn fields(items: &[Item]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Field(label, _) => Some(label.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn ctl(items: &[Item], id: u16) -> Option<Ctl> {
+    controls(items).into_iter().find(|ctl| ctl.id == id)
+}
+
+/// `숨기기` moves a row under `숨긴 토큰 n개 보기` (dimmed, `다시 보이기`) and persists in meta
+/// `token_view`; `잔액 0인 토큰 숨기기` hides only known zero balances; registry tokens have no
+/// `삭제`; hiding never removes a token from `chain_tokens` (balances, approvals, recognition).
+#[test]
+#[expect(clippy::too_many_lines, reason = "one walk through the card states")]
+fn evm_token_rows_hide_unhide_and_zero_balance() {
+    use crate::token_view::RowPlace;
+    use crate::ui::screens_evm::ids::{
+        TOKEN_HIDDEN_TOGGLE, TOKEN_HIDE_ZERO, TokenAction, token_row_id,
+    };
+    let (mut app, dir) = token_app("token-hide");
+    let chain = 11_155_111;
+    let tokens = app.chain_tokens(chain);
+    let registry = tokens.iter().filter(|(.., registered)| *registered).count();
+    assert!(registry >= 2, "Sepolia registry WETH/USDC");
+    assert_eq!(tokens.len(), registry + 2);
+    let scam = registry;
+    let items = app.items();
+    assert!(fields(&items).contains(&"SCAM (사용자 추가)".to_owned()));
+    for (index, (.., registered)) in tokens.iter().enumerate() {
+        let hide = ctl(
+            &items,
+            token_row_id(TokenAction::ToggleHidden(index)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(hide.text, "숨기기");
+        // Registry tokens can only be hidden; user tokens also have `삭제`.
+        let delete = ctl(&items, token_row_id(TokenAction::Delete(index)).unwrap());
+        assert_eq!(delete.is_some(), !registered, "row {index}");
+    }
+    assert!(
+        ctl(&items, TOKEN_HIDDEN_TOGGLE).is_none(),
+        "nothing hidden yet"
+    );
+    assert_eq!(ctl(&items, TOKEN_HIDE_ZERO).unwrap().checked, Some(false));
+
+    // Hide the scam token.
+    app.on_command(token_row_id(TokenAction::ToggleHidden(scam)).unwrap());
+    let meta = app.meta.as_ref().unwrap();
+    assert!(meta.token_view.is_hidden("eip155:11155111", SCAM));
+    let items = app.items();
+    assert!(!fields(&items).contains(&"SCAM (사용자 추가)".to_owned()));
+    assert_eq!(
+        ctl(&items, TOKEN_HIDDEN_TOGGLE).unwrap().text,
+        "숨긴 토큰 1개 보기 ▸"
+    );
+    assert!(
+        ctl(
+            &items,
+            token_row_id(TokenAction::ToggleHidden(scam)).unwrap()
+        )
+        .is_none()
+    );
+    // Still known everywhere safety matters.
+    assert_eq!(app.chain_tokens(chain), tokens);
+    assert_eq!(app.evm_token_rows(chain)[scam].place, RowPlace::Hidden);
+    // Expand: dimmed row with `다시 보이기` and `삭제`.
+    app.on_command(TOKEN_HIDDEN_TOGGLE);
+    let items = app.items();
+    assert!(has_text(
+        &items,
+        "SCAM (사용자 추가) · 잔액 알 수 없음 · 숨김"
+    ));
+    assert!(has_text(
+        &items,
+        crate::ui::screens_evm::T_TOKEN_HIDDEN_NOTE
+    ));
+    let again = ctl(
+        &items,
+        token_row_id(TokenAction::ToggleHidden(scam)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(again.text, "다시 보이기");
+    assert!(ctl(&items, token_row_id(TokenAction::Delete(scam)).unwrap()).is_some());
+    assert_eq!(
+        ctl(&items, TOKEN_HIDDEN_TOGGLE).unwrap().text,
+        "숨긴 토큰 1개 접기 ▾"
+    );
+
+    // Zero balances: registry[0] = 0, registry[1] = 5, GOOD unread.
+    let address = |index: usize| tokens[index].0;
+    app.evm.balances.insert(
+        chain,
+        BalanceState {
+            snapshot: Some(BalanceSnapshot {
+                block: 7,
+                native: Vec::new(),
+                tokens: vec![
+                    (address(0), Some(U256::ZERO)),
+                    (address(1), Some(U256::from_u64(5))),
+                    (address(scam), Some(U256::ZERO)),
+                ],
+            }),
+            ..BalanceState::default()
+        },
+    );
+    let zero_label = tokens[0].1.clone();
+    assert!(fields(&app.items()).contains(&zero_label));
+    app.on_command(TOKEN_HIDE_ZERO);
+    assert!(app.meta.as_ref().unwrap().token_view.hide_zero);
+    let items = app.items();
+    assert!(!fields(&items).contains(&zero_label));
+    assert!(fields(&items).contains(&tokens[1].1));
+    assert!(
+        fields(&items).contains(&"GOOD (사용자 추가)".to_owned()),
+        "an unread balance never hides a row"
+    );
+    assert!(has_text(&items, "잔액이 0인 토큰 1개를 감췄습니다"));
+    assert_eq!(ctl(&items, TOKEN_HIDE_ZERO).unwrap().checked, Some(true));
+    // An explicit hide wins over the zero rule (still listed under the hidden tokens).
+    assert_eq!(app.evm_token_rows(chain)[scam].place, RowPlace::Hidden);
+
+    // Unhide: back in the list, the hidden section collapses.
+    app.on_command(token_row_id(TokenAction::ToggleHidden(scam)).unwrap());
+    assert!(app.meta.as_ref().unwrap().token_view.hidden.is_empty());
+    assert!(!app.evm.show_hidden_tokens);
+    let items = app.items();
+    assert!(ctl(&items, TOKEN_HIDDEN_TOGGLE).is_none());
+    // SCAM's balance is 0 and the zero toggle is on.
+    assert_eq!(app.evm_token_rows(chain)[scam].place, RowPlace::ZeroHidden);
+    app.on_command(TOKEN_HIDE_ZERO);
+    assert!(app.meta.as_ref().unwrap().token_view.is_default());
+    assert!(fields(&app.items()).contains(&"SCAM (사용자 추가)".to_owned()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The send form's asset radios leave hidden tokens out until `숨긴 토큰 n개 보기`; a selected
+/// hidden token is always shown; zero-balance tokens stay; radio ids never renumber.
+#[test]
+fn send_picker_tucks_hidden_tokens_away() {
+    use crate::app_evm::SendAsset;
+    use crate::ui::screens_evm::ids::{SEND_ASSET_BASE, SEND_HIDDEN_TOGGLE};
+    let (mut app, dir) = token_app("token-send");
+    let chain = 11_155_111;
+    let tokens = app.chain_tokens(chain);
+    let scam = tokens.len() - 2;
+    let scam_radio = SEND_ASSET_BASE + u16::try_from(scam + 1).unwrap();
+    let good_radio = scam_radio + 1;
+    {
+        let meta = app.meta.as_mut().unwrap();
+        assert!(meta.token_view.set_hidden("eip155:11155111", SCAM, true));
+        meta.token_view.hide_zero = true;
+    }
+    app.evm.balances.insert(
+        chain,
+        BalanceState {
+            snapshot: Some(BalanceSnapshot {
+                block: 7,
+                native: Vec::new(),
+                tokens: vec![(tokens[scam + 1].0, Some(U256::ZERO))],
+            }),
+            ..BalanceState::default()
+        },
+    );
+    app.set_screen(Screen::Send);
+    let items = app.items();
+    assert!(ctl(&items, scam_radio).is_none());
+    assert!(
+        ctl(&items, good_radio).is_some(),
+        "zero balance is not hidden here"
+    );
+    assert!(ctl(&items, SEND_ASSET_BASE).is_some());
+    let toggle = ctl(&items, SEND_HIDDEN_TOGGLE).unwrap();
+    assert_eq!(toggle.text, "숨긴 토큰 1개 보기 ▸");
+    app.on_command(SEND_HIDDEN_TOGGLE);
+    let items = app.items();
+    let radio = ctl(&items, scam_radio).unwrap();
+    assert_eq!(radio.text, "SCAM (사용자 추가)");
+    assert!(items.iter().any(|item| matches!(
+        item,
+        Item::LabeledRow(label, ctls) if label == "숨긴 토큰" && ctls.iter().any(|c| c.id == scam_radio)
+    )));
+    assert_eq!(
+        ctl(&items, SEND_HIDDEN_TOGGLE).unwrap().text,
+        "숨긴 토큰 접기 ▾"
+    );
+    // Collapsed again, but the selected hidden token stays visible (toggle disabled).
+    app.on_command(SEND_HIDDEN_TOGGLE);
+    app.evm.send.asset = SendAsset::Token(tokens[scam].0);
+    let items = app.items();
+    assert_eq!(ctl(&items, scam_radio).unwrap().checked, Some(true));
+    assert!(!ctl(&items, SEND_HIDDEN_TOGGLE).unwrap().enabled);
+    // The radio id maps to the same token whatever is hidden.
+    assert_eq!(app.send_asset_meta(), (18, "SCAM".to_owned()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// `삭제` of a user token: a confirmation with the label and the full contract, then meta
+/// `tokens` without it (and without its hidden mark). Registry rows offer no `삭제`.
+#[test]
+fn user_token_delete_confirms_with_label_and_address() {
+    use crate::ui::screens_evm::ids::{TokenAction, token_row_id};
+    let (mut app, dir) = token_app("token-delete");
+    let chain = 11_155_111;
+    let tokens = app.chain_tokens(chain);
+    let scam = tokens.len() - 2;
+    app.on_command(token_row_id(TokenAction::Delete(0)).unwrap());
+    assert_eq!(app.screen, Screen::Main, "registry token: no delete");
+    app.on_command(token_row_id(TokenAction::ToggleHidden(scam)).unwrap());
+    app.on_command(token_row_id(TokenAction::Delete(scam)).unwrap());
+    assert_eq!(app.screen, Screen::Confirm(Confirm::TokenDelete));
+    let items = app.items();
+    assert!(has_text(&items, crate::ui::screens::T_TOKEN_DELETE));
+    assert!(items.iter().any(
+        |item| matches!(item, Item::Field(label, value) if label == "토큰" && value == "SCAM")
+    ));
+    let full = yw_core::evm::display::format_address(&tokens[scam].0);
+    assert!(
+        items
+            .iter()
+            .any(|item| matches!(item, Item::Mono(text) if *text == full))
+    );
+    // `취소` keeps it.
+    app.on_command(ids::CONFIRM_NO);
+    assert_eq!(app.evm.token_delete, None);
+    assert_eq!(app.chain_tokens(chain).len(), tokens.len());
+    app.on_command(token_row_id(TokenAction::Delete(scam)).unwrap());
+    app.on_command(ids::CONFIRM_YES);
+    assert_eq!(app.screen, Screen::Main);
+    let meta = app.meta.as_ref().unwrap();
+    let left: Vec<String> = meta
+        .tokens_of("eip155:11155111")
+        .into_iter()
+        .map(|entry| entry.label)
+        .collect();
+    assert_eq!(left, ["GOOD"]);
+    assert!(meta.token_view.is_default(), "the hidden mark went with it");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Activity rows of a hidden token stay (history), tagged `[숨긴 토큰]`.
+#[test]
+fn activity_of_hidden_tokens_stays_tagged() {
+    let (mut app, dir) = token_app("token-activity");
+    let meta = app.meta.as_mut().unwrap();
+    meta.upsert_activity(
+        "eip155:11155111",
+        &crate::meta::ActivityEntry {
+            account: "0x9858effd232b4033e47d90003d41ec34ecaeda94".to_owned(),
+            tx_id: format!("0x{}", "ab".repeat(32)),
+            title: "토큰 보내기".to_owned(),
+            asset: SCAM.to_owned(),
+            amount: "1000000000000000000".to_owned(),
+            counterparty: GOOD.to_owned(),
+            status: "succeeded".to_owned(),
+            time_unix_ms: 1,
+        },
+    );
+    let head = |app: &App| app.activity_rows()[0].head.clone();
+    assert!(head(&app).contains("1 SCAM") && !head(&app).contains("숨긴 토큰"));
+    assert!(
+        app.meta
+            .as_mut()
+            .unwrap()
+            .token_view
+            .set_hidden("eip155:11155111", SCAM, true)
+    );
+    assert_eq!(app.activity_rows().len(), 1);
+    assert!(
+        head(&app).contains("1 SCAM · [숨긴 토큰]"),
+        "{}",
+        head(&app)
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Solana: the allowlist rows of the token card hide and show the same way (per cluster); the
+/// send form still offers every allowlisted token.
+#[test]
+fn sol_token_card_hides_allowlist_rows_per_cluster() {
+    use crate::ui::screens_sol::ids::{SEND_ASSET_BASE, TOKEN_HIDDEN_TOGGLE, TOKEN_HIDE_BASE};
+    let (mut app, dir) = unlocked_app("token-sol", false);
+    app.meta.as_mut().unwrap().prefs.tab = Tab::Sol;
+    let entry = yw_core::sol::template::spl_entries(app.sol_cluster())
+        .next()
+        .unwrap();
+    let items = app.items();
+    assert!(fields(&items).contains(&entry.symbol.to_owned()));
+    assert_eq!(ctl(&items, TOKEN_HIDE_BASE).unwrap().text, "숨기기");
+    app.on_command(TOKEN_HIDE_BASE);
+    let network = app.sol_token_network();
+    assert!(
+        app.meta
+            .as_ref()
+            .unwrap()
+            .token_view
+            .is_hidden(&network, &entry.mint.to_base58())
+    );
+    let items = app.items();
+    assert!(!fields(&items).contains(&entry.symbol.to_owned()));
+    assert_eq!(
+        ctl(&items, TOKEN_HIDDEN_TOGGLE).unwrap().text,
+        "숨긴 토큰 1개 보기 ▸"
+    );
+    app.on_command(TOKEN_HIDDEN_TOGGLE);
+    let items = app.items();
+    assert!(has_text(
+        &items,
+        &format!("{} · 잔액 알 수 없음 · 숨김", entry.symbol)
+    ));
+    assert_eq!(ctl(&items, TOKEN_HIDE_BASE).unwrap().text, "다시 보이기");
+    // Another cluster is not affected.
+    assert!(!network.ends_with("devnet"));
+    assert!(
+        !app.meta
+            .as_ref()
+            .unwrap()
+            .token_view
+            .is_hidden("solana:devnet", &entry.mint.to_base58())
+    );
+    // The send form keeps every allowlisted token.
+    app.set_screen(Screen::SolSend);
+    assert!(ctl(&app.items(), SEND_ASSET_BASE + 1).is_some());
+    app.set_screen(Screen::Main);
+    app.on_command(TOKEN_HIDE_BASE);
+    assert!(app.meta.as_ref().unwrap().token_view.is_default());
+    assert!(!app.sol.show_hidden_tokens);
+    assert!(fields(&app.items()).contains(&entry.symbol.to_owned()));
     let _ = std::fs::remove_dir_all(dir);
 }

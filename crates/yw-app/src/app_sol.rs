@@ -363,6 +363,8 @@ pub struct SolUi {
     pub book: SolBookForm,
     /// Rename of the selected account.
     pub rename: Option<SolAccountId>,
+    /// The token card lists the hidden allowlist tokens (`숨긴 토큰 n개 보기`; session only).
+    pub show_hidden_tokens: bool,
     /// Job counter.
     pub next_job: u64,
 }

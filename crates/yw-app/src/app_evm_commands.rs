@@ -101,6 +101,21 @@ impl App {
                 self.evm.send.picker = !self.evm.send.picker;
                 self.refresh();
             }
+            ids::SEND_HIDDEN_TOGGLE => {
+                self.evm.send_show_hidden = !self.evm.send_show_hidden;
+                self.refresh();
+            }
+            ids::TOKEN_HIDE_ZERO => {
+                let on = self
+                    .controls
+                    .checked(ids::TOKEN_HIDE_ZERO)
+                    .unwrap_or(!self.evm_hide_zero());
+                self.set_evm_hide_zero(on);
+            }
+            ids::TOKEN_HIDDEN_TOGGLE => {
+                self.evm.show_hidden_tokens = !self.evm.show_hidden_tokens;
+                self.refresh();
+            }
             ids::SEND_ACK => {
                 self.evm.send.ack = self.controls.checked(ids::SEND_ACK).unwrap_or(false);
                 self.refresh();
@@ -215,6 +230,13 @@ impl App {
             self.evm.send.quote = None;
             self.evm.send.contract = None;
             self.validate_send(true);
+            return true;
+        }
+        if let Some(action) = ids::token_action(id) {
+            match action {
+                ids::TokenAction::ToggleHidden(row) => self.toggle_evm_token_hidden(row),
+                ids::TokenAction::Delete(row) => self.request_delete_token(row),
+            }
             return true;
         }
         if let Some(index) = offset(id, ids::SEND_PICK_BASE, ids::SEND_PICK_SPAN) {

@@ -12,14 +12,19 @@ use yw_core::journal::evm::{EvmRecord, ReceiptStatus, TxState, groups};
 
 use crate::app::{App, AppMode};
 use crate::app_evm::{SendAsset, hash_text};
+use crate::app_tokens::EvmTokenRow;
 use crate::errors::ErrorCode;
 use crate::flow::evm::MismatchKind;
 use crate::flow::evm::track::BroadcastOutcome;
 use crate::logging::format_utc;
 use crate::meta::ActivityEntry;
 use crate::network::NetworkId;
+use crate::token_view::RowPlace;
 use crate::ui::main_window::{Ctl, Item, Tone};
 use crate::ui::qr::{EvmQrKind, RECEIVE_SHARED_ADDRESS_NOTE};
+
+/// T-TOKEN-HIDDEN: the note above the hidden token rows (spec/04 §2.6).
+pub const T_TOKEN_HIDDEN_NOTE: &str = "숨기기는 이 목록과 보내기 화면의 자산 선택에서만 감춥니다. 잔액 조회, 승인 창의 토큰 확인, 활동 기록은 그대로입니다.";
 
 /// T-CUSTOM-CHAIN (spec/04 §2.16): the user-chain badge of S10, S15 and the A01 header.
 #[must_use]
@@ -67,6 +72,8 @@ pub mod ids {
     pub const SEND_REVIEW: u16 = 915;
     /// 취소 / 돌아가기.
     pub const SEND_CANCEL: u16 = 916;
+    /// Send form `숨긴 토큰 n개 보기` (asset radios of hidden tokens).
+    pub const SEND_HIDDEN_TOGGLE: u16 = 917;
     /// Asset radios: native, then the chain's registry tokens and the user's tokens (≤ 100 per
     /// network, spec/02 §5.3). The old 920..960 span (40) let the 40th token reuse the first
     /// picker id; see `ui::command_ids`.
@@ -105,6 +112,10 @@ pub mod ids {
     pub const TOKEN_LABEL_EDIT: u16 = 2_102;
     /// Token save.
     pub const TOKEN_SAVE: u16 = 2_103;
+    /// Token card `잔액 0인 토큰 숨기기`.
+    pub const TOKEN_HIDE_ZERO: u16 = 2_104;
+    /// Token card `숨긴 토큰 n개 보기` / `접기`.
+    pub const TOKEN_HIDDEN_TOGGLE: u16 = 2_105;
     /// Settings EVM-chains section.
     pub const SECTION_CHAINS: u16 = 2_200;
     /// 추가.
@@ -153,8 +164,52 @@ pub mod ids {
     pub const ACTIVITY_STRIDE: u16 = 8;
     /// Activity span (50 rows × 8).
     pub const ACTIVITY_SPAN: u16 = 400;
+    /// Token card rows ([`TOKEN_ROW_STRIDE`] ids per row: 숨기기/다시 보이기, 삭제), indexed by
+    /// the token's position in `App::chain_tokens` (registry tokens + ≤ 100 user tokens).
+    pub const TOKEN_ROW_BASE: u16 = 3_200;
+    /// Ids per token row.
+    pub const TOKEN_ROW_STRIDE: u16 = 2;
+    /// Token rows span (120 rows × 2).
+    pub const TOKEN_ROW_SPAN: u16 = 240;
     /// T-CHAIN-REPIN-ACK check.
     pub const REPIN_CHECK: u16 = 6_600;
+
+    /// What a token-row id does.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum TokenAction {
+        /// `숨기기` / `다시 보이기` of the row.
+        ToggleHidden(usize),
+        /// `삭제` (user tokens only).
+        Delete(usize),
+    }
+
+    /// The button id of a token action (`None` beyond the span).
+    #[must_use]
+    pub fn token_row_id(action: TokenAction) -> Option<u16> {
+        let (row, extra) = match action {
+            TokenAction::ToggleHidden(row) => (row, 0),
+            TokenAction::Delete(row) => (row, 1),
+        };
+        let offset = u16::try_from(row)
+            .ok()?
+            .checked_mul(TOKEN_ROW_STRIDE)?
+            .checked_add(extra)?;
+        (offset < TOKEN_ROW_SPAN).then(|| TOKEN_ROW_BASE.saturating_add(offset))
+    }
+
+    /// The token action of `id`, if it is a token-row id.
+    #[must_use]
+    pub fn token_action(id: u16) -> Option<TokenAction> {
+        let offset = id
+            .checked_sub(TOKEN_ROW_BASE)
+            .filter(|offset| *offset < TOKEN_ROW_SPAN)?;
+        let row = usize::from(offset / TOKEN_ROW_STRIDE);
+        Some(if offset % TOKEN_ROW_STRIDE == 0 {
+            TokenAction::ToggleHidden(row)
+        } else {
+            TokenAction::Delete(row)
+        })
+    }
 
     /// Every fixed id of this module (`ui::command_ids` checks them against all ranges).
     pub const FIXED: &[u16] = &[
@@ -171,6 +226,7 @@ pub mod ids {
         SEND_ACK,
         SEND_REVIEW,
         SEND_CANCEL,
+        SEND_HIDDEN_TOGGLE,
         COPY_ADDRESS,
         QR_EIP681,
         QR_PLAIN,
@@ -183,6 +239,8 @@ pub mod ids {
         TOKEN_LOOKUP,
         TOKEN_LABEL_EDIT,
         TOKEN_SAVE,
+        TOKEN_HIDE_ZERO,
+        TOKEN_HIDDEN_TOGGLE,
         SECTION_CHAINS,
         CHAIN_ADD,
         CHAIN_ID_EDIT,
@@ -343,7 +401,7 @@ impl App {
 
     fn meta_activity_row(&self, entry: &ActivityEntry, chain_id: u64) -> ActivityRowView {
         let amount = U256::from_decimal_str(&entry.amount).unwrap_or(U256::ZERO);
-        let value = if entry.asset == "native" {
+        let mut value = if entry.asset == "native" {
             self.native_text(chain_id, &amount)
         } else {
             let token = parse_address(&entry.asset).ok();
@@ -358,6 +416,10 @@ impl App {
                     |(_, symbol, decimals, _)| format_amount(&amount, decimals, &symbol),
                 )
         };
+        // History stays visible for hidden tokens, tagged so the row is not a surprise.
+        if parse_address(&entry.asset).is_ok_and(|token| self.evm_token_hidden(chain_id, &token)) {
+            value.push_str(" · [숨긴 토큰]");
+        }
         ActivityRowView {
             head: format!(
                 "{} · {} · {} · {value}",
@@ -459,29 +521,7 @@ impl App {
     /// Tokens and activity sections of S10.
     pub fn evm_main_sections(&self, items: &mut Vec<Item>) {
         let chain_id = self.settings.evm_chain_id;
-        items.push(Item::CardStart(Some("토큰 (선택한 계정)".to_owned())));
-        let tokens = self.chain_tokens(chain_id);
-        if tokens.is_empty() {
-            items.push(Item::Help(
-                "표시할 토큰이 없습니다. '토큰 추가'로 컨트랙트 주소를 넣으면 잔액을 함께 봅니다."
-                    .to_owned(),
-            ));
-        }
-        for (address, symbol, decimals, registered) in tokens {
-            let balance = self.token_balance(chain_id, &address).map_or_else(
-                || "잔액 알 수 없음".to_owned(),
-                |value| format_amount(&value, decimals, &symbol),
-            );
-            let label = if registered {
-                symbol.clone()
-            } else {
-                format!("{symbol} (사용자 추가)")
-            };
-            items.push(Item::Field(label, balance));
-            items.push(Item::Mono(format_address(&address)));
-        }
-        items.push(Item::Row(vec![Ctl::button(ids::TOKEN_OPEN, "토큰 추가")]));
-        items.push(Item::CardEnd);
+        self.evm_token_card(items, chain_id);
         items.push(Item::CardStart(Some(
             "활동 (이 지갑이 보낸 거래)".to_owned(),
         )));
@@ -522,6 +562,111 @@ impl App {
         items.push(Item::CardEnd);
     }
 
+    /// The S10 EVM "토큰" card (spec/04 §2.6): shown rows with `숨기기` (and `삭제` for user
+    /// tokens), `잔액 0인 토큰 숨기기`, and `숨긴 토큰 n개 보기` listing the hidden rows dimmed
+    /// with `다시 보이기`.
+    fn evm_token_card(&self, items: &mut Vec<Item>, chain_id: u64) {
+        items.push(Item::CardStart(Some("토큰 (선택한 계정)".to_owned())));
+        let rows = self.evm_token_rows(chain_id);
+        let shown: Vec<&EvmTokenRow> = rows
+            .iter()
+            .filter(|row| row.place == RowPlace::Shown)
+            .collect();
+        let hidden: Vec<&EvmTokenRow> = rows
+            .iter()
+            .filter(|row| row.place == RowPlace::Hidden)
+            .collect();
+        let zero = rows
+            .iter()
+            .filter(|row| row.place == RowPlace::ZeroHidden)
+            .count();
+        if rows.is_empty() {
+            items.push(Item::Help(
+                "표시할 토큰이 없습니다. '토큰 추가'로 컨트랙트 주소를 넣으면 잔액을 함께 봅니다."
+                    .to_owned(),
+            ));
+        } else if shown.is_empty() {
+            items.push(Item::Help(
+                "보이는 토큰이 없습니다. 숨긴 토큰은 아래에서 다시 볼 수 있습니다.".to_owned(),
+            ));
+        }
+        for row in shown {
+            Self::evm_token_row(items, row, false);
+        }
+        if !rows.is_empty() {
+            items.push(Item::Row(vec![Ctl::check(
+                ids::TOKEN_HIDE_ZERO,
+                "잔액 0인 토큰 숨기기",
+                self.evm_hide_zero(),
+            )]));
+            if zero > 0 {
+                items.push(Item::Help(format!(
+                    "잔액이 0인 토큰 {zero}개를 감췄습니다. 잔액이 생기면 다시 보입니다."
+                )));
+            }
+        }
+        if !hidden.is_empty() {
+            let open = self.evm.show_hidden_tokens;
+            let count = hidden.len();
+            items.push(Item::Row(vec![Ctl::link(
+                ids::TOKEN_HIDDEN_TOGGLE,
+                &if open {
+                    format!("숨긴 토큰 {count}개 접기 ▾")
+                } else {
+                    format!("숨긴 토큰 {count}개 보기 ▸")
+                },
+            )]));
+            if open {
+                items.push(Item::Help(T_TOKEN_HIDDEN_NOTE.to_owned()));
+                for row in hidden {
+                    Self::evm_token_row(items, row, true);
+                }
+            }
+        }
+        items.push(Item::Row(vec![Ctl::button(ids::TOKEN_OPEN, "토큰 추가")]));
+        items.push(Item::CardEnd);
+    }
+
+    /// One token row: label and balance (dimmed when hidden), the full contract, and its
+    /// buttons. Registry tokens have no `삭제`.
+    fn evm_token_row(items: &mut Vec<Item>, row: &EvmTokenRow, hidden: bool) {
+        use ids::{TokenAction, token_row_id};
+        let balance = row.balance.map_or_else(
+            || "잔액 알 수 없음".to_owned(),
+            |value| format_amount(&value, row.decimals, &row.symbol),
+        );
+        let label = if row.registered {
+            row.symbol.clone()
+        } else {
+            format!("{} (사용자 추가)", row.symbol)
+        };
+        if hidden {
+            items.push(Item::Muted(format!("{label} · {balance} · 숨김")));
+        } else {
+            items.push(Item::Field(label, balance));
+        }
+        items.push(Item::Mono(format_address(&row.address)));
+        let mut buttons = Vec::new();
+        if let Some(id) = token_row_id(TokenAction::ToggleHidden(row.index)) {
+            buttons.push(Ctl::link(
+                id,
+                if hidden {
+                    "다시 보이기"
+                } else {
+                    "숨기기"
+                },
+            ));
+        }
+        if !row.registered
+            && let Some(id) = token_row_id(TokenAction::Delete(row.index))
+        {
+            buttons.push(Ctl::danger(id, "삭제"));
+        }
+        if !buttons.is_empty() {
+            items.push(Item::Row(buttons));
+        }
+    }
+
     /// A user chain's explorer base URL.
     #[must_use]
     pub fn explorer(&self, chain_id: u64) -> Option<String> {
@@ -530,6 +675,36 @@ impl App {
             .iter()
             .find(|def| def.chain_id == chain_id)
             .and_then(|def| def.explorer.clone())
+    }
+
+    /// The S11 token radios `(visible, hidden)`: every token of the chain (zero balances
+    /// included), the ones the user hid apart. Radio ids follow the `App::chain_tokens` index.
+    #[must_use]
+    pub fn send_asset_rows(&self, chain_id: u64) -> (Vec<Ctl>, Vec<Ctl>) {
+        let asset = self.evm.send.asset;
+        let mut visible = Vec::new();
+        let mut hidden = Vec::new();
+        for row in self.evm_token_rows(chain_id) {
+            let Some(id) = u16::try_from(row.index.saturating_add(1))
+                .ok()
+                .filter(|offset| *offset < ids::SEND_ASSET_SPAN)
+                .map(|offset| ids::SEND_ASSET_BASE.saturating_add(offset))
+            else {
+                continue;
+            };
+            let text = if row.registered {
+                row.symbol.clone()
+            } else {
+                format!("{} (사용자 추가)", row.symbol)
+            };
+            let radio = Ctl::radio(id, &text, asset == SendAsset::Token(row.address), false);
+            if row.place == RowPlace::Hidden {
+                hidden.push(radio);
+            } else {
+                visible.push(radio);
+            }
+        }
+        (visible, hidden)
     }
 
     /// S11.
@@ -640,26 +815,28 @@ impl App {
             form.asset == SendAsset::Native,
             true,
         ));
-        for (index, (address, symbol, _, registered)) in self
-            .chain_tokens(chain_id)
-            .into_iter()
-            .take(usize::from(ids::SEND_ASSET_SPAN).saturating_sub(1))
-            .enumerate()
-        {
-            let text = if registered {
-                symbol
-            } else {
-                format!("{symbol} (사용자 추가)")
-            };
-            assets.push(Ctl::radio(
-                ids::SEND_ASSET_BASE
-                    .saturating_add(u16::try_from(index.saturating_add(1)).unwrap_or(0)),
-                &text,
-                form.asset == SendAsset::Token(address),
-                false,
-            ));
-        }
+        let (visible, hidden) = self.send_asset_rows(chain_id);
+        assets.extend(visible);
         items.push(Item::LabeledRow("자산".to_owned(), assets));
+        if !hidden.is_empty() {
+            // The selected asset is never tucked away.
+            let selected = hidden.iter().any(|ctl| ctl.checked == Some(true));
+            let open = self.evm.send_show_hidden || selected;
+            items.push(Item::Row(vec![
+                Ctl::link(
+                    ids::SEND_HIDDEN_TOGGLE,
+                    &if open {
+                        "숨긴 토큰 접기 ▾".to_owned()
+                    } else {
+                        format!("숨긴 토큰 {}개 보기 ▸", hidden.len())
+                    },
+                )
+                .enabled(!selected),
+            ]));
+            if open {
+                items.push(Item::LabeledRow("숨긴 토큰".to_owned(), hidden));
+            }
+        }
         if let SendAsset::Token(token) = form.asset {
             items.push(Item::Help(format!(
                 "토큰 컨트랙트 {}",

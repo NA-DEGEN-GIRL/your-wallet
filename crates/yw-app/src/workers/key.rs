@@ -559,7 +559,7 @@ impl KeyWorker {
             document.btc_accounts.clone(),
         );
         Ok(MetaLoaded {
-            meta: document,
+            meta: Box::new(document),
             mismatch,
             prefs_reset,
             has_mnemonic: keys.has_mnemonic,

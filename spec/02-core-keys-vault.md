@@ -471,7 +471,7 @@ journal_key = HKDF-SHA256(salt = 없음,                   ikm = DEK, info = "yo
 
 ### 5.3 meta JSON (`schema = "yw-meta/3"`)
 
-최상위 객체. 중복 키·아래 키(선택 키 `btc_accounts`·`sol_sites`·`btc_sites` 제외)의 누락은 거부한다. 아래 표에 없는 **최상위** 키는 같은 `schema`의 새 부 버전이 더한 키로 보고 보존해 다음 쓰기에서 알려진 키 뒤에 그대로 쓴다([04](04-app-ui.md) §6.6). 레코드·객체 안의 알 수 없는 키는 거부한다(`prefs`는 기본값으로 되돌림, [04] §6.4). 정수는 JSON 정수(소수·지수 금지), 64비트 금액은 10진 문자열(각 체인 문서).
+최상위 객체. 중복 키·아래 키(선택 키 `btc_accounts`·`sol_sites`·`btc_sites`·`sol_raw_accounts`·`sol_raw_selected`·`security_settings`·`vault_generation_seen`·`token_view` 제외)의 누락은 거부한다. 아래 표에 없는 **최상위** 키는 같은 `schema`의 새 부 버전이 더한 키로 보고 보존해 다음 쓰기에서 알려진 키 뒤에 그대로 쓴다([04](04-app-ui.md) §6.6). 레코드·객체 안의 알 수 없는 키는 거부한다(`prefs`는 기본값으로 되돌림, [04] §6.4). 정수는 JSON 정수(소수·지수 금지), 64비트 금액은 10진 문자열(각 체인 문서).
 
 | 키 | 타입 | 규칙 |
 |---|---|---|
@@ -490,6 +490,7 @@ journal_key = HKDF-SHA256(salt = 없음,                   ikm = DEK, info = "yo
 | `sol_raw_accounts` | `SolRawAccount[]` | **선택 키**(가져오기 전 파일에는 없음, 없으면 `[]`). 0..=15개, vault `SolKey` record와 1:1, `record_id` 중복 금지 |
 | `sol_raw_selected` | Hex16 \| null | **선택 키**. 선택한 Solana 계정이 가져온 키면 그 `record_id`(`sol_raw_accounts`에 있어야 함), 아니면 `null`(`prefs.sol_account`의 파생 계정) |
 | `security_settings` (선택, 2026-11-01) | object | 평문 `settings.json`의 보안 관련 값을 앱이 마지막으로 쓴 그대로 둔 스냅샷([04](04-app-ui.md) §6.7). 없으면 잠금 해제 뒤 첫 검사가 만든다. 있으면 아래 형식으로 엄격 검증(위반은 문서 거부) |
+| `token_view` (선택, 2026-11-03) | `TokenView` | S10 토큰 카드의 행 숨김([04] §2.6, 표시 전용). 기본값(숨김 없음·`hide_zero` false)이면 쓰지 않는다(이전 버전은 모르는 키로 보존). `hidden`의 키는 `eip155:*`(값 = `EvmAddr`, 레지스트리·사용자 토큰 모두)·`solana:*`(값 = 허용 목록 mint base58)만, 네트워크당 1..=200개(빈 배열 키는 쓰지 않음)·전체 0..=2,000개, 같은 네트워크 안 중복 금지. 사용자 토큰을 `tokens`에서 지우면 그 항목도 지운다. 형식이 틀리면 문서를 거부하지 않고 `prefs`처럼 기본값으로 되돌리고 로그(`meta.prefs_reset`)를 남긴다: 승인·위험 판단·토큰 인식은 이 키를 읽지 않는다 |
 | `vault_generation_seen` (선택, 2026-11-01) | u64 | 이 meta와 함께 본 가장 큰 `vault.ywv` `generation`. 0이면 쓰지 않는다. 잠금 해제 때 본 파일의 generation이 이보다 작으면 경고 배너([04] §6.7) |
 
 ```
@@ -501,6 +502,7 @@ AddressBookEntry = { "chain": "evm"|"sol"|"btc", "address": string, "label": Lab
 ConnectedSite    = { "origin": string, "accounts": EvmAddr[1..=16], "chain_id": u64(≥ 1, EVM chainId),
                      "granted_at_unix_ms": u64 }
 TokenEntry       = { "address": EvmAddr, "label": Label, "decimals": u8(0..=36, [03] §2.5) }
+TokenView        = { "hidden": { NetworkId: string[1..=200] }, "hide_zero": bool }
 ActivityEntry    = { "account": string, "tx_id": string, "title": string, "asset": string, "amount": string,
                      "counterparty": string, "status": ActivityStatus, "time_unix_ms": u64 }
 ActivityStatus   = "succeeded" | "failed" | "dropped" | "replaced" | "expired" | "rejected" | "conflicted" | "abandoned"

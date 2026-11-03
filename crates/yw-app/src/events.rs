@@ -551,8 +551,8 @@ pub enum KeyJobError {
 /// Meta after loading.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MetaLoaded {
-    /// The document with refreshed address caches.
-    pub meta: Meta,
+    /// The document with refreshed address caches (boxed: the largest key-worker outcome).
+    pub meta: Box<Meta>,
     /// The caches had to be fixed (`MetaAddressMismatch`).
     pub mismatch: bool,
     /// `prefs` was reset.

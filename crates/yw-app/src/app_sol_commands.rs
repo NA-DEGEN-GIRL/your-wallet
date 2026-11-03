@@ -156,6 +156,15 @@ impl App {
             self.sol_select_asset(usize::from(index));
             return true;
         }
+        if let Some(index) = offset(id, ids::TOKEN_HIDE_BASE, ids::TOKEN_HIDE_SPAN) {
+            self.toggle_sol_token_hidden(usize::from(index));
+            return true;
+        }
+        if id == ids::TOKEN_HIDDEN_TOGGLE {
+            self.sol.show_hidden_tokens = !self.sol.show_hidden_tokens;
+            self.refresh();
+            return true;
+        }
         if let Some(index) = offset(id, ids::TOKEN_SEND_BASE, ids::TOKEN_SEND_SPAN) {
             // Token card "보내기": the send form with that token selected (SOL is asset 0).
             self.sol_open_send();

@@ -288,6 +288,9 @@ pub const T_ACCOUNTS_KEY_ONLY: &str = "보내기·받기에 쓸 계정을 고르
 pub const T_REMOVE_KEY: &str = "선택한 가져온 개인키 계정을 이 지갑에서 지웁니다. 가져온 개인키는 복구 단어로 복구되지 않으므로, 지우고 나면 원래 개인키 없이는 이 계정의 자산에 다시 접근할 수 없습니다. 지우기 전에 설정 → 보안 → '개인키 보기'로 개인키를 내보내 안전하게 보관했는지 확인하세요. 계속하려면 비밀번호를 입력하세요.";
 /// The EVM `폐기` confirmation: discarding only stops tracking; a resend may pay twice.
 pub const T_DISCARD: &str = "폐기는 이 앱에서 추적만 멈추고 '폐기됨'으로 표시합니다. 네트워크에서 거래를 취소하지는 않습니다. 이미 전파된 거래라면 나중에 처리될 수 있고, 그 사이 같은 송금을 다시 보내면 두 거래가 모두 처리되어 두 번 지불될 수 있습니다. 확실히 막으려면 폐기 대신 '취소'(같은 nonce의 취소 거래)를 쓰고, 다시 보내기 전에 탐색기에서 이 거래가 사라졌는지 확인하세요.";
+/// T-TOKEN-DELETE: `삭제` of a user-added EVM token (spec/04 §2.6); the label and the full
+/// contract address follow it.
+pub const T_TOKEN_DELETE: &str = "이 토큰을 이 네트워크의 토큰 목록에서 지웁니다. 토큰이나 잔액은 그대로이며 블록체인에는 아무것도 보내지 않습니다. 같은 컨트랙트 주소로 언제든 다시 추가할 수 있습니다. 지운 뒤 이 토큰의 활동 기록은 원시 단위로 보입니다.";
 /// Every chain's `받기` (S12) command.
 pub const RECEIVE_IDS: [u16; 3] = [
     crate::ui::screens_evm::ids::RECEIVE_OPEN,
@@ -1317,6 +1320,11 @@ impl App {
                 "선택한 주소록 항목을 지웁니다.".to_owned(),
                 "삭제",
             ),
+            Confirm::TokenDelete => (
+                "토큰 삭제",
+                T_TOKEN_DELETE.to_owned(),
+                "삭제",
+            ),
             Confirm::DisconnectAll => (
                 "모든 사이트 연결 해제",
                 "연결된 모든 사이트의 연결을 해제합니다. 사이트는 다시 연결을 요청해야 계정을 볼 수 있습니다.".to_owned(),
@@ -1343,6 +1351,7 @@ impl App {
             Confirm::PruneDormant
                 | Confirm::ChainDelete
                 | Confirm::BookDelete
+                | Confirm::TokenDelete
                 | Confirm::DisconnectAll
                 | Confirm::Discard
                 | Confirm::RemoveKey
@@ -1354,6 +1363,13 @@ impl App {
         items.push(Item::Text(text));
         if kind == Confirm::RemoveKey {
             self.remove_key_balance(items);
+        }
+        if kind == Confirm::TokenDelete
+            && let Some((label, address)) = self.token_delete_target()
+        {
+            items.push(Item::Field("토큰".to_owned(), label));
+            items.push(Item::Help("컨트랙트 주소".to_owned()));
+            items.push(Item::Mono(yw_core::evm::display::format_address(&address)));
         }
         if matches!(kind, Confirm::RemoveImported | Confirm::RevealImported)
             && let Some((label, address)) = self.imported_target_text()

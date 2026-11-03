@@ -329,6 +329,12 @@ pub struct EvmUi {
     pub discard: Option<GroupKey>,
     /// User chain awaiting the delete confirmation.
     pub delete_chain: Option<u64>,
+    /// User token awaiting the delete confirmation `(chain, contract)`.
+    pub token_delete: Option<(u64, Address)>,
+    /// The S10 token card lists the hidden tokens (`숨긴 토큰 n개 보기`; session only).
+    pub show_hidden_tokens: bool,
+    /// The S11 asset radios of hidden tokens are expanded (`숨긴 토큰 n개 보기`; session only).
+    pub send_show_hidden: bool,
     /// The approval window.
     pub window: Option<crate::app_approval::ApprovalUi>,
     /// What the S12 receive QR encodes (session only, spec/04 §2.8).
@@ -354,6 +360,8 @@ impl EvmUi {
         self.book = BookForm::default();
         self.token = TokenForm::default();
         self.discard = None;
+        self.token_delete = None;
+        self.send_show_hidden = false;
     }
 
     /// Records of the journal view.

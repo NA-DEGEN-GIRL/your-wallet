@@ -59,6 +59,12 @@ pub mod ids {
     pub const TOKEN_SEND_BASE: u16 = 7_027;
     /// Token send span.
     pub const TOKEN_SEND_SPAN: u16 = 3;
+    /// Token card `숨기기` / `다시 보이기` (allowlist index of the cluster).
+    pub const TOKEN_HIDE_BASE: u16 = 7_070;
+    /// Token hide span.
+    pub const TOKEN_HIDE_SPAN: u16 = 4;
+    /// Token card `숨긴 토큰 n개 보기` / `접기`.
+    pub const TOKEN_HIDDEN_TOGGLE: u16 = 7_075;
     /// Account radios (one id per row; rows ≤ 100, spec/02 §5.3). The span covers the whole
     /// account-index range 0..=999. It used to start at 7,200, inside the scan rows below, so
     /// the 41st scan row's `계정 추가` selected account 0 instead.
@@ -146,6 +152,7 @@ pub mod ids {
         SEND_PICK,
         SEND_AGAIN,
         SEND_NOW,
+        TOKEN_HIDDEN_TOGGLE,
         SECTION_SOL,
         FEE_CAP_EDIT,
         CU_PRICE_EDIT,
@@ -347,6 +354,7 @@ impl App {
             if let Some(holdings) = self.sol_token_holdings(address) {
                 let tokens: Vec<String> = holdings
                     .iter()
+                    .filter(|(entry, _)| !self.sol_token_hidden(entry))
                     .map(|(entry, holding)| {
                         holding.balance().map_or_else(
                             || format!("{} 확인할 수 없음", entry.symbol),
@@ -555,7 +563,16 @@ impl App {
             "허용 목록 토큰만 표시합니다: {} (SPL Token). 다른 토큰·NFT는 받아도 여기에 보이지 않고 보낼 수 없습니다.",
             symbols.join("·")
         )));
-        for (index, entry) in entries.into_iter().enumerate() {
+        let (hidden, shown): (Vec<_>, Vec<_>) = entries
+            .into_iter()
+            .enumerate()
+            .partition(|(_, entry)| self.sol_token_hidden(entry));
+        if shown.is_empty() {
+            items.push(Item::Help(
+                "보이는 토큰이 없습니다. 숨긴 토큰은 아래에서 다시 볼 수 있습니다.".to_owned(),
+            ));
+        }
+        for (index, entry) in shown {
             let holding = self.sol_token_holding(address, entry);
             let (value, note) = token_holding_text(entry, holding);
             items.push(Item::Field(entry.symbol.to_owned(), value));
@@ -563,17 +580,63 @@ impl App {
             items.push(Item::Help("mint (허용 목록 고정)".to_owned()));
             items.push(Item::Mono(grouped(&entry.mint)));
             let id = ids::TOKEN_SEND_BASE.saturating_add(u16::try_from(index).unwrap_or(0));
-            items.push(Item::Row(vec![
+            let mut row = vec![
                 Ctl::link(id, &format!("{} 보내기", entry.symbol)).enabled(
                     can_send
                         && holding
                             .and_then(TokenHolding::balance)
                             .is_some_and(|raw| raw > 0),
                 ),
-            ]));
+            ];
+            row.extend(Self::sol_token_hide_button(index, false));
+            items.push(Item::Row(row));
             items.push(Item::Gap(4));
         }
+        if !hidden.is_empty() {
+            let open = self.sol.show_hidden_tokens;
+            let count = hidden.len();
+            items.push(Item::Row(vec![Ctl::link(
+                ids::TOKEN_HIDDEN_TOGGLE,
+                &if open {
+                    format!("숨긴 토큰 {count}개 접기 ▾")
+                } else {
+                    format!("숨긴 토큰 {count}개 보기 ▸")
+                },
+            )]));
+            if open {
+                items.push(Item::Help(
+                    "숨기기는 이 카드에서만 감춥니다. 보내기 화면의 자산 선택, 승인 창의 확인, 활동 기록은 그대로입니다."
+                        .to_owned(),
+                ));
+                for (index, entry) in hidden {
+                    let (value, _) =
+                        token_holding_text(entry, self.sol_token_holding(address, entry));
+                    items.push(Item::Muted(format!("{} · {value} · 숨김", entry.symbol)));
+                    items.push(Item::Mono(grouped(&entry.mint)));
+                    items.push(Item::Row(Self::sol_token_hide_button(index, true)));
+                }
+            }
+        }
         items.push(Item::CardEnd);
+    }
+
+    /// `숨기기` / `다시 보이기` of allowlist row `index` (none beyond the id span).
+    fn sol_token_hide_button(index: usize, hidden: bool) -> Vec<Ctl> {
+        u16::try_from(index)
+            .ok()
+            .filter(|offset| *offset < ids::TOKEN_HIDE_SPAN)
+            .map(|offset| {
+                Ctl::link(
+                    ids::TOKEN_HIDE_BASE.saturating_add(offset),
+                    if hidden {
+                        "다시 보이기"
+                    } else {
+                        "숨기기"
+                    },
+                )
+            })
+            .into_iter()
+            .collect()
     }
 
     /// The SOL/SPL send form.

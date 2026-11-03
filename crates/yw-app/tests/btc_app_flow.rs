@@ -662,7 +662,7 @@ impl Harness {
         match outcome {
             KeyOutcome::Meta(Ok(loaded)) => {
                 self.has_mnemonic = loaded.has_mnemonic;
-                self.meta = Some(loaded.meta);
+                self.meta = Some(*loaded.meta);
             }
             KeyOutcome::Journal(Ok(view)) => {
                 self.journal = Some(view);

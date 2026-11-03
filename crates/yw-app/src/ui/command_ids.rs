@@ -9,9 +9,9 @@
 //! | Block | Ids | Contents |
 //! |---|---|---|
 //! | core (`screens`) | 100–802 | S01–S09, top bar, settings 보안·네트워크·기타, overlays; network chips 210–249, URL rows 540–699 |
-//! | EVM (`screens_evm`) | 900–3,199, 6,600 | send, book rows 1,020–2,019, chain rows 2,210–2,349, caps 2,400–2,439, activity 2,500–2,899, send assets 3,000–3,199 |
+//! | EVM (`screens_evm`) | 900–3,439, 6,600 | send, book rows 1,020–2,019, chain rows 2,210–2,349, caps 2,400–2,439, activity 2,500–2,899, send assets 3,000–3,199, token rows 3,200–3,439 |
 //! | sites (`screens_sites`) | 6,700–6,965 | S13 rows 6,710–6,965 |
-//! | Solana (`screens_sol`) | 7,000–7,909 | send assets 7,015–7,018, token cards 7,027–7,029, picker 7,030–7,069, scan rows 7,120–7,375, book rows 7,410–7,909 |
+//! | Solana (`screens_sol`) | 7,000–7,909 | send assets 7,015–7,018, token cards 7,027–7,029, picker 7,030–7,069, token hide 7,070–7,073, scan rows 7,120–7,375, book rows 7,410–7,909 |
 //! | Bitcoin (`screens_btc`) | 9,000–9,899 | account rows 9,130–9,194, UTXO rows 9,200–9,499, activity 9,500–9,899 |
 //! | AI 설명 (`screens_llm`) | 10,000–10,099 | M6 settings |
 //! | EVM accounts (`screens`) | 11,000–11,999 | one radio per row (index range 0..=999) |
@@ -153,6 +153,13 @@ pub fn ranges() -> Vec<IdRange> {
             evm_chains,
         ),
         range(
+            "evm.token_rows",
+            screens_evm::ids::TOKEN_ROW_BASE,
+            screens_evm::ids::TOKEN_ROW_SPAN,
+            screens_evm::ids::TOKEN_ROW_STRIDE,
+            max_registry_tokens() + crate::meta::MAX_TOKENS_PER_NETWORK,
+        ),
+        range(
             "evm.activity",
             screens_evm::ids::ACTIVITY_BASE,
             screens_evm::ids::ACTIVITY_SPAN,
@@ -177,6 +184,13 @@ pub fn ranges() -> Vec<IdRange> {
             "sol.token_send",
             screens_sol::ids::TOKEN_SEND_BASE,
             screens_sol::ids::TOKEN_SEND_SPAN,
+            1,
+            max_spl_tokens(),
+        ),
+        range(
+            "sol.token_hide",
+            screens_sol::ids::TOKEN_HIDE_BASE,
+            screens_sol::ids::TOKEN_HIDE_SPAN,
             1,
             max_spl_tokens(),
         ),
@@ -298,6 +312,43 @@ mod tests {
                     inside.iter().map(|range| range.name).collect::<Vec<_>>()
                 );
             }
+        }
+    }
+
+    /// Token-row ids (2026-11-03): every row of the longest EVM token list maps back to its
+    /// row and action, and the token-card ids collide with nothing (above).
+    #[test]
+    fn every_token_row_id_maps_back_to_its_row() {
+        use crate::ui::screens_evm::ids::{TokenAction, token_action, token_row_id};
+        let rows = super::max_registry_tokens() + crate::meta::MAX_TOKENS_PER_NETWORK;
+        let mut seen = std::collections::BTreeSet::new();
+        for row in 0..rows {
+            for action in [TokenAction::ToggleHidden(row), TokenAction::Delete(row)] {
+                let id = token_row_id(action).unwrap();
+                assert_eq!(token_action(id), Some(action), "row {row}");
+                assert!(seen.insert(id), "row {row} id {id} reused");
+                for range in ranges() {
+                    assert!(
+                        range.name == "evm.token_rows" || !range.contains(id),
+                        "row {row} id {id} inside {}",
+                        range.name
+                    );
+                }
+            }
+        }
+        assert_eq!(token_action(3_199), None);
+        assert_eq!(token_action(3_440), None);
+        let fixed_new = [
+            crate::ui::screens_evm::ids::SEND_HIDDEN_TOGGLE,
+            crate::ui::screens_evm::ids::TOKEN_HIDE_ZERO,
+            crate::ui::screens_evm::ids::TOKEN_HIDDEN_TOGGLE,
+            crate::ui::screens_sol::ids::TOKEN_HIDDEN_TOGGLE,
+        ];
+        for id in fixed_new {
+            assert!(
+                fixed().iter().any(|(_, ids)| ids.contains(&id)),
+                "{id} not listed as a fixed id"
+            );
         }
     }
 

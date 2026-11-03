@@ -201,6 +201,8 @@ pub enum Confirm {
     Discard,
     /// Delete an address-book entry.
     BookDelete,
+    /// Delete a user-added EVM token (`EvmUi::token_delete`).
+    TokenDelete,
     /// S13 `모두 해제`.
     DisconnectAll,
     /// A Bitcoin overlay (`BtcUi::confirm` holds which one and its texts).
@@ -1625,7 +1627,7 @@ impl App {
                     logging::warn("app", "meta.prefs_reset", &[]);
                 }
                 self.keys.has_mnemonic = has_mnemonic;
-                self.meta = Some(meta);
+                self.meta = Some(*meta);
                 // Review M1/L15/L17: compare settings.json with the snapshot in the meta.
                 self.verify_settings();
                 if matches!(self.mode, AppMode::Unlocked { .. })
@@ -2841,6 +2843,7 @@ impl App {
                     form.pending = None;
                     form.message = None;
                 }
+                self.evm.token_delete = None;
                 if matches!(self.screen, Screen::Confirm(Confirm::BookDelete)) {
                     self.evm.book = crate::app_evm::BookForm::default();
                 }
@@ -3376,6 +3379,10 @@ impl App {
             Confirm::BookDelete => {
                 self.delete_book_entry();
                 self.set_screen(Screen::AddressBook);
+            }
+            Confirm::TokenDelete => {
+                self.delete_token();
+                self.set_screen(Screen::Main);
             }
             Confirm::Btc => self.btc_confirm_yes(),
             Confirm::LlmOn => self.llm_confirm_on(),

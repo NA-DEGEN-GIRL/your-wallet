@@ -55,6 +55,8 @@ use crate::ui::secret::{DisplaySecret, SecretKind};
 use crate::workers::rpc::RpcJob;
 
 const TIMER_CLASS: &str = "YourWalletV3TourTimer";
+/// A made-up user token contract (shot 31, hidden like an unwanted airdrop).
+const TOUR_AIRDROP: &str = "0x00000000000000000000000000000000000a1d40";
 const SETTLE_MS: u32 = 450;
 
 struct QuitOnTimer;
@@ -988,6 +990,72 @@ fn screenshot_tour() {
     unlocked_state(&mut app.borrow_mut());
     set_screen(&app, UNLOCKED, Screen::Main);
     save(main_hwnd(&app), "10-main-evm");
+    {
+        // The token card (2026-11-03): a made-up airdrop token hidden with the hidden list open,
+        // `잔액 0인 토큰 숨기기` on (WETH 0 is tucked away), made-up USDC balance; scrolled to it.
+        let mut state = app.borrow_mut();
+        let registry: Vec<Address> = state
+            .chain_tokens(SEPOLIA)
+            .into_iter()
+            .map(|(address, ..)| address)
+            .collect();
+        let network = NetworkId::Eip155(SEPOLIA).to_string();
+        if let Some(meta) = state.meta.as_mut() {
+            let _ = meta.add_token(
+                &network,
+                &crate::meta::TokenEntry {
+                    address: TOUR_AIRDROP.to_owned(),
+                    label: "FREE-AIRDROP".to_owned(),
+                    decimals: 18,
+                },
+            );
+            meta.token_view.set_hidden(&network, TOUR_AIRDROP, true);
+            meta.token_view.hide_zero = true;
+        }
+        if let Some(snapshot) = state
+            .evm
+            .balances
+            .get_mut(&SEPOLIA)
+            .and_then(|balance| balance.snapshot.as_mut())
+        {
+            snapshot.tokens = registry
+                .iter()
+                .enumerate()
+                .map(|(index, address)| {
+                    (
+                        *address,
+                        Some(if index == 0 {
+                            U256::ZERO
+                        } else {
+                            U256::from_u64(125_500_000)
+                        }),
+                    )
+                })
+                .collect();
+        }
+        state.evm.show_hidden_tokens = true;
+        state.scroll = 600;
+        state.refresh();
+    }
+    save(main_hwnd(&app), "31-main-evm-tokens");
+    {
+        let mut state = app.borrow_mut();
+        let network = NetworkId::Eip155(SEPOLIA).to_string();
+        if let Some(meta) = state.meta.as_mut() {
+            meta.remove_token(&network, TOUR_AIRDROP);
+            *meta.token_view = crate::token_view::TokenView::default();
+        }
+        if let Some(snapshot) = state
+            .evm
+            .balances
+            .get_mut(&SEPOLIA)
+            .and_then(|balance| balance.snapshot.as_mut())
+        {
+            snapshot.tokens = Vec::new();
+        }
+        state.evm.show_hidden_tokens = false;
+        state.scroll = 0;
+    }
     {
         let mut state = app.borrow_mut();
         state.evm.send.to_text = recipient().to_checksum();

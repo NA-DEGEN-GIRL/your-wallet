@@ -6,13 +6,16 @@
 //! (spec/04 §6.6, spec/02 §5.3). The imported-key keys (`sol_raw_accounts`, `sol_raw_selected`)
 //! are optional on read (files written before key import lack them) and always written after
 //! `prefs`; `btc_accounts` (spec/08 §12.3a) is optional too and written last. Imported Bitcoin
-//! keys have no list of their own: each is a single-key account in `btc_accounts`.
+//! keys have no list of their own: each is a single-key account in `btc_accounts`. The optional
+//! `token_view` (hidden token rows, `crate::token_view`) is written only when not the default and
+//! falls back to the default when invalid, like `prefs`.
 
 use yw_core::btc::meta::{BtcAccounts, BtcMeta, btc_meta_from_json, btc_meta_to_json};
 use yw_json::{Limits, Number, Object, Value};
 
 use crate::network::NetworkId;
 use crate::text::{is_valid_label, json_object, json_object_owned, json_str, json_u64};
+use crate::token_view::{TOKEN_VIEW_KEY, TokenView};
 
 /// Schema tag.
 pub const META_SCHEMA: &str = "yw-meta/3";
@@ -236,6 +239,9 @@ pub struct Meta {
     /// `security_settings` and `vault_generation_seen` (boxed to keep the document small in
     /// key-worker messages).
     pub security: Box<MetaSecurity>,
+    /// `token_view` (optional key, 2026-11-03): hidden token rows and `잔액 0인 토큰 숨기기`
+    /// (display only, `crate::token_view`).
+    pub token_view: Box<TokenView>,
     /// Top-level keys this version does not know (a newer minor version's), in file order; written
     /// back after the known keys while the plaintext stays within 8 MiB (spec/04 §6.6).
     pub unknown: Vec<(String, Value)>,
@@ -263,6 +269,7 @@ impl Default for Meta {
             activity: Vec::new(),
             prefs: Prefs::default(),
             security: Box::default(),
+            token_view: Box::default(),
             unknown: Vec::new(),
         }
     }
@@ -288,7 +295,7 @@ pub struct MetaError;
 pub struct MetaParse {
     /// Document.
     pub meta: Meta,
-    /// `prefs` was invalid and reset (logged).
+    /// `prefs` or `token_view` was invalid and reset to its default (logged).
     pub prefs_reset: bool,
 }
 
@@ -624,6 +631,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
                 && *key != BTC_SITES_KEY
                 && *key != SECURITY_KEY
                 && *key != VAULT_SEEN_KEY
+                && *key != TOKEN_VIEW_KEY
         })
         .map(|(key, value)| (key.to_owned(), value.clone()))
         .collect();
@@ -718,6 +726,13 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         None => 0,
         Some(value) => u64_of(value).ok_or(MetaError)?,
     };
+    // A view preference: an invalid value falls back to the default like `prefs`.
+    let (token_view, token_view_reset) = match object.get(TOKEN_VIEW_KEY) {
+        None => (TokenView::default(), false),
+        Some(value) => {
+            TokenView::from_json(value).map_or((TokenView::default(), true), |view| (view, false))
+        }
+    };
     let mut meta = Meta {
         evm_accounts,
         evm_raw_accounts,
@@ -739,10 +754,11 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
             snapshot,
             vault_generation_seen,
         }),
+        token_view: Box::new(token_view),
         unknown,
     };
     let prefs = parse_prefs(get("prefs")?, &meta);
-    let prefs_reset = prefs.is_none();
+    let prefs_reset = prefs.is_none() || token_view_reset;
     meta.prefs = prefs.unwrap_or_default();
     Ok(MetaParse { meta, prefs_reset })
 }
@@ -865,6 +881,9 @@ impl Meta {
                 VAULT_SEEN_KEY,
                 json_u64(self.security.vault_generation_seen),
             ));
+        }
+        if !self.token_view.is_default() {
+            members.push((TOKEN_VIEW_KEY, self.token_view.to_json()));
         }
         members
     }
@@ -1252,8 +1271,9 @@ impl Meta {
         Ok(())
     }
 
-    /// Removes a user token.
+    /// Removes a user token (and its hidden mark: a token added again starts visible).
     pub fn remove_token(&mut self, network: &str, address: &str) {
+        self.token_view.set_hidden(network, address, false);
         for (key, items) in &mut self.tokens {
             if key == network {
                 items.retain(|value| {
@@ -1606,6 +1626,86 @@ mod tests {
         let parsed = parse(bad.as_bytes()).unwrap();
         assert!(parsed.prefs_reset);
         assert_eq!(parsed.meta.prefs.evm_account, EvmAccountPref::Index(0));
+    }
+
+    /// `token_view` (2026-11-03): an optional key written only when not the default, after the
+    /// required keys; a file without it (every earlier version) reads as "nothing hidden" and is
+    /// written back byte-identical; an older app keeps it as an unknown key; an invalid value
+    /// resets only the view (`prefs_reset`), never the document.
+    #[test]
+    fn token_view_is_an_optional_key_with_fallback() {
+        const USDC: &str = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48";
+        const MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        let old = Meta::default().to_json();
+        assert!(
+            !String::from_utf8(old.clone())
+                .unwrap()
+                .contains("token_view")
+        );
+        let parsed = parse(&old).unwrap();
+        assert!(!parsed.prefs_reset);
+        assert!(parsed.meta.token_view.is_default());
+        assert_eq!(parsed.meta.to_json(), old);
+
+        let mut meta = Meta::default();
+        meta.add_token(
+            "eip155:1",
+            &super::TokenEntry {
+                address: "0x1111111111111111111111111111111111111111".to_owned(),
+                label: "SCAM".to_owned(),
+                decimals: 18,
+            },
+        )
+        .unwrap();
+        assert!(meta.token_view.set_hidden("eip155:1", USDC, true));
+        assert!(meta.token_view.set_hidden(
+            "eip155:1",
+            "0x1111111111111111111111111111111111111111",
+            true
+        ));
+        assert!(meta.token_view.set_hidden("solana:mainnet", MINT, true));
+        meta.token_view.hide_zero = true;
+        let bytes = meta.to_json();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert!(text.find("\"prefs\"").unwrap() < text.find("\"token_view\"").unwrap());
+        let parsed = parse(&bytes).unwrap();
+        assert!(!parsed.prefs_reset);
+        assert_eq!(parsed.meta, meta);
+        assert!(parsed.meta.unknown.is_empty());
+        assert_eq!(parsed.meta.to_json(), bytes);
+
+        // Deleting a user token also forgets its hidden mark; registry marks stay.
+        let mut removed = parsed.meta;
+        removed.remove_token("eip155:1", "0x1111111111111111111111111111111111111111");
+        assert!(removed.tokens_of("eip155:1").is_empty());
+        assert_eq!(removed.token_view.hidden_of("eip155:1"), [USDC.to_owned()]);
+
+        // An app that predates the key keeps it unread (as an unknown key) and writes it back.
+        let older = text.replacen("\"token_view\"", "\"token_view_next\"", 1);
+        let kept = parse(older.as_bytes()).unwrap().meta;
+        assert!(kept.token_view.is_default());
+        assert_eq!(kept.unknown.len(), 1);
+        assert_eq!(kept.to_json(), older.as_bytes());
+
+        // Invalid values reset the view only.
+        for bad in [
+            text.replacen("\"hide_zero\":true", "\"hide_zero\":1", 1),
+            text.replacen("\"hide_zero\":true", "\"hide_zero\":true,\"x\":1", 1),
+            text.replacen(USDC, &USDC.to_uppercase().replacen("0X", "0x", 1), 1),
+            text.replacen("\"solana:mainnet\"", "\"bitcoin:mainnet\"", 1),
+        ] {
+            let parsed = parse(bad.as_bytes()).unwrap();
+            assert!(parsed.prefs_reset, "{bad}");
+            assert!(parsed.meta.token_view.is_default());
+            assert_eq!(parsed.meta.tokens_of("eip155:1").len(), 1);
+            assert!(
+                !parsed
+                    .meta
+                    .to_json()
+                    .windows(10)
+                    .any(|w| w == b"token_view")
+            );
+        }
     }
 
     #[test]
