@@ -108,6 +108,8 @@ pub struct MockCard {
     pub refuse_touch: bool,
     /// Return a corrupted signature.
     pub corrupt_signature: bool,
+    /// Refuse Ed25519 PIV import (`6A80`), as a 5.7.0–5.7.3 card might.
+    pub refuse_ed25519_import: bool,
     /// Every command header received, in order.
     pub log: Vec<[u8; 4]>,
     /// Touches requested.
@@ -170,6 +172,7 @@ impl MockCard {
             high_s: false,
             refuse_touch: false,
             corrupt_signature: false,
+            refuse_ed25519_import: false,
             log: Vec::new(),
             touches: 0,
             pw1: super::openpgp::DEFAULT_PW1.to_vec(),
@@ -676,6 +679,9 @@ impl MockCard {
                 }
                 if p1 != super::piv::ALG_ED25519 || super::plan::PivSlot::new(p2).is_err() {
                     return sw(0x6A86);
+                }
+                if self.refuse_ed25519_import {
+                    return sw(0x6A80);
                 }
                 let (Ok(seed), Ok(pin), Ok(touch)) = (
                     tlv::find(data, 0x07),

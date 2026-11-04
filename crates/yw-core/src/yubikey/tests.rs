@@ -140,7 +140,7 @@ fn enrol_recommended_plan_and_public_keys_match_known_vectors() {
         card.pgp_attributes[0],
         super::openpgp::secp256k1_attributes()
     );
-    assert_eq!(card.pgp_uif, [0x02, 0x00, 0x02]);
+    assert_eq!(card.pgp_uif, [0x01, 0x00, 0x01]);
     assert_eq!(card.piv_keys.len(), 2);
     assert!(
         card.piv_keys
@@ -381,8 +381,13 @@ fn enrolment_refusals() {
     // Re-enrolling a card whose SIG touch policy is already fixed: the same fixed policy is
     // kept (no UIF write), another one is refused before any key is written.
     let mut card = MockCard::new(8);
-    enrol(&mut card, ABOUT, &[sig(evm(0))], &[]).unwrap();
-    enrol(&mut card, ABOUT, &[sig(evm(5))], &[]).unwrap();
+    let fixed = |role| {
+        let mut planned = sig(role);
+        planned.touch = TouchPolicy::AlwaysFixed;
+        planned
+    };
+    enrol(&mut card, ABOUT, &[fixed(evm(0))], &[]).unwrap();
+    enrol(&mut card, ABOUT, &[fixed(evm(5))], &[]).unwrap();
     let mut cached = sig(evm(6));
     cached.touch = TouchPolicy::CachedFixed;
     let before = card.pgp_keys[0];
@@ -391,6 +396,20 @@ fn enrolment_refusals() {
         Some(EnrolError::Card(CardError::Conditions))
     );
     assert_eq!(card.pgp_keys[0], before);
+    // A 5.7.2 card refusing the Ed25519 import gets the specific message; on 5.7.4 the same
+    // refusal stays a plain data error.
+    let mut card = MockCard::new(9);
+    card.firmware = Firmware::new(5, 7, 2);
+    card.refuse_ed25519_import = true;
+    assert_eq!(
+        enrol(&mut card, ABOUT, &[piv(0x82, sol(0))], &[]).err(),
+        Some(EnrolError::Card(CardError::Ed25519ImportRefused))
+    );
+    card.firmware = Firmware::new(5, 7, 4);
+    assert_eq!(
+        enrol(&mut card, ABOUT, &[piv(0x82, sol(0))], &[]).err(),
+        Some(EnrolError::Card(CardError::WrongData))
+    );
     let mut card = MockCard::new(6);
     card.has_openpgp = false;
     assert_eq!(

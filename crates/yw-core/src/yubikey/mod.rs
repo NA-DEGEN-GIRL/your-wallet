@@ -120,6 +120,9 @@ pub enum CardError {
     BadSignature,
     /// The PIN or admin PIN does not meet the applet's length rules.
     PinFormat,
+    /// The card refused an Ed25519 PIV import on firmware 5.7.0–5.7.3 (Yubico documents the
+    /// import from 5.7.4, spec/10 §2).
+    Ed25519ImportRefused,
     /// Internal error (derivation failure, invariant).
     Internal,
 }
@@ -171,6 +174,7 @@ impl CardError {
             Self::WrongCard => "wrong_card",
             Self::BadSignature => "bad_signature",
             Self::PinFormat => "pin_format",
+            Self::Ed25519ImportRefused => "ed25519_import_refused",
             Self::Internal => "internal",
         }
     }
@@ -214,6 +218,9 @@ impl fmt::Display for CardError {
                 .write_str("이 YubiKey에는 이 계정의 키가 없습니다. 등록한 YubiKey를 연결하세요."),
             Self::BadSignature => formatter.write_str("서명 검증 실패(YubiKey 응답 오류)"),
             Self::PinFormat => formatter.write_str("PIN 길이가 맞지 않습니다."),
+            Self::Ed25519ImportRefused => formatter.write_str(
+                "이 YubiKey 펌웨어(5.7.0–5.7.3)는 Ed25519 키 가져오기를 거부했습니다. Yubico는 5.7.4부터 지원한다고 안내합니다. Solana 슬롯 없이 등록하거나 5.7.4 이상의 YubiKey를 쓰세요.",
+            ),
             Self::ManagementKeyMismatch => formatter.write_str("PIV 관리 키가 맞지 않습니다."),
             Self::WrongData
             | Self::NotFound
@@ -264,5 +271,9 @@ impl fmt::Display for Firmware {
 
 /// OpenPGP secp256k1 import/sign: OpenPGP card 3.4 on YubiKey 5.2.3+ (spec/10 §2).
 pub const MIN_FIRMWARE_OPENPGP: Firmware = Firmware::new(5, 2, 3);
-/// PIV Ed25519 key import: 5.7.0 adds Ed25519/X25519 to PIV (spec/10 §2).
+/// PIV Ed25519 support: 5.7.0 adds Ed25519/X25519 to PIV (spec/10 §2). Below this the PIV
+/// session is refused.
 pub const MIN_FIRMWARE_PIV_ED25519: Firmware = Firmware::new(5, 7, 0);
+/// PIV Ed25519 key **import** as documented by Yubico ("as of 5.7.4", spec/10 §2). On
+/// 5.7.0–5.7.3 the import is attempted; a refusal becomes [`CardError::Ed25519ImportRefused`].
+pub const DOCUMENTED_FIRMWARE_PIV_ED25519_IMPORT: Firmware = Firmware::new(5, 7, 4);

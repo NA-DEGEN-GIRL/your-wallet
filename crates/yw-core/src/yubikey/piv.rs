@@ -625,7 +625,16 @@ impl<'t> Piv<'t> {
         let expected = ed25519_dalek::SigningKey::from_bytes(seed)
             .verifying_key()
             .to_bytes();
-        self.run(&import_ed25519(slot, seed, pin, touch)?)?;
+        let early = !self
+            .firmware
+            .at_least(super::DOCUMENTED_FIRMWARE_PIV_ED25519_IMPORT);
+        self.run(&import_ed25519(slot, seed, pin, touch)?)
+            .map_err(|error| match error {
+                CardError::NotSupported | CardError::WrongData if early => {
+                    CardError::Ed25519ImportRefused
+                }
+                other => other,
+            })?;
         let metadata = self.slot_metadata(slot)?;
         if metadata.algorithm != ALG_ED25519
             || metadata.origin != 2

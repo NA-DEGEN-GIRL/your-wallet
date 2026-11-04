@@ -438,12 +438,12 @@ pub struct PlannedSlot {
 }
 
 impl PlannedSlot {
-    /// The recommended defaults for `slot` holding `role` (touch always — fixed on OpenPGP —,
-    /// PIN always on PIV).
+    /// The recommended defaults for `slot` holding `role`: touch "always" (changeable; the fixed
+    /// variants are an explicit choice, user decision 2026-11-05), PIN "always" on PIV.
     #[must_use]
     pub const fn recommended(slot: CardSlot, role: KeyRole) -> Self {
         let (touch, pin) = match slot {
-            CardSlot::OpenPgp(_) => (TouchPolicy::AlwaysFixed, PinPolicy::NotApplicable),
+            CardSlot::OpenPgp(_) => (TouchPolicy::Always, PinPolicy::NotApplicable),
             CardSlot::Piv(_) => (TouchPolicy::Always, PinPolicy::Always),
         };
         Self {
