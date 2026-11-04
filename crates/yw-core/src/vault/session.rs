@@ -15,7 +15,7 @@ use subtle::{Choice, ConstantTimeEq};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::format::{
-    self, Bip39Record, BtcKeyRecord, MAX_RAW_KEYS, Payload, RawKeyRecord, SealMaterial,
+    self, Bip39Record, BtcKeyRecord, HwKeyEntry, MAX_RAW_KEYS, Payload, RawKeyRecord, SealMaterial,
     SolKeyRecord,
 };
 use super::{
@@ -40,6 +40,7 @@ use crate::keyimport::{
 use crate::password::{Bip39Passphrase, VaultPassword};
 use crate::secret::{SecretBytes, SecretString, SecretVec};
 use crate::slip10::SolKeySource;
+use crate::yubikey::record::{HwKeyRecord, records_consistent};
 
 const MAX_ADDRESS_BATCH: usize = 100;
 /// `sol_public_keys` batch bound (spec/02 §10.3).
@@ -1432,6 +1433,20 @@ impl Vault {
         slot: Slot,
         now_unix: u64,
     ) -> Result<RecordId, VaultError> {
+        self.create_without_mnemonic(rng, password, slot, |payload, record_id| {
+            add_key(payload, key, record_id, now_unix)
+        })
+    }
+
+    /// `Create` of a vault without recovery words whose first record `fill` adds (a key-only
+    /// vault, spec/02 §8.5, or a `YubiKey` vault, spec/10 §8.2).
+    fn create_without_mnemonic(
+        &mut self,
+        rng: &mut impl RandomSource,
+        password: &VaultPassword,
+        slot: Slot,
+        fill: impl FnOnce(&mut Payload, [u8; 16]) -> Result<(), VaultError>,
+    ) -> Result<RecordId, VaultError> {
         if self.status != VaultStatus::NoVault {
             wipe_and_drop(slot);
             return Err(VaultError::InvalidState);
@@ -1444,7 +1459,7 @@ impl Vault {
             let wrap_nonce = random_array_with::<24>(rng)?;
             let payload_nonce = random_array_with::<24>(rng)?;
             let mut payload = Payload::new(None);
-            add_key(&mut payload, key, record_id, now_unix)?;
+            fill(&mut payload, record_id)?;
             let material = SealMaterial {
                 password,
                 vault_id,
@@ -1679,6 +1694,141 @@ impl Vault {
     #[cfg(test)]
     pub(crate) fn held_bytes(&self) -> Option<&[u8]> {
         self.ciphertext.as_deref()
+    }
+}
+
+/// One enrolled `YubiKey` as stored in the vault (tag 5, spec/10 §8): public data only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HardwareKey {
+    /// Record id.
+    pub id: RecordId,
+    /// Enrolment time (Unix seconds, from yw-app).
+    pub created_unix: u64,
+    /// Serial, firmware, fingerprint and slot map.
+    pub record: HwKeyRecord,
+}
+
+/// Adds a hardware key reference (one per serial, at most 8, consistent with the others).
+fn add_hardware(
+    payload: &mut Payload,
+    record: HwKeyRecord,
+    record_id: [u8; 16],
+    now_unix: u64,
+) -> Result<(), VaultError> {
+    if payload
+        .hw_keys
+        .iter()
+        .any(|entry| entry.record.serial == record.serial)
+    {
+        return Err(VaultError::DuplicateKey);
+    }
+    if payload.hw_keys.len() >= format::MAX_HW_KEYS {
+        return Err(VaultError::RecordLimit);
+    }
+    let mut all: Vec<HwKeyRecord> = payload
+        .hw_keys
+        .iter()
+        .map(|entry| entry.record.clone())
+        .collect();
+    all.push(record.clone());
+    if !record.is_valid() || !records_consistent(&all) {
+        return Err(VaultError::Key(KeyError::DerivationFailed));
+    }
+    payload.hw_keys.push(HwKeyEntry {
+        record_id,
+        created_unix: now_unix,
+        record,
+    });
+    Ok(())
+}
+
+/// `YubiKey` accounts (spec/10 §8): the vault keeps only public slot maps.
+impl Vault {
+    /// The enrolled `YubiKeys` in payload order.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` outside `BackupPending`/`Unlocked`.
+    pub fn hardware_keys(&self) -> Result<Vec<HardwareKey>, VaultError> {
+        self.require_public()?;
+        Ok(self
+            .payload()?
+            .hw_keys
+            .iter()
+            .map(|entry| HardwareKey {
+                id: RecordId(entry.record_id),
+                created_unix: entry.created_unix,
+                record: entry.record.clone(),
+            })
+            .collect())
+    }
+
+    /// Adds an enrolled `YubiKey` (`PayloadRewrite`, no password: nothing secret is added).
+    ///
+    /// # Errors
+    ///
+    /// `BackupNotConfirmed`/`InvalidState`, `DuplicateKey` (serial already enrolled),
+    /// `RecordLimit` (8 cards), `Key(DerivationFailed)` for a record that contradicts the
+    /// enrolled ones (another fingerprint, or another public key for the same path),
+    /// `RandomnessUnavailable` or `Storage`.
+    pub fn add_hardware_key(
+        &mut self,
+        record: HwKeyRecord,
+        now_unix: u64,
+    ) -> Result<RecordId, VaultError> {
+        self.require_signing()?;
+        let mut payload = self.payload()?;
+        let record_id = fresh_record_id(&mut OsRandom, &payload)?;
+        add_hardware(&mut payload, record, record_id, now_unix)?;
+        self.rewrite_payload(&payload)?;
+        Ok(RecordId(record_id))
+    }
+
+    /// Removes an enrolled `YubiKey` after re-entering the password. The last record of a vault
+    /// without recovery words cannot be removed (`LastKey`).
+    ///
+    /// # Errors
+    ///
+    /// `BackupNotConfirmed`/`InvalidState`, `UnlockFailed`, `RecordNotFound`, `LastKey` or
+    /// `Storage`.
+    pub fn remove_hardware_key(
+        &mut self,
+        password: &VaultPassword,
+        id: RecordId,
+    ) -> Result<(), VaultError> {
+        self.require_signing()?;
+        self.verify_password(password)?;
+        let mut payload = self.payload()?;
+        let before = payload.hw_keys.len();
+        payload.hw_keys.retain(|entry| entry.record_id != id.0);
+        if payload.hw_keys.len() == before {
+            return Err(VaultError::RecordNotFound);
+        }
+        if payload.record_count() == 0 {
+            return Err(VaultError::LastKey);
+        }
+        self.rewrite_payload(&payload)
+    }
+
+    /// Creates a `YubiKey` vault (no recovery words, spec/10 §8.2) holding the first enrolled
+    /// card: `Create`, then `Unlocked { alt: false }`. The mnemonic the keys came from is the
+    /// paper backup and is never stored.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` outside `NoVault`, `Key(DerivationFailed)` for an invalid record,
+    /// `RandomnessUnavailable`, `OutOfMemory` or `Storage`. On failure the state stays
+    /// `NoVault` and the slot is wiped.
+    pub fn create_with_hardware(
+        &mut self,
+        password: &VaultPassword,
+        record: HwKeyRecord,
+        slot: Slot,
+        now_unix: u64,
+    ) -> Result<RecordId, VaultError> {
+        self.create_without_mnemonic(&mut OsRandom, password, slot, |payload, record_id| {
+            add_hardware(payload, record, record_id, now_unix)
+        })
     }
 }
 

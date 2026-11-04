@@ -10,8 +10,9 @@ use secp256k1::{Secp256k1, SecretKey};
 use sha3::{Digest, Keccak256};
 
 use super::{
-    SignError, recover_address, recover_message_signer, sign_digest, sign_message_with,
-    sign_personal, sign_transaction, sign_tx_with, sign_typed_data, verify_signed_tx,
+    CardSignError, SignError, recover_address, recover_message_signer, sign_digest,
+    sign_message_with, sign_personal, sign_personal_card, sign_transaction, sign_transaction_card,
+    sign_tx_with, sign_typed_data, verify_signed_tx,
 };
 use crate::approval::{AccountRef, ApprovalKind, Approved, ChainRef, Signer, SigningPayload};
 use crate::bip32::path::AccountIndex;
@@ -464,6 +465,121 @@ fn sepolia_tx() -> Eip1559Tx {
         data: Vec::new(),
         access_list: Vec::new(),
     }
+}
+
+/// The card path (spec/10 §6.2) against the APDU emulator: EVM account 0 of `abandon`×11
+/// `about` in `OpenPGP` SIG, high-s card signatures, full post-sign verification.
+#[test]
+#[allow(clippy::too_many_lines, reason = "one end-to-end scenario")]
+fn card_signing_verifies_and_recovers_the_account() {
+    use crate::yubikey::apdu::ApduMode;
+    use crate::yubikey::mock::{MockCard, ToyCipher};
+    use crate::yubikey::plan::{CardSlot, KeyRole, PgpKey, PlannedSlot};
+    use crate::yubikey::sign::{CardKey, sign_evm};
+
+    let role = KeyRole::Evm {
+        index: AccountIndex::ZERO,
+        btc: None,
+    };
+    let seed = *crate::bip39::Mnemonic::parse(
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    )
+    .unwrap()
+    .to_seed(&crate::password::Bip39Passphrase::empty())
+    .unwrap()
+    .expose();
+    let mut card = MockCard::new(42);
+    let auth = crate::yubikey::enrol::EnrolAuth {
+        admin_pin: b"12345678",
+        management_key: &crate::yubikey::piv::DEFAULT_MANAGEMENT_KEY,
+        cipher: Some(&ToyCipher),
+        challenge: [0; 16],
+    };
+    let record = crate::yubikey::enrol::enrol_card(
+        &mut card,
+        ApduMode::Short,
+        &seed,
+        &[PlannedSlot::recommended(
+            CardSlot::OpenPgp(PgpKey::Sig),
+            role,
+        )],
+        &[],
+        &auth,
+    )
+    .unwrap()
+    .record;
+    card.high_s = true;
+    let key = CardKey {
+        serial: 42,
+        slot: record.slots[0].slot,
+        public: record.slots[0].public,
+    };
+    let account = crate::yubikey::plan::evm_address(&key.public).unwrap();
+    assert_eq!(account, addr("0x9858EfFD232B4033E47d90003D41EC34EcaEda94"));
+    let ctx = Secp256k1::verification_only();
+    let mut signer =
+        |digest: [u8; 32]| sign_evm(&ctx, &mut card, ApduMode::Short, &key, b"123456", digest);
+    let card_approved = |kind, payload| {
+        Approved::for_test(
+            ChainRef::Evm {
+                chain_id: 11_155_111,
+                genesis: SEPOLIA_GENESIS,
+            },
+            AccountRef::Evm(account),
+            Signer::Hardware(role),
+            kind,
+            payload,
+        )
+    };
+    let tx = sepolia_tx();
+    let card_tx = sign_transaction_card(
+        card_approved(
+            ApprovalKind::EvmTransaction,
+            SigningPayload::EvmTx(tx.clone()),
+        ),
+        &mut signer,
+    )
+    .unwrap();
+    assert_eq!(decode_signed(&card_tx.raw).unwrap().tx, tx);
+    let preimage = personal_preimage(b"card");
+    let signature = sign_personal_card(
+        card_approved(
+            ApprovalKind::EvmPersonalSign,
+            SigningPayload::EvmPersonal(preimage.clone()),
+        ),
+        &mut signer,
+    )
+    .unwrap();
+    assert_eq!(
+        recover_message_signer(keccak(&preimage), &signature),
+        Some(account)
+    );
+    // A vault-signer approval is refused by the card path, and a card approval by the vault path.
+    let wrong = approved(
+        ACC1,
+        ApprovalKind::EvmPersonalSign,
+        SigningPayload::EvmPersonal(preimage.clone()),
+        11_155_111,
+    );
+    assert_eq!(
+        sign_personal_card(wrong, &mut signer),
+        Err(CardSignError::Sign(SignError::KindMismatch))
+    );
+    // Another account than the card's key fails the post-sign verification.
+    let other = Approved::for_test(
+        ChainRef::Evm {
+            chain_id: 11_155_111,
+            genesis: SEPOLIA_GENESIS,
+        },
+        AccountRef::Evm(addr("0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0")),
+        Signer::Hardware(role),
+        ApprovalKind::EvmPersonalSign,
+        SigningPayload::EvmPersonal(preimage),
+    );
+    assert_eq!(
+        sign_personal_card(other, &mut signer),
+        Err(CardSignError::Sign(SignError::PostSignVerification))
+    );
 }
 
 fn approved(account: &str, kind: ApprovalKind, payload: SigningPayload, chain_id: u64) -> Approved {
