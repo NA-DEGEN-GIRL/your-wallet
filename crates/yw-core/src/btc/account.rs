@@ -358,6 +358,14 @@ pub enum BtcAccountId {
         /// Vault record id.
         id: [u8; 16],
     },
+    /// The key of EVM account `evm_index` (`m/44'/60'/0'/0/i`) used for `script_type`: one fixed
+    /// address (spec/08 §3.5 "EVM 계정과 같은 키").
+    EvmShared {
+        /// EVM account index (`AccountIndex`, 0–999).
+        evm_index: u32,
+        /// Address type.
+        script_type: ScriptType,
+    },
 }
 
 impl BtcAccountId {
@@ -368,7 +376,8 @@ impl BtcAccountId {
     };
 
     /// The `ActivityEntry.account` text: `""` for [`Self::PRIMARY`] (unchanged rows),
-    /// `p2tr/0`-style for HD accounts, `imported/<32 hex>` for imported keys.
+    /// `p2tr/0`-style for HD accounts, `imported/<32 hex>` for imported keys, `evm/p2tr/0`-style
+    /// for an EVM account's key.
     #[must_use]
     pub fn activity_tag(&self) -> String {
         match self {
@@ -378,6 +387,10 @@ impl BtcAccountId {
                 account,
             } => format!("{}/{account}", script_type.json_name()),
             Self::Imported { id } => format!("imported/{}", crate::hex::encode(id)),
+            Self::EvmShared {
+                evm_index,
+                script_type,
+            } => format!("evm/{}/{evm_index}", script_type.json_name()),
         }
     }
 }
@@ -405,10 +418,19 @@ pub enum BtcKeySource {
         /// The account's public key is compressed (an uncompressed key is P2PKH only).
         compressed: bool,
     },
+    /// The key of EVM account `evm_index`, `m/44'/60'/0'/0/i` from the mnemonic (vault
+    /// `KeyRef::Evm(EvmKeySource::Derived)`, the same path on every BTC network).
+    EvmShared {
+        /// EVM account index.
+        evm_index: u32,
+        /// Address type of the account.
+        script_type: ScriptType,
+    },
 }
 
 impl BtcKeySource {
-    /// The vault's account node of a derived key on `net` (`None` for imported keys).
+    /// The vault's account node of a derived key on `net` (`None` for imported keys and EVM
+    /// keys).
     #[must_use]
     pub fn coin(&self, net: BtcNetwork) -> Option<BtcCoin> {
         match self {
@@ -417,7 +439,17 @@ impl BtcKeySource {
                 account,
                 ..
             } => net.account_node(script_type.purpose(), *account).ok(),
-            Self::Imported { .. } => None,
+            Self::Imported { .. } | Self::EvmShared { .. } => None,
+        }
+    }
+
+    /// Address type of the input.
+    #[must_use]
+    pub const fn script_type(&self) -> ScriptType {
+        match self {
+            Self::Derived { script_type, .. }
+            | Self::Imported { script_type, .. }
+            | Self::EvmShared { script_type, .. } => *script_type,
         }
     }
 }
@@ -433,6 +465,11 @@ pub enum BtcAccountKey {
         account: u32,
         /// `m/{purpose}'/{coin}'/{account}'` (public).
         xpub: AccountXpub,
+        /// Fixed-address mode (spec/08 §3.5 "고정 주소 모드", the default): the receive screen
+        /// shows only `(Receive, 0)` and change goes back to it, like UniSat/Xverse. Discovery
+        /// and the watch set stay HD, so outputs on other addresses of the account are still
+        /// seen and spent. `false`: a new receive address each time and the change chain (HD).
+        single_address: bool,
     },
     /// One imported key: one address, change back to it, no gap scan.
     Single {
@@ -443,20 +480,33 @@ pub enum BtcAccountKey {
         /// Public key (uncompressed only with `P2pkh`).
         pubkey: BtcPubKey,
     },
+    /// The key of EVM account `evm_index` (`m/44'/60'/0'/0/i`) for `script_type`: one address,
+    /// change back to it, no gap scan (like [`Self::Single`], but derived from the mnemonic and
+    /// signed through the vault's EVM key).
+    EvmShared {
+        /// EVM account index (0–999).
+        evm_index: u32,
+        /// Address type.
+        script_type: ScriptType,
+        /// Compressed public key of `m/44'/60'/0'/0/{evm_index}`.
+        pubkey: [u8; 33],
+    },
 }
 
 impl BtcAccountKey {
-    /// The BIP84 account 0 node (meta `btc`).
+    /// The BIP84 account 0 node (meta `btc`), in fixed-address mode.
     #[must_use]
     pub const fn primary(xpub: AccountXpub) -> Self {
         Self::Hd {
             script_type: ScriptType::P2wpkh,
             account: 0,
             xpub,
+            single_address: true,
         }
     }
 
-    /// An HD account node.
+    /// An HD account node, in fixed-address mode (the default; see
+    /// [`BtcAccountKey::with_single_address`]).
     ///
     /// # Errors
     ///
@@ -479,6 +529,7 @@ impl BtcAccountKey {
             script_type,
             account,
             xpub,
+            single_address: true,
         })
     }
 
@@ -502,18 +553,96 @@ impl BtcAccountKey {
         })
     }
 
+    /// The account on the key of EVM account `evm_index` (`m/44'/60'/0'/0/i`, public key from
+    /// `Vault::evm_public_key`).
+    ///
+    /// # Errors
+    ///
+    /// [`AccountKeyError::Account`] above EVM account 999, [`AccountKeyError::PublicKey`] for an
+    /// invalid compressed point.
+    pub fn evm_shared(
+        evm_index: u32,
+        script_type: ScriptType,
+        pubkey: [u8; 33],
+    ) -> Result<Self, AccountKeyError> {
+        if crate::bip32::path::AccountIndex::new(evm_index).is_err() {
+            return Err(AccountKeyError::Account);
+        }
+        if !matches!(pubkey.first(), Some(0x02 | 0x03))
+            || PublicKey::from_byte_array_compressed(pubkey).is_err()
+        {
+            return Err(AccountKeyError::PublicKey);
+        }
+        Ok(Self::EvmShared {
+            evm_index,
+            script_type,
+            pubkey,
+        })
+    }
+
+    /// The same HD account in fixed-address (`true`) or HD (`false`) mode; other keys are
+    /// always one address and stay unchanged.
+    #[must_use]
+    pub const fn with_single_address(self, on: bool) -> Self {
+        match self {
+            Self::Hd {
+                script_type,
+                account,
+                xpub,
+                ..
+            } => Self::Hd {
+                script_type,
+                account,
+                xpub,
+                single_address: on,
+            },
+            other => other,
+        }
+    }
+
     /// Address type.
     #[must_use]
     pub const fn script_type(&self) -> ScriptType {
         match self {
-            Self::Hd { script_type, .. } | Self::Single { script_type, .. } => *script_type,
+            Self::Hd { script_type, .. }
+            | Self::Single { script_type, .. }
+            | Self::EvmShared { script_type, .. } => *script_type,
         }
     }
 
-    /// One imported key (no chains, no gap scan, change back to the same address).
+    /// One key with one address and no chains (an imported key or an EVM account's key): no gap
+    /// scan, no "새 주소", change back to the same address.
     #[must_use]
     pub const fn is_single(&self) -> bool {
+        matches!(self, Self::Single { .. } | Self::EvmShared { .. })
+    }
+
+    /// An imported key (vault tag 4 record; listed, revealed and removed with the record).
+    #[must_use]
+    pub const fn is_imported(&self) -> bool {
         matches!(self, Self::Single { .. })
+    }
+
+    /// The account uses the key of an EVM account.
+    #[must_use]
+    pub const fn is_evm_shared(&self) -> bool {
+        matches!(self, Self::EvmShared { .. })
+    }
+
+    /// An HD account (receive and change chains, discovery).
+    #[must_use]
+    pub const fn is_hd(&self) -> bool {
+        matches!(self, Self::Hd { .. })
+    }
+
+    /// Receiving and change always use `(Receive, 0)`: every one-key account, and an HD account
+    /// in fixed-address mode (spec/08 §3.5).
+    #[must_use]
+    pub const fn fixed_address(&self) -> bool {
+        match self {
+            Self::Hd { single_address, .. } => *single_address,
+            Self::Single { .. } | Self::EvmShared { .. } => true,
+        }
     }
 
     /// The account identity.
@@ -529,6 +658,14 @@ impl BtcAccountKey {
                 account: *account,
             },
             Self::Single { id, .. } => BtcAccountId::Imported { id: *id },
+            Self::EvmShared {
+                evm_index,
+                script_type,
+                ..
+            } => BtcAccountId::EvmShared {
+                evm_index: *evm_index,
+                script_type: *script_type,
+            },
         }
     }
 
@@ -539,6 +676,7 @@ impl BtcAccountKey {
         match self {
             Self::Hd { xpub, .. } => xpub.pubkey,
             Self::Single { pubkey, .. } => pubkey.compressed().unwrap_or([0; 33]),
+            Self::EvmShared { pubkey, .. } => *pubkey,
         }
     }
 
@@ -547,7 +685,7 @@ impl BtcAccountKey {
     pub const fn xpub(&self) -> Option<&AccountXpub> {
         match self {
             Self::Hd { xpub, .. } => Some(xpub),
-            Self::Single { .. } => None,
+            Self::Single { .. } | Self::EvmShared { .. } => None,
         }
     }
 
@@ -555,7 +693,9 @@ impl BtcAccountKey {
     #[must_use]
     pub const fn input_weight(&self) -> u64 {
         match self {
-            Self::Hd { script_type, .. } => script_type.input_weight(true),
+            Self::Hd { script_type, .. } | Self::EvmShared { script_type, .. } => {
+                script_type.input_weight(true)
+            }
             Self::Single {
                 script_type,
                 pubkey,
@@ -587,21 +727,51 @@ impl BtcAccountKey {
                 script_type: *script_type,
                 compressed: pubkey.is_compressed(),
             },
+            Self::EvmShared {
+                evm_index,
+                script_type,
+                ..
+            } => BtcKeySource::EvmShared {
+                evm_index: *evm_index,
+                script_type: *script_type,
+            },
         }
     }
 
-    /// The `(chain, index)` of change output `index` (HD: the change chain; single key: its one
-    /// address, recorded as `(Receive, 0)`).
+    /// The `(chain, index)` of change output `index`: the change chain of an HD account in HD
+    /// mode; `(Receive, 0)` — the account's one receive address — for a fixed-address account
+    /// ([`BtcAccountKey::fixed_address`]).
     #[must_use]
     pub const fn change_path(&self, index: u32) -> (BtcChain, u32) {
-        match self {
-            Self::Hd { .. } => (BtcChain::Change, index),
-            Self::Single { .. } => (BtcChain::Receive, 0),
+        if self.fixed_address() {
+            (BtcChain::Receive, 0)
+        } else {
+            (BtcChain::Change, index)
         }
     }
 
-    /// The path text of `(chain, index)` on `net`: `m/86'/0'/0'/0/5`, or `가져온 키` for a
-    /// single key.
+    /// Where a recorded change output `index` may be, preferred first: [`Self::change_path`],
+    /// then for an HD account the other mode's path (a record written before the mode was
+    /// switched). Callers match the output script to pick one.
+    #[must_use]
+    pub fn change_candidates(&self, index: u32) -> Vec<(BtcChain, u32)> {
+        let first = self.change_path(index);
+        let mut out = vec![first];
+        if self.is_hd() {
+            let other = if self.fixed_address() {
+                (BtcChain::Change, index)
+            } else {
+                (BtcChain::Receive, 0)
+            };
+            if other != first {
+                out.push(other);
+            }
+        }
+        out
+    }
+
+    /// The path text of `(chain, index)` on `net`: `m/86'/0'/0'/0/5`, `m/44'/60'/0'/0/3` for an
+    /// EVM account's key, or `가져온 키` for an imported key.
     #[must_use]
     pub fn path_text(&self, net: BtcNetwork, chain: BtcChain, index: u32) -> String {
         match self {
@@ -616,10 +786,12 @@ impl BtcAccountKey {
                 chain.index()
             ),
             Self::Single { .. } => "가져온 키".to_owned(),
+            Self::EvmShared { evm_index, .. } => format!("m/44'/60'/0'/0/{evm_index}"),
         }
     }
 
-    /// The account node text: `m/86'/0'/0'`, or `가져온 키` for a single key.
+    /// The account node text: `m/86'/0'/0'`, `m/44'/60'/0'/0/3` for an EVM account's key, or
+    /// `가져온 키` for an imported key.
     #[must_use]
     pub fn node_text(&self, net: BtcNetwork) -> String {
         match self {
@@ -633,10 +805,12 @@ impl BtcAccountKey {
                 net.coin_number()
             ),
             Self::Single { .. } => "가져온 키".to_owned(),
+            Self::EvmShared { evm_index, .. } => format!("m/44'/60'/0'/0/{evm_index}"),
         }
     }
 
-    /// The display name: `네이티브 세그윗 계정 0`, `탭루트 계정 2`, `가져온 키 · 레거시`.
+    /// The display name: `네이티브 세그윗 계정 0`, `탭루트 계정 2`, `가져온 키 · 레거시`,
+    /// `EVM 계정 3 키 · 탭루트`.
     #[must_use]
     pub fn display_name(&self) -> String {
         match self {
@@ -646,6 +820,11 @@ impl BtcAccountKey {
                 ..
             } => format!("{} 계정 {account}", script_type.name()),
             Self::Single { script_type, .. } => format!("가져온 키 · {}", script_type.name()),
+            Self::EvmShared {
+                evm_index,
+                script_type,
+                ..
+            } => format!("EVM 계정 {evm_index} 키 · {}", script_type.name()),
         }
     }
 
@@ -709,7 +888,7 @@ impl AccountDeriver {
                 derive_public_child_with(&ctx, xpub, BtcChain::Receive.index())?,
                 derive_public_child_with(&ctx, xpub, BtcChain::Change.index())?,
             )),
-            BtcAccountKey::Single { .. } => None,
+            BtcAccountKey::Single { .. } | BtcAccountKey::EvmShared { .. } => None,
         };
         Ok(Self { key, ctx, chains })
     }
@@ -743,6 +922,13 @@ impl AccountDeriver {
             (BtcAccountKey::Single { pubkey, .. }, _) => {
                 if chain == BtcChain::Receive && index == 0 {
                     Ok(*pubkey)
+                } else {
+                    Err(KeyError::InvalidPath)
+                }
+            }
+            (BtcAccountKey::EvmShared { pubkey, .. }, _) => {
+                if chain == BtcChain::Receive && index == 0 {
+                    Ok(BtcPubKey::Compressed(*pubkey))
                 } else {
                     Err(KeyError::InvalidPath)
                 }

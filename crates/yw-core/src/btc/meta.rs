@@ -249,7 +249,8 @@ pub enum MetaError {
     Full,
     /// Discovery is not finished.
     DiscoveryIncomplete,
-    /// An imported key has one address ("새 주소" refused).
+    /// The account uses one fixed address ("새 주소" refused; a one-key account also has no
+    /// address mode to switch).
     SingleAddress,
     /// Public derivation failed.
     Key(KeyError),
@@ -275,7 +276,7 @@ impl fmt::Display for MetaError {
             Self::Full => formatter.write_str("BTC 데이터 공간이 부족합니다"),
             Self::DiscoveryIncomplete => formatter.write_str("주소 검색 미완료"),
             Self::SingleAddress => {
-                formatter.write_str("가져온 키 계정은 주소가 하나라 새 주소를 만들 수 없습니다")
+                formatter.write_str("이 계정은 주소 하나만 써서 새 주소를 만들 수 없습니다")
             }
             Self::Key(_) => formatter.write_str(super::policy::texts::DERIVATION_FAILED),
         }
@@ -375,10 +376,17 @@ impl BtcMeta {
         self.account.id()
     }
 
-    /// One imported key (one address, no discovery, no "새 주소").
+    /// One key with one address (an imported key or an EVM account's key: no discovery, no
+    /// "새 주소").
     #[must_use]
     pub const fn is_single(&self) -> bool {
         self.account.is_single()
+    }
+
+    /// An imported key's account (vault tag 4 record).
+    #[must_use]
+    pub const fn is_imported(&self) -> bool {
+        self.account.is_imported()
     }
 
     /// Next receive index to issue.
@@ -533,6 +541,14 @@ impl BtcMeta {
         if self.is_single() {
             return Ok(ReceiveAddress::Existing(0));
         }
+        if self.account.fixed_address() {
+            // Fixed-address mode: always `(Receive, 0)`, issued once (spec/08 §3.5).
+            return if self.receive_next > 0 {
+                Ok(ReceiveAddress::Existing(0))
+            } else {
+                self.issue_receive().map(ReceiveAddress::Issued)
+            };
+        }
         let start = self.receive_start();
         if start < self.receive_next {
             return Ok(ReceiveAddress::Existing(start));
@@ -547,9 +563,9 @@ impl BtcMeta {
     /// # Errors
     ///
     /// [`MetaError::GapWarning`], [`MetaError::GapHardLimit`], [`MetaError::IndexExhausted`],
-    /// [`MetaError::SingleAddress`] for an imported key.
+    /// [`MetaError::SingleAddress`] for a one-key account or an HD account in fixed-address mode.
     pub fn new_receive_address(&mut self, gap_confirmed: bool) -> Result<u32, MetaError> {
-        if self.is_single() {
+        if self.account.fixed_address() {
             return Err(MetaError::SingleAddress);
         }
         let unused = self.unused_receive_tail();
@@ -560,6 +576,31 @@ impl BtcMeta {
             return Err(MetaError::GapWarning { unused });
         }
         self.issue_receive()
+    }
+
+    /// Receiving and change always use `(Receive, 0)` ([`BtcAccountKey::fixed_address`]).
+    #[must_use]
+    pub const fn fixed_address(&self) -> bool {
+        self.account.fixed_address()
+    }
+
+    /// Switches an HD account between fixed-address mode (`true`: receive only at `(Receive, 0)`,
+    /// change back to it) and HD mode (`false`: a new receive address each time, the change
+    /// chain), spec/08 §3.5. Indices, history and outputs are kept: discovery and the watch set
+    /// are the same in both modes. Returns whether meta changed.
+    ///
+    /// # Errors
+    ///
+    /// [`MetaError::SingleAddress`] for a one-key account (always one address).
+    pub const fn set_single_address(&mut self, on: bool) -> Result<bool, MetaError> {
+        if !self.account.is_hd() {
+            return Err(MetaError::SingleAddress);
+        }
+        if self.account.fixed_address() == on {
+            return Ok(false);
+        }
+        self.account = self.account.with_single_address(on);
+        Ok(true)
     }
 
     /// Marks discovery as not finished (sending blocked until [`Discovery::apply`]).
@@ -1151,6 +1192,34 @@ fn object_with<'a>(
     Ok(object)
 }
 
+/// [`object_with`] that also allows the `optional` keys (each at most once).
+fn object_with_optional<'a>(
+    value: &'a Value,
+    keys: &[&str],
+    optional: &[&str],
+    field: &'static str,
+) -> Result<&'a Object, BtcMetaError> {
+    let object = value.as_object().ok_or(BtcMetaError(field))?;
+    let present = optional
+        .iter()
+        .filter(|key| object.get(key).is_some())
+        .count();
+    if object.len() != keys.len().saturating_add(present)
+        || object
+            .keys()
+            .any(|key| !keys.contains(&key) && !optional.contains(&key))
+        || keys.iter().any(|key| object.get(key).is_none())
+    {
+        return Err(BtcMetaError(field));
+    }
+    Ok(object)
+}
+
+/// The optional account-object key of an HD account's address mode (spec/08 §12.3): absent =
+/// fixed-address mode (the default, also for metas written before the mode existed); written only
+/// as `false` (HD mode), so the default keeps earlier bytes.
+pub const SINGLE_ADDRESS_KEY: &str = "single_address";
+
 fn get<'a>(object: &'a Object, key: &'static str) -> Result<&'a Value, BtcMetaError> {
     object.get(key).ok_or(BtcMetaError(key))
 }
@@ -1317,6 +1386,8 @@ const KEYS_V2: [&str; 14] = [
 const HD_KEYS: [&str; 3] = ["account", "pubkey", "chain_code"];
 /// `key.imported` of a version 2 object.
 const IMPORTED_KEYS: [&str; 2] = ["id", "pubkey"];
+/// `key.evm` of a version 2 object (the key of EVM account `index`, `m/44'/60'/0'/0/i`).
+const EVM_KEYS: [&str; 2] = ["index", "pubkey"];
 /// `BtcMeta` version of the non-primary accounts.
 pub const BTC_META_VERSION_V2: u64 = 2;
 
@@ -1349,6 +1420,13 @@ fn account_key(value: &Value, script_type: ScriptType) -> Result<BtcAccountKey, 
             return Err(BtcMetaError("key.hd"));
         }
         return Ok(key);
+    }
+    if let Some(evm) = object.get("evm") {
+        let evm = object_with(evm, &EVM_KEYS, "key.evm")?;
+        let index = u32_field(get(evm, "index")?, MAX_NEXT, "key.evm.index")?;
+        let pubkey = hex_array::<33>(get(evm, "pubkey")?, "key.evm.pubkey")?;
+        return BtcAccountKey::evm_shared(index, script_type, pubkey)
+            .map_err(|_| BtcMetaError("key.evm"));
     }
     let imported = object_with(
         object.get("imported").ok_or(BtcMetaError("key"))?,
@@ -1425,6 +1503,15 @@ fn account_key_json(account: &BtcAccountKey) -> Value {
                 ("pubkey", string(crate::hex::encode(pubkey.as_bytes()))),
             ]),
         )]),
+        BtcAccountKey::EvmShared {
+            evm_index, pubkey, ..
+        } => object(vec![(
+            "evm",
+            object(vec![
+                ("index", number(u64::from(*evm_index))),
+                ("pubkey", string(crate::hex::encode(pubkey))),
+            ]),
+        )]),
     }
 }
 
@@ -1448,7 +1535,7 @@ impl BtcMeta {
             .and_then(|version| integer(version, u64::MAX, "version"))?;
         let (root, account) = match version {
             BTC_META_VERSION => {
-                let root = object_with(value, &KEYS, "btc")?;
+                let root = object_with_optional(value, &KEYS, &[SINGLE_ADDRESS_KEY], "btc")?;
                 let pubkey = hex_array::<33>(get(root, "account_pubkey")?, "account_pubkey")?;
                 if !matches!(pubkey.first(), Some(0x02 | 0x03))
                     || PublicKey::from_byte_array_compressed(pubkey).is_err()
@@ -1463,7 +1550,7 @@ impl BtcMeta {
                 )
             }
             BTC_META_VERSION_V2 => {
-                let root = object_with(value, &KEYS_V2, "btc")?;
+                let root = object_with_optional(value, &KEYS_V2, &[SINGLE_ADDRESS_KEY], "btc")?;
                 let script_type = get(root, "script_type")?
                     .as_str()
                     .and_then(ScriptType::parse_json_name)
@@ -1471,6 +1558,12 @@ impl BtcMeta {
                 (root, account_key(get(root, "key")?, script_type)?)
             }
             _ => return Err(BtcMetaError("version")),
+        };
+        // The address mode of an HD account; absent = fixed-address mode (spec/08 §12.3).
+        let account = match root.get(SINGLE_ADDRESS_KEY) {
+            None => account,
+            Some(_) if !account.is_hd() => return Err(BtcMetaError(SINGLE_ADDRESS_KEY)),
+            Some(flag) => account.with_single_address(boolean(flag, SINGLE_ADDRESS_KEY)?),
         };
         let network = get(root, "network")?
             .as_str()
@@ -1604,6 +1697,10 @@ impl BtcMeta {
                 ),
             ),
         ]);
+        if !self.account.fixed_address() {
+            // HD mode only: the default (fixed address) keeps the earlier bytes.
+            members.push((SINGLE_ADDRESS_KEY, Value::Bool(false)));
+        }
         object(members)
     }
 }
@@ -1665,6 +1762,16 @@ fn account_id_json(id: &BtcAccountId) -> Value {
             ]),
         )]),
         BtcAccountId::Imported { id } => object(vec![("imported", string(crate::hex::encode(id)))]),
+        BtcAccountId::EvmShared {
+            evm_index,
+            script_type,
+        } => object(vec![(
+            "evm",
+            object(vec![
+                ("script_type", string(script_type.json_name())),
+                ("index", number(u64::from(*evm_index))),
+            ]),
+        )]),
     }
 }
 
@@ -1682,6 +1789,16 @@ fn account_id(value: &Value) -> Result<BtcAccountId, BtcMetaError> {
                 .and_then(ScriptType::parse_json_name)
                 .ok_or(BtcMetaError(FIELD))?,
             account: u32_field(get(hd, "account")?, MAX_NEXT, FIELD)?,
+        });
+    }
+    if let Some(evm) = object.get("evm") {
+        let evm = object_with(evm, &["script_type", "index"], FIELD)?;
+        return Ok(BtcAccountId::EvmShared {
+            script_type: get(evm, "script_type")?
+                .as_str()
+                .and_then(ScriptType::parse_json_name)
+                .ok_or(BtcMetaError(FIELD))?,
+            evm_index: u32_field(get(evm, "index")?, MAX_NEXT, FIELD)?,
         });
     }
     let id = hex_array::<16>(object.get("imported").ok_or(BtcMetaError(FIELD))?, FIELD)?;

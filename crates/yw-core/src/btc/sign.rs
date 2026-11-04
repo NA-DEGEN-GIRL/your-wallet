@@ -13,7 +13,8 @@
 //!
 //! [`sign_plan`] (spec/08 §11.1) checks that the one-time `Approved` token is for exactly this
 //! plan (kind, chain, account and the `btc_payload` bytes), then signs one input at a time
-//! through the crate-internal `BtcKeys`: derived keys come from `Vault::with_secp_key`, imported
+//! through the crate-internal `BtcKeys`: derived keys (and the EVM key `m/44'/60'/0'/0/i` of an
+//! account on an EVM account's key) come from `Vault::with_secp_key`, imported
 //! single keys from `BtcImportedKeys::btc_imported_secret` (vault tag 4, wrapped in the
 //! crate-internal `ImportedBtcSecret` that is erased on drop). Both are lent to the signing
 //! closure only; nothing outside yw-core can reach a lent secret. Before signing, the public key
@@ -46,9 +47,10 @@ use super::sighash::{bip143_sighash_p2wpkh, legacy_sighash};
 use super::taproot::{Prevout, TaprootSigError, sighash_default, sign_key_path};
 use super::tx::{OutPoint, serialize};
 use crate::approval::{AccountRef, ApprovalId, Approved, ChainRef, Signer, SigningPayload};
+use crate::bip32::path::AccountIndex;
 use crate::entropy::{OsRandom, fill_random, secp_context};
 use crate::error::VaultError;
-use crate::vault::{KeyRef, Vault};
+use crate::vault::{EvmKeySource, KeyRef, Vault};
 
 /// Longest DER signature we produce or accept (low-R, low-S).
 pub const MAX_DER_LEN: usize = 70;
@@ -405,6 +407,14 @@ impl BtcKeys for Vault {
                 let secret = self.btc_imported_secret(&id)?;
                 lend_imported(&secret, network, (script_type, compressed), input, f)
             }
+            BtcKeySource::EvmShared { evm_index, .. } => {
+                // `m/44'/60'/0'/0/i` on every BTC network; the caller checks the public key.
+                let index = AccountIndex::new(evm_index).map_err(|_| SignError::Derivation)?;
+                self.with_secp_key(KeyRef::Evm(EvmKeySource::Derived(index)), |ctx, secret| {
+                    Ok(f(ctx, secret))
+                })
+                .map_err(SignError::Vault)?
+            }
         }
     }
 }
@@ -467,6 +477,16 @@ impl BtcKeys for SeedKeys {
                     .find(|(known, _)| *known == id)
                     .ok_or(SignError::Vault(VaultError::RecordNotFound))?;
                 lend_imported(secret, network, (script_type, compressed), input, f)
+            }
+            BtcKeySource::EvmShared { evm_index, .. } => {
+                let index = AccountIndex::new(evm_index).map_err(|_| SignError::Derivation)?;
+                let path = crate::bip32::path::evm_path(index);
+                let ctx = secp_context(&mut OsRandom).map_err(|_| SignError::Randomness)?;
+                let mut secret = crate::bip32::secret_key_from_seed(&ctx, &self.seed, &path)
+                    .map_err(|_| SignError::Derivation)?;
+                let result = f(&ctx, &secret);
+                secret.non_secure_erase();
+                result
             }
         }
     }

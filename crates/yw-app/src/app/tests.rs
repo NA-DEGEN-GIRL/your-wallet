@@ -2157,3 +2157,37 @@ fn sol_token_card_hides_allowlist_rows_per_cluster() {
     assert!(fields(&app.items()).contains(&entry.symbol.to_owned()));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// spec/08 §3.5: `개인키 보기` of a Bitcoin account on an EVM account's key goes through the same
+/// T-REVEAL-WARN overlay and W03 as an imported key, and the key worker returns the compressed WIF
+/// of `m/44'/60'/0'/0/0` for the account's network (W09 cannot open headless).
+#[test]
+fn evm_shared_bitcoin_key_reveal() {
+    use yw_core::btc::BtcNetwork;
+    /// Testnet WIF of the EVM key `m/44'/60'/0'/0/0` of `abandon … about` (public test key).
+    const EVM0_TEST_WIF: &str = "cNUcMV1Uwy9xWKgNzrjKaJ5A7bPTk4Gs8KPujpMqzwkfUuBoD4Kv";
+
+    let mut h = Harness::new("evm-shared-reveal");
+    h.submit(Purpose::ImportPassword, &[WALLET_PW]);
+    h.submit(Purpose::ImportMnemonic, &[ABOUT.as_bytes()]);
+    h.pump();
+    h.app.on_command(ids::IMPORT_CORRECT);
+    h.pump();
+    h.app.on_command(ids::DONE_CONTINUE);
+    h.app.btc_evm_shared_reveal(0, BtcNetwork::Testnet4);
+    assert_eq!(h.app.screen, Screen::Confirm(Confirm::RevealImported));
+    assert_eq!(h.app.keys.btc_evm_target, Some((0, BtcNetwork::Testnet4)));
+    // W03's submission (the window itself cannot open headless) queues the reveal job.
+    h.submit(
+        Purpose::ConfirmPassword(PasswordAction::RevealBtcEvmShared {
+            evm_index: 0,
+            network: BtcNetwork::Testnet4,
+        }),
+        &[WALLET_PW],
+    );
+    let results = h.run_one();
+    assert!(results.iter().any(|result| matches!(
+        &result.outcome,
+        KeyOutcome::Revealed(Ok((_, text, None))) if text.expose() == EVM0_TEST_WIF
+    )));
+}

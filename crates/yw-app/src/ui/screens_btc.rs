@@ -158,12 +158,26 @@ pub mod ids {
     pub const ACCOUNT_ADD_CANCEL: u16 = 9_013;
     /// The chooser's four address types, in `ScriptType::CHOICES` order (9,014–9,017).
     pub const ACCOUNT_ADD_TYPE: u16 = 9_014;
+    /// The chooser's key source `BTC 표준 경로 (권장, 기본값)`.
+    pub const ACCOUNT_SOURCE_STANDARD: u16 = 9_018;
+    /// The chooser's key source `EVM 계정과 같은 키`.
+    pub const ACCOUNT_SOURCE_EVM: u16 = 9_019;
+    /// Address mode of the selected HD account: `고정 주소 하나만 사용`.
+    pub const ADDRESS_MODE_SINGLE: u16 = 9_062;
+    /// Address mode of the selected HD account: `받을 때마다 새 주소`.
+    pub const ADDRESS_MODE_HD: u16 = 9_063;
+    /// The chooser's EVM account radios: `EVM_ACCOUNT_BASE + row` (rows of meta `evm_accounts`).
+    pub const EVM_ACCOUNT_BASE: u16 = 9_064;
+    /// EVM account rows shown in the chooser (and id span, 9,064–9,095).
+    pub const EVM_ACCOUNT_SPAN: u16 = 32;
     /// Account rows: `ACCOUNT_BASE + row` selects that account.
     pub const ACCOUNT_BASE: u16 = 9_130;
     /// Most account rows with a button (1 + `MAX_BTC_ACCOUNTS`).
     pub const ACCOUNT_SPAN: u16 = 65;
 
     const _: () = assert!(ACT_CANCEL < ACTIVITY_STRIDE);
+    const _: () = assert!(NEW_ADDRESS < ADDRESS_MODE_SINGLE);
+    const _: () = assert!(EVM_ACCOUNT_BASE + EVM_ACCOUNT_SPAN <= ENABLE);
     const _: () = assert!(ACCOUNT_ADD_TYPE + 4 <= ESPLORA_MAINNET_EDIT);
     const _: () = assert!(ESPLORA_TESTNET4_TEST < ACCOUNT_BASE);
     const _: () = assert!(ACCOUNT_BASE + ACCOUNT_SPAN <= UTXO_BASE);
@@ -171,7 +185,11 @@ pub mod ids {
     const _: () = assert!(ACTIVITY_BASE + ACTIVITY_SPAN <= 10_000);
 
     /// Every fixed id (tests check uniqueness and the range).
-    pub const FIXED: [u16; 59] = [
+    pub const FIXED: [u16; 63] = [
+        ACCOUNT_SOURCE_STANDARD,
+        ACCOUNT_SOURCE_EVM,
+        ADDRESS_MODE_SINGLE,
+        ADDRESS_MODE_HD,
         TAB_BTC,
         SECTION_BTC,
         REFRESH,
@@ -535,9 +553,13 @@ impl App {
         }
         for (index, row) in rows.iter().take(usize::from(ids::ACCOUNT_SPAN)).enumerate() {
             let id = ids::ACCOUNT_BASE.saturating_add(u16::try_from(index).unwrap_or(0));
+            let badge = match (row.imported, row.evm_shared) {
+                (true, _) => "[가져온 키] ".to_owned(),
+                (false, Some(evm_index)) => format!("[EVM 계정 {evm_index} 키] "),
+                (false, None) => String::new(),
+            };
             let label = format!(
-                "{}{} · {} · {}",
-                if row.imported { "[가져온 키] " } else { "" },
+                "{badge}{} · {} · {}",
                 row.name,
                 row.kind,
                 BtcUi::amount_text(row.available)
@@ -549,6 +571,7 @@ impl App {
         if let Some(message) = &self.btc.account_message {
             items.push(Item::Banner(message.clone(), Tone::Warn));
         }
+        Self::btc_address_mode_items(ctx, usable, items);
         if !ctx.has_mnemonic {
             // A key-only wallet has no recovery words to derive accounts from.
             self.btc_imported_items(ctx, items);
@@ -556,6 +579,7 @@ impl App {
         }
         if self.btc.add_account_open {
             items.push(Item::Help(ADD_ACCOUNT_HELP.to_owned()));
+            self.btc_add_source_items(ctx, usable, items);
             for (offset, script_type) in yw_core::btc::ScriptType::CHOICES.iter().enumerate() {
                 let id = ids::ACCOUNT_ADD_TYPE.saturating_add(u16::try_from(offset).unwrap_or(0));
                 items.push(Item::Row(vec![
@@ -573,6 +597,95 @@ impl App {
         }
         items.push(Item::Help(ACCOUNTS_HELP.to_owned()));
         self.btc_imported_items(ctx, items);
+    }
+
+    /// The selected HD account's address mode (spec/08 §3.5): `고정 주소 하나만 사용` (default) /
+    /// `받을 때마다 새 주소` with the one-line trade-off. One-key accounts have one address only.
+    fn btc_address_mode_items(ctx: &BtcCtx<'_>, usable: bool, items: &mut Vec<Item>) {
+        let Some(meta) = ctx.btc_meta().filter(|meta| meta.account().is_hd()) else {
+            return;
+        };
+        let fixed = meta.fixed_address();
+        items.push(Item::Text(format!(
+            "주소 방식 — {}",
+            crate::app_btc::account_label(meta.account())
+        )));
+        items.push(Item::Row(vec![
+            Ctl::radio(
+                ids::ADDRESS_MODE_SINGLE,
+                crate::app_btc::T_BTC_MODE_SINGLE,
+                fixed,
+                true,
+            )
+            .enabled(usable),
+        ]));
+        items.push(Item::Row(vec![
+            Ctl::radio(
+                ids::ADDRESS_MODE_HD,
+                crate::app_btc::T_BTC_MODE_HD,
+                !fixed,
+                false,
+            )
+            .enabled(usable),
+        ]));
+        items.push(Item::Help(crate::app_btc::T_BTC_MODE_HELP.to_owned()));
+    }
+
+    /// The add-account key source (spec/08 §3.5): the standard BTC path (default) or the key of
+    /// an EVM account (warning and the EVM account radios; adding asks for confirmation).
+    fn btc_add_source_items(&self, ctx: &BtcCtx<'_>, usable: bool, items: &mut Vec<Item>) {
+        let evm = self.btc.add_source == crate::app_btc::BtcAddSource::EvmShared;
+        items.push(Item::Text("키 출처".to_owned()));
+        items.push(Item::Row(vec![
+            Ctl::radio(
+                ids::ACCOUNT_SOURCE_STANDARD,
+                crate::app_btc::T_BTC_SOURCE_STANDARD,
+                !evm,
+                true,
+            )
+            .enabled(usable),
+        ]));
+        items.push(Item::Help(
+            crate::app_btc::T_BTC_SOURCE_STANDARD_HELP.to_owned(),
+        ));
+        items.push(Item::Row(vec![
+            Ctl::radio(
+                ids::ACCOUNT_SOURCE_EVM,
+                crate::app_btc::T_BTC_SOURCE_EVM,
+                evm,
+                false,
+            )
+            .enabled(usable),
+        ]));
+        if !evm {
+            return;
+        }
+        items.push(Item::Banner(
+            crate::app_btc::T_BTC_EVM_SHARED.to_owned(),
+            Tone::Warn,
+        ));
+        let accounts = ctx.evm_accounts();
+        if accounts.is_empty() {
+            items.push(Item::Muted("EVM 계정이 없습니다".to_owned()));
+        }
+        for (row, (index, label, address)) in accounts
+            .iter()
+            .take(usize::from(ids::EVM_ACCOUNT_SPAN))
+            .enumerate()
+        {
+            let id = ids::EVM_ACCOUNT_BASE.saturating_add(u16::try_from(row).unwrap_or(0));
+            let text = format!(
+                "{label} · {} · m/44'/60'/0'/0/{index}",
+                crate::app_btc::short_address(address)
+            );
+            items.push(Item::Row(vec![
+                Ctl::radio(id, &text, self.btc.add_evm_index == *index, row == 0).enabled(usable),
+            ]));
+        }
+        items.push(Item::Help(
+            "주소 형식을 누르면 확인 창이 열립니다. 그 EVM 계정의 키로 주소 하나를 만듭니다."
+                .to_owned(),
+        ));
     }
 
     fn btc_balance_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
@@ -1239,28 +1352,30 @@ impl App {
             }
             return;
         };
-        let single = ctx.btc_meta().is_some_and(BtcMeta::is_single);
-        items.push(Item::CardStart(Some(if single {
+        items.push(Item::CardStart(Some(if view.single_key {
             view.account.clone()
+        } else if view.fixed {
+            format!("{} · 고정 주소", view.account)
         } else {
             format!("{} · 받기 주소 {}번", view.account, view.index)
         })));
         items.push(Item::Text(format!("주소 형식: {}", view.kind)));
+        if view.fixed && !view.single_key {
+            // An HD account in fixed-address mode (spec/08 §3.5): said before the QR.
+            items.push(Item::Banner(
+                crate::app_btc::T_BTC_FIXED_RECEIVE.to_owned(),
+                Tone::Info,
+            ));
+        }
         items.push(Item::Qr(view.qr.clone()));
         items.push(Item::Mono(grouped(&view.address)));
         items.push(Item::Help(view.path.clone()));
         let mut row = vec![Ctl::primary(ids::COPY_ADDRESS, "주소 복사")];
-        if !single {
+        if !view.fixed {
             row.push(Ctl::button(ids::NEW_ADDRESS, "새 주소").enabled(ctx.gate().is_ok()));
         }
         items.push(Item::Row(row));
-        items.push(Item::Help(if single {
-            "가져온 키 계정은 주소가 하나입니다. 주소를 복사한 뒤 붙여넣은 곳에서 주소 전체를 확인하세요."
-                .to_owned()
-        } else {
-            "주소를 복사한 뒤 붙여넣은 곳에서 주소 전체를 확인하세요. 새 주소는 아직 쓰지 않은 주소가 20개 이상이면 경고하고 100개면 발급하지 않습니다."
-                .to_owned()
-        }));
+        items.push(Item::Help(view.note.clone()));
         items.push(Item::CardEnd);
     }
 
@@ -1659,7 +1774,69 @@ mod tests {
             }
             assert!(control(&items, ids::ACCOUNT_ADD_CANCEL).is_some());
             assert!(control(&items, ids::ACCOUNT_ADD).is_none());
+            // Key source: the standard path is checked by default (spec/08 §3.5 (a)); the EVM
+            // key needs the explicit choice and shows the warning and the EVM accounts.
+            let standard = control(&items, ids::ACCOUNT_SOURCE_STANDARD).expect("standard");
+            assert_eq!(standard.text, "BTC 표준 경로 (권장, 기본값)");
+            assert_eq!(standard.checked, Some(true));
+            let evm = control(&items, ids::ACCOUNT_SOURCE_EVM).expect("evm source");
+            assert_eq!(evm.text, "EVM 계정과 같은 키");
+            assert_eq!(evm.checked, Some(false));
+            assert!(control(&items, ids::EVM_ACCOUNT_BASE).is_none());
+            assert!(!has_text(&items, crate::app_btc::T_BTC_EVM_SHARED));
+            app.btc.add_source = crate::app_btc::BtcAddSource::EvmShared;
+            let items = app.items();
+            assert_eq!(
+                control(&items, ids::ACCOUNT_SOURCE_EVM).and_then(|ctl| ctl.checked),
+                Some(true)
+            );
+            assert!(has_text(&items, crate::app_btc::T_BTC_EVM_SHARED));
+            let first = control(&items, ids::EVM_ACCOUNT_BASE).expect("EVM account 0");
+            assert!(first.text.ends_with("m/44'/60'/0'/0/0"), "{}", first.text);
+            assert_eq!(first.checked, Some(true));
+            app.btc.add_source = crate::app_btc::BtcAddSource::Standard;
         }
+    }
+
+    /// spec/08 §3.5: the selected HD account's address mode (fixed by default, the one-line
+    /// trade-off) and the receive screen of each mode: fixed shows `…/0/0`, the explanation and
+    /// no `새 주소`; HD shows the index and `새 주소`.
+    #[test]
+    fn address_mode_radios_and_receive_screen() {
+        let mut app = app(true, BtcNet::Testnet4, Some(BtcNetwork::Testnet4), true);
+        let items = app.items();
+        let single = control(&items, ids::ADDRESS_MODE_SINGLE).expect("fixed radio");
+        assert_eq!(single.text, "고정 주소 하나만 사용 (UniSat·Xverse 방식)");
+        assert_eq!(single.checked, Some(true));
+        let hd = control(&items, ids::ADDRESS_MODE_HD).expect("hd radio");
+        assert_eq!(hd.text, "받을 때마다 새 주소 (HD, 프라이버시↑)");
+        assert_eq!(hd.checked, Some(false));
+        assert!(has_text(&items, crate::app_btc::T_BTC_MODE_HELP));
+        let meta = app.btc_ctx().btc_meta().cloned().unwrap();
+        app.btc.receive = crate::app_btc::BtcUi::receive_view(&meta, 0);
+        app.screen = Screen::BtcReceive;
+        let items = app.items();
+        assert!(has_text(&items, crate::app_btc::T_BTC_FIXED_RECEIVE));
+        assert!(has_text(&items, "m/84'/1'/0'/0/0"));
+        assert!(control(&items, ids::NEW_ADDRESS).is_none());
+        assert!(control(&items, ids::COPY_ADDRESS).is_some());
+        // HD mode.
+        let mut hd_meta = meta;
+        hd_meta.set_single_address(false).unwrap();
+        if let Some(document) = app.meta.as_mut() {
+            document.btc = Some(Box::new(hd_meta.clone()));
+        }
+        app.btc.receive = crate::app_btc::BtcUi::receive_view(&hd_meta, 3);
+        let items = app.items();
+        assert!(!has_text(&items, crate::app_btc::T_BTC_FIXED_RECEIVE));
+        assert!(has_text(&items, "m/84'/1'/0'/0/3"));
+        assert!(control(&items, ids::NEW_ADDRESS).is_some());
+        app.screen = Screen::Main;
+        let items = app.items();
+        assert_eq!(
+            control(&items, ids::ADDRESS_MODE_HD).and_then(|ctl| ctl.checked),
+            Some(true)
+        );
     }
 
     /// Same order as the other tabs: the selected account's `보내기`·`받기` come before the

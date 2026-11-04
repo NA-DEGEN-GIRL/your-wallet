@@ -298,6 +298,13 @@ impl App {
                 Ctl::danger(ids::BTC_REMOVE, "삭제")
                     .enabled(unlocked && self.can_remove_imported()),
             ]));
+        } else if ctx.selected_evm_shared().is_some() {
+            // An account on an EVM account's key (spec/08 §3.5): its WIF can be exported; it is
+            // not a vault record, so there is nothing to delete.
+            items.push(Item::Help(crate::app_btc::T_BTC_EVM_SHARED.to_owned()));
+            items.push(Item::Row(vec![
+                Ctl::button(ids::BTC_REVEAL, "개인키 보기").enabled(unlocked),
+            ]));
         }
         items.push(Item::Rule);
         if !self.keys.btc_import_open {

@@ -23,9 +23,14 @@
 //! Records of BIP84 account 0 keep exactly this layout (`record_version = 1`). Every other account
 //! (another address type or account number, or an imported key) writes `record_version = 2`:
 //! the same 238-byte header, an 18-byte account block at `[238]` (`source u8` 1 HD / 2
-//! imported, `script_type u8`, then the HD account `u32` and 12 zero bytes, or the 16-byte record
-//! id), then the inputs at `[256]` and the raw bytes. A P2PKH account's raw transaction has no
-//! witness.
+//! imported / 3 EVM account key, `script_type u8`, then the HD account `u32` and 12 zero bytes,
+//! the 16-byte record id, or the EVM account index `u32` and 12 zero bytes), then the inputs at
+//! `[256]` and the raw bytes. A P2PKH account's raw transaction has no witness.
+//!
+//! A record's change index does not say which chain it is on: an HD account in fixed-address
+//! mode (spec/08 §3.5) sends change to `(Receive, 0)` and records index 0. The change output's
+//! script decides ([`BtcRecord::hd_change_index`], [`BtcRecord::own_change_utxo`]), so records
+//! written before the account's mode was switched stay correct.
 #![deny(clippy::indexing_slicing)]
 
 use core::fmt;
@@ -64,8 +69,8 @@ pub const BTC_RECORD_VERSION: u8 = 1;
 pub const BTC_RECORD_VERSION_V2: u8 = 2;
 /// Fixed header length.
 pub const BTC_JOURNAL_HEADER_LEN: usize = 238;
-/// The version 2 account block: `source u8 (1 HD, 2 imported) ‖ script_type u8 ‖ (HD: account
-/// u32 ‖ 0^12 | imported: record id 16)`.
+/// The version 2 account block: `source u8 (1 HD, 2 imported, 3 EVM key) ‖ script_type u8 ‖ (HD:
+/// account u32 ‖ 0^12 | imported: record id 16 | EVM key: EVM account index u32 ‖ 0^12)`.
 pub const BTC_JOURNAL_ACCOUNT_LEN: usize = 18;
 /// Bytes per input record.
 pub const BTC_JOURNAL_INPUT_LEN: usize = 49;
@@ -452,6 +457,19 @@ fn decode_account_block(
             }
         }
         2 if id != [0; 16] => BtcAccountId::Imported { id },
+        3 => {
+            let (number, padding) = id.split_first_chunk::<4>().ok_or(BtcRecordError::Length)?;
+            let evm_index = u32::from_be_bytes(*number);
+            if padding.iter().any(|byte| *byte != 0)
+                || crate::bip32::path::AccountIndex::new(evm_index).is_err()
+            {
+                return Err(BtcRecordError::Value);
+            }
+            BtcAccountId::EvmShared {
+                evm_index,
+                script_type,
+            }
+        }
         _ => return Err(BtcRecordError::Value),
     };
     if account == BtcAccountId::PRIMARY {
@@ -468,7 +486,7 @@ fn check_against_raw(record: &BtcRecord) -> Result<Transaction, BtcRecordError> 
     if record.inputs.is_empty() || record.inputs.len() > BTC_MAX_INPUTS {
         return Err(BtcRecordError::Length);
     }
-    if matches!(record.account, BtcAccountId::Hd { script_type, .. } if script_type != record.script_type)
+    if matches!(record.account, BtcAccountId::Hd { script_type, .. } | BtcAccountId::EvmShared { script_type, .. } if script_type != record.script_type)
     {
         return Err(BtcRecordError::Value);
     }
@@ -637,6 +655,13 @@ impl BtcRecord {
                 (1_u8, body)
             }
             BtcAccountId::Imported { id } => (2_u8, id),
+            BtcAccountId::EvmShared { evm_index, .. } => {
+                let mut body = [0_u8; 16];
+                for (slot, byte) in body.iter_mut().zip(evm_index.to_be_bytes()) {
+                    *slot = byte;
+                }
+                (3_u8, body)
+            }
         };
         for (slot, byte) in out
             .iter_mut()
@@ -952,6 +977,31 @@ impl BtcRecord {
         })
     }
 
+    /// The change index of this record on `account`'s change chain (spec/08 §3.2): `None` when
+    /// there is no change or the change went to the fixed address `(Receive, 0)` (fixed-address
+    /// mode and one-key accounts never move `change_next`). A record whose bytes cannot be
+    /// checked keeps its index (raising `change_next` is harmless).
+    #[must_use]
+    pub fn hd_change_index(&self, account: &BtcAccountKey) -> Option<u32> {
+        let change = self.change?;
+        if account.is_single() {
+            return None;
+        }
+        let fixed = account.script(BtcChain::Receive, 0).ok();
+        let paid = self
+            .transaction()
+            .and_then(|tx| {
+                tx.outputs
+                    .into_iter()
+                    .nth(usize::try_from(change.vout).ok()?)
+            })
+            .map(|output| output.script_pubkey);
+        match (fixed, paid) {
+            (Some(fixed), Some(paid)) if fixed == paid => None,
+            _ => Some(change.index),
+        }
+    }
+
     /// The change outpoint, if any.
     #[must_use]
     pub const fn change_outpoint(&self) -> Option<OutPoint> {
@@ -980,10 +1030,17 @@ impl BtcRecord {
             .outputs
             .into_iter()
             .nth(usize::try_from(change.vout).ok()?)?;
-        let (chain, index) = account.change_path(change.index);
-        if output.script_pubkey != account.script(chain, index).ok()? {
-            return None;
-        }
+        // The change chain or the fixed address, whichever the output pays (an HD account's mode
+        // may have been switched since the record was written).
+        let (chain, index) =
+            account
+                .change_candidates(change.index)
+                .into_iter()
+                .find(|(chain, index)| {
+                    account
+                        .script(*chain, *index)
+                        .is_ok_and(|script| script == output.script_pubkey)
+                })?;
         Some(VerifiedUtxo {
             outpoint: OutPoint {
                 txid: self.txid,
@@ -1496,13 +1553,18 @@ pub fn check_abandoned_conflicts(
 }
 
 /// The startup floor of `change_next` (spec/08 §3.2): `max(change_index + 1)` over records of
-/// `network` that reached `Broadcasting` or a later state.
+/// `network` that reached `Broadcasting` or a later state, counting only change on `account`'s
+/// change chain ([`BtcRecord::hd_change_index`]: change to the fixed address does not count).
 #[must_use]
-pub fn change_next_floor(records: &[BtcRecord], network: BtcNetwork) -> Option<u32> {
+pub fn change_next_floor(
+    records: &[BtcRecord],
+    network: BtcNetwork,
+    account: &BtcAccountKey,
+) -> Option<u32> {
     of_network(records, network)
         .filter(|record| !matches!(record.state, BtcTxState::Signed | BtcTxState::Rejected))
-        .filter_map(|record| record.change)
-        .filter_map(|change| change.index.checked_add(1))
+        .filter_map(|record| record.hd_change_index(account))
+        .filter_map(|index| index.checked_add(1))
         .max()
 }
 

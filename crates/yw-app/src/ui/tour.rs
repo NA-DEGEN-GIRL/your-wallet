@@ -363,16 +363,19 @@ fn tour_browser(state: &mut App) {
     }
 }
 
-/// A testnet4 Bitcoin account with discovery done and two made-up verified UTXOs. The account key
-/// is the synthetic test value of `screens_btc`'s tests (not derived from any mnemonic).
+/// A testnet4 Bitcoin account with discovery done and two made-up verified UTXOs, in
+/// fixed-address mode (the default). The account node is the public testnet4 node
+/// `m/84'/1'/0'` of the tour's `abandon`×11 `about` wallet (spec/08 §14.1), so the receive
+/// screen shows its real first address `m/84'/1'/0'/0/0`.
 fn tour_btc(state: &mut App) {
     use yw_core::bip32::path::BtcChain;
     use yw_core::btc::meta::{ListedUtxo, VerifiedUtxo};
     use yw_core::btc::{BtcMeta, BtcNetwork, Discovery, OutPoint, Sats, Txid};
     const ACCOUNT: &str = "03b88e0fbe3f646337ed93bc0c0f3b843fcf7d2589e5ec884754e6402027a890b4";
+    const CHAIN_CODE: &str = "3c8c2037ee4c1621da0d348db51163709a622d0d2838dde6d8419c51f6301c62";
     let account = yw_core::bip32::AccountXpub {
         pubkey: yw_core::hex::decode_array::<33>(ACCOUNT).unwrap(),
-        chain_code: [7; 32],
+        chain_code: yw_core::hex::decode_array::<32>(CHAIN_CODE).unwrap(),
     };
     let mut meta = BtcMeta::new(BtcNetwork::Testnet4, account);
     let mut discovery = Discovery::full();
@@ -1125,17 +1128,48 @@ fn screenshot_tour() {
     set_screen(&app, UNLOCKED, Screen::Main);
     save(main_hwnd(&app), "16-main-bitcoin");
     {
-        // The account card with `계정 추가`'s address-type chooser open, scrolled to it.
+        // The account card scrolled to the selected account's address mode (fixed by default).
+        let mut state = app.borrow_mut();
+        state.scroll = 300;
+        state.refresh();
+    }
+    save(main_hwnd(&app), "32-bitcoin-address-mode");
+    {
+        // The account card with `계정 추가`'s chooser open (key source at its default, the
+        // standard BTC path), scrolled to it.
         let mut state = app.borrow_mut();
         state.btc.add_account_open = true;
-        state.scroll = 420;
+        state.scroll = 520;
         state.refresh();
     }
     save(main_hwnd(&app), "25-bitcoin-account-types");
     {
+        // The explicit choice "EVM 계정과 같은 키": the warning and the EVM accounts.
+        let mut state = app.borrow_mut();
+        state.btc.add_source = crate::app_btc::BtcAddSource::EvmShared;
+        state.btc.add_evm_index = 0;
+        state.scroll = 640;
+        state.refresh();
+    }
+    save(main_hwnd(&app), "33-bitcoin-evm-key-choice");
+    {
         let mut state = app.borrow_mut();
         state.btc.add_account_open = false;
+        state.btc.add_source = crate::app_btc::BtcAddSource::Standard;
         state.scroll = 0;
+        // S12 of BIP84 account 0 in fixed-address mode: `m/84'/1'/0'/0/0` only.
+        let primary = state
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.btc.as_deref().cloned());
+        state.btc.receive = primary.and_then(|meta| crate::app_btc::BtcUi::receive_view(&meta, 0));
+    }
+    set_screen(&app, UNLOCKED, Screen::BtcReceive);
+    save(main_hwnd(&app), "34-receive-bitcoin");
+    set_screen(&app, UNLOCKED, Screen::Main);
+    {
+        let mut state = app.borrow_mut();
+        state.btc.receive = None;
         tour_chain_grants(&state);
     }
     // Message signing on Solana (ownership proof only, no transaction).

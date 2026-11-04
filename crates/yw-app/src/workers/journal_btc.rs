@@ -84,6 +84,26 @@ pub enum BtcMetaOp {
         /// `BtcAccountKey::single(record id, type, public key)`.
         key: BtcAccountKey,
     },
+    /// `계정 추가` with the key of EVM account `evm_index` (`m/44'/60'/0'/0/i`, spec/08 §3.5
+    /// "EVM 계정과 같은 키"): one fixed address of `script_type`, stored and selected; no
+    /// discovery. Refused when the account exists or its address is already an account's.
+    AddEvmShared {
+        /// Network.
+        network: BtcNetwork,
+        /// Address type.
+        script_type: ScriptType,
+        /// EVM account index.
+        evm_index: u32,
+    },
+    /// The address mode of an HD account (spec/08 §3.5): fixed address (`true`) or HD.
+    SetAddressMode {
+        /// Network.
+        network: BtcNetwork,
+        /// Account (HD only).
+        account: BtcAccountId,
+        /// Fixed-address mode.
+        single_address: bool,
+    },
     /// The selected account (meta `btc_accounts.selected`).
     Select {
         /// Network.
@@ -159,6 +179,8 @@ impl BtcMetaOp {
             Self::Create { .. } => "create",
             Self::AddAccount { .. } => "add_account",
             Self::AddImported { .. } => "add_imported",
+            Self::AddEvmShared { .. } => "add_evm_shared",
+            Self::SetAddressMode { .. } => "address_mode",
             Self::Select { .. } => "select",
             Self::Discovered { .. } => "discovered",
             Self::Refreshed { .. } => "refreshed",
@@ -175,6 +197,8 @@ impl BtcMetaOp {
             Self::Create { network }
             | Self::AddAccount { network, .. }
             | Self::AddImported { network, .. }
+            | Self::AddEvmShared { network, .. }
+            | Self::SetAddressMode { network, .. }
             | Self::Select { network, .. }
             | Self::Discovered { network, .. }
             | Self::Refreshed { network, .. }
@@ -190,6 +214,7 @@ impl BtcMetaOp {
     const fn account(&self) -> Option<BtcAccountId> {
         match self {
             Self::Select { account, .. }
+            | Self::SetAddressMode { account, .. }
             | Self::Discovered { account, .. }
             | Self::Refreshed { account, .. }
             | Self::ReceiveAddress { account, .. }
@@ -198,6 +223,7 @@ impl BtcMetaOp {
             Self::Create { .. }
             | Self::AddAccount { .. }
             | Self::AddImported { .. }
+            | Self::AddEvmShared { .. }
             | Self::Tip { .. }
             | Self::ResetTip { .. } => None,
         }
@@ -228,6 +254,8 @@ pub enum BtcMetaDone {
     Unfrozen,
     /// `max_tip_seen` forgotten.
     TipReset,
+    /// An HD account's address mode changed (or was already the requested one).
+    AddressMode(BtcAccountId),
     /// `change_next` raised (startup reconciliation or `Broadcasting`).
     ChangeNext,
     /// Other bookkeeping of a journal step (sent script, own change, tip).
@@ -717,7 +745,7 @@ impl JournalState {
                 BtcAccountId::Imported { id } => {
                     matches!(vault.has_btc_key(RecordId::from_bytes(*id)), Ok(false))
                 }
-                BtcAccountId::Hd { .. } => false,
+                BtcAccountId::Hd { .. } | BtcAccountId::EvmShared { .. } => false,
             })
             .collect();
         for account in removed {
@@ -736,7 +764,7 @@ impl JournalState {
                 Ok(false) => Err(BtcKeyError::KeyRemoved),
                 Err(error) => Err(BtcKeyError::Vault(error)),
             },
-            BtcAccountId::Hd { .. } => Ok(()),
+            BtcAccountId::Hd { .. } | BtcAccountId::EvmShared { .. } => Ok(()),
         }
     }
 
@@ -902,8 +930,36 @@ impl JournalState {
                 self.add_and_select(vault, BtcMeta::with_key(network, key), alt)
             }
             BtcMetaOp::AddImported { network, key } => {
-                if !key.is_single() {
+                if !key.is_imported() {
                     return Err(BtcKeyError::Internal);
+                }
+                self.add_and_select(vault, BtcMeta::with_key(network, key), alt)
+            }
+            BtcMetaOp::AddEvmShared {
+                network,
+                script_type,
+                evm_index,
+            } => {
+                self.btc
+                    .as_ref()
+                    .ok_or(BtcKeyError::NoMeta)?
+                    .check_network(network)
+                    .map_err(BtcKeyError::Meta)?;
+                let index = yw_core::bip32::path::AccountIndex::new(evm_index)
+                    .map_err(|error| BtcKeyError::Meta(MetaError::Key(error)))?;
+                let pubkey = vault.evm_public_key(index).map_err(BtcKeyError::Vault)?;
+                let key = BtcAccountKey::evm_shared(evm_index, script_type, pubkey)
+                    .map_err(|_| BtcKeyError::Internal)?;
+                if self.account_meta(network, key.id()).is_some() {
+                    // The same EVM account and address type twice.
+                    return Err(BtcKeyError::Vault(VaultError::DuplicateKey));
+                }
+                let script = key
+                    .script(BtcChain::Receive, 0)
+                    .map_err(|error| BtcKeyError::Meta(MetaError::Key(error)))?;
+                if self.btc_address_taken(vault, network, &script) {
+                    // One address, one account identity (spec/08 §3.5 주소 중복 거부).
+                    return Err(BtcKeyError::Vault(VaultError::DuplicateKey));
                 }
                 self.add_and_select(vault, BtcMeta::with_key(network, key), alt)
             }
@@ -980,6 +1036,7 @@ impl JournalState {
             BtcMetaOp::Create { .. }
                 | BtcMetaOp::AddAccount { .. }
                 | BtcMetaOp::AddImported { .. }
+                | BtcMetaOp::AddEvmShared { .. }
                 | BtcMetaOp::Select { .. }
         ) {
             return self.btc_account_op(vault, &op, alt);
@@ -1000,7 +1057,13 @@ impl JournalState {
             BtcMetaOp::Create { .. }
             | BtcMetaOp::AddAccount { .. }
             | BtcMetaOp::AddImported { .. }
+            | BtcMetaOp::AddEvmShared { .. }
             | BtcMetaOp::Select { .. } => return Err(BtcKeyError::Internal),
+            BtcMetaOp::SetAddressMode { single_address, .. } => {
+                meta.set_single_address(single_address)
+                    .map_err(BtcKeyError::Meta)?;
+                BtcMetaDone::AddressMode(target)
+            }
             BtcMetaOp::Discovered { discovery, .. } => {
                 discovery.apply(&mut meta).map_err(BtcKeyError::Meta)?;
                 BtcMetaDone::Discovered
@@ -1103,7 +1166,7 @@ impl JournalState {
             let records = BtcEntries::from_plain(&next).records();
             let reconcile = |meta: &mut BtcMeta| {
                 let mine = of_account(&records, meta.network(), meta.id());
-                meta.reconcile_change_next(change_next_floor(&mine, meta.network()))
+                meta.reconcile_change_next(change_next_floor(&mine, meta.network(), meta.account()))
             };
             let mut primary = self.btc.clone();
             let mut accounts = self.btc_accounts.clone();
@@ -1324,7 +1387,7 @@ impl JournalState {
             return Ok(());
         };
         if meta
-            .on_broadcasting(record.change.map(|change| change.index))
+            .on_broadcasting(record.hd_change_index(meta.account()))
             .map_err(BtcKeyError::Meta)?
         {
             self.persist_account(vault, meta, &[], alt)?;
@@ -1478,7 +1541,7 @@ impl JournalState {
                         && matches!(outcome, BroadcastOutcome::Rejected { .. })
                     {
                         meta_changed |=
-                            meta.on_send_rejected(record.change.map(|change| change.index));
+                            meta.on_send_rejected(record.hd_change_index(meta.account()));
                     }
                 }
                 if meta_changed && let Some(meta) = meta {
@@ -1601,7 +1664,11 @@ impl JournalState {
                         let records = BtcEntries::from_plain(&next).records();
                         let reconcile = |account: &mut BtcMeta| {
                             let mine = of_account(&records, network, account.id());
-                            account.reconcile_change_next(change_next_floor(&mine, network))
+                            account.reconcile_change_next(change_next_floor(
+                                &mine,
+                                network,
+                                account.account(),
+                            ))
                         };
                         if let Some(primary) =
                             meta.as_mut().filter(|primary| primary.network() == network)

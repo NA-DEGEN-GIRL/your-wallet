@@ -546,12 +546,7 @@ pub(crate) fn sign_message_with<K: BtcKeys>(
     if address != payload.address {
         return Err(BtcMessageError::KeyMismatch);
     }
-    let source_type = match payload.source {
-        BtcKeySource::Derived { script_type, .. } | BtcKeySource::Imported { script_type, .. } => {
-            script_type
-        }
-    };
-    if source_type != payload.script_type {
+    if payload.source.script_type() != payload.script_type {
         return Err(BtcMessageError::KeyMismatch);
     }
     let aux = keys.aux_rand().map_err(|_| BtcMessageError::Signing)?;
