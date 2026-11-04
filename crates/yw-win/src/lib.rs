@@ -7,15 +7,18 @@
 //! M3 provides `time`, `mem`, `file`, `dpapi`, `clipboard`, `http`, `session`, `process`
 //! (single instance, process setup), `input` and `ui`. M5 adds `pipe` (the yw-host ↔ yw-app named
 //! pipe) and the yw-host process helpers (`spawn_detached`, `StdIn`/`StdOut`,
-//! `current_user_sid_string`; spec/05 §7.8).
+//! `current_user_sid_string`; spec/05 §7.8). The `YubiKey` feature (spec/10 §4) adds `pcsc` (PC/SC
+//! smart-card transport) and `cng` (one-block AES/3DES ECB for the PIV management key).
 
 pub mod clipboard;
+pub mod cng;
 pub mod dpapi;
 mod error;
 pub mod file;
 pub mod http;
 pub mod input;
 pub mod mem;
+pub mod pcsc;
 pub mod pipe;
 pub mod process;
 pub mod security;

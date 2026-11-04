@@ -88,8 +88,8 @@ Bitcoin 슬롯의 인덱스는 **계정 0의 받기 체인 주소 인덱스**(`�
 | `yw_core::yubikey::{plan, record, enrol, sign, sig}` | 슬롯 계획·경로·검사, tag 5 코덱, 등록, 카드 서명, 서명 후처리 | 없음 |
 | `yw_core::yubikey::mock` (`cfg(test)` 또는 feature `test-card`) | 두 애플릿의 APDU 수준 에뮬레이터(실제 secp256k1·Ed25519 서명) | 없음 |
 | `yw_core::vault` | tag 5 record, `hardware_keys`·`add_hardware_key`·`remove_hardware_key`·`create_with_hardware` | 없음 |
-| `yw_win::pcsc` | `SCardEstablishContext`/`ListReadersW`/`ConnectW`(T=1, 공유)/`Transmit`/`BeginTransaction`/`Disconnect` 래퍼, `CardTransport` 구현. USB·NFC 리더 모두 같은 경로 | 있음 |
-| `yw_win::cng` | PIV 관리 키용 AES-ECB·3DES-ECB 한 블록(`BCryptEncrypt`/`BCryptDecrypt`), `MgmtCipher` 구현 | 있음 |
+| `yw_win::pcsc` | `SCardEstablishContext`(사용자 범위)/`ListReadersW`/`ConnectW`(T=1, 공유)/`BeginTransaction`/`Transmit`/`EndTransaction`·`Disconnect`(`SCARD_LEAVE_CARD`, 재설정 없음) 래퍼. USB·NFC 리더 모두 같은 경로. yw-win은 yw-core에 의존하지 않으므로(D4) `CardTransport` 구현은 yw-app의 얇은 어댑터가 한다 | 있음 |
+| `yw_win::cng` | PIV 관리 키용 AES-ECB·3DES-ECB 한 블록(`BCRYPT_AES_ECB_ALG_HANDLE`·`BCRYPT_3DES_ECB_ALG_HANDLE` 의사 핸들, `BCryptEncrypt`/`BCryptDecrypt`). `MgmtCipher` 구현은 yw-app 어댑터 | 있음 |
 | `yw-app` (§13) | 등록 마법사, "YubiKey" 계정 종류, 승인 후 카드 서명 단계 | — |
 
 - yw-core에는 AES·3DES 구현이 없다(D6 "직접 구현 금지" 취지): PIV 관리 키 상호 인증의 블록 암호는 `piv::MgmtCipher` trait으로 받고 yw-win이 Windows CNG로 구현한다. 새 크레이트는 없다(windows-sys feature `Win32_Security_Credentials`만 추가).
