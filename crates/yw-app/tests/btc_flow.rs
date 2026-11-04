@@ -107,6 +107,8 @@ fn discovery_gap_rule_and_more() -> TestResult {
     assert!(result.discovery.is_done());
     assert_eq!(result.discovery.checked(), 46);
     let mut meta = BtcMeta::new(BtcNetwork::Testnet4, xpub());
+    // HD mode: "새 주소" below issues more receive addresses.
+    meta.set_single_address(false)?;
     result.discovery.apply(&mut meta)?;
     // Receive: 0 and 3 used, then 20 unused (4..=23); index 25 is beyond the gap.
     assert_eq!(meta.receive_next(), 4);

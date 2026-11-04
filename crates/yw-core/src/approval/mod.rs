@@ -278,6 +278,14 @@ impl BtcMessagePayload {
                 transcript.push_u8(script_type.code());
                 transcript.push_bool(compressed);
             }
+            BtcKeySource::EvmShared {
+                evm_index,
+                script_type,
+            } => {
+                transcript.push_u8(3);
+                transcript.push_u8(script_type.code());
+                transcript.push_u32(evm_index);
+            }
         }
         let _ = transcript.push_bytes(self.pubkey.as_bytes());
         transcript.push_u8(self.script_type.code());

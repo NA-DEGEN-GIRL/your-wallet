@@ -124,6 +124,8 @@ pub struct KeysUi {
     pub btc_import_open: bool,
     /// The imported Solana/Bitcoin key being revealed or removed.
     pub target: Option<RecordId>,
+    /// The Bitcoin account on an EVM account's key being revealed (EVM index, network).
+    pub btc_evm_target: Option<(u32, yw_core::btc::BtcNetwork)>,
     /// S08 follows "개인키로 시작하기".
     pub done_start: bool,
 }
@@ -136,6 +138,7 @@ impl Default for KeysUi {
             btc_script: ScriptType::P2wpkh,
             btc_import_open: false,
             target: None,
+            btc_evm_target: None,
             done_start: false,
         }
     }
@@ -149,7 +152,7 @@ fn btc_imported_count(meta: &crate::meta::Meta) -> usize {
     meta.btc_accounts
         .accounts
         .iter()
-        .filter(|account| account.is_single())
+        .filter(|account| account.is_imported())
         .count()
 }
 
@@ -416,6 +419,17 @@ impl App {
     pub fn imported_reveal(&mut self, id: [u8; 16]) {
         if matches!(self.mode, AppMode::Unlocked { .. }) {
             self.keys.target = Some(RecordId::from_bytes(id));
+            self.keys.btc_evm_target = None;
+            self.set_screen(Screen::Confirm(Confirm::RevealImported));
+        }
+    }
+
+    /// `개인키 보기` of a Bitcoin account on an EVM account's key (spec/08 §3.5): the same
+    /// T-REVEAL-WARN and password, then its WIF.
+    pub fn btc_evm_shared_reveal(&mut self, evm_index: u32, network: yw_core::btc::BtcNetwork) {
+        if matches!(self.mode, AppMode::Unlocked { .. }) {
+            self.keys.target = None;
+            self.keys.btc_evm_target = Some((evm_index, network));
             self.set_screen(Screen::Confirm(Confirm::RevealImported));
         }
     }
@@ -453,6 +467,16 @@ impl App {
     pub fn imported_confirmed(&mut self, kind: Confirm) {
         let previous = self.previous_screen.clone();
         self.set_screen(previous);
+        if kind == Confirm::RevealImported
+            && let Some((evm_index, network)) = self.keys.btc_evm_target.take()
+        {
+            self.open_input(
+                SecretKind::ConfirmPassword,
+                Purpose::ConfirmPassword(PasswordAction::RevealBtcEvmShared { evm_index, network }),
+                false,
+            );
+            return;
+        }
         let Some(id) = self.keys.target.take() else {
             return;
         };
@@ -473,8 +497,22 @@ impl App {
     /// always shown with it.
     #[must_use]
     pub fn imported_target_text(&self) -> Option<(String, String)> {
-        let id = *self.keys.target?.as_bytes();
         let meta = self.meta.as_ref()?;
+        if self.keys.btc_evm_target.is_some() {
+            // The selected account of the Bitcoin list (the one `개인키 보기` was pressed for).
+            let ctx = self.btc_ctx();
+            let account = ctx
+                .btc_meta()
+                .filter(|account| account.account().is_evm_shared())?;
+            let address = account
+                .address(yw_core::bip32::path::BtcChain::Receive, 0)
+                .ok()?;
+            return Some((
+                crate::app_btc::account_label(account.account()),
+                address.as_str().to_owned(),
+            ));
+        }
+        let id = *self.keys.target?.as_bytes();
         meta.evm_raw_accounts
             .iter()
             .find(|raw| raw.record_id == id)
@@ -582,13 +620,19 @@ impl App {
                 }
             }
             ids::BTC_REVEAL | ids::BTC_REMOVE => {
-                // The selected account of the Bitcoin list, when it is an imported key.
+                // The selected account of the Bitcoin list, when it is an imported key (or, for
+                // `개인키 보기` only, an account on an EVM account's key).
+                let evm_shared = self.btc_ctx().selected_evm_shared();
                 if let Some(record) = self.btc_ctx().selected_imported() {
                     if id == ids::BTC_REVEAL {
                         self.imported_reveal(record);
                     } else {
                         self.imported_remove(record);
                     }
+                } else if let Some((evm_index, network)) = evm_shared
+                    && id == ids::BTC_REVEAL
+                {
+                    self.btc_evm_shared_reveal(evm_index, network);
                 }
             }
             _ => return false,

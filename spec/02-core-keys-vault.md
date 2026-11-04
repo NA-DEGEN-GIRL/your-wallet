@@ -481,7 +481,7 @@ journal_key = HKDF-SHA256(salt = 없음,                   ikm = DEK, info = "yo
 | `evm_raw_accounts` | `RawAccount[]` | 0..=15개, vault의 `EvmRawKey` record와 1:1 |
 | `sol_accounts` | `Account[]` | 0..=100개(M7 전에는 `[]`) |
 | `btc` | `BtcMeta` | null | BTC를 켜기 전(M8 전 포함) `null`. BIP84 계정 0(버전 1). 필드는 [08](08-bitcoin.md) §12.3 이름 그대로, 바이트 배열은 소문자 hex 문자열, 없음은 `null` |
-| `btc_accounts` (선택) | object | 이 키만 없어도 된다(없음 = 다른 BTC 계정 없음, 기본값이면 쓰지 않음). 다른 BTC 계정(주소 형식·계정 번호·가져온 키, 두 네트워크)과 선택: [08](08-bitcoin.md) §12.3a. 있으면 알려진 키로 엄격 검증 |\| null | BTC를 켜기 전(M8 전 포함) `null`. 필드는 [08](08-bitcoin.md) §12.3 이름 그대로, 바이트 배열은 소문자 hex 문자열, 없음은 `null` |
+| `btc_accounts` (선택) | object | 이 키만 없어도 된다(없음 = 다른 BTC 계정 없음, 기본값이면 쓰지 않음). 다른 BTC 계정(주소 형식·계정 번호·가져온 키·EVM 계정과 같은 키 `key.evm {index, pubkey}`, 두 네트워크)과 선택: [08](08-bitcoin.md) §12.3a. 있으면 알려진 키로 엄격 검증. HD 계정 객체(이 목록과 `btc` 모두)의 선택 키 `single_address`(bool, **없음 = 고정 주소 모드**, HD 모드일 때만 `false`로 쓴다 — 기본값은 이전 바이트 그대로, [08] §3.5·§12.3) |\| null | BTC를 켜기 전(M8 전 포함) `null`. 필드는 [08](08-bitcoin.md) §12.3 이름 그대로, 바이트 배열은 소문자 hex 문자열, 없음은 `null` |
 | `address_book` | `AddressBookEntry[]` | 0..=500개, (`chain`, `address`) 중복 금지 |
 | `connected_sites` | `ConnectedSite[]` | 0..=256개, `origin` 중복 금지([05](05-browser.md) §4.1) |
 | `sol_sites`·`btc_sites` (선택, 2026-10-31) | object[] | Solana·Bitcoin dApp 연결([05] §4.9). 각 0..=256개의 객체 배열, 비어 있으면 쓰지 않는다(이전 버전은 모르는 키로 보존). 항목: `sol_sites` `{ origin, public_key: base58, granted_at_unix_ms }`, `btc_sites` `{ origin, network: 1|2, addresses: [{ purpose: "payment"|"ordinals"|"any", address, public_key: hex, script_type }], granted_at_unix_ms }`. 쓸 수 없는 항목은 읽을 때 건너뛴다 |
@@ -537,7 +537,7 @@ ChainIdDec = u64 값 1..=2^64−1의 10진 표기, 앞자리 0 없음 (예 "eip1
 - `activity`: 이 지갑이 보낸 종결 거래만, 체인 문서가 종결 저널 레코드를 정리할 때 만든다. `account`·`counterparty`는 체인별 정규형(위 `address_book`과 같음, 받는 주소가 없으면 `""`; BTC는 계정 0 하나뿐이므로 `account` = `""`, [08] §12.3), `tx_id`는 EVM `0x`+소문자 hex 64, SOL base58 서명, BTC 소문자 hex txid(표시 순서). `title`은 서명 당시 승인 제목(≤ 256바이트, [03] §11.1·[07] §13.3·[08] §10), `asset`은 `"native"` 또는 토큰(EVM `EvmAddr`, SOL mint base58), `amount`는 최소 단위 10진 문자열(≤ 78자, 없으면 `"0"`), `time_unix_ms`는 종결 관측 시각. 상태: EVM `Finalized`(영수증 성공 `succeeded`, 실패 `failed`)·`Dropped`·`Replaced`, SOL `Landed`→`succeeded`·`FailedOnChain`→`failed`·`Expired`→`expired`, BTC `Confirmed`→`succeeded`·`Rejected`·`Replaced`·`Conflicted`·`Abandoned`(나머지는 같은 이름의 소문자). 화면은 표시 전용이다([04] §2.6).
 - `ActivityEntry`는 모든 체인이 쓰는 유일한 스키마다. 체인 문서는 필드 대응만 정하고 별도 activity 스키마를 두지 않는다: EVM [03] §5.4; SOL [07] §14.1(`account` = 보낸 주소 from, `tx_id` = base58 서명, `asset` = `"native"`(SOL) 또는 mint base58, `amount` = lamports 또는 토큰 원시 단위, `counterparty` = 받는 주소 to); BTC [08] §12.3.
 - meta가 없고 `.prev`도 없으면(첫 실행, 또는 사용자가 지움) 기본 meta(`evm_accounts = [{index 0, label "계정 1"}]`, 나머지 빈 값)로 시작한다. 키 전용 지갑의 기본 meta는 `evm_accounts = []`이고 가져온 키를 해당 목록에 넣는다(라벨 "가져온 계정 n"·"가져온 Solana n"; Bitcoin 키는 `btc_accounts`의 가져온 키 계정으로, 선택된 채).
-- 두 선택 키(`sol_raw_accounts`·`sol_raw_selected`)는 [04] §6.6의 "새 최상위 키" 규칙으로 더했다: 이 버전은 없으면 빈 값으로 읽고 항상 `prefs` 뒤에 쓴다. 이전 버전은 모르는 최상위 키로 보존한다. 가져온 Bitcoin 키(`BtcKey` record)는 따로 목록이 없고 선택 최상위 키 `btc_accounts`([08] §12.3a)의 가져온 키 계정(`BtcAccountKey::Single { id = record_id, script_type, pubkey }`, 그 키의 network)과 1:1이다. 잠금 해제 때 yw-app은 `imported_keys`(§10.3)로 가져온 키 목록의 주소 캐시를 다시 계산하고 vault에 없는 항목은 지우며 vault에만 있는 항목은 기본 라벨로 더한다; Bitcoin은 계정이 없는 `BtcKey` record에 계정을 더하고, record가 없거나 키·형식·network가 다른 가져온 키 계정을 지운다(`MetaAddressMismatch` 로그). 그래서 meta 쓰기가 vault 쓰기 뒤에 실패해도, 또는 계정 목록 없이 `BtcKey`만 있는 vault여도 다음 잠금 해제에서 맞춰진다.
+- 두 선택 키(`sol_raw_accounts`·`sol_raw_selected`)는 [04] §6.6의 "새 최상위 키" 규칙으로 더했다: 이 버전은 없으면 빈 값으로 읽고 항상 `prefs` 뒤에 쓴다. 이전 버전은 모르는 최상위 키로 보존한다. 가져온 Bitcoin 키(`BtcKey` record)는 따로 목록이 없고 선택 최상위 키 `btc_accounts`([08] §12.3a)의 가져온 키 계정(`BtcAccountKey::Single { id = record_id, script_type, pubkey }`, 그 키의 network)과 1:1이다. 잠금 해제 때 yw-app은 `imported_keys`(§10.3)로 가져온 키 목록의 주소 캐시를 다시 계산하고 vault에 없는 항목은 지우며 vault에만 있는 항목은 기본 라벨로 더한다; Bitcoin은 계정이 없는 `BtcKey` record에 계정을 더하고, record가 없거나 키·형식·network가 다른 가져온 키 계정을 지운다(`MetaAddressMismatch` 로그). 그래서 meta 쓰기가 vault 쓰기 뒤에 실패해도, 또는 계정 목록 없이 `BtcKey`만 있는 vault여도 다음 잠금 해제에서 맞춰진다. EVM 키 Bitcoin 계정(`BtcAccountKey::EvmShared { evm_index, script_type, pubkey }`, [08] §3.5)은 vault record가 아니라 이 맞춤의 대상이 아니다(`is_imported()`는 `Single`만): 공개키는 추가할 때 `evm_public_key`로 받아 캐시하고, 서명할 때 vault가 빌려 주는 EVM 키의 공개키와 같지 않으면 `KeyMismatch`로 멈춘다. HD 계정의 주소 방식(`single_address`, 기본 고정 주소)은 계정 객체 안에 있다. 이전 앱 버전은 `single_address`나 `key.evm`이 있는 BTC 객체를 모르는 키로 보고 meta 문서를 거부하므로, 이전 버전 호환은 기본값(고정 주소, EVM 키 계정 없음)에만 보장한다.
 
 ### 5.4 journal 평문 (이진, `yw_core::journal`, M4)과 롤백
 
@@ -793,6 +793,7 @@ pub struct BackupChallenge { pub id: ChallengeId, pub positions: [u8; 4] } // 1-
 | `reveal_mnemonic(password)` | `BackupPending`, `Unlocked` | `SecretString`(`Debug` 가림, §10.3), 단어를 공백 하나로 연결 |
 | `reveal_evm_private_key(password, src)` | `Unlocked` | `SecretString`, 소문자 hex 64자, `0x` 없음 |
 | `reveal_imported_key(password, id)` | `Unlocked` | `(ImportChain, SecretString)`: EVM hex 64자, Solana base58 64바이트 keypair, Bitcoin WIF(§8.4) |
+| `reveal_evm_shared_wif(password, index, network)` | `Unlocked` | `SecretString`: EVM 계정 index의 키(m/44'/60'/0'/0/i)를 압축 WIF로(network 버전 바이트) — EVM 키 Bitcoin 계정의 `개인키 보기`([08] §3.5). 같은 비밀은 `reveal_evm_private_key`의 hex이기도 하다 |
 
 - 잠금 해제 상태여도 매번 비밀번호를 다시 받는다: 현재 vault 바이트의 `kdf_salt`로 Argon2 → KEK → `wrapped_dek` 복호화. 실패는 `UnlockFailed`(§7.4 규칙). 성공하면 풀린 DEK와 슬롯의 DEK를 상수 시간 비교하고, 다르면 `UnlockFailed`.
 - passphrase는 표시하지 않는다(저장하지 않음). 파생(니모닉) Solana·Bitcoin 개인키 표시는 없다. 가져온 Solana·Bitcoin 키는 `reveal_imported_key`로 가져온 형식 그대로 내보낸다(삭제 전 내보내기, [04] §2.18).
@@ -906,6 +907,7 @@ impl Vault {
     pub fn quarantined_at(&self) -> Option<u64>;                              // 마지막 `.prev` 복구가 본 파일을 옮긴 `now_unix`
     pub fn reveal_mnemonic(&self, password: Pw) -> R<SecretString>;
     pub fn reveal_evm_private_key(&self, password: Pw, src: EvmKeySource) -> R<SecretString>;
+    pub fn reveal_evm_shared_wif(&self, password: Pw, index: AccountIndex, network: BtcNetwork) -> R<SecretString>; // [08] §3.5, 압축 WIF
 
     // 공개 정보 (BackupPending·Unlocked)
     pub fn evm_address(&self, src: EvmKeySource) -> R<crate::evm::Address>;
@@ -916,6 +918,7 @@ impl Vault {
     pub fn sol_public_keys(&self, srcs: &[SolKeySource]) -> R<Vec<[u8; 32]>>;                    // M7, ≤ 128개, 입력 순서
     pub fn btc_account_xpub(&self, coin: BtcCoin) -> R<AccountXpub>;                              // M8, m/84'/c'/0'
     pub fn btc_public_key(&self, coin: BtcCoin, chain: BtcChain, index: u32) -> R<[u8; 33]>;      // M8, 개인 파생 잎 공개키
+    pub fn evm_public_key(&self, index: AccountIndex) -> R<[u8; 33]>;                            // m/44'/60'/0'/0/i 압축 공개키(EVM 키 BTC 계정, [08] §3.5)
 
     // 사이드카 (BackupPending·Unlocked)
     pub fn open_sidecar(&self, kind: FileKind) -> R<Option<(u64, SecretVec)>>;

@@ -27,8 +27,15 @@ pub const TIP: u32 = 200_000;
 /// A fixed layout seed.
 pub const SEED: [u8; 32] = [0x5a; 32];
 
-/// The BIP84 account 0 of [`xpub`] (the account of every fixture plan).
+/// The BIP84 account 0 of [`xpub`] in HD mode (the account of every fixture plan: change on the
+/// change chain). [`fixed_account`] is the same node in fixed-address mode.
 pub fn account() -> BtcAccountKey {
+    BtcAccountKey::primary(xpub()).with_single_address(false)
+}
+
+/// The BIP84 account 0 of [`xpub`] in fixed-address mode (the default of new accounts, spec/08
+/// §3.5): receive and change at `(Receive, 0)`.
+pub fn fixed_account() -> BtcAccountKey {
     BtcAccountKey::primary(xpub())
 }
 

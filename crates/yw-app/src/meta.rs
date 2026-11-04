@@ -1546,6 +1546,65 @@ mod tests {
         );
     }
 
+    /// spec/08 §3.5/§12.3: the address mode of an HD account. A meta written before the mode
+    /// existed (no `single_address`) loads every HD account in fixed-address mode and is written
+    /// back byte-identical; HD mode adds `"single_address":false` to that account only; an
+    /// account on an EVM account's key round-trips in `btc_accounts`.
+    #[test]
+    fn btc_address_mode_and_evm_shared_accounts() {
+        use yw_core::btc::{BtcAccountKey, BtcMeta, BtcNetwork, ScriptType};
+        let node = yw_core::bip32::AccountXpub {
+            pubkey: yw_core::hex::decode_array::<33>(
+                "03b88e0fbe3f646337ed93bc0c0f3b843fcf7d2589e5ec884754e6402027a890b4",
+            )
+            .unwrap(),
+            chain_code: [7; 32],
+        };
+        let taproot = BtcAccountKey::hd(ScriptType::P2tr, 0, node).unwrap();
+        let mut old = Meta {
+            btc: Some(Box::new(BtcMeta::new(BtcNetwork::Testnet4, node))),
+            ..Meta::default()
+        };
+        old.btc_accounts
+            .upsert(BtcMeta::with_key(BtcNetwork::Testnet4, taproot))
+            .unwrap();
+        let old_bytes = old.to_json();
+        assert!(
+            !String::from_utf8(old_bytes.clone())
+                .unwrap()
+                .contains("single_address")
+        );
+        let parsed = parse(&old_bytes).unwrap().meta;
+        assert!(parsed.btc.as_deref().unwrap().fixed_address());
+        assert!(
+            parsed
+                .btc_accounts
+                .accounts
+                .iter()
+                .all(BtcMeta::fixed_address)
+        );
+        assert_eq!(parsed.to_json(), old_bytes);
+        // HD mode on the taproot account only.
+        let mut hd = parsed;
+        assert_eq!(
+            hd.btc_accounts.accounts[0].set_single_address(false),
+            Ok(true)
+        );
+        let key = BtcAccountKey::evm_shared(2, ScriptType::P2wpkh, node.pubkey).unwrap();
+        hd.btc_accounts
+            .upsert(BtcMeta::with_key(BtcNetwork::Testnet4, key))
+            .unwrap();
+        let bytes = hd.to_json();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert_eq!(text.matches("\"single_address\":false").count(), 1);
+        assert!(text.contains("\"key\":{\"evm\":{\"index\":2,"));
+        let back = parse(&bytes).unwrap().meta;
+        assert_eq!(back, hd);
+        assert!(back.btc.as_deref().unwrap().fixed_address());
+        assert!(!back.btc_accounts.accounts[0].fixed_address());
+        assert!(back.btc_accounts.accounts[1].is_single());
+    }
+
     #[test]
     fn default_round_trips_and_has_account_zero() {
         let mut meta = Meta::default();

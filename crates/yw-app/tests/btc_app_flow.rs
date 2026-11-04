@@ -721,6 +721,14 @@ impl Harness {
     fn enable(&mut self) {
         self.run(|ui, ctx| ui.enable(ctx, BtcNetwork::Testnet4));
     }
+
+    /// [`Harness::enable`], then BIP84 account 0 switched to HD mode (a new receive address each
+    /// time, change on the change chain; spec/08 §3.5) for the tests of the HD index rules.
+    fn enable_hd(&mut self) {
+        self.enable();
+        self.run(|ui, ctx| ui.set_address_mode(ctx, false));
+        assert!(self.btc_meta().is_some_and(|meta| !meta.fixed_address()));
+    }
 }
 
 impl Drop for Harness {
@@ -744,7 +752,7 @@ fn send_form(harness: &mut Harness, amount_sats: &str, rate: &str) {
 #[expect(clippy::too_many_lines, reason = "one end-to-end send in order")]
 fn testnet4_send_end_to_end() -> TestResult {
     let mut harness = Harness::new("e2e")?;
-    harness.enable();
+    harness.enable_hd();
     // Settings written, BtcMeta of the spec/08 §14.1 testnet4 account node, discovery done.
     assert!(harness.settings.enabled);
     assert_eq!(harness.settings.network, BtcNet::Testnet4);
@@ -921,7 +929,7 @@ fn testnet4_send_end_to_end() -> TestResult {
 #[test]
 fn precheck_rejection_keeps_change_index() -> TestResult {
     let mut harness = Harness::new("reject")?;
-    harness.enable();
+    harness.enable_hd();
     if let Ok(mut world) = harness.world.lock() {
         world.reject = Some("min relay fee not met");
     }
@@ -1294,7 +1302,7 @@ fn locked_no_btc_calls_except_esplora_test() -> TestResult {
 #[test]
 fn receive_address_shown_after_persisted_issue() -> TestResult {
     let mut harness = Harness::new("receive")?;
-    harness.enable();
+    harness.enable_hd();
     // Discovery: 0/0 used → receive_next 1, the range [1, 1) is empty → issue index 1.
     harness.call(BtcUi::open_receive);
     // Queued, not shown yet.
@@ -1592,7 +1600,7 @@ fn abandon_offered_only_after_not_found_limit() -> TestResult {
 #[test]
 fn precheck_already_in_mempool_keeps_tracking() -> TestResult {
     let mut harness = Harness::new("known")?;
-    harness.enable();
+    harness.enable_hd();
     if let Ok(mut world) = harness.world.lock() {
         world.reject = Some("txn-already-in-mempool");
     }
@@ -1658,23 +1666,52 @@ fn funding_to(script: Vec<u8>, value: u64, salt: u8) -> TestResult<(Transaction,
 /// real RPC worker (prepare → approval → sign → post-sign verification → pre-check → send), the
 /// version 2 journal record of that account, tracking to one confirmation with the own change
 /// inserted into that account (not BIP84 account 0), the activity row's account tag, and the
-/// switch back.
+/// switch back. Each type runs in both address modes (spec/08 §3.5): fixed address (the default
+/// of a new account: no `새 주소`, change back to the receive address `…/0/0`, `change_next`
+/// unchanged) and HD (change on the change chain, `change_next` 1).
 #[test]
 #[expect(clippy::too_many_lines, reason = "one account of each type end to end")]
 fn every_address_type_end_to_end() -> TestResult {
-    for (round, script_type) in ScriptType::CHOICES.into_iter().enumerate() {
+    let rounds = ScriptType::CHOICES
+        .into_iter()
+        .flat_map(|script_type| [(script_type, true), (script_type, false)]);
+    for (round, (script_type, fixed)) in rounds.enumerate() {
         let salt = u8::try_from(round).unwrap_or(0).saturating_add(0x60);
         let number = u32::from(script_type == ScriptType::P2wpkh);
-        let mut harness = Harness::new(&format!("types-{}", script_type.json_name()))?;
+        let mut harness = Harness::new(&format!(
+            "types-{}-{}",
+            script_type.json_name(),
+            if fixed { "fixed" } else { "hd" }
+        ))?;
         harness.enable();
         let primary_before = harness.btc_meta().ok_or("primary")?.clone();
+        assert!(
+            primary_before.fixed_address(),
+            "BIP84 account 0 defaults to fixed"
+        );
         harness.run(|ui, ctx| {
             ui.open_add_account(ctx);
             Vec::new()
         });
         assert!(harness.ui.add_account_open);
+        assert_eq!(
+            harness.ui.add_source,
+            yw_app::app_btc::BtcAddSource::Standard
+        );
         harness.run(|ui, ctx| ui.add_account(ctx, script_type));
         assert!(!harness.ui.add_account_open);
+        assert!(
+            harness
+                .ctx()
+                .btc_meta()
+                .ok_or("new account")?
+                .fixed_address(),
+            "a new account starts in fixed-address mode"
+        );
+        if !fixed {
+            harness.run(|ui, ctx| ui.set_address_mode(ctx, false));
+            assert!(!harness.ctx().btc_meta().ok_or("hd")?.fixed_address());
+        }
         // BIP84 account 0 is meta `btc`: the first added native segwit account is 1.
         let expected_id = BtcAccountId::Hd {
             script_type,
@@ -1701,6 +1738,20 @@ fn every_address_type_end_to_end() -> TestResult {
             view.path,
             format!("m/{}'/1'/{number}'/0/0", script_type.purpose().number())
         );
+        assert_eq!(view.fixed, fixed);
+        if fixed {
+            // One address: no `새 주소` (refused by the key worker too), the explanation shown.
+            assert!(
+                view.note
+                    .contains("받은 돈과 보내고 남은 잔돈이 모두 이 주소로"),
+                "{}",
+                view.note
+            );
+            harness.run(BtcUi::new_receive_address);
+            assert!(harness.ui.receive_message.is_some());
+            harness.run(BtcUi::open_receive);
+            assert_eq!(harness.ui.receive.as_ref().map(|view| view.index), Some(0));
+        }
         let first = address.as_str().chars().next().ok_or("address")?;
         assert!(match script_type {
             ScriptType::P2pkh => matches!(first, 'm' | 'n'),
@@ -1747,9 +1798,25 @@ fn every_address_type_end_to_end() -> TestResult {
         let sent = parse_transaction(&record.raw)?;
         assert_eq!(sent.has_witness(), script_type.is_segwit());
         let sent_txid = record.txid;
-        // The change index moved in this account, not in BIP84 account 0.
+        let record_change = record.change.ok_or("record change")?;
+        let change_output = sent
+            .outputs
+            .get(usize::try_from(record_change.vout)?)
+            .ok_or("change output")?;
         let account = harness.ctx().btc_meta().ok_or("active")?.clone();
-        assert_eq!(account.change_next(), 1);
+        if fixed {
+            // Change back to the receive address `…/0/0`; no change-chain index is used.
+            assert_eq!(record_change.index, 0);
+            assert_eq!(change_output.script_pubkey, address.script_pubkey());
+            assert_eq!(account.change_next(), 0);
+        } else {
+            // The change index moved in this account, not in BIP84 account 0.
+            assert_eq!(
+                change_output.script_pubkey,
+                account.expected_script(BtcChain::Change, 0)?
+            );
+            assert_eq!(account.change_next(), 1);
+        }
         assert_eq!(harness.btc_meta().ok_or("primary")?.change_next(), 0);
         // Tracking to one confirmation (final): own change into this account.
         harness.clock.advance(60_000);
@@ -1767,12 +1834,14 @@ fn every_address_type_end_to_end() -> TestResult {
         assert_eq!(record.state, BtcTxState::Confirmed);
         let change = record.change_outpoint().ok_or("change")?;
         let account = harness.ctx().btc_meta().ok_or("active")?.clone();
-        assert!(
-            account
-                .verified()
-                .iter()
-                .any(|utxo| utxo.outpoint == change && utxo.own)
-        );
+        let own_path = if fixed {
+            (BtcChain::Receive, 0)
+        } else {
+            (BtcChain::Change, 0)
+        };
+        assert!(account.verified().iter().any(|utxo| utxo.outpoint == change
+            && utxo.own
+            && (utxo.chain, utxo.index) == own_path));
         assert!(
             !harness
                 .btc_meta()
@@ -2596,7 +2665,9 @@ fn reimported_key_must_conflict_with_its_abandoned_send() -> TestResult {
         harness.ctx().remove_block(
             match second.id() {
                 BtcAccountId::Imported { id } => id,
-                BtcAccountId::Hd { .. } => return Err("not imported".into()),
+                BtcAccountId::Hd { .. } | BtcAccountId::EvmShared { .. } => {
+                    return Err("not imported".into());
+                }
             },
             harness.ui.slot
         ),
@@ -2686,5 +2757,317 @@ fn wif_of_an_hd_address_is_refused() -> TestResult {
         outcomes.as_slice(),
         [KeyOutcome::KeyImported(Ok(ImportedAccount::Btc(..)))]
     ));
+    Ok(())
+}
+
+// ----- fixed-address mode and EVM-shared keys (spec/08 §3.5) -------------------------------------
+
+/// The settled send of the queued item: approve, then tracking to one confirmation.
+fn send_and_confirm(harness: &mut Harness, amount: &str, seed: u8) -> TestResult<Txid> {
+    send_form(harness, amount, "2");
+    harness.run(|ui, ctx| ui.review(ctx, [seed; 32]));
+    if harness.queued.len() != 1 {
+        return Err(format!("not queued: {:?}", harness.ui.send.info).into());
+    }
+    harness.approve()?;
+    let sent = harness
+        .records()
+        .into_iter()
+        .find(|record| record.state == BtcTxState::Submitted)
+        .ok_or("submitted record")?
+        .txid;
+    harness.clock.advance(60_000);
+    harness.run(BtcUi::tick);
+    if let Ok(mut world) = harness.world.lock() {
+        world.confirm(&sent, CONFIRM_HEIGHT);
+    }
+    harness.clock.advance(60_000);
+    harness.run(BtcUi::tick);
+    Ok(sent)
+}
+
+/// spec/08 §3.5: BIP84 account 0 of a wallet is in fixed-address mode (old metas and new
+/// wallets alike). Discovery still scans with the gap limit, so a deposit made earlier to `/0/1`
+/// is found and spent; the receive screen always shows `m/84'/1'/0'/0/0` with the explanation
+/// and no `새 주소`; the change of a send returns to `/0/0` (`change_next` stays 0, the own change
+/// lands on `/0/0`). The mode switch HD ↔ fixed is persisted and refused while a BTC approval is
+/// open.
+#[test]
+fn fixed_address_mode_end_to_end() -> TestResult {
+    let mut harness = Harness::new("fixed")?;
+    // A deposit to receive 1 made before (another wallet in HD mode, or this one before the
+    // switch): discovery must still see it.
+    let second = account().address(BtcNetwork::Testnet4, BtcChain::Receive, 1)?;
+    let (deposit, raw) = funding_to(second.script_pubkey(), 60_000, 0x71)?;
+    let deposit_outpoint = OutPoint {
+        txid: txid(&deposit),
+        vout: 0,
+    };
+    if let Ok(mut world) = harness.world.lock() {
+        world.txs.push((deposit, raw, Some(FUNDING_HEIGHT)));
+    }
+    harness.enable();
+    let meta = harness.btc_meta().ok_or("meta")?.clone();
+    assert!(meta.fixed_address());
+    assert_eq!(meta.receive_next(), 2, "discovery found /0/0 and /0/1");
+    assert_eq!(meta.verified().len(), 2);
+    assert_eq!(
+        harness
+            .ui
+            .balance(&harness.ctx())
+            .ok_or("balance")?
+            .available
+            .get(),
+        FUNDING_VALUE + 60_000
+    );
+    // The receive screen: always /0/0, no new address.
+    harness.run(BtcUi::open_receive);
+    let view = harness.ui.receive.clone().ok_or("receive view")?;
+    assert_eq!((view.index, view.path.as_str()), (0, "m/84'/1'/0'/0/0"));
+    assert!(view.fixed && !view.single_key);
+    assert_eq!(view.address, meta.address(BtcChain::Receive, 0)?.as_str());
+    harness.run(BtcUi::new_receive_address);
+    assert_eq!(
+        harness.ui.receive_message.as_deref(),
+        Some("이 계정은 주소 하나만 써서 새 주소를 만들 수 없습니다")
+    );
+    assert_eq!(harness.btc_meta().ok_or("meta")?.receive_next(), 2);
+    // A send that needs both inputs: change back to /0/0.
+    let sent = send_and_confirm(&mut harness, "130000", 0x72)?;
+    let record = harness
+        .records()
+        .into_iter()
+        .find(|record| record.txid == sent)
+        .ok_or("record")?;
+    assert_eq!(record.state, BtcTxState::Confirmed);
+    assert!(
+        record
+            .inputs
+            .iter()
+            .any(|input| input.outpoint == deposit_outpoint
+                && (input.chain, input.index) == (BtcChain::Receive, 1))
+    );
+    let change = record.change.ok_or("change")?;
+    assert_eq!(change.index, 0);
+    let tx = parse_transaction(&record.raw)?;
+    assert_eq!(
+        tx.outputs
+            .get(usize::try_from(change.vout)?)
+            .ok_or("change output")?
+            .script_pubkey,
+        meta.expected_script(BtcChain::Receive, 0)?
+    );
+    let meta = harness.btc_meta().ok_or("meta")?.clone();
+    assert_eq!(meta.change_next(), 0, "no change-chain index used");
+    let own = meta
+        .verified()
+        .iter()
+        .find(|utxo| utxo.own)
+        .ok_or("own change")?;
+    assert_eq!((own.chain, own.index), (BtcChain::Receive, 0));
+    // Switch to HD: persisted (a fresh LoadMeta reads it back), the next unused address.
+    harness.run(|ui, ctx| ui.set_address_mode(ctx, false));
+    harness.key_job(KeyJob::LoadMeta);
+    harness.drain();
+    assert!(!harness.btc_meta().ok_or("meta")?.fixed_address());
+    harness.run(BtcUi::open_receive);
+    let view = harness.ui.receive.clone().ok_or("hd view")?;
+    assert_eq!((view.index, view.fixed), (2, false));
+    harness.run(BtcUi::new_receive_address);
+    assert_eq!(harness.ui.receive.as_ref().map(|view| view.index), Some(3));
+    // Refused while a BTC approval is open.
+    harness.ui.slot = true;
+    harness.run(|ui, ctx| ui.set_address_mode(ctx, true));
+    assert_eq!(
+        harness.ui.account_message.as_deref(),
+        Some(yw_app::app_btc::ADDRESS_MODE_BUSY)
+    );
+    assert!(!harness.btc_meta().ok_or("meta")?.fixed_address());
+    harness.ui.slot = false;
+    // Back to fixed: /0/0 again, indices kept.
+    harness.run(|ui, ctx| ui.set_address_mode(ctx, true));
+    let meta = harness.btc_meta().ok_or("meta")?;
+    assert!(meta.fixed_address());
+    assert_eq!(meta.receive_next(), 4);
+    harness.run(BtcUi::open_receive);
+    assert_eq!(harness.ui.receive.as_ref().map(|view| view.index), Some(0));
+    assert!(harness.banners.is_empty(), "{:?}", harness.banners);
+    Ok(())
+}
+
+/// Testnet WIF of the EVM key `m/44'/60'/0'/0/0` of `abandon … about` (public test key).
+const EVM0_TEST_WIF: &str = "cNUcMV1Uwy9xWKgNzrjKaJ5A7bPTk4Gs8KPujpMqzwkfUuBoD4Kv";
+
+/// spec/08 §3.5 "EVM 계정과 같은 키" at the app level: the chooser starts at the standard path;
+/// the EVM key needs the explicit source, an EVM account and the confirmation; the key worker
+/// derives the EVM public key, stores and selects the account (no discovery); its one address is
+/// the vector address of every type; a send through the real workers returns the change to the
+/// same address and confirms with the own change; the same EVM index and type twice, and the
+/// same address as an imported key (either order), are refused.
+#[test]
+#[expect(clippy::too_many_lines, reason = "one scenario per address type")]
+fn evm_shared_account_end_to_end() -> TestResult {
+    let vectors = [
+        (
+            ScriptType::P2wpkh,
+            "tb1qgsvdpdxec8hsu57lhxg5xem7refr233zqds492",
+        ),
+        (
+            ScriptType::P2tr,
+            "tb1p08q6wdgnqe0gwpp4ygs0y8lwgxlpv2l4uc0zq5qjnagwtg92fussh9p5y9",
+        ),
+        (
+            ScriptType::P2shP2wpkh,
+            "2MvXGPvpYDuY3DamixGw9SFyM6t5iFE1NbY",
+        ),
+        (ScriptType::P2pkh, "mmj1yHwjveGUmtpfxSrcVhbRq8c4RtLA7N"),
+    ];
+    for (round, (script_type, expected)) in vectors.into_iter().enumerate() {
+        let salt = u8::try_from(round).unwrap_or(0).saturating_add(0x80);
+        let mut harness = Harness::new(&format!("evm-{}", script_type.json_name()))?;
+        harness.enable();
+        let id = BtcAccountId::EvmShared {
+            evm_index: 0,
+            script_type,
+        };
+        // Default (a): the standard path; a type button adds an HD account directly.
+        harness.run(|ui, ctx| {
+            ui.open_add_account(ctx);
+            Vec::new()
+        });
+        assert_eq!(
+            harness.ui.add_source,
+            yw_app::app_btc::BtcAddSource::Standard
+        );
+        // (b) needs the explicit choice and the confirmation.
+        harness.run(|ui, ctx| {
+            ui.set_add_source(yw_app::app_btc::BtcAddSource::EvmShared);
+            ui.set_add_evm_index(ctx, 0);
+            Vec::new()
+        });
+        harness.run(|ui, ctx| ui.add_account(ctx, script_type));
+        assert_eq!(harness.confirms, 1);
+        assert!(
+            harness.ctx().accounts().iter().all(|meta| meta.id() != id),
+            "nothing before the confirmation"
+        );
+        let (_, text, _) = harness.ui.confirm.ok_or("confirm")?.texts();
+        assert!(text.contains("m/44'/60'/0'/0/0") && text.contains("공개키가 같아져"));
+        harness.run(BtcUi::confirm_yes);
+        let account = harness.ctx().btc_meta().ok_or("active")?.clone();
+        assert_eq!(account.id(), id);
+        assert!(account.discovery_done() && account.fixed_address() && !account.is_imported());
+        assert_eq!(account.address(BtcChain::Receive, 0)?.as_str(), expected);
+        let rows = harness.ui.account_rows(&harness.ctx());
+        let row = rows.iter().find(|row| row.id == id).ok_or("row")?;
+        assert!(row.selected && row.evm_shared == Some(0) && !row.imported && row.fixed);
+        // The receive screen: the one address, the EVM path and the warning.
+        harness.run(BtcUi::open_receive);
+        let view = harness.ui.receive.clone().ok_or("receive")?;
+        assert_eq!(view.address, expected);
+        assert_eq!(view.path, "m/44'/60'/0'/0/0");
+        assert!(view.fixed && view.single_key);
+        assert!(
+            view.note
+                .contains("니모닉만 넣으면 이 주소가 보이지 않습니다")
+        );
+        // Fund, refresh, send: change back to the same address.
+        let script = account.expected_script(BtcChain::Receive, 0)?;
+        let (funding, raw) = funding_to(script.clone(), FUNDING_VALUE, salt)?;
+        if let Ok(mut world) = harness.world.lock() {
+            world.txs.push((funding, raw, Some(FUNDING_HEIGHT)));
+        }
+        harness.run(|ui, ctx| ui.refresh(ctx, Trigger::User));
+        assert_eq!(
+            harness.ctx().btc_meta().ok_or("active")?.verified().len(),
+            1
+        );
+        let sent = send_and_confirm(&mut harness, "30000", salt)?;
+        let record = harness
+            .records()
+            .into_iter()
+            .find(|record| record.txid == sent)
+            .ok_or("record")?;
+        assert_eq!((record.account, record.state), (id, BtcTxState::Confirmed));
+        let change = record.change.ok_or("change")?;
+        let tx = parse_transaction(&record.raw)?;
+        assert_eq!(
+            tx.outputs
+                .get(usize::try_from(change.vout)?)
+                .ok_or("change output")?
+                .script_pubkey,
+            script
+        );
+        let account = harness.ctx().btc_meta().ok_or("active")?.clone();
+        assert_eq!((account.receive_next(), account.change_next()), (1, 0));
+        assert!(
+            account
+                .verified()
+                .iter()
+                .any(|utxo| utxo.own && (utxo.chain, utxo.index) == (BtcChain::Receive, 0))
+        );
+        let activity = harness
+            .meta
+            .as_ref()
+            .ok_or("meta")?
+            .activity_of("bitcoin:testnet4");
+        assert!(activity.iter().any(|row| row.tx_id == sent.to_display_hex()
+            && row.account == format!("evm/{}/0", script_type.json_name())));
+        // The same EVM index and type again: refused, nothing added.
+        let before = harness.meta.as_ref().ok_or("meta")?.btc_accounts.clone();
+        harness.run(|ui, ctx| {
+            ui.open_add_account(ctx);
+            ui.set_add_source(yw_app::app_btc::BtcAddSource::EvmShared);
+            Vec::new()
+        });
+        harness.run(|ui, ctx| ui.add_account(ctx, script_type));
+        harness.run(BtcUi::confirm_yes);
+        assert_eq!(harness.meta.as_ref().ok_or("meta")?.btc_accounts, before);
+        assert!(harness.ui.account_message.is_some());
+        // The same key imported as a WIF with the same type: the address is taken (E-VLT-011).
+        let outcomes = harness.key.handle(KeyJob::ImportKey {
+            spec: ImportSpec::Btc(script_type),
+            key: Zeroizing::new(EVM0_TEST_WIF.as_bytes().to_vec()),
+        });
+        assert!(
+            matches!(
+                outcomes.first(),
+                Some(KeyOutcome::KeyImported(Err(
+                    yw_core::error::VaultError::DuplicateKey
+                )))
+            ),
+            "{script_type:?}"
+        );
+        assert!(harness.banners.is_empty(), "{:?}", harness.banners);
+    }
+    // The other order: the key imported first, then the EVM-shared account of that address.
+    let mut harness = Harness::new("evm-after-import")?;
+    harness.enable();
+    harness.import_key(EVM0_TEST_WIF, ScriptType::P2wpkh)?;
+    let before = harness.meta.as_ref().ok_or("meta")?.btc_accounts.clone();
+    harness.run(|ui, ctx| {
+        ui.open_add_account(ctx);
+        ui.set_add_source(yw_app::app_btc::BtcAddSource::EvmShared);
+        Vec::new()
+    });
+    harness.run(|ui, ctx| ui.add_account(ctx, ScriptType::P2wpkh));
+    harness.run(BtcUi::confirm_yes);
+    assert_eq!(harness.meta.as_ref().ok_or("meta")?.btc_accounts, before);
+    assert!(harness.ui.account_message.is_some());
+    // Another type of the same key is another address: allowed.
+    harness.run(|ui, ctx| {
+        ui.open_add_account(ctx);
+        ui.set_add_source(yw_app::app_btc::BtcAddSource::EvmShared);
+        Vec::new()
+    });
+    harness.run(|ui, ctx| ui.add_account(ctx, ScriptType::P2tr));
+    harness.run(BtcUi::confirm_yes);
+    assert_eq!(
+        harness.ctx().active_id(),
+        BtcAccountId::EvmShared {
+            evm_index: 0,
+            script_type: ScriptType::P2tr
+        }
+    );
     Ok(())
 }

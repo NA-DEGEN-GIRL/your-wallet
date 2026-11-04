@@ -407,7 +407,10 @@ fn discovery_and_issuance_caps() {
     }
     assert_eq!(extra, 2 * BTC_DISCOVERY_MAX_SCAN);
     // Issuance at the cap.
-    let text = String::from_utf8(yw_json::to_vec(&BtcMeta::new(NET, xpub()).to_json())).unwrap();
+    // HD mode (issuance; a fixed-address account always shows `/0/0`).
+    let mut hd = BtcMeta::new(NET, xpub());
+    assert_eq!(hd.set_single_address(false), Ok(true));
+    let text = String::from_utf8(yw_json::to_vec(&hd.to_json())).unwrap();
     let capped = text
         .replace(
             "\"receive_next\":0",

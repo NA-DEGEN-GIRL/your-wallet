@@ -2994,3 +2994,40 @@ fn hardware_keys_next_to_a_mnemonic_and_the_largest_payload() {
     payload.hw_keys.push(ninth);
     assert_eq!(payload.encode().err(), Some(VaultError::RecordLimit));
 }
+
+/// spec/08 §3.5: the public key and the WIF export of a Bitcoin account on EVM account `i`'s key
+/// (`m/44'/60'/0'/0/i`, compressed, the network's version byte, after the password); the EVM
+/// private key of `abandon`×11 `about` account 0 is the well-known `1ab42cc4…b727`.
+#[test]
+fn evm_shared_public_key_and_wif() {
+    use crate::btc::BtcNetwork;
+    let vault = unlocked_with(ABOUT);
+    let zero = AccountIndex::ZERO;
+    assert_eq!(
+        hex::encode(&vault.evm_public_key(zero).unwrap()),
+        "0237b0bb7a8288d38ed49a524b5dc98cff3eb5ca824c9f9dc0dfdb3d9cd600f299"
+    );
+    for network in [BtcNetwork::Mainnet, BtcNetwork::Testnet4] {
+        let wif = vault
+            .reveal_evm_shared_wif(&pw(PASSWORD), zero, network)
+            .unwrap();
+        let parsed = crate::codec::wif::parse_wif(wif.expose()).unwrap();
+        assert!(parsed.compressed());
+        assert_eq!(parsed.network(), network);
+        assert_eq!(
+            hex::encode(parsed.secret().as_slice()),
+            "1ab42cc412b618bdea3a599e3c9bae199ebf030895b039e9db1e30dafb12b727"
+        );
+        // The same secret as the EVM export.
+        let evm = vault
+            .reveal_evm_private_key(&pw(PASSWORD), EvmKeySource::Derived(zero))
+            .unwrap();
+        assert_eq!(hex::encode(parsed.secret().as_slice()), evm.expose());
+    }
+    assert_eq!(
+        vault
+            .reveal_evm_shared_wif(&pw(OTHER_PASSWORD), zero, BtcNetwork::Mainnet)
+            .err(),
+        Some(VaultError::UnlockFailed)
+    );
+}

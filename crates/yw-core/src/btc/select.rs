@@ -794,15 +794,16 @@ struct Assembly<'a> {
     new_input_total: Sats,
 }
 
-/// The change output of `account`: HD accounts use change index `index` (the next one when it
-/// equals the recipient script); a single-key account sends change back to its one address
-/// (index 0, even when that is the recipient).
+/// The change output of `account`: HD accounts in HD mode use change index `index` (the next one
+/// when it equals the recipient script); a fixed-address account — a one-key account, or an HD
+/// account in fixed-address mode (spec/08 §3.5) — sends change back to its one receive address
+/// `(Receive, 0)` (recorded as index 0, even when that is the recipient).
 fn change_script(
     account: &BtcAccountKey,
     index: u32,
     recipient: &[u8],
 ) -> Result<(u32, Vec<u8>), PlanError> {
-    if account.is_single() {
+    if account.fixed_address() {
         let (chain, single) = account.change_path(0);
         return Ok((0, account.script(chain, single)?));
     }

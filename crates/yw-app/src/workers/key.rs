@@ -122,7 +122,7 @@ fn reconcile_btc_accounts(document: &mut Meta, keys: &ImportedKeys) -> bool {
         .btc_accounts
         .accounts
         .iter()
-        .filter(|meta| meta.is_single())
+        .filter(|meta| meta.account().is_imported())
         .filter(|meta| {
             !expected
                 .iter()
@@ -665,6 +665,11 @@ impl KeyWorker {
             RevealWhat::ImportedKey(id) => {
                 let (_, text) = vault.reveal_imported_key(&password, id)?;
                 Ok((what, text, None))
+            }
+            RevealWhat::BtcEvmShared { evm_index, network } => {
+                let index = AccountIndex::new(evm_index).map_err(VaultError::Key)?;
+                let wif = vault.reveal_evm_shared_wif(&password, index, network)?;
+                Ok((what, wif, None))
             }
         }
     }

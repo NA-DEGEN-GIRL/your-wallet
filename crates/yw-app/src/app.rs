@@ -298,6 +298,13 @@ pub enum PasswordAction {
     RemoveKey(RecordId),
     /// Reveal an imported Solana/Bitcoin key.
     RevealImported(RecordId),
+    /// Reveal the WIF of a Bitcoin account on an EVM account's key.
+    RevealBtcEvmShared {
+        /// EVM account index.
+        evm_index: u32,
+        /// The account's network.
+        network: yw_core::btc::BtcNetwork,
+    },
     /// Remove an imported Solana/Bitcoin key.
     RemoveImported(RecordId),
     /// Recover from `.prev`.
@@ -1551,7 +1558,9 @@ impl App {
                         Purpose::ShowRevealed,
                         display,
                     ),
-                    RevealWhat::PrivateKey(_) | RevealWhat::ImportedKey(_) => {
+                    RevealWhat::PrivateKey(_)
+                    | RevealWhat::ImportedKey(_)
+                    | RevealWhat::BtcEvmShared { .. } => {
                         self.open_display(SecretKind::ShowKey, Purpose::ShowRevealed, display);
                     }
                 }
@@ -2282,6 +2291,12 @@ impl App {
                         password,
                         what: RevealWhat::ImportedKey(id),
                     }),
+                    PasswordAction::RevealBtcEvmShared { evm_index, network } => {
+                        self.key(KeyJob::Reveal {
+                            password,
+                            what: RevealWhat::BtcEvmShared { evm_index, network },
+                        });
+                    }
                     PasswordAction::RemoveImported(id) => {
                         self.key(KeyJob::RemoveImportedKey { password, id });
                     }
