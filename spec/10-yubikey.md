@@ -1,0 +1,316 @@
+# YubiKey 계정 (선택 기능)
+
+상위 문서: [spec.md](../spec.md)
+
+- 상태: **명세 2026-11-04 · 코어 구현(yw-core `yubikey`, vault tag 5, yw-win PC/SC·CNG) · 앱 연결은 §13의 남은 작업** — 실제 YubiKey 확인은 [docs/acceptance/yubikey-20261104.md](../docs/acceptance/yubikey-20261104.md)(사용자가 수행).
+- 범위: 니모닉에서 고른 키를 한 번 파생해 하나 이상의 YubiKey 5(펌웨어 5.7 이상 권장, OpenPGP만 쓰면 5.2.3 이상)에 **가져오기(import)** 하고, 그 뒤로는 PC가 그 계정의 비밀을 전혀 갖지 않은 채(공개키·주소·일련번호·슬롯 표만) YubiKey에서 PIN + 터치로 서명한다. 니모닉 자체가 종이 백업이다. 같은 키를 여러 YubiKey에 넣어 서로의 백업으로 쓸 수 있다.
+- 기존 소프트웨어 vault 경로([02](02-core-keys-vault.md)·[03](03-evm.md)·[07](07-solana.md)·[08](08-bitcoin.md))는 바뀌지 않는다. 이 문서는 **추가**만 한다: vault payload의 새 tag 5(§8), 새 모듈 `yw_core::yubikey`·`yw_win::pcsc`·`yw_win::cng`(§4), 승인 후 서명 단계의 카드 분기(§10).
+- 규범 용어는 spec.md와 같다(MUST/반드시, SHOULD/권고, MAY/선택). 바이트 값의 출처는 §14.
+
+## 1. 위협 모델 변화 (spec.md §2에 대한 차이)
+
+| 항목 | 소프트웨어 계정 | YubiKey 계정 |
+|---|---|---|
+| 서명 순간 PC 메모리의 개인키 | 서명마다 복호화·파생 후 소거(D10) | **없음.** 개인키는 카드 밖으로 나오지 않는다(가져온 키도 내보낼 수 없음, §14 [Y-EXP]) |
+| 디스크(vault) 도난 + 비밀번호 추측 | 니모닉·개인키 노출 | 공개키·슬롯 표만 노출(자산 이동 불가, 주소 연결성만) |
+| 같은 사용자 권한의 악성코드(§2.2 비목표) | 즉시 전부 탈취 | 키 탈취는 불가. PIN은 키 입력을 가로채 알 수 있으므로 **터치가 마지막 방어선**이다: 터치 정책 "항상"이면 악성코드가 몰래 서명하려 해도 사용자가 카드를 만져야 한다. 단, 사용자가 승인한 서명의 **내용을 바꿔 터치를 받아내는 공격**(표시는 PC가 하므로)은 막지 못한다 — 아래 "표시 무결성" |
+| 표시 무결성 | PC 승인 창 | **변화 없음: 여전히 PC 승인 창이 유일한 표시다.** YubiKey는 화면이 없어 무엇에 서명하는지 보여주지 않는다. 장악된 PC는 다른 digest를 카드에 보낼 수 있다. YubiKey는 "키가 PC 밖에 있음"을 주지 "PC를 믿지 않아도 됨"을 주지 않는다 |
+| 니모닉 | vault에 암호화 저장 | **PC에 저장하지 않는다**(등록 중 한 번 입력·파생 후 소거, §7). 종이 백업만 있다. 기존 지갑의 니모닉과 같은 니모닉으로 등록하면 PC에 그 니모닉이 이미 있으므로 보안 이득이 없다 — 마법사가 경고한다(§7.1) |
+| 카드 분실 | — | 다른 백업 YubiKey 또는 니모닉으로 재등록(§7.5). 분실 카드는 PIN 3회 오류로 잠기므로(PIN 추측 3회) 즉시 자산 위험은 아니지만 **새 니모닉으로 옮기는 것은 사용자 판단**이다 |
+
+권고(체크리스트, 코드 게이트 아님):
+
+- 터치 정책은 **항상**(OpenPGP는 "항상(고정)")을 권장하고 기본값으로 한다. 고정(UIF `02`)은 관리자 PIN을 아는 악성코드도 터치를 끌 수 없게 한다(바꾸려면 OpenPGP 애플릿 초기화 + 재등록). Bitcoin 다중 입력 거래가 잦으면 BTC 슬롯만 **15초 유지**(UIF `03`/`04`, PIV `03`)를 고를 수 있다 — 대신 그 15초 동안은 터치 없이 추가 서명이 가능하다.
+- 기본 PIN·관리자 PIN·PIV 관리 키는 등록 직후 바꾼다(§9.3).
+- 여러 YubiKey에 같은 키를 넣어 두면 하나를 잃어도 서명할 수 있다. 니모닉 종이 백업은 별도 장소에 둔다.
+
+## 2. 지원 범위와 펌웨어
+
+| 기능 | 애플릿 | 알고리즘 | 펌웨어 | 근거 |
+|---|---|---|---|---|
+| secp256k1 서명 키 가져오기·서명 | OpenPGP 3.4 (SIG `B6`, AUT `A4`) | ECDSA secp256k1 (OID 1.3.132.0.10) | 5.2.3+ | [Y-523], [Y-PGP], [KIT-PGP] |
+| Ed25519 키 가져오기·서명 | PIV (`9A`·`9C`·`9D`·`9E`·`82`–`95`) | Ed25519 (alg `E0`) | 5.7.0+ (Yubico 매뉴얼은 "5.7.4부터"로 적음; yubikit은 5.7.0으로 판정 — 사용자 키는 최신이므로 문제 없음, 수동 체크 Y-03) | [Y-57], [KIT-PIV] |
+| PIV 메타데이터(GET METADATA) | PIV | — | 5.3+ | [KIT-PIV] |
+| PIV 일련번호(GET SERIAL) | PIV | — | 5.0.3+ | [KIT-PIV] |
+| 터치 15초 유지(OpenPGP UIF `03`/`04`) | OpenPGP | — | 5.2.1+ | [KIT-PGP] |
+| PIV 관리 키 기본값 AES-192 | PIV | `0A` | 5.7+ (이전 3DES `03`) | [Y-PIVM] |
+
+- **PIV에는 secp256k1이 없다**(P-256·P-384·RSA·Ed25519·X25519뿐, [KIT-PIV] `KEY_TYPE`). 그래서 EVM·Bitcoin 키는 OpenPGP에만 넣을 수 있고, OpenPGP의 서명 가능한 슬롯은 SIG·AUT 두 개뿐이다(DEC `B8`은 복호 전용) → **YubiKey 하나에 secp256k1 키 최대 2개.** 더 많은 EVM/BTC 키는 YubiKey를 더 쓰거나(§3.4) 인덱스를 나눠 등록한다.
+- **BIP340 Schnorr가 없다**(어느 애플릿에도 없음) → 탭루트(P2TR) 키는 YubiKey에 둘 수 없다.
+- OpenPGP KDF-DO(`F9`)가 켜진 카드(PIN을 해시해서 VERIFY하는 설정)는 v1에서 지원하지 않는다(`KdfEnabled`, §11).
+- YubiKey 4 이하, NEO, Security Key 시리즈는 대상이 아니다.
+
+## 3. 슬롯 계획
+
+### 3.1 역할과 경로
+
+| 역할 (`plan::KeyRole`) | 곡선 | 파생 경로 | 들어가는 슬롯 |
+|---|---|---|---|
+| EVM 계정 i (`Evm { index: i, btc: None }`) | secp256k1 | `m/44'/60'/0'/0/i` (D29와 같음) | OpenPGP SIG 또는 AUT |
+| EVM 공유 키 (`Evm { index: i, btc: Some(형식, 네트워크) }`) | secp256k1 | `m/44'/60'/0'/0/i` — 같은 공개키를 Bitcoin 단일 주소로도 쓴다 | OpenPGP SIG 또는 AUT |
+| Bitcoin 단일 주소 (`Btc { network, script, index: i }`) | secp256k1 | `m/{44\|49\|84}'/{0\|1}'/0'/0/i` — P2PKH 44, P2SH-P2WPKH 49, P2WPKH 84(기본), 메인넷 coin 0·testnet4 1 | OpenPGP SIG 또는 AUT |
+| Solana 계정 i (`Sol { index: i }`) | Ed25519 | `m/44'/501'/i'/0'` (D25와 같음) | PIV `82`–`95`(보관 슬롯 20개), 원하면 `9A`·`9C`·`9D`·`9E` |
+
+- **인덱스는 슬롯마다 사용자가 고른다**(고정값 없음). 마법사는 첫 YubiKey의 기본값으로 SIG = EVM 0, AUT = Bitcoin P2WPKH 0을 채워 두고(공유 키 방식이면 SIG = EVM 0, AUT = EVM 1), 다음 YubiKey에는 아직 쓰지 않은 다음 인덱스(예: 2·3, 4·5 …)를 제안한다. 인덱스 범위: EVM·Solana 0–999(`AccountIndex`), Bitcoin 0–999(`MAX_BTC_INDEX`).
+- 니모닉은 오프라인에 안전하게 보관되어 있고 언제든 다시 파생·재등록할 수 있다고 가정한다. 따라서 YubiKey N개(또는 백업 쌍 N개)로 같은 니모닉에서 secp256k1 키 N×2개를 쓸 수 있다.
+- 마법사는 가져오기 **전에** 모든 슬롯의 전체 경로 문자열과 그 키의 주소(EVM 체크섬 주소, Bitcoin 주소, Solana base58; 공유 키는 둘 다)를 보여준다(`enrol::preview`, 카드 통신 없음).
+
+### 3.2 공유 키 방식의 공개키 연결
+
+EVM 공유 키는 EVM 주소와 Bitcoin 주소가 **같은 secp256k1 공개키**에서 나온다. Bitcoin에서 그 주소로 한 번이라도 보내면(입력 서명 시 공개키 공개) 누구나 그 공개키에서 EVM 주소를 계산할 수 있어 **두 체인의 신원이 연결된다.** 또 표준 Bitcoin 지갑은 BIP84 스캔으로 이 주소를 찾지 못한다(경로가 `m/44'/60'/…`). 복구는 이 지갑으로 같은 니모닉·같은 인덱스를 다시 등록하거나, 그 EVM 개인키를 WIF로 다른 지갑에 가져와야 한다. 마법사는 공유 키를 고르면 이 두 문장을 확인 체크박스와 함께 보인다. 권장은 §3.1의 분리 방식(SIG = EVM, AUT = BTC 표준 경로)이다.
+
+### 3.3 Bitcoin 인덱스 선택: 주소 인덱스
+
+Bitcoin 슬롯의 인덱스는 **계정 0의 받기 체인 주소 인덱스**(`…/0'/0/i`)다. 계정 번호(`…/i'/0/0`)가 아니다. 이유: 표준 지갑(Sparrow·Electrum 등)으로 같은 니모닉·같은 형식의 계정 0을 복구하면 gap limit 20 안의 주소가 그대로 보인다(i < 20 권장, 그 이상이면 마법사가 "복구 시 gap limit을 늘려야 합니다" 안내). 단점: 같은 니모닉으로 소프트웨어 지갑의 BTC 계정 0을 함께 쓰면 그 지갑도 이 주소를 자기 주소로 본다(키가 같으므로 당연하다 — 그 경우 YubiKey의 의미가 없다, §1). 잔돈은 같은 주소로 돌아온다(단일 주소 계정, [08] §3.5와 같은 규칙).
+
+### 3.4 여러 YubiKey
+
+- 한 YubiKey(일련번호) = vault tag 5 record 하나 = 슬롯 표 하나(일련번호 → 슬롯 → 경로 → 공개키, §8).
+- 예: YubiKey #1 = EVM 0·1, #2 = EVM 2·3, #3 = EVM 4·5, #4 = #1의 백업 복사본(EVM 0·1, 슬롯은 달라도 됨).
+- **같은 경로는 한 YubiKey 안에서 두 번 넣을 수 없다**(`DuplicatePath`). EVM 계정 i와 같은 i의 EVM 공유 키도 같은 키다.
+- **다른 YubiKey와 같은 경로는 사용자가 그 슬롯을 "백업 복사본"으로 명시했을 때만** 허용한다(`PathOnOtherCard`). 반대로 "백업 복사본"인데 다른 YubiKey에 그 경로가 없으면 `NotACopy`.
+- 모든 YubiKey는 **같은 니모닉(+ passphrase)** 이어야 한다: BIP32 마스터 지문(`HASH160(master pubkey)[0..4]`)을 record에 두고 다르면 `DifferentMnemonic`으로 거부한다. 같은 경로는 언제나 같은 공개키여야 한다(vault 디코드·추가 시 검사, §8).
+- 마법사의 "YubiKey 목록" 화면은 계정별로 그 키를 가진 YubiKey(일련번호·슬롯)를 모두 보인다(`plan::accounts`): 예) "EVM 계정 0 — #12345678 SIG, #23456789 AUT(백업)".
+- 최대 8개 YubiKey(`MAX_CARDS`), YubiKey당 슬롯 24개(`MAX_SLOTS_PER_CARD`: OpenPGP 2 + PIV 22, 또는 PIV 24).
+
+### 3.5 계획 검사 규칙 (`plan::validate_plan`, `plan::validate_against`)
+
+1. 슬롯 1–24개. 2. 같은 슬롯 두 번 금지. 3. OpenPGP 슬롯은 secp256k1 역할만, PIV 슬롯은 Ed25519 역할만(`WrongApplet`). 4. 탭루트·범위 밖 인덱스 금지(`UnsupportedRole`). PIV 슬롯은 `9A 9C 9D 9E 82–95`만(`9B` 관리 키·`F9` 증명 금지). 5. 터치 "고정" 변형은 OpenPGP만, PIV는 PIN 정책 필수(`Policy`). 같은 YubiKey 안 같은 경로 금지(`DuplicatePath`). 6. 이미 등록한 일련번호 금지(`CardAlreadyEnrolled` — 다시 등록하려면 먼저 그 record를 지운다). 7. 8개 초과 금지. 8. 지문 불일치 금지. 9. 다른 YubiKey와 같은 경로는 백업 복사본 표시가 있어야 하고, 표시가 있으면 실제로 있어야 한다.
+
+검사는 **카드에 아무것도 쓰기 전에** 한다(일련번호는 읽기 전용 명령으로 먼저 읽음, §7.3).
+
+## 4. 모듈 배치
+
+| 위치 | 내용 | OS |
+|---|---|---|
+| `yw_core::yubikey::{apdu, tlv}` | ISO 7816-4 APDU(짧은·확장, 체이닝, `61xx` GET RESPONSE, `6Cxx`), BER-TLV | 없음 |
+| `yw_core::yubikey::{openpgp, piv}` | 명령 빌더·응답 파서(순수)와 `CardTransport` 위의 흐름 | 없음 |
+| `yw_core::yubikey::{plan, record, enrol, sign, sig}` | 슬롯 계획·경로·검사, tag 5 코덱, 등록, 카드 서명, 서명 후처리 | 없음 |
+| `yw_core::yubikey::mock` (`cfg(test)` 또는 feature `test-card`) | 두 애플릿의 APDU 수준 에뮬레이터(실제 secp256k1·Ed25519 서명) | 없음 |
+| `yw_core::vault` | tag 5 record, `hardware_keys`·`add_hardware_key`·`remove_hardware_key`·`create_with_hardware` | 없음 |
+| `yw_win::pcsc` | `SCardEstablishContext`/`ListReadersW`/`ConnectW`(T=1, 공유)/`Transmit`/`BeginTransaction`/`Disconnect` 래퍼, `CardTransport` 구현. USB·NFC 리더 모두 같은 경로 | 있음 |
+| `yw_win::cng` | PIV 관리 키용 AES-ECB·3DES-ECB 한 블록(`BCryptEncrypt`/`BCryptDecrypt`), `MgmtCipher` 구현 | 있음 |
+| `yw-app` (§13) | 등록 마법사, "YubiKey" 계정 종류, 승인 후 카드 서명 단계 | — |
+
+- yw-core에는 AES·3DES 구현이 없다(D6 "직접 구현 금지" 취지): PIV 관리 키 상호 인증의 블록 암호는 `piv::MgmtCipher` trait으로 받고 yw-win이 Windows CNG로 구현한다. 새 크레이트는 없다(windows-sys feature `Win32_Security_Credentials`만 추가).
+- 게이트(`check.ps1`)의 어떤 테스트도 실제 리더·카드에 접근하지 않는다. yw-win의 PC/SC 테스트는 리더가 필요 없는 부분(오류 코드 매핑, 다중 문자열 파싱)만 자동이고, 실제 리더 진단은 `#[ignore]` + 읽기 전용(§12.2).
+
+## 5. APDU 흐름
+
+### 5.1 공통
+
+- 전송: `CardTransport::transmit(frame) → data ‖ SW1 SW2`. 기본은 **짧은 APDU + 명령 체이닝**(CLA `10`, 255바이트씩)과 `61xx` GET RESPONSE(`00 C0 00 00 xx`) — USB·NFC 모두 동작한다. 확장 APDU(최대 3,000바이트 데이터)도 지원한다(ykman은 USB에서만 확장을 쓴다 [KIT-SC]).
+- 상태어 매핑(`CardError::from_status`): `9000` 성공, `63Cx` PIN 오류(남은 x회), `6983` 잠김, `6982` 보안 조건(PIN·관리 키·**터치 시간 초과**), `6985` 사용 조건, `6A80` 데이터 오류, `6A82` 애플릿 없음, `6A88` 빈 슬롯, `6A81`/`6A86`/`6D00`/`6E00` 미지원.
+- 응답 최대 16 KiB, GET RESPONSE 80회 상한(고장 난 카드 방어).
+- 한 작업 동안 `SCardBeginTransaction`으로 카드를 잡는다(다른 프로그램이 애플릿을 바꾸지 못하게). 작업이 끝나면 `SCARD_LEAVE_CARD`로 놓는다(재설정 없음).
+
+### 5.2 OpenPGP (secp256k1: SIG·AUT)
+
+| 단계 | APDU | 비고 |
+|---|---|---|
+| SELECT | `00 A4 04 00 06 D2 76 00 01 24 01 00` | [OPC] p12 |
+| 펌웨어 | `00 F1 00 00 00` → 3바이트 | Yubico 전용 [KIT-PGP] |
+| 응용 데이터 | `00 CA 00 6E 00` → `6E { 4F AID(16), 73 { C0, C1 C2 C3, C4, … } }` | AID `[10..14]` = 일련번호(BCD) |
+| KDF | `00 CA 00 F9 00` → `81 01 00`이면 꺼짐, 그 밖이면 `KdfEnabled`로 중단 | [OPC] p19 |
+| PW3 (관리자) | `00 20 00 83 Lc PIN` | 기본 `12345678`, 8–127자 |
+| 알고리즘 속성 | `00 DA 00 C1`(SIG)/`C3`(AUT) `06 13 2B 81 04 00 0A` | `13` = ECDSA, OID secp256k1, 가져오기 형식 표준(FF 없음). 속성을 바꾸면 그 슬롯의 기존 키가 지워진다 |
+| 가져오기 | `00 DB 3F FF Lc 4D { B6 00 \| A4 00, 7F48 { 92 20 }, 5F48 <32바이트 스칼라> }` | 확장 헤더 목록, 공개키(`99`)는 넣지 않음 [OPC] p38–39 |
+| 터치(UIF) | `00 DA 00 D6`(SIG)/`D8`(AUT) `02 <uif> 20` | `00` 끔, `01` 켬, `02` 고정, `03` 15초, `04` 15초 고정; 고정은 이후 변경 불가 [KIT-PGP] |
+| 공개키 읽기 | `00 47 81 00 02 B6 00`(또는 `A4 00`) `00` → `7F49 { 86 41 04‖X‖Y }` | P1 `81` = 기존 키 읽기(생성 아님) |
+| PW1 (서명) | SIG: `00 20 00 81 Lc PIN`, AUT: `00 20 00 82 Lc PIN` | 기본 `123456`, 6–127자. `81`은 PSO:CDS 한 번에만 유효(C4 첫 바이트 `00`) |
+| 서명 (SIG) | `00 2A 9E 9A 20 <digest 32> 00` → `r ‖ s`(64) | PSO: COMPUTE DIGITAL SIGNATURE [OPC] p63 |
+| 서명 (AUT) | `00 88 00 00 20 <digest 32> 00` → `r ‖ s`(64) | INTERNAL AUTHENTICATE [OPC] p71 |
+| PIN 변경 | `00 24 00 81`(PW1)/`83`(PW3) `Lc old‖new` | §9.3 |
+
+- 입력은 항상 32바이트 digest(EVM keccak256, Bitcoin sighash). 카드는 짧은 입력을 앞쪽 0으로 채운다고 명세에 있으나([OPC] p64) 우리는 항상 정확히 32바이트를 보낸다.
+- 서명 흐름의 순서: SELECT → 일련번호 확인(`WrongCard`) → **공개키 읽기로 슬롯의 키가 기록과 같은지 확인**(`KeyMismatch`, 덮어쓴 슬롯을 PIN 전에 거부) → VERIFY PW1 → 서명 → §6 후처리. 서명 흐름은 쓰기 명령(`DA`·`DB`·`FE`·`FF`·`24`, `47 80`)을 **절대 보내지 않는다**(에뮬레이터 로그로 시험, §12.1).
+
+### 5.3 PIV (Ed25519)
+
+| 단계 | APDU | 비고 |
+|---|---|---|
+| SELECT | `00 A4 04 00 05 A0 00 00 03 08 00` | |
+| 펌웨어 / 일련번호 | `00 FD 00 00 00` / `00 F8 00 00 00` → 3 / 4바이트(BE) | 5.7 미만이면 `FirmwareTooOld` |
+| 관리 키 메타데이터 | `00 F7 00 9B 00` → `01 <type>`, `05 <기본값 여부>` | type: `03` 3DES, `08` AES-128, `0A` AES-192, `0C` AES-256. ykman처럼 **메타데이터로** 판정한다(펌웨어로 추측하지 않음) [KIT-PIV] |
+| PIN 메타데이터 | `00 F7 00 80 00` → `05 <기본값 여부>`, `06 <전체, 남은 횟수>` | 기본 PIN이면 §9.3 안내 |
+| 관리 키 상호 인증 1 | `00 87 <type> 9B 04 7C 02 80 00 00` → `7C { 80 <witness> }` | witness 8(3DES)/16(AES) |
+| 관리 키 상호 인증 2 | `00 87 <type> 9B Lc 7C { 80 D(witness), 81 <challenge> } 00` → `7C { 82 E(challenge) }` | 우리가 `E(challenge)`를 계산해 **상수 시간 비교**, 다르면 `ManagementKeyMismatch`. 키가 틀리면 카드가 `6982` [KIT-PIV] `authenticate` |
+| 가져오기 | `00 FE E0 <slot> Lc 07 20 <seed 32> AA 01 <pin> AB 01 <touch>` | Ed25519는 tag `07`(원시 32바이트 seed, 바이트 순서 그대로), PIN 정책 `02` 한 번/`03` 항상, 터치 `01` 없음/`02` 항상/`03` 15초 [KIT-PIV] |
+| 확인 | `00 F7 00 <slot> 00` → `01 E0`, `02 <pin touch>`, `03 02`(가져옴), `04 { 86 <공개키 32> }` | 알고리즘·출처·정책·공개키가 모두 기대값이어야 함 |
+| PIN | `00 20 00 80 08 <PIN, FF로 8바이트 채움>` | 기본 `123456`, 6–8자 |
+| 서명 | `00 87 E0 <slot> Lc 7C { 82 00, 81 <메시지 전체> } 00` → `7C { 82 <서명 64> }` | Ed25519는 해시하지 않은 **메시지 원문**(Solana 메시지 ≤ 1,232바이트 → 체이닝) |
+| PIN·PUK 변경 | `00 24 00 80`/`81` `10 old(8,FF) ‖ new(8,FF)` | §9.3 |
+| 관리 키 변경 | `00 FF FF FF Lc <type> 9B <len> <key>` | 인증된 상태에서만. 터치 요구 변형(`P2 FE`)은 쓰지 않음 |
+
+- PIV 서명 흐름: SELECT → 일련번호 확인 → GET METADATA로 슬롯 공개키가 기록과 같은지 → VERIFY PIN → GENERAL AUTHENTICATE → §6.4 검증.
+- PIN 정책 기본값은 **항상**(`03`): 한 번의 VERIFY가 한 번의 서명에만 쓰인다. "한 번"(`02`)도 고를 수 있으나 이 지갑은 어차피 작업마다 SELECT·VERIFY를 다시 하므로 차이는 "같은 PIV 세션 안 다른 프로그램"뿐이다.
+
+## 6. 서명 후처리 (`yubikey::sig`)
+
+### 6.1 ECDSA 공통
+
+1. `r ‖ s` 64바이트를 엄격히 파싱한다(각각 1..n, 영 금지).
+2. **low-s 정규화**: `s > n/2`면 `s ← n − s`(EIP-2, BIP62/146). 카드는 무작위 nonce로 서명하므로 high-s가 절반쯤 나온다.
+3. **기록된 공개키로 검증**한다(카드 응답을 믿지 않는다). 실패는 `BadSignature`("서명 검증 실패(YubiKey 응답 오류)").
+
+### 6.2 EVM
+
+- 복구 id(y_parity)는 카드가 주지 않는다: 정규화된 `(r, s)`로 0과 1을 차례로 복구해 **기록된 공개키와 같은 쪽**을 고른다(`sig::evm_recoverable`). 둘 다 아니면 `BadSignature`.
+- 그 뒤는 소프트웨어 경로와 같은 **서명 후 검증**([03] §4.3: 재인코딩, 엄격 디코드, 필드 비교, 보낸 주소 복구 = 승인된 계정)을 그대로 거친다. 실패하면 저장·전송하지 않는다.
+
+### 6.3 Bitcoin
+
+- 서명 항목 = `DER(r, s) ‖ 01`(SIGHASH_ALL). 정규화로 low-s는 보장되지만 **low-R은 보장할 수 없다**(카드 nonce를 고를 수 없고, 다시 서명하면 터치가 또 필요하다). 따라서 카드 서명에는 [08]의 "DER ≤ 70바이트(low-R)" 검사 대신 **DER ≤ 72바이트, low-s, 엄격 DER, 서명 검증**을 적용한다(`sig::btc_der`). 표준성(BIP66·BIP146)은 low-R을 요구하지 않는다.
+- 수수료 계산의 서명 크기는 YubiKey 입력에서 **72 + 1바이트**(DER 최대 + sighash)로 잡는다(소프트웨어 입력은 지금처럼 71 + 1). P2WPKH 입력 하나당 witness 1바이트(0.25 vB) 차이다.
+- 입력마다 카드 서명 한 번: 터치 "항상"이면 입력 수만큼 터치, "15초 유지"면 첫 터치 뒤 15초 안의 입력은 터치 없이 서명된다. 승인 창은 "YubiKey 터치 N회가 필요합니다"를 보인다(§10).
+- 탭루트 입력은 YubiKey 계정에 존재하지 않는다(§2).
+
+### 6.4 Ed25519 (Solana)
+
+- 카드 서명 64바이트를 기록된 공개키로 `verify_strict` 한다(정규 S, 소수 위수 키 거부). 그 뒤는 [07] §13의 서명 후 검증(메시지 바이트 = 승인한 템플릿)을 그대로 거친다.
+
+## 7. 등록 (`yubikey::enrol`)
+
+### 7.1 진입점
+
+1. **새 YubiKey 지갑**(지갑 생성 화면의 "YubiKey에 키 보관"): 24단어를 새로 만들고 보여준 뒤 백업 확인(메모리 안에서, [02] §8.3과 같은 4단어 확인)까지 마치고 §7.3 등록을 한다. 첫 YubiKey 등록이 끝나면 `Vault::create_with_hardware`로 **니모닉 없는 vault**(tag 5만)를 만든다. 니모닉은 저장되지 않는다.
+2. **복구 단어로 YubiKey 계정 추가**(설정 → YubiKey, 또는 키 전용·YubiKey 지갑에서): 니모닉(+ 선택 passphrase)을 비밀 입력 창에 **한 번** 입력한다. 그 니모닉이 이 vault의 니모닉과 같으면(같은 지문) "이 PC에 이미 이 복구 단어가 저장되어 있어 YubiKey의 보안 이득이 없습니다"를 경고하고 계속할지 묻는다(백업 사본 용도로는 의미가 있다).
+3. **백업 YubiKey 추가**: 2와 같되 슬롯마다 "백업 복사본"을 고를 수 있다.
+
+어느 경우든 니모닉·시드·파생 키는 `Zeroizing` 버퍼에만 있고 마법사가 닫히거나 잠금(자동 잠금 포함)되면 즉시 지운다. 등록 중 자동 잠금은 등록을 취소한다(카드에 일부 쓴 상태일 수 있음 → §7.4).
+
+### 7.2 확인 화면 (카드 통신 전)
+
+슬롯마다: 슬롯 이름(예 "OpenPGP 서명(SIG)", "PIV 82 (보관 1)"), 역할 제목, **전체 경로**, 주소(공유 키는 EVM·Bitcoin 둘 다), 터치·PIN 정책. 다른 YubiKey와의 관계(새 키 / 백업 복사본: 어느 YubiKey의 어느 슬롯과 같은지). §3.5 검사 결과를 여기서 보인다.
+
+### 7.3 카드 절차 (`enrol_card`)
+
+1. **읽기만**: OpenPGP(계획에 있으면) SELECT·버전·`6E`·KDF → 일련번호; PIV(계획에 있으면) SELECT·버전·일련번호. 두 일련번호가 다르면 `SerialMismatch`(YubiKey를 하나만 꽂으라고 안내).
+2. §3.5 규칙 6–9 검사(`validate_against`). 실패면 **아무것도 쓰지 않고** 끝.
+3. OpenPGP: VERIFY PW3 → 슬롯마다 속성 `C1`/`C3` → 가져오기 → UIF → 공개키 읽기 = 파생 공개키(`KeyMismatch`).
+4. PIV(OpenPGP 뒤에: 다른 애플릿을 SELECT하면 PW3 확인이 풀린다 [OPC] p52): 관리 키 메타데이터 → 상호 인증 → 슬롯마다 가져오기 → 메타데이터 확인.
+5. record 완성(일련번호, 펌웨어, 지문, 계획 순서의 슬롯·공개키). 기존 record들과의 일관성(같은 경로 = 같은 공개키) 확인.
+6. vault에 `add_hardware_key`(또는 첫 YubiKey 지갑이면 `create_with_hardware`). 그 뒤 "다시 확인"(`sign::check_key`, 읽기 전용)으로 슬롯마다 공개키를 한 번 더 읽어 보인다.
+
+### 7.4 실패와 재시도
+
+- 3–4단계 중 실패하면 앞 슬롯은 카드에 이미 써졌을 수 있지만 vault에는 아무 record도 없다. 같은 계획으로 다시 하면 덮어쓴다(속성 재설정이 기존 키를 지운다). 화면: "일부 슬롯에 키가 이미 들어갔을 수 있습니다. 다시 시도하면 덮어씁니다."
+- 카드를 다른 지갑 용도(GPG 등)로 쓰던 경우 그 슬롯의 키는 **지워진다**. 마법사는 가져오기 전에 "이 YubiKey의 OpenPGP SIG/AUT 키와 PIV 82…의 키가 바뀝니다"를 보이고, 읽을 수 있으면 현재 키가 있는지(공개키 읽기·메타데이터 `6A88` 여부)를 함께 보인다.
+
+### 7.5 복구
+
+- YubiKey를 잃으면: 다른 백업 YubiKey로 계속 서명하거나, 니모닉으로 새 YubiKey에 같은 경로를 다시 등록한다(§7.1-2, "백업 복사본"). 잃은 YubiKey의 record는 설정에서 지운다(비밀번호 재입력).
+- PC·vault를 잃으면: 새 PC에서 "YubiKey 지갑 복구" = §7.1-2와 같은 경로로 니모닉 입력 → 경로 선택 → 카드 쓰기 **없이**(이미 키가 있는 카드) 공개키만 읽어 record를 만드는 "가져오기 없이 등록"(카드의 공개키 = 파생 공개키일 때만). v1에서는 다시 가져오기(덮어쓰기)로 대신해도 결과가 같다.
+- 니모닉만 있으면 이 지갑 없이도 다른 표준 지갑으로 복구된다(공유 키 방식의 Bitcoin 주소는 §3.2 예외).
+
+## 8. vault 기록: tag 5 `HwKey` (공개 데이터만)
+
+[02] §4.6의 형식 확장 규칙(새 tag만 더함)을 따른다.
+
+```
+HwKey (tag 5, 25 + 12 + 48n 바이트)
+1   tag = 5
+16  record_id (0 아님)
+8   created_unix u64
+4   serial u32 (OpenPGP AID와 PIV GET SERIAL이 같아야 함)
+3   firmware major, minor, patch
+4   master_fingerprint = HASH160(BIP32 master 공개키)[0..4]
+1   slot_count n (1..=24)
+n × 48:
+  1 applet (1 OpenPGP, 2 PIV)          1 slot (OpenPGP 1 SIG / 3 AUT; PIV 슬롯 id)
+  1 curve (1 secp256k1, 2 Ed25519)     1 role (1 EVM, 2 BTC, 3 SOL)
+  1 btc_network (0, 1, 2)              1 btc_script (0, 1 P2PKH, 2 P2SH-P2WPKH, 3 P2WPKH)
+  4 index u32                          1 touch (1 없음, 2 항상, 3 15초, 4 항상 고정, 5 15초 고정)
+  1 pin (0 해당 없음, 2 한 번, 3 항상)
+  33 공개키 (secp256k1 압축; Ed25519는 00 ‖ 32바이트)
+  3 예약 0
+```
+
+- 순서: tag 1 → 2 → 3 → 4 → **5**(0–8개). tag 5만 있는 payload = **YubiKey 지갑**(니모닉 없음; [02] §8.5 키 전용 vault와 같이 `has_mnemonic() = false`, 파생 호출은 `NoMnemonic`). 가져온 키와 함께 있을 수 있다.
+- 디코드 거부(`UnsupportedPayload`): 알 수 없는 코드, 예약 바이트 ≠ 0, 슬롯 수 0·25 이상, §3.5 규칙 1–5 위반, 곡선과 공개키 형식 불일치, 곡선 위에 없는 공개키, 같은 일련번호 두 record, record 간 지문 불일치, 같은 경로·다른 공개키, 9번째 record.
+- 상한: `MAX_RECORDS` 46 → **54**, `PAYLOAD_CT_MAX` 4,096 → **16,384**(최대 평문 3,170 + 8 × 1,189 = 12,682바이트). 호환: 이 버전 이전의 앱은 tag 5를 만나면 `UnsupportedPayload`(업데이트 안내, `.prev` 제안 없음)로 멈춘다. payload 암호문이 4,096바이트를 넘는 vault는 이전 앱이 구조 단계에서 `Malformed`로 본다 — [04] §6.6과 같이 **되돌린 앱에서 `.prev` 복구를 하지 말고 새 버전을 다시 설치한다.** YubiKey를 등록하지 않은 vault는 바이트가 전혀 바뀌지 않는다.
+- 비밀이 없으므로 `add_hardware_key`는 비밀번호를 다시 묻지 않는다(`PayloadRewrite`). 지우기(`remove_hardware_key`)는 비밀번호를 다시 묻는다(실수로 계정을 잃지 않게). 니모닉 없는 vault의 마지막 record는 지울 수 없다(`LastKey`).
+- meta(`yw-meta/3`)에는 선택 최상위 키 `hw_accounts`(라벨·숨김·선택; 주소는 표시 캐시)만 더한다 — 진실 원천은 vault의 tag 5다(잠금 해제 때 다시 계산). §13에서 구현.
+
+## 9. PIN 처리
+
+### 9.1 입력
+
+- PIN·관리자 PIN·PUK·관리 키는 **우리의 비밀 입력 창**(D11: 캡처 제외, 직접 그린 입력, 복사 금지)에서만 받는다. Windows의 스마트카드 PIN 대화상자(minidriver)는 쓰지 않는다(PC/SC로 직접 VERIFY).
+- 입력 버퍼는 `Zeroizing`이고, **한 작업(서명 1건, 등록 1회)이 끝나면 지운다.** 작업 사이에 PIN을 캐시하지 않는다. Bitcoin 다중 입력 거래는 "한 작업"이므로 입력마다 같은 PIN 버퍼로 VERIFY한다(카드가 PSO:CDS 한 번마다 PW1을 요구).
+- 길이 검사: OpenPGP PW1 6–127, PW3 8–127, PIV PIN·PUK 6–8(ASCII, `FF` 금지). 남은 횟수가 1이면 "한 번 더 틀리면 PIN이 잠깁니다"를 입력 전에 보인다(OpenPGP `C4`, PIV 메타데이터 `06`).
+
+### 9.2 서명 중 표시
+
+승인 → **"YubiKey를 연결하고 PIN 입력 후 터치하세요"** 단계(PIN 입력 칸, 연결된 YubiKey의 일련번호, 이 계정의 키를 가진 YubiKey 목록) → PIN 확인 뒤 "YubiKey가 깜박이면 터치하세요"(터치 대기 최대 15초는 카드가 정한다; 시간이 지나면 `6982` → "터치 시간이 지났습니다. 다시 시도하세요") → 카드 서명 → 기존 서명 후 검증 → 기존 저장·전송.
+
+### 9.3 기본값 변경 안내
+
+등록 중 기본값을 발견하면(`DefaultsSeen`: 성공한 관리자 PIN이 `12345678`, PIV PIN 메타데이터 기본, 관리 키 메타데이터 기본) 등록 직후 바꾸도록 한 화면에서 안내한다: OpenPGP PW1·PW3, PIV PIN·PUK, PIV 관리 키(새 무작위 AES-192 키를 만들고 **화면에 한 번 보여 적게 한다** — 이 지갑은 관리 키를 저장하지 않으므로, 다음 등록에 다시 입력해야 한다). 건너뛸 수 있지만 계정 화면에 "기본 PIN 사용 중" 경고가 남는다(정보는 meta `hw_accounts`에).
+
+## 10. 기존 기능과의 상호작용
+
+| 기능 | YubiKey 계정에서 |
+|---|---|
+| 승인 창·digest([03] §11) | 변화 없음. 서명자 종류(`Signer`)는 digest에 들어가지 않고 계정 주소가 묶는다. YubiKey 계정은 `Signer::Hardware`로 표시하고, 승인 창에 "YubiKey로 서명" 배지와 이 키를 가진 YubiKey 목록을 더한다 |
+| EVM 보내기·dApp(`eth_sendTransaction`·`personal_sign`·`eth_signTypedData_v4`) | 같은 준비·시뮬레이션·위험 규칙. 서명 단계만 카드(§9.2). 서명 결과는 §6.2 후 기존 서명 후 검증 |
+| 승인 만료(D23, 120초) | 승인 클릭까지가 기존 규칙이다. 승인 뒤 카드 단계는 별도 상한 120초(PIN 입력·터치 포함), 넘으면 취소 |
+| Bitcoin 보내기 | 단일 주소 계정(§3.3). 입력마다 카드 서명, 수수료 서명 크기 72+1(§6.3). dApp 메시지 서명(BIP137·BIP322)도 같은 키로 가능(§13) |
+| Solana 보내기·메시지 서명(SIWS 포함) | PIV Ed25519로 메시지 원문 서명(§5.3), 기존 템플릿·서명 후 검증 그대로 |
+| 키 전용 지갑·가져온 키 | 같은 vault에 공존. YubiKey 지갑에는 "계정 추가(파생)"·"복구 단어 보기"가 없다(`has_mnemonic = false`) |
+| 잠금·자동 잠금(D12) | 잠긴 동안 카드 작업 없음. 잠금은 진행 중인 카드 작업의 PIN 버퍼를 지우고 PC/SC 연결을 끊는다(이미 카드로 보낸 한 APDU는 끝까지 간다) |
+| 저널([02] §5.4) | 변화 없음(서명 결과만 저장) |
+| 백업 확인 | 새 YubiKey 지갑은 등록 전에 메모리 안에서 한다(§7.1) |
+| 복구 단어 보기 | YubiKey 지갑에는 없다(저장하지 않으므로) |
+
+## 11. 제한과 범위 밖
+
+- 탭루트(P2TR) — BIP340 없음. YubiKey 하나에 secp256k1 키 3개 이상 — OpenPGP 슬롯 2개(DEC는 복호 전용).
+- OpenPGP KDF-DO 켜진 카드, OpenPGP 4.x 이전 카드 형식, YubiKey 4 이하.
+- YubiKey에서 키 **생성**(on-card generation): 니모닉 백업이 불가능하므로 하지 않는다.
+- PIV P-256 등 다른 곡선, PIV 인증서 쓰기, 증명(attestation) — 가져온 키는 증명 대상이 아니다.
+- 터치 없는 정책(`Never`)은 마법사가 제안하지 않는다(읽기는 허용).
+- FIDO/U2F·OTP·OATH 애플릿은 건드리지 않는다.
+- 카드 쪽 표시(화면) — 없다. 표시 무결성은 PC에 남는다(§1).
+
+## 12. 테스트
+
+### 12.1 자동 (게이트, 실제 카드 없음)
+
+- `yubikey::mock::MockCard`: OpenPGP(SELECT, F1, 6E, F9, VERIFY 81/82/83, C1–C3, D6–D8, 3FFF 가져오기, 47 81, PSO:CDS, INTERNAL AUTHENTICATE, CHANGE REFERENCE)와 PIV(SELECT, FD, F8, F7, VERIFY, 87 관리 키·서명, FE, FF, 24), 체이닝·`61xx`, PIN 횟수·잠김, PW1 일회성, PIN 정책 "항상", 터치 거부, high-s, 손상 서명. 관리 키 블록 암호는 테스트용 `ToyCipher`(AES가 아님 — 실제 AES·3DES는 yw-win CNG에서 FIPS-197·SP 800-67 벡터로 시험).
+- 벡터: `abandon`×11 `about`로 SIG = EVM 0 → `0x9858EfFD232B4033E47d90003D41EC34EcaEda94`, AUT = BIP84 0 → `bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu`, PIV 82 = Solana 0 → `HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk`, 지문 `73c5da0a`.
+- 서명: high-s 카드에서도 EVM 복구 주소 = 등록 주소, BIP143 P2WPKH sighash 서명 검증(low-s), Solana 1,000바이트 메시지(체이닝) `verify_strict`, 서명 흐름에 쓰기 명령 없음.
+- 오류: 틀린 PIN(남은 횟수), 3회 → 잠김, 터치 없음, 손상 서명, 다른 일련번호(PIN 전 거부), 덮어쓴 슬롯, KDF, 구 펌웨어, 틀린 관리자 PIN·관리 키(쓰기 0), 애플릿 없음.
+- 계획: 슬롯별 인덱스 선택·경로 문자열, 한 카드 안 같은 경로 거부(공유 키 변형 포함), 다른 카드와 같은 경로는 백업 표시가 있을 때만, 다른 니모닉 거부, 같은 카드 재등록 거부, 카드 3개가 EVM 0–5를 나눠 갖고 4번째가 #1의 백업인 슬롯 표와 라우팅(`slot_on_card`).
+- record 코덱: 왕복, 코드·예약 바이트·패딩 변조 거부, record 간 일관성. vault: YubiKey 지갑 생성·잠금 해제 후 동일·추가·중복 일련번호·모순 record·삭제(비밀번호·`LastKey`)·최대 크기(24단어 + 가져온 키 45개 + 카드 8 × 24슬롯)가 상한 안·9번째 거부, tag 6이 `UnsupportedPayload`.
+- yw-win: CNG AES-128/192/256·3DES 한 블록 KAT, PC/SC 다중 문자열 파서·오류 매핑(리더 불필요).
+
+### 12.2 수동 (사용자 YubiKey)
+
+[docs/acceptance/yubikey-20261104.md](../docs/acceptance/yubikey-20261104.md). 실제 카드 진단(`yw_win::pcsc` 읽기 전용 테스트, `#[ignore]`)은 `SCardListReaders`, SELECT, GET VERSION/SERIAL, GET DATA `6E`·`F9`, GET METADATA만 보낸다.
+
+## 13. 구현 상태와 남은 작업 (2026-11-04)
+
+완료: §4의 yw-core 모듈 전부, vault tag 5, `Signer::Hardware`와 EVM 카드 서명 진입점(`evm::sign::sign_transaction_card`·`sign_personal_card`·`sign_typed_data_card`), yw-win `pcsc`·`cng`, 자동 테스트(§12.1).
+
+남은 작업(yw-app):
+
+1. 등록 마법사 화면(슬롯·인덱스 선택, 확인 화면 §7.2, PIN·관리자 PIN·관리 키 입력, 반복 등록, 기본값 변경 §9.3).
+2. EVM·BTC·SOL 탭의 "YubiKey" 계정 종류와 meta `hw_accounts`.
+3. 승인 후 카드 서명 단계(§9.2) — EVM부터, 그다음 Solana(T_SOL·메시지), Bitcoin(입력별 서명 훅과 72+1 수수료 크기, §6.3).
+4. 새 YubiKey 지갑 생성 경로(§7.1-1)와 "가져오기 없이 등록"(§7.5).
+
+## 14. 출처
+
+- [Y-523] Yubico, YubiKey 5.2.3 Enhancements to OpenPGP 3.4 — secp256k1 등 곡선 목록: https://developers.yubico.com/PGP/YubiKey_5.2.3_Enhancements_to_OpenPGP_3.4.html
+- [Y-PGP] YubiKey 5 기술 매뉴얼, OpenPGP: https://docs.yubico.com/hardware/yubikey/yk-tech-manual/yk5-apps-openpgp.html
+- [Y-57] YubiKey 5.7 펌웨어 노트(Ed25519·X25519 PIV, "As of 5.7.4" 가져오기 문구): https://docs.yubico.com/hardware/yubikey/yk-tech-manual/yk5-firmware-5.7.html
+- [Y-PIVM] YubiKey 5 기술 매뉴얼, PIV(기본 PIN·PUK·관리 키, 5.7 AES-192): https://docs.yubico.com/hardware/yubikey/yk-tech-manual/yk5-apps-piv.html
+- [Y-IMP] Yubico .NET SDK, PIV IMPORT ASYMMETRIC KEY(관리 키 인증 필요, 없으면 `6982`): https://docs.yubico.com/yesdk/users-manual/application-piv/apdu/import-asym.html
+- [Y-SIGN] Yubico .NET SDK, PIV GENERAL AUTHENTICATE 서명: https://docs.yubico.com/yesdk/users-manual/application-piv/apdu/auth-sign.html
+- [Y-EXP] Yubico .NET SDK, PIV 개인키("a YubiKey will never return a private key"): https://docs.yubico.com/yesdk/users-manual/application-piv/private-keys.html
+- [KIT-PIV] yubikey-manager `yubikit/piv.py`(KEY_TYPE, `authenticate`, `put_key` tag 06/07/08, AA/AB, GET METADATA 태그, 버전 조건): https://github.com/Yubico/yubikey-manager/blob/main/yubikit/piv.py
+- [KIT-PGP] yubikey-manager `yubikit/openpgp.py`(GET VERSION `F1`, UIF 값·버전, EcAttributes, 가져오기 템플릿, KDF): https://github.com/Yubico/yubikey-manager/blob/main/yubikit/openpgp.py
+- [KIT-SC] yubikey-manager `yubikit/core/smartcard/__init__.py`(확장 APDU는 USB만, 최대 3,062바이트, 체이닝·GET RESPONSE): https://github.com/Yubico/yubikey-manager/blob/main/yubikit/core/smartcard/__init__.py
+- [OPC] Functional Specification of the OpenPGP application on ISO Smart Card Operating Systems, v3.4(.1): https://gnupg.org/ftp/specs/OpenPGP-smart-card-application-3.4.pdf — AID p12·p15, DO C4 p23, UIF p24, 속성 p35, 가져오기 p38–39, VERIFY p52, PSO:CDS p63–64, INTERNAL AUTHENTICATE p71–72, 공개키 읽기 p74–75, KDF-DO p19.
+- 메모: Ed25519 EdDSA 속성(`16 2B 06 01 04 01 DA 47 0F 01`)은 명세 3.4.1이 아니라 yubikit에서 온다(이 지갑은 OpenPGP Ed25519를 쓰지 않는다). OpenPGP X25519 가져오기는 바이트를 뒤집지만 이 지갑은 X25519를 쓰지 않는다.

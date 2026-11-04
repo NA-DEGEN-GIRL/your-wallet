@@ -20,6 +20,7 @@
 | [spec/07-solana.md](spec/07-solana.md) | Solana 전송 전용, dApp은 소유 증명(연결·메시지 서명·SIWS)만(§19) |
 | [spec/08-bitcoin.md](spec/08-bitcoin.md) | Bitcoin 전송 전용, dApp은 소유 증명(연결·메시지 서명)만(§17) |
 | [spec/09-testing.md](spec/09-testing.md) | 테스트 벡터, 퍼징, 수동 체크리스트, 마일스톤별 판정 기준 |
+| [spec/10-yubikey.md](spec/10-yubikey.md) | 선택 기능: YubiKey 계정(니모닉에서 파생한 키를 YubiKey에 가져와 카드에서 서명, PC에는 공개키·슬롯 표만) |
 
 ---
 
@@ -110,6 +111,7 @@
 | D30 | 네트워크 선택(EVM 활성 체인, Solana 클러스터, Bitcoin 네트워크)과 `browserAutoLaunch`는 평문 `settings.json`에 둔다. 사이트별 연결·체인 권한은 암호화된 meta에 둔다. 잠긴 동안 `eth_accounts`는 `[]`, `eth_chainId`는 사이트별 메모리 캐시 또는 활성 체인을 돌려준다. |
 | D31 | 문서 간 우선순위: 오류 코드·메시지는 [05](spec/05-browser.md) §5, 승인 digest·표시 인코딩은 [03](spec/03-evm.md) §11, meta·주소록·계정 스키마는 [02](spec/02-core-keys-vault.md) §5, check.ps1과 크레이트 구성은 [01](spec/01-repo-build.md)이 기준이다. |
 | D32 | **확인 1개 = 확정(모든 체인).** 설정한 RPC(D13·D26의 인덱서 포함)를 신뢰한다. 추가 확인 수·`finalized` 대기·긴 안전 타이머는 사용자에게 아무것도 주지 않으므로 두지 않는다. 확인 1개로 확정한 거래가 재구성으로 빠지는 것은 체인 문제로 보고 범위 밖이다(§2.2). EVM: 검증한 영수증이 블록에 있으면(1 확인) 그 자리에서 `Finalized`([03](spec/03-evm.md) §4.5; 영수증의 해시·보낸 주소·nonce 검증과 가짜 영수증 방어는 유지). Bitcoin: 확인 1이면 `Confirmed`가 최종이고 추적을 끝내며, 진행 중 규칙(D20) 해제·잔돈 UTXO 사용·포기/공개 거래 충돌 해소도 확인 1로 한다([08](spec/08-bitcoin.md) §12.2; 팁 높이 이상값 검사는 유지). Solana: `confirmed` commitment가 최종이다. 모든 조회는 `confirmed`이고, 만료 증명은 RPC(`confirmed`)의 블록 높이 > 서명한 거래의 `lastValidBlockHeight`이고 `getSignatureStatuses` 이력 검색에 없을 때 한 번으로 성립한다(벽시계·단조 시계 최소 시간, 두 번 관측 없음). 그 뒤에만 새 블록해시로 다시 서명할 수 있고, 그 전에는 **같은 서명 거래를 즉시 다시 전송**("지금 다시 전송")할 수 있다(같은 서명이므로 두 번 지불되지 않음). 저널은 첫 전송 전에 기록한다([07](spec/07-solana.md) §14). |
+| D33 | **YubiKey 계정(선택, 2026-11-04).** 니모닉에서 고른 키를 한 번 파생해 YubiKey 5에 가져온다: secp256k1(EVM `m/44'/60'/0'/0/i`, Bitcoin 단일 주소 `m/{44\|49\|84}'/{coin}'/0'/0/i`, 또는 EVM 키를 BTC 주소로도 쓰는 공유 키)는 OpenPGP SIG·AUT(카드당 최대 2개, 펌웨어 5.2.3+), Ed25519(Solana `m/44'/501'/i'/0'`)는 PIV `82`–`95`·`9A`–`9E`(5.7+). 인덱스는 슬롯마다 사용자가 고르고, 여러 YubiKey에 다른 인덱스 또는 명시적 백업 복사본을 둔다. PC는 공개키·일련번호·슬롯 표(vault tag 5)만 저장하고 니모닉을 저장하지 않는다. 서명은 승인 창 뒤 PIN(작업마다 입력, 캐시 없음) + 터치(기본 "항상")로 카드가 한다. 표시 무결성은 여전히 PC 승인 창에 있다. 탭루트·카드당 secp256k1 3개 이상은 범위 밖. 세부: [spec/10](spec/10-yubikey.md). |
 
 ---
 
