@@ -19,7 +19,9 @@ use secp256k1::PublicKey;
 use sha2::{Digest, Sha256};
 use yw_json::{Number, Object, Value};
 
-use super::account::{BTC_MAX_HD_ACCOUNT, BtcAccountId, BtcAccountKey, BtcPubKey, ScriptType};
+use super::account::{
+    BTC_MAX_HD_ACCOUNT, BtcAccountId, BtcAccountKey, BtcPubKey, HwBtcKey, ScriptType,
+};
 use super::address::{BtcAddress, ScriptKind, kind_from_script};
 use super::amount::Sats;
 use super::display::BtcSendFacts;
@@ -1388,6 +1390,12 @@ const HD_KEYS: [&str; 3] = ["account", "pubkey", "chain_code"];
 const IMPORTED_KEYS: [&str; 2] = ["id", "pubkey"];
 /// `key.evm` of a version 2 object (the key of EVM account `index`, `m/44'/60'/0'/0/i`).
 const EVM_KEYS: [&str; 2] = ["index", "pubkey"];
+/// `key.yubikey` of a version 2 object (a `YubiKey` key, spec/10 §3.3: `kind` `btc` = address
+/// key `m/{44|49|84}'/{coin}'/0'/0/i`, `evm` = the EVM key `m/44'/60'/0'/0/i`; the public key is
+/// a display cache, the vault tag-5 slot map is the source of truth).
+const HW_KEYS: [&str; 3] = ["kind", "index", "pubkey"];
+/// `btc_accounts.selected.yubikey`.
+const HW_ID_KEYS: [&str; 3] = ["script_type", "kind", "index"];
 /// `BtcMeta` version of the non-primary accounts.
 pub const BTC_META_VERSION_V2: u64 = 2;
 
@@ -1427,6 +1435,17 @@ fn account_key(value: &Value, script_type: ScriptType) -> Result<BtcAccountKey, 
         let pubkey = hex_array::<33>(get(evm, "pubkey")?, "key.evm.pubkey")?;
         return BtcAccountKey::evm_shared(index, script_type, pubkey)
             .map_err(|_| BtcMetaError("key.evm"));
+    }
+    if let Some(hw) = object.get("yubikey") {
+        let hw = object_with(hw, &HW_KEYS, "key.yubikey")?;
+        let index = u32_field(get(hw, "index")?, MAX_NEXT, "key.yubikey.index")?;
+        let key = get(hw, "kind")?
+            .as_str()
+            .and_then(|kind| HwBtcKey::from_json(kind, index))
+            .ok_or(BtcMetaError("key.yubikey.kind"))?;
+        let pubkey = hex_array::<33>(get(hw, "pubkey")?, "key.yubikey.pubkey")?;
+        return BtcAccountKey::hardware(key, script_type, pubkey)
+            .map_err(|_| BtcMetaError("key.yubikey"));
     }
     let imported = object_with(
         object.get("imported").ok_or(BtcMetaError("key"))?,
@@ -1509,6 +1528,14 @@ fn account_key_json(account: &BtcAccountKey) -> Value {
             "evm",
             object(vec![
                 ("index", number(u64::from(*evm_index))),
+                ("pubkey", string(crate::hex::encode(pubkey))),
+            ]),
+        )]),
+        BtcAccountKey::Hardware { key, pubkey, .. } => object(vec![(
+            "yubikey",
+            object(vec![
+                ("kind", string(key.json_kind())),
+                ("index", number(u64::from(key.index()))),
                 ("pubkey", string(crate::hex::encode(pubkey))),
             ]),
         )]),
@@ -1772,6 +1799,14 @@ fn account_id_json(id: &BtcAccountId) -> Value {
                 ("index", number(u64::from(*evm_index))),
             ]),
         )]),
+        BtcAccountId::Hardware { key, script_type } => object(vec![(
+            "yubikey",
+            object(vec![
+                ("script_type", string(script_type.json_name())),
+                ("kind", string(key.json_kind())),
+                ("index", number(u64::from(key.index()))),
+            ]),
+        )]),
     }
 }
 
@@ -1800,6 +1835,20 @@ fn account_id(value: &Value) -> Result<BtcAccountId, BtcMetaError> {
                 .ok_or(BtcMetaError(FIELD))?,
             evm_index: u32_field(get(evm, "index")?, MAX_NEXT, FIELD)?,
         });
+    }
+    if let Some(hw) = object.get("yubikey") {
+        let hw = object_with(hw, &HW_ID_KEYS, FIELD)?;
+        let script_type = get(hw, "script_type")?
+            .as_str()
+            .and_then(ScriptType::parse_json_name)
+            .filter(|script_type| *script_type != ScriptType::P2tr)
+            .ok_or(BtcMetaError(FIELD))?;
+        let index = u32_field(get(hw, "index")?, MAX_NEXT, FIELD)?;
+        let key = get(hw, "kind")?
+            .as_str()
+            .and_then(|kind| HwBtcKey::from_json(kind, index))
+            .ok_or(BtcMetaError(FIELD))?;
+        return Ok(BtcAccountId::Hardware { key, script_type });
     }
     let id = hex_array::<16>(object.get("imported").ok_or(BtcMetaError(FIELD))?, FIELD)?;
     Ok(BtcAccountId::Imported { id })

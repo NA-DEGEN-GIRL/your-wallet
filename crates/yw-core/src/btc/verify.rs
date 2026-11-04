@@ -18,8 +18,8 @@ use super::script::{dust_threshold, split_p2pkh_script_sig};
 use super::select::SendPlan;
 use super::sighash::{bip143_sighash_p2wpkh, legacy_sighash};
 use super::sign::{
-    PUBKEY_LEN, WitnessSigError, check_p2pkh_signature_with, check_witness_signature_with,
-    expected_inputs, plan_prevouts,
+    PUBKEY_LEN, WitnessSigError, check_card_signature_with, check_p2pkh_signature_with,
+    check_witness_signature_with, expected_inputs, plan_prevouts,
 };
 use super::taproot::{TaprootSigError, check_key_path_witness, sighash_default};
 use super::tx::{Transaction, Txid, parse_transaction, serialize, txid, vsize, weight, wtxid};
@@ -250,6 +250,9 @@ pub fn verify_signed(
 
 /// Checks 3–5 for every input, by account type:
 ///
+/// (A `YubiKey` account's ECDSA items are checked with the relaxed card rules instead,
+/// `sign::check_card_signature`.)
+///
 /// - P2WPKH / P2SH-P2WPKH: exactly `[DER ‖ 0x01, K]` (the P2SH scriptSig was compared in check
 ///   2), `K` is the account key of `(chain, index)`, BIP143 with the verified amount;
 /// - P2PKH: no witness, scriptSig exactly `<DER ‖ 0x01> <K>` with the account key (33 or 65
@@ -265,6 +268,9 @@ fn check_witnesses(
     let prevouts = plan_prevouts(plan, &expected);
     let ctx = secp_context(&mut OsRandom).map_err(|_| PostSignError::Derivation)?;
     let script_type = account.script_type();
+    // A YubiKey account's inputs are card signatures: the relaxed card rules (high-R allowed,
+    // DER ≤ 72, spec/10 §6.3); every other account keeps the strict low-R rules.
+    let card = account.is_hardware();
     for (position, ((planned, input), (pubkey, kind))) in plan
         .inputs()
         .iter()
@@ -293,8 +299,12 @@ fn check_witnesses(
                 let sighash =
                     bip143_sighash_p2wpkh(parsed, position, &hash160(key_item), planned.value)
                         .ok_or(PostSignError::PlanInconsistent)?;
-                check_witness_signature_with(&ctx, sig_item, key_item, &sighash)
-                    .map_err(signature_error)?;
+                if card {
+                    check_card_signature_with(&ctx, sig_item, key_item, &sighash)
+                } else {
+                    check_witness_signature_with(&ctx, sig_item, key_item, &sighash)
+                }
+                .map_err(signature_error)?;
             }
             ScriptType::P2pkh => {
                 if !input.witness.is_empty() {
@@ -312,8 +322,12 @@ fn check_witnesses(
                     u32::from(SIGHASH_ALL),
                 )
                 .ok_or(PostSignError::PlanInconsistent)?;
-                check_p2pkh_signature_with(&ctx, sig_item, key_item, &sighash)
-                    .map_err(signature_error)?;
+                if card {
+                    check_card_signature_with(&ctx, sig_item, key_item, &sighash)
+                } else {
+                    check_p2pkh_signature_with(&ctx, sig_item, key_item, &sighash)
+                }
+                .map_err(signature_error)?;
             }
             ScriptType::P2tr => {
                 let ScriptKind::P2tr(output) = kind else {

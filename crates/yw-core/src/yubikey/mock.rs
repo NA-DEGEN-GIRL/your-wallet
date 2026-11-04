@@ -104,6 +104,9 @@ pub struct MockCard {
     pub kdf: bool,
     /// Return high-s signatures (as a real card does half the time).
     pub high_s: bool,
+    /// Return only high-R signatures (`r ≥ 2^255`, DER 71 bytes after low-s): a real card picks
+    /// its own nonce and gives one about half the time (spec/10 §6.3).
+    pub high_r: bool,
     /// The user does not touch (signing answers `6982`).
     pub refuse_touch: bool,
     /// Return a corrupted signature.
@@ -170,6 +173,7 @@ impl MockCard {
             has_piv: true,
             kdf: false,
             high_s: false,
+            high_r: false,
             refuse_touch: false,
             corrupt_signature: false,
             refuse_ed25519_import: false,
@@ -409,9 +413,20 @@ impl MockCard {
         let Ok(secret) = SecretKey::from_byte_array(scalar) else {
             return sw(0x6F00);
         };
-        let signature = Secp256k1::new()
-            .sign_ecdsa(Message::from_digest(digest), &secret)
-            .serialize_compact();
+        let ctx = Secp256k1::new();
+        let message = Message::from_digest(digest);
+        let mut signature = ctx.sign_ecdsa(message, &secret).serialize_compact();
+        let mut counter = 0_u32;
+        while self.high_r && signature.first().is_some_and(|r| r & 0x80 == 0) && counter < 1_024 {
+            counter = counter.saturating_add(1);
+            let mut extra = [0_u8; 32];
+            for (slot, byte) in extra.iter_mut().zip(counter.to_be_bytes()) {
+                *slot = byte;
+            }
+            signature = ctx
+                .sign_ecdsa_with_noncedata(message, &secret, &extra)
+                .serialize_compact();
+        }
         let mut out = signature.to_vec();
         if self.high_s {
             let mut s = [0_u8; 32];

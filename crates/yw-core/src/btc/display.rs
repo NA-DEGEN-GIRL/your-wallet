@@ -176,9 +176,9 @@ pub fn payload_header(bytes: &[u8]) -> Option<BtcPayloadHeader> {
 const ACCOUNT_BLOCK_LEN: usize = 19;
 
 /// The account block of `account`, `None` for the primary (BIP84 account 0) whose payload keeps
-/// the original layout: `0x01 ‖ source (1 HD, 2 imported, 3 EVM account key) ‖ ScriptType code ‖
-/// (HD: account u32 ‖ 12 zero bytes | imported: record id 16 | EVM: EVM account index u32 ‖ 12
-/// zero bytes)`.
+/// the original layout: `0x01 ‖ source (1 HD, 2 imported, 3 EVM account key, 4 YubiKey address
+/// key, 5 YubiKey EVM key) ‖ ScriptType code ‖ (HD: account u32 ‖ 12 zero bytes | imported:
+/// record id 16 | EVM and YubiKey: the index u32 ‖ 12 zero bytes)`.
 fn account_block(account: &BtcAccountKey) -> Option<[u8; ACCOUNT_BLOCK_LEN]> {
     let id = account.id();
     if id == BtcAccountId::PRIMARY {
@@ -202,6 +202,12 @@ fn account_block(account: &BtcAccountKey) -> Option<[u8; ACCOUNT_BLOCK_LEN]> {
                 *slot = byte;
             }
             3
+        }
+        BtcAccountId::Hardware { key, .. } => {
+            for (slot, byte) in body.iter_mut().zip(key.index().to_be_bytes()) {
+                *slot = byte;
+            }
+            key.source_code()
         }
     };
     for (slot, byte) in out.iter_mut().zip(

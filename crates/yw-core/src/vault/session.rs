@@ -1708,11 +1708,21 @@ impl Vault {
             return Ok(Vec::new());
         }
         let payload = self.payload()?;
-        let seed = self.seed(&payload)?;
+        // `YubiKey` sources come from the tag-5 slot map; the BIP39 seed is computed only when a
+        // derived source asks for it (a `YubiKey` wallet has no mnemonic).
+        let seed = if srcs.iter().all(|src| src.is_hardware()) {
+            None
+        } else {
+            Some(self.seed(&payload)?)
+        };
         srcs.iter()
-            .map(|src| {
-                let secret = src.ed25519_seed(seed.expose())?;
-                Ok(crate::sol::keys::public_key(&secret))
+            .map(|src| match (src, seed.as_ref()) {
+                (SolKeySource::Hardware(index), _) => hardware_sol_public_key(&payload, *index),
+                (_, Some(seed)) => {
+                    let secret = src.ed25519_seed(seed.expose())?;
+                    Ok(crate::sol::keys::public_key(&secret))
+                }
+                (_, None) => Err(INTERNAL),
             })
             .collect()
     }
@@ -1726,6 +1736,10 @@ impl Vault {
         f: impl FnOnce(&[u8; 32]) -> Result<T, VaultError>,
     ) -> Result<T, VaultError> {
         self.require_signing()?;
+        // A YubiKey account has no key on the PC (spec/10 §1).
+        if src.is_hardware() {
+            return Err(VaultError::RecordNotFound);
+        }
         let payload = self.payload()?;
         let seed = self.seed(&payload)?;
         let secret = src.ed25519_seed(seed.expose())?;
@@ -1768,6 +1782,48 @@ fn hardware_evm_address(payload: &Payload, index: AccountIndex) -> Result<Addres
         .find(|slot| slot.role.key_identity() == identity)
         .ok_or(VaultError::RecordNotFound)
         .and_then(|slot| crate::yubikey::plan::evm_address(&slot.public).map_err(|_| INTERNAL))
+}
+
+/// The Ed25519 public key of `YubiKey` Solana account `index` from the slot map
+/// (`RecordNotFound` when no card holds it).
+fn hardware_sol_public_key(payload: &Payload, index: AccountIndex) -> Result<[u8; 32], VaultError> {
+    let identity = crate::yubikey::plan::KeyRole::Sol { index }.key_identity();
+    payload
+        .hw_keys
+        .iter()
+        .flat_map(|entry| &entry.record.slots)
+        .find(|slot| slot.role.key_identity() == identity)
+        .ok_or(VaultError::RecordNotFound)
+        .and_then(|slot| {
+            crate::yubikey::plan::sol_address(&slot.public)
+                .map(crate::sol::SolAddress::to_bytes)
+                .map_err(|_| INTERNAL)
+        })
+}
+
+/// The compressed public key of a `YubiKey` Bitcoin key from the slot map: `key` names the slot
+/// role (a Bitcoin address key of `network`/`script_type`, or an EVM key used as one Bitcoin
+/// address). `RecordNotFound` when no card holds it.
+fn hardware_btc_public_key(
+    payload: &Payload,
+    network: crate::btc::BtcNetwork,
+    script_type: crate::btc::account::ScriptType,
+    key: crate::btc::account::HwBtcKey,
+) -> Result<[u8; 33], VaultError> {
+    let identity = key
+        .role(network, script_type)
+        .ok_or(VaultError::RecordNotFound)?
+        .key_identity();
+    payload
+        .hw_keys
+        .iter()
+        .flat_map(|entry| &entry.record.slots)
+        .find(|slot| slot.role.key_identity() == identity)
+        .ok_or(VaultError::RecordNotFound)
+        .and_then(|slot| match slot.public {
+            crate::yubikey::record::HwPublicKey::Secp256k1(public) => Ok(public),
+            crate::yubikey::record::HwPublicKey::Ed25519(_) => Err(INTERNAL),
+        })
 }
 
 /// Adds a hardware key reference (one per serial, at most 8, consistent with the others).
@@ -1823,6 +1879,28 @@ impl Vault {
                 record: entry.record.clone(),
             })
             .collect())
+    }
+
+    /// The Bitcoin account of a `YubiKey` key (spec/10 §3.1, §3.3): one fixed address whose
+    /// compressed public key comes from the tag-5 slot map (never from the seed). `key` is a
+    /// Bitcoin address key (`m/{44|49|84}'/{coin}'/0'/0/i` of `network` and `script_type`) or an
+    /// EVM key (`m/44'/60'/0'/0/i`) used as one `script_type` address.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` outside `BackupPending`/`Unlocked`, `RecordNotFound` when no enrolled
+    /// card holds the key (also for Taproot, which a card cannot hold).
+    pub fn hardware_btc_account(
+        &self,
+        network: crate::btc::BtcNetwork,
+        script_type: crate::btc::account::ScriptType,
+        key: crate::btc::account::HwBtcKey,
+    ) -> Result<crate::btc::account::BtcAccountKey, VaultError> {
+        self.require_public()?;
+        let payload = self.payload()?;
+        let public = hardware_btc_public_key(&payload, network, script_type, key)?;
+        crate::btc::account::BtcAccountKey::hardware(key, script_type, public)
+            .map_err(|_| VaultError::RecordNotFound)
     }
 
     /// Adds an enrolled `YubiKey` (`PayloadRewrite`, no password: nothing secret is added).

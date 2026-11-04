@@ -160,14 +160,18 @@ Bitcoin 슬롯의 인덱스는 **계정 0의 받기 체인 주소 인덱스**(`�
 
 ### 6.3 Bitcoin
 
-- 서명 항목 = `DER(r, s) ‖ 01`(SIGHASH_ALL). 정규화로 low-s는 보장되지만 **low-R은 보장할 수 없다**(카드 nonce를 고를 수 없고, 다시 서명하면 터치가 또 필요하다). 따라서 카드 서명에는 [08]의 "DER ≤ 70바이트(low-R)" 검사 대신 **DER ≤ 72바이트, low-s, 엄격 DER, 서명 검증**을 적용한다(`sig::btc_der`). 표준성(BIP66·BIP146)은 low-R을 요구하지 않는다.
-- 수수료 계산의 서명 크기는 YubiKey 입력에서 **72 + 1바이트**(DER 최대 + sighash)로 잡는다(소프트웨어 입력은 지금처럼 71 + 1). P2WPKH 입력 하나당 witness 1바이트(0.25 vB) 차이다.
+- 서명 항목 = `DER(r, s) ‖ 01`(SIGHASH_ALL). 정규화로 low-s는 보장되지만 **low-R은 보장할 수 없다**(카드 nonce를 고를 수 없고, 다시 서명하면 터치가 또 필요하다). 따라서 카드 서명에는 [08]의 "DER ≤ 70바이트(low-R)" 검사 대신 **DER ≤ 72바이트, low-s, 엄격 DER(왕복 동일), 서명 검증**을 적용한다(`sig::btc_der`, 서명 후 `btc::sign::check_card_signature`). 표준성(BIP66·BIP146)은 low-R을 요구하지 않는다. 이 완화는 **YubiKey 계정의 입력에만** 적용되고 소프트웨어 입력의 검사(`check_witness_signature`·`check_p2pkh_signature`, low-R ≤ 70)는 그대로다.
+- 수수료 계산의 서명 항목 크기는 YubiKey 입력에서 **72 + 1바이트**(카드 DER 상한 + sighash)로 잡는다(소프트웨어 입력은 지금처럼 70 + 1 = 71바이트). 입력 무게(`ScriptType::card_input_weight`): P2WPKH 273(소프트웨어 271), P2SH-P2WPKH 365(363), P2PKH 596(588). witness 입력은 서명 항목 2바이트(0.5 vB), P2PKH는 scriptSig 2바이트(2 vB) 차이다. low-s 뒤 실제 DER은 최대 71바이트라 이 추정은 실제 크기를 넘지 않는다(서명 후 검증의 "실제 vsize ≤ 계획 vsize").
+- 표현(코어): YubiKey Bitcoin 계정은 단일 주소 계정 `BtcAccountKey::Hardware { key, script_type, pubkey }`다. `key: HwBtcKey`는 슬롯 역할이다 — `Address(i)` = `KeyRole::Btc`(`m/{44|49|84}'/{coin}'/0'/0/i`), `Evm(i)` = EVM 공유 키(`m/44'/60'/0'/0/i`). 공개키는 **tag 5 슬롯 표에서만** 온다(`Vault::hardware_btc_account`, 시드에서 파생하지 않음 — 같은 경로의 표준 파생과 같은지는 시험이 확인). 주소·scriptPubKey·받기·잔돈 규칙은 [08] §3.5의 단일 주소 계정과 같다(`(Receive, 0)` 하나, 잔돈도 같은 주소, gap 탐색 없음). P2TR은 만들 수 없다(`AccountKeyError::HardwareTaproot`). 입력 키 출처는 `BtcKeySource::Hardware`이고 vault 서명 경로(`sign_plan`)는 `Vault(RecordNotFound)`로 거부한다. 승인 payload·저널 계정 블록의 source는 4(주소 키)·5(EVM 키), 활동 태그 `yubikey/p2wpkh/i`·`yubikey/evm/p2wpkh/i`, meta `btc_accounts`의 `key.yubikey`(`kind` `btc`/`evm`, `index`, `pubkey`)·`selected.yubikey`.
+- 서명(코어): `btc::sign::sign_plan_card(approved, plan, account, card)` — `sign_plan`과 같은 승인·계획 검사 → 입력마다 sighash(P2PKH 레거시, P2SH-P2WPKH·P2WPKH BIP143; P2TR은 `Card(NotSupported)`)를 카드 클로저(`yubikey::sign::sign_btc`, DER 반환)로 서명 → 완화 검사 → 소프트웨어 경로와 같은 scriptSig·witness → 거래 전체의 서명 후 검증(`verify::verify_signed`: 비서명 거래 동일, 키, 서명, 출력·잔돈, 수수료·상한, dust, 크기, [08] §11.2). 오류는 `CardSignError::{Sign, Card, PostSign}`. 앱은 그 전에 `check_recorded_amounts`를 부른다(vault 경로와 같음).
 - 입력마다 카드 서명 한 번: 터치 "항상"이면 입력 수만큼 터치, "15초 유지"면 첫 터치 뒤 15초 안의 입력은 터치 없이 서명된다. 승인 창은 "YubiKey 터치 N회가 필요합니다"를 보인다(§10).
 - 탭루트 입력은 YubiKey 계정에 존재하지 않는다(§2).
 
 ### 6.4 Ed25519 (Solana)
 
 - 카드 서명 64바이트를 기록된 공개키로 `verify_strict` 한다(정규 S, 소수 위수 키 거부). 그 뒤는 [07] §13의 서명 후 검증(메시지 바이트 = 승인한 템플릿)을 그대로 거친다.
+- 표현(코어): 키 출처 `SolKeySource::Hardware(i)`(**tag 7**, 매개변수 `(i, 0)`, 경로 `m/44'/501'/i'/0'`, 경로 문구 "… (YubiKey PIV)"). 표준 경로이므로 비표준 경로 규칙([07] §3.3)은 적용되지 않는다. vault는 이 출처에 시드를 빌려 주지 않고(`with_ed25519_seed` → `RecordNotFound`), 공개키는 `Vault::sol_public_keys`가 tag 5 슬롯 표에서 답한다(니모닉 없는 YubiKey 지갑에서도).
+- 서명(코어): `sol::sign::sign_transfer_card(approved, consumed_at_ms, blockhash, now_ms, card)` — `sign_transfer`와 같은 기한·승인·수수료 규칙·메시지(파싱 + 재인코딩 동일) 검사 → 카드가 메시지 바이트 그대로 서명 → 같은 서명 후 검증(`verify_strict`, 조립, 재파싱). `sol::msgsign::sign_message_card(approved, card)` — `sign_message`와 같은 승인 검사와 거래 모양·잘못된 오프체인 메시지 거부(M01·M02)를 **카드에 묻기 전에** 하고, 카드 서명을 `verify_strict` 한다. 카드 클로저 형식은 `sol::sign::SolCardSigner`(`yubikey::sign::sign_sol`), 오류는 `SolCardSignError`·`SolMessageCardError`(`Sign`·`Card`).
 
 ## 7. 등록 (`yubikey::enrol`)
 
@@ -296,6 +300,8 @@ n × 48:
 완료:
 
 - yw-core: §4의 `yubikey` 모듈 전부(APDU·TLV, OpenPGP·PIV 흐름, 슬롯 계획·검사, tag 5 코덱, 등록, 카드 서명, 후처리, 에뮬레이터), vault tag 5(`hardware_keys`·`add_hardware_key`·`remove_hardware_key`·`create_with_hardware`), `EvmKeySource::Hardware`(vault 서명 경로는 거부, 주소는 슬롯 표에서), EVM 카드 서명 진입점 `evm::sign::{sign_transaction_card, sign_personal_card, sign_typed_data_card}`(승인 검사 → 카드 → 기존 서명 후 검증).
+- yw-core Solana(§6.4): `SolKeySource::Hardware`(tag 7; vault 서명 거부, 공개키는 슬롯 표에서), `sol::sign::sign_transfer_card`, `sol::msgsign::sign_message_card`. 시험: 에뮬레이터 카드 서명 = 템플릿 메시지의 RFC 8032 서명, 서명 후 검증, 쓰기 명령 없음, 기한·출처·수수료 규칙·파싱 거부, 거래 모양·오프체인 메시지 거부, 터치 없음·다른 카드·틀린 PIN, vault 경로 거부.
+- yw-core Bitcoin(§6.3): 단일 주소 계정 `BtcAccountKey::Hardware`(`HwBtcKey::{Address, Evm}`, `Vault::hardware_btc_account`), 입력별 카드 서명 `btc::sign::sign_plan_card`(P2PKH·P2SH-P2WPKH·P2WPKH, P2TR 거부), 카드 입력의 완화 검사(`check_card_signature`, `verify_signed`에서도), 수수료 서명 크기 72 + 1, 승인 payload·저널·meta의 YubiKey 계정 식별(source 4·5). 시험: 세 형식 × (주소 키, EVM 공유 키) 두 입력 송금을 high-s·high-R 에뮬레이터로 서명(엄격 검사는 거부, 카드 검사는 통과), 잔돈 = 같은 주소, 입력당 터치 1회, 쓰기 명령 없음, 서명 후 검증·vsize, 저널·meta 왕복, vault 경로 거부, 터치 없음·다른 카드·틀린 PIN·다른 digest·high-s 응답·다른 계획 승인·탭루트 거부.
 - yw-win: `pcsc`(PC/SC 래퍼, 읽기 전용 수동 진단 `pcsc_readonly_probe`), `cng`(AES·3DES 한 블록, KAT).
 - yw-app(백엔드): `yubikey` 어댑터(`PcscTransport`, `CngCipher`, `CardSource`/`PcscSource`, `sign_evm_digest`, `enrol_first_card`), 키 작업자 작업 `EnrolYubiKey`·`HardwareKeys`·`SignEvmCard`·`SignMessageCard`(PIN은 작업이 소유하고 작업과 함께 지워짐), `SignFailure::Card`·`MessageSignFailure::Card`. 작업자 수준의 EVM 종단 시험(지갑 가져오기 → 에뮬레이터 YubiKey 등록 → 승인된 Sepolia 전송을 카드로 서명 → 서명 후 검증 → `Signed` 저널 기록, `personal_sign`, 틀린 PIN·다른 카드·카드 없음, vault 경로 거부).
 
@@ -304,7 +310,7 @@ n × 48:
 1. 등록 마법사 화면(슬롯·인덱스 선택, 확인 화면 §7.2, 니모닉·PIN·관리자 PIN·관리 키 입력은 기존 비밀 입력 창(W05 등)에 새 종류를 더해, 반복 등록, 기본값 변경 §9.3) → `KeyJob::EnrolYubiKey`.
 2. EVM 탭의 "YubiKey" 계정 종류: meta 선택 최상위 키 `hw_accounts`(라벨·숨김), `EvmAccountPref`에 YubiKey 항목, 계정 목록·받기·dApp 연결 계정 목록에 tag 5의 EVM 계정.
 3. 승인 후 카드 단계(§9.2): 출처가 `EvmKeySource::Hardware`인 승인은 `SignEvm`/`SignMessage` 대신 PIN 입력 창 → `SignEvmCard`/`SignMessageCard`.
-4. Solana(PIV, `SolKeySource`에 YubiKey 출처 + 카드 서명 진입점)와 Bitcoin(단일 주소 계정의 입력별 카드 서명 훅, 수수료 서명 크기 72+1, §6.3) — 코어의 카드 흐름(`sign::sign_sol`·`sign::sign_btc`)과 시험은 이미 있다.
+4. Solana·Bitcoin YubiKey 계정의 앱 연결: 계정 목록(`SolKeySource::Hardware`, `BtcAccountKey::Hardware`), 키 작업자 작업(`sign_transfer_card`·`sign_message_card`·`sign_plan_card`에 `sign::sign_sol`·`sign::sign_btc` 클로저), 승인 창의 "YubiKey 터치 N회" 안내(§6.3, §10). Bitcoin dApp 메시지 서명(BIP137·BIP322)의 카드 경로는 아직 없다(vault 경로는 YubiKey 출처를 거부).
 5. 새 YubiKey 지갑 생성(§7.1-1, `create_with_hardware`)과 "가져오기 없이 등록"(§7.5).
 
 ## 14. 출처

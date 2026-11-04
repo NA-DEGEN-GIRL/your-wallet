@@ -1184,3 +1184,488 @@ fn vault_key(vault: &Vault, evm_index: u32) -> [u8; 33] {
         .evm_public_key(AccountIndex::new(evm_index).unwrap())
         .unwrap()
 }
+
+// ----- YubiKey single-address accounts (spec/10 §3.3, §6.3) -------------------------------------
+
+/// The `abandon`×11 `about` seed for the card emulator's enrolment.
+fn about_seed() -> [u8; 64] {
+    *crate::bip39::Mnemonic::parse(super::tests::ABOUT)
+        .unwrap()
+        .to_seed(&crate::password::Bip39Passphrase::empty())
+        .unwrap()
+        .expose()
+}
+
+/// A card (emulator, `serial`) with SIG = Bitcoin `script_type` address 3 of testnet4 and
+/// AUT = EVM key 0 shared as a `script_type` address; its record added to the `about` vault.
+fn card_vault(
+    serial: u32,
+    script_type: ScriptType,
+) -> (
+    crate::yubikey::mock::MockCard,
+    Vault,
+    crate::yubikey::record::HwKeyRecord,
+) {
+    use crate::yubikey::apdu::ApduMode;
+    use crate::yubikey::enrol::{EnrolAuth, enrol_card};
+    use crate::yubikey::mock::{MockCard, ToyCipher};
+    use crate::yubikey::plan::{BtcUse, CardSlot, KeyRole, PgpKey, PlannedSlot};
+    let mut card = MockCard::new(serial);
+    let plan = [
+        PlannedSlot::recommended(
+            CardSlot::OpenPgp(PgpKey::Sig),
+            KeyRole::Btc {
+                network: NET,
+                script: script_type,
+                index: 3,
+            },
+        ),
+        PlannedSlot::recommended(
+            CardSlot::OpenPgp(PgpKey::Aut),
+            KeyRole::Evm {
+                index: AccountIndex::ZERO,
+                btc: Some(BtcUse {
+                    network: NET,
+                    script: script_type,
+                }),
+            },
+        ),
+    ];
+    let auth = EnrolAuth {
+        admin_pin: b"12345678",
+        management_key: &crate::yubikey::piv::DEFAULT_MANAGEMENT_KEY,
+        cipher: Some(&ToyCipher),
+        challenge: [0; 16],
+    };
+    let record = enrol_card(&mut card, ApduMode::Short, &about_seed(), &plan, &[], &auth)
+        .unwrap()
+        .record;
+    let mut vault = about_vault();
+    vault.add_hardware_key(record.clone(), NOW_UNIX).unwrap();
+    (card, vault, record)
+}
+
+/// The card key of a `YubiKey` account (slot routing through the tag-5 slot map).
+fn card_key_of(
+    record: &crate::yubikey::record::HwKeyRecord,
+    account: &BtcAccountKey,
+) -> crate::yubikey::sign::CardKey {
+    let BtcAccountKey::Hardware {
+        key,
+        script_type,
+        pubkey,
+    } = *account
+    else {
+        unreachable!("a YubiKey account");
+    };
+    let role = key.role(NET, script_type).unwrap();
+    let holder =
+        crate::yubikey::plan::slot_on_card(core::slice::from_ref(record), role, record.serial)
+            .unwrap();
+    crate::yubikey::sign::CardKey {
+        serial: record.serial,
+        slot: holder.slot,
+        public: crate::yubikey::record::HwPublicKey::Secp256k1(pubkey),
+    }
+}
+
+/// The sighash input `position` of `tx` signs for a single-key account of `script_type`.
+fn input_sighash(
+    tx: &Transaction,
+    position: usize,
+    script_type: ScriptType,
+    pubkey: &[u8; 33],
+    value: Sats,
+) -> [u8; 32] {
+    let hash = super::address::hash160(pubkey);
+    match script_type {
+        ScriptType::P2pkh => super::sighash::legacy_sighash(
+            tx,
+            position,
+            &super::address::script_pubkey(&super::address::ScriptKind::P2pkh(hash)),
+            1,
+        )
+        .unwrap(),
+        _ => super::sighash::bip143_sighash_p2wpkh(tx, position, &hash, value).unwrap(),
+    }
+}
+
+/// spec/10 §3.3, §6.3: `YubiKey` single-address accounts of every card address type (a Bitcoin
+/// address key and an EVM key shared as one address) spend two inputs on the card emulator with
+/// high-s **and** high-R signatures: the public key comes from the tag-5 slot map (equal to the
+/// standard derivation), change goes back to the one address, the vault refuses to sign, the
+/// card path signs one input per touch without any write command, the relaxed card check accepts
+/// the high-R items the strict software check rejects, the card fee estimate (72 + 1) covers the
+/// actual size, and the journal record and meta round trip.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario per account kind"
+)]
+fn yubikey_single_address_send_every_type() {
+    use super::account::{BtcAccountId, HwBtcKey};
+    use super::sign::{
+        CardSignError, check_card_signature, check_p2pkh_signature, check_witness_signature,
+        sign_plan_card,
+    };
+    use crate::yubikey::apdu::ApduMode;
+    let ctx = secp256k1::Secp256k1::verification_only();
+    let mut salt = 0xc0_u8;
+    for (serial, script_type) in [
+        (31_u32, ScriptType::P2wpkh),
+        (32, ScriptType::P2shP2wpkh),
+        (33, ScriptType::P2pkh),
+    ] {
+        for hw_key in [HwBtcKey::Address(3), HwBtcKey::Evm(0)] {
+            let (mut card, vault, record) = card_vault(serial, script_type);
+            let account = vault
+                .hardware_btc_account(NET, script_type, hw_key)
+                .unwrap();
+            // The slot map's key is the standard one (address key) or the EVM key.
+            let BtcAccountKey::Hardware { pubkey, .. } = account else {
+                unreachable!("a YubiKey account");
+            };
+            let standard = match hw_key {
+                HwBtcKey::Address(index) => vault
+                    .btc_public_key(
+                        NET.account_node(script_type.purpose(), 0).unwrap(),
+                        BtcChain::Receive,
+                        index,
+                    )
+                    .unwrap(),
+                HwBtcKey::Evm(index) => vault_key(&vault, index),
+            };
+            assert_eq!(pubkey, standard, "{script_type:?} {hw_key:?}");
+            assert!(account.is_single() && account.fixed_address() && account.is_hardware());
+            assert!(!account.is_imported() && !account.is_evm_shared());
+            assert!(
+                account
+                    .path_text(NET, BtcChain::Receive, 0)
+                    .ends_with("(YubiKey)")
+            );
+            assert_eq!(account.input_weight(), script_type.card_input_weight());
+            // The card estimate is 2 signature bytes above the software one (72 + 1 vs 70 + 1).
+            let software = script_type.input_weight(true);
+            let extra = if script_type == ScriptType::P2pkh {
+                8
+            } else {
+                2
+            };
+            assert_eq!(account.input_weight(), software + extra);
+            let mut meta = BtcMeta::with_key(NET, account);
+            let script = meta.expected_script(BtcChain::Receive, 0).unwrap();
+            fund_receive0(&mut meta, &[(80_000, salt), (50_000, salt + 1)]);
+            salt += 2;
+            let fixture = Fixture {
+                vault,
+                account,
+                meta,
+            };
+            let plan = two_input_plan(&fixture);
+            let change = plan.change().unwrap();
+            assert_eq!(
+                plan.tx().outputs[usize::try_from(change.vout).unwrap()].script_pubkey,
+                script
+            );
+            // The vault has no key for it.
+            assert_eq!(
+                sign_plan(&fixture.vault, approve(&fixture, &plan, 9), &plan, &account),
+                Err(SignError::Vault(crate::error::VaultError::RecordNotFound))
+            );
+            // On the card: high-s and high-R signatures, one touch per input, no writes.
+            card.high_s = true;
+            card.high_r = true;
+            card.log.clear();
+            let touches = card.touches;
+            let key = card_key_of(&record, &account);
+            let signed = {
+                let mut signer = |sighash: [u8; 32]| {
+                    crate::yubikey::sign::sign_btc(
+                        &ctx,
+                        &mut card,
+                        ApduMode::Short,
+                        &key,
+                        b"123456",
+                        sighash,
+                    )
+                };
+                sign_plan_card(approve(&fixture, &plan, 10), &plan, &account, &mut signer).unwrap()
+            };
+            assert!(!card.saw_write());
+            assert_eq!(card.touches - touches, 2);
+            let verified = verify_signed(&signed.raw, &plan, &account).unwrap();
+            assert!(verified.vsize() <= u64::from(plan.planned_vsize()));
+            // Every item is high-R (71-byte DER): the strict software rule refuses it, the
+            // relaxed card rule accepts it.
+            let parsed = parse_transaction(&signed.raw).unwrap();
+            for (position, (input, planned)) in parsed.inputs.iter().zip(plan.inputs()).enumerate()
+            {
+                let sig_item = if script_type == ScriptType::P2pkh {
+                    super::script::split_p2pkh_script_sig(&input.script_sig)
+                        .unwrap()
+                        .0
+                        .to_vec()
+                } else {
+                    input.witness[0].clone()
+                };
+                assert!(
+                    (71..=72).contains(&sig_item.len()),
+                    "{script_type:?} input {position}"
+                );
+                let sighash = input_sighash(&parsed, position, script_type, &pubkey, planned.value);
+                let strict = if script_type == ScriptType::P2pkh {
+                    check_p2pkh_signature(&sig_item, &pubkey, &sighash)
+                } else {
+                    check_witness_signature(&sig_item, &pubkey, &sighash)
+                };
+                assert!(matches!(
+                    strict,
+                    Err(WitnessSigError::DerTooLong | WitnessSigError::HighR)
+                ));
+                check_card_signature(&sig_item, &pubkey, &sighash).unwrap();
+            }
+            // The journal record and the meta object round trip with the YubiKey identity.
+            let record_btc = BtcRecord::new_signed(&plan, &signed, &verified, NOW_UNIX).unwrap();
+            assert_eq!(
+                record_btc.account,
+                BtcAccountId::Hardware {
+                    key: hw_key,
+                    script_type
+                }
+            );
+            assert_eq!(
+                BtcRecord::decode(&record_btc.encode().unwrap()).unwrap(),
+                record_btc
+            );
+            assert_eq!(record_btc.hd_change_index(&account), None);
+            let meta_json = fixture.meta.to_json();
+            assert_eq!(BtcMeta::from_json(&meta_json).unwrap(), fixture.meta);
+            let accounts = super::meta::BtcAccounts {
+                selected: Some(account.id()),
+                accounts: vec![fixture.meta.clone()],
+            };
+            assert_eq!(
+                super::meta::BtcAccounts::from_json(Some(&accounts.to_json())).unwrap(),
+                accounts
+            );
+            // The payload's account block binds the YubiKey source (4 address key, 5 EVM key).
+            let payload = btc_payload(&plan);
+            assert_eq!(payload[payload.len() - 18], hw_key.source_code());
+            // A software account through the card path: refused.
+            if hw_key == HwBtcKey::Evm(0) {
+                let software = BtcAccountKey::evm_shared(0, script_type, pubkey).unwrap();
+                let mut never = |_: [u8; 32]| -> Result<Vec<u8>, crate::yubikey::CardError> {
+                    unreachable!("not asked")
+                };
+                assert_eq!(
+                    sign_plan_card(approved_for(&plan, &software), &plan, &software, &mut never),
+                    Err(CardSignError::Sign(SignError::ApprovalMismatch))
+                );
+            }
+        }
+    }
+}
+
+/// spec/10 §6.3 refusals: a touch not given, another card, a card answer that does not verify
+/// and an approval of another plan stop the card path with nothing signed; Taproot cannot be a
+/// `YubiKey` account and is refused by the card path if forged.
+#[test]
+#[expect(clippy::too_many_lines, reason = "one scenario per refusal")]
+fn yubikey_card_signing_refusals() {
+    use super::account::{AccountKeyError, HwBtcKey};
+    use super::sign::{CardSignError, sign_plan_card};
+    use crate::yubikey::CardError;
+    use crate::yubikey::apdu::ApduMode;
+    use crate::yubikey::mock::MockCard;
+    let ctx = secp256k1::Secp256k1::verification_only();
+    let (mut card, vault, record) = card_vault(41, ScriptType::P2wpkh);
+    let account = vault
+        .hardware_btc_account(NET, ScriptType::P2wpkh, HwBtcKey::Address(3))
+        .unwrap();
+    let mut meta = BtcMeta::with_key(NET, account);
+    fund_receive0(&mut meta, &[(80_000, 0xd1), (50_000, 0xd2)]);
+    let fixture = Fixture {
+        vault,
+        account,
+        meta,
+    };
+    let plan = two_input_plan(&fixture);
+    let key = card_key_of(&record, &account);
+    // No touch.
+    card.refuse_touch = true;
+    let result = {
+        let mut signer = |sighash: [u8; 32]| {
+            crate::yubikey::sign::sign_btc(
+                &ctx,
+                &mut card,
+                ApduMode::Short,
+                &key,
+                b"123456",
+                sighash,
+            )
+        };
+        sign_plan_card(approve(&fixture, &plan, 11), &plan, &account, &mut signer)
+    };
+    assert_eq!(result, Err(CardSignError::Card(CardError::SecurityStatus)));
+    card.refuse_touch = false;
+    // Another card: refused before the PIN.
+    let mut other = MockCard::new(42);
+    let result = {
+        let mut signer = |sighash: [u8; 32]| {
+            crate::yubikey::sign::sign_btc(
+                &ctx,
+                &mut other,
+                ApduMode::Short,
+                &key,
+                b"123456",
+                sighash,
+            )
+        };
+        sign_plan_card(approve(&fixture, &plan, 12), &plan, &account, &mut signer)
+    };
+    assert_eq!(result, Err(CardSignError::Card(CardError::WrongCard)));
+    assert!(!other.log.iter().any(|header| header[1] == 0x20));
+    // A wrong PIN.
+    let result = {
+        let mut signer = |sighash: [u8; 32]| {
+            crate::yubikey::sign::sign_btc(
+                &ctx,
+                &mut card,
+                ApduMode::Short,
+                &key,
+                b"654321",
+                sighash,
+            )
+        };
+        sign_plan_card(approve(&fixture, &plan, 13), &plan, &account, &mut signer)
+    };
+    assert_eq!(
+        result,
+        Err(CardSignError::Card(CardError::WrongPin { retries: 2 }))
+    );
+    // A card answer that is not a signature of this sighash (another digest) fails the relaxed
+    // check; a high-s answer fails it as well.
+    let result = {
+        let mut signer = |sighash: [u8; 32]| {
+            let mut other_digest = sighash;
+            other_digest[0] ^= 1;
+            crate::yubikey::sign::sign_btc(
+                &ctx,
+                &mut card,
+                ApduMode::Short,
+                &key,
+                b"123456",
+                other_digest,
+            )
+        };
+        sign_plan_card(approve(&fixture, &plan, 14), &plan, &account, &mut signer)
+    };
+    assert_eq!(
+        result,
+        Err(CardSignError::Sign(SignError::Witness(
+            WitnessSigError::VerifyFailed
+        )))
+    );
+    let result = {
+        let mut signer = |sighash: [u8; 32]| {
+            let der = crate::yubikey::sign::sign_btc(
+                &ctx,
+                &mut card,
+                ApduMode::Short,
+                &key,
+                b"123456",
+                sighash,
+            )?;
+            let signature = Signature::from_der(&der).unwrap();
+            let compact = signature.serialize_compact();
+            let negated = secp256k1::SecretKey::from_byte_array(
+                <[u8; 32]>::try_from(&compact[32..]).unwrap(),
+            )
+            .unwrap()
+            .negate();
+            let mut high = compact;
+            high[32..].copy_from_slice(&negated.secret_bytes());
+            Ok(Signature::from_compact(&high)
+                .unwrap()
+                .serialize_der()
+                .to_vec())
+        };
+        sign_plan_card(approve(&fixture, &plan, 15), &plan, &account, &mut signer)
+    };
+    assert_eq!(
+        result,
+        Err(CardSignError::Sign(SignError::Witness(
+            WitnessSigError::HighS
+        )))
+    );
+    // An approval of another plan.
+    let other_plan = plan_with(
+        &fixture,
+        SendAmount::Exact(Sats::new(20_000).unwrap()),
+        two_sat_per_vb(),
+        3,
+        None,
+    );
+    let mut never = |_: [u8; 32]| -> Result<Vec<u8>, CardError> { unreachable!("not asked") };
+    assert_eq!(
+        sign_plan_card(
+            approve(&fixture, &other_plan, 16),
+            &plan,
+            &account,
+            &mut never
+        ),
+        Err(CardSignError::Sign(SignError::ApprovalMismatch))
+    );
+    // Taproot: not a YubiKey account, not in the slot map, and refused by the card path.
+    let BtcAccountKey::Hardware { pubkey, .. } = account else {
+        unreachable!("a YubiKey account");
+    };
+    assert_eq!(
+        BtcAccountKey::hardware(HwBtcKey::Address(3), ScriptType::P2tr, pubkey),
+        Err(AccountKeyError::HardwareTaproot)
+    );
+    assert_eq!(
+        BtcAccountKey::hardware(HwBtcKey::Address(1_000), ScriptType::P2wpkh, pubkey),
+        Err(AccountKeyError::Account)
+    );
+    assert_eq!(
+        fixture
+            .vault
+            .hardware_btc_account(NET, ScriptType::P2tr, HwBtcKey::Address(3)),
+        Err(crate::error::VaultError::RecordNotFound)
+    );
+    assert_eq!(
+        fixture
+            .vault
+            .hardware_btc_account(NET, ScriptType::P2wpkh, HwBtcKey::Address(4)),
+        Err(crate::error::VaultError::RecordNotFound)
+    );
+    let forged = BtcAccountKey::Hardware {
+        key: HwBtcKey::Address(3),
+        script_type: ScriptType::P2tr,
+        pubkey,
+    };
+    let mut forged_meta = BtcMeta::with_key(NET, forged);
+    fund_receive0(&mut forged_meta, &[(90_000, 0xd3)]);
+    let forged_fixture = Fixture {
+        vault: about_vault(),
+        account: forged,
+        meta: forged_meta,
+    };
+    let forged_plan = plan_with(
+        &forged_fixture,
+        SendAmount::Exact(Sats::new(20_000).unwrap()),
+        two_sat_per_vb(),
+        4,
+        None,
+    );
+    assert_eq!(
+        sign_plan_card(
+            approved_for(&forged_plan, &forged),
+            &forged_plan,
+            &forged,
+            &mut never
+        ),
+        Err(CardSignError::Card(CardError::NotSupported))
+    );
+}

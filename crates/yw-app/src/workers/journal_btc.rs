@@ -745,7 +745,9 @@ impl JournalState {
                 BtcAccountId::Imported { id } => {
                     matches!(vault.has_btc_key(RecordId::from_bytes(*id)), Ok(false))
                 }
-                BtcAccountId::Hd { .. } | BtcAccountId::EvmShared { .. } => false,
+                BtcAccountId::Hd { .. }
+                | BtcAccountId::EvmShared { .. }
+                | BtcAccountId::Hardware { .. } => false,
             })
             .collect();
         for account in removed {
@@ -764,7 +766,9 @@ impl JournalState {
                 Ok(false) => Err(BtcKeyError::KeyRemoved),
                 Err(error) => Err(BtcKeyError::Vault(error)),
             },
-            BtcAccountId::Hd { .. } | BtcAccountId::EvmShared { .. } => Ok(()),
+            BtcAccountId::Hd { .. }
+            | BtcAccountId::EvmShared { .. }
+            | BtcAccountId::Hardware { .. } => Ok(()),
         }
     }
 
