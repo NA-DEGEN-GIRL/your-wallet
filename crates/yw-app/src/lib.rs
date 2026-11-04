@@ -35,3 +35,4 @@ pub mod text;
 pub mod token_view;
 pub mod ui;
 pub mod workers;
+pub mod yubikey;

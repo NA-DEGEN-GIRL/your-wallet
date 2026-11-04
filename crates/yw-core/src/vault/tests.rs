@@ -2870,6 +2870,19 @@ fn hardware_vault_lifecycle() {
         vault.evm_addresses(&[index(0)]),
         Err(VaultError::NoMnemonic)
     );
+    // YubiKey EVM accounts answer from the slot map; no vault path lends a key for them.
+    assert_eq!(
+        vault.evm_address(EvmKeySource::Hardware(index(1))).ok(),
+        crate::yubikey::plan::evm_address(&first.slots[1].public).ok()
+    );
+    assert_eq!(
+        vault.evm_address(EvmKeySource::Hardware(index(9))),
+        Err(VaultError::RecordNotFound)
+    );
+    assert_eq!(
+        vault.with_secp_key(KeyRef::Evm(EvmKeySource::Hardware(index(0))), |_, _| Ok(())),
+        Err(VaultError::RecordNotFound)
+    );
     let keys = vault.hardware_keys().unwrap();
     assert_eq!(keys.len(), 1);
     assert_eq!((keys[0].id, keys[0].created_unix), (id, 5));

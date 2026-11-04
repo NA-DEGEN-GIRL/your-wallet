@@ -720,6 +720,9 @@ impl App {
                 format!("m/44'/60'/0'/0/{}", index.get())
             }
             yw_core::vault::EvmKeySource::Raw(_) => "가져온 개인키".to_owned(),
+            yw_core::vault::EvmKeySource::Hardware(index) => {
+                format!("YubiKey · m/44'/60'/0'/0/{}", index.get())
+            }
         }));
         let balance = self.native_balance(chain_id, &address);
         let state = self.evm.balances.get(&chain_id);

@@ -526,7 +526,7 @@ fn card_signing_verifies_and_recovers_the_account() {
                 genesis: SEPOLIA_GENESIS,
             },
             AccountRef::Evm(account),
-            Signer::Hardware(role),
+            Signer::Evm(EvmKeySource::Hardware(AccountIndex::ZERO)),
             kind,
             payload,
         )
@@ -572,7 +572,7 @@ fn card_signing_verifies_and_recovers_the_account() {
             genesis: SEPOLIA_GENESIS,
         },
         AccountRef::Evm(addr("0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0")),
-        Signer::Hardware(role),
+        Signer::Evm(EvmKeySource::Hardware(AccountIndex::ZERO)),
         ApprovalKind::EvmPersonalSign,
         SigningPayload::EvmPersonal(preimage),
     );

@@ -1431,7 +1431,8 @@ impl App {
                 self.set_screen(Screen::Done);
             }
             // The answer to `DiscardKeyStart`.
-            KeyOutcome::KeyStartCommitted(Err(VaultError::InvalidState)) => {}
+            KeyOutcome::KeyStartCommitted(Err(VaultError::InvalidState))
+            | KeyOutcome::HardwareKeys(_) => {}
             KeyOutcome::KeyStartCommitted(Err(error)) => {
                 self.keys.start = crate::app_keys::KeyStartFlow::default();
                 self.error_banner(vault_code(error));
@@ -1455,6 +1456,19 @@ impl App {
             KeyOutcome::SignedSol(result) => self.on_sol_signed(result),
             KeyOutcome::SignedMessage(result) => self.browser_message_signed(result),
             KeyOutcome::SignedChainMessage(result) => self.browser_chain_message_signed(&result),
+            // The enrolment wizard and the YubiKey list (spec/10 §13 item 1) are not wired yet:
+            // the outcomes are logged only.
+            KeyOutcome::YubiKeyEnrolled(result) => {
+                logging::info(
+                    "app",
+                    if result.is_ok() {
+                        "yubikey.enrolled"
+                    } else {
+                        "yubikey.enrol_failed"
+                    },
+                    &[],
+                );
+            }
             KeyOutcome::Imported(Err(_))
             | KeyOutcome::LockDone
             | KeyOutcome::Cancelled(..)

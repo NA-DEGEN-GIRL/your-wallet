@@ -85,6 +85,29 @@ pub fn sign_evm<C: Verification>(
     sig::evm_recoverable(ctx, digest, &raw, &public)
 }
 
+/// [`sign_evm`] with its own verification-only context (for callers without a secp256k1
+/// dependency, e.g. yw-app).
+///
+/// # Errors
+///
+/// As [`sign_evm`].
+pub fn sign_evm_checked(
+    transport: &mut dyn CardTransport,
+    mode: ApduMode,
+    key: &CardKey,
+    pin: &[u8],
+    digest: [u8; 32],
+) -> Result<(u8, [u8; 64]), CardError> {
+    sign_evm(
+        &Secp256k1::verification_only(),
+        transport,
+        mode,
+        key,
+        pin,
+        digest,
+    )
+}
+
 /// Bitcoin: signs a sighash and returns the verified low-s DER (without the sighash byte).
 ///
 /// # Errors

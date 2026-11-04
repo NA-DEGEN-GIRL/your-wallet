@@ -758,6 +758,7 @@ impl App {
                         format!("저널 저장 실패 — {}", ErrorCode::Vlt003.text())
                     }
                     SignFailure::Locked => ErrorCode::App009.text(),
+                    SignFailure::Card(error) => error.to_string(),
                 };
                 logging::warn("app", "sign.failed", &[]);
                 self.evm.send.info = Some(message.clone());

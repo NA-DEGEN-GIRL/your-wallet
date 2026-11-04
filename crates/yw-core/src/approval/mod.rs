@@ -312,10 +312,6 @@ pub enum Signer {
     /// The key source is in the payload (SOL intent `source`; BTC per-input paths; the signing
     /// check binds the account).
     FromPayload,
-    /// A key on a `YubiKey` (spec/10 §10): the role names the derivation path; the card slot
-    /// is chosen by the inserted card's serial at signing time. Signed only through the
-    /// `*_card` functions; the vault signing functions refuse it (`KindMismatch`).
-    Hardware(crate::yubikey::plan::KeyRole),
 }
 
 /// Simulation block binding (spec/03 §6.5, §11.1).

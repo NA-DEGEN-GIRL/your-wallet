@@ -252,7 +252,7 @@ n × 48:
 
 | 기능 | YubiKey 계정에서 |
 |---|---|
-| 승인 창·digest([03] §11) | 변화 없음. 서명자 종류(`Signer`)는 digest에 들어가지 않고 계정 주소가 묶는다. YubiKey 계정은 `Signer::Hardware`로 표시하고, 승인 창에 "YubiKey로 서명" 배지와 이 키를 가진 YubiKey 목록을 더한다 |
+| 승인 창·digest([03] §11) | 변화 없음. 서명자 종류(`Signer`)는 digest에 들어가지 않고 계정 주소가 묶는다. YubiKey EVM 계정은 키 출처 `EvmKeySource::Hardware(i)`(vault는 이 출처에 키를 빌려 주지 않고 `RecordNotFound`, 주소는 tag 5의 공개키에서 계산)로 표시하고, 승인 창에 "YubiKey로 서명" 배지와 이 키를 가진 YubiKey 목록을 더한다 |
 | EVM 보내기·dApp(`eth_sendTransaction`·`personal_sign`·`eth_signTypedData_v4`) | 같은 준비·시뮬레이션·위험 규칙. 서명 단계만 카드(§9.2). 서명 결과는 §6.2 후 기존 서명 후 검증 |
 | 승인 만료(D23, 120초) | 승인 클릭까지가 기존 규칙이다. 승인 뒤 카드 단계는 별도 상한 120초(PIN 입력·터치 포함), 넘으면 취소 |
 | Bitcoin 보내기 | 단일 주소 계정(§3.3). 입력마다 카드 서명, 수수료 서명 크기 72+1(§6.3). dApp 메시지 서명(BIP137·BIP322)도 같은 키로 가능(§13) |
@@ -289,16 +289,21 @@ n × 48:
 
 [docs/acceptance/yubikey-20261104.md](../docs/acceptance/yubikey-20261104.md). 실제 카드 진단(`yw_win::pcsc` 읽기 전용 테스트, `#[ignore]`)은 `SCardListReaders`, SELECT, GET VERSION/SERIAL, GET DATA `6E`·`F9`, GET METADATA만 보낸다.
 
-## 13. 구현 상태와 남은 작업 (2026-11-04)
+## 13. 구현 상태와 남은 작업 (2026-11-05)
 
-완료: §4의 yw-core 모듈 전부, vault tag 5, `Signer::Hardware`와 EVM 카드 서명 진입점(`evm::sign::sign_transaction_card`·`sign_personal_card`·`sign_typed_data_card`), yw-win `pcsc`·`cng`, 자동 테스트(§12.1).
+완료:
 
-남은 작업(yw-app):
+- yw-core: §4의 `yubikey` 모듈 전부(APDU·TLV, OpenPGP·PIV 흐름, 슬롯 계획·검사, tag 5 코덱, 등록, 카드 서명, 후처리, 에뮬레이터), vault tag 5(`hardware_keys`·`add_hardware_key`·`remove_hardware_key`·`create_with_hardware`), `EvmKeySource::Hardware`(vault 서명 경로는 거부, 주소는 슬롯 표에서), EVM 카드 서명 진입점 `evm::sign::{sign_transaction_card, sign_personal_card, sign_typed_data_card}`(승인 검사 → 카드 → 기존 서명 후 검증).
+- yw-win: `pcsc`(PC/SC 래퍼, 읽기 전용 수동 진단 `pcsc_readonly_probe`), `cng`(AES·3DES 한 블록, KAT).
+- yw-app(백엔드): `yubikey` 어댑터(`PcscTransport`, `CngCipher`, `CardSource`/`PcscSource`, `sign_evm_digest`, `enrol_first_card`), 키 작업자 작업 `EnrolYubiKey`·`HardwareKeys`·`SignEvmCard`·`SignMessageCard`(PIN은 작업이 소유하고 작업과 함께 지워짐), `SignFailure::Card`·`MessageSignFailure::Card`. 작업자 수준의 EVM 종단 시험(지갑 가져오기 → 에뮬레이터 YubiKey 등록 → 승인된 Sepolia 전송을 카드로 서명 → 서명 후 검증 → `Signed` 저널 기록, `personal_sign`, 틀린 PIN·다른 카드·카드 없음, vault 경로 거부).
 
-1. 등록 마법사 화면(슬롯·인덱스 선택, 확인 화면 §7.2, PIN·관리자 PIN·관리 키 입력, 반복 등록, 기본값 변경 §9.3).
-2. EVM·BTC·SOL 탭의 "YubiKey" 계정 종류와 meta `hw_accounts`.
-3. 승인 후 카드 서명 단계(§9.2) — EVM부터, 그다음 Solana(T_SOL·메시지), Bitcoin(입력별 서명 훅과 72+1 수수료 크기, §6.3).
-4. 새 YubiKey 지갑 생성 경로(§7.1-1)와 "가져오기 없이 등록"(§7.5).
+남은 작업(yw-app UI, 순서대로):
+
+1. 등록 마법사 화면(슬롯·인덱스 선택, 확인 화면 §7.2, 니모닉·PIN·관리자 PIN·관리 키 입력은 기존 비밀 입력 창(W05 등)에 새 종류를 더해, 반복 등록, 기본값 변경 §9.3) → `KeyJob::EnrolYubiKey`.
+2. EVM 탭의 "YubiKey" 계정 종류: meta 선택 최상위 키 `hw_accounts`(라벨·숨김), `EvmAccountPref`에 YubiKey 항목, 계정 목록·받기·dApp 연결 계정 목록에 tag 5의 EVM 계정.
+3. 승인 후 카드 단계(§9.2): 출처가 `EvmKeySource::Hardware`인 승인은 `SignEvm`/`SignMessage` 대신 PIN 입력 창 → `SignEvmCard`/`SignMessageCard`.
+4. Solana(PIV, `SolKeySource`에 YubiKey 출처 + 카드 서명 진입점)와 Bitcoin(단일 주소 계정의 입력별 카드 서명 훅, 수수료 서명 크기 72+1, §6.3) — 코어의 카드 흐름(`sign::sign_sol`·`sign::sign_btc`)과 시험은 이미 있다.
+5. 새 YubiKey 지갑 생성(§7.1-1, `create_with_hardware`)과 "가져오기 없이 등록"(§7.5).
 
 ## 14. 출처
 

@@ -350,7 +350,7 @@ pub type CardDigestSigner<'a> =
 
 fn card_account(approved: &Approved) -> Result<Address, SignError> {
     match (approved.account(), approved.signer()) {
-        (AccountRef::Evm(account), Signer::Hardware(crate::yubikey::plan::KeyRole::Evm { .. })) => {
+        (AccountRef::Evm(account), Signer::Evm(crate::vault::EvmKeySource::Hardware(_))) => {
             Ok(account)
         }
         _ => Err(SignError::KindMismatch),

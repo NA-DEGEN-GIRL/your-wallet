@@ -187,6 +187,11 @@ pub enum EvmKeySource {
     Derived(crate::bip32::path::AccountIndex),
     /// An imported raw private key.
     Raw(RecordId),
+    /// EVM account `i` (`m/44'/60'/0'/0/i`) held on one or more `YubiKey`s (vault tag 5,
+    /// spec/10): the PC has no secret for it. [`Vault::evm_address`] answers from the slot map;
+    /// every vault signing path refuses it (`RecordNotFound`) — it is signed only through
+    /// `evm::sign::*_card`.
+    Hardware(crate::bip32::path::AccountIndex),
 }
 
 /// A secp256k1 signing key reference for the chain modules.

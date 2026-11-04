@@ -6,7 +6,7 @@
 
 use yw_core::approval::{AccountRef, Approved, ChainRef};
 use yw_core::error::{StorageError, VaultError};
-use yw_core::evm::sign::{SignError, sign_transaction};
+use yw_core::evm::sign::{SignError, SignedTx, sign_transaction};
 use yw_core::journal::JournalPlain;
 use yw_core::journal::evm::{
     ActivityRow, EvmEntries, EvmRecord, Transition, apply_to_plain, make_room, push_record,
@@ -470,8 +470,30 @@ impl JournalState {
         info: &SignInfo,
         alt: bool,
     ) -> Vec<KeyOutcome> {
+        self.sign_with(
+            vault,
+            ticket,
+            approved,
+            info,
+            alt,
+            &mut |vault, approved| sign_transaction(vault, approved).map_err(SignFailure::Sign),
+        )
+    }
+
+    /// [`JournalState::sign`] with another signer: the `YubiKey` path (spec/10 §9.2) passes the
+    /// card signer; room check, post-sign verification (inside the signer) and the `Signed`
+    /// commit before anything is returned are the same.
+    pub fn sign_with(
+        &mut self,
+        vault: &mut Vault,
+        ticket: crate::events::SignTicket,
+        approved: Box<Approved>,
+        info: &SignInfo,
+        alt: bool,
+        sign_fn: &mut dyn FnMut(&Vault, Approved) -> Result<SignedTx, SignFailure>,
+    ) -> Vec<KeyOutcome> {
         let mut out = Vec::new();
-        let result = self.sign_inner(vault, *approved, info, alt, &mut out);
+        let result = self.sign_inner(vault, *approved, info, alt, &mut out, sign_fn);
         out.insert(
             0,
             KeyOutcome::SignedEvm(crate::events::EvmSigned { ticket, result }),
@@ -486,6 +508,7 @@ impl JournalState {
         info: &SignInfo,
         alt: bool,
         out: &mut Vec<KeyOutcome>,
+        sign_fn: &mut dyn FnMut(&Vault, Approved) -> Result<SignedTx, SignFailure>,
     ) -> Result<SignedSummary, SignFailure> {
         let current = self.current(vault).map_err(SignFailure::JournalWrite)?;
         let mut trial = current.clone();
@@ -512,7 +535,7 @@ impl JournalState {
             return Err(SignFailure::Sign(SignError::KindMismatch));
         };
         let digest = approved.digest();
-        let signed = sign_transaction(vault, approved).map_err(SignFailure::Sign)?;
+        let signed = sign_fn(vault, approved)?;
         let record = EvmRecord::new_signed(
             chain_id,
             account,

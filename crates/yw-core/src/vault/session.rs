@@ -494,6 +494,8 @@ impl Vault {
                 return SecretKey::from_byte_array(*raw.key).map_err(|_| INTERNAL);
             }
             KeyRef::Evm(EvmKeySource::Derived(index)) => evm_path(index),
+            // A YubiKey account has no key on the PC (spec/10 §1).
+            KeyRef::Evm(EvmKeySource::Hardware(_)) => return Err(VaultError::RecordNotFound),
             KeyRef::Btc { coin, chain, index } => btc_path(coin, chain, index)?,
         };
         let seed = self.seed(payload)?;
@@ -1218,6 +1220,9 @@ impl Vault {
     pub fn evm_address(&self, src: EvmKeySource) -> Result<Address, VaultError> {
         self.require_public()?;
         let payload = self.payload()?;
+        if let EvmKeySource::Hardware(index) = src {
+            return hardware_evm_address(&payload, index);
+        }
         let ctx = secp_context(&mut OsRandom)?;
         let mut secret = self.secret_for(&ctx, &payload, KeyRef::Evm(src))?;
         let public = PublicKey::from_secret_key(&ctx, &secret);
@@ -1706,6 +1711,20 @@ pub struct HardwareKey {
     pub created_unix: u64,
     /// Serial, firmware, fingerprint and slot map.
     pub record: HwKeyRecord,
+}
+
+/// The address of `YubiKey` EVM account `index` from the slot map (`RecordNotFound` when no card
+/// holds it).
+fn hardware_evm_address(payload: &Payload, index: AccountIndex) -> Result<Address, VaultError> {
+    let role = crate::yubikey::plan::KeyRole::Evm { index, btc: None };
+    let identity = role.key_identity();
+    payload
+        .hw_keys
+        .iter()
+        .flat_map(|entry| &entry.record.slots)
+        .find(|slot| slot.role.key_identity() == identity)
+        .ok_or(VaultError::RecordNotFound)
+        .and_then(|slot| crate::yubikey::plan::evm_address(&slot.public).map_err(|_| INTERNAL))
 }
 
 /// Adds a hardware key reference (one per serial, at most 8, consistent with the others).
