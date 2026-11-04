@@ -378,6 +378,19 @@ fn enrolment_refusals() {
         Some(EnrolError::Card(CardError::SecurityStatus))
     );
     assert!(card.piv_keys.is_empty());
+    // Re-enrolling a card whose SIG touch policy is already fixed: the same fixed policy is
+    // kept (no UIF write), another one is refused before any key is written.
+    let mut card = MockCard::new(8);
+    enrol(&mut card, ABOUT, &[sig(evm(0))], &[]).unwrap();
+    enrol(&mut card, ABOUT, &[sig(evm(5))], &[]).unwrap();
+    let mut cached = sig(evm(6));
+    cached.touch = TouchPolicy::CachedFixed;
+    let before = card.pgp_keys[0];
+    assert_eq!(
+        enrol(&mut card, ABOUT, &[cached], &[]).err(),
+        Some(EnrolError::Card(CardError::Conditions))
+    );
+    assert_eq!(card.pgp_keys[0], before);
     let mut card = MockCard::new(6);
     card.has_openpgp = false;
     assert_eq!(

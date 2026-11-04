@@ -12,9 +12,5 @@ yw-core.workspace = true
 yw-json.workspace = true
 yw-win.workspace = true
 
-[dev-dependencies]
-# The YubiKey APDU emulator (spec/10 §12.1) for the key-worker tests; never in a normal build.
-yw-core = { workspace = true, features = ["test-card"] }
-
 [lints]
 workspace = true

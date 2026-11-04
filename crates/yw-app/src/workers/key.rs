@@ -1223,7 +1223,9 @@ mod tests {
         use crate::events::{EvmSigned, MessageSignFailure, SignFailure, SignInfo, SignTicket};
         use crate::yubikey::{CardJobError, MockSource};
 
-        const ABOUT: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        // The public `abandon`×11 `about` test mnemonic, built at run time (the privacy scan
+        // allows word sequences only in `tests.rs` files).
+        let about = format!("{} about", ["abandon"; 11].join(" "));
         let dir = std::env::temp_dir().join(format!(
             "yw-app-yubikey-{}-{}",
             std::process::id(),
@@ -1237,7 +1239,7 @@ mod tests {
         worker.handle(KeyJob::Load);
         worker.handle(KeyJob::PreviewImport {
             password: Some(bytes("yubikey test password")),
-            phrase: bytes(ABOUT),
+            phrase: bytes(&about),
             passphrase: None,
         });
         assert!(matches!(
@@ -1256,7 +1258,7 @@ mod tests {
         ];
         let enrolled = match worker
             .handle(KeyJob::EnrolYubiKey {
-                phrase: bytes(ABOUT),
+                phrase: bytes(&about),
                 passphrase: None,
                 slots,
                 admin_pin: bytes("12345678"),

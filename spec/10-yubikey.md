@@ -86,7 +86,7 @@ Bitcoin 슬롯의 인덱스는 **계정 0의 받기 체인 주소 인덱스**(`�
 | `yw_core::yubikey::{apdu, tlv}` | ISO 7816-4 APDU(짧은·확장, 체이닝, `61xx` GET RESPONSE, `6Cxx`), BER-TLV | 없음 |
 | `yw_core::yubikey::{openpgp, piv}` | 명령 빌더·응답 파서(순수)와 `CardTransport` 위의 흐름 | 없음 |
 | `yw_core::yubikey::{plan, record, enrol, sign, sig}` | 슬롯 계획·경로·검사, tag 5 코덱, 등록, 카드 서명, 서명 후처리 | 없음 |
-| `yw_core::yubikey::mock` (`cfg(test)` 또는 feature `test-card`) | 두 애플릿의 APDU 수준 에뮬레이터(실제 secp256k1·Ed25519 서명) | 없음 |
+| `yw_core::yubikey::mock` | 두 애플릿의 APDU 수준 에뮬레이터(실제 secp256k1·Ed25519 서명). 시험 전용이지만 의존성 검사가 dev-dependency·feature 전환을 막으므로 항상 컴파일된다. 시험 밖에서는 아무도 만들지 않는다(yw-app의 `MockSource`는 `cfg(test)`) | 없음 |
 | `yw_core::vault` | tag 5 record, `hardware_keys`·`add_hardware_key`·`remove_hardware_key`·`create_with_hardware` | 없음 |
 | `yw_win::pcsc` | `SCardEstablishContext`(사용자 범위)/`ListReadersW`/`ConnectW`(T=1, 공유)/`BeginTransaction`/`Transmit`/`EndTransaction`·`Disconnect`(`SCARD_LEAVE_CARD`, 재설정 없음) 래퍼. USB·NFC 리더 모두 같은 경로. yw-win은 yw-core에 의존하지 않으므로(D4) `CardTransport` 구현은 yw-app의 얇은 어댑터가 한다 | 있음 |
 | `yw_win::cng` | PIV 관리 키용 AES-ECB·3DES-ECB 한 블록(`BCRYPT_AES_ECB_ALG_HANDLE`·`BCRYPT_3DES_ECB_ALG_HANDLE` 의사 핸들, `BCryptEncrypt`/`BCryptDecrypt`). `MgmtCipher` 구현은 yw-app 어댑터 | 있음 |
@@ -195,6 +195,7 @@ Bitcoin 슬롯의 인덱스는 **계정 0의 받기 체인 주소 인덱스**(`�
 ### 7.4 실패와 재시도
 
 - 3–4단계 중 실패하면 앞 슬롯은 카드에 이미 써졌을 수 있지만 vault에는 아무 record도 없다. 같은 계획으로 다시 하면 덮어쓴다(속성 재설정이 기존 키를 지운다). 화면: "일부 슬롯에 키가 이미 들어갔을 수 있습니다. 다시 시도하면 덮어씁니다."
+- 터치 정책이 이미 **고정**(UIF `02`/`04`)인 슬롯을 다시 등록할 때: 원하는 정책과 같으면 UIF를 쓰지 않고 진행하고, 다르면 키를 쓰기 전에 `Conditions`로 거부한다("이 슬롯의 터치 정책은 고정되어 있습니다 — 바꾸려면 OpenPGP 초기화가 필요합니다"). 그래서 기본값 "항상(고정)"으로 등록한 YubiKey는 같은 정책으로 언제든 다시 등록할 수 있다.
 - 카드를 다른 지갑 용도(GPG 등)로 쓰던 경우 그 슬롯의 키는 **지워진다**. 마법사는 가져오기 전에 "이 YubiKey의 OpenPGP SIG/AUT 키와 PIV 82…의 키가 바뀝니다"를 보이고, 읽을 수 있으면 현재 키가 있는지(공개키 읽기·메타데이터 `6A88` 여부)를 함께 보인다.
 
 ### 7.5 복구

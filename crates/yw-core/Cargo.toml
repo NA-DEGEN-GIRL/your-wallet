@@ -25,8 +25,3 @@ yw-json.workspace = true
 
 [lints]
 workspace = true
-
-[features]
-# The APDU emulator `yubikey::mock` for other crates' tests (spec/10 §12.1). Never enabled in a
-# normal build: yw-app turns it on only through its dev-dependency.
-test-card = []

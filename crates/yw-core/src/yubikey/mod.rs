@@ -14,7 +14,7 @@
 //! | [`record`] | vault tag 5 record codec (one record per YubiKey) |
 //! | [`enrol`] | derive from the mnemonic, import, read back and compare public keys |
 //! | [`sign`] | signing on the card for a planned slot (PIN per operation) |
-//! | `mock` | APDU-level emulator of both applets (tests and the `test-card` feature only) |
+//! | [`mock`] | APDU-level emulator of both applets for tests (yw-app uses it only under `cfg(test)`; the check script forbids dev-dependencies, so it is always compiled) |
 //!
 //! yw-core has no OS access: the transport is the [`CardTransport`] trait (PC/SC in yw-win) and
 //! the PIV management-key block cipher is [`piv::MgmtCipher`] (Windows CNG in yw-win).
@@ -31,7 +31,6 @@ use core::fmt;
 
 pub mod apdu;
 pub mod enrol;
-#[cfg(any(test, feature = "test-card"))]
 pub mod mock;
 pub mod openpgp;
 pub mod piv;

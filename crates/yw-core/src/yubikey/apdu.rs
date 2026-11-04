@@ -272,7 +272,8 @@ pub fn exchange(
         }
     }
     let (mut answer, last_frame) = response.ok_or(CardError::Malformed)?;
-    if answer.sw & 0xFF00 == 0x6C00 {
+    // `6Cxx` = wrong Le: re-send with Le = xx (only frames that carry an Le byte).
+    if answer.sw & 0xFF00 == 0x6C00 && command.expect_response && mode == ApduMode::Short {
         let mut again = Zeroizing::new(last_frame.to_vec());
         if let Some(le) = again.last_mut() {
             *le = u8::try_from(answer.sw & 0x00FF).map_err(|_| CardError::Malformed)?;
@@ -316,7 +317,6 @@ pub fn exchange_ok(
 
 /// Splits one received frame into `(header, data, expects_response)` for the emulator: accepts
 /// short and extended cases 1–4. `None` for a malformed frame.
-#[cfg(any(test, feature = "test-card"))]
 pub(crate) fn decode_frame(frame: &[u8]) -> Option<([u8; 4], Vec<u8>, bool)> {
     let (header, rest) = frame.split_first_chunk::<4>()?;
     match rest {

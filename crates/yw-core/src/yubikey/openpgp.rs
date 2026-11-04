@@ -494,9 +494,22 @@ impl<'t> OpenPgp<'t> {
         let mut secret = SecretKey::from_byte_array(*scalar).map_err(|_| CardError::Internal)?;
         let expected = PublicKey::from_secret_key(ctx, &secret).serialize();
         secret.non_secure_erase();
+        // A fixed touch policy cannot be changed (spec/10 §1): re-enrolling a card whose slot
+        // already has the wanted fixed policy skips the write; another fixed value is refused
+        // before anything is written.
+        let current = self.touch_policy(key).ok();
+        let fixed = matches!(
+            current,
+            Some(TouchPolicy::AlwaysFixed | TouchPolicy::CachedFixed)
+        );
+        if fixed && current != Some(touch) {
+            return Err(CardError::Conditions);
+        }
         self.run(&put_secp256k1_attributes(key))?;
         self.run(&import_key(key, scalar)?)?;
-        self.run(&put_uif(key, touch))?;
+        if current != Some(touch) {
+            self.run(&put_uif(key, touch))?;
+        }
         let read = self.public_key(key)?;
         if read != expected {
             return Err(CardError::KeyMismatch);

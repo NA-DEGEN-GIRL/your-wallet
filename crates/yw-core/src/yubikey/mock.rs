@@ -1,5 +1,7 @@
-//! APDU-level emulator of the YubiKey OpenPGP and PIV applets (spec/10 §12.1), for tests only
-//! (`cfg(test)` or the `test-card` feature). It implements exactly the commands this wallet
+//! APDU-level emulator of the YubiKey OpenPGP and PIV applets (spec/10 §12.1), for tests only:
+//! nothing outside `cfg(test)` code constructs it (yw-app's `MockSource` is `cfg(test)`). It is
+//! compiled in every build because the dependency check forbids dev-dependencies, so another
+//! crate's tests cannot turn on a feature for it. It implements exactly the commands this wallet
 //! sends, with real secp256k1 ECDSA and Ed25519 signing, PIN counters, single-use PW1 for
 //! PSO:CDS, PIV management-key mutual authentication (through a [`MgmtCipher`]), command
 //! chaining and `61xx` GET RESPONSE for short APDUs. It never touches hardware.
