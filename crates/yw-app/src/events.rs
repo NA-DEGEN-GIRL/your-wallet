@@ -64,6 +64,13 @@ pub enum RevealWhat {
     /// An imported key of any chain in its export format (W09: EVM hex, Solana base58 keypair,
     /// Bitcoin WIF).
     ImportedKey(RecordId),
+    /// The WIF of a Bitcoin account on EVM account `evm_index`'s key (W09, spec/08 §3.5).
+    BtcEvmShared {
+        /// EVM account index.
+        evm_index: u32,
+        /// The account's network (the WIF version byte).
+        network: yw_core::btc::BtcNetwork,
+    },
 }
 
 /// An imported key just stored in the vault (public facts only).

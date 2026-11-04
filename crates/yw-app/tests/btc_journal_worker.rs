@@ -91,14 +91,36 @@ fn meta_op(fixture: &mut Fixture, op: BtcMetaOp) -> TestResult<BtcMetaDone> {
     }
 }
 
-/// Creates the testnet4 `BtcMeta` and adds one verified 100,000-sat output at 0/0.
+/// Creates the testnet4 `BtcMeta` in HD mode (the change-index rules under test) and adds one
+/// verified 100,000-sat output at 0/0.
 fn funded(fixture: &mut Fixture) -> TestResult<OutPoint> {
+    funded_mode(fixture, false)
+}
+
+/// [`funded`] in fixed-address mode (`true`, the default of a new account) or HD mode.
+fn funded_mode(fixture: &mut Fixture, single_address: bool) -> TestResult<OutPoint> {
     meta_op(
         fixture,
         BtcMetaOp::Create {
             network: BtcNetwork::Testnet4,
         },
     )?;
+    assert!(
+        fixture.state.btc_meta().is_some_and(BtcMeta::fixed_address),
+        "a new BIP84 account 0 is in fixed-address mode"
+    );
+    let done = meta_op(
+        fixture,
+        BtcMetaOp::SetAddressMode {
+            network: BtcNetwork::Testnet4,
+            account: yw_core::btc::BtcAccountId::PRIMARY,
+            single_address,
+        },
+    )?;
+    assert_eq!(
+        done,
+        BtcMetaDone::AddressMode(yw_core::btc::BtcAccountId::PRIMARY)
+    );
     let outpoint = OutPoint {
         txid: Txid::from_bytes([0x44; 32]),
         vout: 0,
@@ -923,5 +945,82 @@ fn rejected_then_confirmed_raises_change_next_again() -> TestResult {
         1
     );
     assert_eq!(fixture.state.btc_meta().ok_or("meta")?.change_next(), 1);
+    Ok(())
+}
+
+/// spec/08 §3.5/§3.2 in the key worker: a fixed-address account's change goes to `(Receive, 0)`,
+/// so neither `Broadcasting` nor the startup reconciliation moves `change_next`; after the
+/// account is switched to HD mode the same record still does not count (its change is not on
+/// the change chain), and the mode switch is persisted.
+#[test]
+fn fixed_address_change_never_moves_change_next() -> TestResult {
+    let mut fixture = fixture("fixed")?;
+    funded_mode(&mut fixture, true)?;
+    let before = fixture.state.btc_meta().ok_or("meta")?.clone();
+    assert!(before.fixed_address());
+    let plan = plan(&before, 4)?;
+    let change = plan.change().ok_or("change")?;
+    assert_eq!(change.index, 0);
+    let vout = usize::try_from(change.vout)?;
+    assert_eq!(
+        plan.tx().outputs.get(vout).ok_or("output")?.script_pubkey,
+        before.expected_script(BtcChain::Receive, 0)?
+    );
+    let txid = sign(&mut fixture, &plan)?;
+    let accept = accept_for(&fixture, &txid)?;
+    let outcomes = fixture.state.btc_journal(
+        &mut fixture.vault,
+        BtcJournalOp::Precheck {
+            network: BtcNetwork::Testnet4,
+            txid,
+            accept,
+        },
+        NOW_MS,
+        false,
+    );
+    assert!(
+        !outcomes.iter().any(|outcome| matches!(
+            outcome,
+            KeyOutcome::BtcMeta(Ok(update)) if update.done == BtcMetaDone::ChangeNext
+        )),
+        "no change index to raise"
+    );
+    assert_eq!(reload(&fixture)?[0].state, BtcTxState::Broadcasting);
+    assert_eq!(
+        meta_on_disk(&fixture.vault)?.ok_or("meta")?.change_next(),
+        0
+    );
+    // Switched to HD mode, a restart reconciles against the journal: still 0.
+    meta_op(
+        &mut fixture,
+        BtcMetaOp::SetAddressMode {
+            network: BtcNetwork::Testnet4,
+            account: yw_core::btc::BtcAccountId::PRIMARY,
+            single_address: false,
+        },
+    )?;
+    let stored = meta_on_disk(&fixture.vault)?.ok_or("meta")?;
+    assert!(!stored.fixed_address());
+    let mut restarted = JournalState::default();
+    restarted.set_btc_meta(Some(stored), yw_core::btc::BtcAccounts::default());
+    restarted.load(&fixture.vault)?;
+    let outcomes = restarted.btc_startup(&mut fixture.vault, NOW_MS / 1_000 + 60, false);
+    assert!(!outcomes.iter().any(|outcome| matches!(
+        outcome,
+        KeyOutcome::BtcMeta(Ok(update)) if update.done == BtcMetaDone::ChangeNext
+    )));
+    assert_eq!(restarted.btc_meta().ok_or("meta")?.change_next(), 0);
+    // A one-key account has no mode to switch.
+    assert!(
+        meta_op(
+            &mut fixture,
+            BtcMetaOp::SetAddressMode {
+                network: BtcNetwork::Testnet4,
+                account: yw_core::btc::BtcAccountId::Imported { id: [9; 16] },
+                single_address: false,
+            },
+        )
+        .is_err()
+    );
     Ok(())
 }

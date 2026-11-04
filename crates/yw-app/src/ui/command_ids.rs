@@ -230,6 +230,13 @@ pub fn ranges() -> Vec<IdRange> {
             usize::from(screens_btc::ids::ACCOUNT_SPAN),
         ),
         range(
+            "btc.evm_accounts",
+            screens_btc::ids::EVM_ACCOUNT_BASE,
+            screens_btc::ids::EVM_ACCOUNT_SPAN,
+            1,
+            usize::from(screens_btc::ids::EVM_ACCOUNT_SPAN),
+        ),
+        range(
             "btc.utxo_rows",
             screens_btc::ids::UTXO_BASE,
             screens_btc::ids::UTXO_SPAN,

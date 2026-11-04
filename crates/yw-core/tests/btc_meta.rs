@@ -289,6 +289,8 @@ fn discovery_gap_rules() {
 #[test]
 fn receive_issuance_and_gap() {
     let mut meta = BtcMeta::new(NET, xpub());
+    // HD mode: a new receive address each time (fixed-address mode: `fixed_address_mode`).
+    assert_eq!(meta.set_single_address(false), Ok(true));
     assert_eq!(meta.receive_address(), Ok(ReceiveAddress::Issued(0)));
     assert_eq!(meta.receive_next(), 1);
     assert_eq!(meta.receive_address(), Ok(ReceiveAddress::Existing(0)));
@@ -546,4 +548,208 @@ fn sent_scripts_tip_change_and_own() {
     assert_eq!(facts.own_recipient, None);
     assert_eq!(facts.min_confirmations, None);
     assert_eq!(facts.verified_balance, Sats::ZERO);
+}
+
+/// spec/08 §3.5 fixed-address mode (the default of every HD account): the receive address is
+/// always `(Receive, 0)`, "새 주소" is refused, discovery and the watch set stay HD (an output on
+/// `/0/1` or `/1/0` received earlier is seen and spendable), the mode can be switched both ways
+/// without losing indices or outputs, and the JSON keeps the earlier bytes for the default.
+#[test]
+#[expect(clippy::too_many_lines, reason = "one block per rule")]
+fn fixed_address_mode() {
+    let mut meta = BtcMeta::new(NET, xpub());
+    assert!(meta.fixed_address() && meta.account().fixed_address());
+    assert_eq!(meta.receive_address(), Ok(ReceiveAddress::Issued(0)));
+    assert_eq!(meta.receive_address(), Ok(ReceiveAddress::Existing(0)));
+    assert_eq!(
+        meta.new_receive_address(true),
+        Err(MetaError::SingleAddress)
+    );
+    assert_eq!(meta.receive_next(), 1);
+    // Discovery still scans both chains with the gap limit: funds sent earlier to /0/1 and /1/0
+    // (e.g. by this wallet in HD mode, or by another HD wallet) are found.
+    let mut discovery = Discovery::full();
+    while let Some((chain, index)) = discovery.next_request() {
+        let used =
+            (chain == BtcChain::Receive && index <= 1) || (chain == BtcChain::Change && index == 0);
+        discovery.observe(u64::from(used));
+    }
+    discovery.apply(&mut meta).unwrap();
+    assert_eq!((meta.receive_next(), meta.change_next()), (2, 1));
+    let watch: Vec<(BtcChain, u32)> = meta
+        .watch_set()
+        .unwrap()
+        .into_iter()
+        .map(|(chain, index, _)| (chain, index))
+        .collect();
+    assert_eq!(
+        watch,
+        [
+            (BtcChain::Receive, 0),
+            (BtcChain::Receive, 1),
+            (BtcChain::Change, 0)
+        ]
+    );
+    // Still /0/0 after discovery (no "smallest unused" in fixed-address mode).
+    assert_eq!(meta.receive_address(), Ok(ReceiveAddress::Existing(0)));
+    let on_second = listed(0x61, BtcChain::Receive, 1, TIP - 10);
+    let on_change = listed(0x62, BtcChain::Change, 0, TIP - 10);
+    let report = meta.apply_refresh(
+        &[on_second, on_change],
+        &[verified(&on_second, 40_000), verified(&on_change, 30_000)],
+        &[],
+        &[],
+    );
+    assert_eq!(report.inserted, 2);
+    assert_eq!(meta.spendable(TIP, &[]).len(), 2);
+    assert_eq!(meta.balance(TIP, &[]).available, sats(70_000));
+    // /0/1 is still recognised as our own address (B07) and as an owned script.
+    let second = meta.expected_script(BtcChain::Receive, 1).unwrap();
+    assert_eq!(
+        meta.own_recipient(&second).unwrap(),
+        Some((BtcChain::Receive, 1))
+    );
+    assert!(meta.owned_scripts().unwrap().contains(&second));
+    // The default writes no mode key: the bytes of earlier versions.
+    let fixed_text = json_text(&meta);
+    assert!(!fixed_text.contains("single_address"), "{fixed_text}");
+    // Switch to HD mode: the next unused address, `새 주소`, and the key in JSON.
+    assert_eq!(meta.set_single_address(false), Ok(true));
+    assert_eq!(meta.set_single_address(false), Ok(false));
+    assert!(!meta.fixed_address());
+    assert_eq!(meta.receive_address(), Ok(ReceiveAddress::Issued(2)));
+    assert_eq!(meta.new_receive_address(false), Ok(3));
+    let hd_text = json_text(&meta);
+    assert!(hd_text.ends_with(",\"single_address\":false}"), "{hd_text}");
+    let back = BtcMeta::from_json(&parse(&hd_text)).unwrap();
+    assert_eq!(back, meta);
+    assert!(!back.fixed_address());
+    // Back to fixed: the same account, indices and outputs kept, /0/0 again.
+    assert_eq!(meta.set_single_address(true), Ok(true));
+    assert_eq!(meta.receive_address(), Ok(ReceiveAddress::Existing(0)));
+    assert_eq!((meta.receive_next(), meta.change_next()), (4, 1));
+    assert_eq!(meta.verified().len(), 2);
+    assert_eq!(BtcMeta::from_json(&meta.to_json()).unwrap(), meta);
+    // An old meta (no key) is fixed; an explicit `true` is accepted; anything else refused.
+    let old = BtcMeta::from_json(&parse(&fixed_text)).unwrap();
+    assert!(old.fixed_address());
+    let explicit = fixed_text.replacen(
+        "\"sent_scripts\":[]",
+        "\"sent_scripts\":[],\"single_address\":true",
+        1,
+    );
+    assert_ne!(explicit, fixed_text);
+    assert!(
+        BtcMeta::from_json(&parse(&explicit))
+            .unwrap()
+            .fixed_address()
+    );
+    for bad in ["1", "\"false\"", "null"] {
+        let text = fixed_text.replacen(
+            "\"sent_scripts\":[]",
+            &format!("\"sent_scripts\":[],\"single_address\":{bad}"),
+            1,
+        );
+        assert!(BtcMeta::from_json(&parse(&text)).is_err(), "{bad}");
+    }
+    let twice = hd_text.replacen(
+        ",\"single_address\":false}",
+        ",\"single_address\":false,\"single_address\":false}",
+        1,
+    );
+    assert!(
+        yw_json::parse(twice.as_bytes(), &Limits::RESPONSE).is_err() || {
+            BtcMeta::from_json(&parse(&twice)).is_err()
+        }
+    );
+    // One-key accounts have no mode (and never carry the key).
+    let imported = yw_core::btc::BtcAccountKey::single(
+        [0x42; 16],
+        yw_core::btc::ScriptType::P2tr,
+        yw_core::btc::BtcPubKey::parse(&xpub().pubkey).unwrap(),
+    )
+    .unwrap();
+    let mut single = BtcMeta::with_key(NET, imported);
+    assert_eq!(
+        single.set_single_address(false),
+        Err(MetaError::SingleAddress)
+    );
+    let single_text = json_text(&single);
+    assert!(!single_text.contains("single_address"));
+    let with_key = single_text.replacen(
+        "\"sent_scripts\":[]",
+        "\"sent_scripts\":[],\"single_address\":false",
+        1,
+    );
+    assert!(BtcMeta::from_json(&parse(&with_key)).is_err());
+}
+
+/// spec/08 §3.5/§12.3a: an account on an EVM account's key is a one-address account of
+/// `btc_accounts` (`key.evm`, selection `{"evm":…}`); the same EVM index and type twice is
+/// refused.
+#[test]
+fn evm_shared_account_json() {
+    use yw_core::btc::meta::BtcAccounts;
+    use yw_core::btc::{BtcAccountId, BtcAccountKey, ScriptType};
+    let key = BtcAccountKey::evm_shared(3, ScriptType::P2tr, xpub().pubkey).unwrap();
+    let mut meta = BtcMeta::with_key(NET, key);
+    assert!(meta.is_single() && !meta.is_imported() && meta.fixed_address());
+    assert_eq!(meta.receive_address(), Ok(ReceiveAddress::Existing(0)));
+    assert_eq!(
+        meta.new_receive_address(true),
+        Err(MetaError::SingleAddress)
+    );
+    assert_eq!(meta.watch_set().unwrap().len(), 1);
+    let text = json_text(&meta);
+    assert!(
+        text.contains(&format!(
+            "\"key\":{{\"evm\":{{\"index\":3,\"pubkey\":\"{}\"}}}}",
+            yw_core::hex::encode(&xpub().pubkey)
+        )),
+        "{text}"
+    );
+    assert_eq!(BtcMeta::from_json(&parse(&text)).unwrap(), meta);
+    let accounts = BtcAccounts {
+        selected: Some(BtcAccountId::EvmShared {
+            evm_index: 3,
+            script_type: ScriptType::P2tr,
+        }),
+        accounts: vec![meta.clone()],
+    };
+    let accounts_text = String::from_utf8(yw_json::to_vec(&accounts.to_json())).unwrap();
+    assert!(
+        accounts_text.contains("\"selected\":{\"evm\":{\"script_type\":\"p2tr\",\"index\":3}}"),
+        "{accounts_text}"
+    );
+    let parsed = BtcAccounts::from_json(Some(&parse(&accounts_text))).unwrap();
+    assert_eq!(parsed, accounts);
+    // The same EVM index and type twice on one network.
+    let doubled = BtcAccounts {
+        selected: None,
+        accounts: vec![meta.clone(), meta.clone()],
+    };
+    assert!(BtcAccounts::from_json(Some(&doubled.to_json())).is_err());
+    // Another type of the same EVM key is another account.
+    let taproot_and_segwit = BtcAccounts {
+        selected: None,
+        accounts: vec![
+            meta,
+            BtcMeta::with_key(
+                NET,
+                BtcAccountKey::evm_shared(3, ScriptType::P2wpkh, xpub().pubkey).unwrap(),
+            ),
+        ],
+    };
+    assert!(BtcAccounts::from_json(Some(&taproot_and_segwit.to_json())).is_ok());
+    // Not a one-address state, a bad index or key: refused.
+    for (from, to) in [
+        ("\"receive_next\":1", "\"receive_next\":2"),
+        ("\"index\":3", "\"index\":1000"),
+        ("\"index\":3", "\"index\":-1"),
+        ("\"pubkey\":\"03", "\"pubkey\":\"05"),
+    ] {
+        let bad = text.replacen(from, to, 1);
+        assert_ne!(bad, text, "{from}");
+        assert!(BtcMeta::from_json(&parse(&bad)).is_err(), "{to}");
+    }
 }

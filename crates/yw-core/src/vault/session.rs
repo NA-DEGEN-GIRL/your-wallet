@@ -1224,6 +1224,49 @@ impl Vault {
         Ok(Address::from_public_key(&public))
     }
 
+    /// The compressed public key of derived EVM account `index` (`m/44'/60'/0'/0/i`) for a
+    /// Bitcoin account on the same key (spec/08 §3.5 "EVM 계정과 같은 키"). Public information; the
+    /// key is erased on return.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` outside `BackupPending`/`Unlocked`, `NoMnemonic` for a key-only vault, or a
+    /// derivation error.
+    pub fn evm_public_key(&self, index: AccountIndex) -> Result<[u8; 33], VaultError> {
+        self.require_public()?;
+        let payload = self.payload()?;
+        let ctx = secp_context(&mut OsRandom)?;
+        let mut secret =
+            self.secret_for(&ctx, &payload, KeyRef::Evm(EvmKeySource::Derived(index)))?;
+        let public = PublicKey::from_secret_key(&ctx, &secret);
+        secret.non_secure_erase();
+        Ok(public.serialize())
+    }
+
+    /// The WIF of a Bitcoin account on EVM account `index`'s key (`m/44'/60'/0'/0/i`, compressed,
+    /// `network`'s version byte) after re-entering the password (spec/08 §3.5; the same export
+    /// rules as an imported key's WIF, spec/02 §9).
+    ///
+    /// # Errors
+    ///
+    /// `BackupNotConfirmed`/`InvalidState`, `UnlockFailed`, `NoMnemonic` or a derivation error.
+    pub fn reveal_evm_shared_wif(
+        &self,
+        password: &VaultPassword,
+        index: AccountIndex,
+        network: crate::btc::BtcNetwork,
+    ) -> Result<SecretString, VaultError> {
+        self.require_signing()?;
+        self.verify_password(password)?;
+        let payload = self.payload()?;
+        let ctx = secp_context(&mut OsRandom)?;
+        let mut secret =
+            self.secret_for(&ctx, &payload, KeyRef::Evm(EvmKeySource::Derived(index)))?;
+        let raw = Zeroizing::new(secret.secret_bytes());
+        secret.non_secure_erase();
+        Ok(crate::codec::wif::encode_wif(&raw, true, network))
+    }
+
     /// Addresses of up to 100 derived accounts, computing the seed once.
     ///
     /// # Errors

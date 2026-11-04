@@ -460,3 +460,52 @@ fn refusals() {
     );
     let _ = BtcPubKey::Compressed([2; 33]);
 }
+
+/// spec/08 §17 with an account on an EVM account's key (spec/08 §3.5): the vault lends the EVM
+/// key `m/44'/60'/0'/0/0` for the account's one address (BIP322 for P2WPKH and P2TR); a payload
+/// naming EVM account 1 for account 0's key is refused.
+#[test]
+fn evm_shared_key_signs_messages() {
+    let vault = crate::btc::tests::about_vault();
+    let pubkey = vault
+        .evm_public_key(crate::bip32::path::AccountIndex::ZERO)
+        .unwrap();
+    for script_type in [ScriptType::P2wpkh, ScriptType::P2tr] {
+        let key = BtcPubKey::Compressed(pubkey);
+        let (_, address) = address_of(BtcNetwork::Mainnet, script_type, &key).unwrap();
+        let request = |evm_index| {
+            Approved::for_test(
+                ChainRef::Bitcoin {
+                    network: BtcNetwork::Mainnet.id(),
+                    genesis: BtcNetwork::Mainnet.genesis(),
+                },
+                AccountRef::Bitcoin(pubkey),
+                Signer::FromPayload,
+                ApprovalKind::BtcMessage,
+                SigningPayload::BtcMessage(Box::new(BtcMessagePayload {
+                    network: BtcNetwork::Mainnet,
+                    source: BtcKeySource::EvmShared {
+                        evm_index,
+                        script_type,
+                    },
+                    pubkey: key,
+                    script_type,
+                    address: address.clone(),
+                    protocol: BtcMessageProtocol::Bip322,
+                    message: b"Hello World".to_vec(),
+                })),
+            )
+        };
+        let signed = sign_message_with(&vault, &request(0)).unwrap();
+        let parsed = parse_address(&address, BtcNetwork::Mainnet).unwrap();
+        assert!(bip322_verify_simple(
+            &parsed,
+            b"Hello World",
+            &signed.signature
+        ));
+        assert_eq!(
+            sign_message_with(&vault, &request(1)),
+            Err(BtcMessageError::KeyMismatch)
+        );
+    }
+}

@@ -52,7 +52,8 @@ fn push_u32(out: &mut Vec<u8>, value: u32) {
 /// ‖ fee u64 ‖ planned_vsize u32 ‖ has_replaces u8 ‖ [replaces_txid 32 (internal order)]
 /// ‖ fee_override_typed u8
 /// ‖ [account block 19, every account but BIP84 account 0:
-///    0x01 ‖ source u8 (1 HD, 2 imported) ‖ script_type u8 ‖ HD account u32 ‖ 0^12 | record id 16]
+///    0x01 ‖ source u8 (1 HD, 2 imported, 3 EVM key) ‖ script_type u8
+///    ‖ HD account u32 ‖ 0^12 | record id 16 | EVM account index u32 ‖ 0^12]
 /// ```
 ///
 /// The unsigned transaction carries the fixed P2SH-P2WPKH scriptSigs; the account block binds
@@ -175,8 +176,9 @@ pub fn payload_header(bytes: &[u8]) -> Option<BtcPayloadHeader> {
 const ACCOUNT_BLOCK_LEN: usize = 19;
 
 /// The account block of `account`, `None` for the primary (BIP84 account 0) whose payload keeps
-/// the original layout: `0x01 ‖ source (1 HD, 2 imported) ‖ ScriptType code ‖ (HD: account u32
-/// ‖ 12 zero bytes | imported: record id 16)`.
+/// the original layout: `0x01 ‖ source (1 HD, 2 imported, 3 EVM account key) ‖ ScriptType code ‖
+/// (HD: account u32 ‖ 12 zero bytes | imported: record id 16 | EVM: EVM account index u32 ‖ 12
+/// zero bytes)`.
 fn account_block(account: &BtcAccountKey) -> Option<[u8; ACCOUNT_BLOCK_LEN]> {
     let id = account.id();
     if id == BtcAccountId::PRIMARY {
@@ -194,6 +196,12 @@ fn account_block(account: &BtcAccountKey) -> Option<[u8; ACCOUNT_BLOCK_LEN]> {
         BtcAccountId::Imported { id } => {
             body = id;
             2
+        }
+        BtcAccountId::EvmShared { evm_index, .. } => {
+            for (slot, byte) in body.iter_mut().zip(evm_index.to_be_bytes()) {
+                *slot = byte;
+            }
+            3
         }
     };
     for (slot, byte) in out.iter_mut().zip(

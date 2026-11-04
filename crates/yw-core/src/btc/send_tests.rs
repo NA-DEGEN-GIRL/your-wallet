@@ -11,7 +11,7 @@
 
 use secp256k1::ecdsa::Signature;
 
-use super::account::BtcAccountKey;
+use super::account::{BtcAccountKey, ScriptType};
 use super::address::parse_address;
 use super::amount::Sats;
 use super::display::{BtcSendFacts, btc_payload, build_btc_request};
@@ -23,7 +23,6 @@ use super::policy::{
     check_mempool_accept,
 };
 use super::prevtx::verify_prev_output;
-use super::script::p2wpkh_script_pubkey;
 use super::select::{SendAmount, SendPlan, SendRequest, plan_send};
 use super::sign::{SignError, WitnessSigError, check_recorded_amounts, sign_plan};
 use super::tests::about_vault;
@@ -56,8 +55,8 @@ struct Fixture {
     meta: BtcMeta,
 }
 
-/// A non-witness previous transaction paying `value` to `program` (output 0).
-fn fake_prev(program: &[u8; 20], value: u64, salt: u8) -> (Vec<u8>, Txid) {
+/// A non-witness previous transaction paying `value` to `script` (output 0).
+fn fake_prev(script: &[u8], value: u64, salt: u8) -> (Vec<u8>, Txid) {
     let tx = Transaction {
         version: 2,
         inputs: vec![TxIn {
@@ -71,7 +70,7 @@ fn fake_prev(program: &[u8; 20], value: u64, salt: u8) -> (Vec<u8>, Txid) {
         }],
         outputs: vec![TxOut {
             value: Sats::new(value).unwrap(),
-            script_pubkey: p2wpkh_script_pubkey(program).to_vec(),
+            script_pubkey: script.to_vec(),
         }],
         lock_time: 0,
     };
@@ -80,9 +79,21 @@ fn fake_prev(program: &[u8; 20], value: u64, salt: u8) -> (Vec<u8>, Txid) {
 
 /// testnet4 `about` wallet: discovery finds receive 0–1 used, then three verified UTXOs
 /// (receive 0: 50,000, receive 1: 30,000, change 0: 80,000 after one change index is used).
+/// The account is in HD mode (change on the change chain); [`fixture_fixed`] is the same wallet
+/// in fixed-address mode.
 fn fixture() -> Fixture {
+    fixture_mode(false)
+}
+
+/// [`fixture`] with BIP84 account 0 in fixed-address mode (spec/08 §3.5, the default).
+fn fixture_fixed() -> Fixture {
+    fixture_mode(true)
+}
+
+fn fixture_mode(single_address: bool) -> Fixture {
     let vault = about_vault();
-    let account = BtcAccountKey::primary(vault.btc_account_xpub(BtcCoin::Test).unwrap());
+    let account = BtcAccountKey::primary(vault.btc_account_xpub(BtcCoin::Test).unwrap())
+        .with_single_address(single_address);
     let mut meta = BtcMeta::with_key(NET, account);
     let mut discovery = Discovery::full();
     while let Some((chain, index)) = discovery.next_request() {
@@ -101,8 +112,7 @@ fn fixture() -> Fixture {
     let mut newly = Vec::new();
     for (chain, index, value, salt, height) in owned {
         let script = meta.expected_script(chain, index).unwrap();
-        let program: [u8; 20] = script[2..].try_into().unwrap();
-        let (raw, prev_txid) = fake_prev(&program, value, salt);
+        let (raw, prev_txid) = fake_prev(&script, value, salt);
         let item = ListedUtxo {
             outpoint: OutPoint {
                 txid: prev_txid,
@@ -886,4 +896,291 @@ fn end_to_end_testnet4_core() {
     // Meta survives its JSON round trip.
     let json = fixture.meta.to_json();
     assert_eq!(BtcMeta::from_json(&json).unwrap(), fixture.meta);
+}
+
+/// spec/08 §3.5/§11.2-6 fixed-address mode (the default of BIP84 account 0): change goes back to
+/// the receive address `(Receive, 0)` while inputs on other addresses of the account (receive 1,
+/// change 0, found by discovery) are still spent; post-sign verification accepts exactly that
+/// change script and refuses any other address of the account (and HD mode refuses `/0/0`).
+#[test]
+fn fixed_address_change_is_the_receive_address() {
+    let fixture = fixture_fixed();
+    let account = &fixture.account;
+    assert!(account.fixed_address());
+    let receive = fixture.meta.expected_script(BtcChain::Receive, 0).unwrap();
+    let plan = two_input_plan(&fixture);
+    let change = plan.change().unwrap();
+    assert_eq!(change.index, 0);
+    let vout = usize::try_from(change.vout).unwrap();
+    assert_eq!(plan.tx().outputs[vout].script_pubkey, receive);
+    // 80,000 on change 0 and 50,000 on receive 0 (both discovered, both spendable).
+    assert!(
+        plan.inputs()
+            .iter()
+            .any(|input| (input.chain, input.index) == (BtcChain::Change, 0))
+    );
+    let signed = sign_plan(&fixture.vault, approve(&fixture, &plan, 3), &plan, account).unwrap();
+    assert!(verify_signed(&signed.raw, &plan, account).is_ok());
+    // The approval shows the change as returning to the receive path.
+    let draft = draft_of(&fixture, &plan, 3);
+    let change_text = draft
+        .display
+        .fields
+        .iter()
+        .find(|field| field.key == FieldKey::BTC_CHANGE)
+        .unwrap();
+    assert!(
+        change_text.value.contains("m/84'/1'/0'/0/0"),
+        "{}",
+        change_text.value
+    );
+    // A plan whose change pays another address of the account (signed for that plan) fails
+    // the post-sign output check in fixed-address mode.
+    for (chain, index) in [
+        (BtcChain::Change, 0),
+        (BtcChain::Change, 1),
+        (BtcChain::Receive, 1),
+    ] {
+        let mut tampered = plan.clone();
+        tampered.tx.outputs[vout].script_pubkey =
+            fixture.meta.expected_script(chain, index).unwrap();
+        let signed = sign_plan(
+            &fixture.vault,
+            approved_for(&tampered, account),
+            &tampered,
+            account,
+        )
+        .unwrap();
+        assert_eq!(
+            verify_signed(&signed.raw, &tampered, account),
+            Err(PostSignError::Outputs),
+            "{chain:?}/{index}"
+        );
+    }
+    // The same node in HD mode: change on the change chain; a change paying `/0/0` is refused.
+    let hd = fixture_mode(false);
+    let hd_plan = two_input_plan(&hd);
+    let hd_change = hd_plan.change().unwrap();
+    let hd_vout = usize::try_from(hd_change.vout).unwrap();
+    assert_eq!(
+        hd_plan.tx().outputs[hd_vout].script_pubkey,
+        hd.meta
+            .expected_script(BtcChain::Change, hd_change.index)
+            .unwrap()
+    );
+    let mut tampered = hd_plan.clone();
+    tampered.tx.outputs[hd_vout].script_pubkey = receive;
+    let signed = sign_plan(
+        &hd.vault,
+        approved_for(&tampered, &hd.account),
+        &tampered,
+        &hd.account,
+    )
+    .unwrap();
+    assert_eq!(
+        verify_signed(&signed.raw, &tampered, &hd.account),
+        Err(PostSignError::Outputs)
+    );
+}
+
+/// `(type, mainnet address, testnet4 address)`.
+type VectorRow = (ScriptType, &'static str, &'static str);
+
+/// Independent vectors (pure-Python secp256k1/BIP32/bech32 over `abandon`×11 `about`, the script
+/// cross-checked against the published BIP84/BIP86 first addresses): the BTC addresses of the
+/// EVM key `m/44'/60'/0'/0/i` for each address type (spec/08 §3.5 "EVM 계정과 같은 키").
+const EVM_SHARED_VECTORS: [(u32, &str, [VectorRow; 4]); 2] = [
+    (
+        0,
+        "0237b0bb7a8288d38ed49a524b5dc98cff3eb5ca824c9f9dc0dfdb3d9cd600f299",
+        [
+            (
+                ScriptType::P2pkh,
+                "17D4gErm7cqDznM4EstEfnP6y91MWADXm8",
+                "mmj1yHwjveGUmtpfxSrcVhbRq8c4RtLA7N",
+            ),
+            (
+                ScriptType::P2shP2wpkh,
+                "34y4LBtWcT2h1o9BH9KGpJz5tXsYXwxMUs",
+                "2MvXGPvpYDuY3DamixGw9SFyM6t5iFE1NbY",
+            ),
+            (
+                ScriptType::P2wpkh,
+                "bc1qgsvdpdxec8hsu57lhxg5xem7refr233z2ttx7e",
+                "tb1qgsvdpdxec8hsu57lhxg5xem7refr233zqds492",
+            ),
+            (
+                ScriptType::P2tr,
+                "bc1p08q6wdgnqe0gwpp4ygs0y8lwgxlpv2l4uc0zq5qjnagwtg92fussqdhm72",
+                "tb1p08q6wdgnqe0gwpp4ygs0y8lwgxlpv2l4uc0zq5qjnagwtg92fussh9p5y9",
+            ),
+        ],
+    ),
+    (
+        1,
+        "039fd0991d0222b4e1339c1a1a5b5f6d9f6a96672a3247b638ee6156d9ea877a2f",
+        [
+            (
+                ScriptType::P2pkh,
+                "1HFtisb5rwGvD3kGuUbV4a4d9mrHDM4BwS",
+                "mwmr1vg4fxiAzADtd3ZrtVGx1mSz3jpY82",
+            ),
+            (
+                ScriptType::P2shP2wpkh,
+                "37jwSpUyMLBrgH8Q6sCdMDQGTqDUDmsuSB",
+                "2MyJ9WZQzxnhCt4kwmzpVyAPXgBRdw3inGz",
+            ),
+            (
+                ScriptType::P2wpkh,
+                "bc1qkffs9e9jzdlnmpk025zgklzd0kpcapzaryywkr",
+                "tb1qkffs9e9jzdlnmpk025zgklzd0kpcapzafzlads",
+            ),
+            (
+                ScriptType::P2tr,
+                "bc1p255jm74yvz5z0hk2jk4mmj3cxy5l02tr7dvweqq55u8y5w036evqsq53hf",
+                "tb1p255jm74yvz5z0hk2jk4mmj3cxy5l02tr7dvweqq55u8y5w036evq8gz7dx",
+            ),
+        ],
+    ),
+];
+
+#[test]
+fn evm_shared_addresses_match_vectors() {
+    let vault = about_vault();
+    for (evm_index, pubkey, rows) in EVM_SHARED_VECTORS {
+        let derived = vault
+            .evm_public_key(AccountIndex::new(evm_index).unwrap())
+            .unwrap();
+        assert_eq!(crate::hex::encode(&derived), pubkey);
+        for (script_type, mainnet, testnet4) in rows {
+            let key = BtcAccountKey::evm_shared(evm_index, script_type, derived).unwrap();
+            assert!(key.is_single() && key.fixed_address() && !key.is_imported());
+            for (net, expected) in [
+                (BtcNetwork::Mainnet, mainnet),
+                (BtcNetwork::Testnet4, testnet4),
+            ] {
+                assert_eq!(
+                    key.address(net, BtcChain::Receive, 0).unwrap().as_str(),
+                    expected,
+                    "{script_type:?} {net:?}"
+                );
+            }
+            // One address: nothing else derives; the path is the EVM path on both networks.
+            assert!(key.address(NET, BtcChain::Receive, 1).is_err());
+            assert!(key.address(NET, BtcChain::Change, 0).is_err());
+            assert_eq!(
+                key.path_text(NET, BtcChain::Receive, 0),
+                format!("m/44'/60'/0'/0/{evm_index}")
+            );
+        }
+    }
+    // Index 1000 is not an EVM account.
+    let any = EVM_SHARED_VECTORS[0].1;
+    let point = crate::hex::decode_array::<33>(any).unwrap();
+    assert!(BtcAccountKey::evm_shared(1_000, ScriptType::P2wpkh, point).is_err());
+    assert!(BtcAccountKey::evm_shared(0, ScriptType::P2wpkh, [5; 33]).is_err());
+}
+
+/// One verified output of `value` on `meta`'s `(Receive, 0)` (a fake previous transaction).
+fn fund_receive0(meta: &mut BtcMeta, values: &[(u64, u8)]) {
+    let script = meta.expected_script(BtcChain::Receive, 0).unwrap();
+    let mut listed = Vec::new();
+    let mut newly = Vec::new();
+    for (value, salt) in values {
+        let (raw, prev_txid) = fake_prev(&script, *value, *salt);
+        let item = ListedUtxo {
+            outpoint: OutPoint {
+                txid: prev_txid,
+                vout: 0,
+            },
+            chain: BtcChain::Receive,
+            index: 0,
+            height: TIP - 3,
+        };
+        let prev = verify_prev_output(&raw, &prev_txid, 0, &script).unwrap();
+        listed.push(item);
+        newly.push(VerifiedUtxo::from_prev(&prev, &item));
+    }
+    let report = meta.apply_refresh(&listed, &newly, &[], &[]);
+    assert_eq!(report.inserted as usize, values.len());
+}
+
+/// spec/08 §3.5: an account on the EVM key of account 0, every address type, end to end on
+/// testnet4 with the real vault: verified outputs on its one address → plan (change back to the
+/// same address) → approval → `sign_plan` (the vault lends the EVM key) → `verify_signed` →
+/// journal record round trip; a cached key that is not the vault's EVM key is refused.
+#[test]
+fn evm_shared_send_end_to_end_every_type() {
+    for (offset, script_type) in ScriptType::CHOICES.into_iter().enumerate() {
+        let vault = about_vault();
+        let pubkey = vault.evm_public_key(AccountIndex::ZERO).unwrap();
+        let account = BtcAccountKey::evm_shared(0, script_type, pubkey).unwrap();
+        let mut meta = BtcMeta::with_key(NET, account);
+        assert!(meta.discovery_done() && meta.receive_next() == 1 && meta.change_next() == 0);
+        let script = meta.expected_script(BtcChain::Receive, 0).unwrap();
+        let salt = 0xb0 + u8::try_from(offset).unwrap() * 4;
+        fund_receive0(&mut meta, &[(80_000, salt), (50_000, salt + 1)]);
+        let fixture = Fixture {
+            vault,
+            account,
+            meta,
+        };
+        let plan = two_input_plan(&fixture);
+        let change = plan.change().unwrap();
+        let vout = usize::try_from(change.vout).unwrap();
+        assert_eq!(change.index, 0);
+        assert_eq!(
+            plan.tx().outputs[vout].script_pubkey,
+            script,
+            "{script_type:?}"
+        );
+        let signed =
+            sign_plan(&fixture.vault, approve(&fixture, &plan, 6), &plan, &account).unwrap();
+        let verified = verify_signed(&signed.raw, &plan, &account).unwrap();
+        let record = BtcRecord::new_signed(&plan, &signed, &verified, NOW_UNIX).unwrap();
+        assert_eq!(
+            record.account,
+            super::account::BtcAccountId::EvmShared {
+                evm_index: 0,
+                script_type
+            }
+        );
+        let decoded = BtcRecord::decode(&record.encode().unwrap()).unwrap();
+        assert_eq!(decoded, record);
+        // Change to the fixed address never moves a change-chain index.
+        assert_eq!(decoded.hd_change_index(&account), None);
+        // A cached key that is not the vault's EVM key 0 (here EVM key 1 under index 0): the
+        // lent key does not match and nothing is signed.
+        let wrong = vault_key(&fixture.vault, 1);
+        let other = BtcAccountKey::evm_shared(0, script_type, wrong).unwrap();
+        let mut other_meta = BtcMeta::with_key(NET, other);
+        fund_receive0(&mut other_meta, &[(90_000, salt + 2)]);
+        let other_fixture = Fixture {
+            vault: about_vault(),
+            account: other,
+            meta: other_meta,
+        };
+        let other_plan = plan_with(
+            &other_fixture,
+            SendAmount::Exact(Sats::new(20_000).unwrap()),
+            two_sat_per_vb(),
+            2,
+            None,
+        );
+        assert_eq!(
+            sign_plan(
+                &other_fixture.vault,
+                approved_for(&other_plan, &other),
+                &other_plan,
+                &other
+            ),
+            Err(SignError::KeyMismatch { input: 0 })
+        );
+    }
+}
+
+fn vault_key(vault: &Vault, evm_index: u32) -> [u8; 33] {
+    vault
+        .evm_public_key(AccountIndex::new(evm_index).unwrap())
+        .unwrap()
 }

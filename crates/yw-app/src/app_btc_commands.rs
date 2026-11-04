@@ -222,6 +222,16 @@ impl App {
                 ui.close_add_account();
                 Vec::new()
             }),
+            ids::ACCOUNT_SOURCE_STANDARD => self.btc_call(|ui, _| {
+                ui.set_add_source(crate::app_btc::BtcAddSource::Standard);
+                Vec::new()
+            }),
+            ids::ACCOUNT_SOURCE_EVM => self.btc_call(|ui, _| {
+                ui.set_add_source(crate::app_btc::BtcAddSource::EvmShared);
+                Vec::new()
+            }),
+            ids::ADDRESS_MODE_SINGLE => self.btc_call(|ui, ctx| ui.set_address_mode(ctx, true)),
+            ids::ADDRESS_MODE_HD => self.btc_call(|ui, ctx| ui.set_address_mode(ctx, false)),
             ids::SEND_ADDR_ACK => self.btc_toggle_address_ack(),
             ids::UNIT_BTC => self.btc_set_unit(BtcAmountUnit::Btc),
             ids::UNIT_SATS => self.btc_set_unit(BtcAmountUnit::Sats),
@@ -292,6 +302,16 @@ impl App {
         if let Some(choice) = offset(id, ids::ACCOUNT_ADD_TYPE, 4) {
             if let Some(script_type) = ScriptType::CHOICES.get(usize::from(choice)).copied() {
                 self.btc_call(|ui, ctx| ui.add_account(ctx, script_type));
+            }
+            return true;
+        }
+        if let Some(row) = offset(id, ids::EVM_ACCOUNT_BASE, ids::EVM_ACCOUNT_SPAN) {
+            let index = self.btc_ctx().evm_indices().get(usize::from(row)).copied();
+            if let Some(index) = index {
+                self.btc_call(|ui, ctx| {
+                    ui.set_add_evm_index(ctx, index);
+                    Vec::new()
+                });
             }
             return true;
         }

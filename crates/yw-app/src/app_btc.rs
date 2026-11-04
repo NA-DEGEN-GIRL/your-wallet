@@ -80,6 +80,35 @@ pub const INDEXER_ONLY: &str = "인덱서만 확인(노드 미확인)";
 /// Account switch / add refused while a BTC approval is open.
 pub const ACCOUNT_SWITCH_BUSY: &str =
     "Bitcoin 승인이 진행 중이라 계정을 바꾸거나 추가할 수 없습니다";
+/// Address-mode switch refused while a BTC approval is open.
+pub const ADDRESS_MODE_BUSY: &str = "Bitcoin 승인이 진행 중이라 주소 방식을 바꿀 수 없습니다";
+
+/// The address-mode radio of an HD account: fixed address (spec/08 §3.5, the default).
+pub const T_BTC_MODE_SINGLE: &str = "고정 주소 하나만 사용 (UniSat·Xverse 방식)";
+/// The address-mode radio of an HD account: a new address each time.
+pub const T_BTC_MODE_HD: &str = "받을 때마다 새 주소 (HD, 프라이버시↑)";
+/// One-line trade-off under the address-mode radios.
+pub const T_BTC_MODE_HELP: &str = "고정 주소는 받기·잔돈이 늘 같은 주소(…/0/0)라 관리와 소유 증명이 쉽지만, 누구나 그 주소의 잔액과 거래를 모두 볼 수 있습니다. 새 주소 방식은 프라이버시가 낫지만 주소가 계속 바뀝니다.";
+/// The receive note of an HD account in fixed-address mode (spec/04 §2.8).
+pub const T_BTC_FIXED_RECEIVE: &str = "이 계정은 주소 하나만 씁니다. 같은 니모닉을 Electrum/Sparrow/UniSat에 넣으면 같은 주소가 나옵니다.";
+/// The key-source radio of `계정 추가`: the standard BTC path (default).
+pub const T_BTC_SOURCE_STANDARD: &str = "BTC 표준 경로 (권장, 기본값)";
+/// The key-source radio of `계정 추가`: the key of an EVM account.
+pub const T_BTC_SOURCE_EVM: &str = "EVM 계정과 같은 키";
+/// Help under the standard key source.
+pub const T_BTC_SOURCE_STANDARD_HELP: &str = "m/{44·49·84·86}'/{코인}'/{계정}'/0/0 — 같은 복구 단어를 다른 Bitcoin 지갑에 넣어도 같은 주소가 나옵니다.";
+/// The warning of an account on an EVM account's key (spec/08 §3.5).
+pub const T_BTC_EVM_SHARED: &str = "같은 키를 쓰면 EVM 주소와 BTC 주소의 공개키가 같아져, 누구나 두 주소가 같은 사람 것임을 알 수 있습니다. 다른 BTC 지갑(Electrum·Sparrow)에 니모닉만 넣으면 이 주소가 보이지 않습니다(복구는 이 지갑이나 개인키 내보내기로).";
+
+/// The key source chosen in `계정 추가` (spec/08 §3.5).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BtcAddSource {
+    /// `m/{44|49|84|86}'/{coin}'/a'` (the default).
+    #[default]
+    Standard,
+    /// The key of an EVM account (`m/44'/60'/0'/0/i`), explicit choice and confirmation.
+    EvmShared,
+}
 
 /// Account delete refused while a BTC approval is open (spec/04 §2.18).
 pub const REMOVE_BUSY_APPROVAL: &str = "Bitcoin 승인이 진행 중이라 이 가져온 키를 지울 수 없습니다. 승인을 끝내거나 거절한 뒤 다시 하세요";
@@ -102,6 +131,10 @@ pub struct BtcAccountRow {
     pub selected: bool,
     /// An imported single key (the "[가져온 키]" badge; not restored by the recovery words).
     pub imported: bool,
+    /// The EVM account whose key this account uses (the "[EVM 계정 i 키]" badge).
+    pub evm_shared: Option<u32>,
+    /// The account receives and gets change at one fixed address.
+    pub fixed: bool,
 }
 
 /// The shortened address of a single-key account row: first 6 and last 6 characters.
@@ -267,12 +300,52 @@ impl BtcCtx<'_> {
         self.account(id)
     }
 
+    /// The derived EVM accounts (`m/44'/60'/0'/0/i`) a BTC account may share a key with, in meta
+    /// order: `(index, label, address)` (hidden accounts too).
+    #[must_use]
+    pub fn evm_accounts(&self) -> Vec<(u32, String, String)> {
+        self.meta.map_or_else(Vec::new, |meta| {
+            meta.evm_accounts
+                .iter()
+                .map(|account| {
+                    (
+                        account.index,
+                        account.label.clone(),
+                        account.address.clone(),
+                    )
+                })
+                .collect()
+        })
+    }
+
+    /// The indices of [`BtcCtx::evm_accounts`].
+    #[must_use]
+    pub fn evm_indices(&self) -> Vec<u32> {
+        self.meta.map_or_else(Vec::new, |meta| {
+            meta.evm_accounts
+                .iter()
+                .map(|account| account.index)
+                .collect()
+        })
+    }
+
+    /// The EVM account index and network of the selected account when it uses an EVM account's
+    /// key (`개인키 보기` shows its WIF).
+    #[must_use]
+    pub fn selected_evm_shared(&self) -> Option<(u32, BtcNetwork)> {
+        let meta = self.btc_meta()?;
+        match meta.id() {
+            BtcAccountId::EvmShared { evm_index, .. } => Some((evm_index, meta.network())),
+            BtcAccountId::Hd { .. } | BtcAccountId::Imported { .. } => None,
+        }
+    }
+
     /// The vault record id of the selected account when it is an imported single key.
     #[must_use]
     pub fn selected_imported(&self) -> Option<[u8; 16]> {
         match self.btc_meta()?.id() {
             BtcAccountId::Imported { id } => Some(id),
-            BtcAccountId::Hd { .. } => None,
+            BtcAccountId::Hd { .. } | BtcAccountId::EvmShared { .. } => None,
         }
     }
 
@@ -721,6 +794,12 @@ pub struct BtcReceiveView {
     pub qr: String,
     /// The network banner (§2 table).
     pub banner: &'static str,
+    /// The account receives only at this one address (no `새 주소`).
+    pub fixed: bool,
+    /// The account has one key (an imported key or an EVM account's key: no index in the title).
+    pub single_key: bool,
+    /// The explanation under the address (fixed address, imported key, EVM key or HD).
+    pub note: String,
 }
 
 /// Discovery progress (spec/08 §3.4).
@@ -830,6 +909,13 @@ pub enum BtcConfirm {
     },
     /// "블록 높이 기록 초기화" after a `TipRegression` block (spec/08 §2 step 2).
     ResetTip,
+    /// `계정 추가` with the key of an EVM account (T-BTC-EVM-SHARED, spec/08 §3.5).
+    AddEvmShared {
+        /// Address type.
+        script_type: ScriptType,
+        /// EVM account index.
+        evm_index: u32,
+    },
 }
 
 impl BtcConfirm {
@@ -875,6 +961,17 @@ impl BtcConfirm {
                 "블록 높이 기록 초기화",
                 RESET_TIP_TEXT.to_owned(),
                 "초기화",
+            ),
+            Self::AddEvmShared {
+                script_type,
+                evm_index,
+            } => (
+                "EVM 계정과 같은 키로 Bitcoin 계정 만들기",
+                format!(
+                    "EVM 계정 {evm_index}의 키(m/44'/60'/0'/0/{evm_index})로 {} 주소 하나를 만듭니다. 받기와 잔돈은 늘 이 주소입니다. {T_BTC_EVM_SHARED} 그래도 만들까요?",
+                    script_type.name()
+                ),
+                "같은 키로 만들기",
             ),
         }
     }
@@ -1029,6 +1126,10 @@ pub struct BtcUi {
     pub account_message: Option<String>,
     /// The add-account chooser is open (spec/04 BTC 계정 추가).
     pub add_account_open: bool,
+    /// The key source chosen in the add-account chooser (default: the standard path).
+    pub add_source: BtcAddSource,
+    /// The EVM account of [`BtcAddSource::EvmShared`].
+    pub add_evm_index: u32,
     next_job: u64,
 }
 
@@ -1066,6 +1167,8 @@ impl Default for BtcUi {
             refresh_account: BtcAccountId::PRIMARY,
             account_message: None,
             add_account_open: false,
+            add_source: BtcAddSource::Standard,
+            add_evm_index: 0,
             next_job: 0,
         }
     }
@@ -1629,6 +1732,25 @@ impl BtcUi {
                 actions.push(BtcAction::Screen(BtcScreen::Back));
                 actions
             }
+            BtcConfirm::AddEvmShared {
+                script_type,
+                evm_index,
+            } => {
+                let mut actions = Vec::new();
+                if self.add_refused(ctx) {
+                    actions.push(BtcAction::Screen(BtcScreen::Back));
+                    return actions;
+                }
+                actions.push(key_job(KeyJob::BtcMeta {
+                    op: BtcMetaOp::AddEvmShared {
+                        network: ctx.net(),
+                        script_type,
+                        evm_index,
+                    },
+                }));
+                actions.push(BtcAction::Screen(BtcScreen::Back));
+                actions
+            }
         }
     }
 
@@ -1740,21 +1862,44 @@ impl BtcUi {
         self.request_receive(ctx, true, false)
     }
 
-    fn receive_view(meta: &BtcMeta, index: u32) -> Option<BtcReceiveView> {
+    /// The S12 view of `meta`'s receive address `index` (address, path, mode and explanation).
+    #[must_use]
+    pub fn receive_view(meta: &BtcMeta, index: u32) -> Option<BtcReceiveView> {
         let address = meta.address(BtcChain::Receive, index).ok()?;
         let network = meta.network();
         // Exactly as encoded: bech32 is lowercase already, base58 is case-sensitive.
         let text = address.as_str().to_owned();
         let account = meta.account();
+        let path = account.path_text(network, BtcChain::Receive, index);
+        let note = match account {
+            BtcAccountKey::Single { .. } => {
+                "가져온 키 계정은 주소가 하나입니다. 주소를 복사한 뒤 붙여넣은 곳에서 주소 전체를 확인하세요."
+                    .to_owned()
+            }
+            BtcAccountKey::EvmShared { evm_index, .. } => format!(
+                "이 계정은 주소 하나만 씁니다. EVM 계정 {evm_index}과 같은 키({path})입니다. {T_BTC_EVM_SHARED}"
+            ),
+            BtcAccountKey::Hd { .. } if account.fixed_address() => {
+                "받은 돈과 보내고 남은 잔돈이 모두 이 주소로 옵니다(새 주소 없음). 받을 때마다 새 주소를 쓰려면 Bitcoin 탭의 계정 목록 아래 '주소 방식'에서 바꾸세요. 주소를 복사한 뒤 붙여넣은 곳에서 주소 전체를 확인하세요."
+                    .to_owned()
+            }
+            BtcAccountKey::Hd { .. } => {
+                "주소를 복사한 뒤 붙여넣은 곳에서 주소 전체를 확인하세요. 새 주소는 아직 쓰지 않은 주소가 20개 이상이면 경고하고 100개면 발급하지 않습니다."
+                    .to_owned()
+            }
+        };
         Some(BtcReceiveView {
             network,
             index,
-            path: account.path_text(network, BtcChain::Receive, index),
+            path,
             account: account_label(account),
             kind: account_type_text(account, network),
             qr: format!("bitcoin:{text}"),
             address: text,
             banner: network.banner(),
+            fixed: account.fixed_address(),
+            single_key: account.is_single(),
+            note,
         })
     }
 
@@ -2309,8 +2454,12 @@ impl BtcUi {
             .into_iter()
             .map(|meta| {
                 let records = of_account(ctx.all_records(), net, meta.id());
-                let imported = meta.is_single();
-                let name = if imported {
+                let imported = meta.is_imported();
+                let evm_shared = match meta.id() {
+                    BtcAccountId::EvmShared { evm_index, .. } => Some(evm_index),
+                    _ => None,
+                };
+                let name = if meta.is_single() {
                     meta.address(BtcChain::Receive, 0).map_or_else(
                         |_| account_label(meta.account()),
                         |address| short_address(address.as_str()),
@@ -2327,6 +2476,8 @@ impl BtcUi {
                         .available,
                     selected: meta.id() == active,
                     imported,
+                    evm_shared,
+                    fixed: meta.fixed_address(),
                 }
             })
             .collect()
@@ -2374,7 +2525,8 @@ impl BtcUi {
     }
 
     /// `계정 추가`: opens the address-type chooser (HD accounts need the recovery words: a
-    /// key-only wallet adds Bitcoin accounts with `개인키 가져오기` only).
+    /// key-only wallet adds Bitcoin accounts with `개인키 가져오기` only). The key source starts
+    /// at the standard BTC path; the EVM-shared key is an explicit choice (spec/08 §3.5).
     pub fn open_add_account(&mut self, ctx: &BtcCtx<'_>) {
         self.account_message = if ctx.has_mnemonic {
             ctx.gate().err().map(BtcGate::text)
@@ -2382,36 +2534,99 @@ impl BtcUi {
             Some(yw_core::error::VaultError::NoMnemonic.to_string())
         };
         self.add_account_open = self.account_message.is_none();
+        self.add_source = BtcAddSource::Standard;
+        self.add_evm_index = ctx.evm_indices().first().copied().unwrap_or(0);
     }
 
     /// Closes the chooser without adding.
     pub fn close_add_account(&mut self) {
         self.add_account_open = false;
+        self.add_source = BtcAddSource::Standard;
     }
 
-    /// Adds the next HD account of `script_type` (`m/{44|49|84|86}'/{coin}'/{n}'`); the key
-    /// worker stores and selects it, then discovery runs.
+    /// The chooser's key source radio.
+    pub fn set_add_source(&mut self, source: BtcAddSource) {
+        self.add_source = source;
+    }
+
+    /// The chooser's EVM account radio (an index of the wallet's derived EVM accounts).
+    pub fn set_add_evm_index(&mut self, ctx: &BtcCtx<'_>, evm_index: u32) {
+        if ctx.evm_indices().contains(&evm_index) {
+            self.add_evm_index = evm_index;
+        }
+    }
+
+    /// Whether adding an account is refused now (no recovery words, gate, open BTC approval);
+    /// sets the reason and closes the chooser.
+    fn add_refused(&mut self, ctx: &BtcCtx<'_>) -> bool {
+        let reason = if !ctx.has_mnemonic {
+            Some(yw_core::error::VaultError::NoMnemonic.to_string())
+        } else if let Err(gate) = ctx.gate() {
+            Some(gate.text())
+        } else if self.slot {
+            Some(ACCOUNT_SWITCH_BUSY.to_owned())
+        } else {
+            None
+        };
+        if reason.is_some() {
+            self.add_account_open = false;
+            self.account_message = reason;
+            return true;
+        }
+        false
+    }
+
+    /// A chooser address type: with the standard source the next HD account of `script_type`
+    /// (`m/{44|49|84|86}'/{coin}'/{n}'`; the key worker stores and selects it, then discovery
+    /// runs); with the EVM-shared source the confirmation T-BTC-EVM-SHARED first.
     pub fn add_account(&mut self, ctx: &BtcCtx<'_>, script_type: ScriptType) -> Vec<BtcAction> {
         self.account_message = None;
-        if !ctx.has_mnemonic {
-            self.add_account_open = false;
-            self.account_message = Some(yw_core::error::VaultError::NoMnemonic.to_string());
+        if self.add_refused(ctx) {
             return Vec::new();
         }
-        if let Err(gate) = ctx.gate() {
-            self.add_account_open = false;
-            self.account_message = Some(gate.text());
-            return Vec::new();
-        }
-        if self.slot {
-            self.add_account_open = false;
-            self.account_message = Some(ACCOUNT_SWITCH_BUSY.to_owned());
-            return Vec::new();
+        if self.add_source == BtcAddSource::EvmShared {
+            if !ctx.evm_indices().contains(&self.add_evm_index) {
+                self.account_message = Some("EVM 계정을 고르세요".to_owned());
+                return Vec::new();
+            }
+            self.confirm = Some(BtcConfirm::AddEvmShared {
+                script_type,
+                evm_index: self.add_evm_index,
+            });
+            return vec![BtcAction::Confirm];
         }
         vec![key_job(KeyJob::BtcMeta {
             op: BtcMetaOp::AddAccount {
                 network: ctx.net(),
                 script_type,
+            },
+        })]
+    }
+
+    /// The address mode of the selected HD account (spec/08 §3.5): fixed address (`true`,
+    /// receive and change at `…/0/0`) or a new receive address each time with the change chain.
+    /// Refused while a BTC approval is open; one-key accounts have no mode.
+    pub fn set_address_mode(&mut self, ctx: &BtcCtx<'_>, single_address: bool) -> Vec<BtcAction> {
+        self.account_message = None;
+        let Some(meta) = ctx.btc_meta() else {
+            return Vec::new();
+        };
+        if !meta.account().is_hd() || meta.fixed_address() == single_address {
+            return Vec::new();
+        }
+        if let Err(gate) = ctx.gate() {
+            self.account_message = Some(gate.text());
+            return Vec::new();
+        }
+        if self.slot {
+            self.account_message = Some(ADDRESS_MODE_BUSY.to_owned());
+            return Vec::new();
+        }
+        vec![key_job(KeyJob::BtcMeta {
+            op: BtcMetaOp::SetAddressMode {
+                network: ctx.net(),
+                account: meta.id(),
+                single_address,
             },
         })]
     }
@@ -2505,6 +2720,7 @@ impl BtcUi {
                             actions.extend(self.refresh_with(ctx, &meta, Trigger::User));
                         }
                     }
+                    BtcMetaDone::AddressMode(_) => self.on_address_mode(active.as_ref()),
                     BtcMetaDone::Tip
                     | BtcMetaDone::Frozen
                     | BtcMetaDone::Unfrozen
@@ -2535,6 +2751,18 @@ impl BtcUi {
                 Vec::new()
             }
         }
+    }
+
+    /// An HD account's address mode was stored: the receive screen shows the address of the new
+    /// mode next time.
+    fn on_address_mode(&mut self, active: Option<&BtcMeta>) {
+        self.receive = None;
+        let fixed = active.is_some_and(BtcMeta::fixed_address);
+        logging::info(
+            "app",
+            "btc.address_mode",
+            &[("mode", Field::Word(if fixed { "single" } else { "hd" }))],
+        );
     }
 
     /// Discovery against a meta that the mirror may not show yet (right after `Create`).
@@ -2609,16 +2837,13 @@ impl BtcUi {
             receive_count: meta.receive_next(),
             change_count: meta.change_next(),
             known: meta.verified().iter().map(|utxo| utxo.outpoint).collect(),
-            inflight_change: if meta.is_single() {
-                // One address: its own in-flight change shows no "미확정 입금".
-                Vec::new()
-            } else {
-                records
-                    .iter()
-                    .filter(|record| record.state.is_in_flight())
-                    .filter_map(|record| record.change.map(|change| change.index))
-                    .collect()
-            },
+            // Change on the change chain only: change back to the fixed address `(Receive, 0)`
+            // (one-key accounts, fixed-address mode) is not a change-chain index.
+            inflight_change: records
+                .iter()
+                .filter(|record| record.state.is_in_flight())
+                .filter_map(|record| record.hd_change_index(meta.account()))
+                .collect(),
             chain: Self::chain_of(ctx, meta),
             trigger,
         };

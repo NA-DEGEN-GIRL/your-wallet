@@ -709,11 +709,11 @@ fn inflight_blocks_new_send() {
             vout: first.change().unwrap().vout
         }
     );
-    assert_eq!(change_next_floor(&both, NET), Some(4));
+    assert_eq!(change_next_floor(&both, NET, &account()), Some(4));
     let signed_only = vec![record(&first, BtcTxState::Signed, 1)];
-    assert_eq!(change_next_floor(&signed_only, NET), None);
+    assert_eq!(change_next_floor(&signed_only, NET, &account()), None);
     assert_eq!(
-        change_next_floor(&both, yw_core::btc::BtcNetwork::Mainnet),
+        change_next_floor(&both, yw_core::btc::BtcNetwork::Mainnet, &account()),
         None
     );
 }
@@ -1182,4 +1182,100 @@ fn own_change_needs_the_account_script() {
         record(&send, BtcTxState::InMempool, 1).own_change_utxo(&account()),
         None
     );
+}
+
+/// spec/08 §3.5/§3.2: a fixed-address plan records change index 0 paying `(Receive, 0)`. The
+/// change output's script decides where the change is, so `change_next` never moves for it and
+/// own change is found after the account's mode was switched (both directions).
+#[test]
+fn fixed_address_change_in_records() {
+    use yw_core::bip32::path::BtcChain;
+    let fixed = btc_common::fixed_account();
+    let hd = account();
+    let fixed_plan = yw_core::btc::select::plan_send(&yw_core::btc::select::SendRequest {
+        network: NET,
+        account: &fixed,
+        recipient: RECIPIENT,
+        amount: SendAmount::Exact(Sats::new(20_000).unwrap()),
+        fee: rate(1),
+        candidates: &[utxo(100_000, TIP - 10, 5, 0)],
+        tip_height: TIP,
+        change_next: 3,
+        layout_seed: SEED,
+        typed_fee_override: None,
+        conflicts: &[],
+    })
+    .unwrap();
+    let change = fixed_plan.change().unwrap();
+    assert_eq!(change.index, 0);
+    assert_eq!(fixed.change_path(change.index), (BtcChain::Receive, 0));
+    let confirmed = record(&fixed_plan, BtcTxState::Confirmed, 1);
+    for key in [&fixed, &hd] {
+        // Change to the fixed address: no change-chain index, own change at /0/0.
+        assert_eq!(confirmed.hd_change_index(key), None);
+        let own = confirmed.own_change_utxo(key).unwrap();
+        assert_eq!((own.chain, own.index), (BtcChain::Receive, 0));
+        assert_eq!(own.value, change.value);
+    }
+    assert_eq!(
+        change_next_floor(std::slice::from_ref(&confirmed), NET, &fixed),
+        None
+    );
+    assert_eq!(
+        change_next_floor(std::slice::from_ref(&confirmed), NET, &hd),
+        None
+    );
+    // An HD-mode record (change index 3 on the change chain) seen by the fixed-address mode of
+    // the same account: still its change-chain index and its own change.
+    let hd_plan = simple_plan(6, 20_000);
+    let hd_change = hd_plan.change().unwrap();
+    assert_eq!(hd_change.index, 3);
+    let hd_record = record(&hd_plan, BtcTxState::Confirmed, 2);
+    for key in [&fixed, &hd] {
+        assert_eq!(hd_record.hd_change_index(key), Some(3));
+        let own = hd_record.own_change_utxo(key).unwrap();
+        assert_eq!((own.chain, own.index), (BtcChain::Change, 3));
+    }
+    assert_eq!(
+        change_next_floor(&[confirmed, hd_record], NET, &fixed),
+        Some(4)
+    );
+}
+
+/// spec/08 §12.4: the version 2 account block of an account on an EVM account's key (`source`
+/// 3, the EVM index, zero padding) round-trips; a non-zero padding, an index above 999 or an
+/// unknown source is refused.
+#[test]
+fn evm_shared_account_block() {
+    use yw_core::btc::account::{BtcAccountId, ScriptType};
+    let send = simple_plan(9, 20_000);
+    let mut evm = record(&send, BtcTxState::Submitted, 1);
+    evm.account = BtcAccountId::EvmShared {
+        evm_index: 7,
+        script_type: ScriptType::P2wpkh,
+    };
+    let body = evm.encode().unwrap();
+    assert_eq!(body[0], 2, "record version 2");
+    let block = &body[BTC_JOURNAL_HEADER_LEN..BTC_JOURNAL_HEADER_LEN + 18];
+    assert_eq!(block[..2], [3, ScriptType::P2wpkh.code()]);
+    assert_eq!(block[2..6], 7_u32.to_be_bytes());
+    assert!(block[6..].iter().all(|byte| *byte == 0));
+    assert_eq!(BtcRecord::decode(&body).unwrap(), evm);
+    for (at, value) in [
+        (BTC_JOURNAL_HEADER_LEN + 6, 1_u8),
+        (BTC_JOURNAL_HEADER_LEN + 3, 0x03),
+        (BTC_JOURNAL_HEADER_LEN, 4),
+    ] {
+        let mut bad = body.clone();
+        bad[at] = value;
+        assert!(BtcRecord::decode(&bad).is_err(), "byte {at}");
+    }
+    // The record's type must be the account's type.
+    let mut mismatch = evm.clone();
+    mismatch.account = BtcAccountId::EvmShared {
+        evm_index: 7,
+        script_type: ScriptType::P2tr,
+    };
+    assert!(mismatch.encode().is_err());
+    assert_eq!(evm.account.activity_tag(), "evm/p2wpkh/7");
 }
