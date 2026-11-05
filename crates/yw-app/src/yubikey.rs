@@ -11,7 +11,7 @@ use yw_core::secret::Zeroizing;
 use yw_core::yubikey::apdu::ApduMode;
 use yw_core::yubikey::enrol::{EnrolAuth, EnrolError, Enrolled, enrol_card, identify};
 use yw_core::yubikey::piv::{MgmtAlgorithm, MgmtCipher};
-use yw_core::yubikey::plan::{KeyRole, PlannedSlot, slot_on_card};
+use yw_core::yubikey::plan::{Curve, KeyRole, PlannedSlot, slot_on_card};
 use yw_core::yubikey::record::HwKeyRecord;
 use yw_core::yubikey::sign::{CardKey, sign_evm_checked};
 use yw_core::yubikey::{CardError, CardTransport, TransportFault};
@@ -159,26 +159,25 @@ impl core::fmt::Display for CardJobError {
     }
 }
 
-/// Signs `digest` with `YubiKey` EVM account `index` on the first inserted card that holds it
-/// (`yubikey::sign::sign_evm`: serial and public key checked before the PIN is sent, low-s,
-/// recovery id against the recorded key).
-///
-/// # Errors
-///
-/// [`CardJobError::NoCard`], [`CardJobError::Card`] (PIN, touch, wrong card, bad signature).
-pub fn sign_evm_digest(
+/// Runs `operation` once on the first inserted card that holds the key of `role` (found by the
+/// serial the card reports and the vault slot map), with that card's [`CardKey`] (recorded
+/// public key). Cards that do not hold the key are skipped; when only such cards answered the
+/// error is [`CardError::WrongCard`].
+fn on_card<T>(
     source: &mut dyn CardSource,
     records: &[HwKeyRecord],
-    index: AccountIndex,
-    pin: &[u8],
-    digest: [u8; 32],
-) -> Result<(u8, [u8; 64]), CardJobError> {
-    let role = KeyRole::Evm { index, btc: None };
-    let mut result: Option<Result<(u8, [u8; 64]), CardError>> = None;
+    role: KeyRole,
+    operation: &mut dyn FnMut(&mut dyn CardTransport, &CardKey) -> Result<T, CardError>,
+) -> Result<T, CardJobError> {
+    let (pgp, piv) = match role.curve() {
+        Curve::Secp256k1 => (true, false),
+        Curve::Ed25519 => (false, true),
+    };
+    let mut result: Option<Result<T, CardError>> = None;
     let mut seen_other = false;
     source
         .each_card(&mut |transport, _| {
-            let Ok((serial, _)) = identify(transport, MODE, true, false) else {
+            let Ok((serial, _)) = identify(transport, MODE, pgp, piv) else {
                 return false;
             };
             let Some(holder) = slot_on_card(records, role, serial) else {
@@ -198,7 +197,7 @@ pub fn sign_evm_digest(
                 slot: holder.slot,
                 public,
             };
-            result = Some(sign_evm_checked(transport, MODE, &key, pin, digest));
+            result = Some(operation(transport, &key));
             true
         })
         .map_err(CardJobError::Card)?;
@@ -206,6 +205,155 @@ pub fn sign_evm_digest(
         Some(outcome) => outcome.map_err(CardJobError::Card),
         None if seen_other => Err(CardJobError::Card(CardError::WrongCard)),
         None => Err(CardJobError::NoCard),
+    }
+}
+
+/// The PIN check before an approved operation is spent (spec/10 §9.2,
+/// `yubikey::sign::check_pin`: serial, recorded key, one VERIFY; no write, no touch). A wrong
+/// PIN, another card or no card is reported while the approval is still unused, so the app can
+/// ask for the PIN again.
+///
+/// # Errors
+///
+/// [`CardJobError::NoCard`], [`CardJobError::Card`].
+pub fn check_pin(
+    source: &mut dyn CardSource,
+    records: &[HwKeyRecord],
+    role: KeyRole,
+    pin: &[u8],
+) -> Result<(), CardJobError> {
+    on_card(source, records, role, &mut |transport, key| {
+        yw_core::yubikey::sign::check_pin(transport, MODE, key, pin)
+    })
+}
+
+/// Signs `digest` with `YubiKey` EVM account `index` on the first inserted card that holds it
+/// (`yubikey::sign::sign_evm`: serial and public key checked before the PIN is sent, low-s,
+/// recovery id against the recorded key).
+///
+/// # Errors
+///
+/// [`CardJobError::NoCard`], [`CardJobError::Card`] (PIN, touch, wrong card, bad signature).
+pub fn sign_evm_digest(
+    source: &mut dyn CardSource,
+    records: &[HwKeyRecord],
+    index: AccountIndex,
+    pin: &[u8],
+    digest: [u8; 32],
+) -> Result<(u8, [u8; 64]), CardJobError> {
+    let role = KeyRole::Evm { index, btc: None };
+    on_card(source, records, role, &mut |transport, key| {
+        sign_evm_checked(transport, MODE, key, pin, digest)
+    })
+}
+
+/// Signs the Solana `message` bytes with `YubiKey` Solana account `index` (PIV Ed25519,
+/// `yubikey::sign::sign_sol`: serial and slot key checked first, `verify_strict` against the
+/// recorded key).
+///
+/// # Errors
+///
+/// [`CardJobError::NoCard`], [`CardJobError::Card`].
+pub fn sign_sol_message(
+    source: &mut dyn CardSource,
+    records: &[HwKeyRecord],
+    index: AccountIndex,
+    pin: &[u8],
+    message: &[u8],
+) -> Result<[u8; 64], CardJobError> {
+    on_card(
+        source,
+        records,
+        KeyRole::Sol { index },
+        &mut |transport, key| yw_core::yubikey::sign::sign_sol(transport, MODE, key, pin, message),
+    )
+}
+
+/// Signs one Bitcoin sighash with the `YubiKey` key of `role` (`yubikey::sign::sign_btc`: DER,
+/// low-s, verified against the recorded key).
+///
+/// # Errors
+///
+/// [`CardJobError::NoCard`], [`CardJobError::Card`].
+pub fn sign_btc_sighash(
+    source: &mut dyn CardSource,
+    records: &[HwKeyRecord],
+    role: KeyRole,
+    pin: &[u8],
+    sighash: [u8; 32],
+) -> Result<Vec<u8>, CardJobError> {
+    on_card(source, records, role, &mut |transport, key| {
+        yw_core::yubikey::sign::sign_btc_checked(transport, MODE, key, pin, sighash)
+    })
+}
+
+/// The serials of the enrolled cards holding the key of `role`, in record order (the PIN
+/// window lists them).
+#[must_use]
+pub fn holders(records: &[HwKeyRecord], role: KeyRole) -> Vec<u32> {
+    let identity = role.key_identity();
+    records
+        .iter()
+        .filter(|record| {
+            record
+                .slots
+                .iter()
+                .any(|slot| slot.role.key_identity() == identity)
+        })
+        .map(|record| record.serial)
+        .collect()
+}
+
+/// The PIN length bounds of the applet holding a key of `role` (spec/10 §9.1): `OpenPGP` PW1
+/// 6–127, PIV PIN 6–8.
+#[must_use]
+pub const fn pin_bounds(role: KeyRole) -> (u8, u8) {
+    match role.curve() {
+        Curve::Secp256k1 => (6, 127),
+        Curve::Ed25519 => (6, 8),
+    }
+}
+
+/// The card key role of an approval signed on a `YubiKey` (spec/10 §10): an EVM approval of
+/// `EvmKeySource::Hardware`, a Solana transfer or message of `SolKeySource::Hardware`, a Bitcoin
+/// message of `BtcKeySource::Hardware`. `None` for a software approval (and for a Bitcoin send,
+/// whose key is the plan's account: [`btc_plan_role`]).
+#[must_use]
+pub fn approval_role(approved: &yw_core::approval::Approved) -> Option<KeyRole> {
+    use yw_core::approval::{Signer, SigningPayload};
+    use yw_core::slip10::SolKeySource;
+    use yw_core::vault::EvmKeySource;
+    if let Signer::Evm(EvmKeySource::Hardware(index)) = approved.signer() {
+        return Some(KeyRole::Evm { index, btc: None });
+    }
+    match approved.payload() {
+        SigningPayload::SolTransfer(intent) => match intent.source {
+            SolKeySource::Hardware(index) => Some(KeyRole::Sol { index }),
+            _ => None,
+        },
+        SigningPayload::SolMessage(payload) => match payload.source {
+            SolKeySource::Hardware(index) => Some(KeyRole::Sol { index }),
+            _ => None,
+        },
+        SigningPayload::BtcMessage(payload) => match payload.source {
+            yw_core::btc::account::BtcKeySource::Hardware { key, script_type } => {
+                key.role(payload.network, script_type)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The card key role of a Bitcoin plan of a `YubiKey` account (every input uses the account's
+/// one key); `None` for a software account.
+#[must_use]
+pub fn btc_plan_role(plan: &yw_core::btc::SendPlan) -> Option<KeyRole> {
+    match *plan.account() {
+        yw_core::btc::account::BtcAccountKey::Hardware {
+            key, script_type, ..
+        } => key.role(plan.network(), script_type),
+        _ => None,
     }
 }
 

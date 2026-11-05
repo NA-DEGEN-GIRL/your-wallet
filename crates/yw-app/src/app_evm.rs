@@ -483,6 +483,12 @@ impl App {
             .map(|(pref, ..)| pref)
     }
 
+    /// The selected EVM account is a `YubiKey` account (no "개인키 보기", spec/10 §13).
+    #[must_use]
+    pub fn hardware_selected(&self) -> bool {
+        matches!(self.selected_pref(), Some(EvmAccountPref::Hardware(_)))
+    }
+
     fn preferred_account(&self) -> Option<(Address, EvmKeySource, String)> {
         self.account_of(self.meta.as_ref()?.prefs.evm_account)
     }
@@ -512,6 +518,19 @@ impl App {
                     address,
                     EvmKeySource::Raw(RecordId::from_bytes(id)),
                     raw.label.clone(),
+                ))
+            }
+            EvmAccountPref::Hardware(index) => {
+                let account = meta
+                    .hw_accounts
+                    .evm
+                    .iter()
+                    .find(|account| account.index == index)?;
+                let address = yw_core::evm::address::parse_address(&account.address).ok()?;
+                Some((
+                    address,
+                    EvmKeySource::Hardware(AccountIndex::new(index).ok()?),
+                    account.label.clone(),
                 ))
             }
         }

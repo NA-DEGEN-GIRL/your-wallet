@@ -244,6 +244,9 @@ pub struct PendingSign {
     pub consumed_at_ms: u64,
     /// Lookup job.
     pub job: u64,
+    /// The `YubiKey` PIN of a card transfer (spec/10 §6.4): moved into `SignSolCard` with the
+    /// blockhash, wiped with this pending entry otherwise.
+    pub pin: Option<crate::app_card::PinBuffer>,
 }
 
 /// Recovery scan stage.
@@ -301,6 +304,8 @@ pub enum SolAccountId {
     Derived(u32),
     /// Imported key record id.
     Imported([u8; 16]),
+    /// `YubiKey` account `i` (`SolKeySource::Hardware`, meta `hw_accounts.sol`, spec/10 §13).
+    Hardware(u32),
 }
 
 impl SolAccountId {
@@ -310,6 +315,7 @@ impl SolAccountId {
         match self {
             Self::Derived(index) => AccountIndex::new(index).ok().map(SolKeySource::Standard),
             Self::Imported(_) => Some(SolKeySource::Imported),
+            Self::Hardware(index) => AccountIndex::new(index).ok().map(SolKeySource::Hardware),
         }
     }
 
@@ -319,6 +325,7 @@ impl SolAccountId {
         match self {
             Self::Derived(index) => format!("m/44'/501'/{index}'/0'"),
             Self::Imported(_) => "가져온 개인키 (복구 단어로 복구되지 않음)".to_owned(),
+            Self::Hardware(index) => format!("m/44'/501'/{index}'/0' (YubiKey PIV)"),
         }
     }
 
@@ -326,6 +333,12 @@ impl SolAccountId {
     #[must_use]
     pub const fn is_imported(self) -> bool {
         matches!(self, Self::Imported(_))
+    }
+
+    /// Whether this is a `YubiKey` account (signed on the card).
+    #[must_use]
+    pub const fn is_hardware(self) -> bool {
+        matches!(self, Self::Hardware(_))
     }
 }
 
@@ -443,7 +456,21 @@ impl App {
                     )
                 })
             });
-            derived.chain(imported).collect()
+            let hardware = meta
+                .hw_accounts
+                .sol
+                .iter()
+                .filter(|account| !account.hidden)
+                .filter_map(|account| {
+                    SolAddress::parse(&account.address).ok().map(|address| {
+                        (
+                            SolAccountId::Hardware(account.index),
+                            account.label.clone(),
+                            address,
+                        )
+                    })
+                });
+            derived.chain(imported).chain(hardware).collect()
         })
     }
 
@@ -451,9 +478,14 @@ impl App {
     #[must_use]
     pub fn sol_selected(&self) -> Option<(SolAccountId, String, SolAddress)> {
         let meta = self.meta.as_ref()?;
-        let wanted = meta.sol_raw_selected.map_or(
-            SolAccountId::Derived(meta.prefs.sol_account),
-            SolAccountId::Imported,
+        let wanted = meta.hw_accounts.sol_selected.map_or_else(
+            || {
+                meta.sol_raw_selected.map_or(
+                    SolAccountId::Derived(meta.prefs.sol_account),
+                    SolAccountId::Imported,
+                )
+            },
+            SolAccountId::Hardware,
         );
         let rows = self.sol_account_rows();
         rows.iter()
@@ -523,7 +555,7 @@ impl App {
                 label,
                 kind: match id {
                     SolAccountId::Derived(index) => KnownKind::Own { index },
-                    SolAccountId::Imported(_) => KnownKind::OwnImported,
+                    SolAccountId::Imported(_) | SolAccountId::Hardware(_) => KnownKind::OwnImported,
                 },
             });
         }
@@ -620,8 +652,16 @@ impl App {
                 SolAccountId::Derived(index) => {
                     meta.prefs.sol_account = index;
                     meta.sol_raw_selected = None;
+                    meta.hw_accounts.sol_selected = None;
                 }
-                SolAccountId::Imported(record) => meta.sol_raw_selected = Some(record),
+                SolAccountId::Imported(record) => {
+                    meta.sol_raw_selected = Some(record);
+                    meta.hw_accounts.sol_selected = None;
+                }
+                SolAccountId::Hardware(index) => {
+                    meta.hw_accounts.sol_selected = Some(index);
+                    meta.sol_raw_selected = None;
+                }
             }
             self.sol.rename = None;
             self.save_meta();
@@ -660,6 +700,16 @@ impl App {
                         label.clone_into(&mut raw.label);
                     }
                 }
+                SolAccountId::Hardware(index) => {
+                    if let Some(account) = meta
+                        .hw_accounts
+                        .sol
+                        .iter_mut()
+                        .find(|account| account.index == index)
+                    {
+                        label.clone_into(&mut account.label);
+                    }
+                }
             }
         }
         self.sol.rename = None;
@@ -669,6 +719,25 @@ impl App {
 
     /// Hides the selected standard account (not account 0; imported keys are removed instead).
     pub fn sol_hide_selected(&mut self) {
+        if let Some((SolAccountId::Hardware(index), ..)) = self.sol_selected() {
+            // A hidden YubiKey account comes back when a card with its key is enrolled again.
+            let mut hidden = None;
+            if let Some(meta) = self.meta.as_mut() {
+                for account in &mut meta.hw_accounts.sol {
+                    if account.index == index {
+                        account.hidden = true;
+                        hidden = SolAddress::parse(&account.address).ok();
+                    }
+                }
+                meta.hw_accounts.sol_selected = None;
+            }
+            self.save_meta();
+            if let Some(address) = hidden {
+                self.sol_account_removed_from_sites(&address.to_bytes());
+            }
+            self.refresh();
+            return;
+        }
         let Some((SolAccountId::Derived(index), ..)) = self.sol_selected() else {
             return;
         };
@@ -1241,8 +1310,40 @@ impl App {
         }
     }
 
-    /// `consume` succeeded (spec/07 §13.1 step 4): fetch the finalized blockhash now.
+    /// `consume` succeeded (spec/07 §13.1 step 4): fetch the finalized blockhash now; a
+    /// `YubiKey` transfer first goes through the card step (PIN window, spec/10 §9.2) and comes
+    /// back in [`App::sol_consumed_card`].
     pub fn sol_consumed(&mut self, approved: Approved, cluster: SolCluster, consumed_at_ms: u64) {
+        let approved = match self.card_begin(
+            approved,
+            crate::app_card::CardJobKind::SolTransfer { cluster },
+            None,
+        ) {
+            Ok(()) => return,
+            Err(approved) => *approved,
+        };
+        self.sol_presign(approved, cluster, consumed_at_ms, None);
+    }
+
+    /// The card step's PIN is in: fetch the blockhash, then `SignSolCard` (the SOL signing
+    /// deadline runs from `consumed_at_ms`, the PIN submission).
+    pub(crate) fn sol_consumed_card(
+        &mut self,
+        approved: Approved,
+        cluster: SolCluster,
+        consumed_at_ms: u64,
+        pin: crate::app_card::PinBuffer,
+    ) {
+        self.sol_presign(approved, cluster, consumed_at_ms, Some(pin));
+    }
+
+    fn sol_presign(
+        &mut self,
+        approved: Approved,
+        cluster: SolCluster,
+        consumed_at_ms: u64,
+        pin: Option<crate::app_card::PinBuffer>,
+    ) {
         let job = self.sol.job();
         match self.sol_endpoint(cluster) {
             Ok(endpoint) => {
@@ -1250,6 +1351,7 @@ impl App {
                     approved: Box::new(approved),
                     consumed_at_ms,
                     job,
+                    pin,
                 });
                 if !self.rpc(RpcJob::SolPreSign { job, endpoint }) {
                     self.sol_abort_sign(ErrorCode::Rpc001);
@@ -1257,6 +1359,7 @@ impl App {
             }
             Err(code) => {
                 drop(approved);
+                drop(pin);
                 self.sol.slot = None;
                 self.sol_abort_message(code);
             }
@@ -1286,15 +1389,23 @@ impl App {
             return;
         }
         match result {
-            Ok((blockhash, last_valid_block_height)) => {
-                self.key(KeyJob::SignSol {
+            Ok((blockhash, last_valid_block_height)) => match pending.pin {
+                Some(pin) => self.key(KeyJob::SignSolCard {
                     approved: pending.approved,
                     consumed_at_ms: pending.consumed_at_ms,
                     blockhash,
                     last_valid_block_height,
                     now_unix_ms: now_unix_ms(),
-                });
-            }
+                    pin: pin.into_inner(),
+                }),
+                None => self.key(KeyJob::SignSol {
+                    approved: pending.approved,
+                    consumed_at_ms: pending.consumed_at_ms,
+                    blockhash,
+                    last_valid_block_height,
+                    now_unix_ms: now_unix_ms(),
+                }),
+            },
             Err(error) => {
                 let code = match error {
                     PreSignError::Rpc(code) => code,
@@ -1357,6 +1468,18 @@ impl App {
                     SolSignFailure::Sign(_) | SolSignFailure::AlreadySigned => ErrorCode::Tx003,
                     SolSignFailure::JournalFull => ErrorCode::Tx005,
                     SolSignFailure::JournalWrite(_) => ErrorCode::Vlt003,
+                    SolSignFailure::Card(error) => {
+                        let message = format!("{} — {error}", ErrorCode::Sol004.text());
+                        logging::warn(
+                            "app",
+                            "sol.sign_aborted",
+                            &[("reason", Field::Word("card"))],
+                        );
+                        self.sol.send.info = Some(message.clone());
+                        self.banner(None, message);
+                        self.refresh();
+                        return;
+                    }
                 };
                 self.sol_abort_message(cause);
             }

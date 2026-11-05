@@ -827,6 +827,7 @@ impl App {
             let is_selected = selected == Some(pref);
             let shown_label = match pref {
                 EvmAccountPref::Record(_) => format!("{label}  [가져온 키]"),
+                EvmAccountPref::Hardware(_) => format!("{label}  [YubiKey]"),
                 EvmAccountPref::Index(_) => label.clone(),
             };
             items.push(Item::Row(vec![
@@ -864,6 +865,11 @@ impl App {
                                 Ctl::danger(ids::REMOVE_KEY, "삭제")
                                     .enabled(self.can_remove_imported()),
                             );
+                        }
+                        // A YubiKey account (spec/10 §13): no "개인키 보기" (the key is on
+                        // the card only); hidden until a card with its key is enrolled again.
+                        EvmAccountPref::Hardware(_) => {
+                            row_ctls.push(Ctl::button(ids::HIDE, "숨기기"));
                         }
                     }
                     items.push(Item::Row(row_ctls));
@@ -984,8 +990,9 @@ impl App {
                     .to_owned(),
             ));
             items.push(Item::Row(vec![
-                Ctl::button(ids::REVEAL_KEY, "개인키 보기")
-                    .enabled(unlocked && self.selected_account().is_some()),
+                Ctl::button(ids::REVEAL_KEY, "개인키 보기").enabled(
+                    unlocked && self.selected_account().is_some() && !self.hardware_selected(),
+                ),
             ]));
         } else {
             items.push(Item::Help(
@@ -994,7 +1001,8 @@ impl App {
             ));
             items.push(Item::Row(vec![
                 Ctl::button(ids::REVEAL_MNEMONIC, "복구 단어 보기").enabled(public),
-                Ctl::button(ids::REVEAL_KEY, "개인키 보기").enabled(unlocked),
+                Ctl::button(ids::REVEAL_KEY, "개인키 보기")
+                    .enabled(unlocked && !self.hardware_selected()),
             ]));
         }
         items.push(Item::Help(

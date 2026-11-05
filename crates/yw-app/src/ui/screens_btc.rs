@@ -553,7 +553,9 @@ impl App {
         }
         for (index, row) in rows.iter().take(usize::from(ids::ACCOUNT_SPAN)).enumerate() {
             let id = ids::ACCOUNT_BASE.saturating_add(u16::try_from(index).unwrap_or(0));
+            let hardware = matches!(row.id, yw_core::btc::BtcAccountId::Hardware { .. });
             let badge = match (row.imported, row.evm_shared) {
+                _ if hardware => "[YubiKey] ".to_owned(),
                 (true, _) => "[가져온 키] ".to_owned(),
                 (false, Some(evm_index)) => format!("[EVM 계정 {evm_index} 키] "),
                 (false, None) => String::new(),
@@ -978,8 +980,13 @@ impl App {
         let usable = gate.is_ok();
         self.btc_refresh_row(&ctx, usable, items);
         items.push(Item::CardEnd);
-        let show_accounts =
-            (ctx.primary_meta().is_some() || !ctx.has_mnemonic) && ctx.mismatch().is_none();
+        // `YubiKey` accounts (spec/10 §13) are listed even before BIP84 account 0 exists.
+        let has_hardware = ctx
+            .accounts()
+            .iter()
+            .any(|meta| meta.account().is_hardware());
+        let show_accounts = (ctx.primary_meta().is_some() || !ctx.has_mnemonic || has_hardware)
+            && ctx.mismatch().is_none();
         if ctx.btc_meta().is_none() && !ctx.has_mnemonic {
             // A key-only wallet without a Bitcoin key yet: only the account card.
             if show_accounts {

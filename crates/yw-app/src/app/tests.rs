@@ -2191,3 +2191,298 @@ fn evm_shared_bitcoin_key_reveal() {
         KeyOutcome::Revealed(Ok((_, text, None))) if text.expose() == EVM0_TEST_WIF
     )));
 }
+
+/// spec/10 §9.2, §13 at the App level (no windows): a wallet with enrolled emulator `YubiKey`s
+/// lists the `YubiKey` accounts in the EVM, Solana and Bitcoin tabs (badge, slot-map addresses,
+/// dApp connect lists, no "개인키 보기"); an approved EVM transfer of a `YubiKey` account opens
+/// the card step (W11 `CardPin`, `Purpose::CardSign`) instead of `SignEvm`; a wrong PIN returns
+/// the unused approval and asks again; the right PIN dispatches `SignEvmCard` and journals the
+/// transaction; cancelling drops the approval; a software account still goes to `SignEvm`.
+#[test]
+#[expect(clippy::too_many_lines, reason = "one card-step scenario")]
+fn yubikey_accounts_and_the_card_step() {
+    use yw_core::approval::{ApprovalId, ApprovalKind, ApprovalOrigin, ApprovalStore};
+    use yw_core::bip32::path::AccountIndex;
+    use yw_core::evm::decode::{DecodedTx, decode_call};
+    use yw_core::evm::simulate::SimResult;
+    use yw_core::evm::tx::Eip1559Tx;
+    use yw_core::journal::evm::Role;
+    use yw_core::vault::EvmKeySource;
+
+    use crate::app_browser::SignWaiter;
+    use crate::app_sol::SolAccountId;
+    use crate::events::{KeyJob, SignInfo};
+
+    let (worker, cards, dir, _) = crate::workers::key::tests::yubikey_wallet("app");
+    let mut h = Harness {
+        app: app_at(&dir),
+        worker,
+        dir,
+        phrase: None,
+        address: None,
+    };
+    h.app.key(KeyJob::Load);
+    h.pump();
+    h.submit(Purpose::Unlock, &[b"yubikey wallet password"]);
+    h.pump();
+    assert!(matches!(h.app.mode, AppMode::Unlocked { .. }));
+
+    // EVM: the derived account 0, then the two YubiKey accounts (badge, path, EIP-55 address).
+    let rows = h.app.account_rows();
+    let hardware: Vec<(EvmAccountPref, String, String)> = rows
+        .iter()
+        .filter(|(pref, ..)| matches!(pref, EvmAccountPref::Hardware(_)))
+        .map(|(pref, _, address, path)| (*pref, address.clone(), path.clone()))
+        .collect();
+    assert_eq!(
+        hardware,
+        [
+            (
+                EvmAccountPref::Hardware(0),
+                "0x9858EfFD232B4033E47d90003D41EC34EcaEda94".to_owned(),
+                "m/44'/60'/0'/0/0 (YubiKey)".to_owned()
+            ),
+            (
+                EvmAccountPref::Hardware(1),
+                "0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0".to_owned(),
+                "m/44'/60'/0'/0/1 (YubiKey)".to_owned()
+            )
+        ]
+    );
+    let card_row = rows
+        .iter()
+        .position(|(pref, ..)| *pref == EvmAccountPref::Hardware(1))
+        .unwrap();
+    h.app
+        .on_command(ids::ACCOUNT_BASE + u16::try_from(card_row).unwrap());
+    h.pump();
+    assert_eq!(h.app.selected_pref(), Some(EvmAccountPref::Hardware(1)));
+    let (account, source, _) = h.app.selected_account().unwrap();
+    assert_eq!(
+        source,
+        EvmKeySource::Hardware(AccountIndex::new(1).unwrap())
+    );
+    assert!(h.app.hardware_selected());
+    h.app.set_screen(Screen::Main);
+    assert!(
+        controls(&h.app.items())
+            .iter()
+            .any(|ctl| ctl.text.contains("[YubiKey]"))
+    );
+    // dApp connect lists offer it.
+    assert!(
+        h.app
+            .own_accounts()
+            .iter()
+            .any(|(address, _)| *address == account)
+    );
+    // Solana: the PIV account, selectable.
+    let sol = h.app.sol_account_rows();
+    let (sol_row, (_, _, sol_address)) = sol
+        .iter()
+        .enumerate()
+        .find(|(_, (id, ..))| *id == SolAccountId::Hardware(0))
+        .unwrap();
+    assert_eq!(
+        sol_address.to_base58(),
+        "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"
+    );
+    h.app.sol_select_account(sol_row);
+    assert_eq!(
+        h.app.sol_selected().map(|(id, ..)| id),
+        Some(SolAccountId::Hardware(0))
+    );
+    assert!(
+        h.app
+            .sol_dapp_rows()
+            .iter()
+            .any(|row| row.source == yw_core::slip10::SolKeySource::Hardware(AccountIndex::ZERO))
+    );
+    // Bitcoin (mainnet): the BIP84 address key as a single-address account with the badge.
+    h.app.settings.bitcoin.enabled = true;
+    h.app.settings.bitcoin.network = crate::network::BtcNet::Mainnet;
+    assert!(
+        h.app
+            .btc_dapp_rows()
+            .iter()
+            .any(|row| row.entry.address == "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu")
+    );
+    if let Some(meta) = h.app.meta.as_mut() {
+        meta.prefs.tab = Tab::Btc;
+    }
+    assert!(
+        controls(&h.app.items())
+            .iter()
+            .any(|ctl| ctl.text.contains("[YubiKey]"))
+    );
+    if let Some(meta) = h.app.meta.as_mut() {
+        meta.prefs.tab = Tab::Evm;
+    }
+
+    // An approved Sepolia transfer of YubiKey EVM account 1.
+    let chain = yw_core::evm::chain::sepolia();
+    let tx = Eip1559Tx {
+        chain_id: 11_155_111,
+        nonce: 0,
+        max_priority_fee_per_gas: U256::from_u64(1_000_000_000),
+        max_fee_per_gas: U256::from_u64(2_000_000_000),
+        gas_limit: 21_000,
+        to: parse_address("0x9858EfFD232B4033E47d90003D41EC34EcaEda94").unwrap(),
+        value: U256::from_u64(1_000),
+        data: Vec::new(),
+        access_list: Vec::new(),
+    };
+    let mut store = ApprovalStore::new();
+    let mut approve = |source: EvmKeySource, from: Address| {
+        let decoded = DecodedTx {
+            call: decode_call(&chain, &tx.to, &tx.data),
+            tx: tx.clone(),
+        };
+        let draft = yw_core::approval::build_evm_tx_request(
+            ApprovalId::random().unwrap(),
+            ApprovalOrigin::App,
+            source,
+            from,
+            ApprovalKind::EvmTransaction,
+            &chain,
+            &decoded,
+            &SimResult::skipped(),
+            &yw_core::approval::ChainFacts::default(),
+            Vec::new(),
+            1_790_000_000_000,
+        )
+        .unwrap();
+        let request = store.issue(draft, 0, 1_790_000_000_000).unwrap();
+        store.consume(request.id, request.digest, 1).unwrap()
+    };
+    let info = SignInfo {
+        origin: "yw-app".to_owned(),
+        label: "YubiKey 보내기".to_owned(),
+        role: Role::Original,
+        now_unix_ms: 1_790_000_000_000,
+    };
+    // Runs the next queued job after checking its name.
+    let run_named = |h: &mut Harness, name: &str| {
+        let entry = h.app.key_queue.pop().unwrap();
+        assert_eq!(entry.1.name(), name);
+        let results = std::cell::RefCell::new(Vec::new());
+        let signal = std::sync::Arc::clone(&h.app.lock_signal);
+        step(
+            &mut h.worker,
+            &h.app.key_queue,
+            entry,
+            &|result| results.borrow_mut().push(result),
+            &signal,
+        );
+        h.deliver(results.into_inner());
+    };
+    let records = |h: &Harness| {
+        h.app
+            .evm
+            .journal
+            .as_ref()
+            .map_or(0, |journal| journal.records.len())
+    };
+    h.pump();
+    let before = records(&h);
+
+    let ticket = h.app.push_sign_waiter(SignWaiter::App);
+    h.app
+        .dispatch_evm_sign(ticket, approve(source, account), info.clone());
+    // No signing job yet: the card step waits for the PIN (W11 bounds: OpenPGP PW1 6–127).
+    assert!(h.app.key_queue.is_empty());
+    let id = h.app.card_waiting_id().unwrap();
+    let step = h.app.card.step.as_ref().unwrap();
+    assert_eq!(crate::yubikey::pin_bounds(step.role), (6, 127));
+    assert_eq!(step.touches, 1);
+    assert_eq!(
+        crate::yubikey::holders(&h.app.card.records, step.role),
+        [7_700_011]
+    );
+
+    // Wrong PIN: the worker checks it before the approval is used; the step asks again.
+    h.submit(Purpose::CardSign(id), &[b"000000"]);
+    assert!(!h.app.card_waiting(id));
+    run_named(&mut h, "SignEvmCard");
+    assert!(h.app.card_waiting(id), "the PIN window opens again");
+    assert!(
+        h.app
+            .card
+            .step
+            .as_ref()
+            .and_then(|step| step.error.clone())
+            .is_some_and(|error| error.contains("PIN이 틀렸습니다"))
+    );
+    assert_eq!(records(&h), before);
+    // The right PIN signs on the card and journals the transaction.
+    h.submit(Purpose::CardSign(id), &[b"123456"]);
+    run_named(&mut h, "SignEvmCard");
+    h.pump();
+    assert!(h.app.card.step.is_none());
+    assert_eq!(records(&h), before + 1);
+
+    // Cancelling the PIN window signs nothing.
+    let ticket = h.app.push_sign_waiter(SignWaiter::App);
+    h.app
+        .dispatch_evm_sign(ticket, approve(source, account), info.clone());
+    let id = h.app.card_waiting_id().unwrap();
+    h.app.on_cancel(Purpose::CardSign(id));
+    assert!(h.app.card.step.is_none());
+    assert!(h.app.key_queue.is_empty());
+    assert_eq!(records(&h), before + 1);
+
+    // A software account is unchanged: `SignEvm` right away, no card step.
+    let derived = EvmKeySource::Derived(AccountIndex::ZERO);
+    let address = parse_address("0x9858EfFD232B4033E47d90003D41EC34EcaEda94").unwrap();
+    let ticket = h.app.push_sign_waiter(SignWaiter::App);
+    h.app
+        .dispatch_evm_sign(ticket, approve(derived, address), info);
+    assert!(h.app.card.step.is_none());
+    run_named(&mut h, "SignEvm");
+    h.pump();
+
+    // The wizard's entry point: a third card (SIG = EVM 2) enrolled through the App — the
+    // accounts are reconciled from the slot map and the defaults to change are reported.
+    {
+        use yw_core::yubikey::plan::{CardSlot, KeyRole, PgpKey, PlannedSlot};
+        *cards.lock().unwrap() = vec![yw_core::yubikey::mock::MockCard::new(7_700_013)];
+        h.app.enrol_yubikey(crate::app_card::EnrolRequest {
+            phrase: Zeroizing::new(format!("{} about", ["abandon"; 11].join(" ")).into_bytes()),
+            passphrase: None,
+            slots: vec![PlannedSlot::recommended(
+                CardSlot::OpenPgp(PgpKey::Sig),
+                KeyRole::Evm {
+                    index: AccountIndex::new(2).unwrap(),
+                    btc: None,
+                },
+            )],
+            admin_pin: Zeroizing::new(b"12345678".to_vec()),
+            management_key: Zeroizing::new(Vec::new()),
+        });
+        h.pump();
+    }
+    assert!(matches!(
+        &h.app.card.enrol,
+        Some(crate::app_card::EnrolState::Done {
+            serial: 7_700_013,
+            slots: 1,
+            defaults,
+        }) if !defaults.is_empty()
+    ));
+    assert_eq!(h.app.card.records.len(), 3);
+    let meta = h.app.meta.as_ref().unwrap();
+    assert!(
+        meta.hw_accounts
+            .evm
+            .iter()
+            .any(|account| account.index == 2)
+    );
+    assert_eq!(meta.hw_accounts.defaults, [7_700_013]);
+    assert!(
+        h.app
+            .account_rows()
+            .iter()
+            .any(|(pref, ..)| *pref == EvmAccountPref::Hardware(2))
+    );
+    let _ = std::fs::remove_dir_all(&h.dir);
+}

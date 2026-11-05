@@ -1914,10 +1914,14 @@ impl App {
                         return;
                     };
                     let ticket = self.push_sign_waiter(waiter);
-                    self.key(KeyJob::SignChainMessage {
-                        ticket,
-                        approved: Box::new(approved),
-                    });
+                    // A YubiKey account signs on the card after its PIN (spec/10 §10).
+                    if let Err(approved) = self.card_begin(
+                        approved,
+                        crate::app_card::CardJobKind::ChainMessage,
+                        Some(ticket),
+                    ) {
+                        self.key(KeyJob::SignChainMessage { ticket, approved });
+                    }
                     self.finish_approval(QueueOutcome::Approved);
                     return;
                 }
@@ -1932,11 +1936,19 @@ impl App {
                             crate::app_browser::SignWaiter::Message,
                         );
                         let ticket = self.push_sign_waiter(waiter);
-                        self.key(KeyJob::SignMessage {
-                            ticket,
-                            approved: Box::new(approved),
-                            typed: kind == yw_core::approval::ApprovalKind::EvmTypedData,
-                        });
+                        let typed = kind == yw_core::approval::ApprovalKind::EvmTypedData;
+                        // A YubiKey account signs on the card after its PIN (spec/10 §9.2).
+                        if let Err(approved) = self.card_begin(
+                            approved,
+                            crate::app_card::CardJobKind::EvmMessage { typed },
+                            Some(ticket),
+                        ) {
+                            self.key(KeyJob::SignMessage {
+                                ticket,
+                                approved,
+                                typed,
+                            });
+                        }
                     }
                     (Some(prepared), _) => {
                         let (origin, waiter) = match &item {
@@ -1949,16 +1961,13 @@ impl App {
                             }
                         };
                         let ticket = self.push_sign_waiter(waiter);
-                        self.key(KeyJob::SignEvm {
-                            ticket,
-                            approved: Box::new(approved),
-                            info: SignInfo {
-                                origin,
-                                label: request.display.title.clone(),
-                                role: prepared.context.role,
-                                now_unix_ms: now_unix_ms(),
-                            },
-                        });
+                        let info = SignInfo {
+                            origin,
+                            label: request.display.title.clone(),
+                            role: prepared.context.role,
+                            now_unix_ms: now_unix_ms(),
+                        };
+                        self.dispatch_evm_sign(ticket, approved, info);
                     }
                     (None, _) => {
                         self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
@@ -1973,8 +1982,34 @@ impl App {
         }
     }
 
+    /// The signing job of a consumed EVM transaction approval: `SignEvm`, or — for a `YubiKey`
+    /// account (`EvmKeySource::Hardware`) — the card step: the PIN window, then `SignEvmCard`
+    /// (spec/10 §9.2).
+    pub(crate) fn dispatch_evm_sign(
+        &mut self,
+        ticket: crate::events::SignTicket,
+        approved: yw_core::approval::Approved,
+        info: SignInfo,
+    ) {
+        let kind = crate::app_card::CardJobKind::EvmTx { info };
+        match self.card_begin(approved, kind.clone(), Some(ticket)) {
+            Ok(()) => {}
+            Err(approved) => {
+                let crate::app_card::CardJobKind::EvmTx { info } = kind else {
+                    return;
+                };
+                self.key(KeyJob::SignEvm {
+                    ticket,
+                    approved,
+                    info,
+                });
+            }
+        }
+    }
+
     /// Main-timer part: deadlines, re-arming, the simulation countdown.
     pub fn tick_approval(&mut self, now: u64) {
+        self.card_tick(now);
         let finished = self.evm.queue.tick(now);
         let _ = self.evm.store.expire_due(now);
         let shown_gone = self.evm.queue.shown().is_none() && self.evm.window.is_some();

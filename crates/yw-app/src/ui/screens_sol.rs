@@ -412,6 +412,8 @@ impl App {
             let is_selected = selected == Some(id);
             let shown_label = if id.is_imported() {
                 format!("{label}  [가져온 키]")
+            } else if id.is_hardware() {
+                format!("{label}  [YubiKey]")
             } else {
                 label.clone()
             };
@@ -448,6 +450,10 @@ impl App {
                     match id {
                         SolAccountId::Derived(index) => {
                             row_ctls.push(Ctl::button(ids::HIDE, "숨기기").enabled(index != 0));
+                        }
+                        // A YubiKey account: no "개인키 보기" (the key is on the card only).
+                        SolAccountId::Hardware(_) => {
+                            row_ctls.push(Ctl::button(ids::HIDE, "숨기기"));
                         }
                         SolAccountId::Imported(_) => {
                             row_ctls.push(

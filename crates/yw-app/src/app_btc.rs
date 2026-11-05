@@ -3970,8 +3970,21 @@ impl crate::app::App {
         }
     }
 
-    /// `consume` succeeded for a BTC item.
+    /// `consume` succeeded for a BTC item; a `YubiKey` account first goes through the card step
+    /// (PIN window, then `SignBtcCard`, spec/10 §6.3).
     pub(crate) fn btc_consumed(&mut self, approved: Approved, item: &BtcApprovalItem) {
+        let kind = crate::app_card::CardJobKind::Btc {
+            plan: Box::new(item.plan.clone()),
+            tip_height: item.tip_height,
+        };
+        if crate::yubikey::btc_plan_role(&item.plan).is_some() {
+            self.btc.slot = true;
+            if let Err(approved) = self.card_begin(approved, kind, None) {
+                self.btc.slot = false;
+                drop(approved);
+            }
+            return;
+        }
         self.btc_call(|ui, ctx| ui.consumed(ctx, approved, item));
     }
 

@@ -344,6 +344,10 @@ pub enum Purpose {
     KeyStartKey,
     /// W07 of `개인키 가져오기` on the Solana / Bitcoin tab.
     ImportChainKey(yw_core::keyimport::ImportSpec),
+    /// W11: the PIN of card step `id` (spec/10 §9.2). The consumed approval and the job to
+    /// dispatch are held by that step (`crate::app_card::CardStep`); submitting moves the PIN
+    /// buffer into the card job, cancelling drops the approval (nothing signed).
+    CardSign(u64),
 }
 
 struct SecretWin {
@@ -511,6 +515,8 @@ pub struct App {
     pub(crate) btc: crate::app_btc::BtcUi,
     /// Imported keys and "개인키로 시작하기" (spec/04 §2.18).
     pub(crate) keys: crate::app_keys::KeysUi,
+    /// `YubiKey` card step and enrolment state (spec/10).
+    pub(crate) card: crate::app_card::CardUi,
     pub(crate) browser: Option<crate::app_browser::BrowserUi>,
     /// The `yw-llm` worker, only while the AI explanation is effectively on (spec/06 §9).
     pub(crate) llm: Option<crate::explain::ExplainService>,
@@ -720,6 +726,7 @@ impl App {
             sol: crate::app_sol::SolUi::default(),
             btc: crate::app_btc::BtcUi::default(),
             keys: crate::app_keys::KeysUi::default(),
+            card: crate::app_card::CardUi::default(),
             browser: None,
             llm: None,
             llm_ui: crate::app_llm::LlmUi::default(),
@@ -1189,6 +1196,7 @@ impl App {
         self.lock_epoch = self.lock_epoch.saturating_add(1);
         let before = self.lock_signal.count();
         self.key(KeyJob::Lock);
+        self.card_lock();
         self.close_secret();
         self.import = ImportFlow::default();
         self.challenge = None;
@@ -1303,7 +1311,7 @@ impl App {
         self.refresh();
     }
 
-    fn secret_purpose(&self) -> Option<Purpose> {
+    pub(crate) fn secret_purpose(&self) -> Option<Purpose> {
         self.secret.as_ref().map(|secret| secret.purpose)
     }
 
@@ -1320,7 +1328,11 @@ impl App {
             return;
         }
         let now = now_ms();
-        match result.outcome {
+        // The YubiKey card step sees signing outcomes first (a returned approval, a retry).
+        let Some(outcome) = self.card_filter(result.outcome) else {
+            return;
+        };
+        match outcome {
             KeyOutcome::Quarantined(name) => self.quarantined = Some(name),
             KeyOutcome::Loaded { status, leftover } => {
                 self.leftover = leftover;
@@ -1439,7 +1451,8 @@ impl App {
             }
             // The answer to `DiscardKeyStart`.
             KeyOutcome::KeyStartCommitted(Err(VaultError::InvalidState))
-            | KeyOutcome::HardwareKeys(_) => {}
+            | KeyOutcome::CardUnused(..) => {}
+            KeyOutcome::HardwareKeys(result) => self.on_hardware_keys(result),
             KeyOutcome::KeyStartCommitted(Err(error)) => {
                 self.keys.start = crate::app_keys::KeyStartFlow::default();
                 self.error_banner(vault_code(error));
@@ -1463,19 +1476,7 @@ impl App {
             KeyOutcome::SignedSol(result) => self.on_sol_signed(result),
             KeyOutcome::SignedMessage(result) => self.browser_message_signed(result),
             KeyOutcome::SignedChainMessage(result) => self.browser_chain_message_signed(&result),
-            // The enrolment wizard and the YubiKey list (spec/10 §13 item 1) are not wired yet:
-            // the outcomes are logged only.
-            KeyOutcome::YubiKeyEnrolled(result) => {
-                logging::info(
-                    "app",
-                    if result.is_ok() {
-                        "yubikey.enrolled"
-                    } else {
-                        "yubikey.enrol_failed"
-                    },
-                    &[],
-                );
-            }
+            KeyOutcome::YubiKeyEnrolled(result) => self.on_yubikey_enrolled(result),
             KeyOutcome::Imported(Err(_))
             | KeyOutcome::LockDone
             | KeyOutcome::Cancelled(..)
@@ -1670,6 +1671,7 @@ impl App {
                     self.sol_ensure_account();
                 }
                 self.btc_after_meta();
+                self.card_after_meta();
             }
             KeyOutcome::Meta(Err(
                 VaultError::SidecarCorrupt(_) | VaultError::SidecarVaultMismatch(_),
@@ -2328,6 +2330,7 @@ impl App {
                 self.with_form(|form| form.set_busy(true));
                 self.key(KeyJob::ImportKey { spec, key: next() });
             }
+            Purpose::CardSign(id) => self.card_submit(id, next()),
             Purpose::ShowForBackup | Purpose::ShowRevealed => {}
         }
     }
@@ -2394,6 +2397,7 @@ impl App {
                     _ => Screen::Locked,
                 });
             }
+            Purpose::CardSign(id) => self.card_cancel(id),
             Purpose::ConfirmPassword(_)
             | Purpose::ShowRevealed
             | Purpose::ChangePassword
@@ -3012,6 +3016,21 @@ impl App {
                 "가져온 개인키".to_owned(),
             )
         }));
+        // YubiKey accounts (spec/10 §13): the address of the slot map's public key.
+        rows.extend(
+            meta.hw_accounts
+                .evm
+                .iter()
+                .filter(|account| !account.hidden)
+                .map(|account| {
+                    (
+                        EvmAccountPref::Hardware(account.index),
+                        account.label.clone(),
+                        checksum(&account.address),
+                        format!("m/44'/60'/0'/0/{} (YubiKey)", account.index),
+                    )
+                }),
+        );
         rows
     }
 
@@ -3053,6 +3072,16 @@ impl App {
                         raw.label = label;
                     }
                 }
+                EvmAccountPref::Hardware(index) => {
+                    if let Some(account) = meta
+                        .hw_accounts
+                        .evm
+                        .iter_mut()
+                        .find(|account| account.index == index)
+                    {
+                        account.label = label;
+                    }
+                }
             }
         }
         self.rename = None;
@@ -3062,6 +3091,25 @@ impl App {
     }
 
     fn hide_selected(&mut self) {
+        if let Some(meta) = self.meta.as_mut()
+            && let EvmAccountPref::Hardware(index) = meta.prefs.evm_account
+            && let Some(account) = meta
+                .hw_accounts
+                .evm
+                .iter_mut()
+                .find(|account| account.index == index)
+        {
+            // A hidden YubiKey account comes back when a card with its key is enrolled again.
+            account.hidden = true;
+            let hidden = yw_core::evm::address::parse_address(&account.address).ok();
+            meta.prefs.evm_account = EvmAccountPref::Index(0);
+            self.save_meta();
+            if let Some(address) = hidden {
+                self.account_removed_from_sites(&address);
+            }
+            self.refresh();
+            return;
+        }
         if let Some(meta) = self.meta.as_mut()
             && let EvmAccountPref::Index(index) = meta.prefs.evm_account
             && index != 0
@@ -3346,6 +3394,15 @@ impl App {
             Confirm::RevealKey => {
                 self.set_screen(previous);
                 let source = match self.selected_pref() {
+                    Some(EvmAccountPref::Hardware(_)) => {
+                        // The key of a YubiKey account never leaves the card (spec/10 §1).
+                        self.info = Some(
+                            "YubiKey 계정의 개인키는 YubiKey 밖으로 나오지 않습니다. 백업은 등록할 때 쓴 복구 단어입니다."
+                                .to_owned(),
+                        );
+                        self.refresh();
+                        return;
+                    }
                     Some(EvmAccountPref::Record(id)) => EvmKeySource::Raw(RecordId::from_bytes(id)),
                     Some(EvmAccountPref::Index(index)) => {
                         yw_core::bip32::path::AccountIndex::new(index).map_or(

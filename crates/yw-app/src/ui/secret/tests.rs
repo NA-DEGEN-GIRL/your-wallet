@@ -350,3 +350,62 @@ fn w07_solana_and_bitcoin_fields_take_their_formats() {
     let pasted = crate::ui::secure_field::normalize_paste(&units, Charset::KeyText, 64).unwrap();
     assert_eq!(pasted.as_slice(), b"[1, 2, 3]");
 }
+
+/// W11 (spec/10 §9.1): one masked field with the applet's bounds (PIV 6–8 here), ASCII only,
+/// no copy (Ctrl+C does nothing), capture exclusion preferred like the other input windows, the
+/// submitted PIN moved out as an owned `Zeroizing` buffer and the field wiped; the title and the
+/// "N회 터치" line follow the kind.
+#[test]
+fn w11_card_pin_bounds_mask_and_owned_buffer() {
+    let kind = SecretKind::CardPin {
+        min: 6,
+        max: 8,
+        touches: 3,
+    };
+    assert_eq!(kind.id(), "W11");
+    assert_eq!(kind.title(), "YubiKey PIN");
+    assert!(!kind.is_display() && !kind.plaintext());
+    assert_eq!(
+        capture_decision(kind, Ok(false)),
+        CaptureDecision::Show { warning: true }
+    );
+    let intro = super::intro(kind, 0);
+    assert!(intro[0].contains("YubiKey를 연결하고 PIN 입력 후 터치하세요"));
+    assert!(intro[1].contains("YubiKey 터치 3회가 필요합니다"));
+    assert_eq!(
+        super::intro(
+            SecretKind::CardPin {
+                min: 6,
+                max: 127,
+                touches: 1
+            },
+            0
+        )
+        .len(),
+        1
+    );
+    let mut form = SecretForm::new(kind, 0, true);
+    form.set_details(vec!["이 키를 가진 YubiKey: #7700011".to_owned()]);
+    type_text(&mut form, "12345", 0);
+    assert!(
+        matches!(form.on_char(0x0D, 0), FormAction::Redraw),
+        "too short"
+    );
+    type_text(&mut form, "6789", 0);
+    // The field holds at most 8 characters.
+    let FormAction::Submit(submission) = form.on_char(0x0D, 0) else {
+        unreachable!("expected submit");
+    };
+    let [pin] = submission.values.as_slice() else {
+        unreachable!("one value");
+    };
+    let owned: &Zeroizing<Vec<u8>> = pin;
+    assert_eq!(owned.as_slice(), b"12345678");
+    assert!(matches!(
+        form.on_key(u16::from(b'C'), true, false, false, 0),
+        FormAction::None
+    ));
+    // Non-ASCII is refused like in every secret window.
+    assert!(matches!(form.on_char(0xAC00, 0), FormAction::Redraw));
+    assert!(!form.can_submit(0), "the field was wiped by the submission");
+}

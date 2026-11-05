@@ -43,6 +43,8 @@ pub const MNEMONIC_TEXT_MAX: usize = 216;
 pub const T_IMPORTED_KEY_BACKUP: &str = "주의: 가져온 개인키는 이 지갑의 복구 단어(24단어)로 복구되지 않습니다. 이 PC나 지갑 파일을 잃으면 이 계정은 원래 개인키로만 되살릴 수 있으니, 원래 개인키를 따로 안전하게 보관하세요.";
 /// T-KEY-ONLY (W07 of a wallet without recovery words, spec/04 §2.16).
 pub const T_KEY_ONLY_BACKUP: &str = "주의: 이 지갑에는 복구 단어가 없습니다. 이 계정의 백업은 지금 입력하는 원래 개인키뿐입니다. 이 PC나 지갑 파일을 잃으면 원래 개인키로만 되살릴 수 있으니, 원래 개인키를 종이 등 안전한 곳에 따로 보관하세요.";
+/// W11 (spec/10 §9.2): the card step after approval.
+pub const T_CARD_PIN: &str = "YubiKey를 연결하고 PIN 입력 후 터치하세요. PIN을 확인한 뒤 YubiKey가 깜박이면 터치하세요(15초 안에). PIN은 이 서명 한 번에만 쓰고 바로 지웁니다.";
 /// W07 help of a Solana key (spec/04 §2.18).
 pub const T_SOL_KEY_INPUT: &str = "Phantom·Solflare의 '개인키 내보내기'로 받은 base58 문자열(64바이트 keypair) 또는 solana-keygen JSON 파일의 내용([숫자 64개])을 붙여넣으세요. 주소(32바이트)는 개인키가 아닙니다.";
 /// W07 help of a Bitcoin key (spec/04 §2.18).
@@ -90,6 +92,17 @@ pub enum SecretKind {
         /// Word positions.
         positions: [u8; 4],
     },
+    /// W11 `YubiKey` PIN (spec/10 §9.1): one masked ASCII field of `min..=max` characters
+    /// (`OpenPGP` PW1 6–127, PIV 6–8), for one card operation; `touches` > 1 adds the
+    /// "`YubiKey` 터치 N회가 필요합니다" line (one touch per Bitcoin input).
+    CardPin {
+        /// Shortest PIN.
+        min: u8,
+        /// Longest PIN.
+        max: u8,
+        /// Card signatures (touches) the operation needs.
+        touches: u8,
+    },
 }
 
 impl SecretKind {
@@ -107,6 +120,7 @@ impl SecretKind {
             Self::ShowMnemonic { .. } => "W08",
             Self::ShowKey => "W09",
             Self::Backup { .. } => "W10",
+            Self::CardPin { .. } => "W11",
         }
     }
 
@@ -152,6 +166,7 @@ impl SecretKind {
             Self::ShowMnemonic { .. } => "복구 단어 (니모닉)",
             Self::ShowKey => "개인키 보기",
             Self::Backup { .. } => "백업 확인",
+            Self::CardPin { .. } => "YubiKey PIN",
         }
     }
 
@@ -339,6 +354,8 @@ pub struct SecretForm {
     layout: Layout,
     note: Option<String>,
     step: Option<SecretStep>,
+    /// Extra non-secret lines under the intro (W11: the cards holding the key, the PIN tries).
+    details: Vec<String>,
 }
 
 /// The flow a secret window belongs to and its step (the main window's step indicator, spec/04
@@ -420,6 +437,13 @@ fn slots_for(kind: SecretKind) -> Vec<Slot> {
             chain: ImportChain::Btc,
             ..
         } => vec![slot("Bitcoin 개인키 (WIF)", Charset::Base58, 51, 52, false)],
+        SecretKind::CardPin { min, max, .. } => vec![slot(
+            "YubiKey PIN",
+            Charset::Printable,
+            usize::from(min),
+            usize::from(max),
+            true,
+        )],
         SecretKind::Backup { positions } => positions
             .iter()
             .map(|position| {
@@ -484,6 +508,15 @@ fn intro(kind: SecretKind, words: usize) -> Vec<String> {
             "적은 종이를 보고 {}, {}, {}, {}번째 단어를 입력하세요.",
             positions[0], positions[1], positions[2], positions[3]
         )],
+        SecretKind::CardPin { touches, .. } => {
+            let mut lines = vec![T_CARD_PIN.to_owned()];
+            if touches > 1 {
+                lines.push(format!(
+                    "YubiKey 터치 {touches}회가 필요합니다 (입력마다 한 번, 15초 유지 정책이면 첫 터치 뒤 15초 안의 입력은 터치 없이 서명됩니다)."
+                ));
+            }
+            lines
+        }
     }
 }
 
@@ -586,6 +619,7 @@ impl SecretForm {
             pressed: None,
             layout: Layout::default(),
             step: None,
+            details: Vec::new(),
             note: matches!(kind, SecretKind::Mnemonic).then(|| {
                 "이전 지갑에서 BIP39 passphrase(25번째 단어)를 썼을 때만 켜세요. ASCII만 지원합니다.".to_owned()
             }),
@@ -630,6 +664,11 @@ impl SecretForm {
     /// Shows an error line (fixed text).
     pub fn set_error(&mut self, message: Option<String>) {
         self.error = message;
+    }
+
+    /// Extra non-secret lines under the intro (W11 card serials and PIN tries).
+    pub fn set_details(&mut self, lines: Vec<String>) {
+        self.details = lines;
     }
 
     /// Shows an information line (T-PASTE-CLEARED, T-COPIED…).
@@ -759,6 +798,13 @@ impl SecretForm {
                 if self.slots.iter().any(|slot| slot.field.len() < slot.min) =>
             {
                 return Err(ErrorCode::Inp013.text());
+            }
+            SecretKind::CardPin { min, max, .. }
+                if self.slots.iter().any(|slot| {
+                    !(usize::from(min)..=usize::from(max)).contains(&slot.field.len())
+                }) =>
+            {
+                return Err(format!("PIN은 영문·숫자·기호(ASCII) {min}–{max}자입니다."));
             }
             _ => {}
         }
@@ -1229,8 +1275,8 @@ impl SecretForm {
             .map_or(24, |display| display.text.expose().split(' ').count());
         dc.select_font(&fonts.body);
         dc.set_text_color(theme::MUTED);
-        for paragraph in intro(self.kind, words) {
-            let text = wide(&paragraph);
+        for paragraph in intro(self.kind, words).iter().chain(&self.details) {
+            let text = wide(paragraph);
             let height = dc.measure_wrapped(&text, width, DrawFlags::WRAP);
             dc.draw_text(&text, Rect::new(margin, y, width, height), DrawFlags::WRAP);
             y = y.saturating_add(height).saturating_add(px(8));
