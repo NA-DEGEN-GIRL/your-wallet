@@ -555,7 +555,8 @@ impl App {
                 label,
                 kind: match id {
                     SolAccountId::Derived(index) => KnownKind::Own { index },
-                    SolAccountId::Imported(_) | SolAccountId::Hardware(_) => KnownKind::OwnImported,
+                    SolAccountId::Imported(_) => KnownKind::OwnImported,
+                    SolAccountId::Hardware(_) => KnownKind::OwnHardware,
                 },
             });
         }

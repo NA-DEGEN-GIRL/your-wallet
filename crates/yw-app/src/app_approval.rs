@@ -2106,6 +2106,27 @@ impl App {
             testnet = test;
             badges.push(text.to_owned());
         }
+        // spec/10 §10: a YubiKey signer adds the "YubiKey로 서명" badge (app chrome only: the
+        // badges are not part of the request's digested display, spec/03 §11.3).
+        let card_badge = self.evm.window.as_ref().and_then(|ui| {
+            let (role, touches) = match (&ui.item, &ui.session.gate.prepare) {
+                (QueuedItem::Btc(item), _) => (
+                    crate::yubikey::btc_plan_role(&item.plan)?,
+                    item.plan.inputs().len(),
+                ),
+                (_, PrepareState::Ready(ReadyContent::Signing(request))) => (
+                    crate::yubikey::role_of(&request.signer, &request.payload)?,
+                    1,
+                ),
+                _ => return None,
+            };
+            Some(crate::app_card::card_badge(
+                &self.card.records,
+                role,
+                touches,
+            ))
+        });
+        badges.extend(card_badge);
         let Some(ui) = self.evm.window.as_mut() else {
             return;
         };
