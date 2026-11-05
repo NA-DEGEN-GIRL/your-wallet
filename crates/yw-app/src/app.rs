@@ -1164,6 +1164,8 @@ impl App {
             || self.keys.start.holds_secret()
             || self.secret.is_some()
             || self.card.wizard.is_some()
+            // A new YubiKey wallet's words may be held by the key worker (W08 not shown).
+            || self.screen == Screen::YubiKeyWalletIntro
     }
 
     /// Wipes a pending first-run import after the idle time (spec/04 §5.1): windows closed,
