@@ -10,12 +10,52 @@ use core::fmt;
 use std::sync::OnceLock;
 
 use sha2::{Digest, Sha256, Sha512};
+use subtle::{Choice, ConstantTimeEq};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::entropy::{RandomSource, random_secret32_with};
+use crate::entropy::{OsRandom, RandomSource, random_below_with, random_secret32_with};
 use crate::error::KeyError;
 use crate::password::Bip39Passphrase;
 use crate::secret::{SecretBytes, SecretString};
+
+/// Words asked by the backup confirmation (spec/02 §8.3).
+pub const BACKUP_WORDS: usize = 4;
+/// Longest BIP39 English word.
+const MAX_BACKUP_WORD: usize = 8;
+
+/// Picks [`BACKUP_WORDS`] distinct 1-based positions of a `words`-word phrase (partial
+/// Fisher–Yates over `random_below`), ascending.
+pub(crate) fn backup_positions_with(
+    rng: &mut impl RandomSource,
+    words: usize,
+) -> Result<[u8; BACKUP_WORDS], KeyError> {
+    if !(BACKUP_WORDS..=24).contains(&words) {
+        return Err(KeyError::Internal);
+    }
+    let mut candidates = [0_u8; 24];
+    for (index, slot) in candidates.iter_mut().enumerate() {
+        *slot = u8::try_from(index).map_err(|_| KeyError::Internal)?;
+    }
+    for offset in 0..BACKUP_WORDS {
+        let remaining = u32::try_from(words.checked_sub(offset).ok_or(KeyError::Internal)?)
+            .map_err(|_| KeyError::Internal)?;
+        let pick =
+            usize::try_from(random_below_with(rng, remaining)?).map_err(|_| KeyError::Internal)?;
+        candidates.swap(
+            offset,
+            offset
+                .checked_add(pick)
+                .filter(|index| *index < words)
+                .ok_or(KeyError::Internal)?,
+        );
+    }
+    let mut positions = [0_u8; BACKUP_WORDS];
+    for (position, candidate) in positions.iter_mut().zip(candidates) {
+        *position = candidate.checked_add(1).ok_or(KeyError::Internal)?;
+    }
+    positions.sort_unstable();
+    Ok(positions)
+}
 
 /// PBKDF2 iteration count for the seed.
 pub const BIP39_PBKDF2_ROUNDS: u32 = 2_048;
@@ -161,6 +201,53 @@ impl Mnemonic {
             entropy,
             count: WordCount::W24,
         })
+    }
+
+    /// Generates a new 24-word mnemonic from the OS random source (D9): the mnemonic of a
+    /// `YubiKey` wallet, which is shown once and never stored (spec/10 §7.1-1).
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError::RandomnessUnavailable`].
+    pub fn generate() -> Result<Self, KeyError> {
+        Self::generate_with_rng(&mut OsRandom)
+    }
+
+    /// Four distinct 1-based word positions, ascending, for the backup confirmation of a
+    /// mnemonic held in memory (spec/02 §8.3, the same draw as `Vault::backup_challenge`).
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError::RandomnessUnavailable`], [`KeyError::Internal`].
+    pub fn backup_positions(&self) -> Result<[u8; BACKUP_WORDS], KeyError> {
+        backup_positions_with(&mut OsRandom, self.count.words())
+    }
+
+    /// Whether the answers are the words at `positions` (spec/02 §8.3): every answer must be
+    /// 1–8 lowercase ASCII letters, and the four comparisons run in constant time and are
+    /// decided once (as `Vault::confirm_backup`).
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError::Internal`] for a position outside the phrase.
+    pub fn backup_words_match(
+        &self,
+        positions: [u8; BACKUP_WORDS],
+        answers: [&str; BACKUP_WORDS],
+    ) -> Result<bool, KeyError> {
+        let well_formed = answers.iter().all(|word| {
+            (1..=MAX_BACKUP_WORD).contains(&word.len())
+                && word.bytes().all(|b| b.is_ascii_lowercase())
+        });
+        if !well_formed {
+            return Ok(false);
+        }
+        let mut all = Choice::from(1);
+        for (position, answer) in positions.iter().zip(answers) {
+            let expected = self.word_at(*position)?;
+            all &= expected.as_bytes().ct_eq(answer.as_bytes());
+        }
+        Ok(all.unwrap_u8() == 1)
     }
 
     /// Builds a mnemonic from 16/20/24/28/32 bytes of entropy.

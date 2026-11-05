@@ -171,6 +171,153 @@ pub fn preview(
         .collect()
 }
 
+/// [`preview`] with its own context (for callers outside yw-core: the app's key worker).
+///
+/// # Errors
+///
+/// Derivation errors.
+pub fn preview_seed(
+    seed: &[u8; 64],
+    slots: &[PlannedSlot],
+) -> Result<Vec<PreviewLine>, EnrolError> {
+    let ctx = crate::entropy::secp_context(&mut crate::entropy::OsRandom)?;
+    preview(&ctx, seed, slots)
+}
+
+/// What identifies a seed without revealing it: its BIP32 master fingerprint and the EVM
+/// account-0 address (`m/44'/60'/0'/0/0`). The wizard compares the address with the vault's own
+/// account 0 to warn when the entered recovery words are the ones this PC already stores
+/// (spec/10 §7.1-2).
+///
+/// # Errors
+///
+/// Derivation errors.
+pub fn seed_identity(
+    seed: &[u8; 64],
+) -> Result<([u8; 4], crate::evm::address::Address), EnrolError> {
+    let ctx = crate::entropy::secp_context(&mut crate::entropy::OsRandom)?;
+    let fingerprint = master_fingerprint(&ctx, seed)?;
+    let public = derive_public(
+        &ctx,
+        seed,
+        KeyRole::Evm {
+            index: crate::bip32::path::AccountIndex::ZERO,
+            btc: None,
+        },
+    )?;
+    let address = super::plan::evm_address(&public)?;
+    Ok((fingerprint, address))
+}
+
+/// "가져오기 없이 등록" (spec/10 §7.5): builds the record of a card that already holds the
+/// planned keys, **without writing anything**. Reads the serial(s), validates the plan against
+/// the enrolled records, then per slot the public key (`OpenPGP` `00 47 81 00`, PIV GET
+/// METADATA) and requires it to equal the key derived from `seed`; the record takes the card's
+/// own touch (and PIV PIN) policy. Only read-only commands are sent.
+///
+/// # Errors
+///
+/// [`EnrolError::Plan`], [`CardError::KeyMismatch`] (a slot holds another key or none:
+/// [`CardError::NotFound`]), [`CardError::NotSupported`] (a PIV policy this wallet does not
+/// use), card and derivation errors.
+pub fn adopt_card(
+    transport: &mut dyn CardTransport,
+    mode: ApduMode,
+    seed: &[u8; 64],
+    slots: &[PlannedSlot],
+    records: &[HwKeyRecord],
+) -> Result<Enrolled, EnrolError> {
+    let ctx = crate::entropy::secp_context(&mut crate::entropy::OsRandom)?;
+    let fingerprint = master_fingerprint(&ctx, seed)?;
+    let has_pgp = slots
+        .iter()
+        .any(|planned| matches!(planned.slot, CardSlot::OpenPgp(_)));
+    let has_piv = slots
+        .iter()
+        .any(|planned| matches!(planned.slot, CardSlot::Piv(_)));
+    let (serial, firmware) = identify(transport, mode, has_pgp, has_piv)?;
+    validate_against(records, serial, fingerprint, slots)?;
+    let mut defaults = DefaultsSeen::default();
+    let mut recorded = Vec::with_capacity(slots.len());
+    if has_pgp {
+        let mut session = OpenPgp::open(transport, mode)?;
+        for planned in slots {
+            let CardSlot::OpenPgp(key) = planned.slot else {
+                continue;
+            };
+            let expected = derive_public(&ctx, seed, planned.role)?;
+            let public = session.public_key(key)?;
+            if expected != HwPublicKey::Secp256k1(public) {
+                return Err(EnrolError::Card(CardError::KeyMismatch));
+            }
+            let touch = session.touch_policy(key)?;
+            recorded.push(RecordedSlot {
+                slot: planned.slot,
+                role: planned.role,
+                touch,
+                pin: super::plan::PinPolicy::NotApplicable,
+                public: expected,
+            });
+        }
+    }
+    if has_piv {
+        let mut session = Piv::open(transport, mode)?;
+        let (_, management_default) = session.management_metadata()?;
+        let (pin_default, _) = session.pin_metadata()?;
+        defaults.piv_management = management_default;
+        defaults.piv_pin = pin_default;
+        for planned in slots {
+            let CardSlot::Piv(slot) = planned.slot else {
+                continue;
+            };
+            let expected = derive_public(&ctx, seed, planned.role)?;
+            let metadata = session.slot_metadata(slot)?;
+            if metadata.algorithm != super::piv::ALG_ED25519
+                || metadata.public.map(HwPublicKey::Ed25519) != Some(expected)
+            {
+                return Err(EnrolError::Card(CardError::KeyMismatch));
+            }
+            let pin = [super::plan::PinPolicy::Once, super::plan::PinPolicy::Always]
+                .into_iter()
+                .find(|policy| super::piv::pin_policy_byte(*policy) == metadata.pin_policy)
+                .ok_or(CardError::NotSupported)?;
+            let touch = [
+                super::plan::TouchPolicy::Never,
+                super::plan::TouchPolicy::Always,
+                super::plan::TouchPolicy::Cached,
+            ]
+            .into_iter()
+            .find(|policy| super::piv::touch_policy_byte(*policy) == metadata.touch_policy)
+            .ok_or(CardError::NotSupported)?;
+            recorded.push(RecordedSlot {
+                slot: planned.slot,
+                role: planned.role,
+                touch,
+                pin,
+                public: expected,
+            });
+        }
+    }
+    recorded.sort_by_key(|slot| {
+        slots
+            .iter()
+            .position(|planned| planned.slot == slot.slot)
+            .unwrap_or(usize::MAX)
+    });
+    let record = HwKeyRecord {
+        serial,
+        firmware,
+        fingerprint,
+        slots: recorded,
+    };
+    let mut all = records.to_vec();
+    all.push(record.clone());
+    if !record.is_valid() || !super::record::records_consistent(&all) {
+        return Err(EnrolError::Card(CardError::KeyMismatch));
+    }
+    Ok(Enrolled { record, defaults })
+}
+
 /// Card credentials for an enrolment (all wiped by their owners).
 pub struct EnrolAuth<'a> {
     /// OpenPGP admin PIN (PW3), needed when the plan has OpenPGP slots.

@@ -133,6 +133,8 @@ pub struct MockCard {
     pub piv_pin: Vec<u8>,
     /// PIV PIN retries.
     pub piv_retries: u8,
+    /// PIV PUK.
+    pub piv_puk: Vec<u8>,
     /// Management key algorithm.
     pub mgmt_algorithm: MgmtAlgorithm,
     /// Management key.
@@ -191,6 +193,7 @@ impl MockCard {
             pgp_uif: [0, 0, 0],
             piv_pin: super::piv::DEFAULT_PIN.to_vec(),
             piv_retries: 3,
+            piv_puk: super::piv::DEFAULT_PUK.to_vec(),
             mgmt_algorithm: MgmtAlgorithm::Aes192,
             mgmt_key: super::piv::DEFAULT_MANAGEMENT_KEY.to_vec(),
             piv_keys: Vec::new(),
@@ -648,6 +651,32 @@ impl MockCard {
         ok(tlv::encode(0x7C, &out).unwrap_or_default())
     }
 
+    /// CHANGE REFERENCE DATA of the PIN (`80`) or the PUK (`81`): `old(8, FF) ‖ new(8, FF)`.
+    fn piv_change_reference(&mut self, puk: bool, data: &[u8]) -> Vec<u8> {
+        let mut padded = if puk {
+            self.piv_puk.clone()
+        } else {
+            self.piv_pin.clone()
+        };
+        padded.resize(8, 0xFF);
+        if data.get(..8) != Some(padded.as_slice()) {
+            return sw(0x63C2);
+        }
+        let new: Vec<u8> = data
+            .get(8..)
+            .unwrap_or_default()
+            .iter()
+            .copied()
+            .take_while(|byte| *byte != 0xFF)
+            .collect();
+        if puk {
+            self.piv_puk = new;
+        } else {
+            self.piv_pin = new;
+        }
+        ok(Vec::new())
+    }
+
     fn piv(&mut self, ins: u8, p1: u8, p2: u8, data: &[u8]) -> Vec<u8> {
         match ins {
             0xFD => ok(vec![
@@ -671,22 +700,7 @@ impl MockCard {
                 self.piv_pin_ok = true;
                 ok(Vec::new())
             }
-            0x24 if p2 == 0x80 => {
-                let mut padded = self.piv_pin.clone();
-                padded.resize(8, 0xFF);
-                if data.get(..8) != Some(padded.as_slice()) {
-                    return sw(0x63C2);
-                }
-                let new: Vec<u8> = data
-                    .get(8..)
-                    .unwrap_or_default()
-                    .iter()
-                    .copied()
-                    .take_while(|byte| *byte != 0xFF)
-                    .collect();
-                self.piv_pin = new;
-                ok(Vec::new())
-            }
+            0x24 if matches!(p2, 0x80 | 0x81) => self.piv_change_reference(p2 == 0x81, data),
             0x87 => self.piv_authenticate(p1, p2, data),
             0xFE => {
                 if !self.mgmt_ok {

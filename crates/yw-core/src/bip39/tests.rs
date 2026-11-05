@@ -279,3 +279,45 @@ fn is_word_matches_the_list_exactly() {
     assert!(!is_word(""));
     assert!(!is_word("aban"));
 }
+
+/// The in-memory backup confirmation of a `YubiKey` wallet (spec/10 §7.1-1): a fresh 24-word
+/// mnemonic, four distinct ascending positions, the right words accepted, a wrong or malformed
+/// answer refused (the same rules as `Vault::confirm_backup`).
+#[test]
+fn in_memory_backup_confirmation() {
+    let mnemonic = Mnemonic::generate().unwrap();
+    assert_eq!(mnemonic.word_count(), WordCount::W24);
+    let phrase = mnemonic.phrase().unwrap();
+    let words: Vec<&str> = phrase.expose().split(' ').collect();
+    for _ in 0..20 {
+        let positions = mnemonic.backup_positions().unwrap();
+        let mut distinct = positions.to_vec();
+        distinct.dedup();
+        assert!(positions.is_sorted() && distinct.len() == 4);
+        assert!(positions.iter().all(|position| (1..=24).contains(position)));
+        let answers =
+            positions.map(|position| words.get(usize::from(position) - 1).copied().unwrap());
+        assert_eq!(mnemonic.backup_words_match(positions, answers), Ok(true));
+        let [first, second, third, fourth] = answers;
+        let other = if third == "zoo" { "zone" } else { "zoo" };
+        assert_eq!(
+            mnemonic.backup_words_match(positions, [first, second, other, fourth]),
+            Ok(false)
+        );
+        assert_eq!(
+            mnemonic.backup_words_match(positions, ["ABANDON", second, third, fourth]),
+            Ok(false)
+        );
+    }
+    let twelve = Mnemonic::parse(ABOUT).unwrap();
+    let positions = twelve.backup_positions().unwrap();
+    assert!(positions.iter().all(|position| (1..=12).contains(position)));
+    assert_eq!(
+        twelve.backup_words_match([1, 2, 3, 12], ["abandon", "abandon", "abandon", "about"]),
+        Ok(true)
+    );
+    assert_eq!(
+        twelve.backup_words_match([1, 2, 3, 13], ["abandon"; 4]),
+        Err(KeyError::Internal)
+    );
+}

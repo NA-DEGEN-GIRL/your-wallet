@@ -583,6 +583,22 @@ pub fn validate_against(
     if records.iter().any(|record| record.serial == serial) {
         return Err(PlanError::CardAlreadyEnrolled);
     }
+    validate_before_card(records, fingerprint, slots)
+}
+
+/// The rules of [`validate_against`] that do not need the card's serial (spec/10 §3.5 rules
+/// 1–5 and 7–9): what the wizard's confirmation screen shows before any card contact (§7.2).
+/// Rule 6 (`CardAlreadyEnrolled`) is checked at the card (`enrol_card`).
+///
+/// # Errors
+///
+/// The first violated [`PlanError`].
+pub fn validate_before_card(
+    records: &[HwKeyRecord],
+    fingerprint: [u8; 4],
+    slots: &[PlannedSlot],
+) -> Result<(), PlanError> {
+    validate_plan(slots)?;
     if records.len() >= MAX_CARDS {
         return Err(PlanError::TooManyCards);
     }
@@ -758,6 +774,16 @@ pub fn addresses<C: Verification>(
         } => Ok(vec![btc_address(ctx, public, BtcUse { network, script })?]),
         KeyRole::Sol { .. } => Ok(vec![sol_address(public)?.to_base58()]),
     }
+}
+
+/// [`addresses`] with its own verification-only context (no secret is involved): for callers
+/// outside yw-core (the app's slot-map screens).
+///
+/// # Errors
+///
+/// [`CardError::KeyMismatch`].
+pub fn address_texts(role: KeyRole, public: &HwPublicKey) -> Result<Vec<String>, CardError> {
+    addresses(&Secp256k1::verification_only(), role, public)
 }
 
 /// Whether `components` are all hardened (SLIP-0010 requirement; used in tests).

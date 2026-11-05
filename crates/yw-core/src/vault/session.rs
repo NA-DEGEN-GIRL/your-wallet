@@ -11,7 +11,7 @@ use core::fmt;
 
 use secp256k1::{All, PublicKey, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
-use subtle::{Choice, ConstantTimeEq};
+use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, Zeroizing};
 
 use super::format::{
@@ -28,8 +28,8 @@ use crate::bip32::{
 };
 use crate::bip39::Mnemonic;
 use crate::entropy::{
-    OsRandom, RandomSource, random_array_with, random_below_with, random_nonzero_id_with,
-    random_secret32_with, secp_context,
+    OsRandom, RandomSource, random_array_with, random_nonzero_id_with, random_secret32_with,
+    secp_context,
 };
 use crate::error::{KeyError, StorageError, VaultError};
 use crate::evm::Address;
@@ -46,7 +46,6 @@ const MAX_ADDRESS_BATCH: usize = 100;
 /// `sol_public_keys` batch bound (spec/02 §10.3).
 const MAX_SOL_KEY_BATCH: usize = 128;
 const CHALLENGE_WORDS: usize = 4;
-const MAX_BACKUP_WORD: usize = 8;
 const SLOT_DEK_END: usize = 32;
 const SLOT_FLAG: usize = 32;
 const SLOT_PASSPHRASE_LEN: usize = 33;
@@ -984,27 +983,9 @@ impl Vault {
             .mnemonic
             .word_count()
             .words();
-        let mut candidates = [0_u8; 24];
-        for (index, slot) in candidates.iter_mut().enumerate() {
-            *slot = u8::try_from(index).map_err(|_| INTERNAL)?;
-        }
-        for offset in 0..CHALLENGE_WORDS {
-            let remaining =
-                u32::try_from(words.checked_sub(offset).ok_or(INTERNAL)?).map_err(|_| INTERNAL)?;
-            let pick = usize::try_from(random_below_with(rng, remaining)?).map_err(|_| INTERNAL)?;
-            candidates.swap(
-                offset,
-                offset
-                    .checked_add(pick)
-                    .filter(|index| *index < words)
-                    .ok_or(INTERNAL)?,
-            );
-        }
-        let mut positions = [0_u8; CHALLENGE_WORDS];
-        for (position, candidate) in positions.iter_mut().zip(candidates) {
-            *position = candidate.checked_add(1).ok_or(INTERNAL)?;
-        }
-        positions.sort_unstable();
+        // The same draw as a mnemonic held in memory (`Mnemonic::backup_positions`).
+        let positions: [u8; CHALLENGE_WORDS] =
+            crate::bip39::backup_positions_with(rng, words).map_err(VaultError::Key)?;
         let id = ChallengeId(random_nonzero_id_with(rng)?);
         self.challenge = Some((id, positions));
         Ok(BackupChallenge { id, positions })
@@ -1026,21 +1007,11 @@ impl Vault {
             _ => return Err(VaultError::ChallengeStale),
         };
         self.challenge = None;
-        let well_formed = words.iter().all(|word| {
-            (1..=MAX_BACKUP_WORD).contains(&word.len())
-                && word.bytes().all(|b| b.is_ascii_lowercase())
-        });
-        if !well_formed {
-            return Err(VaultError::BackupMismatch);
-        }
         let mut payload = self.payload()?;
         let bip39 = mnemonic_record(&payload)?;
-        let mut all = Choice::from(1);
-        for (position, answer) in positions.iter().zip(words) {
-            let expected = bip39.mnemonic.word_at(*position)?;
-            all &= expected.as_bytes().ct_eq(answer.as_bytes());
-        }
-        if all.unwrap_u8() != 1 {
+        // Well-formedness, then four constant-time comparisons decided once (shared with the
+        // in-memory confirmation of a `YubiKey` wallet, spec/10 §7.1-1).
+        if !bip39.mnemonic.backup_words_match(positions, words)? {
             return Err(VaultError::BackupMismatch);
         }
         if let Some(bip39) = payload.bip39.as_mut() {

@@ -707,3 +707,138 @@ fn pin_check_before_signing() {
     );
     assert!(!other.log.iter().any(|header| header[1] == 0x20));
 }
+
+/// spec/10 §7.5 "가져오기 없이 등록": a card that already holds the planned keys gives the same
+/// record without any write; a card holding other keys (or none) is refused.
+#[test]
+fn adopt_card_reads_the_keys_back_without_writing() {
+    use super::enrol::adopt_card;
+    let mut card = MockCard::new(31_000_001);
+    let enrolled = enrol(&mut card, ABOUT, &recommended_plan(), &[]).unwrap();
+    card.log.clear();
+    let adopted = adopt_card(
+        &mut card,
+        ApduMode::Short,
+        &seed_of(ABOUT),
+        &recommended_plan(),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(adopted.record, enrolled.record);
+    assert!(!card.saw_write(), "{:x?}", card.log);
+    // Another mnemonic's keys are not on this card: nothing is recorded.
+    assert_eq!(
+        adopt_card(
+            &mut card,
+            ApduMode::Short,
+            &seed_of(OTHER),
+            &recommended_plan(),
+            &[]
+        ),
+        Err(EnrolError::Card(CardError::KeyMismatch))
+    );
+    // An empty card: the OpenPGP slot answers "no key".
+    let mut empty = MockCard::new(31_000_002);
+    assert!(
+        adopt_card(
+            &mut empty,
+            ApduMode::Short,
+            &seed_of(ABOUT),
+            &[sig(evm(0))],
+            &[]
+        )
+        .is_err()
+    );
+    assert!(!empty.saw_write());
+    // Already enrolled serial: refused before any slot is read.
+    assert_eq!(
+        adopt_card(
+            &mut card,
+            ApduMode::Short,
+            &seed_of(ABOUT),
+            &recommended_plan(),
+            core::slice::from_ref(&enrolled.record)
+        ),
+        Err(EnrolError::Plan(PlanError::CardAlreadyEnrolled))
+    );
+}
+
+/// The checks the confirmation screen can run before any card contact (spec/10 §7.2) and the
+/// address texts of the slot-map screens.
+#[test]
+fn validate_before_card_and_address_texts() {
+    use super::plan::{address_texts, validate_before_card};
+    let mut card = MockCard::new(31_000_003);
+    let first = enrol(&mut card, ABOUT, &[sig(evm(0)), aut(btc(0))], &[]).unwrap();
+    let records = [first.record.clone()];
+    let fingerprint = first.record.fingerprint;
+    assert_eq!(
+        validate_before_card(&records, fingerprint, &[sig(evm(0))]),
+        Err(PlanError::PathOnOtherCard(CardSlot::OpenPgp(PgpKey::Sig)))
+    );
+    let mut copy = sig(evm(0));
+    copy.backup_copy = true;
+    assert_eq!(validate_before_card(&records, fingerprint, &[copy]), Ok(()));
+    assert_eq!(
+        validate_before_card(&records, [0; 4], &[sig(evm(5))]),
+        Err(PlanError::DifferentMnemonic)
+    );
+    assert_eq!(
+        validate_before_card(&records, fingerprint, &[sig(evm(1)), aut(evm(1))]),
+        Err(PlanError::DuplicatePath(CardSlot::OpenPgp(PgpKey::Aut)))
+    );
+    assert_eq!(
+        address_texts(first.record.slots[1].role, &first.record.slots[1].public).unwrap(),
+        ["bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu"]
+    );
+    let shared = KeyRole::Evm {
+        index: AccountIndex::ZERO,
+        btc: Some(BtcUse {
+            network: BtcNetwork::Mainnet,
+            script: ScriptType::P2wpkh,
+        }),
+    };
+    assert_eq!(
+        address_texts(shared, &first.record.slots[0].public)
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+/// spec/10 §9.3 on the emulator: `OpenPGP` PW1/PW3, PIV PIN/PUK and the management key change.
+#[test]
+fn defaults_change_on_the_emulator() {
+    use super::openpgp::OpenPgp;
+    use super::piv::{MgmtAlgorithm, MgmtKey, Piv};
+    let mut card = MockCard::new(31_000_004);
+    {
+        let mut session = OpenPgp::open(&mut card, ApduMode::Short).unwrap();
+        session.change_pin(false, b"123456", b"246810").unwrap();
+        session.change_pin(true, b"12345678", b"13579111").unwrap();
+    }
+    assert_eq!(card.pw1, b"246810");
+    assert_eq!(card.pw3, b"13579111");
+    {
+        let mut session = Piv::open(&mut card, ApduMode::Short).unwrap();
+        session
+            .change_reference(false, b"123456", b"654321")
+            .unwrap();
+        session
+            .change_reference(true, b"12345678", b"87654321")
+            .unwrap();
+        assert!(
+            session
+                .change_reference(true, b"12345678", b"11112222")
+                .is_err()
+        );
+        let old = MgmtKey::default_for(MgmtAlgorithm::Aes192).unwrap();
+        session.authenticate(&old, &ToyCipher, &[0x11; 16]).unwrap();
+        session
+            .set_management_key(&MgmtKey::new(MgmtAlgorithm::Aes192, &[0x42; 24]).unwrap())
+            .unwrap();
+    }
+    assert_eq!(card.piv_pin, b"654321");
+    assert_eq!(card.piv_puk, b"87654321");
+    assert_eq!(card.mgmt_key, [0x42; 24]);
+}
