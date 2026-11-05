@@ -2,7 +2,7 @@
 
 상위 문서: [spec.md](../spec.md)
 
-- 상태: **명세 2026-11-04 · 코어 구현(yw-core `yubikey`, vault tag 5, yw-win PC/SC·CNG) · 앱 연결(계정·PIN 창·카드 서명) 2026-11-05, 등록 마법사는 §13의 남은 작업** — 실제 YubiKey 확인은 [docs/acceptance/yubikey-20261104.md](../docs/acceptance/yubikey-20261104.md)(사용자가 수행).
+- 상태: **명세 2026-11-04 · 코어 구현(yw-core `yubikey`, vault tag 5, yw-win PC/SC·CNG) · 앱 연결(계정·PIN 창·카드 서명)·등록 마법사·YubiKey 지갑 2026-11-05, 남은 작업은 §13** — 실제 YubiKey 확인은 [docs/acceptance/yubikey-20261104.md](../docs/acceptance/yubikey-20261104.md)(사용자가 수행).
 - 범위: 니모닉에서 고른 키를 한 번 파생해 하나 이상의 YubiKey 5(펌웨어 5.7 이상 권장, OpenPGP만 쓰면 5.2.3 이상)에 **가져오기(import)** 하고, 그 뒤로는 PC가 그 계정의 비밀을 전혀 갖지 않은 채(공개키·주소·일련번호·슬롯 표만) YubiKey에서 PIN + 터치로 서명한다. 니모닉 자체가 종이 백업이다. 같은 키를 여러 YubiKey에 넣어 서로의 백업으로 쓸 수 있다.
 - 기존 소프트웨어 vault 경로([02](02-core-keys-vault.md)·[03](03-evm.md)·[07](07-solana.md)·[08](08-bitcoin.md))는 바뀌지 않는다. 이 문서는 **추가**만 한다: vault payload의 새 tag 5(§8), 새 모듈 `yw_core::yubikey`·`yw_win::pcsc`·`yw_win::cng`(§4), 승인 후 서명 단계의 카드 분기(§10).
 - 규범 용어는 spec.md와 같다(MUST/반드시, SHOULD/권고, MAY/선택). 바이트 값의 출처는 §14.
@@ -183,9 +183,17 @@ Bitcoin 슬롯의 인덱스는 **계정 0의 받기 체인 주소 인덱스**(`�
 
 어느 경우든 니모닉·시드·파생 키는 `Zeroizing` 버퍼에만 있고 마법사가 닫히거나 잠금(자동 잠금 포함)되면 즉시 지운다. 등록 중 자동 잠금은 등록을 취소한다(카드에 일부 쓴 상태일 수 있음 → §7.4).
 
+구현(2026-11-05, 화면은 [04] §2.19):
+
+- 진입점 1은 S01 카드 "YubiKey에 키 보관" → S20 → W01 → W08 → W10 → S21이다. 24단어는 키 작업자가 만들어(`bip39::Mnemonic::generate`) 비밀번호와 함께 보관하고, W08에 한 번 보인다. W10의 4단어 확인은 vault 없이 보관한 니모닉으로 한다(`Mnemonic::backup_positions`·`backup_words_match`: `Vault::backup_challenge`·`confirm_backup`과 같은 추첨·같은 상수 시간 비교 — vault도 이 함수를 쓴다). 첫 YubiKey가 등록되면 `create_with_hardware`와 슬롯 표의 기본 meta(파생 계정 없음, 첫 계정 선택)를 쓰고 `Unlocked`가 된다. 같은 단어로 백업 YubiKey를 이어서 등록할 수 있도록 단어는 마법사의 `완료`(또는 `취소`·유휴 폐기·잠금)까지 키 작업자 메모리에만 있다.
+- 진입점 2·3은 설정 → YubiKey `YubiKey 등록`(키 전용·YubiKey 지갑의 빈 체인 카드에도)이다. 단어는 W05(+ W06)에서 한 번 받아 바로 키 작업자로 옮기고(`YkJob::Preview`), 그 뒤 미리보기·등록·백업 YubiKey 반복은 보관한 시드로 한다. 같은 니모닉 판정은 입력한 시드의 EVM 계정 0 주소 = vault의 계정 0 주소(`enrol::seed_identity`; passphrase가 다르면 다른 시드이므로 경고하지 않음)이고, 경고(T-YK-SAME)를 체크해야 계속한다.
+- "백업 복사본"은 이미 등록한 카드 하나의 슬롯 계획(슬롯·경로·정책)을 그대로 복사하고 모든 슬롯에 `backup_copy`를 켠다. 직접 고른 계획에서 같은 경로는 `PathOnOtherCard`로 확인 화면에서 막힌다.
+
 ### 7.2 확인 화면 (카드 통신 전)
 
 슬롯마다: 슬롯 이름(예 "OpenPGP 서명(SIG)", "PIV 82 (보관 1)"), 역할 제목, **전체 경로**, 주소(공유 키는 EVM·Bitcoin 둘 다), 터치·PIN 정책. 다른 YubiKey와의 관계(새 키 / 백업 복사본: 어느 YubiKey의 어느 슬롯과 같은지). §3.5 검사 결과를 여기서 보인다.
+
+구현: 미리보기는 `enrol::preview_seed`(카드 통신 없음), 검사는 일련번호가 필요 없는 규칙 1–5·7–9(`plan::validate_before_card`; 규칙 6 `CardAlreadyEnrolled`는 카드에서 `enrol_card`가 판정)이며 오류면 `다음`·`가져오기`가 꺼진다. 관계는 같은 경로를 가진 등록 카드의 일련번호. PIV 슬롯이 있으면 펌웨어 안내(5.7.4 / 5.7.0–5.7.3 / 5.7.0 미만)를 언제나 보인다 — 이 화면에서는 카드를 읽지 않으므로 실제 펌웨어는 결과 화면(기록의 펌웨어)에서 보인다.
 
 ### 7.3 카드 절차 (`enrol_card`)
 
@@ -206,6 +214,8 @@ Bitcoin 슬롯의 인덱스는 **계정 0의 받기 체인 주소 인덱스**(`�
 
 - YubiKey를 잃으면: 다른 백업 YubiKey로 계속 서명하거나, 니모닉으로 새 YubiKey에 같은 경로를 다시 등록한다(§7.1-2, "백업 복사본"). 잃은 YubiKey의 record는 설정에서 지운다(비밀번호 재입력).
 - PC·vault를 잃으면: 새 PC에서 "YubiKey 지갑 복구" = §7.1-2와 같은 경로로 니모닉 입력 → 경로 선택 → 카드 쓰기 **없이**(이미 키가 있는 카드) 공개키만 읽어 record를 만드는 "가져오기 없이 등록"(카드의 공개키 = 파생 공개키일 때만). v1에서는 다시 가져오기(덮어쓰기)로 대신해도 결과가 같다.
+- 구현(2026-11-05): `enrol::adopt_card` — 일련번호 읽기 → `validate_against` → 슬롯마다 OpenPGP `00 47 81 00`·UIF 읽기 / PIV GET METADATA(알고리즘 `E0`, 공개키, PIN·터치 정책)만 보내고, 공개키가 파생 공개키와 다르거나 비어 있으면 `KeyMismatch`/`NotFound`. record의 터치·PIN 정책은 카드의 실제 값이다. 마법사 자격 정보 화면의 `가져오기 없이 등록`(관리자 PIN·관리 키를 묻지 않음). 복구 단어 없는 새 PC에서 처음부터 하는 "YubiKey 지갑 복구"(vault를 만드는 진입점)는 아직 없다: 지금은 S01 "YubiKey 지갑 만들기"가 새 단어만 만든다(§13).
+- 기록 삭제: 설정 → YubiKey `삭제` → 그 카드에만 있는 계정을 보이는 확인 오버레이 → W03 → `remove_hardware_key` → meta 다시 읽기(그 카드에만 있던 계정은 목록에서 빠지고, 백업 카드가 가진 계정은 남는다).
 - 니모닉만 있으면 이 지갑 없이도 다른 표준 지갑으로 복구된다(공유 키 방식의 Bitcoin 주소는 §3.2 예외).
 
 ## 8. vault 기록: tag 5 `HwKey` (공개 데이터만)
@@ -245,7 +255,7 @@ n × 48:
 - PIN·관리자 PIN·PUK·관리 키는 **우리의 비밀 입력 창**(D11: 캡처 제외, 직접 그린 입력, 복사 금지)에서만 받는다. Windows의 스마트카드 PIN 대화상자(minidriver)는 쓰지 않는다(PC/SC로 직접 VERIFY).
 - 입력 버퍼는 `Zeroizing`이고, **한 작업(서명 1건, 등록 1회)이 끝나면 지운다.** 작업 사이에 PIN을 캐시하지 않는다. Bitcoin 다중 입력 거래는 "한 작업"이므로 입력마다 같은 PIN 버퍼로 VERIFY한다(카드가 PSO:CDS 한 번마다 PW1을 요구).
 - 길이 검사: OpenPGP PW1 6–127, PW3 8–127, PIV PIN·PUK 6–8(ASCII, `FF` 금지). 남은 횟수가 1이면 "한 번 더 틀리면 PIN이 잠깁니다"를 입력 전에 보인다(OpenPGP `C4`, PIV 메타데이터 `06`).
-- 구현(2026-11-05): 서명 PIN 창은 **W11 `SecretKind::CardPin { min, max, touches }`**(`ui::secret`): 기존 비밀 입력 창과 같이 캡처 제외 우선·직접 그린 입력·복사 금지·ASCII, 가린 칸 하나, 길이는 키가 있는 애플릿의 범위(OpenPGP 6–127, PIV 6–8)를 넘겨받는다. 제목 "YubiKey PIN", 안내 "YubiKey를 연결하고 PIN 입력 후 터치하세요", 그 아래 서명할 키(역할·경로)·이 키를 가진 YubiKey 일련번호·직전 시도의 오류(남은 횟수, 1회면 잠김 경고), 터치가 여러 번이면 "YubiKey 터치 N회가 필요합니다". 남은 횟수는 카드를 읽지 않고는 모르므로 틀린 PIN 뒤에만 보인다. 제출된 PIN은 `Zeroizing` 버퍼 그대로 카드 작업(`KeyJob::*Card`의 `pin`)으로 옮겨지고 작업과 함께 지워진다(SOL 전송은 blockhash를 받는 동안 `PinBuffer`로 보관, 잠금·취소 때 지움). 작업 사이 캐시는 없다. 등록 마법사의 관리자 PIN·관리 키 입력은 아직 없다(§13).
+- 구현(2026-11-05): 서명 PIN 창은 **W11 `SecretKind::CardPin { min, max, touches }`**(`ui::secret`): 기존 비밀 입력 창과 같이 캡처 제외 우선·직접 그린 입력·복사 금지·ASCII, 가린 칸 하나, 길이는 키가 있는 애플릿의 범위(OpenPGP 6–127, PIV 6–8)를 넘겨받는다. 제목 "YubiKey PIN", 안내 "YubiKey를 연결하고 PIN 입력 후 터치하세요", 그 아래 서명할 키(역할·경로)·이 키를 가진 YubiKey 일련번호·직전 시도의 오류(남은 횟수, 1회면 잠김 경고), 터치가 여러 번이면 "YubiKey 터치 N회가 필요합니다". 남은 횟수는 카드를 읽지 않고는 모르므로 틀린 PIN 뒤에만 보인다. 제출된 PIN은 `Zeroizing` 버퍼 그대로 카드 작업(`KeyJob::*Card`의 `pin`)으로 옮겨지고 작업과 함께 지워진다(SOL 전송은 blockhash를 받는 동안 `PinBuffer`로 보관, 잠금·취소 때 지움). 작업 사이 캐시는 없다. 등록 마법사의 관리자 PIN·PIV 관리 키와 PIN·PUK 바꾸기는 **W12** `SecretKind::CardSecret`(같은 규칙: 캡처 제외 우선·가림·복사 금지·ASCII; 관리 키는 16진수 정확히 48자리), 새 관리 키 표시는 **W13** `SecretKind::ShowCardKey`(`Required`, 복사 없음, 2초 `다 적었습니다`)다. 제출된 값은 `Zeroizing` 버퍼 그대로 키 작업자 작업(`YkJob::Enrol`·`ChangePin`·`SetManagementKey`)으로 옮겨지고 작업과 함께 지워진다(관리자 PIN은 W12 → 관리 키 W12 사이에만 마법사가 보관).
 
 ### 9.2 서명 중 표시
 
@@ -262,11 +272,13 @@ n × 48:
 
 등록 중 기본값을 발견하면(`DefaultsSeen`: 성공한 관리자 PIN이 `12345678`, PIV PIN 메타데이터 기본, 관리 키 메타데이터 기본) 등록 직후 바꾸도록 한 화면에서 안내한다: OpenPGP PW1·PW3, PIV PIN·PUK, PIV 관리 키(새 무작위 AES-192 키를 만들고 **화면에 한 번 보여 적게 한다** — 이 지갑은 관리 키를 저장하지 않으므로, 다음 등록에 다시 입력해야 한다). 건너뛸 수 있지만 계정 화면에 "기본 PIN 사용 중" 경고가 남는다(정보는 meta `hw_accounts`에).
 
+구현(2026-11-05): 결과 화면의 카드 `기본값 바꾸기`. `OpenPGP PIN 바꾸기`·`OpenPGP 관리자 PIN 바꾸기`(관리자 PIN이 기본이었을 때)·`PIV PIN 바꾸기`·`PIV PUK 바꾸기`(PIV PIN이 기본이었을 때)는 W12(현재·새·새 확인) → `YkJob::ChangePin` → 그 일련번호의 카드에서 CHANGE REFERENCE DATA(OpenPGP `24 81`/`83`, PIV `24 80`/`81`). `PIV 관리 키 바꾸기`(관리 키가 기본이었을 때)는 `YkJob::NewManagementKey`(키 작업자가 `entropy::fill_random`으로 24바이트를 만들어 **보관만** 한다) → W13에 16진수로 한 번 보인다 → 2초 `다 적었습니다` 뒤에만 `YkJob::SetManagementKey`(GET METADATA 9B → 공장 기본 키로 상호 인증 → SET MANAGEMENT KEY AES-192). W13을 닫으면 보관한 키를 지우고 아무것도 바꾸지 않는다(보이지 못한 키로 바꾸어 PIV를 잠그는 일을 막는다). 바꾼 기본값이 모두 없어지면 그 일련번호를 `hw_accounts.defaults`에서 지운다.
+
 ## 10. 기존 기능과의 상호작용
 
 | 기능 | YubiKey 계정에서 |
 |---|---|
-| 승인 창·digest([03] §11) | 변화 없음. 서명자 종류(`Signer`)는 digest에 들어가지 않고 계정 주소가 묶는다. YubiKey EVM 계정은 키 출처 `EvmKeySource::Hardware(i)`(vault는 이 출처에 키를 빌려 주지 않고 `RecordNotFound`, 주소는 tag 5의 공개키에서 계산)로 표시하고, 승인 창에 "YubiKey로 서명" 배지와 이 키를 가진 YubiKey 목록을 더한다 |
+| 승인 창·digest([03] §11) | 변화 없음. 서명자 종류(`Signer`)는 digest에 들어가지 않고 계정 주소가 묶는다. YubiKey EVM 계정은 키 출처 `EvmKeySource::Hardware(i)`(vault는 이 출처에 키를 빌려 주지 않고 `RecordNotFound`, 주소는 tag 5의 공개키에서 계산)로 표시하고, 승인 창에 "YubiKey로 서명" 배지와 이 키를 가진 YubiKey 목록을 더한다. 구현(2026-11-05): 배지 "YubiKey로 서명 · #일련번호… · 터치 N회"(Bitcoin은 입력 수)는 헤더의 앱 배지 줄(사용자 체인·테스트넷 배지와 같은 곳)에 그리며 요청의 `ApprovalDisplay`·display 바이트·digest에는 들어가지 않는다([03] §11.3) |
 | EVM 보내기·dApp(`eth_sendTransaction`·`personal_sign`·`eth_signTypedData_v4`) | 같은 준비·시뮬레이션·위험 규칙. 서명 단계만 카드(§9.2). 서명 결과는 §6.2 후 기존 서명 후 검증 |
 | 승인 만료(D23, 120초) | 승인 클릭까지가 기존 규칙이다. 승인 뒤 카드 단계는 별도 상한 120초(PIN 입력·터치 포함), 넘으면 취소 |
 | Bitcoin 보내기 | 단일 주소 계정(§3.3). 입력마다 카드 서명, 수수료 서명 크기 72+1(§6.3). dApp 메시지 서명도 카드로 한다: BIP137(카드 DER → compact, 복구 id는 기록된 공개키를 복구하는 값, 헤더는 주소 형식), BIP322 simple(P2WPKH: `to_sign`의 BIP143 sighash를 카드로 서명한 witness)·full(P2SH-P2WPKH) — `btc::msgsign::sign_message_card`(vault 경로와 같은 승인 검사, 기존 검증기로 시험) |
@@ -320,11 +332,17 @@ n × 48:
   - 등록 진입점(마법사가 부름): `App::enrol_yubikey(EnrolRequest)` → `KeyJob::EnrolYubiKey`; 결과 `App::on_yubikey_enrolled`가 `CardUi::enrol`(`EnrolState::{Running, Done { serial, slots, defaults }, Failed}`)을 채우고, 기본값이 보였으면 일련번호를 `hw_accounts.defaults`에 더하고, `HardwareKeys`·`LoadMeta`로 계정을 다시 맞추고, 그 카드의 키로 숨겨 둔 계정을 다시 보인다.
   - 시험: meta 왕복·엄격 검사·이전 파일·이전 버전 보존, 등록 뒤 세 체인 계정(`abandon` 벡터 주소), 에뮬레이터로 `SignSolCard`·`SignBtcCard` 종단(저널 기록, 서명 검증, high-s·high-R 카드, 입력당 카드 서명 1회, 틀린 PIN은 승인 반환·저널 없음), App 수준(승인된 EVM 전송 → W11 카드 단계 → 틀린 PIN 재요청 → `SignEvmCard` 저널, 취소, 소프트웨어 계정은 `SignEvm`, `enrol_yubikey` 진입점), W11 입력 규칙.
 
-남은 작업(yw-app UI, 순서대로):
+- 등록 마법사·YubiKey 지갑(2026-11-05, [04] §2.19):
+  - yw-core: `bip39::Mnemonic::{generate, backup_positions, backup_words_match}`(vault 백업 확인과 같은 함수), `plan::{validate_before_card, address_texts}`, `enrol::{preview_seed, seed_identity, adopt_card}`, 에뮬레이터 PIV PUK 변경, `sol::recipient::KnownKind::OwnHardware`("내 계정(YubiKey)").
+  - yw-app: S21 마법사(키·슬롯 → W05/W06 → 확인 → 자격 정보 W12 → 결과, `다시 확인`, 기본값 바꾸기 W12/W13, `다른 YubiKey 등록(백업)`), S01 카드 → S20 → W01 → W08 → W10 → 마법사 → `create_with_hardware`(니모닉 없음), "가져오기 없이 등록"(§7.5), 설정 → YubiKey(카드·슬롯·계정별 보유 카드·`삭제` + W03), 키 작업자 `KeyJob::YubiKey(YkJob)`(단어·시드·새 관리 키를 보관하고 `Discard`·잠금에 지움), 어댑터 `change_card_pin`·`change_management_key`·`check_record`·`adopt_first_card`, 승인 창 배지(앱 배지 줄, digest 밖), Solana 받는 사람 "내 계정(YubiKey)", 투어 장면 35–43.
+  - 시험(에뮬레이터만): 기존 지갑 마법사 종단(SIG = EVM 2, AUT = BIP84 0, Solana 1·2 → 확인 화면의 경로 `m/44'/60'/0'/0/2`·`m/84'/0'/0'/0/0`·`m/44'/501'/1'/0'`·`m/44'/501'/2'/0'`과 vault 파생과 같은 주소, 같은 니모닉 경고, 세 탭의 계정, 다시 확인, PIV PIN·PUK 변경), 다른 카드의 같은 경로 거부·백업 복사본 등록·같은 카드 재등록 거부(쓰기 없음)·기록 삭제(틀린 비밀번호, 백업이 계정 유지)·바뀐 관리 키(기본 키 실패 → 새 키 성공)·W13 확인 뒤에만 설정, YubiKey 지갑 생성(틀린 단어 → 새 위치, `has_mnemonic = false`, 기록 1개, 재시작·잠금 해제 뒤 같은 계정, 중간 잠금이 단어를 지움), 키 작업자 작업(미리보기 카드 통신 없음, 틀린 관리자 PIN은 기록 없음, PW1 변경, 관리 키 보관·설정, 삭제, 가져오기 없이 등록 쓰기 없음, `Discard`·잠금), W12/W13 입력 규칙, 배지가 digest된 표시에 없음, 화면별 명령 ID 중복 없음.
 
-1. 등록 마법사 화면(슬롯·인덱스 선택, 확인 화면 §7.2, 니모닉·관리자 PIN·관리 키 입력은 기존 비밀 입력 창에 새 종류를 더해, 반복 등록, 기본값 변경 화면 §9.3과 PIN 변경) → `App::enrol_yubikey`.
-2. 새 YubiKey 지갑 생성(§7.1-1, `create_with_hardware`, 그 뒤 `write_key_only_meta`에 해당하는 meta)과 "가져오기 없이 등록"(§7.5), YubiKey 기록 삭제(설정, 비밀번호).
-3. 승인 창의 "YubiKey로 서명" 배지·보유 YubiKey 목록·"YubiKey 터치 N회" 안내(지금은 W11에만 있음), Solana 보내기 확인의 자기 계정 표시(YubiKey 계정이 "내 계정(가져온 개인키)"로 보임), 둘러보기 스크린샷.
+남은 작업:
+
+1. 복구 단어만 있는 새 PC에서 "YubiKey 지갑 복구"(vault가 없을 때 §7.1-2와 같은 입력 → `가져오기 없이 등록`으로 `create_with_hardware`). 지금 S01에서는 새 단어를 만드는 진입점만 있고, 기존 단어로는 니모닉 지갑을 가져온 뒤 등록할 수 있다(그러면 단어가 PC에 남는다).
+2. 확인 화면에서 카드의 실제 펌웨어·현재 키 유무를 읽어 보이는 것(§7.4 "읽을 수 있으면 현재 키가 있는지"; 지금은 결과 화면에서 기록의 펌웨어만, 확인 화면은 일반 안내).
+3. 기본값 바꾸기는 등록 직후 결과 화면에서만 연다(나중에 설정 → YubiKey에서 다시 여는 화면, 관리 키가 기본이 아닌 카드의 관리 키 변경은 없음 — ykman 안내).
+4. 실제 YubiKey 수동 판정(docs/acceptance/yubikey-20261104.md Y-01–Y-27, 사용자 수행).
 
 ## 14. 출처
 

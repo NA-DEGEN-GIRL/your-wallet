@@ -173,8 +173,8 @@ pub enum AppMode { NoVault, Locked, Unlocking, PassphraseRequired, PassphraseMis
                    Unlocked { alt_passphrase: bool }, Corrupt { prev_available: bool }, MainMissing, ShuttingDown }
 ```
 `AppMode`는 [02] `VaultStatus`에 진행 상태(`Unlocking`, `ShuttingDown`)를 더한 화면용 사본이다.
-- 주 창 화면: S01 첫 실행(`NoVault`), S02 생성 안내, S03 처리 중(KDF 진행 표시), S04 백업 대기(`BackupPending`), S05 가져오기, S06 첫 주소 확인, S07 잠금 화면(`Locked`·`PassphraseRequired`), S08 완료, S09 복구(`Corrupt`·`MainMissing`), S10 메인(`Unlocked`), S11 보내기·결과, S12 받기, S13 연결된 사이트, S14 주소록, S15 설정, S16 토큰 추가, S17 EVM 체인 추가·편집(§2.17), S18 개인키로 시작하기(체인·주소 형식), S19 개인키 주소 확인(§2.18).
-- 별도 최상위 창: W01–W10 비밀 창(§4.1), A01 승인·연결 창(§3).
+- 주 창 화면: S01 첫 실행(`NoVault`), S02 생성 안내, S03 처리 중(KDF 진행 표시), S04 백업 대기(`BackupPending`), S05 가져오기, S06 첫 주소 확인, S07 잠금 화면(`Locked`·`PassphraseRequired`), S08 완료, S09 복구(`Corrupt`·`MainMissing`), S10 메인(`Unlocked`), S11 보내기·결과, S12 받기, S13 연결된 사이트, S14 주소록, S15 설정, S16 토큰 추가, S17 EVM 체인 추가·편집(§2.17), S18 개인키로 시작하기(체인·주소 형식), S19 개인키 주소 확인(§2.18), S20 YubiKey 지갑 만들기, S21 YubiKey 등록 마법사(§2.19).
+- 별도 최상위 창: W01–W13 비밀 창(§4.1; W11–W13은 YubiKey, [10]), A01 승인·연결 창(§3).
 - 비밀 창이 열려 있는 동안 주 창은 `EnableWindow(FALSE)`다. 승인 창은 주 창을 막지 않는다.
 - 주 창 자식 컨트롤의 명령 ID(`WM_COMMAND`)는 화면 모듈마다 `ids`에 두고, 고정 ID와 목록형 범위(계정·주소록·스캔 행·사이트 등)가 서로 겹치지 않으며 각 범위가 그 목록의 최대 길이(행 수 × 행당 ID 수)를 담는다. 전체 지도와 시험은 `ui::command_ids`(1·2는 쓰지 않음). 승인 창·비밀 창은 자식 컨트롤 없이 직접 그리고 영역으로 판정하므로 명령 ID가 없다.
 - `Unlocked`의 S10 상단 막대(흰 띠): 왼쪽 "Your Wallet", 오른쪽 `주소록`, `연결된 사이트`, `설정`, `잠금 (Ctrl+L)`. 그 아래 체인 탭(`EVM (이더리움 등)`·`Solana`·`Bitcoin`, 탭 모양; 키보드 Ctrl+1·Ctrl+2·Ctrl+3 — 메시지 루프 관찰자가 주 창에 `WM_YW_TAB_SHORTCUT`(`WM_APP + 5`, wParam = 탭 번호)을 post하고, 주 창이 전경이고 S10이 그 탭을 켜 보이며 비밀 창이 없을 때만 탭을 누른 것과 같이 처리한다)과 네트워크 칩. 다른 화면은 맨 위 링크 `← 메인으로`. `alt_passphrase == true`(`App::passphrase_unverified()`)이면 **모든 화면** 맨 위에 닫을 수 없는 고위험 띠 T-ALT-PASS를 보이고, 모든 체인의 `받기`(S12)를 끈다(누르면 T-ALT-PASS-RECV). 브라우저 다리는 이 상태의 연결·서명 요청을 4100 `PassphraseUnverified`(이유를 담은 메시지)로 끝내고(디스패처 상태 `VaultView::PassphraseUnverified`, 큐에 있던 요청은 §3.1 `PassphraseUnverified`), 읽기 요청은 계속 처리한다([02] §7.5, [05] §4.2·§5). 앱의 보내기는 허용한다.
@@ -182,7 +182,7 @@ pub enum AppMode { NoVault, Locked, Unlocking, PassphraseRequired, PassphraseMis
 
 ### 2.2 첫 실행 (S01)
 - `NoVault`일 때. 데이터 폴더에 `meta.ywm`·`journal.ywj` 또는 그 `.prev`가 남아 있으면 생성·가져오기 버튼을 끄고 T-LEFTOVER와 폴더 경로, `폴더 열기`(§2.14)를 보인다. 파일은 사용자가 직접 옮긴다([02] §6.3). 앱은 지갑 파일을 옮기거나 지우지 않는다.
-- 환영 화면: 큰 제목 "Your Wallet", 세 문장 T-FIRST-1(무엇인지 · 모든 서명은 이 앱 확인 창에서 · 복구 단어 24개가 유일한 백업), 카드 세 개 — "처음 사용합니다"(설명 + 주 버튼 `새 지갑 만들기`), "다른 지갑에서 쓰던 복구 단어가 있습니다"(설명 + `기존 지갑 가져오기`), "개인키만 있습니다"(T-KEYSTART-CARD + `개인키로 시작하기`, §2.18). T-LEFTOVER면 세 버튼 모두 끈다.
+- 환영 화면: 큰 제목 "Your Wallet", 세 문장 T-FIRST-1(무엇인지 · 모든 서명은 이 앱 확인 창에서 · 복구 단어 24개가 유일한 백업), 카드 세 개 — "처음 사용합니다"(설명 + 주 버튼 `새 지갑 만들기`), "다른 지갑에서 쓰던 복구 단어가 있습니다"(설명 + `기존 지갑 가져오기`), "개인키만 있습니다"(T-KEYSTART-CARD + `개인키로 시작하기`, §2.18), "YubiKey에 키 보관"(T-YK-WALLET + `YubiKey 지갑 만들기`, §2.19). T-LEFTOVER면 네 버튼 모두 끈다.
 
 ### 2.3 새 지갑 만들기
 단계 표시 `1 비밀번호 정하기 · 2 복구 단어 적기 · 3 백업 확인`을 S02(아직 시작 전)와 W01(1/3)·W08(2/3)·W10(3/3) 머리에 보인다(비밀 창은 "새 지갑 만들기 · n/3단계"와 점 세 개).
@@ -464,6 +464,22 @@ W04(현재, 새, 새 확인) → 새 비밀번호 검사(E-INP-001/002) → `Key
 | T-BTC-SOURCE-STANDARD-HELP | Bitcoin `계정 추가`(키 출처 `BTC 표준 경로` 아래) | m/{44·49·84·86}'/{코인}'/{계정}'/0/0 — 같은 복구 단어를 다른 Bitcoin 지갑에 넣어도 같은 주소가 나옵니다. |
 | T-BTC-EVM-SHARED | Bitcoin `계정 추가`(키 출처 `EVM 계정과 같은 키`, 주의 띠)·확인 오버레이·EVM 키 계정의 받기·계정 카드 | 같은 키를 쓰면 EVM 주소와 BTC 주소의 공개키가 같아져, 누구나 두 주소가 같은 사람 것임을 알 수 있습니다. 다른 BTC 지갑(Electrum·Sparrow)에 니모닉만 넣으면 이 주소가 보이지 않습니다(복구는 이 지갑이나 개인키 내보내기로). |
 
+YubiKey(§2.19, [10]) 문구 — 정본은 `app_yubikey`·`ui::screens_yubikey`·`ui::secret`의 상수:
+
+| ID | 위치 | 문구(요지) |
+|---|---|---|
+| T-YK-WALLET | S01 카드 "YubiKey에 키 보관" | 새 복구 단어 24개를 만들어 종이에 적고, 그 단어에서 만든 키를 YubiKey에 넣습니다. 이 PC에는 복구 단어를 저장하지 않고 공개키·주소만 둡니다. 서명은 YubiKey에서 PIN과 터치로 합니다. |
+| T-YK-SAME | S21 확인(고위험 띠) | [10] §7.1-2의 사용자 결정 문구("이 복구 단어는 이 PC의 vault에도 저장되어 있습니다…'YubiKey 지갑'…을 새로 만드세요.") |
+| T-YK-SHARED | S21 키·슬롯(공유 키, 주의 띠) | [10] §3.2의 두 문장(신원 연결, 표준 지갑이 찾지 못함·복구 방법) |
+| T-YK-OVERWRITE | S21 확인·자격 정보 | 가져오기를 하면 이 YubiKey의 고른 슬롯(OpenPGP SIG/AUT, PIV 82…)에 있던 키는 지워지고 바뀝니다. 다른 용도(GPG 등)로 쓰던 슬롯이면 고르지 마세요. |
+| T-YK-PARTIAL | S21 결과(카드 쓰기 중 실패) | 일부 슬롯에 키가 이미 들어갔을 수 있습니다. 다시 시도하면 덮어씁니다. 지갑에는 아무것도 기록하지 않았습니다. |
+| T-YK-PIV-FIRMWARE | S21 키·슬롯·확인(PIV) | Solana(PIV Ed25519) 키 가져오기는 펌웨어 5.7.4 이상에서 문서화되어 있습니다. 5.7.0–5.7.3은 거부할 수 있고, 5.7.0 미만은 PIV 슬롯을 쓸 수 없습니다. |
+| T-YK-ADOPT | S21 자격 정보 | PC나 지갑 파일을 잃고 새로 설치했을 때 … '가져오기 없이 등록'으로 카드에 아무것도 쓰지 않고 공개키만 읽어 등록합니다(카드의 공개키 = 계산한 공개키일 때만). |
+| T-YK-LIST | 설정 → YubiKey | YubiKey 계정은 복구 단어에서 만든 키를 YubiKey에 넣어 두고 … 같은 키를 여러 YubiKey에 넣어 서로의 백업으로 쓸 수 있습니다(최대 8개). |
+| T-YK-MNEMONIC-WALLET | 설정 → YubiKey(니모닉 지갑) | 이 지갑의 복구 단어로 등록하면 그 단어가 이 PC에도 있으므로 보안 이득이 없습니다 … 'YubiKey 지갑'을 새로 만드세요. |
+| T-CARD-ADMIN-PIN / T-CARD-MANAGEMENT-KEY | W12 | 관리자 PIN(8–127자, 기본 12345678) / 관리 키 16진수 48자리 — 이번 작업에만 쓰고 바로 지웁니다. |
+| T-SHOW-CARD-KEY | W13 | 새 PIV 관리 키입니다. 이 지갑은 관리 키를 저장하지 않으므로 … '다 적었습니다'를 2초 누르면 YubiKey에 설정합니다. 이 창을 닫으면 아무것도 바꾸지 않습니다. |
+
 ### 2.17 EVM 체인 추가·편집·삭제 (S17, D14)
 기본 체인(1·11155111·999)은 [03] §1.1 상수이며 편집·삭제할 수 없다(RPC URL §2.11.1, 수수료 상한, HyperEVM `다시 고정`만). 사용자 체인은 최대 `MAX_CUSTOM_EVM_CHAINS = 32`개이고, 비밀이 아닌 정의(템플릿 식별자 포함)는 `settings.json` `evmChains`(§6.1), RPC URL은 토큰이 들어 있으므로(D13) `apikeys.dpapi` `rpc:eip155:<chainId>`(§6.3)에 둔다. 런타임은 이 URL만 쓴다(§1.9). S15 `EVM 체인`에서 연다. 추가·편집은 S15를 열 수 있으면 언제나(이미 32개면 `추가` → E-CHN-006), 삭제는 `Unlocked`에서만(§2.17.3). dApp은 체인을 추가할 수 없다(`wallet_addEthereumChain` 거부, D14, [05]).
 
@@ -518,6 +534,20 @@ W04(현재, 새, 새 확인) → 새 비밀번호 검사(E-INP-001/002) → `Key
 **삭제**: EVM은 기존 `삭제`(T-REMOVE-KEY → W03 → `remove_evm_raw_key`). Solana·Bitcoin은 `삭제` → T-REMOVE-IMPORTED(계정 라벨·주소) → W03 → `KeyJob::RemoveImportedKey` → `Vault::remove_imported_key`. 키 전용 지갑의 마지막 키는 `삭제`가 꺼져 있고 vault도 `LastKey`(E-VLT-013)로 거부한다. Bitcoin 키는 그 계정에 BTC 승인이 열려 있거나 그 주소의 거래가 아직 확정될 수 있으면(진행 중, `Replaced`, 포기·공개된 거부 뒤 30일 이내 — 다시 가져온 같은 키의 옛 레코드 포함, [08] §3.5·§12.1) 확인 창 전에 이유를 보이고 멈춘다("Bitcoin 승인이 진행 중이라 이 가져온 키를 지울 수 없습니다…" / "이 가져온 키의 주소로 보낸 거래가 아직 확정될 수 있습니다(진행 중, 또는 포기·거절 뒤 30일 이내)…"; key worker도 다시 확인해 `ImportedKeyBusy`면 W03에 같은 문구). 지운 뒤 key worker가 그 계정을 meta `btc_accounts`에서 지우고(`BtcMetaDone::Removed`) 선택은 기본 계정(키 전용 지갑은 첫 계정)으로 돌아간다. 끝난 거래의 활동 행은 남는다.
 
 **브라우저**: dApp 연결은 EVM 계정만 쓴다(키 전용 지갑은 가져온 EVM 키). EVM 계정이 하나도 없으면 연결 요청은 4100 `NoEvmAccount`(이유 문구, [05] §5)로 끝나고 연결 창을 열지 않는다. 잠금·자동 잠금·잠금 해제·브라우저 다리는 키 전용 지갑에서도 같다.
+
+### 2.19 YubiKey 등록·YubiKey 지갑 (S20, S21, [10] §7, §9.3)
+형식·카드 절차·검사 규칙은 [10](10-yubikey.md). 화면 모듈 `ui::screens_yubikey`(명령 ID 13,200–13,399), 상태 `app_yubikey::YkWizard`(`CardUi::wizard`), 키 작업자 작업 `KeyJob::YubiKey(YkJob)`.
+
+- **진입**: 설정 → `YubiKey` 탭(등록한 YubiKey 목록과 주 버튼 `YubiKey 등록`), 키 전용·YubiKey 지갑의 T-NO-ACCOUNTS 카드의 `YubiKey 등록`, S01 카드 `YubiKey 지갑 만들기`(S20). `Unlocked`에서만(S20은 `NoVault`). 카드 8개면 끈다.
+- **S21 단계 표시** `1 키·슬롯 고르기 · 2 확인 · 3 자격 정보 · 4 결과`.
+  1. 키·슬롯: 카드 `OpenPGP 서명(SIG)`·`OpenPGP 인증(AUT)` — 라디오 "넣을 키" `없음`·`EVM 계정`·`Bitcoin 주소`·`EVM 공유 키`, "계정 인덱스"/"주소 인덱스 (0–999)" EDIT, Bitcoin·공유 키는 "주소 형식 ({현재 Bitcoin 네트워크})" `네이티브 세그윗 (P2WPKH)`(기본)·`호환 세그윗 (P2SH-P2WPKH)`·`레거시 (P2PKH)`, "터치" `항상`(기본)·`15초 유지`·`항상(고정)`·`15초 유지(고정)`, 경로 도움말(Bitcoin 인덱스 ≥ 20이면 gap limit 안내), 공유 키면 T-YK-SHARED(주의 띠)와 체크박스(켜야 다음). 카드 `PIV — Solana 계정` — "Solana 계정 수 (0–20)", "첫 계정 인덱스", 터치 `항상`·`15초 유지`, 보관 슬롯 82부터 차례로, T-YK-PIV-FIRMWARE. 기본값: 첫 YubiKey SIG = EVM 0, AUT = Bitcoin P2WPKH 0, Solana 1개(0부터); 다음 YubiKey는 기록된 카드들의 다음 인덱스. 등록한 카드가 있으면 카드 `백업 복사본` — 체크박스 "이미 등록한 YubiKey와 같은 키를 넣기(백업 복사본)"와 복사할 카드 라디오(그 카드의 슬롯·경로·정책을 그대로, `backup_copy`). 주 버튼 `다음 (복구 단어 입력)`(키 작업자가 단어를 보관 중이면 `다음 (확인)`), `취소`. 입력 오류(범위·빈 계획·`validate_plan`)는 위험 띠.
+  2. 복구 단어: W05(+ BIP39 passphrase 체크 시 W06 두 칸) → `YkJob::Preview` — 키 작업자가 시드를 보관하고(UI 스레드에는 남지 않음) `enrol::preview`로 경로·주소를 계산한다(카드 통신 없음). 단어 오류는 W05를 다시 열고 그 오류.
+  3. 확인: 슬롯마다 "{슬롯 이름} — {역할 제목}", 경로, 주소(EVM 체크섬·Bitcoin·Solana base58, 공유 키는 둘 다), 정책(터치·PIV PIN), 관계(`새 키` / 같은 경로를 가진 YubiKey 일련번호, 백업 복사본 여부). `plan::validate_before_card` 오류는 위험 띠(`PlanError` 문구)이고 `다음`이 꺼진다. 입력한 단어(+ passphrase)가 이 vault의 것이면(EVM 계정 0 주소 비교) T-YK-SAME(고위험 띠)과 체크박스 "이해했습니다. 그래도 이 복구 단어로 등록합니다" — 켜야 `다음`. PIV가 있으면 T-YK-PIV-FIRMWARE, 언제나 T-YK-OVERWRITE. `← 슬롯 다시 고르기`(단어는 보관), `취소`.
+  4. 자격 정보: OpenPGP 슬롯이 있으면 관리자 PIN을 W12에서, PIV 슬롯이 있으면 라디오 `기본 관리 키 사용`(기본)·`관리 키 직접 입력 (16진수 48자리)`(W12). 주 버튼 `가져오기`(W12 → `YkJob::Enrol`), `가져오기 없이 등록`(쓰기 없이 공개키만 읽음, [10] §7.5, T-YK-ADOPT), `← 이전`, `취소`. 진행 중에는 "YubiKey에 키를 넣는 중입니다".
+  5. 결과: 완료 띠, 카드 일련번호·펌웨어와 다시 읽은 슬롯별 경로·주소·정책, `다시 확인`(`sign::check_key` 읽기 전용, 슬롯마다 "공개키가 기록과 같습니다 ✓" 또는 오류), 기본값이 보였으면 카드 `기본값 바꾸기`(§9.3 문구, `OpenPGP PIN 바꾸기`·`OpenPGP 관리자 PIN 바꾸기`·`PIV PIN 바꾸기`·`PIV PUK 바꾸기`(W12 현재·새·새 확인)·`PIV 관리 키 바꾸기`(새 무작위 AES-192 키를 W13에 한 번 보이고, 2초 `다 적었습니다` 뒤에만 카드에 설정; 닫으면 바꾸지 않음)). 모두 바꾸면 meta `hw_accounts.defaults`에서 그 일련번호를 지운다. 주 버튼 `완료`(키 작업자가 단어를 지운다), `다른 YubiKey 등록(백업)`(1단계로, 이 카드의 백업 복사본이 선택된 채, 단어 보관 유지). 실패는 위험 띠(카드 쓰기 중이면 T-YK-PARTIAL)와 `다시 시도`(4단계로)·`← 슬롯 다시 고르기`·`취소`.
+- **S20 YubiKey 지갑 만들기**: 제목, 생성 단계 표시(§2.3과 같은 세 단계, 비밀 창 머리 "YubiKey 지갑 만들기 · n/3단계"), 카드 "시작하기 전에"(네 줄)와 주의 띠, `시작하기`·`취소`. W01 → `YkJob::Generate`(키 작업자가 24단어를 만들고 비밀번호와 함께 보관, vault 없음) → W08(만들기 모양: 24단어 + EVM 계정 0 주소, 2초 길게 누르기) → W10(`YkJob::Challenge`/`ConfirmWords`: 보관한 단어로 위치 4개, [02] §8.3과 같은 상수 시간 비교, 틀리면 새 위치) → S21(원점 `NewWallet`). 첫 `가져오기`가 성공하면 `Vault::create_with_hardware`로 니모닉 없는 vault를 만들고(`Unlocked`), 슬롯 표의 기본 meta(파생 계정 없음, `hw_accounts`·Bitcoin `key.yubikey` 계정, 첫 계정 선택, 첫 키의 탭)와 Bitcoin 키가 있으면 `bitcoin.enabled`·네트워크를 쓴다. 단어는 디스크에 쓰지 않고, `완료`·`취소`·유휴 폐기(§5.1)·잠금에서 지운다.
+- **설정 → YubiKey**: T-YK-LIST, 니모닉 지갑이면 T-YK-MNEMONIC-WALLET, `YubiKey 등록`. 카드마다 "YubiKey #{일련번호}" 카드(펌웨어, 슬롯 수, 슬롯별 경로·주소·정책, 기본값 안내 띠, `삭제`). "계정별 YubiKey": `{역할} ({경로}) — #{일련번호} {SIG|AUT|PIV xx}, …(백업)`.
+- **삭제**: `삭제` → 확인 오버레이(그 카드에만 있는 계정 목록, YubiKey 안의 키는 지우지 않음) → W03 → `YkJob::Remove` → `Vault::remove_hardware_key` → 계정 다시 맞춤(meta 다시 읽기). 복구 단어 없는 지갑의 마지막 키는 끈다(`LastKey`).
 
 ## 3. 승인 창 (A01, 모든 체인)
 
@@ -714,6 +744,9 @@ pub fn can_approve(g: &ApprovalGate, now: Instant) -> bool {
 | W08 | 복구 단어 (니모닉) | — | 평문 3열 × (n/3)행, 열 우선 번호(24단어: 1–8, 9–16, 17–24) + 첫 주소 | — | 토글 | `Required` |
 | W09 | 개인키 보기 | — | 평문(EVM hex 64자, Solana base58 keypair, Bitcoin WIF) | — | 토글 | `Required` |
 | W10 | 백업 확인 | 단어 4칸 `BackupWord` ≤ 8 | 평문 | 금지 | 없음 | `Preferred` |
+| W11 | YubiKey PIN | `Printable` OpenPGP 6–127 / PIV 6–8 ([10] §9.1) | 가림 | 허용 | 없음 | `Preferred` |
+| W12 | YubiKey 관리자 PIN · PIV 관리 키 · PIN/PUK 바꾸기 | 관리자 PIN `Printable` 8–127, 관리 키 `PrivateKeyHex` 정확히 48, 바꾸기 3칸(현재·새·새 확인, 대상 범위: PW1 6–127, PW3 8–127, PIV PIN·PUK 6–8; 새 두 칸 같고 현재와 달라야 함) | 가림 | 허용 | 없음 | `Preferred` |
+| W13 | 새 PIV 관리 키 | — | 평문(16진수 48자) | — | 없음(언제나) | `Required` |
 
 - 배치(§1.6): 회색 창 배경에 (만들기·가져오기 흐름이면) "{흐름} · n/3단계"와 단계 점, 제목 14pt, 안내 문구(보조색), 내용을 담는 흰 카드(입력 칸·단어 격자·체크박스·오류), 아래 버튼 줄(왼쪽 `모두 지우기`/`복사`, 오른쪽 `취소`/`나중에`와 주 버튼). W01의 주 버튼은 `다음`, W08 단어 격자는 번호(보조색) + 단어(14pt), 첫 주소는 4자 묶음으로 보인다.
 - 가림 칸은 글자 수만큼 U+25CF를 그린다. 칸 옆 `보기`를 누르고 있는 동안만 평문을 그린다(§4.5 실패 시 비활성).
@@ -1167,7 +1200,7 @@ BTC 계정 선택은 `prefs`에 두지 않는다(알려진 객체에 키를 더�
 ## 11. 화면 투어 (개발 전용)
 주요 화면과 창의 스크린샷(`docs/screenshots/`, 목록과 설명은 그 폴더의 `README.md`)을 만드는 개발 도구다. 판정 기준이 아니다.
 - 실행: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/screenshot-tour.ps1`. yw-app의 `#[ignore]` 테스트 `ui::tour::screenshot_tour`(테스트 빌드에만 있다)를 돌려 BMP를 `target/screenshot-tour/`에 쓰고, System.Drawing으로 PNG로 바꾼다. 확장 팝업은 `scripts/popup-preview.html`(팝업 마크업 + `chrome` 대역, 실제 `popup.css`·`popup.js`; `<body>`가 `popup.html`과 같은지 `scripts/popup-preview.test.mjs`가 확인한다)을 127.0.0.1 임시 정적 서버로 열어 헤드리스 Edge/Chrome으로 찍는다(브라우저가 없으면 건너뜀).
-- 장면: 첫 실행·만들기·가져오기·개인키로 시작하기, 잠금, 세 체인 메인, EVM 토큰 카드(숨긴 토큰 펼침, 지어낸 사용자 토큰), 보내기(EVM·Solana 토큰), 받기, 승인 창(시뮬레이션 성공·결과 없음·Solana 토큰·AI 설명·사이트 연결·Solana 메시지 서명), 설정(RPC·AI), 연결된 사이트(EVM과 Solana·Bitcoin), 확장 팝업. dApp 요청은 투어 브라우저 코어에 넣은 지어낸 연결(grant)과 요청으로 만들고 거부로 끝낸다(서명 없음).
+- 장면: 첫 실행·만들기·가져오기·개인키로 시작하기·YubiKey 지갑(S01 카드, S20), 잠금, 세 체인 메인, EVM 토큰 카드(숨긴 토큰 펼침, 지어낸 사용자 토큰), 보내기(EVM·Solana 토큰), 받기, 승인 창(시뮬레이션 성공·결과 없음·Solana 토큰·AI 설명·사이트 연결·Solana 메시지 서명), 설정(RPC·AI·YubiKey), 연결된 사이트(EVM과 Solana·Bitcoin), YubiKey 등록 마법사(키·슬롯, 확인, 자격 정보, W12, 결과)와 W11 카드 단계, 확장 팝업. YubiKey 장면은 카드·키 작업자 없이 공개 시험 니모닉에서 투어가 직접 계산한 미리보기·기록(지어낸 일련번호 12345678)을 쓴다. dApp 요청은 투어 브라우저 코어에 넣은 지어낸 연결(grant)과 요청으로 만들고 거부로 끝낸다(서명 없음).
 - 데이터: 버리는 임시 데이터 폴더(끝나면 삭제)만 쓰고 `%LOCALAPPDATA%\YourWallet`은 읽지도 쓰지도 않는다. vault·키 작업자·RPC 작업자를 만들지 않는다. 생성 흐름 화면의 단어는 BIP39 공개 시험 벡터(엔트로피 0, 24단어), 메인 화면은 공개 시험 니모닉(`abandon` × 11 + `about`) 지갑의 주소이고, 잔액·사이트·UTXO는 지어낸 값이다. RPC URL은 연결하지 않는 `*.example.test`, EVM 승인 창은 `app_approval::smoke`의 고정 응답(`tests/fixtures/eth_simulateV1/S2`·`S4`)으로, Solana 토큰(devnet USDC) 승인 창은 투어 안의 고정 Solana 응답(`SolTourRpc`: 받는 ATA 없음, 2026-10-28 실측 rent)으로 준비한다. 브라우저 다리는 투어 전용 pipe 이름(`\\.\pipe\YourWallet.tour.<pid>`)으로 연다.
 - 캡처: yw-win `ui::capture`(`#[cfg(debug_assertions)]`, release 빌드에 없음). `RedrawWindow(RDW_UPDATENOW | RDW_ALLCHILDREN)`로 창과 자식 컨트롤을 동기로 다시 그리고 `GdiFlush` 뒤, 창 자신의 클라이언트 DC에서 `BitBlt`로 복사한다(`PrintWindow(PW_RENDERFULLCONTENT)`는 마지막 DWM 프레임을 돌려줘 반쯤 그린 화면이 찍혔다). 캡처 제외 창(W01–W10)은 검게 찍히므로 **투어 프로세스가 직접 만든 창에 한해** 캡처 직전 `dev_tour_lift_capture_exclusion`(`WDA_NONE`)을 부른다. 앱의 비밀 창 생성 경로(§4.5)는 바뀌지 않는다.
 
@@ -1183,3 +1216,4 @@ BTC 계정 선택은 `prefs`에 두지 않는다(알려진 객체에 키를 더�
 [07]: 07-solana.md
 [08]: 08-bitcoin.md
 [09]: 09-testing.md
+[10]: 10-yubikey.md
