@@ -2,7 +2,7 @@
 
 상위 문서: [spec.md](../spec.md)
 
-- 상태: **명세 2026-11-04 · 코어 구현(yw-core `yubikey`, vault tag 5, yw-win PC/SC·CNG) · 앱 연결은 §13의 남은 작업** — 실제 YubiKey 확인은 [docs/acceptance/yubikey-20261104.md](../docs/acceptance/yubikey-20261104.md)(사용자가 수행).
+- 상태: **명세 2026-11-04 · 코어 구현(yw-core `yubikey`, vault tag 5, yw-win PC/SC·CNG) · 앱 연결(계정·PIN 창·카드 서명) 2026-11-05, 등록 마법사는 §13의 남은 작업** — 실제 YubiKey 확인은 [docs/acceptance/yubikey-20261104.md](../docs/acceptance/yubikey-20261104.md)(사용자가 수행).
 - 범위: 니모닉에서 고른 키를 한 번 파생해 하나 이상의 YubiKey 5(펌웨어 5.7 이상 권장, OpenPGP만 쓰면 5.2.3 이상)에 **가져오기(import)** 하고, 그 뒤로는 PC가 그 계정의 비밀을 전혀 갖지 않은 채(공개키·주소·일련번호·슬롯 표만) YubiKey에서 PIN + 터치로 서명한다. 니모닉 자체가 종이 백업이다. 같은 키를 여러 YubiKey에 넣어 서로의 백업으로 쓸 수 있다.
 - 기존 소프트웨어 vault 경로([02](02-core-keys-vault.md)·[03](03-evm.md)·[07](07-solana.md)·[08](08-bitcoin.md))는 바뀌지 않는다. 이 문서는 **추가**만 한다: vault payload의 새 tag 5(§8), 새 모듈 `yw_core::yubikey`·`yw_win::pcsc`·`yw_win::cng`(§4), 승인 후 서명 단계의 카드 분기(§10).
 - 규범 용어는 spec.md와 같다(MUST/반드시, SHOULD/권고, MAY/선택). 바이트 값의 출처는 §14.
@@ -235,7 +235,7 @@ n × 48:
 - 디코드 거부(`UnsupportedPayload`): 알 수 없는 코드, 예약 바이트 ≠ 0, 슬롯 수 0·25 이상, §3.5 규칙 1–5 위반, 곡선과 공개키 형식 불일치, 곡선 위에 없는 공개키, 같은 일련번호 두 record, record 간 지문 불일치, 같은 경로·다른 공개키, 9번째 record.
 - 상한: `MAX_RECORDS` 46 → **54**, `PAYLOAD_CT_MAX` 4,096 → **16,384**(최대 평문 3,170 + 8 × 1,189 = 12,682바이트). 호환: 이 버전 이전의 앱은 tag 5를 만나면 `UnsupportedPayload`(업데이트 안내, `.prev` 제안 없음)로 멈춘다. payload 암호문이 4,096바이트를 넘는 vault는 이전 앱이 구조 단계에서 `Malformed`로 본다 — [04] §6.6과 같이 **되돌린 앱에서 `.prev` 복구를 하지 말고 새 버전을 다시 설치한다.** YubiKey를 등록하지 않은 vault는 바이트가 전혀 바뀌지 않는다.
 - 비밀이 없으므로 `add_hardware_key`는 비밀번호를 다시 묻지 않는다(`PayloadRewrite`). 지우기(`remove_hardware_key`)는 비밀번호를 다시 묻는다(실수로 계정을 잃지 않게). 니모닉 없는 vault의 마지막 record는 지울 수 없다(`LastKey`).
-- meta(`yw-meta/3`)에는 선택 최상위 키 `hw_accounts`(라벨·숨김·선택; 주소는 표시 캐시)만 더한다 — 진실 원천은 vault의 tag 5다(잠금 해제 때 다시 계산). §13에서 구현.
+- meta(`yw-meta/3`)에는 선택 최상위 키 `hw_accounts`(라벨·숨김·선택; 주소는 표시 캐시)만 더한다 — 진실 원천은 vault의 tag 5다(잠금 해제 때 다시 계산). 형식(구현 2026-11-05, [02] §5.3의 "새 최상위 키" 규칙: 없으면 빈 값, 기본값이 아닐 때만 씀, 안쪽은 엄격 검사, 이전 버전은 모르는 키로 보존): `{"evm": [Account], "sol": [Account], "sol_selected": i | null, "defaults": [serial]}` — `Account`는 `evm_accounts`와 같은 `{index, label, address, hidden}`(index 오름차순·중복 없음, 주소 비어 있으면 안 됨, 체인당 192개 이하), `sol_selected`는 `sol`에 있는 index, `defaults`는 등록 때 기본 PIN·관리 키가 보였던 카드의 일련번호(오름차순, 8개 이하, "기본 PIN 사용 중" 안내 §9.3). EVM 선택은 `prefs.evm_account`의 `{"hardware": i}`(이전 버전은 prefs를 기본값으로 되돌림 — 허용). Bitcoin YubiKey 계정은 `btc_accounts`의 `key.yubikey`(§6.3)다.
 
 ## 9. PIN 처리
 
@@ -245,10 +245,18 @@ n × 48:
 - PIN·관리자 PIN·PUK·관리 키는 **우리의 비밀 입력 창**(D11: 캡처 제외, 직접 그린 입력, 복사 금지)에서만 받는다. Windows의 스마트카드 PIN 대화상자(minidriver)는 쓰지 않는다(PC/SC로 직접 VERIFY).
 - 입력 버퍼는 `Zeroizing`이고, **한 작업(서명 1건, 등록 1회)이 끝나면 지운다.** 작업 사이에 PIN을 캐시하지 않는다. Bitcoin 다중 입력 거래는 "한 작업"이므로 입력마다 같은 PIN 버퍼로 VERIFY한다(카드가 PSO:CDS 한 번마다 PW1을 요구).
 - 길이 검사: OpenPGP PW1 6–127, PW3 8–127, PIV PIN·PUK 6–8(ASCII, `FF` 금지). 남은 횟수가 1이면 "한 번 더 틀리면 PIN이 잠깁니다"를 입력 전에 보인다(OpenPGP `C4`, PIV 메타데이터 `06`).
+- 구현(2026-11-05): 서명 PIN 창은 **W11 `SecretKind::CardPin { min, max, touches }`**(`ui::secret`): 기존 비밀 입력 창과 같이 캡처 제외 우선·직접 그린 입력·복사 금지·ASCII, 가린 칸 하나, 길이는 키가 있는 애플릿의 범위(OpenPGP 6–127, PIV 6–8)를 넘겨받는다. 제목 "YubiKey PIN", 안내 "YubiKey를 연결하고 PIN 입력 후 터치하세요", 그 아래 서명할 키(역할·경로)·이 키를 가진 YubiKey 일련번호·직전 시도의 오류(남은 횟수, 1회면 잠김 경고), 터치가 여러 번이면 "YubiKey 터치 N회가 필요합니다". 남은 횟수는 카드를 읽지 않고는 모르므로 틀린 PIN 뒤에만 보인다. 제출된 PIN은 `Zeroizing` 버퍼 그대로 카드 작업(`KeyJob::*Card`의 `pin`)으로 옮겨지고 작업과 함께 지워진다(SOL 전송은 blockhash를 받는 동안 `PinBuffer`로 보관, 잠금·취소 때 지움). 작업 사이 캐시는 없다. 등록 마법사의 관리자 PIN·관리 키 입력은 아직 없다(§13).
 
 ### 9.2 서명 중 표시
 
 승인 → **"YubiKey를 연결하고 PIN 입력 후 터치하세요"** 단계(PIN 입력 칸, 연결된 YubiKey의 일련번호, 이 계정의 키를 가진 YubiKey 목록) → PIN 확인 뒤 "YubiKey가 깜박이면 터치하세요"(터치 대기 최대 15초는 카드가 정한다; 시간이 지나면 `6982` → "터치 시간이 지났습니다. 다시 시도하세요") → 카드 서명 → 기존 서명 후 검증 → 기존 저장·전송.
+
+구현(2026-11-05, `app_card`):
+
+- 승인(consume) 뒤 서명자가 YubiKey 키인 승인(`EvmKeySource::Hardware`, `SolKeySource::Hardware`, `BtcAccountKey::Hardware` 계획, YubiKey 출처의 Solana·Bitcoin dApp 메시지)은 소프트웨어 작업(`SignEvm`·`SignMessage`·`SignChainMessage`·`SignSol`·`SignBtc`) 대신 **카드 단계**(`CardStep`, `Purpose::CardSign(id)`)에 보관되고 W11이 열린다. 소프트웨어 계정의 경로는 그대로다(같은 작업, 같은 순서).
+- PIN 제출 → `SignEvmCard`·`SignMessageCard`·`SignChainMessageCard`·`SignBtcCard`(입력마다 같은 PIN으로 카드 서명 1회) 또는 SOL은 blockhash 조회 뒤 `SignSolCard`(SOL 서명 기한 20초는 PIN 제출 시각부터 잰다). 결과는 기존 `SignedEvm`·`SignedMessage`·`SignedChainMessage`·`SignedSol`·`SignedBtc` 처리로 간다(실패 문구는 `CardJobError` 문구).
+- 키 작업자는 승인을 쓰기 **전에** 카드에서 PIN을 확인한다(`yubikey::sign::check_pin`: 일련번호·기록 공개키 확인 뒤 VERIFY 한 번, 쓰기·서명 명령·터치 없음). 틀린 PIN·다른 카드·카드 없음이면 쓰지 않은 승인을 돌려주고(`KeyOutcome::CardUnused`) 실패 결과를 보낸다. 앱은 카드 단계가 상한(승인 뒤 120초) 안이고 PIN이 잠기지 않았으면 그 실패를 보이지 않고 W11을 오류와 함께 다시 연다. 그 밖에는 승인을 버리고 실패를 보인다.
+- W11 취소·닫기·창이 열리지 못함(캡처 제외 거부 등)·120초 초과는 승인을 버린다(아무것도 서명하지 않음). dApp에는 4001(사용자 거부), 120초 초과는 -32603. 잠금은 보관 중인 승인과 PIN을 지우고 dApp에 4001을 보낸다.
 
 ### 9.3 기본값 변경 안내
 
@@ -261,7 +269,8 @@ n × 48:
 | 승인 창·digest([03] §11) | 변화 없음. 서명자 종류(`Signer`)는 digest에 들어가지 않고 계정 주소가 묶는다. YubiKey EVM 계정은 키 출처 `EvmKeySource::Hardware(i)`(vault는 이 출처에 키를 빌려 주지 않고 `RecordNotFound`, 주소는 tag 5의 공개키에서 계산)로 표시하고, 승인 창에 "YubiKey로 서명" 배지와 이 키를 가진 YubiKey 목록을 더한다 |
 | EVM 보내기·dApp(`eth_sendTransaction`·`personal_sign`·`eth_signTypedData_v4`) | 같은 준비·시뮬레이션·위험 규칙. 서명 단계만 카드(§9.2). 서명 결과는 §6.2 후 기존 서명 후 검증 |
 | 승인 만료(D23, 120초) | 승인 클릭까지가 기존 규칙이다. 승인 뒤 카드 단계는 별도 상한 120초(PIN 입력·터치 포함), 넘으면 취소 |
-| Bitcoin 보내기 | 단일 주소 계정(§3.3). 입력마다 카드 서명, 수수료 서명 크기 72+1(§6.3). dApp 메시지 서명(BIP137·BIP322)도 같은 키로 가능(§13) |
+| Bitcoin 보내기 | 단일 주소 계정(§3.3). 입력마다 카드 서명, 수수료 서명 크기 72+1(§6.3). dApp 메시지 서명도 카드로 한다: BIP137(카드 DER → compact, 복구 id는 기록된 공개키를 복구하는 값, 헤더는 주소 형식), BIP322 simple(P2WPKH: `to_sign`의 BIP143 sighash를 카드로 서명한 witness)·full(P2SH-P2WPKH) — `btc::msgsign::sign_message_card`(vault 경로와 같은 승인 검사, 기존 검증기로 시험) |
+| 계정 목록 | EVM·Solana·Bitcoin 탭에 "[YubiKey]" 배지로 나온다(선택·이름 바꾸기·숨기기는 탭이 지원하는 만큼; Bitcoin 탭은 이름·숨김 없음). 받기 주소·QR은 기록된 공개키의 주소. "개인키 보기"는 없다(설정의 버튼도 YubiKey 계정이 선택되면 꺼짐). dApp 연결 목록(EVM `eth_requestAccounts`, Solana·Bitcoin 연결)에도 들어간다. 숨긴 YubiKey 계정은 그 키를 가진 카드를 다시 등록하면 다시 보인다 |
 | Solana 보내기·메시지 서명(SIWS 포함) | PIV Ed25519로 메시지 원문 서명(§5.3), 기존 템플릿·서명 후 검증 그대로 |
 | 키 전용 지갑·가져온 키 | 같은 vault에 공존. YubiKey 지갑에는 "계정 추가(파생)"·"복구 단어 보기"가 없다(`has_mnemonic = false`) |
 | 잠금·자동 잠금(D12) | 잠긴 동안 카드 작업 없음. 잠금은 진행 중인 카드 작업의 PIN 버퍼를 지우고 PC/SC 연결을 끊는다(이미 카드로 보낸 한 APDU는 끝까지 간다) |
@@ -304,14 +313,18 @@ n × 48:
 - yw-core Bitcoin(§6.3): 단일 주소 계정 `BtcAccountKey::Hardware`(`HwBtcKey::{Address, Evm}`, `Vault::hardware_btc_account`), 입력별 카드 서명 `btc::sign::sign_plan_card`(P2PKH·P2SH-P2WPKH·P2WPKH, P2TR 거부), 카드 입력의 완화 검사(`check_card_signature`, `verify_signed`에서도), 수수료 서명 크기 72 + 1, 승인 payload·저널·meta의 YubiKey 계정 식별(source 4·5). 시험: 세 형식 × (주소 키, EVM 공유 키) 두 입력 송금을 high-s·high-R 에뮬레이터로 서명(엄격 검사는 거부, 카드 검사는 통과), 잔돈 = 같은 주소, 입력당 터치 1회, 쓰기 명령 없음, 서명 후 검증·vsize, 저널·meta 왕복, vault 경로 거부, 터치 없음·다른 카드·틀린 PIN·다른 digest·high-s 응답·다른 계획 승인·탭루트 거부.
 - yw-win: `pcsc`(PC/SC 래퍼, 읽기 전용 수동 진단 `pcsc_readonly_probe`), `cng`(AES·3DES 한 블록, KAT).
 - yw-app(백엔드): `yubikey` 어댑터(`PcscTransport`, `CngCipher`, `CardSource`/`PcscSource`, `sign_evm_digest`, `enrol_first_card`), 키 작업자 작업 `EnrolYubiKey`·`HardwareKeys`·`SignEvmCard`·`SignMessageCard`(PIN은 작업이 소유하고 작업과 함께 지워짐), `SignFailure::Card`·`MessageSignFailure::Card`. 작업자 수준의 EVM 종단 시험(지갑 가져오기 → 에뮬레이터 YubiKey 등록 → 승인된 Sepolia 전송을 카드로 서명 → 서명 후 검증 → `Signed` 저널 기록, `personal_sign`, 틀린 PIN·다른 카드·카드 없음, vault 경로 거부).
+- yw-core(2026-11-05): `yubikey::sign::check_pin`(서명 전 PIN 확인, 쓰기·서명·터치 없음), `sign_btc_checked`, `btc::msgsign::sign_message_card`(BIP137·BIP322 simple/full, §10).
+- yw-app 연결(2026-11-05):
+  - meta `hw_accounts`(§8)와 `EvmAccountPref::Hardware`(`{"hardware": i}`). 잠금 해제·등록 뒤 meta를 읽을 때 tag 5 슬롯 표로 맞춘다(`reconcile_hardware`, 가져온 키의 `reconcile_imported`와 같은 방식: 새 키는 기본 이름 "YubiKey 계정 n"·"YubiKey Solana n"으로 추가, 없어진 키는 삭제, 주소 캐시 재계산, 사라진 선택은 되돌림; Bitcoin은 `KeyRole::Btc` 슬롯과 공유 키의 Bitcoin 용도마다 `btc_accounts`의 단일 주소 계정 `key.yubikey`를 만들고 키가 없어진 계정을 지움).
+  - 세 탭의 계정 목록·배지·받기·dApp 연결 목록(§10 표), W11 PIN 창과 카드 단계(§9.1, §9.2), 키 작업자 작업 `SignSolCard`·`SignBtcCard`·`SignChainMessageCard`(+ `SolSignFailure::Card`·`BtcSignFailure::Card`, 저널 처리는 `sign_sol_with`·`sign_btc_with`로 소프트웨어 경로와 같음), `KeyOutcome::CardUnused`.
+  - 등록 진입점(마법사가 부름): `App::enrol_yubikey(EnrolRequest)` → `KeyJob::EnrolYubiKey`; 결과 `App::on_yubikey_enrolled`가 `CardUi::enrol`(`EnrolState::{Running, Done { serial, slots, defaults }, Failed}`)을 채우고, 기본값이 보였으면 일련번호를 `hw_accounts.defaults`에 더하고, `HardwareKeys`·`LoadMeta`로 계정을 다시 맞추고, 그 카드의 키로 숨겨 둔 계정을 다시 보인다.
+  - 시험: meta 왕복·엄격 검사·이전 파일·이전 버전 보존, 등록 뒤 세 체인 계정(`abandon` 벡터 주소), 에뮬레이터로 `SignSolCard`·`SignBtcCard` 종단(저널 기록, 서명 검증, high-s·high-R 카드, 입력당 카드 서명 1회, 틀린 PIN은 승인 반환·저널 없음), App 수준(승인된 EVM 전송 → W11 카드 단계 → 틀린 PIN 재요청 → `SignEvmCard` 저널, 취소, 소프트웨어 계정은 `SignEvm`, `enrol_yubikey` 진입점), W11 입력 규칙.
 
 남은 작업(yw-app UI, 순서대로):
 
-1. 등록 마법사 화면(슬롯·인덱스 선택, 확인 화면 §7.2, 니모닉·PIN·관리자 PIN·관리 키 입력은 기존 비밀 입력 창(W05 등)에 새 종류를 더해, 반복 등록, 기본값 변경 §9.3) → `KeyJob::EnrolYubiKey`.
-2. EVM 탭의 "YubiKey" 계정 종류: meta 선택 최상위 키 `hw_accounts`(라벨·숨김), `EvmAccountPref`에 YubiKey 항목, 계정 목록·받기·dApp 연결 계정 목록에 tag 5의 EVM 계정.
-3. 승인 후 카드 단계(§9.2): 출처가 `EvmKeySource::Hardware`인 승인은 `SignEvm`/`SignMessage` 대신 PIN 입력 창 → `SignEvmCard`/`SignMessageCard`.
-4. Solana·Bitcoin YubiKey 계정의 앱 연결: 계정 목록(`SolKeySource::Hardware`, `BtcAccountKey::Hardware`), 키 작업자 작업(`sign_transfer_card`·`sign_message_card`·`sign_plan_card`에 `sign::sign_sol`·`sign::sign_btc` 클로저), 승인 창의 "YubiKey 터치 N회" 안내(§6.3, §10). Bitcoin dApp 메시지 서명(BIP137·BIP322)의 카드 경로는 아직 없다(vault 경로는 YubiKey 출처를 거부).
-5. 새 YubiKey 지갑 생성(§7.1-1, `create_with_hardware`)과 "가져오기 없이 등록"(§7.5).
+1. 등록 마법사 화면(슬롯·인덱스 선택, 확인 화면 §7.2, 니모닉·관리자 PIN·관리 키 입력은 기존 비밀 입력 창에 새 종류를 더해, 반복 등록, 기본값 변경 화면 §9.3과 PIN 변경) → `App::enrol_yubikey`.
+2. 새 YubiKey 지갑 생성(§7.1-1, `create_with_hardware`, 그 뒤 `write_key_only_meta`에 해당하는 meta)과 "가져오기 없이 등록"(§7.5), YubiKey 기록 삭제(설정, 비밀번호).
+3. 승인 창의 "YubiKey로 서명" 배지·보유 YubiKey 목록·"YubiKey 터치 N회" 안내(지금은 W11에만 있음), Solana 보내기 확인의 자기 계정 표시(YubiKey 계정이 "내 계정(가져온 개인키)"로 보임), 둘러보기 스크린샷.
 
 ## 14. 출처
 
