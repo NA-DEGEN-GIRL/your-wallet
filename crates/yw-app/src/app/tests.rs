@@ -1716,6 +1716,8 @@ fn every_screen_has_unique_control_ids() {
         Screen::Settings(SettingsSection::Other),
         Screen::Settings(SettingsSection::YubiKey),
         Screen::Done,
+        Screen::Reset,
+        Screen::Extension,
     ];
     let check = |app: &mut App, screens: &[Screen], pass: &str| {
         for tab in [Tab::Evm, Tab::Sol, Tab::Btc] {
@@ -3237,4 +3239,212 @@ fn yubikey_badge_is_chrome_and_the_solana_note() {
     drop(worker);
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(other);
+}
+
+/// The meta an older build (2026-10-31) wrote with a new wallet: no settings snapshot, no
+/// `hardware`, no token view.
+fn old_build_meta(address: &str) -> String {
+    format!(
+        r#"{{"schema":"yw-meta/3","evm_accounts":[{{"index":0,"label":"계정 1","address":"{address}","hidden":false}}],"evm_raw_accounts":[],"sol_accounts":[],"sol_raw_accounts":[],"btc":null,"address_book":[],"connected_sites":[],"tokens":{{}},"activity":{{}},"prefs":{{"evm_account":{{"index":0}},"sol_account":0,"tab":"evm"}}}}"#
+    )
+}
+
+/// 2026-11-05 field report: wallet created, `다 적었습니다` held (`backup.written_ack`), app
+/// closed before the word quiz; the new build starts → S07 → unlock → `BackupPending`. S04 must
+/// show at once, and its `받기` (S12) must show account 0 instead of waiting forever for a meta
+/// that `BackupPending` never requested; `← 메인으로` returns to S04 (never a `Processing`
+/// screen that only an `Unlocked` meta answer would leave). A wait that does not end shows
+/// T-WAIT-STALLED after `WAIT_TIMEOUT_MS`.
+#[test]
+#[expect(clippy::too_many_lines, reason = "one field report, step by step")]
+fn backup_pending_after_restart_shows_s04_and_receive() {
+    use crate::app_reset::WAIT_TIMEOUT_MS;
+    use crate::ui::screens_reset::T_WAIT_STALLED;
+
+    let dir = temp_dir("bp-restart");
+    {
+        // The first run: create, `다 적었습니다` (the challenge is asked for), quit before the quiz.
+        let mut first = Harness {
+            app: app_at(&dir),
+            worker: KeyWorker::new(&dir),
+            dir: temp_dir("bp-restart-unused"),
+            phrase: None,
+            address: None,
+        };
+        first.app.key(crate::events::KeyJob::Load);
+        first.pump();
+        first.submit(Purpose::CreatePassword, &[WALLET_PW]);
+        first.pump();
+        assert_eq!(first.app.mode, AppMode::BackupPending);
+        let address = first.address.unwrap();
+        first.app.key(crate::events::KeyJob::BackupChallenge);
+        first.pump();
+        // The older build's meta.
+        first
+            .worker
+            .test_write_meta_bytes(old_build_meta(&address.to_lower_hex()).as_bytes())
+            .unwrap();
+    }
+
+    // The new build starts on the same folder.
+    let mut again = Harness {
+        app: app_at(&dir),
+        worker: KeyWorker::new(&dir),
+        dir,
+        phrase: None,
+        address: None,
+    };
+    again.app.key(crate::events::KeyJob::Load);
+    again.pump();
+    assert_eq!(again.app.screen, Screen::Locked);
+    again.submit(Purpose::Unlock, &[WALLET_PW]);
+    again.pump();
+    assert_eq!(again.app.mode, AppMode::BackupPending);
+    assert_eq!(again.app.screen, Screen::BackupPending);
+    assert!(again.app.meta.is_some(), "BackupPending loads the meta");
+    assert!(again.app.guard.verified, "the settings snapshot check ran");
+    let items = again.app.items();
+    assert!(has_text(&items, "백업 확인이 필요합니다"));
+    let shown = control_ids(&items);
+    for id in [
+        ids::BACKUP_CHECK,
+        crate::ui::screens_evm::ids::RECEIVE_OPEN,
+        ids::LOCK,
+        crate::ui::screens_reset::ids::RESET_OPEN,
+    ] {
+        assert!(shown.contains(&id), "S04 control {id}");
+    }
+    // S04 `받기` → S12 with account 0, no loading line.
+    again
+        .app
+        .on_command(crate::ui::screens_evm::ids::RECEIVE_OPEN);
+    again.pump();
+    assert_eq!(again.app.screen, Screen::Receive);
+    let items = again.app.items();
+    assert!(
+        !has_text(&items, "계정을 불러오는 중"),
+        "{:?}",
+        texts(&items)
+    );
+    assert!(
+        items.iter().any(|item| matches!(item, Item::Qr(_))),
+        "S12 shows account 0: {:?}",
+        texts(&items)
+    );
+    // `← 메인으로` from S12: S04 again (not S10, not a Processing screen).
+    again.app.on_command(ids::BACK_MAIN);
+    again.pump();
+    assert_eq!(again.app.screen, Screen::BackupPending);
+
+    // The meta answer never comes (simulated): the wait times out to T-WAIT-STALLED with the
+    // next steps instead of hanging; the self-heal requests a meta when none was requested.
+    again.app.meta = None;
+    again.app.wait = crate::app_reset::WaitWatch::default();
+    again.app.set_screen(Screen::Receive);
+    let now = yw_win::time::monotonic_ms();
+    again.app.wait_tick(now);
+    assert!(
+        again.app.wait.meta_since.is_some(),
+        "a missing meta is requested"
+    );
+    assert!(has_text(&again.app.items(), "계정을 불러오는 중"));
+    // The worker is "stuck": nothing answers (`pop` blocks on an empty queue).
+    while !again.app.key_queue.is_empty() {
+        let _ = again.app.key_queue.pop();
+    }
+    let since = again.app.wait.meta_since.unwrap();
+    again.app.wait_tick(since + WAIT_TIMEOUT_MS);
+    assert!(again.app.wait.stalled);
+    let items = again.app.items();
+    assert!(has_text(&items, T_WAIT_STALLED));
+    let shown = control_ids(&items);
+    assert!(shown.contains(&crate::ui::screens_reset::ids::WAIT_RETRY));
+    assert!(shown.contains(&ids::LOCK));
+    // `다시 불러오기` → the meta arrives → the stall line goes.
+    again
+        .app
+        .on_command(crate::ui::screens_reset::ids::WAIT_RETRY);
+    again.pump();
+    assert!(again.app.meta.is_some());
+    again.app.wait_tick(since + WAIT_TIMEOUT_MS + 1);
+    assert!(!again.app.wait.stalled);
+    // A Processing screen that never ends also times out.
+    again.app.set_screen(Screen::Processing("불러오는 중…"));
+    let since = again.app.wait.since.unwrap();
+    again.app.wait_tick(since + WAIT_TIMEOUT_MS);
+    assert!(has_text(&again.app.items(), T_WAIT_STALLED));
+}
+
+/// S22 `지갑 초기화` from the lock screen without the password: the files move into
+/// `reset-<UTC>`, settings and API keys stay, the app is back at S01 with no T-LEFTOVER.
+#[test]
+fn wallet_reset_from_the_lock_screen_returns_to_first_run() {
+    use crate::ui::screens_reset::ids as reset_ids;
+
+    let mut h = Harness::new("reset");
+    h.create_and_confirm();
+    std::fs::write(h.dir.join("settings.json"), b"{}").unwrap();
+    h.app.lock(LockReason::Manual);
+    h.pump();
+    assert_eq!(h.app.screen, Screen::Locked);
+    assert!(control_ids(&h.app.items()).contains(&reset_ids::RESET_OPEN));
+    h.app.on_command(reset_ids::RESET_OPEN);
+    assert_eq!(h.app.screen, Screen::Reset);
+    let items = h.app.items();
+    assert!(has_text(&items, "비밀번호를 잊었어도"));
+    assert!(
+        items
+            .iter()
+            .any(|item| matches!(item, Item::Field(_, value) if value.contains("vault.ywv")))
+    );
+    // The hold area stays disabled until the phrase is typed; `취소` goes back to S07.
+    assert!(
+        items
+            .iter()
+            .any(|item| matches!(item, Item::Hold { enabled: false, .. }))
+    );
+    h.app.reset_execute();
+    assert_eq!(h.app.screen, Screen::Reset, "no phrase, no reset");
+    h.app.on_command(reset_ids::RESET_CANCEL);
+    assert_eq!(h.app.screen, Screen::Locked);
+    h.app.on_command(reset_ids::RESET_OPEN);
+    h.app.reset_phrase_changed(" 초기화 ");
+    assert!(
+        h.app
+            .items()
+            .iter()
+            .any(|item| matches!(item, Item::Hold { enabled: true, .. }))
+    );
+    // The 2 s hold, then the reset (the hold area's rectangle is not laid out headless).
+    h.app.reset.holding = Some(reset_ids::RESET_HOLD);
+    let start = yw_win::time::monotonic_ms();
+    h.app.reset.gate.begin(start);
+    h.app.reset_hold_tick(start + 1_000);
+    assert_eq!(h.app.screen, Screen::Reset, "half a hold does nothing");
+    h.app.reset_hold_tick(start + 2_000);
+    assert!(matches!(h.app.screen, Screen::Processing(_)));
+    h.pump();
+    assert_eq!(h.app.mode, AppMode::NoVault);
+    assert_eq!(h.app.screen, Screen::FirstRun);
+    assert!(!h.app.leftover, "files in reset-* never block S01");
+    assert!(h.app.info.as_deref().unwrap_or_default().contains("reset-"));
+    let folders: Vec<PathBuf> = std::fs::read_dir(&h.dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("reset-"))
+        })
+        .collect();
+    assert_eq!(folders.len(), 1);
+    assert!(folders[0].join("vault.ywv").is_file() && folders[0].join("meta.ywm").is_file());
+    assert!(!h.vault_file().exists());
+    assert!(
+        h.dir.join("settings.json").is_file(),
+        "settings stay by default"
+    );
+    // S01 creation works again.
+    assert!(control_ids(&h.app.items()).contains(&ids::FIRST_CREATE));
 }

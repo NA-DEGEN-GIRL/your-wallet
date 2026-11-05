@@ -385,6 +385,15 @@ pub enum KeyJob {
         /// Wall clock.
         now_unix_ms: u64,
     },
+    /// `지갑 초기화` (spec/04 §2.20): drop the vault (no unlock needed) and move the wallet files
+    /// into `<data>\reset-<stamp>\` (`store::reset`). A control job: it is queued right after
+    /// the lock procedure's `Lock`/`Load` and must survive that `Lock`.
+    ResetWallet {
+        /// UTC `YYYYMMDDTHHMMSSZ` for the folder name.
+        stamp: String,
+        /// Also move `settings.json` and `apikeys.dpapi`.
+        include_settings: bool,
+    },
     /// Stop the worker (after locking).
     Shutdown,
 }
@@ -603,6 +612,7 @@ impl KeyJob {
             Self::BtcMeta { .. } => "BtcMeta",
             Self::SignBtc { .. } => "SignBtc",
             Self::BtcJournal { .. } => "BtcJournal",
+            Self::ResetWallet { .. } => "ResetWallet",
             Self::Shutdown => "Shutdown",
         }
     }
@@ -611,7 +621,10 @@ impl KeyJob {
     /// right after `Lock` (spec/04 §5.3) so the UI learns the vault status the lock left, e.g.
     /// `Locked` after a `CreateWallet`/`CommitImport` whose result the lock discarded.
     const fn is_control(&self) -> bool {
-        matches!(self, Self::Lock | Self::Shutdown | Self::Load)
+        matches!(
+            self,
+            Self::Lock | Self::Shutdown | Self::Load | Self::ResetWallet { .. }
+        )
     }
 
     /// What a job cancelled by `Lock` reports: signing jobs answer their ticket's waiter
@@ -770,6 +783,8 @@ pub enum KeyOutcome {
     SignedBtc(Result<BtcSignedSummary, BtcSignFailure>),
     /// A BTC journal step finished.
     BtcJournal(Result<BtcJournalDone, BtcKeyError>),
+    /// `ResetWallet` finished: the files moved (or what moved before a failure).
+    WalletReset(Result<crate::store::reset::ResetReport, crate::store::reset::ResetError>),
     /// The job was cancelled by `Lock`.
     Cancelled(&'static str, KeyJobError),
 }

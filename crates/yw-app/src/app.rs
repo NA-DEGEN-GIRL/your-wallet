@@ -124,7 +124,7 @@ impl AppMode {
         }
     }
 
-    const fn word(self) -> &'static str {
+    pub(crate) const fn word(self) -> &'static str {
         match self {
             Self::Starting => "Starting",
             Self::NoVault => "NoVault",
@@ -290,6 +290,10 @@ pub enum Screen {
     YubiKey,
     /// S20 `YubiKey 지갑 만들기`: what the new `YubiKey` wallet is (spec/10 §7.1-1).
     YubiKeyWalletIntro,
+    /// S22 `지갑 초기화` (spec/04 §2.20).
+    Reset,
+    /// S23 `Chrome 확장 설치` (spec/04 §2.21).
+    Extension,
 }
 
 /// What a password-confirm window (W03) is for.
@@ -536,6 +540,12 @@ pub struct App {
     pub(crate) llm_ui: crate::app_llm::LlmUi,
     /// `settings.json` integrity (meta snapshot) and the startup facts shown with it.
     pub(crate) guard: SettingsGuard,
+    /// Loading waits that time out to T-WAIT-STALLED instead of hanging (`app_reset`).
+    pub(crate) wait: crate::app_reset::WaitWatch,
+    /// S22 `지갑 초기화` (spec/04 §2.20).
+    pub(crate) reset: crate::app_reset::ResetUi,
+    /// S23 `Chrome 확장 설치` (spec/04 §2.21).
+    pub(crate) ext: crate::app_extension::ExtensionUi,
     secret: Option<SecretWin>,
     secret_serial: u64,
     import: ImportFlow,
@@ -752,6 +762,9 @@ impl App {
             llm: None,
             llm_ui: crate::app_llm::LlmUi::default(),
             guard: SettingsGuard::default(),
+            wait: crate::app_reset::WaitWatch::default(),
+            reset: crate::app_reset::ResetUi::default(),
+            ext: crate::app_extension::ExtensionUi::default(),
             secret: None,
             secret_serial: 0,
             import: ImportFlow::default(),
@@ -923,6 +936,7 @@ impl App {
         if matches!(screen, Screen::Confirm(_)) && !matches!(self.screen, Screen::Confirm(_)) {
             self.previous_screen = self.screen.clone();
         }
+        self.wait.screen_changed(&self.screen, &screen, now_ms());
         self.screen = screen;
         self.scroll = 0;
         self.refresh();
@@ -1011,6 +1025,7 @@ impl App {
                 if *code == 0 {
                     self.on_command(*id);
                 } else if *code == EN_CHANGE
+                    && !self.on_reset_edit_change(*id)
                     && !self.on_sol_edit_change(*id)
                     && !self.on_btc_edit_change(*id)
                     && !self.on_llm_edit_change(*id)
@@ -1019,6 +1034,19 @@ impl App {
                     self.on_edit_change(*id);
                 }
                 Reply::Handled(0)
+            }
+            // The S22 hold area (painted, no child control).
+            Msg::MouseDown { x, y } => {
+                self.hold_down(*x, *y, now_ms());
+                Reply::Default
+            }
+            Msg::MouseMove { x, y } => {
+                self.hold_move(*x, *y);
+                Reply::Default
+            }
+            Msg::MouseUp { .. } => {
+                self.hold_cancel();
+                Reply::Default
             }
             Msg::Wheel(delta) => {
                 let step = window.px(60);
@@ -1115,6 +1143,8 @@ impl App {
             self.register_session();
         }
         self.idle_tick(now);
+        self.wait_tick(now);
+        self.reset_hold_tick(now);
         if let Some((clip, at)) = self.secret_clip
             && now.saturating_sub(at) >= SECRET_CLIPBOARD_TTL_MS
         {
@@ -1237,6 +1267,8 @@ impl App {
         self.sol_lock();
         self.btc_lock();
         self.meta = None;
+        self.wait = crate::app_reset::WaitWatch::default();
+        self.hold_cancel();
         self.rename = None;
         self.pending_remove = None;
         self.keys = crate::app_keys::KeysUi::default();
@@ -1364,7 +1396,11 @@ impl App {
         };
         match outcome {
             KeyOutcome::Quarantined(name) => self.quarantined = Some(name),
+            KeyOutcome::WalletReset(result) => self.on_wallet_reset(result),
             KeyOutcome::Loaded { status, leftover } => {
+                if self.reset_absorbs_load(leftover) {
+                    return;
+                }
                 self.leftover = leftover;
                 self.prev_on_disk = crate::store::prev_exists(&self.paths.data, FileKind::Vault);
                 if status == VaultStatus::Locked && self.payload_damaged {
@@ -1402,6 +1438,8 @@ impl App {
             }
             KeyOutcome::Created(Ok((phrase, address))) => {
                 self.set_mode(AppMode::BackupPending);
+                // The default meta was written with the vault; S04 `받기` needs it.
+                self.request_meta();
                 self.set_screen(Screen::BackupPending);
                 self.open_display(
                     SecretKind::ShowMnemonic { create: true },
@@ -1440,7 +1478,7 @@ impl App {
                     alt_passphrase: false,
                 });
                 self.idle.input(now);
-                self.key(KeyJob::LoadMeta);
+                self.request_meta();
                 // S08 after an import: no backup check ran (the words came from the user).
                 self.done_imported = true;
                 self.set_screen(Screen::Done);
@@ -1472,7 +1510,7 @@ impl App {
                     alt_passphrase: false,
                 });
                 self.idle.input(now);
-                self.key(KeyJob::LoadMeta);
+                self.request_meta();
                 logging::info("app", "keystart.created", &[]);
                 // S08 after "개인키로 시작하기": the backup is the original key.
                 self.done_imported = false;
@@ -1548,7 +1586,7 @@ impl App {
                     alt_passphrase: false,
                 });
                 self.idle.input(now);
-                self.key(KeyJob::LoadMeta);
+                self.request_meta();
                 // S08 shows T-BACKUP-OK itself.
                 self.done_imported = false;
                 self.set_screen(Screen::Done);
@@ -1683,8 +1721,22 @@ impl App {
                 }
                 self.keys.has_mnemonic = has_mnemonic;
                 self.meta = Some(*meta);
+                self.wait.meta_since = None;
                 // Review M1/L15/L17: compare settings.json with the snapshot in the meta.
                 self.verify_settings();
+                if self.mode == AppMode::BackupPending {
+                    // S04 (and its S12) only needs the account list. The chain hooks (journal,
+                    // balances, card) run after the backup check, which loads the meta again.
+                    if matches!(
+                        self.screen,
+                        Screen::Processing(_) | Screen::Locked | Screen::Starting | Screen::Main
+                    ) {
+                        self.set_screen(Screen::BackupPending);
+                    } else {
+                        self.refresh();
+                    }
+                    return;
+                }
                 if matches!(self.mode, AppMode::Unlocked { .. })
                     && matches!(
                         self.screen,
@@ -1707,20 +1759,26 @@ impl App {
             KeyOutcome::Meta(Err(
                 VaultError::SidecarCorrupt(_) | VaultError::SidecarVaultMismatch(_),
             )) => {
+                self.wait.meta_since = None;
                 self.error_banner(ErrorCode::Vlt006);
                 self.set_screen(Screen::Confirm(Confirm::SidecarCorrupt));
             }
             KeyOutcome::Meta(Err(error)) => {
+                self.wait.meta_since = None;
                 self.error_banner(vault_code(error));
                 self.meta = Some(Meta::default());
-                self.set_screen(Screen::Main);
+                self.set_screen(if self.mode == AppMode::BackupPending {
+                    Screen::BackupPending
+                } else {
+                    Screen::Main
+                });
             }
             KeyOutcome::SidecarResolved(result) => {
                 if let Err(code) = result {
                     self.error_banner(code);
                 }
                 self.evm.journal = None;
-                self.key(KeyJob::LoadMeta);
+                self.request_meta();
                 self.set_screen(Screen::Processing("불러오는 중…"));
             }
             KeyOutcome::Addresses(Ok(list)) => {
@@ -1780,6 +1838,10 @@ impl App {
                     VaultStatus::BackupPending => {
                         self.close_secret();
                         self.idle.input(now);
+                        // S04's `받기` (S12) shows account 0 from the meta: read it now. Before
+                        // this, a `BackupPending` session never loaded the meta and S12 waited
+                        // for accounts that were never requested.
+                        self.request_meta();
                         self.set_screen(Screen::BackupPending);
                         self.browser_vault_loaded();
                     }
@@ -1790,7 +1852,7 @@ impl App {
                         if alt_passphrase {
                             logging::warn("app", "unlock.alt_passphrase", &[]);
                         }
-                        self.key(KeyJob::LoadMeta);
+                        self.request_meta();
                         self.set_screen(Screen::Processing("불러오는 중…"));
                     }
                     VaultStatus::Corrupt { .. } | VaultStatus::MainMissing => {
@@ -2680,7 +2742,7 @@ impl App {
         self.save_settings(self.settings.clone(), "settingsFileRestored");
     }
 
-    fn open_folder(path: &Path) {
+    pub(crate) fn open_folder(path: &Path) {
         let root = std::env::var_os("SystemRoot")
             .map_or_else(|| PathBuf::from("C:\\Windows"), PathBuf::from);
         let spawned = std::process::Command::new(root.join("explorer.exe"))
@@ -2740,10 +2802,17 @@ impl App {
             ids::DONE_CONTINUE | ids::BACK_MAIN | ids::SWITCH_ACCOUNT => {
                 self.info = None;
                 self.keys.done_start = false;
-                if self.meta.is_some() {
+                if self.mode == AppMode::BackupPending {
+                    // `← 메인으로` from S12 during the backup check: S04 is this mode's main
+                    // screen (S10, and a `Processing` wait for it, never come in this mode).
+                    if self.meta.is_none() {
+                        self.request_meta();
+                    }
+                    self.set_screen(Screen::BackupPending);
+                } else if self.meta.is_some() {
                     self.set_screen(Screen::Main);
                 } else {
-                    self.key(KeyJob::LoadMeta);
+                    self.request_meta();
                     self.set_screen(Screen::Processing("불러오는 중…"));
                 }
             }
@@ -2939,7 +3008,9 @@ impl App {
                 self.refresh();
             }
             other => {
-                if !self.on_keys_command(other)
+                if !self.on_reset_command(other)
+                    && !self.on_extension_command(other)
+                    && !self.on_keys_command(other)
                     && !self.on_sol_command(other)
                     && !self.on_btc_command(other)
                     && !self.on_evm_command(other)

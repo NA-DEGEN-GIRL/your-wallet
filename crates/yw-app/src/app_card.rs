@@ -353,7 +353,7 @@ impl App {
                     self.info = Some(text);
                 }
                 self.key(KeyJob::HardwareKeys);
-                self.key(KeyJob::LoadMeta);
+                self.request_meta();
             }
             Err(error) => {
                 logging::info("app", "yubikey.enrol_failed", &[]);

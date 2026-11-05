@@ -173,7 +173,7 @@ pub enum AppMode { NoVault, Locked, Unlocking, PassphraseRequired, PassphraseMis
                    Unlocked { alt_passphrase: bool }, Corrupt { prev_available: bool }, MainMissing, ShuttingDown }
 ```
 `AppMode`는 [02] `VaultStatus`에 진행 상태(`Unlocking`, `ShuttingDown`)를 더한 화면용 사본이다.
-- 주 창 화면: S01 첫 실행(`NoVault`), S02 생성 안내, S03 처리 중(KDF 진행 표시), S04 백업 대기(`BackupPending`), S05 가져오기, S06 첫 주소 확인, S07 잠금 화면(`Locked`·`PassphraseRequired`), S08 완료, S09 복구(`Corrupt`·`MainMissing`), S10 메인(`Unlocked`), S11 보내기·결과, S12 받기, S13 연결된 사이트, S14 주소록, S15 설정, S16 토큰 추가, S17 EVM 체인 추가·편집(§2.17), S18 개인키로 시작하기(체인·주소 형식), S19 개인키 주소 확인(§2.18), S20 YubiKey 지갑 만들기, S21 YubiKey 등록 마법사(§2.19).
+- 주 창 화면: S01 첫 실행(`NoVault`), S02 생성 안내, S03 처리 중(KDF 진행 표시), S04 백업 대기(`BackupPending`), S05 가져오기, S06 첫 주소 확인, S07 잠금 화면(`Locked`·`PassphraseRequired`), S08 완료, S09 복구(`Corrupt`·`MainMissing`), S10 메인(`Unlocked`), S11 보내기·결과, S12 받기, S13 연결된 사이트, S14 주소록, S15 설정, S16 토큰 추가, S17 EVM 체인 추가·편집(§2.17), S18 개인키로 시작하기(체인·주소 형식), S19 개인키 주소 확인(§2.18), S20 YubiKey 지갑 만들기, S21 YubiKey 등록 마법사(§2.19), S22 지갑 초기화(§2.20), S23 Chrome 확장 설치(§2.21).
 - 별도 최상위 창: W01–W13 비밀 창(§4.1; W11–W13은 YubiKey, [10]), A01 승인·연결 창(§3).
 - 비밀 창이 열려 있는 동안 주 창은 `EnableWindow(FALSE)`다. 승인 창은 주 창을 막지 않는다.
 - 주 창 자식 컨트롤의 명령 ID(`WM_COMMAND`)는 화면 모듈마다 `ids`에 두고, 고정 ID와 목록형 범위(계정·주소록·스캔 행·사이트 등)가 서로 겹치지 않으며 각 범위가 그 목록의 최대 길이(행 수 × 행당 ID 수)를 담는다. 전체 지도와 시험은 `ui::command_ids`(1·2는 쓰지 않음). 승인 창·비밀 창은 자식 컨트롤 없이 직접 그리고 영역으로 판정하므로 명령 ID가 없다.
@@ -181,7 +181,7 @@ pub enum AppMode { NoVault, Locked, Unlocking, PassphraseRequired, PassphraseMis
 - 사용자에게 보이는 용어: "니모닉"은 "복구 단어"로 부르고 처음 나오는 곳에 "(니모닉)"을 붙인다. 오류 문구(§7)와 코드는 바꾸지 않는다.
 
 ### 2.2 첫 실행 (S01)
-- `NoVault`일 때. 데이터 폴더에 `meta.ywm`·`journal.ywj` 또는 그 `.prev`가 남아 있으면 생성·가져오기 버튼을 끄고 T-LEFTOVER와 폴더 경로, `폴더 열기`(§2.14)를 보인다. 파일은 사용자가 직접 옮긴다([02] §6.3). 앱은 지갑 파일을 옮기거나 지우지 않는다.
+- `NoVault`일 때. 데이터 폴더에 `meta.ywm`·`journal.ywj` 또는 그 `.prev`가 남아 있으면 생성·가져오기 버튼을 끄고 T-LEFTOVER와 폴더 경로, `폴더 열기`(§2.14), 링크 `남은 파일을 reset- 폴더로 옮기기…`(§2.20)를 보인다. 파일은 사용자가 직접 옮기거나 §2.20으로 옮긴다([02] §6.3). 앱이 지갑 파일을 옮기는 것은 사용자가 확인한 §2.20뿐이고, 지우지는 않는다. 검사는 데이터 폴더 자체만 보므로 `reset-*` 하위 폴더의 파일은 막지 않는다.
 - 환영 화면: 큰 제목 "Your Wallet", 세 문장 T-FIRST-1(무엇인지 · 모든 서명은 이 앱 확인 창에서 · 복구 단어 24개가 유일한 백업), 카드 세 개 — "처음 사용합니다"(설명 + 주 버튼 `새 지갑 만들기`), "다른 지갑에서 쓰던 복구 단어가 있습니다"(설명 + `기존 지갑 가져오기`), "개인키만 있습니다"(T-KEYSTART-CARD + `개인키로 시작하기`, §2.18), "YubiKey에 키 보관"(T-YK-WALLET + `YubiKey 지갑 만들기`, §2.19). T-LEFTOVER면 네 버튼 모두 끈다.
 
 ### 2.3 새 지갑 만들기
@@ -196,7 +196,9 @@ pub enum AppMode { NoVault, Locked, Unlocking, PassphraseRequired, PassphraseMis
 | 5 | W10 | `backup_challenge()`의 위치 4개 단어(주소는 묻지 않는다). `KeyJob::ConfirmBackup` → `confirm_backup`. `BackupMismatch` → T-BACKUP-FAIL, 새 challenge(새 위치)로 다시 입력. 횟수 제한 없음. |
 | 6 | S08 | 제목 "준비되었습니다", T-BACKUP-OK(완료 띠; 가져오기 흐름 뒤에는 백업 확인을 하지 않았으므로 T-IMPORT-OK와 도움말 "이 지갑의 백업은 방금 입력한 복구 단어(와 passphrase)입니다…"). 저장된 RPC 엔드포인트(§6.3 `rpc:*`)가 하나도 없으면 카드 "마지막 단계: 블록체인 연결(RPC)"(무엇이고 왜 필요한지 한 줄 + 도움말) 안에 주 버튼 `RPC 설정하기`(S15 `네트워크(RPC)`, §2.11.1)와 `나중에`. 있으면 주 버튼 `지갑 열기`. → S10. |
 
-S04(백업 대기): 잠금 해제 직후 백업이 확인되지 않았을 때. 제목 "백업 확인이 필요합니다", T-BACKUP-PENDING(주의 띠), 카드에 무엇을 하는지 한 줄과 주 버튼 `복구 단어 보고 백업 확인`(W03 → W08 → W10), `받기`(S12, 상단 경고 T-BACKUP-RECV), `잠금`. 서명·개인키 표시·개인키 가져오기는 없다([02] §7.1). 이 상태에서 dApp 승인 항목은 즉시 `NotReady`.
+S04(백업 대기): 잠금 해제 직후 백업이 확인되지 않았을 때. 제목 "백업 확인이 필요합니다", T-BACKUP-PENDING(주의 띠), 카드에 무엇을 하는지 한 줄과 주 버튼 `복구 단어 보고 백업 확인`(W03 → W08 → W10), `받기`(S12, 상단 경고 T-BACKUP-RECV), `잠금`, 카드 아래 링크 `지갑 초기화…`(§2.20). 서명·개인키 표시·개인키 가져오기는 없다([02] §7.1). 이 상태에서 dApp 승인 항목은 즉시 `NotReady`.
+- S04로 들어갈 때(생성 직후 `Created`, 잠금 해제 뒤 `BackupPending`) meta를 읽는다(`request_meta`): S12가 계정 0을 보이기 위해서다. meta가 오면 설정 스냅샷 검사(§6.7)를 하고 S04에 머문다(대기 화면·S07·S10이었다면 S04로). 저널·잔액·YubiKey 후속 작업은 백업 확인 뒤 다시 읽는 meta에서 한다. meta 읽기가 실패해도 S04(기본 meta). S12의 `← 메인으로`는 이 모드에서 S04로 간다(S10이 아니다).
+- 2026-11-06 수정: 이전에는 `BackupPending`에서 meta를 읽지 않아 S04 → `받기`의 S12가 "계정을 불러오는 중…"에서 멈췄고, 그 화면의 `← 메인으로`는 meta를 요청한 뒤 S03("불러오는 중…")으로 갔는데 meta 응답이 `Unlocked`일 때만 그 화면을 떠나서 영원히 기다렸다(현장 로그: `backup.written_ack` 뒤 종료 → 새 빌드 → `BackupPending` → `settings.snapshot_created` → 멈춤). 회귀 시험 `app::tests::backup_pending_after_restart_shows_s04_and_receive`(이전 빌드 형식 meta, 재시작, S04·S12·`← 메인으로`, §2.22 시간 제한).
 
 ### 2.4 기존 지갑 가져오기 (니모닉)
 단계 표시 `1 비밀번호 정하기 · 2 복구 단어 입력 · 3 첫 주소 확인`(S05 시작 전, W01 1/3, W05·W06 2/3, S06 3/3).
@@ -383,6 +385,14 @@ W04(현재, 새, 새 확인) → 새 비밀번호 검사(E-INP-001/002) → `Key
 |---|---|---|
 | T-FIRST-1 | S01 | Your Wallet은 이 PC에서만 쓰는 개인용 암호화폐 지갑입니다. / 돈을 보내거나 사이트에 서명할 때는 언제나 이 앱의 확인 창에서 내용을 보고 직접 승인합니다. / 지갑을 만들 때 받는 복구 단어 24개가 유일한 백업입니다. 종이에 적어 안전한 곳에 보관하세요. (세 줄) |
 | T-LEFTOVER | S01 | 이전 지갑의 파일이 데이터 폴더에 남아 있습니다. 앱을 종료하고 파일을 다른 곳으로 옮긴 뒤 다시 실행하세요. |
+| T-RESET-INTRO | S22 | 이 PC의 지갑 파일을 옮겨 두고 처음 화면으로 돌아갑니다. 자산은 블록체인에 그대로 있지만, 이 지갑을 다시 쓰려면 복구 단어(니모닉) 또는 원래 개인키가 있어야 합니다. |
+| T-RESET-NOUNLOCK | S22 | 비밀번호를 잊었어도 진행할 수 있습니다. 잠금 해제 없이 파일만 옮깁니다. |
+| T-RESET-MOVE | S22 | 지갑 파일(vault.ywv와 이전 사본 .prev, meta.ywm, journal.ywj, 격리된 손상 파일)을 지우지 않고 데이터 폴더 안의 새 폴더로 옮깁니다. 옮긴 파일은 예전 비밀번호로 계속 열리며, 되돌리는 방법은 복구 안내(recovery-guide)와 새 폴더의 README-reset.txt에 있습니다. |
+| T-RESET-YUBIKEY | S22 | YubiKey를 쓰는 지갑이었다면 YubiKey 안의 키는 그대로 남습니다. 초기화는 YubiKey를 지우거나 바꾸지 않습니다. 다시 쓰려면 복구 단어로 지갑을 가져온 뒤 YubiKey를 다시 등록하세요. |
+| T-RESET-SETTINGS | S22 | 설정(settings.json)과 저장한 API 키·RPC 주소(apikeys.dpapi)는 기본으로 그대로 둡니다. 새 지갑에서도 같은 RPC 설정을 씁니다. |
+| T-RESET-IN-FLIGHT | S22 | 보내는 중인 거래가 있습니다. 초기화해도 이미 보낸 거래는 블록체인에서 계속 처리되지만, 이 앱에서는 결과를 더 볼 수 없습니다. 끝난 뒤에 초기화하는 것을 권합니다. |
+| T-WAIT-STALLED | S03·S12 | 30초가 지나도 불러오기가 끝나지 않았습니다. '다시 불러오기'를 누르거나, '잠금'을 누른 뒤 다시 잠금 해제해 보세요. 그래도 안 되면 앱을 종료했다가 다시 실행하세요. 계속되면 로그 폴더의 yw-app.log를 확인하고, 복구 단어(또는 원래 개인키)가 있다면 잠금 화면의 '지갑 초기화…'로 처음부터 시작할 수 있습니다. |
+| T-EXT-MISSING | S23 | 확장 폴더를 찾지 못했습니다. 설치 프로그램(install.cmd)을 다시 실행하면 앱 폴더 안에 extension 폴더가 만들어집니다. |
 | T-CREATE-1 | S02 | · 종이와 펜을 준비하세요. 다음 화면들에서 복구 단어 24개와 첫 주소를 적습니다. / · 복구 단어는 종이(또는 금속)에만 적고 사진·클라우드·메신저에 남기지 마세요. / · 화면 공유·녹화를 끄고 주변에 사람이나 카메라가 없는지 확인하세요. (세 줄) |
 | T-PW-RULE | W01·W04 | 비밀번호는 영문·숫자·기호(ASCII) 12–128자입니다. 단어 4개 이상을 이은 긴 문장을 권장합니다. 잊으면 복구 단어(니모닉)로만 복구할 수 있습니다. |
 | T-MN-SHOW | W08 | 아래 {n}단어와 첫 주소를 순서대로 종이에 적으세요. 이 단어들이 지갑의 유일한 백업이며, 아는 사람은 누구든 자산을 옮길 수 있습니다. 이 창은 화면 캡처에서 제외됩니다. |
@@ -548,6 +558,32 @@ YubiKey(§2.19, [10]) 문구 — 정본은 `app_yubikey`·`ui::screens_yubikey`�
 - **S20 YubiKey 지갑 만들기**: 제목, 생성 단계 표시(§2.3과 같은 세 단계, 비밀 창 머리 "YubiKey 지갑 만들기 · n/3단계"), 카드 "시작하기 전에"(네 줄)와 주의 띠, `시작하기`·`취소`. W01 → `YkJob::Generate`(키 작업자가 24단어를 만들고 비밀번호와 함께 보관, vault 없음) → W08(만들기 모양: 24단어 + EVM 계정 0 주소, 2초 길게 누르기) → W10(`YkJob::Challenge`/`ConfirmWords`: 보관한 단어로 위치 4개, [02] §8.3과 같은 상수 시간 비교, 틀리면 새 위치) → S21(원점 `NewWallet`). 첫 `가져오기`가 성공하면 `Vault::create_with_hardware`로 니모닉 없는 vault를 만들고(`Unlocked`), 슬롯 표의 기본 meta(파생 계정 없음, `hw_accounts`·Bitcoin `key.yubikey` 계정, 첫 계정 선택, 첫 키의 탭)와 Bitcoin 키가 있으면 `bitcoin.enabled`·네트워크를 쓴다. 단어는 디스크에 쓰지 않고, `완료`·`취소`·유휴 폐기(§5.1)·잠금에서 지운다.
 - **설정 → YubiKey**: T-YK-LIST, 니모닉 지갑이면 T-YK-MNEMONIC-WALLET, `YubiKey 등록`. 카드마다 "YubiKey #{일련번호}" 카드(펌웨어, 슬롯 수, 슬롯별 경로·주소·정책, 기본값 안내 띠, `삭제`). "계정별 YubiKey": `{역할} ({경로}) — #{일련번호} {SIG|AUT|PIV xx}, …(백업)`.
 - **삭제**: `삭제` → 확인 오버레이(그 카드에만 있는 계정 목록, YubiKey 안의 키는 지우지 않음) → W03 → `YkJob::Remove` → `Vault::remove_hardware_key` → 계정 다시 맞춤(meta 다시 읽기). 복구 단어 없는 지갑의 마지막 키는 끈다(`LastKey`).
+
+### 2.20 지갑 초기화 (S22) — 2026-11-06
+더 진행할 수 없을 때(비밀번호 분실, 백업 확인 전 복구 단어 분실, 열리지 않는 파일) 지갑 파일을 **지우지 않고** 옮긴 뒤 S01로 돌아간다. 모듈 `app_reset`(상태 `ResetUi`), 화면 `ui::screens_reset`(명령 ID 13,400–13,449), 파일 이동 `store::reset`, 키 작업자 작업 `KeyJob::ResetWallet { stamp, include_settings }`(제어 작업: 잠금 절차의 `Lock`에 취소되지 않는다) → `KeyOutcome::WalletReset`.
+
+- **진입**(링크·버튼 `지갑 초기화…`): S07(잠금 해제 아래, 도움말 "비밀번호를 잊었거나 더 진행할 수 없다면…"), S09, S04(도움말 "복구 단어를 적지 못했거나 잃어버렸다면, 이 지갑에 자산을 받기 전에…"), S01 T-LEFTOVER 띠(`남은 파일을 reset- 폴더로 옮기기…`), 설정 → 보안 카드 "지갑 초기화"(위험 버튼), T-WAIT-STALLED. **잠금 해제가 필요 없다.** `Starting`·`ShuttingDown`·진행 중에는 열지 않는다.
+- **S22 내용**: 제목 "지갑 초기화", 고위험 띠 T-RESET-INTRO, 잠금 해제 상태에서 추적 중인 거래(EVM·Solana·Bitcoin 저널의 끝나지 않은 기록)가 있으면 주의 띠 T-RESET-IN-FLIGHT(막지 않는다). 카드 "무엇을 하나요": T-RESET-NOUNLOCK, T-RESET-MOVE, "옮길 곳" `<데이터 폴더>\reset-<날짜시각(UTC)>`, "옮길 파일"(지금 폴더에 있는 이름; 열 때와 체크 상자를 바꿀 때 다시 읽음), T-RESET-YUBIKEY(YubiKey가 등록된 지갑이면 정보 띠 추가), T-RESET-SETTINGS, 체크 상자 `설정과 API 키도 함께 옮기기 (앱 설정을 처음 상태로)`(기본 끔). 카드 "확인": "계속하려면 아래 칸에 '초기화'를 입력한 뒤, 빨간 버튼을 2초 동안 누르고 있으세요.", EDIT "확인 문구"(앞뒤 공백 무시, 정확히 `초기화`), 길게 누르기 영역(`Item::Hold`, 아래), `취소`(연 화면으로 돌아감).
+- **길게 누르기 영역** `Item::Hold`: 자식 컨트롤이 아니라 주 창이 그리는 사각형(위험 색, 아래쪽 진행 막대). 확인 문구 전에는 꺼진 색과 "'초기화'를 입력하면 누를 수 있습니다". 주 창 `Msg::MouseDown`이 영역 안이면 `HoldGate`(W08과 같은 2초, 포인터만)를 시작하고 마우스를 잡는다(`SetCapture`). 영역을 벗어나거나 떼거나 화면이 바뀌거나 잠그면 취소. 주 타이머(250 ms)가 진행을 그리고 2초가 차면 실행한다.
+- **실행**: 로그 `reset.start`(설정 이동 여부, 진행 중 거래 여부) → 잠금 절차 그대로(§5.3: 비밀 창·승인 창을 닫고 대기 중 dApp 항목을 끝내고 버퍼를 지우고 대기 키 작업을 취소, `Lock`·`Load` 대기열) → S03 "지갑 파일을 옮기는 중…" → `ResetWallet`. 키 작업자는 vault를 잠그고 버리고(잠금 해제 없이) `store::reset::move_wallet_files`를 부른다. vault·meta·journal 쓰기는 모두 이 스레드에서만 일어나므로 옮기는 동안·뒤에 그 파일을 쓰는 일이 없다. 초기화가 도는 동안 도착한 `Loaded`는 사실(`leftover`)만 받고 화면을 바꾸지 않는다.
+- **옮기는 파일**(`store::reset`): 데이터 폴더 바로 아래의 파일 중 `vault.ywv`·`meta.ywm`·`journal.ywj`이거나 그 이름 + `.`으로 시작하는 것(`.prev`, `.tmp`, `.prev.tmp`, `.corrupt-<t>`). 체크 상자를 켜면 `settings.json`·`apikeys.dpapi`(+`.tmp`)도. 폴더(`logs`, 이전 `reset-*`)와 그 밖의 파일은 그대로. 순서는 `vault.ywv` 먼저(중간에 실패해도 열리는 지갑이 남지 않고, 남은 sidecar는 S01 T-LEFTOVER로 보인다), 나머지는 이름순. 옮길 것이 없으면 폴더를 만들지 않는다.
+- **새 폴더**: `<데이터 폴더>\reset-<YYYYMMDDTHHMMSSZ>`(UTC; 이미 있으면 `-2`…`-9`). 데이터 폴더 안에 만들어 데이터 폴더의 보호된 DACL(현재 사용자·SYSTEM·Administrators, §1.4-3)을 물려받는다. 데이터 폴더나 새 폴더가 재분석 지점이면 거부. 파일은 `MoveFileExW(WRITE_THROUGH)`(덮어쓰지 않음)로 옮기고 두 폴더를 flush. 끝으로 `README-reset.txt`(옮긴 파일 목록과 되돌리는 방법; 쓰지 못해도 이동은 유효). 다음 시작의 `ensure_private_dir(v3)`는 이 폴더를 항목으로 검사한다(§1.4-3).
+- **끝**: 성공 → `reset.done`(파일 수). 설정을 옮겼으면 메모리의 설정·API 키를 기본값으로. 이전 지갑의 파일 사실(`payload_damaged`·`.prev`·격리 이름·설정 스냅샷 검사·세대 경고)을 지우고 정보 띠 T-RESET-DONE("지갑을 초기화했습니다. 지갑 파일 {n}개를 지우지 않고 {폴더} 폴더로 옮겼습니다…"; 진행 중 거래가 있었으면 "보내던 거래는 블록체인에서 계속 처리됩니다…" 추가) → `KeyJob::Load` → `NoVault` → S01(T-LEFTOVER 없음: 남은 파일 검사는 데이터 폴더 자체만 본다). 실패 → 오류 띠(폴더를 못 만들었으면 아무것도 옮기지 않았다는 문장, 중간 실패면 옮기지 못한 파일 이름과 이미 옮긴 수·폴더) → `Load`로 지금 파일 상태를 다시 읽는다.
+- 되돌리는 방법은 [docs/recovery-guide.ko.md](../docs/recovery-guide.ko.md) "지갑 초기화와 되돌리기". YubiKey 안의 키는 건드리지 않는다([10] §7.5).
+- 시험: `store::reset` 단위 시험(옮기는 이름, 설정 유지·이동, 이름 충돌 `-2`, 빈 폴더, T-LEFTOVER 없음), `app::tests::wallet_reset_from_the_lock_screen_returns_to_first_run`(S07에서 비밀번호 없이, 문구 전에는 꺼짐, 절반 누르기는 무효, S01·파일 위치·설정 유지).
+
+### 2.21 Chrome 확장 설치 (S23) — 2026-11-06
+확장을 로드하는 방법과 폴더를 앱 안에서 보인다. 모듈 `app_extension`, 화면 `ui::screens_reset`.
+
+- **진입**: 설정 → 브라우저·진단·정보 → 카드 "브라우저 확장"(연결 상태 한 줄 + `Chrome 확장 설치 방법·폴더`), 확장이 아직 연결되지 않았으면(상태 `Never`·`Unknown`) S08 아래와 S13 "연결된 사이트가 없습니다" 카드의 링크 `브라우저에서 쓰려면: Chrome 확장 설치 방법`. `← 돌아가기`는 연 화면으로.
+- **연결 상태**(싸게 알 수 있는 것만): 파이프 연결이 지금 있으면 "확장이 지금 이 앱에 연결되어 있습니다.", 잠금 해제 상태에서 EVM·Solana·Bitcoin 연결 사이트가 있으면 "확장이 연결된 적 있음 (연결된 사이트가 있습니다).", 없으면 "아직 연결되지 않음 — …", 잠겨 있으면 "지금은 연결되어 있지 않습니다. 연결 기록(연결된 사이트)은 잠금을 해제하면 보입니다."
+- **설치 방법**: 1. Chrome 주소창에 chrome://extensions 입력 2. 오른쪽 위 '개발자 모드' 켜기 3. '압축해제된 확장 프로그램을 로드합니다' → 아래 폴더 선택 4. 퍼즐 아이콘에서 고정. 도움말: 앱을 업데이트한 뒤에는 확장 카드의 '새로고침'.
+- **확장 폴더**: 설치 사본 `<yw-app.exe가 있는 폴더>\extension`(install.ps1). 디버그 빌드는 그것이 없을 때만 저장소의 `extension\`(`CARGO_MANIFEST_DIR\..\..`). 후보는 재분석 지점이 아닌 폴더이고 이름이 `extension`이며 안에 재분석 지점이 아닌 일반 파일 `manifest.json`이 있어야 한다. 없으면 주의 띠 T-EXT-MISSING과 "있어야 할 곳".
+- **버튼**: `폴더 열기`(§2.14 `explorer.exe`, 인자는 위에서 확인한 경로뿐 — 다른 곳의 문자열을 넘기지 않는다), `경로 복사`(일반 클립보드, 비밀 아님), `chrome://extensions 주소 복사`(Chrome은 다른 프로그램이 `chrome://` 주소를 여는 것을 막으므로 복사 뒤 "Chrome 주소창에 붙여넣으세요"). 폴더가 없으면 앞의 둘은 끈다.
+- 시험: `app_extension::tests::installed_folder_first_then_the_repository`(설치 폴더 우선, 저장소 대체, release에는 대체 없음, 이름·manifest 검사).
+
+### 2.22 기다림 시간 제한 (T-WAIT-STALLED) — 2026-11-06
+S03(`Processing`)과 요청한 meta(`KeyJob::LoadMeta`, `App::request_meta`)는 시각을 잰다(`app_reset::WaitWatch`). 30초(`WAIT_TIMEOUT_MS`)가 지나도 끝나지 않으면 화면은 계속 기다리되(늦게 온 결과는 그대로 반영) S03 카드 아래와 S12의 "계정을 불러오는 중…" 자리에 오류 띠 T-WAIT-STALLED와 `다시 불러오기`(세션이 열려 있을 때 meta 다시 요청), `잠금`, `로그 폴더 열기`, `지갑 초기화…`를 보이고 `wait.timeout`을 로그에 남긴다. 세션이 열린 화면(S10·S04·S12)이 계정 목록을 쓰는데 meta가 없고 요청도 없으면 주 타이머가 요청한다(`wait.meta_requested`). 잠그면 시계를 지운다.
 
 ## 3. 승인 창 (A01, 모든 체인)
 
@@ -1159,7 +1195,8 @@ BTC 계정 선택은 `prefs`에 두지 않는다(알려진 객체에 키를 더�
 | `logs\yw-app*.log` | §8 | 이 문서 | 모든 스레드(뮤텍스) |
 
 - `settings.json`·`apikeys.dpapi` 원자적 쓰기는 yw-win `file::atomic_write`(spec.md §4.3, [01] §7.2: 재분석 지점 거부 → 남은 `<이름>.tmp` 삭제 → `create_new` → `sync_all` → `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)` → 부모 디렉터리 flush)다. 실패(`FileError`)는 둘 다 E-APP-002. 시작 시 남은 `*.tmp`는 지운다. vault·meta·journal의 `.prev` 회전 절차는 [02] §6.
-- 앱은 지갑 파일(vault·meta·journal과 `.prev`)을 옮기거나 지우지 않는다. 다른 지갑으로 바꾸려면 사용자가 직접 옮긴다([02] §6.3).
+- 앱은 지갑 파일(vault·meta·journal과 `.prev`)을 지우지 않는다. 옮기는 것은 사용자가 확인한 지갑 초기화(§2.20: `v3\reset-<UTC>\`로 이동, 설정·API 키는 선택)뿐이다. 다른 지갑으로 바꾸려면 사용자가 직접 옮기거나 §2.20을 쓴다([02] §6.3).
+- `reset-<YYYYMMDDTHHMMSSZ>\`(§2.20): 초기화로 옮긴 파일과 `README-reset.txt`. 앱은 이 폴더를 읽거나 쓰지 않는다(되돌리기는 사용자가 직접, recovery-guide).
 
 ## 10. 수동 체크리스트 (M3·M4 UI)
 판정 기준과 기록 방식은 [09]. 각 항목을 1회 수행한다.
@@ -1200,7 +1237,7 @@ BTC 계정 선택은 `prefs`에 두지 않는다(알려진 객체에 키를 더�
 ## 11. 화면 투어 (개발 전용)
 주요 화면과 창의 스크린샷(`docs/screenshots/`, 목록과 설명은 그 폴더의 `README.md`)을 만드는 개발 도구다. 판정 기준이 아니다.
 - 실행: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/screenshot-tour.ps1`. yw-app의 `#[ignore]` 테스트 `ui::tour::screenshot_tour`(테스트 빌드에만 있다)를 돌려 BMP를 `target/screenshot-tour/`에 쓰고, System.Drawing으로 PNG로 바꾼다. 확장 팝업은 `scripts/popup-preview.html`(팝업 마크업 + `chrome` 대역, 실제 `popup.css`·`popup.js`; `<body>`가 `popup.html`과 같은지 `scripts/popup-preview.test.mjs`가 확인한다)을 127.0.0.1 임시 정적 서버로 열어 헤드리스 Edge/Chrome으로 찍는다(브라우저가 없으면 건너뜀).
-- 장면: 첫 실행·만들기·가져오기·개인키로 시작하기·YubiKey 지갑(S01 카드, S20), 잠금, 세 체인 메인, EVM 토큰 카드(숨긴 토큰 펼침, 지어낸 사용자 토큰), 보내기(EVM·Solana 토큰), 받기, 승인 창(시뮬레이션 성공·결과 없음·Solana 토큰·AI 설명·사이트 연결·Solana 메시지 서명), 설정(RPC·AI·YubiKey), 연결된 사이트(EVM과 Solana·Bitcoin), YubiKey 등록 마법사(키·슬롯, 확인, 자격 정보, W12, 결과)와 W11 카드 단계, 확장 팝업. YubiKey 장면은 카드·키 작업자 없이 공개 시험 니모닉에서 투어가 직접 계산한 미리보기·기록(지어낸 일련번호 12345678)을 쓴다. dApp 요청은 투어 브라우저 코어에 넣은 지어낸 연결(grant)과 요청으로 만들고 거부로 끝낸다(서명 없음).
+- 장면: 첫 실행·만들기·가져오기·개인키로 시작하기·YubiKey 지갑(S01 카드, S20), 잠금, 세 체인 메인, EVM 토큰 카드(숨긴 토큰 펼침, 지어낸 사용자 토큰), 보내기(EVM·Solana 토큰), 받기, 승인 창(시뮬레이션 성공·결과 없음·Solana 토큰·AI 설명·사이트 연결·Solana 메시지 서명), 설정(RPC·AI·YubiKey), 연결된 사이트(EVM과 Solana·Bitcoin), YubiKey 등록 마법사(키·슬롯, 확인, 자격 정보, W12, 결과)와 W11 카드 단계, 지갑 초기화(S22)·Chrome 확장 설치(S23), 확장 팝업. YubiKey 장면은 카드·키 작업자 없이 공개 시험 니모닉에서 투어가 직접 계산한 미리보기·기록(지어낸 일련번호 12345678)을 쓴다. dApp 요청은 투어 브라우저 코어에 넣은 지어낸 연결(grant)과 요청으로 만들고 거부로 끝낸다(서명 없음).
 - 데이터: 버리는 임시 데이터 폴더(끝나면 삭제)만 쓰고 `%LOCALAPPDATA%\YourWallet`은 읽지도 쓰지도 않는다. vault·키 작업자·RPC 작업자를 만들지 않는다. 생성 흐름 화면의 단어는 BIP39 공개 시험 벡터(엔트로피 0, 24단어), 메인 화면은 공개 시험 니모닉(`abandon` × 11 + `about`) 지갑의 주소이고, 잔액·사이트·UTXO는 지어낸 값이다. RPC URL은 연결하지 않는 `*.example.test`, EVM 승인 창은 `app_approval::smoke`의 고정 응답(`tests/fixtures/eth_simulateV1/S2`·`S4`)으로, Solana 토큰(devnet USDC) 승인 창은 투어 안의 고정 Solana 응답(`SolTourRpc`: 받는 ATA 없음, 2026-10-28 실측 rent)으로 준비한다. 브라우저 다리는 투어 전용 pipe 이름(`\\.\pipe\YourWallet.tour.<pid>`)으로 연다.
 - 캡처: yw-win `ui::capture`(`#[cfg(debug_assertions)]`, release 빌드에 없음). `RedrawWindow(RDW_UPDATENOW | RDW_ALLCHILDREN)`로 창과 자식 컨트롤을 동기로 다시 그리고 `GdiFlush` 뒤, 창 자신의 클라이언트 DC에서 `BitBlt`로 복사한다(`PrintWindow(PW_RENDERFULLCONTENT)`는 마지막 DWM 프레임을 돌려줘 반쯤 그린 화면이 찍혔다). 캡처 제외 창(W01–W10)은 검게 찍히므로 **투어 프로세스가 직접 만든 창에 한해** 캡처 직전 `dev_tour_lift_capture_exclusion`(`WDA_NONE`)을 부른다. 앱의 비밀 창 생성 경로(§4.5)는 바뀌지 않는다.
 

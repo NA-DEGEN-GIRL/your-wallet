@@ -398,8 +398,13 @@ impl App {
                 items.push(Item::Subtitle("잠시만 기다려 주세요".to_owned()));
                 items.push(Item::Text((*text).to_owned()));
                 items.push(Item::CardEnd);
+                if self.wait.stalled {
+                    self.wait_stalled(&mut items);
+                }
             }
             Screen::BackupPending => Self::backup_pending(&mut items),
+            Screen::Reset => self.reset_screen(&mut items),
+            Screen::Extension => self.extension_screen(&mut items),
             Screen::ImportIntro => Self::import_intro(&mut items),
             Screen::ImportAddress(address) => Self::import_address(address, &mut items),
             Screen::Locked => self.locked(&mut items),
@@ -449,10 +454,13 @@ impl App {
                 Tone::Warn,
             ));
             items.push(Item::Mono(self.paths.data.display().to_string()));
-            items.push(Item::Row(vec![Ctl::button(
-                ids::OPEN_DATA_FOLDER,
-                "폴더 열기",
-            )]));
+            items.push(Item::Row(vec![
+                Ctl::button(ids::OPEN_DATA_FOLDER, "폴더 열기"),
+                Ctl::link(
+                    crate::ui::screens_reset::ids::RESET_OPEN,
+                    "남은 파일을 reset- 폴더로 옮기기…",
+                ),
+            ]));
         }
         items.push(Item::CardStart(Some("처음 사용합니다".to_owned())));
         items.push(Item::Text(
@@ -516,6 +524,10 @@ impl App {
             Ctl::button(ids::LOCK, "잠금"),
         ]));
         items.push(Item::CardEnd);
+        Self::reset_link(
+            items,
+            "복구 단어를 적지 못했거나 잃어버렸다면, 이 지갑에 자산을 받기 전에 초기화하고 새로 만드세요.",
+        );
     }
 
     fn import_intro(items: &mut Vec<Item>) {
@@ -591,6 +603,10 @@ impl App {
                 "이전 사본(.prev)으로 복구",
             )]));
         }
+        Self::reset_link(
+            items,
+            "비밀번호를 잊었거나 더 진행할 수 없다면: 지갑 파일을 옮겨 두고(지우지 않음) 복구 단어로 새로 시작할 수 있습니다.",
+        );
     }
 
     fn pass_mismatch(&self, items: &mut Vec<Item>) {
@@ -663,6 +679,7 @@ impl App {
                 "지갑 열기",
             )]));
         }
+        self.extension_link(items);
     }
 
     fn recovery(&self, items: &mut Vec<Item>) {
@@ -708,6 +725,10 @@ impl App {
             "앱은 지갑 파일을 지우거나 덮어쓰지 않습니다. 복구 단어가 있으면 언제든 새로 가져올 수 있습니다."
                 .to_owned(),
         ));
+        Self::reset_link(
+            items,
+            "복구할 수 없다면: 지갑 파일을 데이터 폴더 안의 reset- 폴더로 옮겨 두고 처음부터 시작합니다.",
+        );
     }
 
     /// The selected EVM account's hero card: name, big balance, address, 보내기 / 받기.
@@ -1049,6 +1070,16 @@ impl App {
                 .to_owned()
         }));
         items.push(Item::CardEnd);
+        items.push(Item::CardStart(Some("지갑 초기화".to_owned())));
+        items.push(Item::Help(
+            "이 PC의 지갑 파일을 데이터 폴더 안의 reset- 폴더로 옮기고(지우지 않음) 처음 화면으로 돌아갑니다. 다시 쓰려면 복구 단어 또는 원래 개인키가 필요합니다."
+                .to_owned(),
+        ));
+        items.push(Item::Row(vec![Ctl::danger(
+            crate::ui::screens_reset::ids::RESET_OPEN,
+            "지갑 초기화…",
+        )]));
+        items.push(Item::CardEnd);
     }
 
     #[expect(
@@ -1210,6 +1241,13 @@ impl App {
     }
 
     fn other_section(&self, items: &mut Vec<Item>) {
+        items.push(Item::CardStart(Some("브라우저 확장".to_owned())));
+        items.push(Item::Text(self.extension_status().text().to_owned()));
+        items.push(Item::Row(vec![Ctl::button(
+            crate::ui::screens_reset::ids::EXT_OPEN,
+            "Chrome 확장 설치 방법·폴더",
+        )]));
+        items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("브라우저 연결".to_owned())));
         items.push(Item::Help(
             "크롬 확장과 이 앱을 잇는 설정입니다. 사이트의 연결·서명 요청은 언제나 이 앱의 승인 창에서 확인합니다."

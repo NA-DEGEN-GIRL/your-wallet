@@ -282,5 +282,6 @@ impl LockedSlot for LockedSlotBox {
     }
 }
 
+pub mod reset;
 #[cfg(test)]
 mod tests;

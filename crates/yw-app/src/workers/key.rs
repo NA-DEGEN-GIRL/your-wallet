@@ -839,6 +839,13 @@ impl KeyWorker {
         )
     }
 
+    /// Tests: writes `plaintext` as the meta sidecar as it is (e.g. the JSON an older build
+    /// wrote), bypassing `Meta::to_json`.
+    #[cfg(test)]
+    pub(crate) fn test_write_meta_bytes(&mut self, plaintext: &[u8]) -> Result<u64, VaultError> {
+        self.vault()?.save_sidecar(FileKind::Meta, plaintext)
+    }
+
     /// Locks the vault and wipes held import buffers.
     pub fn lock(&mut self) {
         self.pending = None;
@@ -1479,6 +1486,20 @@ impl KeyWorker {
             )),
             KeyJob::HardwareKeys => {
                 KeyOutcome::HardwareKeys(self.vault().and_then(|vault| vault.hardware_keys()))
+            }
+            KeyJob::ResetWallet {
+                stamp,
+                include_settings,
+            } => {
+                // No unlock: the files are moved as they are. Every vault write runs on this
+                // thread, so nothing writes them while (or after) they move.
+                self.lock();
+                self.vault = None;
+                KeyOutcome::WalletReset(crate::store::reset::move_wallet_files(
+                    &self.dir,
+                    &stamp,
+                    include_settings,
+                ))
             }
             KeyJob::YubiKey(job) => self.yubikey_job(job),
             KeyJob::SignChainMessage { ticket, approved } => {

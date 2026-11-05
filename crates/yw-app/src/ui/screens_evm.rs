@@ -1005,7 +1005,7 @@ impl App {
             ));
         }
         let Some((address, source, label)) = self.selected_account() else {
-            items.push(Item::Muted("계정을 불러오는 중…".to_owned()));
+            self.accounts_loading(items);
             return;
         };
         items.push(Item::CardStart(Some(format!(

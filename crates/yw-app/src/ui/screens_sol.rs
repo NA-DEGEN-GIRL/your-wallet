@@ -664,7 +664,7 @@ impl App {
             ));
         }
         let Some((source, from, label)) = self.sol_form_sender() else {
-            items.push(Item::Muted("계정을 불러오는 중…".to_owned()));
+            self.accounts_loading(items);
             return;
         };
         if let Some(record) = self.sol_pending(cluster, &from) {
@@ -949,7 +949,7 @@ impl App {
             ));
         }
         let Some((index, label, address)) = self.sol_selected() else {
-            items.push(Item::Muted("계정을 불러오는 중…".to_owned()));
+            self.accounts_loading(items);
             return;
         };
         items.push(Item::CardStart(Some(format!(

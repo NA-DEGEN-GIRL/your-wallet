@@ -277,6 +277,18 @@ pub enum Item {
     Steps(Vec<String>, usize),
     /// The top bar of the unlocked screens: the app name on the left, controls on the right.
     Toolbar(String, Vec<Ctl>),
+    /// A press-and-hold area (painted, no child control; the app hit-tests
+    /// [`Placed::holds`] and runs `id` after a 2 s continuous hold, spec/04 §2.20).
+    Hold {
+        /// Action id.
+        id: u16,
+        /// Label.
+        label: String,
+        /// Progress 0–1000 (the strip at the bottom).
+        progress: u16,
+        /// Pressable.
+        enabled: bool,
+    },
 }
 
 /// How a placed text is drawn.
@@ -341,6 +353,8 @@ pub struct Placed {
     pub controls: Vec<(Ctl, Rect)>,
     /// QR codes: origin, module pixels, payload (re-encoded at paint; never cached).
     pub qrs: Vec<(i32, i32, i32, String)>,
+    /// Hold areas: action id, pixel rectangle (scrolled), enabled.
+    pub holds: Vec<(u16, Rect, bool)>,
     /// Total content height (px, unscrolled).
     pub content_height: i32,
 }
@@ -637,6 +651,50 @@ impl Layouter<'_> {
         self.advance(row_h, self.px(10));
     }
 
+    fn hold(&mut self, id: u16, label: &str, progress: u16, enabled: bool) {
+        let w = self.px(320).min(self.frame.w);
+        let h = self.px(44);
+        let top = self.y.saturating_sub(self.scroll);
+        let rect = Rect::new(self.frame.x, top, w, h);
+        let radius = self.px(theme::RADIUS_CONTROL);
+        let (fill, border, text) = if enabled {
+            (theme::DANGER_BG, theme::DANGER_ACCENT, theme::DANGER_TEXT)
+        } else {
+            (theme::DISABLED_BG, theme::BORDER, theme::DISABLED_TEXT)
+        };
+        self.shape(rect, radius, fill, border);
+        if enabled && progress > 0 {
+            let strip = self.px(6);
+            let filled = i32::from(progress.min(1_000))
+                .saturating_mul(w.saturating_sub(radius.saturating_mul(2)))
+                / 1_000;
+            self.shape(
+                Rect::new(
+                    rect.x.saturating_add(radius),
+                    rect.y
+                        .saturating_add(h)
+                        .saturating_sub(strip.saturating_mul(2)),
+                    filled.max(strip),
+                    strip,
+                ),
+                strip / 2,
+                theme::DANGER_ACCENT,
+                theme::DANGER_ACCENT,
+            );
+        }
+        self.placed.texts.push(PaintText {
+            rect,
+            text: label.to_owned(),
+            font: FontRole::BodyBold,
+            color: text.0,
+            fill: None,
+            wrap: false,
+            align: TextAlign::Center,
+        });
+        self.placed.holds.push((id, rect, enabled));
+        self.advance(h, self.px(10));
+    }
+
     fn toolbar(&mut self, title: &str, ctls: &[Ctl]) {
         let bar_h = self.px(56);
         let full_w = self.client_w;
@@ -908,6 +966,12 @@ pub fn layout(
             Item::CardEnd => layouter.close_card(),
             Item::Steps(labels, current) => layouter.steps(labels, *current),
             Item::Toolbar(title, ctls) => layouter.toolbar(title, ctls),
+            Item::Hold {
+                id,
+                label,
+                progress,
+                enabled,
+            } => layouter.hold(*id, label, *progress, *enabled),
         }
     }
     layouter.close_card();

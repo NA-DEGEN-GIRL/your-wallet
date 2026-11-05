@@ -1144,6 +1144,29 @@ fn screenshot_tour() {
     save(main_hwnd(&app), "08-locked");
     save(secret_hwnd(&app), "09-unlock-password");
     app.borrow_mut().close_secret();
+    {
+        // S22 지갑 초기화 from the lock screen: the phrase typed, the hold not started. The file
+        // list is made up (the tour's data folder has no wallet files).
+        let mut state = app.borrow_mut();
+        state.open_reset();
+        state.reset.files = [
+            "vault.ywv",
+            "vault.ywv.prev",
+            "meta.ywm",
+            "meta.ywm.prev",
+            "journal.ywj",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        state.refresh();
+        state
+            .controls
+            .set_text(crate::ui::screens_reset::ids::RESET_PHRASE, "초기화");
+        state.reset.phrase_ok = true;
+        state.refresh();
+    }
+    save(main_hwnd(&app), "44-wallet-reset");
+    app.borrow_mut().cancel_reset();
 
     // Main screens.
     unlocked_state(&mut app.borrow_mut());
@@ -1410,6 +1433,10 @@ fn screenshot_tour() {
     }
     save(main_hwnd(&app), "29-sites-solana-bitcoin");
     app.borrow_mut().scroll = 0;
+    // S23 Chrome 확장 설치 (from settings → 브라우저·진단·정보).
+    set_screen(&app, UNLOCKED, Screen::Settings(SettingsSection::Other));
+    app.borrow_mut().open_extension_help();
+    save(main_hwnd(&app), "45-chrome-extension");
     // A new site asks to connect (EVM): the account chooser of the connect window.
     set_screen(&app, UNLOCKED, Screen::Main);
     dapp_request(

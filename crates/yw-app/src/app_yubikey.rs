@@ -484,7 +484,7 @@ impl App {
             _ => Screen::Settings(SettingsSection::YubiKey),
         };
         if back == Screen::Main && self.meta.is_none() {
-            self.key(KeyJob::LoadMeta);
+            self.request_meta();
             self.set_screen(Screen::Processing("불러오는 중…"));
         } else {
             self.set_screen(back);
@@ -895,7 +895,7 @@ impl App {
                 self.close_secret();
                 self.info = Some("YubiKey 기록을 지웠습니다.".to_owned());
                 self.key(KeyJob::HardwareKeys);
-                self.key(KeyJob::LoadMeta);
+                self.request_meta();
                 self.refresh();
             }
             YkOutcome::Removed(Err(error)) => {

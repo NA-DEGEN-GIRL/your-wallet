@@ -18,10 +18,11 @@
 //! | Solana accounts (`screens_sol`) | 12,000–12,999 | one radio per row (index range 0..=999) |
 //! | imported keys (`screens_keys`) | 13,000–13,199 | S18/S19, script radios 13,010–13,013, selected imported Solana/Bitcoin account 13,022–13,025 (Bitcoin keys are rows of `btc.accounts`) |
 //! | `YubiKey` (`screens_yubikey`) | 13,200–13,399 | S20, S21 wizard (`OpenPGP` SIG 13,210–13,221, AUT 13,230–13,241), settings tab; backup sources 13,260–13,267, `삭제` rows 13,270–13,277 |
+//! | reset·extension (`screens_reset`) | 13,400–13,449 | S22 `지갑 초기화`, T-WAIT-STALLED, S23 `Chrome 확장 설치` |
 
 use crate::ui::{
-    screens, screens_btc, screens_evm, screens_keys, screens_llm, screens_sites, screens_sol,
-    screens_yubikey,
+    screens, screens_btc, screens_evm, screens_keys, screens_llm, screens_reset, screens_sites,
+    screens_sol, screens_yubikey,
 };
 
 /// Largest number of rows of the Solana recovery scan (spec/07 §3.3: 50 standard + 50 BIP44
@@ -281,6 +282,7 @@ pub fn fixed() -> Vec<(&'static str, &'static [u16])> {
         ("llm", screens_llm::ids::FIXED),
         ("keys", screens_keys::ids::FIXED),
         ("yubikey", screens_yubikey::ids::FIXED),
+        ("reset", screens_reset::ids::FIXED),
     ]
 }
 
