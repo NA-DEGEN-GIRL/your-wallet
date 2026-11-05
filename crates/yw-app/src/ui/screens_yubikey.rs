@@ -273,7 +273,7 @@ fn slot_items(
     role: KeyRole,
     touch: TouchPolicy,
     pin: PinPolicy,
-    public: Option<&yw_core::yubikey::record::HwPublicKey>,
+    addresses: &[String],
     items: &mut Vec<Item>,
 ) {
     items.push(Item::Subtitle(format!(
@@ -282,10 +282,8 @@ fn slot_items(
         role.title()
     )));
     items.push(Item::Field("경로".to_owned(), role.path_text()));
-    if let Some(public) = public {
-        for address in address_texts(role, public).unwrap_or_default() {
-            items.push(Item::Mono(address));
-        }
+    for address in addresses {
+        items.push(Item::Mono(address.clone()));
     }
     let policy = match pin {
         PinPolicy::NotApplicable => format!("터치: {}", touch_label(touch)),
@@ -376,7 +374,7 @@ impl App {
                     slot.role,
                     slot.touch,
                     slot.pin,
-                    Some(&slot.public),
+                    &address_texts(slot.role, &slot.public).unwrap_or_default(),
                     items,
                 );
             }
@@ -718,12 +716,9 @@ impl App {
                 planned.role,
                 planned.touch,
                 planned.pin,
-                None,
+                &line.addresses,
                 items,
             );
-            for address in &line.addresses {
-                items.push(Item::Mono(address.clone()));
-            }
             let holders = crate::yubikey::holders(&self.card.records, planned.role);
             let relation = if holders.is_empty() {
                 "새 키".to_owned()
@@ -847,7 +842,7 @@ impl App {
                 slot.role,
                 slot.touch,
                 slot.pin,
-                Some(&slot.public),
+                &address_texts(slot.role, &slot.public).unwrap_or_default(),
                 items,
             );
         }
