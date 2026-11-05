@@ -520,10 +520,12 @@ pub fn sign_message(
     sign_message_with(keys, &approved)
 }
 
-pub(crate) fn sign_message_with<K: BtcKeys>(
-    keys: &K,
+/// The approval checks shared by the vault and card paths: a Bitcoin message approval of this
+/// payload's chain and key, the size and M03 bounds, the approved address and the source's
+/// address type. Returns the payload and its address kind.
+fn approved_payload(
     approved: &Approved,
-) -> Result<BtcMessageSignature, BtcMessageError> {
+) -> Result<(&crate::approval::BtcMessagePayload, ScriptKind), BtcMessageError> {
     let SigningPayload::BtcMessage(payload) = approved.payload() else {
         return Err(BtcMessageError::KindMismatch);
     };
@@ -549,6 +551,14 @@ pub(crate) fn sign_message_with<K: BtcKeys>(
     if payload.source.script_type() != payload.script_type {
         return Err(BtcMessageError::KeyMismatch);
     }
+    Ok((payload, kind))
+}
+
+pub(crate) fn sign_message_with<K: BtcKeys>(
+    keys: &K,
+    approved: &Approved,
+) -> Result<BtcMessageSignature, BtcMessageError> {
+    let (payload, kind) = approved_payload(approved)?;
     let aux = keys.aux_rand().map_err(|_| BtcMessageError::Signing)?;
     let compressed = payload.pubkey.is_compressed();
     keys.with_btc_key(payload.network, payload.source, 0, |ctx, secret| {
@@ -568,6 +578,160 @@ pub(crate) fn sign_message_with<K: BtcKeys>(
         ))
     })
     .map_err(|_| BtcMessageError::Signing)?
+}
+
+/// Failure of a `YubiKey` Bitcoin message signature (spec/10 §10, §13): nothing is returned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BtcMessageCardError {
+    /// The approval or the post-sign check failed (as for vault signing; `KindMismatch` also
+    /// for a source other than `BtcKeySource::Hardware`).
+    Sign(BtcMessageError),
+    /// The card operation failed.
+    Card(crate::yubikey::CardError),
+}
+
+impl fmt::Display for BtcMessageCardError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sign(error) => error.fmt(formatter),
+            Self::Card(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for BtcMessageCardError {}
+
+impl From<BtcMessageError> for BtcMessageCardError {
+    fn from(error: BtcMessageError) -> Self {
+        Self::Sign(error)
+    }
+}
+
+impl From<crate::yubikey::CardError> for BtcMessageCardError {
+    fn from(error: crate::yubikey::CardError) -> Self {
+        Self::Card(error)
+    }
+}
+
+/// The BIP137 `header ‖ r ‖ s` of a card signature over `hash`: the card gives no recovery id,
+/// so each id is tried and the one that recovers the recorded key is kept.
+fn bip137_from_card(
+    ctx: &Secp256k1<All>,
+    der: &[u8],
+    hash: [u8; 32],
+    public: &PublicKey,
+    header_base: u8,
+) -> Result<[u8; 65], BtcMessageError> {
+    let mut signature =
+        secp256k1::ecdsa::Signature::from_der(der).map_err(|_| BtcMessageError::Signing)?;
+    signature.normalize_s();
+    let compact = signature.serialize_compact();
+    for id in 0_u8..=3 {
+        let Ok(recovery) = RecoveryId::try_from(i32::from(id)) else {
+            continue;
+        };
+        let Ok(recoverable) = RecoverableSignature::from_compact(&compact, recovery) else {
+            continue;
+        };
+        if ctx
+            .recover_ecdsa(Message::from_digest(hash), &recoverable)
+            .is_ok_and(|key| key == *public)
+        {
+            let mut out = [0_u8; 65];
+            let (head, body) = out.split_at_mut(1);
+            if let Some(first) = head.first_mut() {
+                *first = header_base.saturating_add(id);
+            }
+            body.copy_from_slice(&compact);
+            return Ok(out);
+        }
+    }
+    Err(BtcMessageError::Signing)
+}
+
+/// Signs an approved Bitcoin message of a `YubiKey` account on the card (spec/10 §13): the same
+/// approval checks as [`sign_message`] (kind, chain, account, size, M03, address, address
+/// type), then one card signature (`yubikey::sign::sign_btc`: DER, low-s, verified against the
+/// recorded key) of
+///
+/// - BIP137: the magic hash; the recovery id is found by recovering the recorded key, then the
+///   same post-sign check as the vault path (recovered key, compression and header type);
+/// - BIP322 simple (P2WPKH): the BIP143 sighash of `to_sign`, witness `[DER ‖ 01, pubkey]`;
+/// - BIP322 full (P2SH-P2WPKH): the same sighash with the nested script, the whole `to_sign`.
+///
+/// Each BIP322 item is verified again against the recorded key (the card may give high-R
+/// signatures, which verifiers accept). A `YubiKey` account is never P2TR.
+///
+/// # Errors
+///
+/// [`BtcMessageCardError`]; nothing is returned on error.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the one-time approval token is consumed by signing (spec/03 §11.5)"
+)]
+pub fn sign_message_card(
+    approved: Approved,
+    card: super::sign::CardSighashSigner<'_>,
+) -> Result<BtcMessageSignature, BtcMessageCardError> {
+    let (payload, kind) = approved_payload(&approved)?;
+    if !payload.source.is_hardware() || !payload.pubkey.is_compressed() {
+        return Err(BtcMessageError::KindMismatch.into());
+    }
+    if !payload.protocol.supports(payload.script_type) {
+        return Err(BtcMessageError::Unsupported.into());
+    }
+    let ctx = secp_context(&mut OsRandom).map_err(|_| BtcMessageError::Signing)?;
+    let public = payload
+        .pubkey
+        .compressed()
+        .map_err(|_| BtcMessageError::KeyMismatch)?;
+    let point = PublicKey::from_slice(&public).map_err(|_| BtcMessageError::KeyMismatch)?;
+    let message = &payload.message;
+    if payload.protocol == BtcMessageProtocol::Ecdsa {
+        let base =
+            bip137_header_base(payload.script_type, true).ok_or(BtcMessageError::Unsupported)?;
+        let hash = bip137_magic_hash(message);
+        let der = card(hash)?;
+        let bytes = bip137_from_card(&ctx, &der, hash, &point, base)?;
+        let (recovered, compressed, recovered_base) =
+            bip137_recover(&bytes, message).ok_or(BtcMessageError::Signing)?;
+        if recovered != point || !compressed || recovered_base != base {
+            return Err(BtcMessageError::Signing.into());
+        }
+        return Ok(BtcMessageSignature {
+            signature: crate::codec::base64::encode(&bytes),
+            message_hash: hash,
+        });
+    }
+    let script = script_pubkey(&kind);
+    let to_spend = bip322_to_spend(&script, message);
+    let mut to_sign = bip322_to_sign(txid(&to_spend));
+    let key_hash = hash160(&public);
+    let sighash = bip143_sighash_p2wpkh(&to_sign, 0, &key_hash, Sats::ZERO)
+        .ok_or(BtcMessageError::Signing)?;
+    let mut item = card(sighash)?;
+    item.push(0x01);
+    if !ecdsa_item_verifies(&item, &public, &sighash) {
+        return Err(BtcMessageError::Signing.into());
+    }
+    let hash = bip322_message_hash(message);
+    let signature = match (payload.script_type, &kind) {
+        (ScriptType::P2wpkh, ScriptKind::P2wpkh(program)) if *program == key_hash => {
+            encode_witness(&[item, public.to_vec()])
+        }
+        (ScriptType::P2shP2wpkh, ScriptKind::P2sh(_)) => {
+            if let Some(input) = to_sign.inputs.first_mut() {
+                input.script_sig = p2sh_p2wpkh_script_sig(&key_hash).to_vec();
+                input.witness = vec![item, public.to_vec()];
+            }
+            serialize(&to_sign, true)
+        }
+        _ => return Err(BtcMessageError::Unsupported.into()),
+    };
+    Ok(BtcMessageSignature {
+        signature: crate::codec::base64::encode(&signature),
+        message_hash: hash,
+    })
 }
 
 /// What a Bitcoin message approval shows besides the bytes (spec/08 §17.4).

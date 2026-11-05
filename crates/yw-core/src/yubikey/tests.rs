@@ -657,3 +657,53 @@ fn slot_map_record_round_trip_and_strict_decode() {
     forged.slots[0].public = record.slots[1].public;
     assert!(!records_consistent(&[record.clone(), forged]));
 }
+
+/// spec/10 §9.2: the PIN check before signing sends no write and no signing command, counts a
+/// wrong PIN like a signature would, accepts the right one (OpenPGP PW1 and PIV), refuses
+/// another card before any VERIFY, and the signature afterwards still verifies the PIN itself.
+#[test]
+fn pin_check_before_signing() {
+    use super::sign::check_pin;
+    let mut card = MockCard::new(6);
+    let record = enrol(&mut card, ABOUT, &recommended_plan(), &[])
+        .unwrap()
+        .record;
+    card.log.clear();
+    let evm_key = card_key(&record, 0);
+    let sol_key = card_key(&record, 2);
+    assert_eq!(
+        check_pin(&mut card, ApduMode::Short, &evm_key, b"000000"),
+        Err(CardError::WrongPin { retries: 2 })
+    );
+    check_pin(&mut card, ApduMode::Short, &evm_key, b"123456").unwrap();
+    check_pin(&mut card, ApduMode::Short, &sol_key, b"123456").unwrap();
+    assert_eq!(
+        check_pin(&mut card, ApduMode::Short, &sol_key, b"999999"),
+        Err(CardError::WrongPin { retries: 2 })
+    );
+    assert!(!card.saw_write());
+    // No PSO:CDS, INTERNAL AUTHENTICATE or GENERAL AUTHENTICATE.
+    assert!(
+        !card
+            .log
+            .iter()
+            .any(|header| matches!(header[1], 0x2A | 0x88 | 0x87))
+    );
+    let ctx = Secp256k1::new();
+    sign_evm(
+        &ctx,
+        &mut card,
+        ApduMode::Short,
+        &evm_key,
+        b"123456",
+        [3; 32],
+    )
+    .unwrap();
+    let mut other = MockCard::new(98);
+    other.log.clear();
+    assert_eq!(
+        check_pin(&mut other, ApduMode::Short, &evm_key, b"123456"),
+        Err(CardError::WrongCard)
+    );
+    assert!(!other.log.iter().any(|header| header[1] == 0x20));
+}

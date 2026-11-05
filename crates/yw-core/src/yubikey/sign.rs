@@ -128,6 +128,29 @@ pub fn sign_btc<C: Verification>(
     sig::btc_der(ctx, sighash, &raw, &public)
 }
 
+/// [`sign_btc`] with its own verification-only context (for callers without a secp256k1
+/// dependency, e.g. yw-app).
+///
+/// # Errors
+///
+/// As [`sign_btc`].
+pub fn sign_btc_checked(
+    transport: &mut dyn CardTransport,
+    mode: ApduMode,
+    key: &CardKey,
+    pin: &[u8],
+    sighash: [u8; 32],
+) -> Result<Vec<u8>, CardError> {
+    sign_btc(
+        &Secp256k1::verification_only(),
+        transport,
+        mode,
+        key,
+        pin,
+        sighash,
+    )
+}
+
 /// Solana: signs `message` (the exact bytes the Solana signature covers) with the PIV Ed25519
 /// key and verifies the signature strictly against the recorded key.
 ///
@@ -165,6 +188,33 @@ fn open_piv<'t>(
         return Err(CardError::KeyMismatch);
     }
     Ok(session)
+}
+
+/// Checks the PIN before anything is signed (spec/10 §9.2): the same serial and recorded-key
+/// checks as signing, then one VERIFY (PW1 of the slot's operation, or the PIV PIN). Sends no
+/// write instruction and asks for no touch, so a wrong PIN, another card or a missing card is
+/// known before the approved operation is spent. The signing call verifies the PIN again (PW1
+/// `81` is valid for one signature, a PIV "always" PIN policy for one operation).
+///
+/// # Errors
+///
+/// [`CardError::WrongCard`], [`CardError::KeyMismatch`], [`CardError::WrongPin`],
+/// [`CardError::PinBlocked`], [`CardError::PinFormat`], status errors.
+pub fn check_pin(
+    transport: &mut dyn CardTransport,
+    mode: ApduMode,
+    key: &CardKey,
+    pin: &[u8],
+) -> Result<(), CardError> {
+    match (key.slot, key.public) {
+        (CardSlot::OpenPgp(pgp_key), HwPublicKey::Secp256k1(public)) => {
+            open_pgp(transport, mode, key.serial, pgp_key, &public)?.verify(pgp_key.pw(), pin)
+        }
+        (CardSlot::Piv(slot), HwPublicKey::Ed25519(public)) => {
+            open_piv(transport, mode, key.serial, slot, &public)?.verify_pin(pin)
+        }
+        _ => Err(CardError::Internal),
+    }
 }
 
 /// Read-only check that the inserted card holds `key` (serial and public key): used by the
