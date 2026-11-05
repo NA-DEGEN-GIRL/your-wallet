@@ -1367,6 +1367,8 @@ impl App {
     }
 
     fn sol_abort_message(&mut self, cause: ErrorCode) {
+        // A YubiKey transfer whose blockhash step failed never reaches the card.
+        self.card_abandon_sol();
         let message = format!("{} — {}", ErrorCode::Sol004.text(), cause.text());
         logging::warn("app", "sol.sign_aborted", &[("code", Field::Code(cause))]);
         self.sol.send.info = Some(message.clone());

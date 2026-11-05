@@ -714,6 +714,16 @@ impl App {
         }
     }
 
+    /// A SOL card transfer that will not reach the card (its blockhash step failed after the
+    /// PIN): the in-flight step ends (the pending entry, with the PIN, is already dropped).
+    pub(crate) fn card_abandon_sol(&mut self) {
+        if self.card.step.as_ref().is_some_and(|step| {
+            step.approved.is_none() && matches!(step.kind, CardJobKind::SolTransfer { .. })
+        }) {
+            self.card.step = None;
+        }
+    }
+
     /// Lock: the held approval and any PIN are dropped; a dApp waiter gets 4001.
     pub(crate) fn card_lock(&mut self) {
         if let Some(step) = self.card.step.take() {

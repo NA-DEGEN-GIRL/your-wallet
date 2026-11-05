@@ -1991,19 +1991,19 @@ impl App {
         approved: yw_core::approval::Approved,
         info: SignInfo,
     ) {
+        if crate::yubikey::approval_role(&approved).is_none() {
+            self.key(KeyJob::SignEvm {
+                ticket,
+                approved: Box::new(approved),
+                info,
+            });
+            return;
+        }
         let kind = crate::app_card::CardJobKind::EvmTx { info };
-        match self.card_begin(approved, kind.clone(), Some(ticket)) {
-            Ok(()) => {}
-            Err(approved) => {
-                let crate::app_card::CardJobKind::EvmTx { info } = kind else {
-                    return;
-                };
-                self.key(KeyJob::SignEvm {
-                    ticket,
-                    approved,
-                    info,
-                });
-            }
+        if let Err(approved) = self.card_begin(approved, kind, Some(ticket)) {
+            // Not reached (the role was checked); never signed in software by accident.
+            drop(approved);
+            self.browser_sign_cancelled(ticket);
         }
     }
 
