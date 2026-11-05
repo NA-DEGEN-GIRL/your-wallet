@@ -178,14 +178,28 @@ pub struct CardUi {
     pub enrol: Option<EnrolState>,
     /// Keys of the last enrolment: their hidden accounts become visible at the next meta load.
     pending_unhide: Vec<KeyRole>,
+    /// The vault record ids of [`CardUi::records`] (same order).
+    pub record_ids: Vec<yw_core::vault::RecordId>,
+    /// The enrolment wizard (spec/10 §7).
+    pub wizard: Option<crate::app_yubikey::YkWizard>,
+    /// The record `삭제` was pressed for.
+    pub remove_target: Option<yw_core::vault::RecordId>,
+    /// A card enrolled with factory defaults before the meta existed (new `YubiKey` wallet):
+    /// joins `hw_accounts.defaults` at the next meta load.
+    pending_default: Option<u32>,
 }
 
 impl CardUi {
-    /// Forgets everything of the unlocked session (the held approval and buffers are dropped).
+    /// Forgets everything of the unlocked session (the held approval, the wizard and their
+    /// buffers are dropped).
     pub fn clear(&mut self) {
         self.step = None;
         self.records.clear();
+        self.record_ids.clear();
         self.enrol = None;
+        self.wizard = None;
+        self.remove_target = None;
+        self.pending_default = None;
         self.pending_unhide.clear();
     }
 }
@@ -210,6 +224,24 @@ pub fn defaults_lines(defaults: yw_core::yubikey::enrol::DefaultsSeen) -> Vec<St
         );
     }
     lines
+}
+
+/// The approval window's `YubiKey` badge (spec/10 §10): `YubiKey로 서명`, the cards holding the
+/// key and the touches the operation needs. It is app chrome next to the header badges; it is
+/// not part of the digested display (spec/03 §11.3), which stays exactly the core's.
+#[must_use]
+pub fn card_badge(records: &[HwKeyRecord], role: KeyRole, touches: usize) -> String {
+    let serials = crate::yubikey::holders(records, role);
+    let mut text = "YubiKey로 서명".to_owned();
+    if !serials.is_empty() {
+        let list: Vec<String> = serials.iter().map(|serial| format!("#{serial}")).collect();
+        text.push_str(" · ");
+        text.push_str(&list.join(", "));
+    }
+    text.push_str(" · 터치 ");
+    text.push_str(&touches.max(1).to_string());
+    text.push('회');
+    text
 }
 
 fn job_error_text(error: YubiKeyJobError) -> String {
@@ -277,10 +309,14 @@ impl App {
             YubiKeyJobError,
         >,
     ) {
+        self.yk_enrolled(&result);
         match result {
             Ok((_, enrolled)) => {
                 let serial = enrolled.record.serial;
                 let defaults = defaults_lines(enrolled.defaults);
+                if !defaults.is_empty() && self.meta.is_none() {
+                    self.card.pending_default = Some(serial);
+                }
                 logging::info(
                     "app",
                     "yubikey.enrolled",
@@ -313,7 +349,9 @@ impl App {
                     text.push(' ');
                     text.push_str(line);
                 }
-                self.info = Some(text);
+                if self.card.wizard.is_none() {
+                    self.info = Some(text);
+                }
                 self.key(KeyJob::HardwareKeys);
                 self.key(KeyJob::LoadMeta);
             }
@@ -321,7 +359,10 @@ impl App {
                 logging::info("app", "yubikey.enrol_failed", &[]);
                 let text = job_error_text(error);
                 self.card.enrol = Some(EnrolState::Failed(text.clone()));
-                self.banner(None, text);
+                // The wizard's result screen shows it (with the §7.4 note).
+                if self.card.wizard.is_none() {
+                    self.banner(None, text);
+                }
             }
         }
         self.refresh();
@@ -331,6 +372,15 @@ impl App {
     /// enrolment shown again.
     pub(crate) fn card_after_meta(&mut self) {
         self.key(KeyJob::HardwareKeys);
+        if let Some(serial) = self.card.pending_default.take()
+            && let Some(meta) = self.meta.as_mut()
+            && !meta.hw_accounts.defaults.contains(&serial)
+        {
+            meta.hw_accounts.defaults.push(serial);
+            meta.hw_accounts.defaults.sort_unstable();
+            meta.hw_accounts.defaults.truncate(8);
+            self.save_meta();
+        }
         let roles = core::mem::take(&mut self.card.pending_unhide);
         if roles.is_empty() {
             return;
@@ -361,7 +411,9 @@ impl App {
         result: Result<Vec<yw_core::vault::HardwareKey>, yw_core::error::VaultError>,
     ) {
         if let Ok(keys) = result {
+            self.card.record_ids = keys.iter().map(|key| key.id).collect();
             self.card.records = keys.into_iter().map(|key| key.record).collect();
+            self.refresh();
         }
     }
 

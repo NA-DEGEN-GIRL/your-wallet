@@ -27,6 +27,8 @@ use crate::meta::{self, Account, EvmAccountPref, Meta, RawAccount, SolRawAccount
 use crate::store::{FileStorage, LockedSlotBox};
 use crate::workers::journal::{JournalState, SolSignTimes};
 
+pub mod yubikey;
+
 struct PendingImport {
     phrase: Zeroizing<Vec<u8>>,
     passphrase: Option<Zeroizing<Vec<u8>>>,
@@ -45,6 +47,10 @@ pub struct KeyWorker {
     pending_password: Option<Zeroizing<Vec<u8>>>,
     pending: Option<PendingImport>,
     pending_key: Option<PendingKeyStart>,
+    /// The recovery words of a `YubiKey` enrolment wizard (spec/10 §7; never on disk).
+    pending_enrol: Option<yubikey::PendingEnrol>,
+    /// A new PIV management key between W13 and the card (spec/10 §9.3).
+    pending_card_key: Option<yubikey::PendingKey>,
     journal: JournalState,
     /// The inserted `YubiKey`s (PC/SC; the emulator in tests, spec/10 §12.1).
     cards: Box<dyn crate::yubikey::CardSource>,
@@ -406,6 +412,8 @@ impl KeyWorker {
             pending_password: None,
             pending: None,
             pending_key: None,
+            pending_enrol: None,
+            pending_card_key: None,
             journal: JournalState::default(),
             cards: Box::new(crate::yubikey::PcscSource),
         }
@@ -836,6 +844,7 @@ impl KeyWorker {
         self.pending = None;
         self.pending_key = None;
         self.pending_password = None;
+        self.yk_wipe();
         self.journal.clear();
         if let Some(vault) = self.vault.as_mut() {
             vault.lock();
@@ -1471,6 +1480,7 @@ impl KeyWorker {
             KeyJob::HardwareKeys => {
                 KeyOutcome::HardwareKeys(self.vault().and_then(|vault| vault.hardware_keys()))
             }
+            KeyJob::YubiKey(job) => self.yubikey_job(job),
             KeyJob::SignChainMessage { ticket, approved } => {
                 KeyOutcome::SignedChainMessage(crate::events::ChainMessageSigned {
                     ticket,
@@ -2365,6 +2375,262 @@ pub(crate) mod tests {
         assert_eq!(signs - signs_before, 2, "one card signature per input");
         assert!(cards.iter().all(|card| !card.saw_write()));
         drop(cards);
+        drop(worker);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The wizard jobs on the emulator (spec/10 §7, §7.5, §9.3): the preview holds the seed and
+    /// touches no card; a wrong admin PIN writes no record; the enrolment, "다시 확인", the PW1
+    /// change (a wrong current PIN refused), the management key held between W13 and the card
+    /// and set only then, "가져오기 없이 등록" of a card that already holds the keys (no write),
+    /// the removal after the password, and `Discard` / the lock wiping the held words.
+    #[test]
+    #[expect(clippy::too_many_lines, reason = "one emulator scenario")]
+    fn yubikey_wizard_jobs_on_the_emulator() {
+        use std::sync::{Arc, Mutex};
+
+        use yw_core::bip32::path::AccountIndex;
+        use yw_core::secret::Zeroizing;
+        use yw_core::yubikey::mock::MockCard;
+        use yw_core::yubikey::plan::{CardSlot, KeyRole, PgpKey, PivSlot, PlannedSlot};
+
+        use super::yubikey::{YkJob, YkOutcome};
+        use crate::yubikey::{CardJobError, PinTarget};
+
+        let about = format!("{} about", ["abandon"; 11].join(" "));
+        let dir = std::env::temp_dir().join(format!(
+            "yw-app-yk-jobs-{}-{}",
+            std::process::id(),
+            yw_win::time::monotonic_ms()
+        ));
+        let cards = Arc::new(Mutex::new(vec![MockCard::new(9_900_001)]));
+        let mut worker =
+            KeyWorker::new(&dir).with_card_source(Box::new(crate::yubikey::MockSource {
+                cards: Arc::clone(&cards),
+            }));
+        let bytes = |text: &str| Zeroizing::new(text.as_bytes().to_vec());
+        worker.handle(KeyJob::Load);
+        worker.handle(KeyJob::PreviewImport {
+            password: Some(bytes("yubikey jobs password")),
+            phrase: bytes(&about),
+            passphrase: None,
+        });
+        worker.handle(KeyJob::CommitImport);
+        let slots = vec![
+            PlannedSlot::recommended(
+                CardSlot::OpenPgp(PgpKey::Sig),
+                KeyRole::Evm {
+                    index: AccountIndex::new(3).unwrap(),
+                    btc: None,
+                },
+            ),
+            PlannedSlot::recommended(
+                CardSlot::Piv(PivSlot::new(0x82).unwrap()),
+                KeyRole::Sol {
+                    index: AccountIndex::new(4).unwrap(),
+                },
+            ),
+        ];
+        let yk =
+            |worker: &mut KeyWorker, job: YkJob| match worker.handle(KeyJob::YubiKey(job)).pop() {
+                Some(KeyOutcome::YubiKey(outcome)) => Some(outcome),
+                Some(KeyOutcome::YubiKeyEnrolled(result)) => {
+                    assert!(result.is_ok(), "{result:?}");
+                    None
+                }
+                other => unreachable!("{other:?}"),
+            };
+        let enrol = |worker: &mut KeyWorker, admin: &str, adopt: bool| {
+            worker
+                .handle(KeyJob::YubiKey(YkJob::Enrol {
+                    slots: slots.clone(),
+                    admin_pin: bytes(admin),
+                    management_key: Zeroizing::new(
+                        yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY.to_vec(),
+                    ),
+                    adopt,
+                }))
+                .pop()
+        };
+        let records = |worker: &mut KeyWorker| match worker.handle(KeyJob::HardwareKeys).pop() {
+            Some(KeyOutcome::HardwareKeys(Ok(keys))) => keys,
+            other => unreachable!("{other:?}"),
+        };
+        // Wrong words: refused, nothing held.
+        assert!(matches!(
+            yk(
+                &mut worker,
+                YkJob::Preview {
+                    mnemonic: Some((bytes("abandon abandon"), None)),
+                    slots: slots.clone(),
+                }
+            ),
+            Some(YkOutcome::Preview(Err(
+                crate::events::YubiKeyJobError::Key(_)
+            )))
+        ));
+        let Some(YkOutcome::Preview(Ok(preview))) = yk(
+            &mut worker,
+            YkJob::Preview {
+                mnemonic: Some((bytes(&about), None)),
+                slots: slots.clone(),
+            },
+        ) else {
+            unreachable!("preview");
+        };
+        assert!(preview.same_as_vault && preview.plan.is_ok());
+        assert_eq!(preview.lines[0].path, "m/44'/60'/0'/0/3");
+        assert_eq!(preview.lines[1].path, "m/44'/501'/4'/0'");
+        assert!(cards.lock().unwrap()[0].log.is_empty());
+        // A wrong admin PIN: nothing written, no record.
+        assert!(matches!(
+            enrol(&mut worker, "00000000", false),
+            Some(KeyOutcome::YubiKeyEnrolled(Err(_)))
+        ));
+        assert!(records(&mut worker).is_empty());
+        assert!(matches!(
+            enrol(&mut worker, "12345678", false),
+            Some(KeyOutcome::YubiKeyEnrolled(Ok(_)))
+        ));
+        let enrolled = records(&mut worker);
+        assert_eq!(enrolled.len(), 1);
+        let Some(YkOutcome::Checked(9_900_001, Ok(checks))) =
+            yk(&mut worker, YkJob::Check { serial: 9_900_001 })
+        else {
+            unreachable!("check");
+        };
+        assert_eq!(checks, [Ok(()), Ok(())]);
+        // PW1: a wrong current PIN is refused, then changed.
+        let change = |worker: &mut KeyWorker, old: &str| {
+            worker
+                .handle(KeyJob::YubiKey(YkJob::ChangePin {
+                    serial: 9_900_001,
+                    target: PinTarget::OpenPgpUser,
+                    old: bytes(old),
+                    new: bytes("135791"),
+                }))
+                .pop()
+        };
+        assert!(matches!(
+            change(&mut worker, "000000"),
+            Some(KeyOutcome::YubiKey(YkOutcome::PinChanged(
+                _,
+                PinTarget::OpenPgpUser,
+                Err(CardJobError::Card(_))
+            )))
+        ));
+        assert!(matches!(
+            change(&mut worker, "123456"),
+            Some(KeyOutcome::YubiKey(YkOutcome::PinChanged(_, _, Ok(()))))
+        ));
+        assert_eq!(cards.lock().unwrap()[0].pw1, b"135791");
+        // The management key: generated and held, set only by `SetManagementKey`.
+        let Some(YkOutcome::ManagementKey(Ok(key))) =
+            yk(&mut worker, YkJob::NewManagementKey { serial: 9_900_001 })
+        else {
+            unreachable!("new key");
+        };
+        let key = key.expose().to_owned();
+        assert_eq!(key.len(), 48);
+        assert_eq!(
+            cards.lock().unwrap()[0].mgmt_key,
+            yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY
+        );
+        assert!(matches!(
+            yk(
+                &mut worker,
+                YkJob::SetManagementKey {
+                    old: Zeroizing::new(yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY.to_vec()),
+                }
+            ),
+            Some(YkOutcome::ManagementKeySet(9_900_001, Ok(())))
+        ));
+        assert_eq!(
+            yw_core::hex::encode(&cards.lock().unwrap()[0].mgmt_key),
+            key
+        );
+        // Nothing held any more: a second set has no key.
+        assert!(matches!(
+            yk(
+                &mut worker,
+                YkJob::SetManagementKey {
+                    old: Zeroizing::new(Vec::new()),
+                }
+            ),
+            Some(YkOutcome::ManagementKeySet(_, Err(_)))
+        ));
+        // Removal: a wrong password keeps the record.
+        let id = enrolled[0].id;
+        assert!(matches!(
+            yk(
+                &mut worker,
+                YkJob::Remove {
+                    password: bytes("not the password"),
+                    id,
+                }
+            ),
+            Some(YkOutcome::Removed(Err(
+                yw_core::error::VaultError::UnlockFailed
+            )))
+        ));
+        assert!(matches!(
+            yk(
+                &mut worker,
+                YkJob::Remove {
+                    password: bytes("yubikey jobs password"),
+                    id,
+                }
+            ),
+            Some(YkOutcome::Removed(Ok(_)))
+        ));
+        assert!(records(&mut worker).is_empty());
+        // "가져오기 없이 등록": the card still holds the keys; read-only.
+        cards.lock().unwrap()[0].log.clear();
+        assert!(matches!(
+            enrol(&mut worker, "", true),
+            Some(KeyOutcome::YubiKeyEnrolled(Ok(_)))
+        ));
+        assert!(!cards.lock().unwrap()[0].saw_write());
+        assert_eq!(records(&mut worker)[0].record, enrolled[0].record);
+        // `Discard` wipes the held words; so does the lock.
+        assert!(matches!(
+            yk(&mut worker, YkJob::Discard),
+            Some(YkOutcome::Discarded)
+        ));
+        assert!(matches!(
+            yk(
+                &mut worker,
+                YkJob::Preview {
+                    mnemonic: None,
+                    slots: slots.clone(),
+                }
+            ),
+            Some(YkOutcome::Preview(Err(_)))
+        ));
+        assert!(matches!(
+            yk(
+                &mut worker,
+                YkJob::Preview {
+                    mnemonic: Some((bytes(&about), None)),
+                    slots: slots.clone(),
+                }
+            ),
+            Some(YkOutcome::Preview(Ok(_)))
+        ));
+        worker.lock();
+        let _ = worker.handle(KeyJob::Unlock {
+            password: bytes("yubikey jobs password"),
+        });
+        assert!(matches!(
+            yk(
+                &mut worker,
+                YkJob::Preview {
+                    mnemonic: None,
+                    slots,
+                }
+            ),
+            Some(YkOutcome::Preview(Err(_)))
+        ));
         drop(worker);
         let _ = std::fs::remove_dir_all(&dir);
     }

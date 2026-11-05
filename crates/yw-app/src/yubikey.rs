@@ -320,13 +320,23 @@ pub const fn pin_bounds(role: KeyRole) -> (u8, u8) {
 /// whose key is the plan's account: [`btc_plan_role`]).
 #[must_use]
 pub fn approval_role(approved: &yw_core::approval::Approved) -> Option<KeyRole> {
+    role_of(&approved.signer(), approved.payload())
+}
+
+/// [`approval_role`] of a request's signer and payload (before it is approved: the approval
+/// window's `YubiKey로 서명` badge, which is app chrome outside the digested display).
+#[must_use]
+pub fn role_of(
+    signer: &yw_core::approval::Signer,
+    payload: &yw_core::approval::SigningPayload,
+) -> Option<KeyRole> {
     use yw_core::approval::{Signer, SigningPayload};
     use yw_core::slip10::SolKeySource;
     use yw_core::vault::EvmKeySource;
-    if let Signer::Evm(EvmKeySource::Hardware(index)) = approved.signer() {
+    if let Signer::Evm(EvmKeySource::Hardware(index)) = *signer {
         return Some(KeyRole::Evm { index, btc: None });
     }
-    match approved.payload() {
+    match payload {
         SigningPayload::SolTransfer(intent) => match intent.source {
             SolKeySource::Hardware(index) => Some(KeyRole::Sol { index }),
             _ => None,
@@ -402,6 +412,232 @@ pub fn enrol_first_card(
     result
         .ok_or(CardJobError::NoCard)?
         .map_err(CardJobError::Enrol)
+}
+
+/// "가져오기 없이 등록" (spec/10 §7.5) on the first inserted card that answers: the record of
+/// keys already on the card, built with read-only commands only (`enrol::adopt_card`).
+///
+/// # Errors
+///
+/// [`CardJobError::NoCard`], [`CardJobError::Enrol`].
+pub fn adopt_first_card(
+    source: &mut dyn CardSource,
+    seed: &[u8; 64],
+    slots: &[PlannedSlot],
+    records: &[HwKeyRecord],
+) -> Result<Enrolled, CardJobError> {
+    let mut result: Option<Result<Enrolled, EnrolError>> = None;
+    source
+        .each_card(&mut |transport, _| {
+            result = Some(yw_core::yubikey::enrol::adopt_card(
+                transport, MODE, seed, slots, records,
+            ));
+            true
+        })
+        .map_err(CardJobError::Card)?;
+    result
+        .ok_or(CardJobError::NoCard)?
+        .map_err(CardJobError::Enrol)
+}
+
+/// Which card secret a defaults change replaces (spec/10 §9.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PinTarget {
+    /// `OpenPGP` user PIN PW1 (6–127, factory `123456`).
+    OpenPgpUser,
+    /// `OpenPGP` admin PIN PW3 (8–127, factory `12345678`).
+    OpenPgpAdmin,
+    /// PIV PIN (6–8, factory `123456`).
+    PivPin,
+    /// PIV PUK (6–8, factory `12345678`).
+    PivPuk,
+}
+
+impl PinTarget {
+    /// Length bounds (spec/10 §9.1).
+    #[must_use]
+    pub const fn bounds(self) -> (u8, u8) {
+        match self {
+            Self::OpenPgpUser => (6, 127),
+            Self::OpenPgpAdmin => (8, 127),
+            Self::PivPin | Self::PivPuk => (6, 8),
+        }
+    }
+
+    /// The secret's name in sentences.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::OpenPgpUser => "OpenPGP PIN",
+            Self::OpenPgpAdmin => "OpenPGP 관리자 PIN",
+            Self::PivPin => "PIV PIN",
+            Self::PivPuk => "PIV PUK",
+        }
+    }
+
+    /// The W12 title.
+    #[must_use]
+    pub const fn change_title(self) -> &'static str {
+        match self {
+            Self::OpenPgpUser => "OpenPGP PIN 바꾸기",
+            Self::OpenPgpAdmin => "OpenPGP 관리자 PIN 바꾸기",
+            Self::PivPin => "PIV PIN 바꾸기",
+            Self::PivPuk => "PIV PUK 바꾸기",
+        }
+    }
+
+    /// The length rule and the factory value.
+    #[must_use]
+    pub const fn rule(self) -> &'static str {
+        match self {
+            Self::OpenPgpUser => "영문·숫자·기호(ASCII) 6–127자입니다(공장 기본값 123456).",
+            Self::OpenPgpAdmin => "영문·숫자·기호(ASCII) 8–127자입니다(공장 기본값 12345678).",
+            Self::PivPin => "영문·숫자·기호(ASCII) 6–8자입니다(공장 기본값 123456).",
+            Self::PivPuk => "영문·숫자·기호(ASCII) 6–8자입니다(공장 기본값 12345678).",
+        }
+    }
+
+    const fn applets(self) -> (bool, bool) {
+        match self {
+            Self::OpenPgpUser | Self::OpenPgpAdmin => (true, false),
+            Self::PivPin | Self::PivPuk => (false, true),
+        }
+    }
+}
+
+/// A card operation of [`on_serial`].
+type CardOperation<'a, T> =
+    dyn FnMut(&mut dyn CardTransport, &dyn MgmtCipher) -> Result<T, CardError> + 'a;
+
+/// Runs `operation` once on the inserted card whose serial is `serial` (read with the applets
+/// `pgp` / `piv`); other cards are skipped ([`CardError::WrongCard`] when only they answered).
+fn on_serial<T>(
+    source: &mut dyn CardSource,
+    serial: u32,
+    (pgp, piv): (bool, bool),
+    operation: &mut CardOperation<'_, T>,
+) -> Result<T, CardJobError> {
+    let mut result: Option<Result<T, CardError>> = None;
+    let mut seen_other = false;
+    source
+        .each_card(&mut |transport, cipher| {
+            match identify(transport, MODE, pgp, piv) {
+                Ok((found, _)) if found == serial => {}
+                _ => {
+                    seen_other = true;
+                    return false;
+                }
+            }
+            result = Some(operation(transport, cipher));
+            true
+        })
+        .map_err(CardJobError::Card)?;
+    match result {
+        Some(outcome) => outcome.map_err(CardJobError::Card),
+        None if seen_other => Err(CardJobError::Card(CardError::WrongCard)),
+        None => Err(CardJobError::NoCard),
+    }
+}
+
+/// Changes a PIN or PUK of card `serial` (spec/10 §9.3: `OpenPGP` CHANGE REFERENCE DATA `81` /
+/// `83`, PIV `80` / `81`).
+///
+/// # Errors
+///
+/// [`CardJobError::NoCard`], [`CardJobError::Card`] (wrong current value with the tries left,
+/// blocked, format, another card).
+pub fn change_card_pin(
+    source: &mut dyn CardSource,
+    serial: u32,
+    target: PinTarget,
+    old: &[u8],
+    new: &[u8],
+) -> Result<(), CardJobError> {
+    on_serial(
+        source,
+        serial,
+        target.applets(),
+        &mut |transport, _| match target {
+            PinTarget::OpenPgpUser | PinTarget::OpenPgpAdmin => {
+                yw_core::yubikey::openpgp::OpenPgp::open(transport, MODE)?.change_pin(
+                    target == PinTarget::OpenPgpAdmin,
+                    old,
+                    new,
+                )
+            }
+            PinTarget::PivPin | PinTarget::PivPuk => yw_core::yubikey::piv::Piv::open(
+                transport, MODE,
+            )?
+            .change_reference(target == PinTarget::PivPuk, old, new),
+        },
+    )
+}
+
+/// Replaces the PIV management key of card `serial` with `new` (AES-192, spec/10 §9.3): GET
+/// METADATA `9B` (the current algorithm), mutual authentication with `old`, then SET MANAGEMENT
+/// KEY.
+///
+/// # Errors
+///
+/// [`CardJobError::NoCard`], [`CardJobError::Card`] (`SecurityStatus` /
+/// `ManagementKeyMismatch` for a wrong current key, format, another card).
+pub fn change_management_key(
+    source: &mut dyn CardSource,
+    serial: u32,
+    old: &[u8],
+    new: &[u8; 24],
+) -> Result<(), CardJobError> {
+    let mut challenge = [0_u8; 16];
+    yw_core::entropy::fill_random(&mut challenge)
+        .map_err(|_| CardJobError::Card(CardError::Internal))?;
+    on_serial(source, serial, (false, true), &mut |transport, cipher| {
+        let mut session = yw_core::yubikey::piv::Piv::open(transport, MODE)?;
+        let (algorithm, _) = session.management_metadata()?;
+        let current = yw_core::yubikey::piv::MgmtKey::new(algorithm, old)?;
+        let challenge = challenge
+            .get(..algorithm.block_len())
+            .ok_or(CardError::Internal)?;
+        session.authenticate(&current, cipher, challenge)?;
+        let next = yw_core::yubikey::piv::MgmtKey::new(MgmtAlgorithm::Aes192, new)?;
+        session.set_management_key(&next)
+    })
+}
+
+/// "다시 확인" (spec/10 §7.3-6): on card `record.serial`, every recorded slot's public key is read
+/// again (`sign::check_key`, read-only). One result per slot, in record order.
+///
+/// # Errors
+///
+/// [`CardJobError::NoCard`], [`CardJobError::Card`] (no card with that serial answered).
+pub fn check_record(
+    source: &mut dyn CardSource,
+    record: &HwKeyRecord,
+) -> Result<Vec<Result<(), CardError>>, CardJobError> {
+    let pgp = record
+        .slots
+        .iter()
+        .any(|slot| slot.role.curve() == Curve::Secp256k1);
+    let piv = record
+        .slots
+        .iter()
+        .any(|slot| slot.role.curve() == Curve::Ed25519);
+    on_serial(source, record.serial, (pgp, piv), &mut |transport, _| {
+        Ok(record
+            .slots
+            .iter()
+            .map(|slot| {
+                yw_core::yubikey::sign::check_key(
+                    transport,
+                    MODE,
+                    &CardKey {
+                        serial: record.serial,
+                        slot: slot.slot,
+                        public: slot.public,
+                    },
+                )
+            })
+            .collect())
+    })
 }
 
 /// The emulator as a card source (tests of the key worker and the app).

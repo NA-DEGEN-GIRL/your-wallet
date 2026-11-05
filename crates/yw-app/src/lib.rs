@@ -18,6 +18,7 @@ pub mod app_llm;
 pub mod app_sol;
 pub mod app_sol_commands;
 pub mod app_tokens;
+pub mod app_yubikey;
 pub mod browser;
 pub mod btc;
 pub mod errors;

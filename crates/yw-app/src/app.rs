@@ -170,6 +170,8 @@ pub enum SettingsSection {
     Bitcoin,
     /// AI 설명 (M6, spec/06 §2).
     Ai,
+    /// `YubiKey`: the enrolled cards, their slots and accounts, `YubiKey 등록`, `삭제` (spec/10).
+    YubiKey,
 }
 
 /// Confirmation overlays.
@@ -215,6 +217,8 @@ pub enum Confirm {
     RevealImported,
     /// Remove an imported Solana/Bitcoin key (T-REMOVE-IMPORTED, `KeysUi::target`).
     RemoveImported,
+    /// Remove a `YubiKey` record (`CardUi::remove_target`, spec/10 §7.5).
+    RemoveYubiKey,
 }
 
 /// Screens S01–S15 (M3 subset).
@@ -282,6 +286,10 @@ pub enum Screen {
     KeyStartIntro,
     /// S19: the address of the entered key.
     KeyStartAddress(crate::app_keys::KeyStartView),
+    /// S21 the `YubiKey` enrolment wizard (its step is `CardUi::wizard`, spec/10 §7).
+    YubiKey,
+    /// S20 `YubiKey 지갑 만들기`: what the new `YubiKey` wallet is (spec/10 §7.1-1).
+    YubiKeyWalletIntro,
 }
 
 /// What a password-confirm window (W03) is for.
@@ -307,6 +315,8 @@ pub enum PasswordAction {
     },
     /// Remove an imported Solana/Bitcoin key.
     RemoveImported(RecordId),
+    /// Remove a `YubiKey` record (spec/10 §8: the password is asked again).
+    RemoveHardwareKey(RecordId),
     /// Recover from `.prev`.
     Recover,
 }
@@ -348,6 +358,8 @@ pub enum Purpose {
     /// dispatch are held by that step (`crate::app_card::CardStep`); submitting moves the PIN
     /// buffer into the card job, cancelling drops the approval (nothing signed).
     CardSign(u64),
+    /// A window of the `YubiKey` wizard or the new `YubiKey` wallet (spec/10 §7, §9.3).
+    YubiKey(crate::app_yubikey::YkPurpose),
 }
 
 struct SecretWin {
@@ -528,7 +540,7 @@ pub struct App {
     secret_serial: u64,
     import: ImportFlow,
     challenge: Option<BackupChallenge>,
-    idle: IdleTracker,
+    pub(crate) idle: IdleTracker,
     secret_clip: Option<(SecretClip, u64)>,
     startup_load: bool,
     session_retries: u32,
@@ -599,6 +611,15 @@ fn flow_step(purpose: Purpose) -> Option<SecretStep> {
         }
         Purpose::KeyStartPassword => ("개인키로 시작하기", crate::app_keys::KEY_START_STEPS, 1),
         Purpose::KeyStartKey => ("개인키로 시작하기", crate::app_keys::KEY_START_STEPS, 2),
+        Purpose::YubiKey(crate::app_yubikey::YkPurpose::NewPassword) => {
+            ("YubiKey 지갑 만들기", CREATE_STEPS, 1)
+        }
+        Purpose::YubiKey(crate::app_yubikey::YkPurpose::ShowWords) => {
+            ("YubiKey 지갑 만들기", CREATE_STEPS, 2)
+        }
+        Purpose::YubiKey(crate::app_yubikey::YkPurpose::Backup) => {
+            ("YubiKey 지갑 만들기", CREATE_STEPS, 3)
+        }
         _ => return None,
     };
     Some(SecretStep {
@@ -860,7 +881,7 @@ impl App {
         self.key_queue.push(self.lock_epoch, job);
     }
 
-    fn set_mode(&mut self, mode: AppMode) {
+    pub(crate) fn set_mode(&mut self, mode: AppMode) {
         if self.mode != mode {
             logging::info("app", "mode", &[("to", Field::Word(mode.word()))]);
             self.mode = mode;
@@ -993,6 +1014,7 @@ impl App {
                     && !self.on_sol_edit_change(*id)
                     && !self.on_btc_edit_change(*id)
                     && !self.on_llm_edit_change(*id)
+                    && !self.on_yk_edit_change(*id)
                 {
                     self.on_edit_change(*id);
                 }
@@ -1141,6 +1163,7 @@ impl App {
             || self.import.password_sent
             || self.keys.start.holds_secret()
             || self.secret.is_some()
+            || self.card.wizard.is_some()
     }
 
     /// Wipes a pending first-run import after the idle time (spec/04 §5.1): windows closed,
@@ -1156,6 +1179,11 @@ impl App {
         self.key(KeyJob::DiscardKeyStart {
             keep_password: false,
         });
+        // A new YubiKey wallet's words and password (held by the key worker).
+        self.key(KeyJob::YubiKey(
+            crate::workers::key::yubikey::YkJob::Discard,
+        ));
+        self.card.wizard = None;
         self.idle.input(now);
         self.info = Some(
             "오래 입력이 없어 입력하던 비밀번호·복구 단어·개인키를 지웠습니다. 처음부터 다시 진행하세요."
@@ -1477,6 +1505,7 @@ impl App {
             KeyOutcome::SignedMessage(result) => self.browser_message_signed(result),
             KeyOutcome::SignedChainMessage(result) => self.browser_chain_message_signed(&result),
             KeyOutcome::YubiKeyEnrolled(result) => self.on_yubikey_enrolled(result),
+            KeyOutcome::YubiKey(outcome) => self.on_yk_outcome(outcome),
             KeyOutcome::Imported(Err(_))
             | KeyOutcome::LockDone
             | KeyOutcome::Cancelled(..)
@@ -1866,7 +1895,7 @@ impl App {
         }
     }
 
-    fn password_failure(&mut self, error: VaultError, now: u64) {
+    pub(crate) fn password_failure(&mut self, error: VaultError, now: u64) {
         if error == VaultError::UnlockFailed {
             logging::info("app", "unlock.failed", &[]);
             self.with_form(|form| form.fail_password(now));
@@ -1976,7 +2005,12 @@ impl App {
     }
 
     /// Opens a display window (W08/W09); on exclusion failure the secret is wiped (E-SEC-001).
-    fn open_display(&mut self, kind: SecretKind, purpose: Purpose, display: DisplaySecret) {
+    pub(crate) fn open_display(
+        &mut self,
+        kind: SecretKind,
+        purpose: Purpose,
+        display: DisplaySecret,
+    ) {
         self.close_secret();
         let (serial, created) = self.create_secret(kind, false);
         let excluded = created
@@ -2089,9 +2123,7 @@ impl App {
                 return Reply::Default;
             }
             Msg::Close => {
-                let action = if form.kind().is_display()
-                    && form.kind() != (SecretKind::ShowMnemonic { create: true })
-                {
+                let action = if form.kind().is_display() && !form.kind().needs_hold() {
                     form.wipe();
                     FormAction::Close
                 } else {
@@ -2134,9 +2166,13 @@ impl App {
             FormAction::Paste => self.paste(),
             FormAction::Copy => self.copy_secret(),
             FormAction::HoldComplete => {
-                self.close_secret();
                 logging::info("app", "backup.written_ack", &[]);
-                self.key(KeyJob::BackupChallenge);
+                if let Purpose::YubiKey(yk) = purpose {
+                    self.yk_hold_complete(yk);
+                } else {
+                    self.close_secret();
+                    self.key(KeyJob::BackupChallenge);
+                }
             }
         }
     }
@@ -2216,6 +2252,10 @@ impl App {
 
     #[expect(clippy::too_many_lines, reason = "one arm per secret-window purpose")]
     fn on_submit(&mut self, purpose: Purpose, submission: Submission) {
+        if let Purpose::YubiKey(yk) = purpose {
+            self.yk_submit(yk, submission.values, submission.checkbox);
+            return;
+        }
         let mut values = submission.values.into_iter();
         let mut next = || values.next().unwrap_or_default();
         match purpose {
@@ -2302,6 +2342,9 @@ impl App {
                     PasswordAction::RemoveImported(id) => {
                         self.key(KeyJob::RemoveImportedKey { password, id });
                     }
+                    PasswordAction::RemoveHardwareKey(id) => self.key(KeyJob::YubiKey(
+                        crate::workers::key::yubikey::YkJob::Remove { password, id },
+                    )),
                     PasswordAction::Recover => {
                         // Where to return on failure or cancel (S09, or S07 after a failed
                         // unlock); a retry after a failure is already back in that mode.
@@ -2331,7 +2374,7 @@ impl App {
                 self.key(KeyJob::ImportKey { spec, key: next() });
             }
             Purpose::CardSign(id) => self.card_submit(id, next()),
-            Purpose::ShowForBackup | Purpose::ShowRevealed => {}
+            Purpose::ShowForBackup | Purpose::ShowRevealed | Purpose::YubiKey(_) => {}
         }
     }
 
@@ -2398,6 +2441,7 @@ impl App {
                 });
             }
             Purpose::CardSign(id) => self.card_cancel(id),
+            Purpose::YubiKey(yk) => self.yk_cancel(yk),
             Purpose::ConfirmPassword(_)
             | Purpose::ShowRevealed
             | Purpose::ChangePassword
@@ -2868,6 +2912,7 @@ impl App {
             ids::CONFIRM_NO => {
                 self.pending_remove = None;
                 self.keys.target = None;
+                self.card.remove_target = None;
                 self.evm.discard = None;
                 self.evm.delete_chain = None;
                 self.evm.repin = None;
@@ -2898,6 +2943,7 @@ impl App {
                     && !self.on_evm_command(other)
                     && !self.on_sites_command(other)
                     && !self.on_llm_command(other)
+                    && !self.on_yk_command(other)
                 {
                     self.on_indexed_command(other);
                 }
@@ -3483,6 +3529,7 @@ impl App {
                 }
             }
             Confirm::RevealImported | Confirm::RemoveImported => self.imported_confirmed(kind),
+            Confirm::RemoveYubiKey => self.yk_remove_confirmed(),
         }
     }
 

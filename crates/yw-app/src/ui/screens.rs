@@ -426,6 +426,8 @@ impl App {
             Screen::BtcReceive => self.btc_receive_screen(&mut items),
             Screen::KeyStartIntro => self.key_start_intro(&mut items),
             Screen::KeyStartAddress(view) => Self::key_start_address(view, &mut items),
+            Screen::YubiKey => self.yk_wizard_screen(&mut items),
+            Screen::YubiKeyWalletIntro => Self::yk_wallet_intro(&mut items),
         }
         if self.passphrase_unverified() {
             disable_receive(&mut items);
@@ -471,6 +473,7 @@ impl App {
         ]));
         items.push(Item::CardEnd);
         self.first_run_key_card(items);
+        self.first_run_yubikey_card(items);
     }
 
     fn create_intro(items: &mut Vec<Item>) {
@@ -933,6 +936,11 @@ impl App {
                 section == SettingsSection::Ai,
             ),
             Ctl::tab(
+                crate::ui::screens_yubikey::ids::SECTION_YUBIKEY,
+                "YubiKey",
+                section == SettingsSection::YubiKey,
+            ),
+            Ctl::tab(
                 ids::SECTION_OTHER,
                 "브라우저·진단·정보",
                 section == SettingsSection::Other,
@@ -946,6 +954,7 @@ impl App {
             SettingsSection::Bitcoin => self.btc_settings_section(items),
             SettingsSection::Ai => self.llm_settings_section(items),
             SettingsSection::Other => self.other_section(items),
+            SettingsSection::YubiKey => self.yk_settings_section(items),
         }
     }
 
@@ -1309,6 +1318,7 @@ impl App {
                 crate::ui::screens_keys::T_REMOVE_IMPORTED.to_owned(),
                 "계속",
             ),
+            Confirm::RemoveYubiKey => ("YubiKey 기록 삭제", self.yk_remove_text(), "계속"),
             Confirm::RevealImported => (
                 "개인키 보기",
                 "화면 근처의 사람이나 카메라가 볼 수 있습니다. 계속하려면 비밀번호를 입력하세요.".to_owned(),
@@ -1367,6 +1377,7 @@ impl App {
                 | Confirm::Discard
                 | Confirm::RemoveKey
                 | Confirm::RemoveImported
+                | Confirm::RemoveYubiKey
                 | Confirm::JournalCorrupt
         );
         items.push(Item::Title(title.to_owned()));

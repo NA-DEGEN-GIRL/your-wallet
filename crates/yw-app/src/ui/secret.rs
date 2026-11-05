@@ -45,6 +45,12 @@ pub const T_IMPORTED_KEY_BACKUP: &str = "주의: 가져온 개인키는 이 지�
 pub const T_KEY_ONLY_BACKUP: &str = "주의: 이 지갑에는 복구 단어가 없습니다. 이 계정의 백업은 지금 입력하는 원래 개인키뿐입니다. 이 PC나 지갑 파일을 잃으면 원래 개인키로만 되살릴 수 있으니, 원래 개인키를 종이 등 안전한 곳에 따로 보관하세요.";
 /// W11 (spec/10 §9.2): the card step after approval.
 pub const T_CARD_PIN: &str = "YubiKey를 연결하고 PIN 입력 후 터치하세요. PIN을 확인한 뒤 YubiKey가 깜박이면 터치하세요(15초 안에). PIN은 이 서명 한 번에만 쓰고 바로 지웁니다.";
+/// W12 admin PIN (spec/10 §7.3).
+pub const T_CARD_ADMIN_PIN: &str = "YubiKey를 하나만 연결하고 OpenPGP 관리자 PIN(PW3, 8–127자, 공장 기본값 12345678)을 입력하세요. 키를 가져오는 동안 한 번만 쓰고 바로 지웁니다.";
+/// W12 management key (spec/10 §7.3).
+pub const T_CARD_MANAGEMENT_KEY: &str = "YubiKey의 PIV 관리 키를 16진수 48자리로 입력하세요(ykman이 보여주는 형식). 이 지갑은 관리 키를 저장하지 않으며, 이번 작업에만 쓰고 바로 지웁니다.";
+/// W13 (spec/10 §9.3).
+pub const T_SHOW_CARD_KEY: &str = "새 PIV 관리 키입니다. 이 지갑은 관리 키를 저장하지 않으므로 다음 YubiKey 등록·관리 키 변경에 이 값을 다시 입력해야 합니다. 종이에 적은 뒤 '다 적었습니다'를 2초 누르면 YubiKey에 설정합니다. 이 창을 닫으면 아무것도 바꾸지 않습니다. 이 창은 화면 캡처에서 제외됩니다.";
 /// W07 help of a Solana key (spec/04 §2.18).
 pub const T_SOL_KEY_INPUT: &str = "Phantom·Solflare의 '개인키 내보내기'로 받은 base58 문자열(64바이트 keypair) 또는 solana-keygen JSON 파일의 내용([숫자 64개])을 붙여넣으세요. 주소(32바이트)는 개인키가 아닙니다.";
 /// W07 help of a Bitcoin key (spec/04 §2.18).
@@ -103,6 +109,37 @@ pub enum SecretKind {
         /// Card signatures (touches) the operation needs.
         touches: u8,
     },
+    /// W12 `YubiKey` credentials of the enrolment wizard and the defaults change (spec/10 §7,
+    /// §9.1, §9.3): the `OpenPGP` admin PIN, a PIV management key (48 hex digits), or a PIN /
+    /// PUK change (current, new, new again). Same rules as W11: capture exclusion preferred,
+    /// owner-drawn masked fields, no copy, ASCII, wiped after the one card operation.
+    CardSecret(CardSecretKind),
+    /// W13 the new PIV management key, shown once (spec/10 §9.3): `CaptureExclusion::Required`,
+    /// no copy, 2 s `다 적었습니다` hold before the key is set on the card.
+    ShowCardKey,
+}
+
+/// What a W12 window asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardSecretKind {
+    /// `OpenPGP` admin PIN (PW3, 8–127).
+    AdminPin,
+    /// The current PIV management key (48 hex digits, AES-192 / 3DES).
+    ManagementKey,
+    /// A PIN or PUK change: current, new, new again.
+    ChangePin(crate::yubikey::PinTarget),
+}
+
+impl CardSecretKind {
+    /// Title.
+    #[must_use]
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::AdminPin => "YubiKey 관리자 PIN",
+            Self::ManagementKey => "YubiKey PIV 관리 키",
+            Self::ChangePin(target) => target.change_title(),
+        }
+    }
 }
 
 impl SecretKind {
@@ -121,16 +158,31 @@ impl SecretKind {
             Self::ShowKey => "W09",
             Self::Backup { .. } => "W10",
             Self::CardPin { .. } => "W11",
+            Self::CardSecret(_) => "W12",
+            Self::ShowCardKey => "W13",
         }
     }
 
-    /// Display windows (W08, W09) use `CaptureExclusion::Required`.
+    /// Display windows (W08, W09, W13) use `CaptureExclusion::Required`.
     #[must_use]
     pub const fn is_display(self) -> bool {
-        matches!(self, Self::ShowMnemonic { .. } | Self::ShowKey)
+        matches!(
+            self,
+            Self::ShowMnemonic { .. } | Self::ShowKey | Self::ShowCardKey
+        )
     }
 
-    /// Plain-text windows mask their content on focus loss (W05, W07–W10).
+    /// Display windows that end with the 2 s `다 적었습니다` hold instead of `닫기` (W08 of a new
+    /// wallet, W13): closing them is a cancel.
+    #[must_use]
+    pub const fn needs_hold(self) -> bool {
+        matches!(
+            self,
+            Self::ShowMnemonic { create: true } | Self::ShowCardKey
+        )
+    }
+
+    /// Plain-text windows mask their content on focus loss (W05, W07–W10, W13).
     #[must_use]
     pub const fn plaintext(self) -> bool {
         matches!(
@@ -140,15 +192,16 @@ impl SecretKind {
                 | Self::ShowMnemonic { .. }
                 | Self::ShowKey
                 | Self::Backup { .. }
+                | Self::ShowCardKey
         )
     }
 
-    /// Paste allowed (W01–W07).
+    /// Paste allowed (W01–W07, W11, W12).
     #[must_use]
     pub const fn paste_allowed(self) -> bool {
         !matches!(
             self,
-            Self::ShowMnemonic { .. } | Self::ShowKey | Self::Backup { .. }
+            Self::ShowMnemonic { .. } | Self::ShowKey | Self::Backup { .. } | Self::ShowCardKey
         )
     }
 
@@ -167,6 +220,8 @@ impl SecretKind {
             Self::ShowKey => "개인키 보기",
             Self::Backup { .. } => "백업 확인",
             Self::CardPin { .. } => "YubiKey PIN",
+            Self::CardSecret(what) => what.title(),
+            Self::ShowCardKey => "새 PIV 관리 키",
         }
     }
 
@@ -175,9 +230,13 @@ impl SecretKind {
     pub const fn size(self) -> (i32, i32) {
         match self {
             Self::ShowMnemonic { .. } | Self::ShowKey => (820, 680),
+            Self::ShowCardKey => (820, 560),
             Self::Mnemonic => (720, 600),
             // W07 also carries the T-IMPORTED-KEY backup warning.
-            Self::Backup { .. } | Self::ChangePassword | Self::PrivateKey { .. } => (640, 560),
+            Self::Backup { .. }
+            | Self::ChangePassword
+            | Self::PrivateKey { .. }
+            | Self::CardSecret(CardSecretKind::ChangePin(_)) => (640, 560),
             _ => (640, 480),
         }
     }
@@ -385,6 +444,7 @@ fn slot(label: &str, charset: Charset, min: usize, max: usize, masked: bool) -> 
     })
 }
 
+#[expect(clippy::too_many_lines, reason = "one arm per window kind")]
 fn slots_for(kind: SecretKind) -> Vec<Slot> {
     let slots = match kind {
         SecretKind::SetPassword => vec![
@@ -444,6 +504,32 @@ fn slots_for(kind: SecretKind) -> Vec<Slot> {
             usize::from(max),
             true,
         )],
+        SecretKind::CardSecret(CardSecretKind::AdminPin) => {
+            vec![slot("OpenPGP 관리자 PIN", Charset::Printable, 8, 127, true)]
+        }
+        SecretKind::CardSecret(CardSecretKind::ManagementKey) => vec![slot(
+            "PIV 관리 키 (16진수 48자리)",
+            Charset::PrivateKeyHex,
+            48,
+            48,
+            true,
+        )],
+        SecretKind::CardSecret(CardSecretKind::ChangePin(target)) => {
+            let (min, max) = target.bounds();
+            let (min, max) = (usize::from(min), usize::from(max));
+            let name = target.name();
+            vec![
+                slot(&format!("현재 {name}"), Charset::Printable, min, max, true),
+                slot(&format!("새 {name}"), Charset::Printable, min, max, true),
+                slot(
+                    &format!("새 {name} 확인"),
+                    Charset::Printable,
+                    min,
+                    max,
+                    true,
+                ),
+            ]
+        }
         SecretKind::Backup { positions } => positions
             .iter()
             .map(|position| {
@@ -456,7 +542,9 @@ fn slots_for(kind: SecretKind) -> Vec<Slot> {
                 )
             })
             .collect(),
-        SecretKind::ShowMnemonic { .. } | SecretKind::ShowKey => Vec::new(),
+        SecretKind::ShowMnemonic { .. } | SecretKind::ShowKey | SecretKind::ShowCardKey => {
+            Vec::new()
+        }
     };
     slots.into_iter().flatten().collect()
 }
@@ -508,6 +596,16 @@ fn intro(kind: SecretKind, words: usize) -> Vec<String> {
             "적은 종이를 보고 {}, {}, {}, {}번째 단어를 입력하세요.",
             positions[0], positions[1], positions[2], positions[3]
         )],
+        SecretKind::CardSecret(CardSecretKind::AdminPin) => vec![T_CARD_ADMIN_PIN.to_owned()],
+        SecretKind::CardSecret(CardSecretKind::ManagementKey) => {
+            vec![T_CARD_MANAGEMENT_KEY.to_owned()]
+        }
+        SecretKind::CardSecret(CardSecretKind::ChangePin(target)) => vec![format!(
+            "YubiKey를 하나만 연결하고 현재 {name}과(와) 새 {name}을(를) 입력하세요. {rule} 이 지갑은 PIN을 저장하지 않으니 새 {name}을(를) 따로 기억해 두세요.",
+            name = target.name(),
+            rule = target.rule()
+        )],
+        SecretKind::ShowCardKey => vec![T_SHOW_CARD_KEY.to_owned()],
         SecretKind::CardPin { touches, .. } => {
             let mut lines = vec![T_CARD_PIN.to_owned()];
             if touches > 1 {
@@ -750,6 +848,7 @@ impl SecretForm {
             .all(|slot| slot.field.len() >= slot.min.min(1))
     }
 
+    #[expect(clippy::too_many_lines, reason = "one arm per window kind")]
     fn validate(&self) -> Result<(), String> {
         let equal = |a: usize, b: usize| {
             self.slots.get(a).map(|slot| slot.field.as_bytes())
@@ -806,6 +905,39 @@ impl SecretForm {
             {
                 return Err(format!("PIN은 영문·숫자·기호(ASCII) {min}–{max}자입니다."));
             }
+            SecretKind::CardSecret(CardSecretKind::AdminPin)
+                if self
+                    .slots
+                    .iter()
+                    .any(|slot| !(8..=127).contains(&slot.field.len())) =>
+            {
+                return Err("관리자 PIN은 영문·숫자·기호(ASCII) 8–127자입니다.".to_owned());
+            }
+            SecretKind::CardSecret(CardSecretKind::ManagementKey)
+                if self.slots.iter().any(|slot| {
+                    slot.field.len() != 48
+                        || !slot.field.as_bytes().iter().all(u8::is_ascii_hexdigit)
+                }) =>
+            {
+                return Err("관리 키는 16진수(0–9, a–f) 48자리입니다.".to_owned());
+            }
+            SecretKind::CardSecret(CardSecretKind::ChangePin(target)) => {
+                let (min, max) = target.bounds();
+                let range = usize::from(min)..=usize::from(max);
+                if self
+                    .slots
+                    .iter()
+                    .any(|slot| !range.contains(&slot.field.len()))
+                {
+                    return Err(format!("{}: {}", target.name(), target.rule()));
+                }
+                if !equal(1, 2) {
+                    return Err(format!("새 {} 두 칸이 서로 다릅니다.", target.name()));
+                }
+                if equal(0, 1) {
+                    return Err(format!("새 {}이(가) 현재 값과 같습니다.", target.name()));
+                }
+            }
             _ => {}
         }
         if self
@@ -823,9 +955,10 @@ impl SecretForm {
 
     fn submit(&mut self, now_ms: u64) -> FormAction {
         if self.display.is_some() {
-            return match self.kind {
-                SecretKind::ShowMnemonic { create: true } => FormAction::None,
-                _ => FormAction::Close,
+            return if self.kind.needs_hold() {
+                FormAction::None
+            } else {
+                FormAction::Close
             };
         }
         if !self.can_submit(now_ms) {
@@ -1036,7 +1169,7 @@ impl SecretForm {
         }
         self.pressed = Some(button);
         match button {
-            Button::Primary if self.kind == (SecretKind::ShowMnemonic { create: true }) => {
+            Button::Primary if self.kind.needs_hold() => {
                 self.hold.begin(now_ms);
                 (FormAction::Redraw, true)
             }
@@ -1084,9 +1217,7 @@ impl SecretForm {
         match pressed {
             Button::Primary => self.submit(now_ms),
             Button::Cancel => {
-                if self.display.is_some()
-                    && self.kind != (SecretKind::ShowMnemonic { create: true })
-                {
+                if self.display.is_some() && !self.kind.needs_hold() {
                     self.wipe();
                     FormAction::Close
                 } else {
@@ -1423,7 +1554,7 @@ impl SecretForm {
         px: impl Fn(i32) -> i32,
     ) -> i32 {
         dc.set_text_color(theme::TEXT);
-        if self.kind == SecretKind::ShowKey {
+        if matches!(self.kind, SecretKind::ShowKey | SecretKind::ShowCardKey) {
             dc.select_font(&fonts.mono_large);
             let text = display.text.expose();
             // A Solana keypair (up to 88 characters, no spaces) does not fit one line: paint it
@@ -1701,7 +1832,7 @@ impl SecretForm {
         now_ms: u64,
     ) {
         let primary_label = match self.kind {
-            SecretKind::ShowMnemonic { create: true } => {
+            SecretKind::ShowMnemonic { create: true } | SecretKind::ShowCardKey => {
                 if self.hold.active() {
                     format!(
                         "다 적었습니다 ({:.1}초)",
