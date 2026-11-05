@@ -509,3 +509,197 @@ fn evm_shared_key_signs_messages() {
         );
     }
 }
+
+/// spec/10 §13: Bitcoin message signatures of `YubiKey` accounts on the card emulator (high-s
+/// and high-R answers): BIP137 for the three card address types (recovery id found against the
+/// recorded key, the vault verifier accepts it), BIP322 simple for P2WPKH (the vault verifier
+/// accepts the card witness) and BIP322 full for P2SH-P2WPKH (the `to_sign` witness verifies);
+/// the vault path and a software source are refused, and card errors come back unchanged.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario per address type and protocol"
+)]
+fn yubikey_card_signs_bip137_and_bip322() {
+    use super::{BtcMessageCardError, sign_message_card};
+    use crate::btc::account::HwBtcKey;
+    use crate::yubikey::CardError;
+    use crate::yubikey::apdu::ApduMode;
+    use crate::yubikey::enrol::{EnrolAuth, enrol_card};
+    use crate::yubikey::mock::{MockCard, ToyCipher};
+    use crate::yubikey::plan::{CardSlot, KeyRole, PgpKey, PlannedSlot, slot_on_card};
+    use crate::yubikey::record::HwPublicKey;
+    use crate::yubikey::sign::{CardKey, sign_btc};
+
+    let seed = *crate::bip39::Mnemonic::parse(crate::btc::tests::ABOUT)
+        .unwrap()
+        .to_seed(&crate::password::Bip39Passphrase::empty())
+        .unwrap()
+        .expose();
+    let owned = secp_context(&mut OsRandom).unwrap();
+    let ctx = &owned;
+    for script_type in [
+        ScriptType::P2wpkh,
+        ScriptType::P2shP2wpkh,
+        ScriptType::P2pkh,
+    ] {
+        let role = KeyRole::Btc {
+            network: BtcNetwork::Mainnet,
+            script: script_type,
+            index: 0,
+        };
+        let mut card = MockCard::new(5_550_001);
+        let auth = EnrolAuth {
+            admin_pin: b"12345678",
+            management_key: &crate::yubikey::piv::DEFAULT_MANAGEMENT_KEY,
+            cipher: Some(&ToyCipher),
+            challenge: [0; 16],
+        };
+        let record = enrol_card(
+            &mut card,
+            ApduMode::Short,
+            &seed,
+            &[PlannedSlot::recommended(
+                CardSlot::OpenPgp(PgpKey::Sig),
+                role,
+            )],
+            &[],
+            &auth,
+        )
+        .unwrap()
+        .record;
+        card.high_s = true;
+        card.high_r = true;
+        card.log.clear();
+        let holder = slot_on_card(core::slice::from_ref(&record), role, record.serial).unwrap();
+        let HwPublicKey::Secp256k1(public) = record.slots[0].public else {
+            unreachable!("secp256k1 slot");
+        };
+        let key = CardKey {
+            serial: record.serial,
+            slot: holder.slot,
+            public: HwPublicKey::Secp256k1(public),
+        };
+        let pubkey = BtcPubKey::Compressed(public);
+        let (kind, address) = address_of(BtcNetwork::Mainnet, script_type, &pubkey).unwrap();
+        if script_type == ScriptType::P2wpkh {
+            // BIP84 receive 0 of the `abandon` mnemonic.
+            assert_eq!(address, "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu");
+        }
+        let request = |protocol, source| {
+            Approved::for_test(
+                ChainRef::Bitcoin {
+                    network: BtcNetwork::Mainnet.id(),
+                    genesis: BtcNetwork::Mainnet.genesis(),
+                },
+                AccountRef::Bitcoin(public),
+                Signer::FromPayload,
+                ApprovalKind::BtcMessage,
+                SigningPayload::BtcMessage(Box::new(BtcMessagePayload {
+                    network: BtcNetwork::Mainnet,
+                    source,
+                    pubkey,
+                    script_type,
+                    address: address.clone(),
+                    protocol,
+                    message: b"Hello YubiKey".to_vec(),
+                })),
+            )
+        };
+        let hardware = BtcKeySource::Hardware {
+            key: HwBtcKey::Address(0),
+            script_type,
+        };
+        let mut touches = 0;
+        let card_fn = |pin: &'static [u8]| {
+            move |card: &mut MockCard, touches: &mut usize, sighash: [u8; 32]| {
+                *touches += 1;
+                sign_btc(ctx, card, ApduMode::Short, &key, pin, sighash)
+            }
+        };
+        let right = card_fn(b"123456");
+        let mut sign = |protocol| {
+            sign_message_card(request(protocol, hardware), &mut |sighash| {
+                right(&mut card, &mut touches, sighash)
+            })
+        };
+        let ecdsa = sign(BtcMessageProtocol::Ecdsa).unwrap();
+        assert!(bip137_verify(
+            BtcNetwork::Mainnet,
+            &address,
+            b"Hello YubiKey",
+            &ecdsa.signature
+        ));
+        assert_eq!(ecdsa.message_hash, bip137_magic_hash(b"Hello YubiKey"));
+        match script_type {
+            ScriptType::P2wpkh => {
+                let signed = sign(BtcMessageProtocol::Bip322).unwrap();
+                assert!(bip322_verify_simple(
+                    &kind,
+                    b"Hello YubiKey",
+                    &signed.signature
+                ));
+                assert_eq!(signed.message_hash, bip322_message_hash(b"Hello YubiKey"));
+            }
+            ScriptType::P2shP2wpkh => {
+                let signed = sign(BtcMessageProtocol::Bip322).unwrap();
+                let bytes = crate::codec::base64::decode(&signed.signature).unwrap();
+                let tx = parse_transaction(&bytes).unwrap();
+                let spend =
+                    bip322_to_spend(&crate::btc::address::script_pubkey(&kind), b"Hello YubiKey");
+                assert_eq!(tx.inputs[0].prevout.txid, txid(&spend));
+                let sighash = crate::btc::sighash::bip143_sighash_p2wpkh(
+                    &bip322_to_sign(txid(&spend)),
+                    0,
+                    &crate::btc::address::hash160(&public),
+                    crate::btc::amount::Sats::ZERO,
+                )
+                .unwrap();
+                // A high-R card item: the relaxed card check accepts it.
+                crate::btc::sign::check_card_signature(
+                    &tx.inputs[0].witness[0],
+                    &tx.inputs[0].witness[1],
+                    &sighash,
+                )
+                .unwrap();
+            }
+            _ => {
+                // No BIP322 form for P2PKH: refused before the card is asked.
+                assert_eq!(
+                    sign(BtcMessageProtocol::Bip322),
+                    Err(BtcMessageCardError::Sign(BtcMessageError::Unsupported))
+                );
+            }
+        }
+        let signed_count = if script_type == ScriptType::P2pkh {
+            1
+        } else {
+            2
+        };
+        assert_eq!(touches, signed_count, "one card signature per message");
+        assert!(!card.saw_write(), "message signing sends no write");
+        // A software source is not a card approval; a wrong PIN comes back as a card error.
+        let software = BtcKeySource::Imported {
+            id: [1; 16],
+            script_type,
+            compressed: true,
+        };
+        assert_eq!(
+            sign_message_card(request(BtcMessageProtocol::Ecdsa, software), &mut |_| {
+                unreachable!("refused before the card")
+            }),
+            Err(BtcMessageCardError::Sign(BtcMessageError::KindMismatch))
+        );
+        let wrong = card_fn(b"000000");
+        let mut ignored = 0;
+        assert_eq!(
+            sign_message_card(
+                request(BtcMessageProtocol::Ecdsa, hardware),
+                &mut |sighash| { wrong(&mut card, &mut ignored, sighash) }
+            ),
+            Err(BtcMessageCardError::Card(CardError::WrongPin {
+                retries: 2
+            }))
+        );
+    }
+}

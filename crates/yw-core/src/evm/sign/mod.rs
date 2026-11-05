@@ -311,5 +311,151 @@ pub fn sign_typed_data(vault: &Vault, approved: Approved) -> Result<[u8; 65], Si
     })
 }
 
+/// Failure of a card (`YubiKey`) signature (spec/10 §6.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardSignError {
+    /// The approval or the post-sign verification failed (as for vault signing).
+    Sign(SignError),
+    /// The card operation failed.
+    Card(crate::yubikey::CardError),
+}
+
+impl fmt::Display for CardSignError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sign(error) => error.fmt(formatter),
+            Self::Card(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for CardSignError {}
+
+impl From<SignError> for CardSignError {
+    fn from(error: SignError) -> Self {
+        Self::Sign(error)
+    }
+}
+
+impl From<crate::yubikey::CardError> for CardSignError {
+    fn from(error: crate::yubikey::CardError) -> Self {
+        Self::Card(error)
+    }
+}
+
+/// The card signs a 32-byte digest and returns `(y_parity, r ‖ s)` (low-s, recovered against the
+/// recorded key: `yubikey::sign::sign_evm`).
+pub type CardDigestSigner<'a> =
+    &'a mut dyn FnMut([u8; 32]) -> Result<(u8, [u8; 64]), crate::yubikey::CardError>;
+
+fn card_account(approved: &Approved) -> Result<Address, SignError> {
+    match (approved.account(), approved.signer()) {
+        (AccountRef::Evm(account), Signer::Evm(crate::vault::EvmKeySource::Hardware(_))) => {
+            Ok(account)
+        }
+        _ => Err(SignError::KindMismatch),
+    }
+}
+
+/// Signs an approved EVM transaction on a card (spec/10 §6.2): same checks as
+/// [`sign_transaction`], the card signs the signing hash, then the full post-sign verification
+/// (re-encode, strict decode, field comparison, sender = approved account).
+///
+/// # Errors
+///
+/// [`CardSignError::Sign`] (`KindMismatch`, `PostSignVerification`), [`CardSignError::Card`].
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the one-time approval token is consumed by signing (spec/03 §11.5)"
+)]
+pub fn sign_transaction_card(
+    approved: Approved,
+    card: CardDigestSigner<'_>,
+) -> Result<SignedTx, CardSignError> {
+    let SigningPayload::EvmTx(tx) = approved.payload() else {
+        return Err(SignError::KindMismatch.into());
+    };
+    let ChainRef::Evm { chain_id, .. } = approved.chain() else {
+        return Err(SignError::KindMismatch.into());
+    };
+    if !approved.kind().is_evm_transaction() || tx.chain_id != chain_id || tx.validate().is_err() {
+        return Err(SignError::KindMismatch.into());
+    }
+    let account = card_account(&approved)?;
+    let hash = keccak(&tx.signing_preimage());
+    let (y_parity, compact) = card(hash)?;
+    let (r, s) = scalars(&compact);
+    let raw = tx.encode_signed(y_parity, &r, &s);
+    let tx_hash = verify_signed_tx(&Secp256k1::verification_only(), tx, hash, &raw, &account)?;
+    Ok(SignedTx {
+        raw,
+        tx_hash,
+        tx: tx.clone(),
+    })
+}
+
+fn card_message(
+    approved: &Approved,
+    digest: [u8; 32],
+    card: CardDigestSigner<'_>,
+) -> Result<[u8; 65], CardSignError> {
+    let account = card_account(approved)?;
+    let (y_parity, compact) = card(digest)?;
+    if recover_address(digest, y_parity, &compact) != Some(account) {
+        return Err(SignError::PostSignVerification.into());
+    }
+    let mut out = [0_u8; 65];
+    let (body, v) = out.split_at_mut(64);
+    body.copy_from_slice(&compact);
+    if let Some(slot) = v.first_mut() {
+        *slot = y_parity.checked_add(27).ok_or(SignError::RecoveryId)?;
+    }
+    Ok(out)
+}
+
+/// [`sign_personal`] on a card.
+///
+/// # Errors
+///
+/// As [`sign_transaction_card`].
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the one-time approval token is consumed by signing (spec/03 §11.5)"
+)]
+pub fn sign_personal_card(
+    approved: Approved,
+    card: CardDigestSigner<'_>,
+) -> Result<[u8; 65], CardSignError> {
+    let SigningPayload::EvmPersonal(preimage) = approved.payload() else {
+        return Err(SignError::KindMismatch.into());
+    };
+    if approved.kind() != ApprovalKind::EvmPersonalSign || !is_personal_preimage(preimage) {
+        return Err(SignError::KindMismatch.into());
+    }
+    card_message(&approved, keccak(preimage), card)
+}
+
+/// [`sign_typed_data`] on a card.
+///
+/// # Errors
+///
+/// As [`sign_transaction_card`].
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the one-time approval token is consumed by signing (spec/03 §11.5)"
+)]
+pub fn sign_typed_data_card(
+    approved: Approved,
+    card: CardDigestSigner<'_>,
+) -> Result<[u8; 65], CardSignError> {
+    let SigningPayload::EvmTypedData(preimage) = approved.payload() else {
+        return Err(SignError::KindMismatch.into());
+    };
+    if approved.kind() != ApprovalKind::EvmTypedData || !is_typed_data_preimage(preimage) {
+        return Err(SignError::KindMismatch.into());
+    }
+    card_message(&approved, keccak(preimage), card)
+}
+
 #[cfg(test)]
 mod tests;

@@ -336,7 +336,9 @@ impl BtcCtx<'_> {
         let meta = self.btc_meta()?;
         match meta.id() {
             BtcAccountId::EvmShared { evm_index, .. } => Some((evm_index, meta.network())),
-            BtcAccountId::Hd { .. } | BtcAccountId::Imported { .. } => None,
+            BtcAccountId::Hd { .. }
+            | BtcAccountId::Imported { .. }
+            | BtcAccountId::Hardware { .. } => None,
         }
     }
 
@@ -345,7 +347,9 @@ impl BtcCtx<'_> {
     pub fn selected_imported(&self) -> Option<[u8; 16]> {
         match self.btc_meta()?.id() {
             BtcAccountId::Imported { id } => Some(id),
-            BtcAccountId::Hd { .. } | BtcAccountId::EvmShared { .. } => None,
+            BtcAccountId::Hd { .. }
+            | BtcAccountId::EvmShared { .. }
+            | BtcAccountId::Hardware { .. } => None,
         }
     }
 
@@ -1874,6 +1878,10 @@ impl BtcUi {
         let note = match account {
             BtcAccountKey::Single { .. } => {
                 "가져온 키 계정은 주소가 하나입니다. 주소를 복사한 뒤 붙여넣은 곳에서 주소 전체를 확인하세요."
+                    .to_owned()
+            }
+            BtcAccountKey::Hardware { .. } => {
+                "YubiKey 계정은 주소가 하나입니다. 주소를 복사한 뒤 붙여넣은 곳에서 주소 전체를 확인하세요."
                     .to_owned()
             }
             BtcAccountKey::EvmShared { evm_index, .. } => format!(
@@ -3962,8 +3970,21 @@ impl crate::app::App {
         }
     }
 
-    /// `consume` succeeded for a BTC item.
+    /// `consume` succeeded for a BTC item; a `YubiKey` account first goes through the card step
+    /// (PIN window, then `SignBtcCard`, spec/10 §6.3).
     pub(crate) fn btc_consumed(&mut self, approved: Approved, item: &BtcApprovalItem) {
+        let kind = crate::app_card::CardJobKind::Btc {
+            plan: Box::new(item.plan.clone()),
+            tip_height: item.tip_height,
+        };
+        if crate::yubikey::btc_plan_role(&item.plan).is_some() {
+            self.btc.slot = true;
+            if let Err(approved) = self.card_begin(approved, kind, None) {
+                self.btc.slot = false;
+                drop(approved);
+            }
+            return;
+        }
         self.btc_call(|ui, ctx| ui.consumed(ctx, approved, item));
     }
 

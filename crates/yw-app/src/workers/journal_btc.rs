@@ -350,7 +350,19 @@ pub enum BtcSignFailure {
     Record(BtcRecordError),
     /// The `Signed` record could not be committed (nothing sent).
     JournalWrite(VaultError),
+    /// The `YubiKey` did not sign (spec/10 §6.3; nothing stored or sent).
+    Card(crate::yubikey::CardJobError),
 }
+
+/// The signing step of a BTC plan: `(vault, approval, plan, account)` → the signed transaction
+/// (the vault's `sign_plan` or the card path).
+pub type BtcSigner<'a> = dyn FnMut(
+        &Vault,
+        Approved,
+        &SendPlan,
+        &BtcAccountKey,
+    ) -> Result<yw_core::btc::SignedTx, BtcSignFailure>
+    + 'a;
 
 impl BtcSignFailure {
     /// Fixed text.
@@ -374,6 +386,7 @@ impl BtcSignFailure {
                     crate::errors::ErrorCode::Vlt003.text()
                 )
             }
+            Self::Card(error) => error.to_string(),
         }
     }
 }
@@ -745,7 +758,9 @@ impl JournalState {
                 BtcAccountId::Imported { id } => {
                     matches!(vault.has_btc_key(RecordId::from_bytes(*id)), Ok(false))
                 }
-                BtcAccountId::Hd { .. } | BtcAccountId::EvmShared { .. } => false,
+                BtcAccountId::Hd { .. }
+                | BtcAccountId::EvmShared { .. }
+                | BtcAccountId::Hardware { .. } => false,
             })
             .collect();
         for account in removed {
@@ -764,7 +779,9 @@ impl JournalState {
                 Ok(false) => Err(BtcKeyError::KeyRemoved),
                 Err(error) => Err(BtcKeyError::Vault(error)),
             },
-            BtcAccountId::Hd { .. } | BtcAccountId::EvmShared { .. } => Ok(()),
+            BtcAccountId::Hd { .. }
+            | BtcAccountId::EvmShared { .. }
+            | BtcAccountId::Hardware { .. } => Ok(()),
         }
     }
 
@@ -1215,6 +1232,31 @@ impl JournalState {
         now_unix_ms: u64,
         alt: bool,
     ) -> Vec<KeyOutcome> {
+        self.sign_btc_with(
+            vault,
+            approved,
+            plan,
+            (tip_height, now_unix_ms),
+            alt,
+            &mut |vault, approved, plan, account| {
+                sign_plan(vault, approved, plan, account).map_err(BtcSignFailure::Sign)
+            },
+        )
+    }
+
+    /// [`JournalState::sign_btc`] with another signer: the `YubiKey` path (spec/10 §6.3) passes
+    /// the card signer (`btc::sign::sign_plan_card`, which runs the post-sign verification
+    /// itself); the in-flight, recorded-amount and room checks before signing, the post-sign
+    /// verification and the `Signed` commit before anything is returned are the same.
+    pub fn sign_btc_with(
+        &mut self,
+        vault: &mut Vault,
+        approved: Box<Approved>,
+        plan: &SendPlan,
+        (tip_height, now_unix_ms): (u32, u64),
+        alt: bool,
+        sign_step: &mut BtcSigner<'_>,
+    ) -> Vec<KeyOutcome> {
         let mut out = Vec::new();
         let result = self.sign_btc_inner(
             vault,
@@ -1224,6 +1266,7 @@ impl JournalState {
             now_unix_ms,
             alt,
             &mut out,
+            sign_step,
         );
         logging::info(
             "journal",
@@ -1253,6 +1296,7 @@ impl JournalState {
         now_unix_ms: u64,
         alt: bool,
         out: &mut Vec<KeyOutcome>,
+        sign_step: &mut BtcSigner<'_>,
     ) -> Result<BtcSignedSummary, BtcSignFailure> {
         let network = plan.network();
         self.check_network(network)
@@ -1288,8 +1332,7 @@ impl JournalState {
         let mut recorded = meta.recorded_amounts();
         recorded.extend(recorded_amounts(&related, network));
         check_recorded_amounts(plan, &recorded).map_err(BtcSignFailure::Sign)?;
-        let signed =
-            sign_plan(vault, approved, plan, meta.account()).map_err(BtcSignFailure::Sign)?;
+        let signed = sign_step(vault, approved, plan, meta.account())?;
         let verified =
             verify_signed(&signed.raw, plan, meta.account()).map_err(BtcSignFailure::PostSign)?;
         let maxfeerate = verified

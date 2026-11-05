@@ -736,6 +736,19 @@ pub fn signable(bytes: &[u8]) -> bool {
     reason = "the one-time approval token is consumed by signing (spec/03 §11.5)"
 )]
 pub fn sign_message(vault: &Vault, approved: Approved) -> Result<[u8; 64], SolMessageError> {
+    let payload = approved_message(&approved)?;
+    let sign = |secret: &[u8; 32]| Ok(sign_with_seed(secret, &payload.public, &payload.message));
+    let signed = if payload.source.is_imported() {
+        vault.with_imported_ed25519_seed(&payload.public, sign)
+    } else {
+        vault.with_ed25519_seed(payload.source, sign)
+    };
+    signed.map_err(|_| SolMessageError::Signing)?
+}
+
+/// The approval checks of a message signature before any key use: kind, account and cluster,
+/// then the M01/M02 rules ([`signable`]).
+fn approved_message(approved: &Approved) -> Result<&SolMessagePayload, SolMessageError> {
     let SigningPayload::SolMessage(payload) = approved.payload() else {
         return Err(SolMessageError::KindMismatch);
     };
@@ -754,13 +767,67 @@ pub fn sign_message(vault: &Vault, approved: Approved) -> Result<[u8; 64], SolMe
     if !signable(&payload.message) {
         return Err(SolMessageError::Refused);
     }
-    let sign = |secret: &[u8; 32]| Ok(sign_with_seed(secret, &payload.public, &payload.message));
-    let signed = if payload.source.is_imported() {
-        vault.with_imported_ed25519_seed(&payload.public, sign)
-    } else {
-        vault.with_ed25519_seed(payload.source, sign)
-    };
-    signed.map_err(|_| SolMessageError::Signing)?
+    Ok(payload)
+}
+
+/// Failure of a card (`YubiKey`) Solana message signature (spec/10 §6.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SolMessageCardError {
+    /// The approval or the post-sign verification failed (as for vault signing:
+    /// `KindMismatch` also for a source other than `SolKeySource::Hardware`, `Refused` for
+    /// transaction-like or malformed off-chain bytes, `Signing` when `verify_strict` fails).
+    Sign(SolMessageError),
+    /// The card operation failed.
+    Card(crate::yubikey::CardError),
+}
+
+impl fmt::Display for SolMessageCardError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sign(error) => error.fmt(formatter),
+            Self::Card(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for SolMessageCardError {}
+
+impl From<SolMessageError> for SolMessageCardError {
+    fn from(error: SolMessageError) -> Self {
+        Self::Sign(error)
+    }
+}
+
+impl From<crate::yubikey::CardError> for SolMessageCardError {
+    fn from(error: crate::yubikey::CardError) -> Self {
+        Self::Card(error)
+    }
+}
+
+/// [`sign_message`] on a card (spec/10 §6.4): the same approval checks and the same refusal of
+/// transaction-like bytes and malformed off-chain messages (M01/M02) before the card is asked,
+/// the card signs the exact message bytes, then `verify_strict` against the approved public key.
+///
+/// # Errors
+///
+/// [`SolMessageCardError::Sign`], [`SolMessageCardError::Card`]; nothing is returned on error.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the one-time approval token is consumed by signing (spec/03 §11.5)"
+)]
+pub fn sign_message_card(
+    approved: Approved,
+    card: super::sign::SolCardSigner<'_>,
+) -> Result<[u8; 64], SolMessageCardError> {
+    let payload = approved_message(&approved)?;
+    if !payload.source.is_hardware() {
+        return Err(SolMessageError::KindMismatch.into());
+    }
+    let signature = card(&payload.message)?;
+    if !verify_strict(&payload.public, &payload.message, &signature) {
+        return Err(SolMessageError::Signing.into());
+    }
+    Ok(signature)
 }
 
 /// Signs with a seed whose public key must be `public`, then `verify_strict`.

@@ -891,6 +891,152 @@ fn wait_for_ai(app: &Rc<RefCell<App>>) {
     }
 }
 
+/// The `YubiKey` scenes (spec/10 §7, §9.2): the wizard's four steps, W12, settings → `YubiKey`
+/// and W11. No card and no key worker: the preview and the record are computed here from the
+/// public test mnemonic (`abandon`×11 `about`) — SIG = EVM 0, AUT = Bitcoin P2WPKH 0 (testnet4),
+/// PIV 82 = Solana 0 — and the serial `12345678` is made up.
+#[expect(clippy::too_many_lines, reason = "one scene after another")]
+fn tour_yubikey(app: &Rc<RefCell<App>>) {
+    use yw_core::btc::ScriptType;
+    use yw_core::yubikey::Firmware;
+    use yw_core::yubikey::enrol::{DefaultsSeen, Enrolled};
+    use yw_core::yubikey::plan::{CardSlot, KeyRole, PgpKey, PivSlot, PlannedSlot};
+    use yw_core::yubikey::record::{HwKeyRecord, RecordedSlot};
+
+    use crate::app_yubikey::{WizardOrigin, WizardStep, YkPurpose, YkWizard};
+    use crate::ui::secret::CardSecretKind;
+    use crate::workers::key::yubikey::YkPreview;
+
+    let network = app.borrow().yk_network();
+    let seed = *yw_core::bip39::Mnemonic::parse(&test_phrase_12())
+        .unwrap()
+        .to_seed(&yw_core::password::Bip39Passphrase::empty())
+        .unwrap()
+        .expose();
+    let slots = vec![
+        PlannedSlot::recommended(
+            CardSlot::OpenPgp(PgpKey::Sig),
+            KeyRole::Evm {
+                index: AccountIndex::ZERO,
+                btc: None,
+            },
+        ),
+        PlannedSlot::recommended(
+            CardSlot::OpenPgp(PgpKey::Aut),
+            KeyRole::Btc {
+                network,
+                script: ScriptType::P2wpkh,
+                index: 0,
+            },
+        ),
+        PlannedSlot::recommended(
+            CardSlot::Piv(PivSlot::new(0x82).unwrap()),
+            KeyRole::Sol {
+                index: AccountIndex::ZERO,
+            },
+        ),
+    ];
+    let lines = yw_core::yubikey::enrol::preview_seed(&seed, &slots).unwrap();
+    let (fingerprint, _) = yw_core::yubikey::enrol::seed_identity(&seed).unwrap();
+    let record = HwKeyRecord {
+        serial: 12_345_678,
+        firmware: Firmware::new(5, 7, 4),
+        fingerprint,
+        slots: lines
+            .iter()
+            .map(|line| RecordedSlot {
+                slot: line.planned.slot,
+                role: line.planned.role,
+                touch: line.planned.touch,
+                pin: line.planned.pin,
+                public: line.public,
+            })
+            .collect(),
+    };
+    {
+        let mut state = app.borrow_mut();
+        let mut wizard = YkWizard::new(WizardOrigin::Vault, &[], network);
+        wizard.slots.clone_from(&slots);
+        state.card.wizard = Some(wizard);
+    }
+    set_screen(app, UNLOCKED, Screen::YubiKey);
+    save(main_hwnd(app), "37-yubikey-slots");
+    let step = |app: &Rc<RefCell<App>>, change: &dyn Fn(&mut YkWizard)| {
+        let mut state = app.borrow_mut();
+        if let Some(wizard) = state.card.wizard.as_mut() {
+            change(wizard);
+        }
+        state.scroll = 0;
+        state.refresh();
+    };
+    step(app, &|wizard| {
+        wizard.step = WizardStep::Confirm;
+        wizard.seed_held = true;
+        wizard.preview = Some(YkPreview {
+            lines: lines.clone(),
+            same_as_vault: false,
+            plan: Ok(()),
+        });
+    });
+    save(main_hwnd(app), "38-yubikey-confirm");
+    step(app, &|wizard| wizard.step = WizardStep::Credentials);
+    save(main_hwnd(app), "39-yubikey-credentials");
+    app.borrow_mut().open_input(
+        SecretKind::CardSecret(CardSecretKind::AdminPin),
+        Purpose::YubiKey(YkPurpose::AdminPin),
+        false,
+    );
+    app.borrow_mut().tour_type("12345678");
+    save(secret_hwnd(app), "40-yubikey-admin-pin");
+    app.borrow_mut().close_secret();
+    app.borrow_mut().card.records = vec![record.clone()];
+    step(app, &|wizard| {
+        wizard.step = WizardStep::Result;
+        let defaults = DefaultsSeen {
+            openpgp_admin: true,
+            piv_pin: true,
+            piv_management: true,
+        };
+        wizard.defaults = defaults;
+        wizard.enrolled = Some(Enrolled {
+            record: record.clone(),
+            defaults,
+        });
+        wizard.check = Some(
+            record
+                .slots
+                .iter()
+                .map(|slot| format!("{} — 공개키가 기록과 같습니다 ✓", slot.slot.label()))
+                .collect(),
+        );
+    });
+    save(main_hwnd(app), "41-yubikey-result");
+    app.borrow_mut().card.wizard = None;
+    set_screen(app, UNLOCKED, Screen::Settings(SettingsSection::YubiKey));
+    save(main_hwnd(app), "42-settings-yubikey");
+    // W11: the card step of an approved EVM send of the YubiKey account (made-up step id).
+    set_screen(app, UNLOCKED, Screen::Main);
+    app.borrow_mut().open_input(
+        SecretKind::CardPin {
+            min: 6,
+            max: 127,
+            touches: 1,
+        },
+        Purpose::CardSign(0),
+        false,
+    );
+    app.borrow_mut().with_form(|form| {
+        form.set_details(vec![
+            "서명할 키: EVM 계정 0 (m/44'/60'/0'/0/0)".to_owned(),
+            "이 키를 가진 YubiKey: #12345678".to_owned(),
+        ]);
+    });
+    app.borrow_mut().tour_type("123456");
+    save(secret_hwnd(app), "43-yubikey-card-pin");
+    app.borrow_mut().close_secret();
+    app.borrow_mut().card.records.clear();
+}
+
 #[test]
 #[ignore = "DEV ONLY: opens windows on the desktop and writes BMPs (scripts/screenshot-tour.ps1)"]
 #[expect(clippy::too_many_lines, reason = "one scene after another")]
@@ -975,6 +1121,16 @@ fn screenshot_tour() {
     set_screen(&app, AppMode::NoVault, Screen::KeyStartIntro);
     save(main_hwnd(&app), "24-key-start-bitcoin");
     app.borrow_mut().keys.start = crate::app_keys::KeyStartFlow::default();
+    // The YubiKey wallet (spec/10 §7.1-1): the S01 card scrolled into view, then S20.
+    set_screen(&app, AppMode::NoVault, Screen::FirstRun);
+    {
+        let mut state = app.borrow_mut();
+        state.scroll = 600;
+        state.refresh();
+    }
+    save(main_hwnd(&app), "35-welcome-yubikey");
+    set_screen(&app, AppMode::NoVault, Screen::YubiKeyWalletIntro);
+    save(main_hwnd(&app), "36-yubikey-wallet-start");
 
     // Unlock.
     {
@@ -1264,6 +1420,8 @@ fn screenshot_tour() {
     );
     save(approval_hwnd(&app), "26-approval-connect");
     app.borrow_mut().tour_reject_approval();
+    // YubiKey: the enrolment wizard, settings → YubiKey and the card step (W11).
+    tour_yubikey(&app);
 
     // M6: the optional AI explanation, answered by the tour's own loopback mock.
     let endpoint = tour_llm_mock();

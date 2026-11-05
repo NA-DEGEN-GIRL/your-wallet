@@ -163,12 +163,14 @@ fn key_source_tags_and_parts_round_trip() {
             account: 2,
         },
         SolKeySource::Imported,
+        SolKeySource::Hardware(i),
     ] {
         let (a, b) = source.params();
         assert_eq!(SolKeySource::from_parts(source.tag(), a, b), Ok(source));
     }
     assert!(SolKeySource::from_parts(0, 0, 0).is_err());
-    assert!(SolKeySource::from_parts(7, 0, 0).is_err());
+    assert!(SolKeySource::from_parts(8, 0, 0).is_err());
+    assert!(SolKeySource::from_parts(7, 0, 1).is_err());
     assert!(SolKeySource::from_parts(6, 0, 1).is_err());
     assert!(SolKeySource::from_parts(1, 1_000, 0).is_err());
     assert!(SolKeySource::from_parts(1, 0, 1).is_err());

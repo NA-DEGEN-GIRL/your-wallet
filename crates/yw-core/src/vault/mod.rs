@@ -14,7 +14,7 @@ mod format;
 mod session;
 
 pub use format::{check_vault_header, peek_generation};
-pub use session::{ImportedKeys, PasswordChange, SidecarContents, Vault};
+pub use session::{HardwareKey, ImportedKeys, PasswordChange, SidecarContents, Vault};
 
 /// `vault.ywv` magic.
 pub const VAULT_MAGIC: [u8; 8] = *b"YWVLT003";
@@ -45,11 +45,12 @@ pub const WRAPPED_DEK_LEN: usize = 48;
 /// Smallest payload ciphertext (64-byte plaintext + tag).
 pub const PAYLOAD_CT_MIN: u32 = 80;
 /// Largest payload ciphertext: 16 + 64 (24-word `Bip39`) + 15 × (57 + 89 + 60) imported keys
-/// + 16 = 3,186 bytes fit; files written before key import never exceed 2,048.
-pub const PAYLOAD_CT_MAX: u32 = 4_096;
+/// plus 8 × (25 + 12 + 24 × 48) hardware key references (spec/10 §8) plus the 16-byte tag is
+/// 12,698 bytes; files written before key import never exceed 2,048, before hardware keys 4,096.
+pub const PAYLOAD_CT_MAX: u32 = 16_384;
 /// At most one `Bip39` record plus at most 15 imported keys of each chain (`EvmRawKey`,
-/// `SolKey`, `BtcKey`).
-pub const MAX_RECORDS: usize = 46;
+/// `SolKey`, `BtcKey`) and 8 hardware key references (`HwKey`).
+pub const MAX_RECORDS: usize = 54;
 /// Locked slot layout: `[0..32)` DEK, `[32]` passphrase present, `[33..35)` passphrase length
 /// (u16 BE, 0..=256), `[35..291)` passphrase bytes, `[291..320)` zero.
 pub const SLOT_LEN: usize = 320;
@@ -186,6 +187,11 @@ pub enum EvmKeySource {
     Derived(crate::bip32::path::AccountIndex),
     /// An imported raw private key.
     Raw(RecordId),
+    /// EVM account `i` (`m/44'/60'/0'/0/i`) held on one or more `YubiKey`s (vault tag 5,
+    /// spec/10): the PC has no secret for it. [`Vault::evm_address`] answers from the slot map;
+    /// every vault signing path refuses it (`RecordNotFound`) — it is signed only through
+    /// `evm::sign::*_card`.
+    Hardware(crate::bip32::path::AccountIndex),
 }
 
 /// A secp256k1 signing key reference for the chain modules.

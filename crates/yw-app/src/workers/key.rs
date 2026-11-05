@@ -27,6 +27,8 @@ use crate::meta::{self, Account, EvmAccountPref, Meta, RawAccount, SolRawAccount
 use crate::store::{FileStorage, LockedSlotBox};
 use crate::workers::journal::{JournalState, SolSignTimes};
 
+pub mod yubikey;
+
 struct PendingImport {
     phrase: Zeroizing<Vec<u8>>,
     passphrase: Option<Zeroizing<Vec<u8>>>,
@@ -45,7 +47,13 @@ pub struct KeyWorker {
     pending_password: Option<Zeroizing<Vec<u8>>>,
     pending: Option<PendingImport>,
     pending_key: Option<PendingKeyStart>,
+    /// The recovery words of a `YubiKey` enrolment wizard (spec/10 §7; never on disk).
+    pending_enrol: Option<yubikey::PendingEnrol>,
+    /// A new PIV management key between W13 and the card (spec/10 §9.3).
+    pending_card_key: Option<yubikey::PendingKey>,
     journal: JournalState,
+    /// The inserted `YubiKey`s (PC/SC; the emulator in tests, spec/10 §12.1).
+    cards: Box<dyn crate::yubikey::CardSource>,
 }
 
 impl core::fmt::Debug for KeyWorker {
@@ -91,6 +99,14 @@ const fn format_error(spec: ImportSpec) -> KeyError {
 fn parse_key(spec: ImportSpec, bytes: &[u8]) -> Result<ImportKey, KeyError> {
     let text = core::str::from_utf8(bytes).map_err(|_| format_error(spec))?;
     ImportKey::parse(spec, text)
+}
+
+/// The `YubiKey` EVM account index of an approval (`EvmKeySource::Hardware`).
+fn card_index(approved: &yw_core::approval::Approved) -> Option<AccountIndex> {
+    match approved.signer() {
+        yw_core::approval::Signer::Evm(EvmKeySource::Hardware(index)) => Some(index),
+        _ => None,
+    }
 }
 
 /// Reconciles the imported Bitcoin accounts of meta `btc_accounts` with the vault's tag-4
@@ -216,6 +232,176 @@ fn reconcile_imported(document: &mut Meta, keys: &ImportedKeys) -> bool {
     changed
 }
 
+/// The default label of a `YubiKey` account (`YubiKey 계정 1`, `YubiKey Solana 1`).
+fn hw_label(evm: bool, index: u32) -> String {
+    if evm {
+        format!("YubiKey 계정 {}", index.saturating_add(1))
+    } else {
+        format!("YubiKey Solana {}", index.saturating_add(1))
+    }
+}
+
+/// One chain's `hw_accounts` list from the slot map's accounts: labels and hidden flags kept by
+/// index, addresses recomputed; returns the list and whether it differs from `old`.
+fn hw_list(
+    old: &[Account],
+    found: impl Iterator<Item = (u32, String)>,
+    evm: bool,
+) -> (Vec<Account>, bool) {
+    let mut list: Vec<Account> = found
+        .map(|(index, address)| {
+            let existing = old.iter().find(|account| account.index == index);
+            Account {
+                index,
+                label: existing
+                    .map_or_else(|| hw_label(evm, index), |account| account.label.clone()),
+                address,
+                hidden: existing.is_some_and(|account| account.hidden),
+            }
+        })
+        .collect();
+    list.sort_by_key(|account| account.index);
+    list.dedup_by_key(|account| account.index);
+    let changed = list.as_slice() != old;
+    (list, changed)
+}
+
+/// The Bitcoin accounts the slot map gives (spec/10 §3.1, §3.3): a `KeyRole::Btc` slot is a
+/// single-address account of its network and type, an EVM slot with a shared Bitcoin use is one
+/// of that use; the public keys come from the vault (`Vault::hardware_btc_account`).
+fn hw_btc_expected(
+    vault: &Vault,
+    records: &[yw_core::yubikey::record::HwKeyRecord],
+) -> Vec<(BtcNetwork, yw_core::btc::account::BtcAccountKey)> {
+    use yw_core::btc::account::HwBtcKey;
+    use yw_core::yubikey::plan::KeyRole;
+    let mut expected = Vec::new();
+    for slot in records.iter().flat_map(|record| &record.slots) {
+        let (key, network, script_type) = match slot.role {
+            KeyRole::Btc {
+                network,
+                script,
+                index,
+            } => (HwBtcKey::Address(index), network, script),
+            KeyRole::Evm {
+                index,
+                btc: Some(shared),
+            } => (HwBtcKey::Evm(index.get()), shared.network, shared.script),
+            KeyRole::Evm { btc: None, .. } | KeyRole::Sol { .. } => continue,
+        };
+        match vault.hardware_btc_account(network, script_type, key) {
+            Ok(account) => {
+                if !expected.contains(&(network, account)) {
+                    expected.push((network, account));
+                }
+            }
+            Err(_) => logging::warn("key", "btc.hardware_account_invalid", &[]),
+        }
+    }
+    expected
+}
+
+/// Reconciles meta `hw_accounts` and the `YubiKey` Bitcoin accounts of `btc_accounts` with the
+/// vault's tag-5 slot map (spec/10 §8, §13), like [`reconcile_imported`] for raw keys: an
+/// enrolled key without its account gets one (default label, visible), an account whose key no
+/// card holds any more is dropped, address caches are recomputed, and a selection naming a
+/// dropped account falls back. Returns whether anything changed.
+///
+/// # Errors
+///
+/// The vault's slot map is not readable (locked).
+fn reconcile_hardware(document: &mut Meta, vault: &Vault) -> Result<bool, VaultError> {
+    use yw_core::yubikey::plan::{KeyRole, accounts, evm_address, sol_address};
+    let records = KeyWorker::hardware_records(vault)?;
+    let found = accounts(&records);
+    let (evm, evm_changed) = hw_list(
+        &document.hw_accounts.evm,
+        found.iter().filter_map(|account| match account.role {
+            KeyRole::Evm { index, .. } => evm_address(&account.public)
+                .ok()
+                .map(|address| (index.get(), address.to_lower_hex())),
+            KeyRole::Btc { .. } | KeyRole::Sol { .. } => None,
+        }),
+        true,
+    );
+    let (sol, sol_changed) = hw_list(
+        &document.hw_accounts.sol,
+        found.iter().filter_map(|account| match account.role {
+            KeyRole::Sol { index } => sol_address(&account.public)
+                .ok()
+                .map(|address| (index.get(), address.to_base58())),
+            KeyRole::Evm { .. } | KeyRole::Btc { .. } => None,
+        }),
+        false,
+    );
+    let mut changed = evm_changed || sol_changed;
+    document.hw_accounts.evm = evm;
+    document.hw_accounts.sol = sol;
+    if let EvmAccountPref::Hardware(index) = document.prefs.evm_account
+        && !document
+            .hw_accounts
+            .evm
+            .iter()
+            .any(|account| account.index == index)
+    {
+        document.prefs.evm_account = EvmAccountPref::Index(0);
+        changed = true;
+    }
+    if let Some(index) = document.hw_accounts.sol_selected
+        && !document
+            .hw_accounts
+            .sol
+            .iter()
+            .any(|account| account.index == index)
+    {
+        document.hw_accounts.sol_selected = None;
+        changed = true;
+    }
+    let present: Vec<u32> = records.iter().map(|record| record.serial).collect();
+    let before = document.hw_accounts.defaults.len();
+    document
+        .hw_accounts
+        .defaults
+        .retain(|serial| present.contains(serial));
+    changed |= document.hw_accounts.defaults.len() != before;
+    // Bitcoin: single-address accounts in `btc_accounts` (`key.yubikey`).
+    let expected = hw_btc_expected(vault, &records);
+    let stale: Vec<(BtcNetwork, BtcAccountId)> = document
+        .btc_accounts
+        .accounts
+        .iter()
+        .filter(|meta| meta.account().is_hardware())
+        .filter(|meta| {
+            !expected
+                .iter()
+                .any(|(network, key)| *network == meta.network() && key == meta.account())
+        })
+        .map(|meta| (meta.network(), meta.id()))
+        .collect();
+    for (network, id) in stale {
+        let has_primary = document
+            .btc
+            .as_deref()
+            .is_some_and(|primary| primary.network() == network);
+        changed |= document
+            .btc_accounts
+            .remove(network, id, has_primary)
+            .is_some();
+    }
+    for (network, key) in expected {
+        if document.btc_accounts.get(network, key.id()).is_none() {
+            match document
+                .btc_accounts
+                .upsert(BtcMeta::with_key(network, key))
+            {
+                Ok(()) => changed = true,
+                Err(_) => logging::warn("key", "btc.accounts_full", &[]),
+            }
+        }
+    }
+    Ok(changed)
+}
+
 impl KeyWorker {
     /// A worker for the data folder `dir`.
     #[must_use]
@@ -226,8 +412,418 @@ impl KeyWorker {
             pending_password: None,
             pending: None,
             pending_key: None,
+            pending_enrol: None,
+            pending_card_key: None,
             journal: JournalState::default(),
+            cards: Box::new(crate::yubikey::PcscSource),
         }
+    }
+
+    /// Replaces the card source (tests use the APDU emulator).
+    #[must_use]
+    pub fn with_card_source(mut self, cards: Box<dyn crate::yubikey::CardSource>) -> Self {
+        self.cards = cards;
+        self
+    }
+
+    /// The slot maps of the enrolled `YubiKey`s.
+    fn hardware_records(
+        vault: &Vault,
+    ) -> Result<Vec<yw_core::yubikey::record::HwKeyRecord>, VaultError> {
+        Ok(vault
+            .hardware_keys()?
+            .into_iter()
+            .map(|key| key.record)
+            .collect())
+    }
+
+    /// `EnrolYubiKey` (spec/10 §7): parse the mnemonic, derive, enrol the inserted card, then
+    /// add the record (public data only) to the vault.
+    fn enrol_yubikey(
+        &mut self,
+        phrase: &[u8],
+        passphrase: Option<&[u8]>,
+        slots: &[yw_core::yubikey::plan::PlannedSlot],
+        admin_pin: &[u8],
+        management_key: &[u8],
+    ) -> Result<(RecordId, yw_core::yubikey::enrol::Enrolled), crate::events::YubiKeyJobError> {
+        use crate::events::YubiKeyJobError;
+        let mnemonic =
+            yw_core::bip39::Mnemonic::parse(ascii(phrase).map_err(YubiKeyJobError::Key)?)
+                .map_err(YubiKeyJobError::Key)?;
+        let passphrase = match passphrase {
+            Some(bytes) => self::passphrase(bytes).map_err(YubiKeyJobError::Key)?,
+            None => Bip39Passphrase::empty(),
+        };
+        let seed = mnemonic
+            .to_seed(&passphrase)
+            .map_err(YubiKeyJobError::Key)?;
+        let vault = self
+            .vault
+            .as_mut()
+            .ok_or(YubiKeyJobError::Vault(VaultError::InvalidState))?;
+        let records = Self::hardware_records(vault).map_err(YubiKeyJobError::Vault)?;
+        let secrets = crate::yubikey::EnrolSecrets {
+            admin_pin,
+            management_key,
+        };
+        let enrolled = crate::yubikey::enrol_first_card(
+            self.cards.as_mut(),
+            seed.expose(),
+            slots,
+            &records,
+            &secrets,
+        )
+        .map_err(YubiKeyJobError::Card)?;
+        let id = vault
+            .add_hardware_key(enrolled.record.clone(), now_unix())
+            .map_err(YubiKeyJobError::Vault)?;
+        logging::info(
+            "key",
+            "yubikey.enrolled",
+            &[(
+                "slots",
+                Field::Num(u64::try_from(enrolled.record.slots.len()).unwrap_or(0)),
+            )],
+        );
+        Ok((id, enrolled))
+    }
+
+    /// `SignEvmCard` (spec/10 §9.2): the journal's signing step with the card signer.
+    fn sign_evm_card(
+        &mut self,
+        ticket: crate::events::SignTicket,
+        approved: Box<yw_core::approval::Approved>,
+        info: &crate::events::SignInfo,
+        pin: &[u8],
+        alt: bool,
+    ) -> Vec<KeyOutcome> {
+        use crate::events::SignFailure;
+        let role = card_index(&approved)
+            .map(|index| yw_core::yubikey::plan::KeyRole::Evm { index, btc: None });
+        if let Some(error) = self.card_refusal(role, pin) {
+            return vec![
+                KeyOutcome::CardUnused(approved, error),
+                KeyOutcome::SignedEvm(crate::events::EvmSigned {
+                    ticket,
+                    result: Err(SignFailure::Card(error)),
+                }),
+            ];
+        }
+        let Some(vault) = self.vault.as_mut() else {
+            return vec![KeyOutcome::SignedEvm(crate::events::EvmSigned {
+                ticket,
+                result: Err(SignFailure::JournalWrite(VaultError::InvalidState)),
+            })];
+        };
+        let records = match Self::hardware_records(vault) {
+            Ok(records) => records,
+            Err(error) => {
+                return vec![KeyOutcome::SignedEvm(crate::events::EvmSigned {
+                    ticket,
+                    result: Err(SignFailure::JournalWrite(error)),
+                })];
+            }
+        };
+        let cards = self.cards.as_mut();
+        self.journal
+            .sign_with(vault, ticket, approved, info, alt, &mut |_, approved| {
+                let index = card_index(&approved).ok_or(SignFailure::Sign(
+                    yw_core::evm::sign::SignError::KindMismatch,
+                ))?;
+                let mut card_failure = None;
+                let mut card = |digest: [u8; 32]| {
+                    crate::yubikey::sign_evm_digest(cards, &records, index, pin, digest).map_err(
+                        |error| {
+                            card_failure = Some(error);
+                            yw_core::yubikey::CardError::Internal
+                        },
+                    )
+                };
+                let result =
+                    yw_core::evm::sign::sign_transaction_card(*Box::new(approved), &mut card);
+                result.map_err(|error| match (card_failure, error) {
+                    (Some(failure), _) => SignFailure::Card(failure),
+                    (None, yw_core::evm::sign::CardSignError::Sign(error)) => {
+                        SignFailure::Sign(error)
+                    }
+                    (None, yw_core::evm::sign::CardSignError::Card(error)) => {
+                        SignFailure::Card(crate::yubikey::CardJobError::Card(error))
+                    }
+                })
+            })
+    }
+
+    /// `SignMessageCard` (spec/10 §9.2): the PIN check first (a failure returns the unused
+    /// approval), then the card signature.
+    fn sign_message_card(
+        &mut self,
+        ticket: crate::events::SignTicket,
+        approved: Box<yw_core::approval::Approved>,
+        typed: bool,
+        pin: &[u8],
+    ) -> Vec<KeyOutcome> {
+        use crate::events::{MessageSignFailure, MessageSigned};
+        let role = card_index(&approved)
+            .map(|index| yw_core::yubikey::plan::KeyRole::Evm { index, btc: None });
+        if let Some(error) = self.card_refusal(role, pin) {
+            return vec![
+                KeyOutcome::CardUnused(approved, error),
+                KeyOutcome::SignedMessage(MessageSigned {
+                    ticket,
+                    result: Err(MessageSignFailure::Card(error)),
+                }),
+            ];
+        }
+        vec![KeyOutcome::SignedMessage(MessageSigned {
+            ticket,
+            result: self.sign_message_on_card(*approved, typed, pin),
+        })]
+    }
+
+    fn sign_message_on_card(
+        &mut self,
+        approved: yw_core::approval::Approved,
+        typed: bool,
+        pin: &[u8],
+    ) -> Result<[u8; 65], crate::events::MessageSignFailure> {
+        use crate::events::MessageSignFailure;
+        let vault = self.vault.as_ref().ok_or(MessageSignFailure::Sign(
+            yw_core::evm::sign::SignError::Vault(VaultError::InvalidState),
+        ))?;
+        let records = Self::hardware_records(vault).map_err(|error| {
+            MessageSignFailure::Sign(yw_core::evm::sign::SignError::Vault(error))
+        })?;
+        let index = card_index(&approved).ok_or(MessageSignFailure::Sign(
+            yw_core::evm::sign::SignError::KindMismatch,
+        ))?;
+        let cards = self.cards.as_mut();
+        let mut card_failure = None;
+        let mut card = |digest: [u8; 32]| {
+            crate::yubikey::sign_evm_digest(cards, &records, index, pin, digest).map_err(|error| {
+                card_failure = Some(error);
+                yw_core::yubikey::CardError::Internal
+            })
+        };
+        let result = if typed {
+            yw_core::evm::sign::sign_typed_data_card(approved, &mut card)
+        } else {
+            yw_core::evm::sign::sign_personal_card(approved, &mut card)
+        };
+        result.map_err(|error| match (card_failure, error) {
+            (Some(failure), _) => MessageSignFailure::Card(failure),
+            (None, yw_core::evm::sign::CardSignError::Sign(error)) => {
+                MessageSignFailure::Sign(error)
+            }
+            (None, yw_core::evm::sign::CardSignError::Card(error)) => {
+                MessageSignFailure::Card(crate::yubikey::CardJobError::Card(error))
+            }
+        })
+    }
+
+    /// The PIN check of a card job before its approval is used (spec/10 §9.2): `Some(error)`
+    /// when the PIN is wrong or no inserted card holds the key — the job then returns the
+    /// unused approval ([`KeyOutcome::CardUnused`]) before its failure. `None` lets the job run
+    /// (also when the vault or the role is missing: the signing step reports that).
+    fn card_refusal(
+        &mut self,
+        role: Option<yw_core::yubikey::plan::KeyRole>,
+        pin: &[u8],
+    ) -> Option<crate::yubikey::CardJobError> {
+        let role = role?;
+        let records = Self::hardware_records(self.vault.as_ref()?).ok()?;
+        crate::yubikey::check_pin(self.cards.as_mut(), &records, role, pin).err()
+    }
+
+    /// `SignSolCard` (spec/10 §6.4): the journal's SOL signing step with the card signer.
+    fn sign_sol_card(
+        &mut self,
+        approved: Box<yw_core::approval::Approved>,
+        times: SolSignTimes,
+        pin: &[u8],
+        alt: bool,
+    ) -> Vec<KeyOutcome> {
+        use crate::events::SolSignFailure;
+        use crate::yubikey::CardJobError;
+        use yw_core::sol::sign::SolCardSignError;
+        let role = crate::yubikey::approval_role(&approved);
+        if let Some(error) = self.card_refusal(role, pin) {
+            return vec![
+                KeyOutcome::CardUnused(approved, error),
+                KeyOutcome::SignedSol(Err(SolSignFailure::Card(error))),
+            ];
+        }
+        let Some(vault) = self.vault.as_mut() else {
+            return vec![KeyOutcome::SignedSol(Err(SolSignFailure::JournalWrite(
+                VaultError::InvalidState,
+            )))];
+        };
+        let records = match Self::hardware_records(vault) {
+            Ok(records) => records,
+            Err(error) => {
+                return vec![KeyOutcome::SignedSol(Err(SolSignFailure::JournalWrite(
+                    error,
+                )))];
+            }
+        };
+        let Some(yw_core::yubikey::plan::KeyRole::Sol { index }) = role else {
+            return vec![KeyOutcome::SignedSol(Err(SolSignFailure::Sign(
+                yw_core::sol::SolSignError::KindMismatch,
+            )))];
+        };
+        let cards = self.cards.as_mut();
+        self.journal.sign_sol_with(
+            vault,
+            approved,
+            times,
+            alt,
+            &mut |_, approved, consumed_at_ms, blockhash, now_ms| {
+                let mut failure = None;
+                let mut card = |message: &[u8]| {
+                    crate::yubikey::sign_sol_message(cards, &records, index, pin, message).map_err(
+                        |error| {
+                            failure = Some(error);
+                            yw_core::yubikey::CardError::Internal
+                        },
+                    )
+                };
+                let result = yw_core::sol::sign::sign_transfer_card(
+                    approved,
+                    consumed_at_ms,
+                    blockhash,
+                    now_ms,
+                    &mut card,
+                );
+                result.map_err(|error| match (failure, error) {
+                    (Some(failure), _) => SolSignFailure::Card(failure),
+                    (None, SolCardSignError::Sign(error)) => SolSignFailure::Sign(error),
+                    (None, SolCardSignError::Card(error)) => {
+                        SolSignFailure::Card(CardJobError::Card(error))
+                    }
+                })
+            },
+        )
+    }
+
+    /// `SignBtcCard` (spec/10 §6.3): the journal's BTC signing step with one card signature per
+    /// input (same PIN).
+    fn sign_btc_card(
+        &mut self,
+        approved: Box<yw_core::approval::Approved>,
+        plan: &yw_core::btc::SendPlan,
+        times: (u32, u64),
+        pin: &[u8],
+        alt: bool,
+    ) -> Vec<KeyOutcome> {
+        use crate::workers::journal::btc::BtcSignFailure;
+        use crate::yubikey::CardJobError;
+        use yw_core::btc::sign::CardSignError;
+        let role = crate::yubikey::btc_plan_role(plan);
+        if let Some(error) = self.card_refusal(role, pin) {
+            return vec![
+                KeyOutcome::CardUnused(approved, error),
+                KeyOutcome::SignedBtc(Err(BtcSignFailure::Card(error))),
+            ];
+        }
+        let Some(vault) = self.vault.as_mut() else {
+            return vec![KeyOutcome::SignedBtc(Err(BtcSignFailure::JournalWrite(
+                VaultError::InvalidState,
+            )))];
+        };
+        let records = match Self::hardware_records(vault) {
+            Ok(records) => records,
+            Err(error) => {
+                return vec![KeyOutcome::SignedBtc(Err(BtcSignFailure::JournalWrite(
+                    error,
+                )))];
+            }
+        };
+        let Some(role) = role else {
+            return vec![KeyOutcome::SignedBtc(Err(BtcSignFailure::Sign(
+                yw_core::btc::SignError::ApprovalMismatch,
+            )))];
+        };
+        let cards = self.cards.as_mut();
+        self.journal.sign_btc_with(
+            vault,
+            approved,
+            plan,
+            times,
+            alt,
+            &mut |_, approved, plan, account| {
+                let mut failure = None;
+                let mut card = |sighash: [u8; 32]| {
+                    crate::yubikey::sign_btc_sighash(cards, &records, role, pin, sighash).map_err(
+                        |error| {
+                            failure = Some(error);
+                            yw_core::yubikey::CardError::Internal
+                        },
+                    )
+                };
+                let result = yw_core::btc::sign::sign_plan_card(approved, plan, account, &mut card);
+                result.map_err(|error| match (failure, error) {
+                    (Some(failure), _) => BtcSignFailure::Card(failure),
+                    (None, CardSignError::Sign(error)) => BtcSignFailure::Sign(error),
+                    (None, CardSignError::Card(error)) => {
+                        BtcSignFailure::Card(CardJobError::Card(error))
+                    }
+                    (None, CardSignError::PostSign(error)) => BtcSignFailure::PostSign(error),
+                })
+            },
+        )
+    }
+
+    /// `SignChainMessageCard` (spec/10 §10): a Solana message (PIV Ed25519) or a Bitcoin
+    /// message (BIP137 / BIP322 on `OpenPGP`) of a `YubiKey` account.
+    fn sign_chain_message_card(
+        &mut self,
+        ticket: crate::events::SignTicket,
+        approved: Box<yw_core::approval::Approved>,
+        pin: &[u8],
+    ) -> Vec<KeyOutcome> {
+        use crate::events::{ChainMessageSigned, ChainSignature};
+        use yw_core::yubikey::plan::KeyRole;
+        let role = crate::yubikey::approval_role(&approved);
+        if let Some(error) = self.card_refusal(role, pin) {
+            logging::info("key", "card.pin_check_failed", &[]);
+            return vec![
+                KeyOutcome::CardUnused(approved, error),
+                KeyOutcome::SignedChainMessage(ChainMessageSigned {
+                    ticket,
+                    result: Err(false),
+                }),
+            ];
+        }
+        let records = self
+            .vault
+            .as_ref()
+            .and_then(|vault| Self::hardware_records(vault).ok());
+        let cards = self.cards.as_mut();
+        let result = match (role, records) {
+            (Some(KeyRole::Sol { index }), Some(records)) => {
+                yw_core::sol::msgsign::sign_message_card(*approved, &mut |message: &[u8]| {
+                    crate::yubikey::sign_sol_message(cards, &records, index, pin, message)
+                        .map_err(|_| yw_core::yubikey::CardError::Internal)
+                })
+                .map(ChainSignature::Sol)
+                .map_err(|_| false)
+            }
+            (Some(role @ (KeyRole::Btc { .. } | KeyRole::Evm { .. })), Some(records))
+                if approved.kind() == yw_core::approval::ApprovalKind::BtcMessage =>
+            {
+                yw_core::btc::msgsign::sign_message_card(*approved, &mut |sighash: [u8; 32]| {
+                    crate::yubikey::sign_btc_sighash(cards, &records, role, pin, sighash)
+                        .map_err(|_| yw_core::yubikey::CardError::Internal)
+                })
+                .map(ChainSignature::Btc)
+                .map_err(|_| false)
+            }
+            _ => Err(false),
+        };
+        vec![KeyOutcome::SignedChainMessage(ChainMessageSigned {
+            ticket,
+            result,
+        })]
     }
 
     fn vault(&mut self) -> Result<&mut Vault, VaultError> {
@@ -248,6 +844,7 @@ impl KeyWorker {
         self.pending = None;
         self.pending_key = None;
         self.pending_password = None;
+        self.yk_wipe();
         self.journal.clear();
         if let Some(vault) = self.vault.as_mut() {
             vault.lock();
@@ -539,6 +1136,7 @@ impl KeyWorker {
             }
         }
         mismatch |= reconcile_imported(&mut document, &keys);
+        mismatch |= reconcile_hardware(&mut document, vault)?;
         let sol_sources: Vec<SolKeySource> = document
             .sol_accounts
             .iter()
@@ -585,6 +1183,7 @@ impl KeyWorker {
 
     /// Runs one non-control job; journal jobs can report several outcomes (signing result,
     /// journal view, moved activity).
+    #[expect(clippy::too_many_lines, reason = "one arm per multi-outcome job")]
     pub fn handle(&mut self, job: KeyJob) -> Vec<KeyOutcome> {
         let alt = self.is_alt();
         match job {
@@ -632,6 +1231,12 @@ impl KeyWorker {
                     crate::workers::journal::btc::BtcKeyError::Vault(VaultError::InvalidState),
                 ))],
             },
+            KeyJob::SignEvmCard {
+                ticket,
+                approved,
+                info,
+                pin,
+            } => self.sign_evm_card(ticket, approved, &info, &pin, alt),
             KeyJob::SignEvm {
                 ticket,
                 approved,
@@ -681,6 +1286,42 @@ impl KeyWorker {
                 Some(vault) => self.journal.apply_sol(vault, &transition, now_unix_ms, alt),
                 None => vec![KeyOutcome::Journal(Err(VaultError::InvalidState))],
             },
+            KeyJob::SignSolCard {
+                approved,
+                consumed_at_ms,
+                blockhash,
+                last_valid_block_height,
+                now_unix_ms,
+                pin,
+            } => self.sign_sol_card(
+                approved,
+                SolSignTimes {
+                    consumed_at_ms,
+                    blockhash,
+                    last_valid_block_height,
+                    now_unix_ms,
+                },
+                &pin,
+                alt,
+            ),
+            KeyJob::SignBtcCard {
+                approved,
+                plan,
+                tip_height,
+                now_unix_ms,
+                pin,
+            } => self.sign_btc_card(approved, &plan, (tip_height, now_unix_ms), &pin, alt),
+            KeyJob::SignMessageCard {
+                ticket,
+                approved,
+                typed,
+                pin,
+            } => self.sign_message_card(ticket, approved, typed, &pin),
+            KeyJob::SignChainMessageCard {
+                ticket,
+                approved,
+                pin,
+            } => self.sign_chain_message_card(ticket, approved, &pin),
             KeyJob::RemoveImportedKey { password, id } => self.remove_imported(&password, id),
             KeyJob::RecoverFromPrev { password: bytes } => self.recover_from_prev(&bytes),
             other => vec![self.handle_single(other)],
@@ -823,6 +1464,23 @@ impl KeyWorker {
                 }
                 .map_err(crate::events::MessageSignFailure::Sign),
             }),
+            KeyJob::EnrolYubiKey {
+                phrase,
+                passphrase,
+                slots,
+                admin_pin,
+                management_key,
+            } => KeyOutcome::YubiKeyEnrolled(self.enrol_yubikey(
+                &phrase,
+                passphrase.as_deref().map(Vec::as_slice),
+                &slots,
+                &admin_pin,
+                &management_key,
+            )),
+            KeyJob::HardwareKeys => {
+                KeyOutcome::HardwareKeys(self.vault().and_then(|vault| vault.hardware_keys()))
+            }
+            KeyJob::YubiKey(job) => self.yubikey_job(job),
             KeyJob::SignChainMessage { ticket, approved } => {
                 KeyOutcome::SignedChainMessage(crate::events::ChainMessageSigned {
                     ticket,
@@ -854,6 +1512,11 @@ impl KeyWorker {
             ),
             KeyJob::LoadJournal
             | KeyJob::SignEvm { .. }
+            | KeyJob::SignEvmCard { .. }
+            | KeyJob::SignMessageCard { .. }
+            | KeyJob::SignChainMessageCard { .. }
+            | KeyJob::SignSolCard { .. }
+            | KeyJob::SignBtcCard { .. }
             | KeyJob::JournalApply { .. }
             | KeyJob::SignSol { .. }
             | KeyJob::SolApply { .. }
@@ -934,8 +1597,10 @@ pub fn run(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Mutex;
+
+    use yw_core::btc::BtcNetwork;
 
     use super::{KeyWorker, run};
     use crate::events::{
@@ -987,6 +1652,986 @@ mod tests {
         };
         assert!(!accept_result(&stale, 2));
         assert!(accept_result(&results[1], 7));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// spec/10 §13 minimal EVM end to end on the key worker, with the APDU emulator as the card:
+    /// import a wallet, enrol a `YubiKey` (SIG = EVM 0, AUT = EVM 1) from the mnemonic, then sign
+    /// an approved Sepolia transfer and a `personal_sign` of the `YubiKey` account on the card —
+    /// post-sign verification and the `Signed` journal commit included. Card failures (wrong PIN,
+    /// no card, another card) come back as `SignFailure::Card` with nothing journaled.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        clippy::indexing_slicing,
+        reason = "one end-to-end scenario"
+    )]
+    fn yubikey_evm_end_to_end_with_the_emulator() {
+        use std::sync::{Arc, Mutex};
+
+        use yw_core::approval::{ApprovalId, ApprovalKind, ApprovalOrigin, ApprovalStore};
+        use yw_core::bip32::path::AccountIndex;
+        use yw_core::evm::amount::U256;
+        use yw_core::evm::decode::{DecodedTx, decode_call};
+        use yw_core::evm::simulate::SimResult;
+        use yw_core::evm::tx::{Eip1559Tx, decode_signed};
+        use yw_core::journal::evm::Role;
+        use yw_core::secret::Zeroizing;
+        use yw_core::vault::EvmKeySource;
+        use yw_core::yubikey::mock::MockCard;
+        use yw_core::yubikey::plan::{CardSlot, KeyRole, PgpKey, PlannedSlot};
+
+        use crate::events::{EvmSigned, MessageSignFailure, SignFailure, SignInfo, SignTicket};
+        use crate::yubikey::{CardJobError, MockSource};
+
+        // The public `abandon`×11 `about` test mnemonic, built at run time (the privacy scan
+        // allows word sequences only in `tests.rs` files).
+        let about = format!("{} about", ["abandon"; 11].join(" "));
+        let dir = std::env::temp_dir().join(format!(
+            "yw-app-yubikey-{}-{}",
+            std::process::id(),
+            yw_win::time::monotonic_ms()
+        ));
+        let cards = Arc::new(Mutex::new(vec![MockCard::new(7_700_001)]));
+        let mut worker = KeyWorker::new(&dir).with_card_source(Box::new(MockSource {
+            cards: Arc::clone(&cards),
+        }));
+        let bytes = |text: &str| Zeroizing::new(text.as_bytes().to_vec());
+        worker.handle(KeyJob::Load);
+        worker.handle(KeyJob::PreviewImport {
+            password: Some(bytes("yubikey test password")),
+            phrase: bytes(&about),
+            passphrase: None,
+        });
+        assert!(matches!(
+            worker.handle(KeyJob::CommitImport).first(),
+            Some(KeyOutcome::Imported(Ok(())))
+        ));
+
+        // Enrol: SIG = EVM 0, AUT = EVM 1.
+        let evm = |index| KeyRole::Evm {
+            index: AccountIndex::new(index).unwrap(),
+            btc: None,
+        };
+        let slots = vec![
+            PlannedSlot::recommended(CardSlot::OpenPgp(PgpKey::Sig), evm(0)),
+            PlannedSlot::recommended(CardSlot::OpenPgp(PgpKey::Aut), evm(1)),
+        ];
+        let enrolled = match worker
+            .handle(KeyJob::EnrolYubiKey {
+                phrase: bytes(&about),
+                passphrase: None,
+                slots,
+                admin_pin: bytes("12345678"),
+                management_key: Zeroizing::new(Vec::new()),
+            })
+            .pop()
+        {
+            Some(KeyOutcome::YubiKeyEnrolled(Ok((_, enrolled)))) => enrolled,
+            other => unreachable!("enrolment failed: {other:?}"),
+        };
+        assert_eq!(enrolled.record.serial, 7_700_001);
+        assert!(enrolled.defaults.openpgp_admin);
+        let Some(KeyOutcome::HardwareKeys(Ok(keys))) = worker.handle(KeyJob::HardwareKeys).pop()
+        else {
+            unreachable!("hardware keys");
+        };
+        assert_eq!(keys.len(), 1);
+        let source = EvmKeySource::Hardware(AccountIndex::new(1).unwrap());
+        let account = worker.vault.as_ref().unwrap().evm_address(source).unwrap();
+        // EVM account 1 of the `abandon` mnemonic.
+        assert_eq!(
+            account.to_checksum(),
+            "0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0"
+        );
+
+        // An approved transfer of the YubiKey account.
+        let chain = yw_core::evm::chain::sepolia();
+        let tx = Eip1559Tx {
+            chain_id: 11_155_111,
+            nonce: 0,
+            max_priority_fee_per_gas: U256::from_u64(1_000_000_000),
+            max_fee_per_gas: U256::from_u64(2_000_000_000),
+            gas_limit: 21_000,
+            to: yw_core::evm::address::parse_address("0x9858EfFD232B4033E47d90003D41EC34EcaEda94")
+                .unwrap(),
+            value: U256::from_u64(1_000),
+            data: Vec::new(),
+            access_list: Vec::new(),
+        };
+        let mut store = ApprovalStore::new();
+        let mut approve = |kind, draft: yw_core::approval::ApprovalDraft| {
+            assert_eq!(draft.kind, kind);
+            let request = store.issue(draft, 0, 1_790_000_000_000).unwrap();
+            store.consume(request.id, request.digest, 1).unwrap()
+        };
+        let tx_approval = |approve: &mut dyn FnMut(
+            ApprovalKind,
+            yw_core::approval::ApprovalDraft,
+        ) -> yw_core::approval::Approved| {
+            let decoded = DecodedTx {
+                call: decode_call(&chain, &tx.to, &tx.data),
+                tx: tx.clone(),
+            };
+            approve(
+                ApprovalKind::EvmTransaction,
+                yw_core::approval::build_evm_tx_request(
+                    ApprovalId::random().unwrap(),
+                    ApprovalOrigin::App,
+                    source,
+                    account,
+                    ApprovalKind::EvmTransaction,
+                    &chain,
+                    &decoded,
+                    &SimResult::skipped(),
+                    &yw_core::approval::ChainFacts::default(),
+                    Vec::new(),
+                    1_790_000_000_000,
+                )
+                .unwrap(),
+            )
+        };
+        let info = SignInfo {
+            origin: "yw-app".to_owned(),
+            label: "YubiKey test".to_owned(),
+            role: Role::Original,
+            now_unix_ms: 1_790_000_000_000,
+        };
+        let sign_tx = |worker: &mut KeyWorker, approved, pin: &str| {
+            worker
+                .handle(KeyJob::SignEvmCard {
+                    ticket: SignTicket(9),
+                    approved: Box::new(approved),
+                    info: info.clone(),
+                    pin: bytes(pin),
+                })
+                .into_iter()
+                .find_map(|outcome| match outcome {
+                    KeyOutcome::SignedEvm(EvmSigned { ticket, result }) => {
+                        assert_eq!(ticket, SignTicket(9));
+                        Some(result)
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+
+        // Wrong PIN: the card error comes back, nothing is journaled.
+        cards.lock().unwrap()[0].high_s = true;
+        cards.lock().unwrap()[0].log.clear();
+        assert_eq!(
+            sign_tx(&mut worker, tx_approval(&mut approve), "000000"),
+            Err(SignFailure::Card(CardJobError::Card(
+                yw_core::yubikey::CardError::WrongPin { retries: 2 }
+            )))
+        );
+        let summary = sign_tx(&mut worker, tx_approval(&mut approve), "123456").unwrap();
+        assert_eq!(summary.account, account);
+        let decoded = decode_signed(&summary.raw).unwrap();
+        assert_eq!(decoded.tx, tx);
+        let mut compact = [0_u8; 64];
+        compact[..32].copy_from_slice(&decoded.r);
+        compact[32..].copy_from_slice(&decoded.s);
+        assert_eq!(
+            yw_core::evm::sign::recover_address(tx.signing_hash(), decoded.y_parity, &compact),
+            Some(account)
+        );
+        assert!(compact[32] < 0x80, "low-s");
+        assert!(
+            !cards.lock().unwrap()[0].saw_write(),
+            "signing sends no write instruction"
+        );
+
+        // personal_sign on the card.
+        let message = |approve: &mut dyn FnMut(
+            ApprovalKind,
+            yw_core::approval::ApprovalDraft,
+        ) -> yw_core::approval::Approved| {
+            approve(
+                ApprovalKind::EvmPersonalSign,
+                yw_core::approval::build_personal_request(
+                    ApprovalId::random().unwrap(),
+                    ApprovalOrigin::Site(
+                        yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
+                    ),
+                    source,
+                    account,
+                    ApprovalKind::EvmPersonalSign,
+                    &chain,
+                    &yw_core::evm::eip191::decode_personal_message(b"YubiKey".to_vec()),
+                    1_790_000_000_000,
+                )
+                .unwrap(),
+            )
+        };
+        let signed = worker.handle(KeyJob::SignMessageCard {
+            ticket: SignTicket(10),
+            approved: Box::new(message(&mut approve)),
+            typed: false,
+            pin: bytes("123456"),
+        });
+        let Some(KeyOutcome::SignedMessage(signed)) = signed.into_iter().next() else {
+            unreachable!("message outcome");
+        };
+        let signature = signed.result.unwrap();
+        assert_eq!(
+            yw_core::evm::sign::recover_message_signer(
+                yw_core::evm::eip191::personal_digest(b"YubiKey"),
+                &signature
+            ),
+            Some(account)
+        );
+        // The vault path refuses a YubiKey approval (no PC key).
+        let refused = worker.handle(KeyJob::SignMessage {
+            ticket: SignTicket(11),
+            approved: Box::new(message(&mut approve)),
+            typed: false,
+        });
+        assert!(matches!(
+            refused.first(),
+            Some(KeyOutcome::SignedMessage(crate::events::MessageSigned {
+                result: Err(MessageSignFailure::Sign(_)),
+                ..
+            }))
+        ));
+        // Another card (not enrolled) and no card at all.
+        cards.lock().unwrap()[0] = MockCard::new(7_700_002);
+        assert_eq!(
+            sign_tx(&mut worker, tx_approval(&mut approve), "123456"),
+            Err(SignFailure::Card(CardJobError::Card(
+                yw_core::yubikey::CardError::WrongCard
+            )))
+        );
+        cards.lock().unwrap().clear();
+        assert_eq!(
+            sign_tx(&mut worker, tx_approval(&mut approve), "123456"),
+            Err(SignFailure::Card(CardJobError::Card(
+                yw_core::yubikey::CardError::Transport(yw_core::yubikey::TransportFault::NoCard)
+            )))
+        );
+        drop(worker);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A worker on the `abandon` wallet with two emulated `YubiKey`s enrolled: card A (SIG = EVM 0,
+    /// AUT = EVM 1, PIV 82 = Solana 0) and card B (SIG = BIP84 mainnet address 0); both cards stay
+    /// inserted. Returns the worker, the cards (A, B), the folder and the reconciled meta.
+    pub(crate) fn yubikey_wallet(
+        tag: &str,
+    ) -> (
+        KeyWorker,
+        std::sync::Arc<std::sync::Mutex<Vec<yw_core::yubikey::mock::MockCard>>>,
+        std::path::PathBuf,
+        crate::events::MetaLoaded,
+    ) {
+        use std::sync::{Arc, Mutex};
+
+        use yw_core::bip32::path::AccountIndex;
+        use yw_core::secret::Zeroizing;
+        use yw_core::yubikey::mock::MockCard;
+        use yw_core::yubikey::plan::{CardSlot, KeyRole, PgpKey, PivSlot, PlannedSlot};
+
+        let about = format!("{} about", ["abandon"; 11].join(" "));
+        let dir = std::env::temp_dir().join(format!(
+            "yw-app-yk-{tag}-{}-{}",
+            std::process::id(),
+            yw_win::time::monotonic_ms()
+        ));
+        let cards = Arc::new(Mutex::new(vec![MockCard::new(7_700_011)]));
+        let mut worker =
+            KeyWorker::new(&dir).with_card_source(Box::new(crate::yubikey::MockSource {
+                cards: Arc::clone(&cards),
+            }));
+        let bytes = |text: &str| Zeroizing::new(text.as_bytes().to_vec());
+        worker.handle(KeyJob::Load);
+        worker.handle(KeyJob::PreviewImport {
+            password: Some(bytes("yubikey wallet password")),
+            phrase: bytes(&about),
+            passphrase: None,
+        });
+        assert!(matches!(
+            worker.handle(KeyJob::CommitImport).first(),
+            Some(KeyOutcome::Imported(Ok(())))
+        ));
+        let evm = |index| KeyRole::Evm {
+            index: AccountIndex::new(index).unwrap(),
+            btc: None,
+        };
+        let enrol = |worker: &mut KeyWorker, slots| match worker
+            .handle(KeyJob::EnrolYubiKey {
+                phrase: bytes(&about),
+                passphrase: None,
+                slots,
+                admin_pin: bytes("12345678"),
+                management_key: Zeroizing::new(
+                    yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY.to_vec(),
+                ),
+            })
+            .pop()
+        {
+            Some(KeyOutcome::YubiKeyEnrolled(Ok(_))) => {}
+            other => unreachable!("enrolment failed: {other:?}"),
+        };
+        enrol(
+            &mut worker,
+            vec![
+                PlannedSlot::recommended(CardSlot::OpenPgp(PgpKey::Sig), evm(0)),
+                PlannedSlot::recommended(CardSlot::OpenPgp(PgpKey::Aut), evm(1)),
+                PlannedSlot::recommended(
+                    CardSlot::Piv(PivSlot::new(0x82).unwrap()),
+                    KeyRole::Sol {
+                        index: AccountIndex::ZERO,
+                    },
+                ),
+            ],
+        );
+        // Card B alone in the reader for its enrolment, then both inserted.
+        let card_a = cards.lock().unwrap().pop().unwrap();
+        cards.lock().unwrap().push(MockCard::new(7_700_012));
+        enrol(
+            &mut worker,
+            vec![PlannedSlot::recommended(
+                CardSlot::OpenPgp(PgpKey::Sig),
+                KeyRole::Btc {
+                    network: BtcNetwork::Mainnet,
+                    script: yw_core::btc::ScriptType::P2wpkh,
+                    index: 0,
+                },
+            )],
+        );
+        cards.lock().unwrap().insert(0, card_a);
+        for card in cards.lock().unwrap().iter_mut() {
+            card.log.clear();
+        }
+        let Some(KeyOutcome::Meta(Ok(loaded))) = worker.handle(KeyJob::LoadMeta).pop() else {
+            unreachable!("meta");
+        };
+        (worker, cards, dir, loaded)
+    }
+
+    /// spec/10 §13: after enrolment the meta reconcile lists the slot map's accounts — EVM 0/1
+    /// and Solana 0 in `hw_accounts`, the BIP84 address key as a single-address `YubiKey` account
+    /// of `btc_accounts` — with the `abandon` vectors as addresses; a second load changes
+    /// nothing; labels and hidden flags survive; a key no card holds any more is dropped.
+    #[test]
+    #[allow(clippy::indexing_slicing, reason = "fixed test lists")]
+    fn reconcile_lists_yubikey_accounts_of_every_chain() {
+        use yw_core::bip32::path::BtcChain;
+        use yw_core::btc::account::HwBtcKey;
+        use yw_core::btc::{BtcAccountId, ScriptType};
+
+        let (mut worker, _cards, dir, loaded) = yubikey_wallet("reconcile");
+        assert!(loaded.mismatch, "the first load adds the accounts");
+        let meta = &loaded.meta;
+        let evm: Vec<(u32, &str, &str)> = meta
+            .hw_accounts
+            .evm
+            .iter()
+            .map(|account| {
+                (
+                    account.index,
+                    account.label.as_str(),
+                    account.address.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            evm,
+            [
+                (
+                    0,
+                    "YubiKey 계정 1",
+                    "0x9858effd232b4033e47d90003d41ec34ecaeda94"
+                ),
+                (
+                    1,
+                    "YubiKey 계정 2",
+                    "0x6fac4d18c912343bf86fa7049364dd4e424ab9c0"
+                )
+            ]
+        );
+        assert_eq!(meta.hw_accounts.sol.len(), 1);
+        assert_eq!(
+            meta.hw_accounts.sol[0].address,
+            "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"
+        );
+        let id = BtcAccountId::Hardware {
+            key: HwBtcKey::Address(0),
+            script_type: ScriptType::P2wpkh,
+        };
+        let btc = meta.btc_accounts.get(BtcNetwork::Mainnet, id).unwrap();
+        assert_eq!(
+            btc.address(BtcChain::Receive, 0).unwrap().as_str(),
+            "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu"
+        );
+        assert!(btc.account().is_hardware());
+        // The mnemonic's own derived account 0 is still there (same key, different account).
+        assert_eq!(meta.evm_accounts.len(), 1);
+        // Idempotent; a renamed and hidden account keeps its label and flag.
+        let mut edited = (*loaded.meta).clone();
+        edited.hw_accounts.evm[1].label = "카드 계정".to_owned();
+        edited.hw_accounts.evm[1].hidden = true;
+        assert!(matches!(
+            worker
+                .handle(KeyJob::SaveMeta {
+                    meta: Box::new(edited.clone())
+                })
+                .pop(),
+            Some(KeyOutcome::MetaSaved(Ok(())))
+        ));
+        let Some(KeyOutcome::Meta(Ok(again))) = worker.handle(KeyJob::LoadMeta).pop() else {
+            unreachable!("meta");
+        };
+        assert!(!again.mismatch);
+        assert_eq!(again.meta.hw_accounts, edited.hw_accounts);
+        // The vault without card B's record: its Bitcoin account leaves `btc_accounts`.
+        let mut document = (*again.meta).clone();
+        {
+            let vault = worker.vault.as_mut().unwrap();
+            let keys = vault.hardware_keys().unwrap();
+            let password =
+                yw_core::password::VaultPassword::new(b"yubikey wallet password").unwrap();
+            vault.remove_hardware_key(&password, keys[1].id).unwrap();
+            assert!(super::reconcile_hardware(&mut document, vault).unwrap());
+        }
+        assert!(document.btc_accounts.get(BtcNetwork::Mainnet, id).is_none());
+        assert_eq!(document.hw_accounts.evm.len(), 2);
+        drop(worker);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// spec/10 §6.4, §13: `SignSolCard` signs an approved devnet transfer of `YubiKey` Solana
+    /// account 0 on the emulator's PIV slot — the `Pending` record is journaled before the
+    /// transaction is returned and the signature verifies strictly; a wrong PIN returns the
+    /// unused approval and a `Card` failure with nothing journaled.
+    #[test]
+    #[allow(clippy::indexing_slicing, reason = "Solana wire offsets")]
+    fn sign_sol_card_end_to_end_with_the_emulator() {
+        use yw_core::approval::ApprovalStore;
+        use yw_core::bip32::path::AccountIndex;
+        use yw_core::secret::Zeroizing;
+        use yw_core::slip10::SolKeySource;
+        use yw_core::sol::display::{SimSummary, SolPreviewFacts, build_sol_transfer_request};
+        use yw_core::sol::intent::{SolTransferIntent, flags};
+        use yw_core::sol::recipient::{AccountClass, check_recipient};
+        use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolTransferCore};
+
+        use crate::events::SolSignFailure;
+        use crate::yubikey::CardJobError;
+
+        const FROM: &str = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
+        const TO: &str = "Hh8QwFUA6MtVu1qAoq12ucvFHNwCcVTV7hpWjeY1Hztb";
+        const NOW: u64 = 1_800_000_000_000;
+        let (mut worker, cards, dir, _) = yubikey_wallet("sol");
+        let approve = |id: u8| {
+            let intent = SolTransferIntent {
+                id: [id; 16],
+                cluster: SolCluster::Devnet,
+                source: SolKeySource::Hardware(AccountIndex::ZERO),
+                core: SolTransferCore {
+                    from: SolAddress::parse(FROM).unwrap(),
+                    to: SolAddress::parse(TO).unwrap(),
+                    asset: SolAsset::Sol,
+                    amount: 1_000_000,
+                    cu_limit: 600,
+                    cu_price_micro: 0,
+                },
+                max_fee_lamports: 5_000,
+                fee_cap_lamports: 100_000,
+                flags: flags::FIRST_TIME,
+                created_at_ms: NOW,
+            };
+            let facts = SolPreviewFacts {
+                account_label: "YubiKey Solana 1".to_owned(),
+                recipient: check_recipient(TO, &intent.core.from, &[]).unwrap(),
+                recipient_account: AccountClass::Missing,
+                balance: 10_000_000_000,
+                rent0: 890_880,
+                rpc_fee: Some(5_000),
+                simulation: SimSummary::Ok { units: 450 },
+                spl: None,
+                blocks: Vec::new(),
+            };
+            let draft =
+                build_sol_transfer_request(&intent, &intent.cluster.genesis(), &facts).unwrap();
+            let mut store = ApprovalStore::new();
+            let request = store.issue(draft, 1, NOW).unwrap();
+            store.consume(request.id, request.digest, 2).unwrap()
+        };
+        let sign = |worker: &mut KeyWorker, id: u8, pin: &str| {
+            worker.handle(KeyJob::SignSolCard {
+                approved: Box::new(approve(id)),
+                consumed_at_ms: yw_win::time::monotonic_ms(),
+                blockhash: [7; 32],
+                last_valid_block_height: 1_150,
+                now_unix_ms: NOW,
+                pin: Zeroizing::new(pin.as_bytes().to_vec()),
+            })
+        };
+        let journal = |worker: &KeyWorker| {
+            crate::workers::journal::JournalState::default()
+                .load(worker.vault.as_ref().unwrap())
+                .unwrap()
+        };
+        // Wrong PIN: the approval comes back unused, nothing is signed or journaled.
+        let refused = sign(&mut worker, 1, "000000");
+        assert!(matches!(refused[0], KeyOutcome::CardUnused(_, _)));
+        assert!(matches!(
+            refused[1],
+            KeyOutcome::SignedSol(Err(SolSignFailure::Card(CardJobError::Card(
+                yw_core::yubikey::CardError::WrongPin { retries: 2 }
+            ))))
+        ));
+        assert!(journal(&worker).sol_records.is_empty());
+        let outcomes = sign(&mut worker, 2, "123456");
+        let Some(KeyOutcome::SignedSol(Ok(summary))) = outcomes.first() else {
+            unreachable!("signed");
+        };
+        assert_eq!(summary.from, SolAddress::parse(FROM).unwrap());
+        // `compact-u16(1) ‖ signature ‖ message`: the card signed the template message.
+        assert_eq!(summary.tx[0], 1);
+        assert_eq!(&summary.tx[1..65], &summary.signature[..]);
+        assert!(yw_core::sol::keys::verify_strict(
+            &summary.from.to_bytes(),
+            &summary.tx[65..],
+            &summary.signature
+        ));
+        let records = journal(&worker).sol_records;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].tx, summary.tx);
+        assert!(
+            cards.lock().unwrap().iter().all(|card| !card.saw_write()),
+            "card signing sends no write"
+        );
+        drop(worker);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// spec/10 §6.3, §13: `SignBtcCard` spends two inputs of the `YubiKey` BIP84 address on card
+    /// B (high-s and high-R answers): one card signature per input with the same PIN, the full
+    /// post-sign verification, the `Signed` record on disk; a wrong PIN returns the unused
+    /// approval and a `Card` failure with nothing journaled.
+    #[test]
+    #[allow(clippy::too_many_lines, reason = "one end-to-end send")]
+    fn sign_btc_card_end_to_end_with_the_emulator() {
+        use yw_core::approval::{ApprovalId, ApprovalStore};
+        use yw_core::bip32::path::BtcChain;
+        use yw_core::btc::account::HwBtcKey;
+        use yw_core::btc::fee::{FeeChoice, FeeRate, FeeSource};
+        use yw_core::btc::meta::{ListedUtxo, VerifiedUtxo};
+        use yw_core::btc::{
+            BtcAccountId, OutPoint, Sats, ScriptType, SendAmount, SendRequest, Txid,
+            build_btc_request, parse_address, plan_send, verify_signed,
+        };
+        use yw_core::secret::Zeroizing;
+
+        use crate::workers::journal::btc::{BtcMetaOp, BtcRefreshUpdate, BtcSignFailure};
+        use crate::yubikey::CardJobError;
+
+        const TIP: u32 = 900_000;
+        const NOW_MS: u64 = 1_793_074_713_000;
+        let (mut worker, cards, dir, _) = yubikey_wallet("btc");
+        let id = BtcAccountId::Hardware {
+            key: HwBtcKey::Address(0),
+            script_type: ScriptType::P2wpkh,
+        };
+        let utxo = |byte: u8| {
+            let outpoint = OutPoint {
+                txid: Txid::from_bytes([byte; 32]),
+                vout: 0,
+            };
+            (
+                ListedUtxo {
+                    outpoint,
+                    chain: BtcChain::Receive,
+                    index: 0,
+                    height: TIP - 10,
+                },
+                VerifiedUtxo {
+                    outpoint,
+                    value: Sats::new(20_000).unwrap(),
+                    chain: BtcChain::Receive,
+                    index: 0,
+                    height: TIP - 10,
+                    is_coinbase: false,
+                    own: false,
+                },
+            )
+        };
+        let (listed, newly): (Vec<_>, Vec<_>) = [utxo(0x51), utxo(0x52)].into_iter().unzip();
+        let Some(KeyOutcome::BtcMeta(Ok(update))) = worker
+            .handle(KeyJob::BtcMeta {
+                op: BtcMetaOp::Refreshed {
+                    network: BtcNetwork::Mainnet,
+                    account: id,
+                    update: Box::new(BtcRefreshUpdate {
+                        listed,
+                        newly,
+                        history: vec![(BtcChain::Receive, 0, 2)],
+                        max_tip_seen: TIP,
+                        now_unix: 1_000,
+                    }),
+                },
+            })
+            .into_iter()
+            .next()
+        else {
+            unreachable!("refreshed");
+        };
+        let meta = update
+            .accounts
+            .get(BtcNetwork::Mainnet, id)
+            .unwrap()
+            .clone();
+        let recipient = parse_address(
+            "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+            BtcNetwork::Mainnet,
+        )
+        .unwrap();
+        let candidates = meta.spendable(TIP, &[]);
+        let plan = plan_send(&SendRequest {
+            network: BtcNetwork::Mainnet,
+            account: meta.account(),
+            recipient,
+            amount: SendAmount::Exact(Sats::new(30_000).unwrap()),
+            fee: FeeChoice {
+                rate: FeeRate::from_sat_per_kvb(2_000),
+                source: FeeSource::Manual,
+            },
+            candidates: &candidates,
+            tip_height: TIP,
+            change_next: meta.change_next(),
+            layout_seed: [3; 32],
+            typed_fee_override: None,
+            conflicts: &[],
+        })
+        .unwrap();
+        assert_eq!(plan.inputs().len(), 2);
+        assert_eq!(
+            crate::yubikey::btc_plan_role(&plan).map(yw_core::yubikey::plan::KeyRole::curve),
+            Some(yw_core::yubikey::plan::Curve::Secp256k1)
+        );
+        let approve = || {
+            let facts = meta.send_facts(&plan, TIP, &[]).unwrap();
+            let draft =
+                build_btc_request(ApprovalId::random().unwrap(), &plan, meta.account(), &facts)
+                    .unwrap();
+            let mut store = ApprovalStore::new();
+            let request = store.issue(draft, 1, NOW_MS).unwrap();
+            store.consume(request.id, request.digest, 2).unwrap()
+        };
+        let sign = |worker: &mut KeyWorker, pin: &str| {
+            worker.handle(KeyJob::SignBtcCard {
+                approved: Box::new(approve()),
+                plan: Box::new(plan.clone()),
+                tip_height: TIP,
+                now_unix_ms: NOW_MS,
+                pin: Zeroizing::new(pin.as_bytes().to_vec()),
+            })
+        };
+        let records = |worker: &KeyWorker| {
+            crate::workers::journal::JournalState::default()
+                .load(worker.vault.as_ref().unwrap())
+                .unwrap()
+                .btc_records
+        };
+        for card in cards.lock().unwrap().iter_mut() {
+            card.high_s = true;
+            card.high_r = true;
+        }
+        let refused = sign(&mut worker, "000000");
+        assert!(matches!(
+            refused.first(),
+            Some(KeyOutcome::CardUnused(_, _))
+        ));
+        assert!(matches!(
+            refused.get(1),
+            Some(KeyOutcome::SignedBtc(Err(BtcSignFailure::Card(
+                CardJobError::Card(yw_core::yubikey::CardError::WrongPin { retries: 2 })
+            ))))
+        ));
+        assert!(records(&worker).is_empty());
+        let signs_before = cards.lock().unwrap()[1]
+            .log
+            .iter()
+            .filter(|header| header[1] == 0x2A)
+            .count();
+        let outcomes = sign(&mut worker, "123456");
+        let Some(KeyOutcome::SignedBtc(Ok(summary))) = outcomes.first() else {
+            unreachable!("signed: {outcomes:?}");
+        };
+        assert_eq!(summary.network, BtcNetwork::Mainnet);
+        verify_signed(&summary.tx.raw, &plan, meta.account()).unwrap();
+        let on_disk = records(&worker);
+        assert_eq!(on_disk.len(), 1);
+        assert_eq!(on_disk[0].txid, summary.tx.txid);
+        assert_eq!(on_disk[0].account, id);
+        let cards = cards.lock().unwrap();
+        let signs = cards[1]
+            .log
+            .iter()
+            .filter(|header| header[1] == 0x2A)
+            .count();
+        assert_eq!(signs - signs_before, 2, "one card signature per input");
+        assert!(cards.iter().all(|card| !card.saw_write()));
+        drop(cards);
+        drop(worker);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The wizard jobs on the emulator (spec/10 §7, §7.5, §9.3): the preview holds the seed and
+    /// touches no card; a wrong admin PIN writes no record; the enrolment, "다시 확인", the PW1
+    /// change (a wrong current PIN refused), the management key held between W13 and the card
+    /// and set only then, "가져오기 없이 등록" of a card that already holds the keys (no write),
+    /// the removal after the password, and `Discard` / the lock wiping the held words.
+    #[test]
+    #[expect(clippy::too_many_lines, reason = "one emulator scenario")]
+    fn yubikey_wizard_jobs_on_the_emulator() {
+        use std::sync::{Arc, Mutex};
+
+        use yw_core::bip32::path::AccountIndex;
+        use yw_core::secret::Zeroizing;
+        use yw_core::yubikey::mock::MockCard;
+        use yw_core::yubikey::plan::{CardSlot, KeyRole, PgpKey, PivSlot, PlannedSlot};
+
+        use super::yubikey::{YkJob, YkOutcome};
+        use crate::yubikey::{CardJobError, PinTarget};
+
+        let about = format!("{} about", ["abandon"; 11].join(" "));
+        let dir = std::env::temp_dir().join(format!(
+            "yw-app-yk-jobs-{}-{}",
+            std::process::id(),
+            yw_win::time::monotonic_ms()
+        ));
+        let cards = Arc::new(Mutex::new(vec![MockCard::new(9_900_001)]));
+        let mut worker =
+            KeyWorker::new(&dir).with_card_source(Box::new(crate::yubikey::MockSource {
+                cards: Arc::clone(&cards),
+            }));
+        let bytes = |text: &str| Zeroizing::new(text.as_bytes().to_vec());
+        worker.handle(KeyJob::Load);
+        worker.handle(KeyJob::PreviewImport {
+            password: Some(bytes("yubikey jobs password")),
+            phrase: bytes(&about),
+            passphrase: None,
+        });
+        worker.handle(KeyJob::CommitImport);
+        let slots = vec![
+            PlannedSlot::recommended(
+                CardSlot::OpenPgp(PgpKey::Sig),
+                KeyRole::Evm {
+                    index: AccountIndex::new(3).unwrap(),
+                    btc: None,
+                },
+            ),
+            PlannedSlot::recommended(
+                CardSlot::Piv(PivSlot::new(0x82).unwrap()),
+                KeyRole::Sol {
+                    index: AccountIndex::new(4).unwrap(),
+                },
+            ),
+        ];
+        let yk =
+            |worker: &mut KeyWorker, job: YkJob| match worker.handle(KeyJob::YubiKey(job)).pop() {
+                Some(KeyOutcome::YubiKey(outcome)) => Some(outcome),
+                Some(KeyOutcome::YubiKeyEnrolled(result)) => {
+                    assert!(result.is_ok(), "{result:?}");
+                    None
+                }
+                other => unreachable!("{other:?}"),
+            };
+        let enrol = |worker: &mut KeyWorker, admin: &str, adopt: bool| {
+            worker
+                .handle(KeyJob::YubiKey(YkJob::Enrol {
+                    slots: slots.clone(),
+                    admin_pin: bytes(admin),
+                    management_key: Zeroizing::new(
+                        yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY.to_vec(),
+                    ),
+                    adopt,
+                }))
+                .pop()
+        };
+        let records = |worker: &mut KeyWorker| match worker.handle(KeyJob::HardwareKeys).pop() {
+            Some(KeyOutcome::HardwareKeys(Ok(keys))) => keys,
+            other => unreachable!("{other:?}"),
+        };
+        // Wrong words: refused, nothing held.
+        assert!(matches!(
+            yk(
+                &mut worker,
+                YkJob::Preview {
+                    mnemonic: Some((bytes("abandon abandon"), None)),
+                    slots: slots.clone(),
+                }
+            ),
+            Some(YkOutcome::Preview(Err(
+                crate::events::YubiKeyJobError::Key(_)
+            )))
+        ));
+        let Some(YkOutcome::Preview(Ok(preview))) = yk(
+            &mut worker,
+            YkJob::Preview {
+                mnemonic: Some((bytes(&about), None)),
+                slots: slots.clone(),
+            },
+        ) else {
+            unreachable!("preview");
+        };
+        assert!(preview.same_as_vault && preview.plan.is_ok());
+        assert_eq!(preview.lines[0].path, "m/44'/60'/0'/0/3");
+        assert_eq!(preview.lines[1].path, "m/44'/501'/4'/0'");
+        assert!(cards.lock().unwrap()[0].log.is_empty());
+        // A wrong admin PIN: nothing written, no record.
+        assert!(matches!(
+            enrol(&mut worker, "00000000", false),
+            Some(KeyOutcome::YubiKeyEnrolled(Err(_)))
+        ));
+        assert!(records(&mut worker).is_empty());
+        assert!(matches!(
+            enrol(&mut worker, "12345678", false),
+            Some(KeyOutcome::YubiKeyEnrolled(Ok(_)))
+        ));
+        let enrolled = records(&mut worker);
+        assert_eq!(enrolled.len(), 1);
+        let Some(YkOutcome::Checked(9_900_001, Ok(checks))) =
+            yk(&mut worker, YkJob::Check { serial: 9_900_001 })
+        else {
+            unreachable!("check");
+        };
+        assert_eq!(checks, [Ok(()), Ok(())]);
+        // PW1: a wrong current PIN is refused, then changed.
+        let change = |worker: &mut KeyWorker, old: &str| {
+            worker
+                .handle(KeyJob::YubiKey(YkJob::ChangePin {
+                    serial: 9_900_001,
+                    target: PinTarget::OpenPgpUser,
+                    old: bytes(old),
+                    new: bytes("135791"),
+                }))
+                .pop()
+        };
+        assert!(matches!(
+            change(&mut worker, "000000"),
+            Some(KeyOutcome::YubiKey(YkOutcome::PinChanged(
+                _,
+                PinTarget::OpenPgpUser,
+                Err(CardJobError::Card(_))
+            )))
+        ));
+        assert!(matches!(
+            change(&mut worker, "123456"),
+            Some(KeyOutcome::YubiKey(YkOutcome::PinChanged(_, _, Ok(()))))
+        ));
+        assert_eq!(cards.lock().unwrap()[0].pw1, b"135791");
+        // The management key: generated and held, set only by `SetManagementKey`.
+        let Some(YkOutcome::ManagementKey(Ok(key))) =
+            yk(&mut worker, YkJob::NewManagementKey { serial: 9_900_001 })
+        else {
+            unreachable!("new key");
+        };
+        let key = key.expose().to_owned();
+        assert_eq!(key.len(), 48);
+        assert_eq!(
+            cards.lock().unwrap()[0].mgmt_key,
+            yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY
+        );
+        assert!(matches!(
+            yk(
+                &mut worker,
+                YkJob::SetManagementKey {
+                    old: Zeroizing::new(yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY.to_vec()),
+                }
+            ),
+            Some(YkOutcome::ManagementKeySet(9_900_001, Ok(())))
+        ));
+        assert_eq!(
+            yw_core::hex::encode(&cards.lock().unwrap()[0].mgmt_key),
+            key
+        );
+        // Nothing held any more: a second set has no key.
+        assert!(matches!(
+            yk(
+                &mut worker,
+                YkJob::SetManagementKey {
+                    old: Zeroizing::new(Vec::new()),
+                }
+            ),
+            Some(YkOutcome::ManagementKeySet(_, Err(_)))
+        ));
+        // Removal: a wrong password keeps the record.
+        let id = enrolled[0].id;
+        assert!(matches!(
+            yk(
+                &mut worker,
+                YkJob::Remove {
+                    password: bytes("not the password"),
+                    id,
+                }
+            ),
+            Some(YkOutcome::Removed(Err(
+                yw_core::error::VaultError::UnlockFailed
+            )))
+        ));
+        assert!(matches!(
+            yk(
+                &mut worker,
+                YkJob::Remove {
+                    password: bytes("yubikey jobs password"),
+                    id,
+                }
+            ),
+            Some(YkOutcome::Removed(Ok(_)))
+        ));
+        assert!(records(&mut worker).is_empty());
+        // "가져오기 없이 등록": the card still holds the keys; read-only.
+        cards.lock().unwrap()[0].log.clear();
+        assert!(matches!(
+            enrol(&mut worker, "", true),
+            Some(KeyOutcome::YubiKeyEnrolled(Ok(_)))
+        ));
+        assert!(!cards.lock().unwrap()[0].saw_write());
+        assert_eq!(records(&mut worker)[0].record, enrolled[0].record);
+        // `Discard` wipes the held words; so does the lock.
+        assert!(matches!(
+            yk(&mut worker, YkJob::Discard),
+            Some(YkOutcome::Discarded)
+        ));
+        assert!(matches!(
+            yk(
+                &mut worker,
+                YkJob::Preview {
+                    mnemonic: None,
+                    slots: slots.clone(),
+                }
+            ),
+            Some(YkOutcome::Preview(Err(_)))
+        ));
+        assert!(matches!(
+            yk(
+                &mut worker,
+                YkJob::Preview {
+                    mnemonic: Some((bytes(&about), None)),
+                    slots: slots.clone(),
+                }
+            ),
+            Some(YkOutcome::Preview(Ok(_)))
+        ));
+        worker.lock();
+        let _ = worker.handle(KeyJob::Unlock {
+            password: bytes("yubikey jobs password"),
+        });
+        assert!(matches!(
+            yk(
+                &mut worker,
+                YkJob::Preview {
+                    mnemonic: None,
+                    slots,
+                }
+            ),
+            Some(YkOutcome::Preview(Err(_)))
+        ));
+        drop(worker);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

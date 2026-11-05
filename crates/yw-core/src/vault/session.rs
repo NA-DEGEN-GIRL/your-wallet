@@ -11,11 +11,11 @@ use core::fmt;
 
 use secp256k1::{All, PublicKey, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
-use subtle::{Choice, ConstantTimeEq};
+use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, Zeroizing};
 
 use super::format::{
-    self, Bip39Record, BtcKeyRecord, MAX_RAW_KEYS, Payload, RawKeyRecord, SealMaterial,
+    self, Bip39Record, BtcKeyRecord, HwKeyEntry, MAX_RAW_KEYS, Payload, RawKeyRecord, SealMaterial,
     SolKeyRecord,
 };
 use super::{
@@ -28,8 +28,8 @@ use crate::bip32::{
 };
 use crate::bip39::Mnemonic;
 use crate::entropy::{
-    OsRandom, RandomSource, random_array_with, random_below_with, random_nonzero_id_with,
-    random_secret32_with, secp_context,
+    OsRandom, RandomSource, random_array_with, random_nonzero_id_with, random_secret32_with,
+    secp_context,
 };
 use crate::error::{KeyError, StorageError, VaultError};
 use crate::evm::Address;
@@ -40,12 +40,12 @@ use crate::keyimport::{
 use crate::password::{Bip39Passphrase, VaultPassword};
 use crate::secret::{SecretBytes, SecretString, SecretVec};
 use crate::slip10::SolKeySource;
+use crate::yubikey::record::{HwKeyRecord, records_consistent};
 
 const MAX_ADDRESS_BATCH: usize = 100;
 /// `sol_public_keys` batch bound (spec/02 §10.3).
 const MAX_SOL_KEY_BATCH: usize = 128;
 const CHALLENGE_WORDS: usize = 4;
-const MAX_BACKUP_WORD: usize = 8;
 const SLOT_DEK_END: usize = 32;
 const SLOT_FLAG: usize = 32;
 const SLOT_PASSPHRASE_LEN: usize = 33;
@@ -493,6 +493,8 @@ impl Vault {
                 return SecretKey::from_byte_array(*raw.key).map_err(|_| INTERNAL);
             }
             KeyRef::Evm(EvmKeySource::Derived(index)) => evm_path(index),
+            // A YubiKey account has no key on the PC (spec/10 §1).
+            KeyRef::Evm(EvmKeySource::Hardware(_)) => return Err(VaultError::RecordNotFound),
             KeyRef::Btc { coin, chain, index } => btc_path(coin, chain, index)?,
         };
         let seed = self.seed(payload)?;
@@ -981,27 +983,9 @@ impl Vault {
             .mnemonic
             .word_count()
             .words();
-        let mut candidates = [0_u8; 24];
-        for (index, slot) in candidates.iter_mut().enumerate() {
-            *slot = u8::try_from(index).map_err(|_| INTERNAL)?;
-        }
-        for offset in 0..CHALLENGE_WORDS {
-            let remaining =
-                u32::try_from(words.checked_sub(offset).ok_or(INTERNAL)?).map_err(|_| INTERNAL)?;
-            let pick = usize::try_from(random_below_with(rng, remaining)?).map_err(|_| INTERNAL)?;
-            candidates.swap(
-                offset,
-                offset
-                    .checked_add(pick)
-                    .filter(|index| *index < words)
-                    .ok_or(INTERNAL)?,
-            );
-        }
-        let mut positions = [0_u8; CHALLENGE_WORDS];
-        for (position, candidate) in positions.iter_mut().zip(candidates) {
-            *position = candidate.checked_add(1).ok_or(INTERNAL)?;
-        }
-        positions.sort_unstable();
+        // The same draw as a mnemonic held in memory (`Mnemonic::backup_positions`).
+        let positions: [u8; CHALLENGE_WORDS] =
+            crate::bip39::backup_positions_with(rng, words).map_err(VaultError::Key)?;
         let id = ChallengeId(random_nonzero_id_with(rng)?);
         self.challenge = Some((id, positions));
         Ok(BackupChallenge { id, positions })
@@ -1023,21 +1007,11 @@ impl Vault {
             _ => return Err(VaultError::ChallengeStale),
         };
         self.challenge = None;
-        let well_formed = words.iter().all(|word| {
-            (1..=MAX_BACKUP_WORD).contains(&word.len())
-                && word.bytes().all(|b| b.is_ascii_lowercase())
-        });
-        if !well_formed {
-            return Err(VaultError::BackupMismatch);
-        }
         let mut payload = self.payload()?;
         let bip39 = mnemonic_record(&payload)?;
-        let mut all = Choice::from(1);
-        for (position, answer) in positions.iter().zip(words) {
-            let expected = bip39.mnemonic.word_at(*position)?;
-            all &= expected.as_bytes().ct_eq(answer.as_bytes());
-        }
-        if all.unwrap_u8() != 1 {
+        // Well-formedness, then four constant-time comparisons decided once (shared with the
+        // in-memory confirmation of a `YubiKey` wallet, spec/10 §7.1-1).
+        if !bip39.mnemonic.backup_words_match(positions, words)? {
             return Err(VaultError::BackupMismatch);
         }
         if let Some(bip39) = payload.bip39.as_mut() {
@@ -1217,6 +1191,9 @@ impl Vault {
     pub fn evm_address(&self, src: EvmKeySource) -> Result<Address, VaultError> {
         self.require_public()?;
         let payload = self.payload()?;
+        if let EvmKeySource::Hardware(index) = src {
+            return hardware_evm_address(&payload, index);
+        }
         let ctx = secp_context(&mut OsRandom)?;
         let mut secret = self.secret_for(&ctx, &payload, KeyRef::Evm(src))?;
         let public = PublicKey::from_secret_key(&ctx, &secret);
@@ -1475,6 +1452,20 @@ impl Vault {
         slot: Slot,
         now_unix: u64,
     ) -> Result<RecordId, VaultError> {
+        self.create_without_mnemonic(rng, password, slot, |payload, record_id| {
+            add_key(payload, key, record_id, now_unix)
+        })
+    }
+
+    /// `Create` of a vault without recovery words whose first record `fill` adds (a key-only
+    /// vault, spec/02 §8.5, or a `YubiKey` vault, spec/10 §8.2).
+    fn create_without_mnemonic(
+        &mut self,
+        rng: &mut impl RandomSource,
+        password: &VaultPassword,
+        slot: Slot,
+        fill: impl FnOnce(&mut Payload, [u8; 16]) -> Result<(), VaultError>,
+    ) -> Result<RecordId, VaultError> {
         if self.status != VaultStatus::NoVault {
             wipe_and_drop(slot);
             return Err(VaultError::InvalidState);
@@ -1487,7 +1478,7 @@ impl Vault {
             let wrap_nonce = random_array_with::<24>(rng)?;
             let payload_nonce = random_array_with::<24>(rng)?;
             let mut payload = Payload::new(None);
-            add_key(&mut payload, key, record_id, now_unix)?;
+            fill(&mut payload, record_id)?;
             let material = SealMaterial {
                 password,
                 vault_id,
@@ -1688,11 +1679,21 @@ impl Vault {
             return Ok(Vec::new());
         }
         let payload = self.payload()?;
-        let seed = self.seed(&payload)?;
+        // `YubiKey` sources come from the tag-5 slot map; the BIP39 seed is computed only when a
+        // derived source asks for it (a `YubiKey` wallet has no mnemonic).
+        let seed = if srcs.iter().all(|src| src.is_hardware()) {
+            None
+        } else {
+            Some(self.seed(&payload)?)
+        };
         srcs.iter()
-            .map(|src| {
-                let secret = src.ed25519_seed(seed.expose())?;
-                Ok(crate::sol::keys::public_key(&secret))
+            .map(|src| match (src, seed.as_ref()) {
+                (SolKeySource::Hardware(index), _) => hardware_sol_public_key(&payload, *index),
+                (_, Some(seed)) => {
+                    let secret = src.ed25519_seed(seed.expose())?;
+                    Ok(crate::sol::keys::public_key(&secret))
+                }
+                (_, None) => Err(INTERNAL),
             })
             .collect()
     }
@@ -1706,6 +1707,10 @@ impl Vault {
         f: impl FnOnce(&[u8; 32]) -> Result<T, VaultError>,
     ) -> Result<T, VaultError> {
         self.require_signing()?;
+        // A YubiKey account has no key on the PC (spec/10 §1).
+        if src.is_hardware() {
+            return Err(VaultError::RecordNotFound);
+        }
         let payload = self.payload()?;
         let seed = self.seed(&payload)?;
         let secret = src.ed25519_seed(seed.expose())?;
@@ -1722,6 +1727,219 @@ impl Vault {
     #[cfg(test)]
     pub(crate) fn held_bytes(&self) -> Option<&[u8]> {
         self.ciphertext.as_deref()
+    }
+}
+
+/// One enrolled `YubiKey` as stored in the vault (tag 5, spec/10 §8): public data only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HardwareKey {
+    /// Record id.
+    pub id: RecordId,
+    /// Enrolment time (Unix seconds, from yw-app).
+    pub created_unix: u64,
+    /// Serial, firmware, fingerprint and slot map.
+    pub record: HwKeyRecord,
+}
+
+/// The address of `YubiKey` EVM account `index` from the slot map (`RecordNotFound` when no card
+/// holds it).
+fn hardware_evm_address(payload: &Payload, index: AccountIndex) -> Result<Address, VaultError> {
+    let role = crate::yubikey::plan::KeyRole::Evm { index, btc: None };
+    let identity = role.key_identity();
+    payload
+        .hw_keys
+        .iter()
+        .flat_map(|entry| &entry.record.slots)
+        .find(|slot| slot.role.key_identity() == identity)
+        .ok_or(VaultError::RecordNotFound)
+        .and_then(|slot| crate::yubikey::plan::evm_address(&slot.public).map_err(|_| INTERNAL))
+}
+
+/// The Ed25519 public key of `YubiKey` Solana account `index` from the slot map
+/// (`RecordNotFound` when no card holds it).
+fn hardware_sol_public_key(payload: &Payload, index: AccountIndex) -> Result<[u8; 32], VaultError> {
+    let identity = crate::yubikey::plan::KeyRole::Sol { index }.key_identity();
+    payload
+        .hw_keys
+        .iter()
+        .flat_map(|entry| &entry.record.slots)
+        .find(|slot| slot.role.key_identity() == identity)
+        .ok_or(VaultError::RecordNotFound)
+        .and_then(|slot| {
+            crate::yubikey::plan::sol_address(&slot.public)
+                .map(crate::sol::SolAddress::to_bytes)
+                .map_err(|_| INTERNAL)
+        })
+}
+
+/// The compressed public key of a `YubiKey` Bitcoin key from the slot map: `key` names the slot
+/// role (a Bitcoin address key of `network`/`script_type`, or an EVM key used as one Bitcoin
+/// address). `RecordNotFound` when no card holds it.
+fn hardware_btc_public_key(
+    payload: &Payload,
+    network: crate::btc::BtcNetwork,
+    script_type: crate::btc::account::ScriptType,
+    key: crate::btc::account::HwBtcKey,
+) -> Result<[u8; 33], VaultError> {
+    let identity = key
+        .role(network, script_type)
+        .ok_or(VaultError::RecordNotFound)?
+        .key_identity();
+    payload
+        .hw_keys
+        .iter()
+        .flat_map(|entry| &entry.record.slots)
+        .find(|slot| slot.role.key_identity() == identity)
+        .ok_or(VaultError::RecordNotFound)
+        .and_then(|slot| match slot.public {
+            crate::yubikey::record::HwPublicKey::Secp256k1(public) => Ok(public),
+            crate::yubikey::record::HwPublicKey::Ed25519(_) => Err(INTERNAL),
+        })
+}
+
+/// Adds a hardware key reference (one per serial, at most 8, consistent with the others).
+fn add_hardware(
+    payload: &mut Payload,
+    record: HwKeyRecord,
+    record_id: [u8; 16],
+    now_unix: u64,
+) -> Result<(), VaultError> {
+    if payload
+        .hw_keys
+        .iter()
+        .any(|entry| entry.record.serial == record.serial)
+    {
+        return Err(VaultError::DuplicateKey);
+    }
+    if payload.hw_keys.len() >= format::MAX_HW_KEYS {
+        return Err(VaultError::RecordLimit);
+    }
+    let mut all: Vec<HwKeyRecord> = payload
+        .hw_keys
+        .iter()
+        .map(|entry| entry.record.clone())
+        .collect();
+    all.push(record.clone());
+    if !record.is_valid() || !records_consistent(&all) {
+        return Err(VaultError::Key(KeyError::DerivationFailed));
+    }
+    payload.hw_keys.push(HwKeyEntry {
+        record_id,
+        created_unix: now_unix,
+        record,
+    });
+    Ok(())
+}
+
+/// `YubiKey` accounts (spec/10 §8): the vault keeps only public slot maps.
+impl Vault {
+    /// The enrolled `YubiKeys` in payload order.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` outside `BackupPending`/`Unlocked`.
+    pub fn hardware_keys(&self) -> Result<Vec<HardwareKey>, VaultError> {
+        self.require_public()?;
+        Ok(self
+            .payload()?
+            .hw_keys
+            .iter()
+            .map(|entry| HardwareKey {
+                id: RecordId(entry.record_id),
+                created_unix: entry.created_unix,
+                record: entry.record.clone(),
+            })
+            .collect())
+    }
+
+    /// The Bitcoin account of a `YubiKey` key (spec/10 §3.1, §3.3): one fixed address whose
+    /// compressed public key comes from the tag-5 slot map (never from the seed). `key` is a
+    /// Bitcoin address key (`m/{44|49|84}'/{coin}'/0'/0/i` of `network` and `script_type`) or an
+    /// EVM key (`m/44'/60'/0'/0/i`) used as one `script_type` address.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` outside `BackupPending`/`Unlocked`, `RecordNotFound` when no enrolled
+    /// card holds the key (also for Taproot, which a card cannot hold).
+    pub fn hardware_btc_account(
+        &self,
+        network: crate::btc::BtcNetwork,
+        script_type: crate::btc::account::ScriptType,
+        key: crate::btc::account::HwBtcKey,
+    ) -> Result<crate::btc::account::BtcAccountKey, VaultError> {
+        self.require_public()?;
+        let payload = self.payload()?;
+        let public = hardware_btc_public_key(&payload, network, script_type, key)?;
+        crate::btc::account::BtcAccountKey::hardware(key, script_type, public)
+            .map_err(|_| VaultError::RecordNotFound)
+    }
+
+    /// Adds an enrolled `YubiKey` (`PayloadRewrite`, no password: nothing secret is added).
+    ///
+    /// # Errors
+    ///
+    /// `BackupNotConfirmed`/`InvalidState`, `DuplicateKey` (serial already enrolled),
+    /// `RecordLimit` (8 cards), `Key(DerivationFailed)` for a record that contradicts the
+    /// enrolled ones (another fingerprint, or another public key for the same path),
+    /// `RandomnessUnavailable` or `Storage`.
+    pub fn add_hardware_key(
+        &mut self,
+        record: HwKeyRecord,
+        now_unix: u64,
+    ) -> Result<RecordId, VaultError> {
+        self.require_signing()?;
+        let mut payload = self.payload()?;
+        let record_id = fresh_record_id(&mut OsRandom, &payload)?;
+        add_hardware(&mut payload, record, record_id, now_unix)?;
+        self.rewrite_payload(&payload)?;
+        Ok(RecordId(record_id))
+    }
+
+    /// Removes an enrolled `YubiKey` after re-entering the password. The last record of a vault
+    /// without recovery words cannot be removed (`LastKey`).
+    ///
+    /// # Errors
+    ///
+    /// `BackupNotConfirmed`/`InvalidState`, `UnlockFailed`, `RecordNotFound`, `LastKey` or
+    /// `Storage`.
+    pub fn remove_hardware_key(
+        &mut self,
+        password: &VaultPassword,
+        id: RecordId,
+    ) -> Result<(), VaultError> {
+        self.require_signing()?;
+        self.verify_password(password)?;
+        let mut payload = self.payload()?;
+        let before = payload.hw_keys.len();
+        payload.hw_keys.retain(|entry| entry.record_id != id.0);
+        if payload.hw_keys.len() == before {
+            return Err(VaultError::RecordNotFound);
+        }
+        if payload.record_count() == 0 {
+            return Err(VaultError::LastKey);
+        }
+        self.rewrite_payload(&payload)
+    }
+
+    /// Creates a `YubiKey` vault (no recovery words, spec/10 §8.2) holding the first enrolled
+    /// card: `Create`, then `Unlocked { alt: false }`. The mnemonic the keys came from is the
+    /// paper backup and is never stored.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` outside `NoVault`, `Key(DerivationFailed)` for an invalid record,
+    /// `RandomnessUnavailable`, `OutOfMemory` or `Storage`. On failure the state stays
+    /// `NoVault` and the slot is wiped.
+    pub fn create_with_hardware(
+        &mut self,
+        password: &VaultPassword,
+        record: HwKeyRecord,
+        slot: Slot,
+        now_unix: u64,
+    ) -> Result<RecordId, VaultError> {
+        self.create_without_mnemonic(&mut OsRandom, password, slot, |payload, record_id| {
+            add_hardware(payload, record, record_id, now_unix)
+        })
     }
 }
 

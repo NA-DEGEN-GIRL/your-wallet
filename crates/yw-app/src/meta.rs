@@ -71,6 +71,119 @@ pub const SECURITY_KEY: &str = "security_settings";
 /// own. Written when non-zero.
 pub const VAULT_SEEN_KEY: &str = "vault_generation_seen";
 
+/// The optional top-level key of the `YubiKey` accounts (spec/10 §8, §13): labels, hidden flags,
+/// the Solana selection and the cards still on default PINs. The truth source is vault tag 5
+/// (the accounts and addresses are recomputed from it at unlock); written only when not the
+/// default, kept unread (as an unknown key) by earlier versions.
+pub const HW_ACCOUNTS_KEY: &str = "hw_accounts";
+/// `hw_accounts` bound per chain (8 cards × 24 slots).
+pub const MAX_HW_ACCOUNTS: usize = 192;
+/// `hw_accounts.defaults` bound (`MAX_CARDS`).
+const MAX_HW_DEFAULTS: usize = 8;
+const HW_KEYS: [&str; 4] = ["evm", "sol", "sol_selected", "defaults"];
+
+/// meta `hw_accounts` (spec/10 §8, §13).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HwAccounts {
+    /// `YubiKey` EVM accounts: `index` = EVM account `i` (`m/44'/60'/0'/0/i`), `address` = display
+    /// cache of the slot-map public key (index ascending).
+    pub evm: Vec<Account>,
+    /// `YubiKey` Solana accounts (`m/44'/501'/i'/0'` on a PIV slot; base58 cache).
+    pub sol: Vec<Account>,
+    /// The selected Solana account is this `YubiKey` account (before `sol_raw_selected` and
+    /// `prefs.sol_account`).
+    pub sol_selected: Option<u32>,
+    /// Serials of the cards whose PIN, admin PIN or management key was still the default at
+    /// enrolment (the "기본 PIN 사용 중" warning, spec/10 §9.3), ascending.
+    pub defaults: Vec<u32>,
+}
+
+impl HwAccounts {
+    fn parse_list(value: &Value, evm: bool) -> Option<Vec<Account>> {
+        let list: Vec<Account> = value
+            .as_array()?
+            .iter()
+            .map(|item| parse_account(item, evm))
+            .collect::<Option<_>>()?;
+        let ascending = list
+            .windows(2)
+            .all(|pair| pair.first().map(|a| a.index) < pair.get(1).map(|b| b.index));
+        (list.len() <= MAX_HW_ACCOUNTS
+            && ascending
+            && list.iter().all(|account| !account.address.is_empty()))
+        .then_some(list)
+    }
+
+    /// Strict decoding (absent = the default).
+    fn from_json(value: Option<&Value>) -> Option<Self> {
+        let Some(value) = value else {
+            return Some(Self::default());
+        };
+        let object = value.as_object()?;
+        if !exact_keys(object, &HW_KEYS) {
+            return None;
+        }
+        let evm = Self::parse_list(object.get("evm")?, true)?;
+        let sol = Self::parse_list(object.get("sol")?, false)?;
+        let sol_selected = match object.get("sol_selected")? {
+            Value::Null => None,
+            other => {
+                let index = u32::try_from(u64_of(other)?).ok()?;
+                sol.iter()
+                    .any(|account| account.index == index)
+                    .then_some(index)?;
+                Some(index)
+            }
+        };
+        let defaults: Vec<u32> = object
+            .get("defaults")?
+            .as_array()?
+            .iter()
+            .map(|item| u32::try_from(u64_of(item)?).ok())
+            .collect::<Option<_>>()?;
+        let ascending = defaults.windows(2).all(|pair| pair.first() < pair.get(1));
+        (defaults.len() <= MAX_HW_DEFAULTS && ascending).then_some(Self {
+            evm,
+            sol,
+            sol_selected,
+            defaults,
+        })
+    }
+
+    fn to_json(&self) -> Value {
+        json_object(vec![
+            (
+                "evm",
+                Value::Array(self.evm.iter().map(account_json).collect()),
+            ),
+            (
+                "sol",
+                Value::Array(self.sol.iter().map(account_json).collect()),
+            ),
+            (
+                "sol_selected",
+                self.sol_selected
+                    .map_or(Value::Null, |index| json_u64(u64::from(index))),
+            ),
+            (
+                "defaults",
+                Value::Array(
+                    self.defaults
+                        .iter()
+                        .map(|serial| json_u64(u64::from(*serial)))
+                        .collect(),
+                ),
+            ),
+        ])
+    }
+
+    /// Nothing to store (the key is then not written).
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// meta `security_settings` and `vault_generation_seen` (review M1/L15/L17).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MetaSecurity {
@@ -155,6 +268,9 @@ pub enum EvmAccountPref {
     Index(u32),
     /// Raw key record.
     Record([u8; 16]),
+    /// `YubiKey` EVM account `i` (`EvmKeySource::Hardware`, meta `hw_accounts.evm`; prefs
+    /// `{"hardware": i}` — an older version resets such prefs to the default).
+    Hardware(u32),
 }
 
 /// The main-window chain tab (spec/04 §6.4 `tab`).
@@ -242,6 +358,9 @@ pub struct Meta {
     /// `token_view` (optional key, 2026-11-03): hidden token rows and `잔액 0인 토큰 숨기기`
     /// (display only, `crate::token_view`).
     pub token_view: Box<TokenView>,
+    /// `hw_accounts` (optional key, spec/10 §13): the `YubiKey` accounts' labels, hidden flags and
+    /// selection (vault tag 5 is the truth source).
+    pub hw_accounts: HwAccounts,
     /// Top-level keys this version does not know (a newer minor version's), in file order; written
     /// back after the known keys while the plaintext stays within 8 MiB (spec/04 §6.6).
     pub unknown: Vec<(String, Value)>,
@@ -270,6 +389,7 @@ impl Default for Meta {
             prefs: Prefs::default(),
             security: Box::default(),
             token_view: Box::default(),
+            hw_accounts: HwAccounts::default(),
             unknown: Vec::new(),
         }
     }
@@ -571,6 +691,13 @@ fn parse_prefs(value: &Value, meta: &Meta) -> Option<Prefs> {
                             .iter()
                             .any(|account| account.index == index))
                     .then_some(EvmAccountPref::Index(index))?
+                } else if let Some(index) = selector.get("hardware") {
+                    let index = u32::try_from(u64_of(index)?).ok()?;
+                    meta.hw_accounts
+                        .evm
+                        .iter()
+                        .any(|account| account.index == index)
+                        .then_some(EvmAccountPref::Hardware(index))?
                 } else {
                     let id = parse_hex16(selector.get("record_id")?.as_str()?)?;
                     meta.evm_raw_accounts
@@ -632,6 +759,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
                 && *key != SECURITY_KEY
                 && *key != VAULT_SEEN_KEY
                 && *key != TOKEN_VIEW_KEY
+                && *key != HW_ACCOUNTS_KEY
         })
         .map(|(key, value)| (key.to_owned(), value.clone()))
         .collect();
@@ -733,6 +861,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
             TokenView::from_json(value).map_or((TokenView::default(), true), |view| (view, false))
         }
     };
+    let hw_accounts = HwAccounts::from_json(object.get(HW_ACCOUNTS_KEY)).ok_or(MetaError)?;
     let mut meta = Meta {
         evm_accounts,
         evm_raw_accounts,
@@ -755,6 +884,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
             vault_generation_seen,
         }),
         token_view: Box::new(token_view),
+        hw_accounts,
         unknown,
     };
     let prefs = parse_prefs(get("prefs")?, &meta);
@@ -800,6 +930,9 @@ impl Meta {
             }
             EvmAccountPref::Record(id) => {
                 json_object(vec![("record_id", json_str(&yw_core::hex::encode(&id)))])
+            }
+            EvmAccountPref::Hardware(index) => {
+                json_object(vec![("hardware", json_u64(u64::from(index)))])
             }
         };
         let mut members = vec![
@@ -884,6 +1017,9 @@ impl Meta {
         }
         if !self.token_view.is_default() {
             members.push((TOKEN_VIEW_KEY, self.token_view.to_json()));
+        }
+        if !self.hw_accounts.is_default() {
+            members.push((HW_ACCOUNTS_KEY, self.hw_accounts.to_json()));
         }
         members
     }
@@ -1777,5 +1913,116 @@ mod tests {
             hidden: false,
         });
         assert!(parse(&meta.to_json()).is_err());
+    }
+
+    /// spec/10 §13: `hw_accounts` is an optional key (spec/02 §5.3 "새 최상위 키"): absent in
+    /// older files (= no `YubiKey` accounts, written back byte-identical), written after the
+    /// required keys only when not the default, decoded strictly (a violation rejects the
+    /// document like other keys), kept unread by an app that predates it; `prefs` may select a
+    /// `YubiKey` EVM account (`{"hardware": i}`), which falls back when no such account exists.
+    #[test]
+    fn hw_accounts_is_an_optional_strict_key() {
+        use super::HwAccounts;
+        let old = Meta::default().to_json();
+        assert!(
+            !String::from_utf8(old.clone())
+                .unwrap()
+                .contains("hw_accounts")
+        );
+        let parsed = parse(&old).unwrap();
+        assert!(parsed.meta.hw_accounts.is_default());
+        assert_eq!(parsed.meta.to_json(), old);
+
+        let mut meta = Meta {
+            hw_accounts: HwAccounts {
+                evm: vec![
+                    Account {
+                        index: 0,
+                        label: "YubiKey 계정 1".to_owned(),
+                        address: "0x9858effd232b4033e47d90003d41ec34ecaeda94".to_owned(),
+                        hidden: false,
+                    },
+                    Account {
+                        index: 1,
+                        label: "카드 2".to_owned(),
+                        address: "0x6fac4d18c912343bf86fa7049364dd4e424ab9c0".to_owned(),
+                        hidden: true,
+                    },
+                ],
+                sol: vec![Account {
+                    index: 0,
+                    label: "YubiKey Solana 1".to_owned(),
+                    address: "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk".to_owned(),
+                    hidden: false,
+                }],
+                sol_selected: Some(0),
+                defaults: vec![7_700_011, 7_700_012],
+            },
+            ..Meta::default()
+        };
+        meta.prefs.evm_account = EvmAccountPref::Hardware(1);
+        let bytes = meta.to_json();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert!(text.find("\"prefs\"").unwrap() < text.find("\"hw_accounts\"").unwrap());
+        assert!(text.contains("\"evm_account\":{\"hardware\":1}"));
+        let parsed = parse(&bytes).unwrap();
+        assert!(!parsed.prefs_reset);
+        assert_eq!(parsed.meta, meta);
+        assert!(parsed.meta.unknown.is_empty());
+        assert_eq!(parsed.meta.to_json(), bytes);
+
+        // An app that predates the key keeps it unread and writes it back (its `prefs` naming a
+        // YubiKey account resets there — accepted, spec/10 §13).
+        let older = text.replacen("\"hw_accounts\"", "\"hw_accounts_next\"", 1);
+        let kept = parse(older.as_bytes()).unwrap();
+        assert!(kept.meta.hw_accounts.is_default());
+        assert_eq!(kept.meta.unknown.len(), 1);
+        assert!(kept.prefs_reset);
+
+        // Strict inside: each violation rejects the document.
+        for bad in [
+            text.replacen("\"sol_selected\":0", "\"sol_selected\":5", 1),
+            text.replacen("\"sol_selected\":0", "\"sol_selected\":\"0\"", 1),
+            text.replacen(
+                "\"defaults\":[7700011,7700012]",
+                "\"defaults\":[7700012,7700011]",
+                1,
+            ),
+            text.replacen("\"defaults\":[7700011,7700012]", "\"defaults\":[-1]", 1),
+            text.replacen(",\"defaults\":[7700011,7700012]", "", 1),
+            text.replacen("\"defaults\":", "\"extra\":1,\"defaults\":", 1),
+            text.replacen(
+                "\"index\":1,\"label\":\"카드 2\"",
+                "\"index\":0,\"label\":\"카드 2\"",
+                1,
+            ),
+            text.replacen(
+                "\"address\":\"0x6fac4d18c912343bf86fa7049364dd4e424ab9c0\"",
+                "\"address\":\"\"",
+                1,
+            ),
+            text.replacen(
+                "\"address\":\"HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk\"",
+                "\"address\":\"0x9858effd232b4033e47d90003d41ec34ecaeda94\"",
+                1,
+            ),
+            text.replacen(
+                "\"index\":1,\"label\":\"카드 2\"",
+                "\"index\":1000,\"label\":\"카드 2\"",
+                1,
+            ),
+        ] {
+            assert!(parse(bad.as_bytes()).is_err(), "{bad}");
+        }
+        // `prefs` naming a YubiKey account that is not listed: only `prefs` resets.
+        let unlisted = text.replacen(
+            "\"evm_account\":{\"hardware\":1}",
+            "\"evm_account\":{\"hardware\":4}",
+            1,
+        );
+        let parsed = parse(unlisted.as_bytes()).unwrap();
+        assert!(parsed.prefs_reset);
+        assert_eq!(parsed.meta.prefs.evm_account, EvmAccountPref::Index(0));
+        assert_eq!(parsed.meta.hw_accounts, meta.hw_accounts);
     }
 }

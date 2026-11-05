@@ -1,7 +1,8 @@
 //! Bitcoin account kinds (spec/08 §3): the four address types an account can have, the public
 //! key material of an account (an HD account node `m/{44|49|84|86}'/{coin}'/{account}'`, or a
-//! single imported key), our output script of `(chain, index)`, and the key reference signing
-//! asks the vault for.
+//! single imported key, an EVM account's key, or a `YubiKey` key whose public key comes from the
+//! vault tag-5 slot map), our output script of `(chain, index)`, and the key reference signing
+//! asks the vault for (a `YubiKey` key is signed on the card instead, spec/10 §6.3).
 //!
 //! | `ScriptType` (stable `u8`) | path | our output | spending input |
 //! |---|---|---|---|
@@ -186,6 +187,25 @@ impl ScriptType {
             }
         }
     }
+
+    /// Pre-signing weight of one input signed on a `YubiKey` (spec/10 §6.3): the card cannot
+    /// grind for low-R, so the signature item is counted as `72 + 1` bytes (the card DER bound
+    /// `yubikey::sig::MAX_CARD_DER_LEN` plus the sighash type) instead of `70 + 1`:
+    ///
+    /// - P2WPKH `41·4 + 109` = 273 (witness: count 1, 1 + 73, 1 + 33);
+    /// - P2SH-P2WPKH `(41 + 23)·4 + 109` = 365;
+    /// - P2PKH `(41 + 108)·4` = 596 (scriptSig `1 + 73 + 1 + 33`, card keys are compressed).
+    ///
+    /// P2TR has no card form (no BIP340 on the card); its software weight is returned.
+    #[must_use]
+    pub const fn card_input_weight(self) -> u64 {
+        match self {
+            Self::P2wpkh => 273,
+            Self::P2shP2wpkh => 365,
+            Self::P2pkh => 596,
+            Self::P2tr => 230,
+        }
+    }
 }
 
 impl fmt::Display for ScriptType {
@@ -201,8 +221,10 @@ pub enum AccountKeyError {
     PublicKey,
     /// An uncompressed key is only usable as P2PKH (segwit and Taproot need compressed keys).
     UncompressedNotP2pkh,
-    /// The HD account number is hardened (≥ 2^31).
+    /// The HD account number is hardened (≥ 2^31), or a `YubiKey` key index is out of range.
     Account,
+    /// A `YubiKey` account cannot be Taproot (no BIP340 on the card, spec/10 §2).
+    HardwareTaproot,
 }
 
 impl fmt::Display for AccountKeyError {
@@ -211,6 +233,7 @@ impl fmt::Display for AccountKeyError {
             Self::PublicKey => "공개키 형식이 올바르지 않습니다",
             Self::UncompressedNotP2pkh => "비압축 키는 레거시(P2PKH) 주소로만 쓸 수 있습니다",
             Self::Account => "계정 번호가 범위를 벗어났습니다",
+            Self::HardwareTaproot => "YubiKey에는 탭루트 키를 둘 수 없습니다",
         })
     }
 }
@@ -343,6 +366,105 @@ pub fn kind_for_key<C: Verification>(
     }
 }
 
+/// Which `YubiKey` key a hardware Bitcoin account uses (spec/10 §3.1): the slot role of vault
+/// tag 5 whose public key is the account's one address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum HwBtcKey {
+    /// A Bitcoin address key `m/{44|49|84}'/{coin}'/0'/0/{index}` (`KeyRole::Btc`: address
+    /// index on account 0's receive chain, spec/10 §3.3; `index` ≤ 999).
+    Address(u32),
+    /// The EVM key `m/44'/60'/0'/0/{index}` used as one Bitcoin address ("EVM 공유 키",
+    /// `KeyRole::Evm` with a Bitcoin use, spec/10 §3.2; `index` 0–999).
+    Evm(u32),
+}
+
+impl HwBtcKey {
+    /// The index (address index or EVM account index).
+    #[must_use]
+    pub const fn index(self) -> u32 {
+        match self {
+            Self::Address(index) | Self::Evm(index) => index,
+        }
+    }
+
+    /// The source code of the approval payload and journal account blocks (4 address key,
+    /// 5 EVM key; 1–3 are the software accounts).
+    #[must_use]
+    pub const fn source_code(self) -> u8 {
+        match self {
+            Self::Address(_) => 4,
+            Self::Evm(_) => 5,
+        }
+    }
+
+    /// Inverse of [`HwBtcKey::source_code`] with the index (range checked).
+    #[must_use]
+    pub fn from_source(code: u8, index: u32) -> Option<Self> {
+        let key = match code {
+            4 => Self::Address(index),
+            5 => Self::Evm(index),
+            _ => return None,
+        };
+        key.index_ok().then_some(key)
+    }
+
+    /// The index is inside its range (address ≤ `MAX_BTC_INDEX`, EVM account 0–999).
+    #[must_use]
+    pub fn index_ok(self) -> bool {
+        match self {
+            Self::Address(index) => index <= crate::yubikey::plan::MAX_BTC_INDEX,
+            Self::Evm(index) => crate::bip32::path::AccountIndex::new(index).is_ok(),
+        }
+    }
+
+    /// The slot role holding this key for a `script_type` account on `network` (`None` for
+    /// Taproot or an index out of range). The slot map lookup compares key identities, so an
+    /// EVM key enrolled without a Bitcoin use is found as well.
+    #[must_use]
+    pub fn role(
+        self,
+        network: BtcNetwork,
+        script_type: ScriptType,
+    ) -> Option<crate::yubikey::plan::KeyRole> {
+        use crate::yubikey::plan::{BtcUse, KeyRole};
+        let role = match self {
+            Self::Address(index) => KeyRole::Btc {
+                network,
+                script: script_type,
+                index,
+            },
+            Self::Evm(index) => KeyRole::Evm {
+                index: crate::bip32::path::AccountIndex::new(index).ok()?,
+                btc: Some(BtcUse {
+                    network,
+                    script: script_type,
+                }),
+            },
+        };
+        role.validate().is_ok().then_some(role)
+    }
+
+    /// The JSON name of the kind (`btc` / `evm`, meta).
+    #[must_use]
+    pub const fn json_kind(self) -> &'static str {
+        match self {
+            Self::Address(_) => "btc",
+            Self::Evm(_) => "evm",
+        }
+    }
+
+    /// Inverse of [`HwBtcKey::json_kind`] with the index (range checked).
+    #[must_use]
+    pub fn from_json(kind: &str, index: u32) -> Option<Self> {
+        let key = match kind {
+            "btc" => Self::Address(index),
+            "evm" => Self::Evm(index),
+            _ => return None,
+        };
+        key.index_ok().then_some(key)
+    }
+}
+
 /// The identity of an account (meta selection, journal records, activity rows).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BtcAccountId {
@@ -366,6 +488,13 @@ pub enum BtcAccountId {
         /// Address type.
         script_type: ScriptType,
     },
+    /// A `YubiKey` key used for `script_type`: one fixed address (spec/10 §3.3).
+    Hardware {
+        /// The slot role.
+        key: HwBtcKey,
+        /// Address type (never P2TR).
+        script_type: ScriptType,
+    },
 }
 
 impl BtcAccountId {
@@ -377,7 +506,7 @@ impl BtcAccountId {
 
     /// The `ActivityEntry.account` text: `""` for [`Self::PRIMARY`] (unchanged rows),
     /// `p2tr/0`-style for HD accounts, `imported/<32 hex>` for imported keys, `evm/p2tr/0`-style
-    /// for an EVM account's key.
+    /// for an EVM account's key, `yubikey/p2wpkh/0` / `yubikey/evm/p2wpkh/0` for `YubiKey` keys.
     #[must_use]
     pub fn activity_tag(&self) -> String {
         match self {
@@ -391,6 +520,14 @@ impl BtcAccountId {
                 evm_index,
                 script_type,
             } => format!("evm/{}/{evm_index}", script_type.json_name()),
+            Self::Hardware {
+                key: HwBtcKey::Address(index),
+                script_type,
+            } => format!("yubikey/{}/{index}", script_type.json_name()),
+            Self::Hardware {
+                key: HwBtcKey::Evm(index),
+                script_type,
+            } => format!("yubikey/evm/{}/{index}", script_type.json_name()),
         }
     }
 }
@@ -426,6 +563,14 @@ pub enum BtcKeySource {
         /// Address type of the account.
         script_type: ScriptType,
     },
+    /// A `YubiKey` key (spec/10 §3.1): the vault has no secret for it (`RecordNotFound`); the
+    /// input is signed on the card (`btc::sign::sign_plan_card`).
+    Hardware {
+        /// The slot role.
+        key: HwBtcKey,
+        /// Address type of the account.
+        script_type: ScriptType,
+    },
 }
 
 impl BtcKeySource {
@@ -439,7 +584,7 @@ impl BtcKeySource {
                 account,
                 ..
             } => net.account_node(script_type.purpose(), *account).ok(),
-            Self::Imported { .. } | Self::EvmShared { .. } => None,
+            Self::Imported { .. } | Self::EvmShared { .. } | Self::Hardware { .. } => None,
         }
     }
 
@@ -449,8 +594,15 @@ impl BtcKeySource {
         match self {
             Self::Derived { script_type, .. }
             | Self::Imported { script_type, .. }
-            | Self::EvmShared { script_type, .. } => *script_type,
+            | Self::EvmShared { script_type, .. }
+            | Self::Hardware { script_type, .. } => *script_type,
         }
+    }
+
+    /// The input is signed on a `YubiKey`.
+    #[must_use]
+    pub const fn is_hardware(&self) -> bool {
+        matches!(self, Self::Hardware { .. })
     }
 }
 
@@ -489,6 +641,17 @@ pub enum BtcAccountKey {
         /// Address type.
         script_type: ScriptType,
         /// Compressed public key of `m/44'/60'/0'/0/{evm_index}`.
+        pubkey: [u8; 33],
+    },
+    /// A `YubiKey` key (spec/10 §3.3): one address, change back to it, no gap scan (like
+    /// [`Self::EvmShared`]), the public key from the vault tag-5 slot map (never derived from a
+    /// seed) and every input signed on the card. Never P2TR.
+    Hardware {
+        /// The slot role.
+        key: HwBtcKey,
+        /// Address type (P2PKH, P2SH-P2WPKH or P2WPKH).
+        script_type: ScriptType,
+        /// Compressed public key recorded for the slot.
         pubkey: [u8; 33],
     },
 }
@@ -580,6 +743,36 @@ impl BtcAccountKey {
         })
     }
 
+    /// The account on a `YubiKey` key (public key from `Vault::hardware_btc_account` / the tag-5
+    /// slot map).
+    ///
+    /// # Errors
+    ///
+    /// [`AccountKeyError::HardwareTaproot`] for P2TR, [`AccountKeyError::Account`] for an index
+    /// out of range, [`AccountKeyError::PublicKey`] for an invalid compressed point.
+    pub fn hardware(
+        key: HwBtcKey,
+        script_type: ScriptType,
+        pubkey: [u8; 33],
+    ) -> Result<Self, AccountKeyError> {
+        if script_type == ScriptType::P2tr {
+            return Err(AccountKeyError::HardwareTaproot);
+        }
+        if !key.index_ok() {
+            return Err(AccountKeyError::Account);
+        }
+        if !matches!(pubkey.first(), Some(0x02 | 0x03))
+            || PublicKey::from_byte_array_compressed(pubkey).is_err()
+        {
+            return Err(AccountKeyError::PublicKey);
+        }
+        Ok(Self::Hardware {
+            key,
+            script_type,
+            pubkey,
+        })
+    }
+
     /// The same HD account in fixed-address (`true`) or HD (`false`) mode; other keys are
     /// always one address and stay unchanged.
     #[must_use]
@@ -606,15 +799,25 @@ impl BtcAccountKey {
         match self {
             Self::Hd { script_type, .. }
             | Self::Single { script_type, .. }
-            | Self::EvmShared { script_type, .. } => *script_type,
+            | Self::EvmShared { script_type, .. }
+            | Self::Hardware { script_type, .. } => *script_type,
         }
     }
 
-    /// One key with one address and no chains (an imported key or an EVM account's key): no gap
-    /// scan, no "새 주소", change back to the same address.
+    /// One key with one address and no chains (an imported key, an EVM account's key or a
+    /// `YubiKey` key): no gap scan, no "새 주소", change back to the same address.
     #[must_use]
     pub const fn is_single(&self) -> bool {
-        matches!(self, Self::Single { .. } | Self::EvmShared { .. })
+        matches!(
+            self,
+            Self::Single { .. } | Self::EvmShared { .. } | Self::Hardware { .. }
+        )
+    }
+
+    /// A `YubiKey` account: every input is signed on the card (`btc::sign::sign_plan_card`).
+    #[must_use]
+    pub const fn is_hardware(&self) -> bool {
+        matches!(self, Self::Hardware { .. })
     }
 
     /// An imported key (vault tag 4 record; listed, revealed and removed with the record).
@@ -641,7 +844,7 @@ impl BtcAccountKey {
     pub const fn fixed_address(&self) -> bool {
         match self {
             Self::Hd { single_address, .. } => *single_address,
-            Self::Single { .. } | Self::EvmShared { .. } => true,
+            Self::Single { .. } | Self::EvmShared { .. } | Self::Hardware { .. } => true,
         }
     }
 
@@ -666,6 +869,12 @@ impl BtcAccountKey {
                 evm_index: *evm_index,
                 script_type: *script_type,
             },
+            Self::Hardware {
+                key, script_type, ..
+            } => BtcAccountId::Hardware {
+                key: *key,
+                script_type: *script_type,
+            },
         }
     }
 
@@ -676,7 +885,7 @@ impl BtcAccountKey {
         match self {
             Self::Hd { xpub, .. } => xpub.pubkey,
             Self::Single { pubkey, .. } => pubkey.compressed().unwrap_or([0; 33]),
-            Self::EvmShared { pubkey, .. } => *pubkey,
+            Self::EvmShared { pubkey, .. } | Self::Hardware { pubkey, .. } => *pubkey,
         }
     }
 
@@ -685,14 +894,16 @@ impl BtcAccountKey {
     pub const fn xpub(&self) -> Option<&AccountXpub> {
         match self {
             Self::Hd { xpub, .. } => Some(xpub),
-            Self::Single { .. } | Self::EvmShared { .. } => None,
+            Self::Single { .. } | Self::EvmShared { .. } | Self::Hardware { .. } => None,
         }
     }
 
-    /// Pre-signing weight of one of this account's inputs.
+    /// Pre-signing weight of one of this account's inputs (a `YubiKey` input with the card
+    /// signature bound, [`ScriptType::card_input_weight`]).
     #[must_use]
     pub const fn input_weight(&self) -> u64 {
         match self {
+            Self::Hardware { script_type, .. } => script_type.card_input_weight(),
             Self::Hd { script_type, .. } | Self::EvmShared { script_type, .. } => {
                 script_type.input_weight(true)
             }
@@ -733,6 +944,12 @@ impl BtcAccountKey {
                 ..
             } => BtcKeySource::EvmShared {
                 evm_index: *evm_index,
+                script_type: *script_type,
+            },
+            Self::Hardware {
+                key, script_type, ..
+            } => BtcKeySource::Hardware {
+                key: *key,
                 script_type: *script_type,
             },
         }
@@ -787,6 +1004,9 @@ impl BtcAccountKey {
             ),
             Self::Single { .. } => "가져온 키".to_owned(),
             Self::EvmShared { evm_index, .. } => format!("m/44'/60'/0'/0/{evm_index}"),
+            Self::Hardware {
+                key, script_type, ..
+            } => hardware_path_text(*key, *script_type, net),
         }
     }
 
@@ -806,6 +1026,9 @@ impl BtcAccountKey {
             ),
             Self::Single { .. } => "가져온 키".to_owned(),
             Self::EvmShared { evm_index, .. } => format!("m/44'/60'/0'/0/{evm_index}"),
+            Self::Hardware {
+                key, script_type, ..
+            } => hardware_path_text(*key, *script_type, net),
         }
     }
 
@@ -825,6 +1048,16 @@ impl BtcAccountKey {
                 script_type,
                 ..
             } => format!("EVM 계정 {evm_index} 키 · {}", script_type.name()),
+            Self::Hardware {
+                key: HwBtcKey::Address(index),
+                script_type,
+                ..
+            } => format!("YubiKey · {} 주소 {index}", script_type.name()),
+            Self::Hardware {
+                key: HwBtcKey::Evm(index),
+                script_type,
+                ..
+            } => format!("YubiKey EVM 계정 {index} 키 · {}", script_type.name()),
         }
     }
 
@@ -871,6 +1104,18 @@ impl BtcAccountKey {
     }
 }
 
+/// The path text of a `YubiKey` key: `m/84'/1'/0'/0/3 (YubiKey)` or `m/44'/60'/0'/0/3 (YubiKey)`.
+fn hardware_path_text(key: HwBtcKey, script_type: ScriptType, net: BtcNetwork) -> String {
+    match key {
+        HwBtcKey::Address(index) => format!(
+            "m/{}'/{}'/0'/0/{index} (YubiKey)",
+            script_type.purpose().number(),
+            net.coin_number()
+        ),
+        HwBtcKey::Evm(index) => format!("m/44'/60'/0'/0/{index} (YubiKey)"),
+    }
+}
+
 /// Batch derivation of an account's outputs and public keys with one context (watch set,
 /// own-recipient search, signing and post-sign checks).
 #[derive(Debug)]
@@ -888,7 +1133,9 @@ impl AccountDeriver {
                 derive_public_child_with(&ctx, xpub, BtcChain::Receive.index())?,
                 derive_public_child_with(&ctx, xpub, BtcChain::Change.index())?,
             )),
-            BtcAccountKey::Single { .. } | BtcAccountKey::EvmShared { .. } => None,
+            BtcAccountKey::Single { .. }
+            | BtcAccountKey::EvmShared { .. }
+            | BtcAccountKey::Hardware { .. } => None,
         };
         Ok(Self { key, ctx, chains })
     }
@@ -926,7 +1173,10 @@ impl AccountDeriver {
                     Err(KeyError::InvalidPath)
                 }
             }
-            (BtcAccountKey::EvmShared { pubkey, .. }, _) => {
+            (
+                BtcAccountKey::EvmShared { pubkey, .. } | BtcAccountKey::Hardware { pubkey, .. },
+                _,
+            ) => {
                 if chain == BtcChain::Receive && index == 0 {
                     Ok(BtcPubKey::Compressed(*pubkey))
                 } else {

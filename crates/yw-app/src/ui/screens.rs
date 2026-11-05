@@ -426,6 +426,8 @@ impl App {
             Screen::BtcReceive => self.btc_receive_screen(&mut items),
             Screen::KeyStartIntro => self.key_start_intro(&mut items),
             Screen::KeyStartAddress(view) => Self::key_start_address(view, &mut items),
+            Screen::YubiKey => self.yk_wizard_screen(&mut items),
+            Screen::YubiKeyWalletIntro => Self::yk_wallet_intro(&mut items),
         }
         if self.passphrase_unverified() {
             disable_receive(&mut items);
@@ -471,6 +473,7 @@ impl App {
         ]));
         items.push(Item::CardEnd);
         self.first_run_key_card(items);
+        self.first_run_yubikey_card(items);
     }
 
     fn create_intro(items: &mut Vec<Item>) {
@@ -720,6 +723,9 @@ impl App {
                 format!("m/44'/60'/0'/0/{}", index.get())
             }
             yw_core::vault::EvmKeySource::Raw(_) => "가져온 개인키".to_owned(),
+            yw_core::vault::EvmKeySource::Hardware(index) => {
+                format!("YubiKey · m/44'/60'/0'/0/{}", index.get())
+            }
         }));
         let balance = self.native_balance(chain_id, &address);
         let state = self.evm.balances.get(&chain_id);
@@ -824,6 +830,7 @@ impl App {
             let is_selected = selected == Some(pref);
             let shown_label = match pref {
                 EvmAccountPref::Record(_) => format!("{label}  [가져온 키]"),
+                EvmAccountPref::Hardware(_) => format!("{label}  [YubiKey]"),
                 EvmAccountPref::Index(_) => label.clone(),
             };
             items.push(Item::Row(vec![
@@ -861,6 +868,11 @@ impl App {
                                 Ctl::danger(ids::REMOVE_KEY, "삭제")
                                     .enabled(self.can_remove_imported()),
                             );
+                        }
+                        // A YubiKey account (spec/10 §13): no "개인키 보기" (the key is on
+                        // the card only); hidden until a card with its key is enrolled again.
+                        EvmAccountPref::Hardware(_) => {
+                            row_ctls.push(Ctl::button(ids::HIDE, "숨기기"));
                         }
                     }
                     items.push(Item::Row(row_ctls));
@@ -924,6 +936,11 @@ impl App {
                 section == SettingsSection::Ai,
             ),
             Ctl::tab(
+                crate::ui::screens_yubikey::ids::SECTION_YUBIKEY,
+                "YubiKey",
+                section == SettingsSection::YubiKey,
+            ),
+            Ctl::tab(
                 ids::SECTION_OTHER,
                 "브라우저·진단·정보",
                 section == SettingsSection::Other,
@@ -937,6 +954,7 @@ impl App {
             SettingsSection::Bitcoin => self.btc_settings_section(items),
             SettingsSection::Ai => self.llm_settings_section(items),
             SettingsSection::Other => self.other_section(items),
+            SettingsSection::YubiKey => self.yk_settings_section(items),
         }
     }
 
@@ -981,8 +999,9 @@ impl App {
                     .to_owned(),
             ));
             items.push(Item::Row(vec![
-                Ctl::button(ids::REVEAL_KEY, "개인키 보기")
-                    .enabled(unlocked && self.selected_account().is_some()),
+                Ctl::button(ids::REVEAL_KEY, "개인키 보기").enabled(
+                    unlocked && self.selected_account().is_some() && !self.hardware_selected(),
+                ),
             ]));
         } else {
             items.push(Item::Help(
@@ -991,7 +1010,8 @@ impl App {
             ));
             items.push(Item::Row(vec![
                 Ctl::button(ids::REVEAL_MNEMONIC, "복구 단어 보기").enabled(public),
-                Ctl::button(ids::REVEAL_KEY, "개인키 보기").enabled(unlocked),
+                Ctl::button(ids::REVEAL_KEY, "개인키 보기")
+                    .enabled(unlocked && !self.hardware_selected()),
             ]));
         }
         items.push(Item::Help(
@@ -1298,6 +1318,7 @@ impl App {
                 crate::ui::screens_keys::T_REMOVE_IMPORTED.to_owned(),
                 "계속",
             ),
+            Confirm::RemoveYubiKey => ("YubiKey 기록 삭제", self.yk_remove_text(), "계속"),
             Confirm::RevealImported => (
                 "개인키 보기",
                 "화면 근처의 사람이나 카메라가 볼 수 있습니다. 계속하려면 비밀번호를 입력하세요.".to_owned(),
@@ -1356,6 +1377,7 @@ impl App {
                 | Confirm::Discard
                 | Confirm::RemoveKey
                 | Confirm::RemoveImported
+                | Confirm::RemoveYubiKey
                 | Confirm::JournalCorrupt
         );
         items.push(Item::Title(title.to_owned()));

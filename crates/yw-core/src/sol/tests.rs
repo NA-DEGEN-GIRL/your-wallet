@@ -932,7 +932,7 @@ fn journal_record_round_trip_and_rejections() {
     reject(&|b| b[2] = 5, SolRecordError::Value);
     reject(&|b| b[2] = 0, SolRecordError::Value);
     reject(&|b| b[3] = 3, SolRecordError::Value);
-    reject(&|b| b[4] = 7, SolRecordError::Source);
+    reject(&|b| b[4] = 8, SolRecordError::Source);
     // Tag 6 (imported key) takes no parameters.
     reject(
         &|b| {
@@ -1174,4 +1174,300 @@ fn imported_source_needs_the_matching_imported_key() {
     assert_eq!(SolKeySource::Imported.params(), (0, 0));
     assert!(!SolKeySource::Imported.needs_move_rule());
     assert!(SolKeySource::RawSeed.needs_move_rule());
+}
+
+// ----- YubiKey (PIV Ed25519) accounts (spec/10 §6.4) ---------------------------------------------
+
+/// A card (emulator) with PIV 82 = Solana account 0 of `abandon`×11 `about`, and the unlocked
+/// `about` vault holding its tag-5 record.
+fn sol_card() -> (
+    crate::yubikey::mock::MockCard,
+    crate::vault::Vault,
+    crate::yubikey::sign::CardKey,
+) {
+    use crate::yubikey::apdu::ApduMode;
+    use crate::yubikey::enrol::{EnrolAuth, enrol_card};
+    use crate::yubikey::mock::{MockCard, ToyCipher};
+    use crate::yubikey::plan::{CardSlot, KeyRole, PivSlot, PlannedSlot};
+    let seed = *crate::bip39::Mnemonic::parse(ABOUT)
+        .unwrap()
+        .to_seed(&crate::password::Bip39Passphrase::empty())
+        .unwrap()
+        .expose();
+    let mut card = MockCard::new(77);
+    let auth = EnrolAuth {
+        admin_pin: b"12345678",
+        management_key: &crate::yubikey::piv::DEFAULT_MANAGEMENT_KEY,
+        cipher: Some(&ToyCipher),
+        challenge: [0; 16],
+    };
+    let record = enrol_card(
+        &mut card,
+        ApduMode::Short,
+        &seed,
+        &[PlannedSlot::recommended(
+            CardSlot::Piv(PivSlot::new(0x82).unwrap()),
+            KeyRole::Sol {
+                index: AccountIndex::ZERO,
+            },
+        )],
+        &[],
+        &auth,
+    )
+    .unwrap()
+    .record;
+    let key = crate::yubikey::sign::CardKey {
+        serial: record.serial,
+        slot: record.slots[0].slot,
+        public: record.slots[0].public,
+    };
+    let mut vault = unlocked_with(ABOUT);
+    vault.add_hardware_key(record, 1).unwrap();
+    (card, vault, key)
+}
+
+#[test]
+fn hardware_source_tag_and_vault_refusal() {
+    use crate::error::VaultError;
+    let hw = SolKeySource::Hardware(AccountIndex::new(3).unwrap());
+    assert_eq!((hw.tag(), hw.params()), (7, (3, 0)));
+    assert_eq!(SolKeySource::from_parts(7, 3, 0), Ok(hw));
+    assert!(SolKeySource::from_parts(7, 3, 1).is_err());
+    assert!(SolKeySource::from_parts(7, 1_000, 0).is_err());
+    assert!(hw.is_hardware() && !hw.is_standard() && !hw.is_imported());
+    assert!(!hw.needs_move_rule());
+    assert_eq!(hw.path_text(), "m/44'/501'/3'/0' (YubiKey PIV)");
+    let (_, vault, _) = sol_card();
+    let hw0 = SolKeySource::Hardware(AccountIndex::ZERO);
+    // The public key comes from the slot map (= the standard derivation of the same path).
+    assert_eq!(
+        vault
+            .sol_public_keys(&[hw0, SolKeySource::Standard(AccountIndex::ZERO)])
+            .unwrap(),
+        vec![addr(FROM).to_bytes(); 2]
+    );
+    assert_eq!(
+        vault.sol_public_keys(&[hw]),
+        Err(VaultError::RecordNotFound)
+    );
+    // The vault never lends a seed for it: transfer and message signing are refused.
+    let intent = intent(template_core(), hw0, flags::FIRST_TIME);
+    let (_, approved) = approved_for(&intent);
+    assert_eq!(
+        sign_transfer(&vault, approved, 2_000, BLOCKHASH, 2_000),
+        Err(SolSignError::Vault(VaultError::RecordNotFound))
+    );
+    let message = message_approval(hw0, b"Prove you own it".to_vec());
+    assert_eq!(
+        super::msgsign::sign_message(&vault, message),
+        Err(super::msgsign::SolMessageError::Signing)
+    );
+}
+
+fn message_approval(source: SolKeySource, message: Vec<u8>) -> crate::approval::Approved {
+    crate::approval::Approved::for_test(
+        ChainRef::Solana {
+            cluster: SolCluster::Devnet,
+            genesis: SolCluster::Devnet.genesis(),
+        },
+        AccountRef::Sol(addr(FROM).to_bytes()),
+        Signer::FromPayload,
+        ApprovalKind::SolMessage,
+        SigningPayload::SolMessage(Box::new(crate::approval::SolMessagePayload {
+            source,
+            public: addr(FROM).to_bytes(),
+            message,
+        })),
+    )
+}
+
+/// spec/10 §6.4: a transfer of the `YubiKey` Solana account signed on the card emulator is the
+/// RFC 8032 signature of the template message (the vault reference key gives the same bytes),
+/// passes the post-sign verification and sends no write command; every vault-path check runs
+/// before the card is asked.
+#[test]
+#[expect(clippy::too_many_lines, reason = "one scenario per check")]
+fn yubikey_transfer_signed_on_the_card() {
+    use super::sign::{SolCardSignError, sign_transfer_card};
+    use crate::yubikey::CardError;
+    use crate::yubikey::apdu::ApduMode;
+    use crate::yubikey::sign::sign_sol;
+    let (mut card, _vault, key) = sol_card();
+    let hw0 = SolKeySource::Hardware(AccountIndex::ZERO);
+    let hw_intent = intent(template_core(), hw0, flags::FIRST_TIME);
+    card.log.clear();
+    let transfer = {
+        let (_, approved) = approved_for(&hw_intent);
+        let mut signer =
+            |message: &[u8]| sign_sol(&mut card, ApduMode::Short, &key, b"123456", message);
+        sign_transfer_card(approved, 2_000, BLOCKHASH, 22_000, &mut signer).unwrap()
+    };
+    assert!(!card.saw_write());
+    let message = encode_message(&template_core(), &BLOCKHASH);
+    let reference = SigningKey::from_bytes(&secret()).sign(&message).to_bytes();
+    assert_eq!(transfer.signature, reference);
+    assert_eq!(transfer.tx, assemble_transaction(&reference, &message));
+    assert_eq!(
+        transfer.message_sha256,
+        <[u8; 32]>::from(Sha256::digest(&message))
+    );
+    assert_eq!(transfer.tx.len(), T_SOL_TX_LEN);
+    // Refusals before the card is asked.
+    let mut never = |_: &[u8]| -> Result<[u8; 64], CardError> { unreachable!("not asked") };
+    let (_, late) = approved_for(&hw_intent);
+    assert_eq!(
+        sign_transfer_card(late, 2_000, BLOCKHASH, 22_001, &mut never),
+        Err(SolCardSignError::Sign(SolSignError::DeadlineExceeded))
+    );
+    let software = intent_with_source(SolKeySource::Standard(AccountIndex::ZERO));
+    let (_, approved) = approved_for(&software);
+    assert_eq!(
+        sign_transfer_card(approved, 0, BLOCKHASH, 0, &mut never),
+        Err(SolCardSignError::Sign(SolSignError::KindMismatch))
+    );
+    let golden = intent(golden_core(), hw0, 0);
+    assert_eq!(
+        sign_transfer_card(raw_approval(golden), 0, BLOCKHASH, 0, &mut never),
+        Err(SolCardSignError::Sign(SolSignError::PolicyMismatch))
+    );
+    let mut zero = template_core();
+    zero.amount = 0;
+    assert_eq!(
+        sign_transfer_card(
+            raw_approval(intent(zero, hw0, 0)),
+            0,
+            BLOCKHASH,
+            0,
+            &mut never
+        ),
+        Err(SolCardSignError::Sign(SolSignError::Parse(
+            SolParseError::ZeroAmount
+        )))
+    );
+    let evm = crate::approval::Approved::for_test(
+        ChainRef::Solana {
+            cluster: SolCluster::Devnet,
+            genesis: SolCluster::Devnet.genesis(),
+        },
+        AccountRef::Sol(addr(FROM).to_bytes()),
+        Signer::FromPayload,
+        ApprovalKind::EvmPersonalSign,
+        SigningPayload::EvmPersonal(vec![1]),
+    );
+    assert_eq!(
+        sign_transfer_card(evm, 0, BLOCKHASH, 0, &mut never),
+        Err(SolCardSignError::Sign(SolSignError::KindMismatch))
+    );
+    // A card answer that is not the signature of the message (or of another key): the post-sign
+    // verification refuses it.
+    let mut garbage = |_: &[u8]| -> Result<[u8; 64], CardError> { Ok(reference_other()) };
+    assert_eq!(
+        sign_transfer_card(raw_approval(hw_intent), 0, BLOCKHASH, 0, &mut garbage),
+        Err(SolCardSignError::Sign(SolSignError::PostSignVerification))
+    );
+    // Card failures propagate: no touch, another card, a wrong PIN.
+    card.refuse_touch = true;
+    let result = {
+        let mut signer =
+            |message: &[u8]| sign_sol(&mut card, ApduMode::Short, &key, b"123456", message);
+        sign_transfer_card(raw_approval(hw_intent), 0, BLOCKHASH, 0, &mut signer)
+    };
+    assert_eq!(
+        result,
+        Err(SolCardSignError::Card(CardError::SecurityStatus))
+    );
+    card.refuse_touch = false;
+    let mut other = crate::yubikey::mock::MockCard::new(78);
+    let result = {
+        let mut signer =
+            |message: &[u8]| sign_sol(&mut other, ApduMode::Short, &key, b"123456", message);
+        sign_transfer_card(raw_approval(hw_intent), 0, BLOCKHASH, 0, &mut signer)
+    };
+    assert_eq!(result, Err(SolCardSignError::Card(CardError::WrongCard)));
+    let result = {
+        let mut signer =
+            |message: &[u8]| sign_sol(&mut card, ApduMode::Short, &key, b"000000", message);
+        sign_transfer_card(raw_approval(hw_intent), 0, BLOCKHASH, 0, &mut signer)
+    };
+    assert!(matches!(
+        result,
+        Err(SolCardSignError::Card(CardError::WrongPin { .. }))
+    ));
+}
+
+/// A valid Ed25519 signature of the template message by another key (standard account 1).
+fn reference_other() -> [u8; 64] {
+    let seed = *crate::bip39::Mnemonic::parse(ABOUT)
+        .unwrap()
+        .to_seed(&crate::password::Bip39Passphrase::empty())
+        .unwrap()
+        .expose();
+    let other = SolKeySource::Standard(AccountIndex::new(1).unwrap())
+        .ed25519_seed(&seed)
+        .unwrap();
+    SigningKey::from_bytes(&other)
+        .sign(&encode_message(&template_core(), &BLOCKHASH))
+        .to_bytes()
+}
+
+/// spec/10 §6.4 with spec/07 §19: a dApp message signed on the card verifies strictly for the
+/// account; transaction-like bytes and malformed off-chain messages are refused before the card
+/// is asked, as in the vault path.
+#[test]
+fn yubikey_message_signed_on_the_card() {
+    use super::msgsign::{SolMessageCardError, SolMessageError, sign_message_card};
+    use crate::yubikey::CardError;
+    use crate::yubikey::apdu::ApduMode;
+    use crate::yubikey::sign::sign_sol;
+    let (mut card, _vault, key) = sol_card();
+    let hw0 = SolKeySource::Hardware(AccountIndex::ZERO);
+    let text = b"Prove you own it".to_vec();
+    card.log.clear();
+    let signature = {
+        let mut signer =
+            |message: &[u8]| sign_sol(&mut card, ApduMode::Short, &key, b"123456", message);
+        sign_message_card(message_approval(hw0, text.clone()), &mut signer).unwrap()
+    };
+    assert!(!card.saw_write());
+    assert_eq!(
+        signature,
+        SigningKey::from_bytes(&secret()).sign(&text).to_bytes()
+    );
+    let mut never = |_: &[u8]| -> Result<[u8; 64], CardError> { unreachable!("not asked") };
+    // A transaction message (the template) and a malformed off-chain message: refused.
+    let transaction = encode_message(&template_core(), &BLOCKHASH);
+    assert_eq!(
+        sign_message_card(message_approval(hw0, transaction), &mut never),
+        Err(SolMessageCardError::Sign(SolMessageError::Refused))
+    );
+    let mut offchain = super::msgsign::OFFCHAIN_DOMAIN.to_vec();
+    offchain.extend_from_slice(&[0x07, 0x01]);
+    assert_eq!(
+        sign_message_card(message_approval(hw0, offchain), &mut never),
+        Err(SolMessageCardError::Sign(SolMessageError::Refused))
+    );
+    // A software source.
+    assert_eq!(
+        sign_message_card(
+            message_approval(SolKeySource::Standard(AccountIndex::ZERO), text.clone()),
+            &mut never
+        ),
+        Err(SolMessageCardError::Sign(SolMessageError::KindMismatch))
+    );
+    // A card answer that does not verify for the account.
+    let mut garbage = |_: &[u8]| -> Result<[u8; 64], CardError> { Ok(reference_other()) };
+    assert_eq!(
+        sign_message_card(message_approval(hw0, text.clone()), &mut garbage),
+        Err(SolMessageCardError::Sign(SolMessageError::Signing))
+    );
+    card.refuse_touch = true;
+    let result = {
+        let mut signer =
+            |message: &[u8]| sign_sol(&mut card, ApduMode::Short, &key, b"123456", message);
+        sign_message_card(message_approval(hw0, text), &mut signer)
+    };
+    assert_eq!(
+        result,
+        Err(SolMessageCardError::Card(CardError::SecurityStatus))
+    );
 }

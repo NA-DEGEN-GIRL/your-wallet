@@ -267,17 +267,23 @@ impl App {
         };
         items.push(Item::CardStart(None));
         items.push(Item::Subtitle(no_accounts_text(chain)));
-        items.push(Item::Text(
+        items.push(Item::Text(if self.card.records.is_empty() {
             "이 지갑은 개인키로 시작해 복구 단어가 없습니다. 이 체인을 쓰려면 그 체인의 개인키를 가져오세요."
-                .to_owned(),
-        ));
+                .to_owned()
+        } else {
+            "이 YubiKey 지갑에는 복구 단어가 저장되어 있지 않습니다. 이 체인을 쓰려면 같은 복구 단어로 YubiKey에 이 체인의 키를 등록하거나(설정 → YubiKey), 그 체인의 개인키를 가져오세요."
+                .to_owned()
+        }));
         items.push(Item::Help(chain_help(chain).to_owned()));
         if chain == ImportChain::Btc {
             items.push(script_radios(self.keys.btc_script));
             items.push(Item::Help(T_BTC_SCRIPT.to_owned()));
         }
+        let unlocked = matches!(self.mode, crate::app::AppMode::Unlocked { .. });
         items.push(Item::Row(vec![
             Ctl::primary(import_id, "개인키 가져오기").enabled(self.can_import(chain)),
+            Ctl::button(crate::ui::screens_yubikey::ids::ENROL_START, "YubiKey 등록")
+                .enabled(unlocked && self.card.records.len() < yw_core::yubikey::plan::MAX_CARDS),
         ]));
         items.push(Item::CardEnd);
     }

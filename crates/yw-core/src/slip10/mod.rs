@@ -168,6 +168,11 @@ pub enum SolKeySource {
     /// An imported private key (vault `tag 3`, spec/02 §8.4), outside the mnemonic. The key is
     /// found by its public key (`intent.core.from`), so the source carries no parameters. Tag 6.
     Imported,
+    /// Solana account `i` (`m/44'/501'/i'/0'`) whose Ed25519 key lives in a `YubiKey` PIV slot
+    /// (spec/10 §3.1, vault tag 5). The PC holds only the public key: the vault never lends a
+    /// seed for it (`VaultError::RecordNotFound`) and the signature comes from the card
+    /// (`sol::sign::sign_transfer_card`, `sol::msgsign::sign_message_card`). Tag 7.
+    Hardware(AccountIndex),
 }
 
 impl SolKeySource {
@@ -181,15 +186,18 @@ impl SolKeySource {
             Self::RawSeed => 4,
             Self::SolletLegacy { .. } => 5,
             Self::Imported => 6,
+            Self::Hardware(_) => 7,
         }
     }
 
     /// `(a, b)` of the intent transcript and journal header (spec/07 §13.2): the account index
-    /// for tags 1–2, `(wallet, account)` for tag 5, `(0, 0)` otherwise.
+    /// for tags 1, 2 and 7, `(wallet, account)` for tag 5, `(0, 0)` otherwise.
     #[must_use]
     pub const fn params(self) -> (u32, u32) {
         match self {
-            Self::Standard(index) | Self::Bip44Account(index) => (index.get(), 0),
+            Self::Standard(index) | Self::Bip44Account(index) | Self::Hardware(index) => {
+                (index.get(), 0)
+            }
             Self::SolletLegacy { wallet, account } => (wallet, account),
             Self::Bip44Root | Self::RawSeed | Self::Imported => (0, 0),
         }
@@ -212,6 +220,7 @@ impl SolKeySource {
                 account: b,
             }),
             (6, 0) if a == 0 => Ok(Self::Imported),
+            (7, 0) => Ok(Self::Hardware(index()?)),
             _ => Err(KeyError::InvalidPath),
         }
     }
@@ -228,12 +237,18 @@ impl SolKeySource {
         matches!(self, Self::Imported)
     }
 
+    /// Whether this is a `YubiKey` key (tag 7): signed on the card, never by the vault.
+    #[must_use]
+    pub const fn is_hardware(self) -> bool {
+        matches!(self, Self::Hardware(_))
+    }
+
     /// Whether the non-standard-path rule applies (spec/07 §3.3): a recovery-scan source
-    /// (tags 2–5) may only "send max" to one of the wallet's own standard accounts. Standard and
-    /// imported keys send freely.
+    /// (tags 2–5) may only "send max" to one of the wallet's own standard accounts. Standard,
+    /// imported and `YubiKey` keys (the standard path on the card) send freely.
     #[must_use]
     pub const fn needs_move_rule(self) -> bool {
-        !matches!(self, Self::Standard(_) | Self::Imported)
+        !matches!(self, Self::Standard(_) | Self::Imported | Self::Hardware(_))
     }
 
     /// The path text shown to the user (`m/44'/501'/0'/0'`, `BIP39 seed[0..32]`, …).
@@ -246,6 +261,7 @@ impl SolKeySource {
             Self::RawSeed => "BIP39 seed[0..32] (파생 없음)".to_owned(),
             Self::SolletLegacy { wallet, account } => format!("m/501'/{wallet}'/0/{account}"),
             Self::Imported => "가져온 개인키 (복구 단어 밖)".to_owned(),
+            Self::Hardware(index) => format!("m/44'/501'/{}'/0' (YubiKey PIV)", index.get()),
         }
     }
 
@@ -266,7 +282,10 @@ impl SolKeySource {
                 }
                 return Ok(out);
             }
-            Self::SolletLegacy { .. } | Self::Imported => return Err(KeyError::InvalidPath),
+            // A YubiKey key is on the card only; the vault refuses it before this point.
+            Self::SolletLegacy { .. } | Self::Imported | Self::Hardware(_) => {
+                return Err(KeyError::InvalidPath);
+            }
         };
         slip10_ed25519(seed, &path)
     }

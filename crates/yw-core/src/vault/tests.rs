@@ -2377,16 +2377,16 @@ fn tagged_records_codec_and_rejections() {
             ),
         ),
         (
-            "unknown tag 5",
+            "unknown tag 6",
             payload_bytes(&[btc_record_bytes(7, [9; 32], 1, 1, 3)], 1)
                 .into_iter()
                 .enumerate()
-                .map(|(at, byte)| if at == 16 { 5 } else { byte })
+                .map(|(at, byte)| if at == 16 { 6 } else { byte })
                 .collect(),
         ),
         (
-            "count 47",
-            payload_bytes(std::slice::from_ref(&good_sol), 47),
+            "count 55",
+            payload_bytes(std::slice::from_ref(&good_sol), 55),
         ),
     ];
     for (label, bytes) in cases {
@@ -2737,10 +2737,10 @@ fn newer_payload_tag_is_unsupported_not_corrupt_and_never_restored_from_prev() {
             },
         )
         .unwrap();
-    // One more record of a future tag 5.
+    // One more record of a future tag 6 (tag 5 is the hardware key reference, spec/10 §8).
     let count = u16::from_be_bytes(at(&plain, 8..10).try_into().unwrap()) + 1;
     put(&mut plain, 8, &count.to_be_bytes());
-    plain.push(5);
+    plain.push(6);
     plain.extend_from_slice(&[0x55; 16]);
     plain.extend_from_slice(&[0; 9]);
     let mut header = at(&main, 0..176).to_vec();
@@ -2801,6 +2801,198 @@ fn newer_payload_tag_is_unsupported_not_corrupt_and_never_restored_from_prev() {
         .recover_from_prev(&pw(PASSWORD), new_slot(), 9)
         .unwrap();
     assert_eq!(vault.quarantined_at(), Some(9));
+}
+
+// ---- Hardware key references (tag 5, spec/10 §8) ----
+
+/// The slot map of a mock `YubiKey` enrolled with `ABOUT` holding EVM `first`/`first + 1` in
+/// SIG/AUT and Solana `first` in PIV 82.
+fn hw_record(
+    serial: u32,
+    first: u32,
+    others: &[crate::yubikey::record::HwKeyRecord],
+) -> crate::yubikey::record::HwKeyRecord {
+    use crate::yubikey::plan::{CardSlot, KeyRole, PgpKey, PivSlot, PlannedSlot};
+    let seed = *Mnemonic::parse(ABOUT)
+        .unwrap()
+        .to_seed(&Bip39Passphrase::empty())
+        .unwrap()
+        .expose();
+    let evm = |i: u32| KeyRole::Evm {
+        index: index(i),
+        btc: None,
+    };
+    let plan = [
+        PlannedSlot::recommended(CardSlot::OpenPgp(PgpKey::Sig), evm(first)),
+        PlannedSlot::recommended(CardSlot::OpenPgp(PgpKey::Aut), evm(first + 1)),
+        PlannedSlot::recommended(
+            CardSlot::Piv(PivSlot::new(0x82).unwrap()),
+            KeyRole::Sol {
+                index: index(first),
+            },
+        ),
+    ];
+    let mut card = crate::yubikey::mock::MockCard::new(serial);
+    let auth = crate::yubikey::enrol::EnrolAuth {
+        admin_pin: b"12345678",
+        management_key: &crate::yubikey::piv::DEFAULT_MANAGEMENT_KEY,
+        cipher: Some(&crate::yubikey::mock::ToyCipher),
+        challenge: [1; 16],
+    };
+    crate::yubikey::enrol::enrol_card(
+        &mut card,
+        crate::yubikey::apdu::ApduMode::Short,
+        &seed,
+        &plan,
+        others,
+        &auth,
+    )
+    .unwrap()
+    .record
+}
+
+#[test]
+#[allow(clippy::indexing_slicing, reason = "test assertions")]
+fn hardware_vault_lifecycle() {
+    let first = hw_record(11, 0, &[]);
+    let (storage, mut vault) = empty_vault(KDF_TEST);
+    let id = vault
+        .create_with_hardware(&pw(PASSWORD), first.clone(), new_slot(), 5)
+        .unwrap();
+    assert_eq!(
+        vault.status(),
+        VaultStatus::Unlocked {
+            alt_passphrase: false
+        }
+    );
+    assert_eq!(vault.has_mnemonic(), Ok(false));
+    assert_eq!(
+        vault.evm_addresses(&[index(0)]),
+        Err(VaultError::NoMnemonic)
+    );
+    // YubiKey EVM accounts answer from the slot map; no vault path lends a key for them.
+    assert_eq!(
+        vault.evm_address(EvmKeySource::Hardware(index(1))).ok(),
+        crate::yubikey::plan::evm_address(&first.slots[1].public).ok()
+    );
+    assert_eq!(
+        vault.evm_address(EvmKeySource::Hardware(index(9))),
+        Err(VaultError::RecordNotFound)
+    );
+    assert_eq!(
+        vault.with_secp_key(KeyRef::Evm(EvmKeySource::Hardware(index(0))), |_, _| Ok(())),
+        Err(VaultError::RecordNotFound)
+    );
+    let keys = vault.hardware_keys().unwrap();
+    assert_eq!(keys.len(), 1);
+    assert_eq!((keys[0].id, keys[0].created_unix), (id, 5));
+    assert_eq!(keys[0].record, first);
+    // The payload holds no secret: no Bip39 and no imported-key record.
+    let payload = vault.payload().unwrap();
+    assert!(payload.bip39.is_none() && payload.raw_keys.is_empty());
+    assert!(payload.sol_keys.is_empty() && payload.btc_keys.is_empty());
+
+    // A second card with other indices, then the same serial again.
+    let second = hw_record(12, 2, std::slice::from_ref(&first));
+    let second_id = vault.add_hardware_key(second.clone(), 6).unwrap();
+    assert_eq!(
+        vault.add_hardware_key(second.clone(), 7),
+        Err(VaultError::DuplicateKey)
+    );
+    // A record contradicting the first (same path, other public key) is refused.
+    let mut forged = hw_record(13, 4, &[first.clone(), second.clone()]);
+    forged.slots[0].role = first.slots[0].role;
+    assert_eq!(
+        vault.add_hardware_key(forged, 8),
+        Err(VaultError::Key(KeyError::DerivationFailed))
+    );
+
+    // Reload and unlock: the slot map survives byte for byte.
+    vault.lock();
+    let mut vault = reload(&storage);
+    vault.unlock(&pw(PASSWORD), new_slot()).unwrap();
+    let keys = vault.hardware_keys().unwrap();
+    assert_eq!(
+        keys.iter()
+            .map(|key| key.record.clone())
+            .collect::<Vec<_>>(),
+        vec![first.clone(), second]
+    );
+    // Imported keys can live next to hardware keys.
+    vault.import_evm_private_key(&"07".repeat(32), 9).unwrap();
+
+    // Removal needs the password; the last record of a vault without words stays.
+    assert_eq!(
+        vault.remove_hardware_key(&pw(OTHER_PASSWORD), second_id),
+        Err(VaultError::UnlockFailed)
+    );
+    vault.remove_hardware_key(&pw(PASSWORD), second_id).unwrap();
+    assert_eq!(
+        vault.remove_hardware_key(&pw(PASSWORD), second_id),
+        Err(VaultError::RecordNotFound)
+    );
+    let raw = vault.raw_keys().unwrap()[0].0;
+    vault.remove_imported_key(&pw(PASSWORD), raw).unwrap();
+    assert_eq!(
+        vault.remove_hardware_key(&pw(PASSWORD), id),
+        Err(VaultError::LastKey)
+    );
+    assert_eq!(vault.hardware_keys().unwrap().len(), 1);
+}
+
+#[test]
+#[allow(clippy::indexing_slicing, reason = "test assertions")]
+fn hardware_keys_next_to_a_mnemonic_and_the_largest_payload() {
+    use crate::yubikey::plan::{CardSlot, KeyRole, PinPolicy, PivSlot, TouchPolicy};
+    use crate::yubikey::record::{HwKeyRecord, HwPublicKey, RecordedSlot};
+
+    let (_, mut vault) = imported(None);
+    let record = hw_record(21, 0, &[]);
+    vault.add_hardware_key(record.clone(), 1).unwrap();
+    assert_eq!(vault.hardware_keys().unwrap()[0].record, record);
+
+    // 24 words + 15 keys of each chain + 8 cards × 24 slots fits PAYLOAD_CT_MAX.
+    let mut payload = golden_payload();
+    payload.raw_keys.extend((1..=15).map(raw_record));
+    for card in 0..8_u32 {
+        let slots = (0..20_u8)
+            .map(|n| PivSlot::retired(n).unwrap().id())
+            .chain(PivSlot::STANDARD)
+            .enumerate()
+            .map(|(position, id)| {
+                let i = card * 24 + u32::try_from(position).unwrap();
+                let seed = [u8::try_from(i % 250).unwrap() + 1; 32];
+                RecordedSlot {
+                    slot: CardSlot::Piv(PivSlot::new(id).unwrap()),
+                    role: KeyRole::Sol { index: index(i) },
+                    touch: TouchPolicy::Always,
+                    pin: PinPolicy::Always,
+                    public: HwPublicKey::Ed25519(crate::sol::keys::public_key(&seed)),
+                }
+            })
+            .collect();
+        payload.hw_keys.push(format::HwKeyEntry {
+            record_id: [0xC0 + u8::try_from(card).unwrap(); 16],
+            created_unix: 1,
+            record: HwKeyRecord {
+                serial: 1_000 + card,
+                firmware: crate::yubikey::Firmware::new(5, 7, 4),
+                fingerprint: [1, 2, 3, 4],
+                slots,
+            },
+        });
+    }
+    let encoded = payload.encode().unwrap();
+    assert_eq!(encoded.len(), 16 + 64 + 15 * 57 + 8 * (25 + 12 + 24 * 48));
+    assert!(encoded.len() + 16 <= usize::try_from(super::PAYLOAD_CT_MAX).unwrap());
+    let decoded = Payload::decode(&encoded).unwrap();
+    assert_eq!(decoded.hw_keys, payload.hw_keys);
+    // A ninth card is over the limit.
+    let mut ninth = payload.hw_keys[0].clone();
+    ninth.record_id = [0xEE; 16];
+    ninth.record.serial = 9_999;
+    payload.hw_keys.push(ninth);
+    assert_eq!(payload.encode().err(), Some(VaultError::RecordLimit));
 }
 
 /// spec/08 §3.5: the public key and the WIF export of a Bitcoin account on EVM account `i`'s key

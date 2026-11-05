@@ -236,6 +236,58 @@ pub enum KeyJob {
         /// `true` = typed data.
         typed: bool,
     },
+    /// Sign an approved EVM transaction of a `YubiKey` account on the inserted card, then the
+    /// same verification and `Signed` journal commit as [`KeyJob::SignEvm`] (spec/10 §9.2).
+    SignEvmCard {
+        /// Who answers the result ([`KeyOutcome::SignedEvm`]).
+        ticket: SignTicket,
+        /// The one-time approval (moved; signer `EvmKeySource::Hardware`).
+        approved: Box<Approved>,
+        /// Record fields from the approval.
+        info: SignInfo,
+        /// The card PIN for this one operation (wiped when the job is dropped).
+        pin: Zeroizing<Vec<u8>>,
+    },
+    /// [`KeyJob::SignMessage`] for a `YubiKey` account (spec/10 §9.2).
+    SignMessageCard {
+        /// Who answers the result ([`KeyOutcome::SignedMessage`]).
+        ticket: SignTicket,
+        /// The one-time approval (moved).
+        approved: Box<Approved>,
+        /// `true` = typed data.
+        typed: bool,
+        /// The card PIN for this one operation.
+        pin: Zeroizing<Vec<u8>>,
+    },
+    /// Enrol the inserted `YubiKey` with keys derived from a mnemonic entered once (spec/10 §7):
+    /// the mnemonic, passphrase, admin PIN and management key are wiped with the job; the
+    /// record (public data only) is added to the vault.
+    EnrolYubiKey {
+        /// Mnemonic text.
+        phrase: Zeroizing<Vec<u8>>,
+        /// Optional BIP39 passphrase.
+        passphrase: Option<Zeroizing<Vec<u8>>>,
+        /// The validated slot plan.
+        slots: Vec<yw_core::yubikey::plan::PlannedSlot>,
+        /// `OpenPGP` admin PIN (PW3).
+        admin_pin: Zeroizing<Vec<u8>>,
+        /// PIV management key bytes (empty without PIV slots).
+        management_key: Zeroizing<Vec<u8>>,
+    },
+    /// The enrolled `YubiKey`s (vault tag 5).
+    HardwareKeys,
+    /// A `YubiKey` wizard job (spec/10 §7, §9.3).
+    YubiKey(crate::workers::key::yubikey::YkJob),
+    /// [`KeyJob::SignChainMessage`] for a `YubiKey` Solana or Bitcoin account (spec/10 §10):
+    /// `sol::msgsign::sign_message_card` / `btc::msgsign::sign_message_card` with the card.
+    SignChainMessageCard {
+        /// Who answers the result ([`KeyOutcome::SignedChainMessage`]).
+        ticket: SignTicket,
+        /// The one-time approval (moved; payload source `Hardware`).
+        approved: Box<Approved>,
+        /// The card PIN for this one operation.
+        pin: Zeroizing<Vec<u8>>,
+    },
     /// Sign an approved Solana or Bitcoin dApp message (spec/07 §19, spec/08 §17).
     SignChainMessage {
         /// Who answers the result.
@@ -271,6 +323,22 @@ pub enum KeyJob {
         /// Wall clock (journal `signed_at_ms`).
         now_unix_ms: u64,
     },
+    /// [`KeyJob::SignSol`] for a `YubiKey` Solana account (spec/10 §6.4): the same journal and
+    /// intent handling, the signature from the card (`sol::sign::sign_transfer_card`).
+    SignSolCard {
+        /// The one-time approval (moved; intent source `SolKeySource::Hardware`).
+        approved: Box<Approved>,
+        /// Monotonic ms of `consume`.
+        consumed_at_ms: u64,
+        /// Finalized blockhash fetched after approval.
+        blockhash: [u8; 32],
+        /// Its `lastValidBlockHeight`.
+        last_valid_block_height: u64,
+        /// Wall clock (journal `signed_at_ms`).
+        now_unix_ms: u64,
+        /// The card PIN for this one operation.
+        pin: Zeroizing<Vec<u8>>,
+    },
     /// Apply a SOL broadcast-loop transition; terminal records move to activity (spec/07 §14.1).
     SolApply {
         /// Transition.
@@ -295,6 +363,20 @@ pub enum KeyJob {
         tip_height: u32,
         /// Wall clock.
         now_unix_ms: u64,
+    },
+    /// [`KeyJob::SignBtc`] for a `YubiKey` Bitcoin account (spec/10 §6.3): one card signature
+    /// per input with the same PIN (`btc::sign::sign_plan_card`), the same journal handling.
+    SignBtcCard {
+        /// The one-time approval (moved).
+        approved: Box<Approved>,
+        /// The approved plan.
+        plan: Box<SendPlan>,
+        /// Core tip of the plan (journal clean-up).
+        tip_height: u32,
+        /// Wall clock.
+        now_unix_ms: u64,
+        /// The card PIN for this one operation (every input).
+        pin: Zeroizing<Vec<u8>>,
     },
     /// Apply a BTC journal step (spec/08 §11.3, §12.1–§12.4).
     BtcJournal {
@@ -329,6 +411,8 @@ pub enum MessageSignFailure {
     Sign(SignError),
     /// Cancelled by `Lock` before it ran (spec/04 §1.2).
     Locked,
+    /// The `YubiKey` did not sign (spec/10 §9.2).
+    Card(crate::yubikey::CardJobError),
 }
 
 /// A finished `SignMessage` job (or one cancelled by `Lock` before it ran).
@@ -434,6 +518,8 @@ pub enum SolSignFailure {
     JournalFull,
     /// The `Pending` record could not be committed (the signature is dropped; nothing sent).
     JournalWrite(VaultError),
+    /// The `YubiKey` did not sign (spec/10 §9.2; nothing stored or sent).
+    Card(crate::yubikey::CardJobError),
 }
 
 /// A signed and journaled transaction ready to broadcast.
@@ -462,6 +548,9 @@ pub enum SignFailure {
     JournalWrite(VaultError),
     /// Cancelled by `Lock` before it ran (spec/04 §1.2; nothing signed or stored).
     Locked,
+    /// The `YubiKey` did not sign (no card, wrong card, PIN, touch, bad signature; spec/10 §9.2;
+    /// nothing stored or sent).
+    Card(crate::yubikey::CardJobError),
 }
 
 impl KeyJob {
@@ -499,6 +588,14 @@ impl KeyJob {
             Self::SignEvm { .. } => "SignEvm",
             Self::SignMessage { .. } => "SignMessage",
             Self::SignChainMessage { .. } => "SignChainMessage",
+            Self::SignEvmCard { .. } => "SignEvmCard",
+            Self::SignMessageCard { .. } => "SignMessageCard",
+            Self::EnrolYubiKey { .. } => "EnrolYubiKey",
+            Self::HardwareKeys => "HardwareKeys",
+            Self::YubiKey(job) => job.name(),
+            Self::SignChainMessageCard { .. } => "SignChainMessageCard",
+            Self::SignSolCard { .. } => "SignSolCard",
+            Self::SignBtcCard { .. } => "SignBtcCard",
             Self::JournalApply { .. } => "JournalApply",
             Self::SolKeys { .. } => "SolKeys",
             Self::SignSol { .. } => "SignSol",
@@ -523,20 +620,27 @@ impl KeyJob {
     #[must_use]
     pub fn cancelled_outcome(self) -> KeyOutcome {
         match self {
-            Self::SignEvm { ticket, .. } => KeyOutcome::SignedEvm(EvmSigned {
-                ticket,
-                result: Err(SignFailure::Locked),
-            }),
-            Self::SignMessage { ticket, .. } => KeyOutcome::SignedMessage(MessageSigned {
-                ticket,
-                result: Err(MessageSignFailure::Locked),
-            }),
-            Self::SignChainMessage { ticket, .. } => {
+            Self::SignEvm { ticket, .. } | Self::SignEvmCard { ticket, .. } => {
+                KeyOutcome::SignedEvm(EvmSigned {
+                    ticket,
+                    result: Err(SignFailure::Locked),
+                })
+            }
+            Self::SignMessage { ticket, .. } | Self::SignMessageCard { ticket, .. } => {
+                KeyOutcome::SignedMessage(MessageSigned {
+                    ticket,
+                    result: Err(MessageSignFailure::Locked),
+                })
+            }
+            Self::SignChainMessage { ticket, .. } | Self::SignChainMessageCard { ticket, .. } => {
                 KeyOutcome::SignedChainMessage(ChainMessageSigned {
                     ticket,
                     result: Err(true),
                 })
             }
+            // The card jobs end like their software jobs for the UI.
+            Self::SignSolCard { .. } => KeyOutcome::Cancelled("SignSol", KeyJobError::Locked),
+            Self::SignBtcCard { .. } => KeyOutcome::Cancelled("SignBtc", KeyJobError::Locked),
             other => KeyOutcome::Cancelled(other.name(), KeyJobError::Locked),
         }
     }
@@ -546,6 +650,17 @@ impl core::fmt::Debug for KeyJob {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter.write_str(self.name())
     }
+}
+
+/// Why `EnrolYubiKey` failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum YubiKeyJobError {
+    /// The mnemonic or passphrase is invalid.
+    Key(KeyError),
+    /// The vault refused (locked, record limit, duplicate serial, storage).
+    Vault(VaultError),
+    /// The card operation failed (spec/10 §7.4: earlier slots may be written).
+    Card(crate::yubikey::CardJobError),
 }
 
 /// A job that did not run because the wallet was locked first.
@@ -629,6 +744,17 @@ pub enum KeyOutcome {
     SignedMessage(MessageSigned),
     /// A Solana or Bitcoin dApp message signature (or why there is none).
     SignedChainMessage(ChainMessageSigned),
+    /// `EnrolYubiKey` finished: the new record id and the enrolment result (defaults seen).
+    YubiKeyEnrolled(Result<(RecordId, yw_core::yubikey::enrol::Enrolled), YubiKeyJobError>),
+    /// `HardwareKeys` finished.
+    HardwareKeys(Result<Vec<yw_core::vault::HardwareKey>, VaultError>),
+    /// A `YubiKey` wizard job finished.
+    YubiKey(crate::workers::key::yubikey::YkOutcome),
+    /// A card job stopped at the PIN check, before its approval was used (wrong PIN, another
+    /// card, no card; spec/10 §9.2): the unused approval comes back, just before the job's
+    /// failure outcome, with the reason, so the app may ask for the PIN again while the card step
+    /// is still valid.
+    CardUnused(Box<Approved>, crate::yubikey::CardJobError),
     /// Terminal journal records moved to activity (spec/03 §5.4).
     ActivityMoved(Vec<(NetworkId, ActivityEntry)>),
     /// Solana public keys.

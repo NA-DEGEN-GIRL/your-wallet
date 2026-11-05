@@ -21,6 +21,7 @@ use crate::btc::account::ScriptType;
 use crate::btc::network::BtcNetwork;
 use crate::error::{KeyError, StorageError, VaultError};
 use crate::password::VaultPassword;
+use crate::yubikey::record::{HwKeyRecord, records_consistent};
 
 /// Payload plaintext magic.
 pub(crate) const PAYLOAD_MAGIC: [u8; 8] = *b"YWPAY003";
@@ -36,6 +37,12 @@ const TAG_BIP39: u8 = 1;
 const TAG_RAW_KEY: u8 = 2;
 const TAG_SOL_KEY: u8 = 3;
 const TAG_BTC_KEY: u8 = 4;
+/// Hardware key reference (`YubiKey` slot map, spec/10 §8): no secret.
+const TAG_HW_KEY: u8 = 5;
+/// Record header of a tag-5 record: tag, record id, created.
+const HW_RECORD_HEAD_LEN: usize = 25;
+/// Enrolled `YubiKeys` (tag-5 records).
+pub(crate) const MAX_HW_KEYS: usize = crate::yubikey::plan::MAX_CARDS;
 const SIDECAR_VERSION: u16 = 3;
 const HKDF_META_INFO: &[u8] = b"your-wallet/v3/meta";
 const HKDF_JOURNAL_INFO: &[u8] = b"your-wallet/v3/journal";
@@ -407,8 +414,17 @@ impl BtcKeyRecord {
     }
 }
 
+/// One hardware key reference (`tag 5`): the slot map of one enrolled `YubiKey`. Public data only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HwKeyEntry {
+    pub(crate) record_id: [u8; 16],
+    pub(crate) created_unix: u64,
+    pub(crate) record: HwKeyRecord,
+}
+
 /// Decoded payload: at most one BIP39 record (none in a key-only vault) followed by 0–15 imported
-/// keys of each chain, grouped by tag (2, then 3, then 4).
+/// keys of each chain, grouped by tag (2, then 3, then 4), then 0–8 hardware key references
+/// (tag 5, spec/10 §8).
 ///
 /// Each imported-key list is allocated with room for [`MAX_RAW_KEYS`] records up front, so `push`
 /// never reallocates (a reallocation would free the old buffer with key copies in it). `retain`
@@ -419,6 +435,7 @@ pub(crate) struct Payload {
     pub(crate) raw_keys: Vec<RawKeyRecord>,
     pub(crate) sol_keys: Vec<SolKeyRecord>,
     pub(crate) btc_keys: Vec<BtcKeyRecord>,
+    pub(crate) hw_keys: Vec<HwKeyEntry>,
 }
 
 impl Drop for Payload {
@@ -449,6 +466,7 @@ impl Payload {
             raw_keys: raw_key_list(),
             sol_keys: Vec::with_capacity(MAX_RAW_KEYS),
             btc_keys: Vec::with_capacity(MAX_RAW_KEYS),
+            hw_keys: Vec::with_capacity(MAX_HW_KEYS),
         }
     }
 
@@ -458,6 +476,7 @@ impl Payload {
             .saturating_add(self.raw_keys.len())
             .saturating_add(self.sol_keys.len())
             .saturating_add(self.btc_keys.len())
+            .saturating_add(self.hw_keys.len())
     }
 
     /// Whether `id` names any record.
@@ -468,6 +487,7 @@ impl Payload {
             || self.raw_keys.iter().any(|raw| raw.record_id == *id)
             || self.sol_keys.iter().any(|sol| sol.record_id == *id)
             || self.btc_keys.iter().any(|btc| btc.record_id == *id)
+            || self.hw_keys.iter().any(|hw| hw.record_id == *id)
     }
 
     fn encoded_len(&self) -> Option<usize> {
@@ -478,19 +498,33 @@ impl Payload {
         let raws = RAW_RECORD_LEN.checked_mul(self.raw_keys.len())?;
         let sols = SOL_RECORD_LEN.checked_mul(self.sol_keys.len())?;
         let btcs = BTC_RECORD_LEN.checked_mul(self.btc_keys.len())?;
+        let hws = self.hw_keys.iter().try_fold(0_usize, |sum, entry| {
+            sum.checked_add(HW_RECORD_HEAD_LEN)?
+                .checked_add(entry.record.body_len())
+        })?;
         PAYLOAD_HEADER_LEN
             .checked_add(bip39)?
             .checked_add(raws)?
             .checked_add(sols)?
-            .checked_add(btcs)
+            .checked_add(btcs)?
+            .checked_add(hws)
     }
 
     pub(crate) fn encode(&self) -> Result<Zeroizing<Vec<u8>>, VaultError> {
         if self.raw_keys.len() > MAX_RAW_KEYS
             || self.sol_keys.len() > MAX_RAW_KEYS
             || self.btc_keys.len() > MAX_RAW_KEYS
+            || self.hw_keys.len() > MAX_HW_KEYS
         {
             return Err(VaultError::RecordLimit);
+        }
+        let hw_records: Vec<HwKeyRecord> = self
+            .hw_keys
+            .iter()
+            .map(|entry| entry.record.clone())
+            .collect();
+        if !records_consistent(&hw_records) {
+            return Err(INTERNAL);
         }
         let records = self.record_count();
         if records == 0 || records > MAX_RECORDS {
@@ -534,6 +568,12 @@ impl Payload {
             out.push(u8::from(btc.compressed));
             out.push(btc.network.id());
             out.push(btc.script.code());
+        }
+        for hw in &self.hw_keys {
+            out.push(TAG_HW_KEY);
+            out.extend_from_slice(&hw.record_id);
+            out.extend_from_slice(&hw.created_unix.to_be_bytes());
+            hw.record.encode_into(&mut out).map_err(|_| INTERNAL)?;
         }
         if out.len() != len || out.capacity() != len {
             return Err(INTERNAL);
@@ -653,6 +693,30 @@ impl Payload {
         Some(())
     }
 
+    fn decode_hw(&mut self, reader: &mut Reader<'_>, record_id: [u8; 16]) -> Option<()> {
+        let created_unix = reader.u64()?;
+        let (record, rest) = HwKeyRecord::decode(reader.bytes)?;
+        reader.bytes = rest;
+        if self.hw_keys.len() >= MAX_HW_KEYS {
+            return None;
+        }
+        let mut all: Vec<HwKeyRecord> = self
+            .hw_keys
+            .iter()
+            .map(|entry| entry.record.clone())
+            .collect();
+        all.push(record.clone());
+        if !records_consistent(&all) {
+            return None;
+        }
+        self.hw_keys.push(HwKeyEntry {
+            record_id,
+            created_unix,
+            record,
+        });
+        Some(())
+    }
+
     fn decode_inner(bytes: &[u8]) -> Option<Self> {
         let mut reader = Reader::new(bytes);
         if reader.array::<8>()? != PAYLOAD_MAGIC {
@@ -687,6 +751,7 @@ impl Payload {
                 TAG_RAW_KEY => payload.decode_raw(&mut reader, id)?,
                 TAG_SOL_KEY => payload.decode_sol(&mut reader, id)?,
                 TAG_BTC_KEY => payload.decode_btc(&mut reader, id)?,
+                TAG_HW_KEY => payload.decode_hw(&mut reader, id)?,
                 _ => return None,
             }
         }

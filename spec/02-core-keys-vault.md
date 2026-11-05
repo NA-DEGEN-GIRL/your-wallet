@@ -440,6 +440,7 @@ len field                                len field
 - `addr0` = 그 passphrase로 파생한 EVM 계정 0(`m/44'/60'/0'/0/0`)의 20바이트 주소. 다른 passphrase도 유효한 다른 지갑을 열기 때문에 BIP39 자체로는 오타를 알 수 없다. 4바이트 확인값은 잠금 해제 때 오타를 잡는다(놓칠 확률 2^-32). 확인값은 암호화된 payload 안에 있어 vault 비밀번호 없이는 passphrase 추측에 쓸 수 없다(비밀번호를 가진 공격자는 어차피 체인 위 주소로 같은 추측을 할 수 있다).
 - 디코드 거부(`UnsupportedPayload`, 인증된 평문이므로 손상이 아니다 — §4.5 단계 10): magic 불일치, `record_count` 범위 밖, reserved ≠ 0, 알 수 없는 tag, 순서 위반, `record_id` 0 또는 (모든 tag를 통틀어) 중복, `entropy_len` 오류, flags 예약 비트, `passphrase_used = 0`인데 확인값 ≠ 0, `backup_state` ∉ {0,1}, `backup_state = 0`이면서 `passphrase_used = 1`(생성 지갑은 passphrase를 쓰지 않음, §8.1), raw key 범위 밖, 같은 raw key 중복, 체인별 16번째 가져온 키, `SolKey` 공개키 불일치·중복, `BtcKey` 값 규칙 위반·중복, 남는 바이트.
 - 최대 크기: 16 + `Bip39`(24단어) 64 + 15 × (57 + 89 + 60) = 3,170바이트 평문.
+- **tag 5 `HwKey`(2026-11-04, D33):** YubiKey 하나의 슬롯 표(일련번호·펌웨어·마스터 지문·슬롯별 역할·경로 인덱스·정책·공개키, 비밀 없음), 0–8개, tag 4 뒤. 바이트 배치와 검사 규칙은 [10](10-yubikey.md) §8. 이에 따라 `MAX_RECORDS` = 54, `PAYLOAD_CT_MAX` = 16,384(최대 평문 3,170 + 8 × 1,189 = 12,682바이트). tag 5만 있는 payload는 니모닉 없는 **YubiKey 지갑**이다(§8.5와 같이 `has_mnemonic() = false`).
 - 인코더는 `Zeroizing<Vec<u8>>`에 정확한 길이를 먼저 계산해 할당한다.
 
 ## 5. DEK 하위 키와 사이드카 파일

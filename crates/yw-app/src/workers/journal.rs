@@ -6,7 +6,7 @@
 
 use yw_core::approval::{AccountRef, Approved, ChainRef};
 use yw_core::error::{StorageError, VaultError};
-use yw_core::evm::sign::{SignError, sign_transaction};
+use yw_core::evm::sign::{SignError, SignedTx, sign_transaction};
 use yw_core::journal::JournalPlain;
 use yw_core::journal::evm::{
     ActivityRow, EvmEntries, EvmRecord, Transition, apply_to_plain, make_room, push_record,
@@ -16,7 +16,12 @@ use yw_core::journal::sol::{
     SolActivityRow, SolEntries, SolRecord, SolTransition, has_intent, has_room as sol_has_room,
     make_room as sol_make_room, pending_for, push_record as sol_push_record, take_terminal,
 };
-use yw_core::sol::{SolSignError, sign_transfer};
+use yw_core::sol::{SignedSolTransfer, SolSignError, sign_transfer};
+
+/// The signing step of a SOL transfer: `(vault, approval, consumed_at_ms, blockhash, now_ms)`
+/// → the signed and verified transfer (the vault's `sign_transfer` or the card path).
+pub type SolSigner<'a> = dyn FnMut(&Vault, Approved, u64, [u8; 32], u64) -> Result<SignedSolTransfer, SolSignFailure>
+    + 'a;
 use yw_core::vault::{FileKind, Vault};
 
 use crate::events::{
@@ -239,8 +244,32 @@ impl JournalState {
         times: SolSignTimes,
         alt: bool,
     ) -> Vec<KeyOutcome> {
+        self.sign_sol_with(
+            vault,
+            approved,
+            times,
+            alt,
+            &mut |vault, approved, consumed_at_ms, blockhash, now_ms| {
+                sign_transfer(vault, approved, consumed_at_ms, blockhash, now_ms)
+                    .map_err(SolSignFailure::Sign)
+            },
+        )
+    }
+
+    /// [`JournalState::sign_sol`] with another signer: the `YubiKey` path (spec/10 §6.4) passes
+    /// the card signer (`sol::sign::sign_transfer_card`); the `AlreadySigned`/`PendingExists`
+    /// and room checks before signing and the `Pending` commit before anything is returned are
+    /// the same.
+    pub fn sign_sol_with(
+        &mut self,
+        vault: &mut Vault,
+        approved: Box<Approved>,
+        times: SolSignTimes,
+        alt: bool,
+        sign_step: &mut SolSigner<'_>,
+    ) -> Vec<KeyOutcome> {
         let mut out = Vec::new();
-        let result = self.sign_sol_inner(vault, *approved, times, alt, &mut out);
+        let result = self.sign_sol_inner(vault, *approved, times, alt, &mut out, sign_step);
         out.insert(0, KeyOutcome::SignedSol(result));
         out
     }
@@ -252,6 +281,7 @@ impl JournalState {
         times: SolSignTimes,
         alt: bool,
         out: &mut Vec<KeyOutcome>,
+        sign_step: &mut SolSigner<'_>,
     ) -> Result<SolSignedSummary, SolSignFailure> {
         let yw_core::approval::SigningPayload::SolTransfer(intent) = approved.payload() else {
             return Err(SolSignFailure::Sign(SolSignError::KindMismatch));
@@ -282,14 +312,13 @@ impl JournalState {
             }
         }
         let now_ms = yw_win::time::monotonic_ms();
-        let signed = sign_transfer(
+        let signed = sign_step(
             vault,
             approved,
             times.consumed_at_ms,
             times.blockhash,
             now_ms,
-        )
-        .map_err(SolSignFailure::Sign)?;
+        )?;
         let record = SolRecord::new_pending(
             &intent,
             &signed,
@@ -470,8 +499,30 @@ impl JournalState {
         info: &SignInfo,
         alt: bool,
     ) -> Vec<KeyOutcome> {
+        self.sign_with(
+            vault,
+            ticket,
+            approved,
+            info,
+            alt,
+            &mut |vault, approved| sign_transaction(vault, approved).map_err(SignFailure::Sign),
+        )
+    }
+
+    /// [`JournalState::sign`] with another signer: the `YubiKey` path (spec/10 §9.2) passes the
+    /// card signer; room check, post-sign verification (inside the signer) and the `Signed`
+    /// commit before anything is returned are the same.
+    pub fn sign_with(
+        &mut self,
+        vault: &mut Vault,
+        ticket: crate::events::SignTicket,
+        approved: Box<Approved>,
+        info: &SignInfo,
+        alt: bool,
+        sign_fn: &mut dyn FnMut(&Vault, Approved) -> Result<SignedTx, SignFailure>,
+    ) -> Vec<KeyOutcome> {
         let mut out = Vec::new();
-        let result = self.sign_inner(vault, *approved, info, alt, &mut out);
+        let result = self.sign_inner(vault, *approved, info, alt, &mut out, sign_fn);
         out.insert(
             0,
             KeyOutcome::SignedEvm(crate::events::EvmSigned { ticket, result }),
@@ -486,6 +537,7 @@ impl JournalState {
         info: &SignInfo,
         alt: bool,
         out: &mut Vec<KeyOutcome>,
+        sign_fn: &mut dyn FnMut(&Vault, Approved) -> Result<SignedTx, SignFailure>,
     ) -> Result<SignedSummary, SignFailure> {
         let current = self.current(vault).map_err(SignFailure::JournalWrite)?;
         let mut trial = current.clone();
@@ -512,7 +564,7 @@ impl JournalState {
             return Err(SignFailure::Sign(SignError::KindMismatch));
         };
         let digest = approved.digest();
-        let signed = sign_transaction(vault, approved).map_err(SignFailure::Sign)?;
+        let signed = sign_fn(vault, approved)?;
         let record = EvmRecord::new_signed(
             chain_id,
             account,

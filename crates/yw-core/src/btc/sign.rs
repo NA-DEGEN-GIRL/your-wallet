@@ -27,6 +27,10 @@
 //! | P2SH-P2WPKH | BIP143, `SIGHASH_ALL` | `16 00 14 <HASH160(K)>` (in the plan) | `[DER‖01, K]` |
 //! | P2WPKH | BIP143, `SIGHASH_ALL` | — | `[DER‖01, K]` |
 //! | P2TR | BIP341 key path, `SIGHASH_DEFAULT` | — | `[schnorr64]` |
+//!
+//! A `YubiKey` account (`BtcAccountKey::Hardware`) has no key in the vault: [`sign_plan`]
+//! refuses it (`Vault(RecordNotFound)`) and [`sign_plan_card`] signs each input on the card
+//! (spec/10 §6.3) with the relaxed card rules [`check_card_signature`] (high-R allowed, DER ≤ 72).
 #![deny(clippy::indexing_slicing)]
 
 use core::fmt;
@@ -46,11 +50,13 @@ use super::select::SendPlan;
 use super::sighash::{bip143_sighash_p2wpkh, legacy_sighash};
 use super::taproot::{Prevout, TaprootSigError, sighash_default, sign_key_path};
 use super::tx::{OutPoint, serialize};
+use super::verify::{PostSignError, verify_signed};
 use crate::approval::{AccountRef, ApprovalId, Approved, ChainRef, Signer, SigningPayload};
 use crate::bip32::path::AccountIndex;
 use crate::entropy::{OsRandom, fill_random, secp_context};
 use crate::error::VaultError;
 use crate::vault::{EvmKeySource, KeyRef, Vault};
+use crate::yubikey::CardError;
 
 /// Longest DER signature we produce or accept (low-R, low-S).
 pub const MAX_DER_LEN: usize = 70;
@@ -415,6 +421,8 @@ impl BtcKeys for Vault {
                 })
                 .map_err(SignError::Vault)?
             }
+            // A YubiKey account has no key on the PC (spec/10 §1): `sign_plan_card` signs it.
+            BtcKeySource::Hardware { .. } => Err(SignError::Vault(VaultError::RecordNotFound)),
         }
     }
 }
@@ -488,6 +496,7 @@ impl BtcKeys for SeedKeys {
                 secret.non_secure_erase();
                 result
             }
+            BtcKeySource::Hardware { .. } => Err(SignError::Vault(VaultError::RecordNotFound)),
         }
     }
 
@@ -550,6 +559,26 @@ fn approval_matches(approved: &Approved, plan: &SendPlan, account: &BtcAccountKe
             })
         && approved.account() == AccountRef::Bitcoin(account.identity())
         && matches!(approved.payload(), SigningPayload::Btc(bytes) if *bytes == btc_payload(plan))
+}
+
+/// The plan's inputs are its transaction's inputs (same outpoints, no witness, the unsigned
+/// scriptSig of each input's path).
+fn check_plan_consistent(plan: &SendPlan, account: &BtcAccountKey) -> Result<(), SignError> {
+    let unsigned = plan.tx();
+    let inputs = plan.inputs();
+    let deriver = account.deriver().map_err(|_| SignError::Derivation)?;
+    if inputs.len() != unsigned.inputs.len()
+        || inputs.iter().zip(&unsigned.inputs).any(|(planned, input)| {
+            planned.outpoint != input.prevout
+                || !input.witness.is_empty()
+                || deriver
+                    .unsigned_script_sig(planned.chain, planned.index)
+                    .map_or(true, |script| script != input.script_sig)
+        })
+    {
+        return Err(SignError::PlanInconsistent);
+    }
+    Ok(())
 }
 
 /// The public key and our output of every plan input (derived from the account's public data).
@@ -636,18 +665,7 @@ pub(crate) fn sign_plan_with<K: BtcKeys>(
     }
     let unsigned = plan.tx();
     let inputs = plan.inputs();
-    let deriver = account.deriver().map_err(|_| SignError::Derivation)?;
-    if inputs.len() != unsigned.inputs.len()
-        || inputs.iter().zip(&unsigned.inputs).any(|(planned, input)| {
-            planned.outpoint != input.prevout
-                || !input.witness.is_empty()
-                || deriver
-                    .unsigned_script_sig(planned.chain, planned.index)
-                    .map_or(true, |script| script != input.script_sig)
-        })
-    {
-        return Err(SignError::PlanInconsistent);
-    }
+    check_plan_consistent(plan, account)?;
     let expected = expected_inputs(plan, account)?;
     let network = plan.network();
     let script_type = account.script_type();
@@ -711,6 +729,208 @@ pub(crate) fn sign_plan_with<K: BtcKeys>(
     }
     Ok(SignedTx {
         raw: serialize(&signed, true),
+        approval_id: approved.id(),
+        approval_digest: approved.digest(),
+    })
+}
+
+// ----- YubiKey card signing (spec/10 §6.3) ------------------------------------------------------
+
+/// Longest DER of a card signature: the card picks its own nonce, so high-R stays (spec/10 §6.3,
+/// [`crate::yubikey::sig::MAX_CARD_DER_LEN`]).
+pub const MAX_CARD_DER_LEN: usize = crate::yubikey::sig::MAX_CARD_DER_LEN;
+/// Longest card signature item (`DER ‖ sighash type`): the `72 + 1` of the card input weight
+/// ([`ScriptType::card_input_weight`]).
+pub const MAX_CARD_SIG_ITEM_LEN: usize = MAX_CARD_DER_LEN + 1;
+
+/// The card signature rules on `DER ‖ 0x01` (spec/10 §6.3): the type byte, at most
+/// [`MAX_CARD_DER_LEN`] DER bytes, strict DER with an identical round trip, low-S. High-R is
+/// allowed (unlike [`check_signature_shape`], which stays unchanged for software inputs).
+fn check_card_signature_shape(sig_item: &[u8]) -> Result<Signature, WitnessSigError> {
+    let (sighash_type, der) = sig_item.split_last().ok_or(WitnessSigError::SighashType)?;
+    if *sighash_type != SIGHASH_ALL {
+        return Err(WitnessSigError::SighashType);
+    }
+    if der.len() > MAX_CARD_DER_LEN {
+        return Err(WitnessSigError::DerTooLong);
+    }
+    let signature = Signature::from_der(der).map_err(|_| WitnessSigError::DerInvalid)?;
+    if signature.serialize_der().as_ref() != der {
+        return Err(WitnessSigError::DerNotCanonical);
+    }
+    let mut normalized = signature;
+    normalized.normalize_s();
+    if normalized != signature {
+        return Err(WitnessSigError::HighS);
+    }
+    Ok(signature)
+}
+
+/// [`check_card_signature`] with a caller's context.
+pub(crate) fn check_card_signature_with<C: Verification>(
+    ctx: &Secp256k1<C>,
+    sig_item: &[u8],
+    pubkey_item: &[u8],
+    sighash: &[u8; 32],
+) -> Result<(), WitnessSigError> {
+    let signature = check_card_signature_shape(sig_item)?;
+    let key = <[u8; PUBKEY_LEN]>::try_from(pubkey_item).map_err(|_| WitnessSigError::PublicKey)?;
+    if !matches!(key.first(), Some(0x02 | 0x03)) {
+        return Err(WitnessSigError::PublicKey);
+    }
+    let public =
+        PublicKey::from_byte_array_compressed(key).map_err(|_| WitnessSigError::PublicKey)?;
+    ctx.verify_ecdsa(Message::from_digest(*sighash), &signature, &public)
+        .map_err(|_| WitnessSigError::VerifyFailed)
+}
+
+/// The relaxed check of a `YubiKey` input's signature item (witness or P2PKH scriptSig) against
+/// `sighash` and the compressed card key (spec/10 §6.3): `SIGHASH_ALL`, strict DER of at most
+/// 72 bytes, low-S and a valid signature; high-R is allowed. Software inputs keep
+/// [`check_witness_signature`] / [`check_p2pkh_signature`] (low-R, ≤ 70 bytes).
+///
+/// # Errors
+///
+/// The first failing rule's [`WitnessSigError`].
+pub fn check_card_signature(
+    sig_item: &[u8],
+    pubkey_item: &[u8],
+    sighash: &[u8; 32],
+) -> Result<(), WitnessSigError> {
+    check_card_signature_with(
+        &Secp256k1::verification_only(),
+        sig_item,
+        pubkey_item,
+        sighash,
+    )
+}
+
+/// The card signs one 32-byte sighash and returns the DER signature without the sighash type
+/// (`yubikey::sign::sign_btc`: low-s, verified against the recorded key).
+pub type CardSighashSigner<'a> = &'a mut dyn FnMut([u8; 32]) -> Result<Vec<u8>, CardError>;
+
+/// Failure of a card (`YubiKey`) Bitcoin signature: nothing signed is returned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardSignError {
+    /// The approval, the plan or a card signature failed a check (as for vault signing).
+    Sign(SignError),
+    /// The card operation failed (`NotSupported` for a Taproot input: no BIP340 on the card).
+    Card(CardError),
+    /// The post-sign verification of the whole transaction failed (spec/08 §11.2).
+    PostSign(PostSignError),
+}
+
+impl fmt::Display for CardSignError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sign(error) => error.fmt(formatter),
+            Self::Card(error) => error.fmt(formatter),
+            Self::PostSign(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for CardSignError {}
+
+impl From<SignError> for CardSignError {
+    fn from(error: SignError) -> Self {
+        Self::Sign(error)
+    }
+}
+
+impl From<CardError> for CardSignError {
+    fn from(error: CardError) -> Self {
+        Self::Card(error)
+    }
+}
+
+/// One card signature item `DER ‖ 0x01` for `sighash`, checked with the relaxed card rules
+/// against the account's key.
+fn card_item(
+    ctx: &Secp256k1<secp256k1::VerifyOnly>,
+    card: &mut dyn FnMut([u8; 32]) -> Result<Vec<u8>, CardError>,
+    sighash: [u8; 32],
+    key: &[u8; PUBKEY_LEN],
+) -> Result<Vec<u8>, CardSignError> {
+    let der = card(sighash)?;
+    let mut item = Vec::with_capacity(MAX_CARD_SIG_ITEM_LEN);
+    item.extend_from_slice(&der);
+    item.push(SIGHASH_ALL);
+    check_card_signature_with(ctx, &item, key, &sighash).map_err(SignError::Witness)?;
+    Ok(item)
+}
+
+/// Signs an approved plan of a `YubiKey` account on the card (spec/10 §6.3): the same approval
+/// and plan checks as [`sign_plan`], then one card signature per input — the legacy sighash for
+/// P2PKH, BIP143 for P2SH-P2WPKH and P2WPKH (Taproot is refused: `Card(NotSupported)`) — each
+/// checked with the relaxed card rules ([`check_card_signature`]), the same scriptSig / witness
+/// as the vault path, and finally the full post-sign verification of the transaction
+/// ([`super::verify::verify_signed`]: unsigned transaction, keys, signatures, outputs, change,
+/// fee, caps, dust and sizes). The app runs [`check_recorded_amounts`] first, as for
+/// [`sign_plan`]. A software account is refused (`Sign(ApprovalMismatch)`).
+///
+/// # Errors
+///
+/// [`CardSignError`]; nothing signed is returned on error.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the one-time approval token is consumed by signing (spec/03 §11.5)"
+)]
+pub fn sign_plan_card(
+    approved: Approved,
+    plan: &SendPlan,
+    account: &BtcAccountKey,
+    card: CardSighashSigner<'_>,
+) -> Result<SignedTx, CardSignError> {
+    if !account.is_hardware() || !approval_matches(&approved, plan, account) {
+        return Err(SignError::ApprovalMismatch.into());
+    }
+    let script_type = account.script_type();
+    if script_type == ScriptType::P2tr {
+        return Err(CardError::NotSupported.into());
+    }
+    check_plan_consistent(plan, account)?;
+    let expected = expected_inputs(plan, account)?;
+    let unsigned = plan.tx();
+    let ctx = Secp256k1::verification_only();
+    let mut signed = unsigned.clone();
+    for (position, ((planned, input), (pubkey, kind))) in plan
+        .inputs()
+        .iter()
+        .zip(signed.inputs.iter_mut())
+        .zip(&expected)
+        .enumerate()
+    {
+        let BtcPubKey::Compressed(key) = pubkey else {
+            return Err(SignError::Derivation.into());
+        };
+        match script_type {
+            ScriptType::P2wpkh | ScriptType::P2shP2wpkh => {
+                let sighash =
+                    bip143_sighash_p2wpkh(unsigned, position, &hash160(key), planned.value)
+                        .ok_or(SignError::PlanInconsistent)?;
+                let item = card_item(&ctx, card, sighash, key)?;
+                input.witness = vec![item, key.to_vec()];
+            }
+            ScriptType::P2pkh => {
+                let sighash = legacy_sighash(
+                    unsigned,
+                    position,
+                    &script_pubkey(kind),
+                    u32::from(SIGHASH_ALL),
+                )
+                .ok_or(SignError::PlanInconsistent)?;
+                let item = card_item(&ctx, card, sighash, key)?;
+                input.script_sig =
+                    p2pkh_script_sig(&item, key).ok_or(SignError::PlanInconsistent)?;
+            }
+            ScriptType::P2tr => return Err(CardError::NotSupported.into()),
+        }
+    }
+    let raw = serialize(&signed, true);
+    verify_signed(&raw, plan, account).map_err(CardSignError::PostSign)?;
+    Ok(SignedTx {
+        raw,
         approval_id: approved.id(),
         approval_digest: approved.digest(),
     })

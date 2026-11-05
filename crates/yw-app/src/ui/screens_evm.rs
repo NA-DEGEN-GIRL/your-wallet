@@ -1052,6 +1052,9 @@ impl App {
                 format!("m/44'/60'/0'/0/{}", index.get())
             }
             yw_core::vault::EvmKeySource::Raw(_) => "가져온 개인키".to_owned(),
+            yw_core::vault::EvmKeySource::Hardware(index) => {
+                format!("YubiKey · m/44'/60'/0'/0/{}", index.get())
+            }
         }));
         items.push(Item::Row(vec![Ctl::primary(
             ids::COPY_ADDRESS,

@@ -15,6 +15,7 @@ pub mod screens_keys;
 pub mod screens_llm;
 pub mod screens_sites;
 pub mod screens_sol;
+pub mod screens_yubikey;
 pub mod secret;
 pub mod secure_field;
 pub mod text_layout;

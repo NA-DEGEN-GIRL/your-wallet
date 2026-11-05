@@ -5,6 +5,11 @@
 //! `Vault::with_ed25519_seed`, public-key check, signature, `verify_strict`, transaction assembly
 //! and re-parse. Post-sign re-verification ports the pattern of
 //! `archive/spec-v2.4:crates/key-agent/src/lib.rs:328-345`.
+//!
+//! A `YubiKey` account (`SolKeySource::Hardware`, spec/10 §6.4) has no seed in the vault:
+//! [`sign_transfer`] is refused (`Vault(RecordNotFound)`) and [`sign_transfer_card`] runs the
+//! same checks, lets the card sign the exact message bytes and runs the same post-sign
+//! verification.
 
 use core::fmt;
 
@@ -167,23 +172,13 @@ pub(crate) fn finish_signed(
     })
 }
 
-/// Signs an approved SOL transfer with the finalized `blockhash` fetched after approval.
-/// `consumed_at_ms`/`now_ms` are monotonic milliseconds.
-///
-/// # Errors
-///
-/// [`SolSignError`]; on any error nothing has been signed or is returned.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "the one-time approval token is consumed by signing (spec/03 §11.5)"
-)]
-pub fn sign_transfer(
-    vault: &Vault,
-    approved: Approved,
+/// The approval checks of a transfer before any key use: the 20 s deadline, the kind, account
+/// and cluster of the approval against its intent.
+fn approved_intent(
+    approved: &Approved,
     consumed_at_ms: u64,
-    blockhash: [u8; 32],
     now_ms: u64,
-) -> Result<SignedSolTransfer, SolSignError> {
+) -> Result<SolTransferIntent, SolSignError> {
     let deadline = consumed_at_ms.saturating_add(SOL_SIGN_DEADLINE_SECS.saturating_mul(1_000));
     if now_ms > deadline {
         return Err(SolSignError::DeadlineExceeded);
@@ -202,12 +197,14 @@ pub fn sign_transfer(
     {
         return Err(SolSignError::KindMismatch);
     }
-    // Defence in depth: the rules intent creation enforces, again, before any key use.
-    if !fee_policy_ok(&intent)
-        || !non_standard_rule_ok(vault, &intent).map_err(SolSignError::Vault)?
-    {
-        return Err(SolSignError::PolicyMismatch);
-    }
+    Ok(intent)
+}
+
+/// The message of `intent` with `blockhash`, with the parse + re-encoding identity.
+fn transfer_message(
+    intent: &SolTransferIntent,
+    blockhash: [u8; 32],
+) -> Result<Vec<u8>, SolSignError> {
     let message = encode_message(&intent.core, &blockhash);
     let (core, parsed_blockhash) =
         parse_message(&message, intent.cluster).map_err(SolSignError::Parse)?;
@@ -217,6 +214,35 @@ pub fn sign_transfer(
     {
         return Err(SolSignError::EncodingMismatch);
     }
+    Ok(message)
+}
+
+/// Signs an approved SOL transfer with the finalized `blockhash` fetched after approval.
+/// `consumed_at_ms`/`now_ms` are monotonic milliseconds.
+///
+/// # Errors
+///
+/// [`SolSignError`]; on any error nothing has been signed or is returned. A `YubiKey` source
+/// is refused by the vault (`Vault(RecordNotFound)`): use [`sign_transfer_card`].
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the one-time approval token is consumed by signing (spec/03 §11.5)"
+)]
+pub fn sign_transfer(
+    vault: &Vault,
+    approved: Approved,
+    consumed_at_ms: u64,
+    blockhash: [u8; 32],
+    now_ms: u64,
+) -> Result<SignedSolTransfer, SolSignError> {
+    let intent = approved_intent(&approved, consumed_at_ms, now_ms)?;
+    // Defence in depth: the rules intent creation enforces, again, before any key use.
+    if !fee_policy_ok(&intent)
+        || !non_standard_rule_ok(vault, &intent).map_err(SolSignError::Vault)?
+    {
+        return Err(SolSignError::PolicyMismatch);
+    }
+    let message = transfer_message(&intent, blockhash)?;
     let from = intent.core.from.to_bytes();
     let sign = |secret: &[u8; 32]| {
         let key = signing_key(secret);
@@ -233,4 +259,81 @@ pub fn sign_transfer(
     };
     let signature = signed.map_err(SolSignError::Vault)??;
     finish_signed(&from, &message, signature, intent.cluster)
+}
+
+/// The card signs the exact message bytes with the PIV Ed25519 key and returns the 64-byte
+/// signature (`yubikey::sign::sign_sol`: verified strictly against the recorded key).
+pub type SolCardSigner<'a> =
+    &'a mut dyn FnMut(&[u8]) -> Result<[u8; 64], crate::yubikey::CardError>;
+
+/// Failure of a card (`YubiKey`) Solana transfer signature (spec/10 §6.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SolCardSignError {
+    /// The approval, intent rules, message or post-sign verification failed (as for vault
+    /// signing; `KindMismatch` also for a source that is not `SolKeySource::Hardware`).
+    Sign(SolSignError),
+    /// The card operation failed.
+    Card(crate::yubikey::CardError),
+}
+
+impl fmt::Display for SolCardSignError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sign(error) => error.fmt(formatter),
+            Self::Card(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for SolCardSignError {}
+
+impl From<SolSignError> for SolCardSignError {
+    fn from(error: SolSignError) -> Self {
+        Self::Sign(error)
+    }
+}
+
+impl From<crate::yubikey::CardError> for SolCardSignError {
+    fn from(error: crate::yubikey::CardError) -> Self {
+        Self::Card(error)
+    }
+}
+
+/// Signs an approved SOL transfer of a `YubiKey` account on the card (spec/10 §6.4): the same
+/// deadline, approval and intent checks as [`sign_transfer`] (the fee rules; the non-standard
+/// path rule never applies to the card's `m/44'/501'/i'/0'` key), the same message with the
+/// parse + re-encoding identity, the card signs those exact bytes, then the same post-sign
+/// verification (`verify_strict` for `intent.core.from`, assembly and re-parse).
+///
+/// # Errors
+///
+/// [`SolCardSignError::Sign`] (`KindMismatch` for a source other than
+/// `SolKeySource::Hardware`, `DeadlineExceeded`, `PolicyMismatch`, `Parse`, `EncodingMismatch`,
+/// `PostSignVerification`), [`SolCardSignError::Card`].
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the one-time approval token is consumed by signing (spec/03 §11.5)"
+)]
+pub fn sign_transfer_card(
+    approved: Approved,
+    consumed_at_ms: u64,
+    blockhash: [u8; 32],
+    now_ms: u64,
+    card: SolCardSigner<'_>,
+) -> Result<SignedSolTransfer, SolCardSignError> {
+    let intent = approved_intent(&approved, consumed_at_ms, now_ms)?;
+    if !intent.source.is_hardware() {
+        return Err(SolSignError::KindMismatch.into());
+    }
+    if !fee_policy_ok(&intent) || intent.source.needs_move_rule() {
+        return Err(SolSignError::PolicyMismatch.into());
+    }
+    let message = transfer_message(&intent, blockhash)?;
+    let signature = card(&message)?;
+    Ok(finish_signed(
+        &intent.core.from.to_bytes(),
+        &message,
+        signature,
+        intent.cluster,
+    )?)
 }

@@ -1244,7 +1244,7 @@ fn fixed_address_change_in_records() {
 
 /// spec/08 §12.4: the version 2 account block of an account on an EVM account's key (`source`
 /// 3, the EVM index, zero padding) round-trips; a non-zero padding, an index above 999 or an
-/// unknown source is refused.
+/// unknown source (6) is refused.
 #[test]
 fn evm_shared_account_block() {
     use yw_core::btc::account::{BtcAccountId, ScriptType};
@@ -1264,7 +1264,7 @@ fn evm_shared_account_block() {
     for (at, value) in [
         (BTC_JOURNAL_HEADER_LEN + 6, 1_u8),
         (BTC_JOURNAL_HEADER_LEN + 3, 0x03),
-        (BTC_JOURNAL_HEADER_LEN, 4),
+        (BTC_JOURNAL_HEADER_LEN, 6),
     ] {
         let mut bad = body.clone();
         bad[at] = value;
@@ -1278,4 +1278,46 @@ fn evm_shared_account_block() {
     };
     assert!(mismatch.encode().is_err());
     assert_eq!(evm.account.activity_tag(), "evm/p2wpkh/7");
+}
+
+/// spec/10 §3.3: the account block of a `YubiKey` account (`source` 4 address key / 5 EVM key,
+/// the index, zero padding) round-trips; a non-zero padding, an index above 999, a Taproot
+/// type or a type other than the record's is refused.
+#[test]
+fn yubikey_account_block() {
+    use yw_core::btc::account::{BtcAccountId, HwBtcKey, ScriptType};
+    let send = simple_plan(9, 20_000);
+    for (key, source, tag) in [
+        (HwBtcKey::Address(7), 4_u8, "yubikey/p2wpkh/7"),
+        (HwBtcKey::Evm(7), 5, "yubikey/evm/p2wpkh/7"),
+    ] {
+        let mut hw = record(&send, BtcTxState::Submitted, 1);
+        hw.account = BtcAccountId::Hardware {
+            key,
+            script_type: ScriptType::P2wpkh,
+        };
+        let body = hw.encode().unwrap();
+        assert_eq!(body[0], 2, "record version 2");
+        let block = &body[BTC_JOURNAL_HEADER_LEN..BTC_JOURNAL_HEADER_LEN + 18];
+        assert_eq!(block[..2], [source, ScriptType::P2wpkh.code()]);
+        assert_eq!(block[2..6], 7_u32.to_be_bytes());
+        assert!(block[6..].iter().all(|byte| *byte == 0));
+        assert_eq!(BtcRecord::decode(&body).unwrap(), hw);
+        for (at, value) in [
+            (BTC_JOURNAL_HEADER_LEN + 6, 1_u8),
+            (BTC_JOURNAL_HEADER_LEN + 3, 0x03),
+            (BTC_JOURNAL_HEADER_LEN + 1, ScriptType::P2tr.code()),
+        ] {
+            let mut bad = body.clone();
+            bad[at] = value;
+            assert!(BtcRecord::decode(&bad).is_err(), "byte {at}");
+        }
+        let mut mismatch = hw.clone();
+        mismatch.account = BtcAccountId::Hardware {
+            key,
+            script_type: ScriptType::P2pkh,
+        };
+        assert!(mismatch.encode().is_err());
+        assert_eq!(hw.account.activity_tag(), tag);
+    }
 }

@@ -23,8 +23,9 @@
 //! Records of BIP84 account 0 keep exactly this layout (`record_version = 1`). Every other account
 //! (another address type or account number, or an imported key) writes `record_version = 2`:
 //! the same 238-byte header, an 18-byte account block at `[238]` (`source u8` 1 HD / 2
-//! imported / 3 EVM account key, `script_type u8`, then the HD account `u32` and 12 zero bytes,
-//! the 16-byte record id, or the EVM account index `u32` and 12 zero bytes), then the inputs at
+//! imported / 3 EVM account key / 4 `YubiKey` address key / 5 `YubiKey` EVM key, `script_type u8`,
+//! then the HD account `u32` and 12 zero bytes, the 16-byte record id, or the EVM / `YubiKey`
+//! index `u32` and 12 zero bytes), then the inputs at
 //! `[256]` and the raw bytes. A P2PKH account's raw transaction has no witness.
 //!
 //! A record's change index does not say which chain it is on: an HD account in fixed-address
@@ -40,7 +41,7 @@ use super::{
 };
 use crate::bip32::HARDENED;
 use crate::bip32::path::BtcChain;
-use crate::btc::account::{BtcAccountId, BtcAccountKey, ScriptType};
+use crate::btc::account::{BtcAccountId, BtcAccountKey, HwBtcKey, ScriptType};
 use crate::btc::address::{ScriptKind, encode_address, hash160, kind_from_script, script_pubkey};
 use crate::btc::amount::Sats;
 use crate::btc::display::btc_title;
@@ -69,8 +70,9 @@ pub const BTC_RECORD_VERSION: u8 = 1;
 pub const BTC_RECORD_VERSION_V2: u8 = 2;
 /// Fixed header length.
 pub const BTC_JOURNAL_HEADER_LEN: usize = 238;
-/// The version 2 account block: `source u8 (1 HD, 2 imported, 3 EVM key) ‖ script_type u8 ‖ (HD:
-/// account u32 ‖ 0^12 | imported: record id 16 | EVM key: EVM account index u32 ‖ 0^12)`.
+/// The version 2 account block: `source u8 (1 HD, 2 imported, 3 EVM key, 4 YubiKey address key,
+/// 5 YubiKey EVM key) ‖ script_type u8 ‖ (HD: account u32 ‖ 0^12 | imported: record id 16 |
+/// EVM / YubiKey key: index u32 ‖ 0^12)`.
 pub const BTC_JOURNAL_ACCOUNT_LEN: usize = 18;
 /// Bytes per input record.
 pub const BTC_JOURNAL_INPUT_LEN: usize = 49;
@@ -470,6 +472,15 @@ fn decode_account_block(
                 script_type,
             }
         }
+        4 | 5 => {
+            let (number, padding) = id.split_first_chunk::<4>().ok_or(BtcRecordError::Length)?;
+            let key = HwBtcKey::from_source(*source, u32::from_be_bytes(*number))
+                .ok_or(BtcRecordError::Value)?;
+            if padding.iter().any(|byte| *byte != 0) || script_type == ScriptType::P2tr {
+                return Err(BtcRecordError::Value);
+            }
+            BtcAccountId::Hardware { key, script_type }
+        }
         _ => return Err(BtcRecordError::Value),
     };
     if account == BtcAccountId::PRIMARY {
@@ -486,7 +497,7 @@ fn check_against_raw(record: &BtcRecord) -> Result<Transaction, BtcRecordError> 
     if record.inputs.is_empty() || record.inputs.len() > BTC_MAX_INPUTS {
         return Err(BtcRecordError::Length);
     }
-    if matches!(record.account, BtcAccountId::Hd { script_type, .. } | BtcAccountId::EvmShared { script_type, .. } if script_type != record.script_type)
+    if matches!(record.account, BtcAccountId::Hd { script_type, .. } | BtcAccountId::EvmShared { script_type, .. } | BtcAccountId::Hardware { script_type, .. } if script_type != record.script_type)
     {
         return Err(BtcRecordError::Value);
     }
@@ -661,6 +672,13 @@ impl BtcRecord {
                     *slot = byte;
                 }
                 (3_u8, body)
+            }
+            BtcAccountId::Hardware { key, .. } => {
+                let mut body = [0_u8; 16];
+                for (slot, byte) in body.iter_mut().zip(key.index().to_be_bytes()) {
+                    *slot = byte;
+                }
+                (key.source_code(), body)
             }
         };
         for (slot, byte) in out

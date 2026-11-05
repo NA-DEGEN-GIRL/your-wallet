@@ -2665,7 +2665,9 @@ fn reimported_key_must_conflict_with_its_abandoned_send() -> TestResult {
         harness.ctx().remove_block(
             match second.id() {
                 BtcAccountId::Imported { id } => id,
-                BtcAccountId::Hd { .. } | BtcAccountId::EvmShared { .. } => {
+                BtcAccountId::Hd { .. }
+                | BtcAccountId::EvmShared { .. }
+                | BtcAccountId::Hardware { .. } => {
                     return Err("not imported".into());
                 }
             },

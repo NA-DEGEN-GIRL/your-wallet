@@ -350,3 +350,141 @@ fn w07_solana_and_bitcoin_fields_take_their_formats() {
     let pasted = crate::ui::secure_field::normalize_paste(&units, Charset::KeyText, 64).unwrap();
     assert_eq!(pasted.as_slice(), b"[1, 2, 3]");
 }
+
+/// W11 (spec/10 §9.1): one masked field with the applet's bounds (PIV 6–8 here), ASCII only,
+/// no copy (Ctrl+C does nothing), capture exclusion preferred like the other input windows, the
+/// submitted PIN moved out as an owned `Zeroizing` buffer and the field wiped; the title and the
+/// "N회 터치" line follow the kind.
+#[test]
+fn w11_card_pin_bounds_mask_and_owned_buffer() {
+    let kind = SecretKind::CardPin {
+        min: 6,
+        max: 8,
+        touches: 3,
+    };
+    assert_eq!(kind.id(), "W11");
+    assert_eq!(kind.title(), "YubiKey PIN");
+    assert!(!kind.is_display() && !kind.plaintext());
+    assert_eq!(
+        capture_decision(kind, Ok(false)),
+        CaptureDecision::Show { warning: true }
+    );
+    let intro = super::intro(kind, 0);
+    assert!(intro[0].contains("YubiKey를 연결하고 PIN 입력 후 터치하세요"));
+    assert!(intro[1].contains("YubiKey 터치 3회가 필요합니다"));
+    assert_eq!(
+        super::intro(
+            SecretKind::CardPin {
+                min: 6,
+                max: 127,
+                touches: 1
+            },
+            0
+        )
+        .len(),
+        1
+    );
+    let mut form = SecretForm::new(kind, 0, true);
+    form.set_details(vec!["이 키를 가진 YubiKey: #7700011".to_owned()]);
+    type_text(&mut form, "12345", 0);
+    assert!(
+        matches!(form.on_char(0x0D, 0), FormAction::Redraw),
+        "too short"
+    );
+    type_text(&mut form, "6789", 0);
+    // The field holds at most 8 characters.
+    let FormAction::Submit(submission) = form.on_char(0x0D, 0) else {
+        unreachable!("expected submit");
+    };
+    let [pin] = submission.values.as_slice() else {
+        unreachable!("one value");
+    };
+    let owned: &Zeroizing<Vec<u8>> = pin;
+    assert_eq!(owned.as_slice(), b"12345678");
+    assert!(matches!(
+        form.on_key(u16::from(b'C'), true, false, false, 0),
+        FormAction::None
+    ));
+    // Non-ASCII is refused like in every secret window.
+    assert!(matches!(form.on_char(0xAC00, 0), FormAction::Redraw));
+    assert!(!form.can_submit(0), "the field was wiped by the submission");
+}
+
+/// W12 (spec/10 §7.3, §9.3): the admin PIN 8–127, the management key exactly 48 hex digits, a
+/// PIN change with current / new / new again (the two new fields equal, different from the
+/// current one, the target's bounds); every field masked; W13 is a capture-required display
+/// with the 2 s hold and no copy.
+#[test]
+fn w12_card_secrets_and_w13_management_key() {
+    use super::CardSecretKind;
+    use crate::yubikey::PinTarget;
+    let submit = |kind: SecretKind, fields: &[&str]| {
+        let mut form = SecretForm::new(kind, 0, true);
+        for (index, text) in fields.iter().enumerate() {
+            if index > 0 {
+                form.on_key(0x09, false, false, false, 0);
+            }
+            type_text(&mut form, text, 0);
+        }
+        form.on_char(0x0D, 0)
+    };
+    let admin = SecretKind::CardSecret(CardSecretKind::AdminPin);
+    assert_eq!(admin.id(), "W12");
+    assert!(!admin.is_display() && admin.paste_allowed());
+    assert!(matches!(submit(admin, &["1234567"]), FormAction::Redraw));
+    assert!(matches!(
+        submit(admin, &["12345678"]),
+        FormAction::Submit(_)
+    ));
+    let key = SecretKind::CardSecret(CardSecretKind::ManagementKey);
+    assert!(matches!(
+        submit(key, &[&"0a".repeat(23)]),
+        FormAction::Redraw
+    ));
+    let FormAction::Submit(submission) = submit(key, &[&"0A".repeat(24)]) else {
+        unreachable!("48 hex digits");
+    };
+    assert_eq!(submission.values[0].as_slice(), "0a".repeat(24).as_bytes());
+    let change = SecretKind::CardSecret(CardSecretKind::ChangePin(PinTarget::PivPin));
+    assert!(matches!(
+        submit(change, &["123456", "654321", "654320"]),
+        FormAction::Redraw
+    ));
+    assert!(matches!(
+        submit(change, &["123456", "123456", "123456"]),
+        FormAction::Redraw
+    ));
+    // A PIV PIN field holds at most 8 characters (the 9th is not taken).
+    let FormAction::Submit(long) = submit(change, &["123456", "123456789", "123456789"]) else {
+        unreachable!("8 characters kept");
+    };
+    assert_eq!(long.values[1].as_slice(), b"12345678");
+    let FormAction::Submit(submission) = submit(change, &["123456", "654321", "654321"]) else {
+        unreachable!("valid change");
+    };
+    assert_eq!(submission.values.len(), 3);
+    let pw3 = SecretKind::CardSecret(CardSecretKind::ChangePin(PinTarget::OpenPgpAdmin));
+    assert!(matches!(
+        submit(pw3, &["12345678", "1234567", "1234567"]),
+        FormAction::Redraw
+    ));
+    let view = SecretKind::ShowCardKey;
+    assert_eq!(view.id(), "W13");
+    assert!(view.is_display() && view.needs_hold() && !view.paste_allowed());
+    assert_eq!(
+        capture_decision(view, Ok(false)),
+        CaptureDecision::Refuse(ErrorCode::Sec001)
+    );
+    let mut display = SecretForm::display(
+        view,
+        0,
+        DisplaySecret {
+            text: SecretString::from_zeroizing(Zeroizing::new("0a".repeat(24))),
+            address: None,
+            passphrase_note: false,
+            copy_allowed: false,
+        },
+    );
+    // Enter does not close it: only the 2 s hold (HoldComplete) or a cancel.
+    assert!(matches!(display.on_char(0x0D, 1), FormAction::None));
+}

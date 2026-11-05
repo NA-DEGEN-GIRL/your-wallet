@@ -1714,6 +1714,7 @@ fn every_screen_has_unique_control_ids() {
         Screen::Settings(SettingsSection::Bitcoin),
         Screen::Settings(SettingsSection::Ai),
         Screen::Settings(SettingsSection::Other),
+        Screen::Settings(SettingsSection::YubiKey),
         Screen::Done,
     ];
     let check = |app: &mut App, screens: &[Screen], pass: &str| {
@@ -2190,4 +2191,1050 @@ fn evm_shared_bitcoin_key_reveal() {
         &result.outcome,
         KeyOutcome::Revealed(Ok((_, text, None))) if text.expose() == EVM0_TEST_WIF
     )));
+}
+
+/// spec/10 §9.2, §13 at the App level (no windows): a wallet with enrolled emulator `YubiKey`s
+/// lists the `YubiKey` accounts in the EVM, Solana and Bitcoin tabs (badge, slot-map addresses,
+/// dApp connect lists, no "개인키 보기"); an approved EVM transfer of a `YubiKey` account opens
+/// the card step (W11 `CardPin`, `Purpose::CardSign`) instead of `SignEvm`; a wrong PIN returns
+/// the unused approval and asks again; the right PIN dispatches `SignEvmCard` and journals the
+/// transaction; cancelling drops the approval; a software account still goes to `SignEvm`.
+#[test]
+#[expect(clippy::too_many_lines, reason = "one card-step scenario")]
+fn yubikey_accounts_and_the_card_step() {
+    use yw_core::approval::{ApprovalId, ApprovalKind, ApprovalOrigin, ApprovalStore};
+    use yw_core::bip32::path::AccountIndex;
+    use yw_core::evm::decode::{DecodedTx, decode_call};
+    use yw_core::evm::simulate::SimResult;
+    use yw_core::evm::tx::Eip1559Tx;
+    use yw_core::journal::evm::Role;
+    use yw_core::vault::EvmKeySource;
+
+    use crate::app_browser::SignWaiter;
+    use crate::app_sol::SolAccountId;
+    use crate::events::{KeyJob, SignInfo};
+
+    let (worker, cards, dir, _) = crate::workers::key::tests::yubikey_wallet("app");
+    let mut h = Harness {
+        app: app_at(&dir),
+        worker,
+        dir,
+        phrase: None,
+        address: None,
+    };
+    h.app.key(KeyJob::Load);
+    h.pump();
+    h.submit(Purpose::Unlock, &[b"yubikey wallet password"]);
+    h.pump();
+    assert!(matches!(h.app.mode, AppMode::Unlocked { .. }));
+
+    // EVM: the derived account 0, then the two YubiKey accounts (badge, path, EIP-55 address).
+    let rows = h.app.account_rows();
+    let hardware: Vec<(EvmAccountPref, String, String)> = rows
+        .iter()
+        .filter(|(pref, ..)| matches!(pref, EvmAccountPref::Hardware(_)))
+        .map(|(pref, _, address, path)| (*pref, address.clone(), path.clone()))
+        .collect();
+    assert_eq!(
+        hardware,
+        [
+            (
+                EvmAccountPref::Hardware(0),
+                "0x9858EfFD232B4033E47d90003D41EC34EcaEda94".to_owned(),
+                "m/44'/60'/0'/0/0 (YubiKey)".to_owned()
+            ),
+            (
+                EvmAccountPref::Hardware(1),
+                "0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0".to_owned(),
+                "m/44'/60'/0'/0/1 (YubiKey)".to_owned()
+            )
+        ]
+    );
+    let card_row = rows
+        .iter()
+        .position(|(pref, ..)| *pref == EvmAccountPref::Hardware(1))
+        .unwrap();
+    h.app
+        .on_command(ids::ACCOUNT_BASE + u16::try_from(card_row).unwrap());
+    h.pump();
+    assert_eq!(h.app.selected_pref(), Some(EvmAccountPref::Hardware(1)));
+    let (account, source, _) = h.app.selected_account().unwrap();
+    assert_eq!(
+        source,
+        EvmKeySource::Hardware(AccountIndex::new(1).unwrap())
+    );
+    assert!(h.app.hardware_selected());
+    h.app.set_screen(Screen::Main);
+    assert!(
+        controls(&h.app.items())
+            .iter()
+            .any(|ctl| ctl.text.contains("[YubiKey]"))
+    );
+    // dApp connect lists offer it.
+    assert!(
+        h.app
+            .own_accounts()
+            .iter()
+            .any(|(address, _)| *address == account)
+    );
+    // Solana: the PIV account, selectable.
+    let sol = h.app.sol_account_rows();
+    let (sol_row, (_, _, sol_address)) = sol
+        .iter()
+        .enumerate()
+        .find(|(_, (id, ..))| *id == SolAccountId::Hardware(0))
+        .unwrap();
+    assert_eq!(
+        sol_address.to_base58(),
+        "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"
+    );
+    h.app.sol_select_account(sol_row);
+    assert_eq!(
+        h.app.sol_selected().map(|(id, ..)| id),
+        Some(SolAccountId::Hardware(0))
+    );
+    assert!(
+        h.app
+            .sol_dapp_rows()
+            .iter()
+            .any(|row| row.source == yw_core::slip10::SolKeySource::Hardware(AccountIndex::ZERO))
+    );
+    // Bitcoin (mainnet): the BIP84 address key as a single-address account with the badge.
+    h.app.settings.bitcoin.enabled = true;
+    h.app.settings.bitcoin.network = crate::network::BtcNet::Mainnet;
+    assert!(
+        h.app
+            .btc_dapp_rows()
+            .iter()
+            .any(|row| row.entry.address == "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu")
+    );
+    if let Some(meta) = h.app.meta.as_mut() {
+        meta.prefs.tab = Tab::Btc;
+    }
+    assert!(
+        controls(&h.app.items())
+            .iter()
+            .any(|ctl| ctl.text.contains("[YubiKey]"))
+    );
+    if let Some(meta) = h.app.meta.as_mut() {
+        meta.prefs.tab = Tab::Evm;
+    }
+
+    // An approved Sepolia transfer of YubiKey EVM account 1.
+    let chain = yw_core::evm::chain::sepolia();
+    let tx = Eip1559Tx {
+        chain_id: 11_155_111,
+        nonce: 0,
+        max_priority_fee_per_gas: U256::from_u64(1_000_000_000),
+        max_fee_per_gas: U256::from_u64(2_000_000_000),
+        gas_limit: 21_000,
+        to: parse_address("0x9858EfFD232B4033E47d90003D41EC34EcaEda94").unwrap(),
+        value: U256::from_u64(1_000),
+        data: Vec::new(),
+        access_list: Vec::new(),
+    };
+    let mut store = ApprovalStore::new();
+    let mut approve = |source: EvmKeySource, from: Address| {
+        let decoded = DecodedTx {
+            call: decode_call(&chain, &tx.to, &tx.data),
+            tx: tx.clone(),
+        };
+        let draft = yw_core::approval::build_evm_tx_request(
+            ApprovalId::random().unwrap(),
+            ApprovalOrigin::App,
+            source,
+            from,
+            ApprovalKind::EvmTransaction,
+            &chain,
+            &decoded,
+            &SimResult::skipped(),
+            &yw_core::approval::ChainFacts::default(),
+            Vec::new(),
+            1_790_000_000_000,
+        )
+        .unwrap();
+        let request = store.issue(draft, 0, 1_790_000_000_000).unwrap();
+        store.consume(request.id, request.digest, 1).unwrap()
+    };
+    let info = SignInfo {
+        origin: "yw-app".to_owned(),
+        label: "YubiKey 보내기".to_owned(),
+        role: Role::Original,
+        now_unix_ms: 1_790_000_000_000,
+    };
+    // Runs the next queued job after checking its name.
+    let run_named = |h: &mut Harness, name: &str| {
+        let entry = h.app.key_queue.pop().unwrap();
+        assert_eq!(entry.1.name(), name);
+        let results = std::cell::RefCell::new(Vec::new());
+        let signal = std::sync::Arc::clone(&h.app.lock_signal);
+        step(
+            &mut h.worker,
+            &h.app.key_queue,
+            entry,
+            &|result| results.borrow_mut().push(result),
+            &signal,
+        );
+        h.deliver(results.into_inner());
+    };
+    let records = |h: &Harness| {
+        h.app
+            .evm
+            .journal
+            .as_ref()
+            .map_or(0, |journal| journal.records.len())
+    };
+    h.pump();
+    let before = records(&h);
+
+    let ticket = h.app.push_sign_waiter(SignWaiter::App);
+    h.app
+        .dispatch_evm_sign(ticket, approve(source, account), info.clone());
+    // No signing job yet: the card step waits for the PIN (W11 bounds: OpenPGP PW1 6–127).
+    assert!(h.app.key_queue.is_empty());
+    let id = h.app.card_waiting_id().unwrap();
+    let step = h.app.card.step.as_ref().unwrap();
+    assert_eq!(crate::yubikey::pin_bounds(step.role), (6, 127));
+    assert_eq!(step.touches, 1);
+    assert_eq!(
+        crate::yubikey::holders(&h.app.card.records, step.role),
+        [7_700_011]
+    );
+
+    // Wrong PIN: the worker checks it before the approval is used; the step asks again.
+    h.submit(Purpose::CardSign(id), &[b"000000"]);
+    assert!(!h.app.card_waiting(id));
+    run_named(&mut h, "SignEvmCard");
+    assert!(h.app.card_waiting(id), "the PIN window opens again");
+    assert!(
+        h.app
+            .card
+            .step
+            .as_ref()
+            .and_then(|step| step.error.clone())
+            .is_some_and(|error| error.contains("PIN이 틀렸습니다"))
+    );
+    assert_eq!(records(&h), before);
+    // The right PIN signs on the card and journals the transaction.
+    h.submit(Purpose::CardSign(id), &[b"123456"]);
+    run_named(&mut h, "SignEvmCard");
+    h.pump();
+    assert!(h.app.card.step.is_none());
+    assert_eq!(records(&h), before + 1);
+
+    // Cancelling the PIN window signs nothing.
+    let ticket = h.app.push_sign_waiter(SignWaiter::App);
+    h.app
+        .dispatch_evm_sign(ticket, approve(source, account), info.clone());
+    let id = h.app.card_waiting_id().unwrap();
+    h.app.on_cancel(Purpose::CardSign(id));
+    assert!(h.app.card.step.is_none());
+    assert!(h.app.key_queue.is_empty());
+    assert_eq!(records(&h), before + 1);
+
+    // A software account is unchanged: `SignEvm` right away, no card step.
+    let derived = EvmKeySource::Derived(AccountIndex::ZERO);
+    let address = parse_address("0x9858EfFD232B4033E47d90003D41EC34EcaEda94").unwrap();
+    let ticket = h.app.push_sign_waiter(SignWaiter::App);
+    h.app
+        .dispatch_evm_sign(ticket, approve(derived, address), info);
+    assert!(h.app.card.step.is_none());
+    run_named(&mut h, "SignEvm");
+    h.pump();
+
+    // The wizard's entry point: a third card (SIG = EVM 2) enrolled through the App — the
+    // accounts are reconciled from the slot map and the defaults to change are reported.
+    {
+        use yw_core::yubikey::plan::{CardSlot, KeyRole, PgpKey, PlannedSlot};
+        *cards.lock().unwrap() = vec![yw_core::yubikey::mock::MockCard::new(7_700_013)];
+        h.app.enrol_yubikey(crate::app_card::EnrolRequest {
+            phrase: Zeroizing::new(format!("{} about", ["abandon"; 11].join(" ")).into_bytes()),
+            passphrase: None,
+            slots: vec![PlannedSlot::recommended(
+                CardSlot::OpenPgp(PgpKey::Sig),
+                KeyRole::Evm {
+                    index: AccountIndex::new(2).unwrap(),
+                    btc: None,
+                },
+            )],
+            admin_pin: Zeroizing::new(b"12345678".to_vec()),
+            management_key: Zeroizing::new(Vec::new()),
+        });
+        h.pump();
+    }
+    assert!(matches!(
+        &h.app.card.enrol,
+        Some(crate::app_card::EnrolState::Done {
+            serial: 7_700_013,
+            slots: 1,
+            defaults,
+        }) if !defaults.is_empty()
+    ));
+    assert_eq!(h.app.card.records.len(), 3);
+    let meta = h.app.meta.as_ref().unwrap();
+    assert!(
+        meta.hw_accounts
+            .evm
+            .iter()
+            .any(|account| account.index == 2)
+    );
+    assert_eq!(meta.hw_accounts.defaults, [7_700_013]);
+    assert!(
+        h.app
+            .account_rows()
+            .iter()
+            .any(|(pref, ..)| *pref == EvmAccountPref::Hardware(2))
+    );
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+// ------------------------------------------------- YubiKey wizard (spec/10 §7, §9.3, §13)
+
+type Cards = std::sync::Arc<std::sync::Mutex<Vec<yw_core::yubikey::mock::MockCard>>>;
+
+/// The non-secret values the key worker hands to W08/W10/W13 (those windows cannot open
+/// headless): captured from the results before they are delivered.
+#[derive(Default)]
+struct YkSeen {
+    words: Option<String>,
+    positions: Option<[u8; 4]>,
+    key: Option<String>,
+}
+
+/// A harness whose key worker talks to emulated cards only.
+fn card_harness(tag: &str, serial: u32) -> (Harness, Cards) {
+    let dir = temp_dir(tag);
+    let cards: Cards = std::sync::Arc::new(std::sync::Mutex::new(vec![
+        yw_core::yubikey::mock::MockCard::new(serial),
+    ]));
+    let worker = KeyWorker::new(&dir).with_card_source(Box::new(crate::yubikey::MockSource {
+        cards: std::sync::Arc::clone(&cards),
+    }));
+    let app = app_at(&dir);
+    app.key(crate::events::KeyJob::Load);
+    let mut h = Harness {
+        app,
+        worker,
+        dir,
+        phrase: None,
+        address: None,
+    };
+    h.pump();
+    (h, cards)
+}
+
+/// [`Harness::pump`] that also records what the `YubiKey` windows would show.
+fn yk_pump(h: &mut Harness, seen: &mut YkSeen) {
+    use crate::workers::key::yubikey::YkOutcome;
+    let mut guard = 0;
+    while !h.app.key_queue.is_empty() {
+        let results = h.run_one();
+        for result in &results {
+            match &result.outcome {
+                KeyOutcome::YubiKey(YkOutcome::Words(Ok((words, _)))) => {
+                    seen.words = Some(words.expose().to_owned());
+                }
+                KeyOutcome::YubiKey(YkOutcome::Challenge(Ok(positions))) => {
+                    seen.positions = Some(*positions);
+                }
+                KeyOutcome::YubiKey(YkOutcome::ManagementKey(Ok(key))) => {
+                    seen.key = Some(key.expose().to_owned());
+                }
+                _ => {}
+            }
+        }
+        h.deliver(results);
+        guard += 1;
+        assert!(guard < 200, "key jobs keep queueing each other");
+    }
+}
+
+/// Every text, field value and monospace line of a screen.
+fn all_text(items: &[Item]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Title(text)
+            | Item::Text(text)
+            | Item::Muted(text)
+            | Item::Help(text)
+            | Item::Subtitle(text)
+            | Item::Display(text)
+            | Item::Mono(text)
+            | Item::Banner(text, _)
+            | Item::Field(_, text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn unique_ids(items: &[Item]) {
+    let mut seen = std::collections::HashSet::new();
+    for id in control_ids(items) {
+        assert!(seen.insert(id), "id {id} twice");
+    }
+}
+
+fn wizard_step(h: &Harness) -> Option<crate::app_yubikey::WizardStep> {
+    h.app.card.wizard.as_ref().map(|wizard| wizard.step)
+}
+
+/// An unlocked wallet of `abandon … about` (imported) on Bitcoin mainnet.
+fn about_wallet(h: &mut Harness) {
+    h.submit(Purpose::ImportPassword, &[WALLET_PW]);
+    h.submit(Purpose::ImportMnemonic, &[ABOUT.as_bytes()]);
+    h.pump();
+    h.app.on_command(ids::IMPORT_CORRECT);
+    h.pump();
+    h.app.on_command(ids::DONE_CONTINUE);
+    h.pump();
+    h.app.settings.bitcoin.enabled = true;
+    h.app.settings.bitcoin.network = crate::network::BtcNet::Mainnet;
+    assert!(matches!(h.app.mode, AppMode::Unlocked { .. }));
+}
+
+/// spec/10 §7.1-2, §7.2, §13 at the App level: Settings → `YubiKey` → the wizard with SIG = EVM 2,
+/// AUT = Bitcoin P2WPKH 0 and 2 Solana accounts from index 1 → the recovery words (this vault's:
+/// the same-mnemonic warning must be acknowledged) → the confirmation with every path and its
+/// address (the vault's own derivation of the same paths) → the admin PIN → the emulator card →
+/// the accounts in all three tabs, "다시 확인", the PIV PIN change on the card.
+#[test]
+#[expect(clippy::too_many_lines, reason = "one wizard walk-through")]
+fn yubikey_wizard_enrols_an_existing_wallet() {
+    use crate::app_sol::SolAccountId;
+    use crate::app_yubikey::{WizardStep, YkPurpose};
+    use crate::ui::screens_yubikey::ids as yk;
+    use crate::yubikey::PinTarget;
+
+    let (mut h, cards) = card_harness("yk-wizard", 8_800_001);
+    let mut seen = YkSeen::default();
+    about_wallet(&mut h);
+    h.app.on_command(yk::SECTION_YUBIKEY);
+    h.pump();
+    assert_eq!(
+        h.app.screen,
+        Screen::Settings(super::SettingsSection::YubiKey)
+    );
+    let items = h.app.items();
+    unique_ids(&items);
+    assert!(has_text(
+        &items,
+        crate::ui::screens_yubikey::T_YK_MNEMONIC_WALLET
+    ));
+    h.app.on_command(yk::ENROL_START);
+    assert_eq!(h.app.screen, Screen::YubiKey);
+    assert_eq!(wizard_step(&h), Some(WizardStep::Plan));
+    unique_ids(&h.app.items());
+    // (a) SIG = EVM 2, AUT = Bitcoin P2WPKH 0 (the default), 2 Solana accounts from index 1.
+    h.app.yk_set_text(yk::SIG_INDEX_EDIT, "2".to_owned());
+    h.app.yk_set_text(yk::SOL_COUNT_EDIT, "2".to_owned());
+    h.app.yk_set_text(yk::SOL_START_EDIT, "1".to_owned());
+    // An out-of-range index is refused on the plan screen.
+    h.app.yk_set_text(yk::AUT_INDEX_EDIT, "1000".to_owned());
+    h.app.on_command(yk::PLAN_NEXT);
+    assert_eq!(wizard_step(&h), Some(WizardStep::Plan));
+    assert!(h.app.card.wizard.as_ref().unwrap().error.is_some());
+    h.app.yk_set_text(yk::AUT_INDEX_EDIT, "0".to_owned());
+    h.app.on_command(yk::PLAN_NEXT);
+    assert_eq!(wizard_step(&h), Some(WizardStep::Confirm));
+    // (b) W05 (headless: the submission) → the key worker derives the preview, no card.
+    h.submit(Purpose::YubiKey(YkPurpose::Mnemonic), &[ABOUT.as_bytes()]);
+    yk_pump(&mut h, &mut seen);
+    assert!(!cards.lock().unwrap()[0].saw_write());
+    assert!(cards.lock().unwrap()[0].log.is_empty(), "no card contact");
+    let wizard = h.app.card.wizard.as_ref().unwrap();
+    let preview = wizard.preview.as_ref().unwrap();
+    assert!(preview.same_as_vault);
+    assert_eq!(preview.plan, Ok(()));
+    let items = h.app.items();
+    unique_ids(&items);
+    let shown = all_text(&items);
+    assert!(
+        shown
+            .iter()
+            .any(|text| text == crate::app_yubikey::T_YK_SAME)
+    );
+    let evm2 = yw_core::bip32::preview_evm_address(
+        ABOUT,
+        None,
+        yw_core::bip32::path::AccountIndex::new(2).unwrap(),
+    )
+    .unwrap()
+    .to_checksum();
+    let sol = match h
+        .worker
+        .handle(crate::events::KeyJob::SolKeys {
+            purpose: crate::events::SolKeysPurpose::Scan,
+            sources: [1, 2]
+                .map(|index| {
+                    yw_core::slip10::SolKeySource::Standard(
+                        yw_core::bip32::path::AccountIndex::new(index).unwrap(),
+                    )
+                })
+                .to_vec(),
+        })
+        .pop()
+    {
+        Some(KeyOutcome::SolKeys(_, Ok(keys))) => keys
+            .into_iter()
+            .map(|(_, address)| address.to_base58())
+            .collect::<Vec<_>>(),
+        _ => unreachable!("vault Solana keys"),
+    };
+    for expected in [
+        "m/44'/60'/0'/0/2",
+        evm2.as_str(),
+        "m/84'/0'/0'/0/0",
+        "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu",
+        "m/44'/501'/1'/0'",
+        sol[0].as_str(),
+        "m/44'/501'/2'/0'",
+        sol[1].as_str(),
+    ] {
+        assert!(
+            shown.iter().any(|text| text == expected),
+            "{expected} not shown"
+        );
+    }
+    // The same-mnemonic warning blocks `다음` until it is acknowledged.
+    let next = |h: &Harness| ctl(&h.app.items(), yk::CONFIRM_NEXT).unwrap().enabled;
+    assert!(!next(&h));
+    h.app.on_command(yk::CONFIRM_NEXT);
+    assert_eq!(wizard_step(&h), Some(WizardStep::Confirm));
+    h.app.on_command(yk::SAME_ACK);
+    assert!(next(&h));
+    h.app.on_command(yk::CONFIRM_NEXT);
+    assert_eq!(wizard_step(&h), Some(WizardStep::Credentials));
+    unique_ids(&h.app.items());
+    // (d) `가져오기` → W12 admin PIN → the card job (factory management key for PIV).
+    h.app.on_command(yk::IMPORT);
+    h.submit(Purpose::YubiKey(YkPurpose::AdminPin), &[b"12345678"]);
+    assert_eq!(wizard_step(&h), Some(WizardStep::Running));
+    yk_pump(&mut h, &mut seen);
+    assert_eq!(wizard_step(&h), Some(WizardStep::Result));
+    let wizard = h.app.card.wizard.as_ref().unwrap();
+    let record = wizard.enrolled.as_ref().unwrap().record.clone();
+    assert_eq!(record.serial, 8_800_001);
+    assert_eq!(record.slots.len(), 4);
+    assert!(wizard.defaults.openpgp_admin && wizard.defaults.piv_pin);
+    assert_eq!(h.app.card.records, core::slice::from_ref(&record));
+    let items = h.app.items();
+    unique_ids(&items);
+    assert!(all_text(&items).contains(&evm2));
+    // The accounts of the three tabs.
+    assert!(h.app.account_rows().iter().any(|(pref, _, address, path)| {
+        *pref == EvmAccountPref::Hardware(2)
+            && *address == evm2
+            && path == "m/44'/60'/0'/0/2 (YubiKey)"
+    }));
+    let sol_rows: Vec<(SolAccountId, String)> = h
+        .app
+        .sol_account_rows()
+        .into_iter()
+        .map(|(id, _, address)| (id, address.to_base58()))
+        .collect();
+    assert!(sol_rows.contains(&(SolAccountId::Hardware(1), sol[0].clone())));
+    assert!(sol_rows.contains(&(SolAccountId::Hardware(2), sol[1].clone())));
+    assert!(
+        h.app
+            .btc_dapp_rows()
+            .iter()
+            .any(|row| row.entry.address == "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu")
+    );
+    // "다시 확인": the public keys are read again (read-only).
+    cards.lock().unwrap()[0].log.clear();
+    h.app.on_command(yk::RECHECK);
+    yk_pump(&mut h, &mut seen);
+    assert!(!cards.lock().unwrap()[0].saw_write());
+    let check = h.app.card.wizard.as_ref().unwrap().check.clone().unwrap();
+    assert_eq!(check.len(), 4);
+    assert!(check.iter().all(|line| line.ends_with('✓')), "{check:?}");
+    // §9.3: the PIV PIN and PUK changed on the card; a wrong current value is refused.
+    h.app.on_command(yk::CHANGE_PIV_PIN);
+    h.submit(
+        Purpose::YubiKey(YkPurpose::ChangePin(PinTarget::PivPin)),
+        &[b"999999", b"654321", b"654321"],
+    );
+    yk_pump(&mut h, &mut seen);
+    assert_eq!(cards.lock().unwrap()[0].piv_pin, b"123456");
+    h.submit(
+        Purpose::YubiKey(YkPurpose::ChangePin(PinTarget::PivPin)),
+        &[b"123456", b"654321", b"654321"],
+    );
+    h.submit(
+        Purpose::YubiKey(YkPurpose::ChangePin(PinTarget::PivPuk)),
+        &[b"12345678", b"87654321", b"87654321"],
+    );
+    yk_pump(&mut h, &mut seen);
+    assert_eq!(cards.lock().unwrap()[0].piv_pin, b"654321");
+    assert_eq!(cards.lock().unwrap()[0].piv_puk, b"87654321");
+    assert!(!h.app.card.wizard.as_ref().unwrap().defaults.piv_pin);
+    // `완료`: the key worker forgets the words.
+    h.app.on_command(yk::FINISH);
+    yk_pump(&mut h, &mut seen);
+    assert!(h.app.card.wizard.is_none());
+    assert_eq!(
+        h.app.screen,
+        Screen::Settings(super::SettingsSection::YubiKey)
+    );
+    let outcome = h
+        .worker
+        .handle(crate::events::KeyJob::YubiKey(
+            crate::workers::key::yubikey::YkJob::Preview {
+                mnemonic: None,
+                slots: Vec::new(),
+            },
+        ))
+        .pop();
+    assert!(matches!(
+        outcome,
+        Some(KeyOutcome::YubiKey(
+            crate::workers::key::yubikey::YkOutcome::Preview(Err(_))
+        ))
+    ));
+    let items = h.app.items();
+    unique_ids(&items);
+    assert!(has_text(
+        &items,
+        &format!("{} (m/44'/60'/0'/0/2) — #8800001 SIG", "EVM 계정 2")
+    ));
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+/// spec/10 §3.4, §3.5, §7.1-3: on a second card the same path is refused unless it is a backup
+/// copy; the "백업 복사본" of the first card's plan enrols the second emulator card; the list
+/// shows both holders; removing the first card's record asks the password and keeps the
+/// accounts (the copy still holds them); the management key change (W13) is set on the card
+/// and the next enrolment of that card needs the new key.
+#[test]
+#[expect(clippy::too_many_lines, reason = "one multi-card scenario")]
+fn yubikey_backup_copy_removal_and_management_key() {
+    use crate::app_yubikey::{WizardStep, YkPurpose};
+    use crate::ui::screens_yubikey::ids as yk;
+    use yw_core::yubikey::mock::MockCard;
+
+    let (mut h, cards) = card_harness("yk-backup", 8_800_011);
+    let mut seen = YkSeen::default();
+    about_wallet(&mut h);
+    h.app.on_command(yk::SECTION_YUBIKEY);
+    h.pump();
+    h.app.on_command(yk::ENROL_START);
+    // Card A: SIG = EVM 0, AUT = none, no PIV.
+    h.app.on_command(crate::ui::screens_yubikey::ids::pgp_id(
+        yw_core::yubikey::plan::PgpKey::Aut,
+        crate::ui::screens_yubikey::ids::PgpAction::Kind(crate::app_yubikey::PgpKind::None),
+    ));
+    h.app.yk_set_text(yk::SOL_COUNT_EDIT, "0".to_owned());
+    h.app.on_command(yk::PLAN_NEXT);
+    h.submit(Purpose::YubiKey(YkPurpose::Mnemonic), &[ABOUT.as_bytes()]);
+    yk_pump(&mut h, &mut seen);
+    h.app.on_command(yk::SAME_ACK);
+    h.app.on_command(yk::CONFIRM_NEXT);
+    h.app.on_command(yk::IMPORT);
+    h.submit(Purpose::YubiKey(YkPurpose::AdminPin), &[b"12345678"]);
+    yk_pump(&mut h, &mut seen);
+    assert_eq!(h.app.card.records.len(), 1);
+    // `다른 YubiKey 등록(백업)`: back to the plan with the copy of card A; first without it.
+    h.app.on_command(yk::ANOTHER);
+    assert_eq!(wizard_step(&h), Some(WizardStep::Plan));
+    assert_eq!(
+        h.app.card.wizard.as_ref().unwrap().backup_of,
+        Some(8_800_011)
+    );
+    h.app.on_command(yk::BACKUP_TOGGLE);
+    assert_eq!(h.app.card.wizard.as_ref().unwrap().backup_of, None);
+    h.app.yk_set_text(yk::SIG_INDEX_EDIT, "0".to_owned());
+    h.app.on_command(yk::PLAN_NEXT);
+    yk_pump(&mut h, &mut seen);
+    let preview = h.app.card.wizard.as_ref().unwrap().preview.clone().unwrap();
+    assert_eq!(
+        preview.plan,
+        Err(yw_core::yubikey::plan::PlanError::PathOnOtherCard(
+            yw_core::yubikey::plan::CardSlot::OpenPgp(yw_core::yubikey::plan::PgpKey::Sig)
+        ))
+    );
+    h.app.on_command(yk::SAME_ACK);
+    assert!(!ctl(&h.app.items(), yk::CONFIRM_NEXT).unwrap().enabled);
+    assert!(has_text(&h.app.items(), "백업 복사본"));
+    // The backup copy (the words are still held: no W05).
+    h.app.on_command(yk::CONFIRM_BACK);
+    h.app.on_command(yk::BACKUP_TOGGLE);
+    h.app.on_command(yk::PLAN_NEXT);
+    yk_pump(&mut h, &mut seen);
+    assert_eq!(
+        h.app
+            .card
+            .wizard
+            .as_ref()
+            .unwrap()
+            .preview
+            .as_ref()
+            .unwrap()
+            .plan,
+        Ok(())
+    );
+    *cards.lock().unwrap() = vec![MockCard::new(8_800_012)];
+    h.app.on_command(yk::SAME_ACK);
+    h.app.on_command(yk::CONFIRM_NEXT);
+    h.app.on_command(yk::IMPORT);
+    h.submit(Purpose::YubiKey(YkPurpose::AdminPin), &[b"12345678"]);
+    yk_pump(&mut h, &mut seen);
+    assert_eq!(h.app.card.records.len(), 2);
+    let role = h.app.card.records[1].slots[0].role;
+    assert_eq!(
+        crate::yubikey::holders(&h.app.card.records, role),
+        [8_800_011, 8_800_012]
+    );
+    // A second copy of the same card is refused at the card (already enrolled).
+    h.app.on_command(yk::ANOTHER);
+    h.app.on_command(yk::PLAN_NEXT);
+    yk_pump(&mut h, &mut seen);
+    h.app.on_command(yk::SAME_ACK);
+    h.app.on_command(yk::CONFIRM_NEXT);
+    h.app.on_command(yk::IMPORT);
+    cards.lock().unwrap()[0].log.clear();
+    h.submit(Purpose::YubiKey(YkPurpose::AdminPin), &[b"12345678"]);
+    yk_pump(&mut h, &mut seen);
+    let failure = h.app.card.wizard.as_ref().unwrap().failure.clone().unwrap();
+    assert!(failure.contains("이미 등록되어"), "{failure}");
+    assert!(
+        !cards.lock().unwrap()[0].saw_write(),
+        "refused before any write"
+    );
+    assert_eq!(h.app.card.records.len(), 2);
+    h.app.on_command(yk::WIZARD_CANCEL);
+    yk_pump(&mut h, &mut seen);
+    let items = h.app.items();
+    assert!(has_text(&items, "#8800011 SIG, #8800012 SIG(백업)"));
+    // Remove card A's record: overlay, W03 (a wrong password first), the copy keeps the account.
+    h.app.on_command(yk::REMOVE_BASE);
+    assert_eq!(h.app.screen, Screen::Confirm(Confirm::RemoveYubiKey));
+    assert!(has_text(&h.app.items(), "다른 YubiKey에도 있어"));
+    let id = h.app.card.record_ids[0];
+    h.app.on_command(ids::CONFIRM_YES);
+    h.submit(
+        Purpose::ConfirmPassword(PasswordAction::RemoveHardwareKey(id)),
+        &[WRONG],
+    );
+    yk_pump(&mut h, &mut seen);
+    assert_eq!(h.app.card.records.len(), 2);
+    h.submit(
+        Purpose::ConfirmPassword(PasswordAction::RemoveHardwareKey(id)),
+        &[WALLET_PW],
+    );
+    yk_pump(&mut h, &mut seen);
+    assert_eq!(h.app.card.records.len(), 1);
+    assert_eq!(h.app.card.records[0].serial, 8_800_012);
+    assert!(
+        h.app
+            .account_rows()
+            .iter()
+            .any(|(pref, ..)| *pref == EvmAccountPref::Hardware(0))
+    );
+    // Card A again (record removed), now with PIV: change its management key first.
+    {
+        let mut inserted = cards.lock().unwrap();
+        let mut card_a = MockCard::new(8_800_011);
+        card_a.mgmt_key = vec![0x42; 24];
+        *inserted = vec![card_a];
+    }
+    h.app.on_command(yk::ENROL_START);
+    h.app.on_command(crate::ui::screens_yubikey::ids::pgp_id(
+        yw_core::yubikey::plan::PgpKey::Sig,
+        crate::ui::screens_yubikey::ids::PgpAction::Kind(crate::app_yubikey::PgpKind::None),
+    ));
+    h.app.on_command(crate::ui::screens_yubikey::ids::pgp_id(
+        yw_core::yubikey::plan::PgpKey::Aut,
+        crate::ui::screens_yubikey::ids::PgpAction::Kind(crate::app_yubikey::PgpKind::None),
+    ));
+    h.app.on_command(yk::PLAN_NEXT);
+    h.submit(Purpose::YubiKey(YkPurpose::Mnemonic), &[ABOUT.as_bytes()]);
+    yk_pump(&mut h, &mut seen);
+    h.app.on_command(yk::SAME_ACK);
+    h.app.on_command(yk::CONFIRM_NEXT);
+    // The factory key no longer works on this card: nothing is written, the failure is shown.
+    h.app.on_command(yk::IMPORT);
+    yk_pump(&mut h, &mut seen);
+    assert!(h.app.card.wizard.as_ref().unwrap().failure.is_some());
+    assert_eq!(h.app.card.records.len(), 1);
+    h.app.on_command(yk::RETRY);
+    h.app.on_command(yk::MGMT_CUSTOM);
+    h.app.on_command(yk::IMPORT);
+    h.submit(
+        Purpose::YubiKey(YkPurpose::ManagementKey),
+        &["42".repeat(24).as_bytes()],
+    );
+    yk_pump(&mut h, &mut seen);
+    assert_eq!(h.app.card.records.len(), 2);
+    // §9.3 on the result screen: a new random key, shown once (W13), set after the hold.
+    {
+        let mut inserted = cards.lock().unwrap();
+        inserted[0].mgmt_key = yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY.to_vec();
+    }
+    h.app.card.wizard.as_mut().unwrap().defaults.piv_management = true;
+    h.app.on_command(yk::CHANGE_MGMT);
+    yk_pump(&mut h, &mut seen);
+    let key = seen.key.clone().unwrap();
+    assert_eq!(key.len(), 48);
+    assert_eq!(
+        cards.lock().unwrap()[0].mgmt_key,
+        yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY,
+        "nothing set before the acknowledgement"
+    );
+    h.app.yk_hold_complete(YkPurpose::ShowManagementKey);
+    yk_pump(&mut h, &mut seen);
+    assert_eq!(
+        yw_core::hex::encode(&cards.lock().unwrap()[0].mgmt_key),
+        key
+    );
+    assert!(!h.app.card.wizard.as_ref().unwrap().defaults.piv_management);
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+/// spec/10 §7.1-1: the YubiKey-only wallet from the first-run screen — 24 new words (W08), the
+/// in-memory four-word check (a wrong answer asks again), the wizard with the defaults, the card,
+/// then `create_with_hardware`: no recovery words in the vault, one `YubiKey` record, the accounts
+/// from the slot map; after a restart and unlock they are the same. A lock before the end wipes
+/// the words in the key worker.
+#[test]
+#[expect(clippy::too_many_lines, reason = "one wallet-creation scenario")]
+fn yubikey_only_wallet_from_the_first_run_screen() {
+    use crate::app_yubikey::{WizardStep, YkPurpose};
+    use crate::ui::screens_yubikey::ids as yk;
+    use crate::workers::key::yubikey::{YkJob, YkOutcome};
+
+    let (mut h, cards) = card_harness("yk-wallet", 8_800_021);
+    let mut seen = YkSeen::default();
+    assert_eq!(h.app.screen, Screen::FirstRun);
+    let items = h.app.items();
+    assert!(has_text(&items, crate::app_yubikey::T_YK_WALLET));
+    // A lock in the middle wipes everything: the words are gone from the key worker.
+    h.app.on_command(yk::NEW_WALLET);
+    assert_eq!(h.app.screen, Screen::YubiKeyWalletIntro);
+    unique_ids(&h.app.items());
+    h.app.on_command(yk::NEW_WALLET_START);
+    h.submit(Purpose::YubiKey(YkPurpose::NewPassword), &[WALLET_PW]);
+    yk_pump(&mut h, &mut seen);
+    assert!(seen.words.is_some());
+    h.app.lock(LockReason::Manual);
+    yk_pump(&mut h, &mut seen);
+    assert!(matches!(
+        h.worker
+            .handle(crate::events::KeyJob::YubiKey(YkJob::Challenge))
+            .pop(),
+        Some(KeyOutcome::YubiKey(YkOutcome::Challenge(Err(_))))
+    ));
+    assert_eq!(h.app.screen, Screen::FirstRun);
+    // Again, to the end.
+    h.app.on_command(yk::NEW_WALLET);
+    h.app.on_command(yk::NEW_WALLET_START);
+    h.submit(Purpose::YubiKey(YkPurpose::NewPassword), &[WALLET_PW]);
+    yk_pump(&mut h, &mut seen);
+    let words: Vec<String> = seen
+        .words
+        .clone()
+        .unwrap()
+        .split(' ')
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(words.len(), 24);
+    // W08's 2 s hold → the challenge (W10); a wrong answer → new positions.
+    h.app.yk_hold_complete(YkPurpose::ShowWords);
+    yk_pump(&mut h, &mut seen);
+    let answer = |positions: [u8; 4]| -> Vec<Vec<u8>> {
+        positions
+            .iter()
+            .map(|position| words[usize::from(*position) - 1].as_bytes().to_vec())
+            .collect()
+    };
+    let positions = seen.positions.take().unwrap();
+    let mut wrong = answer(positions);
+    wrong[0] = if wrong[0] == b"zoo" {
+        b"zone".to_vec()
+    } else {
+        b"zoo".to_vec()
+    };
+    let refs: Vec<&[u8]> = wrong.iter().map(Vec::as_slice).collect();
+    h.submit(Purpose::YubiKey(YkPurpose::Backup), &refs);
+    yk_pump(&mut h, &mut seen);
+    assert!(h.app.card.wizard.is_none());
+    let right = answer(seen.positions.take().unwrap());
+    let refs: Vec<&[u8]> = right.iter().map(Vec::as_slice).collect();
+    h.submit(Purpose::YubiKey(YkPurpose::Backup), &refs);
+    yk_pump(&mut h, &mut seen);
+    assert_eq!(h.app.screen, Screen::YubiKey);
+    assert_eq!(wizard_step(&h), Some(WizardStep::Plan));
+    assert_eq!(h.app.mode, AppMode::NoVault);
+    // The defaults: SIG = EVM 0, AUT = Bitcoin P2WPKH 0, Solana 0; no W05 (the words are held).
+    h.app.on_command(yk::PLAN_NEXT);
+    yk_pump(&mut h, &mut seen);
+    let preview = h.app.card.wizard.as_ref().unwrap().preview.clone().unwrap();
+    assert!(!preview.same_as_vault);
+    let paths: Vec<&str> = preview
+        .lines
+        .iter()
+        .map(|line| line.path.as_str())
+        .collect();
+    assert_eq!(
+        paths,
+        ["m/44'/60'/0'/0/0", "m/84'/0'/0'/0/0", "m/44'/501'/0'/0'"]
+    );
+    h.app.on_command(yk::CONFIRM_NEXT);
+    h.app.on_command(yk::IMPORT);
+    h.submit(Purpose::YubiKey(YkPurpose::AdminPin), &[b"12345678"]);
+    yk_pump(&mut h, &mut seen);
+    assert!(matches!(h.app.mode, AppMode::Unlocked { .. }));
+    let wizard = h.app.card.wizard.as_ref().unwrap();
+    assert!(wizard.created && wizard.failure.is_none());
+    assert!(!h.app.keys.has_mnemonic);
+    assert_eq!(h.app.card.records.len(), 1);
+    assert!(h.app.settings.bitcoin.enabled);
+    let accounts = |h: &Harness| {
+        let evm: Vec<String> = h
+            .app
+            .account_rows()
+            .into_iter()
+            .map(|(_, _, address, _)| address)
+            .collect();
+        let sol: Vec<String> = h
+            .app
+            .sol_account_rows()
+            .into_iter()
+            .map(|(_, _, address)| address.to_base58())
+            .collect();
+        let btc: Vec<String> = h
+            .app
+            .btc_dapp_rows()
+            .into_iter()
+            .map(|row| row.entry.address)
+            .collect();
+        (evm, sol, btc)
+    };
+    let before = accounts(&h);
+    assert_eq!(before.0.len(), 1);
+    assert_eq!(before.1.len(), 1);
+    assert!(before.2.iter().any(|address| address.starts_with("bc1q")));
+    let items = h.app.items();
+    unique_ids(&items);
+    assert!(has_text(&items, "YubiKey 지갑을 만들었습니다"));
+    h.app.on_command(yk::FINISH);
+    yk_pump(&mut h, &mut seen);
+    assert_eq!(h.app.screen, Screen::Main);
+    // The vault has no recovery words: the worker's meta load says so.
+    assert!(matches!(
+        h.worker.handle(crate::events::KeyJob::LoadMeta).pop(),
+        Some(KeyOutcome::Meta(Ok(loaded))) if !loaded.has_mnemonic
+    ));
+    // Restart: a new app and worker on the same folder, unlock, the same accounts.
+    h.app.lock(LockReason::Manual);
+    yk_pump(&mut h, &mut seen);
+    let dir = h.dir.clone();
+    let worker = KeyWorker::new(&dir).with_card_source(Box::new(crate::yubikey::MockSource {
+        cards: std::sync::Arc::clone(&cards),
+    }));
+    let mut again = Harness {
+        app: app_at(&dir),
+        worker,
+        dir: dir.clone(),
+        phrase: None,
+        address: None,
+    };
+    again.app.settings.bitcoin.enabled = true;
+    again.app.key(crate::events::KeyJob::Load);
+    again.pump();
+    again.submit(Purpose::Unlock, &[WALLET_PW]);
+    again.pump();
+    assert!(matches!(again.app.mode, AppMode::Unlocked { .. }));
+    assert_eq!(accounts(&again), before);
+    assert_eq!(again.app.card.records.len(), 1);
+}
+
+/// spec/10 §10 with spec/03 §11.3: the approval window's `YubiKey로 서명` badge (holders, touches)
+/// is app chrome computed from the request's signer — the digested display of a `YubiKey`
+/// request is the core's own and names no card; a Solana `YubiKey` recipient is `내 계정(YubiKey)`.
+#[test]
+fn yubikey_badge_is_chrome_and_the_solana_note() {
+    use yw_core::approval::{ApprovalId, ApprovalKind, ApprovalOrigin};
+    use yw_core::bip32::path::AccountIndex;
+    use yw_core::vault::EvmKeySource;
+    use yw_core::yubikey::plan::KeyRole;
+
+    let (mut worker, _cards, dir, _) = crate::workers::key::tests::yubikey_wallet("badge");
+    let Some(KeyOutcome::HardwareKeys(Ok(keys))) =
+        worker.handle(crate::events::KeyJob::HardwareKeys).pop()
+    else {
+        unreachable!("records");
+    };
+    let records: Vec<_> = keys.into_iter().map(|key| key.record).collect();
+    let role = KeyRole::Evm {
+        index: AccountIndex::ZERO,
+        btc: None,
+    };
+    assert_eq!(
+        crate::app_card::card_badge(&records, role, 1),
+        "YubiKey로 서명 · #7700011 · 터치 1회"
+    );
+    assert_eq!(
+        crate::app_card::card_badge(&[], role, 3),
+        "YubiKey로 서명 · 터치 3회"
+    );
+    let chain = yw_core::evm::chain::sepolia();
+    let tx = yw_core::evm::tx::Eip1559Tx {
+        chain_id: 11_155_111,
+        nonce: 0,
+        max_priority_fee_per_gas: U256::from_u64(1),
+        max_fee_per_gas: U256::from_u64(2),
+        gas_limit: 21_000,
+        to: parse_address("0x9858EfFD232B4033E47d90003D41EC34EcaEda94").unwrap(),
+        value: U256::from_u64(1),
+        data: Vec::new(),
+        access_list: Vec::new(),
+    };
+    let draft = yw_core::approval::build_evm_tx_request(
+        ApprovalId::random().unwrap(),
+        ApprovalOrigin::App,
+        EvmKeySource::Hardware(AccountIndex::ZERO),
+        parse_address("0x9858EfFD232B4033E47d90003D41EC34EcaEda94").unwrap(),
+        ApprovalKind::EvmTransaction,
+        &chain,
+        &yw_core::evm::decode::DecodedTx {
+            call: yw_core::evm::decode::decode_call(&chain, &tx.to, &tx.data),
+            tx: tx.clone(),
+        },
+        &yw_core::evm::simulate::SimResult::skipped(),
+        &yw_core::approval::ChainFacts::default(),
+        Vec::new(),
+        1_790_000_000_000,
+    )
+    .unwrap();
+    assert_eq!(
+        crate::yubikey::role_of(&draft.signer, &draft.payload),
+        Some(role)
+    );
+    assert!(
+        !draft
+            .display
+            .fields
+            .iter()
+            .any(|field| field.value.contains("YubiKey"))
+            && !draft.display.title.contains("YubiKey")
+    );
+    // The send form's recipient note of a YubiKey Solana account.
+    let (mut app, other) = unlocked_app("yk-sol-note", false);
+    if let Some(meta) = app.meta.as_mut() {
+        meta.hw_accounts.sol.push(crate::meta::Account {
+            index: 0,
+            label: "YubiKey Solana 1".to_owned(),
+            address: "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk".to_owned(),
+            hidden: false,
+        });
+        meta.prefs.tab = Tab::Sol;
+    }
+    app.sol.send.to_text = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk".to_owned();
+    app.sol_validate_send();
+    app.screen = Screen::SolSend;
+    assert!(has_text(&app.items(), "내 계정(YubiKey): YubiKey Solana 1"));
+    drop(worker);
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(other);
 }

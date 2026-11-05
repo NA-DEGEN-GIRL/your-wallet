@@ -57,6 +57,8 @@ pub enum KnownKind {
     },
     /// One of the wallet's imported Solana keys (spec/02 §8.4).
     OwnImported,
+    /// One of the wallet's `YubiKey` Solana accounts (spec/10 §10).
+    OwnHardware,
     /// A recipient of an earlier successful send on the same cluster (activity / journal): the
     /// address is known (no `FirstTime`).
     Sent,
@@ -132,7 +134,10 @@ pub fn check_recipient(
             entry.address == to
                 && matches!(
                     entry.kind,
-                    KnownKind::Book { .. } | KnownKind::Own { .. } | KnownKind::OwnImported
+                    KnownKind::Book { .. }
+                        | KnownKind::Own { .. }
+                        | KnownKind::OwnImported
+                        | KnownKind::OwnHardware
                 )
         })
         .cloned();

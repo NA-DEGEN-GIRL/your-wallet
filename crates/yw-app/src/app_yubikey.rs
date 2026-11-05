@@ -1,0 +1,1329 @@
+//! The `YubiKey` enrolment wizard, the new `YubiKey` wallet and the `YubiKey` list (spec/10 §7,
+//! §9.3; spec/04 §2.19).
+//!
+//! Wizard (`Screen::YubiKey`, steps [`WizardStep`]): (a) keys and slots — `OpenPGP` SIG and AUT
+//! each none / EVM account / Bitcoin single address / EVM shared key with an index, PIV a count
+//! of Solana accounts from a start index in the retired slots `82`…, touch policy per applet, or
+//! "백업 복사본" of an enrolled card's slot plan; (b) the recovery words once in W05 (+ W06) —
+//! held by the key worker from then on, never on the UI thread; (c) the confirmation with every
+//! path and address (`enrol::preview`, no card), the pre-card plan checks, the cards already
+//! holding the same keys and the same-mnemonic warning; (d) credentials — the `OpenPGP` admin
+//! PIN and the PIV management key in W12 (or the factory key), moved into the job; (e) the
+//! result with the recorded slots, "다시 확인" and the defaults change (§9.3); (f)
+//! `다른 YubiKey 등록(백업)` back to (a) with the backup copy.
+//!
+//! New `YubiKey` wallet (S01 card, spec/10 §7.1-1): S20 → W01 → W08 (new words) → W10 (four
+//! words, checked in memory by the key worker) → the wizard → `Vault::create_with_hardware`.
+//! The words are never written to disk; the key worker wipes them when the wizard ends or the
+//! wallet locks.
+
+use yw_core::bip32::path::AccountIndex;
+use yw_core::btc::{BtcNetwork, ScriptType};
+use yw_core::secret::Zeroizing;
+use yw_core::vault::RecordId;
+use yw_core::yubikey::enrol::{DefaultsSeen, Enrolled};
+use yw_core::yubikey::plan::{
+    BtcUse, CardSlot, KeyRole, MAX_BTC_INDEX, MAX_CARDS, PgpKey, PinPolicy, PivSlot, PlannedSlot,
+    TouchPolicy, validate_plan,
+};
+use yw_core::yubikey::record::HwKeyRecord;
+
+use crate::app::{App, AppMode, Confirm, PasswordAction, Purpose, Screen, SettingsSection};
+use crate::events::{KeyJob, YubiKeyJobError};
+use crate::logging;
+use crate::ui::secret::{CardSecretKind, DisplaySecret, SecretKind};
+use crate::workers::key::yubikey::{YkJob, YkOutcome, YkPreview};
+use crate::yubikey::{CardJobError, PinTarget};
+
+/// Most Solana accounts on one card (the 20 retired PIV slots `82`–`95`).
+pub const MAX_PIV_ACCOUNTS: u32 = 20;
+/// Highest EVM / Solana account index (`AccountIndex`).
+const MAX_ACCOUNT_INDEX: u32 = 999;
+
+/// T-YK-SAME (spec/10 §7.1-2, user decision 2026-11-05): the entered words are this vault's.
+pub const T_YK_SAME: &str = "이 복구 단어는 이 PC의 vault에도 저장되어 있습니다. 복구 단어가 이 PC에 남아 있는 동안 YubiKey는 보안 이득이 없습니다(같은 키를 PC에서도 만들 수 있음). 키를 PC 밖에 두려면 'YubiKey 지갑'(복구 단어를 저장하지 않는 지갑)을 새로 만드세요.";
+/// T-YK-SHARED (spec/10 §3.2): the two sentences of the shared-key choice.
+pub const T_YK_SHARED: &str = "EVM 공유 키는 EVM 주소와 Bitcoin 주소가 같은 공개키에서 나옵니다. Bitcoin에서 그 주소로 한 번이라도 보내면 누구나 그 공개키에서 EVM 주소를 계산할 수 있어 두 체인의 신원이 연결됩니다. 또 표준 Bitcoin 지갑은 이 주소를 찾지 못합니다(경로가 m/44'/60'/…): 복구는 이 지갑으로 같은 복구 단어·같은 인덱스를 다시 등록하거나 그 EVM 개인키를 WIF로 가져와야 합니다.";
+/// T-YK-OVERWRITE (spec/10 §7.4).
+pub const T_YK_OVERWRITE: &str = "가져오기를 하면 이 YubiKey의 고른 슬롯(OpenPGP SIG/AUT, PIV 82…)에 있던 키는 지워지고 바뀝니다. 다른 용도(GPG 등)로 쓰던 슬롯이면 고르지 마세요.";
+/// T-YK-PARTIAL (spec/10 §7.4).
+pub const T_YK_PARTIAL: &str = "일부 슬롯에 키가 이미 들어갔을 수 있습니다. 다시 시도하면 덮어씁니다. 지갑에는 아무것도 기록하지 않았습니다.";
+/// T-YK-PIV-FIRMWARE (spec/10 §2, user decision 2026-11-05).
+pub const T_YK_PIV_FIRMWARE: &str = "Solana(PIV Ed25519) 키 가져오기는 펌웨어 5.7.4 이상에서 문서화되어 있습니다. 5.7.0–5.7.3 YubiKey는 가져오기를 거부할 수 있고(그때 \"이 펌웨어는 Ed25519 가져오기를 거부했습니다\"), 5.7.0 미만은 PIV 슬롯을 쓸 수 없습니다.";
+/// T-YK-WALLET (S01 card, spec/10 §7.1-1).
+pub const T_YK_WALLET: &str = "새 복구 단어 24개를 만들어 종이에 적고, 그 단어에서 만든 키를 YubiKey에 넣습니다. 이 PC에는 복구 단어를 저장하지 않고 공개키·주소만 둡니다. 서명은 YubiKey에서 PIN과 터치로 합니다.";
+
+/// What an `OpenPGP` slot of the plan holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PgpKind {
+    /// Nothing.
+    None,
+    /// EVM account `i`.
+    Evm,
+    /// Bitcoin single address `i` (current network).
+    Btc,
+    /// EVM account `i` also used as one Bitcoin address (spec/10 §3.2).
+    Shared,
+}
+
+/// The form of one `OpenPGP` slot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PgpForm {
+    /// What it holds.
+    pub kind: PgpKind,
+    /// The index text (0–999).
+    pub index_text: String,
+    /// Bitcoin address type (Bitcoin and shared key).
+    pub script: ScriptType,
+    /// Touch policy.
+    pub touch: TouchPolicy,
+}
+
+impl PgpForm {
+    fn new(kind: PgpKind, index: u32) -> Self {
+        Self {
+            kind,
+            index_text: index.to_string(),
+            script: ScriptType::P2wpkh,
+            touch: TouchPolicy::Always,
+        }
+    }
+}
+
+/// Where the wizard was started.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WizardOrigin {
+    /// Settings → `YubiKey` of an unlocked wallet.
+    Vault,
+    /// The new `YubiKey` wallet (no vault yet; it is created by the first enrolment).
+    NewWallet,
+}
+
+/// The wizard step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WizardStep {
+    /// (a) keys and slots.
+    Plan,
+    /// (c) the confirmation (the preview is computed by the key worker meanwhile).
+    Confirm,
+    /// (d) credentials.
+    Credentials,
+    /// The card job runs.
+    Running,
+    /// (e) the result (or the failure).
+    Result,
+}
+
+/// The secret windows of the `YubiKey` flows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum YkPurpose {
+    /// W05: the recovery words of an enrolment.
+    Mnemonic,
+    /// W06: their BIP39 passphrase.
+    Passphrase,
+    /// W01 of the new `YubiKey` wallet.
+    NewPassword,
+    /// W08: the new words.
+    ShowWords,
+    /// W10: the four words.
+    Backup,
+    /// W12: the `OpenPGP` admin PIN.
+    AdminPin,
+    /// W12: the PIV management key of the enrolment.
+    ManagementKey,
+    /// W12: a PIN/PUK change.
+    ChangePin(PinTarget),
+    /// W13: the new management key.
+    ShowManagementKey,
+}
+
+/// The wizard state (no secret: the words are in the key worker, the credentials only between
+/// their window and the job).
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent flags of one wizard"
+)]
+pub struct YkWizard {
+    /// Origin.
+    pub origin: WizardOrigin,
+    /// Step.
+    pub step: WizardStep,
+    /// `OpenPGP` SIG.
+    pub sig: PgpForm,
+    /// `OpenPGP` AUT.
+    pub aut: PgpForm,
+    /// Solana accounts (PIV) count text.
+    pub sol_count_text: String,
+    /// First Solana index text.
+    pub sol_start_text: String,
+    /// PIV touch policy.
+    pub piv_touch: TouchPolicy,
+    /// "백업 복사본": copy this enrolled card's slot plan.
+    pub backup_of: Option<u32>,
+    /// The §3.2 checkbox of the shared key.
+    pub shared_ack: bool,
+    /// The same-mnemonic warning was acknowledged.
+    pub same_ack: bool,
+    /// Input error of the plan screen.
+    pub error: Option<String>,
+    /// The plan sent to the preview / the card.
+    pub slots: Vec<PlannedSlot>,
+    /// The confirmation facts.
+    pub preview: Option<YkPreview>,
+    /// The key worker holds the recovery words.
+    pub seed_held: bool,
+    /// Use the factory PIV management key.
+    pub default_management: bool,
+    /// The admin PIN between W12 and the job (wiped on drop).
+    admin_pin: Option<Zeroizing<Vec<u8>>>,
+    /// The words of W05 while W06 asks for the passphrase (wiped on drop).
+    phrase: Option<Zeroizing<Vec<u8>>>,
+    /// "가져오기 없이 등록" of the running job.
+    pub adopt: bool,
+    /// The last enrolment.
+    pub enrolled: Option<Enrolled>,
+    /// The last failure (§7.4).
+    pub failure: Option<String>,
+    /// "다시 확인" lines.
+    pub check: Option<Vec<String>>,
+    /// Defaults still to change of the enrolled card.
+    pub defaults: DefaultsSeen,
+    /// PIN changes done on the result screen.
+    pub changed: Vec<PinTarget>,
+    /// Notes of the result screen (PIN changed, management key set).
+    pub notes: Vec<String>,
+    /// A wallet was created by this wizard (new `YubiKey` wallet).
+    pub created: bool,
+}
+
+impl core::fmt::Debug for YkWizard {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("YkWizard")
+            .field("origin", &self.origin)
+            .field("step", &self.step)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The next unused index of EVM accounts, Bitcoin `script` addresses of `network`, and Solana
+/// accounts over the enrolled cards (the defaults of the next `YubiKey`, spec/10 §3.1).
+fn next_indices(
+    records: &[HwKeyRecord],
+    network: BtcNetwork,
+    script: ScriptType,
+) -> (u32, u32, u32) {
+    let mut evm: Vec<u32> = Vec::new();
+    let mut btc: Vec<u32> = Vec::new();
+    let mut sol: Vec<u32> = Vec::new();
+    for slot in records.iter().flat_map(|record| &record.slots) {
+        match slot.role {
+            KeyRole::Evm { index, .. } => evm.push(index.get()),
+            KeyRole::Btc {
+                network: net,
+                script: kind,
+                index,
+            } if net == network && kind == script => btc.push(index),
+            KeyRole::Btc { .. } => {}
+            KeyRole::Sol { index } => sol.push(index.get()),
+        }
+    }
+    let next = |used: &[u32]| used.iter().max().map_or(0, |max| max.saturating_add(1));
+    (next(&evm), next(&btc), next(&sol))
+}
+
+fn parse_index(text: &str, max: u32, what: &str) -> Result<u32, String> {
+    text.trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|value| *value <= max)
+        .ok_or_else(|| format!("{what}: 0–{max} 사이의 숫자를 넣으세요."))
+}
+
+impl YkWizard {
+    /// A wizard with the defaults (spec/10 §3.1): the first card SIG = EVM 0, AUT = Bitcoin
+    /// P2WPKH 0, one Solana account 0; the next cards the next unused indices.
+    #[must_use]
+    pub fn new(origin: WizardOrigin, records: &[HwKeyRecord], network: BtcNetwork) -> Self {
+        let (evm, btc, sol) = next_indices(records, network, ScriptType::P2wpkh);
+        Self {
+            origin,
+            step: WizardStep::Plan,
+            sig: PgpForm::new(PgpKind::Evm, evm),
+            aut: PgpForm::new(PgpKind::Btc, btc),
+            sol_count_text: "1".to_owned(),
+            sol_start_text: sol.to_string(),
+            piv_touch: TouchPolicy::Always,
+            backup_of: None,
+            shared_ack: false,
+            same_ack: false,
+            error: None,
+            slots: Vec::new(),
+            preview: None,
+            seed_held: false,
+            default_management: true,
+            admin_pin: None,
+            phrase: None,
+            adopt: false,
+            enrolled: None,
+            failure: None,
+            check: None,
+            defaults: DefaultsSeen::default(),
+            changed: Vec::new(),
+            notes: Vec::new(),
+            created: false,
+        }
+    }
+
+    /// The form of `key`.
+    #[must_use]
+    pub const fn pgp(&self, key: PgpKey) -> &PgpForm {
+        match key {
+            PgpKey::Sig => &self.sig,
+            PgpKey::Aut => &self.aut,
+        }
+    }
+
+    const fn pgp_mut(&mut self, key: PgpKey) -> &mut PgpForm {
+        match key {
+            PgpKey::Sig => &mut self.sig,
+            PgpKey::Aut => &mut self.aut,
+        }
+    }
+
+    /// Whether the plan uses the shared key (the §3.2 checkbox is required).
+    #[must_use]
+    pub fn uses_shared(&self) -> bool {
+        self.backup_of.is_none()
+            && (self.sig.kind == PgpKind::Shared || self.aut.kind == PgpKind::Shared)
+    }
+
+    /// The planned slot of one `OpenPGP` form (`None` for an empty slot).
+    ///
+    /// # Errors
+    ///
+    /// The index text is not a number in range.
+    pub fn pgp_preview(
+        form: &PgpForm,
+        key: PgpKey,
+        network: BtcNetwork,
+    ) -> Result<Option<PlannedSlot>, String> {
+        let label = CardSlot::OpenPgp(key).label();
+        let role = match form.kind {
+            PgpKind::None => return Ok(None),
+            PgpKind::Evm | PgpKind::Shared => {
+                let index = parse_index(&form.index_text, MAX_ACCOUNT_INDEX, &label)?;
+                let index =
+                    AccountIndex::new(index).map_err(|_| format!("{label}: 인덱스 범위"))?;
+                KeyRole::Evm {
+                    index,
+                    btc: (form.kind == PgpKind::Shared).then_some(BtcUse {
+                        network,
+                        script: form.script,
+                    }),
+                }
+            }
+            PgpKind::Btc => KeyRole::Btc {
+                network,
+                script: form.script,
+                index: parse_index(&form.index_text, MAX_BTC_INDEX, &label)?,
+            },
+        };
+        Ok(Some(PlannedSlot {
+            slot: CardSlot::OpenPgp(key),
+            role,
+            touch: form.touch,
+            pin: PinPolicy::NotApplicable,
+            backup_copy: false,
+        }))
+    }
+
+    /// The slot plan of the form (or the backup copy of `records`' card), checked with the
+    /// per-card rules (`plan::validate_plan`).
+    ///
+    /// # Errors
+    ///
+    /// The text to show on the plan screen.
+    pub fn plan(
+        &self,
+        records: &[HwKeyRecord],
+        network: BtcNetwork,
+    ) -> Result<Vec<PlannedSlot>, String> {
+        let slots = if let Some(serial) = self.backup_of {
+            let record = records
+                .iter()
+                .find(|record| record.serial == serial)
+                .ok_or_else(|| "복사할 YubiKey 기록을 찾지 못했습니다.".to_owned())?;
+            record
+                .slots
+                .iter()
+                .map(|slot| PlannedSlot {
+                    backup_copy: true,
+                    ..slot.planned()
+                })
+                .collect()
+        } else {
+            let mut slots = Vec::new();
+            for key in [PgpKey::Sig, PgpKey::Aut] {
+                if let Some(slot) = Self::pgp_preview(self.pgp(key), key, network)? {
+                    slots.push(slot);
+                }
+            }
+            let count = parse_index(&self.sol_count_text, MAX_PIV_ACCOUNTS, "Solana 계정 수")?;
+            let start = parse_index(&self.sol_start_text, MAX_ACCOUNT_INDEX, "첫 Solana 계정")?;
+            if count > 0 && start.saturating_add(count - 1) > MAX_ACCOUNT_INDEX {
+                return Err(format!(
+                    "Solana 계정 인덱스는 {MAX_ACCOUNT_INDEX}까지입니다."
+                ));
+            }
+            for n in 0..count {
+                let slot = u8::try_from(n)
+                    .ok()
+                    .and_then(PivSlot::retired)
+                    .ok_or_else(|| "PIV 슬롯은 20개까지입니다.".to_owned())?;
+                let index = AccountIndex::new(start.saturating_add(n))
+                    .map_err(|_| "Solana 계정 인덱스 범위".to_owned())?;
+                slots.push(PlannedSlot {
+                    slot: CardSlot::Piv(slot),
+                    role: KeyRole::Sol { index },
+                    touch: self.piv_touch,
+                    pin: PinPolicy::Always,
+                    backup_copy: false,
+                });
+            }
+            slots
+        };
+        if slots.is_empty() {
+            return Err("YubiKey에 넣을 키를 하나 이상 고르세요.".to_owned());
+        }
+        if self.uses_shared() && !self.shared_ack {
+            return Err("EVM 공유 키의 안내를 읽고 확인란을 체크하세요.".to_owned());
+        }
+        validate_plan(&slots).map_err(|error| error.to_string())?;
+        Ok(slots)
+    }
+
+    /// Whether the plan has `OpenPGP` / PIV slots.
+    #[must_use]
+    pub fn applets(&self) -> (bool, bool) {
+        (
+            self.slots
+                .iter()
+                .any(|slot| matches!(slot.slot, CardSlot::OpenPgp(_))),
+            self.slots
+                .iter()
+                .any(|slot| matches!(slot.slot, CardSlot::Piv(_))),
+        )
+    }
+
+    /// Whether the confirmation allows going on (no plan error, the same-mnemonic warning
+    /// acknowledged).
+    #[must_use]
+    pub fn can_continue(&self) -> bool {
+        self.preview.as_ref().is_some_and(|preview| {
+            preview.plan.is_ok() && (!preview.same_as_vault || self.same_ack)
+        })
+    }
+}
+
+/// The text of an enrolment failure.
+fn failure_text(error: YubiKeyJobError) -> String {
+    match error {
+        YubiKeyJobError::Key(error) => crate::errors::key_code(error).text(),
+        YubiKeyJobError::Vault(error) => crate::errors::vault_code(error).text(),
+        YubiKeyJobError::Card(error) => error.to_string(),
+    }
+}
+
+/// Command ids of the wizard's touch radios: `(policy, id offset)`.
+pub const PGP_TOUCH: [TouchPolicy; 4] = [
+    TouchPolicy::Always,
+    TouchPolicy::Cached,
+    TouchPolicy::AlwaysFixed,
+    TouchPolicy::CachedFixed,
+];
+/// The PIV touch choices.
+pub const PIV_TOUCH: [TouchPolicy; 2] = [TouchPolicy::Always, TouchPolicy::Cached];
+/// The Bitcoin address types a card key can be (no Taproot).
+pub const CARD_SCRIPTS: [ScriptType; 3] = [
+    ScriptType::P2wpkh,
+    ScriptType::P2shP2wpkh,
+    ScriptType::P2pkh,
+];
+
+impl App {
+    /// The current Bitcoin network of the settings (the network of a planned Bitcoin key).
+    #[must_use]
+    pub fn yk_network(&self) -> BtcNetwork {
+        crate::btc::core_network(self.settings.bitcoin.network)
+    }
+
+    /// Opens the wizard (Settings → `YubiKey`, a key-only wallet's chain card).
+    pub fn yk_open_wizard(&mut self) {
+        if !matches!(self.mode, AppMode::Unlocked { .. }) || self.card.records.len() >= MAX_CARDS {
+            return;
+        }
+        let wizard = YkWizard::new(WizardOrigin::Vault, &self.card.records, self.yk_network());
+        self.card.wizard = Some(wizard);
+        self.set_screen(Screen::YubiKey);
+    }
+
+    fn yk_wizard(&mut self) -> Option<&mut YkWizard> {
+        self.card.wizard.as_mut()
+    }
+
+    /// Ends the wizard: the key worker wipes the words (and a new wallet's password).
+    pub fn yk_close_wizard(&mut self) {
+        let wizard = self.card.wizard.take();
+        self.key(KeyJob::YubiKey(YkJob::Discard));
+        let back = match wizard {
+            Some(wizard) if wizard.origin == WizardOrigin::NewWallet && !wizard.created => {
+                Screen::FirstRun
+            }
+            Some(wizard) if wizard.created => Screen::Main,
+            _ => Screen::Settings(SettingsSection::YubiKey),
+        };
+        if back == Screen::Main && self.meta.is_none() {
+            self.key(KeyJob::LoadMeta);
+            self.set_screen(Screen::Processing("불러오는 중…"));
+        } else {
+            self.set_screen(back);
+        }
+    }
+
+    /// (a) `다음`: the plan, then W05 (or straight to the preview when the words are held).
+    pub fn yk_plan_next(&mut self) {
+        let records = self.card.records.clone();
+        let network = self.yk_network();
+        let Some(wizard) = self.yk_wizard() else {
+            return;
+        };
+        match wizard.plan(&records, network) {
+            Err(text) => {
+                wizard.error = Some(text);
+                self.refresh();
+            }
+            Ok(slots) => {
+                wizard.error = None;
+                wizard.slots.clone_from(&slots);
+                wizard.preview = None;
+                wizard.same_ack = false;
+                wizard.step = WizardStep::Confirm;
+                if wizard.seed_held {
+                    self.key(KeyJob::YubiKey(YkJob::Preview {
+                        mnemonic: None,
+                        slots,
+                    }));
+                    self.refresh();
+                } else {
+                    self.refresh();
+                    self.open_input(
+                        SecretKind::Mnemonic,
+                        Purpose::YubiKey(YkPurpose::Mnemonic),
+                        false,
+                    );
+                }
+            }
+        }
+    }
+
+    fn yk_send_preview(
+        &mut self,
+        phrase: Zeroizing<Vec<u8>>,
+        passphrase: Option<Zeroizing<Vec<u8>>>,
+    ) {
+        self.close_secret();
+        let Some(wizard) = self.yk_wizard() else {
+            return;
+        };
+        let slots = wizard.slots.clone();
+        self.key(KeyJob::YubiKey(YkJob::Preview {
+            mnemonic: Some((phrase, passphrase)),
+            slots,
+        }));
+        self.refresh();
+    }
+
+    /// (d) `가져오기` (`adopt` = "가져오기 없이 등록"): the credentials windows, then the job.
+    pub fn yk_import(&mut self, adopt: bool) {
+        let Some(wizard) = self.card.wizard.as_mut() else {
+            return;
+        };
+        if !wizard.can_continue() {
+            return;
+        }
+        wizard.adopt = adopt;
+        wizard.admin_pin = None;
+        let (pgp, piv) = wizard.applets();
+        let custom_key = piv && !wizard.default_management;
+        if adopt {
+            self.yk_run(Zeroizing::new(Vec::new()), Zeroizing::new(Vec::new()));
+        } else if pgp {
+            self.open_input(
+                SecretKind::CardSecret(CardSecretKind::AdminPin),
+                Purpose::YubiKey(YkPurpose::AdminPin),
+                false,
+            );
+        } else if custom_key {
+            self.open_input(
+                SecretKind::CardSecret(CardSecretKind::ManagementKey),
+                Purpose::YubiKey(YkPurpose::ManagementKey),
+                false,
+            );
+        } else {
+            self.yk_run(Zeroizing::new(Vec::new()), Self::yk_factory_key(piv));
+        }
+    }
+
+    fn yk_factory_key(piv: bool) -> Zeroizing<Vec<u8>> {
+        Zeroizing::new(if piv {
+            yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY.to_vec()
+        } else {
+            Vec::new()
+        })
+    }
+
+    /// Hex text of W12 → key bytes.
+    fn yk_key_bytes(text: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+        if text.len() != 48 {
+            return None;
+        }
+        let digit = |byte: u8| char::from(byte).to_digit(16);
+        let mut key = Zeroizing::new(Vec::with_capacity(24));
+        for pair in text.chunks_exact(2) {
+            let high = pair.first().copied().and_then(digit)?;
+            let low = pair.get(1).copied().and_then(digit)?;
+            key.push(u8::try_from(high.saturating_mul(16).saturating_add(low)).ok()?);
+        }
+        Some(key)
+    }
+
+    /// Queues the enrolment with the credentials (moved into the job).
+    fn yk_run(&mut self, admin_pin: Zeroizing<Vec<u8>>, management_key: Zeroizing<Vec<u8>>) {
+        self.close_secret();
+        let Some(wizard) = self.card.wizard.as_mut() else {
+            return;
+        };
+        wizard.step = WizardStep::Running;
+        wizard.failure = None;
+        let job = YkJob::Enrol {
+            slots: wizard.slots.clone(),
+            admin_pin,
+            management_key,
+            adopt: wizard.adopt,
+        };
+        self.card.enrol = Some(crate::app_card::EnrolState::Running);
+        logging::info("app", "yubikey.enrol_start", &[]);
+        self.key(KeyJob::YubiKey(job));
+        self.refresh();
+    }
+
+    /// A W12/W05/W06/W01/W10 submission of the `YubiKey` flows.
+    pub(crate) fn yk_submit(
+        &mut self,
+        purpose: YkPurpose,
+        values: Vec<Zeroizing<Vec<u8>>>,
+        checkbox: bool,
+    ) {
+        let mut values = values.into_iter();
+        let mut next = || values.next().unwrap_or_default();
+        match purpose {
+            YkPurpose::Mnemonic => {
+                let phrase = next();
+                if checkbox {
+                    if let Some(wizard) = self.card.wizard.as_mut() {
+                        wizard.phrase = Some(phrase);
+                    }
+                    self.open_input(
+                        SecretKind::Passphrase { confirm: true },
+                        Purpose::YubiKey(YkPurpose::Passphrase),
+                        false,
+                    );
+                } else {
+                    self.yk_send_preview(phrase, None);
+                }
+            }
+            YkPurpose::Passphrase => {
+                let passphrase = next();
+                let phrase = self
+                    .card
+                    .wizard
+                    .as_mut()
+                    .and_then(|wizard| wizard.phrase.take());
+                match phrase {
+                    Some(phrase) => self.yk_send_preview(phrase, Some(passphrase)),
+                    None => self.close_secret(),
+                }
+            }
+            YkPurpose::NewPassword => {
+                let password = next();
+                self.close_secret();
+                self.set_screen(Screen::Processing("새 복구 단어를 만드는 중…"));
+                self.key(KeyJob::YubiKey(YkJob::Generate { password }));
+            }
+            YkPurpose::Backup => {
+                let words = [next(), next(), next(), next()];
+                self.with_form(|form| form.set_busy(true));
+                self.key(KeyJob::YubiKey(YkJob::ConfirmWords { words }));
+            }
+            YkPurpose::AdminPin => {
+                let pin = next();
+                let piv_custom = self
+                    .card
+                    .wizard
+                    .as_ref()
+                    .is_some_and(|wizard| wizard.applets().1 && !wizard.default_management);
+                let piv = self
+                    .card
+                    .wizard
+                    .as_ref()
+                    .is_some_and(|wizard| wizard.applets().1);
+                if piv_custom {
+                    if let Some(wizard) = self.card.wizard.as_mut() {
+                        wizard.admin_pin = Some(pin);
+                    }
+                    self.open_input(
+                        SecretKind::CardSecret(CardSecretKind::ManagementKey),
+                        Purpose::YubiKey(YkPurpose::ManagementKey),
+                        false,
+                    );
+                } else {
+                    self.yk_run(pin, Self::yk_factory_key(piv));
+                }
+            }
+            YkPurpose::ManagementKey => {
+                let text = next();
+                let Some(key) = Self::yk_key_bytes(&text) else {
+                    self.with_form(|form| {
+                        form.set_error(Some("관리 키는 16진수 48자리입니다.".to_owned()));
+                    });
+                    return;
+                };
+                let pin = self
+                    .card
+                    .wizard
+                    .as_mut()
+                    .and_then(|wizard| wizard.admin_pin.take())
+                    .unwrap_or_default();
+                self.yk_run(pin, key);
+            }
+            YkPurpose::ChangePin(target) => {
+                let old = next();
+                let new = next();
+                let Some(serial) = self.yk_result_serial() else {
+                    self.close_secret();
+                    return;
+                };
+                self.with_form(|form| form.set_busy(true));
+                self.key(KeyJob::YubiKey(YkJob::ChangePin {
+                    serial,
+                    target,
+                    old,
+                    new,
+                }));
+            }
+            YkPurpose::ShowWords | YkPurpose::ShowManagementKey => {}
+        }
+    }
+
+    /// A `YubiKey` secret window was cancelled or closed.
+    pub(crate) fn yk_cancel(&mut self, purpose: YkPurpose) {
+        match purpose {
+            YkPurpose::NewPassword | YkPurpose::ShowWords | YkPurpose::Backup => {
+                // The new wallet is abandoned: the worker wipes the words and the password.
+                self.key(KeyJob::YubiKey(YkJob::Discard));
+                self.card.wizard = None;
+                self.set_screen(Screen::FirstRun);
+            }
+            YkPurpose::Mnemonic | YkPurpose::Passphrase => {
+                if let Some(wizard) = self.card.wizard.as_mut() {
+                    wizard.phrase = None;
+                    if !wizard.seed_held {
+                        wizard.step = WizardStep::Plan;
+                    }
+                }
+                self.refresh();
+            }
+            YkPurpose::AdminPin | YkPurpose::ManagementKey => {
+                if let Some(wizard) = self.card.wizard.as_mut() {
+                    wizard.admin_pin = None;
+                }
+                self.refresh();
+            }
+            YkPurpose::ChangePin(_) => self.refresh(),
+            YkPurpose::ShowManagementKey => {
+                self.key(KeyJob::YubiKey(YkJob::DiscardManagementKey));
+                if let Some(wizard) = self.card.wizard.as_mut() {
+                    wizard.notes.push(
+                        "새 관리 키를 설정하지 않았습니다. 관리 키는 그대로입니다.".to_owned(),
+                    );
+                }
+                self.refresh();
+            }
+        }
+    }
+
+    /// W08 / W13 `다 적었습니다` held: the W10 challenge, or the new management key is set.
+    pub(crate) fn yk_hold_complete(&mut self, purpose: YkPurpose) {
+        self.close_secret();
+        match purpose {
+            YkPurpose::ShowWords => self.key(KeyJob::YubiKey(YkJob::Challenge)),
+            YkPurpose::ShowManagementKey => {
+                // The current key is the factory key (this change is offered when it was seen).
+                self.key(KeyJob::YubiKey(YkJob::SetManagementKey {
+                    old: Zeroizing::new(yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY.to_vec()),
+                }));
+            }
+            _ => {}
+        }
+        self.refresh();
+    }
+
+    fn yk_result_serial(&self) -> Option<u32> {
+        self.card
+            .wizard
+            .as_ref()
+            .and_then(|wizard| wizard.enrolled.as_ref())
+            .map(|enrolled| enrolled.record.serial)
+    }
+
+    // ----- the new YubiKey wallet ------------------------------------------------------------
+
+    /// S01 `YubiKey 지갑 만들기`.
+    pub fn yk_new_wallet(&mut self) {
+        if self.mode != AppMode::NoVault || self.leftover {
+            return;
+        }
+        self.key(KeyJob::YubiKey(YkJob::Discard));
+        self.card.wizard = None;
+        self.set_screen(Screen::YubiKeyWalletIntro);
+    }
+
+    /// S20 `시작하기`: W01.
+    pub fn yk_new_wallet_start(&mut self) {
+        self.open_input(
+            SecretKind::SetPassword,
+            Purpose::YubiKey(YkPurpose::NewPassword),
+            false,
+        );
+    }
+
+    // ----- key worker results ----------------------------------------------------------------
+
+    /// A wizard job finished.
+    pub(crate) fn on_yk_outcome(&mut self, outcome: YkOutcome) {
+        match outcome {
+            YkOutcome::Preview(result) => self.on_yk_preview(result),
+            YkOutcome::Words(Ok((phrase, address))) => {
+                self.set_screen(Screen::YubiKeyWalletIntro);
+                self.open_display(
+                    SecretKind::ShowMnemonic { create: true },
+                    Purpose::YubiKey(YkPurpose::ShowWords),
+                    DisplaySecret {
+                        text: phrase,
+                        address: Some(address.to_checksum()),
+                        passphrase_note: false,
+                        copy_allowed: self.settings.allow_secret_copy,
+                    },
+                );
+            }
+            YkOutcome::Words(Err(error)) => {
+                self.banner(None, failure_text(error));
+                self.set_screen(Screen::YubiKeyWalletIntro);
+            }
+            YkOutcome::Challenge(Ok(positions)) => {
+                if self.secret_purpose() == Some(Purpose::YubiKey(YkPurpose::Backup)) {
+                    self.with_form(|form| {
+                        form.reset_backup(
+                            positions,
+                            Some(
+                                "입력한 단어가 맞지 않습니다. 새 위치로 다시 확인합니다."
+                                    .to_owned(),
+                            ),
+                        );
+                    });
+                } else {
+                    self.open_input(
+                        SecretKind::Backup { positions },
+                        Purpose::YubiKey(YkPurpose::Backup),
+                        false,
+                    );
+                }
+            }
+            YkOutcome::Challenge(Err(error)) | YkOutcome::WordsConfirmed(Err(error)) => {
+                self.close_secret();
+                self.banner(None, failure_text(error));
+                self.refresh();
+            }
+            YkOutcome::WordsConfirmed(Ok(true)) => {
+                self.close_secret();
+                let mut wizard = YkWizard::new(WizardOrigin::NewWallet, &[], self.yk_network());
+                wizard.seed_held = true;
+                self.card.wizard = Some(wizard);
+                self.set_screen(Screen::YubiKey);
+            }
+            YkOutcome::WordsConfirmed(Ok(false)) => self.key(KeyJob::YubiKey(YkJob::Challenge)),
+            YkOutcome::Checked(serial, result) => self.on_yk_checked(serial, result),
+            YkOutcome::PinChanged(serial, target, result) => {
+                self.on_yk_pin_changed(serial, target, result);
+            }
+            YkOutcome::ManagementKey(Ok(text)) => self.open_display(
+                SecretKind::ShowCardKey,
+                Purpose::YubiKey(YkPurpose::ShowManagementKey),
+                DisplaySecret {
+                    text,
+                    address: None,
+                    passphrase_note: false,
+                    copy_allowed: false,
+                },
+            ),
+            YkOutcome::ManagementKey(Err(error)) => self.yk_note(error.to_string()),
+            YkOutcome::ManagementKeySet(serial, result) => match result {
+                Ok(()) => {
+                    if let Some(wizard) = self.card.wizard.as_mut() {
+                        wizard.defaults.piv_management = false;
+                    }
+                    self.yk_note(
+                        "PIV 관리 키를 바꿨습니다. 다음 YubiKey 등록·관리 키 변경에는 적어 둔 새 관리 키를 입력하세요."
+                            .to_owned(),
+                    );
+                    self.yk_defaults_done(serial);
+                }
+                Err(error) => self.yk_note(format!("관리 키를 바꾸지 못했습니다: {error}")),
+            },
+            YkOutcome::Removed(Ok(_)) => {
+                self.close_secret();
+                self.info = Some("YubiKey 기록을 지웠습니다.".to_owned());
+                self.key(KeyJob::HardwareKeys);
+                self.key(KeyJob::LoadMeta);
+                self.refresh();
+            }
+            YkOutcome::Removed(Err(error)) => {
+                self.password_failure(error, yw_win::time::monotonic_ms());
+            }
+            YkOutcome::Discarded => {}
+        }
+    }
+
+    fn yk_note(&mut self, text: String) {
+        if let Some(wizard) = self.card.wizard.as_mut() {
+            wizard.notes.push(text);
+        } else {
+            self.info = Some(text);
+        }
+        self.refresh();
+    }
+
+    fn on_yk_preview(&mut self, result: Result<YkPreview, YubiKeyJobError>) {
+        match result {
+            Ok(preview) => {
+                if let Some(wizard) = self.card.wizard.as_mut() {
+                    wizard.seed_held = true;
+                    wizard.preview = Some(preview);
+                    wizard.step = WizardStep::Confirm;
+                }
+                self.refresh();
+            }
+            Err(YubiKeyJobError::Key(error)) => {
+                // Wrong words or passphrase: W05 again with the parser's reason.
+                let code = crate::errors::key_code(error);
+                let message = match error {
+                    yw_core::error::KeyError::MnemonicUnknownWord { position } => {
+                        code.render(&position.to_string())
+                    }
+                    _ => code.text(),
+                };
+                self.open_input(
+                    SecretKind::Mnemonic,
+                    Purpose::YubiKey(YkPurpose::Mnemonic),
+                    false,
+                );
+                self.with_form(|form| form.set_error(Some(message)));
+                self.refresh();
+            }
+            Err(error) => {
+                if let Some(wizard) = self.card.wizard.as_mut() {
+                    wizard.step = WizardStep::Plan;
+                    wizard.error = Some(failure_text(error));
+                }
+                self.refresh();
+            }
+        }
+    }
+
+    /// The wizard's part of `on_yubikey_enrolled`.
+    pub(crate) fn yk_enrolled(&mut self, result: &Result<(RecordId, Enrolled), YubiKeyJobError>) {
+        let created = match (result, self.card.wizard.as_ref()) {
+            (Ok(_), Some(wizard)) => wizard.origin == WizardOrigin::NewWallet && !wizard.created,
+            _ => false,
+        };
+        if created {
+            // The YubiKey wallet exists and is open (`create_with_hardware`).
+            self.set_mode(AppMode::Unlocked {
+                alt_passphrase: false,
+            });
+            self.idle.input(yw_win::time::monotonic_ms());
+            if let Ok((_, enrolled)) = result {
+                let bitcoin = enrolled
+                    .record
+                    .slots
+                    .iter()
+                    .find_map(|slot| match slot.role {
+                        KeyRole::Btc { network, .. }
+                        | KeyRole::Evm {
+                            btc: Some(BtcUse { network, .. }),
+                            ..
+                        } => Some(network),
+                        _ => None,
+                    });
+                if let Some(network) = bitcoin
+                    && !self.settings.bitcoin.enabled
+                {
+                    let mut settings = self.settings.clone();
+                    settings.bitcoin.enabled = true;
+                    settings.bitcoin.network = crate::btc::app_network(network);
+                    self.save_settings(settings, "bitcoin.enabled");
+                }
+            }
+        }
+        let Some(wizard) = self.card.wizard.as_mut() else {
+            return;
+        };
+        match result {
+            Ok((_, enrolled)) => {
+                wizard.created |= created;
+                if created {
+                    wizard.origin = WizardOrigin::Vault;
+                }
+                wizard.defaults = enrolled.defaults;
+                wizard.enrolled = Some(enrolled.clone());
+                wizard.failure = None;
+                wizard.check = None;
+                wizard.changed.clear();
+                wizard.notes.clear();
+            }
+            Err(error) => {
+                let mut text = failure_text(*error);
+                if matches!(
+                    error,
+                    YubiKeyJobError::Card(CardJobError::Enrol(
+                        yw_core::yubikey::enrol::EnrolError::Card(_)
+                    ))
+                ) && !wizard.adopt
+                {
+                    text.push(' ');
+                    text.push_str(T_YK_PARTIAL);
+                }
+                wizard.failure = Some(text);
+                wizard.enrolled = None;
+            }
+        }
+        wizard.step = WizardStep::Result;
+    }
+
+    fn on_yk_checked(
+        &mut self,
+        serial: u32,
+        result: Result<Vec<Result<(), yw_core::yubikey::CardError>>, CardJobError>,
+    ) {
+        let record = self
+            .card
+            .records
+            .iter()
+            .find(|record| record.serial == serial)
+            .cloned();
+        let lines = match (result, record) {
+            (Ok(results), Some(record)) => record
+                .slots
+                .iter()
+                .zip(results)
+                .map(|(slot, result)| match result {
+                    Ok(()) => format!("{} — 공개키가 기록과 같습니다 ✓", slot.slot.label()),
+                    Err(error) => format!("{} — {error}", slot.slot.label()),
+                })
+                .collect(),
+            (Ok(_), None) => vec!["이 YubiKey의 기록을 찾지 못했습니다.".to_owned()],
+            (Err(error), _) => vec![format!("확인하지 못했습니다: {error}")],
+        };
+        if let Some(wizard) = self.card.wizard.as_mut() {
+            wizard.check = Some(lines);
+        }
+        self.refresh();
+    }
+
+    fn on_yk_pin_changed(
+        &mut self,
+        serial: u32,
+        target: PinTarget,
+        result: Result<(), CardJobError>,
+    ) {
+        match result {
+            Ok(()) => {
+                self.close_secret();
+                if let Some(wizard) = self.card.wizard.as_mut() {
+                    if !wizard.changed.contains(&target) {
+                        wizard.changed.push(target);
+                    }
+                    let both = |a: PinTarget, b: PinTarget| {
+                        wizard.changed.contains(&a) && wizard.changed.contains(&b)
+                    };
+                    if both(PinTarget::OpenPgpUser, PinTarget::OpenPgpAdmin) {
+                        wizard.defaults.openpgp_admin = false;
+                    }
+                    if both(PinTarget::PivPin, PinTarget::PivPuk) {
+                        wizard.defaults.piv_pin = false;
+                    }
+                }
+                self.yk_note(format!("{}을(를) 바꿨습니다.", target.name()));
+                self.yk_defaults_done(serial);
+            }
+            Err(error) => {
+                let mut text = error.to_string();
+                if matches!(
+                    error,
+                    CardJobError::Card(yw_core::yubikey::CardError::WrongPin { retries: 1 })
+                ) {
+                    text.push_str(" 한 번 더 틀리면 잠깁니다.");
+                }
+                self.with_form(|form| {
+                    form.set_busy(false);
+                    form.set_error(Some(text));
+                });
+            }
+        }
+    }
+
+    /// Every default of card `serial` was changed: its "기본 PIN 사용 중" note goes.
+    fn yk_defaults_done(&mut self, serial: u32) {
+        let done = self.card.wizard.as_ref().is_some_and(|wizard| {
+            !wizard.defaults.openpgp_admin
+                && !wizard.defaults.piv_pin
+                && !wizard.defaults.piv_management
+        });
+        if done
+            && let Some(meta) = self.meta.as_mut()
+            && meta.hw_accounts.defaults.contains(&serial)
+        {
+            meta.hw_accounts.defaults.retain(|other| *other != serial);
+            self.save_meta();
+        }
+        self.refresh();
+    }
+
+    // ----- removal ---------------------------------------------------------------------------
+
+    /// `삭제` of an enrolled card (the list row `row`): the confirmation overlay.
+    pub fn yk_remove(&mut self, row: usize) {
+        if !matches!(self.mode, AppMode::Unlocked { .. }) || !self.yk_can_remove() {
+            return;
+        }
+        if let Some(id) = self.card.record_ids.get(row).copied() {
+            self.card.remove_target = Some(id);
+            self.set_screen(Screen::Confirm(Confirm::RemoveYubiKey));
+        }
+    }
+
+    /// A record may be removed (a wallet without recovery words keeps its last key).
+    #[must_use]
+    pub fn yk_can_remove(&self) -> bool {
+        self.keys.has_mnemonic || self.imported_count() > 0 || self.card.records.len() > 1
+    }
+
+    /// Overlay `계속`: W03.
+    pub(crate) fn yk_remove_confirmed(&mut self) {
+        let previous = self.previous_screen.clone();
+        self.set_screen(previous);
+        if let Some(id) = self.card.remove_target.take() {
+            self.open_input(
+                SecretKind::ConfirmPassword,
+                Purpose::ConfirmPassword(PasswordAction::RemoveHardwareKey(id)),
+                false,
+            );
+        }
+    }
+
+    // ----- commands --------------------------------------------------------------------------
+
+    /// Main-window commands of the `YubiKey` screens; `false` when `id` is not one of them.
+    #[expect(clippy::too_many_lines, reason = "one arm per wizard control")]
+    pub fn on_yk_command(&mut self, id: u16) -> bool {
+        use crate::ui::screens_yubikey::ids;
+        if let Some((key, action)) = ids::pgp_action(id) {
+            if let Some(wizard) = self.yk_wizard() {
+                let form = wizard.pgp_mut(key);
+                match action {
+                    ids::PgpAction::Kind(kind) => form.kind = kind,
+                    ids::PgpAction::Script(script) => form.script = script,
+                    ids::PgpAction::Touch(touch) => form.touch = touch,
+                }
+                wizard.error = None;
+            }
+            self.refresh();
+            return true;
+        }
+        if let Some(row) = ids::remove_row(id) {
+            self.yk_remove(row);
+            return true;
+        }
+        if let Some(row) = ids::backup_row(id) {
+            let serial = self.card.records.get(row).map(|record| record.serial);
+            if let Some(wizard) = self.yk_wizard() {
+                wizard.backup_of = serial;
+            }
+            self.refresh();
+            return true;
+        }
+        match id {
+            ids::SECTION_YUBIKEY => {
+                self.set_screen(Screen::Settings(SettingsSection::YubiKey));
+                self.key(KeyJob::HardwareKeys);
+            }
+            ids::ENROL_START => self.yk_open_wizard(),
+            ids::NEW_WALLET => self.yk_new_wallet(),
+            ids::NEW_WALLET_START => self.yk_new_wallet_start(),
+            ids::NEW_WALLET_CANCEL => {
+                self.key(KeyJob::YubiKey(YkJob::Discard));
+                self.set_screen(Screen::FirstRun);
+            }
+            ids::PIV_TOUCH_ALWAYS | ids::PIV_TOUCH_CACHED => {
+                if let Some(wizard) = self.yk_wizard() {
+                    wizard.piv_touch = if id == ids::PIV_TOUCH_ALWAYS {
+                        TouchPolicy::Always
+                    } else {
+                        TouchPolicy::Cached
+                    };
+                }
+                self.refresh();
+            }
+            ids::SHARED_ACK => {
+                if let Some(wizard) = self.yk_wizard() {
+                    wizard.shared_ack = !wizard.shared_ack;
+                    wizard.error = None;
+                }
+                self.refresh();
+            }
+            ids::BACKUP_TOGGLE => {
+                let first = self.card.records.first().map(|record| record.serial);
+                if let Some(wizard) = self.yk_wizard() {
+                    wizard.backup_of = if wizard.backup_of.is_some() {
+                        None
+                    } else {
+                        first
+                    };
+                    wizard.error = None;
+                }
+                self.refresh();
+            }
+            ids::PLAN_NEXT => self.yk_plan_next(),
+            ids::WIZARD_CANCEL | ids::FINISH => self.yk_close_wizard(),
+            ids::SAME_ACK => {
+                if let Some(wizard) = self.yk_wizard() {
+                    wizard.same_ack = !wizard.same_ack;
+                }
+                self.refresh();
+            }
+            ids::CONFIRM_BACK | ids::ANOTHER => {
+                let another = id == ids::ANOTHER;
+                let serial = self.yk_result_serial();
+                if let Some(wizard) = self.yk_wizard() {
+                    wizard.step = WizardStep::Plan;
+                    wizard.preview = None;
+                    if another {
+                        wizard.backup_of = serial;
+                        wizard.enrolled = None;
+                        wizard.check = None;
+                        wizard.notes.clear();
+                        wizard.failure = None;
+                    }
+                }
+                self.refresh();
+            }
+            ids::CONFIRM_NEXT => {
+                if let Some(wizard) = self.yk_wizard()
+                    && wizard.can_continue()
+                {
+                    wizard.step = WizardStep::Credentials;
+                }
+                self.refresh();
+            }
+            ids::CRED_BACK | ids::RETRY => {
+                if let Some(wizard) = self.yk_wizard() {
+                    wizard.step = if id == ids::RETRY {
+                        WizardStep::Credentials
+                    } else {
+                        WizardStep::Confirm
+                    };
+                    wizard.failure = None;
+                }
+                self.refresh();
+            }
+            ids::MGMT_DEFAULT | ids::MGMT_CUSTOM => {
+                if let Some(wizard) = self.yk_wizard() {
+                    wizard.default_management = id == ids::MGMT_DEFAULT;
+                }
+                self.refresh();
+            }
+            ids::IMPORT => self.yk_import(false),
+            ids::ADOPT => self.yk_import(true),
+            ids::RECHECK => {
+                if let Some(serial) = self.yk_result_serial() {
+                    self.key(KeyJob::YubiKey(YkJob::Check { serial }));
+                }
+            }
+            ids::CHANGE_PW1 | ids::CHANGE_PW3 | ids::CHANGE_PIV_PIN | ids::CHANGE_PUK => {
+                let target = match id {
+                    ids::CHANGE_PW1 => PinTarget::OpenPgpUser,
+                    ids::CHANGE_PW3 => PinTarget::OpenPgpAdmin,
+                    ids::CHANGE_PIV_PIN => PinTarget::PivPin,
+                    _ => PinTarget::PivPuk,
+                };
+                self.open_input(
+                    SecretKind::CardSecret(CardSecretKind::ChangePin(target)),
+                    Purpose::YubiKey(YkPurpose::ChangePin(target)),
+                    false,
+                );
+            }
+            ids::CHANGE_MGMT => {
+                if let Some(serial) = self.yk_result_serial() {
+                    self.key(KeyJob::YubiKey(YkJob::NewManagementKey { serial }));
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// `EN_CHANGE` of a wizard edit; `false` when `id` is not one of them.
+    pub fn on_yk_edit_change(&mut self, id: u16) -> bool {
+        use crate::ui::screens_yubikey::ids;
+        if ![
+            ids::SIG_INDEX_EDIT,
+            ids::AUT_INDEX_EDIT,
+            ids::SOL_COUNT_EDIT,
+            ids::SOL_START_EDIT,
+        ]
+        .contains(&id)
+        {
+            return false;
+        }
+        let text = self.controls.text(id, 8).unwrap_or_default();
+        self.yk_set_text(id, text);
+        true
+    }
+
+    /// Stores the text of a wizard edit (also the tests' way to type).
+    pub fn yk_set_text(&mut self, id: u16, text: String) {
+        use crate::ui::screens_yubikey::ids;
+        let Some(wizard) = self.yk_wizard() else {
+            return;
+        };
+        match id {
+            ids::SIG_INDEX_EDIT => wizard.sig.index_text = text,
+            ids::AUT_INDEX_EDIT => wizard.aut.index_text = text,
+            ids::SOL_COUNT_EDIT => wizard.sol_count_text = text,
+            ids::SOL_START_EDIT => wizard.sol_start_text = text,
+            _ => {}
+        }
+        wizard.error = None;
+    }
+}
