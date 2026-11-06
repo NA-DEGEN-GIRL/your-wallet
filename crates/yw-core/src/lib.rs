@@ -13,6 +13,7 @@ pub mod entropy;
 pub mod error;
 pub mod evm;
 pub mod hex;
+pub mod hypercore;
 pub mod journal;
 pub mod keyimport;
 pub mod password;

@@ -191,13 +191,13 @@ const fn is_diff(key: FieldKey) -> bool {
 }
 
 const fn is_raw(field: &DisplayField) -> bool {
-    !field.critical && matches!(field.key.0, 0x0140..=0x014F)
+    !field.critical && matches!(field.key.0, 0x0140..=0x014F | 0x0706)
 }
 
 const fn is_mono(key: FieldKey) -> bool {
     matches!(
         key.0,
-        0x0003 | 0x0101 | 0x0125 | 0x0140 | 0x0141 | 0x0501 | 0x0509 | 0x0601
+        0x0003 | 0x0101 | 0x0125 | 0x0140 | 0x0141 | 0x0501 | 0x0509 | 0x0601 | 0x0702 | 0x0706
     )
 }
 
@@ -402,8 +402,8 @@ pub fn summary(request: &ApprovalRequest) -> (String, Option<String>) {
             Some(amount) => send(amount, field_value(display, 0x0601)),
             None => (format!("{place}BTC를 보냅니다."), None),
         },
-        ApprovalKind::ZecSend => match field_value(display, 0x0703) {
-            Some(amount) => send(amount, field_value(display, 0x0701)),
+        ApprovalKind::ZecSend => match field_value(display, 0x0803) {
+            Some(amount) => send(amount, field_value(display, 0x0801)),
             None => (format!("{place}ZEC를 보냅니다."), None),
         },
         ApprovalKind::BtcFeeBump => (
@@ -415,6 +415,15 @@ pub fn summary(request: &ApprovalRequest) -> (String, Option<String>) {
                 "{place}메시지에 서명해 이 주소의 소유를 증명합니다. 거래 서명이나 전송은 하지 않습니다."
             ),
             None,
+        ),
+        ApprovalKind::HyperCoreAction => (
+            format!(
+                "{place}Hyperliquid HyperCore 작업에 서명합니다: {}. 서명하면 Hyperliquid가 바로 처리하며 되돌릴 수 없습니다.",
+                field_value(display, 0x0701).map_or("", first_line)
+            ),
+            field_value(display, 0x0702)
+                .map(address_part)
+                .filter(|address| !address.is_empty()),
         ),
         ApprovalKind::SolSignIn => (
             format!(
@@ -500,7 +509,7 @@ pub fn signing_view(
         });
     }
     let (sentence, address) = summary(request);
-    let notes = [0x0101, 0x0501, 0x0601]
+    let notes = [0x0101, 0x0501, 0x0601, 0x0702]
         .into_iter()
         .find_map(|key| field_value(display, key))
         .filter(|_| address.is_some())
@@ -521,8 +530,14 @@ pub fn signing_view(
         yw_core::approval::ApprovalKind::EvmPersonalSign
             | yw_core::approval::ApprovalKind::EvmTypedData
     ) || request.kind.is_chain_message();
-    let money = |key: FieldKey| (sol && is_sol_money(key)) || (btc && is_btc_money(key));
-    if sol || btc {
+    // HyperCore (spec/11 §6): no simulation; its amount and fee rows take the money area.
+    let hc = request.kind == yw_core::approval::ApprovalKind::HyperCoreAction;
+    let money = |key: FieldKey| {
+        (sol && is_sol_money(key))
+            || (btc && is_btc_money(key))
+            || (hc && matches!(key.0, 0x0703 | 0x0704))
+    };
+    if sol || btc || hc {
         view.blocks.push(Block::Section("금액·수수료"));
         for field in display.fields.iter().filter(|field| money(field.key)) {
             view.blocks.push(Block::Field {

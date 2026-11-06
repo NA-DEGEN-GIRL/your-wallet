@@ -10,6 +10,7 @@ use yw_app::zec::rpc::{
 use yw_core::zec::{ZecAccount, ZecKeySource, ZecNetwork};
 use yw_json::{Limits, Value};
 
+#[expect(clippy::unwrap_used, reason = "fixture JSON is valid")]
 fn json(text: &str) -> Value {
     yw_json::parse(text.as_bytes(), &Limits::RESPONSE).unwrap()
 }
@@ -32,9 +33,8 @@ fn chain_info_is_checked() {
         parse_chain_info(&info, ZecNetwork::Mainnet),
         Err(ZecRpcError::WrongChain)
     );
-    let lagging = json(
-        r#"{"chain":"main","blocks":10,"headers":100,"consensus":{"nextblock":"77190ad9"}}"#,
-    );
+    let lagging =
+        json(r#"{"chain":"main","blocks":10,"headers":100,"consensus":{"nextblock":"77190ad9"}}"#);
     assert_eq!(
         parse_chain_info(&lagging, ZecNetwork::Mainnet),
         Err(ZecRpcError::NotSynced)

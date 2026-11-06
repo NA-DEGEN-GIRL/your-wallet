@@ -148,22 +148,22 @@ v5(ZIP 225), 일반 부분만. 모든 정수는 little-endian:
 
 ## 9. 승인 표시 (`zec::display::build_zec_request`)
 
-`ApprovalKind::ZecSend`(0x40), `ChainRef::Zcash{network, genesis}`(digest `chain_tag` 4), `AccountRef::Zcash(압축 공개키)`, `Signer::FromPayload`, `SigningPayload::Zec(zec_payload)`(transcript `"your-wallet/v3/zec-send"` v1: 네트워크, 키 출처, 공개키, 받는 사람 형식·스크립트·입력 문자열, 금액, 수수료, 잔돈, 보내기 최대, branch id, 만료 높이, 입력 값들, 서명 전 거래 바이트). 필드(모두 계획에서 만듦, 서버 문자열 없음):
+`ApprovalKind::ZecSend`(0x50; 0x40은 HyperCore), `ChainRef::Zcash{network, genesis}`(digest `chain_tag` 5; 4는 HyperCore), `AccountRef::Zcash(압축 공개키)`, `Signer::FromPayload`, `SigningPayload::Zec(zec_payload)`(transcript `"your-wallet/v3/zec-send"` v1: 네트워크, 키 출처, 공개키, 받는 사람 형식·스크립트·입력 문자열, 금액, 수수료, 잔돈, 보내기 최대, branch id, 만료 높이, 입력 값들, 서명 전 거래 바이트). 필드(모두 계획에서 만듦, 서버 문자열 없음):
 
 | 키 | 내용 | 표시 |
 |---|---|---|
 | `0x0001` 요청 출처 | "Your Wallet 앱" | 펼침 |
 | `0x0002` 네트워크 | `ZCASH MAINNET` / `ZCASH TESTNET — 가치 없음` | 펼침 |
 | `0x0003` 계정 | 키 출처 · 경로 · 보내는 주소 | 펼침 |
-| `0x0701` 받는 주소 | 일반 주소로 다시 인코딩한 값, TEX·UA면 "입력한 주소: …"도 | 펼침 |
-| `0x0702` 주소 형식 | 일반(transparent) 주소 / TEX / UA의 일반 수신자 | 펼침 |
-| `0x0703` 금액 | `x.xxxxxxxx ZEC (n zats)` | 펼침 |
-| `0x0704` 잔돈 | 같은 주소로 돌아오는 금액, 또는 수수료에 더한 나머지 | 펼침 |
-| `0x0705` 수수료 | 금액 + ZIP 317 기본 수수료(입력·출력 수) | 펼침 |
-| `0x0706` 합계 | 금액 + 수수료 | 펼침 |
-| `0x0707` 만료 | 만료 높이, 남은 블록·대략 분, 업그레이드 이름·branch id, 다음 업그레이드 높이 | 펼침 |
-| `0x0708` 입력 | 개수·합계, "입력 금액과 스크립트는 서명(ZIP 244)에 포함" | 접힘 |
-| `0x0740` 고급 | v5·nLockTime 0·sequence·SIGHASH_ALL·보내기 최대 여부 | 접힘 |
+| `0x0801` 받는 주소 | 일반 주소로 다시 인코딩한 값, TEX·UA면 "입력한 주소: …"도 | 펼침 |
+| `0x0802` 주소 형식 | 일반(transparent) 주소 / TEX / UA의 일반 수신자 | 펼침 |
+| `0x0803` 금액 | `x.xxxxxxxx ZEC (n zats)` | 펼침 |
+| `0x0804` 잔돈 | 같은 주소로 돌아오는 금액, 또는 수수료에 더한 나머지 | 펼침 |
+| `0x0805` 수수료 | 금액 + ZIP 317 기본 수수료(입력·출력 수) | 펼침 |
+| `0x0806` 합계 | 금액 + 수수료 | 펼침 |
+| `0x0807` 만료 | 만료 높이, 남은 블록·대략 분, 업그레이드 이름·branch id, 다음 업그레이드 높이 | 펼침 |
+| `0x0808` 입력 | 개수·합계, "입력 금액과 스크립트는 서명(ZIP 244)에 포함" | 접힘 |
+| `0x0840` 고급 | v5·nLockTime 0·sequence·SIGHASH_ALL·보내기 최대 여부 | 접힘 |
 
 경고: Z05(정보) 일반 전송은 공개됨(항상), Z01(정보) 받는 주소가 내 주소, Z02(정보) TEX, Z03(주의) UA의 일반 수신자로 보냄, Z04(정보) 다음 업그레이드 때문에 만료를 앞당김. 승인 창 상단 요약은 "…에서 x ZEC를 아래 주소로 보냅니다."
 

@@ -126,23 +126,35 @@ impl FieldKey {
     /// BTC 고급(version·nLockTime·RBF·vsize·weight·txid).
     pub const BTC_ADVANCED: Self = Self(0x0640);
     /// ZEC 받는 주소(일반 주소로 다시 인코딩한 값과 입력한 형식).
-    pub const ZEC_TO: Self = Self(0x0701);
+    pub const ZEC_TO: Self = Self(0x0801);
     /// ZEC 받는 주소 형식(t 주소 / TEX / UA의 일반 수신자).
-    pub const ZEC_FORM: Self = Self(0x0702);
+    pub const ZEC_FORM: Self = Self(0x0802);
     /// ZEC 보내는 금액.
-    pub const ZEC_AMOUNT: Self = Self(0x0703);
+    pub const ZEC_AMOUNT: Self = Self(0x0803);
     /// ZEC 잔돈.
-    pub const ZEC_CHANGE: Self = Self(0x0704);
+    pub const ZEC_CHANGE: Self = Self(0x0804);
     /// ZEC 수수료(ZIP 317).
-    pub const ZEC_FEE: Self = Self(0x0705);
+    pub const ZEC_FEE: Self = Self(0x0805);
     /// ZEC 합계(금액 + 수수료).
-    pub const ZEC_TOTAL: Self = Self(0x0706);
+    pub const ZEC_TOTAL: Self = Self(0x0806);
     /// ZEC 만료 높이와 네트워크 업그레이드.
-    pub const ZEC_EXPIRY: Self = Self(0x0707);
+    pub const ZEC_EXPIRY: Self = Self(0x0807);
     /// ZEC 입력(개수·합계).
-    pub const ZEC_INPUTS: Self = Self(0x0708);
+    pub const ZEC_INPUTS: Self = Self(0x0808);
     /// ZEC 고급(형식·branch id·txid).
-    pub const ZEC_ADVANCED: Self = Self(0x0740);
+    pub const ZEC_ADVANCED: Self = Self(0x0840);
+    /// `HyperCore` 작업.
+    pub const HC_ACTION: Self = Self(0x0701);
+    /// `HyperCore` 받는 주소.
+    pub const HC_TO: Self = Self(0x0702);
+    /// `HyperCore` 토큰·금액.
+    pub const HC_AMOUNT: Self = Self(0x0703);
+    /// `HyperCore` 수수료.
+    pub const HC_FEE: Self = Self(0x0704);
+    /// `HyperCore` nonce(time).
+    pub const HC_NONCE: Self = Self(0x0705);
+    /// `HyperCore` 원본 typed data.
+    pub const HC_TYPED: Self = Self(0x0706);
 
     /// `(critical, volatile)` for keys of the §11.2 table; `None` for unknown keys.
     #[must_use]
@@ -160,7 +172,8 @@ impl FieldKey {
             | 0x0501..=0x0505
             | 0x0601..=0x0607
             | 0x0609
-            | 0x0701..=0x0707 => (true, false),
+            | 0x0701..=0x0704
+            | 0x0801..=0x0807 => (true, false),
             0x0121 | 0x0130 => (false, true),
             0x0113
             | 0x0122..=0x0124
@@ -170,8 +183,10 @@ impl FieldKey {
             | 0x0506..=0x0509
             | 0x0608
             | 0x0640
-            | 0x0708
-            | 0x0740 => (false, false),
+            | 0x0705
+            | 0x0706
+            | 0x0808
+            | 0x0840 => (false, false),
             _ => return None,
         })
     }

@@ -417,6 +417,7 @@ impl App {
             Screen::BackupPending => Self::backup_pending(&mut items),
             Screen::Reset => self.reset_screen(&mut items),
             Screen::Extension => self.extension_screen(&mut items),
+            Screen::HyperCore => self.hc_screen(&mut items),
             Screen::ImportIntro => Self::import_intro(&mut items),
             Screen::ImportAddress(address) => Self::import_address(address, &mut items),
             Screen::Locked => self.locked(&mut items),

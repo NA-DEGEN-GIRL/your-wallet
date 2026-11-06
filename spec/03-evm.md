@@ -446,7 +446,7 @@ tx_hash   = keccak256(signed)
 // yw-app 키 작업 스레드가 Vault를 소유하고 호출한다([04] §1.2). signer = Approved 안의 Signer::Evm(EvmKeySource)(§11.1)
 pub fn sign_transaction(vault: &Vault, approved: Approved) -> Result<SignedTx, SignError>;   // kind 0x10–0x12, payload EvmTx
 pub fn sign_personal(vault: &Vault, approved: Approved) -> Result<[u8; 65], SignError>;      // kind 0x13
-pub fn sign_typed_data(vault: &Vault, approved: Approved) -> Result<[u8; 65], SignError>;    // kind 0x14
+pub fn sign_typed_data(vault: &Vault, approved: Approved) -> Result<[u8; 65], SignError>;    // kind 0x14, 0x40(HyperCore: 승인된 작업에서 preimage 재계산, [11] §6)
 pub struct SignedTx { pub raw: Vec<u8>, pub tx_hash: [u8; 32], pub tx: Eip1559Tx }
 // kind·payload·signer 불일치 → SignError::KindMismatch (서명하지 않음)
 ```
@@ -823,11 +823,15 @@ primaryType 이름 일치 + primaryType의 typeHash(도달 가능 타입 그래�
 | `Permit2WitnessTransfer` (`permit2-witness-transfer`) | `PermitWitnessTransferFrom` | 동적 | P2, W |
 | `Permit2BatchWitnessTransfer` (`permit2-batch-witness-transfer`) | `PermitBatchWitnessTransferFrom` | 동적 | P2, W |
 | `SeaportOrder` (`seaport-order`) | `OrderComponents` | `0xfa445660b7e21515a59617fcd68910b487aa5808b8abda3d78bc85df364b2c2f` | S |
+| `HyperliquidUser(…)` (`hyperliquid-user-action`) | `HyperliquidTransaction:UsdSend`·`SpotSend`·`Withdraw`·`UsdClassTransfer`·`SendAsset`·`ApproveAgent`·`ApproveBuilderFee` | SDK `encodeType`의 keccak([11] §4·§7) | HL |
+| `HyperliquidL1Agent` (`hyperliquid-l1-agent`) | `Agent` | keccak(`Agent(string source,bytes32 connectionId)`) | HL1 |
 
 보조 typeHash: `PermitDetails 0x65626cad6cb96493bf6f5ebea28756c966f023ab9e8a83a7101849d5573b3678`, `TokenPermissions 0x618358ac3db8dc274f0cd8829da7e234bd48cd73c4a740aede1adec9846d06a1`, 4필드 도메인 `0x8b73c3c69bb8fe3d512ecc4cf759cc79239f7b179b0ffacaa9a75d522b39400f`, Permit2 3필드 도메인 `0x8cad95687ba82c2ce50e74f7b754645e5117c3a5bec8151c0726d5857980a866`.
 
 - **P2**: domain == `{name:"Permit2", chainId, verifyingContract: Permit2}`(version 없음). 스키마가 Permit2 형인데 verifyingContract ≠ Permit2 → 미인식(T04). verifyingContract == Permit2인데 표의 어느 Permit2 스키마도 아님 → 거부(T02).
 - **W**: 처음 네 필드가 `permitted TokenPermissions`(배치는 `TokenPermissions[]`), `spender address`, `nonce uint256`, `deadline uint256`과 정확히 같고, 다섯째 필드가 정확히 하나의 struct 타입(이름 자유). witness 하위 트리는 해석하지 않는다(T06).
+- **HL** (2026-11-06, [11] §7): 4필드 도메인, `name "HyperliquidSignTransaction"`, `version "1"`, verifyingContract 0. chainId는 현재 체인과 같아야 한다(T01). 경고 H01(전송)·H06(ApproveAgent, 고위험)·H08(ApproveBuilderFee, 고위험)·H09(`hyperliquidChain` Testnet), T10은 붙이지 않는다. 표시: `작업`, `hyperliquidChain`, message 필드 순서대로(§8.3 대신 [11] §7). 타입 이름(primaryType·struct)에는 `:`를 허용한다(첫·끝 글자 제외, 필드 이름은 식별자 그대로).
+- **HL1**: domain `{name "Exchange", version "1", chainId 1337, verifyingContract 0}`. 이 스키마와 정확히 같을 때만 chainId 1337을 현재 체인 대신 받아들이고(그 밖은 T01), H07(고위험, "주문·거래 서명 — 해시만 보임")을 붙인다. 지갑은 L1 작업을 만들지 않는다(D34).
 - **S**: domain `name:"Seaport"`, (version `"1.6"` ∧ verifyingContract Seaport 1.6) 또는 (version `"1.5"` ∧ Seaport 1.5). verifyingContract가 Seaport 1.5/1.6인데 스키마 불일치 또는 primaryType `BulkOrder` → 거부(T02). Seaport 1.1 등 레지스트리 밖 → 미인식(T04).
 
 ### 8.3 스키마별 표시
@@ -1035,6 +1039,8 @@ P01 UTF-8 아님(hex 표시) → 고위험(D18). P02 숨은·방향 제어 문�
 
 **차단 규칙 전체(창을 띄우고 거부만 가능)**: E05 수수료 상한 초과, E06 진행 중 거래·저널 공간 부족, E10 거래 가스 상한 초과, E11 서명 거래 크기 초과, E34 체인 식별 불일치, E35 거래를 준비할 수 없음, T16 typed data 표시 한도 초과, S01–S04 SIWE 도메인·scheme·주소 불일치·만료. 이 밖의 규칙은 차단하지 않는다. 특히 시뮬레이션·가스 추정 관련 규칙(E01–E04, E07–E09, E36, E37)은 고위험이다(D15).
 
+**Hyperliquid 규칙 H01–H09** (2026-11-06, [11] §6·§7): H01 정보 HyperCore 사용자 서명 작업(되돌릴 수 없음), H02 주의 받는 주소가 주소록에 없음, H03 고위험 주소 오염(앞뒤 같은 다른 주소), H04 정보 HyperEVM으로 이동, H05 정보 Arbitrum 출금 고정 수수료 1 USDC, H06 고위험 거래 권한 위임(API 지갑 승인), H07 고위험 주문·거래 서명(L1 Agent, 해시만), H08 고위험 빌더 수수료 승인, H09 주의 `hyperliquidChain` Testnet. 차단 규칙은 없다.
+
 ## 11. 승인 요청 모델 (yw-core `approval`)
 
 D27·D31에 따라 이 절이 모든 체인(EVM·SOL·BTC)의 승인 요청 타입·태그·필드 키·digest의 정본이다. SOL·BTC 변형은 M7·M8에서 코드에 더하며, 값의 내용(intent·계획 바이트, 필드 문구)은 [07](07-solana.md) §13·[08](08-bitcoin.md) §10이 정한다.
@@ -1047,13 +1053,16 @@ pub enum ApprovalOrigin { App, Site(BrowserOrigin) } // 직렬화 "yw-app" / Bro
 pub enum ChainRef {                                   // chain_tag(§11.4)
     Evm { chain_id: u64, genesis: [u8; 32] },         // 1, genesis = §1.4로 확인된 값(고정·최초 신뢰 고정 포함)
     Solana { cluster: SolCluster, genesis: [u8; 32] },// 2, cluster u8: 1 mainnet, 2 devnet ([07] §2)
-    Bitcoin { network: u8, genesis: [u8; 32] } }      // 3, network: 1 mainnet, 2 testnet4 ([08] §2)
+    Bitcoin { network: u8, genesis: [u8; 32] },       // 3, network: 1 mainnet, 2 testnet4 ([08] §2)
+    HyperCore { network: u8, signature_chain_id: u64 } } // 4, network: 1 mainnet, 2 testnet ([11] §6, 제네시스 없음)
 pub enum AccountRef { Evm(Address), Sol([u8; 32]) /* from 공개키 */,
     Bitcoin([u8; 33]) /* 계정 공개키 m/84'/c'/0' = [08] §12.3 account_pubkey */ }
 #[repr(u8)] pub enum ApprovalKind { EvmTransaction = 0x10, EvmSpeedUp = 0x11, EvmCancel = 0x12,
-    EvmPersonalSign = 0x13, EvmTypedData = 0x14, SolTransfer = 0x20, BtcSend = 0x30, BtcFeeBump = 0x31 }
+    EvmPersonalSign = 0x13, EvmTypedData = 0x14, SolTransfer = 0x20, BtcSend = 0x30, BtcFeeBump = 0x31,
+    HyperCoreAction = 0x40 /* [11] §6, 2026-11-06 */ }
 pub enum SigningPayload { EvmTx(Eip1559Tx), EvmPersonal(Vec<u8>), EvmTypedData([u8; 66]),
-    SolTransfer(SolTransferIntent), Btc(Vec<u8>) }    // 서명 대상 바이트는 §11.4 표
+    SolTransfer(SolTransferIntent), Btc(Vec<u8>),
+    HyperCore(Box<HcAction>) /* 서명 = 작업의 EIP-712 preimage, digest 바이트는 [11] §6 */ }    // 서명 대상 바이트는 §11.4 표
 pub enum Signer { Evm(EvmKeySource) /* [02] §10.3 */, FromPayload /* SOL intent source, BTC 입력별 경로 */ }
 pub struct ApprovalDisplay { pub title: String, pub fields: Vec<DisplayField>, pub warnings: Vec<Warning>,
     pub risk: RiskLevel, pub ack_required: bool }
@@ -1120,6 +1129,8 @@ critical = 승인 판단에 필요한 필드(창에서 접지 않음). volatile 
 | `0x0506`–`0x0509` | SOL: 잔액(RPC 참고), 시뮬레이션(참고), 유효 시간, 감사(intent_hash) | | |
 | `0x0601`–`0x0607`, `0x0609` | BTC([08] §10): 받는 주소, 주소 종류, 금액, 잔돈, 입력, 수수료, 총 차감, 교체 대상(`BtcFeeBump`만) | 예 | |
 | `0x0608`, `0x0640` | BTC: 승인 후 잔액, 고급(version·nLockTime·RBF·vsize·weight·txid) | | |
+| `0x0701`–`0x0704` | HyperCore([11] §6): 작업, 받는 주소, 토큰·금액, 수수료 | ✓ | |
+| `0x0705`, `0x0706` | HyperCore: nonce(time), 원본 typed data | | |
 
 표시 문자열 규칙: LF 외 제어 문자·표시 금지 문자 없음(빌더가 §9.2로 이스케이프, `DisplayField::new`가 다시 검사), 앞뒤 공백 없음, 값 ≤ 270,000바이트, 필드 ≤ 1,024개, 경고 ≤ 64개.
 
@@ -1144,7 +1155,7 @@ T = Transcript::start_domain("your-wallet/v3/approval", 1)
 T.push_bytes(id)                                  // 16
 T.push_u8(kind)
 T.push_str(origin_serialized)                     // "yw-app" 또는 BrowserOrigin::as_str
-T.push_u8(chain_tag)                              // EVM 1, SOL 2, BTC 3
+T.push_u8(chain_tag)                              // EVM 1, SOL 2, BTC 3, HyperCore 4 ([11] §6: u8 network ‖ u64 signatureChainId)
 EVM: T.push_u64(chain_id); T.push_bytes(genesis)  / SOL: T.push_u8(cluster); T.push_bytes(genesis)
                                                   / BTC: T.push_u8(network); T.push_bytes(genesis)
 T.push_bytes(account_bytes)                       // EVM 20, SOL 32, BTC 33바이트

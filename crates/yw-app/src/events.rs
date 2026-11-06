@@ -1067,6 +1067,8 @@ pub enum RpcEvent {
     Btc(Box<BtcRpcEvent>),
     /// A Zcash RPC result (spec/12).
     Zec(Box<crate::zec::work::ZecRpcEvent>),
+    /// A `HyperCore` job result (spec/11).
+    HyperCore(Box<crate::hypercore::HcEvent>),
 }
 
 /// An event for the UI thread.

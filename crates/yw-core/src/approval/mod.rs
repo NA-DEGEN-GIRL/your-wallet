@@ -110,12 +110,19 @@ pub enum ChainRef {
         /// Genesis hash bytes in display order (the §2 hex decoded).
         genesis: [u8; 32],
     },
-    /// Zcash network with its pinned genesis hash (spec/12 §2, §9; `chain_tag` 4).
+    /// Zcash network with its pinned genesis hash (spec/12 §2, §9; `chain_tag` 5).
     Zcash {
         /// Network id: 1 mainnet, 2 testnet.
         network: u8,
         /// Genesis hash bytes in display order.
         genesis: [u8; 32],
+    },
+    /// Hyperliquid `HyperCore` (spec/11): no genesis; the network and the EIP-712 chain id.
+    HyperCore {
+        /// [`crate::hypercore::HcNetwork::code`]: 1 mainnet, 2 testnet.
+        network: u8,
+        /// `signatureChainId` of the signed action.
+        signature_chain_id: u64,
     },
 }
 
@@ -159,7 +166,9 @@ pub enum ApprovalKind {
     /// dApp Bitcoin message signature (`btc_signMessage`, spec/08 §17; ownership proof only).
     BtcMessage = 0x32,
     /// Zcash transparent send (spec/12 §9; origin is always the app).
-    ZecSend = 0x40,
+    ZecSend = 0x50,
+    /// `HyperCore 전송`: an app-built Hyperliquid user-signed action (spec/11 §6).
+    HyperCoreAction = 0x40,
 }
 
 impl ApprovalKind {
@@ -210,6 +219,8 @@ pub enum SigningPayload {
     BtcMessage(Box<BtcMessagePayload>),
     /// The Zcash `zec_payload` bytes (spec/12 §9).
     Zec(Vec<u8>),
+    /// A `HyperCore` user-signed action (signed as its EIP-712 preimage, spec/11 §5).
+    HyperCore(Box<crate::hypercore::HcAction>),
 }
 
 /// What a Solana message approval signs: the exact message bytes with the key of `source`, whose
@@ -326,6 +337,7 @@ impl SigningPayload {
             Self::Btc(payload) | Self::Zec(payload) => payload.clone(),
             Self::SolMessage(payload) => payload.digest_bytes(),
             Self::BtcMessage(payload) => payload.digest_bytes(),
+            Self::HyperCore(action) => action.digest_bytes(),
         }
     }
 }

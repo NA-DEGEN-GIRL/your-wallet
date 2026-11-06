@@ -239,6 +239,7 @@ S04(백업 대기): 잠금 해제 직후 백업이 확인되지 않았을 때. �
 - **토큰 행 숨기기**(2026-11-03, 스캠·쓰지 않는 토큰 정리용): EVM 토큰 카드의 행 = 라벨(사용자 토큰은 "{라벨} (사용자 추가)")과 잔액 · 컨트랙트 전체(§3.3) · 링크 `숨기기` · 사용자 토큰만 위험 버튼 `삭제`(레지스트리 토큰은 숨길 수만 있다). 행 아래 체크 `잔액 0인 토큰 숨기기`(기본 끔): 켜면 잔액을 읽었고 0인 행을 감추고 도움말 "잔액이 0인 토큰 n개를 감췄습니다. 잔액이 생기면 다시 보입니다."(잔액을 못 읽은 행은 감추지 않는다). 숨긴 토큰이 있으면 링크 `숨긴 토큰 n개 보기 ▸`/`숨긴 토큰 n개 접기 ▾`: 펼치면 T-TOKEN-HIDDEN 도움말과 숨긴 행을 흐리게(`{라벨} · {잔액} · 숨김`, 컨트랙트 전체) `다시 보이기`(사용자 토큰은 `삭제`도)와 함께 보인다. 직접 숨긴 행은 잔액 0 규칙보다 우선해 이 목록에 있다. 보이는 행이 없으면 "보이는 토큰이 없습니다. 숨긴 토큰은 아래에서 다시 볼 수 있습니다." Solana 카드도 같은 `숨기기`·`숨긴 토큰 n개 보기`·`다시 보이기`(클러스터별, 잔액 0 체크 없음)를 둔다. 숨김과 `잔액 0인 토큰 숨기기`는 meta `token_view`([02] §5.3)에 네트워크별로 저장하고, 펼침 상태는 실행 중에만 둔다.
   - 숨김은 **표시 전용**이다. 잔액 조회, 승인 창(A01)의 토큰 인식(레지스트리 신뢰, E19 모방 토큰 검사)·위험 규칙·시뮬레이션 해석은 숨김과 무관하게 레지스트리와 meta `tokens` 전체를 쓴다. 활동 행은 기록이므로 숨긴 토큰 것도 그대로 보이고 금액 뒤에 `[숨긴 토큰]` 태그를 붙인다. EVM 보내기(S11)의 `자산` 라디오는 숨긴 토큰을 빼고 `숨긴 토큰 n개 보기 ▸`로 펼친 줄 "숨긴 토큰"에 보인다(잔액 0 규칙은 적용하지 않는다; 이미 고른 자산이 숨긴 토큰이면 늘 펼치고 접기 링크는 끈다; 라디오 id는 숨김과 무관하게 같은 토큰을 가리킨다). Solana 보내기 폼의 자산 라디오는 그대로다(허용 목록 2개).
   - 사용자 토큰 `삭제` → 확인 오버레이 "토큰 삭제"(T-TOKEN-DELETE, 필드 "토큰" = 라벨, "컨트랙트 주소"와 전체 주소) → `삭제`면 meta `tokens`에서 지우고 그 숨김 표시도 지운다(다시 추가하면 보이는 상태로 시작). 보내기 폼이 그 토큰을 골라 두었으면 기본 자산으로 바꾼다.
+- **HyperCore 카드**(EVM 탭, D34, [11] §8): 설정 `hypercore.enabled`(기본 켜짐)이면 토큰 카드와 활동 카드 사이에 카드 "Hyperliquid HyperCore 메인넷|테스트넷" — 네트워크 라디오(`hypercore.network`), 같은 EVM 주소의 선물 USDC(계정 가치·출금 가능)·현물 잔액, 버튼 `보내기(Core)`·`현물↔선물 이동`·`Arbitrum으로 출금`·`HyperEVM으로 이동`·`HyperEVM에서 Core로 이동`·`새로고침`, "HyperCore 활동 (이번 실행)"(작업·금액·받는 주소·nonce·Hyperliquid 응답 상태). 테스트넷이면 `TESTNET_BG` 띠. 거래(주문) 기능은 없다.
 - 잔액 갱신: S10 진입 시, `새로고침`, S10이 보이고 `Unlocked`인 동안 60초마다. 값 옆에 기준 블록 번호. 실패하면 이전 값을 `MUTED`로 두고 오류 코드를 붙인다.
 - 활동: meta `activity`([02] §5.3 `ActivityEntry`, 모든 체인 공통 스키마; 이 지갑이 보낸 거래만, 네트워크당 최대 500)와 진행 중 저널 항목. 받은 거래 목록은 만들지 않고, 활동의 주소에는 복사·선택 버튼을 두지 않는다(주소 오염 대비, [07] §12.3). 행 = 로컬 시각(`YYYY-MM-DD HH:MM`, yw-win `time::local_wall_ms`; 변환 실패면 UTC 표기), 계정 라벨, 종류·금액([03]/[07]/[08] 문자열), 상태, 해시 전체, `해시 복사`, 탐색기 URL이 있는 체인(사용자 체인 §2.17의 입력값, 또는 기본 체인 [03] §1.1의 `explorer` — Arbitrum One·Base·BNB Smart Chain·Robinhood Chain; 사용자 체인 값이 우선)이면 `탐색기 링크 복사`(`{explorer}/tx/{해시}`를 `clipboard::set_text`; 앱은 URL을 열지 않는다, §2.14). 진행 중 EVM 거래에는 `가속`·`취소`([03] `EvmSpeedUp`·`EvmCancel`), BTC 거래에는 `수수료 올리기`([08] §9)가 있고 모두 새 승인 창을 거친다.
 - 거래 상태 문구(D32: 모든 체인에서 확인 1 = 확정, 추가 확인·`finalized` 대기 없음): EVM `확정 (블록 N)`·`확정 (실행 실패, 블록 N)`(검증한 영수증이 블록에 있으면 바로, [03] §4.5); Solana `전송 확인 중`·`처리 중 (confirmed 대기)`(`processed`)·`성공`·`실패: …`·`만료 (전송되지 않음)`([07] §14.2); Bitcoin `확인 대기 (서버 기준)`·`확정 (서버 기준)`(확인 1, [08] §12.2-4). 확인 수를 `n/6`처럼 세는 표시는 없다. Solana 보내기 결과 화면과 보내기 화면의 진행 중 안내에는 `Pending`인 동안 `지금 다시 전송`(T-SOL-SEND-NOW)이 있다([07] §14.3).
@@ -588,6 +589,10 @@ YubiKey(§2.19, [10]) 문구 — 정본은 `app_yubikey`·`ui::screens_yubikey`�
 ### 2.22 기다림 시간 제한 (T-WAIT-STALLED) — 2026-11-06
 S03(`Processing`)과 요청한 meta(`KeyJob::LoadMeta`, `App::request_meta`)는 시각을 잰다(`app_reset::WaitWatch`). 30초(`WAIT_TIMEOUT_MS`)가 지나도 끝나지 않으면 화면은 계속 기다리되(늦게 온 결과는 그대로 반영) S03 카드 아래와 S12의 "계정을 불러오는 중…" 자리에 오류 띠 T-WAIT-STALLED와 `다시 불러오기`(세션이 열려 있을 때 meta 다시 요청), `잠금`, `로그 폴더 열기`, `지갑 초기화…`를 보이고 `wait.timeout`을 로그에 남긴다. 세션이 열린 화면(S10·S04·S12)이 계정 목록을 쓰는데 meta가 없고 요청도 없으면 주 타이머가 요청한다(`wait.meta_requested`). 잠그면 시계를 지운다.
 
+### 2.23 HyperCore 전송 (S-HC) — 2026-11-06
+
+[11] §5의 폼 하나(`Screen::HyperCore`): 제목 `보내기 (HyperCore)`·`현물↔선물 USDC 이동`·`Arbitrum으로 USDC 출금`·`HyperEVM으로 이동` + 네트워크 이름, 테스트넷 띠, 카드 "서명 계정", 카드 "내용"(작업별: 자산 라디오 `USDC — 선물(perp) 잔액`/현물 토큰, 받는 주소 편집과 §2.15 주소 문구·`주소 전체를 직접 확인했습니다`, 방향 라디오, 출금 수수료 안내 띠, HyperEVM 연결 토큰 라디오와 시스템 주소), `금액`, 검증 오류 띠, `검토`(500 ms 디바운스 뒤, 오류 없음·주소 오염이면 체크·진행 중 서명 없음)·`취소`. `검토` → A01 `HyperCore 전송`(§3, [11] §6). 승인 → 서명(vault 또는 YubiKey PIN·터치) → `POST /exchange` → S10 카드 활동에 상태. `HyperEVM에서 Core로 이동`은 이 폼이 아니라 HyperEVM 체인의 S11(받는 주소 `0x2222…2222`, HYPE)을 연다. S11은 HyperEVM(999·998)에서 시스템 주소로 보낼 때 자산·주소 짝을 검사해 맞지 않으면 차단 띠를 보이고 `검토`를 끈다([11] §5-5).
+
 ## 3. 승인 창 (A01, 모든 체인)
 
 ### 3.1 큐 항목과 결과
@@ -632,6 +637,8 @@ pub enum QueueOutcome {
 App 항목(이 앱의 보내기·가속·취소·수수료 올리기)은 dApp 응답이 없다. `Rejected`·`Expired`면 그 흐름을 시작한 화면으로 돌아간다(보내기 폼은 입력 유지, §2.7; `Expired`는 T-APPR-EXPIRED). 다시 검토하면 새 승인을 만든다.
 
 **Solana·Bitcoin dApp 항목(2026-10-31, [05] §3.6·§4.9, [07] §19, [08] §17)**: 연결(`sol_connect`·`btc_requestAccounts`)은 같은 "사이트 연결" 창을 쓰되 계정 목록이 **라디오**다(Solana 1개; Bitcoin은 목적마다 한 그룹, 행 라벨 앞에 `[결제용] `·`[오디널스용] `, 주소는 받기 주소 0번 전체). 안내 문구는 `이 사이트는 선택한 주소와 공개키를 볼 수 있습니다. 이 지갑은 Solana·Bitcoin에서 메시지 서명(소유 증명)만 지원하며, 거래 서명과 전송은 할 수 없습니다. 메시지 서명은 매번 따로 승인합니다.`, 구역 제목 `연결할 Solana 계정 (1개)`·`연결할 Bitcoin 주소 (용도마다 1개, 받기 주소 0번)`. 모든 그룹에 하나씩 골라야 `연결`이 켜진다. 메시지 서명(`ApprovalKind::SolMessage`·`SolSignIn`·`BtcMessage`)은 EVM `personal_sign`과 같은 창·준비 시간(1 s)·고위험 확인·일회 소비·120 s 만료·digest 규칙을 쓰고, 요약 문장은 "{네트워크}에서 메시지에 서명해 이 주소의 소유를 증명합니다. 거래 서명이나 전송은 하지 않습니다."(SIWS는 "사이트 로그인(Sign-In-With-Solana) 메시지에 서명합니다. …"). 차단 경고(`M01`–`M03`, `W01`–`W04`, `W07`)가 있으면 `거부`만 가능하다. AI 설명 패널은 없다. 서명은 키 작업 `SignChainMessage`가 하고 잠금으로 취소되면 4001이다.
+
+**HyperCore 전송(2026-11-06, D34, [11] §6)**: 앱 항목 `QueuedItem::HyperCore`(origin 앱, 준비 없이 바로 Ready). 요약 문장 "{네트워크}에서 Hyperliquid HyperCore 작업에 서명합니다: {작업}. 서명하면 Hyperliquid가 바로 처리하며 되돌릴 수 없습니다." + 받는 주소. 시뮬레이션 카드 대신 "금액·수수료" 구역(`0x0703`·`0x0704`), 핵심 정보(`0x0701`·`0x0702`), 세부 정보(nonce, 원본 typed data). 헤더 배지 T-MAINNET 또는 "HyperCore 테스트넷 — 실제 자산이 아닙니다"(테스트넷 색). H03(주소 오염)이면 고위험 확인. 승인 뒤 서명은 EVM typed-data와 같은 키 작업(`SignMessage`, YubiKey는 카드 단계)이고, 결과는 dApp이 아니라 HyperCore 제출(`POST /exchange`)로 간다. dApp의 Hyperliquid typed data는 `EvmTypedData` 그대로이며 표시만 [11] §7로 구조화한다.
 
 ### 3.2 배치 (위 → 아래)
 `ApprovalDisplay { title, fields, warnings, risk, ack_required }`와 `DisplayField { key, sub_label, value, critical, volatile }`([03] §11.1)를 다음 영역에 나눠 그린다.
@@ -939,6 +946,7 @@ impl SecretField {
   "bitcoin": { "enabled": false, "network": "mainnet", "indexer": "esplora",
                "esploraBaseUrl": { "mainnet": "https://mempool.space/api", "testnet4": "https://mempool.space/testnet4/api" } },
   "llm_explain": { "enabled": false, "endpoint": "", "model": "", "response_format": "json_schema", "max_tokens": 0, "privacy_notice_version": 0 },
+  "hypercore": { "enabled": true, "network": "mainnet", "testnetApi": "https://api.hyperliquid-testnet.xyz" },
   "logLevel": "info"
 }
 ```
@@ -959,6 +967,7 @@ impl SecretField {
 | `bitcoin` | object | 위 값 | M8부터, 의미는 [08] §2 소유. `enabled` bool. `network` = `"mainnet"`·`"testnet4"`(D26·D30), 바꾸기는 진행 중 BTC 저널 항목이 없을 때만. `indexer` = `"esplora"`(기본: `esploraBaseUrl`의 Esplora REST GET, 무료·키 없음)·`"bb-rpc"`(Core 엔드포인트 URL에 Blockbook `bb_*` JSON-RPC POST, QuickNode BTC Blockbook 유료 애드온)·`"bb-rest"`(`<Core URL>/api/v2/` Blockbook REST GET, 알케미 UTXO API)([08] §2·§4.3), 언제든 변경 가능. `esploraBaseUrl` = 아래 `EsploraBaseUrls`(비밀이 아니므로 여기 둔다; 토큰이 든 Core URL은 §6.3). `enabled`·`network`·`indexer`가 없거나 틀리거나 네 키 밖의 키가 있으면 `bitcoin` 객체 단위 기본값(`esploraBaseUrl` 포함). `esploraBaseUrl`은 아래 규칙으로 키 단위 검증 |
 | `zcash` | object | `{"enabled": false, "network": "mainnet", "indexer": "node"}` | D35, 의미는 [12](12-zcash.md) §2.1 소유. `network` = `"mainnet"`·`"testnet"`, `indexer` = `"node"`(같은 엔드포인트의 `getaddressutxos`)·`"bb-rest"`(같은 엔드포인트의 Blockbook REST). 모르는 하위 키·형식 오류는 객체 전체를 기본값으로(배너 E-APP-001). 끄기·네트워크 바꾸기는 진행 중 ZEC 저널 항목이 없을 때만 |
 | `llm_explain` | object | [06] §2.1 | 검증·되돌림은 [06] §2.1 |
+| `hypercore` | object | `enabled` bool(기본 true), `network` `mainnet`\|`testnet`(기본 mainnet), `testnetApi` HTTPS ≤ 256바이트·`?`/`#` 없음·끝 `/` 제거(기본 공식 주소). 메인넷 API는 고정([11] §8) | 키 하나라도 틀리면 객체 전체 기본값 + 배너 |
 | `logLevel` | string | `"info"` | `error`·`warn`·`info`·`debug` |
 
 ```

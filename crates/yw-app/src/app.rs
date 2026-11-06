@@ -294,6 +294,8 @@ pub enum Screen {
     Reset,
     /// S23 `Chrome 확장 설치` (spec/04 §2.21).
     Extension,
+    /// S-HC: a `HyperCore` transfer form (spec/11 §8).
+    HyperCore,
 }
 
 /// What a password-confirm window (W03) is for.
@@ -533,6 +535,8 @@ pub struct App {
     pub(crate) btc: crate::app_btc::BtcUi,
     /// The Zcash tab (spec/12).
     pub(crate) zec: crate::app_zec::ZecUi,
+    /// `HyperCore` card, form and session activity (spec/11).
+    pub(crate) hypercore: crate::app_hypercore::HcUi,
     /// Imported keys and "개인키로 시작하기" (spec/04 §2.18).
     pub(crate) keys: crate::app_keys::KeysUi,
     /// `YubiKey` card step and enrolment state (spec/10).
@@ -764,6 +768,7 @@ impl App {
             sol: crate::app_sol::SolUi::default(),
             btc: crate::app_btc::BtcUi::default(),
             zec: crate::app_zec::ZecUi::default(),
+            hypercore: crate::app_hypercore::HcUi::default(),
             keys: crate::app_keys::KeysUi::default(),
             card: crate::app_card::CardUi::default(),
             browser: None,
@@ -1042,6 +1047,7 @@ impl App {
                     && !self.on_zec_edit_change(*id)
                     && !self.on_llm_edit_change(*id)
                     && !self.on_yk_edit_change(*id)
+                    && !self.on_hc_edit_change(*id)
                 {
                     self.on_edit_change(*id);
                 }
@@ -1166,6 +1172,7 @@ impl App {
             self.clear_secret_clip(clip);
         }
         self.evm_tick(now);
+        self.hc_tick(now);
         self.sol_tick(now);
         self.btc_tick(now);
         self.zec_tick(now);
@@ -3043,6 +3050,7 @@ impl App {
                     && !self.on_sites_command(other)
                     && !self.on_llm_command(other)
                     && !self.on_yk_command(other)
+                    && !self.on_hc_command(other)
                 {
                     self.on_indexed_command(other);
                 }

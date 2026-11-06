@@ -1,0 +1,870 @@
+//! `HyperCore` on the UI thread (D34, spec/11 §8): the card on the EVM tab (balances), the
+//! transfer form (S-HC), the approval item (`HyperCore 전송`, kind 0x40), the signed-action
+//! submission and the session activity. Trading is out of scope.
+//!
+//! Flow: form → [`HcApprovalItem`] → A01 (draft built in yw-core from the item) → consume →
+//! `SignMessage { typed: true }` (vault) or the card step (`YubiKey`) → the signature comes back
+//! through [`App::hc_message_signed`] → `POST /exchange` on the RPC worker → the reply status is
+//! the activity status (Hyperliquid has no transaction hash; the nonce/time is the key) →
+//! balances refresh.
+
+use std::collections::HashMap;
+
+use yw_core::approval::Approved;
+use yw_core::evm::address::Address;
+use yw_core::evm::amount::{U256, parse_units};
+use yw_core::hypercore::display::HcRecipient;
+use yw_core::hypercore::{
+    HcAction, HcExchangeReply, HcKind, HcNetwork, HcPayload, HcToken, USD_DECIMALS,
+    WITHDRAW_FEE_USDC, parse_amount,
+};
+use yw_core::vault::EvmKeySource;
+
+use crate::app::{App, AppMode, Screen};
+use crate::app_evm::{QueuedItem, SendAsset};
+use crate::events::{KeyJob, MessageSignFailure, MessageSigned, SignTicket};
+use crate::flow::evm::form::{AddressNote, check_recipient};
+use crate::hypercore::{HcBalances, HcEndpoint, HcEvent, HcRpcJob};
+use crate::logging::{self, Field};
+use crate::ui::approval::{QueueOutcome, QueueSource};
+use crate::workers::rpc::RpcJob;
+
+/// Balance refresh while the card is visible.
+pub const HC_REFRESH_MS: u64 = 60_000;
+/// Session activity rows kept.
+const MAX_ACTIVITY: usize = 50;
+
+/// What the S-HC form does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HcFormKind {
+    /// `보내기(Core)`: perp USDC (`usdSend`) or a spot token (`spotSend`).
+    #[default]
+    Send,
+    /// `현물↔선물 이동` (`usdClassTransfer`).
+    ClassTransfer,
+    /// `Arbitrum으로 출금` (`withdraw3`).
+    Withdraw,
+    /// `HyperEVM으로 이동` (`sendAsset` to the token's system address).
+    ToEvm,
+}
+
+/// The asset of the send / `HyperEVM` form.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HcAsset {
+    /// Perp USDC (`usdSend`).
+    #[default]
+    PerpUsdc,
+    /// A spot token by index (`spotSend` / `sendAsset`).
+    Spot(u32),
+}
+
+/// S-HC form state.
+#[derive(Clone, Debug, Default)]
+pub struct HcForm {
+    /// Kind.
+    pub kind: HcFormKind,
+    /// Asset.
+    pub asset: HcAsset,
+    /// Recipient text.
+    pub to_text: String,
+    /// Amount text.
+    pub amount_text: String,
+    /// `usdClassTransfer` direction: spot → perp.
+    pub to_perp: bool,
+    /// `주소 전체를 직접 확인했습니다` (look-alike).
+    pub ack: bool,
+    /// Recipient notes of the last check.
+    pub notes: Vec<AddressNote>,
+    /// Validation message (blocks `검토`).
+    pub error: Option<String>,
+    /// Info line (after review, expiry).
+    pub info: Option<String>,
+    /// Last edit (monotonic ms) awaiting validation (500 ms debounce, like S11).
+    pub dirty_ms: Option<u64>,
+}
+
+/// Status of a submitted action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HcStatus {
+    /// Approved, waiting for the signature.
+    Signing,
+    /// Signed and posted.
+    Submitting,
+    /// `status: ok`.
+    Ok,
+    /// `status: err` with the server message.
+    Rejected(String),
+    /// No answer (the action may still have been processed — check the balances).
+    Unknown(String),
+    /// Not signed (lock, card failure, error).
+    NotSigned(String),
+}
+
+impl HcStatus {
+    /// Display text.
+    #[must_use]
+    pub fn text(&self) -> String {
+        match self {
+            Self::Signing => "서명 중".to_owned(),
+            Self::Submitting => "전송 중".to_owned(),
+            Self::Ok => "성공 (Hyperliquid status ok)".to_owned(),
+            Self::Rejected(message) => format!("거부됨 (status err): {message}"),
+            Self::Unknown(message) => {
+                format!("결과 불명 — 잔액을 확인하세요 ({message})")
+            }
+            Self::NotSigned(message) => format!("서명하지 않음 — {message}"),
+        }
+    }
+}
+
+/// One submitted action of this run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HcActivity {
+    /// Network.
+    pub network: HcNetwork,
+    /// Nonce (= `time`, unix ms).
+    pub nonce: u64,
+    /// Account.
+    pub account: Address,
+    /// Kind.
+    pub kind: HcKind,
+    /// Amount with its symbol.
+    pub amount: String,
+    /// Recipient.
+    pub to: Option<Address>,
+    /// Status.
+    pub status: HcStatus,
+}
+
+/// A queued `HyperCore 전송` approval.
+#[derive(Clone, Debug)]
+pub struct HcApprovalItem {
+    /// The action (nonce fixed at `검토`).
+    pub action: HcAction,
+    /// Signing account.
+    pub account: Address,
+    /// Key source.
+    pub signer: EvmKeySource,
+    /// The spot token (`spotSend`, `sendAsset`).
+    pub token: Option<HcToken>,
+    /// Recipient checks.
+    pub recipient: HcRecipient,
+}
+
+/// `HyperCore` UI state.
+#[derive(Debug, Default)]
+pub struct HcUi {
+    /// Outstanding load job.
+    pub job: u64,
+    /// A load is running.
+    pub loading: bool,
+    /// `spotMeta` of a network.
+    pub tokens: Option<(HcNetwork, Vec<HcToken>)>,
+    /// Balances of an account on a network.
+    pub balances: Option<(HcNetwork, Address, HcBalances)>,
+    /// Last load error.
+    pub error: Option<String>,
+    /// Last load (monotonic ms).
+    pub loaded_ms: Option<u64>,
+    /// S-HC.
+    pub form: HcForm,
+    /// Signing jobs waiting for their signature.
+    pub pending: HashMap<SignTicket, HcAction>,
+    /// Session activity, newest first.
+    pub activity: Vec<HcActivity>,
+    /// Settings: testnet API text.
+    pub api_text: Option<String>,
+    /// Settings message.
+    pub settings_message: Option<String>,
+}
+
+impl HcUi {
+    /// Drops everything account-related (lock).
+    pub fn clear_unlocked(&mut self) {
+        self.balances = None;
+        self.error = None;
+        self.loading = false;
+        self.loaded_ms = None;
+        self.form = HcForm::default();
+        for action in std::mem::take(&mut self.pending).into_values() {
+            if let Some(row) = self
+                .activity
+                .iter_mut()
+                .find(|row| row.network == action.network && row.nonce == action.nonce)
+            {
+                row.status = HcStatus::NotSigned("잠겨서 취소됨".to_owned());
+            }
+        }
+    }
+
+    /// The token of `index` on `network`.
+    #[must_use]
+    pub fn token(&self, network: HcNetwork, index: u32) -> Option<&HcToken> {
+        self.tokens
+            .as_ref()
+            .filter(|(net, _)| *net == network)
+            .and_then(|(_, tokens)| tokens.iter().find(|token| token.index == index))
+    }
+}
+
+/// Smallest units of an API decimal (`"14.625485"`) at `decimals`, the fraction truncated.
+#[must_use]
+pub fn api_units(text: &str, decimals: u8) -> Option<U256> {
+    if text.starts_with('-') {
+        return Some(U256::ZERO);
+    }
+    let (integer, fraction) = text.split_once('.').unwrap_or((text, ""));
+    let fraction: String = fraction.chars().take(usize::from(decimals)).collect();
+    let integer = integer.trim_start_matches('0');
+    let integer = if integer.is_empty() { "0" } else { integer };
+    let normalized = if fraction.is_empty() {
+        integer.to_owned()
+    } else {
+        format!("{integer}.{fraction}")
+    };
+    parse_units(&normalized, decimals).ok()
+}
+
+fn now_unix_ms() -> u64 {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis()),
+    )
+    .unwrap_or(0)
+}
+
+impl App {
+    /// The card's network.
+    #[must_use]
+    pub const fn hc_network(&self) -> HcNetwork {
+        self.settings.hypercore.network
+    }
+
+    fn hc_endpoint(&self, network: HcNetwork) -> HcEndpoint {
+        HcEndpoint {
+            network,
+            api: self.settings.hypercore_api(network),
+        }
+    }
+
+    /// Whether the card is shown (setting on, unlocked).
+    #[must_use]
+    pub fn hc_visible(&self) -> bool {
+        self.settings.hypercore.enabled && matches!(self.mode, AppMode::Unlocked { .. })
+    }
+
+    /// Balances of the selected account on the card's network (and `spotMeta` once).
+    pub fn hc_refresh(&mut self) {
+        if !self.hc_visible() {
+            return;
+        }
+        let Some((account, ..)) = self.selected_account() else {
+            return;
+        };
+        let network = self.hc_network();
+        let meta = self
+            .hypercore
+            .tokens
+            .as_ref()
+            .is_none_or(|(net, _)| *net != network);
+        self.hypercore.job = self.hypercore.job.wrapping_add(1);
+        self.hypercore.loading = true;
+        self.hypercore.loaded_ms = Some(yw_win::time::monotonic_ms());
+        let job = HcRpcJob::Load {
+            job: self.hypercore.job,
+            endpoint: self.hc_endpoint(network),
+            account,
+            meta,
+        };
+        if !self.rpc(RpcJob::HyperCore(Box::new(job))) {
+            self.hypercore.loading = false;
+            self.hypercore.error = Some("RPC 작업자를 사용할 수 없습니다".to_owned());
+        }
+    }
+
+    /// Main-timer part: refresh while S10 shows the card.
+    pub fn hc_tick(&mut self, now: u64) {
+        let due = self
+            .hypercore
+            .loaded_ms
+            .is_none_or(|at| now.saturating_sub(at) >= HC_REFRESH_MS);
+        if due && matches!(self.screen, Screen::Main) && !self.hypercore.loading {
+            self.hc_refresh();
+        }
+        if let Some(changed) = self.hypercore.form.dirty_ms
+            && now.saturating_sub(changed) >= crate::app_evm::SEND_DEBOUNCE_MS
+        {
+            self.hypercore.form.dirty_ms = None;
+            self.hc_validate();
+            self.refresh();
+        }
+    }
+
+    /// RPC worker results.
+    pub fn hc_rpc_event(&mut self, event: HcEvent) {
+        match event {
+            HcEvent::Loaded {
+                job,
+                network,
+                account,
+                meta,
+                balances,
+            } => {
+                if job != self.hypercore.job {
+                    return;
+                }
+                self.hypercore.loading = false;
+                match meta {
+                    Some(Ok(tokens)) => self.hypercore.tokens = Some((network, tokens)),
+                    Some(Err(text)) => self.hypercore.error = Some(text),
+                    None => {}
+                }
+                match balances {
+                    Ok(balances) => {
+                        self.hypercore.balances = Some((network, account, balances));
+                        if self.hypercore.tokens.is_some() {
+                            self.hypercore.error = None;
+                        }
+                    }
+                    Err(text) => self.hypercore.error = Some(text),
+                }
+                if matches!(self.screen, Screen::HyperCore) {
+                    self.hc_validate();
+                }
+                self.refresh();
+            }
+            HcEvent::Submitted {
+                network,
+                nonce,
+                result,
+            } => {
+                let status = match result {
+                    Ok(HcExchangeReply::Ok) => HcStatus::Ok,
+                    Ok(HcExchangeReply::Err(message)) => {
+                        HcStatus::Rejected(yw_core::approval::escape_untrusted(&message).text)
+                    }
+                    Err(text) => HcStatus::Unknown(text),
+                };
+                self.hc_set_status(network, nonce, status);
+                self.hc_refresh();
+                self.refresh();
+            }
+        }
+    }
+
+    fn hc_set_status(&mut self, network: HcNetwork, nonce: u64, status: HcStatus) {
+        if let Some(row) = self
+            .hypercore
+            .activity
+            .iter_mut()
+            .find(|row| row.network == network && row.nonce == nonce)
+        {
+            row.status = status;
+        }
+    }
+
+    /// Opens S-HC for `kind`.
+    pub fn hc_open_form(&mut self, kind: HcFormKind) {
+        let own = self
+            .selected_account()
+            .map(|(account, ..)| account.to_checksum())
+            .unwrap_or_default();
+        self.hypercore.form = HcForm {
+            kind,
+            to_text: if kind == HcFormKind::Withdraw {
+                own
+            } else {
+                String::new()
+            },
+            to_perp: true,
+            asset: match kind {
+                HcFormKind::ToEvm => self
+                    .hc_evm_tokens()
+                    .first()
+                    .map_or(HcAsset::PerpUsdc, |token| HcAsset::Spot(token.index)),
+                _ => HcAsset::PerpUsdc,
+            },
+            ..HcForm::default()
+        };
+        self.set_screen(Screen::HyperCore);
+        self.hc_refresh();
+        self.hc_validate();
+    }
+
+    /// Spot tokens with a balance and a `HyperEVM` link (the `HyperEVM으로 이동` choices).
+    #[must_use]
+    pub fn hc_evm_tokens(&self) -> Vec<HcToken> {
+        let network = self.hc_network();
+        self.hc_spot_rows()
+            .into_iter()
+            .filter_map(|(index, _, _)| self.hypercore.token(network, index).cloned())
+            .filter(|token| token.evm.is_some() && token.evm_transfer_decimals().is_some())
+            .collect()
+    }
+
+    /// Spot balances of the selected account: `(token index, coin, available text)`.
+    #[must_use]
+    pub fn hc_spot_rows(&self) -> Vec<(u32, String, String)> {
+        let network = self.hc_network();
+        let account = self.selected_account().map(|(account, ..)| account);
+        let Some((net, owner, balances)) = self.hypercore.balances.as_ref() else {
+            return Vec::new();
+        };
+        if *net != network || Some(*owner) != account {
+            return Vec::new();
+        }
+        balances
+            .spot
+            .iter()
+            .filter(|balance| api_units(&balance.total, 18).is_some_and(|units| !units.is_zero()))
+            .map(|balance| (balance.token, balance.coin.clone(), balance.total.clone()))
+            .collect()
+    }
+
+    /// The current account's balances on the card network, if loaded.
+    #[must_use]
+    pub fn hc_balances(&self) -> Option<&HcBalances> {
+        let account = self.selected_account().map(|(account, ..)| account)?;
+        let (net, owner, balances) = self.hypercore.balances.as_ref()?;
+        (*net == self.hc_network() && *owner == account).then_some(balances)
+    }
+
+    /// Available units of the form's source balance and its decimals.
+    fn hc_available(&self, kind: HcFormKind, asset: HcAsset, to_perp: bool) -> Option<(U256, u8)> {
+        let balances = self.hc_balances()?;
+        let spot = |index: u32, decimals: u8| {
+            balances
+                .spot
+                .iter()
+                .find(|balance| balance.token == index)
+                .and_then(|balance| {
+                    let total = api_units(&balance.total, decimals)?;
+                    let hold = api_units(&balance.hold, decimals).unwrap_or(U256::ZERO);
+                    Some(total.checked_sub(hold).unwrap_or(U256::ZERO))
+                })
+                .unwrap_or(U256::ZERO)
+        };
+        let perp = || api_units(&balances.perp.withdrawable, USD_DECIMALS);
+        match (kind, asset) {
+            (HcFormKind::ClassTransfer, _) if to_perp => {
+                Some((spot(0, USD_DECIMALS), USD_DECIMALS))
+            }
+            (HcFormKind::ClassTransfer | HcFormKind::Withdraw, _)
+            | (HcFormKind::Send, HcAsset::PerpUsdc) => Some((perp()?, USD_DECIMALS)),
+            (HcFormKind::Send | HcFormKind::ToEvm, HcAsset::Spot(index)) => {
+                let token = self.hypercore.token(self.hc_network(), index)?;
+                Some((spot(index, token.wei_decimals), token.wei_decimals))
+            }
+            (HcFormKind::ToEvm, HcAsset::PerpUsdc) => None,
+        }
+    }
+
+    /// Validates S-HC and returns the action and its item parts when it is complete.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one block per form kind of spec/11 §8"
+    )]
+    fn hc_build(&self) -> Result<(HcPayload, Option<HcToken>, HcRecipient), String> {
+        let form = &self.hypercore.form;
+        let (sender, ..) = self
+            .selected_account()
+            .ok_or_else(|| "계정을 선택하세요".to_owned())?;
+        if self.hc_balances().is_none() {
+            return Err("HyperCore 잔액을 불러오는 중입니다".to_owned());
+        }
+        let network = self.hc_network();
+        let token = match form.asset {
+            HcAsset::Spot(index) => Some(
+                self.hypercore
+                    .token(network, index)
+                    .cloned()
+                    .ok_or_else(|| "토큰 정보(spotMeta)를 확인할 수 없습니다".to_owned())?,
+            ),
+            HcAsset::PerpUsdc => None,
+        };
+        let decimals = match (form.kind, &token) {
+            (HcFormKind::ToEvm, Some(token)) => token
+                .evm_transfer_decimals()
+                .ok_or_else(|| "이 토큰은 HyperEVM에 연결되어 있지 않습니다".to_owned())?,
+            (HcFormKind::Send, Some(token)) => token.wei_decimals,
+            (HcFormKind::ToEvm, None) => return Err("HyperEVM으로 옮길 토큰을 고르세요".to_owned()),
+            _ => USD_DECIMALS,
+        };
+        let recipient_of = |text: &str| -> Result<(Address, HcRecipient), String> {
+            let known = self.known_addresses();
+            let (address, notes) = check_recipient(text, &sender, None, &known)
+                .map_err(crate::errors::ErrorCode::text)?;
+            Ok((
+                address,
+                HcRecipient {
+                    look_alike: notes.iter().any(AddressNote::needs_ack),
+                    not_in_book: notes.contains(&AddressNote::NotInBook),
+                    notes: notes.iter().map(AddressNote::text).collect(),
+                },
+            ))
+        };
+        let (units, amount) = if form.amount_text.trim().is_empty() {
+            return Err("금액을 입력하세요".to_owned());
+        } else {
+            parse_amount(&form.amount_text, decimals)
+                .map_err(|_| format!("금액 형식이 올바르지 않습니다 (소수 {decimals}자리까지)"))?
+        };
+        let (available, _) = self
+            .hc_available(form.kind, form.asset, form.to_perp)
+            .ok_or_else(|| "잔액을 확인할 수 없습니다".to_owned())?;
+        let fee = if form.kind == HcFormKind::Withdraw {
+            parse_units(WITHDRAW_FEE_USDC, USD_DECIMALS).unwrap_or(U256::ZERO)
+        } else {
+            U256::ZERO
+        };
+        if form.kind == HcFormKind::Withdraw && units <= fee {
+            return Err(format!(
+                "출금 금액은 수수료 {WITHDRAW_FEE_USDC} USDC보다 커야 합니다"
+            ));
+        }
+        // The withdrawal fee comes out of the amount itself (Arbitrum receives amount − fee),
+        // so the whole withdrawable balance can be withdrawn.
+        if units > available {
+            return Err("잔액이 부족합니다".to_owned());
+        }
+        let payload = match (form.kind, &token) {
+            (HcFormKind::Send, None) => {
+                let (destination, recipient) = recipient_of(&form.to_text)?;
+                return Ok((
+                    HcPayload::UsdSend {
+                        destination,
+                        amount,
+                    },
+                    None,
+                    recipient,
+                ));
+            }
+            (HcFormKind::Send, Some(token)) => {
+                let (destination, recipient) = recipient_of(&form.to_text)?;
+                return Ok((
+                    HcPayload::SpotSend {
+                        destination,
+                        token: token.wire(),
+                        amount,
+                    },
+                    Some(token.clone()),
+                    recipient,
+                ));
+            }
+            (HcFormKind::Withdraw, _) => {
+                let (destination, recipient) = recipient_of(&form.to_text)?;
+                return Ok((
+                    HcPayload::Withdraw {
+                        destination,
+                        amount,
+                    },
+                    None,
+                    recipient,
+                ));
+            }
+            (HcFormKind::ClassTransfer, _) => HcPayload::UsdClassTransfer {
+                amount,
+                to_perp: form.to_perp,
+            },
+            (HcFormKind::ToEvm, Some(token)) => HcPayload::SendAsset {
+                destination: token.system_address(),
+                source_dex: "spot".to_owned(),
+                destination_dex: "spot".to_owned(),
+                token: token.wire(),
+                amount,
+            },
+            (HcFormKind::ToEvm, None) => return Err("HyperEVM으로 옮길 토큰을 고르세요".to_owned()),
+        };
+        Ok((payload, token, HcRecipient::default()))
+    }
+
+    /// Re-checks the form (after every edit and load).
+    pub fn hc_validate(&mut self) {
+        let result = self.hc_build();
+        let known = self.known_addresses();
+        let notes = match (&result, self.selected_account()) {
+            (Ok(_), Some((sender, ..))) if !self.hypercore.form.to_text.trim().is_empty() => {
+                check_recipient(&self.hypercore.form.to_text, &sender, None, &known)
+                    .map(|(_, notes)| notes)
+                    .unwrap_or_default()
+            }
+            _ => Vec::new(),
+        };
+        let form = &mut self.hypercore.form;
+        match result {
+            Ok((_, _, recipient)) => {
+                form.error = None;
+                form.notes = notes;
+                if !recipient.look_alike {
+                    form.ack = false;
+                }
+            }
+            Err(text) => {
+                form.error = Some(text);
+                form.notes.clear();
+            }
+        }
+    }
+
+    /// `검토` allowed.
+    #[must_use]
+    pub fn hc_can_review(&self) -> bool {
+        let form = &self.hypercore.form;
+        let look_alike = form.notes.iter().any(AddressNote::needs_ack);
+        form.error.is_none()
+            && (!look_alike || form.ack)
+            && matches!(self.mode, AppMode::Unlocked { .. })
+            && self.hypercore.pending.is_empty()
+    }
+
+    /// `검토`: queue the approval (the nonce is the current wall-clock ms).
+    pub fn hc_review(&mut self) {
+        self.hc_validate();
+        if !self.hc_can_review() {
+            self.refresh();
+            return;
+        }
+        let Ok((payload, token, recipient)) = self.hc_build() else {
+            return;
+        };
+        let Some((account, signer, _)) = self.selected_account() else {
+            return;
+        };
+        let action = HcAction::new(self.hc_network(), now_unix_ms(), payload);
+        if action.validate().is_err() {
+            self.hypercore.form.error = Some("작업 형식이 올바르지 않습니다".to_owned());
+            self.refresh();
+            return;
+        }
+        let item = HcApprovalItem {
+            action,
+            account,
+            signer,
+            token,
+            recipient,
+        };
+        if self
+            .evm
+            .queue
+            .enqueue(QueueSource::App, QueuedItem::HyperCore(Box::new(item)))
+            .is_ok()
+        {
+            self.hypercore.form.info = None;
+            self.show_next_approval();
+        } else {
+            self.hypercore.form.info = Some(crate::errors::ErrorCode::App005.text());
+            self.refresh();
+        }
+    }
+
+    /// Builds the draft of a queued item at its first Ready display.
+    pub(crate) fn prepare_hypercore(&mut self, item: &HcApprovalItem) {
+        let Ok(id) = Self::new_approval_id() else {
+            self.show_failure(
+                crate::errors::ErrorCode::Vlt005,
+                false,
+                crate::errors::ErrorCode::Vlt005.text(),
+            );
+            return;
+        };
+        let input = yw_core::hypercore::display::HcApprovalInput {
+            action: &item.action,
+            account: item.account,
+            signer: item.signer,
+            token: item.token.as_ref(),
+            recipient: item.recipient.clone(),
+        };
+        match yw_core::hypercore::display::build_hypercore_request(id, &input) {
+            Ok(draft) => self.show_ready_draft_at(draft, None, now_unix_ms()),
+            Err(_) => self.show_failure(
+                crate::errors::ErrorCode::App009,
+                false,
+                crate::errors::ErrorCode::App009.text(),
+            ),
+        }
+    }
+
+    /// `consume` succeeded: sign on the vault or the card (`YubiKey`), then submit.
+    pub(crate) fn hc_consumed(&mut self, approved: Approved, item: &HcApprovalItem) {
+        let ticket = self.push_sign_waiter(crate::app_browser::SignWaiter::App);
+        self.hypercore.pending.insert(ticket, item.action.clone());
+        let amount = match &item.token {
+            Some(token) => format!(
+                "{} {}",
+                item.action.amount(),
+                yw_core::approval::escape_untrusted(&token.name).text
+            ),
+            None => format!("{} USDC", item.action.amount()),
+        };
+        self.hypercore.activity.insert(
+            0,
+            HcActivity {
+                network: item.action.network,
+                nonce: item.action.nonce,
+                account: item.account,
+                kind: item.action.kind(),
+                amount,
+                to: item.action.destination(),
+                status: HcStatus::Signing,
+            },
+        );
+        self.hypercore.activity.truncate(MAX_ACTIVITY);
+        self.hypercore.form = HcForm::default();
+        logging::info(
+            "app",
+            "hypercore.approved",
+            &[
+                ("net", Field::Word(item.action.network.as_str())),
+                ("type", Field::Word(item.action.kind().wire_type())),
+            ],
+        );
+        if let Err(approved) = self.card_begin(
+            approved,
+            crate::app_card::CardJobKind::EvmMessage { typed: true },
+            Some(ticket),
+        ) {
+            self.key(KeyJob::SignMessage {
+                ticket,
+                approved,
+                typed: true,
+            });
+        }
+        if matches!(self.screen, Screen::HyperCore) {
+            self.set_screen(Screen::Main);
+        }
+        self.refresh();
+    }
+
+    /// A message signature finished: `true` when it was a `HyperCore` job (then posted).
+    pub(crate) fn hc_message_signed(&mut self, signed: &MessageSigned) -> bool {
+        let Some(action) = self.hypercore.pending.remove(&signed.ticket) else {
+            return false;
+        };
+        let _ = self.take_sign_waiter(signed.ticket);
+        match &signed.result {
+            Ok(signature) => {
+                let job = HcRpcJob::Submit {
+                    endpoint: self.hc_endpoint(action.network),
+                    nonce: action.nonce,
+                    body: action.exchange_body(signature),
+                };
+                let status = if self.rpc(RpcJob::HyperCore(Box::new(job))) {
+                    HcStatus::Submitting
+                } else {
+                    HcStatus::Unknown("RPC 작업자를 사용할 수 없습니다".to_owned())
+                };
+                self.hc_set_status(action.network, action.nonce, status);
+            }
+            Err(failure) => {
+                let text = match failure {
+                    MessageSignFailure::Locked => "잠겨서 취소됨".to_owned(),
+                    MessageSignFailure::Card(error) => error.to_string(),
+                    MessageSignFailure::Sign(error) => error.to_string(),
+                };
+                self.hc_set_status(action.network, action.nonce, HcStatus::NotSigned(text));
+            }
+        }
+        self.refresh();
+        true
+    }
+
+    /// A consumed signing job was cancelled (lock, card window closed): `true` when it was ours.
+    pub(crate) fn hc_sign_cancelled(&mut self, ticket: SignTicket) -> bool {
+        let Some(action) = self.hypercore.pending.remove(&ticket) else {
+            return false;
+        };
+        self.hc_set_status(
+            action.network,
+            action.nonce,
+            HcStatus::NotSigned("취소됨".to_owned()),
+        );
+        true
+    }
+
+    /// An approval ended.
+    pub(crate) fn hc_approval_finished(&mut self, outcome: QueueOutcome) {
+        if outcome == QueueOutcome::Expired {
+            self.hypercore.form.info = Some("승인 시간이 지났습니다. 다시 검토하세요.".to_owned());
+        }
+        logging::info(
+            "app",
+            "approval.finished",
+            &[(
+                "outcome",
+                Field::Word(crate::app_evm::outcome_name(outcome)),
+            )],
+        );
+        self.refresh();
+    }
+
+    /// `HyperEVM에서 Core로 이동`: the EVM send form on `HyperEVM` with HYPE's system address
+    /// (another linked token: choose it in the form; the recipient guard checks the pair).
+    pub fn hc_open_from_evm(&mut self) {
+        let chain_id = self.hc_network().hyperevm_chain_id();
+        if !self.settings.registered_evm().contains(&chain_id) {
+            self.banner(
+                None,
+                format!(
+                    "HyperEVM(chainId {chain_id})이 등록되어 있지 않습니다. 설정 → EVM 체인에서 추가하세요."
+                ),
+            );
+            return;
+        }
+        if self.settings.evm_chain_id != chain_id {
+            let mut settings = self.settings.clone();
+            settings.evm_chain_id = chain_id;
+            self.save_settings(settings, "evmChainId");
+        }
+        self.evm.send = crate::app_evm::SendForm {
+            asset: SendAsset::Native,
+            to_text: yw_core::hypercore::HYPE_SYSTEM_ADDRESS.to_checksum(),
+            ..crate::app_evm::SendForm::default()
+        };
+        self.open_send();
+        self.validate_send(true);
+    }
+
+    /// The `HyperEVM` system-address guard of the EVM send form (spec/11 §5.5): on `HyperEVM`, a
+    /// recipient that is a system address must match the asset — HYPE (native) only to
+    /// `0x2222…2222`, a token only to the system address whose `spotMeta` link is that token.
+    /// `None` = fine or not a system address.
+    #[must_use]
+    pub fn hc_system_recipient_error(
+        &self,
+        chain_id: u64,
+        recipient: &Address,
+        asset: SendAsset,
+    ) -> Option<String> {
+        let network = [HcNetwork::Mainnet, HcNetwork::Testnet]
+            .into_iter()
+            .find(|network| network.hyperevm_chain_id() == chain_id)?;
+        let hype = *recipient == yw_core::hypercore::HYPE_SYSTEM_ADDRESS;
+        let index = yw_core::hypercore::system_address_index(recipient);
+        if !hype && index.is_none() {
+            return None;
+        }
+        match (asset, hype, index) {
+            (SendAsset::Native, true, _) | (SendAsset::Token(_), false, None) => None,
+            (SendAsset::Native, false, _) => Some(
+                "HYPE는 0x2222…2222로만 HyperCore로 옮길 수 있습니다 — 이 시스템 주소로 보내면 잃을 수 있습니다".to_owned(),
+            ),
+            (SendAsset::Token(_), true, _) => Some(
+                "0x2222…2222는 HYPE 전용 시스템 주소입니다 — 토큰을 보내면 잃을 수 있습니다".to_owned(),
+            ),
+            (SendAsset::Token(token), false, Some(index)) => {
+                let Some(linked) = self.hypercore.token(network, index) else {
+                    return Some(
+                        "HyperCore 토큰 정보를 확인할 수 없어 시스템 주소를 검증하지 못했습니다 — EVM 탭의 HyperCore 카드에서 새로고침하세요".to_owned(),
+                    );
+                };
+                let ok = linked.evm.is_some_and(|link| link.address == token);
+                (!ok).then(|| {
+                    format!(
+                        "이 시스템 주소(토큰 index {index})에 연결된 토큰이 아닙니다 — 보내면 잃을 수 있습니다"
+                    )
+                })
+            }
+        }
+    }
+}

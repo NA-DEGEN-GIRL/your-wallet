@@ -21,8 +21,8 @@
 //! | reset·extension (`screens_reset`) | 13,400–13,449 | S22 `지갑 초기화`, T-WAIT-STALLED, S23 `Chrome 확장 설치` |
 
 use crate::ui::{
-    screens, screens_btc, screens_evm, screens_keys, screens_llm, screens_reset, screens_sites,
-    screens_sol, screens_yubikey,
+    screens, screens_btc, screens_evm, screens_hypercore, screens_keys, screens_llm, screens_reset,
+    screens_sites, screens_sol, screens_yubikey,
 };
 
 /// Largest number of rows of the Solana recovery scan (spec/07 §3.3: 50 standard + 50 BIP44
@@ -99,6 +99,13 @@ pub fn ranges() -> Vec<IdRange> {
     // URL rows: every EVM chain, solana:mainnet/devnet, bitcoin:mainnet/testnet4 (spec/04 §2.11.1).
     let url_rows = evm_chains + 2 + 2 + 2;
     vec![
+        range(
+            "hypercore.assets",
+            screens_hypercore::ids::ASSET_BASE,
+            screens_hypercore::ids::ASSET_SPAN,
+            1,
+            usize::from(screens_hypercore::ids::ASSET_SPAN),
+        ),
         range(
             "core.network_chips",
             screens::ids::NETWORK_BASE,
@@ -291,6 +298,7 @@ pub fn fixed() -> Vec<(&'static str, &'static [u16])> {
         ("keys", screens_keys::ids::FIXED),
         ("yubikey", screens_yubikey::ids::FIXED),
         ("reset", screens_reset::ids::FIXED),
+        ("hypercore", screens_hypercore::ids::FIXED),
     ]
 }
 

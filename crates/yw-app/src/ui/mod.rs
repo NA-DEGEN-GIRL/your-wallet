@@ -11,6 +11,7 @@ pub mod qr;
 pub mod screens;
 pub mod screens_btc;
 pub mod screens_evm;
+pub mod screens_hypercore;
 pub mod screens_keys;
 pub mod screens_llm;
 pub mod screens_reset;
