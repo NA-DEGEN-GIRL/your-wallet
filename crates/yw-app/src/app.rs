@@ -535,6 +535,8 @@ pub struct App {
     pub(crate) btc: crate::app_btc::BtcUi,
     /// `HyperCore` card, form and session activity (spec/11).
     pub(crate) hypercore: crate::app_hypercore::HcUi,
+    /// Address book (S14, favorites, the inline save prompt).
+    pub(crate) book: crate::app_book::BookUi,
     /// Imported keys and "개인키로 시작하기" (spec/04 §2.18).
     pub(crate) keys: crate::app_keys::KeysUi,
     /// `YubiKey` card step and enrolment state (spec/10).
@@ -766,6 +768,7 @@ impl App {
             sol: crate::app_sol::SolUi::default(),
             btc: crate::app_btc::BtcUi::default(),
             hypercore: crate::app_hypercore::HcUi::default(),
+            book: crate::app_book::BookUi::default(),
             keys: crate::app_keys::KeysUi::default(),
             card: crate::app_card::CardUi::default(),
             browser: None,
@@ -947,6 +950,12 @@ impl App {
         if matches!(screen, Screen::Confirm(_)) && !matches!(self.screen, Screen::Confirm(_)) {
             self.previous_screen = self.screen.clone();
         }
+        if screen != self.screen && !matches!(screen, Screen::Confirm(_)) {
+            // The inline `주소록에 저장` prompt and its note belong to the screen they opened on.
+            self.book.prompt = None;
+            self.book.saved = None;
+            self.book.btc_picker = false;
+        }
         self.wait.screen_changed(&self.screen, &screen, now_ms());
         self.screen = screen;
         self.scroll = 0;
@@ -1039,6 +1048,7 @@ impl App {
                     self.on_command(*id);
                 } else if *code == EN_CHANGE
                     && !self.on_reset_edit_change(*id)
+                    && !self.on_book_edit_change(*id)
                     && !self.on_sol_edit_change(*id)
                     && !self.on_btc_edit_change(*id)
                     && !self.on_llm_edit_change(*id)
@@ -1281,6 +1291,7 @@ impl App {
             self.clear_secret_clip(clip);
         }
         self.evm_lock();
+        self.book = crate::app_book::BookUi::default();
         self.sol_lock();
         self.btc_lock();
         self.meta = None;
@@ -3012,7 +3023,7 @@ impl App {
                 }
                 self.evm.token_delete = None;
                 if matches!(self.screen, Screen::Confirm(Confirm::BookDelete)) {
-                    self.evm.book = crate::app_evm::BookForm::default();
+                    self.book.delete = None;
                 }
                 let previous = self.previous_screen.clone();
                 self.set_screen(previous);
@@ -3027,6 +3038,7 @@ impl App {
             }
             other => {
                 if !self.on_reset_command(other)
+                    && !self.on_book_command(other)
                     && !self.on_rpc_import_command(other)
                     && !self.on_extension_command(other)
                     && !self.on_keys_command(other)

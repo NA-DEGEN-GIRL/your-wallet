@@ -28,7 +28,7 @@ use crate::app_evm::QueuedItem;
 use crate::errors::ErrorCode;
 use crate::events::{KeyJob, RpcEvent, SolKeysPurpose, SolSignFailure, SolSignedSummary};
 use crate::logging::{self, Field};
-use crate::meta::{Account, SolBookEntry, Tab};
+use crate::meta::{Account, Tab};
 use crate::network::NetworkId;
 use crate::sol::flow::{
     PreSignError, PreviewJob, PreviewOutcome, PreviewResult, SolEndpoint, TrackJob, TrackResult,
@@ -282,19 +282,6 @@ pub struct SolScanState {
     pub message: Option<String>,
 }
 
-/// Solana address-book form (S14).
-#[derive(Clone, Debug, Default)]
-pub struct SolBookForm {
-    /// Address text.
-    pub address: String,
-    /// Label text.
-    pub label: String,
-    /// Verified.
-    pub verified: bool,
-    /// Message.
-    pub message: Option<String>,
-}
-
 /// A Solana account of this wallet: a standard-path account (`m/44'/501'/i'/0'`) or an imported
 /// key (vault `tag 3`, spec/02 §8.4). The signer is `SolKeySource::Standard(i)` or
 /// `SolKeySource::Imported` (looked up by the public key).
@@ -372,8 +359,6 @@ pub struct SolUi {
     pub resend: Option<(SolSendForm, SolAddress)>,
     /// Recovery scan.
     pub scan: SolScanState,
-    /// Address book form.
-    pub book: SolBookForm,
     /// Rename of the selected account.
     pub rename: Option<SolAccountId>,
     /// The token card lists the hidden allowlist tokens (`숨긴 토큰 n개 보기`; session only).
@@ -403,7 +388,6 @@ impl SolUi {
         self.sent = None;
         self.resend = None;
         self.scan = SolScanState::default();
-        self.book = SolBookForm::default();
         self.rename = None;
     }
 }
@@ -537,7 +521,7 @@ impl App {
         let selected = self.sol_cluster();
         let mut known = Vec::new();
         if let Some(meta) = self.meta.as_ref() {
-            for entry in meta.sol_book() {
+            for entry in meta.contacts_favorites_first(crate::meta::BookChain::Sol) {
                 if let Ok(address) = SolAddress::parse(&entry.address) {
                     known.push(KnownAddress {
                         address,
@@ -1772,60 +1756,6 @@ impl App {
         if let Some((_, _, address)) = self.sol_selected() {
             self.copy_text(&address.to_base58());
         }
-    }
-
-    /// Saves a Solana address-book entry (S14).
-    pub fn sol_save_book(&mut self) {
-        let form = self.sol.book.clone();
-        let Ok(address) = SolAddress::parse_input(&form.address) else {
-            self.sol.book.message = Some(ErrorCode::Inp009.text());
-            self.refresh();
-            return;
-        };
-        let label = form.label.trim();
-        if !is_valid_label(label) {
-            self.sol.book.message = Some(ErrorCode::Inp017.text());
-            self.refresh();
-            return;
-        }
-        let entry = SolBookEntry {
-            address: address.to_base58(),
-            label: label.to_owned(),
-            verified: form.verified,
-            added_at_unix_ms: now_unix_ms(),
-        };
-        let Some(meta) = self.meta.as_mut() else {
-            return;
-        };
-        match meta.add_sol_book(&entry) {
-            Ok(()) => {
-                self.sol.book = SolBookForm::default();
-                self.save_meta();
-            }
-            Err(crate::meta::ListError::Duplicate) => {
-                self.sol.book.message = Some(ErrorCode::Inp016.text());
-            }
-            Err(crate::meta::ListError::Full) => {
-                self.sol.book.message = Some("주소록은 최대 500개입니다.".to_owned());
-            }
-        }
-        self.refresh();
-    }
-
-    /// Deletes a Solana address-book entry.
-    pub fn sol_delete_book(&mut self, row: usize) {
-        let Some(entry) = self
-            .meta
-            .as_ref()
-            .and_then(|meta| meta.sol_book().get(row).cloned())
-        else {
-            return;
-        };
-        if let Some(meta) = self.meta.as_mut() {
-            meta.remove_sol_book(&entry.address);
-        }
-        self.save_meta();
-        self.refresh();
     }
 
     /// Opens the scan screen at its notice.
