@@ -119,3 +119,49 @@ fn zcash_meta_round_trip() {
     let broken = json(r#"{"testnet":{"source":9,"a":0,"b":0,"pubkey":"02"}}"#);
     assert!(ZcashMeta::from_json(Some(&broken)).is_default());
 }
+
+/// The Zcash approval draft passes the window's own display check (every key has a label).
+#[test]
+fn zec_draft_is_displayable() {
+    use yw_core::zec::upgrade::{ConsensusObservation, tx_consensus};
+    use yw_core::zec::{ZecAmount, ZecDest, ZecOutPoint, ZecSendRequest, ZecUtxo, plan_send};
+    let account = ZecAccount {
+        network: ZecNetwork::Testnet,
+        source: ZecKeySource::DEFAULT,
+        pubkey: [2; 33],
+    };
+    let to = ZecDest::P2sh([7; 20]).encode(ZecNetwork::Testnet);
+    let recipient = yw_core::zec::parse_recipient(&to, ZecNetwork::Testnet).unwrap();
+    let consensus = tx_consensus(
+        ZecNetwork::Testnet,
+        &ConsensusObservation {
+            tip: 4_470_000,
+            next_branch: 0x7719_0AD9,
+            upgrades: Vec::new(),
+        },
+    )
+    .unwrap();
+    let plan = plan_send(
+        &account,
+        &ZecSendRequest {
+            recipient,
+            amount: ZecAmount::Exact(40_000),
+            utxos: vec![ZecUtxo {
+                outpoint: ZecOutPoint {
+                    txid: [1; 32],
+                    index: 0,
+                },
+                value: 100_000,
+                height: Some(4_469_000),
+                coinbase: false,
+            }],
+            reserved: Vec::new(),
+            consensus,
+        },
+    )
+    .unwrap();
+    let draft =
+        yw_core::zec::display::build_zec_request(yw_core::approval::ApprovalId([3; 16]), &plan)
+            .unwrap();
+    assert!(yw_app::ui::approval::validate_for_display(&draft.display).is_ok());
+}
