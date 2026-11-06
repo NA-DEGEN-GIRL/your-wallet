@@ -285,7 +285,7 @@ fn hw_btc_expected(
                 index,
                 btc: Some(shared),
             } => (HwBtcKey::Evm(index.get()), shared.network, shared.script),
-            KeyRole::Evm { btc: None, .. } | KeyRole::Sol { .. } => continue,
+            KeyRole::Evm { btc: None, .. } | KeyRole::Sol { .. } | KeyRole::Zec { .. } => continue,
         };
         match vault.hardware_btc_account(network, script_type, key) {
             Ok(account) => {
@@ -318,7 +318,7 @@ fn reconcile_hardware(document: &mut Meta, vault: &Vault) -> Result<bool, VaultE
             KeyRole::Evm { index, .. } => evm_address(&account.public)
                 .ok()
                 .map(|address| (index.get(), address.to_lower_hex())),
-            KeyRole::Btc { .. } | KeyRole::Sol { .. } => None,
+            KeyRole::Btc { .. } | KeyRole::Sol { .. } | KeyRole::Zec { .. } => None,
         }),
         true,
     );
@@ -328,7 +328,7 @@ fn reconcile_hardware(document: &mut Meta, vault: &Vault) -> Result<bool, VaultE
             KeyRole::Sol { index } => sol_address(&account.public)
                 .ok()
                 .map(|address| (index.get(), address.to_base58())),
-            KeyRole::Evm { .. } | KeyRole::Btc { .. } => None,
+            KeyRole::Evm { .. } | KeyRole::Btc { .. } | KeyRole::Zec { .. } => None,
         }),
         false,
     );

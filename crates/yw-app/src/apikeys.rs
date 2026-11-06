@@ -525,7 +525,7 @@ impl ApiKeys {
 pub fn is_registered(settings: &Settings, network: NetworkId) -> bool {
     match network {
         NetworkId::Eip155(id) => settings.registered_evm().contains(&id),
-        NetworkId::Solana(_) | NetworkId::Bitcoin(_) => true,
+        NetworkId::Solana(_) | NetworkId::Bitcoin(_) | NetworkId::Zcash(_) => true,
     }
 }
 
@@ -587,7 +587,7 @@ pub fn template_entry(
         label: label.to_owned(),
     };
     match (template, network) {
-        (RpcTemplate::Manual, _) => None,
+        (RpcTemplate::Manual, _) | (RpcTemplate::Alchemy, NetworkId::Zcash(_)) => None,
         (_, NetworkId::Eip155(id)) => {
             if let Some(chain) = builtin_chain(id) {
                 let templates = chain.templates?;
@@ -635,6 +635,15 @@ pub fn template_entry(
             BtcNet::Mainnet => "bitcoin-mainnet",
             BtcNet::Testnet4 => "bitcoin-testnet4",
         })),
+        // spec/12 §4.1: QuickNode Zcash docs use `zec-mainnet` (testnet `zec-testnet`, checked
+        // at first use); Alchemy has no Zcash endpoint (`Manual` arm above).
+        (RpcTemplate::QuickNode, NetworkId::Zcash(net)) => Some(quicknode(
+            Some(match net {
+                yw_core::zec::ZecNetwork::Mainnet => "zec-mainnet",
+                yw_core::zec::ZecNetwork::Testnet => "zec-testnet",
+            }),
+            None,
+        )),
     }
 }
 

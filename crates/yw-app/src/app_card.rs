@@ -399,7 +399,7 @@ impl App {
             let (list, index) = match role {
                 KeyRole::Evm { index, .. } => (&mut meta.hw_accounts.evm, index.get()),
                 KeyRole::Sol { index } => (&mut meta.hw_accounts.sol, index.get()),
-                KeyRole::Btc { .. } => continue,
+                KeyRole::Btc { .. } | KeyRole::Zec { .. } => continue,
             };
             for account in list.iter_mut().filter(|account| account.index == index) {
                 changed |= account.hidden;

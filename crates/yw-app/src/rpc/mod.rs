@@ -449,6 +449,24 @@ pub fn test_endpoint(client: &RpcClient<'_>, network: NetworkId, url: &HttpsUrl)
             Ok(_) => TestOutcome::Failed(ErrorCode::Rpc005),
             Err(failure) => TestOutcome::Failed(classify(failure)),
         },
+        // spec/12 §2: the genesis pin (`getblockhash 0`).
+        NetworkId::Zcash(net) => {
+            match client.call(
+                url,
+                "getblockhash",
+                Value::Array(vec![Value::Number(yw_json::Number::from_u64(0))]),
+            ) {
+                Ok(Value::String(hash)) if hash == net.genesis_hex() => {
+                    TestOutcome::Ok("genesis 일치".to_owned())
+                }
+                Ok(Value::String(_)) => TestOutcome::Mismatch {
+                    item: "genesis",
+                    rpc_chain_id: None,
+                },
+                Ok(_) => TestOutcome::Failed(ErrorCode::Rpc005),
+                Err(failure) => TestOutcome::Failed(classify(failure)),
+            }
+        }
     }
 }
 

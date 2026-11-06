@@ -63,7 +63,7 @@ fn valid_id(network: NetworkId, id: &str) -> bool {
     match network {
         NetworkId::Eip155(_) => is_evm_addr(id),
         NetworkId::Solana(_) => is_sol_addr(id),
-        NetworkId::Bitcoin(_) => false,
+        NetworkId::Bitcoin(_) | NetworkId::Zcash(_) => false,
     }
 }
 

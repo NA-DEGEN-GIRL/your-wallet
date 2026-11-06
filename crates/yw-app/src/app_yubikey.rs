@@ -235,7 +235,7 @@ fn next_indices(
                 script: kind,
                 index,
             } if net == network && kind == script => btc.push(index),
-            KeyRole::Btc { .. } => {}
+            KeyRole::Btc { .. } | KeyRole::Zec { .. } => {}
             KeyRole::Sol { index } => sol.push(index.get()),
         }
     }
