@@ -840,7 +840,7 @@ const forbidden = [
 - 형식: UTF-8 JSON 객체 하나, ≤ 64 KiB, 엄격 파싱(중복 키 거부; Node 도구는 `scripts/lib/strict-json.mjs`의 `decodeUtf8`·`parseStrictJson`). 키 = [02](02-core-keys-vault.md) §5.3 `NetworkId`(예 `eip155:1`, `eip155:11155111`, `eip155:999`, `solana:devnet`, `bitcoin:testnet4`), 값 = HTTPS JSON-RPC URL 전체(토큰 포함, `https://`만, ≤ 2048바이트, userinfo·fragment 없음 — yw-win `HttpsUrl`(§7.4)과 같은 규칙). 예: `{"eip155:1":"https://…","eip155:11155111":"https://…","eip155:999":"https://…"}`. 도구는 자기가 쓰는 키만 읽고 나머지는 무시한다.
 - URL 전체가 비밀이다(D13). 출력·로그·오류 문구·`docs/acceptance/` 기록·커밋 메시지에는 URL·호스트·토큰 대신 `NetworkId`만 쓴다. 설정 파일 파싱·검증 오류도 고정 문구 + 키 이름만 출력한다(값·파서 메시지 출력 금지).
 - 파일은 저장소 밖에 둔다. 도구는 설정 파일의 실제 경로(`realpath`)가 저장소 루트 아래이면 읽지 않고 실패한다. `%USERPROFILE%\.yw-dev\`는 저장소 밖이므로 `.gitignore` 변경은 없다. 저장소에 잘못 들어온 URL은 privacy scan(§4.3)이 알케미·QuickNode 모양만 잡는다.
-- 제품 코드(yw-app·yw-host 실행 파일)는 이 파일·변수를 읽지 않는다. 앱의 엔드포인트는 `apikeys.dpapi`([04](04-app-ui.md) §6.3)뿐이다.
+- 제품 코드는 이 파일을 엔드포인트로 쓰지 않는다. 앱의 엔드포인트는 `apikeys.dpapi`([04](04-app-ui.md) §6.3)뿐이다. 예외는 사용자가 누르는 yw-app 설정 → 네트워크(RPC) → `rpc.json에서 가져오기`(파일이 있을 때만 보임) 하나다: `%USERPROFILE%\.yw-dev\rpc.json`(디버그 빌드만 `YW_RPC_JSON`도)을 위 형식·크기 규칙으로 읽고, 값마다 `교체`와 같은 `HttpsUrl` 검사에 QuickNode(`parse_quicknode_url`)·알케미(`<label>.g.alchemy.com/v2/<key>`) 모양·포트 없음을 더해 통과한 것만, 가린 확인 목록(네트워크·공급자·`…/****`)을 거쳐 `apikeys.dpapi`에 저장한다(`덮어쓰기` / `비어 있는 네트워크만`; 모두 한 QuickNode 이름·토큰이면 `tpl:quicknode`와 `rpc.template = quicknode`도). yw-host는 읽지 않는다.
 
 ### 4.7 `scripts/probe-rpc.mjs` (수동 실서비스 프로브)
 

@@ -544,6 +544,8 @@ pub struct App {
     pub(crate) wait: crate::app_reset::WaitWatch,
     /// S22 `지갑 초기화` (spec/04 §2.20).
     pub(crate) reset: crate::app_reset::ResetUi,
+    /// Settings → 네트워크(RPC) `rpc.json에서 가져오기` (a plan waiting for confirmation).
+    pub(crate) rpc_import: crate::app_rpc_import::RpcImportUi,
     /// S23 `Chrome 확장 설치` (spec/04 §2.21).
     pub(crate) ext: crate::app_extension::ExtensionUi,
     secret: Option<SecretWin>,
@@ -764,6 +766,7 @@ impl App {
             guard: SettingsGuard::default(),
             wait: crate::app_reset::WaitWatch::default(),
             reset: crate::app_reset::ResetUi::default(),
+            rpc_import: crate::app_rpc_import::RpcImportUi::default(),
             ext: crate::app_extension::ExtensionUi::default(),
             secret: None,
             secret_serial: 0,
@@ -1272,6 +1275,7 @@ impl App {
         self.rename = None;
         self.pending_remove = None;
         self.keys = crate::app_keys::KeysUi::default();
+        self.rpc_import = crate::app_rpc_import::RpcImportUi::default();
         self.passphrase_session = false;
         self.recover_return = None;
         logging::info("app", "lock", &[("reason", Field::Word(reason.as_str()))]);
@@ -3009,6 +3013,7 @@ impl App {
             }
             other => {
                 if !self.on_reset_command(other)
+                    && !self.on_rpc_import_command(other)
                     && !self.on_extension_command(other)
                     && !self.on_keys_command(other)
                     && !self.on_sol_command(other)
