@@ -496,6 +496,11 @@ impl Vault {
             // A YubiKey account has no key on the PC (spec/10 §1).
             KeyRef::Evm(EvmKeySource::Hardware(_)) => return Err(VaultError::RecordNotFound),
             KeyRef::Btc { coin, chain, index } => btc_path(coin, chain, index)?,
+            KeyRef::Zec {
+                test,
+                account,
+                index,
+            } => crate::bip32::path::zec_path(test, account, index)?,
         };
         let seed = self.seed(payload)?;
         Ok(secret_key_from_seed(ctx, seed.expose(), &path)?)
@@ -1322,6 +1327,37 @@ impl Vault {
         let payload = self.payload()?;
         let ctx = secp_context(&mut OsRandom)?;
         let mut secret = self.secret_for(&ctx, &payload, KeyRef::Btc { coin, chain, index })?;
+        let public = PublicKey::from_secret_key(&ctx, &secret);
+        secret.non_secure_erase();
+        Ok(public.serialize())
+    }
+
+    /// The compressed public key of the Zcash transparent key `m/44'/{133|1}'/{account}'/0/{index}`
+    /// (public information, spec/12 §2.2; the private key is wiped on return).
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` outside `BackupPending`/`Unlocked`, `NoMnemonic` for a key-only vault,
+    /// `Key(InvalidPath)` for a hardened index, or a derivation error.
+    pub fn zec_public_key(
+        &self,
+        test: bool,
+        account: u32,
+        index: u32,
+    ) -> Result<[u8; 33], VaultError> {
+        self.require_public()?;
+        crate::bip32::path::zec_path(test, account, index)?;
+        let payload = self.payload()?;
+        let ctx = secp_context(&mut OsRandom)?;
+        let mut secret = self.secret_for(
+            &ctx,
+            &payload,
+            KeyRef::Zec {
+                test,
+                account,
+                index,
+            },
+        )?;
         let public = PublicKey::from_secret_key(&ctx, &secret);
         secret.non_secure_erase();
         Ok(public.serialize())

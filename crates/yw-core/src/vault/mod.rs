@@ -211,6 +211,15 @@ pub enum KeyRef {
         /// Non-hardened index.
         index: u32,
     },
+    /// A derived Zcash transparent key `m/44'/{133|1}'/{account}'/0/{index}` (spec/12 §2.2).
+    Zec {
+        /// Coin type `1'` (testnet) instead of `133'`.
+        test: bool,
+        /// BIP44 account (non-hardened input, hardened in the path).
+        account: u32,
+        /// Receive index (non-hardened).
+        index: u32,
+    },
 }
 
 /// Identifier of the current backup challenge.

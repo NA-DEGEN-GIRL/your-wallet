@@ -125,6 +125,24 @@ impl FieldKey {
     pub const BTC_REPLACES: Self = Self(0x0609);
     /// BTC 고급(version·nLockTime·RBF·vsize·weight·txid).
     pub const BTC_ADVANCED: Self = Self(0x0640);
+    /// ZEC 받는 주소(일반 주소로 다시 인코딩한 값과 입력한 형식).
+    pub const ZEC_TO: Self = Self(0x0701);
+    /// ZEC 받는 주소 형식(t 주소 / TEX / UA의 일반 수신자).
+    pub const ZEC_FORM: Self = Self(0x0702);
+    /// ZEC 보내는 금액.
+    pub const ZEC_AMOUNT: Self = Self(0x0703);
+    /// ZEC 잔돈.
+    pub const ZEC_CHANGE: Self = Self(0x0704);
+    /// ZEC 수수료(ZIP 317).
+    pub const ZEC_FEE: Self = Self(0x0705);
+    /// ZEC 합계(금액 + 수수료).
+    pub const ZEC_TOTAL: Self = Self(0x0706);
+    /// ZEC 만료 높이와 네트워크 업그레이드.
+    pub const ZEC_EXPIRY: Self = Self(0x0707);
+    /// ZEC 입력(개수·합계).
+    pub const ZEC_INPUTS: Self = Self(0x0708);
+    /// ZEC 고급(형식·branch id·txid).
+    pub const ZEC_ADVANCED: Self = Self(0x0740);
 
     /// `(critical, volatile)` for keys of the §11.2 table; `None` for unknown keys.
     #[must_use]
@@ -141,7 +159,8 @@ impl FieldKey {
             | 0x0404..=0x0406
             | 0x0501..=0x0505
             | 0x0601..=0x0607
-            | 0x0609 => (true, false),
+            | 0x0609
+            | 0x0701..=0x0707 => (true, false),
             0x0121 | 0x0130 => (false, true),
             0x0113
             | 0x0122..=0x0124
@@ -150,7 +169,9 @@ impl FieldKey {
             | 0x0403
             | 0x0506..=0x0509
             | 0x0608
-            | 0x0640 => (false, false),
+            | 0x0640
+            | 0x0708
+            | 0x0740 => (false, false),
             _ => return None,
         })
     }

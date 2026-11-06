@@ -110,6 +110,13 @@ pub enum ChainRef {
         /// Genesis hash bytes in display order (the §2 hex decoded).
         genesis: [u8; 32],
     },
+    /// Zcash network with its pinned genesis hash (spec/12 §2, §9; `chain_tag` 4).
+    Zcash {
+        /// Network id: 1 mainnet, 2 testnet.
+        network: u8,
+        /// Genesis hash bytes in display order.
+        genesis: [u8; 32],
+    },
 }
 
 /// Signing account.
@@ -121,6 +128,8 @@ pub enum AccountRef {
     Sol([u8; 32]),
     /// Bitcoin account public key `m/84'/{coin}'/0'` (`BtcMeta.account_pubkey`).
     Bitcoin([u8; 33]),
+    /// Zcash transparent account public key (compressed, spec/12 §9).
+    Zcash([u8; 33]),
 }
 
 /// Approval kind (digest byte).
@@ -149,6 +158,8 @@ pub enum ApprovalKind {
     SolSignIn = 0x22,
     /// dApp Bitcoin message signature (`btc_signMessage`, spec/08 §17; ownership proof only).
     BtcMessage = 0x32,
+    /// Zcash transparent send (spec/12 §9; origin is always the app).
+    ZecSend = 0x40,
 }
 
 impl ApprovalKind {
@@ -197,6 +208,8 @@ pub enum SigningPayload {
     SolMessage(Box<SolMessagePayload>),
     /// A Bitcoin message (BIP137 or BIP322) and its key (spec/08 §17).
     BtcMessage(Box<BtcMessagePayload>),
+    /// The Zcash `zec_payload` bytes (spec/12 §9).
+    Zec(Vec<u8>),
 }
 
 /// What a Solana message approval signs: the exact message bytes with the key of `source`, whose
@@ -310,7 +323,7 @@ impl SigningPayload {
             Self::EvmPersonal(preimage) => preimage.clone(),
             Self::EvmTypedData(preimage) => preimage.to_vec(),
             Self::SolTransfer(intent) => intent.transcript(),
-            Self::Btc(payload) => payload.clone(),
+            Self::Btc(payload) | Self::Zec(payload) => payload.clone(),
             Self::SolMessage(payload) => payload.digest_bytes(),
             Self::BtcMessage(payload) => payload.digest_bytes(),
         }

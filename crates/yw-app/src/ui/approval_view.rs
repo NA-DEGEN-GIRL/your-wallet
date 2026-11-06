@@ -402,6 +402,10 @@ pub fn summary(request: &ApprovalRequest) -> (String, Option<String>) {
             Some(amount) => send(amount, field_value(display, 0x0601)),
             None => (format!("{place}BTC를 보냅니다."), None),
         },
+        ApprovalKind::ZecSend => match field_value(display, 0x0703) {
+            Some(amount) => send(amount, field_value(display, 0x0701)),
+            None => (format!("{place}ZEC를 보냅니다."), None),
+        },
         ApprovalKind::BtcFeeBump => (
             format!("{place}아직 확정되지 않은 거래의 수수료를 올려 다시 보냅니다."),
             None,
