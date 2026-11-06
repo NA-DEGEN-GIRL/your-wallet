@@ -68,8 +68,8 @@ fn text(value: &Result<Value, ProviderError>) -> String {
 fn user_chain_settings() -> Settings {
     let mut settings = Settings::default();
     settings.evm_chains.push(EvmChainDef {
-        chain_id: 8453,
-        name: "Base".to_owned(),
+        chain_id: 10,
+        name: "OP Mainnet".to_owned(),
         symbol: "ETH".to_owned(),
         decimals: 18,
         quicknode_subdomain: None,
@@ -1035,32 +1035,32 @@ fn r_g2_x25_switching_registered_and_user_chains() -> TestResult {
         SITE,
         1,
         "wallet_switchEthereumChain",
-        json(r#"[{"chainId":"0x2105"}]"#),
+        json(r#"[{"chainId":"0xa"}]"#),
     );
     let out = h.out.take();
     assert!(
         matches!(&out[0], yw_app::browser::Outbound::Response { correlation, body: Ok(Value::Null) } if *correlation == switch)
     );
-    assert_eq!(events_of(&out, 1), vec![BrowserEvent::ChainChanged(8453)]);
+    assert_eq!(events_of(&out, 1), vec![BrowserEvent::ChainChanged(10)]);
     assert!(events_of(&out, 2).is_empty());
     assert_eq!(
         h.sink.take(),
         vec![DappEvent::GrantChanged {
             origin: origin(SITE)?,
-            change: GrantChange::Chain(8453)
+            change: GrantChange::Chain(10)
         }]
     );
-    assert_eq!(h.core.grants()[0].chain_id, 8453);
+    assert_eq!(h.core.grants()[0].chain_id, 10);
     let chain = h.send(SITE, 1, "eth_chainId", json("[]"));
-    assert_eq!(text(&single(&h, &chain)?), "\"0x2105\"");
+    assert_eq!(text(&single(&h, &chain)?), "\"0xa\"");
     let version = h.send(SITE, 1, "net_version", json("[]"));
-    assert_eq!(text(&single(&h, &version)?), "\"8453\"");
+    assert_eq!(text(&single(&h, &version)?), "\"10\"");
     // Same chain again: null, no event.
     let again = h.send(
         SITE,
         1,
         "wallet_switchEthereumChain",
-        json(r#"[{"chainId":"0x2105"}]"#),
+        json(r#"[{"chainId":"0xa"}]"#),
     );
     let out = h.out.take();
     assert_eq!(out.len(), 1);
@@ -1090,7 +1090,7 @@ fn r_g2_x25_switching_registered_and_user_chains() -> TestResult {
             "error 4902 Unrecognized chain."
         );
     }
-    for chain_id in ["0x89", "0x2105"] {
+    for chain_id in ["0x89", "0xa"] {
         let add = h.send(
             SITE,
             1,
@@ -1118,7 +1118,7 @@ fn r_g2_reads_go_to_the_origin_chain_endpoint_only() -> TestResult {
     let transport = Arc::new(ByUrl {
         calls: Mutex::new(Vec::new()),
         chains: vec![
-            (base_url.clone(), 8453, [0x84; 32]),
+            (base_url.clone(), 10, [0x84; 32]),
             (
                 sepolia_url.clone(),
                 SEPOLIA,
@@ -1130,7 +1130,7 @@ fn r_g2_reads_go_to_the_origin_chain_endpoint_only() -> TestResult {
     let mut view = wallet(VaultView::Unlocked, &settings);
     for entry in &mut view.chains {
         entry.url = match entry.info.chain_id {
-            8453 => Some(base_url.clone()),
+            10 => Some(base_url.clone()),
             SEPOLIA => Some(sepolia_url.clone()),
             _ => None,
         };
@@ -1145,7 +1145,7 @@ fn r_g2_reads_go_to_the_origin_chain_endpoint_only() -> TestResult {
         SITE,
         1,
         "wallet_switchEthereumChain",
-        json(r#"[{"chainId":"0x2105"}]"#),
+        json(r#"[{"chainId":"0xa"}]"#),
     );
     assert_eq!(text(&single(&h, &switch)?), "null");
     assert!(
@@ -1179,13 +1179,13 @@ fn r_g2_reads_go_to_the_origin_chain_endpoint_only() -> TestResult {
     );
     assert_eq!(transport.calls.lock().unwrap().len(), before);
     // Blocked (RpcMismatch): switch 4901, no cache/grant/event change; cleared → works.
-    view.blocked = vec![8453];
+    view.blocked = vec![10];
     h.core.set_wallet(view.clone());
     let blocked_switch = h.send(
         OTHER,
         2,
         "wallet_switchEthereumChain",
-        json(r#"[{"chainId":"0x2105"}]"#),
+        json(r#"[{"chainId":"0xa"}]"#),
     );
     assert_eq!(
         text(&single(&h, &blocked_switch)?),
@@ -1205,7 +1205,7 @@ fn r_g2_reads_go_to_the_origin_chain_endpoint_only() -> TestResult {
         OTHER,
         2,
         "wallet_switchEthereumChain",
-        json(r#"[{"chainId":"0x2105"}]"#),
+        json(r#"[{"chainId":"0xa"}]"#),
     );
     assert_eq!(text(&single(&h, &cleared)?), "null");
     Ok(())
@@ -1222,13 +1222,13 @@ fn r_g2_locked_switch_unlock_merge_and_chain_removal() -> TestResult {
         SITE,
         1,
         "wallet_switchEthereumChain",
-        json(r#"[{"chainId":"0x2105"}]"#),
+        json(r#"[{"chainId":"0xa"}]"#),
     );
     let out = h.out.take();
     assert!(
         matches!(&out[0], yw_app::browser::Outbound::Response { correlation, .. } if *correlation == switch)
     );
-    assert_eq!(events_of(&out, 1), vec![BrowserEvent::ChainChanged(8453)]);
+    assert_eq!(events_of(&out, 1), vec![BrowserEvent::ChainChanged(10)]);
     assert!(
         h.sink
             .take()
@@ -1249,7 +1249,7 @@ fn r_g2_locked_switch_unlock_merge_and_chain_removal() -> TestResult {
     assert_eq!(
         ids,
         vec![
-            (SITE.to_owned(), 8453),
+            (SITE.to_owned(), 10),
             ("https://gone.example".to_owned(), SEPOLIA)
         ]
     );
@@ -1264,7 +1264,7 @@ fn r_g2_locked_switch_unlock_merge_and_chain_removal() -> TestResult {
     let other = h.send(OTHER, 2, "eth_chainId", json("[]"));
     assert_eq!(text(&single(&h, &other)?), "\"0x3e7\"");
     // User chain deleted: chainChanged(evmChainId) to its origins, grants rewritten.
-    let rewritten = h.core.chain_removed(8453, SEPOLIA);
+    let rewritten = h.core.chain_removed(10, SEPOLIA);
     assert_eq!(rewritten.len(), 1);
     assert_eq!(rewritten[0].chain_id, SEPOLIA);
     let out = h.out.take();

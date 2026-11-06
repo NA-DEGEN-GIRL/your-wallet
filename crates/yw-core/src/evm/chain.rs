@@ -10,7 +10,7 @@ use core::fmt;
 
 use super::address::Address;
 use super::amount::U256;
-use super::fee::FeeCaps;
+use super::fee::{FeeCaps, L1DataFee};
 use crate::approval::is_forbidden_display_char;
 
 /// Ethereum mainnet chain id.
@@ -19,6 +19,14 @@ pub const ETHEREUM_MAINNET: u64 = 1;
 pub const SEPOLIA: u64 = 11_155_111;
 /// `HyperEVM` mainnet chain id.
 pub const HYPEREVM_MAINNET: u64 = 999;
+/// Arbitrum One chain id.
+pub const ARBITRUM_ONE: u64 = 42_161;
+/// Base mainnet chain id.
+pub const BASE_MAINNET: u64 = 8_453;
+/// BNB Smart Chain mainnet chain id.
+pub const BSC_MAINNET: u64 = 56;
+/// Robinhood Chain mainnet chain id.
+pub const ROBINHOOD_MAINNET: u64 = 4_663;
 /// Largest chain id (EIP-2294).
 pub const MAX_CHAIN_ID: u64 = 9_223_372_036_854_775_771;
 /// Default `tip_floor_wei` (0.01 gwei).
@@ -33,6 +41,22 @@ pub const MAINNET_GENESIS: [u8; 32] =
 /// Sepolia genesis hash.
 pub const SEPOLIA_GENESIS: [u8; 32] =
     hex32("25a5cc106eea7138acab33231d7160d69cb777ee0c2c553fcddf5138993e6dd9");
+/// Arbitrum One genesis hash (block 0 of the Nitro chain, spec/03 §1.1 sources).
+pub const ARBITRUM_ONE_GENESIS: [u8; 32] =
+    hex32("7ee576b35482195fc49205cec9af72ce14f003b9ae69f6ba0faef4514be8b442");
+/// Base mainnet genesis hash.
+pub const BASE_GENESIS: [u8; 32] =
+    hex32("f712aa9241cc24369b143cf6dce85f0902a9731e70d66818a3a5845b296c73dd");
+/// BNB Smart Chain genesis hash.
+pub const BSC_GENESIS: [u8; 32] =
+    hex32("0d21840abff46b96c84b2ac9e10e4f5cdaeb5693cb665db62a2f3b02d2d57b5b");
+/// Robinhood Chain mainnet genesis hash.
+pub const ROBINHOOD_GENESIS: [u8; 32] =
+    hex32("aad15f3d702aaea00caf3e9bb56395efe9127bc3b31b24921abf1eee3409305c");
+/// BSC minimum gas price adopted by validators in 2025 (0.05 gwei), the BSC tip floor.
+pub const BSC_TIP_FLOOR_WEI: u64 = 50_000_000;
+/// Base tip floor (0.001 gwei): Base priority fees are usually far below the default floor.
+pub const BASE_TIP_FLOOR_WEI: u64 = 1_000_000;
 /// `OpenSea` conduit key (Seaport display label, spec/03 §1.2).
 pub const OPENSEA_CONDUIT_KEY: [u8; 32] =
     hex32("0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b8104250f0000");
@@ -48,7 +72,7 @@ const fn addr(text: &str) -> Address {
 /// Where a chain definition comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChainSource {
-    /// Built into the wallet (1, 11155111, 999).
+    /// Built into the wallet (1, 11155111, 999, 42161, 8453, 56, 4663).
     BuiltIn,
     /// Added by the user (spec/03 §1.6).
     User,
@@ -127,6 +151,9 @@ pub struct KnownToken {
     pub decimals: u8,
     /// Role.
     pub role: TokenRole,
+    /// Address label when the symbol alone would mislead (bridged/pegged tokens), `None` = the
+    /// symbol. The symbol stays the on-chain ticker so E19/T20 still catch look-alikes.
+    pub label: Option<&'static str>,
 }
 
 /// The per-chain registry of trusted tokens.
@@ -173,7 +200,7 @@ pub struct ChainInfo {
     pub native_symbol: String,
     /// Native decimals.
     pub native_decimals: u8,
-    /// Explorer URL (user chains only, display/link only).
+    /// Explorer base URL (display/link only, never used for RPC).
     pub explorer: Option<String>,
     /// Simulation support.
     pub simulation: SimulationSupport,
@@ -185,6 +212,8 @@ pub struct ChainInfo {
     pub tip_floor_wei: u64,
     /// `HyperEVM` small-block gas limit (E38), `None` elsewhere.
     pub small_block_gas_limit: Option<u64>,
+    /// How the chain charges L1 data beyond `gas × price` (spec/03 §3.4a).
+    pub l1_data_fee: L1DataFee,
     /// Registered tokens (empty for user chains).
     pub tokens: &'static TokenRegistry,
     /// Registered contracts (empty for user chains).
@@ -202,24 +231,28 @@ static MAINNET_TOKENS: [KnownToken; 4] = [
         symbol: "WETH",
         decimals: 18,
         role: TokenRole::Weth,
+        label: None,
     },
     KnownToken {
         address: addr("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
         symbol: "USDC",
         decimals: 6,
         role: TokenRole::Plain,
+        label: None,
     },
     KnownToken {
         address: addr("dAC17F958D2ee523a2206206994597C13D831ec7"),
         symbol: "USDT",
         decimals: 6,
         role: TokenRole::Plain,
+        label: None,
     },
     KnownToken {
         address: addr("6B175474E89094C44Da98b954EedeAC495271d0F"),
         symbol: "DAI",
         decimals: 18,
         role: TokenRole::Dai,
+        label: None,
     },
 ];
 
@@ -229,12 +262,14 @@ static SEPOLIA_TOKENS: [KnownToken; 2] = [
         symbol: "WETH",
         decimals: 18,
         role: TokenRole::Weth,
+        label: None,
     },
     KnownToken {
         address: addr("1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"),
         symbol: "USDC",
         decimals: 6,
         role: TokenRole::Plain,
+        label: None,
     },
 ];
 
@@ -243,7 +278,114 @@ static HYPEREVM_TOKENS: [KnownToken; 1] = [KnownToken {
     symbol: "WHYPE",
     decimals: 18,
     role: TokenRole::Weth,
+    label: None,
 }];
+
+const fn token(address: &str, symbol: &'static str, decimals: u8, role: TokenRole) -> KnownToken {
+    KnownToken {
+        address: addr(address),
+        symbol,
+        decimals,
+        role,
+        label: None,
+    }
+}
+
+const fn labeled(token: KnownToken, label: &'static str) -> KnownToken {
+    KnownToken {
+        label: Some(label),
+        ..token
+    }
+}
+
+/// Arbitrum One: WETH (Arbitrum docs), native USDC (Circle), USDT0 (USDT0 docs).
+static ARBITRUM_TOKENS: [KnownToken; 3] = [
+    token(
+        "82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+        "WETH",
+        18,
+        TokenRole::Weth,
+    ),
+    token(
+        "af88d065e77c8cC2239327C5EDb3A432268e5831",
+        "USDC",
+        6,
+        TokenRole::Plain,
+    ),
+    labeled(
+        token(
+            "Fd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
+            "USDT0",
+            6,
+            TokenRole::Plain,
+        ),
+        "USDT0 (Tether OFT)",
+    ),
+];
+
+/// Base: WETH predeploy (OP specs), native USDC (Circle).
+static BASE_TOKENS: [KnownToken; 2] = [
+    token(
+        "4200000000000000000000000000000000000006",
+        "WETH",
+        18,
+        TokenRole::Weth,
+    ),
+    token(
+        "833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "USDC",
+        6,
+        TokenRole::Plain,
+    ),
+];
+
+/// BNB Smart Chain: WBNB and the Binance-Peg USDT/USDC (18 decimals, issued by Binance, not by
+/// Tether or Circle).
+static BSC_TOKENS: [KnownToken; 3] = [
+    token(
+        "bb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
+        "WBNB",
+        18,
+        TokenRole::Weth,
+    ),
+    labeled(
+        token(
+            "55d398326f99059fF775485246999027B3197955",
+            "USDT",
+            18,
+            TokenRole::Plain,
+        ),
+        "USDT (Binance-Peg)",
+    ),
+    labeled(
+        token(
+            "8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
+            "USDC",
+            18,
+            TokenRole::Plain,
+        ),
+        "USDC (Binance-Peg)",
+    ),
+];
+
+/// Robinhood Chain: WETH (Robinhood Chain docs), USDG (Paxos, Robinhood Chain docs).
+static ROBINHOOD_TOKENS: [KnownToken; 2] = [
+    token(
+        "0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+        "WETH",
+        18,
+        TokenRole::Weth,
+    ),
+    labeled(
+        token(
+            "5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+            "USDG",
+            6,
+            TokenRole::Plain,
+        ),
+        "USDG (Global Dollar, Paxos)",
+    ),
+];
 
 static NO_TOKENS: [KnownToken; 0] = [];
 static NO_CONTRACTS: [KnownContract; 0] = [];
@@ -357,6 +499,7 @@ pub fn ethereum_mainnet() -> ChainInfo {
         },
         tip_floor_wei: TIP_FLOOR_WEI,
         small_block_gas_limit: None,
+        l1_data_fee: L1DataFee::None,
         tokens: &MAINNET_TOKENS,
         contracts: &MAINNET_CONTRACTS,
     }
@@ -387,6 +530,7 @@ pub fn sepolia() -> ChainInfo {
         },
         tip_floor_wei: TIP_FLOOR_WEI,
         small_block_gas_limit: None,
+        l1_data_fee: L1DataFee::None,
         tokens: &SEPOLIA_TOKENS,
         contracts: &SEPOLIA_CONTRACTS,
     }
@@ -417,15 +561,165 @@ pub fn hyperevm_mainnet() -> ChainInfo {
         },
         tip_floor_wei: TIP_FLOOR_WEI,
         small_block_gas_limit: Some(HYPEREVM_SMALL_BLOCK_GAS),
+        l1_data_fee: L1DataFee::None,
         tokens: &HYPEREVM_TOKENS,
         contracts: &HYPEREVM_CONTRACTS,
     }
 }
 
-/// The three built-in chains, in table order.
+/// Arbitrum One (spec/03 §1.1): the L1 cost is part of `gasUsed`, so `eth_estimateGas` already
+/// covers it (no extra L1 fee); the chain ignores the tip.
 #[must_use]
-pub fn builtin_chains() -> [ChainInfo; 3] {
-    [ethereum_mainnet(), sepolia(), hyperevm_mainnet()]
+pub fn arbitrum_one() -> ChainInfo {
+    ChainInfo {
+        chain_id: ARBITRUM_ONE,
+        source: ChainSource::BuiltIn,
+        genesis: GenesisRule::Fixed(ARBITRUM_ONE_GENESIS),
+        templates: Some(EndpointTemplates {
+            quicknode_subdomain: Some("arbitrum-mainnet"),
+            quicknode_path: None,
+            alchemy_label: Some("arb-mainnet"),
+        }),
+        name: "Arbitrum One".to_owned(),
+        native_symbol: "ETH".to_owned(),
+        native_decimals: 18,
+        explorer: Some("https://arbiscan.io".to_owned()),
+        simulation: SimulationSupport::Auto,
+        amsterdam_time: None,
+        default_caps: FeeCaps {
+            max_fee_per_gas: gwei(10),
+            max_priority_fee_per_gas: gwei(1),
+            max_total_fee: native_percent(18, 2),
+        },
+        tip_floor_wei: TIP_FLOOR_WEI,
+        small_block_gas_limit: None,
+        l1_data_fee: L1DataFee::None,
+        tokens: &ARBITRUM_TOKENS,
+        contracts: &NO_CONTRACTS,
+    }
+}
+
+/// Base mainnet (spec/03 §1.1): OP-stack, the L1 data fee comes on top of `gas × price`
+/// (§3.4a).
+#[must_use]
+pub fn base_mainnet() -> ChainInfo {
+    ChainInfo {
+        chain_id: BASE_MAINNET,
+        source: ChainSource::BuiltIn,
+        genesis: GenesisRule::Fixed(BASE_GENESIS),
+        templates: Some(EndpointTemplates {
+            quicknode_subdomain: Some("base-mainnet"),
+            quicknode_path: None,
+            alchemy_label: Some("base-mainnet"),
+        }),
+        name: "Base".to_owned(),
+        native_symbol: "ETH".to_owned(),
+        native_decimals: 18,
+        explorer: Some("https://basescan.org".to_owned()),
+        simulation: SimulationSupport::Auto,
+        amsterdam_time: None,
+        default_caps: FeeCaps {
+            max_fee_per_gas: gwei(10),
+            max_priority_fee_per_gas: gwei(1),
+            max_total_fee: native_percent(18, 2),
+        },
+        tip_floor_wei: BASE_TIP_FLOOR_WEI,
+        small_block_gas_limit: None,
+        l1_data_fee: L1DataFee::OpStack,
+        tokens: &BASE_TOKENS,
+        contracts: &NO_CONTRACTS,
+    }
+}
+
+/// BNB Smart Chain (spec/03 §1.1): type 2 with base fee 0 (BEP-226), so the whole price is
+/// the tip; the floor is the validators' 0.05 gwei minimum.
+#[must_use]
+pub fn bsc_mainnet() -> ChainInfo {
+    ChainInfo {
+        chain_id: BSC_MAINNET,
+        source: ChainSource::BuiltIn,
+        genesis: GenesisRule::Fixed(BSC_GENESIS),
+        templates: Some(EndpointTemplates {
+            quicknode_subdomain: Some("bsc"),
+            quicknode_path: None,
+            alchemy_label: Some("bnb-mainnet"),
+        }),
+        name: "BNB Smart Chain".to_owned(),
+        native_symbol: "BNB".to_owned(),
+        native_decimals: 18,
+        explorer: Some("https://bscscan.com".to_owned()),
+        simulation: SimulationSupport::Auto,
+        amsterdam_time: None,
+        default_caps: FeeCaps {
+            max_fee_per_gas: gwei(10),
+            max_priority_fee_per_gas: gwei(10),
+            max_total_fee: native_percent(18, 2),
+        },
+        tip_floor_wei: BSC_TIP_FLOOR_WEI,
+        small_block_gas_limit: None,
+        l1_data_fee: L1DataFee::None,
+        tokens: &BSC_TOKENS,
+        contracts: &NO_CONTRACTS,
+    }
+}
+
+/// Robinhood Chain mainnet (spec/03 §1.1): an Arbitrum chain, fees as on Arbitrum One.
+#[must_use]
+pub fn robinhood_mainnet() -> ChainInfo {
+    ChainInfo {
+        chain_id: ROBINHOOD_MAINNET,
+        source: ChainSource::BuiltIn,
+        genesis: GenesisRule::Fixed(ROBINHOOD_GENESIS),
+        templates: Some(EndpointTemplates {
+            quicknode_subdomain: Some("robinhood-mainnet"),
+            quicknode_path: None,
+            alchemy_label: Some("robinhood-mainnet"),
+        }),
+        name: "Robinhood Chain".to_owned(),
+        native_symbol: "ETH".to_owned(),
+        native_decimals: 18,
+        explorer: Some("https://robinhoodchain.blockscout.com".to_owned()),
+        simulation: SimulationSupport::Auto,
+        amsterdam_time: None,
+        default_caps: FeeCaps {
+            max_fee_per_gas: gwei(10),
+            max_priority_fee_per_gas: gwei(1),
+            max_total_fee: native_percent(18, 2),
+        },
+        tip_floor_wei: TIP_FLOOR_WEI,
+        small_block_gas_limit: None,
+        l1_data_fee: L1DataFee::None,
+        tokens: &ROBINHOOD_TOKENS,
+        contracts: &NO_CONTRACTS,
+    }
+}
+
+/// The built-in chains, in table order.
+#[must_use]
+pub fn builtin_chains() -> [ChainInfo; 7] {
+    [
+        ethereum_mainnet(),
+        sepolia(),
+        hyperevm_mainnet(),
+        arbitrum_one(),
+        base_mainnet(),
+        bsc_mainnet(),
+        robinhood_mainnet(),
+    ]
+}
+
+/// Whether `chain_id` is a built-in mainnet (real assets; the header badge).
+#[must_use]
+pub const fn is_builtin_mainnet(chain_id: u64) -> bool {
+    matches!(
+        chain_id,
+        ETHEREUM_MAINNET
+            | HYPEREVM_MAINNET
+            | ARBITRUM_ONE
+            | BASE_MAINNET
+            | BSC_MAINNET
+            | ROBINHOOD_MAINNET
+    )
 }
 
 /// A built-in chain by id.
@@ -492,7 +786,10 @@ impl ChainInfo {
     pub fn label(&self, address: &Address) -> Option<&'static str> {
         self.contract(address)
             .map(|contract| contract.label)
-            .or_else(|| self.token(address).map(|token| token.symbol))
+            .or_else(|| {
+                self.token(address)
+                    .map(|token| token.label.unwrap_or(token.symbol))
+            })
     }
 }
 
@@ -616,6 +913,7 @@ pub fn user_chain_info(input: &UserChainInput, genesis: [u8; 32]) -> ChainInfo {
         },
         tip_floor_wei: TIP_FLOOR_WEI,
         small_block_gas_limit: None,
+        l1_data_fee: L1DataFee::Probe,
         tokens: &NO_TOKENS,
         contracts: &NO_CONTRACTS,
     }

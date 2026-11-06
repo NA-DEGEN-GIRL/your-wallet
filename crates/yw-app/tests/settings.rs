@@ -55,6 +55,26 @@ fn chains_beyond_32_are_dropped() {
     assert_eq!(loaded.banners, ["evmChains[32]"]);
 }
 
+/// A user chain whose id became built-in (Base, 2026-11-06) is dropped silently; the next item
+/// keeps its place and no banner is shown.
+#[test]
+fn user_chains_that_became_built_in_are_dropped_without_a_banner() {
+    let loaded = with(&format!(
+        r#""evmChains":[{},{}]"#,
+        chain(8_453, "My Base"),
+        chain(10, "OP Mainnet")
+    ));
+    let ids: Vec<u64> = loaded
+        .settings
+        .evm_chains
+        .iter()
+        .map(|c| c.chain_id)
+        .collect();
+    assert_eq!(ids, [10]);
+    assert!(loaded.banners.is_empty(), "{:?}", loaded.banners);
+    assert!(loaded.settings.registered_evm().contains(&8_453));
+}
+
 #[test]
 fn invalid_chain_items_are_dropped_one_by_one() {
     let items = [

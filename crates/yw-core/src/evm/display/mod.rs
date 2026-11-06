@@ -613,8 +613,21 @@ pub fn build_evm_tx_request(
             )?;
         }
     }
+    // spec/03 §3.4a: on an OP-stack chain the L1 data fee is added to both fee lines.
+    let l1 = facts.l1_fee;
     let max_fee = max_total_fee(tx.gas_limit, &tx.max_fee_per_gas)
-        .map_or_else(|| "계산 불가".to_owned(), |fee| native_amount(chain, &fee));
+        .and_then(|fee| fee.checked_add(l1.map_or(U256::ZERO, |quote| quote.max)))
+        .map_or_else(
+            || "계산 불가".to_owned(),
+            |fee| match l1 {
+                Some(quote) => format!(
+                    "{} (L1 데이터 수수료 최대 {} 포함)",
+                    native_amount(chain, &fee),
+                    native_amount(chain, &quote.max)
+                ),
+                None => native_amount(chain, &fee),
+            },
+        );
     fields.push(FieldKey::MAX_FEE, "", max_fee)?;
     let expected = match sim {
         SimResult::Simulated { diff, .. } => expected_fee(
@@ -623,7 +636,18 @@ pub fn build_evm_tx_request(
             &diff.block.base_fee,
             &tx.max_priority_fee_per_gas,
         )
-        .map_or_else(|| "알 수 없음".to_owned(), |fee| native_amount(chain, &fee)),
+        .and_then(|fee| fee.checked_add(l1.map_or(U256::ZERO, |quote| quote.estimate)))
+        .map_or_else(
+            || "알 수 없음".to_owned(),
+            |fee| match l1 {
+                Some(quote) => format!(
+                    "{} (L1 데이터 수수료 약 {} 포함)",
+                    native_amount(chain, &fee),
+                    native_amount(chain, &quote.estimate)
+                ),
+                None => native_amount(chain, &fee),
+            },
+        ),
         SimResult::Unavailable { .. } => "알 수 없음".to_owned(),
     };
     fields.push(FieldKey::EXPECTED_FEE, "", expected)?;

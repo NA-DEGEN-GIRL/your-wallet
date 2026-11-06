@@ -395,6 +395,112 @@ pub fn cancel_tx(
     })
 }
 
+/// How a chain charges for data posted to L1 beyond `gas_used × gas_price` (spec/03 §3.4a).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum L1DataFee {
+    /// Everything is in `gas × price`: Ethereum, BSC, and Arbitrum-style L2s whose
+    /// `eth_estimateGas` already includes the L1 component in gas units.
+    None,
+    /// OP-stack (Base): the L1 data fee is charged on top. The wallet asks the
+    /// `GasPriceOracle` predeploy; a failed lookup adds E41.
+    OpStack,
+    /// User chain: the oracle is asked only when the predeploy has code; a failed lookup is
+    /// silent (the chain may not be OP-stack at all).
+    Probe,
+}
+
+/// OP-stack `GasPriceOracle` predeploy.
+pub const GAS_PRICE_ORACLE: Address = Address::from_bytes(crate::hex::const_decode::<20>(
+    "420000000000000000000000000000000000000F",
+));
+
+/// The L1 fee estimate is multiplied by this for the "maximum" fee and the cap check: the L1
+/// data fee has no protocol cap and follows the L1 base and blob fees at inclusion time, so the
+/// wallet keeps the same 2× headroom it gives the L2 base fee (§3.4-5).
+pub const L1_FEE_HEADROOM: u64 = 2;
+
+/// The L1 part of a transaction fee on an OP-stack chain (spec/03 §3.4a).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct L1FeeQuote {
+    /// `getL1Fee(unsigned tx)` + `getOperatorFee(gas_limit)` now.
+    pub estimate: U256,
+    /// `getL1Fee × L1_FEE_HEADROOM + getOperatorFee(gas_limit)`, added to the maximum fee.
+    pub max: U256,
+}
+
+impl L1FeeQuote {
+    /// The quote of an oracle answer (`l1_fee` from `getL1Fee`, `operator_fee` from
+    /// `getOperatorFee(gas_limit)`, zero when the chain has none), `None` on overflow.
+    #[must_use]
+    pub fn new(l1_fee: U256, operator_fee: U256) -> Option<Self> {
+        Some(Self {
+            estimate: l1_fee.checked_add(operator_fee)?,
+            max: l1_fee
+                .checked_mul_u64(L1_FEE_HEADROOM)?
+                .checked_add(operator_fee)?,
+        })
+    }
+}
+
+fn selector(signature: &str) -> [u8; 4] {
+    let hash = crate::codec::keccak256(signature.as_bytes());
+    [hash[0], hash[1], hash[2], hash[3]]
+}
+
+/// `getL1Fee(bytes)` calldata for `tx` (its unsigned type-2 encoding, as the oracle expects;
+/// the oracle adds the signature overhead itself).
+#[must_use]
+pub fn get_l1_fee_data(tx: &Eip1559Tx) -> Vec<u8> {
+    super::abi::encode_call(
+        selector("getL1Fee(bytes)"),
+        &[super::abi::AbiValue::Bytes(tx.signing_preimage())],
+    )
+}
+
+/// `getOperatorFee(uint256)` calldata (Isthmus and later; older chains revert).
+#[must_use]
+pub fn get_operator_fee_data(gas_limit: u64) -> Vec<u8> {
+    super::abi::encode_call(
+        selector("getOperatorFee(uint256)"),
+        &[super::abi::AbiValue::Uint(U256::from_u64(gas_limit))],
+    )
+}
+
+/// `gas_limit × max_fee + l1_max`, the maximum fee including the L1 part.
+#[must_use]
+pub fn max_total_fee_with_l1(gas_limit: u64, max_fee: &U256, l1_max: &U256) -> Option<U256> {
+    max_total_fee(gas_limit, max_fee)?.checked_add(*l1_max)
+}
+
+/// [`check_caps`] with the L1 part (`l1_max`, [`L1FeeQuote::max`]) in the total.
+///
+/// # Errors
+///
+/// The first [`CapViolation`] (E05).
+pub fn check_caps_with_l1(
+    fees: &Fees,
+    gas_limit: u64,
+    l1_max: &U256,
+    caps: &FeeCaps,
+) -> Result<(), CapViolation> {
+    check_caps(fees, gas_limit, caps)?;
+    let Some(total) = max_total_fee_with_l1(gas_limit, &fees.max_fee_per_gas, l1_max) else {
+        return Err(CapViolation {
+            kind: CapKind::Overflow,
+            value: U256::MAX,
+            cap: caps.max_total_fee,
+        });
+    };
+    if total > caps.max_total_fee {
+        return Err(CapViolation {
+            kind: CapKind::TotalFee,
+            value: total,
+            cap: caps.max_total_fee,
+        });
+    }
+    Ok(())
+}
+
 /// The fees of a built transaction, for the cap check of a replacement (§4.6 "둘 다: 상한 검사").
 #[must_use]
 pub const fn fees_of(tx: &Eip1559Tx, base_fee_next: U256) -> Fees {
@@ -633,6 +739,85 @@ mod tests {
         assert_eq!(cancel.max_fee_per_gas, U256::from_u64(25_320_000_000));
         let fees = super::fees_of(&cancel, fresh.base_fee_next);
         assert_eq!(fees.max_priority_fee_per_gas, U256::from_u64(1_320_000_000));
+    }
+
+    /// spec/03 §3.4a: the oracle calldata, the 2× headroom and the cap check with the L1 part.
+    #[test]
+    fn op_stack_l1_fee() {
+        use super::{
+            GAS_PRICE_ORACLE, L1FeeQuote, check_caps_with_l1, get_l1_fee_data,
+            get_operator_fee_data, max_total_fee_with_l1,
+        };
+        use crate::evm::address::Address;
+        use crate::evm::chain::base_mainnet;
+        use crate::evm::tx::Eip1559Tx;
+        assert_eq!(
+            crate::hex::encode(GAS_PRICE_ORACLE.as_bytes()),
+            "420000000000000000000000000000000000000f"
+        );
+        let tx = Eip1559Tx {
+            chain_id: 8_453,
+            nonce: 1,
+            max_priority_fee_per_gas: U256::from_u64(1_000_000),
+            max_fee_per_gas: U256::from_u64(12_000_000),
+            gas_limit: 25_200,
+            to: Address::from_bytes([0x11; 20]),
+            value: U256::from_u64(1),
+            data: Vec::new(),
+            access_list: Vec::new(),
+        };
+        let preimage = tx.signing_preimage();
+        let data = get_l1_fee_data(&tx);
+        // getL1Fee(bytes) = 0x49948e0e, then offset 0x20, length, the unsigned tx, zero pad.
+        assert_eq!(crate::hex::encode(&data[..4]), "49948e0e");
+        assert_eq!(U256::from_be_slice(&data[4..36]), Some(U256::from_u64(32)));
+        assert_eq!(
+            U256::from_be_slice(&data[36..68]),
+            Some(U256::from_u64(preimage.len() as u64))
+        );
+        assert_eq!(&data[68..68 + preimage.len()], preimage.as_slice());
+        assert_eq!((data.len() - 4) % 32, 0);
+        let operator = get_operator_fee_data(25_200);
+        assert_eq!(operator.len(), 36);
+        assert_eq!(
+            U256::from_be_slice(&operator[4..]),
+            Some(U256::from_u64(25_200))
+        );
+
+        // A mocked oracle answer: L1 fee 0.000001 ETH, operator fee 0.0000001 ETH.
+        let quote = L1FeeQuote::new(
+            U256::from_u64(1_000_000_000_000),
+            U256::from_u64(100_000_000_000),
+        )
+        .unwrap();
+        assert_eq!(quote.estimate, U256::from_u64(1_100_000_000_000));
+        assert_eq!(quote.max, U256::from_u64(2_100_000_000_000));
+        assert!(L1FeeQuote::new(U256::MAX, U256::ZERO).is_none());
+        // 25,200 gas × 0.012 gwei = 302,400 gwei = 0.0000003024 ETH, + 0.0000021 ETH.
+        assert_eq!(
+            max_total_fee_with_l1(25_200, &U256::from_u64(12_000_000), &quote.max),
+            Some(U256::from_u64(302_400_000_000 + 2_100_000_000_000))
+        );
+        let chain = base_mainnet();
+        let fees = Fees {
+            max_priority_fee_per_gas: U256::from_u64(1_000_000),
+            max_fee_per_gas: U256::from_u64(12_000_000),
+            base_fee_next: U256::from_u64(5_500_000),
+        };
+        assert_eq!(
+            check_caps_with_l1(&fees, 25_200, &quote.max, &chain.default_caps),
+            Ok(())
+        );
+        // The L2 part alone fits the 0.02 ETH cap; the L1 part pushes the total over it.
+        let caps = super::FeeCaps {
+            max_total_fee: U256::from_u64(1_000_000_000_000),
+            ..chain.default_caps
+        };
+        assert_eq!(check_caps(&fees, 25_200, &caps), Ok(()));
+        let over = check_caps_with_l1(&fees, 25_200, &quote.max, &caps).unwrap_err();
+        assert_eq!(over.kind, CapKind::TotalFee);
+        assert_eq!(over.value, U256::from_u64(2_402_400_000_000));
+        assert!(over.warning(&chain).text.contains("상한"));
     }
 
     #[test]

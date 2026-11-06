@@ -7,7 +7,7 @@
 
 use core::fmt::Write as _;
 
-use yw_core::evm::chain::{ETHEREUM_MAINNET, HYPEREVM_MAINNET, SEPOLIA};
+use yw_core::evm::chain::SEPOLIA;
 use yw_core::evm::display::format_address;
 
 use crate::apikeys::{KeyName, mask_url};
@@ -144,7 +144,7 @@ pub mod ids {
     pub const GENERATE: u16 = 528;
     /// 보관 항목 삭제 (`ApiKeys::prune_dormant`, spec/04 §6.6).
     pub const PRUNE_DORMANT: u16 = 529;
-    /// URL rows base (4 ids per row: 교체, 테스트, 삭제).
+    /// URL rows base (3 ids per row: 교체, 테스트, 삭제).
     pub const ROW_BASE: u16 = 540;
     /// URL rows span.
     pub const ROW_SPAN: u16 = 160;
@@ -820,10 +820,7 @@ impl App {
                 "테스트넷 — 실제 자산이 아닙니다".to_owned(),
                 Tone::Testnet,
             ));
-        } else if matches!(
-            self.settings.evm_chain_id,
-            ETHEREUM_MAINNET | HYPEREVM_MAINNET
-        ) {
+        } else if yw_core::evm::chain::is_builtin_mainnet(self.settings.evm_chain_id) {
             // The built-in mainnets (user chains carry no testnet flag, so no badge).
             items.push(Item::Banner(T_MAINNET.to_owned(), Tone::BtcMainnet));
         }
@@ -1181,7 +1178,7 @@ impl App {
                 .to_owned(),
         ));
         let mut networks = self.url_networks();
-        networks.truncate(usize::from(ids::ROW_SPAN / 4));
+        networks.truncate(usize::from(ids::ROW_SPAN / 3));
         let last = networks.len().saturating_sub(1);
         for (row, network) in networks.into_iter().enumerate() {
             let url = self.apikeys.rpc_url(network);
@@ -1195,7 +1192,7 @@ impl App {
             )));
             items.push(Item::Help(state));
             let base =
-                ids::ROW_BASE.saturating_add(u16::try_from(row).unwrap_or(0).saturating_mul(4));
+                ids::ROW_BASE.saturating_add(u16::try_from(row).unwrap_or(0).saturating_mul(3));
             items.push(Item::Row(vec![
                 Ctl::button(base, if url.is_some() { "교체" } else { "입력" }),
                 Ctl::button(base.saturating_add(1), "테스트"),

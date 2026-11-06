@@ -3049,12 +3049,12 @@ impl App {
             .checked_sub(ids::ROW_BASE)
             .filter(|offset| *offset < ids::ROW_SPAN)
         {
-            let row = usize::from(offset / 4);
+            let row = usize::from(offset / 3);
             let networks = self.url_networks();
             let Some(network) = networks.get(row).copied() else {
                 return;
             };
-            match offset % 4 {
+            match offset % 3 {
                 0 => {
                     self.replace_target = Some(network);
                     self.refresh();

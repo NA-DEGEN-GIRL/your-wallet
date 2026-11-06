@@ -331,13 +331,13 @@ fn amounts_funds_and_max() {
         .is_err()
     );
     assert!(check_funds(false, &U256::from_u64(1), &fee, &balance, None).is_err());
-    // 최대: balance − gas × maxFee, nothing left → E-INP-012.
+    // 최대: balance − max total (gas × maxFee + L1 part), nothing left → E-INP-012.
     assert_eq!(
-        max_native(&U256::from_u64(1_000_000), 21_000, &U256::from_u64(10)),
+        max_native(&U256::from_u64(1_000_000), &U256::from_u64(210_000)),
         Ok(U256::from_u64(790_000))
     );
     assert_eq!(
-        max_native(&U256::from_u64(210_000), 21_000, &U256::from_u64(10)),
+        max_native(&U256::from_u64(210_000), &U256::from_u64(210_000)),
         Err(ErrorCode::Inp012)
     );
 }

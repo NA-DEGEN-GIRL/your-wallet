@@ -7,7 +7,7 @@
 //! defaults, and every write reproduces its original bytes instead of overwriting it.
 
 use yw_core::evm::amount::{U256, parse_units};
-use yw_core::evm::chain::{MAX_CHAIN_ID, SimulationSupport, builtin_chains};
+use yw_core::evm::chain::{GenesisRule, MAX_CHAIN_ID, SimulationSupport, builtin_chains};
 use yw_json::{Limits, Object, Value};
 use yw_win::http::HttpsUrl;
 
@@ -494,6 +494,14 @@ fn parse_chain(item: &Value) -> Option<EvmChainDef> {
     })
 }
 
+/// Chain ids that were user chains before they became built-in (2026-11-06, spec/03 §1.1).
+const BECAME_BUILTIN: [u64; 4] = [
+    yw_core::evm::chain::ARBITRUM_ONE,
+    yw_core::evm::chain::BASE_MAINNET,
+    yw_core::evm::chain::BSC_MAINNET,
+    yw_core::evm::chain::ROBINHOOD_MAINNET,
+];
+
 fn load_chains(value: Option<&Value>, banners: &mut Vec<String>) -> Vec<EvmChainDef> {
     let Some(value) = value else {
         return Vec::new();
@@ -505,6 +513,18 @@ fn load_chains(value: Option<&Value>, banners: &mut Vec<String>) -> Vec<EvmChain
     let reserved = builtin_names();
     let mut chains: Vec<EvmChainDef> = Vec::new();
     for (index, item) in items.iter().enumerate() {
+        // A user chain that later became built-in (`BECAME_BUILTIN`) is dropped without a
+        // banner: the built-in entry takes over its chain id, and its `rpc:eip155:<id>` URL and
+        // `feeCaps` entry stay valid.
+        let became_builtin = item
+            .as_object()
+            .and_then(|object| object.get("chainId"))
+            .and_then(Value::as_number)
+            .and_then(yw_json::Number::as_u64)
+            .is_some_and(|id| BECAME_BUILTIN.contains(&id));
+        if became_builtin {
+            continue;
+        }
         let accepted = (chains.len() < MAX_CUSTOM_EVM_CHAINS)
             .then(|| parse_chain(item))
             .flatten()
@@ -1402,6 +1422,13 @@ pub fn reconcile(current: &Settings, snapshot: &SecuritySnapshot, accepted: &[&s
     // Genesis pins.
     for (id, pin) in &snapshot.genesis_pins {
         if BUILTIN_EVM.contains(id) {
+            // Only pin-on-first-use built-ins (HyperEVM) keep a pin; a fixed-genesis built-in
+            // (e.g. a former user chain that became built-in) ignores an old snapshot pin.
+            if !yw_core::evm::chain::builtin_chain(*id)
+                .is_some_and(|chain| matches!(chain.genesis, GenesisRule::PinOnFirstUse(_)))
+            {
+                continue;
+            }
             let found = file
                 .evm_genesis_pins
                 .iter()

@@ -32,6 +32,18 @@ pub fn custom_chain_badge(chain_id: u64) -> String {
     format!("사용자 추가 체인 (chainId {chain_id})")
 }
 
+/// The S15 `EVM 체인` add note and button (spec/04 §2.11): any other L1/L2 is a user chain.
+fn chain_add_row(items: &mut Vec<Item>) {
+    items.push(Item::Help(
+        "다른 EVM 체인(L1·L2)은 여기서 추가합니다 — chainId·RPC URL을 넣으면 chainId와 블록 0을 확인해 등록합니다."
+            .to_owned(),
+    ));
+    items.push(Item::Row(vec![Ctl::button(
+        ids::CHAIN_ADD,
+        "EVM 체인 추가",
+    )]));
+}
+
 /// `YYYY-MM-DD HH:MM` in local time (spec/04 §2.6); UTC with a suffix if the conversion fails.
 fn format_local(unix_ms: u64) -> String {
     let wall = yw_win::time::local_wall_ms(unix_ms);
@@ -120,7 +132,7 @@ pub mod ids {
     pub const SECTION_CHAINS: u16 = 2_200;
     /// 추가.
     pub const CHAIN_ADD: u16 = 2_201;
-    /// Chain rows (4 ids per row: 편집, 삭제, 다시 고정).
+    /// Chain rows (3 ids per row: 편집, 삭제, 다시 고정).
     pub const CHAIN_ROW_BASE: u16 = 2_210;
     /// Chain rows span.
     pub const CHAIN_ROW_SPAN: u16 = 140;
@@ -667,7 +679,7 @@ impl App {
         }
     }
 
-    /// A user chain's explorer base URL.
+    /// The explorer base URL: the user chain's, else the built-in chain's (spec/03 §1.1).
     #[must_use]
     pub fn explorer(&self, chain_id: u64) -> Option<String> {
         self.settings
@@ -675,6 +687,7 @@ impl App {
             .iter()
             .find(|def| def.chain_id == chain_id)
             .and_then(|def| def.explorer.clone())
+            .or_else(|| builtin_chain(chain_id).and_then(|chain| chain.explorer))
     }
 
     /// The S11 token radios `(visible, hidden)`: every token of the chain (zero balances
@@ -1205,11 +1218,11 @@ impl App {
     pub fn chains_section(&self, items: &mut Vec<Item>) {
         items.push(Item::CardStart(Some("EVM 체인".to_owned())));
         items.push(Item::Help(
-            "기본 체인 3개와 직접 추가한 체인입니다. 체인마다 RPC 주소가 있어야 쓸 수 있고, 연결할 때마다 chainId와 첫 블록(제네시스)을 다시 확인합니다."
+            "기본 체인 7개(Ethereum·Sepolia·HyperEVM·Arbitrum One·Base·BNB Smart Chain·Robinhood Chain)와 직접 추가한 체인입니다. 체인마다 RPC 주소가 있어야 쓸 수 있고, 연결할 때마다 chainId와 첫 블록(제네시스)을 다시 확인합니다."
                 .to_owned(),
         ));
         let mut chains = self.settings.registered_evm();
-        chains.truncate(usize::from(ids::CHAIN_ROW_SPAN / 4));
+        chains.truncate(usize::from(ids::CHAIN_ROW_SPAN / 3));
         let count = chains.len();
         for (index, chain_id) in chains.into_iter().enumerate() {
             let user = self
@@ -1265,7 +1278,7 @@ impl App {
                 items.push(Item::Mono(format!("genesis {genesis}")));
             }
             let base = ids::CHAIN_ROW_BASE
-                .saturating_add(u16::try_from(index).unwrap_or(0).saturating_mul(4));
+                .saturating_add(u16::try_from(index).unwrap_or(0).saturating_mul(3));
             let mut row = Vec::new();
             if user.is_some() {
                 row.push(Ctl::button(base, "편집"));
@@ -1293,7 +1306,7 @@ impl App {
         {
             items.push(Item::Banner(message.clone(), Tone::Info));
         }
-        items.push(Item::Row(vec![Ctl::button(ids::CHAIN_ADD, "체인 추가")]));
+        chain_add_row(items);
         items.push(Item::CardEnd);
         if self.show_advanced {
             self.caps_section(items);

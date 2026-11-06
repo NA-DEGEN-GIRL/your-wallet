@@ -622,7 +622,8 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Tokens of a chain: registry `(address, symbol, decimals, registered)` then meta tokens.
+    /// Tokens of a chain: registry `(address, symbol or label, decimals, registered)` then meta
+    /// tokens.
     #[must_use]
     pub fn chain_tokens(&self, chain_id: u64) -> Vec<(Address, String, u8, bool)> {
         let mut out: Vec<(Address, String, u8, bool)> = chain_info(&self.settings, chain_id)
@@ -630,7 +631,11 @@ impl App {
                 chain
                     .tokens
                     .iter()
-                    .map(|token| (token.address, token.symbol.to_owned(), token.decimals, true))
+                    .map(|token| {
+                        // Pegged/bridged registry tokens show their label (spec/03 §1.2).
+                        let shown = token.label.unwrap_or(token.symbol);
+                        (token.address, shown.to_owned(), token.decimals, true)
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -1409,11 +1414,7 @@ impl App {
                 let Some(balance) = self.native_balance(chain_id, &account) else {
                     return;
                 };
-                crate::flow::evm::form::max_native(
-                    &balance,
-                    quote.gas_limit,
-                    &quote.max_fee_per_gas,
-                )
+                crate::flow::evm::form::max_native(&balance, &quote.max_total)
             }
             SendAsset::Token(token) => self
                 .token_balance(chain_id, &token)
