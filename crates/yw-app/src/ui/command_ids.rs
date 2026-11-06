@@ -275,6 +275,27 @@ pub fn ranges() -> Vec<IdRange> {
             yw_core::yubikey::plan::MAX_CARDS,
         ),
         range(
+            "yubikey.reslot_rows",
+            screens_yubikey::ids::RESLOT_BASE,
+            screens_yubikey::ids::RESLOT_SPAN,
+            1,
+            yw_core::yubikey::plan::MAX_CARDS,
+        ),
+        range(
+            "yubikey.clear_rows",
+            screens_yubikey::ids::CLEAR_BASE,
+            screens_yubikey::ids::CLEAR_SPAN,
+            1,
+            yw_core::yubikey::plan::MAX_CARDS,
+        ),
+        range(
+            "yubikey.reslot_backup_rows",
+            screens_yubikey::ids::RESLOT_BACKUP_BASE,
+            screens_yubikey::ids::RESLOT_BACKUP_SPAN,
+            1,
+            yw_core::yubikey::plan::MAX_CARDS,
+        ),
+        range(
             "btc.activity",
             screens_btc::ids::ACTIVITY_BASE,
             screens_btc::ids::ACTIVITY_SPAN,

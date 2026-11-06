@@ -48,6 +48,18 @@ const INS_PUT_DATA_ODD: u8 = 0xDB;
 const INS_GENERATE: u8 = 0x47;
 const INS_PSO: u8 = 0x2A;
 const INS_INTERNAL_AUTHENTICATE: u8 = 0x88;
+const INS_TERMINATE: u8 = 0xE6;
+const INS_ACTIVATE: u8 = 0x44;
+
+/// RSA 2048 algorithm attributes (`01 0800 0020 00`, the factory value of every key slot).
+pub const RSA2048_ATTRIBUTES: [u8; 6] = [0x01, 0x08, 0x00, 0x00, 0x20, 0x00];
+/// RSA 4096 algorithm attributes (`01 1000 0020 00`): the first of yubikit's two attribute
+/// changes of `delete_key` (spec/10 §15.2).
+pub const RSA4096_ATTRIBUTES: [u8; 6] = [0x01, 0x10, 0x00, 0x00, 0x20, 0x00];
+/// The wrong PIN yubikit's `reset` sends until PW1 and PW3 are blocked (`b"\0" * 8`).
+pub const INVALID_PIN: [u8; 8] = [0; 8];
+/// Most wrong VERIFY attempts sent to block one PIN (the counters are at most 15).
+const MAX_BLOCK_ATTEMPTS: usize = 16;
 
 /// Which PIN a VERIFY targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -208,6 +220,31 @@ pub fn put_uif(key: PgpKey, policy: TouchPolicy) -> Command {
         key.uif_do(),
         vec![uif_byte(policy), 0x20],
     )
+}
+
+/// PUT DATA of raw algorithm attributes of `key` (the key slot is emptied when they change).
+#[must_use]
+pub fn put_attributes(key: PgpKey, attributes: &[u8]) -> Command {
+    Command::no_response(
+        0x00,
+        INS_PUT_DATA,
+        0x00,
+        key.attributes_do(),
+        attributes.to_vec(),
+    )
+}
+
+/// TERMINATE DF (`00 E6 00 00`): accepted once PW3 is blocked; the applet then answers only
+/// ACTIVATE FILE.
+#[must_use]
+pub fn terminate() -> Command {
+    Command::no_response(0x00, INS_TERMINATE, 0x00, 0x00, Vec::new())
+}
+
+/// ACTIVATE FILE (`00 44 00 00`): after TERMINATE, the applet returns to its factory state.
+#[must_use]
+pub fn activate() -> Command {
+    Command::no_response(0x00, INS_ACTIVATE, 0x00, 0x00, Vec::new())
 }
 
 /// The extended header list importing a 32-byte secp256k1 scalar into `key`
@@ -553,6 +590,71 @@ impl<'t> OpenPgp<'t> {
             return Err(CardError::Malformed);
         }
         Ok(signature)
+    }
+
+    /// Empties `key` the way yubikit's `delete_key` does on firmware 4+ (PW3 must be
+    /// verified): OpenPGP card 3.4 has no DELETE command, but changing a slot's algorithm
+    /// attributes removes its key — first to RSA 4096, then back to the factory RSA 2048. The
+    /// touch policy (UIF) is not changed; a fixed one stays (only a reset clears it).
+    ///
+    /// # Errors
+    ///
+    /// [`CardError::KeyMismatch`] when the slot still answers with a public key afterwards,
+    /// status errors.
+    pub fn delete_key(&mut self, key: PgpKey) -> Result<(), CardError> {
+        self.run(&put_attributes(key, &RSA4096_ATTRIBUTES))?;
+        self.run(&put_attributes(key, &RSA2048_ATTRIBUTES))?;
+        let response = exchange(self.transport, &read_public_key(key), self.mode)?;
+        let holds_key = response.sw == super::apdu::SW_OK
+            && tlv::unwrap_single(&response.data, 0x7F49).is_ok_and(|inner| {
+                // RSA modulus `81` or EC point `86`: present and non-empty only with a key.
+                [0x81_u16, 0x86]
+                    .into_iter()
+                    .any(|tag| tlv::find(inner, tag).is_ok_and(|value| !value.is_empty()))
+            });
+        if holds_key {
+            Err(CardError::KeyMismatch)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Factory reset of the `OpenPGP` applet (yubikit `reset`): VERIFY PW1 (`81`) and PW3
+    /// (`83`) with a wrong value until each is blocked, then TERMINATE DF and ACTIVATE FILE.
+    /// Every key, the touch policies (also fixed ones) and both PINs return to the factory
+    /// state (PW1 `123456`, PW3 `12345678`). No PIN is needed — anyone holding the card can do
+    /// this; it never touches PIV, FIDO, OTP or OATH.
+    ///
+    /// # Errors
+    ///
+    /// [`CardError::Conditions`] when a PIN did not block within the attempt bound, transport
+    /// and status errors of TERMINATE / ACTIVATE.
+    pub fn reset(mut self) -> Result<(), CardError> {
+        for pw in [Pw::UserSign, Pw::Admin] {
+            let mut blocked = false;
+            for _ in 0..MAX_BLOCK_ATTEMPTS {
+                match self.run(&verify(pw, &INVALID_PIN)) {
+                    Err(CardError::PinBlocked | CardError::WrongPin { retries: 0 }) => {
+                        blocked = true;
+                        break;
+                    }
+                    Err(
+                        error @ (CardError::Transport(_)
+                        | CardError::CardRemoved
+                        | CardError::Malformed
+                        | CardError::TooLarge),
+                    ) => return Err(error),
+                    // Another wrong-PIN answer (or, impossibly, success): try again.
+                    _ => {}
+                }
+            }
+            if !blocked {
+                return Err(CardError::Conditions);
+            }
+        }
+        self.run(&terminate())?;
+        self.run(&activate())?;
+        Ok(())
     }
 }
 

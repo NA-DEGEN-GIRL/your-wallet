@@ -64,6 +64,14 @@ const INS_GET_VERSION: u8 = 0xFD;
 const INS_SET_MGMKEY: u8 = 0xFF;
 const INS_GET_DATA: u8 = 0xCB;
 const INS_PUT_DATA: u8 = 0xDB;
+const INS_RESET_RETRY: u8 = 0x2C;
+const INS_MOVE_KEY: u8 = 0xF6;
+const INS_RESET: u8 = 0xFB;
+/// Most wrong attempts sent to block the PIN or the PUK (the counters are at most 15).
+const MAX_BLOCK_ATTEMPTS: usize = 16;
+/// PIV key DELETE (yubikit `delete_key` = MOVE KEY to `FF`): documented by Yubico "as of
+/// 5.7.4"; yubikit accepts it from 5.7.0 (spec/10 §15.3).
+pub const DOCUMENTED_FIRMWARE_DELETE_KEY: Firmware = Firmware::new(5, 7, 4);
 
 /// ADMIN DATA object (yubikey-manager "pivman data"; readable without authentication).
 pub const OBJECT_ADMIN_DATA: u32 = 0x005F_FF00;
@@ -409,6 +417,34 @@ pub fn set_management_key(new: &MgmtKey) -> Command {
     data.push(u8::try_from(new.key.len()).unwrap_or(0));
     data.extend_from_slice(&new.key);
     Command::no_response(0x00, INS_SET_MGMKEY, 0xFF, 0xFF, data)
+}
+
+/// DELETE KEY of `slot` (yubikit `delete_key`: MOVE KEY `00 F6 FF <slot>`, management key
+/// authenticated; 5.7+).
+#[must_use]
+pub fn delete_key(slot: PivSlot) -> Command {
+    Command::no_response(0x00, INS_MOVE_KEY, 0xFF, slot.id(), Vec::new())
+}
+
+/// VERIFY with a PIN of eight `FF` bytes (yubikit `verify_pin("")`): never a valid PIN, used
+/// only to block the PIN before a reset.
+#[must_use]
+pub fn verify_invalid_pin() -> Command {
+    Command::no_response(0x00, INS_VERIFY, 0x00, SLOT_PIN, vec![0xFF; 8])
+}
+
+/// RESET RETRY COUNTER with an all-`FF` PUK and PIN (yubikit `_change_reference(INS_RESET_RETRY,
+/// PIN_P2, "", "")`): never a valid PUK, used only to block the PUK before a reset.
+#[must_use]
+pub fn reset_retry_invalid() -> Command {
+    Command::no_response(0x00, INS_RESET_RETRY, 0x00, SLOT_PIN, vec![0xFF; 16])
+}
+
+/// RESET (`00 FB 00 00`): accepted only while both the PIN and the PUK are blocked (`6985`
+/// otherwise).
+#[must_use]
+pub fn reset() -> Command {
+    Command::no_response(0x00, INS_RESET, 0x00, 0x00, Vec::new())
 }
 
 fn object_tag(object: u32) -> [u8; 5] {
@@ -1010,6 +1046,58 @@ impl<'t> Piv<'t> {
         dynamic_auth_value(&response, 0x82)?
             .try_into()
             .map_err(|_| CardError::Malformed)
+    }
+
+    /// Deletes the key in `slot` (management key authenticated): DELETE KEY, then GET METADATA
+    /// must answer "empty" (`6A88`). This wallet writes no certificate, so none is removed.
+    ///
+    /// # Errors
+    ///
+    /// [`CardError::NotSupported`] (firmware without DELETE KEY), [`CardError::KeyMismatch`]
+    /// (the slot still holds a key), status errors.
+    pub fn delete_key(&mut self, slot: PivSlot) -> Result<(), CardError> {
+        match self.run(&delete_key(slot)) {
+            // Already empty: nothing to delete.
+            Ok(_) | Err(CardError::NotFound) => {}
+            Err(error) => return Err(error),
+        }
+        match self.slot_metadata(slot) {
+            Err(CardError::NotFound) => Ok(()),
+            Ok(_) => Err(CardError::KeyMismatch),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn block(&mut self, command: &Command) -> Result<(), CardError> {
+        for _ in 0..MAX_BLOCK_ATTEMPTS {
+            match self.run(command) {
+                Err(CardError::PinBlocked | CardError::WrongPin { retries: 0 }) => return Ok(()),
+                Err(
+                    error @ (CardError::Transport(_)
+                    | CardError::CardRemoved
+                    | CardError::Malformed
+                    | CardError::TooLarge),
+                ) => return Err(error),
+                _ => {}
+            }
+        }
+        Err(CardError::Conditions)
+    }
+
+    /// Factory reset of the PIV applet (yubikit `reset`): VERIFY with an invalid PIN until the
+    /// PIN is blocked, RESET RETRY COUNTER with an invalid PUK until the PUK is blocked, then
+    /// RESET. Every PIV key and data object is deleted and the PIN, PUK and management key
+    /// return to the factory values (`123456`, `12345678`, the default AES-192 / 3DES key). No
+    /// PIN is needed; `OpenPGP`, FIDO, OTP and OATH are not touched.
+    ///
+    /// # Errors
+    ///
+    /// [`CardError::Conditions`] (a counter did not block, or RESET refused), transport and
+    /// status errors.
+    pub fn reset(mut self) -> Result<(), CardError> {
+        self.block(&verify_invalid_pin())?;
+        self.block(&reset_retry_invalid())?;
+        self.run(&reset()).map(drop)
     }
 }
 

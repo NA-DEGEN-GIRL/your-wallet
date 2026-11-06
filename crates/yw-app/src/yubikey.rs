@@ -833,6 +833,91 @@ pub fn check_record(
     })
 }
 
+/// An enrolment-style operation of [`on_serial_enrol`].
+type EnrolOperation<'a, T> =
+    dyn FnMut(&mut dyn CardTransport, &dyn MgmtCipher) -> Result<T, EnrolError> + 'a;
+
+/// [`on_serial`] for operations that fail with an [`EnrolError`] (re-slot, clear).
+fn on_serial_enrol<T>(
+    source: &mut dyn CardSource,
+    serial: u32,
+    (pgp, piv): (bool, bool),
+    operation: &mut EnrolOperation<'_, T>,
+) -> Result<T, CardJobError> {
+    let mut result: Option<Result<T, EnrolError>> = None;
+    let mut seen_other = false;
+    source
+        .each_card(&mut |transport, cipher| {
+            match identify(transport, MODE, pgp, piv) {
+                Ok((found, _)) if found == serial => {}
+                _ => {
+                    seen_other = true;
+                    return false;
+                }
+            }
+            result = Some(operation(transport, cipher));
+            true
+        })
+        .map_err(CardJobError::Card)?;
+    match result {
+        Some(outcome) => outcome.map_err(CardJobError::Enrol),
+        None if seen_other => Err(CardJobError::Card(CardError::WrongCard)),
+        None => Err(CardJobError::NoCard),
+    }
+}
+
+/// "슬롯 구성 바꾸기" of the inserted card `record.serial` (spec/10 §15.1,
+/// `yubikey::manage::reslot_card`): the new `OpenPGP` keys from `seed`, read back and compared.
+///
+/// # Errors
+///
+/// [`CardJobError::NoCard`], [`CardJobError::Card`] (`WrongCard`), [`CardJobError::Enrol`].
+pub fn reslot_card(
+    source: &mut dyn CardSource,
+    seed: &[u8; 64],
+    record: &HwKeyRecord,
+    openpgp: &[PlannedSlot],
+    others: &[HwKeyRecord],
+    admin_pin: &[u8],
+) -> Result<HwKeyRecord, CardJobError> {
+    on_serial_enrol(source, record.serial, (true, false), &mut |transport, _| {
+        yw_core::yubikey::manage::reslot_card(
+            transport, MODE, seed, record, openpgp, others, admin_pin,
+        )
+    })
+}
+
+/// "`YubiKey` 비우기" of the inserted card `record.serial` (spec/10 §15.2–§15.3,
+/// `yubikey::manage::clear_card`).
+///
+/// # Errors
+///
+/// [`CardJobError::NoCard`], [`CardJobError::Card`] (`WrongCard`), [`CardJobError::Enrol`]
+/// (identification).
+pub fn clear_card(
+    source: &mut dyn CardSource,
+    record: &HwKeyRecord,
+    plan: yw_core::yubikey::manage::ClearPlan,
+    admin_pin: &[u8],
+    piv_pin: &[u8],
+) -> Result<yw_core::yubikey::manage::ClearReport, CardJobError> {
+    let challenge = fresh_challenge()?;
+    on_serial_enrol(
+        source,
+        record.serial,
+        (plan.openpgp.is_some(), plan.piv.is_some()),
+        &mut |transport, cipher| {
+            let auth = yw_core::yubikey::manage::ClearAuth {
+                admin_pin,
+                piv_pin,
+                cipher: Some(cipher),
+                challenge,
+            };
+            yw_core::yubikey::manage::clear_card(transport, MODE, record, plan, &auth)
+        },
+    )
+}
+
 /// The emulator as a card source (tests of the key worker and the app).
 #[cfg(test)]
 pub(crate) struct MockSource {
