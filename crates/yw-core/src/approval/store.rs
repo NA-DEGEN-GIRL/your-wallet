@@ -208,6 +208,14 @@ fn digest_parts(parts: &Parts<'_>, expires_unix_ms: u64) -> Result<[u8; 32], App
             transcript.push_u8(*network);
             transcript.push_bytes(genesis)?;
         }
+        ChainRef::HyperCore {
+            network,
+            signature_chain_id,
+        } => {
+            transcript.push_u8(4);
+            transcript.push_u8(*network);
+            transcript.push_u64(*signature_chain_id);
+        }
     }
     match parts.account {
         AccountRef::Evm(address) => transcript.push_bytes(address.as_bytes())?,
@@ -337,6 +345,20 @@ fn check_draft(draft: &ApprovalDraft) -> Result<(), ApprovalError> {
                 ApprovalOrigin::Site(_),
                 Signer::FromPayload,
             ) if payload.public == *public && *genesis == cluster.genesis()
+        ),
+        // HyperCore (spec/11 §6): app origin, an EVM key and account, and a valid action whose
+        // network and signature chain id are the chain's.
+        ApprovalKind::HyperCoreAction => matches!(
+            (&draft.payload, &draft.chain, &draft.account, &draft.origin, &draft.signer),
+            (
+                SigningPayload::HyperCore(action),
+                ChainRef::HyperCore { network, signature_chain_id },
+                AccountRef::Evm(_),
+                ApprovalOrigin::App,
+                Signer::Evm(_),
+            ) if action.network.code() == *network
+                && action.signature_chain_id == *signature_chain_id
+                && action.validate().is_ok()
         ),
         ApprovalKind::BtcMessage => matches!(
             (&draft.payload, &draft.chain, &draft.account, &draft.origin, &draft.signer),

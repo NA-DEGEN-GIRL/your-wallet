@@ -11,7 +11,7 @@ use super::address::Address;
 use super::amount::{Delta, U256};
 use super::chain::ChainInfo;
 use super::decode::DecodedCall;
-use super::eip712::{DecodedTypedData, KnownSchema, TdNode};
+use super::eip712::{DecodedTypedData, HlUserAction, KnownSchema, TdNode};
 use super::simulate::{
     ApprovalKindEvm, AssetChange, AssetId, LogEvent, SimResult, is_verified_asset,
 };
@@ -689,7 +689,7 @@ fn typed_tokens(typed: &DecodedTypedData) -> Vec<Address> {
                 }
             }
         }
-        None => {}
+        Some(KnownSchema::HyperliquidUser(_) | KnownSchema::HyperliquidL1Agent) | None => {}
     }
     tokens
 }
@@ -788,6 +788,25 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
                     warnings.push(warning(T12, None));
                 }
             }
+            KnownSchema::HyperliquidUser(action) => {
+                warnings.push(warning(
+                    match action {
+                        HlUserAction::Transfer(_) => H01,
+                        HlUserAction::ApproveAgent => H06,
+                        HlUserAction::ApproveBuilderFee => H08,
+                    },
+                    None,
+                ));
+                if root.field("hyperliquidChain").and_then(TdNode::string) == Some("Testnet") {
+                    warnings.push(warning(H09, None));
+                }
+            }
+            KnownSchema::HyperliquidL1Agent => {
+                warnings.push(warning(H07, None));
+                if root.field("source").and_then(TdNode::string) == Some("b") {
+                    warnings.push(warning(H09, None));
+                }
+            }
             KnownSchema::SeaportOrder => {
                 let offer = root
                     .field("offer")
@@ -849,7 +868,13 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
     {
         warnings.push(warning(T20, None));
     }
+    let hyperliquid = matches!(
+        typed.schema,
+        Some(KnownSchema::HyperliquidUser(_) | KnownSchema::HyperliquidL1Agent)
+    );
     match typed.domain.verifying_contract {
+        // Hyperliquid signs with a zero verifying contract by design (spec/11 §7).
+        None if hyperliquid => {}
         None => warnings.push(warning(T10, None)),
         Some(contract) => {
             if input.facts.code_of(&contract) == Some(CodeKind::Eoa) {

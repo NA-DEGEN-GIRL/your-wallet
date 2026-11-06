@@ -98,6 +98,33 @@ pub fn is_typed_data_preimage(preimage: &[u8; 66]) -> bool {
     preimage.starts_with(&TYPED_PREFIX)
 }
 
+/// The typed-data preimage of an approved `eth_signTypedData_v4` (kind 0x14, its 66 bytes) or
+/// `HyperCore 전송` (kind 0x40, recomputed from the approved action, whose network and chain id
+/// must be the approval's chain) — anything else is [`SignError::KindMismatch`].
+fn typed_preimage(approved: &Approved) -> Result<[u8; 66], SignError> {
+    match (approved.kind(), approved.payload(), approved.chain()) {
+        (ApprovalKind::EvmTypedData, SigningPayload::EvmTypedData(preimage), _)
+            if is_typed_data_preimage(preimage) =>
+        {
+            Ok(*preimage)
+        }
+        (
+            ApprovalKind::HyperCoreAction,
+            SigningPayload::HyperCore(action),
+            ChainRef::HyperCore {
+                network,
+                signature_chain_id,
+            },
+        ) if action.network.code() == network
+            && action.signature_chain_id == signature_chain_id
+            && action.validate().is_ok() =>
+        {
+            Ok(action.preimage())
+        }
+        _ => Err(SignError::KindMismatch),
+    }
+}
+
 /// RFC 6979 recoverable signature of a 32-byte digest: `(y_parity, r ‖ s)` (low-s).
 pub(crate) fn sign_digest(
     ctx: &Secp256k1<All>,
@@ -288,7 +315,8 @@ pub fn sign_personal(vault: &Vault, approved: Approved) -> Result<[u8; 65], Sign
     })
 }
 
-/// Signs an approved typed-data request (kind 0x14): the payload is the 66-byte preimage.
+/// Signs an approved typed-data request (kind 0x14: the payload is the 66-byte preimage) or a
+/// `HyperCore 전송` (kind 0x40: the preimage of the approved action).
 ///
 /// # Errors
 ///
@@ -299,13 +327,7 @@ pub fn sign_personal(vault: &Vault, approved: Approved) -> Result<[u8; 65], Sign
     reason = "the one-time approval token is consumed by signing (spec/03 §11.5)"
 )]
 pub fn sign_typed_data(vault: &Vault, approved: Approved) -> Result<[u8; 65], SignError> {
-    let SigningPayload::EvmTypedData(preimage) = approved.payload() else {
-        return Err(SignError::KindMismatch);
-    };
-    if approved.kind() != ApprovalKind::EvmTypedData || !is_typed_data_preimage(preimage) {
-        return Err(SignError::KindMismatch);
-    }
-    let digest = keccak(preimage);
+    let digest = keccak(&typed_preimage(&approved)?);
     with_key(vault, &approved, |ctx, secret, account| {
         sign_message_with(ctx, secret, digest, account)
     })
@@ -448,13 +470,8 @@ pub fn sign_typed_data_card(
     approved: Approved,
     card: CardDigestSigner<'_>,
 ) -> Result<[u8; 65], CardSignError> {
-    let SigningPayload::EvmTypedData(preimage) = approved.payload() else {
-        return Err(SignError::KindMismatch.into());
-    };
-    if approved.kind() != ApprovalKind::EvmTypedData || !is_typed_data_preimage(preimage) {
-        return Err(SignError::KindMismatch.into());
-    }
-    card_message(&approved, keccak(preimage), card)
+    let digest = keccak(&typed_preimage(&approved)?);
+    card_message(&approved, digest, card)
 }
 
 #[cfg(test)]
