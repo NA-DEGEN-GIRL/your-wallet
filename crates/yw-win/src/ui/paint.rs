@@ -12,12 +12,14 @@ use core::marker::PhantomData;
 
 use windows_sys::Win32::Foundation::{HWND, RECT, SIZE};
 use windows_sys::Win32::Graphics::Gdi::{
+    AC_SRC_ALPHA, AC_SRC_OVER, AlphaBlend, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
     BeginPaint, BitBlt, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateCompatibleBitmap,
-    CreateCompatibleDC, CreateFontW, CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CALCRECT,
-    DT_CENTER, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, DeleteDC,
-    DeleteObject, DrawTextW, EndPaint, FF_DONTCARE, FW_BOLD, FW_NORMAL, FillRect, FrameRect,
-    GetTextExtentExPointW, HBITMAP, HDC, HFONT, HGDIOBJ, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PatBlt,
-    SRCCOPY, SelectObject, SetBkMode, SetTextColor, SetViewportOrgEx, TRANSPARENT, WHITENESS,
+    CreateCompatibleDC, CreateDIBSection, CreateFontW, CreateSolidBrush, DEFAULT_CHARSET,
+    DEFAULT_PITCH, DIB_RGB_COLORS, DT_CALCRECT, DT_CENTER, DT_LEFT, DT_NOPREFIX, DT_RIGHT,
+    DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, DeleteDC, DeleteObject, DrawTextW, EndPaint,
+    FF_DONTCARE, FW_BOLD, FW_NORMAL, FillRect, FrameRect, GetTextExtentExPointW, HBITMAP, HDC,
+    HFONT, HGDIOBJ, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PatBlt, SRCCOPY, SelectObject, SetBkMode,
+    SetTextColor, SetViewportOrgEx, TRANSPARENT, WHITENESS,
 };
 
 use crate::error::WinError;
@@ -249,6 +251,78 @@ pub struct PaintDc<'w> {
     _window: PhantomData<&'w ()>,
 }
 
+/// Blends `w` × `h` premultiplied `0xAARRGGBB` pixels (rows top-down) onto `hdc` at `(x, y)`
+/// with per-pixel alpha (`AlphaBlend`). `false` when the sizes do not match or GDI fails.
+pub(crate) fn alpha_blit(hdc: HDC, x: i32, y: i32, w: i32, h: i32, pixels: &[u32]) -> bool {
+    let (Ok(width), Ok(height)) = (usize::try_from(w), usize::try_from(h)) else {
+        return false;
+    };
+    if width == 0 || height == 0 || pixels.len() != width.saturating_mul(height) {
+        return false;
+    }
+    let info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: u32::try_from(core::mem::size_of::<BITMAPINFOHEADER>()).unwrap_or(40),
+            biWidth: w,
+            // Negative: rows top-down.
+            biHeight: h.saturating_neg(),
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB,
+            ..BITMAPINFOHEADER::default()
+        },
+        ..BITMAPINFO::default()
+    };
+    let mut bits: *mut core::ffi::c_void = core::ptr::null_mut();
+    // SAFETY: `info` describes a 32 bpp top-down DIB; `bits` receives the section's memory,
+    // which lives until the bitmap is deleted below.
+    let bitmap = unsafe {
+        CreateDIBSection(
+            hdc,
+            &raw const info,
+            DIB_RGB_COLORS,
+            &raw mut bits,
+            core::ptr::null_mut(),
+            0,
+        )
+    };
+    if bitmap.is_null() || bits.is_null() {
+        if !bitmap.is_null() {
+            // SAFETY: The bitmap was created above and is not selected anywhere.
+            unsafe { DeleteObject(bitmap) };
+        }
+        return false;
+    }
+    // SAFETY: The section holds exactly `width * height` 32-bit pixels (checked against
+    // `pixels`), is aligned for `u32` (DIB rows are DWORD aligned) and nothing else aliases it.
+    let target = unsafe { core::slice::from_raw_parts_mut(bits.cast::<u32>(), pixels.len()) };
+    target.copy_from_slice(pixels);
+    // SAFETY: Creates a memory DC compatible with the target (deleted below).
+    let source = unsafe { CreateCompatibleDC(hdc) };
+    let mut done = false;
+    if !source.is_null() {
+        // SAFETY: Selects our bitmap into our memory DC; the previous object is restored below.
+        let previous = unsafe { SelectObject(source, bitmap) };
+        let blend = BLENDFUNCTION {
+            BlendOp: u8::try_from(AC_SRC_OVER).unwrap_or(0),
+            BlendFlags: 0,
+            SourceConstantAlpha: 255,
+            AlphaFormat: u8::try_from(AC_SRC_ALPHA).unwrap_or(1),
+        };
+        // SAFETY: Both DCs are live; the source rectangle is the whole bitmap.
+        done = unsafe { AlphaBlend(hdc, x, y, w, h, source, 0, 0, w, h, blend) } != 0;
+        if !previous.is_null() {
+            // SAFETY: Restores the memory DC's previous bitmap.
+            unsafe { SelectObject(source, previous) };
+        }
+        // SAFETY: The memory DC was created above; our bitmap is no longer selected into it.
+        unsafe { DeleteDC(source) };
+    }
+    // SAFETY: The bitmap is no longer selected into any DC.
+    unsafe { DeleteObject(bitmap) };
+    done
+}
+
 /// A memory DC with a bitmap covering the update rectangle; its viewport origin is shifted so
 /// client coordinates draw at the right place.
 struct BackBuffer {
@@ -429,6 +503,12 @@ impl PaintDc<'_> {
     pub fn ellipse(&mut self, rect: Rect, fill: Color, border: Color) {
         let radius = rect.w.min(rect.h) / 2;
         self.round_rect(rect, radius, fill, border);
+    }
+
+    /// Blends `w` × `h` premultiplied `0xAARRGGBB` pixels (rows top-down) at `(x, y)` (icons
+    /// such as the app's chain badges); nothing is drawn when the sizes do not match.
+    pub fn draw_argb(&mut self, x: i32, y: i32, w: i32, h: i32, pixels: &[u32]) {
+        let _ = alpha_blit(self.hdc(), x, y, w, h, pixels);
     }
 
     /// Sets the text color for subsequent draws.

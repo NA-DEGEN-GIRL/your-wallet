@@ -137,6 +137,9 @@ pub struct ApprovalView {
     pub header: Vec<(String, String)>,
     /// Header badges (user chain, testnet).
     pub badges: Vec<String>,
+    /// The chain badge drawn before the `네트워크` header value (app chrome, not part of the
+    /// digested display).
+    pub chain: Option<crate::ui::badge::Badge>,
     /// Testnet coloring.
     pub testnet: bool,
     /// Bitcoin network banner (header colored red / orange instead of the testnet band).

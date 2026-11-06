@@ -43,6 +43,7 @@ use crate::flow::evm::prepare::{
 use crate::logging::{self, Field};
 use crate::ui::approval::QueueOutcome;
 use crate::ui::approval_view::{ApprovalView, Block, Tone, escape_spans, view};
+use crate::ui::badge::{BADGE_DIP, BADGE_GAP_DIP, Badge};
 use crate::ui::interaction::{
     APPROVAL_TICK_MS, ApprovalGate, ApprovalSession, HIGH_RISK_HOLD_MS, InteractionEvent,
     InteractionStatus, MAX_LIFETIME_MS, PrepareStage, PrepareState, ReadyContent, stray_press,
@@ -2100,6 +2101,20 @@ impl App {
         };
         let site_btc_banner = (family == yw_core::policy::Family::Bitcoin)
             .then(|| crate::ui::approval_view::BtcBanner::of(self.btc_network_now()));
+        let chain_badge = match (self.evm.window.as_ref().map(|ui| &ui.item), family) {
+            (Some(QueuedItem::Btc(item)), _) => Some(Badge::bitcoin(item.network)),
+            (Some(QueuedItem::Site(_)), yw_core::policy::Family::Bitcoin) => {
+                Some(Badge::bitcoin(self.btc_network_now()))
+            }
+            _ => sol_cluster.map(Badge::solana).or_else(|| {
+                evm_chain.map(|id| {
+                    Badge::evm(
+                        id,
+                        &self.network_name(crate::network::NetworkId::Eip155(id)),
+                    )
+                })
+            }),
+        };
         let mut testnet = false;
         if let Some((text, test)) = network_badge(evm_chain, sol_cluster) {
             testnet = test;
@@ -2153,6 +2168,7 @@ impl App {
                 );
                 connect_view.badges.extend(badges);
                 connect_view.testnet = testnet;
+                connect_view.chain = chain_badge;
                 ui.view = connect_view;
                 ui.layout = None;
                 ui.window.invalidate();
@@ -2190,6 +2206,7 @@ impl App {
         ) {
             Ok(mut view) => {
                 view.btc_banner = btc_banner;
+                view.chain = chain_badge;
                 if !force && view == ui.view {
                     return;
                 }
@@ -2690,11 +2707,27 @@ impl App {
             badges.push(banner.text().to_owned());
         }
         badges.extend(ui.view.badges.iter().cloned());
+        // The chain badge goes before the first `네트워크` value line (app chrome, spec/04 §3.2).
+        let badge_size = px(BADGE_DIP);
+        let badge_row = ui.view.chain.and_then(|badge| {
+            rows.iter()
+                .position(|(label, _, _)| label == "네트워크")
+                .map(|row| (row, badge))
+        });
+        let badge_indent = |row: usize| {
+            badge_row
+                .filter(|(at, _)| *at == row)
+                .map_or(0, |_| badge_size.saturating_add(px(BADGE_GAP_DIP)))
+        };
         let mut header_height = 0;
-        for (_, value, role) in &rows {
+        for (row, (_, value, role)) in rows.iter().enumerate() {
             dc.select_font(fonts.get(*role));
             header_height += dc
-                .measure_wrapped(&wide(value), value_w, DrawFlags::WRAP)
+                .measure_wrapped(
+                    &wide(value),
+                    value_w.saturating_sub(badge_indent(row)),
+                    DrawFlags::WRAP,
+                )
                 .saturating_add(px(4));
         }
         if !badges.is_empty() {
@@ -2723,9 +2756,11 @@ impl App {
             Rect::new(0, header_rect.bottom(), client.w, 1),
             theme::CARD_BORDER,
         );
-        for (label, value, role) in &rows {
+        for (row, (label, value, role)) in rows.iter().enumerate() {
+            let indent = badge_indent(row);
+            let row_w = value_w.saturating_sub(indent);
             dc.select_font(fonts.get(*role));
-            let height = dc.measure_wrapped(&wide(value), value_w, DrawFlags::WRAP);
+            let height = dc.measure_wrapped(&wide(value), row_w, DrawFlags::WRAP);
             if !label.is_empty() {
                 dc.select_font(&fonts.body);
                 dc.set_text_color(header_muted);
@@ -2735,7 +2770,26 @@ impl App {
                     DrawFlags::WRAP,
                 );
             }
-            let rect = Rect::new(margin.saturating_add(label_w), y, value_w, height);
+            if indent > 0
+                && let Some((_, badge)) = badge_row
+            {
+                let line = line_height(&mut dc, fonts, *role);
+                let top = y.saturating_add((line.saturating_sub(badge_size) / 2).max(0));
+                let pixels = badge.render(badge_size);
+                dc.draw_argb(
+                    margin.saturating_add(label_w),
+                    top,
+                    badge_size,
+                    badge_size,
+                    &pixels,
+                );
+            }
+            let rect = Rect::new(
+                margin.saturating_add(label_w).saturating_add(indent),
+                y,
+                row_w,
+                height,
+            );
             dc.set_text_color(header_text);
             let emphasized = *role == FontRole::Mono
                 && crate::ui::theme::sol_address_segments(value).is_some_and(|segments| {

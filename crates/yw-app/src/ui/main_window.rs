@@ -8,9 +8,10 @@
 //! primary / secondary / danger / link / tab buttons, and banners that always name their status
 //! (정보·완료·주의·고위험·차단·오류·테스트넷) in a colored tag.
 
-use yw_win::ui::controls::{ButtonStyle, Control, ControlKind, create_control};
+use yw_win::ui::controls::{ButtonIcon, ButtonStyle, Control, ControlKind, create_control};
 use yw_win::ui::{Color, DrawFlags, PaintDc, Rect, Window, scale};
 
+use crate::ui::badge::{BADGE_DIP, BADGE_GAP_DIP, Badge, TITLE_BADGE_DIP};
 use crate::ui::theme::{self, FontRole, Fonts, wide};
 
 /// Banner tone. Each tone has one meaning everywhere (spec/04 §1.6 status colors).
@@ -98,6 +99,8 @@ pub struct Ctl {
     pub limit: Option<u32>,
     /// The color under the control (set by [`layout`]).
     pub backdrop: Option<Color>,
+    /// A chain badge drawn before a button's label (`crate::ui::badge`).
+    pub badge: Option<Badge>,
 }
 
 impl Ctl {
@@ -111,6 +114,7 @@ impl Ctl {
             checked: None,
             limit: None,
             backdrop: None,
+            badge: None,
         }
     }
 
@@ -166,6 +170,7 @@ impl Ctl {
             checked: Some(checked),
             limit: None,
             backdrop: None,
+            badge: None,
         }
     }
 
@@ -183,6 +188,7 @@ impl Ctl {
             checked: Some(checked),
             limit: None,
             backdrop: None,
+            badge: None,
         }
     }
 
@@ -201,7 +207,15 @@ impl Ctl {
             checked: None,
             limit: Some(limit),
             backdrop: None,
+            badge: None,
         }
+    }
+
+    /// Draws a chain badge before a button's label (other kinds ignore it).
+    #[must_use]
+    pub const fn badge(mut self, badge: Badge) -> Self {
+        self.badge = Some(badge);
+        self
     }
 
     /// Sets enabled.
@@ -277,6 +291,9 @@ pub enum Item {
     Steps(Vec<String>, usize),
     /// The top bar of the unlocked screens: the app name on the left, controls on the right.
     Toolbar(String, Vec<Ctl>),
+    /// A chain badge before a text item (`Title`, `Subtitle`, `Text`, `Muted`, `Help`, `Mono`)
+    /// or before a `Field`'s value; other items are laid out without it.
+    Badged(Badge, Box<Item>),
     /// A press-and-hold area (painted, no child control; the app hit-tests
     /// [`Placed::holds`] and runs `id` after a 2 s continuous hold, spec/04 §2.20).
     Hold {
@@ -355,6 +372,8 @@ pub struct Placed {
     pub qrs: Vec<(i32, i32, i32, String)>,
     /// Hold areas: action id, pixel rectangle (scrolled), enabled.
     pub holds: Vec<(u16, Rect, bool)>,
+    /// Chain badges: square pixel rectangle (scrolled), painted after the shapes.
+    pub badges: Vec<(Badge, Rect)>,
     /// Total content height (px, unscrolled).
     pub content_height: i32,
 }
@@ -377,6 +396,7 @@ impl Placed {
         self.holds
             .iter_mut()
             .for_each(|(_, rect, _)| move_rect(rect));
+        self.badges.iter_mut().for_each(|(_, rect)| move_rect(rect));
         for (_, y, _, _) in &mut self.qrs {
             *y = y.saturating_add(dy);
         }
@@ -606,8 +626,13 @@ impl Layouter<'_> {
             self.px(ctl.width)
         } else {
             let pad = if ctl.is_button() { 36 } else { 28 };
+            let badge = if ctl.is_button() && ctl.badge.is_some() {
+                BADGE_DIP + BADGE_GAP_DIP
+            } else {
+                0
+            };
             (self.label_width)(&ctl.text)
-                .saturating_add(self.px(pad))
+                .saturating_add(self.px(pad + badge))
                 .max(self.px(if ctl.is_button() { 88 } else { 60 }))
         }
     }
@@ -852,8 +877,17 @@ impl Layouter<'_> {
     }
 
     fn field(&mut self, label: &str, value: &str) {
+        self.field_with(label, value, None);
+    }
+
+    /// A field, with a badge before the value when given.
+    fn field_with(&mut self, label: &str, value: &str, badge: Option<Badge>) {
         let label_w = self.px(150).min(self.frame.w / 3);
-        let value_x = label_w.saturating_add(self.px(12));
+        let mut value_x = label_w.saturating_add(self.px(12));
+        if let Some(badge) = badge {
+            let x = self.frame.x.saturating_add(value_x);
+            value_x = value_x.saturating_add(self.badge_at(badge, x, self.px(20), BADGE_DIP));
+        }
         let value_w = self.frame.w.saturating_sub(value_x).max(self.px(40));
         let mono = value.starts_with("0x")
             || crate::ui::theme::address_segments(value).is_some()
@@ -945,28 +979,91 @@ pub fn layout(
         placed: Placed::default(),
     };
     for item in items {
+        layouter.place(item, dpi);
+    }
+    layouter.close_card();
+    let mut placed = layouter.placed;
+    placed.content_height = layouter.y.saturating_add(margin);
+    placed
+}
+
+/// The font, color and gap (DIP) of a text item.
+fn text_style(item: &Item) -> Option<(&str, FontRole, Color, i32)> {
+    Some(match item {
+        Item::Title(text) => (text.as_str(), FontRole::Title, theme::TEXT, theme::SPACE_M),
+        Item::Display(text) => (
+            text.as_str(),
+            FontRole::Display,
+            theme::TEXT,
+            theme::SPACE_XS,
+        ),
+        Item::Subtitle(text) => (
+            text.as_str(),
+            FontRole::Subtitle,
+            theme::TEXT,
+            theme::SPACE_S,
+        ),
+        Item::Text(text) => (text.as_str(), FontRole::Body, theme::TEXT, theme::SPACE_S),
+        Item::Muted(text) => (text.as_str(), FontRole::Body, theme::MUTED, theme::SPACE_S),
+        Item::Help(text) => (
+            text.as_str(),
+            FontRole::Caption,
+            theme::MUTED,
+            theme::SPACE_S,
+        ),
+        Item::Mono(text) => (text.as_str(), FontRole::Mono, theme::TEXT, theme::SPACE_S),
+        _ => return None,
+    })
+}
+
+impl Layouter<'_> {
+    /// A badge square of `dip` at `x`, centered on a first line `line_h` tall at the current y.
+    fn badge_at(&mut self, badge: Badge, x: i32, line_h: i32, dip: i32) -> i32 {
+        let size = self.px(dip);
+        let top = self
+            .y
+            .saturating_add((line_h.saturating_sub(size) / 2).max(0))
+            .saturating_sub(self.scroll);
+        self.placed
+            .badges
+            .push((badge, Rect::new(x, top, size, size)));
+        size.saturating_add(self.px(BADGE_GAP_DIP))
+    }
+
+    fn badged(&mut self, badge: Badge, item: &Item, dpi: u32) {
+        if let Some((text, font, color, gap)) = text_style(item) {
+            let dip = if font == FontRole::Title {
+                TITLE_BADGE_DIP
+            } else {
+                BADGE_DIP
+            };
+            let line_h = (self.measure)("가", font, self.frame.w.max(1));
+            let indent = self.badge_at(badge, self.frame.x, line_h, dip);
+            self.text(text, font, color, indent, self.px(gap));
+        } else if let Item::Field(label, value) = item {
+            self.field_with(label, value, Some(badge));
+        } else {
+            self.place(item, dpi);
+        }
+    }
+
+    fn place(&mut self, item: &Item, dpi: u32) {
+        let px = |dip: i32| scale(dip, dpi);
+        if let Some((text, font, color, gap)) = text_style(item) {
+            self.text(text, font, color, 0, px(gap));
+            return;
+        }
+        let layouter = self;
         match item {
-            Item::Title(text) => {
-                layouter.text(text, FontRole::Title, theme::TEXT, 0, px(theme::SPACE_M));
-            }
-            Item::Display(text) => {
-                layouter.text(text, FontRole::Display, theme::TEXT, 0, px(theme::SPACE_XS));
-            }
-            Item::Subtitle(text) => {
-                layouter.text(text, FontRole::Subtitle, theme::TEXT, 0, px(theme::SPACE_S));
-            }
-            Item::Text(text) => {
-                layouter.text(text, FontRole::Body, theme::TEXT, 0, px(theme::SPACE_S));
-            }
-            Item::Muted(text) => {
-                layouter.text(text, FontRole::Body, theme::MUTED, 0, px(theme::SPACE_S));
-            }
-            Item::Help(text) => {
-                layouter.text(text, FontRole::Caption, theme::MUTED, 0, px(theme::SPACE_S));
-            }
-            Item::Mono(text) => {
-                layouter.text(text, FontRole::Mono, theme::TEXT, 0, px(theme::SPACE_S));
-            }
+            // Handled by `text_style` above.
+            Item::Title(_)
+            | Item::Display(_)
+            | Item::Subtitle(_)
+            | Item::Text(_)
+            | Item::Muted(_)
+            | Item::Help(_)
+            | Item::Mono(_) => {}
+            Item::Badged(badge, inner) => layouter.badged(*badge, inner, dpi),
             Item::Field(label, value) => layouter.field(label, value),
             Item::Banner(text, tone) => layouter.banner(text, *tone),
             Item::Gap(dip) => layouter.advance(0, px(*dip)),
@@ -998,10 +1095,6 @@ pub fn layout(
             } => layouter.hold(*id, label, *progress, *enabled),
         }
     }
-    layouter.close_card();
-    let mut placed = layouter.placed;
-    placed.content_height = layouter.y.saturating_add(margin);
-    placed
 }
 
 /// Paints the placed texts and shapes that meet the paint session's update rectangle (after a
@@ -1028,6 +1121,9 @@ pub fn paint(dc: &mut PaintDc<'_>, client: Rect, placed: &Placed, fonts: &Fonts)
     }
     for rule in placed.rules.iter().filter(|rule| !outside(rule)) {
         dc.fill_rect(*rule, theme::CARD_BORDER);
+    }
+    for (badge, rect) in placed.badges.iter().filter(|(_, rect)| !outside(rect)) {
+        dc.draw_argb(rect.x, rect.y, rect.w, rect.h, &badge.render(rect.w));
     }
     for (x, y, module, payload) in &placed.qrs {
         if *y >= bottom {
@@ -1080,6 +1176,8 @@ fn kind_class(kind: ControlKind) -> ControlKind {
 #[derive(Debug, Default)]
 pub struct ControlSet {
     controls: Vec<(Ctl, Control)>,
+    /// The DPI the button badges were rendered at.
+    icon_dpi: u32,
 }
 
 impl ControlSet {
@@ -1161,6 +1259,9 @@ impl ControlSet {
             .iter()
             .map(|(ctl, _)| (ctl.id, kind_class(ctl.kind)))
             .collect();
+        let dpi = window.dpi();
+        let fresh = wanted != current || self.icon_dpi != dpi;
+        self.icon_dpi = dpi;
         if wanted != current {
             self.controls.clear();
             for (ctl, rect) in &placed.controls {
@@ -1184,6 +1285,13 @@ impl ControlSet {
             }
             if let ControlKind::Button(style) = wanted_ctl.kind {
                 control.set_button_style(style);
+                if fresh || ctl.badge != wanted_ctl.badge {
+                    let size = scale(BADGE_DIP, dpi);
+                    control.set_icon(wanted_ctl.badge.map(|badge| ButtonIcon {
+                        size,
+                        pixels: badge.render(size),
+                    }));
+                }
             }
             let visible = rect.bottom() > 0 && rect.y < client.h;
             control.show(visible);

@@ -482,7 +482,8 @@ journal_key = HKDF-SHA256(salt = 없음,                   ikm = DEK, info = "yo
 | `sol_accounts` | `Account[]` | 0..=100개(M7 전에는 `[]`) |
 | `btc` | `BtcMeta` | null | BTC를 켜기 전(M8 전 포함) `null`. BIP84 계정 0(버전 1). 필드는 [08](08-bitcoin.md) §12.3 이름 그대로, 바이트 배열은 소문자 hex 문자열, 없음은 `null` |
 | `btc_accounts` (선택) | object | 이 키만 없어도 된다(없음 = 다른 BTC 계정 없음, 기본값이면 쓰지 않음). 다른 BTC 계정(주소 형식·계정 번호·가져온 키·EVM 계정과 같은 키 `key.evm {index, pubkey}`, 두 네트워크)과 선택: [08](08-bitcoin.md) §12.3a. 있으면 알려진 키로 엄격 검증. HD 계정 객체(이 목록과 `btc` 모두)의 선택 키 `single_address`(bool, **없음 = 고정 주소 모드**, HD 모드일 때만 `false`로 쓴다 — 기본값은 이전 바이트 그대로, [08] §3.5·§12.3) |\| null | BTC를 켜기 전(M8 전 포함) `null`. 필드는 [08](08-bitcoin.md) §12.3 이름 그대로, 바이트 배열은 소문자 hex 문자열, 없음은 `null` |
-| `address_book` | `AddressBookEntry[]` | 0..=500개, (`chain`, `address`) 중복 금지 |
+| `address_book` | `AddressBookEntry[]` | 0..=500개, (`chain`, `address`) 중복 금지. `chain`은 체인 **계열**이다: EVM 항목은 모두 `"evm"` 하나로 내장·사용자 추가 EVM 체인 전부에서 같이 쓴다(아래 2026-11-06 이전 규칙) |
+| `address_book_favorites` (선택, 2026-11-06) | `BookFavorite[]` | 주소록 ★ 즐겨찾기([04] §2.10). 0..=500개, 별을 붙인 순서, `address_book`에 있는 (`chain`, `address`)만. 비어 있으면 쓰지 않는다(이전 버전은 모르는 최상위 키로 보존하고 다시 쓴다). 형식이 틀리면 문서를 거부하지 않고 즐겨찾기 없음으로 읽는다(표시 전용, `token_view`와 같음). 읽을 때 주소록에 없는 항목·중복은 버린다(이전 버전이 지운 항목의 별) |
 | `connected_sites` | `ConnectedSite[]` | 0..=256개, `origin` 중복 금지([05](05-browser.md) §4.1) |
 | `sol_sites`·`btc_sites` (선택, 2026-10-31) | object[] | Solana·Bitcoin dApp 연결([05] §4.9). 각 0..=256개의 객체 배열, 비어 있으면 쓰지 않는다(이전 버전은 모르는 키로 보존). 항목: `sol_sites` `{ origin, public_key: base58, granted_at_unix_ms }`, `btc_sites` `{ origin, network: 1|2, addresses: [{ purpose: "payment"|"ordinals"|"any", address, public_key: hex, script_type }], granted_at_unix_ms }`. 쓸 수 없는 항목은 읽을 때 건너뛴다 |
 | `tokens` | object: `NetworkId` → `TokenEntry[]` | `eip155:*` 키만(SOL 토큰은 고정 허용 목록, D25), 네트워크당 0..=100개·전체 0..=1,000개(어느 쪽이든 상한이면 S16 저장 거부), `address` 중복 금지, 빈 배열 키는 쓰지 않음 |
@@ -499,7 +500,8 @@ Account          = { "index": u32(0..=999), "label": Label, "address": string, "
 RawAccount       = { "record_id": Hex16, "label": Label, "address": EvmAddr }
 SolRawAccount    = { "record_id": Hex16, "label": Label, "address": string(정규 base58) }
 AddressBookEntry = { "chain": "evm"|"sol"|"btc", "address": string, "label": Label,
-                     "verified": bool, "added_at_unix_ms": u64 }
+                     "verified": bool, "added_at_unix_ms": u64 }     // 정확히 이 5개 멤버
+BookFavorite     = { "chain": "evm"|"sol"|"btc", "address": string }  // address_book 항목을 가리킴
 ConnectedSite    = { "origin": string, "accounts": EvmAddr[1..=16], "chain_id": u64(≥ 1, EVM chainId),
                      "granted_at_unix_ms": u64 }
 TokenEntry       = { "address": EvmAddr, "label": Label, "decimals": u8(0..=36, [03] §2.5) }
@@ -532,6 +534,9 @@ ChainIdDec = u64 값 1..=2^64−1의 10진 표기, 앞자리 0 없음 (예 "eip1
 
 - `address`(계정 목록)는 표시용 캐시다. 받기 주소·QR 표시와 서명은 항상 vault에서 다시 파생한 값을 쓴다. 잠금 해제 직후 yw-app은 `evm_addresses`(§10.3)로 캐시를 다시 계산하고, 다르면 캐시를 고쳐 쓰고 로그에 `MetaAddressMismatch`를 남긴다.
 - `address_book`의 `address`는 체인별 정규형(EVM 소문자, SOL base58, BTC 소문자 bech32 또는 base58check)이다. `verified`는 사용자가 다른 경로로 확인했다고 표시한 값이다.
+- 주소록 계열(2026-11-06): EVM 항목은 `chain = "evm"` 하나로 **모든 EVM 체인**(내장 7개와 사용자 추가 체인, HyperCore처럼 EVM 주소를 쓰는 화면 포함)이 같이 쓴다 — 주소가 어느 EVM 체인에서나 같기 때문이다. Solana 항목(`"sol"`)은 mainnet·devnet이 같이 쓴다(같은 base58 공개키). Bitcoin 항목(`"btc"`)은 계열 하나지만 mainnet(`bc1…`·`1…`·`3…`)과 testnet4(`tb1…`·`m…`·`n…`·`2…`) 주소가 달라, 보내기 화면은 그 네트워크가 파싱하는 항목만 보인다(값을 나누지 않아 이전 버전과 호환).
+- 주소록 이전 규칙(읽을 때, 2026-11-06): `chain`이 `"eip155:<chainId>"`(체인별 EVM 값, 정식 10진 chainId)이고 주소가 `EvmAddr`인 항목은 `"evm"`의 옛 표기로 받아 `"evm"`으로 바꾸고, 같은 (`chain`, `address`)가 여럿이면 **첫 항목**에 합친다: 첫 항목의 라벨·위치를 남기고, 하나라도 `verified`면 `verified = true`, `added_at_unix_ms`는 가장 이른 값. 합친 결과는 다음 meta 저장 때 쓴다. `yw-meta/3` 출시본은 `"evm"|"sol"|"btc"`만 썼으므로 실제 파일에서는 중복 정리만 일어난다. 이 앱은 `"eip155:*"`를 **쓰지 않는다**.
+- 이전 버전 호환(확인함, `meta.rs` `valid_book_entry`): 이전 버전은 `AddressBookEntry`의 멤버가 정확히 5개이고 `chain`이 `"evm"|"sol"|"btc"`가 아니면 **meta 문서 전체를 거부**한다(E-VLT-006, `.prev` 복구 화면). 그래서 즐겨찾기를 항목 멤버로 넣지 않고 새 최상위 키 `address_book_favorites`에 두며, 새 `chain` 값(예 체인별 EVM 값, `"btc-testnet4"`)도 쓰지 않는다. 새 계열이 필요하면 `address_book`이 아닌 새 최상위 키로 더한다.
 - `ConnectedSite`의 의미와 `origin` 형식(≤ 256바이트 ASCII)은 [05](05-browser.md) §4.1·§4.7이다. 이 절의 상한이 정본이다(D31): `connected_sites` 0..=256개, `accounts` 1..=16개. `accounts`는 dApp에 돌려주는 순서이고 첫 항목이 선택 계정이다. 16개 상한이므로 연결 창([05] §4.2)은 17개 이상 선택하면 `연결`을 비활성화하고, `accountsChanged` payload도 최대 16개다. `granted_at_unix_ms`는 연결을 승인한 시각(Unix ms)이다.
 - `tokens`: 레지스트리 토큰([03] §1.2)은 넣지 않는다. 사용자가 S16([04] §2.6)에서 확인한 라벨만 저장한다.
 - `activity`: 이 지갑이 보낸 종결 거래만, 체인 문서가 종결 저널 레코드를 정리할 때 만든다. `account`·`counterparty`는 체인별 정규형(위 `address_book`과 같음, 받는 주소가 없으면 `""`; BTC는 계정 0 하나뿐이므로 `account` = `""`, [08] §12.3), `tx_id`는 EVM `0x`+소문자 hex 64, SOL base58 서명, BTC 소문자 hex txid(표시 순서). `title`은 서명 당시 승인 제목(≤ 256바이트, [03] §11.1·[07] §13.3·[08] §10), `asset`은 `"native"` 또는 토큰(EVM `EvmAddr`, SOL mint base58), `amount`는 최소 단위 10진 문자열(≤ 78자, 없으면 `"0"`), `time_unix_ms`는 종결 관측 시각. 상태: EVM `Finalized`(영수증 성공 `succeeded`, 실패 `failed`)·`Dropped`·`Replaced`, SOL `Landed`→`succeeded`·`FailedOnChain`→`failed`·`Expired`→`expired`, BTC `Confirmed`→`succeeded`·`Rejected`·`Replaced`·`Conflicted`·`Abandoned`(나머지는 같은 이름의 소문자). 화면은 표시 전용이다([04] §2.6).
