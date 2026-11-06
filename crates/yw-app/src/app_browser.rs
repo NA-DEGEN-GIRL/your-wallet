@@ -1007,6 +1007,9 @@ impl App {
 
     /// `SignMessage` finished (a lock-cancelled one answers 4001, spec/04 §1.2).
     pub(crate) fn browser_message_signed(&mut self, signed: MessageSigned) {
+        if self.hc_message_signed(&signed) {
+            return;
+        }
         if signed.result == Err(MessageSignFailure::Locked) {
             self.evm_sign_locked(signed.ticket);
             return;
@@ -1021,6 +1024,10 @@ impl App {
 
     /// A consumed signing job was cancelled by the lock: 4001 (spec/04 §1.2).
     pub(crate) fn browser_sign_cancelled(&mut self, ticket: SignTicket) {
+        if self.hc_sign_cancelled(ticket) {
+            let _ = self.take_sign_waiter(ticket);
+            return;
+        }
         match self.take_sign_waiter(ticket) {
             Some(
                 SignWaiter::Tx(reply) | SignWaiter::Message(reply) | SignWaiter::Chain(reply, _),

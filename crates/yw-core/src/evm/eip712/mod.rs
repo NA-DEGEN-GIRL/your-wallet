@@ -423,8 +423,7 @@ fn hyperliquid_schema(
     }
     match (domain.name.as_deref(), domain.version.as_deref()) {
         (Some(crate::hypercore::DOMAIN_NAME), Some(crate::hypercore::DOMAIN_VERSION)) => {
-            let action = if let Some(kind) = crate::hypercore::HcKind::from_primary_type(primary)
-            {
+            let action = if let Some(kind) = crate::hypercore::HcKind::from_primary_type(primary) {
                 (primary_hash == kind.type_hash()).then_some(HlUserAction::Transfer(kind))?
             } else if primary_hash == keccak(HL_APPROVE_AGENT_TYPE.as_bytes()) {
                 HlUserAction::ApproveAgent

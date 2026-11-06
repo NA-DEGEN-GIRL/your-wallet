@@ -534,6 +534,7 @@ impl App {
     pub fn evm_main_sections(&self, items: &mut Vec<Item>) {
         let chain_id = self.settings.evm_chain_id;
         self.evm_token_card(items, chain_id);
+        self.hc_card(items);
         items.push(Item::CardStart(Some(
             "활동 (이 지갑이 보낸 거래)".to_owned(),
         )));
@@ -784,6 +785,9 @@ impl App {
         }
         if let Some(code) = form.recipient_error {
             items.push(Item::Banner(code.text(), Tone::Danger));
+        }
+        if let Some(text) = &form.system_error {
+            items.push(Item::Banner(text.clone(), Tone::Blocked));
         }
         if let Some((address, notes)) = &form.recipient {
             items.push(Item::Mono(format_address(address)));
@@ -1308,6 +1312,7 @@ impl App {
         }
         chain_add_row(items);
         items.push(Item::CardEnd);
+        self.hc_settings_section(items);
         if self.show_advanced {
             self.caps_section(items);
         }

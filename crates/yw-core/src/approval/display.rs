@@ -125,17 +125,17 @@ impl FieldKey {
     pub const BTC_REPLACES: Self = Self(0x0609);
     /// BTC 고급(version·nLockTime·RBF·vsize·weight·txid).
     pub const BTC_ADVANCED: Self = Self(0x0640);
-    /// HyperCore 작업.
+    /// `HyperCore` 작업.
     pub const HC_ACTION: Self = Self(0x0701);
-    /// HyperCore 받는 주소.
+    /// `HyperCore` 받는 주소.
     pub const HC_TO: Self = Self(0x0702);
-    /// HyperCore 토큰·금액.
+    /// `HyperCore` 토큰·금액.
     pub const HC_AMOUNT: Self = Self(0x0703);
-    /// HyperCore 수수료.
+    /// `HyperCore` 수수료.
     pub const HC_FEE: Self = Self(0x0704);
-    /// HyperCore nonce(time).
+    /// `HyperCore` nonce(time).
     pub const HC_NONCE: Self = Self(0x0705);
-    /// HyperCore 원본 typed data.
+    /// `HyperCore` 원본 typed data.
     pub const HC_TYPED: Self = Self(0x0706);
 
     /// `(critical, volatile)` for keys of the §11.2 table; `None` for unknown keys.

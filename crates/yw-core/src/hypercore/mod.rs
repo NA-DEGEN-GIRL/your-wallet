@@ -175,7 +175,7 @@ impl fmt::Display for HcError {
 impl std::error::Error for HcError {}
 
 /// The system address of spot token `index`: `0x20`, zeros, then the index big-endian
-/// (docs "HyperCore <> HyperEVM transfers"); HYPE uses [`HYPE_SYSTEM_ADDRESS`].
+/// (docs "`HyperCore` <> `HyperEVM` transfers"); HYPE uses [`HYPE_SYSTEM_ADDRESS`].
 #[must_use]
 pub fn system_address(index: u32) -> Address {
     let mut bytes = [0_u8; 20];
@@ -235,7 +235,10 @@ pub fn wire_amount(units: &U256, decimals: u8) -> String {
         return digits;
     }
     let padded = if digits.len() <= places {
-        format!("{}{digits}", "0".repeat(places.saturating_add(1).saturating_sub(digits.len())))
+        format!(
+            "{}{digits}",
+            "0".repeat(places.saturating_add(1).saturating_sub(digits.len()))
+        )
     } else {
         digits
     };
@@ -577,7 +580,12 @@ impl HcAction {
             | HcPayload::Withdraw {
                 destination,
                 amount,
-            } => vec![chain, HcValue::Str(address_text(destination)), s(amount), nonce],
+            } => vec![
+                chain,
+                HcValue::Str(address_text(destination)),
+                s(amount),
+                nonce,
+            ],
             HcPayload::SpotSend {
                 destination,
                 token,
@@ -755,13 +763,25 @@ impl HcAction {
         let (s, v) = rest.split_at(32);
         let v = v.first().copied().unwrap_or(27);
         let signature = object(vec![
-            ("r".to_owned(), Value::String(format!("0x{}", crate::hex::encode(r)))),
-            ("s".to_owned(), Value::String(format!("0x{}", crate::hex::encode(s)))),
-            ("v".to_owned(), Value::Number(Number::from_u64(u64::from(v)))),
+            (
+                "r".to_owned(),
+                Value::String(format!("0x{}", crate::hex::encode(r))),
+            ),
+            (
+                "s".to_owned(),
+                Value::String(format!("0x{}", crate::hex::encode(s))),
+            ),
+            (
+                "v".to_owned(),
+                Value::Number(Number::from_u64(u64::from(v))),
+            ),
         ]);
         yw_json::to_vec(&object(vec![
             ("action".to_owned(), self.action_json()),
-            ("nonce".to_owned(), Value::Number(Number::from_u64(self.nonce))),
+            (
+                "nonce".to_owned(),
+                Value::Number(Number::from_u64(self.nonce)),
+            ),
             ("signature".to_owned(), signature),
         ]))
     }

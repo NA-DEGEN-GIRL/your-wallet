@@ -201,6 +201,56 @@ pub struct BitcoinSettings {
     pub esplora_testnet4: String,
 }
 
+/// `hypercore` (spec/11 §8, D34): the `HyperCore` card and its network. Mainnet always uses the
+/// official API; only the testnet API base may be overridden (HTTPS).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HyperCoreSettings {
+    /// The card on the EVM tab (default on).
+    pub enabled: bool,
+    /// Network of the card.
+    pub network: yw_core::hypercore::HcNetwork,
+    /// Testnet API base URL (normalized, no trailing `/`; default the official one).
+    pub testnet_api: String,
+}
+
+impl Default for HyperCoreSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            network: yw_core::hypercore::HcNetwork::Mainnet,
+            testnet_api: yw_core::hypercore::TESTNET_API.to_owned(),
+        }
+    }
+}
+
+/// Validates a `HyperCore` API base URL (HTTPS, ≤ 256 bytes, no query/fragment) and returns
+/// its normal form without a trailing `/`.
+#[must_use]
+pub fn validate_hypercore_api(text: &str) -> Option<String> {
+    let trimmed = text.trim().strip_suffix('/').unwrap_or(text.trim());
+    if trimmed.len() > 256 || trimmed.contains('?') || trimmed.contains('#') {
+        return None;
+    }
+    HttpsUrl::parse(trimmed)
+        .ok()
+        .map(|url| url.expose().trim_end_matches('/').to_owned())
+}
+
+fn load_hypercore(object: &Object) -> Option<HyperCoreSettings> {
+    let mut hypercore = HyperCoreSettings::default();
+    for (key, value) in object.iter() {
+        match key {
+            "enabled" => hypercore.enabled = value.as_bool()?,
+            "network" => {
+                hypercore.network = yw_core::hypercore::HcNetwork::parse(value.as_str()?)?;
+            }
+            "testnetApi" => hypercore.testnet_api = validate_hypercore_api(value.as_str()?)?,
+            _ => return None,
+        }
+    }
+    Some(hypercore)
+}
+
 /// `llm_explain` (spec/06 §2.1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LlmSettings {
@@ -280,6 +330,8 @@ pub struct Settings {
     pub bitcoin: BitcoinSettings,
     /// LLM.
     pub llm_explain: LlmSettings,
+    /// `HyperCore` (spec/11).
+    pub hypercore: HyperCoreSettings,
     /// Log level.
     pub log_level: LogLevel,
     /// Format compatibility (unknown keys, read-only newer file; spec/04 §6.6).
@@ -351,6 +403,7 @@ impl Default for Settings {
             solana: SolanaSettings::default(),
             bitcoin: BitcoinSettings::default(),
             llm_explain: LlmSettings::default(),
+            hypercore: HyperCoreSettings::default(),
             log_level: LogLevel::Info,
             compat: SettingsCompat::default(),
         }
@@ -824,6 +877,10 @@ pub fn load(bytes: Option<&[u8]>) -> SettingsLoad {
                 Some(llm) => settings.llm_explain = llm,
                 None => banners.push(key.to_owned()),
             },
+            "hypercore" => match value.as_object().and_then(load_hypercore) {
+                Some(hypercore) => settings.hypercore = hypercore,
+                None => banners.push(key.to_owned()),
+            },
             "logLevel" => match value.as_str().and_then(LogLevel::parse) {
                 Some(level) => settings.log_level = level,
                 None => banners.push(key.to_owned()),
@@ -952,6 +1009,7 @@ impl Settings {
         self.compat.read_only_version()
     }
 
+    #[expect(clippy::too_many_lines, reason = "one member per key of spec/04 §6.1")]
     fn known_members(&self) -> Vec<(&'static str, Value)> {
         let pins = json_object_owned(
             self.evm_genesis_pins
@@ -1050,8 +1108,25 @@ impl Settings {
                     ),
                 ]),
             ),
+            (
+                "hypercore",
+                json_object(vec![
+                    ("enabled", Value::Bool(self.hypercore.enabled)),
+                    ("network", json_str(self.hypercore.network.as_str())),
+                    ("testnetApi", json_str(&self.hypercore.testnet_api)),
+                ]),
+            ),
             ("logLevel", json_str(self.log_level.as_str())),
         ]
+    }
+
+    /// The `HyperCore` API base of `network` (mainnet: always the official one).
+    #[must_use]
+    pub fn hypercore_api(&self, network: yw_core::hypercore::HcNetwork) -> String {
+        match network {
+            yw_core::hypercore::HcNetwork::Mainnet => yw_core::hypercore::MAINNET_API.to_owned(),
+            yw_core::hypercore::HcNetwork::Testnet => self.hypercore.testnet_api.clone(),
+        }
     }
 }
 

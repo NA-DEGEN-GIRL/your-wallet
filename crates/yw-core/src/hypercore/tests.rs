@@ -24,11 +24,62 @@ fn address(text: &str) -> Address {
     parse_address(text).unwrap()
 }
 
+/// A dApp's (app.hyperliquid.xyz) `eth_signTypedData_v4` of a transfer and of `approveAgent`
+/// gets the structured Hyperliquid display (spec/11 §7): H01 resp. H06, no T04/T10.
+#[test]
+fn dapp_typed_data_gets_the_hyperliquid_display() {
+    use crate::approval::{ApprovalId, ApprovalKind, ApprovalOrigin, ChainFacts, FieldKey};
+    use crate::evm::display::build_typed_request;
+    use crate::evm::risk::{H01, H06, T04, T10};
+    use crate::policy::BrowserOrigin;
+
+    let chain = crate::evm::chain::builtin_chain(42_161).unwrap();
+    let account = address(SDK_DESTINATION);
+    let origin = ApprovalOrigin::Site(BrowserOrigin::parse("https://app.hyperliquid.xyz").unwrap());
+    let build = |source: &[u8]| {
+        let value = yw_json::parse(source, &yw_json::Limits::REQUEST).unwrap();
+        let typed = validate_typed_data_v4(source, &value, 42_161).unwrap();
+        build_typed_request(
+            ApprovalId([9; 16]),
+            origin.clone(),
+            crate::vault::EvmKeySource::Derived(crate::bip32::path::AccountIndex::new(0).unwrap()),
+            account,
+            ApprovalKind::EvmTypedData,
+            &chain,
+            &typed,
+            &ChainFacts::default(),
+            1_790_000_000_000,
+        )
+        .unwrap()
+    };
+    let mut action = every_kind(HcNetwork::Mainnet).remove(0);
+    action.signature_chain_id = 42_161;
+    let draft = build(&yw_json::to_vec(&action.typed_data_json()));
+    let rules: Vec<_> = draft.display.warnings.iter().map(|w| w.rule).collect();
+    assert!(
+        rules.contains(&H01) && !rules.contains(&T04) && !rules.contains(&T10),
+        "{rules:?}"
+    );
+    assert!(
+        draft
+            .display
+            .fields
+            .iter()
+            .any(|field| field.key == FieldKey::TD_FIELD && field.value == "1.5 USDC")
+    );
+
+    let agent = br#"{"types":{"EIP712Domain":[{"name":"name","type":"string"},{"name":"version","type":"string"},{"name":"chainId","type":"uint256"},{"name":"verifyingContract","type":"address"}],"HyperliquidTransaction:ApproveAgent":[{"name":"hyperliquidChain","type":"string"},{"name":"agentAddress","type":"address"},{"name":"agentName","type":"string"},{"name":"nonce","type":"uint64"}]},"primaryType":"HyperliquidTransaction:ApproveAgent","domain":{"name":"HyperliquidSignTransaction","version":"1","chainId":42161,"verifyingContract":"0x0000000000000000000000000000000000000000"},"message":{"hyperliquidChain":"Mainnet","agentAddress":"0x1111111111111111111111111111111111111111","agentName":"","nonce":1790000000000}}"#;
+    let draft = build(agent);
+    let rules: Vec<_> = draft.display.warnings.iter().map(|w| w.rule).collect();
+    assert!(rules.contains(&H06) && !rules.contains(&T04), "{rules:?}");
+}
+
 fn sign(action: &HcAction) -> [u8; 65] {
     let ctx = Secp256k1::new();
     let secret =
         SecretKey::from_byte_array(crate::hex::decode_array::<32>(SDK_KEY).unwrap()).unwrap();
-    let (y_parity, compact) = crate::evm::sign::sign_digest(&ctx, &secret, action.digest()).unwrap();
+    let (y_parity, compact) =
+        crate::evm::sign::sign_digest(&ctx, &secret, action.digest()).unwrap();
     let mut out = [0_u8; 65];
     out[..64].copy_from_slice(&compact);
     out[64] = 27 + y_parity;
@@ -162,9 +213,8 @@ fn l1_agent_is_recognized_only_with_the_exact_schema() {
             r#"{{"domain":{{"chainId":1337,"name":"Exchange","verifyingContract":"0x0000000000000000000000000000000000000000","version":"1"}},"types":{{"Agent":[{fields}],"EIP712Domain":[{{"name":"name","type":"string"}},{{"name":"version","type":"string"}},{{"name":"chainId","type":"uint256"}},{{"name":"verifyingContract","type":"address"}}]}},"primaryType":"Agent","message":{{"source":"a","connectionId":"0x0fcbeda5ae3c4950a548021552a4fea2226858c4453571bf3f24ba017eac2908"}}}}"#
         )
     };
-    let exact = document(
-        r#"{"name":"source","type":"string"},{"name":"connectionId","type":"bytes32"}"#,
-    );
+    let exact =
+        document(r#"{"name":"source","type":"string"},{"name":"connectionId","type":"bytes32"}"#);
     let value = yw_json::parse(exact.as_bytes(), &yw_json::Limits::REQUEST).unwrap();
     let typed = validate_typed_data_v4(exact.as_bytes(), &value, 42_161).unwrap();
     assert_eq!(typed.schema, Some(KnownSchema::HyperliquidL1Agent));
@@ -206,11 +256,24 @@ fn exchange_body_shape() {
     let value = yw_json::parse(&body, &yw_json::Limits::REQUEST).unwrap();
     let object = value.as_object().unwrap();
     assert_eq!(
-        object.get("nonce").and_then(yw_json::Value::as_number).and_then(yw_json::Number::as_u64),
+        object
+            .get("nonce")
+            .and_then(yw_json::Value::as_number)
+            .and_then(yw_json::Number::as_u64),
         Some(SDK_TIME)
     );
-    let signature = object.get("signature").and_then(yw_json::Value::as_object).unwrap();
-    assert_eq!(signature.get("r").and_then(yw_json::Value::as_str).unwrap().len(), 66);
+    let signature = object
+        .get("signature")
+        .and_then(yw_json::Value::as_object)
+        .unwrap();
+    assert_eq!(
+        signature
+            .get("r")
+            .and_then(yw_json::Value::as_str)
+            .unwrap()
+            .len(),
+        66
+    );
     let text = String::from_utf8(body).unwrap();
     assert!(text.contains(r#""type":"usdSend","signatureChainId":"0x66eee","hyperliquidChain":"Testnet","destination":"0x5e9ee1089755c3435139848e47e6635505d5a13a","amount":"1.5","time":1687816341423"#), "{text}");
 }
@@ -219,7 +282,18 @@ fn exchange_body_shape() {
 fn amounts_and_system_addresses() {
     assert!(is_wire_amount("1", 6));
     assert!(is_wire_amount("0.000001", 6));
-    for bad in ["", "0", "0.0", "1.", "1.50", "01", "1e3", "-1", "0.0000001", " 1"] {
+    for bad in [
+        "",
+        "0",
+        "0.0",
+        "1.",
+        "1.50",
+        "01",
+        "1e3",
+        "-1",
+        "0.0000001",
+        " 1",
+    ] {
         assert!(!is_wire_amount(bad, 6), "{bad}");
     }
     assert_eq!(wire_amount(&U256::from_u64(1_500_000), 6), "1.5");
@@ -248,11 +322,13 @@ fn info_and_exchange_shapes() {
     assert_eq!(tokens[1].wire(), "HYPE:0x7317beb7cceed72ef0b346074cc8e7ab");
 
     let spot = br#"{"balances":[{"coin":"USDC","token":0,"hold":"0.0","total":"14.625485","entryNtl":"0.0"}]}"#;
-    let balances = parse_spot_state(&yw_json::parse(spot, &yw_json::Limits::RESPONSE).unwrap()).unwrap();
+    let balances =
+        parse_spot_state(&yw_json::parse(spot, &yw_json::Limits::RESPONSE).unwrap()).unwrap();
     assert_eq!(balances[0].total, "14.625485");
 
     let perp = br#"{"assetPositions":[],"crossMaintenanceMarginUsed":"0.0","crossMarginSummary":{"accountValue":"13104.514502","totalMarginUsed":"0.0","totalNtlPos":"0.0","totalRawUsd":"13104.514502"},"marginSummary":{"accountValue":"13109.482328","totalMarginUsed":"4.967826","totalNtlPos":"100.02765","totalRawUsd":"13009.454678"},"time":1708622398623,"withdrawable":"13104.514502"}"#;
-    let state = parse_perp_state(&yw_json::parse(perp, &yw_json::Limits::RESPONSE).unwrap()).unwrap();
+    let state =
+        parse_perp_state(&yw_json::parse(perp, &yw_json::Limits::RESPONSE).unwrap()).unwrap();
     assert_eq!(state.account_value, "13109.482328");
     assert_eq!(state.withdrawable, "13104.514502");
 

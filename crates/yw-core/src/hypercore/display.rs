@@ -42,7 +42,7 @@ pub struct HcApprovalInput<'a> {
 #[must_use]
 pub fn network_text(network: HcNetwork, signature_chain_id: u64) -> String {
     format!(
-        "Hyperliquid {} (hyperliquidChain {} · 서명 chainId {signature_chain_id})",
+        "Hyperliquid {} (chainId {signature_chain_id}로 서명 · hyperliquidChain {})",
         network.label(),
         network.chain_name()
     )
@@ -73,6 +73,10 @@ fn push(fields: &mut Vec<DisplayField>, key: FieldKey, value: String) -> Result<
 /// # Errors
 ///
 /// [`DisplayError`] (defensive).
+#[expect(
+    clippy::too_many_lines,
+    reason = "one block per display field of spec/11 §6"
+)]
 pub fn build_hypercore_request(
     id: ApprovalId,
     input: &HcApprovalInput<'_>,
@@ -109,7 +113,9 @@ pub fn build_hypercore_request(
         let mut text = destination.to_checksum();
         match kind {
             HcKind::SendAsset => {
-                text.push_str("\nHyperEVM 시스템 주소 — 토큰은 HyperEVM의 같은 주소(서명 계정)로 들어갑니다");
+                text.push_str(
+                    "\nHyperEVM 시스템 주소 — 토큰은 HyperEVM의 같은 주소(서명 계정)로 들어갑니다",
+                );
                 warnings.push(warning(H04, None));
             }
             HcKind::Withdraw => {
@@ -135,9 +141,10 @@ pub fn build_hypercore_request(
     }
     let amount = match &action.payload {
         HcPayload::SpotSend { token, amount, .. } | HcPayload::SendAsset { token, amount, .. } => {
-            let symbol = input
-                .token
-                .map_or_else(|| "?".to_owned(), |token| escape_untrusted(&token.name).text);
+            let symbol = input.token.map_or_else(
+                || "?".to_owned(),
+                |token| escape_untrusted(&token.name).text,
+            );
             format!("{amount} {symbol}\n{}", token_text(input.token, token))
         }
         HcPayload::UsdSend { amount, .. }
@@ -165,7 +172,11 @@ pub fn build_hypercore_request(
         String::from_utf8_lossy(&yw_json::to_vec(&action.typed_data_json())).into_owned(),
     )?;
     sort_warnings(&mut warnings);
-    let title = format!("[{}] HyperCore 전송: {}", action.network.label(), kind.korean());
+    let title = format!(
+        "[{}] HyperCore 전송: {}",
+        action.network.label(),
+        kind.korean()
+    );
     let display = ApprovalDisplay::new(title, fields, warnings)?;
     Ok(ApprovalDraft {
         id,

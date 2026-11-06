@@ -1131,7 +1131,9 @@ fn hyperliquid_fields(
                         if crate::hypercore::system_address_index(&address).is_some()
                             || address == crate::hypercore::HYPE_SYSTEM_ADDRESS
                         {
-                            out.push_str("\nHyperEVM 시스템 주소 — HyperEVM으로 이동하는 작업입니다");
+                            out.push_str(
+                                "\nHyperEVM 시스템 주소 — HyperEVM으로 이동하는 작업입니다",
+                            );
                         }
                         out
                     }
