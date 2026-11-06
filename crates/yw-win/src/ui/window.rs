@@ -26,7 +26,8 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Graphics::Gdi::{
     GetMonitorInfoW, GetStockObject, GetUpdateRect, InvalidateRect, MONITOR_DEFAULTTONEAREST,
-    MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromWindow, SetBkColor, WHITE_BRUSH,
+    MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromWindow, RDW_ALLCHILDREN, RDW_INVALIDATE,
+    RDW_UPDATENOW, RedrawWindow, SetBkColor, WHITE_BRUSH,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{
@@ -51,15 +52,15 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     MSG, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, SB_VERT, SCROLLINFO,
     SIF_PAGE, SIF_POS, SIF_RANGE, SIF_TRACKPOS, SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON,
     SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SYSTEM_METRICS_INDEX, SetForegroundWindow, SetTimer, SetWindowDisplayAffinity,
+    SYSTEM_METRICS_INDEX, SendMessageW, SetForegroundWindow, SetTimer, SetWindowDisplayAffinity,
     SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage,
     WDA_EXCLUDEFROMCAPTURE, WM_APP, WM_CHAR, WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC,
     WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND, WM_GETMINMAXINFO,
     WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEWHEEL,
-    WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WNDCLASSEXW, WS_CAPTION,
-    WS_CHILD, WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME,
-    WS_EX_TOPMOST, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW, WS_SYSMENU, WS_THICKFRAME,
-    WS_VSCROLL,
+    WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_SETREDRAW, WM_SYSKEYDOWN, WNDCLASSEXW,
+    WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_EX_CONTROLPARENT,
+    WS_EX_DLGMODALFRAME, WS_EX_TOPMOST, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW,
+    WS_SYSMENU, WS_THICKFRAME, WS_VSCROLL,
 };
 
 use super::msg::{
@@ -664,6 +665,31 @@ impl Window {
         let Some(hwnd) = self.live() else { return };
         // SAFETY: Invalidates our live window's client area (null rect = everything).
         unsafe { InvalidateRect(hwnd, core::ptr::null(), 0) };
+    }
+
+    /// Suspends drawing (`WM_SETREDRAW` false) so many child moves (a scroll or re-layout) land
+    /// as one repaint in [`Window::end_batch`] instead of one flash per control.
+    pub fn begin_batch(&self) {
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: WM_SETREDRAW(FALSE) to our live window; no pointers involved.
+        unsafe { SendMessageW(hwnd, WM_SETREDRAW, 0, 0) };
+    }
+
+    /// Resumes drawing and repaints the window and all children once, synchronously.
+    pub fn end_batch(&self) {
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: WM_SETREDRAW(TRUE) to our live window; no pointers involved.
+        unsafe { SendMessageW(hwnd, WM_SETREDRAW, 1, 0) };
+        // SAFETY: Repaints our live window and its children (null rect/region = the whole
+        // client area); no erase, every paint draws the full area into a back buffer.
+        unsafe {
+            RedrawWindow(
+                hwnd,
+                core::ptr::null(),
+                core::ptr::null_mut(),
+                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+            )
+        };
     }
 
     /// Invalidates only `rect` (client pixels), without background erase, so a periodic update

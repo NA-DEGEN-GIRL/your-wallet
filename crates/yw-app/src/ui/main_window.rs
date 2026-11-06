@@ -1121,6 +1121,9 @@ impl ControlSet {
                 }
             }
         }
+        // One repaint for the whole batch: moving each control with its own repaint leaves
+        // stale button images behind while scrolling.
+        window.begin_batch();
         for ((ctl, control), (wanted_ctl, rect)) in self.controls.iter_mut().zip(&placed.controls) {
             control.set_rect(*rect);
             control.set_font(&fonts.body);
@@ -1147,5 +1150,6 @@ impl ControlSet {
             }
             *ctl = wanted_ctl.clone();
         }
+        window.end_batch();
     }
 }
