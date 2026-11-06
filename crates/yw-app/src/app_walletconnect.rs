@@ -83,7 +83,11 @@ impl App {
 
     /// A draft about to be shown: a `WalletConnect` request gets the `WalletConnect: …` origin
     /// text and its Verify warning (C01–C04; mismatch and scam are high risk).
-    pub(crate) fn wc_decorate_draft(&self, origin: Option<&BrowserOrigin>, draft: &mut ApprovalDraft) {
+    pub(crate) fn wc_decorate_draft(
+        &self,
+        origin: Option<&BrowserOrigin>,
+        draft: &mut ApprovalDraft,
+    ) {
         let Some((peer, verify)) = origin.and_then(|origin| self.wc_peer_of(origin)) else {
             return;
         };
@@ -105,14 +109,19 @@ impl App {
     /// origin: the origin label, the chains to approve and the Verify warning.
     pub(crate) fn wc_connect_patch(&self, origin: &BrowserOrigin) -> Option<ConnectPatch> {
         let topic = crate::walletconnect::topic_of_origin(origin)?;
-        let proposal = self.wc.proposals.iter().find(|p| p.session_topic == topic)?;
+        let proposal = self
+            .wc
+            .proposals
+            .iter()
+            .find(|p| p.session_topic == topic)?;
         let chains: Vec<String> = proposal
             .chains
             .iter()
             .map(|id| {
-                self.settings
-                    .evm_chain_name(*id)
-                    .map_or_else(|| format!("eip155:{id}"), |name| format!("{name} (eip155:{id})"))
+                self.settings.evm_chain_name(*id).map_or_else(
+                    || format!("eip155:{id}"),
+                    |name| format!("{name} (eip155:{id})"),
+                )
             })
             .collect();
         Some(ConnectPatch {
@@ -172,7 +181,8 @@ impl ConnectPatch {
                 proposal.unsupported_methods.join(", ")
             )));
         }
-        view.badges.push(format!("Verify {}", proposal.verify.label()));
+        view.badges
+            .push(format!("Verify {}", proposal.verify.label()));
     }
 }
 
@@ -266,7 +276,8 @@ impl App {
             WcEvent::Proposal(view) => {
                 self.wc.proposals.retain(|p| p.id != view.id);
                 self.wc.proposals.push(*view);
-                self.wc.notice = Some("연결 요청이 도착했습니다 — 연결 창을 확인하세요.".to_owned());
+                self.wc.notice =
+                    Some("연결 요청이 도착했습니다 — 연결 창을 확인하세요.".to_owned());
             }
             WcEvent::ProposalDone(id) => self.wc.proposals.retain(|p| p.id != id),
             WcEvent::Sessions(views, store) => {
@@ -346,8 +357,17 @@ impl App {
     /// Decodes a QR from BGRA pixels and pairs with it.
     fn wc_pair_pixels(&mut self, width: usize, height: usize, pixels: &[u8], source: &'static str) {
         match crate::walletconnect::qr_decode::decode_bgra_text(width, height, pixels) {
-            Some(text) if text.trim_start().get(..3).is_some_and(|p| p.eq_ignore_ascii_case("wc:")) => {
-                logging::info("walletconnect", "qr.decoded", &[("source", Field::Word(source))]);
+            Some(text)
+                if text
+                    .trim_start()
+                    .get(..3)
+                    .is_some_and(|p| p.eq_ignore_ascii_case("wc:")) =>
+            {
+                logging::info(
+                    "walletconnect",
+                    "qr.decoded",
+                    &[("source", Field::Word(source))],
+                );
                 self.wc_pair(&text);
             }
             Some(_) => {
@@ -374,8 +394,7 @@ impl App {
                     self.wc_pair_pixels(width, height, &pixels, "clipboard");
                 }
                 None => {
-                    self.wc.notice =
-                        Some("클립보드 이미지 형식을 읽을 수 없습니다.".to_owned());
+                    self.wc.notice = Some("클립보드 이미지 형식을 읽을 수 없습니다.".to_owned());
                 }
             },
             Ok(None) => {
@@ -385,7 +404,8 @@ impl App {
                 );
             }
             Err(_) => {
-                self.wc.notice = Some("클립보드를 열 수 없습니다. 잠시 후 다시 시도하세요.".to_owned());
+                self.wc.notice =
+                    Some("클립보드를 열 수 없습니다. 잠시 후 다시 시도하세요.".to_owned());
             }
         }
     }
@@ -401,7 +421,8 @@ impl App {
         match yw_win::image::decode_file(std::path::Path::new(&path)) {
             Ok(image) => self.wc_pair_pixels(image.width, image.height, &image.pixels, "file"),
             Err(_) => {
-                self.wc.notice = Some("이미지 파일을 열 수 없습니다 (PNG·JPEG·BMP·GIF).".to_owned());
+                self.wc.notice =
+                    Some("이미지 파일을 열 수 없습니다 (PNG·JPEG·BMP·GIF).".to_owned());
             }
         }
     }
@@ -416,7 +437,9 @@ impl App {
             .trim()
             .to_ascii_lowercase();
         if !text.is_empty() && !crate::walletconnect::worker::valid_project_id(&text) {
-            self.wc.notice = Some("Project ID는 32자리 16진수입니다 (Reown Cloud 대시보드의 Project ID).".to_owned());
+            self.wc.notice = Some(
+                "Project ID는 32자리 16진수입니다 (Reown Cloud 대시보드의 Project ID).".to_owned(),
+            );
             return;
         }
         let mut settings = self.settings.clone();

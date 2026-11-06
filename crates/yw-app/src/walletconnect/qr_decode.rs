@@ -56,7 +56,8 @@ impl Gray {
         let data = pixels
             .chunks_exact(4)
             .map(|pixel| {
-                let [b, g, r, a] = [0, 1, 2, 3].map(|i| u32::from(pixel.get(i).copied().unwrap_or(0)));
+                let [b, g, r, a] =
+                    [0, 1, 2, 3].map(|i| u32::from(pixel.get(i).copied().unwrap_or(0)));
                 let luma = (r * 299 + g * 587 + b * 114) / 1_000;
                 // Composite over white.
                 let value = (luma * a + 255 * (255 - a)) / 255;
@@ -76,10 +77,14 @@ impl Gray {
 #[must_use]
 pub fn dib_to_bgra(bytes: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
     let u32_at = |offset: usize| -> Option<u32> {
-        Some(u32::from_le_bytes(bytes.get(offset..offset + 4)?.try_into().ok()?))
+        Some(u32::from_le_bytes(
+            bytes.get(offset..offset + 4)?.try_into().ok()?,
+        ))
     };
     let u16_at = |offset: usize| -> Option<u16> {
-        Some(u16::from_le_bytes(bytes.get(offset..offset + 2)?.try_into().ok()?))
+        Some(u16::from_le_bytes(
+            bytes.get(offset..offset + 2)?.try_into().ok()?,
+        ))
     };
     let header = usize::try_from(u32_at(0)?).ok()?;
     if !(40..=124).contains(&header) {
@@ -92,7 +97,9 @@ pub fn dib_to_bgra(bytes: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
     let used = usize::try_from(u32_at(32)?).ok()?;
     let top_down = height < 0;
     let width = usize::try_from(width).ok().filter(|w| *w > 0)?;
-    let height = usize::try_from(height.unsigned_abs()).ok().filter(|h| *h > 0)?;
+    let height = usize::try_from(height.unsigned_abs())
+        .ok()
+        .filter(|h| *h > 0)?;
     if width.checked_mul(height)? > MAX_PIXELS {
         return None;
     }
@@ -100,7 +107,11 @@ pub fn dib_to_bgra(bytes: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
     if compression != 0 && compression != 3 {
         return None;
     }
-    let masks = if compression == 3 && header == 40 { 12 } else { 0 };
+    let masks = if compression == 3 && header == 40 {
+        12
+    } else {
+        0
+    };
     let palette_len = if bits <= 8 {
         if used == 0 { 1_usize << bits } else { used }
     } else {
@@ -127,7 +138,8 @@ pub fn dib_to_bgra(bytes: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
                 }
                 8 => {
                     let index = usize::from(*line.get(x)?);
-                    let entry = bytes.get(palette_start + index * 4..palette_start + index * 4 + 3)?;
+                    let entry =
+                        bytes.get(palette_start + index * 4..palette_start + index * 4 + 3)?;
                     [*entry.first()?, *entry.get(1)?, *entry.get(2)?, 255]
                 }
                 _ => return None,
@@ -181,7 +193,9 @@ struct Bits {
 
 impl Bits {
     fn get(&self, x: usize, y: usize) -> bool {
-        x < self.width && y < self.height && self.dark.get(y * self.width + x).copied().unwrap_or(false)
+        x < self.width
+            && y < self.height
+            && self.dark.get(y * self.width + x).copied().unwrap_or(false)
     }
 
     fn at(&self, x: f64, y: f64) -> Option<bool> {
@@ -222,7 +236,8 @@ fn otsu(gray: &Gray) -> u8 {
             break;
         }
         sum_b += u64::try_from(value).unwrap_or(0) * count;
-        let to_f = |n: u64| f64::from(u32::try_from(n.min(u64::from(u32::MAX))).unwrap_or(u32::MAX));
+        let to_f =
+            |n: u64| f64::from(u32::try_from(n.min(u64::from(u32::MAX))).unwrap_or(u32::MAX));
         let mean_b = to_f(sum_b) / to_f(weight_b);
         let mean_f = to_f(sum_all - sum_b) / to_f(weight_f);
         let between = to_f(weight_b) * to_f(weight_f) * (mean_b - mean_f).powi(2);
@@ -266,9 +281,11 @@ fn binarize_local(gray: &Gray) -> Bits {
                 }
             }
             let index = by * blocks_x + bx;
-            if let (Some(mean), Some(min), Some(max)) =
-                (means.get_mut(index), mins.get_mut(index), maxs.get_mut(index))
-            {
+            if let (Some(mean), Some(min), Some(max)) = (
+                means.get_mut(index),
+                mins.get_mut(index),
+                maxs.get_mut(index),
+            ) {
                 *mean = sum / count.max(1);
                 *min = low;
                 *max = high;
@@ -352,7 +369,14 @@ fn ratio_ok(runs: &[usize; 5]) -> Option<f64> {
 
 /// Runs through `(x, y)` along `(dx, dy)` (−1/0/1 steps): the centre dark run and the four runs
 /// around it, `None` when the pattern is not there. Returns the runs and the centre offset.
-fn cross_runs(bits: &Bits, x: usize, y: usize, dx: isize, dy: isize, max_run: usize) -> Option<([usize; 5], f64)> {
+fn cross_runs(
+    bits: &Bits,
+    x: usize,
+    y: usize,
+    dx: isize,
+    dy: isize,
+    max_run: usize,
+) -> Option<([usize; 5], f64)> {
     if !bits.get(x, y) {
         return None;
     }
@@ -391,7 +415,13 @@ fn cross_runs(bits: &Bits, x: usize, y: usize, dx: isize, dy: isize, max_run: us
     };
     let back = walk(-1)?;
     let forward = walk(1)?;
-    let runs = [back[2], back[1], back[0] + forward[0] + 1, forward[1], forward[2]];
+    let runs = [
+        back[2],
+        back[1],
+        back[0] + forward[0] + 1,
+        forward[1],
+        forward[2],
+    ];
     ratio_ok(&runs)?;
     // Centre offset from (x, y) along the direction.
     let offset = (fl(forward[0]) - fl(back[0])) / 2.0;
@@ -653,7 +683,8 @@ fn find_alignment(bits: &Bits, affine: &Transform, size: usize) -> Option<Point>
                 for i in -2_i32..=2 {
                     let (fi, fj) = (f64::from(i), f64::from(j));
                     let want_dark = i.abs().max(j.abs()) != 1;
-                    if bits.at(p.x + fi * ux + fj * vx, p.y + fi * uy + fj * vy) == Some(want_dark) {
+                    if bits.at(p.x + fi * ux + fj * vx, p.y + fi * uy + fj * vy) == Some(want_dark)
+                    {
                         score += 1;
                     }
                 }
@@ -678,17 +709,41 @@ fn find_alignment(bits: &Bits, affine: &Transform, size: usize) -> Option<Point>
 // ----- QR structure ------------------------------------------------------------------------
 
 const ECC_CODEWORDS_PER_BLOCK: [[u8; 41]; 4] = [
-    [0, 7, 10, 15, 20, 26, 18, 20, 24, 30, 18, 20, 24, 26, 30, 22, 24, 28, 30, 28, 28, 28, 28, 30, 30, 26, 28, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30],
-    [0, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26, 26, 26, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28],
-    [0, 13, 22, 18, 26, 18, 24, 18, 22, 20, 24, 28, 26, 24, 20, 30, 24, 28, 28, 26, 30, 28, 30, 30, 30, 30, 28, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30],
-    [0, 17, 28, 22, 16, 22, 28, 26, 26, 24, 28, 24, 28, 22, 24, 24, 30, 28, 28, 26, 28, 30, 24, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30],
+    [
+        0, 7, 10, 15, 20, 26, 18, 20, 24, 30, 18, 20, 24, 26, 30, 22, 24, 28, 30, 28, 28, 28, 28,
+        30, 30, 26, 28, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30,
+    ],
+    [
+        0, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26, 26, 26, 28,
+        28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28,
+    ],
+    [
+        0, 13, 22, 18, 26, 18, 24, 18, 22, 20, 24, 28, 26, 24, 20, 30, 24, 28, 28, 26, 30, 28, 30,
+        30, 30, 30, 28, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30,
+    ],
+    [
+        0, 17, 28, 22, 16, 22, 28, 26, 26, 24, 28, 24, 28, 22, 24, 24, 30, 28, 28, 26, 28, 30, 24,
+        30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30,
+    ],
 ];
 
 const NUM_ERROR_CORRECTION_BLOCKS: [[u8; 41]; 4] = [
-    [0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 4, 4, 4, 4, 4, 6, 6, 6, 6, 7, 8, 8, 9, 9, 10, 12, 12, 12, 13, 14, 15, 16, 17, 18, 19, 19, 20, 21, 22, 24, 25],
-    [0, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14, 16, 17, 17, 18, 20, 21, 23, 25, 26, 28, 29, 31, 33, 35, 37, 38, 40, 43, 45, 47, 49],
-    [0, 1, 1, 2, 2, 4, 4, 6, 6, 8, 8, 8, 10, 12, 16, 12, 17, 16, 18, 21, 20, 23, 23, 25, 27, 29, 34, 34, 35, 38, 40, 43, 45, 48, 51, 53, 56, 59, 62, 65, 68],
-    [0, 1, 1, 2, 4, 4, 4, 5, 6, 8, 8, 11, 11, 16, 16, 18, 16, 19, 21, 25, 25, 25, 34, 30, 32, 35, 37, 40, 42, 45, 48, 51, 54, 57, 60, 63, 66, 70, 74, 77, 81],
+    [
+        0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 4, 4, 4, 4, 4, 6, 6, 6, 6, 7, 8, 8, 9, 9, 10, 12, 12, 12, 13,
+        14, 15, 16, 17, 18, 19, 19, 20, 21, 22, 24, 25,
+    ],
+    [
+        0, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14, 16, 17, 17, 18, 20, 21,
+        23, 25, 26, 28, 29, 31, 33, 35, 37, 38, 40, 43, 45, 47, 49,
+    ],
+    [
+        0, 1, 1, 2, 2, 4, 4, 6, 6, 8, 8, 8, 10, 12, 16, 12, 17, 16, 18, 21, 20, 23, 23, 25, 27, 29,
+        34, 34, 35, 38, 40, 43, 45, 48, 51, 53, 56, 59, 62, 65, 68,
+    ],
+    [
+        0, 1, 1, 2, 4, 4, 4, 5, 6, 8, 8, 11, 11, 16, 16, 18, 16, 19, 21, 25, 25, 25, 34, 30, 32,
+        35, 37, 40, 42, 45, 48, 51, 54, 57, 60, 63, 66, 70, 74, 77, 81,
+    ],
 ];
 
 /// Error-correction level as the table row (Low, Medium, Quartile, High).
@@ -781,7 +836,9 @@ impl Grid {
         let mut best: Option<(u32, u32)> = None;
         for data in 0..32_u32 {
             let code = format_code(data);
-            let distance = (code ^ first).count_ones().min((code ^ second).count_ones());
+            let distance = (code ^ first)
+                .count_ones()
+                .min((code ^ second).count_ones());
             if best.is_none_or(|(_, known)| distance < known) {
                 best = Some((data, distance));
             }
@@ -810,7 +867,9 @@ impl Grid {
         let mut best: Option<(u32, u32)> = None;
         for version in 7..=40_u32 {
             let code = version_code(version);
-            let distance = (code ^ first).count_ones().min((code ^ second).count_ones());
+            let distance = (code ^ first)
+                .count_ones()
+                .min((code ^ second).count_ones());
             if best.is_none_or(|(_, known)| distance < known) {
                 best = Some((version, distance));
             }
@@ -990,7 +1049,9 @@ impl Field {
 
     /// Evaluates a polynomial stored lowest degree first.
     fn eval_low(&self, poly: &[u8], x: u8) -> u8 {
-        poly.iter().rev().fold(0, |acc, coefficient| self.mul(acc, x) ^ coefficient)
+        poly.iter()
+            .rev()
+            .fold(0, |acc, coefficient| self.mul(acc, x) ^ coefficient)
     }
 }
 
@@ -1244,11 +1305,7 @@ fn try_bits(bits: &Bits) -> Option<Vec<u8>> {
         return None;
     }
     for ([top_left, top_right, bottom_left], _) in triples(&candidates) {
-        let module = candidates
-            .iter()
-            .map(|c| c.module)
-            .sum::<f64>()
-            / fl(candidates.len());
+        let module = candidates.iter().map(|c| c.module).sum::<f64>() / fl(candidates.len());
         let module = {
             // The finders of this triple decide the module size.
             let near = |p: Point| {
@@ -1269,7 +1326,13 @@ fn try_bits(bits: &Bits) -> Option<Vec<u8>> {
             3 => estimate.saturating_sub(2),
             _ => estimate,
         };
-        for size in [base, base + 4, base.saturating_sub(4), base + 8, base.saturating_sub(8)] {
+        for size in [
+            base,
+            base + 4,
+            base.saturating_sub(4),
+            base + 8,
+            base.saturating_sub(8),
+        ] {
             if !(21..=177).contains(&size) || (size - 17) % 4 != 0 {
                 continue;
             }

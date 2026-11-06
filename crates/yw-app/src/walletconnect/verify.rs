@@ -94,11 +94,13 @@ pub fn check_attestation(
     if !verify_signature(&key.x, &key.y, &digest, &signature) {
         return None;
     }
-    let header = yw_json::parse(&yw_core::walletconnect::base64url_decode(header)?, &LIMITS).ok()?;
+    let header =
+        yw_json::parse(&yw_core::walletconnect::base64url_decode(header)?, &LIMITS).ok()?;
     if header.as_object()?.get("alg")?.as_str()? != "ES256" {
         return None;
     }
-    let payload = yw_json::parse(&yw_core::walletconnect::base64url_decode(payload)?, &LIMITS).ok()?;
+    let payload =
+        yw_json::parse(&yw_core::walletconnect::base64url_decode(payload)?, &LIMITS).ok()?;
     let object = payload.as_object()?;
     let exp = object.get("exp")?.as_number()?.as_u64()?;
     if exp <= now_s || object.get("id")?.as_str()? != encrypted_id {
@@ -106,8 +108,14 @@ pub fn check_attestation(
     }
     Some(Attestation {
         origin: object.get("origin")?.as_str()?.to_owned(),
-        is_scam: object.get("isScam").and_then(Value::as_bool).unwrap_or(false),
-        is_verified: object.get("isVerified").and_then(Value::as_bool).unwrap_or(false),
+        is_scam: object
+            .get("isScam")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        is_verified: object
+            .get("isVerified")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     })
 }
 
@@ -118,7 +126,10 @@ pub fn parse_v2(body: &[u8]) -> Option<Attestation> {
     let object = value.as_object()?;
     Some(Attestation {
         origin: object.get("origin")?.as_str()?.to_owned(),
-        is_scam: object.get("isScam").and_then(Value::as_bool).unwrap_or(false),
+        is_scam: object
+            .get("isScam")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         is_verified: true,
     })
 }

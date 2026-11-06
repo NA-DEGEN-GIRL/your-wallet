@@ -83,10 +83,14 @@ fn render(size: usize, modules: &[bool], scene: &Scene) -> Vec<u8> {
                         && (ry + half) < total * scene.module;
                     inside_any |= inside_quiet;
                     let value = if !inside_quiet {
-                        let near_box = boxes.iter().any(|(bx, by)| {
-                            px.abs_diff(*bx) < 18 && py.abs_diff(*by) < 10
-                        });
-                        if near_box { 40.0 } else { f64::from(scene.background) }
+                        let near_box = boxes
+                            .iter()
+                            .any(|(bx, by)| px.abs_diff(*bx) < 18 && py.abs_diff(*by) < 10);
+                        if near_box {
+                            40.0
+                        } else {
+                            f64::from(scene.background)
+                        }
                     } else if mx >= 0.0
                         && my >= 0.0
                         && (mx as usize) < size
@@ -143,7 +147,12 @@ fn qr_decodes_generated_codes() {
         let module = 4.0;
         let side = ((f64::from(qr.size()) + 8.0) * module) as usize + 40;
         let found = decode_scene(&qr, &scene(side, side, module, 0.0));
-        assert_eq!(found.as_deref(), Some(text), "version {}", qr.version().value());
+        assert_eq!(
+            found.as_deref(),
+            Some(text),
+            "version {}",
+            qr.version().value()
+        );
     }
 }
 
@@ -152,9 +161,19 @@ fn qr_decodes_generated_codes() {
 #[test]
 fn qr_decodes_rotated_scaled_and_inverted_screenshots() {
     let qr = QrCode::encode_text(URI, QrCodeEcc::Medium).unwrap();
-    for (module, angle) in [(3.3, 17.0), (2.6, -8.0), (5.1, 90.0), (3.0, 180.0), (4.4, 33.0)] {
+    for (module, angle) in [
+        (3.3, 17.0),
+        (2.6, -8.0),
+        (5.1, 90.0),
+        (3.0, 180.0),
+        (4.4, 33.0),
+    ] {
         let found = decode_scene(&qr, &scene(900, 700, module, angle));
-        assert_eq!(found.as_deref(), Some(URI), "module {module}, angle {angle}");
+        assert_eq!(
+            found.as_deref(),
+            Some(URI),
+            "module {module}, angle {angle}"
+        );
     }
     let mut dark_mode = scene(700, 600, 3.5, 5.0);
     dark_mode.dark = 245;
@@ -193,7 +212,14 @@ fn qr_corrects_damaged_modules() {
 #[test]
 fn dib_formats_parse() {
     let (width, height) = (3_usize, 2_usize);
-    let colors = [[1_u8, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12], [13, 14, 15], [16, 17, 18]];
+    let colors = [
+        [1_u8, 2, 3],
+        [4, 5, 6],
+        [7, 8, 9],
+        [10, 11, 12],
+        [13, 14, 15],
+        [16, 17, 18],
+    ];
     let header = |bits: u16, height: i32| {
         let mut h = Vec::new();
         h.extend_from_slice(&40_u32.to_le_bytes());
@@ -253,8 +279,12 @@ fn origins_labels_and_caip2() {
     assert_eq!(super::parse_caip2("eip155:8453"), Some(8_453));
     assert_eq!(super::parse_caip2("eip155:01"), None);
     assert_eq!(super::parse_caip2("solana:5eykt"), None);
-    assert!(super::worker::valid_project_id("0123456789abcdef0123456789abcdef"));
-    assert!(!super::worker::valid_project_id("0123456789ABCDEF0123456789abcdef"));
+    assert!(super::worker::valid_project_id(
+        "0123456789abcdef0123456789abcdef"
+    ));
+    assert!(!super::worker::valid_project_id(
+        "0123456789ABCDEF0123456789abcdef"
+    ));
 }
 
 /// The ES256 example of RFC 7515 Appendix A.3 verifies with the CNG P-256 check used for Verify
@@ -262,8 +292,12 @@ fn origins_labels_and_caip2() {
 #[test]
 fn es256_rfc7515_vector_verifies_with_cng() {
     let decode = |text: &str| yw_core::walletconnect::base64url_decode(text).unwrap();
-    let x: [u8; 32] = decode("f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU").try_into().unwrap();
-    let y: [u8; 32] = decode("x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0").try_into().unwrap();
+    let x: [u8; 32] = decode("f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU")
+        .try_into()
+        .unwrap();
+    let y: [u8; 32] = decode("x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0")
+        .try_into()
+        .unwrap();
     let jws = "eyJhbGciOiJFUzI1NiJ9.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.DtEhU3ljbEg8L38VWAfUAqOyKAM6-Xx-F4GawxaepmXFCgfTjDxw5djxLa8ISlSApmWQxfKTUJqPP3-Kg6NU1Q";
     let (input, signature) = jws.rsplit_once('.').unwrap();
     let signature: [u8; 64] = decode(signature).try_into().unwrap();
@@ -300,7 +334,10 @@ fn verify_status_rules() {
         VerifyStatus::Valid
     );
     assert_eq!(
-        status_of(Some(&attested("https://evil.example", false, true)), claimed),
+        status_of(
+            Some(&attested("https://evil.example", false, true)),
+            claimed
+        ),
         VerifyStatus::Invalid
     );
     assert_eq!(
@@ -308,7 +345,10 @@ fn verify_status_rules() {
         VerifyStatus::Scam
     );
     assert_eq!(
-        status_of(Some(&attested("https://app.example", false, false)), claimed),
+        status_of(
+            Some(&attested("https://app.example", false, false)),
+            claimed
+        ),
         VerifyStatus::Unknown
     );
     // The live Verify public key format (fetched 2026-11-06 from /v3/public-key).
@@ -348,7 +388,9 @@ impl super::worker::RelayLink for MockLink {
     }
 
     fn abort(&self) {
-        self.0.closed.store(true, std::sync::atomic::Ordering::Release);
+        self.0
+            .closed
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -438,7 +480,8 @@ fn publishes(wire: &MockWire) -> Vec<([u8; 32], String, u64)> {
         .map(|v| {
             let params = get(&v, &["params"]);
             (
-                yw_core::hex::decode_array::<32>(get(params, &["topic"]).as_str().unwrap()).unwrap(),
+                yw_core::hex::decode_array::<32>(get(params, &["topic"]).as_str().unwrap())
+                    .unwrap(),
                 get(params, &["message"]).as_str().unwrap().to_owned(),
                 get(params, &["tag"]).as_number().unwrap().as_u64().unwrap(),
             )
@@ -453,8 +496,8 @@ fn publishes(wire: &MockWire) -> Vec<([u8; 32], String, u64)> {
 /// independently from the proposal key agreement.
 #[test]
 fn mocked_end_to_end_session() {
-    use crate::browser::{BrowserCore, ChainEntry, DappEvent, SiteKind, VaultView, WalletView};
     use super::worker::{Input, WcCommand, WcEvent, Worker};
+    use crate::browser::{BrowserCore, ChainEntry, DappEvent, SiteKind, VaultView, WalletView};
 
     let recorder = Arc::new(Recorder::default());
     let core = BrowserCore::new(
@@ -506,14 +549,18 @@ fn mocked_end_to_end_session() {
     worker.handle(Input::Command(WcCommand::Configure(Some(
         "0123456789abcdef0123456789abcdef".to_owned(),
     ))));
-    worker.handle(Input::Command(WcCommand::Load(Box::new(super::store::WcStore {
-        client_seed: Some(yw_core::secret::Zeroizing::new([9; 32])),
-        sessions: Vec::new(),
-    }))));
+    worker.handle(Input::Command(WcCommand::Load(Box::new(
+        super::store::WcStore {
+            client_seed: Some(yw_core::secret::Zeroizing::new([9; 32])),
+            sessions: Vec::new(),
+        },
+    ))));
     worker.handle(Input::Command(WcCommand::Pair(uri)));
     worker.tick();
     let url = urls.lock().unwrap()[0].clone();
-    assert!(url.starts_with("https://relay.walletconnect.org/?auth=eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9."));
+    assert!(url.starts_with(
+        "https://relay.walletconnect.org/?auth=eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9."
+    ));
     assert!(url.contains("&projectId=0123456789abcdef0123456789abcdef&ua=wc-2%2Frust-yourwallet-"));
     let subscribe = json(&wire.sent.lock().unwrap()[0]);
     assert_eq!(get(&subscribe, &["method"]).as_str(), Some("irn_subscribe"));
@@ -542,7 +589,11 @@ fn mocked_end_to_end_session() {
             _ => None,
         })
         .unwrap();
-    assert_eq!(view.chains, vec![1, yw_core::evm::chain::SEPOLIA], "137 is not registered");
+    assert_eq!(
+        view.chains,
+        vec![1, yw_core::evm::chain::SEPOLIA],
+        "137 is not registered"
+    );
     assert_eq!(view.verify, super::VerifyStatus::Unknown);
     assert_eq!(view.unsupported_methods, vec!["eth_sign".to_owned()]);
     let origin = super::session_origin(&view.session_topic).unwrap();
@@ -558,20 +609,30 @@ fn mocked_end_to_end_session() {
         })
         .unwrap();
     assert_eq!(connect.kind, SiteKind::RequestAccounts);
-    let account = yw_core::evm::address::parse_address("0x9858effd232b4033e47d90003d41ec34ecaeda94").unwrap();
+    let account =
+        yw_core::evm::address::parse_address("0x9858effd232b4033e47d90003d41ec34ecaeda94").unwrap();
     core.respond(
         &connect.reply,
-        Ok(crate::browser::envelope::accounts_value(&[*account.as_bytes()])),
+        Ok(crate::browser::envelope::accounts_value(&[
+            *account.as_bytes()
+        ])),
     );
-    core.upsert_grant(yw_core::policy::ConnectedSite::new(origin.clone(), vec![account], 1, 0).unwrap());
+    core.upsert_grant(
+        yw_core::policy::ConnectedSite::new(origin.clone(), vec![account], 1, 0).unwrap(),
+    );
     pump(&mut worker);
 
     // The dApp reads the approval on the pairing topic and derives the session key.
     let sent = publishes(&wire);
-    let response = sent.iter().find(|(topic, _, tag)| *topic == dapp.pairing_topic && *tag == 1101).unwrap();
+    let response = sent
+        .iter()
+        .find(|(topic, _, tag)| *topic == dapp.pairing_topic && *tag == 1101)
+        .unwrap();
     let response = Dapp::open(&dapp.pairing_key, &response.1);
     let responder = yw_core::hex::decode_array::<32>(
-        get(&response, &["result", "responderPublicKey"]).as_str().unwrap(),
+        get(&response, &["result", "responderPublicKey"])
+            .as_str()
+            .unwrap(),
     )
     .unwrap();
     let session_key = *derive_sym_key(&dapp.secret, &responder).unwrap();
@@ -581,7 +642,10 @@ fn mocked_end_to_end_session() {
     };
     let session_topic = topic_of(&session_key);
     assert_eq!(session_topic, view.session_topic);
-    let settle = sent.iter().find(|(topic, _, tag)| *topic == session_topic && *tag == 1102).unwrap();
+    let settle = sent
+        .iter()
+        .find(|(topic, _, tag)| *topic == session_topic && *tag == 1102)
+        .unwrap();
     let settle = Dapp::open(&session_key, &settle.1);
     assert_eq!(get(&settle, &["method"]).as_str(), Some("wc_sessionSettle"));
     let namespace = get(&settle, &["params", "namespaces", "eip155"]);
@@ -598,13 +662,21 @@ fn mocked_end_to_end_session() {
             "eip155:11155111:0x9858effd232b4033e47d90003d41ec34ecaeda94"
         ]
     );
-    let methods: Vec<&str> = get(namespace, &["methods"]).as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+    let methods: Vec<&str> = get(namespace, &["methods"])
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
     assert!(methods.contains(&"personal_sign") && methods.contains(&"eth_sign"));
     let key = dapp.session_key.unwrap();
 
     // personal_sign → dispatcher → the UI queue (answered with a dummy value; never signed).
     let request = r#"{"id":1700000000000002,"jsonrpc":"2.0","method":"wc_sessionRequest","params":{"request":{"method":"personal_sign","params":["0x48656c6c6f","0x9858effd232b4033e47d90003d41ec34ecaeda94"]},"chainId":"eip155:11155111"}}"#;
-    wire.inbox.lock().unwrap().push_back(subscription(&session_topic, &Dapp::seal(&key, request)));
+    wire.inbox
+        .lock()
+        .unwrap()
+        .push_back(subscription(&session_topic, &Dapp::seal(&key, request)));
     pump(&mut worker);
     let sign = recorder
         .dapp
@@ -612,14 +684,20 @@ fn mocked_end_to_end_session() {
         .unwrap()
         .iter()
         .find_map(|event| match event {
-            DappEvent::Request(site) if site.origin == origin && site.kind != SiteKind::RequestAccounts => {
+            DappEvent::Request(site)
+                if site.origin == origin && site.kind != SiteKind::RequestAccounts =>
+            {
                 Some((**site).clone())
             }
             _ => None,
         })
         .unwrap();
     assert!(matches!(&sign.kind, SiteKind::PersonalSign { message, .. } if message == b"Hello"));
-    assert_eq!(sign.chain_id, yw_core::evm::chain::SEPOLIA, "the request's chain");
+    assert_eq!(
+        sign.chain_id,
+        yw_core::evm::chain::SEPOLIA,
+        "the request's chain"
+    );
     core.respond(&sign.reply, Ok(Value::String("0xdummy".to_owned())));
     // Local answers and refusals.
     for text in [
@@ -628,7 +706,10 @@ fn mocked_end_to_end_session() {
         r#"{"id":1700000000000005,"jsonrpc":"2.0","method":"wc_sessionRequest","params":{"request":{"method":"personal_sign","params":[]},"chainId":"eip155:137"}}"#,
         r#"{"id":1700000000000006,"jsonrpc":"2.0","method":"wc_sessionPing","params":{}}"#,
     ] {
-        wire.inbox.lock().unwrap().push_back(subscription(&session_topic, &Dapp::seal(&key, text)));
+        wire.inbox
+            .lock()
+            .unwrap()
+            .push_back(subscription(&session_topic, &Dapp::seal(&key, text)));
     }
     pump(&mut worker);
     let answers: Vec<(u64, Value)> = publishes(&wire)
@@ -642,14 +723,26 @@ fn mocked_end_to_end_session() {
             .find(|(_, v)| get(v, &["id"]).as_number().unwrap().as_u64() == Some(id))
             .unwrap()
     };
-    assert_eq!(get(&by_id(1_700_000_000_000_002).1, &["result"]).as_str(), Some("0xdummy"));
-    assert_eq!(get(&by_id(1_700_000_000_000_003).1, &["result"]).as_str(), Some("0x1"));
     assert_eq!(
-        get(&by_id(1_700_000_000_000_004).1, &["error", "code"]).as_number().unwrap().as_i64(),
+        get(&by_id(1_700_000_000_000_002).1, &["result"]).as_str(),
+        Some("0xdummy")
+    );
+    assert_eq!(
+        get(&by_id(1_700_000_000_000_003).1, &["result"]).as_str(),
+        Some("0x1")
+    );
+    assert_eq!(
+        get(&by_id(1_700_000_000_000_004).1, &["error", "code"])
+            .as_number()
+            .unwrap()
+            .as_i64(),
         Some(4_200)
     );
     assert_eq!(
-        get(&by_id(1_700_000_000_000_005).1, &["error", "code"]).as_number().unwrap().as_i64(),
+        get(&by_id(1_700_000_000_000_005).1, &["error", "code"])
+            .as_number()
+            .unwrap()
+            .as_i64(),
         Some(5_100)
     );
     let ping = by_id(1_700_000_000_000_006);
@@ -679,12 +772,20 @@ fn mocked_end_to_end_session() {
         .find(|(topic, _, tag)| *topic == session_topic && *tag == 1112)
         .unwrap();
     let delete = Dapp::open(&key, &delete.1);
-    assert_eq!(get(&delete, &["params", "code"]).as_number().unwrap().as_u64(), Some(6_000));
-    assert!(recorder
-        .wc
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|event| matches!(event, WcEvent::Ended(ended) if *ended == origin)));
+    assert_eq!(
+        get(&delete, &["params", "code"])
+            .as_number()
+            .unwrap()
+            .as_u64(),
+        Some(6_000)
+    );
+    assert!(
+        recorder
+            .wc
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, WcEvent::Ended(ended) if *ended == origin))
+    );
     let _ = Envelope::decode;
 }

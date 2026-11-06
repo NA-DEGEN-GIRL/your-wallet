@@ -1285,10 +1285,7 @@ impl App {
         };
         let address_book = self.address_book_facts();
         let (origin, extra_warnings) = match site {
-            Some(site) => (
-                self.site_approval_origin(site),
-                site_fee_warning(site),
-            ),
+            Some(site) => (self.site_approval_origin(site), site_fee_warning(site)),
             None => (yw_core::approval::ApprovalOrigin::App, Vec::new()),
         };
         let sent = self.rpc(RpcJob::Prepare(Box::new(PrepareJob {

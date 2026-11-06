@@ -4,8 +4,8 @@
 //! clear). A malformed session is dropped on read; a malformed document resets to empty.
 
 use yw_core::evm::address::{Address, parse_address};
-use yw_json::Value;
 use yw_core::secret::Zeroizing;
+use yw_json::Value;
 
 use super::engine::Session;
 use super::{Metadata, VerifyStatus};
@@ -87,7 +87,10 @@ fn session_from(value: &Value) -> Option<Session> {
 fn session_to(session: &Session) -> Value {
     json_object(vec![
         ("topic", json_str(&yw_core::hex::encode(&session.topic))),
-        ("symKey", json_str(&yw_core::hex::encode(session.sym_key.as_ref()))),
+        (
+            "symKey",
+            json_str(&yw_core::hex::encode(session.sym_key.as_ref())),
+        ),
         (
             "peerPublic",
             json_str(&yw_core::hex::encode(&session.peer_public)),

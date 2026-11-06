@@ -21,14 +21,14 @@ use windows_sys::Win32::Networking::WinHttp::{
     WINHTTP_OPTION_REDIRECT_POLICY, WINHTTP_OPTION_REDIRECT_POLICY_NEVER,
     WINHTTP_OPTION_SECURE_PROTOCOLS, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET,
     WINHTTP_OPTION_WEB_SOCKET_CLOSE_TIMEOUT, WINHTTP_OPTION_WEB_SOCKET_KEEPALIVE_INTERVAL,
-    WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE, WINHTTP_WEB_SOCKET_BINARY_FRAGMENT_BUFFER_TYPE,
-    WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE, WINHTTP_WEB_SOCKET_BUFFER_TYPE,
-    WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE, WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS,
-    WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE, WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE,
-    WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders,
-    WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetOption, WinHttpSetTimeouts,
-    WinHttpWebSocketClose, WinHttpWebSocketCompleteUpgrade, WinHttpWebSocketReceive,
-    WinHttpWebSocketSend,
+    WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
+    WINHTTP_WEB_SOCKET_BINARY_FRAGMENT_BUFFER_TYPE, WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE,
+    WINHTTP_WEB_SOCKET_BUFFER_TYPE, WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE,
+    WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS, WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE,
+    WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE, WinHttpCloseHandle, WinHttpConnect, WinHttpOpen,
+    WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReceiveResponse, WinHttpSendRequest,
+    WinHttpSetOption, WinHttpSetTimeouts, WinHttpWebSocketClose, WinHttpWebSocketCompleteUpgrade,
+    WinHttpWebSocketReceive, WinHttpWebSocketSend,
 };
 
 use crate::error::WinError;
@@ -184,7 +184,11 @@ impl WebSocket {
         )?;
         // Keep-alive pings every 15 s (the minimum) so a dead connection fails the receive; set on
         // the request before the upgrade (best effort: older systems keep the 30 s default).
-        let _ = set_u32_option(&request, WINHTTP_OPTION_WEB_SOCKET_KEEPALIVE_INTERVAL, 15_000);
+        let _ = set_u32_option(
+            &request,
+            WINHTTP_OPTION_WEB_SOCKET_KEEPALIVE_INTERVAL,
+            15_000,
+        );
         // SAFETY: The upgrade option takes no buffer (NULL, 0) on our request handle.
         if unsafe {
             WinHttpSetOption(
@@ -199,15 +203,7 @@ impl WebSocket {
         }
         // SAFETY: No extra headers and no body for this synchronous call.
         let sent = unsafe {
-            WinHttpSendRequest(
-                request.0,
-                core::ptr::null(),
-                0,
-                core::ptr::null(),
-                0,
-                0,
-                0,
-            )
+            WinHttpSendRequest(request.0, core::ptr::null(), 0, core::ptr::null(), 0, 0, 0)
         };
         if sent == 0 {
             return Err(os_error("WinHttpSendRequest"));
@@ -233,7 +229,10 @@ impl WebSocket {
             return Err(os_error("WinHttpQueryHeaders"));
         }
         if status != 101 {
-            return Err(HttpError::Os(WinError::new("WinHttpReceiveResponse", status)));
+            return Err(HttpError::Os(WinError::new(
+                "WinHttpReceiveResponse",
+                status,
+            )));
         }
         // SAFETY: Completes the upgrade of our request handle (no context).
         let socket = Handle(unsafe { WinHttpWebSocketCompleteUpgrade(request.0, 0) });

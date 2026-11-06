@@ -26,8 +26,8 @@ pub mod security;
 pub mod session;
 pub mod time;
 pub mod ui;
-pub mod ws;
 mod wide;
+pub mod ws;
 
 pub use error::WinError;
 pub use process::{

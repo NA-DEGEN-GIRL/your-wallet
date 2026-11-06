@@ -148,7 +148,11 @@ pub fn parse_pairing_uri(text: &str) -> Result<PairingUri, UriError> {
         return Err(UriError::Malformed);
     }
     let decoded;
-    let text = if trimmed.len() > 5 && trimmed.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("wc%3a")) {
+    let text = if trimmed.len() > 5
+        && trimmed
+            .get(..5)
+            .is_some_and(|p| p.eq_ignore_ascii_case("wc%3a"))
+    {
         decoded = percent_decode(trimmed).ok_or(UriError::Malformed)?;
         decoded.as_str()
     } else {
@@ -187,7 +191,9 @@ pub fn parse_pairing_uri(text: &str) -> Result<PairingUri, UriError> {
             "relay-protocol" => relay_protocol = Some(value),
             "relay-data" => relay_data = Some(value),
             "expiryTimestamp" => {
-                if value.is_empty() || value.len() > 12 || !value.bytes().all(|b| b.is_ascii_digit())
+                if value.is_empty()
+                    || value.len() > 12
+                    || !value.bytes().all(|b| b.is_ascii_digit())
                 {
                     return Err(UriError::Malformed);
                 }

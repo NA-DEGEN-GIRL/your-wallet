@@ -1210,7 +1210,10 @@ impl EventQueue {
                     }
                     lanes.dapp += 1;
                 }
-                UiEvent::Rpc(_) | UiEvent::Llm(_) | UiEvent::LlmTest(_) | UiEvent::WalletConnect(_) => {
+                UiEvent::Rpc(_)
+                | UiEvent::Llm(_)
+                | UiEvent::LlmTest(_)
+                | UiEvent::WalletConnect(_) => {
                     if lanes.other >= EVENT_QUEUE_CAP {
                         return Err(QueueFull);
                     }

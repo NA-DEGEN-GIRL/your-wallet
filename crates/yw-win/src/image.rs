@@ -110,7 +110,8 @@ pub fn decode_file(path: &Path) -> Result<Bgra, WinError> {
     let rect = Rect {
         X: 0,
         Y: 0,
-        Width: i32::try_from(width).map_err(|_| WinError::invalid_argument("GdipBitmapLockBits"))?,
+        Width: i32::try_from(width)
+            .map_err(|_| WinError::invalid_argument("GdipBitmapLockBits"))?,
         Height: i32::try_from(height)
             .map_err(|_| WinError::invalid_argument("GdipBitmapLockBits"))?,
     };

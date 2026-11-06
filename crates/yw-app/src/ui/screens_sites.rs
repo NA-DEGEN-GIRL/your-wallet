@@ -315,9 +315,9 @@ impl App {
                     .filter(|grant| !crate::walletconnect::is_session_origin(&grant.origin))
                     .count()
                     + {
-                    let (sol, btc) = self.chain_grants();
-                    sol.len() + btc.len()
-                };
+                        let (sol, btc) = self.chain_grants();
+                        sol.len() + btc.len()
+                    };
                 if let Some(browser) = self.browser.as_mut() {
                     let (pages, shown) = page_of(total, browser.site_rows.page);
                     browser.site_rows.page = if id == ids::SITES_PREV {

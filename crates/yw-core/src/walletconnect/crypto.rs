@@ -90,7 +90,10 @@ impl X25519Secret {
 /// The session symmetric key: `HKDF-SHA256(X25519(secret, peer))` (no salt, empty info, 32 bytes;
 /// `deriveSymKey`). `None` for a low-order peer key.
 #[must_use]
-pub fn derive_sym_key(secret: &X25519Secret, peer_public: &[u8; 32]) -> Option<Zeroizing<[u8; 32]>> {
+pub fn derive_sym_key(
+    secret: &X25519Secret,
+    peer_public: &[u8; 32],
+) -> Option<Zeroizing<[u8; 32]>> {
     let shared = secret.shared(peer_public)?;
     let hkdf = Hkdf::<Sha256>::new(None, shared.as_ref());
     let mut out = Zeroizing::new([0_u8; 32]);
@@ -208,5 +211,7 @@ pub fn open_envelope(sym_key: &[u8; 32], envelope: &Envelope) -> Option<Vec<u8>>
         Envelope::Type0 { iv, sealed } | Envelope::Type1 { iv, sealed, .. } => (iv, sealed),
     };
     let cipher = ChaCha20Poly1305::new(Key::from_slice(sym_key));
-    cipher.decrypt(Nonce::from_slice(iv), sealed.as_slice()).ok()
+    cipher
+        .decrypt(Nonce::from_slice(iv), sealed.as_slice())
+        .ok()
 }

@@ -247,7 +247,10 @@ impl Outlet for WcOutlet {
 #[derive(Clone, Debug)]
 enum Waiting {
     /// The connect window of proposal `id` (session origin `origin`).
-    Connect { proposal: u64, origin: BrowserOrigin },
+    Connect {
+        proposal: u64,
+        origin: BrowserOrigin,
+    },
     /// A session request.
     Request { topic: [u8; 32], id: u64 },
 }
@@ -310,7 +313,10 @@ fn percent_encode(text: &str) -> String {
 /// Whether `text` is a Reown Cloud project id (32 lowercase hex digits).
 #[must_use]
 pub fn valid_project_id(text: &str) -> bool {
-    text.len() == 32 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    text.len() == 32
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 impl Worker {
@@ -646,7 +652,8 @@ impl Worker {
             ("ttl", json_u64(u64::from(publish.ttl))),
             ("tag", json_u64(u64::from(publish.tag))),
         ]);
-        if !self.send_rpc("irn_publish", params, RelayCall::Other) && self.queued.len() < MAX_QUEUED {
+        if !self.send_rpc("irn_publish", params, RelayCall::Other) && self.queued.len() < MAX_QUEUED
+        {
             self.queued.push(publish.clone());
         }
     }
@@ -771,10 +778,12 @@ impl Worker {
             &[("verify", Field::Word(status.as_str()))],
         );
         self.sink.push(WcEvent::Proposal(Box::new(view.clone())));
-        let deadline = view
-            .expiry
-            .saturating_mul(1_000)
-            .min(self.core.clock().now_unix_ms().saturating_add(INTERACTIVE_DEADLINE_MS));
+        let deadline = view.expiry.saturating_mul(1_000).min(
+            self.core
+                .clock()
+                .now_unix_ms()
+                .saturating_add(INTERACTIVE_DEADLINE_MS),
+        );
         // The session origin starts on the first offered chain.
         if let Some(first) = view.chains.first() {
             self.core.set_origin_chain(&origin, *first);
@@ -846,7 +855,11 @@ impl Worker {
         match request.method.as_str() {
             "eth_accounts" => {
                 let accounts = crate::browser::envelope::accounts_value(
-                    &session.accounts.iter().map(|a| *a.as_bytes()).collect::<Vec<_>>(),
+                    &session
+                        .accounts
+                        .iter()
+                        .map(|a| *a.as_bytes())
+                        .collect::<Vec<_>>(),
                 );
                 self.answer(&request.topic, request.id, Ok(accounts));
             }
@@ -863,10 +876,11 @@ impl Worker {
                 };
                 self.core.set_origin_chain(&origin, request.chain_id);
                 let now = self.core.clock().now_unix_ms();
-                let deadline = request.expiry.map_or(
-                    now.saturating_add(INTERACTIVE_DEADLINE_MS),
-                    |expiry| expiry.saturating_mul(1_000),
-                );
+                let deadline = request
+                    .expiry
+                    .map_or(now.saturating_add(INTERACTIVE_DEADLINE_MS), |expiry| {
+                        expiry.saturating_mul(1_000)
+                    });
                 self.submit(
                     origin,
                     request.topic,
@@ -1012,13 +1026,17 @@ impl Worker {
                     let outs = self.engine.update(&topic, Some(accounts), None, now);
                     self.apply(outs);
                     if let Some(chain) = session.chains.first() {
-                        let outs = self.engine.emit(&topic, "accountsChanged", *chain, self.now_ms());
+                        let outs =
+                            self.engine
+                                .emit(&topic, "accountsChanged", *chain, self.now_ms());
                         self.apply(outs);
                     }
                 }
             }
             BrowserEvent::ChainChanged(chain) if session.chains.contains(chain) => {
-                let outs = self.engine.emit(&topic, "chainChanged", *chain, self.now_ms());
+                let outs = self
+                    .engine
+                    .emit(&topic, "chainChanged", *chain, self.now_ms());
                 self.apply(outs);
             }
             _ => {}

@@ -115,7 +115,10 @@ pub fn relay_auth_jwt(seed: &[u8; 32], sub: &str, aud: &str, iat: u64, ttl_s: u6
     );
     let signing_input = format!("{header}.{}", base64url_encode(payload.as_bytes()));
     let signature = key.sign(signing_input.as_bytes());
-    format!("{signing_input}.{}", base64url_encode(&signature.to_bytes()))
+    format!(
+        "{signing_input}.{}",
+        base64url_encode(&signature.to_bytes())
+    )
 }
 
 /// The Ed25519 public key of a client seed.

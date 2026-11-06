@@ -12,11 +12,11 @@
 use std::collections::VecDeque;
 
 use yw_core::evm::address::Address;
+use yw_core::secret::Zeroizing;
 use yw_core::walletconnect::{
     Envelope, X25519Secret, derive_sym_key, open_envelope, seal_envelope, topic_of,
 };
 use yw_json::{Limits, Value};
-use yw_core::secret::Zeroizing;
 
 use super::{Metadata, VerifyStatus, chain_caip2, parse_caip2};
 use crate::text::{json_object, json_str, json_u64};
@@ -193,7 +193,12 @@ impl Session {
             json_object(vec![
                 (
                     "chains",
-                    Value::Array(self.chains.iter().map(|c| json_str(&chain_caip2(*c))).collect()),
+                    Value::Array(
+                        self.chains
+                            .iter()
+                            .map(|c| json_str(&chain_caip2(*c)))
+                            .collect(),
+                    ),
                 ),
                 ("accounts", Value::Array(accounts)),
                 (
@@ -426,7 +431,10 @@ impl Engine {
     /// The pending proposal `id`.
     #[must_use]
     pub fn proposal(&self, id: u64) -> Option<&ProposalView> {
-        self.proposals.iter().find(|p| p.view.id == id).map(|p| &p.view)
+        self.proposals
+            .iter()
+            .find(|p| p.view.id == id)
+            .map(|p| &p.view)
     }
 
     /// Every topic the relay connection must be subscribed to.
@@ -444,7 +452,10 @@ impl Engine {
         let mut out = Vec::new();
         for session in sessions {
             if session.expiry > now
-                && !self.sessions.iter().any(|known| known.topic == session.topic)
+                && !self
+                    .sessions
+                    .iter()
+                    .any(|known| known.topic == session.topic)
                 && self.sessions.len() < MAX_SESSIONS
             {
                 out.push(Out::Subscribe(session.topic));
@@ -457,7 +468,8 @@ impl Engine {
     /// `pair(uri)`: remembers the pairing key and subscribes its topic; the proposal arrives as a
     /// relay message.
     pub fn pair(&mut self, uri: &yw_core::walletconnect::PairingUri, now: u64) -> Vec<Out> {
-        self.pairings.retain(|p| p.topic != uri.topic && p.expiry > now);
+        self.pairings
+            .retain(|p| p.topic != uri.topic && p.expiry > now);
         if self.pairings.len() >= MAX_PROPOSALS {
             self.pairings.remove(0);
         }
@@ -587,14 +599,22 @@ impl Engine {
             // back to its proposal (spec/13 §9); unknown methods are ignored the same way.
             // Only the controller (this wallet) may update or extend; events go wallet → dApp.
             "wc_sessionUpdate" | "wc_sessionExtend" | "wc_sessionEvent" if is_session => self
-                .publish(*topic, &rpc_error(id, 3003, "Unauthorized update request"), 1105, 86_400)
+                .publish(
+                    *topic,
+                    &rpc_error(id, 3003, "Unauthorized update request"),
+                    1105,
+                    86_400,
+                )
                 .into_iter()
                 .collect(),
             _ => Vec::new(),
         }
     }
 
-    #[expect(clippy::too_many_lines, reason = "the proposal checks of the namespaces spec in order")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the proposal checks of the namespaces spec in order"
+    )]
     fn on_propose(
         &mut self,
         pairing_topic: [u8; 32],
@@ -793,9 +813,14 @@ impl Engine {
             return Vec::new();
         };
         let proposal = self.proposals.remove(index);
-        self.publish(proposal.pairing_topic, &rpc_error(id, code, message), 1120, 300)
-            .into_iter()
-            .collect()
+        self.publish(
+            proposal.pairing_topic,
+            &rpc_error(id, code, message),
+            1120,
+            300,
+        )
+        .into_iter()
+        .collect()
     }
 
     fn on_request(&mut self, topic: [u8; 32], id: u64, params: &Value, now: u64) -> Vec<Out> {
@@ -858,12 +883,19 @@ impl Engine {
 
     /// Answers a session request.
     #[must_use]
-    pub fn respond(&self, topic: &[u8; 32], id: u64, result: Result<Value, (i64, String)>) -> Vec<Out> {
+    pub fn respond(
+        &self,
+        topic: &[u8; 32],
+        id: u64,
+        result: Result<Value, (i64, String)>,
+    ) -> Vec<Out> {
         let value = match result {
             Ok(result) => rpc_result(id, result),
             Err((code, message)) => rpc_error(id, code, &message),
         };
-        self.publish(*topic, &value, 1109, 300).into_iter().collect()
+        self.publish(*topic, &value, 1109, 300)
+            .into_iter()
+            .collect()
     }
 
     /// `wc_sessionEvent` (`chainChanged` data = the chain id number; `accountsChanged` data = the
@@ -896,9 +928,14 @@ impl Engine {
             ),
             ("chainId", json_str(&chain_caip2(chain_id))),
         ]);
-        self.publish(*topic, &rpc_request(new_id(now_ms), "wc_sessionEvent", params), 1110, 300)
-            .into_iter()
-            .collect()
+        self.publish(
+            *topic,
+            &rpc_request(new_id(now_ms), "wc_sessionEvent", params),
+            1110,
+            300,
+        )
+        .into_iter()
+        .collect()
     }
 
     /// `wc_sessionUpdate` with new accounts and/or chains.
@@ -922,7 +959,12 @@ impl Engine {
         }
         let params = json_object(vec![("namespaces", session.namespaces())]);
         let mut out: Vec<Out> = self
-            .publish(*topic, &rpc_request(new_id(now * 1_000), "wc_sessionUpdate", params), 1104, 86_400)
+            .publish(
+                *topic,
+                &rpc_request(new_id(now * 1_000), "wc_sessionUpdate", params),
+                1104,
+                86_400,
+            )
             .into_iter()
             .collect();
         out.push(Out::SessionsChanged);
@@ -937,7 +979,12 @@ impl Engine {
         session.expiry = now + SESSION_TTL_S;
         let params = json_object(vec![("expiry", json_u64(session.expiry))]);
         let mut out: Vec<Out> = self
-            .publish(*topic, &rpc_request(new_id(now * 1_000), "wc_sessionExtend", params), 1106, 86_400)
+            .publish(
+                *topic,
+                &rpc_request(new_id(now * 1_000), "wc_sessionExtend", params),
+                1106,
+                86_400,
+            )
             .into_iter()
             .collect();
         out.push(Out::SessionsChanged);
@@ -954,7 +1001,12 @@ impl Engine {
             ("message", json_str("User disconnected.")),
         ]);
         let mut out: Vec<Out> = self
-            .publish(*topic, &rpc_request(new_id(now * 1_000), "wc_sessionDelete", params), 1112, 86_400)
+            .publish(
+                *topic,
+                &rpc_request(new_id(now * 1_000), "wc_sessionDelete", params),
+                1112,
+                86_400,
+            )
             .into_iter()
             .collect();
         out.extend(self.drop_session(topic));
@@ -967,7 +1019,11 @@ impl Engine {
         if before == self.sessions.len() {
             return Vec::new();
         }
-        vec![Out::Unsubscribe(*topic), Out::Ended(*topic), Out::SessionsChanged]
+        vec![
+            Out::Unsubscribe(*topic),
+            Out::Ended(*topic),
+            Out::SessionsChanged,
+        ]
     }
 
     /// Expiry of sessions, proposals and pairings.
@@ -986,7 +1042,9 @@ impl Engine {
         let gone: Vec<[u8; 32]> = self
             .pairings
             .iter()
-            .filter(|p| p.expiry <= now && !self.proposals.iter().any(|q| q.pairing_topic == p.topic))
+            .filter(|p| {
+                p.expiry <= now && !self.proposals.iter().any(|q| q.pairing_topic == p.topic)
+            })
             .map(|p| p.topic)
             .collect();
         for topic in gone {

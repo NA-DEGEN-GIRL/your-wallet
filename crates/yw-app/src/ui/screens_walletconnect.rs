@@ -123,10 +123,7 @@ impl App {
             ))));
             items.push(Item::Field(
                 "사이트 주소".to_owned(),
-                format!(
-                    "{} (사이트가 주장한 주소)",
-                    session.peer.display_url()
-                ),
+                format!("{} (사이트가 주장한 주소)", session.peer.display_url()),
             ));
             let tone = match session.verify {
                 VerifyStatus::Valid => None,
@@ -136,7 +133,10 @@ impl App {
             let verify = format!("Verify: {}", session.verify.label());
             match tone {
                 Some(tone) => items.push(Item::Banner(verify, tone)),
-                None => items.push(Item::Field("Verify".to_owned(), session.verify.label().to_owned())),
+                None => items.push(Item::Field(
+                    "Verify".to_owned(),
+                    session.verify.label().to_owned(),
+                )),
             }
             let chains: Vec<String> = session
                 .chains
@@ -148,7 +148,10 @@ impl App {
                 })
                 .collect();
             items.push(Item::Field("네트워크".to_owned(), chains.join(", ")));
-            items.push(Item::Field("연결 시각".to_owned(), local_time(session.created)));
+            items.push(Item::Field(
+                "연결 시각".to_owned(),
+                local_time(session.created),
+            ));
             items.push(Item::Field("만료".to_owned(), local_time(session.expiry)));
             for account in &session.accounts {
                 let label = labels

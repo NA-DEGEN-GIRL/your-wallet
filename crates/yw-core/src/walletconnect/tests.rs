@@ -28,7 +28,10 @@ fn spec_pairing_uri_parses() {
         Some("[wc_sessionPropose],[wc_authRequest,wc_authBatchRequest]")
     );
     // Whitespace, percent-encoding of the whole URI and of values are accepted.
-    let encoded = SPEC_URI.replace(':', "%3A").replace('@', "%40").replace('?', "%3F");
+    let encoded = SPEC_URI
+        .replace(':', "%3A")
+        .replace('@', "%40")
+        .replace('?', "%3F");
     assert_eq!(parse_pairing_uri(&format!("  {encoded}\n")).unwrap(), uri);
     let escaped = SPEC_URI.replace("[wc_sessionPropose]", "%5Bwc_sessionPropose%5D");
     assert_eq!(parse_pairing_uri(&escaped).unwrap().topic, uri.topic);
@@ -39,7 +42,10 @@ fn spec_pairing_uri_parses() {
 fn bad_pairing_uris_are_refused() {
     let v1 = "wc:8a5e5bdc-a0e4-4702-ba63-8f1a5655744f@1?bridge=https%3A%2F%2Fbridge.walletconnect.org&key=41791102999c339c844880b23950704cc43aa840f3739e365323cda4dfa89e7a";
     assert_eq!(parse_pairing_uri(v1), Err(UriError::Version1));
-    assert_eq!(parse_pairing_uri("https://example.com"), Err(UriError::NotWalletConnect));
+    assert_eq!(
+        parse_pairing_uri("https://example.com"),
+        Err(UriError::NotWalletConnect)
+    );
     assert_eq!(
         parse_pairing_uri(&SPEC_URI.replace("relay-protocol=irn", "relay-protocol=waku")),
         Err(UriError::BadRelay)
