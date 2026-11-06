@@ -236,6 +236,8 @@ struct State {
     /// applied by [`BrowserCore::unlock_chains`] before any account event (in memory only,
     /// at most [`MAX_LOCKED_REVOCATIONS`], oldest dropped first).
     revoked_while_locked: Vec<(BrowserOrigin, Family)>,
+    /// Virtual connections (the `WalletConnect` bridge, spec/13 §5): not counted as browser pipes.
+    virtual_conns: std::collections::HashSet<ConnId>,
 }
 
 /// Bound of the disconnects remembered while locked (one per origin and family; twice the
@@ -243,6 +245,14 @@ struct State {
 pub const MAX_LOCKED_REVOCATIONS: usize = 4 * MAX_CHAIN_GRANTS;
 
 impl State {
+    /// Live pipe connections (virtual ones excluded).
+    fn pipe_count(&self) -> usize {
+        self.conns
+            .keys()
+            .filter(|id| !self.virtual_conns.contains(id))
+            .count()
+    }
+
     /// Activations with a request still pending on their connection.
     fn busy_documents(&self) -> std::collections::HashSet<Id32> {
         self.conns
@@ -333,6 +343,7 @@ impl BrowserCore {
                 locked_connected: Vec::new(),
                 unlock_cooldown_until_ms: 0,
                 revoked_while_locked: Vec::new(),
+                virtual_conns: std::collections::HashSet::new(),
             }),
             reads_ready: Condvar::new(),
             sink,
@@ -377,10 +388,52 @@ impl BrowserCore {
                     buckets: Lru::new(MAX_DOCUMENTS),
                 },
             );
-            state.conns.len()
+            state.pipe_count()
         };
         let _ = self.sink.push(DappEvent::Connections(count));
         id
+    }
+
+    /// Registers a virtual connection (the `WalletConnect` bridge, spec/13 §5): requests are
+    /// given with [`BrowserCore::submit`], answers and events go to `outlet` like a pipe's. Not
+    /// counted in the browser status line.
+    pub fn open_virtual_connection(&self, outlet: Box<dyn Outlet>) -> ConnId {
+        let id = self.next_conn.fetch_add(1, Ordering::Relaxed);
+        let mut state = self.lock();
+        state.conns.insert(
+            id,
+            Conn {
+                outlet,
+                max_sequence: 0,
+                last_session: None,
+                pending: HashMap::new(),
+                buckets: Lru::new(MAX_DOCUMENTS),
+            },
+        );
+        state.virtual_conns.insert(id);
+        id
+    }
+
+    /// A request of a virtual connection: the steps of [`BrowserCore::handle_frame`] after
+    /// envelope parsing (session, sequence, document, method and route, deadline, rate limits,
+    /// params, execution).
+    pub fn submit(&self, conn: ConnId, request: &RequestEnvelope) {
+        if self.lock().virtual_conns.contains(&conn) {
+            self.request(conn, request);
+        }
+    }
+
+    /// Sets the chain of a `WalletConnect` session origin without events (each session request
+    /// names its chain; the grant follows it).
+    pub fn set_origin_chain(&self, origin: &BrowserOrigin, chain_id: u64) {
+        let mut state = self.lock();
+        if !state.wallet.registered(chain_id) {
+            return;
+        }
+        state.cache_chain(origin, chain_id);
+        if let Some(site) = state.grants.iter_mut().find(|s| s.origin == *origin) {
+            site.chain_id = chain_id;
+        }
     }
 
     /// A connection ended: its pending approvals are cancelled without a response, its reads'
@@ -399,7 +452,8 @@ impl BrowserCore {
             for key in &keys {
                 state.approvals.remove(key);
             }
-            (keys, state.conns.len())
+            state.virtual_conns.remove(&conn);
+            (keys, state.pipe_count())
         };
         for key in cancelled {
             let _ = self.sink.push(DappEvent::Cancel(key));
@@ -410,7 +464,7 @@ impl BrowserCore {
     /// Number of live connections.
     #[must_use]
     pub fn connection_count(&self) -> usize {
-        self.lock().conns.len()
+        self.lock().pipe_count()
     }
 
     // ----- responses and events -------------------------------------------------------

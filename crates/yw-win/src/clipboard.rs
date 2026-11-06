@@ -485,6 +485,21 @@ pub fn read_text(owner: &Window, max_units: usize) -> Result<(WipeBuf<u16>, u32)
     read_with(&mut ops_for(owner), max_units)
 }
 
+/// Reads the clipboard bitmap as `CF_DIB` bytes (`BITMAPINFOHEADER` + optional masks/palette +
+/// pixels; a screenshot from Win+Shift+S is placed in this format by the system) when present
+/// and at most `max_len` bytes; `Ok(None)` when there is no bitmap (spec/13 §6).
+///
+/// # Errors
+///
+/// [`ClipError::Busy`] or [`ClipError::Os`].
+pub fn read_dib(owner: &Window, max_len: usize) -> Result<Option<Vec<u8>>, ClipError> {
+    let mut ops = ops_for(owner);
+    open_with_retry(&mut ops)?;
+    let result = ops.get_bytes(u32::from(windows_sys::Win32::System::Ole::CF_DIB), max_len);
+    ops.close();
+    result
+}
+
 /// Empties the clipboard only if its sequence number is still `seq` (paste-clear: `seq` comes
 /// from [`read_text`], and reading does not change it).
 ///

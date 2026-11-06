@@ -122,6 +122,10 @@ rules! {
     H07 = b'H' 7, High, "Hyperliquid 주문·거래 서명(L1 action)입니다 — 지갑은 서명 내용(해시)을 해석할 수 없고, 이 지갑은 거래 기능을 지원하지 않습니다";
     H08 = b'H' 8, High, "Hyperliquid 빌더 수수료 승인입니다 — 승인한 주소가 내 주문에 수수료를 붙일 수 있습니다";
     H09 = b'H' 9, Caution, "hyperliquidChain이 Testnet입니다 — 테스트넷 작업입니다";
+    C01 = b'C' 1, Caution, "WalletConnect 요청입니다 — 사이트 주소는 사이트가 스스로 주장한 값이며 확인되지 않았습니다";
+    C02 = b'C' 2, High, "WalletConnect Verify 결과 사이트가 주장한 주소와 실제 주소가 다릅니다 — 피싱일 수 있습니다";
+    C03 = b'C' 3, High, "WalletConnect Verify가 이 사이트를 알려진 사기 사이트로 표시했습니다";
+    C04 = b'C' 4, Info, "WalletConnect 요청 — Verify로 사이트 주소가 확인되었습니다";
 }
 
 /// Simulation-status rules shown first within their level (spec/03 §10.1, D15).
