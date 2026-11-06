@@ -97,7 +97,7 @@ pub fn ranges() -> Vec<IdRange> {
     use crate::settings::MAX_CUSTOM_EVM_CHAINS;
     let evm_chains = crate::network::BUILTIN_EVM.len() + MAX_CUSTOM_EVM_CHAINS;
     // URL rows: every EVM chain, solana:mainnet/devnet, bitcoin:mainnet/testnet4 (spec/04 §2.11.1).
-    let url_rows = evm_chains + 2 + 2;
+    let url_rows = evm_chains + 2 + 2 + 2;
     vec![
         range(
             "core.network_chips",
@@ -286,6 +286,7 @@ pub fn fixed() -> Vec<(&'static str, &'static [u16])> {
         ("sites", screens_sites::ids::FIXED),
         ("sol", screens_sol::ids::FIXED),
         ("btc", &screens_btc::ids::FIXED),
+        ("zec", &crate::ui::screens_zec::ids::FIXED),
         ("llm", screens_llm::ids::FIXED),
         ("keys", screens_keys::ids::FIXED),
         ("yubikey", screens_yubikey::ids::FIXED),

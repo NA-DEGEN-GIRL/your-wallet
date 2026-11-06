@@ -1130,7 +1130,9 @@ impl App {
                 | SiteKind::SolSign { .. }
                 | SiteKind::BtcSign { .. } => None,
             },
-            QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => None,
+            QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) | QueuedItem::Zec(_) => {
+                None
+            }
         }
         .filter(|_| self.llm.is_some());
         let extra = if ai_kind.is_some() {
@@ -1186,7 +1188,7 @@ impl App {
         };
         let deadline_ms = match &item {
             QueuedItem::Site(site) => site.deadline_ms,
-            QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => {
+            QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) | QueuedItem::Zec(_) => {
                 now.saturating_add(MAX_LIFETIME_MS)
             }
         };
@@ -1252,6 +1254,7 @@ impl App {
             QueuedItem::Site(site) => self.prepare_site(job, &site),
             QueuedItem::Sol(sol) => self.prepare_sol(job, &sol),
             QueuedItem::Btc(btc) => self.prepare_btc(&btc),
+            QueuedItem::Zec(zec) => self.prepare_zec(&zec),
         }
         self.rebuild_view();
     }
@@ -1588,7 +1591,10 @@ impl App {
                 );
                 let site = self.evm.window.as_ref().and_then(|ui| match &ui.item {
                     QueuedItem::Site(site) => Some(site.reply),
-                    QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => None,
+                    QueuedItem::App(_)
+                    | QueuedItem::Sol(_)
+                    | QueuedItem::Btc(_)
+                    | QueuedItem::Zec(_) => None,
                 });
                 if failure.invalid_params
                     && let Some(reply) = site
@@ -1830,7 +1836,9 @@ impl App {
         let chain_id = ui.item.chain_id();
         let extra_warnings = match &ui.item {
             QueuedItem::Site(site) => site_fee_warning(site),
-            QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => Vec::new(),
+            QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) | QueuedItem::Zec(_) => {
+                Vec::new()
+            }
         };
         let chain = match self.chain_job(chain_id) {
             Ok(chain) => chain,
@@ -1887,7 +1895,10 @@ impl App {
                 );
                 let reply = match &item {
                     QueuedItem::Site(site) => Some(site.reply),
-                    QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => None,
+                    QueuedItem::App(_)
+                    | QueuedItem::Sol(_)
+                    | QueuedItem::Btc(_)
+                    | QueuedItem::Zec(_) => None,
                 };
                 if let QueuedItem::Sol(sol) = &item
                     && request.kind == yw_core::approval::ApprovalKind::SolTransfer
@@ -1900,6 +1911,13 @@ impl App {
                     && request.kind.is_btc()
                 {
                     self.btc_consumed(approved, btc);
+                    self.finish_approval(QueueOutcome::Approved);
+                    return;
+                }
+                if let QueuedItem::Zec(zec) = &item
+                    && request.kind == yw_core::approval::ApprovalKind::ZecSend
+                {
+                    self.zec_consumed(approved, zec);
                     self.finish_approval(QueueOutcome::Approved);
                     return;
                 }
@@ -1955,7 +1973,10 @@ impl App {
                                 site.origin.as_str().to_owned(),
                                 crate::app_browser::SignWaiter::Tx(site.reply),
                             ),
-                            QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => {
+                            QueuedItem::App(_)
+                            | QueuedItem::Sol(_)
+                            | QueuedItem::Btc(_)
+                            | QueuedItem::Zec(_) => {
                                 ("yw-app".to_owned(), crate::app_browser::SignWaiter::App)
                             }
                         };
@@ -2095,7 +2116,7 @@ impl App {
                 (None, Some(self.sol_cluster()))
             }
             (Some(QueuedItem::Site(_)), yw_core::policy::Family::Bitcoin)
-            | (Some(QueuedItem::Btc(_)) | None, _) => (None, None),
+            | (Some(QueuedItem::Btc(_) | QueuedItem::Zec(_)) | None, _) => (None, None),
             (Some(QueuedItem::App(_) | QueuedItem::Site(_)), _) => (Some(chain_id), None),
         };
         let site_btc_banner = (family == yw_core::policy::Family::Bitcoin)
@@ -2112,6 +2133,10 @@ impl App {
                 (QueuedItem::Btc(item), _) => (
                     crate::yubikey::btc_plan_role(&item.plan)?,
                     item.plan.inputs().len(),
+                ),
+                (QueuedItem::Zec(item), _) => (
+                    crate::yubikey::zec_plan_role(&item.plan)?,
+                    item.plan.inputs.len(),
                 ),
                 (_, PrepareState::Ready(ReadyContent::Signing(request))) => (
                     crate::yubikey::role_of(&request.signer, &request.payload)?,
@@ -2177,7 +2202,7 @@ impl App {
         let btc_banner = match &ui.item {
             QueuedItem::Btc(item) => Some(crate::ui::approval_view::BtcBanner::of(item.network)),
             QueuedItem::Site(_) => site_btc_banner,
-            QueuedItem::App(_) | QueuedItem::Sol(_) => None,
+            QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Zec(_) => None,
         };
         match view(
             &ui.session.gate.prepare,

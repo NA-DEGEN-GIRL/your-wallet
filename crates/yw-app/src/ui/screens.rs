@@ -806,6 +806,10 @@ impl App {
             self.sol_main_screen(items);
             return;
         }
+        if self.zec_tab_active() {
+            self.zec_main_screen(items);
+            return;
+        }
         if self.btc_tab_active() {
             // Imported keys are accounts of the Bitcoin account list (a key-only wallet has
             // only those).

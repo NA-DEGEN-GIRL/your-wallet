@@ -58,6 +58,9 @@ pub struct SolSignTimes {
 #[path = "journal_btc.rs"]
 pub mod btc;
 
+#[path = "journal_zec.rs"]
+pub mod zec;
+
 /// The journal state the key worker keeps between jobs, with the authoritative `BtcMeta` of
 /// the unlocked session (spec/08 §12.3: the key worker is the only writer of meta `btc`; every
 /// meta document the UI saves gets this copy).
@@ -76,6 +79,7 @@ pub fn view_of(plain: &JournalPlain) -> JournalView {
     let entries = EvmEntries::from_plain(plain);
     let sol = SolEntries::from_plain(plain);
     let btc = yw_core::journal::btc::BtcEntries::from_plain(plain);
+    let zec = yw_core::journal::zec::ZecEntries::from_plain(plain);
     let mut trial = plain.clone();
     JournalView {
         records: entries.records(),
@@ -87,6 +91,8 @@ pub fn view_of(plain: &JournalPlain) -> JournalView {
         btc_records: btc.records(),
         btc_corrupt: btc.corrupt,
         btc_room: yw_core::journal::btc::has_room(plain),
+        zec_records: zec.records(),
+        zec_corrupt: zec.corrupt,
     }
 }
 

@@ -57,6 +57,9 @@ pub const ZEC_MIN_CONF: u32 = 1;
 pub const ZEC_POLL_SECS: u64 = 30;
 /// Most UTXOs accepted from one node / indexer answer.
 pub const ZEC_MAX_UTXOS: usize = 1_000;
+/// Blocks past `nExpiryHeight` before an unmined record counts as expired (reorg margin: a
+/// replaced block at the expiry height could still include it).
+pub const ZEC_EXPIRED_AFTER: u32 = 10;
 /// Consecutive "not found" answers (after the first seen) before `BroadcastUnknown`.
 pub const ZEC_NOT_FOUND_LIMIT: u32 = 10;
 /// Terminal ZEC journal records kept.

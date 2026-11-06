@@ -164,6 +164,8 @@ pub enum RpcJob {
     },
     /// A Bitcoin job (spec/08).
     Btc(Box<crate::btc::work::BtcRpcJob>),
+    /// A Zcash job (spec/12).
+    Zec(Box<crate::zec::work::ZecRpcJob>),
     /// Stop.
     Shutdown,
 }
@@ -197,6 +199,7 @@ impl RpcJob {
             Self::SolTrack(_) => "SolTrack",
             Self::SolScan { .. } => "SolScan",
             Self::Btc(job) => job.name(),
+            Self::Zec(job) => job.name(),
             Self::Shutdown => "Shutdown",
         }
     }
@@ -430,6 +433,10 @@ impl RpcWorker {
                     .handle(&*transport, &*self.clock, *btc_job, &mut |event| {
                         push(events, RpcEvent::Btc(Box::new(event)));
                     });
+            }
+            RpcJob::Zec(zec_job) => {
+                let event = crate::zec::work::handle(&*transport, *zec_job);
+                push(events, RpcEvent::Zec(Box::new(event)));
             }
             RpcJob::Test { network, name, url } => {
                 push(events, run_test(&*transport, network, &name, &url));
