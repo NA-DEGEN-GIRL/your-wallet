@@ -14,5 +14,5 @@ pub use paint::{Color, DrawFlags, Font, PaintDc, Rect};
 pub use window::{
     ClassSpec, Handler, Hwnd, InputKind, MbKind, MbResult, PaintStats, Poster, Reply, UiError,
     Window, WindowKind, WindowSpec, create_window, exclude_from_capture, find_windows, init,
-    message_box, quit, register_class, run_loop, scale,
+    message_box, quit, register_class, run_loop, scale, wheel_scroll_lines,
 };

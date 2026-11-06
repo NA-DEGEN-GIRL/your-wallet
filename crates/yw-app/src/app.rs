@@ -524,6 +524,8 @@ pub struct App {
     /// when it fails or the window is cancelled.
     recover_return: Option<AppMode>,
     pub(crate) scroll: i32,
+    /// Wheel accumulation and glide of the main window (`app_scroll`).
+    pub(crate) scroll_state: crate::app_scroll::MainScroll,
     pub(crate) controls: ControlSet,
     pub(crate) placed: Placed,
     pub(crate) evm: crate::app_evm::EvmUi,
@@ -544,6 +546,8 @@ pub struct App {
     pub(crate) wait: crate::app_reset::WaitWatch,
     /// S22 `지갑 초기화` (spec/04 §2.20).
     pub(crate) reset: crate::app_reset::ResetUi,
+    /// Settings → 네트워크(RPC) `rpc.json에서 가져오기` (a plan waiting for confirmation).
+    pub(crate) rpc_import: crate::app_rpc_import::RpcImportUi,
     /// S23 `Chrome 확장 설치` (spec/04 §2.21).
     pub(crate) ext: crate::app_extension::ExtensionUi,
     secret: Option<SecretWin>,
@@ -751,6 +755,7 @@ impl App {
             done_imported: false,
             recover_return: None,
             scroll: 0,
+            scroll_state: crate::app_scroll::MainScroll::default(),
             controls: ControlSet::default(),
             placed: Placed::default(),
             evm: crate::app_evm::EvmUi::default(),
@@ -764,6 +769,7 @@ impl App {
             guard: SettingsGuard::default(),
             wait: crate::app_reset::WaitWatch::default(),
             reset: crate::app_reset::ResetUi::default(),
+            rpc_import: crate::app_rpc_import::RpcImportUi::default(),
             ext: crate::app_extension::ExtensionUi::default(),
             secret: None,
             secret_serial: 0,
@@ -939,6 +945,7 @@ impl App {
         self.wait.screen_changed(&self.screen, &screen, now_ms());
         self.screen = screen;
         self.scroll = 0;
+        self.stop_scroll();
         self.refresh();
     }
 
@@ -981,6 +988,7 @@ impl App {
             placed = layout(&items, client.w, dpi, self.scroll, &measure, &label);
         }
         self.controls.sync(main, &placed, fonts, client);
+        main.set_vscroll_content(self.scroll, client.h, placed.content_height);
         self.placed = placed;
         main.invalidate();
     }
@@ -1048,14 +1056,16 @@ impl App {
                 self.hold_cancel();
                 Reply::Default
             }
+            Msg::Timer(crate::app_scroll::SCROLL_TIMER_ID) => {
+                self.scroll_tick(window);
+                Reply::Handled(0)
+            }
             Msg::Wheel(delta) => {
-                let step = window.px(60);
-                let lines = i32::from(*delta) / 120;
-                self.scroll = self
-                    .scroll
-                    .saturating_sub(lines.saturating_mul(step))
-                    .max(0);
-                self.refresh();
+                self.main_wheel(window, *delta);
+                Reply::Handled(0)
+            }
+            Msg::VScroll { code } => {
+                self.main_vscroll(window, *code);
                 Reply::Handled(0)
             }
             Msg::App { msg, wparam } => {
@@ -1272,6 +1282,7 @@ impl App {
         self.rename = None;
         self.pending_remove = None;
         self.keys = crate::app_keys::KeysUi::default();
+        self.rpc_import = crate::app_rpc_import::RpcImportUi::default();
         self.passphrase_session = false;
         self.recover_return = None;
         logging::info("app", "lock", &[("reason", Field::Word(reason.as_str()))]);
@@ -3009,6 +3020,7 @@ impl App {
             }
             other => {
                 if !self.on_reset_command(other)
+                    && !self.on_rpc_import_command(other)
                     && !self.on_extension_command(other)
                     && !self.on_keys_command(other)
                     && !self.on_sol_command(other)

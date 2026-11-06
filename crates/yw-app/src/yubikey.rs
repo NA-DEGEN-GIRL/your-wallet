@@ -10,7 +10,7 @@ use yw_core::bip32::path::AccountIndex;
 use yw_core::secret::Zeroizing;
 use yw_core::yubikey::apdu::ApduMode;
 use yw_core::yubikey::enrol::{EnrolAuth, EnrolError, Enrolled, enrol_card, identify};
-use yw_core::yubikey::piv::{MgmtAlgorithm, MgmtCipher};
+use yw_core::yubikey::piv::{ManagementState, MgmtAlgorithm, MgmtCipher};
 use yw_core::yubikey::plan::{Curve, KeyRole, PlannedSlot, slot_on_card};
 use yw_core::yubikey::record::HwKeyRecord;
 use yw_core::yubikey::sign::{CardKey, sign_evm_checked};
@@ -371,8 +371,10 @@ pub fn btc_plan_role(plan: &yw_core::btc::SendPlan) -> Option<KeyRole> {
 pub struct EnrolSecrets<'a> {
     /// `OpenPGP` admin PIN.
     pub admin_pin: &'a [u8],
-    /// PIV management key (empty when the plan has no PIV slot).
+    /// PIV management key (empty when the plan has no PIV slot or the key is PIN-protected).
     pub management_key: &'a [u8],
+    /// PIV PIN (only for a PIN-protected management key; otherwise empty).
+    pub piv_pin: &'a [u8],
 }
 
 impl core::fmt::Debug for EnrolSecrets<'_> {
@@ -402,6 +404,7 @@ pub fn enrol_first_card(
             let auth = EnrolAuth {
                 admin_pin: secrets.admin_pin,
                 management_key: secrets.management_key,
+                piv_pin: secrets.piv_pin,
                 cipher: Some(cipher),
                 challenge,
             };
@@ -573,33 +576,210 @@ pub fn change_card_pin(
     )
 }
 
-/// Replaces the PIV management key of card `serial` with `new` (AES-192, spec/10 §9.3): GET
-/// METADATA `9B` (the current algorithm), mutual authentication with `old`, then SET MANAGEMENT
-/// KEY.
-///
-/// # Errors
-///
-/// [`CardJobError::NoCard`], [`CardJobError::Card`] (`SecurityStatus` /
-/// `ManagementKeyMismatch` for a wrong current key, format, another card).
-pub fn change_management_key(
-    source: &mut dyn CardSource,
-    serial: u32,
-    old: &[u8],
-    new: &[u8; 24],
-) -> Result<(), CardJobError> {
+fn fresh_challenge() -> Result<[u8; 16], CardJobError> {
     let mut challenge = [0_u8; 16];
     yw_core::entropy::fill_random(&mut challenge)
         .map_err(|_| CardJobError::Card(CardError::Internal))?;
+    Ok(challenge)
+}
+
+/// The PIV management key state of the first inserted card (read-only: GET METADATA `9B`,
+/// GET DATA ADMIN DATA), for the wizard's credentials step (spec/10 §7.3).
+///
+/// # Errors
+///
+/// [`CardJobError::NoCard`], [`CardJobError::Card`].
+pub fn probe_management(source: &mut dyn CardSource) -> Result<ManagementState, CardJobError> {
+    let mut result: Option<Result<ManagementState, CardError>> = None;
+    source
+        .each_card(&mut |transport, _| {
+            result = Some(
+                yw_core::yubikey::piv::Piv::open(transport, MODE)
+                    .and_then(|mut session| session.management_state()),
+            );
+            true
+        })
+        .map_err(CardJobError::Card)?;
+    result
+        .ok_or(CardJobError::NoCard)?
+        .map_err(CardJobError::Card)
+}
+
+/// "PIV 관리 키 자동 보호" of card `serial` (spec/10 §9.3, `Piv::protect_management_key`, the
+/// equivalent of `ykman piv access change-management-key --generate --protect`): a random
+/// AES-192 key made on this PC, stored PIN-protected on the card, never shown.
+///
+/// # Errors
+///
+/// [`CardJobError::NoCard`], [`CardJobError::Card`] (wrong PIN, a custom key the wallet does
+/// not know, another card).
+pub fn protect_management_key(
+    source: &mut dyn CardSource,
+    serial: u32,
+    pin: &[u8],
+) -> Result<(), CardJobError> {
+    let challenge = fresh_challenge()?;
     on_serial(source, serial, (false, true), &mut |transport, cipher| {
-        let mut session = yw_core::yubikey::piv::Piv::open(transport, MODE)?;
-        let (algorithm, _) = session.management_metadata()?;
-        let current = yw_core::yubikey::piv::MgmtKey::new(algorithm, old)?;
-        let challenge = challenge
-            .get(..algorithm.block_len())
-            .ok_or(CardError::Internal)?;
-        session.authenticate(&current, cipher, challenge)?;
-        let next = yw_core::yubikey::piv::MgmtKey::new(MgmtAlgorithm::Aes192, new)?;
-        session.set_management_key(&next)
+        yw_core::yubikey::piv::Piv::open(transport, MODE)?
+            .protect_management_key(pin, cipher, &challenge)
+    })
+}
+
+/// One step of "PIN 설정" (spec/10 §9.3), in the order they run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DefaultsStep {
+    /// PIV PIN.
+    PivPin,
+    /// PIV PUK.
+    PivPuk,
+    /// PIV management key: generated and stored PIN-protected (needs the new PIN).
+    PivManagement,
+    /// `OpenPGP` admin PIN (PW3).
+    OpenPgpAdmin,
+    /// `OpenPGP` user PIN (PW1).
+    OpenPgpUser,
+}
+
+impl DefaultsStep {
+    /// The name in sentences.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::PivPin => "PIV PIN",
+            Self::PivPuk => "PIV PUK",
+            Self::PivManagement => "PIV 관리 키(PIN 보호)",
+            Self::OpenPgpAdmin => "OpenPGP 관리자 PIN",
+            Self::OpenPgpUser => "OpenPGP PIN",
+        }
+    }
+
+    const fn factory(self) -> &'static [u8] {
+        match self {
+            Self::PivPin | Self::OpenPgpUser | Self::PivManagement => b"123456",
+            Self::PivPuk | Self::OpenPgpAdmin => b"12345678",
+        }
+    }
+}
+
+/// What "PIN 설정" did: the steps done in order, the ones skipped (applet missing or already
+/// PIN-protected), and the step that failed (nothing after it ran).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PinReport {
+    /// Done, in order.
+    pub done: Vec<DefaultsStep>,
+    /// Skipped.
+    pub skipped: Vec<DefaultsStep>,
+    /// The failed step and why.
+    pub failed: Option<(DefaultsStep, CardError)>,
+}
+
+impl PinReport {
+    fn step(&mut self, step: DefaultsStep, result: Result<(), CardError>) -> bool {
+        match result {
+            Ok(()) => {
+                self.done.push(step);
+                true
+            }
+            Err(error) => {
+                self.failed = Some((step, error));
+                false
+            }
+        }
+    }
+
+    fn piv(
+        &mut self,
+        session: &mut yw_core::yubikey::piv::Piv<'_>,
+        (old_pin, old_puk): (&[u8], &[u8]),
+        new: &[u8],
+        cipher: &dyn MgmtCipher,
+        challenge: &[u8; 16],
+    ) {
+        if !self.step(
+            DefaultsStep::PivPin,
+            session.change_reference(false, old_pin, new),
+        ) || !self.step(
+            DefaultsStep::PivPuk,
+            session.change_reference(true, old_puk, new),
+        ) {
+            return;
+        }
+        match session.management_state() {
+            Ok(state) if state.protected && !state.default => {
+                self.skipped.push(DefaultsStep::PivManagement);
+            }
+            Ok(_) => {
+                self.step(
+                    DefaultsStep::PivManagement,
+                    session.protect_management_key(new, cipher, challenge),
+                );
+            }
+            Err(error) => self.failed = Some((DefaultsStep::PivManagement, error)),
+        }
+    }
+}
+
+/// "PIN 하나로 통일" of card `serial` (spec/10 §9.3): one `new` value (8 characters, valid for
+/// every applet) replaces, in this order, the PIV PIN, the PIV PUK, the management key
+/// (generated and stored PIN-protected with the new PIN), the `OpenPGP` admin PIN and the
+/// `OpenPGP` user PIN. `current` empty = the factory values; otherwise the one current value of
+/// all four. The first failure stops the sequence; the report says what changed. An applet the
+/// card lacks is skipped. `applets` are the ones used to identify the card (its record's).
+///
+/// # Errors
+///
+/// [`CardJobError::NoCard`], [`CardJobError::Card`] (`WrongCard`, the serial could not be read).
+pub fn set_pins(
+    source: &mut dyn CardSource,
+    serial: u32,
+    applets: (bool, bool),
+    current: &[u8],
+    new: &[u8],
+) -> Result<PinReport, CardJobError> {
+    let challenge = fresh_challenge()?;
+    let old = |step: DefaultsStep| -> &[u8] {
+        if current.is_empty() {
+            step.factory()
+        } else {
+            current
+        }
+    };
+    on_serial(source, serial, applets, &mut |transport, cipher| {
+        let mut report = PinReport::default();
+        match yw_core::yubikey::piv::Piv::open(transport, MODE) {
+            Ok(mut session) => report.piv(
+                &mut session,
+                (old(DefaultsStep::PivPin), old(DefaultsStep::PivPuk)),
+                new,
+                cipher,
+                &challenge,
+            ),
+            Err(CardError::AppletMissing | CardError::FirmwareTooOld) => report.skipped.extend([
+                DefaultsStep::PivPin,
+                DefaultsStep::PivPuk,
+                DefaultsStep::PivManagement,
+            ]),
+            Err(error) => report.failed = Some((DefaultsStep::PivPin, error)),
+        }
+        if report.failed.is_some() {
+            return Ok(report);
+        }
+        match yw_core::yubikey::openpgp::OpenPgp::open(transport, MODE) {
+            Ok(mut session) => {
+                let _ = report.step(
+                    DefaultsStep::OpenPgpAdmin,
+                    session.change_pin(true, old(DefaultsStep::OpenPgpAdmin), new),
+                ) && report.step(
+                    DefaultsStep::OpenPgpUser,
+                    session.change_pin(false, old(DefaultsStep::OpenPgpUser), new),
+                );
+            }
+            Err(CardError::AppletMissing | CardError::FirmwareTooOld) => report
+                .skipped
+                .extend([DefaultsStep::OpenPgpAdmin, DefaultsStep::OpenPgpUser]),
+            Err(error) => report.failed = Some((DefaultsStep::OpenPgpAdmin, error)),
+        }
+        Ok(report)
     })
 }
 

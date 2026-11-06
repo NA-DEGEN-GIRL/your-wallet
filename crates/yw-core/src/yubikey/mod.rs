@@ -107,6 +107,11 @@ pub enum CardError {
     TooLarge,
     /// The PIV management-key mutual authentication failed (the card's proof was wrong).
     ManagementKeyMismatch,
+    /// The PIV management key is PIN-protected (ADMIN DATA flag `02`) and no PIV PIN was given.
+    ManagementKeyProtected,
+    /// The PIV management key is neither the factory key nor PIN-protected: this wallet does
+    /// not know it.
+    ManagementKeyUnknown,
     /// The firmware is older than the feature needs (spec/10 §2).
     FirmwareTooOld,
     /// The OpenPGP applet uses a KDF for PINs (KDF-DO set), which this wallet does not support.
@@ -168,6 +173,8 @@ impl CardError {
             Self::Malformed => "malformed",
             Self::TooLarge => "too_large",
             Self::ManagementKeyMismatch => "management_key_mismatch",
+            Self::ManagementKeyProtected => "management_key_protected",
+            Self::ManagementKeyUnknown => "management_key_unknown",
             Self::FirmwareTooOld => "firmware_too_old",
             Self::KdfEnabled => "kdf_enabled",
             Self::KeyMismatch => "key_mismatch",
@@ -222,6 +229,12 @@ impl fmt::Display for CardError {
                 "이 YubiKey 펌웨어(5.7.0–5.7.3)는 Ed25519 키 가져오기를 거부했습니다. Yubico는 5.7.4부터 지원한다고 안내합니다. Solana 슬롯 없이 등록하거나 5.7.4 이상의 YubiKey를 쓰세요.",
             ),
             Self::ManagementKeyMismatch => formatter.write_str("PIV 관리 키가 맞지 않습니다."),
+            Self::ManagementKeyProtected => formatter.write_str(
+                "이 YubiKey의 PIV 관리 키는 PIN으로 보호되어 있습니다. PIV PIN을 입력해 다시 시도하세요.",
+            ),
+            Self::ManagementKeyUnknown => formatter.write_str(
+                "PIV 관리 키가 기본값도 PIN 보호도 아닙니다. 'ykman piv access change-management-key --generate --protect'로 PIN 보호로 바꾼 뒤 다시 시도하세요.",
+            ),
             Self::WrongData
             | Self::NotFound
             | Self::Status(_)

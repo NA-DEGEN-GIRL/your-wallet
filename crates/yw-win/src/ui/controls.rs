@@ -26,9 +26,10 @@ use windows_sys::Win32::UI::Controls::{
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled, SetFocus};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_MULTILINE, BS_OWNERDRAW,
-    CreateWindowExW, DestroyWindow, ES_AUTOHSCROLL, ES_PASSWORD, ES_READONLY, GetWindowTextLengthW,
-    GetWindowTextW, HMENU, MoveWindow, SW_HIDE, SW_SHOW, SendMessageW, SetWindowTextW, ShowWindow,
-    WM_GETFONT, WM_SETFONT, WS_CHILD, WS_EX_CLIENTEDGE, WS_GROUP, WS_TABSTOP, WS_VISIBLE,
+    CreateWindowExW, DestroyWindow, ES_AUTOHSCROLL, ES_PASSWORD, ES_READONLY, GWL_STYLE,
+    GetWindowLongW, GetWindowTextLengthW, GetWindowTextW, HMENU, MoveWindow, SW_HIDE, SW_SHOW,
+    SendMessageW, SetWindowTextW, ShowWindow, WM_GETFONT, WM_SETFONT, WS_CHILD, WS_EX_CLIENTEDGE,
+    WS_GROUP, WS_TABSTOP, WS_VISIBLE,
 };
 
 use super::paint::{Color, Font, Rect};
@@ -545,6 +546,17 @@ impl Control {
         let Some(hwnd) = self.live() else { return };
         // SAFETY: Shows or hides our live control.
         unsafe { ShowWindow(hwnd, if visible { SW_SHOW } else { SW_HIDE }) };
+    }
+
+    /// Whether the control has `WS_VISIBLE` (shown by [`Control::show`], whatever its parent).
+    #[must_use]
+    pub fn is_shown(&self) -> bool {
+        let Some(hwnd) = self.live() else {
+            return false;
+        };
+        // SAFETY: Reads the style of our live control.
+        let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) };
+        style.cast_unsigned() & WS_VISIBLE != 0
     }
 
     /// Moves and resizes the control.

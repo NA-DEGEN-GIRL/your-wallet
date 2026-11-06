@@ -141,6 +141,9 @@ pub struct MockCard {
     pub mgmt_key: Vec<u8>,
     /// PIV slots (id, key).
     pub piv_keys: Vec<(u8, PivKey)>,
+    /// PIV data objects (3-byte id, content of `53`): ADMIN DATA, PRINTED. PRINTED is readable
+    /// only after VERIFY PIN; PUT DATA needs the management key.
+    pub piv_objects: Vec<(u32, Vec<u8>)>,
     applet: Applet,
     pw1_sign: bool,
     pw1_other: bool,
@@ -197,6 +200,7 @@ impl MockCard {
             mgmt_algorithm: MgmtAlgorithm::Aes192,
             mgmt_key: super::piv::DEFAULT_MANAGEMENT_KEY.to_vec(),
             piv_keys: Vec::new(),
+            piv_objects: Vec::new(),
             applet: Applet::None,
             pw1_sign: false,
             pw1_other: false,
@@ -208,6 +212,72 @@ impl MockCard {
             chain: Vec::new(),
             pending: Vec::new(),
         }
+    }
+
+    /// The card as `ykman piv access change-management-key --generate --protect` leaves it: an
+    /// AES-192 management `key`, ADMIN DATA `80 { 81 02 }`, PRINTED `88 { 89 key }`.
+    pub fn protect_management(&mut self, key: [u8; 24]) {
+        self.mgmt_algorithm = MgmtAlgorithm::Aes192;
+        self.mgmt_key = key.to_vec();
+        self.piv_objects.retain(|(id, _)| {
+            *id != super::piv::OBJECT_ADMIN_DATA && *id != super::piv::OBJECT_PRINTED
+        });
+        self.piv_objects.push((
+            super::piv::OBJECT_ADMIN_DATA,
+            vec![0x80, 0x03, 0x81, 0x01, 0x02],
+        ));
+        let mut printed = vec![0x88, 0x1A, 0x89, 0x18];
+        printed.extend_from_slice(&key);
+        self.piv_objects.push((super::piv::OBJECT_PRINTED, printed));
+    }
+
+    /// The content of PIV data object `id`.
+    #[must_use]
+    pub fn piv_object(&self, id: u32) -> Option<&[u8]> {
+        self.piv_objects
+            .iter()
+            .find(|(other, _)| *other == id)
+            .map(|(_, content)| content.as_slice())
+    }
+
+    fn object_id(data: &[u8]) -> Option<(u32, &[u8])> {
+        match data {
+            [0x5C, 0x03, high, middle, low, rest @ ..] => {
+                Some((u32::from_be_bytes([0, *high, *middle, *low]), rest))
+            }
+            _ => None,
+        }
+    }
+
+    fn piv_get_data(&self, data: &[u8]) -> Vec<u8> {
+        let Some((id, [])) = Self::object_id(data) else {
+            return sw(0x6A80);
+        };
+        if id == super::piv::OBJECT_PRINTED && !self.piv_pin_ok {
+            return sw(0x6982);
+        }
+        match self.piv_object(id) {
+            Some(content) => ok(tlv::encode(0x53, content).unwrap_or_default()),
+            None => sw(0x6A82),
+        }
+    }
+
+    fn piv_put_data(&mut self, data: &[u8]) -> Vec<u8> {
+        if !self.mgmt_ok {
+            return sw(0x6982);
+        }
+        let Some((id, rest)) = Self::object_id(data) else {
+            return sw(0x6A80);
+        };
+        let Ok(content) = tlv::unwrap_single(rest, 0x53) else {
+            return sw(0x6A80);
+        };
+        let content = content.to_vec();
+        self.piv_objects.retain(|(other, _)| *other != id);
+        if !content.is_empty() {
+            self.piv_objects.push((id, content));
+        }
+        ok(Vec::new())
     }
 
     /// Whether any logged command is a write instruction (or GENERATE with P1 `80`).
@@ -701,6 +771,8 @@ impl MockCard {
                 ok(Vec::new())
             }
             0x24 if matches!(p2, 0x80 | 0x81) => self.piv_change_reference(p2 == 0x81, data),
+            0xCB if p1 == 0x3F && p2 == 0xFF => self.piv_get_data(data),
+            0xDB if p1 == 0x3F && p2 == 0xFF => self.piv_put_data(data),
             0x87 => self.piv_authenticate(p1, p2, data),
             0xFE => {
                 if !self.mgmt_ok {

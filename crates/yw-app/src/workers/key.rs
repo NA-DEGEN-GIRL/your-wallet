@@ -49,8 +49,6 @@ pub struct KeyWorker {
     pending_key: Option<PendingKeyStart>,
     /// The recovery words of a `YubiKey` enrolment wizard (spec/10 §7; never on disk).
     pending_enrol: Option<yubikey::PendingEnrol>,
-    /// A new PIV management key between W13 and the card (spec/10 §9.3).
-    pending_card_key: Option<yubikey::PendingKey>,
     journal: JournalState,
     /// The inserted `YubiKey`s (PC/SC; the emulator in tests, spec/10 §12.1).
     cards: Box<dyn crate::yubikey::CardSource>,
@@ -413,7 +411,6 @@ impl KeyWorker {
             pending: None,
             pending_key: None,
             pending_enrol: None,
-            pending_card_key: None,
             journal: JournalState::default(),
             cards: Box::new(crate::yubikey::PcscSource),
         }
@@ -466,6 +463,7 @@ impl KeyWorker {
         let secrets = crate::yubikey::EnrolSecrets {
             admin_pin,
             management_key,
+            piv_pin: &[],
         };
         let enrolled = crate::yubikey::enrol_first_card(
             self.cards.as_mut(),
@@ -2402,8 +2400,8 @@ pub(crate) mod tests {
 
     /// The wizard jobs on the emulator (spec/10 §7, §7.5, §9.3): the preview holds the seed and
     /// touches no card; a wrong admin PIN writes no record; the enrolment, "다시 확인", the PW1
-    /// change (a wrong current PIN refused), the management key held between W13 and the card
-    /// and set only then, "가져오기 없이 등록" of a card that already holds the keys (no write),
+    /// change (a wrong current PIN refused), "PIN 하나로 통일" with the PIN-protected management
+    /// key, "가져오기 없이 등록" of a card that already holds the keys (no write),
     /// the removal after the password, and `Discard` / the lock wiping the held words.
     #[test]
     #[expect(clippy::too_many_lines, reason = "one emulator scenario")]
@@ -2469,6 +2467,7 @@ pub(crate) mod tests {
                     management_key: Zeroizing::new(
                         yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY.to_vec(),
                     ),
+                    piv_pin: Zeroizing::new(Vec::new()),
                     adopt,
                 }))
                 .pop()
@@ -2545,40 +2544,42 @@ pub(crate) mod tests {
             Some(KeyOutcome::YubiKey(YkOutcome::PinChanged(_, _, Ok(()))))
         ));
         assert_eq!(cards.lock().unwrap()[0].pw1, b"135791");
-        // The management key: generated and held, set only by `SetManagementKey`.
-        let Some(YkOutcome::ManagementKey(Ok(key))) =
-            yk(&mut worker, YkJob::NewManagementKey { serial: 9_900_001 })
-        else {
-            unreachable!("new key");
+        // "PIN 하나로 통일" from the factory values (spec/10 §9.3): PIV PIN, PUK, the management
+        // key generated and stored PIN-protected, OpenPGP admin, then user. PW1 is no longer the
+        // factory value, so the last step fails and the report names the ones that changed.
+        let Some(YkOutcome::PinsSet(9_900_001, Ok(report))) = yk(
+            &mut worker,
+            YkJob::SetPins {
+                serial: 9_900_001,
+                current: Zeroizing::new(Vec::new()),
+                new: bytes("24681357"),
+            },
+        ) else {
+            unreachable!("set pins");
         };
-        let key = key.expose().to_owned();
-        assert_eq!(key.len(), 48);
-        assert_eq!(
-            cards.lock().unwrap()[0].mgmt_key,
-            yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY
-        );
+        {
+            use crate::yubikey::DefaultsStep::{
+                OpenPgpAdmin, OpenPgpUser, PivManagement, PivPin, PivPuk,
+            };
+            assert_eq!(report.done, [PivPin, PivPuk, PivManagement, OpenPgpAdmin]);
+            assert!(matches!(
+                report.failed,
+                Some((OpenPgpUser, yw_core::yubikey::CardError::WrongPin { .. }))
+            ));
+            let card = &cards.lock().unwrap()[0];
+            assert_eq!(
+                (card.piv_pin.as_slice(), card.piv_puk.as_slice()),
+                (&b"24681357"[..], &b"24681357"[..])
+            );
+            assert_eq!(
+                (card.pw3.as_slice(), card.pw1.as_slice()),
+                (&b"24681357"[..], &b"135791"[..])
+            );
+            assert_ne!(card.mgmt_key, yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY);
+        }
         assert!(matches!(
-            yk(
-                &mut worker,
-                YkJob::SetManagementKey {
-                    old: Zeroizing::new(yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY.to_vec()),
-                }
-            ),
-            Some(YkOutcome::ManagementKeySet(9_900_001, Ok(())))
-        ));
-        assert_eq!(
-            yw_core::hex::encode(&cards.lock().unwrap()[0].mgmt_key),
-            key
-        );
-        // Nothing held any more: a second set has no key.
-        assert!(matches!(
-            yk(
-                &mut worker,
-                YkJob::SetManagementKey {
-                    old: Zeroizing::new(Vec::new()),
-                }
-            ),
-            Some(YkOutcome::ManagementKeySet(_, Err(_)))
+            yk(&mut worker, YkJob::ProbeManagement),
+            Some(YkOutcome::Management(Ok(state))) if state.protected && !state.default
         ));
         // Removal: a wrong password keeps the record.
         let id = enrolled[0].id;

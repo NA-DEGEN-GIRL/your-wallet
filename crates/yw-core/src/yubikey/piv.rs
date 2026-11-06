@@ -11,9 +11,18 @@
 //! | sign | `00 87 E0 <slot> 7C { 82 00, 81 <message> }` → `7C { 82 <signature> }` |
 //! | change PIN / PUK | `00 24 00 80` / `81` `‖ old(8, FF) ‖ new(8, FF)` |
 //! | set management key | `00 FF FF FF ‖ <type> 9B <len> <key>` |
+//! | GET DATA | `00 CB 3F FF 05 5C 03 <object id> 00` → `53 { content }` (`6A82`: no object) |
+//! | PUT DATA | `00 DB 3F FF ‖ 5C 03 <object id> ‖ 53 { content }` (empty content deletes) |
 //!
 //! The management-key block cipher (3DES / AES-ECB, one block each way) is [`MgmtCipher`]: yw-win
 //! implements it with Windows CNG; yw-core has no AES or 3DES of its own (D6).
+//!
+//! **PIN-protected management key** (spec/10 §5.3.3, the layout of yubikey-manager
+//! `ykman/piv.py` `PivmanData` / `PivmanProtectedData`, what `ykman piv access
+//! change-management-key --generate --protect` writes): ADMIN DATA `5FFF00` (readable without
+//! authentication) holds `80 { 81 flags, 82 salt, 83 PIN timestamp }` with flag `02` = "the
+//! management key is stored on the card"; PRINTED `5FC109` (readable only after VERIFY PIN)
+//! holds `88 { 89 key }`. The algorithm of the stored key is the one GET METADATA `9B` reports.
 #![deny(clippy::indexing_slicing)]
 
 use zeroize::Zeroizing;
@@ -53,6 +62,17 @@ const INS_GET_METADATA: u8 = 0xF7;
 const INS_GET_SERIAL: u8 = 0xF8;
 const INS_GET_VERSION: u8 = 0xFD;
 const INS_SET_MGMKEY: u8 = 0xFF;
+const INS_GET_DATA: u8 = 0xCB;
+const INS_PUT_DATA: u8 = 0xDB;
+
+/// ADMIN DATA object (yubikey-manager "pivman data"; readable without authentication).
+pub const OBJECT_ADMIN_DATA: u32 = 0x005F_FF00;
+/// PRINTED object (yubikey-manager "pivman protected data"; readable after VERIFY PIN).
+pub const OBJECT_PRINTED: u32 = 0x005F_C109;
+/// ADMIN DATA flag: the PUK is blocked on purpose (ykman `puk_blocked`).
+pub const ADMIN_FLAG_PUK_BLOCKED: u8 = 0x01;
+/// ADMIN DATA flag: the management key is stored in PRINTED (ykman `mgm_key_protected`).
+pub const ADMIN_FLAG_MGM_PROTECTED: u8 = 0x02;
 
 /// Management key algorithm (GET METADATA `9B` tag 01).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -179,6 +199,18 @@ impl MgmtKey {
     #[must_use]
     pub const fn algorithm(&self) -> MgmtAlgorithm {
         self.algorithm
+    }
+
+    /// A fresh random key of `algorithm` from the OS random generator (the equivalent of ykman
+    /// `--generate`).
+    ///
+    /// # Errors
+    ///
+    /// [`CardError::Internal`] when the OS generator fails.
+    pub fn random(algorithm: MgmtAlgorithm) -> Result<Self, CardError> {
+        let mut key = Zeroizing::new(vec![0_u8; algorithm.key_len()]);
+        crate::entropy::fill_random(&mut key).map_err(|_| CardError::Internal)?;
+        Self::new(algorithm, &key)
     }
 
     /// Parses 48/32/64 hex digits (the form ykman prints).
@@ -377,6 +409,150 @@ pub fn set_management_key(new: &MgmtKey) -> Command {
     data.push(u8::try_from(new.key.len()).unwrap_or(0));
     data.extend_from_slice(&new.key);
     Command::no_response(0x00, INS_SET_MGMKEY, 0xFF, 0xFF, data)
+}
+
+fn object_tag(object: u32) -> [u8; 5] {
+    let [_, high, middle, low] = object.to_be_bytes();
+    [0x5C, 0x03, high, middle, low]
+}
+
+/// GET DATA of a PIV data object (3-byte id, e.g. [`OBJECT_ADMIN_DATA`]).
+#[must_use]
+pub fn get_data(object: u32) -> Command {
+    Command::new(0x00, INS_GET_DATA, 0x3F, 0xFF, object_tag(object).to_vec())
+}
+
+/// PUT DATA of a PIV data object: `5C 03 <id> ‖ 53 { content }` (empty content deletes it).
+///
+/// # Errors
+///
+/// [`CardError::TooLarge`].
+pub fn put_data(object: u32, content: &[u8]) -> Result<Command, CardError> {
+    // Sized up front so a PRINTED key is never left behind by a reallocation.
+    let mut data = Vec::with_capacity(content.len().saturating_add(9));
+    data.extend_from_slice(&object_tag(object));
+    tlv::push(&mut data, 0x53, content)?;
+    Ok(Command::no_response(0x00, INS_PUT_DATA, 0x3F, 0xFF, data))
+}
+
+/// The ADMIN DATA object (ykman `PivmanData`): `80 { 81 flags, 82 salt, 83 PIN timestamp }`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AdminData {
+    /// Tag 81 (one byte; absent = 0).
+    pub flags: u8,
+    /// Tag 82: the salt of a PIN-derived management key (old ykman `--pin-derived`).
+    pub salt: Option<Vec<u8>>,
+    /// Tag 83: the last PIN change time (4 bytes, kept as read).
+    pub pin_timestamp: Option<[u8; 4]>,
+}
+
+impl AdminData {
+    /// Parses the object content (the value of `53`); empty content = no object.
+    ///
+    /// # Errors
+    ///
+    /// [`CardError::Malformed`].
+    pub fn parse(content: &[u8]) -> Result<Self, CardError> {
+        if content.is_empty() {
+            return Ok(Self::default());
+        }
+        let inner = tlv::unwrap_single(content, 0x80)?;
+        let mut data = Self::default();
+        for element in tlv::parse_all(inner)? {
+            match (element.tag, element.value) {
+                (0x81, [flags]) => data.flags = *flags,
+                (0x82, salt) => data.salt = Some(salt.to_vec()),
+                (0x83, stamp) => {
+                    data.pin_timestamp = Some(stamp.try_into().map_err(|_| CardError::Malformed)?);
+                }
+                (0x81, _) => return Err(CardError::Malformed),
+                _ => {}
+            }
+        }
+        Ok(data)
+    }
+
+    /// The object content as ykman writes it (empty when nothing is set).
+    ///
+    /// # Errors
+    ///
+    /// [`CardError::TooLarge`] (never for these sizes).
+    pub fn encode(&self) -> Result<Vec<u8>, CardError> {
+        let mut inner = Vec::new();
+        if self.flags != 0 {
+            tlv::push(&mut inner, 0x81, &[self.flags])?;
+        }
+        if let Some(salt) = &self.salt {
+            tlv::push(&mut inner, 0x82, salt)?;
+        }
+        if let Some(stamp) = &self.pin_timestamp {
+            tlv::push(&mut inner, 0x83, stamp)?;
+        }
+        if inner.is_empty() {
+            return Ok(inner);
+        }
+        tlv::encode(0x80, &inner)
+    }
+
+    /// The management key is stored PIN-protected in PRINTED.
+    #[must_use]
+    pub const fn mgm_key_protected(&self) -> bool {
+        self.flags & ADMIN_FLAG_MGM_PROTECTED != 0
+    }
+}
+
+/// The key of the PRINTED object content `88 { 89 key }` (`None`: no key stored).
+///
+/// # Errors
+///
+/// [`CardError::Malformed`].
+pub fn parse_protected_key(content: &[u8]) -> Result<Option<Zeroizing<Vec<u8>>>, CardError> {
+    if content.is_empty() {
+        return Ok(None);
+    }
+    let inner = tlv::unwrap_single(content, 0x88)?;
+    Ok(tlv::parse_all(inner)?
+        .into_iter()
+        .find(|element| element.tag == 0x89)
+        .map(|element| Zeroizing::new(element.value.to_vec())))
+}
+
+/// The PRINTED object content `88 { 89 key }` (ykman `PivmanProtectedData`).
+///
+/// # Errors
+///
+/// [`CardError::TooLarge`] (never).
+pub fn encode_protected_key(key: &MgmtKey) -> Result<Zeroizing<Vec<u8>>, CardError> {
+    let inner = Zeroizing::new(tlv::encode(0x89, &key.key)?);
+    Ok(Zeroizing::new(tlv::encode(0x88, &inner)?))
+}
+
+/// What the card says about its management key (no authentication needed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ManagementState {
+    /// Algorithm (GET METADATA `9B`).
+    pub algorithm: MgmtAlgorithm,
+    /// Still the factory key.
+    pub default: bool,
+    /// Stored PIN-protected (ADMIN DATA flag `02`).
+    pub protected: bool,
+    /// Derived from the PIN (ADMIN DATA salt; old ykman, not supported here).
+    pub derived: bool,
+}
+
+/// How the management key is obtained for an authentication.
+#[derive(Clone, Copy)]
+pub struct ManagementCredential<'a> {
+    /// The key bytes the user entered (or the factory key); may be empty.
+    pub key: &'a [u8],
+    /// The PIV PIN, used when the key is PIN-protected; may be empty.
+    pub pin: &'a [u8],
+}
+
+impl core::fmt::Debug for ManagementCredential<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("ManagementCredential([REDACTED])")
+    }
 }
 
 // ---- parsers ----
@@ -607,6 +783,168 @@ impl<'t> Piv<'t> {
     /// Status errors.
     pub fn set_management_key(&mut self, new: &MgmtKey) -> Result<(), CardError> {
         self.run(&set_management_key(new)).map(drop)
+    }
+
+    /// GET DATA of `object`: its content, or `None` when the card has no such object (`6A82`).
+    ///
+    /// # Errors
+    ///
+    /// [`CardError::SecurityStatus`] (PRINTED before VERIFY PIN), status and parse errors.
+    pub fn get_object(&mut self, object: u32) -> Result<Option<Zeroizing<Vec<u8>>>, CardError> {
+        let response = exchange(self.transport, &get_data(object), self.mode)?;
+        match response.sw {
+            SW_OK => Ok(Some(Zeroizing::new(
+                tlv::unwrap_single(&response.data, 0x53)?.to_vec(),
+            ))),
+            0x6A82 => Ok(None),
+            sw => Err(CardError::from_status(sw)),
+        }
+    }
+
+    /// PUT DATA of `object` (management key authenticated).
+    ///
+    /// # Errors
+    ///
+    /// Status errors.
+    pub fn put_object(&mut self, object: u32, content: &[u8]) -> Result<(), CardError> {
+        self.run(&put_data(object, content)?).map(drop)
+    }
+
+    /// ADMIN DATA (empty when absent).
+    ///
+    /// # Errors
+    ///
+    /// Status and parse errors.
+    pub fn admin_data(&mut self) -> Result<AdminData, CardError> {
+        match self.get_object(OBJECT_ADMIN_DATA)? {
+            Some(content) => AdminData::parse(&content),
+            None => Ok(AdminData::default()),
+        }
+    }
+
+    /// The management key's algorithm, default and protection (read-only, no PIN).
+    ///
+    /// # Errors
+    ///
+    /// Status and parse errors.
+    pub fn management_state(&mut self) -> Result<ManagementState, CardError> {
+        let (algorithm, default) = self.management_metadata()?;
+        let admin = self.admin_data()?;
+        Ok(ManagementState {
+            algorithm,
+            default,
+            protected: admin.mgm_key_protected(),
+            derived: admin.salt.is_some(),
+        })
+    }
+
+    /// The PIN-protected key from PRINTED (VERIFY PIN must have succeeded in this session).
+    ///
+    /// # Errors
+    ///
+    /// [`CardError::NotFound`] (no key stored), [`CardError::Malformed`] (wrong length for
+    /// `algorithm`), status errors.
+    pub fn protected_management_key(
+        &mut self,
+        algorithm: MgmtAlgorithm,
+    ) -> Result<MgmtKey, CardError> {
+        let content = self
+            .get_object(OBJECT_PRINTED)?
+            .ok_or(CardError::NotFound)?;
+        let key = parse_protected_key(&content)?.ok_or(CardError::NotFound)?;
+        MgmtKey::new(algorithm, &key).map_err(|_| CardError::Malformed)
+    }
+
+    /// Mutual authentication with the management key the card asks for: a PIN-protected key is
+    /// read from PRINTED after VERIFY PIN with `credential.pin` (it is wiped when this returns);
+    /// otherwise `credential.key` is used. Returns the state read first.
+    ///
+    /// # Errors
+    ///
+    /// [`CardError::ManagementKeyProtected`] (protected and no PIN given),
+    /// [`CardError::NotSupported`] (a PIN-derived key), PIN, key and status errors.
+    pub fn authenticate_management(
+        &mut self,
+        credential: ManagementCredential<'_>,
+        cipher: &dyn MgmtCipher,
+        challenge: &[u8; 16],
+    ) -> Result<ManagementState, CardError> {
+        let state = self.management_state()?;
+        let block = challenge
+            .get(..state.algorithm.block_len())
+            .ok_or(CardError::Internal)?;
+        let key = if state.protected {
+            // The user never saw this key (ykman `--generate --protect`): only the PIN opens it.
+            if credential.pin.is_empty() {
+                return Err(CardError::ManagementKeyProtected);
+            }
+            self.verify_pin(credential.pin)?;
+            self.protected_management_key(state.algorithm)?
+        } else if !credential.key.is_empty() {
+            MgmtKey::new(state.algorithm, credential.key)?
+        } else if state.derived {
+            return Err(CardError::NotSupported);
+        } else {
+            return Err(CardError::PinFormat);
+        };
+        self.authenticate(&key, cipher, block)?;
+        Ok(state)
+    }
+
+    /// `ykman piv access change-management-key --generate --protect` (spec/10 §9.3): VERIFY PIN
+    /// with `pin`, authenticate with the current key (the factory key, or the PIN-protected one),
+    /// generate a random AES-192 key on this PC, store it in PRINTED, SET MANAGEMENT KEY, then
+    /// set the ADMIN DATA flag. Every key buffer is wiped when this returns; nobody sees the key.
+    ///
+    /// PRINTED is written before the key is set so that a failure of SET MANAGEMENT KEY leaves
+    /// the old key working; PRINTED is then restored (best effort).
+    ///
+    /// # Errors
+    ///
+    /// [`CardError::ManagementKeyUnknown`] (a custom key that is not PIN-protected),
+    /// [`CardError::NotSupported`] (a PIN-derived key), PIN and status errors.
+    pub fn protect_management_key(
+        &mut self,
+        pin: &[u8],
+        cipher: &dyn MgmtCipher,
+        challenge: &[u8; 16],
+    ) -> Result<(), CardError> {
+        let state = self.management_state()?;
+        if state.derived {
+            return Err(CardError::NotSupported);
+        }
+        self.verify_pin(pin)?;
+        let current = if state.protected {
+            self.protected_management_key(state.algorithm)?
+        } else if state.default {
+            MgmtKey::default_for(state.algorithm)?
+        } else {
+            return Err(CardError::ManagementKeyUnknown);
+        };
+        let block = challenge
+            .get(..state.algorithm.block_len())
+            .ok_or(CardError::Internal)?;
+        self.authenticate(&current, cipher, block)?;
+        let mut admin = self.admin_data()?;
+        let next = MgmtKey::random(MgmtAlgorithm::Aes192)?;
+        self.put_object(OBJECT_PRINTED, &encode_protected_key(&next)?)?;
+        if let Err(error) = self.set_management_key(&next) {
+            let previous = if state.protected {
+                encode_protected_key(&current)?
+            } else {
+                Zeroizing::new(Vec::new())
+            };
+            let _ = self.put_object(OBJECT_PRINTED, &previous);
+            return Err(error);
+        }
+        let before = admin.encode()?;
+        admin.flags |= ADMIN_FLAG_MGM_PROTECTED;
+        admin.salt = None;
+        let after = admin.encode()?;
+        if after != before {
+            self.put_object(OBJECT_ADMIN_DATA, &after)?;
+        }
+        Ok(())
     }
 
     /// Imports an Ed25519 seed (management key authenticated), then reads the metadata back

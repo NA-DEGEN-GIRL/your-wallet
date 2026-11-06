@@ -144,6 +144,14 @@ pub mod ids {
     pub const GENERATE: u16 = 528;
     /// 보관 항목 삭제 (`ApiKeys::prune_dormant`, spec/04 §6.6).
     pub const PRUNE_DORMANT: u16 = 529;
+    /// `rpc.json에서 가져오기` (`app_rpc_import`).
+    pub const RPC_IMPORT: u16 = 530;
+    /// The import confirmation `덮어쓰기` / `가져오기`.
+    pub const RPC_IMPORT_OVERWRITE: u16 = 531;
+    /// The import confirmation `비어 있는 네트워크만`.
+    pub const RPC_IMPORT_FILL: u16 = 532;
+    /// The import confirmation `취소`.
+    pub const RPC_IMPORT_CANCEL: u16 = 533;
     /// URL rows base (3 ids per row: 교체, 테스트, 삭제).
     pub const ROW_BASE: u16 = 540;
     /// URL rows span.
@@ -231,6 +239,10 @@ pub mod ids {
         TPL_DELETE,
         GENERATE,
         PRUNE_DORMANT,
+        RPC_IMPORT,
+        RPC_IMPORT_OVERWRITE,
+        RPC_IMPORT_FILL,
+        RPC_IMPORT_CANCEL,
         REPLACE_EDIT,
         REPLACE_SAVE,
         REPLACE_CANCEL,
@@ -1084,6 +1096,7 @@ impl App {
         reason = "the RPC provider form and the URL rows"
     )]
     fn network_section(&self, items: &mut Vec<Item>) {
+        self.rpc_import_section(items);
         items.push(Item::CardStart(Some("RPC 공급자".to_owned())));
         items.push(Item::Help(
             "RPC는 지갑이 블록체인에서 잔액을 읽고 거래를 보낼 때 쓰는 연결 주소입니다. QuickNode나 알케미 계정 정보를 한 번 넣으면 아래 모든 네트워크의 주소를 자동으로 만들 수 있습니다."

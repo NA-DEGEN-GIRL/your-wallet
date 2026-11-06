@@ -492,6 +492,7 @@ fn card_signing_verifies_and_recovers_the_account() {
     let auth = crate::yubikey::enrol::EnrolAuth {
         admin_pin: b"12345678",
         management_key: &crate::yubikey::piv::DEFAULT_MANAGEMENT_KEY,
+        piv_pin: b"",
         cipher: Some(&ToyCipher),
         challenge: [0; 16],
     };

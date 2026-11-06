@@ -412,10 +412,10 @@ fn w11_card_pin_bounds_mask_and_owned_buffer() {
 
 /// W12 (spec/10 §7.3, §9.3): the admin PIN 8–127, the management key exactly 48 hex digits, a
 /// PIN change with current / new / new again (the two new fields equal, different from the
-/// current one, the target's bounds); every field masked; W13 is a capture-required display
-/// with the 2 s hold and no copy.
+/// current one, the target's bounds); "PIN 하나로 통일" (current empty or 8, new exactly 8
+/// twice); the PIV PIN 6–8.
 #[test]
-fn w12_card_secrets_and_w13_management_key() {
+fn w12_card_secrets() {
     use super::CardSecretKind;
     use crate::yubikey::PinTarget;
     let submit = |kind: SecretKind, fields: &[&str]| {
@@ -468,23 +468,30 @@ fn w12_card_secrets_and_w13_management_key() {
         submit(pw3, &["12345678", "1234567", "1234567"]),
         FormAction::Redraw
     ));
-    let view = SecretKind::ShowCardKey;
-    assert_eq!(view.id(), "W13");
-    assert!(view.is_display() && view.needs_hold() && !view.paste_allowed());
-    assert_eq!(
-        capture_decision(view, Ok(false)),
-        CaptureDecision::Refuse(ErrorCode::Sec001)
-    );
-    let mut display = SecretForm::display(
-        view,
-        0,
-        DisplaySecret {
-            text: SecretString::from_zeroizing(Zeroizing::new("0a".repeat(24))),
-            address: None,
-            passphrase_note: false,
-            copy_allowed: false,
-        },
-    );
-    // Enter does not close it: only the 2 s hold (HoldComplete) or a cancel.
-    assert!(matches!(display.on_char(0x0D, 1), FormAction::None));
+    // "PIN 하나로 통일": current empty (factory) or 8, the new value exactly 8, twice.
+    let pins = SecretKind::CardSecret(CardSecretKind::SetPins);
+    assert!(!pins.is_display() && pins.paste_allowed());
+    assert!(matches!(
+        submit(pins, &["", "1234567", "1234567"]),
+        FormAction::Redraw
+    ));
+    assert!(matches!(
+        submit(pins, &["123456", "24681357", "24681357"]),
+        FormAction::Redraw
+    ));
+    assert!(matches!(
+        submit(pins, &["", "24681357", "24681358"]),
+        FormAction::Redraw
+    ));
+    let FormAction::Submit(submission) = submit(pins, &["", "24681357", "24681357"]) else {
+        unreachable!("factory current, new twice");
+    };
+    assert!(submission.values[0].is_empty());
+    assert_eq!(submission.values[1].as_slice(), b"24681357");
+    let piv_pin = SecretKind::CardSecret(CardSecretKind::PivPin);
+    assert!(matches!(submit(piv_pin, &["12345"]), FormAction::Redraw));
+    assert!(matches!(
+        submit(piv_pin, &["123456"]),
+        FormAction::Submit(_)
+    ));
 }

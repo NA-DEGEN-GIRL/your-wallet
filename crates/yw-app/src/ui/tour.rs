@@ -996,6 +996,7 @@ fn tour_yubikey(app: &Rc<RefCell<App>>) {
             openpgp_admin: true,
             piv_pin: true,
             piv_management: true,
+            piv_management_protected: false,
         };
         wizard.defaults = defaults;
         wizard.enrolled = Some(Enrolled {
