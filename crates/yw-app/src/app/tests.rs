@@ -2592,6 +2592,9 @@ fn about_wallet(h: &mut Harness) {
     assert!(matches!(h.app.mode, AppMode::Unlocked { .. }));
 }
 
+/// "슬롯 구성 바꾸기" and "YubiKey 비우기" (spec/10 §15).
+mod yubikey_manage;
+
 /// spec/10 §7.1-2, §7.2, §13 at the App level: Settings → `YubiKey` → the wizard with SIG = EVM 2,
 /// AUT = Bitcoin P2WPKH 0 and 2 Solana accounts from index 1 → the recovery words (this vault's:
 /// the same-mnemonic warning must be acknowledged) → the confirmation with every path and its

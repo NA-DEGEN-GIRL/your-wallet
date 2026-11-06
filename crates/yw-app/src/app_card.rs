@@ -191,6 +191,9 @@ pub struct CardUi {
     pub pin_serial: Option<u32>,
     /// "PIN 설정" mode: `false` = "8자리 하나로 통일" (the default), `true` = one value each.
     pub pins_separate: bool,
+    /// The open card action of the `YubiKey` list ("슬롯 구성 바꾸기" / "`YubiKey` 비우기",
+    /// spec/10 §15).
+    pub manage: Option<crate::app_yubikey::manage::YkManage>,
 }
 
 impl CardUi {
@@ -207,6 +210,12 @@ impl CardUi {
         self.pin_serial = None;
         self.pins_separate = false;
         self.pending_unhide.clear();
+        self.manage = None;
+    }
+
+    /// Keys whose hidden accounts become visible at the next meta load (after a card change).
+    pub fn unhide_later(&mut self, roles: impl IntoIterator<Item = KeyRole>) {
+        self.pending_unhide.extend(roles);
     }
 }
 
