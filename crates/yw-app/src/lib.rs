@@ -18,6 +18,7 @@ pub mod app_keys;
 pub mod app_llm;
 pub mod app_reset;
 pub mod app_rpc_import;
+pub mod app_scroll;
 pub mod app_sol;
 pub mod app_sol_commands;
 pub mod app_tokens;

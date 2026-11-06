@@ -359,6 +359,30 @@ pub struct Placed {
     pub content_height: i32,
 }
 
+impl Placed {
+    /// Moves everything by `dy` pixels: `layout(.., scroll - dy, ..)` without laying out again
+    /// (every placed `y` is `content_y - scroll`).
+    pub fn shift(&mut self, dy: i32) {
+        let move_rect = |rect: &mut Rect| rect.y = rect.y.saturating_add(dy);
+        self.texts
+            .iter_mut()
+            .for_each(|text| move_rect(&mut text.rect));
+        self.shapes
+            .iter_mut()
+            .for_each(|shape| move_rect(&mut shape.rect));
+        self.rules.iter_mut().for_each(move_rect);
+        self.controls
+            .iter_mut()
+            .for_each(|(_, rect)| move_rect(rect));
+        self.holds
+            .iter_mut()
+            .for_each(|(_, rect, _)| move_rect(rect));
+        for (_, y, _, _) in &mut self.qrs {
+            *y = y.saturating_add(dy);
+        }
+    }
+}
+
 /// Measures `(text, font, width)` → height in pixels.
 pub type Measure<'a> = &'a dyn Fn(&str, FontRole, i32) -> i32;
 /// Measures a one-line label width in pixels.
@@ -980,11 +1004,19 @@ pub fn layout(
     placed
 }
 
-/// Paints the placed texts and shapes.
+/// Paints the placed texts and shapes that meet the paint session's update rectangle (after a
+/// scroll only the uncovered strip).
 pub fn paint(dc: &mut PaintDc<'_>, client: Rect, placed: &Placed, fonts: &Fonts) {
+    let area = dc.update_rect();
+    let (top, bottom) = if area.h > 0 {
+        (area.y, area.bottom())
+    } else {
+        (0, client.h)
+    };
+    let outside = |rect: &Rect| rect.bottom() <= top || rect.y >= bottom;
     dc.fill_rect(client, theme::BG);
     for shape in &placed.shapes {
-        if shape.rect.bottom() < 0 || shape.rect.y > client.h {
+        if outside(&shape.rect) {
             continue;
         }
         dc.round_rect(
@@ -994,10 +1026,13 @@ pub fn paint(dc: &mut PaintDc<'_>, client: Rect, placed: &Placed, fonts: &Fonts)
             Color(shape.border),
         );
     }
-    for rule in &placed.rules {
+    for rule in placed.rules.iter().filter(|rule| !outside(rule)) {
         dc.fill_rect(*rule, theme::CARD_BORDER);
     }
     for (x, y, module, payload) in &placed.qrs {
+        if *y >= bottom {
+            continue;
+        }
         if let Some(code) = crate::ui::qr::encode(payload) {
             let geometry = crate::ui::qr::QrLayout {
                 symbol_modules: code.size(),
@@ -1010,7 +1045,7 @@ pub fn paint(dc: &mut PaintDc<'_>, client: Rect, placed: &Placed, fonts: &Fonts)
         }
     }
     for text in &placed.texts {
-        if text.rect.bottom() < 0 || text.rect.y > client.h {
+        if outside(&text.rect) {
             continue;
         }
         if let Some(fill) = text.fill {
@@ -1101,6 +1136,23 @@ impl ControlSet {
             .map(|(_, control)| control.is_checked())
     }
 
+    /// After a pure scroll ([`Placed::shift`] + [`Window::scroll_content`], which already moved
+    /// every child): shows the controls that came into `client` and hides those that left it.
+    /// A control is placed at its rectangle before it is shown (whether or not the system moved
+    /// it while hidden).
+    pub fn scrolled(&self, placed: &Placed, client: Rect) {
+        for ((_, control), (_, rect)) in self.controls.iter().zip(&placed.controls) {
+            let visible = rect.bottom() > 0 && rect.y < client.h;
+            if visible == control.is_shown() {
+                continue;
+            }
+            if visible {
+                control.set_rect(*rect);
+            }
+            control.show(visible);
+        }
+    }
+
     /// Creates, moves and updates controls to match `placed`.
     pub fn sync(&mut self, window: &Window, placed: &Placed, fonts: &Fonts, client: Rect) {
         let wanted = Self::signature(&placed.controls);
@@ -1151,5 +1203,39 @@ impl ControlSet {
             *ctl = wanted_ctl.clone();
         }
         window.end_batch();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shift_equals_layout_at_the_new_offset() {
+        let items = vec![
+            Item::Title("제목".to_owned()),
+            Item::Banner("주의 문구".to_owned(), Tone::Warn),
+            Item::CardStart(Some("카드".to_owned())),
+            Item::Field("주소".to_owned(), "0x1234".to_owned()),
+            Item::Row(vec![Ctl::button(1, "보내기"), Ctl::primary(2, "받기")]),
+            Item::Rule,
+            Item::Qr("0x1234".to_owned()),
+            Item::CardEnd,
+            Item::Hold {
+                id: 3,
+                label: "길게 누르기".to_owned(),
+                progress: 0,
+                enabled: true,
+            },
+            Item::Text("본문".to_owned()),
+        ];
+        let measure = |_: &str, _: FontRole, _: i32| 20;
+        let width = |text: &str| i32::try_from(text.len()).unwrap_or(0).saturating_mul(7);
+        let at = |scroll: i32| layout(&items, 900, 96, scroll, &measure, &width);
+        let mut shifted = at(120);
+        shifted.shift(120 - 45);
+        assert_eq!(shifted, at(45));
+        shifted.shift(45 - 300);
+        assert_eq!(shifted, at(300));
     }
 }

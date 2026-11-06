@@ -50,17 +50,18 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     IMAGE_ICON, IsChild, IsDialogMessageW, IsIconic, KillTimer, LR_DEFAULTCOLOR, LoadCursorW,
     LoadIconW, LoadImageW, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MINMAXINFO,
     MSG, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, SB_VERT, SCROLLINFO,
-    SIF_PAGE, SIF_POS, SIF_RANGE, SIF_TRACKPOS, SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON,
-    SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SYSTEM_METRICS_INDEX, SendMessageW, SetForegroundWindow, SetTimer, SetWindowDisplayAffinity,
-    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage,
-    WDA_EXCLUDEFROMCAPTURE, WM_APP, WM_CHAR, WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC,
-    WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND, WM_GETMINMAXINFO,
-    WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEWHEEL,
-    WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_SETREDRAW, WM_SYSKEYDOWN, WNDCLASSEXW,
-    WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_EX_CONTROLPARENT,
-    WS_EX_DLGMODALFRAME, WS_EX_TOPMOST, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW,
-    WS_SYSMENU, WS_THICKFRAME, WS_VSCROLL,
+    SIF_DISABLENOSCROLL, SIF_PAGE, SIF_POS, SIF_RANGE, SIF_TRACKPOS, SM_CXICON, SM_CXSMICON,
+    SM_CYICON, SM_CYSMICON, SPI_GETWHEELSCROLLLINES, SW_HIDE, SW_INVALIDATE, SW_RESTORE,
+    SW_SCROLLCHILDREN, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SYSTEM_METRICS_INDEX, ScrollWindowEx, SendMessageW, SetForegroundWindow, SetTimer,
+    SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
+    SystemParametersInfoW, TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WM_APP, WM_CHAR, WM_CREATE,
+    WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND,
+    WM_GETMINMAXINFO, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN,
+    WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_SETREDRAW,
+    WM_SYSKEYDOWN, WNDCLASSEXW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_APPWINDOW,
+    WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_EX_TOPMOST, WS_MINIMIZEBOX, WS_OVERLAPPED,
+    WS_OVERLAPPEDWINDOW, WS_SYSMENU, WS_THICKFRAME, WS_VSCROLL,
 };
 
 use super::msg::{
@@ -442,8 +443,11 @@ impl WindowSpec {
 
     fn styles(&self) -> (u32, u32) {
         match self.kind {
+            // The main window scrolls its own client area (spec/04 §1.7): the bar is always
+            // there (disabled when everything fits, `set_vscroll_content`) so the layout width
+            // never jumps.
             WindowKind::Main => (
-                WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+                WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_VSCROLL,
                 WS_EX_APPWINDOW | WS_EX_CONTROLPARENT,
             ),
             WindowKind::Owned { .. } | WindowKind::Floating => {
@@ -888,6 +892,65 @@ impl Window {
         };
         // SAFETY: `info` is a valid SCROLLINFO for our live window's vertical bar.
         unsafe { SetScrollInfo(hwnd, SB_VERT, &raw const info, 1) };
+    }
+
+    /// Sets the vertical scroll bar for `content` pixels of content seen through a `page`-pixel
+    /// view at offset `pos`. The bar stays visible (disabled) when everything fits
+    /// (`SIF_DISABLENOSCROLL`), so the client width does not change with the content.
+    pub fn set_vscroll_content(&self, pos: i32, page: i32, content: i32) {
+        let Some(hwnd) = self.live() else { return };
+        let info = SCROLLINFO {
+            cbSize: u32::try_from(core::mem::size_of::<SCROLLINFO>()).unwrap_or(28),
+            fMask: SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL,
+            nMin: 0,
+            // The range is inclusive: positions 0..=content-page.
+            nMax: content.saturating_sub(1).max(0),
+            nPage: u32::try_from(page.max(0)).unwrap_or(0),
+            nPos: pos.max(0),
+            nTrackPos: 0,
+        };
+        // SAFETY: `info` is a valid SCROLLINFO for our live window's vertical bar.
+        unsafe { SetScrollInfo(hwnd, SB_VERT, &raw const info, 1) };
+    }
+
+    /// Scrolls the client area by `dy` pixels (positive = content moves down): the system copies
+    /// the pixels that stay visible, moves every child window with them
+    /// (`SW_SCROLLCHILDREN`) and invalidates only the uncovered strip (`SW_INVALIDATE`, no
+    /// erase). Call [`Window::update_now`] to paint that strip at once.
+    pub fn scroll_content(&self, dy: i32) {
+        let Some(hwnd) = self.live() else { return };
+        if dy == 0 {
+            return;
+        }
+        // SAFETY: Scrolls our live window's whole client area (null rectangles and region; no
+        // output pointers).
+        unsafe {
+            ScrollWindowEx(
+                hwnd,
+                0,
+                dy,
+                core::ptr::null(),
+                core::ptr::null(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                SW_SCROLLCHILDREN | SW_INVALIDATE,
+            )
+        };
+    }
+
+    /// Paints whatever is invalid in the window and its children now (nothing else).
+    pub fn update_now(&self) {
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: Validates our live window and children by painting their pending update
+        // regions; null rectangle and region = no new invalidation.
+        unsafe {
+            RedrawWindow(
+                hwnd,
+                core::ptr::null(),
+                core::ptr::null_mut(),
+                RDW_UPDATENOW | RDW_ALLCHILDREN,
+            )
+        };
     }
 
     /// The thumb position while it is dragged (`SB_THUMBTRACK`), 0 if unknown.
@@ -1472,6 +1535,27 @@ unsafe extern "system" fn trampoline(
         drop(unsafe { Box::from_raw(state_ptr) });
     }
     result
+}
+
+/// Lines one wheel notch scrolls (`SPI_GETWHEELSCROLLLINES`, default 3); `None` = one page
+/// per notch (`WHEEL_PAGESCROLL`).
+#[must_use]
+pub fn wheel_scroll_lines() -> Option<u32> {
+    let mut lines: u32 = 3;
+    // SAFETY: Reads one UINT into `lines` (valid, writable); no setting changes (fWinIni 0).
+    let ok = unsafe {
+        SystemParametersInfoW(
+            SPI_GETWHEELSCROLLLINES,
+            0,
+            (&raw mut lines).cast::<core::ffi::c_void>(),
+            0,
+        )
+    };
+    match (ok, lines) {
+        (0, _) => Some(3),
+        (_, u32::MAX) => None,
+        (_, lines) => Some(lines),
+    }
 }
 
 /// Posts application messages to a window from any thread.

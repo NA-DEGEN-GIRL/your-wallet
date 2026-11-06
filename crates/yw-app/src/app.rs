@@ -524,6 +524,8 @@ pub struct App {
     /// when it fails or the window is cancelled.
     recover_return: Option<AppMode>,
     pub(crate) scroll: i32,
+    /// Wheel accumulation and glide of the main window (`app_scroll`).
+    pub(crate) scroll_state: crate::app_scroll::MainScroll,
     pub(crate) controls: ControlSet,
     pub(crate) placed: Placed,
     pub(crate) evm: crate::app_evm::EvmUi,
@@ -753,6 +755,7 @@ impl App {
             done_imported: false,
             recover_return: None,
             scroll: 0,
+            scroll_state: crate::app_scroll::MainScroll::default(),
             controls: ControlSet::default(),
             placed: Placed::default(),
             evm: crate::app_evm::EvmUi::default(),
@@ -942,6 +945,7 @@ impl App {
         self.wait.screen_changed(&self.screen, &screen, now_ms());
         self.screen = screen;
         self.scroll = 0;
+        self.stop_scroll();
         self.refresh();
     }
 
@@ -984,6 +988,7 @@ impl App {
             placed = layout(&items, client.w, dpi, self.scroll, &measure, &label);
         }
         self.controls.sync(main, &placed, fonts, client);
+        main.set_vscroll_content(self.scroll, client.h, placed.content_height);
         self.placed = placed;
         main.invalidate();
     }
@@ -1051,14 +1056,16 @@ impl App {
                 self.hold_cancel();
                 Reply::Default
             }
+            Msg::Timer(crate::app_scroll::SCROLL_TIMER_ID) => {
+                self.scroll_tick(window);
+                Reply::Handled(0)
+            }
             Msg::Wheel(delta) => {
-                let step = window.px(60);
-                let lines = i32::from(*delta) / 120;
-                self.scroll = self
-                    .scroll
-                    .saturating_sub(lines.saturating_mul(step))
-                    .max(0);
-                self.refresh();
+                self.main_wheel(window, *delta);
+                Reply::Handled(0)
+            }
+            Msg::VScroll { code } => {
+                self.main_vscroll(window, *code);
                 Reply::Handled(0)
             }
             Msg::App { msg, wparam } => {
