@@ -216,11 +216,18 @@ fn digest_parts(parts: &Parts<'_>, expires_unix_ms: u64) -> Result<[u8; 32], App
             transcript.push_u8(*network);
             transcript.push_u64(*signature_chain_id);
         }
+        ChainRef::Zcash { network, genesis } => {
+            transcript.push_u8(5);
+            transcript.push_u8(*network);
+            transcript.push_bytes(genesis)?;
+        }
     }
     match parts.account {
         AccountRef::Evm(address) => transcript.push_bytes(address.as_bytes())?,
         AccountRef::Sol(public) => transcript.push_bytes(public)?,
-        AccountRef::Bitcoin(public) => transcript.push_bytes(public)?,
+        AccountRef::Bitcoin(public) | AccountRef::Zcash(public) => {
+            transcript.push_bytes(public)?;
+        }
     }
     transcript.push_bytes(&parts.payload.digest_bytes())?;
     transcript.push_bytes(&parts.display.digest()?)?;
@@ -334,6 +341,20 @@ fn check_draft(draft: &ApprovalDraft) -> Result<(), ApprovalError> {
             )
         }
         ApprovalKind::BtcSend | ApprovalKind::BtcFeeBump => btc_draft_ok(draft),
+        // Zcash sends (spec/12 §9): app origin, the key in the payload, the network's pinned
+        // genesis and a payload whose network byte is the chain's.
+        ApprovalKind::ZecSend => matches!(
+            (&draft.payload, &draft.chain, &draft.account, &draft.origin, &draft.signer),
+            (
+                SigningPayload::Zec(payload),
+                ChainRef::Zcash { network, genesis },
+                AccountRef::Zcash(_),
+                ApprovalOrigin::App,
+                Signer::FromPayload,
+            ) if crate::zec::ZecNetwork::from_id(*network).map(crate::zec::ZecNetwork::genesis)
+                == Some(*genesis)
+                && crate::zec::sign::payload_network(payload) == Some(*network)
+        ),
         // dApp messages (spec/07 §19, spec/08 §17): a site origin, the key in the payload, the
         // pinned genesis of the chain and the payload's own key as the account.
         ApprovalKind::SolMessage | ApprovalKind::SolSignIn => matches!(

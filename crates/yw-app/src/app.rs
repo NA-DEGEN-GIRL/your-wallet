@@ -3106,6 +3106,8 @@ impl App {
         networks.push(NetworkId::Solana(crate::network::SolCluster::Devnet));
         networks.push(NetworkId::Bitcoin(crate::network::BtcNet::Mainnet));
         networks.push(NetworkId::Bitcoin(crate::network::BtcNet::Testnet4));
+        networks.push(NetworkId::Zcash(yw_core::zec::ZecNetwork::Mainnet));
+        networks.push(NetworkId::Zcash(yw_core::zec::ZecNetwork::Testnet));
         networks
     }
 
@@ -3121,6 +3123,7 @@ impl App {
                 .display_name()
                 .to_owned(),
             NetworkId::Bitcoin(net) => crate::btc::core_network(net).display_name().to_owned(),
+            NetworkId::Zcash(net) => net.display_name().to_owned(),
         }
     }
 

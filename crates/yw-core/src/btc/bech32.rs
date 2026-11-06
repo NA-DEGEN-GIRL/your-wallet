@@ -173,8 +173,18 @@ fn charset_char(value: u8) -> char {
 ///
 /// The first failing rule's [`Bech32Error`].
 pub fn decode(text: &str) -> Result<Decoded, Bech32Error> {
+    decode_limited(text, MAX_LEN)
+}
+
+/// [`decode`] with another length limit: Zcash unified addresses (ZIP 316) and TEX addresses
+/// (ZIP 320) are bech32m without the 90-character limit (spec/12 §3).
+///
+/// # Errors
+///
+/// As [`decode`], with [`Bech32Error::InvalidLength`] outside 8–`max_len`.
+pub fn decode_limited(text: &str, max_len: usize) -> Result<Decoded, Bech32Error> {
     let bytes = text.as_bytes();
-    if !(MIN_LEN..=MAX_LEN).contains(&bytes.len()) {
+    if !(MIN_LEN..=max_len).contains(&bytes.len()) {
         return Err(Bech32Error::InvalidLength);
     }
     if !bytes.iter().all(|byte| (0x21..=0x7e).contains(byte)) {
@@ -216,7 +226,7 @@ pub fn decode(text: &str) -> Result<Decoded, Bech32Error> {
 
 /// `hrp ‖ '1' ‖ data ‖ checksum` without validation (callers pass a valid lowercase HRP and
 /// 5-bit values; out-of-range bits are masked).
-fn assemble(hrp: &str, values: &[u8], variant: Variant) -> String {
+pub(crate) fn assemble(hrp: &str, values: &[u8], variant: Variant) -> String {
     let checksum = polymod(
         hrp.as_bytes(),
         values
@@ -267,7 +277,7 @@ pub fn encode(hrp: &str, values: &[u8], variant: Variant) -> Result<String, Bech
 }
 
 /// 8-bit bytes → 5-bit values, zero-padding the last group.
-fn to_five_bits(bytes: &[u8]) -> Vec<u8> {
+pub(crate) fn to_five_bits(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len().saturating_mul(8).div_ceil(5));
     let mut accumulator = 0_u32;
     let mut bits = 0_u32;
@@ -286,7 +296,7 @@ fn to_five_bits(bytes: &[u8]) -> Vec<u8> {
 }
 
 /// 5-bit values → bytes; at most 4 padding bits, all zero.
-fn from_five_bits(values: &[u8]) -> Result<Vec<u8>, Bech32Error> {
+pub(crate) fn from_five_bits(values: &[u8]) -> Result<Vec<u8>, Bech32Error> {
     let mut out = Vec::with_capacity(values.len().saturating_mul(5) / 8);
     let mut accumulator = 0_u32;
     let mut bits = 0_u32;

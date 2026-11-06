@@ -1,4 +1,5 @@
-//! `NetworkId` (spec/02 §5.3): `eip155:<chainId>`, `solana:<cluster>`, `bitcoin:<net>`.
+//! `NetworkId` (spec/02 §5.3): `eip155:<chainId>`, `solana:<cluster>`, `bitcoin:<net>`,
+//! `zcash:<net>` (spec/12 §2).
 //! Logs and screens refer to RPC endpoints only by this identifier (D13).
 
 use core::fmt;
@@ -88,6 +89,8 @@ pub enum NetworkId {
     Solana(SolCluster),
     /// `bitcoin:<net>`.
     Bitcoin(BtcNet),
+    /// `zcash:<net>` (`mainnet`, `testnet`).
+    Zcash(yw_core::zec::ZecNetwork),
 }
 
 /// Strict decimal: digits only, no leading zero, 1..=`u64::MAX`.
@@ -116,6 +119,9 @@ impl NetworkId {
         if let Some(net) = text.strip_prefix("bitcoin:") {
             return BtcNet::parse(net).map(Self::Bitcoin);
         }
+        if let Some(net) = text.strip_prefix("zcash:") {
+            return yw_core::zec::ZecNetwork::from_name(net).map(Self::Zcash);
+        }
         None
     }
 
@@ -132,6 +138,7 @@ impl fmt::Display for NetworkId {
             Self::Eip155(id) => write!(formatter, "eip155:{id}"),
             Self::Solana(cluster) => write!(formatter, "solana:{}", cluster.as_str()),
             Self::Bitcoin(net) => write!(formatter, "bitcoin:{}", net.as_str()),
+            Self::Zcash(net) => formatter.write_str(net.endpoint_id()),
         }
     }
 }
@@ -148,6 +155,8 @@ mod tests {
             "eip155:18446744073709551615",
             "solana:devnet",
             "bitcoin:testnet4",
+            "zcash:mainnet",
+            "zcash:testnet",
         ] {
             assert_eq!(NetworkId::parse(text).unwrap().to_string(), text);
         }

@@ -182,6 +182,24 @@ pub fn btc_path(coin: BtcCoin, chain: BtcChain, index: u32) -> Result<Bip32Path,
     Ok(path)
 }
 
+/// SLIP-44 coin type of Zcash mainnet (`133'`); testnet uses `1'`.
+pub const ZEC_COIN_MAINNET: u32 = 133;
+
+/// `m/44'/{133|1}'/{account}'/0/{index}` (Zcash transparent, BIP44; spec/12 §2.2).
+///
+/// # Errors
+///
+/// [`KeyError::InvalidPath`] when `account` or `index` is hardened (≥ 2^31).
+pub fn zec_path(test: bool, account: u32, index: u32) -> Result<Bip32Path, KeyError> {
+    if account >= HARDENED || index >= HARDENED {
+        return Err(KeyError::InvalidPath);
+    }
+    let coin = if test { 1 } else { ZEC_COIN_MAINNET };
+    Ok(Bip32Path {
+        components: vec![hardened(44), hardened(coin), hardened(account), 0, index],
+    })
+}
+
 impl BtcChain {
     /// The path component: receive `0`, change `1`.
     #[must_use]

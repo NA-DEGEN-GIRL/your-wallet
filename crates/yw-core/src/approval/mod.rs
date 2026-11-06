@@ -117,6 +117,13 @@ pub enum ChainRef {
         /// `signatureChainId` of the signed action.
         signature_chain_id: u64,
     },
+    /// Zcash network with its pinned genesis hash (spec/12 §2, §9; `chain_tag` 5).
+    Zcash {
+        /// Network id: 1 mainnet, 2 testnet.
+        network: u8,
+        /// Genesis hash bytes in display order.
+        genesis: [u8; 32],
+    },
 }
 
 /// Signing account.
@@ -128,6 +135,8 @@ pub enum AccountRef {
     Sol([u8; 32]),
     /// Bitcoin account public key `m/84'/{coin}'/0'` (`BtcMeta.account_pubkey`).
     Bitcoin([u8; 33]),
+    /// Zcash transparent account public key (compressed, spec/12 §9).
+    Zcash([u8; 33]),
 }
 
 /// Approval kind (digest byte).
@@ -158,6 +167,8 @@ pub enum ApprovalKind {
     BtcMessage = 0x32,
     /// `HyperCore 전송`: an app-built Hyperliquid user-signed action (spec/11 §6).
     HyperCoreAction = 0x40,
+    /// Zcash transparent send (spec/12 §9; origin is always the app).
+    ZecSend = 0x50,
 }
 
 impl ApprovalKind {
@@ -208,6 +219,8 @@ pub enum SigningPayload {
     BtcMessage(Box<BtcMessagePayload>),
     /// A `HyperCore` user-signed action (signed as its EIP-712 preimage, spec/11 §5).
     HyperCore(Box<crate::hypercore::HcAction>),
+    /// The Zcash `zec_payload` bytes (spec/12 §9).
+    Zec(Vec<u8>),
 }
 
 /// What a Solana message approval signs: the exact message bytes with the key of `source`, whose
@@ -321,7 +334,7 @@ impl SigningPayload {
             Self::EvmPersonal(preimage) => preimage.clone(),
             Self::EvmTypedData(preimage) => preimage.to_vec(),
             Self::SolTransfer(intent) => intent.transcript(),
-            Self::Btc(payload) => payload.clone(),
+            Self::Btc(payload) | Self::Zec(payload) => payload.clone(),
             Self::SolMessage(payload) => payload.digest_bytes(),
             Self::BtcMessage(payload) => payload.digest_bytes(),
             Self::HyperCore(action) => action.digest_bytes(),

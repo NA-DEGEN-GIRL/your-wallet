@@ -114,6 +114,7 @@ fn role_fields(role: KeyRole) -> (u8, u8, u8, u32) {
             index,
         } => (2, network.id(), script.code(), index),
         KeyRole::Sol { index } => (3, 0, 0, index.get()),
+        KeyRole::Zec { network, index } => (4, network.id(), 0, index),
     }
 }
 
@@ -137,6 +138,10 @@ fn role_from(kind: u8, network: u8, script: u8, index: u32) -> Option<KeyRole> {
         },
         (3, 0, 0) => KeyRole::Sol {
             index: AccountIndex::new(index).ok()?,
+        },
+        (4, network, 0) => KeyRole::Zec {
+            network: crate::zec::ZecNetwork::from_id(network)?,
+            index,
         },
         _ => return None,
     };
