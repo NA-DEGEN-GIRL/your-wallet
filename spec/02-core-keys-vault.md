@@ -557,7 +557,7 @@ kind  = 0x01 EVM ([03](03-evm.md) §5.1, body[0] = record_kind 0x01이어야 함
 - **프레이밍 오류**(magic, `entry_count` 범위, reserved ≠ 0, 알 수 없는 `kind`, `body_len` 범위 밖·남은 길이 초과, 남는 바이트) → `VaultError::SidecarCorrupt(Journal)`, §6.3 선택 대화상자.
 - **본문 오류**: 프레이밍은 맞는데 체인 디코더가 본문을 거부하면 그 체인의 보내기만 끄고 "저널 손상"(E-VLT-006, [04] §2.6)을 표시한다([03] §5.1 규칙을 모든 체인에 적용). 자동 삭제하지 않고 다른 entry를 고쳐 쓸 때도 그 본문을 바이트 그대로 보존한다. 다른 체인은 정상 동작한다.
 - **개수 상한**: 전체 ≤ 256. SOL ≤ 64([07] §14.2 `SOL_JOURNAL_MAX_RECORDS`), BTC 종결 항목 ≤ 64(진행 중 BTC 항목은 지우지 않음), EVM은 나머지. EVM 몫은 등록된 EVM 체인 수와 무관하게 모든 체인이 함께 쓴다(체인은 본문 `chain_id`, [03](03-evm.md) §5.1). 컨테이너·본문 검증은 체인 레지스트리를 보지 않으므로 미등록 chainId의 레코드도 유효하다.
-- **용량 상한**: 평문 ≤ 16 MiB(16,777,216바이트, §5.2). 체인별 최대 본문: EVM 131,761(172 + 255 + 2 + 256 + 4 + 131,072), SOL 1,321(고정 헤더 89 + 트랜잭션 1,232, [07] §14.1), BTC 37,924(238 + 18 + 49 × 100 + 32,768; 레코드 버전 1은 37,906, [08] §12.4).
+- **용량 상한**: 평문 ≤ 16 MiB(16,777,216바이트, §5.2). 체인별 최대 본문: EVM 131,761(172 + 255 + 2 + 256 + 4 + 131,072), SOL 1,321(고정 헤더 89 + 트랜잭션 1,232, [07] §14.1), ZEC 32,903(머리 135 + 32,768, [12](12-zcash.md) §12.1), BTC 37,924(238 + 18 + 49 × 100 + 32,768; 레코드 버전 1은 37,906, [08] §12.4).
 - **추가 전 검사(서명 전)**: 새 레코드(EVM `Signed` 원본·SpeedUp·Cancel, SOL `Pending`, BTC `Signed`)를 만들 서명 전에 `entry_count + 1 ≤ 256`·체인 상한과 `현재 평문 길이 + 5 + 그 체인 최대 본문 ≤ 16 MiB`를 본다. 넘으면 종결 레코드를 체인 문서의 정리 순서대로(오래된 것부터, activity로 옮긴 뒤) 지우며 다시 보고, 그래도 넘으면 `journal::JournalError::Full`(§10.2)로 차단한다: 서명·전송 없음, 문구 "거래 저널 공간이 부족합니다"([04] §7 오류 표; EVM은 [03] §5.4의 E06 거부와 같은 경로).
 
 **롤백은 막지 않는다(알아챌 수 있게만 한다).** vault·meta·journal을 이전 세대 파일로 바꿔치기하는 것은 거부하지 않는다. 파일 쓰기 권한이 있는 공격자는 §2.2 비목표(PC 장악)이고, 사용자가 직접 예전 사본을 복원하는 경우도 정상 동작으로 본다. `generation`은 동시 쓰기 충돌(CAS)과 `.prev` 구분에 쓰고, 다음 두 가지로 되감기를 보이게 한다(2026-11-01 검토 L17): (1) 잠금 화면과 설정 → 보안에 `vault.ywv`의 `generation`과 마지막 저장 시각을 표시한다. (2) meta의 `vault_generation_seen`(§5.3, AEAD로 보호)이 본 파일의 generation보다 크면 잠금 해제 뒤 배너로 알린다. `vault.ywv`만 되돌린 경우는 이렇게 드러나고, vault·meta를 같은 백업에서 함께 되돌린 경우는 드러나지 않는다(서로 맞는 옛 상태라 구분할 근거가 없다).
@@ -1055,7 +1055,7 @@ payload_nonce 707172…87   record_id 909192…9f   generation 1, backup_state 0
 
 - 사이드카 왕복, `vault_id` 불일치 → `SidecarVaultMismatch`, 1비트 변조 → `SidecarCorrupt`, magic 교차(meta 파일을 journal로 열기) 거부, generation CAS 충돌 → `Storage(GenerationConflict)`.
 - `MemStorage` 기준 `commit` 계약: `None`인데 파일 있음 → `AlreadyExists`, 손상 본 파일 위 커밋 → `Corrupt`이고 바이트 불변, 성공 시 `.prev` = 직전 바이트.
-- journal 컨테이너(M4, §5.4): kind 3종 왕복; 알 수 없는 kind, `body_len` 0·초과, 남는 바이트, `entry_count` 257 → `SidecarCorrupt(Journal)`; 본문 오류 entry는 다른 entry 갱신 후에도 바이트 불변; 개수·용량 초과 시 종결 레코드 정리 후에도 넘으면 `Full`이고 커밋 0회.
+- journal 컨테이너(M4, §5.4): kind 4종 왕복(4 = Zcash, [12](12-zcash.md) §12.1); 알 수 없는 kind, `body_len` 0·초과, 남는 바이트, `entry_count` 257 → `SidecarCorrupt(Journal)`; 본문 오류 entry는 다른 entry 갱신 후에도 바이트 불변; 개수·용량 초과 시 종결 레코드 정리 후에도 넘으면 `Full`이고 커밋 0회.
 - yw-win 실제 파일 구현의 중단 지점 테스트(각 단계 후 강제 중단 → 재시작 분류)와 고아 `.tmp` 정리는 [09](09-testing.md) §4.1 V-FS.
 
 ### 11.8 상태 기계·백업
