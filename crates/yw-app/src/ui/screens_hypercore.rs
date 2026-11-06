@@ -303,7 +303,7 @@ impl App {
                 self.hc_recipient_rows(items, "받는 주소 (Arbitrum One)");
                 items.push(Item::Banner(
                     format!(
-                        "고정 출금 수수료 {WITHDRAW_FEE_USDC} USDC가 HyperCore에서 빠집니다. Arbitrum One에 USDC로 도착하며 약 5분 걸립니다."
+                        "고정 출금 수수료 {WITHDRAW_FEE_USDC} USDC는 입력한 금액에서 빠집니다(받는 금액 = 입력 금액 − {WITHDRAW_FEE_USDC}). 출금 가능액 전체를 출금할 수 있습니다. Arbitrum One에 USDC로 도착하며 약 5분 걸립니다."
                     ),
                     Tone::Info,
                 ));

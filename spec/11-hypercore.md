@@ -59,7 +59,7 @@
 
 1. `보내기(Core)`: 자산 라디오 — `USDC — 선물(perp) 잔액` → `usdSend`, 현물 토큰 → `spotSend`. 받는 주소는 EVM 보내기와 같은 검사([04] §2.15: 형식·체크섬·0 주소 거부, 주소록·내 계정 표시, 주소 오염(앞뒤 같은 주소) → `주소 전체를 직접 확인했습니다` 체크 필요). 금액 ≤ 출금 가능(perp `withdrawable`) / 현물 `total − hold`.
 2. `현물↔선물 이동`: 방향 라디오, 금액 ≤ 현물 USDC(→ 선물) / `withdrawable`(→ 현물). 받는 주소 없음.
-3. `Arbitrum으로 출금`(`withdraw3`): 받는 주소 기본값 = 서명 계정(Arbitrum One), 금액 > 1 USDC, 금액 + 1 USDC(고정 수수료) ≤ `withdrawable`.
+3. `Arbitrum으로 출금`(`withdraw3`): 받는 주소 기본값 = 서명 계정(Arbitrum One), 금액 > 1 USDC, 금액 ≤ `withdrawable`. 고정 수수료 1 USDC는 금액에서 빠진다(받는 금액 = 금액 − 1, 사용자 결정 2026-11-06).
 4. `HyperEVM으로 이동`(Core → EVM): `sendAsset { destination: 토큰의 시스템 주소, sourceDex: "spot", destinationDex: "spot", token }`. 시스템 주소 = `0x20` + 0 + index(big-endian), HYPE(`evmContract.address == 0x0`, 이름 HYPE)는 `0x2222…2222`. `evmContract`가 있는 현물 잔액만 고를 수 있고, 금액 소수 자릿수 ≤ min(`weiDecimals`, EVM 자릿수 = `weiDecimals + evm_extra_wei_decimals`)(끝수 소각 방지, USDC는 6). 토큰은 HyperEVM의 **같은 주소**로 들어간다(문서: recipient = sender). 공식 문서·Circle 문서는 현재 `sendAsset`을 쓰므로(예전 문서는 시스템 주소로 `spotSend`) 이 지갑은 `sendAsset`을 쓴다. 두 작업의 서명 형식은 테스트넷 서명 복구 시험을 통과했지만(§9), 자금이 실제로 HyperEVM에 들어오는지는 실제 자산 체크리스트에서 확인한다.
 5. `HyperEVM에서 Core로 이동`(EVM → Core): 일반 EVM 보내기([04] §2.7)를 HyperEVM(메인넷 999 / 테스트넷 998 — 등록돼 있어야 함)에서 연다. 활성 체인을 그 체인으로 바꾸고 받는 주소 `0x2222…2222`, 자산 HYPE(네이티브)를 채운다. 다른 연결 토큰은 사용자가 자산과 그 토큰의 시스템 주소를 직접 고른다. **시스템 주소 가드**(EVM 보내기, HyperEVM 999·998에서만): 받는 주소가 시스템 주소이면 — HYPE는 `0x2222…2222`에만, 토큰은 `spotMeta`에서 그 index의 `evmContract.address`가 그 토큰일 때만 허용; 아니면 차단 띠("…보내면 잃을 수 있습니다")와 `검토` 꺼짐; 토큰 정보를 못 읽었으면 역시 차단(HyperCore 카드 새로고침 안내). USDC의 EVM→Core는 CoreDepositWallet 경로라 이 지갑은 다루지 않는다(가드가 `spotMeta` 연결과 맞으면 막지 않지만, 문서로 확인하지 않은 경로이므로 수동 체크리스트에서 금지).
 
@@ -95,7 +95,7 @@
 
 ## 10. 미결 사항
 
-- 출금 수수료 1 USDC가 금액에서 빠지는지 잔액에서 따로 빠지는지 공식 문서에 명확한 문장이 없다. 폼은 보수적으로 `금액 + 1 ≤ 출금 가능`과 `금액 > 1`을 요구한다. 실제 자산 체크리스트에서 확인.
+- 출금 수수료 1 USDC는 금액에서 빠지는 것으로 본다(사용자 결정 2026-11-06). 폼은 `금액 > 1`과 `금액 ≤ 출금 가능`만 요구하므로 전액 출금이 된다. 실제 자산 체크리스트에서 도착 금액(금액 − 1)을 확인한다.
 - HyperCore 활동을 meta에 저장할지(새 `NetworkId` 또는 별도 목록 필요). 지금은 실행 중에만 보인다.
 - 테스트넷 HyperEVM 998은 기본 체인이 아니다(EVM→Core 테스트넷 확인에는 사용자 체인 추가가 필요).
 - USDC의 HyperEVM→Core(CoreDepositWallet)는 범위 밖.

@@ -523,8 +523,10 @@ impl App {
                 "출금 금액은 수수료 {WITHDRAW_FEE_USDC} USDC보다 커야 합니다"
             ));
         }
-        if units.checked_add(fee).is_none_or(|total| total > available) {
-            return Err("잔액이 부족합니다 (출금은 수수료 1 USDC 포함)".to_owned());
+        // The withdrawal fee comes out of the amount itself (Arbitrum receives amount − fee),
+        // so the whole withdrawable balance can be withdrawn.
+        if units > available {
+            return Err("잔액이 부족합니다".to_owned());
         }
         let payload = match (form.kind, &token) {
             (HcFormKind::Send, None) => {
