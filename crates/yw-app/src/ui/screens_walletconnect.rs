@@ -7,26 +7,26 @@ use crate::app::App;
 use crate::ui::main_window::{Ctl, Item, Tone};
 use crate::walletconnect::VerifyStatus;
 
-/// Control ids (14,500–14,599; the whole map is `ui::command_ids`).
+/// Control ids (16,000–16,099; the whole map is `ui::command_ids`).
 pub mod ids {
     /// URI edit.
-    pub const URI_EDIT: u16 = 14_500;
+    pub const URI_EDIT: u16 = 16_000;
     /// 연결.
-    pub const PAIR: u16 = 14_501;
+    pub const PAIR: u16 = 16_001;
     /// 클립보드 이미지에서 QR 읽기.
-    pub const CLIPBOARD_QR: u16 = 14_502;
+    pub const CLIPBOARD_QR: u16 = 16_002;
     /// Image path edit.
-    pub const FILE_EDIT: u16 = 14_503;
+    pub const FILE_EDIT: u16 = 16_003;
     /// 이미지 파일에서 QR 읽기.
-    pub const FILE_QR: u16 = 14_504;
+    pub const FILE_QR: u16 = 16_004;
     /// Project id edit.
-    pub const PROJECT_EDIT: u16 = 14_505;
+    pub const PROJECT_EDIT: u16 = 16_005;
     /// Project id save.
-    pub const PROJECT_SAVE: u16 = 14_506;
+    pub const PROJECT_SAVE: u16 = 16_006;
     /// `모든 WalletConnect 세션 끊기`.
-    pub const DISCONNECT_ALL: u16 = 14_507;
+    pub const DISCONNECT_ALL: u16 = 16_007;
     /// Session row buttons (`연결 해제`).
-    pub const ROW_BASE: u16 = 14_520;
+    pub const ROW_BASE: u16 = 16_020;
     /// Row span (the engine keeps at most 64 sessions).
     pub const ROW_SPAN: u16 = 64;
     /// Every fixed id of this module.

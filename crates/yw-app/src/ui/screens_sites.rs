@@ -181,7 +181,10 @@ impl App {
                 .settings
                 .evm_chain_name(site.chain_id)
                 .unwrap_or_else(|| format!("chainId {}", site.chain_id));
-            items.push(Item::Field("네트워크".to_owned(), chain));
+            items.push(Item::Badged(
+                crate::ui::badge::Badge::evm(site.chain_id, &chain),
+                Box::new(Item::Field("네트워크".to_owned(), chain)),
+            ));
             items.push(Item::Field(
                 "연결 시각".to_owned(),
                 local_time(site.granted_at_unix_ms),
@@ -226,9 +229,12 @@ impl App {
                 continue;
             }
             items.push(Item::CardStart(Some(card_title(&grant.origin, "Solana"))));
-            items.push(Item::Field(
-                "네트워크".to_owned(),
-                "Solana (메시지 서명·소유 증명만)".to_owned(),
+            items.push(Item::Badged(
+                crate::ui::badge::Badge::family(crate::meta::BookChain::Sol),
+                Box::new(Item::Field(
+                    "네트워크".to_owned(),
+                    "Solana (메시지 서명·소유 증명만)".to_owned(),
+                )),
             ));
             items.push(Item::Field(
                 "연결 시각".to_owned(),
@@ -251,9 +257,12 @@ impl App {
                 continue;
             }
             items.push(Item::CardStart(Some(card_title(&grant.origin, "Bitcoin"))));
-            items.push(Item::Field(
-                "네트워크".to_owned(),
-                format!("{} (메시지 서명·소유 증명만)", grant.network.display_name()),
+            items.push(Item::Badged(
+                crate::ui::badge::Badge::bitcoin(grant.network),
+                Box::new(Item::Field(
+                    "네트워크".to_owned(),
+                    format!("{} (메시지 서명·소유 증명만)", grant.network.display_name()),
+                )),
             ));
             items.push(Item::Field(
                 "연결 시각".to_owned(),

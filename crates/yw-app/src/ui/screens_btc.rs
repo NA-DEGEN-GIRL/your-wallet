@@ -11,12 +11,15 @@ use yw_core::btc::{BtcMeta, BtcNetwork, FeeRate, Sats, Txid, encode_address};
 
 use crate::apikeys::KeyName;
 use crate::app::{App, AppMode};
+use crate::app_book::{BookTarget, PromptPlace};
 use crate::app_btc::{
     BtcCtx, BtcFeeChoice, BtcFeeForm, BtcFlowStage, BtcGate, BtcUi, DISCOVERY_INCOMPLETE,
     PENDING_INCOMING, confirmations_text, record_status,
 };
 use crate::errors::ErrorCode;
+use crate::meta::BookChain;
 use crate::settings::BtcIndexer;
+use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item, Tone};
 
 /// Command ids of the Bitcoin screens (9000–9899; the whole map is `ui::command_ids`).
@@ -152,6 +155,8 @@ pub mod ids {
     pub const ACT_CONTINUE: u16 = 5;
     /// Activity offset: 취소 (a `Signed` record).
     pub const ACT_CANCEL: u16 = 6;
+    /// Activity offset: 이 주소 저장 (address book).
+    pub const ACT_SAVE: u16 = 7;
     /// `계정 추가` (opens the address-type chooser).
     pub const ACCOUNT_ADD: u16 = 9_012;
     /// The chooser's `취소`.
@@ -175,7 +180,7 @@ pub mod ids {
     /// Most account rows with a button (1 + `MAX_BTC_ACCOUNTS`).
     pub const ACCOUNT_SPAN: u16 = 65;
 
-    const _: () = assert!(ACT_CANCEL < ACTIVITY_STRIDE);
+    const _: () = assert!(ACT_SAVE < ACTIVITY_STRIDE);
     const _: () = assert!(NEW_ADDRESS < ADDRESS_MODE_SINGLE);
     const _: () = assert!(EVM_ACCOUNT_BASE + EVM_ACCOUNT_SPAN <= ENABLE);
     const _: () = assert!(ACCOUNT_ADD_TYPE + 4 <= ESPLORA_MAINNET_EDIT);
@@ -803,8 +808,13 @@ impl App {
         }
     }
 
+    #[expect(clippy::too_many_lines, reason = "one block per activity button")]
     fn btc_activity_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
-        items.push(Item::Subtitle("활동 (이 지갑이 보낸 거래)".to_owned()));
+        items.push(Item::Badged(
+            Badge::bitcoin(ctx.net()),
+            Box::new(Item::Subtitle("활동 (이 지갑이 보낸 거래)".to_owned())),
+        ));
+        let mut prompt_drawn = false;
         let rows = self.btc.activity_rows(ctx);
         if rows.is_empty() {
             items.push(Item::Help("아직 보낸 거래가 없습니다.".to_owned()));
@@ -893,7 +903,21 @@ impl App {
                     Ctl::button(base.saturating_add(ids::ACT_CANCEL), "취소").enabled(unlocked),
                 );
             }
+            if self.offer_save(BookChain::Btc, &row.counterparty) {
+                buttons.push(Ctl::link(
+                    base.saturating_add(ids::ACT_SAVE),
+                    "이 주소 저장",
+                ));
+            }
             items.push(Item::Row(buttons));
+            if !prompt_drawn && !row.counterparty.is_empty() {
+                prompt_drawn = self.prompt_items(
+                    PromptPlace::Activity,
+                    BookChain::Btc,
+                    &row.counterparty,
+                    items,
+                );
+            }
             items.push(Item::Gap(4));
         }
     }
@@ -1091,11 +1115,15 @@ impl App {
     }
 
     /// S11 for Bitcoin (spec/08 §7–§8, spec/04 §2.7).
+    #[expect(clippy::too_many_lines, reason = "the Bitcoin S11 fields in order")]
     pub fn btc_send_screen(&self, items: &mut Vec<Item>) {
         let ctx = self.btc_ctx();
         let net = ctx.net();
         items.push(crate::ui::screens::back_main());
-        items.push(Item::Title(format!("보내기 — {}", net.display_name())));
+        items.push(Item::Badged(
+            Badge::bitcoin(net),
+            Box::new(Item::Title(format!("보내기 — {}", net.display_name()))),
+        ));
         network_banners(net, items);
         let form = &self.btc.send;
         if let Some(info) = &form.info {
@@ -1117,19 +1145,38 @@ impl App {
         }
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("받는 사람".to_owned())));
+        let target = BookTarget::Btc(net);
+        self.favorite_chip_items(target, items);
         items.push(Item::LabeledRow(
             "받는 주소".to_owned(),
-            vec![Ctl::edit(ids::SEND_TO_EDIT, &form.to_text, 430, false, 128)],
+            vec![
+                Ctl::edit(ids::SEND_TO_EDIT, &form.to_text, 430, false, 128),
+                Ctl::button(crate::ui::screens_book::ids::BTC_PICK, "주소록에서 선택"),
+            ],
         ));
         items.push(Item::Help(
             "bc1…·tb1… 등 Bitcoin 주소입니다. 붙여넣은 뒤 굵게 표시된 앞 6자·뒤 6자와 가운데까지 전체를 확인하세요."
                 .to_owned(),
         ));
+        self.btc_picker_items(target, items);
         if let Some(error) = &form.recipient_error {
             items.push(Item::Banner(error.clone(), Tone::Danger));
         } else if let Some(kind) = form.recipient {
             items.push(Item::Help(format!("주소 종류: {}", kind.type_label())));
-            items.push(Item::Mono(grouped(&encode_address(&kind, net))));
+            let address = encode_address(&kind, net);
+            items.push(Item::Mono(grouped(&address)));
+            if let Some(meta) = self.meta.as_ref()
+                && let Some(entry) = meta.contact(BookChain::Btc, &address)
+            {
+                items.push(Item::Banner(
+                    format!(
+                        "주소록: {}{}",
+                        entry.label,
+                        if entry.verified { " ✓ 확인됨" } else { "" }
+                    ),
+                    Tone::Info,
+                ));
+            }
             if let Some(note) = &form.look_alike {
                 items.push(Item::Banner(note.clone(), Tone::Warn));
                 items.push(Item::Row(vec![Ctl::check(
@@ -1138,6 +1185,7 @@ impl App {
                     form.ack,
                 )]));
             }
+            self.recipient_save_items(target, items);
         }
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("금액과 수수료".to_owned())));
@@ -1294,10 +1342,13 @@ impl App {
             || "종결 (활동 참고)".to_owned(),
             |record| record_status(record, self.btc_tip(&ctx)),
         );
-        items.push(Item::Muted(format!(
-            "상태: {status} ({})",
-            net.display_name()
-        )));
+        items.push(Item::Badged(
+            Badge::bitcoin(net),
+            Box::new(Item::Muted(format!(
+                "상태: {status} ({})",
+                net.display_name()
+            ))),
+        ));
         let flow = self.btc.flow(&txid);
         if let Some(text) = flow.and_then(|flow| flow_stage_text(flow.stage)) {
             items.push(Item::Muted(text.to_owned()));
@@ -1337,6 +1388,9 @@ impl App {
             Ctl::primary(crate::ui::screens::ids::BACK_MAIN, "메인으로"),
         );
         items.push(Item::Row(row));
+        if !bump {
+            self.result_save_items(BookTarget::Btc(net), items);
+        }
     }
 
     /// S12 for Bitcoin (spec/08 §3.2): the address appears only after `receive_next` is stored.
@@ -1348,7 +1402,10 @@ impl App {
             .as_ref()
             .map_or_else(|| ctx.net(), |view| view.network);
         items.push(crate::ui::screens::back_main());
-        items.push(Item::Title(format!("받기 — {}", net.display_name())));
+        items.push(Item::Badged(
+            Badge::bitcoin(net),
+            Box::new(Item::Title(format!("받기 — {}", net.display_name()))),
+        ));
         network_banners(net, items);
         if let Some(message) = &self.btc.receive_message {
             items.push(Item::Banner(message.clone(), Tone::Danger));

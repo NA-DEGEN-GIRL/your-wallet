@@ -31,8 +31,6 @@ impl App {
                 self.sol.send.amount_text = self.sol_edit_text(id);
                 self.sol.send.dirty_ms = Some(now);
             }
-            ids::BOOK_ADDR_EDIT => self.sol.book.address = self.sol_edit_text(id),
-            ids::BOOK_LABEL_EDIT => self.sol.book.label = self.sol_edit_text(id),
             _ => return false,
         }
         true
@@ -137,11 +135,6 @@ impl App {
             ids::FEE_SAVE => self.sol_save_fees(false),
             ids::FEE_DEFAULT => self.sol_save_fees(true),
             ids::SCAN_START => self.sol_start_scan(),
-            ids::BOOK_SAVE => self.sol_save_book(),
-            ids::BOOK_VERIFIED => {
-                self.sol.book.verified = !self.sol.book.verified;
-                self.refresh();
-            }
             other => return self.on_sol_indexed(other),
         }
         true
@@ -191,10 +184,6 @@ impl App {
                 return true;
             }
             None => {}
-        }
-        if let Some(row) = offset(id, ids::BOOK_ROW_BASE, ids::BOOK_ROW_SPAN) {
-            self.sol_delete_book(usize::from(row));
-            return true;
         }
         false
     }

@@ -229,6 +229,36 @@ fn tour_meta() -> Meta {
         verified: true,
         added_at_unix_ms: 1_793_000_000_000,
     });
+    // S14 (2026-11-06): a second, unverified EVM entry (the well-known burn address) and a
+    // Bitcoin testnet4 entry (the BIP173 testnet example address); the test recipients are
+    // favorites, so the send forms show them as `즐겨찾기` chips.
+    let extra = [
+        (
+            crate::meta::BookChain::Evm,
+            "0x000000000000000000000000000000000000dead",
+            "시험용 소각 주소",
+        ),
+        (
+            crate::meta::BookChain::Btc,
+            "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
+            "BIP173 예시 주소",
+        ),
+    ];
+    for (chain, address, label) in extra {
+        let _ = meta.add_contact(&crate::meta::Contact {
+            chain,
+            address: address.to_owned(),
+            label: label.to_owned(),
+            verified: false,
+            added_at_unix_ms: 1_793_000_000_000,
+        });
+    }
+    meta.set_favorite(
+        crate::meta::BookChain::Evm,
+        &recipient().to_lower_hex(),
+        true,
+    );
+    meta.set_favorite(crate::meta::BookChain::Sol, SOL_RECIPIENT, true);
     meta
 }
 
@@ -1261,6 +1291,8 @@ fn screenshot_tour() {
     }
     set_screen(&app, UNLOCKED, Screen::Send);
     save(main_hwnd(&app), "11-send");
+    set_screen(&app, UNLOCKED, Screen::AddressBook);
+    save(main_hwnd(&app), "46-address-book");
     set_screen(&app, UNLOCKED, Screen::Main);
     approval(&app, "S2");
     save(approval_hwnd(&app), "12-approval-simulated");

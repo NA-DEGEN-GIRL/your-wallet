@@ -5,7 +5,6 @@ use yw_core::evm::chain::builtin_chain;
 use crate::app::{App, AppMode, Confirm, Screen, SettingsSection};
 use crate::app_evm::{SendAsset, SendForm, hash_text};
 use crate::flow::evm::prepare::ReplaceMode;
-use crate::meta::BookEntry;
 use crate::ui::screens_evm::ids;
 
 const TEXT_MAX: usize = 512;
@@ -39,8 +38,6 @@ impl App {
                     self.refresh();
                 }
             }
-            ids::BOOK_ADDR_EDIT => self.evm.book.address = self.edit_text(id),
-            ids::BOOK_LABEL_EDIT => self.evm.book.label = self.edit_text(id),
             ids::TOKEN_ADDR_EDIT => self.evm.token.address = self.edit_text(id),
             ids::TOKEN_LABEL_EDIT => self.evm.token.label = self.edit_text(id),
             ids::CHAIN_ID_EDIT
@@ -147,18 +144,6 @@ impl App {
                 };
                 self.refresh();
             }
-            ids::BOOK_VERIFIED => {
-                self.evm.book.verified = self.controls.checked(ids::BOOK_VERIFIED).unwrap_or(false);
-            }
-            ids::BOOK_SAVE => {
-                self.evm.book.address = self.edit_text(ids::BOOK_ADDR_EDIT);
-                self.evm.book.label = self.edit_text(ids::BOOK_LABEL_EDIT);
-                self.save_book();
-            }
-            ids::BOOK_CANCEL => {
-                self.evm.book = crate::app_evm::BookForm::default();
-                self.refresh();
-            }
             ids::TOKEN_LOOKUP => {
                 self.evm.token.address = self.edit_text(ids::TOKEN_ADDR_EDIT);
                 self.lookup_token();
@@ -213,7 +198,6 @@ impl App {
         true
     }
 
-    #[expect(clippy::too_many_lines, reason = "one block per indexed id range")]
     fn on_evm_indexed(&mut self, id: u16) -> bool {
         let chain_id = self.settings.evm_chain_id;
         if let Some(index) = offset(id, ids::SEND_ASSET_BASE, ids::SEND_ASSET_SPAN) {
@@ -246,29 +230,6 @@ impl App {
                 self.controls
                     .set_text(ids::SEND_TO_EDIT, &self.evm.send.to_text.clone());
                 self.validate_send(true);
-            }
-            return true;
-        }
-        if let Some(index) = offset(id, ids::BOOK_ROW_BASE, ids::BOOK_ROW_SPAN) {
-            let entries: Vec<BookEntry> = self
-                .meta
-                .as_ref()
-                .map(crate::meta::Meta::book)
-                .unwrap_or_default();
-            if let Some(entry) = entries.get(usize::from(index / 2)) {
-                if index % 2 == 0 {
-                    self.evm.book = crate::app_evm::BookForm {
-                        editing: Some(entry.address.clone()),
-                        address: entry.address.clone(),
-                        label: entry.label.clone(),
-                        verified: entry.verified,
-                        message: None,
-                    };
-                    self.refresh();
-                } else {
-                    self.evm.book.editing = Some(entry.address.clone());
-                    self.set_screen(Screen::Confirm(Confirm::BookDelete));
-                }
             }
             return true;
         }
@@ -329,22 +290,15 @@ impl App {
                         self.copy_text(&link);
                     }
                 }
+                6 => self.save_activity_address(
+                    crate::meta::BookChain::Evm,
+                    usize::from(index / ids::ACTIVITY_STRIDE),
+                ),
                 _ => {}
             }
             return true;
         }
         false
-    }
-
-    /// `삭제` of an address-book entry confirmed.
-    pub fn delete_book_entry(&mut self) {
-        if let Some(address) = self.evm.book.editing.take()
-            && let Some(meta) = self.meta.as_mut()
-        {
-            meta.remove_book(&address);
-            self.save_meta();
-        }
-        self.evm.book = crate::app_evm::BookForm::default();
     }
 
     /// The hash text of a record (shared by screens).

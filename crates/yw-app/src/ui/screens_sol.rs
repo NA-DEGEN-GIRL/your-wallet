@@ -14,8 +14,10 @@ use yw_core::sol::token::TokenHolding;
 use yw_core::sol::{SolAddress, SolAsset, SolCluster, SplAllowEntry};
 
 use crate::app::{App, AppMode};
+use crate::app_book::{BookTarget, PromptPlace};
 use crate::app_sol::SolAccountId;
-use crate::meta::Tab;
+use crate::meta::{BookChain, Tab};
+use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item, Tone};
 
 /// Command ids of the Solana screens (7000–7909 and the account radios at 12,000; the whole
@@ -112,20 +114,8 @@ pub mod ids {
     pub const SCAN_ROW_BASE: u16 = 7_120;
     /// Ids per scan row.
     pub const SCAN_ROW_STRIDE: u16 = 2;
-    /// Scan rows span (128 rows × 2; ends at 7,376 below `BOOK_ADDR_EDIT`).
+    /// Scan rows span (128 rows × 2; ends at 7,376).
     pub const SCAN_ROW_SPAN: u16 = 256;
-    /// Book address edit.
-    pub const BOOK_ADDR_EDIT: u16 = 7_400;
-    /// Book label edit.
-    pub const BOOK_LABEL_EDIT: u16 = 7_401;
-    /// Book verified check.
-    pub const BOOK_VERIFIED: u16 = 7_402;
-    /// Book add.
-    pub const BOOK_SAVE: u16 = 7_403;
-    /// Book rows (삭제).
-    pub const BOOK_ROW_BASE: u16 = 7_410;
-    /// Book rows span.
-    pub const BOOK_ROW_SPAN: u16 = 500;
 
     /// Every fixed id of this module (`ui::command_ids` checks them against all ranges).
     pub const FIXED: &[u16] = &[
@@ -161,10 +151,6 @@ pub mod ids {
         SET_MAINNET,
         SET_DEVNET,
         SCAN_START,
-        BOOK_ADDR_EDIT,
-        BOOK_LABEL_EDIT,
-        BOOK_VERIFIED,
-        BOOK_SAVE,
     ];
 
     /// What a scan-row id does (row index into `sol_scan_rows`).
@@ -269,13 +255,16 @@ impl App {
     pub fn tab_row(&self, items: &mut Vec<Item>) {
         let tab = self.meta.as_ref().map_or(Tab::Evm, |meta| meta.prefs.tab);
         items.push(Item::Row(vec![
-            Ctl::tab(ids::TAB_EVM, "  EVM (이더리움 등)  ", tab == Tab::Evm),
-            Ctl::tab(ids::TAB_SOL, "  Solana  ", tab == Tab::Sol),
+            Ctl::tab(ids::TAB_EVM, "  EVM (이더리움 등)  ", tab == Tab::Evm)
+                .badge(Badge::family(BookChain::Evm)),
+            Ctl::tab(ids::TAB_SOL, "  Solana  ", tab == Tab::Sol)
+                .badge(Badge::family(BookChain::Sol)),
             Ctl::tab(
                 crate::ui::screens_btc::ids::TAB_BTC,
                 "  Bitcoin  ",
                 tab == Tab::Btc,
-            ),
+            )
+            .badge(Badge::family(BookChain::Btc)),
         ]));
     }
 
@@ -300,12 +289,14 @@ impl App {
                     ids::CLUSTER_MAINNET,
                     "Solana mainnet",
                     cluster == SolCluster::Mainnet,
-                ),
+                )
+                .badge(Badge::solana(SolCluster::Mainnet)),
                 Ctl::tab(
                     ids::CLUSTER_DEVNET,
                     "Solana devnet (테스트)",
                     cluster == SolCluster::Devnet,
-                ),
+                )
+                .badge(Badge::solana(SolCluster::Devnet)),
             ],
         ));
         self.sol_cluster_banner(items);
@@ -501,10 +492,14 @@ impl App {
         if let Some((_, _, address)) = self.sol_selected() {
             self.sol_token_card(items, &address, unlocked && !no_endpoint);
         }
-        items.push(Item::CardStart(Some(
-            "활동 (이 지갑이 보낸 거래)".to_owned(),
-        )));
+        items.push(Item::CardStart(None));
+        items.push(Item::Badged(
+            Badge::solana(cluster),
+            Box::new(Item::Subtitle("활동 (이 지갑이 보낸 거래)".to_owned())),
+        ));
         let mut shown = 0_usize;
+        let mut prompt_drawn = false;
+        let counterparties = self.sol_activity_counterparties();
         for record in self.sol_records() {
             if record.cluster != cluster {
                 continue;
@@ -526,6 +521,7 @@ impl App {
                 items.push(Item::Help(format!("받는 주소 {}", grouped(&core.to))));
             }
             items.push(Item::Mono(record.tx_id()));
+            self.sol_activity_save(shown, &counterparties, &mut prompt_drawn, items);
             shown = shown.saturating_add(1);
         }
         if let Some(meta) = self.meta.as_ref() {
@@ -546,6 +542,7 @@ impl App {
                         .map_or_else(|_| entry.counterparty.clone(), |address| grouped(&address))
                 )));
                 items.push(Item::Mono(entry.tx_id.clone()));
+                self.sol_activity_save(shown, &counterparties, &mut prompt_drawn, items);
                 shown = shown.saturating_add(1);
             }
         }
@@ -650,7 +647,10 @@ impl App {
     pub fn sol_send_screen(&self, items: &mut Vec<Item>) {
         let cluster = self.sol_cluster();
         items.push(crate::ui::screens::back_main());
-        items.push(Item::Title(format!("보내기 — {}", cluster.display_name())));
+        items.push(Item::Badged(
+            Badge::solana(cluster),
+            Box::new(Item::Title(format!("보내기 — {}", cluster.display_name()))),
+        ));
         self.sol_cluster_banner(items);
         let form = &self.sol.send;
         if let Some(info) = &form.info {
@@ -693,6 +693,9 @@ impl App {
                     .to_owned(),
                 Tone::Warn,
             ));
+        }
+        if form.moving.is_none() {
+            self.favorite_chip_items(BookTarget::Sol, items);
         }
         let mut to_edit = Ctl::edit(ids::SEND_TO_EDIT, &form.to_text, 430, false, 64);
         let mut to_row = Vec::new();
@@ -767,6 +770,9 @@ impl App {
                         .to_owned(),
                     Tone::Warn,
                 ));
+            }
+            if form.moving.is_none() {
+                self.recipient_save_items(BookTarget::Sol, items);
             }
         }
         items.push(Item::CardEnd);
@@ -869,7 +875,13 @@ impl App {
         self.sol_known()
             .into_iter()
             .filter_map(|entry| match entry.kind {
-                KnownKind::Book { .. } => Some((format!("주소록: {}", entry.label), entry.address)),
+                KnownKind::Book { .. } => {
+                    let favorite = self.meta.as_ref().is_some_and(|meta| {
+                        meta.is_favorite(BookChain::Sol, &entry.address.to_base58())
+                    });
+                    let star = if favorite { "★ " } else { "" };
+                    Some((format!("{star}주소록: {}", entry.label), entry.address))
+                }
                 KnownKind::Own { .. } | KnownKind::OwnImported | KnownKind::OwnHardware => {
                     Some((format!("내 계정: {}", entry.label), entry.address))
                 }
@@ -901,9 +913,12 @@ impl App {
                     || "종결 (활동 참고)".to_owned(),
                     |record| self.sol_record_status(record),
                 );
-            items.push(Item::Field(
-                "상태".to_owned(),
-                format!("{status} ({})", cluster.display_name()),
+            items.push(Item::Badged(
+                Badge::solana(cluster),
+                Box::new(Item::Field(
+                    "상태".to_owned(),
+                    format!("{status} ({})", cluster.display_name()),
+                )),
             ));
             items.push(Item::Field("서명(거래 ID)".to_owned(), String::new()));
             items.push(Item::Mono(yw_core::codec::base58::base58_encode(
@@ -911,6 +926,7 @@ impl App {
             )));
             items.push(Item::CardEnd);
             self.sol_send_now_row(items);
+            self.result_save_items(BookTarget::Sol, items);
         }
         let mut row = vec![Ctl::primary(crate::ui::screens::ids::BACK_MAIN, "메인으로")];
         if self.sol_can_resend() {
@@ -952,10 +968,14 @@ impl App {
             self.accounts_loading(items);
             return;
         };
-        items.push(Item::CardStart(Some(format!(
-            "{label} · {}",
-            self.sol_cluster().display_name()
-        ))));
+        items.push(Item::CardStart(None));
+        items.push(Item::Badged(
+            Badge::solana(self.sol_cluster()),
+            Box::new(Item::Subtitle(format!(
+                "{label} · {}",
+                self.sol_cluster().display_name()
+            ))),
+        ));
         if self.sol_cluster() == SolCluster::Devnet {
             items.push(Item::Banner(
                 "devnet(테스트) 주소입니다. 주소 자체는 mainnet과 같습니다.".to_owned(),
@@ -1144,63 +1164,65 @@ impl App {
         }
     }
 
-    /// The Solana part of S14.
-    pub fn sol_book_section(&self, items: &mut Vec<Item>) {
-        let form = &self.sol.book;
-        if let Some(message) = &form.message {
-            items.push(Item::Banner(message.clone(), Tone::Danger));
-        }
-        items.push(Item::CardStart(Some("Solana 주소 추가".to_owned())));
-        items.push(Item::LabeledRow(
-            "주소".to_owned(),
-            vec![Ctl::edit(
-                ids::BOOK_ADDR_EDIT,
-                &form.address,
-                430,
-                false,
-                64,
-            )],
-        ));
-        items.push(Item::LabeledRow(
-            "이름".to_owned(),
-            vec![Ctl::edit(ids::BOOK_LABEL_EDIT, &form.label, 260, false, 64)],
-        ));
-        items.push(Item::Row(vec![Ctl::check(
-            ids::BOOK_VERIFIED,
-            "다른 경로(전화·대면 등)로 이 주소를 확인했습니다",
-            form.verified,
-        )]));
-        items.push(Item::Row(vec![Ctl::primary(ids::BOOK_SAVE, "추가")]));
-        items.push(Item::CardEnd);
-        let entries = self
-            .meta
-            .as_ref()
-            .map(crate::meta::Meta::sol_book)
-            .unwrap_or_default();
-        items.push(Item::CardStart(Some(format!(
-            "Solana 주소록 ({}개)",
-            entries.len()
-        ))));
-        if entries.is_empty() {
-            items.push(Item::Help("Solana 주소록이 비어 있습니다.".to_owned()));
-        }
-        for (index, entry) in entries
+    /// The counterparties of the S10 Solana activity rows, in display order (`""` without one):
+    /// the cluster's journal records, then its meta activity, at most `SOL_MAX_ACTIVITY_ROWS`
+    /// after the records (as drawn).
+    #[must_use]
+    pub fn sol_activity_counterparties(&self) -> Vec<String> {
+        let cluster = self.sol_cluster();
+        let mut out: Vec<String> = self
+            .sol_records()
             .iter()
-            .take(usize::from(ids::BOOK_ROW_SPAN))
-            .enumerate()
+            .filter(|record| record.cluster == cluster)
+            .map(|record| {
+                record
+                    .core()
+                    .map_or_else(String::new, |core| core.to.to_base58())
+            })
+            .collect();
+        if let Some(meta) = self.meta.as_ref() {
+            for entry in meta.activity_of(cluster.network_id()) {
+                if out.len() >= crate::app_sol::SOL_MAX_ACTIVITY_ROWS {
+                    break;
+                }
+                out.push(
+                    SolAddress::parse(&entry.counterparty)
+                        .map_or_else(|_| String::new(), SolAddress::to_base58),
+                );
+            }
+        }
+        out
+    }
+
+    /// `이 주소 저장` of activity row `row` and its prompt.
+    fn sol_activity_save(
+        &self,
+        row: usize,
+        counterparties: &[String],
+        prompt_drawn: &mut bool,
+        items: &mut Vec<Item>,
+    ) {
+        let Some(address) = counterparties
+            .get(row)
+            .filter(|address| !address.is_empty())
+        else {
+            return;
+        };
+        if !*prompt_drawn
+            && self.prompt_items(PromptPlace::Activity, BookChain::Sol, address, items)
         {
-            let verified = if entry.verified { " ✓ 확인됨" } else { "" };
-            items.push(Item::Subtitle(format!("{}{verified}", entry.label)));
-            items.push(Item::Mono(SolAddress::parse(&entry.address).map_or_else(
-                |_| entry.address.clone(),
-                |address| grouped(&address),
-            )));
-            items.push(Item::Row(vec![Ctl::danger(
-                ids::BOOK_ROW_BASE.saturating_add(u16::try_from(index).unwrap_or(0)),
-                "삭제",
+            *prompt_drawn = true;
+            return;
+        }
+        if self.offer_save(BookChain::Sol, address)
+            && let Ok(offset) = u16::try_from(row)
+            && offset < crate::ui::screens_book::ids::SOL_ACTIVITY_SPAN
+        {
+            items.push(Item::Row(vec![Ctl::link(
+                crate::ui::screens_book::ids::SOL_ACTIVITY_BASE.saturating_add(offset),
+                "이 주소 저장",
             )]));
         }
-        items.push(Item::CardEnd);
     }
 
     /// Whether the main screen shows the Solana tab.

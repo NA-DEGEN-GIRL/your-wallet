@@ -38,7 +38,7 @@ use crate::flow::evm::{
     ChainCheck, ChainJob, MismatchKind, chain_info, default_caps_text, fee_caps, parse_caps,
 };
 use crate::logging::{self, Field};
-use crate::meta::{BookEntry, EvmAccountPref, ListError, TokenEntry};
+use crate::meta::{EvmAccountPref, ListError, TokenEntry};
 use crate::network::NetworkId;
 use crate::settings::{EvmChainDef, FeeCapsText, Settings, validate_fee_caps};
 use crate::text::{hash32_text, is_valid_label, json_object, json_str};
@@ -246,21 +246,6 @@ pub struct RepinState {
     pub message: Option<String>,
 }
 
-/// S14 form state.
-#[derive(Clone, Debug, Default)]
-pub struct BookForm {
-    /// Edited entry (lowercase address).
-    pub editing: Option<String>,
-    /// Address text.
-    pub address: String,
-    /// Label text.
-    pub label: String,
-    /// Verified.
-    pub verified: bool,
-    /// Message.
-    pub message: Option<String>,
-}
-
 /// S16 state.
 #[derive(Clone, Debug, Default)]
 pub struct TokenForm {
@@ -324,8 +309,6 @@ pub struct EvmUi {
     pub chain_form: Option<ChainFormState>,
     /// 다시 고정.
     pub repin: Option<RepinState>,
-    /// S14.
-    pub book: BookForm,
     /// S16.
     pub token: TokenForm,
     /// Fee caps.
@@ -362,7 +345,6 @@ impl EvmUi {
         self.slots.clear();
         self.sent = None;
         self.send = SendForm::default();
-        self.book = BookForm::default();
         self.token = TokenForm::default();
         self.discard = None;
         self.token_delete = None;
@@ -564,7 +546,7 @@ impl App {
             .meta
             .as_ref()
             .map(|meta| {
-                meta.book()
+                meta.contacts_favorites_first(crate::meta::BookChain::Evm)
                     .into_iter()
                     .filter_map(|entry| {
                         Some(KnownAddress {
@@ -1674,57 +1656,6 @@ impl App {
             } else {
                 ErrorCode::Sec002.text()
             });
-        }
-        self.refresh();
-    }
-
-    // ----- address book (S14) ---------------------------------------------------------------
-
-    /// `추가` / `저장` of the book form.
-    pub fn save_book(&mut self) {
-        let form = self.evm.book.clone();
-        let address = match yw_core::evm::address::parse_address(form.address.trim()) {
-            Ok(address) => address,
-            Err(yw_core::evm::address::AddressError::BadChecksum) => {
-                self.evm.book.message = Some(ErrorCode::Inp010.text());
-                self.refresh();
-                return;
-            }
-            Err(_) => {
-                self.evm.book.message = Some(ErrorCode::Inp009.text());
-                self.refresh();
-                return;
-            }
-        };
-        if !is_valid_label(&form.label) {
-            self.evm.book.message = Some(ErrorCode::Inp017.text());
-            self.refresh();
-            return;
-        }
-        let entry = BookEntry {
-            address: address.to_lower_hex(),
-            label: form.label.clone(),
-            verified: form.verified,
-            added_at_unix_ms: now_unix_ms(),
-        };
-        let Some(meta) = self.meta.as_mut() else {
-            return;
-        };
-        let result = if form.editing.is_some() {
-            meta.update_book(&entry);
-            Ok(())
-        } else {
-            meta.add_book(&entry)
-        };
-        match result {
-            Ok(()) => {
-                self.evm.book = BookForm::default();
-                self.save_meta();
-            }
-            Err(ListError::Duplicate) => self.evm.book.message = Some(ErrorCode::Inp016.text()),
-            Err(ListError::Full) => {
-                self.evm.book.message = Some("주소록은 최대 500개입니다.".to_owned());
-            }
         }
         self.refresh();
     }
