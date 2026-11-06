@@ -367,6 +367,19 @@ pub fn btc_plan_role(plan: &yw_core::btc::SendPlan) -> Option<KeyRole> {
     }
 }
 
+/// The card key role of a Zcash plan of a `YubiKey` account (spec/10 §6.4); `None` for a
+/// software account.
+#[must_use]
+pub const fn zec_plan_role(plan: &yw_core::zec::ZecPlan) -> Option<KeyRole> {
+    match plan.account.source {
+        yw_core::zec::ZecKeySource::Hardware { index } => Some(KeyRole::Zec {
+            network: plan.account.network,
+            index,
+        }),
+        _ => None,
+    }
+}
+
 /// Card credentials for [`enrol_first_card`] (borrowed from the job's wiped buffers).
 pub struct EnrolSecrets<'a> {
     /// `OpenPGP` admin PIN.

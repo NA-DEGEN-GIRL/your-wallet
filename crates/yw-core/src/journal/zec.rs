@@ -556,6 +556,8 @@ fn remove_txid(plain: &mut JournalPlain, id: &[u8; 32]) {
 /// A change observed by the tracking loop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ZecTransition {
+    /// About to be handed to a node (set before any RPC sees the bytes).
+    Disclose,
     /// The node accepted it (or the answer was lost: `disclosed` either way).
     Broadcast,
     /// The node refused it (`-25`/`-26`, disclosed).
@@ -590,6 +592,12 @@ pub fn apply(
             continue;
         }
         match transition {
+            ZecTransition::Disclose => {
+                if record.disclosed {
+                    return None;
+                }
+                record.disclosed = true;
+            }
             ZecTransition::Broadcast => {
                 record.state = ZecTxState::Broadcast;
                 record.disclosed = true;

@@ -208,6 +208,11 @@ fn digest_parts(parts: &Parts<'_>, expires_unix_ms: u64) -> Result<[u8; 32], App
             transcript.push_u8(*network);
             transcript.push_bytes(genesis)?;
         }
+        ChainRef::Zcash { network, genesis } => {
+            transcript.push_u8(5);
+            transcript.push_u8(*network);
+            transcript.push_bytes(genesis)?;
+        }
         ChainRef::HyperCore {
             network,
             signature_chain_id,
@@ -215,11 +220,6 @@ fn digest_parts(parts: &Parts<'_>, expires_unix_ms: u64) -> Result<[u8; 32], App
             transcript.push_u8(4);
             transcript.push_u8(*network);
             transcript.push_u64(*signature_chain_id);
-        }
-        ChainRef::Zcash { network, genesis } => {
-            transcript.push_u8(5);
-            transcript.push_u8(*network);
-            transcript.push_bytes(genesis)?;
         }
     }
     match parts.account {

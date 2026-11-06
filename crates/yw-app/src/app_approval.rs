@@ -1133,6 +1133,7 @@ impl App {
             QueuedItem::App(_)
             | QueuedItem::Sol(_)
             | QueuedItem::Btc(_)
+            | QueuedItem::Zec(_)
             | QueuedItem::HyperCore(_) => None,
         }
         .filter(|_| self.llm.is_some());
@@ -1192,6 +1193,7 @@ impl App {
             QueuedItem::App(_)
             | QueuedItem::Sol(_)
             | QueuedItem::Btc(_)
+            | QueuedItem::Zec(_)
             | QueuedItem::HyperCore(_) => now.saturating_add(MAX_LIFETIME_MS),
         };
         let gate = ApprovalGate {
@@ -1256,6 +1258,7 @@ impl App {
             QueuedItem::Site(site) => self.prepare_site(job, &site),
             QueuedItem::Sol(sol) => self.prepare_sol(job, &sol),
             QueuedItem::Btc(btc) => self.prepare_btc(&btc),
+            QueuedItem::Zec(zec) => self.prepare_zec(&zec),
             QueuedItem::HyperCore(item) => self.prepare_hypercore(&item),
         }
         self.rebuild_view();
@@ -1596,6 +1599,7 @@ impl App {
                     QueuedItem::App(_)
                     | QueuedItem::Sol(_)
                     | QueuedItem::Btc(_)
+                    | QueuedItem::Zec(_)
                     | QueuedItem::HyperCore(_) => None,
                 });
                 if failure.invalid_params
@@ -1841,6 +1845,7 @@ impl App {
             QueuedItem::App(_)
             | QueuedItem::Sol(_)
             | QueuedItem::Btc(_)
+            | QueuedItem::Zec(_)
             | QueuedItem::HyperCore(_) => Vec::new(),
         };
         let chain = match self.chain_job(chain_id) {
@@ -1901,6 +1906,7 @@ impl App {
                     QueuedItem::App(_)
                     | QueuedItem::Sol(_)
                     | QueuedItem::Btc(_)
+                    | QueuedItem::Zec(_)
                     | QueuedItem::HyperCore(_) => None,
                 };
                 if let QueuedItem::Sol(sol) = &item
@@ -1921,6 +1927,13 @@ impl App {
                     && request.kind.is_btc()
                 {
                     self.btc_consumed(approved, btc);
+                    self.finish_approval(QueueOutcome::Approved);
+                    return;
+                }
+                if let QueuedItem::Zec(zec) = &item
+                    && request.kind == yw_core::approval::ApprovalKind::ZecSend
+                {
+                    self.zec_consumed(approved, zec);
                     self.finish_approval(QueueOutcome::Approved);
                     return;
                 }
@@ -1979,6 +1992,7 @@ impl App {
                             QueuedItem::App(_)
                             | QueuedItem::Sol(_)
                             | QueuedItem::Btc(_)
+                            | QueuedItem::Zec(_)
                             | QueuedItem::HyperCore(_) => {
                                 ("yw-app".to_owned(), crate::app_browser::SignWaiter::App)
                             }
@@ -2119,7 +2133,10 @@ impl App {
                 (None, Some(self.sol_cluster()))
             }
             (Some(QueuedItem::Site(_)), yw_core::policy::Family::Bitcoin)
-            | (Some(QueuedItem::Btc(_) | QueuedItem::HyperCore(_)) | None, _) => (None, None),
+            | (
+                Some(QueuedItem::Btc(_) | QueuedItem::Zec(_) | QueuedItem::HyperCore(_)) | None,
+                _,
+            ) => (None, None),
             (Some(QueuedItem::App(_) | QueuedItem::Site(_)), _) => (Some(chain_id), None),
         };
         let site_btc_banner = (family == yw_core::policy::Family::Bitcoin)
@@ -2145,6 +2162,10 @@ impl App {
                 (QueuedItem::Btc(item), _) => (
                     crate::yubikey::btc_plan_role(&item.plan)?,
                     item.plan.inputs().len(),
+                ),
+                (QueuedItem::Zec(item), _) => (
+                    crate::yubikey::zec_plan_role(&item.plan)?,
+                    item.plan.inputs.len(),
                 ),
                 (_, PrepareState::Ready(ReadyContent::Signing(request))) => (
                     crate::yubikey::role_of(&request.signer, &request.payload)?,
@@ -2210,7 +2231,10 @@ impl App {
         let btc_banner = match &ui.item {
             QueuedItem::Btc(item) => Some(crate::ui::approval_view::BtcBanner::of(item.network)),
             QueuedItem::Site(_) => site_btc_banner,
-            QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::HyperCore(_) => None,
+            QueuedItem::App(_)
+            | QueuedItem::Sol(_)
+            | QueuedItem::Zec(_)
+            | QueuedItem::HyperCore(_) => None,
         };
         match view(
             &ui.session.gate.prepare,

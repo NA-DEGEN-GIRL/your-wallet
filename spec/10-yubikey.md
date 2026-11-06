@@ -192,6 +192,12 @@ Bitcoin 슬롯의 인덱스는 **계정 0의 받기 체인 주소 인덱스**(`�
 - 표현(코어): 키 출처 `SolKeySource::Hardware(i)`(**tag 7**, 매개변수 `(i, 0)`, 경로 `m/44'/501'/i'/0'`, 경로 문구 "… (YubiKey PIV)"). 표준 경로이므로 비표준 경로 규칙([07] §3.3)은 적용되지 않는다. vault는 이 출처에 시드를 빌려 주지 않고(`with_ed25519_seed` → `RecordNotFound`), 공개키는 `Vault::sol_public_keys`가 tag 5 슬롯 표에서 답한다(니모닉 없는 YubiKey 지갑에서도).
 - 서명(코어): `sol::sign::sign_transfer_card(approved, consumed_at_ms, blockhash, now_ms, card)` — `sign_transfer`와 같은 기한·승인·수수료 규칙·메시지(파싱 + 재인코딩 동일) 검사 → 카드가 메시지 바이트 그대로 서명 → 같은 서명 후 검증(`verify_strict`, 조립, 재파싱). `sol::msgsign::sign_message_card(approved, card)` — `sign_message`와 같은 승인 검사와 거래 모양·잘못된 오프체인 메시지 거부(M01·M02)를 **카드에 묻기 전에** 하고, 카드 서명을 `verify_strict` 한다. 카드 클로저 형식은 `sol::sign::SolCardSigner`(`yubikey::sign::sign_sol`), 오류는 `SolCardSignError`·`SolMessageCardError`(`Sign`·`Card`).
 
+### 6.5 Zcash 서명 (2026-11-06)
+
+- YubiKey Zcash 계정(`KeyRole::Zec`, §3.1)의 일반(transparent) 보내기는 **입력마다 카드 서명 한 번**이다: 입력의 ZIP 244 `SIGHASH_ALL` digest(32바이트)를 그 슬롯(SIG는 PSO:CDS, AUT는 INTERNAL AUTHENTICATE, §5.2)으로 서명한다(`zec::sign::sign_plan_card`, 카드 클로저는 Bitcoin과 같은 `yubikey::sign::sign_btc_checked` 경로).
+- 서명 항목 규칙은 Bitcoin §6.3과 같다: low-S로 정규화, 기록된 공개키로 검증, 엄격 DER ≤ 72바이트(low-R은 보장하지 않음), 끝에 `SIGHASH_ALL`(`01`) 바이트. 그 뒤 거래 전체의 서명 후 검증([12] §10.2)을 그대로 거친다.
+- PIN은 보내기 한 건에 한 번(모든 입력에 같은 PIN 버퍼, §9.1), 터치는 입력마다(터치 정책 "15초 유지"면 첫 터치 뒤 15초 안의 입력은 터치 없이). 자세한 내용은 [12] §8.2.
+
 ## 7. 등록 (`yubikey::enrol`)
 
 ### 7.1 진입점

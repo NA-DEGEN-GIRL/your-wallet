@@ -164,6 +164,8 @@ pub enum RpcJob {
     },
     /// A Bitcoin job (spec/08).
     Btc(Box<crate::btc::work::BtcRpcJob>),
+    /// A Zcash job (spec/12).
+    Zec(Box<crate::zec::work::ZecRpcJob>),
     /// A `HyperCore` job (spec/11).
     HyperCore(Box<crate::hypercore::HcRpcJob>),
     /// Stop.
@@ -199,6 +201,7 @@ impl RpcJob {
             Self::SolTrack(_) => "SolTrack",
             Self::SolScan { .. } => "SolScan",
             Self::Btc(job) => job.name(),
+            Self::Zec(job) => job.name(),
             Self::HyperCore(_) => "HyperCore",
             Self::Shutdown => "Shutdown",
         }
@@ -433,6 +436,10 @@ impl RpcWorker {
                     .handle(&*transport, &*self.clock, *btc_job, &mut |event| {
                         push(events, RpcEvent::Btc(Box::new(event)));
                     });
+            }
+            RpcJob::Zec(zec_job) => {
+                let event = crate::zec::work::handle(&*transport, *zec_job);
+                push(events, RpcEvent::Zec(Box::new(event)));
             }
             RpcJob::HyperCore(job) => {
                 let event = crate::hypercore::run(&*transport, *job);

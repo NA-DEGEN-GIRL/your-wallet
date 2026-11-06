@@ -276,6 +276,11 @@ impl App {
                 "  Bitcoin  ",
                 tab == Tab::Btc,
             ),
+            Ctl::tab(
+                crate::ui::screens_zec::ids::TAB_ZEC,
+                "  Zcash  ",
+                tab == Tab::Zec,
+            ),
         ]));
     }
 

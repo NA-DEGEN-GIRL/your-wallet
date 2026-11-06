@@ -533,6 +533,8 @@ pub struct App {
     pub(crate) evm: crate::app_evm::EvmUi,
     pub(crate) sol: crate::app_sol::SolUi,
     pub(crate) btc: crate::app_btc::BtcUi,
+    /// The Zcash tab (spec/12).
+    pub(crate) zec: crate::app_zec::ZecUi,
     /// `HyperCore` card, form and session activity (spec/11).
     pub(crate) hypercore: crate::app_hypercore::HcUi,
     /// Imported keys and "개인키로 시작하기" (spec/04 §2.18).
@@ -765,6 +767,7 @@ impl App {
             evm: crate::app_evm::EvmUi::default(),
             sol: crate::app_sol::SolUi::default(),
             btc: crate::app_btc::BtcUi::default(),
+            zec: crate::app_zec::ZecUi::default(),
             hypercore: crate::app_hypercore::HcUi::default(),
             keys: crate::app_keys::KeysUi::default(),
             card: crate::app_card::CardUi::default(),
@@ -1041,6 +1044,7 @@ impl App {
                     && !self.on_reset_edit_change(*id)
                     && !self.on_sol_edit_change(*id)
                     && !self.on_btc_edit_change(*id)
+                    && !self.on_zec_edit_change(*id)
                     && !self.on_llm_edit_change(*id)
                     && !self.on_yk_edit_change(*id)
                     && !self.on_hc_edit_change(*id)
@@ -1121,6 +1125,7 @@ impl App {
             1 => crate::ui::screens_sol::ids::TAB_EVM,
             2 => crate::ui::screens_sol::ids::TAB_SOL,
             3 => crate::ui::screens_btc::ids::TAB_BTC,
+            4 => crate::ui::screens_zec::ids::TAB_ZEC,
             _ => return,
         };
         if self.screen != Screen::Main || self.secret.is_some() {
@@ -1170,6 +1175,7 @@ impl App {
         self.hc_tick(now);
         self.sol_tick(now);
         self.btc_tick(now);
+        self.zec_tick(now);
         if now.saturating_sub(self.last_flush_ms) >= LOG_FLUSH_MS {
             self.last_flush_ms = now;
             logging::flush();
@@ -1283,6 +1289,7 @@ impl App {
         self.evm_lock();
         self.sol_lock();
         self.btc_lock();
+        self.zec_lock();
         self.meta = None;
         self.wait = crate::app_reset::WaitWatch::default();
         self.hold_cancel();
@@ -1551,6 +1558,11 @@ impl App {
             KeyOutcome::ImportedKeyBusy(_) => self.on_imported_key_busy(),
             KeyOutcome::Cancelled("SignEvm" | "SignMessage", _) => self.evm_sign_cancelled(),
             KeyOutcome::Cancelled("SignSol", _) => self.sol_sign_cancelled(),
+            KeyOutcome::Zec(outcome) => self.zec_key_outcome(*outcome),
+            KeyOutcome::Cancelled("SignZec" | "SignZecCard", _) => {
+                self.zec_card_cancelled();
+                self.refresh();
+            }
             KeyOutcome::Cancelled("SignBtc", _) => {
                 self.btc.sign_cancelled();
                 self.refresh();
@@ -1772,6 +1784,7 @@ impl App {
                     self.sol_ensure_account();
                 }
                 self.btc_after_meta();
+                self.zec_ensure_account();
                 self.card_after_meta();
             }
             KeyOutcome::Meta(Err(
@@ -3032,6 +3045,7 @@ impl App {
                     && !self.on_keys_command(other)
                     && !self.on_sol_command(other)
                     && !self.on_btc_command(other)
+                    && !self.on_zec_command(other)
                     && !self.on_evm_command(other)
                     && !self.on_sites_command(other)
                     && !self.on_llm_command(other)
