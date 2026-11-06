@@ -148,8 +148,6 @@ impl WebSocket {
             WINHTTP_OPTION_REDIRECT_POLICY,
             WINHTTP_OPTION_REDIRECT_POLICY_NEVER,
         )?;
-        // Keep-alive pings every 15 s (the minimum) so a dead connection fails the receive.
-        set_u32_option(&session, WINHTTP_OPTION_WEB_SOCKET_KEEPALIVE_INTERVAL, 15_000)?;
         let timeout = i32::try_from(timeout_ms).unwrap_or(i32::MAX);
         // SAFETY: Sets resolve, connect, send and receive timeouts on our session handle.
         if unsafe { WinHttpSetTimeouts(session.0, timeout, timeout, timeout, timeout) } == 0 {
@@ -184,6 +182,9 @@ impl WebSocket {
             WINHTTP_OPTION_DISABLE_FEATURE,
             WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_REDIRECTS | WINHTTP_DISABLE_AUTHENTICATION,
         )?;
+        // Keep-alive pings every 15 s (the minimum) so a dead connection fails the receive; set on
+        // the request before the upgrade (best effort: older systems keep the 30 s default).
+        let _ = set_u32_option(&request, WINHTTP_OPTION_WEB_SOCKET_KEEPALIVE_INTERVAL, 15_000);
         // SAFETY: The upgrade option takes no buffer (NULL, 0) on our request handle.
         if unsafe {
             WinHttpSetOption(

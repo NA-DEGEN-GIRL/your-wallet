@@ -257,6 +257,33 @@ fn origins_labels_and_caip2() {
     assert!(!super::worker::valid_project_id("0123456789ABCDEF0123456789abcdef"));
 }
 
+/// The ES256 example of RFC 7515 Appendix A.3 verifies with the CNG P-256 check used for Verify
+/// v3 attestations; a flipped bit does not. `check_attestation` then reads the claims.
+#[test]
+fn es256_rfc7515_vector_verifies_with_cng() {
+    let decode = |text: &str| yw_core::walletconnect::base64url_decode(text).unwrap();
+    let x: [u8; 32] = decode("f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU").try_into().unwrap();
+    let y: [u8; 32] = decode("x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0").try_into().unwrap();
+    let jws = "eyJhbGciOiJFUzI1NiJ9.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.DtEhU3ljbEg8L38VWAfUAqOyKAM6-Xx-F4GawxaepmXFCgfTjDxw5djxLa8ISlSApmWQxfKTUJqPP3-Kg6NU1Q";
+    let (input, signature) = jws.rsplit_once('.').unwrap();
+    let signature: [u8; 64] = decode(signature).try_into().unwrap();
+    let digest = yw_core::codec::sha256(input.as_bytes());
+    assert!(yw_win::cng::p256_verify(&x, &y, &digest, &signature));
+    let mut bad = signature;
+    bad[10] ^= 1;
+    assert!(!yw_win::cng::p256_verify(&x, &y, &digest, &bad));
+    // The claims check: the RFC payload has `exp` but no `id`, so it is not an attestation.
+    let key = super::verify::VerifyKey {
+        x,
+        y,
+        expires_at: u64::MAX,
+    };
+    let check = |x: &[u8; 32], y: &[u8; 32], d: &[u8; 32], s: &[u8; 64]| {
+        yw_win::cng::p256_verify(x, y, d, s)
+    };
+    assert!(super::verify::check_attestation(jws, &key, "id", 0, &check).is_none());
+}
+
 #[test]
 fn verify_status_rules() {
     use super::VerifyStatus;
