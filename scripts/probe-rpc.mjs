@@ -192,6 +192,20 @@ async function main() {
     const bb = await rpc(cfg[id], 'bb_getBlockHash', ['0']);
     out(id, 'bb_getBlockHash 0', bb.result !== undefined, bb.result !== undefined ? { result: JSON.stringify(bb.result).slice(0, 80), ms: bb.ms } : errKv(bb));
   }
+  // Zcash (spec/12 §4): genesis pin, consensus branch, the address index the app needs, and
+  // Blockbook REST under the same endpoint. Read-only calls only (no sendrawtransaction).
+  const zec = { 'zcash:mainnet': '00040fe8ec8471911baa1db1266ea15dd06b4a8a5c453883c000b031973dce08', 'zcash:testnet': '05a60a92d99d85997cce3b87616c089f6124d7342af37106edc76126334a2c38' };
+  for (const [id, exp] of Object.entries(zec)) {
+    if (!cfg[id]) { console.log(`${id.padEnd(16)} skip`); continue; }
+    const r = await rpc(cfg[id], 'getblockhash', [0]);
+    out(id, 'getblockhash 0', r.result === exp, r.result !== undefined ? { hash: r.result, ms: r.ms } : errKv(r));
+    const i = await rpc(cfg[id], 'getblockchaininfo', []);
+    out(id, 'getblockchaininfo', !!(i.result && i.result.consensus), i.result ? { chain: i.result.chain, blocks: i.result.blocks, nextblock: i.result.consensus && i.result.consensus.nextblock, ms: i.ms } : errKv(i));
+    // A well-known empty-ish address is not needed: an invalid-address error still proves the
+    // method exists (-5 / -8), while -32601 means no address index.
+    const u = await rpc(cfg[id], 'getaddressutxos', [{ addresses: [] }]);
+    out(id, 'getaddressutxos', u.result !== undefined || (u.error && u.error.code !== -32601), u.result !== undefined ? { rows: u.result.length, ms: u.ms } : errKv(u));
+  }
   console.log(`summary: ${failures === 0 ? 'all ok' : `${failures} check(s) not ok`}`);
   process.exit(failures === 0 ? 0 : 1);
 }
