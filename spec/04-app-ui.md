@@ -122,7 +122,7 @@ BTC_MAINNET_BG #C42B1C / BTC_MAINNET_TEXT #FFFFFF, BTC_TESTNET4_BG #F7A23B(글�
 
 | 클래스 | 용도 | 스타일 | 확장 스타일 | 비밀 클래스 |
 |---|---|---|---|---|
-| `YourWalletV3Main` | 주 창(화면은 자식 패널) | `WS_OVERLAPPEDWINDOW` | `WS_EX_APPWINDOW` | 아니오 |
+| `YourWalletV3Main` | 주 창(화면은 자식 패널) | `WS_OVERLAPPEDWINDOW\|WS_CLIPCHILDREN\|WS_VSCROLL` | `WS_EX_APPWINDOW` | 아니오 |
 | `YourWalletV3Panel` | 화면 패널, 직접 그리는 목록 | `WS_CHILD\|WS_CLIPCHILDREN\|WS_VSCROLL` | — | 아니오 |
 | `YourWalletV3Approval` | 승인·연결 창 | `WS_OVERLAPPED\|WS_CAPTION\|WS_SYSMENU\|WS_THICKFRAME\|WS_MINIMIZEBOX` | `WS_EX_TOPMOST\|WS_EX_APPWINDOW\|WS_EX_DLGMODALFRAME` | 아니오 |
 | `YourWalletV3SecretInput` | 비밀 입력 창 W01–W07, W10 | `WS_OVERLAPPED\|WS_CAPTION\|WS_SYSMENU` | `WS_EX_APPWINDOW\|WS_EX_DLGMODALFRAME` (dApp 요청으로 연 W02·W06은 `\|WS_EX_TOPMOST`) | 예, `capture: CaptureExclusion::Preferred` |
@@ -131,7 +131,7 @@ BTC_MAINNET_BG #C42B1C / BTC_MAINNET_TEXT #FFFFFF, BTC_TESTNET4_BG #F7A23B(글�
 - 비밀 클래스는 `ClassSpec { name, secret: true, capture }`로 등록한다([01] §7.7). `capture`는 캡처 제외 실패 처리다(§4.5): `Required` = 창 파괴·비밀 미표시, `Preferred` = 창 유지·경고 배너. 비밀 아닌 클래스에는 캡처 제외를 적용하지 않는다.
 - **앱 아이콘**: 둥근 사각 타일(왼쪽 위 짙은 남색 `#352A9C` → 오른쪽 아래 청록 `#0B8A80` 대각 그라데이션) 위의 흰 지갑(둥근 몸통, 덮개 선, 오른쪽 끈과 둥근 똑딱단추). 독자 도안이며 다른 지갑의 로고(여우·토끼 등)를 닮지 않는다. `scripts/make-icons.mjs`가 절차적으로(부호 거리 도형 + 초과 표본 안티에일리어싱) 그리고, 32 px 이하는 가장자리를 픽셀 격자에 맞추고 24 px 이하는 끈을 똑딱단추 점만 남겨 16 px에서도 읽히게 한다. 출력: `crates/yw-app/icons/yw-app.ico`(16·20·24·32·40·48·64 = 32비트 BMP, 256 = PNG)와 같은 이미지의 컴파일된 리소스 `yw-app.res`(RT_ICON 1–8 + RT_GROUP_ICON 1, 언어 0x0409), 미리 보기 `docs/icon-preview.png`. `build.rs`가 `.res`를 링크 인자로 넘긴다([01] §2.4). 모든 클래스의 `hIcon`·`hIconSm` = 그 그룹을 `LoadImageW`로 `SM_CXICON`·`SM_CXSMICON`(시스템 DPI) 크기로 읽은 것(프로세스당 한 번, 해제 안 함; 리소스가 없는 테스트 바이너리는 `IDI_APPLICATION`, [01] §7.7). 제목 표시줄(`WS_EX_DLGMODALFRAME` 창 포함, Windows 11에서 확인)·작업 표시줄·Alt-Tab은 클래스 아이콘을, 탐색기·시작 메뉴 바로가기(`yw-app.exe,0`, [01] §9.2)는 exe의 아이콘 그룹을 쓴다. 생성 결과는 커밋하고 check.ps1 icons 단계(30)가 같은지 확인한다.
 
-주 창 960×680 DIP(최소 720×520), 비밀 창 640×480(W04·W10은 640×560, W05는 24칸 때문에 720×600, W08·W09는 820×680), 승인 창 §3.6. M3 주 창은 화면을 직접 그리고 표준 컨트롤을 직접 소유한다(휠 스크롤). `YourWalletV3Panel`·`YourWalletV3Approval`은 owner-draw 목록·승인 창이 생기는 M4에서 등록한다.
+주 창 960×680 DIP(최소 720×520), 비밀 창 640×480(W04·W10은 640×560, W05는 24칸 때문에 720×600, W08·W09는 820×680), 승인 창 §3.6. M3 주 창은 화면을 직접 그리고 표준 컨트롤을 직접 소유한다. 세로 스크롤 막대는 늘 보이고 내용이 창에 다 들어가면 비활성이다(`SIF_DISABLENOSCROLL`, 내용에 따라 폭이 바뀌지 않는다). 스크롤(휠·터치패드는 1/120 단위로 누적, 한 칸 = `SPI_GETWHEELSCROLLLINES`줄 × 20 DIP, 마우스 휠 한 칸은 약 60 ms 동안 4단계로 미끄러진다; 막대 화살표 20 DIP, 막대 안 클릭 한 쪽, 엄지 끌기는 실시간)은 다시 배치하지 않는다: 배치된 사각형을 옮기고 `ScrollWindowEx(SW_SCROLLCHILDREN|SW_INVALIDATE)`로 남는 픽셀·자식 컨트롤을 함께 옮긴 뒤 드러난 띠만 그린다(`app_scroll`). 보기 가장자리를 넘는 컨트롤만 보이기·숨기기를 바꾼다. `YourWalletV3Panel`·`YourWalletV3Approval`은 owner-draw 목록·승인 창이 생기는 M4에서 등록한다.
 
 ### 1.8 yw-win 사용 API
 이름·시그니처·오류 타입의 정본은 [01] §7이다(D31). yw-app이 쓰는 것:
