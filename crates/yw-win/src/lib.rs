@@ -16,6 +16,7 @@ pub mod dpapi;
 mod error;
 pub mod file;
 pub mod http;
+pub mod image;
 pub mod input;
 pub mod mem;
 pub mod pcsc;
@@ -26,6 +27,7 @@ pub mod session;
 pub mod time;
 pub mod ui;
 mod wide;
+pub mod ws;
 
 pub use error::WinError;
 pub use process::{

@@ -19,6 +19,7 @@ pub mod screens_llm;
 pub mod screens_reset;
 pub mod screens_sites;
 pub mod screens_sol;
+pub mod screens_walletconnect;
 pub mod screens_yubikey;
 pub mod secret;
 pub mod secure_field;

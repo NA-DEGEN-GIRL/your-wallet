@@ -133,7 +133,13 @@ impl App {
     pub(crate) fn sites_screen(&self, items: &mut Vec<Item>) {
         items.push(crate::ui::screens::back_main());
         items.push(Item::Title("연결된 사이트".to_owned()));
-        let grants = self.browser_grants();
+        // WalletConnect sessions have their own cards (spec/13 §6).
+        self.wc_panel(items);
+        let grants: Vec<_> = self
+            .browser_grants()
+            .into_iter()
+            .filter(|grant| !crate::walletconnect::is_session_origin(&grant.origin))
+            .collect();
         let (sol_grants, btc_grants) = self.chain_grants();
         items.push(Item::Help(
             "연결된 사이트는 아래 계정의 주소를 볼 수 있고, EVM 사이트는 잔액과 거래 기록도 읽을 수 있습니다. 서명과 전송은 매번 이 앱의 확인 창에서 따로 승인합니다."
@@ -303,10 +309,15 @@ impl App {
                 true
             }
             ids::SITES_PREV | ids::SITES_NEXT => {
-                let total = self.browser_grants().len() + {
-                    let (sol, btc) = self.chain_grants();
-                    sol.len() + btc.len()
-                };
+                let total = self
+                    .browser_grants()
+                    .iter()
+                    .filter(|grant| !crate::walletconnect::is_session_origin(&grant.origin))
+                    .count()
+                    + {
+                        let (sol, btc) = self.chain_grants();
+                        sol.len() + btc.len()
+                    };
                 if let Some(browser) = self.browser.as_mut() {
                     let (pages, shown) = page_of(total, browser.site_rows.page);
                     browser.site_rows.page = if id == ids::SITES_PREV {

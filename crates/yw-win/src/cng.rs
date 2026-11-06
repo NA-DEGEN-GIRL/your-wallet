@@ -155,6 +155,59 @@ pub fn ecb_block(
     Ok(out)
 }
 
+/// Verifies an ECDSA P-256 signature `r ‖ s` (64 bytes) over the SHA-256 `digest` with the
+/// public key `(x, y)` (uncompressed affine coordinates, 32 bytes each), via the
+/// `BCRYPT_ECDSA_P256_ALG_HANDLE` pseudo-handle (Windows 10+). Used for `WalletConnect` Verify
+/// attestation JWTs (ES256, spec/13 §7). `false` for any failure.
+#[must_use]
+pub fn p256_verify(x: &[u8; 32], y: &[u8; 32], digest: &[u8; 32], signature: &[u8; 64]) -> bool {
+    use windows_sys::Win32::Security::Cryptography::{
+        BCRYPT_ECCPUBLIC_BLOB, BCRYPT_ECDSA_P256_ALG_HANDLE, BCRYPT_ECDSA_PUBLIC_P256_MAGIC,
+        BCryptImportKeyPair, BCryptVerifySignature,
+    };
+    // BCRYPT_ECCKEY_BLOB { dwMagic, cbKey } ‖ X ‖ Y.
+    let mut blob = Vec::with_capacity(8 + 64);
+    blob.extend_from_slice(&BCRYPT_ECDSA_PUBLIC_P256_MAGIC.to_le_bytes());
+    blob.extend_from_slice(&32_u32.to_le_bytes());
+    blob.extend_from_slice(x);
+    blob.extend_from_slice(y);
+    let Ok(blob_len) = u32::try_from(blob.len()) else {
+        return false;
+    };
+    let mut handle: BCRYPT_KEY_HANDLE = core::ptr::null_mut();
+    // SAFETY: A pseudo algorithm handle, no import key, a static blob type string, a valid out
+    // pointer and `blob` readable for `blob_len` bytes.
+    let status = unsafe {
+        BCryptImportKeyPair(
+            BCRYPT_ECDSA_P256_ALG_HANDLE,
+            core::ptr::null_mut(),
+            BCRYPT_ECCPUBLIC_BLOB,
+            &raw mut handle,
+            blob.as_ptr(),
+            blob_len,
+            0,
+        )
+    };
+    if status != 0 || handle.is_null() {
+        return false;
+    }
+    let key = Key(handle);
+    // SAFETY: `key.0` is a live key; the digest (32) and signature (64) are readable for the
+    // lengths passed; no padding info (ECDSA).
+    let status = unsafe {
+        BCryptVerifySignature(
+            key.0,
+            core::ptr::null(),
+            digest.as_ptr(),
+            32,
+            signature.as_ptr(),
+            64,
+            0,
+        )
+    };
+    status == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::{BlockCipher, ecb_block};

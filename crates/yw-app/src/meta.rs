@@ -209,6 +209,9 @@ pub struct ChainSites {
     pub sol: Vec<Value>,
     /// `btc_sites`.
     pub btc: Vec<Value>,
+    /// `walletconnect` (optional key, spec/13 §8): the relay client key and the `WalletConnect`
+    /// sessions, validated by `crate::walletconnect::store`; written only when present.
+    pub walletconnect: Option<Value>,
 }
 
 const LIMITS: Limits = Limits {
@@ -863,6 +866,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
                 && *key != VAULT_SEEN_KEY
                 && *key != TOKEN_VIEW_KEY
                 && *key != HW_ACCOUNTS_KEY
+                && *key != crate::walletconnect::store::META_KEY
                 && *key != BOOK_FAVORITES_KEY
         })
         .map(|(key, value)| (key.to_owned(), value.clone()))
@@ -986,6 +990,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         chain_sites: Box::new(ChainSites {
             sol: sol_sites,
             btc: btc_sites,
+            walletconnect: object.get(crate::walletconnect::store::META_KEY).cloned(),
         }),
         tokens,
         activity,
@@ -1138,6 +1143,9 @@ impl Meta {
         }
         if !self.book_favorites.is_empty() {
             members.push((BOOK_FAVORITES_KEY, self.favorites_json()));
+        }
+        if let Some(walletconnect) = &self.chain_sites.walletconnect {
+            members.push((crate::walletconnect::store::META_KEY, walletconnect.clone()));
         }
         members
     }

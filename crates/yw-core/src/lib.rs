@@ -22,4 +22,5 @@ pub mod secret;
 pub mod slip10;
 pub mod sol;
 pub mod vault;
+pub mod walletconnect;
 pub mod yubikey;

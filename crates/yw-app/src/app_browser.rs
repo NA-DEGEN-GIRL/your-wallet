@@ -487,6 +487,7 @@ impl App {
         if let Some(browser) = self.browser.as_mut() {
             browser.dapp_unlock = false;
         }
+        self.wc_after_unlock();
         self.show_next_approval();
     }
 
@@ -1081,10 +1082,13 @@ impl App {
     pub fn waiting_origins(&self) -> Vec<String> {
         let mut origins: Vec<String> = Vec::new();
         for item in self.evm.queue.waiting_payloads() {
-            if let QueuedItem::Site(site) = item
-                && !origins.iter().any(|known| known == site.origin.as_str())
-            {
-                origins.push(site.origin.as_str().to_owned());
+            // A WalletConnect session shows its claimed origin label (spec/13 §7).
+            let text = match item {
+                QueuedItem::Site(site) => self.site_origin_text(site),
+                _ => continue,
+            };
+            if !origins.contains(&text) {
+                origins.push(text);
             }
         }
         origins

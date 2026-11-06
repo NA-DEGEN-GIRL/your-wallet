@@ -332,6 +332,10 @@ pub struct Settings {
     pub llm_explain: LlmSettings,
     /// `HyperCore` (spec/11).
     pub hypercore: HyperCoreSettings,
+    /// `walletconnect.projectId` (spec/13 §8): the user's Reown Cloud project id (32 lowercase
+    /// hex; not a secret — dApps embed theirs in web pages). Empty = `WalletConnect` off. The key
+    /// is written only when set.
+    pub walletconnect_project: String,
     /// Log level.
     pub log_level: LogLevel,
     /// Format compatibility (unknown keys, read-only newer file; spec/04 §6.6).
@@ -404,6 +408,7 @@ impl Default for Settings {
             bitcoin: BitcoinSettings::default(),
             llm_explain: LlmSettings::default(),
             hypercore: HyperCoreSettings::default(),
+            walletconnect_project: String::new(),
             log_level: LogLevel::Info,
             compat: SettingsCompat::default(),
         }
@@ -881,6 +886,16 @@ pub fn load(bytes: Option<&[u8]>) -> SettingsLoad {
                 Some(hypercore) => settings.hypercore = hypercore,
                 None => banners.push(key.to_owned()),
             },
+            "walletconnect" => match value
+                .as_object()
+                .filter(|object| object.len() == 1)
+                .and_then(|object| object.get("projectId"))
+                .and_then(Value::as_str)
+                .filter(|id| crate::walletconnect::worker::valid_project_id(id))
+            {
+                Some(id) => id.clone_into(&mut settings.walletconnect_project),
+                None => banners.push(key.to_owned()),
+            },
             "logLevel" => match value.as_str().and_then(LogLevel::parse) {
                 Some(level) => settings.log_level = level,
                 None => banners.push(key.to_owned()),
@@ -1042,7 +1057,7 @@ impl Settings {
                 .collect(),
         )
         .unwrap_or_else(|| json_object(Vec::new()));
-        vec![
+        let mut members = vec![
             ("version", json_u64(SETTINGS_VERSION)),
             (
                 "autoLockMinutes",
@@ -1117,7 +1132,14 @@ impl Settings {
                 ]),
             ),
             ("logLevel", json_str(self.log_level.as_str())),
-        ]
+        ];
+        if !self.walletconnect_project.is_empty() {
+            members.push((
+                "walletconnect",
+                json_object(vec![("projectId", json_str(&self.walletconnect_project))]),
+            ));
+        }
+        members
     }
 
     /// The `HyperCore` API base of `network` (mainnet: always the official one).
