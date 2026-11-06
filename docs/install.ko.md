@@ -128,6 +128,17 @@ Chrome → `chrome://extensions` → 오른쪽 위 **개발자 모드** 켜기 �
    3. **네트워크 URL 생성** → **생성** → 아래 **네트워크별 RPC 주소**에서 네트워크마다 **테스트**. 실패하는 네트워크는
       대시보드에서 그 체인을 켜거나 **교체**로 `https://` 주소를 직접 넣는다.
 
+   개발용 `%USERPROFILE%\.yw-dev\rpc.json`(spec/01 §4.6, `scripts\dev-rpc-setup.ps1`이 만든 파일)이 이미 있으면 2–3 대신
+   **설정** → **네트워크(RPC)** → **rpc.json에서 가져오기**를 쓴다(파일이 있을 때만 보인다. 디버그 빌드는 `YW_RPC_JSON`이
+   가리키는 파일). 앱이 파일을 읽어(64 KiB 이하 엄격 JSON, 값마다 `교체`와 같은 `https://` 검사 + QuickNode·알케미 주소 모양,
+   userinfo 없음) 네트워크 이름·공급자·`…/****`만 보이는 확인 목록을 보여 주고, 확인하면 `교체`와 똑같이 `apikeys.dpapi`에
+   저장한다. 이미 주소가 있는 네트워크가 있으면 **덮어쓰기** / **비어 있는 네트워크만**을 고른다. 모든 주소가 같은 QuickNode
+   엔드포인트(이름·토큰)이면 RPC 공급자를 **QuickNode 멀티체인**으로 바꾸고 이름·토큰을 템플릿 자격 정보로 함께 저장한다
+   (템플릿이 만들지 않는 주소는 그 네트워크의 주소로 그대로 둔다). 그다음 네트워크마다 **테스트**.
+   가져온 주소는 `%LOCALAPPDATA%\YourWallet\v3\apikeys.dpapi`(설정은 같은 폴더의 `settings.json`)에 있어 `install.cmd`로
+   다시 설치하거나 `uninstall.cmd`(`-RemoveWalletData` 없이)로 제거해도 유지된다. 지갑 초기화 때 **설정과 API 키도 함께
+   옮기기**를 켜지 않으면 그대로 남는다.
+
    RPC 주소 전체(이름·토큰 포함)가 비밀이다. 스크린샷·메신저·이슈에 붙이지 않는다. Bitcoin 조회는 기본으로 키가 필요
    없는 Esplora(mempool.space)를 쓴다. 연결되지 않으면(E-BTC-001·E-BTC-002가 계속) 설정 → Bitcoin → **Esplora URL**을
    `https://blockstream.info/api`(testnet4는 `https://blockstream.info/testnet4/api`)로 바꾸고 **저장** → **테스트**.
