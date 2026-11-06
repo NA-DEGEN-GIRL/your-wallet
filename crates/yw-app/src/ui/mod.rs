@@ -4,11 +4,13 @@
 
 pub mod approval;
 pub mod approval_view;
+pub mod badge;
 pub mod command_ids;
 pub mod interaction;
 pub mod main_window;
 pub mod qr;
 pub mod screens;
+pub mod screens_book;
 pub mod screens_btc;
 pub mod screens_evm;
 pub mod screens_hypercore;

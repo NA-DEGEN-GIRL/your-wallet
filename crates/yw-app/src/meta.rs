@@ -71,6 +71,15 @@ pub const SECURITY_KEY: &str = "security_settings";
 /// own. Written when non-zero.
 pub const VAULT_SEEN_KEY: &str = "vault_generation_seen";
 
+/// The optional top-level key of the address-book favorites (spec/02 §5.3, spec/04 §2.10):
+/// `[{"chain": "evm"|"sol"|"btc", "address": string}]` naming `address_book` entries, in the
+/// order they were starred. A view preference kept apart from the entries because earlier
+/// versions reject an `AddressBookEntry` with an extra member (the whole meta would become
+/// unreadable, E-VLT-006) but keep an unknown top-level key unread and write it back. Written
+/// only when non-empty; an invalid value falls back to no favorites (like `token_view`), and
+/// names of entries that no longer exist are dropped on read.
+pub const BOOK_FAVORITES_KEY: &str = "address_book_favorites";
+
 /// The optional top-level key of the `YubiKey` accounts (spec/10 §8, §13): labels, hidden flags,
 /// the Solana selection and the cards still on default PINs. The truth source is vault tag 5
 /// (the accounts and addresses are recomputed from it at unlock); written only when not the
@@ -342,8 +351,11 @@ pub struct Meta {
     /// imported keys: one single-key account per vault tag-4 record) and the selected one. An optional top-level key: absent in files of
     /// earlier versions (= no other accounts), which keep it unread when they write.
     pub btc_accounts: BtcAccounts,
-    /// Address book.
+    /// Address book (validated `AddressBookEntry` values; EVM entries use `chain = "evm"` and
+    /// are shared by every EVM chain).
     pub address_book: Vec<Value>,
+    /// `address_book_favorites` (optional key): the starred entries, in starring order.
+    pub book_favorites: Vec<(BookChain, String)>,
     /// Connected sites (M5).
     pub connected_sites: Vec<Value>,
     /// Solana and Bitcoin dApp grants (`sol_sites`/`btc_sites`, optional keys; boxed to keep
@@ -387,6 +399,7 @@ impl Default for Meta {
             btc: None,
             btc_accounts: BtcAccounts::default(),
             address_book: Vec::new(),
+            book_favorites: Vec::new(),
             connected_sites: Vec::new(),
             chain_sites: Box::default(),
             tokens: Vec::new(),
@@ -560,6 +573,13 @@ fn valid_book_entry(value: &Value) -> bool {
         )
         .then_some(())?;
         let chain = object.get("chain")?.as_str()?;
+        // `eip155:<chainId>` is read as a legacy alias of `evm` and folded into it on load
+        // ([`migrate_book`]); it is never written.
+        let chain = if legacy_evm_chain(chain) {
+            "evm"
+        } else {
+            chain
+        };
         matches!(chain, "evm" | "sol" | "btc").then_some(())?;
         let address = object.get("address")?.as_str()?;
         (chain != "evm" || is_evm_addr(address)).then_some(())?;
@@ -571,6 +591,89 @@ fn valid_book_entry(value: &Value) -> bool {
         Some(())
     };
     check().is_some()
+}
+
+/// A per-chain EVM `chain` value (`eip155:` + strict decimal chain id).
+fn legacy_evm_chain(chain: &str) -> bool {
+    chain
+        .strip_prefix("eip155:")
+        .and_then(crate::network::parse_decimal_u64)
+        .is_some()
+}
+
+/// Folds the address book into one entry per `(family, address)` (2026-11-06): a legacy
+/// per-chain EVM entry (`eip155:<id>`) becomes `chain = "evm"`, shared by every EVM chain, and
+/// duplicates merge into the first one, which keeps its label and position, becomes verified
+/// when any duplicate was, and keeps the earliest `added_at_unix_ms`. Returns whether anything
+/// changed. Releases of `yw-meta/3` only ever wrote `evm`/`sol`/`btc`, so for their files this
+/// only removes duplicates (which `add_*` never creates).
+fn migrate_book(entries: &mut Vec<Value>) -> bool {
+    let mut merged: Vec<Contact> = Vec::with_capacity(entries.len());
+    let mut changed = false;
+    for value in entries.iter() {
+        let Some(object) = value.as_object() else {
+            continue;
+        };
+        let raw_chain = object.get("chain").and_then(Value::as_str).unwrap_or("");
+        let Some(chain) = BookChain::parse(raw_chain)
+            .or_else(|| legacy_evm_chain(raw_chain).then_some(BookChain::Evm))
+        else {
+            continue;
+        };
+        changed |= raw_chain != chain.as_str();
+        let (Some(address), Some(label), Some(verified), Some(added)) = (
+            object.get("address").and_then(Value::as_str),
+            object.get("label").and_then(Value::as_str),
+            object.get("verified").and_then(Value::as_bool),
+            object.get("added_at_unix_ms").and_then(u64_of),
+        ) else {
+            continue;
+        };
+        if let Some(first) = merged
+            .iter_mut()
+            .find(|known| known.chain == chain && known.address == address)
+        {
+            first.verified |= verified;
+            first.added_at_unix_ms = first.added_at_unix_ms.min(added);
+            changed = true;
+            continue;
+        }
+        merged.push(Contact {
+            chain,
+            address: address.to_owned(),
+            label: label.to_owned(),
+            verified,
+            added_at_unix_ms: added,
+        });
+    }
+    if changed {
+        *entries = merged.iter().map(Contact::to_value).collect();
+    }
+    changed
+}
+
+/// `address_book_favorites` of the file: `None` when the value is invalid (the caller falls
+/// back to no favorites). Duplicates and names of entries the book does not hold are dropped.
+fn parse_favorites(value: &Value, book: &[Value]) -> Option<Vec<(BookChain, String)>> {
+    let items = value.as_array()?;
+    if items.len() > MAX_ADDRESS_BOOK {
+        return None;
+    }
+    let held: Vec<Contact> = book.iter().filter_map(Contact::from_value).collect();
+    let mut out: Vec<(BookChain, String)> = Vec::new();
+    for item in items {
+        let object = item.as_object()?;
+        exact_keys(object, &["chain", "address"]).then_some(())?;
+        let chain = BookChain::parse(object.get("chain")?.as_str()?)?;
+        let address = object.get("address")?.as_str()?;
+        let in_book = held
+            .iter()
+            .any(|entry| entry.chain == chain && entry.address == address);
+        if in_book && !out.iter().any(|(c, a)| *c == chain && a == address) {
+            out.push((chain, address.to_owned()));
+        }
+    }
+    Some(out)
 }
 
 fn valid_site(value: &Value) -> bool {
@@ -768,6 +871,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
                 && *key != TOKEN_VIEW_KEY
                 && *key != HW_ACCOUNTS_KEY
                 && *key != crate::zec::meta::ZCASH_KEY
+                && *key != BOOK_FAVORITES_KEY
         })
         .map(|(key, value)| (key.to_owned(), value.clone()))
         .collect();
@@ -815,10 +919,16 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         .map(Box::new);
     let btc_accounts =
         BtcAccounts::from_json(object.get(BTC_ACCOUNTS_KEY)).map_err(|_| MetaError)?;
-    let address_book = array("address_book")?.to_vec();
+    let mut address_book = array("address_book")?.to_vec();
     if address_book.len() > MAX_ADDRESS_BOOK || !address_book.iter().all(valid_book_entry) {
         return Err(MetaError);
     }
+    // Written back at the next meta save (the in-memory book is already migrated).
+    let _ = migrate_book(&mut address_book);
+    let book_favorites = object
+        .get(BOOK_FAVORITES_KEY)
+        .and_then(|value| parse_favorites(value, &address_book))
+        .unwrap_or_default();
     let connected_sites = array("connected_sites")?.to_vec();
     if connected_sites.len() > MAX_SITES || !connected_sites.iter().all(valid_site) {
         return Err(MetaError);
@@ -879,6 +989,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         btc,
         btc_accounts,
         address_book,
+        book_favorites,
         connected_sites,
         chain_sites: Box::new(ChainSites {
             sol: sol_sites,
@@ -934,7 +1045,10 @@ impl Meta {
         )
     }
 
-    #[expect(clippy::too_many_lines, reason = "every top-level key in write order")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "every key of spec/02 §5.3 in write order"
+    )]
     fn known_members(&self) -> Vec<(&'static str, Value)> {
         let evm_account = match self.prefs.evm_account {
             EvmAccountPref::Index(index) => {
@@ -1036,7 +1150,25 @@ impl Meta {
         if !self.zcash.is_default() {
             members.push((crate::zec::meta::ZCASH_KEY, self.zcash.to_json()));
         }
+        if !self.book_favorites.is_empty() {
+            members.push((BOOK_FAVORITES_KEY, self.favorites_json()));
+        }
         members
+    }
+
+    /// `address_book_favorites`.
+    fn favorites_json(&self) -> Value {
+        Value::Array(
+            self.book_favorites
+                .iter()
+                .map(|(chain, address)| {
+                    json_object(vec![
+                        ("chain", json_str(chain.as_str())),
+                        ("address", json_str(address)),
+                    ])
+                })
+                .collect(),
+        )
     }
 
     /// The next Solana standard index (largest + 1, or 0 for the first account), `None` at the
@@ -1131,6 +1263,86 @@ impl ActivityEntry {
             counterparty: text("counterparty")?,
             status: text("status")?,
             time_unix_ms: object.get("time_unix_ms").and_then(u64_of)?,
+        })
+    }
+}
+
+/// The address family of an `AddressBookEntry` (`chain`). One EVM entry serves every EVM chain
+/// (built-in and user-added: the address is the same everywhere); one Solana entry serves
+/// mainnet and devnet (the same base58 key); Bitcoin entries are one family too, but an address
+/// belongs to one network (`bc1…`/`1…`/`3…` mainnet, `tb1…`/`m…`/`n…`/`2…` testnet4), so a
+/// send form only offers the entries its network parses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum BookChain {
+    /// `evm`.
+    #[default]
+    Evm,
+    /// `sol`.
+    Sol,
+    /// `btc`.
+    Btc,
+}
+
+impl BookChain {
+    /// Every family, in S14 order.
+    pub const ALL: [Self; 3] = [Self::Evm, Self::Sol, Self::Btc];
+
+    /// The `chain` value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Evm => "evm",
+            Self::Sol => "sol",
+            Self::Btc => "btc",
+        }
+    }
+
+    /// Parses a canonical `chain` value.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "evm" => Some(Self::Evm),
+            "sol" => Some(Self::Sol),
+            "btc" => Some(Self::Btc),
+            _ => None,
+        }
+    }
+}
+
+/// A typed `AddressBookEntry` of any family (the address in its canonical form, spec/02 §5.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Contact {
+    /// Family.
+    pub chain: BookChain,
+    /// Canonical address (EVM lowercase `0x`, SOL base58, BTC lowercase bech32 or base58check).
+    pub address: String,
+    /// Label.
+    pub label: String,
+    /// Verified out of band.
+    pub verified: bool,
+    /// Added (Unix ms).
+    pub added_at_unix_ms: u64,
+}
+
+impl Contact {
+    fn to_value(&self) -> Value {
+        json_object(vec![
+            ("chain", json_str(self.chain.as_str())),
+            ("address", json_str(&self.address)),
+            ("label", json_str(&self.label)),
+            ("verified", Value::Bool(self.verified)),
+            ("added_at_unix_ms", json_u64(self.added_at_unix_ms)),
+        ])
+    }
+
+    fn from_value(value: &Value) -> Option<Self> {
+        let object = value.as_object()?;
+        Some(Self {
+            chain: BookChain::parse(object.get("chain")?.as_str()?)?,
+            address: object.get("address")?.as_str()?.to_owned(),
+            label: object.get("label")?.as_str()?.to_owned(),
+            verified: object.get("verified")?.as_bool()?,
+            added_at_unix_ms: object.get("added_at_unix_ms").and_then(u64_of)?,
         })
     }
 }
@@ -1378,16 +1590,106 @@ impl Meta {
 
     /// Removes the Solana entry for `address`.
     pub fn remove_sol_book(&mut self, address: &str) {
-        self.address_book.retain(|value| {
-            SolBookEntry::from_value(value).is_none_or(|known| known.address != address)
-        });
+        self.remove_contact(BookChain::Sol, address);
     }
 
     /// Removes the EVM entry for `address`.
     pub fn remove_book(&mut self, address: &str) {
-        self.address_book.retain(|value| {
-            BookEntry::from_value(value).is_none_or(|known| known.address != address)
+        self.remove_contact(BookChain::Evm, address);
+    }
+
+    /// The entries of one family, in book order.
+    #[must_use]
+    pub fn contacts(&self, chain: BookChain) -> Vec<Contact> {
+        self.address_book
+            .iter()
+            .filter_map(Contact::from_value)
+            .filter(|entry| entry.chain == chain)
+            .collect()
+    }
+
+    /// The entries of one family with the favorites first (in starring order), then the rest
+    /// in book order.
+    #[must_use]
+    pub fn contacts_favorites_first(&self, chain: BookChain) -> Vec<Contact> {
+        let mut entries = self.contacts(chain);
+        entries.sort_by_key(|entry| {
+            self.book_favorites
+                .iter()
+                .position(|(c, a)| *c == entry.chain && *a == entry.address)
+                .unwrap_or(usize::MAX)
         });
+        entries
+    }
+
+    /// The entry for `(chain, address)`.
+    #[must_use]
+    pub fn contact(&self, chain: BookChain, address: &str) -> Option<Contact> {
+        self.contacts(chain)
+            .into_iter()
+            .find(|entry| entry.address == address)
+    }
+
+    /// Adds an entry.
+    ///
+    /// # Errors
+    ///
+    /// [`ListError`].
+    pub fn add_contact(&mut self, entry: &Contact) -> Result<(), ListError> {
+        if self.contact(entry.chain, &entry.address).is_some() {
+            return Err(ListError::Duplicate);
+        }
+        if self.address_book.len() >= MAX_ADDRESS_BOOK {
+            return Err(ListError::Full);
+        }
+        self.address_book.push(entry.to_value());
+        Ok(())
+    }
+
+    /// Replaces the label and verified flag of the entry for `(entry.chain, entry.address)`
+    /// (its `added_at_unix_ms` stays).
+    pub fn update_contact(&mut self, entry: &Contact) {
+        for value in &mut self.address_book {
+            if let Some(known) = Contact::from_value(value)
+                && known.chain == entry.chain
+                && known.address == entry.address
+            {
+                *value = Contact {
+                    label: entry.label.clone(),
+                    verified: entry.verified,
+                    ..known
+                }
+                .to_value();
+            }
+        }
+    }
+
+    /// Removes the entry for `(chain, address)` and its star.
+    pub fn remove_contact(&mut self, chain: BookChain, address: &str) {
+        self.address_book.retain(|value| {
+            Contact::from_value(value)
+                .is_none_or(|known| known.chain != chain || known.address != address)
+        });
+        self.set_favorite(chain, address, false);
+    }
+
+    /// Whether the entry is starred.
+    #[must_use]
+    pub fn is_favorite(&self, chain: BookChain, address: &str) -> bool {
+        self.book_favorites
+            .iter()
+            .any(|(c, a)| *c == chain && a == address)
+    }
+
+    /// Stars or unstars an entry (only entries the book holds can be starred).
+    pub fn set_favorite(&mut self, chain: BookChain, address: &str, on: bool) {
+        let starred = self.is_favorite(chain, address);
+        if on && !starred && self.contact(chain, address).is_some() {
+            self.book_favorites.push((chain, address.to_owned()));
+        } else if !on && starred {
+            self.book_favorites
+                .retain(|(c, a)| *c != chain || a != address);
+        }
     }
 
     /// User tokens of a network.
@@ -1439,7 +1741,8 @@ impl Meta {
 #[cfg(test)]
 mod tests {
     use super::{
-        Account, EvmAccountPref, Meta, RawAccount, SolBookEntry, SolRawAccount, Tab, parse,
+        Account, BOOK_FAVORITES_KEY, BookChain, Contact, EvmAccountPref, LIMITS, Meta, RawAccount,
+        SolBookEntry, SolRawAccount, Tab, parse,
     };
     use yw_core::btc::{BtcAccountKey, BtcMeta, BtcNetwork, BtcPubKey, ScriptType};
 
@@ -1587,6 +1890,157 @@ mod tests {
             .unwrap()
             .replacen("HAgk14", "0xHAgk", 1);
         assert!(parse(bad.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn book_favorites_round_trip_and_stay_out_of_the_entries() {
+        let a = "0x52908400098527886e0f7030069857d2e4169ee7";
+        let b = "0x8617e340b3d01fa5f11f306f4090fd50e238070d";
+        let contact = |chain, address: &str, label: &str| Contact {
+            chain,
+            address: address.to_owned(),
+            label: label.to_owned(),
+            verified: false,
+            added_at_unix_ms: 7,
+        };
+        let mut meta = Meta::default();
+        meta.add_contact(&contact(BookChain::Evm, a, "가")).unwrap();
+        meta.add_contact(&contact(BookChain::Evm, b, "나")).unwrap();
+        let sol = "Hh8QwFUA6MtVu1qAoq12ucvFHNwCcVTV7hpWjeY1Hztb";
+        meta.add_contact(&contact(BookChain::Sol, sol, "다"))
+            .unwrap();
+        let btc = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+        meta.add_contact(&contact(BookChain::Btc, btc, "라"))
+            .unwrap();
+        assert!(
+            meta.add_contact(&contact(BookChain::Evm, a, "중복"))
+                .is_err()
+        );
+        // Unknown entries cannot be starred; starring is idempotent.
+        meta.set_favorite(BookChain::Sol, a, true);
+        meta.set_favorite(BookChain::Evm, b, true);
+        meta.set_favorite(BookChain::Evm, b, true);
+        assert_eq!(meta.book_favorites, vec![(BookChain::Evm, b.to_owned())]);
+        let labels: Vec<String> = meta
+            .contacts_favorites_first(BookChain::Evm)
+            .into_iter()
+            .map(|entry| entry.label)
+            .collect();
+        assert_eq!(labels, ["나", "가"]);
+        let text = String::from_utf8(meta.to_json()).unwrap();
+        assert!(text.ends_with(
+            r#","address_book_favorites":[{"chain":"evm","address":"0x8617e340b3d01fa5f11f306f4090fd50e238070d"}]}"#
+        ));
+        // The entries keep exactly the five members an earlier version accepts.
+        let root = yw_json::parse(text.as_bytes(), &LIMITS).unwrap();
+        let entries = root.as_object().unwrap().get("address_book").unwrap();
+        for entry in entries.as_array().unwrap() {
+            assert_eq!(entry.as_object().unwrap().len(), 5);
+        }
+        let parsed = parse(text.as_bytes()).unwrap();
+        assert_eq!(parsed.meta, meta);
+        assert!(parsed.meta.unknown.is_empty());
+        // An earlier version keeps the key unread (an unknown key) and writes it back.
+        let mut older = parsed.meta.clone();
+        older.unknown = vec![(BOOK_FAVORITES_KEY.to_owned(), older.favorites_json())];
+        older.book_favorites.clear();
+        assert_eq!(
+            parse(&older.to_json()).unwrap().meta.book_favorites,
+            meta.book_favorites
+        );
+        // Deleting an entry drops its star; a stale or invalid favorites value is ignored.
+        meta.remove_contact(BookChain::Evm, b);
+        assert!(meta.book_favorites.is_empty());
+        let stale = text.replace(
+            r#""address":"0x8617e340b3d01fa5f11f306f4090fd50e238070d"}]}"#,
+            r#""address":"0x1111111111111111111111111111111111111111"}]}"#,
+        );
+        assert!(
+            parse(stale.as_bytes())
+                .unwrap()
+                .meta
+                .book_favorites
+                .is_empty()
+        );
+        let invalid = text.replace(
+            r#""address_book_favorites":[{"chain":"evm","address""#,
+            r#""address_book_favorites":[{"chain":"evm","x":1,"address""#,
+        );
+        let invalid = parse(invalid.as_bytes()).unwrap();
+        assert!(invalid.meta.book_favorites.is_empty());
+        assert_eq!(invalid.meta.contacts(BookChain::Evm).len(), 2);
+    }
+
+    #[test]
+    fn per_chain_and_duplicate_entries_fold_into_one_evm_entry() {
+        let a = "0x52908400098527886e0f7030069857d2e4169ee7";
+        let b = "0x8617e340b3d01fa5f11f306f4090fd50e238070d";
+        let entry = |chain: &str, address: &str, label: &str, verified: bool, added: u64| {
+            format!(
+                r#"{{"chain":"{chain}","address":"{address}","label":"{label}","verified":{verified},"added_at_unix_ms":{added}}}"#
+            )
+        };
+        let book = [
+            entry("eip155:1", a, "첫 이름", false, 50),
+            entry("evm", b, "다른", false, 10),
+            entry("eip155:8453", a, "둘째 이름", true, 20),
+            entry("evm", a, "셋째", false, 90),
+        ]
+        .join(",");
+        let good = String::from_utf8(Meta::default().to_json()).unwrap();
+        let text = good.replacen(
+            "\"address_book\":[]",
+            &format!("\"address_book\":[{book}]"),
+            1,
+        );
+        let meta = parse(text.as_bytes()).unwrap().meta;
+        assert_eq!(
+            meta.contacts(BookChain::Evm),
+            vec![
+                Contact {
+                    chain: BookChain::Evm,
+                    address: a.to_owned(),
+                    label: "첫 이름".to_owned(),
+                    verified: true,
+                    added_at_unix_ms: 20,
+                },
+                Contact {
+                    chain: BookChain::Evm,
+                    address: b.to_owned(),
+                    label: "다른".to_owned(),
+                    verified: false,
+                    added_at_unix_ms: 10,
+                },
+            ]
+        );
+        let written = String::from_utf8(meta.to_json()).unwrap();
+        assert!(!written.contains("eip155:1\""));
+        assert!(!written.contains("eip155:8453"));
+        // A per-chain value with a non-EVM address, or an unknown family, still rejects the file.
+        let bad = good.replacen(
+            "\"address_book\":[]",
+            &format!(
+                "\"address_book\":[{}]",
+                entry(
+                    "eip155:1",
+                    "Hh8QwFUA6MtVu1qAoq12ucvFHNwCcVTV7hpWjeY1Hztb",
+                    "x",
+                    false,
+                    1
+                )
+            ),
+            1,
+        );
+        assert!(parse(bad.as_bytes()).is_err());
+        let unknown = good.replacen(
+            "\"address_book\":[]",
+            &format!(
+                "\"address_book\":[{}]",
+                entry("hypercore", a, "x", false, 1)
+            ),
+            1,
+        );
+        assert!(parse(unknown.as_bytes()).is_err());
     }
 
     #[test]

@@ -13,11 +13,11 @@ use core::fmt;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use windows_sys::Win32::Foundation::{ERROR_INVALID_WINDOW_HANDLE, HWND, RECT};
+use windows_sys::Win32::Foundation::{ERROR_INVALID_WINDOW_HANDLE, HWND, RECT, SIZE};
 use windows_sys::Win32::Graphics::Gdi::{
     CreatePen, CreateSolidBrush, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteObject,
-    DrawTextW, FillRect, HBRUSH, HDC, HFONT, InvalidateRect, PS_SOLID, RoundRect, SelectObject,
-    SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
+    DrawTextW, FillRect, GetTextExtentPoint32W, HBRUSH, HDC, HFONT, InvalidateRect, PS_SOLID,
+    RoundRect, SelectObject, SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
 };
 use windows_sys::Win32::UI::Controls::{
     BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, EM_SETLIMITTEXT, ODS_DISABLED, ODS_FOCUS,
@@ -73,9 +73,21 @@ struct ControlPaint {
     id: u16,
 }
 
+/// A small picture drawn before an owner-drawn button's label (the app's chain badges): `size`
+/// × `size` premultiplied `0xAARRGGBB` pixels, rows top-down, already at the control's DPI.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ButtonIcon {
+    /// Width and height in pixels.
+    pub size: i32,
+    /// Pixels.
+    pub pixels: Vec<u32>,
+}
+
 thread_local! {
     /// Child control hwnd → paint state (UI thread only; removed when the control is dropped).
     static PAINTS: RefCell<HashMap<usize, ControlPaint>> = RefCell::new(HashMap::new());
+    /// Owner-drawn button hwnd → its icon (UI thread only; removed when the control is dropped).
+    static ICONS: RefCell<HashMap<usize, ButtonIcon>> = RefCell::new(HashMap::new());
     /// Solid brushes by color for `WM_CTLCOLOR*` replies (a handful of theme colors, kept for
     /// the process lifetime because the system uses the brush after the reply).
     static BRUSHES: RefCell<HashMap<u32, usize>> = RefCell::new(HashMap::new());
@@ -275,26 +287,62 @@ pub(crate) fn draw_item(parent: HWND, wparam: usize, lparam: isize) -> bool {
     let capacity = i32::try_from(buffer.len()).unwrap_or(0);
     // SAFETY: `buffer` is writable for `capacity` units including the terminator.
     let copied = unsafe { GetWindowTextW(item.hwndItem, buffer.as_mut_ptr(), capacity) };
-    let mut text_rect = rect;
-    if let Ok(count) = i32::try_from(usize::try_from(copied).unwrap_or(0).min(len))
-        && count > 0
-    {
-        // SAFETY: `buffer` holds `count` units; DT_MODIFYSTRING is not set.
-        unsafe {
-            DrawTextW(
-                hdc,
-                buffer.as_ptr(),
-                count,
-                &raw mut text_rect,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-            )
-        };
-    }
+    let count = usize::try_from(copied).unwrap_or(0).min(len);
+    let icon = ICONS.with(|icons| {
+        icons
+            .try_borrow()
+            .ok()
+            .and_then(|icons| icons.get(&item.hwndItem.expose_provenance()).cloned())
+    });
+    draw_label(
+        hdc,
+        rect,
+        buffer.get(..count).unwrap_or(&[]),
+        icon.as_ref(),
+        dpi,
+    );
     if !old_font.is_null() {
         // SAFETY: Restores the DC's previous font.
         unsafe { SelectObject(hdc, old_font) };
     }
     true
+}
+
+/// Draws a button label centered in `rect` (font and color already selected), with the icon
+/// before it when given (icon, gap, label centered together).
+fn draw_label(hdc: HDC, rect: RECT, label: &[u16], icon: Option<&ButtonIcon>, dpi: u32) {
+    let count = i32::try_from(label.len()).unwrap_or(0);
+    let mut text_rect = rect;
+    let mut flags = DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX;
+    if let Some(icon) = icon {
+        let gap = super::window::scale(6, dpi);
+        let mut extent = SIZE { cx: 0, cy: 0 };
+        if count > 0 {
+            // SAFETY: `label` holds `count` units; `extent` is writable.
+            unsafe { GetTextExtentPoint32W(hdc, label.as_ptr(), count, &raw mut extent) };
+        }
+        let label_w = if count > 0 {
+            extent.cx.saturating_add(gap)
+        } else {
+            0
+        };
+        let width = rect.right.saturating_sub(rect.left);
+        let height = rect.bottom.saturating_sub(rect.top);
+        let total = icon.size.saturating_add(label_w);
+        let left = rect
+            .left
+            .saturating_add((width.saturating_sub(total) / 2).max(0));
+        let top = rect
+            .top
+            .saturating_add((height.saturating_sub(icon.size) / 2).max(0));
+        let _ = super::paint::alpha_blit(hdc, left, top, icon.size, icon.size, &icon.pixels);
+        text_rect.left = left.saturating_add(icon.size).saturating_add(gap);
+        flags = DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX;
+    }
+    if count > 0 {
+        // SAFETY: `label` holds `count` units; DT_MODIFYSTRING is not set.
+        unsafe { DrawTextW(hdc, label.as_ptr(), count, &raw mut text_rect, flags) };
+    }
 }
 
 /// Kind of a child control.
@@ -609,6 +657,28 @@ impl Control {
         }
     }
 
+    /// Sets or clears the icon drawn before an owner-drawn button's label.
+    pub fn set_icon(&self, icon: Option<ButtonIcon>) {
+        let Some(hwnd) = self.live() else { return };
+        let changed = ICONS.with(|icons| {
+            let Ok(mut icons) = icons.try_borrow_mut() else {
+                return false;
+            };
+            match icon {
+                Some(icon) if icons.get(&self.hwnd) != Some(&icon) => {
+                    icons.insert(self.hwnd, icon);
+                    true
+                }
+                None => icons.remove(&self.hwnd).is_some(),
+                Some(_) => false,
+            }
+        });
+        if changed {
+            // SAFETY: Invalidates our live control so it repaints with the new icon.
+            unsafe { InvalidateRect(hwnd, core::ptr::null(), 1) };
+        }
+    }
+
     /// Replaces an owner-drawn button's style (same control, new colors).
     pub fn set_button_style(&self, style: ButtonStyle) {
         let Some(hwnd) = self.live() else { return };
@@ -636,6 +706,11 @@ impl Drop for Control {
         PAINTS.with(|paints| {
             if let Ok(mut paints) = paints.try_borrow_mut() {
                 paints.remove(&self.hwnd);
+            }
+        });
+        ICONS.with(|icons| {
+            if let Ok(mut icons) = icons.try_borrow_mut() {
+                icons.remove(&self.hwnd);
             }
         });
         if let Some(hwnd) = self.live() {

@@ -828,6 +828,7 @@ impl App {
                     &self.network_label(*chain_id),
                     *chain_id == self.settings.evm_chain_id,
                 )
+                .badge(self.evm_badge(*chain_id))
             })
             .collect();
         items.push(Item::CardStart(None));
@@ -1391,7 +1392,7 @@ impl App {
             ),
             Confirm::BookDelete => (
                 "주소록 항목 삭제",
-                "선택한 주소록 항목을 지웁니다.".to_owned(),
+                self.book_delete_text(),
                 "삭제",
             ),
             Confirm::TokenDelete => (

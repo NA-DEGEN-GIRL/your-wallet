@@ -248,7 +248,6 @@ impl App {
                 ZecNetwork::Testnet => Tone::Testnet,
             },
         ));
-        // TODO(chain-logos): a Zcash chain badge/logo once the chain-logo component lands.
         if self.zec_journal_damaged() {
             items.push(Item::Banner(
                 "거래 저널의 Zcash 기록이 손상되어 Zcash 보내기를 멈췄습니다. (E-VLT-006)"

@@ -46,7 +46,7 @@ impl App {
     }
 
     /// Hands a form edit's text to the controller (no repaint).
-    fn btc_apply_field(&mut self, id: u16, text: &str) {
+    pub(crate) fn btc_apply_field(&mut self, id: u16, text: &str) {
         self.btc_call(|ui, ctx| {
             match id {
                 ids::SEND_TO_EDIT => ui.set_recipient(ctx, text),
@@ -352,6 +352,11 @@ impl App {
             if action == ids::ACT_COPY {
                 let text = view.txid.clone();
                 self.copy_text(&text);
+                return true;
+            }
+            if action == ids::ACT_SAVE {
+                let row = usize::from(position / ids::ACTIVITY_STRIDE);
+                self.save_activity_address(crate::meta::BookChain::Btc, row);
                 return true;
             }
             let Ok(txid) = Txid::from_display_hex(&view.txid) else {

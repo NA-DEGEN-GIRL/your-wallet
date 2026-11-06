@@ -11,15 +11,18 @@ use yw_core::evm::display::format_address;
 use yw_core::journal::evm::{EvmRecord, ReceiptStatus, TxState, groups};
 
 use crate::app::{App, AppMode};
+use crate::app_book::{BookTarget, PromptPlace};
 use crate::app_evm::{SendAsset, hash_text};
 use crate::app_tokens::EvmTokenRow;
 use crate::errors::ErrorCode;
 use crate::flow::evm::MismatchKind;
+use crate::flow::evm::form::tx_recipients;
 use crate::flow::evm::track::BroadcastOutcome;
 use crate::logging::format_utc;
-use crate::meta::ActivityEntry;
+use crate::meta::{ActivityEntry, BookChain};
 use crate::network::NetworkId;
 use crate::token_view::RowPlace;
+use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item, Tone};
 use crate::ui::qr::{EvmQrKind, RECEIVE_SHARED_ADDRESS_NOTE};
 
@@ -102,20 +105,6 @@ pub mod ids {
     pub const QR_EIP681: u16 = 1_001;
     /// Receive QR: the bare address (`ui::qr::EvmQrKind::PlainAddress`).
     pub const QR_PLAIN: u16 = 1_002;
-    /// Book address edit.
-    pub const BOOK_ADDR_EDIT: u16 = 1_010;
-    /// Book label edit.
-    pub const BOOK_LABEL_EDIT: u16 = 1_011;
-    /// Book verified check.
-    pub const BOOK_VERIFIED: u16 = 1_012;
-    /// Book save.
-    pub const BOOK_SAVE: u16 = 1_013;
-    /// Book cancel edit.
-    pub const BOOK_CANCEL: u16 = 1_014;
-    /// Book rows (2 ids per row: 편집, 삭제).
-    pub const BOOK_ROW_BASE: u16 = 1_020;
-    /// Book rows span.
-    pub const BOOK_ROW_SPAN: u16 = 1_000;
     /// Token address edit.
     pub const TOKEN_ADDR_EDIT: u16 = 2_100;
     /// 조회.
@@ -242,11 +231,6 @@ pub mod ids {
         COPY_ADDRESS,
         QR_EIP681,
         QR_PLAIN,
-        BOOK_ADDR_EDIT,
-        BOOK_LABEL_EDIT,
-        BOOK_VERIFIED,
-        BOOK_SAVE,
-        BOOK_CANCEL,
         TOKEN_ADDR_EDIT,
         TOKEN_LOOKUP,
         TOKEN_LABEL_EDIT,
@@ -301,6 +285,8 @@ pub struct ActivityRowView {
     pub open: Option<yw_core::journal::evm::GroupKey>,
     /// Manual resend/discard offered.
     pub manual: bool,
+    /// The recipient (decoded token recipient for ERC-20 transfers) for `이 주소 저장`.
+    pub counterparty: Option<Address>,
 }
 
 impl App {
@@ -396,6 +382,7 @@ impl App {
                 hash,
                 open: open.then_some(key),
                 manual,
+                counterparty: shown.tx().and_then(|tx| tx_recipients(&tx).last().copied()),
             });
         }
         if let Some(meta) = self.meta.as_ref() {
@@ -443,6 +430,7 @@ impl App {
             hash: entry.tx_id.clone(),
             open: None,
             manual: false,
+            counterparty: parse_address(&entry.counterparty).ok(),
         }
     }
 
@@ -492,6 +480,12 @@ impl App {
         name
     }
 
+    /// The badge of an EVM chain (user chains: from their name).
+    #[must_use]
+    pub fn evm_badge(&self, chain_id: u64) -> Badge {
+        Badge::evm(chain_id, &self.network_name(NetworkId::Eip155(chain_id)))
+    }
+
     /// The blocked-chain banner and the journal banner of S10.
     pub fn evm_banners(&self, items: &mut Vec<Item>) {
         let chain_id = self.settings.evm_chain_id;
@@ -535,9 +529,11 @@ impl App {
         let chain_id = self.settings.evm_chain_id;
         self.evm_token_card(items, chain_id);
         self.hc_card(items);
-        items.push(Item::CardStart(Some(
-            "활동 (이 지갑이 보낸 거래)".to_owned(),
-        )));
+        items.push(Item::CardStart(None));
+        items.push(Item::Badged(
+            self.evm_badge(chain_id),
+            Box::new(Item::Subtitle("활동 (이 지갑이 보낸 거래)".to_owned())),
+        ));
         let rows = self.activity_rows();
         if rows.is_empty() {
             items.push(Item::Help(
@@ -546,6 +542,7 @@ impl App {
             ));
         }
         let count = rows.len();
+        let mut prompt_drawn = false;
         for (index, row) in rows.into_iter().enumerate() {
             let base = ids::ACTIVITY_BASE.saturating_add(
                 u16::try_from(index)
@@ -567,7 +564,19 @@ impl App {
             if self.explorer(chain_id).is_some() {
                 buttons.push(Ctl::button(base.saturating_add(5), "탐색기 링크 복사"));
             }
+            let counterparty = row.counterparty.map(Address::to_lower_hex);
+            if let Some(address) = &counterparty
+                && self.offer_save(BookChain::Evm, address)
+            {
+                buttons.push(Ctl::link(base.saturating_add(6), "이 주소 저장"));
+            }
             items.push(Item::Row(buttons));
+            if let Some(address) = &counterparty
+                && !prompt_drawn
+            {
+                prompt_drawn =
+                    self.prompt_items(PromptPlace::Activity, BookChain::Evm, address, items);
+            }
             if index.saturating_add(1) < count {
                 items.push(Item::Rule);
             }
@@ -726,10 +735,13 @@ impl App {
     pub fn send_screen(&self, items: &mut Vec<Item>) {
         let chain_id = self.settings.evm_chain_id;
         items.push(crate::ui::screens::back_main());
-        items.push(Item::Title(format!(
-            "보내기 — {}",
-            self.network_name(NetworkId::Eip155(chain_id))
-        )));
+        items.push(Item::Badged(
+            self.evm_badge(chain_id),
+            Box::new(Item::Title(format!(
+                "보내기 — {}",
+                self.network_name(NetworkId::Eip155(chain_id))
+            ))),
+        ));
         if chain_id == SEPOLIA {
             items.push(Item::Banner(
                 "테스트넷 — 실제 자산이 아닙니다".to_owned(),
@@ -769,6 +781,7 @@ impl App {
             items.push(Item::CardEnd);
         }
         items.push(Item::CardStart(Some("받는 사람".to_owned())));
+        self.favorite_chip_items(BookTarget::Evm, items);
         items.push(Item::LabeledRow(
             "받는 주소".to_owned(),
             vec![
@@ -819,6 +832,7 @@ impl App {
                     form.ack,
                 )]));
             }
+            self.recipient_save_items(BookTarget::Evm, items);
         }
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("보낼 자산과 금액".to_owned())));
@@ -935,8 +949,15 @@ impl App {
             if shown >= ids::SEND_PICK_SPAN {
                 break;
             }
+            let favorite = !entry.mine
+                && self
+                    .meta
+                    .as_ref()
+                    .is_some_and(|meta| meta.is_favorite(BookChain::Evm, &hex));
             let prefix = if entry.mine {
                 "내 계정"
+            } else if favorite {
+                "★ 주소록"
             } else {
                 "주소록"
             };
@@ -993,16 +1014,20 @@ impl App {
                     || "전송 확인 중".to_owned(),
                     |record| self.record_status(record),
                 );
-            items.push(Item::Field(
-                "상태".to_owned(),
-                format!(
-                    "{status} ({})",
-                    self.network_name(NetworkId::Eip155(sent.chain_id))
-                ),
+            items.push(Item::Badged(
+                self.evm_badge(sent.chain_id),
+                Box::new(Item::Field(
+                    "상태".to_owned(),
+                    format!(
+                        "{status} ({})",
+                        self.network_name(NetworkId::Eip155(sent.chain_id))
+                    ),
+                )),
             ));
             items.push(Item::Field("거래 해시".to_owned(), String::new()));
             items.push(Item::Mono(hash_text(&sent.tx_hash)));
             items.push(Item::CardEnd);
+            self.result_save_items(BookTarget::Evm, items);
         }
         items.push(Item::Row(vec![Ctl::primary(
             crate::ui::screens::ids::BACK_MAIN,
@@ -1025,10 +1050,14 @@ impl App {
             self.accounts_loading(items);
             return;
         };
-        items.push(Item::CardStart(Some(format!(
-            "{label} · {}",
-            self.network_name(NetworkId::Eip155(chain_id))
-        ))));
+        items.push(Item::CardStart(None));
+        items.push(Item::Badged(
+            self.evm_badge(chain_id),
+            Box::new(Item::Subtitle(format!(
+                "{label} · {}",
+                self.network_name(NetworkId::Eip155(chain_id))
+            ))),
+        ));
         if chain_id == SEPOLIA {
             items.push(Item::Banner(
                 "테스트넷 주소입니다.".to_owned(),
@@ -1082,84 +1111,6 @@ impl App {
         ));
         items.push(Item::Help(RECEIVE_SHARED_ADDRESS_NOTE.to_owned()));
         items.push(Item::CardEnd);
-    }
-
-    /// S14.
-    pub fn book_screen(&self, items: &mut Vec<Item>) {
-        items.push(crate::ui::screens::back_main());
-        items.push(Item::Title("주소록".to_owned()));
-        let form = &self.evm.book;
-        if let Some(message) = &form.message {
-            items.push(Item::Banner(message.clone(), Tone::Danger));
-        }
-        let editing = form.editing.is_some();
-        items.push(Item::CardStart(Some(if editing {
-            "EVM 주소 편집".to_owned()
-        } else {
-            "EVM 주소 추가".to_owned()
-        })));
-        items.push(Item::Help(
-            "자주 보내는 주소에 이름을 붙여 두면 보내기와 승인 창에서 '주소록: 이름'으로 확인할 수 있고, 비슷하게 생긴 가짜 주소를 경고합니다."
-                .to_owned(),
-        ));
-        let mut address = Ctl::edit(ids::BOOK_ADDR_EDIT, &form.address, 430, false, 64);
-        if editing {
-            address = address.readonly();
-        }
-        items.push(Item::LabeledRow("주소".to_owned(), vec![address]));
-        items.push(Item::LabeledRow(
-            "이름".to_owned(),
-            vec![Ctl::edit(ids::BOOK_LABEL_EDIT, &form.label, 260, false, 64)],
-        ));
-        items.push(Item::Row(vec![Ctl::check(
-            ids::BOOK_VERIFIED,
-            "다른 경로(전화·대면 등)로 이 주소를 확인했습니다",
-            form.verified,
-        )]));
-        let mut row = vec![Ctl::primary(
-            ids::BOOK_SAVE,
-            if editing { "저장" } else { "추가" },
-        )];
-        if editing {
-            row.push(Ctl::button(ids::BOOK_CANCEL, "취소"));
-        }
-        items.push(Item::Row(row));
-        items.push(Item::CardEnd);
-        let entries = self
-            .meta
-            .as_ref()
-            .map(crate::meta::Meta::book)
-            .unwrap_or_default();
-        items.push(Item::CardStart(Some(format!(
-            "EVM 주소록 ({}개)",
-            entries.len()
-        ))));
-        if entries.is_empty() {
-            items.push(Item::Help(
-                "주소록이 비어 있습니다. 위에서 첫 주소를 추가하세요.".to_owned(),
-            ));
-        }
-        let count = entries.len().min(usize::from(ids::BOOK_ROW_SPAN / 2));
-        for (index, entry) in entries.iter().take(count).enumerate() {
-            let base = ids::BOOK_ROW_BASE
-                .saturating_add(u16::try_from(index).unwrap_or(0).saturating_mul(2));
-            let verified = if entry.verified { " ✓ 확인됨" } else { "" };
-            items.push(Item::Subtitle(format!("{}{verified}", entry.label)));
-            let shown = parse_address(&entry.address).map_or_else(
-                |_| entry.address.clone(),
-                |address| format_address(&address),
-            );
-            items.push(Item::Mono(shown));
-            items.push(Item::Row(vec![
-                Ctl::button(base, "편집"),
-                Ctl::danger(base.saturating_add(1), "삭제"),
-            ]));
-            if index.saturating_add(1) < count {
-                items.push(Item::Rule);
-            }
-        }
-        items.push(Item::CardEnd);
-        self.sol_book_section(items);
     }
 
     /// S16.
@@ -1250,10 +1201,13 @@ impl App {
                 }
                 _ => "확인 전".to_owned(),
             };
-            items.push(Item::Subtitle(format!(
-                "{} (chainId {chain_id})",
-                self.network_name(NetworkId::Eip155(chain_id))
-            )));
+            items.push(Item::Badged(
+                self.evm_badge(chain_id),
+                Box::new(Item::Subtitle(format!(
+                    "{} (chainId {chain_id})",
+                    self.network_name(NetworkId::Eip155(chain_id))
+                ))),
+            ));
             items.push(Item::Help(format!(
                 "{symbol}, 소수 {decimals} · 시뮬레이션 {simulation} · {state} · 엔드포인트: {}",
                 self.endpoint_text(chain_id)

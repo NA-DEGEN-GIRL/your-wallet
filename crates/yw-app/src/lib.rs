@@ -6,6 +6,7 @@
 pub mod apikeys;
 pub mod app;
 pub mod app_approval;
+pub mod app_book;
 pub mod app_browser;
 pub mod app_btc;
 pub mod app_btc_commands;

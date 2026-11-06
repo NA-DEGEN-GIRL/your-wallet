@@ -9,9 +9,9 @@
 //! | Block | Ids | Contents |
 //! |---|---|---|
 //! | core (`screens`) | 100–802 | S01–S09, top bar, settings 보안·네트워크·기타, overlays; network chips 210–249, URL rows 540–699 |
-//! | EVM (`screens_evm`) | 900–3,439, 6,600 | send, book rows 1,020–2,019, chain rows 2,210–2,349, caps 2,400–2,439, activity 2,500–2,899, send assets 3,000–3,199, token rows 3,200–3,439 |
+//! | EVM (`screens_evm`) | 900–3,439, 6,600 | send, chain rows 2,210–2,349, caps 2,400–2,439, activity 2,500–2,899, send assets 3,000–3,199, token rows 3,200–3,439 |
 //! | sites (`screens_sites`) | 6,700–6,965 | S13 rows 6,710–6,965 |
-//! | Solana (`screens_sol`) | 7,000–7,909 | send assets 7,015–7,018, token cards 7,027–7,029, picker 7,030–7,069, token hide 7,070–7,073, scan rows 7,120–7,375, book rows 7,410–7,909 |
+//! | Solana (`screens_sol`) | 7,000–7,375 | send assets 7,015–7,018, token cards 7,027–7,029, picker 7,030–7,069, token hide 7,070–7,073, scan rows 7,120–7,375 |
 //! | Bitcoin (`screens_btc`) | 9,000–9,899 | account rows 9,130–9,194, UTXO rows 9,200–9,499, activity 9,500–9,899 |
 //! | AI 설명 (`screens_llm`) | 10,000–10,099 | M6 settings |
 //! | EVM accounts (`screens`) | 11,000–11,999 | one radio per row (index range 0..=999) |
@@ -19,10 +19,11 @@
 //! | imported keys (`screens_keys`) | 13,000–13,199 | S18/S19, script radios 13,010–13,013, selected imported Solana/Bitcoin account 13,022–13,025 (Bitcoin keys are rows of `btc.accounts`) |
 //! | `YubiKey` (`screens_yubikey`) | 13,200–13,399 | S20, S21 wizard (`OpenPGP` SIG 13,210–13,221, AUT 13,230–13,241), settings tab; backup sources 13,260–13,267, `삭제` rows 13,270–13,277 |
 //! | reset·extension (`screens_reset`) | 13,400–13,449 | S22 `지갑 초기화`, T-WAIT-STALLED, S23 `Chrome 확장 설치` |
+//! | address book (`screens_book`) | 14,000–15,699 | S14 form 14,000–14,016, favorite chips 14,020–14,027, BTC picker 14,030–14,069, SOL activity `이 주소 저장` 14,080–14,143, S14 rows 14,200–15,699 (★·편집·삭제) |
 
 use crate::ui::{
-    screens, screens_btc, screens_evm, screens_hypercore, screens_keys, screens_llm, screens_reset,
-    screens_sites, screens_sol, screens_yubikey,
+    screens, screens_book, screens_btc, screens_evm, screens_hypercore, screens_keys, screens_llm,
+    screens_reset, screens_sites, screens_sol, screens_yubikey,
 };
 
 /// Largest number of rows of the Solana recovery scan (spec/07 §3.3: 50 standard + 50 BIP44
@@ -142,11 +143,32 @@ pub fn ranges() -> Vec<IdRange> {
             usize::from(screens_evm::ids::SEND_PICK_SPAN),
         ),
         range(
-            "evm.book_rows",
-            screens_evm::ids::BOOK_ROW_BASE,
-            screens_evm::ids::BOOK_ROW_SPAN,
-            2,
+            "book.rows",
+            screens_book::ids::ROW_BASE,
+            screens_book::ids::ROW_SPAN,
+            screens_book::ids::ROW_STRIDE,
             MAX_ADDRESS_BOOK,
+        ),
+        range(
+            "book.favorites",
+            screens_book::ids::FAV_BASE,
+            screens_book::ids::FAV_SPAN,
+            1,
+            crate::app_book::FAVORITE_CHIPS,
+        ),
+        range(
+            "book.btc_picker",
+            screens_book::ids::BTC_PICK_BASE,
+            screens_book::ids::BTC_PICK_SPAN,
+            1,
+            usize::from(screens_book::ids::BTC_PICK_SPAN),
+        ),
+        range(
+            "book.sol_activity",
+            screens_book::ids::SOL_ACTIVITY_BASE,
+            screens_book::ids::SOL_ACTIVITY_SPAN,
+            1,
+            crate::app_sol::SOL_MAX_ACTIVITY_ROWS,
         ),
         range(
             "evm.chain_rows",
@@ -217,13 +239,6 @@ pub fn ranges() -> Vec<IdRange> {
             screens_sol::ids::SCAN_ROW_SPAN,
             screens_sol::ids::SCAN_ROW_STRIDE,
             SOL_SCAN_MAX_ROWS,
-        ),
-        range(
-            "sol.book_rows",
-            screens_sol::ids::BOOK_ROW_BASE,
-            screens_sol::ids::BOOK_ROW_SPAN,
-            1,
-            MAX_ADDRESS_BOOK,
         ),
         range(
             "sol.accounts",
@@ -311,6 +326,7 @@ pub fn fixed() -> Vec<(&'static str, &'static [u16])> {
     vec![
         ("core", screens::ids::FIXED),
         ("evm", screens_evm::ids::FIXED),
+        ("book", screens_book::ids::FIXED),
         ("sites", screens_sites::ids::FIXED),
         ("sol", screens_sol::ids::FIXED),
         ("btc", &screens_btc::ids::FIXED),
