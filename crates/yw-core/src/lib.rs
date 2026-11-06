@@ -24,3 +24,4 @@ pub mod sol;
 pub mod vault;
 pub mod walletconnect;
 pub mod yubikey;
+pub mod zec;

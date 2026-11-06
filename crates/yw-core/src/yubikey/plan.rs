@@ -193,6 +193,13 @@ pub enum KeyRole {
         /// Account index.
         index: AccountIndex,
     },
+    /// Zcash transparent address `m/44'/{133|1}'/0'/0/i` (spec/10 §3.1, spec/12 §2.2).
+    Zec {
+        /// Network (coin type `133'` / `1'`).
+        network: crate::zec::ZecNetwork,
+        /// Receive address index (non-hardened, ≤ [`MAX_BTC_INDEX`]).
+        index: u32,
+    },
 }
 
 /// A derivation path of either scheme.
@@ -225,7 +232,7 @@ impl KeyRole {
     #[must_use]
     pub const fn curve(self) -> Curve {
         match self {
-            Self::Evm { .. } | Self::Btc { .. } => Curve::Secp256k1,
+            Self::Evm { .. } | Self::Btc { .. } | Self::Zec { .. } => Curve::Secp256k1,
             Self::Sol { .. } => Curve::Ed25519,
         }
     }
@@ -244,6 +251,7 @@ impl KeyRole {
             Self::Btc { script, index, .. } if !script_ok(script) || index > MAX_BTC_INDEX => {
                 Err(CardError::NotSupported)
             }
+            Self::Zec { index, .. } if index > MAX_BTC_INDEX => Err(CardError::NotSupported),
             _ => Ok(()),
         }
     }
@@ -265,6 +273,11 @@ impl KeyRole {
                 .map(KeyPath::Bip32)
                 .map_err(|_| CardError::NotSupported),
             Self::Sol { index } => Ok(KeyPath::Slip10(sol_path(index))),
+            Self::Zec { network, index } => {
+                crate::bip32::path::zec_path(network == crate::zec::ZecNetwork::Testnet, 0, index)
+                    .map(KeyPath::Bip32)
+                    .map_err(|_| CardError::NotSupported)
+            }
         }
     }
 
@@ -305,6 +318,7 @@ impl KeyRole {
                 format!("Bitcoin {} 주소 {index}", script_name(script))
             }
             Self::Sol { index } => format!("Solana 계정 {}", index.get()),
+            Self::Zec { index, .. } => format!("Zcash 일반(transparent) 주소 {index}"),
         }
     }
 }
@@ -687,6 +701,7 @@ fn sort_key(role: KeyRole) -> (u8, u8, u8, u32) {
             index,
         } => (1, network.id(), script.code(), index),
         KeyRole::Sol { index } => (2, 0, 0, index.get()),
+        KeyRole::Zec { network, index } => (3, network.id(), 0, index),
     }
 }
 
@@ -773,6 +788,29 @@ pub fn addresses<C: Verification>(
             network, script, ..
         } => Ok(vec![btc_address(ctx, public, BtcUse { network, script })?]),
         KeyRole::Sol { .. } => Ok(vec![sol_address(public)?.to_base58()]),
+        KeyRole::Zec { network, .. } => Ok(vec![zec_address(public, network)?]),
+    }
+}
+
+/// The Zcash transparent `t1…`/`tm…` address of a secp256k1 key.
+///
+/// # Errors
+///
+/// [`CardError::KeyMismatch`] for an Ed25519 or invalid key.
+pub fn zec_address(
+    public: &HwPublicKey,
+    network: crate::zec::ZecNetwork,
+) -> Result<String, CardError> {
+    match public {
+        HwPublicKey::Secp256k1(bytes) if PublicKey::from_slice(bytes).is_ok() => {
+            Ok(crate::zec::ZecAccount {
+                network,
+                source: crate::zec::ZecKeySource::Hardware { index: 0 },
+                pubkey: *bytes,
+            }
+            .address())
+        }
+        _ => Err(CardError::KeyMismatch),
     }
 }
 

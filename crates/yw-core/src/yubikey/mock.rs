@@ -21,7 +21,7 @@ use super::piv::{MgmtAlgorithm, MgmtCipher};
 use super::{CardError, CardTransport, Firmware, apdu::decode_frame, tlv};
 
 /// Instructions that change card state (never sent by a signing flow).
-pub const WRITE_INS: [u8; 7] = [0xDA, 0xDB, 0xFE, 0xFF, 0x24, 0x2C, 0xE6];
+pub const WRITE_INS: [u8; 10] = [0xDA, 0xDB, 0xFE, 0xFF, 0x24, 0x2C, 0xE6, 0x44, 0xF6, 0xFB];
 
 /// A reversible toy block cipher for the emulator and tests (byte-wise add / subtract of the
 /// key). It is **not** AES or 3DES: those come from Windows CNG in yw-win and are checked
@@ -135,6 +135,8 @@ pub struct MockCard {
     pub piv_retries: u8,
     /// PIV PUK.
     pub piv_puk: Vec<u8>,
+    /// PIV PUK retries (RESET RETRY COUNTER `2C`).
+    pub piv_puk_retries: u8,
     /// Management key algorithm.
     pub mgmt_algorithm: MgmtAlgorithm,
     /// Management key.
@@ -145,6 +147,8 @@ pub struct MockCard {
     /// only after VERIFY PIN; PUT DATA needs the management key.
     pub piv_objects: Vec<(u32, Vec<u8>)>,
     applet: Applet,
+    /// `OpenPGP` after TERMINATE DF: only ACTIVATE FILE (and SELECT) are answered.
+    pgp_terminated: bool,
     pw1_sign: bool,
     pw1_other: bool,
     pw3_ok: bool,
@@ -156,7 +160,7 @@ pub struct MockCard {
     pending: Vec<u8>,
 }
 
-const RSA2048_ATTRIBUTES: [u8; 6] = [0x01, 0x08, 0x00, 0x00, 0x20, 0x00];
+const RSA2048_ATTRIBUTES: [u8; 6] = super::openpgp::RSA2048_ATTRIBUTES;
 
 fn sw(code: u16) -> Vec<u8> {
     code.to_be_bytes().to_vec()
@@ -197,11 +201,13 @@ impl MockCard {
             piv_pin: super::piv::DEFAULT_PIN.to_vec(),
             piv_retries: 3,
             piv_puk: super::piv::DEFAULT_PUK.to_vec(),
+            piv_puk_retries: 3,
             mgmt_algorithm: MgmtAlgorithm::Aes192,
             mgmt_key: super::piv::DEFAULT_MANAGEMENT_KEY.to_vec(),
             piv_keys: Vec::new(),
             piv_objects: Vec::new(),
             applet: Applet::None,
+            pgp_terminated: false,
             pw1_sign: false,
             pw1_other: false,
             pw3_ok: false,
@@ -517,8 +523,42 @@ impl MockCard {
         ok(out)
     }
 
+    /// ACTIVATE FILE after TERMINATE DF: the applet's factory state (keys, attributes, touch
+    /// policies — also fixed ones — and both PINs with their counters).
+    fn pgp_factory(&mut self) {
+        self.pw1 = super::openpgp::DEFAULT_PW1.to_vec();
+        self.pw3 = super::openpgp::DEFAULT_PW3.to_vec();
+        self.pgp_retries = [3, 3];
+        self.pgp_keys = [None, None, None];
+        self.pgp_attributes = [
+            RSA2048_ATTRIBUTES.to_vec(),
+            RSA2048_ATTRIBUTES.to_vec(),
+            RSA2048_ATTRIBUTES.to_vec(),
+        ];
+        self.pgp_uif = [0, 0, 0];
+        self.kdf = false;
+        self.pgp_terminated = false;
+        self.deselect();
+    }
+
     fn openpgp(&mut self, ins: u8, p1: u8, p2: u8, data: &[u8]) -> Vec<u8> {
+        if self.pgp_terminated {
+            return if (ins, p1, p2) == (0x44, 0x00, 0x00) {
+                self.pgp_factory();
+                ok(Vec::new())
+            } else {
+                sw(0x6285) // selected file in termination state
+            };
+        }
         match (ins, p1, p2) {
+            (0xE6, 0x00, 0x00) => {
+                if self.pgp_retries[1] != 0 && !self.pw3_ok {
+                    return sw(0x6982);
+                }
+                self.pgp_terminated = true;
+                ok(Vec::new())
+            }
+            (0x44, 0x00, 0x00) => ok(Vec::new()),
             (0xF1, 0, 0) => ok(vec![
                 self.firmware.major,
                 self.firmware.minor,
@@ -557,7 +597,8 @@ impl MockCard {
                     return sw(0x6982);
                 }
                 let known = data == super::openpgp::secp256k1_attributes().as_slice()
-                    || data == RSA2048_ATTRIBUTES;
+                    || data == RSA2048_ATTRIBUTES
+                    || data == super::openpgp::RSA4096_ATTRIBUTES;
                 if !known {
                     return sw(0x6A80);
                 }
@@ -747,6 +788,62 @@ impl MockCard {
         ok(Vec::new())
     }
 
+    /// DELETE KEY (MOVE KEY to `FF`, 5.7+, management key authenticated).
+    fn piv_delete_key(&mut self, slot: u8) -> Vec<u8> {
+        if !self.mgmt_ok {
+            return sw(0x6982);
+        }
+        if !self.firmware.at_least(Firmware::new(5, 7, 0)) {
+            return sw(0x6D00);
+        }
+        if self.piv_key(slot).is_none() {
+            return sw(0x6A88);
+        }
+        self.piv_keys.retain(|(id, _)| *id != slot);
+        ok(Vec::new())
+    }
+
+    /// RESET: only with the PIN and the PUK blocked; every key and object goes, the PIN, PUK
+    /// and management key return to the factory values.
+    fn piv_reset(&mut self) -> Vec<u8> {
+        if self.piv_retries != 0 || self.piv_puk_retries != 0 {
+            return sw(0x6985);
+        }
+        self.piv_pin = super::piv::DEFAULT_PIN.to_vec();
+        self.piv_puk = super::piv::DEFAULT_PUK.to_vec();
+        self.piv_retries = 3;
+        self.piv_puk_retries = 3;
+        self.mgmt_algorithm = MgmtAlgorithm::Aes192;
+        self.mgmt_key = super::piv::DEFAULT_MANAGEMENT_KEY.to_vec();
+        self.piv_keys.clear();
+        self.piv_objects.clear();
+        self.deselect();
+        ok(Vec::new())
+    }
+
+    /// RESET RETRY COUNTER: `PUK(8, FF) ‖ new PIN(8, FF)`.
+    fn piv_reset_retry(&mut self, data: &[u8]) -> Vec<u8> {
+        if self.piv_puk_retries == 0 {
+            return sw(0x6983);
+        }
+        let mut padded = self.piv_puk.clone();
+        padded.resize(8, 0xFF);
+        if data.get(..8) != Some(padded.as_slice()) {
+            self.piv_puk_retries = self.piv_puk_retries.saturating_sub(1);
+            return sw(0x63C0 | u16::from(self.piv_puk_retries));
+        }
+        self.piv_puk_retries = 3;
+        self.piv_pin = data
+            .get(8..)
+            .unwrap_or_default()
+            .iter()
+            .copied()
+            .take_while(|byte| *byte != 0xFF)
+            .collect();
+        self.piv_retries = 3;
+        ok(Vec::new())
+    }
+
     fn piv(&mut self, ins: u8, p1: u8, p2: u8, data: &[u8]) -> Vec<u8> {
         match ins {
             0xFD => ok(vec![
@@ -771,6 +868,9 @@ impl MockCard {
                 ok(Vec::new())
             }
             0x24 if matches!(p2, 0x80 | 0x81) => self.piv_change_reference(p2 == 0x81, data),
+            0x2C if p2 == 0x80 => self.piv_reset_retry(data),
+            0xF6 if p1 == 0xFF => self.piv_delete_key(p2),
+            0xFB if p1 == 0 && p2 == 0 => self.piv_reset(),
             0xCB if p1 == 0x3F && p2 == 0xFF => self.piv_get_data(data),
             0xDB if p1 == 0x3F && p2 == 0xFF => self.piv_put_data(data),
             0x87 => self.piv_authenticate(p1, p2, data),

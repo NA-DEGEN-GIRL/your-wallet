@@ -394,6 +394,8 @@ pub enum KeyJob {
         /// Also move `settings.json` and `apikeys.dpapi`.
         include_settings: bool,
     },
+    /// A Zcash step (spec/12).
+    Zec(Box<crate::workers::journal::zec::ZecKeyJob>),
     /// Stop the worker (after locking).
     Shutdown,
 }
@@ -485,6 +487,10 @@ pub struct JournalView {
     pub btc_corrupt: usize,
     /// A new BTC `Signed` record fits without clean-up.
     pub btc_room: bool,
+    /// Decoded ZEC records (spec/12 §12), every network.
+    pub zec_records: Vec<yw_core::journal::zec::ZecRecord>,
+    /// ZEC entries the decoder rejected (ZEC sending stops, bytes kept).
+    pub zec_corrupt: usize,
 }
 
 /// Why Solana public keys were asked for.
@@ -613,6 +619,7 @@ impl KeyJob {
             Self::SignBtc { .. } => "SignBtc",
             Self::BtcJournal { .. } => "BtcJournal",
             Self::ResetWallet { .. } => "ResetWallet",
+            Self::Zec(job) => job.name(),
             Self::Shutdown => "Shutdown",
         }
     }
@@ -785,6 +792,8 @@ pub enum KeyOutcome {
     BtcJournal(Result<BtcJournalDone, BtcKeyError>),
     /// `ResetWallet` finished: the files moved (or what moved before a failure).
     WalletReset(Result<crate::store::reset::ResetReport, crate::store::reset::ResetError>),
+    /// A Zcash step finished (spec/12).
+    Zec(Box<crate::workers::journal::zec::ZecKeyOutcome>),
     /// The job was cancelled by `Lock`.
     Cancelled(&'static str, KeyJobError),
 }
@@ -817,7 +826,8 @@ pub fn accept_result(result: &KeyResult, current_epoch: u64) -> bool {
             | KeyOutcome::SignedSol(_)
             | KeyOutcome::SignedBtc(_)
             | KeyOutcome::Cancelled("SignEvm" | "SignMessage" | "SignSol" | "SignBtc", _)
-    ) || result.epoch == current_epoch
+    ) || matches!(&result.outcome, KeyOutcome::Zec(outcome) if outcome.is_signed())
+        || result.epoch == current_epoch
 }
 
 /// The key worker's job queue.
@@ -1055,6 +1065,8 @@ pub enum RpcEvent {
     },
     /// A Bitcoin job result (spec/08).
     Btc(Box<BtcRpcEvent>),
+    /// A Zcash RPC result (spec/12).
+    Zec(Box<crate::zec::work::ZecRpcEvent>),
     /// A `HyperCore` job result (spec/11).
     HyperCore(Box<crate::hypercore::HcEvent>),
 }

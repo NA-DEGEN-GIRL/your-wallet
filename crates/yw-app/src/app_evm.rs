@@ -169,6 +169,8 @@ pub enum QueuedItem {
     Sol(Box<crate::app_sol::SolApprovalItem>),
     /// A Bitcoin send or fee bump of this app (spec/08 §10).
     Btc(Box<crate::app_btc::BtcApprovalItem>),
+    /// A Zcash transparent send of this app (spec/12 §9).
+    Zec(Box<crate::app_zec::ZecApprovalItem>),
     /// A `HyperCore 전송` of this app (spec/11 §6).
     HyperCore(Box<crate::app_hypercore::HcApprovalItem>),
 }
@@ -180,7 +182,7 @@ impl QueuedItem {
         match self {
             Self::App(item) => item.chain_id,
             Self::Site(site) => site.chain_id,
-            Self::Sol(_) | Self::Btc(_) | Self::HyperCore(_) => 0,
+            Self::Sol(_) | Self::Btc(_) | Self::Zec(_) | Self::HyperCore(_) => 0,
         }
     }
 
@@ -192,6 +194,7 @@ impl QueuedItem {
             Self::Site(site) => NetworkId::Eip155(site.chain_id),
             Self::Sol(item) => crate::workers::journal::sol_network(item.cluster),
             Self::Btc(item) => item.network_id(),
+            Self::Zec(item) => item.network_id(),
             Self::HyperCore(item) => NetworkId::Eip155(item.action.network.hyperevm_chain_id()),
         }
     }
@@ -899,6 +902,7 @@ impl App {
             | RpcEvent::SolTracked(_)
             | RpcEvent::SolScanned { .. }) => self.sol_rpc_event(event),
             RpcEvent::Btc(event) => self.btc_rpc_event(*event),
+            RpcEvent::Zec(event) => self.zec_rpc_event(*event),
             RpcEvent::HyperCore(event) => self.hc_rpc_event(*event),
         }
     }
@@ -1544,6 +1548,10 @@ impl App {
             }
             QueuedItem::Btc(item) => {
                 self.btc_approval_finished(item, outcome);
+                return;
+            }
+            QueuedItem::Zec(item) => {
+                self.zec_approval_finished(item, outcome);
                 return;
             }
             QueuedItem::HyperCore(_) => {

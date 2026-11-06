@@ -265,6 +265,12 @@ impl App {
                 tab == Tab::Btc,
             )
             .badge(Badge::family(BookChain::Btc)),
+            Ctl::tab(
+                crate::ui::screens_zec::ids::TAB_ZEC,
+                "  Zcash  ",
+                tab == Tab::Zec,
+            )
+            .badge(Badge::zcash(self.settings.zcash.network)),
         ]));
     }
 

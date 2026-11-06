@@ -23,7 +23,10 @@ $nets = @(
     @{ id = 'solana:mainnet';  name = 'Solana mainnet';    sub = 'solana-mainnet';   path = '';    kind = 'sol'; expect = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d' },
     @{ id = 'solana:devnet';   name = 'Solana devnet';     sub = 'solana-devnet';    path = '';    kind = 'sol'; expect = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG' },
     @{ id = 'bitcoin:mainnet'; name = 'Bitcoin mainnet';   sub = 'btc';              path = '';    kind = 'btc'; expect = '000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f' },
-    @{ id = 'bitcoin:testnet4';name = 'Bitcoin testnet4';  sub = 'btc-testnet4';     path = '';    kind = 'btc'; expect = '00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043' }
+    @{ id = 'bitcoin:testnet4';name = 'Bitcoin testnet4';  sub = 'btc-testnet4';     path = '';    kind = 'btc'; expect = '00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043' },
+    # Zcash (spec/12 §2): QuickNode 문서 예시 서브도메인 zec-mainnet; testnet zec-testnet은 첫 사용 때 확인. 제네시스로 확인(getblockhash 0).
+    @{ id = 'zcash:mainnet';   name = 'Zcash mainnet';     sub = 'zec-mainnet';      path = '';    kind = 'btc'; expect = '00040fe8ec8471911baa1db1266ea15dd06b4a8a5c453883c000b031973dce08' },
+    @{ id = 'zcash:testnet';   name = 'Zcash testnet';     sub = 'zec-testnet';      path = '';    kind = 'btc'; expect = '05a60a92d99d85997cce3b87616c089f6124d7342af37106edc76126334a2c38' }
 )
 
 function Read-Secret([string]$prompt) {

@@ -7,7 +7,7 @@
 //! diamond, Arbitrum a navy disc with a blue hexagon and "A", Base a blue disc with a white ring,
 //! BNB a yellow disc with a hollow diamond, Robinhood Chain a green disc with "R", `HyperEVM` a dark
 //! teal disc with a teal "H", Solana a dark disc with three slanted bars (teal → purple), Bitcoin
-//! an orange disc with "₿". A user-added chain gets a neutral disc with the first letter or digit
+//! an orange disc with "₿", Zcash a gold disc with a dark "Z". A user-added chain gets a neutral disc with the first letter or digit
 //! of its name, coloured from its chain id. Testnets (Sepolia, Solana devnet, Bitcoin testnet4)
 //! are dimmed and carry a small white "T" disc at the lower right.
 //!
@@ -141,7 +141,19 @@ impl Badge {
             NetworkId::Eip155(chain_id) => Self::evm(chain_id, name),
             NetworkId::Solana(cluster) => Self::solana(crate::app_sol::core_cluster(cluster)),
             NetworkId::Bitcoin(net) => Self::bitcoin(crate::btc::core_network(net)),
+            NetworkId::Zcash(net) => Self::zcash(net),
         }
+    }
+
+    /// Zcash (spec/12): a gold disc with a dark "Z"; testnet dimmed with the "T" corner.
+    #[must_use]
+    pub const fn zcash(network: yw_core::zec::ZecNetwork) -> Self {
+        Self::new(
+            Mark::Letter('Z'),
+            0x00F4_B728,
+            0x0023_1F20,
+            matches!(network, yw_core::zec::ZecNetwork::Testnet),
+        )
     }
 
     /// An address-book family (S14): EVM a slate diamond (every EVM chain), Solana, Bitcoin.

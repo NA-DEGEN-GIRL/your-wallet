@@ -21,6 +21,7 @@ pub mod screens_sites;
 pub mod screens_sol;
 pub mod screens_walletconnect;
 pub mod screens_yubikey;
+pub mod screens_zec;
 pub mod secret;
 pub mod secure_field;
 pub mod text_layout;

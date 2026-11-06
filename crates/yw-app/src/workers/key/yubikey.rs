@@ -16,6 +16,8 @@ use yw_core::yubikey::piv::ManagementState;
 use yw_core::yubikey::plan::{PlanError, PlannedSlot};
 
 use super::{KeyWorker, ascii, new_slot, now_unix, passphrase, password, reconcile_hardware};
+
+pub mod manage;
 use crate::events::{KeyOutcome, YubiKeyJobError};
 use crate::logging::{self, Field};
 use crate::meta::{EvmAccountPref, Meta, Tab};
@@ -105,6 +107,8 @@ pub enum YkJob {
     },
     /// The wizard ended: wipe the held mnemonic, seed and (new wallet) password.
     Discard,
+    /// A card action of the `YubiKey` list (spec/10 §15).
+    Manage(manage::ManageJob),
 }
 
 impl core::fmt::Debug for YkJob {
@@ -130,6 +134,7 @@ impl YkJob {
             Self::SetPins { .. } => "YkSetPins",
             Self::Remove { .. } => "YkRemove",
             Self::Discard => "YkDiscard",
+            Self::Manage(job) => job.name(),
         }
     }
 }
@@ -170,6 +175,8 @@ pub enum YkOutcome {
     Removed(Result<RecordId, VaultError>),
     /// `Discard` finished.
     Discarded,
+    /// A card action finished.
+    Manage(manage::ManageOutcome),
 }
 
 /// The recovery words of an enrolment held between the confirmation and the card.
@@ -316,6 +323,7 @@ impl KeyWorker {
                 self.yk_wipe();
                 KeyOutcome::YubiKey(YkOutcome::Discarded)
             }
+            YkJob::Manage(job) => KeyOutcome::YubiKey(YkOutcome::Manage(self.yubikey_manage(job))),
         }
     }
 
@@ -364,24 +372,34 @@ impl KeyWorker {
         result
     }
 
+    /// Parses entered recovery words (+ passphrase) and holds their seed for the next card job
+    /// (the words themselves are wiped when this returns).
+    pub(super) fn yk_hold_words(
+        &mut self,
+        (phrase, extra): EnteredWords,
+    ) -> Result<(), YubiKeyJobError> {
+        let parsed = Mnemonic::parse(ascii(&phrase).map_err(job_key)?).map_err(job_key)?;
+        let passphrase = match extra.as_deref() {
+            Some(bytes) => passphrase(bytes).map_err(job_key)?,
+            None => Bip39Passphrase::empty(),
+        };
+        let seed = parsed.to_seed(&passphrase).map_err(job_key)?;
+        self.pending_enrol = Some(PendingEnrol {
+            seed,
+            fresh: None,
+            challenge: None,
+            confirmed: false,
+        });
+        Ok(())
+    }
+
     fn yk_preview(
         &mut self,
         mnemonic: Option<EnteredWords>,
         slots: &[PlannedSlot],
     ) -> Result<YkPreview, YubiKeyJobError> {
-        if let Some((phrase, extra)) = mnemonic {
-            let parsed = Mnemonic::parse(ascii(&phrase).map_err(job_key)?).map_err(job_key)?;
-            let passphrase = match extra.as_deref() {
-                Some(bytes) => passphrase(bytes).map_err(job_key)?,
-                None => Bip39Passphrase::empty(),
-            };
-            let seed = parsed.to_seed(&passphrase).map_err(job_key)?;
-            self.pending_enrol = Some(PendingEnrol {
-                seed,
-                fresh: None,
-                challenge: None,
-                confirmed: false,
-            });
+        if let Some(words) = mnemonic {
+            self.yk_hold_words(words)?;
         }
         let pending = self
             .pending_enrol

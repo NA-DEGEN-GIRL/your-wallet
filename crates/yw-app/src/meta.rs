@@ -295,6 +295,8 @@ pub enum Tab {
     Sol,
     /// `"btc"` (M8).
     Btc,
+    /// `"zec"` (spec/12; earlier versions reset `prefs` to the default when they read it).
+    Zec,
 }
 
 impl Tab {
@@ -305,6 +307,7 @@ impl Tab {
             Self::Evm => "evm",
             Self::Sol => "sol",
             Self::Btc => "btc",
+            Self::Zec => "zec",
         }
     }
 }
@@ -376,6 +379,8 @@ pub struct Meta {
     /// `hw_accounts` (optional key, spec/10 §13): the `YubiKey` accounts' labels, hidden flags and
     /// selection (vault tag 5 is the truth source).
     pub hw_accounts: HwAccounts,
+    /// `zcash` (optional key, spec/12 §12.3): the Zcash account of each network.
+    pub zcash: Box<crate::zec::meta::ZcashMeta>,
     /// Top-level keys this version does not know (a newer minor version's), in file order; written
     /// back after the known keys while the plaintext stays within 8 MiB (spec/04 §6.6).
     pub unknown: Vec<(String, Value)>,
@@ -406,6 +411,7 @@ impl Default for Meta {
             security: Box::default(),
             token_view: Box::default(),
             hw_accounts: HwAccounts::default(),
+            zcash: Box::default(),
             unknown: Vec::new(),
         }
     }
@@ -827,6 +833,7 @@ fn parse_prefs(value: &Value, meta: &Meta) -> Option<Prefs> {
                     "evm" => Tab::Evm,
                     "sol" => Tab::Sol,
                     "btc" => Tab::Btc,
+                    "zec" => Tab::Zec,
                     _ => return None,
                 };
             }
@@ -867,6 +874,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
                 && *key != TOKEN_VIEW_KEY
                 && *key != HW_ACCOUNTS_KEY
                 && *key != crate::walletconnect::store::META_KEY
+                && *key != crate::zec::meta::ZCASH_KEY
                 && *key != BOOK_FAVORITES_KEY
         })
         .map(|(key, value)| (key.to_owned(), value.clone()))
@@ -1001,6 +1009,9 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         }),
         token_view: Box::new(token_view),
         hw_accounts,
+        zcash: Box::new(crate::zec::meta::ZcashMeta::from_json(
+            object.get(crate::zec::meta::ZCASH_KEY),
+        )),
         unknown,
     };
     let prefs = parse_prefs(get("prefs")?, &meta);
@@ -1140,6 +1151,9 @@ impl Meta {
         }
         if !self.hw_accounts.is_default() {
             members.push((HW_ACCOUNTS_KEY, self.hw_accounts.to_json()));
+        }
+        if !self.zcash.is_default() {
+            members.push((crate::zec::meta::ZCASH_KEY, self.zcash.to_json()));
         }
         if !self.book_favorites.is_empty() {
             members.push((BOOK_FAVORITES_KEY, self.favorites_json()));

@@ -52,7 +52,7 @@ pub const WM_YW_EVENTS: u32     = WM_APP + 1; // 0x8001, 이벤트 큐 초인종
 pub const WM_YW_ACTIVATE: u32   = WM_APP + 2; // 두 번째 인스턴스 → 첫 인스턴스
 pub const WM_YW_CHILD_DONE: u32 = WM_APP + 3; // 승인·비밀 창 → 주 창, wParam = 창 id
 pub const WM_YW_LOCK_SHORTCUT: u32 = WM_APP + 4; // 메시지 루프 관찰자가 Ctrl+L(어느 창이든)을 보면 주 창에 post
-pub const WM_YW_TAB_SHORTCUT: u32 = WM_APP + 5;  // Ctrl+1/2/3 → 주 창에 post(wParam 1–3), 주 창이 전경인 S10에서만 체인 탭(§2.1)
+pub const WM_YW_TAB_SHORTCUT: u32 = WM_APP + 5;  // Ctrl+1/2/3/4 → 주 창에 post(wParam 1–4), 주 창이 전경인 S10에서만 체인 탭(§2.1)
 pub const EVENT_QUEUE_CAP: usize = 4096;
 pub const MAIN_TIMER_MS: u32 = 250;           // 큐 보조 배출, 자동 잠금 판정, 기한 검사
 
@@ -119,7 +119,7 @@ BTC_MAINNET_BG #C42B1C / BTC_MAINNET_TEXT #FFFFFF, BTC_TESTNET4_BG #F7A23B(글�
 
 #### 1.6.1 체인 배지 (2026-11-06)
 - 체인·네트워크 이름 앞에는 작은 둥근 배지를 그린다(`ui::badge::Badge`, 본문 옆 16 DIP·화면 제목 옆 20 DIP, 글자와 6 DIP 간격): 체인 탭(`EVM`·`Solana`·`Bitcoin`), S10 네트워크 칩(EVM 체인마다)·Solana 클러스터 칩, 보내기·받기 제목과 카드 제목, 보내기 결과의 상태 줄, S10 활동 카드 제목, S13 연결된 사이트의 `네트워크` 줄, S14 계열 탭·카드 제목·Bitcoin 네트워크 줄, S15 `EVM 체인` 목록, 승인 창 헤더의 `네트워크` 값(앞). HyperCore 화면은 `Badge::hyperliquid()`를 쓴다.
-- 배지는 **원래 그린 단순 표식**이다(공식 로고 파일·상표 이미지를 복사하지 않는다): Ethereum 남보라 원 + 두 조각 마름모, Sepolia 같은 표식(테스트넷 처리), Arbitrum One 남색 원 + 파란 육각형 + "A", Base 파란 원 + 흰 고리, BNB Smart Chain 노란 원 + 속이 빈 흰 마름모, Robinhood Chain 초록 원 + "R", HyperEVM·Hyperliquid 짙은 청록 원 + 청록 "H", Solana 짙은 원 + 비스듬한 막대 셋(청록→보라), Bitcoin 주황 원 + "₿". EVM 계열(탭·주소록)은 회청색 원 + 마름모. 사용자 추가 체인은 이름의 첫 ASCII 영문자·숫자(없으면 마름모)를 흰 글자로, 원 색은 chainId에서 정한 색상(채도·명도 고정)으로 그린다. 테스트넷(Sepolia·Solana devnet·Bitcoin testnet4)은 원 색을 회색 쪽으로 45% 흐리게 하고 오른쪽 아래에 흰 원 + "T"를 붙인다.
+- 배지는 **원래 그린 단순 표식**이다(공식 로고 파일·상표 이미지를 복사하지 않는다): Ethereum 남보라 원 + 두 조각 마름모, Sepolia 같은 표식(테스트넷 처리), Arbitrum One 남색 원 + 파란 육각형 + "A", Base 파란 원 + 흰 고리, BNB Smart Chain 노란 원 + 속이 빈 흰 마름모, Robinhood Chain 초록 원 + "R", HyperEVM·Hyperliquid 짙은 청록 원 + 청록 "H", Solana 짙은 원 + 비스듬한 막대 셋(청록→보라), Bitcoin 주황 원 + "₿", Zcash 금색 원 + 어두운 "Z"([12](12-zcash.md) §11; testnet도 테스트넷 처리). EVM 계열(탭·주소록)은 회청색 원 + 마름모. 사용자 추가 체인은 이름의 첫 ASCII 영문자·숫자(없으면 마름모)를 흰 글자로, 원 색은 chainId에서 정한 색상(채도·명도 고정)으로 그린다. 테스트넷(Sepolia·Solana devnet·Bitcoin testnet4)은 원 색을 회색 쪽으로 45% 흐리게 하고 오른쪽 아래에 흰 원 + "T"를 붙인다.
 - 그리기: 단위 정사각형 안의 도형(원·고리·선분·호·다각형) 부호 거리로 픽셀마다 1픽셀 안티에일리어싱 덮임을 계산해 미리 곱한 `0xAARRGGBB`를 만들고(그 DPI의 픽셀 크기로 매번 다시 계산, 비트맵 파일 없음), GDI `AlphaBlend`로 합성한다(`yw_win::ui::PaintDc::draw_argb`; 소유자 그리기 버튼은 `Control::set_icon` — 배지, 6 DIP, 라벨을 함께 가운데 정렬). 그래서 100–200% DPI와 직접 그리는 승인 창에서도 같은 선명도다. 배지는 표시 장식이며 승인 digest·표시 모델([03] §11)에 들어가지 않는다.
 
 ### 1.7 창 클래스
@@ -182,7 +182,7 @@ pub enum AppMode { NoVault, Locked, Unlocking, PassphraseRequired, PassphraseMis
 - 별도 최상위 창: W01–W12 비밀 창(§4.1; W11·W12는 YubiKey, [10]. 옛 W13 "새 PIV 관리 키"는 2026-11-06에 없앰), A01 승인·연결 창(§3).
 - 비밀 창이 열려 있는 동안 주 창은 `EnableWindow(FALSE)`다. 승인 창은 주 창을 막지 않는다.
 - 주 창 자식 컨트롤의 명령 ID(`WM_COMMAND`)는 화면 모듈마다 `ids`에 두고, 고정 ID와 목록형 범위(계정·주소록·스캔 행·사이트 등)가 서로 겹치지 않으며 각 범위가 그 목록의 최대 길이(행 수 × 행당 ID 수)를 담는다. 전체 지도와 시험은 `ui::command_ids`(1·2는 쓰지 않음). 승인 창·비밀 창은 자식 컨트롤 없이 직접 그리고 영역으로 판정하므로 명령 ID가 없다.
-- `Unlocked`의 S10 상단 막대(흰 띠): 왼쪽 "Your Wallet", 오른쪽 `주소록`, `연결된 사이트`, `설정`, `잠금 (Ctrl+L)`. 그 아래 체인 탭(`EVM (이더리움 등)`·`Solana`·`Bitcoin`, 탭 모양; 키보드 Ctrl+1·Ctrl+2·Ctrl+3 — 메시지 루프 관찰자가 주 창에 `WM_YW_TAB_SHORTCUT`(`WM_APP + 5`, wParam = 탭 번호)을 post하고, 주 창이 전경이고 S10이 그 탭을 켜 보이며 비밀 창이 없을 때만 탭을 누른 것과 같이 처리한다)과 네트워크 칩. 다른 화면은 맨 위 링크 `← 메인으로`. `alt_passphrase == true`(`App::passphrase_unverified()`)이면 **모든 화면** 맨 위에 닫을 수 없는 고위험 띠 T-ALT-PASS를 보이고, 모든 체인의 `받기`(S12)를 끈다(누르면 T-ALT-PASS-RECV). 브라우저 다리는 이 상태의 연결·서명 요청을 4100 `PassphraseUnverified`(이유를 담은 메시지)로 끝내고(디스패처 상태 `VaultView::PassphraseUnverified`, 큐에 있던 요청은 §3.1 `PassphraseUnverified`), 읽기 요청은 계속 처리한다([02] §7.5, [05] §4.2·§5). 앱의 보내기는 허용한다.
+- `Unlocked`의 S10 상단 막대(흰 띠): 왼쪽 "Your Wallet", 오른쪽 `주소록`, `연결된 사이트`, `설정`, `잠금 (Ctrl+L)`. 그 아래 체인 탭(`EVM (이더리움 등)`·`Solana`·`Bitcoin`·`Zcash`, 탭 모양; 키보드 Ctrl+1·Ctrl+2·Ctrl+3·Ctrl+4 — 메시지 루프 관찰자가 주 창에 `WM_YW_TAB_SHORTCUT`(`WM_APP + 5`, wParam = 탭 번호)을 post하고, 주 창이 전경이고 S10이 그 탭을 켜 보이며 비밀 창이 없을 때만 탭을 누른 것과 같이 처리한다)과 네트워크 칩. 다른 화면은 맨 위 링크 `← 메인으로`. `alt_passphrase == true`(`App::passphrase_unverified()`)이면 **모든 화면** 맨 위에 닫을 수 없는 고위험 띠 T-ALT-PASS를 보이고, 모든 체인의 `받기`(S12)를 끈다(누르면 T-ALT-PASS-RECV). 브라우저 다리는 이 상태의 연결·서명 요청을 4100 `PassphraseUnverified`(이유를 담은 메시지)로 끝내고(디스패처 상태 `VaultView::PassphraseUnverified`, 큐에 있던 요청은 §3.1 `PassphraseUnverified`), 읽기 요청은 계속 처리한다([02] §7.5, [05] §4.2·§5). 앱의 보내기는 허용한다.
 - 사용자에게 보이는 용어: "니모닉"은 "복구 단어"로 부르고 처음 나오는 곳에 "(니모닉)"을 붙인다. 오류 문구(§7)와 코드는 바꾸지 않는다.
 
 ### 2.2 첫 실행 (S01)
@@ -234,7 +234,7 @@ S04(백업 대기): 잠금 해제 직후 백업이 확인되지 않았을 때. �
 
 ### 2.6 메인 (S10)
 - 배치(위 → 아래, 체인 탭마다 같음): 상단 막대 → 체인 탭 → 카드 "네트워크"(칩, 테스트넷 띠, 차단·저널 띠, 상태 줄 도움말) → **선택 계정 카드**(계정 이름, 경로, 큰 잔액 20pt와 기준 블록, 전체 주소, 주 버튼 `보내기`·`받기`, 링크 `새로고침`, 엔드포인트가 없으면 링크 `RPC 설정하기`) → 카드 "내 계정"(계정 목록 라디오, 선택 행의 `이름 바꾸기`·`숨기기`/`삭제`(위험), `계정 추가`·`개인키 가져오기`) → 카드 "토큰" → 카드 "활동". 빈 목록에는 다음에 할 일을 알려주는 도움말을 보인다("아직 보낸 거래가 없습니다. 보낸 거래는 여기에서…").
-- 체인 탭: 구현된 단계만(M4 `EVM`, M7 `Solana`, M8 `Bitcoin`). 각 탭의 "내 계정" 카드에 `개인키 가져오기`가 있다(그 체인의 키, §2.18). 가져온 계정은 라벨 뒤에 배지 "[가져온 키]"와 도움말 "가져온 키 · 복구 단어로 복구되지 않음"을 보인다. 키 전용 지갑(복구 단어 없음, [02] §8.5)은 파생 기능(`계정 추가`, `다른 경로 스캔`, 파생 Bitcoin 계정·발견, 복구 단어 보기)을 숨기고, 계정이 없는 체인 탭은 "이 지갑에는 {체인} 계정이 없습니다."와 `개인키 가져오기`만 보인다.
+- 체인 탭: 구현된 단계만(M4 `EVM`, M7 `Solana`, M8 `Bitcoin`, D36 `Zcash`). **Zcash 탭**([12](12-zcash.md) §11)은 한 화면에 네트워크(엔드포인트 상태·UTXO 원천)·계정(키 출처, 확인된 잔액)·받기(일반 주소, QR, T-ZEC-RECEIVE)·보내기(t·TEX·UA, 금액/최대, 검토 → 승인 창)·활동 카드를 차례로 보이고, 꺼져 있으면 `Zcash mainnet 켜기`/`Zcash testnet 켜기`만 보인다. 각 탭의 "내 계정" 카드에 `개인키 가져오기`가 있다(그 체인의 키, §2.18). 가져온 계정은 라벨 뒤에 배지 "[가져온 키]"와 도움말 "가져온 키 · 복구 단어로 복구되지 않음"을 보인다. 키 전용 지갑(복구 단어 없음, [02] §8.5)은 파생 기능(`계정 추가`, `다른 경로 스캔`, 파생 Bitcoin 계정·발견, 복구 단어 보기)을 숨기고, 계정이 없는 체인 탭은 "이 지갑에는 {체인} 계정이 없습니다."와 `개인키 가져오기`만 보인다.
 - EVM 네트워크 선택: 기본 체인 7개(`Ethereum 메인넷`, `Sepolia 테스트넷`, HyperEVM, `Arbitrum One`, `Base`, `BNB Smart Chain`, `Robinhood Chain`; 이름은 [03] §1.1) 다음에 사용자 체인(§2.17, `evmChains` 순서, 이름 옆 배지 T-CUSTOM-CHAIN). 차단된 체인(E-RPC-006·E-CHN-008)도 목록에 남기고 "(차단됨)"을 붙인다. 고르면 S10에 그 오류 배너와(E-CHN-008이면) `설정에서 다시 고정`(S15)을 보이고 잔액·보내기는 끈다. 선택은 `settings.json` `evmChainId`(§6.1, D30)이고, 잠긴 동안 [05]가 캐시 없는 origin의 `eth_chainId`로 쓴다. Solana 클러스터는 `solana.cluster`([07] §10), BTC 네트워크는 `bitcoin.network`([08] §2, D26)로 모두 `settings.json`에 있다. 테스트넷(Sepolia, [07]의 테스트 네트워크)이면 상단에 `TESTNET_BG` 띠 "테스트넷 — 실제 자산이 아닙니다". Bitcoin testnet4는 [08] §2 전용 배너 `BITCOIN TESTNET4 — 가치 없음`만 보인다(메인·보내기·받기·결과 화면 모두; 같은 뜻의 띠를 두 겹으로 그리지 않는다). 기본 메인넷(Ethereum 메인넷 1, HyperEVM 999, Arbitrum One 42161, Base 8453, BNB Smart Chain 56, Robinhood Chain 4663)과 Solana mainnet이면 빨간(`BTC_MAINNET_BG`) 띠 T-MAINNET "메인넷 — 실제 자산"(Bitcoin은 [08] §2 `BITCOIN MAINNET`). 같은 조건에서 승인 창 A01 헤더에도 T-MAINNET 배지를 보인다(§3.2 헤더; 대상은 S10의 선택 네트워크가 아니라 그 요청의 체인·클러스터). 사용자 체인에는 테스트넷 구분이 없으므로 띠·배지를 그리지 않는다. 기본값은 그대로다(EVM Sepolia, Solana mainnet, Bitcoin 꺼짐).
 - 상태 줄: `RPC: 연결됨 | 엔드포인트 없음 (E-KEY-005) | 오류 E-RPC-0nn | 차단 E-CHN-008`(네트워크 이름만, URL·호스트 없음, §1.9), `브라우저: 연결 n개 | 연결 없음 | 사용 불가 E-PIPE-001 | 사용 불가 E-PIPE-002`. 엔드포인트 없음이면 잔액·보내기를 끄고 `설정에서 URL 입력`(S15 §2.11.1)을 보인다.
 - 계정 목록: 라벨, 전체 주소(§3.3 주소 그리기), 기본 자산 잔액, 경로 또는 `가져온 개인키`. 카드 도움말 T-ACCOUNTS(파생 계정만 복구 단어로 복구되고 가져온 개인키는 아니다). 선택 행 버튼: `보내기`, `받기`, `이름 바꾸기`, 파생 계정 `숨기기`(meta `hidden`), 개인키 계정 `삭제`(확인 오버레이 T-REMOVE-KEY → W03 → `remove_evm_raw_key`). 삭제 오버레이는 계정 라벨·주소(라벨은 겹칠 수 있으므로 모든 체인에서 주소를 함께)와 선택한 EVM 네트워크의 마지막으로 읽은 기본 자산 잔액을 보인다: 0보다 크면 고위험 띠 "이 계정에 잔액이 있습니다: … 먼저 옮기거나 개인키를 내보내세요", 모르면 주의 띠 "잔액을 확인하지 못했습니다…", 0이면 "다른 네트워크와 토큰 잔액은 확인하지 않았습니다" 도움말. 숨기기·삭제는 [05] §4.1에 알린다(grant에서 제외). 단, 지우는 가져온 EVM 키의 주소가 (숨기지 않은) 파생 계정의 주소와 같으면(그 계정의 개인키를 가져온 경우) 파생 계정이 남으므로 사이트 연결을 끊지 않는다. 가져온 계정의 기본 라벨(`가져온 계정 N`·`가져온 Solana N`)은 같은 접두어의 기존 라벨 중 가장 큰 N + 1이다(`개수 + 1`은 삭제 뒤 번호가 겹친다).
@@ -318,7 +318,7 @@ S16 토큰 추가: 컨트랙트 주소(§2.15) → RPC `decimals()`·`symbol()`(
 | 브라우저 | 연결된 사이트 | S13 |
 | AI 설명 (M6) | [06] §2 | [06] |
 | 진단 | 로그 수준, 로그 폴더 열기 | §8, §2.14 |
-| 정보 | 버전, 데이터 폴더 경로, `폴더 열기`, "단축키" 줄(Ctrl+L 잠금 · Ctrl+1/2/3 체인 탭 · Tab 다음 칸) | §2.14 |
+| 정보 | 버전, 데이터 폴더 경로, `폴더 열기`, "단축키" 줄(Ctrl+L 잠금 · Ctrl+1/2/3/4 체인 탭 · Tab 다음 칸) | §2.14 |
 
 - 템플릿 자격 정보 형식(`저장` 때 검사, 위반 E-KEY-002 + 항목 이름): QuickNode 엔드포인트 이름은 소문자로 바꾼 뒤 `^[a-z0-9]+(-[a-z0-9]+)*$` 1–63자(호스트 첫 라벨), QuickNode 토큰 `^[A-Za-z0-9_-]{16,128}$`(URL 경로 한 단계), 알케미 키 `^[A-Za-z0-9_-]{16,128}$`(URL 경로). 구현 시 확인: 실제 이름·토큰·키의 길이·문자 집합. 다르면 이 정규식만 고친다.
 - 변경은 즉시 `settings.json`에 원자적으로 쓴다(`apikeys.dpapi` 항목은 §6.3). 실패 → E-APP-002, 화면 값을 되돌린다. 읽기 전용 `settings.json`(§6.6 더 새로운 `version`, `Settings::read_only()`)이면 쓰지 않고 이번 실행의 메모리에만 적용한다(로그 `settings.changed key=<키> saved=no`).
@@ -975,6 +975,7 @@ impl SecretField {
 | `rpc` | object | `{"template": "quicknode"}` | `template` = `"quicknode"`·`"alchemy"`·`"manual"`(S15 `RPC 공급자` 라디오, §2.11.1 `RpcTemplate`). 입력 편의(URL 생성·S17 식별자 해석)에만 쓰고 런타임 엔드포인트에는 영향이 없다(§1.9). 다른 키나 다른 값 → `rpc` 객체 단위 기본값. 템플릿 자격 정보와 네트워크별 URL은 토큰이 들어 있으므로 여기 두지 않고 §6.3 `tpl:*`·`rpc:<NetworkId>`에 둔다(D13) |
 | `solana` | object | [07] §10 | M7부터. 키·범위·기본값은 [07] §10 |
 | `bitcoin` | object | 위 값 | M8부터, 의미는 [08] §2 소유. `enabled` bool. `network` = `"mainnet"`·`"testnet4"`(D26·D30), 바꾸기는 진행 중 BTC 저널 항목이 없을 때만. `indexer` = `"esplora"`(기본: `esploraBaseUrl`의 Esplora REST GET, 무료·키 없음)·`"bb-rpc"`(Core 엔드포인트 URL에 Blockbook `bb_*` JSON-RPC POST, QuickNode BTC Blockbook 유료 애드온)·`"bb-rest"`(`<Core URL>/api/v2/` Blockbook REST GET, 알케미 UTXO API)([08] §2·§4.3), 언제든 변경 가능. `esploraBaseUrl` = 아래 `EsploraBaseUrls`(비밀이 아니므로 여기 둔다; 토큰이 든 Core URL은 §6.3). `enabled`·`network`·`indexer`가 없거나 틀리거나 네 키 밖의 키가 있으면 `bitcoin` 객체 단위 기본값(`esploraBaseUrl` 포함). `esploraBaseUrl`은 아래 규칙으로 키 단위 검증 |
+| `zcash` | object | `{"enabled": false, "network": "mainnet", "indexer": "node"}` | D36, 의미는 [12](12-zcash.md) §2.1 소유. `network` = `"mainnet"`·`"testnet"`, `indexer` = `"node"`(같은 엔드포인트의 `getaddressutxos`)·`"bb-rest"`(같은 엔드포인트의 Blockbook REST). 모르는 하위 키·형식 오류는 객체 전체를 기본값으로(배너 E-APP-001). 끄기·네트워크 바꾸기는 진행 중 ZEC 저널 항목이 없을 때만 |
 | `llm_explain` | object | [06] §2.1 | 검증·되돌림은 [06] §2.1 |
 | `hypercore` | object | `enabled` bool(기본 true), `network` `mainnet`\|`testnet`(기본 mainnet), `testnetApi` HTTPS ≤ 256바이트·`?`/`#` 없음·끝 `/` 제거(기본 공식 주소). 메인넷 API는 고정([11] §8) | 키 하나라도 틀리면 객체 전체 기본값 + 배너 |
 | `logLevel` | string | `"info"` | `error`·`warn`·`info`·`debug` |
@@ -1039,7 +1040,7 @@ offset 8   count       u8       0..=48
 |---|---|---|---|
 | `evm_account` | object | `{"index":0}` | `{"index": u32}`(meta `evm_accounts`에 있음) 또는 `{"record_id": Hex16}`(`evm_raw_accounts`에 있음) |
 | `sol_account` | integer | 0 | meta `sol_accounts`의 `index`(M7) |
-| `tab` | string | `"evm"` | `"evm"`·`"sol"`·`"btc"`(구현된 것만) |
+| `tab` | string | `"evm"` | `"evm"`·`"sol"`·`"btc"`·`"zec"`(구현된 것만; 이전 버전은 `"zec"`을 모르는 값으로 보고 `prefs`를 기본값으로 되돌린다) |
 
 BTC 계정 선택은 `prefs`에 두지 않는다(알려진 객체에 키를 더하면 이전 버전이 `prefs`를 버린다, §6.6). 선택한 BTC 계정은 새 최상위 키 `btc_accounts.selected`에 둔다([08] §12.3a, D26).
 
@@ -1058,6 +1059,7 @@ BTC 계정 선택은 `prefs`에 두지 않는다(알려진 객체에 키를 더�
 | `settings.json` | `version` 정수(현재 1) | 모르는 **최상위 키**: 배너 없이 보존, 쓰기 때 알려진 키 뒤에 읽은 순서·값 그대로 | `version` > 1: 읽기 전용(값은 기본값, 배너 E-APP-001, 이번 실행의 변경은 메모리에만, 파일 내용 불변) | 알려진 이전 버전은 읽을 때 메모리에서 이행하고 다음 쓰기에 현재 버전으로 쓴다. 현재 1이 첫 버전이므로 이행할 이전 버전은 없고 0·정수 아님은 손상(§6.2) |
 | `meta.ywm` 평문 | `schema` = `"yw-meta/3"` | 모르는 **최상위 키**: 보존, 쓰기 때 알려진 키 뒤에 그대로([02] §5.3). 2026-10-29에 선택 최상위 키 `sol_raw_accounts`·`sol_raw_selected`·`btc_accounts`를 더했다(이전 버전은 보존만 한다; 가져온 Bitcoin 키는 `btc_accounts`의 계정). 2026-11-03에 `token_view`(토큰 행 숨김, §2.6)를 같은 방식으로 더했다 | 없음: `schema`는 데이터 폴더 `v3`과 함께만 바뀐다(다른 `schema`는 형식 오류, E-VLT-006) | 없음(v1·v2는 이행하지 않음, D7) |
 | `vault.ywv` payload | `payload_magic` `YWPAY003` | 2026-10-29 확장(가져온 개인키, [02] §4.6): `tag 3`·`tag 4` record, `Bip39` 없는 키 전용 payload, `payload_ct_len` 상한 4,096. `tag 1`·`tag 2` 배치는 그대로라 이 버전은 이전 vault를 그대로 연다. 이전 버전은 확장된 vault를 E-VLT-008(또는 E-VLT-002)로 본다: 이전 버전으로 되돌렸다면 `.prev` 복구를 하지 말고 새 버전을 다시 설치한다(복구하면 마지막 가져오기가 사라진다, 손상으로 본 파일은 격리 보존). 이 버전부터 인증된 payload의 모르는 tag는 E-VLT-014(`UnsupportedPayload`, `.prev` 제안 없음)다. 앞으로 tag를 더하는 버전은 이 경로를 따른다([02] §4.6 형식 확장 규칙) | — | — |
+| `journal.ywj` 평문 | magic `YWJPL003` | 2026-11-06 확장(Zcash, [12](12-zcash.md) §12.1): entry `kind 4`. 이전 버전의 디코더는 모르는 `kind`를 `SidecarCorrupt(Journal)`로 본다: Zcash를 보낸 뒤 이전 버전으로 되돌렸다면 저널을 초기화하거나 `.prev`로 복구하지 말고 새 버전을 다시 설치한다. 앞으로 kind를 더하는 버전도 같은 안내를 따른다 | — | — |
 | `apikeys.dpapi` 평문 | magic `YWAPIK01` | 모르는 **항목 이름**(§6.3 이름 형식): 값 바이트를 해석하지 않고 보존, 저장 때 다시 씀. 등록 안 된 네트워크의 `rpc:*`(고아)도 같이 보존 | 없음: magic은 데이터 폴더와 함께만 바뀐다(다른 magic은 형식 오류, E-KEY-001) | 없음 |
 
 - 새 부 버전이 지켜야 할 것(쓰는 쪽 규칙): 새 데이터는 **새 최상위 키**(settings·meta) 또는 **새 항목 이름**(apikeys)으로만 더한다. 이미 있는 키의 의미·값 범위를 바꾸거나 알려진 객체·레코드 안에 키를 더하는 것은 주 버전 변경이다(settings는 `version` + 1, meta·apikeys·vault·journal은 새 데이터 폴더 `v4`). 이전 버전은 알려진 객체 안의 모르는 키를 지금처럼 그 객체 단위 오류로 처리한다(§6.2, [02] §5.3).

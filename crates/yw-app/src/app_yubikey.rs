@@ -40,6 +40,8 @@ use crate::ui::secret::{CardSecretKind, DisplaySecret, SecretKind};
 use crate::workers::key::yubikey::{YkJob, YkOutcome, YkPreview};
 use crate::yubikey::{CardJobError, PinTarget};
 
+pub mod manage;
+
 /// Most Solana accounts on one card (the 20 retired PIV slots `82`–`95`).
 pub const MAX_PIV_ACCOUNTS: u32 = 20;
 /// Highest EVM / Solana account index (`AccountIndex`).
@@ -69,6 +71,8 @@ pub enum PgpKind {
     Btc,
     /// EVM account `i` also used as one Bitcoin address (spec/10 §3.2).
     Shared,
+    /// Zcash transparent address `i` (`m/44'/{133|1}'/0'/0/i`, spec/10 §3.1).
+    Zec,
 }
 
 /// The form of one `OpenPGP` slot.
@@ -82,6 +86,8 @@ pub struct PgpForm {
     pub script: ScriptType,
     /// Touch policy.
     pub touch: TouchPolicy,
+    /// Zcash network (Zcash slot).
+    pub zec: yw_core::zec::ZecNetwork,
 }
 
 impl PgpForm {
@@ -91,7 +97,18 @@ impl PgpForm {
             index_text: index.to_string(),
             script: ScriptType::P2wpkh,
             touch: TouchPolicy::Always,
+            zec: yw_core::zec::ZecNetwork::Mainnet,
         }
+    }
+}
+
+/// The Zcash network that goes with the Bitcoin network of the settings (testnet4 → testnet).
+#[must_use]
+pub fn zec_network_for(network: BtcNetwork) -> yw_core::zec::ZecNetwork {
+    if network == BtcNetwork::Testnet4 {
+        yw_core::zec::ZecNetwork::Testnet
+    } else {
+        yw_core::zec::ZecNetwork::Mainnet
     }
 }
 
@@ -144,6 +161,31 @@ pub enum YkPurpose {
     ProtectManagement,
     /// W12: "PIN 하나로 통일".
     SetPins,
+    /// W05 of "슬롯 구성 바꾸기" (spec/10 §15.1).
+    ReslotMnemonic,
+    /// W06 of "슬롯 구성 바꾸기".
+    ReslotPassphrase,
+    /// W12: the `OpenPGP` admin PIN of "슬롯 구성 바꾸기".
+    ReslotAdminPin,
+    /// W12: the `OpenPGP` admin PIN of "`YubiKey` 비우기" (our slots only).
+    ClearAdminPin,
+    /// W12: the PIV PIN of "`YubiKey` 비우기" (our slots only).
+    ClearPivPin,
+}
+
+impl YkPurpose {
+    /// A window of the `YubiKey` list's card actions ([`manage`]).
+    #[must_use]
+    pub const fn is_manage(self) -> bool {
+        matches!(
+            self,
+            Self::ReslotMnemonic
+                | Self::ReslotPassphrase
+                | Self::ReslotAdminPin
+                | Self::ClearAdminPin
+                | Self::ClearPivPin
+        )
+    }
 }
 
 /// The wizard state (no secret: the words are in the key worker, the credentials only between
@@ -235,7 +277,7 @@ fn next_indices(
                 script: kind,
                 index,
             } if net == network && kind == script => btc.push(index),
-            KeyRole::Btc { .. } => {}
+            KeyRole::Btc { .. } | KeyRole::Zec { .. } => {}
             KeyRole::Sol { index } => sol.push(index.get()),
         }
     }
@@ -257,11 +299,15 @@ impl YkWizard {
     #[must_use]
     pub fn new(origin: WizardOrigin, records: &[HwKeyRecord], network: BtcNetwork) -> Self {
         let (evm, btc, sol) = next_indices(records, network, ScriptType::P2wpkh);
+        let form = |kind, index| PgpForm {
+            zec: zec_network_for(network),
+            ..PgpForm::new(kind, index)
+        };
         Self {
             origin,
             step: WizardStep::Plan,
-            sig: PgpForm::new(PgpKind::Evm, evm),
-            aut: PgpForm::new(PgpKind::Btc, btc),
+            sig: form(PgpKind::Evm, evm),
+            aut: form(PgpKind::Btc, btc),
             sol_count_text: "1".to_owned(),
             sol_start_text: sol.to_string(),
             piv_touch: TouchPolicy::Always,
@@ -338,6 +384,10 @@ impl YkWizard {
             PgpKind::Btc => KeyRole::Btc {
                 network,
                 script: form.script,
+                index: parse_index(&form.index_text, MAX_BTC_INDEX, &label)?,
+            },
+            PgpKind::Zec => KeyRole::Zec {
+                network: form.zec,
                 index: parse_index(&form.index_text, MAX_BTC_INDEX, &label)?,
             },
         };
@@ -673,6 +723,10 @@ impl App {
         values: Vec<Zeroizing<Vec<u8>>>,
         checkbox: bool,
     ) {
+        if purpose.is_manage() {
+            self.yk_manage_submit(purpose, values, checkbox);
+            return;
+        }
         let mut values = values.into_iter();
         let mut next = || values.next().unwrap_or_default();
         match purpose {
@@ -785,7 +839,12 @@ impl App {
                     new,
                 }));
             }
-            YkPurpose::ShowWords => {}
+            YkPurpose::ShowWords
+            | YkPurpose::ReslotMnemonic
+            | YkPurpose::ReslotPassphrase
+            | YkPurpose::ReslotAdminPin
+            | YkPurpose::ClearAdminPin
+            | YkPurpose::ClearPivPin => {}
         }
     }
 
@@ -816,6 +875,11 @@ impl App {
             YkPurpose::ChangePin(_) | YkPurpose::ProtectManagement | YkPurpose::SetPins => {
                 self.refresh();
             }
+            YkPurpose::ReslotMnemonic
+            | YkPurpose::ReslotPassphrase
+            | YkPurpose::ReslotAdminPin
+            | YkPurpose::ClearAdminPin
+            | YkPurpose::ClearPivPin => self.yk_manage_cancel(purpose),
         }
     }
 
@@ -1090,6 +1154,7 @@ impl App {
                 self.password_failure(error, yw_win::time::monotonic_ms());
             }
             YkOutcome::Discarded => {}
+            YkOutcome::Manage(outcome) => self.on_yk_manage(outcome),
         }
     }
 
@@ -1336,6 +1401,9 @@ impl App {
     #[expect(clippy::too_many_lines, reason = "one arm per wizard control")]
     pub fn on_yk_command(&mut self, id: u16) -> bool {
         use crate::ui::screens_yubikey::ids;
+        if self.on_yk_manage_command(id) {
+            return true;
+        }
         if let Some((key, action)) = ids::pgp_action(id) {
             if let Some(wizard) = self.yk_wizard() {
                 let form = wizard.pgp_mut(key);
@@ -1343,6 +1411,7 @@ impl App {
                     ids::PgpAction::Kind(kind) => form.kind = kind,
                     ids::PgpAction::Script(script) => form.script = script,
                     ids::PgpAction::Touch(touch) => form.touch = touch,
+                    ids::PgpAction::Zec(network) => form.zec = network,
                 }
                 wizard.error = None;
             }
@@ -1373,6 +1442,15 @@ impl App {
         }
         match id {
             ids::SECTION_YUBIKEY => {
+                // Opening the tab again ends a card action that is not talking to the card.
+                if self
+                    .card
+                    .manage
+                    .as_ref()
+                    .is_some_and(|manage| !manage.running())
+                {
+                    self.yk_manage_close();
+                }
                 self.set_screen(Screen::Settings(SettingsSection::YubiKey));
                 self.key(KeyJob::HardwareKeys);
             }
@@ -1495,6 +1573,9 @@ impl App {
     /// `EN_CHANGE` of a wizard edit; `false` when `id` is not one of them.
     pub fn on_yk_edit_change(&mut self, id: u16) -> bool {
         use crate::ui::screens_yubikey::ids;
+        if self.on_yk_manage_edit_change(id) {
+            return true;
+        }
         if ![
             ids::SIG_INDEX_EDIT,
             ids::AUT_INDEX_EDIT,

@@ -13,6 +13,7 @@
 pub mod btc;
 pub mod evm;
 pub mod sol;
+pub mod zec;
 
 #[cfg(test)]
 mod tests;
@@ -45,6 +46,8 @@ pub enum EntryKind {
     Sol = 2,
     /// Bitcoin record (spec/08 §12.4, M8).
     Btc = 3,
+    /// Zcash transparent record (spec/12 §12).
+    Zec = 4,
 }
 
 impl EntryKind {
@@ -61,6 +64,7 @@ impl EntryKind {
             1 => Some(Self::Evm),
             2 => Some(Self::Sol),
             3 => Some(Self::Btc),
+            4 => Some(Self::Zec),
             _ => None,
         }
     }
@@ -72,6 +76,7 @@ impl EntryKind {
             Self::Evm => evm::MAX_BODY,
             Self::Sol => sol::SOL_JOURNAL_MAX_BODY,
             Self::Btc => btc::BTC_JOURNAL_MAX_BODY,
+            Self::Zec => zec::ZEC_JOURNAL_MAX_BODY,
         }
     }
 }

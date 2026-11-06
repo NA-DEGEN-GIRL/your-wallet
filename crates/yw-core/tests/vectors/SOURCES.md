@@ -12,6 +12,15 @@ that time.
 | `slip10_ed25519.json` (M7) | https://github.com/satoshilabs/slips/blob/master/slip-0010.md (`### Test vector 1 for ed25519`, `### Test vector 2 for ed25519`) | `a00312491693714d9bc1b6e4cb5b2e356e6c511e` | not stated in the document | Seeds and every chain's `fingerprint`/`chain code`/`private`/`public` copied verbatim into `[{"seed", "chains": [{"path", "fingerprint", "chain_code", "private", "public"}]}]` (2 seeds, 12 chains); the only rewrite is the path notation `0<sub>H</sub>` → `0'`. |
 | `rfc8032.json` (M7) | https://www.rfc-editor.org/rfc/rfc8032.txt §7.1 (`-----TEST 1`, `2`, `3`, `1024`, `SHA(abc)`) | RFC (immutable) | IETF Trust, BCP 78 | `SECRET KEY`/`PUBLIC KEY`/`MESSAGE`/`SIGNATURE` hex of the five Ed25519 tests, line breaks and spaces removed, into `{"source", "tests": [{"test", "secret_key", "public_key", "message", "signature"}]}`. |
 
+Zcash (spec/12 §14.1), fetched 2026-11-06 from `raw.githubusercontent.com/zcash/zcash-test-vectors/master/test-vectors/json/` (repository latest commit 2026-07-01; commit hash not recorded in this session), files unchanged:
+
+| File | Source | License | Notes |
+|---|---|---|---|
+| `zec/f4jumble.json` | https://github.com/zcash/zcash-test-vectors/blob/master/test-vectors/json/f4jumble.json | MIT OR Apache-2.0 | 8 rows `normal, jumbled` (ZIP 316 F4Jumble) |
+| `zec/unified_address.json` | https://github.com/zcash/zcash-test-vectors/blob/master/test-vectors/json/unified_address.json | MIT OR Apache-2.0 | 60 rows, ZIP 316 revision 0 mainnet UAs |
+| `zec/zip_0320.json` | https://github.com/zcash/zcash-test-vectors/blob/master/test-vectors/json/zip_0320.json | MIT OR Apache-2.0 | 15 rows `t_addr, p2pkh_bytes, tex_addr, account, child_index` |
+| `zec/zip_0244.json` | https://github.com/zcash/zcash-test-vectors/blob/master/test-vectors/json/zip_0244.json | MIT OR Apache-2.0 | 10 v5 transactions: txid, auth digest, sighashes |
+
 Inline vectors (not files):
 
 | Test | Source | Commit | License |

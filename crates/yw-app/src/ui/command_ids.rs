@@ -99,7 +99,7 @@ pub fn ranges() -> Vec<IdRange> {
     use crate::settings::MAX_CUSTOM_EVM_CHAINS;
     let evm_chains = crate::network::BUILTIN_EVM.len() + MAX_CUSTOM_EVM_CHAINS;
     // URL rows: every EVM chain, solana:mainnet/devnet, bitcoin:mainnet/testnet4 (spec/04 §2.11.1).
-    let url_rows = evm_chains + 2 + 2;
+    let url_rows = evm_chains + 2 + 2 + 2;
     vec![
         range(
             "walletconnect.sessions",
@@ -298,6 +298,27 @@ pub fn ranges() -> Vec<IdRange> {
             yw_core::yubikey::plan::MAX_CARDS,
         ),
         range(
+            "yubikey.reslot_rows",
+            screens_yubikey::ids::RESLOT_BASE,
+            screens_yubikey::ids::RESLOT_SPAN,
+            1,
+            yw_core::yubikey::plan::MAX_CARDS,
+        ),
+        range(
+            "yubikey.clear_rows",
+            screens_yubikey::ids::CLEAR_BASE,
+            screens_yubikey::ids::CLEAR_SPAN,
+            1,
+            yw_core::yubikey::plan::MAX_CARDS,
+        ),
+        range(
+            "yubikey.reslot_backup_rows",
+            screens_yubikey::ids::RESLOT_BACKUP_BASE,
+            screens_yubikey::ids::RESLOT_BACKUP_SPAN,
+            1,
+            yw_core::yubikey::plan::MAX_CARDS,
+        ),
+        range(
             "btc.activity",
             screens_btc::ids::ACTIVITY_BASE,
             screens_btc::ids::ACTIVITY_SPAN,
@@ -317,6 +338,7 @@ pub fn fixed() -> Vec<(&'static str, &'static [u16])> {
         ("sites", screens_sites::ids::FIXED),
         ("sol", screens_sol::ids::FIXED),
         ("btc", &screens_btc::ids::FIXED),
+        ("zec", &crate::ui::screens_zec::ids::FIXED),
         ("llm", screens_llm::ids::FIXED),
         ("keys", screens_keys::ids::FIXED),
         ("yubikey", screens_yubikey::ids::FIXED),

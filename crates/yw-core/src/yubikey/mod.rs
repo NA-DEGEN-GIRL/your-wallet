@@ -13,6 +13,7 @@
 //! | [`plan`] | slot plan: roles, derivation paths, duplicate rules, slot map queries |
 //! | [`record`] | vault tag 5 record codec (one record per YubiKey) |
 //! | [`enrol`] | derive from the mnemonic, import, read back and compare public keys |
+//! | [`manage`] | re-slot an enrolled card ("슬롯 구성 바꾸기"), clear it ("YubiKey 비우기") |
 //! | [`sign`] | signing on the card for a planned slot (PIN per operation) |
 //! | [`mock`] | APDU-level emulator of both applets for tests (yw-app uses it only under `cfg(test)`; the check script forbids dev-dependencies, so it is always compiled) |
 //!
@@ -20,8 +21,8 @@
 //! the PIV management-key block cipher is [`piv::MgmtCipher`] (Windows CNG in yw-win).
 //!
 //! **Hardware rule:** nothing in the gate talks to a real card. The only code that writes to a
-//! card is [`enrol`] and the PIN/management-key change helpers, and it runs only when the user
-//! starts the enrolment wizard.
+//! card is [`enrol`], [`manage`] and the PIN/management-key change helpers, and it runs only when
+//! the user starts the enrolment wizard or a card action of the `YubiKey` list.
 #![allow(
     clippy::doc_markdown,
     reason = "product names (YubiKey, OpenPGP) appear throughout the card documentation"
@@ -31,6 +32,7 @@ use core::fmt;
 
 pub mod apdu;
 pub mod enrol;
+pub mod manage;
 pub mod mock;
 pub mod openpgp;
 pub mod piv;

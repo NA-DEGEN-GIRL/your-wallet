@@ -174,9 +174,9 @@ fn frame(count: u16, entries: &[(u8, Vec<u8>)]) -> Vec<u8> {
 fn container_framing_errors_are_sidecar_corrupt() {
     let ok = frame(1, &[(1, vec![1; 4])]);
     assert!(JournalPlain::decode(&ok).is_ok());
-    // Unknown kind.
+    // Unknown kind (4 is Zcash since spec/12; its body is checked by `journal::zec`).
     assert_eq!(
-        JournalPlain::decode(&frame(1, &[(4, vec![1])])),
+        JournalPlain::decode(&frame(1, &[(5, vec![1])])),
         Err(CORRUPT)
     );
     assert_eq!(

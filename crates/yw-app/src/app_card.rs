@@ -62,6 +62,11 @@ pub enum CardJobKind {
         /// Core tip of the plan.
         tip_height: u32,
     },
+    /// A ZEC send (`SignZecCard`, one card signature per input; spec/10 §6.4).
+    Zec {
+        /// The approved plan.
+        plan: Box<yw_core::zec::ZecPlan>,
+    },
 }
 
 /// One approval waiting for (or signing with) the card.
@@ -191,6 +196,9 @@ pub struct CardUi {
     pub pin_serial: Option<u32>,
     /// "PIN 설정" mode: `false` = "8자리 하나로 통일" (the default), `true` = one value each.
     pub pins_separate: bool,
+    /// The open card action of the `YubiKey` list ("슬롯 구성 바꾸기" / "`YubiKey` 비우기",
+    /// spec/10 §15).
+    pub manage: Option<crate::app_yubikey::manage::YkManage>,
 }
 
 impl CardUi {
@@ -207,6 +215,12 @@ impl CardUi {
         self.pin_serial = None;
         self.pins_separate = false;
         self.pending_unhide.clear();
+        self.manage = None;
+    }
+
+    /// Keys whose hidden accounts become visible at the next meta load (after a card change).
+    pub fn unhide_later(&mut self, roles: impl IntoIterator<Item = KeyRole>) {
+        self.pending_unhide.extend(roles);
     }
 }
 
@@ -399,7 +413,7 @@ impl App {
             let (list, index) = match role {
                 KeyRole::Evm { index, .. } => (&mut meta.hw_accounts.evm, index.get()),
                 KeyRole::Sol { index } => (&mut meta.hw_accounts.sol, index.get()),
-                KeyRole::Btc { .. } => continue,
+                KeyRole::Btc { .. } | KeyRole::Zec { .. } => continue,
             };
             for account in list.iter_mut().filter(|account| account.index == index) {
                 changed |= account.hidden;
@@ -430,6 +444,7 @@ impl App {
     pub(crate) fn card_role(approved: &Approved, kind: &CardJobKind) -> Option<KeyRole> {
         match kind {
             CardJobKind::Btc { plan, .. } => crate::yubikey::btc_plan_role(plan),
+            CardJobKind::Zec { plan } => crate::yubikey::zec_plan_role(plan),
             _ => crate::yubikey::approval_role(approved),
         }
     }
@@ -447,6 +462,7 @@ impl App {
         };
         let touches = match &kind {
             CardJobKind::Btc { plan, .. } => u8::try_from(plan.inputs().len()).unwrap_or(u8::MAX),
+            CardJobKind::Zec { plan } => u8::try_from(plan.inputs.len()).unwrap_or(u8::MAX),
             _ => 1,
         };
         self.card.next_id = self.card.next_id.wrapping_add(1);
@@ -592,6 +608,14 @@ impl App {
                 now_unix_ms: now_unix_ms(),
                 pin,
             }),
+            CardJobKind::Zec { plan } => self.key(KeyJob::Zec(Box::new(
+                crate::workers::journal::zec::ZecKeyJob::SignCard {
+                    approved,
+                    plan,
+                    now_unix_ms: now_unix_ms(),
+                    pin,
+                },
+            ))),
         }
         self.info = Some("YubiKey가 깜박이면 터치하세요 (15초 안에).".to_owned());
         self.refresh();
@@ -655,6 +679,7 @@ impl App {
             CardJobKind::EvmTx { .. } => self.evm.slots.clear(),
             CardJobKind::SolTransfer { .. } => self.sol.slot = None,
             CardJobKind::Btc { .. } => self.btc.slot = false,
+            CardJobKind::Zec { .. } => self.zec_card_cancelled(),
             CardJobKind::EvmMessage { .. } | CardJobKind::ChainMessage => {}
         }
     }
@@ -713,6 +738,7 @@ impl App {
             ) => step.ticket == Some(*ticket),
             (CardJobKind::SolTransfer { .. }, KeyOutcome::SignedSol(_))
             | (CardJobKind::Btc { .. }, KeyOutcome::SignedBtc(_)) => true,
+            (CardJobKind::Zec { .. }, KeyOutcome::Zec(outcome)) => outcome.is_signed(),
             _ => false,
         }
     }

@@ -9,6 +9,7 @@ use yw_core::yubikey::plan::{
     CardSlot, KeyRole, MAX_CARDS, PgpKey, PinPolicy, TouchPolicy, accounts, address_texts,
 };
 use yw_core::yubikey::record::HwKeyRecord;
+use yw_core::zec::ZecNetwork;
 
 use crate::app::{App, AppMode};
 use crate::app_yubikey::{
@@ -17,11 +18,15 @@ use crate::app_yubikey::{
 };
 use crate::ui::main_window::{Ctl, Item, Tone};
 
+mod manage;
+
 /// Command ids (block 13,200–13,399, `ui::command_ids`).
 pub mod ids {
     use yw_core::btc::ScriptType;
     use yw_core::yubikey::plan::{PgpKey, TouchPolicy};
+    use yw_core::zec::ZecNetwork;
 
+    use crate::app_yubikey::manage::{Chain, Preset};
     use crate::app_yubikey::{CARD_SCRIPTS, PGP_TOUCH, PgpKind};
 
     /// Settings tab `YubiKey`.
@@ -35,7 +40,7 @@ pub mod ids {
     /// S20 `취소`.
     pub const NEW_WALLET_CANCEL: u16 = 13_204;
     /// `OpenPGP` SIG controls: `SIG_BASE + offset` (kind 0–3, index edit 4, scripts 5–7,
-    /// touch 8–11).
+    /// touch 8–11, kind Zcash 12, Zcash network mainnet 13 / testnet 14).
     pub const SIG_BASE: u16 = 13_210;
     /// `OpenPGP` AUT controls (same offsets).
     pub const AUT_BASE: u16 = 13_230;
@@ -112,7 +117,69 @@ pub mod ids {
     /// Rows of [`PINS_BASE`].
     pub const PINS_SPAN: u16 = 8;
 
+    /// `슬롯 구성 바꾸기` of card row: `RESLOT_BASE + row` (spec/10 §15.1).
+    pub const RESLOT_BASE: u16 = 13_310;
+    /// Rows of [`RESLOT_BASE`].
+    pub const RESLOT_SPAN: u16 = 8;
+    /// `YubiKey 비우기` of card row: `CLEAR_BASE + row` (spec/10 §15.2).
+    pub const CLEAR_BASE: u16 = 13_320;
+    /// Rows of [`CLEAR_BASE`].
+    pub const CLEAR_SPAN: u16 = 8;
+    /// Re-slot preset radios: `PRESET_BASE + position` of [`Preset::ALL`].
+    pub const PRESET_BASE: u16 = 13_330;
+    /// Re-slot SIG controls: `RESLOT_SIG_BASE + offset` (chain 0–3, index edit 4, scripts 5–7).
+    pub const RESLOT_SIG_BASE: u16 = 13_340;
+    /// Re-slot AUT controls (same offsets).
+    pub const RESLOT_AUT_BASE: u16 = 13_350;
+    /// Re-slot SIG index edit.
+    pub const RESLOT_SIG_INDEX_EDIT: u16 = RESLOT_SIG_BASE + 4;
+    /// Re-slot AUT index edit.
+    pub const RESLOT_AUT_INDEX_EDIT: u16 = RESLOT_AUT_BASE + 4;
+    /// Re-slot Zcash network "메인넷".
+    pub const RESLOT_ZEC_MAIN: u16 = 13_358;
+    /// Re-slot Zcash network "테스트넷".
+    pub const RESLOT_ZEC_TEST: u16 = 13_359;
+    /// Re-slot "고급: EVM 공유 키도 보이기".
+    pub const RESLOT_ADVANCED: u16 = 13_360;
+    /// Re-slot §3.2 checkbox of the shared key.
+    pub const RESLOT_SHARED_ACK: u16 = 13_361;
+    /// Re-slot "이해했습니다" of the removed chains.
+    pub const RESLOT_REMOVED_ACK: u16 = 13_362;
+    /// Re-slot `다음`.
+    pub const RESLOT_NEXT: u16 = 13_363;
+    /// Re-slot `← 다시 고르기`.
+    pub const RESLOT_BACK: u16 = 13_364;
+    /// Re-slot `YubiKey에 넣기` (admin PIN).
+    pub const RESLOT_IMPORT: u16 = 13_365;
+    /// Card action `취소`.
+    pub const MANAGE_CANCEL: u16 = 13_366;
+    /// Re-slot `다시 시도`.
+    pub const RESLOT_RETRY: u16 = 13_367;
+    /// Card action `완료`.
+    pub const MANAGE_DONE: u16 = 13_368;
+    /// "백업 `YubiKey`에도 같은 구성 적용" of card row: `RESLOT_BACKUP_BASE + row`.
+    pub const RESLOT_BACKUP_BASE: u16 = 13_370;
+    /// Rows of [`RESLOT_BACKUP_BASE`].
+    pub const RESLOT_BACKUP_SPAN: u16 = 8;
+    /// Clear: `OpenPGP` wallet keys checkbox.
+    pub const CLEAR_PGP_TOGGLE: u16 = 13_380;
+    /// Clear: PIV Solana slots checkbox.
+    pub const CLEAR_PIV_TOGGLE: u16 = 13_381;
+    /// Clear: `OpenPGP` "우리 슬롯만 지우기".
+    pub const CLEAR_PGP_OURS: u16 = 13_382;
+    /// Clear: `OpenPGP` "애플릿 초기화".
+    pub const CLEAR_PGP_RESET: u16 = 13_383;
+    /// Clear: PIV "우리 슬롯만 지우기".
+    pub const CLEAR_PIV_OURS: u16 = 13_384;
+    /// Clear: PIV "애플릿 초기화".
+    pub const CLEAR_PIV_RESET: u16 = 13_385;
+    /// Clear: the confirmation word edit.
+    pub const CLEAR_CONFIRM_EDIT: u16 = 13_386;
+    /// Clear: `비우기`.
+    pub const CLEAR_RUN: u16 = 13_387;
+
     const KINDS: [PgpKind; 4] = [PgpKind::None, PgpKind::Evm, PgpKind::Btc, PgpKind::Shared];
+    const ZEC_NETWORKS: [ZecNetwork; 2] = [ZecNetwork::Mainnet, ZecNetwork::Testnet];
 
     /// What an `OpenPGP` slot control sets.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,6 +190,99 @@ pub mod ids {
         Script(ScriptType),
         /// The touch radio.
         Touch(TouchPolicy),
+        /// The Zcash network radio.
+        Zec(ZecNetwork),
+    }
+
+    /// What a re-slot slot control sets.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum ReslotAction {
+        /// The chain radio.
+        Chain(Chain),
+        /// The address-type radio.
+        Script(ScriptType),
+    }
+
+    /// The id of a control of `key`'s re-slot form.
+    #[must_use]
+    pub fn reslot_id(key: PgpKey, action: ReslotAction) -> u16 {
+        let base = match key {
+            PgpKey::Sig => RESLOT_SIG_BASE,
+            PgpKey::Aut => RESLOT_AUT_BASE,
+        };
+        let offset = match action {
+            ReslotAction::Chain(chain) => Chain::ALL.iter().position(|other| *other == chain),
+            ReslotAction::Script(script) => CARD_SCRIPTS
+                .iter()
+                .position(|other| *other == script)
+                .map(|position| position + 5),
+        };
+        base.saturating_add(
+            offset
+                .and_then(|offset| u16::try_from(offset).ok())
+                .unwrap_or(4),
+        )
+    }
+
+    /// The form and action of a re-slot slot control id.
+    #[must_use]
+    pub fn reslot_action(id: u16) -> Option<(PgpKey, ReslotAction)> {
+        let (key, offset) = if (RESLOT_SIG_BASE..RESLOT_SIG_BASE + 8).contains(&id) {
+            (PgpKey::Sig, id - RESLOT_SIG_BASE)
+        } else if (RESLOT_AUT_BASE..RESLOT_AUT_BASE + 8).contains(&id) {
+            (PgpKey::Aut, id - RESLOT_AUT_BASE)
+        } else {
+            return None;
+        };
+        let offset = usize::from(offset);
+        let action = match offset {
+            0..=3 => ReslotAction::Chain(*Chain::ALL.get(offset)?),
+            5..=7 => ReslotAction::Script(*CARD_SCRIPTS.get(offset - 5)?),
+            _ => return None,
+        };
+        Some((key, action))
+    }
+
+    /// The id of a preset radio.
+    #[must_use]
+    pub fn preset_id(preset: Preset) -> u16 {
+        let position = Preset::ALL
+            .iter()
+            .position(|other| *other == preset)
+            .and_then(|position| u16::try_from(position).ok())
+            .unwrap_or(0);
+        PRESET_BASE.saturating_add(position)
+    }
+
+    /// The preset of a preset radio id.
+    #[must_use]
+    pub fn preset(id: u16) -> Option<Preset> {
+        let offset = id.checked_sub(PRESET_BASE)?;
+        Preset::ALL.get(usize::from(offset)).copied()
+    }
+
+    fn row_of(id: u16, base: u16, span: u16) -> Option<usize> {
+        id.checked_sub(base)
+            .filter(|offset| *offset < span)
+            .map(usize::from)
+    }
+
+    /// The card row of a `슬롯 구성 바꾸기` id.
+    #[must_use]
+    pub fn reslot_row(id: u16) -> Option<usize> {
+        row_of(id, RESLOT_BASE, RESLOT_SPAN)
+    }
+
+    /// The card row of a `YubiKey 비우기` id.
+    #[must_use]
+    pub fn clear_row(id: u16) -> Option<usize> {
+        row_of(id, CLEAR_BASE, CLEAR_SPAN)
+    }
+
+    /// The card row of a "백업 `YubiKey`에도 같은 구성 적용" id.
+    #[must_use]
+    pub fn reslot_backup_row(id: u16) -> Option<usize> {
+        row_of(id, RESLOT_BACKUP_BASE, RESLOT_BACKUP_SPAN)
     }
 
     /// The id of a control of `key`'s form.
@@ -133,6 +293,11 @@ pub mod ids {
             PgpKey::Aut => AUT_BASE,
         };
         let offset = match action {
+            PgpAction::Kind(PgpKind::Zec) => Some(12),
+            PgpAction::Zec(network) => ZEC_NETWORKS
+                .iter()
+                .position(|other| *other == network)
+                .map(|position| position + 13),
             PgpAction::Kind(kind) => KINDS.iter().position(|other| *other == kind),
             PgpAction::Script(script) => CARD_SCRIPTS
                 .iter()
@@ -153,9 +318,9 @@ pub mod ids {
     /// The form and action of an `OpenPGP` slot control id.
     #[must_use]
     pub fn pgp_action(id: u16) -> Option<(PgpKey, PgpAction)> {
-        let (key, offset) = if (SIG_BASE..SIG_BASE + 12).contains(&id) {
+        let (key, offset) = if (SIG_BASE..SIG_BASE + 15).contains(&id) {
             (PgpKey::Sig, id - SIG_BASE)
-        } else if (AUT_BASE..AUT_BASE + 12).contains(&id) {
+        } else if (AUT_BASE..AUT_BASE + 15).contains(&id) {
             (PgpKey::Aut, id - AUT_BASE)
         } else {
             return None;
@@ -165,6 +330,8 @@ pub mod ids {
             0..=3 => PgpAction::Kind(*KINDS.get(offset)?),
             5..=7 => PgpAction::Script(*CARD_SCRIPTS.get(offset - 5)?),
             8..=11 => PgpAction::Touch(*PGP_TOUCH.get(offset - 8)?),
+            12 => PgpAction::Kind(PgpKind::Zec),
+            13..=14 => PgpAction::Zec(*ZEC_NETWORKS.get(offset - 13)?),
             _ => return None,
         };
         Some((key, action))
@@ -213,6 +380,9 @@ pub mod ids {
         SIG_BASE + 9,
         SIG_BASE + 10,
         SIG_BASE + 11,
+        SIG_BASE + 12,
+        SIG_BASE + 13,
+        SIG_BASE + 14,
         AUT_BASE,
         AUT_BASE + 1,
         AUT_BASE + 2,
@@ -225,6 +395,9 @@ pub mod ids {
         AUT_BASE + 9,
         AUT_BASE + 10,
         AUT_BASE + 11,
+        AUT_BASE + 12,
+        AUT_BASE + 13,
+        AUT_BASE + 14,
         SOL_COUNT_EDIT,
         SOL_START_EDIT,
         PIV_TOUCH_ALWAYS,
@@ -253,6 +426,46 @@ pub mod ids {
         SET_PINS,
         PINS_UNIFIED,
         PINS_SEPARATE,
+        PRESET_BASE,
+        PRESET_BASE + 1,
+        PRESET_BASE + 2,
+        PRESET_BASE + 3,
+        PRESET_BASE + 4,
+        RESLOT_SIG_BASE,
+        RESLOT_SIG_BASE + 1,
+        RESLOT_SIG_BASE + 2,
+        RESLOT_SIG_BASE + 3,
+        RESLOT_SIG_INDEX_EDIT,
+        RESLOT_SIG_BASE + 5,
+        RESLOT_SIG_BASE + 6,
+        RESLOT_SIG_BASE + 7,
+        RESLOT_AUT_BASE,
+        RESLOT_AUT_BASE + 1,
+        RESLOT_AUT_BASE + 2,
+        RESLOT_AUT_BASE + 3,
+        RESLOT_AUT_INDEX_EDIT,
+        RESLOT_AUT_BASE + 5,
+        RESLOT_AUT_BASE + 6,
+        RESLOT_AUT_BASE + 7,
+        RESLOT_ZEC_MAIN,
+        RESLOT_ZEC_TEST,
+        RESLOT_ADVANCED,
+        RESLOT_SHARED_ACK,
+        RESLOT_REMOVED_ACK,
+        RESLOT_NEXT,
+        RESLOT_BACK,
+        RESLOT_IMPORT,
+        MANAGE_CANCEL,
+        RESLOT_RETRY,
+        MANAGE_DONE,
+        CLEAR_PGP_TOGGLE,
+        CLEAR_PIV_TOGGLE,
+        CLEAR_PGP_OURS,
+        CLEAR_PGP_RESET,
+        CLEAR_PIV_OURS,
+        CLEAR_PIV_RESET,
+        CLEAR_CONFIRM_EDIT,
+        CLEAR_RUN,
     ];
 }
 
@@ -300,6 +513,16 @@ const fn kind_label(kind: PgpKind) -> &'static str {
         PgpKind::Evm => "EVM 계정",
         PgpKind::Btc => "Bitcoin 주소",
         PgpKind::Shared => "EVM 공유 키",
+        PgpKind::Zec => "Zcash 주소",
+    }
+}
+
+/// "메인넷 (t1…)" / "테스트넷 (tm…)".
+#[must_use]
+pub const fn zec_network_label(network: ZecNetwork) -> &'static str {
+    match network {
+        ZecNetwork::Mainnet => "메인넷 (t1…)",
+        ZecNetwork::Testnet => "테스트넷 (tm…)",
     }
 }
 
@@ -381,8 +604,16 @@ impl App {
     }
 
     /// Settings → `YubiKey`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one card per enrolled YubiKey / slot form"
+    )]
     pub fn yk_settings_section(&self, items: &mut Vec<Item>) {
         let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
+        if unlocked && let Some(manage) = self.card.manage.as_ref() {
+            self.yk_manage_items(manage, items);
+            return;
+        }
         let records = &self.card.records;
         items.push(Item::CardStart(Some("YubiKey 계정".to_owned())));
         items.push(Item::Text(T_YK_LIST.to_owned()));
@@ -443,6 +674,12 @@ impl App {
                 .enabled(unlocked),
                 Ctl::danger(ids::REMOVE_BASE.saturating_add(row_id), "삭제")
                     .enabled(unlocked && self.yk_can_remove()),
+            ]));
+            items.push(Item::Row(vec![
+                Ctl::button(ids::RESLOT_BASE.saturating_add(row_id), "슬롯 구성 바꾸기")
+                    .enabled(unlocked),
+                Ctl::danger(ids::CLEAR_BASE.saturating_add(row_id), "YubiKey 비우기")
+                    .enabled(unlocked),
             ]));
             items.push(Item::CardEnd);
             if open && unlocked {
@@ -520,24 +757,34 @@ impl App {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one card per enrolled YubiKey / slot form"
+    )]
     fn yk_pgp_items(&self, wizard: &YkWizard, key: PgpKey, items: &mut Vec<Item>) {
         use ids::PgpAction;
         let form = wizard.pgp(key);
         items.push(Item::CardStart(Some(CardSlot::OpenPgp(key).label())));
         items.push(Item::LabeledRow(
             "넣을 키".to_owned(),
-            [PgpKind::None, PgpKind::Evm, PgpKind::Btc, PgpKind::Shared]
-                .into_iter()
-                .enumerate()
-                .map(|(position, kind)| {
-                    Ctl::radio(
-                        ids::pgp_id(key, PgpAction::Kind(kind)),
-                        kind_label(kind),
-                        form.kind == kind,
-                        position == 0,
-                    )
-                })
-                .collect(),
+            [
+                PgpKind::None,
+                PgpKind::Evm,
+                PgpKind::Btc,
+                PgpKind::Zec,
+                PgpKind::Shared,
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(position, kind)| {
+                Ctl::radio(
+                    ids::pgp_id(key, PgpAction::Kind(kind)),
+                    kind_label(kind),
+                    form.kind == kind,
+                    position == 0,
+                )
+            })
+            .collect(),
         ));
         if form.kind == PgpKind::None {
             items.push(Item::CardEnd);
@@ -548,7 +795,7 @@ impl App {
             PgpKey::Aut => ids::AUT_INDEX_EDIT,
         };
         items.push(Item::LabeledRow(
-            if form.kind == PgpKind::Btc {
+            if matches!(form.kind, PgpKind::Btc | PgpKind::Zec) {
                 "주소 인덱스 (0–999)".to_owned()
             } else {
                 "계정 인덱스 (0–999)".to_owned()
@@ -566,6 +813,23 @@ impl App {
                             ids::pgp_id(key, PgpAction::Script(script)),
                             &script_label(script),
                             form.script == script,
+                            position == 0,
+                        )
+                    })
+                    .collect(),
+            ));
+        }
+        if form.kind == PgpKind::Zec {
+            items.push(Item::LabeledRow(
+                "Zcash 네트워크".to_owned(),
+                [ZecNetwork::Mainnet, ZecNetwork::Testnet]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(position, network)| {
+                        Ctl::radio(
+                            ids::pgp_id(key, PgpAction::Zec(network)),
+                            zec_network_label(network),
+                            form.zec == network,
                             position == 0,
                         )
                     })

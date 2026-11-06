@@ -496,6 +496,11 @@ impl Vault {
             // A YubiKey account has no key on the PC (spec/10 §1).
             KeyRef::Evm(EvmKeySource::Hardware(_)) => return Err(VaultError::RecordNotFound),
             KeyRef::Btc { coin, chain, index } => btc_path(coin, chain, index)?,
+            KeyRef::Zec {
+                test,
+                account,
+                index,
+            } => crate::bip32::path::zec_path(test, account, index)?,
         };
         let seed = self.seed(payload)?;
         Ok(secret_key_from_seed(ctx, seed.expose(), &path)?)
@@ -1327,6 +1332,37 @@ impl Vault {
         Ok(public.serialize())
     }
 
+    /// The compressed public key of the Zcash transparent key `m/44'/{133|1}'/{account}'/0/{index}`
+    /// (public information, spec/12 §2.2; the private key is wiped on return).
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` outside `BackupPending`/`Unlocked`, `NoMnemonic` for a key-only vault,
+    /// `Key(InvalidPath)` for a hardened index, or a derivation error.
+    pub fn zec_public_key(
+        &self,
+        test: bool,
+        account: u32,
+        index: u32,
+    ) -> Result<[u8; 33], VaultError> {
+        self.require_public()?;
+        crate::bip32::path::zec_path(test, account, index)?;
+        let payload = self.payload()?;
+        let ctx = secp_context(&mut OsRandom)?;
+        let mut secret = self.secret_for(
+            &ctx,
+            &payload,
+            KeyRef::Zec {
+                test,
+                account,
+                index,
+            },
+        )?;
+        let public = PublicKey::from_secret_key(&ctx, &secret);
+        secret.non_secure_erase();
+        Ok(public.serialize())
+    }
+
     /// Whether the vault has recovery words (`false` for a key-only vault, spec/02 §4.6).
     ///
     /// # Errors
@@ -1918,6 +1954,80 @@ impl Vault {
         if payload.record_count() == 0 {
             return Err(VaultError::LastKey);
         }
+        self.rewrite_payload(&payload)
+    }
+
+    /// The payload with record `id` replaced by `record` (`None`: removed), after the tag-5
+    /// rules: same serial, a valid record consistent with the other cards, and a vault without
+    /// recovery words keeps at least one record (`LastKey`).
+    fn replaced_hardware(
+        &self,
+        id: RecordId,
+        record: Option<&HwKeyRecord>,
+    ) -> Result<Payload, VaultError> {
+        let mut payload = self.payload()?;
+        let position = payload
+            .hw_keys
+            .iter()
+            .position(|entry| entry.record_id == id.0)
+            .ok_or(VaultError::RecordNotFound)?;
+        if let Some(record) = record {
+            let entry = payload
+                .hw_keys
+                .get_mut(position)
+                .ok_or(VaultError::RecordNotFound)?;
+            if entry.record.serial != record.serial {
+                return Err(VaultError::Key(KeyError::DerivationFailed));
+            }
+            entry.record = record.clone();
+            let all: Vec<HwKeyRecord> = payload
+                .hw_keys
+                .iter()
+                .map(|entry| entry.record.clone())
+                .collect();
+            if !record.is_valid() || !records_consistent(&all) {
+                return Err(VaultError::Key(KeyError::DerivationFailed));
+            }
+        } else {
+            payload.hw_keys.remove(position);
+            if payload.record_count() == 0 {
+                return Err(VaultError::LastKey);
+            }
+        }
+        Ok(payload)
+    }
+
+    /// Whether [`Vault::replace_hardware_key`] would accept the change (checked before a card is
+    /// changed, spec/10 §15).
+    ///
+    /// # Errors
+    ///
+    /// As [`Vault::replace_hardware_key`], without writing.
+    pub fn check_replace_hardware_key(
+        &self,
+        id: RecordId,
+        record: Option<&HwKeyRecord>,
+    ) -> Result<(), VaultError> {
+        self.require_signing()?;
+        self.replaced_hardware(id, record).map(drop)
+    }
+
+    /// Replaces the slot map of an enrolled `YubiKey` after "슬롯 구성 바꾸기" or
+    /// "`YubiKey` 비우기" (spec/10 §15; `PayloadRewrite`, no password: the card was already changed with
+    /// its own PIN, and nothing secret is involved). `None` removes the record (a card with no
+    /// wallet slot left).
+    ///
+    /// # Errors
+    ///
+    /// `BackupNotConfirmed`/`InvalidState`, `RecordNotFound`, `Key(DerivationFailed)` (another
+    /// serial, an invalid record or one contradicting the other cards), `LastKey` or `Storage`.
+    pub fn replace_hardware_key(
+        &mut self,
+        id: RecordId,
+        record: Option<&HwKeyRecord>,
+    ) -> Result<(), VaultError> {
+        self.require_signing()?;
+        let payload = self.replaced_hardware(id, record)?;
         self.rewrite_payload(&payload)
     }
 

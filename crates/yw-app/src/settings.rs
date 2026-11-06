@@ -201,6 +201,57 @@ pub struct BitcoinSettings {
     pub esplora_testnet4: String,
 }
 
+/// Zcash UTXO source (spec/12 §4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ZecIndexer {
+    /// The `zcash:<net>` node's `getaddressutxos` (Zebra / zcashd `-insightexplorer`).
+    Node,
+    /// Blockbook REST under the same endpoint (`<url>/api/v2/utxo/<address>`).
+    BbRest,
+}
+
+impl ZecIndexer {
+    /// Settings string.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Node => "node",
+            Self::BbRest => "bb-rest",
+        }
+    }
+
+    /// Parses `node` / `bb-rest`.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "node" => Some(Self::Node),
+            "bb-rest" => Some(Self::BbRest),
+            _ => None,
+        }
+    }
+}
+
+/// `zcash` (spec/12 §2): off by default; one network per wallet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ZcashSettings {
+    /// Zcash enabled.
+    pub enabled: bool,
+    /// Network.
+    pub network: yw_core::zec::ZecNetwork,
+    /// UTXO source.
+    pub indexer: ZecIndexer,
+}
+
+impl Default for ZcashSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            network: yw_core::zec::ZecNetwork::Mainnet,
+            indexer: ZecIndexer::Node,
+        }
+    }
+}
+
 /// `hypercore` (spec/11 §8, D34): the `HyperCore` card and its network. Mainnet always uses the
 /// official API; only the testnet API base may be overridden (HTTPS).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -221,6 +272,28 @@ impl Default for HyperCoreSettings {
             testnet_api: yw_core::hypercore::TESTNET_API.to_owned(),
         }
     }
+}
+
+fn zcash_json(zcash: ZcashSettings) -> Value {
+    json_object(vec![
+        ("enabled", Value::Bool(zcash.enabled)),
+        ("network", json_str(zcash.network.name())),
+        ("indexer", json_str(zcash.indexer.as_str())),
+    ])
+}
+
+fn load_zcash(object: &Object) -> Option<ZcashSettings> {
+    if object
+        .keys()
+        .any(|key| !matches!(key, "enabled" | "network" | "indexer"))
+    {
+        return None;
+    }
+    Some(ZcashSettings {
+        enabled: object.get("enabled")?.as_bool()?,
+        network: yw_core::zec::ZecNetwork::from_name(object.get("network")?.as_str()?)?,
+        indexer: ZecIndexer::parse(object.get("indexer")?.as_str()?)?,
+    })
 }
 
 /// Validates a `HyperCore` API base URL (HTTPS, ≤ 256 bytes, no query/fragment) and returns
@@ -328,6 +401,8 @@ pub struct Settings {
     pub solana: SolanaSettings,
     /// Bitcoin.
     pub bitcoin: BitcoinSettings,
+    /// Zcash (spec/12).
+    pub zcash: ZcashSettings,
     /// LLM.
     pub llm_explain: LlmSettings,
     /// `HyperCore` (spec/11).
@@ -406,6 +481,7 @@ impl Default for Settings {
             rpc_template: RpcTemplate::QuickNode,
             solana: SolanaSettings::default(),
             bitcoin: BitcoinSettings::default(),
+            zcash: ZcashSettings::default(),
             llm_explain: LlmSettings::default(),
             hypercore: HyperCoreSettings::default(),
             walletconnect_project: String::new(),
@@ -878,6 +954,10 @@ pub fn load(bytes: Option<&[u8]>) -> SettingsLoad {
                 Some(bitcoin) => settings.bitcoin = bitcoin,
                 None => banners.push(key.to_owned()),
             },
+            "zcash" => match value.as_object().and_then(load_zcash) {
+                Some(zcash) => settings.zcash = zcash,
+                None => banners.push(key.to_owned()),
+            },
             "llm_explain" => match value.as_object().and_then(load_llm) {
                 Some(llm) => settings.llm_explain = llm,
                 None => banners.push(key.to_owned()),
@@ -1106,6 +1186,7 @@ impl Settings {
                     ),
                 ]),
             ),
+            ("zcash", zcash_json(self.zcash)),
             (
                 "llm_explain",
                 json_object(vec![

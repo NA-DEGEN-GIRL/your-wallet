@@ -285,7 +285,7 @@ fn hw_btc_expected(
                 index,
                 btc: Some(shared),
             } => (HwBtcKey::Evm(index.get()), shared.network, shared.script),
-            KeyRole::Evm { btc: None, .. } | KeyRole::Sol { .. } => continue,
+            KeyRole::Evm { btc: None, .. } | KeyRole::Sol { .. } | KeyRole::Zec { .. } => continue,
         };
         match vault.hardware_btc_account(network, script_type, key) {
             Ok(account) => {
@@ -318,7 +318,7 @@ fn reconcile_hardware(document: &mut Meta, vault: &Vault) -> Result<bool, VaultE
             KeyRole::Evm { index, .. } => evm_address(&account.public)
                 .ok()
                 .map(|address| (index.get(), address.to_lower_hex())),
-            KeyRole::Btc { .. } | KeyRole::Sol { .. } => None,
+            KeyRole::Btc { .. } | KeyRole::Sol { .. } | KeyRole::Zec { .. } => None,
         }),
         true,
     );
@@ -328,7 +328,7 @@ fn reconcile_hardware(document: &mut Meta, vault: &Vault) -> Result<bool, VaultE
             KeyRole::Sol { index } => sol_address(&account.public)
                 .ok()
                 .map(|address| (index.get(), address.to_base58())),
-            KeyRole::Evm { .. } | KeyRole::Btc { .. } => None,
+            KeyRole::Evm { .. } | KeyRole::Btc { .. } | KeyRole::Zec { .. } => None,
         }),
         false,
     );
@@ -698,6 +698,94 @@ impl KeyWorker {
                     (None, SolCardSignError::Card(error)) => {
                         SolSignFailure::Card(CardJobError::Card(error))
                     }
+                })
+            },
+        )
+    }
+
+    /// A Zcash step (spec/12 §10–§12).
+    fn zec_job(&mut self, job: crate::workers::journal::zec::ZecKeyJob) -> Vec<KeyOutcome> {
+        use crate::workers::journal::JournalState;
+        use crate::workers::journal::zec::{ZecKeyJob, ZecKeyOutcome, ZecSignFailure};
+        let locked = || {
+            vec![KeyOutcome::Zec(Box::new(ZecKeyOutcome::Signed(Err(
+                ZecSignFailure::JournalWrite,
+            ))))]
+        };
+        match job {
+            ZecKeyJob::PublicKey { network, source } => match self.vault.as_ref() {
+                Some(vault) => JournalState::zec_public_key(vault, network, source),
+                None => vec![KeyOutcome::Zec(Box::new(ZecKeyOutcome::PublicKey(Err(
+                    VaultError::InvalidState.to_string(),
+                ))))],
+            },
+            ZecKeyJob::Sign {
+                approved,
+                plan,
+                now_unix_ms,
+            } => match self.vault.as_mut() {
+                Some(vault) => self.journal.sign_zec(vault, approved, &plan, now_unix_ms),
+                None => locked(),
+            },
+            ZecKeyJob::SignCard {
+                approved,
+                plan,
+                now_unix_ms,
+                pin,
+            } => self.sign_zec_card(approved, &plan, now_unix_ms, &pin),
+            ZecKeyJob::Journal { txid, transition } => match self.vault.as_mut() {
+                Some(vault) => self.journal.apply_zec(vault, txid, transition),
+                None => vec![KeyOutcome::Journal(Err(VaultError::InvalidState))],
+            },
+        }
+    }
+
+    /// `SignZecCard` (spec/10 §6.4): one card signature per input with the same PIN
+    /// (`zec::sign::sign_plan_card`), the same journal handling as the vault path.
+    fn sign_zec_card(
+        &mut self,
+        approved: Box<yw_core::approval::Approved>,
+        plan: &yw_core::zec::ZecPlan,
+        now_unix_ms: u64,
+        pin: &[u8],
+    ) -> Vec<KeyOutcome> {
+        use crate::workers::journal::zec::{ZecKeyOutcome, ZecSignFailure};
+        let signed_err = |failure: ZecSignFailure| {
+            KeyOutcome::Zec(Box::new(ZecKeyOutcome::Signed(Err(failure))))
+        };
+        let role = crate::yubikey::zec_plan_role(plan);
+        if let Some(error) = self.card_refusal(role, pin) {
+            return vec![
+                KeyOutcome::CardUnused(approved, error),
+                signed_err(ZecSignFailure::Card(error)),
+            ];
+        }
+        let (Some(vault), Some(role)) = (self.vault.as_mut(), role) else {
+            return vec![signed_err(ZecSignFailure::JournalWrite)];
+        };
+        let Ok(records) = Self::hardware_records(vault) else {
+            return vec![signed_err(ZecSignFailure::JournalWrite)];
+        };
+        let cards = self.cards.as_mut();
+        self.journal.sign_zec_with(
+            vault,
+            approved,
+            plan,
+            now_unix_ms,
+            &mut |_, approved, plan| {
+                let mut failure = None;
+                let mut card = |sighash: [u8; 32]| {
+                    crate::yubikey::sign_btc_sighash(cards, &records, role, pin, sighash).map_err(
+                        |error| {
+                            failure = Some(error);
+                            yw_core::yubikey::CardError::Internal
+                        },
+                    )
+                };
+                let result = yw_core::zec::sign_plan_card(approved, plan, &mut card);
+                result.map_err(|error| match failure {
+                    Some(failure) => ZecSignFailure::Card(failure),
+                    None => ZecSignFailure::Sign(error),
                 })
             },
         )
@@ -1316,6 +1404,7 @@ impl KeyWorker {
                 now_unix_ms,
                 pin,
             } => self.sign_btc_card(approved, &plan, (tip_height, now_unix_ms), &pin, alt),
+            KeyJob::Zec(zec_job) => self.zec_job(*zec_job),
             KeyJob::SignMessageCard {
                 ticket,
                 approved,
@@ -1542,6 +1631,7 @@ impl KeyWorker {
             | KeyJob::BtcMeta { .. }
             | KeyJob::SignBtc { .. }
             | KeyJob::BtcJournal { .. }
+            | KeyJob::Zec(_)
             | KeyJob::RemoveImportedKey { .. }
             | KeyJob::RecoverFromPrev { .. } => KeyOutcome::Journal(Err(VaultError::InvalidState)),
             KeyJob::Lock | KeyJob::Shutdown => {
