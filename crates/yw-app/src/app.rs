@@ -535,6 +535,8 @@ pub struct App {
     pub(crate) btc: crate::app_btc::BtcUi,
     /// `HyperCore` card, form and session activity (spec/11).
     pub(crate) hypercore: crate::app_hypercore::HcUi,
+    /// `WalletConnect` worker, sessions and panel state (spec/13).
+    pub(crate) wc: crate::app_walletconnect::WcUi,
     /// Imported keys and "개인키로 시작하기" (spec/04 §2.18).
     pub(crate) keys: crate::app_keys::KeysUi,
     /// `YubiKey` card step and enrolment state (spec/10).
@@ -766,6 +768,7 @@ impl App {
             sol: crate::app_sol::SolUi::default(),
             btc: crate::app_btc::BtcUi::default(),
             hypercore: crate::app_hypercore::HcUi::default(),
+            wc: crate::app_walletconnect::WcUi::default(),
             keys: crate::app_keys::KeysUi::default(),
             card: crate::app_card::CardUi::default(),
             browser: None,
@@ -1044,6 +1047,7 @@ impl App {
                     && !self.on_llm_edit_change(*id)
                     && !self.on_yk_edit_change(*id)
                     && !self.on_hc_edit_change(*id)
+                    && !self.on_wc_edit_change(*id)
                 {
                     self.on_edit_change(*id);
                 }
@@ -1327,6 +1331,7 @@ impl App {
         if let Some(browser) = self.browser.as_mut() {
             browser.stop();
         }
+        self.wc_shutdown();
         let before = self.lock_signal.count();
         self.lock(LockReason::Shutdown);
         let _ = self.lock_signal.wait_beyond(before, Duration::from_secs(5));
@@ -1381,6 +1386,7 @@ impl App {
                 UiEvent::Dapp(event) => self.on_dapp_event(event),
                 UiEvent::Llm(done) => self.on_llm_done(*done),
                 UiEvent::LlmTest(result) => self.on_llm_test(result),
+                UiEvent::WalletConnect(event) => self.on_wc_event(*event),
             }
         }
     }
@@ -3037,6 +3043,7 @@ impl App {
                     && !self.on_llm_command(other)
                     && !self.on_yk_command(other)
                     && !self.on_hc_command(other)
+                    && !self.on_wc_command(other)
                 {
                     self.on_indexed_command(other);
                 }

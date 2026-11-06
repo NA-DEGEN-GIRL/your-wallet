@@ -70,8 +70,8 @@ fn render(size: usize, modules: &[bool], scene: &Scene) -> Vec<u8> {
             let mut inside_any = false;
             for sy in 0..3 {
                 for sx in 0..3 {
-                    let fx = px as f64 + (sx as f64 + 0.5) / 3.0 - scene.center.0;
-                    let fy = py as f64 + (sy as f64 + 0.5) / 3.0 - scene.center.1;
+                    let fx = px as f64 + (f64::from(sx) + 0.5) / 3.0 - scene.center.0;
+                    let fy = py as f64 + (f64::from(sy) + 0.5) / 3.0 - scene.center.1;
                     // Inverse rotation into the code frame.
                     let rx = fx * cos + fy * sin;
                     let ry = -fx * sin + fy * cos;
@@ -141,7 +141,7 @@ fn qr_decodes_generated_codes() {
     ] {
         let qr = QrCode::encode_text(text, ecc).unwrap();
         let module = 4.0;
-        let side = ((qr.size() as f64 + 8.0) * module) as usize + 40;
+        let side = ((f64::from(qr.size()) + 8.0) * module) as usize + 40;
         let found = decode_scene(&qr, &scene(side, side, module, 0.0));
         assert_eq!(found.as_deref(), Some(text), "version {}", qr.version().value());
     }

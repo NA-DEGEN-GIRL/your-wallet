@@ -1070,8 +1070,16 @@ pub enum UiEvent {
     Dapp(crate::browser::DappEvent),
     /// `yw-llm` result for an approval window (spec/06 §3.2).
     Llm(Box<crate::explain::LlmDone>),
+    /// A `WalletConnect` worker event (spec/13).
+    WalletConnect(Box<crate::walletconnect::worker::WcEvent>),
     /// Settings `연결 테스트` result (spec/06 §2.2).
     LlmTest(Result<(), crate::explain::ExplainError>),
+}
+
+impl crate::walletconnect::worker::WcSink for EventQueue {
+    fn push(&self, event: crate::walletconnect::worker::WcEvent) {
+        let _ = Self::push(self, UiEvent::WalletConnect(Box::new(event)));
+    }
 }
 
 impl crate::browser::DappSink for EventQueue {
@@ -1202,7 +1210,7 @@ impl EventQueue {
                     }
                     lanes.dapp += 1;
                 }
-                UiEvent::Rpc(_) | UiEvent::Llm(_) | UiEvent::LlmTest(_) => {
+                UiEvent::Rpc(_) | UiEvent::Llm(_) | UiEvent::LlmTest(_) | UiEvent::WalletConnect(_) => {
                     if lanes.other >= EVENT_QUEUE_CAP {
                         return Err(QueueFull);
                     }

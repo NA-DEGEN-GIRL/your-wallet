@@ -1285,7 +1285,7 @@ impl App {
         let address_book = self.address_book_facts();
         let (origin, extra_warnings) = match site {
             Some(site) => (
-                yw_core::approval::ApprovalOrigin::Site(site.origin.clone()),
+                self.site_approval_origin(site),
                 site_fee_warning(site),
             ),
             None => (yw_core::approval::ApprovalOrigin::App, Vec::new()),
@@ -1374,7 +1374,7 @@ impl App {
                     let id = Self::new_approval_id().ok()?;
                     yw_core::evm::display::build_personal_request(
                         id,
-                        yw_core::approval::ApprovalOrigin::Site(site.origin.clone()),
+                        self.site_approval_origin(site),
                         signer,
                         *account,
                         yw_core::approval::ApprovalKind::EvmPersonalSign,
@@ -1484,7 +1484,7 @@ impl App {
             let id = Self::new_approval_id().ok()?;
             yw_core::evm::display::build_typed_request(
                 id,
-                yw_core::approval::ApprovalOrigin::Site(site.origin.clone()),
+                self.site_approval_origin(&site),
                 signer,
                 *account,
                 yw_core::approval::ApprovalKind::EvmTypedData,
@@ -1639,6 +1639,12 @@ impl App {
         now_unix: u64,
     ) {
         let now = now_ms();
+        let mut draft = draft;
+        let site_origin = self.evm.window.as_ref().and_then(|ui| match &ui.item {
+            QueuedItem::Site(site) => Some(site.origin.clone()),
+            _ => None,
+        });
+        self.wc_decorate_draft(site_origin.as_ref(), &mut draft);
         let Ok(request) = self.evm.store.issue(draft, now, now_unix) else {
             self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
             return;
@@ -1973,7 +1979,7 @@ impl App {
                     (Some(prepared), _) => {
                         let (origin, waiter) = match &item {
                             QueuedItem::Site(site) => (
-                                site.origin.as_str().to_owned(),
+                                self.site_origin_text(site),
                                 crate::app_browser::SignWaiter::Tx(site.reply),
                             ),
                             QueuedItem::App(_)
@@ -2159,11 +2165,19 @@ impl App {
             ))
         });
         badges.extend(card_badge);
+        // WalletConnect sessions (spec/13 §7): the claimed origin, chains and Verify state.
+        let wc_patch = self.evm.window.as_ref().and_then(|ui| match &ui.item {
+            QueuedItem::Site(site) => self.wc_connect_patch(&site.origin),
+            _ => None,
+        });
         let Some(ui) = self.evm.window.as_mut() else {
             return;
         };
         let wide_layout = ui.window.client_rect().w >= ui.window.px(80 * 8);
         if let QueuedItem::Site(site) = &ui.item {
+            if crate::walletconnect::is_session_origin(&site.origin) {
+                badges.insert(0, "WalletConnect 세션".to_owned());
+            }
             // spec/05 §2.12: after the http/punycode badges, connect and approval views alike.
             if let Some(mode) = site.compat_mode {
                 badges.insert(0, crate::ui::approval_view::compat_mode_badge(mode));
@@ -2184,6 +2198,9 @@ impl App {
                     &connect.chain_name,
                     connect.family,
                 );
+                if let Some(patch) = &wc_patch {
+                    patch.apply(&mut connect_view);
+                }
                 connect_view.badges.extend(badges);
                 connect_view.testnet = testnet;
                 ui.view = connect_view;
@@ -3273,7 +3290,7 @@ impl App {
             if request.display.risk == RiskLevel::Blocked {
                 AiReady::Skip(SKIP_BLOCKED)
             } else {
-                crate::app_llm::transaction_input(prepared, site.origin.as_str(), &user)
+                crate::app_llm::transaction_input(prepared, &self.site_origin_text(site), &user)
                     .map_or(AiReady::Skip(SKIP_BLOCKED), AiReady::Input)
             }
         };
@@ -3305,7 +3322,7 @@ impl App {
                 let decoded = yw_core::evm::eip191::decode_personal_message(message.clone());
                 AiReady::Input(build_input(
                     &ExplainSource::PersonalSign(&decoded),
-                    site.origin.as_str(),
+                    &self.site_origin_text(&site),
                     account,
                     &chain,
                     &yw_core::approval::ChainFacts::default(),
@@ -3338,7 +3355,7 @@ impl App {
             _ if blocked => AiReady::Skip(SKIP_BLOCKED),
             Some(chain) => AiReady::Input(build_input(
                 &ExplainSource::TypedData(&typed),
-                site.origin.as_str(),
+                &self.site_origin_text(&site),
                 account,
                 &chain,
                 facts,

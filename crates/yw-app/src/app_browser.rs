@@ -487,6 +487,7 @@ impl App {
         if let Some(browser) = self.browser.as_mut() {
             browser.dapp_unlock = false;
         }
+        self.wc_after_unlock();
         self.show_next_approval();
     }
 

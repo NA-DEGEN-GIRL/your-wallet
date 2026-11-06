@@ -200,6 +200,9 @@ pub struct ChainSites {
     pub sol: Vec<Value>,
     /// `btc_sites`.
     pub btc: Vec<Value>,
+    /// `walletconnect` (optional key, spec/13 §8): the relay client key and the `WalletConnect`
+    /// sessions, validated by `crate::walletconnect::store`; written only when present.
+    pub walletconnect: Option<Value>,
 }
 
 const LIMITS: Limits = Limits {
@@ -760,6 +763,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
                 && *key != VAULT_SEEN_KEY
                 && *key != TOKEN_VIEW_KEY
                 && *key != HW_ACCOUNTS_KEY
+                && *key != crate::walletconnect::store::META_KEY
         })
         .map(|(key, value)| (key.to_owned(), value.clone()))
         .collect();
@@ -875,6 +879,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         chain_sites: Box::new(ChainSites {
             sol: sol_sites,
             btc: btc_sites,
+            walletconnect: object.get(crate::walletconnect::store::META_KEY).cloned(),
         }),
         tokens,
         activity,
@@ -923,6 +928,7 @@ impl Meta {
         )
     }
 
+    #[expect(clippy::too_many_lines, reason = "one member per key of spec/02 §5.3")]
     fn known_members(&self) -> Vec<(&'static str, Value)> {
         let evm_account = match self.prefs.evm_account {
             EvmAccountPref::Index(index) => {
@@ -1020,6 +1026,9 @@ impl Meta {
         }
         if !self.hw_accounts.is_default() {
             members.push((HW_ACCOUNTS_KEY, self.hw_accounts.to_json()));
+        }
+        if let Some(walletconnect) = &self.chain_sites.walletconnect {
+            members.push((crate::walletconnect::store::META_KEY, walletconnect.clone()));
         }
         members
     }
