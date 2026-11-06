@@ -552,6 +552,7 @@ fn yubikey_card_signs_bip137_and_bip322() {
         let auth = EnrolAuth {
             admin_pin: b"12345678",
             management_key: &crate::yubikey::piv::DEFAULT_MANAGEMENT_KEY,
+            piv_pin: b"",
             cipher: Some(&ToyCipher),
             challenge: [0; 16],
         };

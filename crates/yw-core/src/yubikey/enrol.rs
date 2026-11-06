@@ -4,7 +4,8 @@
 //! Order on the card: read the serial(s) first and validate the plan against the enrolled
 //! records (nothing is written before that), then all OpenPGP work (VERIFY PW3 → per slot:
 //! attributes, import, UIF, read-back), then PIV (selecting PIV ends the PW3 session): GET
-//! METADATA 9B → management-key mutual authentication → per slot import + metadata read-back.
+//! METADATA 9B → ADMIN DATA (a PIN-protected key: VERIFY PIN → PRINTED) → management-key
+//! mutual authentication → per slot import + metadata read-back.
 //! Every derived private key lives only in a `Zeroizing` buffer for the import command and is
 //! wiped right after it. A failure part-way leaves earlier slots written on the card but no
 //! record in the vault; repeating the enrolment overwrites them (spec/10 §7.4).
@@ -14,7 +15,7 @@ use zeroize::Zeroizing;
 
 use super::apdu::ApduMode;
 use super::openpgp::{DEFAULT_PW3, OpenPgp, Pw};
-use super::piv::{MgmtCipher, MgmtKey, Piv};
+use super::piv::{ManagementCredential, MgmtCipher, Piv};
 use super::plan::{CardSlot, KeyPath, KeyRole, PlanError, PlannedSlot, validate_against};
 use super::record::{HwKeyRecord, HwPublicKey, RecordedSlot};
 use super::{CardError, CardTransport, Firmware};
@@ -262,9 +263,10 @@ pub fn adopt_card(
     }
     if has_piv {
         let mut session = Piv::open(transport, mode)?;
-        let (_, management_default) = session.management_metadata()?;
+        let management = session.management_state()?;
         let (pin_default, _) = session.pin_metadata()?;
-        defaults.piv_management = management_default;
+        defaults.piv_management = management.default;
+        defaults.piv_management_protected = management.protected;
         defaults.piv_pin = pin_default;
         for planned in slots {
             let CardSlot::Piv(slot) = planned.slot else {
@@ -323,8 +325,12 @@ pub struct EnrolAuth<'a> {
     /// OpenPGP admin PIN (PW3), needed when the plan has OpenPGP slots.
     pub admin_pin: &'a [u8],
     /// PIV management key bytes (24 for 3DES/AES-192, 16 or 32 for AES-128/256), needed when
-    /// the plan has PIV slots; its algorithm is read from the card (GET METADATA 9B).
+    /// the plan has PIV slots and the key is not PIN-protected; its algorithm is read from the
+    /// card (GET METADATA 9B).
     pub management_key: &'a [u8],
+    /// PIV PIN, needed when the management key is PIN-protected (ADMIN DATA flag `02`): the
+    /// key is then read from PRINTED after VERIFY PIN and wiped after the authentication.
+    pub piv_pin: &'a [u8],
     /// The CNG-backed cipher for the management key.
     pub cipher: Option<&'a dyn MgmtCipher>,
     /// A fresh random challenge (16 bytes; the first 8 are used for 3DES).
@@ -340,6 +346,10 @@ impl core::fmt::Debug for EnrolAuth<'_> {
 /// Factory defaults seen during enrolment; the wizard then asks the user to change them
 /// (spec/10 §9.3).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts read from the card"
+)]
 pub struct DefaultsSeen {
     /// The OpenPGP admin PIN that worked is `12345678`.
     pub openpgp_admin: bool,
@@ -347,6 +357,8 @@ pub struct DefaultsSeen {
     pub piv_pin: bool,
     /// The PIV management key is still the default (metadata).
     pub piv_management: bool,
+    /// The PIV management key is stored PIN-protected (ADMIN DATA flag `02`).
+    pub piv_management_protected: bool,
 }
 
 /// Result of one card enrolment.
@@ -441,17 +453,19 @@ pub fn enrol_card(
         if session.serial != serial {
             return Err(EnrolError::SerialMismatch);
         }
-        let (algorithm, management_default) = session.management_metadata()?;
         let (pin_default, _) = session.pin_metadata()?;
-        defaults.piv_management = management_default;
-        defaults.piv_pin = pin_default;
-        let key = MgmtKey::new(algorithm, auth.management_key)?;
         let cipher = auth.cipher.ok_or(CardError::Internal)?;
-        let challenge = auth
-            .challenge
-            .get(..algorithm.block_len())
-            .ok_or(CardError::Internal)?;
-        session.authenticate(&key, cipher, challenge)?;
+        let management = session.authenticate_management(
+            ManagementCredential {
+                key: auth.management_key,
+                pin: auth.piv_pin,
+            },
+            cipher,
+            &auth.challenge,
+        )?;
+        defaults.piv_management = management.default;
+        defaults.piv_management_protected = management.protected;
+        defaults.piv_pin = pin_default;
         for planned in slots {
             let CardSlot::Piv(slot) = planned.slot else {
                 continue;

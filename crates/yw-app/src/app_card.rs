@@ -187,6 +187,10 @@ pub struct CardUi {
     /// A card enrolled with factory defaults before the meta existed (new `YubiKey` wallet):
     /// joins `hw_accounts.defaults` at the next meta load.
     pending_default: Option<u32>,
+    /// The card whose "PIN 설정" card is open in the `YubiKey` list (spec/10 §9.3).
+    pub pin_serial: Option<u32>,
+    /// "PIN 설정" mode: `false` = "8자리 하나로 통일" (the default), `true` = one value each.
+    pub pins_separate: bool,
 }
 
 impl CardUi {
@@ -200,6 +204,8 @@ impl CardUi {
         self.wizard = None;
         self.remove_target = None;
         self.pending_default = None;
+        self.pin_serial = None;
+        self.pins_separate = false;
         self.pending_unhide.clear();
     }
 }
@@ -219,7 +225,7 @@ pub fn defaults_lines(defaults: yw_core::yubikey::enrol::DefaultsSeen) -> Vec<St
     }
     if defaults.piv_management {
         lines.push(
-            "PIV 관리 키가 기본값입니다. 새 관리 키로 바꾸고 적어 두세요(이 지갑은 관리 키를 저장하지 않습니다)."
+            "PIV 관리 키가 기본값입니다. 'PIN 설정'이 새 관리 키를 자동으로 만들어 PIN으로 보호합니다(적거나 입력할 필요 없음)."
                 .to_owned(),
         );
     }

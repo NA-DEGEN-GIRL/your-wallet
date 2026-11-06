@@ -261,6 +261,13 @@ pub fn ranges() -> Vec<IdRange> {
             yw_core::yubikey::plan::MAX_CARDS,
         ),
         range(
+            "yubikey.pin_rows",
+            screens_yubikey::ids::PINS_BASE,
+            screens_yubikey::ids::PINS_SPAN,
+            1,
+            yw_core::yubikey::plan::MAX_CARDS,
+        ),
+        range(
             "btc.activity",
             screens_btc::ids::ACTIVITY_BASE,
             screens_btc::ids::ACTIVITY_SPAN,

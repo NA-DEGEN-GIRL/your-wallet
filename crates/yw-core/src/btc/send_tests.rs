@@ -1234,6 +1234,7 @@ fn card_vault(
     let auth = EnrolAuth {
         admin_pin: b"12345678",
         management_key: &crate::yubikey::piv::DEFAULT_MANAGEMENT_KEY,
+        piv_pin: b"",
         cipher: Some(&ToyCipher),
         challenge: [0; 16],
     };

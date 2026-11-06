@@ -95,12 +95,22 @@ pub mod ids {
     pub const CHANGE_PIV_PIN: u16 = 13_292;
     /// (e) `PIV PUK 바꾸기`.
     pub const CHANGE_PUK: u16 = 13_293;
-    /// (e) `PIV 관리 키 바꾸기`.
+    /// (e) `PIV 관리 키 자동 보호` (generated, stored PIN-protected).
     pub const CHANGE_MGMT: u16 = 13_294;
     /// (d) `← 이전`.
     pub const CRED_BACK: u16 = 13_295;
     /// (e) `다시 시도` after a failure.
     pub const RETRY: u16 = 13_296;
+    /// "PIN 설정" `PIN 설정하기` ("8자리 하나로 통일").
+    pub const SET_PINS: u16 = 13_297;
+    /// "PIN 설정" mode radio "8자리 하나로 통일" (default).
+    pub const PINS_UNIFIED: u16 = 13_298;
+    /// "PIN 설정" mode radio "하나씩 따로".
+    pub const PINS_SEPARATE: u16 = 13_299;
+    /// Settings `PIN 설정 / 기본값 변경` of card row: `PINS_BASE + row`.
+    pub const PINS_BASE: u16 = 13_300;
+    /// Rows of [`PINS_BASE`].
+    pub const PINS_SPAN: u16 = 8;
 
     const KINDS: [PgpKind; 4] = [PgpKind::None, PgpKind::Evm, PgpKind::Btc, PgpKind::Shared];
 
@@ -168,6 +178,14 @@ pub mod ids {
             .map(usize::from)
     }
 
+    /// The card row of a `PIN 설정 / 기본값 변경` id.
+    #[must_use]
+    pub fn pins_row(id: u16) -> Option<usize> {
+        id.checked_sub(PINS_BASE)
+            .filter(|offset| *offset < PINS_SPAN)
+            .map(usize::from)
+    }
+
     /// The card row of a "백업 복사본" source id.
     #[must_use]
     pub fn backup_row(id: u16) -> Option<usize> {
@@ -232,6 +250,9 @@ pub mod ids {
         CHANGE_MGMT,
         CRED_BACK,
         RETRY,
+        SET_PINS,
+        PINS_UNIFIED,
+        PINS_SEPARATE,
     ];
 }
 
@@ -241,8 +262,27 @@ pub const WIZARD_STEPS: [&str; 4] = ["키·슬롯 고르기", "확인", "자격 
 pub const T_YK_LIST: &str = "YubiKey 계정은 복구 단어에서 만든 키를 YubiKey에 넣어 두고, 서명할 때마다 YubiKey에서 PIN과 터치로 서명합니다. 이 PC에는 공개키·주소·슬롯 표만 있습니다. 같은 키를 여러 YubiKey에 넣어 서로의 백업으로 쓸 수 있습니다(최대 8개).";
 /// T-YK-MNEMONIC-WALLET: the recommendation in a wallet that stores its words.
 pub const T_YK_MNEMONIC_WALLET: &str = "이 지갑의 복구 단어로 등록하면 그 단어가 이 PC에도 있으므로 보안 이득이 없습니다. 다른 복구 단어로 등록하거나, 키를 PC 밖에 두려면 첫 화면의 'YubiKey 지갑'(복구 단어를 저장하지 않는 지갑)을 새로 만드세요.";
+/// T-YK-PIN-GUIDE (spec/10 §9.3): what each card secret is for.
+pub const T_YK_PIN_GUIDE: [&str; 5] = [
+    "OpenPGP PIN: EVM·Bitcoin 서명할 때마다 입력 (기본 123456, 6자 이상)",
+    "OpenPGP 관리자 PIN: 키를 넣을 때, OpenPGP PIN이 잠겼을 때 (기본 12345678, 8자 이상)",
+    "PIV PIN: Solana 서명할 때 (기본 123456, 6–8자)",
+    "PIV PUK: PIV PIN이 잠겼을 때 풀기 (기본 12345678, 6–8자)",
+    "PIV 관리 키: 앱이 자동으로 만들어 PIN으로 잠가 보관 (입력할 필요 없음)",
+];
+/// T-YK-PIN-LOCKS.
+pub const T_YK_PIN_LOCKS: &str = "각각 3번 틀리면 따로 잠깁니다. 하나가 잠겨도 다른 쪽(OpenPGP/PIV)은 그대로이고, FIDO2·패스키 로그인은 이 중 어느 것과도 관계없습니다.";
+/// T-YK-PIN-EASY.
+pub const T_YK_PIN_EASY: &str = "편하게 쓰려면: 8자리 하나로 통일하세요 (네 개 모두 같은 값). 기본값 그대로 두면 YubiKey를 가진 사람이 서명할 수 있습니다.";
+/// T-YK-PIN-TRADEOFF (the unified mode).
+pub const T_YK_PIN_TRADEOFF: &str = "순서: PIV PIN → PIV PUK → PIV 관리 키(새로 만들어 PIN으로 보호) → OpenPGP 관리자 PIN → OpenPGP PIN. 하나로 통일하면 잠기기 전까지 맞혀 볼 기회가 늘고(네 곳 각 3번), 서명 PIN을 아는 사람이 관리자 권한도 갖습니다. 개인용으로는 괜찮은 선택입니다.";
+/// T-YK-PROTECT-MGMT (the separate mode).
+pub const T_YK_PROTECT_MGMT: &str = "PIV 관리 키 자동 보호: 새 관리 키를 이 PC에서 무작위로 만들어 YubiKey에 PIN으로 잠가 둡니다('ykman piv access change-management-key --generate --protect'와 같음). 현재 PIV PIN만 묻고, 관리 키는 보여 주지도 묻지도 않습니다.";
+/// T-YK-IMPORT: the "가져오기" choice.
+pub const T_YK_IMPORT: &str =
+    "복구 단어에서 고른 키를 YubiKey에 씁니다. 그 슬롯에 있던 키는 덮어씁니다.";
 /// T-YK-ADOPT (spec/10 §7.5).
-pub const T_YK_ADOPT: &str = "PC나 지갑 파일을 잃고 새로 설치했을 때: 이미 이 키를 넣어 둔 YubiKey라면 '가져오기 없이 등록'으로 카드에 아무것도 쓰지 않고 공개키만 읽어 등록합니다(카드의 공개키가 복구 단어에서 계산한 공개키와 같을 때만).";
+pub const T_YK_ADOPT: &str = "YubiKey에 이미 같은 니모닉의 키가 들어 있을 때 씁니다. 카드에는 아무것도 쓰지 않고, 카드의 공개키가 복구 단어와 맞는지만 확인해 지갑에 연결합니다(재설치·새 PC·지갑 초기화 후).";
 
 const fn touch_label(touch: TouchPolicy) -> &'static str {
     match touch {
@@ -303,8 +343,12 @@ impl App {
                 .to_owned(),
         ));
         items.push(Item::Row(vec![
-            Ctl::button(ids::NEW_WALLET, "YubiKey 지갑 만들기").enabled(!self.leftover),
+            Ctl::button(ids::NEW_WALLET, "YubiKey 지갑 새로 만들기").enabled(!self.leftover),
         ]));
+        items.push(Item::Help(
+            "새 복구 단어 24개를 만들어 종이에만 적고, 그 키를 YubiKey에 넣습니다. 이 PC에는 복구 단어가 남지 않습니다."
+                .to_owned(),
+        ));
         items.push(Item::CardEnd);
     }
 
@@ -380,16 +424,30 @@ impl App {
             }
             if defaults.contains(&record.serial) {
                 items.push(Item::Banner(
-                    "기본 PIN·관리 키를 쓰고 있을 수 있습니다. 등록을 다시 하거나 ykman으로 PIN·PUK·관리 키를 바꾸세요(spec/10 §9.3)."
+                    "기본 PIN·관리 키를 쓰고 있을 수 있습니다. 'PIN 설정 / 기본값 변경'에서 바꾸세요."
                         .to_owned(),
                     Tone::Warn,
                 ));
             }
-            let id = ids::REMOVE_BASE.saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
+            let row_id = u16::try_from(row).unwrap_or(u16::MAX);
+            let open = self.card.pin_serial == Some(record.serial);
             items.push(Item::Row(vec![
-                Ctl::danger(id, "삭제").enabled(unlocked && self.yk_can_remove()),
+                Ctl::button(
+                    ids::PINS_BASE.saturating_add(row_id),
+                    if open {
+                        "PIN 설정 닫기"
+                    } else {
+                        "PIN 설정 / 기본값 변경 (PIN 안내)"
+                    },
+                )
+                .enabled(unlocked),
+                Ctl::danger(ids::REMOVE_BASE.saturating_add(row_id), "삭제")
+                    .enabled(unlocked && self.yk_can_remove()),
             ]));
             items.push(Item::CardEnd);
+            if open && unlocked {
+                self.yk_pin_items(record.serial, items);
+            }
         }
         if !records.is_empty() {
             items.push(Item::CardStart(Some("계정별 YubiKey".to_owned())));
@@ -557,9 +615,13 @@ impl App {
             items.push(Item::CardStart(Some("백업 복사본".to_owned())));
             items.push(Item::Row(vec![Ctl::check(
                 ids::BACKUP_TOGGLE,
-                "이미 등록한 YubiKey와 같은 키를 넣기(백업 복사본)",
+                "백업 YubiKey 만들기 (같은 키 복사)",
                 wizard.backup_of.is_some(),
             )]));
+            items.push(Item::Help(
+                "같은 키를 다른 YubiKey에도 넣어 예비용으로 씁니다. 이미 등록한 YubiKey의 슬롯 구성을 그대로 따릅니다."
+                    .to_owned(),
+            ));
             if let Some(serial) = wizard.backup_of {
                 items.push(Item::LabeledRow(
                     "복사할 YubiKey".to_owned(),
@@ -761,7 +823,12 @@ impl App {
                 "관리자 PIN(PW3)을 다음 창에서 입력합니다 (공장 기본값 12345678).".to_owned(),
             ));
         }
-        if piv {
+        if piv && wizard.management_protected() {
+            items.push(Item::Field(
+                "PIV 관리 키".to_owned(),
+                "관리 키: PIN으로 보호됨 — PIV PIN만 입력".to_owned(),
+            ));
+        } else if piv {
             items.push(Item::LabeledRow(
                 "PIV 관리 키".to_owned(),
                 vec![
@@ -779,16 +846,30 @@ impl App {
                     ),
                 ],
             ));
+            if wizard.management.is_none() {
+                items.push(Item::Help(
+                    "연결한 YubiKey의 관리 키 설정을 아직 읽지 못했습니다. ykman으로 PIN 보호(--protect)를 해 둔 YubiKey라면 연결한 뒤 '← 이전' → '다음'으로 다시 읽으세요."
+                        .to_owned(),
+                ));
+            }
         }
+        items.push(Item::CardEnd);
+        let ready = wizard.can_continue();
+        items.push(Item::CardStart(Some("어떻게 등록할까요?".to_owned())));
+        items.push(Item::Row(vec![
+            Ctl::primary(ids::IMPORT, "니모닉에서 키를 넣기 (처음 등록)").enabled(ready),
+        ]));
+        items.push(Item::Help(T_YK_IMPORT.to_owned()));
+        items.push(Item::Row(vec![
+            Ctl::button(ids::ADOPT, "이미 넣은 키 연결하기 (가져오기 없이 등록)").enabled(ready),
+        ]));
+        items.push(Item::Help(T_YK_ADOPT.to_owned()));
         items.push(Item::Banner(T_YK_OVERWRITE.to_owned(), Tone::Warn));
         items.push(Item::CardEnd);
         items.push(Item::Row(vec![
-            Ctl::primary(ids::IMPORT, "가져오기").enabled(wizard.can_continue()),
-            Ctl::button(ids::ADOPT, "가져오기 없이 등록").enabled(wizard.can_continue()),
             Ctl::button(ids::CRED_BACK, "← 이전"),
             Ctl::button(ids::WIZARD_CANCEL, "취소"),
         ]));
-        items.push(Item::Help(T_YK_ADOPT.to_owned()));
     }
 
     fn yk_result_items(&self, wizard: &YkWizard, items: &mut Vec<Item>) {
@@ -853,31 +934,8 @@ impl App {
             }
         }
         items.push(Item::CardEnd);
-        let defaults = crate::app_card::defaults_lines(wizard.defaults);
-        if !defaults.is_empty() {
-            items.push(Item::CardStart(Some("기본값 바꾸기".to_owned())));
-            for line in defaults {
-                items.push(Item::Banner(line, Tone::Warn));
-            }
-            let mut row = Vec::new();
-            if wizard.defaults.openpgp_admin {
-                row.push(Ctl::button(ids::CHANGE_PW1, "OpenPGP PIN 바꾸기"));
-                row.push(Ctl::button(ids::CHANGE_PW3, "OpenPGP 관리자 PIN 바꾸기"));
-            }
-            if wizard.defaults.piv_pin {
-                row.push(Ctl::button(ids::CHANGE_PIV_PIN, "PIV PIN 바꾸기"));
-                row.push(Ctl::button(ids::CHANGE_PUK, "PIV PUK 바꾸기"));
-            }
-            if wizard.defaults.piv_management {
-                row.push(Ctl::button(ids::CHANGE_MGMT, "PIV 관리 키 바꾸기"));
-            }
-            items.push(Item::Row(row));
-            items.push(Item::Help(
-                "건너뛸 수 있지만 그동안 YubiKey 목록에 '기본 PIN·관리 키' 안내가 남습니다. 새 관리 키는 한 번만 보여 드리니 적어 두세요."
-                    .to_owned(),
-            ));
-            items.push(Item::CardEnd);
-        }
+        // "가져오기" and "가져오기 없이 등록" both end here (spec/10 §9.3).
+        self.yk_pin_items(record.serial, items);
         for note in &wizard.notes {
             items.push(Item::Banner(note.clone(), Tone::Info));
         }
@@ -886,6 +944,57 @@ impl App {
             Ctl::button(ids::ANOTHER, "다른 YubiKey 등록(백업)")
                 .enabled(self.card.records.len() < MAX_CARDS),
         ]));
+    }
+
+    /// "기본값 변경 / PIN 설정" of card `serial` (spec/10 §9.3): the defaults still seen, the
+    /// PIN guide, and the two modes — "8자리 하나로 통일" (default: one W12 window sets the four
+    /// PINs and protects the management key) or one secret at a time.
+    pub fn yk_pin_items(&self, serial: u32, items: &mut Vec<Item>) {
+        let separate = self.card.pins_separate;
+        items.push(Item::CardStart(Some(format!(
+            "기본값 변경 / PIN 설정 — YubiKey #{serial}"
+        ))));
+        for line in crate::app_card::defaults_lines(self.yk_pin_defaults(serial)) {
+            items.push(Item::Banner(line, Tone::Warn));
+        }
+        items.push(Item::Subtitle("PIN 안내".to_owned()));
+        for line in T_YK_PIN_GUIDE {
+            items.push(Item::Text(format!("· {line}")));
+        }
+        items.push(Item::Help(T_YK_PIN_LOCKS.to_owned()));
+        items.push(Item::Text(T_YK_PIN_EASY.to_owned()));
+        items.push(Item::LabeledRow(
+            "방식".to_owned(),
+            vec![
+                Ctl::radio(
+                    ids::PINS_UNIFIED,
+                    "8자리 하나로 통일 (권장)",
+                    !separate,
+                    true,
+                ),
+                Ctl::radio(ids::PINS_SEPARATE, "하나씩 따로", separate, false),
+            ],
+        ));
+        if separate {
+            items.push(Item::Row(vec![
+                Ctl::button(ids::CHANGE_PW1, "OpenPGP PIN"),
+                Ctl::button(ids::CHANGE_PW3, "OpenPGP 관리자 PIN"),
+                Ctl::button(ids::CHANGE_PIV_PIN, "PIV PIN"),
+                Ctl::button(ids::CHANGE_PUK, "PIV PUK"),
+            ]));
+            items.push(Item::Row(vec![Ctl::button(
+                ids::CHANGE_MGMT,
+                "PIV 관리 키 자동 보호",
+            )]));
+            items.push(Item::Help(T_YK_PROTECT_MGMT.to_owned()));
+        } else {
+            items.push(Item::Row(vec![Ctl::primary(
+                ids::SET_PINS,
+                "PIN 설정하기 (8자리 하나)",
+            )]));
+            items.push(Item::Help(T_YK_PIN_TRADEOFF.to_owned()));
+        }
+        items.push(Item::CardEnd);
     }
 
     /// The removal overlay's text (spec/10 §7.5).

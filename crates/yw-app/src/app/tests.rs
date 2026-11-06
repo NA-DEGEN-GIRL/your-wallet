@@ -2494,13 +2494,12 @@ fn yubikey_accounts_and_the_card_step() {
 
 type Cards = std::sync::Arc<std::sync::Mutex<Vec<yw_core::yubikey::mock::MockCard>>>;
 
-/// The non-secret values the key worker hands to W08/W10/W13 (those windows cannot open
+/// The non-secret values the key worker hands to W08/W10 (those windows cannot open
 /// headless): captured from the results before they are delivered.
 #[derive(Default)]
 struct YkSeen {
     words: Option<String>,
     positions: Option<[u8; 4]>,
-    key: Option<String>,
 }
 
 /// A harness whose key worker talks to emulated cards only.
@@ -2538,9 +2537,6 @@ fn yk_pump(h: &mut Harness, seen: &mut YkSeen) {
                 }
                 KeyOutcome::YubiKey(YkOutcome::Challenge(Ok(positions))) => {
                     seen.positions = Some(*positions);
-                }
-                KeyOutcome::YubiKey(YkOutcome::ManagementKey(Ok(key))) => {
-                    seen.key = Some(key.expose().to_owned());
                 }
                 _ => {}
             }
@@ -2806,8 +2802,9 @@ fn yubikey_wizard_enrols_an_existing_wallet() {
 /// spec/10 §3.4, §3.5, §7.1-3: on a second card the same path is refused unless it is a backup
 /// copy; the "백업 복사본" of the first card's plan enrols the second emulator card; the list
 /// shows both holders; removing the first card's record asks the password and keeps the
-/// accounts (the copy still holds them); the management key change (W13) is set on the card
-/// and the next enrolment of that card needs the new key.
+/// accounts (the copy still holds them); a card with a custom management key needs it typed;
+/// "PIV 관리 키 자동 보호" stores a new key PIN-protected, "8자리 하나로 통일" sets the four PINs,
+/// and the next enrolment of that card asks only the PIV PIN.
 #[test]
 #[expect(clippy::too_many_lines, reason = "one multi-card scenario")]
 fn yubikey_backup_copy_removal_and_management_key() {
@@ -2968,28 +2965,73 @@ fn yubikey_backup_copy_removal_and_management_key() {
     );
     yk_pump(&mut h, &mut seen);
     assert_eq!(h.app.card.records.len(), 2);
-    // §9.3 on the result screen: a new random key, shown once (W13), set after the hold.
+    // §9.3 on the result screen ("하나씩 따로"): "PIV 관리 키 자동 보호" — a random key made on
+    // this PC and stored PIN-protected on the card; the user never sees or types it. A custom
+    // key the wallet does not know is refused first.
+    let items = h.app.items();
+    assert!(
+        ctl(&items, yk::SET_PINS).is_some(),
+        "unified mode by default"
+    );
+    assert!(ctl(&items, yk::CHANGE_MGMT).is_none());
+    h.app.on_command(yk::PINS_SEPARATE);
+    assert!(ctl(&h.app.items(), yk::CHANGE_MGMT).is_some());
+    h.app.on_command(yk::CHANGE_MGMT);
+    h.submit(Purpose::YubiKey(YkPurpose::ProtectManagement), &[b"123456"]);
+    yk_pump(&mut h, &mut seen);
+    assert_eq!(cards.lock().unwrap()[0].mgmt_key, [0x42; 24]);
     {
         let mut inserted = cards.lock().unwrap();
         inserted[0].mgmt_key = yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY.to_vec();
     }
     h.app.card.wizard.as_mut().unwrap().defaults.piv_management = true;
-    h.app.on_command(yk::CHANGE_MGMT);
+    h.submit(Purpose::YubiKey(YkPurpose::ProtectManagement), &[b"123456"]);
     yk_pump(&mut h, &mut seen);
-    let key = seen.key.clone().unwrap();
-    assert_eq!(key.len(), 48);
-    assert_eq!(
-        cards.lock().unwrap()[0].mgmt_key,
-        yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY,
-        "nothing set before the acknowledgement"
-    );
-    h.app.yk_hold_complete(YkPurpose::ShowManagementKey);
-    yk_pump(&mut h, &mut seen);
-    assert_eq!(
-        yw_core::hex::encode(&cards.lock().unwrap()[0].mgmt_key),
-        key
-    );
+    {
+        use yw_core::yubikey::piv::{OBJECT_PRINTED, parse_protected_key};
+        let card = &cards.lock().unwrap()[0];
+        assert_ne!(card.mgmt_key, yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY);
+        let stored = parse_protected_key(card.piv_object(OBJECT_PRINTED).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.as_slice(), card.mgmt_key.as_slice());
+    }
     assert!(!h.app.card.wizard.as_ref().unwrap().defaults.piv_management);
+    // "8자리 하나로 통일" from the factory values: PIV PIN, PUK, (key already protected:
+    // skipped), OpenPGP admin and user — one value everywhere.
+    h.app.on_command(yk::PINS_UNIFIED);
+    h.app.on_command(yk::SET_PINS);
+    h.submit(
+        Purpose::YubiKey(YkPurpose::SetPins),
+        &[b"", b"80808080", b"80808080"],
+    );
+    yk_pump(&mut h, &mut seen);
+    {
+        let card = &cards.lock().unwrap()[0];
+        for value in [&card.piv_pin, &card.piv_puk, &card.pw3, &card.pw1] {
+            assert_eq!(value.as_slice(), b"80808080");
+        }
+    }
+    let wizard = h.app.card.wizard.as_ref().unwrap();
+    assert!(!wizard.defaults.piv_pin && !wizard.defaults.openpgp_admin);
+    assert!(
+        wizard
+            .notes
+            .iter()
+            .any(|note| note
+                .starts_with("바꾼 것: PIV PIN, PIV PUK, OpenPGP 관리자 PIN, OpenPGP PIN.")),
+        "{:?}",
+        wizard.notes
+    );
+    // The next enrolment of this card asks only the PIV PIN for the management key.
+    h.app.on_command(yk::RETRY);
+    yk_pump(&mut h, &mut seen);
+    assert!(h.app.card.wizard.as_ref().unwrap().management_protected());
+    assert!(
+        all_text(&h.app.items())
+            .iter()
+            .any(|text| text == "관리 키: PIN으로 보호됨 — PIV PIN만 입력")
+    );
     let _ = std::fs::remove_dir_all(&h.dir);
 }
 

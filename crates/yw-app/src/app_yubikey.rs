@@ -7,9 +7,13 @@
 //! "백업 복사본" of an enrolled card's slot plan; (b) the recovery words once in W05 (+ W06) —
 //! held by the key worker from then on, never on the UI thread; (c) the confirmation with every
 //! path and address (`enrol::preview`, no card), the pre-card plan checks, the cards already
-//! holding the same keys and the same-mnemonic warning; (d) credentials — the `OpenPGP` admin
-//! PIN and the PIV management key in W12 (or the factory key), moved into the job; (e) the
-//! result with the recorded slots, "다시 확인" and the defaults change (§9.3); (f)
+//! holding the same keys and the same-mnemonic warning; (d) credentials — the inserted card's
+//! management key state is read first (`YkJob::ProbeManagement`); the `OpenPGP` admin PIN and
+//! the PIV management key in W12 (or the factory key; for a PIN-protected key only the PIV
+//! PIN), moved into the job; (e) the result (also after "가져오기 없이 등록") with the recorded
+//! slots, "다시 확인" and "기본값 변경 / PIN 설정" (§9.3: "8자리 하나로 통일" by default, or one
+//! secret at a time; the management key is generated and stored PIN-protected, never shown),
+//! also reachable from the `YubiKey` list; (f)
 //! `다른 YubiKey 등록(백업)` back to (a) with the backup copy.
 //!
 //! New `YubiKey` wallet (S01 card, spec/10 §7.1-1): S20 → W01 → W08 (new words) → W10 (four
@@ -22,6 +26,7 @@ use yw_core::btc::{BtcNetwork, ScriptType};
 use yw_core::secret::Zeroizing;
 use yw_core::vault::RecordId;
 use yw_core::yubikey::enrol::{DefaultsSeen, Enrolled};
+use yw_core::yubikey::piv::ManagementState;
 use yw_core::yubikey::plan::{
     BtcUse, CardSlot, KeyRole, MAX_BTC_INDEX, MAX_CARDS, PgpKey, PinPolicy, PivSlot, PlannedSlot,
     TouchPolicy, validate_plan,
@@ -133,8 +138,12 @@ pub enum YkPurpose {
     ManagementKey,
     /// W12: a PIN/PUK change.
     ChangePin(PinTarget),
-    /// W13: the new management key.
-    ShowManagementKey,
+    /// W12: the PIV PIN of an enrolment whose management key is PIN-protected.
+    PivPin,
+    /// W12: the PIV PIN for "PIV 관리 키 자동 보호".
+    ProtectManagement,
+    /// W12: "PIN 하나로 통일".
+    SetPins,
 }
 
 /// The wizard state (no secret: the words are in the key worker, the credentials only between
@@ -174,6 +183,8 @@ pub struct YkWizard {
     pub seed_held: bool,
     /// Use the factory PIV management key.
     pub default_management: bool,
+    /// The inserted card's management key state read at step (d) (`None`: not read).
+    pub management: Option<ManagementState>,
     /// The admin PIN between W12 and the job (wiped on drop).
     admin_pin: Option<Zeroizing<Vec<u8>>>,
     /// The words of W05 while W06 asks for the passphrase (wiped on drop).
@@ -262,6 +273,7 @@ impl YkWizard {
             preview: None,
             seed_held: false,
             default_management: true,
+            management: None,
             admin_pin: None,
             phrase: None,
             adopt: false,
@@ -416,6 +428,12 @@ impl YkWizard {
         )
     }
 
+    /// Whether the inserted card's PIV management key is PIN-protected (read at step (d)).
+    #[must_use]
+    pub fn management_protected(&self) -> bool {
+        self.management.is_some_and(|state| state.protected)
+    }
+
     /// Whether the confirmation allows going on (no plan error, the same-mnemonic warning
     /// acknowledged).
     #[must_use]
@@ -555,23 +573,46 @@ impl App {
         wizard.adopt = adopt;
         wizard.admin_pin = None;
         let (pgp, piv) = wizard.applets();
-        let custom_key = piv && !wizard.default_management;
+        let protected = piv && wizard.management_protected();
+        let custom_key = piv && !protected && !wizard.default_management;
         if adopt {
-            self.yk_run(Zeroizing::new(Vec::new()), Zeroizing::new(Vec::new()));
+            self.yk_run(Zeroizing::new(Vec::new()), Zeroizing::new(Vec::new()), None);
         } else if pgp {
             self.open_input(
                 SecretKind::CardSecret(CardSecretKind::AdminPin),
                 Purpose::YubiKey(YkPurpose::AdminPin),
                 false,
             );
-        } else if custom_key {
+        } else {
+            self.yk_piv_credentials(Zeroizing::new(Vec::new()), protected, custom_key, piv);
+        }
+    }
+
+    /// After the admin PIN (or without `OpenPGP` slots): the PIV PIN window of a PIN-protected
+    /// management key, the management key window, or the job with the factory key.
+    fn yk_piv_credentials(
+        &mut self,
+        admin_pin: Zeroizing<Vec<u8>>,
+        protected: bool,
+        custom_key: bool,
+        piv: bool,
+    ) {
+        if protected || custom_key {
+            if let Some(wizard) = self.card.wizard.as_mut() {
+                wizard.admin_pin = Some(admin_pin);
+            }
+            let (kind, purpose) = if protected {
+                (CardSecretKind::PivPin, YkPurpose::PivPin)
+            } else {
+                (CardSecretKind::ManagementKey, YkPurpose::ManagementKey)
+            };
             self.open_input(
-                SecretKind::CardSecret(CardSecretKind::ManagementKey),
-                Purpose::YubiKey(YkPurpose::ManagementKey),
+                SecretKind::CardSecret(kind),
+                Purpose::YubiKey(purpose),
                 false,
             );
         } else {
-            self.yk_run(Zeroizing::new(Vec::new()), Self::yk_factory_key(piv));
+            self.yk_run(admin_pin, Self::yk_factory_key(piv), None);
         }
     }
 
@@ -599,7 +640,12 @@ impl App {
     }
 
     /// Queues the enrolment with the credentials (moved into the job).
-    fn yk_run(&mut self, admin_pin: Zeroizing<Vec<u8>>, management_key: Zeroizing<Vec<u8>>) {
+    fn yk_run(
+        &mut self,
+        admin_pin: Zeroizing<Vec<u8>>,
+        management_key: Zeroizing<Vec<u8>>,
+        piv_pin: Option<Zeroizing<Vec<u8>>>,
+    ) {
         self.close_secret();
         let Some(wizard) = self.card.wizard.as_mut() else {
             return;
@@ -610,6 +656,7 @@ impl App {
             slots: wizard.slots.clone(),
             admin_pin,
             management_key,
+            piv_pin: piv_pin.unwrap_or_default(),
             adopt: wizard.adopt,
         };
         self.card.enrol = Some(crate::app_card::EnrolState::Running);
@@ -619,6 +666,7 @@ impl App {
     }
 
     /// A W12/W05/W06/W01/W10 submission of the `YubiKey` flows.
+    #[expect(clippy::too_many_lines, reason = "one arm per secret window")]
     pub(crate) fn yk_submit(
         &mut self,
         purpose: YkPurpose,
@@ -668,28 +716,43 @@ impl App {
             }
             YkPurpose::AdminPin => {
                 let pin = next();
-                let piv_custom = self
+                let (piv, protected, custom) =
+                    self.card
+                        .wizard
+                        .as_ref()
+                        .map_or((false, false, false), |wizard| {
+                            let piv = wizard.applets().1;
+                            let protected = piv && wizard.management_protected();
+                            (
+                                piv,
+                                protected,
+                                piv && !protected && !wizard.default_management,
+                            )
+                        });
+                self.yk_piv_credentials(pin, protected, custom, piv);
+            }
+            YkPurpose::PivPin => {
+                let pin = next();
+                let admin = self
                     .card
                     .wizard
-                    .as_ref()
-                    .is_some_and(|wizard| wizard.applets().1 && !wizard.default_management);
-                let piv = self
-                    .card
-                    .wizard
-                    .as_ref()
-                    .is_some_and(|wizard| wizard.applets().1);
-                if piv_custom {
-                    if let Some(wizard) = self.card.wizard.as_mut() {
-                        wizard.admin_pin = Some(pin);
-                    }
-                    self.open_input(
-                        SecretKind::CardSecret(CardSecretKind::ManagementKey),
-                        Purpose::YubiKey(YkPurpose::ManagementKey),
-                        false,
-                    );
-                } else {
-                    self.yk_run(pin, Self::yk_factory_key(piv));
-                }
+                    .as_mut()
+                    .and_then(|wizard| wizard.admin_pin.take())
+                    .unwrap_or_default();
+                self.yk_run(admin, Zeroizing::new(Vec::new()), Some(pin));
+            }
+            YkPurpose::ProtectManagement => {
+                let pin = next();
+                self.yk_pin_job(|serial| YkJob::ProtectManagementKey { serial, pin });
+            }
+            YkPurpose::SetPins => {
+                let current = next();
+                let new = next();
+                self.yk_pin_job(|serial| YkJob::SetPins {
+                    serial,
+                    current,
+                    new,
+                });
             }
             YkPurpose::ManagementKey => {
                 let text = next();
@@ -705,12 +768,12 @@ impl App {
                     .as_mut()
                     .and_then(|wizard| wizard.admin_pin.take())
                     .unwrap_or_default();
-                self.yk_run(pin, key);
+                self.yk_run(pin, key, None);
             }
             YkPurpose::ChangePin(target) => {
                 let old = next();
                 let new = next();
-                let Some(serial) = self.yk_result_serial() else {
+                let Some(serial) = self.yk_pin_serial() else {
                     self.close_secret();
                     return;
                 };
@@ -722,7 +785,7 @@ impl App {
                     new,
                 }));
             }
-            YkPurpose::ShowWords | YkPurpose::ShowManagementKey => {}
+            YkPurpose::ShowWords => {}
         }
     }
 
@@ -744,37 +807,23 @@ impl App {
                 }
                 self.refresh();
             }
-            YkPurpose::AdminPin | YkPurpose::ManagementKey => {
+            YkPurpose::AdminPin | YkPurpose::ManagementKey | YkPurpose::PivPin => {
                 if let Some(wizard) = self.card.wizard.as_mut() {
                     wizard.admin_pin = None;
                 }
                 self.refresh();
             }
-            YkPurpose::ChangePin(_) => self.refresh(),
-            YkPurpose::ShowManagementKey => {
-                self.key(KeyJob::YubiKey(YkJob::DiscardManagementKey));
-                if let Some(wizard) = self.card.wizard.as_mut() {
-                    wizard.notes.push(
-                        "새 관리 키를 설정하지 않았습니다. 관리 키는 그대로입니다.".to_owned(),
-                    );
-                }
+            YkPurpose::ChangePin(_) | YkPurpose::ProtectManagement | YkPurpose::SetPins => {
                 self.refresh();
             }
         }
     }
 
-    /// W08 / W13 `다 적었습니다` held: the W10 challenge, or the new management key is set.
+    /// W08 `다 적었습니다` held: the W10 challenge.
     pub(crate) fn yk_hold_complete(&mut self, purpose: YkPurpose) {
         self.close_secret();
-        match purpose {
-            YkPurpose::ShowWords => self.key(KeyJob::YubiKey(YkJob::Challenge)),
-            YkPurpose::ShowManagementKey => {
-                // The current key is the factory key (this change is offered when it was seen).
-                self.key(KeyJob::YubiKey(YkJob::SetManagementKey {
-                    old: Zeroizing::new(yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY.to_vec()),
-                }));
-            }
-            _ => {}
+        if purpose == YkPurpose::ShowWords {
+            self.key(KeyJob::YubiKey(YkJob::Challenge));
         }
         self.refresh();
     }
@@ -785,6 +834,166 @@ impl App {
             .as_ref()
             .and_then(|wizard| wizard.enrolled.as_ref())
             .map(|enrolled| enrolled.record.serial)
+    }
+
+    /// The card of the "PIN 설정" actions: the wizard's result card while the wizard is open,
+    /// otherwise the `YubiKey` list row opened with `PIN 설정`.
+    fn yk_pin_serial(&self) -> Option<u32> {
+        if self.card.wizard.is_some() {
+            self.yk_result_serial()
+        } else {
+            self.card.pin_serial
+        }
+    }
+
+    /// The flags of the "PIN 설정" card of `serial` (the wizard's when it shows that card).
+    #[must_use]
+    pub fn yk_pin_defaults(&self, serial: u32) -> DefaultsSeen {
+        self.card
+            .wizard
+            .as_ref()
+            .filter(|_| self.yk_result_serial() == Some(serial))
+            .map_or_else(DefaultsSeen::default, |wizard| wizard.defaults)
+    }
+
+    /// Queues a "PIN 설정" card job for the action's card (the window waits, busy).
+    fn yk_pin_job(&mut self, job: impl FnOnce(u32) -> YkJob) {
+        let Some(serial) = self.yk_pin_serial() else {
+            self.close_secret();
+            return;
+        };
+        self.with_form(|form| form.set_busy(true));
+        self.key(KeyJob::YubiKey(job(serial)));
+    }
+
+    /// The PIN window of a "PIN 설정" action.
+    fn yk_open_pin_action(&mut self, kind: CardSecretKind, purpose: YkPurpose) {
+        if self.yk_pin_serial().is_some() {
+            self.open_input(
+                SecretKind::CardSecret(kind),
+                Purpose::YubiKey(purpose),
+                false,
+            );
+        }
+    }
+
+    /// Enters step (d): reads the inserted card's management key state when the plan has PIV.
+    fn yk_enter_credentials(&mut self) {
+        let Some(wizard) = self.yk_wizard() else {
+            return;
+        };
+        wizard.step = WizardStep::Credentials;
+        wizard.failure = None;
+        wizard.management = None;
+        if wizard.applets().1 {
+            self.key(KeyJob::YubiKey(YkJob::ProbeManagement));
+        }
+    }
+
+    fn on_yk_management(&mut self, result: Result<ManagementState, CardJobError>) {
+        if let (Some(wizard), Ok(state)) = (self.card.wizard.as_mut(), result) {
+            wizard.management = Some(state);
+            if !state.protected {
+                wizard.default_management = state.default;
+            }
+        }
+        self.refresh();
+    }
+
+    fn on_yk_protected(&mut self, serial: u32, result: Result<(), CardJobError>) {
+        match result {
+            Ok(()) => {
+                self.close_secret();
+                if let Some(wizard) = self.card.wizard.as_mut() {
+                    wizard.defaults.piv_management = false;
+                    wizard.defaults.piv_management_protected = true;
+                }
+                self.yk_note(
+                    "PIV 관리 키를 새로 만들어 PIN으로 보호했습니다. 관리 키는 입력할 필요가 없습니다(다음 등록에는 PIV PIN만 묻습니다)."
+                        .to_owned(),
+                );
+                self.yk_defaults_done(serial);
+            }
+            Err(error) => self.with_form(|form| {
+                form.set_busy(false);
+                form.set_error(Some(error.to_string()));
+            }),
+        }
+    }
+
+    fn on_yk_pins_set(
+        &mut self,
+        serial: u32,
+        result: Result<crate::yubikey::PinReport, CardJobError>,
+    ) {
+        use core::fmt::Write as _;
+
+        use crate::yubikey::DefaultsStep;
+        let report = match result {
+            Ok(report) if !report.done.is_empty() || report.failed.is_none() => report,
+            Ok(report) => {
+                // The first step failed: nothing changed; the window stays for another try.
+                let text = report
+                    .failed
+                    .map(|(_, error)| error.to_string())
+                    .unwrap_or_default();
+                self.with_form(|form| {
+                    form.set_busy(false);
+                    form.set_error(Some(format!("바꾼 것 없음. {text}")));
+                });
+                return;
+            }
+            Err(error) => {
+                self.with_form(|form| {
+                    form.set_busy(false);
+                    form.set_error(Some(error.to_string()));
+                });
+                return;
+            }
+        };
+        self.close_secret();
+        let names = |steps: &[DefaultsStep]| {
+            steps
+                .iter()
+                .map(|step| step.name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut text = format!("바꾼 것: {}.", names(&report.done));
+        if !report.skipped.is_empty() {
+            let _ = write!(text, " 건너뜀: {}.", names(&report.skipped));
+        }
+        if let Some((step, error)) = report.failed {
+            let _ = write!(
+                text,
+                " 실패: {} — {error} 그 뒤 항목은 바꾸지 않았습니다.",
+                step.name()
+            );
+        } else {
+            text.push_str(" 새 PIN은 이 지갑에 저장하지 않으니 따로 기억해 두세요.");
+        }
+        let has = |step| report.done.contains(&step) || report.skipped.contains(&step);
+        if let Some(wizard) = self.card.wizard.as_mut() {
+            if has(DefaultsStep::PivPin) && has(DefaultsStep::PivPuk) {
+                wizard.defaults.piv_pin = false;
+            }
+            if has(DefaultsStep::PivManagement) {
+                wizard.defaults.piv_management = false;
+                wizard.defaults.piv_management_protected = true;
+            }
+            if has(DefaultsStep::OpenPgpAdmin) && has(DefaultsStep::OpenPgpUser) {
+                wizard.defaults.openpgp_admin = false;
+            }
+        }
+        self.yk_note(text);
+        if report.failed.is_none()
+            && let Some(meta) = self.meta.as_mut()
+            && meta.hw_accounts.defaults.contains(&serial)
+        {
+            meta.hw_accounts.defaults.retain(|other| *other != serial);
+            self.save_meta();
+        }
+        self.refresh();
     }
 
     // ----- the new YubiKey wallet ------------------------------------------------------------
@@ -867,30 +1076,9 @@ impl App {
             YkOutcome::PinChanged(serial, target, result) => {
                 self.on_yk_pin_changed(serial, target, result);
             }
-            YkOutcome::ManagementKey(Ok(text)) => self.open_display(
-                SecretKind::ShowCardKey,
-                Purpose::YubiKey(YkPurpose::ShowManagementKey),
-                DisplaySecret {
-                    text,
-                    address: None,
-                    passphrase_note: false,
-                    copy_allowed: false,
-                },
-            ),
-            YkOutcome::ManagementKey(Err(error)) => self.yk_note(error.to_string()),
-            YkOutcome::ManagementKeySet(serial, result) => match result {
-                Ok(()) => {
-                    if let Some(wizard) = self.card.wizard.as_mut() {
-                        wizard.defaults.piv_management = false;
-                    }
-                    self.yk_note(
-                        "PIV 관리 키를 바꿨습니다. 다음 YubiKey 등록·관리 키 변경에는 적어 둔 새 관리 키를 입력하세요."
-                            .to_owned(),
-                    );
-                    self.yk_defaults_done(serial);
-                }
-                Err(error) => self.yk_note(format!("관리 키를 바꾸지 못했습니다: {error}")),
-            },
+            YkOutcome::Management(result) => self.on_yk_management(result),
+            YkOutcome::ManagementProtected(serial, result) => self.on_yk_protected(serial, result),
+            YkOutcome::PinsSet(serial, result) => self.on_yk_pins_set(serial, result),
             YkOutcome::Removed(Ok(_)) => {
                 self.close_secret();
                 self.info = Some("YubiKey 기록을 지웠습니다.".to_owned());
@@ -1165,6 +1353,16 @@ impl App {
             self.yk_remove(row);
             return true;
         }
+        if let Some(row) = ids::pins_row(id) {
+            let serial = self.card.records.get(row).map(|record| record.serial);
+            self.card.pin_serial = if self.card.pin_serial == serial {
+                None
+            } else {
+                serial
+            };
+            self.refresh();
+            return true;
+        }
         if let Some(row) = ids::backup_row(id) {
             let serial = self.card.records.get(row).map(|record| record.serial);
             if let Some(wizard) = self.yk_wizard() {
@@ -1239,20 +1437,18 @@ impl App {
                 self.refresh();
             }
             ids::CONFIRM_NEXT => {
-                if let Some(wizard) = self.yk_wizard()
-                    && wizard.can_continue()
-                {
-                    wizard.step = WizardStep::Credentials;
+                if self.yk_wizard().is_some_and(|wizard| wizard.can_continue()) {
+                    self.yk_enter_credentials();
                 }
                 self.refresh();
             }
-            ids::CRED_BACK | ids::RETRY => {
+            ids::RETRY => {
+                self.yk_enter_credentials();
+                self.refresh();
+            }
+            ids::CRED_BACK => {
                 if let Some(wizard) = self.yk_wizard() {
-                    wizard.step = if id == ids::RETRY {
-                        WizardStep::Credentials
-                    } else {
-                        WizardStep::Confirm
-                    };
+                    wizard.step = WizardStep::Confirm;
                     wizard.failure = None;
                 }
                 self.refresh();
@@ -1284,9 +1480,12 @@ impl App {
                 );
             }
             ids::CHANGE_MGMT => {
-                if let Some(serial) = self.yk_result_serial() {
-                    self.key(KeyJob::YubiKey(YkJob::NewManagementKey { serial }));
-                }
+                self.yk_open_pin_action(CardSecretKind::PivPin, YkPurpose::ProtectManagement);
+            }
+            ids::SET_PINS => self.yk_open_pin_action(CardSecretKind::SetPins, YkPurpose::SetPins),
+            ids::PINS_UNIFIED | ids::PINS_SEPARATE => {
+                self.card.pins_separate = id == ids::PINS_SEPARATE;
+                self.refresh();
             }
             _ => return false,
         }

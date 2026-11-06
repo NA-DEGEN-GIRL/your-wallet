@@ -12,13 +12,14 @@ use yw_core::secret::{SecretBytes, SecretString, Zeroizing};
 use yw_core::vault::{FileKind, RecordId, Vault, VaultStatus};
 use yw_core::yubikey::CardError;
 use yw_core::yubikey::enrol::PreviewLine;
+use yw_core::yubikey::piv::ManagementState;
 use yw_core::yubikey::plan::{PlanError, PlannedSlot};
 
 use super::{KeyWorker, ascii, new_slot, now_unix, passphrase, password, reconcile_hardware};
 use crate::events::{KeyOutcome, YubiKeyJobError};
 use crate::logging::{self, Field};
 use crate::meta::{EvmAccountPref, Meta, Tab};
-use crate::yubikey::{CardJobError, PinTarget};
+use crate::yubikey::{CardJobError, PinReport, PinTarget};
 
 /// Recovery words and an optional BIP39 passphrase as entered (W05, W06).
 pub type EnteredWords = (Zeroizing<Vec<u8>>, Option<Zeroizing<Vec<u8>>>);
@@ -53,8 +54,10 @@ pub enum YkJob {
         slots: Vec<PlannedSlot>,
         /// `OpenPGP` admin PIN (empty without `OpenPGP` slots or when adopting).
         admin_pin: Zeroizing<Vec<u8>>,
-        /// PIV management key (empty without PIV slots or when adopting).
+        /// PIV management key (empty without PIV slots, when PIN-protected or when adopting).
         management_key: Zeroizing<Vec<u8>>,
+        /// PIV PIN for a PIN-protected management key (otherwise empty).
+        piv_pin: Zeroizing<Vec<u8>>,
         /// "가져오기 없이 등록": read the card's keys, write nothing (spec/10 §7.5).
         adopt: bool,
     },
@@ -74,19 +77,25 @@ pub enum YkJob {
         /// New value.
         new: Zeroizing<Vec<u8>>,
     },
-    /// Generate a new random AES-192 management key for card `serial` and hold it; it comes
-    /// back once for W13 and is set only by [`YkJob::SetManagementKey`].
-    NewManagementKey {
+    /// Read the first card's PIV management key state (read-only) for the credentials step.
+    ProbeManagement,
+    /// "PIV 관리 키 자동 보호" of card `serial`: a random AES-192 key made here, stored
+    /// PIN-protected on the card (spec/10 §9.3), never shown.
+    ProtectManagementKey {
         /// Card.
         serial: u32,
+        /// The current PIV PIN.
+        pin: Zeroizing<Vec<u8>>,
     },
-    /// Authenticate with the current key and set the held new key.
-    SetManagementKey {
-        /// The current management key.
-        old: Zeroizing<Vec<u8>>,
+    /// "PIN 하나로 통일" of card `serial` (`crate::yubikey::set_pins`).
+    SetPins {
+        /// Card.
+        serial: u32,
+        /// The one current value of all four (empty = the factory values).
+        current: Zeroizing<Vec<u8>>,
+        /// The new value (8 characters).
+        new: Zeroizing<Vec<u8>>,
     },
-    /// Wipe the held new management key (W13 closed without the acknowledgement).
-    DiscardManagementKey,
     /// Remove a `YubiKey` record after the password (spec/10 §7.5).
     Remove {
         /// Password (W03).
@@ -116,9 +125,9 @@ impl YkJob {
             Self::Enrol { .. } => "YkEnrol",
             Self::Check { .. } => "YkCheck",
             Self::ChangePin { .. } => "YkChangePin",
-            Self::NewManagementKey { .. } => "YkNewManagementKey",
-            Self::SetManagementKey { .. } => "YkSetManagementKey",
-            Self::DiscardManagementKey => "YkDiscardManagementKey",
+            Self::ProbeManagement => "YkProbeManagement",
+            Self::ProtectManagementKey { .. } => "YkProtectManagementKey",
+            Self::SetPins { .. } => "YkSetPins",
             Self::Remove { .. } => "YkRemove",
             Self::Discard => "YkDiscard",
         }
@@ -151,13 +160,15 @@ pub enum YkOutcome {
     Checked(u32, Result<Vec<Result<(), CardError>>, CardJobError>),
     /// `ChangePin` finished.
     PinChanged(u32, PinTarget, Result<(), CardJobError>),
-    /// `NewManagementKey` finished: the key to show once (48 hex digits).
-    ManagementKey(Result<SecretString, CardJobError>),
-    /// `SetManagementKey` finished.
-    ManagementKeySet(u32, Result<(), CardJobError>),
+    /// `ProbeManagement` finished.
+    Management(Result<ManagementState, CardJobError>),
+    /// `ProtectManagementKey` finished.
+    ManagementProtected(u32, Result<(), CardJobError>),
+    /// `SetPins` finished.
+    PinsSet(u32, Result<PinReport, CardJobError>),
     /// `Remove` finished.
     Removed(Result<RecordId, VaultError>),
-    /// `Discard` / `DiscardManagementKey` finished.
+    /// `Discard` finished.
     Discarded,
 }
 
@@ -171,32 +182,8 @@ pub(super) struct PendingEnrol {
     confirmed: bool,
 }
 
-/// A new management key between W13 and the card.
-pub(super) struct PendingKey {
-    serial: u32,
-    key: Zeroizing<[u8; 24]>,
-}
-
 fn job_key(error: KeyError) -> YubiKeyJobError {
     YubiKeyJobError::Key(error)
-}
-
-/// Hex of a key, in a redacting string.
-fn hex_secret(key: &[u8]) -> Result<SecretString, KeyError> {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut text = SecretString::with_capacity(key.len().saturating_mul(2));
-    for byte in key {
-        for nibble in [byte >> 4, byte & 0x0F] {
-            let digit = DIGITS
-                .get(usize::from(nibble))
-                .copied()
-                .ok_or(KeyError::Internal)?;
-            let mut buffer = [0_u8; 4];
-            text.push_str(char::from(digit).encode_utf8(&mut buffer))
-                .map_err(|_| KeyError::Internal)?;
-        }
-    }
-    Ok(text)
 }
 
 /// The default meta of a new `YubiKey` wallet: no derived account, the slot map's accounts
@@ -253,11 +240,15 @@ impl KeyWorker {
                 slots,
                 admin_pin,
                 management_key,
+                piv_pin,
                 adopt,
             } => KeyOutcome::YubiKeyEnrolled(self.yk_enrol(
                 &slots,
-                &admin_pin,
-                &management_key,
+                &crate::yubikey::EnrolSecrets {
+                    admin_pin: &admin_pin,
+                    management_key: &management_key,
+                    piv_pin: &piv_pin,
+                },
                 adopt,
             )),
             YkJob::Check { serial } => {
@@ -291,33 +282,27 @@ impl KeyWorker {
                 );
                 KeyOutcome::YubiKey(YkOutcome::PinChanged(serial, target, result))
             }
-            YkJob::NewManagementKey { serial } => {
-                KeyOutcome::YubiKey(YkOutcome::ManagementKey(self.yk_new_management_key(serial)))
-            }
-            YkJob::SetManagementKey { old } => {
-                let Some(pending) = self.pending_card_key.take() else {
-                    return KeyOutcome::YubiKey(YkOutcome::ManagementKeySet(
-                        0,
-                        Err(CardJobError::Card(CardError::Internal)),
-                    ));
-                };
-                let result = crate::yubikey::change_management_key(
-                    self.cards.as_mut(),
-                    pending.serial,
-                    &old,
-                    &pending.key,
-                );
+            YkJob::ProbeManagement => KeyOutcome::YubiKey(YkOutcome::Management(
+                crate::yubikey::probe_management(self.cards.as_mut()),
+            )),
+            YkJob::ProtectManagementKey { serial, pin } => {
+                let result =
+                    crate::yubikey::protect_management_key(self.cards.as_mut(), serial, &pin);
                 logging::info(
                     "key",
-                    "yubikey.management_key_change",
+                    "yubikey.management_key_protect",
                     &[("ok", Field::Word(if result.is_ok() { "yes" } else { "no" }))],
                 );
-                KeyOutcome::YubiKey(YkOutcome::ManagementKeySet(pending.serial, result))
+                KeyOutcome::YubiKey(YkOutcome::ManagementProtected(serial, result))
             }
-            YkJob::DiscardManagementKey => {
-                self.pending_card_key = None;
-                KeyOutcome::YubiKey(YkOutcome::Discarded)
-            }
+            YkJob::SetPins {
+                serial,
+                current,
+                new,
+            } => KeyOutcome::YubiKey(YkOutcome::PinsSet(
+                serial,
+                self.yk_set_pins(serial, &current, &new),
+            )),
             YkJob::Remove {
                 password: bytes,
                 id,
@@ -344,7 +329,39 @@ impl KeyWorker {
             self.pending_password = None;
         }
         self.pending_enrol = None;
-        self.pending_card_key = None;
+    }
+
+    /// `SetPins`: the card is identified with its record's applets (both when unknown).
+    fn yk_set_pins(
+        &mut self,
+        serial: u32,
+        current: &[u8],
+        new: &[u8],
+    ) -> Result<PinReport, CardJobError> {
+        use yw_core::yubikey::plan::Curve;
+        let applets = self
+            .vault
+            .as_ref()
+            .and_then(|vault| Self::hardware_records(vault).ok())
+            .and_then(|records| records.into_iter().find(|record| record.serial == serial))
+            .map_or((true, true), |record| {
+                let has = |curve| record.slots.iter().any(|slot| slot.role.curve() == curve);
+                (has(Curve::Secp256k1), has(Curve::Ed25519))
+            });
+        let result = crate::yubikey::set_pins(self.cards.as_mut(), serial, applets, current, new);
+        logging::info(
+            "key",
+            "yubikey.set_pins",
+            &[(
+                "ok",
+                Field::Word(match &result {
+                    Ok(report) if report.failed.is_none() => "yes",
+                    Ok(_) => "partial",
+                    Err(_) => "no",
+                }),
+            )],
+        );
+        result
     }
 
     fn yk_preview(
@@ -475,8 +492,7 @@ impl KeyWorker {
     fn yk_enrol(
         &mut self,
         slots: &[PlannedSlot],
-        admin_pin: &[u8],
-        management_key: &[u8],
+        secrets: &crate::yubikey::EnrolSecrets<'_>,
         adopt: bool,
     ) -> Result<(RecordId, yw_core::yubikey::enrol::Enrolled), YubiKeyJobError> {
         let pending = self
@@ -500,16 +516,7 @@ impl KeyWorker {
         let enrolled = if adopt {
             crate::yubikey::adopt_first_card(self.cards.as_mut(), seed, slots, &records)
         } else {
-            crate::yubikey::enrol_first_card(
-                self.cards.as_mut(),
-                seed,
-                slots,
-                &records,
-                &crate::yubikey::EnrolSecrets {
-                    admin_pin,
-                    management_key,
-                },
-            )
+            crate::yubikey::enrol_first_card(self.cards.as_mut(), seed, slots, &records, secrets)
         }
         .map_err(YubiKeyJobError::Card)?;
         let id = if fresh {
@@ -551,14 +558,5 @@ impl KeyWorker {
             )],
         );
         Ok((id, enrolled))
-    }
-
-    fn yk_new_management_key(&mut self, serial: u32) -> Result<SecretString, CardJobError> {
-        let mut key = Zeroizing::new([0_u8; 24]);
-        yw_core::entropy::fill_random(key.as_mut())
-            .map_err(|_| CardJobError::Card(CardError::Internal))?;
-        let text = hex_secret(key.as_ref()).map_err(|_| CardJobError::Card(CardError::Internal))?;
-        self.pending_card_key = Some(PendingKey { serial, key });
-        Ok(text)
     }
 }

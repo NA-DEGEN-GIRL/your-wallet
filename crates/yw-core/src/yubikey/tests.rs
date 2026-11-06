@@ -67,6 +67,7 @@ fn default_auth() -> EnrolAuth<'static> {
     EnrolAuth {
         admin_pin: b"12345678",
         management_key: &super::piv::DEFAULT_MANAGEMENT_KEY,
+        piv_pin: b"",
         cipher: Some(&ToyCipher),
         challenge: [0x5C; 16],
     }
@@ -841,4 +842,108 @@ fn defaults_change_on_the_emulator() {
     assert_eq!(card.piv_pin, b"654321");
     assert_eq!(card.piv_puk, b"87654321");
     assert_eq!(card.mgmt_key, [0x42; 24]);
+}
+
+/// spec/10 §5.3.3 on the emulator: the PIN-protected management key (ykman `--generate
+/// --protect`): the object layouts, enrolment with the PIV PIN only, and the wallet's own
+/// "generate and protect" from the factory key.
+#[test]
+fn pin_protected_management_key() {
+    use super::piv::{
+        ADMIN_FLAG_MGM_PROTECTED, AdminData, ManagementCredential, OBJECT_ADMIN_DATA,
+        OBJECT_PRINTED, Piv, get_data, parse_protected_key, put_data,
+    };
+    let frame = |command: &super::apdu::Command| {
+        super::apdu::encode(command, ApduMode::Short).unwrap()[0].to_vec()
+    };
+    assert_eq!(
+        frame(&get_data(OBJECT_ADMIN_DATA)),
+        [
+            0x00, 0xCB, 0x3F, 0xFF, 0x05, 0x5C, 0x03, 0x5F, 0xFF, 0x00, 0x00
+        ]
+    );
+    assert_eq!(
+        frame(&put_data(OBJECT_PRINTED, &[]).unwrap()),
+        [
+            0x00, 0xDB, 0x3F, 0xFF, 0x07, 0x5C, 0x03, 0x5F, 0xC1, 0x09, 0x53, 0x00
+        ]
+    );
+    let admin = AdminData::parse(&[0x80, 0x09, 0x81, 0x01, 0x03, 0x83, 0x04, 1, 2, 3, 4]).unwrap();
+    assert!(admin.mgm_key_protected());
+    assert_eq!(admin.pin_timestamp, Some([1, 2, 3, 4]));
+    assert_eq!(
+        admin.encode().unwrap(),
+        [0x80, 0x09, 0x81, 0x01, 0x03, 0x83, 0x04, 1, 2, 3, 4]
+    );
+    assert!(AdminData::default().encode().unwrap().is_empty());
+    assert!(AdminData::parse(&[0x81, 0x01, 0x02]).is_err());
+    assert_eq!(parse_protected_key(&[]).unwrap(), None);
+
+    // A card set up by ykman: enrolment needs only the PIV PIN.
+    let plan = vec![piv(0x82, sol(0))];
+    let mut card = MockCard::new(31_000_010);
+    card.protect_management([0x37; 24]);
+    // The factory key is not tried on a protected card: only the PIN opens it.
+    let mut auth = default_auth();
+    let seed = seed_of(ABOUT);
+    assert_eq!(
+        enrol_card(&mut card, ApduMode::Short, &seed, &plan, &[], &auth),
+        Err(EnrolError::Card(CardError::ManagementKeyProtected))
+    );
+    auth.piv_pin = b"999999";
+    assert_eq!(
+        enrol_card(&mut card, ApduMode::Short, &seed, &plan, &[], &auth),
+        Err(EnrolError::Card(CardError::WrongPin { retries: 2 }))
+    );
+    auth.piv_pin = b"123456";
+    let enrolled = enrol_card(&mut card, ApduMode::Short, &seed, &plan, &[], &auth).unwrap();
+    assert!(enrolled.defaults.piv_management_protected);
+    assert!(!enrolled.defaults.piv_management);
+
+    // The wallet's own --generate --protect from the factory key.
+    let mut fresh = MockCard::new(31_000_011);
+    {
+        let mut session = Piv::open(&mut fresh, ApduMode::Short).unwrap();
+        assert!(!session.management_state().unwrap().protected);
+        assert_eq!(
+            session.protect_management_key(b"000000", &ToyCipher, &[0x21; 16]),
+            Err(CardError::WrongPin { retries: 2 })
+        );
+        session
+            .protect_management_key(b"123456", &ToyCipher, &[0x21; 16])
+            .unwrap();
+    }
+    assert_ne!(fresh.mgmt_key, super::piv::DEFAULT_MANAGEMENT_KEY);
+    let printed = parse_protected_key(fresh.piv_object(OBJECT_PRINTED).unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(printed.as_slice(), fresh.mgmt_key.as_slice());
+    let admin = AdminData::parse(fresh.piv_object(OBJECT_ADMIN_DATA).unwrap()).unwrap();
+    assert_eq!(admin.flags, ADMIN_FLAG_MGM_PROTECTED);
+    // Again (now protected): a new key, still readable with the PIN only.
+    let first = fresh.mgmt_key.clone();
+    let mut session = Piv::open(&mut fresh, ApduMode::Short).unwrap();
+    session
+        .protect_management_key(b"123456", &ToyCipher, &[0x22; 16])
+        .unwrap();
+    let state = session
+        .authenticate_management(
+            ManagementCredential {
+                key: b"",
+                pin: b"123456",
+            },
+            &ToyCipher,
+            &[0x23; 16],
+        )
+        .unwrap();
+    assert!(state.protected && !state.default);
+    assert_ne!(fresh.mgmt_key, first);
+    // A custom key that is not protected is not guessed.
+    let mut custom = MockCard::new(31_000_012);
+    custom.mgmt_key = vec![0x42; 24];
+    let mut session = Piv::open(&mut custom, ApduMode::Short).unwrap();
+    assert_eq!(
+        session.protect_management_key(b"123456", &ToyCipher, &[0x24; 16]),
+        Err(CardError::ManagementKeyUnknown)
+    );
 }
