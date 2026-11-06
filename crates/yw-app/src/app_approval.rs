@@ -920,22 +920,21 @@ fn status_action(
 }
 
 /// The header network badge (spec/04 §3 header): built-in mainnets (Ethereum, `HyperEVM`,
-/// Solana mainnet) say plainly that real assets move; Sepolia and Solana devnet are test
+/// Arbitrum One, Base, BNB Smart Chain, Robinhood Chain, Solana mainnet) say plainly that real assets move; Sepolia and Solana devnet are test
 /// networks. User chains have no testnet classification and get neither; Bitcoin has its own
 /// network banner. Returns the text and whether it is the testnet coloring.
 fn network_badge(
     evm_chain: Option<u64>,
     sol: Option<yw_core::sol::SolCluster>,
 ) -> Option<(&'static str, bool)> {
-    use yw_core::evm::chain::{ETHEREUM_MAINNET, HYPEREVM_MAINNET};
+    use yw_core::evm::chain::is_builtin_mainnet;
     use yw_core::sol::SolCluster;
     match (evm_chain, sol) {
         (_, Some(SolCluster::Devnet)) => {
             Some(("Solana devnet (테스트) — 실제 자산이 아닙니다", true))
         }
-        (_, Some(SolCluster::Mainnet)) | (Some(ETHEREUM_MAINNET | HYPEREVM_MAINNET), None) => {
-            Some((MAINNET_BADGE, false))
-        }
+        (_, Some(SolCluster::Mainnet)) => Some((MAINNET_BADGE, false)),
+        (Some(chain), None) if is_builtin_mainnet(chain) => Some((MAINNET_BADGE, false)),
         (Some(SEPOLIA), None) => Some(("테스트넷 — 실제 자산이 아닙니다", true)),
         _ => None,
     }
@@ -3503,7 +3502,10 @@ fn site_fee_warning(site: &SiteRequest) -> Vec<yw_core::approval::Warning> {
 
 #[cfg(test)]
 mod tests {
-    use yw_core::evm::chain::{ETHEREUM_MAINNET, HYPEREVM_MAINNET, SEPOLIA};
+    use yw_core::evm::chain::{
+        ARBITRUM_ONE, BASE_MAINNET, BSC_MAINNET, ETHEREUM_MAINNET, HYPEREVM_MAINNET,
+        ROBINHOOD_MAINNET, SEPOLIA,
+    };
     use yw_core::sol::SolCluster;
 
     use super::{MAINNET_BADGE, StatusAction, network_badge, status_action};
@@ -3541,7 +3543,14 @@ mod tests {
     #[test]
     fn mainnets_get_the_real_asset_badge() {
         assert_eq!(MAINNET_BADGE, "메인넷 — 실제 자산");
-        for chain in [ETHEREUM_MAINNET, HYPEREVM_MAINNET] {
+        for chain in [
+            ETHEREUM_MAINNET,
+            HYPEREVM_MAINNET,
+            ARBITRUM_ONE,
+            BASE_MAINNET,
+            BSC_MAINNET,
+            ROBINHOOD_MAINNET,
+        ] {
             assert_eq!(
                 network_badge(Some(chain), None),
                 Some((MAINNET_BADGE, false))
@@ -3557,7 +3566,7 @@ mod tests {
         );
         assert!(network_badge(None, Some(SolCluster::Devnet)).is_some_and(|(_, test)| test));
         // User chains have no testnet classification; Bitcoin has its own banner.
-        assert_eq!(network_badge(Some(8_453), None), None);
+        assert_eq!(network_badge(Some(10), None), None);
         assert_eq!(network_badge(None, None), None);
     }
 }

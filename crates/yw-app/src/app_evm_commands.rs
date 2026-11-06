@@ -274,8 +274,8 @@ impl App {
         }
         if let Some(index) = offset(id, ids::CHAIN_ROW_BASE, ids::CHAIN_ROW_SPAN) {
             let chains = self.settings.registered_evm();
-            if let Some(chain) = chains.get(usize::from(index / 4)).copied() {
-                match index % 4 {
+            if let Some(chain) = chains.get(usize::from(index / 3)).copied() {
+                match index % 3 {
                     0 if builtin_chain(chain).is_none() => self.open_chain_form(Some(chain)),
                     1 if builtin_chain(chain).is_none() => self.request_delete_chain(chain),
                     2 => self.start_repin(chain),

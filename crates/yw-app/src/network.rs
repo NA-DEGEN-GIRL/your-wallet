@@ -3,10 +3,21 @@
 
 use core::fmt;
 
-use yw_core::evm::chain::{ETHEREUM_MAINNET, HYPEREVM_MAINNET, SEPOLIA};
+use yw_core::evm::chain::{
+    ARBITRUM_ONE, BASE_MAINNET, BSC_MAINNET, ETHEREUM_MAINNET, HYPEREVM_MAINNET, ROBINHOOD_MAINNET,
+    SEPOLIA,
+};
 
 /// Built-in EVM chains in table order (spec/03 §1.1).
-pub const BUILTIN_EVM: [u64; 3] = [ETHEREUM_MAINNET, SEPOLIA, HYPEREVM_MAINNET];
+pub const BUILTIN_EVM: [u64; 7] = [
+    ETHEREUM_MAINNET,
+    SEPOLIA,
+    HYPEREVM_MAINNET,
+    ARBITRUM_ONE,
+    BASE_MAINNET,
+    BSC_MAINNET,
+    ROBINHOOD_MAINNET,
+];
 
 /// Solana cluster.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

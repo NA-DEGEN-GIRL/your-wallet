@@ -96,7 +96,19 @@ const EVM = [
   { id: 'eip155:1', chainId: '0x1', genesis: '0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3' },
   { id: 'eip155:11155111', chainId: '0xaa36a7', genesis: '0x25a5cc106eea7138acab33231d7160d69cb777ee0c2c553fcddf5138993e6dd9' },
   { id: 'eip155:999', chainId: '0x3e7', genesis: null },
+  // 2026-11-06 built-ins (spec/03 §1.1; QuickNode arbitrum-mainnet / base-mainnet / bsc / robinhood-mainnet).
+  { id: 'eip155:42161', chainId: '0xa4b1', genesis: '0x7ee576b35482195fc49205cec9af72ce14f003b9ae69f6ba0faef4514be8b442' },
+  { id: 'eip155:8453', chainId: '0x2105', genesis: '0xf712aa9241cc24369b143cf6dce85f0902a9731e70d66818a3a5845b296c73dd', opStack: true },
+  { id: 'eip155:56', chainId: '0x38', genesis: '0x0d21840abff46b96c84b2ac9e10e4f5cdaeb5693cb665db62a2f3b02d2d57b5b' },
+  { id: 'eip155:4663', chainId: '0x1237', genesis: '0xaad15f3d702aaea00caf3e9bb56395efe9127bc3b31b24921abf1eee3409305c' },
 ];
+
+// OP-stack GasPriceOracle predeploy (spec/03 §3.4a): getL1Fee(bytes) of a 100-byte sample.
+const GAS_PRICE_ORACLE = '0x420000000000000000000000000000000000000F';
+const GET_L1_FEE_SAMPLE = '0x49948e0e'
+  + (32).toString(16).padStart(64, '0')
+  + (100).toString(16).padStart(64, '0')
+  + '01'.repeat(100).padEnd(128 * 2, '0');
 
 function summarizeCall(call) {
   const logs = call.logs ?? [];
@@ -126,6 +138,11 @@ async function probeEvm(net, url, label = net.id) {
     ? { number: BigInt(b.result.number).toString(), baseFeeGwei: (Number(baseFee) / 1e9).toFixed(4), gasLimit: BigInt(b.result.gasLimit).toString(), ms: b.ms }
     : errKv(b));
   if (baseFee === null) return;
+  if (net.opStack) {
+    const l1 = await rpc(url, 'eth_call', [{ to: GAS_PRICE_ORACLE, input: GET_L1_FEE_SAMPLE }, 'latest']);
+    const ok = typeof l1.result === 'string' && /^0x[0-9a-f]{64}$/i.test(l1.result);
+    out(label, 'getL1Fee(100B)', ok, ok ? { l1FeeWei: BigInt(l1.result).toString(), ms: l1.ms } : errKv(l1));
+  }
   const tip = 1_000_000_000n;
   const fees = { maxFeePerGas: hex(baseFee * 2n + tip), maxPriorityFeePerGas: hex(tip) };
   const from = randAddr();

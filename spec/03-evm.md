@@ -27,18 +27,19 @@ yw-core는 네트워크를 호출하지 않는다. yw-app이 RPC를 호출하고
 
 ### 1.1 체인 정보·내장 체인
 
-yw-app이 내장 상수(아래 표), 사용자 체인 정의(§1.6), 고정 제네시스(§1.4)로 `ChainInfo`를 만들어 yw-core에 넘긴다. "등록된 체인" = 내장 3개 + 사용자 체인.
+yw-app이 내장 상수(아래 표), 사용자 체인 정의(§1.6), 고정 제네시스(§1.4)로 `ChainInfo`를 만들어 yw-core에 넘긴다. "등록된 체인" = 내장 7개(아래 두 표) + 사용자 체인.
 
 ```rust
 pub struct ChainInfo {
     pub chain_id: u64, pub source: ChainSource, pub genesis: GenesisRule,   // §1.4
     pub templates: Option<EndpointTemplates>,             // 내장 체인만 Some, 사용자 체인 None. 설정 화면의 URL 생성 전용(아래), 런타임 엔드포인트(§1.4)에 쓰지 않음
     pub name: String, pub native_symbol: String, pub native_decimals: u8,
-    pub explorer: Option<String>,                         // 사용자 체인만, https URL. 표시·링크 전용([04]), RPC에 쓰지 않음
+    pub explorer: Option<String>,                         // https 기본 URL, 표시·링크 전용([04]), RPC에 쓰지 않음. 내장 L2/BSC(아래 둘째 표)와 사용자 체인
     pub simulation: SimulationSupport,                    // D14·D15, §6
     pub amsterdam_time: Option<u64>,                      // Glamsterdam 활성 unix 초, None = 미정·해당 없음
     pub default_caps: FeeCaps, pub tip_floor_wei: u64,    // §3.4
     pub small_block_gas_limit: Option<u64>,               // HyperEVM 작은 블록(§3.5 대체 가스, E38), 그 밖 None
+    pub l1_data_fee: L1DataFee,                           // §3.4a: None / OpStack(Base) / Probe(사용자 체인)
     pub tokens: &'static TokenRegistry, pub contracts: &'static [KnownContract],   // §1.2, 사용자 체인은 빈 목록
 }
 pub enum ChainSource { BuiltIn, User }
@@ -49,7 +50,8 @@ pub struct EndpointTemplates {                            // D13 입력 템플�
 }
 pub enum GenesisRule { Fixed([u8; 32]), PinOnFirstUse(Option<[u8; 32]>) }   // None = 아직 고정 전(§1.4)
 #[repr(u8)] pub enum SimulationSupport { Auto = 1, Unsupported = 2 }        // 설정 문자열 "auto" / "unsupported"
-pub struct KnownToken { pub address: Address, pub symbol: &'static str, pub decimals: u8, pub role: TokenRole }
+pub struct KnownToken { pub address: Address, pub symbol: &'static str, pub decimals: u8, pub role: TokenRole,
+    pub label: Option<&'static str> }   // 주소 라벨(연동·브리지 토큰 구분, 예 "USDT (Binance-Peg)"), None = symbol. symbol은 온체인 티커 그대로(E19·T20 비교)
 pub type TokenRegistry = [KnownToken];         // 내장 목록만 "등록 토큰"(신뢰 심볼)이다
 pub enum TokenRole { Plain, Weth, Dai }
 pub struct KnownContract { pub address: Address, pub label: &'static str, pub role: ContractRole }
@@ -73,7 +75,37 @@ pub enum ContractRole { Permit2, Seaport16, Seaport15, LabelOnly }
 
 템플릿(D13)은 설정 화면([04](04-app-ui.md) §1.9·§2.11)이 저장할 때 네트워크별 URL을 만드는 데만 쓴다: QuickNode 멀티체인 = `https://<이름>.<quicknode_subdomain>.quiknode.pro/<토큰>/`(서브도메인 `None`이면 `https://<이름>.quiknode.pro/<토큰>/`, `quicknode_path`가 있으면 끝 `/` 대신 `/<path>`), 알케미 = `https://<alchemy_label>.g.alchemy.com/v2/<KEY>`. 만든 URL은 `apikeys.dpapi` `rpc:eip155:<chainId>`([04] §6.3)에 저장하고 런타임에는 그 URL만 쓴다(§1.4). 템플릿 값이 틀려도 §1.4 체인 확인(chainId·제네시스)이 다른 네트워크 연결을 막는다. HyperEVM QuickNode 경로: 2026-10 QuickNode 문서는 `/evm`(최근 블록만 보관, 약 12시간마다 정리, `debug_*`·`trace_*` 없음)과 `/nanoreth`(전체 이력)를 둔다. §1.4는 블록 0 해시가 필요하므로 `nanoreth`를 기본으로 두고 A9 (a)(b)를 두 경로로 확인해 정한다(`/evm`이 블록 0과 `eth_simulateV1`을 모두 주면 `/evm`도 가능). HyperEVM testnet(998, HYPE 18)은 내장하지 않고 사용자 체인(§1.6)으로 추가할 수 있다.
 
-그 밖 체인(Hoodi, L2 등)은 내장하지 않는다. 필요하면 사용자 체인(§1.6)으로 추가한다(D14). mainnet `amsterdam_time`이 정해지면 상수를 고친다(설정값 아님). EIP-7708·EIP-2780은 2026-11-01까지 Last Call이므로 mainnet 활성 전 세부가 바뀔 수 있다.
+**내장 L2·BSC (2026-11-06 추가, 출처는 §1.1a).** 네 체인 모두 `source = BuiltIn`, `genesis = Fixed`, `quicknode_path = None`, `native_decimals = 18`, `simulation = Auto`, `amsterdam_time = None`, `small_block_gas_limit = None`, `contracts` 빈 목록(Permit2·Seaport·Universal Router는 이 체인들에서 확인하지 않아 넣지 않았다 → R3 `Uninterpreted`, typed data T04).
+
+| 필드 | Arbitrum One | Base | BNB Smart Chain | Robinhood Chain |
+|---|---|---|---|---|
+| `chain_id` | 42161 (`0xa4b1`) | 8453 (`0x2105`) | 56 (`0x38`) | 4663 (`0x1237`) |
+| `genesis` (`Fixed`, 블록 0 해시) | `0x7ee576b35482195fc49205cec9af72ce14f003b9ae69f6ba0faef4514be8b442` (Nitro 체인 블록 0) | `0xf712aa9241cc24369b143cf6dce85f0902a9731e70d66818a3a5845b296c73dd` | `0x0d21840abff46b96c84b2ac9e10e4f5cdaeb5693cb665db62a2f3b02d2d57b5b` | `0xaad15f3d702aaea00caf3e9bb56395efe9127bc3b31b24921abf1eee3409305c` |
+| `templates.quicknode_subdomain` | `arbitrum-mainnet` | `base-mainnet` | `bsc` | `robinhood-mainnet` |
+| `templates.alchemy_label` | `arb-mainnet` | `base-mainnet` | `bnb-mainnet` | `robinhood-mainnet` |
+| `name` / `native_symbol` | `Arbitrum One` / `ETH` | `Base` / `ETH` | `BNB Smart Chain` / `BNB` | `Robinhood Chain` / `ETH` |
+| `explorer` | `https://arbiscan.io` | `https://basescan.org` | `https://bscscan.com` | `https://robinhoodchain.blockscout.com` |
+| 수수료 모델 | type 2. L1 비용은 `gasUsed`에 들어 있다(`eth_estimateGas`가 L1 몫까지 포함한 가스 한도를 준다) → `l1_data_fee = None`. 팁은 체인이 무시한다(체인 소유자가 켜기 전까지) | type 2(OP-stack). L1 데이터 수수료가 `gas × price` 밖에 따로 붙는다 → `l1_data_fee = OpStack`(§3.4a). Jovian 최소 base fee 0.005 gwei | type 2(BEP-226: base fee 항상 0, 소각 없음) → 가격 전체가 팁. 검증자 최소 가스 가격 0.05 gwei(2025-10) → `tip_floor_wei` | Arbitrum 체인(Orbit) → Arbitrum One과 같음(`None`). 제네시스 base fee 0.1 gwei |
+| `default_caps` (maxFee / tip / 총) | 10 gwei / 1 gwei / 0.02 ETH | 10 gwei / 1 gwei / 0.02 ETH (L1 몫 포함, §3.4a) | 10 gwei / 10 gwei / 0.02 BNB (base fee 0이라 tip 상한 = maxFee 상한) | 10 gwei / 1 gwei / 0.02 ETH |
+| `tip_floor_wei` | 10,000,000 (0.01 gwei, 실제로는 무시됨) | 1,000,000 (0.001 gwei; 평소 우선 수수료가 0.01 gwei보다 훨씬 낮다) | 50,000,000 (0.05 gwei) | 10,000,000 |
+| 시뮬레이션(D15) | `Auto` — 항상 시도, 실패해도 승인 가능(E01). 2026-11-06 공개 RPC에서 `eth_simulateV1` 응답 확인(공식 문서는 없음) | `Auto`, 같음 | `Auto`, 같음 | `Auto`, 같음 |
+| 거래 가스 상한 | 16,777,216 (D20) | 16,777,216 (Base Azul 2026-05-28에 같은 값을 체인 규칙으로 도입) | 16,777,216 | 16,777,216 |
+
+네 체인 모두 주소는 Ethereum과 같다(m/44'/60'/0'/0/i). 이 체인 id로 전에 추가한 사용자 체인은 기본 체인이 된다: `settings.json` `evmChains`의 그 항목은 배너 없이 버리고(같은 `rpc:eip155:<id>` URL·`feeCaps`는 그대로 쓰임, [04] §6.1), 예전 고정 제네시스는 상수로 대신한다.
+
+### 1.1a 내장 체인 값의 출처 (2026-11-06 확인)
+
+- **Arbitrum One**: chainId·RPC·탐색기 https://docs.arbitrum.io/for-devs/dev-tools-and-resources/chain-info. 블록 0 해시는 탐색기 페이지가 자동 조회를 막아 공식 RPC `arb1.arbitrum.io/rpc`와 publicnode RPC의 `eth_getBlockByNumber("0x0")`가 같은 값임을 확인(타임스탬프 0). 가스 추정에 L1 몫 포함: https://docs.arbitrum.io/build-decentralized-apps/how-to-estimate-gas, 팁 무시: https://docs.arbitrum.io/how-arbitrum-works/gas-fees.
+- **Base**: https://docs.base.org/base-chain/quickstart/connecting-to-base, 블록 0 https://basescan.org/block/0(공식 RPC `mainnet.base.org`와 일치). 수수료 = `gasUsed × (baseFee + priorityFee) + l1Fee + operatorFee` https://docs.base.org/chain/fees, 업그레이드 목록 https://docs.base.org/upgrades/overview.
+- **BNB Smart Chain**: https://docs.bnbchain.org/bnb-smart-chain/developers/wallet-configuration/ (chainId 56, BNB, bscscan.com), 블록 0 https://bscscan.com/block/0(공식 RPC `bsc-dataseed.bnbchain.org`와 일치). type 2·base fee 0: https://github.com/bnb-chain/BEPs/blob/master/BEPs/BEP226.md. 최소 0.05 gwei: https://www.bnbchain.org/en/blog/bnb-chain-weekly-ecosystem-report-sep-25-oct-1 (BEP가 아니라 검증자 합의; 2026-11-06 `eth_gasPrice` = 0.05 gwei, 최근 블록 `baseFeePerGas` = 0).
+- **Robinhood Chain**: 메인넷 운영 중. chainId·RPC·알케미 라벨 https://docs.robinhood.com/chain/connecting, 토큰 https://docs.robinhood.com/chain/contracts. 블록 0 해시는 공식 RPC `rpc.mainnet.chain.robinhood.com` 한 곳에서만 확인(탐색기 자동 조회 차단). testnet(46630)은 내장하지 않는다(필요하면 사용자 체인).
+- **QuickNode 서브도메인**: 각 체인 문서의 예시 URL `https://docs-demo.<sub>.quiknode.pro/` — https://www.quicknode.com/docs/arbitrum/eth_chainId (`arbitrum-mainnet`), …/docs/base/eth_chainId (`base-mainnet`), …/docs/bnb-smart-chain/eth_chainId (`bsc`), …/docs/robinhood/eth_chainId (`robinhood-mainnet`).
+- **알케미 라벨**: https://www.alchemy.com/docs/reference/arbitrum-api-quickstart (`arb-mainnet`), …/base-api-quickstart (`base-mainnet`), …/bnb-smart-chain-api-quickstart (`bnb-mainnet`), Robinhood 문서의 `robinhood-mainnet`.
+- 네이티브 소수 자릿수 18은 어느 문서도 따로 적지 않는다(EVM wei 단위).
+
+템플릿 값이 틀려도 §1.4 체인 확인(chainId·블록 0 해시)이 다른 네트워크 연결을 막는다.
+
+그 밖 체인(Hoodi, Optimism 등 다른 L2)은 내장하지 않는다. 필요하면 사용자 체인(§1.6)으로 추가한다(D14). mainnet `amsterdam_time`이 정해지면 상수를 고친다(설정값 아님). EIP-7708·EIP-2780은 2026-11-01까지 Last Call이므로 mainnet 활성 전 세부가 바뀔 수 있다.
 
 ### 1.2 레지스트리
 
@@ -97,8 +129,18 @@ pub enum ContractRole { Permit2, Seaport16, Seaport15, LabelOnly }
 | 11155111 | `0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b`, `0x7DfD4F31be6814D2906BDE155c3e1B146EAc1468`, `0x7E4f6c5e954Da5c61B3423D81E2277431Ac043f3` | LabelOnly | `Uniswap Universal Router` | 확인됨(M4, 코드 있음) |
 | 999 | `0x5555555555555555555555555555555555555555` | Token(Weth) | `WHYPE`, 18 | 확인됨(M4, WETH9 topic) |
 | 999 | `0x000000000022D473030F116dDEE9F6B43aC78BA3` | Permit2 | `Uniswap Permit2` | 확인됨(M4, immutable 제외 코드 일치) |
+| 42161 | `0x82aF49447D8a07e3bd95BD0d56f35241523fBab1` | Token(Weth) | `WETH`, 18 | 확인됨(2026-11-06, https://docs.arbitrum.io/build-decentralized-apps/reference/contract-addresses, 온체인 이름·심볼·소수 일치) |
+| 42161 | `0xaf88d065e77c8cC2239327C5EDb3A432268e5831` | Token | `USDC`, 6 (Circle 발행 네이티브 USDC) | 확인됨(https://developers.circle.com/stablecoins/usdc-contract-addresses) |
+| 42161 | `0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9` | Token, 라벨 `USDT0 (Tether OFT)` | `USDT0`, 6 (온체인 심볼은 `USD₮0`) | 확인됨(https://docs.usdt0.to/technical-documentation/deployments) |
+| 8453 | `0x4200000000000000000000000000000000000006` | Token(Weth) | `WETH`, 18 (OP-stack 프리디플로이) | 확인됨(https://specs.optimism.io/protocol/predeploys.html) |
+| 8453 | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` | Token | `USDC`, 6 (Circle 발행 네이티브 USDC) | 확인됨(Circle 같은 페이지) |
+| 56 | `0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c` | Token(Weth) | `WBNB`, 18 | 온체인 이름 `Wrapped BNB`·심볼·소수만 확인(BscScan·Binance 문서는 자동 조회 차단) |
+| 56 | `0x55d398326f99059fF775485246999027B3197955` | Token, 라벨 `USDT (Binance-Peg)` | `USDT`, **18** (Binance가 발행한 연동 토큰 — Tether 발행이 아니다; 집계 사이트 표기 `BSC-USD`) | 온체인 이름 `Tether USD`·심볼·소수만 확인. Tether 공식 문서는 BSC를 나열하지 않는다 |
+| 56 | `0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d` | Token, 라벨 `USDC (Binance-Peg)` | `USDC`, **18** (Binance 연동 토큰 — Circle 발행이 아니다) | 온체인 이름 `USD Coin`·심볼·소수만 확인. Circle은 BSC USDC를 나열하지 않는다 |
+| 4663 | `0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73` | Token(Weth) | `WETH`, 18 | 확인됨(https://docs.robinhood.com/chain/contracts) |
+| 4663 | `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` | Token, 라벨 `USDG (Global Dollar, Paxos)` | `USDG`, 6 | 확인됨(Robinhood 문서와 https://docs.paxos.com/guides/stablecoin/usdg/mainnet 가 같은 주소, 온체인 `Global Dollar`·`USDG`·6) |
 
-999에는 Seaport·토큰(USDC 등)을 넣지 않는다.
+999에는 Seaport·토큰(USDC 등)을 넣지 않는다. 42161·8453·56·4663에는 계약(Permit2 등)을 넣지 않았다(이 체인들에서 확인하지 않음). 라벨이 있는 토큰은 주소 뒤 `[라벨]`과 토큰 목록에 라벨을 보이고, 금액은 심볼로 쓴다. BSC의 USDT·USDC는 소수 자릿수가 18이다(Ethereum은 6).
 
 상수 `OPENSEA_CONDUIT_KEY = 0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b8104250f0000`(Seaport 표시용 라벨, 확인됨: mainnet ConduitController가 이 키로 `OpenSea Conduit` 주소·`exists = true`를 돌려줌, M4 `live_probe`).
 
@@ -128,7 +170,7 @@ EIP7708_SYSTEM  = 0xfffffffffffffffffffffffffffffffffffffffe   // 프로토콜 �
 
 ### 1.5 구현 시 확인 (설정한 공급자(현재 QuickNode)의 엔드포인트로 A1–A8은 M2 전, A9·A10은 M4 전에 수행, 공급자·엔드포인트 URL을 바꾸면 그 네트워크에서 다시 수행)
 
-- 도구: A1–A5와 A9 (a)(b)는 `scripts/probe-rpc.mjs`([01](01-repo-build.md) §4.7)로 한다. 엔드포인트는 저장소 밖 개발 설정 `%USERPROFILE%\.yw-dev\rpc.json` 또는 `YW_RPC_JSON`이 가리키는 파일([01] §4.6, 키 `eip155:1`·`eip155:11155111`·`eip155:999`)에서 읽는다. 출력에는 `NetworkId`만 있으므로 그대로 `docs/acceptance/probe-<YYYYMMDD>.md`에 기록한다. A6–A8, A9 (c)–(e), A10은 같은 설정으로 손으로 확인한다.
+- 도구: A1–A5와 A9 (a)(b)는 `scripts/probe-rpc.mjs`([01](01-repo-build.md) §4.7)로 한다. 엔드포인트는 저장소 밖 개발 설정 `%USERPROFILE%\.yw-dev\rpc.json` 또는 `YW_RPC_JSON`이 가리키는 파일([01] §4.6, 키 `eip155:1`·`eip155:11155111`·`eip155:999`·`eip155:42161`·`eip155:8453`·`eip155:56`·`eip155:4663`; `scripts/dev-rpc-setup.ps1`이 QuickNode 서브도메인 표 §1.1로 만든다)에서 읽는다. 2026-11-06에 더한 네 체인은 A1–A5를 QuickNode로 아직 실측하지 않았다(공개 RPC에서 chainId·블록 0·`eth_simulateV1` 응답만 확인); `probe-rpc.mjs`가 chainId·제네시스·시뮬레이션과 Base `getL1Fee`(§3.4a)를 확인한다. 출력에는 `NetworkId`만 있으므로 그대로 `docs/acceptance/probe-<YYYYMMDD>.md`에 기록한다. A6–A8, A9 (c)–(e), A10은 같은 설정으로 손으로 확인한다.
 - **실측 결과(2026-10-27, QuickNode, `scripts/probe-rpc.mjs`)**: Ethereum mainnet — `eth_simulateV1` 지원, 네이티브 로그 발신자 `0xeeee…`, 새 주소 1 wei 전송 21,000 gas, revert `status 0x0`·`error.code 3`·`error.data 0xdeadbeef`, `chainId`·`type` 필드 수락, 잔액 부족은 최상위 -38014, `maxUsedGas` 있음. Sepolia — 지원, 발신자 `0xff…fe`(Glamsterdam 후), 새 주소 전송 **204,600 gas**, **자기 자신 전송은 로그 없음·12,000 gas**, revert 15,018 gas, base fee ≈ 0. HyperEVM(999) — `/evm` 경로는 `eth_simulateV1` -32601·블록 0 조회 실패(-32603), `/nanoreth` 경로는 블록 0 해시 `0xd8fcc13b6a195b88b7b2da3722ff6cad767b13a8c1e9ffb1c73aa9d216d895f0`(최초 신뢰 고정 대상), `eth_simulateV1` 지원(발신자 `0xeeee…`, 자기 자신 전송도 로그 있음), 잔액 부족은 **최상위 -32003**, `maxUsedGas` 없음, 최근 블록 `gasLimit` 3,000,000, base fee 0.2–1.0 gwei. A1–A5·A9 (a)(b)(d)는 이 결과로 판정 완료, 공급자·URL을 바꾸면 다시 수행한다.
 - **M4 `live_probe` 결과(2026-10-27, 같은 설정, `docs/acceptance/m4-live-20261027.md`)**: A6 — 세 체인 모두 `pending` 태그 수락, 최근 송신자 12명 중 `pending > latest`가 Sepolia 1–2명·999 0–1명(멤풀 반영), mainnet 0명(자기 전송 직후 확인은 M4-2). A7 — 1·11155111·999 모두 baseFee 11개·reward 10×1. A8 — 조용한 컨트랙트 10,000블록 `eth_getLogs` 수락(1: 0개, 11155111: 1개), mainnet WETH Transfer 10,000블록은 응답이 클라이언트 4 MiB 한도를 넘음(공급자 오류가 아니라 응답 크기, 2.5–7 s), `eth_simulateV1`(`stateOverrides`) 35–280 ms. A9 (c) — 999 `eth_feeHistory` 정상, 최근 70블록(큰 블록 30,000,000 1개 포함) base fee는 작은 블록 0.1–0.117 gwei, 큰 블록 0.1 gwei로 같은 범위라 `eth_feeHistory`에 큰 블록이 섞여도 §3.4 제안값이 튀지 않음, type 2 `eth_estimateGas` 21,000 수락 (d) 작은 블록 3,000,000 (e) §1.2 999 행 확인. 앱 경로(`check_chain`·`prepare`, 서명·전송 없음)로 세 체인 체인 확인 통과(999 블록 0 해시 = §1.5 1차 실측 값)와 시뮬레이션 `Ok` 승인 초안 생성도 확인했다.
 - 시뮬레이션 지원: 2026-10 QuickNode 문서에는 일부 체인(예: Arbitrum)의 `eth_simulateV1` 페이지만 있었지만 위 실측에서 1·11155111·999(`/nanoreth`) 모두 동작했다. 그래서 내장 체인마다 `simulation` 상수(§1.1)를 `Auto`로 둘지는 그 체인의 A1(Sepolia)·A2(mainnet)·A5 결과로 정한다(999는 A9 (b)). 성공하면 `Auto` 유지, -32601·플랜 거부로 쓸 수 없으면 그 네트워크의 URL만 `eth_simulateV1`을 지원하는 공급자 URL로 바꾸거나(D13: 네트워크마다 공급자를 따로 고를 수 있다) 상수를 `Unsupported`로 바꾼다(§14-2).
@@ -166,7 +208,9 @@ pub fn user_chain_info(i: &UserChainInput, genesis: [u8; 32]) -> ChainInfo;     
 | 탐색기 URL | 선택, `HttpsUrl::parse` |
 | `simulation` | `auto`(기본) / `unsupported` |
 
-고정값: `source = User`, `templates = None`, `tokens`·`contracts` 빈 목록(§1.2), `amsterdam_time = None`, `small_block_gas_limit = None`, `default_caps` = maxFee 1,000 gwei / tip 100 gwei / 총 0.05(네이티브 단위), `tip_floor_wei = 10,000,000`. 상한은 [04] 설정에서 §3.4-7 범위로 바꾼다.
+고정값: `source = User`, `templates = None`, `tokens`·`contracts` 빈 목록(§1.2), `amsterdam_time = None`, `small_block_gas_limit = None`, `l1_data_fee = Probe`(§3.4a: OP-stack L2면 L1 데이터 수수료를 자동으로 더한다), `default_caps` = maxFee 1,000 gwei / tip 100 gwei / 총 0.05(네이티브 단위), `tip_floor_wei = 10,000,000`. 상한은 [04] 설정에서 §3.4-7 범위로 바꾼다.
+
+어떤 L1·L2든 이 절차로 추가한다(EIP-1559 type 2를 받는 체인이면 된다). Arbitrum 계열(Orbit)은 L1 비용이 가스에 들어 있어 따로 할 일이 없고, OP-stack 계열(Optimism·Unichain·Ink 등)은 `Probe`가 L1 데이터 수수료를 찾아 더한다. 그 밖의 L2 수수료 방식(별도 L1 수수료를 다른 방법으로 받는 체인)은 최대 수수료 표시가 실제보다 작을 수 있다.
 
 추가 절차(yw-app `rpc::evm`, 각 호출 §1.4 제한):
 1. `validate_user_chain`.
@@ -299,6 +343,29 @@ pub fn check_caps(f: &Fees, gas_limit: u64, caps: &FeeCaps) -> Result<(), CapVio
 7. 설정 범위: maxFee 상한 1–10,000 gwei, tip 상한 0.01–10,000 gwei이고 maxFee 상한 이하, 총 상한 0.0001–10(네이티브 단위).
 
 벡터: n=10, 블록 1개 `nonempty`=false, 나머지 reward(gwei) `[0.5,1,2,1.5,3,1,2,0.8,1.2]`, `base_fee_next`=10 gwei → tip 1.2 gwei, maxFee 21.2 gwei.
+
+### 3.4a L1 데이터 수수료 (OP-stack, 2026-11-06)
+
+Base 같은 OP-stack L2는 L2 실행 수수료(`gasUsed × 가격`)와 별도로 L1 데이터 수수료(+ Isthmus 이후 operator 수수료)를 받는다. 이 값은 거래 필드로 상한을 걸 수 없고 포함 시점의 L1 base fee·blob fee를 따른다. Arbitrum 계열은 L1 몫을 가스 단위로 `gasUsed`에 넣으므로(§1.1) 해당 없다. BSC·Ethereum도 해당 없다.
+
+```rust
+pub enum L1DataFee { None, OpStack, Probe }
+pub const GAS_PRICE_ORACLE: Address = 0x420000000000000000000000000000000000000F;   // OP-stack 프리디플로이
+pub const L1_FEE_HEADROOM: u64 = 2;
+pub struct L1FeeQuote { pub estimate: U256, pub max: U256 }
+pub fn get_l1_fee_data(tx: &Eip1559Tx) -> Vec<u8>;            // getL1Fee(bytes) 0x49948e0e, 인자 = 서명 전 type 2 인코딩(signing_preimage)
+pub fn get_operator_fee_data(gas_limit: u64) -> Vec<u8>;      // getOperatorFee(uint256)
+pub fn check_caps_with_l1(f: &Fees, gas_limit: u64, l1_max: &U256, caps: &FeeCaps) -> Result<(), CapViolation>;
+```
+
+1. 거래를 만든 뒤(§3.7 단계 5–7, 가스 한도 확정 후) `eth_call(GAS_PRICE_ORACLE, getL1Fee(unsigned tx), "latest")` → `l1`. 오라클이 서명 몫(68바이트)을 스스로 더한다(Fjord: `estimatedSize = max(100e6, -42_585_600 + 836_500 × fastlzSize)`, `l1Fee = estimatedSize × (baseFeeScalar × l1BaseFee × 16 + blobFeeScalar × blobBaseFee) / 1e12`, https://specs.optimism.io/protocol/fjord/exec-engine.html — 지갑은 공식을 다시 구현하지 않고 체인의 오라클 값을 쓴다).
+2. `eth_call(GAS_PRICE_ORACLE, getOperatorFee(gas_limit))` → `op`(Isthmus `gas × scalar / 1e6 + constant`, Jovian `gas × scalar × 100 + constant`; https://specs.optimism.io/protocol/isthmus/predeploys.html). 실패(Isthmus 전 체인은 revert)면 0. `getL1Fee`는 operator 수수료를 포함하지 않는다.
+3. `estimate = l1 + op`, `max = l1 × L1_FEE_HEADROOM + op`(L2 base fee에 주는 2배 여유와 같은 이유: 승인까지 L1 수수료가 오를 수 있다. 상한이 아니라 표시·검사용 추정이다).
+4. 최대 수수료 = `gas_limit × max_fee + max`. §3.4-6 총 상한 검사는 이 값으로 한다(`check_caps_with_l1`, 넘으면 E05 차단). 승인 창 `0x0120` 최대 수수료 값 = "{합계} (L1 데이터 수수료 최대 {max} 포함)", `0x0121` 예상 수수료 = 시뮬레이션 기대값 + `estimate` "(L1 데이터 수수료 약 {estimate} 포함)". 지갑 보내기의 견적 줄([04] §2.7)과 `최대` 버튼(잔액 − 최대 수수료)도 같은 합계를 쓴다.
+5. `OpStack`(내장 Base)에서 1이 실패(RPC 오류·결과가 32바이트가 아님)하면 차단하지 않는다: E41 주의 "L1 데이터 수수료를 확인하지 못했습니다 — 최대 수수료에 L1 수수료가 빠져 있습니다", 표시·검사는 L2 몫만. `Probe`(사용자 체인)는 먼저 `eth_getCode(GAS_PRICE_ORACLE)`가 비어 있지 않을 때만 1–2를 하고, 실패는 조용히 "해당 없음"으로 본다(OP-stack이 아닐 수 있다).
+6. 재시뮬레이션(§6.6)에서 수수료를 다시 계산하면 처음 준비의 `max`로 다시 검사한다. 속도 올리기·취소(§4.6)는 새 거래로 1–4를 다시 한다(`0x0125`의 대체 대상 최대 수수료는 L2 몫만).
+
+벡터(오라클 모의, `crates/yw-app/tests/evm_flow.rs`): Base, 가스 한도 245,520 × maxFee 2.1 gwei = 0.000515592 ETH, `getL1Fee` = 0.000001 ETH, `getOperatorFee` = 0.0000001 ETH → `max` 0.0000021 ETH, 최대 수수료 "0.000517692 ETH (L1 데이터 수수료 최대 0.0000021 ETH 포함)"; 총 상한 0.000516 ETH → E05; 오라클 무응답 → E41, "0.000515592 ETH". OP 명세에는 수수료 시험 벡터가 없어 모의 오라클로 시험한다.
 
 ### 3.5 가스 한도 (D20)
 
@@ -931,6 +998,7 @@ pub struct RuleId(pub u16);   // 상위 바이트 = 'E'(0x45)·'T'(0x54)·'P'(0x
 | E38 | `gas_limit` > `small_block_gas_limit`(HyperEVM 3,000,000, 구현 시 확인 §1.5 A9; §3.5). 문구 "HyperEVM 작은 블록 한도({n})를 넘는 거래입니다 — 계정에 큰 블록 사용이 켜져 있지 않으면 포함되지 않을 수 있습니다" | 주의 |
 | E39 | 레지스트리 밖 승인 spender/operator의 `eth_getCode` 조회 실패(`CodeKind::Unknown`, §8.5). 문구 "승인 대상의 계정 종류를 확인할 수 없습니다(조회 실패)" | 고위험 |
 | E40 | 확인된 자산(네이티브·레지스트리 토큰)을 보내는데 받는 것 중 미등록 토큰·NFT가 있음(가짜 Transfer 로그로 교환처럼 보이게 하는 탈취, §6.4). 문구 "내 자산을 보내고 받는 것은 등록되지 않은 토큰·NFT입니다 — 가짜 자산일 수 있습니다" | 고위험 |
+| E41 | OP-stack 내장 체인(Base, `l1_data_fee = OpStack`)에서 `GasPriceOracle.getL1Fee` 조회 실패(§3.4a-5). 문구 "L1 데이터 수수료를 확인하지 못했습니다 — 최대 수수료에 L1 수수료가 빠져 있습니다". 차단하지 않는다(최대 수수료·상한 검사는 L2 몫만) | 주의 |
 
 ### 10.3 타입 데이터 규칙 (T)
 
@@ -1037,8 +1105,8 @@ critical = 승인 판단에 필요한 필드(창에서 접지 않음). volatile 
 | `0x0103`, `0x0104` | 호출 내용(제목), 호출 인수(`sub_label`=인수 이름, multicall은 `calls[i].이름`) | 예 | |
 | `0x0110`, `0x0111`, `0x0112` | 보냄, 받음, 승인 변경(행마다 1필드). 보냄·받음 행의 순서는 키 순서가 아니라 §6.4 행 순서(확인된 자산 보냄 → 받음 → 그 밖 자산 보냄 → 받음)를 따르므로 `0x0111` 뒤에 `0x0110`이 올 수 있다(가짜 로그의 미확인 자산이 확인된 받음 행보다 앞서지 않게; 보안 검토 S9). 승인 행은 그 뒤 | 예 | |
 | `0x0113` | 기타 이벤트 N개 | | |
-| `0x0120` | 최대 수수료(gas_limit × maxFee, 네이티브 단위) | 예 | |
-| `0x0121` | 예상 수수료(시뮬레이션 블록이 있으면 `Reverted` 포함 §6.4 식, 결과 없음이면 `알 수 없음`) | | 예 |
+| `0x0120` | 최대 수수료(gas_limit × maxFee, 네이티브 단위; OP-stack이면 + L1 몫 `max`와 "(L1 데이터 수수료 최대 … 포함)", §3.4a) | 예 | |
+| `0x0121` | 예상 수수료(시뮬레이션 블록이 있으면 `Reverted` 포함 §6.4 식(OP-stack이면 + L1 몫 `estimate`, §3.4a), 결과 없음이면 `알 수 없음`) | | 예 |
 | `0x0122`, `0x0123`, `0x0124` | maxFee/tip(gwei), 가스 한도, nonce | | |
 | `0x0125` | 대체 대상 거래(해시, 기존 최대 수수료) | 예 | |
 | `0x0130` | 시뮬레이션 기준(블록 번호·UTC 시각), 결과 없음이면 `시뮬레이션 없음: {원인}`(E36이면 `미지원 체인`) | | 예 |
@@ -1168,7 +1236,7 @@ dApp 오류 코드·문구·상위 오류 정화의 정본은 [05](05-browser.md
 | EVM-V13 | 저널 레코드 골든 바이트([02] §5.4 `kind 0x01` 프레이밍 포함), 상태 전이 표 전부, 손상 레코드 거부, 자리 없음 → E06 (`journal` 모듈과 함께 M4, [01] §2.2) | M4 |
 | EVM-V14 | 표시 바이트·승인 digest 골든(`SimulationBinding` 태그 0·1·2 각각), 1비트 변경(verdict·reason·태그 포함), `consume` 재사용·만료(`issue`의 `now_ms` 기준)·digest 불일치, `replace` 후 만료 불변, EVM 거래 kind에 `NotApplicable`·메시지에 `Simulated` → `SimulationBindingMismatch` | M2 |
 | EVM-V15 | E2E(Sepolia): ETH·ERC-20 송금, 시뮬레이션 실패(잔액보다 큰 토큰) → 고위험 경고가 맨 위 + 체크 1개·2초 누르기 후 승인·전송됨, 강제 종료 후 저널 복구 (M4); HyperEVM 소액 송금(E36 확인 후) (M4); dApp 연결·읽기·송금·personal_sign·SIWE·Permit2 typed data (M5) | M4, M5 |
-| EVM-V16 | 체인 설정(가짜 전송): 내장 3체인 상수(§1.1, `templates` 포함, 사용자 체인 `templates = None`); `validate_user_chain` 각 필드 경계(chainId 0·EIP-2294 최댓값+1·중복, 이름 33자·내장 이름, 심볼 17자, 소수 37); RPC URL `http://x`·URL 없음 → 추가 거부; `rpc:eip155:<chainId>` URL이 없는 체인(템플릿 자격 정보는 있음) → 보내기 E35(원인 "RPC 엔드포인트 없음")·읽기 4901, 가짜 전송 호출 0회(템플릿 대체 없음); 추가 시 `eth_chainId` 불일치 → 거부·저장 없음; 블록 0 없음·`baseFeePerGas` 없음 → 거부; 고정 후 다른 제네시스를 주는 RPC → `RpcMismatch`: 보내기 E34 차단·읽기 4901; HyperEVM 첫 연결에서 고정·두 번째 연결 비교; RPC URL 변경 시 재확인 실패 → 저장 거부; 미종결 저널이 있는 체인 삭제 거부 | M4 |
+| EVM-V16 | 체인 설정(가짜 전송): 내장 7체인 상수(§1.1 두 표와 §1.2 행, `templates` 포함, 사용자 체인 `templates = None`; `added_builtin_chains_spec_03_1_1`); OP-stack L1 수수료(§3.4a 벡터, 모의 오라클); `validate_user_chain` 각 필드 경계(chainId 0·EIP-2294 최댓값+1·중복, 이름 33자·내장 이름, 심볼 17자, 소수 37); RPC URL `http://x`·URL 없음 → 추가 거부; `rpc:eip155:<chainId>` URL이 없는 체인(템플릿 자격 정보는 있음) → 보내기 E35(원인 "RPC 엔드포인트 없음")·읽기 4901, 가짜 전송 호출 0회(템플릿 대체 없음); 추가 시 `eth_chainId` 불일치 → 거부·저장 없음; 블록 0 없음·`baseFeePerGas` 없음 → 거부; 고정 후 다른 제네시스를 주는 RPC → `RpcMismatch`: 보내기 E34 차단·읽기 4901; HyperEVM 첫 연결에서 고정·두 번째 연결 비교; RPC URL 변경 시 재확인 실패 → 저장 거부; 미종결 저널이 있는 체인 삭제 거부 | M4 |
 | EVM-V17 | 시뮬레이션 정책: §6.3 표 각 행 → 해당 규칙·`SimulationBinding`·`risk == High`·차단 없음·승인 가능(가짜 승인 입력: 체크+2.0 s → `Approved`); `simulation = unsupported` → 가짜 전송의 `eth_simulateV1` 호출 0회, E36, 바인딩 `None Unsupported`; 해석되지 않은 calldata + 결과 없음 → E12·E01 함께, 체크박스 1개; 경고 순서(시뮬레이션 상태 규칙이 고위험 맨 위); 결과 없음 바인딩은 60 s 뒤 클릭에도 재시뮬레이션 없음; 재시뮬레이션 실패 → `None`으로 `replace` + 새 클릭 요구; R8(결과 없음 + `approve(spender, 2^256−1)` → E14); 가스 추정 실패 → E37 + §3.5 대체 가스 벡터; HyperEVM gas 3,120,000 → E38, 3,000,000 → E38 없음 | M2(코어), M4(`flow::evm`) |
 
 ## 14. 미결 사항

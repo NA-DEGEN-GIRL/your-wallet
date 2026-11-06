@@ -117,7 +117,7 @@ pub fn ranges() -> Vec<IdRange> {
             "core.url_rows",
             screens::ids::ROW_BASE,
             screens::ids::ROW_SPAN,
-            4,
+            3,
             url_rows,
         ),
         range(
@@ -145,7 +145,7 @@ pub fn ranges() -> Vec<IdRange> {
             "evm.chain_rows",
             screens_evm::ids::CHAIN_ROW_BASE,
             screens_evm::ids::CHAIN_ROW_SPAN,
-            4,
+            3,
             evm_chains,
         ),
         range(

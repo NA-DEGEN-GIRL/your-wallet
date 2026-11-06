@@ -1583,3 +1583,105 @@ fn diff_only_approvals_get_balances_and_sixteen_spenders_are_classified() -> Tes
     assert!(rules(&prepared).contains(&yw_core::evm::risk::E27.label()));
     Ok(())
 }
+
+/// A Base-like world whose `GasPriceOracle` answers `getL1Fee` and `getOperatorFee` (or nothing).
+fn op_stack_world(oracle: bool) -> std::sync::Arc<FakeRpc> {
+    use yw_core::evm::chain::{BASE_GENESIS, BASE_MAINNET};
+    let script = world(BASE_MAINNET, BASE_GENESIS, Vec::new());
+    FakeRpc::new(move |method, params| {
+        if method != "eth_call" {
+            return script.get(method);
+        }
+        let call = params
+            .as_array()
+            .and_then(|items| items.first())
+            .and_then(Value::as_object);
+        let field = |key: &str| {
+            call.and_then(|object| object.get(key))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_ascii_lowercase()
+        };
+        if !oracle || field("to") != "0x420000000000000000000000000000000000000f" {
+            return Answer::Error(-32_000, None);
+        }
+        let word = |value: u64| format!("\"0x{value:064x}\"");
+        if field("input").starts_with("0x49948e0e") {
+            // getL1Fee: 0.000001 ETH.
+            Answer::Result(word(1_000_000_000_000))
+        } else {
+            // getOperatorFee(gas_limit): 0.0000001 ETH.
+            Answer::Result(word(100_000_000_000))
+        }
+    })
+}
+
+/// spec/03 §3.4a: on Base the L1 data fee (oracle, mocked) is in the max fee and the cap check;
+/// a silent oracle adds E41 and the fee shows only the L2 part; a user chain without oracle code
+/// is never asked.
+#[test]
+fn op_stack_l1_fee_is_in_the_max_fee_and_the_caps() -> TestResult {
+    use yw_core::evm::chain::base_mainnet;
+    use yw_core::evm::risk::E41;
+    let clock = FakeClock::at(S2_UNIX_MS);
+    let max_fee_text = |prepared: &Prepared| {
+        prepared
+            .draft
+            .display
+            .fields
+            .iter()
+            .find(|field| field.key == FieldKey::MAX_FEE)
+            .map(|field| field.value.clone())
+            .unwrap_or_default()
+    };
+    let run = |rpc: &std::sync::Arc<FakeRpc>, job: &PrepareJob| {
+        ready(
+            prepare(
+                &rpc.shared(),
+                &mut ChainCache::default(),
+                job,
+                &clock,
+                &|_| {},
+            )
+            .outcome,
+        )
+    };
+    let rpc = op_stack_world(true);
+    let base_job = job(base_mainnet(), address(USER)?, send_intent()?);
+    let prepared = run(&rpc, &base_job)?;
+    // 245,520 gas × 2.1 gwei = 0.000515592 ETH, + L1 2 × 0.000001 + operator 0.0000001.
+    assert_eq!(
+        max_fee_text(&prepared),
+        "0.000517692 ETH (L1 데이터 수수료 최대 0.0000021 ETH 포함)"
+    );
+    let quote = prepared.context.facts.l1_fee.ok_or("no l1 quote")?;
+    assert_eq!(quote.estimate, U256::from_u64(1_100_000_000_000));
+    assert!(!rules(&prepared).contains(&E41.label()));
+    assert!(rpc.count("eth_call") >= 2);
+    // The L1 part alone trips a total cap the L2 part fits under (E05, blocked).
+    let mut capped = job(base_mainnet(), address(USER)?, send_intent()?);
+    capped.chain.caps.max_total_fee = U256::from_u64(516_000_000_000_000);
+    let blocked = run(&op_stack_world(true), &capped)?;
+    assert_eq!(blocked.draft.display.risk, RiskLevel::Blocked);
+    assert!(rules(&blocked).contains(&E05.label()));
+    // No oracle answer: E41, the max fee is the L2 part only.
+    let silent = run(&op_stack_world(false), &base_job)?;
+    assert!(rules(&silent).contains(&E41.label()));
+    assert_eq!(max_fee_text(&silent), "0.000515592 ETH");
+    assert_eq!(silent.context.facts.l1_fee, None);
+    // A user chain without oracle code is never asked (the world's eth_getCode is empty).
+    let genesis = [0x11; 32];
+    let user = fake(world(84_532, genesis, Vec::new()));
+    let plain = run(
+        &user,
+        &job(
+            user_chain(84_532, genesis, SimulationSupport::Auto),
+            address(USER)?,
+            send_intent()?,
+        ),
+    )?;
+    assert!(!rules(&plain).contains(&E41.label()));
+    assert_eq!(user.count("eth_call"), 0);
+    assert_eq!(plain.context.facts.l1_fee, None);
+    Ok(())
+}

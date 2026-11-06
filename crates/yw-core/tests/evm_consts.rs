@@ -6,9 +6,12 @@ use yw_core::evm::abi::*;
 use yw_core::evm::address::{AddressError, parse_address};
 use yw_core::evm::chain::{
     ChainSource, ContractRole, GenesisRule, MAINNET_GENESIS, OPENSEA_CONDUIT_KEY, SEPOLIA_GENESIS,
-    SimulationSupport, TokenRole, builtin_chains, ethereum_mainnet, hyperevm_mainnet, sepolia,
+    SimulationSupport, TokenRole, arbitrum_one, base_mainnet, bsc_mainnet, builtin_chain,
+    builtin_chains, ethereum_mainnet, hyperevm_mainnet, is_builtin_mainnet, robinhood_mainnet,
+    sepolia,
 };
 use yw_core::evm::eip712::*;
+use yw_core::evm::fee::L1DataFee;
 use yw_core::evm::simulate::{EIP7708_SYSTEM, ERC7528_NATIVE};
 use yw_core::hex;
 
@@ -323,7 +326,7 @@ fn native_emitters_and_labels() {
 fn builtin_chain_constants_spec_09_3_11() {
     let chains = builtin_chains();
     let ids: Vec<u64> = chains.iter().map(|chain| chain.chain_id).collect();
-    assert_eq!(ids, [1, 11_155_111, 999]);
+    assert_eq!(ids, [1, 11_155_111, 999, 42_161, 8_453, 56, 4_663]);
     let mainnet = ethereum_mainnet();
     assert_eq!(
         hex::encode(&MAINNET_GENESIS),
@@ -363,8 +366,11 @@ fn builtin_chain_constants_spec_09_3_11() {
     for chain in &chains {
         assert_eq!(chain.source, ChainSource::BuiltIn);
         assert_eq!(chain.simulation, SimulationSupport::Auto);
-        assert_eq!(chain.tip_floor_wei, 10_000_000);
         assert_eq!(chain.native_decimals, 18);
+    }
+    for chain in [&mainnet, &sepolia, &hyper] {
+        assert_eq!(chain.tip_floor_wei, 10_000_000);
+        assert_eq!(chain.l1_data_fee, L1DataFee::None);
     }
     // Default caps (spec/03 §1.1).
     let gwei = |value: u64| yw_core::evm::amount::U256::from_u64(value * 1_000_000_000);
@@ -546,8 +552,9 @@ fn user_chain_validation_boundaries() {
     use yw_core::evm::chain::{
         ChainConfigError, MAX_CHAIN_ID, UserChainInput, user_chain_info, validate_user_chain,
     };
+    // OP Mainnet (10) stays a user chain; Base (8453) became built-in on 2026-11-06.
     let base = UserChainInput {
-        chain_id: 8_453,
+        chain_id: 10,
         name: "Test L2".to_owned(),
         native_symbol: "ETH".to_owned(),
         native_decimals: 18,
@@ -555,6 +562,14 @@ fn user_chain_validation_boundaries() {
         simulation: SimulationSupport::Auto,
     };
     assert_eq!(validate_user_chain(&base, &[]), Ok(()));
+    for builtin in [42_161, 8_453, 56, 4_663] {
+        let mut taken = base.clone();
+        taken.chain_id = builtin;
+        assert_eq!(
+            validate_user_chain(&taken, &[]),
+            Err(ChainConfigError::ChainIdRegistered)
+        );
+    }
     let with = |change: &dyn Fn(&mut UserChainInput)| {
         let mut input = base.clone();
         change(&mut input);
@@ -620,4 +635,207 @@ fn user_chain_validation_boundaries() {
         info.default_caps.max_total_fee,
         yw_core::evm::amount::U256::from_u64(50_000_000_000_000_000)
     );
+}
+
+/// The L2/L1 built-ins added 2026-11-06 (spec/03 §1.1 table, sources in §1.1a): chain ids,
+/// fixed genesis hashes, URL templates, explorers, fee model, caps and registry rows.
+#[test]
+#[expect(clippy::too_many_lines, reason = "table-driven test")]
+fn added_builtin_chains_spec_03_1_1() {
+    struct Row {
+        chain: yw_core::evm::chain::ChainInfo,
+        id: u64,
+        genesis: &'static str,
+        quicknode: &'static str,
+        alchemy: &'static str,
+        name: &'static str,
+        symbol: &'static str,
+        explorer: &'static str,
+        l1: L1DataFee,
+        floor: u64,
+    }
+    let gwei = |value: u64| yw_core::evm::amount::U256::from_u64(value * 1_000_000_000);
+    let percent2 = yw_core::evm::amount::U256::from_u64(20_000_000_000_000_000);
+    let rows = [
+        Row {
+            chain: arbitrum_one(),
+            id: 42_161,
+            genesis: "7ee576b35482195fc49205cec9af72ce14f003b9ae69f6ba0faef4514be8b442",
+            quicknode: "arbitrum-mainnet",
+            alchemy: "arb-mainnet",
+            name: "Arbitrum One",
+            symbol: "ETH",
+            explorer: "https://arbiscan.io",
+            l1: L1DataFee::None,
+            floor: 10_000_000,
+        },
+        Row {
+            chain: base_mainnet(),
+            id: 8_453,
+            genesis: "f712aa9241cc24369b143cf6dce85f0902a9731e70d66818a3a5845b296c73dd",
+            quicknode: "base-mainnet",
+            alchemy: "base-mainnet",
+            name: "Base",
+            symbol: "ETH",
+            explorer: "https://basescan.org",
+            l1: L1DataFee::OpStack,
+            floor: 1_000_000,
+        },
+        Row {
+            chain: bsc_mainnet(),
+            id: 56,
+            genesis: "0d21840abff46b96c84b2ac9e10e4f5cdaeb5693cb665db62a2f3b02d2d57b5b",
+            quicknode: "bsc",
+            alchemy: "bnb-mainnet",
+            name: "BNB Smart Chain",
+            symbol: "BNB",
+            explorer: "https://bscscan.com",
+            l1: L1DataFee::None,
+            floor: 50_000_000,
+        },
+        Row {
+            chain: robinhood_mainnet(),
+            id: 4_663,
+            genesis: "aad15f3d702aaea00caf3e9bb56395efe9127bc3b31b24921abf1eee3409305c",
+            quicknode: "robinhood-mainnet",
+            alchemy: "robinhood-mainnet",
+            name: "Robinhood Chain",
+            symbol: "ETH",
+            explorer: "https://robinhoodchain.blockscout.com",
+            l1: L1DataFee::None,
+            floor: 10_000_000,
+        },
+    ];
+    for row in rows {
+        let chain = row.chain;
+        assert_eq!(chain.chain_id, row.id);
+        assert!(is_builtin_mainnet(row.id));
+        assert_eq!(builtin_chain(row.id).map(|c| c.chain_id), Some(row.id));
+        assert_eq!(
+            chain.genesis_hash().map(|hash| hex::encode(&hash)),
+            Some(row.genesis.to_owned())
+        );
+        assert!(matches!(chain.genesis, GenesisRule::Fixed(_)));
+        let templates = chain.templates.unwrap();
+        assert_eq!(templates.quicknode_subdomain, Some(row.quicknode));
+        assert_eq!(templates.quicknode_path, None);
+        assert_eq!(templates.alchemy_label, Some(row.alchemy));
+        assert_eq!(chain.name, row.name);
+        assert_eq!(chain.native_symbol, row.symbol);
+        assert_eq!(chain.native_decimals, 18);
+        assert_eq!(chain.explorer.as_deref(), Some(row.explorer));
+        assert_eq!(chain.simulation, SimulationSupport::Auto);
+        assert_eq!(chain.l1_data_fee, row.l1);
+        assert_eq!(chain.tip_floor_wei, row.floor);
+        assert_eq!(chain.amsterdam_time, None);
+        assert_eq!(chain.small_block_gas_limit, None);
+        assert_eq!(chain.default_caps.max_fee_per_gas, gwei(10));
+        assert_eq!(chain.default_caps.max_total_fee, percent2);
+        assert!(chain.contracts.is_empty());
+    }
+    assert_eq!(
+        bsc_mainnet().default_caps.max_priority_fee_per_gas,
+        gwei(10)
+    );
+    assert_eq!(
+        base_mainnet().default_caps.max_priority_fee_per_gas,
+        gwei(1)
+    );
+    assert!(!is_builtin_mainnet(11_155_111));
+
+    // Registry rows (spec/03 §1.2): EIP-55 strings exactly as the issuer docs print them.
+    for (chain, address, symbol, decimals, role, label) in [
+        (
+            arbitrum_one(),
+            "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+            "WETH",
+            18,
+            TokenRole::Weth,
+            "WETH",
+        ),
+        (
+            arbitrum_one(),
+            "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+            "USDC",
+            6,
+            TokenRole::Plain,
+            "USDC",
+        ),
+        (
+            arbitrum_one(),
+            "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
+            "USDT0",
+            6,
+            TokenRole::Plain,
+            "USDT0 (Tether OFT)",
+        ),
+        (
+            base_mainnet(),
+            "0x4200000000000000000000000000000000000006",
+            "WETH",
+            18,
+            TokenRole::Weth,
+            "WETH",
+        ),
+        (
+            base_mainnet(),
+            "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "USDC",
+            6,
+            TokenRole::Plain,
+            "USDC",
+        ),
+        (
+            bsc_mainnet(),
+            "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
+            "WBNB",
+            18,
+            TokenRole::Weth,
+            "WBNB",
+        ),
+        (
+            bsc_mainnet(),
+            "0x55d398326f99059fF775485246999027B3197955",
+            "USDT",
+            18,
+            TokenRole::Plain,
+            "USDT (Binance-Peg)",
+        ),
+        (
+            bsc_mainnet(),
+            "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
+            "USDC",
+            18,
+            TokenRole::Plain,
+            "USDC (Binance-Peg)",
+        ),
+        (
+            robinhood_mainnet(),
+            "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+            "WETH",
+            18,
+            TokenRole::Weth,
+            "WETH",
+        ),
+        (
+            robinhood_mainnet(),
+            "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+            "USDG",
+            6,
+            TokenRole::Plain,
+            "USDG (Global Dollar, Paxos)",
+        ),
+    ] {
+        let parsed = parse_address(address).unwrap();
+        let token = chain.token(&parsed).unwrap();
+        assert_eq!(
+            (token.symbol, token.decimals, token.role),
+            (symbol, decimals, role)
+        );
+        assert_eq!(chain.label(&parsed), Some(label));
+    }
+    assert_eq!(arbitrum_one().tokens.len(), 3);
+    assert_eq!(base_mainnet().tokens.len(), 2);
+    assert_eq!(bsc_mainnet().tokens.len(), 3);
+    assert_eq!(robinhood_mainnet().tokens.len(), 2);
 }

@@ -520,6 +520,9 @@ pub struct ChainFacts {
     pub balances: Vec<(Address, U256)>,
     /// Address-book names (already user-entered text; escaped at display).
     pub address_book: Vec<(Address, String)>,
+    /// The OP-stack L1 data fee of the prepared transaction (spec/03 §3.4a), `None` when the
+    /// chain charges none or the lookup failed (E41).
+    pub l1_fee: Option<crate::evm::fee::L1FeeQuote>,
 }
 
 impl ChainFacts {

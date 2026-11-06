@@ -23,10 +23,11 @@ use yw_core::evm::chain::{ChainInfo, SimulationSupport};
 use yw_core::evm::decode::{DecodedCall, DecodedTx, decode_call};
 use yw_core::evm::display::add_replacement;
 use yw_core::evm::fee::{
-    FeeError, Fees, GasEstimate, cancel_tx, check_caps, fees_of, max_total_fee, plan_gas_limit,
-    speed_up_tx, suggest_fees,
+    FeeError, Fees, GAS_PRICE_ORACLE, GasEstimate, L1DataFee, L1FeeQuote, cancel_tx,
+    check_caps_with_l1, fees_of, get_l1_fee_data, get_operator_fee_data, max_total_fee,
+    plan_gas_limit, speed_up_tx, suggest_fees,
 };
-use yw_core::evm::risk::{E05, E11, E27, E34, E35, calldata_approvals, warning};
+use yw_core::evm::risk::{E05, E11, E27, E34, E35, E41, calldata_approvals, warning};
 use yw_core::evm::simulate::{
     ApprovalKindEvm, AssetId, SimOutcome, SimResult, TransportKind, interpret,
 };
@@ -507,6 +508,81 @@ fn blocked(text: Option<&str>, rule: RuleId) -> Warning {
     warning(rule, text)
 }
 
+/// The L1 data fee lookup of a built transaction (spec/03 §3.4a).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum L1Lookup {
+    /// The chain charges no L1 fee beyond `gas × price` (or a user chain without the oracle).
+    NotApplicable,
+    /// The oracle's answer.
+    Quoted(L1FeeQuote),
+    /// An OP-stack built-in whose oracle did not answer (E41).
+    Failed,
+}
+
+impl L1Lookup {
+    /// The quote, `None` when there is none.
+    #[must_use]
+    pub const fn quote(self) -> Option<L1FeeQuote> {
+        match self {
+            Self::Quoted(quote) => Some(quote),
+            Self::NotApplicable | Self::Failed => None,
+        }
+    }
+
+    /// The L1 part added to the maximum fee (zero without a quote).
+    #[must_use]
+    pub const fn max(self) -> U256 {
+        match self {
+            Self::Quoted(quote) => quote.max,
+            Self::NotApplicable | Self::Failed => U256::ZERO,
+        }
+    }
+}
+
+/// Asks the OP-stack `GasPriceOracle` for the L1 data fee of `tx` (spec/03 §3.4a):
+/// `getL1Fee(unsigned tx)` plus `getOperatorFee(gas_limit)` (zero when that call fails — chains
+/// before Isthmus have no operator fee). A user chain is asked only when the predeploy has code.
+#[must_use]
+pub fn l1_fee_lookup(
+    client: &RpcClient<'_>,
+    url: &HttpsUrl,
+    chain: &ChainInfo,
+    tx: &Eip1559Tx,
+) -> L1Lookup {
+    let failed = match chain.l1_data_fee {
+        L1DataFee::None => return L1Lookup::NotApplicable,
+        L1DataFee::Probe => {
+            if !rpc::code(client, url, &GAS_PRICE_ORACLE).is_ok_and(|code| !code.is_empty()) {
+                return L1Lookup::NotApplicable;
+            }
+            L1Lookup::NotApplicable
+        }
+        L1DataFee::OpStack => L1Lookup::Failed,
+    };
+    let Some(l1_fee) = rpc::eth_call(
+        client,
+        url,
+        &GAS_PRICE_ORACLE,
+        &get_l1_fee_data(tx),
+        "latest",
+    )
+    .ok()
+    .and_then(|output| decode_uint256_result(&output)) else {
+        return failed;
+    };
+    let operator_fee = rpc::eth_call(
+        client,
+        url,
+        &GAS_PRICE_ORACLE,
+        &get_operator_fee_data(tx.gas_limit),
+        "latest",
+    )
+    .ok()
+    .and_then(|output| decode_uint256_result(&output))
+    .unwrap_or(U256::ZERO);
+    L1FeeQuote::new(l1_fee, operator_fee).map_or(failed, L1Lookup::Quoted)
+}
+
 struct Built {
     tx: Eip1559Tx,
     role: Role,
@@ -514,6 +590,7 @@ struct Built {
     pre_warnings: Vec<Warning>,
     blocking: Vec<Warning>,
     replaced: Option<([u8; 32], Option<U256>)>,
+    l1: L1Lookup,
 }
 
 /// Steps 5–7 for a new transaction.
@@ -551,7 +628,12 @@ fn build_new(
         .into_iter()
         .partition(|warning| warning.level == RiskLevel::Blocked);
     let mut blocking = blocking;
-    if let Err(violation) = check_caps(&fees, tx.gas_limit, &job.chain.caps) {
+    let mut pre = pre;
+    let l1 = l1_fee_lookup(client, url, chain, &tx);
+    if l1 == L1Lookup::Failed {
+        pre.push(warning(E41, None));
+    }
+    if let Err(violation) = check_caps_with_l1(&fees, tx.gas_limit, &l1.max(), &job.chain.caps) {
         blocking.push(violation.warning(chain));
     }
     Ok(Built {
@@ -561,6 +643,7 @@ fn build_new(
         pre_warnings: pre,
         blocking,
         replaced: None,
+        l1,
     })
 }
 
@@ -607,9 +690,14 @@ fn build_replacement(
             cancel_tx(&old, &job.account, plan.gas_limit, &fees).map_err(overflow)?
         }
     };
-    if let Err(violation) = check_caps(
+    let l1 = l1_fee_lookup(client, url, chain, &tx);
+    if l1 == L1Lookup::Failed {
+        pre.push(warning(E41, None));
+    }
+    if let Err(violation) = check_caps_with_l1(
         &fees_of(&tx, fees.base_fee_next),
         tx.gas_limit,
+        &l1.max(),
         &job.chain.caps,
     ) {
         blocking.push(violation.warning(chain));
@@ -628,6 +716,7 @@ fn build_replacement(
             latest.tx_hash,
             max_total_fee(old.gas_limit, &old.max_fee_per_gas),
         )),
+        l1,
     })
 }
 
@@ -928,6 +1017,7 @@ pub fn prepare(
         Ok(built) => built,
         Err(failure) => return fail(result, failure),
     };
+    facts.l1_fee = built.l1.quote();
     if built.tx.validate().is_err()
         || built
             .tx
@@ -1105,6 +1195,10 @@ fn rebuild(
         pre_warnings: context.pre_warnings,
         blocking: context.blocking,
         replaced: context.replaced,
+        l1: context
+            .facts
+            .l1_fee
+            .map_or(L1Lookup::NotApplicable, L1Lookup::Quoted),
     };
     match finish(
         &prepare_job,
@@ -1226,7 +1320,8 @@ pub fn resimulate(
         let mut tx = context.tx.clone();
         tx.max_priority_fee_per_gas = fees.max_priority_fee_per_gas;
         tx.max_fee_per_gas = fees.max_fee_per_gas;
-        if let Err(violation) = check_caps(&fees, tx.gas_limit, &job.chain.caps) {
+        let l1_max = context.facts.l1_fee.map_or(U256::ZERO, |quote| quote.max);
+        if let Err(violation) = check_caps_with_l1(&fees, tx.gas_limit, &l1_max, &job.chain.caps) {
             context.tx = tx;
             context.blocking.push(violation.warning(&context.chain));
             result.kind = ResimKind::Blocked;

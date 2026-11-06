@@ -8,7 +8,10 @@ use yw_core::evm::address::{Address, AddressError, parse_address};
 use yw_core::evm::amount::{U256, format_amount, format_gwei, format_units, parse_units};
 use yw_core::evm::chain::ChainInfo;
 use yw_core::evm::decode::token_transfer_recipient;
-use yw_core::evm::fee::{GasEstimate, check_caps, max_total_fee, plan_gas_limit, suggest_fees};
+use yw_core::evm::fee::{
+    GasEstimate, check_caps_with_l1, max_total_fee, max_total_fee_with_l1, plan_gas_limit,
+    suggest_fees,
+};
 use yw_core::evm::tx::Eip1559Tx;
 
 use super::prepare::SendIntent;
@@ -305,19 +308,15 @@ pub fn check_funds(
     if ok { Ok(()) } else { Err(ErrorCode::Inp012) }
 }
 
-/// `최대` for the native asset: `balance − gas_limit × max_fee` (spec/04 §2.7).
+/// `최대` for the native asset: `balance − max_total` (spec/04 §2.7), where `max_total` is the
+/// quote's `gas_limit × max_fee` plus the OP-stack L1 part (spec/03 §3.4a).
 ///
 /// # Errors
 ///
 /// [`ErrorCode::Inp012`] when nothing is left.
-pub fn max_native(
-    balance: &U256,
-    gas_limit: u64,
-    max_fee_per_gas: &U256,
-) -> Result<U256, ErrorCode> {
-    let fee = max_total_fee(gas_limit, max_fee_per_gas).ok_or(ErrorCode::Inp012)?;
+pub fn max_native(balance: &U256, max_total: &U256) -> Result<U256, ErrorCode> {
     balance
-        .checked_sub(fee)
+        .checked_sub(*max_total)
         .filter(|left| !left.is_zero())
         .ok_or(ErrorCode::Inp012)
 }
@@ -329,7 +328,7 @@ pub struct Quote {
     pub gas_limit: u64,
     /// `maxFeePerGas`.
     pub max_fee_per_gas: U256,
-    /// `gas_limit × maxFee`.
+    /// `gas_limit × maxFee`, plus the OP-stack L1 data fee maximum (spec/03 §3.4a).
     pub max_total: U256,
     /// E-TX-001 cap violation text (blocks `검토`).
     pub cap_violation: Option<String>,
@@ -341,9 +340,17 @@ impl Quote {
     /// The fixed line.
     #[must_use]
     pub fn line(&self, chain: &ChainInfo) -> String {
+        let native =
+            |value: &U256| format_amount(value, chain.native_decimals, &chain.native_symbol);
+        let l1 = max_total_fee(self.gas_limit, &self.max_fee_per_gas)
+            .and_then(|l2| self.max_total.checked_sub(l2))
+            .filter(|l1| !l1.is_zero());
+        let l1_text = l1.map_or_else(String::new, |l1| {
+            format!(" + L1 데이터 수수료 최대 {}", native(&l1))
+        });
         format!(
-            "예상 최대 수수료: {} (가스 한도 {} × 최대 {})",
-            format_amount(&self.max_total, chain.native_decimals, &chain.native_symbol),
+            "예상 최대 수수료: {} (가스 한도 {} × 최대 {}{l1_text})",
+            native(&self.max_total),
             format_units(&U256::from_u64(self.gas_limit), 0),
             format_gwei(&self.max_fee_per_gas)
         )
@@ -391,8 +398,14 @@ pub fn quote(
         },
     };
     let plan = plan_gas_limit(gas, intent.dapp_gas, &fees, &chain.caps, &chain.info);
-    let max_total = max_total_fee(plan.gas_limit, &fees.max_fee_per_gas).unwrap_or(U256::MAX);
-    let cap_violation = check_caps(&fees, plan.gas_limit, &chain.caps)
+    let quoted = Eip1559Tx {
+        gas_limit: plan.gas_limit,
+        ..probe
+    };
+    let l1_max = super::prepare::l1_fee_lookup(&client, &chain.url, &chain.info, &quoted).max();
+    let max_total =
+        max_total_fee_with_l1(plan.gas_limit, &fees.max_fee_per_gas, &l1_max).unwrap_or(U256::MAX);
+    let cap_violation = check_caps_with_l1(&fees, plan.gas_limit, &l1_max, &chain.caps)
         .err()
         .map(|violation| {
             let text = violation.warning(&chain.info).text;

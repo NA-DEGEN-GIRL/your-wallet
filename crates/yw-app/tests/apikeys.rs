@@ -148,51 +148,47 @@ fn unregistered_rpc_entries_are_orphans_kept_on_save() {
     let settings = Settings::default();
     let registered = |network: NetworkId| yw_app::apikeys::is_registered(&settings, network);
     let bytes = plaintext(&[
-        ("rpc:eip155:8453".to_owned(), long_url(1)),
+        ("rpc:eip155:10".to_owned(), long_url(1)),
         ("rpc:eip155:11155111".to_owned(), long_url(2)),
     ]);
     let decoded = ApiKeys::decode(&bytes, &registered).unwrap();
-    assert_eq!(decoded.orphans, [KeyName::Rpc(NetworkId::Eip155(8_453))]);
+    assert_eq!(decoded.orphans, [KeyName::Rpc(NetworkId::Eip155(10))]);
     // Not an endpoint while unregistered, but written back (spec/04 §6.6).
     assert_eq!(
         decoded.keys.names(),
         [KeyName::Rpc(NetworkId::Eip155(11_155_111))]
     );
     assert_eq!(decoded.keys.endpoints().len(), 1);
-    assert_eq!(decoded.keys.dormant_names(), ["rpc:eip155:8453"]);
+    assert_eq!(decoded.keys.dormant_names(), ["rpc:eip155:10"]);
     let saved = decoded.keys.encode();
     let again = ApiKeys::decode(&saved, &all_registered).unwrap();
     assert_eq!(
         again.keys.names(),
         [
             KeyName::Rpc(NetworkId::Eip155(11_155_111)),
-            KeyName::Rpc(NetworkId::Eip155(8_453))
+            KeyName::Rpc(NetworkId::Eip155(10))
         ]
     );
     assert_eq!(
-        again
-            .keys
-            .rpc_url(NetworkId::Eip155(8_453))
-            .unwrap()
-            .expose(),
+        again.keys.rpc_url(NetworkId::Eip155(10)).unwrap().expose(),
         long_url(1)
     );
     // Setting the network again replaces the dormant entry; removing it removes it.
     let mut keys = ApiKeys::decode(&bytes, &registered).unwrap().keys;
     let fresh = HttpsUrl::parse("https://fresh.example/rpc").unwrap();
-    keys.set_rpc(NetworkId::Eip155(8_453), &fresh);
+    keys.set_rpc(NetworkId::Eip155(10), &fresh);
     assert!(keys.dormant_names().is_empty());
     let replaced = ApiKeys::decode(&keys.encode(), &all_registered).unwrap();
     assert_eq!(
         replaced
             .keys
-            .rpc_url(NetworkId::Eip155(8_453))
+            .rpc_url(NetworkId::Eip155(10))
             .unwrap()
             .expose(),
         fresh.expose()
     );
     let mut keys = ApiKeys::decode(&bytes, &registered).unwrap().keys;
-    assert!(keys.remove(KeyName::Rpc(NetworkId::Eip155(8_453))));
+    assert!(keys.remove(KeyName::Rpc(NetworkId::Eip155(10))));
     assert!(keys.dormant_names().is_empty());
     let mut keys = ApiKeys::decode(&bytes, &registered).unwrap().keys;
     assert_eq!(keys.prune_dormant(), 1);
@@ -381,6 +377,28 @@ fn template_urls_follow_the_tables() {
             .expose(),
         format!("https://eth-sepolia{alchemy_path}{KEY}")
     );
+    // The L2/L1 built-ins of 2026-11-06 (spec/03 §1.1: QuickNode and Alchemy docs examples).
+    for (chain_id, subdomain, label) in [
+        (42_161, "arbitrum-mainnet", "arb-mainnet"),
+        (8_453, "base-mainnet", "base-mainnet"),
+        (56, "bsc", "bnb-mainnet"),
+        (4_663, "robinhood-mainnet", "robinhood-mainnet"),
+    ] {
+        assert_eq!(
+            url_for(RpcTemplate::QuickNode, &qn, NetworkId::Eip155(chain_id))
+                .unwrap()
+                .expose(),
+            format!("https://{NAME}.{subdomain}{host}{TOKEN}/"),
+            "{chain_id}"
+        );
+        assert_eq!(
+            url_for(RpcTemplate::Alchemy, &al, NetworkId::Eip155(chain_id))
+                .unwrap()
+                .expose(),
+            format!("https://{label}{alchemy_path}{KEY}"),
+            "{chain_id}"
+        );
+    }
     assert!(url_for(RpcTemplate::QuickNode, &qn, NetworkId::Eip155(84_532)).is_none());
     assert!(url_for(RpcTemplate::Manual, &qn, NetworkId::Eip155(1)).is_none());
     assert!(url_for(RpcTemplate::Alchemy, &qn, NetworkId::Eip155(1)).is_none());
