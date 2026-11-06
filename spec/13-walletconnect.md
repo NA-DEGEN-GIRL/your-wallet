@@ -1,0 +1,120 @@
+# 13. WalletConnect v2 (Reown) — 지갑으로 dApp 연결 (D35, 2026-11-06)
+
+- 상태: 구현(yw-core `walletconnect`, yw-win `ws`·`image`·`cng::p256_verify`·`clipboard::read_dib`, yw-app `walletconnect::{engine, worker, verify, store, qr_decode}`·`app_walletconnect`·`ui::screens_walletconnect`). 실제 dApp 연결은 사용자의 Reown Project ID로 수동 확인만 남음(§10).
+- 범위: 이 앱이 **지갑(응답자·controller)** 으로서 WalletConnect Sign v2 세션을 맺는다. 브라우저 확장([05](05-browser.md))과 나란히 쓰는 두 번째 연결 방법이며, 모든 요청은 같은 디스패처·승인 창·arm 지연·위험 규칙·시뮬레이션을 지난다.
+- **1단계는 EVM(`eip155`)만**이다. Solana·Bitcoin·기타 네임스페이스는 범위 밖: 필수(required)에 있으면 제안을 5100으로 거부하고, 선택(optional)에 있으면 세션에서 뺀다(§9).
+- 의존성 추가 없음: `chacha20poly1305`·`hkdf`·`sha2`·`ed25519-dalek`·`curve25519-dalek`(Montgomery X25519)·`getrandom`은 이미 yw-core에 있고, `windows-sys`에 `Win32_Graphics_GdiPlus` 기능만 더했다(같은 크레이트·같은 lock).
+
+## 1. 출처 (2026-11-06 확인)
+
+| 항목 | 출처 |
+|---|---|
+| 페어링 URI `wc:{topic}@2?symKey&methods&relay-protocol=irn[&relay-data][&expiryTimestamp]`, 예시 URI | https://specs.walletconnect.com/2.0/specs/clients/core/pairing/pairing-uri (원문 `WalletConnect/walletconnect-specs` `docs/specs/clients/core/pairing/pairing-uri.md`) |
+| 타입 0/1 봉투(`tp ‖ iv12 ‖ sealbox`, `tp ‖ pk32 ‖ iv12 ‖ sealbox`, ChaCha20-Poly1305) | https://specs.walletconnect.com/2.0/specs/clients/core/crypto/crypto-envelopes |
+| 키 종류(X25519 합의 → HKDF, 토픽 = SHA-256(키)) | https://specs.walletconnect.com/2.0/specs/clients/core/crypto/crypto-keys |
+| HKDF 인자(salt 없음·info 없음·32바이트), base64(패딩) 직렬화, `hashKey`·`hashMessage` | 참조 구현 `walletconnect-monorepo` `packages/utils/src/crypto.ts` (`deriveSymKey`: `hkdf(sha256, sharedKey, undefined, undefined, 32)`, `serialize`/`deserialize`) |
+| 릴레이 인증 did-JWT(EdDSA, `iss`=did:key, `sub`=연결마다 난수, `aud`=릴레이 URL, `iat`·`exp`), did:key 인코딩, **시험 벡터** | https://specs.walletconnect.com/2.0/specs/clients/core/crypto/crypto-authentication , https://specs.walletconnect.com/2.0/specs/clients/core/relay/relay-client-auth |
+| 릴레이 URL `wss://relay.walletconnect.org`, `?auth=&projectId=&ua=` | 참조 구현 `packages/core/src/constants/relayer.ts`(`RELAYER_DEFAULT_RELAY_URL`), `packages/utils/src/misc.ts`(`formatRelayRpcUrl`), https://specs.walletconnect.com/2.0/specs/clients/core/relay/relay-user-agent |
+| Project ID는 dashboard.reown.com에서 받는다, 출처 허용 목록 규칙 | https://docs.reown.com/cloud/relay |
+| `irn_subscribe`·`irn_publish{topic,message,ttl,tag}`·`irn_subscription{id,data{topic,message,attestation,publishedAt,tag}}`·`irn_unsubscribe` | https://specs.walletconnect.com/2.0/specs/servers/relay/relay-server-rpc |
+| `wc_sessionPropose`/`Settle`/`Update`/`Extend`/`Request`/`Event`/`Delete`/`Ping` 형식·태그·TTL | https://specs.walletconnect.com/2.0/specs/clients/sign/rpc-methods , 참조 구현 `packages/sign-client/src/constants/engine.ts`(`ENGINE_RPC_OPTS`) |
+| 제안·세션 네임스페이스 규칙(필수 전부 만족, 선택 일부, 빈 제안 = 모든 체인, 체인은 CAIP-2) | https://specs.walletconnect.com/2.0/specs/clients/sign/namespaces |
+| 제안 순서(지갑이 키 Y 생성 → 세션 토픽 구독 → settle 발행 → 페어링 토픽에 응답) | https://specs.walletconnect.com/2.0/specs/clients/sign/session-proposal , `data-structures` |
+| 오류 코드(1006, 3003, 4001, 5000, 5100, 5101, 6000, 7001, 8000) | https://specs.walletconnect.com/2.0/specs/clients/sign/error-codes |
+| `chainChanged` data = 숫자 chainId, `accountsChanged` data = CAIP-10 계정 | 참조 구현 `providers/universal-provider/src/UniversalProvider.ts`(`onSessionEventRequest`), `providers/eip155.ts`(`handleSwitchChain`) |
+| Verify: v3 ES256 JWT(`attestation`), `GET /v3/public-key`, v2 폴백 `GET /attestation/{sha256(JSON)}?v2Supported=true`, `id = sha256(암호문)` | https://specs.walletconnect.com/2.0/specs/clients/core/verify/verify-client-api , `servers/verify/verify-server-api`, 참조 구현 `packages/core/src/controllers/verify.ts`, `packages/sign-client/src/controllers/engine.ts`(`getVerifyContext`) |
+| Verify 결과 VALID/INVALID/UNKNOWN·`isScam` 의미와 경고 권고 | https://docs.walletconnect.com/wallets/web/verify.md (docs.reown.com/walletkit/web/verify 리다이렉트) |
+| ES256 서명 시험 벡터 | RFC 7515 부록 A.3 |
+| X25519 시험 벡터 | RFC 7748 §6.1 |
+
+실측(2026-11-06): 릴레이는 JWT가 없거나 형식이 틀리면 HTTP 401(`{"error":"JWT is missing"}`, `"JWT validation error: …"`), 이 앱의 JWT에 지어낸 Project ID면 **403**(JWT 통과, ID 거부)을 준다. Verify `/v3/public-key`는 200 JSON(`{"publicKey":{"crv":"P-256",…},"expiresAt":…}`), 모르는 v2 id는 404.
+
+참고: 최신 참조 SDK(2.2x)는 dApp 쪽이 `wc_proposeSession`, 지갑 쪽이 `wc_approveSession` 릴레이 메서드로 제안·승인을 묶어 보내기도 한다. dApp은 여전히 페어링 토픽을 구독하므로 이 앱은 사양의 기본 방식(응답은 페어링 토픽 `irn_publish` tag 1101, settle은 세션 토픽 tag 1102)을 쓴다.
+
+## 2. 페어링 URI
+
+- `wc:`(대소문자 무시)로 시작, 토픽 64자리 16진수, `@2` 필수(`@1` = v1은 "v1은 종료되어 지원하지 않습니다"), `symKey` 64자리 16진수, `relay-protocol=irn`만, `expiryTimestamp`(초) 지나면 "만료". 앞뒤 공백, 통째로 퍼센트 인코딩된 URI(`wc%3A…`), 값의 퍼센트 인코딩을 받는다. 같은 키가 두 번이면 거부. 2,048바이트 이하.
+- 붙여넣기(dApp WalletConnect 창의 `링크 복사`)가 기본 입력이다. QR은 §6.
+
+## 3. 암호
+
+- X25519: `curve25519-dalek` `MontgomeryPoint::mul_base_clamped`/`mul_clamped`. 공유 비밀이 전부 0이면(저차 점) 거부.
+- 세션 키 = `HKDF-SHA256(ikm = X25519(우리 비밀, dApp 공개키), salt 없음(= 0×32), info 빈 값, 32바이트)`. 세션 토픽 = `SHA-256(세션 키)`(소문자 16진수).
+- 봉투: 타입 0만 보낸다(nonce 12바이트 OS 난수). 받을 때 타입 0만 연다(타입 1은 지갑 흐름에 없음, 타입 2 = 평문 링크 모드는 거부). base64는 표준·패딩.
+- 릴레이 클라이언트 키: Ed25519 시드 32바이트(처음 Project ID를 저장하고 잠금 해제할 때 생성, meta에 봉인 저장 §8). JWT 페이로드는 `{"iss","sub","aud","iat","exp"}` 순서(사양 시험 벡터와 바이트 단위 일치), `aud = "wss://relay.walletconnect.org"`, `exp = iat + 86,400`, `sub`는 연결마다 32바이트 난수.
+
+## 4. 릴레이 연결
+
+- `wss://relay.walletconnect.org/?auth={JWT}&projectId={ID}&ua=wc-2%2Frust-yourwallet-{버전}%2Fwindows`. yw-win `ws`(WinHTTP WebSocket: `WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET` → 101 → `WinHttpWebSocketCompleteUpgrade`), TLS 1.2/1.3, 리다이렉트·쿠키·자동 인증 없음, keep-alive 15초, 닫기 시간 2초. 연결 15초 제한. 오류에는 URL(토큰·ID 포함)을 넣지 않는다.
+- 구독할 토픽(페어링 + 세션)이 있고 Project ID와 클라이언트 키가 있을 때만 연결한다. 토픽이 없으면 10초 뒤 닫는다. 끊기면 1초부터 두 배씩 최대 60초 간격으로 다시 붙고, 붙으면 모든 토픽을 다시 구독(우편함의 밀린 메시지가 온다)하고 그동안 쌓인 발행(최대 256개)을 보낸다. 401/403이면 5분 뒤에만 다시 시도하고 패널에 "릴레이가 Project ID를 거부했습니다 (HTTP n)".
+- `irn_subscription`은 받은 `id`로 `{"result":true}` 응답한 뒤 처리한다. 같은 (토픽, JSON-RPC id)는 한 번만 처리한다(최근 512개; 릴레이는 최소 한 번 전달).
+
+## 5. Sign 프로토콜
+
+| 메시지 | 이 앱의 처리 | 태그 / TTL |
+|---|---|---|
+| `wc_sessionPropose`(페어링 토픽) | 검사 후 Verify(§7) → 연결 창 | 응답 1101 / 300, 거부 1120 / 300 |
+| `wc_sessionSettle`(세션 토픽, 우리가 보냄) | `relay{irn}`, `namespaces.eip155{chains, accounts = 체인×계정 CAIP-10, methods, events}`, `controller{publicKey, metadata}`, `expiry = 지금 + 7일` | 1102 / 300 |
+| `wc_sessionRequest` | §5.2 | 응답 1109 / 300 |
+| `wc_sessionEvent`(우리가 보냄) | `chainChanged`(data = 숫자), `accountsChanged`(data = CAIP-10) | 1110 / 300 |
+| `wc_sessionUpdate`(우리가 보냄) | 체인 추가(전환) 또는 계정 변경 | 1104 / 86,400 |
+| `wc_sessionExtend`(우리가 보냄) | 요청이 오는데 남은 기간 < 2일이면 지금 + 7일 | 1106 / 86,400 |
+| `wc_sessionDelete` | 받으면 `true` 응답 후 세션 삭제, 보낼 때 `{code 6000, "User disconnected."}` | 1113·1112 / 86,400 |
+| `wc_sessionPing`·`wc_pairingPing` | `true` | 1115·1003 / 30 |
+| `wc_pairingDelete` | `true`, 페어링 삭제 | 1001 / 86,400 |
+| `wc_sessionAuthenticate`(원클릭 인증) | 응답하지 않는다(미지원) — dApp은 함께 보낸 제안으로 넘어간다 | — |
+| dApp이 보낸 `wc_sessionUpdate`/`Extend`/`Event` | 3003 Unauthorized(controller만 가능) | 1105 |
+
+### 5.1 제안 검사 (namespaces 사양)
+
+- `requiredNamespaces`·`optionalNamespaces`의 `eip155`(키 `eip155` + `chains`, 또는 키 `eip155:N`)에서 CAIP-2 체인을 읽는다. 필수 체인이 CAIP-2가 아니면 5100, 필수에 다른 네임스페이스(solana 등)가 있으면 5100, 필수 체인 중 이 지갑에 등록되지 않은(또는 RPC 불일치로 막힌) 체인이 있으면 5100.
+- 승인할 체인 = 필수 ∪ (선택 ∩ 등록 체인), 요청 순서. 제안이 비어 있으면 등록된 모든 EVM 체인. 결과가 비면 5100.
+- 세션 메서드 = 이 지갑이 처리하는 6개(`eth_accounts`, `eth_chainId`, `personal_sign`, `eth_signTypedData_v4`, `eth_sendTransaction`, `wallet_switchEthereumChain`) ∪ 필수 메서드(사양상 필수는 모두 넣어야 한다 — 그중 처리하지 않는 것은 요청 때 4200, 연결 창에 "지원하지 않는 요청은 거부됩니다: …"). 이벤트 = `chainChanged`·`accountsChanged` ∪ 필수 이벤트.
+- 제안 만료 = `expiryTimestamp`(없으면 5분, 최대 1시간). 대기 제안 8개, 세션 64개.
+
+### 5.2 세션 요청 → 디스패처
+
+- 세션이 만료 7001, `chainId`가 세션 체인이 아니면 5100, 메서드가 세션 메서드가 아니면 5101, `request.expiry`가 지났으면 8000.
+- `eth_accounts` = 세션 계정, `eth_chainId` = 요청의 `chainId`(16진수): 세션에서 바로 답한다.
+- `wallet_switchEthereumChain`: 등록되지 않은 체인 4902, 막힌 체인 4901, 세션에 없는 등록 체인이면 `wc_sessionUpdate`로 추가, `null` 응답 후 `chainChanged`.
+- `personal_sign`·`eth_signTypedData_v4`·`eth_sendTransaction`: 세션의 합성 출처(§7)를 요청 체인으로 맞춘 뒤 디스패처의 **가상 연결**(`BrowserCore::open_virtual_connection`/`submit`, 브라우저 상태 줄 개수에는 세지 않음)로 넣는다. 활성화 nonce = 세션 토픽(세션별 토큰 버킷), 기한 = `request.expiry` 또는 10분. 이후는 확장과 같다: 권한(계정이 그 세션 승인에 있어야 함), 잠김이면 잠금 해제 창을 열고 기다림(4100/대기, [05](05-browser.md) §4.4), 승인 큐, arm 지연, 위험 규칙, 시뮬레이션, 서명·전송. 응답·오류(코드·메시지)는 그대로 1109로 돌려준다.
+- 그 밖의 메서드는 전부 4200 `Unsupported method.`(`eth_sign` 등 확장과 같음).
+
+### 5.3 연결 승인
+
+- 제안은 세션 합성 출처의 `eth_requestAccounts`로 디스패처에 들어가 확장과 같은 연결 창을 연다. 연결 창은 출처 대신 "WalletConnect: {url} (…)"·이름, 승인할 네트워크 목록("연결할 네트워크 (WalletConnect)"), Verify 경고(§7)를 보인다. 계정을 고르고 `연결`하면 승인(§5 표), 거절·만료·시간 초과면 5000 `User rejected.`. 권한(grant)은 합성 출처로 저장되어 확장의 같은 사이트 권한과 섞이지 않는다.
+- 계정을 숨기거나 지우면 권한에서 빠지고 세션은 `wc_sessionUpdate` + `accountsChanged`(남은 계정), 모두 빠지면 세션 삭제.
+
+## 6. QR 입력
+
+- `클립보드 이미지에서 QR 읽기`: `CF_DIB`(Win+Shift+S가 넣음; BITMAPINFOHEADER/V4/V5, 8·24·32비트, 상하 방향 모두)를 읽는다(최대 80 MB).
+- `이미지 파일에서 QR 읽기`: 경로 입력(탐색기 `경로로 복사`의 따옴표 허용) → GDI+ 평면 API로 PNG·JPEG·BMP·GIF를 32비트로 읽는다(최대 64 M 픽셀).
+- 복호기(yw-app `walletconnect::qr_decode`, ISO/IEC 18004): 회색조 → 전역 Otsu, 실패하면 8×8 블록 국소 임계값, 각각 반전도 시도(다크 모드) → 행의 1:1:3:1:1 런으로 파인더 후보 → 세로·가로 교차 확인으로 중심 보정·병합 → 직각 이등변에 가까운 세 후보(TL = 가장 긴 변의 맞은편, 외적 부호로 TR/BL) → 버전 추정(±4, ±8) → 세 중심의 아핀 변환과, 우하 정렬 패턴을 찾으면 그 점을 쓴 사영 변환 → 모듈 표본 → 형식 정보 BCH(32개 중 해밍 ≤ 3) → 버전 정보(v7+, ≤ 3) → 마스크 해제 → 지그재그 → 블록 역인터리브 → GF(256)(0x11D, 근 α⁰…) Reed–Solomon(Berlekamp–Massey·Chien·Forney) → 숫자·영숫자·바이트 세그먼트(ECI 건너뜀). 결과가 `wc:`로 시작할 때만 페어링한다.
+- 시험: 앱의 인코더(`qrcodegen`)로 만든 코드(여러 버전·L/M/Q/H), 17°·−8°·33°·90°·180° 회전과 2.6–5.1 픽셀 비정수 배율의 "스크린샷"(회색 배경·UI 상자·3×3 초표본), 다크 모드, 버전 15+, 데이터 영역 손상 복구.
+
+## 7. 출처 표시와 Verify (보안)
+
+- dApp 메타데이터(`name`·`url`·`icons`)는 **사이트가 스스로 주장한 값**이다. 이름 100자, 설명 300자, URL 512바이트로 자르고 표시할 때 [03](03-evm.md) §11의 이스케이프를 쓴다. 아이콘은 저장만 하고 받아오지 않는다.
+- 디스패처 출처는 합성: `https://{토픽 앞 32자리}.{뒤 32자리}.walletconnect.invalid`(`.invalid`는 해석되지 않음, RFC 6761). 권한 = (세션 토픽, 그 세션이 주장한 출처)이며 확장 권한·다른 세션과 공유하지 않는다.
+- 승인 창·연결 창의 `요청 출처` = `WalletConnect: {url} (사이트가 주장한 주소 — 확인되지 않음)`(Verify 확인 시 `(Verify로 확인됨)`, 불일치 `(사이트가 주장한 주소 — Verify 불일치(위험))`, 사기 `(Verify: 알려진 사기 사이트(위험))`). `{url}`은 `new URL(url).origin`에 해당하는 정규형(https 또는 http localhost, 기본 포트 제거)이고 형식이 틀리면 원문 + "(형식이 올바르지 않음)". 배지 "WalletConnect 세션"·"Verify …".
+- 승인 digest의 출처(`origin_serialized`)와 SIWE 도메인 검사는 **주장한 출처**를 쓴다(합성 출처로 검사하면 모든 SIWE가 S01로 막힌다). 대신 모든 WalletConnect 요청에 규칙을 붙인다: **C01 주의**(확인되지 않음), **C02 고위험**(Verify 불일치), **C03 고위험**(사기 표시), C04 정보(확인됨). 고위험은 승인 창의 확인 체크·길게 누르기를 요구한다.
+- Verify(제안마다, 결과는 세션에 저장): ① 릴레이 메시지에 `attestation`(v3 JWT)이 있으면 `GET https://verify.walletconnect.org/v3/public-key`(만료까지 캐시)의 P-256 키로 ES256을 CNG(`BCRYPT_ECDSA_P256_ALG_HANDLE`)로 검증하고, `exp` > 지금, `id` = SHA-256(받은 암호문 문자열)일 때만 쓴다(`isVerified` 거짓 = 확인 불가). ② 아니면 `GET https://verify.walletconnect.org/attestation/{SHA-256(복호한 JSON)}?v2Supported=true` 200 `{origin, isScam}`. `isScam` → 사기, 증명된 출처 = 주장한 출처 → 확인됨, 다르면 불일치, 답 없음 → 확인 불가. `metadata.verifyUrl`은 무시하고 공식 서버만 쓴다. HTTP 5초 제한.
+- 연결된 사이트(S13)에는 "WalletConnect 세션" 카드가 따로 나온다(이름, 주장한 주소, Verify, 네트워크, 계정, 연결·만료 시각, `연결 해제`), 확장 사이트 목록에서는 빠진다. `모든 WalletConnect 세션 끊기`, 기존 `모든 사이트 연결 해제`도 WalletConnect 세션을 끊는다.
+
+## 8. 설정·저장
+
+- `settings.json` `walletconnect: {"projectId": "<32자리 소문자 16진수>"}` — 비밀이 아니다(dApp은 웹 페이지에 넣는다). 기본값 없음(없으면 키를 쓰지 않고 WalletConnect는 꺼짐). **이 지갑에는 기본 Project ID가 없다**: 사용자가 dashboard.reown.com에서 무료 프로젝트를 만들고 ID를 붙여 넣는다. 그 프로젝트의 허용 출처(allowlist)는 비워 둔다(데스크톱 앱은 Origin을 보내지 않는다).
+- meta 선택 키 `walletconnect: {"clientSeed": hex, "sessions": [{topic, symKey, peerPublic, peer{name,description,url,icons}, accounts, chains, methods, events, expiry, acknowledged, verify, created}]}`. meta는 vault에서 나온 키로 봉인되므로 세션 키·릴레이 클라이언트 키는 평문으로 디스크에 닿지 않는다. 읽을 때 `topic ≠ SHA-256(symKey)`이거나 형식이 틀린 세션은 버리고, 만료된 세션은 복원하지 않는다. 이전 버전은 이 키를 모르는 키로 보존한다.
+- 수명: 작업 스레드는 Project ID가 있는 상태로 처음 잠금 해제할 때 시작하고 세션을 받는다. 잠그면 세션·연결은 유지하되(키는 메모리에만), 들어오는 서명 요청은 디스패처가 잠금 해제 창으로 기다리게 한다. 앱을 켠 뒤 첫 잠금 해제 전에는 연결하지 않으며, 그동안 온 요청은 릴레이 우편함(TTL 안)에서 기다린다. 잠긴 동안 끝난 세션의 권한은 다음 세션 목록 동기화 때 지운다.
+
+## 9. 범위 밖
+
+- Solana(`solana:`), Bitcoin(`bip122:`) 등 EVM이 아닌 네임스페이스, `wc_sessionAuthenticate`(원클릭 인증/CACAO), 링크 모드, 푸시, 여러 세션의 한 페어링 재사용(새 연결은 새 URI), `eth_sign`·`eth_signTransaction`·`wallet_addEthereumChain`·`wallet_sendCalls` 등 확장도 지원하지 않는 메서드.
+- 세션 요청마다의 Verify(연결 때 결과를 세션 전체에 쓴다).
+
+## 10. 시험
+
+- yw-core: 사양 URI 예시, v1·잘못된 relay·키 길이·중복 키 거부, **JWT 시험 벡터**(바이트 일치), RFC 7748 X25519 + HMAC으로 직접 계산한 HKDF, 봉투 왕복·변조 거부·타입 2 거부.
+- yw-app: QR 6개 시험(§6), CF_DIB 24/32비트, RFC 7515 ES256(CNG), Verify 판정 규칙·공개키 형식, 출처·라벨·CAIP-2, 그리고 **모의 종단 시험**(모의 릴레이 + 독립적으로 키를 유도하는 모의 dApp): 페어링 → 제안(체인 137은 미등록이라 빠짐, `eth_sign`은 미지원 표시) → 연결 창 요청 → settle의 CAIP-10 계정 → `personal_sign`이 디스패처 큐에 요청 체인으로 도착(더미 값으로 응답, 실제 서명 없음) → `eth_chainId` 0x1 → `eth_sign` 4200 → 세션에 없는 체인 5100 → ping → meta 저장 왕복 → 연결 해제 6000.
+- 실제 릴레이 확인(`tests/walletconnect_live.rs`, `#[ignore]`): `YW_WC_PROJECT_ID`가 있으면 두 클라이언트로 구독·발행·수신 왕복, 없으면 지어낸 ID로 연결해 403(JWT 통과)인지 본다. 2026-11-06 실행: 403.
+- 수동(사용자): Project ID를 저장하고, 실제 dApp(예: app.uniswap.org → 지갑 연결 → WalletConnect → 링크 복사)에서 연결, 테스트넷에서 메시지 서명·거래 승인 창의 출처 표시·Verify 상태, 잠금 중 요청의 잠금 해제 창, 앱 재시작 후 세션 유지, `연결 해제`가 dApp 쪽에서 끊기는지 확인.

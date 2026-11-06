@@ -160,7 +160,7 @@ impl RelayStatus {
             Self::Connecting => "릴레이에 연결하는 중…".to_owned(),
             Self::Connected => "릴레이에 연결됨".to_owned(),
             Self::Unauthorized(code) => format!(
-                "릴레이가 Project ID를 거부했습니다 (HTTP {code}) — Reown Cloud에서 ID를 확인하세요"
+                "릴레이가 Project ID를 거부했습니다 (HTTP {code}) — dashboard.reown.com에서 ID와 허용 출처 설정을 확인하세요"
             ),
             Self::Offline => "릴레이에 연결할 수 없습니다 — 다시 시도하는 중".to_owned(),
         }

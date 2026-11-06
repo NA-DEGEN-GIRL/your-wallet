@@ -102,7 +102,7 @@ impl App {
             ],
         ));
         items.push(Item::Help(
-            "WalletConnect 릴레이를 쓰려면 cloud.reown.com에서 무료 프로젝트를 만들고 그 Project ID(32자리)를 넣어야 합니다. 이 지갑에는 기본 ID가 들어 있지 않습니다. Project ID는 비밀값이 아닙니다."
+            "WalletConnect 릴레이를 쓰려면 dashboard.reown.com에서 무료 프로젝트를 만들고 그 Project ID(32자리)를 넣어야 합니다. 이 지갑에는 기본 ID가 들어 있지 않습니다. Project ID는 비밀값이 아닙니다. 프로젝트의 허용 출처(allowlist)는 비워 두세요 — 데스크톱 앱은 웹 출처를 보내지 않습니다."
                 .to_owned(),
         ));
         items.push(Item::CardEnd);

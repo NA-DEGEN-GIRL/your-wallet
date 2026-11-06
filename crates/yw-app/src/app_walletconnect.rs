@@ -324,7 +324,7 @@ impl App {
     pub(crate) fn wc_pair(&mut self, text: &str) {
         if self.settings.walletconnect_project.is_empty() {
             self.wc.notice = Some(
-                "먼저 Reown Project ID를 저장하세요. cloud.reown.com에서 무료 프로젝트를 만들면 ID를 받을 수 있습니다."
+                "먼저 Reown Project ID를 저장하세요. dashboard.reown.com에서 무료 프로젝트를 만들면 ID를 받을 수 있습니다."
                     .to_owned(),
             );
             return;
