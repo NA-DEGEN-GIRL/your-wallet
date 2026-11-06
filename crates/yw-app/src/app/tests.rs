@@ -1718,6 +1718,7 @@ fn every_screen_has_unique_control_ids() {
         Screen::Done,
         Screen::Reset,
         Screen::Extension,
+        Screen::HyperCore,
     ];
     let check = |app: &mut App, screens: &[Screen], pass: &str| {
         for tab in [Tab::Evm, Tab::Sol, Tab::Btc] {

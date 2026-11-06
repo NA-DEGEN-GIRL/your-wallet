@@ -54,10 +54,10 @@ pub const fn field_label(key: FieldKey) -> Option<&'static str> {
         0x0404 => "SIWE 필드",
         0x0405 => "SIWS 필드",
         0x0406 => "서명 방식",
-        0x0501 | 0x0601 => "받는 주소",
+        0x0501 | 0x0601 | 0x0702 => "받는 주소",
         0x0502 => "자산·금액",
         0x0503 => "ATA 생성",
-        0x0504 | 0x0606 => "수수료",
+        0x0504 | 0x0606 | 0x0704 => "수수료",
         0x0505 => "최대 총 차감",
         0x0506 => "잔액 (RPC 참고)",
         0x0507 => "시뮬레이션 (참고)",
@@ -71,6 +71,10 @@ pub const fn field_label(key: FieldKey) -> Option<&'static str> {
         0x0608 => "승인 후 잔액",
         0x0609 => "교체 대상",
         0x0640 => "고급",
+        0x0701 => "작업",
+        0x0703 => "토큰·금액",
+        0x0705 => "nonce (time)",
+        0x0706 => "원본 typed data (EIP-712)",
         _ => return None,
     })
 }

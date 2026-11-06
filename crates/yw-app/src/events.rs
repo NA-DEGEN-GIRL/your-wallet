@@ -1055,6 +1055,8 @@ pub enum RpcEvent {
     },
     /// A Bitcoin job result (spec/08).
     Btc(Box<BtcRpcEvent>),
+    /// A `HyperCore` job result (spec/11).
+    HyperCore(Box<crate::hypercore::HcEvent>),
 }
 
 /// An event for the UI thread.

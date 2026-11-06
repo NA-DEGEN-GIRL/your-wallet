@@ -125,6 +125,18 @@ impl FieldKey {
     pub const BTC_REPLACES: Self = Self(0x0609);
     /// BTC 고급(version·nLockTime·RBF·vsize·weight·txid).
     pub const BTC_ADVANCED: Self = Self(0x0640);
+    /// `HyperCore` 작업.
+    pub const HC_ACTION: Self = Self(0x0701);
+    /// `HyperCore` 받는 주소.
+    pub const HC_TO: Self = Self(0x0702);
+    /// `HyperCore` 토큰·금액.
+    pub const HC_AMOUNT: Self = Self(0x0703);
+    /// `HyperCore` 수수료.
+    pub const HC_FEE: Self = Self(0x0704);
+    /// `HyperCore` nonce(time).
+    pub const HC_NONCE: Self = Self(0x0705);
+    /// `HyperCore` 원본 typed data.
+    pub const HC_TYPED: Self = Self(0x0706);
 
     /// `(critical, volatile)` for keys of the §11.2 table; `None` for unknown keys.
     #[must_use]
@@ -141,7 +153,8 @@ impl FieldKey {
             | 0x0404..=0x0406
             | 0x0501..=0x0505
             | 0x0601..=0x0607
-            | 0x0609 => (true, false),
+            | 0x0609
+            | 0x0701..=0x0704 => (true, false),
             0x0121 | 0x0130 => (false, true),
             0x0113
             | 0x0122..=0x0124
@@ -150,7 +163,9 @@ impl FieldKey {
             | 0x0403
             | 0x0506..=0x0509
             | 0x0608
-            | 0x0640 => (false, false),
+            | 0x0640
+            | 0x0705
+            | 0x0706 => (false, false),
             _ => return None,
         })
     }

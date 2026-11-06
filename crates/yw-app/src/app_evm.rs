@@ -99,6 +99,8 @@ pub struct SendForm {
     pub max_pending: bool,
     /// Message (T-APPR-EXPIRED, errors).
     pub info: Option<String>,
+    /// `HyperEVM` system-address mismatch (spec/11 §5.5): blocks `검토`.
+    pub system_error: Option<String>,
 }
 
 /// What a send approval is built from: the parsed recipient, the asset and the amount.
@@ -167,6 +169,8 @@ pub enum QueuedItem {
     Sol(Box<crate::app_sol::SolApprovalItem>),
     /// A Bitcoin send or fee bump of this app (spec/08 §10).
     Btc(Box<crate::app_btc::BtcApprovalItem>),
+    /// A `HyperCore 전송` of this app (spec/11 §6).
+    HyperCore(Box<crate::app_hypercore::HcApprovalItem>),
 }
 
 impl QueuedItem {
@@ -176,7 +180,7 @@ impl QueuedItem {
         match self {
             Self::App(item) => item.chain_id,
             Self::Site(site) => site.chain_id,
-            Self::Sol(_) | Self::Btc(_) => 0,
+            Self::Sol(_) | Self::Btc(_) | Self::HyperCore(_) => 0,
         }
     }
 
@@ -188,6 +192,7 @@ impl QueuedItem {
             Self::Site(site) => NetworkId::Eip155(site.chain_id),
             Self::Sol(item) => crate::workers::journal::sol_network(item.cluster),
             Self::Btc(item) => item.network_id(),
+            Self::HyperCore(item) => NetworkId::Eip155(item.action.network.hyperevm_chain_id()),
         }
     }
 }
@@ -669,6 +674,7 @@ impl App {
             self.approval_finished(&item.payload, outcome);
         }
         self.evm.clear_unlocked();
+        self.hypercore.clear_unlocked();
     }
 
     /// Key worker outcomes of the EVM flows.
@@ -911,6 +917,7 @@ impl App {
             | RpcEvent::SolTracked(_)
             | RpcEvent::SolScanned { .. }) => self.sol_rpc_event(event),
             RpcEvent::Btc(event) => self.btc_rpc_event(*event),
+            RpcEvent::HyperCore(event) => self.hc_rpc_event(*event),
         }
     }
 
@@ -973,6 +980,7 @@ impl App {
 
     /// Requests balances of the active chain (S10 entry, `새로고침`, every 60 s).
     pub fn refresh_balances(&mut self) {
+        self.hc_refresh();
         if !matches!(self.mode, AppMode::Unlocked { .. }) {
             return;
         }
@@ -1299,6 +1307,12 @@ impl App {
                 form.amount_error = (!form.amount_text.is_empty()).then_some(code);
             }
         }
+        let recipient = form.recipient.as_ref().map(|(address, _)| *address);
+        let asset = form.asset;
+        let system_error = recipient.and_then(|recipient| {
+            self.hc_system_recipient_error(self.settings.evm_chain_id, &recipient, asset)
+        });
+        self.evm.send.system_error = system_error;
         if remote {
             self.request_quote();
         }
@@ -1457,6 +1471,7 @@ impl App {
                 .as_ref()
                 .is_some_and(|quote| quote.cap_violation.is_none())
             && (!look_alike || form.ack)
+            && form.system_error.is_none()
             && self.evm.blocked(chain_id).is_none()
             && !self.evm.journal_damaged()
             && self.evm.journal.is_some()
@@ -1547,6 +1562,10 @@ impl App {
             }
             QueuedItem::Btc(item) => {
                 self.btc_approval_finished(item, outcome);
+                return;
+            }
+            QueuedItem::HyperCore(_) => {
+                self.hc_approval_finished(outcome);
                 return;
             }
             QueuedItem::Site(site) => {

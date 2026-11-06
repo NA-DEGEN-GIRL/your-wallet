@@ -113,6 +113,15 @@ rules! {
     W06 = b'W' 6, High, "SIWS 발급 시각이 현재 시각과 10분 넘게 다릅니다";
     W07 = b'W' 7, Blocked, "SIWS 형식이 올바르지 않습니다";
     W08 = b'W' 8, Info, "로그인 요청 (SIWS)";
+    H01 = b'H' 1, Info, "HyperCore 사용자 서명 작업입니다 — 서명하면 Hyperliquid가 바로 처리하며 되돌릴 수 없습니다";
+    H02 = b'H' 2, Caution, "받는 주소가 주소록에 없습니다 — 주소 전체를 확인하세요";
+    H03 = b'H' 3, High, "알고 있는 주소와 앞뒤가 같지만 다른 주소입니다 — 주소 오염 공격일 수 있습니다";
+    H04 = b'H' 4, Info, "HyperEVM으로 이동합니다 — HyperEVM의 같은 주소로 들어갑니다";
+    H05 = b'H' 5, Info, "Arbitrum 출금에는 고정 수수료 1 USDC가 듭니다(약 5분 걸림)";
+    H06 = b'H' 6, High, "Hyperliquid 거래 권한 위임(API 지갑 승인)입니다 — 승인한 주소가 내 계정으로 주문·취소를 할 수 있습니다";
+    H07 = b'H' 7, High, "Hyperliquid 주문·거래 서명(L1 action)입니다 — 지갑은 서명 내용(해시)을 해석할 수 없고, 이 지갑은 거래 기능을 지원하지 않습니다";
+    H08 = b'H' 8, High, "Hyperliquid 빌더 수수료 승인입니다 — 승인한 주소가 내 주문에 수수료를 붙일 수 있습니다";
+    H09 = b'H' 9, Caution, "hyperliquidChain이 Testnet입니다 — 테스트넷 작업입니다";
 }
 
 /// Simulation-status rules shown first within their level (spec/03 §10.1, D15).

@@ -110,6 +110,13 @@ pub enum ChainRef {
         /// Genesis hash bytes in display order (the §2 hex decoded).
         genesis: [u8; 32],
     },
+    /// Hyperliquid `HyperCore` (spec/11): no genesis; the network and the EIP-712 chain id.
+    HyperCore {
+        /// [`crate::hypercore::HcNetwork::code`]: 1 mainnet, 2 testnet.
+        network: u8,
+        /// `signatureChainId` of the signed action.
+        signature_chain_id: u64,
+    },
 }
 
 /// Signing account.
@@ -149,6 +156,8 @@ pub enum ApprovalKind {
     SolSignIn = 0x22,
     /// dApp Bitcoin message signature (`btc_signMessage`, spec/08 §17; ownership proof only).
     BtcMessage = 0x32,
+    /// `HyperCore 전송`: an app-built Hyperliquid user-signed action (spec/11 §6).
+    HyperCoreAction = 0x40,
 }
 
 impl ApprovalKind {
@@ -197,6 +206,8 @@ pub enum SigningPayload {
     SolMessage(Box<SolMessagePayload>),
     /// A Bitcoin message (BIP137 or BIP322) and its key (spec/08 §17).
     BtcMessage(Box<BtcMessagePayload>),
+    /// A `HyperCore` user-signed action (signed as its EIP-712 preimage, spec/11 §5).
+    HyperCore(Box<crate::hypercore::HcAction>),
 }
 
 /// What a Solana message approval signs: the exact message bytes with the key of `source`, whose
@@ -313,6 +324,7 @@ impl SigningPayload {
             Self::Btc(payload) => payload.clone(),
             Self::SolMessage(payload) => payload.digest_bytes(),
             Self::BtcMessage(payload) => payload.digest_bytes(),
+            Self::HyperCore(action) => action.digest_bytes(),
         }
     }
 }

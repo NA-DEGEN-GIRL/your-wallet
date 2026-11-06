@@ -51,6 +51,26 @@ type_hashes! {
     TYPEHASH_SEAPORT_ORDER = "fa445660b7e21515a59617fcd68910b487aa5808b8abda3d78bc85df364b2c2f";
 }
 
+/// The EIP-712 chain id of Hyperliquid L1 actions (SDK `l1_payload`: domain `Exchange` v1).
+pub const HL_L1_CHAIN_ID: u64 = 1337;
+/// `encodeType` of the Hyperliquid phantom agent (SDK `l1_payload`).
+pub const HL_AGENT_TYPE: &str = "Agent(string source,bytes32 connectionId)";
+/// `encodeType` of `approveAgent` (SDK `sign_agent`).
+pub const HL_APPROVE_AGENT_TYPE: &str = "HyperliquidTransaction:ApproveAgent(string hyperliquidChain,address agentAddress,string agentName,uint64 nonce)";
+/// `encodeType` of `approveBuilderFee` (SDK `sign_approve_builder_fee`).
+pub const HL_APPROVE_BUILDER_FEE_TYPE: &str = "HyperliquidTransaction:ApproveBuilderFee(string hyperliquidChain,string maxFeeRate,address builder,uint64 nonce)";
+
+/// A recognized Hyperliquid user-signed action (`HyperliquidSignTransaction` domain).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HlUserAction {
+    /// One of the transfers this wallet also builds (spec/11 §5).
+    Transfer(crate::hypercore::HcKind),
+    /// `approveAgent`: delegates trading to an API wallet.
+    ApproveAgent,
+    /// `approveBuilderFee`.
+    ApproveBuilderFee,
+}
+
 /// Resource ceiling that was exceeded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LimitKind {
@@ -155,6 +175,10 @@ pub enum KnownSchema {
     },
     /// Seaport `OrderComponents`.
     SeaportOrder,
+    /// A Hyperliquid user-signed action (spec/11 §7).
+    HyperliquidUser(HlUserAction),
+    /// A Hyperliquid L1 action signature (phantom agent, chainId 1337, spec/11 §7).
+    HyperliquidL1Agent,
 }
 
 impl KnownSchema {
@@ -171,6 +195,8 @@ impl KnownSchema {
             Self::Permit2WitnessTransfer { .. } => "permit2-witness-transfer",
             Self::Permit2BatchWitnessTransfer { .. } => "permit2-batch-witness-transfer",
             Self::SeaportOrder => "seaport-order",
+            Self::HyperliquidUser(_) => "hyperliquid-user-action",
+            Self::HyperliquidL1Agent => "hyperliquid-l1-agent",
         }
     }
 
@@ -272,8 +298,22 @@ pub fn validate_typed_data_v4(
         types.hash_struct_tree(schema::DOMAIN_TYPE, envelope.domain, 0)?;
     let (message_hash, root) =
         types.hash_struct_tree(envelope.primary_type, envelope.message, 0)?;
-    let domain = types.domain(envelope.domain, domain_tree, chain_id)?;
+    // A Hyperliquid L1 action is signed at chainId 1337 whatever the wallet's chain (SDK
+    // `l1_payload`); only the exact phantom-agent schema gets that exception (spec/11 §7).
+    let hl_l1 = envelope.primary_type == "Agent"
+        && envelope.domain.get("name").and_then(yw_json::Value::as_str) == Some("Exchange")
+        && envelope
+            .domain
+            .get("chainId")
+            .and_then(yw_json::Value::as_number)
+            .and_then(yw_json::Number::as_u64)
+            == Some(HL_L1_CHAIN_ID);
+    let expected = if hl_l1 { HL_L1_CHAIN_ID } else { chain_id };
+    let domain = types.domain(envelope.domain, domain_tree, expected)?;
     let schema = recognize(&types, envelope.primary_type, &domain, chain_id)?;
+    if expected != chain_id && schema != Some(KnownSchema::HyperliquidL1Agent) {
+        return Err(TypedDataError::ChainIdMismatch);
+    }
     let mut preimage = [0_u8; 66];
     let (prefix, rest) = preimage.split_at_mut(2);
     prefix.copy_from_slice(&[0x19, 0x01]);
@@ -304,6 +344,9 @@ fn recognize(
     });
     let primary_hash = types.type_hash(primary)?;
     let domain_hash = types.type_hash(schema::DOMAIN_TYPE)?;
+    if let Some(schema) = hyperliquid_schema(primary, primary_hash, domain_hash, domain) {
+        return Ok(Some(schema));
+    }
 
     let permit2 = permit2_schema(types, primary, primary_hash)?;
     let permit2_domain = domain_hash == TYPEHASH_DOMAIN_PERMIT2
@@ -361,6 +404,45 @@ fn recognize(
         }
     }
     Ok(None)
+}
+
+fn keccak(bytes: &[u8]) -> [u8; 32] {
+    Keccak256::digest(bytes).into()
+}
+
+/// Hyperliquid schemas (spec/11 §7): the standard 4-field domain with a zero verifying contract,
+/// and a primary type whose `typeHash` equals the SDK's exactly.
+fn hyperliquid_schema(
+    primary: &str,
+    primary_hash: [u8; 32],
+    domain_hash: [u8; 32],
+    domain: &TdDomain,
+) -> Option<KnownSchema> {
+    if domain_hash != TYPEHASH_DOMAIN_4 || domain.verifying_contract.is_some() {
+        return None;
+    }
+    match (domain.name.as_deref(), domain.version.as_deref()) {
+        (Some(crate::hypercore::DOMAIN_NAME), Some(crate::hypercore::DOMAIN_VERSION)) => {
+            let action = if let Some(kind) = crate::hypercore::HcKind::from_primary_type(primary) {
+                (primary_hash == kind.type_hash()).then_some(HlUserAction::Transfer(kind))?
+            } else if primary_hash == keccak(HL_APPROVE_AGENT_TYPE.as_bytes()) {
+                HlUserAction::ApproveAgent
+            } else if primary_hash == keccak(HL_APPROVE_BUILDER_FEE_TYPE.as_bytes()) {
+                HlUserAction::ApproveBuilderFee
+            } else {
+                return None;
+            };
+            Some(KnownSchema::HyperliquidUser(action))
+        }
+        (Some("Exchange"), Some("1"))
+            if primary == "Agent"
+                && primary_hash == keccak(HL_AGENT_TYPE.as_bytes())
+                && domain.chain_id == Some(U256::from_u64(HL_L1_CHAIN_ID)) =>
+        {
+            Some(KnownSchema::HyperliquidL1Agent)
+        }
+        _ => None,
+    }
 }
 
 fn permit2_schema(

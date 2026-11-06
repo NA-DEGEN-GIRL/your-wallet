@@ -241,7 +241,7 @@ impl<'a> Envelope<'a> {
             .get("primaryType")
             .and_then(Value::as_str)
             .ok_or(TypedDataError::InvalidEnvelope)?;
-        if primary_type == DOMAIN_TYPE || !is_identifier(primary_type) {
+        if primary_type == DOMAIN_TYPE || !is_type_name(primary_type) {
             return Err(TypedDataError::InvalidEnvelope);
         }
         Ok(Self {
@@ -298,6 +298,18 @@ enum VisitState {
     Complete,
 }
 
+/// A struct type name: an identifier, or one with `:` after the first character (Hyperliquid's
+/// `HyperliquidTransaction:UsdSend`, spec/11 §7; `:` is not an `encodeType` delimiter).
+fn is_type_name(value: &str) -> bool {
+    if is_identifier(value) {
+        return true;
+    }
+    value.len() <= MAX_IDENTIFIER_BYTES
+        && !value.starts_with(':')
+        && !value.ends_with(':')
+        && is_identifier(&value.replace(':', "_"))
+}
+
 fn is_identifier(value: &str) -> bool {
     if value.len() > MAX_IDENTIFIER_BYTES {
         return false;
@@ -351,7 +363,7 @@ impl BaseType {
                 if let Some(bits) = source.strip_prefix("int") {
                     return parse_integer_width(bits).map(Self::Int);
                 }
-                if is_identifier(source) {
+                if is_type_name(source) {
                     Ok(Self::Struct(source.to_owned()))
                 } else {
                     Err(TypedDataError::InvalidTypeDefinition)
@@ -433,7 +445,7 @@ impl Schema {
         let mut parsed = BTreeMap::new();
         let mut total_fields = 0_usize;
         for (name, value) in definitions.iter() {
-            if !is_identifier(name) || is_primitive_name(name) {
+            if !is_type_name(name) || is_primitive_name(name) {
                 return Err(TypedDataError::InvalidTypeDefinition);
             }
             let fields = value

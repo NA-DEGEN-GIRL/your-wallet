@@ -1130,7 +1130,10 @@ impl App {
                 | SiteKind::SolSign { .. }
                 | SiteKind::BtcSign { .. } => None,
             },
-            QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => None,
+            QueuedItem::App(_)
+            | QueuedItem::Sol(_)
+            | QueuedItem::Btc(_)
+            | QueuedItem::HyperCore(_) => None,
         }
         .filter(|_| self.llm.is_some());
         let extra = if ai_kind.is_some() {
@@ -1186,9 +1189,10 @@ impl App {
         };
         let deadline_ms = match &item {
             QueuedItem::Site(site) => site.deadline_ms,
-            QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => {
-                now.saturating_add(MAX_LIFETIME_MS)
-            }
+            QueuedItem::App(_)
+            | QueuedItem::Sol(_)
+            | QueuedItem::Btc(_)
+            | QueuedItem::HyperCore(_) => now.saturating_add(MAX_LIFETIME_MS),
         };
         let gate = ApprovalGate {
             prepare: PrepareState::Preparing(PrepareStage::Building),
@@ -1252,6 +1256,7 @@ impl App {
             QueuedItem::Site(site) => self.prepare_site(job, &site),
             QueuedItem::Sol(sol) => self.prepare_sol(job, &sol),
             QueuedItem::Btc(btc) => self.prepare_btc(&btc),
+            QueuedItem::HyperCore(item) => self.prepare_hypercore(&item),
         }
         self.rebuild_view();
     }
@@ -1588,7 +1593,10 @@ impl App {
                 );
                 let site = self.evm.window.as_ref().and_then(|ui| match &ui.item {
                     QueuedItem::Site(site) => Some(site.reply),
-                    QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => None,
+                    QueuedItem::App(_)
+                    | QueuedItem::Sol(_)
+                    | QueuedItem::Btc(_)
+                    | QueuedItem::HyperCore(_) => None,
                 });
                 if failure.invalid_params
                     && let Some(reply) = site
@@ -1830,7 +1838,10 @@ impl App {
         let chain_id = ui.item.chain_id();
         let extra_warnings = match &ui.item {
             QueuedItem::Site(site) => site_fee_warning(site),
-            QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => Vec::new(),
+            QueuedItem::App(_)
+            | QueuedItem::Sol(_)
+            | QueuedItem::Btc(_)
+            | QueuedItem::HyperCore(_) => Vec::new(),
         };
         let chain = match self.chain_job(chain_id) {
             Ok(chain) => chain,
@@ -1887,12 +1898,22 @@ impl App {
                 );
                 let reply = match &item {
                     QueuedItem::Site(site) => Some(site.reply),
-                    QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => None,
+                    QueuedItem::App(_)
+                    | QueuedItem::Sol(_)
+                    | QueuedItem::Btc(_)
+                    | QueuedItem::HyperCore(_) => None,
                 };
                 if let QueuedItem::Sol(sol) = &item
                     && request.kind == yw_core::approval::ApprovalKind::SolTransfer
                 {
                     self.sol_consumed(approved, sol.cluster, now);
+                    self.finish_approval(QueueOutcome::Approved);
+                    return;
+                }
+                if let QueuedItem::HyperCore(hypercore) = &item
+                    && request.kind == yw_core::approval::ApprovalKind::HyperCoreAction
+                {
+                    self.hc_consumed(approved, hypercore);
                     self.finish_approval(QueueOutcome::Approved);
                     return;
                 }
@@ -1955,7 +1976,10 @@ impl App {
                                 site.origin.as_str().to_owned(),
                                 crate::app_browser::SignWaiter::Tx(site.reply),
                             ),
-                            QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::Btc(_) => {
+                            QueuedItem::App(_)
+                            | QueuedItem::Sol(_)
+                            | QueuedItem::Btc(_)
+                            | QueuedItem::HyperCore(_) => {
                                 ("yw-app".to_owned(), crate::app_browser::SignWaiter::App)
                             }
                         };
@@ -2095,7 +2119,7 @@ impl App {
                 (None, Some(self.sol_cluster()))
             }
             (Some(QueuedItem::Site(_)), yw_core::policy::Family::Bitcoin)
-            | (Some(QueuedItem::Btc(_)) | None, _) => (None, None),
+            | (Some(QueuedItem::Btc(_) | QueuedItem::HyperCore(_)) | None, _) => (None, None),
             (Some(QueuedItem::App(_) | QueuedItem::Site(_)), _) => (Some(chain_id), None),
         };
         let site_btc_banner = (family == yw_core::policy::Family::Bitcoin)
@@ -2104,6 +2128,15 @@ impl App {
         if let Some((text, test)) = network_badge(evm_chain, sol_cluster) {
             testnet = test;
             badges.push(text.to_owned());
+        }
+        // HyperCore (spec/11 §6): the same mainnet / testnet badges as the EVM chains.
+        if let Some(QueuedItem::HyperCore(item)) = self.evm.window.as_ref().map(|ui| &ui.item) {
+            if item.action.network == yw_core::hypercore::HcNetwork::Testnet {
+                testnet = true;
+                badges.push("HyperCore 테스트넷 — 실제 자산이 아닙니다".to_owned());
+            } else {
+                badges.push(MAINNET_BADGE.to_owned());
+            }
         }
         // spec/10 §10: a YubiKey signer adds the "YubiKey로 서명" badge (app chrome only: the
         // badges are not part of the request's digested display, spec/03 §11.3).
@@ -2177,7 +2210,7 @@ impl App {
         let btc_banner = match &ui.item {
             QueuedItem::Btc(item) => Some(crate::ui::approval_view::BtcBanner::of(item.network)),
             QueuedItem::Site(_) => site_btc_banner,
-            QueuedItem::App(_) | QueuedItem::Sol(_) => None,
+            QueuedItem::App(_) | QueuedItem::Sol(_) | QueuedItem::HyperCore(_) => None,
         };
         match view(
             &ui.session.gate.prepare,

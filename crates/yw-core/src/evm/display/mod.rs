@@ -16,7 +16,7 @@ use super::amount::{Delta, U256, format_amount, format_gwei, format_units};
 use super::chain::{ChainInfo, OPENSEA_CONDUIT_KEY};
 use super::decode::{AMOUNT_OR_TOKEN_ID, DecodedCall, DecodedTx, resolve_token_standard};
 use super::eip191::{DecodedPersonalMessage, HexReason, personal_preimage};
-use super::eip712::{DecodedTypedData, KnownSchema, TdNode, TdValue};
+use super::eip712::{DecodedTypedData, HlUserAction, KnownSchema, TdNode, TdValue};
 use super::fee::{expected_fee, max_total_fee};
 use super::risk::{
     self, P01, P02, P03, P04, T16, TxRiskInput, TypedRiskInput, sort_warnings, tx_rules,
@@ -1070,11 +1070,95 @@ fn schema_name(typed: &DecodedTypedData) -> (String, &'static str) {
         Some(KnownSchema::SeaportOrder) => {
             ("Seaport OrderComponents".to_owned(), "NFT 마켓 주문 서명")
         }
+        Some(KnownSchema::HyperliquidUser(action)) => (
+            format!("Hyperliquid {}", escape_inline(&typed.primary_type).0),
+            match action {
+                HlUserAction::Transfer(_) => "HyperCore 전송 서명",
+                HlUserAction::ApproveAgent => "Hyperliquid 거래 권한 위임 서명",
+                HlUserAction::ApproveBuilderFee => "Hyperliquid 빌더 수수료 승인 서명",
+            },
+        ),
+        Some(KnownSchema::HyperliquidL1Agent) => (
+            "Hyperliquid L1 Agent (chainId 1337)".to_owned(),
+            "Hyperliquid 주문·거래 서명",
+        ),
         None => (
             format!("알 수 없는 형식: {}", escape_inline(&typed.primary_type).0),
             "타입 데이터 서명",
         ),
     }
+}
+
+/// The fields of a recognized Hyperliquid user-signed action (spec/11 §7), in the SDK order.
+fn hyperliquid_fields(
+    fields: &mut Fields,
+    ctx: &Ctx<'_>,
+    root: &TdNode,
+    action: HlUserAction,
+) -> Result<(), DisplayError> {
+    let text = |name: &str| root.field(name).and_then(TdNode::string);
+    let name = match action {
+        HlUserAction::Transfer(kind) => kind.korean(),
+        HlUserAction::ApproveAgent => "API 지갑(에이전트) 승인 — 거래 권한 위임",
+        HlUserAction::ApproveBuilderFee => "빌더 수수료 승인",
+    };
+    fields.push(FieldKey::TD_FIELD, "작업", name.to_owned())?;
+    let network = match text("hyperliquidChain") {
+        Some("Mainnet") => "HyperCore 메인넷 (Mainnet)".to_owned(),
+        Some("Testnet") => "HyperCore 테스트넷 (Testnet)".to_owned(),
+        Some(other) => format!("알 수 없음 ({})", escape_inline(other).0),
+        None => "없음".to_owned(),
+    };
+    fields.push(FieldKey::TD_FIELD, "hyperliquidChain", network)?;
+    let usd = matches!(
+        action,
+        HlUserAction::Transfer(
+            crate::hypercore::HcKind::UsdSend
+                | crate::hypercore::HcKind::Withdraw
+                | crate::hypercore::HcKind::UsdClassTransfer
+        )
+    );
+    let TdNode::Struct { fields: items, .. } = root else {
+        return Ok(());
+    };
+    for (key, node) in items {
+        let value = match (key.as_str(), node.value()) {
+            ("hyperliquidChain", _) => continue,
+            ("destination", Some(TdValue::String(destination))) => {
+                match crate::evm::address::parse_address(destination) {
+                    Ok(address) => {
+                        let mut out = ctx.address(&address);
+                        if crate::hypercore::system_address_index(&address).is_some()
+                            || address == crate::hypercore::HYPE_SYSTEM_ADDRESS
+                        {
+                            out.push_str(
+                                "\nHyperEVM 시스템 주소 — HyperEVM으로 이동하는 작업입니다",
+                            );
+                        }
+                        out
+                    }
+                    Err(_) => escape_inline(destination).0,
+                }
+            }
+            ("amount", Some(TdValue::String(amount))) if usd => {
+                format!("{} USDC", escape_inline(amount).0)
+            }
+            ("toPerp", Some(TdValue::Bool(to_perp))) => if *to_perp {
+                "현물(spot) → 선물(perp)"
+            } else {
+                "선물(perp) → 현물(spot)"
+            }
+            .to_owned(),
+            (_, Some(TdValue::Address(address))) => ctx.address(address),
+            (_, Some(TdValue::String(value))) if value.is_empty() => "(빈 문자열)".to_owned(),
+            (_, Some(TdValue::String(value))) => escape_inline(value).0,
+            (_, Some(TdValue::Uint(number))) => number.to_decimal_string(),
+            (_, Some(TdValue::Bool(flag))) => if *flag { "예" } else { "아니오" }.to_owned(),
+            _ => continue,
+        };
+        fields.push(FieldKey::TD_FIELD, &escape_inline(key).0, value)?;
+    }
+    Ok(())
 }
 
 fn seaport_item(ctx: &Ctx<'_>, item: &TdNode) -> String {
@@ -1306,6 +1390,28 @@ fn structured_fields(
                     FieldKey::TD_FIELD,
                     "witness 타입",
                     escape_inline(witness_type).0,
+                )?;
+            }
+        }
+        KnownSchema::HyperliquidUser(action) => {
+            hyperliquid_fields(fields, ctx, root, *action)?;
+        }
+        KnownSchema::HyperliquidL1Agent => {
+            let network = match root.field("source").and_then(TdNode::string) {
+                Some("a") => "HyperCore 메인넷 (source a)".to_owned(),
+                Some("b") => "HyperCore 테스트넷 (source b)".to_owned(),
+                Some(other) => format!("알 수 없음 (source {})", escape_inline(other).0),
+                None => "알 수 없음".to_owned(),
+            };
+            fields.push(FieldKey::TD_FIELD, "네트워크", network)?;
+            if let Some(hash) = root.field("connectionId").and_then(TdNode::bytes) {
+                fields.push(
+                    FieldKey::TD_FIELD,
+                    "작업 해시 (connectionId)",
+                    format!(
+                        "0x{}\n주문·취소 등 거래 작업의 msgpack 해시입니다 — 내용은 해석할 수 없습니다",
+                        crate::hex::encode(hash)
+                    ),
                 )?;
             }
         }

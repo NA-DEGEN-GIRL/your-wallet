@@ -843,3 +843,77 @@ fn message_preimages_need_their_exact_prefixes() {
         Err(SignError::KindMismatch)
     );
 }
+
+/// `HyperCore 전송` end to end for every action kind (spec/11 §9): the app-built draft is issued
+/// and consumed by the store, the vault signs the action's preimage, and the signature recovers to
+/// the account; a draft whose chain does not match the action is refused at issue.
+#[test]
+fn hypercore_actions_through_the_approval_store() {
+    use crate::approval::{ApprovalId, ApprovalStore};
+    use crate::hypercore::display::{HcApprovalInput, HcRecipient, build_hypercore_request};
+    use crate::hypercore::{HcAction, HcNetwork, HcPayload, system_address};
+
+    let vault = unlocked_vault();
+    let account = addr(ACC1);
+    let destination = addr("0x5e9ee1089755c3435139848e47e6635505d5a13a");
+    let purr = "PURR:0xc4bf3f870c0e9465323c0b6ed28096c2".to_owned();
+    let payloads = [
+        HcPayload::UsdSend {
+            destination,
+            amount: "1".to_owned(),
+        },
+        HcPayload::SpotSend {
+            destination,
+            token: purr.clone(),
+            amount: "0.5".to_owned(),
+        },
+        HcPayload::Withdraw {
+            destination: account,
+            amount: "5".to_owned(),
+        },
+        HcPayload::UsdClassTransfer {
+            amount: "2".to_owned(),
+            to_perp: false,
+        },
+        HcPayload::SendAsset {
+            destination: system_address(1),
+            source_dex: "spot".to_owned(),
+            destination_dex: "spot".to_owned(),
+            token: purr,
+            amount: "0.25".to_owned(),
+        },
+    ];
+    let mut store = ApprovalStore::new();
+    for (index, payload) in (1_u8..).zip(payloads) {
+        let action = HcAction::new(HcNetwork::Testnet, 1_790_000_000_000, payload);
+        let input = HcApprovalInput {
+            action: &action,
+            account,
+            signer: EvmKeySource::Derived(AccountIndex::new(0).unwrap()),
+            token: None,
+            recipient: HcRecipient {
+                notes: vec!["주소록에 없는 주소입니다.".to_owned()],
+                look_alike: false,
+                not_in_book: true,
+            },
+        };
+        let draft = build_hypercore_request(ApprovalId([index; 16]), &input).unwrap();
+        assert_eq!(draft.kind, ApprovalKind::HyperCoreAction);
+        let request = store.issue(draft.clone(), 0, 1_790_000_000_000).unwrap();
+        let approved = store.consume(request.id, request.digest, 1).unwrap();
+        let signature = sign_typed_data(&vault, approved).unwrap();
+        assert_eq!(
+            recover_message_signer(action.digest(), &signature),
+            Some(account)
+        );
+
+        // A chain that does not match the action is a payload mismatch.
+        let mut wrong = draft;
+        wrong.id = ApprovalId([index | 0x80; 16]);
+        wrong.chain = ChainRef::HyperCore {
+            network: HcNetwork::Mainnet.code(),
+            signature_chain_id: action.signature_chain_id,
+        };
+        assert!(store.issue(wrong, 0, 1_790_000_000_000).is_err());
+    }
+}
