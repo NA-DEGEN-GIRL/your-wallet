@@ -3,12 +3,12 @@
 //! (`sendrawtransaction`). The worker keeps no state; every result goes back to the UI, which
 //! asks the key worker to apply journal steps. URLs are never logged (D13).
 
-use yw_core::zec::{ZecNetwork, ZecUtxo};
+use yw_core::zec::{ZecNetwork, ZecOutPoint, ZecUtxo};
 use yw_win::http::HttpsUrl;
 
 use super::rpc::{
-    ChainView, SendOutcome, TxStatus, ZecRpcError, chain_check, send_raw, tx_status,
-    utxos_blockbook, utxos_node,
+    ChainView, SendOutcome, TxStatus, UsefulUtxos, ZecRpcError, chain_check, keep_useful, send_raw,
+    tx_status, utxos_blockbook, utxos_node,
 };
 use crate::logging::{self, Field};
 use crate::network::NetworkId;
@@ -33,6 +33,8 @@ pub enum ZecRpcJob {
         script_hex: String,
         /// Txids (display hex) of records that may still confirm.
         track: Vec<String>,
+        /// Inputs of those records: which are still unspent decides `Expired` (spec/12 §12.2).
+        watch: Vec<ZecOutPoint>,
     },
     /// `sendrawtransaction` of a journaled, disclosed transaction.
     Send {
@@ -69,8 +71,15 @@ impl ZecRpcJob {
 pub struct ZecSnapshot {
     /// Chain view.
     pub chain: ChainView,
-    /// UTXOs of our address.
+    /// UTXOs of our address (dust dropped, the largest [`yw_core::zec::ZEC_MAX_UTXOS`]); empty
+    /// when the lookup failed (`utxo_error`).
     pub utxos: Vec<ZecUtxo>,
+    /// Outputs left out of `utxos` (dust, beyond the limit).
+    pub ignored_utxos: usize,
+    /// The UTXO lookup failed: tracking still ran, sending is not possible.
+    pub utxo_error: Option<ZecRpcError>,
+    /// The watched inputs still listed as unspent (`None`: unknown, the lookup failed).
+    pub unspent_watch: Option<Vec<ZecOutPoint>>,
     /// Status of every tracked txid (display hex), `Err` when that call failed.
     pub tracked: Vec<(String, Result<TxStatus, ZecRpcError>)>,
 }
@@ -111,12 +120,26 @@ pub fn handle(transport: &dyn Transport, job: ZecRpcJob) -> ZecRpcEvent {
             address,
             script_hex,
             track,
+            watch,
         } => {
             let result = (|| {
                 let chain = chain_check(&client, &url, network)?;
-                let utxos = match indexer {
-                    ZecIndexer::Node => utxos_node(&client, &url, &address, &script_hex)?,
-                    ZecIndexer::BbRest => utxos_blockbook(transport, &url, &address)?,
+                // The UTXO lookup and the tracking are independent: a UTXO problem (dust flood,
+                // indexer error) never stops the journal transitions.
+                let listed = match indexer {
+                    ZecIndexer::Node => utxos_node(&client, &url, &address, &script_hex),
+                    ZecIndexer::BbRest => utxos_blockbook(transport, &url, &address),
+                };
+                let (useful, utxo_error, unspent_watch) = match listed {
+                    Ok(all) => {
+                        let unspent: Vec<ZecOutPoint> = watch
+                            .iter()
+                            .filter(|point| all.iter().any(|utxo| utxo.outpoint == **point))
+                            .copied()
+                            .collect();
+                        (keep_useful(all), None, Some(unspent))
+                    }
+                    Err(error) => (UsefulUtxos::default(), Some(error), None),
                 };
                 let tracked = track
                     .into_iter()
@@ -127,7 +150,10 @@ pub fn handle(transport: &dyn Transport, job: ZecRpcJob) -> ZecRpcEvent {
                     .collect();
                 Ok(Box::new(ZecSnapshot {
                     chain,
-                    utxos,
+                    utxos: useful.utxos,
+                    ignored_utxos: useful.ignored,
+                    utxo_error,
+                    unspent_watch,
                     tracked,
                 }))
             })();

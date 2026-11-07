@@ -1488,10 +1488,22 @@ impl BrowserCore {
                 // and only while unlocked — a locked wallet queues the request for the unlock
                 // window and the approval flow validates it then (no parsing work for pages
                 // that cannot be answered yet).
+                // The Hyperliquid L1 Agent exception follows the site origin; a `WalletConnect`
+                // origin is decided by the approval flow (Verify state, spec/11 §7).
+                let l1_requester = if crate::walletconnect::is_session_origin(&origin) {
+                    yw_core::evm::eip712::HlL1Requester::Deferred
+                } else {
+                    yw_core::evm::eip712::HlL1Requester::Origin(origin.as_str())
+                };
                 if vault == VaultView::Unlocked
                     && let SiteKind::TypedData { source, value, .. } = &kind
-                    && yw_core::evm::eip712::validate_typed_data_v4(source, value, chain_id)
-                        .is_err()
+                    && yw_core::evm::eip712::validate_typed_data_v4_from(
+                        source,
+                        value,
+                        chain_id,
+                        l1_requester,
+                    )
+                    .is_err()
                 {
                     Self::log_error(name, &ProviderError::InvalidParams, conn);
                     let _ = self.respond(&reply, Err(ProviderError::InvalidParams));

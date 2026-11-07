@@ -55,8 +55,16 @@ pub const ZEC_SEQUENCE: u32 = 0xFFFF_FFFF;
 pub const ZEC_MIN_CONF: u32 = 1;
 /// Refresh period while a transaction is in flight (seconds).
 pub const ZEC_POLL_SECS: u64 = 30;
-/// Most UTXOs accepted from one node / indexer answer.
+/// Most UTXOs kept from one node / indexer answer: the largest ones (dust dropped first, never a
+/// failure — spec/12 §4.3).
 pub const ZEC_MAX_UTXOS: usize = 1_000;
+/// Outputs worth at most this many zatoshis are ignored (never listed, never spent): below the
+/// dust floor or not worth one input's ZIP 317 marginal fee (dust griefing, spec/12 §4.3).
+pub const ZEC_MIN_UTXO: u64 = if fee::MARGINAL_FEE > ZEC_DUST {
+    fee::MARGINAL_FEE
+} else {
+    ZEC_DUST
+};
 /// Blocks past `nExpiryHeight` before an unmined record counts as expired (reorg margin: a
 /// replaced block at the expiry height could still include it).
 pub const ZEC_EXPIRED_AFTER: u32 = 10;

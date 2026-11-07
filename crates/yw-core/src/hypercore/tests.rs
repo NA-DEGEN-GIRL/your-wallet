@@ -14,7 +14,9 @@ use super::{
 };
 use crate::evm::address::{Address, parse_address};
 use crate::evm::amount::U256;
-use crate::evm::eip712::{HlUserAction, KnownSchema, validate_typed_data_v4};
+use crate::evm::eip712::{
+    HlL1Requester, HlUserAction, KnownSchema, validate_typed_data_v4, validate_typed_data_v4_from,
+};
 
 const SDK_KEY: &str = "0123456789012345678901234567890123456789012345678901234567890123";
 const SDK_DESTINATION: &str = "0x5e9ee1089755c3435139848e47e6635505d5a13a";
@@ -72,6 +74,157 @@ fn dapp_typed_data_gets_the_hyperliquid_display() {
     let draft = build(agent);
     let rules: Vec<_> = draft.display.warnings.iter().map(|w| w.rule).collect();
     assert!(rules.contains(&H06) && !rules.contains(&T04), "{rules:?}");
+}
+
+/// dApp-requested transfers get the S-HC checks (spec/11 §7): a destination outside own accounts
+/// and the address book is high risk (H10), a look-alike H03, `withdraw3` elsewhere H11, a token
+/// not matching `spotMeta` H12, a system address without its linked token H13; facts missing
+/// fail closed; the destination never shows the EVM "일반 계정(EOA)" note.
+#[test]
+#[expect(clippy::too_many_lines, reason = "one case per rule of spec/11 §7")]
+fn dapp_transfers_get_the_site_checks() {
+    use crate::approval::{
+        ApprovalId, ApprovalKind, ApprovalOrigin, ChainFacts, CodeKind, FieldKey, RuleId,
+    };
+    use crate::evm::display::build_typed_request;
+    use crate::evm::risk::{H03, H04, H10, H11, H12, H13};
+    use crate::hypercore::display::{HcRecipient, HlSiteFacts};
+    use crate::hypercore::{HcEvmLink, HcToken};
+    use crate::policy::BrowserOrigin;
+
+    let chain = crate::evm::chain::builtin_chain(42_161).unwrap();
+    let account = address("0x1111111111111111111111111111111111111111");
+    let destination = address(SDK_DESTINATION);
+    let origin = ApprovalOrigin::Site(BrowserOrigin::parse("https://evil.example").unwrap());
+    let purr = HcToken {
+        name: "PURR".to_owned(),
+        index: 1,
+        token_id: "0xc4bf3f870c0e9465323c0b6ed28096c2".to_owned(),
+        sz_decimals: 0,
+        wei_decimals: 5,
+        evm: Some(HcEvmLink {
+            address: address("0x9b498c3c8a0b8cd8ba1d9851d40d186f1872b44e"),
+            extra_wei_decimals: 13,
+        }),
+        full_name: None,
+    };
+    let run = |payload: HcPayload, hyperliquid: Option<HlSiteFacts>| {
+        let mut action = HcAction::new(HcNetwork::Mainnet, SDK_TIME, payload);
+        action.signature_chain_id = 42_161;
+        let source = yw_json::to_vec(&action.typed_data_json());
+        let value = yw_json::parse(&source, &yw_json::Limits::REQUEST).unwrap();
+        let typed = validate_typed_data_v4(&source, &value, 42_161).unwrap();
+        let facts = ChainFacts {
+            code: vec![(destination, CodeKind::Eoa)],
+            hyperliquid,
+            ..ChainFacts::default()
+        };
+        let draft = build_typed_request(
+            ApprovalId([9; 16]),
+            origin.clone(),
+            crate::vault::EvmKeySource::Derived(crate::bip32::path::AccountIndex::new(0).unwrap()),
+            account,
+            ApprovalKind::EvmTypedData,
+            &chain,
+            &typed,
+            &facts,
+            1_790_000_000_000,
+        )
+        .unwrap();
+        let rules: Vec<RuleId> = draft.display.warnings.iter().map(|w| w.rule).collect();
+        let fields: Vec<String> = draft
+            .display
+            .fields
+            .iter()
+            .filter(|field| field.key == FieldKey::TD_FIELD)
+            .map(|field| field.value.clone())
+            .collect();
+        (rules, fields)
+    };
+    let usd = || HcPayload::UsdSend {
+        destination,
+        amount: "1".to_owned(),
+    };
+    let checked = |recipient: HcRecipient| HlSiteFacts {
+        recipient: Some(recipient),
+        spot_meta: Some(vec![purr.clone()]),
+    };
+
+    let (rules, fields) = run(usd(), None);
+    assert!(rules.contains(&H10), "{rules:?}");
+    assert!(
+        fields.iter().all(|value| !value.contains("EOA")),
+        "{fields:?}"
+    );
+    let (rules, _) = run(
+        usd(),
+        Some(checked(HcRecipient {
+            notes: vec!["새 주소".to_owned()],
+            look_alike: false,
+            not_in_book: true,
+        })),
+    );
+    assert!(rules.contains(&H10), "{rules:?}");
+    let (rules, _) = run(
+        usd(),
+        Some(checked(HcRecipient {
+            notes: Vec::new(),
+            look_alike: true,
+            not_in_book: false,
+        })),
+    );
+    assert!(rules.contains(&H03) && !rules.contains(&H10), "{rules:?}");
+    let (rules, fields) = run(
+        usd(),
+        Some(checked(HcRecipient {
+            notes: vec!["주소록: 친구".to_owned()],
+            look_alike: false,
+            not_in_book: false,
+        })),
+    );
+    assert!(!rules.contains(&H10) && !rules.contains(&H03), "{rules:?}");
+    assert!(fields.iter().any(|value| value.contains("주소록: 친구")));
+
+    let (rules, fields) = run(
+        HcPayload::Withdraw {
+            destination,
+            amount: "5".to_owned(),
+        },
+        Some(HlSiteFacts::default()),
+    );
+    assert!(rules.contains(&H11), "{rules:?}");
+    assert!(
+        fields.iter().any(|value| value.contains("= 4 USDC")),
+        "{fields:?}"
+    );
+
+    let to_evm = |token: &str| HcPayload::SpotSend {
+        destination: system_address(1),
+        token: token.to_owned(),
+        amount: "1".to_owned(),
+    };
+    let (rules, _) = run(to_evm(&purr.wire()), Some(checked(HcRecipient::default())));
+    assert!(
+        rules.contains(&H04) && !rules.contains(&H13) && !rules.contains(&H12),
+        "{rules:?}"
+    );
+    // spotMeta unavailable, a renamed token and another token's system address.
+    let (rules, _) = run(to_evm(&purr.wire()), Some(HlSiteFacts::default()));
+    assert!(rules.contains(&H12) && rules.contains(&H13), "{rules:?}");
+    let (rules, _) = run(
+        to_evm("USDC:0xc4bf3f870c0e9465323c0b6ed28096c2"),
+        Some(checked(HcRecipient::default())),
+    );
+    assert!(rules.contains(&H12) && rules.contains(&H13), "{rules:?}");
+    let (rules, _) = run(
+        HcPayload::SpotSend {
+            destination: system_address(2),
+            token: purr.wire(),
+            amount: "1".to_owned(),
+        },
+        Some(checked(HcRecipient::default())),
+    );
+    assert!(rules.contains(&H13) && !rules.contains(&H04), "{rules:?}");
 }
 
 fn sign(action: &HcAction) -> [u8; 65] {
@@ -216,7 +369,30 @@ fn l1_agent_is_recognized_only_with_the_exact_schema() {
     let exact =
         document(r#"{"name":"source","type":"string"},{"name":"connectionId","type":"bytes32"}"#);
     let value = yw_json::parse(exact.as_bytes(), &yw_json::Limits::REQUEST).unwrap();
-    let typed = validate_typed_data_v4(exact.as_bytes(), &value, 42_161).unwrap();
+    let from = |requester| {
+        validate_typed_data_v4_from(exact.as_bytes(), &value, 42_161, requester)
+            .map(|typed| typed.schema)
+    };
+    assert_eq!(
+        from(HlL1Requester::Origin("https://app.hyperliquid.xyz")),
+        Ok(Some(KnownSchema::HyperliquidL1Agent))
+    );
+    // Any other origin, the testnet app for a mainnet (`a`) action, an unattested requester and
+    // the plain validator keep T01 (spec/11 §7).
+    for requester in [
+        HlL1Requester::Origin("https://evil.example"),
+        HlL1Requester::Origin("https://app.hyperliquid-testnet.xyz"),
+        HlL1Requester::Nobody,
+    ] {
+        assert_eq!(
+            from(requester),
+            Err(crate::evm::eip712::TypedDataError::ChainIdMismatch)
+        );
+    }
+    assert!(validate_typed_data_v4(exact.as_bytes(), &value, 42_161).is_err());
+    let typed =
+        validate_typed_data_v4_from(exact.as_bytes(), &value, 42_161, HlL1Requester::Deferred)
+            .unwrap();
     assert_eq!(typed.schema, Some(KnownSchema::HyperliquidL1Agent));
     let other = document(
         r#"{"name":"source","type":"string"},{"name":"connectionId","type":"bytes32"},{"name":"x","type":"uint8"}"#,
@@ -224,7 +400,13 @@ fn l1_agent_is_recognized_only_with_the_exact_schema() {
     .replace(r#""connectionId":"0x0f"#, r#""x":1,"connectionId":"0x0f"#);
     let value = yw_json::parse(other.as_bytes(), &yw_json::Limits::REQUEST).unwrap();
     assert_eq!(
-        validate_typed_data_v4(other.as_bytes(), &value, 42_161).map(|typed| typed.schema),
+        validate_typed_data_v4_from(
+            other.as_bytes(),
+            &value,
+            42_161,
+            HlL1Requester::Origin("https://app.hyperliquid.xyz")
+        )
+        .map(|typed| typed.schema),
         Err(crate::evm::eip712::TypedDataError::ChainIdMismatch)
     );
 }

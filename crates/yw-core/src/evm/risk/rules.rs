@@ -122,6 +122,10 @@ rules! {
     H07 = b'H' 7, High, "Hyperliquid 주문·거래 서명(L1 action)입니다 — 지갑은 서명 내용(해시)을 해석할 수 없고, 이 지갑은 거래 기능을 지원하지 않습니다";
     H08 = b'H' 8, High, "Hyperliquid 빌더 수수료 승인입니다 — 승인한 주소가 내 주문에 수수료를 붙일 수 있습니다";
     H09 = b'H' 9, Caution, "hyperliquidChain이 Testnet입니다 — 테스트넷 작업입니다";
+    H10 = b'H' 10, High, "사이트가 요청한 HyperCore 전송의 받는 주소가 내 계정도, 주소록에 있는 주소도 아닙니다 — 되돌릴 수 없으니 주소 전체를 확인하세요";
+    H11 = b'H' 11, High, "사이트가 요청한 Arbitrum 출금(withdraw3)의 받는 주소가 서명 계정이 아닙니다 — 다른 사람에게 출금될 수 있습니다";
+    H12 = b'H' 12, High, "토큰 이름과 tokenId가 spotMeta와 맞지 않거나 spotMeta를 확인할 수 없습니다 — 다른 토큰일 수 있습니다";
+    H13 = b'H' 13, High, "HyperEVM 시스템 주소로 보내지만 이 토큰의 시스템 주소가 아니거나 HyperEVM에 연결되지 않은 토큰입니다 — 자산을 잃을 수 있습니다";
     C01 = b'C' 1, Caution, "WalletConnect 요청입니다 — 사이트 주소는 사이트가 스스로 주장한 값이며 확인되지 않았습니다";
     C02 = b'C' 2, High, "WalletConnect Verify 결과 사이트가 주장한 주소와 실제 주소가 다릅니다 — 피싱일 수 있습니다";
     C03 = b'C' 3, High, "WalletConnect Verify가 이 사이트를 알려진 사기 사이트로 표시했습니다";

@@ -1095,8 +1095,18 @@ fn hyperliquid_fields(
     ctx: &Ctx<'_>,
     root: &TdNode,
     action: HlUserAction,
+    account: &Address,
 ) -> Result<(), DisplayError> {
     let text = |name: &str| root.field(name).and_then(TdNode::string);
+    let check = match action {
+        HlUserAction::Transfer(kind) => Some(crate::hypercore::display::site_transfer_check(
+            kind,
+            root,
+            account,
+            ctx.facts.hyperliquid.as_ref(),
+        )),
+        _ => None,
+    };
     let name = match action {
         HlUserAction::Transfer(kind) => kind.korean(),
         HlUserAction::ApproveAgent => "API 지갑(에이전트) 승인 — 거래 권한 위임",
@@ -1118,6 +1128,7 @@ fn hyperliquid_fields(
                 | crate::hypercore::HcKind::UsdClassTransfer
         )
     );
+    let withdraw = action == HlUserAction::Transfer(crate::hypercore::HcKind::Withdraw);
     let TdNode::Struct { fields: items, .. } = root else {
         return Ok(());
     };
@@ -1125,21 +1136,18 @@ fn hyperliquid_fields(
         let value = match (key.as_str(), node.value()) {
             ("hyperliquidChain", _) => continue,
             ("destination", Some(TdValue::String(destination))) => {
-                match crate::evm::address::parse_address(destination) {
-                    Ok(address) => {
-                        let mut out = ctx.address(&address);
-                        if crate::hypercore::system_address_index(&address).is_some()
-                            || address == crate::hypercore::HYPE_SYSTEM_ADDRESS
-                        {
-                            out.push_str(
-                                "\nHyperEVM 시스템 주소 — HyperEVM으로 이동하는 작업입니다",
-                            );
-                        }
-                        out
-                    }
-                    Err(_) => escape_inline(destination).0,
+                let mut out = hl_destination(destination, account, check.as_ref(), ctx.facts);
+                if withdraw {
+                    out.push_str("\nArbitrum One의 이 주소로 USDC가 들어갑니다");
                 }
+                out
             }
+            ("amount", Some(TdValue::String(amount))) if withdraw => format!(
+                "{} USDC\nArbitrum 도착 = 금액 − {} USDC = {} USDC",
+                escape_inline(amount).0,
+                crate::hypercore::WITHDRAW_FEE_USDC,
+                crate::hypercore::display::withdraw_arrival(amount)
+            ),
             ("amount", Some(TdValue::String(amount))) if usd => {
                 format!("{} USDC", escape_inline(amount).0)
             }
@@ -1159,6 +1167,51 @@ fn hyperliquid_fields(
         fields.push(FieldKey::TD_FIELD, &escape_inline(key).0, value)?;
     }
     Ok(())
+}
+
+/// A Hyperliquid `destination` (spec/11 §7): the full address with the app's `HyperCore` notes —
+/// never this EVM chain's code classification (a `HyperCore` account is not checked by
+/// `eth_getCode`, so no "일반 계정(EOA)" reassurance).
+fn hl_destination(
+    text: &str,
+    account: &Address,
+    check: Option<&crate::hypercore::display::HlSiteCheck>,
+    facts: &ChainFacts,
+) -> String {
+    let Ok(address) = super::address::parse_address(text) else {
+        return format!("{}\n주소 형식이 아닙니다", escape_inline(text).0);
+    };
+    let mut out = format_address(&address);
+    let system = crate::hypercore::system_address_index(&address).is_some()
+        || address == crate::hypercore::HYPE_SYSTEM_ADDRESS;
+    if check.is_some_and(|check| check.evm_move) {
+        out.push_str(
+            "\nHyperEVM 시스템 주소 — 이 토큰을 HyperEVM의 같은 주소(서명 계정)로 옮기는 작업입니다",
+        );
+        return out;
+    }
+    if system {
+        out.push_str("\nHyperEVM 시스템 주소이지만 이 토큰에 연결된 주소가 아닙니다");
+        return out;
+    }
+    if address == *account {
+        out.push_str("\n서명 계정과 같은 주소입니다");
+        return out;
+    }
+    match facts
+        .hyperliquid
+        .as_ref()
+        .and_then(|hl| hl.recipient.as_ref())
+    {
+        Some(recipient) => {
+            for note in &recipient.notes {
+                out.push('\n');
+                out.push_str(&escape_inline(note).0);
+            }
+        }
+        None => out.push_str("\n내 계정·주소록 확인 불가"),
+    }
+    out
 }
 
 fn seaport_item(ctx: &Ctx<'_>, item: &TdNode) -> String {
@@ -1394,7 +1447,7 @@ fn structured_fields(
             }
         }
         KnownSchema::HyperliquidUser(action) => {
-            hyperliquid_fields(fields, ctx, root, *action)?;
+            hyperliquid_fields(fields, ctx, root, *action, account)?;
         }
         KnownSchema::HyperliquidL1Agent => {
             let network = match root.field("source").and_then(TdNode::string) {
