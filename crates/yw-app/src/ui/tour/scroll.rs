@@ -5,16 +5,22 @@
 //! 가져오기`), and compares what the window shows with a full repaint and with a fresh layout at the
 //! same offset. Any differing pixel is a stale image the scroll left behind.
 //!
+//! The scenes run twice: as the tour runs (DPI-unaware, so 96 DPI scaled by the system, classic
+//! controls) and as the installed app runs (`plain` / `app`: themed comctl32 v6 controls from the
+//! app's manifest at the monitor's DPI, Per-Monitor-V2). The window is moved off the mouse pointer
+//! first, because a themed control under a still pointer keeps a hover shade.
+//!
 //! `cargo test -p yw-app --lib ui::tour::scroll -- --ignored --nocapture`
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use yw_win::http::HttpsUrl;
 use yw_win::ui::Hwnd;
 use yw_win::ui::capture::{
-    Capture, capture_client, dev_tour_flush, dev_tour_post_vscroll, dev_tour_post_wheel,
-    dev_tour_redraw,
+    Capture, capture_client, dev_tour_app_env, dev_tour_clear_of_pointer, dev_tour_flush,
+    dev_tour_post_vscroll, dev_tour_post_wheel, dev_tour_redraw,
 };
 
 use super::{UNLOCKED, main_hwnd, pump, register_classes, tour_apikeys, tour_meta, tour_settings};
@@ -58,6 +64,8 @@ fn differing(a: &Capture, b: &Capture) -> (usize, Option<(u32, u32)>) {
 struct Probe {
     app: Rc<RefCell<App>>,
     hwnd: Hwnd,
+    /// `plain` or `app` (module docs).
+    env: &'static str,
     failures: Vec<String>,
 }
 
@@ -77,18 +85,22 @@ impl Probe {
         let (stale, stale_rows) = differing(&seen, &repainted);
         let (misplaced, misplaced_rows) = differing(&repainted, &fresh);
         let scroll = self.app.borrow().scroll;
+        let env = self.env;
         println!(
-            "scroll-check: {scene:<28} scroll {scroll:>5}  stale px {stale:>7} rows {stale_rows:?}  misplaced px {misplaced:>7} rows {misplaced_rows:?}"
+            "scroll-check: {env:<5} {scene:<28} scroll {scroll:>5}  stale px {stale:>7} rows {stale_rows:?}  misplaced px {misplaced:>7} rows {misplaced_rows:?}"
         );
         if stale != 0 || misplaced != 0 {
-            self.failures.push(scene.to_owned());
+            self.failures.push(format!("{env}: {scene}"));
         }
         if std::env::var_os("YW_SCROLL_DUMP").is_some() && stale != 0 {
             let dir = super::out_dir();
             let _ = std::fs::create_dir_all(&dir);
             let name = scene.replace(' ', "-");
-            let _ = std::fs::write(dir.join(format!("scroll-{name}-seen.bmp")), &seen.bmp);
-            let _ = std::fs::write(dir.join(format!("scroll-{name}-fresh.bmp")), &fresh.bmp);
+            let _ = std::fs::write(dir.join(format!("scroll-{env}-{name}-seen.bmp")), &seen.bmp);
+            let _ = std::fs::write(
+                dir.join(format!("scroll-{env}-{name}-fresh.bmp")),
+                &fresh.bmp,
+            );
         }
     }
 
@@ -105,12 +117,10 @@ impl Probe {
     }
 }
 
-#[test]
-#[ignore = "DEV ONLY: opens a window on the desktop (scroll repaint check)"]
+/// Runs every scene in a new main window on this thread; returns the failed scenes.
 #[expect(clippy::print_stdout, reason = "the check reports the window's DPI")]
-fn scrolling_leaves_no_stale_pixels() {
-    register_classes();
-    let dir = std::env::temp_dir().join(format!("yw-scroll-{}", std::process::id()));
+fn scenes(env: &'static str) -> Vec<String> {
+    let dir = std::env::temp_dir().join(format!("yw-scroll-{env}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let app = Rc::new(RefCell::new(App::new(
         Paths {
@@ -141,14 +151,19 @@ fn scrolling_leaves_no_stale_pixels() {
     super::set_screen(&app, UNLOCKED, Screen::Settings(SettingsSection::Network));
     pump(300);
     let hwnd = main_hwnd(&app).unwrap();
+    let moved = dev_tour_clear_of_pointer(hwnd);
+    if moved {
+        pump(300);
+    }
     println!(
-        "scroll-check: dpi {} content {} px",
+        "scroll-check: {env:<5} dpi {} content {} px, moved off the pointer: {moved}",
         app.borrow().main.as_ref().unwrap().dpi(),
         app.borrow().placed.content_height
     );
     let mut probe = Probe {
         app: Rc::clone(&app),
         hwnd,
+        env,
         failures: Vec::new(),
     };
     probe.check("start");
@@ -205,12 +220,23 @@ fn scrolling_leaves_no_stale_pixels() {
         probe.check(&format!("re-layout mid-glide {round}"));
     }
 
-    drop(probe.app);
+    let Probe { failures, .. } = probe;
+    // Destroyed here, while the environment it was made in is still active.
+    let main = app.borrow_mut().main.take();
+    drop(main);
     drop(app);
     let _ = std::fs::remove_dir_all(&dir);
-    assert!(
-        probe.failures.is_empty(),
-        "stale pixels after: {:?}",
-        probe.failures
-    );
+    failures
+}
+
+#[test]
+#[ignore = "DEV ONLY: opens a window on the desktop (scroll repaint check)"]
+fn scrolling_leaves_no_stale_pixels() {
+    register_classes();
+    let mut failures = scenes("plain");
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("yw-app.manifest");
+    let env = dev_tour_app_env(&manifest).unwrap();
+    failures.extend(scenes("app"));
+    drop(env);
+    assert!(failures.is_empty(), "stale pixels after: {failures:?}");
 }
