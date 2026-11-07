@@ -634,8 +634,14 @@ impl App {
             MnOutcome::PassphraseFor(position, count) => {
                 self.mn.passphrase_for = Some((position, count));
             }
-            MnOutcome::Added(Err(error))
-            | MnOutcome::Generated(Err(error))
+            MnOutcome::Added(Err(error)) => {
+                // Only a mistyped password keeps the held words (and so the preview).
+                if error != VaultError::UnlockFailed {
+                    self.mn.preview = None;
+                }
+                self.password_failure(error, now);
+            }
+            MnOutcome::Generated(Err(error))
             | MnOutcome::Revealed(Err(error))
             | MnOutcome::Removed(Err(error)) => self.password_failure(error, now),
             MnOutcome::Challenge(Err(error))
