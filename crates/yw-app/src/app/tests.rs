@@ -468,6 +468,70 @@ fn unverified_passphrase_blocks_receive_and_shows_the_banner_everywhere() {
     let _ = std::fs::remove_dir_all(other);
 }
 
+/// spec/02 §8.6, spec/04 §2.24: an added phrase whose backup is not confirmed — its receive
+/// screens carry T-MN-RECEIVE-UNCONFIRMED until the quiz passes, and `지우기` asks for the
+/// password only after its words were held to the end (W08) and `백업 없이 지우기` was typed.
+#[test]
+fn unconfirmed_added_phrase_receive_banner_and_guarded_removal() {
+    use crate::app_mnemonics::{MnPurpose, T_MN_RECEIVE_UNCONFIRMED, T_MN_REMOVE_WORD};
+    use crate::ui::screens_mnemonics::ids as mn;
+    use yw_core::vault::{MnemonicInfo, RecordId};
+    let (mut app, dir) = unlocked_app("mn-unconfirmed", false);
+    let id = RecordId::from_bytes([4; 16]);
+    let info = |id: RecordId, primary: bool, backup_confirmed: bool| MnemonicInfo {
+        id,
+        created_unix: 0,
+        words: 24,
+        passphrase_used: false,
+        backup_confirmed,
+        primary,
+    };
+    app.mn.infos = vec![
+        info(RecordId::from_bytes([1; 16]), true, true),
+        info(id, false, false),
+    ];
+    let meta = app.meta.as_mut().unwrap();
+    meta.mnemonic_accounts.upsert_sol(
+        *id.as_bytes(),
+        crate::meta::Account {
+            index: 0,
+            label: "Solana 1".to_owned(),
+            address: yw_core::sol::SolAddress::from_bytes([8; 32]).to_base58(),
+            hidden: false,
+        },
+    );
+    meta.mnemonic_accounts.sol_selected = Some((*id.as_bytes(), 0));
+    app.screen = Screen::SolReceive;
+    assert!(has_text(&app.items(), T_MN_RECEIVE_UNCONFIRMED));
+
+    app.screen = Screen::Settings(super::SettingsSection::Mnemonics);
+    app.on_command(mn::REMOVE_BASE + 1);
+    assert_eq!(app.mn.confirm_remove, Some(id));
+    let items = app.items();
+    assert!(!ctl(&items, mn::REMOVE_CONFIRM).unwrap().enabled);
+    assert!(!ctl(&items, mn::REMOVE_TYPED_EDIT).unwrap().enabled);
+    app.on_command(mn::REMOVE_CONFIRM);
+    assert!(app.mn.remove_error.is_some(), "the words were not shown");
+    // W08 of these words held to the end (`단어 보기` → W03 → W08 with the 2 s hold).
+    app.mn_hold_complete(MnPurpose::ShowWords(id, false));
+    assert!(app.mn.remove_revealed);
+    assert!(ctl(&app.items(), mn::REMOVE_CONFIRM).unwrap().enabled);
+    app.mn_set_remove_typed("지우기".to_owned());
+    app.on_command(mn::REMOVE_CONFIRM);
+    assert!(
+        app.mn.remove_error.is_some(),
+        "the phrase must be typed exactly"
+    );
+    app.mn_set_remove_typed(T_MN_REMOVE_WORD.to_owned());
+    app.on_command(mn::REMOVE_CONFIRM);
+    assert!(app.mn.remove_error.is_none());
+    // The quiz passed: the receive banner goes.
+    app.mn.infos[1].backup_confirmed = true;
+    app.screen = Screen::SolReceive;
+    assert!(!has_text(&app.items(), T_MN_RECEIVE_UNCONFIRMED));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Item 6 (LK-1): the idle clock pauses while an approval is shown; only input restarts it (a
 /// window that closes by itself does not).
 #[test]

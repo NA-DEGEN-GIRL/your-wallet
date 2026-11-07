@@ -3,7 +3,9 @@
 //! "복구 단어 추가 가져오기"; the removal warning) and the "계정 추가" mnemonic picker row.
 
 use crate::app::{App, AppMode};
-use crate::app_mnemonics::{T_MN_INTRO, T_MN_REMOVE, T_MN_UNCONFIRMED};
+use crate::app_mnemonics::{
+    T_MN_INTRO, T_MN_REMOVE, T_MN_REMOVE_UNCONFIRMED, T_MN_REMOVE_WORD, T_MN_UNCONFIRMED,
+};
 use crate::app_yubikey::T_YK_SAME;
 use crate::ui::main_window::{Ctl, Item, Tone};
 
@@ -33,6 +35,10 @@ pub mod ids {
     pub const PICK_CANCEL: u16 = 13_610;
     /// Address preview: the T-YK-SAME checkbox (the words of an enrolled `YubiKey`).
     pub const PREVIEW_SAME_ACK: u16 = 13_613;
+    /// Removal warning of an unconfirmed phrase: 단어 보기.
+    pub const REMOVE_REVEAL: u16 = 13_614;
+    /// Removal warning of an unconfirmed phrase: the typed `백업 없이 지우기`.
+    pub const REMOVE_TYPED_EDIT: u16 = 13_615;
     /// Main account card: 복구 단어 관리.
     pub const MAIN_LINK: u16 = 13_611;
     /// Rows per indexed range (`MAX_MNEMONICS`).
@@ -72,6 +78,8 @@ pub mod ids {
         MAIN_LINK,
         SOL_PICK_CANCEL,
         PREVIEW_SAME_ACK,
+        REMOVE_REVEAL,
+        REMOVE_TYPED_EDIT,
     ];
 }
 
@@ -144,11 +152,7 @@ impl App {
                 items.push(Item::Row(actions));
             }
             if self.mn.confirm_remove == Some(info.id) {
-                items.push(Item::Banner(T_MN_REMOVE.to_owned(), Tone::Danger));
-                items.push(Item::Row(vec![
-                    Ctl::danger(ids::REMOVE_CONFIRM, "이 복구 단어 지우기"),
-                    Ctl::button(ids::REMOVE_CANCEL, "취소"),
-                ]));
+                self.mn_remove_items(info.backup_confirmed, items);
             }
             items.push(Item::CardEnd);
         }
@@ -164,6 +168,50 @@ impl App {
             "추가한 복구 단어에서도 EVM·Solana·Bitcoin·Zcash 계정을 만들 수 있습니다(각 탭의 '계정 추가'에서 복구 단어를 고릅니다). 비밀번호를 다시 입력해야 합니다."
                 .to_owned(),
         ));
+    }
+
+    /// The removal warning of an added phrase. One whose backup is not confirmed needs its words
+    /// shown to the end (`단어 보기`) and [`T_MN_REMOVE_WORD`] typed before `지우기` asks for the
+    /// password.
+    fn mn_remove_items(&self, backup_confirmed: bool, items: &mut Vec<Item>) {
+        if backup_confirmed {
+            items.push(Item::Banner(T_MN_REMOVE.to_owned(), Tone::Danger));
+        } else {
+            items.push(Item::Banner(
+                T_MN_REMOVE_UNCONFIRMED.to_owned(),
+                Tone::HighRisk,
+            ));
+            items.push(Item::Row(vec![Ctl::button(
+                ids::REMOVE_REVEAL,
+                "1. 단어 보기 (끝까지 보고 적어 두기)",
+            )]));
+            items.push(Item::Help(if self.mn.remove_revealed {
+                "단어를 끝까지 보았습니다.".to_owned()
+            } else {
+                "아직 단어를 보지 않았습니다.".to_owned()
+            }));
+            items.push(Item::LabeledRow(
+                format!("2. 확인: '{T_MN_REMOVE_WORD}' 입력"),
+                vec![
+                    Ctl::edit(
+                        ids::REMOVE_TYPED_EDIT,
+                        &self.mn.remove_typed,
+                        160,
+                        false,
+                        16,
+                    )
+                    .enabled(self.mn.remove_revealed),
+                ],
+            ));
+        }
+        if let Some(error) = &self.mn.remove_error {
+            items.push(Item::Banner(error.clone(), Tone::Danger));
+        }
+        items.push(Item::Row(vec![
+            Ctl::danger(ids::REMOVE_CONFIRM, "이 복구 단어 지우기")
+                .enabled(backup_confirmed || self.mn.remove_revealed),
+            Ctl::button(ids::REMOVE_CANCEL, "취소"),
+        ]));
     }
 
     /// The address preview of "복구 단어 추가 가져오기", with T-YK-SAME when the words are an

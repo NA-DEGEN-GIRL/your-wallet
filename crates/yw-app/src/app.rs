@@ -1091,6 +1091,7 @@ impl App {
                     && !self.on_zec_edit_change(*id)
                     && !self.on_llm_edit_change(*id)
                     && !self.on_yk_edit_change(*id)
+                    && !self.on_mn_edit_change(*id)
                     && !self.on_hc_edit_change(*id)
                     && !self.on_wc_edit_change(*id)
                 {

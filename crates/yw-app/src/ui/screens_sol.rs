@@ -1010,6 +1010,10 @@ impl App {
                 Tone::Testnet,
             ));
         }
+        self.mn_receive_banner(
+            index.mnemonic().map(yw_core::vault::RecordId::from_bytes),
+            items,
+        );
         let tokens: Vec<&str> = spl_entries(self.sol_cluster())
             .map(|entry| entry.symbol)
             .collect();

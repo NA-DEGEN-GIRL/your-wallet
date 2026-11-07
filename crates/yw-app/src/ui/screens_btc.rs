@@ -1444,6 +1444,10 @@ impl App {
         if let Some(message) = &self.btc.receive_message {
             items.push(Item::Banner(message.clone(), Tone::Danger));
         }
+        self.mn_receive_banner(
+            ctx.btc_meta().and_then(|meta| meta.account().mnemonic()),
+            items,
+        );
         let Some(view) = &self.btc.receive else {
             if self.btc.receive_message.is_none() {
                 items.push(Item::Muted("주소를 준비하는 중…".to_owned()));

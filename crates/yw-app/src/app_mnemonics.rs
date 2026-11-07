@@ -16,7 +16,7 @@ use crate::events::KeyJob;
 use crate::logging;
 use crate::meta::{Account, EvmAccountPref};
 use crate::text::is_valid_label;
-use crate::ui::main_window::Tone;
+use crate::ui::main_window::{Item, Tone};
 use crate::ui::screens_mnemonics::ids;
 use crate::ui::secret::{DisplaySecret, SecretKind};
 use crate::workers::key::mnemonics::{MnJob, MnOutcome};
@@ -51,6 +51,13 @@ pub struct MnUi {
     pub rename: Option<RecordId>,
     /// The mnemonic whose removal waits for the warning's confirmation.
     pub confirm_remove: Option<RecordId>,
+    /// The words of [`MnUi::confirm_remove`] were shown and held to the end in this removal
+    /// (required before removing a phrase whose backup is not confirmed).
+    pub remove_revealed: bool,
+    /// The typed [`T_MN_REMOVE_WORD`] of an unconfirmed phrase's removal.
+    pub remove_typed: String,
+    /// Input error of the removal warning.
+    pub remove_error: Option<String>,
     /// The "계정 추가" mnemonic picker is open.
     pub add_pick: bool,
     /// The address preview of "복구 단어 추가 가져오기" (EIP-55 account 0).
@@ -81,6 +88,12 @@ pub const T_MN_REMOVE: &str = "이 복구 단어와 그 계정이 지갑에서 �
 pub const T_MN_BUSY: &str = "이 복구 단어의 Solana·Bitcoin·Zcash 계정에서 보낸 거래가 아직 확정될 수 있어(진행 중, 공개된 거래 또는 승인 중) 지울 수 없습니다. 거래가 확정되거나 만료된 뒤에 다시 시도하세요.";
 /// T-MN-UNCONFIRMED.
 pub const T_MN_UNCONFIRMED: &str = "백업 확인 전입니다. 이 복구 단어의 계정은 받기만 되고 서명(보내기·연결 승인)은 백업 확인 뒤에 됩니다.";
+/// T-MN-REMOVE-UNCONFIRMED: removal of a phrase whose backup is not confirmed.
+pub const T_MN_REMOVE_UNCONFIRMED: &str = "백업하지 않은 복구 단어입니다. 지우면 이 PC 어디에도 단어가 남지 않아, 이 단어의 계정으로 받은 자산은 단어를 적어 두지 않았다면 영구히 잃습니다. 먼저 '단어 보기'로 단어를 끝까지 보고 적어 둔 뒤, 아래에 확인 문구를 입력해야 지울 수 있습니다.";
+/// The phrase typed to remove a phrase whose backup is not confirmed.
+pub const T_MN_REMOVE_WORD: &str = "백업 없이 지우기";
+/// T-MN-RECEIVE-UNCONFIRMED: the receive screens of an unconfirmed phrase's accounts.
+pub const T_MN_RECEIVE_UNCONFIRMED: &str = "백업하지 않은 복구 단어의 계정입니다. 이 주소로 받은 자산은 백업 확인 전에는 보낼 수 없고, 단어를 적어 두지 않은 채 잃으면 영구히 잃습니다. 받기 전에 설정 → 복구 단어에서 '백업 확인'을 마치세요.";
 
 impl App {
     /// The label of mnemonic `id` (meta `mnemonics`; `니모닉 N` by vault position otherwise).
@@ -330,16 +343,17 @@ impl App {
                 self.mn.rename = None;
                 self.refresh();
             }
-            ids::REMOVE_CONFIRM => {
+            ids::REMOVE_CONFIRM => self.mn_remove_confirmed(),
+            ids::REMOVE_REVEAL => {
                 if let Some(target) = self.mn.confirm_remove {
                     self.open_mn_input(
                         SecretKind::ConfirmPassword,
-                        MnPurpose::RemovePassword(target),
+                        MnPurpose::RevealPassword(target, false),
                     );
                 }
             }
             ids::REMOVE_CANCEL => {
-                self.mn.confirm_remove = None;
+                self.mn_remove_reset(None);
                 self.refresh();
             }
             ids::PICK_CANCEL => {
@@ -384,10 +398,92 @@ impl App {
             if self.mnemonic_busy(info.id) {
                 self.notice(T_MN_BUSY.to_owned(), Tone::Warn);
             } else {
-                self.mn.confirm_remove = Some(info.id);
+                self.mn_remove_reset(Some(info.id));
             }
         }
         self.refresh();
+    }
+
+    /// Opens (or, with `None`, closes) the removal warning with a fresh state.
+    fn mn_remove_reset(&mut self, target: Option<RecordId>) {
+        self.mn.confirm_remove = target;
+        self.mn.remove_revealed = false;
+        self.mn.remove_typed.clear();
+        self.mn.remove_error = None;
+    }
+
+    /// Whether the removal target's backup is not confirmed (T-MN-REMOVE-UNCONFIRMED applies).
+    #[must_use]
+    pub fn mn_remove_unconfirmed(&self) -> bool {
+        self.mn.confirm_remove.is_some_and(|target| {
+            self.mn
+                .infos
+                .iter()
+                .any(|info| info.id == target && !info.backup_confirmed)
+        })
+    }
+
+    /// The warning's `이 복구 단어 지우기`: W03. A phrase whose backup is not confirmed needs its
+    /// words shown to the end in this removal (`단어 보기`) and [`T_MN_REMOVE_WORD`] typed first.
+    fn mn_remove_confirmed(&mut self) {
+        let Some(target) = self.mn.confirm_remove else {
+            return;
+        };
+        if self.mn_remove_unconfirmed() {
+            if !self.mn.remove_revealed {
+                self.mn.remove_error =
+                    Some("먼저 '단어 보기'로 이 복구 단어를 끝까지 보고 적어 두세요.".to_owned());
+                self.refresh();
+                return;
+            }
+            if self.mn.remove_typed.trim() != T_MN_REMOVE_WORD {
+                self.mn.remove_error = Some(format!(
+                    "지우려면 입력란에 '{T_MN_REMOVE_WORD}'를 정확히 입력하세요."
+                ));
+                self.refresh();
+                return;
+            }
+        }
+        self.mn.remove_error = None;
+        self.open_mn_input(
+            SecretKind::ConfirmPassword,
+            MnPurpose::RemovePassword(target),
+        );
+    }
+
+    /// `EN_CHANGE` of a recovery-phrase edit; `false` when `id` is not one of them.
+    pub fn on_mn_edit_change(&mut self, id: u16) -> bool {
+        if id != ids::REMOVE_TYPED_EDIT {
+            return false;
+        }
+        let text = self.controls.text(id, 32).unwrap_or_default();
+        self.mn_set_remove_typed(text);
+        true
+    }
+
+    /// Stores the typed removal phrase (no repaint: it is checked when `지우기` is pressed; also
+    /// the tests' way to type).
+    pub fn mn_set_remove_typed(&mut self, text: String) {
+        self.mn.remove_typed = text;
+    }
+
+    /// The prominent banner of a receive screen whose account comes from the added phrase
+    /// `mnemonic` while that phrase's backup is not confirmed (until its quiz passes).
+    pub(crate) fn mn_receive_banner(&self, mnemonic: Option<RecordId>, items: &mut Vec<Item>) {
+        let Some(id) = mnemonic else {
+            return;
+        };
+        if self
+            .mn
+            .infos
+            .iter()
+            .any(|info| info.id == id && !info.backup_confirmed)
+        {
+            items.push(Item::Banner(
+                format!("{}: {T_MN_RECEIVE_UNCONFIRMED}", self.mnemonic_label(id)),
+                Tone::HighRisk,
+            ));
+        }
     }
 
     /// The Solana / Bitcoin / Zcash mnemonic choices (spec/02 §8.6); `false` for other ids.
@@ -566,11 +662,19 @@ impl App {
         self.refresh();
     }
 
-    /// W08's hold finished: the quiz of an added mnemonic.
+    /// W08's hold finished: the quiz of an added mnemonic; for the phrase whose removal is
+    /// open, its words count as shown.
     pub(crate) fn mn_hold_complete(&mut self, purpose: MnPurpose) {
         self.close_secret();
-        if let MnPurpose::ShowWords(id, true) = purpose {
-            self.key(KeyJob::Mnemonics(MnJob::Challenge { id }));
+        match purpose {
+            MnPurpose::ShowWords(id, true) => {
+                self.key(KeyJob::Mnemonics(MnJob::Challenge { id }));
+            }
+            MnPurpose::ShowWords(id, false) if self.mn.confirm_remove == Some(id) => {
+                self.mn.remove_revealed = true;
+                self.mn.remove_error = None;
+            }
+            _ => {}
         }
         self.refresh();
     }
@@ -675,10 +779,12 @@ impl App {
                     .infos
                     .iter()
                     .any(|info| info.id == id && info.passphrase_used);
+                // The removal of an unconfirmed phrase needs the words held to the end (the
+                // 2 s `다 적었습니다`), like a new phrase's first display.
+                let hold = then_backup
+                    || (self.mn.confirm_remove == Some(id) && self.mn_remove_unconfirmed());
                 self.open_display(
-                    SecretKind::ShowMnemonic {
-                        create: then_backup,
-                    },
+                    SecretKind::ShowMnemonic { create: hold },
                     Purpose::Mnemonics(MnPurpose::ShowWords(id, then_backup)),
                     DisplaySecret {
                         text: phrase,
@@ -690,7 +796,7 @@ impl App {
             }
             MnOutcome::Removed(Ok(id)) => {
                 self.close_secret();
-                self.mn.confirm_remove = None;
+                self.mn_remove_reset(None);
                 logging::info("app", "mnemonic.removed", &[]);
                 let removed: Vec<Address> = self
                     .meta
@@ -755,7 +861,7 @@ impl App {
             }
             MnOutcome::Busy(_) => {
                 self.close_secret();
-                self.mn.confirm_remove = None;
+                self.mn_remove_reset(None);
                 self.notice(T_MN_BUSY.to_owned(), Tone::Warn);
                 self.refresh();
             }
