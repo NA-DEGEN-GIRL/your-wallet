@@ -686,6 +686,44 @@ impl App {
         self.refresh();
     }
 
+    /// The removed phrase `id`'s Solana and Bitcoin accounts leave meta now (the next meta load
+    /// reconciles the rest), then every dApp grant naming one of them goes (spec/05 §4.9, like
+    /// an imported key's in `on_imported_key_removed`). The order matters: the site helpers keep
+    /// a grant whose key or address is still one of the wallet's accounts, so the accounts must
+    /// be gone first. A grant never comes back when the same words are added again.
+    fn mn_chain_accounts_removed(&mut self, id: RecordId) {
+        let Some(meta) = self.meta.as_mut() else {
+            return;
+        };
+        let sol: Vec<[u8; 32]> = meta
+            .mnemonic_accounts
+            .sol_of(*id.as_bytes())
+            .filter_map(|account| yw_core::sol::SolAddress::parse(&account.address).ok())
+            .map(yw_core::sol::SolAddress::to_bytes)
+            .collect();
+        let btc: Vec<String> = meta
+            .btc_accounts
+            .accounts
+            .iter()
+            .filter(|account| account.account().mnemonic() == Some(id))
+            .filter_map(|account| {
+                let address = account
+                    .address(yw_core::bip32::path::BtcChain::Receive, 0)
+                    .ok()?;
+                Some(address.as_str().to_owned())
+            })
+            .collect();
+        meta.mnemonic_accounts.remove_mnemonic(*id.as_bytes());
+        meta.btc_accounts.remove_mnemonic(id);
+        self.save_meta();
+        for public in &sol {
+            self.sol_account_removed_from_sites(public);
+        }
+        if !btc.is_empty() {
+            self.btc_addresses_removed_from_sites(&btc);
+        }
+    }
+
     /// A finished recovery-phrase job.
     #[expect(clippy::too_many_lines, reason = "one arm per outcome")]
     pub(crate) fn on_mn_outcome(&mut self, outcome: MnOutcome, now: u64) {
@@ -819,23 +857,7 @@ impl App {
                 for address in &removed {
                     self.account_removed_from_sites(address);
                 }
-                // Its Solana accounts leave every dApp connection too (spec/05 §4.9).
-                let sol_removed: Vec<[u8; 32]> = self
-                    .meta
-                    .as_ref()
-                    .map(|meta| {
-                        meta.mnemonic_accounts
-                            .sol_of(*id.as_bytes())
-                            .filter_map(|account| {
-                                yw_core::sol::SolAddress::parse(&account.address).ok()
-                            })
-                            .map(yw_core::sol::SolAddress::to_bytes)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                for public in &sol_removed {
-                    self.sol_account_removed_from_sites(public);
-                }
+                self.mn_chain_accounts_removed(id);
                 self.after_change();
             }
             MnOutcome::Derived(Ok((id, index, address))) => {

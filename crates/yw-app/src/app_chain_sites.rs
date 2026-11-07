@@ -1009,6 +1009,81 @@ mod tests {
         assert!(app.meta.as_ref().unwrap().chain_sites.btc.is_empty());
     }
 
+    /// spec/05 §4.9, spec/02 §8.6: removing an added recovery phrase drops the dApp grants of its
+    /// Solana and Bitcoin accounts (the accounts leave meta first, so the "still an account"
+    /// guards do not keep them); adding the same words again brings the accounts back, not the
+    /// grants.
+    #[test]
+    fn removed_recovery_phrase_drops_its_chain_grants_for_good() {
+        use crate::workers::key::mnemonics::MnOutcome;
+        use yw_core::btc::{BtcAccountKey, BtcMeta, BtcNetwork};
+        use yw_core::vault::RecordId;
+        let mut app = app(false);
+        let first = RecordId::from_bytes([4; 16]);
+        let sol = crate::meta::Account {
+            index: 0,
+            label: "SOL 1".to_owned(),
+            address: yw_core::sol::SolAddress::from_bytes([7; 32]).to_base58(),
+            hidden: false,
+        };
+        let node = yw_core::bip32::AccountXpub {
+            pubkey: yw_core::hex::decode_array::<33>(
+                "03b88e0fbe3f646337ed93bc0c0f3b843fcf7d2589e5ec884754e6402027a890b4",
+            )
+            .unwrap(),
+            chain_code: [7; 32],
+        };
+        let btc_of = |id: RecordId| {
+            BtcMeta::with_key(
+                BtcNetwork::Mainnet,
+                BtcAccountKey::hd(ScriptType::P2wpkh, 0, node)
+                    .unwrap()
+                    .with_mnemonic(Some(id)),
+            )
+        };
+        let address = btc_of(first)
+            .address(yw_core::bip32::path::BtcChain::Receive, 0)
+            .unwrap()
+            .as_str()
+            .to_owned();
+        let add = |app: &mut App, id: RecordId| {
+            let meta = app.meta.as_mut().unwrap();
+            meta.mnemonic_accounts
+                .upsert_sol(*id.as_bytes(), sol.clone());
+            meta.btc_accounts.upsert(btc_of(id)).unwrap();
+        };
+        add(&mut app, first);
+        assert_eq!(app.sol_dapp_rows().len(), 1);
+        assert_eq!(app.btc_dapp_rows().len(), 1);
+        let core = core(&app);
+        assert!(core.upsert_sol_grant(sol_grant("https://app.example", [7; 32])));
+        let grant = yw_core::policy::BtcGrant::new(
+            BrowserOrigin::parse("https://app.example").unwrap(),
+            BtcNetwork::Mainnet,
+            vec![BtcGrantAddress {
+                purpose: BtcPurpose::Payment,
+                address,
+                pubkey: BtcPubKey::Compressed(node.pubkey),
+                script_type: ScriptType::P2wpkh,
+            }],
+            1,
+        )
+        .unwrap();
+        assert!(core.upsert_btc_grant(grant));
+        app.write_grants();
+        app.on_mn_outcome(MnOutcome::Removed(Ok(first)), 0);
+        assert!(core.sol_grants().is_empty());
+        assert!(core.btc_grants().is_empty());
+        let meta = app.meta.as_ref().unwrap();
+        assert!(meta.chain_sites.sol.is_empty() && meta.chain_sites.btc.is_empty());
+        assert!(meta.mnemonic_accounts.sol.is_empty() && meta.btc_accounts.accounts.is_empty());
+        // The same words added again (a new record id, the same accounts): no grant returns.
+        add(&mut app, RecordId::from_bytes([5; 16]));
+        assert!(!relock(&app));
+        assert!(core.sol_grants().is_empty());
+        assert!(core.btc_grants().is_empty());
+    }
+
     #[test]
     fn preflight_checks_hidden_accounts_bitcoin_off_and_the_grant_limit() {
         let mut app = app(true);
