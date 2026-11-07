@@ -183,9 +183,13 @@ impl App {
         self.refresh();
     }
 
-    /// Sends that the journal still tracks (only known while unlocked).
+    /// Sends that may still confirm (only known while unlocked): the EVM, Solana and Zcash
+    /// journal records not yet final (Zcash of every network and account), Bitcoin's, and
+    /// `HyperCore` actions posted without a final answer (`전송 중`, or no answer — Hyperliquid may
+    /// still have processed them).
     #[must_use]
     pub fn sends_in_flight(&self) -> bool {
+        use crate::app_hypercore::HcStatus;
         self.evm
             .records()
             .iter()
@@ -195,6 +199,17 @@ impl App {
                 .iter()
                 .any(|record| !record.state.is_terminal())
             || self.btc_ctx().any_in_flight()
+            || self.evm.journal.as_ref().is_some_and(|journal| {
+                journal
+                    .zec_records
+                    .iter()
+                    .any(|record| !record.is_terminal())
+            })
+            || self
+                .hypercore
+                .activity
+                .iter()
+                .any(|row| matches!(row.status, HcStatus::Submitting | HcStatus::Unknown(_)))
     }
 
     /// `지갑 초기화…`: S22 over the current screen.
@@ -265,6 +280,10 @@ impl App {
         // The lock procedure first: secret and approval windows close, queued dApp items end,
         // buffers are wiped, queued key jobs are cancelled.
         self.lock(LockReason::Manual);
+        // WalletConnect: the old wallet's sessions, relay key and connection end with it (the
+        // worker is restarted for the next wallet at its first unlock; spec/13 §8).
+        self.wc_shutdown();
+        self.wc = crate::app_walletconnect::WcUi::default();
         self.reset = ResetUi {
             include_settings,
             running: true,

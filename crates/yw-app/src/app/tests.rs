@@ -468,7 +468,8 @@ fn unverified_passphrase_blocks_receive_and_shows_the_banner_everywhere() {
     let _ = std::fs::remove_dir_all(other);
 }
 
-/// Item 6 (LK-1): the idle clock pauses while an approval is shown and restarts on close.
+/// Item 6 (LK-1): the idle clock pauses while an approval is shown; only input restarts it (a
+/// window that closes by itself does not).
 #[test]
 fn idle_lock_pauses_while_an_approval_is_shown() {
     let (mut app, dir) = unlocked_app("idle", false);
@@ -495,12 +496,40 @@ fn idle_lock_pauses_while_an_approval_is_shown() {
     app.idle_tick(300_000);
     assert!(matches!(app.mode, AppMode::Unlocked { .. }));
     assert!(app.key_queue.is_empty());
-    // Closed at 300 s: the count restarts from there.
+    // Answered by the user at 300 s (the click is input): the count starts there.
+    app.idle.input(300_000);
     let _ = app.evm.queue.finish_shown(QueueOutcome::Rejected);
     app.idle_tick(300_000);
     app.idle_tick(359_000);
     assert!(matches!(app.mode, AppMode::Unlocked { .. }));
-    app.idle_tick(360_000);
+    // Another one shown at 359 s closes by itself at 600 s (expired, nobody touched it — e.g. a
+    // WalletConnect dApp's request): closing does not restart the count, the wallet locks.
+    let item = app.evm.queue.shown().is_none().then(|| {
+        QueuedItem::App(Box::new(AppApproval {
+            chain_id: 11_155_111,
+            account: parse_address("0x9858EfFD232B4033E47d90003D41EC34EcaEda94").unwrap(),
+            signer: yw_core::vault::EvmKeySource::Derived(yw_core::bip32::path::AccountIndex::ZERO),
+            intent: SendIntent {
+                to: parse_address("0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb").unwrap(),
+                value: U256::from_u64(1),
+                data: Vec::new(),
+                access_list: Vec::new(),
+                dapp_gas: None,
+                dapp_nonce: None,
+            },
+            replace: None,
+        }))
+    });
+    app.evm
+        .queue
+        .enqueue(QueueSource::App, item.unwrap())
+        .unwrap();
+    assert!(app.evm.queue.show_next(359_000, &mut finished).is_some());
+    app.idle_tick(359_500);
+    app.idle_tick(600_000);
+    assert!(matches!(app.mode, AppMode::Unlocked { .. }));
+    let _ = app.evm.queue.finish_shown(QueueOutcome::Expired);
+    app.idle_tick(600_000);
     assert_eq!(app.mode, AppMode::Locked);
     let _ = std::fs::remove_dir_all(dir);
 }

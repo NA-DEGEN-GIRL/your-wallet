@@ -5,7 +5,9 @@
 
 use std::sync::Arc;
 
-use yw_core::approval::{ApprovalDisplay, ApprovalDraft, ApprovalOrigin, DisplayField, FieldKey};
+use yw_core::approval::{
+    ApprovalDisplay, ApprovalDraft, ApprovalOrigin, DisplayField, FieldKey, MAX_DISPLAY_WARNINGS,
+};
 use yw_core::policy::BrowserOrigin;
 
 use crate::app::App;
@@ -77,32 +79,32 @@ impl App {
     pub(crate) fn site_origin_text(&self, site: &SiteRequest) -> String {
         self.wc_peer_of(&site.origin).map_or_else(
             || site.origin.as_str().to_owned(),
-            |(peer, verify)| crate::walletconnect::origin_label(&peer, verify),
+            |(peer, _)| crate::walletconnect::origin_label(&peer),
         )
     }
 
     /// A draft about to be shown: a `WalletConnect` request gets the `WalletConnect: …` origin
-    /// text and its Verify warning (C01–C04; mismatch and scam are high risk).
+    /// text and its Verify warning (C01–C04; mismatch and scam are high risk). The warning always
+    /// gets a slot: at [`MAX_DISPLAY_WARNINGS`] the least severe one gives way. Returns `false`
+    /// when the draft could not be decorated — the caller must not show it (fail closed: the
+    /// bare claimed origin is never shown as if it were the site).
+    #[must_use]
     pub(crate) fn wc_decorate_draft(
         &self,
         origin: Option<&BrowserOrigin>,
         draft: &mut ApprovalDraft,
-    ) {
-        let Some((peer, verify)) = origin.and_then(|origin| self.wc_peer_of(origin)) else {
-            return;
+    ) -> bool {
+        let Some(origin) = origin else {
+            return true;
         };
-        let label = crate::walletconnect::origin_label(&peer, verify);
-        let mut fields = draft.display.fields.clone();
-        if let Some(slot) = fields.iter_mut().find(|f| f.key == FieldKey::ORIGIN)
-            && let Ok(field) = DisplayField::new(FieldKey::ORIGIN, "", label)
-        {
-            *slot = field;
+        if !is_session_origin(origin) {
+            return true;
         }
-        let mut warnings = draft.display.warnings.clone();
-        warnings.push(crate::walletconnect::verify_warning(verify));
-        if let Ok(display) = ApprovalDisplay::new(draft.display.title.clone(), fields, warnings) {
-            draft.display = display;
-        }
+        let Some((peer, verify)) = self.wc_peer_of(origin) else {
+            // A session origin without its session (ended meanwhile): nothing to label it with.
+            return false;
+        };
+        decorate(draft, &peer, verify)
     }
 
     /// What the connect window of a `WalletConnect` proposal shows instead of the synthetic
@@ -131,6 +133,59 @@ impl App {
     }
 }
 
+/// Largest QR image file read (bytes).
+pub const MAX_IMAGE_FILE: u64 = 64 * 1_048_576;
+
+/// Whether `head` starts like a PNG, JPEG, BMP or GIF file.
+#[must_use]
+pub fn image_magic_ok(head: &[u8]) -> bool {
+    head.starts_with(b"\x89PNG\r\n\x1a\n")
+        || head.starts_with(&[0xFF, 0xD8, 0xFF])
+        || head.starts_with(b"BM")
+        || head.starts_with(b"GIF87a")
+        || head.starts_with(b"GIF89a")
+}
+
+/// A regular file of at most [`MAX_IMAGE_FILE`] bytes with an accepted signature.
+fn image_file_acceptable(path: &std::path::Path) -> bool {
+    use std::io::Read as _;
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let size_ok = file
+        .metadata()
+        .is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_IMAGE_FILE);
+    let mut head = [0_u8; 8];
+    size_ok && file.take(8).read_exact(&mut head).is_ok() && image_magic_ok(&head)
+}
+
+/// [`App::wc_decorate_draft`] for a known peer.
+#[must_use]
+pub fn decorate(draft: &mut ApprovalDraft, peer: &Metadata, verify: VerifyStatus) -> bool {
+    let label = crate::walletconnect::origin_label(peer);
+    let Ok(origin_field) = DisplayField::new(FieldKey::ORIGIN, "", label) else {
+        return false;
+    };
+    let mut fields = draft.display.fields.clone();
+    match fields.iter_mut().find(|f| f.key == FieldKey::ORIGIN) {
+        Some(slot) => *slot = origin_field,
+        None => return false,
+    }
+    let mut warnings = draft.display.warnings.clone();
+    if warnings.len() >= MAX_DISPLAY_WARNINGS {
+        yw_core::evm::risk::sort_warnings(&mut warnings);
+        warnings.truncate(MAX_DISPLAY_WARNINGS - 1);
+    }
+    warnings.push(crate::walletconnect::verify_warning(verify));
+    match ApprovalDisplay::new(draft.display.title.clone(), fields, warnings) {
+        Ok(display) => {
+            draft.display = display;
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 /// See [`App::wc_connect_patch`].
 #[derive(Clone, Debug)]
 pub struct ConnectPatch {
@@ -143,10 +198,12 @@ impl ConnectPatch {
     pub fn apply(&self, view: &mut crate::ui::approval_view::ApprovalView) {
         use crate::ui::approval_view::{Block, Tone};
         let proposal = &self.proposal;
-        let label = crate::walletconnect::origin_label(&proposal.peer, proposal.verify);
+        // The origin line and title carry wallet-normalized text only; the self-claimed name
+        // gets its own labelled field, and the Verify state only the badge and warning below.
+        let label = crate::walletconnect::origin_label(&proposal.peer);
         view.header = vec![("요청 출처".to_owned(), label.clone())];
         if let Some(Block::Title(title)) = view.blocks.first_mut() {
-            *title = format!("{} — {label}", proposal.peer.display_name());
+            title.clone_from(&label);
         }
         let (text, tone) = match proposal.verify {
             VerifyStatus::Valid => (
@@ -166,7 +223,16 @@ impl ConnectPatch {
                 Tone::Danger,
             ),
         };
-        view.blocks.insert(1, Block::Warning { text, tone });
+        let at = view.blocks.len().min(1);
+        view.blocks.insert(at, Block::Warning { text, tone });
+        view.blocks.insert(
+            at + 1,
+            Block::Field {
+                label: "사이트 이름 (사이트가 주장)".to_owned(),
+                value: proposal.peer.display_name(),
+                mono: false,
+            },
+        );
         for block in &mut view.blocks {
             if let Block::Field { label, value, .. } = block
                 && label == "현재 네트워크"
@@ -274,13 +340,26 @@ impl App {
             WcEvent::Status(status) => self.wc.status = status,
             WcEvent::Notice(text) => self.wc.notice = Some(text),
             WcEvent::Proposal(view) => {
-                self.wc.proposals.retain(|p| p.id != view.id);
+                self.wc
+                    .proposals
+                    .retain(|p| p.session_topic != view.session_topic);
+                if self.wc.proposals.len() >= crate::walletconnect::engine::MAX_PROPOSALS {
+                    self.wc.proposals.remove(0);
+                }
                 self.wc.proposals.push(*view);
                 self.wc.notice =
                     Some("연결 요청이 도착했습니다 — 연결 창을 확인하세요.".to_owned());
             }
-            WcEvent::ProposalDone(id) => self.wc.proposals.retain(|p| p.id != id),
+            WcEvent::ProposalDone(topic) => {
+                self.wc.proposals.retain(|p| p.session_topic != topic);
+            }
             WcEvent::Sessions(views, store) => {
+                if !self.wc_store_is_current(&store) {
+                    // A snapshot of another wallet's worker state (sent before a reset): never
+                    // shown, never copied into this wallet's meta.
+                    logging::info("walletconnect", "sessions.stale", &[]);
+                    return;
+                }
                 self.wc.sessions = views;
                 self.wc_persist(&store);
                 self.wc_prune_grants();
@@ -292,6 +371,15 @@ impl App {
             }
         }
         self.refresh();
+    }
+
+    /// Whether a worker snapshot belongs to the loaded wallet: its relay key is the one in this
+    /// meta (created at unlock before the worker's `Load`). Without meta nothing is current.
+    fn wc_store_is_current(&self, store: &WcStore) -> bool {
+        self.meta.as_ref().is_some_and(|meta| {
+            WcStore::from_value(meta.chain_sites.walletconnect.as_ref()).client_seed
+                == store.client_seed
+        })
     }
 
     fn wc_persist(&mut self, store: &WcStore) {
@@ -416,6 +504,13 @@ impl App {
         let path = self.wc.file_text.trim().trim_matches('"').to_owned();
         if path.is_empty() {
             self.wc.notice = Some("이미지 파일 경로를 입력하세요.".to_owned());
+            return;
+        }
+        // Only the four formats are handed to GDI+ (no EMF/WMF/TIFF/ICO codecs on untrusted
+        // files), and only files of a screenshot's size.
+        if !image_file_acceptable(std::path::Path::new(&path)) {
+            self.wc.notice =
+                Some("PNG·JPEG·BMP·GIF 이미지 파일만 읽을 수 있습니다 (64 MB 이하).".to_owned());
             return;
         }
         match yw_win::image::decode_file(std::path::Path::new(&path)) {
