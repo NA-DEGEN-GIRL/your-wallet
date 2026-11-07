@@ -81,7 +81,7 @@
 
 - `settings.json` `hypercore`: `{"enabled": true, "network": "mainnet"|"testnet", "testnetApi": "https://api.hyperliquid-testnet.xyz"}`(기본: 켜짐, 메인넷, 공식 주소). `testnetApi`는 HTTPS·256바이트 이하·`?`/`#` 없음, 끝 `/` 제거. 틀리면 그 키 전체를 기본값으로(E-APP-001 배너). 메인넷 API는 설정이 없다(고정). 보안 스냅샷([04] §6.7)에는 넣지 않았다(테스트넷만 바꿀 수 있어 실제 자산에 영향이 없음).
 - S15 `EVM 체인` 탭 아래 카드 "Hyperliquid HyperCore": 체크 `EVM 탭에 HyperCore 카드 보이기`, 네트워크 라디오 `메인넷`/`테스트넷`, 메인넷 API(고정 표시), 테스트넷 API 편집 + `저장`·`공식 주소로`.
-- S10 EVM 탭(토큰 카드 다음, 활동 카드 앞) 카드 "Hyperliquid HyperCore 메인넷|테스트넷": 테스트넷 띠, 네트워크 라디오, 도움말(같은 EVM 주소, 전송만), `선물(perp) USDC: 계정 가치 … · 출금 가능 … (· 열린 포지션 n개)`, `현물 {coin}: {total} (주문 보류 …)`, 오류 띠, 버튼 `보내기(Core)`·`현물↔선물 이동`·`Arbitrum으로 출금` / `HyperEVM으로 이동`·`HyperEVM에서 Core로 이동`·`새로고침`, "HyperCore 활동 (이번 실행)" 행(로컬 시각 · 작업 · 금액 → 받는 주소, `상태: … · nonce N`). 상태: 서명 중 → 전송 중 → `성공 (Hyperliquid status ok)` / `거부됨 (status err): 서버 메시지`(이스케이프) / `결과 불명 — 잔액을 확인하세요` / `서명하지 않음 — …`(잠금·카드 실패).
+- S10 EVM 탭(토큰 카드 다음, 활동 카드 앞) 카드 "Hyperliquid HyperCore 메인넷|테스트넷"(제목 앞 Hyperliquid 배지): 테스트넷 띠 또는 메인넷 띠 "HyperCore 메인넷: 실제 자산"([04] §2.6, 2026-11-07), 네트워크 라디오, 도움말(같은 EVM 주소, 전송만), `선물(perp) USDC: 계정 가치 … · 출금 가능 … (· 열린 포지션 n개)`, `현물 {coin}: {total} (주문 보류 …)`, 오류 띠, 버튼 `보내기(Core)`·`현물↔선물 이동`·`Arbitrum으로 출금` / `HyperEVM으로 이동`·`HyperEVM에서 Core로 이동`·`새로고침`, "HyperCore 활동 (이번 실행)" 행(로컬 시각 · 작업 · 금액 → 받는 주소, `상태: … · nonce N`). 상태: 서명 중 → 전송 중 → `성공 (Hyperliquid status ok)` / `거부됨 (status err): 서버 메시지`(이스케이프) / `결과 불명 — 잔액을 확인하세요` / `서명하지 않음 — …`(잠금·카드 실패).
 - 활동은 이 실행의 메모리에만 있다(meta `activity`는 거래 해시 스키마라 넣지 않음, §10).
 - 명령 id 13,450–13,499([04] §1.8 표).
 
