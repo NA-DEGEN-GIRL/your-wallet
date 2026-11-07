@@ -19,8 +19,11 @@ use crate::logging::{self, Field};
 use crate::network::NetworkId;
 use crate::workers::journal::zec::{ZecKeyJob, ZecKeyOutcome, ZecSignedSummary};
 use crate::workers::rpc::RpcJob;
-use crate::zec::rpc::{SendOutcome, TxStatus};
+use crate::zec::rpc::{SendOutcome, TxStatus, ZecRpcError};
 use crate::zec::work::{ZecRpcEvent, ZecRpcJob, ZecSnapshot};
+
+/// The banner of a hardware account whose key no enrolled card holds any more.
+pub const T_ZEC_HW_MISSING: &str = "이 Zcash 계정의 YubiKey 키를 등록된 YubiKey에서 찾을 수 없습니다 (슬롯을 바꾸었거나 비웠습니다). 받기와 보내기를 멈췄습니다. 그 키가 있는 YubiKey를 다시 등록하거나, 원하면 키 출처를 '표준'으로 바꾸세요(다른 주소가 됩니다).";
 
 /// Automatic refresh period while the tab is shown (and while a transaction is in flight).
 const REFRESH_MS: u64 = yw_core::zec::ZEC_POLL_SECS * 1_000;
@@ -87,6 +90,47 @@ pub struct ZecUi {
     /// Signed and journaled, waiting for the `Disclose` commit before `sendrawtransaction`.
     pending_send: Option<ZecSignedSummary>,
     next_refresh_ms: u64,
+    /// The card slot maps of this session were read (the hardware account can be checked).
+    hw_checked: bool,
+}
+
+/// Whether the account's `YubiKey` key is still on an enrolled card (spec/12 §2.2, spec/10 §15).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ZecHwState {
+    /// Not a hardware account (or no account).
+    NotHardware,
+    /// The slot maps are not read yet: receive and send wait.
+    Unchecked,
+    /// An enrolled card holds the key.
+    Present,
+    /// No enrolled card holds it any more (slot change or clear): receive hidden, sending
+    /// blocked, banner; the user may switch to the standard key source.
+    Missing,
+}
+
+/// Whether some card of `records` (optionally only `serial` in `slots`) holds the Zcash key
+/// `index` of `network` with `pubkey`.
+fn zec_key_held(
+    records: &[yw_core::yubikey::record::HwKeyRecord],
+    account: &ZecAccount,
+    only: Option<(u32, &[yw_core::yubikey::plan::CardSlot])>,
+) -> bool {
+    let ZecKeySource::Hardware { index } = account.source else {
+        return false;
+    };
+    records
+        .iter()
+        .filter(|record| only.is_none_or(|(serial, _)| record.serial == serial))
+        .flat_map(|record| &record.slots)
+        .filter(|slot| only.is_none_or(|(_, slots)| slots.contains(&slot.slot)))
+        .any(|slot| {
+            slot.role
+                == yw_core::yubikey::plan::KeyRole::Zec {
+                    network: account.network,
+                    index,
+                }
+                && slot.public == yw_core::yubikey::record::HwPublicKey::Secp256k1(account.pubkey)
+        })
 }
 
 fn now_unix_ms() -> u64 {
@@ -214,8 +258,73 @@ impl App {
         })));
     }
 
+    /// The hardware account check against the vault's card records (re-evaluated on every meta
+    /// load and card record change, since both feed it).
+    #[must_use]
+    pub fn zec_hw_state(&self) -> ZecHwState {
+        let Some(account) = self.zec_account() else {
+            return ZecHwState::NotHardware;
+        };
+        if !account.is_hardware() {
+            return ZecHwState::NotHardware;
+        }
+        if !self.zec.hw_checked {
+            return ZecHwState::Unchecked;
+        }
+        if zec_key_held(&self.card.records, &account, None) {
+            ZecHwState::Present
+        } else {
+            ZecHwState::Missing
+        }
+    }
+
+    /// The card slot maps were (re)read: the hardware Zcash account is checked from now on.
+    pub fn zec_card_records_changed(&mut self) {
+        self.zec.hw_checked = true;
+        if self.zec_hw_state() == ZecHwState::Missing {
+            logging::warn("app", "zec.hardware_key_missing", &[]);
+        }
+    }
+
+    /// The Zcash accounts (every network) whose `YubiKey` key only card `serial` holds, in one
+    /// of `slots`: clearing or re-slotting those slots orphans them (spec/10 §15). The `YubiKey`
+    /// clear / slot-change screens warn with this before writing.
+    #[must_use]
+    pub fn zec_accounts_using_card(
+        &self,
+        serial: u32,
+        slots: &[yw_core::yubikey::plan::CardSlot],
+    ) -> Vec<ZecAccount> {
+        let Some(meta) = self.meta.as_ref() else {
+            return Vec::new();
+        };
+        ZecNetwork::ALL
+            .into_iter()
+            .filter_map(|network| meta.zcash.get(network).copied())
+            .filter(|account| {
+                zec_key_held(&self.card.records, account, Some((serial, slots)))
+                    && !self
+                        .card
+                        .records
+                        .iter()
+                        .filter(|record| record.serial != serial)
+                        .any(|record| zec_key_held(core::slice::from_ref(record), account, None))
+            })
+            .collect()
+    }
+
+    fn zec_all_terminal(&self) -> bool {
+        !self.zec.busy && self.zec_records().iter().all(ZecRecord::is_terminal)
+    }
+
     /// Uses the `YubiKey` Zcash slot `index` of the current network as the account (spec/10).
     pub fn zec_use_hardware(&mut self, index: u32) {
+        if !self.zec_all_terminal() {
+            self.zec.error =
+                Some("진행 중인 Zcash 거래가 있어 키 출처를 바꿀 수 없습니다.".to_owned());
+            self.refresh();
+            return;
+        }
         let network = self.zec_network();
         let role = yw_core::yubikey::plan::KeyRole::Zec { network, index };
         let identity = role.key_identity();
@@ -251,6 +360,13 @@ impl App {
     /// Turns Zcash on with `network` (or switches the network).
     pub fn zec_enable(&mut self, network: ZecNetwork) {
         if self.zec.busy {
+            return;
+        }
+        // A switch away would stop tracking the in-flight record of this network.
+        if network != self.zec_network() && !self.zec_all_terminal() {
+            self.zec.error =
+                Some("진행 중인 Zcash 거래가 있어 네트워크를 바꿀 수 없습니다.".to_owned());
+            self.refresh();
             return;
         }
         let mut settings = self.settings.clone();
@@ -300,12 +416,10 @@ impl App {
                 return;
             }
         };
-        let track = self
-            .zec_records()
-            .iter()
-            .filter(|record| record.may_still_confirm())
-            .map(ZecRecord::txid_hex)
-            .collect();
+        let records = self.zec_records();
+        let live = || records.iter().filter(|record| record.may_still_confirm());
+        let track = live().map(ZecRecord::txid_hex).collect();
+        let watch = live().flat_map(ZecRecord::inputs).collect();
         self.zec.job = self.zec.job.wrapping_add(1);
         self.zec.refreshing = true;
         self.zec.review_after = review;
@@ -318,6 +432,7 @@ impl App {
             address: account.address(),
             script_hex: yw_core::hex::encode(&account.script_pubkey()),
             track,
+            watch,
         })));
         if !sent {
             self.zec.refreshing = false;
@@ -385,6 +500,16 @@ impl App {
                     .map_err(|_| "보낼 금액(ZEC)을 올바르게 입력하세요.".to_owned())?,
             )
         };
+        if let Some(error) = snapshot.utxo_error {
+            return Err(error.text());
+        }
+        match self.zec_hw_state() {
+            ZecHwState::NotHardware | ZecHwState::Present => {}
+            ZecHwState::Unchecked => {
+                return Err("YubiKey 정보를 확인하는 중입니다. 잠시 후 다시 시도하세요.".to_owned());
+            }
+            ZecHwState::Missing => return Err(T_ZEC_HW_MISSING.to_owned()),
+        }
         let consensus = tx_consensus(account.network, &snapshot.chain.consensus)
             .map_err(yw_core::zec::UpgradeError::text)?;
         let reserved = self
@@ -396,7 +521,7 @@ impl App {
                     .zec_records
                     .iter()
                     .filter(|record| {
-                        record.may_still_confirm() && record.account.network == account.network
+                        record.reserves_inputs() && record.account.network == account.network
                     })
                     .flat_map(ZecRecord::inputs)
                     .collect()
@@ -535,7 +660,12 @@ impl App {
                 }
                 if matches!(
                     state,
-                    Some(ZecTxState::Confirmed | ZecTxState::Expired | ZecTxState::Discarded)
+                    Some(
+                        ZecTxState::Confirmed
+                            | ZecTxState::Expired
+                            | ZecTxState::Discarded
+                            | ZecTxState::InputsSpent
+                    )
                 ) {
                     self.zec.busy = false;
                 }
@@ -582,7 +712,7 @@ impl App {
                 let review = core::mem::take(&mut self.zec.review_after);
                 match result {
                     Ok(snapshot) => {
-                        self.zec.error = None;
+                        self.zec.error = snapshot.utxo_error.map(ZecRpcError::text);
                         self.zec_track(&snapshot);
                         if review {
                             self.zec.info = None;
@@ -648,7 +778,21 @@ impl App {
                             .expiry_height()
                             .saturating_add(yw_core::zec::ZEC_EXPIRED_AFTER) =>
                 {
-                    self.zec_journal(txid, ZecTransition::Expired);
+                    // "Not found" alone is not proof: Expired (inputs released) only while at
+                    // least one input is still unspent; all spent → it may be in the chain.
+                    // Unknown (the UTXO lookup failed) → wait for the next refresh.
+                    if let Some(unspent) = snapshot.unspent_watch.as_ref() {
+                        let any_unspent =
+                            record.inputs().iter().any(|input| unspent.contains(input));
+                        self.zec_journal(
+                            txid,
+                            if any_unspent {
+                                ZecTransition::Expired
+                            } else {
+                                ZecTransition::InputsSpent
+                            },
+                        );
+                    }
                 }
                 Some(TxStatus::NotFound) if tip >= record.expiry_height() => {}
                 Some(TxStatus::Known) => {

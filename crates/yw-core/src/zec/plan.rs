@@ -127,6 +127,8 @@ pub struct ZecPlan {
     pub tx: ZecTx,
     /// Send-max request.
     pub send_max: bool,
+    /// Send-max only: eligible outputs left out beyond [`ZEC_MAX_INPUTS`] (they stay).
+    pub excluded_inputs: usize,
 }
 
 impl ZecPlan {
@@ -187,7 +189,7 @@ pub fn plan_send(account: &ZecAccount, request: &ZecSendRequest) -> Result<ZecPl
     for utxo in &request.utxos {
         if utxo.height.is_none()
             || utxo.coinbase
-            || utxo.value == 0
+            || utxo.value <= super::ZEC_MIN_UTXO
             || utxo.value > MAX_MONEY
             || request.reserved.contains(&utxo.outpoint)
             || eligible.iter().any(|known| known.outpoint == utxo.outpoint)
@@ -206,6 +208,7 @@ pub fn plan_send(account: &ZecAccount, request: &ZecSendRequest) -> Result<ZecPl
         .fold(0_u64, u64::saturating_add);
     let recipient_len = spk_len(&request.recipient.dest);
     let own_len = 25;
+    let mut excluded_inputs = 0;
     let (inputs, amount, fee, conventional, change, send_max) = match request.amount {
         ZecAmount::Exact(amount) => {
             if !(ZEC_DUST..=MAX_MONEY).contains(&amount) {
@@ -214,19 +217,23 @@ pub fn plan_send(account: &ZecAccount, request: &ZecSendRequest) -> Result<ZecPl
             select_exact(&eligible, amount, recipient_len, own_len, available)?
         }
         ZecAmount::Max => {
-            let count = eligible.len();
-            if count > ZEC_MAX_INPUTS {
-                return Err(ZecPlanError::TooManyInputs);
-            }
-            let fee = planned_fee(count, &[recipient_len]);
-            let amount = available.saturating_sub(fee);
+            // More outputs than one transaction can spend (e.g. dust sent to us): send the
+            // largest ZEC_MAX_INPUTS, the rest stays (spec/12 §7.2).
+            let chosen: Vec<ZecUtxo> = eligible.iter().take(ZEC_MAX_INPUTS).copied().collect();
+            excluded_inputs = eligible.len().saturating_sub(chosen.len());
+            let total = chosen
+                .iter()
+                .map(|utxo| utxo.value)
+                .fold(0_u64, u64::saturating_add);
+            let fee = planned_fee(chosen.len(), &[recipient_len]);
+            let amount = total.saturating_sub(fee);
             if amount < ZEC_DUST {
                 return Err(ZecPlanError::Insufficient {
-                    available,
+                    available: total,
                     needed: fee.saturating_add(ZEC_DUST),
                 });
             }
-            (eligible.clone(), amount, fee, fee, 0, true)
+            (chosen, amount, fee, fee, 0, true)
         }
     };
     if fee > ZEC_FEE_ABS_CAP {
@@ -267,6 +274,7 @@ pub fn plan_send(account: &ZecAccount, request: &ZecSendRequest) -> Result<ZecPl
         consensus: request.consensus,
         tx,
         send_max,
+        excluded_inputs,
     })
 }
 

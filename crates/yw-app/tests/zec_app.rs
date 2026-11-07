@@ -71,6 +71,36 @@ fn node_and_blockbook_utxos() {
     assert_eq!(utxos[1].value, 70_000);
 }
 
+/// Dust griefing (spec/12 §4.3): thousands of tiny outputs never fail the parse; dust is
+/// dropped and the largest `ZEC_MAX_UTXOS` are kept.
+#[test]
+fn dust_flood_is_trimmed_not_refused() {
+    let address = "tmXYZ";
+    let script = "76a914000000000000000000000000000000000000000088ac";
+    let row = |index: u64, zats: u64| {
+        format!(
+            r#"{{"address":"{address}","txid":"{TXID}","outputIndex":{index},"script":"{script}","satoshis":{zats},"height":10}}"#
+        )
+    };
+    let rows: Vec<String> = (0..1_500_u64)
+        .map(|index| row(index, 1_000))
+        .chain((1_500..2_700_u64).map(|index| row(index, 6_000 + index)))
+        .chain(core::iter::once(row(9_999, 5_000_000)))
+        .collect();
+    let all = parse_node_utxos(&json(&format!("[{}]", rows.join(","))), address, script).unwrap();
+    assert_eq!(all.len(), 2_701);
+    let useful = yw_app::zec::rpc::keep_useful(all);
+    assert_eq!(useful.utxos.len(), yw_core::zec::ZEC_MAX_UTXOS);
+    assert_eq!(useful.ignored, 2_701 - yw_core::zec::ZEC_MAX_UTXOS);
+    assert_eq!(useful.utxos[0].value, 5_000_000);
+    assert!(
+        useful
+            .utxos
+            .iter()
+            .all(|utxo| utxo.value > yw_core::zec::ZEC_MIN_UTXO)
+    );
+}
+
 #[test]
 fn tx_status_from_getrawtransaction() {
     assert_eq!(

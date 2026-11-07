@@ -156,7 +156,13 @@ impl App {
                 self.refresh();
             }
             ids::COPY_ADDRESS => {
-                if let Some(account) = self.zec_account() {
+                if let Some(account) = self.zec_account()
+                    && matches!(
+                        self.zec_hw_state(),
+                        crate::app_zec::ZecHwState::NotHardware
+                            | crate::app_zec::ZecHwState::Present
+                    )
+                {
                     self.copy_text(&account.address());
                 }
             }
@@ -354,7 +360,7 @@ impl App {
                     let reserved: Vec<_> = self
                         .zec_records()
                         .iter()
-                        .filter(|record| record.may_still_confirm())
+                        .filter(|record| record.reserves_inputs())
                         .flat_map(yw_core::journal::zec::ZecRecord::inputs)
                         .collect();
                     let mut confirmed = 0_u64;
@@ -429,8 +435,20 @@ impl App {
         items.push(Item::Row(row));
         items.push(Item::CardEnd);
 
-        // Receive.
-        if let Some(account) = account {
+        // Receive (hidden while a hardware account's key is missing or not yet checked).
+        let hw_state = self.zec_hw_state();
+        if hw_state == crate::app_zec::ZecHwState::Missing {
+            items.push(Item::Banner(
+                crate::app_zec::T_ZEC_HW_MISSING.to_owned(),
+                Tone::Danger,
+            ));
+        }
+        if let Some(account) = account.filter(|_| {
+            matches!(
+                hw_state,
+                crate::app_zec::ZecHwState::NotHardware | crate::app_zec::ZecHwState::Present
+            )
+        }) {
             let address = account.address();
             items.push(Item::CardStart(Some("받기".to_owned())));
             items.push(Item::Mono(grouped(&address)));
@@ -520,10 +538,23 @@ impl App {
         }
         if let Some(snapshot) = snapshot {
             items.push(Item::Subtitle("받은 출력 (UTXO, 서버 기준)".to_owned()));
-            if snapshot.utxos.is_empty() {
+            if let Some(error) = snapshot.utxo_error {
+                items.push(Item::Help(format!(
+                    "출력 목록을 불러오지 못했습니다: {}",
+                    error.text()
+                )));
+            } else if snapshot.utxos.is_empty() {
                 items.push(Item::Help(
                     "이 주소에 사용 가능한 출력이 없습니다.".to_owned(),
                 ));
+            }
+            if snapshot.ignored_utxos > 0 {
+                items.push(Item::Help(format!(
+                    "아주 작은 출력(먼지, {} zats 이하)이나 한도({}개)를 넘는 작은 출력 {}개는 잔액과 보내기에서 제외했습니다.",
+                    yw_core::zec::ZEC_MIN_UTXO,
+                    yw_core::zec::ZEC_MAX_UTXOS,
+                    snapshot.ignored_utxos
+                )));
             }
             for utxo in snapshot.utxos.iter().take(50) {
                 let height = utxo

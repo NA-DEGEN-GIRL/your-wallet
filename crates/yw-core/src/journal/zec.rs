@@ -49,6 +49,10 @@ pub enum ZecTxState {
     /// Never handed to any node and discarded (terminal; e.g. the send was cancelled after
     /// signing because the node check failed).
     Discarded = 6,
+    /// Past the expiry margin the node does not know it, but none of its inputs is unspent any
+    /// more: it may have been mined (a node without that transaction indexed) or the inputs went
+    /// elsewhere (terminal, no resend; its inputs stay reserved — spec/12 §12.2).
+    InputsSpent = 7,
 }
 
 impl ZecTxState {
@@ -62,6 +66,7 @@ impl ZecTxState {
             4 => Self::Expired,
             5 => Self::Rejected,
             6 => Self::Discarded,
+            7 => Self::InputsSpent,
             _ => return None,
         })
     }
@@ -69,7 +74,10 @@ impl ZecTxState {
     /// Terminal: nothing about this record can change any more.
     #[must_use]
     pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Confirmed | Self::Expired | Self::Discarded)
+        matches!(
+            self,
+            Self::Confirmed | Self::Expired | Self::Discarded | Self::InputsSpent
+        )
     }
 
     /// Display label.
@@ -82,6 +90,7 @@ impl ZecTxState {
             Self::Expired => "만료됨 (포함되지 않음)",
             Self::Rejected => "노드가 거부함 (만료까지 대기)",
             Self::Discarded => "폐기됨 (전송 안 함)",
+            Self::InputsSpent => "입력이 사용됨 — 포함되었을 수 있음",
         }
     }
 
@@ -95,6 +104,7 @@ impl ZecTxState {
             Self::Expired => "Expired",
             Self::Rejected => "Rejected",
             Self::Discarded => "Discarded",
+            Self::InputsSpent => "InputsSpent",
         }
     }
 }
@@ -242,6 +252,13 @@ impl ZecRecord {
     #[must_use]
     pub const fn may_still_confirm(&self) -> bool {
         !self.state.is_terminal()
+    }
+
+    /// Whether this record's inputs are never selected again: every record that may still
+    /// confirm, and an [`ZecTxState::InputsSpent`] one (it may be in the chain).
+    #[must_use]
+    pub const fn reserves_inputs(&self) -> bool {
+        self.may_still_confirm() || matches!(self.state, ZecTxState::InputsSpent)
     }
 
     /// Encodes the body.
@@ -470,7 +487,7 @@ pub fn reserved_inputs(plain: &JournalPlain, network: ZecNetwork) -> Vec<ZecOutP
     ZecEntries::from_plain(plain)
         .records
         .iter()
-        .filter(|(_, record)| record.may_still_confirm() && record.account.network == network)
+        .filter(|(_, record)| record.reserves_inputs() && record.account.network == network)
         .flat_map(|(_, record)| record.inputs())
         .collect()
 }
@@ -570,8 +587,10 @@ pub enum ZecTransition {
     NotFound,
     /// Seen again in the mempool (resets the not-found count).
     InMempool,
-    /// The tip passed the expiry height and it is not mined.
+    /// The tip passed the expiry height and it is not mined (at least one input still unspent).
     Expired,
+    /// The tip passed the expiry height, the node does not know it and every input is spent.
+    InputsSpent,
 }
 
 /// Applies `transition` to the record with `txid` (internal order); returns the new state if a
@@ -621,6 +640,7 @@ pub fn apply(
             ZecTransition::NotFound => record.not_found = record.not_found.saturating_add(1),
             ZecTransition::InMempool => record.not_found = 0,
             ZecTransition::Expired => record.state = ZecTxState::Expired,
+            ZecTransition::InputsSpent => record.state = ZecTxState::InputsSpent,
         }
         let state = record.state;
         let body = record.encode().ok()?;

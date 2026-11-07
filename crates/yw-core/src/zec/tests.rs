@@ -595,6 +595,21 @@ fn mocked_end_to_end_send() {
     zj::check_plan_allowed(&journal, &account).unwrap();
     assert!(zj::reserved_inputs(&journal, ZecNetwork::Testnet).is_empty());
 
+    // Past expiry, unknown to the node, every input spent: "may have been included" — terminal
+    // (no resend, sending allowed again) but its inputs stay reserved.
+    let mut spent = JournalPlain::default();
+    zj::push_record(&mut spent, &record).unwrap();
+    assert_eq!(
+        zj::apply(&mut spent, &txid, ZecTransition::InputsSpent),
+        Some(ZecTxState::InputsSpent)
+    );
+    zj::check_plan_allowed(&spent, &account).unwrap();
+    assert_eq!(
+        zj::reserved_inputs(&spent, ZecNetwork::Testnet),
+        vec![utxo(1, 0).outpoint, utxo(2, 0).outpoint]
+    );
+    assert_eq!(zj::apply(&mut spent, &txid, ZecTransition::Expired), None);
+
     // The signature is from the derived key: HASH160 matches the account address.
     assert_eq!(hash160(&pubkey), account.pubkey_hash());
 }
@@ -656,4 +671,15 @@ fn planning_rules() {
         plan_send(&account, &request),
         Err(ZecPlanError::AmountInvalid)
     );
+    // Send-max with more eligible outputs than one transaction spends: the largest 50 (dust is
+    // never eligible).
+    request.amount = ZecAmount::Max;
+    request.utxos = (1..=60_u8)
+        .map(|n| utxo(n, 100_000 + u64::from(n)))
+        .chain([utxo(200, crate::zec::ZEC_MIN_UTXO)])
+        .collect();
+    let plan = plan_send(&account, &request).unwrap();
+    assert_eq!(plan.inputs.len(), crate::zec::ZEC_MAX_INPUTS);
+    assert_eq!(plan.excluded_inputs, 10);
+    assert!(plan.inputs.iter().all(|input| input.value > 100_010));
 }
