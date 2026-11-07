@@ -17,8 +17,9 @@
 //! - the capture exclusion of the tour's own secret windows is lifted right before capture with
 //!   `dev_tour_lift_capture_exclusion` (debug builds only) — the app's code path is unchanged.
 //!
-//! `cargo test -p yw-app --lib ui::tour -- --ignored --nocapture` (`YW_TOUR_DIR` = output
-//! folder, default `target/screenshot-tour`).
+//! `cargo test -p yw-app --lib ui::tour::screenshot_tour -- --ignored --exact --nocapture`
+//! (`YW_TOUR_DIR` = output folder, default `target/screenshot-tour`; a bare `ui::tour` filter
+//! also runs the scroll check, `ui::tour::scroll`).
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -1578,3 +1579,6 @@ fn screenshot_tour() {
     drop(app);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// DEV ONLY: the scroll repaint check reuses the tour's window setup.
+mod scroll;

@@ -141,6 +141,135 @@ thread_local! {
     /// The state box [`create_window`] is creating on this thread (0 = none). `WM_NCCREATE`
     /// adopts exactly this pointer, once.
     static CREATING: Cell<usize> = const { Cell::new(0) };
+    /// [`Handler::on`] calls running on this thread. While one runs, its window's handler (and
+    /// the app state behind it) is borrowed, so a `WM_PAINT` sent from inside it could not be
+    /// painted: synchronous repaints wait for the last call to return ([`Window::update_now`]).
+    static HANDLERS: Cell<u32> = const { Cell::new(0) };
+    /// Repaints owed to our windows: hwnd and the rectangle to invalidate again (`None` = only
+    /// what is still invalid), run when the last handler call returns ([`flush_owed`]).
+    static OWED: RefCell<Vec<(usize, Option<RECT>)>> = const { RefCell::new(Vec::new()) };
+    /// [`flush_owed`] is running (it does not start again from the paints it causes).
+    static FLUSHING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Records a repaint owed to `hwnd` (merged with one already owed: the rectangles' union).
+fn owe(hwnd: HWND, rect: Option<RECT>) {
+    OWED.with(|owed| {
+        let Ok(mut owed) = owed.try_borrow_mut() else {
+            return;
+        };
+        let key = hwnd.expose_provenance();
+        match owed.iter_mut().find(|(owner, _)| *owner == key) {
+            Some((_, existing)) => {
+                *existing = match (*existing, rect) {
+                    (Some(a), Some(b)) => Some(RECT {
+                        left: a.left.min(b.left),
+                        top: a.top.min(b.top),
+                        right: a.right.max(b.right),
+                        bottom: a.bottom.max(b.bottom),
+                    }),
+                    (a, b) => a.or(b),
+                };
+            }
+            None => owed.push((key, rect)),
+        }
+    });
+}
+
+/// A `WM_PAINT` that cannot be painted now (the handler, or the app state it needs, is busy in a
+/// call further up this thread's stack): the default processing validates the update region as
+/// before, so a queued paint does not repeat, and the region is owed — repainted when the last
+/// running handler call returns ([`flush_owed`]) instead of keeping whatever pixels were there
+/// (after `ScrollWindowEx`, a stale copy of the content).
+fn defer_paint(hwnd: HWND) {
+    let mut update = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    // SAFETY: Reads our live window's update rectangle into writable storage (no erase).
+    let pending = unsafe { GetUpdateRect(hwnd, &raw mut update, 0) } != 0;
+    default_proc(hwnd, WM_PAINT, 0, 0);
+    if pending {
+        owe(hwnd, Some(update));
+    }
+}
+
+/// Runs the repaints owed while handlers ran: invalidates each owed rectangle again and paints
+/// the window and its children synchronously (`RDW_UPDATENOW`), now that no handler holds the
+/// app state. Paints deferred once more during this flush (state still borrowed by code outside
+/// any handler, e.g. a test) are only invalidated, for the message loop to paint.
+fn flush_owed() {
+    if FLUSHING.with(Cell::get) {
+        return;
+    }
+    let take = || {
+        OWED.with(|owed| {
+            owed.try_borrow_mut()
+                .map(|mut owed| core::mem::take(&mut *owed))
+                .unwrap_or_default()
+        })
+    };
+    let owed = take();
+    if owed.is_empty() {
+        return;
+    }
+    FLUSHING.with(|flag| flag.set(true));
+    for (key, rect) in &owed {
+        repaint_owed(*key, rect.as_ref(), true);
+    }
+    FLUSHING.with(|flag| flag.set(false));
+    for (key, rect) in &take() {
+        repaint_owed(*key, rect.as_ref(), false);
+    }
+}
+
+fn repaint_owed(key: usize, rect: Option<&RECT>, now: bool) {
+    let hwnd: HWND = core::ptr::with_exposed_provenance_mut(key);
+    // Only a window still alive on this thread (one destroyed meanwhile is skipped).
+    if registered_state(hwnd).is_null() {
+        return;
+    }
+    if let Some(rect) = rect {
+        // SAFETY: Invalidates part of our live window's client area; `rect` is valid for the
+        // call; no erase.
+        unsafe { InvalidateRect(hwnd, rect, 0) };
+    }
+    if now {
+        // SAFETY: Paints our live window's and its children's pending update regions now; null
+        // rectangle and region = no new invalidation.
+        unsafe {
+            RedrawWindow(
+                hwnd,
+                core::ptr::null(),
+                core::ptr::null_mut(),
+                RDW_UPDATENOW | RDW_ALLCHILDREN,
+            )
+        };
+    }
+}
+
+/// Calls the window's handler for one message, counting the call ([`HANDLERS`]); `None` when the
+/// handler is already running (a message sent to the window from inside its own handler). When
+/// the last running handler call returns, the repaints owed meanwhile run.
+fn call_handler(state: &WindowState, view: &Window, message: &Msg) -> Option<Reply> {
+    let reply = {
+        let Ok(mut slot) = state.handler.try_borrow_mut() else {
+            return None;
+        };
+        let Some(handler) = slot.as_mut() else {
+            return Some(Reply::Default);
+        };
+        HANDLERS.with(|count| count.set(count.get().saturating_add(1)));
+        let reply = handler.on(view, message);
+        HANDLERS.with(|count| count.set(count.get().saturating_sub(1)));
+        reply
+    };
+    if HANDLERS.with(Cell::get) == 0 {
+        flush_owed();
+    }
+    Some(reply)
 }
 
 /// The `WM_NCCREATE` adoption rule: the creation parameter is exactly the state being created
@@ -679,21 +808,33 @@ impl Window {
         unsafe { SendMessageW(hwnd, WM_SETREDRAW, 0, 0) };
     }
 
-    /// Resumes drawing and repaints the window and all children once, synchronously.
+    /// Resumes drawing, invalidates the window and all children, and paints them once, all
+    /// together ([`Window::update_now`]: synchronously, or right after the running handler
+    /// returns).
     pub fn end_batch(&self) {
         let Some(hwnd) = self.live() else { return };
         // SAFETY: WM_SETREDRAW(TRUE) to our live window; no pointers involved.
         unsafe { SendMessageW(hwnd, WM_SETREDRAW, 1, 0) };
-        // SAFETY: Repaints our live window and its children (null rect/region = the whole
+        // SAFETY: Invalidates our live window and its children (null rect/region = the whole
         // client area); no erase, every paint draws the full area into a back buffer.
         unsafe {
             RedrawWindow(
                 hwnd,
                 core::ptr::null(),
                 core::ptr::null_mut(),
-                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+                RDW_INVALIDATE | RDW_ALLCHILDREN,
             )
         };
+        self.update_now();
+    }
+
+    /// For a handler that cannot paint now (its state is busy further up the stack): validates
+    /// the pending update region like the default `WM_PAINT` processing, and repaints it when
+    /// the last running handler call returns — never leaving the old pixels there. Call it
+    /// instead of answering [`Msg::Paint`] with [`Reply::Default`].
+    pub fn defer_paint(&self) {
+        let Some(hwnd) = self.live() else { return };
+        defer_paint(hwnd);
     }
 
     /// Invalidates only `rect` (client pixels), without background erase, so a periodic update
@@ -938,9 +1079,16 @@ impl Window {
         };
     }
 
-    /// Paints whatever is invalid in the window and its children now (nothing else).
+    /// Paints whatever is invalid in the window and its children (nothing else): at once, or —
+    /// when called from inside a handler, where the `WM_PAINT` would find the handler and the app
+    /// state still borrowed and be dropped unpainted — right after the last running handler call
+    /// returns, still before the next message is taken from the queue.
     pub fn update_now(&self) {
         let Some(hwnd) = self.live() else { return };
+        if HANDLERS.with(Cell::get) > 0 {
+            owe(hwnd, None);
+            return;
+        }
         // SAFETY: Validates our live window and children by painting their pending update
         // regions; null rectangle and region = no new invalidation.
         unsafe {
@@ -1299,11 +1447,7 @@ fn deliver_synthesized(state_ptr: *mut WindowState, hwnd: Hwnd, shared: &Rc<Shar
         shared: Rc::clone(shared),
         owning: false,
     };
-    if let Ok(mut slot) = state.handler.try_borrow_mut()
-        && let Some(handler) = slot.as_mut()
-    {
-        handler.on(&view, msg);
-    }
+    let _ = call_handler(state, &view, msg);
     let depth = state.depth.get().saturating_sub(1);
     state.depth.set(depth);
     if depth == 0 && state.pending_free.get() {
@@ -1406,12 +1550,14 @@ fn dispatch(state: &WindowState, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
     }
     let decoded = decode(msg, wparam, lparam, |target| foreign_focus(hwnd, target));
     let reply = match decoded {
-        Some(message) => match state.handler.try_borrow_mut() {
-            Ok(mut slot) => match slot.as_mut() {
-                Some(handler) => handler.on(&view, &message),
-                None => Reply::Default,
-            },
-            Err(_) => Reply::Default,
+        Some(message) => match call_handler(state, &view, &message) {
+            Some(reply) => reply,
+            None if msg == WM_PAINT => {
+                // Sent from inside this window's own handler: painted when it returns.
+                defer_paint(hwnd);
+                return 0;
+            }
+            None => Reply::Default,
         },
         None => Reply::Default,
     };

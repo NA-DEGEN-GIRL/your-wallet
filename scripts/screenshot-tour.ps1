@@ -31,7 +31,7 @@ if (-not $SkipApp) {
     $env:YW_TOUR_DIR = $Raw
     Push-Location $Root
     try {
-        & cargo test -p yw-app --lib --locked ui::tour -- --ignored --nocapture
+        & cargo test -p yw-app --lib --locked ui::tour::screenshot_tour -- --ignored --exact --nocapture
         if ($LASTEXITCODE -ne 0) { throw "tour failed (exit $LASTEXITCODE)" }
     } finally {
         Pop-Location

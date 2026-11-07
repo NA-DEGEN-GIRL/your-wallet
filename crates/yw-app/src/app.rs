@@ -423,6 +423,11 @@ impl Handler for Forward {
             return Reply::Default;
         };
         let Ok(mut app) = app.try_borrow_mut() else {
+            // A paint requested from inside another handler: owed, not dropped unpainted.
+            if matches!(msg, Msg::Paint) {
+                window.defer_paint();
+                return Reply::Handled(0);
+            }
             return Reply::Default;
         };
         match self.target {
