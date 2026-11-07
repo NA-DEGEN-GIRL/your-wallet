@@ -1584,6 +1584,59 @@ fn diff_only_approvals_get_balances_and_sixteen_spenders_are_classified() -> Tes
     Ok(())
 }
 
+/// spec/03 §10.2a, §8.5: the decoded recipient of an ERC-20 `transfer` is classified in its own
+/// slot (next to `to`, the token), so its "호출 인수 · to" row carries the account-kind note.
+#[test]
+fn erc20_transfer_recipient_is_classified() -> TestResult {
+    let chain = sepolia();
+    let token = chain.tokens.first().ok_or("no registry token")?.address;
+    let recipient = address(NEW)?;
+    let intent = yw_app::flow::evm::prepare::SendIntent {
+        to: token,
+        value: U256::ZERO,
+        data: yw_core::evm::abi::erc20_transfer_data(&recipient, &U256::from_u64(1_000_000)),
+        access_list: Vec::new(),
+        dapp_gas: None,
+        dapp_nonce: None,
+    };
+    let rpc = fake(world(11_155_111, SEPOLIA_GENESIS, Vec::new()));
+    let clock = FakeClock::at(S2_UNIX_MS);
+    let job = job(chain, address(USER)?, intent);
+    let prepared = ready(
+        prepare(
+            &rpc.shared(),
+            &mut ChainCache::default(),
+            &job,
+            &clock,
+            &|_| {},
+        )
+        .outcome,
+    )?;
+    let needle = NEW[2..].to_ascii_lowercase();
+    assert!(
+        rpc.params_of("eth_getCode")
+            .iter()
+            .any(|params| params.to_ascii_lowercase().contains(&needle))
+    );
+    assert_eq!(
+        prepared.context.facts.code_of(&recipient),
+        Some(yw_core::approval::CodeKind::Eoa)
+    );
+    assert!(
+        prepared
+            .draft
+            .display
+            .fields
+            .iter()
+            .any(|field| field.sub_label.ends_with("to")
+                && field.value.replace(' ', "").contains(NEW)
+                && field.value.contains("[일반 계정(EOA)]")),
+        "{:?}",
+        prepared.draft.display.fields
+    );
+    Ok(())
+}
+
 /// A Base-like world whose `GasPriceOracle` answers `getL1Fee` and `getOperatorFee` (or nothing).
 fn op_stack_world(oracle: bool) -> std::sync::Arc<FakeRpc> {
     use yw_core::evm::chain::{BASE_GENESIS, BASE_MAINNET};
