@@ -67,6 +67,7 @@ native host 등록은 `install.cmd`가 한다(spec/05 §9). 확장 소스를 고
 | [docs/screenshots/](docs/screenshots/) | 화면 투어(주요 화면·승인 창·확장 팝업, 시험용 값) |
 | [docs/ux-review-20261107.md](docs/ux-review-20261107.md) | 최근 UI/UX 검토(고친 것·남긴 것; 이전 [10-31](docs/ux-review-20261031.md)) |
 | [docs/security-review-20261101.md](docs/security-review-20261101.md) | 보안 검토(발견·권고 순서·스펙 편차) |
+| [docs/android-feasibility-20261107.md](docs/android-feasibility-20261107.md) | Android 이식 타당성 검토(같은 보안 수준의 조건·맞출 수 없는 것·단계 계획, 코드 변경 없음) |
 
 ## 보안 범위
 
