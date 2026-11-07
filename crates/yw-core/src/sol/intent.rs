@@ -73,6 +73,10 @@ impl SolTransferIntent {
         t.push_u8(self.source.tag());
         t.push_u32(a);
         t.push_u32(b);
+        // Tag 8 (an added mnemonic's account) binds its record id; other tags are unchanged.
+        if let Some(id) = self.source.mnemonic() {
+            push_bytes(&mut t, id.as_bytes());
+        }
         push_bytes(&mut t, self.core.from.as_bytes());
         push_bytes(&mut t, self.core.to.as_bytes());
         t.push_u8(self.core.asset.tag());

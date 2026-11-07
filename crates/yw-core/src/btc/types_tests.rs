@@ -1426,6 +1426,7 @@ fn meta_versions_and_accounts_codec() {
     }
     assert!(accounts.upsert(primary.clone()).is_err());
     accounts.selected = Some(BtcAccountId::Hd {
+        mnemonic: None,
         script_type: ScriptType::P2tr,
         account: 0,
     });
@@ -1439,6 +1440,7 @@ fn meta_versions_and_accounts_codec() {
     assert_eq!(
         decoded.selected_on(BtcNetwork::Mainnet),
         BtcAccountId::Hd {
+            mnemonic: None,
             script_type: ScriptType::P2tr,
             account: 0
         }
@@ -1524,6 +1526,7 @@ fn key_sources() {
     assert_eq!(
         source,
         BtcKeySource::Derived {
+            mnemonic: None,
             script_type: ScriptType::P2shP2wpkh,
             account: 4,
             chain: BtcChain::Change,

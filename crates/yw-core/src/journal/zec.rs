@@ -22,12 +22,19 @@ use crate::zec::{ZEC_JOURNAL_FINAL_KEEP, ZEC_MAX_JOURNAL_RAW};
 
 /// `record_kind` (fixed).
 pub const RECORD_KIND: u8 = 0x04;
-/// `record_version`.
+/// `record_version` of every record whose key is not an added mnemonic's (unchanged layout).
 pub const RECORD_VERSION: u8 = 1;
+/// `record_version` of an added mnemonic's account (source code 5, spec/02 §8.6): the version 1
+/// header, then the 16-byte mnemonic record id, then the transaction. Earlier builds treat it as
+/// a damaged body (ZEC sending stops, the bytes are kept; spec/04 §6.6).
+pub const RECORD_VERSION_V2: u8 = 2;
 /// Fixed header length.
 pub const ZEC_JOURNAL_HEADER_LEN: usize = 135;
-/// Largest ZEC body.
-pub const ZEC_JOURNAL_MAX_BODY: usize = ZEC_JOURNAL_HEADER_LEN + ZEC_MAX_JOURNAL_RAW;
+/// The mnemonic record id of a version 2 record.
+pub const ZEC_JOURNAL_MNEMONIC_LEN: usize = 16;
+/// Largest ZEC body (version 2).
+pub const ZEC_JOURNAL_MAX_BODY: usize =
+    ZEC_JOURNAL_HEADER_LEN + ZEC_JOURNAL_MNEMONIC_LEN + ZEC_MAX_JOURNAL_RAW;
 /// ZEC records in the journal.
 pub const ZEC_JOURNAL_MAX_RECORDS: usize = 80;
 
@@ -272,9 +279,15 @@ impl ZecRecord {
         }
         let raw_len = u16::try_from(self.raw.len()).map_err(|_| ZecRecordError::Length)?;
         let (a, b) = self.account.source.params();
-        let mut out = Vec::with_capacity(ZEC_JOURNAL_HEADER_LEN + self.raw.len());
+        let mnemonic = self.account.source.mnemonic();
+        let mut out =
+            Vec::with_capacity(ZEC_JOURNAL_HEADER_LEN + ZEC_JOURNAL_MNEMONIC_LEN + self.raw.len());
         out.push(RECORD_KIND);
-        out.push(RECORD_VERSION);
+        out.push(if mnemonic.is_some() {
+            RECORD_VERSION_V2
+        } else {
+            RECORD_VERSION
+        });
         out.push(self.state as u8);
         out.push(self.account.network.id());
         out.push(self.account.source.code());
@@ -292,6 +305,9 @@ impl ZecRecord {
         out.extend_from_slice(&self.input_total.to_be_bytes());
         out.extend_from_slice(&raw_len.to_be_bytes());
         debug_assert_eq!(out.len(), ZEC_JOURNAL_HEADER_LEN);
+        if let Some(id) = mnemonic {
+            out.extend_from_slice(id.as_bytes());
+        }
         out.extend_from_slice(&self.raw);
         Ok(out)
     }
@@ -307,15 +323,32 @@ impl ZecRecord {
         if body.len() < ZEC_JOURNAL_HEADER_LEN {
             return Err(len);
         }
-        if body.first() != Some(&RECORD_KIND) || body.get(1) != Some(&RECORD_VERSION) {
-            return Err(ZecRecordError::Header);
-        }
+        let v2 = match (body.first(), body.get(1)) {
+            (Some(&RECORD_KIND), Some(&RECORD_VERSION)) => false,
+            (Some(&RECORD_KIND), Some(&RECORD_VERSION_V2)) => true,
+            _ => return Err(ZecRecordError::Header),
+        };
+        let raw_at = if v2 {
+            ZEC_JOURNAL_HEADER_LEN + ZEC_JOURNAL_MNEMONIC_LEN
+        } else {
+            ZEC_JOURNAL_HEADER_LEN
+        };
         let byte = |at: usize| body.get(at).copied().ok_or(len);
         let state = ZecTxState::from_code(byte(2)?).ok_or(ZecRecordError::Value)?;
         let network = ZecNetwork::from_id(byte(3)?).ok_or(ZecRecordError::Value)?;
         let a = be_u32(body, 5).ok_or(len)?;
         let b = be_u32(body, 9).ok_or(len)?;
-        let source = ZecKeySource::from_parts(byte(4)?, a, b).ok_or(ZecRecordError::Value)?;
+        // Code 5 (an added mnemonic) exactly in version 2, with its record id after the header.
+        let source = match (v2, byte(4)?) {
+            (true, 5) => ZecKeySource::from_mnemonic_parts(
+                array::<16>(body, ZEC_JOURNAL_HEADER_LEN).ok_or(len)?,
+                a,
+                b,
+            ),
+            (false, code) if code != 5 => ZecKeySource::from_parts(code, a, b),
+            _ => return Err(ZecRecordError::Header),
+        }
+        .ok_or(ZecRecordError::Value)?;
         let pubkey = array::<33>(body, 13).ok_or(len)?;
         let approval_id = array::<16>(body, 46).ok_or(len)?;
         let approval_digest = array::<32>(body, 62).ok_or(len)?;
@@ -333,11 +366,11 @@ impl ZecRecord {
         let raw_len = usize::from(be_u16(body, 133).ok_or(len)?);
         if raw_len == 0
             || raw_len > ZEC_MAX_JOURNAL_RAW
-            || body.len() != ZEC_JOURNAL_HEADER_LEN.saturating_add(raw_len)
+            || body.len() != raw_at.saturating_add(raw_len)
         {
             return Err(len);
         }
-        let raw = body.get(ZEC_JOURNAL_HEADER_LEN..).ok_or(len)?.to_vec();
+        let raw = body.get(raw_at..).ok_or(len)?.to_vec();
         let record = Self {
             state,
             account: ZecAccount {

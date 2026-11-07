@@ -398,12 +398,21 @@ impl BtcKeys for Vault {
         f: impl FnOnce(&Secp256k1<All>, &SecretKey) -> Result<T, SignError>,
     ) -> Result<T, SignError> {
         match source {
-            BtcKeySource::Derived { chain, index, .. } => {
+            BtcKeySource::Derived {
+                mnemonic,
+                chain,
+                index,
+                ..
+            } => {
                 let coin = source.coin(network).ok_or(SignError::Derivation)?;
-                self.with_secp_key(KeyRef::Btc { coin, chain, index }, |ctx, secret| {
-                    Ok(f(ctx, secret))
-                })
-                .map_err(SignError::Vault)?
+                let key = KeyRef::Btc {
+                    mnemonic,
+                    coin,
+                    chain,
+                    index,
+                };
+                self.with_secp_key(key, |ctx, secret| Ok(f(ctx, secret)))
+                    .map_err(SignError::Vault)?
             }
             BtcKeySource::Imported {
                 id,

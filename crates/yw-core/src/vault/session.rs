@@ -661,12 +661,18 @@ impl Vault {
     /// one).
     fn require_key_backup(payload: &Payload, key: KeyRef) -> Result<(), VaultError> {
         let record = match key {
-            KeyRef::Evm(EvmKeySource::Mnemonic(id, _)) => payload.mnemonic(id.as_bytes()),
+            KeyRef::Evm(EvmKeySource::Mnemonic(id, _))
+            | KeyRef::Btc {
+                mnemonic: Some(id), ..
+            }
+            | KeyRef::Zec {
+                mnemonic: Some(id), ..
+            } => payload.mnemonic(id.as_bytes()),
             KeyRef::Evm(EvmKeySource::Raw(_) | EvmKeySource::Hardware(_))
             | KeyRef::ZecImported { .. } => None,
-            KeyRef::Evm(EvmKeySource::Derived(_)) | KeyRef::Btc { .. } | KeyRef::Zec { .. } => {
-                payload.primary()
-            }
+            KeyRef::Evm(EvmKeySource::Derived(_))
+            | KeyRef::Btc { mnemonic: None, .. }
+            | KeyRef::Zec { mnemonic: None, .. } => payload.primary(),
         };
         if record.is_some_and(|record| !record.backup_confirmed) {
             return Err(VaultError::BackupNotConfirmed);
@@ -680,6 +686,7 @@ impl Vault {
         payload: &Payload,
         key: KeyRef,
     ) -> Result<SecretKey, VaultError> {
+        let mut mnemonic = None;
         let path = match key {
             KeyRef::Evm(EvmKeySource::Raw(id)) => {
                 let raw = payload
@@ -696,12 +703,24 @@ impl Vault {
             }
             // A YubiKey account has no key on the PC (spec/10 §1).
             KeyRef::Evm(EvmKeySource::Hardware(_)) => return Err(VaultError::RecordNotFound),
-            KeyRef::Btc { coin, chain, index } => btc_path(coin, chain, index)?,
+            KeyRef::Btc {
+                mnemonic: id,
+                coin,
+                chain,
+                index,
+            } => {
+                mnemonic = id;
+                btc_path(coin, chain, index)?
+            }
             KeyRef::Zec {
+                mnemonic: id,
                 test,
                 account,
                 index,
-            } => crate::bip32::path::zec_path(test, account, index)?,
+            } => {
+                mnemonic = id;
+                crate::bip32::path::zec_path(test, account, index)?
+            }
             KeyRef::ZecImported { network, pubkey } => {
                 for record in payload.zec_keys.iter().filter(|zec| zec.network == network) {
                     let mut secret =
@@ -714,8 +733,20 @@ impl Vault {
                 return Err(VaultError::RecordNotFound);
             }
         };
-        let seed = self.seed(payload)?;
+        let seed = self.seed_for(payload, mnemonic)?;
         Ok(secret_key_from_seed(ctx, seed.expose(), &path)?)
+    }
+
+    /// The BIP39 seed of mnemonic `id`, or of the primary one for `None` (spec/02 §8.6).
+    fn seed_for(
+        &self,
+        payload: &Payload,
+        id: Option<RecordId>,
+    ) -> Result<SecretBytes<64>, VaultError> {
+        match id {
+            Some(id) => self.seed_of(payload, id.as_bytes()),
+            None => self.seed(payload),
+        }
     }
 
     fn commit_vault(&mut self, expected: Option<u64>, bytes: Vec<u8>) -> Result<(), VaultError> {
@@ -1416,13 +1447,15 @@ impl Vault {
         if hardware {
             return Err(VaultError::DuplicateKey);
         }
-        if payload.primary().is_some() {
-            let ctx = secp_context(&mut OsRandom)?;
-            let test = network == crate::zec::ZecNetwork::Testnet;
+        // The standard key of every mnemonic (an added one's is a Zcash account too, §8.6).
+        let ctx = secp_context(&mut OsRandom)?;
+        let test = network == crate::zec::ZecNetwork::Testnet;
+        for (position, record) in payload.bip39.iter().enumerate() {
             let mut derived = self.secret_for(
                 &ctx,
                 payload,
                 KeyRef::Zec {
+                    mnemonic: (position > 0).then_some(RecordId(record.record_id)),
                     test,
                     account: 0,
                     index: 0,
@@ -1709,9 +1742,23 @@ impl Vault {
     ///
     /// `InvalidState` outside `BackupPending`/`Unlocked`, or a derivation error.
     pub fn btc_account_xpub(&self, coin: BtcCoin) -> Result<AccountXpub, VaultError> {
+        self.btc_account_xpub_of(None, coin)
+    }
+
+    /// [`Vault::btc_account_xpub`] of mnemonic `mnemonic` (`None`: the primary one; an added
+    /// mnemonic's Bitcoin accounts, spec/02 §8.6).
+    ///
+    /// # Errors
+    ///
+    /// As [`Vault::btc_account_xpub`], and `RecordNotFound` for an unknown mnemonic.
+    pub fn btc_account_xpub_of(
+        &self,
+        mnemonic: Option<RecordId>,
+        coin: BtcCoin,
+    ) -> Result<AccountXpub, VaultError> {
         self.require_public()?;
         let payload = self.payload()?;
-        let seed = self.seed(&payload)?;
+        let seed = self.seed_for(&payload, mnemonic)?;
         let ctx = secp_context(&mut OsRandom)?;
         Ok(btc_account_xpub_from_seed(&ctx, seed.expose(), coin)?)
     }
@@ -1733,7 +1780,16 @@ impl Vault {
         btc_path(coin, chain, index)?;
         let payload = self.payload()?;
         let ctx = secp_context(&mut OsRandom)?;
-        let mut secret = self.secret_for(&ctx, &payload, KeyRef::Btc { coin, chain, index })?;
+        let mut secret = self.secret_for(
+            &ctx,
+            &payload,
+            KeyRef::Btc {
+                mnemonic: None,
+                coin,
+                chain,
+                index,
+            },
+        )?;
         let public = PublicKey::from_secret_key(&ctx, &secret);
         secret.non_secure_erase();
         Ok(public.serialize())
@@ -1752,6 +1808,22 @@ impl Vault {
         account: u32,
         index: u32,
     ) -> Result<[u8; 33], VaultError> {
+        self.zec_public_key_of(None, test, account, index)
+    }
+
+    /// [`Vault::zec_public_key`] of mnemonic `mnemonic` (`None`: the primary one; an added
+    /// mnemonic's Zcash key, spec/02 §8.6).
+    ///
+    /// # Errors
+    ///
+    /// As [`Vault::zec_public_key`], and `RecordNotFound` for an unknown mnemonic.
+    pub fn zec_public_key_of(
+        &self,
+        mnemonic: Option<RecordId>,
+        test: bool,
+        account: u32,
+        index: u32,
+    ) -> Result<[u8; 33], VaultError> {
         self.require_public()?;
         crate::bip32::path::zec_path(test, account, index)?;
         let payload = self.payload()?;
@@ -1760,6 +1832,7 @@ impl Vault {
             &ctx,
             &payload,
             KeyRef::Zec {
+                mnemonic,
                 test,
                 account,
                 index,
@@ -2310,23 +2383,29 @@ impl Vault {
             return Ok(Vec::new());
         }
         let payload = self.payload()?;
-        // `YubiKey` sources come from the tag-5 slot map; the BIP39 seed is computed only when a
-        // derived source asks for it (a `YubiKey` wallet has no mnemonic).
-        let seed = if srcs.iter().all(|src| src.is_hardware()) {
-            None
-        } else {
-            Some(self.seed(&payload)?)
-        };
-        srcs.iter()
-            .map(|src| match (src, seed.as_ref()) {
-                (SolKeySource::Hardware(index), _) => hardware_sol_public_key(&payload, *index),
-                (_, Some(seed)) => {
-                    let secret = src.ed25519_seed(seed.expose())?;
-                    Ok(crate::sol::keys::public_key(&secret))
+        // `YubiKey` sources come from the tag-5 slot map; each mnemonic's BIP39 seed is computed
+        // once, only when a derived source of it asks for it (a `YubiKey` wallet has no
+        // mnemonic; an added mnemonic's accounts use its own seed, spec/02 §8.6).
+        let mut seeds: Vec<(Option<RecordId>, SecretBytes<64>)> = Vec::new();
+        let mut out = Vec::with_capacity(srcs.len());
+        for src in srcs {
+            if let SolKeySource::Hardware(index) = src {
+                out.push(hardware_sol_public_key(&payload, *index)?);
+                continue;
+            }
+            let id = src.mnemonic();
+            let position = match seeds.iter().position(|(known, _)| *known == id) {
+                Some(position) => position,
+                None => {
+                    seeds.push((id, self.seed_for(&payload, id)?));
+                    seeds.len().saturating_sub(1)
                 }
-                (_, None) => Err(INTERNAL),
-            })
-            .collect()
+            };
+            let seed = seeds.get(position).ok_or(INTERNAL)?;
+            let secret = src.ed25519_seed(seed.1.expose())?;
+            out.push(crate::sol::keys::public_key(&secret));
+        }
+        Ok(out)
     }
 
     /// Lends the 32-byte Ed25519 seed of `src` to the Solana signing module (`Unlocked` only).
@@ -2343,13 +2422,15 @@ impl Vault {
             return Err(VaultError::RecordNotFound);
         }
         let payload = self.payload()?;
-        if payload
-            .primary()
-            .is_some_and(|record| !record.backup_confirmed)
-        {
+        // The backup gate of the source's own mnemonic (spec/02 §8.6).
+        let record = match src.mnemonic() {
+            Some(id) => Some(record_of(&payload, id.as_bytes())?.0),
+            None => payload.primary(),
+        };
+        if record.is_some_and(|record| !record.backup_confirmed) {
             return Err(VaultError::BackupNotConfirmed);
         }
-        let seed = self.seed(&payload)?;
+        let seed = self.seed_for(&payload, src.mnemonic())?;
         let secret = src.ed25519_seed(seed.expose())?;
         drop(seed);
         drop(payload);

@@ -24,12 +24,20 @@ use crate::sol::{SignedSolTransfer, SolAddress, SolCluster};
 
 /// `record_kind` (fixed).
 pub const RECORD_KIND: u8 = 0x02;
-/// `record_version`.
+/// `record_version` of every record whose source is not an added mnemonic's (unchanged layout).
 pub const RECORD_VERSION: u8 = 1;
+/// `record_version` of a record of an added mnemonic's account (source tag 8, spec/02 §8.6): the
+/// version 1 header, then the 16-byte mnemonic record id, then the transaction. Earlier builds
+/// treat it as a damaged body (SOL sending stops, the bytes are kept; spec/04 §6.6).
+pub const RECORD_VERSION_V2: u8 = 2;
 /// Fixed header length H (offsets 0..=88).
 pub const SOL_JOURNAL_HEADER_LEN: usize = 89;
-/// Largest SOL body: 89 + 1,232 = 1,321 (spec/02 §5.4).
-pub const SOL_JOURNAL_MAX_BODY: usize = SOL_JOURNAL_HEADER_LEN + SOL_MAX_TX_BYTES;
+/// The mnemonic record id of a version 2 record.
+pub const SOL_JOURNAL_MNEMONIC_LEN: usize = 16;
+/// Largest SOL body: 89 + 16 + 1,232 = 1,337 (spec/02 §5.4; version 1 bodies are at most
+/// 1,321).
+pub const SOL_JOURNAL_MAX_BODY: usize =
+    SOL_JOURNAL_HEADER_LEN + SOL_JOURNAL_MNEMONIC_LEN + SOL_MAX_TX_BYTES;
 /// SOL records in the journal.
 pub const SOL_JOURNAL_MAX_RECORDS: usize = 64;
 const MIN_TX_LEN: usize = 65;
@@ -95,7 +103,8 @@ impl SolTxState {
 pub enum SolRecordError {
     /// Body shorter than the header, `tx_len` outside 65..=1232, or `body_len != 89 + tx_len`.
     Length,
-    /// `record_kind != 0x02` or `record_version != 1`.
+    /// `record_kind != 0x02`, an unknown `record_version`, or a version that does not match the
+    /// source (version 2 exactly for tag 8).
     Header,
     /// Unknown state or cluster.
     Value,
@@ -198,9 +207,14 @@ impl SolRecord {
         }
         let tx_len = u16::try_from(self.tx.len()).map_err(|_| SolRecordError::Length)?;
         let (a, b) = self.source.params();
-        let mut out = Vec::with_capacity(SOL_JOURNAL_HEADER_LEN.saturating_add(self.tx.len()));
+        let mnemonic = self.source.mnemonic();
+        let mut out = Vec::with_capacity(SOL_JOURNAL_MAX_BODY);
         out.push(RECORD_KIND);
-        out.push(RECORD_VERSION);
+        out.push(if mnemonic.is_some() {
+            RECORD_VERSION_V2
+        } else {
+            RECORD_VERSION
+        });
         out.push(self.state as u8);
         out.push(self.cluster.code());
         out.push(self.source.tag());
@@ -213,6 +227,9 @@ impl SolRecord {
         out.extend_from_slice(&self.terminal_slot.to_be_bytes());
         out.extend_from_slice(&self.terminal_err.to_be_bytes());
         out.extend_from_slice(&tx_len.to_be_bytes());
+        if let Some(id) = mnemonic {
+            out.extend_from_slice(id.as_bytes());
+        }
         out.extend_from_slice(&self.tx);
         Ok(out)
     }
@@ -227,15 +244,31 @@ impl SolRecord {
             return Err(SolRecordError::Length);
         }
         let byte = |at: usize| body.get(at).copied().ok_or(SolRecordError::Length);
-        if byte(0)? != RECORD_KIND || byte(1)? != RECORD_VERSION {
-            return Err(SolRecordError::Header);
-        }
+        let v2 = match (byte(0)?, byte(1)?) {
+            (RECORD_KIND, RECORD_VERSION) => false,
+            (RECORD_KIND, RECORD_VERSION_V2) => true,
+            _ => return Err(SolRecordError::Header),
+        };
         let state = SolTxState::from_code(byte(2)?).ok_or(SolRecordError::Value)?;
         let cluster = SolCluster::from_code(byte(3)?).ok_or(SolRecordError::Value)?;
         let a = be_u32(body, 5).ok_or(SolRecordError::Length)?;
         let b = be_u32(body, 9).ok_or(SolRecordError::Length)?;
-        let source =
-            SolKeySource::from_parts(byte(4)?, a, b).map_err(|_| SolRecordError::Source)?;
+        let tx_at = if v2 {
+            SOL_JOURNAL_HEADER_LEN + SOL_JOURNAL_MNEMONIC_LEN
+        } else {
+            SOL_JOURNAL_HEADER_LEN
+        };
+        let source = match (v2, byte(4)?) {
+            (true, 8) => {
+                let id = array::<16>(body, SOL_JOURNAL_HEADER_LEN).ok_or(SolRecordError::Length)?;
+                SolKeySource::from_mnemonic_parts(id, a, b).map_err(|_| SolRecordError::Source)?
+            }
+            // Tag 8 in version 1 is refused by `from_parts` (it needs the record id).
+            (false, tag) => {
+                SolKeySource::from_parts(tag, a, b).map_err(|_| SolRecordError::Source)?
+            }
+            (true, _) => return Err(SolRecordError::Header),
+        };
         let intent_id = array::<16>(body, 13).ok_or(SolRecordError::Length)?;
         let intent_hash = array::<32>(body, 29).ok_or(SolRecordError::Length)?;
         let signed_at_ms = be_u64(body, 61).ok_or(SolRecordError::Length)?;
@@ -244,7 +277,7 @@ impl SolRecord {
         let terminal_err = be_u16(body, 85).ok_or(SolRecordError::Length)?;
         let tx_len = usize::from(be_u16(body, 87).ok_or(SolRecordError::Length)?);
         if !(MIN_TX_LEN..=SOL_MAX_TX_BYTES).contains(&tx_len)
-            || body.len() != SOL_JOURNAL_HEADER_LEN.saturating_add(tx_len)
+            || body.len() != tx_at.saturating_add(tx_len)
         {
             return Err(SolRecordError::Length);
         }
@@ -253,10 +286,7 @@ impl SolRecord {
         {
             return Err(SolRecordError::Terminal);
         }
-        let tx = body
-            .get(SOL_JOURNAL_HEADER_LEN..)
-            .ok_or(SolRecordError::Length)?
-            .to_vec();
+        let tx = body.get(tx_at..).ok_or(SolRecordError::Length)?.to_vec();
         let (core, blockhash, signature) =
             parse_transaction(&tx, cluster).map_err(SolRecordError::Tx)?;
         let message = tx.get(MIN_TX_LEN..).ok_or(SolRecordError::Length)?;

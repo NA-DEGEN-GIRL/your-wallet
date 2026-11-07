@@ -68,6 +68,12 @@ pub const BTC_RECORD_VERSION: u8 = 1;
 /// `record_version` of every other account's records: the version 1 header, then an 18-byte
 /// account block, then inputs and raw bytes.
 pub const BTC_RECORD_VERSION_V2: u8 = 2;
+/// `record_version` of an added mnemonic's HD account (spec/02 §8.6): the version 2 layout with
+/// the 16-byte mnemonic record id after the account block. Earlier builds treat it as a damaged
+/// body (BTC sending stops, the bytes are kept; spec/04 §6.6).
+pub const BTC_RECORD_VERSION_V3: u8 = 3;
+/// The mnemonic record id of a version 3 record.
+pub const BTC_JOURNAL_MNEMONIC_LEN: usize = 16;
 /// Fixed header length.
 pub const BTC_JOURNAL_HEADER_LEN: usize = 238;
 /// The version 2 account block: `source u8 (1 HD, 2 imported, 3 EVM key, 4 YubiKey address key,
@@ -76,9 +82,9 @@ pub const BTC_JOURNAL_HEADER_LEN: usize = 238;
 pub const BTC_JOURNAL_ACCOUNT_LEN: usize = 18;
 /// Bytes per input record.
 pub const BTC_JOURNAL_INPUT_LEN: usize = 49;
-/// Largest BTC body: 238 + 18 + 49 × 100 + 32,768 = 37,924 (spec/02 §5.4; version 1 bodies are
-/// at most 37,906).
-pub const BTC_JOURNAL_MAX_BODY: usize = 37_924;
+/// Largest BTC body: 238 + 18 + 16 + 49 × 100 + 32,768 = 37,940 (spec/02 §5.4; version 1 bodies
+/// are at most 37,906, version 2 at most 37,924).
+pub const BTC_JOURNAL_MAX_BODY: usize = 37_940;
 /// Confirmations at which a transaction is final and tracking stops (spec/08 §12.2-4): one.
 /// The configured Core RPC and indexer are trusted (spec.md §2.2); a reorg of a one-confirmation
 /// transaction is out of scope.
@@ -442,6 +448,7 @@ fn read_inputs(reader: &mut Reader<'_>, count: usize) -> Result<Vec<PlanInput>, 
 /// number, a non-zero imported id, and never BIP84 account 0 (that is version 1).
 fn decode_account_block(
     block: &[u8; BTC_JOURNAL_ACCOUNT_LEN],
+    v3: bool,
 ) -> Result<(BtcAccountId, ScriptType), BtcRecordError> {
     let [source, code, rest @ ..] = block;
     let script_type = ScriptType::from_code(*code).ok_or(BtcRecordError::Value)?;
@@ -454,6 +461,7 @@ fn decode_account_block(
                 return Err(BtcRecordError::Value);
             }
             BtcAccountId::Hd {
+                mnemonic: None,
                 script_type,
                 account,
             }
@@ -483,7 +491,8 @@ fn decode_account_block(
         }
         _ => return Err(BtcRecordError::Value),
     };
-    if account == BtcAccountId::PRIMARY {
+    // Version 3 names an added mnemonic's account (its BIP84 account 0 included).
+    if account == BtcAccountId::PRIMARY && !v3 {
         return Err(BtcRecordError::Version);
     }
     Ok((account, script_type))
@@ -654,6 +663,14 @@ impl BtcRecord {
         self.account == BtcAccountId::PRIMARY
     }
 
+    /// The added mnemonic of the record's account (version 3), `None` otherwise.
+    const fn mnemonic(&self) -> Option<crate::vault::RecordId> {
+        match self.account {
+            BtcAccountId::Hd { mnemonic, .. } => mnemonic,
+            _ => None,
+        }
+    }
+
     /// The version 2 account block.
     fn account_block(&self) -> [u8; BTC_JOURNAL_ACCOUNT_LEN] {
         let mut out = [0_u8; BTC_JOURNAL_ACCOUNT_LEN];
@@ -711,6 +728,8 @@ impl BtcRecord {
         );
         out.push(if self.is_v1() {
             BTC_RECORD_VERSION
+        } else if self.mnemonic().is_some() {
+            BTC_RECORD_VERSION_V3
         } else {
             BTC_RECORD_VERSION_V2
         });
@@ -738,6 +757,9 @@ impl BtcRecord {
         if !self.is_v1() {
             out.extend_from_slice(&self.account_block());
         }
+        if let Some(mnemonic) = self.mnemonic() {
+            out.extend_from_slice(mnemonic.as_bytes());
+        }
         for input in &self.inputs {
             out.extend_from_slice(input.outpoint.txid.as_bytes());
             out.extend_from_slice(&input.outpoint.vout.to_be_bytes());
@@ -759,9 +781,11 @@ impl BtcRecord {
             return Err(BtcRecordError::Length);
         }
         let mut reader = Reader { body, at: 0 };
-        let v2 = match reader.u8()? {
-            BTC_RECORD_VERSION => false,
-            BTC_RECORD_VERSION_V2 => true,
+        let version = reader.u8()?;
+        let (v2, v3) = match version {
+            BTC_RECORD_VERSION => (false, false),
+            BTC_RECORD_VERSION_V2 => (true, false),
+            BTC_RECORD_VERSION_V3 => (true, true),
             _ => return Err(BtcRecordError::Version),
         };
         let network = BtcNetwork::from_id(reader.u8()?).ok_or(BtcRecordError::Value)?;
@@ -806,6 +830,7 @@ impl BtcRecord {
             .checked_mul(count)
             .and_then(|inputs| inputs.checked_add(BTC_JOURNAL_HEADER_LEN))
             .and_then(|fixed| fixed.checked_add(if v2 { BTC_JOURNAL_ACCOUNT_LEN } else { 0 }))
+            .and_then(|fixed| fixed.checked_add(if v3 { BTC_JOURNAL_MNEMONIC_LEN } else { 0 }))
             .and_then(|fixed| fixed.checked_add(raw_len))
             .ok_or(BtcRecordError::Length)?;
         if body.len() != expected {
@@ -813,7 +838,28 @@ impl BtcRecord {
         }
         let (account, script_type) = if v2 {
             let block = reader.array::<BTC_JOURNAL_ACCOUNT_LEN>()?;
-            decode_account_block(&block)?
+            let (account, script_type) = decode_account_block(&block, v3)?;
+            if v3 {
+                // Version 3: an HD account of the added mnemonic named by a non-zero record id.
+                let id = reader.array::<BTC_JOURNAL_MNEMONIC_LEN>()?;
+                match account {
+                    BtcAccountId::Hd {
+                        script_type,
+                        account,
+                        ..
+                    } if id != [0; 16] => (
+                        BtcAccountId::Hd {
+                            mnemonic: Some(crate::vault::RecordId::from_bytes(id)),
+                            script_type,
+                            account,
+                        },
+                        script_type,
+                    ),
+                    _ => return Err(BtcRecordError::Value),
+                }
+            } else {
+                (account, script_type)
+            }
         } else {
             (BtcAccountId::PRIMARY, ScriptType::P2wpkh)
         };

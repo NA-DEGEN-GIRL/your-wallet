@@ -67,6 +67,35 @@ fn account_from(network: ZecNetwork, value: &Value) -> Option<ZecAccount> {
     })
 }
 
+fn mnemonic_account_from(network: ZecNetwork, value: &Value) -> Option<ZecAccount> {
+    let object = value.as_object()?;
+    if object.len() != 4 {
+        return None;
+    }
+    let number = |key: &str| -> Option<u32> {
+        object
+            .get(key)?
+            .as_number()?
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+    };
+    let text = object.get("mnemonic")?.as_str()?;
+    if text.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return None;
+    }
+    let id = yw_core::hex::decode_array::<16>(text).ok()?;
+    let source = ZecKeySource::from_mnemonic_parts(id, number("a")?, number("b")?)?;
+    let pubkey = yw_core::hex::decode_array::<33>(object.get("pubkey")?.as_str()?).ok()?;
+    if !matches!(pubkey.first(), Some(0x02 | 0x03)) {
+        return None;
+    }
+    Some(ZecAccount {
+        network,
+        source,
+        pubkey,
+    })
+}
+
 impl ZcashMeta {
     /// The account of `network`.
     #[must_use]
@@ -93,22 +122,91 @@ impl ZcashMeta {
         }
     }
 
-    /// Nothing stored (the key is then not written).
+    /// Nothing stored in the `zcash` key (it is then not written): no account, or only accounts
+    /// on an added mnemonic's key (those go to `mnemonic_accounts.zec`).
     #[must_use]
-    pub const fn is_default(&self) -> bool {
-        self.mainnet.is_none() && self.testnet.is_none()
+    pub fn is_default(&self) -> bool {
+        ZecNetwork::ALL.iter().all(|network| {
+            self.get(*network)
+                .is_none_or(|account| account.source.mnemonic().is_some())
+        })
     }
 
-    /// The JSON value.
+    /// The `zcash` value: every account except those on an added mnemonic's key (earlier builds
+    /// would drop such an entry and make the network's account again; spec/02 §8.6).
     #[must_use]
     pub fn to_json(&self) -> Value {
         let mut pairs = Vec::new();
         for network in ZecNetwork::ALL {
-            if let Some(account) = self.get(network) {
+            if let Some(account) = self.get(network)
+                && account.source.mnemonic().is_none()
+            {
                 pairs.push((network.name().to_owned(), account_json(account)));
             }
         }
         Value::Object(Object::from_pairs(pairs).unwrap_or_default())
+    }
+
+    /// `mnemonic_accounts.zec` (`None` without such an account): `{network: {"mnemonic": Hex16,
+    /// "a": account, "b": index, "pubkey": hex66}}`.
+    #[must_use]
+    pub fn mnemonic_accounts_json(&self) -> Option<Value> {
+        let mut pairs = Vec::new();
+        for network in ZecNetwork::ALL {
+            let Some(account) = self.get(network) else {
+                continue;
+            };
+            let Some(id) = account.source.mnemonic() else {
+                continue;
+            };
+            let (a, b) = account.source.params();
+            let number = |value: u32| Value::Number(Number::from_u64(u64::from(value)));
+            pairs.push((
+                network.name().to_owned(),
+                Value::Object(
+                    Object::from_pairs(vec![
+                        (
+                            "mnemonic".to_owned(),
+                            Value::String(yw_core::hex::encode(id.as_bytes())),
+                        ),
+                        ("a".to_owned(), number(a)),
+                        ("b".to_owned(), number(b)),
+                        (
+                            "pubkey".to_owned(),
+                            Value::String(yw_core::hex::encode(&account.pubkey)),
+                        ),
+                    ])
+                    .unwrap_or_default(),
+                ),
+            ));
+        }
+        (!pairs.is_empty()).then(|| Value::Object(Object::from_pairs(pairs).unwrap_or_default()))
+    }
+
+    /// Reads `mnemonic_accounts.zec` over the `zcash` accounts (strict: `false` for an invalid
+    /// value). Such an entry wins over the network's `zcash` entry (an earlier build may have made
+    /// that one again meanwhile).
+    #[must_use]
+    pub fn read_mnemonic_accounts(&mut self, value: &Value) -> bool {
+        let Some(object) = value.as_object() else {
+            return false;
+        };
+        if object
+            .keys()
+            .any(|key| !ZecNetwork::ALL.iter().any(|network| network.name() == key))
+        {
+            return false;
+        }
+        for network in ZecNetwork::ALL {
+            let Some(entry) = object.get(network.name()) else {
+                continue;
+            };
+            let Some(account) = mnemonic_account_from(network, entry) else {
+                return false;
+            };
+            self.set(account);
+        }
+        true
     }
 
     /// Parses the key (`None` value = absent). An invalid entry drops that network's account

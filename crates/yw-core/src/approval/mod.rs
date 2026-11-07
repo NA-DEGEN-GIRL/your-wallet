@@ -246,6 +246,10 @@ impl SolMessagePayload {
         transcript.push_u8(self.source.tag());
         transcript.push_u32(a);
         transcript.push_u32(b);
+        // Tag 8 (an added mnemonic's account) binds its record id; other tags are unchanged.
+        if let Some(id) = self.source.mnemonic() {
+            let _ = transcript.push_bytes(id.as_bytes());
+        }
         let _ = transcript.push_bytes(&self.public);
         let _ = transcript.push_bytes(&self.message);
         transcript.into_bytes()
@@ -281,12 +285,18 @@ impl BtcMessagePayload {
         transcript.push_u8(self.network.id());
         match self.source {
             BtcKeySource::Derived {
+                mnemonic,
                 script_type,
                 account,
                 chain,
                 index,
             } => {
-                transcript.push_u8(1);
+                // An added mnemonic's key: its own source code and record id (spec/02 §8.6);
+                // the primary mnemonic's bytes are unchanged.
+                transcript.push_u8(if mnemonic.is_some() { 6 } else { 1 });
+                if let Some(id) = mnemonic {
+                    let _ = transcript.push_bytes(id.as_bytes());
+                }
                 transcript.push_u8(script_type.code());
                 transcript.push_u32(account);
                 transcript.push_bool(matches!(chain, crate::bip32::path::BtcChain::Change));
