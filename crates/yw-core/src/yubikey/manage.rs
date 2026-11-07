@@ -228,8 +228,8 @@ impl ClearPlan {
             [0; 4]
         };
         (!slots.is_empty()).then(|| HwKeyRecord {
-            slots,
             fingerprint,
+            slots,
             ..record.clone()
         })
     }

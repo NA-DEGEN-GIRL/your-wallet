@@ -229,6 +229,13 @@ fn scan_openpgp(
                 scan.unsupported.push((slot, attributes_name(&attributes)));
                 continue;
             }
+            // An answer that is not a key (some firmware answers an empty slot with an empty
+            // point): shown, not fatal. Reader and card failures stop the scan.
+            Err(CardError::Malformed | CardError::KeyMismatch | CardError::WrongData) => {
+                scan.unsupported
+                    .push((slot, "공개키를 읽지 못했습니다 — 빈 슬롯일 수 있습니다"));
+                continue;
+            }
             Err(error) => return Err(error),
         };
         if !is_secp256k1_attributes(&attributes) {
@@ -276,6 +283,13 @@ fn scan_piv(
         let metadata = match session.slot_metadata(piv) {
             Ok(metadata) => metadata,
             Err(CardError::NotFound) => continue,
+            Err(CardError::Malformed | CardError::NotSupported | CardError::WrongData) => {
+                scan.unsupported.push((
+                    slot,
+                    "메타데이터를 읽지 못했습니다 — 이 지갑은 쓸 수 없습니다",
+                ));
+                continue;
+            }
             Err(error) => return Err(error),
         };
         if metadata.algorithm != ALG_ED25519 {
