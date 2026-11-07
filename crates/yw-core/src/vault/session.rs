@@ -20,7 +20,7 @@ use super::format::{
 };
 use super::{
     BackupChallenge, ChallengeId, EvmKeySource, FileKind, KDF_V3, KdfParams, KeyRef, LockedSlot,
-    RecordId, SLOT_LEN, VaultStatus, VaultStorage,
+    MAX_MNEMONICS, RecordId, SLOT_LEN, VaultStatus, VaultStorage,
 };
 use crate::bip32::path::{AccountIndex, BtcChain, BtcCoin, btc_path, evm_path};
 use crate::bip32::{
@@ -49,8 +49,13 @@ const CHALLENGE_WORDS: usize = 4;
 const SLOT_DEK_END: usize = 32;
 const SLOT_FLAG: usize = 32;
 const SLOT_PASSPHRASE_LEN: usize = 33;
-const SLOT_PASSPHRASE: usize = 35;
-const SLOT_PASSPHRASE_END: usize = 291;
+/// The other mnemonics' passphrase entries (`SLOT_LEN` doc): `[0]` present, `[1..17)` record
+/// id, then the same length + bytes field as the primary passphrase.
+const SLOT_EXTRA: usize = 320;
+const SLOT_EXTRA_LEN: usize = 275;
+const SLOT_EXTRA_FIELD: usize = 17;
+/// Length + bytes of one passphrase field (u16 BE length, up to 256 bytes).
+const SLOT_FIELD_LEN: usize = 258;
 const INTERNAL: VaultError = VaultError::Key(KeyError::Internal);
 
 type Slot = Box<dyn LockedSlot>;
@@ -85,8 +90,45 @@ pub enum PasswordChange {
     PrevNotRefreshed,
 }
 
-/// An opened vault file: its bytes, `vault_id`, the unwrapped DEK and the status it unlocks to.
-type Opened = (Vec<u8>, [u8; 16], Zeroizing<[u8; 32]>, VaultStatus);
+/// One recovery phrase of the vault (`Bip39` record, spec/02 §4.6): public facts only. The label
+/// is meta's (yw-app); the record id is the stable mnemonic id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MnemonicInfo {
+    /// Record id (the mnemonic id accounts refer to).
+    pub id: RecordId,
+    /// Creation or import time (Unix seconds, from yw-app).
+    pub created_unix: u64,
+    /// 12, 15, 18, 21 or 24.
+    pub words: usize,
+    /// A BIP39 passphrase is used with it.
+    pub passphrase_used: bool,
+    /// The backup quiz is done (imported phrases count as confirmed).
+    pub backup_confirmed: bool,
+    /// The first record: the accounts of the existing meta keys (`evm_accounts`, …) and of
+    /// `EvmKeySource::Derived` come from it; it cannot be removed.
+    pub primary: bool,
+}
+
+/// Which mnemonic the passphrase screen asks for (`PassphraseRequired`/`PassphraseMismatch`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingPassphrase {
+    /// The record asked for.
+    pub id: RecordId,
+    /// 1-based position among the vault's mnemonics (the label is in meta, still closed).
+    pub position: usize,
+    /// Number of mnemonics in the vault.
+    pub count: usize,
+}
+
+/// An opened vault file: its bytes, `vault_id`, the unwrapped DEK, the status it unlocks to and
+/// the first mnemonic whose passphrase is asked for.
+type Opened = (
+    Vec<u8>,
+    [u8; 16],
+    Zeroizing<[u8; 32]>,
+    VaultStatus,
+    Option<[u8; 16]>,
+);
 
 /// What the vault knows about a sidecar file's generation (for the commit CAS).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,13 +162,19 @@ pub struct Vault {
     /// Current `vault.ywv` bytes (ciphertext) while a session is open.
     ciphertext: Option<Vec<u8>>,
     slot: Option<Slot>,
-    challenge: Option<(ChallengeId, [u8; CHALLENGE_WORDS])>,
+    /// The open backup quiz: id, word positions and the mnemonic it checks.
+    challenge: Option<(ChallengeId, [u8; CHALLENGE_WORDS], [u8; 16])>,
+
     /// Last known generation of meta / journal.
     sidecar_generations: Cell<[Known; 2]>,
     kdf: KdfParams,
     /// `now_unix` of the last `.prev` recovery that moved `vault.ywv` aside
     /// (`vault.ywv.corrupt-<now_unix>`).
     quarantined_at: Option<u64>,
+    /// The mnemonic whose passphrase `PassphraseRequired`/`PassphraseMismatch` asks for.
+    passphrase_target: Option<[u8; 16]>,
+    /// A mismatched passphrase was accepted for some mnemonic in this session.
+    alt_passphrase: bool,
 }
 
 impl fmt::Debug for Vault {
@@ -169,54 +217,126 @@ fn slot_dek(slot: Option<&Slot>) -> Result<&[u8; 32], VaultError> {
         .ok_or(INTERNAL)
 }
 
-fn slot_passphrase(slot: Option<&Slot>) -> Result<Bip39Passphrase, VaultError> {
-    let bytes = slot.ok_or(VaultError::InvalidState)?.bytes();
-    if bytes.get(SLOT_FLAG).copied() != Some(1) {
-        return Ok(Bip39Passphrase::empty());
-    }
-    let len_bytes = bytes
-        .get(SLOT_PASSPHRASE_LEN..SLOT_PASSPHRASE)
-        .ok_or(INTERNAL)?;
+/// The passphrase in the field at `at` (u16 BE length, then the bytes).
+fn read_field(bytes: &[u8; SLOT_LEN], at: usize) -> Result<Bip39Passphrase, VaultError> {
+    let start = at.checked_add(2).ok_or(INTERNAL)?;
+    let len_bytes = bytes.get(at..start).ok_or(INTERNAL)?;
     let len = usize::from(u16::from_be_bytes(
         len_bytes.try_into().map_err(|_| INTERNAL)?,
     ));
-    let end = SLOT_PASSPHRASE
+    let end = start
         .checked_add(len)
-        .filter(|end| *end <= SLOT_PASSPHRASE_END)
+        .filter(|end| *end <= at.saturating_add(SLOT_FIELD_LEN))
         .ok_or(INTERNAL)?;
     Ok(Bip39Passphrase::from_bytes(
-        bytes.get(SLOT_PASSPHRASE..end).ok_or(INTERNAL)?,
+        bytes.get(start..end).ok_or(INTERNAL)?,
     )?)
 }
 
-/// Clears the passphrase area and, if given, stores the passphrase.
+/// Writes `passphrase` into the (already zeroed) field at `at`.
+fn write_field(
+    bytes: &mut [u8; SLOT_LEN],
+    at: usize,
+    passphrase: &Bip39Passphrase,
+) -> Result<(), VaultError> {
+    let value = passphrase.as_bytes();
+    let len = u16::try_from(value.len()).map_err(|_| INTERNAL)?;
+    let start = at.checked_add(2).ok_or(INTERNAL)?;
+    let end = start
+        .checked_add(value.len())
+        .filter(|end| *end <= at.saturating_add(SLOT_FIELD_LEN))
+        .ok_or(INTERNAL)?;
+    bytes
+        .get_mut(at..start)
+        .ok_or(INTERNAL)?
+        .copy_from_slice(&len.to_be_bytes());
+    bytes
+        .get_mut(start..end)
+        .ok_or(INTERNAL)?
+        .copy_from_slice(value);
+    Ok(())
+}
+
+/// Start offsets of the other mnemonics' passphrase entries.
+fn extra_entries() -> impl Iterator<Item = usize> {
+    (0..MAX_MNEMONICS.saturating_sub(1))
+        .map(|entry| SLOT_EXTRA.saturating_add(entry.saturating_mul(SLOT_EXTRA_LEN)))
+}
+
+/// The entry holding the passphrase of the non-primary record `id`.
+fn find_extra(bytes: &[u8; SLOT_LEN], id: &[u8; 16]) -> Option<usize> {
+    extra_entries().find(|base| {
+        bytes.get(*base).copied() == Some(1)
+            && bytes.get(base.saturating_add(1)..base.saturating_add(SLOT_EXTRA_FIELD))
+                == Some(id.as_slice())
+    })
+}
+
+/// The passphrase stored for record `id` (`primary`: the first record's area), `None` when none
+/// was entered.
+fn stored_passphrase(
+    bytes: &[u8; SLOT_LEN],
+    id: &[u8; 16],
+    primary: bool,
+) -> Result<Option<Bip39Passphrase>, VaultError> {
+    if primary {
+        if bytes.get(SLOT_FLAG).copied() != Some(1) {
+            return Ok(None);
+        }
+        return read_field(bytes, SLOT_PASSPHRASE_LEN).map(Some);
+    }
+    find_extra(bytes, id)
+        .map(|base| read_field(bytes, base.saturating_add(SLOT_EXTRA_FIELD)))
+        .transpose()
+}
+
+/// Clears the primary passphrase area and, if given, stores the passphrase.
 fn set_slot_passphrase(
     slot: &mut dyn LockedSlot,
     passphrase: Option<&Bip39Passphrase>,
 ) -> Result<(), VaultError> {
     let bytes = slot.bytes_mut();
     bytes
-        .get_mut(SLOT_FLAG..SLOT_LEN)
+        .get_mut(SLOT_FLAG..SLOT_EXTRA)
         .ok_or(INTERNAL)?
         .zeroize();
     if let Some(passphrase) = passphrase {
-        let value = passphrase.as_bytes();
-        let len = u16::try_from(value.len()).map_err(|_| INTERNAL)?;
-        let end = SLOT_PASSPHRASE
-            .checked_add(value.len())
-            .filter(|end| *end <= SLOT_PASSPHRASE_END)
-            .ok_or(INTERNAL)?;
         *bytes.get_mut(SLOT_FLAG).ok_or(INTERNAL)? = 1;
-        bytes
-            .get_mut(SLOT_PASSPHRASE_LEN..SLOT_PASSPHRASE)
-            .ok_or(INTERNAL)?
-            .copy_from_slice(&len.to_be_bytes());
-        bytes
-            .get_mut(SLOT_PASSPHRASE..end)
-            .ok_or(INTERNAL)?
-            .copy_from_slice(value);
+        write_field(bytes, SLOT_PASSPHRASE_LEN, passphrase)?;
     }
     Ok(())
+}
+
+/// Stores (`Some`) or clears (`None`) the passphrase of record `id` (`primary`: the first
+/// record).
+fn set_record_passphrase(
+    slot: &mut dyn LockedSlot,
+    id: &[u8; 16],
+    primary: bool,
+    passphrase: Option<&Bip39Passphrase>,
+) -> Result<(), VaultError> {
+    if primary {
+        return set_slot_passphrase(slot, passphrase);
+    }
+    let bytes = slot.bytes_mut();
+    if let Some(base) = find_extra(bytes, id) {
+        bytes
+            .get_mut(base..base.saturating_add(SLOT_EXTRA_LEN))
+            .ok_or(INTERNAL)?
+            .zeroize();
+    }
+    let Some(passphrase) = passphrase else {
+        return Ok(());
+    };
+    let base = extra_entries()
+        .find(|base| bytes.get(*base).copied() != Some(1))
+        .ok_or(INTERNAL)?;
+    *bytes.get_mut(base).ok_or(INTERNAL)? = 1;
+    bytes
+        .get_mut(base.saturating_add(1)..base.saturating_add(SLOT_EXTRA_FIELD))
+        .ok_or(INTERNAL)?
+        .copy_from_slice(id);
+    write_field(bytes, base.saturating_add(SLOT_EXTRA_FIELD), passphrase)
 }
 
 fn fill_slot(
@@ -232,20 +352,39 @@ fn fill_slot(
     set_slot_passphrase(slot, passphrase)
 }
 
-/// The state after opening a payload: a key-only vault has no passphrase and no backup step.
-const fn status_after_unlock(bip39: Option<&Bip39Record>) -> VaultStatus {
-    match bip39 {
-        Some(record) if record.passphrase_used => VaultStatus::PassphraseRequired,
+/// The state once every passphrase is in: `BackupPending` while the primary mnemonic's quiz is
+/// open (a created wallet), else unlocked. A key-only vault has neither step.
+fn status_when_ready(payload: &Payload, alt_passphrase: bool) -> VaultStatus {
+    match payload.primary() {
         Some(record) if !record.backup_confirmed => VaultStatus::BackupPending,
-        _ => VaultStatus::Unlocked {
-            alt_passphrase: false,
-        },
+        _ => VaultStatus::Unlocked { alt_passphrase },
     }
 }
 
-/// The BIP39 record, or `NoMnemonic` for a key-only vault.
+/// The state after opening a payload and the mnemonic asked for first: every mnemonic with a
+/// BIP39 passphrase asks for it in payload order (spec/02 §7.5).
+fn status_after_unlock(payload: &Payload) -> (VaultStatus, Option<[u8; 16]>) {
+    match payload.bip39.iter().find(|record| record.passphrase_used) {
+        Some(record) => (VaultStatus::PassphraseRequired, Some(record.record_id)),
+        None => (status_when_ready(payload, false), None),
+    }
+}
+
+/// The primary BIP39 record, or `NoMnemonic` for a vault without recovery words.
 fn mnemonic_record(payload: &Payload) -> Result<&Bip39Record, VaultError> {
-    payload.bip39.as_ref().ok_or(VaultError::NoMnemonic)
+    payload.primary().ok_or(VaultError::NoMnemonic)
+}
+
+/// The BIP39 record `id` and whether it is the primary one (`RecordNotFound`).
+fn record_of<'a>(
+    payload: &'a Payload,
+    id: &[u8; 16],
+) -> Result<(&'a Bip39Record, bool), VaultError> {
+    let record = payload.mnemonic(id).ok_or(VaultError::RecordNotFound)?;
+    let primary = payload
+        .primary()
+        .is_some_and(|first| first.record_id == *id);
+    Ok((record, primary))
 }
 
 const fn sidecar_index(kind: FileKind) -> Result<usize, VaultError> {
@@ -446,6 +585,8 @@ impl Vault {
             sidecar_generations: Cell::new([Known::Unknown; 2]),
             kdf,
             quarantined_at: None,
+            passphrase_target: None,
+            alt_passphrase: false,
         })
     }
 
@@ -495,10 +636,42 @@ impl Vault {
         )
     }
 
+    /// The BIP39 seed of the primary mnemonic (`NoMnemonic` without one).
     fn seed(&self, payload: &Payload) -> Result<SecretBytes<64>, VaultError> {
-        Ok(mnemonic_record(payload)?
-            .mnemonic
-            .to_seed(&slot_passphrase(self.slot.as_ref())?)?)
+        let id = mnemonic_record(payload)?.record_id;
+        self.seed_of(payload, &id)
+    }
+
+    /// The BIP39 seed of mnemonic `id` with its passphrase from the slot. A mnemonic that uses a
+    /// passphrase not entered yet is `InvalidState` (never the empty-passphrase wallet).
+    fn seed_of(&self, payload: &Payload, id: &[u8; 16]) -> Result<SecretBytes<64>, VaultError> {
+        let (record, primary) = record_of(payload, id)?;
+        let bytes = self.slot.as_ref().ok_or(VaultError::InvalidState)?.bytes();
+        let passphrase = match stored_passphrase(bytes, id, primary)? {
+            Some(passphrase) => passphrase,
+            None if record.passphrase_used => return Err(VaultError::InvalidState),
+            None => Bip39Passphrase::empty(),
+        };
+        Ok(record.mnemonic.to_seed(&passphrase)?)
+    }
+
+    /// Signing with a key of a mnemonic whose backup quiz is open is refused. The wallet-level
+    /// `BackupPending` covers a created wallet's primary mnemonic at unlock; this also covers a
+    /// mnemonic made later ("새 복구 단어 만들기", which in a key-only vault becomes the primary
+    /// one).
+    fn require_key_backup(payload: &Payload, key: KeyRef) -> Result<(), VaultError> {
+        let record = match key {
+            KeyRef::Evm(EvmKeySource::Mnemonic(id, _)) => payload.mnemonic(id.as_bytes()),
+            KeyRef::Evm(EvmKeySource::Raw(_) | EvmKeySource::Hardware(_))
+            | KeyRef::ZecImported { .. } => None,
+            KeyRef::Evm(EvmKeySource::Derived(_)) | KeyRef::Btc { .. } | KeyRef::Zec { .. } => {
+                payload.primary()
+            }
+        };
+        if record.is_some_and(|record| !record.backup_confirmed) {
+            return Err(VaultError::BackupNotConfirmed);
+        }
+        Ok(())
     }
 
     fn secret_for(
@@ -517,6 +690,10 @@ impl Vault {
                 return SecretKey::from_byte_array(*raw.key).map_err(|_| INTERNAL);
             }
             KeyRef::Evm(EvmKeySource::Derived(index)) => evm_path(index),
+            KeyRef::Evm(EvmKeySource::Mnemonic(id, index)) => {
+                let seed = self.seed_of(payload, id.as_bytes())?;
+                return Ok(secret_key_from_seed(ctx, seed.expose(), &evm_path(index))?);
+            }
             // A YubiKey account has no key on the PC (spec/10 §1).
             KeyRef::Evm(EvmKeySource::Hardware(_)) => return Err(VaultError::RecordNotFound),
             KeyRef::Btc { coin, chain, index } => btc_path(coin, chain, index)?,
@@ -560,17 +737,18 @@ impl Vault {
     fn open_bytes(&self, bytes: Vec<u8>, password: &VaultPassword) -> Result<Opened, VaultError> {
         let (header, dek) = format::unwrap_dek(&bytes, password, &self.kdf)?;
         let payload = format::decrypt_payload(&bytes, &dek, &self.kdf)?;
-        let next = status_after_unlock(payload.bip39.as_ref());
-        Ok((bytes, header.vault_id, dek, next))
+        let (next, target) = status_after_unlock(&payload);
+        Ok((bytes, header.vault_id, dek, next, target))
     }
 
     /// Opens the session on an opened file.
     fn finish_open(&mut self, slot: Slot, opened: Opened) -> Result<VaultStatus, VaultError> {
-        let (bytes, vault_id, dek, next) = opened;
+        let (bytes, vault_id, dek, next, target) = opened;
         self.open_session(slot, &dek, None)?;
         self.ciphertext = Some(bytes);
         self.id = Some(vault_id);
         self.status = next;
+        self.passphrase_target = target;
         Ok(next)
     }
 
@@ -616,6 +794,8 @@ impl Vault {
             wipe_and_drop(old);
         }
         self.challenge = None;
+        self.passphrase_target = None;
+        self.alt_passphrase = false;
         self.sidecar_generations.set([Known::Unknown; 2]);
         Ok(())
     }
@@ -825,7 +1005,54 @@ impl Vault {
         }
     }
 
-    /// Checks the BIP39 passphrase against the stored 4-byte value (spec/02 §7.5).
+    /// Which mnemonic the passphrase screen asks for (`PassphraseRequired`/`PassphraseMismatch`
+    /// only; `None` otherwise).
+    #[must_use]
+    pub fn pending_passphrase(&self) -> Option<PendingPassphrase> {
+        if !matches!(
+            self.status,
+            VaultStatus::PassphraseRequired | VaultStatus::PassphraseMismatch
+        ) {
+            return None;
+        }
+        let target = self.passphrase_target?;
+        let payload = self.payload().ok()?;
+        let position = payload
+            .bip39
+            .iter()
+            .position(|record| record.record_id == target)?;
+        Some(PendingPassphrase {
+            id: RecordId(target),
+            position: position.saturating_add(1),
+            count: payload.bip39.len(),
+        })
+    }
+
+    /// Moves on after the asked passphrase was accepted: the next mnemonic that uses a
+    /// passphrase not entered yet, else the final state.
+    fn next_passphrase(&mut self) -> Result<VaultStatus, VaultError> {
+        let payload = self.payload()?;
+        let bytes = self.slot.as_ref().ok_or(VaultError::InvalidState)?.bytes();
+        let mut next = None;
+        for (position, record) in payload.bip39.iter().enumerate() {
+            if record.passphrase_used
+                && stored_passphrase(bytes, &record.record_id, position == 0)?.is_none()
+            {
+                next = Some(record.record_id);
+                break;
+            }
+        }
+        self.passphrase_target = next;
+        self.status = match next {
+            Some(_) => VaultStatus::PassphraseRequired,
+            None => status_when_ready(&payload, self.alt_passphrase),
+        };
+        Ok(self.status)
+    }
+
+    /// Checks the BIP39 passphrase of the mnemonic asked for ([`Vault::pending_passphrase`])
+    /// against its stored 4-byte value (spec/02 §7.5). With several mnemonics that use a
+    /// passphrase, a match moves on to the next one (`PassphraseRequired` again).
     ///
     /// # Errors
     ///
@@ -844,8 +1071,9 @@ impl Vault {
         if passphrase.is_empty() {
             return Err(KeyError::PassphraseEmpty.into());
         }
+        let target = self.passphrase_target.ok_or(VaultError::InvalidState)?;
         let payload = self.payload()?;
-        let bip39 = mnemonic_record(&payload)?;
+        let (bip39, primary) = record_of(&payload, &target)?;
         let ctx = secp_context(&mut OsRandom)?;
         let check = passphrase_check(&address_zero(&ctx, &bip39.mnemonic, &passphrase)?);
         let matches = check
@@ -853,15 +1081,13 @@ impl Vault {
             .ct_eq(bip39.passphrase_check.as_slice())
             .unwrap_u8()
             == 1;
+        drop(payload);
         let slot = self.slot.as_mut().ok_or(VaultError::InvalidState)?;
-        set_slot_passphrase(slot.as_mut(), Some(&passphrase))?;
-        self.status = if matches {
-            VaultStatus::Unlocked {
-                alt_passphrase: false,
-            }
-        } else {
-            VaultStatus::PassphraseMismatch
-        };
+        set_record_passphrase(slot.as_mut(), &target, primary, Some(&passphrase))?;
+        if matches {
+            return self.next_passphrase();
+        }
+        self.status = VaultStatus::PassphraseMismatch;
         Ok(self.status)
     }
 
@@ -874,8 +1100,10 @@ impl Vault {
         if self.status != VaultStatus::PassphraseMismatch {
             return Err(VaultError::InvalidState);
         }
+        let target = self.passphrase_target.ok_or(VaultError::InvalidState)?;
+        let primary = record_of(&self.payload()?, &target)?.1;
         let slot = self.slot.as_mut().ok_or(VaultError::InvalidState)?;
-        set_slot_passphrase(slot.as_mut(), None)?;
+        set_record_passphrase(slot.as_mut(), &target, primary, None)?;
         self.status = VaultStatus::PassphraseRequired;
         Ok(self.status)
     }
@@ -889,10 +1117,8 @@ impl Vault {
         if self.status != VaultStatus::PassphraseMismatch {
             return Err(VaultError::InvalidState);
         }
-        self.status = VaultStatus::Unlocked {
-            alt_passphrase: true,
-        };
-        Ok(self.status)
+        self.alt_passphrase = true;
+        self.next_passphrase()
     }
 
     /// Wipes and releases the slot, drops the challenge and the held vault bytes (spec/02 §7.2).
@@ -903,6 +1129,8 @@ impl Vault {
         }
         self.challenge = None;
         self.ciphertext = None;
+        self.passphrase_target = None;
+        self.alt_passphrase = false;
         self.sidecar_generations.set([Known::Unknown; 2]);
         if matches!(
             self.status,
@@ -986,12 +1214,8 @@ impl Vault {
             }
             commit_landed(self.storage.as_mut(), FileKind::Vault, None, &bytes)
                 .map_err(VaultError::Storage)?;
-            Ok((
-                bytes,
-                header.vault_id,
-                dek,
-                status_after_unlock(payload.bip39.as_ref()),
-            ))
+            let (next, target) = status_after_unlock(&payload);
+            Ok((bytes, header.vault_id, dek, next, target))
         })();
         match recovered {
             Ok(opened) => self.finish_open(slot, opened),
@@ -1019,7 +1243,46 @@ impl Vault {
         if self.status != VaultStatus::BackupPending {
             return Err(VaultError::InvalidState);
         }
-        let words = mnemonic_record(&self.payload()?)?
+        let primary = mnemonic_record(&self.payload()?)?.record_id;
+        self.challenge_for(rng, primary)
+    }
+
+    /// The backup quiz of mnemonic `id` (an added mnemonic made with "새 복구 단어 만들기"; the
+    /// primary one while `BackupPending`). A new challenge replaces the previous one.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` outside `Unlocked` (or `BackupPending` for the primary mnemonic) or when
+    /// the backup is already confirmed, `RecordNotFound`, or `RandomnessUnavailable`.
+    pub fn backup_challenge_for(&mut self, id: RecordId) -> Result<BackupChallenge, VaultError> {
+        self.require_backup_target(&id.0)?;
+        self.challenge_for(&mut OsRandom, id.0)
+    }
+
+    /// Whether the quiz of `id` may run now: its backup is open, and the wallet is unlocked (or
+    /// waits for the primary mnemonic's quiz, which is `id`).
+    fn require_backup_target(&self, id: &[u8; 16]) -> Result<(), VaultError> {
+        let payload = self.payload()?;
+        let (record, primary) = record_of(&payload, id)?;
+        let allowed = match self.status {
+            VaultStatus::Unlocked { .. } => true,
+            VaultStatus::BackupPending => primary,
+            _ => false,
+        };
+        if !allowed || record.backup_confirmed {
+            return Err(VaultError::InvalidState);
+        }
+        Ok(())
+    }
+
+    fn challenge_for(
+        &mut self,
+        rng: &mut impl RandomSource,
+        record: [u8; 16],
+    ) -> Result<BackupChallenge, VaultError> {
+        let payload = self.payload()?;
+        let words = record_of(&payload, &record)?
+            .0
             .mnemonic
             .word_count()
             .words();
@@ -1027,7 +1290,7 @@ impl Vault {
         let positions: [u8; CHALLENGE_WORDS] =
             crate::bip39::backup_positions_with(rng, words).map_err(VaultError::Key)?;
         let id = ChallengeId(random_nonzero_id_with(rng)?);
-        self.challenge = Some((id, positions));
+        self.challenge = Some((id, positions, record));
         Ok(BackupChallenge { id, positions })
     }
 
@@ -1042,25 +1305,58 @@ impl Vault {
         if self.status != VaultStatus::BackupPending {
             return Err(VaultError::InvalidState);
         }
+        let primary = mnemonic_record(&self.payload()?)?.record_id;
+        self.confirm_record_backup(primary, id, words)
+    }
+
+    /// Verifies the quiz of mnemonic `id` ([`Vault::backup_challenge_for`]); signing with its
+    /// accounts is allowed afterwards.
+    ///
+    /// # Errors
+    ///
+    /// As [`Vault::confirm_backup`]; `InvalidState` also when `id` is not the challenged
+    /// mnemonic's state (see [`Vault::backup_challenge_for`]).
+    pub fn confirm_backup_for(
+        &mut self,
+        record: RecordId,
+        id: ChallengeId,
+        words: [&str; 4],
+    ) -> Result<(), VaultError> {
+        self.require_backup_target(&record.0)?;
+        self.confirm_record_backup(record.0, id, words)
+    }
+
+    fn confirm_record_backup(
+        &mut self,
+        record: [u8; 16],
+        id: ChallengeId,
+        words: [&str; 4],
+    ) -> Result<(), VaultError> {
         let positions = match self.challenge {
-            Some((current, positions)) if current == id => positions,
+            Some((current, positions, target)) if current == id && target == record => positions,
             _ => return Err(VaultError::ChallengeStale),
         };
         self.challenge = None;
         let mut payload = self.payload()?;
-        let bip39 = mnemonic_record(&payload)?;
+        let bip39 = record_of(&payload, &record)?.0;
         // Well-formedness, then four constant-time comparisons decided once (shared with the
         // in-memory confirmation of a `YubiKey` wallet, spec/10 §7.1-1).
         if !bip39.mnemonic.backup_words_match(positions, words)? {
             return Err(VaultError::BackupMismatch);
         }
-        if let Some(bip39) = payload.bip39.as_mut() {
+        if let Some(bip39) = payload
+            .bip39
+            .iter_mut()
+            .find(|bip39| bip39.record_id == record)
+        {
             bip39.backup_confirmed = true;
         }
         self.rewrite_payload(&payload)?;
-        self.status = VaultStatus::Unlocked {
-            alt_passphrase: false,
-        };
+        if self.status == VaultStatus::BackupPending {
+            self.status = VaultStatus::Unlocked {
+                alt_passphrase: self.alt_passphrase,
+            };
+        }
         Ok(())
     }
 
@@ -1120,7 +1416,7 @@ impl Vault {
         if hardware {
             return Err(VaultError::DuplicateKey);
         }
-        if payload.bip39.is_some() {
+        if payload.primary().is_some() {
             let ctx = secp_context(&mut OsRandom)?;
             let test = network == crate::zec::ZecNetwork::Testnet;
             let mut derived = self.secret_for(
@@ -1256,6 +1552,7 @@ impl Vault {
         self.require_signing()?;
         self.verify_password(password)?;
         let payload = self.payload()?;
+        Self::require_key_backup(&payload, KeyRef::Evm(src))?;
         let ctx = secp_context(&mut OsRandom)?;
         let mut secret = self.secret_for(&ctx, &payload, KeyRef::Evm(src))?;
         let raw = Zeroizing::new(secret.secret_bytes());
@@ -1318,6 +1615,7 @@ impl Vault {
         self.require_signing()?;
         self.verify_password(password)?;
         let payload = self.payload()?;
+        Self::require_key_backup(&payload, KeyRef::Evm(EvmKeySource::Derived(index)))?;
         let ctx = secp_context(&mut OsRandom)?;
         let mut secret =
             self.secret_for(&ctx, &payload, KeyRef::Evm(EvmKeySource::Derived(index)))?;
@@ -1340,7 +1638,39 @@ impl Vault {
             return Ok(Vec::new());
         }
         let payload = self.payload()?;
-        let seed = self.seed(&payload)?;
+        let id = mnemonic_record(&payload)?.record_id;
+        self.evm_addresses_from(&payload, &id, indices)
+    }
+
+    /// Addresses of up to 100 derived accounts of mnemonic `id` (any of the vault's mnemonics),
+    /// computing its seed once.
+    ///
+    /// # Errors
+    ///
+    /// As [`Vault::evm_addresses`], and `RecordNotFound` for an unknown `id`.
+    pub fn evm_addresses_of(
+        &self,
+        id: RecordId,
+        indices: &[AccountIndex],
+    ) -> Result<Vec<Address>, VaultError> {
+        self.require_public()?;
+        if indices.len() > MAX_ADDRESS_BATCH {
+            return Err(VaultError::InvalidState);
+        }
+        let payload = self.payload()?;
+        self.evm_addresses_from(&payload, &id.0, indices)
+    }
+
+    fn evm_addresses_from(
+        &self,
+        payload: &Payload,
+        id: &[u8; 16],
+        indices: &[AccountIndex],
+    ) -> Result<Vec<Address>, VaultError> {
+        if indices.is_empty() {
+            return Ok(Vec::new());
+        }
+        let seed = self.seed_of(payload, id)?;
         let ctx = secp_context(&mut OsRandom)?;
         indices
             .iter()
@@ -1447,7 +1777,176 @@ impl Vault {
     /// `InvalidState` outside `BackupPending`/`Unlocked`.
     pub fn has_mnemonic(&self) -> Result<bool, VaultError> {
         self.require_public()?;
-        Ok(self.payload()?.bip39.is_some())
+        Ok(!self.payload()?.bip39.is_empty())
+    }
+
+    /// The vault's recovery phrases in payload order (the first is the primary one).
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` outside `BackupPending`/`Unlocked`.
+    pub fn mnemonics(&self) -> Result<Vec<MnemonicInfo>, VaultError> {
+        self.require_public()?;
+        Ok(self
+            .payload()?
+            .bip39
+            .iter()
+            .enumerate()
+            .map(|(position, record)| MnemonicInfo {
+                id: RecordId(record.record_id),
+                created_unix: record.created_unix,
+                words: record.mnemonic.word_count().words(),
+                passphrase_used: record.passphrase_used,
+                backup_confirmed: record.backup_confirmed,
+                primary: position == 0,
+            })
+            .collect())
+    }
+
+    /// Adds an existing recovery phrase ("복구 단어 추가 가져오기", spec/02 §8.6) after
+    /// re-entering the password: backup counts as confirmed; a passphrase is checked like at
+    /// import and kept in the slot for this session (asked again at each unlock). A key-only or
+    /// `YubiKey` vault's first phrase becomes its primary mnemonic. `PayloadRewrite`.
+    ///
+    /// # Errors
+    ///
+    /// `BackupNotConfirmed`/`InvalidState`, `UnlockFailed`, the mnemonic and passphrase
+    /// `KeyError`s, `DuplicateKey` (the same seed — phrase and passphrase — is already in the
+    /// vault; compared in constant time), `RecordLimit` (8 mnemonics), `RandomnessUnavailable`
+    /// or `Storage`.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "spec/02 §10.3: the passphrase moves into the vault and is wiped on return"
+    )]
+    pub fn add_mnemonic(
+        &mut self,
+        password: &VaultPassword,
+        phrase: &str,
+        passphrase: Option<Bip39Passphrase>,
+        now_unix: u64,
+    ) -> Result<RecordId, VaultError> {
+        self.require_signing()?;
+        self.verify_password(password)?;
+        let mnemonic = Mnemonic::parse(phrase)?;
+        if passphrase.as_ref().is_some_and(Bip39Passphrase::is_empty) {
+            return Err(KeyError::PassphraseEmpty.into());
+        }
+        let mut payload = self.payload()?;
+        if payload.bip39.len() >= MAX_MNEMONICS {
+            return Err(VaultError::RecordLimit);
+        }
+        let empty = Bip39Passphrase::empty();
+        let seed = mnemonic.to_seed(passphrase.as_ref().unwrap_or(&empty))?;
+        let mut duplicate = 0_u8;
+        for record in &payload.bip39 {
+            let other = self.seed_of(&payload, &record.record_id)?;
+            duplicate |= other.expose().ct_eq(seed.expose()).unwrap_u8();
+        }
+        drop(seed);
+        if duplicate != 0 {
+            return Err(VaultError::DuplicateKey);
+        }
+        let passphrase_check = match &passphrase {
+            Some(value) => passphrase_check(&address_zero(
+                &secp_context(&mut OsRandom)?,
+                &mnemonic,
+                value,
+            )?),
+            None => [0; 4],
+        };
+        let record_id = fresh_record_id(&mut OsRandom, &payload)?;
+        let primary = payload.bip39.is_empty();
+        payload.bip39.push(Bip39Record {
+            record_id,
+            created_unix: now_unix,
+            mnemonic,
+            passphrase_used: passphrase.is_some(),
+            backup_confirmed: true,
+            passphrase_check,
+        });
+        self.rewrite_payload(&payload)?;
+        let slot = self.slot.as_mut().ok_or(VaultError::InvalidState)?;
+        set_record_passphrase(slot.as_mut(), &record_id, primary, passphrase.as_ref())?;
+        Ok(RecordId(record_id))
+    }
+
+    /// Makes a new 24-word recovery phrase ("새 복구 단어 만들기 (추가)", spec/02 §8.6) after
+    /// re-entering the password and returns it for the first display. Its backup is open until
+    /// [`Vault::confirm_backup_for`]: signing with its accounts is refused until then.
+    ///
+    /// # Errors
+    ///
+    /// `BackupNotConfirmed`/`InvalidState`, `UnlockFailed`, `RecordLimit`,
+    /// `RandomnessUnavailable` or `Storage`.
+    pub fn generate_mnemonic(
+        &mut self,
+        password: &VaultPassword,
+        now_unix: u64,
+    ) -> Result<(RecordId, SecretString), VaultError> {
+        self.require_signing()?;
+        self.verify_password(password)?;
+        let mut payload = self.payload()?;
+        if payload.bip39.len() >= MAX_MNEMONICS {
+            return Err(VaultError::RecordLimit);
+        }
+        let mnemonic = Mnemonic::generate_with_rng(&mut OsRandom)?;
+        let phrase = mnemonic.phrase()?;
+        let record_id = fresh_record_id(&mut OsRandom, &payload)?;
+        payload.bip39.push(Bip39Record {
+            record_id,
+            created_unix: now_unix,
+            mnemonic,
+            passphrase_used: false,
+            backup_confirmed: false,
+            passphrase_check: [0; 4],
+        });
+        self.rewrite_payload(&payload)?;
+        Ok((RecordId(record_id), phrase))
+    }
+
+    /// Removes an added recovery phrase after re-entering the password (spec/02 §8.6). The
+    /// primary (first) one cannot be removed: the existing account lists come from it.
+    ///
+    /// # Errors
+    ///
+    /// `BackupNotConfirmed`/`InvalidState`, `UnlockFailed`, `RecordNotFound`,
+    /// `PrimaryMnemonic` or `Storage`.
+    pub fn remove_mnemonic(
+        &mut self,
+        password: &VaultPassword,
+        id: RecordId,
+    ) -> Result<(), VaultError> {
+        self.require_signing()?;
+        self.verify_password(password)?;
+        let mut payload = self.payload()?;
+        let primary = record_of(&payload, &id.0)?.1;
+        if primary {
+            return Err(VaultError::PrimaryMnemonic);
+        }
+        payload.bip39.retain(|record| record.record_id != id.0);
+        self.rewrite_payload(&payload)?;
+        if let Some(slot) = self.slot.as_mut() {
+            set_record_passphrase(slot.as_mut(), &id.0, false, None)?;
+        }
+        if matches!(self.challenge, Some((_, _, target)) if target == id.0) {
+            self.challenge = None;
+        }
+        Ok(())
+    }
+
+    /// The words of mnemonic `id`, after re-entering the password (spec/02 §9).
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` outside `BackupPending`/`Unlocked`, `UnlockFailed` or `RecordNotFound`.
+    pub fn reveal_mnemonic_of(
+        &self,
+        password: &VaultPassword,
+        id: RecordId,
+    ) -> Result<SecretString, VaultError> {
+        self.require_public()?;
+        self.verify_password(password)?;
+        Ok(record_of(&self.payload()?, &id.0)?.0.mnemonic.phrase()?)
     }
 
     /// Whether the vault holds an imported Bitcoin key (`tag 4`) with record id `id` (the vault
@@ -1503,7 +2002,7 @@ impl Vault {
             zec.push((RecordId(record.record_id), info));
         }
         Ok(ImportedKeys {
-            has_mnemonic: payload.bip39.is_some(),
+            has_mnemonic: !payload.bip39.is_empty(),
             evm,
             sol,
             btc,
@@ -1786,6 +2285,7 @@ impl Vault {
     ) -> Result<T, VaultError> {
         self.require_signing()?;
         let payload = self.payload()?;
+        Self::require_key_backup(&payload, key)?;
         let ctx = secp_context(&mut OsRandom)?;
         let mut secret = self.secret_for(&ctx, &payload, key)?;
         let result = f(&ctx, &secret);
@@ -1843,6 +2343,12 @@ impl Vault {
             return Err(VaultError::RecordNotFound);
         }
         let payload = self.payload()?;
+        if payload
+            .primary()
+            .is_some_and(|record| !record.backup_confirmed)
+        {
+            return Err(VaultError::BackupNotConfirmed);
+        }
         let seed = self.seed(&payload)?;
         let secret = src.ed25519_seed(seed.expose())?;
         drop(seed);

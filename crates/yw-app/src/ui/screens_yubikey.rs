@@ -21,7 +21,7 @@ use crate::ui::main_window::{Ctl, Item, Tone};
 mod connect;
 mod manage;
 
-/// Command ids (block 13,200–13,399, and 13,500–13,727 for "`YubiKey` 연결하기";
+/// Command ids (block 13,200–13,399, and 13,500–13,506 and 13,720–13,927 for "`YubiKey` 연결하기";
 /// `ui::command_ids`).
 pub mod ids {
     use yw_core::btc::ScriptType;
@@ -382,7 +382,7 @@ pub mod ids {
     /// `저장`.
     pub const CONNECT_SAVE: u16 = 13_506;
     /// Choice radios: row (found key) × [`CONNECT_CHOICES`] column.
-    pub const CONNECT_CHOICE_BASE: u16 = 13_520;
+    pub const CONNECT_CHOICE_BASE: u16 = 13_720;
     /// Ids per row.
     pub const CONNECT_CHOICE_STRIDE: u16 = 8;
     /// Rows: `OpenPGP` SIG + AUT and the 24 PIV slots.

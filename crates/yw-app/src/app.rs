@@ -172,6 +172,8 @@ pub enum SettingsSection {
     Ai,
     /// `YubiKey`: the enrolled cards, their slots and accounts, `YubiKey 등록`, `삭제` (spec/10).
     YubiKey,
+    /// 복구 단어: the wallet's recovery phrases, adding, backup, removal (spec/04 §2.24).
+    Mnemonics,
 }
 
 /// Confirmation overlays.
@@ -366,6 +368,8 @@ pub enum Purpose {
     CardSign(u64),
     /// A window of the `YubiKey` wizard or the new `YubiKey` wallet (spec/10 §7, §9.3).
     YubiKey(crate::app_yubikey::YkPurpose),
+    /// A window of the recovery-phrase flows (spec/04 §2.22).
+    Mnemonics(crate::app_mnemonics::MnPurpose),
 }
 
 struct SecretWin {
@@ -553,6 +557,8 @@ pub struct App {
     pub(crate) keys: crate::app_keys::KeysUi,
     /// `YubiKey` card step and enrolment state (spec/10).
     pub(crate) card: crate::app_card::CardUi,
+    /// The recovery phrases (spec/04 §2.22).
+    pub(crate) mn: crate::app_mnemonics::MnUi,
     pub(crate) browser: Option<crate::app_browser::BrowserUi>,
     /// The `yw-llm` worker, only while the AI explanation is effectively on (spec/06 §9).
     pub(crate) llm: Option<crate::explain::ExplainService>,
@@ -785,6 +791,7 @@ impl App {
             book: crate::app_book::BookUi::default(),
             keys: crate::app_keys::KeysUi::default(),
             card: crate::app_card::CardUi::default(),
+            mn: crate::app_mnemonics::MnUi::default(),
             browser: None,
             llm: None,
             llm_ui: crate::app_llm::LlmUi::default(),
@@ -1618,6 +1625,7 @@ impl App {
             KeyOutcome::SignedChainMessage(result) => self.browser_chain_message_signed(&result),
             KeyOutcome::YubiKeyEnrolled(result) => self.on_yubikey_enrolled(result),
             KeyOutcome::YubiKey(outcome) => self.on_yk_outcome(outcome),
+            KeyOutcome::Mnemonics(outcome) => self.on_mn_outcome(outcome, now),
             KeyOutcome::Imported(Err(_))
             | KeyOutcome::LockDone
             | KeyOutcome::Cancelled(..)
@@ -1787,6 +1795,7 @@ impl App {
                 prefs_reset,
                 has_mnemonic,
                 zec_keys,
+                mnemonics,
                 ..
             })) => {
                 if prefs_reset {
@@ -1794,6 +1803,7 @@ impl App {
                 }
                 self.keys.has_mnemonic = has_mnemonic;
                 self.keys.zec_keys = zec_keys;
+                self.mn.infos = mnemonics;
                 self.meta = Some(*meta);
                 self.wait.meta_since = None;
                 // Review M1/L15/L17: compare settings.json with the snapshot in the meta.
@@ -1904,6 +1914,14 @@ impl App {
                             Purpose::EnterPassphrase,
                             false,
                         );
+                        // Several mnemonics use a passphrase: say which one is asked for.
+                        if let Some((position, count)) = self.mn.passphrase_for.take() {
+                            self.with_form(|form| {
+                                form.set_info(Some(format!(
+                                    "복구 단어 {count}개 중 {position}번째의 passphrase를 입력하세요."
+                                )));
+                            });
+                        }
                     }
                     VaultStatus::PassphraseMismatch => {
                         self.close_secret();
@@ -2308,6 +2326,8 @@ impl App {
                 logging::info("app", "backup.written_ack", &[]);
                 if let Purpose::YubiKey(yk) = purpose {
                     self.yk_hold_complete(yk);
+                } else if let Purpose::Mnemonics(mn) = purpose {
+                    self.mn_hold_complete(mn);
                 } else {
                     self.close_secret();
                     self.key(KeyJob::BackupChallenge);
@@ -2393,6 +2413,10 @@ impl App {
     fn on_submit(&mut self, purpose: Purpose, submission: Submission) {
         if let Purpose::YubiKey(yk) = purpose {
             self.yk_submit(yk, submission.values, submission.checkbox);
+            return;
+        }
+        if let Purpose::Mnemonics(mn) = purpose {
+            self.mn_submit(mn, submission.values, submission.checkbox);
             return;
         }
         let mut values = submission.values.into_iter();
@@ -2513,7 +2537,10 @@ impl App {
                 self.key(KeyJob::ImportKey { spec, key: next() });
             }
             Purpose::CardSign(id) => self.card_submit(id, next()),
-            Purpose::ShowForBackup | Purpose::ShowRevealed | Purpose::YubiKey(_) => {}
+            Purpose::ShowForBackup
+            | Purpose::ShowRevealed
+            | Purpose::YubiKey(_)
+            | Purpose::Mnemonics(_) => {}
         }
     }
 
@@ -2581,6 +2608,7 @@ impl App {
             }
             Purpose::CardSign(id) => self.card_cancel(id),
             Purpose::YubiKey(yk) => self.yk_cancel(yk),
+            Purpose::Mnemonics(mn) => self.mn_cancel(mn),
             Purpose::ConfirmPassword(_)
             | Purpose::ShowRevealed
             | Purpose::ChangePassword
@@ -2946,13 +2974,7 @@ impl App {
             }
             ids::SETTINGS_ACCEPT_FILE => self.settings_accept_file(),
             ids::SETTINGS_RESTORE => self.settings_restore(),
-            ids::ADD_ACCOUNT => {
-                if let Some(index) = self.meta.as_ref().and_then(Meta::next_index) {
-                    self.key(KeyJob::DeriveAddresses {
-                        indices: vec![index],
-                    });
-                }
-            }
+            ids::ADD_ACCOUNT => self.add_account_clicked(),
             ids::IMPORT_KEY => {
                 self.open_key_import(yw_core::keyimport::ImportChain::Evm);
             }
@@ -3095,6 +3117,7 @@ impl App {
                     && !self.on_sites_command(other)
                     && !self.on_llm_command(other)
                     && !self.on_yk_command(other)
+                    && !self.on_mn_command(other)
                     && !self.on_hc_command(other)
                     && !self.on_wc_command(other)
                 {
@@ -3197,6 +3220,11 @@ impl App {
             yw_core::evm::address::parse_address(text)
                 .map_or_else(|_| text.to_owned(), |address| eip55(&address))
         };
+        // With several mnemonics every derived row names its source (`니모닉 1 · m/…`).
+        let primary = self
+            .several_mnemonics()
+            .then(|| self.primary_mnemonic_label())
+            .flatten();
         let mut rows: Vec<_> = meta
             .evm_accounts
             .iter()
@@ -3206,10 +3234,19 @@ impl App {
                     EvmAccountPref::Index(account.index),
                     account.label.clone(),
                     checksum(&account.address),
-                    format!("m/44'/60'/0'/0/{}", account.index),
+                    match &primary {
+                        Some(name) => format!("{name} · m/44'/60'/0'/0/{}", account.index),
+                        None => format!("m/44'/60'/0'/0/{}", account.index),
+                    },
                 )
             })
             .collect();
+        // The added mnemonics' accounts (spec/04 §2.24), after the primary one's.
+        rows.extend(
+            self.mnemonic_account_rows()
+                .into_iter()
+                .map(|(pref, label, address, path)| (pref, label, checksum(&address), path)),
+        );
         rows.extend(meta.evm_raw_accounts.iter().map(|raw| {
             (
                 EvmAccountPref::Record(raw.record_id),
@@ -3288,6 +3325,18 @@ impl App {
                         account.label = label;
                     }
                 }
+                EvmAccountPref::Mnemonic(id, index) => {
+                    if let Some(account) = meta
+                        .mnemonics
+                        .iter_mut()
+                        .find(|entry| entry.record_id == id)
+                        .and_then(|entry| {
+                            entry.evm.iter_mut().find(|account| account.index == index)
+                        })
+                    {
+                        account.label = label;
+                    }
+                }
             }
         }
         self.rename = None;
@@ -3309,6 +3358,23 @@ impl App {
             account.hidden = true;
             let hidden = yw_core::evm::address::parse_address(&account.address).ok();
             meta.prefs.evm_account = EvmAccountPref::Index(0);
+            self.save_meta();
+            if let Some(address) = hidden {
+                self.account_removed_from_sites(&address);
+            }
+            self.refresh();
+            return;
+        }
+        if let Some(EvmAccountPref::Mnemonic(id, index)) =
+            self.meta.as_ref().map(|meta| meta.prefs.evm_account)
+            && index != 0
+            && let Some(account) = self.mnemonic_account_mut(id, index)
+        {
+            account.hidden = true;
+            let hidden = yw_core::evm::address::parse_address(&account.address).ok();
+            if let Some(meta) = self.meta.as_mut() {
+                meta.prefs.evm_account = EvmAccountPref::Mnemonic(id, 0);
+            }
             self.save_meta();
             if let Some(address) = hidden {
                 self.account_removed_from_sites(&address);
@@ -3610,6 +3676,13 @@ impl App {
                         return;
                     }
                     Some(EvmAccountPref::Record(id)) => EvmKeySource::Raw(RecordId::from_bytes(id)),
+                    Some(EvmAccountPref::Mnemonic(id, index)) => {
+                        match yw_core::bip32::path::AccountIndex::new(index) {
+                            Ok(index) => EvmKeySource::Mnemonic(RecordId::from_bytes(id), index),
+                            Err(_) => return,
+                        }
+                    }
+
                     Some(EvmAccountPref::Index(index)) => {
                         yw_core::bip32::path::AccountIndex::new(index).map_or(
                             EvmKeySource::Derived(yw_core::bip32::path::AccountIndex::ZERO),

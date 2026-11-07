@@ -556,7 +556,10 @@ pub const fn vault_code(error: VaultError) -> ErrorCode {
         VaultError::NoMnemonic => ErrorCode::Vlt012,
         VaultError::LastKey => ErrorCode::Vlt013,
         VaultError::Key(key) => key_code(key),
-        VaultError::InvalidState | VaultError::RecordNotFound => ErrorCode::App009,
+        // The UI offers no removal of the primary mnemonic (spec/04 §2.24).
+        VaultError::InvalidState | VaultError::RecordNotFound | VaultError::PrimaryMnemonic => {
+            ErrorCode::App009
+        }
     }
 }
 

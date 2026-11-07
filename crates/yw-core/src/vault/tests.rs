@@ -696,10 +696,6 @@ fn payload_codec_rejection_table() {
             payload_bytes(&[good_raw.clone(), good.clone()], 2),
         ),
         (
-            "two bip39",
-            payload_bytes(&[good.clone(), bip39_record(3, 16, 0, 1, [0; 4])], 2),
-        ),
-        (
             "record_id zero",
             payload_bytes(&[bip39_record(0, 16, 0, 1, [0; 4])], 1),
         ),
@@ -1284,7 +1280,7 @@ fn passphrase_match_mismatch_accept_and_retry() {
     // Stored check value = SHA-256(addr0)[0..4] = dc929830 (ACC-4).
     let payload = vault.payload().unwrap();
     assert_eq!(
-        hex::encode(&payload.bip39.as_ref().unwrap().passphrase_check),
+        hex::encode(&payload.bip39.first().unwrap().passphrase_check),
         "dc929830"
     );
     vault.lock();
@@ -1619,7 +1615,7 @@ fn debug_output_is_redacted() {
     for rendered in [
         format!("{password:?}"),
         format!("{:?}", Bip39Passphrase::new("SECRETPASS").unwrap()),
-        format!("{:?}", payload.bip39.as_ref().unwrap().mnemonic),
+        format!("{:?}", payload.bip39.first().unwrap().mnemonic),
         format!("{vault:?}"),
         format!("{:?}", vault.backup_challenge().err()),
     ] {
@@ -2267,7 +2263,7 @@ fn old_layout_payload_decodes_and_re_encodes_identically() {
         3,
     );
     let payload = Payload::decode(&bytes).unwrap();
-    assert!(payload.bip39.is_some());
+    assert!(!payload.bip39.is_empty());
     assert_eq!(payload.raw_keys.len(), 2);
     assert!(payload.sol_keys.is_empty() && payload.btc_keys.is_empty());
     assert_eq!(payload.encode().unwrap().as_slice(), bytes.as_slice());
@@ -2891,7 +2887,7 @@ fn hardware_vault_lifecycle() {
     assert_eq!(keys[0].record, first);
     // The payload holds no secret: no Bip39 and no imported-key record.
     let payload = vault.payload().unwrap();
-    assert!(payload.bip39.is_none() && payload.raw_keys.is_empty());
+    assert!(payload.bip39.is_empty() && payload.raw_keys.is_empty());
     assert!(payload.sol_keys.is_empty() && payload.btc_keys.is_empty());
 
     // A second card with other indices, then the same serial again.
@@ -3287,4 +3283,137 @@ fn unknown_path_card_vault_accounts_and_zcash_collision() {
     // rule.
     let enrolled = hw_record(42, 0, std::slice::from_ref(&record));
     vault.add_hardware_key(enrolled, 4).unwrap();
+}
+
+// ---------------------------------------------------------------- several mnemonics (§8.6)
+
+/// Hardhat/Anvil's published default mnemonic: account 0 `0xf39F…2266`, account 1 `0x7099…79C8`.
+const HARDHAT: &str = "test test test test test test test test test test test junk";
+
+fn evm_text(vault: &Vault, src: EvmKeySource) -> String {
+    vault.evm_address(src).unwrap().to_checksum()
+}
+
+#[test]
+fn several_mnemonics_round_trip_derive_and_ask_each_passphrase() {
+    let (storage, mut vault) = imported(None);
+    let primary = vault.mnemonics().unwrap().first().unwrap().id;
+    let second = vault.add_mnemonic(&pw(PASSWORD), HARDHAT, None, 2).unwrap();
+    // The same seed again is refused; the same words with a passphrase are another wallet.
+    assert_eq!(
+        vault.add_mnemonic(&pw(PASSWORD), ABOUT, None, 3),
+        Err(VaultError::DuplicateKey)
+    );
+    let third = vault
+        .add_mnemonic(
+            &pw(PASSWORD),
+            ABOUT,
+            Some(Bip39Passphrase::new("TREZOR").unwrap()),
+            4,
+        )
+        .unwrap();
+    let check = |vault: &Vault| {
+        assert_eq!(
+            evm_text(vault, EvmKeySource::Derived(index(0))),
+            "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+        );
+        assert_eq!(
+            evm_text(vault, EvmKeySource::Mnemonic(primary, index(0))),
+            "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+        );
+        assert_eq!(
+            vault
+                .evm_addresses_of(second, &[index(0), index(1)])
+                .unwrap()
+                .iter()
+                .map(|address| address.to_checksum())
+                .collect::<Vec<_>>(),
+            [
+                "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+                "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+            ]
+        );
+        assert_eq!(
+            evm_text(vault, EvmKeySource::Mnemonic(third, index(0))),
+            "0x9c32F71D4DB8Fb9e1A58B0a80dF79935e7256FA6"
+        );
+    };
+    check(&vault);
+    let infos = vault.mnemonics().unwrap();
+    assert_eq!(
+        infos
+            .iter()
+            .map(|info| (
+                info.id,
+                info.primary,
+                info.passphrase_used,
+                info.backup_confirmed
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (primary, true, false, true),
+            (second, false, false, true),
+            (third, false, true, true)
+        ]
+    );
+    // Reopened from disk: the third mnemonic's passphrase is asked for (position 3 of 3).
+    vault.lock();
+    let mut vault = reload(&storage);
+    assert_eq!(
+        vault.unlock(&pw(PASSWORD), new_slot()),
+        Ok(VaultStatus::PassphraseRequired)
+    );
+    let pending = vault.pending_passphrase().unwrap();
+    assert_eq!((pending.id, pending.position, pending.count), (third, 3, 3));
+    assert_eq!(
+        vault.enter_passphrase(Bip39Passphrase::new("TREZOR").unwrap()),
+        Ok(VaultStatus::Unlocked {
+            alt_passphrase: false
+        })
+    );
+    check(&vault);
+}
+
+#[test]
+fn added_mnemonic_backup_gates_signing_and_removal_rules() {
+    let (_, mut vault) = imported(None);
+    let primary = vault.mnemonics().unwrap().first().unwrap().id;
+    let (id, phrase) = vault.generate_mnemonic(&pw(PASSWORD), 2).unwrap();
+    let key = KeyRef::Evm(EvmKeySource::Mnemonic(id, index(0)));
+    // Receiving works, signing waits for the quiz; the wallet itself stays unlocked.
+    assert!(
+        vault
+            .evm_address(EvmKeySource::Mnemonic(id, index(0)))
+            .is_ok()
+    );
+    assert_eq!(
+        vault.with_secp_key(key, |_, _| Ok(())),
+        Err(VaultError::BackupNotConfirmed)
+    );
+    assert!(
+        vault
+            .with_secp_key(KeyRef::Evm(EvmKeySource::Derived(index(0))), |_, _| Ok(()))
+            .is_ok()
+    );
+    let challenge = vault.backup_challenge_for(id).unwrap();
+    vault
+        .confirm_backup_for(
+            id,
+            challenge.id,
+            refs(&answers(phrase.expose(), challenge.positions)),
+        )
+        .unwrap();
+    assert!(vault.with_secp_key(key, |_, _| Ok(())).is_ok());
+    assert_eq!(
+        vault.remove_mnemonic(&pw(PASSWORD), primary),
+        Err(VaultError::PrimaryMnemonic)
+    );
+    vault.remove_mnemonic(&pw(PASSWORD), id).unwrap();
+    assert_eq!(
+        vault
+            .evm_address(EvmKeySource::Mnemonic(id, index(0)))
+            .err(),
+        Some(VaultError::RecordNotFound)
+    );
+    assert_eq!(vault.mnemonics().unwrap().len(), 1);
 }

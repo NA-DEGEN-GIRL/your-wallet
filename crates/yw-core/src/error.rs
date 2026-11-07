@@ -198,6 +198,8 @@ pub enum VaultError {
     NoMnemonic,
     /// The last key of a key-only vault cannot be removed (a vault holds at least one record).
     LastKey,
+    /// The primary (first) recovery phrase cannot be removed (spec/02 §8.6).
+    PrimaryMnemonic,
 }
 
 impl From<KeyError> for VaultError {
@@ -233,6 +235,7 @@ impl fmt::Display for VaultError {
             }
             Self::NoMnemonic => "이 지갑에는 복구 단어가 없습니다(개인키로 시작한 지갑).",
             Self::LastKey => "개인키로 시작한 지갑의 마지막 키는 지울 수 없습니다.",
+            Self::PrimaryMnemonic => "첫 번째 복구 단어는 지울 수 없습니다.",
         };
         formatter.write_str(text)
     }

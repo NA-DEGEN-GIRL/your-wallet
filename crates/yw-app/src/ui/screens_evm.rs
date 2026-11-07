@@ -1097,6 +1097,13 @@ impl App {
             yw_core::vault::EvmKeySource::Derived(index) => {
                 format!("m/44'/60'/0'/0/{}", index.get())
             }
+            yw_core::vault::EvmKeySource::Mnemonic(id, index) => {
+                format!(
+                    "{} · m/44'/60'/0'/0/{}",
+                    self.mnemonic_label(id),
+                    index.get()
+                )
+            }
             yw_core::vault::EvmKeySource::Raw(_) => "가져온 개인키".to_owned(),
             yw_core::vault::EvmKeySource::Hardware(index) => format!(
                 "YubiKey · {}",
