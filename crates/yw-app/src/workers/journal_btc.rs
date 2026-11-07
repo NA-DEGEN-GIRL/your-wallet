@@ -69,12 +69,15 @@ pub enum BtcMetaOp {
         network: BtcNetwork,
     },
     /// `계정 추가`: the next HD account of `script_type` on `network` (`m/{44|49|84|86}'/c'/a'`,
-    /// spec/08 §3.1), stored and selected; discovery follows.
+    /// spec/08 §3.1) of `mnemonic` (`None`: the primary one; an added mnemonic, spec/02 §8.6),
+    /// stored and selected; discovery follows.
     AddAccount {
         /// Network.
         network: BtcNetwork,
         /// Address type.
         script_type: ScriptType,
+        /// The mnemonic (`None`: the primary one).
+        mnemonic: Option<yw_core::vault::RecordId>,
     },
     /// An imported single key's account (`개인키 가져오기` on the Bitcoin tab sends it after the
     /// vault stored the tag-4 record): stored and selected; no discovery.
@@ -703,6 +706,42 @@ impl JournalState {
         })
     }
 
+    /// Whether a BTC record of an account of the added mnemonic `id` (any network) may still
+    /// confirm (`BtcRecord::may_still_confirm`, also through another identity of the same
+    /// address): the mnemonic is not removed then (spec/02 §8.6, like an imported key).
+    pub fn btc_mnemonic_busy(
+        &mut self,
+        vault: &Vault,
+        id: yw_core::vault::RecordId,
+        now_unix: u64,
+    ) -> bool {
+        let metas: Vec<BtcMeta> = self
+            .btc_accounts
+            .accounts
+            .iter()
+            .filter(|meta| meta.account().mnemonic() == Some(id))
+            .cloned()
+            .collect();
+        let Ok(plain) = self.current(vault) else {
+            // An unreadable journal: the records cannot be checked.
+            return !metas.is_empty();
+        };
+        let records = BtcEntries::from_plain(&plain).records();
+        if records.iter().any(|record| {
+            matches!(record.account, BtcAccountId::Hd { mnemonic: Some(of), .. } if of == id)
+                && record.may_still_confirm(now_unix)
+        }) {
+            return true;
+        }
+        metas.iter().any(|meta| {
+            self.related(&records, meta).map_or(true, |related| {
+                related
+                    .iter()
+                    .any(|record| record.may_still_confirm(now_unix))
+            })
+        })
+    }
+
     /// Drops imported key `id`'s account (every network) after its vault record was removed and
     /// persists meta. The selection falls back; in a wallet without BIP84 account 0 the next
     /// account keeps the wallet-level tip.
@@ -928,6 +967,7 @@ impl JournalState {
             BtcMetaOp::AddAccount {
                 network,
                 script_type,
+                mnemonic,
             } => {
                 self.btc
                     .as_ref()
@@ -936,14 +976,17 @@ impl JournalState {
                     .map_err(BtcKeyError::Meta)?;
                 let number = self
                     .btc_accounts
-                    .next_hd_account(network, script_type)
+                    .next_hd_account_of(network, mnemonic, script_type)
                     .ok_or(BtcKeyError::Meta(MetaError::Full))?;
                 let coin = network
                     .account_node(script_type.purpose(), number)
                     .map_err(|error| BtcKeyError::Meta(MetaError::Key(error)))?;
-                let xpub = vault.btc_account_xpub(coin).map_err(BtcKeyError::Vault)?;
+                let xpub = vault
+                    .btc_account_xpub_of(mnemonic, coin)
+                    .map_err(BtcKeyError::Vault)?;
                 let key = BtcAccountKey::hd(script_type, number, xpub)
-                    .map_err(|_| BtcKeyError::Internal)?;
+                    .map_err(|_| BtcKeyError::Internal)?
+                    .with_mnemonic(mnemonic);
                 self.add_and_select(vault, BtcMeta::with_key(network, key), alt)
             }
             BtcMetaOp::AddImported { network, key } => {

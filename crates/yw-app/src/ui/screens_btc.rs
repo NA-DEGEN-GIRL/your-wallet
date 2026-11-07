@@ -565,9 +565,20 @@ impl App {
                 (false, Some(evm_index)) => format!("[EVM 계정 {evm_index} 키] "),
                 (false, None) => String::new(),
             };
+            // HD rows name their mnemonic with several (spec/02 §8.6).
+            let name = match row.id {
+                yw_core::btc::BtcAccountId::Hd {
+                    mnemonic,
+                    script_type,
+                    account,
+                } => self.mnemonic_tagged(
+                    &format!("{} 계정 {account}", script_type.name()),
+                    mnemonic.map(|id| *id.as_bytes()),
+                ),
+                _ => row.name.clone(),
+            };
             let label = format!(
-                "{badge}{} · {} · {}",
-                row.name,
+                "{badge}{name} · {} · {}",
                 row.kind,
                 BtcUi::amount_text(row.available)
             );
@@ -642,6 +653,29 @@ impl App {
     /// an EVM account (warning and the EVM account radios; adding asks for confirmation).
     fn btc_add_source_items(&self, ctx: &BtcCtx<'_>, usable: bool, items: &mut Vec<Item>) {
         let evm = self.btc.add_source == crate::app_btc::BtcAddSource::EvmShared;
+        if self.several_mnemonics() {
+            // Which recovery phrase the standard-path account comes from (spec/02 §8.6).
+            items.push(Item::Text("복구 단어".to_owned()));
+            for (row, info) in self.mn.infos.iter().enumerate() {
+                let chosen = if info.primary {
+                    self.btc.add_mnemonic.is_none()
+                } else {
+                    self.btc.add_mnemonic == Some(info.id)
+                };
+                let id = crate::ui::screens_mnemonics::ids::BTC_PICK_BASE
+                    .saturating_add(u16::try_from(row).unwrap_or(0));
+                items.push(Item::Row(vec![
+                    Ctl::radio(id, &self.mnemonic_label(info.id), chosen, row == 0).enabled(usable),
+                ]));
+            }
+            if self.btc.add_mnemonic.is_some() {
+                items.push(Item::Help(
+                    "추가한 복구 단어의 표준 경로 m/{44·49·84·86}'/{코인}'/{계정}'에서 만듭니다(계정 0부터)."
+                        .to_owned(),
+                ));
+                return;
+            }
+        }
         items.push(Item::Text("키 출처".to_owned()));
         items.push(Item::Row(vec![
             Ctl::radio(

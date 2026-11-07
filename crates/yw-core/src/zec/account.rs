@@ -163,14 +163,14 @@ impl ZecKeySource {
             Self::Derived { account, index } => {
                 format!("Zcash 경로 (계정 {account}, 주소 {index})")
             }
-            // The app prefixes the mnemonic's label ("[니모닉 2]").
+            // The app names the mnemonic by its label instead ("[니모닉 2] Zcash 표준 경로").
             Self::Mnemonic {
                 account: 0,
                 index: 0,
                 ..
-            } => "Zcash 표준 경로".to_owned(),
+            } => "Zcash 표준 경로 (추가한 복구 단어)".to_owned(),
             Self::Mnemonic { account, index, .. } => {
-                format!("Zcash 경로 (계정 {account}, 주소 {index})")
+                format!("Zcash 경로 (계정 {account}, 주소 {index}, 추가한 복구 단어)")
             }
             Self::EvmShared { evm_index } => format!("EVM 계정 {evm_index} 키"),
             Self::Hardware { index } if crate::yubikey::plan::is_unknown_index(index) => format!(

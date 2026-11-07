@@ -2394,14 +2394,13 @@ impl Vault {
                 continue;
             }
             let id = src.mnemonic();
-            let position = match seeds.iter().position(|(known, _)| *known == id) {
-                Some(position) => position,
-                None => {
-                    seeds.push((id, self.seed_for(&payload, id)?));
-                    seeds.len().saturating_sub(1)
-                }
-            };
-            let seed = seeds.get(position).ok_or(INTERNAL)?;
+            if !seeds.iter().any(|(known, _)| *known == id) {
+                seeds.push((id, self.seed_for(&payload, id)?));
+            }
+            let seed = seeds
+                .iter()
+                .find(|(known, _)| *known == id)
+                .ok_or(INTERNAL)?;
             let secret = src.ed25519_seed(seed.1.expose())?;
             out.push(crate::sol::keys::public_key(&secret));
         }

@@ -498,6 +498,39 @@ fn decode_account_block(
     Ok((account, script_type))
 }
 
+/// The account of a body: BIP84 account 0 (version 1), the version 2 account block, or the
+/// block and the added mnemonic's non-zero record id of an HD account (version 3).
+fn read_account(
+    reader: &mut Reader<'_>,
+    v2: bool,
+    v3: bool,
+) -> Result<(BtcAccountId, ScriptType), BtcRecordError> {
+    if !v2 {
+        return Ok((BtcAccountId::PRIMARY, ScriptType::P2wpkh));
+    }
+    let block = reader.array::<BTC_JOURNAL_ACCOUNT_LEN>()?;
+    let (account, script_type) = decode_account_block(&block, v3)?;
+    if !v3 {
+        return Ok((account, script_type));
+    }
+    let id = reader.array::<BTC_JOURNAL_MNEMONIC_LEN>()?;
+    match account {
+        BtcAccountId::Hd {
+            script_type,
+            account,
+            ..
+        } if id != [0; 16] => Ok((
+            BtcAccountId::Hd {
+                mnemonic: Some(crate::vault::RecordId::from_bytes(id)),
+                script_type,
+                account,
+            },
+            script_type,
+        )),
+        _ => Err(BtcRecordError::Value),
+    }
+}
+
 /// Checks the record against its parsed transaction (shared by `decode` and `encode`).
 fn check_against_raw(record: &BtcRecord) -> Result<Transaction, BtcRecordError> {
     if record.raw.is_empty() || record.raw.len() > BTC_MAX_JOURNAL_RAW {
@@ -836,33 +869,7 @@ impl BtcRecord {
         if body.len() != expected {
             return Err(BtcRecordError::Length);
         }
-        let (account, script_type) = if v2 {
-            let block = reader.array::<BTC_JOURNAL_ACCOUNT_LEN>()?;
-            let (account, script_type) = decode_account_block(&block, v3)?;
-            if v3 {
-                // Version 3: an HD account of the added mnemonic named by a non-zero record id.
-                let id = reader.array::<BTC_JOURNAL_MNEMONIC_LEN>()?;
-                match account {
-                    BtcAccountId::Hd {
-                        script_type,
-                        account,
-                        ..
-                    } if id != [0; 16] => (
-                        BtcAccountId::Hd {
-                            mnemonic: Some(crate::vault::RecordId::from_bytes(id)),
-                            script_type,
-                            account,
-                        },
-                        script_type,
-                    ),
-                    _ => return Err(BtcRecordError::Value),
-                }
-            } else {
-                (account, script_type)
-            }
-        } else {
-            (BtcAccountId::PRIMARY, ScriptType::P2wpkh)
-        };
+        let (account, script_type) = read_account(&mut reader, v2, v3)?;
         let inputs = read_inputs(&mut reader, count)?;
         let raw = reader.take(raw_len)?.to_vec();
         let record = Self {

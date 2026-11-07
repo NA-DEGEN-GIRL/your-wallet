@@ -1295,6 +1295,7 @@ impl KeyWorker {
             }
         }
         mismatch |= mnemonics::reconcile_mnemonics(&mut document, vault)?;
+        mismatch |= mnemonics::reconcile_mnemonic_chains(&mut document, vault)?;
         let mnemonic_infos = vault.mnemonics()?;
         let sol_sources: Vec<SolKeySource> = document
             .sol_accounts
@@ -1485,6 +1486,9 @@ impl KeyWorker {
                 pin,
             } => self.sign_chain_message_card(ticket, approved, &pin),
             KeyJob::RemoveImportedKey { password, id } => self.remove_imported(&password, id),
+            KeyJob::Mnemonics(mnemonics::MnJob::Remove { password, id }) => {
+                self.remove_mnemonic(&password, id)
+            }
             KeyJob::RecoverFromPrev { password: bytes } => self.recover_from_prev(&bytes),
             other => {
                 let outcome = self.handle_single(other);

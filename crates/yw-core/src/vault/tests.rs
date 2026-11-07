@@ -3455,15 +3455,18 @@ fn added_mnemonic_derives_solana_bitcoin_and_zcash_keys() {
         ])
         .unwrap();
     let base58 = |key: &[u8; 32]| crate::sol::SolAddress::from_bytes(*key).to_base58();
-    assert_eq!(base58(&keys[0]), HARDHAT_SOL_0);
-    assert_eq!(base58(&keys[1]), HARDHAT_SOL_1);
+    let [added0, added1, primary0]: [[u8; 32]; 3] = keys.try_into().unwrap();
+    let (added0, added1, primary0) = (&added0, &added1, &primary0);
+    assert_eq!(base58(added0), HARDHAT_SOL_0);
+    assert_eq!(base58(added1), HARDHAT_SOL_1);
     assert_eq!(
-        keys[2],
         vault
             .sol_public_keys(&[SolKeySource::Standard(index(0))])
-            .unwrap()[0]
+            .unwrap()
+            .as_slice(),
+        [*primary0]
     );
-    assert_ne!(keys[0], keys[2]);
+    assert_ne!(added0, primary0);
     // Bitcoin BIP84 first address (mainnet and testnet4) from the account node, and the same
     // public key by private derivation (the signer's key).
     for (network, test, expected) in [

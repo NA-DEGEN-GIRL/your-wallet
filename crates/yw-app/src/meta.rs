@@ -2122,6 +2122,89 @@ mod tests {
         meta
     }
 
+    /// spec/02 §8.6: the Solana, Bitcoin and Zcash accounts of an added mnemonic live only in
+    /// the new top-level keys `mnemonic_accounts` and `btc_accounts_mn` (earlier builds keep them
+    /// unread): `sol_accounts`, `prefs`, `btc`, `btc_accounts`, `btc_accounts_ext` and `zcash`
+    /// carry nothing new, and the document round-trips.
+    #[test]
+    fn added_mnemonic_accounts_stay_in_new_top_level_keys() {
+        use yw_core::bip32::AccountXpub;
+        use yw_core::vault::RecordId;
+        use yw_core::zec::{ZecAccount, ZecKeySource, ZecNetwork};
+        let id = [0x5c; 16];
+        let xpub = AccountXpub {
+            pubkey: yw_core::hex::decode_array::<33>(
+                "0330d54fd0dd420a6e5f8d3624f5f3482cae350f79d5f0753bf5beef9c2d91af3c",
+            )
+            .unwrap(),
+            chain_code: [7; 32],
+        };
+        let mut meta = Meta::default();
+        meta.sol_accounts.push(Account {
+            index: 0,
+            label: "Solana 1".to_owned(),
+            address: "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk".to_owned(),
+            hidden: false,
+        });
+        meta.mnemonic_accounts.upsert_sol(
+            id,
+            Account {
+                index: 0,
+                label: "Solana 1".to_owned(),
+                address: "oeYf6KAJkLYhBuR8CiGc6L4D4Xtfepr85fuDgA9kq96".to_owned(),
+                hidden: false,
+            },
+        );
+        meta.mnemonic_accounts.sol_selected = Some((id, 0));
+        meta.btc = Some(Box::new(BtcMeta::new(BtcNetwork::Mainnet, xpub)));
+        let added = BtcAccountKey::hd(ScriptType::P2wpkh, 0, xpub)
+            .unwrap()
+            .with_mnemonic(Some(RecordId::from_bytes(id)));
+        meta.btc_accounts
+            .upsert(BtcMeta::with_key(BtcNetwork::Mainnet, added))
+            .unwrap();
+        meta.btc_accounts
+            .upsert(BtcMeta::with_key(
+                BtcNetwork::Mainnet,
+                added.with_single_address(false).with_mnemonic(None),
+            ))
+            .unwrap_err();
+        meta.btc_accounts.selected = Some(added.id());
+        meta.zcash.set(ZecAccount {
+            network: ZecNetwork::Mainnet,
+            source: ZecKeySource::Mnemonic {
+                mnemonic: RecordId::from_bytes(id),
+                account: 0,
+                index: 0,
+            },
+            pubkey: xpub.pubkey,
+        });
+        let bytes = meta.to_json();
+        let root = yw_json::parse(&bytes, &LIMITS).unwrap();
+        let object = root.as_object().unwrap();
+        let hex = yw_core::hex::encode(&id);
+        for key in [
+            "sol_accounts",
+            "prefs",
+            "btc",
+            "btc_accounts",
+            "btc_accounts_ext",
+        ] {
+            let text = object
+                .get(key)
+                .map(|value| String::from_utf8(yw_json::to_vec(value)).unwrap())
+                .unwrap_or_default();
+            assert!(!text.contains(&hex), "{key}");
+        }
+        assert!(object.get("zcash").is_none());
+        assert!(object.get("btc_accounts").is_none());
+        for key in ["mnemonic_accounts", "btc_accounts_mn"] {
+            let text = String::from_utf8(yw_json::to_vec(object.get(key).unwrap())).unwrap();
+            assert!(text.contains(&hex), "{key}");
+        }
+        assert_eq!(parse(&bytes).unwrap().meta, meta);
+    }
+
     #[test]
     fn imported_lists_and_key_only_meta_round_trip() {
         let meta = imported_meta();

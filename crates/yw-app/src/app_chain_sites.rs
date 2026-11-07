@@ -149,6 +149,11 @@ impl App {
         self.sol_account_rows()
             .into_iter()
             .filter_map(|(id, label, address)| {
+                let label = if id.is_imported() || id.is_hardware() {
+                    label
+                } else {
+                    self.mnemonic_tagged(&label, id.mnemonic())
+                };
                 Some(SolRow {
                     public: address.to_bytes(),
                     source: id.source()?,
@@ -177,7 +182,7 @@ impl App {
                         script_type: account.script_type(),
                     },
                     source: account.key_source(BtcChain::Receive, 0),
-                    label: crate::app_btc::account_label(account),
+                    label: self.btc_account_label(account),
                     path: account.path_text(net, BtcChain::Receive, 0),
                 })
             })

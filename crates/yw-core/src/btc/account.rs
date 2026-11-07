@@ -1092,15 +1092,23 @@ impl BtcAccountKey {
     }
 
     /// The display name: `네이티브 세그윗 계정 0`, `탭루트 계정 2`, `가져온 키 · 레거시`,
-    /// `EVM 계정 3 키 · 탭루트`.
+    /// `EVM 계정 3 키 · 탭루트`; an added mnemonic's HD account says so (`… 계정 0 (추가한 복구
+    /// 단어)`; the app shows the mnemonic's label instead where it has it).
     #[must_use]
     pub fn display_name(&self) -> String {
         match self {
             Self::Hd {
+                mnemonic: None,
                 script_type,
                 account,
                 ..
             } => format!("{} 계정 {account}", script_type.name()),
+            Self::Hd {
+                mnemonic: Some(_),
+                script_type,
+                account,
+                ..
+            } => format!("{} 계정 {account} (추가한 복구 단어)", script_type.name()),
             Self::Single { script_type, .. } => format!("가져온 키 · {}", script_type.name()),
             Self::EvmShared {
                 evm_index,

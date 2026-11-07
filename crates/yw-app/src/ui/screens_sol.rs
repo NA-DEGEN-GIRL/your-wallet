@@ -413,7 +413,8 @@ impl App {
             } else if id.is_hardware() {
                 format!("{label}  [YubiKey]")
             } else {
-                label.clone()
+                // With several mnemonics every derived row names its source.
+                self.mnemonic_tagged(&label, id.mnemonic())
             };
             items.push(Item::Row(vec![
                 Ctl::radio(
@@ -455,7 +456,7 @@ impl App {
                 } else {
                     let mut row_ctls = vec![Ctl::button(ids::RENAME, "이름 바꾸기")];
                     match id {
-                        SolAccountId::Derived(index) => {
+                        SolAccountId::Derived(index) | SolAccountId::Mnemonic(_, index) => {
                             row_ctls.push(Ctl::button(ids::HIDE, "숨기기").enabled(index != 0));
                         }
                         // A YubiKey account: no "개인키 보기" (the key is on the card only).
@@ -490,15 +491,17 @@ impl App {
             items.push(Item::Row(vec![
                 Ctl::button(ids::ADD_ACCOUNT, "계정 추가").enabled(
                     !self.sol.creating
-                        && self
-                            .meta
-                            .as_ref()
-                            .and_then(crate::meta::Meta::next_sol_index)
-                            .is_some(),
+                        && (self.several_mnemonics()
+                            || self
+                                .meta
+                                .as_ref()
+                                .and_then(crate::meta::Meta::next_sol_index)
+                                .is_some()),
                 ),
                 Ctl::button(ids::SCAN_OPEN, "다른 경로 스캔"),
                 import,
             ]));
+            self.sol_pick_row(items);
             items.push(Item::Help(
                 "다른 지갑에서 쓰던 계정이 안 보이면 '다른 경로 스캔'으로 찾을 수 있습니다(읽기 전용). 개인키만 있으면 '개인키 가져오기'(Phantom·Solflare base58 또는 solana-keygen JSON)."
                     .to_owned(),
@@ -753,6 +756,9 @@ impl App {
                     }
                     KnownKind::OwnImported => format!("내 계정(가져온 개인키): {}", exact.label),
                     KnownKind::OwnHardware => format!("내 계정(YubiKey): {}", exact.label),
+                    KnownKind::OwnMnemonic => {
+                        format!("내 계정(추가한 복구 단어): {}", exact.label)
+                    }
                     KnownKind::Sent | KnownKind::History => "보낸 적 있는 주소".to_owned(),
                 };
                 items.push(Item::Banner(note, Tone::Info));
@@ -760,7 +766,10 @@ impl App {
             for lookalike in &check.lookalikes {
                 let name = match lookalike.kind {
                     KnownKind::Book { .. } => format!("주소록 '{}'", lookalike.label),
-                    KnownKind::Own { .. } | KnownKind::OwnImported | KnownKind::OwnHardware => {
+                    KnownKind::Own { .. }
+                    | KnownKind::OwnImported
+                    | KnownKind::OwnHardware
+                    | KnownKind::OwnMnemonic => {
                         format!("내 계정 '{}'", lookalike.label)
                     }
                     KnownKind::Sent | KnownKind::History => "보낸 내역의 주소".to_owned(),
@@ -898,7 +907,10 @@ impl App {
                     let star = if favorite { "★ " } else { "" };
                     Some((format!("{star}주소록: {}", entry.label), entry.address))
                 }
-                KnownKind::Own { .. } | KnownKind::OwnImported | KnownKind::OwnHardware => {
+                KnownKind::Own { .. }
+                | KnownKind::OwnImported
+                | KnownKind::OwnHardware
+                | KnownKind::OwnMnemonic => {
                     Some((format!("내 계정: {}", entry.label), entry.address))
                 }
                 KnownKind::Sent | KnownKind::History => None,
