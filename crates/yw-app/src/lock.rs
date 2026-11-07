@@ -39,8 +39,9 @@ impl LockReason {
 pub const IDLE_CHECK_MS: u64 = 1_000;
 
 /// App-input idle tracking. Only input to yw-app windows counts (never `GetLastInputInfo`);
-/// while an approval or W08/W09 window is open the clock is paused, and it restarts when they
-/// close.
+/// while an approval or W08/W09 window is open the clock is paused. Closing one does not restart
+/// the count: only user input does (a window that expired or was answered for the user — e.g. a
+/// dApp's request nobody looked at — must not keep the wallet unlocked).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IdleTracker {
     last_input_ms: u64,
@@ -62,11 +63,9 @@ impl IdleTracker {
         self.last_input_ms = now_ms;
     }
 
-    /// Pauses while a self-timed window is open; resuming restarts the count.
-    pub const fn set_paused(&mut self, now_ms: u64, paused: bool) {
-        if self.paused && !paused {
-            self.last_input_ms = now_ms;
-        }
+    /// Pauses while a self-timed window is open. Resuming keeps the last input time: input to
+    /// the window itself (approve, reject, scrolling) already counted through [`Self::input`].
+    pub const fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
     }
 
@@ -118,11 +117,19 @@ mod tests {
         let mut idle = IdleTracker::new(0);
         idle.input(10_000);
         assert!(idle.should_lock(10_000 + limit, minutes));
-        // An approval window open across the whole period: no lock; count restarts on close.
+        // An approval window open across the whole period: no lock while it is open.
         let mut idle = IdleTracker::new(0);
-        idle.set_paused(5_000, true);
+        idle.set_paused(true);
         assert!(!idle.should_lock(limit * 2, minutes));
-        idle.set_paused(limit * 2, false);
+        // It closed by itself (expired, or a dApp request answered without the user): the count
+        // is not restarted — the wallet locks at once.
+        idle.set_paused(false);
+        assert!(idle.should_lock(limit * 2, minutes));
+        // The user answered it: that click is input, the count starts there.
+        let mut idle = IdleTracker::new(0);
+        idle.set_paused(true);
+        idle.input(limit * 2);
+        idle.set_paused(false);
         assert!(!idle.should_lock(limit * 3 - 1, minutes));
         assert!(idle.should_lock(limit * 3, minutes));
     }

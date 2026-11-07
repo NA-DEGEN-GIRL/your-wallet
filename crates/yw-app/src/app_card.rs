@@ -477,6 +477,7 @@ impl App {
         if let Ok(keys) = result {
             self.card.record_ids = keys.iter().map(|key| key.id).collect();
             self.card.records = keys.into_iter().map(|key| key.record).collect();
+            self.zec_card_records_changed();
             self.refresh();
         }
     }

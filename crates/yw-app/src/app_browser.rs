@@ -599,6 +599,12 @@ impl App {
                     return;
                 }
             }
+            // A WalletConnect session never opens the password window (spec/13 §5; the
+            // dispatcher refuses first, this covers a stale view).
+            _ if crate::walletconnect::is_session_origin(&site.origin) => {
+                self.respond(&site.reply, Err(ProviderError::Unauthorized));
+                return;
+            }
             _ => {}
         }
         let source = QueueSource::Site {

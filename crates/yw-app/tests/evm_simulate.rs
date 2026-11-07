@@ -100,6 +100,7 @@ fn evaluate(chain: &ChainInfo, tx: &Eip1559Tx, outcome: SimOutcome, now: u64) ->
         balances: Vec::new(),
         address_book: Vec::new(),
         l1_fee: None,
+        hyperliquid: None,
     };
     let draft = build_evm_tx_request(
         ApprovalId([7; 16]),

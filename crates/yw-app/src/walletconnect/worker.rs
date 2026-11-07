@@ -1,8 +1,10 @@
 //! The `WalletConnect` worker thread (spec/13 §4–§5): one relay WebSocket (JSON-RPC `irn_*`),
 //! the [`Engine`], the Verify check, and the bridge to the browser dispatcher as a virtual
 //! connection. Session requests become dispatcher requests of the session's synthetic origin, so
-//! they meet the same vault-state rules (locked → the unlock window, like the extension), grants,
-//! rate limits, approval queue, risk rules and simulation. Proposals become an
+//! they meet the same grants, rate limits, approval queue, risk rules and simulation as the
+//! extension — except that a locked wallet refuses them (4100) instead of opening the password
+//! window, `eth_accounts` is empty while locked, and a rejected or expired request holds the
+//! session's next ones off for [`REQUEST_COOLDOWN_MS`]. Proposals become an
 //! `eth_requestAccounts` of the session origin: the connect window's answer approves or rejects.
 //!
 //! Inputs arrive on one channel: UI commands, relay text frames (from a reader thread per
@@ -44,6 +46,10 @@ const IDLE_CLOSE_MS: u64 = 10_000;
 const JWT_TTL_S: u64 = 86_400;
 /// Messages kept while the relay is down.
 const MAX_QUEUED: usize = 256;
+/// After a session's signing request was rejected or expired, its next ones are refused (4001)
+/// for this long: a dApp cannot keep an approval window — and so the paused idle clock — up
+/// continuously (spec/13 §7.3).
+pub const REQUEST_COOLDOWN_MS: u64 = 15_000;
 
 const RELAY_LIMITS: Limits = Limits {
     max_bytes: 4 * 1_048_576,
@@ -195,8 +201,8 @@ pub enum WcEvent {
     Status(RelayStatus),
     /// A verified proposal (its connect request follows on the dispatcher).
     Proposal(Box<ProposalView>),
-    /// A proposal finished (approved, rejected or expired).
-    ProposalDone(u64),
+    /// The proposal of this session topic finished (approved, rejected or expired).
+    ProposalDone([u8; 32]),
     /// The session list and the state to persist in meta.
     Sessions(Vec<SessionView>, Box<WcStore>),
     /// A session ended: the UI removes its grant and its waiting requests.
@@ -246,9 +252,9 @@ impl Outlet for WcOutlet {
 /// What a dispatcher request of the bridge answers.
 #[derive(Clone, Debug)]
 enum Waiting {
-    /// The connect window of proposal `id` (session origin `origin`).
+    /// The connect window of the proposal of session topic `proposal` (session origin `origin`).
     Connect {
-        proposal: u64,
+        proposal: [u8; 32],
         origin: BrowserOrigin,
     },
     /// A session request.
@@ -284,6 +290,9 @@ pub struct Worker {
     backoff_ms: u64,
     idle_since_ms: Option<u64>,
     waiting: HashMap<[u8; 16], Waiting>,
+    /// Session topic → monotonic ms until which its signing requests are refused (after one was
+    /// rejected or expired).
+    cooldowns: HashMap<[u8; 32], u64>,
     counter: u64,
     status: RelayStatus,
 }
@@ -350,6 +359,7 @@ impl Worker {
             backoff_ms: BACKOFF_MIN_MS,
             idle_since_ms: None,
             waiting: HashMap::new(),
+            cooldowns: HashMap::new(),
             counter: 0,
             status: RelayStatus::NoProject,
         };
@@ -419,6 +429,11 @@ impl Worker {
                 }
             }
             WcCommand::Load(store) => {
+                if self.loaded && store.client_seed != self.client_seed {
+                    // Another wallet's meta (after a reset): the live sessions, proposals and
+                    // relay identity belong to the old one and go without a trace in the new.
+                    self.forget_wallet();
+                }
                 if !self.loaded {
                     self.loaded = true;
                     self.client_seed.clone_from(&store.client_seed);
@@ -438,6 +453,27 @@ impl Worker {
             }
             WcCommand::Shutdown => {}
         }
+    }
+
+    /// Drops every piece of wallet state (sessions, proposals, pairings, waiting answers, the
+    /// relay key and connection); the next [`WcCommand::Load`] starts afresh.
+    fn forget_wallet(&mut self) {
+        if let Some(link) = self.link.take() {
+            link.abort();
+        }
+        self.generation = self.generation.wrapping_add(1);
+        self.engine = Engine::new();
+        self.refresh_chains();
+        self.subscribed.clear();
+        self.calls.clear();
+        self.queued.clear();
+        self.waiting.clear();
+        self.cooldowns.clear();
+        self.client_seed = None;
+        self.loaded = false;
+        self.next_attempt_ms = 0;
+        self.backoff_ms = BACKOFF_MIN_MS;
+        logging::info("walletconnect", "state.replaced", &[]);
     }
 
     fn pair(&mut self, text: &str) {
@@ -767,7 +803,7 @@ impl Worker {
         let status = self.http.as_ref().map_or(VerifyStatus::Unknown, |http| {
             super::verify::resolve(&**http, &mut self.verify_key, input, &view.peer.url, now)
         });
-        self.engine.set_verify(view.id, status);
+        self.engine.set_verify(&view.session_topic, status);
         view.verify = status;
         let Some(origin) = session_origin(&view.session_topic) else {
             return;
@@ -795,7 +831,7 @@ impl Worker {
             Value::Array(Vec::new()),
             deadline,
             Waiting::Connect {
-                proposal: view.id,
+                proposal: view.session_topic,
                 origin,
             },
         );
@@ -839,6 +875,20 @@ impl Worker {
         self.core.submit(self.conn, &envelope);
     }
 
+    fn cool_down(&mut self, topic: [u8; 32]) {
+        let now = self.now_ms();
+        self.cooldowns.retain(|_, until| *until > now);
+        if self.cooldowns.len() < super::engine::MAX_SESSIONS * 2 {
+            self.cooldowns
+                .insert(topic, now.saturating_add(REQUEST_COOLDOWN_MS));
+        }
+    }
+
+    fn cooling(&self, topic: &[u8; 32]) -> bool {
+        let now = self.now_ms();
+        self.cooldowns.get(topic).is_some_and(|until| *until > now)
+    }
+
     fn answer(&mut self, topic: &[u8; 32], id: u64, result: Result<Value, (i64, String)>) {
         let outs = self.engine.respond(topic, id, result);
         self.apply(outs);
@@ -854,14 +904,25 @@ impl Worker {
         let unsupported = || (4_200_i64, "Unsupported method.".to_owned());
         match request.method.as_str() {
             "eth_accounts" => {
-                let accounts = crate::browser::envelope::accounts_value(
-                    &session
-                        .accounts
-                        .iter()
-                        .map(|a| *a.as_bytes())
-                        .collect::<Vec<_>>(),
-                );
+                // Locked: no accounts, like a locked extension provider (spec/05 §4.4).
+                let accounts: Vec<[u8; 20]> = if self.core.wallet().vault == VaultView::Unlocked {
+                    session.accounts.iter().map(|a| *a.as_bytes()).collect()
+                } else {
+                    Vec::new()
+                };
+                let accounts = crate::browser::envelope::accounts_value(&accounts);
                 self.answer(&request.topic, request.id, Ok(accounts));
+            }
+            "personal_sign" | "eth_signTypedData_v4" | "eth_sendTransaction"
+                if self.cooling(&request.topic) =>
+            {
+                // Rejected or expired a moment ago: no new window yet (spec/13 §7.3).
+                let error = ProviderError::UserRejected;
+                self.answer(
+                    &request.topic,
+                    request.id,
+                    Err((error.code(), error.message().to_owned())),
+                );
             }
             "eth_chainId" => self.answer(
                 &request.topic,
@@ -960,6 +1021,12 @@ impl Worker {
                         self.connect_answer(proposal, &origin, &body);
                     }
                     Waiting::Request { topic, id } => {
+                        if matches!(
+                            body,
+                            Err(ProviderError::UserRejected | ProviderError::Expired)
+                        ) {
+                            self.cool_down(topic);
+                        }
                         let result = body.map_err(|e| (e.code(), e.message().to_owned()));
                         self.answer(&topic, id, result);
                     }
@@ -975,7 +1042,7 @@ impl Worker {
 
     fn connect_answer(
         &mut self,
-        proposal: u64,
+        proposal: [u8; 32],
         origin: &BrowserOrigin,
         body: &Result<Value, ProviderError>,
     ) {
@@ -987,17 +1054,24 @@ impl Worker {
                 .map(|item| parse_address(item.as_str()?).ok())
                 .collect()
         });
-        let outs = match accounts.filter(|list| !list.is_empty()) {
-            Some(accounts) => {
-                let outs = self.engine.approve(proposal, accounts, now);
-                if outs.is_empty() {
-                    // The proposal expired meanwhile: the grant the window stored goes again.
-                    self.core.remove_grant(origin);
-                    self.sink.push(WcEvent::Ended(origin.clone()));
-                }
-                outs
+        // The window answered for exactly this proposal's session origin: anything else never
+        // approves (the grant it may have stored goes).
+        let accounts = accounts
+            .filter(|list| !list.is_empty() && super::topic_of_origin(origin) == Some(proposal));
+        let outs = if let Some(accounts) = accounts {
+            let outs = self.engine.approve(&proposal, accounts, now);
+            if outs.is_empty() {
+                // The proposal expired meanwhile: the grant the window stored goes again.
+                self.core.remove_grant(origin);
+                self.sink.push(WcEvent::Ended(origin.clone()));
             }
-            None => self.engine.reject(proposal, 5_000, "User rejected."),
+            outs
+        } else {
+            if body.is_ok() {
+                // Accounts for another origin (never expected): undo the stored grant.
+                self.core.remove_grant(origin);
+            }
+            self.engine.reject(&proposal, 5_000, "User rejected.")
         };
         self.apply(outs);
         self.sink.push(WcEvent::ProposalDone(proposal));

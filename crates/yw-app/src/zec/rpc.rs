@@ -191,7 +191,36 @@ pub fn utxos_node(
     parse_node_utxos(&result, address, script_hex)
 }
 
-/// Parses a `getaddressutxos` answer (spec/12 §4.3).
+/// What a UTXO answer leaves after [`keep_useful`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UsefulUtxos {
+    /// The kept outputs, largest first (at most [`yw_core::zec::ZEC_MAX_UTXOS`]).
+    pub utxos: Vec<ZecUtxo>,
+    /// Outputs left out: dust (≤ [`yw_core::zec::ZEC_MIN_UTXO`]) and the smallest beyond the
+    /// limit.
+    pub ignored: usize,
+}
+
+/// Drops dust (outputs not worth their own marginal input fee) and keeps the largest
+/// [`yw_core::zec::ZEC_MAX_UTXOS`] (ties by outpoint): many tiny outputs sent to the address
+/// never fail the refresh (dust griefing, spec/12 §4.3).
+#[must_use]
+pub fn keep_useful(all: Vec<ZecUtxo>) -> UsefulUtxos {
+    let total = all.len();
+    let mut utxos: Vec<ZecUtxo> = all
+        .into_iter()
+        .filter(|utxo| utxo.value > yw_core::zec::ZEC_MIN_UTXO)
+        .collect();
+    utxos.sort_by(|a, b| b.value.cmp(&a.value).then(a.outpoint.cmp(&b.outpoint)));
+    utxos.truncate(yw_core::zec::ZEC_MAX_UTXOS);
+    UsefulUtxos {
+        ignored: total.saturating_sub(utxos.len()),
+        utxos,
+    }
+}
+
+/// Parses a `getaddressutxos` answer (spec/12 §4.3): every row of our script (no count limit
+/// here, see [`keep_useful`]). A `coinbase: true` row (when the node says so) is marked.
 ///
 /// # Errors
 ///
@@ -202,9 +231,6 @@ pub fn parse_node_utxos(
     script_hex: &str,
 ) -> Result<Vec<ZecUtxo>, ZecRpcError> {
     let rows = result.as_array().ok_or(ZecRpcError::Malformed)?;
-    if rows.len() > yw_core::zec::ZEC_MAX_UTXOS {
-        return Err(ZecRpcError::Malformed);
-    }
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let row = row.as_object().ok_or(ZecRpcError::Malformed)?;
@@ -235,7 +261,7 @@ pub fn parse_node_utxos(
             outpoint: point,
             value,
             height,
-            coinbase: false,
+            coinbase: row.get("coinbase").and_then(Value::as_bool) == Some(true),
         });
     }
     Ok(out)
@@ -280,9 +306,6 @@ pub fn utxos_blockbook(
 /// [`ZecRpcError::Malformed`].
 pub fn parse_blockbook_utxos(value: &Value) -> Result<Vec<ZecUtxo>, ZecRpcError> {
     let rows = value.as_array().ok_or(ZecRpcError::Malformed)?;
-    if rows.len() > yw_core::zec::ZEC_MAX_UTXOS {
-        return Err(ZecRpcError::Malformed);
-    }
     rows.iter()
         .map(|row| {
             let row = row.as_object().ok_or(ZecRpcError::Malformed)?;

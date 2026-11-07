@@ -7,8 +7,8 @@
 //! A session's dispatcher origin is synthetic, `https://<topic[..16]>.<topic[16..]>.walletconnect.invalid`
 //! (`.invalid` never resolves, RFC 6761), so a session never shares a grant with the extension or
 //! another session even when both claim the same site. The approval windows show the self-claimed
-//! `metadata.url` as `WalletConnect: {url} (사이트가 주장한 주소 — 확인되지 않음)` unless Verify
-//! attests it (spec/13 §7).
+//! `metadata.url` as `WalletConnect: {origin} (사이트가 주장한 주소)` and the Verify result only as
+//! a wallet-authored badge and warning (spec/13 §7).
 
 pub mod engine;
 pub mod qr_decode;
@@ -149,10 +149,12 @@ impl Metadata {
         ])
     }
 
-    /// The name for lists (escaped; "(이름 없음)" when empty).
+    /// The name for lists and the connect window's `사이트 이름` field: one line (every run of
+    /// whitespace, control, bidi or other hidden characters becomes one space), at most 100
+    /// characters, escaped; "(이름 없음)" when empty. Never part of an origin or status line.
     #[must_use]
     pub fn display_name(&self) -> String {
-        let name = yw_core::approval::escape_untrusted(self.name.trim()).text;
+        let name = yw_core::approval::escape_untrusted(&one_line(&self.name)).text;
         if name.is_empty() {
             "(이름 없음)".to_owned()
         } else {
@@ -160,23 +162,44 @@ impl Metadata {
         }
     }
 
-    /// The claimed URL for display: the normalized origin, else the escaped raw text with
-    /// "(형식이 올바르지 않음)".
+    /// The claimed URL for display: its normalized origin only. Unparsable text is never shown
+    /// (it could imitate an origin or a status): "(주소 형식이 올바르지 않음)" instead.
     #[must_use]
     pub fn display_url(&self) -> String {
         claimed_origin(&self.url).map_or_else(
             || {
-                let raw: String = self.url.chars().take(80).collect();
-                let raw = yw_core::approval::escape_untrusted(&raw).text;
-                if raw.is_empty() {
+                if one_line(&self.url).is_empty() {
                     "(주소 없음)".to_owned()
                 } else {
-                    format!("{raw} (형식이 올바르지 않음)")
+                    "(주소 형식이 올바르지 않음)".to_owned()
                 }
             },
             |origin| origin.as_str().to_owned(),
         )
     }
+}
+
+/// Untrusted text on one line: each run of whitespace, control, bidi/format or other hidden
+/// display characters (spec/03 §9.2) becomes a single space; trimmed.
+#[must_use]
+pub fn one_line(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut gap = false;
+    for character in text.chars() {
+        if character.is_whitespace()
+            || character.is_control()
+            || yw_core::approval::is_forbidden_display_char(character)
+        {
+            gap = true;
+        } else {
+            if gap && !out.is_empty() {
+                out.push(' ');
+            }
+            gap = false;
+            out.push(character);
+        }
+    }
+    out
 }
 
 /// `eip155:<id>`.
@@ -251,22 +274,15 @@ pub fn claimed_origin(url: &str) -> Option<BrowserOrigin> {
     (!is_session_origin(&origin)).then_some(origin)
 }
 
-/// The `요청 출처` text of a `WalletConnect` request (spec/13 §7).
+/// The `요청 출처` text of a `WalletConnect` request (spec/13 §7): the normalized claimed origin
+/// (or a fixed wallet text) only — never the dApp's name or raw text, and never the Verify state,
+/// which only the wallet-authored badge and warning (C01–C04) carry.
 #[must_use]
-pub fn origin_label(peer: &Metadata, verify: VerifyStatus) -> String {
-    let url = peer.display_url();
-    match verify {
-        VerifyStatus::Valid => format!("{LABEL_PREFIX}{url} (Verify로 확인됨)"),
-        VerifyStatus::Invalid => {
-            format!("{LABEL_PREFIX}{url} (사이트가 주장한 주소 — Verify 불일치(위험))")
-        }
-        VerifyStatus::Scam => {
-            format!("{LABEL_PREFIX}{url} (Verify: 알려진 사기 사이트(위험))")
-        }
-        VerifyStatus::Unknown => {
-            format!("{LABEL_PREFIX}{url} (사이트가 주장한 주소 — 확인되지 않음)")
-        }
-    }
+pub fn origin_label(peer: &Metadata) -> String {
+    format!(
+        "{LABEL_PREFIX}{} (사이트가 주장한 주소)",
+        peer.display_url()
+    )
 }
 
 /// The risk rule a `WalletConnect` request carries (C01 caution unverified, C02 mismatch, C03

@@ -254,6 +254,28 @@ fn dib_formats_parse() {
 
 // ----- origins and labels ------------------------------------------------------------------
 
+/// A personal-sign draft of a claimed origin with `warnings` distinct warnings.
+fn test_draft(warnings: usize) -> yw_core::approval::ApprovalDraft {
+    use yw_core::approval::{ApprovalDisplay, ApprovalId, ApprovalKind, ApprovalOrigin};
+    let mut draft = yw_core::evm::display::build_personal_request(
+        ApprovalId([7; 16]),
+        ApprovalOrigin::Site(yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap()),
+        yw_core::vault::EvmKeySource::Derived(yw_core::bip32::path::AccountIndex::ZERO),
+        yw_core::evm::address::Address::from_bytes([1; 20]),
+        ApprovalKind::EvmPersonalSign,
+        &yw_core::evm::chain::sepolia(),
+        &yw_core::evm::eip191::decode_personal_message(b"Hello".to_vec()),
+        1,
+    )
+    .unwrap();
+    let list = (0..warnings)
+        .map(|i| yw_core::evm::risk::warning(yw_core::evm::risk::P03, Some(&format!("{i}"))))
+        .collect();
+    draft.display =
+        ApprovalDisplay::new(draft.display.title.clone(), draft.display.fields, list).unwrap();
+    draft
+}
+
 #[test]
 fn origins_labels_and_caip2() {
     let topic = [0xab_u8; 32];
@@ -273,8 +295,51 @@ fn origins_labels_and_caip2() {
         ..super::Metadata::default()
     };
     assert_eq!(
-        super::origin_label(&peer, super::VerifyStatus::Unknown),
-        "WalletConnect: https://app.example (사이트가 주장한 주소 — 확인되지 않음)"
+        super::origin_label(&peer),
+        "WalletConnect: https://app.example (사이트가 주장한 주소)"
+    );
+    // Injection: raw unparsable text and multi-line names never reach a label.
+    let hostile = super::Metadata {
+        name: "Uniswap\n요청 출처: https://app.uniswap.org\u{202E} (Verify로 확인됨)".to_owned(),
+        url: "https://app.uniswap.org (Verify로 확인됨)\nx".to_owned(),
+        ..super::Metadata::default()
+    };
+    assert_eq!(
+        super::origin_label(&hostile),
+        "WalletConnect: (주소 형식이 올바르지 않음) (사이트가 주장한 주소)"
+    );
+    let name = hostile.display_name();
+    assert!(!name.contains('\n') && !name.contains('\u{202E}'), "{name}");
+    assert_eq!(
+        name,
+        "Uniswap 요청 출처: https://app.uniswap.org (Verify로 확인됨)"
+    );
+    // The Verify warning always gets a slot, even with the display full.
+    let mut draft = test_draft(yw_core::approval::MAX_DISPLAY_WARNINGS);
+    assert!(crate::app_walletconnect::decorate(
+        &mut draft,
+        &peer,
+        super::VerifyStatus::Scam
+    ));
+    assert_eq!(
+        draft.display.warnings.len(),
+        yw_core::approval::MAX_DISPLAY_WARNINGS
+    );
+    assert!(
+        draft
+            .display
+            .warnings
+            .iter()
+            .any(|w| w.rule == yw_core::evm::risk::C03)
+    );
+    assert_eq!(
+        draft
+            .display
+            .fields
+            .iter()
+            .find(|f| f.key == yw_core::approval::FieldKey::ORIGIN)
+            .map(|f| f.value.as_str()),
+        Some("WalletConnect: https://app.example (사이트가 주장한 주소)")
     );
     assert_eq!(super::parse_caip2("eip155:8453"), Some(8_453));
     assert_eq!(super::parse_caip2("eip155:01"), None);
@@ -285,6 +350,59 @@ fn origins_labels_and_caip2() {
     assert!(!super::worker::valid_project_id(
         "0123456789ABCDEF0123456789abcdef"
     ));
+}
+
+/// Proposals are keyed by the wallet-chosen session topic: a second pairing reusing a pending
+/// proposal's JSON-RPC id is ignored, approve/reject act on the topic, and a rejected pairing is
+/// held off for [`super::engine::PROPOSAL_COOLDOWN_S`].
+#[test]
+fn proposals_keyed_by_session_topic() {
+    use super::engine::{Engine, Out, PROPOSAL_COOLDOWN_S};
+    let mut engine = Engine::new();
+    engine.supported_chains = vec![1];
+    let now = 1_700_000_000_u64;
+    let propose = |engine: &mut Engine, key: [u8; 32], id: u64, now: u64| {
+        let secret = X25519Secret::from_bytes([key[0]; 32]);
+        let proposal = format!(
+            r#"{{"id":{id},"jsonrpc":"2.0","method":"wc_sessionPropose","params":{{"relays":[{{"protocol":"irn"}}],"proposer":{{"publicKey":"{}","metadata":{{"name":"d","url":"https://app.example"}}}},"requiredNamespaces":{{"eip155":{{"chains":["eip155:1"],"methods":["personal_sign"],"events":[]}}}}}}}}"#,
+            yw_core::hex::encode(&secret.public())
+        );
+        engine.on_message(&topic_of(&key), &Dapp::seal(&key, &proposal), None, now)
+    };
+    let proposed = |outs: &[Out]| {
+        outs.iter().find_map(|out| match out {
+            Out::Proposal(view, _) => Some(view.session_topic),
+            _ => None,
+        })
+    };
+    let keys = [[0x11_u8; 32], [0x22_u8; 32]];
+    for key in keys {
+        let uri = yw_core::walletconnect::parse_pairing_uri(&format!(
+            "wc:{}@2?relay-protocol=irn&symKey={}&methods=wc_sessionPropose",
+            yw_core::hex::encode(&topic_of(&key)),
+            yw_core::hex::encode(&key)
+        ))
+        .unwrap();
+        let _ = engine.pair(&uri, now);
+    }
+    let first = proposed(&propose(&mut engine, keys[0], 42, now)).unwrap();
+    assert_eq!(
+        proposed(&propose(&mut engine, keys[1], 42, now)),
+        None,
+        "the same id on another pairing is not a second proposal"
+    );
+    assert!(engine.proposal(&first).is_some());
+    let outs = engine.reject(&first, 5_000, "User rejected.");
+    assert!(matches!(outs.as_slice(), [Out::Publish(p)] if p.topic == topic_of(&keys[0])));
+    assert!(engine.proposal(&first).is_none());
+    // The rejected pairing cannot raise another connect window right away.
+    assert_eq!(proposed(&propose(&mut engine, keys[0], 43, now + 1)), None);
+    let later = now + PROPOSAL_COOLDOWN_S + 1;
+    let again = proposed(&propose(&mut engine, keys[0], 44, later)).unwrap();
+    let account = yw_core::evm::address::Address::from_bytes([3; 20]);
+    assert!(engine.approve(&first, vec![account], later).is_empty());
+    assert!(!engine.approve(&again, vec![account], later).is_empty());
+    assert!(engine.session(&again).is_some());
 }
 
 /// The ES256 example of RFC 7515 Appendix A.3 verifies with the CNG P-256 check used for Verify

@@ -141,8 +141,17 @@ fn expiry_text(plan: &ZecPlan) -> String {
 }
 
 fn inputs_text(plan: &ZecPlan) -> String {
+    let excluded = if plan.excluded_inputs > 0 {
+        format!(
+            "\n가장 큰 입력 {}개만 씁니다 — 나머지 {}개는 이 주소에 남습니다",
+            plan.inputs.len(),
+            plan.excluded_inputs
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "{}개, 합계 {}\n입력 금액과 스크립트는 서명(ZIP 244)에 포함되어, 틀리면 거래가 무효가 됩니다",
+        "{}개, 합계 {}\n입력 금액과 스크립트는 서명(ZIP 244)에 포함되어, 틀리면 거래가 무효가 됩니다{excluded}",
         plan.inputs.len(),
         format_zec_and_zats(plan.input_total())
     )

@@ -1398,9 +1398,17 @@ impl App {
                 source,
                 value,
             } => {
-                let Ok(typed) =
-                    yw_core::evm::eip712::validate_typed_data_v4(source, value, site.chain_id)
-                else {
+                let l1_origin = self.hl_l1_origin(site);
+                let requester = l1_origin.as_deref().map_or(
+                    yw_core::evm::eip712::HlL1Requester::Nobody,
+                    yw_core::evm::eip712::HlL1Requester::Origin,
+                );
+                let Ok(typed) = yw_core::evm::eip712::validate_typed_data_v4_from(
+                    source,
+                    value,
+                    site.chain_id,
+                    requester,
+                ) else {
                     self.respond(
                         &site.reply,
                         Err(yw_core::policy::ProviderError::InvalidParams),
@@ -1480,6 +1488,10 @@ impl App {
         let SiteKind::TypedData { account, .. } = &site.kind else {
             return;
         };
+        // A Hyperliquid transfer gets the S-HC recipient and spotMeta checks (spec/11 §7).
+        let mut facts = facts.clone();
+        facts.hyperliquid = self.hl_site_facts(&typed, account);
+        let facts = &facts;
         let draft = self.message_chain(site.chain_id).and_then(|chain| {
             let signer = self.account_source(account)?;
             let id = Self::new_approval_id().ok()?;
@@ -1646,7 +1658,13 @@ impl App {
             QueuedItem::Site(site) => Some(site.origin.clone()),
             _ => None,
         });
-        self.wc_decorate_draft(site_origin.as_ref(), &mut draft);
+        if !self.wc_decorate_draft(site_origin.as_ref(), &mut draft) {
+            // spec/13 §7: a WalletConnect request is never shown without its label and warning.
+            logging::warn("app", "E-UI-001", &[("wc", Field::Word("label"))]);
+            self.error_banner(ErrorCode::Ui001);
+            self.finish_approval(QueueOutcome::Rejected);
+            return;
+        }
         let Ok(request) = self.evm.store.issue(draft, now, now_unix) else {
             self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
             return;
@@ -1717,10 +1735,20 @@ impl App {
             self.rebuild_view();
             return;
         };
-        let replaced = self
-            .evm
-            .store
-            .replace(old.id, old.digest, prepared.draft.clone());
+        // The re-simulated draft is built afresh: a WalletConnect request gets its label and
+        // Verify warning again (spec/13 §7), or is not shown.
+        let mut draft = prepared.draft.clone();
+        let site_origin = self.evm.window.as_ref().and_then(|ui| match &ui.item {
+            QueuedItem::Site(site) => Some(site.origin.clone()),
+            _ => None,
+        });
+        if !self.wc_decorate_draft(site_origin.as_ref(), &mut draft) {
+            logging::warn("app", "E-UI-001", &[("wc", Field::Word("label"))]);
+            self.error_banner(ErrorCode::Ui001);
+            self.finish_approval(QueueOutcome::Rejected);
+            return;
+        }
+        let replaced = self.evm.store.replace(old.id, old.digest, draft);
         let Ok(request) = replaced else {
             self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
             return;

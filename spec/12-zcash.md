@@ -49,7 +49,8 @@ D36의 세부 명세다. 방식은 Bitcoin([08](08-bitcoin.md))과 같다: 받�
 - 공개키는 압축 33바이트만 쓰고 meta `zcash`(선택 최상위 키, §12.3)에 출처와 함께 캐시한다. 개인키는 서명 때만 `Vault::with_secp_key`로 빌려 쓰고, 빌린 키의 공개키가 캐시와 다르면 서명하지 않는다(`KeyMismatch`).
 - EVM 계정과 같은 키: `m/44'/60'/0'/0/i`. 고르면 경고 T-ZEC-EVM-SHARED("EVM 주소와 이 Zcash 주소가 같은 공개키라 누구나 두 주소를 한 사람의 것으로 묶을 수 있습니다. 같은 복구 단어를 다른 Zcash 지갑에 넣어도 이 주소는 나오지 않습니다…")를 보이고 [정말 EVM 키 사용]을 한 번 더 눌러야 바뀐다. 기본은 표준 경로다.
 - YubiKey: vault tag 5의 `KeyRole::Zec { network, index }` 슬롯(OpenPGP secp256k1, [10](10-yubikey.md))의 공개키를 계정으로 쓴다. 카드에 서명을 맡기는 규칙은 §8.2.
-- 진행 중 거래(§12.1)가 있으면 키 출처·네트워크를 바꾸거나 Zcash를 끄지 않는다.
+- YubiKey 계정 대조(2026-11-07): 카드 기록(vault tag 5)을 읽을 때마다(잠금 해제 후 meta 적재, 등록·슬롯 바꾸기·비우기 뒤) meta `zcash`의 YubiKey 계정을 대조한다 — 같은 네트워크·index의 `KeyRole::Zec` 슬롯이 같은 공개키로 있어야 한다. 없으면 meta는 그대로 두고 받기 카드를 숨기며 보내기를 막고 위험 띠("…YubiKey 키를 찾을 수 없습니다… 키 출처를 '표준'으로 바꾸세요(다른 주소가 됩니다)")를 보인다. 표준 경로로 바꾸는 것은 사용자가 고를 때만. 카드 기록을 아직 못 읽었으면 받기·보내기는 기다린다. YubiKey 비우기·슬롯 바꾸기 화면은 `App::zec_accounts_using_card(serial, slots)`(그 카드의 그 슬롯만 가진 Zcash 계정)로 먼저 경고할 수 있다.
+- 진행 중 거래(§12.1)가 있으면 키 출처(YubiKey 슬롯 선택 포함)·네트워크를 바꾸거나 Zcash를 끄지 않는다.
 
 ## 3. 받는 주소 파싱 (`zec::address::parse_recipient`)
 
@@ -71,12 +72,14 @@ ZIP 316 그대로: `ℓ_L = min(64, ⌊ℓ_M/2⌋)`, `ℓ_R = ℓ_M − ℓ_L`, 
 | 용도 | 호출 | 해석 |
 |---|---|---|
 | 연결 검사 | `getblockhash [0]`, `getblockchaininfo []` | §2.1 |
-| UTXO (`node`) | `getaddressutxos [{"addresses":[<우리 주소>]}]` (Zebra, zcashd는 `-insightexplorer`/`-lightwalletd`; QuickNode 문서에 있음) | 행 `{address, txid, outputIndex, script, satoshis, height}`; `address`가 우리 주소가 아니면 응답 전체 거부, `script`가 우리 P2PKH가 아니면 그 행만 건너뜀, `height > 0`만 확인됨. `-32601`이면 "주소 조회 미지원 — Blockbook으로 바꾸세요" |
+| UTXO (`node`) | `getaddressutxos [{"addresses":[<우리 주소>]}]` (Zebra, zcashd는 `-insightexplorer`/`-lightwalletd`; QuickNode 문서에 있음) | 행 `{address, txid, outputIndex, script, satoshis, height}`; `address`가 우리 주소가 아니면 응답 전체 거부, `script`가 우리 P2PKH가 아니면 그 행만 건너뜀, `height > 0`만 확인됨, `coinbase: true`가 있으면 coinbase로 표시(선택 제외). `-32601`이면 "주소 조회 미지원 — Blockbook으로 바꾸세요" |
 | UTXO (`bb-rest`) | `GET <엔드포인트>/api/v2/utxo/<주소>` (QuickNode Blockbook REST 애드온 형식) | `{txid, vout, value(문자열), height?, coinbase?}`; `height` 0·없음은 미확인 |
 | 상태 추적 | `getrawtransaction [<txid>, 1]` | `height > 0` → 채굴됨, `height` 없음·`-1` → 알려짐(mempool·곁가지), `-5` → 없음 |
 | 전송 | `sendrawtransaction [<hex>]` | 결과가 우리 txid면 수락, `-27`(이미 체인에 있음)도 수락, `-25`/`-26` 거부, 그 밖은 결과 모름 |
 
 응답은 모두 관측일 뿐이다: 금액·스크립트는 ZIP 244 `SIGHASH_ALL`이 서명에 묶으므로(§6) 인덱서가 금액이나 스크립트를 속이면 거래가 무효가 될 뿐 자금을 잃지 않는다. **그래서 Bitcoin §5와 달리 이전 거래 원본을 받아 검증하지 않는다.** 인덱서는 UTXO를 숨기거나(잔액이 적게 보임) 없는 UTXO를 지어낼 수 있다(무효 거래로 끝남). 주소 단위로만 묻고 다른 정보는 보내지 않는다. URL·토큰은 로그에 남기지 않는다(`net=zcash:<net>`만).
+
+**먼지 공격 대비(2026-11-07, §4.3).** 누구나 우리 주소로 아주 작은 출력을 많이 보낼 수 있으므로 행 수로 응답을 거부하지 않는다(응답 크기·JSON 한도만). `ZEC_MIN_UTXO`(= max(`ZEC_DUST`, 입력 하나의 marginal fee 5,000) zats) 이하 출력은 버리고, 나머지를 큰 값부터(같으면 outpoint 순) `ZEC_MAX_UTXOS`개만 남긴다; 버린 수는 활동 카드에 적는다. UTXO 조회와 상태 추적은 서로 독립이다: UTXO 조회가 실패해도(오류 문구 표시, 보내기 불가) 같은 새로고침의 `getrawtransaction` 결과로 저널 전이는 계속된다(연결 검사 실패만 새로고침 전체 실패).
 
 ### 4.2 업그레이드 표 (`zec::upgrade::KNOWN_UPGRADES`)
 
@@ -126,7 +129,7 @@ v5(ZIP 225), 일반 부분만. 모든 정수는 little-endian:
 
 ### 7.1 입력 선택
 
-후보 = 확인된(`height` 있음) 우리 주소 UTXO 중 coinbase 아님, 값 > 0, 중복 아님, **확정될 수 있는 저널 기록의 입력이 아님**(§12.2). 큰 값부터(같으면 outpoint 순) 고르며 최대 50개. 정확한 금액: 잔돈 출력을 넣은 수수료로 잔돈 ≥ `ZEC_DUST`이면 잔돈을 같은 주소로, 아니면 잔돈 없이 나머지를 수수료에 더한다. 보내기 최대: 모든 후보(50개 초과면 거부), 금액 = 합계 − 수수료.
+후보 = 확인된(`height` 있음) 우리 주소 UTXO 중 coinbase 아님, 값 > `ZEC_MIN_UTXO`(먼지 제외), 중복 아님, **확정될 수 있는 저널 기록의 입력이 아님**(§12.2). 큰 값부터(같으면 outpoint 순) 고르며 최대 50개. 정확한 금액: 잔돈 출력을 넣은 수수료로 잔돈 ≥ `ZEC_DUST`이면 잔돈을 같은 주소로, 아니면 잔돈 없이 나머지를 수수료에 더한다. 보내기 최대: 후보 중 가장 큰 50개(넘는 후보는 남기고 승인 창 입력 필드에 "가장 큰 입력 50개만 — 나머지 n개는 남습니다"), 금액 = 그 합계 − 수수료.
 
 ### 7.2 수수료 (ZIP 317)
 
@@ -205,6 +208,7 @@ v5(ZIP 225), 일반 부분만. 모든 정수는 little-endian:
 | `Expired` (4) | 팁 > `nExpiryHeight + 10`(재구성 여유)이고 채굴 안 됨: 더는 포함될 수 없음(ZIP 203) | 예 |
 | `Rejected` (5) | 노드가 거부(`-25`/`-26`), 공개됨 → 만료까지 대기 | 아니오 |
 | `Discarded` (6) | 한 번도 노드에 넘기지 않고 버림 | 예 |
+| `InputsSpent` (7) | 팁 > 만료 + 10, 노드가 모름(또는 곁가지), 그런데 입력이 하나도 미사용 목록에 없음: "입력이 사용됨 — 포함되었을 수 있음". 다시 보내지 않고, 입력은 계속 예약(§12.2) | 예 |
 
 본문(135바이트 머리 + 서명된 거래): kind 0x04, version 1, 상태, 네트워크, 키 출처(코드·a·b), 공개키 33, 승인 id 16, 승인 digest 32, 서명 시각, `disclosed`, `mined_height`, `not_found`, 금액, 수수료, 입력 합계, 거래 길이, 거래. 읽을 때 모든 scriptSig 끝 공개키가 기록의 키인지, 첫 출력 = 금액, 출력 합 + 수수료 = 입력 합계인지 확인한다(다르면 "저널 손상": ZEC 보내기만 멈추고 바이트는 보존). 종결 기록은 64개까지 두고 오래된 것부터 지운다.
 
@@ -213,8 +217,8 @@ v5(ZIP 225), 일반 부분만. 모든 정수는 little-endian:
 ### 12.2 진행 중 규칙과 공개 거래 규칙
 
 - **한 번에 하나(D20과 같음).** 같은 네트워크·같은 공개키의 기록 중 종결이 아닌 것(`Signed`·`Broadcast`·`Rejected`)이 있으면 새 서명을 거부한다(`InFlight` "이 계정의 이전 Zcash 거래가 아직 확인되지 않았습니다. 확인되거나 만료된 뒤에 다시 보내세요."). 화면도 같은 이유로 [검토]를 막는다.
-- **공개 거래 충돌.** 종결이 아닌 기록의 입력은 모든 계획에서 제외한다(`reserved_inputs`). Bitcoin처럼 "포기" 동작이 없는 대신, 만료 높이가 지나면(§12.1 `Expired`) 그 거래는 다시는 채굴될 수 없으므로 그때 입력이 풀린다.
-- **추적**(새로고침마다, 탭이 열려 있거나 진행 중 기록이 있으면 30초마다): 채굴됨 → `Mined`; 알려짐 → `Signed`면 `Broadcast`; 없음 → `Broadcast`면 `not_found + 1`, 만료 전이면 같은 바이트를 다시 보냄(공개 표시 먼저); 팁 > 만료 + 10이고 채굴 안 됨 → `Expired`.
+- **공개 거래 충돌.** 종결이 아닌 기록과 `InputsSpent` 기록의 입력은 모든 계획에서 제외한다(`reserved_inputs`, `ZecRecord::reserves_inputs`). Bitcoin처럼 "포기" 동작이 없는 대신, 만료 높이가 지나면(§12.1 `Expired`) 그 거래는 다시는 채굴될 수 없으므로 그때 입력이 풀린다.
+- **추적**(새로고침마다, 탭이 열려 있거나 진행 중 기록이 있으면 30초마다): 채굴됨 → `Mined`; 알려짐 → `Signed`면 `Broadcast`; 없음 → `Broadcast`면 `not_found + 1`, 만료 전이면 같은 바이트를 다시 보냄(공개 표시 먼저); 팁 > 만료 + 10이고 채굴 안 됨 → 그 기록의 입력이 같은 새로고침의 주소 UTXO 목록(먼지 제외 전 전체)에 하나라도 있으면 `Expired`(입력 풀림), 하나도 없으면 `InputsSpent`(입력 예약 유지), UTXO 조회가 실패했으면 다음 새로고침까지 기다림("없음"만으로 만료 처리하지 않는다, 2026-11-07).
 
 ### 12.3 meta `zcash` (선택 최상위 키)
 
@@ -257,7 +261,7 @@ v5(ZIP 225), 일반 부분만. 모든 정수는 little-endian:
 
 ## 15. 상수 (`yw_core::zec`)
 
-`ZEC_DUST` 1,000 · `ZEC_MAX_INPUTS` 50 · `ZEC_FEE_ABS_CAP` 1,000,000 · `ZEC_SEQUENCE` `0xFFFFFFFF` · `ZEC_MIN_CONF` 1 · `ZEC_POLL_SECS` 30 · `ZEC_MAX_UTXOS` 1,000 · `ZEC_EXPIRED_AFTER` 10 · `ZEC_JOURNAL_FINAL_KEEP` 64 · `ZEC_MAX_JOURNAL_RAW` 32,768 · `upgrade::ZEC_EXPIRY_DELTA_PRE_NU7` 40 · `ZEC_EXPIRY_DELTA_NU7` 120 · `ZEC_MIN_EXPIRY_BLOCKS` 4 · `fee::MARGINAL_FEE` 5,000 · `GRACE_ACTIONS` 2 · `P2PKH_STANDARD_INPUT_SIZE` 150 · `P2PKH_STANDARD_OUTPUT_SIZE` 34 · `f4jumble::MIN_LEN` 38 · `MAX_LEN` 4,194,368.
+`ZEC_DUST` 1,000 · `ZEC_MAX_INPUTS` 50 · `ZEC_FEE_ABS_CAP` 1,000,000 · `ZEC_SEQUENCE` `0xFFFFFFFF` · `ZEC_MIN_CONF` 1 · `ZEC_POLL_SECS` 30 · `ZEC_MAX_UTXOS` 1,000(초과분은 작은 것부터 버림) · `ZEC_MIN_UTXO` 5,000 · `ZEC_EXPIRED_AFTER` 10 · `ZEC_JOURNAL_FINAL_KEEP` 64 · `ZEC_MAX_JOURNAL_RAW` 32,768 · `upgrade::ZEC_EXPIRY_DELTA_PRE_NU7` 40 · `ZEC_EXPIRY_DELTA_NU7` 120 · `ZEC_MIN_EXPIRY_BLOCKS` 4 · `fee::MARGINAL_FEE` 5,000 · `GRACE_ACTIONS` 2 · `P2PKH_STANDARD_INPUT_SIZE` 150 · `P2PKH_STANDARD_OUTPUT_SIZE` 34 · `f4jumble::MIN_LEN` 38 · `MAX_LEN` 4,194,368.
 
 ## 16. 확인한 사실과 출처 (2026-11-06)
 

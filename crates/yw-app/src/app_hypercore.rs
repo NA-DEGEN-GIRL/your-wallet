@@ -13,7 +13,8 @@ use std::collections::HashMap;
 use yw_core::approval::Approved;
 use yw_core::evm::address::Address;
 use yw_core::evm::amount::{U256, parse_units};
-use yw_core::hypercore::display::HcRecipient;
+use yw_core::evm::eip712::{DecodedTypedData, HlUserAction, KnownSchema, TdNode};
+use yw_core::hypercore::display::{HcRecipient, HlSiteFacts};
 use yw_core::hypercore::{
     HcAction, HcExchangeReply, HcKind, HcNetwork, HcPayload, HcToken, USD_DECIMALS,
     WITHDRAW_FEE_USDC, parse_amount,
@@ -22,6 +23,7 @@ use yw_core::vault::EvmKeySource;
 
 use crate::app::{App, AppMode, Screen};
 use crate::app_evm::{QueuedItem, SendAsset};
+use crate::browser::SiteRequest;
 use crate::events::{KeyJob, MessageSignFailure, MessageSigned, SignTicket};
 use crate::flow::evm::form::{AddressNote, check_recipient};
 use crate::hypercore::{HcBalances, HcEndpoint, HcEvent, HcRpcJob};
@@ -235,6 +237,57 @@ fn now_unix_ms() -> u64 {
 }
 
 impl App {
+    /// The S-HC checks of a dApp-requested Hyperliquid transfer (spec/11 §7): the recipient check
+    /// of its `destination` (own accounts, address book, look-alikes — the form's
+    /// [`check_recipient`]) and the cached `spotMeta` of its `hyperliquidChain`. `None` for other
+    /// typed data.
+    pub(crate) fn hl_site_facts(
+        &self,
+        typed: &DecodedTypedData,
+        account: &Address,
+    ) -> Option<HlSiteFacts> {
+        let Some(KnownSchema::HyperliquidUser(HlUserAction::Transfer(_))) = typed.schema else {
+            return None;
+        };
+        let text = |name: &str| typed.root.field(name).and_then(TdNode::string);
+        let network = text("hyperliquidChain").and_then(|chain| {
+            [HcNetwork::Mainnet, HcNetwork::Testnet]
+                .into_iter()
+                .find(|network| network.chain_name() == chain)
+        });
+        let spot_meta = self
+            .hypercore
+            .tokens
+            .as_ref()
+            .filter(|(net, _)| Some(*net) == network)
+            .map(|(_, tokens)| tokens.clone());
+        let known = self.known_addresses();
+        let recipient = text("destination")
+            .and_then(|destination| check_recipient(destination, account, None, &known).ok())
+            .map(|(_, notes)| HcRecipient {
+                look_alike: notes.iter().any(AddressNote::needs_ack),
+                not_in_book: notes.contains(&AddressNote::NotInBook),
+                notes: notes.iter().map(AddressNote::text).collect(),
+            });
+        Some(HlSiteFacts {
+            recipient,
+            spot_meta,
+        })
+    }
+
+    /// The origin that may use the Hyperliquid L1 Agent exception for `site` (spec/11 §7): the
+    /// extension site origin, or a `WalletConnect` claimed origin only when Verify attested it.
+    pub(crate) fn hl_l1_origin(&self, site: &SiteRequest) -> Option<String> {
+        if !crate::walletconnect::is_session_origin(&site.origin) {
+            return Some(site.origin.as_str().to_owned());
+        }
+        let (peer, verify) = self.wc_peer_of(&site.origin)?;
+        if verify != crate::walletconnect::VerifyStatus::Valid {
+            return None;
+        }
+        crate::walletconnect::claimed_origin(&peer.url).map(|origin| origin.as_str().to_owned())
+    }
+
     /// The card's network.
     #[must_use]
     pub const fn hc_network(&self) -> HcNetwork {
@@ -495,6 +548,16 @@ impl App {
             let known = self.known_addresses();
             let (address, notes) = check_recipient(text, &sender, None, &known)
                 .map_err(crate::errors::ErrorCode::text)?;
+            // A system address only moves its own token to HyperEVM; Send/Withdraw to one
+            // loses the funds (spec/11 §5).
+            if yw_core::hypercore::system_address_index(&address).is_some()
+                || address == yw_core::hypercore::HYPE_SYSTEM_ADDRESS
+            {
+                return Err(
+                    "HyperEVM 시스템 주소입니다 — HyperEVM으로 옮기려면 'HyperEVM으로 이동'을 쓰세요"
+                        .to_owned(),
+                );
+            }
             Ok((
                 address,
                 HcRecipient {
@@ -510,8 +573,15 @@ impl App {
             parse_amount(&form.amount_text, decimals)
                 .map_err(|_| format!("금액 형식이 올바르지 않습니다 (소수 {decimals}자리까지)"))?
         };
-        let (available, _) = self
+        let (available, available_decimals) = self
             .hc_available(form.kind, form.asset, form.to_perp)
+            .ok_or_else(|| "잔액을 확인할 수 없습니다".to_owned())?;
+        // The amount is parsed at the form's decimals (fewer for HyperEVM moves), the balance at
+        // weiDecimals: compare in the balance's units.
+        let units_at_balance = available_decimals
+            .checked_sub(decimals)
+            .and_then(U256::checked_pow10)
+            .and_then(|scale| units.checked_mul(scale))
             .ok_or_else(|| "잔액을 확인할 수 없습니다".to_owned())?;
         let fee = if form.kind == HcFormKind::Withdraw {
             parse_units(WITHDRAW_FEE_USDC, USD_DECIMALS).unwrap_or(U256::ZERO)
@@ -525,7 +595,7 @@ impl App {
         }
         // The withdrawal fee comes out of the amount itself (Arbitrum receives amount − fee),
         // so the whole withdrawable balance can be withdrawn.
-        if units > available {
+        if units_at_balance > available {
             return Err("잔액이 부족합니다".to_owned());
         }
         let payload = match (form.kind, &token) {
