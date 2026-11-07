@@ -73,6 +73,8 @@ pub(crate) fn signing_key(k: &[u8; 32]) -> ed25519_dalek::SigningKey;   // with_
 | `RawSeed` | 4 | 파생 없음: BIP39 seed[0..32] | `solana-keygen new`(경로 없음) | 아니오 | 예 |
 | `SolletLegacy { wallet, account }` | 5 | `m/501'/wallet'/0/account`를 secp256k1 BIP32(`"Bitcoin seed"`, [02] §3.1)로 파생한 32바이트 개인키를 Ed25519 시드로 사용 | Sollet(폐기) | 아니오 | 선택(MAY), "고급" 아래 |
 | `Imported` | 6 | 파생 없음: vault `SolKey` record(`tag 3`, [02] §4.6)의 시드, 공개키(`intent.core.from`)로 찾음. 매개변수 `(a, b) = (0, 0)` | Phantom·Solflare·solana-keygen에서 내보낸 개인키(§3.4) | 가져오기 | 아니오 |
+| `Hardware(i)` | 7 | YubiKey PIV 슬롯의 `m/44'/501'/i'/0'`([10] §3.1) | — | YubiKey 등록 | 아니오 |
+| `Mnemonic(id, i)` | 8 | 추가한 니모닉 `id`(vault `Bip39` record, [02] §8.6)의 `m/44'/501'/i'/0'`. 매개변수 `(a, b) = (i, 0)`, 저널·transcript는 그 뒤에 record id 16바이트(§13.2, §14.1) | 다른 지갑의 복구 단어(Phantom 등 표준 경로) | 예(§3.5) | 아니오 |
 
 - 타입은 [02] §3.5 `SolKeySource`(`Standard`·`Bip44Account`의 `i`는 `AccountIndex`, 0..=999)이고, 출처별 32바이트 시드 계산은 [02] §10.3 `with_ed25519_seed`·`sol_public_keys`가 이 표대로 한다.
 - 태그 5는 구현 시 확인: spl-token-wallet의 `deriveSeed` 소스와 대조한 벡터 1개를 얻지 못하면 구현하지 않는다.
@@ -103,6 +105,13 @@ pub const SOL_SCAN_MAX_INDEX: u32 = 49;
 - 가져온 키는 §3.3의 "비표준 경로 규칙"(보내기 최대·자기 표준 계정만)을 받지 않는다: `SolKeySource::needs_move_rule()`이 태그 2–5에만 참이다. 승인 창 `L07`도 없고, 계정 필드의 경로 줄은 "가져온 개인키 (복구 단어 밖)"이다. 수신자가 자기 가져온 계정이면 `KnownKind::OwnImported`("내 계정(가져온 개인키): {라벨}").
 - 저널: SOL 레코드 헤더의 출처 태그 6, `(a, b) = (0, 0)`(§14.1). 태그 6에 0이 아닌 매개변수는 `SolRecordError::Source`.
 - 내보내기: `Vault::reveal_imported_key`가 base58 64바이트 keypair를 돌려준다(W09, 비밀번호 재입력, 복사 토글 규칙 [04] §4.8).
+
+### 3.5 추가한 복구 단어의 계정 (2026-11-08, D37, [02] §8.6)
+
+- 출처 `SolKeySource::Mnemonic(id, i)`(태그 8): 경로는 표준 경로 그대로이고 시드만 그 니모닉의 것(그 니모닉의 passphrase 포함, [02] §7.5)이다. `sol_public_keys`는 니모닉마다 BIP39 시드를 한 번 계산한다. `with_ed25519_seed`는 그 니모닉의 백업 확인 전이면 `BackupNotConfirmed`(받기 주소 계산은 된다). 없는 `id`는 `RecordNotFound`.
+- `is_standard()`가 참이고 `needs_move_rule()`은 거짓이다(비표준 경로 규칙·`L07` 없음). 다른 경로 스캔(§3.3)은 주 니모닉만 본다.
+- meta: 계정은 선택 최상위 키 `mnemonic_accounts.sol`(`{mnemonic, index, label, address, hidden}`), 선택은 `mnemonic_accounts.sol_selected`([02] §5.3). 선택 우선순위: YubiKey(`hw_accounts.sol_selected`) → 추가한 니모닉 → 가져온 키(`sol_raw_selected`) → `prefs.sol_account`.
+- 승인·서명·저널: intent transcript(§13.2)와 메시지 digest(§19)가 record id를 묶고, 저널 레코드는 버전 2(§14.1). 나머지 흐름(미리보기, 수수료, 재인코딩 동일성, `verify_strict`, 방송 루프)은 같다.
 
 ## 4. 의존성
 
@@ -433,7 +442,8 @@ pub const SOL_MIN_LVBH_AHEAD: u64 = 100;         // lvbh = 블록해시 높이 +
 ```text
 start_domain("your-wallet/sol/transfer-intent", 1)
 push_bytes(id[16])  push_u8(cluster)  push_bytes(genesis_hash[32])
-push_u8(source_tag)  push_u32(a)  push_u32(b)          // §3.2 태그(1–6); Standard/Bip44Account: a=AccountIndex 값,b=0; SolletLegacy: a=wallet,b=account; 나머지(Imported 포함) 0,0
+push_u8(source_tag)  push_u32(a)  push_u32(b)          // §3.2 태그(1–8); Standard/Bip44Account/Hardware/Mnemonic: a=AccountIndex 값,b=0; SolletLegacy: a=wallet,b=account; 나머지(Imported 포함) 0,0
+[push_bytes(mnemonic_record_id 16)]                    // 태그 8(추가한 니모닉, §3.5)일 때만; 다른 태그의 바이트는 그대로
 push_bytes(from[32])  push_bytes(to[32])
 push_u8(asset_tag)                                      // 1=SOL, 2=SPL
   SPL이면: push_bytes(mint[32]) push_bytes(token_program[32]) push_u8(decimals) push_bytes(from_ata[32]) push_bytes(to_ata[32])
@@ -504,10 +514,13 @@ off  size  field
 
 ```rust
 pub const SOL_JOURNAL_HEADER_LEN: usize = 89;                                       // 고정 헤더 H (오프셋 0..=88)
-pub const SOL_JOURNAL_MAX_BODY: usize = SOL_JOURNAL_HEADER_LEN + SOL_MAX_TX_BYTES;  // 89 + 1,232 = 1,321 ([02] §5.4 SOL 최대 본문)
+pub const SOL_JOURNAL_MNEMONIC_LEN: usize = 16;                                     // 버전 2의 니모닉 record id
+pub const SOL_JOURNAL_MAX_BODY: usize =
+    SOL_JOURNAL_HEADER_LEN + SOL_JOURNAL_MNEMONIC_LEN + SOL_MAX_TX_BYTES;          // 89 + 16 + 1,232 = 1,337 ([02] §5.4 SOL 최대 본문)
 ```
 
-- 고정 헤더 크기는 **H = 89바이트**이고 `body_len = 89 + tx_len`이어야 한다. 따라서 SOL 최대 본문은 89 + 1,232 = **1,321바이트**다([02] §5.4가 이 값을 쓴다). 실제 템플릿 본문은 T_SOL 356바이트(89 + 267), T_SPL 526바이트(89 + 437).
+- 고정 헤더 크기는 **H = 89바이트**이고 `body_len = 89 + tx_len`이어야 한다. 실제 템플릿 본문은 T_SOL 356바이트(89 + 267), T_SPL 526바이트(89 + 437).
+- **레코드 버전 2 (추가한 니모닉의 계정, 2026-11-08, §3.5).** 출처 태그 8의 레코드는 `record_version = 2`이고 헤더 89바이트 뒤 `[89]`에 니모닉 record id 16바이트(0 아님)가 오고 트랜잭션은 `[105]`부터다(`body_len = 105 + tx_len`; `intent_hash` 등 헤더 위치는 같다). 버전 1에 태그 8은 `Source`, 버전 2에 다른 태그는 `Header`, 0인 id는 `Source`로 거부한다. 다른 출처의 레코드는 버전 1 바이트 그대로다. 그래서 SOL 최대 본문(상한 검사용 `SOL_JOURNAL_MAX_BODY`)은 89 + 16 + 1,232 = **1,337바이트**다([02] §5.4가 이 값을 쓴다; 버전 1 본문은 최대 1,321). 이전 빌드는 버전 2를 본문 오류로 본다(SOL 보내기만 멈춤, 바이트 보존, [04] §6.6).
 - 서명·블록해시·from·to·금액은 tx 바이트 안에 있다. 로드 때 헤더 검사(`record_kind == 0x02`, `record_version == 1`, `state` 1–4, `cluster` 1–2, `source_tag` 1–6과 §13.2의 a·b 규칙, `body_len == 89 + tx_len`, `Pending`·`Expired`면 `terminal_slot == 0`·`terminal_err == 0`) + `parse_transaction` + 재인코딩 동일성 + `verify_strict(from)`이 모두 성공해야 한다. 실패는 [02] §5.4 **본문 오류**다: SOL 보내기만 끄고 "저널 손상"(E-VLT-006)을 표시하며, 그 entry는 브로드캐스트하지 않고 자동 삭제하지 않으며 바이트 그대로 보존한다. 프레이밍 오류(`kind`·`body_len` 범위 등)는 [02] §5.4가 처리한다.
 - 이식 근거(먼저 기록하고 나중에 내보내는 패턴): `archive/spec-v2.4:crates/key-agent/src/durable.rs:725-806,1100-1129`. 이 문서의 상태 수는 4개로 줄인다.
 - 정리: 터미널 상태(2–4) 레코드는 meta `activity["solana:mainnet" | "solana:devnet"]`([02] §5.3)에 아래 `ActivityEntry`로 옮긴(meta 쓰기 성공) 뒤 저널에서 삭제한다. `Pending`은 자동 삭제하지 않는다.
@@ -736,7 +749,7 @@ SHA-256(tx 267B)  7ecb80478f954ea1a3625bf0ee1776ff0991c3f8e6ceb33c6f7b198f3929f7
 dApp은 Solana 계정을 **연결**하고 **메시지에 서명**(Sign-In-With-Solana 포함)하게 할 수만 있다. 거래 서명·전송 요청은 받지 않는다(페이지 shim이 4200으로 거부, 와이어 메서드 없음 — [05] §2.13, §3.6). 연결·grant는 [05] §4.9, 승인 창은 [04] §3.
 
 ### 19.1 코어 (`yw_core::sol::msgsign`)
-- `ApprovalKind::SolMessage = 0x21`(`sol_signMessage`), `SolSignIn = 0x22`(`sol_signIn`). origin은 사이트, `ChainRef::Solana { cluster, genesis = 고정 제네시스 }`(settings 클러스터), `AccountRef::Sol(public)`, `Signer::FromPayload`, `SigningPayload::SolMessage { source, public, message }`(digest 바이트 = transcript `"your-wallet/v3/sol-message"` v1: 출처 태그·인자, 공개키, 메시지). 승인 digest·일회 소비·120 s 만료는 [03] §11 그대로.
+- `ApprovalKind::SolMessage = 0x21`(`sol_signMessage`), `SolSignIn = 0x22`(`sol_signIn`). origin은 사이트, `ChainRef::Solana { cluster, genesis = 고정 제네시스 }`(settings 클러스터), `AccountRef::Sol(public)`, `Signer::FromPayload`, `SigningPayload::SolMessage { source, public, message }`(digest 바이트 = transcript `"your-wallet/v3/sol-message"` v1: 출처 태그·인자(태그 8이면 그 뒤 니모닉 record id `push_bytes` 16, §3.5), 공개키, 메시지). 승인 digest·일회 소비·120 s 만료는 [03] §11 그대로.
 - 서명(`sign_message(vault, approved)`): 종류·체인·계정·payload 일치 확인 → §19.2 규칙 재확인 → 표준 경로는 `with_ed25519_seed`, 가져온 키는 공개키로 `with_imported_ed25519_seed` → 파생 공개키 = 승인 계정 확인 → Ed25519로 **메시지 바이트 그대로** 서명 → `verify_strict`. 결과는 64바이트 서명.
 
 ### 19.2 서명할 수 없는 바이트 (차단, `M01`·`M02`)
